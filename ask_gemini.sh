@@ -73,7 +73,10 @@ for MODEL in "$AGY_MODEL" "$AGY_MODEL_FALLBACK"; do
     echo "ask_gemini.sh: REFUSING weak-tier model '$MODEL' in a judgment seat (GEMINI_ALLOW_WEAK=1 to override)" >&2
     continue
   fi
-  out="$(agy --print "$PROMPT" --model "$MODEL" --print-timeout "$AGY_PRINT_TIMEOUT" </dev/null 2>"$ERRF")"
+  # --sandbox: agy is an AGENTIC CLI — without it, print mode can use file-writing tools and
+  # litter the caller's cwd (observed live 2026-06-12: scratch scrape_*.py files written into
+  # the orchestrator's project root). Legs must be read-only.
+  out="$(agy --print "$PROMPT" --model "$MODEL" --print-timeout "$AGY_PRINT_TIMEOUT" --sandbox </dev/null 2>"$ERRF")"
   if [ -n "$(printf '%s' "$out" | tr -d '[:space:]')" ]; then
     log "$MODEL" "antigravity:pinned:$MODEL (unverified)" 0
     printf '%s\n' "$out"
