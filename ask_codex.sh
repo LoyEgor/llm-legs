@@ -38,8 +38,10 @@ fi
 
 ERRF="$(mktemp)"; trap 'rm -f "$ERRF"' EXIT
 set +e
+# </dev/null: codex reads stdin IN ADDITION to the argv prompt ("Reading additional input
+# from stdin..."): an open pipe without EOF hangs the call, stray input pollutes the prompt.
 OUT="$(codex exec --skip-git-repo-check --sandbox read-only \
-        "${MODEL_ARGS[@]}" -c model_reasoning_effort="$EFFORT" "$PROMPT" 2>"$ERRF")"
+        "${MODEL_ARGS[@]}" -c model_reasoning_effort="$EFFORT" "$PROMPT" </dev/null 2>"$ERRF")"
 RC=$?
 set -e
 

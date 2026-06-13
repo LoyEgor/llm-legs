@@ -88,7 +88,7 @@ set +e
 # (language, hooks) never leak into a judgment call. --strict-mcp-config: no MCP servers.
 OUT="$(claude -p "$PROMPT" --output-format json --model "$MODEL" \
         --strict-mcp-config --setting-sources project \
-        --disallowedTools "$DISALLOWED_TOOLS" 2>"$ERRF")"
+        --disallowedTools "$DISALLOWED_TOOLS" </dev/null 2>"$ERRF")"
 RC=$?
 set -e
 
