@@ -3,9 +3,15 @@
 # (terminal, cron, another orchestrator) — does not require running inside Claude Code.
 # Prompt as $1 or stdin. Prints the model's final text to stdout.
 #
-# TOKEN-ECONOMY POLICY (README hard rule): this leg is a THIN brain — decompose / judge /
-# adjudicate / final synthesis. Do NOT use it for heavy web search fan-out; Gemini/GPT legs
-# do the heavy lifting. `claude -p` draws from a capped subscription credit pool.
+# ROLE: this leg serves BOTH judgment seats (decompose / judge / adjudicate / final synthesis)
+# AND bounded web search/verification for the orchestrator. `claude -p` draws from a capped
+# subscription credit pool, so keep fan-out through this leg bounded; the Gemini/GPT legs still
+# do the heavy search lifting.
+#
+# WEB-TOOL TRAP: headless `claude -p` is non-interactive, so any permission-gated tool
+# (WebSearch, WebFetch) is silently DENIED unless it is on --allowedTools — the model then
+# answers "denied permission" and returns empty findings. That is WHY ALLOWED_TOOLS and the
+# --allowedTools flag below exist. Disable with CLAUDE_ALLOW_WEB=0 (restores judgment-only).
 #
 # Model policy mirrors ask_codex.sh: no hardcoded version. Default is the `opus` alias (the CLI
 # resolves it to the current Opus flagship); judgment seats need a strong tier. The served model
@@ -15,7 +21,8 @@
 #
 # Billing guard: a stray ANTHROPIC_API_KEY silently flips `claude` to per-call API billing —
 # always unset it (and ANTHROPIC_AUTH_TOKEN) so the OAuth subscription session is used.
-# Read-only guard: mutating tools are disallowed; this leg must never write to the machine.
+# Read/write guard: mutating tools stay disallowed (this leg must never write to the machine);
+# only the read-only web tools (WebSearch, WebFetch) are allow-listed.
 #
 # Every call logs {requested, served, weak_tier} to data/served-models.jsonl.
 # Modes: --probe (tiny end-to-end call), --extract-served-model (parse CLI JSON from stdin).
@@ -36,6 +43,10 @@ BLOCKED_RE='(^|[-_.])(fable|mythos)([-_.0-9]|$)'
 # NOTE: only CURRENT tool names — the CLI rejects unknown names in permission rules
 # (MultiEdit no longer exists; listing it broke review calls on 2026-06-12).
 DISALLOWED_TOOLS='Write,Edit,NotebookEdit,Bash,KillShell'
+# Read-only web tools. Headless -p denies permission-gated tools unless allow-listed (see
+# WEB-TOOL TRAP above); the orchestrator relies on this leg reaching the web. CLAUDE_ALLOW_WEB=0
+# drops the allow flag and restores judgment-only behavior.
+ALLOWED_TOOLS='WebSearch,WebFetch'
 
 log() { # $1 requested, $2 served, $3 weak(0/1), $4 rc
   printf '{"ts":"%s","leg":"claude","requested":"%s","served":"%s","weak_tier":%s,"rc":%d}\n' \
@@ -83,12 +94,18 @@ if printf '%s' "$MODEL" | grep -qiE "$BLOCKED_RE"; then
 fi
 
 ERRF="$(mktemp)"; trap 'rm -f "$ERRF"' EXIT
+# Pass --allowedTools only when web is enabled. Built as an array so the empty case adds no
+# flag at all; the ${ARR[@]+...} expansion is the set -u-safe form (bare "${ARR[@]}" on an
+# empty array aborts under nounset in bash < 4.4, e.g. /bin/bash 3.2 in a bare cron PATH).
+ALLOW_ARGS=()
+if [ "${CLAUDE_ALLOW_WEB:-1}" != "0" ]; then ALLOW_ARGS=(--allowedTools "$ALLOWED_TOOLS"); fi
 set +e
 # --setting-sources project: skip user-level settings/CLAUDE.md so personal preferences
 # (language, hooks) never leak into a judgment call. --strict-mcp-config: no MCP servers.
 OUT="$(claude -p "$PROMPT" --output-format json --model "$MODEL" \
         --strict-mcp-config --setting-sources project \
-        --disallowedTools "$DISALLOWED_TOOLS" </dev/null 2>"$ERRF")"
+        --disallowedTools "$DISALLOWED_TOOLS" \
+        ${ALLOW_ARGS[@]+"${ALLOW_ARGS[@]}"} </dev/null 2>"$ERRF")"
 RC=$?
 set -e
 
