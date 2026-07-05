@@ -9,8 +9,15 @@
 #   - `--model "<label>"` pins the model per call (labels from `agy models`); the interactive
 #     /model command merely writes the same label to ~/.gemini/antigravity-cli/settings.json;
 #   - the served model is NOT reported back — the audit row records the PIN, unverified;
-#   - quota state has no public command (the interactive quota panel uses an internal API), so
-#     exhaustion is detected per call and mapped to exit 5 (the orchestrator drops the leg).
+#   - quota state has no public command (the interactive quota panel uses an internal API);
+#     worse, quota exhaustion in `--print` is SILENT (measured 2026-07-05: rc 0, EMPTY stdout
+#     AND stderr for every model). The real error (RESOURCE_EXHAUSTED / code 429 / "Individual
+#     quota reached ... Resets in <dur>") surfaces ONLY in agy's internal log, so we pass
+#     `--log-file` and grep the log with a STRICT, error-shaped pattern (QUOTA_LOG_RE) — the broad
+#     stderr QUOTA_RE would false-positive on the verbose debug log (timestamps like 04.429Z,
+#     "rateLimiter" component names, ids). A quota hit is per-model, so we RECORD it and CONTINUE
+#     to the next model in the chain; only after the whole chain is exhausted with a quota hit do
+#     we exit 5 (with the reset hint) — the orchestrator then drops the leg for the day.
 #
 # Model chain (same Google family only — this leg must stay vendor-pure for cross-checking):
 #   1) AGY_MODEL          (default "Gemini 3.1 Pro (High)")
@@ -30,7 +37,11 @@ AGY_MODEL="${AGY_MODEL:-Gemini 3.1 Pro (High)}"
 AGY_MODEL_FALLBACK="${AGY_MODEL_FALLBACK:-Gemini 3.1 Pro (Low)}"
 AGY_PRINT_TIMEOUT="${AGY_PRINT_TIMEOUT:-5m}"
 WEAK_RE='(^|[^a-z])(flash|lite|nano|mini|small|tiny)([^a-z]|$)'
+# Broad, for stderr only (legacy behavior): stderr is terse, so false positives are unlikely.
 QUOTA_RE='quota|exhausted|capacity|rate.?limit|resource.?exhausted|429'
+# Strict, for the verbose --log-file: anchored to the measured error shape
+# ("RESOURCE_EXHAUSTED (code 429): Individual quota reached ...") so debug-log noise can't trip it.
+QUOTA_LOG_RE='RESOURCE_EXHAUSTED|Individual quota reached|\(code 429\)'
 
 log() { # $1 requested, $2 served, $3 weak(0/1)
   printf '{"ts":"%s","leg":"gemini","transport":"agy","requested":"%s","served":"%s","weak_tier":%s}\n' \
@@ -65,8 +76,9 @@ if ! command -v agy >/dev/null 2>&1; then
   exit 1
 fi
 
-ERRF="$(mktemp)"; trap 'rm -f "$ERRF"' EXIT
+ERRF="$(mktemp)"; LOGF="$(mktemp)"; trap 'rm -f "$ERRF" "$LOGF"' EXIT
 quota_hit=0
+reset_hint=""
 for MODEL in "$AGY_MODEL" "$AGY_MODEL_FALLBACK"; do
   [ -z "$MODEL" ] && continue
   if is_weak "$MODEL" && [ "${GEMINI_ALLOW_WEAK:-0}" != "1" ]; then
@@ -76,25 +88,31 @@ for MODEL in "$AGY_MODEL" "$AGY_MODEL_FALLBACK"; do
   # --sandbox: agy is an AGENTIC CLI — without it, print mode can use file-writing tools and
   # litter the caller's cwd (observed live 2026-06-12: scratch scrape_*.py files written into
   # the orchestrator's project root). Legs must be read-only.
-  out="$(agy --print "$PROMPT" --model "$MODEL" --print-timeout "$AGY_PRINT_TIMEOUT" --sandbox </dev/null 2>"$ERRF")"
+  # --log-file: quota exhaustion prints NOTHING to stdout/stderr (rc 0); its only trace is
+  # RESOURCE_EXHAUSTED/429 in agy's internal log, so route it to a temp file we can grep.
+  : > "$LOGF"  # agy appends — truncate so we inspect only THIS model's log
+  out="$(agy --print "$PROMPT" --model "$MODEL" --print-timeout "$AGY_PRINT_TIMEOUT" --sandbox --log-file "$LOGF" </dev/null 2>"$ERRF")"
   if [ -n "$(printf '%s' "$out" | tr -d '[:space:]')" ]; then
     log "$MODEL" "antigravity:pinned:$MODEL (unverified)" 0
     printf '%s\n' "$out"
     exit 0
   fi
-  if grep -qiE "$QUOTA_RE" "$ERRF" 2>/dev/null; then
+  # Empty output: the real cause (if any) is quota. Broad match on stderr (terse), strict match on
+  # the verbose log. "Individual quota reached" may be per-model/tier, so record it and try the next
+  # model in the chain — the (Low) tier can still serve when (High) is capped.
+  if grep -qiE "$QUOTA_RE" "$ERRF" 2>/dev/null || grep -qE "$QUOTA_LOG_RE" "$LOGF" 2>/dev/null; then
     quota_hit=1
+    [ -z "$reset_hint" ] && reset_hint="$(grep -oh 'Resets in [^.:]*' "$LOGF" "$ERRF" 2>/dev/null | head -1)"
     log "$MODEL" "QUOTA_EXHAUSTED" 0
-    echo "ask_gemini.sh: quota signal on '$MODEL' — trying next model in chain" >&2
-  else
-    head -2 "$ERRF" | sed 's/^/ask_gemini agy stderr: /' >&2
-    echo "ask_gemini.sh: agy produced no output on '$MODEL' — trying next model in chain" >&2
+    echo "ask_gemini.sh: Antigravity individual quota exhausted (RESOURCE_EXHAUSTED/429) on '$MODEL'${reset_hint:+ — $reset_hint} — trying next model in chain" >&2
+    continue
   fi
+  head -2 "$ERRF" | sed 's/^/ask_gemini agy stderr: /' >&2
+  echo "ask_gemini.sh: agy produced no output on '$MODEL' — trying next model in chain" >&2
 done
 
-if [ "$quota_hit" = "1" ]; then
-  echo "ask_gemini.sh: quota exhausted across the model chain — leg unavailable (quota)" >&2
-  log "chain" "QUOTA_EXHAUSTED" 0
+if [ "$quota_hit" = 1 ]; then
+  echo "ask_gemini.sh: Antigravity individual quota exhausted across the model chain${reset_hint:+ — $reset_hint} — account-wide, leg unavailable (quota)" >&2
   exit 5
 fi
 echo "ask_gemini.sh: agy produced no usable output for any model in the chain — leg unavailable" >&2
