@@ -25,7 +25,7 @@ EFFORT="${CODEX_EFFORT:-xhigh}"
 DATA_DIR="${LLM_LEGS_DATA_DIR:-$PWD/data}"
 mkdir -p "$DATA_DIR" 2>/dev/null || true
 LOG="$DATA_DIR/served-models.jsonl"
-WEAK_RE='(^|[-_.])(mini|nano|lite|flash|small|tiny|haiku)([-_.0-9]|$)'
+WEAK_RE='(^|[-_.])(mini|nano|lite|flash|small|tiny|haiku|luna)([-_.0-9]|$)'
 MODEL_ARGS=()
 [ -n "${CODEX_MODEL:-}" ] && MODEL_ARGS=(-m "$CODEX_MODEL")
 
