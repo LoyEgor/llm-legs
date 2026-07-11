@@ -10,8 +10,8 @@
 #     a weak tier (mini/nano/lite/flash/...), the call FAILS (exit 3) rather than silently
 #     feeding a cheap model's judgment into the pipeline (the workflow tolerates a dropped leg).
 #     Override for emergencies: CODEX_ALLOW_WEAK=1. Force a specific model: CODEX_MODEL=<name>.
-#   - Reasoning effort IS pinned (xhigh) — effort flags are stable across model generations.
-#     Light calls may pass CODEX_EFFORT=medium.
+#   - Reasoning effort defaults to high. Frontier legs must not exceed high implicitly;
+#     callers may explicitly pass CODEX_EFFORT for a different supported level.
 #   - Every call logs {requested, served} to data/served-models.jsonl; `--probe` does a tiny
 #     end-to-end call and reports the served model (used by pipeline/preflight.sh).
 set -uo pipefail
@@ -19,7 +19,7 @@ set -uo pipefail
 # Never let a stray API key flip billing away from the subscription session.
 unset OPENAI_API_KEY CODEX_API_KEY 2>/dev/null || true
 
-EFFORT="${CODEX_EFFORT:-xhigh}"
+EFFORT="${CODEX_EFFORT:-high}"
 # Audit log lands in the CALLER's data/ dir by default (orchestrators invoke legs with
 # cwd = project root). Override with LLM_LEGS_DATA_DIR for cron/launchd contexts.
 DATA_DIR="${LLM_LEGS_DATA_DIR:-$PWD/data}"
