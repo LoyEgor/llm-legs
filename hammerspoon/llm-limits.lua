@@ -1,6 +1,7 @@
 local M = {
   cachePath = os.getenv("HOME") .. "/.llm-limits.json",
   collectorPath = "/Volumes/Work/Projects/llm-legs/llm-limits.sh",
+  claudebCmd = "claudeb",
   wallsLog = nil,
   onRefreshStart = function() end,
   onRefreshDone = function() end,
@@ -113,19 +114,61 @@ local function readLlmLimits()
   return nil
 end
 
+local function baseEnvironment()
+  return {
+    HOME = os.getenv("HOME"),
+    PATH = "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin:" .. os.getenv("HOME") .. "/.local/bin",
+  }
+end
+
 local function newCollectorTask(callback, args)
   local task = hs.task.new(M.collectorPath, callback, args or {})
   if task then
-    local environment = {
-      HOME = os.getenv("HOME"),
-      PATH = "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin:" .. os.getenv("HOME") .. "/.local/bin",
-    }
+    local environment = baseEnvironment()
     if M.wallsLog then
       environment.LLM_LIMITS_WALLS_LOG = M.wallsLog
     end
     task:setEnvironment(environment)
   end
   return task
+end
+
+-- hs.task.new needs a launch path, not a PATH-resolved name; a bare command is taken from ~/.local/bin
+-- (where claudeb lives). The env PATH below still covers claudeb's own child processes.
+local function resolveClaudeb()
+  local cmd = M.claudebCmd or "claudeb"
+  if cmd:sub(1, 1) == "/" then
+    return cmd
+  end
+  return os.getenv("HOME") .. "/.local/bin/" .. cmd
+end
+
+function M.switchAccount(name)
+  local ok = pcall(function()
+    pcall(M.onRefreshStart)
+    local task = hs.task.new(resolveClaudeb(), function(exitCode)
+      if exitCode == 0 then
+        -- Token-free re-read (no --refresh): recompute current/is_current from the changed .claudeb-state.
+        local reread = newCollectorTask(function()
+          pcall(M.onRefreshDone, true)
+        end, {})
+        if not reread or not reread:start() then
+          pcall(M.onRefreshDone, true)
+        end
+      else
+        pcall(M.onRefreshDone, false, "switch failed")
+      end
+    end, { "use", name })
+    if task then
+      task:setEnvironment(baseEnvironment())
+    end
+    if not task or not task:start() then
+      error("could not start claudeb")
+    end
+  end)
+  if not ok then
+    pcall(M.onRefreshDone, false, "switch failed")
+  end
 end
 
 local function getLlmLimitsData()
@@ -165,6 +208,7 @@ function M.menuItems()
         })
       else
         local blocks = entry.key == "claude" and vendor.accounts or nil
+        local isClaudeAccounts = entry.key == "claude" and type(blocks) == "table" and #blocks > 0
         if type(blocks) ~= "table" or #blocks == 0 then
           blocks = {{ account = entry.label, five_hour = vendor.five_hour,
             weekly = vendor.weekly, is_current = false }}
@@ -174,23 +218,26 @@ function M.menuItems()
           local weekly = block.weekly
           local fiveHourPct = math.floor((tonumber(fiveHour.used_pct) or 0) + 0.5)
           local marker = block.is_current and "  ●" or ""
-          table.insert(menu, {
-            title = infoTitle(string.format("%-6s  5h  %3d%%  → %s%s", block.account or entry.label,
-              fiveHourPct, formatResetTime(fiveHour.resets_at), marker), fiveHourPct >= 80),
-            disabled = true,
-          })
+          local acct = block.account or entry.label
+          -- Only a NON-current real Claude account switches on click; the current one (● marker) is a no-op,
+          -- and the Codex/Gemini + fallback single-account rows aren't switchable.
+          local switchable = isClaudeAccounts and not block.is_current
+          local function accountRow(title, warning)
+            local row = { title = infoTitle(title, warning), disabled = true }
+            if switchable then
+              row.disabled = nil
+              row.fn = function() M.switchAccount(acct) end
+            end
+            return row
+          end
+          table.insert(menu, accountRow(string.format("%-6s  5h  %3d%%  → %s%s", acct,
+            fiveHourPct, formatResetTime(fiveHour.resets_at), marker), fiveHourPct >= 80))
           if type(weekly) == "table" then
             local weeklyPct = math.floor((tonumber(weekly.used_pct) or 0) + 0.5)
-            table.insert(menu, {
-              title = infoTitle(string.format("%-6s  wk  %3d%%  → %s%s", "",
-                weeklyPct, formatResetTime(weekly.resets_at), marker), weeklyPct >= 80),
-              disabled = true,
-            })
+            table.insert(menu, accountRow(string.format("%-6s  wk  %3d%%  → %s%s", "",
+              weeklyPct, formatResetTime(weekly.resets_at), marker), weeklyPct >= 80))
           else
-            table.insert(menu, {
-              title = infoTitle(string.format("%-6s  wk    -   → —%s", "", marker)),
-              disabled = true,
-            })
+            table.insert(menu, accountRow(string.format("%-6s  wk    -   → —%s", "", marker)))
           end
         end
       end
