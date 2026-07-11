@@ -40,6 +40,7 @@ WEAK_RE='(^|[-_.])(haiku|mini|nano|lite|flash|small|tiny)([-_.0-9]|$)'
 # COST CEILING (owner decision 2026-06-11): Opus is the most expensive tier this leg may use.
 # Mythos-class models (fable/mythos) cost far more per call — block them outright, no override.
 BLOCKED_RE='(^|[-_.])(fable|mythos)([-_.0-9]|$)'
+LIMIT_RE='hit your (session|weekly|Opus|usage) limit|usage_limit|rate.?limit|quota'
 # NOTE: only CURRENT tool names — the CLI rejects unknown names in permission rules
 # (MultiEdit no longer exists; listing it broke review calls on 2026-06-12).
 DISALLOWED_TOOLS='Write,Edit,NotebookEdit,Bash,KillShell'
@@ -112,6 +113,10 @@ set -e
 served="$(printf '%s' "$OUT" | extract_served_model "$MODEL" || true)"
 weak=0
 if printf '%s' "${served:-}" | grep -qiE "$WEAK_RE"; then weak=1; fi
+if [ "$RC" -ne 0 ] && { printf '%s' "$OUT"; cat "$ERRF"; } | grep -qiE "$LIMIT_RE"; then
+  RC=5
+  served="QUOTA_EXHAUSTED"
+fi
 log "$MODEL" "${served:-unknown}" "$weak" "$RC"
 
 if [ "$PROBE" = "1" ]; then
