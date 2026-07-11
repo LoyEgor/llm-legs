@@ -68,11 +68,15 @@ human-readable summary or `--no-write` to leave the cache untouched.
 Set `LLM_LIMITS_WALLS_LOG` to a `served-models.jsonl` audit log to include the most recent
 exit-5 wall timestamp for each vendor. `LLM_LIMITS_CACHE` overrides the cache path.
 
-For Hammerspoon, copy or symlink `hammerspoon/llm-limits.lua` into `~/.hammerspoon` and add:
+For Hammerspoon, copy or symlink `hammerspoon/llm-limits.lua` into `~/.hammerspoon`. Requiring
+the module has no side effects. Use its menu items inside an existing menu:
 
 ```lua
-require("llm-limits")
+local limits = require("llm-limits")
+local submenu = { title = "LLM Limits", menu = limits.menuItems() }
 ```
+
+Call `limits.startMenubar()` to opt into the standalone icon and `limits.stopMenubar()` to remove it.
 
 | Vendor | Limit freshness |
 |--------|-----------------|
