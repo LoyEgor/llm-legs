@@ -99,6 +99,34 @@ rm -f "$SENTINEL"
 CLAUDEB_SENTINEL="$SENTINEL" PATH="$FAKE_BIN:$PATH" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" >/dev/null || fail "default gated collection failed"
 [ ! -e "$SENTINEL" ] || fail "default collection invoked claudeb"
 
+table=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) || fail "table collection failed"
+grep -q $'\x1b' <<<"$table" && fail "piped table output contains ANSI escapes"
+head -n 1 <<<"$table" | grep -q '^SOURCE ' || fail "table header missing"
+grep -q '^claude/main' <<<"$table" && fail "main account must be hidden from the table"
+jq -e 'any(.vendors.claude.accounts[]; .account == "main")' <<<"$multi" >/dev/null || fail "main account missing from JSON accounts"
+[ "$(grep -c '^claude/' <<<"$table")" -eq 1 ] || fail "table must render one row per non-main claude account"
+order=$(awk 'NR > 1 {print $1}' <<<"$table" | paste -sd, -)
+[ "$order" = "claude/alona*,codex,gemini" ] || fail "default table order mismatch: $order"
+grep -q 'fable 33%' <<<"$table" || fail "fable note missing from table"
+awk 'NR > 1 && $1 == "codex"' <<<"$table" | grep -Eq '[0-9]{2}:[0-9]{2}' || fail "codex reset time not rendered"
+sorted=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table --sort 5h) || fail "sorted table collection failed"
+order=$(awk 'NR > 1 {print $1}' <<<"$sorted" | paste -sd, -)
+[ "$order" = "codex,claude/alona*,gemini" ] || fail "--sort 5h order mismatch: $order"
+# zoe: distant 5h reset but imminent weekly reset — --sort reset must use min(5h, weekly).
+printf '{"five_hour":{"used_percentage":11,"resets_at":%s},"seven_day":{"used_percentage":97,"resets_at":%s}}\n' "$((now + 50000))" "$((now + 500))" >"$CLAUDEB/.claudeb/limits/zoe.json"
+reset_sorted=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table --sort reset) || fail "reset-sorted table collection failed"
+order=$(awk 'NR > 1 {print $1}' <<<"$reset_sorted" | paste -sd, -)
+[ "$order" = "claude/zoe,codex,claude/alona*,gemini" ] || fail "--sort reset min(5h, weekly) order mismatch: $order"
+rm "$CLAUDEB/.claudeb/limits/zoe.json"
+HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table --sort bogus >/dev/null 2>&1
+rc=$?
+[ "$rc" -eq 2 ] || fail "unknown --sort value: expected exit 2, got $rc"
+HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table --sort= >/dev/null 2>&1
+rc=$?
+[ "$rc" -eq 2 ] || fail "empty --sort=: expected exit 2, got $rc"
+bare=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT") || fail "bare piped collection failed"
+jq -e '.schema == 1 and (.vendors | keys == ["claude","codex","gemini"])' <<<"$bare" >/dev/null || fail "piped bare invocation must emit schema-1 JSON"
+
 sleep 1
 TRUNCATED="$HOME_FIXTURE/.codex/sessions/2026/07/11/rollout-truncated.jsonl"
 printf '{"padding":"%0700d"}\n' 0 >"$TRUNCATED"
@@ -112,5 +140,5 @@ HOME="$EMPTY" bash "$SCRIPT" --no-write >/dev/null 2>&1
 rc=$?
 [ "$rc" -eq 3 ] || fail "all-missing case: expected exit 3, got $rc"
 
-echo "PASS: schema, Claude multi-account and fallback, refresh gating, small-file fallback, truncated boundary, walls, plain output, atomic cache, missing exit 3"
+echo "PASS: schema, Claude multi-account and fallback, refresh gating, small-file fallback, truncated boundary, walls, plain output, table output and sorts, hidden main, bare JSON default, atomic cache, missing exit 3"
 exit 0

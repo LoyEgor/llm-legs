@@ -61,11 +61,30 @@ Tests: `python3 -m unittest discover tests`.
 
 `llm-limits.sh` normally reads cached local CLI state without invoking a vendor CLI, making a
 network request, or spending tokens. It prints schema-1 JSON and atomically refreshes
-`~/.llm-limits.json` by default. The stable top level is `{schema, fetched_at, vendors}`. Claude includes
+`~/.llm-limits.json` by default. When no output flag is given and stdout is a terminal, it
+renders the `--table` view instead; piped or redirected output keeps the JSON default, and an
+explicit `--json`, `--plain`, or `--table` always wins. The stable top level is
+`{schema, fetched_at, vendors}`. Claude includes
 `current_account`, an ordered `accounts` array, and the current account's `five_hour`, optional
 `weekly`, `as_of`, and `stale_seconds` hoisted at vendor level for compatibility. Each account has
 its own windows and freshness. Use `--plain` for a
-human-readable summary or `--no-write` to leave the cache untouched. `--refresh` is reserved for
+human-readable summary or `--no-write` to leave the cache untouched. `--table` renders an aligned
+terminal table with one row per entity — every Claude account except `main` (hidden from the
+table only, still present in JSON; the current account is marked `*`), then codex
+and gemini — with 5h/weekly used% and local reset times, plus a NOTE column (Claude fable %, codex
+plan, gemini quota group, and a `stale Nh` marker when a snapshot is over an hour old). Percent
+columns are colorized only when stdout is a TTY; piped output stays plain ASCII. `--sort
+5h|weekly|reset` reorders the table by that column (descending for percentages, ascending by the
+nearest of the 5h and weekly resets). For a PATH entry point, symlink the script — it resolves its
+own symlink, so helper
+discovery keeps working:
+
+```bash
+ln -s /Volumes/Work/Projects/llm-legs/llm-limits.sh ~/.local/bin/llm-limits
+llm-limits --table --sort 5h
+```
+
+`--refresh` is reserved for
 the manual Get Data action: it live-polls all Claude accounts through `claudeb accounts` before
 reading their files and fetches Gemini quota through agy's authenticated localhost Connect RPC.
 The Gemini request is the machine-readable equivalent of `/usage`; it consumes no model tokens

@@ -2,26 +2,61 @@
 set -u
 
 usage() {
-  echo "Usage: $0 [--json|--plain] [--no-write] [--refresh]" >&2
+  echo "Usage: $0 [--json|--plain|--table] [--sort 5h|weekly|reset] [--no-write] [--refresh]" >&2
 }
 
-format=json
+format=''
 write_cache=1
 # Only an explicit manual refresh may invoke claudeb and spend tokens.
 refresh=0
-for arg in "$@"; do
-  case "$arg" in
+sort_key=''
+sort_given=0
+while [ $# -gt 0 ]; do
+  case "$1" in
     --json) format=json ;;
     --plain) format=plain ;;
+    --table) format=table ;;
+    --sort) shift; [ $# -gt 0 ] || { usage; exit 2; }; sort_key=$1; sort_given=1 ;;
+    --sort=*) sort_key=${1#--sort=}; sort_given=1 ;;
     --no-write) write_cache=0 ;;
     --refresh) refresh=1 ;;
     *) usage; exit 2 ;;
   esac
+  shift
 done
+
+# Single source of truth for valid --sort keys; columns index the TSV emitted by render_table.
+sort_args() {
+  case "$1" in
+    5h) printf '%s' '-k1,1gr' ;;
+    weekly) printf '%s' '-k2,2gr' ;;
+    reset) printf '%s' '-k5,5n' ;;
+    *) return 1 ;;
+  esac
+}
+sort_flags=''
+if [ "$sort_given" -eq 1 ]; then
+  sort_flags=$(sort_args "$sort_key") || { usage; exit 2; }
+fi
+
+# No explicit output flag: humans at a terminal get the table; pipes keep the JSON contract
+# (hammerspoon and other consumers run the script bare and parse stdout).
+if [ -z "$format" ]; then
+  if [ -t 1 ]; then format=table; else format=json; fi
+fi
 
 command -v jq >/dev/null 2>&1 || { echo "llm-limits.sh: jq is required" >&2; exit 3; }
 
-script_dir=$(cd "$(dirname "$0")" && pwd)
+# Resolve symlinks (e.g. ~/.local/bin/llm-limits) so helpers next to the real script are found.
+script_path=$0
+while [ -L "$script_path" ]; do
+  link_target=$(readlink "$script_path")
+  case "$link_target" in
+    /*) script_path=$link_target ;;
+    *) script_path=$(dirname "$script_path")/$link_target ;;
+  esac
+done
+script_dir=$(cd "$(dirname "$script_path")" && pwd)
 
 chunk_bytes=${LLM_LIMITS_CHUNK_BYTES:-4194304}
 case "$chunk_bytes" in
@@ -44,6 +79,112 @@ epoch_iso() {
 
 file_mtime() {
   stat -f '%m' "$1" 2>/dev/null || stat -c '%Y' "$1" 2>/dev/null
+}
+
+# Shared by the --plain and --table jq programs so the bucketing math cannot diverge.
+stale_def='def stale_amount(day_u; hour_u):
+  if (.stale_seconds // 0) > 3600 then
+    (if .stale_seconds >= 86400
+      then ((.stale_seconds / 86400 | floor | tostring) + day_u)
+      else ((.stale_seconds / 3600 | floor | tostring) + hour_u) end)
+  else null end;'
+
+pct_cell() {
+  # $4 is the raw numeric sort key emitted by jq (-1 = missing value).
+  local cell num
+  printf -v cell '%-*s' "$2" "$1"
+  num=${4%%.*}
+  if [ "$3" -eq 1 ] && [ "$num" != "-1" ]; then
+    if [ "$num" -lt 50 ]; then printf '\033[32m%s\033[0m' "$cell"
+    elif [ "$num" -lt 80 ]; then printf '\033[33m%s\033[0m' "$cell"
+    else printf '\033[31m%s\033[0m' "$cell"; fi
+  else
+    printf '%s' "$cell"
+  fi
+}
+
+render_table() {
+  local table_color=0
+  [ -t 1 ] && table_color=1
+  # Sentinels (-1 / 9999999999) push rows with missing values last for every sort direction.
+  # main is hidden from the table only; JSON output and the cache keep it.
+  local rows
+  rows=$(jq -r "$stale_def"'
+    def pct(v): if v == null then "-" else ((v | tostring) + "%") end;
+    def iso2epoch:
+      if type != "string" then null
+      else (capture("^(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(\\.[0-9]+)?(?<tz>Z|[+-][0-9]{2}:?[0-9]{2})$") // null) as $c |
+        if $c == null then null
+        else ($c.d + "Z" | fromdateiso8601)
+          - (if $c.tz == "Z" then 0
+             else ($c.tz | capture("^(?<s>[+-])(?<h>[0-9]{2}):?(?<m>[0-9]{2})$")
+                   | (if .s == "-" then -1 else 1 end) * ((.h | tonumber) * 3600 + (.m | tonumber) * 60))
+             end)
+        end
+      end;
+    (now | strflocaltime("%Y-%m-%d")) as $today |
+    def fmt_reset($e): . as $iso |
+      if $iso == null or $iso == "" then "-"
+      elif $e == null then $iso
+      elif ($e | strflocaltime("%Y-%m-%d")) == $today then ($e | strflocaltime("%H:%M"))
+      else ($e | strflocaltime("%m-%d %H:%M")) end;
+    def mknote($extra):
+      (stale_amount("d"; "h")) as $a |
+      ([$extra, (if $a then "stale " + $a else null end)]
+       | map(select(. != null and . != "")) | join(", ")
+       | if . == "" then "-" else . end);
+    def row:
+      (.five.used_pct) as $p5 | (.week.used_pct) as $pw |
+      (.five.resets_at | iso2epoch) as $e5 | (.week.resets_at | iso2epoch) as $ew |
+      [($p5 // -1), ($pw // -1),
+       ($e5 // 9999999999), ($ew // 9999999999),
+       ([($e5 // 9999999999), ($ew // 9999999999)] | min),
+       .src, pct($p5), pct($pw),
+       (.five.resets_at | fmt_reset($e5)), (.week.resets_at | fmt_reset($ew)),
+       .note] | @tsv;
+    .vendors as $v |
+    [
+      (if $v.claude.available and (($v.claude.accounts | type) == "array") then
+         ($v.claude.accounts[] | select(.account != "main")
+          | {src: ("claude/" + .account + (if .is_current then "*" else "" end)),
+             five: .five_hour, week: .weekly,
+             note: mknote(if .fable then "fable " + (.fable.used_pct | tostring) + "%" else null end)})
+       else {src: "claude", five: null, week: null, note: ($v.claude.status // "-")} end),
+      (("codex", "gemini") as $k | $v[$k]
+       | if .available then
+           {src: $k, five: .five_hour, week: .weekly,
+            note: mknote(if $k == "codex" then .plan_type else .group end)}
+         else {src: $k, five: null, week: null, note: (.status // "-")} end)
+    ] | .[] | row
+  ' <<<"$result")
+
+  local sorted
+  if [ -n "$sort_flags" ]; then
+    sorted=$(sort -s -t $'\t' $sort_flags <<<"$rows")
+  else
+    sorted=$rows
+  fi
+
+  local k5 kw e5 ew kr src p5 pw d5 dw note
+  local w_src=6 w_p5=3 w_pw=3 w_r5=8 w_rw=8
+  while IFS=$'\t' read -r k5 kw e5 ew kr src p5 pw d5 dw note; do
+    [ -n "$src" ] || continue
+    [ "${#src}" -gt "$w_src" ] && w_src=${#src}
+    [ "${#p5}" -gt "$w_p5" ] && w_p5=${#p5}
+    [ "${#pw}" -gt "$w_pw" ] && w_pw=${#pw}
+    [ "${#d5}" -gt "$w_r5" ] && w_r5=${#d5}
+    [ "${#dw}" -gt "$w_rw" ] && w_rw=${#dw}
+  done <<<"$sorted"
+
+  printf '%-*s  %-*s  %-*s  %-*s  %-*s  %s\n' \
+    "$w_src" SOURCE "$w_p5" "5H%" "$w_pw" "WK%" "$w_r5" "5H RESET" "$w_rw" "WK RESET" NOTE
+  while IFS=$'\t' read -r k5 kw e5 ew kr src p5 pw d5 dw note; do
+    [ -n "$src" ] || continue
+    printf '%-*s  ' "$w_src" "$src"
+    pct_cell "$p5" "$w_p5" "$table_color" "$k5"; printf '  '
+    pct_cell "$pw" "$w_pw" "$table_color" "$kw"; printf '  '
+    printf '%-*s  %-*s  %s\n' "$w_r5" "$d5" "$w_rw" "$dw" "$note"
+  done <<<"$sorted"
 }
 
 wall_for() {
@@ -266,12 +407,13 @@ fi
 
 if [ "$format" = json ]; then
   printf '%s\n' "$result"
+elif [ "$format" = table ]; then
+  render_table
 else
-  jq -r '
+  jq -r "$stale_def"'
     def age:
-      if .stale_seconds > 3600 then
-        " (данные " + (if .stale_seconds >= 86400 then ((.stale_seconds / 86400 | floor | tostring) + "д") else ((.stale_seconds / 3600 | floor | tostring) + "ч") end) + " назад)"
-      else "" end;
+      (stale_amount("д"; "ч")) as $a |
+      if $a == null then "" else " (данные " + $a + " назад)" end;
     .vendors | to_entries[] |
     if .value.available then
       if .key == "claude" and (.value.accounts | type) == "array" then
