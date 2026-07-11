@@ -61,9 +61,15 @@ Tests: `python3 -m unittest discover tests`.
 
 `llm-limits.sh` reads local CLI state without invoking a vendor CLI, making a network request,
 or spending tokens. It prints schema-1 JSON and atomically refreshes `~/.llm-limits.json` by
-default. The stable top level is `{schema, fetched_at, vendors}`; available vendors include
-`five_hour`, `weekly`, `as_of`, `stale_seconds`, `source`, and `last_wall`. Use `--plain` for a
+default. The stable top level is `{schema, fetched_at, vendors}`. Claude includes
+`current_account`, an ordered `accounts` array, and the current account's `five_hour`, optional
+`weekly`, `as_of`, and `stale_seconds` hoisted at vendor level for compatibility. Each account has
+its own windows and freshness. Use `--plain` for a
 human-readable summary or `--no-write` to leave the cache untouched.
+
+Claude reads every `$CLAUDEB_DIR/.claudeb/limits/*.json` account (`CLAUDEB_DIR` defaults to
+`~/.claude-profiles`) and uses `.claudeb-state` to select the current account. If that store is
+absent, it falls back to the freshest Claude status-line snapshot as a single `main` account.
 
 Set `LLM_LIMITS_WALLS_LOG` to a `served-models.jsonl` audit log to include the most recent
 exit-5 wall timestamp for each vendor. `LLM_LIMITS_CACHE` overrides the cache path.
@@ -78,6 +84,6 @@ local submenu = { title = "LLM Limits", menu = limits.menuItems() }
 
 | Vendor | Limit freshness |
 |--------|-----------------|
-| Claude | As of the last Claude Code status-line render |
+| Claude | Per-account claudeb file mtime; status-line snapshot fallback |
 | Codex | As of the last Codex turn that emitted rate limits |
 | Gemini | Not available; only an optional last-wall timestamp is reported |

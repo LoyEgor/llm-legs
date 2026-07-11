@@ -57,60 +57,71 @@ claude_wall=$(wall_for claude)
 codex_wall=$(wall_for codex)
 gemini_wall=$(wall_for gemini)
 
-# statusline-last.json carries model attribution but is written rarely;
-# statusline-cache-rl is written on every render. Freshest mtime wins.
-claude_last="$HOME/.claude/statusline-last.json"
-claude_rl="$HOME/.claude/statusline-cache-rl"
-last_mtime=$(file_mtime "$claude_last" 2>/dev/null || echo 0)
-rl_mtime=$(file_mtime "$claude_rl" 2>/dev/null || echo 0)
-
-claude_model=''
-claude_data=''
-if [ -r "$claude_last" ] && [ "${last_mtime:-0}" -ge "${rl_mtime:-0}" ]; then
-  claude_file="$claude_last"
-  claude_source=statusline-last
-  claude_data=$(jq -c '.rate_limits | select(
-    (.five_hour.used_percentage | type) == "number" and
-    (.five_hour.resets_at | type) == "number" and
-    (.seven_day.used_percentage | type) == "number" and
-    (.seven_day.resets_at | type) == "number"
-  )' "$claude_file" 2>/dev/null || true)
-  claude_model=$(jq -r '.model.display_name // empty' "$claude_file" 2>/dev/null || true)
-fi
-
-if [ -z "$claude_data" ]; then
-  claude_file="$claude_rl"
-  claude_source=statusline-cache
-  claude_model=''
-  if [ -r "$claude_file" ]; then
+claude='{"available":false,"status":"no rate-limit snapshot","source":"none","last_wall":null}'
+claudeb_root="${CLAUDEB_DIR:-$HOME/.claude-profiles}/.claudeb"
+shopt -s nullglob
+claudeb_files=("$claudeb_root/limits/"*.json)
+shopt -u nullglob
+if [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
+  current=$(tr -d '\r\n' <"$claudeb_root/.claudeb-state" 2>/dev/null || true)
+  accounts='[]'
+  for claude_file in "${claudeb_files[@]}"; do
+    account=${claude_file##*/}; account=${account%.json}
     claude_data=$(jq -c 'select(
       (.five_hour.used_percentage | type) == "number" and
-      (.five_hour.resets_at | type) == "number" and
-      (.seven_day.used_percentage | type) == "number" and
-      (.seven_day.resets_at | type) == "number"
+      (.five_hour.resets_at | type) == "number"
     )' "$claude_file" 2>/dev/null || true)
-  fi
-fi
-
-claude='{"available":false,"status":"no rate-limit snapshot","source":"none","last_wall":null}'
-if [ -n "$claude_data" ]; then
-  mtime=$(file_mtime "$claude_file" || true)
-  if [ -n "$mtime" ]; then
+    mtime=$(file_mtime "$claude_file" || true)
+    [ -n "$claude_data" ] && [ -n "$mtime" ] || continue
     stale=$((now_epoch - mtime)); [ "$stale" -ge 0 ] || stale=0
-    claude=$(jq -cn --argjson d "$claude_data" --argjson wall "$claude_wall" \
-      --arg source "$claude_source" --arg model "$claude_model" \
+    week_reset=''
+    if jq -e '(.seven_day.used_percentage | type) == "number" and (.seven_day.resets_at | type) == "number"' <<<"$claude_data" >/dev/null; then
+      week_reset=$(epoch_iso "$(jq -r '.seven_day.resets_at' <<<"$claude_data")")
+    fi
+    account_json=$(jq -cn --argjson d "$claude_data" --arg account "$account" \
       --arg five_reset "$(epoch_iso "$(jq -r '.five_hour.resets_at' <<<"$claude_data")")" \
-      --arg week_reset "$(epoch_iso "$(jq -r '.seven_day.resets_at' <<<"$claude_data")")" \
-      --arg as_of "$(epoch_iso "$mtime")" --argjson stale "$stale" '
-      {available:true,
+      --arg week_reset "$week_reset" --arg as_of "$(epoch_iso "$mtime")" --argjson stale "$stale" '
+      {account:$account,is_current:false,
        five_hour:{used_pct:$d.five_hour.used_percentage,resets_at:$five_reset},
-       weekly:{used_pct:$d.seven_day.used_percentage,resets_at:$week_reset},
-       as_of:$as_of,stale_seconds:$stale,source:$source,last_wall:$wall} +
-       (if $model == "" then {} else {session_model:$model} end)')
-  else
-    claude=$(jq -cn --argjson wall "$claude_wall" \
-      --arg source "$claude_source" \
-      '{available:false,status:"missing snapshot mtime",source:$source,last_wall:$wall}')
+       as_of:$as_of,stale_seconds:$stale} +
+      (if $week_reset == "" then {} else {weekly:{used_pct:$d.seven_day.used_percentage,resets_at:$week_reset}} end)')
+    accounts=$(jq -cn --argjson a "$accounts" --argjson item "$account_json" '$a + [$item]')
+  done
+  if [ "$(jq 'length' <<<"$accounts")" -gt 0 ]; then
+    if ! jq -e --arg current "$current" 'any(.account == $current)' <<<"$accounts" >/dev/null; then
+      current=$(jq -r 'if any(.account == "main") then "main" else sort_by(.account)[0].account end' <<<"$accounts")
+    fi
+    accounts=$(jq -c --arg current "$current" 'map(.is_current = (.account == $current)) | sort_by(if .is_current then 0 else 1 end, .account)' <<<"$accounts")
+    claude=$(jq -cn --argjson accounts "$accounts" --argjson wall "$claude_wall" '
+      ($accounts[0]) as $current |
+      {available:true,source:"claudeb-store",current_account:$current.account,accounts:$accounts,
+       five_hour:$current.five_hour,as_of:$current.as_of,stale_seconds:$current.stale_seconds,last_wall:$wall} +
+      (if $current.weekly then {weekly:$current.weekly} else {} end)')
+  fi
+else
+  claude_last="$HOME/.claude/statusline-last.json"
+  claude_rl="$HOME/.claude/statusline-cache-rl"
+  last_mtime=$(file_mtime "$claude_last" 2>/dev/null || echo 0)
+  rl_mtime=$(file_mtime "$claude_rl" 2>/dev/null || echo 0)
+  claude_data=''
+  if [ -r "$claude_last" ] && [ "${last_mtime:-0}" -ge "${rl_mtime:-0}" ]; then
+    claude_file="$claude_last"; claude_source=statusline-last
+    claude_data=$(jq -c '.rate_limits | select((.five_hour.used_percentage|type)=="number" and (.five_hour.resets_at|type)=="number" and (.seven_day.used_percentage|type)=="number" and (.seven_day.resets_at|type)=="number")' "$claude_file" 2>/dev/null || true)
+  fi
+  if [ -z "$claude_data" ]; then
+    claude_file="$claude_rl"; claude_source=statusline-cache
+    [ ! -r "$claude_file" ] || claude_data=$(jq -c 'select((.five_hour.used_percentage|type)=="number" and (.five_hour.resets_at|type)=="number" and (.seven_day.used_percentage|type)=="number" and (.seven_day.resets_at|type)=="number")' "$claude_file" 2>/dev/null || true)
+  fi
+  if [ -n "$claude_data" ]; then
+    mtime=$(file_mtime "$claude_file" || true)
+    if [ -n "$mtime" ]; then
+      stale=$((now_epoch - mtime)); [ "$stale" -ge 0 ] || stale=0
+      claude=$(jq -cn --argjson d "$claude_data" --argjson wall "$claude_wall" --arg source "$claude_source" \
+        --arg five_reset "$(epoch_iso "$(jq -r '.five_hour.resets_at' <<<"$claude_data")")" --arg week_reset "$(epoch_iso "$(jq -r '.seven_day.resets_at' <<<"$claude_data")")" \
+        --arg as_of "$(epoch_iso "$mtime")" --argjson stale "$stale" '
+        {account:"main",is_current:true,five_hour:{used_pct:$d.five_hour.used_percentage,resets_at:$five_reset},weekly:{used_pct:$d.seven_day.used_percentage,resets_at:$week_reset},as_of:$as_of,stale_seconds:$stale} as $account |
+        {available:true,source:$source,current_account:"main",accounts:[$account],five_hour:$account.five_hour,weekly:$account.weekly,as_of:$as_of,stale_seconds:$stale,last_wall:$wall}')
+    fi
   fi
 fi
 
@@ -179,8 +190,11 @@ else
       else "" end;
     .vendors | to_entries[] |
     if .value.available then
-      (.key + ": " + (.value.five_hour.used_pct|tostring) + "%/" + (.value.weekly.used_pct|tostring) +
-       "% | resets " + .value.five_hour.resets_at + " / " + .value.weekly.resets_at + (.value|age))
+      if .key == "claude" and (.value.accounts | type) == "array" then
+        .value.accounts[] | ("claude/" + .account + ": " + (.five_hour.used_pct|tostring) + "%/" + ((.weekly.used_pct // "-")|tostring) +
+         "% | resets " + .five_hour.resets_at + " / " + (.weekly.resets_at // "—") + (. | age))
+      else (.key + ": " + (.value.five_hour.used_pct|tostring) + "%/" + (.value.weekly.used_pct|tostring) +
+       "% | resets " + .value.five_hour.resets_at + " / " + .value.weekly.resets_at + (.value|age)) end
     else (.key + ": " + .value.status + (if .value.last_wall then " | last wall " + .value.last_wall else "" end)) end
   ' <<<"$result"
 fi

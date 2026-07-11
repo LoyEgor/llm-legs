@@ -26,7 +26,7 @@ printf '%s\n' \
 CACHE="$WORK/cache.json"
 out=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" LLM_LIMITS_WALLS_LOG="$WALLS" bash "$SCRIPT" --json) || fail "fixture collection failed"
 jq -e '.schema == 1 and (.vendors | keys == ["claude","codex","gemini"])' <<<"$out" >/dev/null || fail "schema mismatch"
-jq -e '.vendors.claude.five_hour.used_pct == 12 and .vendors.claude.weekly.used_pct == 40 and .vendors.claude.session_model == "Fable 5" and .vendors.claude.source == "statusline-last"' <<<"$out" >/dev/null || fail "Claude primary snapshot mismatch"
+jq -e '.vendors.claude.five_hour.used_pct == 12 and .vendors.claude.weekly.used_pct == 40 and .vendors.claude.source == "statusline-last" and .vendors.claude.current_account == "main" and (.vendors.claude.accounts | length) == 1 and (.vendors.claude | has("session_model") | not)' <<<"$out" >/dev/null || fail "Claude primary snapshot mismatch"
 jq -e '.vendors.codex.five_hour.used_pct == 74 and .vendors.codex.weekly.used_pct == 31 and .vendors.codex.plan_type == "plus"' <<<"$out" >/dev/null || fail "Codex fallback mismatch"
 jq -e '.vendors.gemini.available == false and .vendors.gemini.status == "unknown" and .vendors.gemini.last_wall == "2026-07-11T08:00:00Z"' <<<"$out" >/dev/null || fail "Gemini state mismatch"
 jq -e . "$CACHE" >/dev/null || fail "cache was not valid JSON"
@@ -44,8 +44,18 @@ fallback=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json)
 jq -e '.vendors.claude.five_hour.used_pct == 19 and .vendors.claude.weekly.used_pct == 53 and (.vendors.claude | has("session_model") | not) and .vendors.claude.source == "statusline-cache"' <<<"$fallback" >/dev/null || fail "Claude cache fallback mismatch"
 
 plain=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain) || fail "plain collection failed"
-grep -q 'claude: 19%/53%' <<<"$plain" || fail "plain Claude values missing"
+grep -q 'claude/main: 19%/53%' <<<"$plain" || fail "plain Claude values missing"
 grep -q 'codex: 74%/31%' <<<"$plain" || fail "plain Codex values missing"
+
+CLAUDEB="$WORK/claude-profiles"
+mkdir -p "$CLAUDEB/.claudeb/limits"
+printf 'alona\n' >"$CLAUDEB/.claudeb/.claudeb-state"
+printf '{"five_hour":{"used_percentage":7,"resets_at":%s}}\n' "$((now + 5000))" >"$CLAUDEB/.claudeb/limits/alona.json"
+printf '{"five_hour":{"used_percentage":21,"resets_at":%s},"seven_day":{"used_percentage":62,"resets_at":%s}}\n' "$((now + 6000))" "$((now + 7000))" >"$CLAUDEB/.claudeb/limits/main.json"
+multi=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "claudeb collection failed"
+jq -e '.vendors.claude.source == "claudeb-store" and (.vendors.claude.accounts | length) == 2 and .vendors.claude.accounts[0].account == "alona" and .vendors.claude.accounts[0].is_current == true and .vendors.claude.accounts[1].account == "main" and .vendors.claude.accounts[1].is_current == false and (.vendors.claude.accounts[0] | has("weekly") | not) and .vendors.claude.five_hour == .vendors.claude.accounts[0].five_hour and (.vendors.claude | has("weekly") | not)' <<<"$multi" >/dev/null || fail "claudeb schema, order, or hoist mismatch"
+multi_plain=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain) || fail "claudeb plain collection failed"
+grep -q 'claude/alona: 7%/-%' <<<"$multi_plain" || fail "claudeb missing-weekly plain output mismatch"
 
 sleep 1
 TRUNCATED="$HOME_FIXTURE/.codex/sessions/2026/07/11/rollout-truncated.jsonl"
@@ -60,5 +70,5 @@ HOME="$EMPTY" bash "$SCRIPT" --no-write >/dev/null 2>&1
 rc=$?
 [ "$rc" -eq 3 ] || fail "all-missing case: expected exit 3, got $rc"
 
-echo "PASS: schema, Claude primary and fallback, small-file fallback, truncated boundary, walls, plain output, atomic cache, missing exit 3"
+echo "PASS: schema, Claude multi-account and fallback, small-file fallback, truncated boundary, walls, plain output, atomic cache, missing exit 3"
 exit 0

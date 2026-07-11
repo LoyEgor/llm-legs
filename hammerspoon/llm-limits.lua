@@ -163,22 +163,35 @@ function M.menuItems()
           disabled = true,
         })
       else
-        local fiveHour = vendor.five_hour or {}
-        local weekly = vendor.weekly or {}
-        local fiveHourPct = math.floor((tonumber(fiveHour.used_pct) or 0) + 0.5)
-        local weeklyPct = math.floor((tonumber(weekly.used_pct) or 0) + 0.5)
-        table.insert(menu, {
-          title = infoTitle(string.format("%-6s  5h  %3d%%  → %s", entry.label,
-            fiveHourPct, formatResetTime(fiveHour.resets_at)), fiveHourPct >= 80),
-          disabled = true,
-        })
-        -- vendor label rendered once per block: the wk row keeps a blank
-        -- label column so numbers stay aligned under the 5h row
-        table.insert(menu, {
-          title = infoTitle(string.format("%-6s  wk  %3d%%  → %s", "",
-            weeklyPct, formatResetTime(weekly.resets_at)), weeklyPct >= 80),
-          disabled = true,
-        })
+        local blocks = entry.key == "claude" and vendor.accounts or nil
+        if type(blocks) ~= "table" or #blocks == 0 then
+          blocks = {{ account = entry.label, five_hour = vendor.five_hour,
+            weekly = vendor.weekly, is_current = false }}
+        end
+        for _, block in ipairs(blocks) do
+          local fiveHour = block.five_hour or {}
+          local weekly = block.weekly
+          local fiveHourPct = math.floor((tonumber(fiveHour.used_pct) or 0) + 0.5)
+          local marker = block.is_current and "  ●" or ""
+          table.insert(menu, {
+            title = infoTitle(string.format("%-6s  5h  %3d%%  → %s%s", block.account or entry.label,
+              fiveHourPct, formatResetTime(fiveHour.resets_at), marker), fiveHourPct >= 80),
+            disabled = true,
+          })
+          if type(weekly) == "table" then
+            local weeklyPct = math.floor((tonumber(weekly.used_pct) or 0) + 0.5)
+            table.insert(menu, {
+              title = infoTitle(string.format("%-6s  wk  %3d%%  → %s%s", "",
+                weeklyPct, formatResetTime(weekly.resets_at), marker), weeklyPct >= 80),
+              disabled = true,
+            })
+          else
+            table.insert(menu, {
+              title = infoTitle(string.format("%-6s  wk    -   → —%s", "", marker)),
+              disabled = true,
+            })
+          end
+        end
       end
     end
 
