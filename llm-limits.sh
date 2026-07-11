@@ -57,11 +57,18 @@ claude_wall=$(wall_for claude)
 codex_wall=$(wall_for codex)
 gemini_wall=$(wall_for gemini)
 
-claude_file="$HOME/.claude/statusline-last.json"
-claude_source=statusline-last
+# statusline-last.json carries model attribution but is written rarely;
+# statusline-cache-rl is written on every render. Freshest mtime wins.
+claude_last="$HOME/.claude/statusline-last.json"
+claude_rl="$HOME/.claude/statusline-cache-rl"
+last_mtime=$(file_mtime "$claude_last" 2>/dev/null || echo 0)
+rl_mtime=$(file_mtime "$claude_rl" 2>/dev/null || echo 0)
+
 claude_model=''
 claude_data=''
-if [ -r "$claude_file" ]; then
+if [ -r "$claude_last" ] && [ "${last_mtime:-0}" -ge "${rl_mtime:-0}" ]; then
+  claude_file="$claude_last"
+  claude_source=statusline-last
   claude_data=$(jq -c '.rate_limits | select(
     (.five_hour.used_percentage | type) == "number" and
     (.five_hour.resets_at | type) == "number" and
@@ -72,7 +79,7 @@ if [ -r "$claude_file" ]; then
 fi
 
 if [ -z "$claude_data" ]; then
-  claude_file="$HOME/.claude/statusline-cache-rl"
+  claude_file="$claude_rl"
   claude_source=statusline-cache
   claude_model=''
   if [ -r "$claude_file" ]; then

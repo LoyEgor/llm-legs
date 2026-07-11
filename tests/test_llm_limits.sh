@@ -32,6 +32,13 @@ jq -e '.vendors.gemini.available == false and .vendors.gemini.status == "unknown
 jq -e . "$CACHE" >/dev/null || fail "cache was not valid JSON"
 compgen -G "$CACHE.tmp.*" >/dev/null && fail "atomic-write temporary file remains"
 
+# Regression: statusline-last.json goes stale while cache-rl keeps updating —
+# the fresher cache-rl must win even though last.json is present and valid.
+sleep 1
+touch "$HOME_FIXTURE/.claude/statusline-cache-rl"
+fresher=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "freshest-wins collection failed"
+jq -e '.vendors.claude.five_hour.used_pct == 19 and .vendors.claude.source == "statusline-cache" and (.vendors.claude | has("session_model") | not)' <<<"$fresher" >/dev/null || fail "stale statusline-last.json outranked a fresher cache-rl"
+
 rm "$HOME_FIXTURE/.claude/statusline-last.json"
 fallback=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "Claude fallback collection failed"
 jq -e '.vendors.claude.five_hour.used_pct == 19 and .vendors.claude.weekly.used_pct == 53 and (.vendors.claude | has("session_model") | not) and .vendors.claude.source == "statusline-cache"' <<<"$fallback" >/dev/null || fail "Claude cache fallback mismatch"

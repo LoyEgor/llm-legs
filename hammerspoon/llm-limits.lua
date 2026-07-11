@@ -42,10 +42,12 @@ local function parseIsoTime(value)
   end
 
   if zone == "Z" or offsetHour ~= nil then
-    local localOffset = os.difftime(
-      os.time(os.date("*t", localEpoch)),
-      os.time(os.date("!*t", localEpoch))
-    )
+    -- os.date("!*t") drops the DST flag; without copying it back os.time()
+    -- interprets the UTC table as standard time and the offset loses an hour.
+    local localTable = os.date("*t", localEpoch)
+    local utcTable = os.date("!*t", localEpoch)
+    utcTable.isdst = localTable.isdst
+    local localOffset = os.difftime(os.time(localTable), os.time(utcTable))
     local sourceOffset = (offsetHour or 0) * 3600 + (offsetMinute or 0) * 60
     return localEpoch + localOffset - sourceOffset
   end
