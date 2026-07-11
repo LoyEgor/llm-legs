@@ -6,6 +6,8 @@ SCRIPT="$ROOT/llm-limits.sh"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
+# Unit fixtures must never discover and launch the developer's real agy binary.
+export LLM_LIMITS_GEMINI_REFRESH=0
 
 HOME_FIXTURE="$WORK/home"
 mkdir -p "$HOME_FIXTURE/.claude" "$HOME_FIXTURE/.codex/sessions/2026/07/10" "$HOME_FIXTURE/.codex/sessions/2026/07/11"
@@ -28,9 +30,37 @@ out=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" LLM_LIMITS_WALLS_LOG="$WALL
 jq -e '.schema == 1 and (.vendors | keys == ["claude","codex","gemini"])' <<<"$out" >/dev/null || fail "schema mismatch"
 jq -e '.vendors.claude.five_hour.used_pct == 12 and .vendors.claude.weekly.used_pct == 40 and .vendors.claude.source == "statusline-last" and .vendors.claude.current_account == "main" and (.vendors.claude.accounts | length) == 1 and (.vendors.claude | has("session_model") | not)' <<<"$out" >/dev/null || fail "Claude primary snapshot mismatch"
 jq -e '.vendors.codex.five_hour.used_pct == 74 and .vendors.codex.weekly.used_pct == 31 and .vendors.codex.plan_type == "plus"' <<<"$out" >/dev/null || fail "Codex fallback mismatch"
-jq -e '.vendors.gemini.available == false and .vendors.gemini.status == "unknown" and .vendors.gemini.last_wall == "2026-07-11T08:00:00Z"' <<<"$out" >/dev/null || fail "Gemini state mismatch"
+jq -e '.vendors.gemini.available == false and .vendors.gemini.status == "no quota snapshot" and .vendors.gemini.last_wall == "2026-07-11T08:00:00Z"' <<<"$out" >/dev/null || fail "Gemini state mismatch"
 jq -e . "$CACHE" >/dev/null || fail "cache was not valid JSON"
 compgen -G "$CACHE.tmp.*" >/dev/null && fail "atomic-write temporary file remains"
+
+# Gemini refresh: the helper's raw remainingFraction snapshot is cached and normalized to the
+# same used_pct/reset schema as Claude and Codex. A normal collection reuses it without a call.
+GEMINI_HELPER="$WORK/fake-agy-quota"
+GEMINI_CACHE="$WORK/gemini.json"
+GEMINI_SENTINEL="$WORK/gemini-called"
+cat >"$GEMINI_HELPER" <<'EOF'
+#!/usr/bin/env bash
+printf 'called\n' >>"$GEMINI_SENTINEL"
+printf '%s\n' '{"groups":[{"displayName":"Gemini Models","buckets":[{"bucketId":"gemini-weekly","window":"weekly","remainingFraction":0.75,"resetTime":"2026-07-18T12:00:00Z"},{"bucketId":"gemini-5h","window":"5h","remainingFraction":0.995,"resetTime":"2026-07-11T22:00:00Z"}]}]}'
+EOF
+chmod +x "$GEMINI_HELPER"
+gemini_live=$(GEMINI_SENTINEL="$GEMINI_SENTINEL" LLM_LIMITS_GEMINI_REFRESH=1 \
+  LLM_LIMITS_GEMINI_CMD="$GEMINI_HELPER" LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
+  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --refresh) \
+  || fail "Gemini refresh collection failed"
+jq -e '.vendors.gemini.available == true and .vendors.gemini.source == "agy-local-rpc" and
+  (.vendors.gemini.five_hour.used_pct > 0.49 and .vendors.gemini.five_hour.used_pct < 0.51) and
+  .vendors.gemini.weekly.used_pct == 25 and
+  .vendors.gemini.five_hour.resets_at == "2026-07-11T22:00:00Z"' <<<"$gemini_live" >/dev/null \
+  || fail "Gemini quota normalization mismatch"
+[ -s "$GEMINI_SENTINEL" ] || fail "Gemini helper was not invoked by --refresh"
+rm -f "$GEMINI_SENTINEL"
+gemini_cached=$(LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" HOME="$HOME_FIXTURE" \
+  LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "Gemini cached collection failed"
+jq -e '.vendors.gemini.available == true and .vendors.gemini.weekly.used_pct == 25' \
+  <<<"$gemini_cached" >/dev/null || fail "Gemini cached snapshot missing"
+[ ! -e "$GEMINI_SENTINEL" ] || fail "default collection invoked Gemini helper"
 
 # Regression: statusline-last.json goes stale while cache-rl keeps updating —
 # the fresher cache-rl must win even though last.json is present and valid.
@@ -50,10 +80,11 @@ grep -q 'codex: 74%/31%' <<<"$plain" || fail "plain Codex values missing"
 CLAUDEB="$WORK/claude-profiles"
 mkdir -p "$CLAUDEB/.claudeb/limits"
 printf 'alona\n' >"$CLAUDEB/.claudeb/.claudeb-state"
-printf '{"five_hour":{"used_percentage":7,"resets_at":%s}}\n' "$((now + 5000))" >"$CLAUDEB/.claudeb/limits/alona.json"
+printf '{"five_hour":{"used_percentage":7,"resets_at":%s},"fable":{"used_percentage":33,"resets_at":%s}}\n' "$((now + 5000))" "$((now + 5500))" >"$CLAUDEB/.claudeb/limits/alona.json"
 printf '{"five_hour":{"used_percentage":21,"resets_at":%s},"seven_day":{"used_percentage":62,"resets_at":%s}}\n' "$((now + 6000))" "$((now + 7000))" >"$CLAUDEB/.claudeb/limits/main.json"
 multi=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "claudeb collection failed"
 jq -e '.vendors.claude.source == "claudeb-store" and (.vendors.claude.accounts | length) == 2 and .vendors.claude.accounts[0].account == "alona" and .vendors.claude.accounts[0].is_current == true and .vendors.claude.accounts[1].account == "main" and .vendors.claude.accounts[1].is_current == false and (.vendors.claude.accounts[0] | has("weekly") | not) and .vendors.claude.five_hour == .vendors.claude.accounts[0].five_hour and (.vendors.claude | has("weekly") | not)' <<<"$multi" >/dev/null || fail "claudeb schema, order, or hoist mismatch"
+jq -e '.vendors.claude.accounts[0].fable.used_pct == 33 and .vendors.claude.fable.used_pct == 33 and (.vendors.claude.accounts[1] | has("fable") | not)' <<<"$multi" >/dev/null || fail "claudeb fable bucket mismatch"
 multi_plain=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain) || fail "claudeb plain collection failed"
 grep -q 'claude/alona: 7%/-%' <<<"$multi_plain" || fail "claudeb missing-weekly plain output mismatch"
 

@@ -59,15 +59,18 @@ Tests: `python3 -m unittest discover tests`.
 
 ## Subscription limit collector
 
-`llm-limits.sh` reads local CLI state without invoking a vendor CLI, making a network request,
-or spending tokens. It prints schema-1 JSON and atomically refreshes `~/.llm-limits.json` by
-default. The stable top level is `{schema, fetched_at, vendors}`. Claude includes
+`llm-limits.sh` normally reads cached local CLI state without invoking a vendor CLI, making a
+network request, or spending tokens. It prints schema-1 JSON and atomically refreshes
+`~/.llm-limits.json` by default. The stable top level is `{schema, fetched_at, vendors}`. Claude includes
 `current_account`, an ordered `accounts` array, and the current account's `five_hour`, optional
 `weekly`, `as_of`, and `stale_seconds` hoisted at vendor level for compatibility. Each account has
 its own windows and freshness. Use `--plain` for a
 human-readable summary or `--no-write` to leave the cache untouched. `--refresh` is reserved for
 the manual Get Data action: it live-polls all Claude accounts through `claudeb accounts` before
-reading their files. Without that flag, collection remains token-free and file-read-only.
+reading their files and fetches Gemini quota through agy's authenticated localhost Connect RPC.
+The Gemini request is the machine-readable equivalent of `/usage`; it consumes no model tokens
+and its last valid response is cached in `~/.llm-limits-gemini.json`. Without `--refresh`,
+collection remains token-free, network-free, and file-read-only.
 
 Claude reads every `$CLAUDEB_DIR/.claudeb/limits/*.json` account (`CLAUDEB_DIR` defaults to
 `~/.claude-profiles`) and uses `.claudeb-state` to select the current account. If that store is
@@ -88,4 +91,10 @@ local submenu = { title = "LLM Limits", menu = limits.menuItems() }
 |--------|-----------------|
 | Claude | Per-account claudeb file mtime; status-line snapshot fallback |
 | Codex | As of the last Codex turn that emitted rate limits |
-| Gemini | Not available; only an optional last-wall timestamp is reported |
+| Gemini | Last successful manual Get Data refresh through agy's localhost quota RPC |
+
+Gemini refresh launches `agy` under a bounded PTY, waits for normal authenticated startup, finds
+its localhost listener, and calls
+`LanguageServerService/RetrieveUserQuotaSummary`. Set `AGY_WORKDIR` to an already trusted folder
+if the repository itself has not been opened in agy. Overrides for tests or alternate installs:
+`AGY_BIN`, `LLM_LIMITS_GEMINI_CMD`, and `LLM_LIMITS_GEMINI_CACHE`.
