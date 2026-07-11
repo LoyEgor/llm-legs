@@ -57,6 +57,17 @@ jq -e '.vendors.claude.source == "claudeb-store" and (.vendors.claude.accounts |
 multi_plain=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain) || fail "claudeb plain collection failed"
 grep -q 'claude/alona: 7%/-%' <<<"$multi_plain" || fail "claudeb missing-weekly plain output mismatch"
 
+FAKE_BIN="$WORK/bin"
+SENTINEL="$WORK/claudeb-called"
+mkdir -p "$FAKE_BIN"
+printf '#!/usr/bin/env bash\n[ "$1" = accounts ] && printf "called\\n" >>"$CLAUDEB_SENTINEL"\n' >"$FAKE_BIN/claudeb"
+chmod +x "$FAKE_BIN/claudeb"
+CLAUDEB_SENTINEL="$SENTINEL" PATH="$FAKE_BIN:$PATH" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --refresh >/dev/null || fail "refresh collection failed"
+[ -s "$SENTINEL" ] || fail "--refresh did not invoke claudeb accounts"
+rm -f "$SENTINEL"
+CLAUDEB_SENTINEL="$SENTINEL" PATH="$FAKE_BIN:$PATH" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" >/dev/null || fail "default gated collection failed"
+[ ! -e "$SENTINEL" ] || fail "default collection invoked claudeb"
+
 sleep 1
 TRUNCATED="$HOME_FIXTURE/.codex/sessions/2026/07/11/rollout-truncated.jsonl"
 printf '{"padding":"%0700d"}\n' 0 >"$TRUNCATED"
@@ -70,5 +81,5 @@ HOME="$EMPTY" bash "$SCRIPT" --no-write >/dev/null 2>&1
 rc=$?
 [ "$rc" -eq 3 ] || fail "all-missing case: expected exit 3, got $rc"
 
-echo "PASS: schema, Claude multi-account and fallback, small-file fallback, truncated boundary, walls, plain output, atomic cache, missing exit 3"
+echo "PASS: schema, Claude multi-account and fallback, refresh gating, small-file fallback, truncated boundary, walls, plain output, atomic cache, missing exit 3"
 exit 0

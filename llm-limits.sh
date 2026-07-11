@@ -2,16 +2,19 @@
 set -u
 
 usage() {
-  echo "Usage: $0 [--json|--plain] [--no-write]" >&2
+  echo "Usage: $0 [--json|--plain] [--no-write] [--refresh]" >&2
 }
 
 format=json
 write_cache=1
+# Only an explicit manual refresh may invoke claudeb and spend tokens.
+refresh=0
 for arg in "$@"; do
   case "$arg" in
     --json) format=json ;;
     --plain) format=plain ;;
     --no-write) write_cache=0 ;;
+    --refresh) refresh=1 ;;
     *) usage; exit 2 ;;
   esac
 done
@@ -59,6 +62,26 @@ gemini_wall=$(wall_for gemini)
 
 claude='{"available":false,"status":"no rate-limit snapshot","source":"none","last_wall":null}'
 claudeb_root="${CLAUDEB_DIR:-$HOME/.claude-profiles}/.claudeb"
+if [ "$refresh" -eq 1 ] && [ -d "$claudeb_root/limits" ]; then
+  claudeb_cmd=$(command -v "${LLM_LIMITS_CLAUDEB_CMD:-claudeb}" 2>/dev/null || true)
+  if [ -n "$claudeb_cmd" ]; then
+    timeout_cmd=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
+    if [ -n "$timeout_cmd" ]; then
+      "$timeout_cmd" 25 "$claudeb_cmd" accounts >/dev/null 2>&1 || true
+    else
+      "$claudeb_cmd" accounts >/dev/null 2>&1 &
+      claudeb_pid=$!
+      (
+        sleep 25
+        kill "$claudeb_pid" 2>/dev/null || true
+      ) &
+      watchdog_pid=$!
+      wait "$claudeb_pid" 2>/dev/null || true
+      kill "$watchdog_pid" 2>/dev/null || true
+      wait "$watchdog_pid" 2>/dev/null || true
+    fi
+  fi
+fi
 shopt -s nullglob
 claudeb_files=("$claudeb_root/limits/"*.json)
 shopt -u nullglob

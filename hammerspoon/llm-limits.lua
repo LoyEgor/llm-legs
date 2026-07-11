@@ -111,14 +111,17 @@ local function readLlmLimits()
   return nil
 end
 
-local function newCollectorTask(callback)
-  local task = hs.task.new(M.collectorPath, callback, {})
-  if task and M.wallsLog then
-    task:setEnvironment({
+local function newCollectorTask(callback, args)
+  local task = hs.task.new(M.collectorPath, callback, args or {})
+  if task then
+    local environment = {
       HOME = os.getenv("HOME"),
-      LLM_LIMITS_WALLS_LOG = M.wallsLog,
-      PATH = "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
-    })
+      PATH = "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin:" .. os.getenv("HOME") .. "/.local/bin",
+    }
+    if M.wallsLog then
+      environment.LLM_LIMITS_WALLS_LOG = M.wallsLog
+    end
+    task:setEnvironment(environment)
   end
   return task
 end
@@ -132,12 +135,12 @@ local function getLlmLimitsData()
         local message = stdErr and stdErr:match("^%s*(.-)%s*$") or ""
         hs.alert.show(message ~= "" and ("LLM limits error: " .. message) or "LLM limits error")
       end
-    end)
+    end, { "--refresh" })
 
     if not task or not task:start() then
       error("could not start collector")
     end
-    hs.alert.show("LLM limits: обновляю…", 1)
+    hs.alert.show("LLM limits: обновляю все аккаунты…", 1)
   end)
 
   if not ok then

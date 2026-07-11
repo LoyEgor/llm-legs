@@ -65,7 +65,9 @@ default. The stable top level is `{schema, fetched_at, vendors}`. Claude include
 `current_account`, an ordered `accounts` array, and the current account's `five_hour`, optional
 `weekly`, `as_of`, and `stale_seconds` hoisted at vendor level for compatibility. Each account has
 its own windows and freshness. Use `--plain` for a
-human-readable summary or `--no-write` to leave the cache untouched.
+human-readable summary or `--no-write` to leave the cache untouched. `--refresh` is reserved for
+the manual Get Data action: it live-polls all Claude accounts through `claudeb accounts` before
+reading their files. Without that flag, collection remains token-free and file-read-only.
 
 Claude reads every `$CLAUDEB_DIR/.claudeb/limits/*.json` account (`CLAUDEB_DIR` defaults to
 `~/.claude-profiles`) and uses `.claudeb-state` to select the current account. If that store is
