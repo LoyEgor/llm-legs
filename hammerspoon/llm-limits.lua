@@ -4,11 +4,12 @@ local M = {
   wallsLog = nil,
 }
 
-local menubar = nil
-local timer = nil
-
-local function infoTitle(text)
-  return hs.styledtext.new(text, { font = { name = "Menlo", size = 13 } })
+local function infoTitle(text, warning)
+  local attributes = { font = { name = "Menlo", size = 13 } }
+  if warning then
+    attributes.color = { red = 0.9, green = 0.25, blue = 0.2 }
+  end
+  return hs.styledtext.new(text, attributes)
 end
 
 local function parseIsoTime(value)
@@ -157,19 +158,16 @@ function M.menuItems()
       else
         local fiveHour = vendor.five_hour or {}
         local weekly = vendor.weekly or {}
-        local warning = (tonumber(fiveHour.used_pct) or 0) >= 80
-          or (tonumber(weekly.used_pct) or 0) >= 80
-        local marker = warning and "⚠" or ""
         local fiveHourPct = math.floor((tonumber(fiveHour.used_pct) or 0) + 0.5)
         local weeklyPct = math.floor((tonumber(weekly.used_pct) or 0) + 0.5)
         table.insert(menu, {
-          title = infoTitle(string.format("%-6s %-2s 5h %3d%%  → %s", entry.label, marker,
-            fiveHourPct, formatResetTime(fiveHour.resets_at))),
+          title = infoTitle(string.format("%-6s  5h  %3d%%  → %s", entry.label,
+            fiveHourPct, formatResetTime(fiveHour.resets_at)), fiveHourPct >= 80),
           disabled = true,
         })
         table.insert(menu, {
-          title = infoTitle(string.format("%-6s %-2s wk %3d%%  → %s", entry.label, marker,
-            weeklyPct, formatResetTime(weekly.resets_at))),
+          title = infoTitle(string.format("%-6s  wk  %3d%%  → %s", entry.label,
+            weeklyPct, formatResetTime(weekly.resets_at)), weeklyPct >= 80),
           disabled = true,
         })
 
@@ -202,97 +200,6 @@ function M.menuItems()
   end
 
   return menu
-end
-
-local function vendorTitle(initial, vendor)
-  if not vendor or not vendor.available then
-    return initial .. "?/?"
-  end
-  return string.format("%s%s/%s", initial, vendor.five_hour.used_pct, vendor.weekly.used_pct)
-end
-
-local function detail(name, vendor)
-  if not vendor or not vendor.available then
-    local wall = vendor and vendor.last_wall and ("; last limit: " .. vendor.last_wall) or ""
-    return name .. ": " .. (vendor and vendor.status or "unknown") .. wall
-  end
-  return string.format("%s: %s%% / %s%%; resets %s / %s; data %s sec ago",
-    name, vendor.five_hour.used_pct, vendor.weekly.used_pct,
-    vendor.five_hour.resets_at, vendor.weekly.resets_at, vendor.stale_seconds)
-end
-
-local function renderMenubar()
-  if not menubar then
-    return
-  end
-
-  local data = readLlmLimits()
-  if not data or not data.vendors then
-    menubar:setTitle("LLM ?")
-    menubar:setTooltip("Limit data unavailable")
-    return
-  end
-
-  local vendors = data.vendors
-  local warning = false
-  for _, vendor in pairs(vendors) do
-    if vendor.available and (vendor.five_hour.used_pct >= 80 or vendor.weekly.used_pct >= 80) then
-      warning = true
-    end
-  end
-
-  local title = vendorTitle("C", vendors.claude) .. " " .. vendorTitle("X", vendors.codex)
-  local lines = {
-    detail("Claude", vendors.claude),
-    detail("Codex", vendors.codex),
-    detail("Gemini", vendors.gemini),
-  }
-  menubar:setTitle((warning and "⚠ " or "") .. title)
-  menubar:setTooltip(table.concat(lines, "\n"))
-  menubar:setMenu({
-    { title = lines[1], disabled = true },
-    { title = lines[2], disabled = true },
-    { title = lines[3], disabled = true },
-    { title = "Refresh", fn = M.refresh },
-  })
-end
-
-function M.refresh()
-  local task = newCollectorTask(function()
-    renderMenubar()
-  end, { "--json" })
-  if task then
-    task:start()
-  end
-end
-
-function M.startMenubar()
-  if menubar then
-    return menubar
-  end
-
-  menubar = hs.menubar.new()
-  M.refresh()
-  if timer then
-    timer:stop()
-  end
-  timer = hs.timer.doEvery(300, M.refresh)
-  M.menubar = menubar
-  M.timer = timer
-  return menubar
-end
-
-function M.stopMenubar()
-  if timer then
-    timer:stop()
-    timer = nil
-  end
-  if menubar then
-    menubar:delete()
-    menubar = nil
-  end
-  M.timer = nil
-  M.menubar = nil
 end
 
 return M

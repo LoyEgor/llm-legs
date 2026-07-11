@@ -76,8 +76,6 @@ local limits = require("llm-limits")
 local submenu = { title = "LLM Limits", menu = limits.menuItems() }
 ```
 
-Call `limits.startMenubar()` to opt into the standalone icon and `limits.stopMenubar()` to remove it.
-
 | Vendor | Limit freshness |
 |--------|-----------------|
 | Claude | As of the last Claude Code status-line render |
