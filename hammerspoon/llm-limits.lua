@@ -1,6 +1,7 @@
 local M = {
   cachePath = os.getenv("HOME") .. "/.llm-limits.json",
   collectorPath = "/Volumes/Work/Projects/llm-legs/llm-limits.sh",
+  wallsLog = nil,
 }
 
 local menubar = nil
@@ -107,8 +108,20 @@ local function readLlmLimits()
   return nil
 end
 
+local function newCollectorTask(callback, arguments)
+  local task = hs.task.new(M.collectorPath, callback, arguments)
+  if task and M.wallsLog then
+    task:setEnvironment({
+      HOME = os.getenv("HOME"),
+      LLM_LIMITS_WALLS_LOG = M.wallsLog,
+      PATH = "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+    })
+  end
+  return task
+end
+
 local function getLlmLimitsData()
-  local task = hs.task.new(M.collectorPath, function(exitCode, _, stdErr)
+  local task = newCollectorTask(function(exitCode, _, stdErr)
     if exitCode == 0 then
       hs.alert.show("LLM limits updated")
     else
@@ -135,9 +148,10 @@ function M.menuItems()
     for _, entry in ipairs(vendors) do
       local vendor = limits.vendors[entry.key]
       if type(vendor) ~= "table" or vendor.available ~= true then
-        local detail = type(vendor) == "table" and vendor.status or "unknown"
+        local lastWall = type(vendor) == "table" and vendor.last_wall or nil
+        local wallText = lastWall and ("wall " .. formatAge(lastWall)) or "no walls seen"
         table.insert(menu, {
-          title = infoTitle(string.format("%-6s    no data (%s)", entry.label, detail or "unknown")),
+          title = infoTitle(string.format("%-6s    no live data · %s", entry.label, wallText)),
           disabled = true,
         })
       else
@@ -244,7 +258,7 @@ local function renderMenubar()
 end
 
 function M.refresh()
-  local task = hs.task.new(M.collectorPath, function()
+  local task = newCollectorTask(function()
     renderMenubar()
   end, { "--json" })
   if task then
