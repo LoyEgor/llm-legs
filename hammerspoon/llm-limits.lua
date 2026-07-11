@@ -109,8 +109,8 @@ local function readLlmLimits()
   return nil
 end
 
-local function newCollectorTask(callback, arguments)
-  local task = hs.task.new(M.collectorPath, callback, arguments)
+local function newCollectorTask(callback)
+  local task = hs.task.new(M.collectorPath, callback, {})
   if task and M.wallsLog then
     task:setEnvironment({
       HOME = os.getenv("HOME"),
@@ -122,17 +122,24 @@ local function newCollectorTask(callback, arguments)
 end
 
 local function getLlmLimitsData()
-  local task = newCollectorTask(function(exitCode, _, stdErr)
-    if exitCode == 0 then
-      hs.alert.show("LLM limits updated")
-    else
-      local message = stdErr and stdErr:match("^%s*(.-)%s*$") or ""
-      hs.alert.show(message ~= "" and ("LLM limits error: " .. message) or "LLM limits error")
+  local ok, err = pcall(function()
+    local task = newCollectorTask(function(exitCode, _, stdErr)
+      if exitCode == 0 then
+        hs.alert.show("LLM limits updated")
+      else
+        local message = stdErr and stdErr:match("^%s*(.-)%s*$") or ""
+        hs.alert.show(message ~= "" and ("LLM limits error: " .. message) or "LLM limits error")
+      end
+    end)
+
+    if not task or not task:start() then
+      error("could not start collector")
     end
+    hs.alert.show("LLM limits: обновляю…", 1)
   end)
 
-  if not task or not task:start() then
-    hs.alert.show("LLM limits error: could not start collector")
+  if not ok then
+    hs.alert.show("LLM limits error: " .. tostring(err))
   end
 end
 
@@ -170,6 +177,13 @@ function M.menuItems()
             weeklyPct, formatResetTime(weekly.resets_at)), weeklyPct >= 80),
           disabled = true,
         })
+
+        if entry.key == "claude" and vendor.session_model then
+          table.insert(menu, {
+            title = infoTitle("         via " .. vendor.session_model .. " session"),
+            disabled = true,
+          })
+        end
 
         local staleSeconds = tonumber(vendor.stale_seconds)
         if not staleSeconds and vendor.as_of then

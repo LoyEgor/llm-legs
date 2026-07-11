@@ -57,33 +57,54 @@ claude_wall=$(wall_for claude)
 codex_wall=$(wall_for codex)
 gemini_wall=$(wall_for gemini)
 
-claude_file="$HOME/.claude/statusline-cache-rl"
-claude='{"available":false,"status":"no cache file","source":"statusline-cache","last_wall":null}'
+claude_file="$HOME/.claude/statusline-last.json"
+claude_source=statusline-last
+claude_model=''
+claude_data=''
 if [ -r "$claude_file" ]; then
-  claude_data=$(jq -c 'select(
+  claude_data=$(jq -c '.rate_limits | select(
     (.five_hour.used_percentage | type) == "number" and
     (.five_hour.resets_at | type) == "number" and
     (.seven_day.used_percentage | type) == "number" and
     (.seven_day.resets_at | type) == "number"
   )' "$claude_file" 2>/dev/null || true)
+  claude_model=$(jq -r '.model.display_name // empty' "$claude_file" 2>/dev/null || true)
+fi
+
+if [ -z "$claude_data" ]; then
+  claude_file="$HOME/.claude/statusline-cache-rl"
+  claude_source=statusline-cache
+  claude_model=''
+  if [ -r "$claude_file" ]; then
+    claude_data=$(jq -c 'select(
+      (.five_hour.used_percentage | type) == "number" and
+      (.five_hour.resets_at | type) == "number" and
+      (.seven_day.used_percentage | type) == "number" and
+      (.seven_day.resets_at | type) == "number"
+    )' "$claude_file" 2>/dev/null || true)
+  fi
+fi
+
+claude='{"available":false,"status":"no rate-limit snapshot","source":"none","last_wall":null}'
+if [ -n "$claude_data" ]; then
   mtime=$(file_mtime "$claude_file" || true)
-  if [ -n "$claude_data" ] && [ -n "$mtime" ]; then
+  if [ -n "$mtime" ]; then
     stale=$((now_epoch - mtime)); [ "$stale" -ge 0 ] || stale=0
     claude=$(jq -cn --argjson d "$claude_data" --argjson wall "$claude_wall" \
+      --arg source "$claude_source" --arg model "$claude_model" \
       --arg five_reset "$(epoch_iso "$(jq -r '.five_hour.resets_at' <<<"$claude_data")")" \
       --arg week_reset "$(epoch_iso "$(jq -r '.seven_day.resets_at' <<<"$claude_data")")" \
       --arg as_of "$(epoch_iso "$mtime")" --argjson stale "$stale" '
       {available:true,
        five_hour:{used_pct:$d.five_hour.used_percentage,resets_at:$five_reset},
        weekly:{used_pct:$d.seven_day.used_percentage,resets_at:$week_reset},
-       as_of:$as_of,stale_seconds:$stale,source:"statusline-cache",last_wall:$wall}')
+       as_of:$as_of,stale_seconds:$stale,source:$source,last_wall:$wall} +
+       (if $model == "" then {} else {session_model:$model} end)')
   else
     claude=$(jq -cn --argjson wall "$claude_wall" \
-      '{available:false,status:"unparsable cache file",source:"statusline-cache",last_wall:$wall}')
+      --arg source "$claude_source" \
+      '{available:false,status:"missing snapshot mtime",source:$source,last_wall:$wall}')
   fi
-else
-  claude=$(jq -cn --argjson wall "$claude_wall" \
-    '{available:false,status:"no cache file",source:"statusline-cache",last_wall:$wall}')
 fi
 
 codex_event=''
