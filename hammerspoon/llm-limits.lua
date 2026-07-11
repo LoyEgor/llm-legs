@@ -158,10 +158,8 @@ function M.menuItems()
     for _, entry in ipairs(vendors) do
       local vendor = limits.vendors[entry.key]
       if type(vendor) ~= "table" or vendor.available ~= true then
-        local lastWall = type(vendor) == "table" and vendor.last_wall or nil
-        local wallText = lastWall and ("wall " .. formatAge(lastWall)) or "no walls seen"
         table.insert(menu, {
-          title = infoTitle(string.format("%-6s    no live data · %s", entry.label, wallText)),
+          title = infoTitle(string.format("%-6s  no live data", entry.label)),
           disabled = true,
         })
       else
@@ -174,30 +172,13 @@ function M.menuItems()
             fiveHourPct, formatResetTime(fiveHour.resets_at)), fiveHourPct >= 80),
           disabled = true,
         })
+        -- vendor label rendered once per block: the wk row keeps a blank
+        -- label column so numbers stay aligned under the 5h row
         table.insert(menu, {
-          title = infoTitle(string.format("%-6s  wk  %3d%%  → %s", entry.label,
+          title = infoTitle(string.format("%-6s  wk  %3d%%  → %s", "",
             weeklyPct, formatResetTime(weekly.resets_at)), weeklyPct >= 80),
           disabled = true,
         })
-
-        if entry.key == "claude" and vendor.session_model then
-          table.insert(menu, {
-            title = infoTitle("         via " .. vendor.session_model .. " session"),
-            disabled = true,
-          })
-        end
-
-        local staleSeconds = tonumber(vendor.stale_seconds)
-        if not staleSeconds and vendor.as_of then
-          local asOf = parseIsoTime(vendor.as_of)
-          staleSeconds = asOf and math.max(0, os.time() - asOf) or nil
-        end
-        if staleSeconds and staleSeconds > 600 then
-          table.insert(menu, {
-            title = infoTitle("         updated " .. formatAge(vendor.as_of)),
-            disabled = true,
-          })
-        end
       end
     end
 
