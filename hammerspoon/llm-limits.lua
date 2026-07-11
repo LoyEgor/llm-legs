@@ -2,6 +2,8 @@ local M = {
   cachePath = os.getenv("HOME") .. "/.llm-limits.json",
   collectorPath = "/Volumes/Work/Projects/llm-legs/llm-limits.sh",
   wallsLog = nil,
+  onRefreshStart = function() end,
+  onRefreshDone = function() end,
 }
 
 local function infoTitle(text, warning)
@@ -129,22 +131,18 @@ end
 local function getLlmLimitsData()
   local ok, err = pcall(function()
     local task = newCollectorTask(function(exitCode, _, stdErr)
-      if exitCode == 0 then
-        hs.alert.show("LLM limits updated")
-      else
-        local message = stdErr and stdErr:match("^%s*(.-)%s*$") or ""
-        hs.alert.show(message ~= "" and ("LLM limits error: " .. message) or "LLM limits error")
-      end
+      local message = stdErr and stdErr:match("^%s*(.-)%s*$") or ""
+      pcall(M.onRefreshDone, exitCode == 0, message ~= "" and message or nil)
     end, { "--refresh" })
 
+    pcall(M.onRefreshStart)
     if not task or not task:start() then
       error("could not start collector")
     end
-    hs.alert.show("LLM limits: обновляю все аккаунты…", 1)
   end)
 
   if not ok then
-    hs.alert.show("LLM limits error: " .. tostring(err))
+    pcall(M.onRefreshDone, false, tostring(err))
   end
 end
 
