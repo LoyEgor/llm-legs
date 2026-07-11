@@ -6,6 +6,10 @@ local M = {
 local menubar = nil
 local timer = nil
 
+local function infoTitle(text)
+  return hs.styledtext.new(text, { font = { name = "Menlo", size = 13 } })
+end
+
 local function parseIsoTime(value)
   if type(value) ~= "string" then
     return nil
@@ -133,7 +137,7 @@ function M.menuItems()
       if type(vendor) ~= "table" or vendor.available ~= true then
         local detail = type(vendor) == "table" and vendor.status or "unknown"
         table.insert(menu, {
-          title = string.format("%-8s no data (%s)", entry.label, detail or "unknown"),
+          title = infoTitle(string.format("%-6s    no data (%s)", entry.label, detail or "unknown")),
           disabled = true,
         })
       else
@@ -141,15 +145,17 @@ function M.menuItems()
         local weekly = vendor.weekly or {}
         local warning = (tonumber(fiveHour.used_pct) or 0) >= 80
           or (tonumber(weekly.used_pct) or 0) >= 80
-        local prefix = warning and "⚠ " or ""
+        local marker = warning and "⚠" or ""
+        local fiveHourPct = math.floor((tonumber(fiveHour.used_pct) or 0) + 0.5)
+        local weeklyPct = math.floor((tonumber(weekly.used_pct) or 0) + 0.5)
         table.insert(menu, {
-          title = string.format("%s%-8s 5h %s%% → %s", prefix, entry.label,
-            tostring(fiveHour.used_pct or "?"), formatResetTime(fiveHour.resets_at)),
+          title = infoTitle(string.format("%-6s %-2s 5h %3d%%  → %s", entry.label, marker,
+            fiveHourPct, formatResetTime(fiveHour.resets_at))),
           disabled = true,
         })
         table.insert(menu, {
-          title = string.format("%s         wk %s%% → %s", prefix,
-            tostring(weekly.used_pct or "?"), formatResetTime(weekly.resets_at)),
+          title = infoTitle(string.format("%-6s %-2s wk %3d%%  → %s", entry.label, marker,
+            weeklyPct, formatResetTime(weekly.resets_at))),
           disabled = true,
         })
 
@@ -160,7 +166,7 @@ function M.menuItems()
         end
         if staleSeconds and staleSeconds > 600 then
           table.insert(menu, {
-            title = "         updated " .. formatAge(vendor.as_of),
+            title = infoTitle("         updated " .. formatAge(vendor.as_of)),
             disabled = true,
           })
         end
@@ -169,13 +175,13 @@ function M.menuItems()
 
     table.insert(menu, { title = "-" })
     table.insert(menu, {
-      title = "Data fetched: " .. formatAge(limits.fetched_at),
+      title = infoTitle("Data fetched: " .. formatAge(limits.fetched_at)),
       disabled = true,
     })
     table.insert(menu, { title = "Get Data", fn = getLlmLimitsData })
   else
     table.insert(menu, {
-      title = "no data — press Get Data",
+      title = infoTitle("no data — press Get Data"),
       disabled = true,
     })
     table.insert(menu, { title = "Get Data", fn = getLlmLimitsData })
