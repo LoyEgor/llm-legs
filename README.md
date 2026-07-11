@@ -56,3 +56,26 @@ git submodule add https://github.com/LoyEgor/llm-legs lib/legs
 ```
 
 Tests: `python3 -m unittest discover tests`.
+
+## Subscription limit collector
+
+`llm-limits.sh` reads local CLI state without invoking a vendor CLI, making a network request,
+or spending tokens. It prints schema-1 JSON and atomically refreshes `~/.llm-limits.json` by
+default. The stable top level is `{schema, fetched_at, vendors}`; available vendors include
+`five_hour`, `weekly`, `as_of`, `stale_seconds`, `source`, and `last_wall`. Use `--plain` for a
+human-readable summary or `--no-write` to leave the cache untouched.
+
+Set `LLM_LIMITS_WALLS_LOG` to a `served-models.jsonl` audit log to include the most recent
+exit-5 wall timestamp for each vendor. `LLM_LIMITS_CACHE` overrides the cache path.
+
+For Hammerspoon, copy or symlink `hammerspoon/llm-limits.lua` into `~/.hammerspoon` and add:
+
+```lua
+require("llm-limits")
+```
+
+| Vendor | Limit freshness |
+|--------|-----------------|
+| Claude | As of the last Claude Code status-line render |
+| Codex | As of the last Codex turn that emitted rate limits |
+| Gemini | Not available; only an optional last-wall timestamp is reported |
