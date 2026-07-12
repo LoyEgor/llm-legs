@@ -36,7 +36,10 @@ CACHE="$WORK/cache.json"
 out=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" LLM_LIMITS_WALLS_LOG="$WALLS" bash "$SCRIPT" --json) || fail "fixture collection failed"
 jq -e '.schema == 1 and (.vendors | keys == ["claude","codex","gemini"])' <<<"$out" >/dev/null || fail "schema mismatch"
 jq -e '.vendors.claude.five_hour.used_pct == 12 and .vendors.claude.weekly.used_pct == 40 and .vendors.claude.source == "statusline-last" and .vendors.claude.current_account == "main" and (.vendors.claude.accounts | length) == 1 and (.vendors.claude | has("session_model") | not)' <<<"$out" >/dev/null || fail "Claude primary snapshot mismatch"
-jq -e '.vendors.codex.five_hour.used_pct == 74 and .vendors.codex.weekly.used_pct == 31 and .vendors.codex.plan_type == "plus"' <<<"$out" >/dev/null || fail "Codex fallback mismatch"
+jq -e '.vendors.codex.five_hour.used_pct == 74 and .vendors.codex.weekly.used_pct == 31 and
+  .vendors.codex.plan_type == "plus" and .vendors.codex.current_account == "main" and
+  (.vendors.codex.accounts | length) == 1 and .vendors.codex.accounts[0].account == "main"' \
+  <<<"$out" >/dev/null || fail "Codex fallback mismatch"
 jq -e '.vendors.claude.five_hour.effective_pct == .vendors.claude.five_hour.used_pct and
   .vendors.claude.accounts[0].weekly.effective_pct == .vendors.claude.accounts[0].weekly.used_pct and
   .vendors.codex.five_hour.effective_pct == .vendors.codex.five_hour.used_pct and
@@ -472,6 +475,60 @@ cached_codex=$(CLAUDEB_SENTINEL="$SENTINEL" CODEX_SENTINEL="$CODEX_SENTINEL" COD
 [ ! -e "$CODEX_QUOTA_SENTINEL" ] || fail "default collection invoked the codex quota helper"
 jq -e '.vendors.codex.five_hour.used_pct == 31 and .vendors.codex.five_hour.origin == "usage"' <<<"$cached_codex" >/dev/null \
   || fail "passive run did not reuse the codex quota cache"
+
+CODEX_ACCOUNTS_HOME="$WORK/codex-accounts-home"
+CODEX_ACCOUNTS_CACHE="$WORK/codex-accounts.json"
+mkdir -p "$CODEX_ACCOUNTS_HOME"
+five_reset_epoch=$((now + 4000))
+expired_reset_epoch=$((now - 60))
+week_reset_epoch=$((now + 90000))
+cat >"$CODEX_ACCOUNTS_CACHE" <<EOF
+{"schema":1,"fetched_at":"$(date -u '+%Y-%m-%dT%H:%M:%SZ')","plan_type":"plus","five_hour":{"used_pct":100,"resets_at":$five_reset_epoch},"weekly":{"used_pct":20,"resets_at":$week_reset_epoch},"accounts":[{"account":"beta","plan_type":"team","five_hour":{"used_pct":100,"resets_at":$expired_reset_epoch},"weekly":{"used_pct":100,"resets_at":$week_reset_epoch},"as_of":$((now - 22000))},{"account":"alpha","plan_type":"plus","five_hour":{"used_pct":100,"resets_at":$five_reset_epoch},"weekly":{"used_pct":20,"resets_at":$week_reset_epoch},"as_of":$((now - 1900))}],"current":"alpha"}
+EOF
+codex_accounts_full=$(HOME="$CODEX_ACCOUNTS_HOME" LLM_LIMITS_CODEX_CACHE="$CODEX_ACCOUNTS_CACHE" \
+  LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "Codex multi-account collection failed"
+jq -e '.vendors.codex.current_account == "alpha" and (.vendors.codex.accounts | length) == 2 and
+  .vendors.codex.accounts[0].is_current == true and
+  .vendors.codex.accounts[0].five_hour.effective_pct == 100 and
+  .vendors.codex.accounts[0].five_hour.stale == true and
+  .vendors.codex.accounts[0].weekly.stale == false and
+  .vendors.codex.accounts[1].five_hour.effective_pct == 0 and
+  .vendors.codex.accounts[1].five_hour.expired == true and
+  (.vendors.codex.accounts[1].five_hour.resets_at | type) == "string" and
+  .vendors.codex.accounts[1].weekly.effective_pct == 100 and
+  .vendors.codex.accounts[1].weekly.stale == true and
+  .vendors.codex.five_hour == .vendors.codex.accounts[0].five_hour and
+  .vendors.codex.weekly == .vendors.codex.accounts[0].weekly and
+  .vendors.codex.usable_now == false' <<<"$codex_accounts_full" >/dev/null \
+  || fail "Codex multi-account normalization mismatch"
+codex_accounts_table=$(HOME="$CODEX_ACCOUNTS_HOME" LLM_LIMITS_CODEX_CACHE="$CODEX_ACCOUNTS_CACHE" \
+  LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) || fail "Codex multi-account table failed"
+[ "$(grep -c '^codex/' <<<"$codex_accounts_table")" -eq 2 ] || fail "Codex table did not render both accounts"
+grep -q '^codex/alpha\*' <<<"$codex_accounts_table" || fail "Codex table current account marker missing"
+grep -q '^codex/beta' <<<"$codex_accounts_table" || fail "Codex table secondary account missing"
+jq '(.accounts[] | select(.account == "beta") | .five_hour.used_pct) = 25 |
+    (.accounts[] | select(.account == "beta") | .weekly.used_pct) = 30' \
+  "$CODEX_ACCOUNTS_CACHE" >"$CODEX_ACCOUNTS_CACHE.tmp"
+mv "$CODEX_ACCOUNTS_CACHE.tmp" "$CODEX_ACCOUNTS_CACHE"
+codex_accounts_free=$(HOME="$CODEX_ACCOUNTS_HOME" LLM_LIMITS_CODEX_CACHE="$CODEX_ACCOUNTS_CACHE" \
+  LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "Codex free-account collection failed"
+jq -e '.vendors.codex.usable_now == true and .vendors.codex.five_hour.effective_pct == 100' \
+  <<<"$codex_accounts_free" >/dev/null || fail "Codex one-free-account usability mismatch"
+
+CODEX_LEGACY_CACHE="$WORK/codex-legacy.json"
+cat >"$CODEX_LEGACY_CACHE" <<EOF
+{"schema":1,"fetched_at":"$(date -u '+%Y-%m-%dT%H:%M:%SZ')","plan_type":"plus","five_hour":{"used_pct":31,"resets_at":$five_reset_epoch},"weekly":{"used_pct":64,"resets_at":$week_reset_epoch}}
+EOF
+codex_legacy=$(HOME="$CODEX_ACCOUNTS_HOME" LLM_LIMITS_CODEX_CACHE="$CODEX_LEGACY_CACHE" \
+  LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "Codex legacy cache collection failed"
+jq -e '.vendors.codex.available == true and .vendors.codex.source == "codex-app-server" and
+  .vendors.codex.plan_type == "plus" and .vendors.codex.current_account == "main" and
+  .vendors.codex.five_hour.used_pct == 31 and .vendors.codex.weekly.used_pct == 64 and
+  (.vendors.codex.accounts | length) == 1 and .vendors.codex.accounts[0].account == "main" and
+  .vendors.codex.accounts[0].is_current == true and
+  .vendors.codex.five_hour == .vendors.codex.accounts[0].five_hour and
+  .vendors.codex.weekly == .vendors.codex.accounts[0].weekly' <<<"$codex_legacy" >/dev/null \
+  || fail "Codex legacy cache compatibility mismatch"
 # Rollout events newer than the cached RPC snapshot must win (fixture rollout is 2026-07-11T10:00Z).
 touch -t 202607110500 "$CODEX_CACHE"
 rollout_wins=$(LLM_LIMITS_CODEX_CACHE="$CODEX_CACHE" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT") || fail "rollout-preference collection failed"
@@ -739,5 +796,5 @@ HOME="$EMPTY" bash "$SCRIPT" --no-write >/dev/null 2>&1
 rc=$?
 [ "$rc" -eq 3 ] || fail "all-missing case: expected exit 3, got $rc"
 
-echo "PASS: schema, Claude unique accounts and fallback, Claude daemon status, enabled flags, freshness contract, machine effective percentages and usability, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, plain output, table output and sorts, reset tiers, expired windows, bare JSON default, atomic cache, missing exit 3"
+echo "PASS: schema, Claude unique accounts and fallback, Codex multi-account and legacy cache, Claude daemon status, enabled flags, freshness contract, machine effective percentages and usability, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, plain output, table output and sorts, reset tiers, expired windows, bare JSON default, atomic cache, missing exit 3"
 exit 0

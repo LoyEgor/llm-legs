@@ -127,7 +127,7 @@ local function isStale(threshold, ...)
 end
 
 local function formatResetTime(value)
-  local timestamp = parseIsoTime(value)
+  local timestamp = parseTime(value)
   if not timestamp then
     return "unknown"
   end
@@ -338,15 +338,22 @@ function M.menuItems()
           disabled = true,
         })
       else
-        local blocks = entry.key == "claude" and vendor.accounts or nil
+        local blocks = (entry.key == "claude" or entry.key == "codex") and vendor.accounts or nil
         local isClaudeAccounts = entry.key == "claude" and type(blocks) == "table" and #blocks > 0
+        local isCodexAccounts = entry.key == "codex" and type(blocks) == "table" and #blocks > 1
+        local isAccountRows = isClaudeAccounts or isCodexAccounts
         local hasAccountControls = isClaudeAccounts and vendor.source == "claudeb-store"
-        if type(blocks) ~= "table" or #blocks == 0 then
+        if not isAccountRows then
           blocks = {{ account = entry.label, five_hour = vendor.five_hour,
             weekly = vendor.weekly, fable = vendor.fable, is_current = false }}
         end
+        if isAccountRows then
+          table.insert(menu, {
+            title = infoTitle(isClaudeAccounts and "Claude B" or entry.label),
+            disabled = true,
+          })
+        end
         if isClaudeAccounts then
-          table.insert(menu, { title = infoTitle("Claude B"), disabled = true })
           local daemon = vendor.daemon
           if type(daemon) == "table" and daemon.reachable == true
               and type(daemon.all_walled_until) == "table" then
@@ -383,8 +390,10 @@ function M.menuItems()
           local fiveHourPct = tonumber(fiveHour.used_pct)
           local fiveHourText = fiveHourPct and string.format("%d%%", math.floor(fiveHourPct + 0.5)) or "-"
           local fiveHourReset = fiveHourPct and formatResetTime(fiveHour.resets_at) or "—"
-          local marker = block.is_current and "  ●" or ""
           local acct = block.account or entry.label
+          local isCurrent = block.is_current == true
+            or (isCodexAccounts and acct == vendor.current_account)
+          local marker = isCurrent and "  ●" or ""
           local enabled = block.enabled ~= false
           local auth = block.auth
           if type(auth) == "table" then
@@ -439,7 +448,7 @@ function M.menuItems()
             table.insert(menu, { title = tailRow("fb", block.fable), disabled = true })
           end
         end
-        if isClaudeAccounts then
+        if isAccountRows then
           table.insert(menu, { title = "-" })
         end
       end

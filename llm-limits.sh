@@ -216,8 +216,14 @@ render_table() {
        else {src: "claude", five: null, week: null, note: ($v.claude.status // "-")} end),
       (("codex", "gemini") as $k | $v[$k]
        | if .available then
-           {src: $k, five: .five_hour, week: .weekly,
-            note: mknote(if $k == "codex" then .plan_type else .group end)}
+           if $k == "codex" and ((.accounts | type) == "array") and (.accounts | length) > 1 then
+             (.accounts[]
+              | {src: ("codex/" + .account + (if .is_current then "*" else "" end)),
+                 five: .five_hour, week: .weekly, note: mknote(.plan_type)})
+           else
+             {src: $k, five: .five_hour, week: .weekly,
+              note: mknote(if $k == "codex" then .plan_type else .group end)}
+           end
          else {src: $k, five: null, week: null, note: (.status // "-")} end)
     ] | .[] | row
   ' <<<"$result")
@@ -535,8 +541,10 @@ refresh_codex_quota() {
   mkdir -p "$(dirname "$codex_cache")"
   codex_tmp=$(mktemp "${codex_cache}.tmp.XXXXXX") || { codex_refresh_error='cache temp failed'; return 1; }
   if "$codex_quota_cmd" >"$codex_tmp" 2>/dev/null &&
-    jq -e '[.rateLimits.primary?, .rateLimits.secondary?]
-           | any((.usedPercent | type) == "number")' "$codex_tmp" >/dev/null 2>&1; then
+    jq -e '([.rateLimits.primary?, .rateLimits.secondary?]
+            | any((.usedPercent | type) == "number")) or
+           ([.five_hour?, .weekly?, .accounts[]?.five_hour?, .accounts[]?.weekly?]
+            | any((.used_pct | type) == "number"))' "$codex_tmp" >/dev/null 2>&1; then
     mv -f "$codex_tmp" "$codex_cache"
     codex_refresh_error=''
   else
@@ -560,20 +568,35 @@ select_codex_event() {
   fi
   if [ -z "$rollout_epoch" ] || [ "$cache_mtime" -ge "$rollout_epoch" ]; then
     cache_event=$(jq -c --arg ts "$(epoch_iso "$cache_mtime")" '
-      [.rateLimits.primary?, .rateLimits.secondary?
-       | select(type == "object" and (.usedPercent | type) == "number")] as $all |
-      ([$all[] | select((.windowDurationMins // 0) <= 300)][0] //
-       [$all[] | select(.windowDurationMins == null)][0]) as $five |
-      ([$all[] | select((.windowDurationMins // 0) >= 10000)][0] //
-       (if ($all | length) > 1 then $all[1] else null end)) as $week |
-      select($five != null or $week != null) |
-      {timestamp: $ts,
-       payload: {rate_limits: {
-         primary: {used_percent: ($five.usedPercent // null),
-                   resets_at: ($five.resetsAt // null)},
-         secondary: {used_percent: ($week.usedPercent // null),
-                     resets_at: ($week.resetsAt // null)},
-         plan_type: (.rateLimits.planType // null)}}}' "$codex_cache" 2>/dev/null || true)
+      if ((.accounts | type) == "array" and (.accounts | length) > 0) or
+         ((.five_hour | type) == "object") or ((.weekly | type) == "object") then
+        (if (.accounts | type) == "array" and (.accounts | length) > 0 then .accounts
+         else [{account:"main",plan_type:(.plan_type // null),five_hour:.five_hour,
+                weekly:.weekly,as_of:(.as_of // null)}] end) as $accounts |
+        (.current // "main") as $current |
+        (first($accounts[] | select(.account == $current)) // $accounts[0]) as $selected |
+        select(([$accounts[].five_hour?, $accounts[].weekly?]
+                | any((.used_pct | type) == "number"))) |
+        {timestamp:$ts,payload:{rate_limits:{
+          primary:{used_percent:($selected.five_hour.used_pct // null),
+                   resets_at:($selected.five_hour.resets_at // null)},
+          secondary:{used_percent:($selected.weekly.used_pct // null),
+                     resets_at:($selected.weekly.resets_at // null)},
+          plan_type:($selected.plan_type // .plan_type // null),
+          accounts:$accounts,current_account:$selected.account}}}
+      else
+        [.rateLimits.primary?, .rateLimits.secondary?
+         | select(type == "object" and (.usedPercent | type) == "number")] as $all |
+        ([$all[] | select((.windowDurationMins // 0) <= 300)][0] //
+         [$all[] | select(.windowDurationMins == null)][0]) as $five |
+        ([$all[] | select((.windowDurationMins // 0) >= 10000)][0] //
+         (if ($all | length) > 1 then $all[1] else null end)) as $week |
+        select($five != null or $week != null) |
+        {timestamp:$ts,payload:{rate_limits:{
+          primary:{used_percent:($five.usedPercent // null),resets_at:($five.resetsAt // null)},
+          secondary:{used_percent:($week.usedPercent // null),resets_at:($week.resetsAt // null)},
+          plan_type:(.rateLimits.planType // null)}}}
+      end' "$codex_cache" 2>/dev/null || true)
     if [ -n "$cache_event" ]; then
       codex_event=$cache_event
       codex_origin=usage
@@ -591,7 +614,9 @@ if [ "$start_windows" -eq 1 ]; then
     echo "llm-limits.sh: codex window start skipped (LLM_LIMITS_CODEX_REFRESH=0)" >&2
   else
     codex_5h_reset=''
-    [ -z "$codex_event" ] || codex_5h_reset=$(int_or_empty "$(jq -r '.payload.rate_limits.primary.resets_at // empty' <<<"$codex_event")")
+    [ -z "$codex_event" ] || codex_5h_reset=$(int_or_empty "$(jq -r "$iso_def"'
+      .payload.rate_limits.primary.resets_at |
+      if type == "number" then . elif type == "string" then iso2epoch // empty else empty end' <<<"$codex_event")")
     if [ -z "$codex_5h_reset" ]; then
       echo "llm-limits.sh: codex 5h window state unknown; not starting a window" >&2
     elif [ "$codex_5h_reset" -le "$now_epoch" ]; then
@@ -632,25 +657,60 @@ if [ -n "$codex_event" ]; then
   codex_epoch=$(int_or_empty "$(jq -nr --arg ts "$codex_ts" "$iso_def"'$ts | iso2epoch // empty' 2>/dev/null || true)")
   if [ -n "$codex_epoch" ]; then
     stale=$((now_epoch - codex_epoch)); [ "$stale" -ge 0 ] || stale=0
-    primary_reset=$(int_or_empty "$(jq -r '.payload.rate_limits.primary.resets_at // empty' <<<"$codex_event")")
-    secondary_reset=$(int_or_empty "$(jq -r '.payload.rate_limits.secondary.resets_at // empty' <<<"$codex_event")")
+    primary_reset=$(int_or_empty "$(jq -r "$iso_def"'
+      .payload.rate_limits.primary.resets_at |
+      if type == "number" then . elif type == "string" then iso2epoch // empty else empty end' <<<"$codex_event")")
+    secondary_reset=$(int_or_empty "$(jq -r "$iso_def"'
+      .payload.rate_limits.secondary.resets_at |
+      if type == "number" then . elif type == "string" then iso2epoch // empty else empty end' <<<"$codex_event")")
     five_reset=''; [ -z "$primary_reset" ] || five_reset=$(epoch_iso "$primary_reset")
     week_reset=''; [ -z "$secondary_reset" ] || week_reset=$(epoch_iso "$secondary_reset")
     codex_source=session-rollout
     [ "$codex_origin" != usage ] || codex_source=codex-app-server
-    codex=$(jq -cn --argjson e "$codex_event" --argjson wall "$codex_wall" \
+    codex=$(jq -cn --argjson e "$codex_event" --argjson wall "$codex_wall" --argjson now "$now_epoch" \
       --arg five_reset "$five_reset" --arg week_reset "$week_reset" \
       --arg as_of "$(epoch_iso "$codex_epoch")" --argjson as_of_epoch "$codex_epoch" \
-      --arg origin "$codex_origin" --arg source "$codex_source" --argjson stale "$stale" '
-      {available:true,
-       five_hour:{used_pct:$e.payload.rate_limits.primary.used_percent,
-                  resets_at:(if $five_reset == "" then null else $five_reset end),
-                  as_of:$as_of_epoch,origin:$origin,stale:($stale > 1800)},
-       weekly:{used_pct:$e.payload.rate_limits.secondary.used_percent,
-               resets_at:(if $week_reset == "" then null else $week_reset end),
-               as_of:$as_of_epoch,origin:$origin,stale:($stale > 21600)},
-       as_of:$as_of,stale_seconds:$stale,source:$source,last_wall:$wall,
-       plan_type:($e.payload.rate_limits.plan_type // null)}')
+      --arg origin "$codex_origin" --arg source "$codex_source" --argjson stale "$stale" "$iso_def"'
+      def reset_iso:
+        if type == "number" then todateiso8601
+        elif type == "string" then (iso2epoch | if . == null then null else todateiso8601 end)
+        else null
+        end;
+      def bucket($b; $fallback_reset; $asof; $threshold):
+        {used_pct:($b.used_pct // $b.used_percent // null),
+         resets_at:(($b.resets_at // $fallback_reset // null) | reset_iso),
+         as_of:$asof,origin:$origin,stale:(($now - $asof) > $threshold)};
+      def account($a; $current):
+        (if ($a.as_of | type) == "number" then $a.as_of else $as_of_epoch end) as $account_asof |
+        ([$now - $account_asof, 0] | max) as $account_age |
+        {account:($a.account // "main"),is_current:(($a.account // "main") == $current),enabled:true,
+         plan_type:($a.plan_type // $e.payload.rate_limits.plan_type // null),
+         five_hour:bucket(($a.five_hour // {}); null; $account_asof; 1800),
+         weekly:bucket(($a.weekly // {}); null; $account_asof; 21600),
+         as_of:($account_asof | todateiso8601),stale_seconds:$account_age};
+      (if (($e.payload.rate_limits.accounts | type) == "array") and
+          ($e.payload.rate_limits.accounts | length) > 0 then
+         ($e.payload.rate_limits.current_account // "main") as $requested |
+         (if any($e.payload.rate_limits.accounts[]; (.account // "main") == $requested)
+          then $requested else ($e.payload.rate_limits.accounts[0].account // "main") end) as $current |
+         [$e.payload.rate_limits.accounts[] | account(.; $current)] |
+         sort_by(if .is_current then 0 else 1 end, .account)
+       else
+         [{account:"main",is_current:true,enabled:true,
+           plan_type:($e.payload.rate_limits.plan_type // null),
+           five_hour:{used_pct:$e.payload.rate_limits.primary.used_percent,
+                      resets_at:(if $five_reset == "" then null else $five_reset end),
+                      as_of:$as_of_epoch,origin:$origin,stale:($stale > 1800)},
+           weekly:{used_pct:$e.payload.rate_limits.secondary.used_percent,
+                   resets_at:(if $week_reset == "" then null else $week_reset end),
+                   as_of:$as_of_epoch,origin:$origin,stale:($stale > 21600)},
+           as_of:$as_of,stale_seconds:$stale}]
+       end) as $accounts |
+      (first($accounts[] | select(.is_current)) // $accounts[0]) as $current |
+      {available:true,current_account:$current.account,accounts:$accounts,
+       five_hour:$current.five_hour,weekly:$current.weekly,
+       as_of:$current.as_of,stale_seconds:$current.stale_seconds,source:$source,last_wall:$wall,
+       plan_type:$current.plan_type}')
   else
     codex=$(jq -cn --argjson wall "$codex_wall" \
       '{available:false,status:"unparsable session timestamp",source:"session-rollout",last_wall:$wall}')
@@ -707,11 +767,11 @@ result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson claude "$claude" \
   def under_limit($bucket):
     ($bucket | type) != "object" or $bucket.effective_pct == null or $bucket.effective_pct < 100;
   def account_usable:
-    .enabled == true and
+    .enabled != false and
     ((.auth.status? // "") != "expired" and (.auth.status? // "") != "failed") and
     under_limit(.five_hour) and under_limit(.weekly);
   def vendor_usable($key):
-    if $key == "claude" then
+    if $key == "claude" or $key == "codex" then
       .available == true and ((.accounts | type) == "array") and any(.accounts[]; account_usable)
     else
       .available == true and under_limit(.five_hour) and under_limit(.weekly)

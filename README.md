@@ -109,6 +109,8 @@ A bare `llm-limits` run is a passive read with zero external network access.
 Scripts must never invoke `--start-windows`; it spends money.
 Read each bucket's `effective_pct` and each vendor's `usable_now`.
 Never make availability decisions from raw `used_pct`.
+`vendors.codex.accounts` is always a non-empty array when Codex is available; legacy snapshots synthesize `main`.
+`vendors.codex.current_account` names the account whose buckets remain hoisted at vendor level.
 Raw usage values persist for provenance after a window expires, while `effective_pct` becomes 0.
 Claude `usable_now` considers enabled, authenticated accounts and their general 5h/weekly limits;
 the model-specific fable bucket does not block other Claude work.
@@ -164,3 +166,19 @@ Canonical sources for the multi-account Claude Code tooling; installed via symli
 - `bin/statusline.sh` → `~/.claude/statusline.sh` — Claude Code statusline; also writes per-account limit snapshots on real usage.
 
 Snapshot store and schema live in `~/.claude-profiles/` (documented in its README). If this volume is not mounted at login, the daemon start is retried by the next `claudeb` invocation.
+
+## codexb multi-account suite
+
+Same idea for OpenAI Codex CLI, without a proxy daemon: each extra account lives in its own
+`CODEX_HOME` under `~/.codex-profiles/<name>` (auth, sessions, history are per-account; config,
+AGENTS.md, skills, plugins, rules are symlinked to `~/.codex`). The default `~/.codex` account is
+always available as `main` and is never modified.
+
+- `bin/codexb` → `~/.local/bin/codexb` — `add <name>` (create profile + print the login command),
+  `list`, `status` (per-account quota via the zero-spend app-server RPC), `pick` (freest usable
+  account), `run <name> [args...]` (exec codex under that account's home).
+
+Adding an account: `codexb add work`, run the login command it prints, then `codexb status` should
+show both accounts. Worker agents pick the freest account automatically (`codexb pick`) unless
+pinned via `codex_profile=` in the worker toggle file; the menubar shows per-account rows once more
+than one account exists.

@@ -1,0 +1,236 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+profiles_dir="$HOME/.codex-profiles"
+shared_items=(config.toml AGENTS.md skills plugins rules)
+
+resolve_root() {
+  local source="${BASH_SOURCE[0]}" directory
+  while [ -L "$source" ]; do
+    directory=$(cd -P "$(dirname "$source")" && pwd)
+    source=$(readlink "$source")
+    [[ "$source" = /* ]] || source="$directory/$source"
+  done
+  cd -P "$(dirname "$source")/.." && pwd
+}
+
+quota_helper="${CODEXB_QUOTA_CMD:-$(resolve_root)/codex-quota.py}"
+
+account_names() {
+  local path
+  printf 'main\n'
+  if [ -d "$profiles_dir" ]; then
+    for path in "$profiles_dir"/*; do
+      [ -d "$path" ] && basename "$path"
+    done | LC_ALL=C sort
+  fi
+}
+
+account_home() {
+  if [ "$1" = main ]; then
+    printf '%s\n' ''
+  else
+    printf '%s\n' "$profiles_dir/$1"
+  fi
+}
+
+account_exists() {
+  [ "$1" = main ] || [ -d "$profiles_dir/$1" ]
+}
+
+ensure_profile() {
+  local directory="$1" item
+  for item in "${shared_items[@]}"; do
+    if [ -e "$HOME/.codex/$item" ] && [ ! -e "$directory/$item" ] && [ ! -L "$directory/$item" ]; then
+      ln -s "$HOME/.codex/$item" "$directory/$item"
+    fi
+  done
+}
+
+ensure_profiles() {
+  local name
+  while IFS= read -r name; do
+    [ "$name" = main ] || ensure_profile "$profiles_dir/$name"
+  done < <(account_names)
+}
+
+login_status() {
+  local name="$1" home output rc
+  home=$(account_home "$name")
+  rc=0
+  if [ "$name" = main ]; then
+    output=$(env -u CODEX_HOME codex login status 2>&1) || rc=$?
+  else
+    output=$(env CODEX_HOME="$home" codex login status 2>&1) || rc=$?
+  fi
+  output=$(printf '%s' "$output" | tr '\n\r\t' '   ' | awk '{$1=$1; print}')
+  [ -n "$output" ] || output="login status unavailable"
+  printf '%s\t%s\n' "$rc" "$output"
+}
+
+authenticated() {
+  local status
+  status=$(login_status "$1")
+  [ "${status%%$'\t'*}" -eq 0 ]
+}
+
+format_reset_time() {
+  local epoch="$1" now delta weekday
+  local -a weekdays=(Sun Mon Tue Wed Thu Fri Sat)
+  if ! [ "$epoch" -gt 0 ] 2>/dev/null; then printf 'unknown'; return; fi
+  now=$(date +%s)
+  delta=$((epoch - now))
+  if [ "$delta" -lt 86400 ]; then
+    date -r "$epoch" '+%H:%M' 2>/dev/null || date -d "@$epoch" '+%H:%M' 2>/dev/null || printf 'unknown'
+  elif [ "$delta" -lt 604800 ]; then
+    weekday=$(date -r "$epoch" '+%w' 2>/dev/null || date -d "@$epoch" '+%w' 2>/dev/null) || { printf 'unknown'; return; }
+    printf '%s ' "${weekdays[$weekday]}"
+    date -r "$epoch" '+%H:%M' 2>/dev/null || date -d "@$epoch" '+%H:%M' 2>/dev/null || printf 'unknown'
+  else
+    date -r "$epoch" '+%m-%d %H:%M' 2>/dev/null || date -d "@$epoch" '+%m-%d %H:%M' 2>/dev/null || printf 'unknown'
+  fi
+}
+
+quota_snapshot() {
+  local output
+  if [ ! -x "$quota_helper" ]; then
+    printf '{"accounts":[]}\n'
+    return
+  fi
+  output=$(CODEX_QUOTA_TIMEOUT="${CODEXB_QUOTA_TIMEOUT:-5}" "$quota_helper" --all-accounts 2>/dev/null) || true
+  if jq -e '.accounts | type == "array"' >/dev/null 2>&1 <<<"$output"; then
+    printf '%s\n' "$output"
+  else
+    printf '{"accounts":[]}\n'
+  fi
+}
+
+add_account() {
+  local name="${1:-}" directory status
+  if [ -z "$name" ] || ! [[ "$name" =~ ^[a-z0-9-]+$ ]] || [ "$name" = main ]; then
+    printf 'usage: codexb add <name> (lowercase letters, numbers, and hyphens; not "main")\n' >&2
+    exit 2
+  fi
+  directory="$profiles_dir/$name"
+  if [ -e "$directory" ] || [ -L "$directory" ]; then
+    printf 'codexb: account already exists: %s\n' "$name" >&2
+    exit 2
+  fi
+  mkdir -p "$directory"
+  ensure_profile "$directory"
+  printf 'CODEX_HOME=~/.codex-profiles/%s codex login\n' "$name"
+  printf 'CODEX_HOME=~/.codex-profiles/%s codex login --device-auth\n' "$name"
+  status=$(login_status "$name")
+  printf '%s: %s\n' "$name" "${status#*$'\t'}"
+}
+
+list_accounts() {
+  local name status
+  while IFS= read -r name; do
+    status=$(login_status "$name")
+    printf '%s: %s\n' "$name" "${status#*$'\t'}"
+  done < <(account_names)
+}
+
+show_status() {
+  local quotas name status entry hused wused hreset wreset
+  quotas=$(quota_snapshot)
+  while IFS= read -r name; do
+    status=$(login_status "$name")
+    entry=$(jq -c --arg account "$name" '[.accounts[] | select(.account == $account)][0] // {}' <<<"$quotas")
+    hused=$(jq -r 'if (.five_hour.used_pct | type) == "number" then (.five_hour.used_pct | round | tostring) + "%" else "-" end' <<<"$entry")
+    wused=$(jq -r 'if (.weekly.used_pct | type) == "number" then (.weekly.used_pct | round | tostring) + "%" else "-" end' <<<"$entry")
+    hreset=$(format_reset_time "$(jq -r '.five_hour.resets_at // 0' <<<"$entry")")
+    wreset=$(format_reset_time "$(jq -r '.weekly.resets_at // 0' <<<"$entry")")
+    printf '%s: %s | 5H %s reset %s | WEEKLY %s reset %s\n' "$name" "${status#*$'\t'}" "$hused" "$hreset" "$wused" "$wreset"
+  done < <(account_names)
+}
+
+pick_account() {
+  local quotas now name selected
+  quotas=$(quota_snapshot)
+  now=$(date +%s)
+  selected=''
+  while IFS= read -r name; do
+    authenticated "$name" || continue
+    selected=$(jq -r --arg account "$name" --argjson now "$now" '
+      def effective($bucket):
+        if ($bucket.used_pct | type) != "number" then null
+        elif ($bucket.resets_at | type) == "number" and $bucket.resets_at <= $now then 0
+        else $bucket.used_pct
+        end;
+      [.accounts[] | select(.account == $account) |
+       . as $entry |
+       [effective(.five_hour), effective(.weekly)] | map(select(. != null)) as $known |
+       select(($known | length) == 0 or ($known | max) < 100) |
+       {account:$entry.account,unknown:(if ($known | length) == 0 then 1 else 0 end),
+        pressure:(if ($known | length) == 0 then 0 else ($known | max) end)}] | .[0] // empty |
+      [.account, .unknown, .pressure] | @tsv
+    ' <<<"$quotas")
+    [ -z "$selected" ] || printf '%s\n' "$selected"
+  done < <(account_names) | LC_ALL=C sort -t $'\t' -k2,2n -k3,3n -k1,1 | awk -F '\t' 'NR == 1 {print $1}'
+}
+
+run_account() {
+  local name="${1:-}" home
+  if [ -z "$name" ]; then
+    printf 'usage: codexb run <name> [codex args...]\n' >&2
+    exit 2
+  fi
+  account_exists "$name" || { printf 'codexb: unknown account: %s\n' "$name" >&2; exit 2; }
+  shift
+  home=$(account_home "$name")
+  if [ "$name" = main ]; then
+    exec env -u CODEX_HOME codex "$@"
+  else
+    exec env CODEX_HOME="$home" codex "$@"
+  fi
+}
+
+show_help() {
+  printf '%s\n' \
+    'codexb add <name>' \
+    'codexb list' \
+    'codexb status' \
+    'codexb pick' \
+    'codexb run <name> [codex args...]' \
+    'codexb <name> exec [args...]'
+}
+
+ensure_profiles
+case "${1:-}" in
+  add)
+    shift
+    [ "$#" -eq 1 ] || { printf 'usage: codexb add <name>\n' >&2; exit 2; }
+    add_account "$1"
+    ;;
+  list)
+    [ "$#" -eq 1 ] || { printf 'usage: codexb list\n' >&2; exit 2; }
+    list_accounts
+    ;;
+  status)
+    [ "$#" -eq 1 ] || { printf 'usage: codexb status\n' >&2; exit 2; }
+    show_status
+    ;;
+  pick)
+    [ "$#" -eq 1 ] || { printf 'usage: codexb pick\n' >&2; exit 2; }
+    selection=$(pick_account)
+    printf '%s\n' "${selection:-main}"
+    ;;
+  run)
+    shift
+    run_account "$@"
+    ;;
+  help|-h|--help|'')
+    show_help
+    ;;
+  *)
+    name="$1"
+    if [ "${2:-}" != exec ]; then
+      printf 'usage: codexb <name> exec [args...]\n' >&2
+      exit 2
+    fi
+    shift 2
+    run_account "$name" exec "$@"
+    ;;
+esac
