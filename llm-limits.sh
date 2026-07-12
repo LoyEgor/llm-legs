@@ -338,13 +338,13 @@ if [ "$refresh" -eq 1 ]; then
       if [ "$start_windows" -eq 1 ]; then
         # Feature-detect: older claudeb builds predate --start-windows and would die on it.
         if "$claudeb_cmd" --help 2>/dev/null | grep -q -- '--start-windows'; then
-          run_bounded 180 "$claudeb_cmd" --refresh --start-windows || claude_refresh_error='probe failed'
+          run_bounded 300 "$claudeb_cmd" --refresh --start-windows --heal || claude_refresh_error='probe failed'
         else
           echo "llm-limits.sh: claudeb lacks --start-windows; claude windows not started (free refresh only)" >&2
           run_bounded 60 "$claudeb_cmd" accounts --no-spend || claude_refresh_error='probe failed'
         fi
       else
-        run_bounded 60 "$claudeb_cmd" accounts --no-spend || claude_refresh_error='probe failed'
+        run_bounded 60 "$claudeb_cmd" accounts --no-spend --heal || claude_refresh_error='probe failed'
       fi
     elif [ "$start_windows" -eq 1 ]; then
       echo "llm-limits.sh: claudeb not found; cannot start claude windows" >&2
@@ -387,9 +387,10 @@ if [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
     fi
     account_json=$(jq -cn --argjson d "$claude_data" --arg account "$account" --argjson enabled "$enabled" \
       --arg five_reset "$five_reset" --argjson mtime "$mtime" --argjson now "$now_epoch" \
-      --arg week_reset "$week_reset" --arg fable_reset "$fable_reset" --arg as_of "$(epoch_iso "$mtime")" \
+      --arg week_reset "$week_reset" --arg fable_reset "$fable_reset" \
       --argjson stale "$stale" '
       (($d.auth | type) == "object" and $d.auth.status == "expired") as $expired |
+      (if ($d.five_hour.as_of | type) == "number" then $d.five_hour.as_of else $mtime end) as $account_asof |
       def meta($b; $thr):
         if ($b | type) != "object" then null else
           (if ($b.as_of | type) == "number" then $b.as_of else $mtime end) as $asof |
@@ -405,7 +406,7 @@ if [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
        five_hour:(if $five_reset == ""
                   then {used_pct:null,resets_at:null,as_of:$mtime,stale:true}
                   else {used_pct:$d.five_hour.used_percentage,resets_at:$five_reset} + ($x.five // {}) end),
-       as_of:$as_of,stale_seconds:$stale} +
+       as_of:($account_asof | todateiso8601),stale_seconds:($now - $account_asof)} +
       (if $x.auth then {auth:$x.auth} else {} end) +
       (if $week_reset == "" then {} else {weekly:({used_pct:$d.seven_day.used_percentage,resets_at:$week_reset} + ($x.week // {}))} end) +
       (if $fable_reset == "" then {} else {fable:({used_pct:$d.fable.used_percentage,resets_at:$fable_reset} + ($x.fable // {}))} end)' <<<"$claude_data")
@@ -417,14 +418,18 @@ if [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
       current=$(jq -r 'sort_by(.account)[0].account' <<<"$accounts")
     fi
     accounts=$(jq -c --arg current "$current" 'map(.is_current = (.account == $current)) | sort_by(if .is_current then 0 else 1 end, .account)' <<<"$accounts")
-    claude=$(jq -cn --argjson accounts "$accounts" --argjson wall "$claude_wall" '
+    claude_bundle=$(jq -cn --argjson accounts "$accounts" --argjson wall "$claude_wall" '
       ($accounts[0]) as $current |
       (first($accounts[] | select(.five_hour.used_pct | type == "number")) // $current) as $five_source |
-      {available:true,source:"claudeb-store",current_account:$current.account,accounts:$accounts,
+      ({available:true,source:"claudeb-store",current_account:$current.account,accounts:$accounts,
        five_hour:$five_source.five_hour,as_of:$current.as_of,stale_seconds:$current.stale_seconds,last_wall:$wall} +
       (if $current.auth then {auth:$current.auth} else {} end) +
       (if $current.weekly then {weekly:$current.weekly} else {} end) +
-      (if $current.fable then {fable:$current.fable} else {} end)')
+      (if $current.fable then {fable:$current.fable} else {} end)) as $claude |
+      {claude:$claude,auth_failures:([$accounts[] | select(.auth.status? == "expired") | .account] | join(", "))}')
+    claude=$(jq -c .claude <<<"$claude_bundle")
+    auth_failures=$(jq -r .auth_failures <<<"$claude_bundle")
+    if [ -n "$auth_failures" ]; then claude_refresh_error="$auth_failures auth"; fi
   fi
 else
   claude_last="$HOME/.claude/statusline-last.json"
@@ -494,8 +499,8 @@ refresh_codex_quota() {
   mkdir -p "$(dirname "$codex_cache")"
   codex_tmp=$(mktemp "${codex_cache}.tmp.XXXXXX") || { codex_refresh_error='cache temp failed'; return 1; }
   if "$codex_quota_cmd" >"$codex_tmp" 2>/dev/null &&
-    jq -e '(.rateLimits.primary.usedPercent | type) == "number" and
-           (.rateLimits.secondary.usedPercent | type) == "number"' "$codex_tmp" >/dev/null 2>&1; then
+    jq -e '[.rateLimits.primary?, .rateLimits.secondary?]
+           | any((.usedPercent | type) == "number")' "$codex_tmp" >/dev/null 2>&1; then
     mv -f "$codex_tmp" "$codex_cache"
     codex_refresh_error=''
   else
@@ -519,14 +524,19 @@ select_codex_event() {
   fi
   if [ -z "$rollout_epoch" ] || [ "$cache_mtime" -ge "$rollout_epoch" ]; then
     cache_event=$(jq -c --arg ts "$(epoch_iso "$cache_mtime")" '
-      select((.rateLimits.primary.usedPercent | type) == "number" and
-             (.rateLimits.secondary.usedPercent | type) == "number") |
+      [.rateLimits.primary?, .rateLimits.secondary?
+       | select(type == "object" and (.usedPercent | type) == "number")] as $all |
+      ([$all[] | select((.windowDurationMins // 0) <= 300)][0] //
+       [$all[] | select(.windowDurationMins == null)][0]) as $five |
+      ([$all[] | select((.windowDurationMins // 0) >= 10000)][0] //
+       (if ($all | length) > 1 then $all[1] else null end)) as $week |
+      select($five != null or $week != null) |
       {timestamp: $ts,
        payload: {rate_limits: {
-         primary: {used_percent: .rateLimits.primary.usedPercent,
-                   resets_at: (.rateLimits.primary.resetsAt // null)},
-         secondary: {used_percent: .rateLimits.secondary.usedPercent,
-                     resets_at: (.rateLimits.secondary.resetsAt // null)},
+         primary: {used_percent: ($five.usedPercent // null),
+                   resets_at: ($five.resetsAt // null)},
+         secondary: {used_percent: ($week.usedPercent // null),
+                     resets_at: ($week.resetsAt // null)},
          plan_type: (.rateLimits.planType // null)}}}' "$codex_cache" 2>/dev/null || true)
     if [ -n "$cache_event" ]; then
       codex_event=$cache_event

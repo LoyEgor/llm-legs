@@ -227,16 +227,16 @@ merge_usage() {
       capture("^(?<base>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\\.[0-9]+)?(?:Z|\\+00:00)$") |
       (.base + "Z") | fromdateiso8601;
     ($old + {
-      five_hour: {used_percentage: (.five_hour.utilization | round), resets_at: (.five_hour.resets_at | epoch), as_of: $now, origin: "usage"}
+      five_hour: {used_percentage: (.five_hour.utilization | round), resets_at: (.five_hour.resets_at | if . == null then 0 else epoch end), as_of: $now, origin: "usage"}
     } +
     (if (.seven_day.utilization | type) == "number" then
-      {seven_day: {used_percentage: (.seven_day.utilization | round), resets_at: (.seven_day.resets_at | epoch), as_of: $now, origin: "usage"}}
+      {seven_day: {used_percentage: (.seven_day.utilization | round), resets_at: (.seven_day.resets_at | if . == null then 0 else epoch end), as_of: $now, origin: "usage"}}
      else {} end)) as $merged |
     [.limits[]? | select(.kind == "weekly_scoped" and .scope.model.display_name == "Fable")][0] as $fable |
     # The endpoint includes the Fable entry inconsistently: a 200 without it may
     # follow one that had a real percent, so a still-valid cached value wins over
     # the zero marker (resets_at 0 = "confirmed zero, no active window").
-    (if $fable then $merged + {fable: {used_percentage: ($fable.percent | round), resets_at: ($fable.resets_at | epoch), as_of: $now, origin: "usage"}}
+    (if $fable then $merged + {fable: {used_percentage: ($fable.percent | round), resets_at: ($fable.resets_at | if . == null then 0 else epoch end), as_of: $now, origin: "usage"}}
     elif ($merged.fable.resets_at? // 0) > $now then $merged + {fable: ($merged.fable + {origin: "cached"})}
     else $merged + {fable: {used_percentage: 0, resets_at: 0, as_of: $now, origin: "usage"}} end) +
     {auth: {status: "ok", checked_at: $now}}' \
@@ -263,14 +263,82 @@ mark_auth() {
 }
 
 oauth_client_id="9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-oauth_token_url="https://platform.claude.com/v1/oauth/token"
+oauth_token_url="${CLAUDEB_OAUTH_TOKEN_URL:-https://platform.claude.com/v1/oauth/token}"
+oauth_attempts_file="$base_dir/oauth-attempts.json"
+
+oauth_attempt_update() {
+  local name="$1" outcome="$2" retry_until="${3:-0}" lock="$oauth_attempts_file.lock" tmp now tries=0 lock_mtime stale_retake=false
+  mkdir -p "$base_dir"
+  while ! mkdir "$lock" 2>/dev/null; do
+    tries=$((tries + 1))
+    if [ "$tries" -ge 50 ]; then
+      lock_mtime=$(file_mtime "$lock" 2>/dev/null || printf '0')
+      now=$(date +%s)
+      if [ "$stale_retake" = false ] && [[ "$lock_mtime" =~ ^[0-9]+$ ]] && [ "$((now - lock_mtime))" -gt 30 ]; then
+        stale_retake=true
+        rm -rf "$lock"
+        continue
+      fi
+      return 1
+    fi
+    sleep 0.02
+  done
+  now=$(date +%s)
+  tmp="$oauth_attempts_file.tmp.$$"
+  jq -cn --argjson old "$([ -r "$oauth_attempts_file" ] && jq -c 'if type == "object" then . else {} end' "$oauth_attempts_file" 2>/dev/null || printf '{}')" \
+    --arg name "$name" --arg outcome "$outcome" --argjson now "$now" --argjson retry "$retry_until" '
+    if $outcome == "success" then $old | del(.[$name])
+    else $old + {($name): {attempted_at:$now,outcome:$outcome,retry_after_until:$retry}} end' > "$tmp" && mv "$tmp" "$oauth_attempts_file"
+  rm -f "$tmp"
+  rmdir "$lock"
+}
+
+oauth_backoff_until() {
+  local name="$1" now
+  now=$(date +%s)
+  jq -r --arg name "$name" --argjson now "$now" '
+    .[$name] // {} |
+    if ((.retry_after_until // 0) > $now) then .retry_after_until
+    elif (.outcome // "") == "warming" and ($now - (.attempted_at // 0)) > 180 then 0
+    elif (.outcome // "") != "success" and ($now - (.attempted_at // 0)) < 900
+    then (.attempted_at + 900) else 0 end' "$oauth_attempts_file" 2>/dev/null || printf '0'
+}
+
+oauth_warm_backoff_until() {
+  local name="$1" mode="$2" now
+  if [ "$mode" = all ]; then
+    oauth_backoff_until "$name"
+    return
+  fi
+  now=$(date +%s)
+  jq -r --arg name "$name" --argjson now "$now" '
+    .[$name] // {} |
+    if (.outcome // "") == "429" and ((.retry_after_until // 0) > $now)
+    then .retry_after_until else 0 end' "$oauth_attempts_file" 2>/dev/null || printf '0'
+}
+
+oauth_backoff_outcome() {
+  jq -r --arg name "$1" '.[$name].outcome // ""' "$oauth_attempts_file" 2>/dev/null || true
+}
+
+oauth_attempt_begin() {
+  local name="$1" now until
+  now=$(date +%s)
+  until=$(oauth_backoff_until "$name")
+  if [ "$until" -gt "$now" ] 2>/dev/null; then
+    printf 'claudeb: %s: OAuth refresh backoff active until %s\n' "$name" "$(format_time "$until")" >&2
+    return 1
+  fi
+  oauth_attempt_update "$name" attempting 0
+}
 
 # security -i takes the command on stdin, so the secret never appears in argv.
 keychain_write() {
-  local service="$1" value="$2" escaped
+  local service="$1" value="$2" escaped account
+  account=${USER:-$(id -un)}
   escaped=${value//\\/\\\\}
   escaped=${escaped//\"/\\\"}
-  printf 'add-generic-password -U -a "%s" -s "%s" -w "%s"\n' "$USER" "$service" "$escaped" | \
+  printf 'add-generic-password -U -a "%s" -s "%s" -w "%s"\n' "$account" "$service" "$escaped" | \
     security -i >/dev/null 2>&1
 }
 
@@ -278,7 +346,8 @@ keychain_write() {
 # the profile out of Claude Code, so the write is verified by re-read and the
 # previous JSON is restored on any mismatch.
 oauth_refresh() {
-  local service="$1" prev="$2" body response new_creds readback
+  local name="$1" service="$2" prev="$3" body response new_creds readback headers http rc=0 retry='' retry_until=0
+  oauth_attempt_begin "$name" || return 1
   body=$(printf '%s' "$prev" | jq -c --arg client_id "$oauth_client_id" '
     .claudeAiOauth as $c |
     ($c.refreshToken | select(type == "string" and length > 0)) as $rt |
@@ -286,8 +355,24 @@ oauth_refresh() {
     + (([$c.scopes[]? | strings] | join(" ")) as $scope |
        if $scope == "" then {} else {scope: $scope} end)' 2>/dev/null) || return 1
   [ -n "$body" ] || return 1
-  response=$(printf '%s' "$body" | curl -fsS -m 8 -X POST -H 'Content-Type: application/json' \
-    -d @- "$oauth_token_url" 2>/dev/null) || return 1
+  headers=$(mktemp "${TMPDIR:-/tmp}/claudeb-oauth.XXXXXX") || { oauth_attempt_update "$name" failed; return 1; }
+  if response=$(printf '%s' "$body" | curl -sS -m 8 -D "$headers" -o - -w $'\n%{http_code}' -X POST \
+    -H 'Content-Type: application/json' -d @- "$oauth_token_url" 2>/dev/null); then :; else rc=$?; fi
+  http=${response##*$'\n'}
+  response=${response%$'\n'*}
+  if [ "$rc" -ne 0 ] || [ "$http" != 200 ]; then
+    if [ "$http" = 429 ]; then
+      retry=$(header_value "$headers" retry-after)
+      if [[ "$retry" =~ ^[0-9]+$ ]]; then retry_until=$(($(date +%s) + retry)); fi
+      printf 'claudeb: %s: OAuth token endpoint returned 429%s\n' "$name" "$([ -n "$retry" ] && printf ' (retry-after: %s)' "$retry")" >&2
+      oauth_attempt_update "$name" 429 "$retry_until"
+    else
+      oauth_attempt_update "$name" failed
+    fi
+    rm -f "$headers"
+    return 1
+  fi
+  rm -f "$headers"
   body=""
   new_creds=$(jq -cn --argjson old "$prev" --argjson new "$response" \
     --argjson now_ms "$(($(date +%s) * 1000))" '
@@ -301,7 +386,7 @@ oauth_refresh() {
        then .claudeAiOauth.refreshTokenExpiresAt = ($now_ms + ($new.refresh_token_expires_in * 1000) | floor)
        else . end)' 2>/dev/null) || return 1
   response=""
-  [ -n "$new_creds" ] || return 1
+  [ -n "$new_creds" ] || { oauth_attempt_update "$name" failed; return 1; }
   keychain_write "$service" "$new_creds" || true
   readback=$(security find-generic-password -s "$service" -w 2>/dev/null) || readback=""
   if [ "$readback" != "$new_creds" ]; then
@@ -311,8 +396,10 @@ oauth_refresh() {
     if ! printf '%s' "$readback" | jq -e '.claudeAiOauth.refreshToken | select(type == "string" and length > 0)' >/dev/null 2>&1; then
       keychain_write "$service" "$prev" || true
     fi
+    oauth_attempt_update "$name" failed
     return 1
   fi
+  oauth_attempt_update "$name" success
   printf '%s' "$new_creds"
 }
 
@@ -343,8 +430,9 @@ probe_one() {
     [[ "$expires_at" =~ ^[0-9]+$ ]] || expires_at=0
     if [ "$expires_at" -le "$now_ms" ]; then
       refreshed=true
-      if ! credentials=$(oauth_refresh "$service" "$credentials"); then
+      if ! credentials=$(oauth_refresh "$name" "$service" "$credentials"); then
         credentials=""
+        http=401
         mark_auth "$name" expired
       fi
     fi
@@ -369,8 +457,9 @@ probe_one() {
       fi
       if [ "$attempt" -eq 1 ] && [ "$http" = 401 ] && [ "$refreshed" != true ]; then
         refreshed=true
-        if ! credentials=$(oauth_refresh "$service" "$credentials"); then
+        if ! credentials=$(oauth_refresh "$name" "$service" "$credentials"); then
           credentials=""
+          http=401
           mark_auth "$name" expired
         fi
       else
@@ -388,8 +477,24 @@ probe_one() {
   printf 'messages %s\n' "$out" > "$dir/$name.result"
 }
 
+messages_probe_and_mark() {
+  local name="$1" dir="$2" mark_live="${3:-false}" out rc http
+  out=$(messages_probe "$name" "$dir")
+  rc=${out%% *}
+  http=${out##* }
+  if [ "$rc" = 0 ] && [ "$http" = 200 ] && merge_headers "$name" "$dir/$name.headers"; then
+    [ "$mark_live" = true ] && grep -qx live "$dir/$name.display" 2>/dev/null || printf 'live*\n' > "$dir/$name.display"
+    return 0
+  fi
+  if [ "$http" = 401 ] || [ "$http" = 403 ]; then
+    mark_auth "$name" expired
+    [ "$mark_live" = true ] && printf 'auth!\n' > "$dir/$name.display"
+  fi
+  return 1
+}
+
 probe_accounts() {
-  local dir="$1" allow_spend="$2" start_windows="${3:-false}" name pid pids="" source rc http now hreset out
+  local dir="$1" allow_spend="$2" start_windows="${3:-false}" heal="${4:-false}" name pid pids="" source rc http now hreset
   while IFS= read -r name; do
     probe_one "$name" "$dir" "$allow_spend" &
     pid=$!
@@ -411,15 +516,25 @@ probe_accounts() {
       printf '!\n' > "$dir/$name.display"
     fi
   done < <(account_names)
+  if [ "$heal" = true ]; then
+    while IFS= read -r name; do
+      is_disabled "$name" && continue
+      [ "$(cat "$dir/$name.display" 2>/dev/null)" = 'auth!' ] || continue
+      if CLAUDEB_WARM_FREE_ONLY=true CLAUDEB_WARM_BACKOFF_MODE=all warm_accounts "$name" >/dev/null; then
+        printf 'live\n' > "$dir/$name.display"
+      fi
+    done < <(account_names)
+  fi
   [ "$start_windows" = true ] || return 0
   now=$(date +%s)
   while IFS= read -r name; do
     is_disabled "$name" && continue
-    # Micro-spend only on a window confirmed expired by THIS run's probe; a
-    # failed probe leaves the window state unknown, and spending on unknowns
-    # would burn tokens on dead or unreachable accounts.
     case "$(cat "$dir/$name.display" 2>/dev/null)" in
       live|'live*') ;;
+      auth!)
+        messages_probe_and_mark "$name" "$dir" false || true
+        continue
+        ;;
       *)
         printf 'claudeb: %s: usage probe failed; window state unknown, not starting a 5h window\n' "$name" >&2
         continue
@@ -428,22 +543,21 @@ probe_accounts() {
     hreset=$(jq -r '.five_hour.resets_at // 0' "$limits_dir/$name.json" 2>/dev/null) || hreset=0
     [[ "$hreset" =~ ^[0-9]+$ ]] || hreset=0
     [ "$hreset" -lt "$now" ] || continue
-    out=$(messages_probe "$name" "$dir")
-    rc=${out%% *}
-    http=${out##* }
-    if [ "$rc" = 0 ] && [ "$http" = 200 ] && merge_headers "$name" "$dir/$name.headers"; then
-      grep -qx live "$dir/$name.display" 2>/dev/null || printf 'live*\n' > "$dir/$name.display"
-    elif [ "$http" = 401 ] || [ "$http" = 403 ]; then
-      mark_auth "$name" expired
-      printf 'auth!\n' > "$dir/$name.display"
-    fi
+    messages_probe_and_mark "$name" "$dir" true || true
   done < <(account_names)
+}
+
+reserved_name() {
+  case "$1" in
+    .*|*/*|help|add|use|enable|disable|pick|accounts|status|st|daemon|profile|warm) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 add_account() {
   local name="${1:-}" token
-  if [ -z "$name" ] || ! [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || [ "$name" = main ]; then
-    printf 'usage: claudeb add <name> (letters, numbers, dots, underscores, and hyphens; not "main")\n' >&2
+  if [ -z "$name" ] || ! [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || [ "$name" = main ] || reserved_name "$name"; then
+    printf 'usage: claudeb add <name> (letters, numbers, dots, underscores, and hyphens; not reserved words or "main")\n' >&2
     exit 2
   fi
   printf 'Run `claude setup-token` in any terminal, complete browser authentication, then paste the printed token here.\n'
@@ -570,11 +684,13 @@ show_help() {
   printf '%sclaudeb%s — multi-account launcher and rotating proxy for Claude Code.\n\n' "$bold" "$reset"
   printf '  %s%sclaudeb%s                                 %sLaunch through the rotating proxy.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb --direct%s                        %sLaunch once without the proxy.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
-  printf '  %s%sclaudeb --refresh [--spend] [--start-windows]%s\n' "$bold" "$cyan" "$reset"
+  printf '  %s%sclaudeb --refresh [--spend] [--start-windows] [--heal]%s\n' "$bold" "$cyan" "$reset"
   printf '                                          %sFree refresh; --spend adds the 1-token fallback,%s\n' "$dim" "$reset"
   printf '                                          %s--start-windows pings expired 5h windows.%s\n' "$dim" "$reset"
   printf '  %s%sclaudeb profile <name>%s                  %sOpen an isolated profile; alias: p.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
-  printf '  %s%sclaudeb status [--cached] [--plain] [--spend] [--start-windows]%s\n' "$bold" "$cyan" "$reset"
+  printf '  %s%sclaudeb warm [names...]%s                 %sHeal profiles and limits; free: session init + /usage only;%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
+  printf '                                          %sfalls back to a minimal paid prompt only if that fails.%s\n' "$dim" "$reset"
+  printf '  %s%sclaudeb status [--cached] [--plain] [--spend] [--start-windows] [--heal]%s\n' "$bold" "$cyan" "$reset"
   printf '                                          %sShow limits; aliases: st, accounts.%s\n' "$dim" "$reset"
   printf '  %s%sclaudeb use <name>%s                      %sSwitch now without pinning.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb enable <name>%s                   %sReturn an account to auto-rotation.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
@@ -608,10 +724,10 @@ profile_command() {
     [ "$found" -eq 1 ] || printf '  (none yet — first run creates one)\n'
     return
   fi
-  case "$profile" in
-    .*|*/*|help|add|use|enable|disable|pick|accounts|status|st|daemon|profile)
-      printf "claudeb: invalid profile name '%s'\n" "$profile" >&2; return 2 ;;
-  esac
+  if reserved_name "$profile"; then
+    printf "claudeb: invalid profile name '%s'\n" "$profile" >&2
+    return 2
+  fi
   shift
   dir="$profiles_dir/$profile"
   if [ ! -d "$dir" ]; then
@@ -646,7 +762,116 @@ profile_command() {
       fi
     fi
   fi
+  if [ "${CLAUDEB_PREPARE_ONLY:-false}" = true ]; then
+    prepared_profile_dir="$dir"
+    return
+  fi
   exec env CLAUDE_CONFIG_DIR="$dir" CLAUDE_LIMITS_ACCOUNT="$profile" claude "$@"
+}
+
+run_warm_session() {
+  local dir="$1" name="$2" output="$3" prompt="$4"
+  shift 4
+  timeout 90 env CLAUDE_CONFIG_DIR="$dir" CLAUDE_LIMITS_ACCOUNT="$name" \
+    claude -p "$prompt" "$@" --output-format json >"$output" 2>&1
+}
+
+warm_accounts() {
+  local name dir output session_rc reason profile hash service credentials expires_at now started probe_dir source rc http asof failed=0 until probe_ok usage_rate_limited backoff_mode explicit=false
+  local -a names
+  names=("$@")
+  [ "${#names[@]}" -eq 0 ] || explicit=true
+  backoff_mode="${CLAUDEB_WARM_BACKOFF_MODE:-$([ "$explicit" = true ] && printf retry-after || printf all)}"
+  if [ "${#names[@]}" -eq 0 ]; then
+    while IFS= read -r name; do
+      is_disabled "$name" || names+=("$name")
+    done < <(account_names)
+  fi
+  if [ "${#names[@]}" -eq 0 ]; then
+    printf 'claudeb: no enabled accounts to warm\n' >&2
+    return 1
+  fi
+  for name in "${names[@]}"; do
+    if [ ! -f "$tokens_dir/$name" ]; then
+      printf '%s: failed (unknown account)\n' "$name"
+      failed=1
+      continue
+    fi
+    until=$(oauth_warm_backoff_until "$name" "$backoff_mode")
+    now=$(date +%s)
+    if [ "$until" -gt "$now" ] 2>/dev/null; then
+      printf 'claudeb: %s: warm backoff active until %s\n' "$name" "$(format_time "$until")" >&2
+      failed=1
+      continue
+    fi
+    prepared_profile_dir=''
+    CLAUDEB_PREPARE_ONLY=true profile_command "$name" || {
+      printf '%s: failed (profile setup)\n' "$name"
+      oauth_attempt_update "$name" warm-failed 0
+      failed=1
+      continue
+    }
+    dir="$prepared_profile_dir"
+    output=$(mktemp "${TMPDIR:-/tmp}/claudeb-warm.XXXXXX") || return 1
+    oauth_attempt_update "$name" warming 0
+    started=$(date +%s)
+    session_rc=0
+    reason=''
+    usage_rate_limited=false
+    if run_warm_session "$dir" "$name" "$output" /usage; then :; else session_rc=$?; fi
+    if [ "$session_rc" -ne 0 ] && grep -Eqi '429|rate.?limit' "$output" 2>/dev/null; then
+      usage_rate_limited=true
+    fi
+    if [ "$session_rc" -ne 0 ] && [ "$usage_rate_limited" != true ] && [ "${CLAUDEB_WARM_FREE_ONLY:-false}" != true ]; then
+      session_rc=0
+      if run_warm_session "$dir" "$name" "$output" ok --model haiku; then :; else session_rc=$?; fi
+    fi
+    if [ "$session_rc" -ne 0 ]; then
+      reason="session exit $session_rc"
+      grep -Eqi '429|rate.?limit' "$output" 2>/dev/null && reason='token endpoint still 429'
+      oauth_attempt_update "$name" warm-failed 0
+    fi
+    rm -f "$output"
+    probe_dir=$(mktemp -d "${TMPDIR:-/tmp}/claudeb-warm-probe.XXXXXX") || return 1
+    probe_one "$name" "$probe_dir" false
+    read -r source rc http < "$probe_dir/$name.result"
+    probe_ok=false
+    if [ "$source" = usage ] && merge_usage "$name" "$probe_dir/$name.usage"; then probe_ok=true; fi
+    profile="$HOME/.claude-profiles/$name"
+    hash=$(printf '%s' "$profile" | shasum -a 256 | awk '{print substr($1, 1, 8)}')
+    service="Claude Code-credentials-$hash"
+    credentials=$(security find-generic-password -s "$service" -w 2>/dev/null || true)
+    expires_at=$(printf '%s' "$credentials" | jq -r '.claudeAiOauth.expiresAt // 0 | floor' 2>/dev/null || printf '0')
+    credentials=''
+    now=$(date +%s)
+    if [ "$session_rc" -ne 0 ]; then
+      rm -rf "$probe_dir"
+      printf '%s: failed (%s)\n' "$name" "$reason"
+      failed=1
+      continue
+    fi
+    if ! [[ "$expires_at" =~ ^[0-9]+$ ]] || [ "$expires_at" -le "$((now * 1000))" ]; then
+      rm -rf "$probe_dir"
+      oauth_attempt_update "$name" warm-failed 0
+      printf '%s: failed (OAuth token is not fresh)\n' "$name"
+      failed=1
+      continue
+    fi
+    if [ "$probe_ok" = true ]; then
+      asof=$(jq -r '.five_hour.as_of // 0' "$limits_dir/$name.json" 2>/dev/null || printf '0')
+      if [ "$asof" -ge "$started" ] 2>/dev/null && jq -e '.fable.as_of | type == "number"' "$limits_dir/$name.json" >/dev/null 2>&1; then
+        oauth_attempt_update "$name" success 0
+        printf '%s: warmed (expiresAt=%s, as_of=%s)\n' "$name" "$expires_at" "$asof"
+        rm -rf "$probe_dir"
+        continue
+      fi
+    fi
+    rm -rf "$probe_dir"
+    oauth_attempt_update "$name" warm-failed 0
+    printf '%s: failed (usage probe HTTP %s)\n' "$name" "${http:-000}"
+    failed=1
+  done
+  return "$failed"
 }
 
 daemon_port="${CLAUDEBD_PORT:-45789}"
@@ -876,7 +1101,7 @@ collect_accounts() {
   accounts_mode="$mode"
   if [ "$mode" = live ]; then
     accounts_probe_dir=$(mktemp -d "${TMPDIR:-/tmp}/claudeb.XXXXXX")
-    probe_accounts "$accounts_probe_dir" "$accounts_allow_spend" "$accounts_start_windows"
+    probe_accounts "$accounts_probe_dir" "$accounts_allow_spend" "$accounts_start_windows" "$accounts_heal"
   fi
   accounts_result=$(selection)
   accounts_picked=$(printf '%s' "$accounts_result" | jq -r .picked)
@@ -1049,9 +1274,10 @@ interactive_accounts() {
 }
 
 show_accounts() {
-  local mode="${1:-live}" force_plain="${2:-false}" allow_spend="${3:-false}" start_windows="${4:-false}"
+  local mode="${1:-live}" force_plain="${2:-false}" allow_spend="${3:-false}" start_windows="${4:-false}" heal="${5:-false}"
   accounts_allow_spend="$allow_spend"
   accounts_start_windows="$start_windows"
+  accounts_heal="$heal"
   accounts_probe_dir=''
   collect_accounts "$mode"
   trap 'interactive_cleanup; [ -z "${accounts_probe_dir:-}" ] || rm -rf "$accounts_probe_dir"' EXIT
@@ -1077,6 +1303,10 @@ case "${1:-}" in
     shift
     profile_command "$@"
     ;;
+  warm)
+    shift
+    warm_accounts "$@"
+    ;;
   add)
     shift
     add_account "${1:-}"
@@ -1100,6 +1330,7 @@ case "${1:-}" in
     accounts_plain_arg=false
     accounts_spend_arg=false
     accounts_windows_arg=false
+    accounts_heal_arg=false
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --cached) accounts_mode_arg=cached ;;
@@ -1107,11 +1338,12 @@ case "${1:-}" in
         --spend) accounts_spend_arg=true ;;
         --no-spend) accounts_spend_arg=false ;;
         --start-windows) accounts_windows_arg=true ;;
-        *) printf 'usage: claudeb %s [--cached] [--plain] [--spend] [--no-spend] [--start-windows]\n' "$command_name" >&2; exit 2 ;;
+        --heal) accounts_heal_arg=true ;;
+        *) printf 'usage: claudeb %s [--cached] [--plain] [--spend] [--no-spend] [--start-windows] [--heal]\n' "$command_name" >&2; exit 2 ;;
       esac
       shift
     done
-    show_accounts "$accounts_mode_arg" "$accounts_plain_arg" "$accounts_spend_arg" "$accounts_windows_arg"
+    show_accounts "$accounts_mode_arg" "$accounts_plain_arg" "$accounts_spend_arg" "$accounts_windows_arg" "$accounts_heal_arg"
     ;;
   pick)
     selection | jq -r .picked
@@ -1124,16 +1356,18 @@ case "${1:-}" in
     shift
     refresh_spend_arg=false
     refresh_windows_arg=false
+    refresh_heal_arg=false
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --spend) refresh_spend_arg=true ;;
         --no-spend) refresh_spend_arg=false ;;
         --start-windows) refresh_windows_arg=true ;;
-        *) printf 'usage: claudeb --refresh [--spend] [--no-spend] [--start-windows]\n' >&2; exit 2 ;;
+        --heal) refresh_heal_arg=true ;;
+        *) printf 'usage: claudeb --refresh [--spend] [--no-spend] [--start-windows] [--heal]\n' >&2; exit 2 ;;
       esac
       shift
     done
-    show_accounts live false "$refresh_spend_arg" "$refresh_windows_arg"
+    show_accounts live false "$refresh_spend_arg" "$refresh_windows_arg" "$refresh_heal_arg"
     ;;
   daemon)
     shift

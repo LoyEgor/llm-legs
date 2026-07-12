@@ -209,6 +209,7 @@ local function recordRefreshOutcome(exitCode)
     table.insert(failures, "collector")
   end
   lastRefreshOutcome = { failures = failures, timestamp = os.time() }
+  return failures
 end
 
 local function shQuote(value)
@@ -283,9 +284,10 @@ end
 local function refreshData(args)
   local ok, err = pcall(function()
     local task = newCollectorTask(function(exitCode, _, stdErr)
-      recordRefreshOutcome(exitCode)
+      local failures = recordRefreshOutcome(exitCode)
       local message = stdErr and stdErr:match("^%s*(.-)%s*$") or ""
-      pcall(M.onRefreshDone, exitCode == 0, message ~= "" and message or nil)
+      pcall(M.onRefreshDone, exitCode == 0 and #failures == 0,
+        message ~= "" and message or nil, failures)
     end, args)
 
     pcall(M.onRefreshStart)
@@ -295,8 +297,8 @@ local function refreshData(args)
   end)
 
   if not ok then
-    recordRefreshOutcome(1)
-    pcall(M.onRefreshDone, false, tostring(err))
+    local failures = recordRefreshOutcome(1)
+    pcall(M.onRefreshDone, false, tostring(err), failures)
   end
 end
 
@@ -349,7 +351,9 @@ function M.menuItems()
         for _, block in ipairs(blocks) do
           local fiveHour = block.five_hour or {}
           local weekly = block.weekly
-          local fiveHourPct = math.floor((tonumber(fiveHour.used_pct) or 0) + 0.5)
+          local fiveHourPct = tonumber(fiveHour.used_pct)
+          local fiveHourText = fiveHourPct and string.format("%d%%", math.floor(fiveHourPct + 0.5)) or "-"
+          local fiveHourReset = fiveHourPct and formatResetTime(fiveHour.resets_at) or "—"
           local marker = block.is_current and "  ●" or ""
           local acct = block.account or entry.label
           local enabled = block.enabled ~= false
@@ -358,12 +362,18 @@ function M.menuItems()
             auth = auth.status
           end
           local blockGray = auth == "expired"
+          local accountAge = ""
+          local accountEpoch = parseTime(block.as_of)
+          local vendorEpoch = parseTime(vendor.as_of)
+          if accountEpoch and vendorEpoch and accountEpoch < vendorEpoch then
+            accountAge = "  " .. formatAgeShort(block.as_of)
+          end
           local fiveGray = blockGray or fiveHour.expired == true
             or isStale(1800, fiveHour, block, vendor)
           local fiveRow = {
-            title = infoTitle(string.format("%-6s  5h  %3d%%  → %s%s", acct,
-              fiveHourPct, formatResetTime(fiveHour.resets_at), marker),
-              fiveHourPct >= 80, fiveGray),
+            title = infoTitle(string.format("%-6s  5h  %4s  → %s%s%s", acct,
+              fiveHourText, fiveHourReset, marker, accountAge),
+              fiveHourPct ~= nil and fiveHourPct >= 80, fiveGray),
             disabled = true,
           }
           if hasAccountControls then

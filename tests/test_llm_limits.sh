@@ -143,6 +143,7 @@ fresh_json=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_FRESH" LLM_LIMITS_CACHE=
 jq -e --argjson asof "$((now - 3000))" '
   [.vendors.claude.accounts[] | select(.account == "aged")][0] as $a |
   $a.five_hour.as_of == $asof and $a.five_hour.origin == "usage" and
+  ($a.as_of | fromdateiso8601) == $asof and
   $a.five_hour.stale == true and $a.weekly.stale == false and $a.auth.status == "ok"' <<<"$fresh_json" >/dev/null \
   || fail "as_of threshold staleness mismatch"
 jq -e '[.vendors.claude.accounts[] | select(.account == "cachedorigin")][0]
@@ -173,6 +174,136 @@ grep -Eq '^claude/authonly +- +- ' <<<"$fresh_table" || fail "auth-only account 
 fresh_plain=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_FRESH" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain) || fail "rounding plain collection failed"
 grep -q 'claude/aged: 7%/57% ' <<<"$fresh_plain" || fail "plain percentages must round to integers"
 grep -q 'claude/authonly: -/-' <<<"$fresh_plain" || fail "auth-only account missing from plain output"
+jq -e '(.vendors.claude.refresh_error | contains("authonly") and endswith(" auth"))' <<<"$auth_current" >/dev/null \
+  || fail "Claude auth failure was not exposed as vendor refresh_error"
+
+CLAUDEB_BIN="$ROOT/bin/claudeb"
+OAUTH_HOME="$WORK/oauth-home"
+OAUTH_STORE="$WORK/oauth-store"
+OAUTH_BIN="$WORK/oauth-bin"
+OAUTH_SENTINEL="$WORK/oauth-curl-called"
+OAUTH_CLAUDE_SENTINEL="$WORK/oauth-claude-called"
+mkdir -p "$OAUTH_HOME/.claude-profiles/stuck" "$OAUTH_STORE/tokens" "$OAUTH_STORE/limits" "$OAUTH_BIN"
+printf 'fixture-daemon-token\n' >"$OAUTH_STORE/tokens/stuck"
+printf 'stuck\n' >"$OAUTH_STORE/.claudeb-state"
+cat >"$OAUTH_BIN/security" <<'EOF'
+#!/usr/bin/env bash
+case " $* " in
+  *" -w "*) printf '{"claudeAiOauth":{"accessToken":"fixture-access","refreshToken":"fixture-refresh","expiresAt":%s}}\n' "${OAUTH_EXPIRES_AT:-1}" ;;
+  *) exit 0 ;;
+esac
+EOF
+cat >"$OAUTH_BIN/curl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$OAUTH_SENTINEL"
+headers=''
+previous=''
+for arg in "$@"; do
+  if [ "$previous" = -D ]; then headers=$arg; fi
+  previous=$arg
+done
+case "$*" in
+  *platform.claude.com*) printf '\n400' ;;
+  *api.anthropic.com/v1/messages*)
+    if [ "${OAUTH_MESSAGES_HTTP:-200}" != 200 ]; then printf '%s' "$OAUTH_MESSAGES_HTTP"; exit; fi
+    printf '%s\n' 'HTTP/2 200' 'anthropic-ratelimit-unified-status: allowed' \
+      'anthropic-ratelimit-unified-5h-utilization: 0.01' \
+      "anthropic-ratelimit-unified-5h-reset: $(($(date +%s) + 3600))" >"$headers"
+    printf '200'
+    ;;
+  *) printf '%s' "${OAUTH_USAGE_HTTP:-401}" ;;
+esac
+EOF
+cat >"$OAUTH_BIN/claude" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$OAUTH_CLAUDE_SENTINEL"
+printf '%s\n' '{"result":"usage"}'
+EOF
+chmod +x "$OAUTH_BIN/security" "$OAUTH_BIN/curl" "$OAUTH_BIN/claude"
+printf '{"stuck":{"attempted_at":%s,"outcome":"failed","retry_after_until":0}}\n' "$now" >"$OAUTH_STORE/oauth-attempts.json"
+OAUTH_SENTINEL="$OAUTH_SENTINEL" OAUTH_CLAUDE_SENTINEL="$OAUTH_CLAUDE_SENTINEL" PATH="$OAUTH_BIN:$PATH" HOME="$OAUTH_HOME" CLAUDEB_DIR="$OAUTH_STORE" \
+  bash "$CLAUDEB_BIN" accounts --no-spend --heal >/dev/null 2>"$WORK/oauth-backoff.err" || true
+[ ! -e "$OAUTH_SENTINEL" ] || fail "recent failed OAuth attempt was not throttled"
+grep -q 'warm backoff active' "$WORK/oauth-backoff.err" || fail "self-heal backoff skip was silent"
+
+rm -f "$OAUTH_STORE/oauth-attempts.json" "$OAUTH_SENTINEL" "$OAUTH_CLAUDE_SENTINEL"
+OAUTH_EXPIRES_AT="$(((now + 3600) * 1000))" OAUTH_USAGE_HTTP=403 OAUTH_SENTINEL="$OAUTH_SENTINEL" OAUTH_CLAUDE_SENTINEL="$OAUTH_CLAUDE_SENTINEL" PATH="$OAUTH_BIN:$PATH" HOME="$OAUTH_HOME" CLAUDEB_DIR="$OAUTH_STORE" \
+  bash "$CLAUDEB_BIN" accounts --no-spend >/dev/null 2>/dev/null || fail "plain refresh routing fixture failed"
+[ ! -e "$OAUTH_CLAUDE_SENTINEL" ] || fail "plain accounts triggered warm without --heal"
+
+rm -f "$OAUTH_STORE/oauth-attempts.json" "$OAUTH_SENTINEL" "$OAUTH_CLAUDE_SENTINEL"
+OAUTH_EXPIRES_AT="$(((now + 3600) * 1000))" OAUTH_USAGE_HTTP=403 OAUTH_SENTINEL="$OAUTH_SENTINEL" OAUTH_CLAUDE_SENTINEL="$OAUTH_CLAUDE_SENTINEL" PATH="$OAUTH_BIN:$PATH" HOME="$OAUTH_HOME" CLAUDEB_DIR="$OAUTH_STORE" \
+  bash "$CLAUDEB_BIN" accounts --no-spend --heal >/dev/null 2>/dev/null || true
+grep -q -- '-p /usage --output-format json' "$OAUTH_CLAUDE_SENTINEL" || fail "--heal did not self-heal auth with /usage"
+grep -q -- '-p ok --model haiku' "$OAUTH_CLAUDE_SENTINEL" && fail "plain refresh used the paid warm fallback"
+
+rm -f "$OAUTH_SENTINEL" "$OAUTH_CLAUDE_SENTINEL"
+printf '{"stuck":{"attempted_at":%s,"outcome":"warming","retry_after_until":0}}\n' "$((now - 181))" >"$OAUTH_STORE/oauth-attempts.json"
+OAUTH_EXPIRES_AT="$(((now + 3600) * 1000))" OAUTH_USAGE_HTTP=403 OAUTH_SENTINEL="$OAUTH_SENTINEL" OAUTH_CLAUDE_SENTINEL="$OAUTH_CLAUDE_SENTINEL" PATH="$OAUTH_BIN:$PATH" HOME="$OAUTH_HOME" CLAUDEB_DIR="$OAUTH_STORE" \
+  bash "$CLAUDEB_BIN" accounts --no-spend --heal >/dev/null 2>/dev/null || true
+grep -q -- '-p /usage --output-format json' "$OAUTH_CLAUDE_SENTINEL" || fail "stale warming state did not expire"
+
+if HOME="$OAUTH_HOME" CLAUDEB_DIR="$OAUTH_STORE" bash "$CLAUDEB_BIN" add warm </dev/null >/dev/null 2>&1; then
+  fail "add accepted reserved account name warm"
+fi
+
+rm -f "$OAUTH_STORE/oauth-attempts.json" "$OAUTH_SENTINEL"
+OAUTH_SENTINEL="$OAUTH_SENTINEL" OAUTH_CLAUDE_SENTINEL="$OAUTH_CLAUDE_SENTINEL" PATH="$OAUTH_BIN:$PATH" HOME="$OAUTH_HOME" CLAUDEB_DIR="$OAUTH_STORE" \
+  bash "$CLAUDEB_BIN" --refresh --start-windows >/dev/null 2>/dev/null || fail "start-windows auth fallback fixture failed"
+grep -q 'api.anthropic.com/v1/messages' "$OAUTH_SENTINEL" || fail "start-windows did not use daemon-token messages fallback after auth failure"
+
+WARM_HOME="$WORK/warm-home"
+WARM_STORE="$WORK/warm-store"
+WARM_BIN="$WORK/warm-bin"
+WARM_SENTINEL="$WORK/warm-called"
+mkdir -p "$WARM_HOME/.claude-profiles/one" "$WARM_HOME/.claude-profiles/two" \
+  "$WARM_STORE/tokens" "$WARM_STORE/limits" "$WARM_BIN"
+printf 'fixture\n' >"$WARM_STORE/tokens/one"
+printf 'fixture\n' >"$WARM_STORE/tokens/two"
+printf 'two\n' >"$WARM_STORE/disabled"
+cat >"$WARM_BIN/claude" <<'EOF'
+#!/usr/bin/env bash
+printf '%s|%s|%s\n' "$CLAUDE_LIMITS_ACCOUNT" "$CLAUDE_CONFIG_DIR" "$*" >>"$WARM_SENTINEL"
+if [ "${WARM_USAGE_429:-0}" = 1 ] && [ "${2:-}" = /usage ]; then printf 'HTTP 429 rate limit\n' >&2; exit 7; fi
+if [ "${WARM_FAIL_USAGE:-0}" = 1 ] && [ "${2:-}" = /usage ]; then exit 7; fi
+printf '%s\n' '{"result":"ok"}'
+EOF
+cat >"$WARM_BIN/security" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' '{"claudeAiOauth":{"accessToken":"fixture-access","refreshToken":"fixture-refresh","expiresAt":$(((now + 3600) * 1000))}}'
+EOF
+cat >"$WARM_BIN/curl" <<EOF
+#!/usr/bin/env bash
+output=''
+previous=''
+for arg in "\$@"; do
+  if [ "\$previous" = -o ]; then output=\$arg; fi
+  previous=\$arg
+done
+printf '%s\n' '{"five_hour":{"utilization":10,"resets_at":"2026-07-13T01:00:00Z"},"seven_day":{"utilization":20,"resets_at":"2026-07-19T01:00:00Z"},"limits":[{"kind":"weekly_scoped","scope":{"model":{"display_name":"Fable"}},"percent":30,"resets_at":"2026-07-19T01:00:00Z"}]}' >"\$output"
+printf '200'
+EOF
+chmod +x "$WARM_BIN/claude" "$WARM_BIN/security" "$WARM_BIN/curl"
+WARM_SENTINEL="$WARM_SENTINEL" PATH="$WARM_BIN:$PATH" HOME="$WARM_HOME" CLAUDEB_DIR="$WARM_STORE" \
+  bash "$CLAUDEB_BIN" warm >/dev/null || fail "default warm fixture failed"
+grep -q '^one|' "$WARM_SENTINEL" || fail "default warm omitted an enabled account"
+grep -q '^two|' "$WARM_SENTINEL" && fail "default warm included a disabled account"
+grep -q -- "-p /usage --output-format json" "$WARM_SENTINEL" || fail "warm did not use client-side /usage first"
+grep -q -- "-p ok --model haiku" "$WARM_SENTINEL" && fail "successful /usage triggered the paid fallback"
+: >"$WARM_SENTINEL"
+WARM_SENTINEL="$WARM_SENTINEL" PATH="$WARM_BIN:$PATH" HOME="$WARM_HOME" CLAUDEB_DIR="$WARM_STORE" \
+  bash "$CLAUDEB_BIN" warm two >/dev/null || fail "explicit disabled warm fixture failed"
+grep -q '^two|' "$WARM_SENTINEL" || fail "explicit warm did not include a disabled account"
+: >"$WARM_SENTINEL"
+WARM_FAIL_USAGE=1 WARM_SENTINEL="$WARM_SENTINEL" PATH="$WARM_BIN:$PATH" HOME="$WARM_HOME" CLAUDEB_DIR="$WARM_STORE" \
+  bash "$CLAUDEB_BIN" warm one >/dev/null || fail "warm paid-fallback fixture failed"
+[ "$(wc -l <"$WARM_SENTINEL" | tr -d ' ')" -eq 2 ] || fail "failed /usage did not produce exactly one fallback"
+sed -n '1p' "$WARM_SENTINEL" | grep -q -- '-p /usage --output-format json' || fail "fallback fixture did not try /usage first"
+sed -n '2p' "$WARM_SENTINEL" | grep -q -- '-p ok --model haiku --output-format json' || fail "failed /usage did not use the minimal paid fallback"
+: >"$WARM_SENTINEL"
+WARM_USAGE_429=1 WARM_SENTINEL="$WARM_SENTINEL" PATH="$WARM_BIN:$PATH" HOME="$WARM_HOME" CLAUDEB_DIR="$WARM_STORE" \
+  bash "$CLAUDEB_BIN" warm one >/dev/null 2>/dev/null && fail "rate-limited warm unexpectedly succeeded"
+[ "$(wc -l <"$WARM_SENTINEL" | tr -d ' ')" -eq 1 ] || fail "rate-limited /usage retried through the paid fallback"
 
 FAKE_BIN="$WORK/bin"
 SENTINEL="$WORK/claudeb-called"
@@ -210,6 +341,26 @@ jq -e '.vendors.codex.five_hour.used_pct == 31 and .vendors.codex.weekly.used_pc
   .vendors.codex.five_hour.stale == false and .vendors.codex.plan_type == "plus" and
   (.vendors.codex | has("refresh_error") | not)' <<<"$refresh_out" >/dev/null \
   || fail "live codex quota did not outrank stale rollouts"
+
+cat >"$WORK/fake-codex-quota-weekly" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' '{"rateLimits":{"primary":{"usedPercent":0,"windowDurationMins":10080,"resetsAt":$((now + 90000))},"secondary":null,"planType":"plus"}}'
+EOF
+chmod +x "$WORK/fake-codex-quota-weekly"
+weekly_only=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" \
+  LLM_LIMITS_CODEX_REFRESH=1 LLM_LIMITS_CODEX_QUOTA_CMD="$WORK/fake-codex-quota-weekly" LLM_LIMITS_CODEX_CACHE="$CODEX_CACHE" \
+  bash "$SCRIPT" --refresh --no-write 2>/dev/null) || fail "weekly-only codex refresh failed"
+jq -e '.vendors.codex.available == true and .vendors.codex.five_hour.used_pct == null and
+  .vendors.codex.weekly.used_pct == 0 and .vendors.codex.source == "codex-app-server" and
+  (.vendors.codex | has("refresh_error") | not)' <<<"$weekly_only" >/dev/null \
+  || fail "weekly-only codex payload was not normalized as an available vendor"
+weekly_only_table=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" \
+  LLM_LIMITS_CODEX_CACHE="$CODEX_CACHE" bash "$SCRIPT" --table 2>/dev/null) || fail "weekly-only codex table failed"
+awk '$1 == "codex" {print}' <<<"$weekly_only_table" | grep -Eq '^codex +- +0%' \
+  || fail "weekly-only codex table did not render unknown 5h and weekly percentage"
+HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" \
+  LLM_LIMITS_CODEX_REFRESH=1 LLM_LIMITS_CODEX_QUOTA_CMD="$WORK/fake-codex-quota" LLM_LIMITS_CODEX_CACHE="$CODEX_CACHE" \
+  bash "$SCRIPT" --refresh --no-write >/dev/null 2>&1 || fail "codex fixture restore failed"
 refresh_failed=$(LLM_LIMITS_CODEX_REFRESH=1 LLM_LIMITS_CODEX_QUOTA_CMD=/usr/bin/false LLM_LIMITS_CODEX_CACHE="$CODEX_CACHE" \
   PATH="$FAKE_BIN:$PATH" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --refresh 2>/dev/null) \
   || fail "failed Codex refresh collection failed"
@@ -241,7 +392,7 @@ CLAUDEB_SENTINEL="$SENTINEL" CODEX_SENTINEL="$CODEX_SENTINEL" CODEX_QUOTA_SENTIN
   LLM_LIMITS_CODEX_REFRESH=1 LLM_LIMITS_CODEX_QUOTA_CMD="$WORK/fake-codex-quota" LLM_LIMITS_CODEX_CACHE="$CODEX_CACHE" \
   PATH="$FAKE_BIN:$PATH" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" \
   bash "$SCRIPT" --refresh --start-windows >/dev/null 2>"$WORK/start-fresh.err" || fail "start-windows (fresh) collection failed"
-grep -qx -- '--refresh --start-windows' "$SENTINEL" || fail "claudeb window start was not requested"
+grep -qx -- '--refresh --start-windows --heal' "$SENTINEL" || fail "claudeb window start was not requested"
 [ ! -e "$CODEX_SENTINEL" ] || fail "fresh codex window must not trigger a spend"
 grep -q 'gemini window start skipped' "$WORK/start-fresh.err" || fail "disabled gemini start must be reported, not silent"
 
