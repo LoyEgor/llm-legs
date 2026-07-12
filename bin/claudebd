@@ -23,6 +23,7 @@ const stateFile = path.join(baseDir, '.claudeb-state');
 const daemonStateFile = path.join(baseDir, 'daemon-state.json');
 const disabledFile = path.join(baseDir, 'disabled');
 const maxBody = 64 * 1024 * 1024;
+const upstreamIdleTimeout = 600000;
 const started = Date.now();
 const states = new Map();
 let accounts = [];
@@ -489,17 +490,50 @@ function sendJson(res, status, body) {
   res.end(data);
 }
 
-function forwardResponse(source, target) {
+function configureOutboundRequest(request) {
+  request.on('socket', (socket) => socket.setKeepAlive(true, 30000));
+}
+
+function forwardResponse(source, target, account, scope) {
   if (target.destroyed) {
     source.destroy();
     return;
   }
-  target.writeHead(source.statusCode || 502, source.headers);
-  source.on('error', () => {
+  const responseStarted = Date.now();
+  const status = source.statusCode || 502;
+  let bytes = 0;
+  let abortLogged = false;
+  const logAbort = (cause) => {
+    if (abortLogged) return;
+    abortLogged = true;
+    log(`stream-abort account=${account} scope=${scope} cause=${cause} elapsed_ms=${Date.now() - responseStarted} bytes=${bytes} status=${status}`);
+  };
+  source.on('data', (chunk) => { bytes += chunk.length; });
+  source.setTimeout(upstreamIdleTimeout, () => {
+    logAbort('upstream-idle');
+    source.destroy();
     if (!target.destroyed) target.destroy();
   });
+  target.writeHead(status, source.headers);
+  source.on('aborted', () => {
+    logAbort('upstream-close');
+    if (!target.destroyed) target.destroy();
+  });
+  source.on('error', () => {
+    logAbort('upstream-error');
+    if (!target.destroyed) target.destroy();
+  });
+  source.on('close', () => {
+    if (!source.complete) {
+      logAbort('upstream-close');
+      if (!target.destroyed) target.destroy();
+    }
+  });
   target.on('close', () => {
-    if (!source.destroyed) source.destroy();
+    if (!target.writableFinished && !source.complete) {
+      logAbort('client-close');
+      if (!source.destroyed) source.destroy();
+    }
   });
   source.pipe(target);
 }
@@ -510,6 +544,7 @@ async function attempt(req, body, name, replaceAuth) {
     try {
       const transport = upstream.protocol === 'http:' ? http : https;
       upstreamReq = transport.request(requestOptions(req, name, replaceAuth), resolve);
+      configureOutboundRequest(upstreamReq);
       upstreamReq.once('error', reject);
       upstreamReq.end(body);
     } catch (error) {
@@ -533,7 +568,7 @@ function requestScope(body) {
 async function bufferedProxy(req, res, body, replaceAuth) {
   if (!replaceAuth) {
     try {
-      return forwardResponse(await attempt(req, body, current, false), res);
+      return forwardResponse(await attempt(req, body, current, false), res, 'passthrough', requestScope(body));
     } catch (error) {
       log(`upstream error account=passthrough message=${error.message}`);
       return sendJson(res, 502, { error: 'Upstream connection failed' });
@@ -547,7 +582,7 @@ async function bufferedProxy(req, res, body, replaceAuth) {
     let account = scope === 'general' ? current : currentByScope.fable;
     if (!eligibleForScope(account, scope, tried)) account = switchForScope(scope, 'request selection', tried);
     if (!account) {
-      if (lastResponse) return forwardResponse(lastResponse, res);
+      if (lastResponse) return forwardResponse(lastResponse, res, account || 'none', scope);
       if (unavailable) return sendJson(res, 502, { error: 'No available accounts' });
       return sendJson(res, 503, noAccountsBody(scope));
     }
@@ -571,12 +606,12 @@ async function bufferedProxy(req, res, body, replaceAuth) {
     if (authFailure) markAuthFailure(account, upstreamRes.statusCode);
     const unified = String(upstreamRes.headers['anthropic-ratelimit-unified-status'] || '');
     const rejected = replaceAuth && (upstreamRes.statusCode === 429 || unified.startsWith('rejected'));
-    if (!rejected && !authFailure) return forwardResponse(upstreamRes, res);
+    if (!rejected && !authFailure) return forwardResponse(upstreamRes, res, account, scope);
     if (rejected) markRejected(account, upstreamRes.headers, scope);
     log(`retry account=${account} scope=${scope} status=${upstreamRes.statusCode || 0} unified=${unified || 'none'}`);
     lastResponse = upstreamRes;
     const next = switchForScope(scope, authFailure ? 'auth failure' : 'rejected', tried);
-    if (!next) return forwardResponse(lastResponse, res);
+    if (!next) return forwardResponse(lastResponse, res, account, scope);
     upstreamRes.resume();
   }
 }
@@ -595,8 +630,9 @@ function streamingProxy(req, res, chunks, name, replaceAuth, scope, tried = new 
       if (replaceAuth && (upstreamRes.statusCode === 429 || unified.startsWith('rejected'))) {
         markRejected(name, upstreamRes.headers, scope);
       }
-      forwardResponse(upstreamRes, res);
+      forwardResponse(upstreamRes, res, name, scope);
     });
+    configureOutboundRequest(upstreamReq);
     upstreamReq.on('error', (error) => {
       log(`upstream error account=${name} message=${error.message}`);
       sendJson(res, 502, { error: 'Upstream connection failed' });

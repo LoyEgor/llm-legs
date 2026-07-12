@@ -235,6 +235,7 @@ curl -sN --max-time 10 -o "$WORK/body" -X POST \
 rc=$?
 contains "data: first" "$(cat "$WORK/body")" "e3: client received the pre-abort partial body"
 if [ "$rc" -ne 0 ]; then pass; else fail "e3: mid-body abort should surface as a broken transfer (curl rc=$rc)"; fi
+contains "stream-abort account=a scope=general cause=upstream-close" "$(cat "$WORK/e3/claudebd.log")" "e3: upstream close is logged"
 eq "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$DAEMON_PORT/claudebd/status")" "200" "e3: daemon survives mid-body abort"
 stop_daemon
 
@@ -275,6 +276,7 @@ curl -sN --max-time 0.5 -o /dev/null -X POST \
   -H "authorization: $(auth_header)" -H 'content-type: application/json' \
   --data "$GEN" "http://127.0.0.1:$DAEMON_PORT/v1/messages" 2>/dev/null || true
 sleep 0.3
+contains "stream-abort account=a scope=general cause=client-close" "$(cat "$WORK/g/claudebd.log")" "g: client close is logged"
 eq "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$DAEMON_PORT/claudebd/status")" "200" "g: daemon alive after client abort"
 write_plan <<'JSON'
 { "byToken": { "acct-a": { "status": 200, "body": "{\"ok\":true}" } } }
