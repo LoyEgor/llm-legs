@@ -20,6 +20,7 @@ const limitsDir = path.join(baseDir, 'limits');
 const logFile = path.join(baseDir, 'claudebd.log');
 const pidFile = path.join(baseDir, 'claudebd.pid');
 const stateFile = path.join(baseDir, '.claudeb-state');
+const daemonStateFile = path.join(baseDir, 'daemon-state.json');
 const disabledFile = path.join(baseDir, 'disabled');
 const maxBody = 64 * 1024 * 1024;
 const started = Date.now();
@@ -30,12 +31,16 @@ let current = null;
 const pinnedAt = new Map();
 const currentByScope = { fable: null };
 let closing = false;
+let daemonState = { accounts: {}, pinnedAt: {} };
 
 fs.mkdirSync(baseDir, { recursive: true });
 fs.mkdirSync(limitsDir, { recursive: true });
 try {
   if (fs.statSync(logFile).size > 1024 * 1024) fs.truncateSync(logFile, 0);
 } catch {}
+
+loadDaemonState();
+for (const [name, at] of Object.entries(daemonState.pinnedAt)) pinnedAt.set(name, at);
 
 function log(message) {
   try {
@@ -54,6 +59,7 @@ function loadState(name) {
     snapshot = JSON.parse(fs.readFileSync(path.join(limitsDir, `${name}.json`), 'utf8'));
   } catch {}
   const previous = states.get(name);
+  const persisted = previous ? undefined : daemonState.accounts[name];
   let tokenMtime = 0;
   try { tokenMtime = fs.statSync(path.join(tokensDir, name)).mtimeMs; } catch {}
   return {
@@ -64,14 +70,47 @@ function loadState(name) {
     sevenDay: snapshot.seven_day && typeof snapshot.seven_day === 'object' ? snapshot.seven_day : undefined,
     fable: snapshot.fable && typeof snapshot.fable === 'object' ? snapshot.fable : undefined,
     auth: snapshot.auth && typeof snapshot.auth === 'object' ? snapshot.auth : undefined,
-    forcedUntil: previous?.forcedUntil || 0,
-    scopedWalls: previous?.scopedWalls || {},
-    authFailedUntil: previous?.authFailedUntil || 0,
+    forcedUntil: previous?.forcedUntil || persisted?.forcedUntil || 0,
+    forcedReason: previous?.forcedReason || persisted?.forcedReason,
+    scopedWalls: previous?.scopedWalls || persisted?.scopedWalls || {},
+    scopedWallReason: previous?.scopedWallReason || persisted?.scopedWallReason || {},
+    authFailedUntil: previous?.authFailedUntil || persisted?.authFailedUntil || 0,
     lastBareReject: previous?.lastBareReject || 0,
     hAt: previous?.hAt || 0,
     wAt: previous?.wAt || 0,
     tokenMtime
   };
+}
+
+function loadDaemonState() {
+  const now = Math.floor(Date.now() / 1000);
+  try {
+    const raw = JSON.parse(fs.readFileSync(daemonStateFile, 'utf8'));
+    const accountsOut = {};
+    for (const [name, entry] of Object.entries(raw.accounts || {})) {
+      const kept = {};
+      if (entry.forcedUntil > now) { kept.forcedUntil = entry.forcedUntil; if (entry.forcedReason) kept.forcedReason = entry.forcedReason; }
+      if (entry.authFailedUntil > now) kept.authFailedUntil = entry.authFailedUntil;
+      const scopedWalls = {};
+      const scopedWallReason = {};
+      for (const [scope, until] of Object.entries(entry.scopedWalls || {})) {
+        if (until > now) {
+          scopedWalls[scope] = until;
+          if (entry.scopedWallReason?.[scope]) scopedWallReason[scope] = entry.scopedWallReason[scope];
+        }
+      }
+      if (Object.keys(scopedWalls).length) { kept.scopedWalls = scopedWalls; kept.scopedWallReason = scopedWallReason; }
+      if (Object.keys(kept).length) accountsOut[name] = kept;
+    }
+    const pinsOut = {};
+    for (const [name, at] of Object.entries(raw.pinnedAt || {})) {
+      if (typeof at === 'number') pinsOut[name] = at;
+    }
+    daemonState = { accounts: accountsOut, pinnedAt: pinsOut };
+  } catch (error) {
+    daemonState = { accounts: {}, pinnedAt: {} };
+    if (error.code !== 'ENOENT') log(`daemon-state corrupt, starting clean: ${error.message}`);
+  }
 }
 
 function refreshTelemetry(name) {
@@ -101,10 +140,11 @@ function refreshTelemetry(name) {
 }
 
 // A snapshot fable value may be rotten (expired OAuth makes probes silently
-// 401, leaving week-old numbers); only usage-origin values fresher than 6h
-// from a non-expired auth may drive hard walls/exclusions.
+// 401, leaving week-old numbers); only usage-origin values fresher than 6h,
+// from an auth that is absent (legacy snapshot compat) or explicitly ok, may
+// drive hard walls/exclusions.
 function fableTrustworthy(state) {
-  if (state.auth?.status === 'expired') return false;
+  if (state.auth && state.auth.status !== 'ok') return false;
   if (state.fable?.origin !== 'usage') return false;
   const asOf = number(state.fable?.as_of, 0);
   return asOf > 0 && Math.floor(Date.now() / 1000) - asOf <= 21600;
@@ -143,14 +183,17 @@ function scanAccounts() {
       const state = states.get(name);
       let mtime = 0;
       try { mtime = fs.statSync(path.join(tokensDir, name)).mtimeMs; } catch {}
-      if (mtime && state.tokenMtime && mtime !== state.tokenMtime) state.authFailedUntil = 0;
+      if (mtime && state.tokenMtime && mtime !== state.tokenMtime && state.authFailedUntil) {
+        state.authFailedUntil = 0;
+        persistDaemonState();
+      }
       state.tokenMtime = mtime;
       refreshTelemetry(name);
     }
   }
   accounts = names;
   if (current && (!accounts.includes(current) || disabledEvicts(current))) {
-    pinnedAt.delete(current);
+    if (pinnedAt.delete(current)) persistDaemonState();
     current = null;
   }
   if (!current) {
@@ -231,7 +274,7 @@ function noAccountsBody(scope) {
 function switchAccount(reason, excluded = new Set()) {
   const from = current;
   const next = pick(excluded);
-  if (from) pinnedAt.delete(from);
+  if (from && pinnedAt.delete(from)) persistDaemonState();
   if (next && next !== from) {
     current = next;
     log(`switch from=${from || 'none'} to=${next} reason=${reason}`);
@@ -302,6 +345,36 @@ function persistCurrent() {
   }
 }
 
+function persistDaemonState() {
+  const now = Math.floor(Date.now() / 1000);
+  const accountsOut = {};
+  for (const [name, state] of states.entries()) {
+    const kept = {};
+    if (state.forcedUntil > now) { kept.forcedUntil = state.forcedUntil; if (state.forcedReason) kept.forcedReason = state.forcedReason; }
+    if (state.authFailedUntil > now) kept.authFailedUntil = state.authFailedUntil;
+    const scopedWalls = {};
+    const scopedWallReason = {};
+    for (const [scope, until] of Object.entries(state.scopedWalls || {})) {
+      if (until > now) {
+        scopedWalls[scope] = until;
+        if (state.scopedWallReason?.[scope]) scopedWallReason[scope] = state.scopedWallReason[scope];
+      }
+    }
+    if (Object.keys(scopedWalls).length) { kept.scopedWalls = scopedWalls; kept.scopedWallReason = scopedWallReason; }
+    if (Object.keys(kept).length) accountsOut[name] = kept;
+  }
+  const pinsOut = {};
+  for (const [name, at] of pinnedAt.entries()) pinsOut[name] = at;
+  const temp = `${daemonStateFile}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(temp, JSON.stringify({ accounts: accountsOut, pinnedAt: pinsOut }), { mode: 0o600 });
+    fs.renameSync(temp, daemonStateFile);
+  } catch (error) {
+    try { fs.unlinkSync(temp); } catch {}
+    log(`daemon-state write error message=${error.message}`);
+  }
+}
+
 function updateFromHeaders(name, headers) {
   const state = states.get(name);
   if (!state) return;
@@ -346,6 +419,7 @@ function markRejected(name, headers, scope) {
   const state = states.get(name);
   if (!state) return;
   const now = Math.floor(Date.now() / 1000);
+  state.scopedWallReason = state.scopedWallReason || {};
   // A fable-scoped 429 can arrive with unified-status "allowed"; only an
   // explicit rejected status means the whole unified bucket is walled.
   const unified = String(headers['anthropic-ratelimit-unified-status'] || '');
@@ -353,21 +427,26 @@ function markRejected(name, headers, scope) {
   if (!unified.startsWith('rejected') && scope === 'fable') {
     if (hasResetHeader) {
       state.scopedWalls.fable = rejectionReset(headers, 300);
+      state.scopedWallReason.fable = 'header';
       logWall(name, 'fable', state.scopedWalls.fable, 'header');
     } else if (fableTrustworthy(state) && number(state.fable?.used_percentage) >= 99 && number(state.fable?.resets_at) > now) {
       state.scopedWalls.fable = number(state.fable.resets_at);
+      state.scopedWallReason.fable = 'quota';
       logWall(name, 'fable', state.scopedWalls.fable, 'quota');
     } else {
       // A bare fable 429 is almost always transient capacity, not quota:
       // walling to the weekly reset here once took an account out for days.
       state.scopedWalls.fable = now + (now - state.lastBareReject <= 3600 ? 900 : 300);
       state.lastBareReject = now;
+      state.scopedWallReason.fable = 'transient';
       logWall(name, 'fable', state.scopedWalls.fable, 'transient');
     }
   } else {
     state.forcedUntil = rejectionReset(headers, 300);
+    state.forcedReason = hasResetHeader ? 'header' : 'transient';
     logWall(name, scope, state.forcedUntil, hasResetHeader ? 'header' : 'transient');
   }
+  persistDaemonState();
 }
 
 function markAuthFailure(name, status) {
@@ -376,6 +455,7 @@ function markAuthFailure(name, status) {
   const now = Math.floor(Date.now() / 1000);
   if (state.authFailedUntil <= now) log(`auth failure account=${name} status=${status}`);
   state.authFailedUntil = now + 1800;
+  persistDaemonState();
 }
 
 function token(name) {
@@ -537,6 +617,29 @@ function streamingProxy(req, res, chunks, name, replaceAuth, scope, tried = new 
   }
 }
 
+function activeWalls() {
+  const now = Math.floor(Date.now() / 1000);
+  const walls = [];
+  for (const [name, state] of states.entries()) {
+    if (state.forcedUntil > now) walls.push({ account: name, scope: 'general', until: new Date(state.forcedUntil * 1000).toISOString(), reason: state.forcedReason || 'unknown' });
+    if (state.authFailedUntil > now) walls.push({ account: name, scope: 'general', until: new Date(state.authFailedUntil * 1000).toISOString(), reason: 'auth_failed' });
+    for (const [scope, until] of Object.entries(state.scopedWalls || {})) {
+      if (until > now) walls.push({ account: name, scope, until: new Date(until * 1000).toISOString(), reason: state.scopedWallReason?.[scope] || 'unknown' });
+    }
+  }
+  return walls;
+}
+
+function activePins() {
+  return Array.from(pinnedAt.entries()).map(([account, at]) => ({ account, pinned_at: new Date(at).toISOString() }));
+}
+
+function allWalledUntil(scope) {
+  const picked = scope === 'general' ? pick() : pickForScope(scope);
+  if (picked) return null;
+  return noAccountsBody(scope).retry_at || null;
+}
+
 function statusPayload() {
   const detail = {};
   const now = Math.floor(Date.now() / 1000);
@@ -553,7 +656,18 @@ function statusPayload() {
       fable_walled_until: Math.max(state.scopedWalls.fable > now ? state.scopedWalls.fable : 0, snapshotWall)
     };
   }
-  return { pid: process.pid, uptime_s: Math.floor((Date.now() - started) / 1000), port, current, current_fable: currentByScope.fable, accounts: detail };
+  return {
+    pid: process.pid,
+    uptime_s: Math.floor((Date.now() - started) / 1000),
+    port,
+    current,
+    current_fable: currentByScope.fable,
+    accounts: detail,
+    scopes: { general: current, fable: currentByScope.fable },
+    walls: activeWalls(),
+    pins: activePins(),
+    all_walled_until: { general: allWalledUntil('general'), fable: allWalledUntil('fable') }
+  };
 }
 
 function handle(req, res) {
@@ -579,6 +693,7 @@ function handle(req, res) {
       current = name;
       pinnedAt.set(name, Date.now());
       persistCurrent();
+      persistDaemonState();
       sendJson(res, 200, { current: name });
     });
     return;

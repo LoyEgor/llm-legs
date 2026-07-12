@@ -20,27 +20,34 @@ globalThis.testApi = {
   states,
   pinnedAt,
   markRejected,
+  markAuthFailure,
   eligibleForScope,
   noAccountsBody,
   persist,
   scanAccounts,
   disabledEvicts,
+  statusPayload,
+  daemonStateFile,
+  persistDaemonState,
   setCurrent(value) { current = value; },
   getCurrent() { return current; }
 };`;
-const context = vm.createContext({
-  require,
-  process,
-  console,
-  Buffer,
-  URL,
-  setTimeout,
-  clearTimeout,
-  setInterval,
-  clearInterval
-});
-new vm.Script(source.slice(0, boundary) + exportsSource, { filename: 'bin/claudebd' }).runInContext(context);
-const api = context.testApi;
+function boot() {
+  const context = vm.createContext({
+    require,
+    process,
+    console,
+    Buffer,
+    URL,
+    setTimeout,
+    clearTimeout,
+    setInterval,
+    clearInterval
+  });
+  new vm.Script(source.slice(0, boundary) + exportsSource, { filename: 'bin/claudebd' }).runInContext(context);
+  return context.testApi;
+}
+const api = boot();
 const limitsDir = path.join(fixture, 'limits');
 const tokensDir = path.join(fixture, 'tokens');
 fs.mkdirSync(limitsDir, { recursive: true });
@@ -63,6 +70,7 @@ function state(overrides = {}) {
     wreset: 0,
     forcedUntil: 0,
     scopedWalls: {},
+    scopedWallReason: {},
     authFailedUntil: 0,
     lastBareReject: 0,
     hAt: 0,
@@ -122,7 +130,15 @@ add('nonok', state({
   auth: { status: 'error' }
 }));
 api.markRejected('nonok', {}, 'fable');
-check(api.states.get('nonok').scopedWalls.fable, weeklyUntil, 'non-ok non-expired auth is currently trusted');
+const nonokUntil = api.states.get('nonok').scopedWalls.fable;
+ok(nonokUntil !== weeklyUntil, 'non-ok auth status is no longer trusted for a quota wall');
+ok(nonokUntil <= now + 301, 'non-ok auth falls back to a transient wall');
+
+add('legacynoauth', state({
+  fable: { used_percentage: 100, resets_at: weeklyUntil, as_of: now, origin: 'usage' }
+}));
+api.markRejected('legacynoauth', {}, 'fable');
+check(api.states.get('legacynoauth').scopedWalls.fable, weeklyUntil, 'a snapshot with no auth field at all (legacy) is still trusted');
 
 api.scanAccounts();
 add('authfail', state({ authFailedUntil: now + 1000 }));
@@ -165,7 +181,7 @@ check(api.getCurrent() === 'stateonly', false, 'state-file mtime alone does not 
 
 add('wall-a', state({ scopedWalls: { fable: now + 700 } }));
 add('wall-b', state({ scopedWalls: { fable: now + 400 } }));
-fs.writeFileSync(disabledFile, 'header\nquota\ntransient\nstale\ncached\nnonok\nauthfail\nactivewall\ntrustedfull\npinned\ndisabled\nstateonly\n');
+fs.writeFileSync(disabledFile, 'header\nquota\ntransient\nstale\ncached\nnonok\nlegacynoauth\nauthfail\nactivewall\ntrustedfull\npinned\ndisabled\nstateonly\n');
 api.scanAccounts();
 check(api.noAccountsBody('fable').retry_at, now + 400, '503 body uses earliest wall expiry');
 
@@ -181,6 +197,65 @@ check(learned.seven_day.origin, 'headers', 'weekly origin stamped');
 ok(Number.isInteger(learned.five_hour.as_of), 'five-hour as_of stamped');
 ok(Number.isInteger(learned.seven_day.as_of), 'weekly as_of stamped');
 check(learned.fable.used_percentage, 12, 'unrelated snapshot bucket preserved');
+
+// --- daemon-state.json persistence across restarts ----------------------
+const persistNow = Math.floor(Date.now() / 1000);
+add('persist-fable', state());
+api.markRejected('persist-fable', { 'anthropic-ratelimit-unified-reset': String(persistNow + 5000) }, 'fable');
+const persistFableUntil = api.states.get('persist-fable').scopedWalls.fable;
+
+add('persist-general', state());
+api.markRejected('persist-general', { 'anthropic-ratelimit-unified-status': 'rejected', 'anthropic-ratelimit-unified-reset': String(persistNow + 6000) }, 'general');
+const persistGeneralUntil = api.states.get('persist-general').forcedUntil;
+
+add('persist-authfail', state());
+api.markAuthFailure('persist-authfail', 401);
+const persistAuthUntil = api.states.get('persist-authfail').authFailedUntil;
+
+add('persist-pin', state());
+api.pinnedAt.set('persist-pin', Date.now());
+api.persistDaemonState();
+
+const dsFile = api.daemonStateFile;
+const dsRaw = JSON.parse(fs.readFileSync(dsFile, 'utf8'));
+check(dsRaw.accounts['persist-fable'].scopedWalls.fable, persistFableUntil, 'daemon-state.json persists fable wall expiry');
+check(dsRaw.accounts['persist-fable'].scopedWallReason.fable, 'header', 'daemon-state.json persists fable wall reason');
+check(dsRaw.accounts['persist-general'].forcedUntil, persistGeneralUntil, 'daemon-state.json persists general wall expiry');
+check(dsRaw.accounts['persist-general'].forcedReason, 'header', 'daemon-state.json persists general wall reason');
+check(dsRaw.accounts['persist-authfail'].authFailedUntil, persistAuthUntil, 'daemon-state.json persists auth failure');
+ok(typeof dsRaw.pinnedAt['persist-pin'] === 'number', 'daemon-state.json persists manual pin');
+
+const api2 = boot();
+api2.scanAccounts();
+check(api2.states.get('persist-fable').scopedWalls.fable, persistFableUntil, 'fable wall survives simulated restart');
+check(api2.states.get('persist-general').forcedUntil, persistGeneralUntil, 'general wall survives simulated restart');
+check(api2.states.get('persist-general').forcedReason, 'header', 'general wall reason survives simulated restart');
+check(api2.states.get('persist-authfail').authFailedUntil, persistAuthUntil, 'auth failure survives simulated restart');
+check(api2.pinnedAt.get('persist-pin'), dsRaw.pinnedAt['persist-pin'], 'manual pin survives simulated restart');
+
+const changedTokenTime = new Date(Date.now() + 2000);
+fs.utimesSync(path.join(tokensDir, 'persist-authfail'), changedTokenTime, changedTokenTime);
+api2.scanAccounts();
+const clearedOnDisk = JSON.parse(fs.readFileSync(dsFile, 'utf8'));
+check(clearedOnDisk.accounts['persist-authfail']?.authFailedUntil, undefined, 'token change clears persisted auth failure');
+
+fs.writeFileSync(dsFile, JSON.stringify({
+  accounts: { 'persist-fable': { scopedWalls: { fable: persistNow - 100 }, scopedWallReason: { fable: 'header' } } },
+  pinnedAt: {}
+}));
+const api3 = boot();
+api3.scanAccounts();
+check(api3.states.get('persist-fable').scopedWalls.fable, undefined, 'expired persisted wall pruned on load, not resurrected');
+
+fs.writeFileSync(dsFile, '{not json');
+const api4 = boot();
+api4.scanAccounts();
+check(api4.states.get('persist-fable').scopedWalls.fable, undefined, 'corrupt daemon-state.json starts clean (wall not resurrected)');
+check(api4.states.get('persist-general').forcedUntil, 0, 'corrupt daemon-state.json does not resurrect general wall');
+check(api4.states.get('persist-authfail').authFailedUntil, 0, 'corrupt daemon-state.json does not resurrect auth failure');
+const corruptLines = fs.readFileSync(path.join(fixture, 'claudebd.log'), 'utf8').trim().split('\n')
+  .filter((line) => line.includes('daemon-state corrupt'));
+check(corruptLines.length, 1, 'exactly one daemon-state corrupt log line emitted');
 
 const logs = fs.readFileSync(path.join(fixture, 'claudebd.log'), 'utf8').trim().split('\n');
 const wallLines = logs.filter((line) => line.includes(' wall account='));
