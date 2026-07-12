@@ -100,6 +100,20 @@ The Gemini request is the machine-readable equivalent of `/usage`; it consumes n
 and its last valid response is cached in `~/.llm-limits-gemini.json`. Without `--refresh`,
 collection remains token-free, network-free, and file-read-only.
 
+### Machine contract
+
+Consumers read `~/.llm-limits.json`.
+A bare `llm-limits` run is a passive read with zero network access.
+`llm-limits --refresh` performs a free live refresh.
+Scripts must never invoke `--start-windows`; it spends money.
+Read each bucket's `effective_pct` and each vendor's `usable_now`.
+Never make availability decisions from raw `used_pct`.
+Raw usage values persist for provenance after a window expires, while `effective_pct` becomes 0.
+Claude `usable_now` considers enabled, authenticated accounts and their general 5h/weekly limits;
+the model-specific fable bucket does not block other Claude work.
+Codex and Gemini additionally require `available == true`.
+Respect bucket and vendor `stale` flags when freshness matters.
+
 Claude reads the `$CLAUDEB_DIR/limits/*.json` accounts (`CLAUDEB_DIR` defaults to
 `~/.claude-profiles/.claudeb`) and uses `.claudeb-state` to select the current account. `main`
 (the default plain-`claude` login, not a real claudeb token account) is excluded from every

@@ -452,7 +452,7 @@ else
       claude=$(jq -cn --argjson d "$claude_data" --argjson wall "$claude_wall" --arg source "$claude_source" \
         --arg five_reset "$(epoch_iso "$(jq -r '.five_hour.resets_at' <<<"$claude_data")")" --arg week_reset "$(epoch_iso "$(jq -r '.seven_day.resets_at' <<<"$claude_data")")" \
         --arg as_of "$(epoch_iso "$mtime")" --argjson as_of_epoch "$mtime" --argjson stale "$stale" '
-        {account:"main",is_current:true,
+        {account:"main",is_current:true,enabled:true,
          five_hour:{used_pct:$d.five_hour.used_percentage,resets_at:$five_reset,as_of:$as_of_epoch,stale:($stale > 1800)},
          weekly:{used_pct:$d.seven_day.used_percentage,resets_at:$week_reset,as_of:$as_of_epoch,stale:($stale > 21600)},
          as_of:$as_of,stale_seconds:$stale} as $account |
@@ -662,8 +662,23 @@ result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson claude "$claude" \
   def mark:
     if type == "object" and has("used_pct") and has("resets_at")
     then (.resets_at | iso2epoch) as $e |
-      if $e != null and $e <= $now then . + {expired:true} else . end
+      if $e != null and $e <= $now
+      then . + {expired:true,effective_pct:0}
+      else . + {effective_pct:.used_pct}
+      end
     else . end;
+  def under_limit($bucket):
+    ($bucket | type) != "object" or $bucket.effective_pct == null or $bucket.effective_pct < 100;
+  def account_usable:
+    .enabled == true and
+    ((.auth.status? // "") != "expired" and (.auth.status? // "") != "failed") and
+    under_limit(.five_hour) and under_limit(.weekly);
+  def vendor_usable($key):
+    if $key == "claude" then
+      .available == true and ((.accounts | type) == "array") and any(.accounts[]; account_usable)
+    else
+      .available == true and under_limit(.five_hour) and under_limit(.weekly)
+    end;
   def vendor_stale:
     [.five_hour?, .weekly?, .fable?] | map(select(type == "object") | .stale == true) | any;
   {schema:1,fetched_at:$fetched_at,vendors:{claude:$claude,codex:$codex,gemini:$gemini}}
@@ -671,7 +686,8 @@ result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson claude "$claude" \
   | if $codex_error != "" and .vendors.codex.available then .vendors.codex.refresh_error = $codex_error else . end
   | if $gemini_error != "" and .vendors.gemini.available then .vendors.gemini.refresh_error = $gemini_error else . end
   | .vendors |= with_entries(if .value.available == true then .value += {stale: (.value | vendor_stale)} else . end)
-  | walk(mark)')
+  | walk(mark)
+  | .vendors |= with_entries(.key as $key | .value.usable_now = (.value | vendor_usable($key)))')
 
 if [ "$write_cache" -eq 1 ]; then
   cache=${LLM_LIMITS_CACHE:-$HOME/.llm-limits.json}

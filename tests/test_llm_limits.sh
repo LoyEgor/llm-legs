@@ -31,6 +31,11 @@ out=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" LLM_LIMITS_WALLS_LOG="$WALL
 jq -e '.schema == 1 and (.vendors | keys == ["claude","codex","gemini"])' <<<"$out" >/dev/null || fail "schema mismatch"
 jq -e '.vendors.claude.five_hour.used_pct == 12 and .vendors.claude.weekly.used_pct == 40 and .vendors.claude.source == "statusline-last" and .vendors.claude.current_account == "main" and (.vendors.claude.accounts | length) == 1 and (.vendors.claude | has("session_model") | not)' <<<"$out" >/dev/null || fail "Claude primary snapshot mismatch"
 jq -e '.vendors.codex.five_hour.used_pct == 74 and .vendors.codex.weekly.used_pct == 31 and .vendors.codex.plan_type == "plus"' <<<"$out" >/dev/null || fail "Codex fallback mismatch"
+jq -e '.vendors.claude.five_hour.effective_pct == .vendors.claude.five_hour.used_pct and
+  .vendors.claude.accounts[0].weekly.effective_pct == .vendors.claude.accounts[0].weekly.used_pct and
+  .vendors.codex.five_hour.effective_pct == .vendors.codex.five_hour.used_pct and
+  .vendors.claude.usable_now == true and .vendors.codex.usable_now == true and
+  .vendors.gemini.usable_now == false' <<<"$out" >/dev/null || fail "live effective percentages or usable state mismatch"
 jq -e '(.vendors.claude.five_hour.as_of | type) == "number" and .vendors.claude.five_hour.stale == false and .vendors.claude.stale == false' <<<"$out" >/dev/null || fail "Claude bucket freshness fields missing"
 jq -e '.vendors.codex.five_hour.origin == "headers" and (.vendors.codex.five_hour.as_of | type) == "number" and .vendors.codex.five_hour.stale == true and .vendors.codex.stale == true' <<<"$out" >/dev/null || fail "Codex rollout freshness fields mismatch"
 jq -e '.vendors.gemini.available == false and .vendors.gemini.status == "no quota snapshot" and .vendors.gemini.last_wall == "2026-07-11T08:00:00Z"' <<<"$out" >/dev/null || fail "Gemini state mismatch"
@@ -159,7 +164,7 @@ jq -e '.vendors.claude.stale == true and .vendors.claude.auth.status == "ok"' <<
   || fail "vendor-level stale/auth hoist mismatch"
 # Auth-only snapshot (failed probe, no five_hour): the account stays visible as unknown.
 jq -e '[.vendors.claude.accounts[] | select(.account == "authonly")][0]
-  | .five_hour.used_pct == null and .five_hour.stale == true and .auth.status == "expired"' <<<"$fresh_json" >/dev/null \
+  | .five_hour.used_pct == null and .five_hour.effective_pct == null and .five_hour.stale == true and .auth.status == "expired"' <<<"$fresh_json" >/dev/null \
   || fail "auth-only snapshot must stay visible with unknown values"
 printf 'authonly\n' >"$CLAUDEB_FRESH/.claudeb-state"
 auth_current=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_FRESH" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "auth-only current collection failed"
@@ -566,6 +571,7 @@ printf '{"timestamp":"%s","payload":{"type":"token_count","rate_limits":{"primar
   >"$HOME_FIXTURE/.codex/sessions/2026/07/11/rollout-expired.jsonl"
 expired_json=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "expired-window collection failed"
 jq -e '.vendors.codex.five_hour.expired == true and .vendors.codex.five_hour.used_pct == 100 and
+  .vendors.codex.five_hour.effective_pct == 0 and .vendors.codex.usable_now == true and
   (.vendors.codex.weekly | has("expired") | not) and
   (.vendors.claude.accounts[0].five_hour | has("expired") | not)' <<<"$expired_json" >/dev/null || fail "expired flag mismatch"
 expired_table=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) || fail "expired table collection failed"
@@ -577,6 +583,37 @@ grep -q 'codex: 100%/44%' <<<"$expired_plain" || fail "expired plain output must
 expired_sorted=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table --sort 5h) || fail "expired sorted table collection failed"
 order=$(awk 'NR > 1 {print $1}' <<<"$expired_sorted" | paste -sd, -)
 [ "$order" = "claude/alona*,codex,gemini" ] || fail "expired 5h sort must rank the stale 100% as 0: $order"
+
+USABLE_STORE="$WORK/usable-store"
+USABLE_HOME="$WORK/usable-home"
+mkdir -p "$USABLE_STORE/limits" "$USABLE_HOME/.codex/sessions"
+printf 'full\n' >"$USABLE_STORE/.claudeb-state"
+printf '{"five_hour":{"used_percentage":100,"resets_at":%s},"seven_day":{"used_percentage":100,"resets_at":%s}}\n' \
+  "$((now + 5000))" "$((now + 9000))" >"$USABLE_STORE/limits/full.json"
+claude_full=$(HOME="$USABLE_HOME" CLAUDEB_DIR="$USABLE_STORE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "Claude exhausted usability collection failed"
+jq -e '.vendors.claude.usable_now == false' <<<"$claude_full" >/dev/null || fail "Claude all-exhausted usability mismatch"
+printf '{"five_hour":{"used_percentage":20,"resets_at":%s},"seven_day":{"used_percentage":30,"resets_at":%s}}\n' \
+  "$((now + 5000))" "$((now + 9000))" >"$USABLE_STORE/limits/free.json"
+claude_free=$(HOME="$USABLE_HOME" CLAUDEB_DIR="$USABLE_STORE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "Claude free-account usability collection failed"
+jq -e '.vendors.claude.usable_now == true' <<<"$claude_free" >/dev/null || fail "Claude one-free-account usability mismatch"
+printf 'free\n' >"$USABLE_STORE/disabled"
+claude_disabled=$(HOME="$USABLE_HOME" CLAUDEB_DIR="$USABLE_STORE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "Claude disabled-account usability collection failed"
+jq -e '.vendors.claude.usable_now == false' <<<"$claude_disabled" >/dev/null || fail "Disabled under-limit account must not make Claude usable"
+rm "$USABLE_STORE/disabled"
+printf '{"five_hour":{"used_percentage":20,"resets_at":%s},"seven_day":{"used_percentage":30,"resets_at":%s},"auth":{"status":"expired"}}\n' \
+  "$((now + 5000))" "$((now + 9000))" >"$USABLE_STORE/limits/free.json"
+claude_expired_auth=$(HOME="$USABLE_HOME" CLAUDEB_DIR="$USABLE_STORE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "Claude expired-auth usability collection failed"
+jq -e '.vendors.claude.usable_now == false' <<<"$claude_expired_auth" >/dev/null || fail "Expired-auth under-limit account must not make Claude usable"
+rm "$USABLE_STORE/limits/free.json"
+printf '{"five_hour":{"used_percentage":20,"resets_at":%s},"seven_day":{"used_percentage":30,"resets_at":%s},"fable":{"used_percentage":100,"resets_at":%s}}\n' \
+  "$((now + 5000))" "$((now + 9000))" "$((now + 6000))" >"$USABLE_STORE/limits/full.json"
+claude_fable=$(HOME="$USABLE_HOME" CLAUDEB_DIR="$USABLE_STORE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "Claude fable usability collection failed"
+jq -e '.vendors.claude.fable.effective_pct == 100 and .vendors.claude.usable_now == true' <<<"$claude_fable" >/dev/null || fail "Fable exhaustion must not block general Claude work"
+
+printf '{"timestamp":"%s","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":100,"resets_at":%s},"secondary":{"used_percent":40,"resets_at":%s}}}}\n' \
+  "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$((now + 5000))" "$((now + 9000))" >"$USABLE_HOME/.codex/sessions/rollout-full.jsonl"
+codex_full=$(HOME="$USABLE_HOME" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "Codex exhausted usability collection failed"
+jq -e '.vendors.codex.five_hour.effective_pct == 100 and .vendors.codex.usable_now == false' <<<"$codex_full" >/dev/null || fail "Codex exhausted usability mismatch"
 
 FORMAT_STORE="$WORK/reset-format-store"
 FORMAT_HOME="$WORK/reset-format-home"
@@ -609,5 +646,5 @@ HOME="$EMPTY" bash "$SCRIPT" --no-write >/dev/null 2>&1
 rc=$?
 [ "$rc" -eq 3 ] || fail "all-missing case: expected exit 3, got $rc"
 
-echo "PASS: schema, Claude unique accounts and fallback, enabled flags, freshness contract, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, plain output, table output and sorts, reset tiers, expired windows, bare JSON default, atomic cache, missing exit 3"
+echo "PASS: schema, Claude unique accounts and fallback, enabled flags, freshness contract, machine effective percentages and usability, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, plain output, table output and sorts, reset tiers, expired windows, bare JSON default, atomic cache, missing exit 3"
 exit 0
