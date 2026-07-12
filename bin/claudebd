@@ -503,17 +503,29 @@ function forwardResponse(source, target, account, scope) {
   const status = source.statusCode || 502;
   let bytes = 0;
   let abortLogged = false;
+  const sourceSocket = source.socket;
+  let idleTimeoutActive = true;
+  const clearIdleTimeout = () => {
+    if (!idleTimeoutActive) return;
+    idleTimeoutActive = false;
+    sourceSocket.setTimeout(0);
+    sourceSocket.removeListener('timeout', onIdleTimeout);
+  };
   const logAbort = (cause) => {
     if (abortLogged) return;
     abortLogged = true;
     log(`stream-abort account=${account} scope=${scope} cause=${cause} elapsed_ms=${Date.now() - responseStarted} bytes=${bytes} status=${status}`);
   };
   source.on('data', (chunk) => { bytes += chunk.length; });
-  source.setTimeout(upstreamIdleTimeout, () => {
+  const onIdleTimeout = () => {
+    if (abortLogged || source.complete || source.destroyed) return clearIdleTimeout();
     logAbort('upstream-idle');
+    clearIdleTimeout();
     source.destroy();
     if (!target.destroyed) target.destroy();
-  });
+  };
+  source.setTimeout(upstreamIdleTimeout, onIdleTimeout);
+  source.on('end', () => { if (source.complete) clearIdleTimeout(); });
   target.writeHead(status, source.headers);
   source.on('aborted', () => {
     logAbort('upstream-close');

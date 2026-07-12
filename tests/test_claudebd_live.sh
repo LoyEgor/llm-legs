@@ -284,6 +284,18 @@ JSON
 eq "$(gpost "$GEN")" "200" "g: daemon still serves requests after client abort"
 stop_daemon
 
+echo "scenario h: completed keep-alive responses clear upstream idle listeners"
+write_plan <<'JSON'
+{ "byToken": { "acct-a": { "status": 200, "body": "{\"ok\":true}" } } }
+JSON
+start_daemon "$(setup_store "$WORK/h" a)"
+for _ in $(seq 1 12); do
+  eq "$(gpost "$GEN")" "200" "h: sequential proxied request completes"
+done
+case "$(cat "$WORK/h/claudebd.log")" in *upstream-idle*) fail "h: completed requests must not log upstream-idle" ;; *) pass ;; esac
+case "$(cat "$WORK/h/daemon.out")" in *MaxListenersExceededWarning*) fail "h: completed requests must not retain timeout listeners" ;; *) pass ;; esac
+stop_daemon
+
 echo
 if [ "$FAIL" -eq 0 ]; then
   echo "PASS: claudebd live switching ($PASS assertions, 0 failures)"
