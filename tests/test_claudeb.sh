@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+set -u
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SCRIPT="$ROOT/bin/claudeb"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+asserts=0
+fail() { echo "FAIL: $*" >&2; exit 1; }
+assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
+assert_fails() {
+  asserts=$((asserts + 1))
+  if "$@"; then
+    fail "assert $asserts unexpectedly succeeded: $*"
+  else
+    status=$?
+    [ "$status" -ne 127 ] || fail "assert $asserts command not found: $*"
+  fi
+}
+
+HOME="$WORK/home"
+CLAUDEB_DIR="$WORK/store"
+FAKE_BIN="$WORK/bin"
+export HOME CLAUDEB_DIR
+mkdir -p "$HOME" "$CLAUDEB_DIR/limits" "$CLAUDEB_DIR/tokens" "$FAKE_BIN"
+for command in curl security claude; do
+  printf '#!/usr/bin/env bash\nexit 97\n' >"$FAKE_BIN/$command"
+  chmod +x "$FAKE_BIN/$command"
+done
+PATH="$FAKE_BIN:$PATH"
+export PATH
+
+source "$SCRIPT"
+
+now=$(date +%s)
+short_epoch=$((now + 3600))
+week_epoch=$((now + 172800))
+date_epoch=$((now + 691200))
+weekdays=(Sun Mon Tue Wed Thu Fri Sat)
+weekday_number=$(date -r "$week_epoch" '+%w' 2>/dev/null || date -d "@$week_epoch" '+%w')
+assert test "$(format_reset_time "$short_epoch")" = "$(date -r "$short_epoch" '+%H:%M' 2>/dev/null || date -d "@$short_epoch" '+%H:%M')"
+assert test "$(format_reset_time "$week_epoch")" = "${weekdays[$weekday_number]} $(date -r "$week_epoch" '+%H:%M' 2>/dev/null || date -d "@$week_epoch" '+%H:%M')"
+assert test "$(format_reset_time "$date_epoch")" = "$(date -r "$date_epoch" '+%m-%d %H:%M' 2>/dev/null || date -d "@$date_epoch" '+%m-%d %H:%M')"
+assert test "$(format_reset_time null)" = unknown
+assert test "$(format_reset_time '')" = unknown
+
+usage="$WORK/usage.json"
+cat >"$usage" <<'EOF'
+{"five_hour":{"utilization":12.4,"resets_at":null},"seven_day":{"utilization":45.6,"resets_at":null},"limits":[{"kind":"weekly_scoped","scope":{"model":{"display_name":"Fable"}},"percent":78.2,"resets_at":null}]}
+EOF
+assert merge_usage alpha "$usage"
+snapshot="$CLAUDEB_DIR/limits/alpha.json"
+assert jq -e '.five_hour.resets_at == 0 and .seven_day.resets_at == 0 and .fable.resets_at == 0' "$snapshot" >/dev/null
+assert jq -e '.five_hour.used_percentage == 12 and .seven_day.used_percentage == 46 and .fable.used_percentage == 78' "$snapshot" >/dev/null
+assert jq -e 'all(.five_hour,.seven_day,.fable; (.as_of | type) == "number" and .origin == "usage")' "$snapshot" >/dev/null
+assert jq -e '.auth.status == "ok" and (.auth.checked_at | type) == "number"' "$snapshot" >/dev/null
+
+cached_as_of=$((now - 60))
+cat >"$snapshot" <<EOF
+{"fable":{"used_percentage":31,"resets_at":$((now + 3600)),"as_of":$cached_as_of,"origin":"usage"}}
+EOF
+cat >"$usage" <<EOF
+{"five_hour":{"utilization":1,"resets_at":null},"seven_day":{"utilization":2,"resets_at":null},"limits":[]}
+EOF
+assert merge_usage alpha "$usage"
+assert jq -e --argjson as_of "$cached_as_of" '.fable.used_percentage == 31 and .fable.as_of == $as_of and .fable.origin == "cached"' "$snapshot" >/dev/null
+assert jq -e '[.five_hour.origin,.seven_day.origin,.fable.origin] | all(. == "usage" or . == "headers" or . == "cached")' "$snapshot" >/dev/null
+
+now=$(date +%s)
+printf '{"alpha":{"attempted_at":%s,"outcome":"failed","retry_after_until":0}}\n' "$now" >"$oauth_attempts_file"
+until=$(oauth_backoff_until alpha)
+assert test "$until" -ge "$((now + 899))"
+assert test "$until" -le "$((now + 900))"
+printf '{"alpha":{"attempted_at":%s,"outcome":"429","retry_after_until":%s}}\n' "$now" "$((now + 1800))" >"$oauth_attempts_file"
+assert test "$(oauth_backoff_until alpha)" = "$((now + 1800))"
+printf '{"alpha":{"attempted_at":%s,"outcome":"warming","retry_after_until":0}}\n' "$((now - 179))" >"$oauth_attempts_file"
+assert test "$(oauth_backoff_until alpha)" -gt "$now"
+printf '{"alpha":{"attempted_at":%s,"outcome":"warming","retry_after_until":0}}\n' "$((now - 181))" >"$oauth_attempts_file"
+assert test "$(oauth_backoff_until alpha)" = 0
+
+export CLAUDEB_LOCK_RETRIES=1 CLAUDEB_LOCK_DELAY=0
+printf '{"seed":{"attempted_at":1,"outcome":"failed","retry_after_until":0}}\n' >"$oauth_attempts_file"
+mkdir "$oauth_attempts_file.lock"
+touch -t 202001010000 "$oauth_attempts_file.lock"
+assert oauth_attempt_update alpha failed 0
+assert test ! -d "$oauth_attempts_file.lock"
+assert jq -e '.alpha.outcome == "failed"' "$oauth_attempts_file" >/dev/null
+mkdir "$oauth_attempts_file.lock"
+assert oauth_attempt_update beta failed 0
+assert test -d "$oauth_attempts_file.lock"
+assert jq -e 'has("beta") | not' "$oauth_attempts_file" >/dev/null
+rm -rf "$oauth_attempts_file.lock"
+mkdir "$oauth_attempts_file.lock"
+printf '#!/usr/bin/env bash\nexit 1\n' >"$FAKE_BIN/stat"
+chmod +x "$FAKE_BIN/stat"
+assert oauth_attempt_update gamma failed 0
+assert test -d "$oauth_attempts_file.lock"
+assert jq -e 'has("gamma") | not' "$oauth_attempts_file" >/dev/null
+rm -f "$FAKE_BIN/stat"
+rm -rf "$oauth_attempts_file.lock"
+assert oauth_attempt_update alpha failed 0
+assert test ! -d "$oauth_attempts_file.lock"
+unset CLAUDEB_LOCK_RETRIES CLAUDEB_LOCK_DELAY
+
+if HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" bash "$SCRIPT" add warm </dev/null >/dev/null 2>&1; then
+  fail "add accepted reserved account name warm"
+fi
+assert test ! -e "$CLAUDEB_DIR/tokens/warm"
+
+touch "$CLAUDEB_DIR/tokens/alpha" "$CLAUDEB_DIR/tokens/beta"
+future=$((now + 7200))
+printf '{"five_hour":{"used_percentage":80,"resets_at":%s}}\n' "$future" >"$CLAUDEB_DIR/limits/alpha.json"
+printf '{"five_hour":{"used_percentage":10,"resets_at":%s}}\n' "$future" >"$CLAUDEB_DIR/limits/beta.json"
+printf 'alpha\n' >"$state_file"
+printf 'alpha\n' >"$disabled_file"
+touch -t 202607120101 "$state_file"
+touch -t 202607120102 "$disabled_file"
+assert test "$(selection | jq -r .picked)" = beta
+touch -t 202607120103 "$state_file"
+assert test "$(selection | jq -r .picked)" = alpha
+
+echo "PASS: $asserts asserts; reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth backoff and lock behavior, reserved names, disabled-account timeline"

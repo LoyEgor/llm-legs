@@ -23,6 +23,10 @@ account_names() {
   fi
 }
 
+file_mtime() {
+  stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null
+}
+
 account_data() {
   local name="$1" file="$limits_dir/$1.json" now modified age
   now=$(date +%s)
@@ -268,29 +272,37 @@ oauth_attempts_file="$base_dir/oauth-attempts.json"
 
 oauth_attempt_update() {
   local name="$1" outcome="$2" retry_until="${3:-0}" lock="$oauth_attempts_file.lock" tmp now tries=0 lock_mtime stale_retake=false
-  mkdir -p "$base_dir"
+  local max_tries="${CLAUDEB_LOCK_RETRIES:-10}" delay="${CLAUDEB_LOCK_DELAY:-0.2}"
+  [[ "$max_tries" =~ ^[1-9][0-9]*$ ]] || max_tries=10
+  mkdir -p "$base_dir" || return 0
   while ! mkdir "$lock" 2>/dev/null; do
     tries=$((tries + 1))
-    if [ "$tries" -ge 50 ]; then
-      lock_mtime=$(file_mtime "$lock" 2>/dev/null || printf '0')
-      now=$(date +%s)
+    if [ "$tries" -ge "$max_tries" ]; then
+      now=$(date +%s) || return 0
+      if ! lock_mtime=$(file_mtime "$lock"); then lock_mtime=$now; fi
       if [ "$stale_retake" = false ] && [[ "$lock_mtime" =~ ^[0-9]+$ ]] && [ "$((now - lock_mtime))" -gt 30 ]; then
         stale_retake=true
-        rm -rf "$lock"
+        rm -rf "$lock" || return 0
         continue
       fi
-      return 1
+      return 0
     fi
-    sleep 0.02
+    sleep "$delay" || return 0
   done
-  now=$(date +%s)
+  if ! now=$(date +%s); then
+    rmdir "$lock" 2>/dev/null || true
+    return 0
+  fi
   tmp="$oauth_attempts_file.tmp.$$"
-  jq -cn --argjson old "$([ -r "$oauth_attempts_file" ] && jq -c 'if type == "object" then . else {} end' "$oauth_attempts_file" 2>/dev/null || printf '{}')" \
+  if jq -cn --argjson old "$([ -r "$oauth_attempts_file" ] && jq -c 'if type == "object" then . else {} end' "$oauth_attempts_file" 2>/dev/null || printf '{}')" \
     --arg name "$name" --arg outcome "$outcome" --argjson now "$now" --argjson retry "$retry_until" '
     if $outcome == "success" then $old | del(.[$name])
-    else $old + {($name): {attempted_at:$now,outcome:$outcome,retry_after_until:$retry}} end' > "$tmp" && mv "$tmp" "$oauth_attempts_file"
-  rm -f "$tmp"
-  rmdir "$lock"
+    else $old + {($name): {attempted_at:$now,outcome:$outcome,retry_after_until:$retry}} end' > "$tmp"; then
+    mv "$tmp" "$oauth_attempts_file" 2>/dev/null || true
+  fi
+  rm -f "$tmp" 2>/dev/null || true
+  rmdir "$lock" 2>/dev/null || true
+  return 0
 }
 
 oauth_backoff_until() {
@@ -1295,6 +1307,7 @@ show_accounts() {
   interactive_cleanup
 }
 
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
 case "${1:-}" in
   help|-h|--help)
     show_help
@@ -1377,3 +1390,4 @@ case "${1:-}" in
     proxy_launch "$@"
     ;;
 esac
+fi
