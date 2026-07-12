@@ -132,35 +132,42 @@ local function formatResetTime(value)
     return "unknown"
   end
 
-  if os.date("%Y-%m-%d", timestamp) == os.date("%Y-%m-%d") then
+  local delta = timestamp - os.time()
+  if delta < 86400 then
     return os.date("%H:%M", timestamp)
   end
-
-  return os.date("%a %H:%M", timestamp)
+  if delta < 604800 then
+    local weekdays = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" }
+    return weekdays[tonumber(os.date("%w", timestamp)) + 1] .. os.date(" %H:%M", timestamp)
+  end
+  return os.date("%m-%d %H:%M", timestamp)
 end
 
 local function readLlmLimits()
-  local ok, result = pcall(function()
+  local ok, result, reason = pcall(function()
     local file = io.open(M.cachePath, "r")
     if not file then
-      return nil
+      return nil, "cache file not found: " .. M.cachePath
     end
 
     local contents = file:read("*a")
     file:close()
     local decoded = hs.json.decode(contents)
-    if type(decoded) ~= "table" or decoded.schema ~= 1 then
-      return nil
+    if type(decoded) ~= "table" then
+      return nil, "cache file is not valid JSON: " .. M.cachePath
+    end
+    if decoded.schema ~= 1 then
+      return nil, "unexpected cache schema " .. tostring(decoded.schema) .. ": " .. M.cachePath
     end
 
-    return decoded
+    return decoded, nil
   end)
 
   if ok then
-    return result
+    return result, reason
   end
 
-  return nil
+  return nil, "error reading cache: " .. tostring(result)
 end
 
 local function baseEnvironment()
@@ -308,7 +315,7 @@ function M.menuItems()
   collectOnOpen()
 
   local menu = {}
-  local limits = readLlmLimits()
+  local limits, readErrorReason = readLlmLimits()
   if limits and type(limits.vendors) == "table" then
     local vendors = {
       { key = "claude", label = "Claude" },
@@ -411,6 +418,12 @@ function M.menuItems()
       title = infoTitle("no data — press Refresh"),
       disabled = true,
     })
+    if readErrorReason then
+      table.insert(menu, {
+        title = infoTitle(readErrorReason, true),
+        disabled = true,
+      })
+    end
     if lastRefreshOutcome and #lastRefreshOutcome.failures > 0 then
       table.insert(menu, {
         title = infoTitle("refresh failed: " .. table.concat(lastRefreshOutcome.failures, ", "), true),

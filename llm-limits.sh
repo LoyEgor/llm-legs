@@ -132,6 +132,16 @@ stale_def='def stale_amount(day_u; hour_u):
       else ((.stale_seconds / 3600 | floor | tostring) + hour_u) end)
   else null end;'
 
+reset_format_def='def format_reset($now):
+  . as $iso | ($iso | iso2epoch) as $epoch |
+  if $iso == null or $iso == "" then "-"
+  elif $epoch == null then $iso
+  elif ($epoch - $now) < 86400 then ($epoch | strflocaltime("%H:%M"))
+  elif ($epoch - $now) < 604800 then
+    (["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][$epoch | strflocaltime("%w") | tonumber]
+     + " " + ($epoch | strflocaltime("%H:%M")))
+  else ($epoch | strflocaltime("%m-%d %H:%M")) end;'
+
 pct_cell() {
   # $4 is the raw numeric sort key emitted by jq (-1 = missing value); $5 dims the cell:
   # expired/stale values must never render in the live severity colors.
@@ -162,14 +172,8 @@ render_table() {
   fi
   # Sentinels (-1 / 9999999999) push rows with missing values last for every sort direction.
   local rows
-  rows=$(jq -r --arg dim "$note_dim" --arg rst "$note_rst" "$stale_def$iso_def"'
+  rows=$(jq -r --arg dim "$note_dim" --arg rst "$note_rst" --argjson render_now "$now_epoch" "$stale_def$iso_def$reset_format_def"'
     def pct(v): if v == null then "-" else ((v | round | tostring) + "%") end;
-    (now | strflocaltime("%Y-%m-%d")) as $today |
-    def fmt_reset($e): . as $iso |
-      if $iso == null or $iso == "" then "-"
-      elif $e == null then $iso
-      elif ($e | strflocaltime("%Y-%m-%d")) == $today then ($e | strflocaltime("%H:%M"))
-      else ($e | strflocaltime("%m-%d %H:%M")) end;
     def mknote($extra):
       (stale_amount("d"; "h")) as $a |
       ([$extra, (if $a then "stale " + $a else null end)]
@@ -196,8 +200,8 @@ render_table() {
        ([($s5 // 9999999999), ($sw // 9999999999)] | min),
        $d5, $dw,
        .src, pct($p5), pct($pw),
-       (.five.resets_at | fmt_reset($e5)),
-       (.week.resets_at | fmt_reset($ew)),
+       (.five.resets_at | format_reset($render_now)),
+       (.week.resets_at | format_reset($render_now)),
        (if $xn == "" then .note
         elif .note == "-" or .note == "" then $xn
         else .note + ", " + $xn end)] | @tsv;
@@ -680,7 +684,7 @@ else
     plain_dim=$'\033[2m'
     plain_rst=$'\033[0m'
   fi
-  jq -r --arg dim "$plain_dim" --arg rst "$plain_rst" "$stale_def"'
+  jq -r --arg dim "$plain_dim" --arg rst "$plain_rst" --argjson render_now "$now_epoch" "$stale_def$iso_def$reset_format_def"'
     def age:
       (stale_amount("d"; "h")) as $a |
       if $a == null then "" else " (stale " + $a + ")" end;
@@ -691,7 +695,7 @@ else
       else ((($window.used_pct | round | tostring) + "%") | dimmed($window)) end;
     def reset($window):
       if $window == null then "—"
-      else (($window.resets_at // "—") | dimmed($window)) end;
+      else (($window.resets_at | format_reset($render_now)) | dimmed($window)) end;
     .vendors | to_entries[] |
     if .value.available then
       if .key == "claude" and (.value.accounts | type) == "array" then

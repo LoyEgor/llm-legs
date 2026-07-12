@@ -427,11 +427,36 @@ expired_sorted=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$
 order=$(awk 'NR > 1 {print $1}' <<<"$expired_sorted" | paste -sd, -)
 [ "$order" = "claude/alona*,codex,gemini" ] || fail "expired 5h sort must rank the stale 100% as 0: $order"
 
+FORMAT_STORE="$WORK/reset-format-store"
+FORMAT_HOME="$WORK/reset-format-home"
+mkdir -p "$FORMAT_STORE/limits" "$FORMAT_STORE/tokens" "$FORMAT_HOME"
+printf 'clock\n' >"$FORMAT_STORE/.claudeb-state"
+clock_epoch=$(( $(date +%s) + 3600 ))
+weekday_epoch=$(( clock_epoch + 172800 ))
+date_epoch=$(( clock_epoch + 691200 ))
+printf '{"five_hour":{"used_percentage":10,"resets_at":%s}}\n' "$clock_epoch" >"$FORMAT_STORE/limits/clock.json"
+printf '{"five_hour":{"used_percentage":20,"resets_at":%s}}\n' "$weekday_epoch" >"$FORMAT_STORE/limits/weekday.json"
+printf '{"five_hour":{"used_percentage":30,"resets_at":%s}}\n' "$date_epoch" >"$FORMAT_STORE/limits/date.json"
+touch "$FORMAT_STORE/tokens/clock" "$FORMAT_STORE/tokens/weekday" "$FORMAT_STORE/tokens/date"
+clock_text=$(date -r "$clock_epoch" '+%H:%M')
+weekday_num=$(date -r "$weekday_epoch" '+%w')
+weekdays=(Sun Mon Tue Wed Thu Fri Sat)
+weekday_text="${weekdays[$weekday_num]} $(date -r "$weekday_epoch" '+%H:%M')"
+date_text=$(date -r "$date_epoch" '+%m-%d %H:%M')
+format_table=$(HOME="$FORMAT_HOME" CLAUDEB_DIR="$FORMAT_STORE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) || fail "reset-format table fixture failed"
+format_plain=$(HOME="$FORMAT_HOME" CLAUDEB_DIR="$FORMAT_STORE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain) || fail "reset-format plain fixture failed"
+claudeb_plain=$(HOME="$FORMAT_HOME" CLAUDEB_DIR="$FORMAT_STORE" bash "$ROOT/bin/claudeb" status --cached --plain) || fail "claudeb reset-format fixture failed"
+for rendered in "$clock_text" "$weekday_text" "$date_text"; do
+  grep -Fq "$rendered" <<<"$format_table" || fail "table reset tier missing: $rendered"
+  grep -Fq "$rendered" <<<"$format_plain" || fail "plain reset tier missing: $rendered"
+  grep -Fq "$rendered" <<<"$claudeb_plain" || fail "claudeb reset tier missing: $rendered"
+done
+
 EMPTY="$WORK/empty-home"
 mkdir -p "$EMPTY"
 HOME="$EMPTY" bash "$SCRIPT" --no-write >/dev/null 2>&1
 rc=$?
 [ "$rc" -eq 3 ] || fail "all-missing case: expected exit 3, got $rc"
 
-echo "PASS: schema, Claude unique accounts and fallback, enabled flags, freshness contract, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, plain output, table output and sorts, expired windows, bare JSON default, atomic cache, missing exit 3"
+echo "PASS: schema, Claude unique accounts and fallback, enabled flags, freshness contract, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, plain output, table output and sorts, reset tiers, expired windows, bare JSON default, atomic cache, missing exit 3"
 exit 0
