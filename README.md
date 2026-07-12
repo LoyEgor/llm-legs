@@ -67,7 +67,8 @@ explicit `--json`, `--plain`, or `--table` always wins. The stable top level is
 `{schema, fetched_at, vendors}`. Claude includes
 `current_account`, an ordered `accounts` array, and the current account's `five_hour`, optional
 `weekly`, `as_of`, and `stale_seconds` hoisted at vendor level for compatibility. Each account has
-its own windows and freshness. Use `--plain` for a
+its own windows and freshness, plus an `enabled` flag reflecting its claudeb rotation membership
+(absent means enabled). Use `--plain` for a
 human-readable summary or `--no-write` to leave the cache untouched. `--table` renders an aligned
 terminal table with one row per entity — every Claude account (the current one is marked `*`),
 then codex
@@ -87,10 +88,14 @@ llm-limits --table --sort 5h
 `--refresh` is reserved for the manual Get Data & Refresh action. It always performs Claude's
 free usage-endpoint poll through `claudeb accounts --no-spend` and fetches Gemini quota through
 agy's authenticated localhost Connect RPC.
-The Codex leg is different: it is a **paid model call** — a real `codex exec` request that spends
-Codex quota — so it runs only when staleness is provable: the event is missing, over 120 seconds
-old, or its five-hour window has expired. When freshness cannot be determined (e.g. a null
-`resets_at`), the poll is skipped rather than spent.
+The Codex leg is a zero-spend usage query too: `codex-quota.py` asks the local
+`codex app-server` for `account/rateLimits/read` and the response is cached in
+`~/.llm-limits-codex.json`; rollout session files remain the passive fallback when they are
+newer or the helper is unavailable. `--refresh --start-windows` is the only paid path: for each
+vendor whose five-hour window has already reset it issues one minimal model call (claudeb's own
+`--refresh --start-windows`, a one-word `codex exec`, a one-word `agy --print`) to start a fresh
+window, then re-reads the free usage endpoints. Vendors that cannot be started are reported on
+stderr, never skipped silently.
 The Gemini request is the machine-readable equivalent of `/usage`; it consumes no model tokens
 and its last valid response is cached in `~/.llm-limits-gemini.json`. Without `--refresh`,
 collection remains token-free, network-free, and file-read-only.
@@ -101,6 +106,13 @@ Claude reads the `$CLAUDEB_DIR/limits/*.json` accounts (`CLAUDEB_DIR` defaults t
 output — JSON, cache, `--plain`, and `--table` — so only real claudeb token accounts are
 reported. If the store is
 absent, it falls back to the freshest Claude status-line snapshot as a single `main` account.
+
+`claudeb disable <name>` takes an account out of auto-rotation and `claudeb enable <name>` puts
+it back; the set lives in `$CLAUDEB_DIR/disabled` (one name per line, missing file = all
+enabled). Disabled accounts are never auto-picked, but `claudeb use` (and the menu's Make
+Current) is independent of membership: a disabled account made current sticks until it hits a
+limit, then auto-rotation resumes among enabled accounts. The last enabled account cannot be
+disabled, and each JSON account carries the resulting `enabled` flag.
 
 Set `LLM_LIMITS_WALLS_LOG` to a `served-models.jsonl` audit log to include the most recent
 exit-5 wall timestamp for each vendor. `LLM_LIMITS_CACHE` overrides the cache path.
@@ -116,7 +128,7 @@ local submenu = { title = "LLM Limits", menu = limits.menuItems() }
 | Vendor | Limit freshness |
 |--------|-----------------|
 | Claude | Per-account claudeb file mtime; status-line snapshot fallback |
-| Codex | As of the last Codex turn that emitted rate limits |
+| Codex | Live app-server rate-limits RPC on refresh; last rollout event otherwise |
 | Gemini | Last successful manual Get Data & Refresh through agy's localhost quota RPC |
 
 Gemini refresh launches `agy` under a bounded PTY, waits for normal authenticated startup, finds
@@ -124,3 +136,13 @@ its localhost listener, and calls
 `LanguageServerService/RetrieveUserQuotaSummary`. Set `AGY_WORKDIR` to an already trusted folder
 if the repository itself has not been opened in agy. Overrides for tests or alternate installs:
 `AGY_BIN`, `LLM_LIMITS_GEMINI_CMD`, and `LLM_LIMITS_GEMINI_CACHE`.
+
+## claudeb multi-account suite (`bin/`)
+
+Canonical sources for the multi-account Claude Code tooling; installed via symlinks:
+
+- `bin/claudeb` → `~/.local/bin/claudeb` — account prober/launcher (OAuth auto-refresh, `--start-windows`, headless passthrough for worker agents).
+- `bin/claudebd` → `~/.local/bin/claudebd` — rotating proxy daemon on 127.0.0.1:45789 (launchd label `com.claudeb.daemon`; `claudeb daemon install`).
+- `bin/statusline.sh` → `~/.claude/statusline.sh` — Claude Code statusline; also writes per-account limit snapshots on real usage.
+
+Snapshot store and schema live in `~/.claude-profiles/` (documented in its README). If this volume is not mounted at login, the daemon start is retried by the next `claudeb` invocation.

@@ -1,0 +1,668 @@
+#!/usr/bin/env node
+// claudebd — local rotating proxy for Claude Code multi-account setup: signs
+// each request with the freest account's token and transparently replays
+// rate-limited requests with the next account. See ~/.claude-profiles/README.md
+// (rotation rules, scoped fable walls, snapshot schema shared with claudeb).
+'use strict';
+
+const http = require('node:http');
+const https = require('node:https');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+
+const host = '127.0.0.1';
+const port = Number(process.env.CLAUDEBD_PORT || 45789);
+const upstream = new URL(process.env.CLAUDEBD_UPSTREAM || 'https://api.anthropic.com');
+const baseDir = process.env.CLAUDEB_DIR || path.join(os.homedir(), '.claude-profiles', '.claudeb');
+const tokensDir = path.join(baseDir, 'tokens');
+const limitsDir = path.join(baseDir, 'limits');
+const logFile = path.join(baseDir, 'claudebd.log');
+const pidFile = path.join(baseDir, 'claudebd.pid');
+const stateFile = path.join(baseDir, '.claudeb-state');
+const disabledFile = path.join(baseDir, 'disabled');
+const maxBody = 64 * 1024 * 1024;
+const started = Date.now();
+const states = new Map();
+let accounts = [];
+let disabled = new Set();
+let current = null;
+const pinnedAt = new Map();
+const currentByScope = { fable: null };
+let closing = false;
+
+fs.mkdirSync(baseDir, { recursive: true });
+fs.mkdirSync(limitsDir, { recursive: true });
+try {
+  if (fs.statSync(logFile).size > 1024 * 1024) fs.truncateSync(logFile, 0);
+} catch {}
+
+function log(message) {
+  try {
+    fs.appendFileSync(logFile, `${new Date().toISOString()} ${message}\n`, { mode: 0o600 });
+  } catch {}
+}
+
+function number(value, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function loadState(name) {
+  let snapshot = {};
+  try {
+    snapshot = JSON.parse(fs.readFileSync(path.join(limitsDir, `${name}.json`), 'utf8'));
+  } catch {}
+  const previous = states.get(name);
+  let tokenMtime = 0;
+  try { tokenMtime = fs.statSync(path.join(tokensDir, name)).mtimeMs; } catch {}
+  return {
+    h5: number(snapshot.five_hour?.used_percentage),
+    wk: number(snapshot.seven_day?.used_percentage),
+    hreset: number(snapshot.five_hour?.resets_at),
+    wreset: number(snapshot.seven_day?.resets_at),
+    sevenDay: snapshot.seven_day && typeof snapshot.seven_day === 'object' ? snapshot.seven_day : undefined,
+    fable: snapshot.fable && typeof snapshot.fable === 'object' ? snapshot.fable : undefined,
+    auth: snapshot.auth && typeof snapshot.auth === 'object' ? snapshot.auth : undefined,
+    forcedUntil: previous?.forcedUntil || 0,
+    scopedWalls: previous?.scopedWalls || {},
+    authFailedUntil: previous?.authFailedUntil || 0,
+    lastBareReject: previous?.lastBareReject || 0,
+    hAt: previous?.hAt || 0,
+    wAt: previous?.wAt || 0,
+    tokenMtime
+  };
+}
+
+function refreshTelemetry(name) {
+  const state = states.get(name);
+  if (!state) return;
+  const file = path.join(limitsDir, `${name}.json`);
+  let snapshot;
+  let mtime = 0;
+  try {
+    mtime = fs.statSync(file).mtimeMs;
+    snapshot = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch { return; }
+  // Snapshots older than the last live-header learn must not overwrite state:
+  // reverting e.g. a header-learned h5 un-walls the account and it gets
+  // re-picked into an immediate re-429.
+  if (mtime > state.hAt) {
+    if (typeof snapshot.five_hour?.used_percentage === 'number') state.h5 = snapshot.five_hour.used_percentage;
+    if (typeof snapshot.five_hour?.resets_at === 'number') state.hreset = snapshot.five_hour.resets_at;
+  }
+  if (mtime > state.wAt) {
+    if (typeof snapshot.seven_day?.used_percentage === 'number') state.wk = snapshot.seven_day.used_percentage;
+    if (typeof snapshot.seven_day?.resets_at === 'number') state.wreset = snapshot.seven_day.resets_at;
+    state.sevenDay = snapshot.seven_day && typeof snapshot.seven_day === 'object' ? snapshot.seven_day : undefined;
+  }
+  state.fable = snapshot.fable && typeof snapshot.fable === 'object' ? snapshot.fable : undefined;
+  state.auth = snapshot.auth && typeof snapshot.auth === 'object' ? snapshot.auth : undefined;
+}
+
+// A snapshot fable value may be rotten (expired OAuth makes probes silently
+// 401, leaving week-old numbers); only usage-origin values fresher than 6h
+// from a non-expired auth may drive hard walls/exclusions.
+function fableTrustworthy(state) {
+  if (state.auth?.status === 'expired') return false;
+  if (state.fable?.origin !== 'usage') return false;
+  const asOf = number(state.fable?.as_of, 0);
+  return asOf > 0 && Math.floor(Date.now() / 1000) - asOf <= 21600;
+}
+
+function loadDisabled() {
+  try {
+    disabled = new Set(fs.readFileSync(disabledFile, 'utf8').split('\n').map((line) => line.trim()).filter(Boolean));
+  } catch {
+    disabled = new Set();
+  }
+}
+
+function disabledMtime() {
+  try { return fs.statSync(disabledFile).mtimeMs; } catch { return 0; }
+}
+
+function disabledEvicts(name) {
+  if (!disabled.has(name)) return false;
+  return (pinnedAt.get(name) || 0) < disabledMtime();
+}
+
+function scanAccounts() {
+  loadDisabled();
+  let names = [];
+  try {
+    names = fs.readdirSync(tokensDir, { withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => entry.name)
+      .sort();
+  } catch {}
+  for (const name of names) {
+    if (!states.has(name)) {
+      states.set(name, loadState(name));
+    } else {
+      const state = states.get(name);
+      let mtime = 0;
+      try { mtime = fs.statSync(path.join(tokensDir, name)).mtimeMs; } catch {}
+      if (mtime && state.tokenMtime && mtime !== state.tokenMtime) state.authFailedUntil = 0;
+      state.tokenMtime = mtime;
+      refreshTelemetry(name);
+    }
+  }
+  accounts = names;
+  if (current && (!accounts.includes(current) || disabledEvicts(current))) {
+    pinnedAt.delete(current);
+    current = null;
+  }
+  if (!current) {
+    current = pick();
+    persistCurrent();
+  }
+  if (currentByScope.fable && !accounts.includes(currentByScope.fable)) currentByScope.fable = null;
+  if (!eligibleForScope(currentByScope.fable, 'fable')) currentByScope.fable = pickForScope('fable');
+}
+
+function effective(name) {
+  const state = states.get(name) || loadState(name);
+  const now = Math.floor(Date.now() / 1000);
+  const h5 = state.hreset > now ? state.h5 : 0;
+  const wk = state.wreset > now ? state.wk : 0;
+  return { ...state, h5, wk, walled: state.forcedUntil > now || state.authFailedUntil > now || h5 >= 97 || wk >= 99 };
+}
+
+function pick(excluded = new Set()) {
+  const available = accounts
+    .filter((name) => !excluded.has(name) && !disabled.has(name))
+    .map((name) => ({ name, ...effective(name) }))
+    .filter((entry) => !entry.walled)
+    .sort((a, b) => a.h5 - b.h5 || a.wk - b.wk || a.name.localeCompare(b.name));
+  return available[0]?.name || null;
+}
+
+function eligibleForScope(name, scope, excluded = new Set()) {
+  if (!name || excluded.has(name) || !accounts.includes(name)) return false;
+  if (disabled.has(name) && (name !== current || disabledEvicts(name))) return false;
+  const state = effective(name);
+  if (state.walled) return false;
+  if (scope === 'fable') {
+    const now = Math.floor(Date.now() / 1000);
+    if (state.scopedWalls.fable > now) return false;
+    if (fableTrustworthy(state) && number(state.fable?.resets_at) > now && number(state.fable?.used_percentage) >= 99) return false;
+  }
+  return true;
+}
+
+function pickForScope(scope, excluded = new Set()) {
+  if (scope === 'general') return pick(excluded);
+  if (eligibleForScope(currentByScope.fable, scope, excluded)) return currentByScope.fable;
+  const now = Math.floor(Date.now() / 1000);
+  return accounts
+    .filter((name) => !disabled.has(name) && eligibleForScope(name, scope, excluded))
+    .map((name) => {
+      const state = effective(name);
+      const fableUsage = number(state.fable?.resets_at) > now ? number(state.fable?.used_percentage) : 0;
+      return { name, ...state, fableUsage };
+    })
+    .sort((a, b) => a.fableUsage - b.fableUsage || a.h5 - b.h5 || a.wk - b.wk || a.name.localeCompare(b.name))[0]?.name || null;
+}
+
+function noAccountsBody(scope) {
+  const now = Math.floor(Date.now() / 1000);
+  let earliest = 0;
+  for (const name of accounts) {
+    if (disabled.has(name)) continue;
+    const state = effective(name);
+    let free = Math.max(
+      state.forcedUntil > now ? state.forcedUntil : 0,
+      state.authFailedUntil > now ? state.authFailedUntil : 0,
+      state.h5 >= 97 ? state.hreset : 0,
+      state.wk >= 99 ? state.wreset : 0
+    );
+    if (scope === 'fable') {
+      if (state.scopedWalls.fable > now) free = Math.max(free, state.scopedWalls.fable);
+      if (fableTrustworthy(state) && number(state.fable?.used_percentage) >= 99 && number(state.fable?.resets_at) > now) {
+        free = Math.max(free, number(state.fable.resets_at));
+      }
+    }
+    if (free > now && (earliest === 0 || free < earliest)) earliest = free;
+  }
+  return earliest ? { error: 'No available accounts', retry_at: earliest } : { error: 'No available accounts' };
+}
+
+function switchAccount(reason, excluded = new Set()) {
+  const from = current;
+  const next = pick(excluded);
+  if (from) pinnedAt.delete(from);
+  if (next && next !== from) {
+    current = next;
+    log(`switch from=${from || 'none'} to=${next} reason=${reason}`);
+    persistCurrent();
+  }
+  return next;
+}
+
+function switchForScope(scope, reason, excluded = new Set()) {
+  if (scope === 'general') return switchAccount(reason, excluded);
+  const from = currentByScope.fable;
+  const next = pickForScope(scope, excluded);
+  if (next && next !== from) log(`switch scope=${scope} from=${from || 'none'} to=${next} reason=${reason}`);
+  currentByScope.fable = next;
+  return next;
+}
+
+function persist(name, learned) {
+  const file = path.join(limitsDir, `${name}.json`);
+  const temp = `${file}.${process.pid}.tmp`;
+  try {
+    let snapshot = {};
+    let raw = null;
+    try {
+      raw = fs.readFileSync(file, 'utf8');
+    } catch (error) {
+      // Only a genuinely missing file may start from {}: a learned-only
+      // rewrite after a failed read would destroy fable/seven_day keys
+      // written by claudeb.
+      if (error.code !== 'ENOENT') {
+        log(`snapshot skip account=${name} message=${error.message}`);
+        return;
+      }
+    }
+    if (raw !== null && raw.trim() !== '') {
+      let existing;
+      try { existing = JSON.parse(raw); } catch {}
+      if (!existing || typeof existing !== 'object' || Array.isArray(existing)) {
+        log(`snapshot skip account=${name} reason=existing file is not a JSON object`);
+        return;
+      }
+      snapshot = existing;
+    }
+    const stampedAt = Math.floor(Date.now() / 1000);
+    for (const key of Object.keys(learned)) {
+      if (learned[key] && typeof learned[key] === 'object') {
+        learned[key] = { ...learned[key], as_of: stampedAt, origin: 'headers' };
+      }
+    }
+    snapshot = { ...snapshot, ...learned };
+    fs.writeFileSync(temp, JSON.stringify(snapshot), { mode: 0o600 });
+    fs.renameSync(temp, file);
+  } catch (error) {
+    try { fs.unlinkSync(temp); } catch {}
+    log(`snapshot error account=${name} message=${error.message}`);
+  }
+}
+
+function persistCurrent() {
+  if (!current) return;
+  const temp = `${stateFile}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(temp, `${current}\n`, { mode: 0o600 });
+    fs.renameSync(temp, stateFile);
+  } catch (error) {
+    try { fs.unlinkSync(temp); } catch {}
+    log(`state file error message=${error.message}`);
+  }
+}
+
+function updateFromHeaders(name, headers) {
+  const state = states.get(name);
+  if (!state) return;
+  const utilization = number(headers['anthropic-ratelimit-unified-5h-utilization'], NaN);
+  const hreset = number(headers['anthropic-ratelimit-unified-5h-reset'], NaN);
+  const status = String(headers['anthropic-ratelimit-unified-status'] || '');
+  const claim = String(headers['anthropic-ratelimit-unified-representative-claim'] || '');
+  const reset = number(headers['anthropic-ratelimit-unified-reset'], NaN);
+  const learned = {};
+  if (Number.isFinite(utilization)) state.h5 = Math.round(utilization * 100);
+  if (Number.isFinite(hreset)) state.hreset = hreset;
+  if (Number.isFinite(utilization) || Number.isFinite(hreset)) state.hAt = Date.now();
+  if (Number.isFinite(utilization) && Number.isFinite(hreset)) {
+    learned.five_hour = { used_percentage: state.h5, resets_at: state.hreset };
+  }
+  if (status !== 'allowed' && claim === 'seven_day' && Number.isFinite(reset)) {
+    state.wk = 100;
+    state.wreset = reset;
+    state.sevenDay = { used_percentage: 100, resets_at: reset };
+    state.wAt = Date.now();
+    learned.seven_day = state.sevenDay;
+  }
+  if (Object.keys(learned).length > 0) persist(name, learned);
+  if (name === current && effective(name).walled && !status.startsWith('rejected')) {
+    switchAccount('limit threshold');
+  }
+}
+
+function rejectionReset(headers, fallbackSeconds) {
+  const now = Math.floor(Date.now() / 1000);
+  const unifiedReset = number(headers['anthropic-ratelimit-unified-reset'], 0);
+  if (unifiedReset > now) return unifiedReset;
+  const retryAfter = number(headers['retry-after'], 0);
+  return retryAfter > 0 ? now + retryAfter : now + fallbackSeconds;
+}
+
+function logWall(name, scope, until, reason) {
+  log(`wall account=${name} scope=${scope} until=${new Date(until * 1000).toISOString()} reason=${reason}`);
+}
+
+function markRejected(name, headers, scope) {
+  const state = states.get(name);
+  if (!state) return;
+  const now = Math.floor(Date.now() / 1000);
+  // A fable-scoped 429 can arrive with unified-status "allowed"; only an
+  // explicit rejected status means the whole unified bucket is walled.
+  const unified = String(headers['anthropic-ratelimit-unified-status'] || '');
+  const hasResetHeader = number(headers['anthropic-ratelimit-unified-reset'], 0) > now || number(headers['retry-after'], 0) > 0;
+  if (!unified.startsWith('rejected') && scope === 'fable') {
+    if (hasResetHeader) {
+      state.scopedWalls.fable = rejectionReset(headers, 300);
+      logWall(name, 'fable', state.scopedWalls.fable, 'header');
+    } else if (fableTrustworthy(state) && number(state.fable?.used_percentage) >= 99 && number(state.fable?.resets_at) > now) {
+      state.scopedWalls.fable = number(state.fable.resets_at);
+      logWall(name, 'fable', state.scopedWalls.fable, 'quota');
+    } else {
+      // A bare fable 429 is almost always transient capacity, not quota:
+      // walling to the weekly reset here once took an account out for days.
+      state.scopedWalls.fable = now + (now - state.lastBareReject <= 3600 ? 900 : 300);
+      state.lastBareReject = now;
+      logWall(name, 'fable', state.scopedWalls.fable, 'transient');
+    }
+  } else {
+    state.forcedUntil = rejectionReset(headers, 300);
+    logWall(name, scope, state.forcedUntil, hasResetHeader ? 'header' : 'transient');
+  }
+}
+
+function markAuthFailure(name, status) {
+  const state = states.get(name);
+  if (!state) return;
+  const now = Math.floor(Date.now() / 1000);
+  if (state.authFailedUntil <= now) log(`auth failure account=${name} status=${status}`);
+  state.authFailedUntil = now + 1800;
+}
+
+function token(name) {
+  try {
+    const value = fs.readFileSync(path.join(tokensDir, name), 'utf8').trim();
+    if (!value) throw new Error('Token file is empty');
+    return value;
+  } catch (error) {
+    error.code = 'CLAUDEB_ACCOUNT_UNAVAILABLE';
+    throw error;
+  }
+}
+
+function requestOptions(req, name, replaceAuth) {
+  const headers = { ...req.headers, host: upstream.host };
+  if (replaceAuth) headers.authorization = `Bearer ${token(name)}`;
+  return {
+    protocol: upstream.protocol,
+    hostname: upstream.hostname,
+    port: upstream.port || undefined,
+    method: req.method,
+    path: req.url,
+    headers
+  };
+}
+
+function sendJson(res, status, body) {
+  if (res.headersSent || res.destroyed) return;
+  const data = JSON.stringify(body);
+  res.writeHead(status, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(data) });
+  res.end(data);
+}
+
+function forwardResponse(source, target) {
+  if (target.destroyed) {
+    source.destroy();
+    return;
+  }
+  target.writeHead(source.statusCode || 502, source.headers);
+  source.on('error', () => {
+    if (!target.destroyed) target.destroy();
+  });
+  target.on('close', () => {
+    if (!source.destroyed) source.destroy();
+  });
+  source.pipe(target);
+}
+
+async function attempt(req, body, name, replaceAuth) {
+  return new Promise((resolve, reject) => {
+    let upstreamReq;
+    try {
+      const transport = upstream.protocol === 'http:' ? http : https;
+      upstreamReq = transport.request(requestOptions(req, name, replaceAuth), resolve);
+      upstreamReq.once('error', reject);
+      upstreamReq.end(body);
+    } catch (error) {
+      if (upstreamReq) upstreamReq.destroy();
+      reject(error);
+    }
+  });
+}
+
+function requestScope(body) {
+  const text = body.toString('utf8');
+  try {
+    const model = JSON.parse(text).model;
+    return typeof model === 'string' && model.startsWith('claude-fable') ? 'fable' : 'general';
+  } catch {
+    const match = text.match(/"model"\s*:\s*"([^"]+)"/);
+    return match?.[1]?.startsWith('claude-fable') ? 'fable' : 'general';
+  }
+}
+
+async function bufferedProxy(req, res, body, replaceAuth) {
+  if (!replaceAuth) {
+    try {
+      return forwardResponse(await attempt(req, body, current, false), res);
+    } catch (error) {
+      log(`upstream error account=passthrough message=${error.message}`);
+      return sendJson(res, 502, { error: 'Upstream connection failed' });
+    }
+  }
+  const scope = requestScope(body);
+  const tried = new Set();
+  let lastResponse = null;
+  let unavailable = false;
+  while (!res.destroyed) {
+    let account = scope === 'general' ? current : currentByScope.fable;
+    if (!eligibleForScope(account, scope, tried)) account = switchForScope(scope, 'request selection', tried);
+    if (!account) {
+      if (lastResponse) return forwardResponse(lastResponse, res);
+      if (unavailable) return sendJson(res, 502, { error: 'No available accounts' });
+      return sendJson(res, 503, noAccountsBody(scope));
+    }
+    tried.add(account);
+    let upstreamRes;
+    try {
+      upstreamRes = await attempt(req, body, account, replaceAuth);
+    } catch (error) {
+      if (error.code === 'CLAUDEB_ACCOUNT_UNAVAILABLE') {
+        unavailable = true;
+        log(`account unavailable account=${account}`);
+        scanAccounts();
+        switchForScope(scope, 'account unavailable', tried);
+        continue;
+      }
+      log(`upstream error account=${account} message=${error.message}`);
+      return sendJson(res, 502, { error: 'Upstream connection failed' });
+    }
+    if (replaceAuth) updateFromHeaders(account, upstreamRes.headers);
+    const authFailure = upstreamRes.statusCode === 401 || upstreamRes.statusCode === 403;
+    if (authFailure) markAuthFailure(account, upstreamRes.statusCode);
+    const unified = String(upstreamRes.headers['anthropic-ratelimit-unified-status'] || '');
+    const rejected = replaceAuth && (upstreamRes.statusCode === 429 || unified.startsWith('rejected'));
+    if (!rejected && !authFailure) return forwardResponse(upstreamRes, res);
+    if (rejected) markRejected(account, upstreamRes.headers, scope);
+    log(`retry account=${account} scope=${scope} status=${upstreamRes.statusCode || 0} unified=${unified || 'none'}`);
+    lastResponse = upstreamRes;
+    const next = switchForScope(scope, authFailure ? 'auth failure' : 'rejected', tried);
+    if (!next) return forwardResponse(lastResponse, res);
+    upstreamRes.resume();
+  }
+}
+
+function streamingProxy(req, res, chunks, name, replaceAuth, scope, tried = new Set()) {
+  tried.add(name);
+  let upstreamReq;
+  try {
+    const transport = upstream.protocol === 'http:' ? http : https;
+    upstreamReq = transport.request(requestOptions(req, name, replaceAuth), (upstreamRes) => {
+      if (replaceAuth) updateFromHeaders(name, upstreamRes.headers);
+      if (upstreamRes.statusCode === 401 || upstreamRes.statusCode === 403) {
+        markAuthFailure(name, upstreamRes.statusCode);
+      }
+      const unified = String(upstreamRes.headers['anthropic-ratelimit-unified-status'] || '');
+      if (replaceAuth && (upstreamRes.statusCode === 429 || unified.startsWith('rejected'))) {
+        markRejected(name, upstreamRes.headers, scope);
+      }
+      forwardResponse(upstreamRes, res);
+    });
+    upstreamReq.on('error', (error) => {
+      log(`upstream error account=${name} message=${error.message}`);
+      sendJson(res, 502, { error: 'Upstream connection failed' });
+    });
+    for (const chunk of chunks) upstreamReq.write(chunk);
+    req.pipe(upstreamReq);
+    req.on('error', () => upstreamReq.destroy());
+    res.on('close', () => upstreamReq.destroy());
+  } catch (error) {
+    if (error.code === 'CLAUDEB_ACCOUNT_UNAVAILABLE') {
+      scanAccounts();
+      const next = switchForScope(scope, 'account unavailable', tried);
+      if (next) return streamingProxy(req, res, chunks, next, replaceAuth, scope, tried);
+      return sendJson(res, 502, { error: 'No available accounts' });
+    }
+    log(`upstream error account=${name} message=${error.message}`);
+    sendJson(res, 502, { error: 'Upstream connection failed' });
+  }
+}
+
+function statusPayload() {
+  const detail = {};
+  const now = Math.floor(Date.now() / 1000);
+  for (const name of accounts) {
+    const state = effective(name);
+    const snapshotWall = fableTrustworthy(state) && number(state.fable?.used_percentage) >= 99 && number(state.fable?.resets_at) > now ? number(state.fable.resets_at) : 0;
+    detail[name] = {
+      h5: state.h5,
+      wk: state.wk,
+      hreset: state.hreset,
+      wreset: state.wreset,
+      walled: state.walled,
+      auth_failed_until: state.authFailedUntil > now ? state.authFailedUntil : 0,
+      fable_walled_until: Math.max(state.scopedWalls.fable > now ? state.scopedWalls.fable : 0, snapshotWall)
+    };
+  }
+  return { pid: process.pid, uptime_s: Math.floor((Date.now() - started) / 1000), port, current, current_fable: currentByScope.fable, accounts: detail };
+}
+
+function handle(req, res) {
+  req.on('error', () => {
+    if (!res.destroyed) res.destroy();
+  });
+  res.on('error', () => {});
+  if (req.method === 'GET' && req.url === '/claudebd/status') {
+    scanAccounts();
+    return sendJson(res, 200, statusPayload());
+  }
+  if (req.method === 'POST' && req.url === '/claudebd/use') {
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => {
+      let name;
+      try { name = JSON.parse(Buffer.concat(chunks).toString('utf8')).account; } catch {}
+      scanAccounts();
+      if (typeof name !== 'string' || !accounts.includes(name)) {
+        return sendJson(res, 404, { error: 'unknown account' });
+      }
+      log(`switch from=${current || 'none'} to=${name} reason=manual`);
+      current = name;
+      pinnedAt.set(name, Date.now());
+      persistCurrent();
+      sendJson(res, 200, { current: name });
+    });
+    return;
+  }
+  if (!current || !accounts.includes(current)) scanAccounts();
+  if (!current) return sendJson(res, 503, { error: 'No accounts configured' });
+  const replaceAuth = /^Bearer sk-ant-/i.test(String(req.headers.authorization || ''));
+  const chunks = [];
+  let size = 0;
+  let streaming = false;
+  req.on('data', (chunk) => {
+    if (streaming) return;
+    size += chunk.length;
+    chunks.push(chunk);
+    if (size > maxBody) {
+      streaming = true;
+      req.pause();
+      const scope = requestScope(Buffer.concat(chunks));
+      let account = scope === 'general' ? current : currentByScope.fable;
+      if (replaceAuth && !eligibleForScope(account, scope)) account = switchForScope(scope, 'streaming request selection');
+      if (account) streamingProxy(req, res, chunks, account, replaceAuth, scope);
+      else sendJson(res, 503, noAccountsBody(scope));
+      req.resume();
+    }
+  });
+  req.on('end', () => {
+    if (!streaming) bufferedProxy(req, res, Buffer.concat(chunks), replaceAuth).catch((error) => {
+      log(`request error message=${error.message}`);
+      sendJson(res, 502, { error: 'Proxy request failed' });
+    });
+  });
+}
+
+// Read the seed before scanAccounts: its initial pick rewrites the state file.
+let seed = '';
+try { seed = fs.readFileSync(stateFile, 'utf8').trim(); } catch {}
+scanAccounts();
+if (seed && accounts.includes(seed) && !disabled.has(seed) && !effective(seed).walled && seed !== current) {
+  current = seed;
+  persistCurrent();
+}
+const initial = current;
+const server = http.createServer((req, res) => {
+  try { handle(req, res); } catch (error) {
+    log(`request error message=${error.message}`);
+    sendJson(res, 500, { error: 'Proxy failure' });
+  }
+});
+server.on('clientError', (_error, socket) => {
+  if (socket.writable) socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
+});
+server.on('error', (error) => {
+  if (error.code === 'EADDRINUSE') {
+    process.stdout.write('already running\n');
+    process.exit(0);
+  }
+  log(`server error message=${error.message}`);
+  process.exit(1);
+});
+server.listen(port, host, () => {
+  fs.writeFileSync(pidFile, `${process.pid}\n`, { mode: 0o600 });
+  log(`startup pid=${process.pid} port=${port} upstream=${upstream.origin}`);
+  log(`initial pick account=${initial || 'none'}`);
+});
+
+const scanner = setInterval(scanAccounts, 30000);
+scanner.unref();
+
+function shutdown(signal) {
+  if (closing) return;
+  closing = true;
+  log(`shutdown signal=${signal}`);
+  clearInterval(scanner);
+  server.close(() => {
+    try { fs.unlinkSync(pidFile); } catch {}
+    process.exit(0);
+  });
+  setTimeout(() => {
+    try { fs.unlinkSync(pidFile); } catch {}
+    process.exit(0);
+  }, 1500).unref();
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('uncaughtException', (error) => log(`uncaught exception message=${error.message}`));
+process.on('unhandledRejection', (error) => log(`unhandled rejection message=${error?.message || error}`));

@@ -11,6 +11,7 @@ import pty
 import re
 import select
 import signal
+import shutil
 import ssl
 import struct
 import subprocess
@@ -45,8 +46,13 @@ def clean_terminal(data: bytes) -> str:
 
 
 def listening_ports(pid: int) -> list[int]:
+    lsof = shutil.which("lsof")
+    if not lsof and os.path.isfile("/usr/sbin/lsof"):
+        lsof = "/usr/sbin/lsof"
+    if not lsof:
+        raise FileNotFoundError("lsof not found")
     result = subprocess.run(
-        ["lsof", "-nP", "-a", "-p", str(pid), "-iTCP", "-sTCP:LISTEN"],
+        [lsof, "-nP", "-a", "-p", str(pid), "-iTCP", "-sTCP:LISTEN"],
         text=True,
         capture_output=True,
         timeout=2,

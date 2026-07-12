@@ -31,6 +31,8 @@ out=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" LLM_LIMITS_WALLS_LOG="$WALL
 jq -e '.schema == 1 and (.vendors | keys == ["claude","codex","gemini"])' <<<"$out" >/dev/null || fail "schema mismatch"
 jq -e '.vendors.claude.five_hour.used_pct == 12 and .vendors.claude.weekly.used_pct == 40 and .vendors.claude.source == "statusline-last" and .vendors.claude.current_account == "main" and (.vendors.claude.accounts | length) == 1 and (.vendors.claude | has("session_model") | not)' <<<"$out" >/dev/null || fail "Claude primary snapshot mismatch"
 jq -e '.vendors.codex.five_hour.used_pct == 74 and .vendors.codex.weekly.used_pct == 31 and .vendors.codex.plan_type == "plus"' <<<"$out" >/dev/null || fail "Codex fallback mismatch"
+jq -e '(.vendors.claude.five_hour.as_of | type) == "number" and .vendors.claude.five_hour.stale == false and .vendors.claude.stale == false' <<<"$out" >/dev/null || fail "Claude bucket freshness fields missing"
+jq -e '.vendors.codex.five_hour.origin == "headers" and (.vendors.codex.five_hour.as_of | type) == "number" and .vendors.codex.five_hour.stale == true and .vendors.codex.stale == true' <<<"$out" >/dev/null || fail "Codex rollout freshness fields mismatch"
 jq -e '.vendors.gemini.available == false and .vendors.gemini.status == "no quota snapshot" and .vendors.gemini.last_wall == "2026-07-11T08:00:00Z"' <<<"$out" >/dev/null || fail "Gemini state mismatch"
 jq -e . "$CACHE" >/dev/null || fail "cache was not valid JSON"
 compgen -G "$CACHE.tmp.*" >/dev/null && fail "atomic-write temporary file remains"
@@ -51,10 +53,14 @@ gemini_live=$(GEMINI_SENTINEL="$GEMINI_SENTINEL" LLM_LIMITS_GEMINI_REFRESH=1 \
   HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --refresh) \
   || fail "Gemini refresh collection failed"
 jq -e '.vendors.gemini.available == true and .vendors.gemini.source == "agy-local-rpc" and
-  (.vendors.gemini.five_hour.used_pct > 0.49 and .vendors.gemini.five_hour.used_pct < 0.51) and
+  .vendors.gemini.five_hour.used_pct == 1 and
   .vendors.gemini.weekly.used_pct == 25 and
   .vendors.gemini.five_hour.resets_at == "2026-07-11T22:00:00Z"' <<<"$gemini_live" >/dev/null \
-  || fail "Gemini quota normalization mismatch"
+  || fail "Gemini quota normalization mismatch (used_pct must be an integer)"
+jq -e '.vendors.gemini.five_hour.origin == "usage" and .vendors.gemini.five_hour.stale == false and
+  (.vendors.gemini.five_hour.as_of | type) == "number" and .vendors.gemini.stale == false and
+  (.vendors.gemini | has("refresh_error") | not)' <<<"$gemini_live" >/dev/null \
+  || fail "Gemini freshness fields mismatch"
 [ -s "$GEMINI_SENTINEL" ] || fail "Gemini helper was not invoked by --refresh"
 rm -f "$GEMINI_SENTINEL"
 gemini_cached=$(LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" HOME="$HOME_FIXTURE" \
@@ -77,6 +83,7 @@ jq -e '.vendors.claude.five_hour.used_pct == 19 and .vendors.claude.weekly.used_
 plain=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain) || fail "plain collection failed"
 grep -q 'claude/main: 19%/53%' <<<"$plain" || fail "plain Claude values missing"
 grep -q 'codex: 74%/31%' <<<"$plain" || fail "plain Codex values missing"
+grep 'codex: 74%/31%' <<<"$plain" | grep -q '(stale ' || fail "plain stale-age suffix missing or not in English"
 fallback_table=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) || fail "fallback table collection failed"
 grep -q '^claude/main' <<<"$fallback_table" || fail "unique fallback main account missing from table"
 
@@ -96,54 +103,243 @@ printf 'alona\n' >"$CLAUDEB/.claudeb-state"
 multi_plain=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain) || fail "claudeb plain collection failed"
 grep -q 'claude/alona: 7%/- |' <<<"$multi_plain" || fail "claudeb missing-weekly plain output mismatch"
 grep -q 'claude/main' <<<"$multi_plain" && fail "main account leaked into plain output"
+jq -e 'all(.vendors.claude.accounts[]; .enabled == true)' <<<"$multi" >/dev/null || fail "missing disabled file must default to enabled:true"
+
+# Rotation membership: a name listed in $CLAUDEB_DIR/disabled flips enabled to false
+# for that account only, on the token-free passive path.
+CLAUDEB_DIS="$WORK/claudeb-disabled-store"
+mkdir -p "$CLAUDEB_DIS/limits"
+printf 'alona\n' >"$CLAUDEB_DIS/.claudeb-state"
+printf '{"five_hour":{"used_percentage":7,"resets_at":%s}}\n' "$((now + 5000))" >"$CLAUDEB_DIS/limits/alona.json"
+printf '{"five_hour":{"used_percentage":21,"resets_at":%s}}\n' "$((now + 6000))" >"$CLAUDEB_DIS/limits/bree.json"
+printf 'bree\n' >"$CLAUDEB_DIS/disabled"
+disabled_json=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_DIS" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "disabled-flag collection failed"
+jq -e '(.vendors.claude.accounts | length) == 2 and
+  ([.vendors.claude.accounts[] | select(.account == "alona")][0].enabled == true) and
+  ([.vendors.claude.accounts[] | select(.account == "bree")][0].enabled == false)' <<<"$disabled_json" >/dev/null || fail "disabled file did not map to enabled flags"
+disabled_table=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_DIS" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) || fail "disabled table collection failed"
+awk '$1 == "claude/bree"' <<<"$disabled_table" | grep -q 'off' || fail "disabled account not marked off in table"
+awk '$1 == "claude/alona*"' <<<"$disabled_table" | grep -q 'off' && fail "enabled account wrongly marked off in table"
+disabled_plain=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_DIS" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain) || fail "disabled plain collection failed"
+grep 'claude/bree' <<<"$disabled_plain" | grep -q ' | off' || fail "disabled account not marked off in plain output"
+grep 'claude/alona' <<<"$disabled_plain" | grep -q ' | off' && fail "enabled account wrongly marked off in plain output"
+
+# Shared staleness contract: per-bucket as_of/origin pass through from the snapshot store;
+# a bucket is stale on expired auth, cached origin, or age over the window threshold
+# (5h: 1800s, weekly/fable: 21600s); missing as_of falls back to the snapshot mtime.
+CLAUDEB_FRESH="$WORK/claudeb-freshness-store"
+mkdir -p "$CLAUDEB_FRESH/limits"
+printf 'aged\n' >"$CLAUDEB_FRESH/.claudeb-state"
+printf '{"five_hour":{"used_percentage":7.000000000000001,"resets_at":%s,"as_of":%s,"origin":"usage"},"seven_day":{"used_percentage":56.99999999999999,"resets_at":%s,"as_of":%s,"origin":"usage"},"auth":{"status":"ok","checked_at":%s}}\n' \
+  "$((now + 5000))" "$((now - 3000))" "$((now + 90000))" "$((now - 3000))" "$now" >"$CLAUDEB_FRESH/limits/aged.json"
+printf '{"five_hour":{"used_percentage":11,"resets_at":%s,"as_of":%s,"origin":"cached"}}\n' \
+  "$((now + 5000))" "$now" >"$CLAUDEB_FRESH/limits/cachedorigin.json"
+printf '{"five_hour":{"used_percentage":13,"resets_at":%s,"as_of":%s,"origin":"usage"},"auth":{"status":"expired","checked_at":%s}}\n' \
+  "$((now + 5000))" "$now" "$now" >"$CLAUDEB_FRESH/limits/badauth.json"
+printf '{"five_hour":{"used_percentage":17,"resets_at":%s}}\n' "$((now + 5000))" >"$CLAUDEB_FRESH/limits/legacy.json"
+touch -t 202607110500 "$CLAUDEB_FRESH/limits/legacy.json"
+printf '{"auth":{"status":"expired","checked_at":%s}}\n' "$now" >"$CLAUDEB_FRESH/limits/authonly.json"
+fresh_json=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_FRESH" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "freshness-contract collection failed"
+jq -e --argjson asof "$((now - 3000))" '
+  [.vendors.claude.accounts[] | select(.account == "aged")][0] as $a |
+  $a.five_hour.as_of == $asof and $a.five_hour.origin == "usage" and
+  $a.five_hour.stale == true and $a.weekly.stale == false and $a.auth.status == "ok"' <<<"$fresh_json" >/dev/null \
+  || fail "as_of threshold staleness mismatch"
+jq -e '[.vendors.claude.accounts[] | select(.account == "cachedorigin")][0]
+  | .five_hour.origin == "cached" and .five_hour.stale == true' <<<"$fresh_json" >/dev/null \
+  || fail "cached origin must mark the bucket stale"
+jq -e '[.vendors.claude.accounts[] | select(.account == "badauth")][0]
+  | .auth.status == "expired" and .five_hour.stale == true' <<<"$fresh_json" >/dev/null \
+  || fail "expired auth must mark buckets stale and pass auth through"
+jq -e '[.vendors.claude.accounts[] | select(.account == "legacy")][0]
+  | (.five_hour.as_of | type) == "number" and .five_hour.stale == true' <<<"$fresh_json" >/dev/null \
+  || fail "missing as_of must fall back to snapshot mtime"
+jq -e '.vendors.claude.stale == true and .vendors.claude.auth.status == "ok"' <<<"$fresh_json" >/dev/null \
+  || fail "vendor-level stale/auth hoist mismatch"
+# Auth-only snapshot (failed probe, no five_hour): the account stays visible as unknown.
+jq -e '[.vendors.claude.accounts[] | select(.account == "authonly")][0]
+  | .five_hour.used_pct == null and .five_hour.stale == true and .auth.status == "expired"' <<<"$fresh_json" >/dev/null \
+  || fail "auth-only snapshot must stay visible with unknown values"
+printf 'authonly\n' >"$CLAUDEB_FRESH/.claudeb-state"
+auth_current=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_FRESH" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "auth-only current collection failed"
+jq -e '.vendors.claude.current_account == "authonly" and
+  .vendors.claude.accounts[0].five_hour.used_pct == null and
+  (.vendors.claude.five_hour.used_pct | type) == "number"' <<<"$auth_current" >/dev/null \
+  || fail "auth-only current account must hoist the first populated five-hour bucket"
+printf 'aged\n' >"$CLAUDEB_FRESH/.claudeb-state"
+fresh_table=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_FRESH" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) || fail "rounding table collection failed"
+grep -Eq '^claude/aged\* +7% +57% ' <<<"$fresh_table" || fail "table percentages must round to integers"
+grep -Eq '^claude/authonly +- +- ' <<<"$fresh_table" || fail "auth-only account missing from table"
+fresh_plain=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_FRESH" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain) || fail "rounding plain collection failed"
+grep -q 'claude/aged: 7%/57% ' <<<"$fresh_plain" || fail "plain percentages must round to integers"
+grep -q 'claude/authonly: -/-' <<<"$fresh_plain" || fail "auth-only account missing from plain output"
 
 FAKE_BIN="$WORK/bin"
 SENTINEL="$WORK/claudeb-called"
 CODEX_SENTINEL="$WORK/codex-called"
+CODEX_QUOTA_SENTINEL="$WORK/codex-quota-called"
+CODEX_CACHE="$WORK/codex-quota.json"
 mkdir -p "$FAKE_BIN"
-printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$CLAUDEB_SENTINEL"\n' >"$FAKE_BIN/claudeb"
+cat >"$FAKE_BIN/claudeb" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = --help ]; then
+  echo "  claudeb --refresh [--no-spend] [--start-windows]"
+  exit 0
+fi
+printf '%s\n' "$*" >>"$CLAUDEB_SENTINEL"
+EOF
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" >>"$CODEX_SENTINEL"\n' >"$FAKE_BIN/codex"
-chmod +x "$FAKE_BIN/claudeb" "$FAKE_BIN/codex"
-CLAUDEB_SENTINEL="$SENTINEL" CODEX_SENTINEL="$CODEX_SENTINEL" LLM_LIMITS_CODEX_REFRESH=1 PATH="$FAKE_BIN:$PATH" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --refresh >/dev/null || fail "refresh collection failed"
+cat >"$WORK/fake-codex-quota" <<EOF
+#!/usr/bin/env bash
+printf 'called\n' >>"\$CODEX_QUOTA_SENTINEL"
+printf '%s\n' '{"rateLimits":{"primary":{"usedPercent":31,"windowDurationMins":300,"resetsAt":$((now + 4000))},"secondary":{"usedPercent":64,"windowDurationMins":10080,"resetsAt":$((now + 90000))},"planType":"plus"}}'
+EOF
+chmod +x "$FAKE_BIN/claudeb" "$FAKE_BIN/codex" "$WORK/fake-codex-quota"
+
+# --refresh is zero token spend: claudeb tier-1 snapshot, codex app-server usage query
+# (never codex exec), and the live snapshot outranks the stale rollout tail.
+refresh_out=$(CLAUDEB_SENTINEL="$SENTINEL" CODEX_SENTINEL="$CODEX_SENTINEL" CODEX_QUOTA_SENTINEL="$CODEX_QUOTA_SENTINEL" \
+  LLM_LIMITS_CODEX_REFRESH=1 LLM_LIMITS_CODEX_QUOTA_CMD="$WORK/fake-codex-quota" LLM_LIMITS_CODEX_CACHE="$CODEX_CACHE" \
+  PATH="$FAKE_BIN:$PATH" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --refresh) || fail "refresh collection failed"
 [ -s "$SENTINEL" ] || fail "--refresh did not invoke claudeb accounts"
 grep -q 'accounts --no-spend' "$SENTINEL" || fail "Claude refresh was not tier-1-only"
-[ -s "$CODEX_SENTINEL" ] || fail "--refresh did not invoke codex"
-grep -qx -- '--sandbox' "$CODEX_SENTINEL" && grep -qx 'read-only' "$CODEX_SENTINEL" || fail "Codex refresh did not use the read-only sandbox"
-grep -qx 'model_reasoning_effort="low"' "$CODEX_SENTINEL" || fail "Codex refresh did not request low reasoning effort"
-grep -qx -- '-m' "$CODEX_SENTINEL" && fail "Codex refresh unexpectedly overrode the configured model"
-rm -f "$SENTINEL"
-rm -f "$CODEX_SENTINEL"
-CLAUDEB_SENTINEL="$SENTINEL" CODEX_SENTINEL="$CODEX_SENTINEL" PATH="$FAKE_BIN:$PATH" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" >/dev/null || fail "default gated collection failed"
+[ -s "$CODEX_QUOTA_SENTINEL" ] || fail "--refresh did not invoke the codex quota helper"
+[ ! -e "$CODEX_SENTINEL" ] || fail "--refresh must be zero-spend but codex exec was invoked"
+jq -e '.vendors.codex.five_hour.used_pct == 31 and .vendors.codex.weekly.used_pct == 64 and
+  .vendors.codex.five_hour.origin == "usage" and .vendors.codex.source == "codex-app-server" and
+  .vendors.codex.five_hour.stale == false and .vendors.codex.plan_type == "plus" and
+  (.vendors.codex | has("refresh_error") | not)' <<<"$refresh_out" >/dev/null \
+  || fail "live codex quota did not outrank stale rollouts"
+refresh_failed=$(LLM_LIMITS_CODEX_REFRESH=1 LLM_LIMITS_CODEX_QUOTA_CMD=/usr/bin/false LLM_LIMITS_CODEX_CACHE="$CODEX_CACHE" \
+  PATH="$FAKE_BIN:$PATH" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --refresh 2>/dev/null) \
+  || fail "failed Codex refresh collection failed"
+jq -e '.vendors.codex.refresh_error == "live query failed" and .vendors.codex.five_hour.used_pct == 31' \
+  <<<"$refresh_failed" >/dev/null || fail "Codex refresh failure was not machine-readable or stale data was lost"
+rm -f "$SENTINEL" "$CODEX_QUOTA_SENTINEL"
+cached_codex=$(CLAUDEB_SENTINEL="$SENTINEL" CODEX_SENTINEL="$CODEX_SENTINEL" CODEX_QUOTA_SENTINEL="$CODEX_QUOTA_SENTINEL" \
+  LLM_LIMITS_CODEX_CACHE="$CODEX_CACHE" PATH="$FAKE_BIN:$PATH" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT") || fail "default gated collection failed"
 [ ! -e "$SENTINEL" ] || fail "default collection invoked claudeb"
 [ ! -e "$CODEX_SENTINEL" ] || fail "default collection invoked codex"
+[ ! -e "$CODEX_QUOTA_SENTINEL" ] || fail "default collection invoked the codex quota helper"
+jq -e '.vendors.codex.five_hour.used_pct == 31 and .vendors.codex.five_hour.origin == "usage"' <<<"$cached_codex" >/dev/null \
+  || fail "passive run did not reuse the codex quota cache"
+# Rollout events newer than the cached RPC snapshot must win (fixture rollout is 2026-07-11T10:00Z).
+touch -t 202607110500 "$CODEX_CACHE"
+rollout_wins=$(LLM_LIMITS_CODEX_CACHE="$CODEX_CACHE" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT") || fail "rollout-preference collection failed"
+jq -e '.vendors.codex.five_hour.used_pct == 74 and .vendors.codex.five_hour.origin == "headers" and .vendors.codex.source == "session-rollout"' <<<"$rollout_wins" >/dev/null \
+  || fail "newer rollout event did not outrank an older quota cache"
+rm -f "$CODEX_CACHE"
 
-fresh_ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-printf '{"timestamp":"%s","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":12,"resets_at":%s},"secondary":{"used_percent":34,"resets_at":%s}}}}\n' "$fresh_ts" "$((now + 5000))" "$((now + 9000))" >"$HOME_FIXTURE/.codex/sessions/2026/07/11/rollout-fresh.jsonl"
-CLAUDEB_SENTINEL="$SENTINEL" CODEX_SENTINEL="$CODEX_SENTINEL" LLM_LIMITS_CODEX_REFRESH=1 PATH="$FAKE_BIN:$PATH" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --refresh >/dev/null || fail "fresh refresh collection failed"
-[ ! -e "$CODEX_SENTINEL" ] || fail "fresh Codex data triggered a paid refresh"
-rm "$HOME_FIXTURE/.codex/sessions/2026/07/11/rollout-fresh.jsonl"
+HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --start-windows >/dev/null 2>&1
+rc=$?
+[ "$rc" -eq 2 ] || fail "--start-windows without --refresh: expected exit 2, got $rc"
 
-EXPIRED_HOME="$WORK/expired-codex-home"
-mkdir -p "$EXPIRED_HOME/.codex/sessions"
-printf '{"timestamp":"%s","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":99,"resets_at":%s},"secondary":{"used_percent":34,"resets_at":%s}}}}\n' "$fresh_ts" "$((now - 1))" "$((now + 9000))" >"$EXPIRED_HOME/.codex/sessions/rollout-expired.jsonl"
-CODEX_SENTINEL="$CODEX_SENTINEL" LLM_LIMITS_CODEX_REFRESH=1 LLM_LIMITS_CODEX_MODEL="fixture model" PATH="$FAKE_BIN:$PATH" HOME="$EXPIRED_HOME" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --refresh >/dev/null || fail "expired refresh collection failed"
-[ -s "$CODEX_SENTINEL" ] || fail "expired Codex data did not trigger refresh"
-grep -qx -- '-m' "$CODEX_SENTINEL" || fail "Codex model override flag was not passed"
-grep -qx 'fixture model' "$CODEX_SENTINEL" || fail "Codex model override was not passed as one argument"
-rm -f "$CODEX_SENTINEL"
+# --refresh --start-windows with a fresh codex 5h window: claudeb gets the window-start
+# request (its help advertises the flag) and codex exec stays untouched.
+rm -f "$SENTINEL" "$CODEX_SENTINEL" "$CODEX_QUOTA_SENTINEL"
+CLAUDEB_SENTINEL="$SENTINEL" CODEX_SENTINEL="$CODEX_SENTINEL" CODEX_QUOTA_SENTINEL="$CODEX_QUOTA_SENTINEL" \
+  LLM_LIMITS_CODEX_REFRESH=1 LLM_LIMITS_CODEX_QUOTA_CMD="$WORK/fake-codex-quota" LLM_LIMITS_CODEX_CACHE="$CODEX_CACHE" \
+  PATH="$FAKE_BIN:$PATH" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" \
+  bash "$SCRIPT" --refresh --start-windows >/dev/null 2>"$WORK/start-fresh.err" || fail "start-windows (fresh) collection failed"
+grep -qx -- '--refresh --start-windows' "$SENTINEL" || fail "claudeb window start was not requested"
+[ ! -e "$CODEX_SENTINEL" ] || fail "fresh codex window must not trigger a spend"
+grep -q 'gemini window start skipped' "$WORK/start-fresh.err" || fail "disabled gemini start must be reported, not silent"
 
-# Undeterminable Codex freshness (fresh event, null resets_at) must neither crash the
-# run under set -u nor force the paid codex poll.
+# Expired codex 5h window: one micro-spend via codex exec, then the quota is re-read.
+cat >"$WORK/fake-codex-quota-expired" <<EOF
+#!/usr/bin/env bash
+printf 'called\n' >>"\$CODEX_QUOTA_SENTINEL"
+if [ -e "\$CODEX_QUOTA_STATE" ]; then
+  printf '%s\n' '{"rateLimits":{"primary":{"usedPercent":12,"resetsAt":$((now + 4000))},"secondary":{"usedPercent":34,"resetsAt":$((now + 90000))},"planType":"plus"}}'
+else
+  : >"\$CODEX_QUOTA_STATE"
+  printf '%s\n' '{"rateLimits":{"primary":{"usedPercent":99,"resetsAt":$((now - 60))},"secondary":{"usedPercent":34,"resetsAt":$((now + 90000))},"planType":"plus"}}'
+fi
+EOF
+chmod +x "$WORK/fake-codex-quota-expired"
+rm -f "$SENTINEL" "$CODEX_SENTINEL" "$CODEX_QUOTA_SENTINEL" "$CODEX_CACHE"
+spend_out=$(CLAUDEB_SENTINEL="$SENTINEL" CODEX_SENTINEL="$CODEX_SENTINEL" CODEX_QUOTA_SENTINEL="$CODEX_QUOTA_SENTINEL" \
+  CODEX_QUOTA_STATE="$WORK/codex-quota-state" \
+  LLM_LIMITS_CODEX_REFRESH=1 LLM_LIMITS_CODEX_QUOTA_CMD="$WORK/fake-codex-quota-expired" LLM_LIMITS_CODEX_CACHE="$CODEX_CACHE" \
+  LLM_LIMITS_CODEX_MODEL="fixture model" \
+  PATH="$FAKE_BIN:$PATH" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" \
+  bash "$SCRIPT" --refresh --start-windows 2>/dev/null) || fail "start-windows (expired) collection failed"
+[ -s "$CODEX_SENTINEL" ] || fail "expired codex window did not trigger the window-start spend"
+grep -qx -- '--sandbox' "$CODEX_SENTINEL" && grep -qx 'read-only' "$CODEX_SENTINEL" || fail "codex window start did not use the read-only sandbox"
+grep -qx 'model_reasoning_effort="low"' "$CODEX_SENTINEL" || fail "codex window start did not request low reasoning effort"
+grep -qx -- '-m' "$CODEX_SENTINEL" || fail "codex model override flag was not passed"
+grep -qx 'fixture model' "$CODEX_SENTINEL" || fail "codex model override was not passed as one argument"
+[ "$(grep -c called "$CODEX_QUOTA_SENTINEL")" -eq 2 ] || fail "codex quota was not re-read after the window start"
+jq -e '.vendors.codex.five_hour.used_pct == 12' <<<"$spend_out" >/dev/null || fail "post-spend codex snapshot was not picked up"
+rm -f "$CODEX_CACHE" "$WORK/codex-quota-state"
+
+# claudeb builds that predate --start-windows: explicit notice, free refresh fallback.
+FAKE_BIN_OLD="$WORK/bin-old"
+mkdir -p "$FAKE_BIN_OLD"
+cat >"$FAKE_BIN_OLD/claudeb" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = --help ]; then
+  echo "  claudeb --refresh [--no-spend]"
+  exit 0
+fi
+printf '%s\n' "$*" >>"$CLAUDEB_SENTINEL"
+EOF
+cp "$FAKE_BIN/codex" "$FAKE_BIN_OLD/codex"
+chmod +x "$FAKE_BIN_OLD/claudeb" "$FAKE_BIN_OLD/codex"
+rm -f "$SENTINEL" "$CODEX_SENTINEL" "$CODEX_QUOTA_SENTINEL"
+CLAUDEB_SENTINEL="$SENTINEL" CODEX_SENTINEL="$CODEX_SENTINEL" CODEX_QUOTA_SENTINEL="$CODEX_QUOTA_SENTINEL" \
+  LLM_LIMITS_CODEX_REFRESH=1 LLM_LIMITS_CODEX_QUOTA_CMD="$WORK/fake-codex-quota" LLM_LIMITS_CODEX_CACHE="$CODEX_CACHE" \
+  PATH="$FAKE_BIN_OLD:$PATH" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" \
+  bash "$SCRIPT" --refresh --start-windows >/dev/null 2>"$WORK/start-old.err" || fail "start-windows (old claudeb) collection failed"
+grep -q 'claudeb lacks --start-windows' "$WORK/start-old.err" || fail "unsupported claudeb flag was skipped silently"
+grep -q 'accounts --no-spend' "$SENTINEL" || fail "old claudeb did not fall back to the free refresh"
+grep -q -- '--refresh --start-windows' "$SENTINEL" && fail "unsupported flag was passed to old claudeb"
+rm -f "$SENTINEL" "$CODEX_SENTINEL" "$CODEX_QUOTA_SENTINEL" "$CODEX_CACHE"
+
+# Undeterminable codex freshness (fresh event, null resets_at) must neither crash the run
+# under set -u nor trigger the window-start spend; the unknown state must be reported.
 NULLRESET_HOME="$WORK/nullreset-codex-home"
 mkdir -p "$NULLRESET_HOME/.codex/sessions"
 printf '{"timestamp":"%s","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":41,"resets_at":null},"secondary":{"used_percent":22,"resets_at":null}}}}\n' \
   "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" >"$NULLRESET_HOME/.codex/sessions/rollout-nullreset.jsonl"
-CODEX_SENTINEL="$CODEX_SENTINEL" LLM_LIMITS_CODEX_REFRESH=1 PATH="$FAKE_BIN:$PATH" HOME="$NULLRESET_HOME" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --refresh >/dev/null || fail "null resets_at refresh crashed"
-[ ! -e "$CODEX_SENTINEL" ] || fail "unknown Codex freshness forced a paid refresh"
+CODEX_SENTINEL="$CODEX_SENTINEL" LLM_LIMITS_CODEX_REFRESH=1 LLM_LIMITS_CODEX_QUOTA_CMD="$WORK/nonexistent-quota" \
+  PATH="$FAKE_BIN:$PATH" HOME="$NULLRESET_HOME" CLAUDEB_DIR="$WORK/no-claudeb-store" LLM_LIMITS_CACHE="$CACHE" \
+  bash "$SCRIPT" --refresh --start-windows >/dev/null 2>"$WORK/null.err" || fail "null resets_at refresh crashed"
+[ ! -e "$CODEX_SENTINEL" ] || fail "unknown codex window state triggered a spend"
+grep -q 'codex 5h window state unknown' "$WORK/null.err" || fail "unknown codex window state was skipped silently"
 null_reset=$(HOME="$NULLRESET_HOME" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "null resets_at collection failed"
 jq -e '.vendors.codex.available == true and .vendors.codex.five_hour.used_pct == 41 and .vendors.codex.five_hour.resets_at == null' <<<"$null_reset" >/dev/null || fail "null resets_at not normalized"
 HOME="$NULLRESET_HOME" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain | grep -q 'codex: 41%/22%' || fail "null resets_at plain render failed"
 HOME="$NULLRESET_HOME" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table | grep -q '^codex' || fail "null resets_at table render failed"
+
+# Gemini window start: an expired 5h bucket in the refreshed quota triggers one bounded
+# agy --print call, then the quota helper runs again.
+GEMINI_START_SENTINEL="$WORK/agy-called"
+GEMINI_STATE="$WORK/gemini-quota-state"
+GEMINI_CACHE2="$WORK/gemini-start.json"
+FAKE_AGY="$WORK/fake-agy"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$GEMINI_START_SENTINEL"\n' >"$FAKE_AGY"
+cat >"$WORK/fake-gemini-quota" <<EOF
+#!/usr/bin/env bash
+printf 'called\n' >>"\$GEMINI_SENTINEL"
+if [ -e "\$GEMINI_STATE" ]; then
+  printf '%s\n' '{"groups":[{"displayName":"Gemini Models","buckets":[{"window":"weekly","remainingFraction":0.6,"resetTime":"$(date -u -r $((now + 500000)) '+%Y-%m-%dT%H:%M:%SZ')"},{"window":"5h","remainingFraction":0.9,"resetTime":"$(date -u -r $((now + 7200)) '+%Y-%m-%dT%H:%M:%SZ')"}]}]}'
+else
+  : >"\$GEMINI_STATE"
+  printf '%s\n' '{"groups":[{"displayName":"Gemini Models","buckets":[{"window":"weekly","remainingFraction":0.75,"resetTime":"$(date -u -r $((now + 500000)) '+%Y-%m-%dT%H:%M:%SZ')"},{"window":"5h","remainingFraction":0.995,"resetTime":"2026-07-11T00:00:00Z"}]}]}'
+fi
+EOF
+chmod +x "$FAKE_AGY" "$WORK/fake-gemini-quota"
+gemini_start=$(GEMINI_SENTINEL="$GEMINI_SENTINEL" GEMINI_STATE="$GEMINI_STATE" GEMINI_START_SENTINEL="$GEMINI_START_SENTINEL" \
+  CLAUDEB_SENTINEL="$SENTINEL" CODEX_SENTINEL="$CODEX_SENTINEL" \
+  LLM_LIMITS_GEMINI_REFRESH=1 LLM_LIMITS_GEMINI_CMD="$WORK/fake-gemini-quota" LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE2" \
+  AGY_BIN="$FAKE_AGY" AGY_WORKDIR="$WORK" \
+  PATH="$FAKE_BIN:$PATH" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" \
+  bash "$SCRIPT" --refresh --start-windows 2>/dev/null) || fail "gemini start-windows collection failed"
+grep -q -- '--print' "$GEMINI_START_SENTINEL" || fail "expired gemini window did not trigger agy --print"
+[ "$(grep -c called "$GEMINI_SENTINEL")" -eq 2 ] || fail "gemini quota was not re-read after the window start"
+jq -e '.vendors.gemini.weekly.used_pct == 40' <<<"$gemini_start" >/dev/null || fail "post-start gemini snapshot was not picked up"
+rm -f "$GEMINI_SENTINEL" "$GEMINI_START_SENTINEL" "$GEMINI_STATE" "$GEMINI_CACHE2"
 
 table=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) || fail "table collection failed"
 grep -q $'\x1b' <<<"$table" && fail "piped table output contains ANSI escapes"
@@ -156,7 +352,7 @@ order=$(awk 'NR > 1 {print $1}' <<<"$table" | paste -sd, -)
 grep -q 'fable 33%' <<<"$table" || fail "fable note missing from table"
 printf '{"five_hour":{"used_percentage":7,"resets_at":%s},"fable":{"used_percentage":33,"resets_at":%s}}\n' "$((now + 5000))" "$((now - 1))" >"$CLAUDEB/limits/alona.json"
 expired_fable=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) || fail "expired fable table failed"
-grep -q 'fable 33%' <<<"$expired_fable" && fail "expired fable remained in table note"
+grep -q 'fable 33%' <<<"$expired_fable" || fail "expired fable must keep its last known value in the note"
 printf '{"five_hour":{"used_percentage":7,"resets_at":%s},"fable":{"used_percentage":33,"resets_at":%s}}\n' "$((now + 5000))" "$((now + 5500))" >"$CLAUDEB/limits/alona.json"
 awk 'NR > 1 && $1 == "codex"' <<<"$table" | grep -Eq '[0-9]{2}:[0-9]{2}' || fail "codex reset time not rendered"
 sorted=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table --sort 5h) || fail "sorted table collection failed"
@@ -168,6 +364,16 @@ reset_sorted=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CA
 order=$(awk 'NR > 1 {print $1}' <<<"$reset_sorted" | paste -sd, -)
 [ "$order" = "claude/zoe,codex,claude/alona*,gemini" ] || fail "--sort reset min(5h, weekly) order mismatch: $order"
 rm "$CLAUDEB/limits/zoe.json"
+SORT_RESET_STORE="$WORK/sort-reset-store"
+EMPTY_SORT_HOME="$WORK/sort-reset-home"
+mkdir -p "$SORT_RESET_STORE/limits" "$EMPTY_SORT_HOME"
+printf 'future-a\n' >"$SORT_RESET_STORE/.claudeb-state"
+printf '{"five_hour":{"used_percentage":10,"resets_at":%s}}\n' "$((now + 1000))" >"$SORT_RESET_STORE/limits/future-a.json"
+printf '{"five_hour":{"used_percentage":20,"resets_at":%s}}\n' "$((now + 2000))" >"$SORT_RESET_STORE/limits/future-b.json"
+printf '{"five_hour":{"used_percentage":30,"resets_at":%s}}\n' "$((now - 18000))" >"$SORT_RESET_STORE/limits/expired.json"
+reset_expired=$(HOME="$EMPTY_SORT_HOME" CLAUDEB_DIR="$SORT_RESET_STORE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table --sort reset) || fail "expired reset-sort collection failed"
+order=$(awk 'NR > 1 && $1 ~ /^claude\// {print $1}' <<<"$reset_expired" | paste -sd, -)
+[ "$order" = "claude/future-a*,claude/future-b,claude/expired" ] || fail "--sort reset must place an expired-window account last: $order"
 HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table --sort bogus >/dev/null 2>&1
 rc=$?
 [ "$rc" -eq 2 ] || fail "unknown --sort value: expected exit 2, got $rc"
@@ -200,8 +406,9 @@ touch -t 202607120500 "$CROSS_HOME/.codex/sessions/rollout-mtime-newest.jsonl"
 cross_latest=$(HOME="$CROSS_HOME" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "cross-file timestamp collection failed"
 jq -e '.vendors.codex.five_hour.used_pct == 17 and .vendors.codex.weekly.used_pct == 11' <<<"$cross_latest" >/dev/null || fail "mtime order outranked the latest event timestamp"
 
-# Passive snapshot whose 5h reset already passed: flagged expired, table shows dashes
-# and a note, sort treats the stale 100% as 0. The fresh weekly window stays unflagged.
+# Passive snapshot whose 5h reset already passed: flagged expired, table keeps the last
+# known value and reset time (dimmed only on a TTY, so piped output stays escape-free),
+# sort treats the stale 100% as 0. The fresh weekly window stays unflagged.
 sleep 1
 printf '{"timestamp":"%s","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":100,"window_minutes":300,"resets_at":%s},"secondary":{"used_percent":44,"window_minutes":10080,"resets_at":%s},"plan_type":"plus"}}}\n' \
   "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$((now - 600))" "$((now + 4000))" \
@@ -212,10 +419,10 @@ jq -e '.vendors.codex.five_hour.expired == true and .vendors.codex.five_hour.use
   (.vendors.claude.accounts[0].five_hour | has("expired") | not)' <<<"$expired_json" >/dev/null || fail "expired flag mismatch"
 expired_table=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) || fail "expired table collection failed"
 codex_row=$(awk 'NR > 1 && $1 == "codex"' <<<"$expired_table")
-grep -Eq '^codex +- +44% +- ' <<<"$codex_row" || fail "expired table columns not dashed: $codex_row"
+grep -Eq '^codex +100% +44% +[0-9]{2}:[0-9]{2}' <<<"$codex_row" || fail "expired window must keep its last known value and reset time: $codex_row"
 grep -q '5h reset passed' <<<"$codex_row" || fail "expired note missing from table"
 expired_plain=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain) || fail "expired plain collection failed"
-grep -q 'codex: -/44%' <<<"$expired_plain" || fail "expired plain value was not blanked"
+grep -q 'codex: 100%/44%' <<<"$expired_plain" || fail "expired plain output must keep the last known value"
 expired_sorted=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table --sort 5h) || fail "expired sorted table collection failed"
 order=$(awk 'NR > 1 {print $1}' <<<"$expired_sorted" | paste -sd, -)
 [ "$order" = "claude/alona*,codex,gemini" ] || fail "expired 5h sort must rank the stale 100% as 0: $order"
@@ -226,5 +433,5 @@ HOME="$EMPTY" bash "$SCRIPT" --no-write >/dev/null 2>&1
 rc=$?
 [ "$rc" -eq 3 ] || fail "all-missing case: expected exit 3, got $rc"
 
-echo "PASS: schema, Claude unique accounts and fallback, refresh gating, small-file fallback, truncated boundary, walls, plain output, table output and sorts, expired windows, bare JSON default, atomic cache, missing exit 3"
+echo "PASS: schema, Claude unique accounts and fallback, enabled flags, freshness contract, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, plain output, table output and sorts, expired windows, bare JSON default, atomic cache, missing exit 3"
 exit 0

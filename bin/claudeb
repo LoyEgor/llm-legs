@@ -1,0 +1,1128 @@
+#!/usr/bin/env bash
+# claudeb — multi-account launcher/balancer for Claude Code: picks the freest
+# account and runs sessions through the claudebd rotating proxy.
+# See ~/.claude-profiles/README.md before changing anything: snapshot schema,
+# account==profile naming, and CLAUDE_LIMITS_ACCOUNT semantics are coupled
+# with claudebd/statusline.sh.
+set -euo pipefail
+
+base_dir="${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}"
+tokens_dir="$base_dir/tokens"
+limits_dir="$base_dir/limits"
+state_file="$base_dir/.claudeb-state"
+disabled_file="$base_dir/disabled"
+
+account_names() {
+  local path
+  if [ -d "$tokens_dir" ]; then
+    for path in "$tokens_dir"/*; do
+      if [ -f "$path" ]; then
+        basename "$path"
+      fi
+    done | LC_ALL=C sort
+  fi
+}
+
+account_data() {
+  local name="$1" file="$limits_dir/$1.json" now modified age
+  now=$(date +%s)
+  modified=0
+  age=-1
+  if [ -r "$file" ] && jq -e 'type == "object"' "$file" >/dev/null 2>&1; then
+    modified=$(stat -f %m "$file" 2>/dev/null || stat -c %Y "$file" 2>/dev/null || printf '0')
+    age=$((now - modified))
+    jq -c --arg name "$name" --argjson now "$now" --argjson age "$age" --argjson mtime "$modified" '
+      def number_or_zero: if type == "number" then . else 0 end;
+      def reset: if type == "number" then . else 0 end;
+      (.auth.status // "") as $auth |
+      def is_stale($b; $thr):
+        ($auth == "expired") or (($b.origin? // "") == "cached")
+        or (($now - ($b.as_of? // $mtime)) > $thr);
+      (.five_hour.resets_at | reset) as $hreset |
+      (.seven_day.resets_at | reset) as $wreset |
+      (.fable.resets_at | reset) as $freset |
+      (if $hreset > $now then (.five_hour.used_percentage | number_or_zero) else 0 end) as $h5 |
+      (if $wreset > $now then (.seven_day.used_percentage | number_or_zero) else 0 end) as $wk |
+      (if (.fable.used_percentage | type) == "number" and
+          ($freset > $now or ($freset == 0 and .fable.used_percentage == 0))
+       then .fable.used_percentage else null end) as $fable |
+      {name: $name, h5: $h5, wk: $wk, hreset: $hreset, wreset: $wreset,
+       fable: $fable, freset: $freset, age: $age,
+       h5_raw: (.five_hour.used_percentage | number_or_zero),
+       wk_raw: (if (.seven_day.used_percentage | type) == "number" then .seven_day.used_percentage else null end),
+       fable_raw: (if (.fable.used_percentage | type) == "number" then .fable.used_percentage else null end),
+       h5_dim: (($hreset <= $now) or is_stale(.five_hour; 1800)),
+       wk_dim: (($wreset <= $now) or is_stale(.seven_day; 21600)),
+       fable_dim: (($freset <= $now) or is_stale(.fable; 21600)),
+       auth: (if $auth == "" then "ok" else $auth end),
+       walled: ($h5 >= 97 or $wk >= 99)}' "$file"
+  else
+    jq -cn --arg name "$name" '{name: $name, h5: 0, wk: 0, hreset: 0, wreset: 0, fable: null, freset: 0, age: -1,
+      h5_raw: 0, wk_raw: null, fable_raw: null, h5_dim: true, wk_dim: true, fable_dim: true, auth: "ok", walled: false}'
+  fi
+}
+
+is_disabled() {
+  [ -r "$disabled_file" ] && grep -qxF "$1" "$disabled_file"
+}
+
+set_disabled() {
+  local name="$1" mode="$2" tmp
+  mkdir -p "$base_dir"
+  tmp="$disabled_file.tmp.$$"
+  {
+    if [ -r "$disabled_file" ]; then grep -vxF "$name" "$disabled_file" || true; fi
+    if [ "$mode" = on ]; then printf '%s\n' "$name"; fi
+  } > "$tmp"
+  mv "$tmp" "$disabled_file"
+}
+
+selection() {
+  local state="" data name result picked all_walled reset disabled_json sticky_disabled=false
+  if ! account_names | grep -q .; then
+    printf 'claudeb: no accounts configured; add one with `claudeb add <name>`\n' >&2
+    exit 1
+  fi
+  [ -r "$state_file" ] && IFS= read -r state < "$state_file" || true
+  disabled_json='[]'
+  if [ -r "$disabled_file" ]; then
+    disabled_json=$(jq -Rn '[inputs | select(length > 0)]' < "$disabled_file")
+  fi
+  if [ -r "$state_file" ] && { [ ! -e "$disabled_file" ] || [ "$state_file" -nt "$disabled_file" ]; }; then
+    sticky_disabled=true
+  fi
+  data=""
+  while IFS= read -r name; do
+    data="${data}$(account_data "$name")"$'\n'
+  done < <(account_names)
+  result=$(printf '%s' "$data" | jq -sc --arg state "$state" --argjson disabled "$disabled_json" --argjson sticky_disabled "$sticky_disabled" '
+    map(. + {disabled: (.name as $n | $disabled | any(. == $n))}) as $all |
+    [$all[] | select(.disabled | not)] as $enabled |
+    ($enabled | length) as $enabled_count |
+    ($enabled_count > 0 and ($enabled | all(.walled))) as $all_walled |
+    ($all | map(select(.name == $state and ((.disabled | not) or $sticky_disabled) and (.walled | not) and .h5 < 90)) | first) as $sticky |
+    (if $sticky != null then $sticky
+     elif $all_walled then $enabled | sort_by(.hreset, .name) | first
+     else [$enabled[] | select(.walled | not)] | sort_by(.h5, .wk, .name) | first
+     end) as $picked |
+    {picked: $picked.name, all_walled: $all_walled, reset: $picked.hreset,
+     enabled_count: $enabled_count, data: $all}')
+  if [ "$(printf '%s' "$result" | jq -r .enabled_count)" -eq 0 ]; then
+    printf 'claudeb: all accounts are disabled; enable one with `claudeb enable <name>`\n' >&2
+    exit 1
+  fi
+  picked=$(printf '%s' "$result" | jq -r .picked)
+  all_walled=$(printf '%s' "$result" | jq -r .all_walled)
+  reset=$(printf '%s' "$result" | jq -r .reset)
+  if [ "$all_walled" = true ]; then
+    printf 'claudeb: warning: all accounts are walled; earliest 5h reset is %s\n' "$(format_time "$reset")" >&2
+  fi
+  printf '%s\n' "$result"
+}
+
+format_time() {
+  local epoch="$1"
+  if [ "$epoch" -gt 0 ] 2>/dev/null; then
+    date -r "$epoch" '+%Y-%m-%d %H:%M:%S %Z' 2>/dev/null || date -d "@$epoch" '+%Y-%m-%d %H:%M:%S %Z' 2>/dev/null || printf 'unknown'
+  else
+    printf 'unknown'
+  fi
+}
+
+format_age() {
+  local seconds="$1"
+  if [ "$seconds" -lt 0 ]; then printf 'unknown'
+  elif [ "$seconds" -lt 60 ]; then printf '%ss' "$seconds"
+  elif [ "$seconds" -lt 3600 ]; then printf '%sm' "$((seconds / 60))"
+  elif [ "$seconds" -lt 86400 ]; then printf '%sh' "$((seconds / 3600))"
+  else printf '%sd' "$((seconds / 86400))"
+  fi
+}
+
+header_value() {
+  local file="$1" key="$2"
+  awk -v wanted="$key" '
+    BEGIN { IGNORECASE = 1 }
+    {
+      sub(/\r$/, "")
+      name = $0
+      sub(/:.*/, "", name)
+      if (tolower(name) == tolower(wanted)) {
+        sub(/^[^:]*:[[:space:]]*/, "")
+        value = $0
+      }
+    }
+    END { print value }
+  ' "$file"
+}
+
+merge_headers() {
+  local name="$1" headers="$2" file="$limits_dir/$1.json"
+  local unified_status utilization hreset claim unified_reset tmp cached='{}'
+  unified_status=$(header_value "$headers" anthropic-ratelimit-unified-status)
+  utilization=$(header_value "$headers" anthropic-ratelimit-unified-5h-utilization)
+  hreset=$(header_value "$headers" anthropic-ratelimit-unified-5h-reset)
+  claim=$(header_value "$headers" anthropic-ratelimit-unified-representative-claim)
+  unified_reset=$(header_value "$headers" anthropic-ratelimit-unified-reset)
+  if ! jq -en --arg utilization "$utilization" --arg hreset "$hreset" '
+    ($utilization | tonumber? // -1) as $u |
+    ($hreset | tonumber? // 0) as $r |
+    $u >= 0 and $u <= 1 and $r > 0' >/dev/null; then
+    return 1
+  fi
+  if [ "$unified_status" != allowed ] && [ "$claim" = seven_day ]; then
+    if ! jq -en --arg reset "$unified_reset" '($reset | tonumber? // 0) > 0' >/dev/null; then
+      return 1
+    fi
+  fi
+  mkdir -p "$limits_dir"
+  tmp="$limits_dir/.$name.json.$$"
+  if [ -r "$file" ] && jq -e 'type == "object"' "$file" >/dev/null 2>&1; then
+    cached=$(jq -c . "$file")
+  fi
+  if ! jq -n --arg utilization "$utilization" --arg hreset "$hreset" \
+    --arg unified_status "$unified_status" --arg claim "$claim" --arg unified_reset "$unified_reset" \
+    --argjson old "$cached" --argjson now "$(date +%s)" '
+      $old + {five_hour: {
+        used_percentage: (($utilization | tonumber) * 100 | round),
+        resets_at: ($hreset | tonumber),
+        as_of: $now, origin: "headers"
+      }} +
+      (if $unified_status != "allowed" and $claim == "seven_day" then
+        {seven_day: {used_percentage: 100, resets_at: ($unified_reset | tonumber), as_of: $now, origin: "headers"}}
+       else {} end) +
+      {auth: {status: "ok", checked_at: $now}}' > "$tmp" 2>/dev/null; then
+    rm -f "$tmp"
+    return 1
+  fi
+  mv "$tmp" "$file"
+}
+
+merge_usage() {
+  local name="$1" body="$2" file="$limits_dir/$1.json" tmp cached='{}'
+  mkdir -p "$limits_dir"
+  tmp="$limits_dir/.$name.json.$$"
+  if [ -r "$file" ] && jq -e 'type == "object"' "$file" >/dev/null 2>&1; then
+    cached=$(jq -c . "$file")
+  fi
+  if ! jq --argjson old "$cached" --argjson now "$(date +%s)" '
+    def epoch:
+      capture("^(?<base>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\\.[0-9]+)?(?:Z|\\+00:00)$") |
+      (.base + "Z") | fromdateiso8601;
+    ($old + {
+      five_hour: {used_percentage: (.five_hour.utilization | round), resets_at: (.five_hour.resets_at | epoch), as_of: $now, origin: "usage"}
+    } +
+    (if (.seven_day.utilization | type) == "number" then
+      {seven_day: {used_percentage: (.seven_day.utilization | round), resets_at: (.seven_day.resets_at | epoch), as_of: $now, origin: "usage"}}
+     else {} end)) as $merged |
+    [.limits[]? | select(.kind == "weekly_scoped" and .scope.model.display_name == "Fable")][0] as $fable |
+    # The endpoint includes the Fable entry inconsistently: a 200 without it may
+    # follow one that had a real percent, so a still-valid cached value wins over
+    # the zero marker (resets_at 0 = "confirmed zero, no active window").
+    (if $fable then $merged + {fable: {used_percentage: ($fable.percent | round), resets_at: ($fable.resets_at | epoch), as_of: $now, origin: "usage"}}
+    elif ($merged.fable.resets_at? // 0) > $now then $merged + {fable: ($merged.fable + {origin: "cached"})}
+    else $merged + {fable: {used_percentage: 0, resets_at: 0, as_of: $now, origin: "usage"}} end) +
+    {auth: {status: "ok", checked_at: $now}}' \
+    "$body" > "$tmp" 2>/dev/null; then
+    rm -f "$tmp"
+    return 1
+  fi
+  mv "$tmp" "$file"
+}
+
+mark_auth() {
+  local name="$1" status="$2" file="$limits_dir/$1.json" tmp cached='{}'
+  mkdir -p "$limits_dir"
+  tmp="$limits_dir/.$name.json.auth.$$"
+  if [ -r "$file" ] && jq -e 'type == "object"' "$file" >/dev/null 2>&1; then
+    cached=$(jq -c . "$file")
+  fi
+  if jq -cn --argjson old "$cached" --argjson now "$(date +%s)" --arg status "$status" \
+    '$old + {auth: {status: $status, checked_at: $now}}' > "$tmp" 2>/dev/null; then
+    mv "$tmp" "$file"
+  else
+    rm -f "$tmp"
+  fi
+}
+
+oauth_client_id="9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+oauth_token_url="https://platform.claude.com/v1/oauth/token"
+
+# security -i takes the command on stdin, so the secret never appears in argv.
+keychain_write() {
+  local service="$1" value="$2" escaped
+  escaped=${value//\\/\\\\}
+  escaped=${escaped//\"/\\\"}
+  printf 'add-generic-password -U -a "%s" -s "%s" -w "%s"\n' "$USER" "$service" "$escaped" | \
+    security -i >/dev/null 2>&1
+}
+
+# Prints the rotated credentials JSON on success. A corrupt keychain write logs
+# the profile out of Claude Code, so the write is verified by re-read and the
+# previous JSON is restored on any mismatch.
+oauth_refresh() {
+  local service="$1" prev="$2" body response new_creds readback
+  body=$(printf '%s' "$prev" | jq -c --arg client_id "$oauth_client_id" '
+    .claudeAiOauth as $c |
+    ($c.refreshToken | select(type == "string" and length > 0)) as $rt |
+    {grant_type: "refresh_token", refresh_token: $rt, client_id: $client_id}
+    + (([$c.scopes[]? | strings] | join(" ")) as $scope |
+       if $scope == "" then {} else {scope: $scope} end)' 2>/dev/null) || return 1
+  [ -n "$body" ] || return 1
+  response=$(printf '%s' "$body" | curl -fsS -m 8 -X POST -H 'Content-Type: application/json' \
+    -d @- "$oauth_token_url" 2>/dev/null) || return 1
+  body=""
+  new_creds=$(jq -cn --argjson old "$prev" --argjson new "$response" \
+    --argjson now_ms "$(($(date +%s) * 1000))" '
+    ($new.access_token | select(type == "string" and length > 0)) as $at |
+    $old
+    | .claudeAiOauth.accessToken = $at
+    | .claudeAiOauth.expiresAt = ($now_ms + (($new.expires_in // 0) * 1000) | floor)
+    | (if ($new.refresh_token | type) == "string" and ($new.refresh_token | length) > 0
+       then .claudeAiOauth.refreshToken = $new.refresh_token else . end)
+    | (if ($new.refresh_token_expires_in | type) == "number"
+       then .claudeAiOauth.refreshTokenExpiresAt = ($now_ms + ($new.refresh_token_expires_in * 1000) | floor)
+       else . end)' 2>/dev/null) || return 1
+  response=""
+  [ -n "$new_creds" ] || return 1
+  keychain_write "$service" "$new_creds" || true
+  readback=$(security find-generic-password -s "$service" -w 2>/dev/null) || readback=""
+  if [ "$readback" != "$new_creds" ]; then
+    # A concurrent Claude Code session may have rotated the item after us; a
+    # readback still holding valid credentials is theirs — restoring $prev over
+    # it would log that session out. Restore only over a garbled write.
+    if ! printf '%s' "$readback" | jq -e '.claudeAiOauth.refreshToken | select(type == "string" and length > 0)' >/dev/null 2>&1; then
+      keychain_write "$service" "$prev" || true
+    fi
+    return 1
+  fi
+  printf '%s' "$new_creds"
+}
+
+messages_probe() {
+  local name="$1" dir="$2" http=000 rc=0
+  if http=$(printf 'header = "Authorization: Bearer %s"\n' "$(cat "$tokens_dir/$name")" | \
+    curl -sK - -m 10 -D "$dir/$name.headers" -o /dev/null -w '%{http_code}' -X POST \
+      -H 'anthropic-beta: oauth-2025-04-20' -H 'anthropic-version: 2023-06-01' \
+      -H 'Content-Type: application/json' \
+      -d '{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}' \
+      https://api.anthropic.com/v1/messages 2>/dev/null); then
+    :
+  else
+    rc=$?
+  fi
+  printf '%s %s' "$rc" "${http:-000}"
+}
+
+probe_one() {
+  local name="$1" dir="$2" allow_spend="$3" http=000 rc=1 attempt out
+  local profile hash service credentials access_token now_ms expires_at refreshed=false
+  profile="$HOME/.claude-profiles/$name"
+  hash=$(printf '%s' "$profile" | shasum -a 256 | awk '{print substr($1, 1, 8)}')
+  service="Claude Code-credentials-$hash"
+  if credentials=$(security find-generic-password -s "$service" -w 2>/dev/null); then
+    now_ms=$(($(date +%s) * 1000))
+    expires_at=$(printf '%s' "$credentials" | jq -r '.claudeAiOauth.expiresAt // 0 | floor' 2>/dev/null) || expires_at=0
+    [[ "$expires_at" =~ ^[0-9]+$ ]] || expires_at=0
+    if [ "$expires_at" -le "$now_ms" ]; then
+      refreshed=true
+      if ! credentials=$(oauth_refresh "$service" "$credentials"); then
+        credentials=""
+        mark_auth "$name" expired
+      fi
+    fi
+    for attempt in 1 2; do
+      [ -n "$credentials" ] || break
+      access_token=$(printf '%s' "$credentials" | jq -er '.claudeAiOauth.accessToken | select(type == "string" and length > 0)' 2>/dev/null) || break
+      rc=0
+      if http=$(printf 'header = "Authorization: Bearer %s"\n' "$access_token" | \
+        curl -sK - -m 10 -o "$dir/$name.usage" -w '%{http_code}' \
+          -H 'anthropic-beta: oauth-2025-04-20' \
+          -H 'User-Agent: claude-cli/2.1.207 (external, cli)' \
+          https://api.anthropic.com/api/oauth/usage 2>/dev/null); then
+        :
+      else
+        rc=$?
+      fi
+      access_token=""
+      if [ "$rc" -eq 0 ] && [ "$http" = 200 ] && jq -e '.five_hour.utilization | type == "number"' "$dir/$name.usage" >/dev/null 2>&1; then
+        credentials=""
+        printf 'usage 0 200\n' > "$dir/$name.result"
+        return
+      fi
+      if [ "$attempt" -eq 1 ] && [ "$http" = 401 ] && [ "$refreshed" != true ]; then
+        refreshed=true
+        if ! credentials=$(oauth_refresh "$service" "$credentials"); then
+          credentials=""
+          mark_auth "$name" expired
+        fi
+      else
+        [ "$http" != 401 ] || mark_auth "$name" expired
+        break
+      fi
+    done
+    credentials=""
+  fi
+  if [ "$allow_spend" != true ]; then
+    printf 'no-spend %s %s\n' "$rc" "${http:-000}" > "$dir/$name.result"
+    return
+  fi
+  out=$(messages_probe "$name" "$dir")
+  printf 'messages %s\n' "$out" > "$dir/$name.result"
+}
+
+probe_accounts() {
+  local dir="$1" allow_spend="$2" start_windows="${3:-false}" name pid pids="" source rc http now hreset out
+  while IFS= read -r name; do
+    probe_one "$name" "$dir" "$allow_spend" &
+    pid=$!
+    pids="$pids $pid"
+  done < <(account_names)
+  for pid in $pids; do
+    wait "$pid" || true
+  done
+  while IFS= read -r name; do
+    read -r source rc http < "$dir/$name.result"
+    if [ "$source" = usage ] && merge_usage "$name" "$dir/$name.usage"; then
+      printf 'live\n' > "$dir/$name.display"
+    elif { [ "$http" = 401 ] || [ "$http" = 403 ]; }; then
+      [ "$source" != messages ] || mark_auth "$name" expired
+      printf 'auth!\n' > "$dir/$name.display"
+    elif [ "$source" = messages ] && [ "$rc" -eq 0 ] && [ "$http" = 200 ] && merge_headers "$name" "$dir/$name.headers"; then
+      printf 'live*\n' > "$dir/$name.display"
+    else
+      printf '!\n' > "$dir/$name.display"
+    fi
+  done < <(account_names)
+  [ "$start_windows" = true ] || return 0
+  now=$(date +%s)
+  while IFS= read -r name; do
+    is_disabled "$name" && continue
+    # Micro-spend only on a window confirmed expired by THIS run's probe; a
+    # failed probe leaves the window state unknown, and spending on unknowns
+    # would burn tokens on dead or unreachable accounts.
+    case "$(cat "$dir/$name.display" 2>/dev/null)" in
+      live|'live*') ;;
+      *)
+        printf 'claudeb: %s: usage probe failed; window state unknown, not starting a 5h window\n' "$name" >&2
+        continue
+        ;;
+    esac
+    hreset=$(jq -r '.five_hour.resets_at // 0' "$limits_dir/$name.json" 2>/dev/null) || hreset=0
+    [[ "$hreset" =~ ^[0-9]+$ ]] || hreset=0
+    [ "$hreset" -lt "$now" ] || continue
+    out=$(messages_probe "$name" "$dir")
+    rc=${out%% *}
+    http=${out##* }
+    if [ "$rc" = 0 ] && [ "$http" = 200 ] && merge_headers "$name" "$dir/$name.headers"; then
+      grep -qx live "$dir/$name.display" 2>/dev/null || printf 'live*\n' > "$dir/$name.display"
+    elif [ "$http" = 401 ] || [ "$http" = 403 ]; then
+      mark_auth "$name" expired
+      printf 'auth!\n' > "$dir/$name.display"
+    fi
+  done < <(account_names)
+}
+
+add_account() {
+  local name="${1:-}" token
+  if [ -z "$name" ] || ! [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || [ "$name" = main ]; then
+    printf 'usage: claudeb add <name> (letters, numbers, dots, underscores, and hyphens; not "main")\n' >&2
+    exit 2
+  fi
+  printf 'Run `claude setup-token` in any terminal, complete browser authentication, then paste the printed token here.\n'
+  printf 'Token (input is visible): '
+  IFS= read -r token
+  token=$(printf '%s' "$token" | tr -d '[:space:]')
+  if [ -z "$token" ]; then
+    printf 'claudeb: EMPTY input — nothing was pasted; token NOT saved\n' >&2
+    exit 1
+  fi
+  printf 'claudeb: got %s characters\n' "${#token}"
+  case "$token" in
+    sk-ant-oat01-*) ;;
+    *)
+      printf 'claudeb: this does not look like a setup-token (expected sk-ant-oat01-... prefix); NOT saved\n' >&2
+      exit 1
+      ;;
+  esac
+  printf 'claudeb: pinging the API with this token...\n'
+  if reply=$(CLAUDE_CODE_OAUTH_TOKEN="$token" timeout 90 claude -p 'Reply with exactly: ok' --model haiku 2>&1); then
+    printf 'claudeb: token WORKS (model replied: %s)\n' "$(printf '%s' "$reply" | tail -n 1)"
+  else
+    printf 'claudeb: token ping FAILED — NOT saved. Last output:\n%s\n' "$(printf '%s' "$reply" | tail -n 3)" >&2
+    exit 1
+  fi
+  mkdir -p "$tokens_dir" "$limits_dir"
+  chmod 700 "$base_dir" "$tokens_dir"
+  (umask 077; printf '%s' "$token" > "$tokens_dir/$name")
+  chmod 600 "$tokens_dir/$name"
+  printf 'claudeb: saved and connected: %s\n' "$name"
+}
+
+use_account() {
+  local name="${1:-}" http body
+  if [ -z "$name" ]; then
+    printf 'usage: claudeb use <name>\n' >&2
+    exit 2
+  fi
+  if [ ! -f "$tokens_dir/$name" ]; then
+    printf 'claudeb: unknown account: %s\n' "$name" >&2
+    exit 2
+  fi
+  write_state_file "$name"
+  if daemon_query >/dev/null 2>&1; then
+    body=$(jq -cn --arg account "$name" '{account: $account}')
+    http=$(curl -s -m 1 -o /dev/null -w '%{http_code}' -X POST \
+      -H 'Content-Type: application/json' -d "$body" \
+      "http://127.0.0.1:$daemon_port/claudebd/use" 2>/dev/null || printf '000')
+    if [ "$http" != 200 ]; then
+      printf 'claudeb: daemon refused the switch (HTTP %s)\n' "$http" >&2
+      exit 1
+    fi
+  else
+    printf 'claudeb: daemon not running; will apply on next start\n' >&2
+  fi
+  printf 'claudeb: using %s\n' "$name"
+}
+
+write_state_file() {
+  local name="$1" tmp
+  mkdir -p "$base_dir"
+  tmp="$state_file.tmp.$$"
+  printf '%s\n' "$name" > "$tmp"
+  mv "$tmp" "$state_file"
+}
+
+# A status GET makes a running daemon rescan and pick up store changes immediately.
+nudge_daemon_rescan() {
+  daemon_query >/dev/null 2>&1 || true
+}
+
+enable_account() {
+  local name="${1:-}"
+  if [ -z "$name" ]; then
+    printf 'usage: claudeb enable <name>\n' >&2
+    exit 2
+  fi
+  if [ ! -f "$tokens_dir/$name" ]; then
+    printf 'claudeb: unknown account: %s\n' "$name" >&2
+    exit 2
+  fi
+  if ! is_disabled "$name"; then
+    printf 'claudeb: %s is already enabled\n' "$name"
+    return
+  fi
+  set_disabled "$name" off
+  nudge_daemon_rescan
+  printf 'claudeb: enabled %s\n' "$name"
+}
+
+disable_account() {
+  local name="${1:-}" other enabled_left=0
+  if [ -z "$name" ]; then
+    printf 'usage: claudeb disable <name>\n' >&2
+    exit 2
+  fi
+  if [ ! -f "$tokens_dir/$name" ]; then
+    printf 'claudeb: unknown account: %s\n' "$name" >&2
+    exit 2
+  fi
+  if is_disabled "$name"; then
+    printf 'claudeb: %s is already disabled\n' "$name"
+    return
+  fi
+  while IFS= read -r other; do
+    if [ "$other" != "$name" ] && ! is_disabled "$other"; then
+      enabled_left=$((enabled_left + 1))
+    fi
+  done < <(account_names)
+  if [ "$enabled_left" -eq 0 ]; then
+    printf 'claudeb: refusing to disable %s: it is the last enabled account\n' "$name" >&2
+    exit 1
+  fi
+  set_disabled "$name" on
+  nudge_daemon_rescan
+  printf 'claudeb: disabled %s\n' "$name"
+}
+
+show_help() {
+  local bold='' cyan='' dim='' yellow='' reset=''
+  if [ -t 1 ] && [ -n "${TERM:-}" ] && [ "${TERM:-}" != dumb ]; then
+    bold=$'\033[1m'; cyan=$'\033[36m'; dim=$'\033[2m'; yellow=$'\033[33m'; reset=$'\033[0m'
+  fi
+  printf '%sclaudeb%s — multi-account launcher and rotating proxy for Claude Code.\n\n' "$bold" "$reset"
+  printf '  %s%sclaudeb%s                                 %sLaunch through the rotating proxy.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
+  printf '  %s%sclaudeb --direct%s                        %sLaunch once without the proxy.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
+  printf '  %s%sclaudeb --refresh [--spend] [--start-windows]%s\n' "$bold" "$cyan" "$reset"
+  printf '                                          %sFree refresh; --spend adds the 1-token fallback,%s\n' "$dim" "$reset"
+  printf '                                          %s--start-windows pings expired 5h windows.%s\n' "$dim" "$reset"
+  printf '  %s%sclaudeb profile <name>%s                  %sOpen an isolated profile; alias: p.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
+  printf '  %s%sclaudeb status [--cached] [--plain] [--spend] [--start-windows]%s\n' "$bold" "$cyan" "$reset"
+  printf '                                          %sShow limits; aliases: st, accounts.%s\n' "$dim" "$reset"
+  printf '  %s%sclaudeb use <name>%s                      %sSwitch now without pinning.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
+  printf '  %s%sclaudeb enable <name>%s                   %sReturn an account to auto-rotation.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
+  printf '  %s%sclaudeb disable <name>%s                  %sExclude an account from auto-rotation.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
+  printf '  %s%sclaudeb add <name>%s                      %sValidate and save a setup-token.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
+  printf '  %s%sclaudeb pick%s                            %sPrint the cached selection.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
+  printf '  %s%sclaudeb daemon status|start|stop|restart|log%s\n' "$bold" "$cyan" "$reset"
+  printf '  %s%sclaudeb daemon install|uninstall%s         %sManage launchd supervision.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
+  printf '  %s←/→%s sort  %sr%s refresh  %sq/Esc%s exit interactive status\n\n' "$yellow" "$reset" "$yellow" "$reset" "$yellow" "$reset"
+  printf '%sDATA%s\n' "$bold" "$reset"
+  printf '  Tokens: %s/tokens/<account>\n' "$base_dir"
+  printf '  Limits: %s/limits/<account>.json\n' "$base_dir"
+  printf '  Guide:  ~/.claude-profiles/README.md\n'
+}
+
+profile_command() {
+  local profiles_dir="$HOME/.claude-profiles" profile="${1:-}" dir found d f
+  if [ "$profile" = -h ] || [ "$profile" = --help ]; then
+    show_help
+    return
+  fi
+  if [ -z "$profile" ]; then
+    printf 'usage: claudeb profile <profile> [claude args...]\n'
+    printf 'existing profiles:\n'
+    found=0
+    for d in "$profiles_dir"/*/; do
+      [ -d "$d" ] || continue
+      printf '  %s\n' "$(basename "$d")"
+      found=1
+    done
+    [ "$found" -eq 1 ] || printf '  (none yet — first run creates one)\n'
+    return
+  fi
+  case "$profile" in
+    .*|*/*|help|add|use|enable|disable|pick|accounts|status|st|daemon|profile)
+      printf "claudeb: invalid profile name '%s'\n" "$profile" >&2; return 2 ;;
+  esac
+  shift
+  dir="$profiles_dir/$profile"
+  if [ ! -d "$dir" ]; then
+    mkdir -p "$dir"
+    printf "claudeb: new profile '%s' created at %s — Claude will ask you to log in once.\n" "$profile" "$dir" >&2
+  fi
+  # A profile isolates only auth (.claude.json + keychain entry); config AND
+  # session data (resume transcripts, prompt history, rewind, plugins) are
+  # shared with ~/.claude. Links are re-ensured on every launch so new shared
+  # items propagate; a real (non-symlink) entry is never replaced.
+  for f in settings.json settings.local.json CLAUDE.md agents commands skills \
+           statusline.sh hooks plugins projects sessions file-history history.jsonl; do
+    if [ -e "$HOME/.claude/$f" ] && [ ! -e "$dir/$f" ] && [ ! -L "$dir/$f" ]; then
+      ln -s "$HOME/.claude/$f" "$dir/$f"
+    fi
+  done
+  # user-scope MCP servers live in ~/.claude.json, which cannot be shared
+  # (it also holds oauthAccount); copy the servers over, profile keys win
+  if command -v jq >/dev/null 2>&1 && [ -f "$HOME/.claude.json" ]; then
+    servers=$(jq -c '.mcpServers // {}' "$HOME/.claude.json" 2>/dev/null || printf '{}')
+    if [ -n "$servers" ] && [ "$servers" != '{}' ]; then
+      if [ -f "$dir/.claude.json" ]; then
+        tmp=$(mktemp)
+        if jq --argjson s "$servers" '.mcpServers = ($s + (.mcpServers // {}))' \
+             "$dir/.claude.json" >"$tmp" 2>/dev/null && [ -s "$tmp" ]; then
+          mv "$tmp" "$dir/.claude.json"
+        else
+          rm -f "$tmp"
+        fi
+      else
+        printf '{"mcpServers":%s}\n' "$servers" >"$dir/.claude.json"
+      fi
+    fi
+  fi
+  exec env CLAUDE_CONFIG_DIR="$dir" CLAUDE_LIMITS_ACCOUNT="$profile" claude "$@"
+}
+
+daemon_port="${CLAUDEBD_PORT:-45789}"
+daemon_url="http://127.0.0.1:$daemon_port/claudebd/status"
+daemon_log="$base_dir/claudebd.log"
+daemon_pid="$base_dir/claudebd.pid"
+daemon_label="com.claudeb.daemon"
+daemon_domain="gui/$(id -u)"
+daemon_service="$daemon_domain/$daemon_label"
+daemon_plist="$HOME/Library/LaunchAgents/$daemon_label.plist"
+daemon_json=""
+
+daemon_query() {
+  curl -fsS --max-time 0.3 "$daemon_url" 2>/dev/null
+}
+
+daemon_supervised() {
+  launchctl print "$daemon_service" >/dev/null 2>&1
+}
+
+daemon_wait() {
+  local i=0
+  while [ "$i" -lt 40 ]; do
+    if daemon_json=$(daemon_query); then return 0; fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 1
+}
+
+daemon_spawn_manual() {
+  mkdir -p "$base_dir"
+  if command -v setsid >/dev/null 2>&1; then
+    nohup setsid "$HOME/.local/bin/claudebd" >> "$daemon_log" 2>&1 </dev/null &
+  else
+    nohup "$HOME/.local/bin/claudebd" >> "$daemon_log" 2>&1 </dev/null &
+  fi
+  disown 2>/dev/null || true
+}
+
+daemon_start_impl() {
+  if daemon_json=$(daemon_query); then return 0; fi
+  if [ -f "$daemon_plist" ]; then
+    if ! daemon_supervised; then
+      launchctl bootstrap "$daemon_domain" "$daemon_plist" >/dev/null 2>&1 || return 1
+    fi
+    launchctl kickstart "$daemon_service" >/dev/null 2>&1 || return 1
+  else
+    daemon_spawn_manual
+  fi
+  daemon_wait
+}
+
+ensure_daemon() {
+  daemon_start_impl
+}
+
+daemon_stop() {
+  local pid="" i
+  [ -r "$daemon_pid" ] && IFS= read -r pid < "$daemon_pid" || true
+  if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+    kill -TERM "$pid"
+  elif command -v lsof >/dev/null 2>&1; then
+    pid=$(lsof -ti "tcp:$daemon_port" 2>/dev/null | head -n 1)
+    [ -z "$pid" ] || kill -TERM "$pid"
+  fi
+  i=0
+  while daemon_query >/dev/null 2>&1 && [ "$i" -lt 20 ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if daemon_query >/dev/null 2>&1; then
+    printf 'claudeb: daemon did not stop\n' >&2
+    return 1
+  fi
+  printf 'claudeb: daemon stopped\n'
+}
+
+daemon_install() {
+  local node_path
+  node_path=$(command -v node 2>/dev/null) || {
+    printf 'claudeb: node was not found\n' >&2
+    return 1
+  }
+  if daemon_query >/dev/null 2>&1; then daemon_stop; fi
+  mkdir -p "$HOME/Library/LaunchAgents" "$base_dir"
+  printf '%s\n' \
+    '<?xml version="1.0" encoding="UTF-8"?>' \
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+    '<plist version="1.0">' \
+    '<dict>' \
+    '  <key>Label</key>' \
+    "  <string>$daemon_label</string>" \
+    '  <key>ProgramArguments</key>' \
+    '  <array>' \
+    "    <string>$node_path</string>" \
+    "    <string>$HOME/.local/bin/claudebd</string>" \
+    '  </array>' \
+    '  <key>RunAtLoad</key>' \
+    '  <true/>' \
+    '  <key>KeepAlive</key>' \
+    '  <dict>' \
+    '    <key>SuccessfulExit</key>' \
+    '    <false/>' \
+    '  </dict>' \
+    '  <key>StandardOutPath</key>' \
+    "  <string>$daemon_log</string>" \
+    '  <key>StandardErrorPath</key>' \
+    "  <string>$daemon_log</string>" \
+    '  <key>ProcessType</key>' \
+    '  <string>Background</string>' \
+    '</dict>' \
+    '</plist>' > "$daemon_plist"
+  plutil -lint "$daemon_plist" >/dev/null || return 1
+  launchctl bootout "$daemon_service" >/dev/null 2>&1 || true
+  launchctl bootstrap "$daemon_domain" "$daemon_plist" >/dev/null 2>&1 || return 1
+  launchctl kickstart "$daemon_service" >/dev/null 2>&1 || return 1
+  if daemon_wait; then
+    printf 'claudeb: launchd supervision installed and daemon started\n'
+  else
+    printf 'claudeb: launchd service did not become ready\n' >&2
+    return 1
+  fi
+}
+
+daemon_uninstall() {
+  launchctl bootout "$daemon_service" >/dev/null 2>&1 || true
+  rm -f "$daemon_plist"
+  printf 'claudeb: launchd supervision uninstalled\n'
+}
+
+daemon_command() {
+  local action="${1:-status}"
+  case "$action" in
+    status)
+      if daemon_json=$(daemon_query); then
+        printf '%s\n' "$daemon_json" | jq .
+      else
+        printf 'not running\n'
+      fi
+      # stderr keeps `daemon status | jq` parseable
+      if daemon_supervised; then
+        printf 'supervision: launchd (auto-restart on crash)\n' >&2
+      else
+        printf 'supervision: manual\n' >&2
+      fi
+      ;;
+    start)
+      if daemon_start_impl; then
+        printf 'claudeb: daemon started\n'
+      else
+        printf 'claudeb: daemon failed to start\n' >&2
+        return 1
+      fi
+      ;;
+    stop)
+      daemon_stop
+      ;;
+    restart)
+      daemon_stop || true
+      if daemon_start_impl; then
+        printf 'claudeb: daemon restarted\n'
+      else
+        printf 'claudeb: daemon failed to start\n' >&2
+        return 1
+      fi
+      ;;
+    install)
+      daemon_install
+      ;;
+    uninstall)
+      daemon_uninstall
+      ;;
+    log)
+      tail -50 "$daemon_log" 2>/dev/null || true
+      ;;
+    *)
+      printf 'usage: claudeb daemon status|start|stop|restart|log|install|uninstall\n' >&2
+      return 2
+      ;;
+  esac
+}
+
+direct_launch() {
+  local result picked row h5 wk age
+  result=$(selection)
+  picked=$(printf '%s' "$result" | jq -r .picked)
+  row=$(printf '%s' "$result" | jq -c --arg name "$picked" '.data[] | select(.name == $name)')
+  h5=$(printf '%s' "$row" | jq -r '.h5 | round')
+  wk=$(printf '%s' "$row" | jq -r '.wk | round')
+  age=$(printf '%s' "$row" | jq -r .age)
+  if ! daemon_query >/dev/null 2>&1; then write_state_file "$picked"; fi
+  if [ "$age" -lt 0 ]; then
+    printf 'claudeb: using %s (no limit data)\n' "$picked" >&2
+  else
+    printf 'claudeb: using %s (5h %s%%, wk %s%%)\n' "$picked" "$h5" "$wk" >&2
+  fi
+  export CLAUDE_LIMITS_ACCOUNT="$picked"
+  CLAUDE_CODE_OAUTH_TOKEN=$(cat "$tokens_dir/$picked")
+  export CLAUDE_CODE_OAUTH_TOKEN
+  exec claude "$@"
+}
+
+proxy_launch() {
+  local picked
+  if ! ensure_daemon; then
+    printf 'claudeb: proxy unavailable; falling back to direct mode\n' >&2
+    direct_launch "$@"
+  fi
+  picked=$(printf '%s' "$daemon_json" | jq -r '.current // empty')
+  if [ -z "$picked" ] || [ ! -r "$tokens_dir/$picked" ]; then
+    printf 'claudeb: proxy has no usable current account; falling back to direct mode\n' >&2
+    direct_launch "$@"
+  fi
+  printf 'claudeb: via proxy on 127.0.0.1:%s (current: %s)\n' "$daemon_port" "$picked" >&2
+  CLAUDE_CODE_OAUTH_TOKEN=$(cat "$tokens_dir/$picked")
+  export CLAUDE_CODE_OAUTH_TOKEN
+  export CLAUDE_LIMITS_ACCOUNT="-"
+  export ANTHROPIC_BASE_URL="http://127.0.0.1:$daemon_port"
+  exec claude "$@"
+}
+
+collect_accounts() {
+  local mode="$1"
+  [ -z "${accounts_probe_dir:-}" ] || rm -rf "$accounts_probe_dir"
+  accounts_probe_dir=""
+  accounts_mode="$mode"
+  if [ "$mode" = live ]; then
+    accounts_probe_dir=$(mktemp -d "${TMPDIR:-/tmp}/claudeb.XXXXXX")
+    probe_accounts "$accounts_probe_dir" "$accounts_allow_spend" "$accounts_start_windows"
+  fi
+  accounts_result=$(selection)
+  accounts_picked=$(printf '%s' "$accounts_result" | jq -r .picked)
+  accounts_show_fable=$(printf '%s' "$accounts_result" | jq -r 'any(.data[]; .fable != null)')
+}
+
+render_plain_accounts() {
+  local row name h5 wk fable hreset wreset age marker age_text probe_state
+  local dim='' sgr0='' h5_dim wk_dim fable_dim disabled h5_cell wk_cell fable_cell hcell wcell
+  if [ -t 1 ] && [ -n "${TERM:-}" ] && [ "${TERM:-}" != dumb ]; then
+    dim=$'\033[2m'; sgr0=$'\033[0m'
+  fi
+  if [ "$accounts_show_fable" = true ]; then
+    printf '%-18s %7s %7s %7s %-25s %-25s %10s %s\n' NAME 5H WEEKLY FABLE '5H RESET' 'WEEKLY RESET' AGE PICK
+  else
+    printf '%-18s %7s %7s %-25s %-25s %10s %s\n' NAME 5H WEEKLY '5H RESET' 'WEEKLY RESET' AGE PICK
+  fi
+  while IFS= read -r row; do
+    IFS=$'\x1f' read -r name h5 wk fable hreset wreset age h5_dim wk_dim fable_dim disabled < <(printf '%s' "$row" | jq -r '
+      [.name, (.h5_raw | round | tostring),
+       (if .wk_raw == null then "-" else ((.wk_raw | round | tostring) + "%") end),
+       (if .fable_raw == null then "-" else ((.fable_raw | round | tostring) + "%") end),
+       (.hreset | tostring), (.wreset | tostring), (.age | tostring),
+       (.h5_dim | tostring), (.wk_dim | tostring), (.fable_dim | tostring),
+       ((.disabled // false) | tostring)] | join("\u001f")')
+    age_text=$(format_age "$age")
+    if [ "$accounts_mode" = live ]; then
+      probe_state=$(cat "$accounts_probe_dir/$name.display")
+      if [ "$probe_state" = live ] || [ "$probe_state" = 'live*' ] || [ "$probe_state" = 'auth!' ]; then
+        age_text="$probe_state"
+      else
+        age_text="${age_text}!"
+      fi
+    fi
+    marker=""
+    [ "$name" = "$accounts_picked" ] && marker="*"
+    [ "$disabled" != true ] || marker="off"
+    # Cells are padded before the SGR wrap so escape bytes never skew columns.
+    h5_cell=$(printf '%6s%%' "$h5")
+    hcell=$(printf '%-25s' "$(format_time "$hreset")")
+    if [ "$h5_dim" = true ] && [ -n "$dim" ]; then h5_cell="${dim}${h5_cell}${sgr0}"; hcell="${dim}${hcell}${sgr0}"; fi
+    wk_cell=$(printf '%7s' "$wk")
+    wcell=$(printf '%-25s' "$(format_time "$wreset")")
+    if [ "$wk_dim" = true ] && [ "$wk" != "-" ] && [ -n "$dim" ]; then wk_cell="${dim}${wk_cell}${sgr0}"; fi
+    if [ "$wk_dim" = true ] && [ -n "$dim" ]; then wcell="${dim}${wcell}${sgr0}"; fi
+    if [ "$accounts_show_fable" = true ]; then
+      fable_cell=$(printf '%7s' "$fable")
+      if [ "$fable_dim" = true ] && [ "$fable" != "-" ] && [ -n "$dim" ]; then fable_cell="${dim}${fable_cell}${sgr0}"; fi
+      printf '%-18s %s %s %s %s %s %10s %s\n' "$name" "$h5_cell" "$wk_cell" "$fable_cell" "$hcell" "$wcell" "$age_text" "$marker"
+    else
+      printf '%-18s %s %s %s %s %10s %s\n' "$name" "$h5_cell" "$wk_cell" "$hcell" "$wcell" "$age_text" "$marker"
+    fi
+  done < <(printf '%s' "$accounts_result" | jq -c '.data[]')
+}
+
+interactive_cleanup() {
+  if [ -t 1 ]; then
+    stty sane echo </dev/tty >/dev/tty 2>/dev/null || true
+    tput cnorm 2>/dev/null || true
+  fi
+}
+
+colored_percent() {
+  local value="$1" dim="${2:-false}" color pre=''
+  if [ "$value" -lt 50 ]; then color=$'\033[32m'
+  elif [ "$value" -lt 80 ]; then color=$'\033[33m'
+  else color=$'\033[31m'
+  fi
+  [ "$dim" != true ] || pre=$'\033[2m'
+  printf '%b%b%3s%%%b' "$pre" "$color" "$value" $'\033[0m'
+}
+
+render_sort_tab() {
+  local label="$1" index="$2" active="$3"
+  if [ "$index" -eq "$active" ]; then printf '\033[7m%s\033[0m' "$label"
+  else printf '%s' "$label"
+  fi
+}
+
+render_interactive_accounts() {
+  local active="$1" sort_key="$2" filter row name h5 wk fable hreset wreset age age_text marker off_text probe_state index=0
+  local h5_dim wk_dim fable_dim disabled hcell wcell sep_width
+  printf '\033[H\033[2J'
+  printf '  '
+  render_sort_tab "$(printf '%-16s' NAME)" "$index" "$active"; index=$((index + 1)); printf ' '
+  render_sort_tab "$(printf '%4s' 5H)" "$index" "$active"; index=$((index + 1)); printf '  '
+  render_sort_tab "$(printf '%6s' WEEKLY)" "$index" "$active"; index=$((index + 1)); printf '  '
+  if [ "$accounts_show_fable" = true ]; then
+    render_sort_tab "$(printf '%6s' FABLE)" "$index" "$active"; index=$((index + 1)); printf '  '
+  fi
+  render_sort_tab "$(printf '%-25s' '5H RESET')" "$index" "$active"; index=$((index + 1)); printf ' '
+  render_sort_tab "$(printf '%-25s' 'WEEKLY RESET')" "$index" "$active"
+  printf ' AGE\n'
+  sep_width=88
+  [ "$accounts_show_fable" != true ] || sep_width=96
+  printf '─%.0s' $(seq 1 "$sep_width"); printf '\n'
+  case "$sort_key" in
+    name) filter='.data | sort_by(.name)[]' ;;
+    h5) filter='.data | sort_by([-.h5, .name])[]' ;;
+    wk) filter='.data | sort_by([-.wk, .name])[]' ;;
+    fable) filter='.data | sort_by([-((.fable // -1)), .name])[]' ;;
+    hreset) filter='.data | sort_by([(if .hreset > 0 then .hreset else 99999999999 end), .name])[]' ;;
+    wreset) filter='.data | sort_by([(if .wreset > 0 then .wreset else 99999999999 end), .name])[]' ;;
+  esac
+  while IFS= read -r row; do
+    IFS=$'\x1f' read -r name h5 wk fable hreset wreset age h5_dim wk_dim fable_dim disabled < <(printf '%s' "$row" | jq -r '
+      [.name, (.h5_raw | round | tostring),
+       (if .wk_raw == null then "" else (.wk_raw | round | tostring) end),
+       (if .fable_raw == null then "" else (.fable_raw | round | tostring) end),
+       (.hreset | tostring), (.wreset | tostring), (.age | tostring),
+       (.h5_dim | tostring), (.wk_dim | tostring), (.fable_dim | tostring),
+       ((.disabled // false) | tostring)] | join("\u001f")')
+    age_text=$(format_age "$age")
+    if [ "$accounts_mode" = live ]; then
+      probe_state=$(cat "$accounts_probe_dir/$name.display")
+      if [ "$probe_state" = live ] || [ "$probe_state" = 'live*' ] || [ "$probe_state" = 'auth!' ]; then age_text="$probe_state"
+      else age_text="${age_text}!"
+      fi
+    fi
+    marker=' '
+    [ "$name" = "$accounts_picked" ] && marker='*'
+    off_text=""
+    [ "$disabled" != true ] || off_text=" off"
+    printf '%s %-16s ' "$marker" "$name"
+    colored_percent "$h5" "$h5_dim"; printf '  '
+    if [ -n "$wk" ]; then printf '  '; colored_percent "$wk" "$wk_dim"; else printf '%6s' -; fi
+    printf '  '
+    if [ "$accounts_show_fable" = true ]; then
+      if [ -n "$fable" ]; then printf '  '; colored_percent "$fable" "$fable_dim"; else printf '%6s' -; fi
+      printf '  '
+    fi
+    hcell=$(printf '%-25s' "$(format_time "$hreset")")
+    [ "$h5_dim" != true ] || hcell=$'\033[2m'"$hcell"$'\033[0m'
+    wcell=$(printf '%-25s' "$(format_time "$wreset")")
+    [ "$wk_dim" != true ] || wcell=$'\033[2m'"$wcell"$'\033[0m'
+    printf '%s %s %s%s\n' "$hcell" "$wcell" "$age_text" "$off_text"
+  done < <(printf '%s' "$accounts_result" | jq -c "$filter")
+  printf '\n\033[33m←/→ sort  r refresh live  q/Esc exit\033[0m\n'
+}
+
+interactive_accounts() {
+  local active=0 key next final sort_count
+  local -a sort_keys
+  trap interactive_cleanup EXIT INT TERM
+  tput civis || return 1
+  while :; do
+    sort_keys=(name h5 wk)
+    [ "$accounts_show_fable" != true ] || sort_keys+=(fable)
+    sort_keys+=(hreset wreset)
+    sort_count=${#sort_keys[@]}
+    [ "$active" -lt "$sort_count" ] || active=0
+    render_interactive_accounts "$active" "${sort_keys[$active]}" || return 1
+    IFS= read -rsn1 key || return 0
+    case "$key" in
+      q|$'\003') return 0 ;;
+      r)
+        collect_accounts live || return 1
+        ;;
+      $'\033')
+        if ! IFS= read -rsn1 -t 0.08 next; then return 0; fi
+        [ "$next" = '[' ] || return 0
+        if ! IFS= read -rsn1 -t 0.08 final; then return 0; fi
+        case "$final" in
+          C) active=$(( (active + 1) % sort_count )) ;;
+          D) active=$(( (active + sort_count - 1) % sort_count )) ;;
+        esac
+        ;;
+    esac
+  done
+}
+
+show_accounts() {
+  local mode="${1:-live}" force_plain="${2:-false}" allow_spend="${3:-false}" start_windows="${4:-false}"
+  accounts_allow_spend="$allow_spend"
+  accounts_start_windows="$start_windows"
+  accounts_probe_dir=''
+  collect_accounts "$mode"
+  trap 'interactive_cleanup; [ -z "${accounts_probe_dir:-}" ] || rm -rf "$accounts_probe_dir"' EXIT
+  if [ "$force_plain" != true ] && [ -t 1 ] && [ -n "${TERM:-}" ] && [ "${TERM:-}" != dumb ]; then
+    if ! interactive_accounts; then
+      interactive_cleanup
+      render_plain_accounts
+    fi
+  else
+    render_plain_accounts
+  fi
+  [ -z "$accounts_probe_dir" ] || rm -rf "$accounts_probe_dir"
+  accounts_probe_dir=''
+  trap - EXIT INT TERM
+  interactive_cleanup
+}
+
+case "${1:-}" in
+  help|-h|--help)
+    show_help
+    ;;
+  profile|p)
+    shift
+    profile_command "$@"
+    ;;
+  add)
+    shift
+    add_account "${1:-}"
+    ;;
+  use)
+    shift
+    use_account "${1:-}"
+    ;;
+  enable)
+    shift
+    enable_account "${1:-}"
+    ;;
+  disable)
+    shift
+    disable_account "${1:-}"
+    ;;
+  accounts|status|st)
+    command_name="$1"
+    shift
+    accounts_mode_arg=live
+    accounts_plain_arg=false
+    accounts_spend_arg=false
+    accounts_windows_arg=false
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --cached) accounts_mode_arg=cached ;;
+        --plain) accounts_plain_arg=true ;;
+        --spend) accounts_spend_arg=true ;;
+        --no-spend) accounts_spend_arg=false ;;
+        --start-windows) accounts_windows_arg=true ;;
+        *) printf 'usage: claudeb %s [--cached] [--plain] [--spend] [--no-spend] [--start-windows]\n' "$command_name" >&2; exit 2 ;;
+      esac
+      shift
+    done
+    show_accounts "$accounts_mode_arg" "$accounts_plain_arg" "$accounts_spend_arg" "$accounts_windows_arg"
+    ;;
+  pick)
+    selection | jq -r .picked
+    ;;
+  --direct)
+    shift
+    direct_launch "$@"
+    ;;
+  --refresh)
+    shift
+    refresh_spend_arg=false
+    refresh_windows_arg=false
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --spend) refresh_spend_arg=true ;;
+        --no-spend) refresh_spend_arg=false ;;
+        --start-windows) refresh_windows_arg=true ;;
+        *) printf 'usage: claudeb --refresh [--spend] [--no-spend] [--start-windows]\n' >&2; exit 2 ;;
+      esac
+      shift
+    done
+    show_accounts live false "$refresh_spend_arg" "$refresh_windows_arg"
+    ;;
+  daemon)
+    shift
+    daemon_command "${1:-status}"
+    ;;
+  *)
+    proxy_launch "$@"
+    ;;
+esac

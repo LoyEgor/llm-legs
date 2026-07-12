@@ -7,9 +7,13 @@ local M = {
   onRefreshDone = function() end,
 }
 
-local function infoTitle(text, warning)
+local grayColor = { red = 0.55, green = 0.55, blue = 0.55 }
+
+local function infoTitle(text, warning, gray)
   local attributes = { font = { name = "Menlo", size = 13 } }
-  if warning then
+  if gray then
+    attributes.color = grayColor
+  elseif warning then
     attributes.color = { red = 0.9, green = 0.25, blue = 0.2 }
   end
   return hs.styledtext.new(text, attributes)
@@ -58,23 +62,68 @@ local function parseIsoTime(value)
   return localEpoch
 end
 
-local function formatAge(value)
+local function parseTime(value)
+  if type(value) == "number" then
+    return value
+  end
+  return parseIsoTime(value)
+end
+
+local function formatAgeShort(value)
   local timestamp = parseIsoTime(value)
   if not timestamp then
-    return "unknown"
+    return "?"
   end
 
   local seconds = math.max(0, os.time() - timestamp)
   if seconds < 60 then
-    return "just now"
+    return "now"
   end
-
   local minutes = math.floor(seconds / 60)
   if minutes < 60 then
-    return string.format("%dm ago", minutes)
+    return string.format("%dm", minutes)
   end
+  local hours = math.floor(minutes / 60)
+  if hours < 24 then
+    return string.format("%dh", hours)
+  end
+  return string.format("%dd", math.floor(hours / 24))
+end
 
-  return string.format("%dh %dm ago", math.floor(minutes / 60), minutes % 60)
+local function formatAge(value)
+  local age = formatAgeShort(value)
+  if age == "now" then
+    return "just now"
+  end
+  if age == "?" then
+    return "unknown"
+  end
+  return age .. " ago"
+end
+
+-- Staleness contract: trust explicit `stale` booleans (bucket, then account, then
+-- vendor); only when absent fall back to as_of/stale_seconds age vs the per-bucket
+-- threshold (1800s five_hour, 21600s weekly/fable).
+local function isStale(threshold, ...)
+  local nodes = { ... }
+  for _, node in ipairs(nodes) do
+    if type(node) == "table" and type(node.stale) == "boolean" then
+      return node.stale
+    end
+  end
+  for _, node in ipairs(nodes) do
+    if type(node) == "table" then
+      local timestamp = parseTime(node.as_of)
+      if timestamp then
+        return (os.time() - timestamp) > threshold
+      end
+      local seconds = tonumber(node.stale_seconds)
+      if seconds then
+        return seconds > threshold
+      end
+    end
+  end
+  return false
 end
 
 local function formatResetTime(value)
@@ -117,7 +166,7 @@ end
 local function baseEnvironment()
   return {
     HOME = os.getenv("HOME"),
-    PATH = "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin:" .. os.getenv("HOME") .. "/.local/bin",
+    PATH = "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin:" .. os.getenv("HOME") .. "/.local/bin:/usr/sbin",
   }
 end
 
@@ -133,6 +182,51 @@ local function newCollectorTask(callback, args)
   return task
 end
 
+local lastCollectEpoch = 0
+local lastRefreshOutcome = nil
+
+local function recordRefreshOutcome(exitCode)
+  local failures = {}
+  local limits = readLlmLimits()
+  local vendors = limits and limits.vendors
+  if type(vendors) == "table" then
+    for _, name in ipairs({ "claude", "codex", "gemini" }) do
+      local vendor = vendors[name]
+      if type(vendor) == "table" and type(vendor.refresh_error) == "string"
+          and vendor.refresh_error ~= "" then
+        table.insert(failures, name)
+      end
+    end
+  end
+  if exitCode ~= 0 and #failures == 0 then
+    table.insert(failures, "collector")
+  end
+  lastRefreshOutcome = { failures = failures, timestamp = os.time() }
+end
+
+local function shQuote(value)
+  return "'" .. tostring(value):gsub("'", "'\\''") .. "'"
+end
+
+-- Menu-open refresh: a no-args collect is local-only (~0.4s measured), so it runs
+-- synchronously and the menu opens already fresh. `timeout` keeps a wedged collect
+-- from freezing the Hammerspoon UI; the throttle keeps rapid reopens instant.
+local function collectOnOpen()
+  local now = os.time()
+  if now - lastCollectEpoch < 5 then
+    return
+  end
+  lastCollectEpoch = now
+
+  local environment = baseEnvironment()
+  local command = "export PATH=" .. shQuote(environment.PATH) .. ";"
+  if M.wallsLog then
+    command = command .. " export LLM_LIMITS_WALLS_LOG=" .. shQuote(M.wallsLog) .. ";"
+  end
+  command = command .. " timeout 3 " .. shQuote(M.collectorPath) .. " >/dev/null 2>&1"
+  pcall(hs.execute, command)
+end
+
 -- hs.task.new needs a launch path, not a PATH-resolved name; a bare command is taken from ~/.local/bin
 -- (where claudeb lives). The env PATH below still covers claudeb's own child processes.
 local function resolveClaudeb()
@@ -143,12 +237,12 @@ local function resolveClaudeb()
   return os.getenv("HOME") .. "/.local/bin/" .. cmd
 end
 
-function M.switchAccount(name)
+local function runClaudeb(args, failMessage)
   local ok = pcall(function()
     pcall(M.onRefreshStart)
     local task = hs.task.new(resolveClaudeb(), function(exitCode)
       if exitCode == 0 then
-        -- Token-free re-read (no --refresh): recompute current/is_current from the changed .claudeb-state.
+        -- Token-free re-read (no --refresh): recompute current/enabled state from the changed store.
         local reread = newCollectorTask(function()
           pcall(M.onRefreshDone, true)
         end, {})
@@ -156,9 +250,9 @@ function M.switchAccount(name)
           pcall(M.onRefreshDone, true)
         end
       else
-        pcall(M.onRefreshDone, false, "switch failed")
+        pcall(M.onRefreshDone, false, failMessage)
       end
-    end, { "use", name })
+    end, args)
     if task then
       task:setEnvironment(baseEnvironment())
     end
@@ -167,16 +261,25 @@ function M.switchAccount(name)
     end
   end)
   if not ok then
-    pcall(M.onRefreshDone, false, "switch failed")
+    pcall(M.onRefreshDone, false, failMessage)
   end
 end
 
-local function getLlmLimitsData()
+function M.switchAccount(name)
+  runClaudeb({ "use", name }, "switch failed")
+end
+
+function M.toggleAccount(name, currentlyEnabled)
+  runClaudeb({ currentlyEnabled and "disable" or "enable", name }, "toggle failed")
+end
+
+local function refreshData(args)
   local ok, err = pcall(function()
     local task = newCollectorTask(function(exitCode, _, stdErr)
+      recordRefreshOutcome(exitCode)
       local message = stdErr and stdErr:match("^%s*(.-)%s*$") or ""
       pcall(M.onRefreshDone, exitCode == 0, message ~= "" and message or nil)
-    end, { "--refresh" })
+    end, args)
 
     pcall(M.onRefreshStart)
     if not task or not task:start() then
@@ -185,11 +288,25 @@ local function getLlmLimitsData()
   end)
 
   if not ok then
+    recordRefreshOutcome(1)
     pcall(M.onRefreshDone, false, tostring(err))
   end
 end
 
+local function refreshItems(menu)
+  table.insert(menu, {
+    title = "Refresh",
+    fn = function() refreshData({ "--refresh" }) end,
+  })
+  table.insert(menu, {
+    title = "Refresh + Start Windows",
+    fn = function() refreshData({ "--refresh", "--start-windows" }) end,
+  })
+end
+
 function M.menuItems()
+  collectOnOpen()
+
   local menu = {}
   local limits = readLlmLimits()
   if limits and type(limits.vendors) == "table" then
@@ -199,8 +316,13 @@ function M.menuItems()
       { key = "gemini", label = "Gemini" },
     }
 
+    local ages = {}
     for _, entry in ipairs(vendors) do
       local vendor = limits.vendors[entry.key]
+      if type(vendor) == "table" and vendor.available == true then
+        table.insert(ages, string.format("%s %s", entry.key, formatAgeShort(vendor.as_of)))
+      end
+
       if type(vendor) ~= "table" or vendor.available ~= true then
         table.insert(menu, {
           title = infoTitle(string.format("%-6s  no live data", entry.label)),
@@ -209,9 +331,13 @@ function M.menuItems()
       else
         local blocks = entry.key == "claude" and vendor.accounts or nil
         local isClaudeAccounts = entry.key == "claude" and type(blocks) == "table" and #blocks > 0
+        local hasAccountControls = isClaudeAccounts and vendor.source == "claudeb-store"
         if type(blocks) ~= "table" or #blocks == 0 then
           blocks = {{ account = entry.label, five_hour = vendor.five_hour,
-            weekly = vendor.weekly, is_current = false }}
+            weekly = vendor.weekly, fable = vendor.fable, is_current = false }}
+        end
+        if isClaudeAccounts then
+          table.insert(menu, { title = infoTitle("Claude B"), disabled = true })
         end
         for _, block in ipairs(blocks) do
           local fiveHour = block.five_hour or {}
@@ -219,49 +345,79 @@ function M.menuItems()
           local fiveHourPct = math.floor((tonumber(fiveHour.used_pct) or 0) + 0.5)
           local marker = block.is_current and "  ●" or ""
           local acct = block.account or entry.label
-          -- Only a NON-current real Claude account switches on click; the current one (● marker) is a no-op,
-          -- and the Codex/Gemini + fallback single-account rows aren't switchable.
-          local switchable = isClaudeAccounts and not block.is_current
-          local function accountRow(title, warning)
-            local row = { title = infoTitle(title, warning), disabled = true }
-            if switchable then
-              row.disabled = nil
-              row.fn = function() M.switchAccount(acct) end
+          local enabled = block.enabled ~= false
+          local auth = block.auth
+          if type(auth) == "table" then
+            auth = auth.status
+          end
+          local blockGray = auth == "expired"
+          local fiveGray = blockGray or fiveHour.expired == true
+            or isStale(1800, fiveHour, block, vendor)
+          local fiveRow = {
+            title = infoTitle(string.format("%-6s  5h  %3d%%  → %s%s", acct,
+              fiveHourPct, formatResetTime(fiveHour.resets_at), marker),
+              fiveHourPct >= 80, fiveGray),
+            disabled = true,
+          }
+          if hasAccountControls then
+            fiveRow.disabled = nil
+            fiveRow.checked = enabled
+            fiveRow.menu = {
+              { title = "In rotation", checked = enabled,
+                fn = function() M.toggleAccount(acct, enabled) end },
+              { title = "Make current", disabled = block.is_current,
+                fn = function() M.switchAccount(acct) end },
+            }
+          end
+          table.insert(menu, fiveRow)
+          local function tailRow(label, bucket)
+            if type(bucket) == "table" then
+              local pct = math.floor((tonumber(bucket.used_pct) or 0) + 0.5)
+              local gray = blockGray or bucket.expired == true
+                or isStale(21600, bucket, block, vendor)
+              return infoTitle(string.format("%-6s  %s  %3d%%  → %s%s", "",
+                label, pct, formatResetTime(bucket.resets_at), marker),
+                pct >= 80, gray)
             end
-            return row
+            return infoTitle(string.format("%-6s  %s    -   → —%s", "", label, marker),
+              false, blockGray)
           end
-          -- "reset " and "%3d%%  " are both 6 chars, keeping the → column aligned.
-          local fiveLabel = fiveHour.expired == true and "reset "
-            or string.format("%3d%%  ", fiveHourPct)
-          table.insert(menu, accountRow(string.format("%-6s  5h  %s→ %s%s", acct,
-            fiveLabel, formatResetTime(fiveHour.resets_at), marker),
-            fiveHour.expired ~= true and fiveHourPct >= 80))
-          if type(weekly) == "table" then
-            local weeklyPct = math.floor((tonumber(weekly.used_pct) or 0) + 0.5)
-            local weeklyLabel = weekly.expired == true and "reset "
-              or string.format("%3d%%  ", weeklyPct)
-            table.insert(menu, accountRow(string.format("%-6s  wk  %s→ %s%s", "",
-              weeklyLabel, formatResetTime(weekly.resets_at), marker),
-              weekly.expired ~= true and weeklyPct >= 80))
-          else
-            table.insert(menu, accountRow(string.format("%-6s  wk    -   → —%s", "", marker)))
+          table.insert(menu, { title = tailRow("wk", weekly), disabled = true })
+          if type(block.fable) == "table" then
+            table.insert(menu, { title = tailRow("fb", block.fable), disabled = true })
           end
+        end
+        if isClaudeAccounts then
+          table.insert(menu, { title = "-" })
         end
       end
     end
 
     table.insert(menu, { title = "-" })
     table.insert(menu, {
-      title = infoTitle("Data fetched: " .. formatAge(limits.fetched_at)),
+      title = infoTitle(#ages > 0 and table.concat(ages, " · ")
+        or "no vendor data · fetched " .. formatAge(limits.fetched_at)),
       disabled = true,
     })
-    table.insert(menu, { title = "Get Data & Refresh", fn = getLlmLimitsData })
+    if lastRefreshOutcome and #lastRefreshOutcome.failures > 0 then
+      table.insert(menu, {
+        title = infoTitle("refresh failed: " .. table.concat(lastRefreshOutcome.failures, ", "), true),
+        disabled = true,
+      })
+    end
+    refreshItems(menu)
   else
     table.insert(menu, {
-      title = infoTitle("no data — press Get Data & Refresh"),
+      title = infoTitle("no data — press Refresh"),
       disabled = true,
     })
-    table.insert(menu, { title = "Get Data & Refresh", fn = getLlmLimitsData })
+    if lastRefreshOutcome and #lastRefreshOutcome.failures > 0 then
+      table.insert(menu, {
+        title = infoTitle("refresh failed: " .. table.concat(lastRefreshOutcome.failures, ", "), true),
+        disabled = true,
+      })
+    end
+    refreshItems(menu)
   end
 
   return menu
