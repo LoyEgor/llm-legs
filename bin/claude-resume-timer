@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+set -u
+
+usage() {
+  echo "Usage: $(basename "$0") [app|terminal|auto] [extra-minutes]" >&2
+}
+
+surface=${1:-auto}
+extra=${2:-10}
+
+case "$surface" in
+  app|terminal) ;;
+  auto)
+    if [ -n "${TERM_PROGRAM+x}" ]; then
+      surface=terminal
+    else
+      surface=app
+    fi
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac
+
+case "$extra" in
+  ''|*[!0-9-]*|-)
+    usage
+    exit 2
+    ;;
+esac
+
+run_bounded() {
+  local seconds=$1 pid watchdog_pid timeout_cmd rc
+  shift
+  timeout_cmd=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
+  if [ -n "$timeout_cmd" ]; then
+    "$timeout_cmd" "$seconds" "$@" >/dev/null 2>&1
+    return $?
+  fi
+  "$@" >/dev/null 2>&1 &
+  pid=$!
+  (sleep "$seconds"; kill "$pid" 2>/dev/null || true) &
+  watchdog_pid=$!
+  wait "$pid" 2>/dev/null; rc=$?
+  kill "$watchdog_pid" 2>/dev/null || true
+  wait "$watchdog_pid" 2>/dev/null || true
+  return "$rc"
+}
+
+account=${CLAUDE_LIMITS_ACCOUNT:-notcom}
+[ "$account" = "-" ] && account=notcom
+cache="$HOME/.llm-limits.json"
+
+if command -v llm-limits >/dev/null 2>&1; then
+  run_bounded 20 llm-limits --refresh
+fi
+
+# Same ISO8601-with-offset parser llm-limits.sh uses, so resets_at math stays in sync.
+iso_def='def iso2epoch:
+  if type != "string" then null
+  else (capture("^(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(\\.[0-9]+)?(?<tz>[Zz]|[+-][0-9]{2}:?[0-9]{2})$") // null) as $c |
+    if $c == null then null
+    else ($c.d + "Z" | fromdateiso8601)
+      - (if ($c.tz | ascii_upcase) == "Z" then 0
+         else ($c.tz | capture("^(?<s>[+-])(?<h>[0-9]{2}):?(?<m>[0-9]{2})$")
+               | (if .s == "-" then -1 else 1 end) * ((.h | tonumber) * 3600 + (.m | tonumber) * 60))
+         end)
+    end
+  end;'
+
+resets_epoch=""
+if [ -f "$cache" ]; then
+  resets_epoch=$(jq -r --arg acct "$account" "$iso_def"'
+    (.vendors.claude.accounts[]? | select(.account == $acct) | .five_hour.resets_at) as $resets
+    | if $resets == null then "" else (($resets | iso2epoch) // "") end
+  ' "$cache" 2>/dev/null)
+fi
+
+is_int() {
+  case "$1" in
+    ''|*[!0-9-]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+now=$(date +%s)
+fallback_reason=""
+
+if [ -z "$resets_epoch" ]; then
+  fallback_reason="no five_hour.resets_at for account '$account'"
+elif ! is_int "$resets_epoch"; then
+  fallback_reason="unparseable resets_at for account '$account'"
+elif [ "$resets_epoch" -le "$now" ]; then
+  fallback_reason="5h window for account '$account' already reset"
+fi
+
+if [ -n "$fallback_reason" ]; then
+  minutes=15
+else
+  minutes=$(( (resets_epoch - now) / 60 + extra ))
+  [ "$minutes" -ge 1 ] || minutes=1
+fi
+
+if ! command -v hs >/dev/null 2>&1; then
+  echo "claude-resume-timer: 'hs' not found on PATH; is Hammerspoon's CLI installed?" >&2
+  exit 1
+fi
+
+hs_output=$(hs -c "ClaudeContinue.startTimerFor(\"$surface\", $minutes)" 2>&1)
+hs_status=$?
+if [ "$hs_status" -ne 0 ]; then
+  echo "claude-resume-timer: could not reach hs (Hammerspoon CLI): $hs_output" >&2
+  exit 1
+fi
+
+fires_epoch=$(( now + minutes * 60 ))
+fires_clock=$(date -r "$fires_epoch" '+%H:%M' 2>/dev/null || date -j -f %s "$fires_epoch" '+%H:%M' 2>/dev/null || echo "?")
+
+if [ -n "$fallback_reason" ]; then
+  echo "claude-resume-timer: $fallback_reason; armed $surface for +$minutes min (fires ~$fires_clock)"
+else
+  echo "claude-resume-timer: armed $surface for $minutes min (fires ~$fires_clock)"
+fi

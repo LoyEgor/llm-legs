@@ -182,3 +182,8 @@ Adding an account: `codexb add work`, run the login command it prints, then `cod
 show both accounts. Worker agents pick the freest account automatically (`codexb pick`) unless
 pinned via `codex_profile=` in the worker toggle file; the menubar shows per-account rows once more
 than one account exists.
+
+- `bin/claude-resume-timer` → `~/.local/bin/claude-resume-timer` — `[app|terminal|auto] [extra-minutes]`
+  reads the given (or auto-detected) account's 5h window from `~/.llm-limits.json` and arms the
+  Hammerspoon `ClaudeContinue.startTimerFor` per-destination resume timer for that reset + extra
+  minutes (default +10), falling back to +15 minutes if the window is expired or unknown.
