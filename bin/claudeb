@@ -751,7 +751,7 @@ profile_command() {
   # shared with ~/.claude. Links are re-ensured on every launch so new shared
   # items propagate; a real (non-symlink) entry is never replaced.
   for f in settings.json settings.local.json CLAUDE.md agents commands skills \
-           statusline.sh hooks plugins projects sessions file-history history.jsonl; do
+           statusline.sh hooks plugins projects sessions file-history plans chrome history.jsonl; do
     if [ -e "$HOME/.claude/$f" ] && [ ! -e "$dir/$f" ] && [ ! -L "$dir/$f" ]; then
       ln -s "$HOME/.claude/$f" "$dir/$f"
     fi
