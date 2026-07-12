@@ -122,19 +122,31 @@ payload = {
     "uptime_s": 60,
     "port": 45789,
     "current": "alona",
-    "current_fable": "bree",
+    "current_fable": "alona",
+    "accounts": {
+        "alona": {"h5": 50, "wk": 10, "hreset": 4102444800, "wreset": 4102440000,
+                  "walled": True, "auth_failed_until": 0, "fable_walled_until": 0},
+    },
+    "scopes": {"general": None, "fable": "alona"},
+    "walls": [
+        {"account": "alona", "scope": "general", "until": "2100-01-01T01:00:00.000Z",
+         "reason": "transient"},
+    ],
+    "pins": [
+        {"account": "alona", "pinned_at": "2100-01-01T00:00:00.000Z"},
+    ],
+    "all_walled_until": {"general": 4102448400, "fable": None},
+}
+legacy_payload = {
+    "pid": 123,
+    "uptime_s": 61,
+    "port": 45789,
+    "current": "alona",
+    "current_fable": "alona",
     "accounts": {
         "alona": {"h5": 98, "wk": 40, "hreset": 4102444800, "wreset": 4102440000,
                   "walled": True, "auth_failed_until": 0, "fable_walled_until": 4102445000},
-        "bree": {"h5": 20, "wk": 30, "hreset": 4102440000, "wreset": 4102440000,
-                 "walled": True, "auth_failed_until": 4102448400, "fable_walled_until": 4102449000},
     },
-}
-partial_payload = dict(payload)
-partial_payload["accounts"] = dict(payload["accounts"])
-partial_payload["accounts"]["bree"] = {
-    "h5": 20, "wk": 30, "hreset": 4102440000, "wreset": 4102440000,
-    "walled": False, "auth_failed_until": 0, "fable_walled_until": 0,
 }
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -144,7 +156,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.path != "/claudebd/status":
             self.send_error(404)
             return
-        body = json.dumps(payload if Handler.requests == 0 else partial_payload).encode()
+        body = json.dumps(payload if Handler.requests == 0 else legacy_payload).encode()
         Handler.requests += 1
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -172,22 +184,22 @@ daemon_json=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" CLAUDEBD_PORT="$daemon
   LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "claudebd status collection failed"
 jq -e '.vendors.claude.daemon == {
   walls:[
-    {account:"alona",scope:"general",until:"2100-01-01T00:00:00Z",reason:"walled"},
-    {account:"alona",scope:"fable",until:"2100-01-01T00:03:20Z",reason:"fable_walled"},
-    {account:"bree",scope:"general",until:"2100-01-01T01:00:00Z",reason:"walled"},
-    {account:"bree",scope:"general",until:"2100-01-01T01:00:00Z",reason:"auth_failed"},
-    {account:"bree",scope:"fable",until:"2100-01-01T01:10:00Z",reason:"fable_walled"}
+    {account:"alona",scope:"general",until:"2100-01-01T01:00:00.000Z",reason:"transient"}
   ],
-  all_walled_until:{general:"2100-01-01T01:00:00Z",fable:"2100-01-01T01:10:00Z"},
+  pins:[{account:"alona",pinned_at:"2100-01-01T00:00:00.000Z"}],
+  all_walled_until:{general:4102448400,fable:null},
   reachable:true
-}' <<<"$daemon_json" >/dev/null || fail "claudebd status fields missing from Claude vendor"
-daemon_partial=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" CLAUDEBD_PORT="$daemon_port" \
-  LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "partial claudebd status collection failed"
-jq -e '.vendors.claude.daemon.reachable == true and
-  .vendors.claude.daemon.all_walled_until == {general:null,fable:null} and
-  any(.vendors.claude.daemon.walls[]; .account == "alona" and .scope == "general") and
-  (.vendors.claude.daemon | has("pins") | not)' <<<"$daemon_partial" >/dev/null \
-  || fail "partial daemon walls or aggregate deadlines mismatch"
+}' <<<"$daemon_json" >/dev/null || fail "native daemon wall fields were not passed through"
+daemon_legacy=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" CLAUDEBD_PORT="$daemon_port" \
+  LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "legacy claudebd status collection failed"
+jq -e '.vendors.claude.daemon == {
+  walls:[
+    {account:"alona",scope:"general",until:"2100-01-01T00:00:00Z",reason:"walled"},
+    {account:"alona",scope:"fable",until:"2100-01-01T00:03:20Z",reason:"fable_walled"}
+  ],
+  all_walled_until:{general:"2100-01-01T00:00:00Z",fable:"2100-01-01T00:03:20Z"},
+  reachable:true
+}' <<<"$daemon_legacy" >/dev/null || fail "legacy daemon wall derivation mismatch"
 kill "$daemon_pid" 2>/dev/null || true
 wait "$daemon_pid" 2>/dev/null || true
 daemon_pid=''

@@ -216,9 +216,7 @@ local function shQuote(value)
   return "'" .. tostring(value):gsub("'", "'\\''") .. "'"
 end
 
--- Menu-open refresh: a no-args collect is local-only (~0.4s measured), so it runs
--- synchronously and the menu opens already fresh. `timeout` keeps a wedged collect
--- from freezing the Hammerspoon UI; the throttle keeps rapid reopens instant.
+-- Menu-open collect includes a sub-second localhost daemon probe bounded by the outer timeout.
 local function collectOnOpen()
   local now = os.time()
   if now - lastCollectEpoch < 5 then
@@ -370,20 +368,6 @@ function M.menuItems()
             end
           end
         end
-        local accountWalls = {}
-        local daemon = vendor.daemon
-        if type(daemon) == "table" and daemon.reachable == true
-            and type(daemon.walls) == "table" then
-          for _, wall in ipairs(daemon.walls) do
-            if type(wall) == "table" and type(wall.account) == "string" then
-              local wallEpoch = parseTime(wall["until"])
-              local previous = accountWalls[wall.account]
-              if not previous or (wallEpoch and wallEpoch > (previous.epoch or 0)) then
-                accountWalls[wall.account] = { untilValue = wall["until"], epoch = wallEpoch }
-              end
-            end
-          end
-        end
         for _, block in ipairs(blocks) do
           local fiveHour = block.five_hour or {}
           local weekly = block.weekly
@@ -408,16 +392,10 @@ function M.menuItems()
           end
           local fiveGray = blockGray or fiveHour.expired == true
             or isStale(1800, fiveHour, block, vendor)
-          local fiveTitle = infoTitle(string.format("%-6s  5h  %4s  → %s%s%s", acct,
-            fiveHourText, fiveHourReset, marker, accountAge),
-            fiveHourPct ~= nil and fiveHourPct >= 80, fiveGray)
-          local accountWall = accountWalls[acct]
-          if accountWall then
-            fiveTitle = fiveTitle .. infoTitle("  walled until "
-              .. formatResetTime(accountWall.untilValue), false, true)
-          end
           local fiveRow = {
-            title = fiveTitle,
+            title = infoTitle(string.format("%-6s  5h  %4s  → %s%s%s", acct,
+              fiveHourText, fiveHourReset, marker, accountAge),
+              fiveHourPct ~= nil and fiveHourPct >= 80, fiveGray),
             disabled = true,
           }
           if hasAccountControls then

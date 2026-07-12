@@ -365,34 +365,39 @@ claudebd_status=$(curl -fsS --connect-timeout 0.2 --max-time 0.5 "$claudebd_url"
 if [ -n "$claudebd_status" ]; then
   claude_daemon=$(jq -ce --argjson now "$now_epoch" '
     select(type == "object" and (.accounts | type) == "object") |
-    (.accounts | to_entries) as $accounts |
-    def active_epoch: if type == "number" and . > $now then . else 0 end;
-    def general_until:
-      [(.auth_failed_until | active_epoch),
-       (if .walled == true and (.h5 | type) == "number" and .h5 >= 97
-        then (.hreset | active_epoch) else 0 end),
-       (if .walled == true and (.wk | type) == "number" and .wk >= 99
-        then (.wreset | active_epoch) else 0 end)] | max;
-    def iso_or_null: if . > $now then todateiso8601 else null end;
-    {walls:[$accounts[] | .key as $account | .value as $state |
-      (if $state.walled == true
-       then {account:$account,scope:"general",until:($state | general_until | iso_or_null),reason:"walled"}
-       else empty end),
-      (if ($state.auth_failed_until | active_epoch) > 0
-       then {account:$account,scope:"general",until:($state.auth_failed_until | todateiso8601),reason:"auth_failed"}
-       else empty end),
-      (if ($state.fable_walled_until | active_epoch) > 0
-       then {account:$account,scope:"fable",until:($state.fable_walled_until | todateiso8601),reason:"fable_walled"}
-       else empty end)],
-     all_walled_until:{
-       general:(if ($accounts | length) > 0 and all($accounts[]; (.value.walled == true or (.value.auth_failed_until | active_epoch) > 0))
-                then ([$accounts[].value | general_until] |
-                      if all(.[]; . > $now) then (max | todateiso8601) else null end)
-                else null end),
-       fable:(if ($accounts | length) > 0 and all($accounts[]; (.value.fable_walled_until | active_epoch) > 0)
-              then ([$accounts[].value.fable_walled_until] | max | todateiso8601)
-              else null end)},
-     reachable:true}
+    def legacy_daemon:
+      (.accounts | to_entries) as $accounts |
+      def active_epoch: if type == "number" and . > $now then . else 0 end;
+      def general_until:
+        [(.auth_failed_until | active_epoch),
+         (if .walled == true and (.h5 | type) == "number" and .h5 >= 97
+          then (.hreset | active_epoch) else 0 end),
+         (if .walled == true and (.wk | type) == "number" and .wk >= 99
+          then (.wreset | active_epoch) else 0 end)] | max;
+      def iso_or_null: if . > $now then todateiso8601 else null end;
+      {walls:[$accounts[] | .key as $account | .value as $state |
+        (if $state.walled == true
+         then {account:$account,scope:"general",until:($state | general_until | iso_or_null),reason:"walled"}
+         else empty end),
+        (if ($state.auth_failed_until | active_epoch) > 0
+         then {account:$account,scope:"general",until:($state.auth_failed_until | todateiso8601),reason:"auth_failed"}
+         else empty end),
+        (if ($state.fable_walled_until | active_epoch) > 0
+         then {account:$account,scope:"fable",until:($state.fable_walled_until | todateiso8601),reason:"fable_walled"}
+         else empty end)],
+       all_walled_until:{
+         general:(if ($accounts | length) > 0 and all($accounts[]; (.value.walled == true or (.value.auth_failed_until | active_epoch) > 0))
+                  then ([$accounts[].value | general_until] |
+                        if all(.[]; . > $now) then (max | todateiso8601) else null end)
+                  else null end),
+         fable:(if ($accounts | length) > 0 and all($accounts[]; (.value.fable_walled_until | active_epoch) > 0)
+                then ([$accounts[].value.fable_walled_until] | max | todateiso8601)
+                else null end)},
+       reachable:true};
+    if has("walls") and has("pins") and has("all_walled_until")
+    then {walls:.walls,pins:.pins,all_walled_until:.all_walled_until,reachable:true}
+    else legacy_daemon
+    end
   ' <<<"$claudebd_status" 2>/dev/null || printf '%s' '{"reachable":false}')
 fi
 shopt -s nullglob
