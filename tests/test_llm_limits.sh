@@ -4,11 +4,17 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT="$ROOT/llm-limits.sh"
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+daemon_pid=''
+cleanup() {
+  [ -z "$daemon_pid" ] || kill "$daemon_pid" 2>/dev/null || true
+  rm -rf "$WORK"
+}
+trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 # Unit fixtures must never discover and launch the developer's real agy binary.
 export LLM_LIMITS_GEMINI_REFRESH=0
 export LLM_LIMITS_CODEX_REFRESH=0
+export CLAUDEBD_PORT=1
 
 HOME_FIXTURE="$WORK/home"
 mkdir -p "$HOME_FIXTURE/.claude" "$HOME_FIXTURE/.codex/sessions/2026/07/10" "$HOME_FIXTURE/.codex/sessions/2026/07/11"
@@ -101,6 +107,93 @@ printf '{"five_hour":{"used_percentage":21,"resets_at":%s},"seven_day":{"used_pe
 multi=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "claudeb collection failed"
 jq -e '.vendors.claude.source == "claudeb-store" and (.vendors.claude.accounts | length) == 1 and .vendors.claude.accounts[0].account == "alona" and .vendors.claude.accounts[0].is_current == true and (.vendors.claude.accounts[0] | has("weekly") | not) and .vendors.claude.five_hour == .vendors.claude.accounts[0].five_hour and (.vendors.claude | has("weekly") | not)' <<<"$multi" >/dev/null || fail "claudeb schema, uniqueness, or hoist mismatch"
 jq -e '.vendors.claude.accounts[0].fable.used_pct == 33 and .vendors.claude.fable.used_pct == 33 and all(.vendors.claude.accounts[]; .account != "main")' <<<"$multi" >/dev/null || fail "claudeb fable or unique-account mismatch"
+
+DAEMON_PORT_FILE="$WORK/claudebd-fixture.port"
+cat >"$WORK/claudebd-fixture.py" <<'EOF'
+import http.server
+import json
+import os
+
+payload = {
+    "pid": 123,
+    "uptime_s": 60,
+    "port": 45789,
+    "current": "alona",
+    "current_fable": "bree",
+    "accounts": {
+        "alona": {"h5": 98, "wk": 40, "hreset": 4102444800, "wreset": 4102440000,
+                  "walled": True, "auth_failed_until": 0, "fable_walled_until": 4102445000},
+        "bree": {"h5": 20, "wk": 30, "hreset": 4102440000, "wreset": 4102440000,
+                 "walled": True, "auth_failed_until": 4102448400, "fable_walled_until": 4102449000},
+    },
+}
+partial_payload = dict(payload)
+partial_payload["accounts"] = dict(payload["accounts"])
+partial_payload["accounts"]["bree"] = {
+    "h5": 20, "wk": 30, "hreset": 4102440000, "wreset": 4102440000,
+    "walled": False, "auth_failed_until": 0, "fable_walled_until": 0,
+}
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    requests = 0
+
+    def do_GET(self):
+        if self.path != "/claudebd/status":
+            self.send_error(404)
+            return
+        body = json.dumps(payload if Handler.requests == 0 else partial_payload).encode()
+        Handler.requests += 1
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *_):
+        pass
+
+server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+with open(os.environ["DAEMON_PORT_FILE"], "w") as port_file:
+    port_file.write(str(server.server_address[1]))
+server.serve_forever()
+EOF
+DAEMON_PORT_FILE="$DAEMON_PORT_FILE" python3 "$WORK/claudebd-fixture.py" &
+daemon_pid=$!
+for _ in {1..40}; do
+  [ -s "$DAEMON_PORT_FILE" ] && break
+  sleep 0.05
+done
+[ -s "$DAEMON_PORT_FILE" ] || fail "claudebd fixture server did not start"
+daemon_port=$(cat "$DAEMON_PORT_FILE")
+daemon_json=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" CLAUDEBD_PORT="$daemon_port" \
+  LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "claudebd status collection failed"
+jq -e '.vendors.claude.daemon == {
+  walls:[
+    {account:"alona",scope:"general",until:"2100-01-01T00:00:00Z",reason:"walled"},
+    {account:"alona",scope:"fable",until:"2100-01-01T00:03:20Z",reason:"fable_walled"},
+    {account:"bree",scope:"general",until:"2100-01-01T01:00:00Z",reason:"walled"},
+    {account:"bree",scope:"general",until:"2100-01-01T01:00:00Z",reason:"auth_failed"},
+    {account:"bree",scope:"fable",until:"2100-01-01T01:10:00Z",reason:"fable_walled"}
+  ],
+  all_walled_until:{general:"2100-01-01T01:00:00Z",fable:"2100-01-01T01:10:00Z"},
+  reachable:true
+}' <<<"$daemon_json" >/dev/null || fail "claudebd status fields missing from Claude vendor"
+daemon_partial=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" CLAUDEBD_PORT="$daemon_port" \
+  LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "partial claudebd status collection failed"
+jq -e '.vendors.claude.daemon.reachable == true and
+  .vendors.claude.daemon.all_walled_until == {general:null,fable:null} and
+  any(.vendors.claude.daemon.walls[]; .account == "alona" and .scope == "general") and
+  (.vendors.claude.daemon | has("pins") | not)' <<<"$daemon_partial" >/dev/null \
+  || fail "partial daemon walls or aggregate deadlines mismatch"
+kill "$daemon_pid" 2>/dev/null || true
+wait "$daemon_pid" 2>/dev/null || true
+daemon_pid=''
+daemon_down=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" CLAUDEBD_PORT="$daemon_port" \
+  LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "daemon-down collection failed"
+jq -e '.vendors.claude.daemon == {reachable:false} and
+  .vendors.claude.available == true and .vendors.claude.accounts[0].account == "alona"' \
+  <<<"$daemon_down" >/dev/null || fail "daemon-down state blocked or damaged Claude collection"
+
 printf 'main\n' >"$CLAUDEB/.claudeb-state"
 invalid_current=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "invalid current fallback failed"
 jq -e '.vendors.claude.current_account == "alona" and all(.vendors.claude.accounts[]; .account != "main")' <<<"$invalid_current" >/dev/null || fail "invalid current did not fall back to the first real account"
@@ -646,5 +739,5 @@ HOME="$EMPTY" bash "$SCRIPT" --no-write >/dev/null 2>&1
 rc=$?
 [ "$rc" -eq 3 ] || fail "all-missing case: expected exit 3, got $rc"
 
-echo "PASS: schema, Claude unique accounts and fallback, enabled flags, freshness contract, machine effective percentages and usability, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, plain output, table output and sorts, reset tiers, expired windows, bare JSON default, atomic cache, missing exit 3"
+echo "PASS: schema, Claude unique accounts and fallback, Claude daemon status, enabled flags, freshness contract, machine effective percentages and usability, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, plain output, table output and sorts, reset tiers, expired windows, bare JSON default, atomic cache, missing exit 3"
 exit 0

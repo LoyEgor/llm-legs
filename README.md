@@ -59,8 +59,8 @@ Tests: `python3 -m unittest discover tests`.
 
 ## Subscription limit collector
 
-`llm-limits.sh` normally reads cached local CLI state without invoking a vendor CLI, making a
-network request, or spending tokens. It prints schema-1 JSON and atomically refreshes
+`llm-limits.sh` normally reads cached local CLI state without invoking a vendor CLI, making an
+external network request, or spending tokens. It prints schema-1 JSON and atomically refreshes
 `~/.llm-limits.json` by default. When no output flag is given and stdout is a terminal, it
 renders the `--table` view instead; piped or redirected output keeps the JSON default, and an
 explicit `--json`, `--plain`, or `--table` always wins. The stable top level is
@@ -98,12 +98,13 @@ window, then re-reads the free usage endpoints. Vendors that cannot be started a
 stderr, never skipped silently.
 The Gemini request is the machine-readable equivalent of `/usage`; it consumes no model tokens
 and its last valid response is cached in `~/.llm-limits-gemini.json`. Without `--refresh`,
-collection remains token-free, network-free, and file-read-only.
+collection remains token-free and external-network-free; it also reads the optional claudebd
+localhost status endpoint.
 
 ### Machine contract
 
 Consumers read `~/.llm-limits.json`.
-A bare `llm-limits` run is a passive read with zero network access.
+A bare `llm-limits` run is a passive read with zero external network access.
 `llm-limits --refresh` performs a free live refresh.
 Scripts must never invoke `--start-windows`; it spends money.
 Read each bucket's `effective_pct` and each vendor's `usable_now`.
@@ -113,6 +114,9 @@ Claude `usable_now` considers enabled, authenticated accounts and their general 
 the model-specific fable bucket does not block other Claude work.
 Codex and Gemini additionally require `available == true`.
 Respect bucket and vendor `stale` flags when freshness matters.
+`vendors.claude.daemon.walls` reports active account/scope walls with their known deadline and
+reason. `all_walled_until.general` and `.fable` are non-null only when every known daemon account
+is walled for that scope; `reachable == false` means local daemon status was unavailable.
 
 Claude reads the `$CLAUDEB_DIR/limits/*.json` accounts (`CLAUDEB_DIR` defaults to
 `~/.claude-profiles/.claudeb`) and uses `.claudeb-state` to select the current account. `main`

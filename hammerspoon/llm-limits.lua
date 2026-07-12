@@ -347,6 +347,35 @@ function M.menuItems()
         end
         if isClaudeAccounts then
           table.insert(menu, { title = infoTitle("Claude B"), disabled = true })
+          local daemon = vendor.daemon
+          if type(daemon) == "table" and daemon.reachable == true
+              and type(daemon.all_walled_until) == "table" then
+            local generalUntil = daemon.all_walled_until.general
+            local fableUntil = daemon.all_walled_until.fable
+            local allWalledUntil = generalUntil or fableUntil
+            if allWalledUntil ~= nil then
+              local scope = generalUntil == nil and " (fable)" or ""
+              table.insert(menu, {
+                title = infoTitle("all accounts walled until "
+                  .. formatResetTime(allWalledUntil) .. scope, true),
+                disabled = true,
+              })
+            end
+          end
+        end
+        local accountWalls = {}
+        local daemon = vendor.daemon
+        if type(daemon) == "table" and daemon.reachable == true
+            and type(daemon.walls) == "table" then
+          for _, wall in ipairs(daemon.walls) do
+            if type(wall) == "table" and type(wall.account) == "string" then
+              local wallEpoch = parseTime(wall["until"])
+              local previous = accountWalls[wall.account]
+              if not previous or (wallEpoch and wallEpoch > (previous.epoch or 0)) then
+                accountWalls[wall.account] = { untilValue = wall["until"], epoch = wallEpoch }
+              end
+            end
+          end
         end
         for _, block in ipairs(blocks) do
           local fiveHour = block.five_hour or {}
@@ -370,10 +399,16 @@ function M.menuItems()
           end
           local fiveGray = blockGray or fiveHour.expired == true
             or isStale(1800, fiveHour, block, vendor)
+          local fiveTitle = infoTitle(string.format("%-6s  5h  %4s  → %s%s%s", acct,
+            fiveHourText, fiveHourReset, marker, accountAge),
+            fiveHourPct ~= nil and fiveHourPct >= 80, fiveGray)
+          local accountWall = accountWalls[acct]
+          if accountWall then
+            fiveTitle = fiveTitle .. infoTitle("  walled until "
+              .. formatResetTime(accountWall.untilValue), false, true)
+          end
           local fiveRow = {
-            title = infoTitle(string.format("%-6s  5h  %4s  → %s%s%s", acct,
-              fiveHourText, fiveHourReset, marker, accountAge),
-              fiveHourPct ~= nil and fiveHourPct >= 80, fiveGray),
+            title = fiveTitle,
             disabled = true,
           }
           if hasAccountControls then
