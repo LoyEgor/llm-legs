@@ -7,7 +7,7 @@ usage() {
 
 format=''
 write_cache=1
-# Only an explicit manual refresh may invoke claudeb and spend tokens.
+# Only an explicit manual refresh may invoke provider CLIs and spend tokens.
 refresh=0
 sort_key=''
 sort_given=0
@@ -81,6 +81,41 @@ file_mtime() {
   stat -f '%m' "$1" 2>/dev/null || stat -c '%Y' "$1" 2>/dev/null
 }
 
+# Snapshots may carry null where an epoch is expected; a literal "null" inside $(( ))
+# aborts the whole run under set -u.
+int_or_empty() {
+  case "$1" in ''|*[!0-9]*) : ;; *) printf '%s' "$1" ;; esac
+}
+
+run_bounded() {
+  local seconds=$1 pid watchdog_pid timeout_cmd
+  shift
+  timeout_cmd=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
+  if [ -n "$timeout_cmd" ]; then
+    "$timeout_cmd" "$seconds" "$@" >/dev/null 2>&1 || true
+    return
+  fi
+  "$@" >/dev/null 2>&1 &
+  pid=$!
+  (sleep "$seconds"; kill "$pid" 2>/dev/null || true) &
+  watchdog_pid=$!
+  wait "$pid" 2>/dev/null || true
+  kill "$watchdog_pid" 2>/dev/null || true
+  wait "$watchdog_pid" 2>/dev/null || true
+}
+
+iso_def='def iso2epoch:
+  if type != "string" then null
+  else (capture("^(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(\\.[0-9]+)?(?<tz>[Zz]|[+-][0-9]{2}:?[0-9]{2})$") // null) as $c |
+    if $c == null then null
+    else ($c.d + "Z" | fromdateiso8601)
+      - (if ($c.tz | ascii_upcase) == "Z" then 0
+         else ($c.tz | capture("^(?<s>[+-])(?<h>[0-9]{2}):?(?<m>[0-9]{2})$")
+               | (if .s == "-" then -1 else 1 end) * ((.h | tonumber) * 3600 + (.m | tonumber) * 60))
+         end)
+    end
+  end;'
+
 # Shared by the --plain and --table jq programs so the bucketing math cannot diverge.
 stale_def='def stale_amount(day_u; hour_u):
   if (.stale_seconds // 0) > 3600 then
@@ -94,7 +129,7 @@ pct_cell() {
   local cell num
   printf -v cell '%-*s' "$2" "$1"
   num=${4%%.*}
-  if [ "$3" -eq 1 ] && [ "$num" != "-1" ]; then
+  if [ "$3" -eq 1 ] && [ "$num" != "-1" ] && [ "$1" != "-" ]; then
     if [ "$num" -lt 50 ]; then printf '\033[32m%s\033[0m' "$cell"
     elif [ "$num" -lt 80 ]; then printf '\033[33m%s\033[0m' "$cell"
     else printf '\033[31m%s\033[0m' "$cell"; fi
@@ -107,21 +142,9 @@ render_table() {
   local table_color=0
   [ -t 1 ] && table_color=1
   # Sentinels (-1 / 9999999999) push rows with missing values last for every sort direction.
-  # main is hidden from the table only; JSON output and the cache keep it.
   local rows
-  rows=$(jq -r "$stale_def"'
+  rows=$(jq -r "$stale_def$iso_def"'
     def pct(v): if v == null then "-" else ((v | tostring) + "%") end;
-    def iso2epoch:
-      if type != "string" then null
-      else (capture("^(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(\\.[0-9]+)?(?<tz>Z|[+-][0-9]{2}:?[0-9]{2})$") // null) as $c |
-        if $c == null then null
-        else ($c.d + "Z" | fromdateiso8601)
-          - (if $c.tz == "Z" then 0
-             else ($c.tz | capture("^(?<s>[+-])(?<h>[0-9]{2}):?(?<m>[0-9]{2})$")
-                   | (if .s == "-" then -1 else 1 end) * ((.h | tonumber) * 3600 + (.m | tonumber) * 60))
-             end)
-        end
-      end;
     (now | strflocaltime("%Y-%m-%d")) as $today |
     def fmt_reset($e): . as $iso |
       if $iso == null or $iso == "" then "-"
@@ -134,21 +157,29 @@ render_table() {
        | map(select(. != null and . != "")) | join(", ")
        | if . == "" then "-" else . end);
     def row:
-      (.five.used_pct) as $p5 | (.week.used_pct) as $pw |
-      (.five.resets_at | iso2epoch) as $e5 | (.week.resets_at | iso2epoch) as $ew |
-      [($p5 // -1), ($pw // -1),
+      (.five.expired == true) as $x5 | (.week.expired == true) as $xw |
+      (if $x5 then null else .five.used_pct end) as $p5 |
+      (if $xw then null else .week.used_pct end) as $pw |
+      (if $x5 then null else (.five.resets_at | iso2epoch) end) as $e5 |
+      (if $xw then null else (.week.resets_at | iso2epoch) end) as $ew |
+      ([(if $x5 then "5h reset passed" else empty end),
+        (if $xw then "wk reset passed" else empty end)] | join(", ")) as $xn |
+      [(if $x5 then 0 else ($p5 // -1) end), (if $xw then 0 else ($pw // -1) end),
        ($e5 // 9999999999), ($ew // 9999999999),
        ([($e5 // 9999999999), ($ew // 9999999999)] | min),
        .src, pct($p5), pct($pw),
-       (.five.resets_at | fmt_reset($e5)), (.week.resets_at | fmt_reset($ew)),
-       .note] | @tsv;
+       (if $x5 then "-" else (.five.resets_at | fmt_reset($e5)) end),
+       (if $xw then "-" else (.week.resets_at | fmt_reset($ew)) end),
+       (if $xn == "" then .note
+        elif .note == "-" or .note == "" then $xn
+        else .note + ", " + $xn end)] | @tsv;
     .vendors as $v |
     [
       (if $v.claude.available and (($v.claude.accounts | type) == "array") then
-         ($v.claude.accounts[] | select(.account != "main")
+         ($v.claude.accounts[]
           | {src: ("claude/" + .account + (if .is_current then "*" else "" end)),
              five: .five_hour, week: .weekly,
-             note: mknote(if .fable then "fable " + (.fable.used_pct | tostring) + "%" else null end)})
+             note: mknote(if .fable and .fable.expired != true then "fable " + (.fable.used_pct | tostring) + "%" else null end)})
        else {src: "claude", five: null, week: null, note: ($v.claude.status // "-")} end),
       (("codex", "gemini") as $k | $v[$k]
        | if .available then
@@ -231,25 +262,11 @@ if [ "$refresh" -eq 1 ] && [ "${LLM_LIMITS_GEMINI_REFRESH:-1}" != 0 ]; then
 fi
 
 claude='{"available":false,"status":"no rate-limit snapshot","source":"none","last_wall":null}'
-claudeb_root="${CLAUDEB_DIR:-$HOME/.claude-profiles}/.claudeb"
+claudeb_root="${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}"
 if [ "$refresh" -eq 1 ] && [ -d "$claudeb_root/limits" ]; then
   claudeb_cmd=$(command -v "${LLM_LIMITS_CLAUDEB_CMD:-claudeb}" 2>/dev/null || true)
   if [ -n "$claudeb_cmd" ]; then
-    timeout_cmd=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
-    if [ -n "$timeout_cmd" ]; then
-      "$timeout_cmd" 25 "$claudeb_cmd" accounts >/dev/null 2>&1 || true
-    else
-      "$claudeb_cmd" accounts >/dev/null 2>&1 &
-      claudeb_pid=$!
-      (
-        sleep 25
-        kill "$claudeb_pid" 2>/dev/null || true
-      ) &
-      watchdog_pid=$!
-      wait "$claudeb_pid" 2>/dev/null || true
-      kill "$watchdog_pid" 2>/dev/null || true
-      wait "$watchdog_pid" 2>/dev/null || true
-    fi
+    run_bounded 25 "$claudeb_cmd" accounts --no-spend
   fi
 fi
 shopt -s nullglob
@@ -260,6 +277,7 @@ if [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
   accounts='[]'
   for claude_file in "${claudeb_files[@]}"; do
     account=${claude_file##*/}; account=${account%.json}
+    [ "$account" != main ] || continue
     claude_data=$(jq -c 'select(
       (.five_hour.used_percentage | type) == "number" and
       (.five_hour.resets_at | type) == "number"
@@ -287,7 +305,7 @@ if [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
   done
   if [ "$(jq 'length' <<<"$accounts")" -gt 0 ]; then
     if ! jq -e --arg current "$current" 'any(.account == $current)' <<<"$accounts" >/dev/null; then
-      current=$(jq -r 'if any(.account == "main") then "main" else sort_by(.account)[0].account end' <<<"$accounts")
+      current=$(jq -r 'sort_by(.account)[0].account' <<<"$accounts")
     fi
     accounts=$(jq -c --arg current "$current" 'map(.is_current = (.account == $current)) | sort_by(if .is_current then 0 else 1 end, .account)' <<<"$accounts")
     claude=$(jq -cn --argjson accounts "$accounts" --argjson wall "$claude_wall" '
@@ -324,34 +342,74 @@ else
   fi
 fi
 
-codex_event=''
 codex_root="$HOME/.codex/sessions"
-if [ -d "$codex_root" ]; then
-  while IFS= read -r entry; do
-    path=${entry#* }
-    event=$(tail -c "$chunk_bytes" "$path" 2>/dev/null | jq -Rc '
-      fromjson? |
-      select(.payload.rate_limits? | type == "object") |
-      select((.payload.rate_limits.primary.used_percent | type) == "number") |
-      select((.payload.rate_limits.secondary.used_percent | type) == "number")
-    ' 2>/dev/null | tail -n 1)
-    if [ -n "$event" ]; then codex_event=$event; break; fi
-  done < <(find "$codex_root" -type f -name 'rollout-*.jsonl' -exec stat -f '%m %N' {} + 2>/dev/null | sort -nr | head -n 5)
+collect_codex_event() {
+  [ -d "$codex_root" ] || return
+  local events
+  events=$(
+    while IFS= read -r entry; do
+      path=${entry#* }
+      tail -c "$chunk_bytes" "$path" 2>/dev/null | jq -Rc '
+        fromjson? |
+        select(.payload.rate_limits? | type == "object") |
+        select((.payload.rate_limits.primary.used_percent | type) == "number") |
+        select((.payload.rate_limits.secondary.used_percent | type) == "number")
+      ' 2>/dev/null
+    done < <(find "$codex_root" -type f -name 'rollout-*.jsonl' -exec stat -f '%m %N' {} + 2>/dev/null | sort -nr | head -n 5)
+  )
+  jq -sc "$iso_def"'
+    def timestamp_key:
+      .timestamp | capture("^(?<base>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\\.(?<fraction>[0-9]+))?(?<tz>[Zz]|[+-][0-9]{2}:?[0-9]{2})$") as $t |
+      [($t.base + $t.tz | iso2epoch), ("0." + ($t.fraction // "0") | tonumber)];
+    map(select((try timestamp_key catch null) != null)) |
+    if length == 0 then empty else max_by(timestamp_key) end
+  ' <<<"$events" 2>/dev/null || true
+}
+
+codex_event=$(collect_codex_event)
+# The codex refresh is a paid model call: force it only on provable staleness (no event,
+# older than 120s, or 5h window already reset) — undeterminable freshness must not spend.
+codex_needs_refresh=1
+if [ -n "$codex_event" ]; then
+  codex_needs_refresh=0
+  codex_epoch=$(int_or_empty "$(jq -nr --arg ts "$(jq -r '.timestamp' <<<"$codex_event")" "$iso_def"'$ts | iso2epoch // empty' 2>/dev/null || true)")
+  primary_reset=$(int_or_empty "$(jq -r '.payload.rate_limits.primary.resets_at // empty' <<<"$codex_event")")
+  if [ -n "$codex_epoch" ] && [ $((now_epoch - codex_epoch)) -gt 120 ]; then
+    codex_needs_refresh=1
+  elif [ -n "$primary_reset" ] && [ "$primary_reset" -le "$now_epoch" ]; then
+    codex_needs_refresh=1
+  fi
+fi
+if [ "$refresh" -eq 1 ] && [ "$codex_needs_refresh" -eq 1 ] && [ "${LLM_LIMITS_CODEX_REFRESH:-1}" != 0 ]; then
+  codex_cmd=$(command -v codex 2>/dev/null || true)
+  if [ -n "$codex_cmd" ]; then
+    codex_args=(exec --skip-git-repo-check --sandbox read-only -c 'model_reasoning_effort="low"')
+    if [ -n "${LLM_LIMITS_CODEX_MODEL:-}" ]; then
+      codex_args+=(-m "$LLM_LIMITS_CODEX_MODEL")
+    fi
+    codex_args+=('Reply with exactly: ok')
+    run_bounded 60 "$codex_cmd" "${codex_args[@]}"
+    codex_event=$(collect_codex_event)
+  fi
 fi
 
 if [ -n "$codex_event" ]; then
   codex_ts=$(jq -r '.timestamp' <<<"$codex_event")
-  codex_epoch=$(jq -nr --arg ts "$codex_ts" '$ts | sub("\\.[0-9]+Z$";"Z") | fromdateiso8601' 2>/dev/null || true)
+  codex_epoch=$(int_or_empty "$(jq -nr --arg ts "$codex_ts" "$iso_def"'$ts | iso2epoch // empty' 2>/dev/null || true)")
   if [ -n "$codex_epoch" ]; then
     stale=$((now_epoch - codex_epoch)); [ "$stale" -ge 0 ] || stale=0
-    primary_reset=$(jq -r '.payload.rate_limits.primary.resets_at' <<<"$codex_event")
-    secondary_reset=$(jq -r '.payload.rate_limits.secondary.resets_at' <<<"$codex_event")
+    primary_reset=$(int_or_empty "$(jq -r '.payload.rate_limits.primary.resets_at // empty' <<<"$codex_event")")
+    secondary_reset=$(int_or_empty "$(jq -r '.payload.rate_limits.secondary.resets_at // empty' <<<"$codex_event")")
+    five_reset=''; [ -z "$primary_reset" ] || five_reset=$(epoch_iso "$primary_reset")
+    week_reset=''; [ -z "$secondary_reset" ] || week_reset=$(epoch_iso "$secondary_reset")
     codex=$(jq -cn --argjson e "$codex_event" --argjson wall "$codex_wall" \
-      --arg five_reset "$(epoch_iso "$primary_reset")" --arg week_reset "$(epoch_iso "$secondary_reset")" \
+      --arg five_reset "$five_reset" --arg week_reset "$week_reset" \
       --arg as_of "$(epoch_iso "$codex_epoch")" --argjson stale "$stale" '
       {available:true,
-       five_hour:{used_pct:$e.payload.rate_limits.primary.used_percent,resets_at:$five_reset},
-       weekly:{used_pct:$e.payload.rate_limits.secondary.used_percent,resets_at:$week_reset},
+       five_hour:{used_pct:$e.payload.rate_limits.primary.used_percent,
+                  resets_at:(if $five_reset == "" then null else $five_reset end)},
+       weekly:{used_pct:$e.payload.rate_limits.secondary.used_percent,
+               resets_at:(if $week_reset == "" then null else $week_reset end)},
        as_of:$as_of,stale_seconds:$stale,source:"session-rollout",last_wall:$wall,
        plan_type:($e.payload.rate_limits.plan_type // null)}')
   else
@@ -391,9 +449,18 @@ if [ -r "$gemini_cache" ]; then
        as_of:$as_of,stale_seconds:$stale,last_wall:$wall}')
   fi
 fi
+# Snapshots are passive: a window whose resets_at is already behind us has been reset
+# server-side, so its used_pct is stale noise. Flag it (values kept for provenance).
 result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson claude "$claude" \
-  --argjson codex "$codex" --argjson gemini "$gemini" \
-  '{schema:1,fetched_at:$fetched_at,vendors:{claude:$claude,codex:$codex,gemini:$gemini}}')
+  --argjson codex "$codex" --argjson gemini "$gemini" --argjson now "$now_epoch" \
+  "$iso_def"'
+  def mark:
+    if type == "object" and has("used_pct") and has("resets_at")
+    then (.resets_at | iso2epoch) as $e |
+      if $e != null and $e <= $now then . + {expired:true} else . end
+    else . end;
+  {schema:1,fetched_at:$fetched_at,vendors:{claude:$claude,codex:$codex,gemini:$gemini}}
+  | walk(mark)')
 
 if [ "$write_cache" -eq 1 ]; then
   cache=${LLM_LIMITS_CACHE:-$HOME/.llm-limits.json}
@@ -414,13 +481,19 @@ else
     def age:
       (stale_amount("д"; "ч")) as $a |
       if $a == null then "" else " (данные " + $a + " назад)" end;
+    def pct($window):
+      if $window == null or $window.expired == true then "-"
+      else (($window.used_pct | tostring) + "%") end;
+    def reset($window):
+      if $window == null or $window.expired == true then "—"
+      else ($window.resets_at // "—") end;
     .vendors | to_entries[] |
     if .value.available then
       if .key == "claude" and (.value.accounts | type) == "array" then
-        .value.accounts[] | ("claude/" + .account + ": " + (.five_hour.used_pct|tostring) + "%/" + ((.weekly.used_pct // "-")|tostring) +
-         "% | resets " + .five_hour.resets_at + " / " + (.weekly.resets_at // "—") + (. | age))
-      else (.key + ": " + (.value.five_hour.used_pct|tostring) + "%/" + (.value.weekly.used_pct|tostring) +
-       "% | resets " + .value.five_hour.resets_at + " / " + .value.weekly.resets_at + (.value|age)) end
+        .value.accounts[] | ("claude/" + .account + ": " + pct(.five_hour) + "/" + pct(.weekly) +
+         " | resets " + reset(.five_hour) + " / " + reset(.weekly) + (. | age))
+      else (.key + ": " + pct(.value.five_hour) + "/" + pct(.value.weekly) +
+       " | resets " + reset(.value.five_hour) + " / " + reset(.value.weekly) + (.value|age)) end
     else (.key + ": " + .value.status + (if .value.last_wall then " | last wall " + .value.last_wall else "" end)) end
   ' <<<"$result"
 fi

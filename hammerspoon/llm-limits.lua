@@ -230,12 +230,19 @@ function M.menuItems()
             end
             return row
           end
-          table.insert(menu, accountRow(string.format("%-6s  5h  %3d%%  → %s%s", acct,
-            fiveHourPct, formatResetTime(fiveHour.resets_at), marker), fiveHourPct >= 80))
+          -- "reset " and "%3d%%  " are both 6 chars, keeping the → column aligned.
+          local fiveLabel = fiveHour.expired == true and "reset "
+            or string.format("%3d%%  ", fiveHourPct)
+          table.insert(menu, accountRow(string.format("%-6s  5h  %s→ %s%s", acct,
+            fiveLabel, formatResetTime(fiveHour.resets_at), marker),
+            fiveHour.expired ~= true and fiveHourPct >= 80))
           if type(weekly) == "table" then
             local weeklyPct = math.floor((tonumber(weekly.used_pct) or 0) + 0.5)
-            table.insert(menu, accountRow(string.format("%-6s  wk  %3d%%  → %s%s", "",
-              weeklyPct, formatResetTime(weekly.resets_at), marker), weeklyPct >= 80))
+            local weeklyLabel = weekly.expired == true and "reset "
+              or string.format("%3d%%  ", weeklyPct)
+            table.insert(menu, accountRow(string.format("%-6s  wk  %s→ %s%s", "",
+              weeklyLabel, formatResetTime(weekly.resets_at), marker),
+              weekly.expired ~= true and weeklyPct >= 80))
           else
             table.insert(menu, accountRow(string.format("%-6s  wk    -   → —%s", "", marker)))
           end
@@ -248,13 +255,13 @@ function M.menuItems()
       title = infoTitle("Data fetched: " .. formatAge(limits.fetched_at)),
       disabled = true,
     })
-    table.insert(menu, { title = "Get Data", fn = getLlmLimitsData })
+    table.insert(menu, { title = "Get Data & Refresh", fn = getLlmLimitsData })
   else
     table.insert(menu, {
-      title = infoTitle("no data — press Get Data"),
+      title = infoTitle("no data — press Get Data & Refresh"),
       disabled = true,
     })
-    table.insert(menu, { title = "Get Data", fn = getLlmLimitsData })
+    table.insert(menu, { title = "Get Data & Refresh", fn = getLlmLimitsData })
   end
 
   return menu

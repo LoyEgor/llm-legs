@@ -69,8 +69,8 @@ explicit `--json`, `--plain`, or `--table` always wins. The stable top level is
 `weekly`, `as_of`, and `stale_seconds` hoisted at vendor level for compatibility. Each account has
 its own windows and freshness. Use `--plain` for a
 human-readable summary or `--no-write` to leave the cache untouched. `--table` renders an aligned
-terminal table with one row per entity — every Claude account except `main` (hidden from the
-table only, still present in JSON; the current account is marked `*`), then codex
+terminal table with one row per entity — every Claude account (the current one is marked `*`),
+then codex
 and gemini — with 5h/weekly used% and local reset times, plus a NOTE column (Claude fable %, codex
 plan, gemini quota group, and a `stale Nh` marker when a snapshot is over an hour old). Percent
 columns are colorized only when stdout is a TTY; piped output stays plain ASCII. `--sort
@@ -84,15 +84,22 @@ ln -s /Volumes/Work/Projects/llm-legs/llm-limits.sh ~/.local/bin/llm-limits
 llm-limits --table --sort 5h
 ```
 
-`--refresh` is reserved for
-the manual Get Data action: it live-polls all Claude accounts through `claudeb accounts` before
-reading their files and fetches Gemini quota through agy's authenticated localhost Connect RPC.
+`--refresh` is reserved for the manual Get Data & Refresh action. It always performs Claude's
+free usage-endpoint poll through `claudeb accounts --no-spend` and fetches Gemini quota through
+agy's authenticated localhost Connect RPC.
+The Codex leg is different: it is a **paid model call** — a real `codex exec` request that spends
+Codex quota — so it runs only when staleness is provable: the event is missing, over 120 seconds
+old, or its five-hour window has expired. When freshness cannot be determined (e.g. a null
+`resets_at`), the poll is skipped rather than spent.
 The Gemini request is the machine-readable equivalent of `/usage`; it consumes no model tokens
 and its last valid response is cached in `~/.llm-limits-gemini.json`. Without `--refresh`,
 collection remains token-free, network-free, and file-read-only.
 
-Claude reads every `$CLAUDEB_DIR/.claudeb/limits/*.json` account (`CLAUDEB_DIR` defaults to
-`~/.claude-profiles`) and uses `.claudeb-state` to select the current account. If that store is
+Claude reads the `$CLAUDEB_DIR/limits/*.json` accounts (`CLAUDEB_DIR` defaults to
+`~/.claude-profiles/.claudeb`) and uses `.claudeb-state` to select the current account. `main`
+(the default plain-`claude` login, not a real claudeb token account) is excluded from every
+output — JSON, cache, `--plain`, and `--table` — so only real claudeb token accounts are
+reported. If the store is
 absent, it falls back to the freshest Claude status-line snapshot as a single `main` account.
 
 Set `LLM_LIMITS_WALLS_LOG` to a `served-models.jsonl` audit log to include the most recent
@@ -110,7 +117,7 @@ local submenu = { title = "LLM Limits", menu = limits.menuItems() }
 |--------|-----------------|
 | Claude | Per-account claudeb file mtime; status-line snapshot fallback |
 | Codex | As of the last Codex turn that emitted rate limits |
-| Gemini | Last successful manual Get Data refresh through agy's localhost quota RPC |
+| Gemini | Last successful manual Get Data & Refresh through agy's localhost quota RPC |
 
 Gemini refresh launches `agy` under a bounded PTY, waits for normal authenticated startup, finds
 its localhost listener, and calls
