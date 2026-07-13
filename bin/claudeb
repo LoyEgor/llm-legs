@@ -778,11 +778,17 @@ profile_command() {
     prepared_profile_dir="$dir"
     return
   fi
+  # Explicit profile entry is "I want THIS account, now" — always direct on the
+  # profile's own keychain creds, independent of rotation membership. Rotation
+  # only governs the loop (proxy_launch); it must have zero effect here.
   if is_disabled "$profile"; then
-    printf 'claudeb: %s is disabled; run `claudeb enable %s` before launching it\n' "$profile" "$profile" >&2
-    return 1
+    printf 'claudeb: note: %s is out of rotation; using it directly\n' "$profile" >&2
   fi
-  exec env CLAUDE_CONFIG_DIR="$dir" CLAUDE_LIMITS_ACCOUNT="$profile" claude "$@"
+  # env -u strips a proxy session's leaked ANTHROPIC_BASE_URL and injected
+  # CLAUDE_CODE_OAUTH_TOKEN; left in place they would silently route the profile
+  # through the rotating daemon (its scope eligibility, not this account's).
+  exec env -u ANTHROPIC_BASE_URL -u CLAUDE_CODE_OAUTH_TOKEN \
+    CLAUDE_CONFIG_DIR="$dir" CLAUDE_LIMITS_ACCOUNT="$profile" claude "$@"
 }
 
 run_warm_session() {
@@ -1088,6 +1094,9 @@ direct_launch() {
   export CLAUDE_LIMITS_ACCOUNT="$picked"
   CLAUDE_CODE_OAUTH_TOKEN=$(cat "$tokens_dir/$picked")
   export CLAUDE_CODE_OAUTH_TOKEN
+  # Drop a proxy session's leaked base URL so the injected token hits Anthropic
+  # directly instead of being re-signed and rerouted by the rotating daemon.
+  unset ANTHROPIC_BASE_URL
   exec claude "$@"
 }
 

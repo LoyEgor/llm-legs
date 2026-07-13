@@ -193,12 +193,26 @@ fi
 
 sep="${DIM}│${RESET}"
 
+# claudeb account this session runs on: a real account name (pinned/profile
+# entry, CLAUDE_LIMITS_ACCOUNT=<name>) shows as cb:<name>; a rotating proxy
+# session (CLAUDE_LIMITS_ACCOUNT="-") shows the daemon's current pick with a ~
+# to mark that it can rotate. The current pick comes from the local state file
+# the daemon persists on every switch — no network, fail silent. Plain
+# non-claudeb sessions (acct=main) get no segment.
+cb_part=""
+if [ "$acct" = "-" ]; then
+  cb_current=$(head -n1 "${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/.claudeb-state" 2>/dev/null | tr -d '[:space:]')
+  [ -n "$cb_current" ] && cb_part=" ${DIM}cb:${RESET}${MAGENTA}~${cb_current}${RESET}"
+elif [ -n "$acct" ] && [ "$acct" != main ]; then
+  cb_part=" ${DIM}cb:${RESET}${MAGENTA}${acct}${RESET}"
+fi
+
 lines_part=""
 if [ -n "$lines_added" ] && [ -n "$lines_removed" ] && [ $(( lines_added + lines_removed )) -ge 50 ]; then
   lines_part=" ${DIM}✎${RESET} ${GREEN}+${lines_added}${RESET}/${RED}-${lines_removed}${RESET}"
 fi
 
-out="${CYAN}${model}${model_suffix}${RESET} ${sep} ${BLUE}📁 ${dir}${RESET}${branch_part}${lines_part} ${sep} ctx $(pct_colored "$ctx_pct")${ctx_tokens_part}"
+out="${CYAN}${model}${model_suffix}${RESET}${cb_part} ${sep} ${BLUE}📁 ${dir}${RESET}${branch_part}${lines_part} ${sep} ctx $(pct_colored "$ctx_pct")${ctx_tokens_part}"
 
 out="${out} ${sep} 5h $(pct_colored "$h5_pct" "$h5_dim")${h5_arrow} ${sep} wk $(pct_colored "$wk_pct" "$wk_dim")${wk_arrow}"
 

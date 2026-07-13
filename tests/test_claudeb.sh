@@ -119,8 +119,31 @@ assert test "$(selection | jq -r .picked)" = beta
 touch -t 202607120103 "$state_file"
 assert test "$(selection | jq -r .picked)" = alpha
 
+# An out-of-rotation (disabled) account launched via `profile` PROCEEDS direct:
+# prints the informational note and execs with the profile's own creds, with the
+# leaked proxy base URL and injected rotating token stripped.
 touch "$CLAUDEB_DIR/tokens/gamma"
 printf 'gamma\n' >"$disabled_file"
-assert_fails profile_command gamma
+ENV_DUMP="$WORK/gamma-env.txt"
+cat >"$FAKE_BIN/claude" <<EOF
+#!/usr/bin/env bash
+env > "$ENV_DUMP"
+exit 0
+EOF
+chmod +x "$FAKE_BIN/claude"
+# Subshell so profile_command's exec replaces the subshell, not the test runner;
+# proxy-session leaks are set to prove they get stripped from the direct launch.
+note=$( ANTHROPIC_BASE_URL="http://127.0.0.1:45789" CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-leak" \
+  profile_command gamma 2>&1 >/dev/null )
+assert grep -q 'out of rotation' <<<"$note"
+assert test -f "$ENV_DUMP"
+assert_fails grep -q '^ANTHROPIC_BASE_URL=' "$ENV_DUMP"
+assert_fails grep -q '^CLAUDE_CODE_OAUTH_TOKEN=' "$ENV_DUMP"
+assert grep -qx "CLAUDE_LIMITS_ACCOUNT=gamma" "$ENV_DUMP"
+assert grep -qx "CLAUDE_CONFIG_DIR=$HOME/.claude-profiles/gamma" "$ENV_DUMP"
+for command in curl security claude; do
+  printf '#!/usr/bin/env bash\nexit 97\n' >"$FAKE_BIN/$command"
+  chmod +x "$FAKE_BIN/$command"
+done
 
-echo "PASS: $asserts asserts; reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth backoff and lock behavior, reserved names, disabled-account timeline, disabled profile launch refused"
+echo "PASS: $asserts asserts; reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth backoff and lock behavior, reserved names, disabled-account timeline, out-of-rotation profile launch proceeds direct (proxy leaks stripped)"
