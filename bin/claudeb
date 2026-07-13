@@ -778,6 +778,10 @@ profile_command() {
     prepared_profile_dir="$dir"
     return
   fi
+  if is_disabled "$profile"; then
+    printf 'claudeb: %s is disabled; run `claudeb enable %s` before launching it\n' "$profile" "$profile" >&2
+    return 1
+  fi
   exec env CLAUDE_CONFIG_DIR="$dir" CLAUDE_LIMITS_ACCOUNT="$profile" claude "$@"
 }
 

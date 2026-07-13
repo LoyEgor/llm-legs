@@ -28,6 +28,7 @@ const started = Date.now();
 const states = new Map();
 let accounts = [];
 let disabled = new Set();
+let disabledMtimeCache = -1;
 let current = null;
 const pinnedAt = new Map();
 const currentByScope = { fable: null };
@@ -157,6 +158,7 @@ function loadDisabled() {
   } catch {
     disabled = new Set();
   }
+  disabledMtimeCache = disabledMtime();
 }
 
 function disabledMtime() {
@@ -746,7 +748,9 @@ function handle(req, res) {
     });
     return;
   }
-  if (!current || !accounts.includes(current)) scanAccounts();
+  // An "In rotation" disable is an order: honor it on the very next request,
+  // not only on the 30s scan tick — reload the moment the file's mtime moves.
+  if (disabledMtime() !== disabledMtimeCache || !current || !accounts.includes(current)) scanAccounts();
   if (!current) return sendJson(res, 503, { error: 'No accounts configured' });
   const replaceAuth = /^Bearer sk-ant-/i.test(String(req.headers.authorization || ''));
   const chunks = [];

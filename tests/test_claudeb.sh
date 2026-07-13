@@ -119,4 +119,8 @@ assert test "$(selection | jq -r .picked)" = beta
 touch -t 202607120103 "$state_file"
 assert test "$(selection | jq -r .picked)" = alpha
 
-echo "PASS: $asserts asserts; reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth backoff and lock behavior, reserved names, disabled-account timeline"
+touch "$CLAUDEB_DIR/tokens/gamma"
+printf 'gamma\n' >"$disabled_file"
+assert_fails profile_command gamma
+
+echo "PASS: $asserts asserts; reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth backoff and lock behavior, reserved names, disabled-account timeline, disabled profile launch refused"

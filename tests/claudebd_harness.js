@@ -179,6 +179,21 @@ api.setCurrent('stateonly');
 api.scanAccounts();
 check(api.getCurrent() === 'stateonly', false, 'state-file mtime alone does not restore a pin');
 
+// Menu disable is authoritative over an OLDER manual pin: it evicts the account
+// and purges the pin from memory + daemon-state.json (no restart resurrection).
+add('menupinned');
+fs.writeFileSync(disabledFile, 'pinned\ndisabled\nstateonly\nmenupinned\n');
+const menuDisableAt = new Date();
+fs.utimesSync(disabledFile, menuDisableAt, menuDisableAt);
+api.pinnedAt.set('menupinned', Date.now() - 5000);
+api.setCurrent('menupinned');
+api.scanAccounts();
+check(api.disabledEvicts('menupinned'), true, 'disable newer than the pin evicts the pinned account');
+check(api.pinnedAt.has('menupinned'), false, 'evicted pin dropped from memory');
+const dsAfterDisable = JSON.parse(fs.readFileSync(api.daemonStateFile, 'utf8'));
+check(dsAfterDisable.pinnedAt['menupinned'], undefined, 'evicted pin purged from daemon-state.json');
+ok(api.getCurrent() !== 'menupinned', 'disabled pinned account is no longer current');
+
 add('wall-a', state({ scopedWalls: { fable: now + 700 } }));
 add('wall-b', state({ scopedWalls: { fable: now + 400 } }));
 fs.writeFileSync(disabledFile, 'header\nquota\ntransient\nstale\ncached\nnonok\nlegacynoauth\nauthfail\nactivewall\ntrustedfull\npinned\ndisabled\nstateonly\n');

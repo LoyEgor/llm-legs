@@ -296,6 +296,79 @@ case "$(cat "$WORK/h/claudebd.log")" in *upstream-idle*) fail "h: completed requ
 case "$(cat "$WORK/h/daemon.out")" in *MaxListenersExceededWarning*) fail "h: completed requests must not retain timeout listeners" ;; *) pass ;; esac
 stop_daemon
 
+echo "scenario i: disabling the current account reroutes the very next request (no restart, no nudge)"
+write_plan <<'JSON'
+{ "byToken": { "acct-a": { "status": 200, "body": "{\"who\":\"a\"}" }, "acct-b": { "status": 200, "body": "{\"who\":\"b\"}" } } }
+JSON
+STORE_I="$(setup_store "$WORK/i" a b)"
+start_daemon "$STORE_I"
+eq "$(gpost "$GEN")" "200" "i: initial request ok"
+eq "$(sfield current)" "a" "i: account a is current initially"
+sleep 0.05
+printf 'a\n' >"$STORE_I/disabled"
+code=$(gpost "$GEN")
+eq "$code" "200" "i: next request after disable still succeeds (no client error)"
+contains '"who":"b"' "$(cat "$WORK/body")" "i: request routed to account b"
+eq "$(sfield current)" "b" "i: current switched to b on the very next request"
+case "$(sfield current)" in a) fail "i: disabled account a must not be current (case 6)" ;; *) pass ;; esac
+stop_daemon
+
+echo "scenario j: disabling an account mid-stream lets the in-flight SSE finish"
+write_plan <<'JSON'
+{ "byToken": { "acct-a": { "sse": ["data: 1\n\n", "data: 2\n\n", "data: 3\n\n"], "delayMs": 300 } } }
+JSON
+STORE_J="$(setup_store "$WORK/j" a b)"
+start_daemon "$STORE_J"
+( sleep 0.4; printf 'a\n' >"$STORE_J/disabled" ) &
+DIS_PID=$!
+code=$(curl -sN --max-time 10 -o "$WORK/body" -w '%{http_code}' -X POST \
+  -H "authorization: $(auth_header)" -H 'content-type: application/json' \
+  --data "$GEN" "http://127.0.0.1:$DAEMON_PORT/v1/messages")
+wait "$DIS_PID" 2>/dev/null || true
+eq "$code" "200" "j: in-flight stream on a completes with 200 despite mid-stream disable"
+contains "data: 1" "$(cat "$WORK/body")" "j: first chunk delivered"
+contains "data: 3" "$(cat "$WORK/body")" "j: final chunk delivered (stream not severed)"
+stop_daemon
+
+echo "scenario k: re-enabling an account returns it to rotation without a restart"
+write_plan <<'JSON'
+{ "byToken": { "acct-a": { "status": 200, "body": "{\"who\":\"a\"}" }, "acct-b": { "status": 200, "body": "{\"who\":\"b\"}" } } }
+JSON
+STORE_K="$(setup_store "$WORK/k" a b)"
+start_daemon "$STORE_K"
+printf 'a\n' >"$STORE_K/disabled"
+eq "$(gpost "$GEN")" "200" "k: request routes to b while a disabled"
+eq "$(sfield current)" "b" "k: current is b"
+sleep 0.05
+: >"$STORE_K/disabled"
+RESET_AT=$(( $(date +%s) + 600 ))
+write_plan <<JSON
+{ "byToken": { "acct-a": { "status": 200, "body": "{\"who\":\"a\"}" }, "acct-b": { "status": 429, "headers": { "anthropic-ratelimit-unified-status": "rejected", "anthropic-ratelimit-unified-reset": "$RESET_AT" }, "body": "{}" } } }
+JSON
+code=$(gpost "$GEN")
+eq "$code" "200" "k: after re-enable and b walling, request succeeds"
+contains '"who":"a"' "$(cat "$WORK/body")" "k: re-enabled account a serves again (back in rotation)"
+eq "$(sfield current)" "a" "k: current rotated back to a"
+stop_daemon
+
+echo "scenario l: a manual pin created AFTER a disable sticks (documented override)"
+write_plan <<'JSON'
+{ "byToken": { "acct-a": { "status": 200, "body": "{\"who\":\"a\"}" }, "acct-b": { "status": 200, "body": "{\"who\":\"b\"}" } } }
+JSON
+STORE_L="$(setup_store "$WORK/l" a b)"
+start_daemon "$STORE_L"
+printf 'a\n' >"$STORE_L/disabled"
+eq "$(gpost "$GEN")" "200" "l: routes off disabled a to b"
+eq "$(sfield current)" "b" "l: current is b after disabling a"
+sleep 1.1
+curl -s -o /dev/null -X POST -H 'content-type: application/json' --data '{"account":"a"}' "http://127.0.0.1:$DAEMON_PORT/claudebd/use"
+eq "$(sfield current)" "a" "l: explicit use AFTER disable pins the disabled account"
+code=$(gpost "$GEN")
+eq "$code" "200" "l: pinned-after-disable account serves"
+contains '"who":"a"' "$(cat "$WORK/body")" "l: request routed to the post-disable pin (a)"
+eq "$(sfield current)" "a" "l: post-disable pin sticks across the next request"
+stop_daemon
+
 echo
 if [ "$FAIL" -eq 0 ]; then
   echo "PASS: claudebd live switching ($PASS assertions, 0 failures)"
