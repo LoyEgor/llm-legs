@@ -160,13 +160,13 @@ local function usageBar(value)
   return string.rep("▓", filled) .. string.rep("░", 5 - filled)
 end
 
-local function rowTitle(account, label, bucket, age, warning, gray, walled)
+local function rowTitle(account, label, bucket, age, gray, walled)
   bucket = type(bucket) == "table" and bucket or {}
   local pct = tonumber(bucket.effective_pct)
   local pctText = pct and string.format("%d%%", math.floor(pct + 0.5)) or "-"
   local reset = formatResetTime(bucket.resets_at)
   return infoTitle(string.format("%-6s  %-2s  %s  %4s  %4s %9s", account or "", label,
-    usageBar(pct), pctText, age or "", reset), warning, gray, walled)
+    usageBar(pct), pctText, age or "", reset), false, gray, walled)
 end
 
 local function readLlmLimits()
@@ -398,11 +398,6 @@ function M.menuItems()
           local isCurrent = block.is_current == true
             or (isCodexAccounts and acct == vendor.current_account)
           local enabled = block.enabled ~= false
-          local auth = block.auth
-          if type(auth) == "table" then
-            auth = auth.status
-          end
-          local blockGray = auth == "expired"
           local accountAge
           local accountEpoch = parseTime(block.as_of)
           local vendorEpoch = parseTime(vendor.as_of)
@@ -412,8 +407,8 @@ function M.menuItems()
           local accountWalled = accountWalls[acct] == true
           if isAccountRows then
             local accountRow = {
-              title = infoTitle(acct .. (isCurrent and "  ●" or ""), false,
-                blockGray, accountWalled),
+              title = infoTitle(acct .. (isCurrent and "  ●" or ""), false, false,
+                accountWalled),
               disabled = true,
             }
             if hasAccountControls then
@@ -428,24 +423,19 @@ function M.menuItems()
             end
             table.insert(menu, accountRow)
           end
-          local fiveGray = blockGray or fiveHour.expired == true
-            or isStale(1800, fiveHour, block, vendor)
-          local fiveHourPct = tonumber(fiveHour.effective_pct)
+          local fiveGray = isStale(1800, fiveHour)
           local fiveRow = {
             title = rowTitle(isAccountRows and "" or acct, "5h", fiveHour, accountAge,
-              fiveHourPct ~= nil and fiveHourPct >= 80, fiveGray, accountWalled),
+              fiveGray, accountWalled),
             disabled = true,
           }
           table.insert(menu, fiveRow)
           local function tailRow(label, bucket)
             if type(bucket) == "table" then
-              local pct = tonumber(bucket.effective_pct)
-              local gray = blockGray or bucket.expired == true
-                or isStale(21600, bucket, block, vendor)
-              return rowTitle("", label, bucket, accountAge,
-                pct ~= nil and pct >= 80, gray, accountWalled)
+              local gray = isStale(21600, bucket)
+              return rowTitle("", label, bucket, accountAge, gray, accountWalled)
             end
-            return rowTitle("", label, nil, accountAge, false, blockGray, accountWalled)
+            return rowTitle("", label, nil, accountAge, false, accountWalled)
           end
           table.insert(menu, { title = tailRow("wk", weekly), disabled = true })
           if type(block.fable) == "table" then
