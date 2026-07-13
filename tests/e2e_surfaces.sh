@@ -97,7 +97,7 @@ pass "menu build: rows for [$(tr '\n' ' ' <<<"$AVAIL")], age line, Refresh + Ref
 # 4. CLI surface: --table exits 0 with rows; bare output is valid JSON with schema fields.
 TABLE=$(llm-limits --table 2>/dev/null) || fail "llm-limits --table exited non-zero"
 grep -qE '^claude/[^ ]+ ' <<<"$TABLE" || fail "--table has no claude account rows"
-grep -qE '^codex( |$)' <<<"$TABLE" || fail "--table missing codex row"
+grep -qE '^codex(/| |$)' <<<"$TABLE" || fail "--table missing codex row"
 grep -qE '^gemini( |$)' <<<"$TABLE" || fail "--table missing gemini row"
 jq -e '.schema == 1 and (.vendors.claude.accounts | type == "array")
   and (.vendors.claude.accounts[0].five_hour | has("as_of"))

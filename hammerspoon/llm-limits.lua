@@ -8,15 +8,26 @@ local M = {
 }
 
 local grayColor = { red = 0.55, green = 0.55, blue = 0.55 }
+local redColor = { red = 0.9, green = 0.25, blue = 0.2 }
+local dimRedColor = { red = 0.9, green = 0.25, blue = 0.2, alpha = 0.55 }
 
-local function infoTitle(text, warning, gray)
+local function infoTitle(text, warning, gray, walled)
   local attributes = { font = { name = "Menlo", size = 13 } }
-  if gray then
+  if walled then
+    attributes.color = gray and dimRedColor or redColor
+  elseif gray then
     attributes.color = grayColor
   elseif warning then
-    attributes.color = { red = 0.9, green = 0.25, blue = 0.2 }
+    attributes.color = redColor
   end
   return hs.styledtext.new(text, attributes)
+end
+
+local function truncateText(text, maxLength)
+  if #text <= maxLength then
+    return text
+  end
+  return text:sub(1, maxLength - 3):gsub("%s+$", "") .. "..."
 end
 
 local function parseIsoTime(value)
@@ -140,7 +151,22 @@ local function formatResetTime(value)
     local weekdays = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" }
     return weekdays[tonumber(os.date("%w", timestamp)) + 1] .. os.date(" %H:%M", timestamp)
   end
-  return os.date("%m-%d %H:%M", timestamp)
+  return os.date("%b %d", timestamp)
+end
+
+local function usageBar(value)
+  local pct = math.max(0, math.min(100, tonumber(value) or 0))
+  local filled = math.floor(pct / 20 + 0.5)
+  return string.rep("▓", filled) .. string.rep("░", 5 - filled)
+end
+
+local function rowTitle(account, label, bucket, age, warning, gray, walled)
+  bucket = type(bucket) == "table" and bucket or {}
+  local pct = tonumber(bucket.effective_pct)
+  local pctText = pct and string.format("%d%%", math.floor(pct + 0.5)) or "-"
+  local reset = formatResetTime(bucket.resets_at)
+  return infoTitle(string.format("%-6s  %-2s  %s  %4s  %4s %9s", account or "", label,
+    usageBar(pct), pctText, age or "", reset), warning, gray, walled)
 end
 
 local function readLlmLimits()
@@ -201,7 +227,8 @@ local function recordRefreshOutcome(exitCode)
       local vendor = vendors[name]
       if type(vendor) == "table" and type(vendor.refresh_error) == "string"
           and vendor.refresh_error ~= "" then
-        table.insert(failures, name)
+        local detail = vendor.refresh_error:match("^%s*(.-)%s*$")
+        table.insert(failures, name .. " — " .. detail)
       end
     end
   end
@@ -351,75 +378,74 @@ function M.menuItems()
             disabled = true,
           })
         end
-        if isClaudeAccounts then
-          local daemon = vendor.daemon
-          if type(daemon) == "table" and daemon.reachable == true
-              and type(daemon.all_walled_until) == "table" then
-            local generalUntil = daemon.all_walled_until.general
-            local fableUntil = daemon.all_walled_until.fable
-            local allWalledUntil = generalUntil or fableUntil
-            if allWalledUntil ~= nil then
-              local scope = generalUntil == nil and " (fable)" or ""
-              table.insert(menu, {
-                title = infoTitle("all accounts walled until "
-                  .. formatResetTime(allWalledUntil) .. scope, true),
-                disabled = true,
-              })
+        local accountWalls = {}
+        local daemon = vendor.daemon
+        if isClaudeAccounts and type(daemon) == "table" and daemon.reachable == true
+            and type(daemon.walls) == "table" then
+          for _, wall in ipairs(daemon.walls) do
+            if type(wall) == "table" and type(wall.account) == "string" then
+              local wallEpoch = parseTime(wall["until"])
+              if not wallEpoch or wallEpoch > os.time() then
+                accountWalls[wall.account] = true
+              end
             end
           end
         end
         for _, block in ipairs(blocks) do
           local fiveHour = block.five_hour or {}
           local weekly = block.weekly
-          local fiveHourPct = tonumber(fiveHour.used_pct)
-          local fiveHourText = fiveHourPct and string.format("%d%%", math.floor(fiveHourPct + 0.5)) or "-"
-          local fiveHourReset = fiveHourPct and formatResetTime(fiveHour.resets_at) or "—"
           local acct = block.account or entry.label
           local isCurrent = block.is_current == true
             or (isCodexAccounts and acct == vendor.current_account)
-          local marker = isCurrent and "  ●" or ""
           local enabled = block.enabled ~= false
           local auth = block.auth
           if type(auth) == "table" then
             auth = auth.status
           end
           local blockGray = auth == "expired"
-          local accountAge = ""
+          local accountAge
           local accountEpoch = parseTime(block.as_of)
           local vendorEpoch = parseTime(vendor.as_of)
           if accountEpoch and vendorEpoch and accountEpoch < vendorEpoch then
-            accountAge = "  " .. formatAgeShort(block.as_of)
+            accountAge = truncateText(formatAgeShort(block.as_of), 4)
+          end
+          local accountWalled = accountWalls[acct] == true
+          if isAccountRows then
+            local accountRow = {
+              title = infoTitle(acct .. (isCurrent and "  ●" or ""), false,
+                blockGray, accountWalled),
+              disabled = true,
+            }
+            if hasAccountControls then
+              accountRow.disabled = nil
+              accountRow.checked = enabled
+              accountRow.menu = {
+                { title = "In rotation", checked = enabled,
+                  fn = function() M.toggleAccount(acct, enabled) end },
+                { title = "Make current", disabled = block.is_current,
+                  fn = function() M.switchAccount(acct) end },
+              }
+            end
+            table.insert(menu, accountRow)
           end
           local fiveGray = blockGray or fiveHour.expired == true
             or isStale(1800, fiveHour, block, vendor)
+          local fiveHourPct = tonumber(fiveHour.effective_pct)
           local fiveRow = {
-            title = infoTitle(string.format("%-6s  5h  %4s  → %s%s%s", acct,
-              fiveHourText, fiveHourReset, marker, accountAge),
-              fiveHourPct ~= nil and fiveHourPct >= 80, fiveGray),
+            title = rowTitle(isAccountRows and "" or acct, "5h", fiveHour, accountAge,
+              fiveHourPct ~= nil and fiveHourPct >= 80, fiveGray, accountWalled),
             disabled = true,
           }
-          if hasAccountControls then
-            fiveRow.disabled = nil
-            fiveRow.checked = enabled
-            fiveRow.menu = {
-              { title = "In rotation", checked = enabled,
-                fn = function() M.toggleAccount(acct, enabled) end },
-              { title = "Make current", disabled = block.is_current,
-                fn = function() M.switchAccount(acct) end },
-            }
-          end
           table.insert(menu, fiveRow)
           local function tailRow(label, bucket)
             if type(bucket) == "table" then
-              local pct = math.floor((tonumber(bucket.used_pct) or 0) + 0.5)
+              local pct = tonumber(bucket.effective_pct)
               local gray = blockGray or bucket.expired == true
                 or isStale(21600, bucket, block, vendor)
-              return infoTitle(string.format("%-6s  %s  %3d%%  → %s%s", "",
-                label, pct, formatResetTime(bucket.resets_at), marker),
-                pct >= 80, gray)
+              return rowTitle("", label, bucket, accountAge,
+                pct ~= nil and pct >= 80, gray, accountWalled)
             end
-            return infoTitle(string.format("%-6s  %s    -   → —%s", "", label, marker),
-              false, blockGray)
+            return rowTitle("", label, nil, accountAge, false, blockGray, accountWalled)
           end
           table.insert(menu, { title = tailRow("wk", weekly), disabled = true })
           if type(block.fable) == "table" then
@@ -440,7 +466,8 @@ function M.menuItems()
     })
     if lastRefreshOutcome and #lastRefreshOutcome.failures > 0 then
       table.insert(menu, {
-        title = infoTitle("refresh failed: " .. table.concat(lastRefreshOutcome.failures, ", "), true),
+        title = infoTitle(truncateText("refresh failed: "
+          .. table.concat(lastRefreshOutcome.failures, ", "), 88), true),
         disabled = true,
       })
     end
@@ -458,7 +485,8 @@ function M.menuItems()
     end
     if lastRefreshOutcome and #lastRefreshOutcome.failures > 0 then
       table.insert(menu, {
-        title = infoTitle("refresh failed: " .. table.concat(lastRefreshOutcome.failures, ", "), true),
+        title = infoTitle(truncateText("refresh failed: "
+          .. table.concat(lastRefreshOutcome.failures, ", "), 88), true),
         disabled = true,
       })
     end
