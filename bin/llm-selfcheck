@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+set -u
+
+resolve_script() {
+  local source="${BASH_SOURCE[0]}" directory
+  while [ -L "$source" ]; do
+    directory=$(cd -P "$(dirname "$source")" && pwd)
+    source=$(readlink "$source")
+    [[ "$source" = /* ]] || source="$directory/$source"
+  done
+  cd -P "$(dirname "$source")" && printf '%s/%s\n' "$PWD" "$(basename "$source")"
+}
+
+script_path=$(resolve_script)
+repo_root=$(cd "$(dirname "$script_path")/.." && pwd)
+log_dir="$HOME/.claude-profiles/.claudeb"
+log_file="$log_dir/selfcheck.log"
+agent_dir="$HOME/Library/LaunchAgents"
+plist="$agent_dir/com.llm-legs.selfcheck.plist"
+link="$HOME/.local/bin/llm-selfcheck"
+label="com.llm-legs.selfcheck"
+
+timeout_command() {
+  if command -v gtimeout >/dev/null 2>&1; then
+    command gtimeout "$@"
+  elif command -v timeout >/dev/null 2>&1; then
+    command timeout "$@"
+  else
+    perl -e 'alarm shift; exec @ARGV' "$@"
+  fi
+}
+
+write_log() {
+  local status="$1" step="$2" temporary
+  mkdir -p "$log_dir"
+  printf 'timestamp=%s status=%s failed_step=%s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$status" "$step" >>"$log_file"
+  temporary="$log_file.$$"
+  tail -n 60 "$log_file" >"$temporary" && mv "$temporary" "$log_file"
+}
+
+alert_failure() {
+  local step="$1" message
+  message="LLM self-check failed: $step"
+  hs -c "hs.alert.show(\"$message\")" >/dev/null 2>&1 || true
+  osascript -e "display notification \"$message\" with title \"LLM self-check\"" >/dev/null 2>&1 || true
+}
+
+run_checks() {
+  local name path seconds output rc
+  local -a steps=(
+    "e2e_surfaces.sh:${LLM_SELFCHECK_E2E_TIMEOUT:-900}"
+    "test_llm_limits.sh:${LLM_SELFCHECK_SUITE_TIMEOUT:-300}"
+    "test_claudeb.sh:${LLM_SELFCHECK_SUITE_TIMEOUT:-300}"
+    "test_claudebd.sh:${LLM_SELFCHECK_SUITE_TIMEOUT:-300}"
+    "test_codexb.sh:${LLM_SELFCHECK_SUITE_TIMEOUT:-300}"
+  )
+  output=$(mktemp "${TMPDIR:-/tmp}/llm-selfcheck.XXXXXX") || exit 1
+  cd "$repo_root" || exit 1
+  for path in "${steps[@]}"; do
+    name=${path%%:*}
+    seconds=${path#*:}
+    rc=0
+    timeout_command "$seconds" bash "tests/$name" >"$output" 2>&1 || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      write_log FAIL "$name"
+      printf 'llm-selfcheck: %s failed (exit %s)\n' "$name" "$rc" >&2
+      cat "$output" >&2
+      alert_failure "$name"
+      rm -f "$output"
+      return "$rc"
+    fi
+  done
+  rm -f "$output"
+  write_log PASS -
+}
+
+install_agent() {
+  mkdir -p "$agent_dir" "$log_dir" "$(dirname "$link")"
+  ln -sfn "$script_path" "$link"
+  cat >"$plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$label</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$link</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>$repo_root</string>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>10</integer>
+    <key>Minute</key>
+    <integer>30</integer>
+  </dict>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>$log_dir/selfcheck.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>$log_dir/selfcheck.stderr.log</string>
+</dict>
+</plist>
+EOF
+  launchctl bootout "gui/$UID" "$plist" >/dev/null 2>&1 || true
+  if ! launchctl bootstrap "gui/$UID" "$plist"; then
+    launchctl load -w "$plist"
+  fi
+  printf 'Installed %s for 10:30 daily.\n' "$label"
+}
+
+uninstall_agent() {
+  launchctl bootout "gui/$UID" "$plist" >/dev/null 2>&1 || launchctl unload -w "$plist" >/dev/null 2>&1 || true
+  rm -f "$plist"
+  if [ -L "$link" ] && [ "$(readlink "$link")" = "$script_path" ]; then
+    rm -f "$link"
+  fi
+  printf 'Uninstalled %s.\n' "$label"
+}
+
+show_status() {
+  if launchctl print "gui/$UID/$label" 2>/dev/null; then
+    printf 'Status: loaded\n'
+  else
+    printf 'Status: not loaded\n'
+  fi
+  if [ -f "$log_file" ]; then
+    printf 'Recent runs:\n'
+    tail -n 10 "$log_file"
+  else
+    printf 'Recent runs: none\n'
+  fi
+}
+
+case "${1:-run}" in
+  run) [ "$#" -le 1 ] || { printf 'usage: llm-selfcheck [install|uninstall|status]\n' >&2; exit 2; }; run_checks ;;
+  install) [ "$#" -eq 1 ] || exit 2; install_agent ;;
+  uninstall) [ "$#" -eq 1 ] || exit 2; uninstall_agent ;;
+  status) [ "$#" -eq 1 ] || exit 2; show_status ;;
+  *) printf 'usage: llm-selfcheck [install|uninstall|status]\n' >&2; exit 2 ;;
+esac

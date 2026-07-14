@@ -57,6 +57,10 @@ git submodule add https://github.com/LoyEgor/llm-legs lib/legs
 
 Tests: `python3 -m unittest discover tests`.
 
+## Daily self-check
+`llm-selfcheck` runs the live zero-spend menubar refresh check, then the hermetic limits, claudeb, claudebd, and codexb suites every day at 10:30 local time.
+Each run is recorded in `~/.claude-profiles/.claudeb/selfcheck.log`; failures also raise a Hammerspoon alert and a macOS notification.
+
 ## Subscription limit collector
 
 `llm-limits.sh` normally reads cached local CLI state without invoking a vendor CLI, making an
