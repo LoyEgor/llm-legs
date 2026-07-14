@@ -172,7 +172,8 @@ printf '{"alpha":{"attempted_at":%s,"outcome":"429","retry_after_until":%s}}\n' 
 assert test "$(oauth_heal_backoff_until alpha)" = 0
 
 # --- oauth_refresh: single-use refresh token races and revocation ---
-creds='{"claudeAiOauth":{"refreshToken":"rt-old","accessToken":"at","scopes":["a"]}}'
+old_expires_at=$(((now - 60) * 1000))
+creds='{"claudeAiOauth":{"refreshToken":"rt-old","accessToken":"at","expiresAt":'"$old_expires_at"',"scopes":["a"]}}'
 cat >"$FAKE_BIN/security" <<EOF
 #!/usr/bin/env bash
 printf '%s' '$creds'
@@ -186,12 +187,77 @@ printf '{}' >"$oauth_attempts_file"
 if got=$(oauth_refresh alpha svc "$creds"); then rc=0; else rc=$?; fi
 assert test "$rc" -ne 0
 assert test "$(oauth_backoff_outcome alpha)" = revoked
+assert test "$(jq -r '.alpha.credentials_expires_at' "$oauth_attempts_file")" = "$old_expires_at"
+assert test ! -d "$oauth_attempts_file.rl.alpha"
+
+# newer credentials from a real re-login bypass the revoked backoff immediately.
+relogin_expires_at=$(((now + 3600) * 1000))
+relogin_creds='{"claudeAiOauth":{"refreshToken":"rt-login","accessToken":"at-login","expiresAt":'"$relogin_expires_at"',"scopes":["a"]}}'
+cat >"$FAKE_BIN/security" <<EOF
+#!/usr/bin/env bash
+printf '%s' '$relogin_creds'
+EOF
+refresh_attempted="$WORK/relogin-refresh-attempted"
+cat >"$FAKE_BIN/curl" <<EOF
+#!/usr/bin/env bash
+touch '$refresh_attempted'
+printf '{"error":"server_error"}\n500'
+EOF
+chmod +x "$FAKE_BIN/security" "$FAKE_BIN/curl"
+if got=$(oauth_refresh alpha svc "$relogin_creds"); then rc=0; else rc=$?; fi
+assert test "$rc" -ne 0
+assert test -f "$refresh_attempted"
+assert test "$(oauth_backoff_outcome alpha)" = failed
+assert test ! -d "$oauth_attempts_file.rl.alpha"
+
+# invalid_grant after an in-flight concurrent rotation adopts the newer keychain value.
+newcreds='{"claudeAiOauth":{"refreshToken":"rt-new","accessToken":"at2","expiresAt":'"$relogin_expires_at"'}}'
+security_calls="$WORK/security-calls"
+cat >"$FAKE_BIN/security" <<EOF
+#!/usr/bin/env bash
+calls=\$(cat '$security_calls' 2>/dev/null || printf '0')
+calls=\$((calls + 1))
+printf '%s' "\$calls" >'$security_calls'
+if [ "\$calls" -eq 1 ]; then printf '%s' '$creds'; else printf '%s' '$newcreds'; fi
+EOF
+cat >"$FAKE_BIN/curl" <<'EOF'
+#!/usr/bin/env bash
+printf '{"error":"invalid_grant"}\n400'
+EOF
+chmod +x "$FAKE_BIN/security" "$FAKE_BIN/curl"
+printf '{}' >"$oauth_attempts_file"
+if got=$(oauth_refresh alpha svc "$creds"); then rc=0; else rc=$?; fi
+assert test "$rc" -eq 0
+assert test "$got" = "$newcreds"
+assert test "$(oauth_backoff_outcome alpha)" = success-adopted
+assert test "$(oauth_backoff_until alpha)" = 0
+assert test ! -d "$oauth_attempts_file.rl.alpha"
+
+# errexit inside the locked section still releases the per-account lock.
+cat >"$FAKE_BIN/security" <<EOF
+#!/usr/bin/env bash
+printf '%s' '$creds'
+EOF
+cat >"$FAKE_BIN/curl" <<'EOF'
+#!/usr/bin/env bash
+printf '{"error":"rate_limited"}\n429'
+EOF
+chmod +x "$FAKE_BIN/security" "$FAKE_BIN/curl"
+header_value() { return 42; }
+printf '{}' >"$oauth_attempts_file"
+set +e
+(
+  set -e
+  oauth_refresh alpha svc "$creds" >/dev/null
+)
+rc=$?
+set -e
+assert test "$rc" -ne 0
 assert test ! -d "$oauth_attempts_file.rl.alpha"
 
 # a concurrent holder of the per-account refresh lock: adopt their fresher token,
 # never POST the already-consumed one, never release the lock we do not own.
 export CLAUDEB_LOCK_RETRIES=1 CLAUDEB_LOCK_DELAY=0
-newcreds='{"claudeAiOauth":{"refreshToken":"rt-new","accessToken":"at2"}}'
 cat >"$FAKE_BIN/security" <<EOF
 #!/usr/bin/env bash
 printf '%s' '$newcreds'
@@ -230,4 +296,4 @@ assert test "$(jq -r '.auth.cause' "$limits_dir/beta.json")" = 'warm 429'
 assert test "$(jq -r '.auth.cause' "$limits_dir/gamma.json")" = 'warm failed'
 assert test "$(jq -r '.auth.cause' "$limits_dir/delta.json")" = 'needs re-login'
 
-echo "PASS: $asserts asserts; reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth backoff and lock behavior, reserved names, disabled-account timeline, out-of-rotation profile launch proceeds direct (proxy leaks stripped), generic lock contention/stale-retake, heal backoff (revoked 6h, warm-failed 30m, token-429 never gates), oauth_refresh revocation and lock-race adoption, heal_expired covers disabled accounts with per-account causes"
+echo "PASS: $asserts asserts; reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth backoff and lock behavior, reserved names, disabled-account timeline, out-of-rotation profile launch proceeds direct (proxy leaks stripped), generic lock contention/stale-retake, heal backoff (revoked 6h, warm-failed 30m, token-429 never gates), oauth_refresh lock release, revocation escape, and concurrent-rotation adoption, heal_expired covers disabled accounts with per-account causes"

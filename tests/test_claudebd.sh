@@ -8,4 +8,4 @@ trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/store"
 OUTPUT=$(CLAUDEB_DIR="$WORK/store" node "$ROOT/tests/claudebd_harness.js")
 printf '%s\n' "$OUTPUT"
-[[ "$OUTPUT" == "PASS: claudebd decision logic (62 assertions)" ]]
+[[ "$OUTPUT" == "PASS: claudebd decision logic (63 assertions)" ]]

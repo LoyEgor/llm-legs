@@ -295,7 +295,7 @@ oauth_token_url="${CLAUDEB_OAUTH_TOKEN_URL:-https://platform.claude.com/v1/oauth
 oauth_attempts_file="$base_dir/oauth-attempts.json"
 
 oauth_attempt_update() {
-  local name="$1" outcome="$2" retry_until="${3:-0}" lock="$oauth_attempts_file.lock" tmp now tries=0 lock_mtime stale_retake=false
+  local name="$1" outcome="$2" retry_until="${3:-0}" credentials_expires_at="${4:-0}" lock="$oauth_attempts_file.lock" tmp now tries=0 lock_mtime stale_retake=false
   local max_tries="${CLAUDEB_LOCK_RETRIES:-10}" delay="${CLAUDEB_LOCK_DELAY:-0.2}"
   [[ "$max_tries" =~ ^[1-9][0-9]*$ ]] || max_tries=10
   mkdir -p "$base_dir" || return 0
@@ -319,9 +319,11 @@ oauth_attempt_update() {
   fi
   tmp="$oauth_attempts_file.tmp.$$"
   if jq -cn --argjson old "$([ -r "$oauth_attempts_file" ] && jq -c 'if type == "object" then . else {} end' "$oauth_attempts_file" 2>/dev/null || printf '{}')" \
-    --arg name "$name" --arg outcome "$outcome" --argjson now "$now" --argjson retry "$retry_until" '
+    --arg name "$name" --arg outcome "$outcome" --argjson now "$now" --argjson retry "$retry_until" \
+    --argjson credentials_expires_at "$credentials_expires_at" '
     if $outcome == "success" then $old | del(.[$name])
-    else $old + {($name): {attempted_at:$now,outcome:$outcome,retry_after_until:$retry}} end' > "$tmp"; then
+    else $old + {($name): ({attempted_at:$now,outcome:$outcome,retry_after_until:$retry}
+      + if $credentials_expires_at > 0 then {credentials_expires_at:$credentials_expires_at} else {} end)} end' > "$tmp"; then
     mv "$tmp" "$oauth_attempts_file" 2>/dev/null || true
   fi
   rm -f "$tmp" 2>/dev/null || true
@@ -330,11 +332,17 @@ oauth_attempt_update() {
 }
 
 oauth_backoff_until() {
-  local name="$1" now
+  local name="$1" credentials="${2:-}" now credentials_expires_at=0
   now=$(date +%s)
-  jq -r --arg name "$name" --argjson now "$now" '
+  if [ -n "$credentials" ]; then
+    credentials_expires_at=$(printf '%s' "$credentials" | jq -r '.claudeAiOauth.expiresAt // 0 | floor' 2>/dev/null) || credentials_expires_at=0
+    [[ "$credentials_expires_at" =~ ^[0-9]+$ ]] || credentials_expires_at=0
+  fi
+  jq -r --arg name "$name" --argjson now "$now" --argjson credentials_expires_at "$credentials_expires_at" '
     .[$name] // {} |
-    if ((.retry_after_until // 0) > $now) then .retry_after_until
+    if (.outcome // "") == "revoked" and $credentials_expires_at > (.credentials_expires_at // 0) then 0
+    elif ((.outcome // "") | startswith("success")) then 0
+    elif ((.retry_after_until // 0) > $now) then .retry_after_until
     elif (.outcome // "") == "warming" and ($now - (.attempted_at // 0)) > 180 then 0
     elif (.outcome // "") != "success" and ($now - (.attempted_at // 0)) < 900
     then (.attempted_at + 900) else 0 end' "$oauth_attempts_file" 2>/dev/null || printf '0'
@@ -377,9 +385,9 @@ oauth_backoff_outcome() {
 }
 
 oauth_attempt_begin() {
-  local name="$1" now until
+  local name="$1" credentials="${2:-}" now until
   now=$(date +%s)
-  until=$(oauth_backoff_until "$name")
+  until=$(oauth_backoff_until "$name" "$credentials")
   if [ "$until" -gt "$now" ] 2>/dev/null; then
     printf 'claudeb: %s: OAuth refresh backoff active until %s\n' "$name" "$(format_time "$until")" >&2
     return 1
@@ -402,9 +410,11 @@ keychain_write() {
 # previous JSON is restored on any mismatch.
 oauth_refresh() {
   local name="$1" service="$2" prev="$3" body response new_creds readback headers http rc=0 retry='' retry_until=0
-  local prev_rt current current_rt rlock=''
-  oauth_attempt_begin "$name" || return 1
+  local prev_rt prev_expires_at current current_rt rlock='' lock_trap
+  oauth_attempt_begin "$name" "$prev" || return 1
   prev_rt=$(printf '%s' "$prev" | jq -r '.claudeAiOauth.refreshToken // empty' 2>/dev/null) || prev_rt=''
+  prev_expires_at=$(printf '%s' "$prev" | jq -r '.claudeAiOauth.expiresAt // 0 | floor' 2>/dev/null) || prev_expires_at=0
+  [[ "$prev_expires_at" =~ ^[0-9]+$ ]] || prev_expires_at=0
   # Anthropic rotates (single-uses) the refresh token on every grant, so two
   # concurrent refreshers POSTing the same $prev_rt race: one wins, the other's
   # token is already consumed and comes back 429/invalid. Serialize per account.
@@ -420,88 +430,101 @@ oauth_refresh() {
     fi
     return 1
   fi
-  trap 'lock_release "$rlock"' RETURN
-  current=$(security find-generic-password -s "$service" -w 2>/dev/null) || current=''
-  current_rt=$(printf '%s' "$current" | jq -r '.claudeAiOauth.refreshToken // empty' 2>/dev/null) || current_rt=''
-  if [ -n "$current" ] && [ -n "$prev_rt" ] && [ "$current_rt" != "$prev_rt" ]; then
-    # A concurrent caller (another probe, a live profile session) already
-    # rotated this account past $prev; adopt its fresher value instead of
-    # racing the server with an already-consumed refresh token.
-    oauth_attempt_update "$name" success
-    printf '%s' "$current"
+  (
+    printf -v lock_trap 'lock_release %q' "$rlock"
+    trap "$lock_trap" EXIT
+    current=$(security find-generic-password -s "$service" -w 2>/dev/null) || current=''
+    current_rt=$(printf '%s' "$current" | jq -r '.claudeAiOauth.refreshToken // empty' 2>/dev/null) || current_rt=''
+    if [ -n "$current" ] && [ -n "$prev_rt" ] && [ "$current_rt" != "$prev_rt" ]; then
+      # A concurrent caller (another probe, a live profile session) already
+      # rotated this account past $prev; adopt its fresher value instead of
+      # racing the server with an already-consumed refresh token.
+      oauth_attempt_update "$name" success
+      printf '%s' "$current"
+      current=''
+      return 0
+    fi
     current=''
-    return 0
-  fi
-  current=''
-  body=$(printf '%s' "$prev" | jq -c --arg client_id "$oauth_client_id" '
-    .claudeAiOauth as $c |
-    ($c.refreshToken | select(type == "string" and length > 0)) as $rt |
-    {grant_type: "refresh_token", refresh_token: $rt, client_id: $client_id}
-    + (([$c.scopes[]? | strings] | join(" ")) as $scope |
-       if $scope == "" then {} else {scope: $scope} end)' 2>/dev/null) || return 1
-  [ -n "$body" ] || return 1
-  headers=$(mktemp "${TMPDIR:-/tmp}/claudeb-oauth.XXXXXX") || { oauth_attempt_update "$name" failed; return 1; }
-  if response=$(printf '%s' "$body" | curl -sS -m 8 -D "$headers" -o - -w $'\n%{http_code}' -X POST \
-    -H 'Content-Type: application/json' -d @- "$oauth_token_url" 2>/dev/null); then :; else rc=$?; fi
-  http=${response##*$'\n'}
-  response=${response%$'\n'*}
-  if [ "$rc" -ne 0 ] || [ "$http" != 200 ]; then
-    if [ "$http" = 429 ]; then
-      retry=$(header_value "$headers" retry-after)
-      if [[ "$retry" =~ ^[0-9]+$ ]]; then retry_until=$(($(date +%s) + retry)); fi
-      printf 'claudeb: %s: OAuth token endpoint returned 429%s\n' "$name" "$([ -n "$retry" ] && printf ' (retry-after: %s)' "$retry")" >&2
-      oauth_attempt_update "$name" 429 "$retry_until"
-    elif printf '%s' "$response" | grep -q invalid_grant; then
-      # Refresh token revoked server-side (re-login elsewhere, manual revoke).
-      # No amount of retrying or warming recovers this without a browser login.
-      oauth_attempt_update "$name" revoked "$(($(date +%s) + 21600))"
-    else
-      oauth_attempt_update "$name" failed
+    body=$(printf '%s' "$prev" | jq -c --arg client_id "$oauth_client_id" '
+      .claudeAiOauth as $c |
+      ($c.refreshToken | select(type == "string" and length > 0)) as $rt |
+      {grant_type: "refresh_token", refresh_token: $rt, client_id: $client_id}
+      + (([$c.scopes[]? | strings] | join(" ")) as $scope |
+         if $scope == "" then {} else {scope: $scope} end)' 2>/dev/null) || return 1
+    [ -n "$body" ] || return 1
+    headers=$(mktemp "${TMPDIR:-/tmp}/claudeb-oauth.XXXXXX") || { oauth_attempt_update "$name" failed; return 1; }
+    if response=$(printf '%s' "$body" | curl -sS -m 8 -D "$headers" -o - -w $'\n%{http_code}' -X POST \
+      -H 'Content-Type: application/json' -d @- "$oauth_token_url" 2>/dev/null); then :; else rc=$?; fi
+    http=${response##*$'\n'}
+    response=${response%$'\n'*}
+    if [ "$rc" -ne 0 ] || [ "$http" != 200 ]; then
+      if [ "$http" = 429 ]; then
+        retry=$(header_value "$headers" retry-after)
+        if [[ "$retry" =~ ^[0-9]+$ ]]; then retry_until=$(($(date +%s) + retry)); fi
+        printf 'claudeb: %s: OAuth token endpoint returned 429%s\n' "$name" "$([ -n "$retry" ] && printf ' (retry-after: %s)' "$retry")" >&2
+        oauth_attempt_update "$name" 429 "$retry_until"
+      elif printf '%s' "$response" | grep -q invalid_grant; then
+        current=$(security find-generic-password -s "$service" -w 2>/dev/null) || current=''
+        current_rt=$(printf '%s' "$current" | jq -r '.claudeAiOauth.refreshToken // empty' 2>/dev/null) || current_rt=''
+        if [ -n "$current" ] && [ -n "$current_rt" ] && [ "$current_rt" != "$prev_rt" ]; then
+          rm -f "$headers"
+          oauth_attempt_update "$name" success-adopted
+          printf '%s' "$current"
+          current=''
+          return 0
+        elif [ -n "$current_rt" ] && [ "$current_rt" = "$prev_rt" ]; then
+          oauth_attempt_update "$name" revoked "$(($(date +%s) + 21600))" "$prev_expires_at"
+        else
+          oauth_attempt_update "$name" failed
+        fi
+      else
+        oauth_attempt_update "$name" failed
+      fi
+      rm -f "$headers"
+      return 1
     fi
     rm -f "$headers"
-    return 1
-  fi
-  rm -f "$headers"
-  body=""
-  new_creds=$(jq -cn --argjson old "$prev" --argjson new "$response" \
-    --argjson now_ms "$(($(date +%s) * 1000))" '
-    ($new.access_token | select(type == "string" and length > 0)) as $at |
-    $old
-    | .claudeAiOauth.accessToken = $at
-    | .claudeAiOauth.expiresAt = ($now_ms + (($new.expires_in // 0) * 1000) | floor)
-    | (if ($new.refresh_token | type) == "string" and ($new.refresh_token | length) > 0
-       then .claudeAiOauth.refreshToken = $new.refresh_token else . end)
-    | (if ($new.refresh_token_expires_in | type) == "number"
-       then .claudeAiOauth.refreshTokenExpiresAt = ($now_ms + ($new.refresh_token_expires_in * 1000) | floor)
-       else . end)' 2>/dev/null) || return 1
-  response=""
-  [ -n "$new_creds" ] || { oauth_attempt_update "$name" failed; return 1; }
-  current=$(security find-generic-password -s "$service" -w 2>/dev/null) || current=''
-  current_rt=$(printf '%s' "$current" | jq -r '.claudeAiOauth.refreshToken // empty' 2>/dev/null) || current_rt=''
-  if [ -n "$current" ] && [ "$current_rt" != "$prev_rt" ]; then
-    # Rotated by someone else while our POST was in flight; our new_creds is
-    # derived from an already-superseded refresh token — discard it and adopt
-    # theirs instead of clobbering a fresher, already-verified rotation.
-    oauth_attempt_update "$name" success
-    printf '%s' "$current"
-    current=''
-    return 0
-  fi
-  current=''
-  keychain_write "$service" "$new_creds" || true
-  readback=$(security find-generic-password -s "$service" -w 2>/dev/null) || readback=""
-  if [ "$readback" != "$new_creds" ]; then
-    # A concurrent Claude Code session may have rotated the item after us; a
-    # readback still holding valid credentials is theirs — restoring $prev over
-    # it would log that session out. Restore only over a garbled write.
-    if ! printf '%s' "$readback" | jq -e '.claudeAiOauth.refreshToken | select(type == "string" and length > 0)' >/dev/null 2>&1; then
-      keychain_write "$service" "$prev" || true
+    body=""
+    new_creds=$(jq -cn --argjson old "$prev" --argjson new "$response" \
+      --argjson now_ms "$(($(date +%s) * 1000))" '
+      ($new.access_token | select(type == "string" and length > 0)) as $at |
+      $old
+      | .claudeAiOauth.accessToken = $at
+      | .claudeAiOauth.expiresAt = ($now_ms + (($new.expires_in // 0) * 1000) | floor)
+      | (if ($new.refresh_token | type) == "string" and ($new.refresh_token | length) > 0
+         then .claudeAiOauth.refreshToken = $new.refresh_token else . end)
+      | (if ($new.refresh_token_expires_in | type) == "number"
+         then .claudeAiOauth.refreshTokenExpiresAt = ($now_ms + ($new.refresh_token_expires_in * 1000) | floor)
+         else . end)' 2>/dev/null) || return 1
+    response=""
+    [ -n "$new_creds" ] || { oauth_attempt_update "$name" failed; return 1; }
+    current=$(security find-generic-password -s "$service" -w 2>/dev/null) || current=''
+    current_rt=$(printf '%s' "$current" | jq -r '.claudeAiOauth.refreshToken // empty' 2>/dev/null) || current_rt=''
+    if [ -n "$current" ] && [ "$current_rt" != "$prev_rt" ]; then
+      # Rotated by someone else while our POST was in flight; our new_creds is
+      # derived from an already-superseded refresh token — discard it and adopt
+      # theirs instead of clobbering a fresher, already-verified rotation.
+      oauth_attempt_update "$name" success
+      printf '%s' "$current"
+      current=''
+      return 0
     fi
-    oauth_attempt_update "$name" failed
-    return 1
-  fi
-  oauth_attempt_update "$name" success
-  printf '%s' "$new_creds"
+    current=''
+    keychain_write "$service" "$new_creds" || true
+    readback=$(security find-generic-password -s "$service" -w 2>/dev/null) || readback=""
+    if [ "$readback" != "$new_creds" ]; then
+      # A concurrent Claude Code session may have rotated the item after us; a
+      # readback still holding valid credentials is theirs — restoring $prev over
+      # it would log that session out. Restore only over a garbled write.
+      if ! printf '%s' "$readback" | jq -e '.claudeAiOauth.refreshToken | select(type == "string" and length > 0)' >/dev/null 2>&1; then
+        keychain_write "$service" "$prev" || true
+      fi
+      oauth_attempt_update "$name" failed
+      return 1
+    fi
+    oauth_attempt_update "$name" success
+    printf '%s' "$new_creds"
+  )
 }
 
 messages_probe() {

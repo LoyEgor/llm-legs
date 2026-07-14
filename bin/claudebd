@@ -257,8 +257,8 @@ function nextEligibleAt(scope) {
   for (const name of accounts) {
     if (disabled.has(name)) continue;
     const state = effective(name);
-    if (state.authFailedUntil > now) continue;
     let free = Math.max(
+      state.authFailedUntil > now ? state.authFailedUntil : 0,
       state.forcedUntil > now ? state.forcedUntil : 0,
       state.h5 >= 97 ? state.hreset : 0,
       state.wk >= 99 ? state.wreset : 0

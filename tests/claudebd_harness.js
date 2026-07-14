@@ -217,6 +217,14 @@ api.states.get('wall-a').forcedUntil = now + 800;
 api.states.get('wall-b').forcedUntil = now + 500;
 check(api.statusPayload().all_walled_until.general, now + 500, 'general aggregate uses earliest eligible account wall');
 check(api.statusPayload().all_walled_until.fable, now + 500, 'scope aggregate waits for every blocker on an account');
+const aggregateDisabled = fs.readFileSync(disabledFile, 'utf8');
+add('auth-wall-a', state({ authFailedUntil: now + 900 }));
+add('auth-wall-b', state({ authFailedUntil: now + 600 }));
+fs.writeFileSync(disabledFile, fs.readdirSync(tokensDir).filter((name) => name !== 'auth-wall-a' && name !== 'auth-wall-b').join('\n') + '\n');
+api.scanAccounts();
+check(api.statusPayload().all_walled_until.general, now + 600, 'all auth-failed accounts report the earliest recovery time');
+fs.writeFileSync(disabledFile, aggregateDisabled);
+api.scanAccounts();
 
 const learnedFile = path.join(limitsDir, 'learned.json');
 fs.writeFileSync(learnedFile, JSON.stringify({ fable: { used_percentage: 12 } }));
