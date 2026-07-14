@@ -111,6 +111,7 @@ Read each bucket's `effective_pct` and each vendor's `usable_now`.
 Never make availability decisions from raw `used_pct`.
 `vendors.codex.accounts` is always a non-empty array when Codex is available; legacy snapshots synthesize `main`.
 `vendors.codex.current_account` names the account whose buckets remain hoisted at vendor level.
+Each `vendors.codex.accounts[]` may expose `reset_credits` and `auth_needed`; auth-needed accounts have no usage buckets and are never usable.
 Raw usage values persist for provenance after a window expires, while `effective_pct` becomes 0.
 Claude `usable_now` considers enabled, authenticated accounts and their general 5h/weekly limits;
 the model-specific fable bucket does not block other Claude work.

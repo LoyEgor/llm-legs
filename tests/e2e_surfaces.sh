@@ -66,6 +66,26 @@ hs_menu() {
   printf '%s\n' "$out"
 }
 
+assert_codex_account_rows() {
+  local menu="$1" json="$2" count account auth credits row
+  count=$(jq '.vendors.codex.accounts | length' <<<"$json")
+  while IFS= read -r account; do
+    auth=$(jq -r --arg account "$account" '.vendors.codex.accounts[] | select(.account == $account) | .auth_needed == true' <<<"$json")
+    credits=$(jq -r --arg account "$account" '.vendors.codex.accounts[] | select(.account == $account) | .reset_credits // 0' <<<"$json")
+    if [ "$auth" = true ]; then
+      grep -Fxq "$account  login needed" <<<"$menu" || fail "Codex auth-needed row is not name plus login needed: $account"
+    elif [ "$count" -gt 1 ]; then
+      row=$(grep -E "^${account}(  ↻[0-9]+)?(  ●)?$" <<<"$menu" | head -1)
+      [ -n "$row" ] || fail "Codex account row missing: $account"
+      if [ "$credits" -gt 0 ]; then
+        grep -Fq "$account  ↻$credits" <<<"$row" || fail "Codex reset-credit count missing for $account"
+      else
+        [[ "$row" != *↻* ]] || fail "Codex zero/absent reset credits rendered for $account"
+      fi
+    fi
+  done < <(jq -r '.vendors.codex.accounts[]?.account' <<<"$json")
+}
+
 # 1. hs CLI reachable and Hammerspoon responding.
 [ "$(hs -c 'return "ok"' 2>/dev/null)" = "ok" ] || fail "Hammerspoon not responding to hs -c"
 pass "hs CLI reachable, Hammerspoon responding"
@@ -92,6 +112,7 @@ done
 grep -q '5h' <<<"$MENU_TXT" || fail "menu has no five-hour vendor rows"
 grep -Fxq 'Refresh' <<<"$MENU_TXT" || fail "menu missing 'Refresh' action item"
 grep -Fxq 'Refresh + Start Windows' <<<"$MENU_TXT" || fail "menu missing 'Refresh + Start Windows' action item"
+assert_codex_account_rows "$MENU_TXT" "$JSON"
 pass "menu build: rows for [$(tr '\n' ' ' <<<"$AVAIL")], age line, Refresh + Refresh + Start Windows"
 
 # 4. CLI surface: --table exits 0 with rows; bare output is valid JSON with schema fields.
@@ -131,7 +152,8 @@ consistency_attempt() {
     [ "$lw" = "$sw" ] || { MISMATCH="$a weekly: store=$lw claudeb=$sw"; return 1; }
     if [ "$hasfab" = 1 ]; then
       sf=$(awk -v n="$a" '$1 == n {print $4; exit}' <<<"$status" | tr -d '%')
-      [ "$lf" = "$sf" ] || { MISMATCH="$a fable: store=$lf claudeb=$sf"; return 1; }
+      [ "$lf" = "$sf" ] || { [ "$lf" = - ] && [ "$sf" = 0 ]; } \
+        || { MISMATCH="$a fable: store=$lf claudeb=$sf"; return 1; }
     fi
   done
   return 0
@@ -185,6 +207,7 @@ for v in claude codex gemini; do
 done
 
 MENU2=$(hs_menu)
+assert_codex_account_rows "$MENU2" "$AFTER"
 grep -qE '(^| )claude (now|[0-9]+m)' <<<"$MENU2" \
   || fail "live module did not reflect the fresh refresh (claude age not recent in rebuilt menu)"
 if [ -n "$visible_failures" ]; then

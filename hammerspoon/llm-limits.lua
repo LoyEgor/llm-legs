@@ -23,6 +23,10 @@ local function infoTitle(text, warning, gray, walled)
   return hs.styledtext.new(text, attributes)
 end
 
+local function loginNeededTitle(account)
+  return infoTitle(account) .. infoTitle("  login needed", false, true)
+end
+
 local function truncateText(text, maxLength)
   if #text <= maxLength then
     return text
@@ -365,7 +369,8 @@ function M.menuItems()
       else
         local blocks = (entry.key == "claude" or entry.key == "codex") and vendor.accounts or nil
         local isClaudeAccounts = entry.key == "claude" and type(blocks) == "table" and #blocks > 0
-        local isCodexAccounts = entry.key == "codex" and type(blocks) == "table" and #blocks > 1
+        local isCodexAccounts = entry.key == "codex" and type(blocks) == "table"
+          and (#blocks > 1 or (#blocks == 1 and blocks[1].auth_needed == true))
         local isAccountRows = isClaudeAccounts or isCodexAccounts
         local hasAccountControls = isClaudeAccounts and vendor.source == "claudeb-store"
         if not isAccountRows then
@@ -400,6 +405,7 @@ function M.menuItems()
           local isCurrent = block.is_current == true
             or (isCodexAccounts and acct == vendor.current_account)
           local enabled = block.enabled ~= false
+          local authNeeded = block.auth_needed == true
           local accountAge
           local accountEpoch = parseTime(block.as_of)
           local vendorEpoch = parseTime(vendor.as_of)
@@ -410,9 +416,13 @@ function M.menuItems()
           local generalWalled = accountWall.general == true
           local fableWalled = accountWall.fable == true
           if isAccountRows then
+            local resetCredits = tonumber(block.reset_credits)
+            local resetSuffix = resetCredits and resetCredits > 0
+              and string.format("  ↻%d", math.floor(resetCredits)) or ""
             local accountRow = {
-              title = infoTitle(acct .. (isCurrent and "  ●" or ""), false, false,
-                generalWalled),
+              title = authNeeded and loginNeededTitle(acct)
+                or infoTitle(acct .. resetSuffix .. (isCurrent and "  ●" or ""), false, false,
+                  generalWalled),
               disabled = true,
             }
             if hasAccountControls then
@@ -427,23 +437,25 @@ function M.menuItems()
             end
             table.insert(menu, accountRow)
           end
-          local fiveGray = isStale(1800, fiveHour)
-          local fiveRow = {
-            title = rowTitle(isAccountRows and "" or acct, "5h", fiveHour, accountAge,
-              fiveGray, generalWalled),
-            disabled = true,
-          }
-          table.insert(menu, fiveRow)
-          local function tailRow(label, bucket, walled)
-            if type(bucket) == "table" then
-              local gray = isStale(21600, bucket)
-              return rowTitle("", label, bucket, accountAge, gray, walled)
+          if not authNeeded then
+            local fiveGray = isStale(1800, fiveHour)
+            local fiveRow = {
+              title = rowTitle(isAccountRows and "" or acct, "5h", fiveHour, accountAge,
+                fiveGray, generalWalled),
+              disabled = true,
+            }
+            table.insert(menu, fiveRow)
+            local function tailRow(label, bucket, walled)
+              if type(bucket) == "table" then
+                local gray = isStale(21600, bucket)
+                return rowTitle("", label, bucket, accountAge, gray, walled)
+              end
+              return rowTitle("", label, nil, accountAge, false, walled)
             end
-            return rowTitle("", label, nil, accountAge, false, walled)
-          end
-          table.insert(menu, { title = tailRow("wk", weekly, generalWalled), disabled = true })
-          if type(block.fable) == "table" then
-            table.insert(menu, { title = tailRow("fb", block.fable, fableWalled), disabled = true })
+            table.insert(menu, { title = tailRow("wk", weekly, generalWalled), disabled = true })
+            if type(block.fable) == "table" then
+              table.insert(menu, { title = tailRow("fb", block.fable, fableWalled), disabled = true })
+            end
           end
         end
         if isAccountRows then

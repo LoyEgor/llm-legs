@@ -582,7 +582,8 @@ select_codex_event() {
         (.current // "main") as $current |
         (first($accounts[] | select(.account == $current)) // $accounts[0]) as $selected |
         select(([$accounts[].five_hour?, $accounts[].weekly?]
-                | any((.used_pct | type) == "number"))) |
+                | any((.used_pct | type) == "number")) or
+               any($accounts[]; .auth_needed == true)) |
         {timestamp:$ts,payload:{rate_limits:{
           primary:{used_percent:($selected.five_hour.used_pct // null),
                    resets_at:($selected.five_hour.resets_at // null)},
@@ -689,11 +690,16 @@ if [ -n "$codex_event" ]; then
       def account($a; $current):
         (if ($a.as_of | type) == "number" then $a.as_of else $as_of_epoch end) as $account_asof |
         ([$now - $account_asof, 0] | max) as $account_age |
-        {account:($a.account // "main"),is_current:(($a.account // "main") == $current),enabled:true,
-         plan_type:($a.plan_type // $e.payload.rate_limits.plan_type // null),
-         five_hour:bucket(($a.five_hour // {}); null; $account_asof; 1800),
-         weekly:bucket(($a.weekly // {}); null; $account_asof; 21600),
-         as_of:($account_asof | todateiso8601),stale_seconds:$account_age};
+        ({account:($a.account // "main"),is_current:(($a.account // "main") == $current),enabled:true} +
+         (if $a.auth_needed == true then
+            {auth_needed:true} + (if ($a.error | type) == "string" then {error:$a.error} else {} end)
+          else
+            {plan_type:($a.plan_type // $e.payload.rate_limits.plan_type // null),
+             five_hour:bucket(($a.five_hour // {}); null; $account_asof; 1800),
+             weekly:bucket(($a.weekly // {}); null; $account_asof; 21600),
+             as_of:($account_asof | todateiso8601),stale_seconds:$account_age}
+          end) +
+         (if ($a.reset_credits | type) == "number" then {reset_credits:$a.reset_credits} else {} end));
       (if (($e.payload.rate_limits.accounts | type) == "array") and
           ($e.payload.rate_limits.accounts | length) > 0 then
          ($e.payload.rate_limits.current_account // "main") as $requested |
@@ -774,6 +780,7 @@ result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson claude "$claude" \
     ($bucket | type) != "object" or $bucket.effective_pct == null or $bucket.effective_pct < 100;
   def account_usable:
     .enabled != false and
+    .auth_needed != true and
     ((.auth.status? // "") != "expired" and (.auth.status? // "") != "failed") and
     under_limit(.five_hour) and under_limit(.weekly);
   def vendor_usable($key):

@@ -129,7 +129,15 @@ def bucket_data(result: dict) -> tuple[dict, dict]:
     return normalized(five), normalized(weekly)
 
 
+def authentication_required(error: str | None) -> bool:
+    message = (error or "").lower()
+    return "authentication required" in message or "not logged in" in message
+
+
 def account_entry(account: str, result: dict | None, as_of: int, error: str | None = None) -> dict:
+    if authentication_required(error):
+        return {"account": account, "auth_needed": True, "as_of": as_of, "error": error}
+
     five, weekly = bucket_data(result or {})
     limits = (result or {}).get("rateLimits")
     if not isinstance(limits, dict):
@@ -141,6 +149,11 @@ def account_entry(account: str, result: dict | None, as_of: int, error: str | No
         "weekly": weekly,
         "as_of": as_of,
     }
+    reset_credits = (result or {}).get("rateLimitResetCredits")
+    if isinstance(reset_credits, dict):
+        available = reset_credits.get("availableCount")
+        if isinstance(available, (int, float)) and not isinstance(available, bool):
+            entry["reset_credits"] = available
     if error:
         entry["error"] = error
     return entry
@@ -257,7 +270,8 @@ def main() -> int:
 
     current = "main" if args.all_accounts else targets[0][0]
     payload = cache_payload(results, read_cache(cache), args.all_accounts, current)
-    if not args.no_cache and any(result for _, result, _, _ in results):
+    has_auth_marker = any(authentication_required(error) for _, _, _, error in results)
+    if not args.no_cache and (any(result for _, result, _, _ in results) or (args.all_accounts and has_auth_marker)):
         write_cache(cache, payload)
 
     if args.all_accounts:

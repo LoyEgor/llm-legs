@@ -507,16 +507,18 @@ five_reset_epoch=$((now + 4000))
 expired_reset_epoch=$((now - 60))
 week_reset_epoch=$((now + 90000))
 cat >"$CODEX_ACCOUNTS_CACHE" <<EOF
-{"schema":1,"fetched_at":"$(date -u '+%Y-%m-%dT%H:%M:%SZ')","plan_type":"plus","five_hour":{"used_pct":100,"resets_at":$five_reset_epoch},"weekly":{"used_pct":20,"resets_at":$week_reset_epoch},"accounts":[{"account":"beta","plan_type":"team","five_hour":{"used_pct":100,"resets_at":$expired_reset_epoch},"weekly":{"used_pct":100,"resets_at":$week_reset_epoch},"as_of":$((now - 22000))},{"account":"alpha","plan_type":"plus","five_hour":{"used_pct":100,"resets_at":$five_reset_epoch},"weekly":{"used_pct":20,"resets_at":$week_reset_epoch},"as_of":$((now - 1900))}],"current":"alpha"}
+{"schema":1,"fetched_at":"$(date -u '+%Y-%m-%dT%H:%M:%SZ')","plan_type":"plus","five_hour":{"used_pct":100,"resets_at":$five_reset_epoch},"weekly":{"used_pct":20,"resets_at":$week_reset_epoch},"accounts":[{"account":"beta","plan_type":"team","reset_credits":0,"five_hour":{"used_pct":100,"resets_at":$expired_reset_epoch},"weekly":{"used_pct":100,"resets_at":$week_reset_epoch},"as_of":$((now - 22000))},{"account":"alpha","plan_type":"plus","reset_credits":2,"five_hour":{"used_pct":100,"resets_at":$five_reset_epoch},"weekly":{"used_pct":20,"resets_at":$week_reset_epoch},"as_of":$((now - 1900))}],"current":"alpha"}
 EOF
 codex_accounts_full=$(HOME="$CODEX_ACCOUNTS_HOME" LLM_LIMITS_CODEX_CACHE="$CODEX_ACCOUNTS_CACHE" \
   LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "Codex multi-account collection failed"
 jq -e '.vendors.codex.current_account == "alpha" and (.vendors.codex.accounts | length) == 2 and
   .vendors.codex.accounts[0].is_current == true and
+  .vendors.codex.accounts[0].reset_credits == 2 and
   .vendors.codex.accounts[0].five_hour.effective_pct == 100 and
   .vendors.codex.accounts[0].five_hour.stale == true and
   .vendors.codex.accounts[0].weekly.stale == false and
   .vendors.codex.accounts[1].five_hour.effective_pct == 0 and
+  .vendors.codex.accounts[1].reset_credits == 0 and
   .vendors.codex.accounts[1].five_hour.expired == true and
   (.vendors.codex.accounts[1].five_hour.resets_at | type) == "string" and
   .vendors.codex.accounts[1].weekly.effective_pct == 100 and
@@ -539,6 +541,17 @@ codex_accounts_free=$(HOME="$CODEX_ACCOUNTS_HOME" LLM_LIMITS_CODEX_CACHE="$CODEX
 jq -e '.vendors.codex.usable_now == true and .vendors.codex.five_hour.effective_pct == 100' \
   <<<"$codex_accounts_free" >/dev/null || fail "Codex one-free-account usability mismatch"
 
+cat >"$CODEX_ACCOUNTS_CACHE" <<EOF
+{"accounts":[{"account":"work","auth_needed":true,"as_of":$now,"error":"codex account authentication required to read rate limits"}],"current":"work"}
+EOF
+codex_auth_needed=$(HOME="$CODEX_ACCOUNTS_HOME" LLM_LIMITS_CODEX_CACHE="$CODEX_ACCOUNTS_CACHE" \
+  LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "Codex auth-needed collection failed"
+jq -e '.vendors.codex.available == true and .vendors.codex.current_account == "work" and
+  .vendors.codex.usable_now == false and (.vendors.codex.accounts | length) == 1 and
+  .vendors.codex.accounts[0].account == "work" and .vendors.codex.accounts[0].auth_needed == true and
+  (.vendors.codex.accounts[0] | has("five_hour") or has("weekly") or has("as_of") or has("stale_seconds") | not)' \
+  <<<"$codex_auth_needed" >/dev/null || fail "Codex auth-needed account normalization mismatch"
+
 CODEX_LEGACY_CACHE="$WORK/codex-legacy.json"
 cat >"$CODEX_LEGACY_CACHE" <<EOF
 {"schema":1,"fetched_at":"$(date -u '+%Y-%m-%dT%H:%M:%SZ')","plan_type":"plus","five_hour":{"used_pct":31,"resets_at":$five_reset_epoch},"weekly":{"used_pct":64,"resets_at":$week_reset_epoch}}
@@ -550,6 +563,7 @@ jq -e '.vendors.codex.available == true and .vendors.codex.source == "codex-app-
   .vendors.codex.five_hour.used_pct == 31 and .vendors.codex.weekly.used_pct == 64 and
   (.vendors.codex.accounts | length) == 1 and .vendors.codex.accounts[0].account == "main" and
   .vendors.codex.accounts[0].is_current == true and
+  (.vendors.codex.accounts[0] | has("reset_credits") | not) and
   .vendors.codex.five_hour == .vendors.codex.accounts[0].five_hour and
   .vendors.codex.weekly == .vendors.codex.accounts[0].weekly' <<<"$codex_legacy" >/dev/null \
   || fail "Codex legacy cache compatibility mismatch"
@@ -820,5 +834,5 @@ HOME="$EMPTY" bash "$SCRIPT" --no-write >/dev/null 2>&1
 rc=$?
 [ "$rc" -eq 3 ] || fail "all-missing case: expected exit 3, got $rc"
 
-echo "PASS: schema, Claude unique accounts and fallback, Codex multi-account and legacy cache, Claude daemon status, enabled flags, freshness contract, machine effective percentages and usability, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, plain output, table output and sorts, reset tiers, expired windows, bare JSON default, atomic cache, missing exit 3"
+echo "PASS: schema, Claude unique accounts and fallback, Codex multi-account reset credits, auth-needed accounts and legacy cache, Claude daemon status, enabled flags, freshness contract, machine effective percentages and usability, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, plain output, table output and sorts, reset tiers, expired windows, bare JSON default, atomic cache, missing exit 3"
 exit 0
