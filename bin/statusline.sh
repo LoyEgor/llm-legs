@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Claude Code status line: model | dir/branch/lines | ctx % | 5h/weekly rate limits | cost.
+# Claude Code status line: model | dir/branch/lines | ctx % | 5h/weekly/fable limits | cost.
 # rate_limits is absent from some renders; the last known object is cached in
 # statusline-cache-rl and reused so usage % survives those gaps.
 # Per-account snapshot writes below feed the claudeb multi-account system
@@ -135,6 +135,11 @@ fi
 
 dir=$(basename "$dir_path")
 
+cb_current=""
+if [ "$acct" = "-" ]; then
+  cb_current=$(head -n1 "${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/.claudeb-state" 2>/dev/null | tr -d '[:space:]')
+fi
+
 model_suffix=""
 [ -n "$effort" ] && model_suffix=" ${effort}"
 
@@ -158,7 +163,7 @@ fi
 h5_arrow=""
 if [ -n "$h5_reset" ]; then
   h5_time=$(TZ=Europe/Kyiv date -r "$h5_reset" +%H:%M 2>/dev/null)
-  [ -n "$h5_time" ] && h5_arrow=" ${DIM}→${h5_time}${RESET}"
+  [ -n "$h5_time" ] && h5_arrow=" ${DIM}${h5_time}${RESET}"
 fi
 
 wk_arrow_txt=""
@@ -172,15 +177,56 @@ if [ -n "$wk_reset" ]; then
       1) dname=Mon ;; 2) dname=Tue ;; 3) dname=Wed ;; 4) dname=Thu ;;
       5) dname=Fri ;; 6) dname=Sat ;; 7) dname=Sun ;;
     esac
-    wk_arrow_txt="→${dname} ${wtime}"
+    wk_arrow_txt="${dname} ${wtime}"
   elif [ "$rem" -gt 3600 ]; then
-    wk_arrow_txt="→$(( (rem + 1800) / 3600 ))h"
+    wk_arrow_txt="$(( (rem + 1800) / 3600 ))h"
   elif [ "$rem" -gt 0 ]; then
-    wk_arrow_txt="→$(( (rem + 30) / 60 ))m"
+    wk_arrow_txt="$(( (rem + 30) / 60 ))m"
   fi
 fi
 wk_arrow=""
 [ -n "$wk_arrow_txt" ] && wk_arrow=" ${DIM}${wk_arrow_txt}${RESET}"
+
+sep="${DIM}│${RESET}"
+
+fable_part=""
+fable_account="$acct"
+[ "$fable_account" = "-" ] && fable_account="$cb_current"
+if [ -n "$fable_account" ] && [ "$fable_account" != main ]; then
+  IFS='|' read -r fable_found fable_pct fable_reset fable_stale < <(jq -r --arg name "$fable_account" '
+    .vendors.claude.accounts[]?
+    | select(.account == $name)
+    | .fable // empty
+    | ["1", (if .used_pct == null then "" else (.used_pct | round | tostring) end), (.resets_at // ""), (.stale == true | tostring)]
+    | join("|")
+  ' "$HOME/.llm-limits.json" 2>/dev/null)
+  if [ "$fable_found" = 1 ]; then
+    fable_dim=""
+    [ "$fable_stale" = true ] && fable_dim=1
+    fable_reset_txt=""
+    if [ -n "$fable_reset" ]; then
+      fable_date=$(TZ=Europe/Kyiv date -j -f "%Y-%m-%dT%H:%M:%S%z" "${fable_reset%:*}${fable_reset##*:}" "+%s|%u|%H:%M" 2>/dev/null)
+      IFS='|' read -r fable_reset_epoch fable_dow fable_time <<< "$fable_date"
+      if [[ "$fable_reset_epoch" =~ ^[0-9]+$ ]]; then
+        fable_rem=$(( fable_reset_epoch - now ))
+        if [ "$fable_rem" -gt 86400 ] || [ "$fable_rem" -le 0 ]; then
+          case "$fable_dow" in
+            1) fable_dname=Mon ;; 2) fable_dname=Tue ;; 3) fable_dname=Wed ;; 4) fable_dname=Thu ;;
+            5) fable_dname=Fri ;; 6) fable_dname=Sat ;; 7) fable_dname=Sun ;;
+          esac
+          [ -n "$fable_dname" ] && fable_reset_txt="${fable_dname} ${fable_time}"
+        elif [ "$fable_rem" -gt 3600 ]; then
+          fable_reset_txt="$(( (fable_rem + 1800) / 3600 ))h"
+        elif [ "$fable_rem" -gt 0 ]; then
+          fable_reset_txt="$(( (fable_rem + 30) / 60 ))m"
+        fi
+      fi
+    fi
+    fable_reset_part=""
+    [ -n "$fable_reset_txt" ] && fable_reset_part=" ${DIM}${fable_reset_txt}${RESET}"
+    fable_part=" ${sep} fb $(pct_colored "$fable_pct" "$fable_dim")${fable_reset_part}"
+  fi
+fi
 
 ctx_tokens_part=""
 if [ -n "$ctx_tokens" ] && [ "$ctx_tokens" -gt 0 ] 2>/dev/null; then
@@ -191,8 +237,6 @@ if [ -n "$ctx_tokens" ] && [ "$ctx_tokens" -gt 0 ] 2>/dev/null; then
   ctx_tokens_part=" ${tk_color}$(( (ctx_tokens + 500) / 1000 ))k${RESET}"
 fi
 
-sep="${DIM}│${RESET}"
-
 # claudeb account this session runs on: a real account name (pinned/profile
 # entry, CLAUDE_LIMITS_ACCOUNT=<name>) shows as cb:<name>; a rotating proxy
 # session (CLAUDE_LIMITS_ACCOUNT="-") shows the daemon's current pick with a ~
@@ -201,7 +245,6 @@ sep="${DIM}│${RESET}"
 # non-claudeb sessions (acct=main) get no segment.
 cb_part=""
 if [ "$acct" = "-" ]; then
-  cb_current=$(head -n1 "${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/.claudeb-state" 2>/dev/null | tr -d '[:space:]')
   [ -n "$cb_current" ] && cb_part=" ${DIM}cb:${RESET}${MAGENTA}~${cb_current}${RESET}"
 elif [ -n "$acct" ] && [ "$acct" != main ]; then
   cb_part=" ${DIM}cb:${RESET}${MAGENTA}${acct}${RESET}"
@@ -209,12 +252,12 @@ fi
 
 lines_part=""
 if [ -n "$lines_added" ] && [ -n "$lines_removed" ] && [ $(( lines_added + lines_removed )) -ge 50 ]; then
-  lines_part=" ${DIM}✎${RESET} ${GREEN}+${lines_added}${RESET}/${RED}-${lines_removed}${RESET}"
+  lines_part=" ${GREEN}+${lines_added}${RESET}/${RED}-${lines_removed}${RESET}"
 fi
 
-out="${CYAN}${model}${model_suffix}${RESET}${cb_part} ${sep} ${BLUE}📁 ${dir}${RESET}${branch_part}${lines_part} ${sep} ctx $(pct_colored "$ctx_pct")${ctx_tokens_part}"
+out="${CYAN}${model}${model_suffix}${RESET}${cb_part} ${sep} ${BLUE}${dir}${RESET}${branch_part}${lines_part} ${sep} ctx $(pct_colored "$ctx_pct")${ctx_tokens_part}"
 
-out="${out} ${sep} 5h $(pct_colored "$h5_pct" "$h5_dim")${h5_arrow} ${sep} wk $(pct_colored "$wk_pct" "$wk_dim")${wk_arrow}"
+out="${out} ${sep} 5h $(pct_colored "$h5_pct" "$h5_dim")${h5_arrow} ${sep} wk $(pct_colored "$wk_pct" "$wk_dim")${wk_arrow}${fable_part}"
 
 if [ -n "$cost_raw" ]; then
   out="${out} ${sep} ${DIM}\$$(printf '%.2f' "$cost_raw")${RESET}"
