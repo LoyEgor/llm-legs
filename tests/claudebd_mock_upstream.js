@@ -101,22 +101,27 @@ function respondSse(res, rule) {
   tick();
 }
 
+function respond(res, rule) {
+  if (Array.isArray(rule.sse)) return respondSse(res, rule);
+  const body = typeof rule.body === 'string' ? rule.body : JSON.stringify(rule.body ?? {});
+  const headers = { 'content-type': 'application/json', ...(rule.headers || {}) };
+  res.writeHead(rule.status || 200, headers);
+  res.end(body);
+}
+
 const server = http.createServer((req, res) => {
   const token = tokenOf(req);
+  const plan = readPlan();
+  const selection = selectRule(plan);
+  const rule = materializeRule(selection?.rule || (plan.byToken && plan.byToken[token]) || plan.default || { status: 200, body: '{}' }, token);
+  if (selection) selection.rule = rule;
+  record(token, req.url, selection);
   // Drain the request body so keep-alive sockets stay clean.
   req.on('data', () => {});
   req.on('end', () => {
-    const plan = readPlan();
-    const selection = selectRule(plan);
-    const rule = materializeRule(selection?.rule || (plan.byToken && plan.byToken[token]) || plan.default || { status: 200, body: '{}' }, token);
-    if (selection) selection.rule = rule;
-    record(token, req.url, selection);
-    if (Array.isArray(rule.sse)) return respondSse(res, rule);
-    const body = typeof rule.body === 'string' ? rule.body : JSON.stringify(rule.body ?? {});
-    const headers = { 'content-type': 'application/json', ...(rule.headers || {}) };
-    res.writeHead(rule.status || 200, headers);
-    res.end(body);
+    if (!rule.early) respond(res, rule);
   });
+  if (rule.early) respond(res, rule);
   req.on('error', () => { if (!res.destroyed) res.destroy(); });
 });
 

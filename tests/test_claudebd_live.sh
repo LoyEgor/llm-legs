@@ -82,6 +82,7 @@ start_daemon() {
     DAEMON_PORT=$(free_port)
     require_test_port daemon "$DAEMON_PORT"
     CLAUDEB_DIR="$store" CLAUDEBD_PORT="$DAEMON_PORT" CLAUDEBD_UPSTREAM="$UPSTREAM" \
+      CLAUDEBD_CAPACITY_RETRY_MS=10 CLAUDEBD_CAPACITY_RETRY_ATTEMPTS=1 \
       node "$DAEMON" >"$store/daemon.out" 2>&1 &
     DAEMON_PID=$!
     wait_ready && return 0
@@ -121,37 +122,54 @@ MOCK_PORT=$(cat "$MOCK_PORT_FILE")
 require_test_port "mock upstream" "$MOCK_PORT"
 UPSTREAM="http://127.0.0.1:$MOCK_PORT"
 
-echo "scenario a: bare 429 (capacity) -> transient wall, switch, client sees success"
+echo "scenario capacity-a: one bare 429 -> same-account success without a wall"
 : >"$MOCK_LOG"
 write_plan <<'JSON'
-{ "byToken": { "acct-a": { "status": 429, "body": "{\"error\":\"overloaded\"}" }, "acct-b": { "status": 200, "body": "{\"ok\":true}" } } }
+{ "id": "capacity-a", "sequence": [{ "fault": "bare429" }, { "fault": "ok" }], "default": { "fault": "ok" } }
 JSON
 start_daemon "$(setup_store "$WORK/a" a b)"
-NOW=$(date +%s)
 code=$(gpost "$FAB")
-eq "$code" "200" "a: client sees success after switch"
-contains '"ok":true' "$(cat "$WORK/body")" "a: body is from account b"
-eq "$(sfield current_fable)" "b" "a: fable scope switched to b"
-walled_a=$(sfield accounts.a.fable_walled_until)
-in_range "$walled_a" "$((NOW + 240))" "$((NOW + 360))" "a: account a gets SHORT (~300s) transient fable wall"
-eq "$(sfield accounts.a.wk)" "0" "a: account a NOT walled to weekly quota"
-eq "$(sfield accounts.a.wreset)" "0" "a: account a has no weekly reset set"
-contains "acct-a" "$(cat "$MOCK_LOG")" "a: upstream saw account a"
-contains "acct-b" "$(cat "$MOCK_LOG")" "a: upstream saw account b (retry)"
+eq "$code" "200" "capacity-a: client sees same-account recovery"
+contains '"account":"acct-a"' "$(cat "$WORK/body")" "capacity-a: response is from account a"
+eq "$(sfield current_fable)" "a" "capacity-a: account a remains current"
+eq "$(sfield accounts.a.fable_walled_until)" "0" "capacity-a: no transient wall is recorded"
+eq "$(grep -c '^acct-a ' "$MOCK_LOG")" "2" "capacity-a: upstream saw account a exactly twice"
+contains "retry account=a scope=fable status=429 unified=none same-account attempt=1" "$(cat "$WORK/a/claudebd.log")" "capacity-a: same-account retry is logged"
 stop_daemon
 
-echo "scenario b: 429 WITH unified reset header -> header wall until that time, switch"
+echo "scenario capacity-b: two bare 429s -> transient wall and account switch"
+: >"$MOCK_LOG"
+write_plan <<'JSON'
+{ "id": "capacity-b", "sequence": [{ "fault": "bare429" }, { "fault": "bare429" }, { "fault": "ok" }], "default": { "fault": "ok" } }
+JSON
 start_daemon "$(setup_store "$WORK/b" a b)"
+NOW=$(date +%s)
+code=$(gpost "$FAB")
+eq "$code" "200" "capacity-b: client sees success after switch"
+contains '"account":"acct-b"' "$(cat "$WORK/body")" "capacity-b: body is from account b"
+eq "$(sfield current_fable)" "b" "capacity-b: fable scope switched to b"
+walled_a=$(sfield accounts.a.fable_walled_until)
+in_range "$walled_a" "$((NOW + 240))" "$((NOW + 360))" "capacity-b: account a gets a short transient wall"
+eq "$(sfield accounts.a.wk)" "0" "capacity-b: account a is not walled to weekly quota"
+eq "$(grep -c '^acct-a ' "$MOCK_LOG")" "2" "capacity-b: account a receives one same-account retry"
+eq "$(grep -c '^acct-b ' "$MOCK_LOG")" "1" "capacity-b: account b receives the switched retry"
+stop_daemon
+
+echo "scenario capacity-c: unified-header 429 -> immediate wall and switch"
+: >"$MOCK_LOG"
+start_daemon "$(setup_store "$WORK/capacity-c" a b)"
 RESET_AT=$(( $(date +%s) + 8 ))
 write_plan <<JSON
-{ "byToken": { "acct-a": { "status": 429, "headers": { "anthropic-ratelimit-unified-status": "rejected", "anthropic-ratelimit-unified-reset": "$RESET_AT" }, "body": "{}" }, "acct-b": { "status": 200, "body": "{\"ok\":true}" } } }
+{ "id": "capacity-c", "sequence": [{ "fault": "unified429", "resetAfter": 8 }, { "fault": "ok" }], "default": { "fault": "ok" } }
 JSON
 code=$(gpost "$GEN")
-eq "$code" "200" "b: client sees success after switch"
-eq "$(sfield current)" "b" "b: general scope switched to b"
-eq "$(sfield accounts.a.walled)" "true" "b: account a is walled by header reset"
+eq "$code" "200" "capacity-c: client sees success after switch"
+eq "$(sfield current)" "b" "capacity-c: general scope switched to b"
+eq "$(sfield accounts.a.walled)" "true" "capacity-c: account a is walled by header reset"
+eq "$(grep -c '^acct-a ' "$MOCK_LOG")" "1" "capacity-c: account a is not retried"
+case "$(cat "$WORK/capacity-c/claudebd.log")" in *same-account*) fail "capacity-c: header 429 must not use same-account retry" ;; *) pass ;; esac
 sleep 9
-eq "$(sfield accounts.a.walled)" "false" "b: header wall cleared shortly after reset (not a 300s+ wall)"
+eq "$(sfield accounts.a.walled)" "false" "capacity-c: header wall clears shortly after reset"
 stop_daemon
 
 echo "scenario c: 401 -> auth-failed, switch, does not poison other account"
@@ -224,6 +242,22 @@ body=$(cat "$WORK/body")
 contains "data: done" "$body" "e2: client receives the retried account's stream"
 case "$body" in *429*) fail "e2: client must not see the 429" ;; *) pass ;; esac
 contains "acct-b" "$(cat "$MOCK_LOG")" "e2: retried onto account b"
+
+: >"$MOCK_LOG"
+write_plan <<'JSON'
+{ "id": "stream-capacity", "sequence": [{ "fault": "bare429", "early": true }, { "fault": "ok" }], "default": { "fault": "ok" } }
+JSON
+stop_daemon; start_daemon "$(setup_store "$WORK/e2-stream" a)"
+LARGE_BODY="$WORK/large-body.json"
+node -e 'const fs=require("node:fs");const size=64*1024*1024+1;const data=Buffer.alloc(size,120);const prefix=Buffer.from("{\"model\":\"claude-sonnet-4-x\",\"padding\":\"");const suffix=Buffer.from("\"}");prefix.copy(data);suffix.copy(data,size-suffix.length);fs.writeFileSync(process.argv[1],data)' "$LARGE_BODY"
+code=$(curl -s --max-time 20 -o "$WORK/body" -w '%{http_code}' -X POST \
+  -H "authorization: $(auth_header)" -H 'content-type: application/json' \
+  --data-binary "@$LARGE_BODY" "http://127.0.0.1:$DAEMON_PORT/v1/messages")
+eq "$code" "200" "e2-stream: replayable pre-body capacity 429 recovers on the same account"
+eq "$(sfield current)" "a" "e2-stream: streaming retry keeps account a current"
+eq "$(sfield accounts.a.walled)" "false" "e2-stream: streaming retry records no wall"
+eq "$(grep -c '^acct-a ' "$MOCK_LOG")" "2" "e2-stream: upstream sees two attempts on account a"
+contains "retry account=a scope=general status=429 unified=none same-account attempt=1" "$(cat "$WORK/e2-stream/claudebd.log")" "e2-stream: same-account retry is logged"
 
 write_plan <<'JSON'
 { "byToken": { "acct-a": { "sse": ["data: first\n\n", "data: second\n\n"], "abortAfter": 1, "delayMs": 20 } } }
@@ -414,6 +448,7 @@ write_chaos_plan() {
   case "$fault" in
     ok|abort) printf '{"id":"chaos-%s","sequence":[{"fault":"%s"}],"default":{"fault":"ok"}}\n' "$index" "$fault" >"$MOCK_PLAN" ;;
     unified429) printf '{"id":"chaos-%s","sequence":[{"fault":"unified429","resetAfter":%s},{"fault":"ok"}],"default":{"fault":"ok"}}\n' "$index" "$reset_after" >"$MOCK_PLAN" ;;
+    bare429) printf '{"id":"chaos-%s","sequence":[{"fault":"bare429"},{"fault":"bare429"},{"fault":"ok"}],"default":{"fault":"ok"}}\n' "$index" >"$MOCK_PLAN" ;;
     *) printf '{"id":"chaos-%s","sequence":[{"fault":"%s"},{"fault":"ok"}],"default":{"fault":"ok"}}\n' "$index" "$fault" >"$MOCK_PLAN" ;;
   esac
 }

@@ -24,6 +24,8 @@ const daemonStateFile = path.join(baseDir, 'daemon-state.json');
 const disabledFile = path.join(baseDir, 'disabled');
 const maxBody = 64 * 1024 * 1024;
 const upstreamIdleTimeout = 600000;
+const capacityRetryMs = Math.max(0, Math.floor(number(process.env.CLAUDEBD_CAPACITY_RETRY_MS, 2000)));
+const capacityRetryAttempts = Math.max(0, Math.floor(number(process.env.CLAUDEBD_CAPACITY_RETRY_ATTEMPTS, 1)));
 const started = Date.now();
 const states = new Map();
 let accounts = [];
@@ -459,6 +461,20 @@ function rejectionReset(headers, fallbackSeconds) {
   return retryAfter > 0 ? now + retryAfter : now + fallbackSeconds;
 }
 
+function isCapacityRejection(response) {
+  if (response.statusCode !== 429) return false;
+  return !Object.keys(response.headers).some((name) => name.startsWith('anthropic-ratelimit-unified-') || name === 'retry-after');
+}
+
+function capacityRetryLog(account, scope, response, attemptNumber) {
+  const unified = String(response.headers['anthropic-ratelimit-unified-status'] || 'none');
+  log(`retry account=${account} scope=${scope} status=${response.statusCode || 0} unified=${unified} same-account attempt=${attemptNumber} delay_ms=${capacityRetryMs}`);
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function logWall(name, scope, until, reason) {
   log(`wall account=${name} scope=${scope} until=${new Date(until * 1000).toISOString()} reason=${reason}`);
 }
@@ -646,20 +662,31 @@ async function bufferedProxy(req, res, body, replaceAuth) {
     }
     tried.add(account);
     let upstreamRes;
-    try {
-      upstreamRes = await attempt(req, body, account, replaceAuth);
-    } catch (error) {
-      if (error.code === 'CLAUDEB_ACCOUNT_UNAVAILABLE') {
-        unavailable = true;
-        log(`account unavailable account=${account}`);
-        scanAccounts();
-        switchForScope(scope, 'account unavailable', tried);
-        continue;
+    let sameAccountRetries = 0;
+    while (!res.destroyed) {
+      try {
+        upstreamRes = await attempt(req, body, account, replaceAuth);
+      } catch (error) {
+        if (error.code === 'CLAUDEB_ACCOUNT_UNAVAILABLE') {
+          upstreamRes = null;
+          unavailable = true;
+          log(`account unavailable account=${account}`);
+          scanAccounts();
+          switchForScope(scope, 'account unavailable', tried);
+          break;
+        }
+        log(`upstream error account=${account} message=${error.message}`);
+        return sendJson(res, 502, { error: 'Upstream connection failed' });
       }
-      log(`upstream error account=${account} message=${error.message}`);
-      return sendJson(res, 502, { error: 'Upstream connection failed' });
+      if (replaceAuth) updateFromHeaders(account, upstreamRes.headers);
+      if (!isCapacityRejection(upstreamRes) || sameAccountRetries >= capacityRetryAttempts) break;
+      sameAccountRetries += 1;
+      capacityRetryLog(account, scope, upstreamRes, sameAccountRetries);
+      upstreamRes.resume();
+      await delay(capacityRetryMs);
     }
-    if (replaceAuth) updateFromHeaders(account, upstreamRes.headers);
+    if (res.destroyed) return;
+    if (!upstreamRes) continue;
     const authFailure = upstreamRes.statusCode === 401 || upstreamRes.statusCode === 403;
     if (authFailure) markAuthFailure(account, upstreamRes.statusCode);
     const unified = String(upstreamRes.headers['anthropic-ratelimit-unified-status'] || '');
@@ -674,36 +701,67 @@ async function bufferedProxy(req, res, body, replaceAuth) {
   }
 }
 
-function streamingProxy(req, res, chunks, name, replaceAuth, scope, tried = new Set()) {
+function streamingProxy(req, res, chunks, name, replaceAuth, scope, tried = new Set(), streamState = { replayable: true, capacityRetries: new Map() }) {
   tried.add(name);
   let upstreamReq;
+  let superseded = false;
   try {
     const transport = upstream.protocol === 'http:' ? http : https;
     upstreamReq = transport.request(requestOptions(req, name, replaceAuth), (upstreamRes) => {
       if (replaceAuth) updateFromHeaders(name, upstreamRes.headers);
-      if (upstreamRes.statusCode === 401 || upstreamRes.statusCode === 403) {
-        markAuthFailure(name, upstreamRes.statusCode);
-      }
+      const authFailure = upstreamRes.statusCode === 401 || upstreamRes.statusCode === 403;
       const unified = String(upstreamRes.headers['anthropic-ratelimit-unified-status'] || '');
-      if (replaceAuth && (upstreamRes.statusCode === 429 || unified.startsWith('rejected'))) {
-        markRejected(name, upstreamRes.headers, scope);
+      const rejected = replaceAuth && (upstreamRes.statusCode === 429 || unified.startsWith('rejected'));
+      const capacityRejection = replaceAuth && isCapacityRejection(upstreamRes);
+      const retries = streamState.capacityRetries.get(name) || 0;
+      if (capacityRejection && retries < capacityRetryAttempts && streamState.replayable && !res.headersSent) {
+        const nextAttempt = retries + 1;
+        streamState.capacityRetries.set(name, nextAttempt);
+        capacityRetryLog(name, scope, upstreamRes, nextAttempt);
+        req.pause();
+        req.unpipe(upstreamReq);
+        superseded = true;
+        upstreamRes.destroy();
+        upstreamReq.destroy();
+        setTimeout(() => {
+          if (!res.destroyed) streamingProxy(req, res, chunks, name, replaceAuth, scope, tried, streamState);
+          req.resume();
+        }, capacityRetryMs);
+        return;
+      }
+      if (authFailure) markAuthFailure(name, upstreamRes.statusCode);
+      if (rejected) markRejected(name, upstreamRes.headers, scope);
+      if (capacityRejection && streamState.replayable && !res.headersSent) {
+        const next = switchForScope(scope, 'rejected', tried);
+        if (next) {
+          req.pause();
+          req.unpipe(upstreamReq);
+          superseded = true;
+          upstreamRes.destroy();
+          upstreamReq.destroy();
+          streamingProxy(req, res, chunks, next, replaceAuth, scope, tried, streamState);
+          req.resume();
+          return;
+        }
       }
       forwardResponse(upstreamRes, res, name, scope);
     });
     configureOutboundRequest(upstreamReq);
     upstreamReq.on('error', (error) => {
+      if (superseded) return;
       log(`upstream error account=${name} message=${error.message}`);
       sendJson(res, 502, { error: 'Upstream connection failed' });
     });
     for (const chunk of chunks) upstreamReq.write(chunk);
-    req.pipe(upstreamReq);
+    if (req.readableEnded) upstreamReq.end();
+    else req.pipe(upstreamReq);
     req.on('error', () => upstreamReq.destroy());
     res.on('close', () => upstreamReq.destroy());
   } catch (error) {
     if (error.code === 'CLAUDEB_ACCOUNT_UNAVAILABLE') {
       scanAccounts();
       const next = switchForScope(scope, 'account unavailable', tried);
-      if (next) return streamingProxy(req, res, chunks, next, replaceAuth, scope, tried);
+      if (next) return streamingProxy(req, res, chunks, next, replaceAuth, scope, tried, streamState);
       return sendJson(res, 502, { error: 'No available accounts' });
     }
     log(`upstream error account=${name} message=${error.message}`);
@@ -798,8 +856,12 @@ function handle(req, res) {
   const chunks = [];
   let size = 0;
   let streaming = false;
+  const streamState = { replayable: true, capacityRetries: new Map() };
   req.on('data', (chunk) => {
-    if (streaming) return;
+    if (streaming) {
+      streamState.replayable = false;
+      return;
+    }
     size += chunk.length;
     chunks.push(chunk);
     if (size > maxBody) {
@@ -808,7 +870,7 @@ function handle(req, res) {
       const scope = requestScope(Buffer.concat(chunks));
       let account = scope === 'general' ? current : currentByScope.fable;
       if (replaceAuth && !eligibleForScope(account, scope)) account = switchForScope(scope, 'streaming request selection');
-      if (account) streamingProxy(req, res, chunks, account, replaceAuth, scope);
+      if (account) streamingProxy(req, res, chunks, account, replaceAuth, scope, new Set(), streamState);
       else sendJson(res, 503, noAccountsBody(scope));
       req.resume();
     }
