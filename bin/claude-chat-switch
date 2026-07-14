@@ -15,11 +15,14 @@ die() { printf 'claude-chat-switch: %s\n' "$*" >&2; exit 1; }
 
 usage() {
   cat >&2 <<'EOF'
-usage: claude-chat-switch <profile> [session-id]
+usage: claude-chat-switch [--front] <profile> [session-id]
 
   <profile>     an existing account under ~/.claude-profiles (NOT "main")
   [session-id]  optional; defaults to $CLAUDE_CODE_SESSION_ID, else the newest
                 transcript for the current directory's project
+  --front       target the chat in the frontmost Terminal tab instead of the
+                calling shell's session; Hammerspoon also types /exit into it,
+                so the whole switch is hands-free (menubar path)
 
 Arms a Hammerspoon one-shot that relaunches THIS chat under <profile> once you
 exit it (Ctrl+C twice or /exit). Nothing is killed for you.
@@ -75,6 +78,13 @@ find_claude_pid() {
 [ $# -ge 1 ] || usage
 case "$1" in -h|--help) usage ;; esac
 
+front_mode=0
+if [ "$1" = "--front" ]; then
+  front_mode=1
+  shift
+  [ $# -ge 1 ] || usage
+fi
+
 profile="$1"
 session_id="${2:-}"
 
@@ -85,16 +95,65 @@ if [ ! -d "$PROFILES_DIR/$profile" ]; then
   exit 1
 fi
 
-if [ -z "$session_id" ]; then
-  session_id="${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}"
-fi
+command -v hs >/dev/null 2>&1 || die "'hs' (Hammerspoon CLI) not on PATH; is Hammerspoon running?"
+command -v jq >/dev/null 2>&1 || die "'jq' is required for the sessions registry lookup but is not on PATH."
 
-if [ -z "$session_id" ]; then
-  slug=$(project_slug "$PWD")
-  proj_dir="$HOME/.claude/projects/$slug"
-  if [ -d "$proj_dir" ]; then
-    session_file=$(ls -t "$proj_dir"/*.jsonl 2>/dev/null | head -1)
-    [ -n "$session_file" ] && session_id=$(basename "$session_file" .jsonl)
+if [ "$front_mode" -eq 1 ]; then
+  front_app=$(osascript -e 'tell application "System Events" to get name of first application process whose frontmost is true' 2>/dev/null)
+  [ "$front_app" = "Terminal" ] || die "Terminal is not the frontmost app (frontmost: ${front_app:-unknown})."
+
+  tty_dev=$(osascript -e 'tell application "Terminal" to get tty of selected tab of front window' 2>/dev/null)
+  [ -n "$tty_dev" ] || die "could not read the tty of the frontmost Terminal tab."
+
+  claude_pid=$(ps -t "${tty_dev#/dev/}" -o pid=,comm= 2>/dev/null \
+    | awk '{ pid=$1; sub(/^ *[0-9]+ +/, ""); n=split($0, parts, "/"); if (parts[n] == "claude") { print pid; exit } }')
+  [ -n "$claude_pid" ] || die "no claude process on the frontmost Terminal tab ($tty_dev)."
+
+  resume_id=""
+  json_cwd=""
+  if [ -n "$session_id" ]; then
+    resume_id="$session_id"
+  else
+    # Claude Code keeps ~/.claude/sessions/<pid>.json per live interactive process
+    # (global: every profile's sessions dir symlinks here). procStart must equal the
+    # process's C-locale UTC start time, else the file is stale or the pid was reused.
+    reg="$HOME/.claude/sessions/$claude_pid.json"
+    if [ -f "$reg" ]; then
+      reg_proc_start=$(jq -r '.procStart // ""' "$reg" 2>/dev/null)
+      ps_start=$(env LC_ALL=C TZ=UTC ps -o lstart= -p "$claude_pid" 2>/dev/null | sed 's/[[:space:]]*$//')
+      if [ -n "$reg_proc_start" ] && [ "$reg_proc_start" = "$ps_start" ]; then
+        session_id=$(jq -r '.sessionId // ""' "$reg" 2>/dev/null)
+        json_cwd=$(jq -r '.cwd // ""' "$reg" 2>/dev/null)
+      fi
+    fi
+    if [ -z "$session_id" ]; then
+      session_id=$(ps -o command= -p "$claude_pid" 2>/dev/null \
+        | grep -oE -- '--resume[= ][0-9a-fA-F-]{36}' | head -1 | sed 's/^--resume[= ]//')
+      json_cwd=""
+    fi
+    [ -n "$session_id" ] || die "cannot identify session for claude pid $claude_pid on $tty_dev (no live sessions-registry entry, no --resume in argv)."
+    resume_id="$session_id"
+    if [ -n "$json_cwd" ]; then
+      config_dir=$(ps eww -o command= -p "$claude_pid" 2>/dev/null | grep -oE 'CLAUDE_CONFIG_DIR=[^ ]+' | head -1 | cut -d= -f2-)
+      [ -n "$config_dir" ] || config_dir="$HOME/.claude"
+      slug=$(project_slug "$json_cwd")
+      # A chat that never wrote a message has no transcript, and claude errors on
+      # --resume of a nonexistent session — relaunch those as a fresh chat instead.
+      [ -f "$config_dir/projects/$slug/$session_id.jsonl" ] || resume_id=""
+    fi
+  fi
+else
+  if [ -z "$session_id" ]; then
+    session_id="${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}"
+  fi
+
+  if [ -z "$session_id" ]; then
+    slug=$(project_slug "$PWD")
+    proj_dir="$HOME/.claude/projects/$slug"
+    if [ -d "$proj_dir" ]; then
+      session_file=$(ls -t "$proj_dir"/*.jsonl 2>/dev/null | head -1)
+      [ -n "$session_file" ] && session_id=$(basename "$session_file" .jsonl)
+    fi
   fi
 fi
 
@@ -104,16 +163,33 @@ fi
 # constrained by their sources; this makes the string interpolation injection-safe.
 case "$session_id" in *[!A-Za-z0-9._-]*) die "session id has unexpected characters: $session_id" ;; esac
 case "$profile"    in *[!A-Za-z0-9._-]*) die "profile name has unexpected characters: $profile" ;; esac
+if [ "$front_mode" -eq 1 ]; then
+  case "$tty_dev" in *[!A-Za-z0-9/._-]*) die "tty has unexpected characters: $tty_dev" ;; esac
+fi
 
-command -v hs >/dev/null 2>&1 || die "'hs' (Hammerspoon CLI) not on PATH; is Hammerspoon running?"
+if [ "$front_mode" -eq 0 ]; then
+  claude_pid=$(find_claude_pid) || die "could not locate the claude process for this chat (no 'claude' ancestor)."
+fi
 
-claude_pid=$(find_claude_pid) || die "could not locate the claude process for this chat (no 'claude' ancestor)."
-
-hs_out=$(hs -c "ClaudeChatSwitch.switchChat(\"$profile\", \"$session_id\", $claude_pid)" 2>&1)
+if [ "$front_mode" -eq 1 ]; then
+  hs_out=$(hs -c "ClaudeChatSwitch.switchChat(\"$profile\", \"$resume_id\", $claude_pid, \"$tty_dev\")" 2>&1)
+else
+  hs_out=$(hs -c "ClaudeChatSwitch.switchChat(\"$profile\", \"$session_id\", $claude_pid)" 2>&1)
+fi
 hs_rc=$?
 if [ "$hs_rc" -ne 0 ] || printf '%s' "$hs_out" | grep -qi 'error\|nil value\|not found'; then
   die "could not arm Hammerspoon: ${hs_out:-unknown error}"
 fi
 
-printf 'claude-chat-switch: armed. Exit this chat (Ctrl+C twice or /exit) and it will reopen under profile "%s" — same conversation (session %s), resumed by: claudeb profile %s --resume %s\n' \
-  "$profile" "$session_id" "$profile" "$session_id"
+if [ "$front_mode" -eq 1 ]; then
+  if [ -n "$resume_id" ]; then
+    printf 'claude-chat-switch: armed (auto). Hammerspoon will /exit the chat on %s and reopen it under profile "%s" — same conversation (session %s), resumed by: claudeb profile %s --resume %s\n' \
+      "$tty_dev" "$profile" "$session_id" "$profile" "$session_id"
+  else
+    printf 'claude-chat-switch: armed (auto). Session %s has no transcript yet; Hammerspoon will /exit the chat on %s and open a FRESH chat: claudeb profile %s\n' \
+      "$session_id" "$tty_dev" "$profile"
+  fi
+else
+  printf 'claude-chat-switch: armed. Exit this chat (Ctrl+C twice or /exit) and it will reopen under profile "%s" — same conversation (session %s), resumed by: claudeb profile %s --resume %s\n' \
+    "$profile" "$session_id" "$profile" "$session_id"
+fi

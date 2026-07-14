@@ -306,6 +306,38 @@ function M.switchAccount(name)
   runClaudeb({ "use", name }, "switch failed")
 end
 
+-- Arms a Hammerspoon one-shot for the chat in the frontmost Terminal tab; the
+-- arm itself is silent — claude_chat_switch.lua alerts on the outcome later.
+function M.switchChatTo(name)
+  local ok = pcall(function()
+    local task = hs.task.new(os.getenv("HOME") .. "/.local/bin/claude-chat-switch",
+      function(exitCode, stdOut, stdErr)
+        if exitCode ~= 0 then
+          local line = tostring(stdErr or ""):match("[^\r\n]+")
+            or tostring(stdOut or ""):match("[^\r\n]+")
+            or ("exit " .. tostring(exitCode))
+          hs.alert.show("Chat switch failed: " .. line)
+        end
+      end, { "--front", name })
+    if task then
+      task:setEnvironment(baseEnvironment())
+    end
+    if not task or not task:start() then
+      error("could not start claude-chat-switch")
+    end
+  end)
+  if not ok then
+    hs.alert.show("Chat switch failed: could not start claude-chat-switch")
+  end
+end
+
+function M.cancelPendingSwitch()
+  if _G.ClaudeChatSwitch and _G.ClaudeChatSwitch.cancel
+      and _G.ClaudeChatSwitch.cancel() then
+    hs.alert.show("Chat switch cancelled")
+  end
+end
+
 function M.toggleAccount(name, currentlyEnabled)
   runClaudeb({ currentlyEnabled and "disable" or "enable", name }, "toggle failed")
 end
@@ -346,6 +378,17 @@ function M.menuItems()
   collectOnOpen()
 
   local menu = {}
+  local pendingOk, pending = pcall(function()
+    return _G.ClaudeChatSwitch and _G.ClaudeChatSwitch.pending
+      and _G.ClaudeChatSwitch.pending()
+  end)
+  if pendingOk and pending then
+    table.insert(menu, {
+      title = "Cancel pending switch",
+      fn = M.cancelPendingSwitch,
+    })
+    table.insert(menu, { title = "-" })
+  end
   local limits, readErrorReason = readLlmLimits()
   if limits and type(limits.vendors) == "table" then
     local vendors = {
@@ -434,6 +477,13 @@ function M.menuItems()
                 { title = "Make current", disabled = block.is_current,
                   fn = function() M.switchAccount(acct) end },
               }
+              -- "main" is ~/.claude itself, not a claudeb profile dir — no chat switch.
+              if acct ~= "main" then
+                table.insert(accountRow.menu, {
+                  title = "Switch chat to this",
+                  fn = function() M.switchChatTo(acct) end,
+                })
+              end
             end
             table.insert(menu, accountRow)
           end
