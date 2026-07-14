@@ -48,6 +48,22 @@ run_bounded() {
   return "$rc"
 }
 
+# stdin here is a pipe (Claude Code Bash tool), so `tty` reports "not a tty";
+# the controlling terminal is only visible on an ancestor process (claude/zsh).
+detect_controlling_tty() {
+  local pid=$$ t hops=0
+  while [ -n "$pid" ] && [ "$pid" != "0" ] && [ "$hops" -lt 10 ]; do
+    t=$(ps -o tty= -p "$pid" 2>/dev/null | tr -d ' ')
+    case "$t" in
+      ''|'??') ;;
+      *) echo "/dev/$t"; return 0 ;;
+    esac
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    hops=$((hops + 1))
+  done
+  return 1
+}
+
 account=${CLAUDE_LIMITS_ACCOUNT:-notcom}
 [ "$account" = "-" ] && account=notcom
 cache="$HOME/.llm-limits.json"
@@ -107,7 +123,20 @@ if ! command -v hs >/dev/null 2>&1; then
   exit 1
 fi
 
-hs_output=$(hs -c "ClaudeContinue.startTimerFor(\"$surface\", $minutes)" 2>&1)
+target_tty=""
+if [ "$surface" = terminal ]; then
+  target_tty=$(detect_controlling_tty) || target_tty=""
+fi
+case "$target_tty" in
+  /dev/tty*) ;;
+  *) target_tty="" ;;
+esac
+
+if [ -n "$target_tty" ]; then
+  hs_output=$(hs -c "ClaudeContinue.startTimerFor(\"$surface\", $minutes, nil, \"$target_tty\")" 2>&1)
+else
+  hs_output=$(hs -c "ClaudeContinue.startTimerFor(\"$surface\", $minutes)" 2>&1)
+fi
 hs_status=$?
 if [ "$hs_status" -ne 0 ]; then
   echo "claude-resume-timer: could not reach hs (Hammerspoon CLI): $hs_output" >&2
@@ -117,8 +146,11 @@ fi
 fires_epoch=$(( now + minutes * 60 ))
 fires_clock=$(date -r "$fires_epoch" '+%H:%M' 2>/dev/null || date -j -f %s "$fires_epoch" '+%H:%M' 2>/dev/null || echo "?")
 
+target_note=""
+[ -n "$target_tty" ] && target_note=" (target $target_tty)"
+
 if [ -n "$fallback_reason" ]; then
-  echo "claude-resume-timer: $fallback_reason; armed $surface for +$minutes min (fires ~$fires_clock)"
+  echo "claude-resume-timer: $fallback_reason; armed $surface for +$minutes min (fires ~$fires_clock)$target_note"
 else
-  echo "claude-resume-timer: armed $surface for $minutes min (fires ~$fires_clock)"
+  echo "claude-resume-timer: armed $surface for $minutes min (fires ~$fires_clock)$target_note"
 fi
