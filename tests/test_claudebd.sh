@@ -6,4 +6,6 @@ WORK=$(mktemp -d "${TMPDIR:-/tmp}/claudebd-test.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 
 mkdir -p "$WORK/store"
-CLAUDEB_DIR="$WORK/store" node "$ROOT/tests/claudebd_harness.js"
+OUTPUT=$(CLAUDEB_DIR="$WORK/store" node "$ROOT/tests/claudebd_harness.js")
+printf '%s\n' "$OUTPUT"
+[[ "$OUTPUT" == "PASS: claudebd decision logic (62 assertions)" ]]

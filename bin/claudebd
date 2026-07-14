@@ -251,15 +251,15 @@ function pickForScope(scope, excluded = new Set()) {
     .sort((a, b) => a.fableUsage - b.fableUsage || a.h5 - b.h5 || a.wk - b.wk || a.name.localeCompare(b.name))[0]?.name || null;
 }
 
-function noAccountsBody(scope) {
+function nextEligibleAt(scope) {
   const now = Math.floor(Date.now() / 1000);
   let earliest = 0;
   for (const name of accounts) {
     if (disabled.has(name)) continue;
     const state = effective(name);
+    if (state.authFailedUntil > now) continue;
     let free = Math.max(
       state.forcedUntil > now ? state.forcedUntil : 0,
-      state.authFailedUntil > now ? state.authFailedUntil : 0,
       state.h5 >= 97 ? state.hreset : 0,
       state.wk >= 99 ? state.wreset : 0
     );
@@ -269,8 +269,14 @@ function noAccountsBody(scope) {
         free = Math.max(free, number(state.fable.resets_at));
       }
     }
+    if (free <= now) return 0;
     if (free > now && (earliest === 0 || free < earliest)) earliest = free;
   }
+  return earliest;
+}
+
+function noAccountsBody(scope) {
+  const earliest = nextEligibleAt(scope);
   return earliest ? { error: 'No available accounts', retry_at: earliest } : { error: 'No available accounts' };
 }
 
@@ -422,12 +428,10 @@ function markRejected(name, headers, scope) {
   const state = states.get(name);
   if (!state) return;
   const now = Math.floor(Date.now() / 1000);
+  state.scopedWalls = state.scopedWalls || {};
   state.scopedWallReason = state.scopedWallReason || {};
-  // A fable-scoped 429 can arrive with unified-status "allowed"; only an
-  // explicit rejected status means the whole unified bucket is walled.
-  const unified = String(headers['anthropic-ratelimit-unified-status'] || '');
   const hasResetHeader = number(headers['anthropic-ratelimit-unified-reset'], 0) > now || number(headers['retry-after'], 0) > 0;
-  if (!unified.startsWith('rejected') && scope === 'fable') {
+  if (scope === 'fable') {
     if (hasResetHeader) {
       state.scopedWalls.fable = rejectionReset(headers, 300);
       state.scopedWallReason.fable = 'header';
@@ -685,9 +689,7 @@ function activePins() {
 }
 
 function allWalledUntil(scope) {
-  const picked = scope === 'general' ? pick() : pickForScope(scope);
-  if (picked) return null;
-  return noAccountsBody(scope).retry_at || null;
+  return nextEligibleAt(scope) || null;
 }
 
 function statusPayload() {

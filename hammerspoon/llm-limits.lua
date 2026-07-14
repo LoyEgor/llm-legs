@@ -386,7 +386,9 @@ function M.menuItems()
             if type(wall) == "table" and type(wall.account) == "string" then
               local wallEpoch = parseTime(wall["until"])
               if not wallEpoch or wallEpoch > os.time() then
-                accountWalls[wall.account] = true
+                accountWalls[wall.account] = accountWalls[wall.account] or {}
+                local scope = wall.scope == "fable" and "fable" or "general"
+                accountWalls[wall.account][scope] = true
               end
             end
           end
@@ -404,11 +406,13 @@ function M.menuItems()
           if accountEpoch and vendorEpoch and accountEpoch < vendorEpoch then
             accountAge = truncateText(formatAgeShort(block.as_of), 4)
           end
-          local accountWalled = accountWalls[acct] == true
+          local accountWall = accountWalls[acct] or {}
+          local generalWalled = accountWall.general == true
+          local fableWalled = accountWall.fable == true
           if isAccountRows then
             local accountRow = {
               title = infoTitle(acct .. (isCurrent and "  ●" or ""), false, false,
-                accountWalled),
+                generalWalled),
               disabled = true,
             }
             if hasAccountControls then
@@ -426,20 +430,20 @@ function M.menuItems()
           local fiveGray = isStale(1800, fiveHour)
           local fiveRow = {
             title = rowTitle(isAccountRows and "" or acct, "5h", fiveHour, accountAge,
-              fiveGray, accountWalled),
+              fiveGray, generalWalled),
             disabled = true,
           }
           table.insert(menu, fiveRow)
-          local function tailRow(label, bucket)
+          local function tailRow(label, bucket, walled)
             if type(bucket) == "table" then
               local gray = isStale(21600, bucket)
-              return rowTitle("", label, bucket, accountAge, gray, accountWalled)
+              return rowTitle("", label, bucket, accountAge, gray, walled)
             end
-            return rowTitle("", label, nil, accountAge, false, accountWalled)
+            return rowTitle("", label, nil, accountAge, false, walled)
           end
-          table.insert(menu, { title = tailRow("wk", weekly), disabled = true })
+          table.insert(menu, { title = tailRow("wk", weekly, generalWalled), disabled = true })
           if type(block.fable) == "table" then
-            table.insert(menu, { title = tailRow("fb", block.fable), disabled = true })
+            table.insert(menu, { title = tailRow("fb", block.fable, fableWalled), disabled = true })
           end
         end
         if isAccountRows then

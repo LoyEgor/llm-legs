@@ -369,6 +369,43 @@ contains '"who":"a"' "$(cat "$WORK/body")" "l: request routed to the post-disabl
 eq "$(sfield current)" "a" "l: post-disable pin sticks across the next request"
 stop_daemon
 
+echo "scenario m: fable unified rejection stays scoped; general aggregate ignores auth-failed accounts"
+STORE_M1="$(setup_store "$WORK/m1" a b)"
+start_daemon "$STORE_M1"
+RESET_AT=$(( $(date +%s) + 600 ))
+write_plan <<JSON
+{ "byToken": { "acct-a": { "status": 429, "headers": { "anthropic-ratelimit-unified-status": "rejected", "anthropic-ratelimit-unified-reset": "$RESET_AT" }, "body": "{}" }, "acct-b": { "status": 200, "body": "{\"who\":\"b\"}" } } }
+JSON
+code=$(gpost "$FAB")
+eq "$code" "200" "m1: fable request succeeds after scoped retry"
+eq "$(sfield accounts.a.walled)" "false" "m1: fable unified rejection does not wall general"
+eq "$(sfield accounts.a.fable_walled_until)" "$RESET_AT" "m1: fable unified rejection walls fable until header reset"
+status_body="$(statusjson)"
+contains '"account":"a","scope":"fable"' "$status_body" "m1: status reports only the fable wall"
+case "$status_body" in *'"account":"a","scope":"general"'*) fail "m1: status must not report a general wall for account a" ;; *) pass ;; esac
+write_plan <<'JSON'
+{ "byToken": { "acct-a": { "status": 200, "body": "{\"who\":\"a\"}" }, "acct-b": { "status": 200, "body": "{\"who\":\"b\"}" } } }
+JSON
+code=$(gpost "$GEN")
+eq "$code" "200" "m1: general request remains routable"
+contains '"who":"a"' "$(cat "$WORK/body")" "m1: general request still routes to fable-walled account a"
+stop_daemon
+
+STORE_M2="$(setup_store "$WORK/m2" a b c)"
+start_daemon "$STORE_M2"
+EARLY=$(( $(date +%s) + 600 ))
+LATE=$(( $(date +%s) + 900 ))
+write_plan <<JSON
+{ "byToken": {
+  "acct-a": { "status": 429, "headers": { "anthropic-ratelimit-unified-status": "rejected", "anthropic-ratelimit-unified-reset": "$EARLY" }, "body": "{}" },
+  "acct-b": { "status": 401, "body": "{}" },
+  "acct-c": { "status": 429, "headers": { "anthropic-ratelimit-unified-status": "rejected", "anthropic-ratelimit-unified-reset": "$LATE" }, "body": "{}" } } }
+JSON
+eq "$(gpost "$GEN")" "429" "m2: exhausting request reaches every account"
+gt "$(sfield accounts.b.auth_failed_until)" "0" "m2: account b is excluded for auth failure"
+eq "$(sfield all_walled_until.general)" "$EARLY" "m2: general aggregate is earliest wall among auth-ok accounts"
+stop_daemon
+
 echo
 if [ "$FAIL" -eq 0 ]; then
   echo "PASS: claudebd live switching ($PASS assertions, 0 failures)"

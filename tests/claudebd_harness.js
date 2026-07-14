@@ -87,8 +87,13 @@ function add(name, value = state()) {
 const now = Math.floor(Date.now() / 1000);
 add('header', state());
 const headerUntil = now + 4800;
-api.markRejected('header', { 'anthropic-ratelimit-unified-reset': String(headerUntil) }, 'fable');
+api.markRejected('header', {
+  'anthropic-ratelimit-unified-status': 'rejected',
+  'anthropic-ratelimit-unified-reset': String(headerUntil)
+}, 'fable');
 check(api.states.get('header').scopedWalls.fable, headerUntil, 'header wall expiry');
+check(api.states.get('header').scopedWallReason.fable, 'header', 'unified fable rejection keeps its scoped reason');
+check(api.states.get('header').forcedUntil, 0, 'unified fable rejection does not wall general');
 
 const quotaUntil = now + 86400;
 add('quota', state({
@@ -97,6 +102,7 @@ add('quota', state({
 }));
 api.markRejected('quota', {}, 'fable');
 check(api.states.get('quota').scopedWalls.fable, quotaUntil, 'trusted quota wall expiry');
+check(api.states.get('quota').forcedUntil, 0, 'fable quota rejection does not wall general');
 
 const weeklyUntil = now + 500000;
 add('transient', state({
@@ -112,6 +118,7 @@ api.markRejected('transient', {}, 'fable');
 transientUntil = api.states.get('transient').scopedWalls.fable;
 ok(transientUntil >= now + 899 && transientUntil <= now + 901, 'repeat bare rejection uses 900 seconds');
 ok(transientUntil !== weeklyUntil, 'repeat bare rejection never uses weekly reset');
+check(api.states.get('transient').forcedUntil, 0, 'fable transient rejection does not wall general');
 
 add('stale', state({
   fable: { used_percentage: 100, resets_at: weeklyUntil, as_of: now - 21601, origin: 'usage' },
@@ -141,6 +148,8 @@ api.markRejected('legacynoauth', {}, 'fable');
 check(api.states.get('legacynoauth').scopedWalls.fable, weeklyUntil, 'a snapshot with no auth field at all (legacy) is still trusted');
 
 api.scanAccounts();
+check(api.eligibleForScope('header', 'general'), true, 'unified fable rejection preserves general eligibility');
+check(api.eligibleForScope('header', 'fable'), false, 'unified fable rejection blocks fable eligibility');
 add('authfail', state({ authFailedUntil: now + 1000 }));
 add('activewall', state({ scopedWalls: { fable: now + 1000 } }));
 add('trustedfull', state({
@@ -196,9 +205,18 @@ ok(api.getCurrent() !== 'menupinned', 'disabled pinned account is no longer curr
 
 add('wall-a', state({ scopedWalls: { fable: now + 700 } }));
 add('wall-b', state({ scopedWalls: { fable: now + 400 } }));
-fs.writeFileSync(disabledFile, 'header\nquota\ntransient\nstale\ncached\nnonok\nlegacynoauth\nauthfail\nactivewall\ntrustedfull\npinned\ndisabled\nstateonly\n');
+add('wall-disabled', state({ forcedUntil: now + 100 }));
+add('wall-authfail', state({ forcedUntil: now + 200, authFailedUntil: now + 1000 }));
+fs.writeFileSync(disabledFile, 'header\nquota\ntransient\nstale\ncached\nnonok\nlegacynoauth\nauthfail\nactivewall\ntrustedfull\npinned\ndisabled\nstateonly\nmenupinned\nwall-disabled\n');
+api.setCurrent(null);
 api.scanAccounts();
 check(api.noAccountsBody('fable').retry_at, now + 400, '503 body uses earliest wall expiry');
+check(api.statusPayload().all_walled_until.general, null, 'fable-only walls leave general scope available');
+check(api.statusPayload().all_walled_until.fable, now + 400, 'fable aggregate uses earliest eligible account wall');
+api.states.get('wall-a').forcedUntil = now + 800;
+api.states.get('wall-b').forcedUntil = now + 500;
+check(api.statusPayload().all_walled_until.general, now + 500, 'general aggregate uses earliest eligible account wall');
+check(api.statusPayload().all_walled_until.fable, now + 500, 'scope aggregate waits for every blocker on an account');
 
 const learnedFile = path.join(limitsDir, 'learned.json');
 fs.writeFileSync(learnedFile, JSON.stringify({ fable: { used_percentage: 12 } }));
@@ -216,7 +234,10 @@ check(learned.fable.used_percentage, 12, 'unrelated snapshot bucket preserved');
 // --- daemon-state.json persistence across restarts ----------------------
 const persistNow = Math.floor(Date.now() / 1000);
 add('persist-fable', state());
-api.markRejected('persist-fable', { 'anthropic-ratelimit-unified-reset': String(persistNow + 5000) }, 'fable');
+api.markRejected('persist-fable', {
+  'anthropic-ratelimit-unified-status': 'rejected',
+  'anthropic-ratelimit-unified-reset': String(persistNow + 5000)
+}, 'fable');
 const persistFableUntil = api.states.get('persist-fable').scopedWalls.fable;
 
 add('persist-general', state());
