@@ -13,6 +13,8 @@ const fs = require('node:fs');
 const planFile = process.env.MOCK_PLAN;
 const portFile = process.env.MOCK_PORT_FILE;
 const logFile = process.env.MOCK_LOG;
+let sequenceId = null;
+let sequenceIndex = 0;
 
 function readPlan() {
   try {
@@ -28,9 +30,46 @@ function tokenOf(req) {
   return match ? match[1].trim() : '';
 }
 
-function record(token, url) {
+function record(token, url, selection) {
   if (!logFile) return;
-  try { fs.appendFileSync(logFile, `${token} ${url}\n`); } catch {}
+  const suffix = selection
+    ? ` plan=${selection.id} step=${selection.index} fault=${selection.rule.fault || 'custom'}${selection.rule.resetAt ? ` reset_at=${selection.rule.resetAt}` : ''}`
+    : '';
+  try { fs.appendFileSync(logFile, `${token} ${url}${suffix}\n`); } catch {}
+}
+
+function selectRule(plan) {
+  if (!Array.isArray(plan.sequence)) return null;
+  const id = String(plan.id || 'default');
+  if (id !== sequenceId) {
+    sequenceId = id;
+    sequenceIndex = 0;
+  }
+  const index = sequenceIndex++;
+  return { id, index, rule: plan.sequence[index] || plan.default || { fault: 'ok' } };
+}
+
+function materializeRule(raw, token) {
+  const rule = { ...raw };
+  if (rule.fault === 'ok') return { ...rule, status: 200, body: { ok: true, account: token } };
+  if (rule.fault === 'bare429') return { ...rule, status: 429, body: { error: 'overloaded' } };
+  if (rule.fault === 'unified429') {
+    rule.resetAt = Math.floor(Date.now() / 1000) + Number(rule.resetAfter || 2);
+    return {
+      ...rule,
+      status: 429,
+      headers: {
+        'anthropic-ratelimit-unified-status': 'rejected',
+        'anthropic-ratelimit-unified-reset': String(rule.resetAt)
+      },
+      body: {}
+    };
+  }
+  if (rule.fault === 'auth401') return { ...rule, status: 401, body: { error: 'unauthorized' } };
+  if (rule.fault === 'abort') {
+    return { ...rule, status: 200, sse: ['data: chaos-first\n\n', 'data: chaos-never\n\n'], abortAfter: 1, delayMs: 15 };
+  }
+  return rule;
 }
 
 function respondSse(res, rule) {
@@ -67,9 +106,11 @@ const server = http.createServer((req, res) => {
   // Drain the request body so keep-alive sockets stay clean.
   req.on('data', () => {});
   req.on('end', () => {
-    record(token, req.url);
     const plan = readPlan();
-    const rule = (plan.byToken && plan.byToken[token]) || plan.default || { status: 200, body: '{}' };
+    const selection = selectRule(plan);
+    const rule = materializeRule(selection?.rule || (plan.byToken && plan.byToken[token]) || plan.default || { status: 200, body: '{}' }, token);
+    if (selection) selection.rule = rule;
+    record(token, req.url, selection);
     if (Array.isArray(rule.sse)) return respondSse(res, rule);
     const body = typeof rule.body === 'string' ? rule.body : JSON.stringify(rule.body ?? {});
     const headers = { 'content-type': 'application/json', ...(rule.headers || {}) };

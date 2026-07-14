@@ -406,6 +406,184 @@ gt "$(sfield accounts.b.auth_failed_until)" "0" "m2: account b is excluded for a
 eq "$(sfield all_walled_until.general)" "$EARLY" "m2: general aggregate is earliest wall among auth-ok accounts"
 stop_daemon
 
+echo "scenario chaos: seeded mixed-scope storm preserves walls, eligibility, recovery, and state"
+STORE_CHAOS="$(setup_store "$WORK/chaos" a b c d)"
+: >"$MOCK_LOG"
+write_chaos_plan() {
+  local index=$1 fault=$2 reset_after=${3:-2}
+  case "$fault" in
+    ok|abort) printf '{"id":"chaos-%s","sequence":[{"fault":"%s"}],"default":{"fault":"ok"}}\n' "$index" "$fault" >"$MOCK_PLAN" ;;
+    unified429) printf '{"id":"chaos-%s","sequence":[{"fault":"unified429","resetAfter":%s},{"fault":"ok"}],"default":{"fault":"ok"}}\n' "$index" "$reset_after" >"$MOCK_PLAN" ;;
+    *) printf '{"id":"chaos-%s","sequence":[{"fault":"%s"},{"fault":"ok"}],"default":{"fault":"ok"}}\n' "$index" "$fault" >"$MOCK_PLAN" ;;
+  esac
+}
+
+wall_field() {
+  local account=$1 scope=$2 field=$3
+  statusjson | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const o=JSON.parse(d);const w=o.walls.find(x=>x.account===process.argv[1]&&x.scope===process.argv[2]);if(!w)return;process.stdout.write(process.argv[3]==="until"?String(Date.parse(w.until)/1000):String(w[process.argv[3]]||""))})' "$account" "$scope" "$field"
+}
+
+last_fault_account() { awk -v id="plan=chaos-$1" '$0 ~ id && $0 ~ /step=0/ { sub(/^acct-/, "", $1); found=$1 } END { print found }' "$MOCK_LOG"; }
+last_fault_reset() { awk -v id="plan=chaos-$1" '$0 ~ id && $0 ~ /step=0/ { for (i=1;i<=NF;i++) if ($i ~ /^reset_at=/) { sub(/^reset_at=/, "", $i); found=$i } } END { print found }' "$MOCK_LOG"; }
+last_plan_account() { awk -v id="plan=chaos-$1" '$0 ~ id { sub(/^acct-/, "", $1); found=$1 } END { print found }' "$MOCK_LOG"; }
+
+# These fixed rows are the seed. Add a future injected request as one new row.
+CHAOS_STORM=(
+  'fable unified429 2'
+  'general ok'
+  'general unified429 6'
+  'fable unified429 3'
+  'general ok'
+  'general ok'
+  'general bare429'
+  'fable ok'
+  'fable bare429'
+  'general ok'
+  'fable ok'
+  'general auth401'
+  'fable auth401'
+  'general ok'
+  'fable ok'
+  'general ok'
+  'fable ok'
+  'general ok'
+  'fable ok'
+  'general unified429 2'
+  'general ok'
+  'fable unified429 2'
+  'fable ok'
+  'general ok'
+  'fable ok'
+  'general auth401'
+  'general ok'
+  'fable auth401'
+  'fable ok'
+  'general unified429 2'
+  'general ok'
+  'fable unified429 2'
+  'fable ok'
+  'general ok'
+  'general ok'
+  'fable ok'
+  'fable ok'
+  'general ok'
+  'general ok'
+  'fable ok'
+  'general unified429 2'
+  'fable unified429 2'
+  'general ok'
+  'fable ok'
+  'general abort'
+  'general ok'
+  'fable ok'
+)
+
+start_daemon "$STORE_CHAOS"
+CHAOS_PID=$DAEMON_PID
+CHAOS_429=0
+CHAOS_401=0
+CHAOS_ABORT=0
+for index in "${!CHAOS_STORM[@]}"; do
+  read -r scope fault reset_after <<<"${CHAOS_STORM[$index]}"
+  if [ "$index" -eq 3 ]; then sleep 3; fi
+  if [ "$index" -eq 4 ] || [ "$index" -eq 23 ] || [ "$index" -eq 33 ]; then sleep 3; fi
+  write_chaos_plan "$index" "$fault" "$reset_after"
+  body=$GEN
+  [ "$scope" = "fable" ] && body=$FAB
+  NOW=$(date +%s)
+  if [ "$fault" = "abort" ]; then
+    curl -sN --max-time 10 -o "$WORK/body" -X POST \
+      -H "authorization: $(auth_header)" -H 'content-type: application/json' \
+      --data "$body" "http://127.0.0.1:$DAEMON_PORT/v1/messages"
+    rc=$?
+    contains "data: chaos-first" "$(cat "$WORK/body")" "chaos: mid-body abort delivered its first chunk"
+    if [ "$rc" -ne 0 ]; then pass; else fail "chaos: mid-body abort must be non-transparent after response bytes"; fi
+    CHAOS_ABORT=$((CHAOS_ABORT + 1))
+  else
+    code=$(gpost "$body")
+    eq "$code" "200" "chaos: request $index ($scope/$fault) is absorbed while an eligible account exists"
+  fi
+  eq "$(sfield pid)" "$CHAOS_PID" "chaos: daemon pid is stable after request $index"
+  case "$fault" in
+    bare429)
+      CHAOS_429=$((CHAOS_429 + 1))
+      account=$(last_fault_account "$index")
+      until=$(wall_field "$account" "$scope" until)
+      in_range "$until" "$((NOW + 250))" "$((NOW + 900))" "chaos: bare 429 wall for $account/$scope stays within the escalation cap"
+      eq "$(wall_field "$account" "$scope" reason)" "transient" "chaos: bare 429 is classified as transient"
+      ;;
+    unified429)
+      CHAOS_429=$((CHAOS_429 + 1))
+      account=$(last_fault_account "$index")
+      reset_at=$(last_fault_reset "$index")
+      eq "$(wall_field "$account" "$scope" until)" "$reset_at" "chaos: header wall for $account/$scope ends exactly at its reset"
+      eq "$(wall_field "$account" "$scope" reason)" "header" "chaos: unified 429 is classified as a header wall"
+      ;;
+    auth401)
+      CHAOS_401=$((CHAOS_401 + 1))
+      account=$(last_fault_account "$index")
+      gt "$(sfield accounts.$account.auth_failed_until)" "0" "chaos: 401 marks only its injected account auth-failed"
+      sleep 0.02
+      touch "$STORE_CHAOS/tokens/$account"
+      statusjson >/dev/null
+      eq "$(sfield accounts.$account.auth_failed_until)" "0" "chaos: rotated credentials restore auth eligibility"
+      ;;
+  esac
+  if [ "$index" -eq 1 ]; then
+    eq "$(last_plan_account "$index")" "a" "chaos: fable rejection leaves the same account eligible for general"
+  fi
+  if [ "$index" -eq 3 ]; then
+    eq "$(last_plan_account "$index")" "a" "chaos: general rejection leaves the same account eligible for fable"
+  fi
+done
+eq "$(grep -c ' wall account=' "$STORE_CHAOS/claudebd.log")" "$CHAOS_429" "chaos: every injected 429 has one wall log"
+eq "$(grep -c ' auth failure account=' "$STORE_CHAOS/claudebd.log")" "$CHAOS_401" "chaos: every injected 401 has one auth-failure log"
+eq "$(grep -c ' stream-abort account=' "$STORE_CHAOS/claudebd.log")" "$CHAOS_ABORT" "chaos: every non-transparent stream abort has one log"
+eq "$(sfield pid)" "$CHAOS_PID" "chaos: storm phase ends on its original daemon pid"
+stop_daemon
+
+STORE_CHAOS_CLEAR="$(setup_store "$WORK/chaos-clear" a b c d)"
+EARLY=$(( $(date +%s) + 3 ))
+LATE=$((EARLY + 3))
+write_plan <<JSON
+{ "byToken": {
+  "acct-a": { "status": 429, "headers": { "anthropic-ratelimit-unified-status": "rejected", "anthropic-ratelimit-unified-reset": "$EARLY" }, "body": "{}" },
+  "acct-b": { "status": 429, "headers": { "anthropic-ratelimit-unified-status": "rejected", "anthropic-ratelimit-unified-reset": "$((EARLY + 1))" }, "body": "{}" },
+  "acct-c": { "status": 429, "headers": { "anthropic-ratelimit-unified-status": "rejected", "anthropic-ratelimit-unified-reset": "$((EARLY + 2))" }, "body": "{}" },
+  "acct-d": { "status": 429, "headers": { "anthropic-ratelimit-unified-status": "rejected", "anthropic-ratelimit-unified-reset": "$LATE" }, "body": "{}" } } }
+JSON
+start_daemon "$STORE_CHAOS_CLEAR"
+CLEAR_PID=$DAEMON_PID
+eq "$(gpost "$GEN")" "429" "chaos: exhausting request reaches all four genuinely walled accounts"
+eq "$(sfield pid)" "$CLEAR_PID" "chaos: all-wall phase keeps its daemon pid"
+eq "$(sfield all_walled_until.general)" "$EARLY" "chaos: all-walled aggregate is the earliest genuine general expiry"
+eq "$(sfield all_walled_until.fable)" "null" "chaos: general walls do not create a false all-walled fable scope"
+eq "$(gpost "$GEN")" "503" "chaos: request during a genuine all-wall interval is synthetic 503"
+eq "$(cat "$WORK/body" | jget retry_at)" "$EARLY" "chaos: 503 retry_at equals the earliest genuine expiry exactly"
+write_plan <<'JSON'
+{ "default": { "status": 200, "body": "{\"ok\":true}" } }
+JSON
+sleep 4
+eq "$(gpost "$GEN")" "200" "chaos: request succeeds just after the earliest expiry without intervention"
+remaining=$((LATE - $(date +%s) + 1))
+if [ "$remaining" -gt 0 ]; then sleep "$remaining"; fi
+status_body=$(statusjson)
+for account in a b c d; do
+  eq "$(echo "$status_body" | jget accounts.$account.walled)" "false" "chaos: account $account is generally eligible after all short walls clear"
+  eq "$(echo "$status_body" | jget accounts.$account.fable_walled_until)" "0" "chaos: account $account is fable-eligible after all short walls clear"
+done
+eq "$(node -e 'const s=require(process.argv[1]);process.stdout.write(String(Object.keys(s.accounts||{}).length))' "$STORE_CHAOS_CLEAR/daemon-state.json")" "0" "chaos: daemon-state prunes every expired account entry"
+eq "$(sfield pid)" "$CLEAR_PID" "chaos: recovery phase keeps its daemon pid"
+stop_daemon
+start_daemon "$STORE_CHAOS_CLEAR"
+RESTART_PID=$DAEMON_PID
+case "$RESTART_PID" in "$CLEAR_PID") fail "chaos: restart phase must use a fresh test daemon pid" ;; *) pass ;; esac
+eq "$(gpost "$GEN")" "200" "chaos: clean restart does not resurrect an expired wall"
+eq "$(sfield all_walled_until.general)" "null" "chaos: restart has no stale general aggregate"
+eq "$(sfield all_walled_until.fable)" "null" "chaos: restart has no stale fable aggregate"
+eq "$(sfield pid)" "$RESTART_PID" "chaos: restarted phase keeps its daemon pid"
+stop_daemon
+
 echo
 if [ "$FAIL" -eq 0 ]; then
   echo "PASS: claudebd live switching ($PASS assertions, 0 failures)"

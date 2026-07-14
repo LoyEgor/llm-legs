@@ -74,6 +74,7 @@ function loadState(name) {
     auth: snapshot.auth && typeof snapshot.auth === 'object' ? snapshot.auth : undefined,
     forcedUntil: previous?.forcedUntil || persisted?.forcedUntil || 0,
     forcedReason: previous?.forcedReason || persisted?.forcedReason,
+    forcedScope: previous?.forcedScope || persisted?.forcedScope,
     scopedWalls: previous?.scopedWalls || persisted?.scopedWalls || {},
     scopedWallReason: previous?.scopedWallReason || persisted?.scopedWallReason || {},
     authFailedUntil: previous?.authFailedUntil || persisted?.authFailedUntil || 0,
@@ -91,7 +92,11 @@ function loadDaemonState() {
     const accountsOut = {};
     for (const [name, entry] of Object.entries(raw.accounts || {})) {
       const kept = {};
-      if (entry.forcedUntil > now) { kept.forcedUntil = entry.forcedUntil; if (entry.forcedReason) kept.forcedReason = entry.forcedReason; }
+      if (entry.forcedUntil > now) {
+        kept.forcedUntil = entry.forcedUntil;
+        if (entry.forcedReason) kept.forcedReason = entry.forcedReason;
+        if (entry.forcedScope) kept.forcedScope = entry.forcedScope;
+      }
       if (entry.authFailedUntil > now) kept.authFailedUntil = entry.authFailedUntil;
       const scopedWalls = {};
       const scopedWallReason = {};
@@ -194,6 +199,7 @@ function scanAccounts() {
       refreshTelemetry(name);
     }
   }
+  pruneExpiredState();
   accounts = names;
   if (current && (!accounts.includes(current) || disabledEvicts(current))) {
     if (pinnedAt.delete(current)) persistDaemonState();
@@ -216,10 +222,11 @@ function effective(name) {
 }
 
 function pick(excluded = new Set()) {
+  const now = Math.floor(Date.now() / 1000);
   const available = accounts
     .filter((name) => !excluded.has(name) && !disabled.has(name))
     .map((name) => ({ name, ...effective(name) }))
-    .filter((entry) => !entry.walled)
+    .filter((entry) => !entry.walled && !(entry.scopedWalls.general > now))
     .sort((a, b) => a.h5 - b.h5 || a.wk - b.wk || a.name.localeCompare(b.name));
   return available[0]?.name || null;
 }
@@ -228,10 +235,11 @@ function eligibleForScope(name, scope, excluded = new Set()) {
   if (!name || excluded.has(name) || !accounts.includes(name)) return false;
   if (disabled.has(name) && (name !== current || disabledEvicts(name))) return false;
   const state = effective(name);
-  if (state.walled) return false;
+  const now = Math.floor(Date.now() / 1000);
+  if (state.authFailedUntil > now || state.h5 >= 97 || state.wk >= 99) return false;
+  if (state.forcedUntil > now && (scope === 'general' || state.forcedScope !== 'general')) return false;
+  if (state.scopedWalls[scope] > now) return false;
   if (scope === 'fable') {
-    const now = Math.floor(Date.now() / 1000);
-    if (state.scopedWalls.fable > now) return false;
     if (fableTrustworthy(state) && number(state.fable?.resets_at) > now && number(state.fable?.used_percentage) >= 99) return false;
   }
   return true;
@@ -259,12 +267,14 @@ function nextEligibleAt(scope) {
     const state = effective(name);
     let free = Math.max(
       state.authFailedUntil > now ? state.authFailedUntil : 0,
-      state.forcedUntil > now ? state.forcedUntil : 0,
       state.h5 >= 97 ? state.hreset : 0,
       state.wk >= 99 ? state.wreset : 0
     );
+    if (state.forcedUntil > now && (scope === 'general' || state.forcedScope !== 'general')) {
+      free = Math.max(free, state.forcedUntil);
+    }
+    if (state.scopedWalls[scope] > now) free = Math.max(free, state.scopedWalls[scope]);
     if (scope === 'fable') {
-      if (state.scopedWalls.fable > now) free = Math.max(free, state.scopedWalls.fable);
       if (fableTrustworthy(state) && number(state.fable?.used_percentage) >= 99 && number(state.fable?.resets_at) > now) {
         free = Math.max(free, number(state.fable.resets_at));
       }
@@ -359,7 +369,11 @@ function persistDaemonState() {
   const accountsOut = {};
   for (const [name, state] of states.entries()) {
     const kept = {};
-    if (state.forcedUntil > now) { kept.forcedUntil = state.forcedUntil; if (state.forcedReason) kept.forcedReason = state.forcedReason; }
+    if (state.forcedUntil > now) {
+      kept.forcedUntil = state.forcedUntil;
+      if (state.forcedReason) kept.forcedReason = state.forcedReason;
+      if (state.forcedScope) kept.forcedScope = state.forcedScope;
+    }
     if (state.authFailedUntil > now) kept.authFailedUntil = state.authFailedUntil;
     const scopedWalls = {};
     const scopedWallReason = {};
@@ -382,6 +396,31 @@ function persistDaemonState() {
     try { fs.unlinkSync(temp); } catch {}
     log(`daemon-state write error message=${error.message}`);
   }
+}
+
+function pruneExpiredState() {
+  const now = Math.floor(Date.now() / 1000);
+  let changed = false;
+  for (const state of states.values()) {
+    if (state.forcedUntil && state.forcedUntil <= now) {
+      state.forcedUntil = 0;
+      delete state.forcedReason;
+      delete state.forcedScope;
+      changed = true;
+    }
+    if (state.authFailedUntil && state.authFailedUntil <= now) {
+      state.authFailedUntil = 0;
+      changed = true;
+    }
+    for (const [scope, until] of Object.entries(state.scopedWalls || {})) {
+      if (until <= now) {
+        delete state.scopedWalls[scope];
+        delete state.scopedWallReason[scope];
+        changed = true;
+      }
+    }
+  }
+  if (changed) persistDaemonState();
 }
 
 function updateFromHeaders(name, headers) {
@@ -451,6 +490,7 @@ function markRejected(name, headers, scope) {
   } else {
     state.forcedUntil = rejectionReset(headers, 300);
     state.forcedReason = hasResetHeader ? 'header' : 'transient';
+    state.forcedScope = 'general';
     logWall(name, scope, state.forcedUntil, hasResetHeader ? 'header' : 'transient');
   }
   persistDaemonState();
@@ -703,7 +743,7 @@ function statusPayload() {
       wk: state.wk,
       hreset: state.hreset,
       wreset: state.wreset,
-      walled: state.walled,
+      walled: state.walled || state.scopedWalls.general > now,
       auth_failed_until: state.authFailedUntil > now ? state.authFailedUntil : 0,
       fable_walled_until: Math.max(state.scopedWalls.fable > now ? state.scopedWalls.fable : 0, snapshotWall)
     };
@@ -785,7 +825,7 @@ function handle(req, res) {
 let seed = '';
 try { seed = fs.readFileSync(stateFile, 'utf8').trim(); } catch {}
 scanAccounts();
-if (seed && accounts.includes(seed) && !disabled.has(seed) && !effective(seed).walled && seed !== current) {
+if (seed && eligibleForScope(seed, 'general') && seed !== current) {
   current = seed;
   persistCurrent();
 }
