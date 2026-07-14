@@ -74,9 +74,10 @@ assert test "$until" -le "$((now + 900))"
 printf '{"alpha":{"attempted_at":%s,"outcome":"429","retry_after_until":%s}}\n' "$now" "$((now + 1800))" >"$oauth_attempts_file"
 assert test "$(oauth_backoff_until alpha)" = "$((now + 1800))"
 printf '{"alpha":{"attempted_at":%s,"outcome":"warming","retry_after_until":0}}\n' "$((now - 179))" >"$oauth_attempts_file"
-assert test "$(oauth_backoff_until alpha)" -gt "$now"
-printf '{"alpha":{"attempted_at":%s,"outcome":"warming","retry_after_until":0}}\n' "$((now - 181))" >"$oauth_attempts_file"
 assert test "$(oauth_backoff_until alpha)" = 0
+assert test "$(oauth_heal_backoff_until alpha)" -gt "$now"
+printf '{"alpha":{"attempted_at":%s,"outcome":"warming","retry_after_until":0}}\n' "$((now - 181))" >"$oauth_attempts_file"
+assert test "$(oauth_heal_backoff_until alpha)" = 0
 
 export CLAUDEB_LOCK_RETRIES=1 CLAUDEB_LOCK_DELAY=0
 printf '{"seed":{"attempted_at":1,"outcome":"failed","retry_after_until":0}}\n' >"$oauth_attempts_file"
@@ -160,14 +161,14 @@ assert lock_acquire "$lockdir"
 lock_release "$lockdir"
 unset CLAUDEB_LOCK_RETRIES CLAUDEB_LOCK_DELAY
 
-# --- heal backoff: revoked blocks ~6h, warm-failed 30m, token-endpoint 429 never gates heal ---
+# --- heal backoff: only warm state gates warm; direct endpoint state never does ---
 now=$(date +%s)
 printf '{"alpha":{"attempted_at":%s,"outcome":"revoked","retry_after_until":0}}\n' "$now" >"$oauth_attempts_file"
-assert test "$(oauth_heal_backoff_until alpha)" -gt "$now"
-printf '{"alpha":{"attempted_at":%s,"outcome":"revoked","retry_after_until":0}}\n' "$((now - 21601))" >"$oauth_attempts_file"
 assert test "$(oauth_heal_backoff_until alpha)" = 0
-printf '{"alpha":{"attempted_at":%s,"outcome":"warm-failed","retry_after_until":0}}\n' "$now" >"$oauth_attempts_file"
+printf '{}' >"$oauth_attempts_file"
+assert oauth_attempt_update alpha warm-failed 0
 assert test "$(oauth_heal_backoff_until alpha)" -gt "$now"
+assert test "$(oauth_backoff_until alpha)" = 0
 printf '{"alpha":{"attempted_at":%s,"outcome":"429","retry_after_until":%s}}\n' "$now" "$((now + 9999))" >"$oauth_attempts_file"
 assert test "$(oauth_heal_backoff_until alpha)" = 0
 
@@ -275,13 +276,108 @@ for command in curl security claude; do
   chmod +x "$FAKE_BIN/$command"
 done
 
-# --- heal_expired: heals disabled accounts too; per-account actionable causes ---
+# --- warm-first heal order and regular probe isolation ---
+EVENT_LOG="$WORK/heal-order.log"
+KEYCHAIN_FRESH="$WORK/keychain-fresh"
+WARM_SUCCEEDS=false
+export EVENT_LOG KEYCHAIN_FRESH WARM_SUCCEEDS
+expired_creds='{"claudeAiOauth":{"refreshToken":"rt-order","accessToken":"at-expired","expiresAt":1,"scopes":["a"]}}'
+fresh_creds='{"claudeAiOauth":{"refreshToken":"rt-fresh","accessToken":"at-fresh","expiresAt":9999999999999,"scopes":["a"]}}'
+cat >"$FAKE_BIN/security" <<EOF
+#!/usr/bin/env bash
+if [ -f '$KEYCHAIN_FRESH' ]; then printf '%s' '$fresh_creds'; else printf '%s' '$expired_creds'; fi
+EOF
+cat >"$FAKE_BIN/claude" <<'EOF'
+#!/usr/bin/env bash
+printf 'warm\n' >>"$EVENT_LOG"
+if [ "$WARM_SUCCEEDS" = true ]; then touch "$KEYCHAIN_FRESH"; exit 0; fi
+exit 1
+EOF
+cat >"$FAKE_BIN/curl" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *'/v1/oauth/token'*)
+    printf 'token\n' >>"$EVENT_LOG"
+    printf '{"error":"rate_limited"}\n429'
+    ;;
+  *'/api/oauth/usage'*)
+    printf 'usage\n' >>"$EVENT_LOG"
+    output=''
+    previous=''
+    for argument in "$@"; do
+      if [ "$previous" = -o ]; then output="$argument"; break; fi
+      previous="$argument"
+    done
+    printf '%s' '{"five_hour":{"utilization":1,"resets_at":null},"seven_day":{"utilization":2,"resets_at":null},"limits":[{"kind":"weekly_scoped","scope":{"model":{"display_name":"Fable"}},"percent":3,"resets_at":null}]}' >"$output"
+    printf '200'
+    ;;
+  *) exit 97 ;;
+esac
+EOF
+chmod +x "$FAKE_BIN/security" "$FAKE_BIN/claude" "$FAKE_BIN/curl"
+
+(
+  account_names() { printf 'alpha\n'; }
+  order_dir="$WORK/heal-order-success"
+  mkdir -p "$order_dir"
+  : >"$EVENT_LOG"
+  rm -f "$KEYCHAIN_FRESH"
+  printf '{}' >"$oauth_attempts_file"
+  WARM_SUCCEEDS=true
+  export WARM_SUCCEEDS
+  probe_accounts "$order_dir" false false true
+  assert test "$(cat "$order_dir/alpha.display")" = live
+  assert test "$(sed -n '1p' "$EVENT_LOG")" = warm
+  assert grep -qx usage "$EVENT_LOG"
+  assert_fails grep -qx token "$EVENT_LOG"
+)
+
+(
+  account_names() { printf 'alpha\n'; }
+  order_dir="$WORK/heal-order-fallback"
+  mkdir -p "$order_dir"
+  : >"$EVENT_LOG"
+  rm -f "$KEYCHAIN_FRESH"
+  printf '{}' >"$oauth_attempts_file"
+  WARM_SUCCEEDS=false
+  export WARM_SUCCEEDS
+  probe_accounts "$order_dir" false false true
+  assert test "$(sed -n '1p' "$EVENT_LOG")" = warm
+  assert test "$(sed -n '2p' "$EVENT_LOG")" = token
+  assert test "$(jq -r '.auth.cause' "$limits_dir/alpha.json")" = 'warm failed, token refresh backoff 15m'
+)
+
+(
+  account_names() { printf 'alpha\n'; }
+  order_dir="$WORK/regular-probe"
+  mkdir -p "$order_dir"
+  : >"$EVENT_LOG"
+  rm -f "$KEYCHAIN_FRESH"
+  printf '{}' >"$oauth_attempts_file"
+  probe_accounts "$order_dir" false false false
+  assert test "$(sed -n '1p' "$EVENT_LOG")" = token
+  assert_fails grep -qx warm "$EVENT_LOG"
+)
+
+for command in curl security claude; do
+  printf '#!/usr/bin/env bash\nexit 97\n' >"$FAKE_BIN/$command"
+  chmod +x "$FAKE_BIN/$command"
+done
+
+# --- heal_expired: disabled accounts and actionable fallback causes ---
+WARM_CALLS="$WORK/warm-calls"
 warm_accounts() {
+  printf '%s\n' "$1" >>"$WARM_CALLS"
   case "$1" in
-    alpha) return 0 ;;
-    beta) echo "beta: failed (token endpoint still 429)"; return 1 ;;
-    *) echo "$1: failed (session exit 1)"; return 1 ;;
+    alpha) oauth_attempt_update "$1" success 0; return 0 ;;
+    *) oauth_attempt_update "$1" warm-failed 0; return 1 ;;
   esac
+}
+probe_one() {
+  case "$1" in
+    beta) oauth_attempt_update "$1" 429 "$((now + 720))" ;;
+  esac
+  printf 'no-spend 0 401\n' >"$2/$1.result"
 }
 account_names() { printf 'alpha\nbeta\ngamma\ndelta\n'; }
 heal_dir="$WORK/heal"
@@ -290,10 +386,12 @@ for n in alpha beta gamma delta; do printf 'auth!\n' >"$heal_dir/$n.display"; pr
 printf 'alpha\n' >"$disabled_file"
 now=$(date +%s)
 printf '{"delta":{"attempted_at":%s,"outcome":"revoked","retry_after_until":0}}\n' "$now" >"$oauth_attempts_file"
+: >"$WARM_CALLS"
 heal_expired "$heal_dir"
 assert test "$(cat "$heal_dir/alpha.display")" = live
-assert test "$(jq -r '.auth.cause' "$limits_dir/beta.json")" = 'warm 429'
-assert test "$(jq -r '.auth.cause' "$limits_dir/gamma.json")" = 'warm failed'
+assert test "$(jq -r '.auth.cause' "$limits_dir/beta.json")" = 'warm failed, token refresh backoff 12m'
+assert test "$(jq -r '.auth.cause' "$limits_dir/gamma.json")" = 'warm failed, token refresh failed'
 assert test "$(jq -r '.auth.cause' "$limits_dir/delta.json")" = 'needs re-login'
+assert grep -qx delta "$WARM_CALLS"
 
-echo "PASS: $asserts asserts; reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth backoff and lock behavior, reserved names, disabled-account timeline, out-of-rotation profile launch proceeds direct (proxy leaks stripped), generic lock contention/stale-retake, heal backoff (revoked 6h, warm-failed 30m, token-429 never gates), oauth_refresh lock release, revocation escape, and concurrent-rotation adoption, heal_expired covers disabled accounts with per-account causes"
+echo "PASS: $asserts asserts; reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth backoff and lock behavior, reserved names, disabled-account timeline, out-of-rotation profile launch proceeds direct (proxy leaks stripped), generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent-rotation adoption, warm-first heal ordering and fallback, regular probes never warm, and heal_expired covers disabled accounts with actionable causes"
