@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# Switch the CURRENT Claude Code chat to another claudeb profile without the
+# manual exit/relogin/resume dance. Because a claude process cannot re-exec
+# itself onto a different account, the actual relaunch has to happen AFTER this
+# chat's claude exits — from an outside actor. This script only resolves the
+# target (profile + session id + the claude pid to wait on) and hands it to a
+# Hammerspoon one-shot (ClaudeChatSwitch.switchChat), which waits for that pid
+# to die and then types `claudeb profile <profile> --resume <session-id>` into
+# Terminal. The single manual step left to the user is exiting the chat.
+set -u
+
+PROFILES_DIR="$HOME/.claude-profiles"
+
+die() { printf 'claude-chat-switch: %s\n' "$*" >&2; exit 1; }
+
+usage() {
+  cat >&2 <<'EOF'
+usage: claude-chat-switch <profile> [session-id]
+
+  <profile>     an existing account under ~/.claude-profiles (NOT "main")
+  [session-id]  optional; defaults to $CLAUDE_CODE_SESSION_ID, else the newest
+                transcript for the current directory's project
+
+Arms a Hammerspoon one-shot that relaunches THIS chat under <profile> once you
+exit it (Ctrl+C twice or /exit). Nothing is killed for you.
+EOF
+  exit 2
+}
+
+list_profiles() {
+  local d
+  for d in "$PROFILES_DIR"/*/; do
+    [ -d "$d" ] || continue
+    printf '  %s\n' "$(basename "$d")"
+  done
+}
+
+# claudeb's own reserved words (bin/claudeb reserved_name) plus "main", which is
+# not a claudeb profile at all (it maps to ~/.claude itself, never an isolated
+# account dir). Keep this list in sync with reserved_name in bin/claudeb.
+is_reserved() {
+  case "$1" in
+    main|help|add|use|enable|disable|pick|accounts|status|st|daemon|profile|warm) return 0 ;;
+    .*|*/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# claude derives a project's transcript directory by replacing every character
+# that is not a letter or digit in the REALPATH of the cwd with a hyphen. /tmp
+# resolves to /private/tmp, so realpath (not $PWD) is what matches on disk.
+project_slug() {
+  local real
+  real=$(cd "$1" 2>/dev/null && pwd -P) || real="$1"
+  printf '%s' "$real" | sed 's/[^A-Za-z0-9]/-/g'
+}
+
+# Nearest claude ancestor of this script — the process that owns the chat and
+# whose exit is the user "leaving". Walk the ppid chain; stop at the first
+# process whose command basename is exactly "claude".
+find_claude_pid() {
+  local pid="$PPID" comm guard=0
+  while [ -n "$pid" ] && [ "$pid" != "0" ] && [ "$pid" != "1" ] && [ "$guard" -lt 40 ]; do
+    comm=$(ps -o comm= -p "$pid" 2>/dev/null)
+    [ -n "$comm" ] || return 1
+    case "${comm##*/}" in
+      claude) printf '%s' "$pid"; return 0 ;;
+    esac
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    guard=$((guard + 1))
+  done
+  return 1
+}
+
+[ $# -ge 1 ] || usage
+case "$1" in -h|--help) usage ;; esac
+
+profile="$1"
+session_id="${2:-}"
+
+is_reserved "$profile" && die "'$profile' is not a valid profile name (reserved; \"main\" is not a claudeb profile)."
+if [ ! -d "$PROFILES_DIR/$profile" ]; then
+  { printf "claude-chat-switch: no profile '%s' under %s\n" "$profile" "$PROFILES_DIR"
+    printf 'existing profiles:\n'; list_profiles; } >&2
+  exit 1
+fi
+
+if [ -z "$session_id" ]; then
+  session_id="${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}"
+fi
+
+if [ -z "$session_id" ]; then
+  slug=$(project_slug "$PWD")
+  proj_dir="$HOME/.claude/projects/$slug"
+  if [ -d "$proj_dir" ]; then
+    session_file=$(ls -t "$proj_dir"/*.jsonl 2>/dev/null | head -1)
+    [ -n "$session_file" ] && session_id=$(basename "$session_file" .jsonl)
+  fi
+fi
+
+[ -n "$session_id" ] || die "could not determine a session id (not in \$CLAUDE_CODE_SESSION_ID and no transcript for this directory). Pass one explicitly: claude-chat-switch $profile <session-id>"
+
+# Guard the charset before embedding into the hs -c lua string. Both are already
+# constrained by their sources; this makes the string interpolation injection-safe.
+case "$session_id" in *[!A-Za-z0-9._-]*) die "session id has unexpected characters: $session_id" ;; esac
+case "$profile"    in *[!A-Za-z0-9._-]*) die "profile name has unexpected characters: $profile" ;; esac
+
+command -v hs >/dev/null 2>&1 || die "'hs' (Hammerspoon CLI) not on PATH; is Hammerspoon running?"
+
+claude_pid=$(find_claude_pid) || die "could not locate the claude process for this chat (no 'claude' ancestor)."
+
+hs_out=$(hs -c "ClaudeChatSwitch.switchChat(\"$profile\", \"$session_id\", $claude_pid)" 2>&1)
+hs_rc=$?
+if [ "$hs_rc" -ne 0 ] || printf '%s' "$hs_out" | grep -qi 'error\|nil value\|not found'; then
+  die "could not arm Hammerspoon: ${hs_out:-unknown error}"
+fi
+
+printf 'claude-chat-switch: armed. Exit this chat (Ctrl+C twice or /exit) and it will reopen under profile "%s" — same conversation (session %s), resumed by: claudeb profile %s --resume %s\n' \
+  "$profile" "$session_id" "$profile" "$session_id"
