@@ -333,11 +333,23 @@ printf '%s\n' "$*" >>"$OAUTH_CLAUDE_SENTINEL"
 printf '%s\n' '{"result":"usage"}'
 EOF
 chmod +x "$OAUTH_BIN/security" "$OAUTH_BIN/curl" "$OAUTH_BIN/claude"
+# A "failed" record from the direct-refresh path (curl against the OAuth token
+# endpoint) must never gate the zero-cost warm fallback — heal proceeds anyway,
+# since warm refreshes through the `claude` CLI's own auth, not that curl call.
 printf '{"stuck":{"attempted_at":%s,"outcome":"failed","retry_after_until":0}}\n' "$now" >"$OAUTH_STORE/oauth-attempts.json"
 OAUTH_SENTINEL="$OAUTH_SENTINEL" OAUTH_CLAUDE_SENTINEL="$OAUTH_CLAUDE_SENTINEL" PATH="$OAUTH_BIN:$PATH" HOME="$OAUTH_HOME" CLAUDEB_DIR="$OAUTH_STORE" \
   bash "$CLAUDEB_BIN" accounts --no-spend --heal >/dev/null 2>"$WORK/oauth-backoff.err" || true
-[ ! -e "$OAUTH_SENTINEL" ] || fail "recent failed OAuth attempt was not throttled"
-grep -q 'warm backoff active' "$WORK/oauth-backoff.err" || fail "self-heal backoff skip was silent"
+grep -q -- '-p /usage --output-format json' "$OAUTH_CLAUDE_SENTINEL" || fail "a direct-refresh failure record blocked the zero-cost warm fallback"
+
+# A recent warm-failed outcome (warm's own bookkeeping) DOES throttle repeat
+# heal attempts, at most once per account per 30 minutes, and records why.
+rm -f "$OAUTH_STORE/oauth-attempts.json" "$OAUTH_SENTINEL" "$OAUTH_CLAUDE_SENTINEL"
+printf '{"stuck":{"attempted_at":%s,"outcome":"warm-failed","retry_after_until":0}}\n' "$now" >"$OAUTH_STORE/oauth-attempts.json"
+OAUTH_SENTINEL="$OAUTH_SENTINEL" OAUTH_CLAUDE_SENTINEL="$OAUTH_CLAUDE_SENTINEL" PATH="$OAUTH_BIN:$PATH" HOME="$OAUTH_HOME" CLAUDEB_DIR="$OAUTH_STORE" \
+  bash "$CLAUDEB_BIN" accounts --no-spend --heal >/dev/null 2>/dev/null || true
+[ ! -e "$OAUTH_CLAUDE_SENTINEL" ] || fail "a recent warm-failed outcome was not throttled to once per 30 minutes"
+jq -e '.auth.cause | test("^backoff [0-9]+m$")' "$OAUTH_STORE/limits/stuck.json" >/dev/null \
+  || fail "throttled heal did not record a per-account backoff cause"
 
 rm -f "$OAUTH_STORE/oauth-attempts.json" "$OAUTH_SENTINEL" "$OAUTH_CLAUDE_SENTINEL"
 OAUTH_EXPIRES_AT="$(((now + 3600) * 1000))" OAUTH_USAGE_HTTP=403 OAUTH_SENTINEL="$OAUTH_SENTINEL" OAUTH_CLAUDE_SENTINEL="$OAUTH_CLAUDE_SENTINEL" PATH="$OAUTH_BIN:$PATH" HOME="$OAUTH_HOME" CLAUDEB_DIR="$OAUTH_STORE" \

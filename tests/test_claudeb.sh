@@ -146,4 +146,88 @@ for command in curl security claude; do
   chmod +x "$FAKE_BIN/$command"
 done
 
-echo "PASS: $asserts asserts; reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth backoff and lock behavior, reserved names, disabled-account timeline, out-of-rotation profile launch proceeds direct (proxy leaks stripped)"
+# --- generic lock: contention, release, stale retake ---
+export CLAUDEB_LOCK_RETRIES=1 CLAUDEB_LOCK_DELAY=0
+lockdir="$WORK/mylock"
+assert lock_acquire "$lockdir"
+assert test -d "$lockdir"
+assert_fails lock_acquire "$lockdir"
+lock_release "$lockdir"
+assert test ! -d "$lockdir"
+mkdir "$lockdir"
+touch -t 202001010000 "$lockdir"
+assert lock_acquire "$lockdir"
+lock_release "$lockdir"
+unset CLAUDEB_LOCK_RETRIES CLAUDEB_LOCK_DELAY
+
+# --- heal backoff: revoked blocks ~6h, warm-failed 30m, token-endpoint 429 never gates heal ---
+now=$(date +%s)
+printf '{"alpha":{"attempted_at":%s,"outcome":"revoked","retry_after_until":0}}\n' "$now" >"$oauth_attempts_file"
+assert test "$(oauth_heal_backoff_until alpha)" -gt "$now"
+printf '{"alpha":{"attempted_at":%s,"outcome":"revoked","retry_after_until":0}}\n' "$((now - 21601))" >"$oauth_attempts_file"
+assert test "$(oauth_heal_backoff_until alpha)" = 0
+printf '{"alpha":{"attempted_at":%s,"outcome":"warm-failed","retry_after_until":0}}\n' "$now" >"$oauth_attempts_file"
+assert test "$(oauth_heal_backoff_until alpha)" -gt "$now"
+printf '{"alpha":{"attempted_at":%s,"outcome":"429","retry_after_until":%s}}\n' "$now" "$((now + 9999))" >"$oauth_attempts_file"
+assert test "$(oauth_heal_backoff_until alpha)" = 0
+
+# --- oauth_refresh: single-use refresh token races and revocation ---
+creds='{"claudeAiOauth":{"refreshToken":"rt-old","accessToken":"at","scopes":["a"]}}'
+cat >"$FAKE_BIN/security" <<EOF
+#!/usr/bin/env bash
+printf '%s' '$creds'
+EOF
+cat >"$FAKE_BIN/curl" <<'EOF'
+#!/usr/bin/env bash
+printf '{"error":"invalid_grant"}\n400'
+EOF
+chmod +x "$FAKE_BIN/security" "$FAKE_BIN/curl"
+printf '{}' >"$oauth_attempts_file"
+if got=$(oauth_refresh alpha svc "$creds"); then rc=0; else rc=$?; fi
+assert test "$rc" -ne 0
+assert test "$(oauth_backoff_outcome alpha)" = revoked
+assert test ! -d "$oauth_attempts_file.rl.alpha"
+
+# a concurrent holder of the per-account refresh lock: adopt their fresher token,
+# never POST the already-consumed one, never release the lock we do not own.
+export CLAUDEB_LOCK_RETRIES=1 CLAUDEB_LOCK_DELAY=0
+newcreds='{"claudeAiOauth":{"refreshToken":"rt-new","accessToken":"at2"}}'
+cat >"$FAKE_BIN/security" <<EOF
+#!/usr/bin/env bash
+printf '%s' '$newcreds'
+EOF
+mkdir "$oauth_attempts_file.rl.alpha"
+printf '{}' >"$oauth_attempts_file"
+if got=$(oauth_refresh alpha svc "$creds"); then rc=0; else rc=$?; fi
+assert test "$rc" -eq 0
+assert test "$got" = "$newcreds"
+assert test -d "$oauth_attempts_file.rl.alpha"
+rmdir "$oauth_attempts_file.rl.alpha"
+unset CLAUDEB_LOCK_RETRIES CLAUDEB_LOCK_DELAY
+for command in curl security claude; do
+  printf '#!/usr/bin/env bash\nexit 97\n' >"$FAKE_BIN/$command"
+  chmod +x "$FAKE_BIN/$command"
+done
+
+# --- heal_expired: heals disabled accounts too; per-account actionable causes ---
+warm_accounts() {
+  case "$1" in
+    alpha) return 0 ;;
+    beta) echo "beta: failed (token endpoint still 429)"; return 1 ;;
+    *) echo "$1: failed (session exit 1)"; return 1 ;;
+  esac
+}
+account_names() { printf 'alpha\nbeta\ngamma\ndelta\n'; }
+heal_dir="$WORK/heal"
+mkdir -p "$heal_dir"
+for n in alpha beta gamma delta; do printf 'auth!\n' >"$heal_dir/$n.display"; printf '{}' >"$limits_dir/$n.json"; done
+printf 'alpha\n' >"$disabled_file"
+now=$(date +%s)
+printf '{"delta":{"attempted_at":%s,"outcome":"revoked","retry_after_until":0}}\n' "$now" >"$oauth_attempts_file"
+heal_expired "$heal_dir"
+assert test "$(cat "$heal_dir/alpha.display")" = live
+assert test "$(jq -r '.auth.cause' "$limits_dir/beta.json")" = 'warm 429'
+assert test "$(jq -r '.auth.cause' "$limits_dir/gamma.json")" = 'warm failed'
+assert test "$(jq -r '.auth.cause' "$limits_dir/delta.json")" = 'needs re-login'
+
+echo "PASS: $asserts asserts; reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth backoff and lock behavior, reserved names, disabled-account timeline, out-of-rotation profile launch proceeds direct (proxy leaks stripped), generic lock contention/stale-retake, heal backoff (revoked 6h, warm-failed 30m, token-429 never gates), oauth_refresh revocation and lock-race adoption, heal_expired covers disabled accounts with per-account causes"

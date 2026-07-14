@@ -473,10 +473,11 @@ if [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
       (if $current.auth then {auth:$current.auth} else {} end) +
       (if $current.weekly then {weekly:$current.weekly} else {} end) +
       (if $current.fable then {fable:$current.fable} else {} end)) as $claude |
-      {claude:$claude,auth_failures:([$accounts[] | select(.auth.status? == "expired") | .account] | join(", "))}')
+      {claude:$claude,auth_failures:([$accounts[] | select(.auth.status? == "expired") |
+        (.account + " auth" + (if (.auth.cause? // "") == "" then "" else " (" + .auth.cause + ")" end))] | join(", "))}')
     claude=$(jq -c .claude <<<"$claude_bundle")
     auth_failures=$(jq -r .auth_failures <<<"$claude_bundle")
-    if [ -n "$auth_failures" ]; then claude_refresh_error="$auth_failures auth"; fi
+    if [ -n "$auth_failures" ]; then claude_refresh_error="$auth_failures"; fi
   fi
 else
   claude_last="$HOME/.claude/statusline-last.json"

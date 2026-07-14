@@ -27,6 +27,30 @@ file_mtime() {
   stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null
 }
 
+lock_acquire() {
+  local lock="$1" tries=0 now mt
+  local max="${CLAUDEB_LOCK_RETRIES:-10}" delay="${CLAUDEB_LOCK_DELAY:-0.2}"
+  [[ "$max" =~ ^[1-9][0-9]*$ ]] || max=10
+  while ! mkdir "$lock" 2>/dev/null; do
+    tries=$((tries + 1))
+    if [ "$tries" -ge "$max" ]; then
+      now=$(date +%s) || return 1
+      mt=$(file_mtime "$lock" 2>/dev/null) || mt="$now"
+      if [[ "$mt" =~ ^[0-9]+$ ]] && [ "$((now - mt))" -gt 30 ]; then
+        rm -rf "$lock" 2>/dev/null && continue
+      fi
+      return 1
+    fi
+    sleep "$delay" 2>/dev/null || return 1
+  done
+  return 0
+}
+
+lock_release() {
+  [ -n "$1" ] || return 0
+  rmdir "$1" 2>/dev/null || true
+}
+
 account_data() {
   local name="$1" file="$limits_dir/$1.json" now modified age
   now=$(date +%s)
@@ -252,14 +276,14 @@ merge_usage() {
 }
 
 mark_auth() {
-  local name="$1" status="$2" file="$limits_dir/$1.json" tmp cached='{}'
+  local name="$1" status="$2" cause="${3:-}" file="$limits_dir/$1.json" tmp cached='{}'
   mkdir -p "$limits_dir"
   tmp="$limits_dir/.$name.json.auth.$$"
   if [ -r "$file" ] && jq -e 'type == "object"' "$file" >/dev/null 2>&1; then
     cached=$(jq -c . "$file")
   fi
-  if jq -cn --argjson old "$cached" --argjson now "$(date +%s)" --arg status "$status" \
-    '$old + {auth: {status: $status, checked_at: $now}}' > "$tmp" 2>/dev/null; then
+  if jq -cn --argjson old "$cached" --argjson now "$(date +%s)" --arg status "$status" --arg cause "$cause" \
+    '$old + {auth: ({status: $status, checked_at: $now} + (if $cause == "" then {} else {cause: $cause} end))}' > "$tmp" 2>/dev/null; then
     mv "$tmp" "$file"
   else
     rm -f "$tmp"
@@ -318,15 +342,34 @@ oauth_backoff_until() {
 
 oauth_warm_backoff_until() {
   local name="$1" mode="$2" now
-  if [ "$mode" = all ]; then
-    oauth_backoff_until "$name"
-    return
-  fi
+  case "$mode" in
+    all) oauth_backoff_until "$name"; return ;;
+    heal) oauth_heal_backoff_until "$name"; return ;;
+  esac
   now=$(date +%s)
   jq -r --arg name "$name" --argjson now "$now" '
     .[$name] // {} |
     if (.outcome // "") == "429" and ((.retry_after_until // 0) > $now)
     then .retry_after_until else 0 end' "$oauth_attempts_file" 2>/dev/null || printf '0'
+}
+
+# The auto-heal path (probe_accounts --heal) warms through the `claude` CLI's
+# own OAuth refresh, not the curl-based oauth_refresh() below — so a 429/failed
+# record left by a direct oauth_refresh() attempt must never gate it; only
+# warm's own outcomes ("warm-failed", "warming") throttle repeat heal attempts,
+# capped loosely (30 min) since warm itself is zero-cost.
+oauth_heal_backoff_until() {
+  local name="$1" now
+  now=$(date +%s)
+  jq -r --arg name "$name" --argjson now "$now" '
+    .[$name] // {} |
+    if (.outcome // "") == "revoked" and ($now - (.attempted_at // 0)) < 21600
+    then (.attempted_at + 21600)
+    elif (.outcome // "") == "warm-failed" and ($now - (.attempted_at // 0)) < 1800
+    then (.attempted_at + 1800)
+    elif (.outcome // "") == "warming" and ($now - (.attempted_at // 0)) < 180
+    then (.attempted_at + 180)
+    else 0 end' "$oauth_attempts_file" 2>/dev/null || printf '0'
 }
 
 oauth_backoff_outcome() {
@@ -359,7 +402,37 @@ keychain_write() {
 # previous JSON is restored on any mismatch.
 oauth_refresh() {
   local name="$1" service="$2" prev="$3" body response new_creds readback headers http rc=0 retry='' retry_until=0
+  local prev_rt current current_rt rlock=''
   oauth_attempt_begin "$name" || return 1
+  prev_rt=$(printf '%s' "$prev" | jq -r '.claudeAiOauth.refreshToken // empty' 2>/dev/null) || prev_rt=''
+  # Anthropic rotates (single-uses) the refresh token on every grant, so two
+  # concurrent refreshers POSTing the same $prev_rt race: one wins, the other's
+  # token is already consumed and comes back 429/invalid. Serialize per account.
+  rlock="$oauth_attempts_file.rl.$(printf '%s' "$name" | LC_ALL=C tr -c 'A-Za-z0-9._-' '_')"
+  if ! lock_acquire "$rlock"; then
+    rlock=''
+    current=$(security find-generic-password -s "$service" -w 2>/dev/null) || current=''
+    current_rt=$(printf '%s' "$current" | jq -r '.claudeAiOauth.refreshToken // empty' 2>/dev/null) || current_rt=''
+    if [ -n "$current" ] && [ -n "$prev_rt" ] && [ "$current_rt" != "$prev_rt" ]; then
+      oauth_attempt_update "$name" success
+      printf '%s' "$current"
+      return 0
+    fi
+    return 1
+  fi
+  trap 'lock_release "$rlock"' RETURN
+  current=$(security find-generic-password -s "$service" -w 2>/dev/null) || current=''
+  current_rt=$(printf '%s' "$current" | jq -r '.claudeAiOauth.refreshToken // empty' 2>/dev/null) || current_rt=''
+  if [ -n "$current" ] && [ -n "$prev_rt" ] && [ "$current_rt" != "$prev_rt" ]; then
+    # A concurrent caller (another probe, a live profile session) already
+    # rotated this account past $prev; adopt its fresher value instead of
+    # racing the server with an already-consumed refresh token.
+    oauth_attempt_update "$name" success
+    printf '%s' "$current"
+    current=''
+    return 0
+  fi
+  current=''
   body=$(printf '%s' "$prev" | jq -c --arg client_id "$oauth_client_id" '
     .claudeAiOauth as $c |
     ($c.refreshToken | select(type == "string" and length > 0)) as $rt |
@@ -378,6 +451,10 @@ oauth_refresh() {
       if [[ "$retry" =~ ^[0-9]+$ ]]; then retry_until=$(($(date +%s) + retry)); fi
       printf 'claudeb: %s: OAuth token endpoint returned 429%s\n' "$name" "$([ -n "$retry" ] && printf ' (retry-after: %s)' "$retry")" >&2
       oauth_attempt_update "$name" 429 "$retry_until"
+    elif printf '%s' "$response" | grep -q invalid_grant; then
+      # Refresh token revoked server-side (re-login elsewhere, manual revoke).
+      # No amount of retrying or warming recovers this without a browser login.
+      oauth_attempt_update "$name" revoked "$(($(date +%s) + 21600))"
     else
       oauth_attempt_update "$name" failed
     fi
@@ -399,6 +476,18 @@ oauth_refresh() {
        else . end)' 2>/dev/null) || return 1
   response=""
   [ -n "$new_creds" ] || { oauth_attempt_update "$name" failed; return 1; }
+  current=$(security find-generic-password -s "$service" -w 2>/dev/null) || current=''
+  current_rt=$(printf '%s' "$current" | jq -r '.claudeAiOauth.refreshToken // empty' 2>/dev/null) || current_rt=''
+  if [ -n "$current" ] && [ "$current_rt" != "$prev_rt" ]; then
+    # Rotated by someone else while our POST was in flight; our new_creds is
+    # derived from an already-superseded refresh token — discard it and adopt
+    # theirs instead of clobbering a fresher, already-verified rotation.
+    oauth_attempt_update "$name" success
+    printf '%s' "$current"
+    current=''
+    return 0
+  fi
+  current=''
   keychain_write "$service" "$new_creds" || true
   readback=$(security find-generic-password -s "$service" -w 2>/dev/null) || readback=""
   if [ "$readback" != "$new_creds" ]; then
@@ -505,6 +594,36 @@ messages_probe_and_mark() {
   return 1
 }
 
+# Disabled accounts are only out of ROTATION; the user still watches their
+# limits and wants them healed. Warm is zero-cost, so heal them too. The warm
+# path uses the `claude` CLI's own OAuth rotation, not the curl refresh, so a
+# token-endpoint 429/failed record must never gate it (see oauth_heal_backoff_until).
+heal_expired() {
+  local dir="$1" name until_heal now_heal warm_out cause
+  while IFS= read -r name; do
+    [ "$(cat "$dir/$name.display" 2>/dev/null)" = 'auth!' ] || continue
+    until_heal=$(oauth_heal_backoff_until "$name")
+    now_heal=$(date +%s)
+    if [ "$until_heal" -gt "$now_heal" ] 2>/dev/null; then
+      if [ "$(oauth_backoff_outcome "$name")" = revoked ]; then
+        mark_auth "$name" expired "needs re-login"
+      else
+        mark_auth "$name" expired "backoff $(( (until_heal - now_heal + 59) / 60 ))m"
+      fi
+      continue
+    fi
+    if warm_out=$(CLAUDEB_WARM_FREE_ONLY=true CLAUDEB_WARM_BACKOFF_MODE=heal warm_accounts "$name" 2>/dev/null); then
+      printf 'live\n' > "$dir/$name.display"
+    else
+      case "$warm_out" in
+        *429*) cause='warm 429' ;;
+        *) cause='warm failed' ;;
+      esac
+      mark_auth "$name" expired "$cause"
+    fi
+  done < <(account_names)
+}
+
 probe_accounts() {
   local dir="$1" allow_spend="$2" start_windows="${3:-false}" heal="${4:-false}" name pid pids="" source rc http now hreset
   while IFS= read -r name; do
@@ -528,15 +647,7 @@ probe_accounts() {
       printf '!\n' > "$dir/$name.display"
     fi
   done < <(account_names)
-  if [ "$heal" = true ]; then
-    while IFS= read -r name; do
-      is_disabled "$name" && continue
-      [ "$(cat "$dir/$name.display" 2>/dev/null)" = 'auth!' ] || continue
-      if CLAUDEB_WARM_FREE_ONLY=true CLAUDEB_WARM_BACKOFF_MODE=all warm_accounts "$name" >/dev/null; then
-        printf 'live\n' > "$dir/$name.display"
-      fi
-    done < <(account_names)
-  fi
+  [ "$heal" != true ] || heal_expired "$dir"
   [ "$start_windows" = true ] || return 0
   now=$(date +%s)
   while IFS= read -r name; do
