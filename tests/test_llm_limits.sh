@@ -290,6 +290,19 @@ grep -q 'claude/authonly: -/-' <<<"$fresh_plain" || fail "auth-only account miss
 jq -e '(.vendors.claude.refresh_error | contains("authonly") and endswith(" auth"))' <<<"$auth_current" >/dev/null \
   || fail "Claude auth failure was not exposed as vendor refresh_error"
 
+# refresh_error is assembled from post-heal snapshot auth: a still-broken account is
+# named with its cause; a healthy (successfully healed) account never appears.
+CLAUDEB_HEAL="$WORK/claudeb-heal-store"
+mkdir -p "$CLAUDEB_HEAL/limits"
+printf 'healed\n' >"$CLAUDEB_HEAL/.claudeb-state"
+printf '{"five_hour":{"used_percentage":4,"resets_at":%s,"as_of":%s,"origin":"usage"},"auth":{"status":"ok","checked_at":%s}}\n' \
+  "$((now + 5000))" "$now" "$now" >"$CLAUDEB_HEAL/limits/healed.json"
+printf '{"five_hour":{"used_percentage":9,"resets_at":%s,"as_of":%s,"origin":"usage"},"auth":{"status":"expired","checked_at":%s,"cause":"warm failed, token refresh backoff 15m"}}\n' \
+  "$((now + 5000))" "$now" "$now" >"$CLAUDEB_HEAL/limits/stuck.json"
+heal_json=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_HEAL" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "heal-contract collection failed"
+jq -e '.vendors.claude.refresh_error == "stuck auth (warm failed, token refresh backoff 15m)"' <<<"$heal_json" >/dev/null \
+  || fail "refresh_error must name only the still-broken account and carry its cause"
+
 CLAUDEB_BIN="$ROOT/bin/claudeb"
 OAUTH_HOME="$WORK/oauth-home"
 OAUTH_STORE="$WORK/oauth-store"
@@ -420,11 +433,18 @@ WARM_SENTINEL="$WARM_SENTINEL" PATH="$WARM_BIN:$PATH" HOME="$WARM_HOME" CLAUDEB_
   bash "$CLAUDEB_BIN" warm two >/dev/null || fail "explicit disabled warm fixture failed"
 grep -q '^two|' "$WARM_SENTINEL" || fail "explicit warm did not include a disabled account"
 : >"$WARM_SENTINEL"
+# By default a failed /usage warm reports and stops; it must never spend on the paid probe.
 WARM_FAIL_USAGE=1 WARM_SENTINEL="$WARM_SENTINEL" PATH="$WARM_BIN:$PATH" HOME="$WARM_HOME" CLAUDEB_DIR="$WARM_STORE" \
-  bash "$CLAUDEB_BIN" warm one >/dev/null || fail "warm paid-fallback fixture failed"
-[ "$(wc -l <"$WARM_SENTINEL" | tr -d ' ')" -eq 2 ] || fail "failed /usage did not produce exactly one fallback"
-sed -n '1p' "$WARM_SENTINEL" | grep -q -- '-p /usage --output-format json' || fail "fallback fixture did not try /usage first"
-sed -n '2p' "$WARM_SENTINEL" | grep -q -- '-p ok --model haiku --output-format json' || fail "failed /usage did not use the minimal paid fallback"
+  bash "$CLAUDEB_BIN" warm one >/dev/null 2>/dev/null && fail "failed /usage warm unexpectedly succeeded by default"
+[ "$(wc -l <"$WARM_SENTINEL" | tr -d ' ')" -eq 1 ] || fail "default warm spent on the paid fallback"
+sed -n '1p' "$WARM_SENTINEL" | grep -q -- '-p /usage --output-format json' || fail "default warm did not try /usage first"
+grep -q -- '-p ok --model haiku' "$WARM_SENTINEL" && fail "default warm must not fire the paid fallback"
+: >"$WARM_SENTINEL"
+# The paid probe runs only behind the explicit opt-in no automated caller sets.
+WARM_FAIL_USAGE=1 CLAUDEB_WARM_ALLOW_PAID=true WARM_SENTINEL="$WARM_SENTINEL" PATH="$WARM_BIN:$PATH" HOME="$WARM_HOME" CLAUDEB_DIR="$WARM_STORE" \
+  bash "$CLAUDEB_BIN" warm one >/dev/null || fail "opt-in warm paid-fallback fixture failed"
+[ "$(wc -l <"$WARM_SENTINEL" | tr -d ' ')" -eq 2 ] || fail "opt-in failed /usage did not produce exactly one fallback"
+sed -n '2p' "$WARM_SENTINEL" | grep -q -- '-p ok --model haiku --output-format json' || fail "opt-in failed /usage did not use the minimal paid fallback"
 : >"$WARM_SENTINEL"
 WARM_USAGE_429=1 WARM_SENTINEL="$WARM_SENTINEL" PATH="$WARM_BIN:$PATH" HOME="$WARM_HOME" CLAUDEB_DIR="$WARM_STORE" \
   bash "$CLAUDEB_BIN" warm one >/dev/null 2>/dev/null && fail "rate-limited warm unexpectedly succeeded"

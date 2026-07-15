@@ -636,49 +636,64 @@ messages_probe_and_mark() {
 # limits and wants them healed. Warm is zero-cost, so heal them too. The warm
 # path uses the `claude` CLI's own OAuth rotation, not the curl refresh, so a
 # token-endpoint 429/failed record must never gate it (see oauth_heal_backoff_until).
+heal_one() {
+  local dir="$1" name="$2" until_heal now_heal warm_out warm_cause cause source rc http until_refresh outcome retry_until warm_gated=false
+  until_heal=$(oauth_heal_backoff_until "$name")
+  now_heal=$(date +%s)
+  if [ "$until_heal" -gt "$now_heal" ] 2>/dev/null; then
+    warm_gated=true
+    warm_cause="warm backoff $(( (until_heal - now_heal + 59) / 60 ))m"
+  else
+    warm_gated=false
+    warm_cause='warm failed'
+  fi
+  if warm_out=$(CLAUDEB_WARM_FREE_ONLY=true CLAUDEB_WARM_BACKOFF_MODE=heal warm_accounts "$name" 2>/dev/null); then
+    printf 'live\n' > "$dir/$name.display"
+    return
+  fi
+  probe_one "$name" "$dir" false true
+  read -r source rc http < "$dir/$name.result"
+  if [ "$source" = usage ] && merge_usage "$name" "$dir/$name.usage"; then
+    printf 'live\n' > "$dir/$name.display"
+    return
+  fi
+  now_heal=$(date +%s)
+  until_refresh=$(oauth_backoff_until "$name")
+  outcome=$(oauth_backoff_outcome "$name")
+  if [ "$outcome" = revoked ]; then
+    cause='needs re-login'
+  elif [ "$warm_gated" = true ]; then
+    retry_until="$until_heal"
+    if [ "$until_refresh" -gt "$now_heal" ] 2>/dev/null && [ "$until_refresh" -lt "$retry_until" ] 2>/dev/null; then
+      retry_until="$until_refresh"
+    fi
+    cause="backoff $(( (retry_until - now_heal + 59) / 60 ))m"
+  elif [ "$until_refresh" -gt "$now_heal" ] 2>/dev/null; then
+    cause="$warm_cause, token refresh backoff $(( (until_refresh - now_heal + 59) / 60 ))m"
+  elif [ "$http" = 401 ] || [ "$http" = 403 ]; then
+    cause="$warm_cause, token refresh failed"
+  else
+    cause="$warm_cause, fallback probe HTTP ${http:-000}"
+  fi
+  mark_auth "$name" expired "$cause"
+}
+
+# Heal every auth-expired account concurrently. Each warm drives a `claude` CLI
+# session capped at 90s; healing sequentially made the whole refresh scale with
+# the number of expired accounts and overrun the collector's 300s bound, which
+# left still-healing accounts marked expired in the snapshot the collector then
+# read — surfacing a refresh_error for accounts that were healing fine.
 heal_expired() {
-  local dir="$1" name until_heal now_heal warm_out warm_cause cause source rc http until_refresh outcome retry_until warm_gated=false
+  local dir="$1" name pid pids=''
   while IFS= read -r name; do
     [ "$(cat "$dir/$name.display" 2>/dev/null)" = 'auth!' ] || continue
-    until_heal=$(oauth_heal_backoff_until "$name")
-    now_heal=$(date +%s)
-    if [ "$until_heal" -gt "$now_heal" ] 2>/dev/null; then
-      warm_gated=true
-      warm_cause="warm backoff $(( (until_heal - now_heal + 59) / 60 ))m"
-    else
-      warm_gated=false
-      warm_cause='warm failed'
-    fi
-    if warm_out=$(CLAUDEB_WARM_FREE_ONLY=true CLAUDEB_WARM_BACKOFF_MODE=heal warm_accounts "$name" 2>/dev/null); then
-      printf 'live\n' > "$dir/$name.display"
-      continue
-    fi
-    probe_one "$name" "$dir" false true
-    read -r source rc http < "$dir/$name.result"
-    if [ "$source" = usage ] && merge_usage "$name" "$dir/$name.usage"; then
-      printf 'live\n' > "$dir/$name.display"
-      continue
-    fi
-    now_heal=$(date +%s)
-    until_refresh=$(oauth_backoff_until "$name")
-    outcome=$(oauth_backoff_outcome "$name")
-    if [ "$outcome" = revoked ]; then
-      cause='needs re-login'
-    elif [ "$warm_gated" = true ]; then
-      retry_until="$until_heal"
-      if [ "$until_refresh" -gt "$now_heal" ] 2>/dev/null && [ "$until_refresh" -lt "$retry_until" ] 2>/dev/null; then
-        retry_until="$until_refresh"
-      fi
-      cause="backoff $(( (retry_until - now_heal + 59) / 60 ))m"
-    elif [ "$until_refresh" -gt "$now_heal" ] 2>/dev/null; then
-      cause="$warm_cause, token refresh backoff $(( (until_refresh - now_heal + 59) / 60 ))m"
-    elif [ "$http" = 401 ] || [ "$http" = 403 ]; then
-      cause="$warm_cause, token refresh failed"
-    else
-      cause="$warm_cause, fallback probe HTTP ${http:-000}"
-    fi
-    mark_auth "$name" expired "$cause"
+    heal_one "$dir" "$name" &
+    pid=$!
+    pids="$pids $pid"
   done < <(account_names)
+  for pid in $pids; do
+    wait "$pid" || true
+  done
 }
 
 probe_accounts() {
@@ -708,6 +723,7 @@ probe_accounts() {
   [ "$heal" != true ] || heal_expired "$dir"
   [ "$start_windows" = true ] || return 0
   now=$(date +%s)
+  local started=''
   while IFS= read -r name; do
     is_disabled "$name" && continue
     case "$(cat "$dir/$name.display" 2>/dev/null)" in
@@ -724,8 +740,32 @@ probe_accounts() {
     hreset=$(jq -r '.five_hour.resets_at // 0' "$limits_dir/$name.json" 2>/dev/null) || hreset=0
     [[ "$hreset" =~ ^[0-9]+$ ]] || hreset=0
     [ "$hreset" -lt "$now" ] || continue
-    messages_probe_and_mark "$name" "$dir" true || true
+    if messages_probe_and_mark "$name" "$dir" true; then started="$started $name"; fi
   done < <(account_names)
+  for name in $started; do
+    reconcile_window "$name" "$dir"
+  done
+}
+
+# The response to the window-opening /v1/messages can carry the just-expired
+# window's reset; a follow-up free usage read returns the new window's
+# authoritative resets_at. Advance-only: a usage read that still lags the fresh
+# window must never roll resets_at back onto the value it just replaced.
+reconcile_window() {
+  local name="$1" dir="$2" file="$limits_dir/$name.json" rdir source rc http before before_reset after tmp
+  before=$(jq -c '.five_hour // empty' "$file" 2>/dev/null) || before=''
+  rdir=$(mktemp -d "${TMPDIR:-/tmp}/claudeb-reconcile.XXXXXX") || return 0
+  probe_one "$name" "$rdir" false false
+  read -r source rc http < "$rdir/$name.result" 2>/dev/null || source=''
+  if [ "$source" = usage ] && merge_usage "$name" "$rdir/$name.usage" && [ -n "$before" ]; then
+    before_reset=$(jq -r '.resets_at // 0' <<<"$before")
+    after=$(jq -r '.five_hour.resets_at // 0' "$file" 2>/dev/null) || after=0
+    if [ "${after:-0}" -lt "${before_reset:-0}" ] 2>/dev/null; then
+      tmp="$limits_dir/.$name.json.rc.$$"
+      if jq --argjson fh "$before" '.five_hour = $fh' "$file" > "$tmp" 2>/dev/null; then mv "$tmp" "$file"; else rm -f "$tmp"; fi
+    fi
+  fi
+  rm -rf "$rdir"
 }
 
 reserved_name() {
@@ -1013,7 +1053,11 @@ warm_accounts() {
     if [ "$session_rc" -ne 0 ] && grep -Eqi '429|rate.?limit' "$output" 2>/dev/null; then
       usage_rate_limited=true
     fi
-    if [ "$session_rc" -ne 0 ] && [ "$usage_rate_limited" != true ] && [ "${CLAUDEB_WARM_FREE_ONLY:-false}" != true ]; then
+    # A failed /usage warm reports and stops; it must not spend. The paid haiku
+    # probe below only ever runs behind an explicit opt-in no automated caller
+    # (menu refresh, heal, start-windows, selfcheck) ever sets.
+    if [ "$session_rc" -ne 0 ] && [ "$usage_rate_limited" != true ] \
+      && [ "${CLAUDEB_WARM_ALLOW_PAID:-false}" = true ] && [ "${CLAUDEB_WARM_FREE_ONLY:-false}" != true ]; then
       session_rc=0
       if run_warm_session "$dir" "$name" "$output" ok --model haiku; then :; else session_rc=$?; fi
     fi
