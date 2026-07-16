@@ -2,10 +2,13 @@ local M = {}
 
 local terminalBundleID = "com.apple.Terminal"
 local cacheTtl = 0.6
-local refreshInterval = 0.2
+local refreshInterval = 0.1
 local refreshAfter = 0.35
 local ttyRefreshAfter = 1.0
 local watchdogInterval = 5
+local refreshSoonDelay = 0.01
+local pendingDeadline = 0.28
+local replayMarker = 1128483673
 -- ANSI keycodes keep Cmd+C/V stable when the active input source has no Latin letters.
 local cKeyCode = 8
 local vKeyCode = 9
@@ -109,22 +112,111 @@ end
 
 local function contextIdentityMatches(observed, cached)
   return observed.bundleID == terminalBundleID
+    and observed.tabElement ~= nil
     and cached.bundleID == observed.bundleID
     and cached.windowID == observed.windowID
-    and cached.windowTitle == observed.windowTitle
     and cached.tabIndex == observed.tabIndex
+    and cached.tabElement == observed.tabElement
 end
 
 function M.decideCached(observed, cached, pasteboardTypes, key, timestamp)
+  local verdict = M.cachedVerdict(observed, cached, timestamp)
+  if verdict == "uncertain" then
+    return "pass"
+  end
+  return decideAction(observed.bundleID, verdict == "claude", pasteboardTypes, key)
+end
+
+function M.cachedVerdict(observed, cached, timestamp)
   if type(observed) ~= "table" or type(cached) ~= "table"
       or not contextIdentityMatches(observed, cached)
       or type(cached.checkedAt) ~= "number"
       or type(timestamp) ~= "number"
       or timestamp < cached.checkedAt
       or timestamp - cached.checkedAt > cacheTtl then
-    return "pass"
+    return "uncertain"
   end
-  return decideAction(observed.bundleID, cached.claude == true, pasteboardTypes, key)
+  return cached.claude == true and "claude" or "not-claude"
+end
+
+local function idlePendingState()
+  return { status = "idle", queue = {} }
+end
+
+local function finishPending(state, verdict, targetMatches)
+  local actions = {}
+  for _, item in ipairs(state.queue) do
+    local targetMatchesItem = targetMatches == nil or targetMatches[item.id] == true
+    local action
+    if verdict == "stop" or not targetMatchesItem then
+      action = item.key == "c" and "replay" or "policy-drop"
+    elseif verdict == "claude" then
+      action = item.key == "c" and "copy" or "image-paste"
+    else
+      action = "replay"
+    end
+    actions[#actions + 1] = {
+      id = item.id,
+      action = action,
+    }
+  end
+  return idlePendingState(), { actions = actions, verdict = verdict }
+end
+
+function M.pendingTransition(state, event)
+  state = type(state) == "table" and state or idlePendingState()
+  event = type(event) == "table" and event or {}
+  if event.type == "press" then
+    if event.selfPosted then
+      return state, { consume = false, ignored = true }
+    end
+    if event.key ~= "c" and event.key ~= "v" then
+      return state, { consume = false }
+    end
+    if event.key == "v" and event.image ~= true then
+      return state, { consume = false }
+    end
+    if event.isRepeat then
+      if state.status == "pending" then
+        for _, item in ipairs(state.queue) do
+          if item.key == event.key then
+            return state, { consume = true, folded = true }
+          end
+        end
+      end
+      return state, { consume = false, repeated = true }
+    end
+    local queue = {}
+    if state.status == "pending" then
+      for index, item in ipairs(state.queue) do
+        queue[index] = item
+      end
+    end
+    queue[#queue + 1] = { id = event.id, key = event.key }
+    return {
+      status = "pending",
+      queue = queue,
+      deadlineAt = state.status == "pending" and state.deadlineAt
+        or event.now + event.timeout,
+    }, {
+      consume = true,
+      startResolve = state.status ~= "pending",
+    }
+  end
+  if state.status ~= "pending" then
+    return state, {}
+  end
+  if event.type == "resolve"
+      and (event.verdict == "claude" or event.verdict == "not-claude") then
+    return finishPending(state, event.verdict, event.targetMatches)
+  end
+  if event.type == "tick" and event.now >= state.deadlineAt then
+    return finishPending(state, "timeout", event.targetMatches)
+  end
+  if event.type == "stop" then
+    return finishPending(state, "stop")
+  end
+  return state, {}
 end
 
 local eventTap
@@ -146,6 +238,18 @@ local started = false
 local repeatDecisions = {}
 local lastCallbackMs = 0
 local axuielement
+local replayProperty
+local pendingState
+local pendingOriginals = {}
+local pendingTimer
+local pendingNextID = 0
+local pendingStartedAt
+local lastDeferredMs
+local lastDeferredVerdict
+local completePending
+local runtimeHooks
+local previousShutdownCallback
+local shutdownCallback
 
 local ttyScript = [[
 tell application "Terminal"
@@ -154,16 +258,19 @@ tell application "Terminal"
 end tell
 ]]
 
-local function observeFrontmost()
-  local app = hs.application.frontmostApplication()
+local function observeFrontmost(app)
+  if runtimeHooks and runtimeHooks.observe then
+    return runtimeHooks.observe()
+  end
+  app = app or hs.application.frontmostApplication()
   local observed = { bundleID = app and app:bundleID() or nil }
   if observed.bundleID == terminalBundleID then
     local window = app:focusedWindow()
     observed.windowID = window and window:id() or nil
-    observed.windowTitle = window and window:title() or nil
     local windowElement = window and axuielement and axuielement.windowElement(window) or nil
     local tabGroup = windowElement and windowElement:childrenWithRole("AXTabGroup")[1] or nil
     local selectedTab = tabGroup and tabGroup:attributeValue("AXValue") or nil
+    observed.tabElement = selectedTab
     for index, tab in ipairs(tabGroup and tabGroup:attributeValue("AXTabs") or {}) do
       if tab == selectedTab then
         observed.tabIndex = index
@@ -175,15 +282,25 @@ local function observeFrontmost()
 end
 
 local function now()
+  if runtimeHooks and runtimeHooks.now then
+    return runtimeHooks.now()
+  end
   return hs.timer.secondsSinceEpoch()
+end
+
+local function absoluteTime()
+  if runtimeHooks and runtimeHooks.absoluteTime then
+    return runtimeHooks.absoluteTime()
+  end
+  return hs.timer.absoluteTime()
 end
 
 local function sameObserved(left, right)
   return type(left) == "table" and type(right) == "table"
     and left.bundleID == right.bundleID
     and left.windowID == right.windowID
-    and left.windowTitle == right.windowTitle
     and left.tabIndex == right.tabIndex
+    and left.tabElement == right.tabElement
 end
 
 local function invalidateContext()
@@ -203,7 +320,7 @@ local function scheduleRefresh()
   if refreshSoonTimer then
     refreshSoonTimer:stop()
   end
-  refreshSoonTimer = hs.timer.doAfter(0.05, function()
+  refreshSoonTimer = hs.timer.doAfter(refreshSoonDelay, function()
     refreshSoonTimer = nil
     pollFrontTab()
   end)
@@ -237,12 +354,13 @@ local function refreshProcess(tty, observed)
     cachedContext = {
       bundleID = observed.bundleID,
       windowID = observed.windowID,
-      windowTitle = observed.windowTitle,
       tabIndex = observed.tabIndex,
+      tabElement = observed.tabElement,
       tty = tty,
       checkedAt = now(),
       claude = M.isClaudeForeground(psOutput),
     }
+    completePending("resolve", cachedContext.claude and "claude" or "not-claude")
   end, { "-t", tty:gsub("^/dev/", ""), "-o", "stat=,command=" })
   psTask = task
   if not task or not task:start() then
@@ -288,7 +406,8 @@ end
 
 pollFrontTab = function()
   local observed = observeFrontmost()
-  if observed.bundleID ~= terminalBundleID or not observed.windowID then
+  if observed.bundleID ~= terminalBundleID or not observed.windowID
+      or not observed.tabElement then
     if cachedContext or resolvedTty then
       invalidateContext()
     end
@@ -306,10 +425,125 @@ pollFrontTab = function()
 end
 
 local function emit(plan)
+  if runtimeHooks and runtimeHooks.emit then
+    runtimeHooks.emit(plan)
+    return
+  end
   hs.eventtap.keyStrokes(M.planBytes(plan))
 end
 
-local function handleEvent(event, keyCode)
+local function cancelResolveTasks()
+  if ttyTask then ttyTask:terminate(); ttyTask = nil end
+  if psTask then psTask:terminate(); psTask = nil end
+end
+
+local function currentTargetMatches(original, observed)
+  return original and sameObserved(original.observed, observed)
+end
+
+local function postOriginal(original)
+  if runtimeHooks and runtimeHooks.post then
+    runtimeHooks.post(original.event)
+    return
+  end
+  original.event:setProperty(replayProperty, replayMarker)
+  original.event:post()
+end
+
+completePending = function(eventType, verdict)
+  local targetMatches
+  if eventType ~= "stop" and pendingState and pendingState.status == "pending" then
+    targetMatches = {}
+    local observed = observeFrontmost()
+    for _, item in ipairs(pendingState.queue) do
+      targetMatches[item.id] = currentTargetMatches(pendingOriginals[item.id], observed)
+    end
+  end
+  local nextState, effect = M.pendingTransition(pendingState, {
+    type = eventType,
+    verdict = verdict,
+    now = now(),
+    targetMatches = targetMatches,
+  })
+  pendingState = nextState
+  if not effect.actions then
+    return false
+  end
+  if pendingTimer then pendingTimer:stop(); pendingTimer = nil end
+  lastDeferredMs = pendingStartedAt
+    and (absoluteTime() - pendingStartedAt) / 1000000 or nil
+  lastDeferredVerdict = effect.verdict
+  pendingStartedAt = nil
+  for _, item in ipairs(effect.actions) do
+    local original = pendingOriginals[item.id]
+    pendingOriginals[item.id] = nil
+    if item.action == "copy" then
+      emit(M.copyChordPlan())
+    elseif item.action == "image-paste" then
+      emit(M.imagePastePlan())
+    elseif item.action == "replay" then
+      postOriginal(original)
+    elseif item.action == "policy-drop" then
+      if runtimeHooks and runtimeHooks.drop then
+        runtimeHooks.drop(original.event)
+      end
+    else
+      error("unknown pending action")
+    end
+  end
+  return true
+end
+
+local function armPendingTimeout(delay)
+  local after = runtimeHooks and runtimeHooks.after or hs.timer.doAfter
+  pendingTimer = after(delay, function()
+    pendingTimer = nil
+    if not completePending("tick")
+        and pendingState and pendingState.status == "pending" then
+      armPendingTimeout(math.max(0.001, pendingState.deadlineAt - now()))
+    end
+  end)
+end
+
+local function deferEvent(event, observed, key, isRepeat)
+  pendingNextID = pendingNextID + 1
+  local nextState, effect = M.pendingTransition(pendingState, {
+    type = "press",
+    id = pendingNextID,
+    key = key,
+    image = key == "v",
+    isRepeat = isRepeat,
+    now = now(),
+    timeout = pendingDeadline,
+  })
+  pendingState = nextState
+  if not effect.consume then
+    return false
+  end
+  if effect.folded then
+    return true
+  end
+  pendingOriginals[pendingNextID] = {
+    event = event:copy(),
+    observed = observed,
+  }
+  if effect.startResolve then
+    pendingStartedAt = absoluteTime()
+    armPendingTimeout(pendingDeadline)
+    invalidateContext()
+    cancelResolveTasks()
+    if runtimeHooks and runtimeHooks.resolve then
+      runtimeHooks.resolve(function(result)
+        completePending("resolve", result)
+      end)
+    else
+      pollFrontTab()
+    end
+  end
+  return true
+end
+
+local function handleEvent(event, keyCode, isRepeat)
   if event:getType() ~= hs.eventtap.event.types.keyDown then
     invalidateAndRefresh()
     return false
@@ -328,21 +562,48 @@ local function handleEvent(event, keyCode)
     return false
   end
 
-  local observed = observeFrontmost()
+  if isRepeat and pendingState and pendingState.status == "pending" then
+    local nextState, effect = M.pendingTransition(pendingState, {
+      type = "press",
+      key = key,
+      image = key == "v",
+      isRepeat = true,
+    })
+    pendingState = nextState
+    if effect.folded then return effect.consume end
+  end
 
   local pasteboardTypes
   if key == "v" then
-    local ok, result = pcall(hs.pasteboard.contentTypes)
+    local contentTypes = runtimeHooks and runtimeHooks.contentTypes
+      or hs.pasteboard.contentTypes
+    local ok, result = pcall(contentTypes)
     if not ok then
       return false
     end
     pasteboardTypes = result
+    if not M.containsImageType(pasteboardTypes) then
+      return false
+    end
   end
 
-  local action = M.decideCached(observed, cachedContext, pasteboardTypes, key, now())
-  if action == "pass" then
-    return false
+  local observed
+  if runtimeHooks then
+    observed = observeFrontmost()
+  else
+    local app = hs.application.frontmostApplication()
+    if not app or app:bundleID() ~= terminalBundleID then
+      return false
+    end
+    observed = observeFrontmost(app)
   end
+  if observed.bundleID ~= terminalBundleID then return false end
+  local verdict = M.cachedVerdict(observed, cachedContext, now())
+  if verdict == "uncertain" then
+    return deferEvent(event, observed, key, isRepeat)
+  end
+  local action = decideAction(observed.bundleID, verdict == "claude", pasteboardTypes, key)
+  if action == "pass" then return false end
 
   if action == "copy" then
     emit(M.copyChordPlan())
@@ -358,9 +619,26 @@ local function healEventTap()
   end
 end
 
+function M.setTestHooks(hooks)
+  runtimeHooks = hooks
+  if pendingTimer then pendingTimer:stop() end
+  pendingTimer = nil
+  pendingState = idlePendingState()
+  pendingOriginals = {}
+  pendingNextID = 0
+  pendingStartedAt = nil
+  cachedContext = nil
+  resolvedTty = nil
+  resolvedObserved = nil
+  repeatDecisions = {}
+  replayProperty = hooks and hooks.replayProperty or replayProperty
+end
+
 function M.start()
   started = true
   axuielement = hs.axuielement
+  replayProperty = hs.eventtap.event.properties.eventSourceUserData
+  pendingState = pendingState or M.pendingTransition(nil, {})
   if eventTap then
     healEventTap()
     return eventTap:isEnabled()
@@ -401,31 +679,59 @@ function M.start()
   terminalWindowFilter:subscribe({
     hs.window.filter.windowFocused,
     hs.window.filter.windowUnfocused,
-    hs.window.filter.windowTitleChanged,
     hs.window.filter.windowCreated,
     hs.window.filter.windowDestroyed,
   }, invalidateAndRefresh)
+  terminalWindowFilter:subscribe(hs.window.filter.windowTitleChanged, pollFrontTab)
+  previousShutdownCallback = hs.shutdownCallback
+  shutdownCallback = function()
+    M.stop()
+    if previousShutdownCallback then previousShutdownCallback() end
+  end
+  hs.shutdownCallback = shutdownCallback
   pollFrontTab()
   return eventTap:isEnabled()
 end
 
 function M.handleEvent(event)
+  if replayProperty and event:getProperty(replayProperty) == replayMarker then
+    local _, effect = M.pendingTransition(pendingState, {
+      type = "press",
+      selfPosted = true,
+    })
+    return effect.consume == true
+  end
+  local keyCode = event:getKeyCode()
+  local isKeyDown = event:getType() == hs.eventtap.event.types.keyDown
   local repeatProperty = hs.eventtap.event.properties.keyboardEventAutorepeat
   local isRepeat = event:getProperty(repeatProperty) ~= 0
-  local keyCode = event:getKeyCode()
   if isRepeat then
-    return repeatDecisions[keyCode] == true
-  end
-  repeatDecisions[keyCode] = false
+    local key = keyCode == cKeyCode and "c" or keyCode == vKeyCode and "v" or nil
+    local keyIsPending = false
+    for _, item in ipairs(pendingState and pendingState.queue or {}) do
+      if item.key == key then
+        keyIsPending = true
+        break
+      end
+    end
+    if not keyIsPending then return repeatDecisions[keyCode] == true end
 
-  local started = hs.timer.absoluteTime()
-  local consume = handleEvent(event, keyCode)
-  lastCallbackMs = (hs.timer.absoluteTime() - started) / 1000000
-  repeatDecisions[keyCode] = consume == true
+    local callbackStarted = absoluteTime()
+    local consume = handleEvent(event, keyCode, true)
+    lastCallbackMs = (absoluteTime() - callbackStarted) / 1000000
+    return consume
+  end
+  if isKeyDown then repeatDecisions[keyCode] = false end
+
+  local callbackStarted = absoluteTime()
+  local consume = handleEvent(event, keyCode, isRepeat)
+  lastCallbackMs = (absoluteTime() - callbackStarted) / 1000000
+  if isKeyDown then repeatDecisions[keyCode] = consume == true end
   return consume
 end
 
 function M.stop()
+  completePending("stop")
   started = false
   invalidateContext()
   if eventTap then eventTap:stop(); eventTap = nil end
@@ -439,9 +745,16 @@ function M.stop()
     terminalWindowFilter = nil
   end
   if refreshSoonTimer then refreshSoonTimer:stop(); refreshSoonTimer = nil end
+  if pendingTimer then pendingTimer:stop(); pendingTimer = nil end
   if ttyTask then ttyTask:terminate(); ttyTask = nil end
   if psTask then psTask:terminate(); psTask = nil end
+  pendingState = nil
+  pendingOriginals = {}
+  pendingStartedAt = nil
   repeatDecisions = {}
+  if rawget(_G, "hs") and hs.shutdownCallback == shutdownCallback then
+    hs.shutdownCallback = previousShutdownCallback
+  end
 end
 
 function M.status()
@@ -451,6 +764,9 @@ function M.status()
     claude = cachedContext and cachedContext.claude or false,
     cacheAge = cachedContext and now() - cachedContext.checkedAt or nil,
     lastCallbackMs = lastCallbackMs,
+    pendingCount = pendingState and #pendingState.queue or 0,
+    lastDeferredMs = lastDeferredMs,
+    lastDeferredVerdict = lastDeferredVerdict,
   }
 end
 
