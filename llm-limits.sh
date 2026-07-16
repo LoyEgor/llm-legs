@@ -220,48 +220,49 @@ dim_cell() {
 }
 
 render_table() {
-  local table_color=0 note_dim='' note_rst=''
+  local table_color=0
   if [ -t 1 ]; then
     table_color=1
-    note_dim=$'\033[2m'
-    note_rst=$'\033[0m'
   fi
   # Sentinels (-1 / 9999999999) push rows with missing values last for every sort direction.
   local rows
-  rows=$(jq -r --arg dim "$note_dim" --arg rst "$note_rst" --argjson render_now "$now_epoch" "$iso_def$age_def$reset_format_def"'
+  rows=$(jq -r --argjson render_now "$now_epoch" "$iso_def$age_def$reset_format_def"'
     def pct(v): if v == null then "-" else ((v | round | tostring) + "%") end;
-    def mknote($extra):
-      ([$extra,
-        (if .five.stale == true then "stale 5h" else null end),
-        (if .week.stale == true then "stale wk" else null end),
-        (if .fable.stale == true then "stale fable" else null end),
-        (if .five.expired == true then "expired 5h reset passed" else null end),
-        (if .week.expired == true then "expired wk reset passed" else null end),
-        (if .fable.expired == true then "expired fable reset passed" else null end)]
-       | map(select(. != null and . != "")) | join(", ")
-       | if . == "" then "-" else . end);
-    def fable_note:
-      if (.fable | type) == "object" then
-        ("fable " + pct(.fable.used_pct)) as $f |
-        (if (.fable.expired == true or .fable.stale == true) then $dim + $f + $rst else $f end)
-      else null end;
+    def marked_pct($window):
+      pct($window.used_pct) +
+      (if $window.stale == true then "~" else "" end) +
+      (if $window.expired == true then "!" else "" end);
+    def rotation:
+      if .enabled == false then "off"
+      elif (.rotation | type) != "object" then "-"
+      elif .rotation.blocked.general != null then .rotation.blocked.general
+      elif .rotation.blocked.fable != null then "fb:" + .rotation.blocked.fable
+      else "-" end;
+    def account_status:
+      if .auth_needed == true or
+         ((.auth.status? | type) == "string" and .auth.status != "ok")
+      then "login needed" else "-" end;
     def row:
-      (.five.expired == true) as $x5 | (.week.expired == true) as $xw |
+      (.five.expired == true) as $x5 | (.week.expired == true) as $xw | (.fable.expired == true) as $xf |
       (if ($x5 or .five.stale == true) then 1 else 0 end) as $d5 |
       (if ($xw or .week.stale == true) then 1 else 0 end) as $dw |
-      .five.used_pct as $p5 | .week.used_pct as $pw |
+      (if ($xf or .fable.stale == true) then 1 else 0 end) as $df |
+      .five.used_pct as $p5 | .week.used_pct as $pw | .fable.used_pct as $pf |
       (.five.resets_at | iso2epoch) as $e5 |
       (.week.resets_at | iso2epoch) as $ew |
+      (.fable.resets_at | iso2epoch) as $ef |
       (if $x5 then null else $e5 end) as $s5 |
       (if $xw then null else $ew end) as $sw |
+      (if $xf then null else $ef end) as $sf |
       [(if $x5 then 0 else ($p5 // -1) end), (if $xw then 0 else ($pw // -1) end),
        ($s5 // 9999999999), ($sw // 9999999999),
-       ([($s5 // 9999999999), ($sw // 9999999999)] | min),
-       $d5, $dw,
-       .src, pct($p5), pct($pw),
+       ([($s5 // 9999999999), ($sw // 9999999999), ($sf // 9999999999)] | min),
+       ($pf // -1), $d5, $dw, $df,
+       .src, marked_pct(.five), marked_pct(.week), marked_pct(.fable),
        (.five.resets_at | format_reset($render_now)),
        (.week.resets_at | format_reset($render_now)),
-       .age, .note] | @tsv;
+       (.fable.resets_at | format_reset($render_now)),
+       .age, .rot, .credits, .status] | @tsv;
     .vendors as $v |
     [
       (if $v.claude.available and (($v.claude.accounts | type) == "array") then
@@ -269,25 +270,25 @@ render_table() {
           | {src: ("claude/" + .account + (if .is_current then "*" else "" end)),
              five: .five_hour, week: .weekly, fable: .fable,
              age: compact_age($render_now),
-             extra: ([fable_note, (if .enabled == false then "off" else null end)]
-                     | map(select(. != null)) | join(", "))}
-          | .note = mknote(.extra))
-       else {src: "claude", five: null, week: null, fable:null, age:"-", note: ($v.claude.status // "-")} end),
+             rot: rotation, credits: "-", status: account_status})
+       else {src: "claude", five: null, week: null, fable:null, age:"-", rot:"-", credits:"-", status:($v.claude.status // "-")} end),
       (("codex", "gemini") as $k | $v[$k]
        | if .available then
-           if $k == "codex" and ((.accounts | type) == "array") and (.accounts | length) > 1 then
+           if $k == "codex" and ((.accounts | type) == "array") and
+              ((.accounts | length) > 1 or any(.accounts[]; .auth_needed == true)) then
              (.accounts[]
               | {src: ("codex/" + .account + (if .is_current then "*" else "" end)),
                  five: .five_hour, week: .weekly, fable:null,
-                 age: compact_age($render_now), extra:.plan_type}
-              | .note = mknote(.extra))
+                 age: compact_age($render_now), rot:"-",
+                 credits:(if (.reset_credits | type) == "number" then "↻" + (.reset_credits | tostring) else "-" end),
+                 status:account_status})
            else
              {src: $k, five: .five_hour, week: .weekly, fable:null,
-              age: compact_age($render_now),
-              extra:(if $k == "codex" then .plan_type else .group end)}
-             | .note = mknote(.extra)
+              age: compact_age($render_now), rot:"-",
+              credits:(if $k == "codex" and (.reset_credits | type) == "number" then "↻" + (.reset_credits | tostring) else "-" end),
+              status:"-"}
            end
-         else {src: $k, five: null, week: null, fable:null, age:"-", note: (.status // "-")} end)
+         else {src: $k, five: null, week: null, fable:null, age:"-", rot:"-", credits:"-", status:(.status // "-")} end)
     ] | .[] | row
   ' <<<"$result")
 
@@ -298,29 +299,37 @@ render_table() {
     sorted=$rows
   fi
 
-  local k5 kw e5 ew kr dim5 dimw src p5 pw r5 rw age note
-  local w_src=6 w_p5=3 w_pw=3 w_r5=8 w_rw=8 w_age=3
-  while IFS=$'\t' read -r k5 kw e5 ew kr dim5 dimw src p5 pw r5 rw age note; do
+  local k5 kw e5 ew kr kf dim5 dimw dimf src p5 pw pf r5 rw rf age rot credits status
+  local w_src=6 w_p5=3 w_pw=3 w_pf=3 w_r5=8 w_rw=8 w_rf=8 w_age=3 w_rot=3 w_cr=2
+  while IFS=$'\t' read -r k5 kw e5 ew kr kf dim5 dimw dimf src p5 pw pf r5 rw rf age rot credits status; do
     [ -n "$src" ] || continue
     [ "${#src}" -gt "$w_src" ] && w_src=${#src}
     [ "${#p5}" -gt "$w_p5" ] && w_p5=${#p5}
     [ "${#pw}" -gt "$w_pw" ] && w_pw=${#pw}
+    [ "${#pf}" -gt "$w_pf" ] && w_pf=${#pf}
     [ "${#r5}" -gt "$w_r5" ] && w_r5=${#r5}
     [ "${#rw}" -gt "$w_rw" ] && w_rw=${#rw}
+    [ "${#rf}" -gt "$w_rf" ] && w_rf=${#rf}
     [ "${#age}" -gt "$w_age" ] && w_age=${#age}
+    [ "${#rot}" -gt "$w_rot" ] && w_rot=${#rot}
+    [ "${#credits}" -gt "$w_cr" ] && w_cr=${#credits}
   done <<<"$sorted"
 
-  printf '%-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %s\n' \
-    "$w_src" SOURCE "$w_p5" "5H%" "$w_pw" "WK%" "$w_r5" "5H RESET" "$w_rw" "WK RESET" "$w_age" AGE NOTE
-  while IFS=$'\t' read -r k5 kw e5 ew kr dim5 dimw src p5 pw r5 rw age note; do
+  printf '%-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %s\n' \
+    "$w_src" SOURCE "$w_p5" "5H%" "$w_pw" "WK%" "$w_pf" "FB%" \
+    "$w_r5" "5H RESET" "$w_rw" "WK RESET" "$w_rf" "FB RESET" \
+    "$w_age" AGE "$w_rot" ROT "$w_cr" CR STATUS
+  while IFS=$'\t' read -r k5 kw e5 ew kr kf dim5 dimw dimf src p5 pw pf r5 rw rf age rot credits status; do
     [ -n "$src" ] || continue
     printf '%-*s  ' "$w_src" "$src"
     pct_cell "$p5" "$w_p5" "$table_color" "$k5" "$dim5"; printf '  '
     pct_cell "$pw" "$w_pw" "$table_color" "$kw" "$dimw"; printf '  '
+    pct_cell "$pf" "$w_pf" "$table_color" "$kf" "$dimf"; printf '  '
     dim_cell "$r5" "$w_r5" "$table_color" "$dim5"; printf '  '
     dim_cell "$rw" "$w_rw" "$table_color" "$dimw"; printf '  '
+    dim_cell "$rf" "$w_rf" "$table_color" "$dimf"; printf '  '
     printf '%-*s  ' "$w_age" "$age"
-    printf '%s\n' "$note"
+    printf '%-*s  %-*s  %s\n' "$w_rot" "$rot" "$w_cr" "$credits" "$status"
   done <<<"$sorted"
 }
 
@@ -969,33 +978,43 @@ else
     def dimmed($window):
       if ($window.expired == true or $window.stale == true) then $dim + . + $rst else . end;
     def pct($window):
-      if $window == null or $window.used_pct == null then "-"
-      else ((($window.used_pct | round | tostring) + "%") | dimmed($window)) end;
+      ((if $window == null or $window.used_pct == null then "-"
+      else ((($window.used_pct | round | tostring) + "%") | dimmed($window)) end) +
+        (if $window.stale == true then "~" else "" end) +
+        (if $window.expired == true then "!" else "" end));
     def reset($window):
-      if $window == null then "—"
+      if $window == null then "-"
       else (($window.resets_at | format_reset($render_now)) | dimmed($window)) end;
-    def markers($five; $week; $fable):
-      [(if $five.stale == true then "stale 5h" else null end),
-       (if $week.stale == true then "stale wk" else null end),
-       (if $fable.stale == true then "stale fable" else null end),
-       (if $five.expired == true then "expired 5h" else null end),
-       (if $week.expired == true then "expired wk" else null end),
-       (if $fable.expired == true then "expired fable" else null end)]
-      | map(select(. != null)) | join(", ");
-    def honesty($row; $five; $week; $fable):
-      (markers($five; $week; $fable)) as $markers |
+    def rotation:
+      if .enabled == false then "off"
+      elif (.rotation | type) != "object" then "-"
+      elif .rotation.blocked.general != null then .rotation.blocked.general
+      elif .rotation.blocked.fable != null then "fb:" + .rotation.blocked.fable
+      else "-" end;
+    def credits:
+      if (.reset_credits | type) == "number" then "↻" + (.reset_credits | tostring) else "-" end;
+    def account_status:
+      if .auth_needed == true or
+         ((.auth.status? | type) == "string" and .auth.status != "ok")
+      then "login needed" else "-" end;
+    def line($src; $row; $rot; $credits; $status):
+      $src + ": 5h " + pct($row.five_hour) + " @ " + reset($row.five_hour) +
+      " | wk " + pct($row.weekly) + " @ " + reset($row.weekly) +
+      " | fb " + pct($row.fable) + " @ " + reset($row.fable) +
       " | age " + ($row | compact_age($render_now)) +
-      (if $markers == "" then "" else " | " + $markers end);
+      " | rot " + $rot + " | cr " + $credits + " | status " + $status;
     .vendors | to_entries[] |
     if .value.available then
       if .key == "claude" and (.value.accounts | type) == "array" then
-        .value.accounts[] | ("claude/" + .account + ": " + pct(.five_hour) + "/" + pct(.weekly) +
-         " | resets " + reset(.five_hour) + " / " + reset(.weekly) +
-         (if .enabled == false then " | off" else "" end) + honesty(.; .five_hour; .weekly; .fable))
-      else (.key + ": " + pct(.value.five_hour) + "/" + pct(.value.weekly) +
-       " | resets " + reset(.value.five_hour) + " / " + reset(.value.weekly) +
-       honesty(.value; .value.five_hour; .value.weekly; null)) end
-    else (.key + ": " + .value.status + (if .value.last_wall then " | last wall " + .value.last_wall else "" end)) end
+        .value.accounts[] |
+        line("claude/" + .account + (if .is_current then "*" else "" end); .; rotation; "-"; account_status)
+      elif .key == "codex" and ((.value.accounts | type) == "array") and
+           ((.value.accounts | length) > 1 or any(.value.accounts[]; .auth_needed == true)) then
+        .value.accounts[] |
+        line("codex/" + .account + (if .is_current then "*" else "" end); .; "-"; credits; account_status)
+      else line(.key; .value; "-"; (if .key == "codex" then (.value | credits) else "-" end); "-") end
+    else line(.key; {}; "-"; "-"; (.value.status // "-")) +
+      (if .value.last_wall then " | last wall " + .value.last_wall else "" end) end
   ' <<<"$result"
 fi
 

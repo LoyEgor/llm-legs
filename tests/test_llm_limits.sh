@@ -103,11 +103,13 @@ rm "$HOME_FIXTURE/.claude/statusline-last.json"
 fallback=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "Claude fallback collection failed"
 jq -e '.vendors.claude.five_hour.used_pct == 19 and .vendors.claude.weekly.used_pct == 53 and (.vendors.claude | has("session_model") | not) and .vendors.claude.source == "statusline-cache"' <<<"$fallback" >/dev/null || fail "Claude cache fallback mismatch"
 
-plain=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain) || fail "plain collection failed"
-grep -q 'claude/main: 19%/53%' <<<"$plain" || fail "plain Claude values missing"
-grep -q 'codex: 74%/31%' <<<"$plain" || fail "plain Codex values missing"
-grep 'codex: 74%/31%' <<<"$plain" | grep -q '| age ' || fail "plain age column missing"
-grep 'codex: 74%/31%' <<<"$plain" | grep -q 'stale 5h' || fail "plain stale marker missing"
+plain=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" LLM_LIMITS_WALLS_LOG="$WALLS" bash "$SCRIPT" --plain) || fail "plain collection failed"
+grep -q 'claude/main\*: 5h 19% @ .* | wk 53% @ .* | fb - @ -' <<<"$plain" || fail "plain Claude values missing"
+grep -q 'codex: 5h 74%~ @ .* | wk 31%~ @ .* | fb - @ -' <<<"$plain" || fail "plain Codex values or stale markers missing"
+grep 'codex:' <<<"$plain" | grep -q '| age ' || fail "plain age field missing"
+grep -q '| rot - | cr - | status -' <<<"$plain" || fail "plain explicit state fields missing"
+grep -q '^gemini: .* | status no quota snapshot | last wall 2026-07-11T08:00:00Z$' <<<"$plain" \
+  || fail "plain unavailable vendor lost its last wall"
 fallback_table=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) || fail "fallback table collection failed"
 grep -q '^claude/main' <<<"$fallback_table" || fail "unique fallback main account missing from table"
 
@@ -157,6 +159,10 @@ payload = {
                   "walled": True, "auth_failed_until": 0, "fable_walled_until": 0,
                   "usable": {"general": False, "fable": True},
                   "blocked": {"general": "wall", "fable": None}},
+        "fbonly": {"h5": 10, "wk": 20, "hreset": 4102444800, "wreset": 4102440000,
+                   "walled": False, "auth_failed_until": 0, "fable_walled_until": 4102445000,
+                   "usable": {"general": True, "fable": False},
+                   "blocked": {"general": None, "fable": "limit-fable"}},
     },
     "scopes": {"general": None, "fable": "alona"},
     "walls": [
@@ -187,7 +193,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.path != "/claudebd/status":
             self.send_error(404)
             return
-        body = json.dumps(payload if Handler.requests == 0 else legacy_payload).encode()
+        body = json.dumps(payload if Handler.requests < 3 else legacy_payload).encode()
         Handler.requests += 1
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -211,6 +217,8 @@ for _ in {1..40}; do
 done
 [ -s "$DAEMON_PORT_FILE" ] || fail "claudebd fixture server did not start"
 daemon_port=$(cat "$DAEMON_PORT_FILE")
+printf '{"five_hour":{"used_percentage":10,"resets_at":%s},"seven_day":{"used_percentage":20,"resets_at":%s},"fable":{"used_percentage":90,"resets_at":%s}}\n' \
+  "$((now + 5000))" "$((now + 7000))" "$((now + 8000))" >"$CLAUDEB/limits/fbonly.json"
 daemon_json=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" CLAUDEBD_PORT="$daemon_port" \
   LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "claudebd status collection failed"
 jq -e '.vendors.claude.daemon == {
@@ -224,6 +232,19 @@ jq -e '.vendors.claude.daemon == {
 jq -e '.vendors.claude.accounts[0].rotation == {
   usable:{general:false,fable:true},blocked:{general:"wall",fable:null}
 }' <<<"$daemon_json" >/dev/null || fail "daemon rotation projection was not merged into the matching account"
+daemon_table=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" CLAUDEBD_PORT="$daemon_port" \
+  LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) || fail "daemon rotation table failed"
+head -n 1 <<<"$daemon_table" | grep -Eq 'FB% +5H RESET +WK RESET +FB RESET +AGE +ROT +CR +STATUS' \
+  || fail "universal table columns missing"
+head -n 1 <<<"$daemon_table" | grep -q 'NOTE' && fail "NOTE column still present"
+awk '$1 == "claude/alona*" {print $(NF-2)}' <<<"$daemon_table" | grep -qx 'wall' \
+  || fail "general rotation block missing from ROT"
+awk '$1 == "claude/fbonly" {print $(NF-2)}' <<<"$daemon_table" | grep -qx 'fb:limit-fable' \
+  || fail "fable-only rotation block missing from ROT"
+daemon_plain=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" CLAUDEBD_PORT="$daemon_port" \
+  LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain) || fail "daemon rotation plain failed"
+grep 'claude/alona\*:' <<<"$daemon_plain" | grep -q '| rot wall |' || fail "plain general rotation block missing"
+grep 'claude/fbonly:' <<<"$daemon_plain" | grep -q '| rot fb:limit-fable |' || fail "plain fable rotation block missing"
 daemon_legacy=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" CLAUDEBD_PORT="$daemon_port" \
   LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "legacy claudebd status collection failed"
 jq -e '.vendors.claude.daemon == {
@@ -236,6 +257,7 @@ jq -e '.vendors.claude.daemon == {
 }' <<<"$daemon_legacy" >/dev/null || fail "legacy daemon wall derivation mismatch"
 jq -e 'all(.vendors.claude.accounts[]; has("rotation") | not)' <<<"$daemon_legacy" >/dev/null \
   || fail "legacy daemon response fabricated account rotation fields"
+rm "$CLAUDEB/limits/fbonly.json"
 kill "$daemon_pid" 2>/dev/null || true
 wait "$daemon_pid" 2>/dev/null || true
 daemon_pid=''
@@ -251,7 +273,8 @@ invalid_current=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="
 jq -e '.vendors.claude.current_account == "alona" and all(.vendors.claude.accounts[]; .account != "main")' <<<"$invalid_current" >/dev/null || fail "invalid current did not fall back to the first real account"
 printf 'alona\n' >"$CLAUDEB/.claudeb-state"
 multi_plain=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain) || fail "claudeb plain collection failed"
-grep -q 'claude/alona: 7%/- |' <<<"$multi_plain" || fail "claudeb missing-weekly plain output mismatch"
+grep -q 'claude/alona\*: 5h 7% @ .* | wk - @ - | fb 33% @ ' <<<"$multi_plain" || fail "claudeb plain window output mismatch"
+grep 'claude/alona\*:' <<<"$multi_plain" | grep -q '| rot - |' || fail "daemon-absent plain ROT must be unknown"
 grep -q 'claude/main' <<<"$multi_plain" && fail "main account leaked into plain output"
 jq -e 'all(.vendors.claude.accounts[]; .enabled == true)' <<<"$multi" >/dev/null || fail "missing disabled file must default to enabled:true"
 
@@ -271,8 +294,8 @@ disabled_table=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_DIS" LLM_LIMITS_CACH
 awk '$1 == "claude/bree"' <<<"$disabled_table" | grep -q 'off' || fail "disabled account not marked off in table"
 awk '$1 == "claude/alona*"' <<<"$disabled_table" | grep -q 'off' && fail "enabled account wrongly marked off in table"
 disabled_plain=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_DIS" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain) || fail "disabled plain collection failed"
-grep 'claude/bree' <<<"$disabled_plain" | grep -q ' | off' || fail "disabled account not marked off in plain output"
-grep 'claude/alona' <<<"$disabled_plain" | grep -q ' | off' && fail "enabled account wrongly marked off in plain output"
+grep 'claude/bree' <<<"$disabled_plain" | grep -q ' | rot off |' || fail "disabled account not marked off in plain output"
+grep 'claude/alona' <<<"$disabled_plain" | grep -q ' | rot off |' && fail "enabled account wrongly marked off in plain output"
 
 # Shared staleness contract: per-bucket as_of/origin pass through from the snapshot store;
 # a bucket is stale on expired auth, cached origin, or age over the window threshold
@@ -319,11 +342,13 @@ jq -e '.vendors.claude.current_account == "authonly" and
   || fail "auth-only current account must hoist the first populated five-hour bucket"
 printf 'aged\n' >"$CLAUDEB_FRESH/.claudeb-state"
 fresh_table=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_FRESH" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) || fail "rounding table collection failed"
-grep -Eq '^claude/aged\* +7% +57% ' <<<"$fresh_table" || fail "table percentages must round to integers"
-grep -Eq '^claude/authonly +- +- ' <<<"$fresh_table" || fail "auth-only account missing from table"
+grep -Eq '^claude/aged\* +7%~ +57% ' <<<"$fresh_table" || fail "table percentages must round to integers"
+grep -Eq '^claude/authonly +-~ +- +- ' <<<"$fresh_table" || fail "auth-only account missing from table"
+grep '^claude/authonly ' <<<"$fresh_table" | grep -q 'login needed$' || fail "Claude non-ok auth table status missing"
 fresh_plain=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_FRESH" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain) || fail "rounding plain collection failed"
-grep -q 'claude/aged: 7%/57% ' <<<"$fresh_plain" || fail "plain percentages must round to integers"
-grep -q 'claude/authonly: -/-' <<<"$fresh_plain" || fail "auth-only account missing from plain output"
+grep -q 'claude/aged\*: 5h 7%~ @ .* | wk 57% @ ' <<<"$fresh_plain" || fail "plain percentages must round to integers"
+grep -q 'claude/authonly: 5h -~ @ - | wk - @ - | fb - @ -' <<<"$fresh_plain" || fail "auth-only account missing from plain output"
+grep '^claude/authonly:' <<<"$fresh_plain" | grep -q '| status login needed$' || fail "Claude non-ok auth plain status missing"
 jq -e '(.vendors.claude.refresh_error | contains("authonly") and endswith(" auth"))' <<<"$auth_current" >/dev/null \
   || fail "Claude auth failure was not exposed as vendor refresh_error"
 
@@ -592,6 +617,15 @@ codex_accounts_table=$(HOME="$CODEX_ACCOUNTS_HOME" LLM_LIMITS_CODEX_CACHE="$CODE
 [ "$(grep -c '^codex/' <<<"$codex_accounts_table")" -eq 2 ] || fail "Codex table did not render both accounts"
 grep -q '^codex/alpha\*' <<<"$codex_accounts_table" || fail "Codex table current account marker missing"
 grep -q '^codex/beta' <<<"$codex_accounts_table" || fail "Codex table secondary account missing"
+awk '$1 == "codex/alpha*" {print $(NF-1)}' <<<"$codex_accounts_table" | grep -qx '↻2' \
+  || fail "Codex reset credits missing from CR"
+awk '$1 == "codex/beta" {print $(NF-1)}' <<<"$codex_accounts_table" | grep -qx '↻0' \
+  || fail "zero Codex reset credits missing from CR"
+grep -q 'plus\|team' <<<"$codex_accounts_table" && fail "Codex plan tag leaked into table"
+codex_accounts_plain=$(HOME="$CODEX_ACCOUNTS_HOME" LLM_LIMITS_CODEX_CACHE="$CODEX_ACCOUNTS_CACHE" \
+  LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain) || fail "Codex multi-account plain failed"
+grep 'codex/alpha\*:' <<<"$codex_accounts_plain" | grep -q '| cr ↻2 |' || fail "plain Codex credits missing"
+grep 'codex/beta:' <<<"$codex_accounts_plain" | grep -q '| cr ↻0 |' || fail "plain zero Codex credits missing"
 CODEX_TARGET_SENTINEL="$WORK/codex-target-called"
 cat >"$WORK/fake-codex-target" <<EOF
 #!/usr/bin/env bash
@@ -628,6 +662,14 @@ jq -e '.vendors.codex.available == true and .vendors.codex.current_account == "w
   .vendors.codex.accounts[0].account == "work" and .vendors.codex.accounts[0].auth_needed == true and
   (.vendors.codex.accounts[0] | has("five_hour") or has("weekly") or has("as_of") or has("stale_seconds") | not)' \
   <<<"$codex_auth_needed" >/dev/null || fail "Codex auth-needed account normalization mismatch"
+codex_auth_table=$(HOME="$CODEX_ACCOUNTS_HOME" LLM_LIMITS_CODEX_CACHE="$CODEX_ACCOUNTS_CACHE" \
+  LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) || fail "Codex auth-needed table failed"
+codex_auth_plain=$(HOME="$CODEX_ACCOUNTS_HOME" LLM_LIMITS_CODEX_CACHE="$CODEX_ACCOUNTS_CACHE" \
+  LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain) || fail "Codex auth-needed plain failed"
+grep -Eq '^codex/work\* +- +- +- +- +- +- +- +- +- +login needed$' <<<"$codex_auth_table" \
+  || fail "Codex auth-needed table status missing: $codex_auth_table"
+grep -q '^codex/work\*: .* | status login needed$' <<<"$codex_auth_plain" \
+  || fail "Codex auth-needed plain status missing: $codex_auth_plain"
 
 CODEX_LEGACY_CACHE="$WORK/codex-legacy.json"
 cat >"$CODEX_LEGACY_CACHE" <<EOF
@@ -734,7 +776,7 @@ rc=$?
 grep -q 'codex 5h window state unknown' "$WORK/null.err" || fail "unknown codex window state was skipped silently"
 null_reset=$(HOME="$NULLRESET_HOME" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "null resets_at collection failed"
 jq -e '.vendors.codex.available == true and .vendors.codex.five_hour.used_pct == 41 and .vendors.codex.five_hour.resets_at == null' <<<"$null_reset" >/dev/null || fail "null resets_at not normalized"
-HOME="$NULLRESET_HOME" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain | grep -q 'codex: 41%/22%' || fail "null resets_at plain render failed"
+HOME="$NULLRESET_HOME" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain | grep -q 'codex: 5h 41% @ - | wk 22% @ -' || fail "null resets_at plain render failed"
 HOME="$NULLRESET_HOME" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table | grep -q '^codex' || fail "null resets_at table render failed"
 
 PLACEHOLDER_HOME="$WORK/placeholder-home"
@@ -790,10 +832,16 @@ jq -e 'all(.vendors.claude.accounts[]; .account != "main")' <<<"$multi" >/dev/nu
 [ "$(grep -c '^claude/' <<<"$table")" -eq 1 ] || fail "table must render one row per non-main claude account"
 order=$(awk 'NR > 1 {print $1}' <<<"$table" | paste -sd, -)
 [ "$order" = "claude/alona*,codex,gemini" ] || fail "default table order mismatch: $order"
-grep -q 'fable 33%' <<<"$table" || fail "fable note missing from table"
+head -n 1 <<<"$table" | grep -q 'FB%' || fail "Fable percentage column missing from table"
+head -n 1 <<<"$table" | grep -q 'FB RESET' || fail "Fable reset column missing from table"
+head -n 1 <<<"$table" | grep -q 'NOTE' && fail "NOTE column still present"
+awk '$1 == "claude/alona*" {print $4}' <<<"$table" | grep -qx '33%' || fail "Fable percentage cell missing"
+awk '$1 == "codex" {print $4}' <<<"$table" | grep -qx '-' || fail "non-Fable row must render a dash"
+grep -q 'Gemini Models\|plus' <<<"$table" && fail "junk labels leaked into table"
 printf '{"five_hour":{"used_percentage":7,"resets_at":%s},"fable":{"used_percentage":33,"resets_at":%s}}\n' "$((now + 5000))" "$((now - 1))" >"$CLAUDEB/limits/alona.json"
 expired_fable=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) || fail "expired fable table failed"
-grep -q 'fable 33%' <<<"$expired_fable" || fail "expired fable must keep its last known value in the note"
+awk '$1 == "claude/alona*" {print $4}' <<<"$expired_fable" | grep -qx '33%!' \
+  || fail "expired fable must keep its raw value with an explicit marker"
 printf '{"five_hour":{"used_percentage":7,"resets_at":%s},"fable":{"used_percentage":33,"resets_at":%s}}\n' "$((now + 5000))" "$((now + 5500))" >"$CLAUDEB/limits/alona.json"
 awk 'NR > 1 && $1 == "codex"' <<<"$table" | grep -Eq '[0-9]{2}:[0-9]{2}' || fail "codex reset time not rendered"
 sorted=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table --sort 5h) || fail "sorted table collection failed"
@@ -810,11 +858,13 @@ EMPTY_SORT_HOME="$WORK/sort-reset-home"
 mkdir -p "$SORT_RESET_STORE/limits" "$EMPTY_SORT_HOME"
 printf 'future-a\n' >"$SORT_RESET_STORE/.claudeb-state"
 printf '{"five_hour":{"used_percentage":10,"resets_at":%s}}\n' "$((now + 1000))" >"$SORT_RESET_STORE/limits/future-a.json"
-printf '{"five_hour":{"used_percentage":20,"resets_at":%s}}\n' "$((now + 2000))" >"$SORT_RESET_STORE/limits/future-b.json"
+printf '{"five_hour":{"used_percentage":20,"resets_at":%s},"fable":{"used_percentage":40,"resets_at":%s}}\n' \
+  "$((now + 2000))" "$((now + 500))" >"$SORT_RESET_STORE/limits/future-b.json"
 printf '{"five_hour":{"used_percentage":30,"resets_at":%s}}\n' "$((now - 18000))" >"$SORT_RESET_STORE/limits/expired.json"
 reset_expired=$(HOME="$EMPTY_SORT_HOME" CLAUDEB_DIR="$SORT_RESET_STORE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table --sort reset) || fail "expired reset-sort collection failed"
 order=$(awk 'NR > 1 && $1 ~ /^claude\// {print $1}' <<<"$reset_expired" | paste -sd, -)
-[ "$order" = "claude/future-a*,claude/future-b,claude/expired" ] || fail "--sort reset must place an expired-window account last: $order"
+[ "$order" = "claude/future-b,claude/future-a*,claude/expired" ] \
+  || fail "--sort reset must include Fable and place expired windows last: $order"
 HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table --sort bogus >/dev/null 2>&1
 rc=$?
 [ "$rc" -eq 2 ] || fail "unknown --sort value: expected exit 2, got $rc"
@@ -861,11 +911,9 @@ jq -e '.vendors.codex.five_hour.expired == true and .vendors.codex.five_hour.use
   (.vendors.claude.accounts[0].five_hour | has("expired") | not)' <<<"$expired_json" >/dev/null || fail "expired flag mismatch"
 expired_table=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) || fail "expired table collection failed"
 codex_row=$(awk 'NR > 1 && $1 == "codex"' <<<"$expired_table")
-grep -Eq '^codex +100% +44% +[0-9]{2}:[0-9]{2}' <<<"$codex_row" || fail "expired window must keep its last known value and reset time: $codex_row"
-grep -q '5h reset passed' <<<"$codex_row" || fail "expired note missing from table"
+grep -Eq '^codex +100%! +44% +- +[0-9]{2}:[0-9]{2}' <<<"$codex_row" || fail "expired window must keep its last known value and reset time: $codex_row"
 expired_plain=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain) || fail "expired plain collection failed"
-grep -q 'codex: 100%/44%' <<<"$expired_plain" || fail "expired plain output must keep the last known value"
-grep -q 'expired 5h' <<<"$expired_plain" || fail "expired plain output lacks explicit marker"
+grep -q 'codex: 5h 100%! @ .* | wk 44% @ ' <<<"$expired_plain" || fail "expired plain output must keep the raw value with a marker"
 expired_sorted=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table --sort 5h) || fail "expired sorted table collection failed"
 order=$(awk 'NR > 1 {print $1}' <<<"$expired_sorted" | paste -sd, -)
 [ "$order" = "claude/alona*,codex,gemini" ] || fail "expired 5h sort must rank the stale 100% as 0: $order"
@@ -880,13 +928,14 @@ honest_table=$(HOME="$HONEST_HOME" CLAUDEB_DIR="$HONEST_STORE" LLM_LIMITS_CACHE=
   || fail "honesty table fixture failed"
 honest_plain=$(HOME="$HONEST_HOME" CLAUDEB_DIR="$HONEST_STORE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain) \
   || fail "honesty plain fixture failed"
-head -n 1 <<<"$honest_table" | grep -Eq 'WK RESET +AGE +NOTE' || fail "table AGE column missing"
+head -n 1 <<<"$honest_table" | grep -Eq 'FB RESET +AGE +ROT +CR +STATUS' || fail "table universal state columns missing"
+head -n 1 <<<"$honest_table" | grep -q 'NOTE' && fail "table NOTE column was not abolished"
 honest_row=$(awk '$1 == "claude/honest*"' <<<"$honest_table")
-grep -Eq '^claude/honest\* +100% +44% ' <<<"$honest_row" || fail "honesty table rewrote raw used_pct"
-grep -Eq ' +1h1m +.*stale 5h.*expired wk' <<<"$honest_row" || fail "table age or stale/expired markers missing: $honest_row"
-grep -q 'claude/honest: 100%/44%' <<<"$honest_plain" || fail "honesty plain rewrote raw used_pct"
-grep 'claude/honest:' <<<"$honest_plain" | grep -q '| age 1h1m | stale 5h, expired wk' \
-  || fail "plain age or stale/expired markers missing"
+grep -Eq '^claude/honest\* +100%~ +44%! ' <<<"$honest_row" || fail "honesty table rewrote raw used_pct or lost markers"
+grep -Eq ' +1h1m +- +- +-$' <<<"$honest_row" || fail "table age or explicit state fields missing: $honest_row"
+grep -q 'claude/honest\*: 5h 100%~ @ .* | wk 44%! @ ' <<<"$honest_plain" || fail "honesty plain rewrote raw used_pct or lost markers"
+grep 'claude/honest\*:' <<<"$honest_plain" | grep -q '| age 1h1m | rot - | cr - | status -' \
+  || fail "plain age or explicit state fields missing"
 
 USABLE_STORE="$WORK/usable-store"
 USABLE_HOME="$WORK/usable-home"

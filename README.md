@@ -72,21 +72,25 @@ explicit `--json`, `--plain`, or `--table` always wins. The stable top level is
 `current_account`, an ordered `accounts` array, and the current account's `five_hour`, optional
 `weekly`, `as_of`, and `stale_seconds` hoisted at vendor level for compatibility. Each account has
 its own windows and freshness, plus an `enabled` flag reflecting its claudeb rotation membership
-(absent means enabled). Use `--plain` for a
-human-readable summary or `--no-write` to leave the cache untouched. `--table` renders an aligned
-terminal table with one row per entity — every Claude account (the current one is marked `*`),
-then codex
-and gemini — with 5h/weekly used% and local reset times, plus a NOTE column (Claude fable %, codex
-plan, gemini quota group, and a `stale Nh` marker when a snapshot is over an hour old). Percent
-columns are colorized only when stdout is a TTY; piped output stays plain ASCII. `--sort
+(absent means enabled). Use `--plain` for a human-readable line per account or `--no-write` to
+leave the cache untouched. `--table` renders the same model as aligned columns: 5h, weekly, and
+Fable percentages and local reset times; account age; Claude rotation state; Codex reset credits;
+and vendor status. Fable is `-` for rows without that bucket. `~` and `!` suffix percentage values
+whose snapshots are stale or whose reset has passed, without rewriting the last known `used_pct`.
+`ROT` is `off` for a disabled Claude account, the daemon-provided general block reason, an
+`fb:<reason>` for a Fable-only block, or `-` when unblocked or daemon rotation data is absent.
+`CR` renders Codex reset credits as `↻N`. The current account is marked `*`; plan tags and Gemini
+quota-group labels are omitted. Percent columns are colorized only when stdout is a TTY; piped
+output stays plain text. `--sort
 5h|weekly|reset` reorders the table by that column (descending for percentages, ascending by the
-nearest of the 5h and weekly resets). For a PATH entry point, symlink the script — it resolves its
+nearest of the 5h, weekly, and Fable resets). For a PATH entry point, symlink the script — it resolves its
 own symlink, so helper
 discovery keeps working:
 
 ```bash
 ln -s /Volumes/Work/Projects/llm-legs/llm-limits.sh ~/.local/bin/llm-limits
 llm-limits --table --sort 5h
+llm-limits --plain
 ```
 
 `--refresh` is reserved for the manual Get Data & Refresh action. It always performs Claude's
@@ -129,7 +133,8 @@ Claude reads the `$CLAUDEB_DIR/limits/*.json` accounts (`CLAUDEB_DIR` defaults t
 `~/.claude-profiles/.claudeb`) and uses `.claudeb-state` to select the current account. `main`
 (the default plain-`claude` login, not a real claudeb token account) is excluded from every
 output — JSON, cache, `--plain`, and `--table` — so only real claudeb token accounts are
-reported. If the store is
+reported. The terminal formats expose the same per-account windows, age, rotation, credits, and
+status fields. If the store is
 absent, it falls back to the freshest Claude status-line snapshot as a single `main` account.
 
 `claudeb disable <name>` takes an account out of auto-rotation and `claudeb enable <name>` puts
