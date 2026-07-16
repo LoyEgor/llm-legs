@@ -27,6 +27,7 @@ const upstreamIdleTimeout = 600000;
 const capacityRetryMs = Math.max(0, Math.floor(number(process.env.CLAUDEBD_CAPACITY_RETRY_MS, 2000)));
 const capacityRetryAttempts = Math.max(0, Math.floor(number(process.env.CLAUDEBD_CAPACITY_RETRY_ATTEMPTS, 1)));
 const started = Date.now();
+const upstreamStartedAt = Symbol('upstreamStartedAt');
 const states = new Map();
 let accounts = [];
 let disabled = new Set();
@@ -568,6 +569,10 @@ function forwardResponse(source, target, account, scope) {
   }
   const responseStarted = Date.now();
   const status = source.statusCode || 502;
+  if (status >= 500) {
+    const attemptStarted = number(source[upstreamStartedAt], responseStarted);
+    log(`upstream-5xx account=${account} scope=${scope} status=${status} elapsed_ms=${responseStarted - attemptStarted}`);
+  }
   let bytes = 0;
   let abortLogged = false;
   const sourceSocket = source.socket;
@@ -622,7 +627,11 @@ async function attempt(req, body, name, replaceAuth) {
     let upstreamReq;
     try {
       const transport = upstream.protocol === 'http:' ? http : https;
-      upstreamReq = transport.request(requestOptions(req, name, replaceAuth), resolve);
+      const attemptStarted = Date.now();
+      upstreamReq = transport.request(requestOptions(req, name, replaceAuth), (upstreamRes) => {
+        upstreamRes[upstreamStartedAt] = attemptStarted;
+        resolve(upstreamRes);
+      });
       configureOutboundRequest(upstreamReq);
       upstreamReq.once('error', reject);
       upstreamReq.end(body);
@@ -712,7 +721,9 @@ function streamingProxy(req, res, chunks, name, replaceAuth, scope, tried = new 
   let superseded = false;
   try {
     const transport = upstream.protocol === 'http:' ? http : https;
+    const attemptStarted = Date.now();
     upstreamReq = transport.request(requestOptions(req, name, replaceAuth), (upstreamRes) => {
+      upstreamRes[upstreamStartedAt] = attemptStarted;
       if (replaceAuth) updateFromHeaders(name, upstreamRes.headers);
       const authFailure = upstreamRes.statusCode === 401 || upstreamRes.statusCode === 403;
       const unified = String(upstreamRes.headers['anthropic-ratelimit-unified-status'] || '');

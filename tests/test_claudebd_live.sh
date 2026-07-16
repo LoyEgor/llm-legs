@@ -137,6 +137,23 @@ eq "$(grep -c '^acct-a ' "$MOCK_LOG")" "2" "capacity-a: upstream saw account a e
 contains "retry account=a scope=fable status=429 unified=none same-account attempt=1" "$(cat "$WORK/a/claudebd.log")" "capacity-a: same-account retry is logged"
 stop_daemon
 
+echo "scenario upstream-529: overload passes through without account state changes"
+write_plan <<'JSON'
+{ "byToken": { "acct-a": { "status": 529, "body": "{\"error\":\"overloaded\"}" } } }
+JSON
+STORE_529="$(setup_store "$WORK/upstream-529" a)"
+start_daemon "$STORE_529"
+code=$(gpost "$GEN")
+eq "$code" "529" "upstream-529: client receives upstream status unchanged"
+contains '"error":"overloaded"' "$(cat "$WORK/body")" "upstream-529: client receives upstream body unchanged"
+eq "$(sfield accounts.a.walled)" "false" "upstream-529: account is not walled"
+eq "$(sfield accounts.a.auth_failed_until)" "0" "upstream-529: account is not auth-rejected"
+eq "$(sfield accounts.a.fable_walled_until)" "0" "upstream-529: fable scope is not walled"
+eq "$(statusjson | jget walls.length)" "0" "upstream-529: no wall state is created"
+eq "$(statusjson | jget pins.length)" "0" "upstream-529: no pin state is created"
+eq "$(grep -c ' upstream-5xx account=a scope=general status=529 elapsed_ms=[0-9][0-9]*$' "$STORE_529/claudebd.log")" "1" "upstream-529: occurrence is logged exactly once"
+stop_daemon
+
 echo "scenario capacity-b: two bare 429s -> transient wall and account switch"
 : >"$MOCK_LOG"
 write_plan <<'JSON'
@@ -258,6 +275,19 @@ eq "$(sfield current)" "a" "e2-stream: streaming retry keeps account a current"
 eq "$(sfield accounts.a.walled)" "false" "e2-stream: streaming retry records no wall"
 eq "$(grep -c '^acct-a ' "$MOCK_LOG")" "2" "e2-stream: upstream sees two attempts on account a"
 contains "retry account=a scope=general status=429 unified=none same-account attempt=1" "$(cat "$WORK/e2-stream/claudebd.log")" "e2-stream: same-account retry is logged"
+
+write_plan <<'JSON'
+{ "byToken": { "acct-a": { "status": 529, "body": "{\"error\":\"stream-overloaded\"}" } } }
+JSON
+stop_daemon; start_daemon "$(setup_store "$WORK/e2-stream-529" a)"
+code=$(curl -s --max-time 20 -o "$WORK/body" -w '%{http_code}' -X POST \
+  -H "authorization: $(auth_header)" -H 'content-type: application/json' \
+  --data-binary "@$LARGE_BODY" "http://127.0.0.1:$DAEMON_PORT/v1/messages")
+eq "$code" "529" "e2-stream-529: client receives streaming-path upstream status unchanged"
+contains '"error":"stream-overloaded"' "$(cat "$WORK/body")" "e2-stream-529: client receives upstream body unchanged"
+eq "$(sfield accounts.a.walled)" "false" "e2-stream-529: account is not walled"
+eq "$(statusjson | jget walls.length)" "0" "e2-stream-529: no wall state is created"
+eq "$(grep -c ' upstream-5xx account=a scope=general status=529 elapsed_ms=[0-9][0-9]*$' "$WORK/e2-stream-529/claudebd.log")" "1" "e2-stream-529: occurrence is logged exactly once"
 
 write_plan <<'JSON'
 { "byToken": { "acct-a": { "sse": ["data: first\n\n", "data: second\n\n"], "abortAfter": 1, "delayMs": 20 } } }
