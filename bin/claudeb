@@ -725,7 +725,10 @@ probe_accounts() {
   now=$(date +%s)
   local started=''
   while IFS= read -r name; do
-    is_disabled "$name" && continue
+    if is_disabled "$name"; then
+      printf 'claudeb: %s: disabled; window not started\n' "$name" >&2
+      continue
+    fi
     case "$(cat "$dir/$name.display" 2>/dev/null)" in
       live|'live*') ;;
       auth!)

@@ -507,8 +507,10 @@ HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" \
   LLM_LIMITS_CODEX_REFRESH=1 LLM_LIMITS_CODEX_QUOTA_CMD="$WORK/fake-codex-quota" LLM_LIMITS_CODEX_CACHE="$CODEX_CACHE" \
   bash "$SCRIPT" --refresh --no-write >/dev/null 2>&1 || fail "codex fixture restore failed"
 refresh_failed=$(LLM_LIMITS_CODEX_REFRESH=1 LLM_LIMITS_CODEX_QUOTA_CMD=/usr/bin/false LLM_LIMITS_CODEX_CACHE="$CODEX_CACHE" \
-  PATH="$FAKE_BIN:$PATH" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --refresh 2>/dev/null) \
-  || fail "failed Codex refresh collection failed"
+  PATH="$FAKE_BIN:$PATH" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --refresh 2>/dev/null)
+rc=$?
+# Exit-code honesty: a --refresh that hit a real vendor error must never report a clean exit 0.
+[ "$rc" -eq 4 ] || fail "refresh with a live codex failure: expected exit 4, got $rc"
 jq -e '.vendors.codex.refresh_error == "live query failed" and .vendors.codex.five_hour.used_pct == 31' \
   <<<"$refresh_failed" >/dev/null || fail "Codex refresh failure was not machine-readable or stale data was lost"
 rm -f "$SENTINEL" "$CODEX_QUOTA_SENTINEL"
@@ -668,7 +670,11 @@ printf '{"timestamp":"%s","payload":{"type":"token_count","rate_limits":{"primar
   "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" >"$NULLRESET_HOME/.codex/sessions/rollout-nullreset.jsonl"
 CODEX_SENTINEL="$CODEX_SENTINEL" LLM_LIMITS_CODEX_REFRESH=1 LLM_LIMITS_CODEX_QUOTA_CMD="$WORK/nonexistent-quota" \
   PATH="$FAKE_BIN:$PATH" HOME="$NULLRESET_HOME" CLAUDEB_DIR="$WORK/no-claudeb-store" LLM_LIMITS_CACHE="$CACHE" \
-  bash "$SCRIPT" --refresh --start-windows >/dev/null 2>"$WORK/null.err" || fail "null resets_at refresh crashed"
+  bash "$SCRIPT" --refresh --start-windows >/dev/null 2>"$WORK/null.err"
+rc=$?
+# The run must not crash (e.g. an unset-variable abort), but a genuinely missing codex
+# quota helper is a real refresh error and must exit non-zero, never a silent/clean 0.
+[ "$rc" -eq 4 ] || fail "null resets_at refresh: expected exit 4 (codex refresh_error), got $rc"
 [ ! -e "$CODEX_SENTINEL" ] || fail "unknown codex window state triggered a spend"
 grep -q 'codex 5h window state unknown' "$WORK/null.err" || fail "unknown codex window state was skipped silently"
 null_reset=$(HOME="$NULLRESET_HOME" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "null resets_at collection failed"

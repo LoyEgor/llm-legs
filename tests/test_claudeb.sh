@@ -410,6 +410,20 @@ chmod +x "$FAKE_BIN/security" "$FAKE_BIN/curl"
   assert jq -e --argjson now "$now" '.five_hour.resets_at > $now and .five_hour.origin == "headers" and .auth.status == "ok"' "$limits_dir/epsilon.json" >/dev/null
 )
 
+# --- start-windows: a disabled account is skipped with an explicit, non-silent
+# cause instead of a bare `continue` ---
+(
+  account_names() { printf 'theta\n'; }
+  probe_one() { printf 'usage 0 200\n' >"$2/$1.result"; printf '{}' >"$2/$1.usage"; }
+  printf 'theta\n' >"$disabled_file"
+  theta_dir="$WORK/start-windows-disabled"
+  mkdir -p "$theta_dir"
+  printf '{}' >"$limits_dir/theta.json"
+  probe_accounts "$theta_dir" false true false 2>"$WORK/theta.err"
+  assert grep -q 'claudeb: theta: disabled; window not started' "$WORK/theta.err"
+  : >"$disabled_file"
+)
+
 # --- the paid haiku warm fallback is off unless explicitly opted in ---
 PAID_LOG="$WORK/paid-warm.log"
 cat >"$FAKE_BIN/security" <<EOF
@@ -469,4 +483,4 @@ assert test "$(jq -r '.auth.cause' "$limits_dir/gamma.json")" = 'warm failed, to
 assert test "$(jq -r '.auth.cause' "$limits_dir/delta.json")" = 'needs re-login'
 assert grep -qx delta "$WARM_CALLS"
 
-echo "PASS: $asserts asserts; reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth backoff and lock behavior, reserved names, disabled-account timeline, out-of-rotation profile launch proceeds direct (proxy leaks stripped), generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent-rotation adoption, warm-first heal ordering and fallback (healed clears to auth ok, unhealable stays expired), start-windows opens a fresh window and reconcile locks the new resets_at without regressing it, the paid haiku warm fallback stays off unless opted in, regular probes never warm, and heal_expired covers disabled accounts with actionable causes"
+echo "PASS: $asserts asserts; reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth backoff and lock behavior, reserved names, disabled-account timeline, out-of-rotation profile launch proceeds direct (proxy leaks stripped), generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent-rotation adoption, warm-first heal ordering and fallback (healed clears to auth ok, unhealable stays expired), start-windows opens a fresh window and reconcile locks the new resets_at without regressing it, start-windows skips a disabled account with an explicit cause, the paid haiku warm fallback stays off unless opted in, regular probes never warm, and heal_expired covers disabled accounts with actionable causes"

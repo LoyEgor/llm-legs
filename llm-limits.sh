@@ -112,6 +112,36 @@ run_bounded() {
   return "$rc"
 }
 
+# Like run_bounded, but for the claude refresh/heal/start-windows path specifically:
+# a bound expiring must be reported as an explicit "timed out" cause (never a silent
+# kill folded into a clean exit), and claudeb's own diagnostic stderr (skip reasons,
+# backoff notices) must reach the invoking terminal/log instead of being discarded.
+run_bounded_claude() {
+  local seconds=$1 phase=$2 pid watchdog_pid timeout_cmd rc errfile stderr_text
+  shift 2
+  errfile=$(mktemp "${TMPDIR:-/tmp}/llm-limits-claude-err.XXXXXX") || errfile=/dev/null
+  timeout_cmd=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
+  if [ -n "$timeout_cmd" ]; then
+    "$timeout_cmd" "$seconds" "$@" >/dev/null 2>"$errfile"
+    rc=$?
+  else
+    "$@" >/dev/null 2>"$errfile" &
+    pid=$!
+    (sleep "$seconds"; kill "$pid" 2>/dev/null || true) &
+    watchdog_pid=$!
+    wait "$pid" 2>/dev/null; rc=$?
+    kill "$watchdog_pid" 2>/dev/null || true
+    wait "$watchdog_pid" 2>/dev/null || true
+  fi
+  stderr_text=$(cat "$errfile" 2>/dev/null || true)
+  rm -f "$errfile"
+  [ -z "$stderr_text" ] || printf '%s\n' "$stderr_text" >&2
+  if [ "$rc" -eq 124 ]; then
+    claude_refresh_error="timed out during $phase (${seconds}s)"
+  fi
+  return "$rc"
+}
+
 iso_def='def iso2epoch:
   if type != "string" then null
   else (capture("^(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(\\.[0-9]+)?(?<tz>[Zz]|[+-][0-9]{2}:?[0-9]{2})$") // null) as $c |
@@ -339,6 +369,13 @@ claudeb_root="${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}"
 claudebd_url=${CLAUDEBD_URL:-http://127.0.0.1:${CLAUDEBD_PORT:-45789}/claudebd/status}
 claude_daemon='{"reachable":false}'
 claude_refresh_error=''
+# Action-path bounds only: this whole block is gated on --refresh, which the passive
+# collect-on-open path (hammerspoon's collectOnOpen, no args) never sets, so raising
+# these has no effect on that fast/synchronous path. Generous by default because a
+# refresh that runs long and reports real data beats one that is cut short and looks
+# clean; env-overridable for anyone who wants a tighter local bound.
+claude_sw_timeout=${LLM_LIMITS_CLAUDE_SW_TIMEOUT:-1200}
+claude_refresh_timeout=${LLM_LIMITS_CLAUDE_REFRESH_TIMEOUT:-300}
 if [ "$refresh" -eq 1 ]; then
   if [ -d "$claudeb_root/limits" ]; then
     claudeb_cmd=$(command -v "${LLM_LIMITS_CLAUDEB_CMD:-claudeb}" 2>/dev/null || true)
@@ -346,13 +383,16 @@ if [ "$refresh" -eq 1 ]; then
       if [ "$start_windows" -eq 1 ]; then
         # Feature-detect: older claudeb builds predate --start-windows and would die on it.
         if "$claudeb_cmd" --help 2>/dev/null | grep -q -- '--start-windows'; then
-          run_bounded 300 "$claudeb_cmd" --refresh --start-windows --heal || claude_refresh_error='probe failed'
+          run_bounded_claude "$claude_sw_timeout" 'refresh + start-windows + heal' "$claudeb_cmd" --refresh --start-windows --heal ||
+            { [ -n "$claude_refresh_error" ] || claude_refresh_error='probe failed'; }
         else
           echo "llm-limits.sh: claudeb lacks --start-windows; claude windows not started (free refresh only)" >&2
-          run_bounded 60 "$claudeb_cmd" accounts --no-spend || claude_refresh_error='probe failed'
+          run_bounded_claude "$claude_refresh_timeout" 'free refresh (no start-windows support)' "$claudeb_cmd" accounts --no-spend ||
+            { [ -n "$claude_refresh_error" ] || claude_refresh_error='probe failed'; }
         fi
       else
-        run_bounded 60 "$claudeb_cmd" accounts --no-spend --heal || claude_refresh_error='probe failed'
+        run_bounded_claude "$claude_refresh_timeout" 'free refresh + heal' "$claudeb_cmd" accounts --no-spend --heal ||
+          { [ -n "$claude_refresh_error" ] || claude_refresh_error='probe failed'; }
       fi
     elif [ "$start_windows" -eq 1 ]; then
       echo "llm-limits.sh: claudeb not found; cannot start claude windows" >&2
@@ -477,7 +517,13 @@ if [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
         (.account + " auth" + (if (.auth.cause? // "") == "" then "" else " (" + .auth.cause + ")" end))] | join(", "))}')
     claude=$(jq -c .claude <<<"$claude_bundle")
     auth_failures=$(jq -r .auth_failures <<<"$claude_bundle")
-    if [ -n "$auth_failures" ]; then claude_refresh_error="$auth_failures"; fi
+    if [ -n "$auth_failures" ]; then
+      if [ -n "$claude_refresh_error" ]; then
+        claude_refresh_error="$claude_refresh_error; $auth_failures"
+      else
+        claude_refresh_error="$auth_failures"
+      fi
+    fi
   fi
 else
   claude_last="$HOME/.claude/statusline-last.json"
@@ -845,5 +891,12 @@ else
 fi
 
 available=$(jq '[.vendors[] | select(.available == true)] | length' <<<"$result")
-[ "$available" -gt 0 ] && exit 0
-exit 3
+if [ "$available" -eq 0 ]; then
+  exit 3
+fi
+# Exit-code honesty: a --refresh that hit a real problem (timeout, probe failure, stuck
+# auth) must never look like a clean success, even when other vendors stayed available.
+if [ "$refresh" -eq 1 ] && { [ -n "$claude_refresh_error" ] || [ -n "$codex_refresh_error" ] || [ -n "$gemini_refresh_error" ]; }; then
+  exit 4
+fi
+exit 0

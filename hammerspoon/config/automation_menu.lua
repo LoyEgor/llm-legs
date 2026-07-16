@@ -14,6 +14,7 @@ local menuBar = hs.menubar.new()
 local titleTimer = nil
 local menuMode = nil
 local menuVisible = true
+local llmRefreshing = false
 
 local startOptions = {
     { title = "Now", minutes = 0 },
@@ -204,6 +205,12 @@ refreshTitle = function()
 
         menuBar:setTitle("…")
         menuBar:setTooltip("GPT Voice processing. Click to cancel.")
+        return
+    end
+
+    if llmRefreshing then
+        -- A live llm-limits refresh can run for minutes (start-windows); the 30s
+        -- titleTimer must not stomp the busy indicator set by onRefreshStart.
         return
     end
 
@@ -504,9 +511,11 @@ AutomationMenu.titleTimer = titleTimer
 
 if llmLimits then
     llmLimits.onRefreshStart = function()
+        llmRefreshing = true
         menuBar:setTitle("…")
     end
     llmLimits.onRefreshDone = function(ok, _, failures)
+        llmRefreshing = false
         if ok then
             refreshTitle()
         else
