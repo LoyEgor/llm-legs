@@ -1,7 +1,7 @@
 # Diagnostics: llm-legs multi-account/limits ecosystem
 
-For LLM sessions asked to "почини лимиты/меню/claudeb". Read this before touching code.
-Facts below are grounded in the code as of 2026-07-14 (line numbers may drift — re-grep, don't trust blindly).
+For LLM sessions asked to fix limits, the menu, or claudeb. Read this before touching code.
+Facts below are grounded in the code as of 2026-07-16 (line numbers may drift — re-grep, don't trust blindly).
 
 ## System map
 
@@ -15,14 +15,14 @@ Facts below are grounded in the code as of 2026-07-14 (line numbers may drift �
   Two independent OAuth-heal paths sharing `oauth-attempts.json`: **warm** (drives the real `claude` CLI's own OAuth rotation, zero-cost, comment at `bin/claudeb:632-635` — a token-endpoint 429/failed record must never gate it) and **direct refresh** (claudeb's own curl POST to the token endpoint, `oauth_refresh()`). `.claudeb-state` = current account name (single line); `disabled` = one disabled-account name per line, absent file = all enabled.
 - `bin/claudebd` — rotating reverse proxy on `127.0.0.1:45789` (launchd label `com.claudeb.daemon`, plist `~/Library/LaunchAgents/com.claudeb.daemon.plist`). Routes by scope (`general` vs `fable`, split on the request body's `model` starting with `claude-fable`, `requestScope()` `bin/claudebd:631`), applies per-account/per-scope walls, persists across restarts via `~/.claude-profiles/.claudeb/daemon-state.json` (only future-dated entries are kept). Logs to `~/.claude-profiles/.claudeb/claudebd.log` (self-truncates at 1MB on startup).
 - `bin/codexb` + `codex-quota.py` — same idea for Codex CLI, no proxy: per-account `CODEX_HOME` under `~/.codex-profiles/<name>`; quota via zero-spend app-server RPC (`account/rateLimits/read`), cached in `~/.llm-limits-codex.json`. `codexb status` prints one line per account (`main: Logged in ... | 5H ... | WEEKLY ...`); an account needing login shows `auth_needed`/`Not logged in` with no usage buckets.
-- `hammerspoon/llm-limits.lua` — menubar menu. Reads only `~/.llm-limits.json`; opening the menu calls `collectOnOpen()` first (`M.menuItems()`, rate-limited to 1/5s) which shells out to `llm-limits.sh` under a 3s timeout to refresh that cache before rendering — the daemon status endpoint itself is never queried directly by the Lua.
+- `hammerspoon/llm-limits.lua` — menubar menu. Reads only `~/.llm-limits.json`; opening the menu renders the existing cache immediately, then `collectOnOpen()` starts a detached, rate-limited `llm-limits.sh` task and re-renders after completion. The collector owns all action budgets; Lua neither adds a timeout nor queries the daemon status endpoint directly.
 - `bin/statusline.sh` — Claude Code statusline; renders the `cb:` segment (`cb:~<name>` = rotating proxy session, current daemon pick from `.claudeb-state`; `cb:<name>` = pinned/profile account; nothing for plain `main` sessions) and writes `~/.claude-profiles/.claudeb/limits/<acct>.json` whenever a live `rate_limits` payload arrives for a real (non-`main`, non-rotating) account, merging only strictly-newer buckets.
 
 ## Where to look, per symptom
 
 | Symptom | Look here |
 |---|---|
-| Menu entry gray (stale) or red (walled), unsure why | `curl -s 127.0.0.1:45789/claudebd/status \| jq '{current,current_fable,scopes,walls,all_walled_until}'`; then `jq '.vendors.claude.accounts, .vendors.claude.daemon' ~/.llm-limits.json` for `as_of`/`stale`/`origin` per account/bucket |
+| Menu entry gray (stale) or red (rotation-blocked), unsure why | `curl -s 127.0.0.1:45789/claudebd/status \| jq '{current,current_fable,scopes,accounts,walls,all_walled_until}'`; then `jq '.vendors.claude.accounts, .vendors.claude.daemon' ~/.llm-limits.json` for per-account `rotation`, `as_of`/`stale`/`origin`, and wall details |
 | "All accounts walled" / proxy returning 503 | `curl -s 127.0.0.1:45789/claudebd/status \| jq '{walls,all_walled_until}'`; cross-check `grep "^.*wall account=" ~/.claude-profiles/.claudeb/claudebd.log \| tail -20` for `reason=transient` (capacity) vs `reason=header` (real quota) |
 | Auth expired / re-login loops | `jq '.auth' ~/.claude-profiles/.claudeb/limits/*.json`; `cat ~/.claude-profiles/.claudeb/oauth-attempts.json` — `outcome` values: `attempting/success/success-adopted/failed/429/revoked/warming/warm-failed`; only `revoked` (invalid_grant + unrotated refresh token, 6h/21600s backoff) sets `cause=needs re-login` in claudeb's own logs — `auth.status` itself is only ever `"ok"` or `"expired"` |
 | Requests dying mid-stream | `grep "stream-abort" ~/.claude-profiles/.claudeb/claudebd.log \| tail -20` — `cause` is one of `upstream-idle` (proxy's own 600000ms/10min idle timeout), `upstream-close`, `upstream-error`, `client-close` (caller's socket closed before the upstream stream completed — this is the CALLING client's own timeout/cancellation, not something claudebd imposes) |
@@ -34,7 +34,8 @@ Facts below are grounded in the code as of 2026-07-14 (line numbers may drift �
 `GET /claudebd/status` shape (real example, trimmed):
 ```json
 {"pid":64763,"port":45789,"current":"notcom","current_fable":"com",
- "accounts":{"com":{"h5":6,"wk":3,"walled":false,"auth_failed_until":0,"fable_walled_until":0}},
+ "accounts":{"com":{"h5":6,"wk":3,"walled":false,"auth_failed_until":0,"fable_walled_until":0,
+   "usable":{"general":true,"fable":false},"blocked":{"general":null,"fable":"wall"}}},
  "scopes":{"general":"notcom","fable":"com"},
  "walls":[{"account":"com","scope":"fable","until":"2026-07-14T11:55:20.000Z","reason":"transient"}],
  "pins":[], "all_walled_until":{"general":null,"fable":null}}
@@ -63,10 +64,19 @@ Golden rules:
 - Restart the real daemon: `launchctl kickstart -k gui/$UID/com.claudeb.daemon` (non-sandboxed shell — `claudeb`'s own restart path does a SIGTERM/`daemon_stop` then a plain `kickstart` without `-k`; `-k` is the safe manual equivalent when you can't run `claudeb` itself).
 - Reload the menu after a Lua change: `hs.reload()` (via `hs -c 'hs.reload()'`), then rerun `tests/e2e_surfaces.sh`.
 
+## Reading `~/.llm-limits.json` as an LLM
+
+Treat `stale`, `expired`, `as_of`, and `effective_pct` as the data-honesty contract. Never infer current availability from raw `used_pct` alone: keep it as provenance, check the bucket's `resets_at` against the current time, and refresh before acting on an old or rolled-over frame.
+
 ## Display contract (hammerspoon/llm-limits.lua)
 
-- **Gray** = stale bucket only (explicit `.stale` flag wins over age; else `as_of`/`stale_seconds` vs a 1800s threshold for 5h, 21600s for weekly/fable) — says nothing about availability.
-- **Red** = walled only, scope-aware (`vendor.daemon.walls` bucketed per account into `general`/`fable`; the 5h/weekly rows use the general wall, the `fb` row uses the fable wall independently). Dim-red when both walled and stale.
-- **●** marks the current account (`is_current` or, for Codex, `vendor.current_account`).
+- **Gray** = stale bucket only (`.stale == true`) — says nothing about availability. Missing or false `.stale` is not gray; every normalized bucket must carry the collector-owned flag.
+- **Reset time** = the collector converts raw zero, empty, absent, and 1970-era reset placeholders to `resets_at: null`; Lua renders null/absent as `–`. Any real reset timestamp, including an expired window awaiting refreshed data, remains visible and `expired` independently controls dimming.
+- **Refresh failure** = vendor `refresh_error` comes from the collector. If the process cannot update the cache, Lua reports only the observed `exit N`, never a guessed cause.
+- **Red** = rotation-blocked, independent of the checkbox. The daemon is the single source through each account's `rotation.blocked`: `auth`, `wall`, `limit-5h`, or `limit-weekly` blocks the account title plus 5h/weekly rows; the scope-aware `fb` row uses `blocked.fable`, which may additionally be `limit-fable`. A fable-only blockage does not color the account title or general rows. Dim-red when both blocked and stale. If the daemon is unreachable, the collector omits `rotation` and the renderer does not infer blockage.
+- **Fable early warning** = when a non-blocked `fb` bucket is at least 80%, only its usage-bar substring is red. The rest of the row retains its normal or stale color, distinguishing warning from rotation blockage.
+- **Table age and markers** = every available row has an `AGE` column derived from that row's account/vendor `as_of` (`2m`, `1h48m`, and similar). `NOTE` names each stale or expired bucket explicitly; displayed percentages remain raw `used_pct` values.
+- **Plain age and markers** = every available row has an `| age ...` field followed by explicit bucket markers when applicable. Expired values are never rewritten to zero.
+- **●** marks the current account from the account block's collector-owned `is_current` flag.
 - **Checkbox ("In rotation")** only appears for real `claudeb-store` accounts (`enabled` = not explicitly disabled) — toggling it calls claudeb enable/disable.
 - An **explicit/pinned profile entry** is not part of `claudeb-store` and so never gets a checkbox: it's always shown direct, independent of rotation membership.

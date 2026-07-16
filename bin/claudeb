@@ -203,7 +203,7 @@ header_value() {
 
 merge_headers() {
   local name="$1" headers="$2" file="$limits_dir/$1.json"
-  local unified_status utilization hreset claim unified_reset tmp cached='{}'
+  local unified_status utilization hreset claim unified_reset tmp lock cached='{}'
   unified_status=$(header_value "$headers" anthropic-ratelimit-unified-status)
   utilization=$(header_value "$headers" anthropic-ratelimit-unified-5h-utilization)
   hreset=$(header_value "$headers" anthropic-ratelimit-unified-5h-reset)
@@ -221,36 +221,48 @@ merge_headers() {
     fi
   fi
   mkdir -p "$limits_dir"
-  tmp="$limits_dir/.$name.json.$$"
-  if [ -r "$file" ] && jq -e 'type == "object"' "$file" >/dev/null 2>&1; then
-    cached=$(jq -c . "$file")
-  fi
-  if ! jq -n --arg utilization "$utilization" --arg hreset "$hreset" \
-    --arg unified_status "$unified_status" --arg claim "$claim" --arg unified_reset "$unified_reset" \
-    --argjson old "$cached" --argjson now "$(date +%s)" '
-      $old + {five_hour: {
-        used_percentage: (($utilization | tonumber) * 100 | round),
-        resets_at: ($hreset | tonumber),
-        as_of: $now, origin: "headers"
-      }} +
-      (if $unified_status != "allowed" and $claim == "seven_day" then
-        {seven_day: {used_percentage: 100, resets_at: ($unified_reset | tonumber), as_of: $now, origin: "headers"}}
-       else {} end) +
-      {auth: {status: "ok", checked_at: $now}}' > "$tmp" 2>/dev/null; then
-    rm -f "$tmp"
-    return 1
-  fi
-  mv "$tmp" "$file"
+  lock="$file.lock"
+  lock_acquire "$lock" || return 1
+  (
+    trap 'lock_release "$lock"' EXIT
+    tmp="$limits_dir/.$name.json.$$"
+    if [ -r "$file" ] && jq -e 'type == "object"' "$file" >/dev/null 2>&1; then
+      cached=$(jq -c . "$file" 2>/dev/null) || cached='{}'
+    fi
+    if ! jq -n --arg utilization "$utilization" --arg hreset "$hreset" \
+      --arg unified_status "$unified_status" --arg claim "$claim" --arg unified_reset "$unified_reset" \
+      --argjson old "$cached" --argjson now "$(date +%s)" '
+        $old + {five_hour: {
+          used_percentage: (($utilization | tonumber) * 100 | round),
+          resets_at: ($hreset | tonumber),
+          as_of: $now, origin: "headers"
+        }} +
+        (if $unified_status != "allowed" and $claim == "seven_day" then
+          {seven_day: {used_percentage: 100, resets_at: ($unified_reset | tonumber), as_of: $now, origin: "headers"}}
+         else {} end) +
+        {auth: {status: "ok", checked_at: $now}}' > "$tmp" 2>/dev/null; then
+      rm -f "$tmp"
+      return 1
+    fi
+    if ! mv "$tmp" "$file"; then
+      rm -f "$tmp"
+      return 1
+    fi
+  )
 }
 
 merge_usage() {
-  local name="$1" body="$2" file="$limits_dir/$1.json" tmp cached='{}'
+  local name="$1" body="$2" file="$limits_dir/$1.json" tmp lock cached='{}'
   mkdir -p "$limits_dir"
-  tmp="$limits_dir/.$name.json.$$"
-  if [ -r "$file" ] && jq -e 'type == "object"' "$file" >/dev/null 2>&1; then
-    cached=$(jq -c . "$file")
-  fi
-  if ! jq --argjson old "$cached" --argjson now "$(date +%s)" '
+  lock="$file.lock"
+  lock_acquire "$lock" || return 1
+  (
+    trap 'lock_release "$lock"' EXIT
+    tmp="$limits_dir/.$name.json.$$"
+    if [ -r "$file" ] && jq -e 'type == "object"' "$file" >/dev/null 2>&1; then
+      cached=$(jq -c . "$file" 2>/dev/null) || cached='{}'
+    fi
+    if ! jq --argjson old "$cached" --argjson now "$(date +%s)" '
     def epoch:
       capture("^(?<base>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\\.[0-9]+)?(?:Z|\\+00:00)$") |
       (.base + "Z") | fromdateiso8601;
@@ -268,26 +280,35 @@ merge_usage() {
     elif ($merged.fable.resets_at? // 0) > $now then $merged + {fable: ($merged.fable + {origin: "cached"})}
     else $merged + {fable: {used_percentage: 0, resets_at: 0, as_of: $now, origin: "usage"}} end) +
     {auth: {status: "ok", checked_at: $now}}' \
-    "$body" > "$tmp" 2>/dev/null; then
-    rm -f "$tmp"
-    return 1
-  fi
-  mv "$tmp" "$file"
+      "$body" > "$tmp" 2>/dev/null; then
+      rm -f "$tmp"
+      return 1
+    fi
+    if ! mv "$tmp" "$file"; then
+      rm -f "$tmp"
+      return 1
+    fi
+  )
 }
 
 mark_auth() {
-  local name="$1" status="$2" cause="${3:-}" file="$limits_dir/$1.json" tmp cached='{}'
+  local name="$1" status="$2" cause="${3:-}" file="$limits_dir/$1.json" tmp lock cached='{}'
   mkdir -p "$limits_dir"
-  tmp="$limits_dir/.$name.json.auth.$$"
-  if [ -r "$file" ] && jq -e 'type == "object"' "$file" >/dev/null 2>&1; then
-    cached=$(jq -c . "$file")
-  fi
-  if jq -cn --argjson old "$cached" --argjson now "$(date +%s)" --arg status "$status" --arg cause "$cause" \
-    '$old + {auth: ({status: $status, checked_at: $now} + (if $cause == "" then {} else {cause: $cause} end))}' > "$tmp" 2>/dev/null; then
-    mv "$tmp" "$file"
-  else
-    rm -f "$tmp"
-  fi
+  lock="$file.lock"
+  lock_acquire "$lock" || return 0
+  (
+    trap 'lock_release "$lock"' EXIT
+    tmp="$limits_dir/.$name.json.auth.$$"
+    if [ -r "$file" ] && jq -e 'type == "object"' "$file" >/dev/null 2>&1; then
+      cached=$(jq -c . "$file" 2>/dev/null) || cached='{}'
+    fi
+    if jq -cn --argjson old "$cached" --argjson now "$(date +%s)" --arg status "$status" --arg cause "$cause" \
+      '$old + {auth: ({status: $status, checked_at: $now} + (if $cause == "" then {} else {cause: $cause} end))}' > "$tmp" 2>/dev/null; then
+      mv "$tmp" "$file" || rm -f "$tmp"
+    else
+      rm -f "$tmp"
+    fi
+  ) || true
 }
 
 oauth_client_id="9d1c250a-e61b-44d9-88ed-5944d1962f5e"
@@ -755,18 +776,30 @@ probe_accounts() {
 # authoritative resets_at. Advance-only: a usage read that still lags the fresh
 # window must never roll resets_at back onto the value it just replaced.
 reconcile_window() {
-  local name="$1" dir="$2" file="$limits_dir/$name.json" rdir source rc http before before_reset after tmp
+  local name="$1" dir="$2" file="$limits_dir/$name.json" rdir source rc http before before_reset after tmp lock
   before=$(jq -c '.five_hour // empty' "$file" 2>/dev/null) || before=''
   rdir=$(mktemp -d "${TMPDIR:-/tmp}/claudeb-reconcile.XXXXXX") || return 0
   probe_one "$name" "$rdir" false false
   read -r source rc http < "$rdir/$name.result" 2>/dev/null || source=''
   if [ "$source" = usage ] && merge_usage "$name" "$rdir/$name.usage" && [ -n "$before" ]; then
     before_reset=$(jq -r '.resets_at // 0' <<<"$before")
-    after=$(jq -r '.five_hour.resets_at // 0' "$file" 2>/dev/null) || after=0
-    if [ "${after:-0}" -lt "${before_reset:-0}" ] 2>/dev/null; then
-      tmp="$limits_dir/.$name.json.rc.$$"
-      if jq --argjson fh "$before" '.five_hour = $fh' "$file" > "$tmp" 2>/dev/null; then mv "$tmp" "$file"; else rm -f "$tmp"; fi
+    lock="$file.lock"
+    if ! lock_acquire "$lock"; then
+      rm -rf "$rdir"
+      return 0
     fi
+    (
+      trap 'lock_release "$lock"' EXIT
+      after=$(jq -r '.five_hour.resets_at // 0' "$file" 2>/dev/null) || after=0
+      if [ "${after:-0}" -lt "${before_reset:-0}" ] 2>/dev/null; then
+        tmp="$limits_dir/.$name.json.rc.$$"
+        if jq --argjson fh "$before" '.five_hour = $fh' "$file" > "$tmp" 2>/dev/null; then
+          mv "$tmp" "$file" || rm -f "$tmp"
+        else
+          rm -f "$tmp"
+        fi
+      fi
+    ) || true
   fi
   rm -rf "$rdir"
 }
@@ -962,7 +995,7 @@ profile_command() {
   # session data (resume transcripts, prompt history, rewind, plugins) are
   # shared with ~/.claude. Links are re-ensured on every launch so new shared
   # items propagate; a real (non-symlink) entry is never replaced.
-  for f in settings.json settings.local.json CLAUDE.md agents commands skills \
+  for f in settings.json settings.local.json keybindings.json CLAUDE.md agents commands skills \
            statusline.sh hooks plugins projects sessions file-history plans chrome history.jsonl; do
     if [ -e "$HOME/.claude/$f" ] && [ ! -e "$dir/$f" ] && [ ! -L "$dir/$f" ]; then
       ln -s "$HOME/.claude/$f" "$dir/$f"

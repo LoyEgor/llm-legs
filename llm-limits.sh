@@ -104,6 +104,12 @@ int_or_empty() {
   case "$1" in ''|*[!0-9]*) : ;; *) printf '%s' "$1" ;; esac
 }
 
+reset_iso_or_empty() {
+  local epoch
+  epoch=$(int_or_empty "$1")
+  [ -z "$epoch" ] || epoch_iso "$epoch"
+}
+
 run_bounded() {
   local seconds=$1 pid watchdog_pid timeout_cmd rc
   shift
@@ -164,13 +170,23 @@ iso_def='def iso2epoch:
     end
   end;'
 
-# Shared by the --plain and --table jq programs so the bucketing math cannot diverge.
-stale_def='def stale_amount(day_u; hour_u):
-  if (.stale_seconds // 0) > 3600 then
-    (if .stale_seconds >= 86400
-      then ((.stale_seconds / 86400 | floor | tostring) + day_u)
-      else ((.stale_seconds / 3600 | floor | tostring) + hour_u) end)
-  else null end;'
+age_def='def compact_age($now):
+  (.as_of | iso2epoch) as $asof |
+  (if $asof != null then ([$now - $asof, 0] | max)
+   elif (.stale_seconds | type) == "number" then .stale_seconds
+   else null end) as $seconds |
+  if $seconds == null then "-"
+  elif $seconds < 60 then "0m"
+  elif $seconds < 3600 then (($seconds / 60 | floor | tostring) + "m")
+  elif $seconds < 86400 then
+    (($seconds / 3600 | floor | tostring) + "h" +
+     (if (($seconds % 3600) / 60 | floor) == 0 then ""
+      else ((($seconds % 3600) / 60 | floor | tostring) + "m") end))
+  else
+    (($seconds / 86400 | floor | tostring) + "d" +
+     (if (($seconds % 86400) / 3600 | floor) == 0 then ""
+      else ((($seconds % 86400) / 3600 | floor | tostring) + "h") end))
+  end;'
 
 reset_format_def='def format_reset($now):
   . as $iso | ($iso | iso2epoch) as $epoch |
@@ -212,11 +228,16 @@ render_table() {
   fi
   # Sentinels (-1 / 9999999999) push rows with missing values last for every sort direction.
   local rows
-  rows=$(jq -r --arg dim "$note_dim" --arg rst "$note_rst" --argjson render_now "$now_epoch" "$stale_def$iso_def$reset_format_def"'
+  rows=$(jq -r --arg dim "$note_dim" --arg rst "$note_rst" --argjson render_now "$now_epoch" "$iso_def$age_def$reset_format_def"'
     def pct(v): if v == null then "-" else ((v | round | tostring) + "%") end;
     def mknote($extra):
-      (stale_amount("d"; "h")) as $a |
-      ([$extra, (if $a then "stale " + $a else null end)]
+      ([$extra,
+        (if .five.stale == true then "stale 5h" else null end),
+        (if .week.stale == true then "stale wk" else null end),
+        (if .fable.stale == true then "stale fable" else null end),
+        (if .five.expired == true then "expired 5h reset passed" else null end),
+        (if .week.expired == true then "expired wk reset passed" else null end),
+        (if .fable.expired == true then "expired fable reset passed" else null end)]
        | map(select(. != null and . != "")) | join(", ")
        | if . == "" then "-" else . end);
     def fable_note:
@@ -233,8 +254,6 @@ render_table() {
       (.week.resets_at | iso2epoch) as $ew |
       (if $x5 then null else $e5 end) as $s5 |
       (if $xw then null else $ew end) as $sw |
-      ([(if $x5 then "5h reset passed" else empty end),
-        (if $xw then "wk reset passed" else empty end)] | join(", ")) as $xn |
       [(if $x5 then 0 else ($p5 // -1) end), (if $xw then 0 else ($pw // -1) end),
        ($s5 // 9999999999), ($sw // 9999999999),
        ([($s5 // 9999999999), ($sw // 9999999999)] | min),
@@ -242,29 +261,33 @@ render_table() {
        .src, pct($p5), pct($pw),
        (.five.resets_at | format_reset($render_now)),
        (.week.resets_at | format_reset($render_now)),
-       (if $xn == "" then .note
-        elif .note == "-" or .note == "" then $xn
-        else .note + ", " + $xn end)] | @tsv;
+       .age, .note] | @tsv;
     .vendors as $v |
     [
       (if $v.claude.available and (($v.claude.accounts | type) == "array") then
          ($v.claude.accounts[]
           | {src: ("claude/" + .account + (if .is_current then "*" else "" end)),
-             five: .five_hour, week: .weekly,
-             note: mknote(([fable_note, (if .enabled == false then "off" else null end)]
-                           | map(select(. != null)) | join(", ")))})
-       else {src: "claude", five: null, week: null, note: ($v.claude.status // "-")} end),
+             five: .five_hour, week: .weekly, fable: .fable,
+             age: compact_age($render_now),
+             extra: ([fable_note, (if .enabled == false then "off" else null end)]
+                     | map(select(. != null)) | join(", "))}
+          | .note = mknote(.extra))
+       else {src: "claude", five: null, week: null, fable:null, age:"-", note: ($v.claude.status // "-")} end),
       (("codex", "gemini") as $k | $v[$k]
        | if .available then
            if $k == "codex" and ((.accounts | type) == "array") and (.accounts | length) > 1 then
              (.accounts[]
               | {src: ("codex/" + .account + (if .is_current then "*" else "" end)),
-                 five: .five_hour, week: .weekly, note: mknote(.plan_type)})
+                 five: .five_hour, week: .weekly, fable:null,
+                 age: compact_age($render_now), extra:.plan_type}
+              | .note = mknote(.extra))
            else
-             {src: $k, five: .five_hour, week: .weekly,
-              note: mknote(if $k == "codex" then .plan_type else .group end)}
+             {src: $k, five: .five_hour, week: .weekly, fable:null,
+              age: compact_age($render_now),
+              extra:(if $k == "codex" then .plan_type else .group end)}
+             | .note = mknote(.extra)
            end
-         else {src: $k, five: null, week: null, note: (.status // "-")} end)
+         else {src: $k, five: null, week: null, fable:null, age:"-", note: (.status // "-")} end)
     ] | .[] | row
   ' <<<"$result")
 
@@ -275,26 +298,28 @@ render_table() {
     sorted=$rows
   fi
 
-  local k5 kw e5 ew kr dim5 dimw src p5 pw r5 rw note
-  local w_src=6 w_p5=3 w_pw=3 w_r5=8 w_rw=8
-  while IFS=$'\t' read -r k5 kw e5 ew kr dim5 dimw src p5 pw r5 rw note; do
+  local k5 kw e5 ew kr dim5 dimw src p5 pw r5 rw age note
+  local w_src=6 w_p5=3 w_pw=3 w_r5=8 w_rw=8 w_age=3
+  while IFS=$'\t' read -r k5 kw e5 ew kr dim5 dimw src p5 pw r5 rw age note; do
     [ -n "$src" ] || continue
     [ "${#src}" -gt "$w_src" ] && w_src=${#src}
     [ "${#p5}" -gt "$w_p5" ] && w_p5=${#p5}
     [ "${#pw}" -gt "$w_pw" ] && w_pw=${#pw}
     [ "${#r5}" -gt "$w_r5" ] && w_r5=${#r5}
     [ "${#rw}" -gt "$w_rw" ] && w_rw=${#rw}
+    [ "${#age}" -gt "$w_age" ] && w_age=${#age}
   done <<<"$sorted"
 
-  printf '%-*s  %-*s  %-*s  %-*s  %-*s  %s\n' \
-    "$w_src" SOURCE "$w_p5" "5H%" "$w_pw" "WK%" "$w_r5" "5H RESET" "$w_rw" "WK RESET" NOTE
-  while IFS=$'\t' read -r k5 kw e5 ew kr dim5 dimw src p5 pw r5 rw note; do
+  printf '%-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %s\n' \
+    "$w_src" SOURCE "$w_p5" "5H%" "$w_pw" "WK%" "$w_r5" "5H RESET" "$w_rw" "WK RESET" "$w_age" AGE NOTE
+  while IFS=$'\t' read -r k5 kw e5 ew kr dim5 dimw src p5 pw r5 rw age note; do
     [ -n "$src" ] || continue
     printf '%-*s  ' "$w_src" "$src"
     pct_cell "$p5" "$w_p5" "$table_color" "$k5" "$dim5"; printf '  '
     pct_cell "$pw" "$w_pw" "$table_color" "$kw" "$dimw"; printf '  '
     dim_cell "$r5" "$w_r5" "$table_color" "$dim5"; printf '  '
     dim_cell "$rw" "$w_rw" "$table_color" "$dimw"; printf '  '
+    printf '%-*s  ' "$w_age" "$age"
     printf '%s\n' "$note"
   done <<<"$sorted"
 }
@@ -389,12 +414,10 @@ claude='{"available":false,"status":"no rate-limit snapshot","source":"none","la
 claudeb_root="${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}"
 claudebd_url=${CLAUDEBD_URL:-http://127.0.0.1:${CLAUDEBD_PORT:-45789}/claudebd/status}
 claude_daemon='{"reachable":false}'
+claude_rotation='{}'
 claude_refresh_error=''
-# Action-path bounds only: this whole block is gated on --refresh, which the passive
-# collect-on-open path (hammerspoon's collectOnOpen, no args) never sets, so raising
-# these has no effect on that fast/synchronous path. Generous by default because a
-# refresh that runs long and reports real data beats one that is cut short and looks
-# clean; env-overridable for anyone who wants a tighter local bound.
+# Action-path bounds only: the detached collect-on-open path has no --refresh, so these
+# never constrain it. Generous defaults favor a complete, honest refresh.
 claude_sw_timeout=${LLM_LIMITS_CLAUDE_SW_TIMEOUT:-1200}
 claude_refresh_timeout=${LLM_LIMITS_CLAUDE_REFRESH_TIMEOUT:-300}
 if [ "$refresh" -eq 1 ] && [ -z "$refresh_account" ]; then
@@ -415,8 +438,9 @@ if [ "$refresh" -eq 1 ] && [ -z "$refresh_account" ]; then
         run_bounded_claude "$claude_refresh_timeout" 'free refresh + heal' "$claudeb_cmd" accounts --no-spend --heal ||
           { [ -n "$claude_refresh_error" ] || claude_refresh_error='probe failed'; }
       fi
-    elif [ "$start_windows" -eq 1 ]; then
-      echo "llm-limits.sh: claudeb not found; cannot start claude windows" >&2
+    else
+      claude_refresh_error='claudeb not found'
+      echo "llm-limits.sh: claudeb not found; cannot refresh claude accounts" >&2
     fi
   elif [ "$start_windows" -eq 1 ]; then
     echo "llm-limits.sh: no claudeb store; cannot start claude windows" >&2
@@ -424,6 +448,12 @@ if [ "$refresh" -eq 1 ] && [ -z "$refresh_account" ]; then
 fi
 claudebd_status=$(curl -fsS --connect-timeout 0.2 --max-time 0.5 "$claudebd_url" 2>/dev/null || true)
 if [ -n "$claudebd_status" ]; then
+  claude_rotation=$(jq -ce '
+    select(type == "object" and (.accounts | type) == "object") |
+    [.accounts | to_entries[] |
+      select((.value.usable | type) == "object" and (.value.blocked | type) == "object") |
+      {key:.key,value:{usable:.value.usable,blocked:.value.blocked}}] | from_entries
+  ' <<<"$claudebd_status" 2>/dev/null || printf '%s' '{}')
   claude_daemon=$(jq -ce --argjson now "$now_epoch" '
     select(type == "object" and (.accounts | type) == "object") |
     def legacy_daemon:
@@ -479,21 +509,23 @@ if [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
     mtime=$(file_mtime "$claude_file" || true)
     [ -n "$claude_data" ] && [ -n "$mtime" ] || continue
     has_five=0
-    if jq -e '(.five_hour.used_percentage | type) == "number" and (.five_hour.resets_at | type) == "number"' <<<"$claude_data" >/dev/null; then
-      has_five=1
-    fi
+    if jq -e '(.five_hour.used_percentage | type) == "number"' <<<"$claude_data" >/dev/null; then has_five=1; fi
     stale=$((now_epoch - mtime)); [ "$stale" -ge 0 ] || stale=0
     five_reset=''
-    [ "$has_five" -eq 0 ] || five_reset=$(epoch_iso "$(jq -r '.five_hour.resets_at' <<<"$claude_data")")
+    five_reset_epoch=$(int_or_empty "$(jq -r '.five_hour.resets_at // empty' <<<"$claude_data")")
+    [ -z "$five_reset_epoch" ] || five_reset=$(epoch_iso "$five_reset_epoch")
+    has_week=0
     week_reset=''
-    if jq -e '(.seven_day.used_percentage | type) == "number" and (.seven_day.resets_at | type) == "number"' <<<"$claude_data" >/dev/null; then
-      week_reset=$(epoch_iso "$(jq -r '.seven_day.resets_at' <<<"$claude_data")")
-    fi
+    if jq -e '(.seven_day.used_percentage | type) == "number"' <<<"$claude_data" >/dev/null; then has_week=1; fi
+    week_reset_epoch=$(int_or_empty "$(jq -r '.seven_day.resets_at // empty' <<<"$claude_data")")
+    [ -z "$week_reset_epoch" ] || week_reset=$(epoch_iso "$week_reset_epoch")
+    has_fable=0
     fable_reset=''
-    if jq -e '(.fable.used_percentage | type) == "number" and (.fable.resets_at | type) == "number" and .fable.resets_at > 0' <<<"$claude_data" >/dev/null; then
-      fable_reset=$(epoch_iso "$(jq -r '.fable.resets_at' <<<"$claude_data")")
-    fi
+    if jq -e '(.fable.used_percentage | type) == "number"' <<<"$claude_data" >/dev/null; then has_fable=1; fi
+    fable_reset_epoch=$(int_or_empty "$(jq -r '.fable.resets_at // empty' <<<"$claude_data")")
+    [ -z "$fable_reset_epoch" ] || fable_reset=$(epoch_iso "$fable_reset_epoch")
     account_json=$(jq -cn --argjson d "$claude_data" --arg account "$account" --argjson enabled "$enabled" \
+      --argjson has_five "$has_five" --argjson has_week "$has_week" --argjson has_fable "$has_fable" \
       --arg five_reset "$five_reset" --argjson mtime "$mtime" --argjson now "$now_epoch" \
       --arg week_reset "$week_reset" --arg fable_reset "$fable_reset" \
       --argjson stale "$stale" '
@@ -511,13 +543,16 @@ if [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
        week: ($d | meta(.seven_day; 21600)),
        fable: ($d | meta(.fable; 21600))} as $x |
       {account:$account,is_current:false,enabled:$enabled,
-       five_hour:(if $five_reset == ""
+       five_hour:(if $has_five == 0
                   then {used_pct:null,resets_at:null,as_of:$mtime,stale:true}
-                  else {used_pct:$d.five_hour.used_percentage,resets_at:$five_reset} + ($x.five // {}) end),
+                  else {used_pct:$d.five_hour.used_percentage,
+                        resets_at:(if $five_reset == "" then null else $five_reset end)} + ($x.five // {}) end),
        as_of:($account_asof | todateiso8601),stale_seconds:($now - $account_asof)} +
       (if $x.auth then {auth:$x.auth} else {} end) +
-      (if $week_reset == "" then {} else {weekly:({used_pct:$d.seven_day.used_percentage,resets_at:$week_reset} + ($x.week // {}))} end) +
-      (if $fable_reset == "" then {} else {fable:({used_pct:$d.fable.used_percentage,resets_at:$fable_reset} + ($x.fable // {}))} end)' <<<"$claude_data")
+      (if $has_week == 0 then {} else {weekly:({used_pct:$d.seven_day.used_percentage,
+        resets_at:(if $week_reset == "" then null else $week_reset end)} + ($x.week // {}))} end) +
+      (if $has_fable == 0 then {} else {fable:({used_pct:$d.fable.used_percentage,
+        resets_at:(if $fable_reset == "" then null else $fable_reset end)} + ($x.fable // {}))} end)' <<<"$claude_data")
     accounts_lines+="$account_json"$'\n'
   done
   accounts=$(jq -sc '.' <<<"$accounts_lines")
@@ -525,7 +560,12 @@ if [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
     if ! jq -e --arg current "$current" 'any(.account == $current)' <<<"$accounts" >/dev/null; then
       current=$(jq -r 'sort_by(.account)[0].account' <<<"$accounts")
     fi
-    accounts=$(jq -c --arg current "$current" 'map(.is_current = (.account == $current)) | sort_by(if .is_current then 0 else 1 end, .account)' <<<"$accounts")
+    accounts=$(jq -c --arg current "$current" --argjson rotation "$claude_rotation" '
+      map(.account as $account |
+        .is_current = (.account == $current) |
+        if ($rotation | has($account)) then .rotation = $rotation[$account] else . end) |
+      sort_by(if .is_current then 0 else 1 end, .account)
+    ' <<<"$accounts")
     claude_bundle=$(jq -cn --argjson accounts "$accounts" --argjson wall "$claude_wall" '
       ($accounts[0]) as $current |
       (first($accounts[] | select(.five_hour.used_pct | type == "number")) // $current) as $five_source |
@@ -554,22 +594,23 @@ else
   claude_data=''
   if [ -r "$claude_last" ] && [ "${last_mtime:-0}" -ge "${rl_mtime:-0}" ]; then
     claude_file="$claude_last"; claude_source=statusline-last
-    claude_data=$(jq -c '.rate_limits | select((.five_hour.used_percentage|type)=="number" and (.five_hour.resets_at|type)=="number" and (.seven_day.used_percentage|type)=="number" and (.seven_day.resets_at|type)=="number")' "$claude_file" 2>/dev/null || true)
+    claude_data=$(jq -c '.rate_limits | select((.five_hour.used_percentage|type)=="number" and (.seven_day.used_percentage|type)=="number")' "$claude_file" 2>/dev/null || true)
   fi
   if [ -z "$claude_data" ]; then
     claude_file="$claude_rl"; claude_source=statusline-cache
-    [ ! -r "$claude_file" ] || claude_data=$(jq -c 'select((.five_hour.used_percentage|type)=="number" and (.five_hour.resets_at|type)=="number" and (.seven_day.used_percentage|type)=="number" and (.seven_day.resets_at|type)=="number")' "$claude_file" 2>/dev/null || true)
+    [ ! -r "$claude_file" ] || claude_data=$(jq -c 'select((.five_hour.used_percentage|type)=="number" and (.seven_day.used_percentage|type)=="number")' "$claude_file" 2>/dev/null || true)
   fi
   if [ -n "$claude_data" ]; then
     mtime=$(file_mtime "$claude_file" || true)
     if [ -n "$mtime" ]; then
       stale=$((now_epoch - mtime)); [ "$stale" -ge 0 ] || stale=0
       claude=$(jq -cn --argjson d "$claude_data" --argjson wall "$claude_wall" --arg source "$claude_source" \
-        --arg five_reset "$(epoch_iso "$(jq -r '.five_hour.resets_at' <<<"$claude_data")")" --arg week_reset "$(epoch_iso "$(jq -r '.seven_day.resets_at' <<<"$claude_data")")" \
+        --arg five_reset "$(reset_iso_or_empty "$(jq -r '.five_hour.resets_at // empty' <<<"$claude_data")")" \
+        --arg week_reset "$(reset_iso_or_empty "$(jq -r '.seven_day.resets_at // empty' <<<"$claude_data")")" \
         --arg as_of "$(epoch_iso "$mtime")" --argjson as_of_epoch "$mtime" --argjson stale "$stale" '
         {account:"main",is_current:true,enabled:true,
-         five_hour:{used_pct:$d.five_hour.used_percentage,resets_at:$five_reset,as_of:$as_of_epoch,stale:($stale > 1800)},
-         weekly:{used_pct:$d.seven_day.used_percentage,resets_at:$week_reset,as_of:$as_of_epoch,stale:($stale > 21600)},
+         five_hour:{used_pct:$d.five_hour.used_percentage,resets_at:(if $five_reset == "" then null else $five_reset end),as_of:$as_of_epoch,stale:($stale > 1800)},
+         weekly:{used_pct:$d.seven_day.used_percentage,resets_at:(if $week_reset == "" then null else $week_reset end),as_of:$as_of_epoch,stale:($stale > 21600)},
          as_of:$as_of,stale_seconds:$stale} as $account |
         {available:true,source:$source,current_account:"main",accounts:[$account],five_hour:$account.five_hour,weekly:$account.weekly,as_of:$as_of,stale_seconds:$stale,last_wall:$wall}')
     fi
@@ -835,9 +876,7 @@ if [ -r "$gemini_cache" ]; then
     [$group.buckets[]? | select(.window == "5h")][0] as $five |
     [$group.buckets[]? | select(.window == "weekly")][0] as $week |
     select(($five.remainingFraction | type) == "number" and
-           ($five.resetTime | type) == "string" and
-           ($week.remainingFraction | type) == "number" and
-           ($week.resetTime | type) == "string") |
+           ($week.remainingFraction | type) == "number") |
     {group:$group.displayName,five:$five,week:$week}
   ' "$gemini_cache" 2>/dev/null || true)
   gemini_mtime=$(file_mtime "$gemini_cache" 2>/dev/null || true)
@@ -863,9 +902,20 @@ result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson claude "$claude" \
   --argjson claude_daemon "$claude_daemon" \
   --arg claude_error "$claude_refresh_error" --arg codex_error "$codex_refresh_error" --arg gemini_error "$gemini_refresh_error" \
   "$iso_def"'
+  def normalize_reset:
+    . as $value |
+    if $value == null or $value == "" then null
+    elif ($value | type) == "number" then
+      if $value < 31536000 then null else ($value | todateiso8601) end
+    elif ($value | type) == "string" then
+      ($value | iso2epoch) as $epoch |
+      if $epoch != null and $epoch < 31536000 then null else $value end
+    else null
+    end;
   def mark:
-    if type == "object" and has("used_pct") and has("resets_at")
-    then (.resets_at | iso2epoch) as $e |
+    if type == "object" and has("used_pct")
+    then .resets_at = ((.resets_at // null) | normalize_reset) |
+      (.resets_at | iso2epoch) as $e |
       if $e != null and $e <= $now
       then . + {expired:true,effective_pct:0}
       else . + {effective_pct:.used_pct}
@@ -887,9 +937,9 @@ result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson claude "$claude" \
   def vendor_stale:
     [.five_hour?, .weekly?, .fable?] | map(select(type == "object") | .stale == true) | any;
   {schema:1,fetched_at:$fetched_at,vendors:{claude:($claude + {daemon:$claude_daemon}),codex:$codex,gemini:$gemini}}
-  | if $claude_error != "" and .vendors.claude.available then .vendors.claude.refresh_error = $claude_error else . end
-  | if $codex_error != "" and .vendors.codex.available then .vendors.codex.refresh_error = $codex_error else . end
-  | if $gemini_error != "" and .vendors.gemini.available then .vendors.gemini.refresh_error = $gemini_error else . end
+  | if $claude_error != "" then .vendors.claude.refresh_error = $claude_error else . end
+  | if $codex_error != "" then .vendors.codex.refresh_error = $codex_error else . end
+  | if $gemini_error != "" then .vendors.gemini.refresh_error = $gemini_error else . end
   | .vendors |= with_entries(if .value.available == true then .value += {stale: (.value | vendor_stale)} else . end)
   | walk(mark)
   | .vendors |= with_entries(.key as $key | .value.usable_now = (.value | vendor_usable($key)))')
@@ -915,10 +965,7 @@ else
     plain_dim=$'\033[2m'
     plain_rst=$'\033[0m'
   fi
-  jq -r --arg dim "$plain_dim" --arg rst "$plain_rst" --argjson render_now "$now_epoch" "$stale_def$iso_def$reset_format_def"'
-    def age:
-      (stale_amount("d"; "h")) as $a |
-      if $a == null then "" else " (stale " + $a + ")" end;
+  jq -r --arg dim "$plain_dim" --arg rst "$plain_rst" --argjson render_now "$now_epoch" "$iso_def$age_def$reset_format_def"'
     def dimmed($window):
       if ($window.expired == true or $window.stale == true) then $dim + . + $rst else . end;
     def pct($window):
@@ -927,14 +974,27 @@ else
     def reset($window):
       if $window == null then "—"
       else (($window.resets_at | format_reset($render_now)) | dimmed($window)) end;
+    def markers($five; $week; $fable):
+      [(if $five.stale == true then "stale 5h" else null end),
+       (if $week.stale == true then "stale wk" else null end),
+       (if $fable.stale == true then "stale fable" else null end),
+       (if $five.expired == true then "expired 5h" else null end),
+       (if $week.expired == true then "expired wk" else null end),
+       (if $fable.expired == true then "expired fable" else null end)]
+      | map(select(. != null)) | join(", ");
+    def honesty($row; $five; $week; $fable):
+      (markers($five; $week; $fable)) as $markers |
+      " | age " + ($row | compact_age($render_now)) +
+      (if $markers == "" then "" else " | " + $markers end);
     .vendors | to_entries[] |
     if .value.available then
       if .key == "claude" and (.value.accounts | type) == "array" then
         .value.accounts[] | ("claude/" + .account + ": " + pct(.five_hour) + "/" + pct(.weekly) +
          " | resets " + reset(.five_hour) + " / " + reset(.weekly) +
-         (if .enabled == false then " | off" else "" end) + (. | age))
+         (if .enabled == false then " | off" else "" end) + honesty(.; .five_hour; .weekly; .fable))
       else (.key + ": " + pct(.value.five_hour) + "/" + pct(.value.weekly) +
-       " | resets " + reset(.value.five_hour) + " / " + reset(.value.weekly) + (.value|age)) end
+       " | resets " + reset(.value.five_hour) + " / " + reset(.value.weekly) +
+       honesty(.value; .value.five_hour; .value.weekly; null)) end
     else (.key + ": " + .value.status + (if .value.last_wall then " | last wall " + .value.last_wall else "" end)) end
   ' <<<"$result"
 fi

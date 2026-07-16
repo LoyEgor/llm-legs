@@ -105,49 +105,28 @@ local function formatAccountAge(value)
   return string.format("%dd", math.floor(hours / 24))
 end
 
-local function accountTitle(text, age, warning, walled)
-  local title = infoTitle(text, warning, false, walled)
+local function accountTitle(text, age, walled)
+  local title = infoTitle(text, false, false, walled)
   if age then
     title = title .. infoTitle("  " .. age, false, true)
   end
   return title
 end
 
--- Staleness contract: trust explicit `stale` booleans (bucket, then account, then
--- vendor); only when absent fall back to as_of/stale_seconds age vs the per-bucket
--- threshold (1800s five_hour, 21600s weekly/fable).
-local function isStale(threshold, ...)
-  local nodes = { ... }
-  for _, node in ipairs(nodes) do
-    if type(node) == "table" and type(node.stale) == "boolean" then
-      return node.stale
-    end
-  end
-  for _, node in ipairs(nodes) do
-    if type(node) == "table" then
-      local timestamp = parseTime(node.as_of)
-      if timestamp then
-        return (os.time() - timestamp) > threshold
-      end
-      local seconds = tonumber(node.stale_seconds)
-      if seconds then
-        return seconds > threshold
-      end
-    end
-  end
-  return false
+local function isStale(bucket)
+  return type(bucket) == "table" and bucket.stale == true
 end
 
 local function formatResetTime(value)
+  if value == nil then
+    return "–"
+  end
   local timestamp = parseTime(value)
   if not timestamp then
     return "unknown"
   end
 
   local delta = timestamp - os.time()
-  if delta < -86400 then
-    return "-"
-  end
   if delta < 86400 then
     return os.date("%H:%M", timestamp)
   end
@@ -164,14 +143,21 @@ local function usageBar(value)
   return string.rep("▓", filled) .. string.rep("░", 5 - filled)
 end
 
-local function rowTitle(account, label, bucket, gray, walled)
+local function rowTitle(account, label, bucket, gray, walled, barWarning)
   bucket = type(bucket) == "table" and bucket or {}
   gray = gray or bucket.expired == true
   local pct = tonumber(bucket.effective_pct)
   local pctText = pct and string.format("%d%%", math.floor(pct + 0.5)) or "-"
   local reset = formatResetTime(bucket.resets_at)
-  return infoTitle(string.format("%-6s  %-2s  %s  %4s  %9s", account or "", label,
-    usageBar(pct), pctText, reset), false, gray, walled)
+  local prefix = string.format("%-6s  %-2s  ", account or "", label)
+  local bar = usageBar(pct)
+  local suffix = string.format("  %4s  %9s", pctText, reset)
+  if barWarning and not walled then
+    return infoTitle(prefix, false, gray, false)
+      .. infoTitle(bar, true, false, false)
+      .. infoTitle(suffix, false, gray, false)
+  end
+  return infoTitle(prefix .. bar .. suffix, false, gray, walled)
 end
 
 local function readLlmLimits()
@@ -221,6 +207,7 @@ local function newCollectorTask(callback, args)
 end
 
 local lastCollectEpoch = 0
+local collectOnOpenTask = nil
 
 local function vendorRefreshFailures(limits)
   local failures = {}
@@ -241,30 +228,28 @@ end
 local function recordRefreshOutcome(exitCode)
   local failures = vendorRefreshFailures(readLlmLimits())
   if exitCode ~= 0 and #failures == 0 then
-    table.insert(failures, "collector")
+    table.insert(failures, "exit " .. tostring(exitCode))
   end
   return failures
 end
 
-local function shQuote(value)
-  return "'" .. tostring(value):gsub("'", "'\\''") .. "'"
-end
-
--- Menu-open collect includes a sub-second localhost daemon probe bounded by the outer timeout.
 local function collectOnOpen()
   local now = os.time()
+  if collectOnOpenTask and collectOnOpenTask:isRunning() then
+    return
+  end
   if now - lastCollectEpoch < 5 then
     return
   end
   lastCollectEpoch = now
-
-  local environment = baseEnvironment()
-  local command = "export PATH=" .. shQuote(environment.PATH) .. ";"
-  if M.wallsLog then
-    command = command .. " export LLM_LIMITS_WALLS_LOG=" .. shQuote(M.wallsLog) .. ";"
+  local task = newCollectorTask(function()
+    readLlmLimits()
+    pcall(M.onRefreshDone, true)
+  end, {})
+  collectOnOpenTask = task
+  if not task or not task:start() then
+    collectOnOpenTask = nil
   end
-  command = command .. " timeout 3 " .. shQuote(M.collectorPath) .. " >/dev/null 2>&1"
-  pcall(hs.execute, command)
 end
 
 -- hs.task.new needs a launch path, not a PATH-resolved name; a bare command is taken from ~/.local/bin
@@ -519,33 +504,18 @@ function M.menuItems()
           end
           table.insert(menu, fallbackRow)
         end
-        local accountWalls = {}
-        local daemon = vendor.daemon
-        if isClaudeAccounts and type(daemon) == "table" and daemon.reachable == true
-            and type(daemon.walls) == "table" then
-          for _, wall in ipairs(daemon.walls) do
-            if type(wall) == "table" and type(wall.account) == "string" then
-              local wallEpoch = parseTime(wall["until"])
-              if not wallEpoch or wallEpoch > os.time() then
-                accountWalls[wall.account] = accountWalls[wall.account] or {}
-                local scope = wall.scope == "fable" and "fable" or "general"
-                accountWalls[wall.account][scope] = true
-              end
-            end
-          end
-        end
         for _, block in ipairs(blocks) do
           local fiveHour = block.five_hour or {}
           local weekly = block.weekly
           local acct = block.account or entry.label
           local isCurrent = block.is_current == true
-            or (isCodexAccounts and acct == vendor.current_account)
           local enabled = block.enabled ~= false
           local authNeeded = block.auth_needed == true
           local accountAge = not authNeeded and formatAccountAge(block.as_of) or nil
-          local accountWall = accountWalls[acct] or {}
-          local generalWalled = accountWall.general == true
-          local fableWalled = accountWall.fable == true
+          local rotation = type(block.rotation) == "table" and block.rotation or {}
+          local blocked = type(rotation.blocked) == "table" and rotation.blocked or {}
+          local generalWalled = blocked.general ~= nil
+          local fableWalled = blocked.fable ~= nil
           if isAccountRows then
             local resetCredits = tonumber(block.reset_credits)
             local resetSuffix = resetCredits and resetCredits > 0
@@ -553,7 +523,7 @@ function M.menuItems()
             local accountRow = {
               title = authNeeded and loginNeededTitle(acct)
                 or accountTitle(acct .. resetSuffix .. (isCurrent and "  ●" or ""),
-                  accountAge, false, generalWalled),
+                  accountAge, generalWalled),
               disabled = true,
             }
             if hasAccountControls then
@@ -584,22 +554,23 @@ function M.menuItems()
             table.insert(menu, accountRow)
           end
           if not authNeeded then
-            local fiveGray = isStale(1800, fiveHour)
+            local fiveGray = isStale(fiveHour)
             local fiveRow = {
               title = rowTitle("", "5h", fiveHour, fiveGray, generalWalled),
               disabled = true,
             }
             table.insert(menu, fiveRow)
-            local function tailRow(label, bucket, walled)
+            local function tailRow(label, bucket, walled, barWarning)
               if type(bucket) == "table" then
-                local gray = isStale(21600, bucket)
-                return rowTitle("", label, bucket, gray, walled)
+                local gray = isStale(bucket)
+                return rowTitle("", label, bucket, gray, walled, barWarning)
               end
-              return rowTitle("", label, nil, false, walled)
+              return rowTitle("", label, nil, false, walled, barWarning)
             end
             table.insert(menu, { title = tailRow("wk", weekly, generalWalled), disabled = true })
             if type(block.fable) == "table" then
-              table.insert(menu, { title = tailRow("fb", block.fable, fableWalled), disabled = true })
+              local fableWarning = (tonumber(block.fable.effective_pct) or 0) >= 80
+              table.insert(menu, { title = tailRow("fb", block.fable, fableWalled, fableWarning), disabled = true })
             end
           end
         end

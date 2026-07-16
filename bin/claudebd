@@ -237,14 +237,19 @@ function eligibleForScope(name, scope, excluded = new Set()) {
   if (!name || excluded.has(name) || !accounts.includes(name)) return false;
   if (disabled.has(name) && (name !== current || disabledEvicts(name))) return false;
   const state = effective(name);
-  const now = Math.floor(Date.now() / 1000);
-  if (state.authFailedUntil > now || state.h5 >= 97 || state.wk >= 99) return false;
-  if (state.forcedUntil > now && (scope === 'general' || state.forcedScope !== 'general')) return false;
-  if (state.scopedWalls[scope] > now) return false;
+  return blockReasonForScope(state, scope) === null;
+}
+
+function blockReasonForScope(state, scope, now = Math.floor(Date.now() / 1000)) {
+  if (state.authFailedUntil > now) return 'auth';
+  if (state.forcedUntil > now && (scope === 'general' || state.forcedScope !== 'general')) return 'wall';
+  if (state.scopedWalls[scope] > now) return 'wall';
+  if (state.h5 >= 97) return 'limit-5h';
+  if (state.wk >= 99) return 'limit-weekly';
   if (scope === 'fable') {
-    if (fableTrustworthy(state) && number(state.fable?.resets_at) > now && number(state.fable?.used_percentage) >= 99) return false;
+    if (fableTrustworthy(state) && number(state.fable?.resets_at) > now && number(state.fable?.used_percentage) >= 99) return 'limit-fable';
   }
-  return true;
+  return null;
 }
 
 function pickForScope(scope, excluded = new Set()) {
@@ -796,6 +801,10 @@ function statusPayload() {
   for (const name of accounts) {
     const state = effective(name);
     const snapshotWall = fableTrustworthy(state) && number(state.fable?.used_percentage) >= 99 && number(state.fable?.resets_at) > now ? number(state.fable.resets_at) : 0;
+    const blocked = {
+      general: blockReasonForScope(state, 'general', now),
+      fable: blockReasonForScope(state, 'fable', now)
+    };
     detail[name] = {
       h5: state.h5,
       wk: state.wk,
@@ -803,7 +812,9 @@ function statusPayload() {
       wreset: state.wreset,
       walled: state.walled || state.scopedWalls.general > now,
       auth_failed_until: state.authFailedUntil > now ? state.authFailedUntil : 0,
-      fable_walled_until: Math.max(state.scopedWalls.fable > now ? state.scopedWalls.fable : 0, snapshotWall)
+      fable_walled_until: Math.max(state.scopedWalls.fable > now ? state.scopedWalls.fable : 0, snapshotWall),
+      usable: { general: blocked.general === null, fable: blocked.fable === null },
+      blocked
     };
   }
   return {

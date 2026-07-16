@@ -17,6 +17,21 @@ fi
 account_cache_dir="${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/limits"
 account_cache="$account_cache_dir/$acct.json"
 
+file_mtime() {
+  stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null
+}
+
+snapshot_lock_acquire() {
+  local lock="$1" now mtime
+  mkdir "$lock" 2>/dev/null && return 0
+  now=$(date +%s 2>/dev/null) || return 1
+  mtime=$(file_mtime "$lock" 2>/dev/null) || return 1
+  [[ "$mtime" =~ ^[0-9]+$ ]] || return 1
+  [ "$((now - mtime))" -gt 120 ] || return 1
+  rmdir "$lock" 2>/dev/null || return 1
+  mkdir "$lock" 2>/dev/null
+}
+
 CYAN=$'\033[36m'; BLUE=$'\033[34m'; DIM=$'\033[2m'
 GREEN=$'\033[32m'; YELLOW=$'\033[33m'; RED=$'\033[31m'; MAGENTA=$'\033[35m'; RESET=$'\033[0m'
 
@@ -59,33 +74,39 @@ if [ -n "$rl_json" ] && [ "$acct" != "-" ]; then
     printf '%s' "$rl_json" > "$cache_rl"
   else
     mkdir -p "$account_cache_dir"
-    tmp_rl="$account_cache.tmp.$$"
-    # An empty/invalid existing file must degrade to {}: feeding it to --argjson
-    # makes jq fail every render and the corrupt file would never self-heal.
-    old_rl=$(jq -c 'select(type == "object")' "$account_cache" 2>/dev/null) || old_rl=''
-    [ -n "$old_rl" ] || old_rl='{}'
-    # An idle session re-renders its last known rate_limits forever; accepting
-    # such rewrites would keep re-freshening stale data over live probe merges.
-    # Only a strictly newer window (or higher pct in the same window) is taken.
-    new_rl=$(jq -cn --argjson old "$old_rl" --argjson fresh "$rl_json" --argjson now "$(date +%s)" '
-      def stamp: . + {as_of: $now, origin: "headers"}
-        | (if (.used_percentage | type) == "number" then .used_percentage = (.used_percentage | round) else . end);
-      def newer($k): ($fresh[$k] // null) as $f | ($old[$k] // null) as $o |
-        ($f != null) and (
-          $o == null
-          or (($f.resets_at? // 0) > ($o.resets_at? // 0))
-          or ((($f.resets_at? // 0) == ($o.resets_at? // 0))
-              and (((($f.used_percentage? // 0)) | round) > ((($o.used_percentage? // 0)) | round)))
-        );
-      $old
-      + (if newer("five_hour") then {five_hour: ($fresh.five_hour | stamp)} else {} end)
-      + (if newer("seven_day") then {seven_day: ($fresh.seven_day | stamp)} else {} end)
-      + (if newer("five_hour") or newer("seven_day") then {auth: {status: "ok", checked_at: $now}} else {} end)
-    ' 2>/dev/null) || new_rl=""
-    # Skipping the no-op rewrite matters: readers fall back to file mtime for
-    # staleness, and a fresh mtime would disguise old data as live.
-    if [ -n "$new_rl" ] && [ "$new_rl" != "$old_rl" ]; then
-      printf '%s' "$new_rl" > "$tmp_rl" && mv "$tmp_rl" "$account_cache" || rm -f "$tmp_rl"
+    snapshot_lock="$account_cache.lock"
+    if snapshot_lock_acquire "$snapshot_lock"; then
+      (
+      trap 'rmdir "$snapshot_lock" 2>/dev/null || true' EXIT
+      tmp_rl="$account_cache.tmp.$$"
+      # An empty/invalid existing file must degrade to {}: feeding it to --argjson
+      # makes jq fail every render and the corrupt file would never self-heal.
+      old_rl=$(jq -c 'select(type == "object")' "$account_cache" 2>/dev/null) || old_rl=''
+      [ -n "$old_rl" ] || old_rl='{}'
+      # An idle session re-renders its last known rate_limits forever; accepting
+      # such rewrites would keep re-freshening stale data over live probe merges.
+      # Only a strictly newer window (or higher pct in the same window) is taken.
+      new_rl=$(jq -cn --argjson old "$old_rl" --argjson fresh "$rl_json" --argjson now "$(date +%s)" '
+        def stamp: . + {as_of: $now, origin: "headers"}
+          | (if (.used_percentage | type) == "number" then .used_percentage = (.used_percentage | round) else . end);
+        def newer($k): ($fresh[$k] // null) as $f | ($old[$k] // null) as $o |
+          ($f != null) and (
+            $o == null
+            or (($f.resets_at? // 0) > ($o.resets_at? // 0))
+            or ((($f.resets_at? // 0) == ($o.resets_at? // 0))
+                and (((($f.used_percentage? // 0)) | round) > ((($o.used_percentage? // 0)) | round)))
+          );
+        $old
+        + (if newer("five_hour") then {five_hour: ($fresh.five_hour | stamp)} else {} end)
+        + (if newer("seven_day") then {seven_day: ($fresh.seven_day | stamp)} else {} end)
+        + (if newer("five_hour") or newer("seven_day") then {auth: {status: "ok", checked_at: $now}} else {} end)
+      ' 2>/dev/null) || new_rl=""
+      # Skipping the no-op rewrite matters: readers fall back to file mtime for
+      # staleness, and a fresh mtime would disguise old data as live.
+      if [ -n "$new_rl" ] && [ "$new_rl" != "$old_rl" ]; then
+        printf '%s' "$new_rl" > "$tmp_rl" && mv "$tmp_rl" "$account_cache" || rm -f "$tmp_rl"
+      fi
+      )
     fi
   fi
 else
@@ -129,8 +150,20 @@ if [ -n "$rl_from_cache" ] && [ -n "$rl_json" ]; then
   [ "$wk_origin" = cached ] && wk_dim=1
   [[ "$h5_as_of" =~ ^[0-9]+$ ]] || h5_as_of=$src_mtime
   [[ "$wk_as_of" =~ ^[0-9]+$ ]] || wk_as_of=$src_mtime
-  [ $((now - h5_as_of)) -gt 1800 ] && h5_dim=1
-  [ $((now - wk_as_of)) -gt 21600 ] && wk_dim=1
+  if [ "$rl_cache_file" = "$cache_rl" ]; then
+    # statusline-cache-rl is header-only and has no collector-owned stale flags.
+    [ $((now - h5_as_of)) -gt 1800 ] && h5_dim=1
+    [ $((now - wk_as_of)) -gt 21600 ] && wk_dim=1
+  else
+    IFS=$'\x1f' read -r h5_stale wk_stale < <(jq -r --arg account "$acct" '
+      [.vendors.claude.accounts[]? | select(.account == $account)][0] as $a |
+      if $a == null then ["", ""]
+      else [($a.five_hour.stale == true | tostring), ($a.weekly.stale == true | tostring)] end |
+      join("\u001f")
+    ' "${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}" 2>/dev/null)
+    [ "$h5_stale" = true ] && h5_dim=1
+    [ "$wk_stale" = true ] && wk_dim=1
+  fi
 fi
 
 dir=$(basename "$dir_path")

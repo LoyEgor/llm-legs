@@ -176,6 +176,7 @@ local function styled(text, attributes)
   })
 end
 local function loadModule(fixture, state)
+  state.now = state.now or os.time()
   local mock = {
     alert = { show = function(message) table.insert(state.alerts, message) end },
     execute = function() return true end,
@@ -187,9 +188,11 @@ local function loadModule(fixture, state)
     local task = { command = command, callback = callback, args = args or {} }
     function task:setEnvironment() return self end
     function task:start()
+      self.running = true
       table.insert(state.starts, self)
       return true
     end
+    function task:isRunning() return self.running == true end
     return task
   end
   local fakeIo = setmetatable({
@@ -197,7 +200,8 @@ local function loadModule(fixture, state)
       return { read = function() return "fixture" end, close = function() end }
     end,
   }, { __index = io })
-  local env = setmetatable({ hs = mock, io = fakeIo }, { __index = _G })
+  local fakeOs = setmetatable({ time = function() return state.now end }, { __index = os })
+  local env = setmetatable({ hs = mock, io = fakeIo, os = fakeOs }, { __index = _G })
   env._G = env
   local chunk, err = loadfile(path, "t", env)
   if not chunk then error(err) end
@@ -209,7 +213,7 @@ local expiredState = { starts = {}, alerts = {} }
 local expired = loadModule({ schema = 1, vendors = {
   claude = { available = true, source = "claudeb-store", accounts = {{
     account = "alona", enabled = true, five_hour = {
-      effective_pct = 100, resets_at = 0, stale = false, expired = true,
+      effective_pct = 100, resets_at = nil, stale = false, expired = true,
     },
   }}},
   codex = { available = false }, gemini = { available = false },
@@ -219,7 +223,7 @@ local expiredRow
 for i, item in ipairs(expiredMenu) do
   if title(item) == "alona" then expiredRow = expiredMenu[i + 1] break end
 end
-if not expiredRow or not title(expiredRow):match("%s%-%s*$") then error("ancient reset did not render dash") end
+if not expiredRow or not title(expiredRow):match("%s–%s*$") then error("null reset did not render dash") end
 local color = expiredRow.title.attributes.color
 if not color or color.red ~= 0.55 or color.green ~= 0.55 or color.blue ~= 0.55 then
   error("expired stale=false row was not dimmed")
@@ -230,12 +234,20 @@ local fallback = loadModule({ schema = 1, vendors = {
   codex = { available = true, current_account = "main", five_hour = { effective_pct = 2, resets_at = now + 60 } },
   gemini = { available = true, five_hour = { effective_pct = 3, resets_at = now + 60 } },
 }}, fallbackState)
+local done = 0
+fallback.onRefreshDone = function() done = done + 1 end
 for _, item in ipairs(fallback.menuItems()) do
   local name = title(item)
   if (name == "Claude" or name == "Codex" or name == "Gemini") and item.menu then item.menu[1].fn() end
 end
-if #fallbackState.starts ~= 3 then error("fallback actions did not start three vendor tasks") end
-local a, b, c = fallbackState.starts[1], fallbackState.starts[2], fallbackState.starts[3]
+if #fallbackState.starts ~= 4 then error("menu collect and fallback actions did not start four tasks") end
+local passive, a, b, c = fallbackState.starts[1], fallbackState.starts[2], fallbackState.starts[3], fallbackState.starts[4]
+if passive.command ~= "/Volumes/Work/Projects/llm-legs/llm-limits.sh" or #passive.args ~= 0 then
+  error("menu-open collector was not a direct argument-free task")
+end
+passive.running = false
+passive.callback(0, "", "")
+if done ~= 1 then error("menu-open collector completion did not trigger a re-render") end
 if a.args[1] ~= "warm" or a.args[2] ~= "com" then error("Claude fallback dispatch mismatch") end
 if b.args[1] ~= "--refresh-account" or b.args[2] ~= "codex/main" then error("Codex fallback dispatch mismatch") end
 if c.args[1] ~= "--refresh-account" or c.args[2] ~= "gemini" then error("Gemini fallback dispatch mismatch") end
@@ -247,16 +259,26 @@ if #guardState.starts ~= 1 then error("duplicate hard refresh started another ta
 if #guardState.alerts ~= 1 or not guardState.alerts[1]:lower():find("already refreshing", 1, true) then
   error("duplicate hard refresh alert mismatch")
 end
-return "OK"
+local openState = { starts = {}, alerts = {} }
+local openGuard = loadModule({ schema = 1, vendors = {} }, openState)
+openGuard.menuItems()
+openGuard.menuItems()
+if #openState.starts ~= 1 then error("running menu-open collector did not suppress the next open") end
+openState.starts[1].running = false
+openState.now = openState.now + 5
+openGuard.menuItems()
+if #openState.starts ~= 2 then error("exited menu-open collector blocked the next open") end
+return "OK open-guard running=1->1 exited=1->2"
 ' 2>/dev/null) || fail "isolated Hammerspoon contract checks threw"
-  [ "$output" = OK ] || fail "isolated Hammerspoon contract checks: $output"
+  [ "$output" = "OK open-guard running=1->1 exited=1->2" ] \
+    || fail "isolated Hammerspoon contract checks: $output"
 }
 
 # 1. hs CLI reachable and Hammerspoon responding.
 [ "$(hs -c 'return "ok"' 2>/dev/null)" = "ok" ] || fail "Hammerspoon not responding to hs -c"
 pass "hs CLI reachable, Hammerspoon responding"
 assert_isolated_menu_contracts
-pass "isolated menu contracts: expired dimming, ancient dash, fallback dispatch, hard-refresh guard"
+pass "isolated menu contracts: open-collect guard running 1->1, exited 1->2; completion re-rendered"
 
 # 2. Live module loaded and its data-read path (menuItems -> readLlmLimits) works.
 MENU_TXT=$(hs_menu)

@@ -66,6 +66,46 @@ assert merge_usage alpha "$usage"
 assert jq -e --argjson as_of "$cached_as_of" '.fable.used_percentage == 31 and .fable.as_of == $as_of and .fable.origin == "cached"' "$snapshot" >/dev/null
 assert jq -e '[.five_hour.origin,.seven_day.origin,.fable.origin] | all(. == "usage" or . == "headers" or . == "cached")' "$snapshot" >/dev/null
 
+headers="$WORK/headers.txt"
+cat >"$headers" <<EOF
+anthropic-ratelimit-unified-status: allowed
+anthropic-ratelimit-unified-5h-utilization: 0.42
+anthropic-ratelimit-unified-5h-reset: $((now + 7200))
+EOF
+assert merge_headers alpha "$headers"
+assert jq -e --argjson as_of "$cached_as_of" \
+  '.five_hour.used_percentage == 42 and .fable.used_percentage == 31 and .fable.as_of == $as_of and .fable.origin == "cached"' \
+  "$snapshot" >/dev/null
+export CLAUDEB_LOCK_RETRIES=1 CLAUDEB_LOCK_DELAY=0
+mkdir "$snapshot.lock"
+assert_fails merge_headers alpha "$headers"
+assert jq -e --argjson as_of "$cached_as_of" '.fable.used_percentage == 31 and .fable.as_of == $as_of' "$snapshot" >/dev/null
+rmdir "$snapshot.lock"
+unset CLAUDEB_LOCK_RETRIES CLAUDEB_LOCK_DELAY
+
+REAL_JQ=$(command -v jq)
+jq() {
+  if [ "$#" -eq 3 ] && [ "$1" = -c ] && [ "$2" = . ] && [ "$3" = "$snapshot" ]; then
+    return 42
+  fi
+  "$REAL_JQ" "$@"
+}
+set +e
+(
+  set -e
+  merge_headers alpha "$headers"
+  [ ! -d "$snapshot.lock" ]
+  merge_usage alpha "$usage"
+  [ ! -d "$snapshot.lock" ]
+  mark_auth alpha expired fixture
+  [ ! -d "$snapshot.lock" ]
+)
+cached_jq_rc=$?
+set -e
+unset -f jq
+assert test "$cached_jq_rc" -eq 0
+assert test ! -d "$snapshot.lock"
+
 now=$(date +%s)
 printf '{"alpha":{"attempted_at":%s,"outcome":"failed","retry_after_until":0}}\n' "$now" >"$oauth_attempts_file"
 until=$(oauth_backoff_until alpha)

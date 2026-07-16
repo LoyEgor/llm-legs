@@ -106,7 +106,8 @@ jq -e '.vendors.claude.five_hour.used_pct == 19 and .vendors.claude.weekly.used_
 plain=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain) || fail "plain collection failed"
 grep -q 'claude/main: 19%/53%' <<<"$plain" || fail "plain Claude values missing"
 grep -q 'codex: 74%/31%' <<<"$plain" || fail "plain Codex values missing"
-grep 'codex: 74%/31%' <<<"$plain" | grep -q '(stale ' || fail "plain stale-age suffix missing or not in English"
+grep 'codex: 74%/31%' <<<"$plain" | grep -q '| age ' || fail "plain age column missing"
+grep 'codex: 74%/31%' <<<"$plain" | grep -q 'stale 5h' || fail "plain stale marker missing"
 fallback_table=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) || fail "fallback table collection failed"
 grep -q '^claude/main' <<<"$fallback_table" || fail "unique fallback main account missing from table"
 
@@ -119,6 +120,25 @@ printf '{"five_hour":{"used_percentage":21,"resets_at":%s},"seven_day":{"used_pe
 multi=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "claudeb collection failed"
 jq -e '.vendors.claude.source == "claudeb-store" and (.vendors.claude.accounts | length) == 1 and .vendors.claude.accounts[0].account == "alona" and .vendors.claude.accounts[0].is_current == true and (.vendors.claude.accounts[0] | has("weekly") | not) and .vendors.claude.five_hour == .vendors.claude.accounts[0].five_hour and (.vendors.claude | has("weekly") | not)' <<<"$multi" >/dev/null || fail "claudeb schema, uniqueness, or hoist mismatch"
 jq -e '.vendors.claude.accounts[0].fable.used_pct == 33 and .vendors.claude.fable.used_pct == 33 and all(.vendors.claude.accounts[]; .account != "main")' <<<"$multi" >/dev/null || fail "claudeb fable or unique-account mismatch"
+
+HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CLAUDEB_CMD="$WORK/missing-claudeb" \
+  LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --refresh >/dev/null 2>&1
+rc=$?
+[ "$rc" -eq 4 ] || fail "missing claudeb refresh: expected exit 4, got $rc"
+jq -e '.vendors.claude.refresh_error == "claudeb not found"' "$CACHE" >/dev/null \
+  || fail "missing claudeb refresh did not persist refresh_error"
+
+cat >"$WORK/slow-claudeb" <<'EOF'
+#!/usr/bin/env bash
+sleep 2
+EOF
+chmod +x "$WORK/slow-claudeb"
+HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CLAUDEB_CMD="$WORK/slow-claudeb" \
+  LLM_LIMITS_CLAUDE_REFRESH_TIMEOUT=1 LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --refresh >/dev/null 2>&1
+rc=$?
+[ "$rc" -eq 4 ] || fail "timed-out claudeb refresh: expected exit 4, got $rc"
+jq -e '.vendors.claude.refresh_error == "timed out during free refresh + heal (1s)"' "$CACHE" >/dev/null \
+  || fail "timed-out claudeb refresh did not persist its reason"
 
 DAEMON_PORT_FILE="$WORK/claudebd-fixture.port"
 cat >"$WORK/claudebd-fixture.py" <<'EOF'
@@ -134,7 +154,9 @@ payload = {
     "current_fable": "alona",
     "accounts": {
         "alona": {"h5": 50, "wk": 10, "hreset": 4102444800, "wreset": 4102440000,
-                  "walled": True, "auth_failed_until": 0, "fable_walled_until": 0},
+                  "walled": True, "auth_failed_until": 0, "fable_walled_until": 0,
+                  "usable": {"general": False, "fable": True},
+                  "blocked": {"general": "wall", "fable": None}},
     },
     "scopes": {"general": None, "fable": "alona"},
     "walls": [
@@ -199,6 +221,9 @@ jq -e '.vendors.claude.daemon == {
   all_walled_until:{general:4102448400,fable:null},
   reachable:true
 }' <<<"$daemon_json" >/dev/null || fail "native daemon wall fields were not passed through"
+jq -e '.vendors.claude.accounts[0].rotation == {
+  usable:{general:false,fable:true},blocked:{general:"wall",fable:null}
+}' <<<"$daemon_json" >/dev/null || fail "daemon rotation projection was not merged into the matching account"
 daemon_legacy=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" CLAUDEBD_PORT="$daemon_port" \
   LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "legacy claudebd status collection failed"
 jq -e '.vendors.claude.daemon == {
@@ -209,13 +234,16 @@ jq -e '.vendors.claude.daemon == {
   all_walled_until:{general:"2100-01-01T00:00:00Z",fable:"2100-01-01T00:03:20Z"},
   reachable:true
 }' <<<"$daemon_legacy" >/dev/null || fail "legacy daemon wall derivation mismatch"
+jq -e 'all(.vendors.claude.accounts[]; has("rotation") | not)' <<<"$daemon_legacy" >/dev/null \
+  || fail "legacy daemon response fabricated account rotation fields"
 kill "$daemon_pid" 2>/dev/null || true
 wait "$daemon_pid" 2>/dev/null || true
 daemon_pid=''
 daemon_down=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" CLAUDEBD_PORT="$daemon_port" \
   LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "daemon-down collection failed"
 jq -e '.vendors.claude.daemon == {reachable:false} and
-  .vendors.claude.available == true and .vendors.claude.accounts[0].account == "alona"' \
+  .vendors.claude.available == true and .vendors.claude.accounts[0].account == "alona" and
+  all(.vendors.claude.accounts[]; has("rotation") | not)' \
   <<<"$daemon_down" >/dev/null || fail "daemon-down state blocked or damaged Claude collection"
 
 printf 'main\n' >"$CLAUDEB/.claudeb-state"
@@ -709,6 +737,22 @@ jq -e '.vendors.codex.available == true and .vendors.codex.five_hour.used_pct ==
 HOME="$NULLRESET_HOME" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain | grep -q 'codex: 41%/22%' || fail "null resets_at plain render failed"
 HOME="$NULLRESET_HOME" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table | grep -q '^codex' || fail "null resets_at table render failed"
 
+PLACEHOLDER_HOME="$WORK/placeholder-home"
+PLACEHOLDER_STORE="$WORK/placeholder-store"
+mkdir -p "$PLACEHOLDER_HOME" "$PLACEHOLDER_STORE/limits"
+printf 'zero\n' >"$PLACEHOLDER_STORE/.claudeb-state"
+printf '%s\n' '{"five_hour":{"used_percentage":10,"resets_at":0}}' >"$PLACEHOLDER_STORE/limits/zero.json"
+printf '%s\n' '{"five_hour":{"used_percentage":20,"resets_at":12345}}' >"$PLACEHOLDER_STORE/limits/epoch-1970.json"
+printf '%s\n' '{"five_hour":{"used_percentage":30,"resets_at":""}}' >"$PLACEHOLDER_STORE/limits/empty.json"
+printf '{"five_hour":{"used_percentage":40,"resets_at":%s}}\n' "$((now - 1800))" >"$PLACEHOLDER_STORE/limits/recent-past.json"
+placeholder_json=$(HOME="$PLACEHOLDER_HOME" CLAUDEB_DIR="$PLACEHOLDER_STORE" LLM_LIMITS_CACHE="$CACHE" \
+  bash "$SCRIPT" --json) || fail "placeholder reset collection failed"
+jq -e 'all(.vendors.claude.accounts[] | select(.account == "zero" or .account == "epoch-1970" or .account == "empty");
+    .five_hour.resets_at == null) and
+  ([.vendors.claude.accounts[] | select(.account == "recent-past")][0].five_hour |
+    (.resets_at | type) == "string" and .expired == true)' <<<"$placeholder_json" >/dev/null \
+  || fail "placeholder or real past resets_at normalization mismatch"
+
 # Gemini window start: an expired 5h bucket in the refreshed quota triggers one bounded
 # agy --print call, then the quota helper runs again.
 GEMINI_START_SENTINEL="$WORK/agy-called"
@@ -821,9 +865,28 @@ grep -Eq '^codex +100% +44% +[0-9]{2}:[0-9]{2}' <<<"$codex_row" || fail "expired
 grep -q '5h reset passed' <<<"$codex_row" || fail "expired note missing from table"
 expired_plain=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain) || fail "expired plain collection failed"
 grep -q 'codex: 100%/44%' <<<"$expired_plain" || fail "expired plain output must keep the last known value"
+grep -q 'expired 5h' <<<"$expired_plain" || fail "expired plain output lacks explicit marker"
 expired_sorted=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table --sort 5h) || fail "expired sorted table collection failed"
 order=$(awk 'NR > 1 {print $1}' <<<"$expired_sorted" | paste -sd, -)
 [ "$order" = "claude/alona*,codex,gemini" ] || fail "expired 5h sort must rank the stale 100% as 0: $order"
+
+HONEST_STORE="$WORK/honest-store"
+HONEST_HOME="$WORK/honest-home"
+mkdir -p "$HONEST_STORE/limits" "$HONEST_HOME"
+printf 'honest\n' >"$HONEST_STORE/.claudeb-state"
+printf '{"five_hour":{"used_percentage":100,"resets_at":%s,"as_of":%s,"origin":"usage"},"seven_day":{"used_percentage":44,"resets_at":%s,"as_of":%s,"origin":"usage"}}\n' \
+  "$((now + 5000))" "$((now - 3660))" "$((now - 60))" "$((now - 120))" >"$HONEST_STORE/limits/honest.json"
+honest_table=$(HOME="$HONEST_HOME" CLAUDEB_DIR="$HONEST_STORE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) \
+  || fail "honesty table fixture failed"
+honest_plain=$(HOME="$HONEST_HOME" CLAUDEB_DIR="$HONEST_STORE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain) \
+  || fail "honesty plain fixture failed"
+head -n 1 <<<"$honest_table" | grep -Eq 'WK RESET +AGE +NOTE' || fail "table AGE column missing"
+honest_row=$(awk '$1 == "claude/honest*"' <<<"$honest_table")
+grep -Eq '^claude/honest\* +100% +44% ' <<<"$honest_row" || fail "honesty table rewrote raw used_pct"
+grep -Eq ' +1h1m +.*stale 5h.*expired wk' <<<"$honest_row" || fail "table age or stale/expired markers missing: $honest_row"
+grep -q 'claude/honest: 100%/44%' <<<"$honest_plain" || fail "honesty plain rewrote raw used_pct"
+grep 'claude/honest:' <<<"$honest_plain" | grep -q '| age 1h1m | stale 5h, expired wk' \
+  || fail "plain age or stale/expired markers missing"
 
 USABLE_STORE="$WORK/usable-store"
 USABLE_HOME="$WORK/usable-home"
@@ -887,5 +950,29 @@ HOME="$EMPTY" bash "$SCRIPT" --no-write >/dev/null 2>&1
 rc=$?
 [ "$rc" -eq 3 ] || fail "all-missing case: expected exit 3, got $rc"
 
-echo "PASS: schema, Claude unique accounts and fallback, Codex multi-account reset credits, auth-needed accounts and legacy cache, Claude daemon status, enabled flags, freshness contract, machine effective percentages and usability, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, plain output, table output and sorts, reset tiers, expired windows, bare JSON default, atomic cache, missing exit 3"
+hs_bounded() {
+  python3 - "$@" <<'PY'
+import subprocess
+import sys
+
+try:
+    result = subprocess.run(["hs", *sys.argv[1:]], capture_output=True, text=True, timeout=3)
+except (FileNotFoundError, subprocess.TimeoutExpired):
+    raise SystemExit(124)
+sys.stdout.write(result.stdout)
+sys.stderr.write(result.stderr)
+raise SystemExit(result.returncode)
+PY
+}
+
+if command -v hs >/dev/null 2>&1 && [ "$(hs_bounded -c 'return "ok"' 2>/dev/null)" = ok ]; then
+  renderer_output=$(hs_bounded -c "return dofile([[$ROOT/tests/llm_limits_renderer_harness.lua]])" 2>/dev/null) \
+    || fail "Hammerspoon renderer contract checks threw"
+  [ "$renderer_output" = "PASS: Hammerspoon projection contract" ] \
+    || fail "Hammerspoon renderer contract checks: $renderer_output"
+else
+  echo "SKIP (hs unavailable): Hammerspoon projection contract"
+fi
+
+echo "PASS: schema, Claude unique accounts and fallback, Codex multi-account reset credits, auth-needed accounts and legacy cache, Claude daemon status and rotation passthrough, enabled flags, freshness contract, reset placeholder normalization, machine effective percentages and usability, refresh failure reasons, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, Hammerspoon projection contract, plain output, table output and sorts, reset tiers, expired windows, bare JSON default, atomic cache, missing exit 3"
 exit 0
