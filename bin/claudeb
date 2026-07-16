@@ -1010,8 +1010,17 @@ run_warm_session() {
     claude -p "$prompt" "$@" --output-format json >"$output" 2>&1
 }
 
+warm_failure() {
+  local name="$1" cause="$2" detail="$3"
+  if [ "${warm_single_explicit:-false}" = true ]; then
+    printf 'claudeb: warm failed account=%s cause=%s\n' "$name" "$cause" >&2
+  else
+    printf '%s: failed (%s)\n' "$name" "$detail"
+  fi
+}
+
 warm_accounts() {
-  local name dir output session_rc reason profile hash service credentials expires_at now started probe_dir source rc http asof failed=0 until probe_ok usage_rate_limited backoff_mode explicit=false
+  local name dir output session_rc reason failure_cause profile hash service credentials expires_at now started probe_dir source rc http asof failed=0 until probe_ok usage_rate_limited backoff_mode explicit=false outcome
   local -a names
   names=("$@")
   [ "${#names[@]}" -eq 0 ] || explicit=true
@@ -1025,22 +1034,24 @@ warm_accounts() {
     printf 'claudeb: no enabled accounts to warm\n' >&2
     return 1
   fi
+  warm_single_explicit=false
+  if [ "$explicit" = true ] && [ "${#names[@]}" -eq 1 ]; then warm_single_explicit=true; fi
   for name in "${names[@]}"; do
     if [ ! -f "$tokens_dir/$name" ]; then
-      printf '%s: failed (unknown account)\n' "$name"
+      warm_failure "$name" unknown-account 'unknown account'
       failed=1
       continue
     fi
     until=$(oauth_warm_backoff_until "$name" "$backoff_mode")
     now=$(date +%s)
     if [ "$until" -gt "$now" ] 2>/dev/null; then
-      printf 'claudeb: %s: warm backoff active until %s\n' "$name" "$(format_time "$until")" >&2
+      warm_failure "$name" warm-429 "warm backoff active until $(format_time "$until")"
       failed=1
       continue
     fi
     prepared_profile_dir=''
     CLAUDEB_PREPARE_ONLY=true profile_command "$name" || {
-      printf '%s: failed (profile setup)\n' "$name"
+      warm_failure "$name" profile-setup 'profile setup'
       oauth_attempt_update "$name" warm-failed 0
       failed=1
       continue
@@ -1066,15 +1077,30 @@ warm_accounts() {
     fi
     if [ "$session_rc" -ne 0 ]; then
       reason="session exit $session_rc"
-      grep -Eqi '429|rate.?limit' "$output" 2>/dev/null && reason='token endpoint still 429'
+      failure_cause=warm-failed
+      outcome=$(oauth_backoff_outcome "$name")
+      if [ "$session_rc" -eq 124 ]; then
+        reason='timeout'
+        failure_cause=timeout
+      elif grep -Eqi '429|rate.?limit' "$output" 2>/dev/null; then
+        reason='warm 429'
+        failure_cause=warm-429
+      elif [ "$outcome" = revoked ] || grep -Eqi 'needs? re-?login|login required|not logged in|authentication required' "$output" 2>/dev/null; then
+        reason='needs re-login'
+        failure_cause=needs-relogin
+      fi
       oauth_attempt_update "$name" warm-failed 0
+    fi
+    if [ "$session_rc" -ne 0 ]; then
+      rm -f "$output"
+      warm_failure "$name" "$failure_cause" "$reason"
+      failed=1
+      continue
     fi
     rm -f "$output"
     probe_dir=$(mktemp -d "${TMPDIR:-/tmp}/claudeb-warm-probe.XXXXXX") || return 1
     probe_one "$name" "$probe_dir" false false
     read -r source rc http < "$probe_dir/$name.result"
-    probe_ok=false
-    if [ "$source" = usage ] && merge_usage "$name" "$probe_dir/$name.usage"; then probe_ok=true; fi
     profile="$HOME/.claude-profiles/$name"
     hash=$(printf '%s' "$profile" | shasum -a 256 | awk '{print substr($1, 1, 8)}')
     service="Claude Code-credentials-$hash"
@@ -1082,19 +1108,15 @@ warm_accounts() {
     expires_at=$(printf '%s' "$credentials" | jq -r '.claudeAiOauth.expiresAt // 0 | floor' 2>/dev/null || printf '0')
     credentials=''
     now=$(date +%s)
-    if [ "$session_rc" -ne 0 ]; then
-      rm -rf "$probe_dir"
-      printf '%s: failed (%s)\n' "$name" "$reason"
-      failed=1
-      continue
-    fi
     if ! [[ "$expires_at" =~ ^[0-9]+$ ]] || [ "$expires_at" -le "$((now * 1000))" ]; then
       rm -rf "$probe_dir"
       oauth_attempt_update "$name" warm-failed 0
-      printf '%s: failed (OAuth token is not fresh)\n' "$name"
+      warm_failure "$name" needs-relogin 'OAuth token is not fresh'
       failed=1
       continue
     fi
+    probe_ok=false
+    if [ "$source" = usage ] && merge_usage "$name" "$probe_dir/$name.usage"; then probe_ok=true; fi
     if [ "$probe_ok" = true ]; then
       asof=$(jq -r '.five_hour.as_of // 0' "$limits_dir/$name.json" 2>/dev/null || printf '0')
       if [ "$asof" -ge "$started" ] 2>/dev/null && jq -e '.fable.as_of | type == "number"' "$limits_dir/$name.json" >/dev/null 2>&1; then
@@ -1106,7 +1128,13 @@ warm_accounts() {
     fi
     rm -rf "$probe_dir"
     oauth_attempt_update "$name" warm-failed 0
-    printf '%s: failed (usage probe HTTP %s)\n' "$name" "${http:-000}"
+    if [ "$http" = 401 ] || [ "$http" = 403 ]; then
+      warm_failure "$name" needs-relogin "usage probe HTTP ${http:-000}"
+    elif [ "$http" = 429 ]; then
+      warm_failure "$name" warm-429 "usage probe HTTP ${http:-000}"
+    else
+      warm_failure "$name" usage-probe-failed "usage probe HTTP ${http:-000}"
+    fi
     failed=1
   done
   return "$failed"

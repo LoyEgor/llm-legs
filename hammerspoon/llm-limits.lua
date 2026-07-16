@@ -84,15 +84,15 @@ local function parseTime(value)
   return parseIsoTime(value)
 end
 
-local function formatAgeShort(value)
-  local timestamp = parseIsoTime(value)
+local function formatAccountAge(value)
+  local timestamp = parseTime(value)
   if not timestamp then
-    return "?"
+    return nil
   end
 
   local seconds = math.max(0, os.time() - timestamp)
-  if seconds < 60 then
-    return "now"
+  if seconds <= 300 then
+    return nil
   end
   local minutes = math.floor(seconds / 60)
   if minutes < 60 then
@@ -105,15 +105,12 @@ local function formatAgeShort(value)
   return string.format("%dd", math.floor(hours / 24))
 end
 
-local function formatAge(value)
-  local age = formatAgeShort(value)
-  if age == "now" then
-    return "just now"
+local function accountTitle(text, age, warning, walled)
+  local title = infoTitle(text, warning, false, walled)
+  if age then
+    title = title .. infoTitle("  " .. age, false, true)
   end
-  if age == "?" then
-    return "unknown"
-  end
-  return age .. " ago"
+  return title
 end
 
 -- Staleness contract: trust explicit `stale` booleans (bucket, then account, then
@@ -148,6 +145,9 @@ local function formatResetTime(value)
   end
 
   local delta = timestamp - os.time()
+  if delta < -86400 then
+    return "-"
+  end
   if delta < 86400 then
     return os.date("%H:%M", timestamp)
   end
@@ -164,13 +164,14 @@ local function usageBar(value)
   return string.rep("▓", filled) .. string.rep("░", 5 - filled)
 end
 
-local function rowTitle(account, label, bucket, age, gray, walled)
+local function rowTitle(account, label, bucket, gray, walled)
   bucket = type(bucket) == "table" and bucket or {}
+  gray = gray or bucket.expired == true
   local pct = tonumber(bucket.effective_pct)
   local pctText = pct and string.format("%d%%", math.floor(pct + 0.5)) or "-"
   local reset = formatResetTime(bucket.resets_at)
-  return infoTitle(string.format("%-6s  %-2s  %s  %4s  %4s %9s", account or "", label,
-    usageBar(pct), pctText, age or "", reset), false, gray, walled)
+  return infoTitle(string.format("%-6s  %-2s  %s  %4s  %9s", account or "", label,
+    usageBar(pct), pctText, reset), false, gray, walled)
 end
 
 local function readLlmLimits()
@@ -220,11 +221,9 @@ local function newCollectorTask(callback, args)
 end
 
 local lastCollectEpoch = 0
-local lastRefreshOutcome = nil
 
-local function recordRefreshOutcome(exitCode)
+local function vendorRefreshFailures(limits)
   local failures = {}
-  local limits = readLlmLimits()
   local vendors = limits and limits.vendors
   if type(vendors) == "table" then
     for _, name in ipairs({ "claude", "codex", "gemini" }) do
@@ -236,10 +235,14 @@ local function recordRefreshOutcome(exitCode)
       end
     end
   end
+  return failures
+end
+
+local function recordRefreshOutcome(exitCode)
+  local failures = vendorRefreshFailures(readLlmLimits())
   if exitCode ~= 0 and #failures == 0 then
     table.insert(failures, "collector")
   end
-  lastRefreshOutcome = { failures = failures, timestamp = os.time() }
   return failures
 end
 
@@ -342,6 +345,75 @@ function M.toggleAccount(name, currentlyEnabled)
   runClaudeb({ currentlyEnabled and "disable" or "enable", name }, "toggle failed")
 end
 
+local function taskCause(stdOut, stdErr, exitCode)
+  local text = tostring(stdErr or "")
+  if text:match("^%s*$") then text = tostring(stdOut or "") end
+  local cause
+  for line in text:gmatch("[^\r\n]+") do
+    if not line:match("^%s*$") then cause = line:match("^%s*(.-)%s*$") end
+  end
+  return truncateText(cause or ("exit " .. tostring(exitCode)), 160)
+end
+
+local hardRefreshInFlight = {}
+
+local function hardRefresh(name, command, args)
+  local key = command .. "\0" .. table.concat(args, "\0")
+  if hardRefreshInFlight[key] then
+    hs.alert.show("Already refreshing: " .. name)
+    return
+  end
+  hardRefreshInFlight[key] = true
+
+  local function finish(success, cause)
+    hardRefreshInFlight[key] = nil
+    pcall(M.onRefreshDone, success, cause)
+  end
+
+  local ok = pcall(function()
+    pcall(M.onRefreshStart)
+    local task = hs.task.new(command, function(exitCode, stdOut, stdErr)
+      if exitCode ~= 0 then
+        local cause = taskCause(stdOut, stdErr, exitCode)
+        hs.alert.show("Hard refresh failed: " .. name .. " — " .. cause)
+        finish(false, cause)
+        return
+      end
+      local reread = newCollectorTask(function(collectExit, collectOut, collectErr)
+        if collectExit == 0 then
+          finish(true)
+        else
+          local cause = taskCause(collectOut, collectErr, collectExit)
+          hs.alert.show("Hard refresh failed: " .. name .. " — " .. cause)
+          finish(false, cause)
+        end
+      end, {})
+      if not reread or not reread:start() then
+        hs.alert.show("Hard refresh failed: " .. name .. " — collect could not start")
+        finish(false, "collect could not start")
+      end
+    end, args)
+    if task then task:setEnvironment(baseEnvironment()) end
+    if not task or not task:start() then error("task could not start") end
+  end)
+  if not ok then
+    hs.alert.show("Hard refresh failed: " .. name .. " — task could not start")
+    finish(false, "task could not start")
+  end
+end
+
+function M.hardRefreshClaude(name)
+  hardRefresh(name, resolveClaudeb(), { "warm", name })
+end
+
+function M.hardRefreshCodex(name)
+  hardRefresh(name, M.collectorPath, { "--refresh-account", "codex/" .. name })
+end
+
+function M.hardRefreshGemini()
+  hardRefresh("Gemini", M.collectorPath, { "--refresh-account", "gemini" })
+end
+
 local function refreshData(args)
   local ok, err = pcall(function()
     local task = newCollectorTask(function(exitCode, _, stdErr)
@@ -397,34 +469,55 @@ function M.menuItems()
       { key = "gemini", label = "Gemini" },
     }
 
-    local ages = {}
     for _, entry in ipairs(vendors) do
       local vendor = limits.vendors[entry.key]
-      if type(vendor) == "table" and vendor.available == true then
-        table.insert(ages, string.format("%s %s", entry.key, formatAgeShort(vendor.as_of)))
-      end
-
       if type(vendor) ~= "table" or vendor.available ~= true then
-        table.insert(menu, {
+        local unavailableRow = {
           title = infoTitle(string.format("%-6s  no live data", entry.label)),
           disabled = true,
-        })
+        }
+        if entry.key == "gemini" then
+          unavailableRow.disabled = nil
+          unavailableRow.menu = {
+            { title = "Hard refresh", fn = M.hardRefreshGemini },
+          }
+        end
+        table.insert(menu, unavailableRow)
       else
         local blocks = (entry.key == "claude" or entry.key == "codex") and vendor.accounts or nil
         local isClaudeAccounts = entry.key == "claude" and type(blocks) == "table" and #blocks > 0
-        local isCodexAccounts = entry.key == "codex" and type(blocks) == "table"
-          and (#blocks > 1 or (#blocks == 1 and blocks[1].auth_needed == true))
+        local isCodexAccounts = entry.key == "codex" and type(blocks) == "table" and #blocks > 0
         local isAccountRows = isClaudeAccounts or isCodexAccounts
         local hasAccountControls = isClaudeAccounts and vendor.source == "claudeb-store"
         if not isAccountRows then
           blocks = {{ account = entry.label, five_hour = vendor.five_hour,
-            weekly = vendor.weekly, fable = vendor.fable, is_current = false }}
+            weekly = vendor.weekly, fable = vendor.fable, as_of = vendor.as_of,
+            is_current = false }}
         end
         if isAccountRows then
           table.insert(menu, {
             title = infoTitle(isClaudeAccounts and "Claude B" or entry.label),
             disabled = true,
           })
+        else
+          local fallbackRow = {
+            title = accountTitle(entry.label, formatAccountAge(vendor.as_of)),
+            disabled = true,
+          }
+          local account = vendor.current_account or vendor.account
+          local refresh
+          if entry.key == "claude" and type(account) == "string" and account ~= "" then
+            refresh = function() M.hardRefreshClaude(account) end
+          elseif entry.key == "codex" and type(account) == "string" and account ~= "" then
+            refresh = function() M.hardRefreshCodex(account) end
+          elseif entry.key == "gemini" then
+            refresh = M.hardRefreshGemini
+          end
+          if refresh then
+            fallbackRow.disabled = nil
+            fallbackRow.menu = {{ title = "Hard refresh", fn = refresh }}
+          end
+          table.insert(menu, fallbackRow)
         end
         local accountWalls = {}
         local daemon = vendor.daemon
@@ -449,12 +542,7 @@ function M.menuItems()
             or (isCodexAccounts and acct == vendor.current_account)
           local enabled = block.enabled ~= false
           local authNeeded = block.auth_needed == true
-          local accountAge
-          local accountEpoch = parseTime(block.as_of)
-          local vendorEpoch = parseTime(vendor.as_of)
-          if accountEpoch and vendorEpoch and accountEpoch < vendorEpoch then
-            accountAge = truncateText(formatAgeShort(block.as_of), 4)
-          end
+          local accountAge = not authNeeded and formatAccountAge(block.as_of) or nil
           local accountWall = accountWalls[acct] or {}
           local generalWalled = accountWall.general == true
           local fableWalled = accountWall.fable == true
@@ -464,8 +552,8 @@ function M.menuItems()
               and string.format("  ↻%d", math.floor(resetCredits)) or ""
             local accountRow = {
               title = authNeeded and loginNeededTitle(acct)
-                or infoTitle(acct .. resetSuffix .. (isCurrent and "  ●" or ""), false, false,
-                  generalWalled),
+                or accountTitle(acct .. resetSuffix .. (isCurrent and "  ●" or ""),
+                  accountAge, false, generalWalled),
               disabled = true,
             }
             if hasAccountControls then
@@ -476,6 +564,8 @@ function M.menuItems()
                   fn = function() M.toggleAccount(acct, enabled) end },
                 { title = "Make current", disabled = block.is_current,
                   fn = function() M.switchAccount(acct) end },
+                { title = "Hard refresh",
+                  fn = function() M.hardRefreshClaude(acct) end },
               }
               -- "main" is ~/.claude itself, not a claudeb profile dir — no chat switch.
               if acct ~= "main" then
@@ -484,23 +574,28 @@ function M.menuItems()
                   fn = function() M.switchChatTo(acct) end,
                 })
               end
+            elseif isCodexAccounts then
+              accountRow.disabled = nil
+              accountRow.menu = {
+                { title = "Hard refresh",
+                  fn = function() M.hardRefreshCodex(acct) end },
+              }
             end
             table.insert(menu, accountRow)
           end
           if not authNeeded then
             local fiveGray = isStale(1800, fiveHour)
             local fiveRow = {
-              title = rowTitle(isAccountRows and "" or acct, "5h", fiveHour, accountAge,
-                fiveGray, generalWalled),
+              title = rowTitle("", "5h", fiveHour, fiveGray, generalWalled),
               disabled = true,
             }
             table.insert(menu, fiveRow)
             local function tailRow(label, bucket, walled)
               if type(bucket) == "table" then
                 local gray = isStale(21600, bucket)
-                return rowTitle("", label, bucket, accountAge, gray, walled)
+                return rowTitle("", label, bucket, gray, walled)
               end
-              return rowTitle("", label, nil, accountAge, false, walled)
+              return rowTitle("", label, nil, false, walled)
             end
             table.insert(menu, { title = tailRow("wk", weekly, generalWalled), disabled = true })
             if type(block.fable) == "table" then
@@ -515,15 +610,11 @@ function M.menuItems()
     end
 
     table.insert(menu, { title = "-" })
-    table.insert(menu, {
-      title = infoTitle(#ages > 0 and table.concat(ages, " · ")
-        or "no vendor data · fetched " .. formatAge(limits.fetched_at)),
-      disabled = true,
-    })
-    if lastRefreshOutcome and #lastRefreshOutcome.failures > 0 then
+    local failures = vendorRefreshFailures(limits)
+    if #failures > 0 then
       table.insert(menu, {
         title = infoTitle(truncateText("refresh failed: "
-          .. table.concat(lastRefreshOutcome.failures, ", "), 88), true),
+          .. table.concat(failures, ", "), 88), true),
         disabled = true,
       })
     end
@@ -536,13 +627,6 @@ function M.menuItems()
     if readErrorReason then
       table.insert(menu, {
         title = infoTitle(readErrorReason, true),
-        disabled = true,
-      })
-    end
-    if lastRefreshOutcome and #lastRefreshOutcome.failures > 0 then
-      table.insert(menu, {
-        title = infoTitle(truncateText("refresh failed: "
-          .. table.concat(lastRefreshOutcome.failures, ", "), 88), true),
         disabled = true,
       })
     end

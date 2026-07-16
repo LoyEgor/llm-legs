@@ -445,6 +445,40 @@ printf '{}' >"$oauth_attempts_file"
   assert grep -q haiku "$PAID_LOG"
 )
 
+(
+  profile_command() { prepared_profile_dir="$WORK/zeta-profile"; mkdir -p "$prepared_profile_dir"; return 0; }
+  probe_one() { printf 'no-spend 1 500\n' >"$2/$1.result"; }
+  pinned_asof=$((now - 900))
+  printf '{"five_hour":{"used_percentage":9,"resets_at":%s,"as_of":%s,"origin":"usage"}}\n' \
+    "$((now + 3600))" "$pinned_asof" >"$limits_dir/zeta.json"
+
+  run_warm_session() { return 124; }
+  if warm_accounts zeta >/dev/null 2>"$WORK/warm-timeout.err"; then fail "timeout warm unexpectedly succeeded"; fi
+  assert grep -qx 'claudeb: warm failed account=zeta cause=timeout' "$WORK/warm-timeout.err"
+  assert test "$(wc -l <"$WORK/warm-timeout.err" | tr -d ' ')" = 1
+  assert test "$(jq -r '.five_hour.as_of' "$limits_dir/zeta.json")" = "$pinned_asof"
+
+  run_warm_session() { printf 'HTTP 429 rate limit\n' >"$3"; return 7; }
+  if warm_accounts zeta >/dev/null 2>"$WORK/warm-429.err"; then fail "429 warm unexpectedly succeeded"; fi
+  assert grep -qx 'claudeb: warm failed account=zeta cause=warm-429' "$WORK/warm-429.err"
+  assert test "$(wc -l <"$WORK/warm-429.err" | tr -d ' ')" = 1
+
+  run_warm_session() { printf 'authentication required; login required\n' >"$3"; return 7; }
+  if warm_accounts zeta >/dev/null 2>"$WORK/warm-login.err"; then fail "auth-failed warm unexpectedly succeeded"; fi
+  assert grep -qx 'claudeb: warm failed account=zeta cause=needs-relogin' "$WORK/warm-login.err"
+  assert test "$(wc -l <"$WORK/warm-login.err" | tr -d ' ')" = 1
+
+  run_warm_session() { return 0; }
+  probe_one() {
+    printf 'usage 0 200\n' >"$2/$1.result"
+    printf '%s\n' '{"five_hour":{"utilization":44,"resets_at":null},"seven_day":{"utilization":22,"resets_at":null},"limits":[]}' >"$2/$1.usage"
+  }
+  security() { printf '%s\n' '{"claudeAiOauth":{"expiresAt":1}}'; }
+  if warm_accounts zeta >/dev/null 2>"$WORK/warm-stale-oauth.err"; then fail "stale-OAuth warm unexpectedly succeeded"; fi
+  assert grep -qx 'claudeb: warm failed account=zeta cause=needs-relogin' "$WORK/warm-stale-oauth.err"
+  assert test "$(jq -r '.five_hour.as_of' "$limits_dir/zeta.json")" = "$pinned_asof"
+)
+
 for command in curl security claude; do
   printf '#!/usr/bin/env bash\nexit 97\n' >"$FAKE_BIN/$command"
   chmod +x "$FAKE_BIN/$command"

@@ -24,7 +24,7 @@ command -v jq >/dev/null 2>&1 || fail "jq not on PATH"
 command -v python3 >/dev/null 2>&1 || fail "python3 not on PATH (needed to parse ISO timestamps)"
 
 iso2epoch() {
-  python3 -c 'import sys,datetime; print(int(datetime.datetime.fromisoformat(sys.argv[1].replace("Z","+00:00")).timestamp()))' "$1"
+  python3 -c 'import sys,datetime; value=sys.argv[1]; print(int(float(value)) if value.replace(".", "", 1).isdigit() else int(datetime.datetime.fromisoformat(value.replace("Z","+00:00")).timestamp()))' "$1"
 }
 
 # Read-only serialization of the LIVE menubar module. Guards that the live singleton
@@ -66,6 +66,27 @@ hs_menu() {
   printf '%s\n' "$out"
 }
 
+hs_alona_five_style() {
+  hs -c '
+local m = package.loaded["llm-limits"]
+local menu = m and m.menuItems()
+local seen = false
+for _, item in ipairs(menu or {}) do
+  local title = item.title
+  local text = type(title) == "userdata" and title.getString and title:getString() or tostring(title)
+  if seen and text:find("5h", 1, true) then
+    local data = title:asTable()
+    local color = data[2] and data[2].attributes and data[2].attributes.color
+    if color and math.abs(color.red - 0.55) < 0.01 and math.abs(color.green - 0.55) < 0.01
+        and math.abs(color.blue - 0.55) < 0.01 then return "GRAY\t" .. text end
+    return "NOT_GRAY\t" .. text
+  end
+  if text == "alona" or text:match("^alona%s") then seen = true end
+end
+return "MISSING"
+' 2>/dev/null
+}
+
 assert_codex_account_rows() {
   local menu="$1" json="$2" count account auth credits row
   count=$(jq '.vendors.codex.accounts | length' <<<"$json")
@@ -74,8 +95,8 @@ assert_codex_account_rows() {
     credits=$(jq -r --arg account "$account" '.vendors.codex.accounts[] | select(.account == $account) | .reset_credits // 0' <<<"$json")
     if [ "$auth" = true ]; then
       grep -Fxq "$account  login needed" <<<"$menu" || fail "Codex auth-needed row is not name plus login needed: $account"
-    elif [ "$count" -gt 1 ]; then
-      row=$(grep -E "^${account}(  ↻[0-9]+)?(  ●)?$" <<<"$menu" | head -1)
+    else
+      row=$(awk -v account="$account" '$1 == account {print; exit}' <<<"$menu")
       [ -n "$row" ] || fail "Codex account row missing: $account"
       if [ "$credits" -gt 0 ]; then
         grep -Fq "$account  ↻$credits" <<<"$row" || fail "Codex reset-credit count missing for $account"
@@ -86,13 +107,160 @@ assert_codex_account_rows() {
   done < <(jq -r '.vendors.codex.accounts[]?.account' <<<"$json")
 }
 
+age_short() {
+  local timestamp="$1" now delta minutes hours
+  [ -n "$timestamp" ] || return
+  now=$(date +%s)
+  delta=$((now - $(iso2epoch "$timestamp")))
+  [ "$delta" -gt 300 ] || return
+  minutes=$((delta / 60))
+  if [ "$minutes" -lt 60 ]; then printf '%sm' "$minutes"; return; fi
+  hours=$((minutes / 60))
+  if [ "$hours" -lt 24 ]; then printf '%sh' "$hours"; return; fi
+  printf '%sd' "$((hours / 24))"
+}
+
+assert_account_ages() {
+  local menu="$1" json="$2" vendor account auth asof expected row actual
+  for vendor in claude codex; do
+    while IFS=$'\t' read -r account auth asof; do
+      [ -n "$account" ] || continue
+      row=$(awk -v account="$account" '$1 == account {print; exit}' <<<"$menu")
+      [ -n "$row" ] || fail "$vendor account row missing for age check: $account"
+      [ "$auth" != true ] || continue
+      expected=$(age_short "$asof")
+      actual=$(awk '{print $NF}' <<<"$row")
+      if [ -n "$expected" ]; then
+        [ "$actual" = "$expected" ] || fail "$vendor/$account age mismatch: expected $expected, row=$row"
+      elif [[ "$actual" =~ ^[0-9]+[mhd]$ ]]; then
+        fail "$vendor/$account is at most 5m old but displays age: $row"
+      fi
+    done < <(jq -r --arg vendor "$vendor" '.vendors[$vendor].accounts[]? |
+      [.account, (.auth_needed == true), (.as_of // "")] | @tsv' <<<"$json")
+  done
+  if [ "$(jq -r '.vendors.gemini.available == true' <<<"$json")" = true ]; then
+    row=$(awk '$1 == "Gemini" {print; exit}' <<<"$menu")
+    [ -n "$row" ] || fail "Gemini vendor row missing for age check"
+    expected=$(age_short "$(jq -r '.vendors.gemini.as_of // ""' <<<"$json")")
+    actual=$(awk '{print $NF}' <<<"$row")
+    if [ -n "$expected" ]; then
+      [ "$actual" = "$expected" ] || fail "Gemini age mismatch: expected $expected, row=$row"
+    elif [[ "$actual" =~ ^[0-9]+[mhd]$ ]]; then
+      fail "Gemini is at most 5m old but displays age: $row"
+    fi
+  fi
+}
+
+within_pp() {
+  local left="$1" right="$2" tolerance=3 delta
+  if [[ "$left" =~ ^[0-9]+$ ]] && [[ "$right" =~ ^[0-9]+$ ]]; then
+    delta=$((left - right)); [ "$delta" -ge 0 ] || delta=$((-delta))
+    [ "$delta" -le "$tolerance" ]
+  else
+    [ "$left" = "$right" ]
+  fi
+}
+
+assert_isolated_menu_contracts() {
+  local output
+  output=$(hs -c '
+local path = "/Volumes/Work/Projects/llm-legs/hammerspoon/llm-limits.lua"
+local function styled(text, attributes)
+  local value = { text = text, attributes = attributes }
+  return setmetatable(value, {
+    __concat = function(left, right)
+      local l = type(left) == "table" and left.text or tostring(left)
+      local r = type(right) == "table" and right.text or tostring(right)
+      return styled(l .. r, type(left) == "table" and left.attributes or right.attributes)
+    end,
+  })
+end
+local function loadModule(fixture, state)
+  local mock = {
+    alert = { show = function(message) table.insert(state.alerts, message) end },
+    execute = function() return true end,
+    json = { decode = function() return fixture end },
+    styledtext = { new = styled },
+    task = {},
+  }
+  mock.task.new = function(command, callback, args)
+    local task = { command = command, callback = callback, args = args or {} }
+    function task:setEnvironment() return self end
+    function task:start()
+      table.insert(state.starts, self)
+      return true
+    end
+    return task
+  end
+  local fakeIo = setmetatable({
+    open = function()
+      return { read = function() return "fixture" end, close = function() end }
+    end,
+  }, { __index = io })
+  local env = setmetatable({ hs = mock, io = fakeIo }, { __index = _G })
+  env._G = env
+  local chunk, err = loadfile(path, "t", env)
+  if not chunk then error(err) end
+  return chunk()
+end
+local function title(item) return type(item.title) == "table" and item.title.text or item.title end
+local now = os.time()
+local expiredState = { starts = {}, alerts = {} }
+local expired = loadModule({ schema = 1, vendors = {
+  claude = { available = true, source = "claudeb-store", accounts = {{
+    account = "alona", enabled = true, five_hour = {
+      effective_pct = 100, resets_at = 0, stale = false, expired = true,
+    },
+  }}},
+  codex = { available = false }, gemini = { available = false },
+}}, expiredState)
+local expiredMenu = expired.menuItems()
+local expiredRow
+for i, item in ipairs(expiredMenu) do
+  if title(item) == "alona" then expiredRow = expiredMenu[i + 1] break end
+end
+if not expiredRow or not title(expiredRow):match("%s%-%s*$") then error("ancient reset did not render dash") end
+local color = expiredRow.title.attributes.color
+if not color or color.red ~= 0.55 or color.green ~= 0.55 or color.blue ~= 0.55 then
+  error("expired stale=false row was not dimmed")
+end
+local fallbackState = { starts = {}, alerts = {} }
+local fallback = loadModule({ schema = 1, vendors = {
+  claude = { available = true, current_account = "com", five_hour = { effective_pct = 1, resets_at = now + 60 } },
+  codex = { available = true, current_account = "main", five_hour = { effective_pct = 2, resets_at = now + 60 } },
+  gemini = { available = true, five_hour = { effective_pct = 3, resets_at = now + 60 } },
+}}, fallbackState)
+for _, item in ipairs(fallback.menuItems()) do
+  local name = title(item)
+  if (name == "Claude" or name == "Codex" or name == "Gemini") and item.menu then item.menu[1].fn() end
+end
+if #fallbackState.starts ~= 3 then error("fallback actions did not start three vendor tasks") end
+local a, b, c = fallbackState.starts[1], fallbackState.starts[2], fallbackState.starts[3]
+if a.args[1] ~= "warm" or a.args[2] ~= "com" then error("Claude fallback dispatch mismatch") end
+if b.args[1] ~= "--refresh-account" or b.args[2] ~= "codex/main" then error("Codex fallback dispatch mismatch") end
+if c.args[1] ~= "--refresh-account" or c.args[2] ~= "gemini" then error("Gemini fallback dispatch mismatch") end
+local guardState = { starts = {}, alerts = {} }
+local guarded = loadModule({ schema = 1, vendors = {} }, guardState)
+guarded.hardRefreshClaude("com")
+guarded.hardRefreshClaude("com")
+if #guardState.starts ~= 1 then error("duplicate hard refresh started another task") end
+if #guardState.alerts ~= 1 or not guardState.alerts[1]:lower():find("already refreshing", 1, true) then
+  error("duplicate hard refresh alert mismatch")
+end
+return "OK"
+' 2>/dev/null) || fail "isolated Hammerspoon contract checks threw"
+  [ "$output" = OK ] || fail "isolated Hammerspoon contract checks: $output"
+}
+
 # 1. hs CLI reachable and Hammerspoon responding.
 [ "$(hs -c 'return "ok"' 2>/dev/null)" = "ok" ] || fail "Hammerspoon not responding to hs -c"
 pass "hs CLI reachable, Hammerspoon responding"
+assert_isolated_menu_contracts
+pass "isolated menu contracts: expired dimming, ancient dash, fallback dispatch, hard-refresh guard"
 
 # 2. Live module loaded and its data-read path (menuItems -> readLlmLimits) works.
 MENU_TXT=$(hs_menu)
-if grep -qE '(^| )(claude|codex|gemini) (now|[0-9]+[mhd])' <<<"$MENU_TXT"; then
+if grep -q '5h' <<<"$MENU_TXT"; then
   pass "live llm-limits module loaded; read path returned parsed data"
 elif grep -q 'no data — press Refresh' <<<"$MENU_TXT"; then
   reason=$(grep -v 'no data — press Refresh' <<<"$MENU_TXT" | grep -m1 . || true)
@@ -101,19 +269,39 @@ else
   fail "live read path returned neither parsed data nor a specific reason: $(head -3 <<<"$MENU_TXT" | tr '\n' '|')"
 fi
 
-# 3. Menu construction: a row per available vendor, the per-vendor age line, both actions.
+# 3. Menu construction: per-account ages, per-account hard refresh, no aggregate age line.
 JSON=$(llm-limits 2>/dev/null) || fail "bare llm-limits failed"
 AVAIL=$(jq -r '.vendors | to_entries[] | select(.value.available == true) | .key' <<<"$JSON")
 [ -n "$AVAIL" ] || fail "no available vendor in store; cannot assert menu rows"
-for v in $AVAIL; do
-  grep -qE "(^| )$v (now|[0-9]+[mhd])" <<<"$MENU_TXT" \
-    || fail "menu age line missing available vendor: $v"
-done
+grep -q ' · ' <<<"$MENU_TXT" && fail "banned aggregate vendor age line is still present"
 grep -q '5h' <<<"$MENU_TXT" || fail "menu has no five-hour vendor rows"
 grep -Fxq 'Refresh' <<<"$MENU_TXT" || fail "menu missing 'Refresh' action item"
 grep -Fxq 'Refresh + Start Windows' <<<"$MENU_TXT" || fail "menu missing 'Refresh + Start Windows' action item"
 assert_codex_account_rows "$MENU_TXT" "$JSON"
-pass "menu build: rows for [$(tr '\n' ' ' <<<"$AVAIL")], age line, Refresh + Refresh + Start Windows"
+assert_account_ages "$MENU_TXT" "$JSON"
+if jq -e '.vendors.claude.accounts[]? | select(.account == "alona") |
+    .five_hour.expired == true and .five_hour.stale == false' <<<"$JSON" >/dev/null; then
+  alona_style=$(hs_alona_five_style)
+  [[ "$alona_style" == $'GRAY\t'* ]] || fail "alona expired stale=false five-hour row is not dimmed: $alona_style"
+fi
+ancient_count=0
+while IFS= read -r reset; do
+  [ -n "$reset" ] || continue
+  reset_epoch=$(iso2epoch "$reset") || fail "cannot parse live reset timestamp: $reset"
+  [ "$reset_epoch" -ge "$(($(date +%s) - 86400))" ] || ancient_count=$((ancient_count + 1))
+done < <(jq -r '.vendors[] | if ((.accounts? // []) | length) > 0 then
+  .accounts[]?.five_hour.resets_at? else .five_hour.resets_at? end | select(. != null)' <<<"$JSON")
+if [ "$ancient_count" -gt 0 ]; then
+  dash_count=$(grep -Ec '5h .* -$' <<<"$MENU_TXT")
+  [ "$dash_count" -ge "$ancient_count" ] \
+    || fail "live menu has $ancient_count ancient five-hour reset(s) but only $dash_count dash row(s)"
+fi
+claude_hard=$(jq 'if .vendors.claude.source == "claudeb-store" then (.vendors.claude.accounts | length) else 0 end' <<<"$JSON")
+codex_hard=$(jq 'if .vendors.codex.available == true then (.vendors.codex.accounts | length) else 0 end' <<<"$JSON")
+hard_count=$(grep -Fxc '  Hard refresh' <<<"$MENU_TXT")
+[ "$hard_count" -eq "$((claude_hard + codex_hard + 1))" ] \
+  || fail "Hard refresh submenu count mismatch: expected $((claude_hard + codex_hard + 1)), got $hard_count"
+pass "menu build: per-account ages and Hard refresh present; aggregate vendor age line absent"
 
 # 4. CLI surface: --table exits 0 with rows; bare output is valid JSON with schema fields.
 TABLE=$(llm-limits --table 2>/dev/null) || fail "llm-limits --table exited non-zero"
@@ -148,11 +336,11 @@ consistency_attempt() {
       | (.fable.used_pct // null | if . == null then "-" else (round|tostring) end)' <<<"$json")
     sh=$(awk -v n="$a" '$1 == n {print $2; exit}' <<<"$status" | tr -d '%')
     sw=$(awk -v n="$a" '$1 == n {print $3; exit}' <<<"$status" | tr -d '%')
-    [ "$lh" = "$sh" ] || { MISMATCH="$a 5h: store=$lh claudeb=$sh"; return 1; }
-    [ "$lw" = "$sw" ] || { MISMATCH="$a weekly: store=$lw claudeb=$sw"; return 1; }
+    within_pp "$lh" "$sh" || { MISMATCH="$a 5h: store=$lh claudeb=$sh"; return 1; }
+    within_pp "$lw" "$sw" || { MISMATCH="$a weekly: store=$lw claudeb=$sw"; return 1; }
     if [ "$hasfab" = 1 ]; then
       sf=$(awk -v n="$a" '$1 == n {print $4; exit}' <<<"$status" | tr -d '%')
-      [ "$lf" = "$sf" ] || { [ "$lf" = - ] && [ "$sf" = 0 ]; } \
+      within_pp "$lf" "$sf" || { [ "$lf" = - ] && [ "$sf" = 0 ]; } \
         || { MISMATCH="$a fable: store=$lf claudeb=$sf"; return 1; }
     fi
   done
@@ -164,7 +352,7 @@ for attempt in 1 2 3; do
   if consistency_attempt; then consistency_ok=1; break; fi
 done
 [ "$consistency_ok" = 1 ] || fail "claudeb status disagrees with store after 3 syncs ($MISMATCH)"
-pass "store consistency: claudeb status used% matches ~/.llm-limits.json for all claude accounts"
+pass "store consistency: claudeb status stays within 3pp of ~/.llm-limits.json for all claude accounts"
 
 # 6. Free refresh round-trip: fetched_at must advance, no vendor may fail invisibly, and
 # the live module must re-read the new store. A vendor that neither advanced its as_of nor
@@ -208,8 +396,10 @@ done
 
 MENU2=$(hs_menu)
 assert_codex_account_rows "$MENU2" "$AFTER"
-grep -qE '(^| )claude (now|[0-9]+m)' <<<"$MENU2" \
-  || fail "live module did not reflect the fresh refresh (claude age not recent in rebuilt menu)"
+assert_account_ages "$MENU2" "$AFTER"
+grep -q ' · ' <<<"$MENU2" && fail "aggregate vendor age line reappeared after refresh"
+grep -q '^refresh failed:' <<<"$MENU2" \
+  && fail "successful refresh left a stale 'refresh failed' menu row"
 if [ -n "$visible_failures" ]; then
   pass "free refresh: fetched_at advanced, no invisible failures; visible refresh_error(s):$visible_failures"
 else

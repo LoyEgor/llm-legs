@@ -2,7 +2,7 @@
 set -u
 
 usage() {
-  echo "Usage: $0 [--json|--plain|--table] [--sort 5h|weekly|reset] [--no-write] [--refresh [--start-windows]]" >&2
+  echo "Usage: $0 [--json|--plain|--table] [--sort 5h|weekly|reset] [--no-write] [--refresh [--start-windows] | --refresh-account codex/NAME|gemini]" >&2
 }
 
 format=''
@@ -10,6 +10,7 @@ write_cache=1
 # --refresh is zero token spend (helpers query usage endpoints only); --start-windows is
 # the only path that may issue paid model calls, and only for vendors whose 5h window expired.
 refresh=0
+refresh_account=''
 start_windows=0
 sort_key=''
 sort_given=0
@@ -22,12 +23,21 @@ while [ $# -gt 0 ]; do
     --sort=*) sort_key=${1#--sort=}; sort_given=1 ;;
     --no-write) write_cache=0 ;;
     --refresh) refresh=1 ;;
+    --refresh-account) shift; [ $# -gt 0 ] || { usage; exit 2; }; refresh=1; refresh_account=$1 ;;
     --start-windows) start_windows=1 ;;
     *) usage; exit 2 ;;
   esac
   shift
 done
 if [ "$start_windows" -eq 1 ] && [ "$refresh" -eq 0 ]; then
+  usage
+  exit 2
+fi
+case "$refresh_account" in
+  ''|gemini|codex/?*) ;;
+  *) usage; exit 2 ;;
+esac
+if [ -n "$refresh_account" ] && [ "$start_windows" -eq 1 ]; then
   usage
   exit 2
 fi
@@ -311,7 +321,7 @@ gemini_wall=$(wall_for gemini)
 gemini_cache=${LLM_LIMITS_GEMINI_CACHE:-$HOME/.llm-limits-gemini.json}
 gemini_refresh_error=''
 refresh_gemini_quota() {
-  local gemini_cmd=${LLM_LIMITS_GEMINI_CMD:-$script_dir/agy-quota.py} gemini_tmp
+  local gemini_cmd=${LLM_LIMITS_GEMINI_CMD:-$script_dir/agy-quota.py} gemini_tmp gemini_err detail rc
   if [ ! -x "$gemini_cmd" ]; then
     gemini_refresh_error='helper not executable'
     echo "llm-limits.sh: Gemini quota helper is not executable: $gemini_cmd" >&2
@@ -319,7 +329,10 @@ refresh_gemini_quota() {
   fi
   mkdir -p "$(dirname "$gemini_cache")"
   gemini_tmp=$(mktemp "${gemini_cache}.tmp.XXXXXX") || { gemini_refresh_error='cache temp failed'; return 1; }
-  if AGY_WORKDIR="${AGY_WORKDIR:-$script_dir}" "$gemini_cmd" >"$gemini_tmp" &&
+  gemini_err=$(mktemp "${gemini_cache}.err.XXXXXX") || { rm -f "$gemini_tmp"; gemini_refresh_error='cache temp failed'; return 1; }
+  rc=0
+  AGY_WORKDIR="${AGY_WORKDIR:-$script_dir}" "$gemini_cmd" >"$gemini_tmp" 2>"$gemini_err" || rc=$?
+  if [ "$rc" -eq 0 ] &&
     jq -e '
       (.groups | type) == "array" and
       any(.groups[]?;
@@ -328,16 +341,24 @@ refresh_gemini_quota() {
         any(.buckets[]?; .window == "weekly" and (.remainingFraction | type) == "number"))
     ' "$gemini_tmp" >/dev/null 2>&1; then
     mv -f "$gemini_tmp" "$gemini_cache"
+    rm -f "$gemini_err"
     gemini_refresh_error=''
   else
-    gemini_refresh_error='live query failed'
-    rm -f "$gemini_tmp"
-    echo "llm-limits.sh: Gemini refresh failed; keeping the last valid snapshot" >&2
+    detail=$(jq -r '.error // empty' "$gemini_err" 2>/dev/null || true)
+    [ -n "$detail" ] || detail='live query failed'
+    gemini_refresh_error=$detail
+    rm -f "$gemini_tmp" "$gemini_err"
+    printf 'llm-limits.sh: Gemini refresh failed: %s\n' "$detail" >&2
     return 1
   fi
 }
-if [ "$refresh" -eq 1 ] && [ "${LLM_LIMITS_GEMINI_REFRESH:-1}" != 0 ]; then
-  refresh_gemini_quota || true
+if [ "$refresh" -eq 1 ] && { [ -z "$refresh_account" ] || [ "$refresh_account" = gemini ]; }; then
+  if [ "${LLM_LIMITS_GEMINI_REFRESH:-1}" != 0 ]; then
+    refresh_gemini_quota || true
+  elif [ "$refresh_account" = gemini ]; then
+    gemini_refresh_error='refresh disabled'
+    printf 'llm-limits.sh: Gemini refresh is disabled\n' >&2
+  fi
 fi
 if [ "$start_windows" -eq 1 ]; then
   if [ "${LLM_LIMITS_GEMINI_REFRESH:-1}" = 0 ]; then
@@ -376,7 +397,7 @@ claude_refresh_error=''
 # clean; env-overridable for anyone who wants a tighter local bound.
 claude_sw_timeout=${LLM_LIMITS_CLAUDE_SW_TIMEOUT:-1200}
 claude_refresh_timeout=${LLM_LIMITS_CLAUDE_REFRESH_TIMEOUT:-300}
-if [ "$refresh" -eq 1 ]; then
+if [ "$refresh" -eq 1 ] && [ -z "$refresh_account" ]; then
   if [ -d "$claudeb_root/limits" ]; then
     claudeb_cmd=$(command -v "${LLM_LIMITS_CLAUDEB_CMD:-claudeb}" 2>/dev/null || true)
     if [ -n "$claudeb_cmd" ]; then
@@ -584,7 +605,9 @@ collect_codex_event() {
 codex_cache=${LLM_LIMITS_CODEX_CACHE:-$HOME/.llm-limits-codex.json}
 codex_refresh_error=''
 refresh_codex_quota() {
-  local codex_quota_cmd=${LLM_LIMITS_CODEX_QUOTA_CMD:-$script_dir/codex-quota.py} codex_tmp
+  local target=${1:-} codex_quota_cmd=${LLM_LIMITS_CODEX_QUOTA_CMD:-$script_dir/codex-quota.py}
+  local codex_tmp codex_err detail rc old_current
+  local -a helper_args=()
   if [ ! -x "$codex_quota_cmd" ]; then
     codex_refresh_error='helper not executable'
     echo "llm-limits.sh: Codex quota helper is not executable: $codex_quota_cmd" >&2
@@ -592,17 +615,36 @@ refresh_codex_quota() {
   fi
   mkdir -p "$(dirname "$codex_cache")"
   codex_tmp=$(mktemp "${codex_cache}.tmp.XXXXXX") || { codex_refresh_error='cache temp failed'; return 1; }
-  if "$codex_quota_cmd" >"$codex_tmp" 2>/dev/null &&
+  codex_err=$(mktemp "${codex_cache}.err.XXXXXX") || { rm -f "$codex_tmp"; codex_refresh_error='cache temp failed'; return 1; }
+  old_current=$(jq -r '.current // "main"' "$codex_cache" 2>/dev/null || printf 'main')
+  if [ -n "$target" ]; then
+    helper_args=(--profile "$target" --no-cache)
+  fi
+  rc=0
+  "$codex_quota_cmd" "${helper_args[@]}" >"$codex_tmp" 2>"$codex_err" || rc=$?
+  if [ "$rc" -eq 0 ] &&
     jq -e '([.rateLimits.primary?, .rateLimits.secondary?]
             | any((.usedPercent | type) == "number")) or
            ([.five_hour?, .weekly?, .accounts[]?.five_hour?, .accounts[]?.weekly?]
             | any((.used_pct | type) == "number"))' "$codex_tmp" >/dev/null 2>&1; then
+    if [ -n "$target" ]; then
+      if ! jq --arg current "$old_current" '.current = $current' "$codex_tmp" >"$codex_tmp.current" \
+          || ! mv -f "$codex_tmp.current" "$codex_tmp"; then
+        codex_refresh_error='cache normalization failed'
+        rm -f "$codex_tmp" "$codex_tmp.current" "$codex_err"
+        return 1
+      fi
+    fi
     mv -f "$codex_tmp" "$codex_cache"
+    rm -f "$codex_err"
     codex_refresh_error=''
   else
-    codex_refresh_error='live query failed'
-    rm -f "$codex_tmp"
-    echo "llm-limits.sh: Codex live quota query failed; keeping the last known data" >&2
+    detail=$(jq -r '.error // empty' "$codex_err" 2>/dev/null || true)
+    [ -n "$detail" ] || detail='live query failed'
+    if [ -n "$target" ]; then codex_refresh_error=$detail; else codex_refresh_error='live query failed'; fi
+    rm -f "$codex_tmp" "$codex_tmp.current" "$codex_err"
+    printf 'llm-limits.sh: Codex%s live quota query failed: %s\n' \
+      "$([ -n "$target" ] && printf ' account %s' "$target")" "$detail" >&2
     return 1
   fi
 }
@@ -657,8 +699,15 @@ select_codex_event() {
   fi
 }
 
-if [ "$refresh" -eq 1 ] && [ "${LLM_LIMITS_CODEX_REFRESH:-1}" != 0 ]; then
-  refresh_codex_quota || true
+codex_refresh_target=''
+case "$refresh_account" in codex/*) codex_refresh_target=${refresh_account#codex/} ;; esac
+if [ "$refresh" -eq 1 ] && { [ -z "$refresh_account" ] || [ -n "$codex_refresh_target" ]; }; then
+  if [ "${LLM_LIMITS_CODEX_REFRESH:-1}" != 0 ]; then
+    refresh_codex_quota "$codex_refresh_target" || true
+  elif [ -n "$codex_refresh_target" ]; then
+    codex_refresh_error='refresh disabled'
+    printf 'llm-limits.sh: Codex account %s refresh is disabled\n' "$codex_refresh_target" >&2
+  fi
 fi
 select_codex_event
 
@@ -896,7 +945,15 @@ if [ "$available" -eq 0 ]; then
 fi
 # Exit-code honesty: a --refresh that hit a real problem (timeout, probe failure, stuck
 # auth) must never look like a clean success, even when other vendors stayed available.
-if [ "$refresh" -eq 1 ] && { [ -n "$claude_refresh_error" ] || [ -n "$codex_refresh_error" ] || [ -n "$gemini_refresh_error" ]; }; then
-  exit 4
+if [ "$refresh" -eq 1 ]; then
+  case "$refresh_account" in
+    gemini) [ -z "$gemini_refresh_error" ] || exit 4 ;;
+    codex/*) [ -z "$codex_refresh_error" ] || exit 4 ;;
+    '')
+      if [ -n "$claude_refresh_error" ] || [ -n "$codex_refresh_error" ] || [ -n "$gemini_refresh_error" ]; then
+        exit 4
+      fi
+      ;;
+  esac
 fi
 exit 0

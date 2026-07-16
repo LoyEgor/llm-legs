@@ -82,6 +82,15 @@ gemini_cached=$(LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" HOME="$HOME_FIXTURE" \
 jq -e '.vendors.gemini.available == true and .vendors.gemini.weekly.used_pct == 25' \
   <<<"$gemini_cached" >/dev/null || fail "Gemini cached snapshot missing"
 [ ! -e "$GEMINI_SENTINEL" ] || fail "default collection invoked Gemini helper"
+gemini_asof_before=$(jq -r '.vendors.gemini.as_of' <<<"$gemini_cached")
+gemini_failed=$(LLM_LIMITS_GEMINI_REFRESH=1 LLM_LIMITS_GEMINI_CMD=/usr/bin/false \
+  LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" \
+  bash "$SCRIPT" --refresh-account gemini 2>/dev/null)
+rc=$?
+[ "$rc" -eq 4 ] || fail "failed Gemini account refresh: expected exit 4, got $rc"
+jq -e --arg asof "$gemini_asof_before" \
+  '.vendors.gemini.as_of == $asof and .vendors.gemini.refresh_error == "live query failed"' \
+  <<<"$gemini_failed" >/dev/null || fail "failed Gemini account refresh advanced real-data as_of or hid its error"
 
 # Regression: statusline-last.json goes stale while cache-rl keeps updating —
 # the fresher cache-rl must win even though last.json is present and valid.
@@ -503,15 +512,16 @@ weekly_only_table=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE
   LLM_LIMITS_CODEX_CACHE="$CODEX_CACHE" bash "$SCRIPT" --table 2>/dev/null) || fail "weekly-only codex table failed"
 awk '$1 == "codex" {print}' <<<"$weekly_only_table" | grep -Eq '^codex +- +0%' \
   || fail "weekly-only codex table did not render unknown 5h and weekly percentage"
-HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" \
+codex_restored=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" \
   LLM_LIMITS_CODEX_REFRESH=1 LLM_LIMITS_CODEX_QUOTA_CMD="$WORK/fake-codex-quota" LLM_LIMITS_CODEX_CACHE="$CODEX_CACHE" \
-  bash "$SCRIPT" --refresh --no-write >/dev/null 2>&1 || fail "codex fixture restore failed"
+  bash "$SCRIPT" --refresh --no-write 2>/dev/null) || fail "codex fixture restore failed"
 refresh_failed=$(LLM_LIMITS_CODEX_REFRESH=1 LLM_LIMITS_CODEX_QUOTA_CMD=/usr/bin/false LLM_LIMITS_CODEX_CACHE="$CODEX_CACHE" \
   PATH="$FAKE_BIN:$PATH" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --refresh 2>/dev/null)
 rc=$?
 # Exit-code honesty: a --refresh that hit a real vendor error must never report a clean exit 0.
 [ "$rc" -eq 4 ] || fail "refresh with a live codex failure: expected exit 4, got $rc"
-jq -e '.vendors.codex.refresh_error == "live query failed" and .vendors.codex.five_hour.used_pct == 31' \
+jq -e --arg asof "$(jq -r '.vendors.codex.as_of' <<<"$codex_restored")" \
+  '.vendors.codex.refresh_error == "live query failed" and .vendors.codex.five_hour.used_pct == 31 and .vendors.codex.as_of == $asof' \
   <<<"$refresh_failed" >/dev/null || fail "Codex refresh failure was not machine-readable or stale data was lost"
 rm -f "$SENTINEL" "$CODEX_QUOTA_SENTINEL"
 cached_codex=$(CLAUDEB_SENTINEL="$SENTINEL" CODEX_SENTINEL="$CODEX_SENTINEL" CODEX_QUOTA_SENTINEL="$CODEX_QUOTA_SENTINEL" \
@@ -554,6 +564,23 @@ codex_accounts_table=$(HOME="$CODEX_ACCOUNTS_HOME" LLM_LIMITS_CODEX_CACHE="$CODE
 [ "$(grep -c '^codex/' <<<"$codex_accounts_table")" -eq 2 ] || fail "Codex table did not render both accounts"
 grep -q '^codex/alpha\*' <<<"$codex_accounts_table" || fail "Codex table current account marker missing"
 grep -q '^codex/beta' <<<"$codex_accounts_table" || fail "Codex table secondary account missing"
+CODEX_TARGET_SENTINEL="$WORK/codex-target-called"
+cat >"$WORK/fake-codex-target" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >"$CODEX_TARGET_SENTINEL"
+printf '%s\n' '{"accounts":[{"account":"beta","plan_type":"team","five_hour":{"used_pct":22,"resets_at":$five_reset_epoch},"weekly":{"used_pct":33,"resets_at":$week_reset_epoch},"as_of":$now},{"account":"alpha","plan_type":"plus","five_hour":{"used_pct":100,"resets_at":$five_reset_epoch},"weekly":{"used_pct":20,"resets_at":$week_reset_epoch},"as_of":$((now - 1900))}],"current":"beta"}'
+EOF
+chmod +x "$WORK/fake-codex-target"
+codex_targeted=$(CODEX_TARGET_SENTINEL="$CODEX_TARGET_SENTINEL" HOME="$CODEX_ACCOUNTS_HOME" \
+  LLM_LIMITS_CODEX_REFRESH=1 LLM_LIMITS_CODEX_QUOTA_CMD="$WORK/fake-codex-target" LLM_LIMITS_CODEX_CACHE="$CODEX_ACCOUNTS_CACHE" \
+  LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --refresh-account codex/beta) \
+  || fail "Codex targeted account refresh failed"
+grep -qx -- '--profile beta --no-cache' "$CODEX_TARGET_SENTINEL" \
+  || fail "Codex targeted refresh did not use the existing single-profile RPC"
+jq -e --argjson now "$now" '.vendors.codex.current_account == "alpha" and
+  ([.vendors.codex.accounts[] | select(.account == "beta")][0] |
+    .as_of == ($now | todateiso8601) and .five_hour.used_pct == 22)' \
+  <<<"$codex_targeted" >/dev/null || fail "Codex targeted refresh changed current account or failed to advance only real target data"
 jq '(.accounts[] | select(.account == "beta") | .five_hour.used_pct) = 25 |
     (.accounts[] | select(.account == "beta") | .weekly.used_pct) = 30' \
   "$CODEX_ACCOUNTS_CACHE" >"$CODEX_ACCOUNTS_CACHE.tmp"
