@@ -16,7 +16,7 @@ Facts below are grounded in the code as of 2026-07-16 (line numbers may drift �
 - `bin/claudebd` — rotating reverse proxy on `127.0.0.1:45789` (launchd label `com.claudeb.daemon`, plist `~/Library/LaunchAgents/com.claudeb.daemon.plist`). Routes by scope (`general` vs `fable`, split on the request body's `model` starting with `claude-fable`, `requestScope()` `bin/claudebd:631`), applies per-account/per-scope walls, persists across restarts via `~/.claude-profiles/.claudeb/daemon-state.json` (only future-dated entries are kept). Logs to `~/.claude-profiles/.claudeb/claudebd.log` (self-truncates at 1MB on startup).
 - `bin/codexb` + `codex-quota.py` — same idea for Codex CLI, no proxy: per-account `CODEX_HOME` under `~/.codex-profiles/<name>`; quota via zero-spend app-server RPC (`account/rateLimits/read`), cached in `~/.llm-limits-codex.json`. `codexb status` prints one line per account (`main: Logged in ... | 5H ... | WEEKLY ...`); an account needing login shows `auth_needed`/`Not logged in` with no usage buckets.
 - `hammerspoon/llm-limits.lua` — menubar menu. Reads only `~/.llm-limits.json`; opening the menu renders the existing cache immediately, then `collectOnOpen()` starts a detached, rate-limited `llm-limits.sh` task and re-renders after completion. The collector owns all action budgets; Lua neither adds a timeout nor queries the daemon status endpoint directly.
-- `bin/statusline.sh` — Claude Code statusline; renders the `cb:` segment (`cb:~<name>` = rotating proxy session, current daemon pick from `.claudeb-state`; `cb:<name>` = pinned/profile account; nothing for plain `main` sessions) and writes `~/.claude-profiles/.claudeb/limits/<acct>.json` whenever a live `rate_limits` payload arrives for a real (non-`main`, non-rotating) account, merging only strictly-newer buckets.
+- `bin/statusline.sh` — Claude Code statusline. Per-segment sources: model/effort/`⚡`(fast_mode)/`1m` chip from the stdin payload; location from `~/.cache/claude-statusline/workdir-<session_id>` when it points at a live git dir (dangling record → unlinked + fall back to `workspace.current_dir`), rendered `<project> » <active>` whenever the active toplevel differs from the launch repo, `@<short-sha>` in red on detached HEAD; `w:` from `~/.claude/worker-model` shows the NEXT delegation target, account included: `w:codex @<pin>·<eff>` when `codex_profile` is pinned, else `w:codex ~<acct>·<eff>` where `~<acct>` mirrors `codexb pick` locally with one jq over `$LLM_LIMITS_FILE` `vendors.codex.accounts` (same ordering as pick: expired reset counts as 0 pressure, accounts at effective ≥100 excluded, unknown quota sorts after known, name tiebreak, `main` fallback when nothing qualifies; documented divergence from the real `codexb pick` — auth comes from the snapshot's `auth_needed` flag instead of live `codex login status`, and the account list/quotas are the collector's last refresh, not a live RPC, so an account added or re-authed since then is invisible until the next collect; no `vendors.codex.accounts` array at all → `~?`); `w:cb @<pin>·son·hi` when `claudeb_profile` is pinned, else `w:cb ~<pick>·son·hi` with the rotating pick from the first line of the general-scope `.claudeb-state` (workers run sonnet/opus — never the fable state file) and `son·hi` = claudeb-worker's documented model/effort defaults; `w:son` (+optional `sonnet_effort` tier) with missing file = the documented sonnet default and an unknown `worker=` value = `w:?`. Efforts abbreviate low/med/hi/xh/max/ultra; the account part renders magenta with `@` = pinned, `~` = rotating, matching the `cb:` segment. Rate limits always render from a stamped merged cache, never raw headers: `~/.claude/statusline-cache-rl` for `main` sessions, `~/.claude-profiles/.claudeb/limits/<acct>.json` for pinned claudeb accounts — a live `rate_limits` payload is merged strictly-newer (tmp+mv) and the merge result is what renders, so a partial header backfills from cache. A rotating session (`CLAUDE_LIMITS_ACCOUNT="-"`) resolves the serving account each render from `.claudeb-state` (`.claudeb-state-fable` when the model id starts with `claude-fable` and that file is non-empty), shows `cb:~<pick>`, and renders that account's cache read-only — `-` sessions never write. Uniform dimming on every path: `five_hour` past 1800s of `as_of` age (legacy caches without `as_of` use file mtime), `seven_day` past 21600s, plus origin=`cached`, expired auth, past `resets_at`, and llm-limits per-bucket stale flags; the `fb` segment reads `$LLM_LIMITS_FILE` (default `~/.llm-limits.json`) and also dims when that file itself is older than 21600s.
 
 ## Where to look, per symptom
 
@@ -47,6 +47,8 @@ Facts below are grounded in the code as of 2026-07-16 (line numbers may drift �
 1. **Capacity 429** — `isCapacityRejection()` (`bin/claudebd:464`): status 429, no `anthropic-ratelimit-unified-*` header, no `retry-after`. Treated as transient overload: one same-account quick retry (`CLAUDEBD_CAPACITY_RETRY_ATTEMPTS`, default 1, `CLAUDEBD_CAPACITY_RETRY_MS` default 2000ms), logged as `retry account=<a> scope=<s> status=429 unified=none ...`. If still rejected, `markRejected()` walls that scope for a **short, transient** window only — 300s (general) or 300s/900s escalating (fable, if within 1h of the last bare reject) — reason=`transient`. **Never** a long wall.
 2. **Header 429** — has `anthropic-ratelimit-unified-reset` or `retry-after`. `markRejected()` walls the **request's own scope** (general or fable — never both) until the header-specified time, reason=`header`. This is real quota, not capacity noise.
 3. **OAuth token-endpoint 429** — `bin/claudeb`'s `oauth_refresh()` (curl to the Anthropic OAuth token endpoint) hitting 429: backs off only the direct-refresh path (`oauth_backoff_until`); by explicit code comment this must **never** gate the warm/heal path (`oauth_heal_backoff_until` is a separate state/namespace in the same `oauth-attempts.json`).
+4. **Warm-probe failure classification** (`bin/claudeb`'s `heal_one()`/`warm_accounts()`) — a failed zero-cost warm probe is classified into a cause (`timeout`, `warm-429`, `usage-probe-failed`, `warm-failed` = capacity-shaped upstream weather, vs. `needs-relogin`/`profile-setup` = auth-shaped), persisted as `warm_cause` in `oauth-attempts.json` (`oauth_warm_cause()`). On a capacity-shaped cause, `heal_one()` does one same-run retry (`CLAUDEB_WARM_RETRY_DELAY`, default 20s) before concluding. If still capacity-shaped and the account's existing access token is not expired/near-expiry (`token_needs_refresh()`, `CLAUDEB_TOKEN_NEAR_EXPIRY_SECONDS` default 300s), the direct token-endpoint refresh is **skipped entirely** — the snapshot is left untouched (ages keep growing honestly) and no `mark_auth expired` is recorded, so the collector's `auth_failures` never sees it. Only an auth-shaped cause, or a capacity-shaped cause with an actually-expired token, falls through to the existing direct-refresh fallback. This is the fix for conflating "probe failed from upstream overload" with "auth is broken."
+
 
 ## How to test
 
@@ -57,6 +59,7 @@ Suites (run from repo root):
 - `bash tests/test_claudebd_live.sh` — spawns a **real** `bin/claudebd` child on an ephemeral port against `claudebd_mock_upstream.js` (a scriptable Anthropic-API stand-in). Includes the **chaos scenario**: a seeded mixed general/fable fault storm (`ok`/`abort`/`unified429`/`bare429`) checking: bare 429s wall 250–900s escalating with `reason=transient`; unified-429 walls end exactly at the header reset with `reason=header`; a 401 marks only that account's `auth_failed_until` and clears on token rotation; a fable rejection never walls general (and vice versa); every injected fault produces exactly one matching log line; daemon pid is stable throughout; expired walls are pruned from `daemon-state.json` on scan; a clean daemon restart never resurrects an expired wall.
 - `bash tests/e2e_surfaces.sh` — drives the **REAL** running Hammerspoon menubar (via `hs -c`), the real `llm-limits` CLI, and `claudeb status` against the real `~/.llm-limits.json`. Golden rule: every `hs -c` snippet only reads `package.loaded["llm-limits"]` and calls `menuItems()` — never assigns to a module field, or it silently breaks the user's live menubar.
 - `bash tests/test_codexb.sh` — `bin/codexb` against a fixture `$HOME/.codex` tree and a fake `codex` binary.
+- `bash tests/test_llm_selfcheck.sh` — `bin/llm-selfcheck` (the daily safety-net job) against a fixture `$HOME`/repo with stubbed suites, `hs`/`osascript`/`launchctl`.
 
 Golden rules:
 - Verify the user-visible surface (menu render, `--table` output), not just internal state.
@@ -71,8 +74,8 @@ Treat `stale`, `expired`, `as_of`, and `effective_pct` as the data-honesty contr
 
 ## Display contract (hammerspoon/llm-limits.lua)
 
-- **Gray** = stale bucket only (`.stale == true`) — says nothing about availability. Missing or false `.stale` is not gray; every normalized bucket must carry the collector-owned flag.
-- **Reset time** = the collector converts raw zero, empty, absent, and 1970-era reset placeholders to `resets_at: null`; Lua renders null/absent as `–`. Any real reset timestamp, including an expired window awaiting refreshed data, remains visible and `expired` independently controls dimming.
+- **Gray** = stale bucket (`.stale == true`), or the collector's own `.expired == true`, or the renderer's own render-time check that `resets_at` has already passed (>60s clock-skew tolerance) — this last case covers a window whose reset landed between collects, before the stored `expired` flag catches up. Missing or false `.stale`/`.expired` alone is not gray; a future `resets_at` is never gray.
+- **Reset time** = the collector converts raw zero, empty, absent, and 1970-era reset placeholders to `resets_at: null`; Lua renders null/absent as `–`. Any real reset timestamp, including one the renderer now treats as past-due, remains visible as its actual clock time.
 - **Refresh failure** = vendor `refresh_error` comes from the collector. If the process cannot update the cache, Lua reports only the observed `exit N`, never a guessed cause.
 - **Red** = rotation-blocked, independent of the checkbox. The daemon is the single source through each account's `rotation.blocked`: `auth`, `wall`, `limit-5h`, or `limit-weekly` blocks the account title plus 5h/weekly rows; the scope-aware `fb` row uses `blocked.fable`, which may additionally be `limit-fable`. A fable-only blockage does not color the account title or general rows. Dim-red when both blocked and stale. If the daemon is unreachable, the collector omits `rotation` and the renderer does not infer blockage.
 - **Fable early warning** = when a non-blocked `fb` bucket is at least 80%, only its usage-bar substring is red. The rest of the row retains its normal or stale color, distinguishing warning from rotation blockage.
@@ -81,5 +84,52 @@ Treat `stale`, `expired`, `as_of`, and `effective_pct` as the data-honesty contr
 - **Table status** = `STATUS` is `login needed` for a Codex account with `auth_needed == true` or a Claude account with a present non-`ok` `auth.status`; unavailable vendor rows show their collector-owned status text; all other rows render `-`.
 - **Plain model** = each line mirrors the table's labeled 5h/weekly/Fable values and resets, age, rotation, credits, and status. The same `~`/`!` markers apply, expired values are never rewritten to zero, and an unavailable vendor's `last_wall` is appended when present.
 - **●** marks the current account from the account block's collector-owned `is_current` flag.
+- **In-flight indicator** = a dim `⟳ updating…` line renders at the top of the menu while the menu-open background collect (`collectOnOpenTask:isRunning()`) or any hard refresh (`hardRefreshInFlight`) is in progress. It coexists with an existing `refresh_error` row rather than replacing it.
 - **Checkbox ("In rotation")** only appears for real `claudeb-store` accounts (`enabled` = not explicitly disabled) — toggling it calls claudeb enable/disable.
 - An **explicit/pinned profile entry** is not part of `claudeb-store` and so never gets a checkbox: it's always shown direct, independent of rotation membership.
+
+## Claude Code statusline hooks
+
+`statusline-workdir-hook.sh` (PostToolUse matcher `Bash|Edit|Write|NotebookEdit|EnterWorktree|ExitWorktree`)
+records the git toplevel a session actually works in; the status line shows it with a magenta `»`
+marker when it differs from the launch repo. Rules:
+- Events carrying `agent_id`/`agent_type` are ignored — subagent tool calls report the PARENT
+  `session_id` and must never retarget the parent's display.
+- Bash: the LAST `cd`/`git -C` in the command wins (`;`, `&`, `|`, `&&`, `||`, and
+  newline-separated all match). `git -C <dir>` counts only when followed by a mutating
+  subcommand (worktree/checkout/switch/commit/merge/rebase/cherry-pick/revert/restore/stash/
+  am/reset/pull); read-only `git -C ... status/log/diff` never retargets.
+- EnterWorktree records the toplevel of the `worktree at <absolute path>` in `.tool_response`
+  (string or object); ExitWorktree deletes the session's state file. tmp/system/`~/.claude*`/
+  node_modules paths are excluded; records older than 7 days are pruned.
+- Also registered for SessionStart: `source` `startup`/`resume`/`clear` deletes the session's
+  workdir state file (a fresh shell starts in the project dir, so surviving state would lie
+  until the first cd); `compact` keeps it — the shell and its cwd survive `/compact`. This
+  runs before the agent filter on purpose: `agent_type` on SessionStart means a top-level
+  `claude --agent` session, not a subagent.
+The statusline itself unlinks a state file that no longer points at a git dir.
+
+State files are stored at:
+- `~/.cache/claude-statusline/workdir-<session_id>`
+- `~/.cache/claude-worker-tags/<agent_id>`
+
+`worker-tag-hook.sh` records the relay worker's `Worker account:` no-op and prefixes the tag
+onto later Bash activity descriptions for `codex-worker` and `claudeb-worker` agents. It exits
+silently for any `hook_event_name` other than PreToolUse (its rewrite payload hardcodes
+`hookEventName: "PreToolUse"`, so a mis-registration must be a no-op).
+
+`limits-triage-nudge.sh` (PostToolUse matcher `Bash`) scans Bash tool output for a limit-shaped
+pattern (`no available accounts`, `API Error: 503/529`, `usage limit`, `overloaded`,
+`anthropic-ratelimit`, `CLAUDEB_USAGE_LIMIT`, `claudeb ... timed out`) alongside a
+claude/claudeb/anthropic/fable context word in the same output, and nudges the session to run
+`llm-limits --table --no-write` and the daemon status check instead of theorizing. Dedup: one
+nudge per session per 15 minutes, state in `/tmp/claude-limits-triage-nudge-<session_id>`.
+
+To disable any of these hooks, remove its entry from `hooks.PostToolUse` or `hooks.PreToolUse` in
+`~/.claude/settings.json`.
+
+Debug workdir tracking (a mutating `git -C` subcommand or a `cd` is required to record):
+`jq -cn --arg dir "$PWD" '{hook_event_name:"PostToolUse",tool_name:"Bash",session_id:"debug",cwd:$dir,tool_input:{command:("cd " + ($dir | @sh))}}' | ~/.claude/hooks/statusline-workdir-hook.sh; cat ~/.cache/claude-statusline/workdir-debug`
+
+Debug worker tag capture:
+`echo '{"hook_event_name":"PreToolUse","tool_name":"Bash","agent_type":"codex-worker","agent_id":"debug","tool_input":{"command":"true","description":"Worker account: main · high"}}' | ~/.claude/hooks/worker-tag-hook.sh; cat ~/.cache/claude-worker-tags/debug`

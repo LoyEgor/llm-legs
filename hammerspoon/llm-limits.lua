@@ -137,6 +137,14 @@ local function formatResetTime(value)
   return os.date("%b %d", timestamp)
 end
 
+local function resetIsPast(resetsAt)
+  local timestamp = parseTime(resetsAt)
+  if not timestamp then
+    return false
+  end
+  return timestamp < os.time() - 60
+end
+
 local function usageBar(value)
   local pct = math.max(0, math.min(100, tonumber(value) or 0))
   local filled = math.floor(pct / 20 + 0.5)
@@ -145,7 +153,7 @@ end
 
 local function rowTitle(account, label, bucket, gray, walled, barWarning)
   bucket = type(bucket) == "table" and bucket or {}
-  gray = gray or bucket.expired == true
+  gray = gray or bucket.expired == true or resetIsPast(bucket.resets_at)
   local pct = tonumber(bucket.effective_pct)
   local pctText = pct and string.format("%d%%", math.floor(pct + 0.5)) or "-"
   local reset = formatResetTime(bucket.resets_at)
@@ -233,9 +241,21 @@ local function recordRefreshOutcome(exitCode)
   return failures
 end
 
+local function collectTaskRunning()
+  if not collectOnOpenTask then
+    return false
+  end
+  local ok, running = pcall(collectOnOpenTask.isRunning, collectOnOpenTask)
+  if not ok then
+    collectOnOpenTask = nil
+    return false
+  end
+  return running == true
+end
+
 local function collectOnOpen()
   local now = os.time()
-  if collectOnOpenTask and collectOnOpenTask:isRunning() then
+  if collectTaskRunning() then
     return
   end
   if now - lastCollectEpoch < 5 then
@@ -431,10 +451,23 @@ local function refreshItems(menu)
   })
 end
 
+local function isInFlight()
+  if collectTaskRunning() then
+    return true
+  end
+  for _ in pairs(hardRefreshInFlight) do
+    return true
+  end
+  return false
+end
+
 function M.menuItems()
   collectOnOpen()
 
   local menu = {}
+  if isInFlight() then
+    table.insert(menu, { title = infoTitle("⟳ updating…", false, true), disabled = true })
+  end
   local pendingOk, pending = pcall(function()
     return _G.ClaudeChatSwitch and _G.ClaudeChatSwitch.pending
       and _G.ClaudeChatSwitch.pending()

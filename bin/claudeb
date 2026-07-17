@@ -292,7 +292,7 @@ merge_usage() {
 }
 
 mark_auth() {
-  local name="$1" status="$2" cause="${3:-}" file="$limits_dir/$1.json" tmp lock cached='{}'
+  local name="$1" status="$2" cause="${3:-}" require_status="${4:-}" file="$limits_dir/$1.json" tmp lock cached='{}'
   mkdir -p "$limits_dir"
   lock="$file.lock"
   lock_acquire "$lock" || return 0
@@ -303,8 +303,11 @@ mark_auth() {
       cached=$(jq -c . "$file" 2>/dev/null) || cached='{}'
     fi
     if jq -cn --argjson old "$cached" --argjson now "$(date +%s)" --arg status "$status" --arg cause "$cause" \
-      '$old + {auth: ({status: $status, checked_at: $now} + (if $cause == "" then {} else {cause: $cause} end))}' > "$tmp" 2>/dev/null; then
-      mv "$tmp" "$file" || rm -f "$tmp"
+      --arg require_status "$require_status" '
+      if $require_status != "" and ($old.auth.status // "") != $require_status then $old
+      else $old + {auth: ({status: $status, checked_at: $now} + (if $cause == "" then {} else {cause: $cause} end))}
+      end' > "$tmp" 2>/dev/null; then
+      if [ "$(cat "$tmp")" = "$cached" ]; then rm -f "$tmp"; else mv "$tmp" "$file" || rm -f "$tmp"; fi
     else
       rm -f "$tmp"
     fi
@@ -316,7 +319,7 @@ oauth_token_url="${CLAUDEB_OAUTH_TOKEN_URL:-https://platform.claude.com/v1/oauth
 oauth_attempts_file="$base_dir/oauth-attempts.json"
 
 oauth_attempt_update() {
-  local name="$1" outcome="$2" retry_until="${3:-0}" credentials_expires_at="${4:-0}" lock="$oauth_attempts_file.lock" tmp now tries=0 lock_mtime stale_retake=false
+  local name="$1" outcome="$2" retry_until="${3:-0}" credentials_expires_at="${4:-0}" warm_cause="${5:-}" http_status="${6:-0}" transport_rc="${7:-0}" lock="$oauth_attempts_file.lock" tmp now tries=0 lock_mtime stale_retake=false
   local max_tries="${CLAUDEB_LOCK_RETRIES:-10}" delay="${CLAUDEB_LOCK_DELAY:-0.2}"
   [[ "$max_tries" =~ ^[1-9][0-9]*$ ]] || max_tries=10
   mkdir -p "$base_dir" || return 0
@@ -341,16 +344,20 @@ oauth_attempt_update() {
   tmp="$oauth_attempts_file.tmp.$$"
   if jq -cn --argjson old "$([ -r "$oauth_attempts_file" ] && jq -c 'if type == "object" then . else {} end' "$oauth_attempts_file" 2>/dev/null || printf '{}')" \
     --arg name "$name" --arg outcome "$outcome" --argjson now "$now" --argjson retry "$retry_until" \
-    --argjson credentials_expires_at "$credentials_expires_at" '
+    --argjson credentials_expires_at "$credentials_expires_at" --arg warm_cause "$warm_cause" \
+    --argjson http_status "$http_status" --argjson transport_rc "$transport_rc" '
     if $outcome == "success" then $old | del(.[$name])
     elif $outcome == "warming" or $outcome == "warm-failed" then
-      $old + {($name): (($old[$name] // {}) + {warm_attempted_at:$now,warm_outcome:$outcome})}
+      $old + {($name): ((($old[$name] // {}) | del(.warm_cause)) + {warm_attempted_at:$now,warm_outcome:$outcome}
+        + (if $warm_cause == "" then {} else {warm_cause:$warm_cause} end))}
     else $old + {($name): (($old[$name] // {}) as $entry |
-      (($entry | del(.attempted_at,.outcome,.retry_after_until,.credentials_expires_at))
+      (($entry | del(.attempted_at,.outcome,.retry_after_until,.credentials_expires_at,.http_status,.transport_rc))
       + (if ($entry.outcome // "") == "warming" or ($entry.outcome // "") == "warm-failed"
          then {warm_attempted_at:($entry.attempted_at // 0),warm_outcome:$entry.outcome} else {} end))
       + {attempted_at:$now,outcome:$outcome,retry_after_until:$retry}
-      + if $credentials_expires_at > 0 then {credentials_expires_at:$credentials_expires_at} else {} end)} end' > "$tmp"; then
+      + (if $credentials_expires_at > 0 then {credentials_expires_at:$credentials_expires_at} else {} end)
+      + (if $outcome == "weather" and $http_status > 0 then {http_status:$http_status} else {} end)
+      + (if $outcome == "weather" and $transport_rc > 0 then {transport_rc:$transport_rc} else {} end))} end' > "$tmp"; then
     mv "$tmp" "$oauth_attempts_file" 2>/dev/null || true
   fi
   rm -f "$tmp" 2>/dev/null || true
@@ -395,23 +402,60 @@ oauth_warm_backoff_until() {
 
 # Direct refresh state must never gate the zero-cost heal path. Warm state is
 # tracked separately so a failed warm can immediately fall back to oauth_refresh.
+# A capacity-shaped warm failure (see warm_class_is_capacity) gets a short gate
+# so weather doesn't lock an account out of healing for half an hour; only an
+# auth-shaped warm cause (needs-relogin, profile-setup, unknown-account) keeps
+# the long 30m gate.
 oauth_heal_backoff_until() {
-  local name="$1" now
+  local name="$1" now cause capacity_gate is_capacity=false
   now=$(date +%s)
-  jq -r --arg name "$name" --argjson now "$now" '
+  cause=$(oauth_warm_cause "$name")
+  capacity_gate="${CLAUDEB_HEAL_GATE_CAPACITY:-90}"
+  [[ "$capacity_gate" =~ ^[0-9]+$ ]] || capacity_gate=90
+  warm_class_is_capacity "$cause" && is_capacity=true
+  jq -r --arg name "$name" --argjson now "$now" --argjson capacity_gate "$capacity_gate" --argjson is_capacity "$is_capacity" '
     .[$name] // {} |
     (if (.warm_outcome // "") != "" then {outcome:.warm_outcome,attempted_at:(.warm_attempted_at // 0)}
      elif (.outcome // "") == "warm-failed" or (.outcome // "") == "warming"
-     then {outcome:.outcome,attempted_at:(.attempted_at // 0)} else {} end) |
-    if (.outcome // "") == "warm-failed" and ($now - (.attempted_at // 0)) < 1800
-    then (.attempted_at + 1800)
-    elif (.outcome // "") == "warming" and ($now - (.attempted_at // 0)) < 180
-    then (.attempted_at + 180)
-    else 0 end' "$oauth_attempts_file" 2>/dev/null || printf '0'
+     then {outcome:.outcome,attempted_at:(.attempted_at // 0)} else {} end) as $w |
+    ($w.outcome // "") as $outcome | ($w.attempted_at // 0) as $attempted_at |
+    (if $outcome == "warm-failed" then (if $is_capacity then $capacity_gate else 1800 end)
+     elif $outcome == "warming" then 180
+     else 0 end) as $window |
+    if $window > 0 and ($now - $attempted_at) < $window then ($attempted_at + $window) else 0 end' \
+    "$oauth_attempts_file" 2>/dev/null || printf '0'
 }
 
 oauth_backoff_outcome() {
   jq -r --arg name "$1" '.[$name].outcome // ""' "$oauth_attempts_file" 2>/dev/null || true
+}
+
+oauth_backoff_http() {
+  jq -r --arg name "$1" '.[$name].http_status // 0' "$oauth_attempts_file" 2>/dev/null || printf '0'
+}
+
+oauth_warm_cause() {
+  jq -r --arg name "$1" '.[$name].warm_cause // ""' "$oauth_attempts_file" 2>/dev/null || printf ''
+}
+
+warm_class_is_capacity() {
+  case "$1" in
+    timeout|warm-429|warm-failed|usage-probe-failed) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+token_needs_refresh() {
+  local name="$1" profile hash service credentials expires_at now_ms near_ms
+  profile="$HOME/.claude-profiles/$name"
+  hash=$(printf '%s' "$profile" | shasum -a 256 | awk '{print substr($1, 1, 8)}')
+  service="Claude Code-credentials-$hash"
+  credentials=$(security find-generic-password -s "$service" -w 2>/dev/null) || return 0
+  expires_at=$(printf '%s' "$credentials" | jq -r '.claudeAiOauth.expiresAt // 0 | floor' 2>/dev/null) || expires_at=0
+  [[ "$expires_at" =~ ^[0-9]+$ ]] || expires_at=0
+  now_ms=$(($(date +%s) * 1000))
+  near_ms=$(( ${CLAUDEB_TOKEN_NEAR_EXPIRY_SECONDS:-300} * 1000 ))
+  [ "$expires_at" -le "$((now_ms + near_ms))" ]
 }
 
 oauth_attempt_begin() {
@@ -439,7 +483,7 @@ keychain_write() {
 # the profile out of Claude Code, so the write is verified by re-read and the
 # previous JSON is restored on any mismatch.
 oauth_refresh() {
-  local name="$1" service="$2" prev="$3" body response new_creds readback headers http rc=0 retry='' retry_until=0
+  local name="$1" service="$2" prev="$3" body response new_creds readback headers http rc=0 retry='' retry_until=0 weather_http=0
   local prev_rt prev_expires_at current current_rt rlock='' lock_trap
   oauth_attempt_begin "$name" "$prev" || return 1
   prev_rt=$(printf '%s' "$prev" | jq -r '.claudeAiOauth.refreshToken // empty' 2>/dev/null) || prev_rt=''
@@ -493,6 +537,8 @@ oauth_refresh() {
         if [[ "$retry" =~ ^[0-9]+$ ]]; then retry_until=$(($(date +%s) + retry)); fi
         printf 'claudeb: %s: OAuth token endpoint returned 429%s\n' "$name" "$([ -n "$retry" ] && printf ' (retry-after: %s)' "$retry")" >&2
         oauth_attempt_update "$name" 429 "$retry_until"
+      elif [ "$rc" -ne 0 ]; then
+        oauth_attempt_update "$name" weather 0 0 '' 0 "$rc"
       elif printf '%s' "$response" | grep -q invalid_grant; then
         current=$(security find-generic-password -s "$service" -w 2>/dev/null) || current=''
         current_rt=$(printf '%s' "$current" | jq -r '.claudeAiOauth.refreshToken // empty' 2>/dev/null) || current_rt=''
@@ -502,11 +548,14 @@ oauth_refresh() {
           printf '%s' "$current"
           current=''
           return 0
-        elif [ -n "$current_rt" ] && [ "$current_rt" = "$prev_rt" ]; then
-          oauth_attempt_update "$name" revoked "$(($(date +%s) + 21600))" "$prev_expires_at"
         else
-          oauth_attempt_update "$name" failed
+          oauth_attempt_update "$name" revoked "$(($(date +%s) + 21600))" "$prev_expires_at"
         fi
+      elif [ "$http" = 401 ] || [ "$http" = 403 ]; then
+        oauth_attempt_update "$name" auth-failed
+      elif [[ "$http" =~ ^5[0-9][0-9]$ ]] || [ "$http" = 000 ]; then
+        weather_http=$((10#$http))
+        oauth_attempt_update "$name" weather 0 0 '' "$weather_http"
       else
         oauth_attempt_update "$name" failed
       fi
@@ -574,7 +623,7 @@ messages_probe() {
 
 probe_one() {
   local name="$1" dir="$2" allow_spend="$3" allow_refresh="${4:-true}" http=000 rc=1 attempt out
-  local profile hash service credentials access_token now_ms expires_at refreshed=false
+  local profile hash service credentials access_token now_ms expires_at refreshed=false refresh_outcome refresh_http
   profile="$HOME/.claude-profiles/$name"
   hash=$(printf '%s' "$profile" | shasum -a 256 | awk '{print substr($1, 1, 8)}')
   service="Claude Code-credentials-$hash"
@@ -587,8 +636,19 @@ probe_one() {
         refreshed=true
         if ! credentials=$(oauth_refresh "$name" "$service" "$credentials"); then
           credentials=""
-          http=401
-          mark_auth "$name" expired
+          refresh_outcome=$(oauth_backoff_outcome "$name")
+          case "$refresh_outcome" in
+            revoked|auth-failed)
+              http=401
+              mark_auth "$name" expired
+              ;;
+            429) http=429 ;;
+            weather)
+              refresh_http=$(oauth_backoff_http "$name")
+              if [ "$refresh_http" -gt 0 ] 2>/dev/null; then http="$refresh_http"; else http=000; fi
+              ;;
+            *) http=000 ;;
+          esac
         fi
       else
         credentials=""
@@ -659,6 +719,7 @@ messages_probe_and_mark() {
 # token-endpoint 429/failed record must never gate it (see oauth_heal_backoff_until).
 heal_one() {
   local dir="$1" name="$2" until_heal now_heal warm_out warm_cause cause source rc http until_refresh outcome retry_until warm_gated=false
+  local warm_reason='' retry_delay
   until_heal=$(oauth_heal_backoff_until "$name")
   now_heal=$(date +%s)
   if [ "$until_heal" -gt "$now_heal" ] 2>/dev/null; then
@@ -672,6 +733,24 @@ heal_one() {
     printf 'live\n' > "$dir/$name.display"
     return
   fi
+  warm_reason=$(oauth_warm_cause "$name")
+  if [ "$warm_gated" != true ] && warm_class_is_capacity "$warm_reason"; then
+    retry_delay="${CLAUDEB_WARM_RETRY_DELAY:-20}"
+    [[ "$retry_delay" =~ ^[0-9]+$ ]] || retry_delay=20
+    [ "$retry_delay" -le 0 ] || sleep "$retry_delay"
+    # The just-recorded warm-failed outcome would otherwise self-gate this
+    # same-run retry under oauth_heal_backoff_until's 30m window.
+    if warm_out=$(CLAUDEB_WARM_FREE_ONLY=true CLAUDEB_WARM_BACKOFF_MODE=retry-after warm_accounts "$name" 2>/dev/null); then
+      printf 'live\n' > "$dir/$name.display"
+      return
+    fi
+    warm_reason=$(oauth_warm_cause "$name")
+  fi
+  if [ "$warm_gated" != true ] && warm_class_is_capacity "$warm_reason" && ! token_needs_refresh "$name"; then
+    mark_auth "$name" ok
+    printf 'claudeb: %s: capacity (anthropic overload) — data kept, will retry (warm cause: %s)\n' "$name" "$warm_reason" >&2
+    return
+  fi
   probe_one "$name" "$dir" false true
   read -r source rc http < "$dir/$name.result"
   if [ "$source" = usage ] && merge_usage "$name" "$dir/$name.usage"; then
@@ -682,8 +761,14 @@ heal_one() {
   until_refresh=$(oauth_backoff_until "$name")
   outcome=$(oauth_backoff_outcome "$name")
   if [ "$outcome" = revoked ]; then
-    cause='needs re-login'
-  elif [ "$warm_gated" = true ]; then
+    mark_auth "$name" expired 'needs re-login'
+    return
+  fi
+  # An already-gated heal cycle keeps its own backoff-shaped cause regardless
+  # of what this round's fallback probe returned; a live retry-after backoff
+  # is likewise capacity, not proof of dead credentials — only a 401/403 left
+  # unexplained by either is affirmative evidence.
+  if [ "$warm_gated" = true ]; then
     retry_until="$until_heal"
     if [ "$until_refresh" -gt "$now_heal" ] 2>/dev/null && [ "$until_refresh" -lt "$retry_until" ] 2>/dev/null; then
       retry_until="$until_refresh"
@@ -692,11 +777,18 @@ heal_one() {
   elif [ "$until_refresh" -gt "$now_heal" ] 2>/dev/null; then
     cause="$warm_cause, token refresh backoff $(( (until_refresh - now_heal + 59) / 60 ))m"
   elif [ "$http" = 401 ] || [ "$http" = 403 ]; then
-    cause="$warm_cause, token refresh failed"
+    mark_auth "$name" expired "$warm_cause, token refresh failed"
+    return
   else
     cause="$warm_cause, fallback probe HTTP ${http:-000}"
   fi
-  mark_auth "$name" expired "$cause"
+  if token_needs_refresh "$name"; then
+    mark_auth "$name" expired "$cause" expired
+    printf 'claudeb: %s: capacity (%s) — token unresolved, no auth verdict\n' "$name" "$cause" >&2
+  else
+    mark_auth "$name" ok
+    printf 'claudeb: %s: capacity (%s) — token still valid, auth ok\n' "$name" "$cause" >&2
+  fi
 }
 
 # Heal every auth-expired account concurrently. Each warm drives a `claude` CLI
@@ -757,6 +849,10 @@ probe_accounts() {
         continue
         ;;
       *)
+        if [ "$(oauth_backoff_outcome "$name")" = failed ]; then
+          messages_probe_and_mark "$name" "$dir" false || true
+          continue
+        fi
         printf 'claudeb: %s: usage probe failed; window state unknown, not starting a 5h window\n' "$name" >&2
         continue
         ;;
@@ -1085,7 +1181,7 @@ warm_accounts() {
     prepared_profile_dir=''
     CLAUDEB_PREPARE_ONLY=true profile_command "$name" || {
       warm_failure "$name" profile-setup 'profile setup'
-      oauth_attempt_update "$name" warm-failed 0
+      oauth_attempt_update "$name" warm-failed 0 0 profile-setup
       failed=1
       continue
     }
@@ -1122,7 +1218,7 @@ warm_accounts() {
         reason='needs re-login'
         failure_cause=needs-relogin
       fi
-      oauth_attempt_update "$name" warm-failed 0
+      oauth_attempt_update "$name" warm-failed 0 0 "$failure_cause"
     fi
     if [ "$session_rc" -ne 0 ]; then
       rm -f "$output"
@@ -1143,7 +1239,7 @@ warm_accounts() {
     now=$(date +%s)
     if ! [[ "$expires_at" =~ ^[0-9]+$ ]] || [ "$expires_at" -le "$((now * 1000))" ]; then
       rm -rf "$probe_dir"
-      oauth_attempt_update "$name" warm-failed 0
+      oauth_attempt_update "$name" warm-failed 0 0 needs-relogin
       warm_failure "$name" needs-relogin 'OAuth token is not fresh'
       failed=1
       continue
@@ -1160,14 +1256,15 @@ warm_accounts() {
       fi
     fi
     rm -rf "$probe_dir"
-    oauth_attempt_update "$name" warm-failed 0
     if [ "$http" = 401 ] || [ "$http" = 403 ]; then
-      warm_failure "$name" needs-relogin "usage probe HTTP ${http:-000}"
+      failure_cause=needs-relogin
     elif [ "$http" = 429 ]; then
-      warm_failure "$name" warm-429 "usage probe HTTP ${http:-000}"
+      failure_cause=warm-429
     else
-      warm_failure "$name" usage-probe-failed "usage probe HTTP ${http:-000}"
+      failure_cause=usage-probe-failed
     fi
+    oauth_attempt_update "$name" warm-failed 0 0 "$failure_cause"
+    warm_failure "$name" "$failure_cause" "usage probe HTTP ${http:-000}"
     failed=1
   done
   return "$failed"

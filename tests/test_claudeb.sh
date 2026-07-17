@@ -21,7 +21,8 @@ assert_fails() {
 HOME="$WORK/home"
 CLAUDEB_DIR="$WORK/store"
 FAKE_BIN="$WORK/bin"
-export HOME CLAUDEB_DIR
+CLAUDEB_WARM_RETRY_DELAY=0
+export HOME CLAUDEB_DIR CLAUDEB_WARM_RETRY_DELAY
 mkdir -p "$HOME" "$CLAUDEB_DIR/limits" "$CLAUDEB_DIR/tokens" "$FAKE_BIN"
 for command in curl security claude; do
   printf '#!/usr/bin/env bash\nexit 97\n' >"$FAKE_BIN/$command"
@@ -248,8 +249,27 @@ chmod +x "$FAKE_BIN/security" "$FAKE_BIN/curl"
 if got=$(oauth_refresh alpha svc "$relogin_creds"); then rc=0; else rc=$?; fi
 assert test "$rc" -ne 0
 assert test -f "$refresh_attempted"
-assert test "$(oauth_backoff_outcome alpha)" = failed
+assert test "$(oauth_backoff_outcome alpha)" = weather
+assert test "$(oauth_backoff_http alpha)" = 500
 assert test ! -d "$oauth_attempts_file.rl.alpha"
+
+weather_dir="$WORK/oauth-weather"
+mkdir -p "$weather_dir"
+cat >"$FAKE_BIN/security" <<EOF
+#!/usr/bin/env bash
+printf '%s' '$creds'
+EOF
+cat >"$FAKE_BIN/curl" <<'EOF'
+#!/usr/bin/env bash
+printf '{"error":"overloaded"}\n529'
+EOF
+chmod +x "$FAKE_BIN/security" "$FAKE_BIN/curl"
+printf '{}' >"$oauth_attempts_file"
+printf '{"auth":{"status":"ok","checked_at":1}}' >"$limits_dir/alpha.json"
+probe_one alpha "$weather_dir" false true
+assert test "$(cat "$weather_dir/alpha.result")" = 'no-spend 1 529'
+assert jq -e '.alpha.outcome == "weather" and .alpha.http_status == 529' "$oauth_attempts_file" >/dev/null
+assert jq -e '.auth.status == "ok" and (.auth | has("cause") | not)' "$limits_dir/alpha.json" >/dev/null
 
 # invalid_grant after an in-flight concurrent rotation adopts the newer keychain value.
 newcreds='{"claudeAiOauth":{"refreshToken":"rt-new","accessToken":"at2","expiresAt":'"$relogin_expires_at"'}}'
@@ -386,7 +406,9 @@ chmod +x "$FAKE_BIN/security" "$FAKE_BIN/claude" "$FAKE_BIN/curl"
   export WARM_SUCCEEDS
   probe_accounts "$order_dir" false false true
   assert test "$(sed -n '1p' "$EVENT_LOG")" = warm
-  assert test "$(sed -n '2p' "$EVENT_LOG")" = token
+  assert test "$(sed -n '2p' "$EVENT_LOG")" = warm
+  assert test "$(sed -n '3p' "$EVENT_LOG")" = token
+  assert test "$(wc -l < "$EVENT_LOG" | tr -d ' ')" = 3
   assert test "$(jq -r '.auth.cause' "$limits_dir/alpha.json")" = 'warm failed, token refresh backoff 15m'
   # A genuinely-unhealable account stays expired post-heal; only then may it surface.
   assert test "$(jq -r '.auth.status' "$limits_dir/alpha.json")" = expired
@@ -402,6 +424,49 @@ chmod +x "$FAKE_BIN/security" "$FAKE_BIN/claude" "$FAKE_BIN/curl"
   probe_accounts "$order_dir" false false false
   assert test "$(sed -n '1p' "$EVENT_LOG")" = token
   assert_fails grep -qx warm "$EVENT_LOG"
+)
+
+touch "$CLAUDEB_DIR/tokens/eta"
+(
+  ETA_WARM_LOG="$WORK/eta-warm.log"
+  ETA_TOKEN_LOG="$WORK/eta-token-post.log"
+  : >"$ETA_WARM_LOG"
+  : >"$ETA_TOKEN_LOG"
+  export ETA_WARM_LOG ETA_TOKEN_LOG
+  eta_fresh_creds='{"claudeAiOauth":{"refreshToken":"rt-eta","accessToken":"at-eta","expiresAt":9999999999999,"scopes":["a"]}}'
+  cat >"$FAKE_BIN/security" <<EOF
+#!/usr/bin/env bash
+printf '%s' '$eta_fresh_creds'
+EOF
+  cat >"$FAKE_BIN/claude" <<'EOF'
+#!/usr/bin/env bash
+printf 'warm\n' >>"$ETA_WARM_LOG"
+echo 'error: 429 too many requests' >&2
+exit 1
+EOF
+  cat >"$FAKE_BIN/curl" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *'/v1/oauth/token'*)
+    printf 'token\n' >>"$ETA_TOKEN_LOG"
+    printf '{"error":"rate_limited"}\n429'
+    ;;
+  *) exit 97 ;;
+esac
+EOF
+  chmod +x "$FAKE_BIN/security" "$FAKE_BIN/claude" "$FAKE_BIN/curl"
+  heal_dir_eta="$WORK/heal-capacity-skip"
+  mkdir -p "$heal_dir_eta"
+  printf '{}' >"$oauth_attempts_file"
+  eta_snapshot_before='{"marker":"untouched","five_hour":{"used_percentage":5},"auth":{"status":"expired","checked_at":1,"cause":"stale"}}'
+  printf '%s' "$eta_snapshot_before" >"$limits_dir/eta.json"
+  heal_one "$heal_dir_eta" eta
+  assert test "$(grep -cx warm "$ETA_WARM_LOG")" = 2
+  assert_fails test -s "$ETA_TOKEN_LOG"
+  assert jq -e '.marker == "untouched" and .five_hour.used_percentage == 5
+    and .auth.status == "ok" and (.auth | has("cause") | not)' "$limits_dir/eta.json" >/dev/null
+  assert test "$(jq -r '.eta.warm_cause' "$oauth_attempts_file")" = warm-429
+  assert_fails test -f "$heal_dir_eta/eta.display"
 )
 
 # --- start-windows opens a fresh 5h window and the reconcile read locks in the
@@ -542,7 +607,10 @@ probe_one() {
 account_names() { printf 'alpha\nbeta\ngamma\ndelta\n'; }
 heal_dir="$WORK/heal"
 mkdir -p "$heal_dir"
-for n in alpha beta gamma delta; do printf 'auth!\n' >"$heal_dir/$n.display"; printf '{}' >"$limits_dir/$n.json"; done
+for n in alpha beta gamma delta; do
+  printf 'auth!\n' >"$heal_dir/$n.display"
+  printf '{"auth":{"status":"expired","checked_at":1}}' >"$limits_dir/$n.json"
+done
 printf 'alpha\n' >"$disabled_file"
 now=$(date +%s)
 printf '{"delta":{"attempted_at":%s,"outcome":"revoked","retry_after_until":0}}\n' "$now" >"$oauth_attempts_file"
@@ -557,4 +625,4 @@ assert test "$(jq -r '.auth.cause' "$limits_dir/gamma.json")" = 'warm failed, to
 assert test "$(jq -r '.auth.cause' "$limits_dir/delta.json")" = 'needs re-login'
 assert grep -qx delta "$WARM_CALLS"
 
-echo "PASS: $asserts asserts; reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth backoff and lock behavior, reserved names, disabled-account timeline, out-of-rotation profile launch proceeds direct (proxy leaks stripped), generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent-rotation adoption, warm-first heal ordering and fallback (healed clears to auth ok, unhealable stays expired), start-windows opens a fresh window and reconcile locks the new resets_at without regressing it, start-windows skips a disabled account with an explicit cause, the paid haiku warm fallback stays off unless opted in, regular probes never warm, and heal_expired covers disabled accounts with actionable causes"
+echo "PASS: $asserts asserts; reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth weather/backoff and lock behavior, reserved names, disabled-account timeline, out-of-rotation profile launch proceeds direct (proxy leaks stripped), generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent-rotation adoption, capacity weather clears stale expired auth for valid tokens, warm-first heal ordering and fallback, start-windows opens a fresh window and reconcile locks the new resets_at without regressing it, start-windows skips a disabled account with an explicit cause, the paid haiku warm fallback stays off unless opted in, regular probes never warm, and heal_expired covers disabled accounts with actionable causes"

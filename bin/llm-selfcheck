@@ -15,6 +15,7 @@ script_path=$(resolve_script)
 repo_root=$(cd "$(dirname "$script_path")/.." && pwd)
 log_dir="$HOME/.claude-profiles/.claudeb"
 log_file="$log_dir/selfcheck.log"
+state_file="$log_dir/selfcheck.state"
 agent_dir="$HOME/Library/LaunchAgents"
 plist="$agent_dir/com.llm-legs.selfcheck.plist"
 link="$HOME/.local/bin/llm-selfcheck"
@@ -38,11 +39,51 @@ write_log() {
   tail -n 60 "$log_file" >"$temporary" && mv "$temporary" "$log_file"
 }
 
-alert_failure() {
-  local step="$1" message
-  message="LLM self-check failed: $step"
+send_alert() {
+  local message="$1"
   hs -c "hs.alert.show(\"$message\")" >/dev/null 2>&1 || true
   osascript -e "display notification \"$message\" with title \"LLM self-check\"" >/dev/null 2>&1 || true
+}
+
+alert_failure() {
+  send_alert "LLM self-check failed: $1"
+}
+
+last_run_epoch() {
+  local ts
+  [ -f "$log_file" ] || return 0
+  ts=$(grep -o 'timestamp=[^ ]*' "$log_file" | tail -n 1 | cut -d= -f2-)
+  [ -n "$ts" ] || return 0
+  date -j -f '%Y-%m-%dT%H:%M:%S%z' "$ts" '+%s' 2>/dev/null || date -d "$ts" '+%s' 2>/dev/null
+}
+
+alert_stale() {
+  local last="$1" prev stale_date
+  mkdir -p "$log_dir"
+  prev=""
+  [ -f "$state_file" ] && prev=$(cat "$state_file")
+  [ "$prev" = "$last" ] && return 0
+  stale_date=$(date -r "$last" '+%Y-%m-%d %H:%M' 2>/dev/null || date -d "@$last" '+%Y-%m-%d %H:%M' 2>/dev/null || printf 'unknown')
+  send_alert "LLM self-check stale since $stale_date"
+  printf '%s\n' "$last" >"$state_file"
+}
+
+maybe_run() {
+  local now last age debounce_s stale_s
+  now=$(date '+%s')
+  last=$(last_run_epoch)
+  if [ -n "$last" ]; then
+    debounce_s=$(( ${LLM_SELFCHECK_DEBOUNCE_HOURS:-20} * 3600 ))
+    age=$(( now - last ))
+    if [ "$age" -lt "$debounce_s" ]; then
+      return 0
+    fi
+    stale_s=$(( ${LLM_SELFCHECK_STALE_ALERT_HOURS:-26} * 3600 ))
+    if [ "$age" -ge "$stale_s" ]; then
+      alert_stale "$last"
+    fi
+  fi
+  run_checks
 }
 
 run_checks() {
@@ -97,8 +138,10 @@ install_agent() {
     <key>Minute</key>
     <integer>30</integer>
   </dict>
+  <key>StartInterval</key>
+  <integer>3600</integer>
   <key>RunAtLoad</key>
-  <false/>
+  <true/>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
@@ -115,7 +158,7 @@ EOF
   if ! launchctl bootstrap "gui/$UID" "$plist"; then
     launchctl load -w "$plist"
   fi
-  printf 'Installed %s for 10:30 daily.\n' "$label"
+  printf 'Installed %s for 10:30 daily, plus RunAtLoad and hourly catch-up checks (debounced).\n' "$label"
 }
 
 uninstall_agent() {
@@ -141,10 +184,20 @@ show_status() {
   fi
 }
 
+usage() { printf 'usage: llm-selfcheck [run [--force]|install|uninstall|status]\n' >&2; exit 2; }
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
 case "${1:-run}" in
-  run) [ "$#" -le 1 ] || { printf 'usage: llm-selfcheck [install|uninstall|status]\n' >&2; exit 2; }; run_checks ;;
+  run)
+    case "${2:-}" in
+      '') maybe_run ;;
+      --force) [ "$#" -eq 2 ] || usage; run_checks ;;
+      *) usage ;;
+    esac
+    ;;
   install) [ "$#" -eq 1 ] || exit 2; install_agent ;;
   uninstall) [ "$#" -eq 1 ] || exit 2; uninstall_agent ;;
   status) [ "$#" -eq 1 ] || exit 2; show_status ;;
-  *) printf 'usage: llm-selfcheck [install|uninstall|status]\n' >&2; exit 2 ;;
+  *) usage ;;
 esac
+fi

@@ -23,13 +23,13 @@ function Styled.__concat(left, right)
   return result
 end
 
-local function loadModule(fixture)
+local function loadModule(fixture, taskFactory)
   local mock = {
     alert = { show = function() end },
     execute = function() return true end,
     json = { decode = function() return fixture end },
     styledtext = { new = styled },
-    task = { new = function() return nil end },
+    task = { new = taskFactory or function() return nil end },
   }
   local fakeIo = setmetatable({
     open = function()
@@ -134,6 +134,16 @@ local fixture = { schema = 1, vendors = {
         five_hour = { effective_pct = 0, resets_at = os.time() - 1800, stale = false, expired = true },
         rotation = { usable = { general = true, fable = true }, blocked = {} },
       },
+      {
+        account = "past-reset-unflagged",
+        five_hour = { effective_pct = 0, resets_at = os.time() - 1800, stale = false, expired = false },
+        rotation = { usable = { general = true, fable = true }, blocked = {} },
+      },
+      {
+        account = "skew-reset",
+        five_hour = { effective_pct = 0, resets_at = os.time() - 30, stale = false, expired = false },
+        rotation = { usable = { general = true, fable = true }, blocked = {} },
+      },
     },
   },
   codex = { available = false },
@@ -177,6 +187,20 @@ local expectedPast = os.date("%H:%M", os.time() - 1800)
 assert(titleText(menu[pastReset + 1]):find(expectedPast, 1, true),
   "real past reset did not render its clock time")
 
+local pastUnflagged = accountIndex(menu, "past-reset-unflagged")
+assert(isGray(menu[pastUnflagged + 1].title.attributes),
+  "past resets_at without expired flag did not render dim")
+assert(titleText(menu[pastUnflagged + 1]):find(expectedPast, 1, true),
+  "render-time-expired row lost its real clock time")
+
+local skewReset = accountIndex(menu, "skew-reset")
+assert(not isGray(menu[skewReset + 1].title.attributes),
+  "clock skew within tolerance was fabricated as expired")
+
+local fresh5h = accountIndex(menu, "fresh")
+assert(not isGray(menu[fresh5h + 1].title.attributes),
+  "future resets_at was rendered dim")
+
 local downFixture = { schema = 1, vendors = {
   claude = {
     available = true,
@@ -219,5 +243,48 @@ for _, item in ipairs(codexMenu) do
   if text:find("wrong", 1, true) then wrongSeen = text:find("●", 1, true) ~= nil end
 end
 assert(markedSeen and not wrongSeen, "Codex marker did not trust is_current alone")
+
+local runningTask = {
+  isRunning = function() return true end,
+  start = function() return true end,
+  setEnvironment = function() end,
+}
+local runningMenu = loadModule(fixture, function() return runningTask end).menuItems()
+assert(titleText(runningMenu[1]):find("updating", 1, true),
+  "in-flight collect did not render the updating indicator")
+assert(isGray(runningMenu[1].title.attributes), "updating indicator was not dim")
+
+local deadFixture = { schema = 1, vendors = {
+  claude = { available = false, refresh_error = "fixture failure" },
+  codex = { available = false },
+  gemini = { available = false },
+}}
+local deadTask = {
+  isRunning = function() error("dead task") end,
+  start = function() return true end,
+  setEnvironment = function() end,
+}
+local deadMenu = loadModule(deadFixture, function() return deadTask end).menuItems()
+local deadErrorSeen = false
+for _, item in ipairs(deadMenu) do
+  if titleText(item):find("refresh failed: claude — fixture failure", 1, true) then
+    deadErrorSeen = true
+  end
+end
+assert(deadErrorSeen, "dead collect task masked the cached refresh error")
+
+assert(not titleText(menu[1]):find("updating", 1, true),
+  "updating indicator appeared with no in-flight collect or hard refresh")
+
+local pendingTask = {
+  isRunning = function() return false end,
+  start = function() return true end,
+  setEnvironment = function() end,
+}
+local hardRefreshModule = loadModule(fixture, function() return pendingTask end)
+hardRefreshModule.hardRefreshClaude("full")
+local hardRefreshMenu = hardRefreshModule.menuItems()
+assert(titleText(hardRefreshMenu[1]):find("updating", 1, true),
+  "in-flight hard refresh did not render the updating indicator")
 
 return "PASS: Hammerspoon projection contract"
