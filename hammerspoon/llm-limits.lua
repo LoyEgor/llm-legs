@@ -451,6 +451,29 @@ local function refreshItems(menu)
   })
 end
 
+local function reportItem(menu)
+  local project = "/Volumes/Work/Projects/usage-ai-report"
+  local item
+  local lock = hs.fs.attributes(project .. "/.run-report.lock")
+  if hs.fs.attributes(project, "mode") ~= "directory" then
+    item = { title = "Report: volume not mounted", disabled = true }
+  -- 10800s matches run_report.sh's stale-lock rule; a crashed run must not pin this item forever
+  elseif lock and os.time() - (lock.modification or 0) <= 10800 then
+    item = { title = "Report: running…", disabled = true }
+  else
+    local report = project .. "/repo/LoyEgor/" .. os.date("%Y-%m-%d") .. ".md"
+    item = {
+      title = hs.fs.attributes(report) and "Update today's report" or "Create today's report",
+      fn = function()
+        hs.task.new("/bin/bash", nil, { project .. "/run_report.sh", "--today" }):start()
+        hs.alert.show("Report started")
+      end,
+    }
+  end
+  table.insert(menu, { title = "-" })
+  table.insert(menu, item)
+end
+
 local function isInFlight()
   if collectTaskRunning() then
     return true
@@ -623,6 +646,7 @@ function M.menuItems()
       })
     end
     refreshItems(menu)
+    reportItem(menu)
   else
     table.insert(menu, {
       title = infoTitle("no data — press Refresh"),
@@ -635,6 +659,7 @@ function M.menuItems()
       })
     end
     refreshItems(menu)
+    reportItem(menu)
   end
 
   return menu
