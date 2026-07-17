@@ -445,6 +445,34 @@ warm_class_is_capacity() {
   esac
 }
 
+warm_cause_from_refresh() {
+  local name="$1" refresh_rc="$2"
+  case "$refresh_rc" in
+    2) printf 'needs-relogin\n' ;;
+    75)
+      if [ "$(oauth_backoff_outcome "$name")" = 429 ]; then printf 'warm-429\n'; else printf 'warm-failed\n'; fi
+      ;;
+    *) printf 'warm-failed\n' ;;
+  esac
+}
+
+probe_http_from_refresh_failure() {
+  local name="$1" refresh_rc="$2" refresh_outcome refresh_http
+  case "$refresh_rc" in
+    2) printf '401\n' ;;
+    75)
+      refresh_outcome=$(oauth_backoff_outcome "$name")
+      if [ "$refresh_outcome" = 429 ]; then
+        printf '429\n'
+      else
+        refresh_http=$(oauth_backoff_http "$name")
+        if [ "$refresh_http" -gt 0 ] 2>/dev/null; then printf '%s\n' "$refresh_http"; else printf '000\n'; fi
+      fi
+      ;;
+    *) printf '000\n' ;;
+  esac
+}
+
 token_needs_refresh() {
   local name="$1" profile hash service credentials expires_at now_ms near_ms
   profile="$HOME/.claude-profiles/$name"
@@ -479,11 +507,12 @@ keychain_write() {
     security -i >/dev/null 2>&1
 }
 
-# Prints the rotated credentials JSON on success. A corrupt keychain write logs
-# the profile out of Claude Code, so the write is verified by re-read and the
-# previous JSON is restored on any mismatch.
+# Prints the rotated credentials JSON on success. Returns 2 only for a fresh
+# token-endpoint auth rejection and 75 for transient endpoint weather. A corrupt
+# keychain write logs the profile out of Claude Code, so the write is verified by
+# re-read and the previous JSON is restored on any mismatch.
 oauth_refresh() {
-  local name="$1" service="$2" prev="$3" body response new_creds readback headers http rc=0 retry='' retry_until=0 weather_http=0
+  local name="$1" service="$2" prev="$3" body response new_creds readback headers http rc=0 retry='' retry_until=0 weather_http=0 refresh_rc=1
   local prev_rt prev_expires_at current current_rt rlock='' lock_trap
   oauth_attempt_begin "$name" "$prev" || return 1
   prev_rt=$(printf '%s' "$prev" | jq -r '.claudeAiOauth.refreshToken // empty' 2>/dev/null) || prev_rt=''
@@ -537,9 +566,11 @@ oauth_refresh() {
         if [[ "$retry" =~ ^[0-9]+$ ]]; then retry_until=$(($(date +%s) + retry)); fi
         printf 'claudeb: %s: OAuth token endpoint returned 429%s\n' "$name" "$([ -n "$retry" ] && printf ' (retry-after: %s)' "$retry")" >&2
         oauth_attempt_update "$name" 429 "$retry_until"
+        refresh_rc=75
       elif [ "$rc" -ne 0 ]; then
         oauth_attempt_update "$name" weather 0 0 '' 0 "$rc"
-      elif printf '%s' "$response" | grep -q invalid_grant; then
+        refresh_rc=75
+      elif printf '%s' "$response" | grep -Eq 'invalid_grant|revoked'; then
         current=$(security find-generic-password -s "$service" -w 2>/dev/null) || current=''
         current_rt=$(printf '%s' "$current" | jq -r '.claudeAiOauth.refreshToken // empty' 2>/dev/null) || current_rt=''
         if [ -n "$current" ] && [ -n "$current_rt" ] && [ "$current_rt" != "$prev_rt" ]; then
@@ -550,17 +581,20 @@ oauth_refresh() {
           return 0
         else
           oauth_attempt_update "$name" revoked "$(($(date +%s) + 21600))" "$prev_expires_at"
+          refresh_rc=2
         fi
       elif [ "$http" = 401 ] || [ "$http" = 403 ]; then
         oauth_attempt_update "$name" auth-failed
+        refresh_rc=2
       elif [[ "$http" =~ ^5[0-9][0-9]$ ]] || [ "$http" = 000 ]; then
         weather_http=$((10#$http))
         oauth_attempt_update "$name" weather 0 0 '' "$weather_http"
+        refresh_rc=75
       else
         oauth_attempt_update "$name" failed
       fi
       rm -f "$headers"
-      return 1
+      return "$refresh_rc"
     fi
     rm -f "$headers"
     body=""
@@ -623,7 +657,7 @@ messages_probe() {
 
 probe_one() {
   local name="$1" dir="$2" allow_spend="$3" allow_refresh="${4:-true}" http=000 rc=1 attempt out
-  local profile hash service credentials access_token now_ms expires_at refreshed=false refresh_outcome refresh_http
+  local profile hash service credentials access_token now_ms expires_at refreshed=false refresh_rc
   profile="$HOME/.claude-profiles/$name"
   hash=$(printf '%s' "$profile" | shasum -a 256 | awk '{print substr($1, 1, 8)}')
   service="Claude Code-credentials-$hash"
@@ -634,21 +668,13 @@ probe_one() {
     if [ "$expires_at" -le "$now_ms" ]; then
       if [ "$allow_refresh" = true ]; then
         refreshed=true
-        if ! credentials=$(oauth_refresh "$name" "$service" "$credentials"); then
+        if credentials=$(oauth_refresh "$name" "$service" "$credentials"); then
+          :
+        else
+          refresh_rc=$?
           credentials=""
-          refresh_outcome=$(oauth_backoff_outcome "$name")
-          case "$refresh_outcome" in
-            revoked|auth-failed)
-              http=401
-              mark_auth "$name" expired
-              ;;
-            429) http=429 ;;
-            weather)
-              refresh_http=$(oauth_backoff_http "$name")
-              if [ "$refresh_http" -gt 0 ] 2>/dev/null; then http="$refresh_http"; else http=000; fi
-              ;;
-            *) http=000 ;;
-          esac
+          http=$(probe_http_from_refresh_failure "$name" "$refresh_rc")
+          [ "$refresh_rc" -ne 2 ] || mark_auth "$name" expired
         fi
       else
         credentials=""
@@ -677,10 +703,13 @@ probe_one() {
       fi
       if [ "$attempt" -eq 1 ] && [ "$http" = 401 ] && [ "$refreshed" != true ] && [ "$allow_refresh" = true ]; then
         refreshed=true
-        if ! credentials=$(oauth_refresh "$name" "$service" "$credentials"); then
+        if credentials=$(oauth_refresh "$name" "$service" "$credentials"); then
+          :
+        else
+          refresh_rc=$?
           credentials=""
-          http=401
-          mark_auth "$name" expired
+          http=$(probe_http_from_refresh_failure "$name" "$refresh_rc")
+          [ "$refresh_rc" -ne 2 ] || mark_auth "$name" expired
         fi
       else
         [ "$http" != 401 ] || mark_auth "$name" expired
@@ -1149,7 +1178,7 @@ warm_failure() {
 }
 
 warm_accounts() {
-  local name dir output session_rc reason failure_cause profile hash service credentials expires_at now started probe_dir source rc http asof failed=0 until probe_ok usage_rate_limited backoff_mode explicit=false outcome
+  local name dir output session_rc reason failure_cause profile hash service credentials expires_at now started probe_dir source rc http asof failed=0 until probe_ok usage_rate_limited backoff_mode explicit=false refresh_rc
   local -a names
   names=("$@")
   [ "${#names[@]}" -eq 0 ] || explicit=true
@@ -1186,6 +1215,9 @@ warm_accounts() {
       continue
     }
     dir="$prepared_profile_dir"
+    profile="$HOME/.claude-profiles/$name"
+    hash=$(printf '%s' "$profile" | shasum -a 256 | awk '{print substr($1, 1, 8)}')
+    service="Claude Code-credentials-$hash"
     output=$(mktemp "${TMPDIR:-/tmp}/claudeb-warm.XXXXXX") || return 1
     oauth_attempt_update "$name" warming 0
     started=$(date +%s)
@@ -1207,16 +1239,39 @@ warm_accounts() {
     if [ "$session_rc" -ne 0 ]; then
       reason="session exit $session_rc"
       failure_cause=warm-failed
-      outcome=$(oauth_backoff_outcome "$name")
       if [ "$session_rc" -eq 124 ]; then
         reason='timeout'
         failure_cause=timeout
       elif grep -Eqi '429|rate.?limit' "$output" 2>/dev/null; then
         reason='warm 429'
         failure_cause=warm-429
-      elif [ "$outcome" = revoked ] || grep -Eqi 'needs? re-?login|login required|not logged in|authentication required' "$output" 2>/dev/null; then
-        reason='needs re-login'
-        failure_cause=needs-relogin
+      elif grep -Eqi 'needs? re-?login|login required|not logged in|authentication required|run /login' "$output" 2>/dev/null; then
+        credentials=$(security find-generic-password -s "$service" -w 2>/dev/null) || credentials=''
+        if [ -z "$credentials" ]; then
+          reason='needs re-login'
+          failure_cause=needs-relogin
+          mark_auth "$name" expired 'needs re-login'
+        else
+          if credentials=$(oauth_refresh "$name" "$service" "$credentials"); then
+            refresh_rc=0
+            mark_auth "$name" ok
+          else
+            refresh_rc=$?
+          fi
+          credentials=''
+          if [ "$refresh_rc" -eq 0 ]; then
+            reason='transient login prompt'
+            failure_cause=warm-failed
+          else
+            failure_cause=$(warm_cause_from_refresh "$name" "$refresh_rc")
+            if [ "$failure_cause" = needs-relogin ]; then
+              reason='needs re-login'
+              mark_auth "$name" expired 'needs re-login'
+            else
+              reason='token refresh weather'
+            fi
+          fi
+        fi
       fi
       oauth_attempt_update "$name" warm-failed 0 0 "$failure_cause"
     fi
@@ -1227,23 +1282,46 @@ warm_accounts() {
       continue
     fi
     rm -f "$output"
+    credentials=$(security find-generic-password -s "$service" -w 2>/dev/null || true)
+    expires_at=$(printf '%s' "$credentials" | jq -r '.claudeAiOauth.expiresAt // 0 | floor' 2>/dev/null || printf '0')
+    now=$(date +%s)
+    if ! [[ "$expires_at" =~ ^[0-9]+$ ]] || [ "$expires_at" -le "$((now * 1000))" ]; then
+      if [ -z "$credentials" ]; then
+        credentials=''
+        mark_auth "$name" expired 'needs re-login'
+        oauth_attempt_update "$name" warm-failed 0 0 needs-relogin
+        warm_failure "$name" needs-relogin 'OAuth credentials missing'
+        failed=1
+        continue
+      fi
+      if credentials=$(oauth_refresh "$name" "$service" "$credentials"); then
+        refresh_rc=0
+        credentials=$(security find-generic-password -s "$service" -w 2>/dev/null || true)
+        expires_at=$(printf '%s' "$credentials" | jq -r '.claudeAiOauth.expiresAt // 0 | floor' 2>/dev/null || printf '0')
+        now=$(date +%s)
+        if ! [[ "$expires_at" =~ ^[0-9]+$ ]] || [ "$expires_at" -le "$((now * 1000))" ]; then refresh_rc=1; fi
+      else
+        refresh_rc=$?
+      fi
+      if [ "$refresh_rc" -ne 0 ]; then
+        failure_cause=$(warm_cause_from_refresh "$name" "$refresh_rc")
+        if [ "$failure_cause" = needs-relogin ]; then
+          reason='OAuth refresh rejected'
+          mark_auth "$name" expired 'needs re-login'
+        else
+          reason='OAuth refresh weather'
+        fi
+        credentials=''
+        oauth_attempt_update "$name" warm-failed 0 0 "$failure_cause"
+        warm_failure "$name" "$failure_cause" "$reason"
+        failed=1
+        continue
+      fi
+    fi
+    credentials=''
     probe_dir=$(mktemp -d "${TMPDIR:-/tmp}/claudeb-warm-probe.XXXXXX") || return 1
     probe_one "$name" "$probe_dir" false false
     read -r source rc http < "$probe_dir/$name.result"
-    profile="$HOME/.claude-profiles/$name"
-    hash=$(printf '%s' "$profile" | shasum -a 256 | awk '{print substr($1, 1, 8)}')
-    service="Claude Code-credentials-$hash"
-    credentials=$(security find-generic-password -s "$service" -w 2>/dev/null || true)
-    expires_at=$(printf '%s' "$credentials" | jq -r '.claudeAiOauth.expiresAt // 0 | floor' 2>/dev/null || printf '0')
-    credentials=''
-    now=$(date +%s)
-    if ! [[ "$expires_at" =~ ^[0-9]+$ ]] || [ "$expires_at" -le "$((now * 1000))" ]; then
-      rm -rf "$probe_dir"
-      oauth_attempt_update "$name" warm-failed 0 0 needs-relogin
-      warm_failure "$name" needs-relogin 'OAuth token is not fresh'
-      failed=1
-      continue
-    fi
     probe_ok=false
     if [ "$source" = usage ] && merge_usage "$name" "$probe_dir/$name.usage"; then probe_ok=true; fi
     if [ "$probe_ok" = true ]; then

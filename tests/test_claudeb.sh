@@ -271,6 +271,28 @@ assert test "$(cat "$weather_dir/alpha.result")" = 'no-spend 1 529'
 assert jq -e '.alpha.outcome == "weather" and .alpha.http_status == 529' "$oauth_attempts_file" >/dev/null
 assert jq -e '.auth.status == "ok" and (.auth | has("cause") | not)' "$limits_dir/alpha.json" >/dev/null
 
+retry_weather_dir="$WORK/oauth-retry-weather"
+mkdir -p "$retry_weather_dir"
+cat >"$FAKE_BIN/security" <<EOF
+#!/usr/bin/env bash
+printf '%s' '$relogin_creds'
+EOF
+cat >"$FAKE_BIN/curl" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *'/api/oauth/usage'*) printf '401' ;;
+  *'/v1/oauth/token'*) printf '{"error":"overloaded"}\n529' ;;
+  *) exit 97 ;;
+esac
+EOF
+chmod +x "$FAKE_BIN/security" "$FAKE_BIN/curl"
+printf '{}' >"$oauth_attempts_file"
+printf '{"auth":{"status":"ok","checked_at":1}}' >"$limits_dir/alpha.json"
+probe_one alpha "$retry_weather_dir" false true
+assert test "$(cat "$retry_weather_dir/alpha.result")" = 'no-spend 0 529'
+assert jq -e '.alpha.outcome == "weather" and .alpha.http_status == 529' "$oauth_attempts_file" >/dev/null
+assert jq -e '.auth.status == "ok" and (.auth | has("cause") | not)' "$limits_dir/alpha.json" >/dev/null
+
 # invalid_grant after an in-flight concurrent rotation adopts the newer keychain value.
 newcreds='{"claudeAiOauth":{"refreshToken":"rt-new","accessToken":"at2","expiresAt":'"$relogin_expires_at"'}}'
 security_calls="$WORK/security-calls"
@@ -552,37 +574,131 @@ printf '{}' >"$oauth_attempts_file"
 
 (
   profile_command() { prepared_profile_dir="$WORK/zeta-profile"; mkdir -p "$prepared_profile_dir"; return 0; }
-  probe_one() { printf 'no-spend 1 500\n' >"$2/$1.result"; }
+  warm_credentials="$WORK/zeta-credentials.json"
+  warm_refresh_calls="$WORK/zeta-refresh-calls"
+  warm_probe_calls="$WORK/zeta-probe-calls"
+  expired_warm_creds='{"claudeAiOauth":{"refreshToken":"rt-zeta","accessToken":"at-expired","expiresAt":1,"scopes":["a"]}}'
+  security() { cat "$warm_credentials"; }
+  keychain_write() { printf '%s' "$2" >"$warm_credentials"; }
+  curl() {
+    printf 'refresh\n' >>"$warm_refresh_calls"
+    printf '%s\n%s' "$refresh_body" "$refresh_http"
+  }
+  probe_one() {
+    printf 'probe\n' >>"$warm_probe_calls"
+    printf 'usage 0 200\n' >"$2/$1.result"
+    printf '%s\n' '{"five_hour":{"utilization":44,"resets_at":null},"seven_day":{"utilization":22,"resets_at":null},"limits":[]}' >"$2/$1.usage"
+  }
   pinned_asof=$((now - 900))
   printf '{"five_hour":{"used_percentage":9,"resets_at":%s,"as_of":%s,"origin":"usage"}}\n' \
     "$((now + 3600))" "$pinned_asof" >"$limits_dir/zeta.json"
 
-  run_warm_session() { return 124; }
-  if warm_accounts zeta >/dev/null 2>"$WORK/warm-timeout.err"; then fail "timeout warm unexpectedly succeeded"; fi
-  assert grep -qx 'claudeb: warm failed account=zeta cause=timeout' "$WORK/warm-timeout.err"
-  assert test "$(wc -l <"$WORK/warm-timeout.err" | tr -d ' ')" = 1
+  run_warm_session() { return 7; }
+  printf '{"zeta":{"attempted_at":%s,"outcome":"revoked","retry_after_until":%s,"credentials_expires_at":1}}\n' \
+    "$now" "$((now + 21600))" >"$oauth_attempts_file"
+  if warm_accounts zeta >/dev/null 2>"$WORK/warm-prior-revoked.err"; then fail "prior-revoked warm unexpectedly succeeded"; fi
+  assert grep -qx 'claudeb: warm failed account=zeta cause=warm-failed' "$WORK/warm-prior-revoked.err"
+  assert test "$(wc -l <"$WORK/warm-prior-revoked.err" | tr -d ' ')" = 1
   assert test "$(jq -r '.five_hour.as_of' "$limits_dir/zeta.json")" = "$pinned_asof"
+  assert test "$(oauth_warm_cause zeta)" = warm-failed
+  assert_fails test "$(oauth_warm_cause zeta)" = needs-relogin
+  touch "$WORK/regression-prior-revoked-generic"
 
+  printf '{}' >"$oauth_attempts_file"
   run_warm_session() { printf 'HTTP 429 rate limit\n' >"$3"; return 7; }
   if warm_accounts zeta >/dev/null 2>"$WORK/warm-429.err"; then fail "429 warm unexpectedly succeeded"; fi
   assert grep -qx 'claudeb: warm failed account=zeta cause=warm-429' "$WORK/warm-429.err"
   assert test "$(wc -l <"$WORK/warm-429.err" | tr -d ' ')" = 1
 
-  run_warm_session() { printf 'authentication required; login required\n' >"$3"; return 7; }
-  if warm_accounts zeta >/dev/null 2>"$WORK/warm-login.err"; then fail "auth-failed warm unexpectedly succeeded"; fi
-  assert grep -qx 'claudeb: warm failed account=zeta cause=needs-relogin' "$WORK/warm-login.err"
-  assert test "$(wc -l <"$WORK/warm-login.err" | tr -d ' ')" = 1
-
   run_warm_session() { return 0; }
-  probe_one() {
-    printf 'usage 0 200\n' >"$2/$1.result"
-    printf '%s\n' '{"five_hour":{"utilization":44,"resets_at":null},"seven_day":{"utilization":22,"resets_at":null},"limits":[]}' >"$2/$1.usage"
-  }
-  security() { printf '%s\n' '{"claudeAiOauth":{"expiresAt":1}}'; }
-  if warm_accounts zeta >/dev/null 2>"$WORK/warm-stale-oauth.err"; then fail "stale-OAuth warm unexpectedly succeeded"; fi
-  assert grep -qx 'claudeb: warm failed account=zeta cause=needs-relogin' "$WORK/warm-stale-oauth.err"
-  assert test "$(jq -r '.five_hour.as_of' "$limits_dir/zeta.json")" = "$pinned_asof"
+  for refresh_http in 429 529; do
+    printf '%s' "$expired_warm_creds" >"$warm_credentials"
+    : >"$warm_refresh_calls"
+    : >"$warm_probe_calls"
+    refresh_body='{"error":"overloaded"}'
+    printf '{}' >"$oauth_attempts_file"
+    printf '{"marker":"untouched","auth":{"status":"ok","checked_at":1}}' >"$limits_dir/zeta.json"
+    if warm_accounts zeta >/dev/null 2>"$WORK/warm-refresh-$refresh_http.err"; then fail "refresh $refresh_http warm unexpectedly succeeded"; fi
+    warm_refresh_cause=$(oauth_warm_cause zeta)
+    assert warm_class_is_capacity "$warm_refresh_cause"
+    assert jq -e '.marker == "untouched" and .auth.status == "ok"' "$limits_dir/zeta.json" >/dev/null
+    assert_fails test "$warm_refresh_cause" = needs-relogin
+    assert_fails jq -e '.zeta.warm_cause == "needs-relogin"' "$oauth_attempts_file" >/dev/null
+    assert test "$(wc -l <"$warm_refresh_calls" | tr -d ' ')" = 1
+    assert_fails test -s "$warm_probe_calls"
+    assert test "$(oauth_heal_backoff_until zeta)" -gt "$(date +%s)"
+  done
+  touch "$WORK/regression-refresh-capacity"
+
+  printf '%s' "$expired_warm_creds" >"$warm_credentials"
+  : >"$warm_refresh_calls"
+  : >"$warm_probe_calls"
+  refresh_body='{"error":"invalid_grant"}'
+  refresh_http=400
+  printf '{}' >"$oauth_attempts_file"
+  printf '{"auth":{"status":"ok","checked_at":1}}' >"$limits_dir/zeta.json"
+  if warm_accounts zeta >/dev/null 2>"$WORK/warm-refresh-revoked.err"; then fail "revoked refresh warm unexpectedly succeeded"; fi
+  assert grep -q 'cause=needs-relogin' "$WORK/warm-refresh-revoked.err"
+  assert test "$(oauth_warm_cause zeta)" = needs-relogin
+  assert test "$(oauth_backoff_outcome zeta)" = revoked
+  assert jq -e '.auth.status == "expired" and .auth.cause == "needs re-login"' "$limits_dir/zeta.json" >/dev/null
+  assert_fails test -s "$warm_probe_calls"
+  touch "$WORK/regression-refresh-revoked"
+
+  for empty_case in login-text successful-session; do
+    : >"$warm_credentials"
+    : >"$warm_refresh_calls"
+    : >"$warm_probe_calls"
+    printf '{}' >"$oauth_attempts_file"
+    printf '{"auth":{"status":"ok","checked_at":1}}' >"$limits_dir/zeta.json"
+    if [ "$empty_case" = login-text ]; then
+      run_warm_session() { printf 'Please run /login\n' >"$3"; return 7; }
+    else
+      run_warm_session() { return 0; }
+    fi
+    if warm_accounts zeta >/dev/null 2>"$WORK/warm-empty-$empty_case.err"; then fail "empty-Keychain $empty_case warm unexpectedly succeeded"; fi
+    assert grep -q 'cause=needs-relogin' "$WORK/warm-empty-$empty_case.err"
+    assert test "$(oauth_warm_cause zeta)" = needs-relogin
+    assert jq -e '.auth.status == "expired" and .auth.cause == "needs re-login"' "$limits_dir/zeta.json" >/dev/null
+    assert_fails test -s "$warm_refresh_calls"
+    assert_fails test -s "$warm_probe_calls"
+  done
+  touch "$WORK/regression-empty-keychain"
+
+  printf '%s' "$expired_warm_creds" >"$warm_credentials"
+  : >"$warm_refresh_calls"
+  refresh_body='{"access_token":"at-fresh","refresh_token":"rt-fresh","expires_in":3600}'
+  refresh_http=200
+  printf '{}' >"$oauth_attempts_file"
+  printf '{"auth":{"status":"expired","checked_at":1,"cause":"stale"}}' >"$limits_dir/zeta.json"
+  run_warm_session() { printf 'Please run /login\n' >"$3"; return 7; }
+  if warm_accounts zeta >/dev/null 2>"$WORK/warm-login-noise.err"; then fail "login-text warm unexpectedly succeeded"; fi
+  assert grep -qx 'claudeb: warm failed account=zeta cause=warm-failed' "$WORK/warm-login-noise.err"
+  assert test "$(oauth_warm_cause zeta)" = warm-failed
+  assert warm_class_is_capacity "$(oauth_warm_cause zeta)"
+  assert_fails jq -e '.zeta.warm_cause == "needs-relogin"' "$oauth_attempts_file" >/dev/null
+  assert jq -e '.auth.status == "ok" and (.auth | has("cause") | not)' "$limits_dir/zeta.json" >/dev/null
+  assert test "$(wc -l <"$warm_refresh_calls" | tr -d ' ')" = 1
+  touch "$WORK/regression-login-refresh-success"
+
+  printf '%s' "$expired_warm_creds" >"$warm_credentials"
+  : >"$warm_refresh_calls"
+  : >"$warm_probe_calls"
+  printf '{}' >"$oauth_attempts_file"
+  printf '{}' >"$limits_dir/zeta.json"
+  run_warm_session() { return 0; }
+  assert warm_accounts zeta >/dev/null 2>"$WORK/warm-refresh-success.err"
+  assert test "$(wc -l <"$warm_refresh_calls" | tr -d ' ')" = 1
+  assert test "$(wc -l <"$warm_probe_calls" | tr -d ' ')" = 1
+  assert jq -e '.five_hour.used_percentage == 44 and .auth.status == "ok"' "$limits_dir/zeta.json" >/dev/null
+  assert test "$(oauth_backoff_outcome zeta)" = ''
 )
+
+assert test -f "$WORK/regression-prior-revoked-generic"
+assert test -f "$WORK/regression-refresh-capacity"
+assert test -f "$WORK/regression-refresh-revoked"
+assert test -f "$WORK/regression-empty-keychain"
+assert test -f "$WORK/regression-login-refresh-success"
 
 for command in curl security claude; do
   printf '#!/usr/bin/env bash\nexit 97\n' >"$FAKE_BIN/$command"
@@ -625,4 +741,4 @@ assert test "$(jq -r '.auth.cause' "$limits_dir/gamma.json")" = 'warm failed, to
 assert test "$(jq -r '.auth.cause' "$limits_dir/delta.json")" = 'needs re-login'
 assert grep -qx delta "$WARM_CALLS"
 
-echo "PASS: $asserts asserts; reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth weather/backoff and lock behavior, reserved names, disabled-account timeline, out-of-rotation profile launch proceeds direct (proxy leaks stripped), generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent-rotation adoption, capacity weather clears stale expired auth for valid tokens, warm-first heal ordering and fallback, start-windows opens a fresh window and reconcile locks the new resets_at without regressing it, start-windows skips a disabled account with an explicit cause, the paid haiku warm fallback stays off unless opted in, regular probes never warm, and heal_expired covers disabled accounts with actionable causes"
+echo "PASS: $asserts asserts; reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth weather/backoff and lock behavior, reserved names, disabled-account timeline, out-of-rotation profile launch proceeds direct (proxy leaks stripped), generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent-rotation adoption, capacity weather clears stale expired auth for valid tokens, warm-first heal ordering and fallback, warm auth verdicts require current-run refresh evidence, start-windows opens a fresh window and reconcile locks the new resets_at without regressing it, start-windows skips a disabled account with an explicit cause, the paid haiku warm fallback stays off unless opted in, regular probes never warm, and heal_expired covers disabled accounts with actionable causes"
