@@ -363,6 +363,7 @@ elif [ -n "$acct" ] && [ "$acct" != main ]; then
 fi
 
 worker=""; codex_effort=""; sonnet_effort=""; codex_profile=""; claudeb_profile=""
+claudeb_model=""; claudeb_effort=""
 worker_file="$HOME/.claude/worker-model"
 if [ -f "$worker_file" ]; then
   while IFS='=' read -r wkey wval; do
@@ -372,6 +373,8 @@ if [ -f "$worker_file" ]; then
       sonnet_effort) sonnet_effort=$wval ;;
       codex_profile) codex_profile=$wval ;;
       claudeb_profile) claudeb_profile=$wval ;;
+      claudeb_model) claudeb_model=$wval ;;
+      claudeb_effort) claudeb_effort=$wval ;;
     esac
   done < "$worker_file"
 else
@@ -380,6 +383,12 @@ fi
 abbrev_tier() {
   case "$1" in
     medium) printf med ;; high) printf hi ;; xhigh) printf xh ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+abbrev_model() {
+  case "$1" in
+    sonnet) printf son ;; haiku) printf hai ;; fable) printf fab ;;
     *) printf '%s' "$1" ;;
   esac
 }
@@ -427,7 +436,7 @@ case "$worker" in
     ;;
   claudeb)
     wname=cb
-    wtier="son·hi"
+    wtier="$(abbrev_model "${claudeb_model:-opus}")·$(abbrev_tier "${claudeb_effort:-high}")"
     if [ -n "$claudeb_profile" ]; then
       wpin=$claudeb_profile
     else
@@ -441,27 +450,66 @@ case "$worker" in
     wname=son
     wtier=$(abbrev_tier "$sonnet_effort")
     ;;
+  auto)
+    wname=auto
+    # Predictive display: what worker-pick would route to right now (codex
+    # state+account, recommended claudeb account·model·effort). The cache is
+    # per own-account because routing excludes the session's own account.
+    pick_acct=$acct
+    { [ "$pick_acct" = "-" ] || [ -z "$pick_acct" ]; } && pick_acct=main
+    pick_cache="$HOME/.cache/worker-pick.line.$pick_acct"
+    pick_mtime=$(file_mtime "$pick_cache" 2>/dev/null)
+    if ! [[ "$pick_mtime" =~ ^[0-9]+$ ]] || [ "$((now - pick_mtime))" -gt 90 ]; then
+      ("$HOME/.local/bin/worker-pick" >/dev/null 2>&1 &)
+    fi
+    auto_line=""
+    [ -r "$pick_cache" ] && IFS= read -r auto_line < "$pick_cache"
+    ;;
   *) wname="?" ;;
 esac
-worker_part=" ${sep} ${DIM}w:${wname}${RESET}"
-if [ -n "$wpin" ]; then
-  worker_part="${worker_part} ${MAGENTA}@${wpin}${RESET}"
-elif [ -n "$wsel" ]; then
-  worker_part="${worker_part} ${MAGENTA}~${wsel}${RESET}"
+
+# A live tag (seeded by worker-tag-hook from the actual launch command) beats
+# the static config guess while a worker is running in THIS session.
+live_tag=""
+if [ -n "$session_id" ]; then
+  tags_dir="$HOME/.cache/claude-worker-tags/$session_id"
+  newest=$(ls -t "$tags_dir" 2>/dev/null | head -n1)
+  if [ -n "$newest" ]; then
+    tag_mtime=$(file_mtime "$tags_dir/$newest")
+    if [[ "$tag_mtime" =~ ^[0-9]+$ ]] && [ "$((now - tag_mtime))" -le 600 ]; then
+      IFS= read -r live_tag < "$tags_dir/$newest" 2>/dev/null || live_tag=""
+      live_tag=$(printf '%s' "$live_tag" | sed 's/ · /·/g; s/·sonnet/·son/; s/·haiku/·hai/; s/·fable/·fab/; s/·medium/·med/; s/·high/·hi/; s/·xhigh/·xh/')
+    fi
+  fi
 fi
-[ "$wname" != "?" ] && [ -n "$wtier" ] && worker_part="${worker_part}${DIM}·${wtier}${RESET}"
+
+worker_part=" ${sep} ${DIM}w:${wname}${RESET}"
+if [ -n "$live_tag" ]; then
+  worker_part="${worker_part} ${MAGENTA}▶${live_tag}${RESET}"
+elif [ "$wname" = auto ] && [ -n "${auto_line:-}" ]; then
+  worker_part="${worker_part} ${MAGENTA}${auto_line}${RESET}"
+else
+  if [ -n "$wpin" ]; then
+    worker_part="${worker_part} ${MAGENTA}@${wpin}${RESET}"
+  elif [ -n "$wsel" ]; then
+    worker_part="${worker_part} ${MAGENTA}~${wsel}${RESET}"
+  fi
+  [ "$wname" != "?" ] && [ -n "$wtier" ] && worker_part="${worker_part}${DIM}·${wtier}${RESET}"
+fi
 
 lines_part=""
 if [ -n "$lines_added" ] && [ -n "$lines_removed" ] && [ $(( lines_added + lines_removed )) -ge 50 ]; then
   lines_part=" ${GREEN}+${lines_added}${RESET}/${RED}-${lines_removed}${RESET}"
 fi
 
-out="${CYAN}${model}${model_suffix}${RESET}${fast_part}${onem_part}${cb_part} ${sep} ${dir_part}${branch_part}${lines_part} ${sep} ctx $(pct_colored "$ctx_pct")${ctx_tokens_part}"
+# Two lines: identity/work (model, account, dir/branch, workers) on top,
+# usage (ctx, 5h, weekly, fable, cost) below.
+line1="${CYAN}${model}${model_suffix}${RESET}${fast_part}${onem_part}${cb_part} ${sep} ${dir_part}${branch_part}${lines_part}${worker_part}"
 
-out="${out} ${sep} 5h $(pct_colored "$h5_pct" "$h5_dim")${h5_arrow} ${sep} wk $(pct_colored "$wk_pct" "$wk_dim")${wk_arrow}${fable_part}${worker_part}"
+line2="ctx $(pct_colored "$ctx_pct")${ctx_tokens_part} ${sep} 5h $(pct_colored "$h5_pct" "$h5_dim")${h5_arrow} ${sep} wk $(pct_colored "$wk_pct" "$wk_dim")${wk_arrow}${fable_part}"
 
 if [ -n "$cost_raw" ]; then
-  out="${out} ${sep} ${DIM}\$$(LC_ALL=C printf '%.2f' "$cost_raw")${RESET}"
+  line2="${line2} ${sep} ${DIM}\$$(LC_ALL=C printf '%.2f' "$cost_raw")${RESET}"
 fi
 
-printf '%s' "$out"
+printf '%s\n%s' "$line1" "$line2"

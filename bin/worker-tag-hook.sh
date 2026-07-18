@@ -1,66 +1,105 @@
 #!/usr/bin/env bash
+# PreToolUse(Bash) inside codex-/claudeb-worker agents. Derives the
+# account·model·effort tag from the ACTUAL launch command text (claudeb/codex
+# CLI arguments + daemon state), never from the model's description discipline,
+# then prefixes the tag onto every Bash description so the UI activity line
+# always names who is spending quota. Tag files are session-scoped so the
+# statusline can surface the live tag. Fail-open everywhere.
+set -u
 
 input=$(cat) || exit 0
-parsed=$(printf '%s' "$input" | jq -r '
-  def value: if . == null then "" else tostring end;
-  [(.hook_event_name | value), (.agent_type | value), (.agent_id | value | gsub("[^A-Za-z0-9_-]"; "")),
-   (.tool_input.description | value),
-   ((.tool_input.description // "")
-    | (try capture("^Worker account: (?<tag>.+)$") catch {})
-    | (.tag // "")
-    | gsub("^[[:space:]]+|[[:space:]]+$"; ""))]
-  | join("\u001f")
-' 2>/dev/null) || exit 0
 
-IFS=$'\x1f' read -r hook_event agent_type agent_id description seed_tag <<< "$parsed"
-# The rewrite payload hardcodes hookEventName PreToolUse; any other
-# registration must be a silent no-op.
-[ "$hook_event" = PreToolUse ] || exit 0
+field() { printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null; }
+
+[ "$(field '.hook_event_name')" = PreToolUse ] || exit 0
+agent_type=$(field '.agent_type')
 case "$agent_type" in
   codex-worker|claudeb-worker) ;;
   *) exit 0 ;;
 esac
+agent_id=$(field '.agent_id' | tr -cd 'A-Za-z0-9_-')
 [ -n "$agent_id" ] || exit 0
+session_id=$(field '.session_id' | tr -cd 'A-Za-z0-9_-')
+[ -n "$session_id" ] || session_id=_
 
-cache_dir="$HOME/.cache/claude-worker-tags"
+command=$(field '.tool_input.command')
+description=$(field '.tool_input.description')
+
+cache_root="$HOME/.cache/claude-worker-tags"
+cache_dir="$cache_root/$session_id"
 tag_file="$cache_dir/$agent_id"
 
-if [ -n "$seed_tag" ]; then
+worker_conf() { sed -n "s/^$1=//p" "$HOME/.claude/worker-model" 2>/dev/null | head -n1; }
+grab() { printf '%s' "$command" | grep -oE -e "$1" 2>/dev/null | head -n1; }
+
+# A launch/resume command re-derives the tag every time (idempotent; a rotating
+# claudeb may land on a different account between resumes).
+tag=""
+if printf '%s' "$command" | grep -q 'codex exec'; then
+  acct=$(grab '\.codex-profiles/[A-Za-z0-9_.-]+' | sed 's|.*/||')
+  [ -n "$acct" ] || acct=main
+  effort=$(grab 'model_reasoning_effort=[a-z]+' | cut -d= -f2)
+  [ -n "$effort" ] || effort=$(worker_conf codex_effort)
+  [ -n "$effort" ] || effort=medium
+  tag="$acct · $effort"
+elif printf '%s' "$command" | grep -q 'claudeb' && printf '%s' "$command" | grep -qE -- '--model|--print|-p '; then
+  acct=$(grab 'claudeb["'\'' ]+profile["'\'' ]+[A-Za-z0-9_.-]+' | grep -oE '[A-Za-z0-9_.-]+$')
+  [ -n "$acct" ] || acct=$(worker_conf claudeb_profile)
+  [ -n "$acct" ] || acct=$(curl -s --max-time 1 127.0.0.1:45789/claudebd/status 2>/dev/null | jq -r '.current // empty' 2>/dev/null)
+  [ -n "$acct" ] || acct='?'
+  model=$(grab '\-\-model[= ]+[A-Za-z0-9_.-]+' | grep -oE '[A-Za-z0-9_.-]+$')
+  [ -n "$model" ] || model=$(worker_conf claudeb_model)
+  [ -n "$model" ] || model=opus
+  effort=$(grab '\-\-effort[= ]+[a-z]+' | grep -oE '[a-z]+$')
+  [ -n "$effort" ] || effort=$(worker_conf claudeb_effort)
+  [ -n "$effort" ] || effort=high
+  tag="$acct · $model · $effort"
+fi
+
+if [ -n "$tag" ]; then
   mkdir -p "$cache_dir" || exit 0
   umask 077
   tmp_file="$tag_file.tmp.$$"
-  trap 'rm -f "$tmp_file" 2>/dev/null; exit 0' EXIT
-  printf '%s\n' "$seed_tag" > "$tmp_file" && mv -f "$tmp_file" "$tag_file"
+  trap 'rm -f "$tmp_file" 2>/dev/null' EXIT
+  printf '%s\n' "$tag" > "$tmp_file" && mv -f "$tmp_file" "$tag_file"
 else
   [ -f "$tag_file" ] || exit 0
   IFS= read -r tag < "$tag_file" || exit 0
   [ -n "$tag" ] || exit 0
-  case "$description" in
-    "Worker account:"*) exit 0 ;;
-  esac
-  tag_prefix="$tag — "
-  [ "${description:0:${#tag_prefix}}" = "$tag_prefix" ] && exit 0
-  if [ -n "$description" ]; then
-    updated_description="$tag — $description"
-  else
-    updated_description=$tag
+  touch "$tag_file" 2>/dev/null
+fi
+
+prune() {
+  marker="$cache_root/.tag-prune"
+  now=$(date +%s 2>/dev/null)
+  marker_mtime=$(stat -f %m "$marker" 2>/dev/null || stat -c %Y "$marker" 2>/dev/null || printf '0')
+  if [[ "$now" =~ ^[0-9]+$ ]] && [[ "$marker_mtime" =~ ^[0-9]+$ ]] && [ "$((now - marker_mtime))" -gt 3600 ]; then
+    find "$cache_root" -type f ! -name '.tag-prune' -mtime +7 -delete >/dev/null 2>&1
+    find "$cache_root" -mindepth 1 -type d -empty -delete >/dev/null 2>&1
+    touch "$marker" 2>/dev/null
   fi
-  # Worker sessions already bypass permissions; allow avoids a redundant prompt.
-  printf '%s' "$input" | jq -c --arg description "$updated_description" '
-    {hookSpecificOutput: {
-      hookEventName: "PreToolUse",
-      permissionDecision: "allow",
-      updatedInput: (.tool_input | .description = $description)
-    }}
-  ' 2>/dev/null || exit 0
-fi
+}
 
-marker="$cache_dir/.tag-prune"
-now=$(date +%s 2>/dev/null)
-marker_mtime=$(stat -f %m "$marker" 2>/dev/null || stat -c %Y "$marker" 2>/dev/null || printf '0')
-if [[ "$now" =~ ^[0-9]+$ ]] && [[ "$marker_mtime" =~ ^[0-9]+$ ]] && [ "$((now - marker_mtime))" -gt 3600 ]; then
-  find "$cache_dir" -type f ! -name '.tag-prune' -mtime +7 -delete >/dev/null 2>&1
-  touch "$marker" 2>/dev/null
+tag_prefix="$tag — "
+if [ "${description:0:${#tag_prefix}}" = "$tag_prefix" ]; then
+  prune; exit 0
 fi
+# Strip a stale tag-shaped prefix (account rotation mid-task, model echoing an
+# old tag) so prefixes never stack.
+description=$(printf '%s' "$description" | sed -E 's/^[A-Za-z0-9_.?-]+( · [A-Za-z0-9_.-]+){1,2} — //')
+if [ -n "$description" ]; then
+  updated_description="$tag — $description"
+else
+  updated_description=$tag
+fi
+# Worker sessions already bypass permissions; allow avoids a redundant prompt.
+printf '%s' "$input" | jq -c --arg description "$updated_description" '
+  {hookSpecificOutput: {
+    hookEventName: "PreToolUse",
+    permissionDecision: "allow",
+    updatedInput: (.tool_input | .description = $description)
+  }}
+' 2>/dev/null
 
+prune
 exit 0
