@@ -1,0 +1,245 @@
+#!/usr/bin/env python3
+"""llm-limitsd-shadow-feed — read-only bridge from the legacy collector cache into the
+SHADOW-mode llm-limitsd control-plane ledger.
+
+Step-2-trial tooling: the bash writers still own ~/.llm-limits.json; this feeder only READS it
+and POSTs typed observations to the shadow daemon (default 127.0.0.1:45791). It never writes the
+real cache and never touches anything under ~/.claude-profiles/.claudeb except its own state file.
+
+Idempotency: the cache's `fetched_at` is stored after a fully-successful run; an unchanged
+`fetched_at` on the next run means "nothing new", so a WatchPaths/StartInterval launchd trigger is
+a cheap no-op with zero HTTP. State is advanced ONLY on total success, so any failure retries the
+whole batch next time.
+"""
+
+import calendar
+import json
+import os
+import sys
+import time
+from http.client import HTTPConnection
+
+VENDORS = ("claude", "codex", "gemini")
+WINDOWS = ("five_hour", "weekly", "fable")
+SOURCE = "shadow-feed"
+DEFAULT_URL = "http://127.0.0.1:45791"
+ACCOUNTLESS = "-"
+# The bash writers put only these into auth.status (needs_relogin/healing are reducer-internal,
+# never written to the cache). "failed" is evidenced broken auth, so it maps to expired.
+STATUS_VERDICT = {"ok": "ok", "expired": "expired", "failed": "expired"}
+
+
+class CacheError(Exception):
+    pass
+
+
+class DaemonUnreachable(Exception):
+    def __init__(self, cause, posted, failed):
+        super().__init__(cause)
+        self.posted = posted
+        self.failed = failed
+
+
+def iso_to_epoch(value):
+    if not isinstance(value, str):
+        return None
+    v = value.strip()
+    for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return int(calendar.timegm(time.strptime(v, fmt)))
+        except (ValueError, OverflowError):
+            pass
+    try:
+        base = int(calendar.timegm(time.strptime(v[:19], "%Y-%m-%dT%H:%M:%S")))
+        tz = v[19:]
+        if tz and tz[0] in "+-":
+            sign = 1 if tz[0] == "+" else -1
+            hh = int(tz[1:3])
+            mm = int(tz[4:6]) if len(tz) >= 6 else int(tz[3:5])
+            return base - sign * (hh * 3600 + mm * 60)
+    except (ValueError, OverflowError, IndexError):
+        pass
+    return None
+
+
+def to_epoch(value):
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        v = value.strip()
+        if v.lstrip("-").isdigit():
+            return int(v)
+        return iso_to_epoch(v)
+    return None
+
+
+def load_cache(path):
+    try:
+        with open(path) as fh:
+            raw = fh.read()
+    except OSError as exc:
+        raise CacheError("cannot read cache %s: %s" % (path, exc))
+    try:
+        data = json.loads(raw)
+    except ValueError as exc:
+        raise CacheError("malformed cache JSON %s: %s" % (path, exc))
+    if not isinstance(data, dict) or not isinstance(data.get("vendors"), dict):
+        raise CacheError("cache %s has no vendors object" % path)
+    return data
+
+
+def read_state(path):
+    try:
+        with open(path) as fh:
+            return fh.read().strip()
+    except OSError:
+        return None
+
+
+def write_state(path, fetched_at):
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = "%s.tmp.%d" % (path, os.getpid())
+    with open(tmp, "w") as fh:
+        fh.write((fetched_at or "") + "\n")
+    os.replace(tmp, path)
+
+
+def _windows(obs, vendor, account, holder, at):
+    for w in WINDOWS:
+        b = holder.get(w)
+        if not isinstance(b, dict):
+            continue
+        obs.append((vendor, account, "window", to_epoch(b.get("as_of")) or at, {
+            "window": w,
+            "used_pct": b.get("used_pct"),
+            "resets_at": b.get("resets_at"),
+            "origin": b.get("origin", "usage"),
+        }))
+
+
+def _auth(obs, unknown, vendor, account, acc, at):
+    # codex signals a login-needed account with a top-level auth_needed flag, not an auth object.
+    if acc.get("auth_needed") is True:
+        obs.append((vendor, account, "auth", at,
+                    {"verdict": "needs_relogin", "evidence": "affirmative"}))
+        return
+    auth = acc.get("auth")
+    if not isinstance(auth, dict) or auth.get("status") is None:
+        return
+    status = auth["status"]
+    verdict = STATUS_VERDICT.get(status)
+    if verdict is None:
+        unknown.append("%s/%s=%s" % (vendor, account, status))
+        return
+    obs.append((vendor, account, "auth", to_epoch(auth.get("checked_at")) or at,
+                {"verdict": verdict, "evidence": "affirmative"}))
+
+
+def build_observations(cache):
+    fallback = to_epoch(cache.get("fetched_at")) or int(time.time())
+    obs = []
+    unknown = []
+    for vendor, vdata in cache.get("vendors", {}).items():
+        if vendor not in VENDORS or not isinstance(vdata, dict):
+            continue
+        accounts = vdata.get("accounts")
+        if isinstance(accounts, list) and accounts:
+            for acc in accounts:
+                if not isinstance(acc, dict):
+                    continue
+                name = acc.get("account")
+                if not name:
+                    continue
+                acc_at = to_epoch(acc.get("as_of")) or fallback
+                _windows(obs, vendor, name, acc, acc_at)
+                obs.append((vendor, name, "rotation", acc_at, {
+                    "enabled": bool(acc.get("enabled", True)),
+                    "is_current": bool(acc.get("is_current", False)),
+                }))
+                _auth(obs, unknown, vendor, name, acc, acc_at)
+        else:
+            # Accountless vendor (gemini): usage lives at vendor level, no accounts array.
+            _windows(obs, vendor, ACCOUNTLESS, vdata, to_epoch(vdata.get("as_of")) or fallback)
+    return obs, unknown
+
+
+def parse_url(url):
+    rest = url.split("://", 1)[-1]
+    host = rest.split("/", 1)[0]
+    if ":" in host:
+        h, p = host.rsplit(":", 1)
+        return h, int(p)
+    return host, 80
+
+
+def post_all(observations, url):
+    host, port = parse_url(url)
+    conn = HTTPConnection(host, port, timeout=10)
+    posted = failed = 0
+    errors = []
+    try:
+        for vendor, account, scope, observed_at, payload in observations:
+            body = json.dumps({
+                "source": SOURCE, "vendor": vendor, "account": account, "scope": scope,
+                "observed_at": observed_at, "payload": payload,
+            }).encode()
+            try:
+                conn.request("POST", "/observations", body,
+                             {"Content-Type": "application/json"})
+                resp = conn.getresponse()
+                data = resp.read()
+            except OSError as exc:
+                raise DaemonUnreachable("%s:%d: %s" % (host, port, exc), posted, failed)
+            if 200 <= resp.status < 300:
+                posted += 1
+            else:
+                failed += 1
+                errors.append("%s/%s %s -> HTTP %d %s"
+                              % (vendor, account, scope, resp.status, data.decode("utf-8", "replace").strip()))
+    finally:
+        conn.close()
+    return posted, failed, errors
+
+
+def main():
+    cache_path = os.environ.get("LLM_LIMITS_CACHE", os.path.expanduser("~/.llm-limits.json"))
+    url = os.environ.get("LLM_LIMITSD_URL", DEFAULT_URL)
+    state_path = os.environ.get(
+        "LLM_SHADOW_FEED_STATE",
+        os.path.expanduser("~/.claude-profiles/.claudeb/shadow-feed.state"))
+
+    try:
+        cache = load_cache(cache_path)
+    except CacheError as exc:
+        sys.stderr.write("shadow-feed: %s\n" % exc)
+        return 1
+
+    fetched_at = cache.get("fetched_at")
+    if fetched_at is not None and read_state(state_path) == str(fetched_at):
+        return 0
+
+    observations, unknown = build_observations(cache)
+    if unknown:
+        sys.stderr.write("shadow-feed: skipped %d unknown auth status(es) (default-deny): %s\n"
+                         % (len(unknown), ", ".join(unknown)))
+    try:
+        posted, failed, errors = post_all(observations, url)
+    except DaemonUnreachable as exc:
+        sys.stderr.write("shadow-feed: daemon unreachable at %s (%s); posted=%d failed=%d\n"
+                         % (url, exc, exc.posted, exc.failed))
+        return 1
+
+    if failed:
+        for line in errors:
+            sys.stderr.write("shadow-feed: %s\n" % line)
+        sys.stderr.write("shadow-feed: posted=%d failed=%d; state NOT advanced\n" % (posted, failed))
+        return 1
+
+    write_state(state_path, str(fetched_at) if fetched_at is not None else "")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -6,8 +6,7 @@
   <string>com.llm-limitsd</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/opt/homebrew/bin/python3</string>
-    <string>/Users/egorloy/.local/bin/llm-limitsd</string>
+    <string>/Users/egorloy/.local/libexec/llm-limitsd</string>
   </array>
   <key>RunAtLoad</key>
   <true/>

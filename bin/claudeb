@@ -677,9 +677,12 @@ probe_one() {
           [ "$refresh_rc" -ne 2 ] || mark_auth "$name" expired
         fi
       else
+        # No refresh allowed here: a hard-expired ACCESS token is scheduled
+        # expiry, not evidence the credentials are dead. Report the condition via
+        # the probe result and leave the auth verdict to a refresh-capable caller
+        # (heal_one); writing expired here would re-stamp checked_at on no proof.
         credentials=""
         http=401
-        mark_auth "$name" expired
       fi
     fi
     for attempt in 1 2; do
@@ -712,7 +715,10 @@ probe_one() {
           [ "$refresh_rc" -ne 2 ] || mark_auth "$name" expired
         fi
       else
-        [ "$http" != 401 ] || mark_auth "$name" expired
+        # A 401 here is affirmative only when a refresh was possible this run, so
+        # the token just used was known-fresh (refreshed above or in attempt 1);
+        # a no-refresh probe on an unrefreshed token defers instead of concluding.
+        if [ "$http" = 401 ] && [ "$allow_refresh" = true ]; then mark_auth "$name" expired; fi
         break
       fi
     done
@@ -736,10 +742,44 @@ messages_probe_and_mark() {
     return 0
   fi
   if [ "$http" = 401 ] || [ "$http" = 403 ]; then
-    mark_auth "$name" expired
+    # The messages probe carries the daemon token, whose freshness we cannot read
+    # from the response; a 401 is affirmative only when the account's token is not
+    # due for refresh. Otherwise defer to the refresh outcome (weather → no write).
+    if token_needs_refresh "$name"; then
+      heal_refresh_verdict "$name" "messages probe $http"
+    else
+      mark_auth "$name" expired
+    fi
     [ "$mark_live" = true ] && printf 'auth!\n' > "$dir/$name.display"
   fi
   return 1
+}
+
+# A fallback-probe 401/403 taken while the access token was already due for
+# refresh is not proof the credentials are dead — the stale access token alone
+# explains it. Refresh and let the token endpoint's own verdict decide. The
+# verdict is read from the persisted outcome, not oauth_refresh's numeric return
+# (which is unreliable across call contexts — see the oauth_refresh tests, which
+# assert oauth_backoff_outcome rather than the rc): a printed credential proves
+# the token still lives (auth ok), revoked/auth-failed is a real rejection
+# (expired), and 429/weather/unresolved leaves the auth field untouched.
+heal_refresh_verdict() {
+  local name="$1" warm_cause="$2" profile hash service credentials refreshed outcome
+  profile="$HOME/.claude-profiles/$name"
+  hash=$(printf '%s' "$profile" | shasum -a 256 | awk '{print substr($1, 1, 8)}')
+  service="Claude Code-credentials-$hash"
+  credentials=$(security find-generic-password -s "$service" -w 2>/dev/null) || credentials=''
+  if refreshed=$(oauth_refresh "$name" "$service" "$credentials" 2>/dev/null) && [ -n "$refreshed" ]; then
+    mark_auth "$name" ok
+    printf 'claudeb: %s: capacity (%s) — token refreshed, auth ok\n' "$name" "$warm_cause" >&2
+    return
+  fi
+  outcome=$(oauth_backoff_outcome "$name")
+  case "$outcome" in
+    revoked|auth-failed) mark_auth "$name" expired "$warm_cause, refresh token rejected" ;;
+    429|weather) printf 'claudeb: %s: capacity (%s, token refresh weather) — no auth verdict\n' "$name" "$warm_cause" >&2 ;;
+    *) printf 'claudeb: %s: capacity (%s) — token refresh unresolved, no auth verdict\n' "$name" "$warm_cause" >&2 ;;
+  esac
 }
 
 # Disabled accounts are only out of ROTATION; the user still watches their
@@ -806,13 +846,16 @@ heal_one() {
   elif [ "$until_refresh" -gt "$now_heal" ] 2>/dev/null; then
     cause="$warm_cause, token refresh backoff $(( (until_refresh - now_heal + 59) / 60 ))m"
   elif [ "$http" = 401 ] || [ "$http" = 403 ]; then
-    mark_auth "$name" expired "$warm_cause, token refresh failed"
+    if token_needs_refresh "$name"; then
+      heal_refresh_verdict "$name" "$warm_cause"
+    else
+      mark_auth "$name" expired "$warm_cause, fresh token rejected ($http)"
+    fi
     return
   else
     cause="$warm_cause, fallback probe HTTP ${http:-000}"
   fi
   if token_needs_refresh "$name"; then
-    mark_auth "$name" expired "$cause" expired
     printf 'claudeb: %s: capacity (%s) — token unresolved, no auth verdict\n' "$name" "$cause" >&2
   else
     mark_auth "$name" ok
@@ -854,7 +897,13 @@ probe_accounts() {
     if [ "$source" = usage ] && merge_usage "$name" "$dir/$name.usage"; then
       printf 'live\n' > "$dir/$name.display"
     elif { [ "$http" = 401 ] || [ "$http" = 403 ]; }; then
-      [ "$source" != messages ] || mark_auth "$name" expired
+      if [ "$source" = messages ]; then
+        if token_needs_refresh "$name"; then
+          heal_refresh_verdict "$name" "messages probe $http"
+        else
+          mark_auth "$name" expired
+        fi
+      fi
       printf 'auth!\n' > "$dir/$name.display"
     elif [ "$source" = messages ] && [ "$rc" -eq 0 ] && [ "$http" = 200 ] && merge_headers "$name" "$dir/$name.headers"; then
       printf 'live*\n' > "$dir/$name.display"

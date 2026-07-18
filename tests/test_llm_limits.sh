@@ -417,14 +417,19 @@ OAUTH_SENTINEL="$OAUTH_SENTINEL" OAUTH_CLAUDE_SENTINEL="$OAUTH_CLAUDE_SENTINEL" 
 grep -q -- '-p /usage --output-format json' "$OAUTH_CLAUDE_SENTINEL" || fail "a direct-refresh failure record blocked the zero-cost warm fallback"
 
 # A recent warm-failed outcome (warm's own bookkeeping) DOES throttle repeat
-# heal attempts, at most once per account per 30 minutes, and records why.
+# heal attempts, at most once per account per 30 minutes. The throttle is a
+# capacity condition, not evidence of dead credentials, so a throttled cycle must
+# leave any prior auth verdict byte-untouched — never stamping or re-stamping one
+# (a capacity "backoff" cause would refresh checked_at and disguise an unproven
+# verdict as freshly confirmed).
 rm -f "$OAUTH_STORE/oauth-attempts.json" "$OAUTH_SENTINEL" "$OAUTH_CLAUDE_SENTINEL"
 printf '{"stuck":{"attempted_at":%s,"outcome":"warm-failed","retry_after_until":0}}\n' "$now" >"$OAUTH_STORE/oauth-attempts.json"
+printf '{"auth":{"status":"expired","checked_at":31337,"cause":"prior sentinel"}}' >"$OAUTH_STORE/limits/stuck.json"
 OAUTH_SENTINEL="$OAUTH_SENTINEL" OAUTH_CLAUDE_SENTINEL="$OAUTH_CLAUDE_SENTINEL" PATH="$OAUTH_BIN:$PATH" HOME="$OAUTH_HOME" CLAUDEB_DIR="$OAUTH_STORE" \
   bash "$CLAUDEB_BIN" accounts --no-spend --heal >/dev/null 2>/dev/null || true
 [ ! -e "$OAUTH_CLAUDE_SENTINEL" ] || fail "a recent warm-failed outcome was not throttled to once per 30 minutes"
-jq -e '.auth.cause | test("^backoff [0-9]+m$")' "$OAUTH_STORE/limits/stuck.json" >/dev/null \
-  || fail "throttled heal did not record a per-account backoff cause"
+jq -e '.auth.status == "expired" and .auth.checked_at == 31337 and .auth.cause == "prior sentinel"' "$OAUTH_STORE/limits/stuck.json" >/dev/null \
+  || fail "throttled heal must leave a prior auth verdict byte-untouched"
 
 rm -f "$OAUTH_STORE/oauth-attempts.json" "$OAUTH_SENTINEL" "$OAUTH_CLAUDE_SENTINEL"
 OAUTH_EXPIRES_AT="$(((now + 3600) * 1000))" OAUTH_USAGE_HTTP=403 OAUTH_SENTINEL="$OAUTH_SENTINEL" OAUTH_CLAUDE_SENTINEL="$OAUTH_CLAUDE_SENTINEL" PATH="$OAUTH_BIN:$PATH" HOME="$OAUTH_HOME" CLAUDEB_DIR="$OAUTH_STORE" \

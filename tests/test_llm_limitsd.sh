@@ -208,6 +208,25 @@ jq -e '.vendors.claude.current_account == "two"' "$PROJc" >/dev/null || fail "cu
 jq -e '[.vendors.claude.accounts[] | select(.is_current)] | length == 1 and (.[0].account == "two")' "$PROJc" >/dev/null || fail "is_current not cleared on the older account"
 ok
 
+echo "== accountless vendor (gemini) projects vendor-level buckets, no fake accounts array =="
+DBg="$WORK/gem.sqlite"; PROJg="$WORK/gem.proj.json"
+stop_daemon; start_daemon "$DBg" "$PROJg" || fail "gemini daemon boot"
+t=$(now); gr=$((t + 3600))
+POST "/observations" "{\"source\":\"shadow-feed\",\"vendor\":\"gemini\",\"account\":\"-\",\"scope\":\"window\",\"observed_at\":$t,\"payload\":{\"window\":\"five_hour\",\"used_pct\":0,\"resets_at\":$gr,\"origin\":\"usage\"}}" >/dev/null
+POST "/observations" "{\"source\":\"shadow-feed\",\"vendor\":\"gemini\",\"account\":\"-\",\"scope\":\"window\",\"observed_at\":$t,\"payload\":{\"window\":\"weekly\",\"used_pct\":75,\"resets_at\":$gr,\"origin\":\"usage\"}}" >/dev/null
+jq -e '.vendors.gemini.five_hour.used_pct == 0 and .vendors.gemini.weekly.used_pct == 75' "$PROJg" >/dev/null || fail "accountless vendor buckets not projected at vendor level"
+jq -e '.vendors.gemini | has("accounts") | not' "$PROJg" >/dev/null || fail "accountless vendor got a fake accounts array"
+jq -e '.vendors.gemini.available == true' "$PROJg" >/dev/null || fail "accountless vendor not available"
+ok
+
+echo "== needs_relogin verdict surfaces auth_needed and is not usable =="
+t=$(now)
+POST "/observations" "{\"source\":\"shadow-feed\",\"vendor\":\"codex\",\"account\":\"work\",\"scope\":\"rotation\",\"observed_at\":$t,\"payload\":{\"enabled\":true,\"is_current\":false}}" >/dev/null
+POST "/observations" "{\"source\":\"shadow-feed\",\"vendor\":\"codex\",\"account\":\"work\",\"scope\":\"auth\",\"observed_at\":$t,\"payload\":{\"verdict\":\"needs_relogin\",\"evidence\":\"affirmative\"}}" >/dev/null
+jq -e '.vendors.codex.accounts[] | select(.account=="work") | .auth_needed == true and .auth.status == "expired"' "$PROJg" >/dev/null || fail "needs_relogin not surfaced as auth_needed"
+jq -e '.vendors.codex.accounts[] | select(.account=="work") | .rotation.usable.general == false' "$PROJg" >/dev/null || fail "needs_relogin account still usable"
+ok
+
 echo "== malformed/unknown observations are rejected, not silently dropped =="
 code="$(POST "/observations" "{\"source\":\"x\",\"vendor\":\"claude\",\"account\":\"z\",\"scope\":\"general\",\"observed_at\":$(now),\"payload\":{}}" | tail -1)"
 [ "$code" = "400" ] || fail "unknown scope not rejected (http $code)"

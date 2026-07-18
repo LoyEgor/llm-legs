@@ -426,14 +426,16 @@ chmod +x "$FAKE_BIN/security" "$FAKE_BIN/claude" "$FAKE_BIN/curl"
   printf '{}' >"$oauth_attempts_file"
   WARM_SUCCEEDS=false
   export WARM_SUCCEEDS
+  # A hard-expired access token with the token endpoint returning 429 is pure
+  # weather: neither the refresh-deferred first pass nor the heal cycle has any
+  # evidence the credentials are dead, so the prior verdict is left byte-untouched.
+  printf '{"auth":{"status":"expired","checked_at":31337,"cause":"prior sentinel"}}' >"$limits_dir/alpha.json"
   probe_accounts "$order_dir" false false true
   assert test "$(sed -n '1p' "$EVENT_LOG")" = warm
   assert test "$(sed -n '2p' "$EVENT_LOG")" = warm
   assert test "$(sed -n '3p' "$EVENT_LOG")" = token
   assert test "$(wc -l < "$EVENT_LOG" | tr -d ' ')" = 3
-  assert test "$(jq -r '.auth.cause' "$limits_dir/alpha.json")" = 'warm failed, token refresh backoff 15m'
-  # A genuinely-unhealable account stays expired post-heal; only then may it surface.
-  assert test "$(jq -r '.auth.status' "$limits_dir/alpha.json")" = expired
+  assert jq -e '.auth.status == "expired" and .auth.checked_at == 31337 and .auth.cause == "prior sentinel"' "$limits_dir/alpha.json" >/dev/null
 )
 
 (
@@ -734,11 +736,133 @@ printf '{"delta":{"attempted_at":%s,"outcome":"revoked","retry_after_until":0}}\
 heal_expired "$heal_dir"
 assert test "$(cat "$heal_dir/alpha.display")" = live
 # One concurrent heal pass: the healed account carries no expired auth (so it is
-# never named in refresh_error), while the unhealable ones keep actionable causes.
+# never named in refresh_error); a genuine revocation gets an actionable cause,
+# while weather-shaped failures (beta: 429 token-refresh backoff; gamma: probe 401
+# with an unresolved refresh) leave the prior verdict byte-untouched — no re-stamp
+# of checked_at, no invented cause on no evidence.
 assert test "$(jq -r '.auth.status' "$limits_dir/alpha.json")" = ok
-assert test "$(jq -r '.auth.cause' "$limits_dir/beta.json")" = 'warm failed, token refresh backoff 12m'
-assert test "$(jq -r '.auth.cause' "$limits_dir/gamma.json")" = 'warm failed, token refresh failed'
+assert jq -e '.auth.status == "expired" and .auth.checked_at == 1 and (.auth | has("cause") | not)' "$limits_dir/beta.json" >/dev/null
+assert jq -e '.auth.status == "expired" and .auth.checked_at == 1 and (.auth | has("cause") | not)' "$limits_dir/gamma.json" >/dev/null
 assert test "$(jq -r '.auth.cause' "$limits_dir/delta.json")" = 'needs re-login'
 assert grep -qx delta "$WARM_CALLS"
 
-echo "PASS: $asserts asserts; reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth weather/backoff and lock behavior, reserved names, disabled-account timeline, out-of-rotation profile launch proceeds direct (proxy leaks stripped), generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent-rotation adoption, capacity weather clears stale expired auth for valid tokens, warm-first heal ordering and fallback, warm auth verdicts require current-run refresh evidence, start-windows opens a fresh window and reconcile locks the new resets_at without regressing it, start-windows skips a disabled account with an explicit cause, the paid haiku warm fallback stays off unless opted in, regular probes never warm, and heal_expired covers disabled accounts with actionable causes"
+# --- heal_one auth verdicts require current-run evidence (the auth-only-on-
+# evidence invariant, third live regression). Warm has failed; the fallback probe
+# 401 and the pre-existing expired verdict must not, on their own, produce or
+# refresh an expired auth field. ---
+stale_creds='{"claudeAiOauth":{"refreshToken":"rt-heal","accessToken":"at-heal","expiresAt":1,"scopes":["a"]}}'
+fresh_creds='{"claudeAiOauth":{"refreshToken":"rt-heal","accessToken":"at-heal","expiresAt":9999999999999,"scopes":["a"]}}'
+
+# (a) stale access token + probe 401 + token endpoint 429 (weather) → NO auth write.
+(
+  account_names() { printf 'ha1\n'; }
+  warm_accounts() { return 1; }
+  oauth_warm_cause() { printf '\n'; }
+  probe_one() { printf 'no-spend 0 401\n' >"$2/$1.result"; }
+  security() { printf '%s' "$stale_creds"; }
+  curl() { case "$*" in *'/v1/oauth/token'*) printf '{"error":"rate_limited"}\n429' ;; *) exit 97 ;; esac; }
+  ha_dir="$WORK/heal-a-weather"; mkdir -p "$ha_dir"
+  printf '{}' >"$oauth_attempts_file"
+  printf '{"auth":{"status":"expired","checked_at":424242,"cause":"friday 401"}}' >"$limits_dir/ha1.json"
+  heal_one "$ha_dir" ha1 2>/dev/null
+  assert jq -e '.auth.status == "expired" and .auth.checked_at == 424242 and .auth.cause == "friday 401"' "$limits_dir/ha1.json" >/dev/null
+)
+
+# (b) stale access token + probe 401 + token endpoint invalid_grant → expired IS written.
+(
+  account_names() { printf 'ha2\n'; }
+  warm_accounts() { return 1; }
+  oauth_warm_cause() { printf '\n'; }
+  probe_one() { printf 'no-spend 0 401\n' >"$2/$1.result"; }
+  security() { printf '%s' "$stale_creds"; }
+  curl() { case "$*" in *'/v1/oauth/token'*) printf '{"error":"invalid_grant"}\n400' ;; *) exit 97 ;; esac; }
+  ha_dir="$WORK/heal-a-revoked"; mkdir -p "$ha_dir"
+  printf '{}' >"$oauth_attempts_file"
+  printf '{"auth":{"status":"ok","checked_at":1}}' >"$limits_dir/ha2.json"
+  heal_one "$ha_dir" ha2 2>/dev/null
+  assert jq -e '.auth.status == "expired" and .auth.checked_at > 1 and .auth.cause == "warm failed, refresh token rejected"' "$limits_dir/ha2.json" >/dev/null
+)
+
+# (c) FRESH access token + probe 401 → expired written (true positive preserved).
+(
+  account_names() { printf 'ha3\n'; }
+  warm_accounts() { return 1; }
+  oauth_warm_cause() { printf '\n'; }
+  probe_one() { printf 'no-spend 0 401\n' >"$2/$1.result"; }
+  security() { printf '%s' "$fresh_creds"; }
+  curl() { exit 97; }
+  ha_dir="$WORK/heal-a-fresh"; mkdir -p "$ha_dir"
+  printf '{}' >"$oauth_attempts_file"
+  printf '{"auth":{"status":"ok","checked_at":1}}' >"$limits_dir/ha3.json"
+  heal_one "$ha_dir" ha3 2>/dev/null
+  assert jq -e '.auth.status == "expired" and .auth.cause == "warm failed, fresh token rejected (401)"' "$limits_dir/ha3.json" >/dev/null
+)
+
+# (d) weather cycle (token-refresh backoff active) over a snapshot already carrying
+# expired(checked_at=T0) → checked_at STILL T0 (the re-stamp regression pin).
+(
+  account_names() { printf 'ha4\n'; }
+  warm_accounts() { return 1; }
+  oauth_warm_cause() { printf '\n'; }
+  token_needs_refresh() { return 0; }
+  wnow=$(date +%s)
+  probe_one() { oauth_attempt_update "$1" 429 "$((wnow + 600))"; printf 'no-spend 0 401\n' >"$2/$1.result"; }
+  ha_dir="$WORK/heal-b-restamp"; mkdir -p "$ha_dir"
+  printf '{}' >"$oauth_attempts_file"
+  printf '{"auth":{"status":"expired","checked_at":55555,"cause":"friday 401"}}' >"$limits_dir/ha4.json"
+  heal_one "$ha_dir" ha4 2>/dev/null
+  assert jq -e '.auth.status == "expired" and .auth.checked_at == 55555 and .auth.cause == "friday 401"' "$limits_dir/ha4.json" >/dev/null
+)
+
+# --- no-refresh contexts and the messages probe never write an auth verdict on
+# unproven evidence: a hard-expired token with refresh disallowed is scheduled
+# expiry, and a daemon-token 401 is affirmative only when the token was fresh. ---
+
+# probe_one with allow_refresh=false + hard-expired token → auth field untouched.
+(
+  security() { printf '%s' "$stale_creds"; }
+  nr_dir="$WORK/probe-norefresh"; mkdir -p "$nr_dir"
+  printf '{"auth":{"status":"ok","checked_at":777}}' >"$limits_dir/nr1.json"
+  probe_one nr1 "$nr_dir" false false
+  assert jq -e '.auth.status == "ok" and .auth.checked_at == 777' "$limits_dir/nr1.json" >/dev/null
+  read -r nr_s nr_r nr_h < "$nr_dir/nr1.result"
+  assert test "$nr_h" = 401
+)
+
+# messages-probe 401, stale token, token endpoint 429 (weather) → NO auth write.
+(
+  security() { printf '%s' "$stale_creds"; }
+  curl() { case "$*" in *'/v1/messages'*) printf '401' ;; *'/v1/oauth/token'*) printf '{"error":"rate_limited"}\n429' ;; *) exit 97 ;; esac; }
+  printf 'tok' >"$tokens_dir/mp2"
+  mp_dir="$WORK/mp-weather"; mkdir -p "$mp_dir"
+  printf '{}' >"$oauth_attempts_file"
+  printf '{"auth":{"status":"expired","checked_at":222,"cause":"seed"}}' >"$limits_dir/mp2.json"
+  messages_probe_and_mark mp2 "$mp_dir" false 2>/dev/null || true
+  assert jq -e '.auth.status == "expired" and .auth.checked_at == 222 and .auth.cause == "seed"' "$limits_dir/mp2.json" >/dev/null
+)
+
+# messages-probe 401, stale token, token endpoint invalid_grant → expired written.
+(
+  security() { printf '%s' "$stale_creds"; }
+  curl() { case "$*" in *'/v1/messages'*) printf '401' ;; *'/v1/oauth/token'*) printf '{"error":"invalid_grant"}\n400' ;; *) exit 97 ;; esac; }
+  printf 'tok' >"$tokens_dir/mp3"
+  mp_dir="$WORK/mp-revoked"; mkdir -p "$mp_dir"
+  printf '{}' >"$oauth_attempts_file"
+  printf '{"auth":{"status":"ok","checked_at":1}}' >"$limits_dir/mp3.json"
+  messages_probe_and_mark mp3 "$mp_dir" false 2>/dev/null || true
+  assert jq -e '.auth.status == "expired" and .auth.checked_at > 1 and .auth.cause == "messages probe 401, refresh token rejected"' "$limits_dir/mp3.json" >/dev/null
+)
+
+# messages-probe 401, FRESH token → expired written (true positive preserved).
+(
+  security() { printf '%s' "$fresh_creds"; }
+  curl() { case "$*" in *'/v1/messages'*) printf '401' ;; *) exit 97 ;; esac; }
+  printf 'tok' >"$tokens_dir/mp4"
+  mp_dir="$WORK/mp-fresh"; mkdir -p "$mp_dir"
+  printf '{}' >"$oauth_attempts_file"
+  printf '{"auth":{"status":"ok","checked_at":1}}' >"$limits_dir/mp4.json"
+  messages_probe_and_mark mp4 "$mp_dir" false 2>/dev/null || true
+  assert jq -e '.auth.status == "expired"' "$limits_dir/mp4.json" >/dev/null
+)
+
+echo "PASS: $asserts asserts; reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth weather/backoff and lock behavior, reserved names, disabled-account timeline, out-of-rotation profile launch proceeds direct (proxy leaks stripped), generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent-rotation adoption, capacity weather clears stale expired auth for valid tokens, warm-first heal ordering and fallback, warm auth verdicts require current-run refresh evidence, start-windows opens a fresh window and reconcile locks the new resets_at without regressing it, start-windows skips a disabled account with an explicit cause, the paid haiku warm fallback stays off unless opted in, regular probes never warm, heal_expired covers disabled accounts with actionable causes, and heal_one writes expired only on current-run evidence (stale-token 401 defers to the token endpoint's verdict, fresh-token 401 is affirmative, weather never re-stamps a prior expired), and no-refresh probes plus daemon-token messages-probe 401s defer to the refresh outcome (stale token → weather no-write / invalid_grant expired, fresh token → affirmative)"

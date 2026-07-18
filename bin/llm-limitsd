@@ -38,6 +38,10 @@ RUN_TERMINAL = {"succeeded", "partial", "failed", "cancelled", "interrupted"}
 
 STALE_THRESHOLDS = {"five_hour": 1800, "weekly": 21600, "fable": 21600}
 PROJECTION_VENDORS = ("claude", "codex", "gemini")
+# Reserved account for accountless vendors (gemini): the real cache stores gemini usage at
+# vendor level with no accounts array, so its observations key on this sentinel and project
+# back up to vendor-level buckets without a fabricated account entry.
+ACCOUNTLESS = "-"
 EXIT_DB_UNRECOVERABLE = 78  # corrupt/foreign db: paired with plist ThrottleInterval, no hot-loop
 
 SCHEMA = """
@@ -417,6 +421,9 @@ class Ledger:
             by_vendor.setdefault(acc["vendor"], []).append(acc)
         for vendor, accs in by_vendor.items():
             accs.sort(key=lambda a: a["account"])
+            if len(accs) == 1 and accs[0]["account"] == ACCOUNTLESS:
+                vendors[vendor] = self._project_accountless(accs[0], proj_now)
+                continue
             acc_objs = [self._project_account(a, proj_now) for a in accs]
             current = next((a for a in acc_objs if a["is_current"]), acc_objs[0] if acc_objs else None)
             vobj = {
@@ -458,11 +465,25 @@ class Ledger:
             "auth": {"status": "expired" if acc["auth"] in ("expired", "needs_relogin") else "ok",
                      "checked_at": int(acc["auth_checked_at"]) if acc["auth_checked_at"] else None},
         }
+        # needs_relogin is codex's login-needed signal: surfaced as the real cache's account-level
+        # auth_needed flag, distinct from claude's auth.status=expired.
+        if acc["auth"] == "needs_relogin":
+            obj["auth_needed"] = True
         auth_expired = acc["auth"] in ("expired", "needs_relogin")
         for window, b in acc["buckets"].items():
             obj[window] = _project_bucket(b, window, proj_now, auth_expired)
         obj["rotation"] = _rotation(obj)
         return obj
+
+    def _project_accountless(self, acc, proj_now):
+        a = self._project_account(acc, proj_now)
+        vobj = {"available": True, "source": "limitsd-shadow", "last_wall": None,
+                "stale": bool(_account_stale(a)), "usable_now": _account_usable(a),
+                "as_of": a["as_of"], "stale_seconds": a["stale_seconds"]}
+        for field in ("five_hour", "weekly", "fable"):
+            if field in a:
+                vobj[field] = a[field]
+        return vobj
 
     def _write_projection(self):
         data = self.build_projection()
