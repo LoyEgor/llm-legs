@@ -672,7 +672,9 @@ refresh_codex_quota() {
     helper_args=(--profile "$target" --no-cache)
   fi
   rc=0
-  "$codex_quota_cmd" "${helper_args[@]}" >"$codex_tmp" 2>"$codex_err" || rc=$?
+  # ${arr[@]+...} keeps bash 3.2 (set -u) from dying on the empty no-target case;
+  # the menu's hs.task PATH resolves `env bash` to /bin/bash 3.2, not homebrew 5.
+  "$codex_quota_cmd" ${helper_args[@]+"${helper_args[@]}"} >"$codex_tmp" 2>"$codex_err" || rc=$?
   if [ "$rc" -eq 0 ] &&
     jq -e '([.rateLimits.primary?, .rateLimits.secondary?]
             | any((.usedPercent | type) == "number")) or

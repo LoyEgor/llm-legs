@@ -64,7 +64,7 @@ EOF
 chmod +x "$GEMINI_HELPER"
 gemini_live=$(GEMINI_SENTINEL="$GEMINI_SENTINEL" LLM_LIMITS_GEMINI_REFRESH=1 \
   LLM_LIMITS_GEMINI_CMD="$GEMINI_HELPER" LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
-  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --refresh) \
+  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" /bin/bash "$SCRIPT" --refresh) \
   || fail "Gemini refresh collection failed"
 jq -e '.vendors.gemini.available == true and .vendors.gemini.source == "agy-local-rpc" and
   .vendors.gemini.five_hour.used_pct == 1 and
@@ -543,7 +543,10 @@ chmod +x "$FAKE_BIN/claudeb" "$FAKE_BIN/codex" "$WORK/fake-codex-quota"
 # (never codex exec), and the live snapshot outranks the stale rollout tail.
 refresh_out=$(CLAUDEB_SENTINEL="$SENTINEL" CODEX_SENTINEL="$CODEX_SENTINEL" CODEX_QUOTA_SENTINEL="$CODEX_QUOTA_SENTINEL" \
   LLM_LIMITS_CODEX_REFRESH=1 LLM_LIMITS_CODEX_QUOTA_CMD="$WORK/fake-codex-quota" LLM_LIMITS_CODEX_CACHE="$CODEX_CACHE" \
-  PATH="$FAKE_BIN:$PATH" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --refresh) || fail "refresh collection failed"
+  PATH="$FAKE_BIN:$PATH" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" /bin/bash "$SCRIPT" --refresh) || fail "refresh collection failed"
+# /bin/bash (3.2) is deliberate here and above: the menu's hs.task PATH resolves `env bash`
+# to the system bash, where an empty-array expansion under set -u is fatal — every menu
+# Refresh exited 1 on the no-target codex path for two days while suites ran on bash 5.
 [ -s "$SENTINEL" ] || fail "--refresh did not invoke claudeb accounts"
 grep -q 'accounts --no-spend' "$SENTINEL" || fail "Claude refresh was not tier-1-only"
 [ -s "$CODEX_QUOTA_SENTINEL" ] || fail "--refresh did not invoke the codex quota helper"
