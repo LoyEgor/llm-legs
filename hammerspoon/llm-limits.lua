@@ -363,48 +363,88 @@ end
 
 local hardRefreshInFlight = {}
 
+-- Liveness is the only truth here: a flag left set by a lost hs.task callback must
+-- never render as updating. Every entry stores its live task handle(s), and both the
+-- updating row and the title spinner ask the OS whether that task still runs.
+local function taskAlive(task)
+  if not task then return false end
+  local ok, running = pcall(task.isRunning, task)
+  if not ok then return false end
+  return running == true
+end
+
+-- A hardRefresh chains a warm/refresh task, then a collector re-read; either may be
+-- the live phase, so an entry survives while either handle runs. 360s is the outer
+-- budget (warm ≤~200s, collector ≤300s): past it, a still-"alive" handle is wedged.
+local function purgeStaleRefreshes(now)
+  for key, entry in pairs(hardRefreshInFlight) do
+    local alive = taskAlive(entry.task) or taskAlive(entry.reread)
+    local aged = entry.started and (now - entry.started) > 360
+    if not alive or aged then
+      hardRefreshInFlight[key] = nil
+    end
+  end
+end
+
 local function hardRefresh(name, command, args)
   local key = command .. "\0" .. table.concat(args, "\0")
+  local now = os.time()
+  purgeStaleRefreshes(now)
   if hardRefreshInFlight[key] then
     hs.alert.show("Already refreshing: " .. name)
     return
   end
-  hardRefreshInFlight[key] = true
+  local entry = { started = now }
+  hardRefreshInFlight[key] = entry
 
   local function finish(success, cause)
     hardRefreshInFlight[key] = nil
     pcall(M.onRefreshDone, success, cause)
   end
 
+  -- Clear the flag before decorating: a throw inside taskCause or hs.alert.show can
+  -- never skip finish() and pin the updating row forever.
+  local function fail(stdOut, stdErr, exitCode, fallback)
+    local ok, cause = pcall(taskCause, stdOut, stdErr, exitCode)
+    if not ok then cause = fallback or ("exit " .. tostring(exitCode)) end
+    finish(false, cause)
+    pcall(function()
+      hs.alert.show("Hard refresh failed: " .. name .. " — " .. tostring(cause))
+    end)
+  end
+
   local ok = pcall(function()
     pcall(M.onRefreshStart)
     local task = hs.task.new(command, function(exitCode, stdOut, stdErr)
       if exitCode ~= 0 then
-        local cause = taskCause(stdOut, stdErr, exitCode)
-        hs.alert.show("Hard refresh failed: " .. name .. " — " .. cause)
-        finish(false, cause)
+        fail(stdOut, stdErr, exitCode)
         return
       end
       local reread = newCollectorTask(function(collectExit, collectOut, collectErr)
         if collectExit == 0 then
           finish(true)
         else
-          local cause = taskCause(collectOut, collectErr, collectExit)
-          hs.alert.show("Hard refresh failed: " .. name .. " — " .. cause)
-          finish(false, cause)
+          fail(collectOut, collectErr, collectExit)
         end
       end, {})
-      if not reread or not reread:start() then
-        hs.alert.show("Hard refresh failed: " .. name .. " — collect could not start")
+      if reread and reread:start() then
+        entry.reread = reread
+      else
         finish(false, "collect could not start")
+        pcall(function()
+          hs.alert.show("Hard refresh failed: " .. name .. " — collect could not start")
+        end)
       end
     end, args)
     if task then task:setEnvironment(baseEnvironment()) end
     if not task or not task:start() then error("task could not start") end
+    entry.task = task
   end)
   if not ok then
-    hs.alert.show("Hard refresh failed: " .. name .. " — task could not start")
     finish(false, "task could not start")
+    pcall(function()
+      hs.alert.show("Hard refresh failed: " .. name .. " — task could not start")
+    end)
   end
 end
 
@@ -479,8 +519,24 @@ local function isInFlight()
   if collectTaskRunning() then
     return true
   end
+  purgeStaleRefreshes(os.time())
   for _ in pairs(hardRefreshInFlight) do
     return true
+  end
+  return false
+end
+
+-- True only while a verified-live hard refresh has run past 30s, so the caller's title
+-- timer can prefix "⟳ " for the multi-minute warm/refresh ops. Same liveness gate as the
+-- row (plus the 360s watchdog), so the title can never show ⟳ with no live task. The
+-- short menu-open re-read is excluded; the explicit Refresh path shows "…" on its own.
+function M.menubarSpinner()
+  local now = os.time()
+  purgeStaleRefreshes(now)
+  for _, entry in pairs(hardRefreshInFlight) do
+    if entry.started and (now - entry.started) > 30 then
+      return true
+    end
   end
   return false
 end

@@ -14,7 +14,7 @@ local menuBar = hs.menubar.new()
 local titleTimer = nil
 local menuMode = nil
 local menuVisible = true
-local llmRefreshing = false
+local llmRefreshingSince = nil
 
 local startOptions = {
     { title = "Now", minutes = 0 },
@@ -208,10 +208,14 @@ refreshTitle = function()
         return
     end
 
-    if llmRefreshing then
+    if llmRefreshingSince then
         -- A live llm-limits refresh can run for minutes (start-windows); the 30s
-        -- titleTimer must not stomp the busy indicator set by onRefreshStart.
-        return
+        -- titleTimer must not stomp the busy indicator set by onRefreshStart. Past the
+        -- collector's own bound the flag is a lost callback, not a refresh — repaint.
+        if os.time() - llmRefreshingSince <= 360 then
+            return
+        end
+        llmRefreshingSince = nil
     end
 
     if menuMode ~= "menu" then
@@ -259,6 +263,13 @@ refreshTitle = function()
             title = table.concat(parts, " · ")
         end
         menuBar:setTooltip((status.destinationText or "Claude App") .. " timer active.")
+    end
+
+    local spinnerOk, spinning = pcall(function()
+        return llmLimits and llmLimits.menubarSpinner and llmLimits.menubarSpinner()
+    end)
+    if spinnerOk and spinning then
+        title = "⟳ " .. title
     end
 
     menuBar:setTitle(title)
@@ -511,11 +522,11 @@ AutomationMenu.titleTimer = titleTimer
 
 if llmLimits then
     llmLimits.onRefreshStart = function()
-        llmRefreshing = true
+        llmRefreshingSince = os.time()
         menuBar:setTitle("…")
     end
     llmLimits.onRefreshDone = function(ok, _, failures)
-        llmRefreshing = false
+        llmRefreshingSince = nil
         if ok then
             refreshTitle()
         else

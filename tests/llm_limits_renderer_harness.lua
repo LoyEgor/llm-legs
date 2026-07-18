@@ -23,9 +23,9 @@ function Styled.__concat(left, right)
   return result
 end
 
-local function loadModule(fixture, taskFactory, nowOverride)
+local function loadModule(fixture, taskFactory, nowOverride, alertFn)
   local mock = {
-    alert = { show = function() end },
+    alert = { show = alertFn or function() end },
     execute = function() return true end,
     fs = { attributes = function() return nil end },
     json = { decode = function() return fixture end },
@@ -39,7 +39,9 @@ local function loadModule(fixture, taskFactory, nowOverride)
   }, { __index = io })
   local env = setmetatable({ hs = mock, io = fakeIo }, { __index = _G })
   if nowOverride then
-    env.os = setmetatable({ time = function() return nowOverride end }, { __index = os })
+    local timeFn = type(nowOverride) == "function" and nowOverride
+      or function() return nowOverride end
+    env.os = setmetatable({ time = timeFn }, { __index = os })
   end
   env._G = env
   local chunk, err = loadfile(root .. "/hammerspoon/llm-limits.lua", "t", env)
@@ -280,14 +282,108 @@ assert(deadErrorSeen, "dead collect task masked the cached refresh error")
 assert(not titleText(menu[1]):find("updating", 1, true),
   "updating indicator appeared with no in-flight collect or hard refresh")
 
+local function updatingShown(module)
+  for _, item in ipairs(module.menuItems()) do
+    if type(titleText(item)) == "string" and titleText(item):find("updating", 1, true) then
+      return true
+    end
+  end
+  return false
+end
+
+-- A hardRefresh whose callback never fires and whose task reports isRunning()==false is
+-- dead evidence, not an in-flight update: no updating row, no spinner.
 local pendingTask = {
   isRunning = function() return false end,
   start = function() return true end,
   setEnvironment = function() end,
 }
-local hardRefreshModule = loadModule(fixture, function() return pendingTask end)
-hardRefreshModule.hardRefreshClaude("full")
-local hardRefreshMenu = hardRefreshModule.menuItems()
+local deadRefresh = loadModule(fixture, function() return pendingTask end)
+deadRefresh.hardRefreshClaude("full")
+assert(not updatingShown(deadRefresh),
+  "dead hard-refresh task rendered a phantom updating indicator")
+assert(not deadRefresh.menubarSpinner(), "dead hard-refresh task lit the title spinner")
+
+-- A verified-live task drives the updating row; past 30s it also drives the title
+-- spinner; when the task ends both vanish on the spot.
+local liveState = { running = true }
+local liveTask = {
+  isRunning = function() return liveState.running end,
+  start = function() return true end,
+  setEnvironment = function() end,
+}
+local clock = { now = 1000 }
+local liveRefresh = loadModule(fixture, function() return liveTask end,
+  function() return clock.now end)
+liveRefresh.hardRefreshClaude("full")
+assert(updatingShown(liveRefresh), "live hard refresh did not render the updating indicator")
+assert(not liveRefresh.menubarSpinner(), "title spinner appeared before 30s of in-flight")
+clock.now = 1031
+assert(liveRefresh.menubarSpinner(), "title spinner missing after 30s of live in-flight")
+assert(updatingShown(liveRefresh), "updating indicator vanished while task still live")
+liveState.running = false
+assert(not liveRefresh.menubarSpinner(), "title spinner persisted after task ended")
+assert(not updatingShown(liveRefresh), "updating indicator persisted after task ended")
+
+-- Watchdog: past the 360s budget even a still-"alive" handle is wedged and dropped
+-- (dead-task drop is covered by deadRefresh above; here the warm task keeps claiming
+-- alive). The collect re-read gets a dead task so it never masks the dropped entry.
+local agedWarm = {
+  isRunning = function() return true end,
+  start = function() return true end,
+  setEnvironment = function() end,
+}
+local deadCollect = {
+  isRunning = function() return false end,
+  start = function() return true end,
+  setEnvironment = function() end,
+}
+local agedClock = { now = 5000 }
+local agedRefresh = loadModule(fixture, function(_, _, args)
+  if args and args[1] == "warm" then return agedWarm end
+  return deadCollect
+end, function() return agedClock.now end)
+agedRefresh.hardRefreshClaude("full")
+agedClock.now = 5031
+assert(agedRefresh.menubarSpinner(), "live 31s refresh did not light the spinner")
+assert(updatingShown(agedRefresh), "live refresh missing updating row")
+agedClock.now = 5000 + 361
+assert(not agedRefresh.menubarSpinner(), "watchdog kept a >360s wedged entry spinning")
+assert(not updatingShown(agedRefresh), "watchdog left a >360s wedged entry in the updating row")
+
+-- A callback whose alert decoration throws must still clear the flag (finish runs first).
+-- The warm task keeps reporting alive, so a skipped finish() would leave the row pinned;
+-- the collect re-read gets a dead task so only the hard-refresh entry drives the row.
+local throwWarm = {
+  isRunning = function() return true end,
+  start = function() return true end,
+  setEnvironment = function() end,
+}
+local throwCollect = {
+  isRunning = function() return false end,
+  start = function() return true end,
+  setEnvironment = function() end,
+}
+local warmCallback
+local throwRefresh = loadModule(fixture, function(_, callback, args)
+  if args and args[1] == "warm" then
+    warmCallback = callback
+    return throwWarm
+  end
+  return throwCollect
+end, nil, function() error("alert boom") end)
+throwRefresh.hardRefreshClaude("full")
+assert(updatingShown(throwRefresh), "live throwing-callback refresh missing updating row")
+pcall(warmCallback, 1, "", "boom")
+assert(not updatingShown(throwRefresh), "thrown alert skipped finish() and pinned the row")
+assert(not throwRefresh.menubarSpinner(), "thrown alert skipped finish() and pinned the spinner")
+
+local pendingModule = loadModule(fixture, function()
+  return { isRunning = function() return true end, start = function() return true end,
+    setEnvironment = function() end }
+end)
+pendingModule.hardRefreshClaude("full")
+local hardRefreshMenu = pendingModule.menuItems()
 assert(titleText(hardRefreshMenu[1]):find("updating", 1, true),
   "in-flight hard refresh did not render the updating indicator")
 
