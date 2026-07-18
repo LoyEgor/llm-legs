@@ -320,6 +320,16 @@ if not chatSwitchOk then
     hs.alert.show("Claude chat switch error")
 end
 
+local cmdKeysOk, cmdKeysError = pcall(function()
+    package.path = package.path .. ";/Volumes/Work/Projects/llm-legs/hammerspoon/?.lua"
+    require("claude_cmd_keys")
+end)
+
+if not cmdKeysOk then
+    print("ERROR: Claude Cmd keys failed to load:", cmdKeysError)
+    hs.alert.show("Claude Cmd keys error")
+end
+
 local gptVoiceOk, gptVoiceError = pcall(function()
     dofile(hs.configdir .. "/gpt_voice.lua")
 end)
