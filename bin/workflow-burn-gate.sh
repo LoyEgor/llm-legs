@@ -57,7 +57,7 @@ if [ "$pct_int" -ge "$DENY_AT" ] 2>/dev/null; then
 fi
 
 if [ "$pct_int" -ge "$WARN_AT" ] 2>/dev/null; then
-  jq -cn --arg c "Heads-up: this workflow's agents will spend the SESSION account ($own), currently at ${pct}%. A large fleet can wall this session mid-task. Keep the fan-out small, prefer claudeb-/codex-workers for implementation stages (run worker-pick), and mention the risk to Egor." \
+  jq -cn --arg c "Heads-up: this workflow's agents will spend the SESSION account ($own), currently at ${pct}%. A large fleet can wall this session mid-task. Keep the fan-out small, run the workflow inside a claudeb-worker (bills a rotation account instead), or move implementation stages to workers (run worker-pick) — and mention the risk to Egor." \
     '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$c}}' 2>/dev/null
   exit 0
 fi

@@ -134,8 +134,8 @@ else
 fi
 
 case "$cx_state" in
-  FRESH) cx_mark="✓"; policy="codex is fresh — prefer codex (Sol high ≈ Opus-level, faster) for well-specified implementation and design tasks, up to ~5 of 10; claudeb for long/multi-step or repo-convention-heavy work. Codex EFFORT per task: medium for average tasks, high for genuinely complex ones (limits allow it)." ;;
-  OK)    cx_mark="✓"; policy="codex has headroom — use it where speed or design taste pays (~3 of 10); claudeb otherwise. Codex EFFORT: medium; raise to high only for genuinely complex tasks." ;;
+  FRESH) cx_mark="✓"; policy="codex is fresh — prefer codex (Sol high ≈ Opus-level, faster) for well-specified implementation, design, and UI-testing tasks (native macOS Computer Use), up to ~5 of 10; claudeb for long/multi-step or repo-convention-heavy work. Codex EFFORT per task: medium for average tasks, high for genuinely complex ones (limits allow it)." ;;
+  OK)    cx_mark="✓"; policy="codex has headroom — use it where speed, design taste, or Computer Use UI testing pays (~3 of 10); claudeb otherwise. Codex EFFORT: medium; raise to high only for genuinely complex tasks." ;;
   TIGHT) cx_mark="!"; policy="codex is tight — claudeb for everything; codex only if Egor explicitly asks, then EFFORT: medium." ;;
   *)     cx_mark="✗"; policy="codex is walled/unavailable — claudeb for everything." ;;
 esac
