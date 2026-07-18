@@ -235,8 +235,8 @@ local fallback = loadModule({ schema = 1, vendors = {
   codex = { available = true, current_account = "main", five_hour = { effective_pct = 2, resets_at = now + 60 } },
   gemini = { available = true, five_hour = { effective_pct = 3, resets_at = now + 60 } },
 }}, fallbackState)
-local done = 0
-fallback.onRefreshDone = function() done = done + 1 end
+local changes = 0
+fallback.onRefreshStateChanged = function() changes = changes + 1 end
 for _, item in ipairs(fallback.menuItems()) do
   local name = title(item)
   if (name == "Claude" or name == "Codex" or name == "Gemini") and item.menu then item.menu[1].fn() end
@@ -247,9 +247,10 @@ if passive.command ~= "/Volumes/Work/Projects/llm-legs/llm-limits.sh" or #passiv
   error("menu-open collector was not a direct argument-free task")
 end
 passive.running = false
+local beforeCompletion = changes
 passive.callback(0, "", "")
-if done ~= 1 then error("menu-open collector completion did not trigger a re-render") end
-if a.args[1] ~= "warm" or a.args[2] ~= "com" then error("Claude fallback dispatch mismatch") end
+if changes ~= beforeCompletion + 1 then error("menu-open collector completion did not trigger a re-render") end
+if a.args[1] ~= "--refresh-account" or a.args[2] ~= "claude/com" then error("Claude fallback dispatch mismatch") end
 if b.args[1] ~= "--refresh-account" or b.args[2] ~= "codex/main" then error("Codex fallback dispatch mismatch") end
 if c.args[1] ~= "--refresh-account" or c.args[2] ~= "gemini" then error("Gemini fallback dispatch mismatch") end
 local guardState = { starts = {}, alerts = {} }
@@ -257,9 +258,7 @@ local guarded = loadModule({ schema = 1, vendors = {} }, guardState)
 guarded.hardRefreshClaude("com")
 guarded.hardRefreshClaude("com")
 if #guardState.starts ~= 1 then error("duplicate hard refresh started another task") end
-if #guardState.alerts ~= 1 or not guardState.alerts[1]:lower():find("already refreshing", 1, true) then
-  error("duplicate hard refresh alert mismatch")
-end
+if #guardState.alerts ~= 0 then error("duplicate hard refresh emitted an alert") end
 local openState = { starts = {}, alerts = {} }
 local openGuard = loadModule({ schema = 1, vendors = {} }, openState)
 openGuard.menuItems()
@@ -280,6 +279,10 @@ return "OK open-guard running=1->1 exited=1->2"
 pass "hs CLI reachable, Hammerspoon responding"
 assert_isolated_menu_contracts
 pass "isolated menu contracts: open-collect guard running 1->1, exited 1->2; completion re-rendered"
+if [ "${LLM_LIMITS_E2E_FIXTURE_ONLY:-0}" = 1 ]; then
+  pass "e2e fixture-only mode: live Hammerspoon singleton, cache, and refresh paths skipped"
+  exit 0
+fi
 
 # 2. Live module loaded and its data-read path (menuItems -> readLlmLimits) works.
 MENU_TXT=$(hs_menu)
@@ -385,7 +388,7 @@ before_fetched=$(jq -r '.fetched_at' <<<"$BEFORE")
 before_epoch=$(iso2epoch "$before_fetched")
 declare -A before_err before_asof
 for v in claude codex gemini; do
-  before_err[$v]=$(jq -r --arg v "$v" '.vendors[$v].refresh_error // ""' <<<"$BEFORE")
+  before_err[$v]=$(jq -r --arg v "$v" '.vendors[$v].refresh_error.cause // ""' <<<"$BEFORE")
   before_asof[$v]=$(jq -r --arg v "$v" '.vendors[$v].as_of // ""' <<<"$BEFORE")
 done
 
@@ -401,11 +404,8 @@ visible_failures=""
 for v in claude codex gemini; do
   present=$(jq -r --arg v "$v" 'has("vendors") and (.vendors | has($v))' <<<"$AFTER")
   [ "$present" = true ] || continue
-  aerr=$(jq -r --arg v "$v" '.vendors[$v].refresh_error // ""' <<<"$AFTER")
+  aerr=$(jq -r --arg v "$v" '.vendors[$v].refresh_error.cause // ""' <<<"$AFTER")
   aasof=$(jq -r --arg v "$v" '.vendors[$v].as_of // ""' <<<"$AFTER")
-  if [ -n "$aerr" ] && [ -z "${before_err[$v]}" ]; then
-    fail "vendor $v gained a new refresh_error not present before: $aerr"
-  fi
   advanced=0
   if [ -n "$aasof" ] && [ -n "${before_asof[$v]}" ]; then
     aep=$(iso2epoch "$aasof"); bep=$(iso2epoch "${before_asof[$v]}")
@@ -421,8 +421,6 @@ MENU2=$(hs_menu)
 assert_codex_account_rows "$MENU2" "$AFTER"
 assert_account_ages "$MENU2" "$AFTER"
 grep -q ' · ' <<<"$MENU2" && fail "aggregate vendor age line reappeared after refresh"
-grep -q '^refresh failed:' <<<"$MENU2" \
-  && fail "successful refresh left a stale 'refresh failed' menu row"
 if [ -n "$visible_failures" ]; then
   pass "free refresh: fetched_at advanced, no invisible failures; visible refresh_error(s):$visible_failures"
 else

@@ -55,6 +55,14 @@ print(sqlite3.connect(sys.argv[1]).execute(
     (sys.argv[2], sys.argv[3])).fetchone()[0])
 PY
 }
+gemini_auth_verdict() { python3 - "$1" <<'PY'
+import sqlite3, sys, json
+row = sqlite3.connect(sys.argv[1]).execute(
+    "SELECT payload FROM observations WHERE vendor='gemini' AND account='-' AND scope='auth' "
+    "ORDER BY observed_at DESC LIMIT 1").fetchone()
+print(json.loads(row[0]).get("verdict") if row else "none")
+PY
+}
 
 DB="$WORK/feed.sqlite"; PROJ="$WORK/feed.proj.json"
 CACHE="$WORK/cache.json"; STATE="$WORK/feed.state"
@@ -68,8 +76,10 @@ cat >"$CACHE" <<JSON
 {
   "fetched_at": "$fetched",
   "schema": 1,
+  "refresh_error": {"cause": "all vendor refreshes failed", "at": $now},
   "vendors": {
     "claude": {
+      "refresh_error": {"cause": "fixture failure", "at": $now},
       "accounts": [
         {"account": "alona", "is_current": true, "enabled": true,
          "as_of": "$fetched", "auth": {"status": "ok", "checked_at": $now},
@@ -87,6 +97,7 @@ cat >"$CACHE" <<JSON
       ]
     },
     "codex": {
+      "refresh_error": {"cause": "fixture failure", "at": $now},
       "accounts": [
         {"account": "main", "is_current": true, "enabled": true, "as_of": "$fetched",
          "five_hour": {"used_pct": null, "resets_at": null, "as_of": $now, "origin": "usage"},
@@ -113,6 +124,8 @@ ok
 echo "== first feed posts fixture buckets, lands in /state with used_pct/resets_at =="
 start_daemon "$DB" "$PROJ" || fail "daemon boot"
 feed 2>"$WORK/feed1.err" || fail "first feed exit nonzero"
+jq -e 'has("refresh_error") | not' "$PROJ" >/dev/null \
+  || fail "refresh outcome metadata leaked into the shadow projection"
 GET /state | jq -e --arg r "$r5" \
   '.accounts[] | select(.account=="alona" and .vendor=="claude")
    | .buckets.five_hour.used_pct == 12 and .buckets.five_hour.resets_at == $r' >/dev/null \
@@ -210,6 +223,55 @@ sed -i.bak "s/\"fetched_at\": \"$fetched2\"/\"fetched_at\": \"$(date -u -r $((no
 before="$(obs_count "$DB")"
 feed || fail "feed after fetched_at change exit nonzero"
 [ "$(obs_count "$DB")" -gt "$before" ] || fail "changed fetched_at did not re-post"
+ok
+
+echo "== gemini logged out: vendor-level auth_needed maps to needs_relogin at the sentinel =="
+GCACHE="$WORK/gemini-auth.json"; GSTATE="$WORK/gemini-auth.state"
+gfetched="$(date -u -r $((now + 300)) +%Y-%m-%dT%H:%M:%SZ)"
+cat >"$GCACHE" <<JSON
+{
+  "fetched_at": "$gfetched",
+  "schema": 1,
+  "vendors": {
+    "gemini": {"available": false, "auth_needed": true, "status": "login needed",
+      "source": "agy-local-rpc", "as_of": "$gfetched"}
+  }
+}
+JSON
+env LLM_LIMITS_CACHE="$GCACHE" LLM_LIMITSD_URL="http://$B" LLM_SHADOW_FEED_STATE="$GSTATE" "$FEED" \
+  || fail "gemini auth feed exit nonzero"
+[ "$(gemini_auth_verdict "$DB")" = "needs_relogin" ] \
+  || fail "gemini auth_needed did not map to a needs_relogin observation at the sentinel"
+GET /state | jq -e '.accounts[] | select(.account=="-" and .vendor=="gemini") | .auth == "needs_relogin"' >/dev/null \
+  || fail "gemini needs_relogin not reflected in /state"
+jq -e '.vendors.gemini.usable_now == false' "$PROJ" >/dev/null \
+  || fail "gemini projection usable while logged out"
+ok
+
+echo "== gemini re-login recovery: a successful RPC restores auth ok and usability =="
+GRCACHE="$WORK/gemini-recover.json"; GRSTATE="$WORK/gemini-recover.state"
+grfetched="$(date -u -r $((now + 600)) +%Y-%m-%dT%H:%M:%SZ)"; grbucket=$((now + 600))
+cat >"$GRCACHE" <<JSON
+{
+  "fetched_at": "$grfetched",
+  "schema": 1,
+  "vendors": {
+    "gemini": {"available": true, "source": "agy-local-rpc", "as_of": "$grfetched",
+      "five_hour": {"used_pct": 4, "resets_at": "$r5", "as_of": $grbucket, "origin": "usage"},
+      "weekly": {"used_pct": 55, "resets_at": "$rw", "as_of": $grbucket, "origin": "usage"}}
+  }
+}
+JSON
+env LLM_LIMITS_CACHE="$GRCACHE" LLM_LIMITSD_URL="http://$B" LLM_SHADOW_FEED_STATE="$GRSTATE" "$FEED" \
+  || fail "gemini recovery feed exit nonzero"
+[ "$(gemini_auth_verdict "$DB")" = "ok" ] \
+  || fail "successful gemini RPC did not restore auth ok at the sentinel"
+GET /state | jq -e '.accounts[] | select(.account=="-" and .vendor=="gemini") | .auth == "ok"' >/dev/null \
+  || fail "gemini auth not ok in /state after recovery"
+jq -e '.vendors.gemini.usable_now == true' "$PROJ" >/dev/null \
+  || fail "gemini projection not usable again after recovery"
+jq -e --arg r "$r5" '.vendors.gemini.five_hour.used_pct == 4 and .vendors.gemini.five_hour.resets_at == $r' "$PROJ" >/dev/null \
+  || fail "gemini fresh buckets not projected after recovery"
 ok
 
 stop_daemon

@@ -28,7 +28,9 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn)
     alert = { show = alertFn or function() end },
     execute = function() return true end,
     fs = { attributes = function() return nil end },
-    json = { decode = function() return fixture end },
+    json = { decode = function()
+      return type(fixture) == "function" and fixture() or fixture
+    end },
     styledtext = { new = styled },
     task = { new = taskFactory or function() return nil end },
   }
@@ -255,57 +257,97 @@ local runningTask = {
   start = function() return true end,
   setEnvironment = function() end,
 }
-local runningMenu = loadModule(fixture, function() return runningTask end).menuItems()
-assert(titleText(runningMenu[1]):find("updating", 1, true),
-  "in-flight collect did not render the updating indicator")
-assert(isGray(runningMenu[1].title.attributes), "updating indicator was not dim")
+local passiveModule = loadModule(fixture, function() return runningTask end)
+local runningMenu = passiveModule.menuItems()
+for _, item in ipairs(runningMenu) do
+  assert(not titleText(item):find("updating", 1, true),
+    "passive collect rendered an updating row")
+end
+assert(passiveModule.refreshState().prefix == "", "passive collect changed the title state")
 
 local deadFixture = { schema = 1, vendors = {
-  claude = { available = false, refresh_error = "fixture failure" },
+  claude = { available = false, refresh_error = { cause = "fixture failure", at = os.time() - 120 } },
   codex = { available = false },
   gemini = { available = false },
 }}
-local deadTask = {
-  isRunning = function() error("dead task") end,
-  start = function() return true end,
-  setEnvironment = function() end,
-}
-local deadMenu = loadModule(deadFixture, function() return deadTask end).menuItems()
+local errorModule = loadModule(deadFixture)
+local deadMenu = errorModule.menuItems()
 local deadErrorSeen = false
 for _, item in ipairs(deadMenu) do
-  if titleText(item):find("refresh failed: claude — fixture failure", 1, true) then
+  if titleText(item):find("refresh failed fixture failure · 2m", 1, true) then
     deadErrorSeen = true
+    assert(isGray(item.title.attributes), "vendor refresh error was not dim")
   end
 end
-assert(deadErrorSeen, "dead collect task masked the cached refresh error")
+assert(deadErrorSeen, "structured vendor refresh error did not render")
+assert(errorModule.refreshState().prefix == "⚠ ", "vendor error did not warn in the title state")
 
-assert(not titleText(menu[1]):find("updating", 1, true),
-  "updating indicator appeared with no in-flight collect or hard refresh")
+local clearModule = loadModule(fixture)
+assert(clearModule.refreshState().prefix == "", "successful cache retained a warning title")
+for _, item in ipairs(clearModule.menuItems()) do
+  assert(not titleText(item):find("refresh failed", 1, true),
+    "successful cache retained a vendor error row")
+end
 
-local function updatingShown(module)
-  for _, item in ipairs(module.menuItems()) do
-    if type(titleText(item)) == "string" and titleText(item):find("updating", 1, true) then
+local geminiAuthFixture = { schema = 1, vendors = {
+  claude = { available = false },
+  codex = { available = false },
+  gemini = { available = false, auth_needed = true, status = "login needed" },
+}}
+local geminiAuthModule = loadModule(geminiAuthFixture)
+local geminiAuthMenu = geminiAuthModule.menuItems()
+local geminiLoginRow = false
+for _, item in ipairs(geminiAuthMenu) do
+  local text = titleText(item)
+  if text:find("Gemini", 1, true) and text:find("login needed", 1, true) then
+    geminiLoginRow = true
+  end
+  assert(not (text:find("Gemini", 1, true) and text:find("no live data", 1, true)),
+    "logged-out Gemini rendered as no live data")
+end
+assert(geminiLoginRow, "logged-out Gemini did not render a login-needed row")
+assert(geminiAuthModule.refreshState().prefix == "",
+  "auth_needed lit the warning title prefix")
+
+local geminiErrorFixture = { schema = 1, vendors = {
+  claude = { available = false },
+  codex = { available = false },
+  gemini = { available = false, refresh_error = { cause = "agy startup timed out", at = os.time() - 60 } },
+}}
+assert(loadModule(geminiErrorFixture).refreshState().prefix == "⚠ ",
+  "a real Gemini refresh error did not warn in the title")
+
+local residueTasks = {}
+local residueModule = loadModule(function() return fixture end,
+  function(_, callback)
+    local task = { running = false, callback = callback }
+    function task:setEnvironment() return self end
+    function task:start()
+      self.running = true
+      table.insert(residueTasks, self)
       return true
     end
-  end
-  return false
-end
+    function task:isRunning() return self.running end
+    return task
+  end)
+residueModule.hardRefreshClaude("full")
+residueTasks[1].running = false
+residueTasks[1].callback(5, "", "collector failed")
+assert(residueModule.refreshState().prefix == "⚠ ", "explicit failure lacked runtime warning evidence")
+residueModule.menuItems()
+residueTasks[2].running = false
+residueTasks[2].callback(0, "", "")
+assert(residueModule.refreshState().prefix == "", "healthy passive collect left a runtime warning pinned")
 
--- A hardRefresh whose callback never fires and whose task reports isRunning()==false is
--- dead evidence, not an in-flight update: no updating row, no spinner.
-local pendingTask = {
+local deadTask = {
   isRunning = function() return false end,
   start = function() return true end,
   setEnvironment = function() end,
 }
-local deadRefresh = loadModule(fixture, function() return pendingTask end)
+local deadRefresh = loadModule(fixture, function() return deadTask end)
 deadRefresh.hardRefreshClaude("full")
-assert(not updatingShown(deadRefresh),
-  "dead hard-refresh task rendered a phantom updating indicator")
-assert(not deadRefresh.menubarSpinner(), "dead hard-refresh task lit the title spinner")
+assert(deadRefresh.refreshState().prefix == "", "dead registry task lit the title")
 
--- A verified-live task drives the updating row; past 30s it also drives the title
--- spinner; when the task ends both vanish on the spot.
 local liveState = { running = true }
 local liveTask = {
   isRunning = function() return liveState.running end,
@@ -316,21 +358,14 @@ local clock = { now = 1000 }
 local liveRefresh = loadModule(fixture, function() return liveTask end,
   function() return clock.now end)
 liveRefresh.hardRefreshClaude("full")
-assert(updatingShown(liveRefresh), "live hard refresh did not render the updating indicator")
-assert(not liveRefresh.menubarSpinner(), "title spinner appeared before 30s of in-flight")
-clock.now = 1031
-assert(liveRefresh.menubarSpinner(), "title spinner missing after 30s of live in-flight")
-assert(updatingShown(liveRefresh), "updating indicator vanished while task still live")
+assert(liveRefresh.refreshState().prefix == "⟳ ", "live hard refresh did not light the title")
 liveState.running = false
-assert(not liveRefresh.menubarSpinner(), "title spinner persisted after task ended")
-assert(not updatingShown(liveRefresh), "updating indicator persisted after task ended")
+assert(liveRefresh.refreshState().prefix == "", "ended task retained a busy title")
 
--- Watchdog: past the 360s budget even a still-"alive" handle is wedged and dropped
--- (dead-task drop is covered by deadRefresh above; here the warm task keeps claiming
--- alive). The collect re-read gets a dead task so it never masks the dropped entry.
+local agedStarts = 0
 local agedWarm = {
   isRunning = function() return true end,
-  start = function() return true end,
+  start = function() agedStarts = agedStarts + 1 return true end,
   setEnvironment = function() end,
 }
 local deadCollect = {
@@ -340,20 +375,21 @@ local deadCollect = {
 }
 local agedClock = { now = 5000 }
 local agedRefresh = loadModule(fixture, function(_, _, args)
-  if args and args[1] == "warm" then return agedWarm end
+  if args and args[1] == "--refresh-account" then return agedWarm end
   return deadCollect
 end, function() return agedClock.now end)
 agedRefresh.hardRefreshClaude("full")
 agedClock.now = 5031
-assert(agedRefresh.menubarSpinner(), "live 31s refresh did not light the spinner")
-assert(updatingShown(agedRefresh), "live refresh missing updating row")
+assert(agedRefresh.refreshState().prefix == "⟳ ", "live refresh missing busy title")
 agedClock.now = 5000 + 361
-assert(not agedRefresh.menubarSpinner(), "watchdog kept a >360s wedged entry spinning")
-assert(not updatingShown(agedRefresh), "watchdog left a >360s wedged entry in the updating row")
+assert(agedRefresh.refreshState().prefix == "⟳ ", "live over-budget task lost its busy state")
+agedRefresh.hardRefreshClaude("full")
+assert(agedStarts == 1, "live over-budget task allowed a duplicate spawn")
+agedWarm.isRunning = function() return false end
+assert(agedRefresh.refreshState().prefix == "", "dead over-budget task retained its busy state")
+agedRefresh.hardRefreshClaude("full")
+assert(agedStarts == 2, "dead over-budget task blocked a replacement spawn")
 
--- A callback whose alert decoration throws must still clear the flag (finish runs first).
--- The warm task keeps reporting alive, so a skipped finish() would leave the row pinned;
--- the collect re-read gets a dead task so only the hard-refresh entry drives the row.
 local throwWarm = {
   isRunning = function() return true end,
   start = function() return true end,
@@ -366,26 +402,102 @@ local throwCollect = {
 }
 local warmCallback
 local throwRefresh = loadModule(fixture, function(_, callback, args)
-  if args and args[1] == "warm" then
+  if args and args[1] == "--refresh-account" then
     warmCallback = callback
     return throwWarm
   end
   return throwCollect
 end, nil, function() error("alert boom") end)
 throwRefresh.hardRefreshClaude("full")
-assert(updatingShown(throwRefresh), "live throwing-callback refresh missing updating row")
-pcall(warmCallback, 1, "", "boom")
-assert(not updatingShown(throwRefresh), "thrown alert skipped finish() and pinned the row")
-assert(not throwRefresh.menubarSpinner(), "thrown alert skipped finish() and pinned the spinner")
+assert(throwRefresh.refreshState().prefix == "⟳ ", "live callback task missing busy title")
+pcall(warmCallback, 0, "", "")
+assert(throwRefresh.refreshState().prefix == "", "completion callback left the registry busy")
 
 local pendingModule = loadModule(fixture, function()
   return { isRunning = function() return true end, start = function() return true end,
     setEnvironment = function() end }
 end)
 pendingModule.hardRefreshClaude("full")
-local hardRefreshMenu = pendingModule.menuItems()
-assert(titleText(hardRefreshMenu[1]):find("updating", 1, true),
-  "in-flight hard refresh did not render the updating indicator")
+assert(pendingModule.refreshState().prefix == "⟳ ", "verified live task did not light the title")
+
+local startClock = { now = 7000 }
+local startRunning = true
+local startCount = 0
+local startTask = { isRunning = function() return startRunning end,
+  start = function() startCount = startCount + 1 return true end,
+  setEnvironment = function() end }
+local startModule = loadModule(fixture, function(_, _, args)
+  if args and args[1] == "--refresh" then return startTask end
+  return deadTask
+end, function() return startClock.now end)
+local startMenu = startModule.menuItems()
+for _, item in ipairs(startMenu) do
+  if titleText(item) == "Refresh + Start Windows" then item.fn() end
+end
+assert(startModule.refreshState().prefix == "⟳ ", "start-windows did not light the title")
+startClock.now = 7361
+assert(startModule.refreshState().prefix == "⟳ ", "360s watchdog truncated start-windows")
+startClock.now = 8201
+assert(startModule.refreshState().prefix == "⟳ ", "live over-budget start-windows task was dropped")
+for _, item in ipairs(startModule.menuItems()) do
+  if titleText(item) == "Refresh + Start Windows" then item.fn() end
+end
+assert(startCount == 1, "live over-budget start-windows task allowed a duplicate spawn")
+startRunning = false
+assert(startModule.refreshState().prefix == "", "dead over-budget start-windows task was retained")
+
+local automationState = { busy = true, warning = false }
+local automationTitles = {}
+local automationMenuBar = {}
+function automationMenuBar:setTitle(value) table.insert(automationTitles, value) end
+function automationMenuBar:setTooltip() end
+function automationMenuBar:setClickCallback() end
+function automationMenuBar:setMenu() end
+function automationMenuBar:returnToMenuBar() end
+function automationMenuBar:removeFromMenuBar() end
+local automationHs = {
+  alert = { show = function() end },
+  menubar = { new = function() return automationMenuBar end },
+  osascript = { applescript = function() return true, false end },
+  task = { new = function()
+    return { start = function() return true end, isRunning = function() return false end }
+  end },
+  timer = { doEvery = function() return {} end },
+}
+local automationLimits = {
+  refreshState = function() return automationState end,
+}
+local automationEnv = setmetatable({
+  hs = automationHs,
+  package = { path = package.path },
+  require = function(name)
+    if name == "llm-limits" then return automationLimits end
+    return require(name)
+  end,
+}, { __index = _G })
+automationEnv._G = automationEnv
+automationEnv.ClaudeContinue = {
+  getStatus = function()
+    return {
+      destinationText = "Claude App",
+      timers = {
+        app = { armed = true, firesAt = 1, firesAtText = "05:00" },
+        terminal = { armed = false },
+      },
+    }
+  end,
+}
+local automationChunk, automationError = loadfile(
+  root .. "/hammerspoon/config/automation_menu.lua", "t", automationEnv)
+assert(automationChunk, automationError)
+local automationModule = automationChunk()
+assert(automationTitles[#automationTitles] == "⟳ A 05:00", "busy prefix masked the resume timer title")
+automationState = { busy = false, warning = true }
+automationModule.refresh()
+assert(automationTitles[#automationTitles] == "⚠ A 05:00", "warning prefix masked the resume timer title")
+automationState = { busy = false, warning = false }
+automationModule.refresh()
+assert(automationTitles[#automationTitles] == "A 05:00", "plain resume timer title changed")
 
 local xmidNow = os.time({ year = 2027, month = 1, day = 15, hour = 12, min = 0, sec = 0 })
 local sameDay = xmidNow + 14400

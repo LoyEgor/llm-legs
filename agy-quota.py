@@ -40,6 +40,19 @@ ANSI = re.compile(
     re.S,
 )
 
+# agy renders this login screen within ~1s when logged out, so it is a cheap auth probe that
+# avoids burning the full startup timeout. "Select login method" is an unambiguous login-screen
+# string; "not signed in" is generic enough to appear in logged-in UI copy, so it only counts as
+# an auth signal on a word boundary within the first screenful of output, before the ready prompt.
+LOGIN_SCREEN_MARKER = "Select login method"
+NOT_SIGNED_IN = re.compile(r"\bnot signed in\b", re.IGNORECASE)
+LOGIN_PROBE_WINDOW = 4096
+AUTH_EXIT = 2
+
+
+class AuthRequired(Exception):
+    pass
+
 
 def clean_terminal(data: bytes) -> str:
     return ANSI.sub(b"", data).decode("utf-8", "replace").replace("\r", "\n")
@@ -171,6 +184,8 @@ def fetch() -> dict[str, Any]:
                     raise RuntimeError(
                         f"agy workdir is not trusted: {WORKDIR}; open agy there once manually"
                     )
+                if LOGIN_SCREEN_MARKER in screen or NOT_SIGNED_IN.search(screen[:LOGIN_PROBE_WINDOW]):
+                    raise AuthRequired("not signed in")
                 if "? for shortcuts" in screen:
                     break
         else:
@@ -207,6 +222,14 @@ def main() -> int:
     try:
         print(json.dumps(fetch(), ensure_ascii=False, separators=(",", ":")))
         return 0
+    except AuthRequired as exc:
+        print(
+            json.dumps(
+                {"auth_needed": True, "source": "agy-local-rpc", "detail": str(exc)},
+                separators=(",", ":"),
+            )
+        )
+        return AUTH_EXIT
     except Exception as exc:
         print(
             json.dumps({"error": str(exc), "source": "agy-local-rpc"}),

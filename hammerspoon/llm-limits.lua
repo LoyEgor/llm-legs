@@ -3,8 +3,7 @@ local M = {
   collectorPath = "/Volumes/Work/Projects/llm-legs/llm-limits.sh",
   claudebCmd = "claudeb",
   wallsLog = nil,
-  onRefreshStart = function() end,
-  onRefreshDone = function() end,
+  onRefreshStateChanged = function() end,
 }
 
 local grayColor = { red = 0.55, green = 0.55, blue = 0.55 }
@@ -215,62 +214,153 @@ local function newCollectorTask(callback, args)
   return task
 end
 
+local taskRegistry = {}
+local nextTaskId = 0
 local lastCollectEpoch = 0
-local collectOnOpenTask = nil
+local runtimeGlobalError = nil
 
-local function vendorRefreshFailures(limits)
-  local failures = {}
-  local vendors = limits and limits.vendors
-  if type(vendors) == "table" then
-    for _, name in ipairs({ "claude", "codex", "gemini" }) do
-      local vendor = vendors[name]
-      if type(vendor) == "table" and type(vendor.refresh_error) == "string"
-          and vendor.refresh_error ~= "" then
-        local detail = vendor.refresh_error:match("^%s*(.-)%s*$")
-        table.insert(failures, name .. " — " .. detail)
-      end
+local function errorState(value)
+  if type(value) == "table" and type(value.cause) == "string" then
+    return { cause = value.cause, at = tonumber(value.at) }
+  end
+  if type(value) == "string" and value ~= "" then
+    return { cause = value }
+  end
+  return nil
+end
+
+local function taskCause(stdOut, stdErr, exitCode, fallback)
+  local text = tostring(stdErr or "")
+  if text:match("^%s*$") then text = tostring(stdOut or "") end
+  local cause
+  for line in text:gmatch("[^\r\n]+") do
+    if not line:match("^%s*$") then cause = line:match("^%s*(.-)%s*$") end
+  end
+  return truncateText(cause or fallback or ("exit " .. tostring(exitCode)), 160)
+end
+
+local function taskLiveness(task)
+  if not task then return true, false end
+  local ok, running = pcall(task.isRunning, task)
+  return ok, ok and running == true
+end
+
+local function taskAlive(task)
+  local verified, running = taskLiveness(task)
+  return verified and running
+end
+
+local function purgeTasks()
+  local now = os.time()
+  for id, entry in pairs(taskRegistry) do
+    if now - entry.started > entry.budget then
+      local verified, running = taskLiveness(entry.task)
+      if verified and not running then taskRegistry[id] = nil end
     end
   end
-  return failures
 end
 
-local function recordRefreshOutcome(exitCode)
-  local failures = vendorRefreshFailures(readLlmLimits())
-  if exitCode ~= 0 and #failures == 0 then
-    table.insert(failures, "exit " .. tostring(exitCode))
-  end
-  return failures
+local function notifyRefreshState()
+  pcall(M.onRefreshStateChanged)
 end
 
-local function collectTaskRunning()
-  if not collectOnOpenTask then
+local function reserveTask(kind, budget, key)
+  nextTaskId = nextTaskId + 1
+  taskRegistry[nextTaskId] = {
+    kind = kind, started = os.time(), budget = budget, key = key,
+  }
+  return nextTaskId
+end
+
+local function finishTask(id, exitCode, stdOut, stdErr, fallback)
+  local entry = taskRegistry[id]
+  taskRegistry[id] = nil
+  local limits = readLlmLimits()
+  local cacheGlobalError = errorState(limits and limits.refresh_error)
+  if cacheGlobalError or (exitCode == 0 and limits) then
+    runtimeGlobalError = nil
+  elseif entry and entry.kind ~= "passive" and exitCode ~= 0 then
+    runtimeGlobalError = {
+      cause = taskCause(stdOut, stdErr, exitCode, fallback),
+      at = os.time(),
+    }
+  end
+  notifyRefreshState()
+end
+
+local function registryEntryForKey(key)
+  for id, entry in pairs(taskRegistry) do
+    if entry.key == key then
+      local verified, running = taskLiveness(entry.task)
+      if running or not verified then return entry end
+      taskRegistry[id] = nil
+    end
+  end
+  return nil
+end
+
+local function startTask(id, task, fallback)
+  local entry = taskRegistry[id]
+  if not entry or not task then
+    finishTask(id, 1, nil, nil, fallback or "task could not start")
     return false
   end
-  local ok, running = pcall(collectOnOpenTask.isRunning, collectOnOpenTask)
-  if not ok then
-    collectOnOpenTask = nil
+  entry.task = task
+  local ok, started = pcall(task.start, task)
+  if not ok or not started then
+    finishTask(id, 1, nil, nil, fallback or "task could not start")
     return false
   end
-  return running == true
+  notifyRefreshState()
+  return true
+end
+
+local function taskForKey(key)
+  purgeTasks()
+  return registryEntryForKey(key)
+end
+
+function M.refreshState()
+  purgeTasks()
+  local busy = false
+  for _, entry in pairs(taskRegistry) do
+    if entry.kind ~= "passive" and taskAlive(entry.task) then
+      busy = true
+      break
+    end
+  end
+  local limits, readError = readLlmLimits()
+  local globalError = errorState(limits and limits.refresh_error) or runtimeGlobalError
+  if not globalError and not limits and readError then
+    globalError = { cause = readError, at = os.time() }
+  end
+  local vendorErrors = {}
+  if limits and type(limits.vendors) == "table" then
+    for _, name in ipairs({ "claude", "codex", "gemini" }) do
+      local vendor = limits.vendors[name]
+      local err = errorState(type(vendor) == "table" and vendor.refresh_error or nil)
+      if err then vendorErrors[name] = err end
+    end
+  end
+  local warning = globalError ~= nil or next(vendorErrors) ~= nil
+  return {
+    busy = busy,
+    warning = warning,
+    prefix = busy and "⟳ " or (warning and "⚠ " or ""),
+    globalError = globalError,
+    vendorErrors = vendorErrors,
+  }
 end
 
 local function collectOnOpen()
   local now = os.time()
-  if collectTaskRunning() then
-    return
-  end
-  if now - lastCollectEpoch < 5 then
-    return
-  end
+  if taskForKey("passive") or now - lastCollectEpoch < 5 then return end
   lastCollectEpoch = now
-  local task = newCollectorTask(function()
-    readLlmLimits()
-    pcall(M.onRefreshDone, true)
+  local id = reserveTask("passive", 360, "passive")
+  local task = newCollectorTask(function(exitCode, stdOut, stdErr)
+    finishTask(id, exitCode, stdOut, stdErr)
   end, {})
-  collectOnOpenTask = task
-  if not task or not task:start() then
-    collectOnOpenTask = nil
-  end
+  startTask(id, task)
 end
 
 -- hs.task.new needs a launch path, not a PATH-resolved name; a bare command is taken from ~/.local/bin
@@ -284,31 +374,21 @@ local function resolveClaudeb()
 end
 
 local function runClaudeb(args, failMessage)
-  local ok = pcall(function()
-    pcall(M.onRefreshStart)
-    local task = hs.task.new(resolveClaudeb(), function(exitCode)
-      if exitCode == 0 then
-        -- Token-free re-read (no --refresh): recompute current/enabled state from the changed store.
-        local reread = newCollectorTask(function()
-          pcall(M.onRefreshDone, true)
-        end, {})
-        if not reread or not reread:start() then
-          pcall(M.onRefreshDone, true)
-        end
-      else
-        pcall(M.onRefreshDone, false, failMessage)
-      end
-    end, args)
-    if task then
-      task:setEnvironment(baseEnvironment())
+  local key = "account-action:" .. table.concat(args, "\0")
+  if taskForKey(key) then return end
+  local id = reserveTask("account-action", 360, key)
+  local task = hs.task.new(resolveClaudeb(), function(exitCode, stdOut, stdErr)
+    if exitCode ~= 0 then
+      finishTask(id, exitCode, stdOut, stdErr, failMessage)
+      return
     end
-    if not task or not task:start() then
-      error("could not start claudeb")
-    end
-  end)
-  if not ok then
-    pcall(M.onRefreshDone, false, failMessage)
-  end
+    local reread = newCollectorTask(function(collectExit, collectOut, collectErr)
+      finishTask(id, collectExit, collectOut, collectErr, "collect failed")
+    end, {})
+    startTask(id, reread, "collect could not start")
+  end, args)
+  if task then task:setEnvironment(baseEnvironment()) end
+  startTask(id, task, failMessage)
 end
 
 function M.switchAccount(name)
@@ -351,144 +431,35 @@ function M.toggleAccount(name, currentlyEnabled)
   runClaudeb({ currentlyEnabled and "disable" or "enable", name }, "toggle failed")
 end
 
-local function taskCause(stdOut, stdErr, exitCode)
-  local text = tostring(stdErr or "")
-  if text:match("^%s*$") then text = tostring(stdOut or "") end
-  local cause
-  for line in text:gmatch("[^\r\n]+") do
-    if not line:match("^%s*$") then cause = line:match("^%s*(.-)%s*$") end
-  end
-  return truncateText(cause or ("exit " .. tostring(exitCode)), 160)
+local function refreshData(args, kind, budget, key)
+  if taskForKey(key) then return end
+  local id = reserveTask(kind, budget, key)
+  local task = newCollectorTask(function(exitCode, stdOut, stdErr)
+    finishTask(id, exitCode, stdOut, stdErr)
+  end, args)
+  startTask(id, task, "collector could not start")
 end
 
-local hardRefreshInFlight = {}
-
--- Liveness is the only truth here: a flag left set by a lost hs.task callback must
--- never render as updating. Every entry stores its live task handle(s), and both the
--- updating row and the title spinner ask the OS whether that task still runs.
-local function taskAlive(task)
-  if not task then return false end
-  local ok, running = pcall(task.isRunning, task)
-  if not ok then return false end
-  return running == true
+local function hardRefresh(target)
+  refreshData({ "--refresh-account", target }, "hard-refresh", 360, "hard:" .. target)
 end
 
--- A hardRefresh chains a warm/refresh task, then a collector re-read; either may be
--- the live phase, so an entry survives while either handle runs. 360s is the outer
--- budget (warm ≤~200s, collector ≤300s): past it, a still-"alive" handle is wedged.
-local function purgeStaleRefreshes(now)
-  for key, entry in pairs(hardRefreshInFlight) do
-    local alive = taskAlive(entry.task) or taskAlive(entry.reread)
-    local aged = entry.started and (now - entry.started) > 360
-    if not alive or aged then
-      hardRefreshInFlight[key] = nil
-    end
-  end
-end
-
-local function hardRefresh(name, command, args)
-  local key = command .. "\0" .. table.concat(args, "\0")
-  local now = os.time()
-  purgeStaleRefreshes(now)
-  if hardRefreshInFlight[key] then
-    hs.alert.show("Already refreshing: " .. name)
-    return
-  end
-  local entry = { started = now }
-  hardRefreshInFlight[key] = entry
-
-  local function finish(success, cause)
-    hardRefreshInFlight[key] = nil
-    pcall(M.onRefreshDone, success, cause)
-  end
-
-  -- Clear the flag before decorating: a throw inside taskCause or hs.alert.show can
-  -- never skip finish() and pin the updating row forever.
-  local function fail(stdOut, stdErr, exitCode, fallback)
-    local ok, cause = pcall(taskCause, stdOut, stdErr, exitCode)
-    if not ok then cause = fallback or ("exit " .. tostring(exitCode)) end
-    finish(false, cause)
-    pcall(function()
-      hs.alert.show("Hard refresh failed: " .. name .. " — " .. tostring(cause))
-    end)
-  end
-
-  local ok = pcall(function()
-    pcall(M.onRefreshStart)
-    local task = hs.task.new(command, function(exitCode, stdOut, stdErr)
-      if exitCode ~= 0 then
-        fail(stdOut, stdErr, exitCode)
-        return
-      end
-      local reread = newCollectorTask(function(collectExit, collectOut, collectErr)
-        if collectExit == 0 then
-          finish(true)
-        else
-          fail(collectOut, collectErr, collectExit)
-        end
-      end, {})
-      if reread and reread:start() then
-        entry.reread = reread
-      else
-        finish(false, "collect could not start")
-        pcall(function()
-          hs.alert.show("Hard refresh failed: " .. name .. " — collect could not start")
-        end)
-      end
-    end, args)
-    if task then task:setEnvironment(baseEnvironment()) end
-    if not task or not task:start() then error("task could not start") end
-    entry.task = task
-  end)
-  if not ok then
-    finish(false, "task could not start")
-    pcall(function()
-      hs.alert.show("Hard refresh failed: " .. name .. " — task could not start")
-    end)
-  end
-end
-
-function M.hardRefreshClaude(name)
-  hardRefresh(name, resolveClaudeb(), { "warm", name })
-end
-
-function M.hardRefreshCodex(name)
-  hardRefresh(name, M.collectorPath, { "--refresh-account", "codex/" .. name })
-end
-
-function M.hardRefreshGemini()
-  hardRefresh("Gemini", M.collectorPath, { "--refresh-account", "gemini" })
-end
-
-local function refreshData(args)
-  local ok, err = pcall(function()
-    local task = newCollectorTask(function(exitCode, _, stdErr)
-      local failures = recordRefreshOutcome(exitCode)
-      local message = stdErr and stdErr:match("^%s*(.-)%s*$") or ""
-      pcall(M.onRefreshDone, exitCode == 0 and #failures == 0,
-        message ~= "" and message or nil, failures)
-    end, args)
-
-    pcall(M.onRefreshStart)
-    if not task or not task:start() then
-      error("could not start collector")
-    end
-  end)
-
-  if not ok then
-    local failures = recordRefreshOutcome(1)
-    pcall(M.onRefreshDone, false, tostring(err), failures)
-  end
-end
+function M.hardRefreshClaude(name) hardRefresh("claude/" .. name) end
+function M.hardRefreshCodex(name) hardRefresh("codex/" .. name) end
+function M.hardRefreshGemini() hardRefresh("gemini") end
 
 local function refreshItems(menu)
   table.insert(menu, {
     title = "Refresh",
-    fn = function() refreshData({ "--refresh" }) end,
+    disabled = M.refreshState().busy,
+    fn = function() refreshData({ "--refresh" }, "refresh", 360, "refresh") end,
   })
   table.insert(menu, {
     title = "Refresh + Start Windows",
-    fn = function() refreshData({ "--refresh", "--start-windows" }) end,
+    disabled = M.refreshState().busy,
+    fn = function()
+      refreshData({ "--refresh", "--start-windows" }, "start-windows", 1200, "start-windows")
+    end,
   })
 end
 
@@ -515,38 +486,29 @@ local function reportItem(menu)
   table.insert(menu, item)
 end
 
-local function isInFlight()
-  if collectTaskRunning() then
-    return true
-  end
-  purgeStaleRefreshes(os.time())
-  for _ in pairs(hardRefreshInFlight) do
-    return true
-  end
-  return false
+local function refreshErrorAge(at)
+  if type(at) ~= "number" then return "unknown" end
+  local seconds = math.max(0, os.time() - at)
+  if seconds < 60 then return "now" end
+  if seconds < 3600 then return string.format("%dm", math.floor(seconds / 60)) end
+  if seconds < 86400 then return string.format("%dh", math.floor(seconds / 3600)) end
+  return string.format("%dd", math.floor(seconds / 86400))
 end
 
--- True only while a verified-live hard refresh has run past 30s, so the caller's title
--- timer can prefix "⟳ " for the multi-minute warm/refresh ops. Same liveness gate as the
--- row (plus the 360s watchdog), so the title can never show ⟳ with no live task. The
--- short menu-open re-read is excluded; the explicit Refresh path shows "…" on its own.
-function M.menubarSpinner()
-  local now = os.time()
-  purgeStaleRefreshes(now)
-  for _, entry in pairs(hardRefreshInFlight) do
-    if entry.started and (now - entry.started) > 30 then
-      return true
-    end
-  end
-  return false
+local function refreshErrorTitle(err)
+  return truncateText("refresh failed " .. err.cause .. " · " .. refreshErrorAge(err.at), 88)
 end
 
 function M.menuItems()
   collectOnOpen()
 
   local menu = {}
-  if isInFlight() then
-    table.insert(menu, { title = infoTitle("⟳ updating…", false, true), disabled = true })
+  local state = M.refreshState()
+  if state.globalError then
+    table.insert(menu, {
+      title = infoTitle(refreshErrorTitle(state.globalError), true),
+      disabled = true,
+    })
   end
   local pendingOk, pending = pcall(function()
     return _G.ClaudeChatSwitch and _G.ClaudeChatSwitch.pending
@@ -570,8 +532,10 @@ function M.menuItems()
     for _, entry in ipairs(vendors) do
       local vendor = limits.vendors[entry.key]
       if type(vendor) ~= "table" or vendor.available ~= true then
+        local authNeeded = type(vendor) == "table" and vendor.auth_needed == true
         local unavailableRow = {
-          title = infoTitle(string.format("%-6s  no live data", entry.label)),
+          title = authNeeded and loginNeededTitle(entry.label)
+            or infoTitle(string.format("%-6s  no live data", entry.label)),
           disabled = true,
         }
         if entry.key == "gemini" then
@@ -691,17 +655,16 @@ function M.menuItems()
           table.insert(menu, { title = "-" })
         end
       end
+      local refreshError = errorState(type(vendor) == "table" and vendor.refresh_error or nil)
+      if refreshError then
+        table.insert(menu, {
+          title = infoTitle(refreshErrorTitle(refreshError), false, true),
+          disabled = true,
+        })
+      end
     end
 
     table.insert(menu, { title = "-" })
-    local failures = vendorRefreshFailures(limits)
-    if #failures > 0 then
-      table.insert(menu, {
-        title = infoTitle(truncateText("refresh failed: "
-          .. table.concat(failures, ", "), 88), true),
-        disabled = true,
-      })
-    end
     refreshItems(menu)
     reportItem(menu)
   else

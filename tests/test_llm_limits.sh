@@ -51,6 +51,49 @@ jq -e '.vendors.gemini.available == false and .vendors.gemini.status == "no quot
 jq -e . "$CACHE" >/dev/null || fail "cache was not valid JSON"
 compgen -G "$CACHE.tmp.*" >/dev/null && fail "atomic-write temporary file remains"
 
+CORRUPT_BIN="$WORK/corrupt-bin"
+mkdir -p "$CORRUPT_BIN"
+cat >"$CORRUPT_BIN/jq" <<'EOF'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  case "$arg" in
+    *'{schema:1,fetched_at:'*) printf '%s\n' '{broken'; exit 0 ;;
+  esac
+done
+exec /usr/bin/jq "$@"
+EOF
+chmod +x "$CORRUPT_BIN/jq"
+cache_before=$(shasum -a 256 "$CACHE" | awk '{print $1}')
+PATH="$CORRUPT_BIN:$PATH" HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" \
+  /bin/bash "$SCRIPT" --json >/dev/null 2>"$WORK/corrupt-result.err"
+rc=$?
+[ "$rc" -eq 5 ] || fail "corrupt pre-write JSON: expected exit 5, got $rc"
+[ "$(shasum -a 256 "$CACHE" | awk '{print $1}')" = "$cache_before" ] \
+  || fail "corrupt pre-write JSON replaced the valid cache"
+grep -q 'refusing to replace cache with invalid JSON' "$WORK/corrupt-result.err" \
+  || fail "corrupt pre-write JSON was not reported honestly"
+compgen -G "$CACHE.tmp.*" >/dev/null && fail "corrupt pre-write JSON left a temporary file"
+rm -f "$CORRUPT_BIN/jq"
+
+cat >"$CORRUPT_BIN/mktemp" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  "$LLM_TEST_CACHE.tmp."*) exit 1 ;;
+esac
+exec /usr/bin/mktemp "$@"
+EOF
+chmod +x "$CORRUPT_BIN/mktemp"
+cache_before=$(shasum -a 256 "$CACHE" | awk '{print $1}')
+LLM_TEST_CACHE="$CACHE" PATH="$CORRUPT_BIN:$PATH" HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" \
+  /bin/bash "$SCRIPT" --json >/dev/null 2>"$WORK/mktemp-failure.err"
+rc=$?
+[ "$rc" -eq 5 ] || fail "cache mktemp failure: expected exit 5, got $rc"
+[ "$(shasum -a 256 "$CACHE" | awk '{print $1}')" = "$cache_before" ] \
+  || fail "cache mktemp failure changed the valid cache"
+grep -q 'cache temp creation failed' "$WORK/mktemp-failure.err" \
+  || fail "cache mktemp failure was not reported honestly"
+rm -f "$CORRUPT_BIN/mktemp"
+
 # Gemini refresh: the helper's raw remainingFraction snapshot is cached and normalized to the
 # same used_pct/reset schema as Claude and Codex. A normal collection reuses it without a call.
 GEMINI_HELPER="$WORK/fake-agy-quota"
@@ -83,14 +126,56 @@ jq -e '.vendors.gemini.available == true and .vendors.gemini.weekly.used_pct == 
   <<<"$gemini_cached" >/dev/null || fail "Gemini cached snapshot missing"
 [ ! -e "$GEMINI_SENTINEL" ] || fail "default collection invoked Gemini helper"
 gemini_asof_before=$(jq -r '.vendors.gemini.as_of' <<<"$gemini_cached")
+gemini_cache_saved=$(cat "$GEMINI_CACHE")
+rm -f "$GEMINI_CACHE"
 gemini_failed=$(LLM_LIMITS_GEMINI_REFRESH=1 LLM_LIMITS_GEMINI_CMD=/usr/bin/false \
   LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" \
   bash "$SCRIPT" --refresh-account gemini 2>/dev/null)
 rc=$?
-[ "$rc" -eq 4 ] || fail "failed Gemini account refresh: expected exit 4, got $rc"
+[ "$rc" -eq 0 ] || fail "failed Gemini account refresh: expected partial exit 0, got $rc"
 jq -e --arg asof "$gemini_asof_before" \
-  '.vendors.gemini.as_of == $asof and .vendors.gemini.refresh_error == "live query failed"' \
+  '.vendors.gemini.as_of == $asof and .vendors.gemini.refresh_error.cause == "live query failed" and
+   (.vendors.gemini.refresh_error.at | type) == "number"' \
   <<<"$gemini_failed" >/dev/null || fail "failed Gemini account refresh advanced real-data as_of or hid its error"
+printf '%s\n' "$gemini_cache_saved" >"$GEMINI_CACHE"
+
+# Logged-out Gemini is a vendor STATE (login needed), not a refresh failure: auth_needed is set,
+# no refresh_error, the prior snapshot's buckets stay in the helper cache for a clean recovery, and
+# the row renders "login needed" in table and plain. Exit stays 0 (other vendors are available).
+GEMINI_AUTH_HELPER="$WORK/fake-agy-auth"
+cat >"$GEMINI_AUTH_HELPER" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '{"auth_needed":true,"source":"agy-local-rpc","detail":"not signed in"}'
+exit 2
+EOF
+chmod +x "$GEMINI_AUTH_HELPER"
+gemini_auth=$(LLM_LIMITS_GEMINI_REFRESH=1 LLM_LIMITS_GEMINI_CMD="$GEMINI_AUTH_HELPER" \
+  LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" \
+  /bin/bash "$SCRIPT" --refresh-account gemini --json)
+rc=$?
+[ "$rc" -eq 0 ] || fail "logged-out Gemini refresh: expected exit 0, got $rc"
+jq -e '.vendors.gemini.auth_needed == true and .vendors.gemini.available == false and
+  .vendors.gemini.status == "login needed" and .vendors.gemini.usable_now == false and
+  (.vendors.gemini | has("refresh_error") | not)' <<<"$gemini_auth" >/dev/null \
+  || fail "logged-out Gemini did not classify as auth-needed without a refresh error"
+jq -e '.auth_needed == true and (.groups[0].buckets | length) == 2' "$GEMINI_CACHE" >/dev/null \
+  || fail "logged-out Gemini refresh dropped the prior snapshot buckets"
+gemini_auth_table=$(LLM_LIMITS_GEMINI_REFRESH=0 LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
+  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" /bin/bash "$SCRIPT" --table)
+awk 'NR > 1 && $1 == "gemini"' <<<"$gemini_auth_table" | grep -q 'login needed$' \
+  || fail "logged-out Gemini table STATUS missing login needed"
+gemini_auth_plain=$(LLM_LIMITS_GEMINI_REFRESH=0 LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
+  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" /bin/bash "$SCRIPT" --plain)
+grep -q '^gemini: .* | status login needed' <<<"$gemini_auth_plain" \
+  || fail "logged-out Gemini plain STATUS missing login needed"
+gemini_recovered=$(LLM_LIMITS_GEMINI_REFRESH=1 LLM_LIMITS_GEMINI_CMD="$GEMINI_HELPER" \
+  LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" \
+  /bin/bash "$SCRIPT" --refresh-account gemini --json)
+jq -e '.vendors.gemini.available == true and (.vendors.gemini | has("auth_needed") | not) and
+  (.vendors.gemini | has("refresh_error") | not) and .vendors.gemini.weekly.used_pct == 25' \
+  <<<"$gemini_recovered" >/dev/null || fail "successful Gemini collection did not clear auth_needed"
+rm -f "$GEMINI_SENTINEL"
+printf '%s\n' "$gemini_cache_saved" >"$GEMINI_CACHE"
 
 # Regression: statusline-last.json goes stale while cache-rl keeps updating —
 # the fresher cache-rl must win even though last.json is present and valid.
@@ -127,7 +212,8 @@ HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CLAUDEB_CMD="$WORK/missin
   LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --refresh >/dev/null 2>&1
 rc=$?
 [ "$rc" -eq 4 ] || fail "missing claudeb refresh: expected exit 4, got $rc"
-jq -e '.vendors.claude.refresh_error == "claudeb not found"' "$CACHE" >/dev/null \
+jq -e '.vendors.claude.refresh_error.cause == "claudeb not found" and
+  .refresh_error.cause == "all vendor refreshes failed"' "$CACHE" >/dev/null \
   || fail "missing claudeb refresh did not persist refresh_error"
 
 cat >"$WORK/slow-claudeb" <<'EOF'
@@ -139,7 +225,7 @@ HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CLAUDEB_CMD="$WORK/slow-c
   LLM_LIMITS_CLAUDE_REFRESH_TIMEOUT=1 LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --refresh >/dev/null 2>&1
 rc=$?
 [ "$rc" -eq 4 ] || fail "timed-out claudeb refresh: expected exit 4, got $rc"
-jq -e '.vendors.claude.refresh_error == "timed out during free refresh + heal (1s)"' "$CACHE" >/dev/null \
+jq -e '.vendors.claude.refresh_error.cause == "timed out during free refresh + heal (1s)"' "$CACHE" >/dev/null \
   || fail "timed-out claudeb refresh did not persist its reason"
 
 DAEMON_PORT_FILE="$WORK/claudebd-fixture.port"
@@ -335,7 +421,14 @@ jq -e '[.vendors.claude.accounts[] | select(.account == "authonly")][0]
   | .five_hour.used_pct == null and .five_hour.effective_pct == null and .five_hour.stale == true and .auth.status == "expired"' <<<"$fresh_json" >/dev/null \
   || fail "auth-only snapshot must stay visible with unknown values"
 printf 'authonly\n' >"$CLAUDEB_FRESH/.claudeb-state"
-auth_current=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_FRESH" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "auth-only current collection failed"
+cat >"$WORK/success-claudeb" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$WORK/success-claudeb"
+auth_current=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_FRESH" \
+  LLM_LIMITS_CLAUDEB_CMD="$WORK/success-claudeb" LLM_LIMITS_CACHE="$CACHE" \
+  bash "$SCRIPT" --refresh-account claude/authonly) || fail "auth-only current collection failed"
 jq -e '.vendors.claude.current_account == "authonly" and
   .vendors.claude.accounts[0].five_hour.used_pct == null and
   (.vendors.claude.five_hour.used_pct | type) == "number"' <<<"$auth_current" >/dev/null \
@@ -349,8 +442,16 @@ fresh_plain=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_FRESH" LLM_LIMITS_CACHE
 grep -q 'claude/aged\*: 5h 7%~ @ .* | wk 57% @ ' <<<"$fresh_plain" || fail "plain percentages must round to integers"
 grep -q 'claude/authonly: 5h -~ @ - | wk - @ - | fb - @ -' <<<"$fresh_plain" || fail "auth-only account missing from plain output"
 grep '^claude/authonly:' <<<"$fresh_plain" | grep -q '| status login needed$' || fail "Claude non-ok auth plain status missing"
-jq -e '(.vendors.claude.refresh_error | contains("authonly") and endswith(" auth"))' <<<"$auth_current" >/dev/null \
+jq -e '(.vendors.claude.refresh_error.cause | contains("authonly") and endswith(" auth")) and
+  (.vendors.claude.refresh_error.at | type) == "number"' <<<"$auth_current" >/dev/null \
   || fail "Claude auth failure was not exposed as vendor refresh_error"
+auth_partial=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_FRESH" \
+  LLM_LIMITS_CLAUDEB_CMD="$WORK/success-claudeb" LLM_LIMITS_CODEX_REFRESH=0 \
+  LLM_LIMITS_GEMINI_REFRESH=0 LLM_LIMITS_CACHE="$CACHE" \
+  /bin/bash "$SCRIPT" --refresh) || fail "partial Claude account failure failed the whole run"
+jq -e '(. | has("refresh_error") | not) and
+  (.vendors.claude.refresh_error.cause | contains("authonly"))' <<<"$auth_partial" >/dev/null \
+  || fail "partial Claude account failure lacked vendor-only error semantics"
 
 # refresh_error is assembled from post-heal snapshot auth: a still-broken account is
 # named with its cause; a healthy (successfully healed) account never appears.
@@ -361,8 +462,10 @@ printf '{"five_hour":{"used_percentage":4,"resets_at":%s,"as_of":%s,"origin":"us
   "$((now + 5000))" "$now" "$now" >"$CLAUDEB_HEAL/limits/healed.json"
 printf '{"five_hour":{"used_percentage":9,"resets_at":%s,"as_of":%s,"origin":"usage"},"auth":{"status":"expired","checked_at":%s,"cause":"warm failed, token refresh backoff 15m"}}\n' \
   "$((now + 5000))" "$now" "$now" >"$CLAUDEB_HEAL/limits/stuck.json"
-heal_json=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_HEAL" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "heal-contract collection failed"
-jq -e '.vendors.claude.refresh_error == "stuck auth (warm failed, token refresh backoff 15m)"' <<<"$heal_json" >/dev/null \
+heal_json=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_HEAL" \
+  LLM_LIMITS_CLAUDEB_CMD="$WORK/success-claudeb" LLM_LIMITS_CACHE="$CACHE" \
+  bash "$SCRIPT" --refresh-account claude/healed) || fail "heal-contract collection failed"
+jq -e '.vendors.claude.refresh_error.cause == "stuck auth (warm failed, token refresh backoff 15m)"' <<<"$heal_json" >/dev/null \
   || fail "refresh_error must name only the still-broken account and carry its cause"
 
 CLAUDEB_BIN="$ROOT/bin/claudeb"
@@ -576,13 +679,15 @@ awk '$1 == "codex" {print}' <<<"$weekly_only_table" | grep -Eq '^codex +- +0%' \
 codex_restored=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" \
   LLM_LIMITS_CODEX_REFRESH=1 LLM_LIMITS_CODEX_QUOTA_CMD="$WORK/fake-codex-quota" LLM_LIMITS_CODEX_CACHE="$CODEX_CACHE" \
   bash "$SCRIPT" --refresh --no-write 2>/dev/null) || fail "codex fixture restore failed"
-refresh_failed=$(LLM_LIMITS_CODEX_REFRESH=1 LLM_LIMITS_CODEX_QUOTA_CMD=/usr/bin/false LLM_LIMITS_CODEX_CACHE="$CODEX_CACHE" \
+refresh_failed=$(CLAUDEB_SENTINEL="$SENTINEL" LLM_LIMITS_CODEX_REFRESH=1 LLM_LIMITS_CODEX_QUOTA_CMD=/usr/bin/false LLM_LIMITS_CODEX_CACHE="$CODEX_CACHE" \
   PATH="$FAKE_BIN:$PATH" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --refresh 2>/dev/null)
 rc=$?
-# Exit-code honesty: a --refresh that hit a real vendor error must never report a clean exit 0.
-[ "$rc" -eq 4 ] || fail "refresh with a live codex failure: expected exit 4, got $rc"
+[ "$rc" -eq 0 ] || fail "refresh with one vendor failure: expected partial exit 0, got $rc"
 jq -e --arg asof "$(jq -r '.vendors.codex.as_of' <<<"$codex_restored")" \
-  '.vendors.codex.refresh_error == "live query failed" and .vendors.codex.five_hour.used_pct == 31 and .vendors.codex.as_of == $asof' \
+  '.vendors.codex.refresh_error.cause == "live query failed" and
+   (.vendors.codex.refresh_error.at | type) == "number" and
+   .vendors.codex.five_hour.used_pct == 31 and .vendors.codex.as_of == $asof and
+   (.refresh_error | not)' \
   <<<"$refresh_failed" >/dev/null || fail "Codex refresh failure was not machine-readable or stale data was lost"
 rm -f "$SENTINEL" "$CODEX_QUOTA_SENTINEL"
 cached_codex=$(CLAUDEB_SENTINEL="$SENTINEL" CODEX_SENTINEL="$CODEX_SENTINEL" CODEX_QUOTA_SENTINEL="$CODEX_QUOTA_SENTINEL" \
@@ -592,6 +697,30 @@ cached_codex=$(CLAUDEB_SENTINEL="$SENTINEL" CODEX_SENTINEL="$CODEX_SENTINEL" COD
 [ ! -e "$CODEX_QUOTA_SENTINEL" ] || fail "default collection invoked the codex quota helper"
 jq -e '.vendors.codex.five_hour.used_pct == 31 and .vendors.codex.five_hour.origin == "usage"' <<<"$cached_codex" >/dev/null \
   || fail "passive run did not reuse the codex quota cache"
+jq -e '.vendors.codex.refresh_error.cause == "live query failed"' <<<"$cached_codex" >/dev/null \
+  || fail "passive run cleared a standing vendor refresh error"
+
+all_failed=$(LLM_LIMITS_GEMINI_REFRESH=1 LLM_LIMITS_GEMINI_CMD=/usr/bin/false \
+  LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" LLM_LIMITS_CODEX_REFRESH=1 \
+  LLM_LIMITS_CODEX_QUOTA_CMD=/usr/bin/false LLM_LIMITS_CODEX_CACHE="$CODEX_CACHE" \
+  LLM_LIMITS_CLAUDEB_CMD=/usr/bin/false HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" \
+  LLM_LIMITS_CACHE="$CACHE" /bin/bash "$SCRIPT" --refresh 2>/dev/null)
+rc=$?
+[ "$rc" -eq 4 ] || fail "all-vendor refresh failure: expected exit 4, got $rc"
+jq -e '
+  .refresh_error.cause == "all vendor refreshes failed" and
+  all(.vendors[]; (.refresh_error.cause | type) == "string" and (.refresh_error.at | type) == "number") and
+  .vendors.codex.five_hour.used_pct == 31 and .vendors.gemini.five_hour.used_pct == 1' \
+  <<<"$all_failed" >/dev/null || fail "all-vendor failure lost structured errors or old buckets"
+
+restored_after_failure=$(CLAUDEB_SENTINEL="$SENTINEL" CODEX_QUOTA_SENTINEL="$CODEX_QUOTA_SENTINEL" \
+  GEMINI_SENTINEL="$GEMINI_SENTINEL" \
+  LLM_LIMITS_GEMINI_REFRESH=1 LLM_LIMITS_GEMINI_CMD="$GEMINI_HELPER" LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
+  LLM_LIMITS_CODEX_REFRESH=1 LLM_LIMITS_CODEX_QUOTA_CMD="$WORK/fake-codex-quota" LLM_LIMITS_CODEX_CACHE="$CODEX_CACHE" \
+  PATH="$FAKE_BIN:$PATH" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" \
+  /bin/bash "$SCRIPT" --refresh) || fail "successful refresh did not clear standing errors"
+jq -e '(. | has("refresh_error") | not) and all(.vendors[]; has("refresh_error") | not)' \
+  <<<"$restored_after_failure" >/dev/null || fail "successful vendor refresh did not clear standing errors"
 
 CODEX_ACCOUNTS_HOME="$WORK/codex-accounts-home"
 CODEX_ACCOUNTS_CACHE="$WORK/codex-accounts.json"
@@ -821,6 +950,7 @@ else
 fi
 EOF
 chmod +x "$FAKE_AGY" "$WORK/fake-gemini-quota"
+rm -f "$GEMINI_SENTINEL"
 gemini_start=$(GEMINI_SENTINEL="$GEMINI_SENTINEL" GEMINI_STATE="$GEMINI_STATE" GEMINI_START_SENTINEL="$GEMINI_START_SENTINEL" \
   CLAUDEB_SENTINEL="$SENTINEL" CODEX_SENTINEL="$CODEX_SENTINEL" \
   LLM_LIMITS_GEMINI_REFRESH=1 LLM_LIMITS_GEMINI_CMD="$WORK/fake-gemini-quota" LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE2" \
@@ -1037,6 +1167,10 @@ mkdir -p "$EMPTY"
 HOME="$EMPTY" bash "$SCRIPT" --no-write >/dev/null 2>&1
 rc=$?
 [ "$rc" -eq 3 ] || fail "all-missing case: expected exit 3, got $rc"
+missing_json=$(HOME="$EMPTY" bash "$SCRIPT" --no-write 2>/dev/null)
+jq -e '.refresh_error.cause == "no vendor data available" and
+  (.refresh_error.at | type) == "number"' <<<"$missing_json" >/dev/null \
+  || fail "all-missing case lacked a structured global error"
 
 hs_bounded() {
   python3 - "$@" <<'PY'

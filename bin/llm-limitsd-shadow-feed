@@ -161,7 +161,17 @@ def build_observations(cache):
                 _auth(obs, unknown, vendor, name, acc, acc_at)
         else:
             # Accountless vendor (gemini): usage lives at vendor level, no accounts array.
-            _windows(obs, vendor, ACCOUNTLESS, vdata, to_epoch(vdata.get("as_of")) or fallback)
+            v_at = to_epoch(vdata.get("as_of")) or fallback
+            if vdata.get("auth_needed") is True:
+                _auth(obs, unknown, vendor, ACCOUNTLESS, vdata, v_at)
+            else:
+                _windows(obs, vendor, ACCOUNTLESS, vdata, v_at)
+                # A successful vendor RPC (buckets collected) is affirmative evidence the auth
+                # works; without it the newest verdict stays needs_relogin forever after a
+                # re-login, so mirror it as ok exactly like claude's evidenced auth.status=ok.
+                if any(isinstance(vdata.get(w), dict) for w in WINDOWS):
+                    obs.append((vendor, ACCOUNTLESS, "auth", v_at,
+                                {"verdict": "ok", "evidence": "affirmative"}))
     return obs, unknown
 
 

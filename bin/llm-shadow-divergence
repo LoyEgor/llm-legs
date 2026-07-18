@@ -1,0 +1,198 @@
+#!/usr/bin/env python3
+
+import argparse
+import datetime
+import json
+import os
+import shutil
+import subprocess
+import sys
+
+
+WINDOWS = ("five_hour", "weekly", "fable")
+VALUES = ("used_pct", "resets_at")
+FEEDER_LABEL = "com.llm-limitsd-shadow-feed"
+
+
+def feeder_job_loaded():
+    # A deliberately unloaded feeder (trial disabled) leaves a stale shadow file; that is not a
+    # stall, so probe launchctl before alerting. Any probe failure -> assume loaded, never mute a
+    # real stall on an inability to check.
+    launchctl = shutil.which("launchctl") or "/bin/launchctl"
+    try:
+        result = subprocess.run(
+            [launchctl, "print", "gui/%d/%s" % (os.getuid(), FEEDER_LABEL)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return result.returncode == 0
+
+
+def load_json(path):
+    with open(path) as handle:
+        data = json.load(handle)
+    if not isinstance(data, dict):
+        raise ValueError("%s is not a JSON object" % path)
+    return data
+
+
+def to_epoch(value):
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if text.lstrip("-").isdigit():
+        return int(text)
+    try:
+        return int(datetime.datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp())
+    except ValueError:
+        return None
+
+
+def account_map(vendor):
+    accounts = vendor.get("accounts")
+    if not isinstance(accounts, list):
+        return {}
+    return {
+        account["account"]: account
+        for account in accounts
+        if isinstance(account, dict) and isinstance(account.get("account"), str)
+    }
+
+
+def compare_bucket(real_holder, shadow_holder, base, findings):
+    for window in WINDOWS:
+        real_bucket = real_holder.get(window)
+        if not isinstance(real_bucket, dict):
+            continue
+        shadow_bucket = shadow_holder.get(window)
+        if not isinstance(shadow_bucket, dict):
+            findings.append("%s.%s" % (base, window))
+            continue
+        for value in VALUES:
+            if value not in shadow_bucket or real_bucket.get(value) != shadow_bucket.get(value):
+                findings.append("%s.%s.%s" % (base, window, value))
+
+
+def compare_values(real, shadow):
+    findings = []
+    real_vendors = real.get("vendors")
+    shadow_vendors = shadow.get("vendors")
+    if not isinstance(real_vendors, dict):
+        raise ValueError("real cache has no vendors object")
+    if not isinstance(shadow_vendors, dict):
+        raise ValueError("shadow projection has no vendors object")
+
+    for vendor_name, real_vendor in real_vendors.items():
+        if not isinstance(real_vendor, dict):
+            continue
+        shadow_vendor = shadow_vendors.get(vendor_name)
+        if not isinstance(shadow_vendor, dict):
+            findings.append("vendors.%s" % vendor_name)
+            continue
+        vendor_base = "vendors.%s" % vendor_name
+        compare_bucket(real_vendor, shadow_vendor, vendor_base, findings)
+
+        shadow_accounts = account_map(shadow_vendor)
+        for account_name, real_account in account_map(real_vendor).items():
+            account_base = "%s.accounts.%s" % (vendor_base, account_name)
+            shadow_account = shadow_accounts.get(account_name)
+            if shadow_account is None:
+                findings.append(account_base)
+                continue
+            if (
+                "is_current" not in shadow_account
+                or real_account.get("is_current") != shadow_account.get("is_current")
+            ):
+                findings.append("%s.is_current" % account_base)
+            compare_bucket(real_account, shadow_account, account_base, findings)
+    return findings
+
+
+def summarize(findings):
+    count = len(findings)
+    shown = findings[:5]
+    suffix = "" if count <= len(shown) else ", +%d more" % (count - len(shown))
+    noun = "difference" if count == 1 else "differences"
+    return "shadow-divergence: %d %s: %s%s" % (
+        count,
+        noun,
+        ", ".join(shown),
+        suffix,
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--real",
+        default=os.environ.get(
+            "LLM_LIMITS_CACHE", os.path.expanduser("~/.llm-limits.json")
+        ),
+    )
+    parser.add_argument(
+        "--shadow",
+        default=os.environ.get(
+            "LLM_LIMITSD_PROJECTION",
+            os.path.expanduser("~/.llm-limits-shadow.json"),
+        ),
+    )
+    parser.add_argument(
+        "--grace-seconds",
+        type=int,
+        default=int(os.environ.get("LLM_SHADOW_DIVERGENCE_GRACE", "900")),
+    )
+    args = parser.parse_args()
+
+    if not os.path.exists(args.shadow):
+        print("shadow-divergence: skipped (shadow projection absent)")
+        return 0
+
+    try:
+        real = load_json(args.real)
+        shadow = load_json(args.shadow)
+        real_at = to_epoch(real.get("fetched_at") or real.get("as_of"))
+        shadow_at = to_epoch(shadow.get("fetched_at") or shadow.get("as_of"))
+        if real_at is None or shadow_at is None:
+            raise ValueError("real or shadow fetched_at/as_of is invalid")
+        lag = real_at - shadow_at
+        if lag > args.grace_seconds:
+            if not feeder_job_loaded():
+                print(
+                    "shadow-divergence: skipped "
+                    "(feeder job not loaded; trial disabled)"
+                )
+                return 0
+            print(
+                "shadow-divergence: feeder stalled "
+                "(shadow is %ds behind real; grace %ds)"
+                % (lag, args.grace_seconds)
+            )
+            return 1
+        if lag > 0:
+            print(
+                "shadow-divergence: skipped "
+                "(propagation lag %ds within %ds grace)"
+                % (lag, args.grace_seconds)
+            )
+            return 0
+        findings = compare_values(real, shadow)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print("shadow-divergence: comparator error: %s" % exc)
+        return 1
+
+    if findings:
+        print(summarize(findings))
+        return 1
+    print("shadow-divergence: match")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

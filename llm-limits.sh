@@ -2,7 +2,7 @@
 set -u
 
 usage() {
-  echo "Usage: $0 [--json|--plain|--table] [--sort 5h|weekly|reset] [--no-write] [--refresh [--start-windows] | --refresh-account codex/NAME|gemini]" >&2
+  echo "Usage: $0 [--json|--plain|--table] [--sort 5h|weekly|reset] [--no-write] [--refresh [--start-windows] | --refresh-account claude/NAME|codex/NAME|gemini]" >&2
 }
 
 format=''
@@ -34,7 +34,7 @@ if [ "$start_windows" -eq 1 ] && [ "$refresh" -eq 0 ]; then
   exit 2
 fi
 case "$refresh_account" in
-  ''|gemini|codex/?*) ;;
+  ''|gemini|claude/?*|codex/?*) ;;
   *) usage; exit 2 ;;
 esac
 if [ -n "$refresh_account" ] && [ "$start_windows" -eq 1 ]; then
@@ -63,6 +63,13 @@ if [ -z "$format" ]; then
 fi
 
 command -v jq >/dev/null 2>&1 || { echo "llm-limits.sh: jq is required" >&2; exit 3; }
+
+cache=${LLM_LIMITS_CACHE:-$HOME/.llm-limits.json}
+previous_cache='{}'
+if [ -r "$cache" ]; then
+  previous_cache=$(jq -c 'select(.schema == 1 and (.vendors | type) == "object")' "$cache" 2>/dev/null || true)
+  [ -n "$previous_cache" ] || previous_cache='{}'
+fi
 
 # Resolve symlinks (e.g. ~/.local/bin/llm-limits) so helpers next to the real script are found.
 script_path=$0
@@ -289,7 +296,8 @@ render_table() {
               credits:(if $k == "codex" and (.reset_credits | type) == "number" then "↻" + (.reset_credits | tostring) else "-" end),
               status:"-"}
            end
-         else {src: $k, five: null, week: null, fable:null, age:"-", rot:"-", credits:"-", status:(.status // "-")} end)
+         else {src: $k, five: null, week: null, fable:null, age:"-", rot:"-", credits:"-",
+               status:(if .auth_needed == true then "login needed" else (.status // "-") end)} end)
     ] | .[] | row
   ' <<<"$result")
 
@@ -355,6 +363,7 @@ gemini_wall=$(wall_for gemini)
 # Keep the last valid snapshot so ordinary menu opens remain file-only and instant.
 gemini_cache=${LLM_LIMITS_GEMINI_CACHE:-$HOME/.llm-limits-gemini.json}
 gemini_refresh_error=''
+gemini_refresh_attempted=0
 refresh_gemini_quota() {
   local gemini_cmd=${LLM_LIMITS_GEMINI_CMD:-$script_dir/agy-quota.py} gemini_tmp gemini_err detail rc
   if [ ! -x "$gemini_cmd" ]; then
@@ -362,12 +371,31 @@ refresh_gemini_quota() {
     echo "llm-limits.sh: Gemini quota helper is not executable: $gemini_cmd" >&2
     return 1
   fi
-  mkdir -p "$(dirname "$gemini_cache")"
+  if ! mkdir -p "$(dirname "$gemini_cache")"; then
+    gemini_refresh_error='cache directory failed'
+    return 1
+  fi
   gemini_tmp=$(mktemp "${gemini_cache}.tmp.XXXXXX") || { gemini_refresh_error='cache temp failed'; return 1; }
   gemini_err=$(mktemp "${gemini_cache}.err.XXXXXX") || { rm -f "$gemini_tmp"; gemini_refresh_error='cache temp failed'; return 1; }
   rc=0
   AGY_WORKDIR="${AGY_WORKDIR:-$script_dir}" "$gemini_cmd" >"$gemini_tmp" 2>"$gemini_err" || rc=$?
-  if [ "$rc" -eq 0 ] &&
+  # A logged-out helper is a vendor STATE (login needed), not a refresh failure: persist
+  # auth_needed so every read renders it, keep the last snapshot's buckets for provenance and
+  # a clean recovery, and clear any prior refresh_error.
+  if [ "$rc" -eq 2 ] && jq -e '.auth_needed == true' "$gemini_tmp" >/dev/null 2>&1; then
+    if [ -r "$gemini_cache" ] && jq -e '(.groups | type) == "array"' "$gemini_cache" >/dev/null 2>&1 &&
+      jq -e '. + {auth_needed:true}' "$gemini_cache" >"$gemini_tmp.auth" 2>/dev/null; then
+      mv -f "$gemini_tmp.auth" "$gemini_tmp"
+    fi
+    if mv -f "$gemini_tmp" "$gemini_cache"; then
+      rm -f "$gemini_err"
+      gemini_refresh_error=''
+    else
+      gemini_refresh_error='cache replace failed'
+      rm -f "$gemini_tmp" "$gemini_tmp.auth" "$gemini_err"
+      return 1
+    fi
+  elif [ "$rc" -eq 0 ] &&
     jq -e '
       (.groups | type) == "array" and
       any(.groups[]?;
@@ -375,9 +403,14 @@ refresh_gemini_quota() {
         any(.buckets[]?; .window == "5h" and (.remainingFraction | type) == "number") and
         any(.buckets[]?; .window == "weekly" and (.remainingFraction | type) == "number"))
     ' "$gemini_tmp" >/dev/null 2>&1; then
-    mv -f "$gemini_tmp" "$gemini_cache"
-    rm -f "$gemini_err"
-    gemini_refresh_error=''
+    if mv -f "$gemini_tmp" "$gemini_cache"; then
+      rm -f "$gemini_err"
+      gemini_refresh_error=''
+    else
+      gemini_refresh_error='cache replace failed'
+      rm -f "$gemini_tmp" "$gemini_err"
+      return 1
+    fi
   else
     detail=$(jq -r '.error // empty' "$gemini_err" 2>/dev/null || true)
     [ -n "$detail" ] || detail='live query failed'
@@ -389,8 +422,10 @@ refresh_gemini_quota() {
 }
 if [ "$refresh" -eq 1 ] && { [ -z "$refresh_account" ] || [ "$refresh_account" = gemini ]; }; then
   if [ "${LLM_LIMITS_GEMINI_REFRESH:-1}" != 0 ]; then
+    gemini_refresh_attempted=1
     refresh_gemini_quota || true
   elif [ "$refresh_account" = gemini ]; then
+    gemini_refresh_attempted=1
     gemini_refresh_error='refresh disabled'
     printf 'llm-limits.sh: Gemini refresh is disabled\n' >&2
   fi
@@ -426,32 +461,57 @@ claudebd_url=${CLAUDEBD_URL:-http://127.0.0.1:${CLAUDEBD_PORT:-45789}/claudebd/s
 claude_daemon='{"reachable":false}'
 claude_rotation='{}'
 claude_refresh_error=''
+claude_refresh_attempted=0
+claude_refresh_succeeded=0
+claude_refresh_target=''
+case "$refresh_account" in claude/*) claude_refresh_target=${refresh_account#claude/} ;; esac
 # Action-path bounds only: the detached collect-on-open path has no --refresh, so these
 # never constrain it. Generous defaults favor a complete, honest refresh.
 claude_sw_timeout=${LLM_LIMITS_CLAUDE_SW_TIMEOUT:-1200}
 claude_refresh_timeout=${LLM_LIMITS_CLAUDE_REFRESH_TIMEOUT:-300}
-if [ "$refresh" -eq 1 ] && [ -z "$refresh_account" ]; then
+if [ "$refresh" -eq 1 ] && { [ -z "$refresh_account" ] || [ -n "$claude_refresh_target" ]; }; then
   if [ -d "$claudeb_root/limits" ]; then
+    claude_refresh_attempted=1
     claudeb_cmd=$(command -v "${LLM_LIMITS_CLAUDEB_CMD:-claudeb}" 2>/dev/null || true)
     if [ -n "$claudeb_cmd" ]; then
-      if [ "$start_windows" -eq 1 ]; then
+      if [ -n "$claude_refresh_target" ]; then
+        if run_bounded_claude "$claude_refresh_timeout" "account refresh ($claude_refresh_target)" \
+            "$claudeb_cmd" warm "$claude_refresh_target"; then
+          claude_refresh_succeeded=1
+        else
+          [ -n "$claude_refresh_error" ] || claude_refresh_error='probe failed'
+        fi
+      elif [ "$start_windows" -eq 1 ]; then
         # Feature-detect: older claudeb builds predate --start-windows and would die on it.
         if "$claudeb_cmd" --help 2>/dev/null | grep -q -- '--start-windows'; then
-          run_bounded_claude "$claude_sw_timeout" 'refresh + start-windows + heal' "$claudeb_cmd" --refresh --start-windows --heal ||
-            { [ -n "$claude_refresh_error" ] || claude_refresh_error='probe failed'; }
+          if run_bounded_claude "$claude_sw_timeout" 'refresh + start-windows + heal' "$claudeb_cmd" --refresh --start-windows --heal; then
+            claude_refresh_succeeded=1
+          else
+            [ -n "$claude_refresh_error" ] || claude_refresh_error='probe failed'
+          fi
         else
           echo "llm-limits.sh: claudeb lacks --start-windows; claude windows not started (free refresh only)" >&2
-          run_bounded_claude "$claude_refresh_timeout" 'free refresh (no start-windows support)' "$claudeb_cmd" accounts --no-spend ||
-            { [ -n "$claude_refresh_error" ] || claude_refresh_error='probe failed'; }
+          if run_bounded_claude "$claude_refresh_timeout" 'free refresh (no start-windows support)' "$claudeb_cmd" accounts --no-spend; then
+            claude_refresh_succeeded=1
+          else
+            [ -n "$claude_refresh_error" ] || claude_refresh_error='probe failed'
+          fi
         fi
       else
-        run_bounded_claude "$claude_refresh_timeout" 'free refresh + heal' "$claudeb_cmd" accounts --no-spend --heal ||
-          { [ -n "$claude_refresh_error" ] || claude_refresh_error='probe failed'; }
+        if run_bounded_claude "$claude_refresh_timeout" 'free refresh + heal' "$claudeb_cmd" accounts --no-spend --heal; then
+          claude_refresh_succeeded=1
+        else
+          [ -n "$claude_refresh_error" ] || claude_refresh_error='probe failed'
+        fi
       fi
     else
       claude_refresh_error='claudeb not found'
       echo "llm-limits.sh: claudeb not found; cannot refresh claude accounts" >&2
     fi
+  elif [ -n "$claude_refresh_target" ]; then
+    claude_refresh_attempted=1
+    claude_refresh_error='no claudeb store'
+    echo "llm-limits.sh: no claudeb store; cannot refresh claude account" >&2
   elif [ "$start_windows" -eq 1 ]; then
     echo "llm-limits.sh: no claudeb store; cannot start claude windows" >&2
   fi
@@ -588,7 +648,7 @@ if [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
         (.account + " auth" + (if (.auth.cause? // "") == "" then "" else " (" + .auth.cause + ")" end))] | join(", "))}')
     claude=$(jq -c .claude <<<"$claude_bundle")
     auth_failures=$(jq -r .auth_failures <<<"$claude_bundle")
-    if [ -n "$auth_failures" ]; then
+    if [ "$claude_refresh_attempted" -eq 1 ] && [ -n "$auth_failures" ]; then
       if [ -n "$claude_refresh_error" ]; then
         claude_refresh_error="$claude_refresh_error; $auth_failures"
       else
@@ -655,6 +715,7 @@ collect_codex_event() {
 # not a model call — zero token spend. Rollout tails remain the offline fallback.
 codex_cache=${LLM_LIMITS_CODEX_CACHE:-$HOME/.llm-limits-codex.json}
 codex_refresh_error=''
+codex_refresh_attempted=0
 refresh_codex_quota() {
   local target=${1:-} codex_quota_cmd=${LLM_LIMITS_CODEX_QUOTA_CMD:-$script_dir/codex-quota.py}
   local codex_tmp codex_err detail rc old_current
@@ -664,7 +725,10 @@ refresh_codex_quota() {
     echo "llm-limits.sh: Codex quota helper is not executable: $codex_quota_cmd" >&2
     return 1
   fi
-  mkdir -p "$(dirname "$codex_cache")"
+  if ! mkdir -p "$(dirname "$codex_cache")"; then
+    codex_refresh_error='cache directory failed'
+    return 1
+  fi
   codex_tmp=$(mktemp "${codex_cache}.tmp.XXXXXX") || { codex_refresh_error='cache temp failed'; return 1; }
   codex_err=$(mktemp "${codex_cache}.err.XXXXXX") || { rm -f "$codex_tmp"; codex_refresh_error='cache temp failed'; return 1; }
   old_current=$(jq -r '.current // "main"' "$codex_cache" 2>/dev/null || printf 'main')
@@ -688,9 +752,14 @@ refresh_codex_quota() {
         return 1
       fi
     fi
-    mv -f "$codex_tmp" "$codex_cache"
-    rm -f "$codex_err"
-    codex_refresh_error=''
+    if mv -f "$codex_tmp" "$codex_cache"; then
+      rm -f "$codex_err"
+      codex_refresh_error=''
+    else
+      codex_refresh_error='cache replace failed'
+      rm -f "$codex_tmp" "$codex_tmp.current" "$codex_err"
+      return 1
+    fi
   else
     detail=$(jq -r '.error // empty' "$codex_err" 2>/dev/null || true)
     [ -n "$detail" ] || detail='live query failed'
@@ -756,8 +825,10 @@ codex_refresh_target=''
 case "$refresh_account" in codex/*) codex_refresh_target=${refresh_account#codex/} ;; esac
 if [ "$refresh" -eq 1 ] && { [ -z "$refresh_account" ] || [ -n "$codex_refresh_target" ]; }; then
   if [ "${LLM_LIMITS_CODEX_REFRESH:-1}" != 0 ]; then
+    codex_refresh_attempted=1
     refresh_codex_quota "$codex_refresh_target" || true
   elif [ -n "$codex_refresh_target" ]; then
+    codex_refresh_attempted=1
     codex_refresh_error='refresh disabled'
     printf 'llm-limits.sh: Codex account %s refresh is disabled\n' "$codex_refresh_target" >&2
   fi
@@ -883,6 +954,9 @@ fi
 gemini=$(jq -cn --argjson wall "$gemini_wall" \
   '{available:false,status:"no quota snapshot",last_wall:$wall,source:"agy-local-rpc"}')
 if [ -r "$gemini_cache" ]; then
+  # A logged-out helper persists auth_needed alongside the last snapshot's groups: keep the
+  # buckets for provenance/recovery, but present the vendor as login needed and not usable.
+  gemini_auth=$(jq -r 'if .auth_needed == true then "1" else "" end' "$gemini_cache" 2>/dev/null || true)
   gemini_data=$(jq -c '
     [.groups[]? | select((.displayName // "") | ascii_downcase | contains("gemini"))][0] as $group |
     [$group.buckets[]? | select(.window == "5h")][0] as $five |
@@ -892,10 +966,12 @@ if [ -r "$gemini_cache" ]; then
     {group:$group.displayName,five:$five,week:$week}
   ' "$gemini_cache" 2>/dev/null || true)
   gemini_mtime=$(file_mtime "$gemini_cache" 2>/dev/null || true)
-  if [ -n "$gemini_data" ] && [ -n "$gemini_mtime" ]; then
+  [ -n "$gemini_mtime" ] || gemini_mtime=$now_epoch
+  if [ -n "$gemini_data" ]; then
     stale=$((now_epoch - gemini_mtime)); [ "$stale" -ge 0 ] || stale=0
     gemini=$(jq -cn --argjson d "$gemini_data" --argjson wall "$gemini_wall" \
-      --arg as_of "$(epoch_iso "$gemini_mtime")" --argjson as_of_epoch "$gemini_mtime" --argjson stale "$stale" '
+      --arg as_of "$(epoch_iso "$gemini_mtime")" --argjson as_of_epoch "$gemini_mtime" --argjson stale "$stale" \
+      --arg auth "$gemini_auth" '
       def used($remaining):
         ((1 - $remaining) * 100) |
         (if . < 0 then 0 elif . > 100 then 100 else . end) | round;
@@ -904,14 +980,35 @@ if [ -r "$gemini_cache" ]; then
                   as_of:$as_of_epoch,origin:"usage",stale:($stale > 1800)},
        weekly:{used_pct:used($d.week.remainingFraction),resets_at:$d.week.resetTime,
                as_of:$as_of_epoch,origin:"usage",stale:($stale > 21600)},
-       as_of:$as_of,stale_seconds:$stale,last_wall:$wall}')
+       as_of:$as_of,stale_seconds:$stale,last_wall:$wall}
+      | if $auth == "1" then . + {available:false,auth_needed:true,status:"login needed"} else . end')
+  elif [ "$gemini_auth" = 1 ]; then
+    gemini=$(jq -cn --argjson wall "$gemini_wall" \
+      --arg as_of "$(epoch_iso "$gemini_mtime")" --argjson as_of_epoch "$gemini_mtime" \
+      '{available:false,auth_needed:true,status:"login needed",source:"agy-local-rpc",
+        as_of:$as_of,as_of_epoch:$as_of_epoch,last_wall:$wall}')
   fi
 fi
 # Snapshots are passive: a window whose resets_at is already behind us has been reset
 # server-side, so its used_pct is stale noise. Flag it (values kept for provenance).
-result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson claude "$claude" \
+global_refresh_error=''
+if [ "$refresh" -eq 1 ] && [ -z "$refresh_account" ]; then
+  refresh_attempts=$((claude_refresh_attempted + codex_refresh_attempted + gemini_refresh_attempted))
+  refresh_successes=0
+  if [ "$claude_refresh_attempted" -eq 1 ] && [ "$claude_refresh_succeeded" -eq 1 ]; then refresh_successes=$((refresh_successes + 1)); fi
+  if [ "$codex_refresh_attempted" -eq 1 ] && [ -z "$codex_refresh_error" ]; then refresh_successes=$((refresh_successes + 1)); fi
+  if [ "$gemini_refresh_attempted" -eq 1 ] && [ -z "$gemini_refresh_error" ]; then refresh_successes=$((refresh_successes + 1)); fi
+  if [ "$refresh_attempts" -gt 0 ] && [ "$refresh_successes" -eq 0 ]; then
+    global_refresh_error='all vendor refreshes failed'
+  fi
+fi
+
+if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson claude "$claude" \
   --argjson codex "$codex" --argjson gemini "$gemini" --argjson now "$now_epoch" \
   --argjson claude_daemon "$claude_daemon" \
+  --argjson previous "$previous_cache" --argjson refresh "$refresh" --arg refresh_account "$refresh_account" \
+  --argjson claude_attempted "$claude_refresh_attempted" --argjson codex_attempted "$codex_refresh_attempted" \
+  --argjson gemini_attempted "$gemini_refresh_attempted" --arg global_error "$global_refresh_error" \
   --arg claude_error "$claude_refresh_error" --arg codex_error "$codex_refresh_error" --arg gemini_error "$gemini_refresh_error" \
   "$iso_def"'
   def normalize_reset:
@@ -944,25 +1041,69 @@ result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson claude "$claude" \
     if $key == "claude" or $key == "codex" then
       .available == true and ((.accounts | type) == "array") and any(.accounts[]; account_usable)
     else
-      .available == true and under_limit(.five_hour) and under_limit(.weekly)
+      .available == true and .auth_needed != true and under_limit(.five_hour) and under_limit(.weekly)
     end;
   def vendor_stale:
     [.five_hour?, .weekly?, .fable?] | map(select(type == "object") | .stale == true) | any;
-  {schema:1,fetched_at:$fetched_at,vendors:{claude:($claude + {daemon:$claude_daemon}),codex:$codex,gemini:$gemini}}
-  | if $claude_error != "" then .vendors.claude.refresh_error = $claude_error else . end
-  | if $codex_error != "" then .vendors.codex.refresh_error = $codex_error else . end
-  | if $gemini_error != "" then .vendors.gemini.refresh_error = $gemini_error else . end
+  def old_error($value):
+    if ($value | type) == "object" and ($value.cause | type) == "string" and ($value.at | type) == "number"
+    then {cause:$value.cause,at:$value.at}
+    elif ($value | type) == "string" and $value != ""
+    then {cause:$value,at:(($previous.fetched_at | iso2epoch) // $now)}
+    else null end;
+  def outcome_error($old; $attempted; $cause):
+    if $attempted == 1 then
+      if $cause == "" then null else {cause:$cause,at:$now} end
+    else old_error($old) end;
+  def vendor_data($key; $current; $attempted; $cause):
+    if $attempted == 1 and $cause != "" and $current.available != true and
+       $previous.vendors[$key].available == true
+    then $previous.vendors[$key]
+    else $current end;
+  {schema:1,fetched_at:$fetched_at,vendors:{
+    claude:(vendor_data("claude"; ($claude + {daemon:$claude_daemon}); $claude_attempted; $claude_error) + {daemon:$claude_daemon}),
+    codex:vendor_data("codex"; $codex; $codex_attempted; $codex_error),
+    gemini:vendor_data("gemini"; $gemini; $gemini_attempted; $gemini_error)}}
+  | outcome_error($previous.vendors.claude.refresh_error; $claude_attempted; $claude_error) as $claude_outcome
+  | outcome_error($previous.vendors.codex.refresh_error; $codex_attempted; $codex_error) as $codex_outcome
+  | outcome_error($previous.vendors.gemini.refresh_error; $gemini_attempted; $gemini_error) as $gemini_outcome
+  | if $claude_outcome == null then . else .vendors.claude.refresh_error = $claude_outcome end
+  | if $codex_outcome == null then . else .vendors.codex.refresh_error = $codex_outcome end
+  | if $gemini_outcome == null then . else .vendors.gemini.refresh_error = $gemini_outcome end
   | .vendors |= with_entries(if .value.available == true then .value += {stale: (.value | vendor_stale)} else . end)
   | walk(mark)
-  | .vendors |= with_entries(.key as $key | .value.usable_now = (.value | vendor_usable($key)))')
+  | .vendors |= with_entries(.key as $key | .value.usable_now = (.value | vendor_usable($key)))
+  | if ([.vendors[] | select(.available == true)] | length) == 0
+    then .refresh_error = {cause:"no vendor data available",at:$now}
+    elif $refresh == 1 and $refresh_account == ""
+    then if $global_error == "" then del(.refresh_error) else .refresh_error = {cause:$global_error,at:$now} end
+    else old_error($previous.refresh_error) as $old_global |
+      if $old_global == null then . else .refresh_error = $old_global end
+    end'); then
+  echo "llm-limits.sh: failed to build cache JSON" >&2
+  exit 5
+fi
+
+if ! jq -e '.schema == 1 and (.vendors | type) == "object"' <<<"$result" >/dev/null 2>&1; then
+  echo "llm-limits.sh: refusing to replace cache with invalid JSON" >&2
+  exit 5
+fi
 
 if [ "$write_cache" -eq 1 ]; then
-  cache=${LLM_LIMITS_CACHE:-$HOME/.llm-limits.json}
-  mkdir -p "$(dirname "$cache")"
-  tmp=$(mktemp "${cache}.tmp.XXXXXX") || exit 1
+  if ! mkdir -p "$(dirname "$cache")"; then
+    echo "llm-limits.sh: cache directory creation failed" >&2
+    exit 5
+  fi
+  tmp=$(mktemp "${cache}.tmp.XXXXXX") || { echo "llm-limits.sh: cache temp creation failed" >&2; exit 5; }
   trap 'rm -f "$tmp"' EXIT HUP INT TERM
-  printf '%s\n' "$result" >"$tmp"
-  mv -f "$tmp" "$cache"
+  if ! printf '%s\n' "$result" >"$tmp" || ! jq -e '.schema == 1 and (.vendors | type) == "object"' "$tmp" >/dev/null 2>&1; then
+    echo "llm-limits.sh: cache temp validation failed" >&2
+    exit 5
+  fi
+  if ! mv -f "$tmp" "$cache"; then
+    echo "llm-limits.sh: cache replace failed" >&2
+    exit 5
+  fi
   trap - EXIT HUP INT TERM
 fi
 
@@ -1016,7 +1157,8 @@ else
         .value.accounts[] |
         line("codex/" + .account + (if .is_current then "*" else "" end); .; "-"; credits; account_status)
       else line(.key; .value; "-"; (if .key == "codex" then (.value | credits) else "-" end); "-") end
-    else line(.key; {}; "-"; "-"; (.value.status // "-")) +
+    else line(.key; {}; "-"; "-";
+      (if .value.auth_needed == true then "login needed" else (.value.status // "-") end)) +
       (if .value.last_wall then " | last wall " + .value.last_wall else "" end) end
   ' <<<"$result"
 fi
@@ -1025,17 +1167,6 @@ available=$(jq '[.vendors[] | select(.available == true)] | length' <<<"$result"
 if [ "$available" -eq 0 ]; then
   exit 3
 fi
-# Exit-code honesty: a --refresh that hit a real problem (timeout, probe failure, stuck
-# auth) must never look like a clean success, even when other vendors stayed available.
-if [ "$refresh" -eq 1 ]; then
-  case "$refresh_account" in
-    gemini) [ -z "$gemini_refresh_error" ] || exit 4 ;;
-    codex/*) [ -z "$codex_refresh_error" ] || exit 4 ;;
-    '')
-      if [ -n "$claude_refresh_error" ] || [ -n "$codex_refresh_error" ] || [ -n "$gemini_refresh_error" ]; then
-        exit 4
-      fi
-      ;;
-  esac
-fi
+# Only a full refresh with zero successful vendor outcomes is a process-level failure.
+[ -z "$global_refresh_error" ] || exit 4
 exit 0

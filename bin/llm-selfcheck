@@ -39,6 +39,15 @@ write_log() {
   tail -n 60 "$log_file" >"$temporary" && mv "$temporary" "$log_file"
 }
 
+write_step_log() {
+  local status="$1" step="$2" detail="$3" temporary
+  detail=${detail//$'\n'/; }
+  mkdir -p "$log_dir"
+  printf 'timestamp=%s status=%s step=%s detail=%s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$status" "$step" "$detail" >>"$log_file"
+  temporary="$log_file.$$"
+  tail -n 60 "$log_file" >"$temporary" && mv "$temporary" "$log_file"
+}
+
 send_alert() {
   local message="$1"
   hs -c "hs.alert.show(\"$message\")" >/dev/null 2>&1 || true
@@ -87,8 +96,9 @@ maybe_run() {
 }
 
 run_checks() {
-  local name path seconds output rc
+  local name path seconds output rc detail step_status
   local -a steps=(
+    "shadow-divergence:${LLM_SELFCHECK_SHADOW_TIMEOUT:-30}"
     "e2e_surfaces.sh:${LLM_SELFCHECK_E2E_TIMEOUT:-900}"
     "test_llm_limits.sh:${LLM_SELFCHECK_SUITE_TIMEOUT:-300}"
     "test_claudeb.sh:${LLM_SELFCHECK_SUITE_TIMEOUT:-300}"
@@ -101,12 +111,25 @@ run_checks() {
     name=${path%%:*}
     seconds=${path#*:}
     rc=0
-    timeout_command "$seconds" bash "tests/$name" >"$output" 2>&1 || rc=$?
+    if [ "$name" = shadow-divergence ]; then
+      timeout_command "$seconds" "$repo_root/bin/llm-shadow-divergence" >"$output" 2>&1 || rc=$?
+      detail=$(tr '\n' ' ' <"$output" | sed 's/[[:space:]]*$//')
+      step_status=PASS
+      [[ "$detail" == *": skipped "* ]] && step_status=SKIP
+      [ "$rc" -ne 0 ] && step_status=FAIL
+      write_step_log "$step_status" "$name" "$detail"
+    else
+      timeout_command "$seconds" bash "tests/$name" >"$output" 2>&1 || rc=$?
+    fi
     if [ "$rc" -ne 0 ]; then
       write_log FAIL "$name"
       printf 'llm-selfcheck: %s failed (exit %s)\n' "$name" "$rc" >&2
       cat "$output" >&2
-      alert_failure "$name"
+      if [ "$name" = shadow-divergence ] && [ -n "$detail" ]; then
+        alert_failure "$name: $detail"
+      else
+        alert_failure "$name"
+      fi
       rm -f "$output"
       return "$rc"
     fi

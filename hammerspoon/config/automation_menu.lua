@@ -14,7 +14,6 @@ local menuBar = hs.menubar.new()
 local titleTimer = nil
 local menuMode = nil
 local menuVisible = true
-local llmRefreshingSince = nil
 
 local startOptions = {
     { title = "Now", minutes = 0 },
@@ -208,25 +207,28 @@ refreshTitle = function()
         return
     end
 
-    if llmRefreshingSince then
-        -- A live llm-limits refresh can run for minutes (start-windows); the 30s
-        -- titleTimer must not stomp the busy indicator set by onRefreshStart. Past the
-        -- collector's own bound the flag is a lost callback, not a refresh — repaint.
-        if os.time() - llmRefreshingSince <= 360 then
-            return
-        end
-        llmRefreshingSince = nil
-    end
-
     if menuMode ~= "menu" then
         menuBar:setClickCallback()
         menuBar:setMenu(buildMenu)
         menuMode = "menu"
     end
 
+    local refreshOk, refreshState = pcall(function()
+        return llmLimits and llmLimits.refreshState and llmLimits.refreshState()
+    end)
+    local refreshPrefix = ""
+    local refreshTooltip = nil
+    if refreshOk and refreshState and refreshState.busy then
+        refreshPrefix = "⟳ "
+        refreshTooltip = "LLM limits refresh in progress"
+    elseif refreshOk and refreshState and refreshState.warning then
+        refreshPrefix = "⚠ "
+        refreshTooltip = "LLM limits refresh needs attention"
+    end
+
     if not claude then
-        menuBar:setTitle("Auto")
-        menuBar:setTooltip("Automations")
+        menuBar:setTitle(refreshPrefix .. "Auto")
+        menuBar:setTooltip(refreshTooltip or "Automations")
         return
     end
 
@@ -265,14 +267,8 @@ refreshTitle = function()
         menuBar:setTooltip((status.destinationText or "Claude App") .. " timer active.")
     end
 
-    local spinnerOk, spinning = pcall(function()
-        return llmLimits and llmLimits.menubarSpinner and llmLimits.menubarSpinner()
-    end)
-    if spinnerOk and spinning then
-        title = "⟳ " .. title
-    end
-
-    menuBar:setTitle(title)
+    menuBar:setTitle(refreshPrefix .. title)
+    if refreshTooltip then menuBar:setTooltip(refreshTooltip) end
 end
 
 buildMenu = function()
@@ -521,21 +517,8 @@ titleTimer = hs.timer.doEvery(30, refreshTitle)
 AutomationMenu.titleTimer = titleTimer
 
 if llmLimits then
-    llmLimits.onRefreshStart = function()
-        llmRefreshingSince = os.time()
-        menuBar:setTitle("…")
-    end
-    llmLimits.onRefreshDone = function(ok, _, failures)
-        llmRefreshingSince = nil
-        if ok then
-            refreshTitle()
-        else
-            menuBar:setTitle("err")
-            if type(failures) == "table" and #failures > 0 then
-                hs.alert.show("LLM refresh failed: " .. table.concat(failures, ", "))
-            end
-            hs.timer.doAfter(2, refreshTitle)
-        end
+    llmLimits.onRefreshStateChanged = function()
+        refreshTitle()
     end
 end
 
