@@ -11,7 +11,7 @@ const fixture = process.env.CLAUDEB_DIR;
 assert.ok(fixture, 'CLAUDEB_DIR is required');
 
 const source = fs.readFileSync(path.join(root, 'bin', 'claudebd'), 'utf8');
-const marker = '// Read the seed before scanAccounts: its initial pick rewrites the state file.';
+const marker = '// Read the seeds before scanAccounts: its initial picks rewrite the state files.';
 const boundary = source.indexOf(marker);
 assert.ok(boundary > 0, 'safe bootstrap boundary not found');
 
@@ -29,8 +29,14 @@ globalThis.testApi = {
   statusPayload,
   daemonStateFile,
   persistDaemonState,
+  capacityWallDurationsS,
+  capacityWallRepeatWindowS,
+  switchForScope,
+  selectAccountForScope,
+  claimedUntil,
   setCurrent(value) { current = value; },
-  getCurrent() { return current; }
+  getCurrent() { return current; },
+  getFableCurrent() { return currentByScope.fable; }
 };`;
 function boot() {
   const context = vm.createContext({
@@ -47,6 +53,7 @@ function boot() {
   new vm.Script(source.slice(0, boundary) + exportsSource, { filename: 'bin/claudebd' }).runInContext(context);
   return context.testApi;
 }
+process.env.CLAUDEBD_CAPACITY_WALL_FIRST_MS = '1000';
 const api = boot();
 const limitsDir = path.join(fixture, 'limits');
 const tokensDir = path.join(fixture, 'tokens');
@@ -72,7 +79,7 @@ function state(overrides = {}) {
     scopedWalls: {},
     scopedWallReason: {},
     authFailedUntil: 0,
-    lastBareReject: 0,
+    capacityEscalation: {},
     hAt: 0,
     wAt: 0,
     tokenMtime: 0,
@@ -110,15 +117,45 @@ add('transient', state({
   fable: { used_percentage: 98, resets_at: weeklyUntil, as_of: now, origin: 'usage' },
   auth: { status: 'ok' }
 }));
+const [tier0S, tier1S, tier2S] = api.capacityWallDurationsS;
 api.markRejected('transient', {}, 'fable');
 let transientUntil = api.states.get('transient').scopedWalls.fable;
-ok(transientUntil >= now + 299 && transientUntil <= now + 301, 'first bare rejection uses 300 seconds');
+ok(transientUntil >= now + tier0S - 1 && transientUntil <= now + tier0S + 1, 'first bare rejection uses the short first-tier wall');
 ok(transientUntil !== weeklyUntil, 'bare rejection never uses weekly reset');
+check(api.states.get('transient').capacityEscalation.fable.tier, 0, 'first bare rejection starts at tier 0');
+
 api.markRejected('transient', {}, 'fable');
 transientUntil = api.states.get('transient').scopedWalls.fable;
-ok(transientUntil >= now + 899 && transientUntil <= now + 901, 'repeat bare rejection uses 900 seconds');
-ok(transientUntil !== weeklyUntil, 'repeat bare rejection never uses weekly reset');
+ok(transientUntil >= now + tier1S - 1 && transientUntil <= now + tier1S + 1, 'repeat bare rejection within the window escalates to the next tier');
+check(api.states.get('transient').capacityEscalation.fable.tier, 1, 'repeat bare rejection escalates to tier 1');
+
+api.markRejected('transient', {}, 'fable');
+transientUntil = api.states.get('transient').scopedWalls.fable;
+ok(transientUntil >= now + tier2S - 1 && transientUntil <= now + tier2S + 1, 'third bare rejection within the window escalates to the capped tier');
+check(api.states.get('transient').capacityEscalation.fable.tier, 2, 'third bare rejection escalates to tier 2 (capped)');
+
+api.markRejected('transient', {}, 'fable');
+transientUntil = api.states.get('transient').scopedWalls.fable;
+ok(transientUntil >= now + tier2S - 1 && transientUntil <= now + tier2S + 1, 'further bare rejections stay capped at the last tier');
+check(api.states.get('transient').capacityEscalation.fable.tier, 2, 'tier never exceeds the last configured tier');
+
+// Simulate a quiet period by pushing the escalation state's expiry outside
+// the repeat window: the next bare rejection must reset to the short tier.
+api.states.get('transient').capacityEscalation.fable.until = now - api.capacityWallRepeatWindowS - 10;
+api.markRejected('transient', {}, 'fable');
+transientUntil = api.states.get('transient').scopedWalls.fable;
+ok(transientUntil >= now + tier0S - 1 && transientUntil <= now + tier0S + 1, 'a quiet period resets escalation to the short first tier');
+check(api.states.get('transient').capacityEscalation.fable.tier, 0, 'quiet period resets tier to 0');
 check(api.states.get('transient').forcedUntil, 0, 'fable transient rejection does not wall general');
+
+add('transient-general', state());
+api.markRejected('transient-general', {}, 'general');
+let generalUntil = api.states.get('transient-general').forcedUntil;
+ok(generalUntil >= now + tier0S - 1 && generalUntil <= now + tier0S + 1, 'first bare general rejection uses the short first-tier wall');
+check(api.states.get('transient-general').forcedReason, 'transient', 'bare general rejection reason is transient');
+api.markRejected('transient-general', {}, 'general');
+generalUntil = api.states.get('transient-general').forcedUntil;
+ok(generalUntil >= now + tier1S - 1 && generalUntil <= now + tier1S + 1, 'repeat bare general rejection escalates to the next tier');
 
 add('stale', state({
   fable: { used_percentage: 100, resets_at: weeklyUntil, as_of: now - 21601, origin: 'usage' },
@@ -221,7 +258,7 @@ add('wall-a', state({ scopedWalls: { fable: now + 700 } }));
 add('wall-b', state({ scopedWalls: { fable: now + 400 } }));
 add('wall-disabled', state({ forcedUntil: now + 100 }));
 add('wall-authfail', state({ forcedUntil: now + 200, authFailedUntil: now + 1000 }));
-fs.writeFileSync(disabledFile, 'header\nquota\ntransient\nstale\ncached\nnonok\nlegacynoauth\nauthfail\nactivewall\ntrustedfull\npinned\ndisabled\nstateonly\nmenupinned\nwall-disabled\n');
+fs.writeFileSync(disabledFile, 'header\nquota\ntransient\ntransient-general\nstale\ncached\nnonok\nlegacynoauth\nauthfail\nactivewall\ntrustedfull\npinned\ndisabled\nstateonly\nmenupinned\nwall-disabled\n');
 api.setCurrent(null);
 api.scanAccounts();
 check(api.noAccountsBody('fable').retry_at, now + 400, '503 body uses earliest wall expiry');
@@ -270,6 +307,11 @@ add('persist-authfail', state());
 api.markAuthFailure('persist-authfail', 401);
 const persistAuthUntil = api.states.get('persist-authfail').authFailedUntil;
 
+add('persist-capacity', state());
+api.markRejected('persist-capacity', {}, 'fable');
+const persistCapacityUntil = api.states.get('persist-capacity').scopedWalls.fable;
+const persistCapacityTier = api.states.get('persist-capacity').capacityEscalation.fable.tier;
+
 add('persist-pin', state());
 api.pinnedAt.set('persist-pin', Date.now());
 api.persistDaemonState();
@@ -281,6 +323,8 @@ check(dsRaw.accounts['persist-fable'].scopedWallReason.fable, 'header', 'daemon-
 check(dsRaw.accounts['persist-general'].forcedUntil, persistGeneralUntil, 'daemon-state.json persists general wall expiry');
 check(dsRaw.accounts['persist-general'].forcedReason, 'header', 'daemon-state.json persists general wall reason');
 check(dsRaw.accounts['persist-authfail'].authFailedUntil, persistAuthUntil, 'daemon-state.json persists auth failure');
+check(dsRaw.accounts['persist-capacity'].capacityEscalation.fable.tier, persistCapacityTier, 'daemon-state.json persists capacity escalation tier');
+check(dsRaw.accounts['persist-capacity'].capacityEscalation.fable.until, persistCapacityUntil, 'daemon-state.json persists capacity escalation until');
 ok(typeof dsRaw.pinnedAt['persist-pin'] === 'number', 'daemon-state.json persists manual pin');
 
 const api2 = boot();
@@ -289,6 +333,8 @@ check(api2.states.get('persist-fable').scopedWalls.fable, persistFableUntil, 'fa
 check(api2.states.get('persist-general').forcedUntil, persistGeneralUntil, 'general wall survives simulated restart');
 check(api2.states.get('persist-general').forcedReason, 'header', 'general wall reason survives simulated restart');
 check(api2.states.get('persist-authfail').authFailedUntil, persistAuthUntil, 'auth failure survives simulated restart');
+check(api2.states.get('persist-capacity').capacityEscalation.fable.tier, persistCapacityTier, 'capacity escalation tier survives simulated restart');
+check(api2.states.get('persist-capacity').capacityEscalation.fable.until, persistCapacityUntil, 'capacity escalation until survives simulated restart');
 check(api2.pinnedAt.get('persist-pin'), dsRaw.pinnedAt['persist-pin'], 'manual pin survives simulated restart');
 
 const changedTokenTime = new Date(Date.now() + 2000);
@@ -298,12 +344,16 @@ const clearedOnDisk = JSON.parse(fs.readFileSync(dsFile, 'utf8'));
 check(clearedOnDisk.accounts['persist-authfail']?.authFailedUntil, undefined, 'token change clears persisted auth failure');
 
 fs.writeFileSync(dsFile, JSON.stringify({
-  accounts: { 'persist-fable': { scopedWalls: { fable: persistNow - 100 }, scopedWallReason: { fable: 'header' } } },
+  accounts: {
+    'persist-fable': { scopedWalls: { fable: persistNow - 100 }, scopedWallReason: { fable: 'header' } },
+    'persist-capacity': { capacityEscalation: { fable: { tier: 2, until: persistNow - api.capacityWallRepeatWindowS - 100 } } }
+  },
   pinnedAt: {}
 }));
 const api3 = boot();
 api3.scanAccounts();
 check(api3.states.get('persist-fable').scopedWalls.fable, undefined, 'expired persisted wall pruned on load, not resurrected');
+check(api3.states.get('persist-capacity').capacityEscalation.fable, undefined, 'stale capacity escalation pruned on load, not resurrected');
 
 fs.writeFileSync(dsFile, '{not json');
 const api4 = boot();
@@ -320,5 +370,76 @@ const wallLines = logs.filter((line) => line.includes(' wall account='));
 ok(wallLines.some((line) => / wall account=header scope=fable until=\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.000Z reason=header$/.test(line)), 'header wall log format');
 ok(wallLines.some((line) => / wall account=quota scope=fable until=\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.000Z reason=quota$/.test(line)), 'quota wall log format');
 ok(wallLines.some((line) => / wall account=transient scope=fable until=\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.000Z reason=transient$/.test(line)), 'transient wall log format');
+
+// --- fable-scope current persistence to .claudeb-state-fable --------------
+const fableFile = path.join(fixture, '.claudeb-state-fable');
+const fsOps = [];
+const realWriteFileSync = fs.writeFileSync;
+const realRenameSync = fs.renameSync;
+fs.writeFileSync = function (file, ...rest) {
+  fsOps.push(['write', String(file)]);
+  return realWriteFileSync.call(fs, file, ...rest);
+};
+fs.renameSync = function (from, to) {
+  fsOps.push(['rename', String(from), String(to)]);
+  return realRenameSync.call(fs, from, to);
+};
+
+fs.writeFileSync(dsFile, '{}');
+const api5 = boot();
+add('fable-a');
+add('fable-b');
+fs.writeFileSync(disabledFile, fs.readdirSync(tokensDir).filter((name) => name !== 'fable-a' && name !== 'fable-b').join('\n') + '\n');
+api5.scanAccounts();
+check(api5.getFableCurrent(), 'fable-a', 'initial scan picks a fable current');
+check(fs.readFileSync(fableFile, 'utf8'), 'fable-a\n', 'initial fable pick persisted');
+
+api5.switchForScope('fable', 'test', new Set(['fable-a']));
+check(api5.getFableCurrent(), 'fable-b', 'fable switch moves the scoped current');
+check(fs.readFileSync(fableFile, 'utf8'), 'fable-b\n', 'fable switch persisted');
+
+const fableOpsBefore = fsOps.filter((op) => op[1] === fableFile || op[2] === fableFile).length;
+api5.setCurrent(null);
+api5.scanAccounts();
+api5.switchForScope('general', 'test', new Set([api5.getCurrent()]));
+check(fs.readFileSync(fableFile, 'utf8'), 'fable-b\n', 'general rotation leaves the fable file content alone');
+check(fsOps.filter((op) => op[1] === fableFile || op[2] === fableFile).length, fableOpsBefore, 'general rotation performs no fable file operations');
+
+check(fsOps.filter((op) => op[0] === 'write' && op[1] === fableFile).length, 0, 'fable state file is never written in place');
+const fableRenames = fsOps.filter((op) => op[0] === 'rename' && op[2] === fableFile);
+ok(fableRenames.length >= 2, 'fable state file lands via rename');
+ok(fableRenames.every((op) => op[1].startsWith(`${fableFile}.`) && op[1].endsWith('.tmp')), 'every fable rename originates from a tmp file');
+
+fs.writeFileSync = realWriteFileSync;
+fs.renameSync = realRenameSync;
+
+// --- held-request claim staggering (thundering-herd desync) ---------------
+// N pollers held on the same burst, all with current pointing at a freed
+// account, must NOT all short-circuit onto it: the fast path is claim-gated.
+add('herd-a');
+add('herd-b');
+fs.writeFileSync(disabledFile, fs.readdirSync(tokensDir).filter((name) => name !== 'herd-a' && name !== 'herd-b').join('\n') + '\n');
+api5.claimedUntil.clear();
+api5.scanAccounts();
+api5.setCurrent('herd-a');
+ok(api5.eligibleForScope('herd-a', 'general') && api5.eligibleForScope('herd-b', 'general'), 'herd: both accounts are general-eligible');
+const herdPicks = [];
+for (let i = 0; i < 3; i += 1) herdPicks.push(api5.selectAccountForScope('general', new Set(), { spreadClaims: true }));
+ok(herdPicks.includes('herd-b'), 'herd: held pollers spread onto the sibling, not all onto current');
+ok(new Set(herdPicks).size === 2, 'herd: claim staggering engages both recovering accounts');
+
+api5.claimedUntil.clear();
+fs.writeFileSync(disabledFile, fs.readdirSync(tokensDir).filter((name) => name !== 'herd-a').join('\n') + '\n');
+api5.scanAccounts();
+api5.setCurrent('herd-a');
+const soloPicks = [];
+for (let i = 0; i < 3; i += 1) soloPicks.push(api5.selectAccountForScope('general', new Set(), { spreadClaims: true }));
+ok(soloPicks.every((name) => name === 'herd-a'), 'herd: claims never withhold the only eligible account');
+
+// A first-wall env value larger than a later tier must not invert escalation.
+process.env.CLAUDEBD_CAPACITY_WALL_FIRST_MS = '600000';
+const bigTiers = boot().capacityWallDurationsS;
+process.env.CLAUDEBD_CAPACITY_WALL_FIRST_MS = '1000';
+ok(bigTiers.every((s, i) => i === 0 || s >= bigTiers[i - 1]), 'capacity wall tiers stay monotonically non-decreasing for an oversized first-wall value');
 
 process.stdout.write(`PASS: claudebd decision logic (${assertions} assertions)\n`);

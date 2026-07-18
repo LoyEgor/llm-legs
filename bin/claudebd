@@ -20,12 +20,24 @@ const limitsDir = path.join(baseDir, 'limits');
 const logFile = path.join(baseDir, 'claudebd.log');
 const pidFile = path.join(baseDir, 'claudebd.pid');
 const stateFile = path.join(baseDir, '.claudeb-state');
+const fableStateFile = path.join(baseDir, '.claudeb-state-fable');
 const daemonStateFile = path.join(baseDir, 'daemon-state.json');
 const disabledFile = path.join(baseDir, 'disabled');
 const maxBody = 64 * 1024 * 1024;
 const upstreamIdleTimeout = 600000;
 const capacityRetryMs = Math.max(0, Math.floor(number(process.env.CLAUDEBD_CAPACITY_RETRY_MS, 2000)));
 const capacityRetryAttempts = Math.max(0, Math.floor(number(process.env.CLAUDEBD_CAPACITY_RETRY_ATTEMPTS, 1)));
+const capacityWallFirstMs = Math.max(0, Math.floor(number(process.env.CLAUDEBD_CAPACITY_WALL_FIRST_MS, 45000)));
+// Tiers must be monotonically non-decreasing so escalation never shortens a
+// wall; a first-wall env value above a later tier would otherwise invert it.
+const capacityWallDurationsS = (() => {
+  const tiers = [Math.max(1, capacityWallFirstMs / 1000), 300, 900];
+  for (let i = 1; i < tiers.length; i += 1) tiers[i] = Math.max(tiers[i], tiers[i - 1]);
+  return tiers;
+})();
+const capacityWallRepeatWindowS = 600;
+const holdMaxMs = Math.max(0, Math.floor(number(process.env.CLAUDEBD_HOLD_MAX_MS, 90000)));
+const holdPollMs = 300;
 const started = Date.now();
 const upstreamStartedAt = Symbol('upstreamStartedAt');
 const states = new Map();
@@ -81,7 +93,7 @@ function loadState(name) {
     scopedWalls: previous?.scopedWalls || persisted?.scopedWalls || {},
     scopedWallReason: previous?.scopedWallReason || persisted?.scopedWallReason || {},
     authFailedUntil: previous?.authFailedUntil || persisted?.authFailedUntil || 0,
-    lastBareReject: previous?.lastBareReject || 0,
+    capacityEscalation: previous?.capacityEscalation || persisted?.capacityEscalation || {},
     hAt: previous?.hAt || 0,
     wAt: previous?.wAt || 0,
     tokenMtime
@@ -110,6 +122,13 @@ function loadDaemonState() {
         }
       }
       if (Object.keys(scopedWalls).length) { kept.scopedWalls = scopedWalls; kept.scopedWallReason = scopedWallReason; }
+      const capacityEscalation = {};
+      for (const [scope, esc] of Object.entries(entry.capacityEscalation || {})) {
+        if (esc && typeof esc === 'object' && now - esc.until <= capacityWallRepeatWindowS) {
+          capacityEscalation[scope] = { tier: esc.tier, until: esc.until };
+        }
+      }
+      if (Object.keys(capacityEscalation).length) kept.capacityEscalation = capacityEscalation;
       if (Object.keys(kept).length) accountsOut[name] = kept;
     }
     const pinsOut = {};
@@ -212,8 +231,10 @@ function scanAccounts() {
     current = pick();
     persistCurrent();
   }
+  const fableBefore = currentByScope.fable;
   if (currentByScope.fable && !accounts.includes(currentByScope.fable)) currentByScope.fable = null;
   if (!eligibleForScope(currentByScope.fable, 'fable')) currentByScope.fable = pickForScope('fable');
+  if (currentByScope.fable !== fableBefore) persistFableCurrent();
 }
 
 function effective(name) {
@@ -293,9 +314,61 @@ function nextEligibleAt(scope) {
   return earliest;
 }
 
+// Classifies WHY every enabled account is currently ineligible for a scope,
+// so a 503 body can name the actual cause instead of a bare "no accounts".
+// wall-capacity covers both transient bare-429 walls and header-confirmed
+// rejection walls; `hint` is only set when every contributing wall is the
+// transient kind, since that's the case likely to clear on its own soon.
+function scopeBlockReasons(scope, now = Math.floor(Date.now() / 1000)) {
+  const reasons = new Set();
+  let anyTransient = false;
+  let anyNonTransient = false;
+  for (const name of accounts) {
+    if (disabled.has(name)) continue;
+    const state = effective(name);
+    const blockReason = blockReasonForScope(state, scope, now);
+    if (blockReason === null) continue;
+    if (blockReason !== 'wall') { reasons.add(blockReason); continue; }
+    reasons.add('wall-capacity');
+    const scopedUntil = state.scopedWalls?.[scope] > now ? state.scopedWalls[scope] : 0;
+    const wallReason = scopedUntil ? state.scopedWallReason?.[scope] : state.forcedReason;
+    if (wallReason === 'transient') anyTransient = true; else anyNonTransient = true;
+  }
+  return { reasons, anyTransient, anyNonTransient };
+}
+
+function causeMessage(scope, reason, retryAt, otherAvailable) {
+  const when = new Date(retryAt * 1000).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false });
+  const label = scope === 'fable' ? 'fable' : 'general';
+  const other = scope === 'fable' ? 'general' : 'fable';
+  const reasonPhrase = {
+    auth: 'an authentication failure on all rotation accounts',
+    'limit-5h': '5-hour usage limits on all rotation accounts',
+    'limit-weekly': 'weekly usage limits on all rotation accounts',
+    'limit-fable': 'fable usage limits on all rotation accounts',
+    'wall-capacity': 'capacity walls on all rotation accounts',
+    mixed: 'a mix of walls and usage limits across rotation accounts'
+  }[reason] || 'capacity walls on all rotation accounts';
+  const suffix = otherAvailable ? ` — ${other} models still available` : '';
+  return `${label} requests blocked by ${reasonPhrase} until ${when}${suffix}.`;
+}
+
+function causeExplicitBody(scope, error) {
+  const now = Math.floor(Date.now() / 1000);
+  const retryAt = nextEligibleAt(scope) || now;
+  const { reasons, anyTransient, anyNonTransient } = scopeBlockReasons(scope, now);
+  const reason = reasons.size === 1 ? [...reasons][0] : reasons.size === 0 ? 'wall-capacity' : 'mixed';
+  const otherScope = scope === 'fable' ? 'general' : 'fable';
+  const otherAvailable = pickForScope(otherScope) !== null;
+  const body = { error, scope, reason, message: causeMessage(scope, reason, retryAt, otherAvailable), retry_at: retryAt };
+  if (reason === 'wall-capacity' && anyTransient && !anyNonTransient) {
+    body.hint = 'transient capacity rejection on all rotation accounts, likely to clear soon';
+  }
+  return body;
+}
+
 function noAccountsBody(scope) {
-  const earliest = nextEligibleAt(scope);
-  return earliest ? { error: 'No available accounts', retry_at: earliest } : { error: 'No available accounts' };
+  return causeExplicitBody(scope, 'No available accounts');
 }
 
 function switchAccount(reason, excluded = new Set()) {
@@ -316,6 +389,7 @@ function switchForScope(scope, reason, excluded = new Set()) {
   const next = pickForScope(scope, excluded);
   if (next && next !== from) log(`switch scope=${scope} from=${from || 'none'} to=${next} reason=${reason}`);
   currentByScope.fable = next;
+  if (next !== from) persistFableCurrent();
   return next;
 }
 
@@ -372,6 +446,18 @@ function persistCurrent() {
   }
 }
 
+function persistFableCurrent() {
+  if (!currentByScope.fable) return;
+  const temp = `${fableStateFile}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(temp, `${currentByScope.fable}\n`, { mode: 0o600 });
+    fs.renameSync(temp, fableStateFile);
+  } catch (error) {
+    try { fs.unlinkSync(temp); } catch {}
+    log(`fable state file error message=${error.message}`);
+  }
+}
+
 function persistDaemonState() {
   const now = Math.floor(Date.now() / 1000);
   const accountsOut = {};
@@ -392,6 +478,11 @@ function persistDaemonState() {
       }
     }
     if (Object.keys(scopedWalls).length) { kept.scopedWalls = scopedWalls; kept.scopedWallReason = scopedWallReason; }
+    const capacityEscalation = {};
+    for (const [scope, esc] of Object.entries(state.capacityEscalation || {})) {
+      if (esc && now - esc.until <= capacityWallRepeatWindowS) capacityEscalation[scope] = { tier: esc.tier, until: esc.until };
+    }
+    if (Object.keys(capacityEscalation).length) kept.capacityEscalation = capacityEscalation;
     if (Object.keys(kept).length) accountsOut[name] = kept;
   }
   const pinsOut = {};
@@ -424,6 +515,12 @@ function pruneExpiredState() {
       if (until <= now) {
         delete state.scopedWalls[scope];
         delete state.scopedWallReason[scope];
+        changed = true;
+      }
+    }
+    for (const [scope, esc] of Object.entries(state.capacityEscalation || {})) {
+      if (now - esc.until > capacityWallRepeatWindowS) {
+        delete state.capacityEscalation[scope];
         changed = true;
       }
     }
@@ -485,6 +582,22 @@ function logWall(name, scope, until, reason) {
   log(`wall account=${name} scope=${scope} until=${new Date(until * 1000).toISOString()} reason=${reason}`);
 }
 
+// A bare 429 (no unified headers) is almost always transient capacity, not
+// quota. The first one gets a short wall so a seconds-long blip doesn't take
+// the account out for minutes; only repeated bare rejections within the same
+// sliding window escalate toward the longer tiers. A quiet period resets to
+// the short tier since it means the blip is over.
+function bareCapacityWallUntil(state, scope, now) {
+  state.capacityEscalation = state.capacityEscalation || {};
+  const prior = state.capacityEscalation[scope];
+  const tier = prior && now - prior.until <= capacityWallRepeatWindowS
+    ? Math.min(prior.tier + 1, capacityWallDurationsS.length - 1)
+    : 0;
+  const until = Math.round(now + capacityWallDurationsS[tier]);
+  state.capacityEscalation[scope] = { tier, until };
+  return until;
+}
+
 function markRejected(name, headers, scope) {
   const state = states.get(name);
   if (!state) return;
@@ -502,18 +615,20 @@ function markRejected(name, headers, scope) {
       state.scopedWallReason.fable = 'quota';
       logWall(name, 'fable', state.scopedWalls.fable, 'quota');
     } else {
-      // A bare fable 429 is almost always transient capacity, not quota:
-      // walling to the weekly reset here once took an account out for days.
-      state.scopedWalls.fable = now + (now - state.lastBareReject <= 3600 ? 900 : 300);
-      state.lastBareReject = now;
+      state.scopedWalls.fable = bareCapacityWallUntil(state, 'fable', now);
       state.scopedWallReason.fable = 'transient';
       logWall(name, 'fable', state.scopedWalls.fable, 'transient');
     }
-  } else {
+  } else if (hasResetHeader) {
     state.forcedUntil = rejectionReset(headers, 300);
-    state.forcedReason = hasResetHeader ? 'header' : 'transient';
+    state.forcedReason = 'header';
     state.forcedScope = 'general';
-    logWall(name, scope, state.forcedUntil, hasResetHeader ? 'header' : 'transient');
+    logWall(name, scope, state.forcedUntil, 'header');
+  } else {
+    state.forcedUntil = bareCapacityWallUntil(state, scope, now);
+    state.forcedReason = 'transient';
+    state.forcedScope = 'general';
+    logWall(name, scope, state.forcedUntil, 'transient');
   }
   persistDaemonState();
 }
@@ -642,6 +757,78 @@ async function attempt(req, body, name, replaceAuth) {
   });
 }
 
+// Claims desynchronize concurrent holds: without them, a burst of requests
+// held at once all observe the same account become eligible and pile back
+// onto it, reproducing the capacity 429 that walled it a moment earlier. When
+// spreading is on, EVERY candidate is claim-gated -- including the preferred
+// current/fable-current, whose ungated fast path was the herd's real entry:
+// once the first poller set current to a freed account, every other poller
+// short-circuited straight to it. A poll that finds all unclaimed candidates
+// exhausted falls back to the claim-free result, so claims only spread and
+// stagger a herd across recovering accounts -- they never withhold an account
+// that is genuinely the only eligible one.
+const claimedUntil = new Map();
+const holdClaimWindowMs = Math.min(holdPollMs * 2, 1000);
+
+function selectAccountForScope(scope, tried, opts = {}) {
+  const preferred = scope === 'general' ? current : currentByScope.fable;
+  if (!opts.spreadClaims) {
+    if (eligibleForScope(preferred, scope, tried)) return preferred;
+    return switchForScope(scope, 'request selection', tried);
+  }
+  const now = Date.now();
+  const withClaims = new Set(tried);
+  for (const [name, until] of claimedUntil) {
+    if (until > now) withClaims.add(name);
+    else claimedUntil.delete(name);
+  }
+  let account = eligibleForScope(preferred, scope, withClaims)
+    ? preferred
+    : switchForScope(scope, 'request selection', withClaims);
+  if (!account && eligibleForScope(preferred, scope, tried)) account = preferred;
+  if (!account) account = switchForScope(scope, 'request selection', tried);
+  if (account) claimedUntil.set(account, now + holdClaimWindowMs);
+  return account;
+}
+
+function logHold(scope, waitedMs, outcome) {
+  log(`hold account-scope=${scope} waited_ms=${waitedMs} outcome=${outcome}`);
+}
+
+// Non-busy-wait poll: re-scan account eligibility every holdPollMs instead of
+// failing instantly, so a request outlives a wall that clears within the cap.
+// The poll interval is jittered (after the first, immediate check) so that
+// many requests held from the same traffic burst do not all re-check on the
+// exact same tick -- that lockstep is what let a freed account get slammed
+// by the whole herd at once and re-walled before any single request's retry
+// could get through.
+function holdForEligibility(scope, res, tried) {
+  return new Promise((resolve) => {
+    const startedAt = Date.now();
+    let settled = false;
+    let timer = null;
+    const finish = (account, aborted) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      res.removeListener('close', onClose);
+      resolve({ account, waitedMs: Date.now() - startedAt, aborted });
+    };
+    const onClose = () => finish(null, true);
+    res.on('close', onClose);
+    const poll = () => {
+      if (settled) return;
+      if (res.destroyed) return finish(null, true);
+      scanAccounts();
+      const account = selectAccountForScope(scope, tried, { spreadClaims: true });
+      if (account) return finish(account, false);
+      if (Date.now() - startedAt >= holdMaxMs) return finish(null, false);
+      timer = setTimeout(poll, holdPollMs + Math.floor(Math.random() * holdPollMs));
+    };
+    poll();
+  });
+}
+
 function requestScope(body) {
   const text = body.toString('utf8');
   try {
@@ -667,12 +854,16 @@ async function bufferedProxy(req, res, body, replaceAuth) {
   let lastResponse = null;
   let unavailable = false;
   while (!res.destroyed) {
-    let account = scope === 'general' ? current : currentByScope.fable;
-    if (!eligibleForScope(account, scope, tried)) account = switchForScope(scope, 'request selection', tried);
+    let account = selectAccountForScope(scope, tried);
     if (!account) {
       if (lastResponse) return forwardResponse(lastResponse, res, account || 'none', scope);
       if (unavailable) return sendJson(res, 502, { error: 'No available accounts' });
-      return sendJson(res, 503, noAccountsBody(scope));
+      if (holdMaxMs <= 0) return sendJson(res, 503, noAccountsBody(scope));
+      const held = await holdForEligibility(scope, res, tried);
+      if (held.aborted) { logHold(scope, held.waitedMs, 'client-close'); return; }
+      if (!held.account) { logHold(scope, held.waitedMs, '503'); return sendJson(res, 503, noAccountsBody(scope)); }
+      logHold(scope, held.waitedMs, 'served');
+      account = held.account;
     }
     tried.add(account);
     let upstreamRes;
@@ -832,6 +1023,7 @@ function statusPayload() {
     pid: process.pid,
     uptime_s: Math.floor((Date.now() - started) / 1000),
     port,
+    rotation_size: accounts.filter((name) => !disabled.has(name)).length,
     current,
     current_fable: currentByScope.fable,
     accounts: detail,
@@ -873,7 +1065,17 @@ function handle(req, res) {
   // An "In rotation" disable is an order: honor it on the very next request,
   // not only on the 30s scan tick — reload the moment the file's mtime moves.
   if (disabledMtime() !== disabledMtimeCache || !current || !accounts.includes(current)) scanAccounts();
-  if (!current) return sendJson(res, 503, { error: 'No accounts configured' });
+  // Gate on the true zero-token-files case only: `current` is a general-scope
+  // pointer, so a null `current` with a fable-eligible sibling must fall
+  // through to scope-aware selection below, not get rejected here.
+  if (accounts.length === 0) {
+    return sendJson(res, 503, {
+      error: 'No accounts configured',
+      scope: null,
+      reason: 'no-accounts',
+      message: 'claudebd has no Claude accounts configured (zero token files found) — no scope can be served.'
+    });
+  }
   const replaceAuth = /^Bearer sk-ant-/i.test(String(req.headers.authorization || ''));
   const chunks = [];
   let size = 0;
@@ -905,13 +1107,19 @@ function handle(req, res) {
   });
 }
 
-// Read the seed before scanAccounts: its initial pick rewrites the state file.
+// Read the seeds before scanAccounts: its initial picks rewrite the state files.
 let seed = '';
 try { seed = fs.readFileSync(stateFile, 'utf8').trim(); } catch {}
+let fableSeed = '';
+try { fableSeed = fs.readFileSync(fableStateFile, 'utf8').trim(); } catch {}
 scanAccounts();
 if (seed && eligibleForScope(seed, 'general') && seed !== current) {
   current = seed;
   persistCurrent();
+}
+if (fableSeed && eligibleForScope(fableSeed, 'fable') && fableSeed !== currentByScope.fable) {
+  currentByScope.fable = fableSeed;
+  persistFableCurrent();
 }
 const initial = current;
 const server = http.createServer((req, res) => {

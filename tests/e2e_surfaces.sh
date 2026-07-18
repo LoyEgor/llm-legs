@@ -180,6 +180,7 @@ local function loadModule(fixture, state)
   local mock = {
     alert = { show = function(message) table.insert(state.alerts, message) end },
     execute = function() return true end,
+    fs = { attributes = function() return nil end },
     json = { decode = function() return fixture end },
     styledtext = { new = styled },
     task = {},

@@ -27,6 +27,7 @@ local function loadModule(fixture, taskFactory)
   local mock = {
     alert = { show = function() end },
     execute = function() return true end,
+    fs = { attributes = function() return nil end },
     json = { decode = function() return fixture end },
     styledtext = { new = styled },
     task = { new = taskFactory or function() return nil end },

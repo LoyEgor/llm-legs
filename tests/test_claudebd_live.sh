@@ -83,6 +83,8 @@ start_daemon() {
     require_test_port daemon "$DAEMON_PORT"
     CLAUDEB_DIR="$store" CLAUDEBD_PORT="$DAEMON_PORT" CLAUDEBD_UPSTREAM="$UPSTREAM" \
       CLAUDEBD_CAPACITY_RETRY_MS=10 CLAUDEBD_CAPACITY_RETRY_ATTEMPTS=1 \
+      CLAUDEBD_CAPACITY_WALL_FIRST_MS="${CLAUDEBD_CAPACITY_WALL_FIRST_MS:-300000}" \
+      CLAUDEBD_HOLD_MAX_MS="${CLAUDEBD_HOLD_MAX_MS:-0}" \
       node "$DAEMON" >"$store/daemon.out" 2>&1 &
     DAEMON_PID=$!
     wait_ready && return 0
@@ -225,6 +227,10 @@ body2=$(cat "$WORK/body")
 contains "No available accounts" "$body2" "d: 503 body carries the error"
 retry_at=$(echo "$body2" | jget retry_at)
 in_range "$retry_at" "$((NOW + 1))" "$((NOW + 6))" "d: retry_at is earliest wall expiry (machine-readable)"
+eq "$(echo "$body2" | jget scope)" "general" "d: 503 body carries the request scope"
+eq "$(echo "$body2" | jget reason)" "wall-capacity" "d: 503 body carries a machine-readable cause"
+contains "general requests blocked" "$(echo "$body2" | jget message)" "d: 503 body carries a human-readable message"
+eq "$(echo "$body2" | jget hint)" "" "d: header-confirmed walls (not transient) carry no hint"
 write_plan <<'JSON'
 { "byToken": { "acct-a": { "status": 200, "body": "{\"ok\":true}" }, "acct-b": { "status": 200, "body": "{\"ok\":true}" } } }
 JSON
@@ -647,6 +653,167 @@ eq "$(gpost "$GEN")" "200" "chaos: clean restart does not resurrect an expired w
 eq "$(sfield all_walled_until.general)" "null" "chaos: restart has no stale general aggregate"
 eq "$(sfield all_walled_until.fable)" "null" "chaos: restart has no stale fable aggregate"
 eq "$(sfield pid)" "$RESTART_PID" "chaos: restarted phase keeps its daemon pid"
+stop_daemon
+
+echo "scenario capacity-first-wall: first bare 429 gets the short first-tier wall, not the long tier"
+: >"$MOCK_LOG"
+write_plan <<'JSON'
+{ "id": "capacity-first-wall", "sequence": [{ "fault": "bare429" }, { "fault": "bare429" }, { "fault": "ok" }], "default": { "fault": "ok" } }
+JSON
+export CLAUDEBD_CAPACITY_WALL_FIRST_MS=3000
+start_daemon "$(setup_store "$WORK/capacity-first-wall" a b)"
+NOW=$(date +%s)
+code=$(gpost "$GEN")
+eq "$code" "200" "capacity-first-wall: client sees success after switch"
+eq "$(sfield current)" "b" "capacity-first-wall: general scope switched to b"
+until=$(wall_field a general until)
+in_range "$until" "$NOW" "$((NOW + 6))" "capacity-first-wall: account a gets the short first-tier wall (~3s), not 300s"
+eq "$(wall_field a general reason)" "transient" "capacity-first-wall: wall is classified as transient"
+stop_daemon
+unset CLAUDEBD_CAPACITY_WALL_FIRST_MS
+
+echo "scenario capacity-escalation: a repeat bare 429 within the sliding window escalates to the next tier"
+: >"$MOCK_LOG"
+write_plan <<'JSON'
+{ "id": "capacity-escalation-1", "sequence": [{ "fault": "bare429" }, { "fault": "bare429" }, { "fault": "ok" }], "default": { "fault": "ok" } }
+JSON
+export CLAUDEBD_CAPACITY_WALL_FIRST_MS=3000
+STORE_ESC="$(setup_store "$WORK/capacity-escalation" a b)"
+start_daemon "$STORE_ESC"
+NOW=$(date +%s)
+code=$(gpost "$GEN")
+eq "$code" "200" "capacity-escalation: first switch succeeds"
+until1=$(wall_field a general until)
+in_range "$until1" "$NOW" "$((NOW + 6))" "capacity-escalation: first wall on a is the short first tier"
+sleep 3.5
+curl -s -o /dev/null -X POST -H 'content-type: application/json' --data '{"account":"a"}' "http://127.0.0.1:$DAEMON_PORT/claudebd/use"
+eq "$(sfield current)" "a" "capacity-escalation: manual pin returns to account a once its wall clears"
+write_plan <<'JSON'
+{ "id": "capacity-escalation-2", "sequence": [{ "fault": "bare429" }, { "fault": "bare429" }, { "fault": "ok" }], "default": { "fault": "ok" } }
+JSON
+NOW2=$(date +%s)
+code=$(gpost "$GEN")
+eq "$code" "200" "capacity-escalation: second switch succeeds"
+until2=$(wall_field a general until)
+in_range "$until2" "$((NOW2 + 250))" "$((NOW2 + 900))" "capacity-escalation: repeat bare 429 on a escalates past the short tier"
+stop_daemon
+unset CLAUDEBD_CAPACITY_WALL_FIRST_MS
+
+echo "scenario rotation-size: /claudebd/status reports rotation_size as the enabled-account count"
+write_plan <<'JSON'
+{ "default": { "status": 200, "body": "{\"ok\":true}" } }
+JSON
+STORE_ROT="$(setup_store "$WORK/rotation-size" a b c)"
+start_daemon "$STORE_ROT"
+eq "$(sfield rotation_size)" "3" "rotation-size: three enabled accounts are reported"
+printf 'a\n' >"$STORE_ROT/disabled"
+eq "$(sfield rotation_size)" "2" "rotation-size: disabling an account drops the reported rotation size"
+stop_daemon
+
+echo "scenario hold-a: request held while all accounts are walled, served once the wall clears within the cap"
+STORE_HOLD_A="$(setup_store "$WORK/hold-a" a)"
+RESET_HOLD_A=$(( $(date +%s) + 4 ))
+write_plan <<JSON
+{ "byToken": { "acct-a": { "status": 429, "headers": { "anthropic-ratelimit-unified-status": "rejected", "anthropic-ratelimit-unified-reset": "$RESET_HOLD_A" }, "body": "{}" } } }
+JSON
+export CLAUDEBD_HOLD_MAX_MS=8000
+start_daemon "$STORE_HOLD_A"
+code1=$(gpost "$GEN")
+eq "$code1" "429" "hold-a: first exhausting request forwards the upstream 429 (documented, not held)"
+eq "$(sfield accounts.a.walled)" "true" "hold-a: account a is walled after the first rejection"
+write_plan <<'JSON'
+{ "byToken": { "acct-a": { "status": 200, "body": "{\"ok\":true}" } } }
+JSON
+START_HOLD=$(date +%s)
+code2=$(gpost "$GEN")
+ELAPSED_HOLD=$(( $(date +%s) - START_HOLD ))
+eq "$code2" "200" "hold-a: held request is served once the wall clears"
+gt "$ELAPSED_HOLD" "1" "hold-a: the held request actually waited (not an instant 503)"
+waited_ms=$(awk -F'waited_ms=' '/hold account-scope=general/ && /outcome=served/ { split($2,a," "); print a[1] }' "$STORE_HOLD_A/claudebd.log" | tail -1)
+gt "$waited_ms" "0" "hold-a: the served hold's logged waited_ms is greater than zero"
+stop_daemon
+unset CLAUDEBD_HOLD_MAX_MS
+
+echo "scenario hold-b: client disconnect while held aborts the hold without leaking"
+STORE_HOLD_B="$(setup_store "$WORK/hold-b" a)"
+RESET_HOLD_B=$(( $(date +%s) + 30 ))
+write_plan <<JSON
+{ "byToken": { "acct-a": { "status": 429, "headers": { "anthropic-ratelimit-unified-status": "rejected", "anthropic-ratelimit-unified-reset": "$RESET_HOLD_B" }, "body": "{}" } } }
+JSON
+export CLAUDEBD_HOLD_MAX_MS=20000
+start_daemon "$STORE_HOLD_B"
+code1=$(gpost "$GEN")
+eq "$code1" "429" "hold-b: first exhausting request forwards the upstream 429 (documented, not held)"
+curl -s --max-time 1 -o /dev/null -X POST \
+  -H "authorization: $(auth_header)" -H 'content-type: application/json' \
+  --data "$GEN" "http://127.0.0.1:$DAEMON_PORT/v1/messages" 2>/dev/null || true
+sleep 0.3
+contains "hold account-scope=general waited_ms=" "$(cat "$STORE_HOLD_B/claudebd.log")" "hold-b: a hold log line is recorded for the aborted hold"
+contains "outcome=client-close" "$(cat "$STORE_HOLD_B/claudebd.log")" "hold-b: the aborted hold logs outcome=client-close"
+eq "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$DAEMON_PORT/claudebd/status")" "200" "hold-b: daemon survives the aborted hold"
+hold_lines=$(grep -c 'hold account-scope=general' "$STORE_HOLD_B/claudebd.log")
+eq "$hold_lines" "1" "hold-b: exactly one hold outcome is logged (no leaked/duplicate resolution)"
+stop_daemon
+unset CLAUDEBD_HOLD_MAX_MS
+
+echo "scenario hold-c: 3 usable + 1 blocked account -> served instantly, no hold path engaged at all"
+STORE_HOLD_C="$(setup_store "$WORK/hold-c" a b c d)"
+BLOCKED_UNTIL=$(( $(date +%s) + 300 ))
+cat >"$STORE_HOLD_C/daemon-state.json" <<JSON
+{ "accounts": { "a": { "forcedUntil": $BLOCKED_UNTIL, "forcedReason": "transient", "forcedScope": "general" } }, "pinnedAt": {} }
+JSON
+write_plan <<'JSON'
+{ "default": { "status": 200, "body": "{\"ok\":true}" } }
+JSON
+export CLAUDEBD_HOLD_MAX_MS=8000
+start_daemon "$STORE_HOLD_C"
+eq "$(sfield accounts.a.walled)" "true" "hold-c: account a is walled from a pre-seeded forcedUntil"
+START_NOHOLD=$(date +%s)
+code=$(gpost "$GEN")
+ELAPSED_NOHOLD=$(( $(date +%s) - START_NOHOLD ))
+eq "$code" "200" "hold-c: request is served despite one blocked account"
+in_range "$ELAPSED_NOHOLD" "0" "1" "hold-c: request is served instantly, not held"
+hold_count_c=$(grep -c 'hold account-scope=' "$STORE_HOLD_C/claudebd.log" 2>/dev/null)
+eq "${hold_count_c:-0}" "0" "hold-c: no hold log line is ever emitted"
+stop_daemon
+unset CLAUDEBD_HOLD_MAX_MS
+
+echo "scenario current-null-fable-sibling: general current=null must not falsely 503 a fable request a sibling can serve"
+STORE_NULLCUR="$(setup_store "$WORK/current-null-fable-sibling" a b)"
+FUTURE_WALL=$(( $(date +%s) + 300 ))
+cat >"$STORE_NULLCUR/daemon-state.json" <<JSON
+{ "accounts": { "a": { "forcedUntil": $FUTURE_WALL, "forcedReason": "transient" }, "b": { "forcedUntil": $FUTURE_WALL, "forcedReason": "transient", "forcedScope": "general" } }, "pinnedAt": {} }
+JSON
+write_plan <<'JSON'
+{ "default": { "fault": "ok" } }
+JSON
+start_daemon "$STORE_NULLCUR"
+eq "$(sfield current)" "null" "current-null-fable-sibling: general current is null (both accounts blocked for general)"
+eq "$(sfield current_fable)" "b" "current-null-fable-sibling: fable current is the general-only-walled sibling b"
+code=$(gpost "$FAB")
+eq "$code" "200" "current-null-fable-sibling: fable request is served by the eligible sibling, not falsely 503'd"
+contains '"account":"acct-b"' "$(cat "$WORK/body")" "current-null-fable-sibling: response comes from account b"
+stop_daemon
+
+echo "scenario cause-explicit: a fable-only transient wall carries scope/reason/hint and notes general still works"
+STORE_CAUSE="$(setup_store "$WORK/cause-explicit" a)"
+write_plan <<'JSON'
+{ "id": "cause-explicit", "sequence": [{ "fault": "bare429" }, { "fault": "bare429" }], "default": { "fault": "ok" } }
+JSON
+start_daemon "$STORE_CAUSE"
+code1=$(gpost "$FAB")
+eq "$code1" "429" "cause-explicit: first fable request forwards the upstream bare 429 (documented)"
+eq "$(sfield accounts.a.usable.fable)" "false" "cause-explicit: account a is no longer fable-usable"
+eq "$(sfield accounts.a.usable.general)" "true" "cause-explicit: account a is still general-usable (scoped wall only)"
+code2=$(gpost "$FAB")
+eq "$code2" "503" "cause-explicit: second fable request hits the synthetic 503 (only account, no hold configured)"
+body2=$(cat "$WORK/body")
+eq "$(echo "$body2" | jget scope)" "fable" "cause-explicit: 503 body names the blocked scope"
+eq "$(echo "$body2" | jget reason)" "wall-capacity" "cause-explicit: 503 body classifies the cause as a capacity wall"
+contains "likely to clear soon" "$(echo "$body2" | jget hint)" "cause-explicit: transient wall carries a hint"
+contains "general models still available" "$(echo "$body2" | jget message)" "cause-explicit: message notes the unaffected scope"
+code3=$(gpost "$GEN")
+eq "$code3" "200" "cause-explicit: a general request on the same account still succeeds"
 stop_daemon
 
 echo
