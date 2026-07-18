@@ -126,13 +126,14 @@ local function formatResetTime(value)
     return "unknown"
   end
 
-  local delta = timestamp - os.time()
-  if delta < 86400 then
-    return os.date("%H:%M", timestamp)
-  end
+  local now = os.time()
+  local delta = timestamp - now
   if delta < 604800 then
-    local weekdays = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" }
-    return weekdays[tonumber(os.date("%w", timestamp)) + 1] .. os.date(" %H:%M", timestamp)
+    if os.date("%Y-%m-%d", timestamp) ~= os.date("%Y-%m-%d", now) then
+      local weekdays = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" }
+      return weekdays[tonumber(os.date("%w", timestamp)) + 1] .. os.date(" %H:%M", timestamp)
+    end
+    return os.date("%H:%M", timestamp)
   end
   return os.date("%b %d", timestamp)
 end

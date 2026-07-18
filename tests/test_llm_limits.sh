@@ -998,6 +998,37 @@ for rendered in "$clock_text" "$weekday_text" "$date_text"; do
   grep -Fq "$rendered" <<<"$claudeb_plain" || fail "claudeb reset tier missing: $rendered"
 done
 
+XMID_STORE="$WORK/xmid-store"
+XMID_HOME="$WORK/xmid-home"
+mkdir -p "$XMID_STORE/limits" "$XMID_STORE/tokens" "$XMID_HOME"
+printf 'sameday\n' >"$XMID_STORE/.claudeb-state"
+pinned_now=$(date -j -f '%Y-%m-%d %H:%M:%S' '2027-01-15 12:00:00' '+%s')
+sameday_epoch=$(( pinned_now + 14400 ))
+crossmid_epoch=$(( pinned_now + 72000 ))
+farweek_epoch=$(( pinned_now + 259200 ))
+printf '{"five_hour":{"used_percentage":10,"resets_at":%s}}\n' "$sameday_epoch" >"$XMID_STORE/limits/sameday.json"
+printf '{"five_hour":{"used_percentage":20,"resets_at":%s}}\n' "$crossmid_epoch" >"$XMID_STORE/limits/crossmid.json"
+printf '{"five_hour":{"used_percentage":30,"resets_at":%s}}\n' "$farweek_epoch" >"$XMID_STORE/limits/farweek.json"
+touch "$XMID_STORE/tokens/sameday" "$XMID_STORE/tokens/crossmid" "$XMID_STORE/tokens/farweek"
+sameday_bare=$(date -r "$sameday_epoch" '+%H:%M')
+sameday_daytext="${weekdays[$(date -r "$sameday_epoch" '+%w')]} $sameday_bare"
+crossmid_text="${weekdays[$(date -r "$crossmid_epoch" '+%w')]} $(date -r "$crossmid_epoch" '+%H:%M')"
+farweek_text="${weekdays[$(date -r "$farweek_epoch" '+%w')]} $(date -r "$farweek_epoch" '+%H:%M')"
+xmid_table=$(HOME="$XMID_HOME" CLAUDEB_DIR="$XMID_STORE" LLM_LIMITS_CACHE="$CACHE" LLM_LIMITS_NOW="$pinned_now" bash "$SCRIPT" --table) || fail "cross-midnight table fixture failed"
+xmid_plain=$(HOME="$XMID_HOME" CLAUDEB_DIR="$XMID_STORE" LLM_LIMITS_CACHE="$CACHE" LLM_LIMITS_NOW="$pinned_now" bash "$SCRIPT" --plain) || fail "cross-midnight plain fixture failed"
+xmid_claudeb=$(HOME="$XMID_HOME" CLAUDEB_DIR="$XMID_STORE" CLAUDEB_NOW="$pinned_now" bash "$ROOT/bin/claudeb" status --cached --plain) || fail "cross-midnight claudeb fixture failed"
+for surface_name in table plain claudeb; do
+  case "$surface_name" in
+    table) surface="$xmid_table" ;;
+    plain) surface="$xmid_plain" ;;
+    claudeb) surface="$xmid_claudeb" ;;
+  esac
+  grep -Fq "$crossmid_text" <<<"$surface" || fail "$surface_name: within-24h cross-midnight reset lacks the day marker ($crossmid_text)"
+  grep -Fq "$sameday_bare" <<<"$surface" || fail "$surface_name: same-day reset lost its bare clock time ($sameday_bare)"
+  grep -Fq "$sameday_daytext" <<<"$surface" && fail "$surface_name: same-day reset wrongly gained a day marker ($sameday_daytext)"
+  grep -Fq "$farweek_text" <<<"$surface" || fail "$surface_name: >24h reset tier changed ($farweek_text)"
+done
+
 EMPTY="$WORK/empty-home"
 mkdir -p "$EMPTY"
 HOME="$EMPTY" bash "$SCRIPT" --no-write >/dev/null 2>&1

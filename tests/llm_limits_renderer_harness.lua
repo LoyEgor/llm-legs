@@ -23,7 +23,7 @@ function Styled.__concat(left, right)
   return result
 end
 
-local function loadModule(fixture, taskFactory)
+local function loadModule(fixture, taskFactory, nowOverride)
   local mock = {
     alert = { show = function() end },
     execute = function() return true end,
@@ -38,6 +38,9 @@ local function loadModule(fixture, taskFactory)
     end,
   }, { __index = io })
   local env = setmetatable({ hs = mock, io = fakeIo }, { __index = _G })
+  if nowOverride then
+    env.os = setmetatable({ time = function() return nowOverride end }, { __index = os })
+  end
   env._G = env
   local chunk, err = loadfile(root .. "/hammerspoon/llm-limits.lua", "t", env)
   assert(chunk, err)
@@ -287,5 +290,39 @@ hardRefreshModule.hardRefreshClaude("full")
 local hardRefreshMenu = hardRefreshModule.menuItems()
 assert(titleText(hardRefreshMenu[1]):find("updating", 1, true),
   "in-flight hard refresh did not render the updating indicator")
+
+local xmidNow = os.time({ year = 2027, month = 1, day = 15, hour = 12, min = 0, sec = 0 })
+local sameDay = xmidNow + 14400
+local crossMid = xmidNow + 72000
+local farWeek = xmidNow + 259200
+local weekdayNames = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" }
+local function dayText(ts)
+  return weekdayNames[tonumber(os.date("%w", ts)) + 1] .. os.date(" %H:%M", ts)
+end
+local xmidFixture = { schema = 1, vendors = {
+  claude = {
+    available = true,
+    source = "claudeb-store",
+    daemon = { reachable = true },
+    accounts = {
+      { account = "sameday", five_hour = { effective_pct = 10, resets_at = sameDay },
+        rotation = { usable = { general = true, fable = true }, blocked = {} } },
+      { account = "crossmid", five_hour = { effective_pct = 20, resets_at = crossMid },
+        rotation = { usable = { general = true, fable = true }, blocked = {} } },
+      { account = "farweek", five_hour = { effective_pct = 30, resets_at = farWeek },
+        rotation = { usable = { general = true, fable = true }, blocked = {} } },
+    },
+  },
+  codex = { available = false },
+  gemini = { available = false },
+}}
+local xmidMenu = loadModule(xmidFixture, nil, xmidNow).menuItems()
+local sameDayRow = titleText(xmidMenu[accountIndex(xmidMenu, "sameday") + 1])
+assert(sameDayRow:find(os.date("%H:%M", sameDay), 1, true), "same-day reset lost its bare clock time")
+assert(not sameDayRow:find(dayText(sameDay), 1, true), "same-day reset wrongly gained a day marker")
+local crossMidRow = titleText(xmidMenu[accountIndex(xmidMenu, "crossmid") + 1])
+assert(crossMidRow:find(dayText(crossMid), 1, true), "within-24h cross-midnight reset lacks the day marker")
+local farWeekRow = titleText(xmidMenu[accountIndex(xmidMenu, "farweek") + 1])
+assert(farWeekRow:find(dayText(farWeek), 1, true), ">24h reset tier changed")
 
 return "PASS: Hammerspoon projection contract"

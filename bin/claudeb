@@ -161,13 +161,16 @@ format_reset_time() {
   local epoch="$1" now delta weekday
   local -a weekdays=(Sun Mon Tue Wed Thu Fri Sat)
   if ! [ "$epoch" -gt 0 ] 2>/dev/null; then printf 'unknown'; return; fi
-  now=$(date +%s)
+  now=${CLAUDEB_NOW:-$(date +%s)}
   delta=$((epoch - now))
-  if [ "$delta" -lt 86400 ]; then
-    date -r "$epoch" '+%H:%M' 2>/dev/null || date -d "@$epoch" '+%H:%M' 2>/dev/null || printf 'unknown'
-  elif [ "$delta" -lt 604800 ]; then
-    weekday=$(date -r "$epoch" '+%w' 2>/dev/null || date -d "@$epoch" '+%w' 2>/dev/null) || { printf 'unknown'; return; }
-    printf '%s ' "${weekdays[$weekday]}"
+  if [ "$delta" -lt 604800 ]; then
+    local epoch_day now_day
+    epoch_day=$(date -r "$epoch" '+%Y-%m-%d' 2>/dev/null || date -d "@$epoch" '+%Y-%m-%d' 2>/dev/null)
+    now_day=$(date -r "$now" '+%Y-%m-%d' 2>/dev/null || date -d "@$now" '+%Y-%m-%d' 2>/dev/null)
+    if [ "$epoch_day" != "$now_day" ]; then
+      weekday=$(date -r "$epoch" '+%w' 2>/dev/null || date -d "@$epoch" '+%w' 2>/dev/null) || { printf 'unknown'; return; }
+      printf '%s ' "${weekdays[$weekday]}"
+    fi
     date -r "$epoch" '+%H:%M' 2>/dev/null || date -d "@$epoch" '+%H:%M' 2>/dev/null || printf 'unknown'
   else
     date -r "$epoch" '+%m-%d %H:%M' 2>/dev/null || date -d "@$epoch" '+%m-%d %H:%M' 2>/dev/null || printf 'unknown'

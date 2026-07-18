@@ -80,7 +80,7 @@ case "$chunk_bytes" in
   ''|*[!0-9]*|0) echo "llm-limits.sh: LLM_LIMITS_CHUNK_BYTES must be a positive integer" >&2; exit 3 ;;
 esac
 
-now_epoch=$(date +%s)
+now_epoch=${LLM_LIMITS_NOW:-$(date +%s)}
 local_iso() {
   date '+%Y-%m-%dT%H:%M:%S%z' | sed -E 's/([+-][0-9]{2})([0-9]{2})$/\1:\2/'
 }
@@ -192,10 +192,11 @@ reset_format_def='def format_reset($now):
   . as $iso | ($iso | iso2epoch) as $epoch |
   if $iso == null or $iso == "" then "-"
   elif $epoch == null then $iso
-  elif ($epoch - $now) < 86400 then ($epoch | strflocaltime("%H:%M"))
   elif ($epoch - $now) < 604800 then
-    (["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][$epoch | strflocaltime("%w") | tonumber]
-     + " " + ($epoch | strflocaltime("%H:%M")))
+    (if ($epoch | strflocaltime("%Y-%m-%d")) != ($now | strflocaltime("%Y-%m-%d"))
+     then (["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][$epoch | strflocaltime("%w") | tonumber]
+           + " " + ($epoch | strflocaltime("%H:%M")))
+     else ($epoch | strflocaltime("%H:%M")) end)
   else ($epoch | strflocaltime("%m-%d %H:%M")) end;'
 
 pct_cell() {
