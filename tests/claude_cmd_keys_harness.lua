@@ -35,12 +35,38 @@ assert(module.containsImageType({ "com.compuserve.gif" }), "GIF pasteboard type 
 assert(not module.containsImageType({ "public.utf8-plain-text" }), "text was classified as an image")
 assert(not module.containsImageType(nil), "missing pasteboard types were classified as an image")
 
+assert(module.containsFileURLType({ "public.file-url" }), "file-url type was not detected")
+assert(module.containsFileURLType({ "public.png", "public.file-url" }), "file-url type was missed alongside others")
+assert(not module.containsFileURLType({ "public.png" }), "image type was misread as file-url")
+assert(not module.containsFileURLType(nil), "missing types were misread as file-url")
+
+assert(module.isImagePath("/tmp/a.png"), "png path was not recognized")
+assert(module.isImagePath("/x/telegram-cloud-photo.JPG"), "uppercase jpg path was not recognized")
+assert(module.isImagePath("/x/y.HEIC") and module.isImagePath("/x/y.tif") and module.isImagePath("/x/y.webp"),
+  "an image extension was not recognized")
+assert(not module.isImagePath("/tmp/a.pdf"), "pdf path was recognized as an image")
+assert(not module.isImagePath("/tmp/noext"), "extensionless path was recognized as an image")
+assert(not module.isImagePath(nil), "nil path was recognized as an image")
+
+assert(module.fileURLToPath("file:///tmp/a.png") == "/tmp/a.png", "file URL was not converted to a path")
+assert(module.fileURLToPath("file://localhost/tmp/a.png") == "/tmp/a.png", "host file URL was not converted")
+assert(module.fileURLToPath("file:///tmp/a%20b.png") == "/tmp/a b.png", "percent-encoded file URL was not decoded")
+assert(module.fileURLToPath("https://example.com/a.png") == nil, "non-file URL was converted to a path")
+assert(module.fileURLToPath({ url = "file:///tmp/a.png" }) == "/tmp/a.png", "table-form URL was not converted")
+assert(module.fileURLToPath(nil) == nil, "nil URL produced a path")
+
 assert(module.decide("com.apple.Terminal", native, nil, "c") == "copy",
   "Cmd+C did not choose copy")
 assert(module.decide("com.apple.Terminal", native, { "public.png" }, "v") == "image-paste",
   "image Cmd+V did not choose image paste")
 assert(module.decide("com.apple.Terminal", native, { "public.utf8-plain-text" }, "v") == "pass",
   "text Cmd+V was not passed through")
+assert(module.decide("com.apple.Terminal", native, { "public.file-url" }, "v", "/tmp/a.png") == "convert",
+  "file-url Cmd+V with a resolved path did not choose convert")
+assert(module.decide("com.apple.Terminal", native, { "public.file-url" }, "v") == "pass",
+  "file-url Cmd+V without a resolved path was intercepted")
+assert(module.decide("com.apple.Terminal", native, { "public.png" }, "v", "/tmp/a.png") == "image-paste",
+  "image UTI lost priority over a convert path")
 assert(module.decide("com.apple.Terminal", "S+ zsh\n", { "public.png" }, "v") == "pass",
   "non-Claude Terminal process was intercepted")
 assert(module.decide("com.apple.Safari", native, { "public.png" }, "v") == "pass",
@@ -104,6 +130,10 @@ local replacedAtSameIndex = {
 }
 assert(module.decideCached(replacedAtSameIndex, cached, nil, "c", 10.1) == "pass",
   "replacement Terminal tab at the same index was intercepted")
+assert(module.decideCached(observed, cached, { "public.file-url" }, "v", 10.1, "/tmp/a.png") == "convert",
+  "cached file-url Cmd+V did not choose convert")
+assert(module.decideCached(observed, cached, { "public.file-url" }, "v", 11, "/tmp/a.png") == "pass",
+  "stale file-url Cmd+V cache was intercepted")
 
 local pending, effect = module.pendingTransition(nil, {
   type = "press", id = 1, key = "c", now = 1, timeout = 0.28,
@@ -165,6 +195,32 @@ pending, effect = module.pendingTransition(nil, {
 assert(pending.status == "idle" and effect.ignored and not effect.consume,
   "self-posted event was not ignored")
 
+local function convertPending(id)
+  return module.pendingTransition(nil, {
+    type = "press", id = id, key = "v", image = true, convertPath = "/tmp/a.png",
+    now = 1, timeout = 0.28,
+  })
+end
+local cvt, cvtEffect
+cvt = convertPending(20)
+cvt, cvtEffect = module.pendingTransition(cvt, { type = "resolve", verdict = "claude" })
+assert(cvtEffect.actions[1].action == "convert" and cvtEffect.actions[1].path == "/tmp/a.png",
+  "convert verdict lost its action or path")
+cvt = convertPending(21)
+cvt, cvtEffect = module.pendingTransition(cvt, { type = "resolve", verdict = "not-claude" })
+assert(cvtEffect.actions[1].action == "replay", "non-Claude convert did not replay")
+cvt = convertPending(22)
+cvt, cvtEffect = module.pendingTransition(cvt, { type = "stop" })
+assert(cvtEffect.actions[1].action == "policy-drop", "stopped convert did not policy-drop")
+cvt = convertPending(23)
+cvt, cvtEffect = module.pendingTransition(cvt, {
+  type = "resolve", verdict = "claude", targetMatches = { [23] = false },
+})
+assert(cvtEffect.actions[1].action == "policy-drop", "target-mismatched convert did not policy-drop")
+cvt = convertPending(24)
+cvt, cvtEffect = module.pendingTransition(cvt, { type = "tick", now = 1.29 })
+assert(cvtEffect.actions[1].action == "replay", "timed-out convert did not replay")
+
 env.hs = {
   eventtap = {
     event = {
@@ -211,7 +267,8 @@ local function keyEvent(keyCode, modifiers, isRepeat, label)
   return event
 end
 
-local function integrationContext(types)
+local function integrationContext(types, opts)
+  opts = opts or {}
   local clock = 20
   local observedNow = {
     bundleID = "com.apple.Terminal",
@@ -221,13 +278,26 @@ local function integrationContext(types)
   }
   local resolver
   local timeout
+  local deferred
   local actions = {}
+  local changeCount = 1
+  local alertCount = 0
   module.setTestHooks({
     replayProperty = 91,
     now = function() return clock end,
     absoluteTime = function() return clock * 1000000000 end,
     observe = function() return observedNow end,
     contentTypes = function() return types or {} end,
+    readURL = function() return opts.url end,
+    fileExists = function() return opts.fileExists ~= false end,
+    changeCount = function() return changeCount end,
+    alert = function() alertCount = alertCount + 1 end,
+    loadImage = function()
+      if opts.loadFails then return nil end
+      return opts.image or {}
+    end,
+    writeImage = function() actions[#actions + 1] = "write-image" end,
+    defer = function(fn) deferred = fn end,
     resolve = function(callback) resolver = callback end,
     after = function(_, callback)
       timeout = { callback = callback, stopped = false }
@@ -252,8 +322,15 @@ local function integrationContext(types)
         tabElement = "tab-b",
       }
     end,
+    bumpClipboard = function() changeCount = changeCount + 1 end,
+    alerts = function() return alertCount end,
     resolve = function(verdict) resolver(verdict) end,
     timeout = function() timeout.callback() end,
+    runDeferred = function()
+      local fn = deferred
+      deferred = nil
+      if fn then fn() end
+    end,
   }
 end
 
@@ -339,6 +416,91 @@ assert(module.handleEvent(vPress(true)),
 assert(#integration.actions == 2 and integration.actions[1] == "image-paste"
     and integration.actions[2] == "copy",
   "cross-key Cmd+V autorepeat emitted an action")
+
+integration = integrationContext({ "public.file-url" }, { url = "file:///tmp/pic.png" })
+assert(module.handleEvent(vPress(false)), "cold file-url Cmd+V was not consumed")
+assert(#integration.actions == 0, "file-url conversion ran inside the tap callback")
+integration.resolve("claude")
+integration.runDeferred()
+assert(#integration.actions == 2 and integration.actions[1] == "write-image"
+    and integration.actions[2] == "image-paste",
+  "file-url convert did not write image pixels then paste")
+
+integration = integrationContext({ "public.file-url" }, { url = "file:///tmp/photo.JPG" })
+assert(module.handleEvent(vPress(false)), "uppercase-extension file-url Cmd+V was not consumed")
+integration.resolve("claude")
+integration.runDeferred()
+assert(integration.actions[1] == "write-image",
+  "uppercase image extension was not treated as an image")
+
+integration = integrationContext({ "public.file-url" }, { url = "file:///tmp/pic.png", loadFails = true })
+assert(module.handleEvent(vPress(false)), "load-failure file-url Cmd+V was not consumed")
+integration.resolve("claude")
+integration.runDeferred()
+assert(#integration.actions == 1 and integration.actions[1] == "replay",
+  "image load failure did not replay the original event")
+assert(integration.alerts() == 1, "unreadable image (TCC) did not raise an alert")
+
+integration = integrationContext({ "public.file-url" }, { url = "file:///tmp/doc.pdf" })
+assert(not module.handleEvent(vPress(false)), "non-image file-url Cmd+V was not passed through")
+assert(#integration.actions == 0, "non-image file-url produced an action")
+
+integration = integrationContext({ "public.file-url" }, { url = "file:///tmp/gone.png", fileExists = false })
+assert(not module.handleEvent(vPress(false)), "missing-file file-url Cmd+V was not passed through")
+assert(#integration.actions == 0, "missing file-url produced an action")
+
+integration = integrationContext({ "public.utf8-plain-text" })
+assert(not module.handleEvent(vPress(false)), "text Cmd+V entered the intercept path")
+assert(#integration.actions == 0, "text Cmd+V produced an action")
+
+integration = integrationContext({ "public.file-url" }, { url = "file:///tmp/pic.png" })
+module.handleEvent(vPress(false))
+integration.changeTarget()
+integration.resolve("claude")
+assert(#integration.actions == 1 and integration.actions[1] == "policy-drop",
+  "target-mismatched file-url Cmd+V was not policy-dropped")
+
+integration = integrationContext({ "public.file-url" }, { url = "file:///tmp/pic.png" })
+module.handleEvent(vPress(false))
+module.stop()
+assert(#integration.actions == 1 and integration.actions[1] == "policy-drop",
+  "stop did not policy-drop a pending file-url Cmd+V")
+
+-- App switch AFTER the convert is scheduled but before the deferred tick runs.
+integration = integrationContext({ "public.file-url" }, { url = "file:///tmp/pic.png" })
+module.handleEvent(vPress(false))
+integration.resolve("claude")
+integration.changeTarget()
+integration.runDeferred()
+assert(#integration.actions == 1 and integration.actions[1] == "policy-drop",
+  "convert into a switched context was not policy-dropped")
+assert(integration.alerts() == 0, "silent context drop raised an alert")
+
+integration = integrationContext({ "public.file-url" }, { url = "file:///tmp/pic.png" })
+module.handleEvent(vPress(false))
+integration.resolve("claude")
+integration.bumpClipboard()
+integration.runDeferred()
+assert(#integration.actions == 1 and integration.actions[1] == "policy-drop",
+  "convert with a changed pasteboard was not policy-dropped")
+assert(integration.alerts() == 0, "silent pasteboard drop raised an alert")
+
+integration = integrationContext({ "public.file-url" }, { url = "file:///tmp/pic.png" })
+module.handleEvent(vPress(false))
+integration.resolve("claude")
+integration.runDeferred()
+assert(#integration.actions == 2 and integration.actions[1] == "write-image"
+    and integration.actions[2] == "image-paste",
+  "unchanged context did not convert after the deferred re-check")
+
+integration = integrationContext({ "public.file-url" }, { url = "file:///tmp/pic.png", loadFails = true })
+module.handleEvent(vPress(false)); integration.resolve("claude"); integration.runDeferred()
+assert(integration.alerts() == 1, "first TCC failure did not alert")
+module.handleEvent(vPress(false)); integration.resolve("claude"); integration.runDeferred()
+assert(integration.alerts() == 1, "repeat TCC failure alert was not throttled")
+integration.advance(11)
+module.handleEvent(vPress(false)); integration.resolve("claude"); integration.runDeferred()
+assert(integration.alerts() == 2, "TCC alert did not re-fire after the throttle window")
 
 local copy = module.copyChordPlan()
 assert(#copy == 2, "copy chord length changed")

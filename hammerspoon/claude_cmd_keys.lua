@@ -76,6 +76,49 @@ function M.containsImageType(types)
   return false
 end
 
+local imageExtensions = {
+  bmp = true,
+  gif = true,
+  heic = true,
+  heif = true,
+  jpeg = true,
+  jpg = true,
+  png = true,
+  tif = true,
+  tiff = true,
+  webp = true,
+}
+
+function M.containsFileURLType(types)
+  if type(types) ~= "table" then
+    return false
+  end
+  for _, contentType in ipairs(types) do
+    if contentType == "public.file-url" then
+      return true
+    end
+  end
+  return false
+end
+
+function M.fileURLToPath(url)
+  if type(url) == "table" then
+    url = url.url or url.filePath or url.path or url[1]
+  end
+  local path = tostring(url or ""):match("^file://[^/]*(/.*)$")
+  if not path then
+    return nil
+  end
+  return (path:gsub("%%(%x%x)", function(hex)
+    return string.char(tonumber(hex, 16))
+  end))
+end
+
+function M.isImagePath(path)
+  local ext = tostring(path or ""):match("%.([%a%d]+)$")
+  return ext ~= nil and imageExtensions[ext:lower()] == true
+end
+
 function M.copyChordPlan()
   return { 24, 25 }
 end
@@ -92,7 +135,7 @@ function M.planBytes(plan)
   return table.concat(bytes)
 end
 
-local function decideAction(bundleID, claude, pasteboardTypes, key)
+local function decideAction(bundleID, claude, pasteboardTypes, key, convertPath)
   if bundleID ~= terminalBundleID or not claude then
     return "pass"
   end
@@ -100,14 +143,19 @@ local function decideAction(bundleID, claude, pasteboardTypes, key)
   if key == "c" then
     return "copy"
   end
-  if key == "v" and M.containsImageType(pasteboardTypes) then
-    return "image-paste"
+  if key == "v" then
+    if M.containsImageType(pasteboardTypes) then
+      return "image-paste"
+    end
+    if convertPath then
+      return "convert"
+    end
   end
   return "pass"
 end
 
-function M.decide(bundleID, psOutput, pasteboardTypes, key)
-  return decideAction(bundleID, M.isClaudeForeground(psOutput), pasteboardTypes, key)
+function M.decide(bundleID, psOutput, pasteboardTypes, key, convertPath)
+  return decideAction(bundleID, M.isClaudeForeground(psOutput), pasteboardTypes, key, convertPath)
 end
 
 local function contextIdentityMatches(observed, cached)
@@ -119,12 +167,12 @@ local function contextIdentityMatches(observed, cached)
     and cached.tabElement == observed.tabElement
 end
 
-function M.decideCached(observed, cached, pasteboardTypes, key, timestamp)
+function M.decideCached(observed, cached, pasteboardTypes, key, timestamp, convertPath)
   local verdict = M.cachedVerdict(observed, cached, timestamp)
   if verdict == "uncertain" then
     return "pass"
   end
-  return decideAction(observed.bundleID, verdict == "claude", pasteboardTypes, key)
+  return decideAction(observed.bundleID, verdict == "claude", pasteboardTypes, key, convertPath)
 end
 
 function M.cachedVerdict(observed, cached, timestamp)
@@ -151,13 +199,20 @@ local function finishPending(state, verdict, targetMatches)
     if verdict == "stop" or not targetMatchesItem then
       action = item.key == "c" and "replay" or "policy-drop"
     elseif verdict == "claude" then
-      action = item.key == "c" and "copy" or "image-paste"
+      if item.key == "c" then
+        action = "copy"
+      elseif item.convertPath then
+        action = "convert"
+      else
+        action = "image-paste"
+      end
     else
       action = "replay"
     end
     actions[#actions + 1] = {
       id = item.id,
       action = action,
+      path = item.convertPath,
     }
   end
   return idlePendingState(), { actions = actions, verdict = verdict }
@@ -192,7 +247,7 @@ function M.pendingTransition(state, event)
         queue[index] = item
       end
     end
-    queue[#queue + 1] = { id = event.id, key = event.key }
+    queue[#queue + 1] = { id = event.id, key = event.key, convertPath = event.convertPath }
     return {
       status = "pending",
       queue = queue,
@@ -450,6 +505,92 @@ local function postOriginal(original)
   original.event:post()
 end
 
+local function deferAsync(fn)
+  if runtimeHooks and runtimeHooks.defer then
+    runtimeHooks.defer(fn)
+    return
+  end
+  hs.timer.doAfter(0, fn)
+end
+
+local function pasteboardChangeCount()
+  if runtimeHooks and runtimeHooks.changeCount then
+    return runtimeHooks.changeCount()
+  end
+  return hs.pasteboard.changeCount()
+end
+
+local alertThrottle = 10
+local lastAlertAt
+
+local function showConvertAlert(message)
+  local at = now()
+  if lastAlertAt and at - lastAlertAt < alertThrottle then
+    return
+  end
+  lastAlertAt = at
+  if runtimeHooks and runtimeHooks.alert then
+    runtimeHooks.alert(message)
+  else
+    hs.alert.show(message)
+  end
+end
+
+local function defaultFileExists(path)
+  local attributes = hs.fs.attributes(path)
+  return attributes ~= nil and attributes.mode == "file"
+end
+
+local function resolveFileImagePath(types)
+  if not M.containsFileURLType(types) then
+    return nil
+  end
+  local readURL = runtimeHooks and runtimeHooks.readURL or hs.pasteboard.readURL
+  local ok, url = pcall(readURL)
+  if not ok then
+    return nil
+  end
+  local path = M.fileURLToPath(url)
+  if not path or not M.isImagePath(path) then
+    return nil
+  end
+  local fileExists = runtimeHooks and runtimeHooks.fileExists or defaultFileExists
+  if not fileExists(path) then
+    return nil
+  end
+  return path
+end
+
+-- The event is consumed at schedule time but the pixel load + write run a tick
+-- later, so re-check both the target and the clipboard before acting: a switched
+-- app or a changed pasteboard means silently drop (replay would paste the wrong
+-- thing into the wrong place); an unreadable file replays and alerts (TCC block).
+local function performConvert(path, original)
+  local scheduledChangeCount = original.changeCount
+  deferAsync(function()
+    if not currentTargetMatches(original, observeFrontmost())
+        or pasteboardChangeCount() ~= scheduledChangeCount then
+      if runtimeHooks and runtimeHooks.drop then
+        runtimeHooks.drop(original.event)
+      end
+      return
+    end
+    local loadImage = runtimeHooks and runtimeHooks.loadImage or hs.image.imageFromPath
+    local image = loadImage(path)
+    if not image then
+      postOriginal(original)
+      showConvertAlert("Cmd+V: can't read image file — check Hammerspoon disk access")
+      return
+    end
+    if runtimeHooks and runtimeHooks.writeImage then
+      runtimeHooks.writeImage(image)
+    else
+      hs.pasteboard.writeObjects(image)
+    end
+    emit(M.imagePastePlan())
+  end)
+end
+
 completePending = function(eventType, verdict)
   local targetMatches
   if eventType ~= "stop" and pendingState and pendingState.status == "pending" then
@@ -481,6 +622,8 @@ completePending = function(eventType, verdict)
       emit(M.copyChordPlan())
     elseif item.action == "image-paste" then
       emit(M.imagePastePlan())
+    elseif item.action == "convert" then
+      performConvert(item.path, original)
     elseif item.action == "replay" then
       postOriginal(original)
     elseif item.action == "policy-drop" then
@@ -505,13 +648,14 @@ local function armPendingTimeout(delay)
   end)
 end
 
-local function deferEvent(event, observed, key, isRepeat)
+local function deferEvent(event, observed, key, isRepeat, convertPath)
   pendingNextID = pendingNextID + 1
   local nextState, effect = M.pendingTransition(pendingState, {
     type = "press",
     id = pendingNextID,
     key = key,
     image = key == "v",
+    convertPath = convertPath,
     isRepeat = isRepeat,
     now = now(),
     timeout = pendingDeadline,
@@ -526,6 +670,7 @@ local function deferEvent(event, observed, key, isRepeat)
   pendingOriginals[pendingNextID] = {
     event = event:copy(),
     observed = observed,
+    changeCount = pasteboardChangeCount(),
   }
   if effect.startResolve then
     pendingStartedAt = absoluteTime()
@@ -573,20 +718,6 @@ local function handleEvent(event, keyCode, isRepeat)
     if effect.folded then return effect.consume end
   end
 
-  local pasteboardTypes
-  if key == "v" then
-    local contentTypes = runtimeHooks and runtimeHooks.contentTypes
-      or hs.pasteboard.contentTypes
-    local ok, result = pcall(contentTypes)
-    if not ok then
-      return false
-    end
-    pasteboardTypes = result
-    if not M.containsImageType(pasteboardTypes) then
-      return false
-    end
-  end
-
   local observed
   if runtimeHooks then
     observed = observeFrontmost()
@@ -598,15 +729,40 @@ local function handleEvent(event, keyCode, isRepeat)
     observed = observeFrontmost(app)
   end
   if observed.bundleID ~= terminalBundleID then return false end
+
+  local pasteboardTypes
+  local convertPath
+  if key == "v" then
+    local contentTypes = runtimeHooks and runtimeHooks.contentTypes
+      or hs.pasteboard.contentTypes
+    local ok, result = pcall(contentTypes)
+    if not ok then
+      return false
+    end
+    pasteboardTypes = result
+    if not M.containsImageType(pasteboardTypes) then
+      convertPath = resolveFileImagePath(pasteboardTypes)
+      if not convertPath then
+        return false
+      end
+    end
+  end
+
   local verdict = M.cachedVerdict(observed, cachedContext, now())
   if verdict == "uncertain" then
-    return deferEvent(event, observed, key, isRepeat)
+    return deferEvent(event, observed, key, isRepeat, convertPath)
   end
-  local action = decideAction(observed.bundleID, verdict == "claude", pasteboardTypes, key)
+  local action = decideAction(observed.bundleID, verdict == "claude", pasteboardTypes, key, convertPath)
   if action == "pass" then return false end
 
   if action == "copy" then
     emit(M.copyChordPlan())
+  elseif action == "convert" then
+    performConvert(convertPath, {
+      event = event:copy(),
+      observed = observed,
+      changeCount = pasteboardChangeCount(),
+    })
   else
     emit(M.imagePastePlan())
   end
@@ -631,6 +787,7 @@ function M.setTestHooks(hooks)
   resolvedTty = nil
   resolvedObserved = nil
   repeatDecisions = {}
+  lastAlertAt = nil
   replayProperty = hooks and hooks.replayProperty or replayProperty
 end
 
