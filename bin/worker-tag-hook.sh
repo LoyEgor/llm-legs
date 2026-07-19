@@ -62,11 +62,21 @@ if [ -n "$tag" ]; then
   tmp_file="$tag_file.tmp.$$"
   trap 'rm -f "$tmp_file" 2>/dev/null' EXIT
   printf '%s\n' "$tag" > "$tmp_file" && mv -f "$tmp_file" "$tag_file"
-else
-  [ -f "$tag_file" ] || exit 0
+elif [ -f "$tag_file" ]; then
   IFS= read -r tag < "$tag_file" || exit 0
   [ -n "$tag" ] || exit 0
   touch "$tag_file" 2>/dev/null
+else
+  # Pre-launch calls (brief saving etc.): adopt the tag worker-spawn-hook
+  # pre-seeded for this agent type; the real launch re-derives over it.
+  pending="$cache_dir/pending-$agent_type"
+  [ -f "$pending" ] || exit 0
+  IFS= read -r tag < "$pending" || exit 0
+  [ -n "$tag" ] || exit 0
+  umask 077
+  tmp_file="$tag_file.tmp.$$"
+  trap 'rm -f "$tmp_file" 2>/dev/null' EXIT
+  printf '%s\n' "$tag" > "$tmp_file" && mv -f "$tmp_file" "$tag_file"
 fi
 
 prune() {

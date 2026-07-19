@@ -55,6 +55,20 @@ fi
 title=$(printf '%s' "$description" | sed -E 's/^[A-Za-z0-9_.?-]+( · [A-Za-z0-9_.-]+){1,2}(: | — )//')
 [ -n "$title" ] || title=task
 
+# Pre-seed the tag for this spawn so the worker's very first Bash calls (brief
+# saving, before any claudeb/codex launch command exists to parse) already
+# carry it; worker-tag-hook claims it per agent_id and the real launch
+# re-derives over it.
+session_id=$(field '.session_id' | tr -cd 'A-Za-z0-9_-')
+[ -n "$session_id" ] || session_id=_
+pending_dir="$HOME/.cache/claude-worker-tags/$session_id"
+if mkdir -p "$pending_dir" 2>/dev/null; then
+  umask 077
+  tmp_pending="$pending_dir/pending-$subagent.tmp.$$"
+  printf '%s\n' "$prefix" > "$tmp_pending" 2>/dev/null && mv -f "$tmp_pending" "$pending_dir/pending-$subagent" 2>/dev/null
+  rm -f "$tmp_pending" 2>/dev/null
+fi
+
 updated="$prefix: $title"
 [ "$updated" = "$description" ] && exit 0
 
