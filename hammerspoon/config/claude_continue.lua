@@ -4,6 +4,8 @@ local ax = require("hs.axuielement")
 
 local appName = "Claude"
 local terminalAppName = "Terminal"
+local kimiAppName = "Kimi"
+local kimiBundleId = "com.moonshot.kimichat"
 local message = "продолжай"
 local promptClickXRatio = 0.35
 local axSearchMaxDepth = 70
@@ -25,8 +27,9 @@ local selectedStartDelayMinutes = nil
 local destinationDefinitions = {}
 
 local destinationEnabled = {
-    app = true,
+    app = false,
     terminal = false,
+    kimi = false,
 }
 
 -- Independent per-destination resume timers, separate from the combined timer/repeat
@@ -110,6 +113,11 @@ local function frontmostIsTerminal()
     return front and front:name() == terminalAppName
 end
 
+local function frontmostIsKimi()
+    local front = hs.application.frontmostApplication()
+    return front and front:bundleID() == kimiBundleId
+end
+
 local function destinationDefinition(id)
     for _, destination in ipairs(destinationDefinitions) do
         if destination.id == id then
@@ -130,10 +138,6 @@ local function enabledDestinationIds()
     end
 
     return ids
-end
-
-local function enabledDestinationCount()
-    return #enabledDestinationIds()
 end
 
 local function destinationLabel()
@@ -255,6 +259,11 @@ local function isPromptTextArea(element)
     return valueContains(classList, "ProseMirror") and valueContains(classList, "tiptap")
 end
 
+local function isTextInputElement(element)
+    local role = axAttribute(element, "AXRole")
+    return role == "AXTextArea" or role == "AXTextField"
+end
+
 local function elementFrame(element)
     local position = axAttribute(element, "AXPosition")
     local size = axAttribute(element, "AXSize")
@@ -285,7 +294,8 @@ local function frameIntersectsWindow(frame, windowFrame)
         and frame.y + frame.h > windowFrame.y
 end
 
-local function findPromptTextArea(rootElement, windowFrame)
+local function findPromptTextArea(rootElement, windowFrame, matcher)
+    matcher = matcher or isPromptTextArea
     local queue = { { element = rootElement, depth = 0 } }
     local index = 1
     local visited = 0
@@ -298,7 +308,7 @@ local function findPromptTextArea(rootElement, windowFrame)
         visited = visited + 1
 
         local element = item.element
-        if isPromptTextArea(element) then
+        if matcher(element) then
             local frame = elementFrame(element)
             local hidden = axAttribute(element, "AXHidden")
             local enabled = axAttribute(element, "AXEnabled")
@@ -325,13 +335,13 @@ local function findPromptTextArea(rootElement, windowFrame)
     return bestPrompt, visited
 end
 
-local function focusedElementIsPrompt(appElement)
-    return isPromptTextArea(axAttribute(appElement, "AXFocusedUIElement"))
+local function focusedElementIsPrompt(appElement, matcher)
+    return (matcher or isPromptTextArea)(axAttribute(appElement, "AXFocusedUIElement"))
 end
 
-local function waitForPromptFocus(appElement)
+local function waitForPromptFocus(appElement, matcher)
     pcall(hs.timer.usleep, 60000)
-    return focusedElementIsPrompt(appElement)
+    return focusedElementIsPrompt(appElement, matcher)
 end
 
 local function clickPromptElement(prompt)
@@ -350,7 +360,7 @@ local function clickPromptElement(prompt)
     return true
 end
 
-local function focusPromptWithAccessibility(app, win)
+local function focusPromptWithAccessibility(app, win, matcher)
     if not ax or not ax.applicationElement then
         return false, "Accessibility module is unavailable"
     end
@@ -360,7 +370,7 @@ local function focusPromptWithAccessibility(app, win)
         return false, "Accessibility app element is unavailable"
     end
 
-    local prompt, visited = findPromptTextArea(appElement, win and win:frame())
+    local prompt, visited = findPromptTextArea(appElement, win and win:frame(), matcher)
     if not prompt then
         return false, "Prompt text area not found after " .. tostring(visited) .. " nodes"
     end
@@ -369,7 +379,7 @@ local function focusPromptWithAccessibility(app, win)
         return prompt:setAttributeValue("AXFocused", true)
     end)
 
-    if setFocusedOk and setFocusedResult ~= false and waitForPromptFocus(appElement) then
+    if setFocusedOk and setFocusedResult ~= false and waitForPromptFocus(appElement, matcher) then
         return true, "Prompt focused via AXFocused after " .. tostring(visited) .. " nodes"
     end
 
@@ -377,11 +387,11 @@ local function focusPromptWithAccessibility(app, win)
         return prompt:performAction("AXPress")
     end)
 
-    if pressOk and pressResult ~= false and waitForPromptFocus(appElement) then
+    if pressOk and pressResult ~= false and waitForPromptFocus(appElement, matcher) then
         return true, "Prompt focused via AXPress after " .. tostring(visited) .. " nodes"
     end
 
-    if clickPromptElement(prompt) and waitForPromptFocus(appElement) then
+    if clickPromptElement(prompt) and waitForPromptFocus(appElement, matcher) then
         return true, "Prompt focused via Accessibility frame after " .. tostring(visited) .. " nodes"
     end
 
@@ -390,6 +400,12 @@ end
 
 local function ensureClaudePromptFocused(app, win)
     local promptFocused, focusMessage = focusPromptWithAccessibility(app, win)
+    log(focusMessage)
+    return promptFocused
+end
+
+local function ensureKimiPromptFocused(app, win)
+    local promptFocused, focusMessage = focusPromptWithAccessibility(app, win, isTextInputElement)
     log(focusMessage)
     return promptFocused
 end
@@ -611,6 +627,82 @@ local function runClaudeApp(pressReturnAfterPaste, onComplete, msgText, opts)
     end)
 end
 
+local function runKimi(pressReturnAfterPaste, onComplete, msgText, opts)
+    deliveryBusy = true
+    opts = opts or {}
+    local id = opts.id or "kimi"
+    local attempt = opts.attempt or 1
+    local text = msgText or message
+    logLine("deliver-start", id, "attempt=" .. attempt .. " kimi-app")
+    log("Start Kimi")
+    hs.application.launchOrFocus(kimiAppName)
+
+    hs.timer.doAfter(launchDelay, function()
+        local app = hs.application.get(kimiBundleId) or hs.application.find(kimiAppName)
+        if not app then
+            logLine("focus-fail", id, "app=" .. frontmostAppName() .. " reason=not-found")
+            finishDelivery(id, onComplete, false, "Kimi not found")
+            return
+        end
+
+        local win = app:mainWindow()
+        if not win then
+            logLine("focus-fail", id, "app=" .. frontmostAppName() .. " reason=no-window")
+            finishDelivery(id, onComplete, false, "No Kimi window")
+            return
+        end
+
+        win:focus()
+
+        hs.timer.doAfter(focusDelay, function()
+            if not frontmostIsKimi() then
+                logLine("focus-fail", id, "app=" .. frontmostAppName())
+                finishDelivery(id, onComplete, false, "Kimi is not focused")
+                return
+            end
+            logLine("focus-ok", id, "app=Kimi")
+
+            ensureKimiPromptFocused(app, win)
+
+            hs.timer.doAfter(clickDelay, function()
+                if not frontmostIsKimi() then
+                    logLine("focus-fail", id, "app=" .. frontmostAppName() .. " before-paste")
+                    finishDelivery(id, onComplete, false, "Kimi lost focus before paste")
+                    return
+                end
+
+                if not ensureKimiPromptFocused(app, win) then
+                    logLine("focus-fail", id, "app=Kimi reason=prompt")
+                    finishDelivery(id, onComplete, false, "Kimi prompt is not focused")
+                    return
+                end
+
+                local snapshotOk, clipboardSnapshot = pcall(hs.pasteboard.readAllData)
+                if not setClipboardText(text) then
+                    finishDelivery(id, onComplete, false, "clipboard set failed", clipboardSnapshot, snapshotOk)
+                    return
+                end
+
+                hs.timer.doAfter(clipboardSettleDelay, function()
+                    hs.eventtap.keyStroke({"cmd"}, "v")
+                    hs.timer.doAfter(pasteDelay, function()
+                        logLine("paste-unverified", id, "attempt=1 kimi-app")
+                        if pressReturnAfterPaste then
+                            hs.eventtap.keyStroke({}, "return")
+                            logLine("return-sent", id, "app=Kimi")
+                            log("Kimi message sent")
+                        else
+                            log("Kimi text pasted, Return disabled")
+                            hs.alert.show("Kimi: text pasted, Return is disabled")
+                        end
+                        finishDelivery(id, onComplete, true, nil, clipboardSnapshot, snapshotOk)
+                    end)
+                end)
+            end)
+        end)
+    end)
+end
+
 local function runTerminal(pressReturnAfterPaste, onComplete, msgText, opts)
     deliveryBusy = true
     opts = opts or {}
@@ -785,8 +877,13 @@ destinationDefinitions = {
     },
     {
         id = "terminal",
-        label = "Terminal",
+        label = "Claude Terminal",
         run = runTerminal,
+    },
+    {
+        id = "kimi",
+        label = "Kimi",
+        run = runKimi,
     },
 }
 
@@ -1342,11 +1439,6 @@ function ClaudeContinue.toggleDestination(id)
         return
     end
 
-    if destinationEnabled[id] and enabledDestinationCount() == 1 then
-        hs.alert.show("Send To: keep at least one destination")
-        return
-    end
-
     destinationEnabled[id] = not destinationEnabled[id]
     notifyStatusChanged()
     hs.alert.show("Send To: " .. destinationLabel())
@@ -1356,11 +1448,6 @@ function ClaudeContinue.setDestinationEnabled(id, enabled)
     local destination = destinationDefinition(id)
     if not destination then
         hs.alert.show("Send To: unknown destination")
-        return
-    end
-
-    if enabled == false and destinationEnabled[id] and enabledDestinationCount() == 1 then
-        hs.alert.show("Send To: keep at least one destination")
         return
     end
 

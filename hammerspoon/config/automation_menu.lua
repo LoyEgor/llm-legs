@@ -238,6 +238,7 @@ refreshTitle = function()
     for _, slot in ipairs({
         { id = "app", label = "A" },
         { id = "terminal", label = "T" },
+        { id = "kimi", label = "K" },
     }) do
         local timerStatus = status.timers and status.timers[slot.id]
         if timerStatus and timerStatus.armed then
@@ -287,6 +288,13 @@ buildMenu = function()
     end
 
     local status = claude.getStatus()
+    local hasEnabledDestination = false
+    for _, destination in ipairs(status.destinations or {}) do
+        if destination.enabled then
+            hasEnabledDestination = true
+            break
+        end
+    end
     local destinationItem = {
         title = "Send To: " .. (status.destinationText or "Claude App"),
         menu = {},
@@ -321,8 +329,6 @@ buildMenu = function()
 
     local menu = {
         destinationItem,
-        firstRunItem,
-        repeatItem,
         { title = "-" },
         monitorItem,
         {
@@ -358,6 +364,11 @@ buildMenu = function()
         llmLimitsItem,
         { title = "-" },
     }
+
+    if hasEnabledDestination then
+        table.insert(menu, 2, firstRunItem)
+        table.insert(menu, 3, repeatItem)
+    end
 
     if ipadMode and ipadMode.isOn() then
         table.insert(menu, {
@@ -415,11 +426,16 @@ buildMenu = function()
     end
 
     local armedIds = {}
+    local shortLabels = {
+        app = "App",
+        terminal = "Terminal",
+        kimi = "Kimi",
+    }
     for _, destination in ipairs(status.destinations or {}) do
         local timerStatus = destination.timer or {}
         if timerStatus.armed then
             table.insert(armedIds, destination.id)
-            local shortLabel = destination.id == "app" and "App" or destination.label
+            local shortLabel = shortLabels[destination.id] or destination.label
             local timeText = timerStatus.overdue and "overdue" or (timerStatus.firesAtText or "?")
 
             table.insert(timersItem.menu, {
@@ -432,9 +448,9 @@ buildMenu = function()
         end
     end
 
-    if #armedIds == 2 then
+    if #armedIds >= 2 then
         table.insert(timersItem.menu, {
-            title = "Stop Both",
+            title = "Stop All",
             fn = function()
                 claude.stopTimer()
                 refreshTitle()
@@ -443,7 +459,7 @@ buildMenu = function()
     end
 
     if #timersItem.menu > 0 then
-        table.insert(menu, 4, timersItem)
+        table.insert(menu, hasEnabledDestination and 4 or 2, timersItem)
     end
 
     for _, option in ipairs(startOptions) do
