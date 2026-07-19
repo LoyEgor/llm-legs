@@ -375,6 +375,15 @@ if not menuOk then
     hs.alert.show("Automation menu error")
 end
 
+local tokenUpkeepOk, tokenUpkeepError = pcall(function()
+    dofile(hs.configdir .. "/token_upkeep.lua")
+end)
+
+if not tokenUpkeepOk then
+    print("ERROR: Token upkeep failed to load:", tokenUpkeepError)
+    hs.alert.show("Token upkeep error")
+end
+
 if _G.DockAutomation then
     local _, sidecarNow = screenStateSnapshot(hs.screen.allScreens())
     _G.DockAutomation.setAutoHide(not sidecarNow)

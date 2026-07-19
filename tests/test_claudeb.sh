@@ -22,7 +22,9 @@ HOME="$WORK/home"
 CLAUDEB_DIR="$WORK/store"
 FAKE_BIN="$WORK/bin"
 CLAUDEB_WARM_RETRY_DELAY=0
-export HOME CLAUDEB_DIR CLAUDEB_WARM_RETRY_DELAY
+CLAUDEB_OAUTH_TOKEN_SPACING=0
+CLAUDEB_WEATHER_RETRY_DELAY=0
+export HOME CLAUDEB_DIR CLAUDEB_WARM_RETRY_DELAY CLAUDEB_OAUTH_TOKEN_SPACING CLAUDEB_WEATHER_RETRY_DELAY
 mkdir -p "$HOME" "$CLAUDEB_DIR/limits" "$CLAUDEB_DIR/tokens" "$FAKE_BIN"
 for command in curl security claude; do
   printf '#!/usr/bin/env bash\nexit 97\n' >"$FAKE_BIN/$command"
@@ -114,7 +116,7 @@ assert test "$until" -ge "$((now + 899))"
 assert test "$until" -le "$((now + 900))"
 printf '{"alpha":{"attempted_at":%s,"outcome":"429","retry_after_until":%s}}\n' "$now" "$((now + 1800))" >"$oauth_attempts_file"
 assert test "$(oauth_backoff_until alpha)" = "$((now + 1800))"
-printf '{"alpha":{"attempted_at":%s,"outcome":"warming","retry_after_until":0}}\n' "$((now - 179))" >"$oauth_attempts_file"
+printf '{"alpha":{"attempted_at":%s,"outcome":"warming","retry_after_until":0}}\n' "$((now - 170))" >"$oauth_attempts_file"
 assert test "$(oauth_backoff_until alpha)" = 0
 assert test "$(oauth_heal_backoff_until alpha)" -gt "$now"
 printf '{"alpha":{"attempted_at":%s,"outcome":"warming","retry_after_until":0}}\n' "$((now - 181))" >"$oauth_attempts_file"
@@ -267,7 +269,7 @@ chmod +x "$FAKE_BIN/security" "$FAKE_BIN/curl"
 printf '{}' >"$oauth_attempts_file"
 printf '{"auth":{"status":"ok","checked_at":1}}' >"$limits_dir/alpha.json"
 probe_one alpha "$weather_dir" false true
-assert test "$(cat "$weather_dir/alpha.result")" = 'no-spend 1 529'
+assert test "$(cat "$weather_dir/alpha.result")" = 'no-spend 255 529'
 assert jq -e '.alpha.outcome == "weather" and .alpha.http_status == 529' "$oauth_attempts_file" >/dev/null
 assert jq -e '.auth.status == "ok" and (.auth | has("cause") | not)' "$limits_dir/alpha.json" >/dev/null
 
@@ -448,6 +450,201 @@ chmod +x "$FAKE_BIN/security" "$FAKE_BIN/claude" "$FAKE_BIN/curl"
   probe_accounts "$order_dir" false false false
   assert test "$(sed -n '1p' "$EVENT_LOG")" = token
   assert_fails grep -qx warm "$EVENT_LOG"
+)
+
+# --- weather-refresh convergence + cross-account token-endpoint serialization ---
+(
+  KC="$WORK/wthr-keychain"; mkdir -p "$KC"
+  SERLOG="$WORK/wthr-serial.log"
+  kc_key() { printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'; }
+  svc_of() { printf 'Claude Code-credentials-%s' "$(printf '%s' "$HOME/.claude-profiles/$1" | shasum -a 256 | awk '{print substr($1, 1, 8)}')"; }
+  seed_expired() { printf '{"claudeAiOauth":{"refreshToken":"%s","accessToken":"at-old","expiresAt":1,"scopes":["a"]}}' "$2" >"$KC/$(kc_key "$(svc_of "$1")")"; }
+  security() {
+    local prev='' svc='' a
+    for a in "$@"; do [ "$prev" = -s ] && svc="$a"; prev="$a"; done
+    cat "$KC/$(kc_key "$svc")" 2>/dev/null || return 44
+  }
+  keychain_write() { printf '%s' "$2" >"$KC/$(kc_key "$1")"; }
+
+  (
+    account_names() { printf 'wa1\nwa2\n'; }
+    curl() {
+      local out='' prev='' a body rt cf n
+      for a in "$@"; do [ "$prev" = -o ] && out="$a"; prev="$a"; done
+      case "$*" in
+        *'/oauth/token'*)
+          body=$(cat)
+          rt=$(printf '%s' "$body" | sed -n 's/.*"refresh_token":"\([^"]*\)".*/\1/p')
+          printf 'S:%s\n' "$rt" >>"$SERLOG"; sleep 0.1; printf 'E:%s\n' "$rt" >>"$SERLOG"
+          cf="$WORK/wthr-tc-$rt"; n=$(cat "$cf" 2>/dev/null || printf 0); n=$((n + 1)); printf '%s' "$n" >"$cf"
+          if [ "$n" -ge 2 ]; then printf '{"access_token":"at-%s","expires_in":3600,"refresh_token":"%s"}\n200' "$rt" "$rt"
+          else printf '{"error":"rate_limited"}\n429'; fi
+          ;;
+        *'/api/oauth/usage'*)
+          [ -z "$out" ] || printf '%s' '{"five_hour":{"utilization":7,"resets_at":null},"seven_day":{"utilization":2,"resets_at":null},"limits":[]}' >"$out"
+          printf '200'
+          ;;
+        *) return 97 ;;
+      esac
+    }
+    : >"$SERLOG"; rm -f "$WORK"/wthr-tc-*
+    seed_expired wa1 rt-wa1; seed_expired wa2 rt-wa2
+    printf '{}' >"$oauth_attempts_file"
+    printf '{"auth":{"status":"ok","checked_at":1}}' >"$limits_dir/wa1.json"
+    printf '{"auth":{"status":"ok","checked_at":1}}' >"$limits_dir/wa2.json"
+    wa_dir="$WORK/wthr-a"; mkdir -p "$wa_dir"
+    probe_accounts "$wa_dir" false false false
+    assert jq -e '.five_hour.used_percentage == 7' "$limits_dir/wa1.json" >/dev/null
+    assert jq -e '.five_hour.used_percentage == 7' "$limits_dir/wa2.json" >/dev/null
+    assert jq -e '.auth.status == "ok"' "$limits_dir/wa1.json" >/dev/null
+    assert jq -e '.auth.status == "ok"' "$limits_dir/wa2.json" >/dev/null
+    assert jq -e '(.wa1 == null) and (.wa2 == null)' "$oauth_attempts_file" >/dev/null
+    assert test "$(cat "$WORK/wthr-tc-rt-wa1")" = 2
+    assert test "$(cat "$WORK/wthr-tc-rt-wa2")" = 2
+    while read -r s && read -r e; do
+      assert test "${s#S:}" = "${e#E:}"
+    done <"$SERLOG"
+  )
+
+  (
+    account_names() { printf 'wb1\n'; }
+    curl() {
+      local body rt cf n
+      case "$*" in
+        *'/oauth/token'*)
+          body=$(cat)
+          rt=$(printf '%s' "$body" | sed -n 's/.*"refresh_token":"\([^"]*\)".*/\1/p')
+          cf="$WORK/wthr-b-tc-$rt"; n=$(cat "$cf" 2>/dev/null || printf 0); n=$((n + 1)); printf '%s' "$n" >"$cf"
+          printf '{"error":"rate_limited"}\n429'
+          ;;
+        *) return 97 ;;
+      esac
+    }
+    rm -f "$WORK"/wthr-b-tc-*
+    seed_expired wb1 rt-wb1
+    printf '{}' >"$oauth_attempts_file"
+    keep='{"five_hour":{"used_percentage":55,"resets_at":123,"as_of":99,"origin":"usage"},"auth":{"status":"ok","checked_at":1}}'
+    printf '%s' "$keep" >"$limits_dir/wb1.json"
+    wb_dir="$WORK/wthr-b"; mkdir -p "$wb_dir"
+    # Budget exhaustion: persistent 429, tiny budget, exactly one retry.
+    CLAUDEB_REFRESH_CONVERGE_S=6 probe_accounts "$wb_dir" false false false
+    assert test "$(cat "$limits_dir/wb1.json")" = "$keep"
+    assert jq -e '.wb1.outcome == "429"' "$oauth_attempts_file" >/dev/null
+    assert test "$(cat "$WORK/wthr-b-tc-rt-wb1")" = 2
+  )
+
+  # Budget 0 disables retrying entirely: exactly one pass, no convergence retries.
+  (
+    account_names() { printf 'wc1\n'; }
+    curl() {
+      local body rt cf n
+      case "$*" in
+        *'/oauth/token'*)
+          body=$(cat)
+          rt=$(printf '%s' "$body" | sed -n 's/.*"refresh_token":"\([^"]*\)".*/\1/p')
+          cf="$WORK/wthr-c-tc-$rt"; n=$(cat "$cf" 2>/dev/null || printf 0); n=$((n + 1)); printf '%s' "$n" >"$cf"
+          printf '{"error":"rate_limited"}\n429'
+          ;;
+        *) return 97 ;;
+      esac
+    }
+    rm -f "$WORK"/wthr-c-tc-*
+    seed_expired wc1 rt-wc1
+    printf '{}' >"$oauth_attempts_file"
+    keep='{"five_hour":{"used_percentage":55,"resets_at":123,"as_of":99,"origin":"usage"},"auth":{"status":"ok","checked_at":1}}'
+    printf '%s' "$keep" >"$limits_dir/wc1.json"
+    wc_dir="$WORK/wthr-c"; mkdir -p "$wc_dir"
+    CLAUDEB_REFRESH_CONVERGE_S=0 probe_accounts "$wc_dir" false false false
+    assert test "$(cat "$limits_dir/wc1.json")" = "$keep"
+    assert jq -e '.wc1.outcome == "429"' "$oauth_attempts_file" >/dev/null
+    assert test "$(cat "$WORK/wthr-c-tc-rt-wc1")" = 1
+  )
+
+  # Convergence: the endpoint 429s twice then succeeds.
+  (
+    account_names() { printf 'wd1\n'; }
+    curl() {
+      local out='' prev='' a body rt cf n
+      for a in "$@"; do [ "$prev" = -o ] && out="$a"; prev="$a"; done
+      case "$*" in
+        *'/oauth/token'*)
+          body=$(cat)
+          rt=$(printf '%s' "$body" | sed -n 's/.*"refresh_token":"\([^"]*\)".*/\1/p')
+          cf="$WORK/wthr-d-tc-$rt"; n=$(cat "$cf" 2>/dev/null || printf 0); n=$((n + 1)); printf '%s' "$n" >"$cf"
+          if [ "$n" -ge 3 ]; then printf '{"access_token":"at-%s","expires_in":3600,"refresh_token":"%s"}\n200' "$rt" "$rt"
+          else printf '{"error":"rate_limited"}\n429'; fi
+          ;;
+        *'/api/oauth/usage'*)
+          [ -z "$out" ] || printf '%s' '{"five_hour":{"utilization":42,"resets_at":null},"seven_day":{"utilization":2,"resets_at":null},"limits":[]}' >"$out"
+          printf '200'
+          ;;
+        *) return 97 ;;
+      esac
+    }
+    rm -f "$WORK"/wthr-d-tc-*
+    seed_expired wd1 rt-wd1
+    printf '{}' >"$oauth_attempts_file"
+    printf '{"five_hour":{"used_percentage":9,"resets_at":1,"as_of":1,"origin":"usage"},"auth":{"status":"ok","checked_at":1}}' >"$limits_dir/wd1.json"
+    wd_dir="$WORK/wthr-d"; mkdir -p "$wd_dir"
+    CLAUDEB_REFRESH_CONVERGE_S=240 probe_accounts "$wd_dir" false false false
+    assert jq -e '.five_hour.used_percentage == 42' "$limits_dir/wd1.json" >/dev/null
+    assert jq -e '.auth.status == "ok" and (.auth | has("cause") | not)' "$limits_dir/wd1.json" >/dev/null
+    assert jq -e '.wd1 == null' "$oauth_attempts_file" >/dev/null
+    assert test "$(cat "$WORK/wthr-d-tc-rt-wd1")" = 3
+  )
+)
+
+# --- token-upkeep: refresh only tokens at/near expiry, silent on weather, no probes ---
+(
+  KC="$WORK/tu-keychain"; mkdir -p "$KC"
+  TOKLOG="$WORK/tu-token.log"
+  kc_key() { printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'; }
+  svc_of() { printf 'Claude Code-credentials-%s' "$(printf '%s' "$HOME/.claude-profiles/$1" | shasum -a 256 | awk '{print substr($1, 1, 8)}')"; }
+  seed_tok() { printf '%s' "$2" >"$KC/$(kc_key "$(svc_of "$1")")"; }
+  security() {
+    local prev='' svc='' a
+    for a in "$@"; do [ "$prev" = -s ] && svc="$a"; prev="$a"; done
+    cat "$KC/$(kc_key "$svc")" 2>/dev/null || return 44
+  }
+  keychain_write() { printf '%s' "$2" >"$KC/$(kc_key "$1")"; }
+  account_names() { printf 'tufresh\ntusoon\ntuexpired\ntuweather\n'; }
+  curl() {
+    local body rt
+    case "$*" in
+      *'/oauth/token'*)
+        body=$(cat)
+        rt=$(printf '%s' "$body" | sed -n 's/.*"refresh_token":"\([^"]*\)".*/\1/p')
+        printf '%s\n' "$rt" >>"$TOKLOG"
+        if [ "$rt" = rt-weather ]; then printf '{"error":"rate_limited"}\n429'
+        else printf '{"access_token":"at-new-%s","expires_in":3600,"refresh_token":"%s"}\n200' "$rt" "$rt"; fi
+        ;;
+      *) return 97 ;;
+    esac
+  }
+  now_s=$(date +%s); now_ms=$((now_s * 1000))
+  fresh_at=$((now_ms + 3600 * 1000))
+  soon_at=$((now_ms + 600 * 1000))
+  weather_creds='{"claudeAiOauth":{"refreshToken":"rt-weather","accessToken":"at-weather","expiresAt":1,"scopes":["a"]}}'
+  seed_tok tufresh   "$(printf '{"claudeAiOauth":{"refreshToken":"rt-fresh","accessToken":"at-fresh","expiresAt":%s,"scopes":["a"]}}' "$fresh_at")"
+  seed_tok tusoon    "$(printf '{"claudeAiOauth":{"refreshToken":"rt-soon","accessToken":"at-soon","expiresAt":%s,"scopes":["a"]}}' "$soon_at")"
+  seed_tok tuexpired '{"claudeAiOauth":{"refreshToken":"rt-expired","accessToken":"at-expired","expiresAt":1,"scopes":["a"]}}'
+  seed_tok tuweather "$weather_creds"
+  : >"$TOKLOG"
+  printf '{}' >"$oauth_attempts_file"
+  tu_err="$WORK/tu.err"
+  token_upkeep 2>"$tu_err"
+  assert_fails grep -qx rt-fresh "$TOKLOG"
+  assert_fails grep -q tufresh "$tu_err"
+  assert test "$(cat "$KC/$(kc_key "$(svc_of tufresh)")")" = "$(printf '{"claudeAiOauth":{"refreshToken":"rt-fresh","accessToken":"at-fresh","expiresAt":%s,"scopes":["a"]}}' "$fresh_at")"
+  assert grep -qx rt-soon "$TOKLOG"
+  assert grep -qx rt-expired "$TOKLOG"
+  assert grep -q 'refreshed tusoon' "$tu_err"
+  assert grep -q 'refreshed tuexpired' "$tu_err"
+  assert jq -e '.claudeAiOauth.accessToken == "at-new-rt-expired"' "$KC/$(kc_key "$(svc_of tuexpired)")" >/dev/null
+  assert_fails grep -q 'refreshed tuweather' "$tu_err"
+  assert test "$(cat "$KC/$(kc_key "$(svc_of tuweather)")")" = "$weather_creds"
+  assert jq -e '.tuweather.outcome == "429"' "$oauth_attempts_file" >/dev/null
+  assert_fails test -e "$limits_dir/tuweather.json"
 )
 
 touch "$CLAUDEB_DIR/tokens/eta"

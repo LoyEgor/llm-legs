@@ -23,7 +23,7 @@ function Styled.__concat(left, right)
   return result
 end
 
-local function loadModule(fixture, taskFactory, nowOverride, alertFn)
+local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptFn)
   local mock = {
     alert = { show = alertFn or function() end },
     execute = function() return true end,
@@ -31,6 +31,7 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn)
     json = { decode = function()
       return type(fixture) == "function" and fixture() or fixture
     end },
+    osascript = { applescript = osascriptFn or function() return true, true, {} end },
     styledtext = { new = styled },
     task = { new = taskFactory or function() return nil end },
   }
@@ -309,6 +310,72 @@ assert(geminiLoginRow, "logged-out Gemini did not render a login-needed row")
 assert(geminiAuthModule.refreshState().prefix == "",
   "auth_needed lit the warning title prefix")
 
+local function rowContaining(menu, needle)
+  for _, item in ipairs(menu) do
+    if titleText(item):find(needle, 1, true) and type(item.menu) == "table" then
+      return item
+    end
+  end
+  error("no submenu row containing: " .. needle)
+end
+
+local function runFirstItem(item, capture)
+  assert(titleText(item.menu[1]) == "Log in…", "first submenu item is not Log in…")
+  local last
+  item.menu[1].fn()
+  last = capture[#capture]
+  assert(last, "Log in… fn did not invoke osascript")
+  return last
+end
+
+local loginCapture = {}
+local claudeLoginFixture = { schema = 1, vendors = {
+  claude = {
+    available = true, source = "claudeb-store", daemon = { reachable = true },
+    accounts = {
+      { account = "loggedout", auth_needed = true },
+      { account = "healthy", five_hour = bucket(10),
+        rotation = { usable = { general = true, fable = true }, blocked = {} } },
+    },
+  },
+  codex = { available = false },
+  gemini = { available = false },
+}}
+local claudeLoginMenu = loadModule(claudeLoginFixture, nil, nil, nil,
+  function(script) table.insert(loginCapture, script); return true, true, {} end).menuItems()
+local claudeLoginRow = rowContaining(claudeLoginMenu, "loggedout")
+local claudeScript = runFirstItem(claudeLoginRow, loginCapture)
+assert(claudeScript:find("claudeb profile", 1, true), "claude Log in… lacks claudeb profile")
+assert(claudeScript:find("loggedout", 1, true), "claude Log in… lacks the profile name")
+for _, item in ipairs(claudeLoginMenu) do
+  if titleText(item):find("healthy", 1, true) and type(item.menu) == "table" then
+    for _, sub in ipairs(item.menu) do
+      assert(titleText(sub) ~= "Log in…", "healthy account offered Log in…")
+    end
+  end
+end
+
+local codexLoginCapture = {}
+local codexLoginFixture = { schema = 1, vendors = {
+  claude = { available = false },
+  codex = { available = true, accounts = {
+    { account = "codexout", auth_needed = true },
+  }},
+  gemini = { available = false },
+}}
+local codexLoginMenu = loadModule(codexLoginFixture, nil, nil, nil,
+  function(script) table.insert(codexLoginCapture, script); return true, true, {} end).menuItems()
+local codexScript = runFirstItem(rowContaining(codexLoginMenu, "codexout"), codexLoginCapture)
+assert(codexScript:find("codexb run", 1, true), "codex Log in… lacks codexb run")
+assert(codexScript:find("codexout", 1, true), "codex Log in… lacks the profile name")
+assert(codexScript:find("login", 1, true), "codex Log in… lacks the login subcommand")
+
+local geminiLoginCapture = {}
+local geminiLoginMenu = loadModule(geminiAuthFixture, nil, nil, nil,
+  function(script) table.insert(geminiLoginCapture, script); return true, true, {} end).menuItems()
+local geminiScript = runFirstItem(rowContaining(geminiLoginMenu, "Gemini"), geminiLoginCapture)
+assert(geminiScript:find("agy", 1, true), "gemini Log in… lacks the agy command")
+
 local geminiErrorFixture = { schema = 1, vendors = {
   claude = { available = false },
   codex = { available = false },
@@ -532,5 +599,49 @@ local crossMidRow = titleText(xmidMenu[accountIndex(xmidMenu, "crossmid") + 1])
 assert(crossMidRow:find(dayText(crossMid), 1, true), "within-24h cross-midnight reset lacks the day marker")
 local farWeekRow = titleText(xmidMenu[accountIndex(xmidMenu, "farweek") + 1])
 assert(farWeekRow:find(dayText(farWeek), 1, true), ">24h reset tier changed")
+
+-- token_upkeep pre-warm: the module parses, arms a wake watcher and a cold-boot
+-- schedule, and its throttle guard suppresses runs within 10 minutes of the last.
+local upkeepClock = { now = 100000 }
+local upkeepScheduled = {}
+local upkeepTasks = {}
+local upkeepWatcherStarted = false
+local upkeepHs = {
+  caffeinate = { watcher = {
+    systemDidWake = "systemDidWake",
+    new = function(fn)
+      return { start = function() upkeepWatcherStarted = true end, _fn = fn }
+    end,
+  } },
+  timer = { doAfter = function(_, fn) table.insert(upkeepScheduled, fn); return {} end },
+  task = { new = function(path, _, args)
+    table.insert(upkeepTasks, { path = path, args = args })
+    return { setEnvironment = function() end, start = function() return true end }
+  end },
+}
+local upkeepEnv = setmetatable({
+  hs = upkeepHs,
+  os = setmetatable({ time = function() return upkeepClock.now end }, { __index = os }),
+}, { __index = _G })
+upkeepEnv._G = upkeepEnv
+local upkeepChunk, upkeepError = loadfile(
+  root .. "/hammerspoon/config/token_upkeep.lua", "t", upkeepEnv)
+assert(upkeepChunk, upkeepError)
+local upkeep = upkeepChunk()
+assert(upkeepWatcherStarted, "wake watcher was not started")
+assert(#upkeepScheduled == 1, "cold-boot pre-warm was not scheduled on load")
+assert(upkeep.shouldRun(1000, 0) == true, "first run should not be throttled")
+assert(upkeep.shouldRun(1000, 600) == false, "run 400s after last must be throttled")
+assert(upkeep.shouldRun(1000, 400) == true, "run exactly 600s after last must fire")
+assert(upkeep.shouldRun(1000, 401) == false, "run 599s after last must be throttled")
+assert(upkeep.shouldRun("x", 0) == false, "non-numeric clock must not fire a run")
+upkeepScheduled[1]()
+assert(#upkeepTasks == 1, "cold-boot schedule did not launch token-upkeep")
+assert(upkeepTasks[1].args[1] == "token-upkeep", "wrong claudeb subcommand launched")
+upkeepScheduled[1]()
+assert(#upkeepTasks == 1, "second run within the throttle window was not suppressed")
+upkeepClock.now = upkeepClock.now + 601
+upkeepScheduled[1]()
+assert(#upkeepTasks == 2, "run past the throttle window did not fire")
 
 return "PASS: Hammerspoon projection contract"

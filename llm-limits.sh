@@ -385,6 +385,9 @@ refresh_gemini_quota() {
   if [ "$rc" -eq 2 ] && jq -e '.auth_needed == true' "$gemini_tmp" >/dev/null 2>&1; then
     if [ -r "$gemini_cache" ] && jq -e '(.groups | type) == "array"' "$gemini_cache" >/dev/null 2>&1 &&
       jq -e '. + {auth_needed:true}' "$gemini_cache" >"$gemini_tmp.auth" 2>/dev/null; then
+      # Preserved buckets must keep the old snapshot's mtime: as_of derives from it,
+      # and a re-stamp would present hours-old data as fresh.
+      touch -r "$gemini_cache" "$gemini_tmp.auth" 2>/dev/null || true
       mv -f "$gemini_tmp.auth" "$gemini_tmp"
     fi
     if mv -f "$gemini_tmp" "$gemini_cache"; then
@@ -463,6 +466,7 @@ claude_rotation='{}'
 claude_refresh_error=''
 claude_refresh_attempted=0
 claude_refresh_succeeded=0
+claude_refresh_run_start=0
 claude_refresh_target=''
 case "$refresh_account" in claude/*) claude_refresh_target=${refresh_account#claude/} ;; esac
 # Action-path bounds only: the detached collect-on-open path has no --refresh, so these
@@ -472,6 +476,7 @@ claude_refresh_timeout=${LLM_LIMITS_CLAUDE_REFRESH_TIMEOUT:-300}
 if [ "$refresh" -eq 1 ] && { [ -z "$refresh_account" ] || [ -n "$claude_refresh_target" ]; }; then
   if [ -d "$claudeb_root/limits" ]; then
     claude_refresh_attempted=1
+    claude_refresh_run_start=$(date +%s)
     claudeb_cmd=$(command -v "${LLM_LIMITS_CLAUDEB_CMD:-claudeb}" 2>/dev/null || true)
     if [ -n "$claudeb_cmd" ]; then
       if [ -n "$claude_refresh_target" ]; then
@@ -654,6 +659,32 @@ if [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
       else
         claude_refresh_error="$auth_failures"
       fi
+    fi
+    # A refresh can claim success while weather kept an account's old snapshot; surface
+    # each such enabled account as a vendor-level cause (recomputed each run → self-clears).
+    if [ "$claude_refresh_attempted" -eq 1 ] && [ "$claude_refresh_succeeded" -eq 1 ] && [ -z "$claude_refresh_target" ]; then
+      claude_oauth_attempts="$claudeb_root/oauth-attempts.json"
+      while IFS= read -r stale_account; do
+        [ -n "$stale_account" ] || continue
+        stale_cause=$(jq -r --arg n "$stale_account" '
+          (.[$n] // null) as $e |
+          if $e == null then "stale data kept"
+          elif ($e.outcome // "") == "429" then "token endpoint 429"
+          elif ($e.outcome // "") == "weather" then "network weather"
+          elif (($e.warm_outcome // "") == "warm-failed" or ($e.outcome // "") == "warm-failed")
+               and ($e.warm_cause // "") != "" then $e.warm_cause
+          else "stale data kept" end' "$claude_oauth_attempts" 2>/dev/null) || stale_cause='stale data kept'
+        [ -n "$stale_cause" ] || stale_cause='stale data kept'
+        stale_entry="$stale_account: not refreshed ($stale_cause)"
+        if [ -n "$claude_refresh_error" ]; then
+          claude_refresh_error="$claude_refresh_error; $stale_entry"
+        else
+          claude_refresh_error="$stale_entry"
+        fi
+      done < <(jq -r --argjson rs "$claude_refresh_run_start" '
+        .[] | select(.enabled == true) | select((.auth.status // "") != "expired")
+        | select((.five_hour.as_of | type) == "number" and .five_hour.as_of < $rs)
+        | .account' <<<"$accounts")
     fi
   fi
 else

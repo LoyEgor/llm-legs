@@ -40,10 +40,8 @@ ANSI = re.compile(
     re.S,
 )
 
-# agy renders this login screen within ~1s when logged out, so it is a cheap auth probe that
-# avoids burning the full startup timeout. "Select login method" is an unambiguous login-screen
-# string; "not signed in" is generic enough to appear in logged-in UI copy, so it only counts as
-# an auth signal on a word boundary within the first screenful of output, before the ready prompt.
+# "not signed in" alone is NOT a verdict: a logged-in agy transiently prints it while
+# auto-signing-in; login-needed is the explicit chooser, or the timeout with it unresolved.
 LOGIN_SCREEN_MARKER = "Select login method"
 NOT_SIGNED_IN = re.compile(r"\bnot signed in\b", re.IGNORECASE)
 LOGIN_PROBE_WINDOW = 4096
@@ -165,6 +163,7 @@ def fetch() -> dict[str, Any]:
     )
     transcript = bytearray()
     deadline = time.monotonic() + STARTUP_TIMEOUT
+    signed_out_seen = False
 
     try:
         while time.monotonic() < deadline:
@@ -184,11 +183,15 @@ def fetch() -> dict[str, Any]:
                     raise RuntimeError(
                         f"agy workdir is not trusted: {WORKDIR}; open agy there once manually"
                     )
-                if LOGIN_SCREEN_MARKER in screen or NOT_SIGNED_IN.search(screen[:LOGIN_PROBE_WINDOW]):
-                    raise AuthRequired("not signed in")
+                if LOGIN_SCREEN_MARKER in screen:
+                    raise AuthRequired("login screen")
+                if NOT_SIGNED_IN.search(screen[:LOGIN_PROBE_WINDOW]):
+                    signed_out_seen = True
                 if "? for shortcuts" in screen:
                     break
         else:
+            if signed_out_seen:
+                raise AuthRequired("not signed in (auto-sign-in never completed)")
             raise TimeoutError("agy startup timed out")
 
         ports_deadline = time.monotonic() + 5

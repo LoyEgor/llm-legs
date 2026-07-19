@@ -15,6 +15,10 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 export LLM_LIMITS_GEMINI_REFRESH=0
 export LLM_LIMITS_CODEX_REFRESH=0
 export CLAUDEBD_PORT=1
+# Weather fixtures would otherwise spin claudeb's real convergence loop (240s of sleeps).
+export CLAUDEB_REFRESH_CONVERGE_S=0
+export CLAUDEB_WEATHER_RETRY_DELAY=0
+export CLAUDEB_OAUTH_TOKEN_SPACING=0
 
 HOME_FIXTURE="$WORK/home"
 mkdir -p "$HOME_FIXTURE/.claude" "$HOME_FIXTURE/.codex/sessions/2026/07/10" "$HOME_FIXTURE/.codex/sessions/2026/07/11"
@@ -177,6 +181,68 @@ jq -e '.vendors.gemini.available == true and (.vendors.gemini | has("auth_needed
 rm -f "$GEMINI_SENTINEL"
 printf '%s\n' "$gemini_cache_saved" >"$GEMINI_CACHE"
 
+# auth_needed preservation must keep the old snapshot's mtime (as_of honesty).
+touch -t 202601010000 "$GEMINI_CACHE"
+gemini_auth_stale=$(LLM_LIMITS_GEMINI_REFRESH=1 LLM_LIMITS_GEMINI_CMD="$GEMINI_AUTH_HELPER" \
+  LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" \
+  /bin/bash "$SCRIPT" --refresh-account gemini --json)
+jq -e '.vendors.gemini.auth_needed == true and .vendors.gemini.stale_seconds > 1000000' \
+  <<<"$gemini_auth_stale" >/dev/null \
+  || fail "auth_needed preservation re-stamped the old snapshot's as_of as fresh"
+printf '%s\n' "$gemini_cache_saved" >"$GEMINI_CACHE"
+
+# agy-quota.py detection against a fake agy: the transient "not signed in" during
+# auto-sign-in must not read as login-needed (live regression: menu stuck after re-login).
+FAKE_AGY="$WORK/fake-agy"
+cat >"$FAKE_AGY" <<'EOF'
+#!/usr/bin/env python3
+import http.server, json, os, sys, threading, time
+mode = os.environ.get("FAKE_AGY_MODE", "signin")
+print("Welcome to the Antigravity CLI. You are currently not signed in.")
+if mode == "chooser":
+    print("Select login method")
+    sys.stdout.flush(); time.sleep(30); sys.exit(0)
+print("Signing in...")
+sys.stdout.flush()
+if mode == "stuck":
+    time.sleep(30); sys.exit(0)
+time.sleep(0.3)
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        body = json.dumps({"response": {"groups": [{"displayName": "Gemini Models", "buckets": [
+            {"window": "5h", "remainingFraction": 1.0, "resetTime": "2099-01-01T00:00:00Z"},
+            {"window": "weekly", "remainingFraction": 0.5, "resetTime": "2099-01-01T00:00:00Z"}]}]}}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, *args): pass
+srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+print("Signed in")
+print("? for shortcuts")
+sys.stdout.flush()
+time.sleep(60)
+EOF
+chmod +x "$FAKE_AGY"
+agy_out=$(FAKE_AGY_MODE=signin AGY_BIN="$FAKE_AGY" AGY_WORKDIR="$WORK" \
+  AGY_QUOTA_STARTUP_TIMEOUT=15 python3 "$ROOT/agy-quota.py") \
+  || fail "transient auto-sign-in was misread as login needed (rc $?)"
+jq -e '(.groups | type) == "array" and (has("auth_needed") | not)' <<<"$agy_out" >/dev/null \
+  || fail "transient auto-sign-in probe returned no quota"
+agy_rc=0
+agy_out=$(FAKE_AGY_MODE=chooser AGY_BIN="$FAKE_AGY" AGY_WORKDIR="$WORK" \
+  AGY_QUOTA_STARTUP_TIMEOUT=15 python3 "$ROOT/agy-quota.py") || agy_rc=$?
+[ "$agy_rc" -eq 2 ] || fail "login chooser: expected exit 2, got $agy_rc"
+jq -e '.auth_needed == true' <<<"$agy_out" >/dev/null || fail "login chooser: auth_needed missing"
+agy_rc=0
+agy_out=$(FAKE_AGY_MODE=stuck AGY_BIN="$FAKE_AGY" AGY_WORKDIR="$WORK" \
+  AGY_QUOTA_STARTUP_TIMEOUT=2 python3 "$ROOT/agy-quota.py") || agy_rc=$?
+[ "$agy_rc" -eq 2 ] || fail "stuck sign-in: expected exit 2 on timeout, got $agy_rc"
+jq -e '.auth_needed == true' <<<"$agy_out" >/dev/null || fail "stuck sign-in: auth_needed missing"
+
 # Regression: statusline-last.json goes stale while cache-rl keeps updating —
 # the fresher cache-rl must win even though last.json is present and valid.
 sleep 1
@@ -227,6 +293,43 @@ rc=$?
 [ "$rc" -eq 4 ] || fail "timed-out claudeb refresh: expected exit 4, got $rc"
 jq -e '.vendors.claude.refresh_error.cause == "timed out during free refresh + heal (1s)"' "$CACHE" >/dev/null \
   || fail "timed-out claudeb refresh did not persist its reason"
+
+# Residual staleness surfaces as vendor refresh_error for enabled accounts only and
+# self-clears; pinned to /bin/bash (system bash 3.2) like the other refresh-path tests.
+STALE_STORE="$WORK/claudeb-stale-store"
+mkdir -p "$STALE_STORE/limits" "$STALE_STORE/tokens"
+: >"$STALE_STORE/tokens/alona"
+: >"$STALE_STORE/tokens/bree"
+printf 'alona\n' >"$STALE_STORE/.claudeb-state"
+printf 'bree\n' >"$STALE_STORE/disabled"
+stale_asof=$((now - 3600))
+printf '{"five_hour":{"used_percentage":7,"resets_at":%s,"as_of":%s,"origin":"usage"}}\n' "$((now + 5000))" "$stale_asof" >"$STALE_STORE/limits/alona.json"
+printf '{"five_hour":{"used_percentage":9,"resets_at":%s,"as_of":%s,"origin":"usage"}}\n' "$((now + 5000))" "$stale_asof" >"$STALE_STORE/limits/bree.json"
+printf '{"alona":{"attempted_at":%s,"outcome":"429","retry_after_until":0},"bree":{"attempted_at":%s,"outcome":"429","retry_after_until":0}}\n' "$now" "$now" >"$STALE_STORE/oauth-attempts.json"
+cat >"$WORK/claudeb-noop" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$WORK/claudeb-noop"
+STALE_CACHE="$WORK/stale-cache.json"
+HOME="$HOME_FIXTURE" CLAUDEB_DIR="$STALE_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-noop" \
+  LLM_LIMITS_CACHE="$STALE_CACHE" /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1 || true
+jq -e '(.vendors.claude.refresh_error.cause | test("alona: not refreshed")) and
+  (.vendors.claude.refresh_error.cause | test("token endpoint 429"))' "$STALE_CACHE" >/dev/null \
+  || fail "residual stale enabled account not surfaced as claude refresh_error"
+jq -e '(.vendors.claude.refresh_error.cause | test("bree")) | not' "$STALE_CACHE" >/dev/null \
+  || fail "disabled stale account must not trigger a refresh_error"
+cat >"$WORK/claudeb-fresh" <<EOF
+#!/usr/bin/env bash
+printf '{"five_hour":{"used_percentage":7,"resets_at":%s,"as_of":9999999999,"origin":"usage"}}\n' "$((now + 5000))" >"$STALE_STORE/limits/alona.json"
+printf '{}' >"$STALE_STORE/oauth-attempts.json"
+exit 0
+EOF
+chmod +x "$WORK/claudeb-fresh"
+HOME="$HOME_FIXTURE" CLAUDEB_DIR="$STALE_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-fresh" \
+  LLM_LIMITS_CACHE="$STALE_CACHE" /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1 || true
+jq -e '.vendors.claude | has("refresh_error") | not' "$STALE_CACHE" >/dev/null \
+  || fail "fully fresh refresh did not clear the residual-staleness cause"
 
 DAEMON_PORT_FILE="$WORK/claudebd-fixture.port"
 cat >"$WORK/claudebd-fixture.py" <<'EOF'
@@ -633,6 +736,10 @@ if [ "${1:-}" = --help ]; then
   exit 0
 fi
 printf '%s\n' "$*" >>"$CLAUDEB_SENTINEL"
+# A real free refresh restamps as_of; model it or the staleness check sees a stuck run.
+if [ -n "${CLAUDEB_DIR:-}" ]; then
+  for f in "$CLAUDEB_DIR"/limits/*.json; do [ -e "$f" ] && touch "$f"; done
+fi
 EOF
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" >>"$CODEX_SENTINEL"\n' >"$FAKE_BIN/codex"
 cat >"$WORK/fake-codex-quota" <<EOF

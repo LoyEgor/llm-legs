@@ -448,6 +448,30 @@ function M.hardRefreshClaude(name) hardRefresh("claude/" .. name) end
 function M.hardRefreshCodex(name) hardRefresh("codex/" .. name) end
 function M.hardRefreshGemini() hardRefresh("gemini") end
 
+local function shellQuote(value)
+  return "'" .. tostring(value):gsub("'", [['\'']]) .. "'"
+end
+
+-- Two quoting layers: the account name is shell-quoted inside the command, then
+-- the whole command becomes an AppleScript string literal for `do script`.
+local function openLoginTerminal(command)
+  local literal = '"' .. command:gsub("\\", "\\\\"):gsub('"', '\\"') .. '"'
+  local script = 'tell application "Terminal"\ndo script ' .. literal
+    .. '\nactivate\nend tell'
+  local ok = pcall(function() return hs.osascript.applescript(script) end)
+  if not ok then
+    hs.alert.show("Login could not open Terminal")
+  end
+end
+
+function M.loginClaude(name)
+  openLoginTerminal((M.claudebCmd or "claudeb") .. " profile " .. shellQuote(name))
+end
+function M.loginCodex(name)
+  openLoginTerminal("codexb run " .. shellQuote(name) .. " login")
+end
+function M.loginGemini() openLoginTerminal("agy") end
+
 local function refreshItems(menu)
   table.insert(menu, {
     title = "Refresh",
@@ -540,9 +564,11 @@ function M.menuItems()
         }
         if entry.key == "gemini" then
           unavailableRow.disabled = nil
-          unavailableRow.menu = {
-            { title = "Hard refresh", fn = M.hardRefreshGemini },
-          }
+          unavailableRow.menu = {}
+          if authNeeded then
+            table.insert(unavailableRow.menu, { title = "Log in…", fn = M.loginGemini })
+          end
+          table.insert(unavailableRow.menu, { title = "Hard refresh", fn = M.hardRefreshGemini })
         end
         table.insert(menu, unavailableRow)
       else
@@ -627,6 +653,16 @@ function M.menuItems()
                 { title = "Hard refresh",
                   fn = function() M.hardRefreshCodex(acct) end },
               }
+            end
+            if authNeeded then
+              accountRow.disabled = nil
+              accountRow.menu = accountRow.menu or {}
+              table.insert(accountRow.menu, 1, {
+                title = "Log in…",
+                fn = entry.key == "claude"
+                  and function() M.loginClaude(acct) end
+                  or function() M.loginCodex(acct) end,
+              })
             end
             table.insert(menu, accountRow)
           end
