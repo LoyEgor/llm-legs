@@ -290,6 +290,37 @@ for _, item in ipairs(clearModule.menuItems()) do
     "successful cache retained a vendor error row")
 end
 
+local multiCause = "olx: not refreshed (usage weather); notcom: not refreshed (token endpoint 429)"
+local multiFixture = { schema = 1, vendors = {
+  claude = { available = false, refresh_error = { cause = multiCause, at = os.time() - 120 } },
+  codex = { available = false },
+  gemini = { available = false },
+}}
+local multiMenu = loadModule(multiFixture).menuItems()
+local multiRows = {}
+for _, item in ipairs(multiMenu) do
+  local text = titleText(item)
+  if text:find("not refreshed", 1, true) then
+    table.insert(multiRows, text)
+    assert(not text:find("; ", 1, true), "per-account refresh error row still joined by \"; \"")
+  end
+end
+assert(#multiRows == 2, "multi-account cause did not render one row per entry")
+assert(multiRows[1]:find("olx", 1, true), "first per-account row missing its account name")
+assert(multiRows[2]:find("notcom", 1, true), "second per-account row missing its account name")
+
+local singleFixture = { schema = 1, vendors = {
+  claude = { available = false,
+    refresh_error = { cause = "olx: not refreshed (usage weather)", at = os.time() - 120 } },
+  codex = { available = false },
+  gemini = { available = false },
+}}
+local singleRows = 0
+for _, item in ipairs(loadModule(singleFixture).menuItems()) do
+  if titleText(item):find("not refreshed", 1, true) then singleRows = singleRows + 1 end
+end
+assert(singleRows == 1, "single per-account cause did not render exactly one row")
+
 local geminiAuthFixture = { schema = 1, vendors = {
   claude = { available = false },
   codex = { available = false },

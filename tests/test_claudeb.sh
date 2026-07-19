@@ -592,6 +592,67 @@ chmod +x "$FAKE_BIN/security" "$FAKE_BIN/claude" "$FAKE_BIN/curl"
     assert jq -e '.wd1 == null' "$oauth_attempts_file" >/dev/null
     assert test "$(cat "$WORK/wthr-d-tc-rt-wd1")" = 3
   )
+
+  # Usage-endpoint 429 on a valid token: convergence must retry off the http field.
+  seed_valid() { printf '{"claudeAiOauth":{"refreshToken":"%s","accessToken":"at-valid","expiresAt":%s,"scopes":["a"]}}' "$2" "$(( ($(date +%s) + 3600) * 1000 ))" >"$KC/$(kc_key "$(svc_of "$1")")"; }
+  (
+    account_names() { printf 'we1\n'; }
+    curl() {
+      local out='' prev='' a n cf
+      for a in "$@"; do [ "$prev" = -o ] && out="$a"; prev="$a"; done
+      case "$*" in
+        *'/api/oauth/usage'*)
+          cf="$WORK/wthr-e-uc"; n=$(cat "$cf" 2>/dev/null || printf 0); n=$((n + 1)); printf '%s' "$n" >"$cf"
+          if [ "$n" -ge 3 ]; then
+            [ -z "$out" ] || printf '%s' '{"five_hour":{"utilization":63,"resets_at":null},"seven_day":{"utilization":2,"resets_at":null},"limits":[]}' >"$out"
+            printf '200'
+          else
+            [ -z "$out" ] || printf '%s' '{"error":"rate_limited"}' >"$out"; printf '429'
+          fi
+          ;;
+        *) return 97 ;;
+      esac
+    }
+    rm -f "$WORK"/wthr-e-uc
+    seed_valid we1 rt-we1
+    printf '{}' >"$oauth_attempts_file"
+    printf '{"five_hour":{"used_percentage":9,"resets_at":1,"as_of":1,"origin":"usage"},"auth":{"status":"ok","checked_at":1}}' >"$limits_dir/we1.json"
+    we_dir="$WORK/wthr-e"; mkdir -p "$we_dir"
+    CLAUDEB_REFRESH_CONVERGE_S=240 probe_accounts "$we_dir" false false false
+    assert jq -e '.five_hour.used_percentage == 63' "$limits_dir/we1.json" >/dev/null
+    assert test "$(cat "$we_dir/we1.display")" = live
+    assert jq -e '.we1 == null' "$oauth_attempts_file" >/dev/null
+    assert jq -e '.auth.status == "ok" and (.auth | has("cause") | not)' "$limits_dir/we1.json" >/dev/null
+    assert test "$(cat "$WORK/wthr-e-uc")" = 3
+  )
+
+  # Persistent usage 429, tiny budget: one retry then give up.
+  (
+    account_names() { printf 'wf1\n'; }
+    curl() {
+      local out='' prev='' a n cf
+      for a in "$@"; do [ "$prev" = -o ] && out="$a"; prev="$a"; done
+      case "$*" in
+        *'/api/oauth/usage'*)
+          cf="$WORK/wthr-f-uc"; n=$(cat "$cf" 2>/dev/null || printf 0); n=$((n + 1)); printf '%s' "$n" >"$cf"
+          [ -z "$out" ] || printf '%s' '{"error":"rate_limited"}' >"$out"; printf '429'
+          ;;
+        *) return 97 ;;
+      esac
+    }
+    rm -f "$WORK"/wthr-f-uc
+    seed_valid wf1 rt-wf1
+    printf '{}' >"$oauth_attempts_file"
+    keep='{"five_hour":{"used_percentage":55,"resets_at":123,"as_of":99,"origin":"usage"},"auth":{"status":"ok","checked_at":1}}'
+    printf '%s' "$keep" >"$limits_dir/wf1.json"
+    wf_dir="$WORK/wthr-f"; mkdir -p "$wf_dir"
+    CLAUDEB_REFRESH_CONVERGE_S=6 probe_accounts "$wf_dir" false false false
+    assert test "$(cat "$limits_dir/wf1.json")" = "$keep"
+    assert test "$(cat "$wf_dir/wf1.display")" = '!'
+    assert jq -e '.wf1 == null' "$oauth_attempts_file" >/dev/null
+    assert jq -e '.auth.status == "ok"' "$limits_dir/wf1.json" >/dev/null
+    assert test "$(cat "$WORK/wthr-f-uc")" = 2
+  )
 )
 
 # --- token-upkeep: refresh only tokens at/near expiry, silent on weather, no probes ---

@@ -937,6 +937,8 @@ probe_weather_failed() {
   local name="$1" dir="$2" run_start="$3" source rc http outcome attempted_at
   read -r source rc http < "$dir/$name.result" 2>/dev/null || return 1
   if [ "$rc" != 0 ] && [ "$rc" != 255 ]; then return 0; fi
+  # Usage-endpoint 429/5xx/000 (rc=0, valid token) leaves no oauth-attempts trace; 401/403 stay out via the caller's display gate.
+  case "$http" in 000|429|5[0-9][0-9]) return 0 ;; esac
   outcome=$(oauth_backoff_outcome "$name")
   attempted_at=$(jq -r --arg n "$name" '.[$n].attempted_at // 0' "$oauth_attempts_file" 2>/dev/null) || attempted_at=0
   [[ "$attempted_at" =~ ^[0-9]+$ ]] || attempted_at=0

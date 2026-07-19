@@ -666,9 +666,10 @@ if [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
       claude_oauth_attempts="$claudeb_root/oauth-attempts.json"
       while IFS= read -r stale_account; do
         [ -n "$stale_account" ] || continue
-        stale_cause=$(jq -r --arg n "$stale_account" '
+        stale_auth=$(jq -r --arg n "$stale_account" '(.[] | select(.account == $n) | .auth.status) // "ok"' <<<"$accounts" 2>/dev/null) || stale_auth=ok
+        stale_cause=$(jq -r --arg n "$stale_account" --arg auth "$stale_auth" '
           (.[$n] // null) as $e |
-          if $e == null then "stale data kept"
+          if $e == null then (if $auth == "failed" then "stale data kept" else "usage weather" end)
           elif ($e.outcome // "") == "429" then "token endpoint 429"
           elif ($e.outcome // "") == "weather" then "network weather"
           elif (($e.warm_outcome // "") == "warm-failed" or ($e.outcome // "") == "warm-failed")
@@ -1086,6 +1087,20 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson claude "$claude" 
     if $attempted == 1 then
       if $cause == "" then null else {cause:$cause,at:$now} end
     else old_error($old) end;
+  # A "<name>: not refreshed (...)" entry self-clears once its snapshot as_of moves past the failed run; other shapes are unprovable-healed, carried verbatim.
+  def heal_claude_error($err; $accounts):
+    if ($err | type) != "object" or ($err.cause | type) != "string" or ($err.at | type) != "number" then $err
+    else
+      [ $err.cause | split("; ")[] |
+        if test("^[^:]+: not refreshed \\(.*\\)$") | not then .
+        else
+          (capture("^(?<a>[^:]+): not refreshed \\(") | .a) as $acct |
+          (first($accounts[]? | select(.account == $acct) | .five_hour.as_of)) as $asof |
+          if ($asof | type) == "number" and $asof > $err.at then empty else . end
+        end
+      ] as $kept |
+      if ($kept | length) == 0 then null else {cause:($kept | join("; ")),at:$err.at} end
+    end;
   def vendor_data($key; $current; $attempted; $cause):
     if $attempted == 1 and $cause != "" and $current.available != true and
        $previous.vendors[$key].available == true
@@ -1095,7 +1110,7 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson claude "$claude" 
     claude:(vendor_data("claude"; ($claude + {daemon:$claude_daemon}); $claude_attempted; $claude_error) + {daemon:$claude_daemon}),
     codex:vendor_data("codex"; $codex; $codex_attempted; $codex_error),
     gemini:vendor_data("gemini"; $gemini; $gemini_attempted; $gemini_error)}}
-  | outcome_error($previous.vendors.claude.refresh_error; $claude_attempted; $claude_error) as $claude_outcome
+  | heal_claude_error(outcome_error($previous.vendors.claude.refresh_error; $claude_attempted; $claude_error); .vendors.claude.accounts) as $claude_outcome
   | outcome_error($previous.vendors.codex.refresh_error; $codex_attempted; $codex_error) as $codex_outcome
   | outcome_error($previous.vendors.gemini.refresh_error; $gemini_attempted; $gemini_error) as $gemini_outcome
   | if $claude_outcome == null then . else .vendors.claude.refresh_error = $claude_outcome end

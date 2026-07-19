@@ -331,6 +331,37 @@ HOME="$HOME_FIXTURE" CLAUDEB_DIR="$STALE_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/cl
 jq -e '.vendors.claude | has("refresh_error") | not' "$STALE_CACHE" >/dev/null \
   || fail "fully fresh refresh did not clear the residual-staleness cause"
 
+# Per-account staleness causes self-clear on passive collects; other shapes never drop.
+PASSIVE_STORE="$WORK/claudeb-passive-store"
+mkdir -p "$PASSIVE_STORE/limits" "$PASSIVE_STORE/tokens"
+: >"$PASSIVE_STORE/tokens/alona"
+printf 'alona\n' >"$PASSIVE_STORE/.claudeb-state"
+flag_at=$((now - 600))
+passive_prev() {
+  printf '{"schema":1,"fetched_at":"1970-01-01T00:00:00+0000","vendors":{"claude":{"available":false,"refresh_error":{"cause":"%s","at":%s}},"codex":{"available":false},"gemini":{"available":false}}}\n' \
+    "$1" "$flag_at" >"$2"
+}
+passive_run() {
+  HOME="$HOME_FIXTURE" CLAUDEB_DIR="$PASSIVE_STORE" LLM_LIMITS_CACHE="$1" \
+    /bin/bash "$SCRIPT" --json >/dev/null 2>&1 || true
+}
+printf '{"five_hour":{"used_percentage":7,"resets_at":%s,"as_of":%s,"origin":"usage"}}\n' "$((now + 5000))" "$((now - 100))" >"$PASSIVE_STORE/limits/alona.json"
+PASSIVE_CACHE="$WORK/passive-cache.json"
+passive_prev "alona: not refreshed (usage weather)" "$PASSIVE_CACHE"
+passive_run "$PASSIVE_CACHE"
+jq -e '.vendors.claude | has("refresh_error") | not' "$PASSIVE_CACHE" >/dev/null \
+  || fail "passive collect did not self-clear a healed per-account cause"
+printf '{"five_hour":{"used_percentage":7,"resets_at":%s,"as_of":%s,"origin":"usage"}}\n' "$((now + 5000))" "$((now - 900))" >"$PASSIVE_STORE/limits/alona.json"
+passive_prev "alona: not refreshed (usage weather)" "$PASSIVE_CACHE"
+passive_run "$PASSIVE_CACHE"
+jq -e '.vendors.claude.refresh_error.cause | test("alona: not refreshed")' "$PASSIVE_CACHE" >/dev/null \
+  || fail "passive collect dropped a still-stale per-account cause"
+printf '{"five_hour":{"used_percentage":7,"resets_at":%s,"as_of":%s,"origin":"usage"}}\n' "$((now + 5000))" "$((now - 100))" >"$PASSIVE_STORE/limits/alona.json"
+passive_prev "probe failed" "$PASSIVE_CACHE"
+passive_run "$PASSIVE_CACHE"
+jq -e '.vendors.claude.refresh_error.cause == "probe failed"' "$PASSIVE_CACHE" >/dev/null \
+  || fail "passive collect destroyed a non-per-account refresh_error cause"
+
 DAEMON_PORT_FILE="$WORK/claudebd-fixture.port"
 cat >"$WORK/claudebd-fixture.py" <<'EOF'
 import http.server

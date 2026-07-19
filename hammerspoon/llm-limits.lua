@@ -523,6 +523,17 @@ local function refreshErrorTitle(err)
   return truncateText("refresh failed " .. err.cause .. " · " .. refreshErrorAge(err.at), 88)
 end
 
+local function splitCauseEntries(cause)
+  local parts, start, sep = {}, 1, "; "
+  while true do
+    local s, e = cause:find(sep, start, true)
+    if not s then parts[#parts + 1] = cause:sub(start); break end
+    parts[#parts + 1] = cause:sub(start, s - 1)
+    start = e + 1
+  end
+  return parts
+end
+
 function M.menuItems()
   collectOnOpen()
 
@@ -693,10 +704,20 @@ function M.menuItems()
       end
       local refreshError = errorState(type(vendor) == "table" and vendor.refresh_error or nil)
       if refreshError then
-        table.insert(menu, {
-          title = infoTitle(refreshErrorTitle(refreshError), false, true),
-          disabled = true,
-        })
+        local entries = splitCauseEntries(refreshError.cause or "")
+        if #entries > 1 then
+          for _, entry in ipairs(entries) do
+            table.insert(menu, {
+              title = infoTitle(refreshErrorTitle({ cause = entry, at = refreshError.at }), false, true),
+              disabled = true,
+            })
+          end
+        else
+          table.insert(menu, {
+            title = infoTitle(refreshErrorTitle(refreshError), false, true),
+            disabled = true,
+          })
+        end
       end
     end
 
