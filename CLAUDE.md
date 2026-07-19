@@ -8,6 +8,11 @@ same for Codex; `hammerspoon/llm-limits.lua` renders it all in the macOS menubar
 **Before debugging anything here, read `docs/DIAGNOSTICS.md`** — it has the system map, a
 symptom→command lookup table, the 429 taxonomy, and the test suites.
 
+**Temporary scaffolding lives in `docs/EXIT-PLAN.md`** — the shadow-trial stack (llm-limitsd,
+shadow-feed, divergence watch, full-e2e-in-selfcheck) is planned-temporary. After that file's
+decision-date, any session must proactively propose executing the exit plan; never treat those
+components as permanent architecture.
+
 **Any statusline work is bound by `docs/statusline-contract.md`** — every segment must declare
 its source of truth, update trigger, staleness/dim policy, and removal condition; "render once
 and forget" is forbidden. Keep that table exhaustive and update `tests/test_statusline_hooks.sh`

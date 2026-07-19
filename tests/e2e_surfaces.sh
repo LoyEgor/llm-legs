@@ -304,7 +304,11 @@ grep -q '5h' <<<"$MENU_TXT" || fail "menu has no five-hour vendor rows"
 grep -Fxq 'Refresh' <<<"$MENU_TXT" || fail "menu missing 'Refresh' action item"
 grep -Fxq 'Refresh + Start Windows' <<<"$MENU_TXT" || fail "menu missing 'Refresh + Start Windows' action item"
 assert_codex_account_rows "$MENU_TXT" "$JSON"
-assert_account_ages "$MENU_TXT" "$JSON"
+# Same-generation pair for age comparison: MENU_TXT predates the fresh collection
+# above, so its ages lag the store whenever data moved in between (live flake).
+STORE_NOW=$(cat "$STORE") || fail "cannot read store for age check"
+MENU_NOW=$(hs_menu)
+assert_account_ages "$MENU_NOW" "$STORE_NOW"
 if jq -e '.vendors.claude.accounts[]? | select(.account == "alona") |
     .five_hour.expired == true and .five_hour.stale == false' <<<"$JSON" >/dev/null; then
   alona_style=$(hs_alona_five_style)

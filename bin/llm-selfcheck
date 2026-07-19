@@ -96,7 +96,15 @@ maybe_run() {
 }
 
 run_checks() {
-  local name path seconds output rc detail step_status
+  local name path seconds output rc detail step_status exit_plan exit_date
+  # Scaffolding self-reminder (docs/EXIT-PLAN.md): after the decision date, nag daily
+  # until the exit plan is executed — this block is removed together with it.
+  exit_plan="$repo_root/docs/EXIT-PLAN.md"
+  exit_date=$(sed -n 's/^decision-date: *//p' "$exit_plan" 2>/dev/null | head -1)
+  if [ -n "$exit_date" ] && ! [ "$(date +%Y-%m-%d)" \< "$exit_date" ]; then
+    write_step_log WARN exit-plan-review "due since $exit_date — see docs/EXIT-PLAN.md"
+    send_alert "LLM limits: exit-plan review due — docs/EXIT-PLAN.md"
+  fi
   local -a steps=(
     "shadow-divergence:${LLM_SELFCHECK_SHADOW_TIMEOUT:-30}"
     "e2e_surfaces.sh:${LLM_SELFCHECK_E2E_TIMEOUT:-900}"
