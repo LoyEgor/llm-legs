@@ -12,6 +12,7 @@ local replayMarker = 1128483673
 -- ANSI keycodes keep Cmd+C/V stable when the active input source has no Latin letters.
 local cKeyCode = 8
 local vKeyCode = 9
+local zKeyCode = 6
 
 local imageTypes = {
   ["com.compuserve.gif"] = true,
@@ -127,6 +128,10 @@ function M.imagePastePlan()
   return { 22 }
 end
 
+function M.undoPlan()
+  return { 31 }
+end
+
 function M.planBytes(plan)
   local bytes = {}
   for _, byte in ipairs(plan or {}) do
@@ -142,6 +147,9 @@ local function decideAction(bundleID, claude, pasteboardTypes, key, convertPath)
   key = tostring(key or ""):lower()
   if key == "c" then
     return "copy"
+  end
+  if key == "z" then
+    return "undo"
   end
   if key == "v" then
     if M.containsImageType(pasteboardTypes) then
@@ -201,6 +209,8 @@ local function finishPending(state, verdict, targetMatches)
     elseif verdict == "claude" then
       if item.key == "c" then
         action = "copy"
+      elseif item.key == "z" then
+        action = "undo"
       elseif item.convertPath then
         action = "convert"
       else
@@ -225,7 +235,7 @@ function M.pendingTransition(state, event)
     if event.selfPosted then
       return state, { consume = false, ignored = true }
     end
-    if event.key ~= "c" and event.key ~= "v" then
+    if event.key ~= "c" and event.key ~= "v" and event.key ~= "z" then
       return state, { consume = false }
     end
     if event.key == "v" and event.image ~= true then
@@ -620,6 +630,8 @@ completePending = function(eventType, verdict)
     pendingOriginals[item.id] = nil
     if item.action == "copy" then
       emit(M.copyChordPlan())
+    elseif item.action == "undo" then
+      emit(M.undoPlan())
     elseif item.action == "image-paste" then
       emit(M.imagePastePlan())
     elseif item.action == "convert" then
@@ -700,6 +712,8 @@ local function handleEvent(event, keyCode, isRepeat)
     key = "c"
   elseif flags:containExactly({ "cmd" }) and keyCode == vKeyCode then
     key = "v"
+  elseif flags:containExactly({ "cmd" }) and keyCode == zKeyCode then
+    key = "z"
   else
     if flags.cmd or flags.ctrl or keyCode == 36 then
       invalidateAndRefresh()
@@ -757,6 +771,8 @@ local function handleEvent(event, keyCode, isRepeat)
 
   if action == "copy" then
     emit(M.copyChordPlan())
+  elseif action == "undo" then
+    emit(M.undoPlan())
   elseif action == "convert" then
     performConvert(convertPath, {
       event = event:copy(),
@@ -863,7 +879,8 @@ function M.handleEvent(event)
   local repeatProperty = hs.eventtap.event.properties.keyboardEventAutorepeat
   local isRepeat = event:getProperty(repeatProperty) ~= 0
   if isRepeat then
-    local key = keyCode == cKeyCode and "c" or keyCode == vKeyCode and "v" or nil
+    local key = keyCode == cKeyCode and "c" or keyCode == vKeyCode and "v"
+      or keyCode == zKeyCode and "z" or nil
     local keyIsPending = false
     for _, item in ipairs(pendingState and pendingState.queue or {}) do
       if item.key == key then

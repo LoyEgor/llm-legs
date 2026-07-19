@@ -73,6 +73,12 @@ assert(module.decide("com.apple.Safari", native, { "public.png" }, "v") == "pass
   "non-Terminal app was intercepted")
 assert(module.decide(nil, native, nil, "c") == "pass", "unknown app was intercepted")
 assert(module.decide("com.apple.Terminal", native, nil, "x") == "pass", "unhandled key was intercepted")
+assert(module.decide("com.apple.Terminal", native, nil, "z") == "undo",
+  "Cmd+Z did not choose undo")
+assert(module.decide("com.apple.Terminal", "S+ zsh\n", nil, "z") == "pass",
+  "non-Claude Cmd+Z was intercepted")
+assert(module.decide("com.apple.Safari", native, nil, "z") == "pass",
+  "non-Terminal Cmd+Z was intercepted")
 
 local observed = {
   bundleID = "com.apple.Terminal",
@@ -96,6 +102,10 @@ assert(module.decideCached(observed, cached, { "public.png" }, "v", 10.1) == "im
   "cached image Cmd+V did not choose image paste")
 assert(module.decideCached(observed, cached, { "public.utf8-plain-text" }, "v", 10.1) == "pass",
   "cached text Cmd+V was not passed through")
+assert(module.decideCached(observed, cached, nil, "z", 10.1) == "undo",
+  "hot cached Claude context did not choose undo")
+assert(module.decideCached(observed, cached, nil, "z", 11) == "pass",
+  "stale Cmd+Z cache was intercepted")
 assert(module.decideCached(observed, nil, nil, "c", 10.1) == "pass",
   "cold cache was intercepted")
 assert(module.decideCached(observed, cached, nil, "c", 11) == "pass",
@@ -158,6 +168,36 @@ pending, effect = module.pendingTransition(pending, {
   type = "resolve", verdict = "claude",
 })
 assert(effect.actions == nil, "completed decision ran twice")
+
+pending, effect = module.pendingTransition(nil, {
+  type = "press", id = 30, key = "z", now = 2.5, timeout = 0.28,
+})
+assert(pending.status == "pending" and effect.consume and effect.startResolve,
+  "cold Cmd+Z did not start a pending resolve")
+pending, effect = module.pendingTransition(pending, {
+  type = "resolve", verdict = "claude",
+})
+assert(effect.actions[1].action == "undo", "cold Claude verdict did not undo")
+pending = module.pendingTransition(nil, {
+  type = "press", id = 31, key = "z", now = 2.6, timeout = 0.28,
+})
+pending, effect = module.pendingTransition(pending, {
+  type = "resolve", verdict = "not-claude",
+})
+assert(effect.actions[1].action == "replay", "non-Claude Cmd+Z did not replay")
+pending = module.pendingTransition(nil, {
+  type = "press", id = 32, key = "z", now = 2.7, timeout = 0.28,
+})
+pending, effect = module.pendingTransition(pending, {
+  type = "resolve", verdict = "claude", targetMatches = { [32] = false },
+})
+assert(effect.actions[1].action == "policy-drop",
+  "target-mismatched Cmd+Z did not policy-drop")
+pending = module.pendingTransition(nil, {
+  type = "press", id = 33, key = "z", now = 2.8, timeout = 0.28,
+})
+pending, effect = module.pendingTransition(pending, { type = "stop" })
+assert(effect.actions[1].action == "policy-drop", "stopped Cmd+Z did not policy-drop")
 
 pending = module.pendingTransition(nil, {
   type = "press", id = 3, key = "c", now = 3, timeout = 0.28,
@@ -306,7 +346,13 @@ local function integrationContext(types, opts)
     end,
     emit = function(plan)
       local bytes = module.planBytes(plan)
-      actions[#actions + 1] = bytes == string.char(24, 25) and "copy" or "image-paste"
+      if bytes == string.char(24, 25) then
+        actions[#actions + 1] = "copy"
+      elseif bytes == string.char(31) then
+        actions[#actions + 1] = "undo"
+      else
+        actions[#actions + 1] = "image-paste"
+      end
     end,
     post = function() actions[#actions + 1] = "replay" end,
     drop = function() actions[#actions + 1] = "policy-drop" end,
@@ -340,6 +386,9 @@ end
 local vPress = function(repeatDown)
   return keyEvent(9, { "cmd" }, repeatDown, "v")
 end
+local zPress = function(repeatDown)
+  return keyEvent(6, { "cmd" }, repeatDown, "z")
+end
 
 local integration = integrationContext()
 assert(module.handleEvent(cPress(false)), "cold integration Cmd+C was not consumed")
@@ -370,6 +419,33 @@ integration.changeTarget()
 integration.resolve("claude")
 assert(#integration.actions == 1 and integration.actions[1] == "policy-drop",
   "target-mismatched image Cmd+V was not policy-dropped")
+
+integration = integrationContext()
+assert(module.handleEvent(zPress(false)), "cold integration Cmd+Z was not consumed")
+integration.resolve("claude")
+assert(#integration.actions == 1 and integration.actions[1] == "undo",
+  "cold Claude Cmd+Z did not emit undo")
+
+integration = integrationContext()
+module.handleEvent(zPress(false))
+integration.resolve("not-claude")
+assert(#integration.actions == 1 and integration.actions[1] == "replay",
+  "non-Claude Cmd+Z was not replayed")
+
+integration = integrationContext()
+module.handleEvent(zPress(false))
+integration.changeTarget()
+integration.resolve("claude")
+assert(#integration.actions == 1 and integration.actions[1] == "policy-drop",
+  "target-mismatched Cmd+Z was not policy-dropped")
+
+integration = integrationContext()
+module.handleEvent(zPress(false))
+assert(module.handleEvent(zPress(true)), "pending Cmd+Z autorepeat was not consumed")
+assert(module.status().pendingCount == 1, "pending Cmd+Z autorepeat created another action")
+integration.resolve("claude")
+assert(#integration.actions == 1 and integration.actions[1] == "undo",
+  "pending Cmd+Z autorepeat emitted more than one undo")
 
 integration = integrationContext()
 module.handleEvent(cPress(false))
@@ -508,5 +584,8 @@ assert(module.planBytes(copy) == string.char(24, 25), "copy bytes changed")
 local paste = module.imagePastePlan()
 assert(#paste == 1, "image paste chord length changed")
 assert(module.planBytes(paste) == string.char(22), "image paste byte changed")
+local undo = module.undoPlan()
+assert(#undo == 1, "undo chord length changed")
+assert(module.planBytes(undo) == string.char(31), "undo byte changed")
 
 return "PASS: Claude Cmd key decisions"
