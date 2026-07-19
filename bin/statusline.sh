@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Claude Code status line: model | dir/branch/lines | ctx % | 5h/weekly/fable limits | worker | cost.
+# Claude Code status line: model | dir/branch/lines | ports | worker | topic ‖ ctx % | 5h/weekly/fable limits | cost.
 # rate_limits is absent from some renders and idle sessions re-send their last
 # copy forever; every path renders from a stamped merged cache (statusline-cache-rl
 # for main, limits/<acct>.json for claudeb accounts — ~/.claude-profiles/README.md),
@@ -41,12 +41,13 @@ snapshot_lock_acquire() {
 CYAN=$'\033[36m'; BLUE=$'\033[34m'; DIM=$'\033[2m'
 GREEN=$'\033[32m'; YELLOW=$'\033[33m'; RED=$'\033[31m'; MAGENTA=$'\033[35m'; RESET=$'\033[0m'
 
+# Third arg overrides the green→yellow threshold (default 50); red stays ≥80.
 pct_colored() {
-  local v="$1" dim_flag="${2:-}"
+  local v="$1" dim_flag="${2:-}" warn="${3:-50}"
   if [ -z "$v" ]; then printf '%s?%s' "$DIM" "$RESET"; return; fi
   if [ -n "$dim_flag" ]; then printf '%s%s%%%s' "$DIM" "$v" "$RESET"; return; fi
   local color
-  if [ "$v" -lt 50 ]; then color="$GREEN"
+  if [ "$v" -lt "$warn" ]; then color="$GREEN"
   elif [ "$v" -lt 80 ]; then color="$YELLOW"
   else color="$RED"
   fi
@@ -341,11 +342,7 @@ fi
 
 ctx_tokens_part=""
 if [ -n "$ctx_tokens" ] && [ "$ctx_tokens" -gt 0 ] 2>/dev/null; then
-  tk_color="$DIM"
-  # 40%, not pct_colored's 80: a large context is expensive to keep (cache
-  # re-reads bill every turn), so this is an early "time to /compact" nudge.
-  [ -n "$ctx_pct" ] && [ "$ctx_pct" -ge 40 ] 2>/dev/null && tk_color="$RED"
-  ctx_tokens_part=" ${tk_color}$(( (ctx_tokens + 500) / 1000 ))k${RESET}"
+  ctx_tokens_part=" ${DIM}$(( (ctx_tokens + 500) / 1000 ))k${RESET}"
 fi
 
 # claudeb account this session runs on: a real account name (pinned/profile
@@ -502,11 +499,52 @@ if [ -n "$lines_added" ] && [ -n "$lines_removed" ] && [ $(( lines_added + lines
   lines_part=" ${GREEN}+${lines_added}${RESET}/${RED}-${lines_removed}${RESET}"
 fi
 
-# Two lines: identity/work (model, account, dir/branch, workers) on top,
-# usage (ctx, 5h, weekly, fable, cost) below.
-line1="${CYAN}${model}${model_suffix}${RESET}${fast_part}${onem_part}${cb_part} ${sep} ${dir_part}${branch_part}${lines_part}${worker_part}"
+# Too slow for the render path: read the cache, fire the probe in the background
+# when it's >15s stale, and hide the segment once it's >60s stale (probe presumed dead).
+ports_part=""
+if [ -n "$session_id" ]; then
+  probe_self="$0"
+  [ -L "$probe_self" ] && probe_self=$(readlink "$probe_self")
+  case "$probe_self" in /*) ;; *) probe_self="$(dirname "$0")/$(basename "$probe_self")" ;; esac
+  probe_bin="$(dirname "$probe_self")/statusline-ports-probe.sh"
+  ports_cache="$HOME/.cache/claude-statusline/ports-$session_id"
+  ports_mtime=$(file_mtime "$ports_cache" 2>/dev/null)
+  if { ! [[ "$ports_mtime" =~ ^[0-9]+$ ]] || [ "$((now - ports_mtime))" -gt 15 ]; } && [ -x "$probe_bin" ]; then
+    ( "$probe_bin" "$session_id" "$PPID" >/dev/null 2>&1 & ) 2>/dev/null
+  fi
+  if [[ "$ports_mtime" =~ ^[0-9]+$ ]] && [ "$((now - ports_mtime))" -le 60 ]; then
+    # `read` still sets the var on a newline-less EOF; ignore the nonzero return.
+    ports_line=""
+    IFS= read -r ports_line < "$ports_cache" 2>/dev/null || :
+    if [ -n "$ports_line" ]; then
+      ports_render=""; ports_count=0
+      for p in $ports_line; do
+        [ "$ports_count" -ge 3 ] && break
+        ports_render="${ports_render} ${GREEN}:${p}${RESET}"
+        ports_count=$((ports_count + 1))
+      done
+      [ -n "$ports_render" ] && ports_part=" ${DIM}⇢${RESET}${ports_render}"
+    fi
+  fi
+fi
 
-line2="ctx $(pct_colored "$ctx_pct")${ctx_tokens_part} ${sep} 5h $(pct_colored "$h5_pct" "$h5_dim")${h5_arrow} ${sep} wk $(pct_colored "$wk_pct" "$wk_dim")${wk_arrow}${fable_part}"
+topic_seg=""
+if [ -n "$session_id" ]; then
+  topic_file="$HOME/.cache/claude-statusline/topic-$session_id"
+  if [ -s "$topic_file" ]; then
+    IFS= read -r topic_txt < "$topic_file" 2>/dev/null || topic_txt=""
+    if [ -n "$topic_txt" ]; then
+      [ "${#topic_txt}" -gt 44 ] && topic_txt="${topic_txt:0:43}…"
+      topic_seg=" ${sep} ${DIM}${topic_txt}${RESET}"
+    fi
+  fi
+fi
+
+# Two lines: identity/work (model, account, dir/branch, workers, topic) on top,
+# usage (ctx, 5h, weekly, fable, cost) below.
+line1="${CYAN}${model}${model_suffix}${RESET}${fast_part}${onem_part}${cb_part} ${sep} ${dir_part}${branch_part}${lines_part}${ports_part}${worker_part}${topic_seg}"
+
+line2="ctx $(pct_colored "$ctx_pct" "" 40)${ctx_tokens_part} ${sep} 5h $(pct_colored "$h5_pct" "$h5_dim")${h5_arrow} ${sep} wk $(pct_colored "$wk_pct" "$wk_dim")${wk_arrow}${fable_part}"
 
 if [ -n "$cost_raw" ]; then
   line2="${line2} ${sep} ${DIM}\$$(LC_ALL=C printf '%.2f' "$cost_raw")${RESET}"
