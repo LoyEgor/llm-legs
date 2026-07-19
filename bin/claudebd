@@ -37,6 +37,8 @@ const capacityWallDurationsS = (() => {
 })();
 const capacityWallRepeatWindowS = 600;
 const holdMaxMs = Math.max(0, Math.floor(number(process.env.CLAUDEBD_HOLD_MAX_MS, 90000)));
+const holdRecoveryCapMs = Math.max(0, Math.floor(number(process.env.CLAUDEBD_HOLD_RECOVERY_CAP_MS, 360000)));
+const holdRecoveryGraceMs = 2000;
 const holdPollMs = 300;
 const started = Date.now();
 const upstreamStartedAt = Symbol('upstreamStartedAt');
@@ -822,7 +824,16 @@ function holdForEligibility(scope, res, tried) {
       scanAccounts();
       const account = selectAccountForScope(scope, tried, { spreadClaims: true });
       if (account) return finish(account, false);
-      if (Date.now() - startedAt >= holdMaxMs) return finish(null, false);
+      // Stretch the give-up deadline to a knowable imminent recovery, recomputed
+      // each poll (in-flight 429s push walls out); beyond the cap, hours-away
+      // resets still fail fast at the base deadline.
+      let deadline = startedAt + holdMaxMs;
+      const eligibleEpoch = nextEligibleAt(scope);
+      if (eligibleEpoch > 0) {
+        const recoveryMs = eligibleEpoch * 1000 + holdRecoveryGraceMs;
+        if (recoveryMs <= startedAt + holdRecoveryCapMs) deadline = Math.max(deadline, recoveryMs);
+      }
+      if (Date.now() >= deadline) return finish(null, false);
       timer = setTimeout(poll, holdPollMs + Math.floor(Math.random() * holdPollMs));
     };
     poll();

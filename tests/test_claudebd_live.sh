@@ -110,7 +110,7 @@ auth_header() {
 }
 
 gpost() {
-  curl -s -o "$WORK/body" -w '%{http_code}' -X POST \
+  curl -s --max-time 30 -o "$WORK/body" -w '%{http_code}' -X POST \
     -H "authorization: $(auth_header)" -H 'content-type: application/json' \
     --data "$1" "http://127.0.0.1:$DAEMON_PORT/v1/messages"
 }
@@ -777,6 +777,52 @@ hold_count_c=$(grep -c 'hold account-scope=' "$STORE_HOLD_C/claudebd.log" 2>/dev
 eq "${hold_count_c:-0}" "0" "hold-c: no hold log line is ever emitted"
 stop_daemon
 unset CLAUDEBD_HOLD_MAX_MS
+
+echo "scenario hold-d: wall outlives holdMax but recovery is within the cap -> hold stretches to the wall expiry"
+STORE_HOLD_D="$(setup_store "$WORK/hold-d" a)"
+RESET_HOLD_D=$(( $(date +%s) + 8 ))
+write_plan <<JSON
+{ "byToken": { "acct-a": { "status": 429, "headers": { "anthropic-ratelimit-unified-status": "rejected", "anthropic-ratelimit-unified-reset": "$RESET_HOLD_D" }, "body": "{}" } } }
+JSON
+export CLAUDEBD_HOLD_MAX_MS=1500
+export CLAUDEBD_HOLD_RECOVERY_CAP_MS=15000
+start_daemon "$STORE_HOLD_D"
+code1=$(gpost "$GEN")
+eq "$code1" "429" "hold-d: first exhausting request forwards the upstream 429"
+eq "$(sfield accounts.a.walled)" "true" "hold-d: account a is walled until past holdMax"
+write_plan <<'JSON'
+{ "byToken": { "acct-a": { "status": 200, "body": "{\"ok\":true}" } } }
+JSON
+START_HOLD_D=$(date +%s)
+code2=$(gpost "$GEN")
+ELAPSED_HOLD_D=$(( $(date +%s) - START_HOLD_D ))
+eq "$code2" "200" "hold-d: request is served after the wall expiry instead of 503ing at holdMax"
+gt "$ELAPSED_HOLD_D" "2" "hold-d: the hold outlived holdMax (waited past 1.5s)"
+waited_d=$(awk -F'waited_ms=' '/hold account-scope=general/ && /outcome=served/ { split($2,a," "); print a[1] }' "$STORE_HOLD_D/claudebd.log" | tail -1)
+gt "$waited_d" "1500" "hold-d: logged waited_ms exceeds holdMax"
+stop_daemon
+unset CLAUDEBD_HOLD_MAX_MS CLAUDEBD_HOLD_RECOVERY_CAP_MS
+
+echo "scenario hold-e: recovery beyond the cap -> gives up at the base deadline with a retry_at cause body"
+STORE_HOLD_E="$(setup_store "$WORK/hold-e" a)"
+RESET_HOLD_E=$(( $(date +%s) + 60 ))
+write_plan <<JSON
+{ "byToken": { "acct-a": { "status": 429, "headers": { "anthropic-ratelimit-unified-status": "rejected", "anthropic-ratelimit-unified-reset": "$RESET_HOLD_E" }, "body": "{}" } } }
+JSON
+export CLAUDEBD_HOLD_MAX_MS=1500
+export CLAUDEBD_HOLD_RECOVERY_CAP_MS=3000
+start_daemon "$STORE_HOLD_E"
+code1=$(gpost "$GEN")
+eq "$code1" "429" "hold-e: first exhausting request forwards the upstream 429"
+START_HOLD_E=$(date +%s)
+code2=$(gpost "$GEN")
+ELAPSED_HOLD_E=$(( $(date +%s) - START_HOLD_E ))
+eq "$code2" "503" "hold-e: far-away recovery is not held for, 503 as before"
+in_range "$ELAPSED_HOLD_E" "1" "3" "hold-e: gave up at the base deadline, not the far recovery"
+contains '"retry_at"' "$(cat "$WORK/body")" "hold-e: 503 body still carries retry_at"
+contains 'outcome=503' "$(cat "$STORE_HOLD_E/claudebd.log")" "hold-e: hold log records the 503 outcome"
+stop_daemon
+unset CLAUDEBD_HOLD_MAX_MS CLAUDEBD_HOLD_RECOVERY_CAP_MS
 
 echo "scenario current-null-fable-sibling: general current=null must not falsely 503 a fable request a sibling can serve"
 STORE_NULLCUR="$(setup_store "$WORK/current-null-fable-sibling" a b)"
