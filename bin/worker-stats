@@ -1,0 +1,517 @@
+#!/usr/bin/env python3
+"""Fable-rework leaderboard.
+
+`worker-stats` (no subcommand): instant, zero-LLM view of how much Fable rework each
+worker x model x effort configuration costs, plus infra/retry/patch/duration/complexity
+signals — read from the ledger + per-delegation snapshot under the claudeb state dir.
+
+`worker-stats collect [--since] [--until] [--account]`: incremental, on-demand updater.
+Extracts recent delegations/followups with worker-corpus (the ONLY extractor — this file
+never re-parses transcripts), classifies each NEW followup with a headless claudeb call on
+rotation (opus/high), appends to the append-only ledger, and refreshes the delegation
+snapshot. Idempotent: dedupes by tool_use_id.
+
+See docs/worker-symbiosis-spec.md for the wider system."""
+import json
+import os
+import re
+import sys
+import argparse
+import statistics
+import subprocess
+import tempfile
+import fcntl
+from collections import defaultdict, Counter
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+FRESH_START_DAYS = 9
+OVERLAP_DAYS = 2
+STALE_LEDGER_DAYS = 3
+CLASSIFY_TIMEOUT_S = 300
+VALID_CLASSES = ("A", "B", "C")
+COST_OUTLIER_MAX = 50000
+DELEGATION_FIELDS = ("tool_use_id", "timestamp", "subagent_type", "model", "effort",
+                     "is_resume", "outcome", "duration_ms", "retry_of",
+                     "worker_tokens", "orchestrator_patch", "prompt_head", "result_head")
+
+
+def state_dir():
+    d = os.environ.get("WORKER_STATS_DIR")
+    if d:
+        return Path(d)
+    base = os.environ.get("CLAUDEB_DIR", str(Path.home() / ".claude-profiles" / ".claudeb"))
+    return Path(base) / "worker-stats"
+
+
+def cfg_key(worker, model, effort):
+    return "\t".join([worker or "?", model or "?", effort or "?"])
+
+
+def read_jsonl(path):
+    rows = []
+    if not path.exists():
+        return rows
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return rows
+
+
+def humanize_ms(ms):
+    if ms is None:
+        return "-"
+    if ms >= 60000:
+        return f"{ms / 60000:.1f}m"
+    if ms >= 1000:
+        return f"{ms / 1000:.1f}s"
+    return f"{int(ms)}ms"
+
+
+def aggregate(ledger, delegations):
+    snapshot = {r["tool_use_id"]: r for r in ledger if r.get("tool_use_id")}
+    deduped = list(snapshot.values())
+
+    cfg_of = {d.get("tool_use_id"): cfg_key(d.get("subagent_type"), d.get("model"), d.get("effort"))
+              for d in delegations}
+
+    dstats = {}
+    retries = Counter()
+    for d in delegations:
+        key = cfg_of[d.get("tool_use_id")]
+        target = d.get("retry_of")
+        if target and target in cfg_of:
+            retries[cfg_of[target]] += 1
+        if d.get("is_resume") or d.get("outcome") == "killed":
+            continue
+        s = dstats.setdefault(key, {"n": 0, "infra": 0, "patch": 0, "durs": []})
+        s["n"] += 1
+        if d.get("outcome") in ("usage_limit", "failed"):
+            s["infra"] += 1
+        if d.get("orchestrator_patch") is True:
+            s["patch"] += 1
+        if isinstance(d.get("duration_ms"), (int, float)):
+            s["durs"].append(d["duration_ms"])
+
+    buckets = {}
+
+    def bucket(key):
+        return buckets.setdefault(key, {"A": 0, "B": 0, "C": 0, "costs": [], "cplx": []})
+
+    all_fault_costs = []
+    outliers_excluded = 0
+    for r in deduped:
+        key = cfg_key(r.get("worker"), r.get("model"), r.get("effort"))
+        b = bucket(key)
+        cls = r.get("class", "C")
+        if cls not in VALID_CLASSES:
+            cls = "C"
+        b[cls] += 1
+        cost = r.get("fable_tokens_cycle")
+        if cls == "A" and isinstance(cost, (int, float)) and cost > 0:
+            if cost > COST_OUTLIER_MAX:
+                outliers_excluded += 1
+            else:
+                b["costs"].append(cost)
+                all_fault_costs.append(cost)
+        cplx = r.get("complexity")
+        if isinstance(cplx, int):
+            b["cplx"].append(cplx)
+
+    global_median = statistics.median(all_fault_costs) if all_fault_costs else 0
+
+    rows = []
+    for key in set(dstats) | set(buckets) | set(retries):
+        worker, model, effort = key.split("\t")
+        b = buckets.get(key, {"A": 0, "B": 0, "C": 0, "costs": [], "cplx": []})
+        s = dstats.get(key, {"n": 0, "infra": 0, "patch": 0, "durs": []})
+        n = s["n"]
+        fault = b["A"]
+        classified = fault + b["B"] + b["C"]
+        fault_rate = (fault / n) if n else None
+        row_cost = statistics.median(b["costs"]) if b["costs"] else global_median
+        rows.append({
+            "worker": worker, "model": model, "effort": effort,
+            "n_delegations": n,
+            "fault": fault, "planned": b["B"], "ambiguous": b["C"],
+            "fault_rate": fault_rate,
+            "median_fault_cost": row_cost,
+            "median_from_global": not b["costs"],
+            "expected_overhead": (fault_rate or 0.0) * row_cost,
+            "infra_rate": (s["infra"] / n) if n else None,
+            "retries": retries.get(key, 0),
+            "orch_patch_rate": (s["patch"] / n) if n else None,
+            "median_duration_ms": statistics.median(s["durs"]) if s["durs"] else None,
+            "median_complexity": statistics.median(b["cplx"]) if b["cplx"] else None,
+            "low_confidence": n < 10,
+            "inconsistent": n > 0 and classified > n,
+        })
+
+    rows.sort(key=lambda r: (r["expected_overhead"], 1 if r["n_delegations"] else 0,
+                             r["fault"], r["n_delegations"]), reverse=True)
+    return rows, global_median, outliers_excluded
+
+
+def freshness(ledger_path, delegations, ledger):
+    mtime = None
+    if ledger_path.exists():
+        mtime = datetime.fromtimestamp(ledger_path.stat().st_mtime, timezone.utc)
+        mtime_str = mtime.strftime("%Y-%m-%d %H:%M UTC")
+    else:
+        mtime_str = "(no ledger)"
+    days = sorted({(d.get("timestamp") or "")[:10] for d in delegations if d.get("timestamp")})
+    window = f"{days[0]}..{days[-1]}" if days else "(none)"
+    return mtime, mtime_str, window, len(delegations), len(ledger)
+
+
+def print_table(rows, global_median, outliers_excluded, ledger_path, delegations, ledger):
+    mtime, mtime_str, window, n_deleg, n_fu = freshness(ledger_path, delegations, ledger)
+
+    print("Fable-rework leaderboard — worker x model x effort, worst overhead first")
+    header = (f"{'worker/model/effort':<33}{'n':>5}{'fault':>6}{'fault%':>7}{'medcost':>9}"
+              f"{'exp.ovh':>9}{'infra%':>7}{'retry':>6}{'orchP%':>7}{'medDur':>8}{'cplx':>6}  conf")
+    print(header)
+    print("-" * len(header))
+    for r in rows:
+        label = f"{r['worker']}/{r['model']}/{r['effort']}"
+        if len(label) > 32:
+            label = label[:31] + "…"
+        fpct = "—" if r["fault_rate"] is None else f"{r['fault_rate'] * 100:.1f}"
+        infra = "—" if r["infra_rate"] is None else f"{r['infra_rate'] * 100:.1f}"
+        orch = "—" if r["orch_patch_rate"] is None else f"{r['orch_patch_rate'] * 100:.1f}"
+        cplx = "-" if r["median_complexity"] is None else f"{r['median_complexity']:.1f}"
+        medcost = f"{r['median_fault_cost']:.0f}"
+        if r["median_from_global"] and r["median_fault_cost"]:
+            medcost += "*"
+        flags = []
+        if r["low_confidence"]:
+            flags.append("n<10")
+        if r["inconsistent"]:
+            flags.append("!")
+        print(f"{label:<33}{r['n_delegations']:>5}{r['fault']:>6}{fpct:>7}{medcost:>9}"
+              f"{r['expected_overhead']:>9.0f}{infra:>7}{r['retries']:>6}{orch:>7}"
+              f"{humanize_ms(r['median_duration_ms']):>8}{cplx:>6}  {' '.join(flags)}")
+
+    print("-" * len(header))
+    print("legend: n=fresh delegations (killed excluded), fault=A followups, fault%=A/n "
+          "(— when n=0), medcost=median A-cycle tokens (*=global fallback), "
+          "exp.ovh=fault%×medcost, infra%=(usage_limit+failed)/n, retry=retries pointing here, "
+          "orchP%=orchestrator self-patch/n, medDur=median duration, cplx=median rated complexity, "
+          "n<10=low confidence, !=classified>n. plan/amb in --json.")
+    print(f"footnote: {outliers_excluded} cost samples excluded as outliers >50k")
+    print(f"data: ledger {mtime_str} | window {window} | {n_deleg} delegations, {n_fu} followups")
+
+    if mtime is not None:
+        age_days = (datetime.now(timezone.utc) - mtime).days
+        if age_days >= STALE_LEDGER_DAYS:
+            print(f"hint: ledger is {age_days}d old — refresh with `worker-stats collect` "
+                  "(add `--account <profile>` to pin who pays)")
+
+
+def to_json(rows, global_median, outliers_excluded, ledger_path, delegations, ledger):
+    _, mtime_str, window, n_deleg, n_fu = freshness(ledger_path, delegations, ledger)
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "global_median_fault_cost": global_median,
+        "cost_outliers_excluded": outliers_excluded,
+        "window": window,
+        "delegations": n_deleg,
+        "followups": n_fu,
+        "ledger_mtime": mtime_str,
+        "rows": rows,
+    }
+
+
+def cmd_view(args):
+    sd = state_dir()
+    ledger_path = sd / "ledger.jsonl"
+    ledger = read_jsonl(ledger_path)
+    delegations = read_jsonl(sd / "delegations.jsonl")
+    rows, global_median, outliers_excluded = aggregate(ledger, delegations)
+    if args.json:
+        json.dump(to_json(rows, global_median, outliers_excluded, ledger_path, delegations, ledger),
+                  sys.stdout, indent=2)
+        sys.stdout.write("\n")
+    else:
+        print_table(rows, global_median, outliers_excluded, ledger_path, delegations, ledger)
+
+
+def worker_corpus_path():
+    override = os.environ.get("WORKER_CORPUS_BIN")
+    if override:
+        return override
+    return str(Path(__file__).resolve().parent / "worker-corpus")
+
+
+def last_covered_ts(ledger):
+    latest = None
+    for r in ledger:
+        ts = r.get("ts")
+        if ts and (latest is None or ts > latest):
+            latest = ts
+    return latest
+
+
+def run_corpus(since, until):
+    tmp = tempfile.NamedTemporaryFile("w+", suffix=".jsonl", delete=False)
+    tmp.close()
+    try:
+        subprocess.run(
+            [worker_corpus_path(), "--since", since, "--until", until, "--out", tmp.name],
+            check=True, capture_output=True, text=True,
+        )
+        return read_jsonl(Path(tmp.name))
+    finally:
+        os.unlink(tmp.name)
+
+
+def build_prompt(followup):
+    original = followup.get("parent_brief_head_masked") or ""
+    redo = followup.get("brief_text_masked") or ""
+    return f"""You are auditing whether a follow-up delegation to an AI coding WORKER was caused
+by the WORKER's own fault or by planned new work. You see only masked briefs.
+
+ORIGINAL BRIEF (what the WORKER was first asked to do):
+<<<
+{original}
+>>>
+
+FOLLOW-UP BRIEF (the next message sent to the same WORKER):
+<<<
+{redo}
+>>>
+
+Classify the follow-up into exactly one class:
+A = FAULT: the WORKER's previous output was wrong, incomplete, or off-brief and this
+    follow-up fixes that failure.
+B = PLANNED ITERATION: new or extended work — the next design round, a scope extension,
+    a user/design-lead direction change, a pre-existing bug newly assigned, or re-applying
+    a change reverted by another process. Not the WORKER's fault.
+C = AMBIGUOUS: cannot tell from the briefs.
+
+Also grade the ORIGINAL BRIEF's complexity on an integer 1–5 scale:
+1 = trivial one-file tweak ... 5 = multi-system build.
+
+Respond with ONE JSON object and nothing else:
+{{"class": "A|B|C", "quote": "<verbatim substring of the FOLLOW-UP BRIEF supporting the class>", "reason": "<one short sentence>", "complexity": <integer 1-5>}}
+The quote MUST be an exact substring copied from the FOLLOW-UP BRIEF above."""
+
+
+def parse_rater_json(text):
+    text = text.strip()
+    m = re.search(r"\{.*\}", text, re.DOTALL)
+    if not m:
+        return None
+    try:
+        obj = json.loads(m.group(0))
+    except json.JSONDecodeError:
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def valid_complexity(value):
+    try:
+        v = int(value)
+    except (TypeError, ValueError):
+        return None
+    return v if 1 <= v <= 5 else None
+
+
+def claudeb_cmd(prompt, account):
+    base = os.environ.get("CLAUDEB_BIN", "claudeb")
+    pin = ["profile", account] if account else []
+    return [base] + pin + ["-p", prompt, "--output-format", "json",
+                           "--model", "opus", "--effort", "high"]
+
+
+def call_claudeb(prompt, account):
+    try:
+        proc = subprocess.run(claudeb_cmd(prompt, account), capture_output=True,
+                              text=True, timeout=CLASSIFY_TIMEOUT_S)
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None, None
+    if proc.returncode != 0:
+        return None, None
+    try:
+        envelope = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return None, None
+    result = envelope.get("result")
+    return (result if isinstance(result, str) else None), envelope.get("session_id")
+
+
+def classify(followup, account):
+    """Classify one followup and grade brief complexity, validating the verbatim quote;
+    one retry on invalid output, then skip on infra failure (return None, session_id)
+    or fallback to C/rater-invalid on parse failure. Returns (fields, session_id) or
+    (None, session_id) on infra errors."""
+    prompt = build_prompt(followup)
+    haystack = followup.get("brief_text_masked") or ""
+    last_session = None
+    for _ in range(2):
+        text, session_id = call_claudeb(prompt, account)
+        if session_id:
+            last_session = session_id
+        if text is None:
+            continue
+        obj = parse_rater_json(text)
+        if not obj:
+            continue
+        cls = obj.get("class")
+        quote = obj.get("quote", "")
+        if cls in VALID_CLASSES and isinstance(quote, str) and len(quote) >= 15 and quote and quote.strip() and quote in haystack:
+            return {"class": cls, "quote": quote, "reason": obj.get("reason", ""),
+                    "complexity": valid_complexity(obj.get("complexity")),
+                    "rater": "claudeb-opus-high"}, last_session
+    if last_session is None:
+        return None, None
+    return {"class": "C", "quote": "", "reason": "rater-invalid",
+            "complexity": None, "rater": "claudeb-opus-high"}, last_session
+
+
+def refresh_delegations(path, recs):
+    """Merge the corpus run's delegation records into the snapshot, deduped/refreshed
+    by tool_use_id (outcome/duration/tokens sharpen as notifications land later).
+    Write atomically: temp file then os.replace()."""
+    snapshot = {d["tool_use_id"]: d for d in read_jsonl(path) if d.get("tool_use_id")}
+    for r in recs:
+        if r.get("type") != "delegation":
+            continue
+        snapshot[r["tool_use_id"]] = {k: r.get(k) for k in DELEGATION_FIELDS}
+
+    tmp = tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False, suffix=".tmp")
+    try:
+        for d in sorted(snapshot.values(), key=lambda x: x.get("timestamp") or ""):
+            tmp.write(json.dumps(d) + "\n")
+        tmp.close()
+        os.replace(tmp.name, path)
+    except:
+        tmp.close()
+        try:
+            os.unlink(tmp.name)
+        except:
+            pass
+        raise
+
+    return len(snapshot)
+
+
+def cmd_collect(args):
+    sd = state_dir()
+    sd.mkdir(parents=True, exist_ok=True)
+    os.chmod(sd, 0o700)
+
+    lock_path = sd / ".collect.lock"
+    try:
+        lockfile = open(lock_path, "w")
+        fcntl.flock(lockfile.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (OSError, IOError):
+        print("another collect is running", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        ledger_path = sd / "ledger.jsonl"
+        deleg_path = sd / "delegations.jsonl"
+
+        ledger = read_jsonl(ledger_path)
+        seen_ids = {r["tool_use_id"] for r in ledger if r.get("tool_use_id")}
+
+        today = datetime.now(timezone.utc).date()
+        until = args.until or today.isoformat()
+        if args.since:
+            since = args.since
+        else:
+            last_ts = last_covered_ts(ledger)
+            if last_ts:
+                last_day = datetime.fromisoformat(last_ts.replace("Z", "+00:00")).date()
+                since = (last_day - timedelta(days=OVERLAP_DAYS)).isoformat()
+            else:
+                since = (today - timedelta(days=FRESH_START_DAYS)).isoformat()
+
+        recs = run_corpus(since, until)
+        new_followups = [
+            r for r in recs
+            if r.get("type") == "followup" and r.get("tool_use_id") not in seen_ids
+        ]
+
+        payer = args.account if args.account else "claudeb rotation"
+        print(f"collect window {since}..{until}: {len(new_followups)} new followups to classify "
+              f"(opus/high, paid by {payer})")
+
+        if args.dry_run:
+            n = sum(1 for r in recs if r.get("type") == "delegation")
+            print(f"dry run — {n} delegations in window, nothing written")
+            return
+
+        session_ids = []
+        appended = 0
+        to_append = []
+        for fu in new_followups:
+            if fu.get("tool_use_id") in seen_ids:
+                continue
+            fields, session_id = classify(fu, args.account)
+            if fields is None:
+                continue
+            if session_id:
+                session_ids.append(session_id)
+            record = {
+                "tool_use_id": fu["tool_use_id"],
+                "ts": fu.get("timestamp"),
+                "worker": fu.get("subagent_type"),
+                "model": fu.get("model"),
+                "effort": fu.get("effort"),
+                "account": fu.get("account"),
+                "class": fields["class"],
+                "quote": fields["quote"],
+                "reason": fields["reason"],
+                "complexity": fields["complexity"],
+                "fable_tokens_cycle": fu.get("fable_tokens_cycle"),
+                "rater": fields["rater"],
+            }
+            to_append.append(record)
+            seen_ids.add(fu["tool_use_id"])
+            appended += 1
+
+        if to_append:
+            with open(ledger_path, "a") as f:
+                for record in to_append:
+                    f.write(json.dumps(record) + "\n")
+
+        total = refresh_delegations(deleg_path, recs)
+        print(f"appended {appended} followups; delegation snapshot now {total} records")
+        uniq = sorted(set(session_ids))
+        if uniq:
+            print("claudeb session(s): " + ", ".join(uniq))
+    finally:
+        try:
+            fcntl.flock(lockfile.fileno(), fcntl.LOCK_UN)
+            lockfile.close()
+        except:
+            pass
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Fable-rework worker leaderboard")
+    parser.add_argument("--json", action="store_true", help="Emit machine-readable aggregates")
+    sub = parser.add_subparsers(dest="cmd")
+    c = sub.add_parser("collect", help="Incrementally classify new followups and refresh the snapshot")
+    c.add_argument("--since", help="Override window start (YYYY-MM-DD)")
+    c.add_argument("--until", help="Override window end (YYYY-MM-DD); default today (UTC)")
+    c.add_argument("--account", help="claudeb profile that pays for classification; default rotation")
+    c.add_argument("--dry-run", action="store_true", help="Preview new followups without classifying or writing")
+    args = parser.parse_args()
+
+    if args.cmd == "collect":
+        cmd_collect(args)
+    else:
+        cmd_view(args)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,842 @@
+#!/usr/bin/env python3
+import json
+import os
+import sys
+import argparse
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from collections import defaultdict
+import re
+
+WORKER_TYPES = {"codex-worker", "claudeb-worker", "sonnet-worker"}
+
+# Only model-shaped values are real; junk like `py_compile`, `pytest`,
+# `transcriber.ctl`, `http.server` came from `python3 -m <module>` commands.
+MODEL_RE = re.compile(r'^(gpt-|claude-|o[0-9]|sol|opus|sonnet|haiku)', re.IGNORECASE)
+USAGE_LIMIT_RE = re.compile(r'(?:CODEX|CLAUDEB)_USAGE_LIMIT')
+# Failure only when the OUTCOME verdict itself is a failure token (not any line that
+# merely contains "error"/"fail" — e.g. "OUTCOME: done ... 0 errors" or a review
+# reporting "partially failed ... not a run fail" are successes), or a real traceback.
+FAILED_RE = re.compile(r'OUTCOME:\s*(?:[❌✗]|FAILED\b|FAIL\b)|Traceback \(most recent call last\):',
+                       re.IGNORECASE)
+SESSION_ID_RE = re.compile(r'\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b')
+EDIT_TOOLS = {"Edit", "Write", "NotebookEdit"}
+
+
+def valid_model(value):
+    return value if value and MODEL_RE.match(value) else None
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Extract delegation corpus from Claude Code transcripts")
+    parser.add_argument("--since", help="Start date (YYYY-MM-DD)", default=None)
+    parser.add_argument("--until", help="End date (YYYY-MM-DD)", default=None)
+    parser.add_argument("--out", help="Output file (default: stdout)", default=None)
+    parser.add_argument("--summary", action="store_true", help="Print summary table only")
+    return parser.parse_args()
+
+
+def get_default_window():
+    today = datetime.now(timezone.utc).date()
+    since = today - timedelta(days=8)
+    return since, today
+
+
+def parse_date(date_str):
+    return datetime.strptime(date_str, "%Y-%m-%d").date()
+
+
+def get_transcript_files():
+    projects_dir = Path.home() / ".claude" / "projects"
+    if not projects_dir.exists():
+        return []
+    files = []
+    seen_realpath = set()
+    for f in projects_dir.rglob("*.jsonl"):
+        rp = str(f.resolve())
+        if rp not in seen_realpath and "/subagents/" not in str(f):
+            files.append(f)
+            seen_realpath.add(rp)
+    return files
+
+
+def extract_model_effort_account_from_description(description):
+    model = None
+    effort = None
+    account = None
+
+    if not description or not isinstance(description, str):
+        return model, effort, account
+
+    match = re.match(r'^([a-z0-9]+)\s*·\s*([a-z0-9\-]+)\s*·\s*(low|medium|high|xhigh|max|ultra):\s*(.*)', description)
+    if match:
+        account = match.group(1)
+        model = match.group(2)
+        effort = match.group(3)
+        return model, effort, account
+
+    match = re.match(r'^([a-z0-9]+)\s*·\s*(low|medium|high|xhigh|max|ultra):\s*(.*)', description)
+    if match:
+        account = match.group(1)
+        effort = match.group(2)
+        return model, effort, account
+
+    return model, effort, account
+
+
+def extract_model_effort_account(brief_text):
+    model = None
+    effort = None
+    account = None
+
+    header = brief_text[:1000]
+
+    model_match = re.search(r'MODEL:\s*(\S+?)(?:\.|,|\s+EFFORT:|\s+ACCOUNT:|\s+Working)', header)
+    if model_match:
+        model = model_match.group(1).strip()
+
+    effort_match = re.search(r'EFFORT:\s*(\S+?)(?:\.|,|\s+MODEL:|\s+ACCOUNT:|\s+Working)', header)
+    if effort_match:
+        effort = effort_match.group(1).strip()
+
+    account_match = re.search(r'ACCOUNT:\s*(\S+?)(?:\.|,|\s+MODEL:|\s+EFFORT:|\s+Working)', header)
+    if account_match:
+        account = account_match.group(1).strip()
+
+    return model, effort, account
+
+
+def extract_delegations(transcript_path, since_date, until_date, file_event_counts):
+    delegations = []
+    event_count = file_event_counts.get(str(transcript_path), 0)
+
+    try:
+        with open(transcript_path) as f:
+            for line in f:
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                if event.get("isSidechain"):
+                    continue
+
+                if event.get("type") != "assistant":
+                    continue
+
+                ts_str = event.get("timestamp")
+                if not ts_str:
+                    continue
+
+                try:
+                    ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).date()
+                except:
+                    continue
+
+                if ts < since_date or ts > until_date:
+                    continue
+
+                message = event.get("message", {})
+                content = message.get("content", [])
+
+                for item in content:
+                    if item.get("type") != "tool_use":
+                        continue
+
+                    tool_name = item.get("name")
+                    if tool_name != "Agent":
+                        continue
+
+                    tool_input = item.get("input", {})
+                    subagent_type = tool_input.get("subagent_type")
+
+                    if subagent_type not in WORKER_TYPES:
+                        continue
+
+                    prompt = tool_input.get("prompt", "")
+                    tool_use_id = item.get("id")
+                    session_id = event.get("sessionId")
+                    description = tool_input.get("description", "")
+                    is_resume = prompt.strip().startswith("RESUME ")
+                    resumed_session = None
+
+                    if is_resume:
+                        match = re.match(r"RESUME\s+([a-f0-9\-]+):", prompt)
+                        if match:
+                            resumed_session = match.group(1)
+
+                    prompt_chars = len(prompt)
+                    model = None
+                    effort = None
+                    account = None
+
+                    model_desc, effort_desc, account_desc = extract_model_effort_account_from_description(description)
+                    if model_desc:
+                        model = model_desc
+                    if effort_desc:
+                        effort = effort_desc
+                    if account_desc:
+                        account = account_desc
+
+                    if not model or not effort or not account:
+                        model_brief, effort_brief, account_brief = extract_model_effort_account(prompt)
+                        if not model and model_brief:
+                            model = model_brief
+                        if not effort and effort_brief:
+                            effort = effort_brief
+                        if not account and account_brief:
+                            account = account_brief
+
+                    brief_head = prompt[:2000]
+                    brief_text_masked = mask_worker_names(prompt)
+                    brief_head_masked = mask_worker_names(brief_head)
+
+                    delegations.append({
+                        "type": "delegation",
+                        "timestamp": ts_str,
+                        "session_id": session_id,
+                        "tool_use_id": tool_use_id,
+                        "subagent_type": subagent_type,
+                        "prompt_chars": prompt_chars,
+                        "is_resume": is_resume,
+                        "resumed_session": resumed_session,
+                        "model": model,
+                        "effort": effort,
+                        "account": account,
+                        "brief_text": prompt,
+                        "parent_brief_head": None,
+                        "brief_text_masked": brief_text_masked,
+                        "parent_brief_head_masked": None,
+                        "parent_tool_use_id": None,
+                        "fable_tokens_cycle": None,
+                        "outcome": None,
+                        "retry_of": None,
+                        "duration_ms": None,
+                        "worker_tokens": None,
+                        "orchestrator_patch": None,
+                        "prompt_head": prompt[:200] if prompt else None,
+                        "result_head": None,
+                        "_file_event_count": event_count,
+                        "_reported_sessions": [],
+                    })
+    except Exception:
+        pass
+
+    return delegations
+
+
+def count_file_events(transcript_path):
+    count = 0
+    try:
+        with open(transcript_path) as f:
+            for line in f:
+                try:
+                    json.loads(line)
+                    count += 1
+                except:
+                    pass
+    except:
+        pass
+    return count
+
+
+def mask_worker_names(text):
+    text = re.sub(r"codex-worker|claudeb-worker|sonnet-worker", "WORKER", text)
+    text = re.sub(r"\bcodex\b|\bclaudeb\b|\bsonnet\b", "WORKER", text, flags=re.IGNORECASE)
+    return text
+
+
+def find_sidechain_file(transcript_path, session_id, prompt_head):
+    session_dir = transcript_path.parent / session_id / "subagents"
+    if not session_dir.exists():
+        return None
+
+    for sidechain_file in session_dir.glob("agent-*.jsonl"):
+        try:
+            with open(sidechain_file) as f:
+                for line in f:
+                    try:
+                        event = json.loads(line)
+                        if event.get("type") == "user":
+                            msg_content = event.get("message", {}).get("content", "")
+                            if isinstance(msg_content, str):
+                                first_msg = msg_content[:300]
+                                if prompt_head in first_msg or first_msg.startswith(prompt_head[:100]):
+                                    return sidechain_file
+                            break
+                    except:
+                        pass
+        except:
+            pass
+
+    return None
+
+
+def extract_sidechain_config(sidechain_file, worker_type):
+    model = None
+    effort = None
+    account = None
+
+    meta_file = sidechain_file.with_name(sidechain_file.name.replace(".jsonl", ".meta.json"))
+    if meta_file.exists():
+        try:
+            with open(meta_file) as f:
+                meta = json.load(f)
+                if "model" in meta:
+                    model = meta["model"]
+                if "effort" in meta:
+                    effort = meta["effort"]
+                if "account" in meta:
+                    account = meta["account"]
+        except:
+            pass
+
+    try:
+        with open(sidechain_file) as f:
+            for line in f:
+                try:
+                    event = json.loads(line)
+
+                    if event.get("type") == "assistant":
+                        if not effort:
+                            top_level_effort = event.get("effort")
+                            if top_level_effort:
+                                effort = top_level_effort
+
+                        message = event.get("message", {})
+                        content = message.get("content", [])
+
+                        for item in content:
+                            if item.get("type") != "tool_use" or item.get("name") != "Bash":
+                                continue
+
+                            cmd = item.get("input", {}).get("command", "")
+
+                            if worker_type == "codex-worker":
+                                if "model_reasoning_effort=" in cmd and not effort:
+                                    m = re.search(r'model_reasoning_effort=([a-z]+)', cmd)
+                                    if m:
+                                        effort = m.group(1)
+                                if " -m " in cmd and not model:
+                                    m = re.search(r' -m (\S+)', cmd)
+                                    if m:
+                                        model = valid_model(m.group(1))
+                                if ".codex-profiles/" in cmd and not account:
+                                    m = re.search(r'\.codex-profiles/([a-zA-Z0-9_-]+)', cmd)
+                                    if m:
+                                        account = m.group(1)
+
+                            elif worker_type == "claudeb-worker":
+                                if "--model" in cmd and not model:
+                                    m = re.search(r'--model\s+(\S+)', cmd)
+                                    if m:
+                                        model = m.group(1)
+                                if "--effort" in cmd and not effort:
+                                    m = re.search(r'--effort\s+(\S+)', cmd)
+                                    if m:
+                                        effort = m.group(1)
+                                if "claudeb profile" in cmd and not account:
+                                    m = re.search(r'claudeb profile\s+(\S+)', cmd)
+                                    if m:
+                                        account = m.group(1)
+                                if ".claude-profiles/" in cmd and not account:
+                                    m = re.search(r'\.claude-profiles/([a-zA-Z0-9_-]+)', cmd)
+                                    if m:
+                                        account = m.group(1)
+                except:
+                    pass
+    except:
+        pass
+
+    return model, effort, account
+
+
+def recover_sidechain_config(delegations, all_transcript_paths):
+    recovery_stats = {"codex": {"total": 0, "model": 0, "effort": 0, "account": 0},
+                     "claudeb": {"total": 0, "model": 0, "effort": 0, "account": 0}}
+
+    session_to_path = {}
+    for fpath in all_transcript_paths:
+        try:
+            with open(fpath) as f:
+                first_line = f.readline()
+                if first_line:
+                    first_event = json.loads(first_line)
+                    session_id = first_event.get("sessionId")
+                    if session_id:
+                        session_to_path[session_id] = fpath
+        except:
+            pass
+
+    for d in delegations:
+        worker_key = "codex" if d["subagent_type"] == "codex-worker" else "claudeb"
+        recovery_stats[worker_key]["total"] += 1
+
+        prompt_head = d["brief_text"][:300]
+        transcript_path = session_to_path.get(d["session_id"])
+
+        if transcript_path and (not d["model"] or not d["effort"] or not d["account"]):
+            sidechain_file = find_sidechain_file(Path(transcript_path), d["session_id"], prompt_head)
+
+            if sidechain_file:
+                model, effort, account = extract_sidechain_config(sidechain_file, d["subagent_type"])
+                if model and not d["model"]:
+                    d["model"] = model
+                    recovery_stats[worker_key]["model"] += 1
+                if effort and not d["effort"]:
+                    d["effort"] = effort
+                    recovery_stats[worker_key]["effort"] += 1
+                if account and not d["account"]:
+                    d["account"] = account
+                    recovery_stats[worker_key]["account"] += 1
+
+    return recovery_stats
+
+
+def load_main_session_events(transcript_path, session_id):
+    events = []
+    try:
+        with open(transcript_path) as f:
+            for line in f:
+                try:
+                    event = json.loads(line)
+                    if event.get("sessionId") == session_id and not event.get("isSidechain"):
+                        events.append(event)
+                except:
+                    pass
+    except:
+        pass
+    return events
+
+
+def parse_ts(ts_str):
+    if not ts_str:
+        return None
+    try:
+        return datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def compute_fable_tokens_cycle(followups, delegations, all_transcript_paths):
+    session_events = {}
+    session_to_path = {}
+
+    for fpath in all_transcript_paths:
+        try:
+            with open(fpath) as f:
+                first_line = f.readline()
+                if first_line:
+                    first_event = json.loads(first_line)
+                    session_id = first_event.get("sessionId")
+                    if session_id:
+                        session_to_path[session_id] = fpath
+        except:
+            pass
+
+    for followup in followups:
+        session_id = followup["session_id"]
+
+        if session_id not in session_events:
+            if session_id in session_to_path:
+                session_events[session_id] = load_main_session_events(session_to_path[session_id], session_id)
+
+        if session_id not in session_events or not session_events[session_id]:
+            continue
+
+        events = session_events[session_id]
+        parent_tool_use_id = followup["parent_tool_use_id"]
+        followup_ts = parse_ts(followup["timestamp"])
+        if followup_ts is None:
+            continue
+
+        parent_result_ts = None
+        for event in events:
+            if event.get("type") != "user":
+                continue
+
+            message = event.get("message", {})
+            content = message.get("content", [])
+
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "tool_result" and block.get("tool_use_id") == parent_tool_use_id:
+                    parent_result_ts = parse_ts(event.get("timestamp"))
+                    break
+
+            if parent_result_ts:
+                break
+
+        if parent_result_ts is None:
+            continue
+
+        tokens_sum = 0
+        for event in events:
+            if event.get("type") != "assistant":
+                continue
+
+            event_ts = parse_ts(event.get("timestamp"))
+            if event_ts is None:
+                continue
+
+            if parent_result_ts < event_ts < followup_ts:
+                usage = event.get("message", {}).get("usage", {})
+                output_tokens = usage.get("output_tokens", 0)
+                tokens_sum += output_tokens
+
+        if tokens_sum > 0:
+            followup["fable_tokens_cycle"] = tokens_sum
+
+
+def build_notification_index(all_transcript_paths):
+    """Map delegation tool_use_id -> its <task-notification> data. Background workers
+    return an async-launch stub; the real status/tokens/result arrive later in a
+    queue-operation event carrying <tool-use-id>. Indexed globally so a notification
+    that landed in a post-compact session file is still found."""
+    index = {}
+    for fpath in all_transcript_paths:
+        try:
+            with open(fpath) as f:
+                for line in f:
+                    if "<task-notification>" not in line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    content = event.get("content")
+                    if not isinstance(content, str):
+                        continue
+                    tid_m = re.search(r"<tool-use-id>([^<]+)</tool-use-id>", content)
+                    if not tid_m:
+                        continue
+                    status_m = re.search(r"<status>([^<]+)</status>", content)
+                    result_m = re.search(r"<result>(.*?)</result>", content, re.DOTALL)
+                    tokens_m = re.search(r"<subagent_tokens>(\d+)</subagent_tokens>", content)
+                    result_text = result_m.group(1) if result_m else ""
+                    index[tid_m.group(1)] = {
+                        "status": status_m.group(1) if status_m else None,
+                        "result_text": result_text,
+                        "worker_tokens": int(tokens_m.group(1)) if tokens_m else None,
+                        "ts": event.get("timestamp"),
+                        "reported_sessions": SESSION_ID_RE.findall(result_text),
+                    }
+        except OSError:
+            pass
+    return index
+
+
+def classify_outcome(notif, sync_text):
+    text = ((notif["result_text"] if notif else "") + "\n" + (sync_text or ""))
+    if USAGE_LIMIT_RE.search(text):
+        return "usage_limit"
+    status = notif["status"] if notif else None
+    if status in ("killed", "stopped"):
+        return "killed"
+    if status == "failed":
+        return "failed"
+    if status == "completed":
+        return "failed" if FAILED_RE.search(text) else "ok"
+    # No notification: rely on a synchronous result block if there was one.
+    if sync_text is None or sync_text.startswith("Async agent launched successfully"):
+        return None
+    if FAILED_RE.search(sync_text):
+        return "failed"
+    return "ok"
+
+
+def enrich_delegations(delegations, all_transcript_paths, notif_index):
+    session_events = {}
+    session_to_path = {}
+    for fpath in all_transcript_paths:
+        try:
+            with open(fpath) as f:
+                first = f.readline()
+                if first:
+                    sid = json.loads(first).get("sessionId")
+                    if sid:
+                        session_to_path[sid] = fpath
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    def events_for(sid):
+        if sid not in session_events:
+            path = session_to_path.get(sid)
+            session_events[sid] = load_main_session_events(path, sid) if path else []
+        return session_events[sid]
+
+    for d in delegations:
+        notif = notif_index.get(d["tool_use_id"])
+        d["_reported_sessions"] = notif["reported_sessions"] if notif else []
+        events = events_for(d["session_id"])
+
+        sync_text = None
+        result_event_ts = None
+        for event in events:
+            if event.get("type") != "user":
+                continue
+            for block in event.get("message", {}).get("content", []) or []:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "tool_result" and block.get("tool_use_id") == d["tool_use_id"]:
+                    c = block.get("content")
+                    if isinstance(c, list):
+                        sync_text = " ".join(b.get("text", "") for b in c if isinstance(b, dict))
+                    elif isinstance(c, str):
+                        sync_text = c
+                    result_event_ts = parse_ts(event.get("timestamp"))
+                    break
+            if sync_text is not None:
+                break
+
+        d["outcome"] = classify_outcome(notif, sync_text)
+        d["worker_tokens"] = notif["worker_tokens"] if notif else None
+        result_full = (notif["result_text"] if notif else "") or (sync_text or "")
+        d["result_head"] = result_full[:200] if result_full.strip() else None
+
+        dispatch_ts = parse_ts(d["timestamp"])
+        arrival_ts = parse_ts(notif["ts"]) if notif else result_event_ts
+        if dispatch_ts and arrival_ts:
+            d["duration_ms"] = int((arrival_ts - dispatch_ts).total_seconds() * 1000)
+
+        d["orchestrator_patch"] = detect_orchestrator_patch(
+            events, arrival_ts or dispatch_ts,
+            (notif["result_text"] if notif else "") + "\n" + (sync_text or ""))
+
+
+def detect_orchestrator_patch(events, after_ts, result_text):
+    """True when, before the next real user message, the orchestrator itself edited a
+    file the worker named in its result — the 'Fable silently fixed it' signal."""
+    if not after_ts or not result_text.strip():
+        return None
+    for event in sorted(events, key=lambda e: e.get("timestamp") or ""):
+        ev_ts = parse_ts(event.get("timestamp"))
+        if not ev_ts or ev_ts <= after_ts:
+            continue
+        if event.get("type") == "user":
+            content = event.get("message", {}).get("content", [])
+            has_text = isinstance(content, str) or any(
+                isinstance(b, dict) and b.get("type") == "text" for b in content or [])
+            if has_text:
+                return False
+        if event.get("type") == "assistant":
+            for item in event.get("message", {}).get("content", []) or []:
+                if isinstance(item, dict) and item.get("type") == "tool_use" and item.get("name") in EDIT_TOOLS:
+                    fp = item.get("input", {}).get("file_path") or item.get("input", {}).get("notebook_path") or ""
+                    if fp and (fp in result_text or os.path.basename(fp) in result_text):
+                        return True
+    return False
+
+
+def link_retries(delegations):
+    """Flag silent retries: a fresh (non-resume) dispatch that closely repeats an
+    earlier same-session, same-worker delegation whose outcome was infra-broken."""
+    from difflib import SequenceMatcher
+    by_session = defaultdict(list)
+    for d in delegations:
+        by_session[d["session_id"]].append(d)
+    for group in by_session.values():
+        group.sort(key=lambda d: d["timestamp"])
+        for i, d in enumerate(group):
+            if d["is_resume"]:
+                continue
+            head = d["brief_text"][:200]
+            for j in range(i - 1, -1, -1):
+                e = group[j]
+                if e["subagent_type"] != d["subagent_type"]:
+                    continue
+                if e["outcome"] not in ("usage_limit", "failed", "killed"):
+                    continue
+                if SequenceMatcher(None, head, e["brief_text"][:200]).ratio() >= 0.8:
+                    d["retry_of"] = e["tool_use_id"]
+                    break
+
+
+def link_followups(delegations):
+    followups = []
+
+    # Worker-session chains for cross-session RESUME linkage: a delegation "belongs"
+    # to worker session S if its notification reported S (the starter) or it is itself
+    # a RESUME of S. A RESUME's true parent is the latest earlier member of that chain,
+    # even when it lives in a different (post-compact) orchestrator session.
+    belong = defaultdict(list)
+    for d in delegations:
+        for s in d.get("_reported_sessions", []):
+            belong[s].append(d)
+        if d["is_resume"] and d["resumed_session"]:
+            belong[d["resumed_session"]].append(d)
+
+    for i, d in enumerate(delegations):
+        if not d["is_resume"]:
+            continue
+
+        parent = None
+        if d["resumed_session"]:
+            chain = [e for e in belong[d["resumed_session"]]
+                     if e["tool_use_id"] != d["tool_use_id"] and e["timestamp"] < d["timestamp"]]
+            if chain:
+                parent = max(chain, key=lambda e: e["timestamp"])
+
+        # Fallback: nearest earlier dispatch to the same worker (covers resumes whose
+        # session id never surfaced in a notification result).
+        if parent is None:
+            for j in range(i - 1, -1, -1):
+                if delegations[j]["subagent_type"] != d["subagent_type"]:
+                    continue
+                if delegations[j]["tool_use_id"] == d["tool_use_id"]:
+                    continue
+                parent = delegations[j]
+                break
+
+        if parent is not None:
+            followup = d.copy()
+            followup["type"] = "followup"
+            followup["parent_tool_use_id"] = parent["tool_use_id"]
+            followup["parent_brief_head"] = parent["brief_text"][:2000]
+            followup["parent_brief_head_masked"] = mask_worker_names(parent["brief_text"][:2000])
+            followups.append(followup)
+
+    return followups
+
+
+def deduplicate_by_tool_use_id(delegations, followups):
+    seen_ids = {}
+
+    for d in delegations:
+        uid = d["tool_use_id"]
+        if uid not in seen_ids:
+            seen_ids[uid] = d
+        else:
+            if d.get("_file_event_count", 0) > seen_ids[uid].get("_file_event_count", 0):
+                seen_ids[uid] = d
+
+    unique_delegations = list(seen_ids.values())
+
+    seen_ids_followup = {}
+    for f in followups:
+        uid = f["tool_use_id"]
+        if uid not in seen_ids_followup:
+            seen_ids_followup[uid] = f
+        else:
+            if f.get("_file_event_count", 0) > seen_ids_followup[uid].get("_file_event_count", 0):
+                seen_ids_followup[uid] = f
+
+    unique_followups = list(seen_ids_followup.values())
+
+    return unique_delegations, unique_followups
+
+
+def output_records(delegations, followups, outfile):
+    output = outfile if outfile else sys.stdout
+    mode = "w" if outfile else None
+
+    with open(output, mode) if mode else output as f:
+        for d in delegations:
+            clean_d = {k: v for k, v in d.items() if not k.startswith("_")}
+            f.write(json.dumps(clean_d) + "\n")
+        for fu in followups:
+            clean_f = {k: v for k, v in fu.items() if not k.startswith("_")}
+            f.write(json.dumps(clean_f) + "\n")
+
+
+def build_summary(delegations, followups):
+    summary = defaultdict(lambda: {"delegations": 0, "followups": 0})
+
+    for d in delegations:
+        key = (d["subagent_type"], d["model"], d["effort"])
+        summary[key]["delegations"] += 1
+
+    for fu in followups:
+        key = (fu["subagent_type"], fu["model"], fu["effort"])
+        summary[key]["followups"] += 1
+
+    return summary
+
+
+def sort_key(item):
+    (subagent_type, model, effort), _ = item
+    return (subagent_type or "", model or "", effort or "")
+
+
+def print_summary(delegations, followups):
+    summary = build_summary(delegations, followups)
+
+    print("Delegation Summary")
+    print("=" * 80)
+    print(f"{'Subagent Type':<20} {'Model':<15} {'Effort':<10} {'Delegations':>12} {'Followups':>12}")
+    print("-" * 80)
+
+    total_delegations = 0
+    total_followups = 0
+
+    for (subagent_type, model, effort), counts in sorted(summary.items(), key=sort_key):
+        model_str = model if model else "(default)"
+        effort_str = effort if effort else "(default)"
+        subagent_str = subagent_type if subagent_type else "(unknown)"
+
+        print(f"{subagent_str:<20} {model_str:<15} {effort_str:<10} {counts['delegations']:>12} {counts['followups']:>12}")
+        total_delegations += counts["delegations"]
+        total_followups += counts["followups"]
+
+    print("-" * 80)
+    print(f"{'TOTAL':<20} {'':<15} {'':<10} {total_delegations:>12} {total_followups:>12}")
+
+
+def main():
+    args = parse_args()
+
+    since_date, until_date = get_default_window()
+    if args.since:
+        since_date = parse_date(args.since)
+    if args.until:
+        until_date = parse_date(args.until)
+
+    all_transcripts = get_transcript_files()
+
+    file_event_counts = {}
+    for fpath in all_transcripts:
+        file_event_counts[str(fpath)] = count_file_events(fpath)
+
+    delegations = []
+    for transcript_path in all_transcripts:
+        delegations.extend(extract_delegations(transcript_path, since_date, until_date, file_event_counts))
+
+    delegations.sort(key=lambda d: d["timestamp"])
+
+    recovery_stats = recover_sidechain_config(delegations, all_transcripts)
+
+    notif_index = build_notification_index(all_transcripts)
+    enrich_delegations(delegations, all_transcripts, notif_index)
+    link_retries(delegations)
+
+    followups = link_followups(delegations)
+    compute_fable_tokens_cycle(followups, delegations, all_transcripts)
+
+    delegations, followups = deduplicate_by_tool_use_id(delegations, followups)
+
+    large_cycles = []
+    for fu in followups:
+        if fu.get("fable_tokens_cycle") and fu["fable_tokens_cycle"] > 50000:
+            large_cycles.append((fu["fable_tokens_cycle"], fu["session_id"]))
+
+    if args.summary:
+        print_summary(delegations, followups)
+        print("\nSidechain Recovery Statistics:")
+        print(f"  codex-worker: {recovery_stats['codex']['effort']}/{recovery_stats['codex']['total']} effort resolved")
+        print(f"  claudeb-worker: {recovery_stats['claudeb']['effort']}/{recovery_stats['claudeb']['total']} effort resolved")
+
+        followups_with_cycle = sum(1 for f in followups if f.get("fable_tokens_cycle") is not None)
+        print(f"\nFable Token Cycles:")
+        print(f"  Non-null fable_tokens_cycle: {followups_with_cycle}/{len(followups)} ({100*followups_with_cycle//len(followups) if followups else 0}%)")
+
+        if large_cycles:
+            print(f"\nFlagged large fable_tokens_cycle values (> 50000):")
+            for cycle_val, session_id in sorted(large_cycles, reverse=True):
+                print(f"  {cycle_val} tokens in session {session_id}")
+    else:
+        output_records(delegations, followups, args.out)
+
+
+if __name__ == "__main__":
+    main()
