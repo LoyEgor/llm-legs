@@ -2,8 +2,10 @@ local GptVoice = {}
 
 local socketPath = os.getenv("HOME") .. "/.transcriptions-gpt/control.sock"
 local pollInterval = 0.7
+local offlinePollInterval = 3
 local requestTimeout = 2
 local pollTimer = nil
+local pollTimerInterval = nil
 local requests = {}
 local offlineReported = false
 
@@ -114,20 +116,29 @@ local function stopPoller()
     if pollTimer then
         pollTimer:stop()
         pollTimer = nil
+        pollTimerInterval = nil
     end
 end
 
 local function startPoller()
-    if GptVoice.state == "idle" or GptVoice.state == "offline" then
+    -- "idle" is the only healthy terminal state (user actions restart the
+    -- poller). "offline" must NOT stop it: without a recovery poll the menu
+    -- stays stuck offline forever after any transient daemon blip (e.g. a
+    -- daemon restart rebinding the socket) and its items sit disabled with no
+    -- way to re-probe. Keep a slow poll going so it self-heals.
+    if GptVoice.state == "idle" then
         stopPoller()
         return
     end
 
-    if pollTimer then
+    local interval = GptVoice.state == "offline" and offlinePollInterval or pollInterval
+    if pollTimer and pollTimerInterval == interval then
         return
     end
 
-    pollTimer = hs.timer.doEvery(pollInterval, function()
+    stopPoller()
+    pollTimerInterval = interval
+    pollTimer = hs.timer.doEvery(interval, function()
         pcall(function()
             GptVoice.refreshStatus()
         end)
@@ -147,7 +158,7 @@ function GptVoice.refreshStatus(callback)
             end
         else
             markOffline()
-            stopPoller()
+            startPoller()
         end
 
         if callback then
