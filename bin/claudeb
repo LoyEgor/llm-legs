@@ -29,17 +29,18 @@ file_mtime() {
 
 lock_acquire() {
   local lock="$1" tries=0 now mt
-  local max="${CLAUDEB_LOCK_RETRIES:-10}" delay="${CLAUDEB_LOCK_DELAY:-0.2}"
+  local max="${2:-${CLAUDEB_LOCK_RETRIES:-10}}" delay="${CLAUDEB_LOCK_DELAY:-0.2}"
   [[ "$max" =~ ^[1-9][0-9]*$ ]] || max=10
   while ! mkdir "$lock" 2>/dev/null; do
     tries=$((tries + 1))
-    if [ "$tries" -ge "$max" ]; then
+    # Stale-break during the wait too — a ~40s waiter must not sit behind a crashed holder.
+    if [ "$tries" -ge "$max" ] || [ "$((tries % 25))" -eq 0 ]; then
       now=$(date +%s) || return 1
       mt=$(file_mtime "$lock" 2>/dev/null) || mt="$now"
       if [[ "$mt" =~ ^[0-9]+$ ]] && [ "$((now - mt))" -gt 30 ]; then
         rm -rf "$lock" 2>/dev/null && continue
       fi
-      return 1
+      [ "$tries" -ge "$max" ] && return 1
     fi
     sleep "$delay" 2>/dev/null || return 1
   done
@@ -566,23 +567,29 @@ oauth_refresh() {
          if $scope == "" then {} else {scope: $scope} end)' 2>/dev/null) || return 1
     [ -n "$body" ] || return 1
     headers=$(mktemp "${TMPDIR:-/tmp}/claudeb-oauth.XXXXXX") || { oauth_attempt_update "$name" failed; return 1; }
-    # The per-account rlock leaves DIFFERENT accounts free to POST the token endpoint
-    # in the same second and both eat a 429; space them out. Skip on contention — a
-    # spaced refresh beats no refresh.
+    # Serialize DIFFERENT accounts' token POSTs (the rlock is per-account). The wait
+    # must cover the worst-case hold — the default 2s budget times out and the herd returns.
     glock="$oauth_attempts_file.rl-global"
     glock_held=false
-    if lock_acquire "$glock"; then
+    if lock_acquire "$glock" 200; then
       glock_held=true
       printf -v lock_trap 'lock_release %q; lock_release %q' "$glock" "$rlock"
       trap "$lock_trap" EXIT
     fi
     spacing="${CLAUDEB_OAUTH_TOKEN_SPACING:-1}"
     [[ "$spacing" =~ ^[0-9]+$ ]] || spacing=1
+    # Above 10s the hold (curl 8s + spacing) crosses the 30s stale threshold and waiters break a live glock.
+    [ "$spacing" -le 10 ] || spacing=10
     if response=$(printf '%s' "$body" | curl -sS -m 8 -D "$headers" -o - -w $'\n%{http_code}' -X POST \
       -H 'Content-Type: application/json' -d @- "$oauth_token_url" 2>/dev/null); then :; else rc=$?; fi
     if [ "$glock_held" = true ]; then
       [ "$spacing" -le 0 ] || sleep "$spacing"
       lock_release "$glock"
+      # Re-arm the trap off the glock the instant it is freed — lock_release has no
+      # ownership check, so exiting later would rmdir another account's fresh glock.
+      glock_held=false
+      printf -v lock_trap 'lock_release %q' "$rlock"
+      trap "$lock_trap" EXIT
     fi
     http=${response##*$'\n'}
     response=${response%$'\n'*}

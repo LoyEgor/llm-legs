@@ -46,6 +46,10 @@ M.wakeWatcher = hs.caffeinate.watcher.new(function(event)
 end)
 if M.wakeWatcher then M.wakeWatcher:start() end
 
+-- An always-on Mac never fires systemDidWake — without this, all tokens expire
+-- overnight and the next refresh herds the token endpoint.
+M.periodicTimer = hs.timer.doEvery(1800, runUpkeep)
+
 scheduleUpkeep()
 
 _G.TokenUpkeep = M

@@ -506,6 +506,47 @@ chmod +x "$FAKE_BIN/security" "$FAKE_BIN/claude" "$FAKE_BIN/curl"
     done <"$SERLOG"
   )
 
+  # Holders hold the glock past the default waiter budget — under the old 10-try
+  # acquire the waiters timed out and POSTed in parallel (the morning-herd 429).
+  (
+    export CLAUDEB_LOCK_RETRIES=10 CLAUDEB_LOCK_DELAY=0.05
+    account_names() { printf 'wg1\nwg2\nwg3\nwg4\n'; }
+    curl() {
+      local out='' prev='' a body rt
+      for a in "$@"; do [ "$prev" = -o ] && out="$a"; prev="$a"; done
+      case "$*" in
+        *'/oauth/token'*)
+          body=$(cat)
+          rt=$(printf '%s' "$body" | sed -n 's/.*"refresh_token":"\([^"]*\)".*/\1/p')
+          printf 'S:%s\n' "$rt" >>"$SERLOG"; sleep 0.6; printf 'E:%s\n' "$rt" >>"$SERLOG"
+          printf '{"access_token":"at-%s","expires_in":3600,"refresh_token":"%s"}\n200' "$rt" "$rt"
+          ;;
+        *'/api/oauth/usage'*)
+          [ -z "$out" ] || printf '%s' '{"five_hour":{"utilization":3,"resets_at":null},"seven_day":{"utilization":1,"resets_at":null},"limits":[]}' >"$out"
+          printf '200'
+          ;;
+        *) return 97 ;;
+      esac
+    }
+    : >"$SERLOG"
+    for a in wg1 wg2 wg3 wg4; do
+      seed_expired "$a" "rt-$a"
+      printf '{"auth":{"status":"ok","checked_at":1}}' >"$limits_dir/$a.json"
+    done
+    printf '{}' >"$oauth_attempts_file"
+    wg_dir="$WORK/wthr-g"; mkdir -p "$wg_dir"
+    probe_accounts "$wg_dir" false false false
+    # No two token POSTs overlapped: every S: line is immediately followed by its own E:.
+    while read -r s && read -r e; do
+      assert test "${s#S:}" = "${e#E:}"
+    done <"$SERLOG"
+    assert test "$(grep -c '^S:' "$SERLOG")" = 4
+    for a in wg1 wg2 wg3 wg4; do
+      assert jq -e '.five_hour.used_percentage == 3 and .auth.status == "ok"' "$limits_dir/$a.json" >/dev/null
+    done
+    assert jq -e '(.wg1 == null) and (.wg2 == null) and (.wg3 == null) and (.wg4 == null)' "$oauth_attempts_file" >/dev/null
+  )
+
   (
     account_names() { printf 'wb1\n'; }
     curl() {

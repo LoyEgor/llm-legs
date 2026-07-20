@@ -635,6 +635,7 @@ assert(farWeekRow:find(dayText(farWeek), 1, true), ">24h reset tier changed")
 -- schedule, and its throttle guard suppresses runs within 10 minutes of the last.
 local upkeepClock = { now = 100000 }
 local upkeepScheduled = {}
+local upkeepPeriodic = {}
 local upkeepTasks = {}
 local upkeepWatcherStarted = false
 local upkeepHs = {
@@ -644,7 +645,10 @@ local upkeepHs = {
       return { start = function() upkeepWatcherStarted = true end, _fn = fn }
     end,
   } },
-  timer = { doAfter = function(_, fn) table.insert(upkeepScheduled, fn); return {} end },
+  timer = {
+    doAfter = function(_, fn) table.insert(upkeepScheduled, fn); return {} end,
+    doEvery = function(interval, fn) table.insert(upkeepPeriodic, { interval = interval, fn = fn }); return {} end,
+  },
   task = { new = function(path, _, args)
     table.insert(upkeepTasks, { path = path, args = args })
     return { setEnvironment = function() end, start = function() return true end }
@@ -674,5 +678,14 @@ assert(#upkeepTasks == 1, "second run within the throttle window was not suppres
 upkeepClock.now = upkeepClock.now + 601
 upkeepScheduled[1]()
 assert(#upkeepTasks == 2, "run past the throttle window did not fire")
+
+assert(#upkeepPeriodic == 1, "periodic upkeep timer was not armed on load")
+assert(upkeepPeriodic[1].interval == 1800, "periodic upkeep interval changed")
+assert(upkeep.periodicTimer ~= nil, "periodic timer must be module-scoped so it is not GC'd")
+upkeepPeriodic[1].fn()
+assert(#upkeepTasks == 2, "periodic run within the throttle window was not suppressed")
+upkeepClock.now = upkeepClock.now + 601
+upkeepPeriodic[1].fn()
+assert(#upkeepTasks == 3, "periodic run past the throttle window did not fire")
 
 return "PASS: Hammerspoon projection contract"
