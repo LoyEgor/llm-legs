@@ -27,7 +27,8 @@ printf '%s\n' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' >"$
 printf '%s\n' 'burnt=100' 'fresh=100' 'ordinary=100' 'reserved=100' 'small=20' \
   'at-floor=100' 'safe=100' 'claude-floor=100' 'soon=100' 'later=100' \
   'effective=100' 'raw=100' 'expired=100' 'live=100' 'session=100' 'worker=20' \
-  'fbcap=100' 'nofb=100' >"$TIERS"
+  'fbcap=100' 'nofb=100' 'missing-low=20' 'missing-high=100' \
+  'stale-existing=100' >"$TIERS"
 
 run_case() {
   local name=$1
@@ -35,6 +36,13 @@ run_case() {
   output=$(TZ=UTC HOME="$HOME_FIXTURE" LLM_LIMITS_FILE="$STORE" WORKER_PICK_CONFIG_FILE="$CONFIG" \
     WORKER_PICK_TIERS_FILE="$TIERS" WORKER_PICK_CACHE_DIR="$CACHE" WORKER_PICK_NOW=2000000000 \
     CLAUDE_LIMITS_ACCOUNT=session "$SCRIPT") || fail "worker-pick failed for $name"
+}
+
+# Run a fixture with a non-default configured model/effort, then restore the default.
+run_case_cfg() {
+  printf '%s\n' 'codex_effort=high' "claudeb_model=$2" "claudeb_effort=$3" >"$CONFIG"
+  run_case "$1"
+  printf '%s\n' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' >"$CONFIG"
 }
 
 run_case r1
@@ -60,6 +68,56 @@ assert contains "$(head -n1 <<<"$output")" 'NEXT: claudeb nofb '
 assert not_contains "$(head -n1 <<<"$output")" 'NEXT: claudeb fbcap '
 assert contains "$output" 'nofb($100)'
 assert contains "$output" 'no-Fable'
+
+# R8: weekly-vs-fable gap on a fable-capable account modulates the claudeb
+# model/effort recommendation and, past the gap threshold, drops the account.
+run_case r8_no_demote
+assert contains "$(head -n1 <<<"$output")" 'NEXT: claudeb protected · opus · high'
+assert not_contains "$output" 'R8 demote'
+
+# Ladder rung 1: from the default opus·high a demote lands on opus·medium.
+run_case r8_demote
+assert contains "$(head -n1 <<<"$output")" 'NEXT: claudeb demoted · opus · medium'
+assert contains "$(head -n1 <<<"$output")" '[R8 demote: opus·high→opus·medium; wk>fb]'
+
+# Ladder rung 2: from opus·medium a demote lands on sonnet·high, the weakest allowed rung.
+run_case_cfg r8_demote opus medium
+assert contains "$(head -n1 <<<"$output")" 'NEXT: claudeb demoted · sonnet · high'
+assert contains "$(head -n1 <<<"$output")" '[R8 demote: opus·medium→sonnet·high; wk>fb]'
+
+# Bottom rung: a demote at sonnet·high cannot go weaker — clamps in place, no step.
+run_case_cfg r8_demote sonnet high
+assert contains "$(head -n1 <<<"$output")" 'NEXT: claudeb demoted · sonnet · high'
+assert not_contains "$output" 'R8 demote'
+
+# General floor: a configured sonnet·medium is snapped up to sonnet·high with no R8 step.
+run_case_cfg r8_no_demote sonnet medium
+assert contains "$(head -n1 <<<"$output")" 'NEXT: claudeb protected · sonnet · high'
+assert not_contains "$output" 'R8 demote'
+
+run_case r8_exclude
+assert contains "$(head -n1 <<<"$output")" 'NEXT: claudeb clean · opus · high'
+assert not_contains "$(head -n1 <<<"$output")" 'claudeb gappy '
+assert contains "$output" 'gappy($100)'
+assert contains "$output" 'Fable-gap-excluded'
+
+run_case r8_exempt
+assert contains "$(head -n1 <<<"$output")" 'NEXT: claudeb nofable · opus · high'
+assert not_contains "$output" 'R8 demote'
+assert contains "$output" 'no-Fable'
+
+run_case r9_missing_low
+assert contains "$(head -n1 <<<"$output")" 'NEXT: claudeb missing-low '
+assert contains "$output" 'missing-low($20) 5h 5% wk ? fb 87% score 28 cap 85%'
+
+run_case r9_missing_high
+assert contains "$(head -n1 <<<"$output")" 'NEXT: claudeb missing-high '
+assert contains "$output" 'missing-high($100) 5h 60% wk ? fb 40% score 30 cap 30%'
+
+run_case r9_existing_stale
+assert contains "$(head -n1 <<<"$output")" 'NEXT: claudeb safe '
+assert contains "$output" 'stale-existing($100) 5h 0% wk 95%'
+assert contains "$output" 'stale-existing($100) 5h 0% wk 95% fb 40% score 0 cap 0% Fable-gap-excluded FLOOR'
 
 run_case floor
 assert contains "$output" 'NEXT: claudeb safe '
@@ -123,4 +181,4 @@ assert contains "$policy" 'long or multi-step tasks'
 assert contains "$policy" 'repository conventions'
 assert contains "$policy" 'five of every ten'
 
-printf 'PASS: %s assertions; R1-R7 scoring, Codex reset runway, stale data, output/cache golden contract, session and policy text\n' "$asserts"
+printf 'PASS: %s assertions; R1-R9 scoring, Codex reset runway, stale data, output/cache golden contract, session and policy text\n' "$asserts"

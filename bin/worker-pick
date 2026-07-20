@@ -8,6 +8,8 @@ R2_FABLE_FRESH_MAX_PCT=20
 R2_WEEKLY_HIGH_MIN_PCT=70
 R2_FABLE_RESERVED_WEIGHT=1.50
 R3_FABLE_INCAPABLE_WEIGHT=0.50
+R8_GAP_EXCLUDE_PCT=50
+R9_FRESH_5H_PCT=5
 RESET_HORIZON_S=604800
 RESET_REFILL_PCT=100
 RESET_CREDIT_REFILL_PCT=100
@@ -87,6 +89,8 @@ summary=$(jq -r \
   --argjson r1_min "$R1_FABLE_BURNT_MIN_PCT" --argjson r1_weight "$R1_FABLE_BURNT_WEIGHT" \
   --argjson r2_fresh "$R2_FABLE_FRESH_MAX_PCT" --argjson r2_weekly "$R2_WEEKLY_HIGH_MIN_PCT" \
   --argjson r2_weight "$R2_FABLE_RESERVED_WEIGHT" --argjson r3_weight "$R3_FABLE_INCAPABLE_WEIGHT" \
+  --argjson r8_gap_exclude "$R8_GAP_EXCLUDE_PCT" \
+  --argjson r9_fresh_5h "$R9_FRESH_5H_PCT" \
   --argjson reset_horizon "$RESET_HORIZON_S" --argjson reset_refill "$RESET_REFILL_PCT" \
   --argjson credit_refill "$RESET_CREDIT_REFILL_PCT" \
   --argjson fresh_runway "$CODEX_FRESH_RUNWAY_PCT" --argjson ok_runway "$CODEX_OK_RUNWAY_PCT" \
@@ -128,6 +132,12 @@ summary=$(jq -r \
     else ($reset | strflocaltime("%b %d %H:%M")) end;
   def round1: (. * 10 | round) / 10;
   def bool_or($value; $fallback): if ($value | type) == "boolean" then $value else $fallback end;
+  def fresh_five_hour:
+    eff(.five_hour) as $pct |
+    ((.five_hour.resets_at // null) | epoch) as $reset |
+    ($pct | type) == "number" and $pct <= $r9_fresh_5h and
+    .five_hour.stale? != true and .five_hour.expired? != true and
+    .five_hour.origin? != "cached" and ($reset == null or $reset > $now);
   def auth_ok: .auth_needed != true and ((.auth.status? // "ok") | IN("expired", "failed") | not);
   def bucket_values: [eff(.five_hour), eff(.weekly)] | map(select(. != null));
   def is_floored: bucket_values | any(. >= $floor);
@@ -150,12 +160,14 @@ summary=$(jq -r \
   ([$cx_source[] | select(auth_ok) |
     bucket_values as $values |
     select(($values | length) > 0) |
+    (((.weekly | type) != "object") and fresh_five_hour) as $r9_optimistic |
     ([raw_runway(.five_hour), raw_runway(.weekly)] | map(select(. != null)) | min) as $time_runway |
     ([safe_runway(.five_hour), safe_runway(.weekly)] | map(select(. != null)) | min) as $safe |
     account_credits as $credits |
     {name:(.account // "main"),pressure:($values | max),floor:is_floored,
      credits:$credits,runway:($time_runway + ($credits * $credit_refill)),
-     score:($safe + ($credits * $credit_refill)),cap:pre_reset_cap,
+     score:((if $r9_optimistic then $floor else $safe end) + ($credits * $credit_refill)),
+     cap:pre_reset_cap,
      r5:reset_str(.five_hour),rw:reset_str(.weekly)}] | sort_by(-.score, .name)) as $cx_accounts |
   ($cx_accounts | map(select(.floor | not))) as $cx_eligible |
   (if ($cx.available // false) != true then
@@ -177,28 +189,34 @@ summary=$(jq -r \
     (bool_or(.rotation.usable.general?; true)) as $general_usable |
     (bool_or(.rotation.usable.fable?; true)) as $fable_capable |
     (eff(.five_hour)) as $h5 | (eff(.weekly)) as $wk | (eff(.fable)) as $fb |
+    (((.weekly | type) != "object") and fresh_five_hour) as $r9_optimistic |
     {name:.account,tier:($tiers[.account] // 100),own:(.account == $own),enabled:(.enabled == true),
      auth_ok:auth_ok,general_usable:$general_usable,fable_capable:$fable_capable,
      h5:$h5,wk:$wk,fb:$fb,r5:reset_str(.five_hour),rw:reset_str(.weekly),rf:reset_str(.fable),
      floor:is_floored,cap:pre_reset_cap,
      base_safe:([safe_runway(.five_hour), safe_runway(.weekly)] | map(select(. != null)) |
-                if length == 2 then min else 0 end)} |
+                if $r9_optimistic then $floor elif length > 0 then min else 0 end)} |
     .reserved = (.fable_capable and (.fb | type) == "number" and .fb <= $r2_fresh and
                  (.wk | type) == "number" and .wk >= $r2_weekly) |
     .r1 = (if .fable_capable and (.fb | type) == "number" and .fb >= $r1_min then
              .tier * $r1_weight * ((.fb - $r1_min) / (100 - $r1_min)) else 0 end) |
     .r2 = (if .reserved then .tier * $r2_weight * ((100 - .fb) / 100) * (.wk / 100) else 0 end) |
     .r3 = (if .fable_capable then 0 else .tier * $r3_weight end) |
-    .score = ((.tier * .base_safe / 100) + .r1 - .r2 + .r3)] |
+    .score = ((.tier * .base_safe / 100) + .r1 - .r2 + .r3) |
+    .r8_gap = (if .fable_capable and (.fb | type) == "number" and (.wk | type) == "number"
+               then .wk - .fb else null end) |
+    .r8_demote = (.r8_gap != null and .r8_gap > 0) |
+    .r8_excluded = (.r8_demote and .r8_gap > $r8_gap_exclude)] |
     sort_by(-.score, .name)) as $cl_accounts |
   ($cl_accounts | map(select((.own | not) and .enabled and .auth_ok and .general_usable and
-                             (.h5 | type) == "number" and (.wk | type) == "number"))) as $cl_candidates |
+                             (.h5 | type) == "number" and
+                             (.r8_excluded | not)))) as $cl_candidates |
   ($cl_candidates | map(select(.floor | not))) as $cl_eligible |
   (if ($cl_eligible | length) == 0 then null else $cl_eligible[0] end) as $rec |
   (first($cl_accounts[] | select(.name == $pin)) // null) as $pin_account |
   (if $pin_account != null and ($pin_account.own | not) and $pin_account.enabled and $pin_account.auth_ok and
-      $pin_account.general_usable and ($pin_account.floor | not) and
-      ($pin_account.h5 | type) == "number" and ($pin_account.wk | type) == "number"
+      $pin_account.general_usable and ($pin_account.floor | not) and ($pin_account.r8_excluded | not) and
+      ($pin_account.h5 | type) == "number"
    then $pin_account else null end) as $pin_rec |
   ([$cl_accounts[] | select(.auth_ok and .fable_capable and
                             (.fb | type) == "number" and (.wk | type) == "number" and
@@ -209,37 +227,73 @@ summary=$(jq -r \
   {codex:$codex,
    claude_line:("claude: " + (if ($cl_accounts | length) == 0 then "no enabled accounts"
      else ($cl_accounts | map(
-       "\(.name)($\(.tier))\(if .own then "*" else "" end) 5h \(if (.h5 | type) == "number" then (.h5 | round | tostring) + "%" else "?" end) wk \(if (.wk | type) == "number" then (.wk | round | tostring) + "%" else "?" end) fb \(if (.fb | type) == "number" then (.fb | round | tostring) + "%" else "?" end) score \(.score | round1) cap \(.cap | round1)%\(if .reserved then " Fable-reserved" else "" end)\(if .fable_capable then "" else " no-Fable" end)\(if .floor then " FLOOR" else "" end)\(if (.general_usable | not) then " blocked" else "" end)\(if .enabled then "" else " off" end)") | join(" | ")) end)),
+       "\(.name)($\(.tier))\(if .own then "*" else "" end) 5h \(if (.h5 | type) == "number" then (.h5 | round | tostring) + "%" else "?" end) wk \(if (.wk | type) == "number" then (.wk | round | tostring) + "%" else "?" end) fb \(if (.fb | type) == "number" then (.fb | round | tostring) + "%" else "?" end) score \(.score | round1) cap \(.cap | round1)%\(if .reserved then " Fable-reserved" else "" end)\(if .r8_excluded then " Fable-gap-excluded" else "" end)\(if .fable_capable then "" else " no-Fable" end)\(if .floor then " FLOOR" else "" end)\(if (.general_usable | not) then " blocked" else "" end)\(if .enabled then "" else " off" end)") | join(" | ")) end)),
    rec:$rec,pin:$pin_rec,session:$session,age:$age,all_floored:$all_floored}
   | [.codex.state,.codex.acct,(.codex.runway | round1 | tostring),(.codex.credits | tostring),.codex.line,
      .claude_line,(.rec.name // ""),((.rec.score // 0) | round1 | tostring),((.rec.cap // 0) | round1 | tostring),
      (if .rec.reserved == true then "yes" else "no" end),
+     (if .rec.r8_demote == true then "yes" else "no" end),
      (.pin.name // ""),((.pin.score // 0) | round1 | tostring),((.pin.cap // 0) | round1 | tostring),
      (if .pin.reserved == true then "yes" else "no" end),
+     (if .pin.r8_demote == true then "yes" else "no" end),
      (.session.name // ""),((.session.fb // 0) | round | tostring),((.session.wk // 0) | round | tostring),
      .age,(if .all_floored then "yes" else "no" end)] | join("\u001f")
 ' "$LIMITS_FILE" 2>/dev/null) || fail_safe "limits parse failed"
 [ -n "$summary" ] || fail_safe "limits parse failed"
 
 IFS=$'\x1f' read -r cx_state cx_acct cx_runway cx_credits cx_line cl_line rec rec_score rec_cap rec_reserved \
-  pin_rec pin_score pin_cap pin_reserved session_acct session_fb session_wk age all_floored <<<"$summary"
+  rec_demote pin_rec pin_score pin_cap pin_reserved pin_demote session_acct session_fb session_wk age all_floored <<<"$summary"
+
+# R8 recommendation ladder, strongest → weakest: opus·high → opus·medium → sonnet·high.
+# sonnet·medium and anything weaker are TOO WEAK and are never emitted. The configured
+# claudeb model/effort is first snapped onto this ladder (general floor: sonnet only at
+# high+, opus down to medium), then stepped ONE rung weaker when R8 fires (a fable-capable
+# account where weekly% > fable% — workers must not eat quota Fable could still use). Past
+# the bottom rung an account is dropped via the R8_GAP_EXCLUDE_PCT path, so a demote at
+# sonnet·high clamps in place rather than emitting anything weaker. Mutating cb_model/
+# cb_effort keeps the NEXT line and the cache in sync; demote_note carries the printed
+# reason. rec_demote is already false for no-Fable accounts and missing/inverted fable data.
+demote_note=""
+ladder_index() {
+  case "$1" in
+    opus) case "$2" in medium) echo 1 ;; *) echo 0 ;; esac ;;
+    sonnet) echo 2 ;;
+    *) echo - ;;
+  esac
+}
+ladder_label() { case $1 in 0) echo 'opus·high' ;; 1) echo 'opus·medium' ;; 2) echo 'sonnet·high' ;; esac; }
+resolve_recommendation() {
+  local base; base=$(ladder_index "$cb_model" "$cb_effort")
+  [ "$base" != - ] || return 0
+  local idx=$base
+  if [ "$rec_demote" = yes ]; then idx=$((base + 1)); [ $idx -le 2 ] || idx=2; fi
+  case $idx in
+    0) cb_model=opus;   cb_effort=high ;;
+    1) cb_model=opus;   cb_effort=medium ;;
+    2) cb_model=sonnet; cb_effort=high ;;
+  esac
+  [ $idx -eq $base ] || demote_note=" [R8 demote: $(ladder_label $base)→$(ladder_label $idx); wk>fb]"
+}
 
 if [ "$all_floored" = yes ]; then
   cb_next="ALL FLOORED, ask Egor"
   cb_cache="cb~?"
 elif [ -n "$cb_pin" ] && [ -n "$pin_rec" ]; then
-  cb_next="claudeb $pin_rec · $cb_model · $cb_effort (pinned; pre-reset cap ${pin_cap}%)"
-  cb_cache="cb@$pin_rec"
   rec=$pin_rec
   rec_score=$pin_score
   rec_cap=$pin_cap
   rec_reserved=$pin_reserved
+  rec_demote=$pin_demote
+  resolve_recommendation
+  cb_next="claudeb $pin_rec · $cb_model · $cb_effort (pinned; pre-reset cap ${pin_cap}%)$demote_note"
+  cb_cache="cb@$pin_rec"
 elif [ -n "$cb_pin" ]; then
   cb_next="claudeb pin $cb_pin is not selectable, ask Egor"
   cb_cache="cb~?"
   rec=""
 elif [ -n "$rec" ]; then
-  cb_next="claudeb $rec · $cb_model · $cb_effort — ACCOUNT: $rec; pre-reset cap ${rec_cap}%"
+  resolve_recommendation
+  cb_next="claudeb $rec · $cb_model · $cb_effort — ACCOUNT: $rec; pre-reset cap ${rec_cap}%$demote_note"
   cb_cache="cb~$rec"
 else
   cb_next="claudeb unavailable — no selectable non-session account"

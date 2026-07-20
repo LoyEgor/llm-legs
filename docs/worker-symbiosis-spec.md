@@ -22,6 +22,9 @@ Gaps to close:
   `rotation.usable.fable` for Pro accounts (olx) so consumers need no plan knowledge.
 - Confirm freshness semantics apply to the `fable` bucket and `reset_credits` like any
   other reading. Tier dollars stay as is (alona/com/notcom $100, olx $20).
+- The live olx snapshot has `seven_day: null`. `claudeb` only stores that bucket when
+  `/api/oauth/usage` returns numeric `seven_day.utilization`, so this Pro response has
+  no weekly value the collector can preserve; collection remains unchanged.
 
 ## 2. Scoring rules (worker-pick)
 
@@ -52,6 +55,36 @@ constants in the script, unit-tested with frozen fixtures — never re-derived i
   BEFORE its reset lands — cap the pre-reset draw so the account stays usable
   (e.g. never plan below FLOOR_PCT until the reset actually occurs).
 - R7 session-account exclusion stays as today.
+- R8 (added 2026-07-20, after v2 shipped) — weekly-vs-fable gap modulates claudeb
+  MODEL/EFFORT, not just account choice: on a fable-capable account where weekly%
+  exceeds fable% (workers eating quota Fable could still use), step the NEXT
+  recommendation one rung down the ladder (strongest → weakest):
+  `opus·high → opus·medium → sonnet·high`. sonnet·medium and anything weaker are too
+  weak and are never emitted — the general floor is sonnet only at effort high or
+  above, opus down to medium. Past a gap threshold (R8_GAP_EXCLUDE_PCT) the account is
+  excluded from worker candidates entirely; a demote already at the bottom rung
+  (sonnet·high) clamps in place rather than emitting anything weaker. fable% ≥ weekly%
+  → no demotion (burning the tail of an already-Fable-burnt account is exactly what
+  workers are for).
+  No-Fable accounts are exempt. Per-task complexity overrides (MODEL:/EFFORT: in the
+  brief) remain the orchestrator's judgment on top of the recommendation.
+  Acceptance: wk 74/fb 93 → no demotion; wk 60/fb 20 → demoted; gap past threshold →
+  excluded with explicit reason; olx (no-Fable) → exempt.
+
+- R9 missing-bucket optimism (Egor, 2026-07-20) — missing data is permission, not
+  prohibition: a bucket entirely ABSENT from an account's data (no `weekly` key, no
+  `fable` key) must never bury the account. When the account's `five_hour` reading is
+  fresh and near zero (threshold constant, e.g. ≤5%), treat the account as fully
+  available ("spend as you like"); otherwise score it on the buckets that DO exist,
+  with no missingness penalty. NO plan-type special-casing in scoring — this rule is
+  generic precisely because incomplete data happens (live case: olx, Pro, weekly bucket
+  absent, 5h 0% fresh → was scored 10/cap 90% and never picked while sitting idle,
+  violating R3). Distinct from staleness: a bucket that exists but is stale/expired
+  keeps the existing conservative staleness rules. Separately (data layer, not scoring):
+  diagnose WHY the weekly bucket is absent for this account class and fix collection if
+  the API does expose it.
+  Acceptance: today's live olx snapshot (5h 0% fresh, weekly absent, fable 87% blocked
+  by plan, no-Fable) → ranks FIRST among worker candidates.
 
 Same shape applies to codex (codexb accounts): tier/floor/reset logic where data
 exists; "prefer codex less as it nears limits" becomes a score, not prose.
