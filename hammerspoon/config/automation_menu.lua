@@ -94,6 +94,12 @@ local terminalBundles = {
     ["com.cmuxterm.app"] = true,
 }
 
+local function targetIsTerminal()
+    if not pasteTarget then return false end
+    local ok, bid = pcall(function() return pasteTarget:bundleID() end)
+    return ok and bid ~= nil and terminalBundles[bid] == true
+end
+
 -- In a terminal running Claude Code the visible selection belongs to the TUI,
 -- not the terminal, so Cmd+C copies nothing (the TUI owns mouse reporting).
 -- Claude Code exposes its copy as the ctrl+x ctrl+y chord (selection:copy in
@@ -101,12 +107,7 @@ local terminalBundles = {
 -- selection is still copied with Cmd+C: it shows up as AXSelectedText, the
 -- TUI's drawn selection does not.
 local function sendCopy()
-    local bid
-    if pasteTarget then
-        local ok, b = pcall(function() return pasteTarget:bundleID() end)
-        bid = ok and b or nil
-    end
-    if not (bid and terminalBundles[bid]) then
+    if not targetIsTerminal() then
         sendKeys({"cmd"}, "c")
         return
     end
@@ -122,10 +123,44 @@ local function sendCopy()
     end)
     if nativeSelection then
         sendKeys({"cmd"}, "c")
+    elseif _G.ClaudeCmdKeys and _G.ClaudeCmdKeys.menuCopy then
+        _G.ClaudeCmdKeys.menuCopy(pasteTarget)
     else
         hs.eventtap.keyStroke({"ctrl"}, "x", 20000, pasteTarget)
         hs.eventtap.keyStroke({"ctrl"}, "y", 20000, pasteTarget)
     end
+end
+
+local function clipboardHasText()
+    local types = hs.pasteboard.contentTypes() or {}
+    for _, t in ipairs(types) do
+        -- file-url counts as text: Terminal's Cmd+V pastes a copied file as
+        -- its path, which ctrl+v would lose.
+        if t == "public.utf8-plain-text" or t == "public.plain-text"
+            or t == "NSStringPboardType" or t == "public.file-url" then
+            return true
+        end
+    end
+    return false
+end
+
+-- A terminal's Cmd+V pastes text through the TTY and cannot deliver an image;
+-- Claude Code reads the pasteboard itself on ctrl+v (its image paste).
+-- ClaudeCmdKeys.menuPaste owns the image and image-file cases (same raw-byte
+-- plans as the physical Cmd+V remap); a textual clipboard falls through to a
+-- native Cmd+V, which works in Claude Code and plain shells alike.
+local function sendPaste()
+    if targetIsTerminal() then
+        local ck = _G.ClaudeCmdKeys
+        if ck and ck.menuPaste and ck.menuPaste(pasteTarget) then
+            return
+        end
+        if not (ck and ck.menuPaste) and not clipboardHasText() then
+            sendKeys({"ctrl"}, "v")
+            return
+        end
+    end
+    sendKeys({"cmd"}, "v")
 end
 
 -- Blocking (AppleScript to System Events) — menu code must use dockAutoHideCache.
@@ -465,18 +500,18 @@ buildMenu = function()
         table.insert(menu, {
             title = "Paste",
             fn = function()
-                sendKeys({"cmd"}, "v")
+                sendPaste()
             end,
         })
-        -- Enter submits the Claude Code prompt, so keep it visually apart from
-        -- Paste: an iPad mis-tap on the adjacent item fires a costly Enter.
-        table.insert(menu, { title = "-" })
         table.insert(menu, {
             title = "Enter",
             fn = function()
                 sendKeys({}, "return")
             end,
         })
+        -- Copy/Paste/Enter is one workflow; GPT Voice/Transform is a separate
+        -- app - split the groups, not the keystrokes.
+        table.insert(menu, { title = "-" })
         table.insert(menu, {
             title = "GPT Voice",
             disabled = not gptVoice or gptVoice.state == "offline",
@@ -608,6 +643,7 @@ AutomationMenu.buildMenu = function()
 end
 AutomationMenu.refresh = refreshTitle
 AutomationMenu.sendCopy = sendCopy
+AutomationMenu.sendPaste = sendPaste
 AutomationMenu.show = showMenu
 AutomationMenu.hide = hideMenu
 AutomationMenu.onMonitorOff = showMenu

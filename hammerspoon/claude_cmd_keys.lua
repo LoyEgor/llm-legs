@@ -601,6 +601,53 @@ local function performConvert(path, original)
   end)
 end
 
+-- Menu-driven entry points: the automation menu (iPad) reuses the same plans
+-- instead of synthesizing modifier chords, which can drop on first press when
+-- posted to an app; raw control bytes take the exact path the physical-key
+-- flow above already proved out. menuPaste returns false when the clipboard
+-- is textual - the caller then pastes natively (Cmd+V).
+local function emitTo(plan, app)
+  if runtimeHooks and runtimeHooks.emit then
+    runtimeHooks.emit(plan)
+    return
+  end
+  hs.eventtap.keyStrokes(M.planBytes(plan), app)
+end
+
+function M.menuCopy(app)
+  emitTo(M.copyChordPlan(), app)
+end
+
+function M.menuPaste(app)
+  local contentTypes = runtimeHooks and runtimeHooks.contentTypes
+    or hs.pasteboard.contentTypes
+  local ok, types = pcall(contentTypes)
+  if not ok then
+    return false
+  end
+  if M.containsImageType(types) then
+    emitTo(M.imagePastePlan(), app)
+    return true
+  end
+  local path = resolveFileImagePath(types)
+  if path then
+    local loadImage = runtimeHooks and runtimeHooks.loadImage or hs.image.imageFromPath
+    local image = loadImage(path)
+    if not image then
+      showConvertAlert("Paste: can't read image file — check Hammerspoon disk access")
+      return false
+    end
+    if runtimeHooks and runtimeHooks.writeImage then
+      runtimeHooks.writeImage(image)
+    else
+      hs.pasteboard.writeObjects(image)
+    end
+    emitTo(M.imagePastePlan(), app)
+    return true
+  end
+  return false
+end
+
 completePending = function(eventType, verdict)
   local targetMatches
   if eventType ~= "stop" and pendingState and pendingState.status == "pending" then
