@@ -596,6 +596,49 @@ jq -e '.vendors.claude.current_account == "authonly" and
   .vendors.claude.accounts[0].five_hour.used_pct == null and
   (.vendors.claude.five_hour.used_pct | type) == "number"' <<<"$auth_current" >/dev/null \
   || fail "auth-only current account must hoist the first populated five-hour bucket"
+
+# Hard refresh (--refresh-account claude/NAME --start-windows) forwards warm --start-window.
+CLAUDEB_ARGS_LOG="$WORK/claudeb-args.log"
+cat >"$WORK/arglog-claudeb" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = --help ]; then printf 'claudeb warm [--start-window] [names...]\n'; exit 0; fi
+printf '%s\n' "\$*" >>"$CLAUDEB_ARGS_LOG"
+exit 0
+EOF
+chmod +x "$WORK/arglog-claudeb"
+: >"$CLAUDEB_ARGS_LOG"
+hard_sw_err=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_FRESH" \
+  LLM_LIMITS_CLAUDEB_CMD="$WORK/arglog-claudeb" LLM_LIMITS_CACHE="$CACHE" \
+  bash "$SCRIPT" --refresh-account claude/authonly --start-windows 2>&1 >/dev/null) \
+  || fail "hard refresh with --start-windows failed"
+grep -qx 'warm --start-window authonly' "$CLAUDEB_ARGS_LOG" \
+  || fail "hard refresh must forward warm --start-window"
+if grep -q 'window state unknown\|window start skipped' <<<"$hard_sw_err"; then
+  fail "claude-targeted hard refresh must not reach gemini/codex window-start: $hard_sw_err"
+fi
+# An older claudeb without warm --start-window degrades to a free warm, loudly.
+cat >"$WORK/oldhelp-claudeb" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = --help ]; then printf 'claudeb --refresh [--spend] [--start-windows] [--heal]\n'; exit 0; fi
+printf '%s\n' "\$*" >>"$CLAUDEB_ARGS_LOG"
+exit 0
+EOF
+chmod +x "$WORK/oldhelp-claudeb"
+: >"$CLAUDEB_ARGS_LOG"
+old_warm_err=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_FRESH" \
+  LLM_LIMITS_CLAUDEB_CMD="$WORK/oldhelp-claudeb" LLM_LIMITS_CACHE="$CACHE" \
+  bash "$SCRIPT" --refresh-account claude/authonly --start-windows 2>&1 >/dev/null) \
+  || fail "hard refresh against old claudeb failed"
+grep -qx 'warm authonly' "$CLAUDEB_ARGS_LOG" || fail "old claudeb must still get a free warm"
+grep -q 'lacks --start-window' <<<"$old_warm_err" || fail "old-claudeb degradation must be loud"
+# Window-start stays a claude-only concept on the per-account path.
+for rejected_target in codex/beta gemini; do
+  if HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_FRESH" LLM_LIMITS_CACHE="$CACHE" \
+    bash "$SCRIPT" --refresh-account "$rejected_target" --start-windows >/dev/null 2>&1; then
+    fail "$rejected_target with --start-windows must be rejected"
+  fi
+done
+
 printf 'aged\n' >"$CLAUDEB_FRESH/.claudeb-state"
 fresh_table=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_FRESH" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) || fail "rounding table collection failed"
 grep -Eq '^claude/aged\* +7%~ +57% ' <<<"$fresh_table" || fail "table percentages must round to integers"

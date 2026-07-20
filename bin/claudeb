@@ -1252,8 +1252,9 @@ show_help() {
   printf '                                          %sFree refresh; --spend adds the 1-token fallback,%s\n' "$dim" "$reset"
   printf '                                          %s--start-windows pings expired 5h windows.%s\n' "$dim" "$reset"
   printf '  %s%sclaudeb profile <name>%s                  %sOpen an isolated profile; alias: p.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
-  printf '  %s%sclaudeb warm [names...]%s                 %sHeal profiles and limits; free: session init + /usage only;%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
+  printf '  %s%sclaudeb warm [--start-window] [names...]%s %sHeal profiles and limits; free: session init + /usage only;%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '                                          %sfalls back to a minimal paid prompt only if that fails.%s\n' "$dim" "$reset"
+  printf '                                          %s--start-window pings an expired 5h window after a good warm.%s\n' "$dim" "$reset"
   printf '  %s%sclaudeb token-upkeep%s                    %sRefresh tokens near expiry (no probes/spend); for wake/cron pre-warm.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb status [--cached] [--plain] [--spend] [--start-windows] [--heal]%s\n' "$bold" "$cyan" "$reset"
   printf '                                          %sShow limits; aliases: st, accounts.%s\n' "$dim" "$reset"
@@ -1361,9 +1362,15 @@ warm_failure() {
 }
 
 warm_accounts() {
-  local name dir output session_rc reason failure_cause service credentials expires_at now started probe_dir source rc http asof failed=0 until probe_ok usage_rate_limited backoff_mode explicit=false refresh_rc
+  local name dir output session_rc reason failure_cause service credentials expires_at now started probe_dir source rc http asof failed=0 until probe_ok usage_rate_limited backoff_mode explicit=false refresh_rc start_window=false hreset arg
   local -a names
-  names=("$@")
+  names=()
+  for arg in "$@"; do
+    case "$arg" in
+      --start-window) start_window=true ;;
+      *) names+=("$arg") ;;
+    esac
+  done
   [ "${#names[@]}" -eq 0 ] || explicit=true
   backoff_mode="${CLAUDEB_WARM_BACKOFF_MODE:-$([ "$explicit" = true ] && printf retry-after || printf all)}"
   if [ "${#names[@]}" -eq 0 ]; then
@@ -1509,6 +1516,26 @@ warm_accounts() {
       asof=$(jq -r '.five_hour.as_of // 0' "$limits_dir/$name.json" 2>/dev/null || printf '0')
       if [ "$asof" -ge "$started" ] 2>/dev/null && jq -e '.fable.as_of | type == "number"' "$limits_dir/$name.json" >/dev/null 2>&1; then
         oauth_attempt_update "$name" success 0
+        if [ "$start_window" = true ]; then
+          hreset=$(jq -r '.five_hour.resets_at // 0' "$limits_dir/$name.json" 2>/dev/null) || hreset=0
+          [[ "$hreset" =~ ^[0-9]+$ ]] || hreset=0
+          now=$(date +%s)
+          if [ "$hreset" -lt "$now" ]; then
+            if messages_probe_and_mark "$name" "$probe_dir" true; then
+              # Re-read usage for seven_day/fable, then let the ping's headers win
+              # five_hour back: the usage endpoint can lag the just-opened window.
+              probe_one "$name" "$probe_dir" false false
+              read -r source rc http < "$probe_dir/$name.result"
+              if [ "$source" = usage ] && merge_usage "$name" "$probe_dir/$name.usage"; then
+                merge_headers "$name" "$probe_dir/$name.headers" \
+                  || printf 'claudeb: %s: window opened but header re-merge failed; snapshot heals on next refresh\n' "$name" >&2
+              fi
+              printf '%s: 5h window started\n' "$name"
+            elif [ "$(cat "$probe_dir/$name.display" 2>/dev/null)" != 'auth!' ]; then
+              printf 'claudeb: %s: window-open probe failed (weather); 5h window unconfirmed\n' "$name" >&2
+            fi
+          fi
+        fi
         printf '%s: warmed (expiresAt=%s, as_of=%s)\n' "$name" "$expires_at" "$asof"
         rm -rf "$probe_dir"
         continue

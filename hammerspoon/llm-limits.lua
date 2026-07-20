@@ -440,11 +440,14 @@ local function refreshData(args, kind, budget, key)
   startTask(id, task, "collector could not start")
 end
 
-local function hardRefresh(target)
-  refreshData({ "--refresh-account", target }, "hard-refresh", 360, "hard:" .. target)
+local function hardRefresh(target, startWindows)
+  local args = { "--refresh-account", target }
+  if startWindows then table.insert(args, "--start-windows") end
+  refreshData(args, "hard-refresh", 360, "hard:" .. target)
 end
 
-function M.hardRefreshClaude(name) hardRefresh("claude/" .. name) end
+-- Hard = full truth at any cost: opens the account's expired 5h window (tiny paid ping).
+function M.hardRefreshClaude(name) hardRefresh("claude/" .. name, true) end
 function M.hardRefreshCodex(name) hardRefresh("codex/" .. name) end
 function M.hardRefreshGemini() hardRefresh("gemini") end
 

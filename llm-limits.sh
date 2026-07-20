@@ -2,7 +2,7 @@
 set -u
 
 usage() {
-  echo "Usage: $0 [--json|--plain|--table] [--sort 5h|weekly|reset] [--no-write] [--refresh [--start-windows] | --refresh-account claude/NAME|codex/NAME|gemini]" >&2
+  echo "Usage: $0 [--json|--plain|--table] [--sort 5h|weekly|reset] [--no-write] [--refresh [--start-windows] | --refresh-account claude/NAME [--start-windows]|codex/NAME|gemini]" >&2
 }
 
 format=''
@@ -38,8 +38,10 @@ case "$refresh_account" in
   *) usage; exit 2 ;;
 esac
 if [ -n "$refresh_account" ] && [ "$start_windows" -eq 1 ]; then
-  usage
-  exit 2
+  case "$refresh_account" in
+    claude/?*) ;;
+    *) usage; exit 2 ;;
+  esac
 fi
 
 # Single source of truth for valid --sort keys; columns index the TSV emitted by render_table.
@@ -447,7 +449,8 @@ if [ "$refresh" -eq 1 ] && { [ -z "$refresh_account" ] || [ "$refresh_account" =
     printf 'llm-limits.sh: Gemini refresh is disabled\n' >&2
   fi
 fi
-if [ "$start_windows" -eq 1 ]; then
+# Gemini/codex window-start is full-refresh-only; a claude/NAME target opens its own window via warm.
+if [ "$start_windows" -eq 1 ] && [ -z "$refresh_account" ]; then
   if [ "${LLM_LIMITS_GEMINI_REFRESH:-1}" = 0 ]; then
     echo "llm-limits.sh: gemini window start skipped (LLM_LIMITS_GEMINI_REFRESH=0)" >&2
   else
@@ -494,8 +497,17 @@ if [ "$refresh" -eq 1 ] && { [ -z "$refresh_account" ] || [ -n "$claude_refresh_
     claudeb_cmd=$(command -v "${LLM_LIMITS_CLAUDEB_CMD:-claudeb}" 2>/dev/null || true)
     if [ -n "$claudeb_cmd" ]; then
       if [ -n "$claude_refresh_target" ]; then
+        warm_args=(warm)
+        if [ "$start_windows" -eq 1 ]; then
+          # Feature-detect; the trailing ] keeps old builds' [--start-windows] from matching.
+          if "$claudeb_cmd" --help 2>/dev/null | grep -q -- '--start-window]'; then
+            warm_args+=(--start-window)
+          else
+            echo "llm-limits.sh: claudeb warm lacks --start-window; free account refresh only" >&2
+          fi
+        fi
         if run_bounded_claude "$claude_refresh_timeout" "account refresh ($claude_refresh_target)" \
-            "$claudeb_cmd" warm "$claude_refresh_target"; then
+            "$claudeb_cmd" "${warm_args[@]}" "$claude_refresh_target"; then
           claude_refresh_succeeded=1
         else
           [ -n "$claude_refresh_error" ] || claude_refresh_error='probe failed'
@@ -887,7 +899,7 @@ if [ "$refresh" -eq 1 ] && { [ -z "$refresh_account" ] || [ -n "$codex_refresh_t
 fi
 select_codex_event
 
-if [ "$start_windows" -eq 1 ]; then
+if [ "$start_windows" -eq 1 ] && [ -z "$refresh_account" ]; then
   if [ "${LLM_LIMITS_CODEX_REFRESH:-1}" = 0 ]; then
     echo "llm-limits.sh: codex window start skipped (LLM_LIMITS_CODEX_REFRESH=0)" >&2
   else

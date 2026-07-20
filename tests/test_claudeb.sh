@@ -1006,6 +1006,79 @@ for command in curl security claude; do
   chmod +x "$FAKE_BIN/$command"
 done
 
+# --- warm --start-window: open an expired 5h window after a good warm ---
+printf 'token-swin' >"$CLAUDEB_DIR/tokens/swin"
+(
+  sw_warm_creds=$(printf '{"claudeAiOauth":{"refreshToken":"rt-swin","accessToken":"at-swin","expiresAt":%s,"scopes":["a"]}}' "$((($(date +%s) + 7200) * 1000))")
+  security() { printf '%s' "$sw_warm_creds"; }
+  profile_command() { prepared_profile_dir="$WORK/swin-profile"; mkdir -p "$prepared_profile_dir"; return 0; }
+  run_warm_session() { return 0; }
+  sw_probe_calls="$WORK/swin-probe-calls"
+  sw_ping_calls="$WORK/swin-ping-calls"
+  sw_usage_resets=null
+  probe_one() {
+    printf 'probe\n' >>"$sw_probe_calls"
+    printf 'usage 0 200\n' >"$2/$1.result"
+    printf '{"five_hour":{"utilization":0,"resets_at":%s},"seven_day":{"utilization":22,"resets_at":null},"limits":[]}\n' \
+      "$sw_usage_resets" >"$2/$1.usage"
+  }
+  sw_now=$(date +%s)
+  sw_ping_reset=$((sw_now + 18000))
+  sw_ping_out='0 200'
+  messages_probe() {
+    printf 'ping\n' >>"$sw_ping_calls"
+    printf 'anthropic-ratelimit-unified-status: allowed\nanthropic-ratelimit-unified-5h-utilization: 0.01\nanthropic-ratelimit-unified-5h-reset: %s\n' \
+      "$sw_ping_reset" >"$2/$1.headers"
+    printf '%s' "$sw_ping_out"
+  }
+
+  : >"$sw_probe_calls"; : >"$sw_ping_calls"
+  printf '{}' >"$oauth_attempts_file"
+  printf '{}' >"$limits_dir/swin.json"
+  warm_accounts --start-window swin >"$WORK/swin-sw.out" 2>"$WORK/swin-sw.err" \
+    || fail "start-window warm failed: $(cat "$WORK/swin-sw.out" "$WORK/swin-sw.err")"
+  assert grep -qx 'swin: 5h window started' "$WORK/swin-sw.out"
+  assert test "$(wc -l <"$sw_ping_calls" | tr -d ' ')" = 1
+  # Initial usage read + the post-ping re-read; headers win five_hour back over the lagging usage.
+  assert test "$(wc -l <"$sw_probe_calls" | tr -d ' ')" = 2
+  assert jq -e --argjson reset "$sw_ping_reset" \
+    '.five_hour.resets_at == $reset and .five_hour.origin == "headers" and .seven_day.used_percentage == 22 and .auth.status == "ok"' \
+    "$limits_dir/swin.json" >/dev/null
+
+  # Live window: no ping, one usage read.
+  : >"$sw_probe_calls"; : >"$sw_ping_calls"
+  printf '{}' >"$oauth_attempts_file"
+  printf '{}' >"$limits_dir/swin.json"
+  sw_live_epoch=$((sw_now + 3600))
+  sw_usage_resets="\"$(date -u -r "$sw_live_epoch" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -d "@$sw_live_epoch" '+%Y-%m-%dT%H:%M:%SZ')\""
+  warm_accounts --start-window swin >"$WORK/swin-live.out" 2>&1 \
+    || fail "live-window warm failed: $(cat "$WORK/swin-live.out")"
+  assert_fails test -s "$sw_ping_calls"
+  assert test "$(wc -l <"$sw_probe_calls" | tr -d ' ')" = 1
+  assert_fails grep -q 'window started' "$WORK/swin-live.out"
+
+  # No flag: expired window is left alone.
+  : >"$sw_probe_calls"; : >"$sw_ping_calls"
+  printf '{}' >"$oauth_attempts_file"
+  printf '{}' >"$limits_dir/swin.json"
+  sw_usage_resets=null
+  warm_accounts swin >"$WORK/swin-noflag.out" 2>&1 \
+    || fail "flagless warm failed: $(cat "$WORK/swin-noflag.out")"
+  assert_fails test -s "$sw_ping_calls"
+
+  # Ping weather: warn on stderr, warm still succeeds, no auth verdict, snapshot kept.
+  : >"$sw_probe_calls"; : >"$sw_ping_calls"
+  printf '{}' >"$oauth_attempts_file"
+  printf '{}' >"$limits_dir/swin.json"
+  sw_ping_out='0 429'
+  warm_accounts --start-window swin >"$WORK/swin-weather.out" 2>"$WORK/swin-weather.err" \
+    || fail "weather-ping warm failed: $(cat "$WORK/swin-weather.out" "$WORK/swin-weather.err")"
+  assert grep -q 'swin: window-open probe failed (weather); 5h window unconfirmed' "$WORK/swin-weather.err"
+  assert grep -q 'swin: warmed' "$WORK/swin-weather.out"
+  assert jq -e '.five_hour.resets_at == 0 and .auth.status == "ok"' "$limits_dir/swin.json" >/dev/null
+)
+rm -f "$CLAUDEB_DIR/tokens/swin" "$limits_dir/swin.json"
+
 # --- heal_expired: disabled accounts and actionable fallback causes ---
 WARM_CALLS="$WORK/warm-calls"
 warm_accounts() {
@@ -1217,4 +1290,4 @@ assert_fails grep -qF $'\033[7m' <<<"$plain_line"
   assert test ! -e "$launch_marker"
 )
 
-echo "PASS: $asserts asserts; reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth weather/backoff and lock behavior, reserved names, disabled-account timeline, out-of-rotation profile launch proceeds direct (proxy leaks stripped), generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent-rotation adoption, capacity weather clears stale expired auth for valid tokens, warm-first heal ordering and fallback, warm auth verdicts require current-run refresh evidence, start-windows opens a fresh window and reconcile locks the new resets_at without regressing it, start-windows skips a disabled account with an explicit cause, the paid haiku warm fallback stays off unless opted in, regular probes never warm, heal_expired covers disabled accounts with actionable causes, and heal_one writes expired only on current-run evidence (stale-token 401 defers to the token endpoint's verdict, fresh-token 401 is affirmative, weather never re-stamps a prior expired), and no-refresh probes plus daemon-token messages-probe 401s defer to the refresh outcome (stale token → weather no-write / invalid_grant expired, fresh token → affirmative), and interactive status account-row selection (bounded up/down navigation, name-stable across re-sort), Enter resolving to a \`claudeb profile <name>\` exec, row-scoped reverse-video highlight, and the non-tty path staying plain with no key loop or launch"
+echo "PASS: $asserts asserts; reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth weather/backoff and lock behavior, reserved names, disabled-account timeline, out-of-rotation profile launch proceeds direct (proxy leaks stripped), generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent-rotation adoption, capacity weather clears stale expired auth for valid tokens, warm-first heal ordering and fallback, warm auth verdicts require current-run refresh evidence, start-windows opens a fresh window and reconcile locks the new resets_at without regressing it, start-windows skips a disabled account with an explicit cause, warm --start-window opens only an expired window for the explicit account (live window and flagless runs never ping; ping weather warns without an auth verdict), the paid haiku warm fallback stays off unless opted in, regular probes never warm, heal_expired covers disabled accounts with actionable causes, and heal_one writes expired only on current-run evidence (stale-token 401 defers to the token endpoint's verdict, fresh-token 401 is affirmative, weather never re-stamps a prior expired), and no-refresh probes plus daemon-token messages-probe 401s defer to the refresh outcome (stale token → weather no-write / invalid_grant expired, fresh token → affirmative), and interactive status account-row selection (bounded up/down navigation, name-stable across re-sort), Enter resolving to a \`claudeb profile <name>\` exec, row-scoped reverse-video highlight, and the non-tty path staying plain with no key loop or launch"
