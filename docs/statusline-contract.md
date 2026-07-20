@@ -29,13 +29,34 @@ refresher (a hook, or the fire-and-forget probe pattern), never the render path.
 
 ## Line 2 — usage
 
+The `1800`s / `21600`s staleness thresholds below are cross-implementation invariants; their canonical values and every other site live in `docs/shared-invariants.md` (guarded by `tests/test_consistency.sh`).
+
 | Segment | Source of truth | Update trigger | Staleness / dim policy | Removal condition |
 |---|---|---|---|---|
 | `ctx <pct>` + `<n>k` tokens | JSON `.context_window.used_percentage` / `.current_usage` | Every render | Live each render. Only the `%` carries color: green <40, yellow 40–79, red ≥80 — the 40 (vs the standard 50) is an early "/compact" nudge, since a large context re-bills cache reads every turn. The `<n>k` token count is an auxiliary number and is always dim. | token count hidden when 0 |
 | `5h <pct>` + reset time | merged rate-limit cache (`statusline-cache-rl` for main, `limits/<acct>.json` for claudeb) — live headers merged under lock each render | Every render merges newer headers; the claudeb daemon writes the caches | Dimmed if reset passed, `auth=expired`, `origin=cached`, `as_of` >1800s, or the `llm-limits.json` `stale` flag is set | Never removed; `?` when unknown |
 | `wk <pct>` + reset | same cache (`seven_day`) | Every render | Dimmed if reset passed, expired/cached, `as_of` >21600s, or `stale` flag | Never removed; `?` when unknown |
-| `fb <pct>` + reset | `~/.llm-limits.json` `vendors.claude.accounts[].fable` | Every render reads the file (the `llm-limits` collector writes it) | Dimmed if the account's `stale` flag is set or the file mtime >21600s | Only for a non-`main` account that has a `fable` bucket; else absent |
+| `fb <pct>` + reset | `~/.llm-limits.json` `vendors.claude.accounts[].fable` | Every render reads the file; the store is written by the `llm-limits` collector (menu collect-on-open, llm-limitsd) and kept fresh by the statusline **store merge-kick** below | Dimmed if the account's `stale` flag is set or the file mtime >21600s | Only for a non-`main` account that has a `fable` bucket; else absent |
 | `$<cost>` | JSON `.cost.total_cost_usd` | Every render | Live each render (`LC_ALL=C` for the decimal point) | Absent when cost is null |
+
+## Store merge-kick (background, not a rendered segment)
+
+`bin/statusline.sh` already merges live `rate_limits` headers into the per-account
+caches every render, but it never used to touch the central store
+`~/.llm-limits.json` — that only updated on a menu open, so the menubar and other
+sessions' store-derived data (`fb`, the `stale` flags) lagged until someone
+opened the menu. After a render that captured fresh headers (the write branch),
+the statusline now nudges the store so fresh data propagates passively.
+
+| Property | Value |
+|---|---|
+| Source of truth | the per-account rate-limit caches the render just wrote |
+| Update trigger | fires only on a render that captured fresh headers; runs the same zero-network collector the menu's collect-on-open uses (bare `llm-limits.sh`, **never** `--refresh`) |
+| Debounce | ≤ once / 60s across **all** sessions via the shared stamp `~/.cache/claude-statusline/store-merge-kick` |
+| Single-flight | the `store-merge-kick.lock` mkdir lock (stale-reclaimed at 120s) via the same `snapshot_lock_acquire` helper the cache write uses; the stamp is written in the foreground under the lock so a near-simultaneous second render sees the debounce and skips |
+| Non-blocking | the collector runs in a detached background subshell with its own fds; render latency is never affected |
+| Failure policy | fully silent — a failed nudge never breaks or slows the render |
+| Consumer | the Hammerspoon menubar reacts to the store write via an `hs.pathwatcher` (2s throttle) that re-renders the title without a menu open; overridable/neutralizable in tests via `STATUSLINE_STORE_MERGE_CMD` |
 
 ## Known limitations
 

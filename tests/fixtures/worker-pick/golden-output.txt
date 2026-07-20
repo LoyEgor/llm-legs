@@ -1,0 +1,14 @@
+NEXT: claudeb worker · opus · high — ACCOUNT: worker; pre-reset cap 50%  |  codex main · high — FRESH
+codex: main 48% runway 152% ↻1 (5h→?, wk→?)
+claude: session($100)* 5h 20% wk 20% fb 10% score 70 cap 70% | worker($20) 5h 30% wk 40% fb 70% score 20 cap 50% no-Fable   (* = this session account, excluded from worker routing)
+POLICY: codex FRESH (main, runway 152%, ↻1 manual); claudeb worker score 20
+DATA: fresh (0 min old)
+SESSION: session — fb 10%, wk 20%
+
+# Worker routing policy
+
+- Prefer Codex for design and well-specified implementation, especially when speed matters. Do not route animation work to Codex; the Fable side is stronger for animation.
+- Use Codex effort `medium` for ordinary tasks and `high` for genuinely complex work.
+- Prefer claudeb for long or multi-step tasks and work that depends heavily on repository conventions.
+- When Codex is FRESH, route roughly five of every ten suitable tasks to Codex. Reduce that share as the data-driven verdict tightens.
+- Always use the concrete account and pre-reset cap from `NEXT:`. Never route a worker to the session account.

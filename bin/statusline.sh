@@ -38,6 +38,44 @@ snapshot_lock_acquire() {
   mkdir "$lock" 2>/dev/null
 }
 
+# Propagate just-merged headers to all surfaces via the zero-network collector
+# (never --refresh); full contract: docs/statusline-contract.md "Store merge-kick".
+# Every failure is silent — the statusline must never break because a nudge failed.
+store_merge_kick() {
+  local collector self kick_dir stamp now_ts age
+  collector="${STATUSLINE_STORE_MERGE_CMD:-}"
+  if [ -z "$collector" ]; then
+    self="$0"
+    [ -L "$self" ] && self=$(readlink "$self")
+    case "$self" in /*) ;; *) self="$(dirname "$0")/$self" ;; esac
+    collector="$(dirname "$self")/../llm-limits.sh"
+  fi
+  [ -x "$collector" ] || return 0
+  kick_dir="$HOME/.cache/claude-statusline"
+  stamp="$kick_dir/store-merge-kick"
+  now_ts=$(date +%s 2>/dev/null) || return 0
+  age=$(file_mtime "$stamp" 2>/dev/null)
+  [[ "$age" =~ ^[0-9]+$ ]] && [ "$((now_ts - age))" -lt 60 ] && return 0
+  mkdir -p "$kick_dir" 2>/dev/null || return 0
+  # Grab the single-flight lock in the foreground and stamp synchronously, so the
+  # next render sees the debounce immediately (a background stamp would race two
+  # near-simultaneous renders into a double kick).
+  snapshot_lock_acquire "$stamp.lock" || return 0
+  age=$(file_mtime "$stamp" 2>/dev/null)
+  if [[ "$age" =~ ^[0-9]+$ ]] && [ "$((now_ts - age))" -lt 60 ]; then
+    rmdir "$stamp.lock" 2>/dev/null
+    return 0
+  fi
+  : > "$stamp" 2>/dev/null
+  # Orphaned double-fork with own fds so the collector never holds the render's
+  # stdout open or adds latency (same detach idiom as the ports probe).
+  ( (
+    PATH="/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin:/usr/sbin" \
+      "$collector" >/dev/null 2>&1
+    rmdir "$stamp.lock" 2>/dev/null
+  ) & ) >/dev/null 2>&1
+}
+
 CYAN=$'\033[36m'; BLUE=$'\033[34m'; DIM=$'\033[2m'
 GREEN=$'\033[32m'; YELLOW=$'\033[33m'; RED=$'\033[31m'; MAGENTA=$'\033[35m'; RESET=$'\033[0m'
 
@@ -145,6 +183,7 @@ elif [ -n "$rl_json" ]; then
     rl_merge "$rl_target"
   fi
   [ -n "$merged_rl" ] && rl_json="$merged_rl"
+  store_merge_kick
 else
   rl_cache_file="$account_cache"
   [ "$acct" = main ] && rl_cache_file="$cache_rl"

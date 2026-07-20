@@ -1,24 +1,38 @@
 #!/usr/bin/env bash
-# Token-free routing advisor for worker=auto: reads ~/.llm-limits.json,
-# account tiers and claudebd state, prints codex/claude pressure and a
-# concrete NEXT/POLICY recommendation the orchestrator follows when choosing
-# the implementation worker. Also writes a compact one-line cache for the
-# statusline (per own-account, since routing excludes the session's account).
-#
-# Key rules encoded here (thresholds live ONLY in this script):
-# - codex pressure: <50% FRESH, <85% OK, <95% TIGHT, else WALLED.
-# - accounts are weighted by subscription tier (~/.claude-profiles/.claudeb/
-#   account-tiers, `name=usd`, default 100): 30% left on a $20 account is far
-#   less real headroom than 30% on a $100 one.
-# - the session's OWN account is excluded from worker routing so heavy
-#   delegation can never wall the session that still has work to finish.
 set -u
 
+FLOOR_PCT=90
+R1_FABLE_BURNT_MIN_PCT=50
+R1_FABLE_BURNT_WEIGHT=0.50
+R2_FABLE_FRESH_MAX_PCT=20
+R2_WEEKLY_HIGH_MIN_PCT=70
+R2_FABLE_RESERVED_WEIGHT=1.50
+R3_FABLE_INCAPABLE_WEIGHT=0.50
+RESET_HORIZON_S=604800
+RESET_REFILL_PCT=100
+RESET_CREDIT_REFILL_PCT=100
+CODEX_FRESH_RUNWAY_PCT=50
+CODEX_OK_RUNWAY_PCT=15
+CODEX_TIGHT_RUNWAY_PCT=5
+SESSION_FABLE_WEIGHT=0.70
+SESSION_WEEKLY_WEIGHT=0.30
+
 LIMITS_FILE="${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}"
-WORKER_FILE="$HOME/.claude/worker-model"
-TIERS_FILE="${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/account-tiers"
-CACHE_DIR="$HOME/.cache"
-now=$(date +%s)
+WORKER_FILE="${WORKER_PICK_CONFIG_FILE:-$HOME/.claude/worker-model}"
+TIERS_FILE="${WORKER_PICK_TIERS_FILE:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/account-tiers}"
+CACHE_DIR="${WORKER_PICK_CACHE_DIR:-$HOME/.cache}"
+now="${WORKER_PICK_NOW:-$(date +%s)}"
+
+script_path=$0
+while [ -L "$script_path" ]; do
+  link_target=$(readlink "$script_path")
+  case "$link_target" in
+    /*) script_path=$link_target ;;
+    *) script_path=$(dirname "$script_path")/$link_target ;;
+  esac
+done
+script_dir=$(cd "$(dirname "$script_path")" && pwd)
+POLICY_FILE="${WORKER_PICK_POLICY_FILE:-$script_dir/../share/worker-policy.md}"
 
 conf() { sed -n "s/^$1=//p" "$WORKER_FILE" 2>/dev/null | head -n1; }
 
@@ -31,23 +45,34 @@ if [ -z "$own" ] || [ "$own" = "-" ]; then
   fi
 fi
 cache_file="$CACHE_DIR/worker-pick.line.$own"
+mkdir -p "$CACHE_DIR" 2>/dev/null || true
 
 write_cache() {
-  # Atomic: statusline polls this file every 5s and must never see a torn read.
+  # The statusline polls this file concurrently and must never observe a torn prediction.
   tmp="$cache_file.tmp.$$"
-  printf '%s\n' "$1" > "$tmp" 2>/dev/null && mv -f "$tmp" "$cache_file" 2>/dev/null
+  printf '%s\n' "$1" >"$tmp" 2>/dev/null && mv -f "$tmp" "$cache_file" 2>/dev/null
   rm -f "$tmp" 2>/dev/null
 }
 
+print_policy() {
+  [ -r "$POLICY_FILE" ] && { printf '\n'; cat "$POLICY_FILE"; }
+}
+
 fail_safe() {
-  echo "NEXT: claudeb (rotating) — $1"
-  write_cache 'cb~?'
+  printf 'NEXT: claudeb (rotating) — %s\n' "$1"
+  printf 'codex: unavailable\n'
+  printf 'claude: unavailable\n'
+  printf 'POLICY: fail-safe to Claude side\n'
+  printf 'DATA: unavailable\n'
+  printf 'SESSION: unavailable\n'
+  write_cache 'cx✗·? cb~?'
+  print_policy
   exit 0
 }
 
-[ -r "$LIMITS_FILE" ] || fail_safe "no limits data, fail-safe to Claude side"
+[ -r "$LIMITS_FILE" ] || fail_safe "no limits data"
 
-tiers_json=$(awk -F= 'NF==2 {printf "%s\"%s\":%s", sep, $1, $2; sep=","} END {print ""}' sep="" "$TIERS_FILE" 2>/dev/null)
+tiers_json=$(awk -F= 'NF==2 && $2 ~ /^[0-9]+([.][0-9]+)?$/ {printf "%s\"%s\":%s", sep, $1, $2; sep=","} END {print ""}' sep="" "$TIERS_FILE" 2>/dev/null)
 tiers_json="{${tiers_json:-}}"
 printf '%s' "$tiers_json" | jq -e . >/dev/null 2>&1 || tiers_json='{}'
 
@@ -56,99 +81,207 @@ cb_effort=$(conf claudeb_effort); cb_effort=${cb_effort:-high}
 cx_effort=$(conf codex_effort); cx_effort=${cx_effort:-high}
 cb_pin=$(conf claudeb_profile)
 
-summary=$(jq -r --argjson now "$now" --argjson tiers "$tiers_json" --arg own "$own" '
+summary=$(jq -r \
+  --argjson now "$now" --argjson tiers "$tiers_json" --arg own "$own" --arg pin "$cb_pin" \
+  --argjson floor "$FLOOR_PCT" \
+  --argjson r1_min "$R1_FABLE_BURNT_MIN_PCT" --argjson r1_weight "$R1_FABLE_BURNT_WEIGHT" \
+  --argjson r2_fresh "$R2_FABLE_FRESH_MAX_PCT" --argjson r2_weekly "$R2_WEEKLY_HIGH_MIN_PCT" \
+  --argjson r2_weight "$R2_FABLE_RESERVED_WEIGHT" --argjson r3_weight "$R3_FABLE_INCAPABLE_WEIGHT" \
+  --argjson reset_horizon "$RESET_HORIZON_S" --argjson reset_refill "$RESET_REFILL_PCT" \
+  --argjson credit_refill "$RESET_CREDIT_REFILL_PCT" \
+  --argjson fresh_runway "$CODEX_FRESH_RUNWAY_PCT" --argjson ok_runway "$CODEX_OK_RUNWAY_PCT" \
+  --argjson tight_runway "$CODEX_TIGHT_RUNWAY_PCT" \
+  --argjson session_fable_weight "$SESSION_FABLE_WEIGHT" \
+  --argjson session_weekly_weight "$SESSION_WEEKLY_WEIGHT" '
   def epoch:
     if type == "number" then .
     elif type == "string" then
-      (capture("^(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(\\.[0-9]+)?(?<tz>Z|[+-][0-9]{2}:?[0-9]{2})?$") // null
-       | if . == null then null
-         else (.d + "Z" | fromdateiso8601)
-           - (if .tz == null or .tz == "Z" then 0
-              else (.tz | capture("^(?<s>[+-])(?<h>[0-9]{2}):?(?<m>[0-9]{2})$")
-                    | (if .s == "-" then -1 else 1 end) * ((.h | tonumber) * 3600 + (.m | tonumber) * 60))
-              end)
-         end)
+      (capture("^(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(\\.[0-9]+)?(?<tz>Z|[+-][0-9]{2}:?[0-9]{2})?$") // null |
+       if . == null then null
+       else (.d + "Z" | fromdateiso8601) -
+         (if .tz == null or .tz == "Z" then 0
+          else (.tz | capture("^(?<s>[+-])(?<h>[0-9]{2}):?(?<m>[0-9]{2})$") |
+                (if .s == "-" then -1 else 1 end) * ((.h | tonumber) * 3600 + (.m | tonumber) * 60)) end)
+       end)
     else null end;
-  def eff(b): (b // {}) as $b | (($b.resets_at // null) | epoch) as $r |
-    if (($b.used_pct // null) | type) != "number" then null
-    elif $r != null and $r <= $now then 0
-    else ($b.effective_pct // $b.used_pct) end;
-  def reset_str(b): ((b // {}).resets_at // null) | epoch |
-    if . == null then "?" elif (. - $now) < 86400 then strflocaltime("%H:%M") else strflocaltime("%b %d %H:%M") end;
+  def eff($b):
+    ($b // {}) as $bucket | (($bucket.resets_at // null) | epoch) as $reset |
+    if (($bucket.used_pct // null) | type) != "number" then null
+    elif $reset != null and $reset <= $now then 0
+    elif (($bucket.effective_pct // null) | type) == "number" then $bucket.effective_pct
+    else $bucket.used_pct end;
+  def reset_bonus($b):
+    (($b.resets_at // null) | epoch) as $reset |
+    if $reset == null or $reset <= $now then 0
+    else ($reset - $now) as $delta |
+      if $delta >= $reset_horizon then 0
+      else $reset_refill * (1 - ($delta / $reset_horizon)) end
+    end;
+  def raw_runway($b):
+    eff($b) as $pct | if $pct == null then null else (100 - $pct) + reset_bonus($b) end;
+  def safe_runway($b):
+    eff($b) as $pct | if $pct == null then null else ([($floor - $pct), 0] | max) + reset_bonus($b) end;
+  def reset_str($b):
+    (($b.resets_at // null) | epoch) as $reset |
+    if $reset == null then "?"
+    elif ($reset - $now) < 86400 then ($reset | strflocaltime("%H:%M"))
+    else ($reset | strflocaltime("%b %d %H:%M")) end;
+  def round1: (. * 10 | round) / 10;
+  def bool_or($value; $fallback): if ($value | type) == "boolean" then $value else $fallback end;
+  def auth_ok: .auth_needed != true and ((.auth.status? // "ok") | IN("expired", "failed") | not);
+  def bucket_values: [eff(.five_hour), eff(.weekly)] | map(select(. != null));
+  def is_floored: bucket_values | any(. >= $floor);
+  def pre_reset_cap:
+    bucket_values | if length == 0 then 0 else map([($floor - .), 0] | max) | min end;
+  def account_credits:
+    if .reset_credits_stale == true then 0
+    elif (.reset_credits | type) == "number" then .reset_credits
+    else 0 end;
 
   (.fetched_at | epoch) as $fetched |
   (if $fetched == null then "no timestamp"
-   elif ($now - $fetched) > 7200 then "STALE (\((($now - $fetched) / 60) | floor) min old)"
-   else "fresh (\((($now - $fetched) / 60) | floor) min old)" end) as $age |
+   elif ($now - $fetched) > 7200 then "STALE (\((([($now - $fetched), 0] | max) / 60) | floor) min old)"
+   else "fresh (\((([($now - $fetched), 0] | max) / 60) | floor) min old)" end) as $age |
 
-  (.vendors.codex as $cx |
-   if ($cx.available // false) != true then {state: "WALLED", line: "codex: unavailable", acct: ""}
-   else
-     ([($cx.accounts // [{account:"main", five_hour:($cx.five_hour // {}), weekly:($cx.weekly // {})}])[]
-       | select(.auth_needed != true)
-       | {name: .account,
-          p: ([eff(.five_hour), eff(.weekly)] | map(select(. != null)) | (if length == 0 then 0 else max end)),
-          r5: reset_str(.five_hour), rw: reset_str(.weekly)}] | sort_by(.p)) as $accs |
-     if ($accs | length) == 0 then {state: "WALLED", line: "codex: no authenticated accounts", acct: ""}
-     else ($accs[0]) as $best |
-       {state: (if $best.p < 50 then "FRESH" elif $best.p < 85 then "OK" elif $best.p < 95 then "TIGHT" else "WALLED" end),
-        acct: $best.name,
-        line: ("codex: " + ($accs | map("\(.name) \(.p)% (5h→\(.r5), wk→\(.rw))") | join(", ")))}
-     end
+  (.vendors.codex // {}) as $cx |
+  (if $cx.available == true and (($cx.accounts | type) == "array") then $cx.accounts
+   elif $cx.available == true then [{account:"main",five_hour:($cx.five_hour // {}),weekly:($cx.weekly // {})}]
+   else [] end) as $cx_source |
+  ([$cx_source[] | select(auth_ok) |
+    bucket_values as $values |
+    select(($values | length) > 0) |
+    ([raw_runway(.five_hour), raw_runway(.weekly)] | map(select(. != null)) | min) as $time_runway |
+    ([safe_runway(.five_hour), safe_runway(.weekly)] | map(select(. != null)) | min) as $safe |
+    account_credits as $credits |
+    {name:(.account // "main"),pressure:($values | max),floor:is_floored,
+     credits:$credits,runway:($time_runway + ($credits * $credit_refill)),
+     score:($safe + ($credits * $credit_refill)),cap:pre_reset_cap,
+     r5:reset_str(.five_hour),rw:reset_str(.weekly)}] | sort_by(-.score, .name)) as $cx_accounts |
+  ($cx_accounts | map(select(.floor | not))) as $cx_eligible |
+  (if ($cx.available // false) != true then
+     {state:"WALLED",acct:"",runway:0,credits:0,line:"codex: unavailable"}
+   elif ($cx_eligible | length) == 0 then
+     {state:"WALLED",acct:"",runway:0,credits:0,
+      line:("codex: " + (if ($cx_accounts | length) == 0 then "no authenticated quota data"
+            else ($cx_accounts | map("\(.name) \(.pressure | round)% FLOOR") | join(", ")) end))}
+   else ($cx_eligible[0]) as $best |
+     {state:(if $best.runway > $fresh_runway then "FRESH"
+             elif $best.runway > $ok_runway then "OK"
+             elif $best.runway > $tight_runway then "TIGHT" else "WALLED" end),
+      acct:$best.name,runway:$best.runway,credits:$best.credits,
+      line:("codex: " + ($cx_accounts | map(
+        "\(.name) \(.pressure | round)% runway \(.runway | round1)% ↻\(.credits)\(if .floor then " FLOOR" else "" end) (5h→\(.r5), wk→\(.rw))") | join(" | ")))}
    end) as $codex |
 
-  ([.vendors.claude.accounts[]? | select(.enabled == true)
-    | {name: .account,
-       tier: ($tiers[.account] // 100),
-       own: (.account == $own),
-       h5: (eff(.five_hour) // 100), r5: reset_str(.five_hour),
-       wk: (eff(.weekly) // 100),
-       soon: ((((.five_hour // {}).resets_at // null) | epoch) as $r | $r != null and ($r - $now) < 3600 and ($r - $now) > 0)}
-    | .headroom = (.tier * (100 - .h5) / 100)
-   ] | sort_by(-.headroom)) as $cl |
+  ([.vendors.claude.accounts[]? |
+    (bool_or(.rotation.usable.general?; true)) as $general_usable |
+    (bool_or(.rotation.usable.fable?; true)) as $fable_capable |
+    (eff(.five_hour)) as $h5 | (eff(.weekly)) as $wk | (eff(.fable)) as $fb |
+    {name:.account,tier:($tiers[.account] // 100),own:(.account == $own),enabled:(.enabled == true),
+     auth_ok:auth_ok,general_usable:$general_usable,fable_capable:$fable_capable,
+     h5:$h5,wk:$wk,fb:$fb,r5:reset_str(.five_hour),rw:reset_str(.weekly),rf:reset_str(.fable),
+     floor:is_floored,cap:pre_reset_cap,
+     base_safe:([safe_runway(.five_hour), safe_runway(.weekly)] | map(select(. != null)) |
+                if length == 2 then min else 0 end)} |
+    .reserved = (.fable_capable and (.fb | type) == "number" and .fb <= $r2_fresh and
+                 (.wk | type) == "number" and .wk >= $r2_weekly) |
+    .r1 = (if .fable_capable and (.fb | type) == "number" and .fb >= $r1_min then
+             .tier * $r1_weight * ((.fb - $r1_min) / (100 - $r1_min)) else 0 end) |
+    .r2 = (if .reserved then .tier * $r2_weight * ((100 - .fb) / 100) * (.wk / 100) else 0 end) |
+    .r3 = (if .fable_capable then 0 else .tier * $r3_weight end) |
+    .score = ((.tier * .base_safe / 100) + .r1 - .r2 + .r3)] |
+    sort_by(-.score, .name)) as $cl_accounts |
+  ($cl_accounts | map(select((.own | not) and .enabled and .auth_ok and .general_usable and
+                             (.h5 | type) == "number" and (.wk | type) == "number"))) as $cl_candidates |
+  ($cl_candidates | map(select(.floor | not))) as $cl_eligible |
+  (if ($cl_eligible | length) == 0 then null else $cl_eligible[0] end) as $rec |
+  (first($cl_accounts[] | select(.name == $pin)) // null) as $pin_account |
+  (if $pin_account != null and ($pin_account.own | not) and $pin_account.enabled and $pin_account.auth_ok and
+      $pin_account.general_usable and ($pin_account.floor | not) and
+      ($pin_account.h5 | type) == "number" and ($pin_account.wk | type) == "number"
+   then $pin_account else null end) as $pin_rec |
+  ([$cl_accounts[] | select(.auth_ok and .fable_capable and
+                            (.fb | type) == "number" and (.wk | type) == "number" and
+                            .fb < $floor and .wk < $floor) |
+    .session_score = ((100 - .fb) * $session_fable_weight + (100 - .wk) * $session_weekly_weight)] |
+    sort_by(-.session_score, -.tier, .name) | .[0] // null) as $session |
+  (($cx_accounts + $cl_candidates) as $all | ($all | length) > 0 and all($all[]; .floor)) as $all_floored |
+  {codex:$codex,
+   claude_line:("claude: " + (if ($cl_accounts | length) == 0 then "no enabled accounts"
+     else ($cl_accounts | map(
+       "\(.name)($\(.tier))\(if .own then "*" else "" end) 5h \(if (.h5 | type) == "number" then (.h5 | round | tostring) + "%" else "?" end) wk \(if (.wk | type) == "number" then (.wk | round | tostring) + "%" else "?" end) fb \(if (.fb | type) == "number" then (.fb | round | tostring) + "%" else "?" end) score \(.score | round1) cap \(.cap | round1)%\(if .reserved then " Fable-reserved" else "" end)\(if .fable_capable then "" else " no-Fable" end)\(if .floor then " FLOOR" else "" end)\(if (.general_usable | not) then " blocked" else "" end)\(if .enabled then "" else " off" end)") | join(" | ")) end)),
+   rec:$rec,pin:$pin_rec,session:$session,age:$age,all_floored:$all_floored}
+  | [.codex.state,.codex.acct,(.codex.runway | round1 | tostring),(.codex.credits | tostring),.codex.line,
+     .claude_line,(.rec.name // ""),((.rec.score // 0) | round1 | tostring),((.rec.cap // 0) | round1 | tostring),
+     (if .rec.reserved == true then "yes" else "no" end),
+     (.pin.name // ""),((.pin.score // 0) | round1 | tostring),((.pin.cap // 0) | round1 | tostring),
+     (if .pin.reserved == true then "yes" else "no" end),
+     (.session.name // ""),((.session.fb // 0) | round | tostring),((.session.wk // 0) | round | tostring),
+     .age,(if .all_floored then "yes" else "no" end)] | join("\u001f")
+' "$LIMITS_FILE" 2>/dev/null) || fail_safe "limits parse failed"
+[ -n "$summary" ] || fail_safe "limits parse failed"
 
-  ($cl | map(select((.own | not) and .h5 < 85 and .wk < 95))) as $eligible |
-  (if ($eligible | length) > 0 then $eligible[0].name else "" end) as $rec |
-  ($cl | map(select((.own | not) and .soon and .h5 >= 30 and .h5 < 85 and .wk < 95)
-             | "\(.name) ($\(.tier), 5h resets \(.r5))") | join(", ")) as $soon |
+IFS=$'\x1f' read -r cx_state cx_acct cx_runway cx_credits cx_line cl_line rec rec_score rec_cap rec_reserved \
+  pin_rec pin_score pin_cap pin_reserved session_acct session_fb session_wk age all_floored <<<"$summary"
 
-  {codex_state: $codex.state, codex_acct: $codex.acct, codex_line: $codex.line,
-   claude_line: ("claude: " + (if ($cl | length) == 0 then "no enabled accounts"
-     else ($cl | map("\(.name)($\(.tier))\(if .own then "*" else "" end) 5h \(.h5)% →\(.r5) wk \(.wk)%") | join(" | ")) end)),
-   rec: $rec, soon: $soon, age: $age}
-  | [.codex_state, .codex_acct, .codex_line, .claude_line, .rec, .soon, .age] | join("")
-' "$LIMITS_FILE" 2>/dev/null) || fail_safe "limits parse failed, fail-safe to Claude side"
-[ -n "$summary" ] || fail_safe "limits parse failed, fail-safe to Claude side"
-
-IFS=$'\x1f' read -r cx_state cx_acct cx_line cl_line rec soon age <<< "$summary"
-
-if [ -n "$cb_pin" ]; then
-  cb_next="claudeb $cb_pin · $cb_model · $cb_effort (pinned via /worker)"
-  cb_cache="cb@$cb_pin"
+if [ "$all_floored" = yes ]; then
+  cb_next="ALL FLOORED, ask Egor"
+  cb_cache="cb~?"
+elif [ -n "$cb_pin" ] && [ -n "$pin_rec" ]; then
+  cb_next="claudeb $pin_rec · $cb_model · $cb_effort (pinned; pre-reset cap ${pin_cap}%)"
+  cb_cache="cb@$pin_rec"
+  rec=$pin_rec
+  rec_score=$pin_score
+  rec_cap=$pin_cap
+  rec_reserved=$pin_reserved
+elif [ -n "$cb_pin" ]; then
+  cb_next="claudeb pin $cb_pin is not selectable, ask Egor"
+  cb_cache="cb~?"
+  rec=""
 elif [ -n "$rec" ]; then
-  cb_next="claudeb $rec · $cb_model · $cb_effort — put \"ACCOUNT: $rec\" in the brief"
+  cb_next="claudeb $rec · $cb_model · $cb_effort — ACCOUNT: $rec; pre-reset cap ${rec_cap}%"
   cb_cache="cb~$rec"
 else
-  cb_next="claudeb (rotating — no account clearly better than the daemon's pick)"
+  cb_next="claudeb unavailable — no selectable non-session account"
   cb_cache="cb~?"
 fi
 
 case "$cx_state" in
-  FRESH) cx_mark="✓"; policy="codex is fresh — prefer codex (Sol high ≈ Opus-level, faster) for well-specified implementation, design, and UI-testing tasks (native macOS Computer Use), up to ~5 of 10; claudeb for long/multi-step or repo-convention-heavy work. Codex EFFORT per task: medium for average tasks, high for genuinely complex ones (limits allow it)." ;;
-  OK)    cx_mark="✓"; policy="codex has headroom — use it where speed, design taste, or Computer Use UI testing pays (~3 of 10); claudeb otherwise. Codex EFFORT: medium; raise to high only for genuinely complex tasks." ;;
-  TIGHT) cx_mark="!"; policy="codex is tight — claudeb for everything; codex only if Egor explicitly asks, then EFFORT: medium." ;;
-  *)     cx_mark="✗"; policy="codex is walled/unavailable — claudeb for everything." ;;
+  FRESH|OK) cx_mark="✓" ;;
+  TIGHT) cx_mark="!" ;;
+  *) cx_mark="✗" ;;
 esac
-[ -n "$soon" ] && policy="$policy Use-it-or-lose-it 5h headroom on: $soon."
-policy="$policy Never route workers to the session's own account ($own, marked *)."
+
+if [ "$all_floored" = yes ]; then
+  verdict="ALL FLOORED, ask Egor"
+else
+  verdict="codex $cx_state"
+  [ -z "$cx_acct" ] || verdict="$verdict ($cx_acct, runway ${cx_runway}%, ↻${cx_credits} manual)"
+  if [ -n "$rec" ]; then
+    verdict="$verdict; claudeb $rec score $rec_score"
+    [ "$rec_reserved" != yes ] || verdict="$verdict, Fable-reserved"
+  else
+    verdict="$verdict; no selectable claudeb account"
+  fi
+fi
 
 case "$cx_effort" in medium) cx_eff_abbr=med ;; high) cx_eff_abbr=hi ;; xhigh) cx_eff_abbr=xh ;; *) cx_eff_abbr=$cx_effort ;; esac
 case "$cb_effort" in medium) cb_eff_abbr=med ;; high) cb_eff_abbr=hi ;; xhigh) cb_eff_abbr=xh ;; *) cb_eff_abbr=$cb_effort ;; esac
 case "$cb_model" in sonnet) cb_model_abbr=son ;; haiku) cb_model_abbr=hai ;; fable) cb_model_abbr=fab ;; *) cb_model_abbr=$cb_model ;; esac
 write_cache "$(printf 'cx%s%s·%s %s·%s·%s' "$cx_mark" "$cx_acct" "$cx_eff_abbr" "$cb_cache" "$cb_model_abbr" "$cb_eff_abbr")"
 
-echo "NEXT: $cb_next  |  codex $cx_acct · $cx_effort — $cx_state"
-echo "$cx_line"
-echo "$cl_line   (* = this session's account, excluded from routing)"
-echo "POLICY: $policy"
-echo "DATA: $age"
+if [ "$all_floored" = yes ]; then
+  printf 'NEXT: ALL FLOORED, ask Egor  |  codex — WALLED\n'
+else
+  printf 'NEXT: %s  |  codex %s · %s — %s\n' "$cb_next" "${cx_acct:-unavailable}" "$cx_effort" "$cx_state"
+fi
+printf '%s\n' "$cx_line"
+printf '%s   (* = this session account, excluded from worker routing)\n' "$cl_line"
+printf 'POLICY: %s\n' "$verdict"
+printf 'DATA: %s\n' "$age"
+if [ -n "$session_acct" ]; then
+  printf 'SESSION: %s — fb %s%%, wk %s%%\n' "$session_acct" "$session_fb" "$session_wk"
+else
+  printf 'SESSION: no healthy Fable-capable account\n'
+fi
+print_policy

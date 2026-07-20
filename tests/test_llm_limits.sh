@@ -383,6 +383,10 @@ payload = {
                    "walled": False, "auth_failed_until": 0, "fable_walled_until": 4102445000,
                    "usable": {"general": True, "fable": False},
                    "blocked": {"general": None, "fable": "limit-fable"}},
+        "proacct": {"h5": 10, "wk": 20, "hreset": 4102444800, "wreset": 4102440000,
+                    "walled": False, "auth_failed_until": 0, "fable_walled_until": 0,
+                    "usable": {"general": True, "fable": True},
+                    "blocked": {"general": None, "fable": None}},
     },
     "scopes": {"general": None, "fable": "alona"},
     "walls": [
@@ -439,7 +443,24 @@ done
 daemon_port=$(cat "$DAEMON_PORT_FILE")
 printf '{"five_hour":{"used_percentage":10,"resets_at":%s},"seven_day":{"used_percentage":20,"resets_at":%s},"fable":{"used_percentage":90,"resets_at":%s}}\n' \
   "$((now + 5000))" "$((now + 7000))" "$((now + 8000))" >"$CLAUDEB/limits/fbonly.json"
-daemon_json=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" CLAUDEBD_PORT="$daemon_port" \
+printf '{"five_hour":{"used_percentage":10,"resets_at":%s},"seven_day":{"used_percentage":20,"resets_at":%s},"fable":{"used_percentage":10,"resets_at":%s}}\n' \
+  "$((now + 5000))" "$((now + 7000))" "$((now + 8000))" >"$CLAUDEB/limits/proacct.json"
+PLAN_BIN="$WORK/plan-bin"
+mkdir -p "$PLAN_BIN"
+pro_profile="$HOME_FIXTURE/.claude-profiles/proacct"
+pro_hash=$(printf '%s' "$pro_profile" | shasum -a 256 | awk '{print substr($1, 1, 8)}')
+cat >"$PLAN_BIN/security" <<EOF
+#!/usr/bin/env bash
+service=''
+while [ \$# -gt 0 ]; do
+  if [ "\$1" = -s ] && [ \$# -gt 1 ]; then service=\$2; shift; fi
+  shift
+done
+[ "\$service" = "Claude Code-credentials-$pro_hash" ] || exit 1
+printf '%s\n' '{"claudeAiOauth":{"subscriptionType":"Pro"}}'
+EOF
+chmod +x "$PLAN_BIN/security"
+daemon_json=$(PATH="$PLAN_BIN:$PATH" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" CLAUDEBD_PORT="$daemon_port" \
   LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "claudebd status collection failed"
 jq -e '.vendors.claude.daemon == {
   walls:[
@@ -452,7 +473,11 @@ jq -e '.vendors.claude.daemon == {
 jq -e '.vendors.claude.accounts[0].rotation == {
   usable:{general:false,fable:true},blocked:{general:"wall",fable:null}
 }' <<<"$daemon_json" >/dev/null || fail "daemon rotation projection was not merged into the matching account"
-daemon_table=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" CLAUDEBD_PORT="$daemon_port" \
+jq -e '[.vendors.claude.accounts[] | select(.account == "proacct")][0] |
+  .plan_type == "pro" and
+  .rotation == {usable:{general:true,fable:false},blocked:{general:null,fable:"plan"}}' \
+  <<<"$daemon_json" >/dev/null || fail "Pro subscription did not disable Fable rotation"
+daemon_table=$(PATH="$PLAN_BIN:$PATH" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" CLAUDEBD_PORT="$daemon_port" \
   LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) || fail "daemon rotation table failed"
 head -n 1 <<<"$daemon_table" | grep -Eq 'FB% +5H RESET +WK RESET +FB RESET +AGE +ROT +CR +STATUS' \
   || fail "universal table columns missing"
@@ -461,11 +486,14 @@ awk '$1 == "claude/alona*" {print $(NF-2)}' <<<"$daemon_table" | grep -qx 'wall'
   || fail "general rotation block missing from ROT"
 awk '$1 == "claude/fbonly" {print $(NF-2)}' <<<"$daemon_table" | grep -qx 'fb:limit-fable' \
   || fail "fable-only rotation block missing from ROT"
-daemon_plain=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" CLAUDEBD_PORT="$daemon_port" \
+awk '$1 == "claude/proacct" {print $(NF-2)}' <<<"$daemon_table" | grep -qx 'fb:plan' \
+  || fail "Pro-plan Fable block missing from ROT"
+daemon_plain=$(PATH="$PLAN_BIN:$PATH" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" CLAUDEBD_PORT="$daemon_port" \
   LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain) || fail "daemon rotation plain failed"
 grep 'claude/alona\*:' <<<"$daemon_plain" | grep -q '| rot wall |' || fail "plain general rotation block missing"
 grep 'claude/fbonly:' <<<"$daemon_plain" | grep -q '| rot fb:limit-fable |' || fail "plain fable rotation block missing"
-daemon_legacy=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" CLAUDEBD_PORT="$daemon_port" \
+grep 'claude/proacct:' <<<"$daemon_plain" | grep -q '| rot fb:plan |' || fail "plain Pro-plan Fable block missing"
+daemon_legacy=$(PATH="$PLAN_BIN:$PATH" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" CLAUDEBD_PORT="$daemon_port" \
   LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "legacy claudebd status collection failed"
 jq -e '.vendors.claude.daemon == {
   walls:[
@@ -478,6 +506,7 @@ jq -e '.vendors.claude.daemon == {
 jq -e 'all(.vendors.claude.accounts[]; has("rotation") | not)' <<<"$daemon_legacy" >/dev/null \
   || fail "legacy daemon response fabricated account rotation fields"
 rm "$CLAUDEB/limits/fbonly.json"
+rm "$CLAUDEB/limits/proacct.json"
 kill "$daemon_pid" 2>/dev/null || true
 wait "$daemon_pid" 2>/dev/null || true
 daemon_pid=''
@@ -874,11 +903,14 @@ codex_accounts_full=$(HOME="$CODEX_ACCOUNTS_HOME" LLM_LIMITS_CODEX_CACHE="$CODEX
 jq -e '.vendors.codex.current_account == "alpha" and (.vendors.codex.accounts | length) == 2 and
   .vendors.codex.accounts[0].is_current == true and
   .vendors.codex.accounts[0].reset_credits == 2 and
+  .vendors.codex.accounts[0].reset_credits_stale == false and
+  (.vendors.codex.accounts[0].reset_credits_as_of | type) == "number" and
   .vendors.codex.accounts[0].five_hour.effective_pct == 100 and
   .vendors.codex.accounts[0].five_hour.stale == true and
   .vendors.codex.accounts[0].weekly.stale == false and
   .vendors.codex.accounts[1].five_hour.effective_pct == 0 and
   .vendors.codex.accounts[1].reset_credits == 0 and
+  .vendors.codex.accounts[1].reset_credits_stale == true and
   .vendors.codex.accounts[1].five_hour.expired == true and
   (.vendors.codex.accounts[1].five_hour.resets_at | type) == "string" and
   .vendors.codex.accounts[1].weekly.effective_pct == 100 and

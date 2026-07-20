@@ -105,6 +105,20 @@ file_mtime() {
   stat -f '%m' "$1" 2>/dev/null || stat -c '%Y' "$1" 2>/dev/null
 }
 
+claude_subscription_type() {
+  local account=$1 profile hash service credentials subscription
+  command -v security >/dev/null 2>&1 || return 0
+  profile="${CLAUDE_PROFILES_DIR:-$HOME/.claude-profiles}/$account"
+  hash=$(printf '%s' "$profile" | shasum -a 256 | awk '{print substr($1, 1, 8)}')
+  service="Claude Code-credentials-$hash"
+  credentials=$(security find-generic-password -s "$service" -w 2>/dev/null) || return 0
+  subscription=$(printf '%s' "$credentials" | jq -r '
+    .claudeAiOauth.subscriptionType // empty |
+    select(type == "string") | ascii_downcase' 2>/dev/null || true)
+  credentials=''
+  printf '%s' "$subscription"
+}
+
 # Snapshots may carry null where an epoch is expected; a literal "null" inside $(( ))
 # aborts the whole run under set -u.
 int_or_empty() {
@@ -576,6 +590,7 @@ if [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
   for claude_file in "${claudeb_files[@]}"; do
     account=${claude_file##*/}; account=${account%.json}
     [ "$account" != main ] || continue
+    plan_type=$(claude_subscription_type "$account")
     enabled=true
     if [ -r "$claudeb_disabled" ] && grep -qxF "$account" "$claudeb_disabled"; then enabled=false; fi
     # Snapshots without a valid five_hour bucket (e.g. auth-only after a failed probe) must
@@ -603,7 +618,7 @@ if [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
       --argjson has_five "$has_five" --argjson has_week "$has_week" --argjson has_fable "$has_fable" \
       --arg five_reset "$five_reset" --argjson mtime "$mtime" --argjson now "$now_epoch" \
       --arg week_reset "$week_reset" --arg fable_reset "$fable_reset" \
-      --argjson stale "$stale" '
+      --argjson stale "$stale" --arg plan_type "$plan_type" '
       (($d.auth | type) == "object" and $d.auth.status == "expired") as $expired |
       (if ($d.five_hour.as_of | type) == "number" then $d.five_hour.as_of else $mtime end) as $account_asof |
       def meta($b; $thr):
@@ -623,6 +638,7 @@ if [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
                   else {used_pct:$d.five_hour.used_percentage,
                         resets_at:(if $five_reset == "" then null else $five_reset end)} + ($x.five // {}) end),
        as_of:($account_asof | todateiso8601),stale_seconds:($now - $account_asof)} +
+      (if $plan_type == "" then {} else {plan_type:$plan_type} end) +
       (if $x.auth then {auth:$x.auth} else {} end) +
       (if $has_week == 0 then {} else {weekly:({used_pct:$d.seven_day.used_percentage,
         resets_at:(if $week_reset == "" then null else $week_reset end)} + ($x.week // {}))} end) +
@@ -638,7 +654,11 @@ if [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
     accounts=$(jq -c --arg current "$current" --argjson rotation "$claude_rotation" '
       map(.account as $account |
         .is_current = (.account == $current) |
-        if ($rotation | has($account)) then .rotation = $rotation[$account] else . end) |
+        if ($rotation | has($account)) then .rotation = $rotation[$account] else . end |
+        if .plan_type == "pro" and (.rotation | type) == "object" then
+          .rotation.usable.fable = false |
+          .rotation.blocked.fable = "plan"
+        else . end) |
       sort_by(if .is_current then 0 else 1 end, .account)
     ' <<<"$accounts")
     claude_bundle=$(jq -cn --argjson accounts "$accounts" --argjson wall "$claude_wall" '
@@ -950,7 +970,10 @@ if [ -n "$codex_event" ]; then
              weekly:bucket(($a.weekly // {}); null; $account_asof; 21600),
              as_of:($account_asof | todateiso8601),stale_seconds:$account_age}
           end) +
-         (if ($a.reset_credits | type) == "number" then {reset_credits:$a.reset_credits} else {} end));
+         (if ($a.reset_credits | type) == "number" then
+            {reset_credits:$a.reset_credits,reset_credits_as_of:$account_asof,
+             reset_credits_stale:($account_age > 21600)}
+          else {} end));
       (if (($e.payload.rate_limits.accounts | type) == "array") and
           ($e.payload.rate_limits.accounts | length) > 0 then
          ($e.payload.rate_limits.current_account // "main") as $requested |

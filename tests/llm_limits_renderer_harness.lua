@@ -688,4 +688,54 @@ upkeepClock.now = upkeepClock.now + 601
 upkeepPeriodic[1].fn()
 assert(#upkeepTasks == 3, "periodic run past the throttle window did not fire")
 
+-- store pathwatcher: a module-scoped watcher on the store re-renders the title
+-- (never a collector — that writes the store and would loop), throttled so a
+-- burst of atomic rewrites collapses to few re-renders.
+local watchClock = { now = 1000 }
+local watchStarts, watchTasks = 0, 0
+local capturedPath, capturedFn, watcherStarted
+local watchHs = {
+  pathwatcher = {
+    new = function(path, fn)
+      capturedPath = path
+      capturedFn = fn
+      return { start = function() watcherStarted = true end }
+    end,
+  },
+  task = { new = function()
+    watchTasks = watchTasks + 1
+    return {
+      setEnvironment = function() end,
+      start = function() watchStarts = watchStarts + 1 return true end,
+      isRunning = function() return false end,
+    }
+  end },
+}
+local watchEnv = setmetatable({
+  hs = watchHs,
+  os = setmetatable({ time = function() return watchClock.now end }, { __index = os }),
+}, { __index = _G })
+watchEnv._G = watchEnv
+local watchChunk, watchError = loadfile(root .. "/hammerspoon/llm-limits.lua", "t", watchEnv)
+assert(watchChunk, watchError)
+local watchModule = watchChunk()
+
+assert(watchModule.shouldRerenderOnStoreChange(10, 0) == true, "first store change must re-render")
+assert(watchModule.shouldRerenderOnStoreChange(11, 10) == false, "sub-throttle store change must be suppressed")
+assert(watchModule.shouldRerenderOnStoreChange(12, 10) == true, "throttle-boundary store change must re-render")
+assert(watchModule.shouldRerenderOnStoreChange("x", 0) == false, "non-numeric clock must not re-render")
+
+assert(capturedPath == watchModule.cachePath, "watcher did not watch the store path")
+assert(watcherStarted, "store watcher was not started")
+assert(watchModule.storeWatcher ~= nil, "store watcher must be module-scoped so it is not GC'd")
+
+local watchNotifies = 0
+watchModule.onRefreshStateChanged = function() watchNotifies = watchNotifies + 1 end
+watchClock.now = 2000; capturedFn()
+watchClock.now = 2001; capturedFn()
+watchClock.now = 2002; capturedFn()
+assert(watchNotifies == 2, "store watcher throttle did not collapse a burst to two re-renders")
+assert(watchStarts == 0, "store watcher must never start a collector task")
+assert(watchTasks == 0, "store watcher must never construct a collector task")
+
 return "PASS: Hammerspoon projection contract"

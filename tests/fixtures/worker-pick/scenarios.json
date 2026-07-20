@@ -1,0 +1,701 @@
+{
+	"r1": {
+		"schema": 1,
+		"fetched_at": 2000000000,
+		"vendors": {
+			"codex": {
+				"available": false
+			},
+			"claude": {
+				"available": true,
+				"accounts": [
+					{
+						"account": "burnt",
+						"enabled": true,
+						"five_hour": {
+							"used_pct": 40
+						},
+						"weekly": {
+							"used_pct": 40
+						},
+						"fable": {
+							"used_pct": 80
+						},
+						"rotation": {
+							"usable": {
+								"general": true,
+								"fable": true
+							},
+							"blocked": {
+								"general": null,
+								"fable": null
+							}
+						}
+					},
+					{
+						"account": "fresh",
+						"enabled": true,
+						"five_hour": {
+							"used_pct": 40
+						},
+						"weekly": {
+							"used_pct": 40
+						},
+						"fable": {
+							"used_pct": 5
+						},
+						"rotation": {
+							"usable": {
+								"general": true,
+								"fable": true
+							},
+							"blocked": {
+								"general": null,
+								"fable": null
+							}
+						}
+					}
+				]
+			}
+		}
+	},
+	"r2": {
+		"schema": 1,
+		"fetched_at": 2000000000,
+		"vendors": {
+			"codex": {
+				"available": false
+			},
+			"claude": {
+				"available": true,
+				"accounts": [
+					{
+						"account": "ordinary",
+						"enabled": true,
+						"five_hour": {
+							"used_pct": 40
+						},
+						"weekly": {
+							"used_pct": 40
+						},
+						"fable": {
+							"used_pct": 50
+						},
+						"rotation": {
+							"usable": {
+								"general": true,
+								"fable": true
+							},
+							"blocked": {
+								"general": null,
+								"fable": null
+							}
+						}
+					},
+					{
+						"account": "reserved",
+						"enabled": true,
+						"five_hour": {
+							"used_pct": 40
+						},
+						"weekly": {
+							"used_pct": 75
+						},
+						"fable": {
+							"used_pct": 5
+						},
+						"rotation": {
+							"usable": {
+								"general": true,
+								"fable": true
+							},
+							"blocked": {
+								"general": null,
+								"fable": null
+							}
+						}
+					}
+				]
+			}
+		}
+	},
+	"r3": {
+		"schema": 1,
+		"fetched_at": 2000000000,
+		"vendors": {
+			"codex": {
+				"available": false
+			},
+			"claude": {
+				"available": true,
+				"accounts": [
+					{
+						"account": "small",
+						"enabled": true,
+						"five_hour": {
+							"used_pct": 30
+						},
+						"weekly": {
+							"used_pct": 40
+						},
+						"fable": {
+							"used_pct": 70
+						},
+						"rotation": {
+							"usable": {
+								"general": true,
+								"fable": false
+							},
+							"blocked": {
+								"general": null,
+								"fable": "plan"
+							}
+						}
+					},
+					{
+						"account": "reserved",
+						"enabled": true,
+						"five_hour": {
+							"used_pct": 40
+						},
+						"weekly": {
+							"used_pct": 75
+						},
+						"fable": {
+							"used_pct": 5
+						},
+						"rotation": {
+							"usable": {
+								"general": true,
+								"fable": true
+							},
+							"blocked": {
+								"general": null,
+								"fable": null
+							}
+						}
+					}
+				]
+			}
+		}
+	},
+	"floor": {
+		"schema": 1,
+		"fetched_at": 2000000000,
+		"vendors": {
+			"codex": {
+				"available": false
+			},
+			"claude": {
+				"available": true,
+				"accounts": [
+					{
+						"account": "at-floor",
+						"enabled": true,
+						"five_hour": {
+							"used_pct": 90
+						},
+						"weekly": {
+							"used_pct": 10
+						},
+						"fable": {
+							"used_pct": 80
+						},
+						"rotation": {
+							"usable": {
+								"general": true,
+								"fable": true
+							},
+							"blocked": {
+								"general": null,
+								"fable": null
+							}
+						}
+					},
+					{
+						"account": "safe",
+						"enabled": true,
+						"five_hour": {
+							"used_pct": 60
+						},
+						"weekly": {
+							"used_pct": 60
+						},
+						"fable": {
+							"used_pct": 10
+						},
+						"rotation": {
+							"usable": {
+								"general": true,
+								"fable": true
+							},
+							"blocked": {
+								"general": null,
+								"fable": null
+							}
+						}
+					}
+				]
+			}
+		}
+	},
+	"all_floor": {
+		"schema": 1,
+		"fetched_at": 2000000000,
+		"vendors": {
+			"codex": {
+				"available": true,
+				"accounts": [
+					{
+						"account": "main",
+						"five_hour": {
+							"used_pct": 95
+						},
+						"weekly": {
+							"used_pct": 95
+						},
+						"reset_credits": 1
+					}
+				]
+			},
+			"claude": {
+				"available": true,
+				"accounts": [
+					{
+						"account": "claude-floor",
+						"enabled": true,
+						"five_hour": {
+							"used_pct": 90
+						},
+						"weekly": {
+							"used_pct": 20
+						},
+						"fable": {
+							"used_pct": 80
+						},
+						"rotation": {
+							"usable": {
+								"general": true,
+								"fable": true
+							},
+							"blocked": {
+								"general": null,
+								"fable": null
+							}
+						}
+					}
+				]
+			}
+		}
+	},
+	"reset": {
+		"schema": 1,
+		"fetched_at": 2000000000,
+		"vendors": {
+			"codex": {
+				"available": false
+			},
+			"claude": {
+				"available": true,
+				"accounts": [
+					{
+						"account": "soon",
+						"enabled": true,
+						"five_hour": {
+							"used_pct": 10
+						},
+						"weekly": {
+							"used_pct": 50,
+							"resets_at": 2000010800
+						},
+						"fable": {
+							"used_pct": 50
+						},
+						"rotation": {
+							"usable": {
+								"general": true,
+								"fable": true
+							},
+							"blocked": {
+								"general": null,
+								"fable": null
+							}
+						}
+					},
+					{
+						"account": "later",
+						"enabled": true,
+						"five_hour": {
+							"used_pct": 10
+						},
+						"weekly": {
+							"used_pct": 50,
+							"resets_at": 2000432000
+						},
+						"fable": {
+							"used_pct": 50
+						},
+						"rotation": {
+							"usable": {
+								"general": true,
+								"fable": true
+							},
+							"blocked": {
+								"general": null,
+								"fable": null
+							}
+						}
+					}
+				]
+			}
+		}
+	},
+	"codex_credit": {
+		"schema": 1,
+		"fetched_at": 2000000000,
+		"vendors": {
+			"codex": {
+				"available": true,
+				"accounts": [
+					{
+						"account": "with-credit",
+						"five_hour": {
+							"used_pct": 48
+						},
+						"weekly": {
+							"used_pct": 48
+						},
+						"reset_credits": 1
+					},
+					{
+						"account": "plain",
+						"five_hour": {
+							"used_pct": 48
+						},
+						"weekly": {
+							"used_pct": 48
+						},
+						"reset_credits": 0
+					}
+				]
+			},
+			"claude": {
+				"available": false,
+				"accounts": []
+			}
+		}
+	},
+	"codex_plain": {
+		"schema": 1,
+		"fetched_at": 2000000000,
+		"vendors": {
+			"codex": {
+				"available": true,
+				"accounts": [
+					{
+						"account": "plain",
+						"five_hour": {
+							"used_pct": 48
+						},
+						"weekly": {
+							"used_pct": 48
+						},
+						"reset_credits": 0
+					}
+				]
+			},
+			"claude": {
+				"available": false,
+				"accounts": []
+			}
+		}
+	},
+	"codex_tight": {
+		"schema": 1,
+		"fetched_at": 2000000000,
+		"vendors": {
+			"codex": {
+				"available": true,
+				"accounts": [
+					{
+						"account": "tight",
+						"five_hour": {
+							"used_pct": 85
+						},
+						"weekly": {
+							"used_pct": 85
+						},
+						"reset_credits": 0
+					}
+				]
+			},
+			"claude": {
+				"available": false,
+				"accounts": []
+			}
+		}
+	},
+	"stale": {
+		"schema": 1,
+		"fetched_at": 1999990000,
+		"vendors": {
+			"codex": {
+				"available": false
+			},
+			"claude": {
+				"available": true,
+				"accounts": [
+					{
+						"account": "effective",
+						"enabled": true,
+						"five_hour": {
+							"used_pct": 95,
+							"effective_pct": 20,
+							"stale": true
+						},
+						"weekly": {
+							"used_pct": 95,
+							"effective_pct": 20,
+							"stale": true
+						},
+						"fable": {
+							"used_pct": 80,
+							"effective_pct": 80,
+							"stale": true
+						},
+						"rotation": {
+							"usable": {
+								"general": true,
+								"fable": true
+							},
+							"blocked": {
+								"general": null,
+								"fable": null
+							}
+						}
+					},
+					{
+						"account": "raw",
+						"enabled": true,
+						"five_hour": {
+							"used_pct": 10,
+							"effective_pct": 30
+						},
+						"weekly": {
+							"used_pct": 10,
+							"effective_pct": 30
+						},
+						"fable": {
+							"used_pct": 80,
+							"effective_pct": 80
+						},
+						"rotation": {
+							"usable": {
+								"general": true,
+								"fable": true
+							},
+							"blocked": {
+								"general": null,
+								"fable": null
+							}
+						}
+					}
+				]
+			}
+		}
+	},
+	"expired": {
+		"schema": 1,
+		"fetched_at": 2000000000,
+		"vendors": {
+			"codex": {
+				"available": false
+			},
+			"claude": {
+				"available": true,
+				"accounts": [
+					{
+						"account": "expired",
+						"enabled": true,
+						"five_hour": {
+							"used_pct": 95,
+							"effective_pct": 95,
+							"resets_at": 1999999999
+						},
+						"weekly": {
+							"used_pct": 10
+						},
+						"fable": {
+							"used_pct": 80
+						},
+						"rotation": {
+							"usable": {
+								"general": true,
+								"fable": true
+							},
+							"blocked": {
+								"general": null,
+								"fable": null
+							}
+						}
+					},
+					{
+						"account": "live",
+						"enabled": true,
+						"five_hour": {
+							"used_pct": 20
+						},
+						"weekly": {
+							"used_pct": 20
+						},
+						"fable": {
+							"used_pct": 80
+						},
+						"rotation": {
+							"usable": {
+								"general": true,
+								"fable": true
+							},
+							"blocked": {
+								"general": null,
+								"fable": null
+							}
+						}
+					}
+				]
+			}
+		}
+	},
+	"golden": {
+		"schema": 1,
+		"fetched_at": 2000000000,
+		"vendors": {
+			"codex": {
+				"available": true,
+				"accounts": [
+					{
+						"account": "main",
+						"five_hour": {
+							"used_pct": 48
+						},
+						"weekly": {
+							"used_pct": 48
+						},
+						"reset_credits": 1
+					}
+				]
+			},
+			"claude": {
+				"available": true,
+				"accounts": [
+					{
+						"account": "session",
+						"enabled": true,
+						"five_hour": {
+							"used_pct": 20
+						},
+						"weekly": {
+							"used_pct": 20
+						},
+						"fable": {
+							"used_pct": 10
+						},
+						"rotation": {
+							"usable": {
+								"general": true,
+								"fable": true
+							},
+							"blocked": {
+								"general": null,
+								"fable": null
+							}
+						}
+					},
+					{
+						"account": "worker",
+						"enabled": true,
+						"five_hour": {
+							"used_pct": 30
+						},
+						"weekly": {
+							"used_pct": 40
+						},
+						"fable": {
+							"used_pct": 70
+						},
+						"rotation": {
+							"usable": {
+								"general": true,
+								"fable": false
+							},
+							"blocked": {
+								"general": null,
+								"fable": "plan"
+							}
+						}
+					}
+				]
+			}
+		}
+	},
+	"r3_decides": {
+		"schema": 1,
+		"fetched_at": 2000000000,
+		"vendors": {
+			"codex": {
+				"available": false
+			},
+			"claude": {
+				"available": true,
+				"accounts": [
+					{
+						"account": "fbcap",
+						"enabled": true,
+						"five_hour": {
+							"used_pct": 30
+						},
+						"weekly": {
+							"used_pct": 30
+						},
+						"fable": {
+							"used_pct": 40
+						},
+						"rotation": {
+							"usable": {
+								"general": true,
+								"fable": true
+							},
+							"blocked": {
+								"general": null,
+								"fable": null
+							}
+						}
+					},
+					{
+						"account": "nofb",
+						"enabled": true,
+						"five_hour": {
+							"used_pct": 30
+						},
+						"weekly": {
+							"used_pct": 30
+						},
+						"fable": {
+							"used_pct": 40
+						},
+						"rotation": {
+							"usable": {
+								"general": true,
+								"fable": false
+							},
+							"blocked": {
+								"general": null,
+								"fable": "plan"
+							}
+						}
+					}
+				]
+			}
+		}
+	}
+}

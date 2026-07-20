@@ -1164,4 +1164,57 @@ fresh_creds='{"claudeAiOauth":{"refreshToken":"rt-heal","accessToken":"at-heal",
   assert jq -e '.auth.status == "expired"' "$limits_dir/mp4.json" >/dev/null
 )
 
-echo "PASS: $asserts asserts; reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth weather/backoff and lock behavior, reserved names, disabled-account timeline, out-of-rotation profile launch proceeds direct (proxy leaks stripped), generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent-rotation adoption, capacity weather clears stale expired auth for valid tokens, warm-first heal ordering and fallback, warm auth verdicts require current-run refresh evidence, start-windows opens a fresh window and reconcile locks the new resets_at without regressing it, start-windows skips a disabled account with an explicit cause, the paid haiku warm fallback stays off unless opted in, regular probes never warm, heal_expired covers disabled accounts with actionable causes, and heal_one writes expired only on current-run evidence (stale-token 401 defers to the token endpoint's verdict, fresh-token 401 is affirmative, weather never re-stamps a prior expired), and no-refresh probes plus daemon-token messages-probe 401s defer to the refresh outcome (stale token → weather no-write / invalid_grant expired, fresh token → affirmative)"
+# interactive status: account-row selection navigation, Enter launch resolution,
+# highlight scoping, and the non-tty path staying plain (no key loop, no launch).
+ia_result=$(cat <<'EOF'
+{"picked":"beta","data":[
+ {"name":"gamma","h5":10,"wk":5,"fable":null,"hreset":0,"wreset":0,"age":60,"h5_raw":10,"wk_raw":5,"fable_raw":null,"h5_dim":false,"wk_dim":false,"fable_dim":false,"disabled":false},
+ {"name":"alpha","h5":40,"wk":20,"fable":null,"hreset":0,"wreset":0,"age":60,"h5_raw":40,"wk_raw":20,"fable_raw":null,"h5_dim":false,"wk_dim":false,"fable_dim":false,"disabled":false},
+ {"name":"beta","h5":25,"wk":15,"fable":null,"hreset":0,"wreset":0,"age":60,"h5_raw":25,"wk_raw":15,"fable_raw":null,"h5_dim":false,"wk_dim":false,"fable_dim":false,"disabled":false}]}
+EOF
+)
+accounts_result="$ia_result"
+accounts_show_fable=false
+accounts_picked=beta
+accounts_mode=cached
+
+assert test "$(sorted_account_names name | tr '\n' ' ')" = "alpha beta gamma "
+
+nav=(alpha beta gamma)
+assert test "$(selection_after_move down '' "${nav[@]}")" = alpha
+assert test "$(selection_after_move down alpha "${nav[@]}")" = beta
+assert test "$(selection_after_move down gamma "${nav[@]}")" = gamma
+assert test "$(selection_after_move up '' "${nav[@]}")" = gamma
+assert test "$(selection_after_move up alpha "${nav[@]}")" = alpha
+assert test "$(selection_after_move up beta "${nav[@]}")" = alpha
+assert test -z "$(selection_after_move down '')"
+
+(
+  claudeb_exec() { printf '%s' "$*"; }
+  accounts_launch=beta
+  assert test "$(maybe_launch_profile)" = "$0 profile beta"
+)
+(
+  claudeb_exec() { printf FIRED; }
+  accounts_launch=''
+  assert test -z "$(maybe_launch_profile)"
+)
+
+sel_line=$(render_interactive_accounts 0 name beta 2>/dev/null | sed -n '4p')
+assert grep -qF $'\033[7m' <<<"$sel_line"
+plain_line=$(render_interactive_accounts 0 name '' 2>/dev/null | sed -n '4p')
+assert_fails grep -qF $'\033[7m' <<<"$plain_line"
+
+(
+  collect_accounts() { :; }
+  interactive_accounts() { printf 'INTERACTIVE\n'; return 1; }
+  launch_marker="$WORK/ia-launch-marker"
+  rm -f "$launch_marker"
+  claudeb_exec() { : >"$launch_marker"; }
+  out=$(show_accounts cached false false false false)
+  assert test "${out#*INTERACTIVE}" = "$out"
+  assert grep -qF NAME <<<"$out"
+  assert test ! -e "$launch_marker"
+)
+
+echo "PASS: $asserts asserts; reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth weather/backoff and lock behavior, reserved names, disabled-account timeline, out-of-rotation profile launch proceeds direct (proxy leaks stripped), generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent-rotation adoption, capacity weather clears stale expired auth for valid tokens, warm-first heal ordering and fallback, warm auth verdicts require current-run refresh evidence, start-windows opens a fresh window and reconcile locks the new resets_at without regressing it, start-windows skips a disabled account with an explicit cause, the paid haiku warm fallback stays off unless opted in, regular probes never warm, heal_expired covers disabled accounts with actionable causes, and heal_one writes expired only on current-run evidence (stale-token 401 defers to the token endpoint's verdict, fresh-token 401 is affirmative, weather never re-stamps a prior expired), and no-refresh probes plus daemon-token messages-probe 401s defer to the refresh outcome (stale token → weather no-write / invalid_grant expired, fresh token → affirmative), and interactive status account-row selection (bounded up/down navigation, name-stable across re-sort), Enter resolving to a \`claudeb profile <name>\` exec, row-scoped reverse-video highlight, and the non-tty path staying plain with no key loop or launch"

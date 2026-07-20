@@ -26,3 +26,8 @@ Cardinal rules:
 - Never commit without the user's explicit, per-commit permission.
 
 Run the suites: `bash tests/test_llm_limits.sh && bash tests/test_claudeb.sh && bash tests/test_claudebd.sh && bash tests/test_claudebd_live.sh && bash tests/e2e_surfaces.sh && bash tests/test_codexb.sh`
+
+Cross-implementation invariants (values duplicated across bash/jq/Lua/prose) are guarded by
+`docs/shared-invariants.md` + `bash tests/test_consistency.sh` — run it after touching any
+staleness threshold, the keychain service formula, the worker-pick cache format, or the weather
+HTTP class lists.

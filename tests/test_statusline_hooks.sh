@@ -194,9 +194,12 @@ statusline_payload() {
 
 run_statusline() {
   # The ports probe reads the real process tree; neutralize it (true emits no
-  # snapshot -> empty cache) so renders stay hermetic and deterministic.
+  # snapshot -> empty cache) so renders stay hermetic and deterministic. The
+  # store merge-kick would otherwise spawn the real llm-limits.sh collector;
+  # point it at a no-op (overridden per-case below where the kick is exercised).
   printf '%s' "$1" | CLAUDE_LIMITS_ACCOUNT="${2:--}" CLAUDEB_DIR="$CLAUDEB_FIX" \
-    LLM_LIMITS_FILE="$WORK/limits.json" STATUSLINE_PS=true STATUSLINE_LSOF=true "$STATUSLINE"
+    LLM_LIMITS_FILE="$WORK/limits.json" STATUSLINE_PS=true STATUSLINE_LSOF=true \
+    STATUSLINE_STORE_MERGE_CMD="${STORE_MERGE_CMD:-/usr/bin/true}" "$STATUSLINE"
 }
 
 status_payload=$(statusline_payload status-override)
@@ -387,6 +390,73 @@ assert grep -Fq "${DIM}120k${RESET}" <<< "$ctx_warn"
 ctx_red=$(run_statusline "$(ctx_case ctx-red 80 180000)")
 assert grep -Fq "ctx ${RED}80%${RESET}" <<< "$ctx_red"
 assert grep -Fq "${DIM}180k${RESET}" <<< "$ctx_red"
+
+# --- store merge-kick (bin/statusline.sh) ---
+KICK_STAMP="$STATE_DIR/store-merge-kick"
+KICK_LOCK="$STATE_DIR/store-merge-kick.lock"
+KICK_MARK="$WORK/kick-marker"
+kick_reset() { rm -f "$KICK_STAMP" "$KICK_MARK"; rmdir "$KICK_LOCK" 2>/dev/null || true; }
+wait_for_mark() { local i; for i in $(seq 1 60); do [ -f "$KICK_MARK" ] && return 0; sleep 0.05; done; return 1; }
+
+FAKE_COLLECTOR="$FIXTURES/fake-collector"
+printf '#!/usr/bin/env bash\nprintf ran >> "%s"\n' "$KICK_MARK" > "$FAKE_COLLECTOR"
+chmod +x "$FAKE_COLLECTOR"
+FAIL_COLLECTOR="$FIXTURES/fail-collector"
+printf '#!/usr/bin/env bash\nprintf boom >&2\nexit 2\n' > "$FAIL_COLLECTOR"
+chmod +x "$FAIL_COLLECTOR"
+SLOW_COLLECTOR="$FIXTURES/slow-collector"
+printf '#!/usr/bin/env bash\nsleep 3\nprintf slow >> "%s"\n' "$KICK_MARK" > "$SLOW_COLLECTOR"
+chmod +x "$SLOW_COLLECTOR"
+
+# The kick only fires in the fresh-headers write branch: a pinned account with
+# rate_limits present in the render payload.
+kick_payload=$(statusline_payload status-kick \
+  '{"rate_limits":{"five_hour":{"used_percentage":50,"resets_at":'"$((NOW + 3600))"'}}}')
+
+# A: absent stamp -> stamp written synchronously and the collector runs.
+kick_reset
+kick_out=$(STORE_MERGE_CMD="$FAKE_COLLECTOR" run_statusline "$kick_payload" kickacct) \
+  || fail "statusline kick render failed"
+assert grep -Fq 'Fixture' <<< "$kick_out"
+assert test -f "$KICK_STAMP"
+assert wait_for_mark
+assert_eq ran "$(cat "$KICK_MARK")"
+
+# B: a fresh stamp debounces — no second kick, and the stamp is not rewritten.
+: > "$KICK_STAMP"
+rm -f "$KICK_MARK"
+kick_before=$(stat -f %m "$KICK_STAMP")
+STORE_MERGE_CMD="$FAKE_COLLECTOR" run_statusline "$kick_payload" kickacct >/dev/null \
+  || fail "statusline debounced render failed"
+sleep 0.2
+assert test ! -f "$KICK_MARK"
+assert_eq "$kick_before" "$(stat -f %m "$KICK_STAMP")"
+
+# C: a failing collector stays silent — the render still succeeds with clean
+# stdout/stderr (the collector's stderr is detached to /dev/null).
+kick_reset
+kick_err="$WORK/kick-stderr"
+fail_out=$(STORE_MERGE_CMD="$FAIL_COLLECTOR" run_statusline "$kick_payload" kickacct 2>"$kick_err") \
+  || fail "statusline kick with failing collector exited nonzero"
+assert grep -Fq 'Fixture' <<< "$fail_out"
+assert test "${fail_out#*boom}" = "$fail_out"
+assert_eq "" "$(cat "$kick_err")"
+
+# D: a slow collector never blocks the render (detached).
+kick_reset
+kick_start=$(date +%s)
+STORE_MERGE_CMD="$SLOW_COLLECTOR" run_statusline "$kick_payload" kickacct >/dev/null \
+  || fail "statusline kick with slow collector exited nonzero"
+assert test "$(( $(date +%s) - kick_start ))" -lt 2
+
+# A rotating (proxy) session never writes caches, so it never kicks the store.
+kick_reset
+STORE_MERGE_CMD="$FAKE_COLLECTOR" run_statusline "$kick_payload" - >/dev/null \
+  || fail "statusline rotating render failed"
+sleep 0.2
+assert test ! -f "$KICK_MARK"
+assert test ! -f "$KICK_STAMP"
+kick_reset
 
 # --- statusline-freshness-gate.sh ---
 FRESH_GATE="$ROOT/bin/statusline-freshness-gate.sh"

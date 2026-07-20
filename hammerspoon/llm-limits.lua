@@ -742,4 +742,33 @@ function M.menuItems()
   return menu
 end
 
+-- The store is written by the collector, llm-limitsd, and now every session's
+-- statusline merge-kick; watch it so the menubar reflects fresh data without a
+-- menu open. Bursty atomic rewrites are collapsed by the throttle below.
+local STORE_RERENDER_THROTTLE = 2
+local lastStoreRenderEpoch = 0
+
+-- Pure epoch guard so the throttle is testable without hs or a live clock.
+function M.shouldRerenderOnStoreChange(now, last)
+  return type(now) == "number" and (now - (last or 0)) >= STORE_RERENDER_THROTTLE
+end
+
+-- Re-render ONLY (title via onRefreshStateChanged; the menu itself rebuilds on
+-- open). It must never start a collector: the collector writes the store, which
+-- would re-fire this watcher forever.
+local function onStoreChanged()
+  local now = os.time()
+  if not M.shouldRerenderOnStoreChange(now, lastStoreRenderEpoch) then return end
+  lastStoreRenderEpoch = now
+  notifyRefreshState()
+end
+
+-- A local pathwatcher is garbage-collected and silently stops firing; hold the
+-- reference at module scope (same trap as token_upkeep's wakeWatcher). Guarded
+-- so the headless renderer harness (no hs.pathwatcher) still loads.
+if hs.pathwatcher then
+  M.storeWatcher = hs.pathwatcher.new(M.cachePath, onStoreChanged)
+  if M.storeWatcher then M.storeWatcher:start() end
+end
+
 return M
