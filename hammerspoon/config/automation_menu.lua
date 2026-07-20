@@ -53,18 +53,78 @@ local function getMonitorAutomation()
     return _G.MonitorAutomation
 end
 
-local pasteTarget = nil
-
 -- The iPad menu's Copy/Paste/Enter send keystrokes, but opening the menubar
 -- menu can drop the terminal's key focus, so a plain keyStroke lands nowhere
--- and the paste silently fails. buildMenu records the app that was frontmost
--- when the menu opened; post the event straight to it (keyStroke's app arg)
--- so it works regardless of where focus went.
+-- and the paste silently fails. Post the event straight to the app the user was
+-- last working in (keyStroke's app arg). frontmostApplication() at menu-build
+-- time is unreliable - it can already read as Hammerspoon, or go stale when the
+-- user switches apps without reopening the menu - so track app activations
+-- continuously and remember the last real (non-Hammerspoon) app instead.
+local pasteTarget = nil
+
+local function rememberFront(app)
+    if not app then return end
+    local ok, bid = pcall(function() return app:bundleID() end)
+    if ok and bid and bid ~= hs.processInfo.bundleID then
+        pasteTarget = app
+    end
+end
+
+rememberFront(hs.application.frontmostApplication())
+
+local pasteTargetWatcher = hs.application.watcher.new(function(_, event, app)
+    if event == hs.application.watcher.activated then
+        rememberFront(app)
+    end
+end)
+pasteTargetWatcher:start()
+
 local function sendKeys(mods, key)
     if pasteTarget and pasteTarget:isRunning() then
         hs.eventtap.keyStroke(mods, key, pasteTarget)
     else
         hs.eventtap.keyStroke(mods, key)
+    end
+end
+
+local terminalBundles = {
+    ["com.apple.Terminal"] = true,
+    ["com.googlecode.iterm2"] = true,
+    ["com.mitchellh.ghostty"] = true,
+    ["com.cmuxterm.app"] = true,
+}
+
+-- In a terminal running Claude Code the visible selection belongs to the TUI,
+-- not the terminal, so Cmd+C copies nothing (the TUI owns mouse reporting).
+-- Claude Code exposes its copy as the ctrl+x ctrl+y chord (selection:copy in
+-- ~/.claude/keybindings.json) - send that instead. A real terminal-native
+-- selection is still copied with Cmd+C: it shows up as AXSelectedText, the
+-- TUI's drawn selection does not.
+local function sendCopy()
+    local bid
+    if pasteTarget then
+        local ok, b = pcall(function() return pasteTarget:bundleID() end)
+        bid = ok and b or nil
+    end
+    if not (bid and terminalBundles[bid]) then
+        sendKeys({"cmd"}, "c")
+        return
+    end
+    local nativeSelection = false
+    pcall(function()
+        local axApp = hs.axuielement.applicationElement(pasteTarget)
+        -- AX calls into a busy app block indefinitely by default and would
+        -- hang the menu; cap them so copy degrades to the chord instead.
+        if axApp.setTimeout then axApp:setTimeout(0.3) end
+        local focused = axApp and axApp:attributeValue("AXFocusedUIElement")
+        local sel = focused and focused:attributeValue("AXSelectedText")
+        nativeSelection = type(sel) == "string" and #sel > 0
+    end)
+    if nativeSelection then
+        sendKeys({"cmd"}, "c")
+    else
+        hs.eventtap.keyStroke({"ctrl"}, "x", 20000, pasteTarget)
+        hs.eventtap.keyStroke({"ctrl"}, "y", 20000, pasteTarget)
     end
 end
 
@@ -296,13 +356,6 @@ buildMenu = function()
     local dockAutoHide = dockAutoHideCache
     local handoffEnabled = handoff and handoff.isEnabledCached and handoff.isEnabledCached()
 
-    -- Frontmost here (menu is opening) is still the user's app; keystroke items
-    -- target it so they survive the focus loss. Skip Hammerspoon itself.
-    local front = hs.application.frontmostApplication()
-    if front and front:bundleID() ~= hs.processInfo.bundleID then
-        pasteTarget = front
-    end
-
     if not claude then
         return {
             { title = "Claude is not loaded", disabled = true },
@@ -406,7 +459,7 @@ buildMenu = function()
         table.insert(menu, {
             title = "Copy",
             fn = function()
-                sendKeys({"cmd"}, "c")
+                sendCopy()
             end,
         })
         table.insert(menu, {
@@ -415,6 +468,9 @@ buildMenu = function()
                 sendKeys({"cmd"}, "v")
             end,
         })
+        -- Enter submits the Claude Code prompt, so keep it visually apart from
+        -- Paste: an iPad mis-tap on the adjacent item fires a costly Enter.
+        table.insert(menu, { title = "-" })
         table.insert(menu, {
             title = "Enter",
             fn = function()
@@ -551,6 +607,7 @@ AutomationMenu.buildMenu = function()
     return buildMenu()
 end
 AutomationMenu.refresh = refreshTitle
+AutomationMenu.sendCopy = sendCopy
 AutomationMenu.show = showMenu
 AutomationMenu.hide = hideMenu
 AutomationMenu.onMonitorOff = showMenu
@@ -563,6 +620,9 @@ refreshTitle()
 showMenu()
 titleTimer = hs.timer.doEvery(30, refreshTitle)
 AutomationMenu.titleTimer = titleTimer
+-- Anchor the watcher in the module table (like the timers above) so the GC
+-- can't collect it and silently stop tracking the paste target.
+AutomationMenu.pasteTargetWatcher = pasteTargetWatcher
 
 if llmLimits then
     llmLimits.onRefreshStateChanged = function()
