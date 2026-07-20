@@ -53,6 +53,21 @@ local function getMonitorAutomation()
     return _G.MonitorAutomation
 end
 
+local pasteTarget = nil
+
+-- The iPad menu's Copy/Paste/Enter send keystrokes, but opening the menubar
+-- menu can drop the terminal's key focus, so a plain keyStroke lands nowhere
+-- and the paste silently fails. buildMenu records the app that was frontmost
+-- when the menu opened; post the event straight to it (keyStroke's app arg)
+-- so it works regardless of where focus went.
+local function sendKeys(mods, key)
+    if pasteTarget and pasteTarget:isRunning() then
+        hs.eventtap.keyStroke(mods, key, pasteTarget)
+    else
+        hs.eventtap.keyStroke(mods, key)
+    end
+end
+
 -- Blocking (AppleScript to System Events) — menu code must use dockAutoHideCache.
 local function dockAutoHideEnabled()
     local ok, result = hs.osascript.applescript('tell application "System Events" to get autohide of dock preferences')
@@ -183,7 +198,7 @@ refreshTitle = function()
         if menuMode ~= "rec" then
             menuBar:setMenu(nil)
             menuBar:setClickCallback(function()
-                gptVoice.stop()
+                gptVoice.submit()
             end)
             menuMode = "rec"
         end
@@ -281,6 +296,13 @@ buildMenu = function()
     local dockAutoHide = dockAutoHideCache
     local handoffEnabled = handoff and handoff.isEnabledCached and handoff.isEnabledCached()
 
+    -- Frontmost here (menu is opening) is still the user's app; keystroke items
+    -- target it so they survive the focus loss. Skip Hammerspoon itself.
+    local front = hs.application.frontmostApplication()
+    if front and front:bundleID() ~= hs.processInfo.bundleID then
+        pasteTarget = front
+    end
+
     if not claude then
         return {
             { title = "Claude is not loaded", disabled = true },
@@ -342,6 +364,16 @@ buildMenu = function()
             end,
         },
         {
+            title = "Connect iPad",
+            fn = function()
+                if _G.SidecarConnect and _G.SidecarConnect.connect then
+                    _G.SidecarConnect.connect()
+                else
+                    hs.alert.show("Sidecar connect: module not loaded")
+                end
+            end,
+        },
+        {
             title = "Dock auto-hide",
             checked = dockAutoHide == true,
             fn = function()
@@ -374,19 +406,19 @@ buildMenu = function()
         table.insert(menu, {
             title = "Copy",
             fn = function()
-                hs.eventtap.keyStroke({"cmd"}, "c")
+                sendKeys({"cmd"}, "c")
             end,
         })
         table.insert(menu, {
             title = "Paste",
             fn = function()
-                hs.eventtap.keyStroke({"cmd"}, "v")
+                sendKeys({"cmd"}, "v")
             end,
         })
         table.insert(menu, {
             title = "Enter",
             fn = function()
-                hs.eventtap.keyStroke({}, "return")
+                sendKeys({}, "return")
             end,
         })
         table.insert(menu, {

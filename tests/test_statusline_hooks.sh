@@ -388,6 +388,16 @@ ctx_red=$(run_statusline "$(ctx_case ctx-red 80 180000)")
 assert grep -Fq "ctx ${RED}80%${RESET}" <<< "$ctx_red"
 assert grep -Fq "${YELLOW}180k${RESET}" <<< "$ctx_red"
 
+# With window size present the % is computed from raw usage: the harness's
+# used_percentage says 100 on a 1m session at 248k — render must show 25%.
+ctx_1m=$(run_statusline "$(statusline_payload ctx-1m \
+  '{"context_window":{"used_percentage":100,"context_window_size":1000000,"current_usage":{"input_tokens":248000}}}')")
+assert grep -Fq "ctx ${GREEN}25%${RESET}" <<< "$ctx_1m"
+assert grep -Fq "${YELLOW}248k${RESET}" <<< "$ctx_1m"
+ctx_200k=$(run_statusline "$(statusline_payload ctx-200k \
+  '{"context_window":{"used_percentage":10,"context_window_size":200000,"current_usage":{"input_tokens":180000}}}')")
+assert grep -Fq "ctx ${RED}90%${RESET}" <<< "$ctx_200k"
+
 # --- token-count color encodes prompt-cache warmth ---
 # cr = the cache_read tokens (input_tokens forced to 0 so ctx_tokens == cr).
 warm_extra() {

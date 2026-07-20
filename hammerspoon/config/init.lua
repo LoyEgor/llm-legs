@@ -357,6 +357,15 @@ if not ipadTriggerOk then
     hs.alert.show("iPad trigger error")
 end
 
+local sidecarConnectOk, sidecarConnectError = pcall(function()
+    dofile(hs.configdir .. "/sidecar_connect.lua")
+end)
+
+if not sidecarConnectOk then
+    print("ERROR: Sidecar connect failed to load:", sidecarConnectError)
+    hs.alert.show("Sidecar connect error")
+end
+
 local ipadModeOk, ipadModeError = pcall(function()
     dofile(hs.configdir .. "/ipad_mode.lua")
 end)
@@ -364,6 +373,15 @@ end)
 if not ipadModeOk then
     print("ERROR: iPad mode failed to load:", ipadModeError)
     hs.alert.show("iPad mode error")
+end
+
+local sidecarPresenceOk, sidecarPresenceError = pcall(function()
+    dofile(hs.configdir .. "/sidecar_presence.lua")
+end)
+
+if not sidecarPresenceOk then
+    print("ERROR: Sidecar presence logger failed to load:", sidecarPresenceError)
+    hs.alert.show("Sidecar presence error")
 end
 
 local menuOk, menuError = pcall(function()

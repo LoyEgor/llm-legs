@@ -6,11 +6,15 @@ local sidecarActive = false
 local sidecarInFlight = false
 local sidecarRunId = 0
 local sidecarRunStartedAt = nil
+local sidecarRunHealed = false
 local lastResult = "none"
+local logSubscribers = {}
+local resultSubscribers = {}
 local maxConnectAttempts = 2
 local verificationTimeout = 18
 local launcherTimeout = 25
 local sidecarLauncherPath = "/Users/egorloy/.local/bin/SidecarLauncher"
+local sidecarBin = "/Users/egorloy/.local/bin/sidecar"
 
 local function notify(title, msg, opts)
     if _G.Notify and _G.Notify.send then
@@ -33,6 +37,36 @@ local function logSidecar(event, detail)
     local text = tostring(detail or ""):gsub("[\r\n]+", " ")
     file:write(os.date("%Y-%m-%d %H:%M:%S"), " ", event, " ", text, "\n")
     file:close()
+
+    for _, fn in ipairs(logSubscribers) do
+        pcall(fn, event, text)
+    end
+end
+
+-- Lets external callers (e.g. sidecar_connect.lua) observe this run's steps/outcome
+-- without duplicating the single-flight state machine below. Returns an unsubscribe fn.
+function IpadTrigger.onLogLine(fn)
+    logSubscribers[#logSubscribers + 1] = fn
+    return function()
+        for i, f in ipairs(logSubscribers) do
+            if f == fn then
+                table.remove(logSubscribers, i)
+                break
+            end
+        end
+    end
+end
+
+function IpadTrigger.onResult(fn)
+    resultSubscribers[#resultSubscribers + 1] = fn
+    return function()
+        for i, f in ipairs(resultSubscribers) do
+            if f == fn then
+                table.remove(resultSubscribers, i)
+                break
+            end
+        end
+    end
 end
 
 local function response(body, code)
@@ -61,8 +95,40 @@ local function openDisplaysSettings()
     end)
 end
 
+-- Locate the Displays "Add" menu button by walking the window for a menu/pop-up button
+-- named or described "Add", instead of a hardcoded nested element path that breaks whenever
+-- the Settings layout shifts.
+local addBtnHelper = [[
+using terms from application "System Events"
+    on findAddBtn(el, dleft)
+        if dleft < 0 then return missing value
+        try
+            if role of el is "AXMenuButton" or role of el is "AXPopUpButton" then
+                set nm to ""
+                try
+                    if name of el is not missing value then set nm to name of el
+                end try
+                set dsc to ""
+                try
+                    if description of el is not missing value then set dsc to description of el
+                end try
+                if nm contains "Add" or dsc contains "Add" then return el
+            end if
+        end try
+        try
+            repeat with k in (UI elements of el)
+                set f to my findAddBtn(k, dleft - 1)
+                if f is not missing value then return f
+            end repeat
+        end try
+        return missing value
+    end findAddBtn
+end using terms from
+]]
+
 local function toggleIpadInDisplays(allowStaleDisconnect)
-    local script = "property allowStaleDisconnect : " .. (allowStaleDisconnect and "true" or "false") .. [[
+    -- Lua strips the newline right after [[, so add it explicitly or the property line fuses with the tell line (-2740)
+    local script = "property allowStaleDisconnect : " .. (allowStaleDisconnect and "true" or "false") .. "\n" .. addBtnHelper .. [[
 tell application "System Settings"
     activate
 end tell
@@ -81,7 +147,15 @@ tell application "System Events"
         end if
 
         set displaysWindow to window "Displays"
-        set addButton to menu button "Add" of group 1 of group 3 of splitter group 1 of group 1 of displaysWindow
+        set addButton to missing value
+        repeat 12 times
+            set addButton to my findAddBtn(displaysWindow, 16)
+            if addButton is not missing value then exit repeat
+            delay 0.4
+        end repeat
+        if addButton is missing value then
+            return "FAIL: Displays Add button not found - Settings layout changed?"
+        end if
         set selectedIpad to missing value
 
         repeat 8 times
@@ -243,6 +317,27 @@ local function cancelSidecarTimers()
         end)
         IpadTrigger.systemSettingsQuitTask = nil
     end
+    if IpadTrigger.runWatchdogTimer then
+        IpadTrigger.runWatchdogTimer:stop()
+        IpadTrigger.runWatchdogTimer = nil
+    end
+end
+
+-- Guarded so it never launches Settings just to quit it. Held in a field so the fire-and-
+-- forget task is not GC-orphaned before it runs.
+local function quitSystemSettingsAsync()
+    local script = [[
+tell application "System Events"
+    if exists (application process "System Settings") then
+        tell application "System Settings" to quit
+    end if
+end tell
+]]
+    local t = hs.task.new("/usr/bin/osascript", function() end, { "-e", script })
+    if t then
+        IpadTrigger.finalQuitTask = t
+        t:start()
+    end
 end
 
 local function finishSidecarRun(runId, connected, message)
@@ -251,6 +346,7 @@ local function finishSidecarRun(runId, connected, message)
     end
 
     cancelSidecarTimers()
+    quitSystemSettingsAsync()
     sidecarInFlight = false
     sidecarRunStartedAt = nil
     sidecarActive = connected
@@ -264,6 +360,10 @@ local function finishSidecarRun(runId, connected, message)
         logSidecar("failed", message)
         hs.alert.show("Sidecar failed")
         notify("Sidecar FAILED", message, { priority = "high" })
+    end
+
+    for _, fn in ipairs(resultSubscribers) do
+        pcall(fn, connected, message)
     end
 end
 
@@ -533,6 +633,43 @@ local function startLauncherConnection(runId)
     end
 end
 
+local refreshTasks = {}
+
+-- `sidecar refresh` can hang (esp. right after a daemon restart), so cap it at 15s and hold
+-- the task in a set until it resolves — a bare local would be GC-orphaned and its callback
+-- would never fire.
+local function sidecarRefreshShowsIpad(cb)
+    local done = false
+    local t, watchdog
+    local function finishOnce(found)
+        if done then return end
+        done = true
+        if watchdog then
+            watchdog:stop()
+            watchdog = nil
+        end
+        if t then refreshTasks[t] = nil end
+        cb(found)
+    end
+    t = hs.task.new(sidecarBin, function(_, out)
+        finishOnce(tostring(out or ""):lower():find("ipad", 1, true) ~= nil)
+    end, { "refresh" })
+    if not t then
+        finishOnce(false)
+        return
+    end
+    refreshTasks[t] = true
+    if not t:start() then
+        refreshTasks[t] = nil
+        finishOnce(false)
+        return
+    end
+    watchdog = hs.timer.doAfter(15, function()
+        pcall(function() t:terminate() end)
+        finishOnce(false)
+    end)
+end
+
 local function startSidecarRun()
     if sidecarPresentNow() then
         if sidecarInFlight then
@@ -568,8 +705,19 @@ local function startSidecarRun()
     cancelSidecarTimers()
     sidecarInFlight = true
     sidecarRunStartedAt = os.time()
+    sidecarRunHealed = false
     sidecarActive = false
     lastResult = "in progress"
+
+    -- Hard cap: no run may sit in-flight forever. If the state machine stalls (a hung heal,
+    -- a wedged AppleScript), reset single-flight so the button works again and the status
+    -- stops reading IN PROGRESS.
+    IpadTrigger.runWatchdogTimer = hs.timer.doAfter(180, function()
+        if runId == sidecarRunId and sidecarInFlight then
+            logSidecar("watchdog", "reset: run exceeded 180s")
+            finishSidecarRun(runId, false, "watchdog reset: connection hung (>180s)")
+        end
+    end)
 
     logSidecar("request", "new-run")
     notify("Sidecar", "Request received from iPad. Starting connection…", { priority = "low" })
@@ -585,7 +733,28 @@ local function startSidecarRun()
         if handoffOk == false then
             logSidecar("handoff-warning", "force-enable was not confirmed")
         end
-        startLauncherConnection(runId)
+
+        -- Pre-step: if the relay shows no iPad, run the Handoff heal cycle once before
+        -- connecting. Bounded to once per run; other in-flight callers are gated by the
+        -- single-flight state above and healCycle's own healInFlight guard.
+        sidecarRefreshShowsIpad(function(hasIpad)
+            if runId ~= sidecarRunId then
+                return
+            end
+            if hasIpad or sidecarRunHealed
+                or not (_G.HandoffGuard and _G.HandoffGuard.healCycle) then
+                startLauncherConnection(runId)
+                return
+            end
+            sidecarRunHealed = true
+            logSidecar("heal", "no iPad in refresh; running Handoff healCycle")
+            _G.HandoffGuard.healCycle(function(healed, variant)
+                logSidecar("heal-done", "healed=" .. tostring(healed) .. " variant=" .. tostring(variant))
+                if runId == sidecarRunId then
+                    startLauncherConnection(runId)
+                end
+            end)
+        end)
     end
 
     if _G.HandoffGuard and _G.HandoffGuard.forceEnable then
@@ -689,6 +858,17 @@ server:setCallback(function(method, path, headers, body)
         return response(statusText(), 200)
     end
 
+    if path == "/sidecar-status" and method == "GET" then
+        local text = "no attempt recorded yet"
+        if _G.SidecarConnect and _G.SidecarConnect.lastAttemptSlice then
+            local ok, slice = pcall(_G.SidecarConnect.lastAttemptSlice)
+            if ok and slice then
+                text = slice
+            end
+        end
+        return response(text, 200)
+    end
+
     if path == "/test-notify" then
         notify("Test", "Тестовое уведомление: " .. os.date("%H:%M:%S"))
         return response("sent\n", 200)
@@ -729,6 +909,12 @@ end
 
 function IpadTrigger.getSidecarActive()
     return sidecarPresentNow()
+end
+
+-- Same entry point /sidecar-on uses; exposed so sidecar_connect.lua can drive it
+-- in-process instead of re-implementing the single-flight run/retry/fallback logic.
+function IpadTrigger.triggerConnect()
+    return startSidecarRun()
 end
 
 function IpadTrigger.isInFlight()

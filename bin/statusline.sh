@@ -119,6 +119,12 @@ IFS=$'\x1f' read -r model model_id effort fast_mode ctx_size dir_path current_di
     ((.prompt_id // "") | tostring | gsub("[^A-Za-z0-9_-]"; ""))
   ] | join("")')
 
+# The harness's used_percentage is denominator-blind on >200k windows (a 1m
+# session at 248k reports 100%); raw usage over window size is the truth.
+if [ -n "$ctx_size" ] && [ "$ctx_size" -gt 0 ] 2>/dev/null && [ -n "$ctx_tokens" ] && [ "$ctx_tokens" -gt 0 ] 2>/dev/null; then
+  ctx_pct=$(( (ctx_tokens * 100 + ctx_size / 2) / ctx_size ))
+fi
+
 cb_current=""
 if [ "$acct" = "-" ]; then
   cb_state="$claudeb_dir/.claudeb-state"

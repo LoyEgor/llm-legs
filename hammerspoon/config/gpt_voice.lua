@@ -184,6 +184,12 @@ function GptVoice.stop()
     runAction("stop", "processing")
 end
 
+-- Stop, paste, and press Enter (submit). The daemon adds the Enter only for
+-- this command; every other stop/apply path pastes without submitting.
+function GptVoice.submit()
+    runAction("submit", "processing")
+end
+
 function GptVoice.cancel()
     runAction("cancel", "idle")
 end
