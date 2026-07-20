@@ -27,7 +27,7 @@ parsed=$(printf '%s' "$input" | jq -r '
 
 MAGENTA=$'\033[35m'; DIM=$'\033[2m'; RESET=$'\033[0m'
 cache_root="$HOME/.cache/claude-worker-tags"
-tag_re='^[A-Za-z0-9_.?-]+( · [A-Za-z0-9_.-]+){1,2}'
+tag_re='^[A-Za-z0-9_.?-]+( · [A-Za-z0-9_.-]+){1,3}'
 now_ms=$(( $(date +%s) * 1000 ))
 
 elapsed_str() {
@@ -53,7 +53,7 @@ while IFS=$'\x1f' read -r sid id description label start_ms tokens status; do
   # The label may already carry the tag: hook-prefixed Bash descriptions use
   # "tag — ", and for idle/queued rows the harness falls back to the rewritten
   # agent description, "tag: ". Strip both so the tag never doubles.
-  body=$(printf '%s' "$label" | sed -E "s/^[A-Za-z0-9_.?-]+( · [A-Za-z0-9_.-]+){1,2}( — |: )//")
+  body=$(printf '%s' "$label" | sed -E "s/^[A-Za-z0-9_.?-]+( · [A-Za-z0-9_.-]+){1,3}( — |: )//")
 
   # Replacing the row body hides the default right-side metrics, so re-add
   # elapsed time (hang detector) and token spend ourselves.

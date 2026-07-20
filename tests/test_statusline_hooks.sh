@@ -242,9 +242,6 @@ fast_output=$(run_statusline "$(statusline_payload status-fast '{"fast_mode":tru
 assert grep -Fq '⚡' <<< "$fast_output"
 assert test "${with_effort#*⚡}" = "$with_effort"
 
-onem_output=$(run_statusline "$(statusline_payload status-1m '{"context_window":{"context_window_size":1000000}}')") || fail "statusline 1m failed"
-assert grep -Fq "${DIM}1m${RESET}" <<< "$onem_output"
-assert test "${with_effort#*"${DIM}1m${RESET}"}" = "$with_effort"
 
 worker_file="$HOME/.claude/worker-model"
 rm -f "$worker_file"
@@ -257,11 +254,11 @@ assert grep -Fq "w:son${RESET}${DIM}·hi${RESET}" <<< "$worker_out"
 
 printf 'worker=codex\ncodex_effort=medium\ncodex_profile=alt\n' > "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-codex)")
-assert grep -Fq "w:codex${RESET} ${MAGENTA}@alt${RESET}${DIM}·med${RESET}" <<< "$worker_out"
+assert grep -Fq "w:codex${RESET} ${MAGENTA}@alt${RESET}${DIM}·sol·med${RESET}" <<< "$worker_out"
 
 printf 'worker=codex\ncodex_effort=xhigh\n' > "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-codex-unres)")
-assert grep -Fq "w:codex${RESET} ${MAGENTA}~?${RESET}${DIM}·xh${RESET}" <<< "$worker_out"
+assert grep -Fq "w:codex${RESET} ${MAGENTA}~?${RESET}${DIM}·sol·xh${RESET}" <<< "$worker_out"
 
 printf 'worker=claudeb\ncodex_effort=high\nclaudeb_profile=notcom\n' > "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-cb)")
@@ -318,18 +315,18 @@ jq -cn --argjson now "$NOW" '{vendors:{codex:{accounts:[
 ]}}}' > "$WORK/limits.json"
 printf 'worker=codex\ncodex_effort=medium\n' > "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-codex-rot)" main)
-assert grep -Fq "w:codex${RESET} ${MAGENTA}~rolled${RESET}${DIM}·med${RESET}" <<< "$worker_out"
+assert grep -Fq "w:codex${RESET} ${MAGENTA}~rolled${RESET}${DIM}·sol·med${RESET}" <<< "$worker_out"
 
 jq -cn --argjson now "$NOW" '{vendors:{codex:{accounts:[
   {account:"full",five_hour:{used_pct:100,resets_at:($now+3600|todateiso8601)}},
   {account:"gone",auth_needed:true}
 ]}}}' > "$WORK/limits.json"
 worker_out=$(run_statusline "$(statusline_payload status-w-codex-fallback)" main)
-assert grep -Fq "w:codex${RESET} ${MAGENTA}~main${RESET}${DIM}·med${RESET}" <<< "$worker_out"
+assert grep -Fq "w:codex${RESET} ${MAGENTA}~main${RESET}${DIM}·sol·med${RESET}" <<< "$worker_out"
 
 printf '{"vendors":{"claude":{}}}' > "$WORK/limits.json"
 worker_out=$(run_statusline "$(statusline_payload status-w-codex-novendor)" main)
-assert grep -Fq "w:codex${RESET} ${MAGENTA}~?${RESET}${DIM}·med${RESET}" <<< "$worker_out"
+assert grep -Fq "w:codex${RESET} ${MAGENTA}~?${RESET}${DIM}·sol·med${RESET}" <<< "$worker_out"
 rm -f "$WORK/limits.json" "$worker_file"
 
 cache_rl="$HOME/.claude/statusline-cache-rl"
@@ -379,17 +376,151 @@ cost_out=$(printf '%s' "$cost_payload" | env -u LANG LC_ALL=ru_RU.UTF-8 \
 assert grep -Fq '$18.20' <<< "$cost_out"
 assert_eq "" "$(cat "$WORK/cost-stderr")"
 
-# --- ctx color (only the % is colored; token count always dim; ctx warn at 40) ---
+# --- ctx color (% colored by pct: green <40, yellow 40–79, red ≥80; token count cold cache) ---
 ctx_case() { statusline_payload "$1" '{"context_window":{"used_percentage":'"$2"',"current_usage":{"input_tokens":'"$3"'}}}'; }
 ctx_lo=$(run_statusline "$(ctx_case ctx-lo 39 50000)")
 assert grep -Fq "ctx ${GREEN}39%${RESET}" <<< "$ctx_lo"
 assert grep -Fq "${DIM}50k${RESET}" <<< "$ctx_lo"
 ctx_warn=$(run_statusline "$(ctx_case ctx-warn 40 120000)")
 assert grep -Fq "ctx ${YELLOW}40%${RESET}" <<< "$ctx_warn"
-assert grep -Fq "${DIM}120k${RESET}" <<< "$ctx_warn"
+assert grep -Fq "${YELLOW}120k${RESET}" <<< "$ctx_warn"
 ctx_red=$(run_statusline "$(ctx_case ctx-red 80 180000)")
 assert grep -Fq "ctx ${RED}80%${RESET}" <<< "$ctx_red"
-assert grep -Fq "${DIM}180k${RESET}" <<< "$ctx_red"
+assert grep -Fq "${YELLOW}180k${RESET}" <<< "$ctx_red"
+
+# --- token-count color encodes prompt-cache warmth ---
+# cr = the cache_read tokens (input_tokens forced to 0 so ctx_tokens == cr).
+warm_extra() {
+  jq -cn --arg tp "$1" --argjson pct "$2" --argjson cr "$3" '
+    {transcript_path:$tp,
+     context_window:{used_percentage:$pct,
+       current_usage:{input_tokens:0,cache_creation_input_tokens:0,cache_read_input_tokens:$cr}}}'
+}
+TRANSCRIPT="$WORK/transcript.jsonl"
+: > "$TRANSCRIPT"  # fresh mtime == warm
+
+# Warm cache: count and time both dim (time presence signals cache alive).
+warm_a=$(run_statusline "$(statusline_payload ctx-warm-lo "$(warm_extra "$TRANSCRIPT" 20 50000)")")
+a_mtime=$(stat -f %m "$TRANSCRIPT"); a_death=$(TZ=Europe/Kyiv date -r $((a_mtime + 3600)) +%H:%M)
+assert grep -Fq "${DIM}50k${RESET}${DIM}→${a_death}${RESET}" <<< "$warm_a"
+
+# Warm cache with large token count: still dim.
+warm_b=$(run_statusline "$(statusline_payload ctx-warm-hi "$(warm_extra "$TRANSCRIPT" 60 350000)")")
+assert grep -Fq "${DIM}350k${RESET}" <<< "$warm_b"
+
+# (c) cache fields >0 but transcript mtime older than TTL -> dim.
+touch -t "$(date -r $((NOW - 4000)) +%Y%m%d%H%M.%S)" "$TRANSCRIPT"
+warm_c=$(run_statusline "$(statusline_payload ctx-stale "$(warm_extra "$TRANSCRIPT" 20 50000)")")
+assert grep -Fq "${DIM}50k${RESET}" <<< "$warm_c"
+: > "$TRANSCRIPT"
+
+# Cold cache color tests: count colored by size (no cache = cache fields are 0).
+cold_extra() {
+  jq -cn --arg tp "$1" --argjson pct "$2" --argjson it "$3" '
+    {transcript_path:$tp,
+     context_window:{used_percentage:$pct,
+       current_usage:{input_tokens:$it,cache_creation_input_tokens:0,cache_read_input_tokens:0}}}'
+}
+
+# Cold <90k -> dim
+cold_lo=$(run_statusline "$(statusline_payload ctx-cold-lo "$(cold_extra "$TRANSCRIPT" 20 50000)")")
+assert grep -Fq "${DIM}50k${RESET}" <<< "$cold_lo"
+
+# Cold 90–299k -> yellow
+cold_mid=$(run_statusline "$(statusline_payload ctx-cold-mid "$(cold_extra "$TRANSCRIPT" 20 150000)")")
+assert grep -Fq "${YELLOW}150k${RESET}" <<< "$cold_mid"
+
+# Cold >=300k -> red
+cold_hi=$(run_statusline "$(statusline_payload ctx-cold-hi "$(cold_extra "$TRANSCRIPT" 20 350000)")")
+assert grep -Fq "${RED}350k${RESET}" <<< "$cold_hi"
+
+# (d) cache fields 0 (only plain input tokens) -> dim.
+d_extra=$(jq -cn --arg tp "$TRANSCRIPT" '
+  {transcript_path:$tp,context_window:{used_percentage:20,current_usage:{input_tokens:60000}}}')
+warm_d=$(run_statusline "$(statusline_payload ctx-nocache "$d_extra")")
+assert grep -Fq "${DIM}60k${RESET}" <<< "$warm_d"
+
+# (e) no transcript path -> dim (unknown is not warm).
+warm_e=$(run_statusline "$(statusline_payload ctx-nopath "$(warm_extra "" 20 50000)")")
+assert grep -Fq "${DIM}50k${RESET}" <<< "$warm_e"
+
+# (f) TTL override file respected: mtime 200s old, override TTL 100 -> dim
+# (would be green under the default 3600).
+touch -t "$(date -r $((NOW - 200)) +%Y%m%d%H%M.%S)" "$TRANSCRIPT"
+printf '100\n' > "$HOME/.claude/statusline-cache-ttl"
+warm_f=$(run_statusline "$(statusline_payload ctx-ttl "$(warm_extra "$TRANSCRIPT" 20 50000)")")
+assert grep -Fq "${DIM}50k${RESET}" <<< "$warm_f"
+rm -f "$HOME/.claude/statusline-cache-ttl"
+: > "$TRANSCRIPT"
+
+# --- effective cache TTL: seed / seed-override / learned bounds affect death time ---
+LEARNED="$STATE_DIR/cache-ttl-learned"
+set_mtime() { touch -t "$(date -r "$1" +%Y%m%d%H%M.%S)" "$TRANSCRIPT"; }
+rm -f "$LEARNED" "$STATE_DIR"/cache-ttl-track-*
+
+# seed override widens the death time: TTL 7200, fresh cache -> dim + mtime+7200.
+set_mtime $((NOW - 100))
+printf '7200\n' > "$HOME/.claude/statusline-cache-ttl"
+ov_out=$(run_statusline "$(statusline_payload ctx-seedov "$(warm_extra "$TRANSCRIPT" 20 50000)")")
+ov_death=$(TZ=Europe/Kyiv date -r $((NOW - 100 + 7200)) +%H:%M)
+assert grep -Fq "${DIM}50k${RESET}${DIM}→${ov_death}${RESET}" <<< "$ov_out"
+rm -f "$HOME/.claude/statusline-cache-ttl"
+
+# A learned ceiling narrows the effective TTL below the seed: ceiling 600 ->
+# death = mtime+600 (not mtime+3600), still warm at a 100s-old transcript.
+printf '{"observed_floor_s":0,"observed_ceiling_s":600,"updated_at":%s}\n' "$NOW" > "$LEARNED"
+set_mtime $((NOW - 100))
+clamp_out=$(run_statusline "$(statusline_payload ctx-clamp "$(warm_extra "$TRANSCRIPT" 20 50000)")")
+clamp_death=$(TZ=Europe/Kyiv date -r $((NOW - 100 + 600)) +%H:%M)
+assert grep -Fq "${DIM}50k${RESET}${DIM}→${clamp_death}${RESET}" <<< "$clamp_out"
+# And a ceiling below the transcript age flips warmth off (dim, no time).
+printf '{"observed_floor_s":0,"observed_ceiling_s":50,"updated_at":%s}\n' "$NOW" > "$LEARNED"
+set_mtime $((NOW - 100))
+clampdim_out=$(run_statusline "$(statusline_payload ctx-clampdim "$(warm_extra "$TRANSCRIPT" 20 50000)")")
+assert grep -Fq "${DIM}50k${RESET} " <<< "$clampdim_out"
+assert test "${clampdim_out#*→}" = "$clampdim_out"
+rm -f "$LEARNED"
+
+# learn_extra carries a prompt_id so the render treats it as a real request.
+learn_extra() {
+  jq -cn --arg tp "$TRANSCRIPT" --arg pid "$1" --argjson cc "$2" --argjson cr "$3" '
+    {transcript_path:$tp,prompt_id:$pid,
+     context_window:{used_percentage:20,
+       current_usage:{input_tokens:0,cache_creation_input_tokens:$cc,cache_read_input_tokens:$cr}}}'
+}
+
+# HIT after a 300s gap raises the floor to 300.
+rm -f "$LEARNED" "$STATE_DIR"/cache-ttl-track-*
+set_mtime $((NOW - 500))
+run_statusline "$(statusline_payload learn-hit "$(learn_extra p1 100 100)")" >/dev/null
+set_mtime $((NOW - 200))
+run_statusline "$(statusline_payload learn-hit "$(learn_extra p2 100 50000)")" >/dev/null
+assert grep -Fq '"observed_floor_s":300' "$LEARNED"
+
+# MISS (full rebuild) after a 600s gap lowers the ceiling to 600.
+rm -f "$LEARNED" "$STATE_DIR"/cache-ttl-track-*
+set_mtime $((NOW - 800))
+run_statusline "$(statusline_payload learn-miss "$(learn_extra q1 100 50000)")" >/dev/null
+set_mtime $((NOW - 200))
+run_statusline "$(statusline_payload learn-miss "$(learn_extra q2 50000 0)")" >/dev/null
+assert grep -Fq '"observed_ceiling_s":600' "$LEARNED"
+
+# A same prompt_id (no new request) never moves a bound.
+before_track=$(cat "$STATE_DIR/cache-ttl-track-learn-miss")
+set_mtime $((NOW - 100))
+run_statusline "$(statusline_payload learn-miss "$(learn_extra q2 50000 0)")" >/dev/null
+assert grep -Fq '"observed_ceiling_s":600' "$LEARNED"
+assert_eq "$before_track" "$(cat "$STATE_DIR/cache-ttl-track-learn-miss")"
+
+# Stale bounds (updated_at > 7 days old) decay to floor 0 / ceiling null.
+printf '{"observed_floor_s":1234,"observed_ceiling_s":5000,"updated_at":%s}\n' $((NOW - 800000)) > "$LEARNED"
+: > "$TRANSCRIPT"
+run_statusline "$(statusline_payload ctx-decay "$(warm_extra "$TRANSCRIPT" 20 50000)")" >/dev/null
+assert grep -Fq '"observed_floor_s":0' "$LEARNED"
+assert grep -Fq '"observed_ceiling_s":null' "$LEARNED"
+assert test "$(grep -oE '"updated_at":[0-9]+' "$LEARNED" | grep -oE '[0-9]+')" -ge "$NOW"
+rm -f "$LEARNED" "$STATE_DIR"/cache-ttl-track-*
+: > "$TRANSCRIPT"
 
 # --- store merge-kick (bin/statusline.sh) ---
 KICK_STAMP="$STATE_DIR/store-merge-kick"
@@ -611,6 +742,35 @@ run_probe() {
 run_probe pp-parse 1001
 assert_eq '5173 8123' "$(cat "$STATE_DIR/ports-pp-parse")"
 
+# 4-digit PID alignment test: ps right-aligns columns, causing leading spaces.
+# Verify the regex handles leading whitespace correctly.
+FAKE_PS_4DIG="$FIXTURES/ports-ps-4dig"
+cat > "$FAKE_PS_4DIG" <<'PSEOF4'
+#!/usr/bin/env bash
+cat <<'SNAP'
+  999 1 init
+ 1000 1 claude
+ 2001 1000 node /path/to/vite
+ 3002 1000 python3 -m http.server 8127
+SNAP
+PSEOF4
+chmod +x "$FAKE_PS_4DIG"
+FAKE_LSOF_4DIG="$FIXTURES/ports-lsof-4dig"
+cat > "$FAKE_LSOF_4DIG" <<'LSEOF4'
+#!/usr/bin/env bash
+cat <<'OUT'
+COMMAND   PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME
+python3  3002 u   22u  IPv4  0t0      TCP *:8127 (LISTEN)
+OUT
+LSEOF4
+chmod +x "$FAKE_LSOF_4DIG"
+run_probe_4dig() {
+  STATUSLINE_PS="$FAKE_PS_4DIG" STATUSLINE_LSOF="$FAKE_LSOF_4DIG" "$PORTS_PROBE" "$1" "$2"
+}
+run_probe_4dig pp-4dig 2001
+assert_eq '8127' "$(cat "$STATE_DIR/ports-pp-4dig")"
+
+
 run_probe pp-selfroot 9999
 assert test -f "$STATE_DIR/ports-pp-selfroot"
 assert_eq "" "$(cat "$STATE_DIR/ports-pp-selfroot")"
@@ -632,7 +792,7 @@ assert grep -Fq '⇢' <<< "$rports_out"
 printf '1 2 3 4 5\n' > "$STATE_DIR/ports-r-cap"
 rcap_out=$(run_statusline "$(statusline_payload r-cap)")
 assert grep -Fq "${GREEN}:3${RESET}" <<< "$rcap_out"
-assert test "${rcap_out#*:4}" = "$rcap_out"
+assert test "${rcap_out#*"${GREEN}:4"}" = "$rcap_out"
 
 printf '' > "$STATE_DIR/ports-r-empty"
 rempty_out=$(run_statusline "$(statusline_payload r-empty)")
@@ -681,22 +841,31 @@ TAGDIR="$HOME/.cache/claude-worker-tags/wt"
 # A codex launch command derives the tag (main, high), stores it, and prefixes.
 seed=$(worker_payload codex-worker worker/one 'Investigate the suite' "codex exec -c model_reasoning_effort=high 'go'")
 seed_output=$(printf '%s' "$seed" | "$WORKER_HOOK") || fail "worker seed exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "main · high — Investigate the suite"' <<< "$seed_output" >/dev/null
-assert_eq 'main · high' "$(cat "$TAGDIR/workerone")"
+assert jq -e '.hookSpecificOutput.updatedInput.description == "main · sol · high — Investigate the suite"' <<< "$seed_output" >/dev/null
+assert_eq 'main · sol · high' "$(cat "$TAGDIR/workerone")"
 
 # A later non-launch command reuses the stored tag to prefix its description.
 later=$(worker_payload codex-worker worker/one 'Run focused tests' 'bash tests/focused.sh')
 later_output=$(printf '%s' "$later" | "$WORKER_HOOK") || fail "worker rewrite exited nonzero"
 assert jq -e '.hookSpecificOutput.hookEventName == "PreToolUse" and
   .hookSpecificOutput.permissionDecision == "allow" and
-  .hookSpecificOutput.updatedInput.description == "main · high — Run focused tests" and
+  .hookSpecificOutput.updatedInput.description == "main · sol · high — Run focused tests" and
   .hookSpecificOutput.updatedInput.command == "bash tests/focused.sh" and
   .hookSpecificOutput.updatedInput.timeout == 42' <<< "$later_output" >/dev/null
 
 # An already-prefixed description is left untouched (no stacking).
-prefixed=$(worker_payload codex-worker worker/one 'main · high — Run focused tests' true)
+prefixed=$(worker_payload codex-worker worker/one 'main · sol · high — Run focused tests' true)
 prefixed_output=$(printf '%s' "$prefixed" | "$WORKER_HOOK") || fail "prefixed worker call exited nonzero"
 assert_eq "" "$prefixed_output"
+
+# Codex model label follows ~/.codex/config.toml, not a hardcode.
+mkdir -p "$HOME/.codex"
+printf 'model = "gpt-9-zenith"\n' > "$HOME/.codex/config.toml"
+seed_zenith=$(worker_payload codex-worker worker/zenith 'Optimize compute' "codex exec -c model_reasoning_effort=high 'go'")
+seed_zenith_out=$(printf '%s' "$seed_zenith" | "$WORKER_HOOK") || fail "zenith seed exited nonzero"
+assert_eq 'main · zenith · high' "$(cat "$TAGDIR/workerzenith")"
+rm -f "$HOME/.codex/config.toml"
+
 
 # A claudeb launch command derives the 3-part tag.
 glob_seed=$(worker_payload claudeb-worker worker/two 'Ship it' 'claudeb profile com -p --model sonnet --effort high')

@@ -95,7 +95,7 @@ pct_colored() {
 # \x1f (unit separator) instead of tab: bash `read` collapses consecutive tab
 # delimiters (tab is IFS-whitespace), which misaligns fields whenever a middle
 # one (e.g. fast_mode, commonly empty) is blank.
-IFS=$'\x1f' read -r model model_id effort fast_mode ctx_size dir_path current_dir session_id ctx_pct ctx_tokens cost_raw lines_added lines_removed rl_json < <(printf '%s' "$input" | jq -r '
+IFS=$'\x1f' read -r model model_id effort fast_mode ctx_size dir_path current_dir session_id ctx_pct ctx_tokens cost_raw lines_added lines_removed rl_json cache_create cache_read transcript_path prompt_id < <(printf '%s' "$input" | jq -r '
   def num0: if . == null then "" else (.+0|round|tostring) end;
   def str0: if . == null then "" else tostring end;
   [ (.model.display_name // "?"),
@@ -112,7 +112,11 @@ IFS=$'\x1f' read -r model model_id effort fast_mode ctx_size dir_path current_di
     (.cost.total_cost_usd | str0),
     (.cost.total_lines_added | num0),
     (.cost.total_lines_removed | num0),
-    ((.rate_limits // null) | if . == null then "" else tojson end)
+    ((.rate_limits // null) | if . == null then "" else tojson end),
+    ((.context_window.current_usage // null) | if . == null then "0" else (.cache_creation_input_tokens//0|tostring) end),
+    ((.context_window.current_usage // null) | if . == null then "0" else (.cache_read_input_tokens//0|tostring) end),
+    (.transcript_path // ""),
+    ((.prompt_id // "") | tostring | gsub("[^A-Za-z0-9_-]"; ""))
   ] | join("")')
 
 cb_current=""
@@ -250,8 +254,6 @@ model_suffix=""
 [ -n "$effort" ] && model_suffix=" ${effort}"
 fast_part=""
 [ -n "$fast_mode" ] && fast_part=" ${YELLOW}⚡${RESET}"
-onem_part=""
-[ -n "$ctx_size" ] && [ "$ctx_size" -gt 200000 ] 2>/dev/null && onem_part=" ${DIM}1m${RESET}"
 
 git_dir="$current_dir"
 active_top=""
@@ -379,18 +381,93 @@ if [ -n "$fable_account" ] && [ "$fable_account" != main ]; then
   fi
 fi
 
-ctx_tokens_part=""
-if [ -n "$ctx_tokens" ] && [ "$ctx_tokens" -gt 0 ] 2>/dev/null; then
-  ctx_tokens_part=" ${DIM}$(( (ctx_tokens + 500) / 1000 ))k${RESET}"
+# Effective cache TTL. The statusline stdin exposes NO TTL or expiry field
+# (verified against a captured live payload — only current_usage token counts),
+# so the TTL is a seed corrected by observed bounds, never a hardcoded truth:
+#   seed   = ~/.claude/statusline-cache-ttl if positive, else 3600 (Anthropic 1h)
+#   floor  = longest inactivity gap a cache was seen to SURVIVE (TTL >= that)
+#   ceiling= shortest gap after which a cache was seen DEAD (TTL < that)
+#   effective = clamp(seed, floor, ceiling)
+# Bounds are learned below from each new request's usage and persisted globally.
+tr_mtime=""
+[ -n "$transcript_path" ] && tr_mtime=$(file_mtime "$transcript_path")
+cache_ttl_seed=3600
+seed_override=""
+# `[ -r ]` guards the read: a `< missing-file` redirect prints its own error
+# that `2>/dev/null` on the read cannot suppress.
+seed_file="$HOME/.claude/statusline-cache-ttl"
+[ -r "$seed_file" ] && { read -r seed_override < "$seed_file" 2>/dev/null || seed_override=""; }
+[[ "$seed_override" =~ ^[0-9]+$ ]] && [ "$seed_override" -gt 0 ] && cache_ttl_seed="$seed_override"
+
+learned_file="$HOME/.cache/claude-statusline/cache-ttl-learned"
+ttl_floor=0; ttl_ceiling=""; learned_at=""
+if [ -r "$learned_file" ] && read -r learned_raw < "$learned_file" 2>/dev/null; then
+  [[ "$learned_raw" =~ \"observed_floor_s\":([0-9]+) ]] && ttl_floor="${BASH_REMATCH[1]}"
+  [[ "$learned_raw" =~ \"observed_ceiling_s\":([0-9]+) ]] && ttl_ceiling="${BASH_REMATCH[1]}"
+  [[ "$learned_raw" =~ \"updated_at\":([0-9]+) ]] && learned_at="${BASH_REMATCH[1]}"
+fi
+bounds_changed=""
+# Anthropic can change the real TTL; bounds older than 7d are no longer trusted.
+if [[ "$learned_at" =~ ^[0-9]+$ ]] && [ $((now - learned_at)) -gt 604800 ]; then
+  ttl_floor=0; ttl_ceiling=""; bounds_changed=1
 fi
 
-# claudeb account this session runs on: a real account name (pinned/profile
-# entry, CLAUDE_LIMITS_ACCOUNT=<name>) shows as cb:<name>; a rotating proxy
-# session (CLAUDE_LIMITS_ACCOUNT="-") shows the daemon's current pick with a ~
-# to mark that it can rotate. The current pick comes from the local state file
-# the daemon persists on every switch (.claudeb-state-fable for fable-model
-# sessions when present) — no network, fail silent. Plain non-claudeb sessions
-# (acct=main) get no segment.
+# Learn from a NEW request (prompt_id changed): a large cache_read after gap G
+# proves the cache survived G (raise floor); a full rebuild (near-zero read,
+# large creation) after gap G proves it died within G (lower ceiling). The gap
+# is measured between successive requests' transcript-write times. Best-effort:
+# a lost update or a prefix-invalidation false-miss only shifts a bound slightly.
+if [ -n "$session_id" ] && [ -n "$prompt_id" ] && [[ "$tr_mtime" =~ ^[0-9]+$ ]]; then
+  track="$HOME/.cache/claude-statusline/cache-ttl-track-$session_id"
+  prev_pid=""; prev_ts=""
+  [ -r "$track" ] && { read -r prev_pid prev_ts < "$track" 2>/dev/null || :; }
+  if [ "$prompt_id" != "$prev_pid" ]; then
+    if [[ "$prev_ts" =~ ^[0-9]+$ ]]; then
+      gap=$((tr_mtime - prev_ts))
+      cr=${cache_read:-0}; cc=${cache_create:-0}
+      if [ "$gap" -gt 0 ] 2>/dev/null; then
+        if [ "$cr" -ge 1000 ] 2>/dev/null && [ "$cr" -ge "$cc" ] 2>/dev/null; then
+          [ "$gap" -gt "$ttl_floor" ] 2>/dev/null && { ttl_floor=$gap; bounds_changed=1; }
+        elif [ "$cr" -lt 1000 ] 2>/dev/null && [ "$cc" -ge 20000 ] 2>/dev/null; then
+          if [ -z "$ttl_ceiling" ] || [ "$gap" -lt "$ttl_ceiling" ] 2>/dev/null; then ttl_ceiling=$gap; bounds_changed=1; fi
+        fi
+      fi
+    fi
+    printf '%s %s\n' "$prompt_id" "$tr_mtime" > "$track.tmp.$$" 2>/dev/null && mv "$track.tmp.$$" "$track" 2>/dev/null || rm -f "$track.tmp.$$" 2>/dev/null
+  fi
+fi
+
+if [ -n "$bounds_changed" ]; then
+  ceil_json=null; [ -n "$ttl_ceiling" ] && ceil_json="$ttl_ceiling"
+  mkdir -p "$HOME/.cache/claude-statusline" 2>/dev/null
+  printf '{"observed_floor_s":%s,"observed_ceiling_s":%s,"updated_at":%s}\n' "$ttl_floor" "$ceil_json" "$now" \
+    > "$learned_file.tmp.$$" 2>/dev/null && mv "$learned_file.tmp.$$" "$learned_file" 2>/dev/null || rm -f "$learned_file.tmp.$$" 2>/dev/null
+fi
+
+cache_ttl="$cache_ttl_seed"
+[ "$cache_ttl" -lt "$ttl_floor" ] 2>/dev/null && cache_ttl="$ttl_floor"
+[ -n "$ttl_ceiling" ] && [ "$cache_ttl" -gt "$ttl_ceiling" ] 2>/dev/null && cache_ttl="$ttl_ceiling"
+
+# Cache warm: token count and time both dim (time presence signals alive cache).
+# Cache not warm: count colored by size — <90k dim, 90–299k yellow, >=300k red.
+# Warm = last request actually cached (creation+read > 0) AND within effective TTL.
+ctx_tokens_part=""
+if [ -n "$ctx_tokens" ] && [ "$ctx_tokens" -gt 0 ] 2>/dev/null; then
+  death_part=""
+  cache_live=$(( ${cache_create:-0} + ${cache_read:-0} ))
+  if [ "$cache_live" -gt 0 ] 2>/dev/null && [[ "$tr_mtime" =~ ^[0-9]+$ ]] \
+     && [ "$((now - tr_mtime))" -le "$cache_ttl" ] 2>/dev/null; then
+    tok_color="$DIM"
+    death_time=$(TZ=Europe/Kyiv date -r "$((tr_mtime + cache_ttl))" +%H:%M 2>/dev/null)
+    [ -n "$death_time" ] && death_part="${DIM}→${death_time}${RESET}"
+  else
+    if [ "$ctx_tokens" -lt 90000 ]; then tok_color="$DIM"
+    elif [ "$ctx_tokens" -lt 300000 ]; then tok_color="$YELLOW"
+    else tok_color="$RED"
+    fi
+  fi
+  ctx_tokens_part=" ${tok_color}$(( (ctx_tokens + 500) / 1000 ))k${RESET}${death_part}"
+fi
 cb_part=""
 if [ "$acct" = "-" ]; then
   [ -n "$cb_current" ] && cb_part=" ${DIM}cb:${RESET}${MAGENTA}~${cb_current}${RESET}"
@@ -459,10 +536,19 @@ codex_local_pick() {
 }
 
 wname=""; wtier=""; wpin=""; wsel=""
+# Derive codex model short label from ~/.codex/config.toml; fallback "sol" defined here.
+codex_model_short_label() {
+  local toml="${1:-$HOME/.codex/config.toml}" label=""
+  [ -r "$toml" ] && label=$(grep -m1 '^model[[:space:]]*=' "$toml" 2>/dev/null \
+    | sed 's/.*"\([^"]*\)".*/\1/; s/.*-//')
+  [[ "$label" =~ ^[A-Za-z0-9]+$ ]] || label=sol
+  printf '%s' "$label"
+}
+
 case "$worker" in
   codex)
     wname=codex
-    wtier=$(abbrev_tier "${codex_effort:-medium}")
+    wtier="$(codex_model_short_label)·$(abbrev_tier "${codex_effort:-medium}")"
     if [ -n "$codex_profile" ]; then
       wpin=$codex_profile
     else
@@ -514,7 +600,7 @@ if [ -n "$session_id" ]; then
     tag_mtime=$(file_mtime "$tags_dir/$newest")
     if [[ "$tag_mtime" =~ ^[0-9]+$ ]] && [ "$((now - tag_mtime))" -le 600 ]; then
       IFS= read -r live_tag < "$tags_dir/$newest" 2>/dev/null || live_tag=""
-      live_tag=$(printf '%s' "$live_tag" | sed 's/ · /·/g; s/·sonnet/·son/; s/·haiku/·hai/; s/·fable/·fab/; s/·medium/·med/; s/·high/·hi/; s/·xhigh/·xh/')
+      live_tag=$(printf '%s' "$live_tag" | sed 's/ · /·/g; s/·gpt-[0-9.-]*-/·/; s/·sonnet/·son/; s/·haiku/·hai/; s/·fable/·fab/; s/·medium/·med/; s/·high/·hi/; s/·xhigh/·xh/')
     fi
   fi
 fi
@@ -581,7 +667,7 @@ fi
 
 # Two lines: identity/work (model, account, dir/branch, workers, topic) on top,
 # usage (ctx, 5h, weekly, fable, cost) below.
-line1="${CYAN}${model}${model_suffix}${RESET}${fast_part}${onem_part}${cb_part} ${sep} ${dir_part}${branch_part}${lines_part}${ports_part}${worker_part}${topic_seg}"
+line1="${CYAN}${model}${model_suffix}${RESET}${fast_part}${cb_part} ${sep} ${dir_part}${branch_part}${lines_part}${ports_part}${worker_part}${topic_seg}"
 
 line2="ctx $(pct_colored "$ctx_pct" "" 40)${ctx_tokens_part} ${sep} 5h $(pct_colored "$h5_pct" "$h5_dim")${h5_arrow} ${sep} wk $(pct_colored "$wk_pct" "$wk_dim")${wk_arrow}${fable_part}"
 

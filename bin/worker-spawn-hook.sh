@@ -24,9 +24,16 @@ prompt=$(field '.tool_input.prompt')
 worker_conf() { sed -n "s/^$1=//p" "$HOME/.claude/worker-model" 2>/dev/null | head -n1; }
 brief_line() { printf '%s' "$prompt" | grep -m1 -oE "^$1:[[:space:]]*[A-Za-z0-9_.-]+" | sed -E "s/^$1:[[:space:]]*//"; }
 
+# Derive codex model short label: from ~/.codex/config.toml model id last dash-segment, fallback 'sol'.
+codex_model_short_label() {
+  local toml="${1:-$HOME/.codex/config.toml}" label=""
+  [ -r "$toml" ] && label=$(grep -m1 '^model[[:space:]]*=' "$toml" 2>/dev/null \
+    | sed 's/.*"\([^"]*\)".*/\1/; s/.*-//')
+  [[ "$label" =~ ^[A-Za-z0-9]+$ ]] || label=sol
+  printf '%s' "$label"
+}
+
 if [ "$subagent" = claudeb-worker ]; then
-  # Same precedence as the claudeb-worker relay: Egor's pin > the brief's
-  # ACCOUNT: routing line > the rotating daemon's current pick.
   acct=$(worker_conf claudeb_profile)
   [ -n "$acct" ] || acct=$(brief_line ACCOUNT)
   [ -n "$acct" ] || acct=$(curl -s --max-time 1 127.0.0.1:45789/claudebd/status 2>/dev/null | jq -r '.current // empty' 2>/dev/null)
@@ -40,25 +47,18 @@ if [ "$subagent" = claudeb-worker ]; then
   prefix="$acct · $model · $effort"
 else
   acct=$(worker_conf codex_profile)
-  # No `timeout` wrapper (GNU coreutils dependency): the hook's own settings.json
-  # timeout bounds a hung codexb.
   [ -n "$acct" ] || acct=$("$HOME/.local/bin/codexb" pick 2>/dev/null | tail -n1 | tr -cd 'A-Za-z0-9_.-')
   [ -n "$acct" ] || acct=main
   effort=$(brief_line EFFORT)
   [ -n "$effort" ] || effort=$(worker_conf codex_effort)
   [ -n "$effort" ] || effort=medium
-  prefix="$acct · $effort"
+  codex_model=$(codex_model_short_label)
+  prefix="$acct · $codex_model · $effort"
 fi
 
-# Title = the model's description minus any tag-shaped prefix it composed
-# itself (correct or stale — this hook is now the single source of the tag).
-title=$(printf '%s' "$description" | sed -E 's/^[A-Za-z0-9_.?-]+( · [A-Za-z0-9_.-]+){1,2}(: | — )//')
+title=$(printf '%s' "$description" | sed -E 's/^[A-Za-z0-9_.?-]+( · [A-Za-z0-9_.-]+){1,3}(: | — )//')
 [ -n "$title" ] || title=task
 
-# Pre-seed the tag for this spawn so the worker's very first Bash calls (brief
-# saving, before any claudeb/codex launch command exists to parse) already
-# carry it; worker-tag-hook claims it per agent_id and the real launch
-# re-derives over it.
 session_id=$(field '.session_id' | tr -cd 'A-Za-z0-9_-')
 [ -n "$session_id" ] || session_id=_
 pending_dir="$HOME/.cache/claude-worker-tags/$session_id"
@@ -72,9 +72,6 @@ fi
 updated="$prefix: $title"
 [ "$updated" = "$description" ] && exit 0
 
-# "allow" is required for updatedInput to apply; a deny from the limit gates
-# on the same matcher still wins (deny > allow), and the session runs
-# bypassPermissions anyway.
 printf '%s' "$input" | jq -c --arg description "$updated" '
   {hookSpecificOutput: {
     hookEventName: "PreToolUse",

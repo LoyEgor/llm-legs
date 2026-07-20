@@ -37,7 +37,7 @@ snapshot=$("$PS_CMD" -axo pid=,ppid=,command= 2>/dev/null)
 if [ -z "$snapshot" ]; then write_cache ""; exit 0; fi
 
 root=$(printf '%s\n' "$snapshot" | awk -v start="$start_pid" '
-  { ppid[$1]=$2; line=$0; sub(/^[0-9]+[ \t]+[0-9]+[ \t]+/,"",line); cmd[$1]=line }
+  { ppid[$1]=$2; line=$0; sub(/^[ \t]*[0-9]+[ \t]+[0-9]+[ \t]+/,"",line); cmd[$1]=line }
   END {
     pid=start; depth=0
     while (pid != "" && pid+0 > 1 && depth < 30) {
@@ -79,7 +79,7 @@ fi
 
 # Passed as files, not awk -v: -v rejects the newlines a multi-line lsof dump would carry.
 ports=$(awk '
-  FNR==NR { line=$0; sub(/^[0-9]+[ \t]+[0-9]+[ \t]+/,"",line); cmd[$1]=tolower(line); next }
+  FNR==NR { line=$0; sub(/^[ \t]*[0-9]+[ \t]+[0-9]+[ \t]+/,"",line); cmd[$1]=tolower(line); next }
   {
     if ($0 == "" || $0 ~ /^COMMAND/) next
     if (!match($0, /:[0-9]+ \(LISTEN\)/)) next

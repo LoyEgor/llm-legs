@@ -32,6 +32,15 @@ tag_file="$cache_dir/$agent_id"
 worker_conf() { sed -n "s/^$1=//p" "$HOME/.claude/worker-model" 2>/dev/null | head -n1; }
 grab() { printf '%s' "$command" | grep -oE -e "$1" 2>/dev/null | head -n1; }
 
+# Derive codex model short label from ~/.codex/config.toml; fallback "sol" defined here.
+codex_model_short_label() {
+  local toml="${1:-$HOME/.codex/config.toml}" label=""
+  [ -r "$toml" ] && label=$(grep -m1 '^model[[:space:]]*=' "$toml" 2>/dev/null \
+    | sed 's/.*"\([^"]*\)".*/\1/; s/.*-//')
+  [[ "$label" =~ ^[A-Za-z0-9]+$ ]] || label=sol
+  printf '%s' "$label"
+}
+
 # A launch/resume command re-derives the tag every time (idempotent; a rotating
 # claudeb may land on a different account between resumes).
 tag=""
@@ -41,7 +50,8 @@ if printf '%s' "$command" | grep -q 'codex exec'; then
   effort=$(grab 'model_reasoning_effort=[a-z]+' | cut -d= -f2)
   [ -n "$effort" ] || effort=$(worker_conf codex_effort)
   [ -n "$effort" ] || effort=medium
-  tag="$acct · $effort"
+  codex_model=$(codex_model_short_label)
+  tag="$acct · $codex_model · $effort"
 elif printf '%s' "$command" | grep -q 'claudeb' && printf '%s' "$command" | grep -qE -- '--model|--print|-p '; then
   acct=$(grab 'claudeb["'\'' ]+profile["'\'' ]+[A-Za-z0-9_.-]+' | grep -oE '[A-Za-z0-9_.-]+$')
   [ -n "$acct" ] || acct=$(worker_conf claudeb_profile)
@@ -96,7 +106,7 @@ if [ "${description:0:${#tag_prefix}}" = "$tag_prefix" ]; then
 fi
 # Strip a stale tag-shaped prefix (account rotation mid-task, model echoing an
 # old tag) so prefixes never stack.
-description=$(printf '%s' "$description" | sed -E 's/^[A-Za-z0-9_.?-]+( · [A-Za-z0-9_.-]+){1,2} — //')
+description=$(printf '%s' "$description" | sed -E 's/^[A-Za-z0-9_.?-]+( · [A-Za-z0-9_.-]+){1,3} — //')
 if [ -n "$description" ]; then
   updated_description="$tag — $description"
 else

@@ -34,6 +34,16 @@ while [ -L "$script_path" ]; do
   esac
 done
 script_dir=$(cd "$(dirname "$script_path")" && pwd)
+
+# Derive codex model short label from ~/.codex/config.toml; fallback "sol" defined here.
+codex_model_short_label() {
+  local toml="${1:-$HOME/.codex/config.toml}" label=""
+  [ -r "$toml" ] && label=$(grep -m1 '^model[[:space:]]*=' "$toml" 2>/dev/null \
+    | sed 's/.*"\([^"]*\)".*/\1/; s/.*-//')
+  [[ "$label" =~ ^[A-Za-z0-9]+$ ]] || label=sol
+  printf '%s' "$label"
+}
+
 POLICY_FILE="${WORKER_PICK_POLICY_FILE:-$script_dir/../share/worker-policy.md}"
 
 conf() { sed -n "s/^$1=//p" "$WORKER_FILE" 2>/dev/null | head -n1; }
@@ -322,7 +332,7 @@ fi
 case "$cx_effort" in medium) cx_eff_abbr=med ;; high) cx_eff_abbr=hi ;; xhigh) cx_eff_abbr=xh ;; *) cx_eff_abbr=$cx_effort ;; esac
 case "$cb_effort" in medium) cb_eff_abbr=med ;; high) cb_eff_abbr=hi ;; xhigh) cb_eff_abbr=xh ;; *) cb_eff_abbr=$cb_effort ;; esac
 case "$cb_model" in sonnet) cb_model_abbr=son ;; haiku) cb_model_abbr=hai ;; fable) cb_model_abbr=fab ;; *) cb_model_abbr=$cb_model ;; esac
-write_cache "$(printf 'cx%s%s·%s %s·%s·%s' "$cx_mark" "$cx_acct" "$cx_eff_abbr" "$cb_cache" "$cb_model_abbr" "$cb_eff_abbr")"
+codex_model=$(codex_model_short_label); write_cache "$(printf 'cx%s%s·'"$codex_model"'·%s %s·%s·%s' "$cx_mark" "$cx_acct" "$cx_eff_abbr" "$cb_cache" "$cb_model_abbr" "$cb_eff_abbr")"
 
 if [ "$all_floored" = yes ]; then
   printf 'NEXT: ALL FLOORED, ask Egor  |  codex — WALLED\n'
