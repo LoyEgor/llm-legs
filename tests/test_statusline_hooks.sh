@@ -521,6 +521,42 @@ t_assist $((NOW - 5))
 compact_warm=$(run_statusline "$(statusline_payload ctx-compact "$(warm_extra "$TRANSCRIPT" 55 111000)")")
 assert grep -Fq "${DIM}111k${RESET}${DIM}→" <<< "$compact_warm"
 
+# --- branched (forked) chats inherit warmth from the parent's stamp ---
+# Copied entries carry forkedFrom.sessionId; the anchor response was produced
+# by the parent, so it must never self-stamp the current account.
+t_assist_fork() { # epoch parent_sid
+  printf '{"type":"assistant","timestamp":"%s","forkedFrom":{"sessionId":"%s"},"message":{"role":"assistant","model":"fixmodel","usage":{"cache_read_input_tokens":50000,"cache_creation_input_tokens":500}}}\n' \
+    "$(iso_utc "$1")" "$2" >> "$TRANSCRIPT"
+}
+# Tail fork: parent's stamp points at the exact copied response -> inherit
+# account + learning cursor, warm; own track written with the inherited stamp.
+t_reset; t_assist_fork $((NOW - 600)) parent-sid
+printf 'v2 %s acctgen 7\n' "$((NOW - 600))" > "$STATE_DIR/cache-ttl-track-parent-sid"
+fork_warm=$(run_statusline "$(statusline_payload ctx-fork "$(warm_extra "$TRANSCRIPT" 55 111000)")")
+assert grep -Fq "${DIM}111k${RESET}${DIM}→" <<< "$fork_warm"
+assert grep -q '^v2 [0-9]* acctgen 7' "$STATE_DIR/cache-ttl-track-ctx-fork"
+# Parent moved past the fork point (stamp ts != copied response ts) -> "?" cold.
+t_reset; t_assist_fork $((NOW - 600)) parent-sid
+printf 'v2 %s acctgen 0\n' "$((NOW - 300))" > "$STATE_DIR/cache-ttl-track-parent-sid"
+fork_moved=$(run_statusline "$(statusline_payload ctx-fork-moved "$(warm_extra "$TRANSCRIPT" 55 111000)")")
+assert grep -Fq "${YELLOW}111k${RESET}" <<< "$fork_moved"
+assert grep -q '^v2 [0-9]* ? ' "$STATE_DIR/cache-ttl-track-ctx-fork-moved"
+# No parent track at all -> "?" cold.
+t_reset; t_assist_fork $((NOW - 600)) parent-sid
+fork_orphan=$(run_statusline "$(statusline_payload ctx-fork-orphan "$(warm_extra "$TRANSCRIPT" 55 111000)")")
+assert grep -Fq "${YELLOW}111k${RESET}" <<< "$fork_orphan"
+# A FRESH copied anchor (inside the 120s window) still must not self-stamp:
+# without a matching parent stamp it stays "?" cold.
+t_reset; t_assist_fork $((NOW - 10)) parent-sid
+fork_fresh=$(run_statusline "$(statusline_payload ctx-fork-fresh "$(warm_extra "$TRANSCRIPT" 55 111000)")")
+assert grep -Fq "${YELLOW}111k${RESET}" <<< "$fork_fresh"
+assert grep -q '^v2 [0-9]* ? ' "$STATE_DIR/cache-ttl-track-ctx-fork-fresh"
+# The fork's own NEW response (no forkedFrom) resumes normal self-stamping.
+t_assist $((NOW - 5))
+fork_own=$(run_statusline "$(statusline_payload ctx-fork-fresh "$(warm_extra "$TRANSCRIPT" 55 111000)")")
+assert grep -Fq "${DIM}111k${RESET}${DIM}→" <<< "$fork_own"
+assert grep -q '^v2 [0-9]* acctgen ' "$STATE_DIR/cache-ttl-track-ctx-fork-fresh"
+
 # Cold cache color tests: count colored by size (no cache = cache fields are 0).
 cold_extra() {
   jq -cn --arg tp "$1" --argjson pct "$2" --argjson it "$3" '

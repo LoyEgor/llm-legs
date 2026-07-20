@@ -399,11 +399,12 @@ fi
 #     user entry (isCompactSummary) and its continuation user entry is
 #     unmarked, which is why warmth anchors on ASSISTANT entries only.
 # One jq pass over the tail extracts everything; any parse failure degrades to
-# cold — never to a false warm. Emits: newest-response epoch + model, TTL
-# bucket seconds, post-compact flag, and one TTL-learning evidence tuple (the
-# newest turn's first response after idle gap G, pre-guarded in jq for "no
-# boundary inside the gap" and "same model across the gap").
-assist_ts=0; assist_model="-"; ttl_bucket=0; post_compact=0
+# cold — never to a false warm. Emits: newest-response epoch + model + its
+# forkedFrom session (branched chats copy the parent's entries), TTL bucket
+# seconds, post-compact flag, and one TTL-learning evidence tuple (the newest
+# turn's first response after idle gap G, pre-guarded in jq for "no boundary
+# inside the gap" and "same model across the gap").
+assist_ts=0; assist_model="-"; fork_sid="-"; ttl_bucket=0; post_compact=0
 ev_valid=0; ev_ts=0; ev_gap=0; ev_cr=0; ev_cc=0
 if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
   cache_scan=$(tail -c 262144 "$transcript_path" 2>/dev/null | jq -Rrn '
@@ -414,7 +415,7 @@ if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
         | capture("ephemeral_(?<n>[0-9]+)(?<u>[mh])_")?
         | ((.n | tonumber) * (if .u == "m" then 60 else 3600 end))) // 0);
     reduce (inputs | fromjson? | select(type == "object" and .isSidechain != true)) as $x (
-      {la: 0, pm: "", pg: -1, pa: 0, lb: 0, ats: 0, am: "-", bk: 0,
+      {la: 0, pm: "", pg: -1, pa: 0, lb: 0, ats: 0, am: "-", afk: "", bk: 0,
        cgap: 0, ccr: 0, ccc: 0, cets: 0, cpm: "", cem: "", cpa: 0, chas: 0};
       ((($x.timestamp? // "") | if type == "string" then ep else null end)) as $ts
       | if $ts == null then .
@@ -432,20 +433,24 @@ if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
                | .cets = $ts | .cpm = .pm | .cem = ($x.message?.model? // "")
                | .cpa = .pa | .chas = 1 | .pg = -1
              else . end)
-          | (if $ts >= .ats then .ats = $ts | .am = (($x.message?.model? // "") | if . == "" then "-" else . end) else . end)
+          | (if $ts >= .ats then .ats = $ts
+               | .am = (($x.message?.model? // "") | if . == "" then "-" else . end)
+               | .afk = (($x.forkedFrom?.sessionId? // "") | tostring)
+             else . end)
           | .pm = ($x.message?.model? // "")
           | (if $bs > 0 then .bk = $bs else . end)
           | (if $ts > .la then .la = $ts else . end)
         else . end)
-    | [ .ats, .am, .bk,
+    | [ .ats, .am, (.afk | if . == "" then "-" else . end), .bk,
         (if .lb > 0 and .lb >= .ats then 1 else 0 end),
         (if .chas == 1 and .cgap > 0 and .cpm != "" and .cpm == .cem
             and (.lb == 0 or .lb <= .cpa or .lb >= .cets) then 1 else 0 end),
         .cets, .cgap, .ccr, .ccc ]
     | map(tostring) | join(" ")' 2>/dev/null)
   if [ -n "$cache_scan" ]; then
-    read -r assist_ts assist_model ttl_bucket post_compact ev_valid ev_ts ev_gap ev_cr ev_cc <<< "$cache_scan" || :
+    read -r assist_ts assist_model fork_sid ttl_bucket post_compact ev_valid ev_ts ev_gap ev_cr ev_cc <<< "$cache_scan" || :
     [[ "$assist_ts" =~ ^[0-9]+$ ]] || assist_ts=0
+    [[ "$fork_sid" =~ ^[A-Za-z0-9_-]+$ ]] || fork_sid="-"
     [[ "$ttl_bucket" =~ ^[0-9]+$ ]] || ttl_bucket=0
     [[ "$ev_ts" =~ ^[0-9]+$ ]] || ev_ts=0
     [[ "$ev_gap" =~ ^[0-9]+$ ]] || ev_gap=0
@@ -496,9 +501,28 @@ if [ -n "$session_id" ] && [ "$assist_ts" -gt 0 ] 2>/dev/null; then
     rec_acct="$t3"
     [[ "$t4" =~ ^[0-9]+$ ]] && learned_upto="$t4"
   fi
+  # A branched chat copies the parent's history (entries keep the parent id in
+  # forkedFrom.sessionId), so its own track starts empty. When the anchor
+  # response is a copied one and the PARENT's stamp still points at that exact
+  # response (the parent has not moved past the fork point), the fork shares
+  # the parent's cached prefix — inherit the parent's account stamp and
+  # learning cursor. Anything less exact stays "?" (cold): a fork from an
+  # earlier message provably rebuilds all but the static prefix.
+  if [ "$t1" != v2 ] && [ "$fork_sid" != "-" ] && [ "$fork_sid" != "$session_id" ]; then
+    p1=""; p2=""; p3=""; p4=""
+    ptrack="$HOME/.cache/claude-statusline/cache-ttl-track-$fork_sid"
+    [ -r "$ptrack" ] && { read -r p1 p2 p3 p4 < "$ptrack" 2>/dev/null || :; }
+    if [ "$p1" = v2 ] && [ "$p2" = "$assist_ts" ] && [ -n "$p3" ] && [ "$p3" != "?" ]; then
+      rec_ts="$p2"; rec_acct="$p3"
+      [[ "$p4" =~ ^[0-9]+$ ]] && learned_upto="$p4"
+    fi
+  fi
   track_acct="$rec_acct"
   if [ "$assist_ts" -gt "$rec_ts" ]; then
-    if [ $((now - assist_ts)) -le 120 ] && [ -n "$warm_acct" ]; then
+    # Self-attribution only for responses this session produced itself: a
+    # copied (forked) anchor was produced by the parent — even a fresh one
+    # must inherit, never stamp the current account.
+    if [ $((now - assist_ts)) -le 120 ] && [ -n "$warm_acct" ] && [ "$fork_sid" = "-" ]; then
       track_acct="$warm_acct"
     else
       track_acct="?"
