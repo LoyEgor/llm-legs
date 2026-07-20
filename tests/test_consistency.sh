@@ -64,7 +64,7 @@ assert doc_has '`keychain_service`'
 
 # --- Row c: worker-pick cache line format ------------------------------------
 # Producer printf and cb prefixes.
-assert grep -Fq 'cx%s%s·%s %s·%s·%s' "$WORKERPICK"
+assert grep -Fq 'cx%s%s·'\''"$codex_model"'\''·%s %s·%s·%s' "$WORKERPICK"
 assert grep -Eq 'cb_cache="cb~\$' "$WORKERPICK"
 assert grep -Eq 'cb_cache="cb@\$' "$WORKERPICK"
 assert grep -Fq 'cb_cache="cb~?"' "$WORKERPICK"
@@ -72,7 +72,7 @@ assert grep -Fq 'cb_cache="cb~?"' "$WORKERPICK"
 assert grep -q 'worker-pick.line' "$WORKERPICK"
 assert grep -q 'worker-pick.line' "$STATUSLINE"
 # Doc records the format.
-assert doc_has 'cx%s%s·%s %s·%s·%s'
+assert doc_has 'cx%s%s·<model>·%s %s·%s·%s'
 
 # --- Row d: weather HTTP classes ---------------------------------------------
 # probe_weather_failed's case pattern is the canonical class list.

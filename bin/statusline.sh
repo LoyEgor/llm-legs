@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Claude Code status line: model | dir/branch/lines | ports | worker | topic ‖ ctx % | 5h/weekly/fable limits | cost.
+# Claude Code status line: model | dir/branch/lines | ports | worker | title ‖ ctx % | 5h/weekly/fable limits | cost.
 # rate_limits is absent from some renders and idle sessions re-send their last
 # copy forever; every path renders from a stamped merged cache (statusline-cache-rl
 # for main, limits/<acct>.json for claudeb accounts — ~/.claude-profiles/README.md),
@@ -95,7 +95,7 @@ pct_colored() {
 # \x1f (unit separator) instead of tab: bash `read` collapses consecutive tab
 # delimiters (tab is IFS-whitespace), which misaligns fields whenever a middle
 # one (e.g. fast_mode, commonly empty) is blank.
-IFS=$'\x1f' read -r model model_id effort fast_mode ctx_size dir_path current_dir session_id ctx_pct ctx_tokens cost_raw lines_added lines_removed rl_json cache_create cache_read transcript_path prompt_id < <(printf '%s' "$input" | jq -r '
+IFS=$'\x1f' read -r model model_id effort fast_mode ctx_size dir_path current_dir session_id ctx_pct ctx_tokens cost_raw lines_added lines_removed rl_json cache_create cache_read transcript_path < <(printf '%s' "$input" | jq -r '
   def num0: if . == null then "" else (.+0|round|tostring) end;
   def str0: if . == null then "" else tostring end;
   [ (.model.display_name // "?"),
@@ -115,8 +115,7 @@ IFS=$'\x1f' read -r model model_id effort fast_mode ctx_size dir_path current_di
     ((.rate_limits // null) | if . == null then "" else tojson end),
     ((.context_window.current_usage // null) | if . == null then "0" else (.cache_creation_input_tokens//0|tostring) end),
     ((.context_window.current_usage // null) | if . == null then "0" else (.cache_read_input_tokens//0|tostring) end),
-    (.transcript_path // ""),
-    ((.prompt_id // "") | tostring | gsub("[^A-Za-z0-9_-]"; ""))
+    (.transcript_path // "")
   ] | join("")')
 
 # The harness's used_percentage is denominator-blind on >200k windows (a 1m
@@ -387,16 +386,73 @@ if [ -n "$fable_account" ] && [ "$fable_account" != main ]; then
   fi
 fi
 
-# Effective cache TTL. The statusline stdin exposes NO TTL or expiry field
-# (verified against a captured live payload — only current_usage token counts),
-# so the TTL is a seed corrected by observed bounds, never a hardcoded truth:
-#   seed   = ~/.claude/statusline-cache-ttl if positive, else 3600 (Anthropic 1h)
-#   floor  = longest inactivity gap a cache was seen to SURVIVE (TTL >= that)
-#   ceiling= shortest gap after which a cache was seen DEAD (TTL < that)
-#   effective = clamp(seed, floor, ceiling)
-# Bounds are learned below from each new request's usage and persisted globally.
-tr_mtime=""
-[ -n "$transcript_path" ] && tr_mtime=$(file_mtime "$transcript_path")
+# Prompt-cache warmth. Anthropic's cache is scoped per ORGANIZATION and per
+# MODEL, its TTL is not in the statusline payload, and the transcript file
+# mtime lies (--resume touches it before any request). The only trustworthy
+# evidence is the transcript entries themselves:
+#   - a completed API response = a non-sidechain, non-<synthetic> assistant
+#     entry (timestamp, message.model, message.usage);
+#   - the usage cache_creation ephemeral_5m/1h split is the API's OWN TTL
+#     declaration for the newest cache write — no guessing needed when present;
+#   - /compact rewrites the prefix (cache dead until the next response) and
+#     marks it with a system/compact_boundary entry; its injected summary is a
+#     user entry (isCompactSummary) and its continuation user entry is
+#     unmarked, which is why warmth anchors on ASSISTANT entries only.
+# One jq pass over the tail extracts everything; any parse failure degrades to
+# cold — never to a false warm. Emits: newest-response epoch + model, TTL
+# bucket seconds, post-compact flag, and one TTL-learning evidence tuple (the
+# newest turn's first response after idle gap G, pre-guarded in jq for "no
+# boundary inside the gap" and "same model across the gap").
+assist_ts=0; assist_model="-"; ttl_bucket=0; post_compact=0
+ev_valid=0; ev_ts=0; ev_gap=0; ev_cr=0; ev_cc=0
+if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
+  cache_scan=$(tail -c 262144 "$transcript_path" 2>/dev/null | jq -Rrn '
+    def ep: try (sub("\\.[0-9]+Z$"; "Z") | fromdate) catch null;
+    def bucket_secs:
+      (((.cache_creation? // {}) | to_entries | map(select((.value? // 0) > 0))
+        | max_by(.value) | (.key // "")
+        | capture("ephemeral_(?<n>[0-9]+)(?<u>[mh])_")?
+        | ((.n | tonumber) * (if .u == "m" then 60 else 3600 end))) // 0);
+    reduce (inputs | fromjson? | select(type == "object" and .isSidechain != true)) as $x (
+      {la: 0, pm: "", pg: -1, pa: 0, lb: 0, ats: 0, am: "-", bk: 0,
+       cgap: 0, ccr: 0, ccc: 0, cets: 0, cpm: "", cem: "", cpa: 0, chas: 0};
+      ((($x.timestamp? // "") | if type == "string" then ep else null end)) as $ts
+      | if $ts == null then .
+        elif $x.type == "system" and $x.subtype == "compact_boundary" then
+          (if $ts > .lb then .lb = $ts else . end)
+        elif $x.type == "user" and ($x.isCompactSummary? != true) then
+          (if .la > 0 and .pg < 0 then .pg = ($ts - .la) | .pa = .la else . end)
+          | (if $ts > .la then .la = $ts else . end)
+        elif $x.type == "assistant" and (($x.message?.model? // "") != "<synthetic>") then
+          ($x.message?.usage? // {}) as $u
+          | ($u | bucket_secs) as $bs
+          | (if .pg >= 0 then
+               .cgap = .pg | .ccr = ($u.cache_read_input_tokens? // 0)
+               | .ccc = ($u.cache_creation_input_tokens? // 0)
+               | .cets = $ts | .cpm = .pm | .cem = ($x.message?.model? // "")
+               | .cpa = .pa | .chas = 1 | .pg = -1
+             else . end)
+          | (if $ts >= .ats then .ats = $ts | .am = (($x.message?.model? // "") | if . == "" then "-" else . end) else . end)
+          | .pm = ($x.message?.model? // "")
+          | (if $bs > 0 then .bk = $bs else . end)
+          | (if $ts > .la then .la = $ts else . end)
+        else . end)
+    | [ .ats, .am, .bk,
+        (if .lb > 0 and .lb >= .ats then 1 else 0 end),
+        (if .chas == 1 and .cgap > 0 and .cpm != "" and .cpm == .cem
+            and (.lb == 0 or .lb <= .cpa or .lb >= .cets) then 1 else 0 end),
+        .cets, .cgap, .ccr, .ccc ]
+    | map(tostring) | join(" ")' 2>/dev/null)
+  if [ -n "$cache_scan" ]; then
+    read -r assist_ts assist_model ttl_bucket post_compact ev_valid ev_ts ev_gap ev_cr ev_cc <<< "$cache_scan" || :
+    [[ "$assist_ts" =~ ^[0-9]+$ ]] || assist_ts=0
+    [[ "$ttl_bucket" =~ ^[0-9]+$ ]] || ttl_bucket=0
+    [[ "$ev_ts" =~ ^[0-9]+$ ]] || ev_ts=0
+    [[ "$ev_gap" =~ ^[0-9]+$ ]] || ev_gap=0
+    [[ "$ev_cr" =~ ^[0-9]+$ ]] || ev_cr=0
+    [[ "$ev_cc" =~ ^[0-9]+$ ]] || ev_cc=0
+  fi
+fi
 cache_ttl_seed=3600
 seed_override=""
 # `[ -r ]` guards the read: a `< missing-file` redirect prints its own error
@@ -418,28 +474,57 @@ if [[ "$learned_at" =~ ^[0-9]+$ ]] && [ $((now - learned_at)) -gt 604800 ]; then
   ttl_floor=0; ttl_ceiling=""; bounds_changed=1
 fi
 
-# Learn from a NEW request (prompt_id changed): a large cache_read after gap G
-# proves the cache survived G (raise floor); a full rebuild (near-zero read,
-# large creation) after gap G proves it died within G (lower ceiling). The gap
-# is measured between successive requests' transcript-write times. Best-effort:
-# a lost update or a prefix-invalidation false-miss only shifts a bound slightly.
-if [ -n "$session_id" ] && [ -n "$prompt_id" ] && [[ "$tr_mtime" =~ ^[0-9]+$ ]]; then
+# The transcript pins the model of the cache but not the ACCOUNT, so the
+# account is stamped into cache-ttl-track-<sid> ("v2 <assist_ts> <acct>
+# <learned_upto>") whenever a response lands during a live render. Attribution
+# window 120s: renders run every few seconds while a session is alive, and the
+# account cannot change without restarting the session (/exit), so a response
+# older than that with no matching stamp is unattributable ("?") and renders
+# cold — this is what makes a menu/rotation account switch (resume under a new
+# profile, no stamp rewrite) reliably cold until the first new response.
+# Legacy v1 track files (prompt_id-based) are treated as absent.
+warm_acct="$acct"
+[ "$acct" = "-" ] && warm_acct="$cb_current"
+track_acct=""
+if [ -n "$session_id" ] && [ "$assist_ts" -gt 0 ] 2>/dev/null; then
   track="$HOME/.cache/claude-statusline/cache-ttl-track-$session_id"
-  prev_pid=""; prev_ts=""
-  [ -r "$track" ] && { read -r prev_pid prev_ts < "$track" 2>/dev/null || :; }
-  if [ "$prompt_id" != "$prev_pid" ]; then
-    if [[ "$prev_ts" =~ ^[0-9]+$ ]]; then
-      gap=$((tr_mtime - prev_ts))
-      cr=${cache_read:-0}; cc=${cache_create:-0}
-      if [ "$gap" -gt 0 ] 2>/dev/null; then
-        if [ "$cr" -ge 1000 ] 2>/dev/null && [ "$cr" -ge "$cc" ] 2>/dev/null; then
-          [ "$gap" -gt "$ttl_floor" ] 2>/dev/null && { ttl_floor=$gap; bounds_changed=1; }
-        elif [ "$cr" -lt 1000 ] 2>/dev/null && [ "$cc" -ge 20000 ] 2>/dev/null; then
-          if [ -z "$ttl_ceiling" ] || [ "$gap" -lt "$ttl_ceiling" ] 2>/dev/null; then ttl_ceiling=$gap; bounds_changed=1; fi
-        fi
-      fi
+  t1=""; t2=""; t3=""; t4=""
+  [ -r "$track" ] && { read -r t1 t2 t3 t4 < "$track" 2>/dev/null || :; }
+  rec_ts=0; rec_acct=""; learned_upto=0
+  if [ "$t1" = v2 ]; then
+    [[ "$t2" =~ ^[0-9]+$ ]] && rec_ts="$t2"
+    rec_acct="$t3"
+    [[ "$t4" =~ ^[0-9]+$ ]] && learned_upto="$t4"
+  fi
+  track_acct="$rec_acct"
+  if [ "$assist_ts" -gt "$rec_ts" ]; then
+    if [ $((now - assist_ts)) -le 120 ] && [ -n "$warm_acct" ]; then
+      track_acct="$warm_acct"
+    else
+      track_acct="?"
     fi
-    printf '%s %s\n' "$prompt_id" "$tr_mtime" > "$track.tmp.$$" 2>/dev/null && mv "$track.tmp.$$" "$track" 2>/dev/null || rm -f "$track.tmp.$$" 2>/dev/null
+  fi
+  [ -n "$track_acct" ] || track_acct="?"
+  # TTL learning feeds the no-bucket fallback. Evidence (from the jq pass, which
+  # already guarded same-model-across-gap and no-boundary-inside-gap): the
+  # newest turn's first response after idle gap G. A large cache_read proves the
+  # cache survived G (floor up; a survival past the believed ceiling disproves
+  # it); a full rebuild after G >= 120s proves it died within G (ceiling down —
+  # sub-2min rebuilds are prefix invalidations, not TTL expiry). An account
+  # switch across the gap is not TTL evidence; each response is consumed once.
+  if [ "$ev_valid" = 1 ] && [ "$ev_ts" -gt "$learned_upto" ] 2>/dev/null \
+     && [ -n "$rec_acct" ] && [ "$rec_acct" != "?" ] && [ "$rec_acct" = "$warm_acct" ]; then
+    if [ "$ev_cr" -ge 1000 ] 2>/dev/null && [ "$ev_cr" -ge "$ev_cc" ] 2>/dev/null; then
+      [ "$ev_gap" -gt "$ttl_floor" ] 2>/dev/null && { ttl_floor=$ev_gap; bounds_changed=1; }
+      if [ -n "$ttl_ceiling" ] && [ "$ev_gap" -gt "$ttl_ceiling" ] 2>/dev/null; then ttl_ceiling=""; bounds_changed=1; fi
+    elif [ "$ev_cr" -lt 1000 ] 2>/dev/null && [ "$ev_cc" -ge 20000 ] 2>/dev/null && [ "$ev_gap" -ge 120 ] 2>/dev/null; then
+      if [ -z "$ttl_ceiling" ] || [ "$ev_gap" -lt "$ttl_ceiling" ] 2>/dev/null; then ttl_ceiling=$ev_gap; bounds_changed=1; fi
+    fi
+  fi
+  [ "$ev_ts" -gt "$learned_upto" ] 2>/dev/null && learned_upto="$ev_ts"
+  if [ "$t1" != v2 ] || [ "$track_acct" != "$rec_acct" ] || [ "$assist_ts" -ne "$rec_ts" ] || [ "$learned_upto" != "${t4:-}" ]; then
+    printf 'v2 %s %s %s\n' "$assist_ts" "$track_acct" "$learned_upto" > "$track.tmp.$$" 2>/dev/null \
+      && mv "$track.tmp.$$" "$track" 2>/dev/null || rm -f "$track.tmp.$$" 2>/dev/null
   fi
 fi
 
@@ -450,21 +535,35 @@ if [ -n "$bounds_changed" ]; then
     > "$learned_file.tmp.$$" 2>/dev/null && mv "$learned_file.tmp.$$" "$learned_file" 2>/dev/null || rm -f "$learned_file.tmp.$$" 2>/dev/null
 fi
 
-cache_ttl="$cache_ttl_seed"
-[ "$cache_ttl" -lt "$ttl_floor" ] 2>/dev/null && cache_ttl="$ttl_floor"
-[ -n "$ttl_ceiling" ] && [ "$cache_ttl" -gt "$ttl_ceiling" ] 2>/dev/null && cache_ttl="$ttl_ceiling"
+# The API's own declaration wins: the newest response's cache_creation bucket
+# (ephemeral_5m/1h field name) IS the TTL of the newest cache write, and reads
+# refresh that same bucket. Seed + learned bounds are the fallback for tails
+# whose entries carry no bucket.
+if [ "$ttl_bucket" -gt 0 ] 2>/dev/null; then
+  cache_ttl="$ttl_bucket"
+else
+  cache_ttl="$cache_ttl_seed"
+  [ "$cache_ttl" -lt "$ttl_floor" ] 2>/dev/null && cache_ttl="$ttl_floor"
+  [ -n "$ttl_ceiling" ] && [ "$cache_ttl" -gt "$ttl_ceiling" ] 2>/dev/null && cache_ttl="$ttl_ceiling"
+fi
 
 # Cache warm: token count and time both dim (time presence signals alive cache).
 # Cache not warm: count colored by size — <90k dim, 90–299k yellow, >=300k red.
-# Warm = last request actually cached (creation+read > 0) AND within effective TTL.
+# Warm requires ALL of: a completed response visible in the tail, cache tokens
+# in the payload, response within TTL, no compact boundary at/after it, same
+# model (payload model.id vs the response entry's model — Anthropic caches are
+# per-model), and a verified same-account stamp ("?" is cold, never warm).
 ctx_tokens_part=""
 if [ -n "$ctx_tokens" ] && [ "$ctx_tokens" -gt 0 ] 2>/dev/null; then
   death_part=""
   cache_live=$(( ${cache_create:-0} + ${cache_read:-0} ))
-  if [ "$cache_live" -gt 0 ] 2>/dev/null && [[ "$tr_mtime" =~ ^[0-9]+$ ]] \
-     && [ "$((now - tr_mtime))" -le "$cache_ttl" ] 2>/dev/null; then
+  if [ "$cache_live" -gt 0 ] 2>/dev/null && [ "$assist_ts" -gt 0 ] 2>/dev/null \
+     && [ "$post_compact" = 0 ] \
+     && [ "$((now - assist_ts))" -le "$cache_ttl" ] 2>/dev/null \
+     && [ -n "$track_acct" ] && [ "$track_acct" != "?" ] && [ "$track_acct" = "$warm_acct" ] \
+     && { [ -z "$model_id" ] || [ "$assist_model" = "-" ] || [ "$assist_model" = "$model_id" ]; }; then
     tok_color="$DIM"
-    death_time=$(TZ=Europe/Kyiv date -r "$((tr_mtime + cache_ttl))" +%H:%M 2>/dev/null)
+    death_time=$(TZ=Europe/Kyiv date -r "$((assist_ts + cache_ttl))" +%H:%M 2>/dev/null)
     [ -n "$death_time" ] && death_part="${DIM}→${death_time}${RESET}"
   else
     if [ "$ctx_tokens" -lt 90000 ]; then tok_color="$DIM"
@@ -659,21 +758,40 @@ if [ -n "$session_id" ]; then
   fi
 fi
 
-topic_seg=""
-if [ -n "$session_id" ]; then
-  topic_file="$HOME/.cache/claude-statusline/topic-$session_id"
-  if [ -s "$topic_file" ]; then
-    IFS= read -r topic_txt < "$topic_file" 2>/dev/null || topic_txt=""
-    if [ -n "$topic_txt" ]; then
-      [ "${#topic_txt}" -gt 44 ] && topic_txt="${topic_txt:0:43}…"
-      topic_seg=" ${sep} ${DIM}${topic_txt}${RESET}"
+# Chat title: the harness's own ai-title entries (it regenerates them as the
+# topic drifts). Tail window first; the per-session cache bridges renders whose
+# tail rotated past the last title; the one-time full-file scan (guarded by
+# cache absence — it also seeds an empty cache) covers resumed sessions whose
+# title sits megabytes back.
+title_seg=""
+if [ -n "$session_id" ] && [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
+  title_cache="$HOME/.cache/claude-statusline/title-$session_id"
+  title_txt=$(tail -c 262144 "$transcript_path" 2>/dev/null \
+    | grep -o '"aiTitle":"[^"]*"' | tail -n1 | cut -d'"' -f4)
+  if [ -n "$title_txt" ]; then
+    cached_title=""
+    [ -r "$title_cache" ] && { IFS= read -r cached_title < "$title_cache" 2>/dev/null || cached_title=""; }
+    if [ "$title_txt" != "$cached_title" ]; then
+      printf '%s\n' "$title_txt" > "$title_cache.tmp.$$" 2>/dev/null \
+        && mv "$title_cache.tmp.$$" "$title_cache" 2>/dev/null || rm -f "$title_cache.tmp.$$" 2>/dev/null
     fi
+  elif [ -r "$title_cache" ]; then
+    IFS= read -r title_txt < "$title_cache" 2>/dev/null || title_txt=""
+  else
+    title_txt=$(grep -o '"aiTitle":"[^"]*"' "$transcript_path" 2>/dev/null | tail -n1 | cut -d'"' -f4)
+    printf '%s\n' "$title_txt" > "$title_cache.tmp.$$" 2>/dev/null \
+      && mv "$title_cache.tmp.$$" "$title_cache" 2>/dev/null || rm -f "$title_cache.tmp.$$" 2>/dev/null
+  fi
+  if [ -n "$title_txt" ]; then
+    # jq counts codepoints — bash ${var:0:43} counts bytes and splits Cyrillic.
+    title_txt=$(printf '%s' "$title_txt" | jq -Rr 'if length > 44 then .[0:43] + "…" else . end' 2>/dev/null)
+    [ -n "$title_txt" ] && title_seg=" ${sep} ${DIM}${title_txt}${RESET}"
   fi
 fi
 
-# Two lines: identity/work (model, account, dir/branch, workers, topic) on top,
+# Two lines: identity/work (model, account, dir/branch, workers, title) on top,
 # usage (ctx, 5h, weekly, fable, cost) below.
-line1="${CYAN}${model}${model_suffix}${RESET}${fast_part}${cb_part} ${sep} ${dir_part}${branch_part}${lines_part}${ports_part}${worker_part}${topic_seg}"
+line1="${CYAN}${model}${model_suffix}${RESET}${fast_part}${cb_part} ${sep} ${dir_part}${branch_part}${lines_part}${ports_part}${worker_part}${title_seg}"
 
 line2="ctx $(pct_colored "$ctx_pct" "" 40)${ctx_tokens_part} ${sep} 5h $(pct_colored "$h5_pct" "$h5_dim")${h5_arrow} ${sep} wk $(pct_colored "$wk_pct" "$wk_dim")${wk_arrow}${fable_part}"
 

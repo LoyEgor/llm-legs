@@ -399,30 +399,127 @@ ctx_200k=$(run_statusline "$(statusline_payload ctx-200k \
 assert grep -Fq "ctx ${RED}90%${RESET}" <<< "$ctx_200k"
 
 # --- token-count color encodes prompt-cache warmth ---
+# Warmth anchors on completed responses: non-sidechain, non-<synthetic>
+# assistant entries (timestamp + message.model + message.usage). Fixture
+# renders resolve warm_acct=acctgen (rotating "-" + .claudeb-state).
 # cr = the cache_read tokens (input_tokens forced to 0 so ctx_tokens == cr).
 warm_extra() {
   jq -cn --arg tp "$1" --argjson pct "$2" --argjson cr "$3" '
-    {transcript_path:$tp,
+    {transcript_path:$tp, model:{id:"fixmodel"},
      context_window:{used_percentage:$pct,
        current_usage:{input_tokens:0,cache_creation_input_tokens:0,cache_read_input_tokens:$cr}}}'
 }
 TRANSCRIPT="$WORK/transcript.jsonl"
-: > "$TRANSCRIPT"  # fresh mtime == warm
+iso_utc() { TZ=UTC date -r "$1" +%Y-%m-%dT%H:%M:%S.000Z; }
+t_user() { printf '{"type":"user","timestamp":"%s","message":{"role":"user"}}\n' "$(iso_utc "$1")" >> "$TRANSCRIPT"; }
+t_assist() { # epoch [model] [cache_read] [cache_creation] [bucket 5m|1h|-]
+  local ts="$1" m="${2:-fixmodel}" cr="${3:-50000}" cc="${4:-500}" bk="${5:--}" b=""
+  case "$bk" in
+    5m) b=',"cache_creation":{"ephemeral_5m_input_tokens":'"$cc"',"ephemeral_1h_input_tokens":0}' ;;
+    1h) b=',"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":'"$cc"'}' ;;
+  esac
+  printf '{"type":"assistant","timestamp":"%s","message":{"role":"assistant","model":"%s","usage":{"cache_read_input_tokens":%s,"cache_creation_input_tokens":%s%s}}}\n' \
+    "$(iso_utc "$ts")" "$m" "$cr" "$cc" "$b" >> "$TRANSCRIPT"
+}
+t_boundary() { printf '{"type":"system","subtype":"compact_boundary","timestamp":"%s"}\n' "$(iso_utc "$1")" >> "$TRANSCRIPT"; }
+t_reset() { : > "$TRANSCRIPT"; rm -f "$STATE_DIR"/cache-ttl-track-*; }
 
-# Warm cache: count and time both dim (time presence signals cache alive).
+# Warm cache: count and time both dim (time presence signals cache alive);
+# a fresh response inside the 120s attribution window self-stamps the account.
+t_reset; t_assist $((NOW - 20))
 warm_a=$(run_statusline "$(statusline_payload ctx-warm-lo "$(warm_extra "$TRANSCRIPT" 20 50000)")")
-a_mtime=$(stat -f %m "$TRANSCRIPT"); a_death=$(TZ=Europe/Kyiv date -r $((a_mtime + 3600)) +%H:%M)
+a_death=$(TZ=Europe/Kyiv date -r $((NOW - 20 + 3600)) +%H:%M)
 assert grep -Fq "${DIM}50k${RESET}${DIM}→${a_death}${RESET}" <<< "$warm_a"
+assert grep -q '^v2 [0-9]* acctgen ' "$STATE_DIR/cache-ttl-track-ctx-warm-lo"
 
 # Warm cache with large token count: still dim.
 warm_b=$(run_statusline "$(statusline_payload ctx-warm-hi "$(warm_extra "$TRANSCRIPT" 60 350000)")")
 assert grep -Fq "${DIM}350k${RESET}" <<< "$warm_b"
 
-# (c) cache fields >0 but transcript mtime older than TTL -> dim.
-touch -t "$(date -r $((NOW - 4000)) +%Y%m%d%H%M.%S)" "$TRANSCRIPT"
+# Response older than the TTL -> cold (dim: 50k < 90k), no death time.
+t_reset; t_assist $((NOW - 4000))
 warm_c=$(run_statusline "$(statusline_payload ctx-stale "$(warm_extra "$TRANSCRIPT" 20 50000)")")
 assert grep -Fq "${DIM}50k${RESET}" <<< "$warm_c"
-: > "$TRANSCRIPT"
+assert test "${warm_c#*→}" = "$warm_c"
+
+# Reopened dead chat: --resume touches the file (fresh mtime + a freshly
+# timestamped file-history-snapshot) before any request — must stay COLD.
+t_reset; t_user $((NOW - 172800)); t_assist $((NOW - 172799))
+printf '{"type":"file-history-snapshot","timestamp":"%s"}\n' "$(iso_utc "$NOW")" >> "$TRANSCRIPT"
+resume_lie=$(run_statusline "$(statusline_payload ctx-resume-lie "$(warm_extra "$TRANSCRIPT" 55 111000)")")
+assert grep -Fq "${YELLOW}111k${RESET}" <<< "$resume_lie"
+assert test 0 -eq "$(grep -c '→' <<< "$resume_lie")"
+
+# Fresh real response wins over an older mtime (entries are the source of truth).
+t_reset; t_user $((NOW - 65)); t_assist $((NOW - 60))
+touch -t "$(date -r $((NOW - 4000)) +%Y%m%d%H%M.%S)" "$TRANSCRIPT"
+ts_warm=$(run_statusline "$(statusline_payload ctx-ts-warm "$(warm_extra "$TRANSCRIPT" 20 50000)")")
+ts_death=$(TZ=Europe/Kyiv date -r $((NOW - 60 + 3600)) +%H:%M)
+assert grep -Fq "${DIM}50k${RESET}${DIM}→${ts_death}${RESET}" <<< "$ts_warm"
+
+# Sidechain (subagent) entries hit different cache prefixes — not this chat's warmth.
+t_reset; t_user $((NOW - 172800))
+printf '{"type":"assistant","isSidechain":true,"timestamp":"%s","message":{"role":"assistant","model":"fixmodel","usage":{"cache_read_input_tokens":50000}}}\n' "$(iso_utc "$NOW")" >> "$TRANSCRIPT"
+side_cold=$(run_statusline "$(statusline_payload ctx-sidechain "$(warm_extra "$TRANSCRIPT" 55 111000)")")
+assert grep -Fq "${YELLOW}111k${RESET}" <<< "$side_cold"
+
+# <synthetic> assistant entries (API-error placeholders) are not responses.
+t_reset; t_assist $((NOW - 172799)); t_assist "$NOW" '<synthetic>' 0 0
+synth_cold=$(run_statusline "$(statusline_payload ctx-synth "$(warm_extra "$TRANSCRIPT" 55 111000)")")
+assert grep -Fq "${YELLOW}111k${RESET}" <<< "$synth_cold"
+
+# --- account switch invalidates the cache (per-organization on Anthropic) ---
+# Recorded stamp (alona) != current (acctgen), response outside the 120s
+# attribution window -> cold despite being well inside the TTL.
+t_reset; t_assist $((NOW - 600))
+printf 'v2 %s alona 0\n' "$((NOW - 600))" > "$STATE_DIR/cache-ttl-track-ctx-swacct"
+sw_out=$(run_statusline "$(statusline_payload ctx-swacct "$(warm_extra "$TRANSCRIPT" 55 111000)")")
+assert grep -Fq "${YELLOW}111k${RESET}" <<< "$sw_out"
+# A NEW response under the current account re-warms and re-stamps it.
+t_assist $((NOW - 5))
+sw2_out=$(run_statusline "$(statusline_payload ctx-swacct "$(warm_extra "$TRANSCRIPT" 55 111000)")")
+assert grep -Fq "${DIM}111k${RESET}${DIM}→" <<< "$sw2_out"
+assert grep -q '^v2 [0-9]* acctgen ' "$STATE_DIR/cache-ttl-track-ctx-swacct"
+
+# Menu-switch resume: no track at all + response outside the attribution
+# window -> unattributable ("?"), cold until the first new response.
+t_reset; t_assist $((NOW - 600))
+noattr_out=$(run_statusline "$(statusline_payload ctx-noattr "$(warm_extra "$TRANSCRIPT" 55 111000)")")
+assert grep -Fq "${YELLOW}111k${RESET}" <<< "$noattr_out"
+assert grep -q '^v2 [0-9]* ? 0' "$STATE_DIR/cache-ttl-track-ctx-noattr"
+
+# Legacy v1 track (prompt_id-based) is treated as absent: same "?" cold path.
+t_reset; t_assist $((NOW - 600))
+printf 'pidsame %s alona\n' "$((NOW - 600))" > "$STATE_DIR/cache-ttl-track-ctx-legacy"
+legacy_out=$(run_statusline "$(statusline_payload ctx-legacy "$(warm_extra "$TRANSCRIPT" 55 111000)")")
+assert grep -Fq "${YELLOW}111k${RESET}" <<< "$legacy_out"
+assert grep -q '^v2 [0-9]* ? ' "$STATE_DIR/cache-ttl-track-ctx-legacy"
+
+# --- model switch invalidates the cache (per-model on Anthropic) ---
+t_reset; t_assist $((NOW - 20))
+model_extra=$(warm_extra "$TRANSCRIPT" 55 111000 | jq -c '.model.id = "othermodel"')
+model_cold=$(run_statusline "$(statusline_payload ctx-model-sw "$model_extra")")
+assert grep -Fq "${YELLOW}111k${RESET}" <<< "$model_cold"
+# Switching back to the model that built the cache re-warms (cache still alive).
+model_warm=$(run_statusline "$(statusline_payload ctx-model-sw "$(warm_extra "$TRANSCRIPT" 55 111000)")")
+assert grep -Fq "${DIM}111k${RESET}${DIM}→" <<< "$model_warm"
+# A payload without model.id cannot check the model — other gates still apply.
+noid_extra=$(warm_extra "$TRANSCRIPT" 20 50000 | jq -c 'del(.model)')
+noid_out=$(run_statusline "$(statusline_payload ctx-model-noid "$noid_extra")")
+assert grep -Fq "${DIM}50k${RESET}${DIM}→" <<< "$noid_out"
+
+# --- /compact kills the cache until the next response ---
+t_reset; t_assist $((NOW - 60)); t_boundary $((NOW - 30))
+# Its injected summary (user, isCompactSummary) and unmarked continuation user
+# entry must not count as warmth.
+printf '{"type":"user","isCompactSummary":true,"timestamp":"%s","message":{"role":"user"}}\n' "$(iso_utc $((NOW - 29)))" >> "$TRANSCRIPT"
+t_user $((NOW - 28))
+compact_cold=$(run_statusline "$(statusline_payload ctx-compact "$(warm_extra "$TRANSCRIPT" 55 111000)")")
+assert grep -Fq "${YELLOW}111k${RESET}" <<< "$compact_cold"
+# The first response after the boundary re-warms.
+t_assist $((NOW - 5))
+compact_warm=$(run_statusline "$(statusline_payload ctx-compact "$(warm_extra "$TRANSCRIPT" 55 111000)")")
+assert grep -Fq "${DIM}111k${RESET}${DIM}→" <<< "$compact_warm"
 
 # Cold cache color tests: count colored by size (no cache = cache fields are 0).
 cold_extra() {
@@ -454,77 +551,111 @@ assert grep -Fq "${DIM}60k${RESET}" <<< "$warm_d"
 warm_e=$(run_statusline "$(statusline_payload ctx-nopath "$(warm_extra "" 20 50000)")")
 assert grep -Fq "${DIM}50k${RESET}" <<< "$warm_e"
 
-# (f) TTL override file respected: mtime 200s old, override TTL 100 -> dim
-# (would be green under the default 3600).
-touch -t "$(date -r $((NOW - 200)) +%Y%m%d%H%M.%S)" "$TRANSCRIPT"
+# (f) TTL override file respected: response 200s ago, override TTL 100 -> cold
+# (would be warm under the default 3600).
+t_reset; t_assist $((NOW - 200))
 printf '100\n' > "$HOME/.claude/statusline-cache-ttl"
 warm_f=$(run_statusline "$(statusline_payload ctx-ttl "$(warm_extra "$TRANSCRIPT" 20 50000)")")
 assert grep -Fq "${DIM}50k${RESET}" <<< "$warm_f"
+assert test "${warm_f#*→}" = "$warm_f"
 rm -f "$HOME/.claude/statusline-cache-ttl"
-: > "$TRANSCRIPT"
 
-# --- effective cache TTL: seed / seed-override / learned bounds affect death time ---
+# --- effective cache TTL: API bucket > (seed clamped by learned bounds) ---
 LEARNED="$STATE_DIR/cache-ttl-learned"
-set_mtime() { touch -t "$(date -r "$1" +%Y%m%d%H%M.%S)" "$TRANSCRIPT"; }
-rm -f "$LEARNED" "$STATE_DIR"/cache-ttl-track-*
+rm -f "$LEARNED"
 
-# seed override widens the death time: TTL 7200, fresh cache -> dim + mtime+7200.
-set_mtime $((NOW - 100))
+# The response's own cache_creation bucket IS the TTL: 5m -> death = ts+300.
+t_reset; t_assist $((NOW - 30)) fixmodel 100000 500 5m
+bk5_out=$(run_statusline "$(statusline_payload ctx-bk5 "$(warm_extra "$TRANSCRIPT" 20 100000)")")
+bk5_death=$(TZ=Europe/Kyiv date -r $((NOW - 30 + 300)) +%H:%M)
+assert grep -Fq "${DIM}100k${RESET}${DIM}→${bk5_death}${RESET}" <<< "$bk5_out"
+# ...and it beats both a learned ceiling and a seed override: 1h bucket stays 3600.
+printf '{"observed_floor_s":0,"observed_ceiling_s":600,"updated_at":%s}\n' "$NOW" > "$LEARNED"
+printf '900\n' > "$HOME/.claude/statusline-cache-ttl"
+t_reset; t_assist $((NOW - 30)) fixmodel 100000 500 1h
+bk1_out=$(run_statusline "$(statusline_payload ctx-bk1 "$(warm_extra "$TRANSCRIPT" 20 100000)")")
+bk1_death=$(TZ=Europe/Kyiv date -r $((NOW - 30 + 3600)) +%H:%M)
+assert grep -Fq "${DIM}100k${RESET}${DIM}→${bk1_death}${RESET}" <<< "$bk1_out"
+rm -f "$HOME/.claude/statusline-cache-ttl" "$LEARNED"
+
+# No bucket in the tail: seed override widens the death time to ts+7200.
+t_reset; t_assist $((NOW - 50))
 printf '7200\n' > "$HOME/.claude/statusline-cache-ttl"
 ov_out=$(run_statusline "$(statusline_payload ctx-seedov "$(warm_extra "$TRANSCRIPT" 20 50000)")")
-ov_death=$(TZ=Europe/Kyiv date -r $((NOW - 100 + 7200)) +%H:%M)
+ov_death=$(TZ=Europe/Kyiv date -r $((NOW - 50 + 7200)) +%H:%M)
 assert grep -Fq "${DIM}50k${RESET}${DIM}→${ov_death}${RESET}" <<< "$ov_out"
 rm -f "$HOME/.claude/statusline-cache-ttl"
 
-# A learned ceiling narrows the effective TTL below the seed: ceiling 600 ->
-# death = mtime+600 (not mtime+3600), still warm at a 100s-old transcript.
+# A learned ceiling narrows the no-bucket TTL below the seed: ceiling 600 ->
+# death = ts+600 (not ts+3600), still warm at a 50s-old response.
 printf '{"observed_floor_s":0,"observed_ceiling_s":600,"updated_at":%s}\n' "$NOW" > "$LEARNED"
-set_mtime $((NOW - 100))
 clamp_out=$(run_statusline "$(statusline_payload ctx-clamp "$(warm_extra "$TRANSCRIPT" 20 50000)")")
-clamp_death=$(TZ=Europe/Kyiv date -r $((NOW - 100 + 600)) +%H:%M)
+clamp_death=$(TZ=Europe/Kyiv date -r $((NOW - 50 + 600)) +%H:%M)
 assert grep -Fq "${DIM}50k${RESET}${DIM}→${clamp_death}${RESET}" <<< "$clamp_out"
-# And a ceiling below the transcript age flips warmth off (dim, no time).
+# And a ceiling below the response age flips warmth off (dim, no time).
 printf '{"observed_floor_s":0,"observed_ceiling_s":50,"updated_at":%s}\n' "$NOW" > "$LEARNED"
-set_mtime $((NOW - 100))
 clampdim_out=$(run_statusline "$(statusline_payload ctx-clampdim "$(warm_extra "$TRANSCRIPT" 20 50000)")")
 assert grep -Fq "${DIM}50k${RESET} " <<< "$clampdim_out"
 assert test "${clampdim_out#*→}" = "$clampdim_out"
 rm -f "$LEARNED"
 
-# learn_extra carries a prompt_id so the render treats it as a real request.
-learn_extra() {
-  jq -cn --arg tp "$TRANSCRIPT" --arg pid "$1" --argjson cc "$2" --argjson cr "$3" '
-    {transcript_path:$tp,prompt_id:$pid,
-     context_window:{used_percentage:20,
-       current_usage:{input_tokens:0,cache_creation_input_tokens:$cc,cache_read_input_tokens:$cr}}}'
+# --- TTL learning from transcript evidence (newest turn's first response) ---
+# The evidence pair needs a same-account stamp covering the previous response,
+# so each case pre-seeds the v2 track with acctgen and the last response epoch.
+learn_case() { # sid prev_assist_gap user_at ev_cr ev_cc [ev_model] [boundary_at]
+  local sid="$1" prev="$2" user="$3" cr="$4" cc="$5" m="${6:-fixmodel}" bnd="${7:-}"
+  t_reset; t_assist "$prev" fixmodel 60000 300
+  [ -n "$bnd" ] && t_boundary "$bnd"
+  t_user "$user"; t_assist $((user + 1)) "$m" "$cr" "$cc"
+  printf 'v2 %s acctgen 0\n' $((user + 1)) > "$STATE_DIR/cache-ttl-track-$sid"
+  run_statusline "$(statusline_payload "$sid" "$(warm_extra "$TRANSCRIPT" 20 50000)")" >/dev/null
 }
 
 # HIT after a 300s gap raises the floor to 300.
-rm -f "$LEARNED" "$STATE_DIR"/cache-ttl-track-*
-set_mtime $((NOW - 500))
-run_statusline "$(statusline_payload learn-hit "$(learn_extra p1 100 100)")" >/dev/null
-set_mtime $((NOW - 200))
-run_statusline "$(statusline_payload learn-hit "$(learn_extra p2 100 50000)")" >/dev/null
+rm -f "$LEARNED"
+learn_case learn-hit $((NOW - 500)) $((NOW - 200)) 50000 100
 assert grep -Fq '"observed_floor_s":300' "$LEARNED"
 
+# ...and a HIT after a gap longer than the believed ceiling disproves it.
+printf '{"observed_floor_s":0,"observed_ceiling_s":200,"updated_at":%s}\n' "$NOW" > "$LEARNED"
+learn_case learn-heal $((NOW - 500)) $((NOW - 200)) 50000 100
+assert grep -Fq '"observed_ceiling_s":null' "$LEARNED"
+
 # MISS (full rebuild) after a 600s gap lowers the ceiling to 600.
-rm -f "$LEARNED" "$STATE_DIR"/cache-ttl-track-*
-set_mtime $((NOW - 800))
-run_statusline "$(statusline_payload learn-miss "$(learn_extra q1 100 50000)")" >/dev/null
-set_mtime $((NOW - 200))
-run_statusline "$(statusline_payload learn-miss "$(learn_extra q2 50000 0)")" >/dev/null
+rm -f "$LEARNED"
+learn_case learn-miss $((NOW - 800)) $((NOW - 200)) 0 50000
 assert grep -Fq '"observed_ceiling_s":600' "$LEARNED"
 
-# A same prompt_id (no new request) never moves a bound.
-before_track=$(cat "$STATE_DIR/cache-ttl-track-learn-miss")
-set_mtime $((NOW - 100))
-run_statusline "$(statusline_payload learn-miss "$(learn_extra q2 50000 0)")" >/dev/null
-assert grep -Fq '"observed_ceiling_s":600' "$LEARNED"
-assert_eq "$before_track" "$(cat "$STATE_DIR/cache-ttl-track-learn-miss")"
+# Each response is consumed once (learned_upto): manually zero the floor,
+# re-render the same transcript — the old evidence must not re-learn.
+rm -f "$LEARNED"
+learn_case learn-dedup $((NOW - 500)) $((NOW - 200)) 50000 100
+assert grep -Fq '"observed_floor_s":300' "$LEARNED"
+printf '{"observed_floor_s":0,"observed_ceiling_s":null,"updated_at":%s}\n' "$NOW" > "$LEARNED"
+run_statusline "$(statusline_payload learn-dedup "$(warm_extra "$TRANSCRIPT" 20 50000)")" >/dev/null
+assert grep -Fq '"observed_floor_s":0' "$LEARNED"
+
+# Guards: a miss is TTL evidence only when nothing else explains it.
+# (a) sub-120s gaps are prefix invalidations, never ceiling evidence;
+rm -f "$LEARNED"
+learn_case learn-tiny $((NOW - 260)) $((NOW - 200)) 0 50000
+assert test ! -e "$LEARNED"
+# (b) a model switch across the gap is not TTL evidence;
+learn_case learn-modelsw $((NOW - 800)) $((NOW - 200)) 0 50000 othermodel
+assert test ! -e "$LEARNED"
+# (c) a compact boundary inside the gap is not TTL evidence;
+learn_case learn-bnd $((NOW - 800)) $((NOW - 200)) 0 50000 fixmodel $((NOW - 400))
+assert test ! -e "$LEARNED"
+# (d) an account switch across the gap (stamp != current) is not TTL evidence.
+t_reset; t_assist $((NOW - 800)) fixmodel 60000 300
+t_user $((NOW - 200)); t_assist $((NOW - 199)) fixmodel 0 50000
+printf 'v2 %s alona 0\n' $((NOW - 199)) > "$STATE_DIR/cache-ttl-track-learn-acctsw"
+run_statusline "$(statusline_payload learn-acctsw "$(warm_extra "$TRANSCRIPT" 20 50000)")" >/dev/null
+assert test ! -e "$LEARNED"
 
 # Stale bounds (updated_at > 7 days old) decay to floor 0 / ceiling null.
 printf '{"observed_floor_s":1234,"observed_ceiling_s":5000,"updated_at":%s}\n' $((NOW - 800000)) > "$LEARNED"
-: > "$TRANSCRIPT"
+t_reset; t_assist $((NOW - 20))
 run_statusline "$(statusline_payload ctx-decay "$(warm_extra "$TRANSCRIPT" 20 50000)")" >/dev/null
 assert grep -Fq '"observed_floor_s":0' "$LEARNED"
 assert grep -Fq '"observed_ceiling_s":null' "$LEARNED"
@@ -608,7 +739,7 @@ fg_payload() {
 }
 fg_out=$(fg_payload PostToolUse Edit "$ROOT/bin/statusline.sh" | "$FRESH_GATE")
 assert grep -Fq 'freshness contract' <<< "$fg_out"
-fg_out=$(fg_payload PostToolUse Write "$ROOT/bin/statusline-topic-hook.sh" | "$FRESH_GATE")
+fg_out=$(fg_payload PostToolUse Write "$ROOT/bin/statusline-ports-probe.sh" | "$FRESH_GATE")
 assert grep -Fq 'statusline-contract.md' <<< "$fg_out"
 fg_out=$(fg_payload PostToolUse NotebookEdit "/x/statusline-ports-probe.sh" | "$FRESH_GATE")
 assert grep -Fq 'freshness contract' <<< "$fg_out"
@@ -619,100 +750,44 @@ assert_eq "" "$fg_out"
 fg_out=$(printf '{broken' | "$FRESH_GATE") || fail "freshness gate broken json nonzero"
 assert_eq "" "$fg_out"
 
-# --- statusline-topic-hook.sh ---
-TOPIC_HOOK="$ROOT/bin/statusline-topic-hook.sh"
-INTERACTIVE_PS="$FIXTURES/ps-interactive"
-printf '900 1 claude\n' > "$INTERACTIVE_PS"
-HEADLESS_PS="$FIXTURES/ps-headless"
-printf '901 900 claude -p --model opus\n900 1 -zsh\n' > "$HEADLESS_PS"
-# A benign fast claudeb so background generators from fast-path triggers finish
-# instantly with an empty reply (keeps the old topic); overwritten per case below.
-mkdir -p "$HOME/.local/bin"
-printf '#!/bin/sh\nexit 0\n' > "$HOME/.local/bin/claudeb"
-chmod +x "$HOME/.local/bin/claudeb"
+# --- chat title segment (harness ai-title entries in the transcript) ---
+TITLE_T="$WORK/title-transcript.jsonl"
+title_extra() { jq -cn --arg tp "$1" '{transcript_path:$tp}'; }
 
-topic_prompt() {
-  jq -cn --arg event UserPromptSubmit --arg session "$1" --arg prompt "$2" \
-    '{hook_event_name:$event,session_id:$session,prompt:$prompt}'
-}
-run_topic() {
-  printf '%s' "$(topic_prompt "$1" "$2")" | \
-    TOPIC_PS_SNAPSHOT="$3" TOPIC_ANCESTOR_START="$4" "$TOPIC_HOOK"
-}
+# Newest ai-title from the tail wins; cache file is written.
+{
+  printf '{"type":"ai-title","aiTitle":"First title","sessionId":"t"}\n'
+  printf '{"type":"user","timestamp":"%s","message":{}}\n' "$(iso_utc $((NOW - 60)))"
+  printf '{"type":"ai-title","aiTitle":"Updated chat title","sessionId":"t"}\n'
+} > "$TITLE_T"
+title_out=$(run_statusline "$(statusline_payload title-a "$(title_extra "$TITLE_T")")")
+assert grep -Fq "${DIM}Updated chat title${RESET}" <<< "$title_out"
+assert_eq 'Updated chat title' "$(cat "$STATE_DIR/title-title-a")"
 
-silence_out=$(run_topic t-silence 'a substantive first prompt about timers' "$INTERACTIVE_PS" 900)
-assert_eq "" "$silence_out"
+# Tail rotated past the last title: the cached copy still renders.
+printf '{"type":"user","timestamp":"%s","message":{}}\n' "$(iso_utc $((NOW - 30)))" > "$TITLE_T"
+title_cached=$(run_statusline "$(statusline_payload title-a "$(title_extra "$TITLE_T")")")
+assert grep -Fq "${DIM}Updated chat title${RESET}" <<< "$title_cached"
 
-run_topic t-first 'work on the menu resume timer feature' "$INTERACTIVE_PS" 900
-assert test -f "$STATE_DIR/topic-t-first.buf"
-assert grep -Fq 'menu resume timer' "$STATE_DIR/topic-t-first.buf"
-IFS=' ' read -r tf_lg tf_cnt < "$STATE_DIR/topic-t-first.meta"
-assert_eq 0 "$tf_cnt"
+# Title buried beyond the 256KB tail window: one-time full scan seeds the cache.
+{
+  printf '{"type":"ai-title","aiTitle":"Deep title","sessionId":"t"}\n'
+  head -c 300000 /dev/zero | tr '\0' 'x'; printf '\n'
+} > "$TITLE_T"
+title_deep=$(run_statusline "$(statusline_payload title-deep "$(title_extra "$TITLE_T")")")
+assert grep -Fq "${DIM}Deep title${RESET}" <<< "$title_deep"
 
-printf 'существующая тема\n' > "$STATE_DIR/topic-t-debounce"
-printf '0 0\n' > "$STATE_DIR/topic-t-debounce.meta"
-for i in 1 2 3 4; do run_topic t-debounce "meaningful prompt number $i here" "$INTERACTIVE_PS" 900; done
-IFS=' ' read -r td_lg td_cnt < "$STATE_DIR/topic-t-debounce.meta"
-assert_eq 4 "$td_cnt"
-run_topic t-debounce "meaningful prompt number 5 here" "$INTERACTIVE_PS" 900
-IFS=' ' read -r td_lg td_cnt < "$STATE_DIR/topic-t-debounce.meta"
-assert_eq 0 "$td_cnt"
+# No titles at all: no segment, and the empty scan result is cached (no rescans).
+: > "$TITLE_T"
+title_none=$(run_statusline "$(statusline_payload title-none "$(title_extra "$TITLE_T")")")
+assert test 0 -eq "$(grep -c 'title' <<< "$title_none")"
+assert test -f "$STATE_DIR/title-title-none"
 
-run_topic t-trivial 'ок' "$INTERACTIVE_PS" 900
-assert test ! -e "$STATE_DIR/topic-t-trivial.buf"
-
-recguard_out=$(printf '%s' "$(topic_prompt t-recguard 'a long substantive prompt here')" | \
-  CLAUDE_STATUSLINE_TOPIC_GEN=1 TOPIC_PS_SNAPSHOT="$INTERACTIVE_PS" TOPIC_ANCESTOR_START=900 "$TOPIC_HOOK")
-assert_eq "" "$recguard_out"
-assert test ! -e "$STATE_DIR/topic-t-recguard.buf"
-
-run_topic t-headless 'a long substantive prompt about the timers' "$HEADLESS_PS" 901
-assert test ! -e "$STATE_DIR/topic-t-headless.buf"
-run_topic t-interactive 'a long substantive prompt about the timers' "$INTERACTIVE_PS" 900
-assert test -f "$STATE_DIR/topic-t-interactive.buf"
-
-printf 'тема\n' > "$STATE_DIR/topic-t-clear"
-printf '1 1\n' > "$STATE_DIR/topic-t-clear.meta"
-printf 'x\n' > "$STATE_DIR/topic-t-clear.buf"
-printf '%s' "$(jq -cn '{hook_event_name:"SessionStart",source:"clear",session_id:"t-clear"}')" | "$TOPIC_HOOK"
-assert test ! -e "$STATE_DIR/topic-t-clear"
-assert test ! -e "$STATE_DIR/topic-t-clear.meta"
-assert test ! -e "$STATE_DIR/topic-t-clear.buf"
-
-printf 'тема\n' > "$STATE_DIR/topic-t-compact"
-printf '%s' "$(jq -cn '{hook_event_name:"SessionStart",source:"compact",session_id:"t-compact"}')" | "$TOPIC_HOOK"
-assert test -f "$STATE_DIR/topic-t-compact"
-
-# Generator (--generate) reply validation, synchronous with a canned claudeb.
-gen_cb() { printf '#!/bin/sh\n%s\n' "$1" > "$HOME/.local/bin/claudeb"; chmod +x "$HOME/.local/bin/claudeb"; }
-
-printf 'first line about the timer work\nsecond line\n' > "$STATE_DIR/topic-t-gen-ok.buf"
-gen_cb "printf 'работа с таймером меню\\n'"
-"$TOPIC_HOOK" --generate t-gen-ok
-assert_eq 'работа с таймером меню' "$(cat "$STATE_DIR/topic-t-gen-ok")"
-
-printf 'buf\n' > "$STATE_DIR/topic-t-gen-long.buf"
-printf 'старая тема\n' > "$STATE_DIR/topic-t-gen-long"
-gen_cb "printf 'это очень длинная тема которая точно превышает шестьдесят символов лимита ответа модели\\n'"
-"$TOPIC_HOOK" --generate t-gen-long
-assert_eq 'старая тема' "$(cat "$STATE_DIR/topic-t-gen-long")"
-
-printf 'buf\n' > "$STATE_DIR/topic-t-gen-md.buf"
-printf 'старая\n' > "$STATE_DIR/topic-t-gen-md"
-gen_cb "printf '\"тема в кавычках\"\\n'"
-"$TOPIC_HOOK" --generate t-gen-md
-assert_eq 'старая' "$(cat "$STATE_DIR/topic-t-gen-md")"
-
-printf 'buf\n' > "$STATE_DIR/topic-t-gen-multi.buf"
-gen_cb "printf 'работа с меню\\nlishnyaya stroka\\n'"
-"$TOPIC_HOOK" --generate t-gen-multi
-assert_eq 'работа с меню' "$(cat "$STATE_DIR/topic-t-gen-multi")"
-
-rm -f "$STATE_DIR/topic-t-gen-empty.buf" "$STATE_DIR/topic-t-gen-empty"
-gen_cb "printf 'должно быть проигнорировано\\n'"
-"$TOPIC_HOOK" --generate t-gen-empty
-assert test ! -e "$STATE_DIR/topic-t-gen-empty"
-printf '#!/bin/sh\nexit 0\n' > "$HOME/.local/bin/claudeb"
+# Longer than 44 chars truncates on a character boundary with an ellipsis.
+long_title=$(printf 'T%.0s' $(seq 1 60))
+printf '{"type":"ai-title","aiTitle":"%s","sessionId":"t"}\n' "$long_title" > "$TITLE_T"
+title_long=$(run_statusline "$(statusline_payload title-long "$(title_extra "$TITLE_T")")")
+assert grep -Fq "$(printf 'T%.0s' $(seq 1 43))…" <<< "$title_long"
 
 # --- statusline-ports-probe.sh ---
 PORTS_PROBE="$ROOT/bin/statusline-ports-probe.sh"
@@ -817,17 +892,15 @@ rm -f "$STATE_DIR/ports-r-absent"
 rabsent_out=$(run_statusline "$(statusline_payload r-absent)")
 assert test "${rabsent_out#*⇢}" = "$rabsent_out"
 
-printf 'работа с таймером меню\n' > "$STATE_DIR/topic-r-topic"
-rtopic_out=$(run_statusline "$(statusline_payload r-topic)")
-assert grep -Fq 'работа с таймером меню' <<< "$rtopic_out"
+# Multibyte title truncates on codepoints (byte slicing would split the char).
+mb_title=$(printf 'ü%.0s' $(seq 1 51))
+printf '{"type":"ai-title","aiTitle":"%s","sessionId":"r"}\n' "$mb_title" > "$TITLE_T"
+rlong_out=$(run_statusline "$(statusline_payload r-long "$(title_extra "$TITLE_T")")")
+assert grep -Fq "$(printf 'ü%.0s' $(seq 1 43))…" <<< "$rlong_out"
 
-rm -f "$STATE_DIR/topic-r-topic-absent"
-rtabsent_out=$(run_statusline "$(statusline_payload r-topic-absent)")
-assert test "${rtabsent_out#*работа с таймером}" = "$rtabsent_out"
-
-printf 'абвгдежзийклмнопрстуфхцчшщъыьэюяабвгдежзийклмнопрст\n' > "$STATE_DIR/topic-r-long"
-rlong_out=$(run_statusline "$(statusline_payload r-long)")
-assert grep -Fq '…' <<< "$rlong_out"
+# No transcript path in the payload → no title segment.
+rtabsent_out=$(run_statusline "$(statusline_payload r-title-absent)")
+assert test 0 -eq "$(grep -c 'ü' <<< "$rtabsent_out")"
 
 # End-to-end: the real probe output (written with a trailing newline) renders.
 run_probe pp-render 1001
