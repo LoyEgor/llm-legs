@@ -21,6 +21,8 @@ import statistics
 import subprocess
 import tempfile
 import fcntl
+import termios
+import tty
 from collections import defaultdict, Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -228,18 +230,119 @@ def to_json(rows, global_median, outliers_excluded, ledger_path, delegations, le
     }
 
 
+def aggregate_reviews(reviews):
+    snapshot = {}
+    for review in reviews:
+        key = (review.get("run_id"), review.get("rater_model"), review.get("rater_effort"))
+        if all(key):
+            snapshot[key] = review
+    buckets = {}
+    for review in snapshot.values():
+        key = (review["rater_model"], review["rater_effort"])
+        bucket = buckets.setdefault(key, {
+            "benches": 0, "findings": 0, "confirmed": 0, "false_positive": 0,
+            "duplicate": 0, "unique_catches": 0, "misses": 0,
+            "p1": 0, "p2": 0, "p3": 0,
+        })
+        bucket["benches"] += 1
+        for field in bucket:
+            if field != "benches" and isinstance(review.get(field), (int, float)):
+                bucket[field] += review[field]
+
+    rows = []
+    for (model, effort), bucket in buckets.items():
+        findings = bucket["findings"]
+        catches = bucket["confirmed"] + bucket["duplicate"]
+        opportunities = catches + bucket["misses"]
+        rows.append({
+            "rater_model": model,
+            "rater_effort": effort,
+            **bucket,
+            "findings_per_bench": findings / bucket["benches"],
+            "confirmed_pct": bucket["confirmed"] / findings if findings else None,
+            "false_positive_pct": bucket["false_positive"] / findings if findings else None,
+            "unique_catch_rate": bucket["unique_catches"] / catches if catches else None,
+            "miss_rate": bucket["misses"] / opportunities if opportunities else None,
+            "weighted_score": (bucket["p1"] * 5 + bucket["p2"] * 2 + bucket["p3"]) / bucket["benches"],
+        })
+    rows.sort(key=lambda row: (-row["weighted_score"], row["miss_rate"] if row["miss_rate"] is not None else 1,
+                               row["rater_model"], row["rater_effort"]))
+    return rows
+
+
+def percent(value):
+    return "—" if value is None else f"{value * 100:.1f}"
+
+
+def print_reviews_table(rows, reviews_path, reviews):
+    print("Review benchmark leaderboard — model x effort, weighted score first")
+    header = (f"{'model/effort':<22}{'bench':>7}{'find/b':>9}{'confirm%':>10}{'FP%':>7}"
+              f"{'unique%':>9}{'miss%':>8}{'score':>8}")
+    print(header)
+    print("-" * len(header))
+    for row in rows:
+        label = f"{row['rater_model']}/{row['rater_effort']}"
+        print(f"{label:<22}{row['benches']:>7}{row['findings_per_bench']:>9.2f}"
+              f"{percent(row['confirmed_pct']):>10}{percent(row['false_positive_pct']):>7}"
+              f"{percent(row['unique_catch_rate']):>9}{percent(row['miss_rate']):>8}"
+              f"{row['weighted_score']:>8.2f}")
+    print("-" * len(header))
+    print("legend: find/b=findings per bench, confirm%=confirmed/findings, FP%=false positives/findings, "
+          "unique%=unique/catches, miss%=misses/opportunities, score=(5×P1+2×P2+P3 confirmed)/bench")
+    if reviews_path.exists():
+        updated = datetime.fromtimestamp(reviews_path.stat().st_mtime, timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    else:
+        updated = "(no reviews ledger)"
+    print(f"data: reviews {updated} | {len(reviews)} rater rows")
+
+
+def interactive_tables(implementation, reviews):
+    current = "implementation"
+    while True:
+        if current == "implementation":
+            implementation()
+            print("[Tab/r] reviews view · [q/Enter] exit", end="", flush=True)
+        else:
+            reviews()
+            print("[Tab/r] implementation view · [q/Enter] exit", end="", flush=True)
+        fd = sys.stdin.fileno()
+        previous = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            key = sys.stdin.read(1)
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, previous)
+        print()
+        if key in ("\r", "\n", "q", "Q"):
+            return
+        if key in ("\t", "r", "R"):
+            current = "reviews" if current == "implementation" else "implementation"
+            print("\033[2J\033[H", end="")
+
+
 def cmd_view(args):
     sd = state_dir()
     ledger_path = sd / "ledger.jsonl"
     ledger = read_jsonl(ledger_path)
     delegations = read_jsonl(sd / "delegations.jsonl")
     rows, global_median, outliers_excluded = aggregate(ledger, delegations)
+    reviews_path = sd / "reviews.jsonl"
+    reviews = read_jsonl(reviews_path)
+    review_rows = aggregate_reviews(reviews)
     if args.json:
-        json.dump(to_json(rows, global_median, outliers_excluded, ledger_path, delegations, ledger),
-                  sys.stdout, indent=2)
+        payload = to_json(rows, global_median, outliers_excluded, ledger_path, delegations, ledger)
+        payload["reviews"] = {"rows": review_rows, "rater_rows": len(reviews)}
+        json.dump(payload, sys.stdout, indent=2)
         sys.stdout.write("\n")
+    elif sys.stdout.isatty() and sys.stdin.isatty():
+        interactive_tables(
+            lambda: print_table(rows, global_median, outliers_excluded, ledger_path, delegations, ledger),
+            lambda: print_reviews_table(review_rows, reviews_path, reviews),
+        )
     else:
         print_table(rows, global_median, outliers_excluded, ledger_path, delegations, ledger)
+        print()
+        print_reviews_table(review_rows, reviews_path, reviews)
 
 
 def worker_corpus_path():

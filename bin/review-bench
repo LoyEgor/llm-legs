@@ -1,0 +1,706 @@
+#!/usr/bin/env python3
+import argparse
+import concurrent.futures
+import fcntl
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+import tempfile
+import time
+from collections import Counter
+from datetime import datetime, timezone
+from difflib import SequenceMatcher
+from pathlib import Path
+
+
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+RATER_TIMEOUT_S = 1800
+AUTO_RATERS = tuple(
+    f"{model}-{effort}"
+    for effort in ("medium", "high", "xhigh", "low", "max")
+    for model in ("sol", "haiku", "sonnet", "opus")
+)
+VERDICTS = {"confirmed", "false_positive", "duplicate"}
+WEIGHTS = {"P1": 5, "P2": 2, "P3": 1}
+RATER_RE = re.compile(r"^(sol|opus|sonnet|haiku)-(low|medium|high|xhigh|max)$")
+PRIORITY_RE = re.compile(r"\b(P[123])\b", re.IGNORECASE)
+LOCATION_RE = re.compile(r"(?P<file>[^\s:]+\.[A-Za-z0-9]+):(?P<line>\d+)(?:-\d+)?")
+
+
+def utc_now():
+    return datetime.now(timezone.utc)
+
+
+def iso_now():
+    return utc_now().isoformat()
+
+
+def state_dir():
+    override = os.environ.get("WORKER_STATS_DIR")
+    if override:
+        return Path(override)
+    base = os.environ.get(
+        "CLAUDEB_DIR", str(Path.home() / ".claude-profiles" / ".claudeb")
+    )
+    return Path(base) / "worker-stats"
+
+
+def read_jsonl(path):
+    rows = []
+    if not path.exists():
+        return rows
+    with open(path) as stream:
+        for number, line in enumerate(stream, 1):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"{path}:{number}: invalid JSON: {exc.msg}") from exc
+            if not isinstance(row, dict):
+                raise ValueError(f"{path}:{number}: expected a JSON object")
+            rows.append(row)
+    return rows
+
+
+def write_jsonl(path, rows):
+    with open(path, "w") as stream:
+        for row in rows:
+            stream.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def parse_rater(spec):
+    match = RATER_RE.fullmatch(spec.strip().lower())
+    if not match:
+        raise ValueError(
+            f"invalid rater {spec!r}; expected sol-<effort> or "
+            "opus|sonnet|haiku-<effort>"
+        )
+    model, effort = match.groups()
+    return {"spec": f"{model}-{effort}", "model": model, "effort": effort,
+            "side": "codex" if model == "sol" else "claude"}
+
+
+def parse_raters(value):
+    specs = [item.strip() for item in value.split(",") if item.strip()]
+    if not specs:
+        raise ValueError("--raters must contain at least one rater")
+    parsed = [parse_rater(spec) for spec in specs]
+    if len({item["spec"] for item in parsed}) != len(parsed):
+        raise ValueError("--raters contains duplicates")
+    return parsed
+
+
+def review_counts(rows):
+    counts = Counter()
+    for row in rows:
+        rater = row.get("rater")
+        if not rater:
+            model = row.get("rater_model")
+            effort = row.get("rater_effort")
+            if model and effort:
+                rater = f"{model}-{effort}"
+        if rater:
+            counts[rater] += 1
+    return counts
+
+
+def command_path(env_name, sibling):
+    override = os.environ.get(env_name)
+    if override:
+        return override
+    local = Path(__file__).resolve().parent / sibling
+    return str(local) if local.exists() else sibling
+
+
+def parse_affordability(output):
+    next_line = next((line for line in output.splitlines() if line.startswith("NEXT:")), "")
+    codex_line = next((line for line in output.splitlines() if line.startswith("codex:")), "")
+    claude_line = next((line for line in output.splitlines() if line.startswith("claude:")), "")
+    account_match = re.search(r"ACCOUNT:\s*([^;|\s]+);\s*pre-reset cap\s+(\d+(?:\.\d+)?)%", next_line)
+    claude_account = account_match.group(1) if account_match else None
+    claude_cap = float(account_match.group(2)) if account_match else None
+    table_accounts = []
+    session_account = None
+    for segment in claude_line.removeprefix("claude:").split(" | "):
+        match = re.match(
+            r"\s*([A-Za-z0-9._-]+)\(\$[^)]*\)(\*)?.*?\bscore\s+(-?[0-9.]+)\s+cap\s+([0-9.]+)%",
+            segment,
+        )
+        if not match:
+            continue
+        account, session_mark, score, cap = match.groups()
+        if session_mark:
+            session_account = account
+        blocked = any(flag in segment for flag in (" FLOOR", " blocked", " off"))
+        if not session_mark and not blocked and float(cap) >= 15:
+            table_accounts.append((float(score), account, float(cap)))
+    table_accounts.sort(key=lambda item: (-item[0], item[1]))
+    next_is_eligible = next(
+        (row for row in table_accounts if row[1] == claude_account), None
+    )
+    selected = next_is_eligible or (table_accounts[0] if table_accounts else None)
+    if selected:
+        _, claude_account, claude_cap = selected
+    else:
+        claude_account = None
+        claude_cap = None
+    claude_ok = bool(selected and "ALL FLOORED" not in next_line)
+    codex_ok = bool(
+        codex_line
+        and "unavailable" not in codex_line.lower()
+        and "WALLED" not in next_line.upper()
+        and not re.match(r"codex:\s*unavailable", codex_line, re.IGNORECASE)
+    )
+    return {
+        "codex": codex_ok,
+        "claude": claude_ok,
+        "claude_account": claude_account,
+        "claude_cap": claude_cap,
+        "session_account": session_account,
+        "worker_pick": output,
+    }
+
+
+def parse_worker_pick(output):
+    parsed = parse_affordability(output)
+    codex_line = next((line for line in output.splitlines() if line.startswith("codex:")), "")
+    codex_match = re.match(r"codex:\s*([^\s]+)", codex_line)
+    return {
+        **parsed,
+        "codex": codex_match.group(1) if parsed["codex"] and codex_match else None,
+        "claude": parsed["claude_account"] if parsed["claude"] else None,
+        "codex_reason": codex_line or "Codex unavailable",
+        "claude_reason": (
+            f"pre-reset cap {parsed['claude_cap']:g}%"
+            if parsed["claude_cap"] is not None else "no eligible non-session account"
+        ),
+    }
+
+
+def affordability():
+    command = [command_path("REVIEW_BENCH_WORKER_PICK_BIN", "worker-pick")]
+    try:
+        proc = subprocess.run(command, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"worker-pick failed: {exc}") from exc
+    if proc.returncode != 0:
+        raise RuntimeError(f"worker-pick failed: {proc.stderr.strip() or proc.returncode}")
+    return parse_affordability(proc.stdout)
+
+
+def auto_pick(number, rows, available):
+    if number < 1:
+        raise ValueError("--auto must be at least 1")
+    counts = review_counts(rows)
+    eligible = []
+    skipped = []
+    for order, spec in enumerate(AUTO_RATERS):
+        rater = parse_rater(spec)
+        if available[rater["side"]]:
+            eligible.append((counts[spec], order, rater))
+        else:
+            skipped.append((spec, f"{rater['side']} side is unaffordable"))
+    eligible.sort(key=lambda item: (item[0], item[1]))
+    if len(eligible) < number:
+        raise RuntimeError(
+            f"only {len(eligible)} affordable benchmark cells are available for --auto {number}"
+        )
+    return [item[2] for item in eligible[:number]], counts, skipped
+
+
+def extract_json_values(text):
+    values = []
+    decoder = json.JSONDecoder()
+    position = 0
+    while position < len(text):
+        match = re.search(r"[\[{]", text[position:])
+        if not match:
+            break
+        start = position + match.start()
+        try:
+            value, consumed = decoder.raw_decode(text[start:])
+        except json.JSONDecodeError:
+            position = start + 1
+            continue
+        values.append(value)
+        position = start + consumed
+    return values
+
+
+def normalize_severity(value):
+    match = PRIORITY_RE.search(str(value or ""))
+    return match.group(1).upper() if match else None
+
+
+def finding_from_dict(value, rater):
+    severity = normalize_severity(
+        value.get("severity") or value.get("priority") or value.get("title")
+    )
+    if not severity:
+        return None
+    location = value.get("code_location") or value.get("location") or {}
+    if not isinstance(location, dict):
+        location = {}
+    file_name = (
+        value.get("file")
+        or value.get("path")
+        or location.get("absolute_file_path")
+        or location.get("file")
+        or ""
+    )
+    line = value.get("line") or value.get("line_number")
+    line_range = location.get("line_range") or {}
+    if line is None and isinstance(line_range, dict):
+        line = line_range.get("start")
+    try:
+        line = int(line) if line is not None else None
+    except (TypeError, ValueError):
+        line = None
+    summary = value.get("summary") or value.get("title") or value.get("body") or ""
+    summary = PRIORITY_RE.sub("", str(summary), count=1).strip(" []:-")
+    if not summary:
+        return None
+    return {"severity": severity, "file": str(file_name), "line": line,
+            "summary": " ".join(summary.split()), "rater": rater}
+
+
+def findings_from_value(value, rater):
+    findings = []
+    if isinstance(value, dict):
+        direct = finding_from_dict(value, rater)
+        if direct:
+            findings.append(direct)
+        for key, nested in value.items():
+            if key in {"findings", "result", "message", "content", "text", "output_text", "item"}:
+                if isinstance(nested, str):
+                    findings.extend(normalize_findings(nested, rater))
+                else:
+                    findings.extend(findings_from_value(nested, rater))
+    elif isinstance(value, list):
+        for nested in value:
+            findings.extend(findings_from_value(nested, rater))
+    return findings
+
+
+def normalize_findings(text, rater):
+    findings = []
+    for value in extract_json_values(text):
+        findings.extend(findings_from_value(value, rater))
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(("{", "[")):
+            continue
+        severity = normalize_severity(line)
+        if not severity:
+            continue
+        location = LOCATION_RE.search(line)
+        summary = PRIORITY_RE.sub("", line, count=1).strip(" -*[]:—")
+        if location:
+            summary = summary.replace(location.group(0), "").strip(" -:—()`")
+        if summary:
+            findings.append({
+                "severity": severity,
+                "file": location.group("file").strip("`'\"()[]") if location else "",
+                "line": int(location.group("line")) if location else None,
+                "summary": " ".join(summary.split()),
+                "rater": rater,
+            })
+    unique = []
+    seen = set()
+    for finding in findings:
+        key = (finding["severity"], finding["file"], finding["line"], finding["summary"])
+        if key not in seen:
+            seen.add(key)
+            unique.append(finding)
+    return unique
+
+
+def normalize_codex_stream(text, rater, repo):
+    return normalize_findings(text, rater)
+
+
+def normalize_claude_output(text, rater, repo):
+    return normalize_findings(text, rater)
+
+
+def review_prompt(sha, focus):
+    suffix = f"\nAdditional focus: {focus}" if focus else ""
+    return (
+        f"Review commit {sha}. Return findings only, one JSON object per line, with exactly "
+        "these fields: severity (P1, P2, or P3), file, line, summary. Use changed lines for "
+        "locations. Return no text when there are no findings. Do not modify the repository."
+        + suffix
+    )
+
+
+def codex_account():
+    command = [command_path("REVIEW_BENCH_CODEXB_BIN", "codexb"), "pick"]
+    proc = subprocess.run(command, capture_output=True, text=True, timeout=30)
+    if proc.returncode != 0:
+        raise RuntimeError(f"codexb pick failed: {proc.stderr.strip() or proc.returncode}")
+    return proc.stdout.strip().splitlines()[-1] if proc.stdout.strip() else "main"
+
+
+def codex_environment(account):
+    env = os.environ.copy()
+    if account == "main":
+        env.pop("CODEX_HOME", None)
+    else:
+        env["CODEX_HOME"] = str(Path.home() / ".codex-profiles" / account)
+    return env
+
+
+def run_codex(rater, repo, sha, focus, run_dir, account):
+    raw_final = tempfile.NamedTemporaryFile(
+        dir=run_dir, prefix=f"raw-final-{rater['spec']}-", delete=False
+    )
+    raw_final.close()
+    raw_events = run_dir / f"raw-events-{rater['spec']}.jsonl"
+    command = [
+        command_path("REVIEW_BENCH_CODEX_BIN", "codex"), "exec", "review",
+        "--commit", sha, "-m", "gpt-5.6-sol", "-c",
+        f"model_reasoning_effort={rater['effort']}",
+    ]
+    if focus:
+        instruction = json.dumps(f"Additional review focus: {focus}")
+        command += ["-c", f"developer_instructions={instruction}"]
+    command += ["--json", "-o", raw_final.name]
+    started = time.monotonic()
+    try:
+        with open(raw_events, "w") as stdout:
+            proc = subprocess.run(command, cwd=repo, env=codex_environment(account), stdin=subprocess.DEVNULL,
+                                  stdout=stdout, stderr=subprocess.PIPE, text=True, timeout=RATER_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        duration = round((time.monotonic() - started) * 1000)
+        return 124, duration, "", f"rater timed out after {RATER_TIMEOUT_S}s", command
+    duration = round((time.monotonic() - started) * 1000)
+    text = Path(raw_final.name).read_text(errors="replace")
+    if raw_events.exists():
+        text += "\n" + raw_events.read_text(errors="replace")
+    return proc.returncode, duration, text, proc.stderr, command
+
+
+def run_claude(rater, repo, sha, focus, run_dir, account, diff):
+    raw_output = run_dir / f"raw-{rater['spec']}.json"
+    prompt = review_prompt(sha, focus) + "\n\nCommit diff:\n" + diff
+    command = [
+        command_path("REVIEW_BENCH_CLAUDEB_BIN", "claudeb"), "profile", account,
+        "-p", prompt, "--output-format", "json", "--model", rater["model"],
+        "--effort", rater["effort"],
+    ]
+    started = time.monotonic()
+    try:
+        proc = subprocess.run(command, cwd=repo, stdin=subprocess.DEVNULL,
+                              capture_output=True, text=True, timeout=RATER_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        duration = round((time.monotonic() - started) * 1000)
+        return 124, duration, "", f"rater timed out after {RATER_TIMEOUT_S}s", command
+    duration = round((time.monotonic() - started) * 1000)
+    raw_output.write_text(proc.stdout)
+    return proc.returncode, duration, proc.stdout, proc.stderr, command
+
+
+def run_one(rater, repo, sha, focus, run_dir, accounts, diff):
+    if rater["side"] == "codex":
+        result = run_codex(rater, repo, sha, focus, run_dir, accounts["codex"])
+        account = accounts["codex"]
+    else:
+        result = run_claude(rater, repo, sha, focus, run_dir, accounts["claude"], diff)
+        account = accounts["claude"]
+    return rater, account, result
+
+
+def resolve_commit(repo, commitish):
+    proc = subprocess.run(["git", "rev-parse", "--verify", f"{commitish}^{{commit}}"],
+                          cwd=repo, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise ValueError(f"cannot resolve commit {commitish!r} in {repo}")
+    return proc.stdout.strip()
+
+
+def commit_diff(repo, sha):
+    proc = subprocess.run(["git", "show", "--format=fuller", "--no-ext-diff", sha],
+                          cwd=repo, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or "git show failed")
+    return proc.stdout
+
+
+def handoff(run_id, paths):
+    verdict_path = f"/tmp/review-bench-{run_id}-verdicts.jsonl"
+    command = f"review-bench record {shlex.quote(run_id)} --verdicts {shlex.quote(verdict_path)}"
+    print("\nADJUDICATION HANDOFF")
+    print("Read these files without revealing one rater's output to another:")
+    for path in paths:
+        print(f"  {path}")
+    print("Merge and deduplicate the findings blind. Write one verdict per zero-based finding "
+          "index as {rater, idx, verdict}, where verdict is confirmed, false_positive, or duplicate.")
+    print(f"Record exactly with: {command}")
+
+
+def cmd_run(args):
+    repo = Path(args.repo).resolve()
+    if not (repo / ".git").exists() and subprocess.run(
+        ["git", "rev-parse", "--git-dir"], cwd=repo, capture_output=True
+    ).returncode != 0:
+        raise ValueError(f"not a git repository: {repo}")
+    sha = resolve_commit(repo, args.commitish)
+    available = affordability()
+    reviews_path = state_dir() / "reviews.jsonl"
+    if args.raters:
+        requested = parse_raters(args.raters)
+        raters = [rater for rater in requested if available[rater["side"]]]
+        skipped = [
+            (rater["spec"], f"{rater['side']} side is unaffordable")
+            for rater in requested if not available[rater["side"]]
+        ]
+        if not raters:
+            raise RuntimeError("no affordable requested raters")
+        counts = review_counts(read_jsonl(reviews_path))
+    else:
+        raters, counts, skipped = auto_pick(args.auto or 2, read_jsonl(reviews_path), available)
+    print("selected raters:")
+    for rater in raters:
+        if rater["side"] == "claude":
+            reason = f"account {available['claude_account']}, cap {available['claude_cap']:g}%"
+        else:
+            reason = "worker-pick reports Codex available"
+        print(f"  {rater['spec']}: {counts[rater['spec']]} recorded bench row(s); {reason}")
+    for spec, reason in skipped:
+        print(f"skipped {spec}: {reason}")
+    accounts = {"claude": available["claude_account"], "codex": None}
+    if any(rater["side"] == "codex" for rater in raters):
+        accounts["codex"] = codex_account()
+
+    started = utc_now()
+    run_id = f"{started.strftime('%Y%m%dT%H%M%SZ')}-{sha[:7]}"
+    run_dir = state_dir() / "benches" / run_id
+    if run_dir.exists():
+        run_id += f"-{os.getpid()}"
+        run_dir = state_dir() / "benches" / run_id
+    run_dir.mkdir(parents=True)
+    os.chmod(run_dir, 0o700)
+    diff = commit_diff(repo, sha) if any(rater["side"] == "claude" for rater in raters) else ""
+    results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(raters)) as pool:
+        futures = {
+            pool.submit(run_one, rater, repo, sha, args.focus or "", run_dir, accounts, diff): rater
+            for rater in raters
+        }
+        for future in concurrent.futures.as_completed(futures):
+            rater = futures[future]
+            try:
+                results.append(future.result())
+            except Exception as exc:
+                results.append((rater, accounts.get(rater["side"]),
+                                (1, 0, "", f"rater crashed: {exc}", [])))
+
+    result_by_spec = {rater["spec"]: (rater, account, result)
+                      for rater, account, result in results}
+    paths = []
+    rater_meta = []
+    failed = False
+    for requested in raters:
+        rater, account, result = result_by_spec[requested["spec"]]
+        rc, duration, text, stderr, command = result
+        findings = normalize_findings(text, rater["spec"])
+        path = run_dir / f"findings-{rater['spec']}.jsonl"
+        write_jsonl(path, findings)
+        paths.append(path)
+        failed = failed or rc != 0
+        rater_meta.append({
+            "rater": rater["spec"], "model": rater["model"], "effort": rater["effort"],
+            "side": rater["side"], "account": account, "duration_ms": duration,
+            "findings": len(findings), "exit_code": rc, "stderr": stderr[-2000:] if stderr else "",
+            "command": shlex.join(command) if rater["side"] == "codex" else
+            shlex.join(command[:4] + ["<review-prompt-and-diff>"] + command[5:]),
+        })
+        print(f"{rater['spec']}: {len(findings)} finding(s), {duration} ms, exit {rc}")
+    meta = {
+        "run_id": run_id, "commit": sha, "repo": str(repo),
+        "raters": [rater["spec"] for rater in raters], "rater_runs": rater_meta,
+        "durations": {row["rater"]: row["duration_ms"] for row in rater_meta},
+        "started": started.isoformat(), "finished": iso_now(), "focus": args.focus or "",
+    }
+    (run_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
+    print(f"run id: {run_id}")
+    handoff(run_id, paths)
+    return 1 if failed else 0
+
+
+def finding_rows(run_dir, rater):
+    return read_jsonl(run_dir / f"findings-{rater}.jsonl")
+
+
+def finding_similarity(left, right):
+    if left.get("file") == right.get("file") and left.get("line") == right.get("line"):
+        return 2 + SequenceMatcher(
+            None, str(left.get("summary", "")).lower(), str(right.get("summary", "")).lower()
+        ).ratio()
+    if left.get("file") == right.get("file"):
+        try:
+            distance = abs(int(left.get("line")) - int(right.get("line")))
+        except (TypeError, ValueError):
+            distance = 100
+        if distance <= 3:
+            return 1 - distance / 10
+    return SequenceMatcher(
+        None, str(left.get("summary", "")).lower(), str(right.get("summary", "")).lower()
+    ).ratio()
+
+
+def append_review_records(sd, records):
+    sd.mkdir(parents=True, exist_ok=True)
+    with open(sd / ".reviews.lock", "w") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        existing = read_jsonl(sd / "reviews.jsonl")
+        keys = {(row.get("run_id"), row.get("rater")) for row in existing}
+        fresh = [row for row in records if (row["run_id"], row["rater"]) not in keys]
+        if fresh:
+            with open(sd / "reviews.jsonl", "a") as stream:
+                for record in fresh:
+                    stream.write(json.dumps(record) + "\n")
+    return fresh
+
+
+def cmd_record(args):
+    sd = state_dir()
+    run_dir = sd / "benches" / args.run_id
+    meta_path = run_dir / "meta.json"
+    if not meta_path.exists():
+        raise ValueError(f"unknown run id: {args.run_id}")
+    meta = json.loads(meta_path.read_text())
+    verdict_rows = read_jsonl(Path(args.verdicts))
+    verdict_map = {}
+    for row in verdict_rows:
+        rater = row.get("rater")
+        idx = row.get("idx")
+        verdict = row.get("verdict")
+        if rater not in meta["raters"] or not isinstance(idx, int) or idx < 0 or verdict not in VERDICTS:
+            raise ValueError(f"invalid verdict row: {row}")
+        key = (rater, idx)
+        if key in verdict_map:
+            raise ValueError(f"duplicate verdict for {rater} index {idx}")
+        verdict_map[key] = verdict
+
+    findings = {rater: finding_rows(run_dir, rater) for rater in meta["raters"]}
+    for rater, rows in findings.items():
+        expected = {(rater, idx) for idx in range(len(rows))}
+        supplied = {key for key in verdict_map if key[0] == rater}
+        if supplied != expected:
+            missing = sorted(expected - supplied)
+            extra = sorted(supplied - expected)
+            raise ValueError(f"verdict coverage mismatch for {rater}: missing={missing}, extra={extra}")
+
+    canonical = [key for key, verdict in verdict_map.items() if verdict == "confirmed"]
+    caught_by = {key: {key[0]} for key in canonical}
+    for key, verdict in verdict_map.items():
+        if verdict != "duplicate" or not canonical:
+            continue
+        source = findings[key[0]][key[1]]
+        target = max(
+            canonical,
+            key=lambda candidate: finding_similarity(
+                source, findings[candidate[0]][candidate[1]]
+            ),
+        )
+        caught_by[target].add(key[0])
+    meta_by_rater = {row["rater"]: row for row in meta.get("rater_runs", [])}
+    records = []
+    for rater in meta["raters"]:
+        parsed = parse_rater(rater)
+        rows = findings[rater]
+        values = [verdict_map[(rater, idx)] for idx in range(len(rows))]
+        counts = Counter(values)
+        priorities = Counter(
+            rows[idx].get("severity") for idx, verdict in enumerate(values)
+            if verdict == "confirmed"
+        )
+        unique_catches = sum(
+            key[0] == rater and len(accounts) == 1
+            for key, accounts in caught_by.items()
+        )
+        caught = sum(rater in accounts for accounts in caught_by.values())
+        duration = meta_by_rater.get(rater, {}).get(
+            "duration_ms", meta.get("durations", {}).get(rater)
+        )
+        record = {
+            "run_id": args.run_id, "ts": iso_now(), "commit": meta["commit"],
+            "rater": rater, "rater_model": parsed["model"], "rater_effort": parsed["effort"],
+            "findings": len(rows), "p1": priorities["P1"], "p2": priorities["P2"],
+            "p3": priorities["P3"], "confirmed": counts["confirmed"],
+            "false_positive": counts["false_positive"], "duplicate": counts["duplicate"],
+            "confirmed_pct": (counts["confirmed"] / len(rows) * 100)
+            if rows else 0.0,
+            "fp_pct": (counts["false_positive"] / len(rows) * 100) if rows else 0.0,
+            "unique_catches": unique_catches, "misses": len(canonical) - caught,
+            "weighted_score": sum(priorities[p] * weight for p, weight in WEIGHTS.items()),
+            "duration_ms": duration,
+        }
+        records.append(record)
+    fresh = append_review_records(sd, records)
+    print(f"recorded {len(fresh)} rater row(s); skipped {len(records) - len(fresh)} existing row(s)")
+    return 0
+
+
+def cmd_list(args):
+    benches = state_dir() / "benches"
+    reviews = read_jsonl(state_dir() / "reviews.jsonl")
+    recorded = Counter(row.get("run_id") for row in reviews)
+    entries = []
+    if benches.exists():
+        for path in benches.iterdir():
+            meta_path = path / "meta.json"
+            if not meta_path.exists():
+                continue
+            try:
+                meta = json.loads(meta_path.read_text())
+            except json.JSONDecodeError:
+                continue
+            entries.append(meta)
+    entries.sort(key=lambda item: item.get("started", item.get("started_at", "")), reverse=True)
+    if not entries:
+        print("no benchmark runs")
+        return 0
+    print(f"{'run id':<33} {'commit':<10} {'raters':>6} {'adjudicated':>12}  status")
+    for meta in entries[: args.limit]:
+        total = len(meta.get("raters", []))
+        done = min(recorded[meta.get("run_id")], total)
+        status = "adjudicated" if total and done == total else "pending"
+        print(f"{meta.get('run_id', '?'):<33} {meta.get('commit', '?')[:9]:<10} "
+              f"{total:>6} {f'{done}/{total}':>12}  {status}")
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Benchmark blind code-review raters")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    run = subparsers.add_parser("run", help="Run blind reviewers against one commit")
+    run.add_argument("commitish")
+    run.add_argument("--repo", default=".")
+    selection = run.add_mutually_exclusive_group()
+    selection.add_argument("--raters", help="Comma-separated rater specs")
+    selection.add_argument("--auto", type=int, metavar="N", help="Pick N least-reviewed cells")
+    run.add_argument("--focus", default="")
+    run.set_defaults(func=cmd_run)
+    record = subparsers.add_parser("record", help="Record blind adjudication verdicts")
+    record.add_argument("run_id")
+    record.add_argument("--verdicts", required=True)
+    record.set_defaults(func=cmd_record)
+    listing = subparsers.add_parser("list", help="List recent benchmark runs")
+    listing.add_argument("--limit", type=int, default=20)
+    listing.set_defaults(func=cmd_list)
+    args = parser.parse_args()
+    try:
+        return args.func(args)
+    except (ValueError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
+        print(f"review-bench: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

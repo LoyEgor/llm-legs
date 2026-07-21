@@ -1,0 +1,187 @@
+#!/usr/bin/env bash
+set -u
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SCRIPT="$ROOT/bin/review-bench"
+STATS="$ROOT/bin/worker-stats"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+asserts=0
+fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
+contains() { grep -Fq -- "$2" <<<"$1"; }
+
+python3 - "$SCRIPT" <<'PY'
+import importlib.machinery
+import importlib.util
+import json
+import sys
+
+loader = importlib.machinery.SourceFileLoader("review_bench", sys.argv[1])
+spec = importlib.util.spec_from_loader("review_bench", loader)
+rb = importlib.util.module_from_spec(spec)
+loader.exec_module(rb)
+
+assert rb.parse_rater("sol-medium") == {
+    "spec": "sol-medium", "model": "sol", "effort": "medium", "side": "codex"
+}
+assert rb.parse_rater("opus-xhigh")["side"] == "claude"
+for invalid in ("gpt-medium", "sol", "opus-ultra", "sol-mega", ""):
+    try:
+        rb.parse_rater(invalid)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError(f"accepted invalid rater: {invalid}")
+
+pick = rb.parse_affordability("""NEXT: claudeb worker · opus · high — ACCOUNT: worker; pre-reset cap 22%  |  codex cx · medium — FRESH
+codex: cx 10% runway 80%
+claude: worker($100) 5h 10% wk 20% fb 30% score 90 cap 22% | session($100)* 5h 0% wk 0% fb 0% score 100 cap 90% | low($20) 5h 85% wk 20% fb 20% score 10 cap 5%
+""")
+assert pick["codex"] is True
+assert pick["claude"] is True
+assert pick["claude_account"] == "worker"
+assert pick["session_account"] == "session"
+
+reviews = []
+for rater in rb.AUTO_RATERS:
+    model, effort = rater.split("-", 1)
+    count = 3
+    if rater == "sol-medium":
+        count = 0
+    elif rater == "haiku-medium":
+        count = 1
+    for index in range(count):
+        reviews.append({"run_id": f"{rater}-{index}", "rater_model": model,
+                        "rater_effort": effort})
+availability = {"codex": True, "claude": True}
+picked, counts, skipped = rb.auto_pick(2, reviews, availability)
+assert [row["spec"] for row in picked] == ["sol-medium", "haiku-medium"]
+assert [counts[row["spec"]] for row in picked] == [0, 1]
+assert not skipped
+
+availability["claude"] = False
+picked, counts, skipped = rb.auto_pick(2, reviews, availability)
+assert all(row["side"] == "codex" for row in picked)
+assert any(spec.startswith("haiku-") for spec, _ in skipped)
+
+codex_stream = "\n".join([
+    json.dumps({"type": "thread.started", "thread_id": "t"}),
+    json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text":
+        "- [P1] Reject empty tokens — `src/auth.py:41-43`"}}),
+])
+codex = rb.normalize_findings(codex_stream, "sol-medium")
+assert [(row["severity"], row["file"], row["line"]) for row in codex] == [
+    ("P1", "src/auth.py", 41)
+]
+
+claude_envelope = json.dumps({"type": "result", "result":
+    '{"severity":"P3","file":"lib/task.py","line":17,"summary":"Handle cancellation"}\n'})
+claude = rb.normalize_findings(claude_envelope, "opus-medium")
+assert claude == [{"severity": "P3", "file": "lib/task.py", "line": 17,
+                   "summary": "Handle cancellation", "rater": "opus-medium"}]
+print("review-bench-unit-ok")
+PY
+assert test "$?" -eq 0
+
+SD="$WORK/state"
+RUN="$SD/benches/run-fixture"
+mkdir -p "$RUN"
+python3 - "$RUN" <<'PY'
+import json
+import pathlib
+import sys
+
+run = pathlib.Path(sys.argv[1])
+meta = {"run_id":"run-fixture","commit":"abcdef0123456789","repo":"/repo",
+        "raters":["sol-medium","opus-medium"],
+        "durations":{"sol-medium":1200,"opus-medium":2400},
+        "started":"2026-07-21T00:00:00+00:00","finished":"2026-07-21T00:00:03+00:00","focus":""}
+(run / "meta.json").write_text(json.dumps(meta))
+findings = {
+    "sol-medium": [
+        {"severity":"P1","file":"src/a.py","line":10,"summary":"Shared bug","rater":"sol-medium"},
+        {"severity":"P2","file":"src/b.py","line":20,"summary":"Sol-only bug","rater":"sol-medium"},
+        {"severity":"P3","file":"src/no.py","line":30,"summary":"Not a bug","rater":"sol-medium"},
+    ],
+    "opus-medium": [
+        {"severity":"P1","file":"src/a.py","line":10,"summary":"Same shared bug","rater":"opus-medium"},
+        {"severity":"P3","file":"src/c.py","line":40,"summary":"Opus-only bug","rater":"opus-medium"},
+    ],
+}
+for rater, rows in findings.items():
+    with open(run / f"findings-{rater}.jsonl", "w") as handle:
+        for row in rows:
+            handle.write(json.dumps(row) + "\n")
+PY
+
+VERDICTS="$WORK/verdicts.jsonl"
+python3 - "$VERDICTS" <<'PY'
+import json
+import sys
+rows = [
+    {"rater":"sol-medium","idx":0,"verdict":"confirmed"},
+    {"rater":"sol-medium","idx":1,"verdict":"confirmed"},
+    {"rater":"sol-medium","idx":2,"verdict":"false_positive"},
+    {"rater":"opus-medium","idx":0,"verdict":"duplicate"},
+    {"rater":"opus-medium","idx":1,"verdict":"confirmed"},
+]
+with open(sys.argv[1], "w") as handle:
+    for row in rows:
+        handle.write(json.dumps(row) + "\n")
+PY
+
+recorded=$(WORKER_STATS_DIR="$SD" "$SCRIPT" record run-fixture --verdicts "$VERDICTS") || fail "record failed"
+assert contains "$recorded" 'recorded 2 rater row(s)'
+assert test "$(wc -l <"$SD/reviews.jsonl")" -eq 2
+
+python3 - "$SD/reviews.jsonl" <<'PY'
+import json
+import sys
+rows = {f"{r['rater_model']}-{r['rater_effort']}":r for r in map(json.loads, open(sys.argv[1]))}
+sol = rows["sol-medium"]
+opus = rows["opus-medium"]
+assert (sol["findings"], sol["p1"], sol["p2"], sol["p3"]) == (3, 1, 1, 0)
+assert (sol["confirmed"], sol["false_positive"], sol["duplicate"]) == (2, 1, 0)
+assert (sol["unique_catches"], sol["misses"], sol["duration_ms"]) == (1, 1, 1200)
+assert (opus["findings"], opus["p1"], opus["p2"], opus["p3"]) == (2, 0, 0, 1)
+assert (opus["confirmed"], opus["false_positive"], opus["duplicate"]) == (1, 0, 1)
+assert (opus["unique_catches"], opus["misses"], opus["duration_ms"]) == (1, 1, 2400)
+print("record-math-ok")
+PY
+assert test "$?" -eq 0
+
+again=$(WORKER_STATS_DIR="$SD" "$SCRIPT" record run-fixture --verdicts "$VERDICTS") || fail "record dedupe failed"
+assert contains "$again" 'recorded 0 rater row(s)'
+assert test "$(wc -l <"$SD/reviews.jsonl")" -eq 2
+
+stats_json=$(WORKER_STATS_DIR="$SD" "$STATS" --json) || fail "worker-stats review JSON failed"
+python3 - "$stats_json" <<'PY'
+import json
+import sys
+data = json.loads(sys.argv[1])
+rows = {f"{r['rater_model']}-{r['rater_effort']}":r for r in data["reviews"]["rows"]}
+sol = rows["sol-medium"]
+opus = rows["opus-medium"]
+assert round(sol["findings_per_bench"], 3) == 3
+assert round(sol["confirmed_pct"], 3) == 0.667
+assert round(sol["false_positive_pct"], 3) == 0.333
+assert round(sol["unique_catch_rate"], 3) == 0.5
+assert round(sol["miss_rate"], 3) == 0.333
+assert sol["weighted_score"] == 7
+assert opus["weighted_score"] == 1
+print("worker-stats-review-math-ok")
+PY
+assert test "$?" -eq 0
+
+table=$(WORKER_STATS_DIR="$SD" "$STATS") || fail "worker-stats static view failed"
+assert contains "$table" 'Fable-rework leaderboard'
+assert contains "$table" 'Review benchmark leaderboard'
+assert contains "$table" 'sol/medium'
+
+listing=$(WORKER_STATS_DIR="$SD" "$SCRIPT" list) || fail "list failed"
+assert contains "$listing" 'run-fixture'
+assert contains "$listing" 'adjudicated'
+
+printf 'PASS: %s assertions; rater grammar, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, record aggregation/dedupe, unique catches, misses, weighted review score, and run listing\n' "$asserts"
