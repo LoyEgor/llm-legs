@@ -74,6 +74,17 @@ sendCommand = function(cmd, attempt)
 end
 IpadOverlay._sendCommand = sendCommand
 
+-- A ghost helper (surviving hs.reload, or one still dying from an idle
+-- quit) owns the control socket and would ACK the spawn-time "show" just
+-- before the new helper's own sweep kills it — the command is lost and the
+-- panel never appears. Clear ghosts synchronously before spawning. The
+-- anchored pattern matches only the python helper invocation (argv0 is the
+-- framework binary .../MacOS/Python — the venv stub execs it), never an
+-- editor/pager holding the file path in its argv.
+local function killStrayHelpers()
+    hs.execute([[pkill -9 -f '^[^ ]*[Pp]ython[^ ]* [^ ]*/ipad_overlay_app/overlay_app\.py$' 2>/dev/null]])
+end
+
 -- Visibility follows iPad connection automatically (connect shows,
 -- disconnect hides), but the menu toggle is a manual override in both
 -- directions: force-show without an iPad, force-hide with one.
@@ -84,6 +95,13 @@ function IpadOverlay.show()
         idleQuitTimer:stop()
         idleQuitTimer = nil
     end
+    if relaunch_timer then
+        relaunch_timer:stop()
+        relaunch_timer = nil
+    end
+    -- A show is fresh intent: restore the full crash-relaunch budget even if
+    -- an earlier crash loop exhausted it.
+    relaunch_attempts = 0
 
     if not task then
         IpadOverlay._launch_helper()
@@ -97,6 +115,12 @@ end
 
 function IpadOverlay.hide()
     visible = false
+    -- A relaunch pending from a crash-while-visible would otherwise respawn
+    -- a hidden helper with no idle-quit armed.
+    if relaunch_timer then
+        relaunch_timer:stop()
+        relaunch_timer = nil
+    end
     if task then
         sendCommand("hide")
         -- The helper must cost nothing while the overlay stays hidden (no
@@ -112,6 +136,10 @@ function IpadOverlay.hide()
                 -- in flight could kill a helper that show() just respawned;
                 -- a lost quit merely leaves the helper idle until next time.
                 sendCommand("quit", 8)
+                -- Drop the handle now: a show() landing before the helper
+                -- finishes dying must respawn, not talk to a corpse (the
+                -- pre-spawn stray sweep reaps it if the quit got lost).
+                task = nil
             end
         end)
     end
@@ -137,6 +165,7 @@ function IpadOverlay.onChange(callback)
 end
 
 function IpadOverlay._launch_helper()
+    killStrayHelpers()
     local task_obj = hs.task.new(PYTHON_PATH, function(exit_code)
         IpadOverlay._on_helper_exit(exit_code)
     end, { HELPER_PATH })
@@ -170,8 +199,16 @@ function IpadOverlay._on_helper_exit(exit_code)
 
         local backoff = math.min(relaunch_backoff * (2 ^ (relaunch_attempts - 1)), relaunch_max_backoff)
         relaunch_timer = hs.timer.doAfter(backoff, function()
-            IpadOverlay._launch_helper()
+            relaunch_timer = nil
+            if visible then
+                IpadOverlay._launch_helper()
+            end
         end)
+    elseif visible then
+        -- Giving up: leaving visible=true would make isShown()/the menu
+        -- checkmark lie and turn the next toggle() into a no-op hide.
+        visible = false
+        IpadOverlay._notifyChange()
     end
 end
 
@@ -195,6 +232,11 @@ function IpadOverlay.init()
         _G.IpadMode.onChange(IpadOverlay._on_ipad_mode_change)
         if _G.IpadMode.isOn() then
             IpadOverlay.show()
+        else
+            -- After hs.reload with the mode off nothing else would ever
+            -- reap a surviving helper (parent pid unchanged, no task
+            -- handle): it stays a visible orphan until the next show.
+            killStrayHelpers()
         end
     end
 end

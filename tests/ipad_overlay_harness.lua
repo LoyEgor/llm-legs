@@ -8,8 +8,13 @@ env._G = env
 local task_launches = {}
 local task_exit_callbacks = {}
 local socket_writes = {}
+local exec_calls = {}
 
 env.hs = {
+    execute = function(cmd)
+        table.insert(exec_calls, cmd)
+        return "", true, "exit", 0
+    end,
     timer = {
         -- Immediate execution keeps the harness synchronous; retry paths
         -- never trigger because the socket mock always connects. Long timers
@@ -83,6 +88,10 @@ assert(module.isShown() == false, "starts hidden while IpadMode is off")
 assert(#task_launches == 0, "init with IpadMode off must not spawn the helper")
 print("✓ starts hidden, no helper spawn")
 
+assert(#exec_calls >= 1 and exec_calls[1]:match("pkill"),
+    "init with IpadMode off must sweep stray helpers")
+print("✓ init with iPad mode off sweeps stray helpers")
+
 -- Manual toggle must force-show even without an iPad.
 module.toggle()
 assert(module.isShown() == true, "toggle must show without an iPad")
@@ -139,5 +148,18 @@ launches = #task_launches
 task_exit_callbacks[#task_exit_callbacks](0)
 assert(#task_launches == launches, "helper death while hidden must not relaunch")
 print("✓ helper death while hidden stays down")
+
+-- Every spawn must be preceded by a stray-helper sweep.
+assert(#exec_calls > #task_launches, "each launch must sweep strays first")
+print("✓ launches sweep stray helpers")
+
+-- Crash-loop exhaustion must clear visible so isShown()/menu don't lie
+-- (backoff timers <5s run inline here; the 10s attempt reset does not).
+module.show()
+for _ = 1, 4 do
+    task_exit_callbacks[#task_exit_callbacks](1)
+end
+assert(module.isShown() == false, "exhausted crash loop must clear visible")
+print("✓ exhausted crash loop clears visible")
 
 print("All iPad overlay tests passed")

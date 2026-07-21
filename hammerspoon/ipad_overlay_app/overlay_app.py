@@ -106,6 +106,12 @@ OWN_SOCK = STATE_DIR / "control.sock"
 
 KB_BUNDLE_ID = "com.apple.inputmethod.AssistiveControl"
 
+# Anchored full-cmdline match for pgrep/pkill -f: a bare substring would also
+# SIGKILL editors/pagers merely holding this file's path in their argv. Not
+# "bin/python": the venv stub execs the framework binary, so the live argv0
+# is .../Python.app/Contents/MacOS/Python.
+HELPER_CMD_RE = r"^[^ ]*[Pp]ython[^ ]* [^ ]*/ipad_overlay_app/overlay_app\.py$"
+
 
 # Live display bounds from the window server, in Cocoa (bottom-left origin)
 # coordinates. NSScreen's list goes stale in this background app when the
@@ -141,8 +147,13 @@ def display_frames():
 # so confirm each pid is actually alive.
 def kb_running():
     for app in NSRunningApplication.runningApplicationsWithBundleIdentifier_(KB_BUNDLE_ID) or []:
+        pid = app.processIdentifier()
+        # Dead LS entries report pid -1, and os.kill(-1, 0) "succeeds"
+        # (it probes every process we may signal).
+        if pid <= 0:
+            continue
         try:
-            os.kill(app.processIdentifier(), 0)
+            os.kill(pid, 0)
             return True
         except OSError:
             pass
@@ -410,8 +421,13 @@ class KeyButton(NSView):
             return
         self._btn_enabled = value
         if not value:
+            was_pressed = self._pressed
             self._pressed = False
             self._refresh_fill()
+            if was_pressed:
+                # _mouse_up early-returns once _pressed is cleared, so the
+                # press dim must be undone here or the icon sticks at 0.55.
+                self._press_icon(False)
         self.render_icon()
 
     @objc.python_method
@@ -487,6 +503,7 @@ class OverlayApp:
         self._optimistic_until = 0.0
         self._kb_optimistic_until = 0.0
         self._kb_expected = False
+        self._kb_lock = threading.Lock()
         self._save_due = None
         self._animating = False
         self._target_frame = None
@@ -780,8 +797,16 @@ class OverlayApp:
         # Decide and paint on the main thread; only the subprocess work goes
         # to a background thread. AssistiveControl cold-starts slowly
         # (seconds, that's macOS itself) — pulse until the tick confirms it.
-        turning_on = not kb_running()
-        self._kb_optimistic_until = time.time() + 3.0
+        # Inside the grace window kb_running() still reports the old state,
+        # so a second tap must invert the pending INTENT (otherwise a
+        # mistaken turn-on cannot be cancelled until the process is up).
+        if time.time() < self._kb_optimistic_until:
+            turning_on = not self._kb_expected
+        else:
+            turning_on = not kb_running()
+        # Cold starts can exceed a short window; the tick confirms early, so
+        # a long turn-on grace only delays a wrong indicator, never a right one.
+        self._kb_optimistic_until = time.time() + (12.0 if turning_on else 3.0)
         self._kb_expected = turning_on
         self._apply_kb_state(turning_on, turning_on)
         threading.Thread(target=self._toggle_kb, args=(turning_on,),
@@ -792,6 +817,12 @@ class OverlayApp:
         # can be left at "on" while the process is dead, and writing them does
         # not start the launchd job by itself — hence the explicit kickstart
         # (and the kill on hide, since launchd otherwise keeps it alive).
+        # Serialized: rapid taps spawn one thread each, and interleaved
+        # defaults/kickstart/pkill would leave a state matching neither tap.
+        with self._kb_lock:
+            self._toggle_kb_locked(turning_on)
+
+    def _toggle_kb_locked(self, turning_on):
         try:
             value = "true" if turning_on else "false"
             for domain, key in (
@@ -1015,14 +1046,20 @@ class OverlayApp:
         # panel stacked on ours. Singleton by force: one instance, ever.
         try:
             out = subprocess.run(
-                ["pgrep", "-f", "ipad_overlay_app/overlay_app.py"],
+                ["pgrep", "-f", HELPER_CMD_RE],
                 capture_output=True, text=True, timeout=5).stdout.split()
-            for pid in out:
+        except Exception as exc:
+            log("stale-instance sweep failed: %r" % exc)
+            return
+        for pid in out:
+            # Per-pid guard: a pid dying between pgrep and kill must not
+            # abort the sweep for the remaining ghosts.
+            try:
                 if int(pid) != os.getpid():
                     os.kill(int(pid), signal.SIGKILL)
                     log("killed stale helper %s" % pid)
-        except Exception as exc:
-            log("stale-instance sweep failed: %r" % exc)
+            except (OSError, ValueError):
+                pass
 
     def run(self, show_now=False):
         self._kill_stale_instances()
