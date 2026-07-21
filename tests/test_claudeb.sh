@@ -1290,4 +1290,96 @@ assert_fails grep -qF $'\033[7m' <<<"$plain_line"
   assert test ! -e "$launch_marker"
 )
 
-echo "PASS: $asserts asserts; reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth weather/backoff and lock behavior, reserved names, disabled-account timeline, out-of-rotation profile launch proceeds direct (proxy leaks stripped), generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent-rotation adoption, capacity weather clears stale expired auth for valid tokens, warm-first heal ordering and fallback, warm auth verdicts require current-run refresh evidence, start-windows opens a fresh window and reconcile locks the new resets_at without regressing it, start-windows skips a disabled account with an explicit cause, warm --start-window opens only an expired window for the explicit account (live window and flagless runs never ping; ping weather warns without an auth verdict), the paid haiku warm fallback stays off unless opted in, regular probes never warm, heal_expired covers disabled accounts with actionable causes, and heal_one writes expired only on current-run evidence (stale-token 401 defers to the token endpoint's verdict, fresh-token 401 is affirmative, weather never re-stamps a prior expired), and no-refresh probes plus daemon-token messages-probe 401s defer to the refresh outcome (stale token → weather no-write / invalid_grant expired, fresh token → affirmative), and interactive status account-row selection (bounded up/down navigation, name-stable across re-sort), Enter resolving to a \`claudeb profile <name>\` exec, row-scoped reverse-video highlight, and the non-tty path staying plain with no key loop or launch"
+# status defaults to cached: the plain render must make ZERO network calls; --live
+# still probes (reaches the keychain/curl). Runs the real dispatch as a subprocess
+# against an isolated store with curl/security stubs that record any invocation.
+(
+  st_store="$WORK/st-store"; st_bin="$WORK/st-bin"; st_home="$WORK/st-home"
+  net_log="$WORK/st-net.log"
+  mkdir -p "$st_store/limits" "$st_store/tokens" "$st_bin" "$st_home"
+  cat >"$st_bin/curl" <<EOF
+#!/usr/bin/env bash
+printf 'curl %s\n' "\$*" >>"$net_log"
+exit 0
+EOF
+  cat >"$st_bin/security" <<EOF
+#!/usr/bin/env bash
+printf 'security %s\n' "\$*" >>"$net_log"
+exit 1
+EOF
+  chmod +x "$st_bin/curl" "$st_bin/security"
+  st_now=$(date +%s)
+  for a in aa bb; do
+    printf 'tok-%s\n' "$a" >"$st_store/tokens/$a"
+    printf '{"five_hour":{"used_percentage":%s,"resets_at":%s,"as_of":%s,"origin":"usage"},"seven_day":{"used_percentage":10,"resets_at":%s,"as_of":%s,"origin":"usage"},"auth":{"status":"ok","checked_at":%s}}\n' \
+      "$([ "$a" = aa ] && echo 12 || echo 40)" "$((st_now + 3600))" "$st_now" "$((st_now + 7200))" "$st_now" "$st_now" \
+      >"$st_store/limits/$a.json"
+  done
+
+  rm -f "$net_log"
+  out=$(PATH="$st_bin:$PATH" HOME="$st_home" CLAUDEB_DIR="$st_store" bash "$SCRIPT" status --plain) \
+    || fail "status --plain (cached default) failed"
+  assert test ! -e "$net_log"
+  assert grep -qF NAME <<<"$out"
+  assert grep -q '^aa ' <<<"$out"
+  assert grep -q '^bb ' <<<"$out"
+
+  rm -f "$net_log"
+  PATH="$st_bin:$PATH" HOME="$st_home" CLAUDEB_DIR="$st_store" bash "$SCRIPT" status --plain --cached >/dev/null \
+    || fail "status --plain --cached failed"
+  assert test ! -e "$net_log"
+
+  rm -f "$net_log"
+  PATH="$st_bin:$PATH" HOME="$st_home" CLAUDEB_DIR="$st_store" bash "$SCRIPT" status --plain --live >/dev/null 2>&1 || true
+  assert test -s "$net_log"
+) || exit 1
+
+# async interactive refresh: outcome summary is ✓ only when every enabled account
+# came back live/live*; otherwise it names the stale accounts with their cause and
+# excludes disabled ones.
+(
+  d="$WORK/ref-ok"; mkdir -p "$d"
+  account_names() { printf '%s\n' aa bb; }
+  is_disabled() { return 1; }
+  printf 'live\n' >"$d/aa.display"; printf 'live*\n' >"$d/bb.display"
+  out=$(accounts_refresh_outcome "$d")
+  assert test "${out#✓ refreshed }" != "$out"
+) || exit 1
+(
+  d="$WORK/ref-mixed"; mkdir -p "$d"
+  account_names() { printf '%s\n' aa bb cc dd; }
+  is_disabled() { [ "$1" = dd ]; }
+  oauth_backoff_outcome() { case "$1" in bb) printf 429 ;; *) printf '' ;; esac; }
+  printf 'live\n' >"$d/aa.display"; printf '!\n' >"$d/bb.display"
+  printf 'auth!\n' >"$d/cc.display"; printf '!\n' >"$d/dd.display"
+  out=$(accounts_refresh_outcome "$d")
+  assert grep -qF 'not refreshed' <<<"$out"
+  assert grep -qF 'bb (token 429)' <<<"$out"
+  assert grep -qF 'cc (auth)' <<<"$out"
+  assert_fails grep -qE '(^| )aa ' <<<"$out"
+  assert_fails grep -qF dd <<<"$out"
+) || exit 1
+
+# The background probe's raw stderr (per-attempt 429 lines) must land in the log
+# file, never on the terminal; the .done sentinel drives running→finish.
+(
+  probe_accounts() { printf 'claudeb: aa: OAuth token endpoint returned 429\n' >&2; printf 'live\n' >"$1/aa.display"; }
+  account_names() { printf '%s\n' aa; }
+  is_disabled() { return 1; }
+  accounts_reselect() { :; }
+  accounts_allow_spend=false; accounts_start_windows=false; accounts_heal=false
+  accounts_probe_dir=''; accounts_refresh_pid=''; accounts_refresh_dir=''; accounts_status_line=''
+  term_out="$WORK/ref-term.out"
+  accounts_refresh_start >"$term_out" 2>&1
+  assert test -n "$accounts_refresh_pid"
+  for _ in $(seq 1 100); do accounts_refresh_running || break; sleep 0.05; done
+  assert_fails accounts_refresh_running
+  assert grep -qF 429 "$accounts_refresh_dir/probe.log"
+  assert_fails grep -qF 429 "$term_out"
+  accounts_refresh_finish
+  assert test -z "$accounts_refresh_pid"
+  assert test "${accounts_status_line#✓ refreshed }" != "$accounts_status_line"
+  [ -z "${accounts_probe_dir:-}" ] || rm -rf "$accounts_probe_dir"
+) || exit 1
+
+echo "PASS: $asserts asserts; reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth weather/backoff and lock behavior, reserved names, disabled-account timeline, out-of-rotation profile launch proceeds direct (proxy leaks stripped), generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent-rotation adoption, capacity weather clears stale expired auth for valid tokens, warm-first heal ordering and fallback, warm auth verdicts require current-run refresh evidence, start-windows opens a fresh window and reconcile locks the new resets_at without regressing it, start-windows skips a disabled account with an explicit cause, warm --start-window opens only an expired window for the explicit account (live window and flagless runs never ping; ping weather warns without an auth verdict), the paid haiku warm fallback stays off unless opted in, regular probes never warm, heal_expired covers disabled accounts with actionable causes, and heal_one writes expired only on current-run evidence (stale-token 401 defers to the token endpoint's verdict, fresh-token 401 is affirmative, weather never re-stamps a prior expired), and no-refresh probes plus daemon-token messages-probe 401s defer to the refresh outcome (stale token → weather no-write / invalid_grant expired, fresh token → affirmative), and interactive status account-row selection (bounded up/down navigation, name-stable across re-sort), Enter resolving to a \`claudeb profile <name>\` exec, row-scoped reverse-video highlight, and the non-tty path staying plain with no key loop or launch, status defaulting to cached (zero network; --live still probes), and the async refresh outcome summary (✓ when all enabled accounts are live/live*, else names stale accounts with a cause and excludes disabled ones, raw probe stderr confined to the log)"

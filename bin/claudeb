@@ -63,6 +63,9 @@ account_data() {
     jq -c --arg name "$name" --argjson now "$now" --argjson age "$age" --argjson mtime "$modified" '
       def number_or_zero: if type == "number" then . else 0 end;
       def reset: if type == "number" then . else 0 end;
+      # Age is observation age (as_of), same metric as the menu/table — file mtime
+      # moves on verdict merges without fresh data and would show younger than truth.
+      (if (.five_hour.as_of | type) == "number" then ($now - .five_hour.as_of) else $age end) as $age |
       (.auth.status // "") as $auth |
       def is_stale($b; $thr):
         ($auth == "expired") or (($b.origin? // "") == "cached")
@@ -1256,8 +1259,8 @@ show_help() {
   printf '                                          %sfalls back to a minimal paid prompt only if that fails.%s\n' "$dim" "$reset"
   printf '                                          %s--start-window pings an expired 5h window after a good warm.%s\n' "$dim" "$reset"
   printf '  %s%sclaudeb token-upkeep%s                    %sRefresh tokens near expiry (no probes/spend); for wake/cron pre-warm.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
-  printf '  %s%sclaudeb status [--cached] [--plain] [--spend] [--start-windows] [--heal]%s\n' "$bold" "$cyan" "$reset"
-  printf '                                          %sShow limits; aliases: st, accounts.%s\n' "$dim" "$reset"
+  printf '  %s%sclaudeb status [--live] [--plain] [--spend] [--start-windows] [--heal]%s\n' "$bold" "$cyan" "$reset"
+  printf '                                          %sShow cached limits (no network); --live probes now. Aliases: st, accounts.%s\n' "$dim" "$reset"
   printf '  %s%sclaudeb use <name>%s                      %sSwitch now without pinning.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb enable <name>%s                   %sReturn an account to auto-rotation.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb disable <name>%s                  %sExclude an account from auto-rotation.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
@@ -1265,7 +1268,7 @@ show_help() {
   printf '  %s%sclaudeb pick%s                            %sPrint the cached selection.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb daemon status|start|stop|restart|log%s\n' "$bold" "$cyan" "$reset"
   printf '  %s%sclaudeb daemon install|uninstall%s         %sManage launchd supervision.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
-  printf '  %s↑/↓%s select  %s⏎%s launch profile  %s←/→%s sort  %sr%s refresh  %sq/Esc%s exit interactive status\n\n' "$yellow" "$reset" "$yellow" "$reset" "$yellow" "$reset" "$yellow" "$reset" "$yellow" "$reset"
+  printf '  %s↑/↓%s select  %s⏎%s launch profile  %s←/→%s sort  %sr%s refresh (async)  %sq/Esc%s exit interactive status\n\n' "$yellow" "$reset" "$yellow" "$reset" "$yellow" "$reset" "$yellow" "$reset" "$yellow" "$reset"
   printf '%sDATA%s\n' "$bold" "$reset"
   printf '  Tokens: %s/tokens/<account>\n' "$base_dir"
   printf '  Limits: %s/limits/<account>.json\n' "$base_dir"
@@ -1779,6 +1782,12 @@ proxy_launch() {
   exec claude "$@"
 }
 
+accounts_reselect() {
+  accounts_result=$(selection)
+  accounts_picked=$(printf '%s' "$accounts_result" | jq -r .picked)
+  accounts_show_fable=$(printf '%s' "$accounts_result" | jq -r 'any(.data[]; .fable != null)')
+}
+
 collect_accounts() {
   local mode="$1"
   [ -z "${accounts_probe_dir:-}" ] || rm -rf "$accounts_probe_dir"
@@ -1788,9 +1797,89 @@ collect_accounts() {
     accounts_probe_dir=$(mktemp -d "${TMPDIR:-/tmp}/claudeb.XXXXXX")
     probe_accounts "$accounts_probe_dir" "$accounts_allow_spend" "$accounts_start_windows" "$accounts_heal"
   fi
-  accounts_result=$(selection)
-  accounts_picked=$(printf '%s' "$accounts_result" | jq -r .picked)
-  accounts_show_fable=$(printf '%s' "$accounts_result" | jq -r 'any(.data[]; .fable != null)')
+  accounts_reselect
+}
+
+# Background 'r' probe: all stdout+stderr goes to probe.log (per-attempt OAuth 429
+# noise must never reach the TUI); completion is a .done sentinel — kill -0 is
+# unreliable once the job is an unreaped zombie.
+accounts_refresh_start() {
+  [ -z "${accounts_refresh_pid:-}" ] || return 1
+  accounts_refresh_dir=$(mktemp -d "${TMPDIR:-/tmp}/claudeb-refresh.XXXXXX") || { accounts_refresh_dir=''; return 1; }
+  accounts_refresh_started=$(date +%s)
+  {
+    # The || true keeps set -e from aborting the subshell before the sentinel is
+    # written; a hung probe would otherwise leave the spinner spinning forever.
+    probe_accounts "$accounts_refresh_dir" "$accounts_allow_spend" "$accounts_start_windows" "$accounts_heal" || true
+    printf 'done\n' >"$accounts_refresh_dir/.done"
+  } >"$accounts_refresh_dir/probe.log" 2>&1 &
+  accounts_refresh_pid=$!
+  return 0
+}
+
+accounts_refresh_running() {
+  [ -n "${accounts_refresh_pid:-}" ] || return 1
+  [ ! -e "$accounts_refresh_dir/.done" ]
+}
+
+accounts_refresh_kill() {
+  if [ -n "${accounts_refresh_pid:-}" ]; then
+    kill "$accounts_refresh_pid" 2>/dev/null || true
+    wait "$accounts_refresh_pid" 2>/dev/null || true
+  fi
+  [ -z "${accounts_refresh_dir:-}" ] || rm -rf "$accounts_refresh_dir"
+  accounts_refresh_pid=''
+  accounts_refresh_dir=''
+}
+
+accounts_refresh_finish() {
+  wait "$accounts_refresh_pid" 2>/dev/null || true
+  [ -z "${accounts_probe_dir:-}" ] || rm -rf "$accounts_probe_dir"
+  accounts_probe_dir="$accounts_refresh_dir"
+  accounts_mode=live
+  accounts_reselect
+  accounts_status_line=$(accounts_refresh_outcome "$accounts_probe_dir")
+  # Ownership moved to accounts_probe_dir; drop the ref so kill/cleanup never double-frees.
+  accounts_refresh_dir=''
+  accounts_refresh_pid=''
+}
+
+accounts_refresh_cause() {
+  local name="$1" state="$2" outcome
+  if [ "$state" = 'auth!' ]; then printf 'auth'; return; fi
+  outcome=$(oauth_backoff_outcome "$name")
+  case "$outcome" in
+    429) printf 'token 429' ;;
+    weather) printf 'token weather' ;;
+    failed) printf 'token error' ;;
+    *) printf 'probe failed' ;;
+  esac
+}
+
+accounts_refresh_outcome() {
+  local dir="$1" name state stale='' cause
+  while IFS= read -r name; do
+    is_disabled "$name" && continue
+    state=$(cat "$dir/$name.display" 2>/dev/null || printf '')
+    case "$state" in
+      live|'live*') ;;
+      *)
+        cause=$(accounts_refresh_cause "$name" "$state")
+        stale="${stale:+$stale, }$name ($cause)"
+        ;;
+    esac
+  done < <(account_names)
+  if [ -z "$stale" ]; then
+    printf '✓ refreshed %s' "$(date '+%H:%M')"
+  else
+    printf '⚠ %s not refreshed' "$stale"
+  fi
+}
+
+accounts_spinner_frame() {
+  local i="$1"
+  local -a frames=('|' '/' '-' '\')
+  printf '%s' "${frames[$(( i % ${#frames[@]} ))]}"
 }
 
 render_plain_accounts() {
@@ -1967,14 +2056,18 @@ render_interactive_accounts() {
       printf '%s\n' "$row_out"
     fi
   done < <(printf '%s' "$accounts_result" | jq -c "$filter")
-  printf '\n\033[33m↑/↓ select  ⏎ launch  ←/→ sort  r refresh live  q/Esc exit\033[0m\n'
+  printf '\n\033[33m↑/↓ select  ⏎ launch  ←/→ sort  r refresh  q/Esc exit\033[0m\n'
+  [ -z "${accounts_status_line:-}" ] || printf '%s\n' "$accounts_status_line"
 }
 
 interactive_accounts() {
-  local active=0 key next final sort_count sel='' dir name
+  local active=0 key next final sort_count sel='' dir name rc spin_i=0 elapsed
   local -a sort_keys names
   accounts_launch=''
-  trap interactive_cleanup EXIT INT TERM
+  accounts_refresh_pid=''
+  accounts_refresh_dir=''
+  accounts_status_line=''
+  trap 'interactive_cleanup; accounts_refresh_kill' EXIT INT TERM
   tput civis || return 1
   while :; do
     sort_keys=(name h5 wk)
@@ -1982,15 +2075,40 @@ interactive_accounts() {
     sort_keys+=(hreset wreset)
     sort_count=${#sort_keys[@]}
     [ "$active" -lt "$sort_count" ] || active=0
+    if [ -n "$accounts_refresh_pid" ] && ! accounts_refresh_running; then
+      accounts_refresh_finish
+    fi
+    if [ -n "$accounts_refresh_pid" ]; then
+      elapsed=$(( $(date +%s) - accounts_refresh_started ))
+      accounts_status_line=$(printf '\033[36m⟳ refreshing… %s (%ss)\033[0m' "$(accounts_spinner_frame "$spin_i")" "$elapsed")
+      # Probes land per account; re-select each ~1s so fast accounts' fresh
+      # numbers show while the convergence loop still retries stragglers.
+      [ $(( spin_i % 3 )) -ne 0 ] || accounts_reselect
+    fi
     render_interactive_accounts "$active" "${sort_keys[$active]}" "$sel" || return 1
-    IFS= read -rsn1 key || return 0
+    # In-flight: timeout read animates the spinner; idle stays blocking. rc goes
+    # through ||, else a timeout's non-zero read trips set -e.
+    if [ -n "$accounts_refresh_pid" ]; then
+      rc=0
+      IFS= read -rsn1 -t 0.3 key || rc=$?
+      spin_i=$((spin_i + 1))
+      if [ "$rc" -gt 128 ]; then continue; fi
+      [ "$rc" -eq 0 ] || return 0
+    else
+      # Idle ticks re-read the store so an open TUI mirrors what the statusline,
+      # menu refreshes, and upkeep keep writing — never a frozen open-time snapshot.
+      rc=0
+      IFS= read -rsn1 -t 5 key || rc=$?
+      if [ "$rc" -gt 128 ]; then accounts_reselect; continue; fi
+      [ "$rc" -eq 0 ] || return 0
+    fi
     case "$key" in
       q|$'\003') return 0 ;;
       ''|$'\r'|$'\n')
         if [ -n "$sel" ]; then accounts_launch="$sel"; return 0; fi
         ;;
       r)
-        collect_accounts live || return 1
+        [ -n "$accounts_refresh_pid" ] || accounts_refresh_start || true
         ;;
       $'\033')
         if ! IFS= read -rsn1 -t 0.08 next; then return 0; fi
@@ -2018,8 +2136,10 @@ show_accounts() {
   accounts_heal="$heal"
   accounts_probe_dir=''
   accounts_launch=''
+  accounts_refresh_pid=''
+  accounts_refresh_dir=''
   collect_accounts "$mode"
-  trap 'interactive_cleanup; [ -z "${accounts_probe_dir:-}" ] || rm -rf "$accounts_probe_dir"' EXIT
+  trap 'interactive_cleanup; accounts_refresh_kill; [ -z "${accounts_probe_dir:-}" ] || rm -rf "$accounts_probe_dir"' EXIT
   if [ "$force_plain" != true ] && [ -t 1 ] && [ -n "${TERM:-}" ] && [ "${TERM:-}" != dumb ]; then
     if ! interactive_accounts; then
       interactive_cleanup
@@ -2028,6 +2148,9 @@ show_accounts() {
   else
     render_plain_accounts
   fi
+  # Kill any still-running background refresh before the exec — maybe_launch_profile
+  # replaces this process and would otherwise orphan the probe and leak its temp dir.
+  accounts_refresh_kill
   [ -z "$accounts_probe_dir" ] || rm -rf "$accounts_probe_dir"
   accounts_probe_dir=''
   trap - EXIT INT TERM
@@ -2070,20 +2193,23 @@ case "${1:-}" in
   accounts|status|st)
     command_name="$1"
     shift
-    accounts_mode_arg=live
+    # --spend/--no-spend/--start-windows/--heal are meaningless on cached data, so
+    # they imply --live (and keep pre-cached-default callers' behavior intact).
+    accounts_mode_arg=cached
     accounts_plain_arg=false
     accounts_spend_arg=false
     accounts_windows_arg=false
     accounts_heal_arg=false
     while [ "$#" -gt 0 ]; do
       case "$1" in
-        --cached) accounts_mode_arg=cached ;;
+        --cached) ;;
+        --live) accounts_mode_arg=live ;;
         --plain) accounts_plain_arg=true ;;
-        --spend) accounts_spend_arg=true ;;
-        --no-spend) accounts_spend_arg=false ;;
-        --start-windows) accounts_windows_arg=true ;;
-        --heal) accounts_heal_arg=true ;;
-        *) printf 'usage: claudeb %s [--cached] [--plain] [--spend] [--no-spend] [--start-windows] [--heal]\n' "$command_name" >&2; exit 2 ;;
+        --spend) accounts_spend_arg=true; accounts_mode_arg=live ;;
+        --no-spend) accounts_spend_arg=false; accounts_mode_arg=live ;;
+        --start-windows) accounts_windows_arg=true; accounts_mode_arg=live ;;
+        --heal) accounts_heal_arg=true; accounts_mode_arg=live ;;
+        *) printf 'usage: claudeb %s [--cached] [--live] [--plain] [--spend] [--no-spend] [--start-windows] [--heal]\n' "$command_name" >&2; exit 2 ;;
       esac
       shift
     done
