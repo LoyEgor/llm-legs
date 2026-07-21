@@ -10,6 +10,23 @@ MUST keep this table exhaustive and update `tests/test_statusline_hooks.sh` to
 match. The `statusline-freshness-gate.sh` PostToolUse hook reminds you of this
 whenever you edit a `statusline*` file.
 
+## Before adding ANY new segment (mandatory checklist)
+
+1. **Enumerate every event that can change the value.** Walk the full list, not
+   just the happy path: user slash-commands (`/rename`, `/branch`, `/clear`,
+   `/compact`, `/model`, `/resume`), account/profile switches, `cd`/worktree
+   moves, OTHER sessions/agents/humans mutating the same repo or shared state,
+   background daemons, and plain passage of time.
+2. **For each event, name the mechanism** by which the segment learns about it:
+   per-render recompute from the source of truth (preferred), a hook that
+   writes per-session state, a background probe with a declared cache TTL.
+   "The cache will probably still be right" is not a mechanism.
+3. **If even one event cannot be detected**, the segment must visibly dim/hide
+   in that situation — or must not ship at all. Segments that froze in practice
+   get REMOVED, not patched around (see Removed segments below).
+4. **Prove each mechanism with a test** in `tests/test_statusline_hooks.sh` and
+   add the row to the table here in the same change.
+
 Render budget: warm p95 ≤150ms. Anything slower than that lives in a background
 refresher (a hook, or the fire-and-forget probe pattern), never the render path.
 
@@ -20,12 +37,10 @@ refresher (a hook, or the fire-and-forget probe pattern), never the render path.
 | model + effort + `⚡`fast | statusline JSON stdin (`.model.display_name`, `.effort.level`, `.fast_mode`) | Every render (harness re-sends JSON, 5s) | Live each render; never dimmed | model always shown; effort suffix only if present; `⚡` only if `fast_mode` |
 | `cb:<account>` | `CLAUDE_LIMITS_ACCOUNT` / `CLAUDE_CONFIG_DIR` basename; for a rotating session (`-`) the daemon pick from `.claudeb-state` (`.claudeb-state-fable` for fable models) | Every render (re-reads state file) | `~` prefix marks a rotating pick that can change; not dimmed | Absent when `acct=main` (plain non-claudeb session) |
 | `dir » worktree` | JSON `.workspace.project_dir`/`.current_dir` + `workdir-<sid>` state file (written by `statusline-workdir-hook`) + `git rev-parse` | Every render; state file updated by the workdir hook on cd/pushd/edit/EnterWorktree | Dangling state file (top gone) deleted on render, falls back to project dir | `»` only when active worktree top ≠ project top |
-| branch `⎇` + `✚`N + `↓`behind `↑`ahead, or `@sha` | `git` in the active dir (`GIT_OPTIONAL_LOCKS=0`) | Every render | Live git each render | No branch → nothing; detached HEAD → `@sha`; counts hidden at 0 |
-| lines `+N/-M` | JSON `.cost.total_lines_added`/`removed` | Every render | Live each render | Hidden while `added+removed < 50` |
+| branch `⎇` + uncommitted `+A/-D` + dim `+N~M-Kf` files + `↓`behind `↑`ahead, or `@sha` | `git` in the active dir (`GIT_OPTIONAL_LOCKS=0`). `+A/-D` = the WHOLE uncommitted volume in the active repo right now, whoever wrote it: `git diff --numstat --summary HEAD` (staged+unstaged; unborn HEAD diffs the worktree against the repo's empty tree instead — no double count of staged intermediates) plus untracked text-file lines (`ls-files --others --exclude-standard` → `grep -cI`, binaries count 0 lines). Dim file split from the same pass: `+` created (`--summary` create + untracked, binaries included), `~` modified (remaining numstat entries — renames and mode changes land here), `-` deleted (`--summary` delete); zero components hidden. NOT the harness's `.cost.total_lines_*` — that was a session-lifetime tool-edit counter across all repos and never matched the actual diff | Every render recomputes from live git — branch switches, commits, edits, or cleanups by ANY session/agent/human show on the next render; the active repo follows the workdir hook (cd/EnterWorktree) | Live git each render; no cache to go stale | No branch → nothing; detached HEAD → `@sha` (diff still shown); `+A/-D` hidden when 0/0 — dirty with zero countable lines (binary/mode/rename-only) shows the dim file counts alone; file suffix hidden when no files; arrows hidden at 0 |
 | live ports `⇢ :PORT` | `ports-<sid>` cache written by `statusline-ports-probe.sh` (fired from render) | Render fires the probe in the background when the cache is >15s stale | Cache mtime >60s → hidden (probe presumed dead) | Cache absent → hidden; cache empty (probed, no servers) → hidden; server death shows within ~15–20s as the next probe writes an empty cache; max 3 ports |
 | worker `w:<name>` + prediction/pin/tier | `~/.claude/worker-model`; for `auto` the `worker-pick.line.<acct>` cache (now includes codex model `sol`); for codex model label: `~/.codex/config.toml` line `model = "gpt-X-<label>"` (last dash-segment, fallback "sol"); for codex accounts the local mirror of `~/.llm-limits.json`; for claudeb `.claudeb-state` | Every render; the `auto` prediction cache is refreshed in the background when >90s stale | `auto` line served from a ≤90s cache (background refresh); pin/sel shown only if resolvable; codex model label derives from `~/.codex/config.toml` every render | `w:<name>` always shown; `?` when the worker key is unknown |
 | live worker tag `▶<tag>` | newest file in `claude-worker-tags/<sid>/` (written by `worker-tag-hook`) | Render reads the newest tag file | Ignored when its mtime >600s (falls back to the static config prediction) | No fresh tag → segment falls back to the config prediction |
-| chat title (dim) | the harness's own `"aiTitle"` entries in the session transcript — newest one in the 256KB tail; `title-<sid>` cache bridges renders whose tail rotated past it (one-time full-file scan seeds the cache, including an empty result, when the cache is absent) | Every render re-reads the tail; the harness regenerates ai-title as the topic drifts, so the segment follows automatically | Always dim — a human hint, not live data | No ai-title yet (fresh chat) → no segment; `/clear` starts a new session id → new cache; cache pruned after 7 days (ports-probe prune); truncated to 44 codepoints with `…` (jq, not bash — byte slicing splits Cyrillic) |
 
 ## Line 2 — usage
 
@@ -86,9 +101,11 @@ a code change; nothing about the TTL is hardcoded truth.
   `mcp|figma|codex|chrome-devtools|chrome_crashpad` and the `claude` binary in
   the listener's command line. A user dev server whose command contains one of
   those tokens would be filtered out.
-- **Title label lag.** The chat title is whatever the harness last generated
-  (`ai-title`); it follows topic drift at the harness's own cadence, not per
-  prompt, and a brand-new chat has no title until the harness writes one.
+- **Uncommitted diff counts text lines only.** Untracked binaries and binary
+  edits contribute 0 lines (`grep -cI` / numstat `-`) but still appear in the
+  dim file counts; a tree dirty with ONLY such changes shows the file counts
+  alone. A huge untracked text file (an unignored log/dataset) inflates `+A`
+  honestly — gitignore it.
 - **Cache warmth is deliberately cold-biased.** Warmth needs a completed
   response, so the first request of a turn shows cold until its response
   lands, and a turn so tool-heavy that the last assistant entry scrolls out of
@@ -98,3 +115,19 @@ a code change; nothing about the TTL is hardcoded truth.
   later produced more responses shows cold even though the shared prefix
   blocks may still be cached server-side — proving that cheaply is impossible,
   so the cold bias wins.
+
+## Removed segments (do not re-add without solving the freshness failure)
+
+- **Chat title** (removed 2026-07-21). Rendered the transcript's newest
+  `aiTitle` entry, but `/rename` and `/branch` do not write a fresh `aiTitle`
+  where the tail scan sees it, so the label froze on stale names — an iron-rule
+  violation with no reliable update trigger available. The haiku topic
+  summarizer before it died the same way (removed 2026-07-21). Any successor
+  needs a harness-provided title field in the render JSON, not transcript
+  archaeology. Orphaned `title-*`/`topic-*` caches are still pruned by the
+  ports probe.
+- **Session lines counter `+N/-M`** (removed 2026-07-21). Showed
+  `.cost.total_lines_added/removed` — a session-lifetime counter of every tool
+  edit across all repos (rewrites double-count; other agents' work invisible).
+  It never answered "how much is uncommitted", which is what the branch
+  segment's `+A/-D` now measures from live git.

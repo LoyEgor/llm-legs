@@ -187,8 +187,7 @@ statusline_payload() {
   jq -cn --arg session "$1" --arg cwd "$REPO_A" --argjson extra "$extra" '
     {session_id:$session,cwd:$cwd,workspace:{current_dir:$cwd,project_dir:$cwd},
      model:{display_name:"Fixture"},effort:{level:"high"},
-     context_window:{used_percentage:12,current_usage:{input_tokens:1000}},
-     cost:{total_lines_added:0,total_lines_removed:0}}
+     context_window:{used_percentage:12,current_usage:{input_tokens:1000}}}
     * $extra'
 }
 
@@ -786,44 +785,107 @@ assert_eq "" "$fg_out"
 fg_out=$(printf '{broken' | "$FRESH_GATE") || fail "freshness gate broken json nonzero"
 assert_eq "" "$fg_out"
 
-# --- chat title segment (harness ai-title entries in the transcript) ---
-TITLE_T="$WORK/title-transcript.jsonl"
-title_extra() { jq -cn --arg tp "$1" '{transcript_path:$tp}'; }
+# --- branch segment: uncommitted diff +A/-D with dim +N~M-Kf file counts ---
+REPO_D="$FIXTURES/diff-repo"
+mkdir -p "$REPO_D"
+git -C "$REPO_D" init -qb main
+printf 'l1\nl2\nl3\n' > "$REPO_D/tracked.txt"
+git -C "$REPO_D" add tracked.txt
+git -C "$REPO_D" -c user.name=Fixture -c user.email=fixture@example.com commit -qm initial
+diff_extra=$(jq -cn --arg d "$REPO_D" '{cwd:$d,workspace:{current_dir:$d,project_dir:$d}}')
+dgit() { git -C "$REPO_D" -c user.name=Fixture -c user.email=fixture@example.com "$@"; }
 
-# Newest ai-title from the tail wins; cache file is written.
-{
-  printf '{"type":"ai-title","aiTitle":"First title","sessionId":"t"}\n'
-  printf '{"type":"user","timestamp":"%s","message":{}}\n' "$(iso_utc $((NOW - 60)))"
-  printf '{"type":"ai-title","aiTitle":"Updated chat title","sessionId":"t"}\n'
-} > "$TITLE_T"
-title_out=$(run_statusline "$(statusline_payload title-a "$(title_extra "$TITLE_T")")")
-assert grep -Fq "${DIM}Updated chat title${RESET}" <<< "$title_out"
-assert_eq 'Updated chat title' "$(cat "$STATE_DIR/title-title-a")"
+# Clean tree: no lines, no file counts.
+dclean_out=$(run_statusline "$(statusline_payload diff-clean "$diff_extra")")
+assert test "${dclean_out#*"${GREEN}+"}" = "$dclean_out"
+assert test "${dclean_out#*"f${RESET}"}" = "$dclean_out"
 
-# Tail rotated past the last title: the cached copy still renders.
-printf '{"type":"user","timestamp":"%s","message":{}}\n' "$(iso_utc $((NOW - 30)))" > "$TITLE_T"
-title_cached=$(run_statusline "$(statusline_payload title-a "$(title_extra "$TITLE_T")")")
-assert grep -Fq "${DIM}Updated chat title${RESET}" <<< "$title_cached"
+# Modified tracked (+2/-1) and an untracked text file (+3): lines sum, files split.
+printf 'l1\nL2\nl3\nl4\n' > "$REPO_D/tracked.txt"
+printf 'n1\nn2\nn3\n' > "$REPO_D/new.txt"
+dmix_out=$(run_statusline "$(statusline_payload diff-mixed "$diff_extra")")
+assert grep -Fq "${GREEN}+5${RESET}/${RED}-1${RESET} ${DIM}+1~1f${RESET}" <<< "$dmix_out"
 
-# Title buried beyond the 256KB tail window: one-time full scan seeds the cache.
-{
-  printf '{"type":"ai-title","aiTitle":"Deep title","sessionId":"t"}\n'
-  head -c 300000 /dev/zero | tr '\0' 'x'; printf '\n'
-} > "$TITLE_T"
-title_deep=$(run_statusline "$(statusline_payload title-deep "$(title_extra "$TITLE_T")")")
-assert grep -Fq "${DIM}Deep title${RESET}" <<< "$title_deep"
+# Staging is still uncommitted: nothing moves.
+dgit add tracked.txt
+dstage_out=$(run_statusline "$(statusline_payload diff-staged "$diff_extra")")
+assert grep -Fq "${GREEN}+5${RESET}/${RED}-1${RESET} ${DIM}+1~1f${RESET}" <<< "$dstage_out"
 
-# No titles at all: no segment, and the empty scan result is cached (no rescans).
-: > "$TITLE_T"
-title_none=$(run_statusline "$(statusline_payload title-none "$(title_extra "$TITLE_T")")")
-assert test 0 -eq "$(grep -c 'title' <<< "$title_none")"
-assert test -f "$STATE_DIR/title-title-none"
+# A commit (by any session/agent) drops its part on the very next render.
+dgit commit -qm second
+dcommit_out=$(run_statusline "$(statusline_payload diff-committed "$diff_extra")")
+assert grep -Fq "${GREEN}+3${RESET}/${RED}-0${RESET} ${DIM}+1f${RESET}" <<< "$dcommit_out"
 
-# Longer than 44 chars truncates on a character boundary with an ellipsis.
-long_title=$(printf 'T%.0s' $(seq 1 60))
-printf '{"type":"ai-title","aiTitle":"%s","sessionId":"t"}\n' "$long_title" > "$TITLE_T"
-title_long=$(run_statusline "$(statusline_payload title-long "$(title_extra "$TITLE_T")")")
-assert grep -Fq "$(printf 'T%.0s' $(seq 1 43))…" <<< "$title_long"
+# Deleting a tracked file: negative lines plus -1f.
+dgit add new.txt
+dgit commit -qm third
+dgit rm -q new.txt
+ddel_out=$(run_statusline "$(statusline_payload diff-deleted "$diff_extra")")
+assert grep -Fq "${GREEN}+0${RESET}/${RED}-3${RESET} ${DIM}-1f${RESET}" <<< "$ddel_out"
+dgit checkout -q HEAD -- new.txt
+
+# Rename-only: zero countable lines, so the dim file counts render alone.
+dgit mv new.txt moved.txt
+dren_out=$(run_statusline "$(statusline_payload diff-renamed "$diff_extra")")
+assert grep -Fq " ${DIM}~1f${RESET}" <<< "$dren_out"
+assert test "${dren_out#*"${GREEN}+"}" = "$dren_out"
+dgit mv moved.txt new.txt
+
+# Untracked binary: 0 lines but still a file → files-only display.
+printf 'BIN\0BIN' > "$REPO_D/blob.bin"
+dbin_out=$(run_statusline "$(statusline_payload diff-binary "$diff_extra")")
+assert grep -Fq " ${DIM}+1f${RESET}" <<< "$dbin_out"
+assert test "${dbin_out#*"${GREEN}+"}" = "$dbin_out"
+rm -f "$REPO_D/blob.bin"
+
+# Branch switch: the label and the diff follow the new HEAD on the next render.
+dgit checkout -qb feat
+printf 'l1\nL2\nl3\nl4\nl5\n' > "$REPO_D/tracked.txt"
+dgit add tracked.txt
+dgit commit -qm feat-version
+dfeat_out=$(run_statusline "$(statusline_payload diff-feat "$diff_extra")")
+assert grep -Fq '⎇ feat' <<< "$dfeat_out"
+assert test "${dfeat_out#*"${GREEN}+"}" = "$dfeat_out"
+
+# HEAD motion under an untouched worktree (soft reset ≈ amend/rebase/switch):
+# the very next render diffs against the NEW HEAD.
+git -C "$REPO_D" reset -q --soft HEAD~1
+dsoft_out=$(run_statusline "$(statusline_payload diff-soft "$diff_extra")")
+assert grep -Fq "${GREEN}+1${RESET}/${RED}-0${RESET} ${DIM}~1f${RESET}" <<< "$dsoft_out"
+dgit commit -qm feat-version-again
+dgit checkout -q main
+
+# The LLM cd's into another repo mid-session: the diff follows the ACTIVE repo.
+printf 'w1\nw2\n' > "$TOP_B/wt-junk.txt"
+printf '%s\n' "$TOP_B" > "$STATE_DIR/workdir-diff-workdir"
+dwd_out=$(run_statusline "$(statusline_payload diff-workdir "$diff_extra")")
+assert grep -Fq 'feature-x' <<< "$dwd_out"
+assert grep -Fq "${GREEN}+2${RESET}/${RED}-0${RESET} ${DIM}+1f${RESET}" <<< "$dwd_out"
+rm -f "$TOP_B/wt-junk.txt" "$STATE_DIR/workdir-diff-workdir"
+
+# Detached HEAD still measures the diff (vs the detached commit).
+printf 'd1\n' > "$TOP_C/det-junk.txt"
+det_extra=$(jq -cn --arg d "$TOP_C" '{cwd:$d,workspace:{current_dir:$d,project_dir:$d}}')
+ddet_out=$(run_statusline "$(statusline_payload diff-detached "$det_extra")")
+assert grep -Fq "@$SHORT_SHA" <<< "$ddet_out"
+assert grep -Fq "${GREEN}+1${RESET}/${RED}-0${RESET} ${DIM}+1f${RESET}" <<< "$ddet_out"
+rm -f "$TOP_C/det-junk.txt"
+
+# Unborn HEAD (no commits yet): staged lines count via the --cached fallback.
+REPO_E="$FIXTURES/diff-unborn"
+mkdir -p "$REPO_E"
+git -C "$REPO_E" init -qb main
+printf 'x\ny\n' > "$REPO_E/f.txt"
+git -C "$REPO_E" add f.txt
+unborn_extra=$(jq -cn --arg d "$REPO_E" '{cwd:$d,workspace:{current_dir:$d,project_dir:$d}}')
+dunborn_out=$(run_statusline "$(statusline_payload diff-unborn "$unborn_extra")")
+assert grep -Fq "${GREEN}+2${RESET}/${RED}-0${RESET} ${DIM}+1f${RESET}" <<< "$dunborn_out"
+
+# Unborn HEAD, staged file modified again in the worktree: the worktree is the
+# truth — no double count of the staged intermediate.
+printf 'p\nq\n' > "$REPO_E/f.txt"
+dunborn2_out=$(run_statusline "$(statusline_payload diff-unborn-mod "$unborn_extra")")
+assert grep -Fq "${GREEN}+2${RESET}/${RED}-0${RESET} ${DIM}+1f${RESET}" <<< "$dunborn2_out"
 
 # --- statusline-ports-probe.sh ---
 PORTS_PROBE="$ROOT/bin/statusline-ports-probe.sh"
@@ -927,16 +989,6 @@ assert test "${rstale_out#*⇢}" = "$rstale_out"
 rm -f "$STATE_DIR/ports-r-absent"
 rabsent_out=$(run_statusline "$(statusline_payload r-absent)")
 assert test "${rabsent_out#*⇢}" = "$rabsent_out"
-
-# Multibyte title truncates on codepoints (byte slicing would split the char).
-mb_title=$(printf 'ü%.0s' $(seq 1 51))
-printf '{"type":"ai-title","aiTitle":"%s","sessionId":"r"}\n' "$mb_title" > "$TITLE_T"
-rlong_out=$(run_statusline "$(statusline_payload r-long "$(title_extra "$TITLE_T")")")
-assert grep -Fq "$(printf 'ü%.0s' $(seq 1 43))…" <<< "$rlong_out"
-
-# No transcript path in the payload → no title segment.
-rtabsent_out=$(run_statusline "$(statusline_payload r-title-absent)")
-assert test 0 -eq "$(grep -c 'ü' <<< "$rtabsent_out")"
 
 # End-to-end: the real probe output (written with a trailing newline) renders.
 run_probe pp-render 1001

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Claude Code status line: model | dir/branch/lines | ports | worker | title ‖ ctx % | 5h/weekly/fable limits | cost.
+# Claude Code status line: model | dir/branch/uncommitted-diff | ports | worker ‖ ctx % | 5h/weekly/fable limits | cost.
 # rate_limits is absent from some renders and idle sessions re-send their last
 # copy forever; every path renders from a stamped merged cache (statusline-cache-rl
 # for main, limits/<acct>.json for claudeb accounts — ~/.claude-profiles/README.md),
@@ -95,7 +95,7 @@ pct_colored() {
 # \x1f (unit separator) instead of tab: bash `read` collapses consecutive tab
 # delimiters (tab is IFS-whitespace), which misaligns fields whenever a middle
 # one (e.g. fast_mode, commonly empty) is blank.
-IFS=$'\x1f' read -r model model_id effort fast_mode ctx_size dir_path current_dir session_id ctx_pct ctx_tokens cost_raw lines_added lines_removed rl_json cache_create cache_read transcript_path < <(printf '%s' "$input" | jq -r '
+IFS=$'\x1f' read -r model model_id effort fast_mode ctx_size dir_path current_dir session_id ctx_pct ctx_tokens cost_raw rl_json cache_create cache_read transcript_path < <(printf '%s' "$input" | jq -r '
   def num0: if . == null then "" else (.+0|round|tostring) end;
   def str0: if . == null then "" else tostring end;
   [ (.model.display_name // "?"),
@@ -110,8 +110,6 @@ IFS=$'\x1f' read -r model model_id effort fast_mode ctx_size dir_path current_di
     ((.context_window.current_usage // null) | if . == null then "" else
       (((.input_tokens//0)+(.cache_creation_input_tokens//0)+(.cache_read_input_tokens//0))|tostring) end),
     (.cost.total_cost_usd | str0),
-    (.cost.total_lines_added | num0),
-    (.cost.total_lines_removed | num0),
     ((.rate_limits // null) | if . == null then "" else tojson end),
     ((.context_window.current_usage // null) | if . == null then "0" else (.cache_creation_input_tokens//0|tostring) end),
     ((.context_window.current_usage // null) | if . == null then "0" else (.cache_read_input_tokens//0|tostring) end),
@@ -302,8 +300,56 @@ if [ -n "$active_top" ]; then
     branch_part=" ${branch_color}⎇ ${branch}${RESET}"
   fi
   if [ -n "$branch_part" ]; then
-    status_count=$(git -C "$git_dir" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
-    [ -n "$status_count" ] && [ "$status_count" -gt 0 ] 2>/dev/null && branch_part="${branch_part} ${YELLOW}✚${status_count}${RESET}"
+    # Uncommitted volume in the ACTIVE repo, whoever wrote it: staged+unstaged
+    # vs HEAD plus untracked files. Lines: numstat + untracked text lines
+    # (grep -cI yields 0 and BSD grep prints nothing for binaries; numstat "-"
+    # skipped by the awk guards). Files: --summary create/delete + untracked
+    # markers; the rest of the numstat entries are "modified" (renames incl.).
+    # Marker rows carry an empty 3rd field + tag — a real numstat path is
+    # never empty, so tracked files can't collide with them. Not the harness's
+    # .cost.total_lines_* — that was a session-lifetime tool-edit counter
+    # across all repos, useless for "how much is hanging uncommitted now".
+    read -r udiff_add udiff_del f_new f_del f_mod < <({
+        if git -C "$git_dir" rev-parse -q --verify HEAD >/dev/null 2>&1; then
+          git -C "$git_dir" diff --numstat --summary HEAD -- 2>/dev/null
+        else
+          # Unborn HEAD (no commits yet): diff the worktree against the empty
+          # tree — summing `--cached` + worktree diffs would double-count a
+          # file that is staged and then modified again. hash-object computes
+          # the repo's own empty-tree id (sha1 and sha256 repos differ).
+          empty_tree=$(git -C "$git_dir" hash-object -t tree /dev/null 2>/dev/null)
+          [ -n "$empty_tree" ] \
+            && git -C "$git_dir" diff --numstat --summary "$empty_tree" -- 2>/dev/null
+        fi
+        # ls-files paths are repo-relative; grep must resolve them, and the
+        # count must be repo-wide even when git_dir is a subdirectory.
+        ( cd "$active_top" 2>/dev/null && {
+            git ls-files --others --exclude-standard 2>/dev/null \
+              | awk '{print "0\t0\t\tU"}'
+            git ls-files --others --exclude-standard -z 2>/dev/null \
+              | xargs -0 grep -cI '' 2>/dev/null | awk -F: '{print $NF "\t0\t\tL"}'
+          } )
+      } | awk -F'\t' '
+        /^[0-9-]+\t/ {
+          if ($1 != "-") a += $1; if ($2 != "-") d += $2
+          if (NF == 4 && $3 == "" && $4 == "U") fu++
+          else if (NF == 4 && $3 == "" && $4 == "L") { }
+          else nt++
+          next
+        }
+        /^ create mode / {fc++}
+        /^ delete mode / {fd++}
+        END {printf "%d %d %d %d %d\n", a, d, fc + fu, fd, nt - fc - fd}')
+    fparts=""
+    [ "$f_new" -gt 0 ] 2>/dev/null && fparts="+${f_new}"
+    [ "$f_mod" -gt 0 ] 2>/dev/null && fparts="${fparts}~${f_mod}"
+    [ "$f_del" -gt 0 ] 2>/dev/null && fparts="${fparts}-${f_del}"
+    if [ "$udiff_add" -gt 0 ] 2>/dev/null || [ "$udiff_del" -gt 0 ] 2>/dev/null; then
+      branch_part="${branch_part} ${GREEN}+${udiff_add}${RESET}/${RED}-${udiff_del}${RESET}${fparts:+ ${DIM}${fparts}f${RESET}}"
+    elif [ -n "$fparts" ]; then
+      # Dirty with zero countable lines (binary/mode/rename-only): files only.
+      branch_part="${branch_part} ${DIM}${fparts}f${RESET}"
+    fi
 
     read -r behind ahead < <(git -C "$git_dir" rev-list --left-right --count '@{upstream}...HEAD' 2>/dev/null)
     [ -n "$behind" ] && [ "$behind" -gt 0 ] 2>/dev/null && branch_part="${branch_part} ${MAGENTA}↓${behind}${RESET}"
@@ -748,11 +794,6 @@ else
   [ "$wname" != "?" ] && [ -n "$wtier" ] && worker_part="${worker_part}${DIM}·${wtier}${RESET}"
 fi
 
-lines_part=""
-if [ -n "$lines_added" ] && [ -n "$lines_removed" ] && [ $(( lines_added + lines_removed )) -ge 50 ]; then
-  lines_part=" ${GREEN}+${lines_added}${RESET}/${RED}-${lines_removed}${RESET}"
-fi
-
 # Too slow for the render path: read the cache, fire the probe in the background
 # when it's >15s stale, and hide the segment once it's >60s stale (probe presumed dead).
 ports_part=""
@@ -782,40 +823,9 @@ if [ -n "$session_id" ]; then
   fi
 fi
 
-# Chat title: the harness's own ai-title entries (it regenerates them as the
-# topic drifts). Tail window first; the per-session cache bridges renders whose
-# tail rotated past the last title; the one-time full-file scan (guarded by
-# cache absence — it also seeds an empty cache) covers resumed sessions whose
-# title sits megabytes back.
-title_seg=""
-if [ -n "$session_id" ] && [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
-  title_cache="$HOME/.cache/claude-statusline/title-$session_id"
-  title_txt=$(tail -c 262144 "$transcript_path" 2>/dev/null \
-    | grep -o '"aiTitle":"[^"]*"' | tail -n1 | cut -d'"' -f4)
-  if [ -n "$title_txt" ]; then
-    cached_title=""
-    [ -r "$title_cache" ] && { IFS= read -r cached_title < "$title_cache" 2>/dev/null || cached_title=""; }
-    if [ "$title_txt" != "$cached_title" ]; then
-      printf '%s\n' "$title_txt" > "$title_cache.tmp.$$" 2>/dev/null \
-        && mv "$title_cache.tmp.$$" "$title_cache" 2>/dev/null || rm -f "$title_cache.tmp.$$" 2>/dev/null
-    fi
-  elif [ -r "$title_cache" ]; then
-    IFS= read -r title_txt < "$title_cache" 2>/dev/null || title_txt=""
-  else
-    title_txt=$(grep -o '"aiTitle":"[^"]*"' "$transcript_path" 2>/dev/null | tail -n1 | cut -d'"' -f4)
-    printf '%s\n' "$title_txt" > "$title_cache.tmp.$$" 2>/dev/null \
-      && mv "$title_cache.tmp.$$" "$title_cache" 2>/dev/null || rm -f "$title_cache.tmp.$$" 2>/dev/null
-  fi
-  if [ -n "$title_txt" ]; then
-    # jq counts codepoints — bash ${var:0:43} counts bytes and splits Cyrillic.
-    title_txt=$(printf '%s' "$title_txt" | jq -Rr 'if length > 44 then .[0:43] + "…" else . end' 2>/dev/null)
-    [ -n "$title_txt" ] && title_seg=" ${sep} ${DIM}${title_txt}${RESET}"
-  fi
-fi
-
-# Two lines: identity/work (model, account, dir/branch, workers, title) on top,
+# Two lines: identity/work (model, account, dir/branch/diff, workers) on top,
 # usage (ctx, 5h, weekly, fable, cost) below.
-line1="${CYAN}${model}${model_suffix}${RESET}${fast_part}${cb_part} ${sep} ${dir_part}${branch_part}${lines_part}${ports_part}${worker_part}${title_seg}"
+line1="${CYAN}${model}${model_suffix}${RESET}${fast_part}${cb_part} ${sep} ${dir_part}${branch_part}${ports_part}${worker_part}"
 
 line2="ctx $(pct_colored "$ctx_pct" "" 40)${ctx_tokens_part} ${sep} 5h $(pct_colored "$h5_pct" "$h5_dim")${h5_arrow} ${sep} wk $(pct_colored "$wk_pct" "$wk_dim")${wk_arrow}${fable_part}"
 
