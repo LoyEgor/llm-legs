@@ -504,7 +504,7 @@ local function reportItem(menu)
     item = {
       title = hs.fs.attributes(report) and "Update today's report" or "Create today's report",
       fn = function()
-        hs.task.new("/bin/bash", nil, { project .. "/run_report.sh", "--today" }):start()
+        hs.task.new("/bin/bash", nil, { "-c", "REPORT_INTERACTIVE=1 exec bash '" .. project .. "/run_report.sh' --today" }):start()
         hs.alert.show("Report started")
       end,
     }
