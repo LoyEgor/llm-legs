@@ -12,9 +12,13 @@ local socket_writes = {}
 env.hs = {
     timer = {
         -- Immediate execution keeps the harness synchronous; retry paths
-        -- never trigger because the socket mock always connects.
+        -- never trigger because the socket mock always connects. Long timers
+        -- (idle-quit, backoff reset) must NOT fire inline or hide() would
+        -- send quit synchronously.
         doAfter = function(delay, fn)
-            fn()
+            if delay < 5 then
+                fn()
+            end
             return { stop = function(self) end }
         end,
     },
@@ -71,24 +75,21 @@ local chunk, err = loadfile(root .. "/hammerspoon/config/ipad_overlay.lua", "t",
 assert(chunk, err)
 local module = chunk()
 
-assert(module.show and module.hide and module.isEnabled and module.setEnabled
-    and module.recompute and module.onChange, "module misses required functions")
+assert(module.show and module.hide and module.isShown and module.toggle
+    and module.onChange, "module misses required functions")
 print("✓ Module has required functions")
 
-assert(module.isEnabled() == true, "isEnabled is the user flag, true by default")
-assert(env.hs.settings.get("ipadOverlay.enabled") == true, "enabled flag persisted on first run")
-print("✓ isEnabled defaults correct")
+assert(module.isShown() == false, "starts hidden while IpadMode is off")
+assert(#task_launches == 0, "init with IpadMode off must not spawn the helper")
+print("✓ starts hidden, no helper spawn")
 
-module.show()
-assert(#task_launches == 0, "show must not spawn while IpadMode is off")
-print("✓ show() is a no-op while IpadMode is off")
-
-env._G.IpadMode._isOn = true
-env._G.IpadMode._hook()
-assert(#task_launches == 1, "iPad-mode change must spawn the helper")
+-- Manual toggle must force-show even without an iPad.
+module.toggle()
+assert(module.isShown() == true, "toggle must show without an iPad")
+assert(#task_launches == 1, "force-show must spawn the helper")
 assert(task_launches[1].cmd:match("python"), "helper runs under the venv python")
 assert(socket_writes[#socket_writes] == "show\n", "spawn must be followed by a show command")
-print("✓ iPad mode on spawns helper and shows")
+print("✓ manual toggle force-shows without iPad")
 
 local launches_before = #task_launches
 socket_writes = {}
@@ -98,24 +99,28 @@ assert(socket_writes[#socket_writes] == "show\n", "second show still sends the c
 print("✓ show() does not respawn on second call")
 
 socket_writes = {}
-module.hide()
+module.toggle()
+assert(module.isShown() == false, "toggle back must hide")
 assert(socket_writes[#socket_writes] == "hide\n", "hide must send hide command")
-print("✓ hide() sends command correctly")
+print("✓ toggle back hides")
 
-module.setEnabled(false)
-assert(env.hs.settings.get("ipadOverlay.enabled") == false, "setEnabled persists the flag")
-assert(module.isEnabled() == false, "isEnabled reflects setEnabled")
+-- iPad connect / disconnect drives visibility automatically.
+env._G.IpadMode._isOn = true
 socket_writes = {}
-module.show()
-assert(socket_writes[#socket_writes] == nil, "show is a no-op while the user flag is off")
-module.setEnabled(true)
-assert(module.isEnabled() == true, "isEnabled reflects setEnabled back on")
-print("✓ Settings persistence works")
+env._G.IpadMode._hook()
+assert(module.isShown() == true, "iPad connect must show")
+assert(socket_writes[#socket_writes] == "show\n", "iPad connect must send show")
+env._G.IpadMode._isOn = false
+socket_writes = {}
+env._G.IpadMode._hook()
+assert(module.isShown() == false, "iPad disconnect must hide")
+assert(socket_writes[#socket_writes] == "hide\n", "iPad disconnect must send hide")
+print("✓ iPad connect/disconnect drives visibility")
 
 local callback_called = false
 module.onChange(function() callback_called = true end)
-module.setEnabled(true)
-assert(callback_called, "onChange callback should fire on setEnabled")
+module.toggle()
+assert(callback_called, "onChange callback should fire on toggle")
 print("✓ onChange callbacks fire")
 
 -- Unexpected death while visible: exit callback must relaunch (timers run
@@ -134,12 +139,5 @@ launches = #task_launches
 task_exit_callbacks[#task_exit_callbacks](0)
 assert(#task_launches == launches, "helper death while hidden must not relaunch")
 print("✓ helper death while hidden stays down")
-
-env._G.IpadMode._isOn = false
-socket_writes = {}
-module.recompute()
-assert(socket_writes[#socket_writes] == nil or socket_writes[#socket_writes] == "hide\n",
-    "recompute with mode off hides")
-print("✓ recompute() respects IpadMode changes")
 
 print("All iPad overlay tests passed")

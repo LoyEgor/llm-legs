@@ -6,7 +6,6 @@ local SOCK_PATH = os.getenv("HOME") .. "/.local/state/ipad-overlay/control.sock"
 
 local task = nil
 local visible = false
-local enabled = true
 local relaunch_backoff = 0.5
 local relaunch_max_backoff = 2.0
 local relaunch_attempts = 0
@@ -75,15 +74,15 @@ sendCommand = function(cmd, attempt)
 end
 IpadOverlay._sendCommand = sendCommand
 
--- isEnabled is the user's preference alone; the panel is actually shown
--- only while an iPad is connected (IpadMode) on top of it.
-local function shouldShow()
-    return enabled and (_G.IpadMode and _G.IpadMode.isOn() or false)
-end
+-- Visibility follows iPad connection automatically (connect shows,
+-- disconnect hides), but the menu toggle is a manual override in both
+-- directions: force-show without an iPad, force-hide with one.
+local idleQuitTimer = nil
 
 function IpadOverlay.show()
-    if not shouldShow() then
-        return
+    if idleQuitTimer then
+        idleQuitTimer:stop()
+        idleQuitTimer = nil
     end
 
     if not task then
@@ -100,26 +99,35 @@ function IpadOverlay.hide()
     visible = false
     if task then
         sendCommand("hide")
+        -- The helper must cost nothing while the overlay stays hidden (no
+        -- iPad connected): quit it entirely after a grace period; show()
+        -- respawns it.
+        if idleQuitTimer then
+            idleQuitTimer:stop()
+        end
+        idleQuitTimer = hs.timer.doAfter(60, function()
+            idleQuitTimer = nil
+            if not visible and task then
+                -- Single attempt (attempt=8 disables retries): a retry left
+                -- in flight could kill a helper that show() just respawned;
+                -- a lost quit merely leaves the helper idle until next time.
+                sendCommand("quit", 8)
+            end
+        end)
     end
 end
 
-function IpadOverlay.isEnabled()
-    return enabled
+function IpadOverlay.isShown()
+    return visible
 end
 
-function IpadOverlay.setEnabled(value)
-    enabled = value
-    hs.settings.set("ipadOverlay.enabled", value)
-    IpadOverlay.recompute()
-    IpadOverlay._notifyChange()
-end
-
-function IpadOverlay.recompute()
-    if shouldShow() then
-        IpadOverlay.show()
-    else
+function IpadOverlay.toggle()
+    if visible then
         IpadOverlay.hide()
+    else
+        IpadOverlay.show()
     end
+    IpadOverlay._notifyChange()
 end
 
 function IpadOverlay.onChange(callback)
@@ -174,21 +182,21 @@ function IpadOverlay._notifyChange()
 end
 
 function IpadOverlay._on_ipad_mode_change()
-    IpadOverlay.recompute()
+    if _G.IpadMode and _G.IpadMode.isOn() then
+        IpadOverlay.show()
+    else
+        IpadOverlay.hide()
+    end
+    IpadOverlay._notifyChange()
 end
 
 function IpadOverlay.init()
-    enabled = hs.settings.get("ipadOverlay.enabled")
-    if enabled == nil then
-        enabled = true
-        hs.settings.set("ipadOverlay.enabled", true)
-    end
-
     if _G.IpadMode then
         _G.IpadMode.onChange(IpadOverlay._on_ipad_mode_change)
+        if _G.IpadMode.isOn() then
+            IpadOverlay.show()
+        end
     end
-
-    IpadOverlay.recompute()
 end
 
 _G.IpadOverlay = IpadOverlay

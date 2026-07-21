@@ -329,11 +329,11 @@ buildMenu = function()
         },
         {
             title = "iPad Overlay",
-            checked = ipadOverlay ~= nil and ipadOverlay.isEnabled(),
+            checked = ipadOverlay ~= nil and ipadOverlay.isShown(),
             disabled = not ipadOverlay,
             fn = function()
                 if ipadOverlay then
-                    ipadOverlay.setEnabled(not ipadOverlay.isEnabled())
+                    ipadOverlay.toggle()
                     refreshTitle()
                 end
             end,

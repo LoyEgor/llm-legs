@@ -13,8 +13,11 @@ mutating those crashes AppKit's display-link flush with SIGTRAP).
 """
 
 import argparse
+import functools
 import json
 import os
+import queue
+import signal
 import subprocess
 import shutil
 import socket
@@ -27,6 +30,11 @@ import objc
 from Cocoa import (
     NSApplication,
     NSApplicationActivationPolicyAccessory,
+    NSApplicationDidChangeScreenParametersNotification,
+    NSNotificationCenter,
+    NSBezierPath,
+    NSEdgeInsetsMake,
+    NSImageResizingModeStretch,
     NSBitmapImageRep,
     NSColor,
     NSCompositingOperationSourceOver,
@@ -41,8 +49,10 @@ from Cocoa import (
     NSMakeRect,
     NSObject,
     NSPanel,
+    NSRunLoop,
+    NSRunningApplication,
     NSScreen,
-    NSTrackingArea,
+    NSTimer,
     NSView,
     NSVisualEffectBlendingModeBehindWindow,
     NSVisualEffectMaterialPopover,
@@ -57,13 +67,13 @@ from Cocoa import (
 from Quartz import (
     CALayer,
     CABasicAnimation,
-    CASpringAnimation,
     CAMediaTimingFunction,
-    CATransform3DIdentity,
-    CATransform3DMakeScale,
     CATransaction,
+    CGDisplayBounds,
     CGEventCreateKeyboardEvent,
     CGEventPost,
+    CGGetActiveDisplayList,
+    CGMainDisplayID,
     kCGHIDEventTap,
 )
 from PyObjCTools import AppHelper
@@ -94,8 +104,49 @@ LOG_FILE = STATE_DIR / "overlay.log"
 CONTROL_SOCK = Path.home() / ".transcriptions-gpt" / "control.sock"
 OWN_SOCK = STATE_DIR / "control.sock"
 
-TRACKING_MOUSE_ENTERED_AND_EXITED = 0x01
-TRACKING_ACTIVE_ALWAYS = 0x80
+KB_BUNDLE_ID = "com.apple.inputmethod.AssistiveControl"
+
+
+# Live display bounds from the window server, in Cocoa (bottom-left origin)
+# coordinates. NSScreen's list goes stale in this background app when the
+# physical monitor and the BetterDisplay virtual display swap (Jump/Sidecar
+# transitions), which left the panel clamped to a screen that no longer
+# exists.
+def display_frames():
+    err, ids, _cnt = CGGetActiveDisplayList(16, None, None)
+    if err or not ids:
+        return [s.visibleFrame() for s in NSScreen.screens()]
+    main_h = CGDisplayBounds(CGMainDisplayID()).size.height
+    frames = []
+    for did in ids:
+        b = CGDisplayBounds(did)
+        frame = NSMakeRect(
+            b.origin.x, main_h - (b.origin.y + b.size.height),
+            b.size.width, b.size.height)
+        # Prefer the matching NSScreen's visibleFrame (menubar/Dock carved
+        # out); fall back to raw bounds when the NSScreen list is stale.
+        for s in NSScreen.screens():
+            sf = s.frame()
+            if abs(sf.origin.x - frame.origin.x) < 1 \
+                    and abs(sf.origin.y - frame.origin.y) < 1 \
+                    and abs(sf.size.width - frame.size.width) < 1:
+                frame = s.visibleFrame()
+                break
+        frames.append(frame)
+    return frames
+
+
+# Launch-services query, deliberately not pgrep: no per-second subprocess
+# forks from inside a Cocoa app. LS keeps dead entries around for seconds,
+# so confirm each pid is actually alive.
+def kb_running():
+    for app in NSRunningApplication.runningApplicationsWithBundleIdentifier_(KB_BUNDLE_ID) or []:
+        try:
+            os.kill(app.processIdentifier(), 0)
+            return True
+        except OSError:
+            pass
+    return False
 
 
 def log(msg):
@@ -105,6 +156,47 @@ def log(msg):
             f.write("%s %s\n" % (time.strftime("%H:%M:%S"), msg))
     except OSError:
         pass
+
+
+# Every ObjC→Python entry point must be wrapped: an exception escaping into
+# AppKit silently kills AppHelper's callAfter machinery for the rest of the
+# process (all UI updates freeze, quit ignored) — happened twice live.
+def safe(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:
+            log("%s failed: %r" % (fn.__name__, exc))
+    return wrapper
+
+
+# Main-thread dispatch through a plain queue drained by an NSTimer: work is
+# never pushed at the runloop from background threads, and one failing action
+# can't break delivery of the rest.
+MAIN_QUEUE = queue.Queue()
+
+
+def on_main(fn, *args):
+    MAIN_QUEUE.put((fn, args))
+
+
+def drain_main_queue():
+    while True:
+        try:
+            fn, args = MAIN_QUEUE.get_nowait()
+        except queue.Empty:
+            return
+        try:
+            fn(*args)
+        except Exception as exc:
+            log("main-thread action failed: %r" % exc)
+
+
+def on_main_later(delay, fn):
+    timer = threading.Timer(delay, lambda: on_main(fn))
+    timer.daemon = True
+    timer.start()
 
 
 def is_dark():
@@ -163,7 +255,7 @@ def symbol_cgimage(name, point_size, tint_key, appearance, scale=2.0):
 
 
 class KeyButton(NSView):
-    """One key: hosted layers for fill/icon, hover + press-spring + pulse."""
+    """One key: hosted layers for fill/icon, press fill/dim + pulse."""
 
     @objc.python_method
     def setup(self, symbol, point_size, callback, app):
@@ -172,7 +264,6 @@ class KeyButton(NSView):
         self._callback = callback
         self._app = app
         self._btn_enabled = True
-        self._hovered = False
         self._pressed = False
         self._tint_key = None
         self._pulsing = False
@@ -209,26 +300,20 @@ class KeyButton(NSView):
     @objc.python_method
     def render_icon(self):
         tint = "disabled" if not self._btn_enabled else self._tint_key
+        # Raster scale must match the layer's contentsScale, or icons draw at
+        # the wrong point size on screens whose backing factor differs (1x
+        # external monitor vs 2x Sidecar).
+        backing = self._app.panel.backingScaleFactor() or 2.0
         cg, _size = symbol_cgimage(
-            self._symbol, self._point_size, tint, self._app.panel.effectiveAppearance()
+            self._symbol, self._point_size, tint,
+            self._app.panel.effectiveAppearance(), scale=backing,
         )
-        if cg is not None:
-            backing = self._app.panel.backingScaleFactor() or 2.0
-            self._icon.setContentsScale_(backing)
-            self._icon.setContents_(cg)
-
-    def updateTrackingAreas(self):
-        objc.super(KeyButton, self).updateTrackingAreas()
-        for area in list(self.trackingAreas() or []):
-            self.removeTrackingArea_(area)
-        self.addTrackingArea_(
-            NSTrackingArea.alloc().initWithRect_options_owner_userInfo_(
-                self.bounds(),
-                TRACKING_MOUSE_ENTERED_AND_EXITED | TRACKING_ACTIVE_ALWAYS,
-                self,
-                None,
-            )
-        )
+        if cg is None:
+            log("render_icon %s tint=%r: rasterization returned None"
+                % (self._symbol, tint))
+            return
+        self._icon.setContentsScale_(backing)
+        self._icon.setContents_(cg)
 
     def mouseDownCanMoveWindow(self):
         # Disabled keys act as panel background so dragging over them works.
@@ -239,11 +324,10 @@ class KeyButton(NSView):
         dark = is_dark()
         base = NSColor.whiteColor() if dark else NSColor.blackColor()
         if self._pressed:
-            return base.colorWithAlphaComponent_(0.18 if dark else 0.12)
-        if self._hovered:
-            return base.colorWithAlphaComponent_(0.11 if dark else 0.08)
-        # Resting key fill: touch/pencil input has no hover, so keys must
-        # read as keys without it.
+            return base.colorWithAlphaComponent_(0.34 if dark else 0.25)
+        # Resting key fill: touch/pencil input has no hover (a Pencil tap
+        # would leave a "hover" stuck on the key until the next tap), so
+        # keys must read as keys without it and there is no hover state.
         return base.colorWithAlphaComponent_(0.055 if dark else 0.04)
 
     @objc.python_method
@@ -259,57 +343,57 @@ class KeyButton(NSView):
         self._bg.setBackgroundColor_(new_color)
         CATransaction.commit()
 
+    # No layer-transform animations here: animating `transform` on a button
+    # layer while a mouseDragged arrives mid-press (every Pencil tap drifts a
+    # pixel) permanently freezes this window's compositing on macOS 27 —
+    # visuals stop updating process-wide while everything else keeps running.
+    # Press feedback = fill darkening + icon dim, both proven safe.
     @objc.python_method
-    def _press_in(self):
-        t = CATransform3DMakeScale(0.90, 0.90, 1.0)
-        anim = CABasicAnimation.animationWithKeyPath_("transform")
-        anim.setToValue_(t)
-        anim.setDuration_(0.08)
-        anim.setTimingFunction_(CAMediaTimingFunction.functionWithName_("easeOut"))
-        self._scale_layer.addAnimation_forKey_(anim, "scale")
-        CATransaction.begin()
-        CATransaction.setDisableActions_(True)
-        self._scale_layer.setTransform_(t)
-        CATransaction.commit()
-
-    @objc.python_method
-    def _spring_back(self):
-        anim = CASpringAnimation.animationWithKeyPath_("transform")
-        anim.setToValue_(CATransform3DIdentity)
-        anim.setMass_(1.0)
-        anim.setStiffness_(420.0)
-        anim.setDamping_(18.0)
-        anim.setDuration_(anim.settlingDuration())
-        self._scale_layer.addAnimation_forKey_(anim, "scale")
-        CATransaction.begin()
-        CATransaction.setDisableActions_(True)
-        self._scale_layer.setTransform_(CATransform3DIdentity)
-        CATransaction.commit()
-
-    def mouseEntered_(self, event):
-        if not self._btn_enabled:
+    def _press_icon(self, down):
+        if self._pulsing:
             return
-        self._hovered = True
-        self._refresh_fill()
-
-    def mouseExited_(self, event):
-        self._hovered = False
-        self._refresh_fill()
+        target = 0.55 if down else 1.0
+        anim = CABasicAnimation.animationWithKeyPath_("opacity")
+        anim.setToValue_(target)
+        anim.setDuration_(0.08 if down else 0.3)
+        self._icon.addAnimation_forKey_(anim, "press")
+        CATransaction.begin()
+        CATransaction.setDisableActions_(True)
+        self._icon.setOpacity_(target)
+        CATransaction.commit()
 
     def mouseDown_(self, event):
+        safe(self._mouse_down)(event)
+
+    def acceptsFirstMouse_(self, event):
+        return True
+
+    def mouseDragged_(self, event):
+        # Swallow press-drift: bubbling it up would reach the panel's default
+        # window-move handling (see setMovableByWindowBackground note).
+        pass
+
+    def mouseUp_(self, event):
+        safe(self._mouse_up)(event)
+
+    @objc.python_method
+    def _mouse_down(self, event):
         if not self._btn_enabled:
             self.window().performWindowDragWithEvent_(event)
             return
         self._pressed = True
         self._refresh_fill(0.06)
-        self._press_in()
+        self._press_icon(True)
 
-    def mouseUp_(self, event):
+    @objc.python_method
+    def _mouse_up(self, event):
         if not self._pressed:
             return
         self._pressed = False
-        self._refresh_fill()
-        self._spring_back()
+        # Slow fade back so even an instantaneous tap leaves a visible
+        # afterglow — a quick tap otherwise shows nothing.
+        self._refresh_fill(0.45)
+        self._press_icon(False)
         point = self.convertPoint_fromView_(event.locationInWindow(), None)
         b = self.bounds()
         if 0 <= point.x <= b.size.width and 0 <= point.y <= b.size.height \
@@ -326,7 +410,6 @@ class KeyButton(NSView):
             return
         self._btn_enabled = value
         if not value:
-            self._hovered = False
             self._pressed = False
             self._refresh_fill()
         self.render_icon()
@@ -361,7 +444,7 @@ class DragRootView(NSVisualEffectView):
     # isMovableByWindowBackground is unreliable for borderless nonactivating
     # panels; drive the drag explicitly.
     def mouseDown_(self, event):
-        self.window().performWindowDragWithEvent_(event)
+        safe(self.window().performWindowDragWithEvent_)(event)
 
 
 class OverlayDelegate(NSObject):
@@ -371,10 +454,25 @@ class OverlayDelegate(NSObject):
         return self
 
     def windowDidMove_(self, notification):
-        self._app.schedule_frame_save()
+        safe(self._app.schedule_frame_save)()
 
     def themeChanged_(self, notification):
-        AppHelper.callAfter(self._app.apply_theme)
+        on_main(self._app.apply_theme)
+
+    def screensChanged_(self, notification):
+        on_main(self._app.reclamp_to_screens)
+
+    def windowDidChangeBackingProperties_(self, notification):
+        on_main(self._app.rerender_icons)
+
+    def drainTick_(self, timer):
+        drain_main_queue()
+        # Layer mutations from timer context don't always reach the screen on
+        # their own (stale icons observed after window drags) — flush.
+        CATransaction.flush()
+
+    def kbTick_(self, timer):
+        safe(self._app.tick_kb)()
 
 
 class OverlayApp:
@@ -387,7 +485,9 @@ class OverlayApp:
         self.visible = False
         self.voice_state = "offline"
         self._optimistic_until = 0.0
-        self._move_seq = 0
+        self._kb_optimistic_until = 0.0
+        self._kb_expected = False
+        self._save_due = None
         self._animating = False
         self._target_frame = None
         self.hs_binary = self._resolve_hs()
@@ -398,6 +498,17 @@ class OverlayApp:
             .addObserver_selector_name_object_(
                 self.delegate, b"themeChanged:",
                 "AppleInterfaceThemeChangedNotification", None)
+        NSNotificationCenter.defaultCenter() \
+            .addObserver_selector_name_object_(
+                self.delegate, b"screensChanged:",
+                NSApplicationDidChangeScreenParametersNotification, None)
+        run_loop = NSRunLoop.currentRunLoop()
+        self._drain_timer = NSTimer.timerWithTimeInterval_target_selector_userInfo_repeats_(
+            0.1, self.delegate, b"drainTick:", None, True)
+        run_loop.addTimer_forMode_(self._drain_timer, "kCFRunLoopCommonModes")
+        self._kb_timer = NSTimer.timerWithTimeInterval_target_selector_userInfo_repeats_(
+            1.0, self.delegate, b"kbTick:", None, True)
+        run_loop.addTimer_forMode_(self._kb_timer, "kCFRunLoopCommonModes")
 
     @staticmethod
     def _resolve_hs():
@@ -453,6 +564,22 @@ class OverlayApp:
         height = BUTTON + 2 * PAD
         return specs, width, height
 
+    @staticmethod
+    def _rounded_mask(radius):
+        size = 2.0 * radius + 1.0
+
+        def draw(rect):
+            NSColor.blackColor().set()
+            NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                rect, radius, radius).fill()
+            return True
+
+        img = NSImage.imageWithSize_flipped_drawingHandler_(
+            (size, size), False, draw)
+        img.setCapInsets_(NSEdgeInsetsMake(radius, radius, radius, radius))
+        img.setResizingMode_(NSImageResizingModeStretch)
+        return img
+
     def _build_panel(self):
         specs, width, height = self._layout()
         frame = self._restore_frame(width, height)
@@ -472,7 +599,12 @@ class OverlayApp:
         panel.setHasShadow_(True)
         panel.setOpaque_(False)
         panel.setBackgroundColor_(NSColor.clearColor())
-        panel.setMovableByWindowBackground_(True)
+        # Never let AppKit start a background-move session on its own: a
+        # mouseDragged bubbling up mid-press (every Pencil tap has micro
+        # movement) wedges the window server into showing stale frames for
+        # this window forever. Drags are driven explicitly via
+        # performWindowDragWithEvent instead.
+        panel.setMovableByWindowBackground_(False)
         panel.setBecomesKeyOnlyIfNeeded_(True)
         panel.setHidesOnDeactivate_(False)
         self.panel = panel
@@ -482,6 +614,10 @@ class OverlayApp:
         root.setState_(NSVisualEffectStateActive)
         root.setMaterial_(NSVisualEffectMaterialPopover)
         root.setWantsLayer_(True)
+        # maskImage (not just layer cornerRadius) so the window server clips
+        # the blur backdrop and shapes the window shadow to the rounded rect;
+        # the layer radius alone leaves both square at the corners.
+        root.setMaskImage_(self._rounded_mask(RADIUS_PANEL))
         layer = root.layer()
         layer.setCornerRadius_(RADIUS_PANEL)
         try:
@@ -538,8 +674,7 @@ class OverlayApp:
         best, best_dist = None, None
         cx = frame.origin.x + frame.size.width / 2.0
         cy = frame.origin.y + frame.size.height / 2.0
-        for screen in NSScreen.screens():
-            sf = screen.visibleFrame()
+        for sf in display_frames():
             dist = (cx - (sf.origin.x + sf.size.width / 2.0)) ** 2 \
                 + (cy - (sf.origin.y + sf.size.height / 2.0)) ** 2
             if best_dist is None or dist < best_dist:
@@ -552,13 +687,37 @@ class OverlayApp:
         return frame
 
     def schedule_frame_save(self):
+        # No timer per move event (drags emit dozens a second): just stamp a
+        # deadline; the once-a-second tick performs the save after the drag
+        # settles.
         if self._animating:
             return
-        self._move_seq += 1
-        seq = self._move_seq
         if self.visible:
             self._target_frame = self.panel.frame()
-        AppHelper.callLater(0.8, lambda: seq == self._move_seq and self._save_frame())
+        self._save_due = time.time() + 1.0
+
+    def rerender_icons(self):
+        for btn in self.buttons.values():
+            btn.render_icon()
+
+    def reclamp_to_screens(self):
+        # Display topology changed (Sidecar gone, resolution switch): pull a
+        # stranded panel back onto a live screen. The move is not a user drag,
+        # so suppress position persistence around it.
+        if not self.visible:
+            return
+        frame = self.panel.frame()
+        clamped = self._clamp(NSMakeRect(frame.origin.x, frame.origin.y,
+                                         frame.size.width, frame.size.height))
+        if (abs(clamped.origin.x - frame.origin.x) < 0.5
+                and abs(clamped.origin.y - frame.origin.y) < 0.5):
+            return
+        self._animating = True
+        self.panel.setFrame_display_(clamped, True)
+
+        def settle():
+            self._animating = False
+        on_main_later(0.25, settle)
 
     def _save_frame(self):
         try:
@@ -590,6 +749,12 @@ class OverlayApp:
         self._optimistic_until = time.time() + 1.5
         self._set_voice_state(state)
 
+    def _apply_polled_voice_state(self, state):
+        # Guard evaluated here, not at enqueue time in the poll thread: a tap
+        # landing between enqueue and execution must win over the stale poll.
+        if time.time() >= self._optimistic_until:
+            self._set_voice_state(state)
+
     def _on_mic(self):
         state = self.voice_state
         if state == "idle":
@@ -612,16 +777,22 @@ class OverlayApp:
     # -- accessibility keyboard ------------------------------------------
 
     def _on_keyboard(self):
-        threading.Thread(target=self._toggle_kb, daemon=True).start()
+        # Decide and paint on the main thread; only the subprocess work goes
+        # to a background thread. AssistiveControl cold-starts slowly
+        # (seconds, that's macOS itself) — pulse until the tick confirms it.
+        turning_on = not kb_running()
+        self._kb_optimistic_until = time.time() + 3.0
+        self._kb_expected = turning_on
+        self._apply_kb_state(turning_on, turning_on)
+        threading.Thread(target=self._toggle_kb, args=(turning_on,),
+                         daemon=True).start()
 
-    def _toggle_kb(self):
-        # The prefs flip the state; launchd starts/keeps AssistiveControl
-        # alive while virtualKeyboardOnOff=1, so hide also needs the kill.
+    def _toggle_kb(self, turning_on):
+        # Ground truth is the AssistiveControl process, not the defaults: they
+        # can be left at "on" while the process is dead, and writing them does
+        # not start the launchd job by itself — hence the explicit kickstart
+        # (and the kill on hide, since launchd otherwise keeps it alive).
         try:
-            out = subprocess.run(
-                ["defaults", "read", "com.apple.universalaccess", "virtualKeyboardOnOff"],
-                capture_output=True, text=True, timeout=5).stdout.strip()
-            turning_on = out != "1"
             value = "true" if turning_on else "false"
             for domain, key in (
                 ("com.apple.universalaccess", "virtualKeyboardOnOff"),
@@ -629,16 +800,58 @@ class OverlayApp:
             ):
                 subprocess.run(["defaults", "write", domain, key, "-bool", value],
                                timeout=5)
-            if not turning_on:
+            if turning_on:
+                subprocess.run(
+                    ["launchctl", "kickstart",
+                     "gui/%d/com.apple.AssistiveControl" % os.getuid()],
+                    timeout=5)
+            else:
                 subprocess.run(["pkill", "-f", "Assistive Control"], timeout=5)
-            AppHelper.callAfter(self._apply_kb_tint, turning_on)
         except Exception as exc:
             log("keyboard toggle failed: %r" % exc)
 
-    def _apply_kb_tint(self, on):
+    def _heal_offscreen(self):
+        # Display topology changed under a visible panel (monitor ↔ virtual ↔
+        # Sidecar): if it no longer intersects any live display, pull it back.
+        # Full-outside check only, so edge-hugging drags are never fought.
+        f = self.panel.frame()
+        for sf in display_frames():
+            if (f.origin.x < sf.origin.x + sf.size.width
+                    and f.origin.x + f.size.width > sf.origin.x
+                    and f.origin.y < sf.origin.y + sf.size.height
+                    and f.origin.y + f.size.height > sf.origin.y):
+                return
+        self.reclamp_to_screens()
+
+    def tick_kb(self):
+        # Keyboard indicator tracks the real AssistiveControl process, so it
+        # also follows native toggles. While a tap's optimistic window is
+        # open, only a confirmed start may override the pending pulse.
+        if self._save_due is not None and time.time() >= self._save_due:
+            self._save_due = None
+            self._save_frame()
+        if not self.visible:
+            return
+        self._heal_offscreen()
+        try:
+            up = kb_running()
+        except Exception:
+            return
+        # Inside a tap's grace window, reality may only CONFIRM the tapped
+        # direction — a still-dying (or still-starting) process must not
+        # flash the indicator back to its previous state.
+        if time.time() < self._kb_optimistic_until and up != self._kb_expected:
+            return
+        self._apply_kb_state(up, False)
+
+    def _apply_kb_state(self, on, pending):
         btn = self.buttons.get("keyboard")
         if btn:
             btn.set_tint("accent" if on else None)
+            btn.set_pulsing(pending)
+        # Layer mutations from timer context don't always reach the screen on
+        # their own (stale icons observed after window drags) — flush.
+        CATransaction.flush()
 
     # -- voice state ------------------------------------------------------
 
@@ -686,8 +899,7 @@ class OverlayApp:
                     state = reply
             except OSError:
                 state = "offline"
-            if time.time() >= self._optimistic_until:
-                AppHelper.callAfter(self._set_voice_state, state)
+            on_main(self._apply_polled_voice_state, state)
             time.sleep(1.0)
 
     # -- show / hide -------------------------------------------------------
@@ -716,7 +928,7 @@ class OverlayApp:
 
         def settle():
             self._animating = False
-        AppHelper.callLater(0.25, settle)
+        on_main_later(0.25, settle)
 
     def hide(self):
         if not self.visible:
@@ -736,12 +948,14 @@ class OverlayApp:
                 panel.orderOut_(None)
                 panel.setFrame_display_(self._target_frame, False)
 
-        NSAnimationContext.runAnimationGroup_completionHandler_(
-            lambda ctx: (ctx.setDuration_(0.15),
-                         panel.animator().setAlphaValue_(0.0),
-                         panel.animator().setFrame_display_(down, True)),
-            done,
-        )
+        def animations(ctx):
+            # Must return None: PyObjC rejects non-void returns from this
+            # block with a ValueError, aborting the hide mid-way.
+            ctx.setDuration_(0.15)
+            panel.animator().setAlphaValue_(0.0)
+            panel.animator().setFrame_display_(down, True)
+
+        NSAnimationContext.runAnimationGroup_completionHandler_(animations, done)
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -760,17 +974,17 @@ class OverlayApp:
                 conn.settimeout(2.0)
                 cmd = conn.recv(64).decode("utf-8", "ignore").strip()
                 if cmd == "show":
-                    AppHelper.callAfter(self.show)
+                    on_main(self.show)
                     conn.sendall(b"ok\n")
                 elif cmd == "hide":
-                    AppHelper.callAfter(self.hide)
+                    on_main(self.hide)
                     conn.sendall(b"ok\n")
                 elif cmd == "status":
                     conn.sendall(b"visible\n" if self.visible else b"hidden\n")
                 elif cmd == "quit":
                     conn.sendall(b"ok\n")
                     conn.close()
-                    AppHelper.callAfter(self._shutdown)
+                    on_main(self._shutdown)
                     return
                 conn.close()
             except OSError as exc:
@@ -782,7 +996,7 @@ class OverlayApp:
         while True:
             if os.getppid() != parent:
                 log("parent died, exiting")
-                AppHelper.callAfter(self._shutdown)
+                on_main(self._shutdown)
                 return
             time.sleep(2.0)
 
@@ -794,20 +1008,30 @@ class OverlayApp:
             pass
         os._exit(0)
 
+    @staticmethod
+    def _kill_stale_instances():
+        # hs.reload() resets the Lua supervisor's state but not Hammerspoon's
+        # pid, so an untracked previous helper survives with a frozen ghost
+        # panel stacked on ours. Singleton by force: one instance, ever.
+        try:
+            out = subprocess.run(
+                ["pgrep", "-f", "ipad_overlay_app/overlay_app.py"],
+                capture_output=True, text=True, timeout=5).stdout.split()
+            for pid in out:
+                if int(pid) != os.getpid():
+                    os.kill(int(pid), signal.SIGKILL)
+                    log("killed stale helper %s" % pid)
+        except Exception as exc:
+            log("stale-instance sweep failed: %r" % exc)
+
     def run(self, show_now=False):
+        self._kill_stale_instances()
         threading.Thread(target=self._serve_control, daemon=True).start()
         if not show_now:
             threading.Thread(target=self._watch_parent, daemon=True).start()
         threading.Thread(target=self._poll_voice, daemon=True).start()
-        try:
-            on = subprocess.run(
-                ["defaults", "read", "com.apple.universalaccess", "virtualKeyboardOnOff"],
-                capture_output=True, text=True, timeout=5).stdout.strip() == "1"
-            self._apply_kb_tint(on)
-        except Exception:
-            pass
         if show_now:
-            AppHelper.callAfter(self.show)
+            on_main(self.show)
         AppHelper.runEventLoop(installInterrupt=False)
 
     def smoke_test(self):
