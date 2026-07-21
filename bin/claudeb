@@ -1003,12 +1003,29 @@ probe_accounts() {
     pid=$!
     pids="$pids $pid"
   done < <(account_names)
+  # Publish in completion order — a wait-all barrier would hold every account's
+  # fresh numbers hostage to the slowest probe. probe_one writes .result last on
+  # every exit path, so a non-empty .result marks that account done.
+  local done_list=' ' progress remaining
+  while :; do
+    progress=false
+    remaining=false
+    while IFS= read -r name; do
+      case "$done_list" in *" $name "*) continue ;; esac
+      if [ -s "$dir/$name.result" ]; then
+        process_probe_result "$name" "$dir"
+        done_list="$done_list$name "
+        progress=true
+      else
+        remaining=true
+      fi
+    done < <(account_names)
+    [ "$remaining" = true ] || break
+    [ "$progress" = true ] || sleep 0.2
+  done
   for pid in $pids; do
     wait "$pid" || true
   done
-  while IFS= read -r name; do
-    process_probe_result "$name" "$dir"
-  done < <(account_names)
   # Weather leaves snapshots untouched and nothing else retries, so a partial refresh
   # would never converge; retry weather-failed accounts serially within the budget.
   converge_budget="${CLAUDEB_REFRESH_CONVERGE_S:-240}"
@@ -1807,6 +1824,9 @@ accounts_refresh_start() {
   [ -z "${accounts_refresh_pid:-}" ] || return 1
   accounts_refresh_dir=$(mktemp -d "${TMPDIR:-/tmp}/claudeb-refresh.XXXXXX") || { accounts_refresh_dir=''; return 1; }
   accounts_refresh_started=$(date +%s)
+  # Job control puts the wrapper in its own process group, so cancelling can take
+  # down the probe_one children with it — a bare kill orphans them mid-request.
+  set -m
   {
     # The || true keeps set -e from aborting the subshell before the sentinel is
     # written; a hung probe would otherwise leave the spinner spinning forever.
@@ -1814,6 +1834,7 @@ accounts_refresh_start() {
     printf 'done\n' >"$accounts_refresh_dir/.done"
   } >"$accounts_refresh_dir/probe.log" 2>&1 &
   accounts_refresh_pid=$!
+  set +m
   return 0
 }
 
@@ -1824,7 +1845,7 @@ accounts_refresh_running() {
 
 accounts_refresh_kill() {
   if [ -n "${accounts_refresh_pid:-}" ]; then
-    kill "$accounts_refresh_pid" 2>/dev/null || true
+    kill -- "-$accounts_refresh_pid" 2>/dev/null || kill "$accounts_refresh_pid" 2>/dev/null || true
     wait "$accounts_refresh_pid" 2>/dev/null || true
   fi
   [ -z "${accounts_refresh_dir:-}" ] || rm -rf "$accounts_refresh_dir"

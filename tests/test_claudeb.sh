@@ -1382,4 +1382,38 @@ EOF
   [ -z "${accounts_probe_dir:-}" ] || rm -rf "$accounts_probe_dir"
 ) || exit 1
 
-echo "PASS: $asserts asserts; reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth weather/backoff and lock behavior, reserved names, disabled-account timeline, out-of-rotation profile launch proceeds direct (proxy leaks stripped), generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent-rotation adoption, capacity weather clears stale expired auth for valid tokens, warm-first heal ordering and fallback, warm auth verdicts require current-run refresh evidence, start-windows opens a fresh window and reconcile locks the new resets_at without regressing it, start-windows skips a disabled account with an explicit cause, warm --start-window opens only an expired window for the explicit account (live window and flagless runs never ping; ping weather warns without an auth verdict), the paid haiku warm fallback stays off unless opted in, regular probes never warm, heal_expired covers disabled accounts with actionable causes, and heal_one writes expired only on current-run evidence (stale-token 401 defers to the token endpoint's verdict, fresh-token 401 is affirmative, weather never re-stamps a prior expired), and no-refresh probes plus daemon-token messages-probe 401s defer to the refresh outcome (stale token → weather no-write / invalid_grant expired, fresh token → affirmative), and interactive status account-row selection (bounded up/down navigation, name-stable across re-sort), Enter resolving to a \`claudeb profile <name>\` exec, row-scoped reverse-video highlight, and the non-tty path staying plain with no key loop or launch, status defaulting to cached (zero network; --live still probes), and the async refresh outcome summary (✓ when all enabled accounts are live/live*, else names stale accounts with a cause and excludes disabled ones, raw probe stderr confined to the log)"
+# Cancelling a running background refresh must take down the probe children with
+# the wrapper (process-group kill), not orphan them mid-request.
+(
+  probe_accounts() { sleep 30 & printf '%s\n' "$!" >"$1/child.pid"; wait; }
+  account_names() { printf '%s\n' aa; }
+  accounts_allow_spend=false; accounts_start_windows=false; accounts_heal=false
+  accounts_probe_dir=''; accounts_refresh_pid=''; accounts_refresh_dir=''; accounts_status_line=''
+  accounts_refresh_start >/dev/null 2>&1
+  for _ in $(seq 1 60); do [ -s "$accounts_refresh_dir/child.pid" ] && break; sleep 0.05; done
+  child=$(cat "$accounts_refresh_dir/child.pid")
+  assert test -n "$child"
+  assert sh -c "kill -0 $child 2>/dev/null"
+  accounts_refresh_kill
+  sleep 0.3
+  assert_fails sh -c "kill -0 $child 2>/dev/null"
+) || exit 1
+
+# First-pass probe results publish in completion order: a fast account is processed
+# while a slow sibling is still probing, not behind a wait-all barrier.
+(
+  export CLAUDEB_REFRESH_CONVERGE_S=0
+  olog="$WORK/order.log"; : >"$olog"
+  probe_one() { case "$1" in bb) sleep 2 ;; esac; printf 'usage 0 200\n' >"$2/$1.result"; printf '%s done %s\n' "$1" "$(date +%s)" >>"$olog"; }
+  process_probe_result() { printf '%s processed %s\n' "$1" "$(date +%s)" >>"$olog"; }
+  account_names() { printf '%s\n' aa bb; }
+  d="$WORK/order-dir"; mkdir -p "$d"
+  probe_accounts "$d" false false false
+  aa_p=$(awk '$1=="aa" && $2=="processed" {print $3}' "$olog")
+  bb_d=$(awk '$1=="bb" && $2=="done" {print $3}' "$olog")
+  assert test -n "$aa_p"
+  assert test -n "$bb_d"
+  assert test "$aa_p" -lt "$bb_d"
+) || exit 1
+
+echo "PASS: $asserts asserts; reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth weather/backoff and lock behavior, reserved names, disabled-account timeline, out-of-rotation profile launch proceeds direct (proxy leaks stripped), generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent-rotation adoption, capacity weather clears stale expired auth for valid tokens, warm-first heal ordering and fallback, warm auth verdicts require current-run refresh evidence, start-windows opens a fresh window and reconcile locks the new resets_at without regressing it, start-windows skips a disabled account with an explicit cause, warm --start-window opens only an expired window for the explicit account (live window and flagless runs never ping; ping weather warns without an auth verdict), the paid haiku warm fallback stays off unless opted in, regular probes never warm, heal_expired covers disabled accounts with actionable causes, and heal_one writes expired only on current-run evidence (stale-token 401 defers to the token endpoint's verdict, fresh-token 401 is affirmative, weather never re-stamps a prior expired), and no-refresh probes plus daemon-token messages-probe 401s defer to the refresh outcome (stale token → weather no-write / invalid_grant expired, fresh token → affirmative), and interactive status account-row selection (bounded up/down navigation, name-stable across re-sort), Enter resolving to a \`claudeb profile <name>\` exec, row-scoped reverse-video highlight, and the non-tty path staying plain with no key loop or launch, status defaulting to cached (zero network; --live still probes), and the async refresh outcome summary (✓ when all enabled accounts are live/live*, else names stale accounts with a cause and excludes disabled ones, raw probe stderr confined to the log), refresh cancellation killing the probe process group, and first-pass results publishing in completion order"
