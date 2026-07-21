@@ -8,6 +8,7 @@ local liveProxyPids = {}
 local offsets = {}
 local partialLines = {}
 local previousSignals = nil
+local onChangeHooks = {}
 
 local function normalizeDir(path)
     return path:sub(-1) == "/" and path or (path .. "/")
@@ -21,6 +22,12 @@ local function logChange(value, reason)
     end
 end
 
+local function notifyChange()
+    for _, fn in ipairs(onChangeHooks) do
+        pcall(fn)
+    end
+end
+
 local function apply(value, reason)
     value = value == true
     if on == value then
@@ -28,6 +35,7 @@ local function apply(value, reason)
     end
     on = value
     logChange(on, reason)
+    notifyChange()
     return true
 end
 
@@ -72,8 +80,8 @@ local function parseLine(line)
         liveProxyPids[pid] = true
         return
     end
-
     -- Agent-mode exits must not end a proxy session unless that pid entered proxy mode.
+
     if liveProxyPids[pid]
         and (line:find("Disconnected from server. Signaling finish", 1, true)
             or line:find("[connect_app] Exiting process", 1, true)) then
@@ -210,6 +218,12 @@ function IpadMode.recompute(reason)
     previousSignals = signals
     apply(derivedOn(signals), reason or "automatic signal")
     return on
+end
+
+function IpadMode.onChange(fn)
+    if type(fn) == "function" then
+        table.insert(onChangeHooks, fn)
+    end
 end
 
 function IpadMode.getJumpConnected()

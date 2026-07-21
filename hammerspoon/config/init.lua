@@ -277,8 +277,8 @@ end
 
 local watcher = hs.screen.watcher.new(scheduleScreenEvaluation)
 
-_G.MonitorAutomation = {
     -- Anchor long-lived objects globally: local-only references can be GC'd and silently die.
+_G.MonitorAutomation = {
     watcher = watcher,
     pending = pending,
     getState = function()
@@ -382,6 +382,24 @@ end)
 if not sidecarPresenceOk then
     print("ERROR: Sidecar presence logger failed to load:", sidecarPresenceError)
     hs.alert.show("Sidecar presence error")
+end
+
+local sendActionsOk, sendActionsError = pcall(function()
+    dofile(hs.configdir .. "/send_actions.lua")
+end)
+
+if not sendActionsOk then
+    print("ERROR: Send actions failed to load:", sendActionsError)
+    hs.alert.show("Send actions error")
+end
+
+local ipadOverlayOk, ipadOverlayError = pcall(function()
+    dofile(hs.configdir .. "/ipad_overlay.lua")
+end)
+
+if not ipadOverlayOk then
+    print("ERROR: iPad overlay failed to load:", ipadOverlayError)
+    hs.alert.show("iPad overlay error")
 end
 
 local menuOk, menuError = pcall(function()

@@ -41,126 +41,12 @@ local function getClaude()
     return _G.ClaudeContinue
 end
 
-local function getGptVoice()
-    return _G.GptVoice
-end
-
 local function getHandoffGuard()
     return _G.HandoffGuard
 end
 
 local function getMonitorAutomation()
     return _G.MonitorAutomation
-end
-
--- The iPad menu's Copy/Paste/Enter send keystrokes, but opening the menubar
--- menu can drop the terminal's key focus, so a plain keyStroke lands nowhere
--- and the paste silently fails. Post the event straight to the app the user was
--- last working in (keyStroke's app arg). frontmostApplication() at menu-build
--- time is unreliable - it can already read as Hammerspoon, or go stale when the
--- user switches apps without reopening the menu - so track app activations
--- continuously and remember the last real (non-Hammerspoon) app instead.
-local pasteTarget = nil
-
-local function rememberFront(app)
-    if not app then return end
-    local ok, bid = pcall(function() return app:bundleID() end)
-    if ok and bid and bid ~= hs.processInfo.bundleID then
-        pasteTarget = app
-    end
-end
-
-rememberFront(hs.application.frontmostApplication())
-
-local pasteTargetWatcher = hs.application.watcher.new(function(_, event, app)
-    if event == hs.application.watcher.activated then
-        rememberFront(app)
-    end
-end)
-pasteTargetWatcher:start()
-
-local function sendKeys(mods, key)
-    if pasteTarget and pasteTarget:isRunning() then
-        hs.eventtap.keyStroke(mods, key, pasteTarget)
-    else
-        hs.eventtap.keyStroke(mods, key)
-    end
-end
-
-local terminalBundles = {
-    ["com.apple.Terminal"] = true,
-    ["com.googlecode.iterm2"] = true,
-    ["com.mitchellh.ghostty"] = true,
-    ["com.cmuxterm.app"] = true,
-}
-
-local function targetIsTerminal()
-    if not pasteTarget then return false end
-    local ok, bid = pcall(function() return pasteTarget:bundleID() end)
-    return ok and bid ~= nil and terminalBundles[bid] == true
-end
-
--- In a terminal running Claude Code the visible selection belongs to the TUI,
--- not the terminal, so Cmd+C copies nothing (the TUI owns mouse reporting).
--- Claude Code exposes its copy as the ctrl+x ctrl+y chord (selection:copy in
--- ~/.claude/keybindings.json) - send that instead. A real terminal-native
--- selection is still copied with Cmd+C: it shows up as AXSelectedText, the
--- TUI's drawn selection does not.
-local function sendCopy()
-    if not targetIsTerminal() then
-        sendKeys({"cmd"}, "c")
-        return
-    end
-    local nativeSelection = false
-    pcall(function()
-        local axApp = hs.axuielement.applicationElement(pasteTarget)
-        -- AX calls into a busy app block indefinitely by default and would
-        -- hang the menu; cap them so copy degrades to the chord instead.
-        if axApp.setTimeout then axApp:setTimeout(0.3) end
-        local focused = axApp and axApp:attributeValue("AXFocusedUIElement")
-        local sel = focused and focused:attributeValue("AXSelectedText")
-        nativeSelection = type(sel) == "string" and #sel > 0
-    end)
-    if nativeSelection then
-        sendKeys({"cmd"}, "c")
-    elseif _G.ClaudeCmdKeys and _G.ClaudeCmdKeys.menuCopy then
-        _G.ClaudeCmdKeys.menuCopy(pasteTarget)
-    else
-        hs.eventtap.keyStroke({"ctrl"}, "x", 20000, pasteTarget)
-        hs.eventtap.keyStroke({"ctrl"}, "y", 20000, pasteTarget)
-    end
-end
-
-local function clipboardHasText()
-    local types = hs.pasteboard.contentTypes() or {}
-    for _, t in ipairs(types) do
-        -- file-url counts as text: Terminal's Cmd+V pastes a copied file as
-        -- its path, which ctrl+v would lose.
-        if t == "public.utf8-plain-text" or t == "public.plain-text"
-            or t == "NSStringPboardType" or t == "public.file-url" then
-            return true
-        end
-    end
-    return false
-end
-
--- A terminal's Cmd+V pastes text through the TTY and cannot deliver an image;
--- Claude Code reads the pasteboard itself on ctrl+v (its image paste).
--- ClaudeCmdKeys.menuPaste owns the image and image-file cases (same raw-byte
--- plans as the physical Cmd+V remap); a textual clipboard falls through to a
--- native Cmd+V, which works in Claude Code and plain shells alike.
-local function sendPaste()
-    if targetIsTerminal() then
-        local ck = _G.ClaudeCmdKeys
-        if ck and ck.menuPaste and ck.menuPaste(pasteTarget) then
-            return
-        end
-        if not (ck and ck.menuPaste) and not clipboardHasText() then
-            sendKeys({"ctrl"}, "v")
-            return
-        end
-    end
-    sendKeys({"cmd"}, "v")
 end
 
 -- Blocking (AppleScript to System Events) — menu code must use dockAutoHideCache.
@@ -287,35 +173,6 @@ end
 
 refreshTitle = function()
     local claude = getClaude()
-    local gptVoice = getGptVoice()
-
-    if gptVoice and gptVoice.state == "recording" then
-        if menuMode ~= "rec" then
-            menuBar:setMenu(nil)
-            menuBar:setClickCallback(function()
-                gptVoice.submit()
-            end)
-            menuMode = "rec"
-        end
-
-        menuBar:setTitle("Rec")
-        menuBar:setTooltip("GPT Voice recording. Click to stop.")
-        return
-    end
-
-    if gptVoice and (gptVoice.state == "processing" or gptVoice.state == "transforming") then
-        if menuMode ~= "processing" then
-            menuBar:setMenu(nil)
-            menuBar:setClickCallback(function()
-                gptVoice.cancel()
-            end)
-            menuMode = "processing"
-        end
-
-        menuBar:setTitle("…")
-        menuBar:setTooltip("GPT Voice processing. Click to cancel.")
-        return
-    end
 
     if menuMode ~= "menu" then
         menuBar:setClickCallback()
@@ -384,10 +241,9 @@ end
 
 buildMenu = function()
     local claude = _G.ClaudeContinue
-    local gptVoice = getGptVoice()
     local handoff = getHandoffGuard()
     local monitor = getMonitorAutomation()
-    local ipadMode = _G.IpadMode
+    local ipadOverlay = _G.IpadOverlay
     local dockAutoHide = dockAutoHideCache
     local handoffEnabled = handoff and handoff.isEnabledCached and handoff.isEnabledCached()
 
@@ -440,6 +296,8 @@ buildMenu = function()
     local menu = {
         destinationItem,
         { title = "-" },
+        llmLimitsItem,
+        { title = "-" },
         monitorItem,
         {
             title = "Handoff",
@@ -470,66 +328,22 @@ buildMenu = function()
             end,
         },
         {
-            title = "For iPad",
-            checked = ipadMode ~= nil and ipadMode.isOn(),
-            disabled = not ipadMode,
+            title = "iPad Overlay",
+            checked = ipadOverlay ~= nil and ipadOverlay.isEnabled(),
+            disabled = not ipadOverlay,
             fn = function()
-                if ipadMode then
-                    ipadMode.toggle()
+                if ipadOverlay then
+                    ipadOverlay.setEnabled(not ipadOverlay.isEnabled())
                     refreshTitle()
                 end
             end,
         },
-        { title = "-" },
-        llmLimitsItem,
         { title = "-" },
     }
 
     if hasEnabledDestination then
         table.insert(menu, 2, firstRunItem)
         table.insert(menu, 3, repeatItem)
-    end
-
-    if ipadMode and ipadMode.isOn() then
-        table.insert(menu, {
-            title = "Copy",
-            fn = function()
-                sendCopy()
-            end,
-        })
-        table.insert(menu, {
-            title = "Paste",
-            fn = function()
-                sendPaste()
-            end,
-        })
-        table.insert(menu, {
-            title = "Enter",
-            fn = function()
-                sendKeys({}, "return")
-            end,
-        })
-        -- Copy/Paste/Enter is one workflow; GPT Voice/Transform is a separate
-        -- app - split the groups, not the keystrokes.
-        table.insert(menu, { title = "-" })
-        table.insert(menu, {
-            title = "GPT Voice",
-            disabled = not gptVoice or gptVoice.state == "offline",
-            fn = function()
-                if gptVoice then
-                    gptVoice.start()
-                end
-            end,
-        })
-        table.insert(menu, {
-            title = "GPT Transform",
-            disabled = not gptVoice or gptVoice.state == "offline",
-            fn = function()
-                if gptVoice then
-                    gptVoice.transform()
-                end
-            end,
-        })
     end
 
     table.insert(menu, {
@@ -642,8 +456,6 @@ AutomationMenu.buildMenu = function()
     return buildMenu()
 end
 AutomationMenu.refresh = refreshTitle
-AutomationMenu.sendCopy = sendCopy
-AutomationMenu.sendPaste = sendPaste
 AutomationMenu.show = showMenu
 AutomationMenu.hide = hideMenu
 AutomationMenu.onMonitorOff = showMenu
@@ -656,9 +468,6 @@ refreshTitle()
 showMenu()
 titleTimer = hs.timer.doEvery(30, refreshTitle)
 AutomationMenu.titleTimer = titleTimer
--- Anchor the watcher in the module table (like the timers above) so the GC
--- can't collect it and silently stop tracking the paste target.
-AutomationMenu.pasteTargetWatcher = pasteTargetWatcher
 
 if llmLimits then
     llmLimits.onRefreshStateChanged = function()
