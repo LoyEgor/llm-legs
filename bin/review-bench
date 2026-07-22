@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -21,13 +22,18 @@ RATER_TIMEOUT_S = 1800
 AUTO_RATERS = tuple(
     f"{model}-{effort}"
     for effort in ("medium", "high", "xhigh", "low", "max")
-    for model in ("sol", "haiku", "sonnet", "opus")
+    for model in ("sol", "haiku", "sonnet", "opus", "fable")
 )
+CLAUDE_MODEL_IDS = {"fable": "claude-fable-5"}
 VERDICTS = {"confirmed", "false_positive", "duplicate"}
 WEIGHTS = {"P1": 5, "P2": 2, "P3": 1}
-RATER_RE = re.compile(r"^(sol|opus|sonnet|haiku)-(low|medium|high|xhigh|max)$")
+RATER_RE = re.compile(
+    r"^(sol|opus|sonnet|haiku|fable)-(low|medium|high|xhigh|max)(-skill)?$"
+)
+OVERLAY_REF = os.environ.get("REVIEW_BENCH_OVERLAY_REF", "review-bench-overlay")
 PRIORITY_RE = re.compile(r"\b(P[123])\b", re.IGNORECASE)
 LOCATION_RE = re.compile(r"(?P<file>[^\s:]+\.[A-Za-z0-9]+):(?P<line>\d+)(?:-\d+)?")
+LIMITS_STALE_AGE_S = 600
 
 
 def utc_now():
@@ -76,12 +82,18 @@ def parse_rater(spec):
     match = RATER_RE.fullmatch(spec.strip().lower())
     if not match:
         raise ValueError(
-            f"invalid rater {spec!r}; expected sol-<effort> or "
-            "opus|sonnet|haiku-<effort>"
+            f"invalid rater {spec!r}; expected sol-<effort>, "
+            "opus|sonnet|haiku|fable-<effort>, or a Claude -skill "
+            "variant such as opus-medium-skill"
         )
-    model, effort = match.groups()
-    return {"spec": f"{model}-{effort}", "model": model, "effort": effort,
-            "side": "codex" if model == "sol" else "claude"}
+    model, effort, skill = match.groups()
+    skill = bool(skill)
+    side = "codex" if model == "sol" else "claude"
+    if skill and side != "claude":
+        raise ValueError(f"invalid rater {spec!r}; -skill mode is Claude-only")
+    canonical = f"{model}-{effort}-skill" if skill else f"{model}-{effort}"
+    return {"spec": canonical, "model": model, "effort": effort,
+            "side": side, "skill": skill}
 
 
 def parse_raters(value):
@@ -241,7 +253,11 @@ def finding_from_dict(value, rater):
         value.get("severity") or value.get("priority") or value.get("title")
     )
     if not severity:
-        return None
+        # The /code-review skill contract has no severity field; a located
+        # finding without one is real output, not noise — default it low.
+        if not (value.get("file") and value.get("summary")):
+            return None
+        severity = "P3"
     location = value.get("code_location") or value.get("location") or {}
     if not isinstance(location, dict):
         location = {}
@@ -337,6 +353,59 @@ def review_prompt(sha, focus):
     )
 
 
+def skill_brief(sha, focus, repo_path):
+    suffix = f"\nAdditional review focus: {focus}" if focus else ""
+    return (
+        f"You are a code-review worker. The repository is your current working directory "
+        f"({repo_path}). Review commit {sha} the way you normally would: invoke the "
+        "/code-review skill and follow its methodology, inspecting the changed code with the "
+        f"repository's tools (start from `git show {sha}`). Return findings only, one JSON "
+        "object per line, with exactly these fields: severity (P1, P2, or P3), file, line, "
+        "summary. Use changed lines for locations. Return no text when there are no findings. "
+        "Do not modify the repository."
+        + suffix
+    )
+
+
+def seal_overlay_clone(repo, sha):
+    full = subprocess.run(["git", "-C", str(repo), "rev-parse", f"{sha}^{{commit}}"],
+                          capture_output=True, text=True).stdout.strip()
+    if not full:
+        raise RuntimeError(f"cannot resolve bench commit {sha!r} in {repo}")
+    # Plain `git fetch <repo> <sha>` fails for non-advertised objects, so the
+    # commit is exposed through an ephemeral ref for the duration of the fetch.
+    ref = f"refs/review-bench/seal-{full[:12]}"
+    tmp = tempfile.mkdtemp(prefix="review-bench-seal-")
+    try:
+        subprocess.run(["git", "-C", str(repo), "update-ref", ref, full],
+                       capture_output=True, text=True, timeout=30)
+        try:
+            for command in (
+                ["git", "init", "-q", tmp],
+                ["git", "-C", tmp, "fetch", "-q", "--depth=2", str(repo), ref],
+                ["git", "-C", tmp, "checkout", "-q", "FETCH_HEAD"],
+            ):
+                proc = subprocess.run(command, capture_output=True, text=True, timeout=120)
+                if proc.returncode != 0:
+                    raise RuntimeError(
+                        f"sealed clone step {command[1:3]} failed: "
+                        f"{proc.stderr.strip() or proc.returncode}"
+                    )
+        finally:
+            subprocess.run(["git", "-C", str(repo), "update-ref", "-d", ref],
+                           capture_output=True, text=True, timeout=30)
+        head = subprocess.run(["git", "-C", tmp, "rev-parse", "HEAD"],
+                              capture_output=True, text=True).stdout.strip()
+        if head != full:
+            raise RuntimeError(
+                f"sealed clone HEAD {head[:7]} does not match bench commit {full[:7]}"
+            )
+    except Exception:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    return tmp
+
+
 def codex_account():
     command = [command_path("REVIEW_BENCH_CODEXB_BIN", "codexb"), "pick"]
     proc = subprocess.run(command, capture_output=True, text=True, timeout=30)
@@ -384,24 +453,110 @@ def run_codex(rater, repo, sha, focus, run_dir, account):
     return proc.returncode, duration, text, proc.stderr, command
 
 
-def run_claude(rater, repo, sha, focus, run_dir, account, diff):
+def is_429_error(result_json_text):
+    try:
+        result = json.loads(result_json_text)
+        if isinstance(result, dict):
+            if result.get("is_error") and result.get("api_error_status") == 429:
+                return True
+            if "hit your session limit" in str(result.get("errors", [])):
+                return True
+    except (json.JSONDecodeError, ValueError):
+        pass
+    if "hit your session limit" in result_json_text:
+        return True
+    return False
+
+
+def check_limits_staleness(account):
+    command = [command_path("REVIEW_BENCH_LIMITS_BIN", "llm-limits"), "--json", "--no-write"]
+    try:
+        proc = subprocess.run(command, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if proc.returncode != 0:
+        return False
+    try:
+        data = json.loads(proc.stdout)
+        accounts_data = data.get("accounts", {})
+        account_key = f"claude/{account}"
+        if account_key in accounts_data:
+            acc_data = accounts_data[account_key]
+            as_of = acc_data.get("as_of")
+            if as_of:
+                age = time.time() - as_of
+                return age > LIMITS_STALE_AGE_S
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+        pass
+    return False
+
+
+def refresh_limits(account):
+    command = [
+        command_path("REVIEW_BENCH_LIMITS_BIN", "llm-limits"),
+        "--refresh-account", f"claude/{account}"
+    ]
+    try:
+        proc = subprocess.run(command, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def run_claude(rater, repo, sha, focus, run_dir, account, diff, retry_on_429=True):
     raw_output = run_dir / f"raw-{rater['spec']}.json"
-    prompt = review_prompt(sha, focus) + "\n\nCommit diff:\n" + diff
+    clone = seal_overlay_clone(repo, sha) if rater["skill"] else None
+    if clone:
+        prompt = skill_brief(sha, focus, clone)
+        cwd = clone
+    else:
+        prompt = review_prompt(sha, focus) + "\n\nCommit diff:\n" + diff
+        cwd = repo
     command = [
         command_path("REVIEW_BENCH_CLAUDEB_BIN", "claudeb"), "profile", account,
-        "-p", prompt, "--output-format", "json", "--model", rater["model"],
+        "-p", prompt, "--output-format", "json",
+        "--model", CLAUDE_MODEL_IDS.get(rater["model"], rater["model"]),
         "--effort", rater["effort"],
     ]
     started = time.monotonic()
     try:
-        proc = subprocess.run(command, cwd=repo, stdin=subprocess.DEVNULL,
-                              capture_output=True, text=True, timeout=RATER_TIMEOUT_S)
-    except subprocess.TimeoutExpired:
+        try:
+            proc = subprocess.run(command, cwd=cwd, stdin=subprocess.DEVNULL,
+                                  capture_output=True, text=True, timeout=RATER_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            duration = round((time.monotonic() - started) * 1000)
+            return 124, duration, "", f"rater timed out after {RATER_TIMEOUT_S}s", command
         duration = round((time.monotonic() - started) * 1000)
-        return 124, duration, "", f"rater timed out after {RATER_TIMEOUT_S}s", command
-    duration = round((time.monotonic() - started) * 1000)
-    raw_output.write_text(proc.stdout)
-    return proc.returncode, duration, proc.stdout, proc.stderr, command
+        raw_output.write_text(proc.stdout)
+
+        if retry_on_429 and is_429_error(proc.stdout):
+            print(f"{rater['spec']}: got 429 on {account}, re-picking account")
+            try:
+                pick = affordability()
+                new_account = pick.get("claude_account")
+                if new_account and new_account != account:
+                    print(f"{rater['spec']}: retrying on {new_account}")
+                    # Swap only the profile argument: a blanket replace would
+                    # also hit the -p prompt ("com" is a substring of "commit").
+                    command_retry = list(command)
+                    command_retry[command_retry.index("profile") + 1] = new_account
+                    try:
+                        proc_retry = subprocess.run(
+                            command_retry, cwd=cwd, stdin=subprocess.DEVNULL,
+                            capture_output=True, text=True, timeout=RATER_TIMEOUT_S
+                        )
+                    except subprocess.TimeoutExpired:
+                        duration = round((time.monotonic() - started) * 1000)
+                        return 124, duration, "", f"rater timed out on retry after {RATER_TIMEOUT_S}s", command_retry
+                    duration = round((time.monotonic() - started) * 1000)
+                    raw_output.write_text(proc_retry.stdout)
+                    return proc_retry.returncode, duration, proc_retry.stdout, proc_retry.stderr, command_retry
+            except Exception as exc:
+                print(f"{rater['spec']}: 429 retry failed: {exc}")
+
+        return proc.returncode, duration, proc.stdout, proc.stderr, command
+    finally:
+        if clone:
+            shutil.rmtree(clone, ignore_errors=True)
 
 
 def run_one(rater, repo, sha, focus, run_dir, accounts, diff):
@@ -412,6 +567,20 @@ def run_one(rater, repo, sha, focus, run_dir, accounts, diff):
         result = run_claude(rater, repo, sha, focus, run_dir, accounts["claude"], diff)
         account = accounts["claude"]
     return rater, account, result
+
+
+def run_raters_on_side(side, raters, repo, sha, focus, run_dir, accounts, diff):
+    results = []
+    for rater in raters:
+        if rater["side"] != side:
+            continue
+        try:
+            result = run_one(rater, repo, sha, focus, run_dir, accounts, diff)
+            results.append(result)
+        except Exception as exc:
+            results.append((rater, accounts.get(side),
+                            (1, 0, "", f"rater crashed: {exc}", [])))
+    return results
 
 
 def resolve_commit(repo, commitish):
@@ -476,6 +645,14 @@ def cmd_run(args):
     if any(rater["side"] == "codex" for rater in raters):
         accounts["codex"] = codex_account()
 
+    if any(rater["side"] == "claude" for rater in raters):
+        if check_limits_staleness(accounts["claude"]):
+            print(f"limits data for {accounts['claude']} is stale; refreshing")
+            refresh_limits(accounts["claude"])
+            available = affordability()
+            if available["claude"]:
+                accounts["claude"] = available["claude_account"]
+
     started = utc_now()
     run_id = f"{started.strftime('%Y%m%dT%H%M%SZ')}-{sha[:7]}"
     run_dir = state_dir() / "benches" / run_id
@@ -485,24 +662,41 @@ def cmd_run(args):
     run_dir.mkdir(parents=True)
     os.chmod(run_dir, 0o700)
     diff = commit_diff(repo, sha) if any(rater["side"] == "claude" for rater in raters) else ""
-    results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(raters)) as pool:
-        futures = {
-            pool.submit(run_one, rater, repo, sha, args.focus or "", run_dir, accounts, diff): rater
-            for rater in raters
-        }
-        for future in concurrent.futures.as_completed(futures):
-            rater = futures[future]
-            try:
-                results.append(future.result())
-            except Exception as exc:
-                results.append((rater, accounts.get(rater["side"]),
-                                (1, 0, "", f"rater crashed: {exc}", [])))
 
-    result_by_spec = {rater["spec"]: (rater, account, result)
-                      for rater, account, result in results}
+    has_codex = any(rater["side"] == "codex" for rater in raters)
+    has_claude = any(rater["side"] == "claude" for rater in raters)
+    results = []
+
+    if has_codex and has_claude:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            codex_future = pool.submit(run_raters_on_side, "codex", raters, repo, sha, args.focus or "", run_dir, accounts, diff)
+            claude_future = pool.submit(run_raters_on_side, "claude", raters, repo, sha, args.focus or "", run_dir, accounts, diff)
+            try:
+                codex_results = codex_future.result()
+                results.extend(codex_results)
+            except Exception as exc:
+                raise RuntimeError(f"codex-side raters failed: {exc}") from exc
+            try:
+                claude_results = claude_future.result()
+                results.extend(claude_results)
+            except Exception as exc:
+                raise RuntimeError(f"claude-side raters failed: {exc}") from exc
+    elif has_codex:
+        results = run_raters_on_side("codex", raters, repo, sha, args.focus or "", run_dir, accounts, diff)
+    else:
+        results = run_raters_on_side("claude", raters, repo, sha, args.focus or "", run_dir, accounts, diff)
+
+    result_by_spec = {}
+    for rater, account, result in results:
+        result_by_spec[rater["spec"]] = (rater, account, result)
+
+    for spec in [r["spec"] for r in raters]:
+        if spec not in result_by_spec:
+            raise RuntimeError(f"rater {spec} missing from results — result assembly failed")
+
     paths = []
     rater_meta = []
+    errored_raters = set()
     failed = False
     for requested in raters:
         rater, account, result = result_by_spec[requested["spec"]]
@@ -511,18 +705,38 @@ def cmd_run(args):
         path = run_dir / f"findings-{rater['spec']}.jsonl"
         write_jsonl(path, findings)
         paths.append(path)
-        failed = failed or rc != 0
-        rater_meta.append({
-            "rater": rater["spec"], "model": rater["model"], "effort": rater["effort"],
-            "side": rater["side"], "account": account, "duration_ms": duration,
-            "findings": len(findings), "exit_code": rc, "stderr": stderr[-2000:] if stderr else "",
-            "command": shlex.join(command) if rater["side"] == "codex" else
-            shlex.join(command[:4] + ["<review-prompt-and-diff>"] + command[5:]),
-        })
-        print(f"{rater['spec']}: {len(findings)} finding(s), {duration} ms, exit {rc}")
+
+        is_error = rc != 0 or (rc == 0 and text and is_429_error(text))
+        if is_error and rc != 0:
+            errored_raters.add(rater["spec"])
+            rater_meta.append({
+                "rater": rater["spec"], "model": rater["model"], "effort": rater["effort"],
+                "side": rater["side"], "account": account, "duration_ms": duration,
+                "findings": 0, "exit_code": rc, "stderr": stderr[-2000:] if stderr else "",
+                "command": shlex.join(command) if rater["side"] == "codex" else
+                shlex.join(command[:4] + [
+                    "<worker-brief>" if rater["skill"] else "<review-prompt-and-diff>"
+                ] + command[5:]),
+                "errored": True,
+            })
+            print(f"ERRORED (not recorded): {rater['spec']}; rerun: review-bench run {sha} --raters {rater['spec']}")
+        else:
+            failed = failed or rc != 0
+            rater_meta.append({
+                "rater": rater["spec"], "model": rater["model"], "effort": rater["effort"],
+                "side": rater["side"], "account": account, "duration_ms": duration,
+                "findings": len(findings), "exit_code": rc, "stderr": stderr[-2000:] if stderr else "",
+                "command": shlex.join(command) if rater["side"] == "codex" else
+                shlex.join(command[:4] + [
+                    "<worker-brief>" if rater["skill"] else "<review-prompt-and-diff>"
+                ] + command[5:]),
+            })
+            print(f"{rater['spec']}: {len(findings)} finding(s), {duration} ms, exit {rc}")
+
     meta = {
         "run_id": run_id, "commit": sha, "repo": str(repo),
-        "raters": [rater["spec"] for rater in raters], "rater_runs": rater_meta,
+        "raters": [rater["spec"] for rater in raters if rater["spec"] not in errored_raters],
+        "rater_runs": rater_meta,
         "durations": {row["rater"]: row["duration_ms"] for row in rater_meta},
         "started": started.isoformat(), "finished": iso_now(), "focus": args.focus or "",
     }

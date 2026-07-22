@@ -72,6 +72,15 @@ function number(value, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function fableCapabilityFromMainLimits(name) {
+  try {
+    const mainLimits = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.llm-limits.json'), 'utf8'));
+    const account = mainLimits.vendors?.claude?.accounts?.find(a => a.account === name);
+    if (account?.rotation?.usable?.fable === false) return false;
+  } catch {}
+  return true;
+}
+
 function loadState(name) {
   let snapshot = {};
   try {
@@ -89,6 +98,7 @@ function loadState(name) {
     sevenDay: snapshot.seven_day && typeof snapshot.seven_day === 'object' ? snapshot.seven_day : undefined,
     fable: snapshot.fable && typeof snapshot.fable === 'object' ? snapshot.fable : undefined,
     auth: snapshot.auth && typeof snapshot.auth === 'object' ? snapshot.auth : undefined,
+    fable_capability: fableCapabilityFromMainLimits(name),
     forcedUntil: previous?.forcedUntil || persisted?.forcedUntil || 0,
     forcedReason: previous?.forcedReason || persisted?.forcedReason,
     forcedScope: previous?.forcedScope || persisted?.forcedScope,
@@ -271,6 +281,7 @@ function blockReasonForScope(state, scope, now = Math.floor(Date.now() / 1000)) 
   if (state.h5 >= 97) return 'limit-5h';
   if (state.wk >= 99) return 'limit-weekly';
   if (scope === 'fable') {
+    if (!state.fable_capability) return 'no-capability';
     if (fableTrustworthy(state) && number(state.fable?.resets_at) > now && number(state.fable?.used_percentage) >= 99) return 'limit-fable';
   }
   return null;

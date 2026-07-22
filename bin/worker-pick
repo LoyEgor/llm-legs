@@ -2,6 +2,7 @@
 set -u
 
 FLOOR_PCT=90
+HEADROOM_PCT="${WORKER_PICK_HEADROOM_PCT:-90}"
 R1_FABLE_BURNT_MIN_PCT=50
 R1_FABLE_BURNT_WEIGHT=0.50
 R2_FABLE_FRESH_MAX_PCT=20
@@ -95,7 +96,7 @@ cb_pin=$(conf claudeb_profile)
 
 summary=$(jq -r \
   --argjson now "$now" --argjson tiers "$tiers_json" --arg own "$own" --arg pin "$cb_pin" \
-  --argjson floor "$FLOOR_PCT" \
+  --argjson floor "$FLOOR_PCT" --argjson headroom "$HEADROOM_PCT" \
   --argjson r1_min "$R1_FABLE_BURNT_MIN_PCT" --argjson r1_weight "$R1_FABLE_BURNT_WEIGHT" \
   --argjson r2_fresh "$R2_FABLE_FRESH_MAX_PCT" --argjson r2_weekly "$R2_WEEKLY_HIGH_MIN_PCT" \
   --argjson r2_weight "$R2_FABLE_RESERVED_WEIGHT" --argjson r3_weight "$R3_FABLE_INCAPABLE_WEIGHT" \
@@ -151,6 +152,7 @@ summary=$(jq -r \
   def auth_ok: .auth_needed != true and ((.auth.status? // "ok") | IN("expired", "failed") | not);
   def bucket_values: [eff(.five_hour), eff(.weekly)] | map(select(. != null));
   def is_floored: bucket_values | any(. >= $floor);
+  def is_above_headroom: bucket_values | any(. >= $headroom);
   def pre_reset_cap:
     bucket_values | if length == 0 then 0 else map([($floor - .), 0] | max) | min end;
   def account_credits:
@@ -203,7 +205,7 @@ summary=$(jq -r \
     {name:.account,tier:($tiers[.account] // 100),own:(.account == $own),enabled:(.enabled == true),
      auth_ok:auth_ok,general_usable:$general_usable,fable_capable:$fable_capable,
      h5:$h5,wk:$wk,fb:$fb,r5:reset_str(.five_hour),rw:reset_str(.weekly),rf:reset_str(.fable),
-     floor:is_floored,cap:pre_reset_cap,
+     floor:is_floored,headroom_hit:is_above_headroom,cap:pre_reset_cap,
      base_safe:([safe_runway(.five_hour), safe_runway(.weekly)] | map(select(. != null)) |
                 if $r9_optimistic then $floor elif length > 0 then min else 0 end)} |
     .reserved = (.fable_capable and (.fb | type) == "number" and .fb <= $r2_fresh and
@@ -212,17 +214,22 @@ summary=$(jq -r \
              .tier * $r1_weight * ((.fb - $r1_min) / (100 - $r1_min)) else 0 end) |
     .r2 = (if .reserved then .tier * $r2_weight * ((100 - .fb) / 100) * (.wk / 100) else 0 end) |
     .r3 = (if .fable_capable then 0 else .tier * $r3_weight end) |
+    .headroom_score = (100 - (if (.h5 | type) == "number" then .h5 else 50 end)) |
     .score = ((.tier * .base_safe / 100) + .r1 - .r2 + .r3) |
     .r8_gap = (if .fable_capable and (.fb | type) == "number" and (.wk | type) == "number"
                then .wk - .fb else null end) |
     .r8_demote = (.r8_gap != null and .r8_gap > 0) |
     .r8_excluded = (.r8_demote and .r8_gap > $r8_gap_exclude)] |
-    sort_by(-.score, .name)) as $cl_accounts |
+    sort_by(-.headroom_score, -.score, .name)) as $cl_accounts |
   ($cl_accounts | map(select((.own | not) and .enabled and .auth_ok and .general_usable and
                              (.h5 | type) == "number" and
                              (.r8_excluded | not)))) as $cl_candidates |
-  ($cl_candidates | map(select(.floor | not))) as $cl_eligible |
+  ($cl_candidates | map(select((.floor | not) and (.headroom_hit | not)))) as $cl_eligible |
   (if ($cl_eligible | length) == 0 then null else $cl_eligible[0] end) as $rec |
+  (if ($rec == null) and (($cl_candidates | length) > 0) then
+     "WARN: no account below HEADROOM_PCT, using least-burnt"
+   else null end) as $headroom_warn |
+  (if $headroom_warn != null then ($cl_candidates | map(select(.floor | not)) | .[0] // null) else $rec end) as $rec_final |
   (first($cl_accounts[] | select(.name == $pin)) // null) as $pin_account |
   (if $pin_account != null and ($pin_account.own | not) and $pin_account.enabled and $pin_account.auth_ok and
       $pin_account.general_usable and ($pin_account.floor | not) and ($pin_account.r8_excluded | not) and
@@ -234,11 +241,12 @@ summary=$(jq -r \
     .session_score = ((100 - .fb) * $session_fable_weight + (100 - .wk) * $session_weekly_weight)] |
     sort_by(-.session_score, -.tier, .name) | .[0] // null) as $session |
   (($cx_accounts + $cl_candidates) as $all | ($all | length) > 0 and all($all[]; .floor)) as $all_floored |
+  (if ($rec_final != null) and (($now - $fetched) > 300) and (($rec_final.cap < 20) or ($rec_final.cap > 80)) then "STALE-REFRESH" else null end) as $freshness_warn |
   {codex:$codex,
    claude_line:("claude: " + (if ($cl_accounts | length) == 0 then "no enabled accounts"
      else ($cl_accounts | map(
-       "\(.name)($\(.tier))\(if .own then "*" else "" end) 5h \(if (.h5 | type) == "number" then (.h5 | round | tostring) + "%" else "?" end) wk \(if (.wk | type) == "number" then (.wk | round | tostring) + "%" else "?" end) fb \(if (.fb | type) == "number" then (.fb | round | tostring) + "%" else "?" end) score \(.score | round1) cap \(.cap | round1)%\(if .reserved then " Fable-reserved" else "" end)\(if .r8_excluded then " Fable-gap-excluded" else "" end)\(if .fable_capable then "" else " no-Fable" end)\(if .floor then " FLOOR" else "" end)\(if (.general_usable | not) then " blocked" else "" end)\(if .enabled then "" else " off" end)") | join(" | ")) end)),
-   rec:$rec,pin:$pin_rec,session:$session,age:$age,all_floored:$all_floored}
+       "\(.name)($\(.tier))\(if .own then "*" else "" end) 5h \(if (.h5 | type) == "number" then (.h5 | round | tostring) + "%" else "?" end) wk \(if (.wk | type) == "number" then (.wk | round | tostring) + "%" else "?" end) fb \(if (.fb | type) == "number" then (.fb | round | tostring) + "%" else "?" end) score \(.score | round1) cap \(.cap | round1)%\(if .reserved then " Fable-reserved" else "" end)\(if .r8_excluded then " Fable-gap-excluded" else "" end)\(if .fable_capable then "" else " no-Fable" end)\(if .floor then " FLOOR" else "" end)\(if .headroom_hit then " HEADROOM" else "" end)\(if (.general_usable | not) then " blocked" else "" end)\(if .enabled then "" else " off" end)") | join(" | ")) end)),
+   rec:$rec_final,pin:$pin_rec,session:$session,age:$age,all_floored:$all_floored,headroom_warn:$headroom_warn,freshness_warn:$freshness_warn}
   | [.codex.state,.codex.acct,(.codex.runway | round1 | tostring),(.codex.credits | tostring),.codex.line,
      .claude_line,(.rec.name // ""),((.rec.score // 0) | round1 | tostring),((.rec.cap // 0) | round1 | tostring),
      (if .rec.reserved == true then "yes" else "no" end),
@@ -247,12 +255,12 @@ summary=$(jq -r \
      (if .pin.reserved == true then "yes" else "no" end),
      (if .pin.r8_demote == true then "yes" else "no" end),
      (.session.name // ""),((.session.fb // 0) | round | tostring),((.session.wk // 0) | round | tostring),
-     .age,(if .all_floored then "yes" else "no" end)] | join("\u001f")
+     .age,(if .all_floored then "yes" else "no" end),.headroom_warn // "",.freshness_warn // ""] | join("\u001f")
 ' "$LIMITS_FILE" 2>/dev/null) || fail_safe "limits parse failed"
 [ -n "$summary" ] || fail_safe "limits parse failed"
 
 IFS=$'\x1f' read -r cx_state cx_acct cx_runway cx_credits cx_line cl_line rec rec_score rec_cap rec_reserved \
-  rec_demote pin_rec pin_score pin_cap pin_reserved pin_demote session_acct session_fb session_wk age all_floored <<<"$summary"
+  rec_demote pin_rec pin_score pin_cap pin_reserved pin_demote session_acct session_fb session_wk age all_floored headroom_warn freshness_warn <<<"$summary"
 
 # R8 recommendation ladder, strongest → weakest: opus·high → opus·medium → sonnet·high.
 # sonnet·medium and anything weaker are TOO WEAK and are never emitted. The configured
@@ -304,6 +312,8 @@ elif [ -n "$cb_pin" ]; then
 elif [ -n "$rec" ]; then
   resolve_recommendation
   cb_next="claudeb $rec · $cb_model · $cb_effort — ACCOUNT: $rec; pre-reset cap ${rec_cap}%$demote_note"
+  [ -z "$freshness_warn" ] || cb_next="$cb_next ($freshness_warn)"
+  [ -z "$headroom_warn" ] || cb_next="$cb_next ($headroom_warn)"
   cb_cache="cb~$rec"
 else
   cb_next="claudeb unavailable — no selectable non-session account"

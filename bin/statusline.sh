@@ -823,9 +823,28 @@ if [ -n "$session_id" ]; then
   fi
 fi
 
+
+# Review-bench liveness: marker exists, not stale (>2700s=45m), and process running.
+bench_part=""
+if [ -n "$session_id" ]; then
+  bench_marker_dir="$HOME/.cache/claude-review-bench/$session_id"
+  bench_marker="$bench_marker_dir/running"
+  if [ -f "$bench_marker" ]; then
+    bench_mtime=$(file_mtime "$bench_marker" 2>/dev/null)
+    if [[ "$bench_mtime" =~ ^[0-9]+$ ]] && [ "$((now - bench_mtime))" -le 2700 ]; then
+      if pgrep -f 'review-bench run' >/dev/null 2>&1; then
+        IFS= read -r bench_label _ < "$bench_marker" 2>/dev/null || bench_label=""
+        if [ -n "$bench_label" ]; then
+          bench_part=" ${sep} ${MAGENTA}⚖${RESET} ${bench_label}"
+        fi
+      fi
+    fi
+  fi
+fi
+
 # Two lines: identity/work (model, account, dir/branch/diff, workers) on top,
 # usage (ctx, 5h, weekly, fable, cost) below.
-line1="${CYAN}${model}${model_suffix}${RESET}${fast_part}${cb_part} ${sep} ${dir_part}${branch_part}${ports_part}${worker_part}"
+line1="${CYAN}${model}${model_suffix}${RESET}${fast_part}${cb_part} ${sep} ${dir_part}${branch_part}${ports_part}${worker_part}${bench_part}"
 
 line2="ctx $(pct_colored "$ctx_pct" "" 40)${ctx_tokens_part} ${sep} 5h $(pct_colored "$h5_pct" "$h5_dim")${h5_arrow} ${sep} wk $(pct_colored "$wk_pct" "$wk_dim")${wk_arrow}${fable_part}"
 

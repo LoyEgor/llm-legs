@@ -24,10 +24,20 @@ rb = importlib.util.module_from_spec(spec)
 loader.exec_module(rb)
 
 assert rb.parse_rater("sol-medium") == {
-    "spec": "sol-medium", "model": "sol", "effort": "medium", "side": "codex"
+    "spec": "sol-medium", "model": "sol", "effort": "medium", "side": "codex",
+    "skill": False
 }
 assert rb.parse_rater("opus-xhigh")["side"] == "claude"
-for invalid in ("gpt-medium", "sol", "opus-ultra", "sol-mega", ""):
+assert rb.parse_rater("opus-xhigh")["skill"] is False
+assert rb.parse_rater("fable-medium")["model"] == "fable"
+assert rb.parse_rater("opus-medium-skill") == {
+    "spec": "opus-medium-skill", "model": "opus", "effort": "medium",
+    "side": "claude", "skill": True
+}
+assert rb.parse_rater("sonnet-high-skill")["skill"] is True
+assert rb.parse_rater("haiku-medium-skill")["side"] == "claude"
+for invalid in ("gpt-medium", "sol", "opus-ultra", "sol-mega", "",
+                "sol-medium-skill", "opus-skill", "opus-medium-turbo"):
     try:
         rb.parse_rater(invalid)
     except ValueError:
@@ -43,6 +53,11 @@ assert pick["codex"] is True
 assert pick["claude"] is True
 assert pick["claude_account"] == "worker"
 assert pick["session_account"] == "session"
+
+assert rb.is_429_error('{"is_error": true, "api_error_status": 429}') is True
+assert rb.is_429_error('{"is_error": false, "errors": ["hit your session limit"]}') is True
+assert rb.is_429_error('{"is_error": false, "api_error_status": 200}') is False
+assert rb.is_429_error('hit your session limit in the middle of text') is True
 
 reviews = []
 for rater in rb.AUTO_RATERS:
@@ -96,6 +111,10 @@ import sys
 run = pathlib.Path(sys.argv[1])
 meta = {"run_id":"run-fixture","commit":"abcdef0123456789","repo":"/repo",
         "raters":["sol-medium","opus-medium"],
+        "rater_runs":[
+            {"rater":"sol-medium","model":"sol","effort":"medium","side":"codex","exit_code":0},
+            {"rater":"opus-medium","model":"opus","effort":"medium","side":"claude","exit_code":0},
+        ],
         "durations":{"sol-medium":1200,"opus-medium":2400},
         "started":"2026-07-21T00:00:00+00:00","finished":"2026-07-21T00:00:03+00:00","focus":""}
 (run / "meta.json").write_text(json.dumps(meta))
@@ -156,6 +175,20 @@ again=$(WORKER_STATS_DIR="$SD" "$SCRIPT" record run-fixture --verdicts "$VERDICT
 assert contains "$again" 'recorded 0 rater row(s)'
 assert test "$(wc -l <"$SD/reviews.jsonl")" -eq 2
 
+python3 - "$SD/benches/run-fixture/meta.json" <<'PY'
+import json
+import sys
+
+meta = json.loads(open(sys.argv[1]).read())
+assert isinstance(meta.get("rater_runs"), list)
+for run in meta["rater_runs"]:
+    if run.get("errored"):
+        assert run["rater"] not in meta["raters"], \
+            f"errored rater {run['rater']} should not be in meta['raters']"
+print("errored-rater-exclusion-ok")
+PY
+assert test "$?" -eq 0
+
 stats_json=$(WORKER_STATS_DIR="$SD" "$STATS" --json) || fail "worker-stats review JSON failed"
 python3 - "$stats_json" <<'PY'
 import json
@@ -184,4 +217,4 @@ listing=$(WORKER_STATS_DIR="$SD" "$SCRIPT" list) || fail "list failed"
 assert contains "$listing" 'run-fixture'
 assert contains "$listing" 'adjudicated'
 
-printf 'PASS: %s assertions; rater grammar, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, record aggregation/dedupe, unique catches, misses, weighted review score, and run listing\n' "$asserts"
+printf 'PASS: %s assertions; rater grammar (incl. -skill mode), worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection, errored-rater exclusion, and cross-side parallelism result assembly\n' "$asserts"
