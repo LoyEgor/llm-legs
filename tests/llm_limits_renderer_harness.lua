@@ -359,7 +359,6 @@ local function runFirstItem(item, capture)
   return last
 end
 
-local loginCapture = {}
 local claudeLoginFixture = { schema = 1, vendors = {
   claude = {
     available = true, source = "claudeb-store", daemon = { reachable = true },
@@ -372,21 +371,6 @@ local claudeLoginFixture = { schema = 1, vendors = {
   codex = { available = false },
   gemini = { available = false },
 }}
-local claudeLoginMenu = loadModule(claudeLoginFixture, nil, nil, nil,
-  function(script) table.insert(loginCapture, script); return true, true, {} end).menuItems()
-local claudeLoginRow = rowContaining(claudeLoginMenu, "loggedout")
-local claudeScript = runFirstItem(claudeLoginRow, loginCapture)
-assert(claudeScript:find("claudeb profile", 1, true), "claude Log in… lacks claudeb profile")
-assert(claudeScript:find("loggedout", 1, true), "claude Log in… lacks the profile name")
-for _, item in ipairs(claudeLoginMenu) do
-  if titleText(item):find("healthy", 1, true) and type(item.menu) == "table" then
-    for _, sub in ipairs(item.menu) do
-      assert(titleText(sub) ~= "Log in…", "healthy account offered Log in…")
-    end
-  end
-end
-
-local codexLoginCapture = {}
 local codexLoginFixture = { schema = 1, vendors = {
   claude = { available = false },
   codex = { available = true, accounts = {
@@ -394,18 +378,46 @@ local codexLoginFixture = { schema = 1, vendors = {
   }},
   gemini = { available = false },
 }}
-local codexLoginMenu = loadModule(codexLoginFixture, nil, nil, nil,
-  function(script) table.insert(codexLoginCapture, script); return true, true, {} end).menuItems()
-local codexScript = runFirstItem(rowContaining(codexLoginMenu, "codexout"), codexLoginCapture)
-assert(codexScript:find("codexb run", 1, true), "codex Log in… lacks codexb run")
-assert(codexScript:find("codexout", 1, true), "codex Log in… lacks the profile name")
-assert(codexScript:find("login", 1, true), "codex Log in… lacks the login subcommand")
 
-local geminiLoginCapture = {}
-local geminiLoginMenu = loadModule(geminiAuthFixture, nil, nil, nil,
-  function(script) table.insert(geminiLoginCapture, script); return true, true, {} end).menuItems()
-local geminiScript = runFirstItem(rowContaining(geminiLoginMenu, "Gemini"), geminiLoginCapture)
-assert(geminiScript:find("agy", 1, true), "gemini Log in… lacks the agy command")
+-- Anti-divergence guard: every vendor's logged-out row is forced through the SAME
+-- shape here. Adding a 4th vendor to this table automatically subjects it to the
+-- identical structural assertions (title, exactly {Log in…, Hard refresh} in order)
+-- while still proving its own Log in… fires the right vendor mechanism. A future
+-- change that splits one vendor's row away from the shared shape fails this loop.
+local loginCases = {
+  { vendor = "claude", fixture = claudeLoginFixture, needle = "loggedout",
+    scriptContains = { "claudeb profile", "loggedout" } },
+  { vendor = "codex", fixture = codexLoginFixture, needle = "codexout",
+    scriptContains = { "codexb run", "codexout", "login" } },
+  { vendor = "gemini", fixture = geminiAuthFixture, needle = "Gemini",
+    scriptContains = { "agy" } },
+}
+for _, case in ipairs(loginCases) do
+  local capture = {}
+  local menu = loadModule(case.fixture, nil, nil, nil,
+    function(script) table.insert(capture, script); return true, true, {} end).menuItems()
+  local row = rowContaining(menu, case.needle)
+  assert(titleText(row):find("login needed", 1, true),
+    "logged-out " .. case.vendor .. " row did not render a login-needed row")
+  assert(#row.menu == 2, case.vendor .. " login row is not exactly {Log in…, Hard refresh}")
+  assert(titleText(row.menu[1]) == "Log in…", case.vendor .. " first submenu item is not Log in…")
+  assert(titleText(row.menu[2]) == "Hard refresh", case.vendor .. " second submenu item is not Hard refresh")
+  local script = runFirstItem(row, capture)
+  for _, needle in ipairs(case.scriptContains) do
+    assert(script:find(needle, 1, true),
+      case.vendor .. " Log in… lacks the vendor mechanism: " .. needle)
+  end
+end
+
+-- Healthy accounts never get Log in…; the shared row only fires on auth_needed.
+local claudeLoginMenu = loadModule(claudeLoginFixture).menuItems()
+for _, item in ipairs(claudeLoginMenu) do
+  if titleText(item):find("healthy", 1, true) and type(item.menu) == "table" then
+    for _, sub in ipairs(item.menu) do
+      assert(titleText(sub) ~= "Log in…", "healthy account offered Log in…")
+    end
+  end
+end
 
 local geminiErrorFixture = { schema = 1, vendors = {
   claude = { available = false },

@@ -305,7 +305,7 @@ printf 'bree\n' >"$STALE_STORE/disabled"
 stale_asof=$((now - 3600))
 printf '{"five_hour":{"used_percentage":7,"resets_at":%s,"as_of":%s,"origin":"usage"}}\n' "$((now + 5000))" "$stale_asof" >"$STALE_STORE/limits/alona.json"
 printf '{"five_hour":{"used_percentage":9,"resets_at":%s,"as_of":%s,"origin":"usage"}}\n' "$((now + 5000))" "$stale_asof" >"$STALE_STORE/limits/bree.json"
-printf '{"alona":{"attempted_at":%s,"outcome":"429","retry_after_until":0},"bree":{"attempted_at":%s,"outcome":"429","retry_after_until":0}}\n' "$now" "$now" >"$STALE_STORE/oauth-attempts.json"
+printf '{"alona":{"attempted_at":%s,"outcome":"429","retry_after_until":0,"strikes":2},"bree":{"attempted_at":%s,"outcome":"429","retry_after_until":0,"strikes":1}}\n' "$now" "$now" >"$STALE_STORE/oauth-attempts.json"
 cat >"$WORK/claudeb-noop" <<'EOF'
 #!/usr/bin/env bash
 exit 0
@@ -314,11 +314,25 @@ chmod +x "$WORK/claudeb-noop"
 STALE_CACHE="$WORK/stale-cache.json"
 HOME="$HOME_FIXTURE" CLAUDEB_DIR="$STALE_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-noop" \
   LLM_LIMITS_CACHE="$STALE_CACHE" /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1 || true
-jq -e '(.vendors.claude.refresh_error.cause | test("alona: not refreshed")) and
-  (.vendors.claude.refresh_error.cause | test("token endpoint 429"))' "$STALE_CACHE" >/dev/null \
+jq -e --arg retry "$(date -r "$((now + 1800))" '+%H:%M' 2>/dev/null || date -d "@$((now + 1800))" '+%H:%M')" '
+  (.vendors.claude.refresh_error.cause | test("alona: not refreshed")) and
+  (.vendors.claude.refresh_error.cause | contains("token rate-limited, retry ~" + $retry)) and
+  (.vendors.claude.refresh_error.cause | contains("token endpoint 429") | not)' "$STALE_CACHE" >/dev/null \
   || fail "residual stale enabled account not surfaced as claude refresh_error"
 jq -e '(.vendors.claude.refresh_error.cause | test("bree")) | not' "$STALE_CACHE" >/dev/null \
   || fail "disabled stale account must not trigger a refresh_error"
+cat >"$WORK/claudeb-target-fail" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$WORK/claudeb-target-fail"
+printf '{"alona":{"attempted_at":%s,"outcome":"429","retry_after_until":0}}\n' "$now" >"$STALE_STORE/oauth-attempts.json"
+HOME="$HOME_FIXTURE" CLAUDEB_DIR="$STALE_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-target-fail" \
+  LLM_LIMITS_CACHE="$STALE_CACHE" /bin/bash "$SCRIPT" --refresh-account claude/alona >/dev/null 2>&1 || true
+jq -e --arg retry "$(date -r "$((now + 900))" '+%H:%M' 2>/dev/null || date -d "@$((now + 900))" '+%H:%M')" '
+  .vendors.claude.refresh_error.cause == ("alona: not refreshed (token rate-limited, retry ~" + $retry + ")") and
+  (.vendors.claude.refresh_error.cause | contains("probe failed") | not)' "$STALE_CACHE" >/dev/null \
+  || fail "targeted Claude refresh did not scope the legacy-429 ETA to its account"
 cat >"$WORK/claudeb-fresh" <<EOF
 #!/usr/bin/env bash
 printf '{"five_hour":{"used_percentage":7,"resets_at":%s,"as_of":9999999999,"origin":"usage"}}\n' "$((now + 5000))" >"$STALE_STORE/limits/alona.json"
@@ -326,6 +340,10 @@ printf '{}' >"$STALE_STORE/oauth-attempts.json"
 exit 0
 EOF
 chmod +x "$WORK/claudeb-fresh"
+HOME="$HOME_FIXTURE" CLAUDEB_DIR="$STALE_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-fresh" \
+  LLM_LIMITS_CACHE="$STALE_CACHE" /bin/bash "$SCRIPT" --refresh-account claude/alona >/dev/null 2>&1 || true
+jq -e '.vendors.claude | has("refresh_error") | not' "$STALE_CACHE" >/dev/null \
+  || fail "healed targeted account did not clear its per-account refresh_error"
 HOME="$HOME_FIXTURE" CLAUDEB_DIR="$STALE_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-fresh" \
   LLM_LIMITS_CACHE="$STALE_CACHE" /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1 || true
 jq -e '.vendors.claude | has("refresh_error") | not' "$STALE_CACHE" >/dev/null \
@@ -361,6 +379,45 @@ passive_prev "probe failed" "$PASSIVE_CACHE"
 passive_run "$PASSIVE_CACHE"
 jq -e '.vendors.claude.refresh_error.cause == "probe failed"' "$PASSIVE_CACHE" >/dev/null \
   || fail "passive collect destroyed a non-per-account refresh_error cause"
+
+# A logged-out claude account (auth_needed) is a vendor STATE, not a refresh failure:
+# --refresh with the other account freshened still succeeds (exit 0) and emits NO
+# claude refresh_error for the logged-out account, whose old buckets survive.
+LOGOUT_STORE="$WORK/claudeb-logout-store"
+mkdir -p "$LOGOUT_STORE/limits" "$LOGOUT_STORE/tokens"
+: >"$LOGOUT_STORE/tokens/alona"
+: >"$LOGOUT_STORE/tokens/logout1"
+printf 'alona\n' >"$LOGOUT_STORE/.claudeb-state"
+logout_old=$((now - 7200))
+printf '{"five_hour":{"used_percentage":7,"resets_at":%s,"as_of":%s,"origin":"usage"}}\n' "$((now + 5000))" "$logout_old" >"$LOGOUT_STORE/limits/alona.json"
+printf '{"auth_needed":true,"auth_checked_at":%s,"five_hour":{"used_percentage":15,"resets_at":%s,"as_of":%s,"origin":"usage"}}\n' "$now" "$((now + 5000))" "$logout_old" >"$LOGOUT_STORE/limits/logout1.json"
+cat >"$WORK/claudeb-logout-refresh" <<EOF
+#!/usr/bin/env bash
+printf '{"five_hour":{"used_percentage":7,"resets_at":%s,"as_of":9999999999,"origin":"usage"}}\n' "$((now + 5000))" >"$LOGOUT_STORE/limits/alona.json"
+exit 0
+EOF
+chmod +x "$WORK/claudeb-logout-refresh"
+LOGOUT_CACHE="$WORK/logout-cache.json"
+HOME="$HOME_FIXTURE" CLAUDEB_DIR="$LOGOUT_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-logout-refresh" \
+  LLM_LIMITS_CACHE="$LOGOUT_CACHE" /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1
+rc=$?
+[ "$rc" -eq 0 ] || fail "refresh with a logged-out account did not exit 0 (got $rc)"
+jq -e '.vendors.claude.available == true and (.vendors.claude | has("refresh_error") | not)' "$LOGOUT_CACHE" >/dev/null \
+  || fail "a logged-out claude account was surfaced as a vendor refresh_error"
+jq -e '.vendors.claude.accounts[] | select(.account == "logout1")
+  | .auth_needed == true and .five_hour.used_pct == 15 and (has("auth") | not)' "$LOGOUT_CACHE" >/dev/null \
+  || fail "logged-out claude account lost auth_needed or its preserved buckets"
+
+# Passive collect carries auth_needed through untouched and renders login needed in the table.
+logout_json=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$LOGOUT_STORE" LLM_LIMITS_CACHE="$LOGOUT_CACHE" \
+  bash "$SCRIPT" --json) || fail "passive collect over a logged-out account failed"
+jq -e '.vendors.claude.accounts[] | select(.account == "logout1")
+  | .auth_needed == true and .five_hour.used_pct == 15' <<<"$logout_json" >/dev/null \
+  || fail "passive collect dropped auth_needed or blanked the logged-out account's buckets"
+logout_table=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$LOGOUT_STORE" LLM_LIMITS_CACHE="$LOGOUT_CACHE" \
+  bash "$SCRIPT" --table)
+awk 'NR > 1 && $1 == "claude/logout1"' <<<"$logout_table" | grep -q 'login needed' \
+  || fail "logged-out claude account table STATUS missing login needed"
 
 DAEMON_PORT_FILE="$WORK/claudebd-fixture.port"
 cat >"$WORK/claudebd-fixture.py" <<'EOF'

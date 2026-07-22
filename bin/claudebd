@@ -15,7 +15,6 @@ const host = '127.0.0.1';
 const port = Number(process.env.CLAUDEBD_PORT || 45789);
 const upstream = new URL(process.env.CLAUDEBD_UPSTREAM || 'https://api.anthropic.com');
 const baseDir = process.env.CLAUDEB_DIR || path.join(os.homedir(), '.claude-profiles', '.claudeb');
-const mainLimitsFile = process.env.LLM_LIMITS_FILE || path.join(os.homedir(), '.llm-limits.json');
 const tokensDir = path.join(baseDir, 'tokens');
 const limitsDir = path.join(baseDir, 'limits');
 const logFile = path.join(baseDir, 'claudebd.log');
@@ -24,6 +23,7 @@ const stateFile = path.join(baseDir, '.claudeb-state');
 const fableStateFile = path.join(baseDir, '.claudeb-state-fable');
 const daemonStateFile = path.join(baseDir, 'daemon-state.json');
 const disabledFile = path.join(baseDir, 'disabled');
+const tiersFile = path.join(baseDir, 'account-tiers');
 const maxBody = 64 * 1024 * 1024;
 const upstreamIdleTimeout = 600000;
 const capacityRetryMs = Math.max(0, Math.floor(number(process.env.CLAUDEBD_CAPACITY_RETRY_MS, 2000)));
@@ -37,6 +37,11 @@ const capacityWallDurationsS = (() => {
   return tiers;
 })();
 const capacityWallRepeatWindowS = 600;
+// Fable plan-incapability is proven only by affirmative evidence and decays
+// back to capable once evidence is this stale, so a wrong verdict self-heals
+// and a real one re-confirms on the next fable attempt.
+const fableEvidenceTtlS = Math.max(60, Math.floor(number(process.env.CLAUDEBD_FABLE_EVIDENCE_TTL_S, 86400)));
+const fableMinTier = number(process.env.CLAUDEBD_FABLE_MIN_TIER, 100);
 const holdMaxMs = Math.max(0, Math.floor(number(process.env.CLAUDEBD_HOLD_MAX_MS, 90000)));
 const holdRecoveryCapMs = Math.max(0, Math.floor(number(process.env.CLAUDEBD_HOLD_RECOVERY_CAP_MS, 360000)));
 const holdRecoveryGraceMs = 2000;
@@ -47,6 +52,8 @@ const states = new Map();
 let accounts = [];
 let disabled = new Set();
 let disabledMtimeCache = -1;
+let tiers = new Map();
+let tiersMtimeCache = -1;
 let current = null;
 const pinnedAt = new Map();
 const currentByScope = { fable: null };
@@ -73,13 +80,44 @@ function number(value, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-function fableCapabilityFromMainLimits(name) {
+function tiersMtime() {
+  try { return fs.statSync(tiersFile).mtimeMs; } catch { return 0; }
+}
+
+function loadTiers() {
+  const mtime = tiersMtime();
+  if (mtime === tiersMtimeCache) return;
+  tiersMtimeCache = mtime;
+  const next = new Map();
   try {
-    const mainLimits = JSON.parse(fs.readFileSync(mainLimitsFile, 'utf8'));
-    const account = mainLimits.vendors?.claude?.accounts?.find(a => a.account === name);
-    if (account?.rotation?.usable?.fable === false) return false;
+    for (const line of fs.readFileSync(tiersFile, 'utf8').split('\n')) {
+      const eq = line.indexOf('=');
+      if (eq <= 0) continue;
+      const name = line.slice(0, eq).trim();
+      const raw = line.slice(eq + 1).trim();
+      // Number('') is 0, which would silently plan-gate an account with a blank value.
+      if (!raw) continue;
+      const tier = Number(raw);
+      if (name && Number.isFinite(tier)) next.set(name, tier);
+    }
   } catch {}
-  return true;
+  tiers = next;
+}
+
+// The $20/Pro tier has no Fable model at all; account-tiers is the authority
+// for that static plan gate. Absent tier data defaults to capable: capability
+// is proven incapable only here or by live plan-rejection evidence, never by
+// reading it back from the limits store (that read-back was self-perpetuating,
+// since the store's rotation.usable.fable is itself written from this daemon).
+function fablePlanGated(name) {
+  loadTiers();
+  const tier = tiers.get(name);
+  return tier !== undefined && tier < fableMinTier;
+}
+
+function fableIncapable(state, now = Math.floor(Date.now() / 1000)) {
+  if (state.fablePlanGated) return true;
+  return state.fableIncapableAt > 0 && now - state.fableIncapableAt <= fableEvidenceTtlS;
 }
 
 function loadState(name) {
@@ -99,7 +137,9 @@ function loadState(name) {
     sevenDay: snapshot.seven_day && typeof snapshot.seven_day === 'object' ? snapshot.seven_day : undefined,
     fable: snapshot.fable && typeof snapshot.fable === 'object' ? snapshot.fable : undefined,
     auth: snapshot.auth && typeof snapshot.auth === 'object' ? snapshot.auth : undefined,
-    fable_capability: fableCapabilityFromMainLimits(name),
+    fablePlanGated: fablePlanGated(name),
+    fableIncapableAt: previous?.fableIncapableAt || persisted?.fableIncapable?.at || 0,
+    fableIncapableStatus: previous?.fableIncapableStatus || persisted?.fableIncapable?.status,
     forcedUntil: previous?.forcedUntil || persisted?.forcedUntil || 0,
     forcedReason: previous?.forcedReason || persisted?.forcedReason,
     forcedScope: previous?.forcedScope || persisted?.forcedScope,
@@ -117,8 +157,16 @@ function loadDaemonState() {
   const now = Math.floor(Date.now() / 1000);
   try {
     const raw = JSON.parse(fs.readFileSync(daemonStateFile, 'utf8'));
+    // Prune state for accounts whose token file is gone (e.g. a stray backup
+    // briefly dropped into tokens/); an unreadable dir keeps every entry so a
+    // transient FS error never silently drops live walls.
+    let tokenNames = null;
+    try {
+      tokenNames = new Set(fs.readdirSync(tokensDir, { withFileTypes: true }).filter((e) => e.isFile()).map((e) => e.name));
+    } catch { tokenNames = null; }
     const accountsOut = {};
     for (const [name, entry] of Object.entries(raw.accounts || {})) {
+      if (tokenNames && !tokenNames.has(name)) continue;
       const kept = {};
       if (entry.forcedUntil > now) {
         kept.forcedUntil = entry.forcedUntil;
@@ -142,6 +190,10 @@ function loadDaemonState() {
         }
       }
       if (Object.keys(capacityEscalation).length) kept.capacityEscalation = capacityEscalation;
+      if (entry.fableIncapable && typeof entry.fableIncapable.at === 'number' && now - entry.fableIncapable.at <= fableEvidenceTtlS) {
+        kept.fableIncapable = { at: entry.fableIncapable.at };
+        if (typeof entry.fableIncapable.status === 'number') kept.fableIncapable.status = entry.fableIncapable.status;
+      }
       if (Object.keys(kept).length) accountsOut[name] = kept;
     }
     const pinsOut = {};
@@ -158,7 +210,7 @@ function loadDaemonState() {
 function refreshTelemetry(name) {
   const state = states.get(name);
   if (!state) return;
-  state.fable_capability = fableCapabilityFromMainLimits(name);
+  state.fablePlanGated = fablePlanGated(name);
   const file = path.join(limitsDir, `${name}.json`);
   let snapshot;
   let mtime = 0;
@@ -283,7 +335,8 @@ function blockReasonForScope(state, scope, now = Math.floor(Date.now() / 1000)) 
   if (state.h5 >= 97) return 'limit-5h';
   if (state.wk >= 99) return 'limit-weekly';
   if (scope === 'fable') {
-    if (state.fable_capability === false) return 'no-capability';
+    if (state.fablePlanGated) return 'plan';
+    if (state.fableIncapableAt > 0 && now - state.fableIncapableAt <= fableEvidenceTtlS) return 'no-capability';
     if (fableTrustworthy(state) && number(state.fable?.resets_at) > now && number(state.fable?.used_percentage) >= 99) return 'limit-fable';
   }
   return null;
@@ -309,7 +362,7 @@ function nextEligibleAt(scope) {
   for (const name of accounts) {
     if (disabled.has(name)) continue;
     const state = effective(name);
-    if (scope === 'fable' && state.fable_capability === false) continue;
+    if (scope === 'fable' && fableIncapable(state, now)) continue;
     let free = Math.max(
       state.authFailedUntil > now ? state.authFailedUntil : 0,
       state.h5 >= 97 ? state.hreset : 0,
@@ -362,6 +415,8 @@ function causeMessage(scope, reason, retryAt, otherAvailable) {
     'limit-5h': '5-hour usage limits on all rotation accounts',
     'limit-weekly': 'weekly usage limits on all rotation accounts',
     'limit-fable': 'fable usage limits on all rotation accounts',
+    plan: 'plans without Fable support on all rotation accounts',
+    'no-capability': 'observed Fable plan rejections on all rotation accounts',
     'wall-capacity': 'capacity walls on all rotation accounts',
     mixed: 'a mix of walls and usage limits across rotation accounts'
   }[reason] || 'capacity walls on all rotation accounts';
@@ -499,6 +554,10 @@ function persistDaemonState() {
       if (esc && now - esc.until <= capacityWallRepeatWindowS) capacityEscalation[scope] = { tier: esc.tier, until: esc.until };
     }
     if (Object.keys(capacityEscalation).length) kept.capacityEscalation = capacityEscalation;
+    if (state.fableIncapableAt > 0 && now - state.fableIncapableAt <= fableEvidenceTtlS) {
+      kept.fableIncapable = { at: state.fableIncapableAt };
+      if (typeof state.fableIncapableStatus === 'number') kept.fableIncapable.status = state.fableIncapableStatus;
+    }
     if (Object.keys(kept).length) accountsOut[name] = kept;
   }
   const pinsOut = {};
@@ -539,6 +598,11 @@ function pruneExpiredState() {
         delete state.capacityEscalation[scope];
         changed = true;
       }
+    }
+    if (state.fableIncapableAt && now - state.fableIncapableAt > fableEvidenceTtlS) {
+      state.fableIncapableAt = 0;
+      delete state.fableIncapableStatus;
+      changed = true;
     }
   }
   if (changed) persistDaemonState();
@@ -655,6 +719,19 @@ function markAuthFailure(name, status) {
   const now = Math.floor(Date.now() / 1000);
   if (state.authFailedUntil <= now) log(`auth failure account=${name} status=${status}`);
   state.authFailedUntil = now + 1800;
+  persistDaemonState();
+}
+
+// Affirmative evidence: the API rejected this account's plan for Fable (a
+// scope-specific 403, distinct from a 401/429/5xx). Records what/when so the
+// verdict persists across restarts yet decays back to capable on its own.
+function markPlanIncapable(name, status) {
+  const state = states.get(name);
+  if (!state) return;
+  const now = Math.floor(Date.now() / 1000);
+  if (state.fableIncapableAt <= 0) log(`fable plan-incapable account=${name} status=${status}`);
+  state.fableIncapableAt = now;
+  state.fableIncapableStatus = status;
   persistDaemonState();
 }
 
@@ -838,7 +915,7 @@ function holdForEligibility(scope, res, tried) {
       scanAccounts();
       const account = selectAccountForScope(scope, tried, { spreadClaims: true });
       if (account) return finish(account, false);
-      if (scope === 'fable' && !accounts.some((name) => !disabled.has(name) && effective(name).fable_capability !== false)) {
+      if (scope === 'fable' && !accounts.some((name) => !disabled.has(name) && !fableIncapable(effective(name)))) {
         return finish(null, false);
       }
       // Stretch the give-up deadline to a knowable imminent recovery, recomputed
@@ -920,15 +997,19 @@ async function bufferedProxy(req, res, body, replaceAuth) {
     }
     if (res.destroyed) return;
     if (!upstreamRes) continue;
-    const authFailure = upstreamRes.statusCode === 401 || upstreamRes.statusCode === 403;
-    if (authFailure) markAuthFailure(account, upstreamRes.statusCode);
+    // A fable-scope 403 is a plan rejection (the plan lacks Fable), not an auth
+    // failure: it must never wall the account for general.
+    const planReject = replaceAuth && scope === 'fable' && upstreamRes.statusCode === 403;
+    const authFailure = !planReject && (upstreamRes.statusCode === 401 || upstreamRes.statusCode === 403);
+    if (planReject) markPlanIncapable(account, upstreamRes.statusCode);
+    else if (authFailure) markAuthFailure(account, upstreamRes.statusCode);
     const unified = String(upstreamRes.headers['anthropic-ratelimit-unified-status'] || '');
     const rejected = replaceAuth && (upstreamRes.statusCode === 429 || unified.startsWith('rejected'));
-    if (!rejected && !authFailure) return forwardResponse(upstreamRes, res, account, scope);
+    if (!rejected && !authFailure && !planReject) return forwardResponse(upstreamRes, res, account, scope);
     if (rejected) markRejected(account, upstreamRes.headers, scope);
     log(`retry account=${account} scope=${scope} status=${upstreamRes.statusCode || 0} unified=${unified || 'none'}`);
     lastResponse = upstreamRes;
-    const next = switchForScope(scope, authFailure ? 'auth failure' : 'rejected', tried);
+    const next = switchForScope(scope, planReject ? 'plan-incapable' : authFailure ? 'auth failure' : 'rejected', tried);
     if (!next) return forwardResponse(lastResponse, res, account, scope);
     upstreamRes.resume();
   }
@@ -944,7 +1025,8 @@ function streamingProxy(req, res, chunks, name, replaceAuth, scope, tried = new 
     upstreamReq = transport.request(requestOptions(req, name, replaceAuth), (upstreamRes) => {
       upstreamRes[upstreamStartedAt] = attemptStarted;
       if (replaceAuth) updateFromHeaders(name, upstreamRes.headers);
-      const authFailure = upstreamRes.statusCode === 401 || upstreamRes.statusCode === 403;
+      const planReject = replaceAuth && scope === 'fable' && upstreamRes.statusCode === 403;
+      const authFailure = !planReject && (upstreamRes.statusCode === 401 || upstreamRes.statusCode === 403);
       const unified = String(upstreamRes.headers['anthropic-ratelimit-unified-status'] || '');
       const rejected = replaceAuth && (upstreamRes.statusCode === 429 || unified.startsWith('rejected'));
       const capacityRejection = replaceAuth && isCapacityRejection(upstreamRes);
@@ -964,10 +1046,11 @@ function streamingProxy(req, res, chunks, name, replaceAuth, scope, tried = new 
         }, capacityRetryMs);
         return;
       }
-      if (authFailure) markAuthFailure(name, upstreamRes.statusCode);
+      if (planReject) markPlanIncapable(name, upstreamRes.statusCode);
+      else if (authFailure) markAuthFailure(name, upstreamRes.statusCode);
       if (rejected) markRejected(name, upstreamRes.headers, scope);
-      if (capacityRejection && streamState.replayable && !res.headersSent) {
-        const next = switchForScope(scope, 'rejected', tried);
+      if ((capacityRejection || planReject) && streamState.replayable && !res.headersSent) {
+        const next = switchForScope(scope, planReject ? 'plan-incapable' : 'rejected', tried);
         if (next) {
           req.pause();
           req.unpipe(upstreamReq);
@@ -1011,7 +1094,7 @@ function activeWalls() {
     if (state.forcedUntil > now) walls.push({ account: name, scope: 'general', until: new Date(state.forcedUntil * 1000).toISOString(), reason: state.forcedReason || 'unknown' });
     if (state.authFailedUntil > now) walls.push({ account: name, scope: 'general', until: new Date(state.authFailedUntil * 1000).toISOString(), reason: 'auth_failed' });
     for (const [scope, until] of Object.entries(state.scopedWalls || {})) {
-      if (scope === 'fable' && state.fable_capability === false) continue;
+      if (scope === 'fable' && fableIncapable(state, now)) continue;
       if (until > now) walls.push({ account: name, scope, until: new Date(until * 1000).toISOString(), reason: state.scopedWallReason?.[scope] || 'unknown' });
     }
   }
@@ -1043,7 +1126,7 @@ function statusPayload() {
       wreset: state.wreset,
       walled: state.walled || state.scopedWalls.general > now,
       auth_failed_until: state.authFailedUntil > now ? state.authFailedUntil : 0,
-      fable_walled_until: state.fable_capability === false ? 0 : Math.max(state.scopedWalls.fable > now ? state.scopedWalls.fable : 0, snapshotWall),
+      fable_walled_until: fableIncapable(state, now) ? 0 : Math.max(state.scopedWalls.fable > now ? state.scopedWalls.fable : 0, snapshotWall),
       usable: { general: blocked.general === null, fable: blocked.fable === null },
       blocked
     };

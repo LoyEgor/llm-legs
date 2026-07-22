@@ -476,6 +476,26 @@ gt "$(sfield accounts.b.auth_failed_until)" "0" "m2: account b is excluded for a
 eq "$(sfield all_walled_until.general)" "$EARLY" "m2: general aggregate is earliest wall among auth-ok accounts"
 stop_daemon
 
+echo "scenario n: fable plan rejection is affirmative capability evidence, scoped to fable, and persists"
+STORE_N="$(setup_store "$WORK/n" a b)"
+start_daemon "$STORE_N"
+write_plan <<'JSON'
+{ "byToken": { "acct-a": { "status": 403, "body": "{\"type\":\"error\",\"error\":{\"type\":\"permission_error\",\"message\":\"model not available on plan\"}}" }, "acct-b": { "status": 200, "body": "{\"who\":\"b\"}" } } }
+JSON
+code=$(gpost "$FAB")
+eq "$code" "200" "n: fable request rotates past the plan-rejecting account and succeeds"
+contains '"who":"b"' "$(cat "$WORK/body")" "n: fable served by the capable account b"
+eq "$(sfield accounts.a.blocked.fable)" "no-capability" "n: plan-rejecting account a is marked fable-incapable"
+eq "$(sfield accounts.a.blocked.general)" "null" "n: plan rejection never blocks general"
+eq "$(sfield accounts.a.walled)" "false" "n: plan rejection does not wall a for general"
+contains "fable plan-incapable account=a" "$(cat "$WORK/n/claudebd.log")" "n: plan-incapability is logged with what/when"
+case "$(statusjson)" in *'"account":"a","scope":"fable"'*) fail "n: an incapable account must not be reported as fable-walled" ;; *) pass ;; esac
+stop_daemon
+start_daemon "$STORE_N"
+eq "$(sfield accounts.a.blocked.fable)" "no-capability" "n: plan-incapability is re-derived from persisted evidence after restart"
+eq "$(sfield accounts.a.blocked.general)" "null" "n: general stays unaffected after restart"
+stop_daemon
+
 echo "scenario chaos: seeded mixed-scope storm preserves walls, eligibility, recovery, and state"
 STORE_CHAOS="$(setup_store "$WORK/chaos" a b c d)"
 : >"$MOCK_LOG"

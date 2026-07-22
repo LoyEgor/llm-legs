@@ -26,6 +26,20 @@ local function loginNeededTitle(account)
   return infoTitle(account) .. infoTitle("  login needed", false, true)
 end
 
+-- The one shared shape for a logged-out row: every vendor (claude/codex accounts,
+-- gemini vendor row, any future vendor) is forced through this so the two actions
+-- and their order can never silently diverge. Rotation/current/chat-switch all
+-- need live credentials, so a logged-out row offers exactly {Log in…, Hard refresh}.
+local function loginNeededRow(label, loginFn, hardRefreshFn)
+  return {
+    title = loginNeededTitle(label),
+    menu = {
+      { title = "Log in…", fn = loginFn },
+      { title = "Hard refresh", fn = hardRefreshFn },
+    },
+  }
+end
+
 local function truncateText(text, maxLength)
   if #text <= maxLength then
     return text
@@ -571,18 +585,19 @@ function M.menuItems()
       local vendor = limits.vendors[entry.key]
       if type(vendor) ~= "table" or vendor.available ~= true then
         local authNeeded = type(vendor) == "table" and vendor.auth_needed == true
-        local unavailableRow = {
-          title = authNeeded and loginNeededTitle(entry.label)
-            or infoTitle(string.format("%-6s  no live data", entry.label)),
-          disabled = true,
-        }
-        if entry.key == "gemini" then
-          unavailableRow.disabled = nil
-          unavailableRow.menu = {}
-          if authNeeded then
-            table.insert(unavailableRow.menu, { title = "Log in…", fn = M.loginGemini })
+        local unavailableRow
+        if entry.key == "gemini" and authNeeded then
+          unavailableRow = loginNeededRow(entry.label, M.loginGemini, M.hardRefreshGemini)
+        else
+          unavailableRow = {
+            title = authNeeded and loginNeededTitle(entry.label)
+              or infoTitle(string.format("%-6s  no live data", entry.label)),
+            disabled = true,
+          }
+          if entry.key == "gemini" then
+            unavailableRow.disabled = nil
+            unavailableRow.menu = {{ title = "Hard refresh", fn = M.hardRefreshGemini }}
           end
-          table.insert(unavailableRow.menu, { title = "Hard refresh", fn = M.hardRefreshGemini })
         end
         table.insert(menu, unavailableRow)
       else
@@ -637,46 +652,44 @@ function M.menuItems()
             local resetCredits = tonumber(block.reset_credits)
             local resetSuffix = resetCredits and resetCredits > 0
               and string.format("  ↻%d", math.floor(resetCredits)) or ""
-            local accountRow = {
-              title = authNeeded and loginNeededTitle(acct)
-                or accountTitle(acct .. resetSuffix .. (isCurrent and "  ●" or ""),
-                  accountAge, generalWalled),
-              disabled = true,
-            }
-            if hasAccountControls then
-              accountRow.disabled = nil
-              accountRow.checked = enabled
-              accountRow.menu = {
-                { title = "In rotation", checked = enabled,
-                  fn = function() M.toggleAccount(acct, enabled) end },
-                { title = "Make current", disabled = block.is_current,
-                  fn = function() M.switchAccount(acct) end },
-                { title = "Hard refresh",
-                  fn = function() M.hardRefreshClaude(acct) end },
-              }
-              -- "main" is ~/.claude itself, not a claudeb profile dir — no chat switch.
-              if acct ~= "main" then
-                table.insert(accountRow.menu, {
-                  title = "Switch chat to this",
-                  fn = function() M.switchChatTo(acct) end,
-                })
-              end
-            elseif isCodexAccounts then
-              accountRow.disabled = nil
-              accountRow.menu = {
-                { title = "Hard refresh",
-                  fn = function() M.hardRefreshCodex(acct) end },
-              }
-            end
+            local accountRow
             if authNeeded then
-              accountRow.disabled = nil
-              accountRow.menu = accountRow.menu or {}
-              table.insert(accountRow.menu, 1, {
-                title = "Log in…",
-                fn = entry.key == "claude"
-                  and function() M.loginClaude(acct) end
+              accountRow = loginNeededRow(acct,
+                entry.key == "claude" and function() M.loginClaude(acct) end
                   or function() M.loginCodex(acct) end,
-              })
+                entry.key == "claude" and function() M.hardRefreshClaude(acct) end
+                  or function() M.hardRefreshCodex(acct) end)
+            else
+              accountRow = {
+                title = accountTitle(acct .. resetSuffix .. (isCurrent and "  ●" or ""),
+                  accountAge, generalWalled),
+                disabled = true,
+              }
+              if hasAccountControls then
+                accountRow.disabled = nil
+                accountRow.checked = enabled
+                accountRow.menu = {
+                  { title = "In rotation", checked = enabled,
+                    fn = function() M.toggleAccount(acct, enabled) end },
+                  { title = "Make current", disabled = block.is_current,
+                    fn = function() M.switchAccount(acct) end },
+                  { title = "Hard refresh",
+                    fn = function() M.hardRefreshClaude(acct) end },
+                }
+                -- "main" is ~/.claude itself, not a claudeb profile dir — no chat switch.
+                if acct ~= "main" then
+                  table.insert(accountRow.menu, {
+                    title = "Switch chat to this",
+                    fn = function() M.switchChatTo(acct) end,
+                  })
+                end
+              elseif isCodexAccounts then
+                accountRow.disabled = nil
+                accountRow.menu = {
+                  { title = "Hard refresh",
+                    fn = function() M.hardRefreshCodex(acct) end },
+                }
+              end
             end
             table.insert(menu, accountRow)
           end

@@ -116,6 +116,61 @@ assert test "$until" -ge "$((now + 899))"
 assert test "$until" -le "$((now + 900))"
 printf '{"alpha":{"attempted_at":%s,"outcome":"429","retry_after_until":%s}}\n' "$now" "$((now + 1800))" >"$oauth_attempts_file"
 assert test "$(oauth_backoff_until alpha)" = "$((now + 1800))"
+printf '{"legacy":{"attempted_at":%s,"outcome":"429","retry_after_until":0}}\n' "$now" >"$oauth_attempts_file"
+assert test "$(oauth_backoff_until legacy)" = "$((now + 900))"
+printf '{}' >"$oauth_attempts_file"
+i=0
+for expected_delay in 900 1800 3600 7200 14400; do
+  i=$((i + 1))
+  assert oauth_attempt_update alpha 429 0
+  attempted_at=$(jq -r '.alpha.attempted_at' "$oauth_attempts_file")
+  strikes=$(jq -r '.alpha.strikes' "$oauth_attempts_file")
+  until=$(oauth_backoff_until alpha)
+  assert test "$strikes" -eq "$i"
+  assert test "$until" -eq "$((attempted_at + expected_delay))"
+done
+assert test "$(jq -r '.alpha.strikes' "$oauth_attempts_file")" -eq 5
+assert oauth_attempt_update alpha 429 0
+attempted_at=$(jq -r '.alpha.attempted_at' "$oauth_attempts_file")
+assert test "$(jq -r '.alpha.strikes' "$oauth_attempts_file")" -eq 6
+assert test "$(oauth_backoff_until alpha)" -eq "$((attempted_at + 14400))"
+assert oauth_attempt_update alpha success-adopted 0
+assert jq -e '.alpha.outcome == "success-adopted" and (.alpha | has("strikes") | not)' "$oauth_attempts_file" >/dev/null
+assert test "$(oauth_backoff_until alpha)" = 0
+assert oauth_attempt_update alpha 429 0
+attempted_at=$(jq -r '.alpha.attempted_at' "$oauth_attempts_file")
+assert jq -e '.alpha.strikes == 1' "$oauth_attempts_file" >/dev/null
+assert test "$(oauth_backoff_until alpha)" -eq "$((attempted_at + 900))"
+assert oauth_attempt_update alpha success 0
+assert jq -e 'has("alpha") | not' "$oauth_attempts_file" >/dev/null
+assert oauth_attempt_update alpha 429 0
+assert jq -e '.alpha.strikes == 1' "$oauth_attempts_file" >/dev/null
+long_retry=$((now + 20000))
+assert oauth_attempt_update beta 429 "$long_retry"
+assert test "$(oauth_backoff_until beta)" -eq "$long_retry"
+printf '{"gamma":{"attempted_at":%s,"outcome":"429","retry_after_until":0,"strikes":3}}\n' "$now" >"$oauth_attempts_file"
+assert oauth_attempt_update gamma weather 0 0 '' 503 0
+attempted_at=$(jq -r '.gamma.attempted_at' "$oauth_attempts_file")
+assert jq -e '.gamma.strikes == 3 and .gamma.http_status == 503' "$oauth_attempts_file" >/dev/null
+assert test "$(oauth_backoff_until gamma)" -eq "$((attempted_at + 900))"
+assert oauth_attempt_update gamma weather 0 0 '' 0 28
+attempted_at=$(jq -r '.gamma.attempted_at' "$oauth_attempts_file")
+assert jq -e '.gamma.strikes == 3 and .gamma.transport_rc == 28' "$oauth_attempts_file" >/dev/null
+assert test "$(oauth_backoff_until gamma)" -eq "$((attempted_at + 900))"
+
+printf '{"delta":{"attempted_at":%s,"outcome":"429","retry_after_until":%s,"strikes":2}}\n' "$now" "$((now + 1800))" >"$oauth_attempts_file"
+CLAUDEB_OAUTH_BYPASS_BACKOFF=false
+assert_fails oauth_attempt_begin delta
+CLAUDEB_OAUTH_BYPASS_BACKOFF=true
+assert oauth_attempt_begin delta
+bypass_attempted_at=$(jq -r '.delta.bypass_attempted_at' "$oauth_attempts_file")
+assert test "$bypass_attempted_at" -ge "$now"
+assert jq -e '.delta.outcome == "attempting" and .delta.strikes == 2' "$oauth_attempts_file" >/dev/null
+assert_fails oauth_attempt_begin delta
+assert test "$(jq -r '.delta.bypass_attempted_at' "$oauth_attempts_file")" = "$bypass_attempted_at"
+assert oauth_attempt_update delta 429 0
+assert jq -e --argjson bypass "$bypass_attempted_at" '.delta.strikes == 3 and .delta.bypass_attempted_at == $bypass' "$oauth_attempts_file" >/dev/null
+unset CLAUDEB_OAUTH_BYPASS_BACKOFF
 printf '{"alpha":{"attempted_at":%s,"outcome":"warming","retry_after_until":0}}\n' "$((now - 170))" >"$oauth_attempts_file"
 assert test "$(oauth_backoff_until alpha)" = 0
 assert test "$(oauth_heal_backoff_until alpha)" -gt "$now"
@@ -340,6 +395,26 @@ set -e
 assert test "$rc" -ne 0
 assert test ! -d "$oauth_attempts_file.rl.alpha"
 
+cat >"$FAKE_BIN/curl" <<'EOF'
+#!/usr/bin/env bash
+headers=''; prev=''
+for arg in "$@"; do
+  [ "$prev" = -D ] && headers="$arg"
+  prev="$arg"
+done
+printf 'Retry-After: 20000\r\n' >"$headers"
+printf '{"error":"rate_limited"}\n429'
+EOF
+chmod +x "$FAKE_BIN/curl"
+printf '{}' >"$oauth_attempts_file"
+retry_started=$(date +%s)
+if got=$(oauth_refresh alpha svc "$creds"); then rc=0; else rc=$?; fi
+assert test "$rc" -ne 0
+assert jq -e '.alpha.outcome == "429" and .alpha.strikes == 1' "$oauth_attempts_file" >/dev/null
+retry_until=$(jq -r '.alpha.retry_after_until' "$oauth_attempts_file")
+assert test "$retry_until" -ge "$((retry_started + 20000))"
+assert test "$(oauth_backoff_until alpha)" = "$retry_until"
+
 # a concurrent holder of the per-account refresh lock: adopt their fresher token,
 # never POST the already-consumed one, never release the lock we do not own.
 export CLAUDEB_LOCK_RETRIES=1 CLAUDEB_LOCK_DELAY=0
@@ -490,17 +565,16 @@ chmod +x "$FAKE_BIN/security" "$FAKE_BIN/claude" "$FAKE_BIN/curl"
     : >"$SERLOG"; rm -f "$WORK"/wthr-tc-*
     seed_expired wa1 rt-wa1; seed_expired wa2 rt-wa2
     printf '{}' >"$oauth_attempts_file"
-    printf '{"auth":{"status":"ok","checked_at":1}}' >"$limits_dir/wa1.json"
-    printf '{"auth":{"status":"ok","checked_at":1}}' >"$limits_dir/wa2.json"
+    wa_keep='{"five_hour":{"used_percentage":12,"resets_at":123,"as_of":99,"origin":"usage"},"auth":{"status":"ok","checked_at":1}}'
+    printf '%s' "$wa_keep" >"$limits_dir/wa1.json"
+    printf '%s' "$wa_keep" >"$limits_dir/wa2.json"
     wa_dir="$WORK/wthr-a"; mkdir -p "$wa_dir"
     probe_accounts "$wa_dir" false false false
-    assert jq -e '.five_hour.used_percentage == 7' "$limits_dir/wa1.json" >/dev/null
-    assert jq -e '.five_hour.used_percentage == 7' "$limits_dir/wa2.json" >/dev/null
-    assert jq -e '.auth.status == "ok"' "$limits_dir/wa1.json" >/dev/null
-    assert jq -e '.auth.status == "ok"' "$limits_dir/wa2.json" >/dev/null
-    assert jq -e '(.wa1 == null) and (.wa2 == null)' "$oauth_attempts_file" >/dev/null
-    assert test "$(cat "$WORK/wthr-tc-rt-wa1")" = 2
-    assert test "$(cat "$WORK/wthr-tc-rt-wa2")" = 2
+    assert test "$(cat "$limits_dir/wa1.json")" = "$wa_keep"
+    assert test "$(cat "$limits_dir/wa2.json")" = "$wa_keep"
+    assert jq -e '.wa1.outcome == "429" and .wa1.strikes == 1 and .wa2.outcome == "429" and .wa2.strikes == 1' "$oauth_attempts_file" >/dev/null
+    assert test "$(cat "$WORK/wthr-tc-rt-wa1")" = 1
+    assert test "$(cat "$WORK/wthr-tc-rt-wa2")" = 1
     while read -r s && read -r e; do
       assert test "${s#S:}" = "${e#E:}"
     done <"$SERLOG"
@@ -567,11 +641,11 @@ chmod +x "$FAKE_BIN/security" "$FAKE_BIN/claude" "$FAKE_BIN/curl"
     keep='{"five_hour":{"used_percentage":55,"resets_at":123,"as_of":99,"origin":"usage"},"auth":{"status":"ok","checked_at":1}}'
     printf '%s' "$keep" >"$limits_dir/wb1.json"
     wb_dir="$WORK/wthr-b"; mkdir -p "$wb_dir"
-    # Budget exhaustion: persistent 429, tiny budget, exactly one retry.
+    # A token-endpoint 429 enters a 15m cooldown immediately; convergence does not retry it.
     CLAUDEB_REFRESH_CONVERGE_S=6 probe_accounts "$wb_dir" false false false
     assert test "$(cat "$limits_dir/wb1.json")" = "$keep"
-    assert jq -e '.wb1.outcome == "429"' "$oauth_attempts_file" >/dev/null
-    assert test "$(cat "$WORK/wthr-b-tc-rt-wb1")" = 2
+    assert jq -e '.wb1.outcome == "429" and .wb1.strikes == 1' "$oauth_attempts_file" >/dev/null
+    assert test "$(cat "$WORK/wthr-b-tc-rt-wb1")" = 1
   )
 
   # Budget 0 disables retrying entirely: exactly one pass, no convergence retries.
@@ -601,7 +675,7 @@ chmod +x "$FAKE_BIN/security" "$FAKE_BIN/claude" "$FAKE_BIN/curl"
     assert test "$(cat "$WORK/wthr-c-tc-rt-wc1")" = 1
   )
 
-  # Convergence: the endpoint 429s twice then succeeds.
+  # Even if a later call would succeed, convergence leaves a cooling account alone.
   (
     account_names() { printf 'wd1\n'; }
     curl() {
@@ -628,10 +702,10 @@ chmod +x "$FAKE_BIN/security" "$FAKE_BIN/claude" "$FAKE_BIN/curl"
     printf '{"five_hour":{"used_percentage":9,"resets_at":1,"as_of":1,"origin":"usage"},"auth":{"status":"ok","checked_at":1}}' >"$limits_dir/wd1.json"
     wd_dir="$WORK/wthr-d"; mkdir -p "$wd_dir"
     CLAUDEB_REFRESH_CONVERGE_S=240 probe_accounts "$wd_dir" false false false
-    assert jq -e '.five_hour.used_percentage == 42' "$limits_dir/wd1.json" >/dev/null
+    assert jq -e '.five_hour.used_percentage == 9' "$limits_dir/wd1.json" >/dev/null
     assert jq -e '.auth.status == "ok" and (.auth | has("cause") | not)' "$limits_dir/wd1.json" >/dev/null
-    assert jq -e '.wd1 == null' "$oauth_attempts_file" >/dev/null
-    assert test "$(cat "$WORK/wthr-d-tc-rt-wd1")" = 3
+    assert jq -e '.wd1.outcome == "429" and .wd1.strikes == 1' "$oauth_attempts_file" >/dev/null
+    assert test "$(cat "$WORK/wthr-d-tc-rt-wd1")" = 1
   )
 
   # Usage-endpoint 429 on a valid token: convergence must retry off the http field.
@@ -709,7 +783,7 @@ chmod +x "$FAKE_BIN/security" "$FAKE_BIN/claude" "$FAKE_BIN/curl"
     cat "$KC/$(kc_key "$svc")" 2>/dev/null || return 44
   }
   keychain_write() { printf '%s' "$2" >"$KC/$(kc_key "$1")"; }
-  account_names() { printf 'tufresh\ntusoon\ntuexpired\ntuweather\n'; }
+  account_names() { printf 'tufresh\ntusoon\ntuexpired\ntuweather\ntucooling\n'; }
   curl() {
     local body rt
     case "$*" in
@@ -731,8 +805,9 @@ chmod +x "$FAKE_BIN/security" "$FAKE_BIN/claude" "$FAKE_BIN/curl"
   seed_tok tusoon    "$(printf '{"claudeAiOauth":{"refreshToken":"rt-soon","accessToken":"at-soon","expiresAt":%s,"scopes":["a"]}}' "$soon_at")"
   seed_tok tuexpired '{"claudeAiOauth":{"refreshToken":"rt-expired","accessToken":"at-expired","expiresAt":1,"scopes":["a"]}}'
   seed_tok tuweather "$weather_creds"
+  seed_tok tucooling '{"claudeAiOauth":{"refreshToken":"rt-cooling","accessToken":"at-cooling","expiresAt":1,"scopes":["a"]}}'
   : >"$TOKLOG"
-  printf '{}' >"$oauth_attempts_file"
+  printf '{"tucooling":{"attempted_at":%s,"outcome":"429","retry_after_until":0,"strikes":2}}\n' "$(date +%s)" >"$oauth_attempts_file"
   tu_err="$WORK/tu.err"
   token_upkeep 2>"$tu_err"
   assert_fails grep -qx rt-fresh "$TOKLOG"
@@ -746,6 +821,8 @@ chmod +x "$FAKE_BIN/security" "$FAKE_BIN/claude" "$FAKE_BIN/curl"
   assert_fails grep -q 'refreshed tuweather' "$tu_err"
   assert test "$(cat "$KC/$(kc_key "$(svc_of tuweather)")")" = "$weather_creds"
   assert jq -e '.tuweather.outcome == "429"' "$oauth_attempts_file" >/dev/null
+  assert_fails grep -qx rt-cooling "$TOKLOG"
+  assert jq -e '.tucooling.outcome == "429" and .tucooling.strikes == 2' "$oauth_attempts_file" >/dev/null
   assert_fails test -e "$limits_dir/tuweather.json"
 )
 
@@ -1236,6 +1313,92 @@ fresh_creds='{"claudeAiOauth":{"refreshToken":"rt-heal","accessToken":"at-heal",
   messages_probe_and_mark mp4 "$mp_dir" false 2>/dev/null || true
   assert jq -e '.auth.status == "expired"' "$limits_dir/mp4.json" >/dev/null
 )
+
+# Re-source probe_one and related functions for the logged-out tests
+unset -f probe_one warm_accounts oauth_warm_cause account_names || true
+source "$SCRIPT"
+
+# --- logged-out detection: affirmative local evidence (an empty-token CLI wipe or
+# keychain item-not-found) marks auth_needed and skips ALL token operations; any
+# other keychain error is weather and never writes a verdict or blanks old buckets. ---
+
+# readable-but-empty-token wipe → auth_needed, zero curl, no oauth-attempt, buckets kept.
+(
+  lo_creds='{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0,"scopes":[]}}'
+  lo_curl="$WORK/lo-curl.log"; : >"$lo_curl"
+  security() { printf '%s' "$lo_creds"; }
+  curl() { printf 'curl %s\n' "$*" >>"$lo_curl"; exit 97; }
+  lo_dir="$WORK/probe-loggedout"; mkdir -p "$lo_dir"
+  printf '{"auth":{"status":"ok","checked_at":1},"five_hour":{"used_percentage":5,"resets_at":0,"as_of":123,"origin":"usage"}}' >"$limits_dir/lo1.json"
+  printf '{}' >"$oauth_attempts_file"
+  probe_one lo1 "$lo_dir" false true
+  assert test "$(cat "$lo_dir/lo1.result")" = 'logged-out 0 000'
+  assert jq -e '.auth_needed == true and (has("auth") | not)' "$limits_dir/lo1.json" >/dev/null
+  assert jq -e '.five_hour.used_percentage == 5 and .five_hour.origin == "usage"' "$limits_dir/lo1.json" >/dev/null
+  assert test ! -s "$lo_curl"
+  assert jq -e '. == {}' "$oauth_attempts_file" >/dev/null
+) || exit 1
+
+# Re-login heal: a successful usage merge must clear auth_needed, or the account
+# stays "login needed" forever after the user logs back in.
+(
+  printf '{"auth_needed":true,"auth_checked_at":1,"five_hour":{"used_percentage":5,"resets_at":0,"as_of":123,"origin":"usage"}}' >"$limits_dir/lohealed.json"
+  assert merge_usage lohealed "$usage"
+  assert jq -e '.auth.status == "ok" and (has("auth_needed") | not) and (has("auth_checked_at") | not)' "$limits_dir/lohealed.json" >/dev/null
+) || exit 1
+
+# keychain item-not-found (security exit 44) → identical logged-out verdict.
+(
+  lo_curl="$WORK/lo44-curl.log"; : >"$lo_curl"
+  security() { return 44; }
+  curl() { printf 'curl %s\n' "$*" >>"$lo_curl"; exit 97; }
+  lo_dir="$WORK/probe-lo44"; mkdir -p "$lo_dir"
+  printf '{"auth":{"status":"ok","checked_at":1},"five_hour":{"used_percentage":8,"resets_at":0,"as_of":123,"origin":"usage"}}' >"$limits_dir/lo44.json"
+  printf '{}' >"$oauth_attempts_file"
+  probe_one lo44 "$lo_dir" false true
+  assert test "$(cat "$lo_dir/lo44.result")" = 'logged-out 0 000'
+  assert jq -e '.auth_needed == true and (has("auth") | not) and .five_hour.used_percentage == 8' "$limits_dir/lo44.json" >/dev/null
+  assert test ! -s "$lo_curl"
+  assert jq -e '. == {}' "$oauth_attempts_file" >/dev/null
+) || exit 1
+
+# any OTHER keychain error (exit 1) is weather: NO auth verdict, old auth preserved.
+(
+  cat >"$FAKE_BIN/security" <<'LOEOF'
+#!/usr/bin/env bash
+exit 1
+LOEOF
+  chmod +x "$FAKE_BIN/security"
+  lo_dir="$WORK/probe-lo-weather"; mkdir -p "$lo_dir"
+  printf '{"auth":{"status":"ok","checked_at":999}}' >"$limits_dir/low.json"
+  printf '{}' >"$oauth_attempts_file"
+  probe_one low "$lo_dir" false true
+  assert jq -e '.auth.status == "ok" and .auth.checked_at == 999 and (has("auth_needed") | not)' "$limits_dir/low.json" >/dev/null
+  read -r low_s low_r low_h < "$lo_dir/low.result"
+  assert test "$low_s" = no-spend
+) || exit 1
+
+# token-upkeep skips a logged-out account: no token endpoint call, no oauth-attempt,
+# credentials untouched (empty-token wipe and item-not-found both skipped).
+(
+  KC="$WORK/tul-keychain"; mkdir -p "$KC"
+  kc_key() { printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'; }
+  tul_curl="$WORK/tul-curl.log"; : >"$tul_curl"
+  security() {
+    local prev='' svc='' a
+    for a in "$@"; do [ "$prev" = -s ] && svc="$a"; prev="$a"; done
+    cat "$KC/$(kc_key "$svc")" 2>/dev/null || return 44
+  }
+  curl() { printf 'curl %s\n' "$*" >>"$tul_curl"; exit 97; }
+  account_names() { printf 'tulwipe\ntulmissing\n'; }
+  wipe_creds='{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0}}'
+  printf '%s' "$wipe_creds" >"$KC/$(kc_key "$(keychain_service tulwipe)")"
+  printf '{}' >"$oauth_attempts_file"
+  token_upkeep 2>/dev/null
+  assert test ! -s "$tul_curl"
+  assert jq -e '. == {}' "$oauth_attempts_file" >/dev/null
+  assert test "$(cat "$KC/$(kc_key "$(keychain_service tulwipe)")")" = "$wipe_creds"
+) || exit 1
 
 # interactive status: account-row selection navigation, Enter launch resolution,
 # highlight scoping, and the non-tty path staying plain (no key loop, no launch).

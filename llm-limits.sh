@@ -103,6 +103,42 @@ epoch_iso() {
   fi
 }
 
+format_reset_time() {
+  local epoch=$1
+  if date -r "$epoch" '+%H:%M' >/dev/null 2>&1; then
+    date -r "$epoch" '+%H:%M'
+  else
+    date -d "@$epoch" '+%H:%M' 2>/dev/null || printf 'unknown'
+  fi
+}
+
+claude_stale_cause() {
+  local attempts_file=$1 name=$2 auth=${3:-ok} raw kind value
+  raw=$(jq -r --arg n "$name" --arg auth "$auth" '
+    (.[$n] // null) as $e |
+    if $e == null then ["cause", (if $auth == "failed" then "stale data kept" else "usage weather" end)] | @tsv
+    elif ($e.outcome // "") == "429" then
+      (((($e.strikes // 0) | if type != "number" or . < 1 then 1 else floor end)) as $s |
+       (900 * (2 | pow(.; $s - 1)) | if . > 14400 then 14400 else . end) as $c |
+       ([((if ($e.attempted_at | type) == "number" then $e.attempted_at else 0 end) + $c),
+         (if ($e.retry_after_until | type) == "number" then $e.retry_after_until else 0 end)] | max) as $until |
+       ["429", $until] | @tsv)
+    elif ($e.outcome // "") == "weather" then ["cause", "network weather"] | @tsv
+    elif (($e.warm_outcome // "") == "warm-failed" or ($e.outcome // "") == "warm-failed")
+         and ($e.warm_cause // "") != "" then ["cause", $e.warm_cause] | @tsv
+    else ["cause", "stale data kept"] | @tsv end' "$attempts_file" 2>/dev/null) || raw=$'cause\tstale data kept'
+  IFS=$'\t' read -r kind value <<<"$raw"
+  if [ "$kind" = 429 ]; then
+    if [ "$value" -le "${now_epoch:-$(date +%s)}" ] 2>/dev/null; then
+      printf 'token rate-limited, retrying'
+    else
+      printf 'token rate-limited, retry ~%s' "$(format_reset_time "$value")"
+    fi
+  else
+    printf '%s' "${value:-stale data kept}"
+  fi
+}
+
 file_mtime() {
   stat -f '%m' "$1" 2>/dev/null || stat -c '%Y' "$1" 2>/dev/null
 }
@@ -510,7 +546,8 @@ if [ "$refresh" -eq 1 ] && { [ -z "$refresh_account" ] || [ -n "$claude_refresh_
             "$claudeb_cmd" "${warm_args[@]}" "$claude_refresh_target"; then
           claude_refresh_succeeded=1
         else
-          [ -n "$claude_refresh_error" ] || claude_refresh_error='probe failed'
+          [ -n "$claude_refresh_error" ] || claude_refresh_error=$(claude_stale_cause "$claudeb_root/oauth-attempts.json" "$claude_refresh_target" ok)
+          claude_refresh_error="$claude_refresh_target: not refreshed ($claude_refresh_error)"
         fi
       elif [ "$start_windows" -eq 1 ]; then
         # Feature-detect: older claudeb builds predate --start-windows and would die on it.
@@ -651,6 +688,7 @@ if [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
                         resets_at:(if $five_reset == "" then null else $five_reset end)} + ($x.five // {}) end),
        as_of:($account_asof | todateiso8601),stale_seconds:($now - $account_asof)} +
       (if $plan_type == "" then {} else {plan_type:$plan_type} end) +
+      (if $d.auth_needed == true then {auth_needed:true} else {} end) +
       (if $x.auth then {auth:$x.auth} else {} end) +
       (if $has_week == 0 then {} else {weekly:({used_pct:$d.seven_day.used_percentage,
         resets_at:(if $week_reset == "" then null else $week_reset end)} + ($x.week // {}))} end) +
@@ -699,14 +737,7 @@ if [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
       while IFS= read -r stale_account; do
         [ -n "$stale_account" ] || continue
         stale_auth=$(jq -r --arg n "$stale_account" '(.[] | select(.account == $n) | .auth.status) // "ok"' <<<"$accounts" 2>/dev/null) || stale_auth=ok
-        stale_cause=$(jq -r --arg n "$stale_account" --arg auth "$stale_auth" '
-          (.[$n] // null) as $e |
-          if $e == null then (if $auth == "failed" then "stale data kept" else "usage weather" end)
-          elif ($e.outcome // "") == "429" then "token endpoint 429"
-          elif ($e.outcome // "") == "weather" then "network weather"
-          elif (($e.warm_outcome // "") == "warm-failed" or ($e.outcome // "") == "warm-failed")
-               and ($e.warm_cause // "") != "" then $e.warm_cause
-          else "stale data kept" end' "$claude_oauth_attempts" 2>/dev/null) || stale_cause='stale data kept'
+        stale_cause=$(claude_stale_cause "$claude_oauth_attempts" "$stale_account" "$stale_auth")
         [ -n "$stale_cause" ] || stale_cause='stale data kept'
         stale_entry="$stale_account: not refreshed ($stale_cause)"
         if [ -n "$claude_refresh_error" ]; then
@@ -716,6 +747,7 @@ if [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
         fi
       done < <(jq -r --argjson rs "$claude_refresh_run_start" '
         .[] | select(.enabled == true) | select((.auth.status // "") != "expired")
+        | select(.auth_needed != true)
         | select((.five_hour.as_of | type) == "number" and .five_hour.as_of < $rs)
         | .account' <<<"$accounts")
     fi

@@ -286,7 +286,7 @@ merge_usage() {
     (if $fable then $merged + {fable: {used_percentage: ($fable.percent | round), resets_at: ($fable.resets_at | if . == null then 0 else epoch end), as_of: $now, origin: "usage"}}
     elif ($merged.fable.resets_at? // 0) > $now then $merged + {fable: ($merged.fable + {origin: "cached"})}
     else $merged + {fable: {used_percentage: 0, resets_at: 0, as_of: $now, origin: "usage"}} end) +
-    {auth: {status: "ok", checked_at: $now}}' \
+    {auth: {status: "ok", checked_at: $now}} | del(.auth_needed, .auth_cause, .auth_checked_at)' \
       "$body" > "$tmp" 2>/dev/null; then
       rm -f "$tmp"
       return 1
@@ -312,7 +312,8 @@ mark_auth() {
     if jq -cn --argjson old "$cached" --argjson now "$(date +%s)" --arg status "$status" --arg cause "$cause" \
       --arg require_status "$require_status" '
       if $require_status != "" and ($old.auth.status // "") != $require_status then $old
-      else $old + {auth: ({status: $status, checked_at: $now} + (if $cause == "" then {} else {cause: $cause} end))}
+      else ($old + {auth: ({status: $status, checked_at: $now} + (if $cause == "" then {} else {cause: $cause} end))}
+           | del(.auth_needed, .auth_cause, .auth_checked_at))
       end' > "$tmp" 2>/dev/null; then
       if [ "$(cat "$tmp")" = "$cached" ]; then rm -f "$tmp"; else mv "$tmp" "$file" || rm -f "$tmp"; fi
     else
@@ -321,12 +322,70 @@ mark_auth() {
   ) || true
 }
 
+# CLI-wipe signature: the Claude CLI blanks its own keychain OAuth blob
+# (accessToken/refreshToken → "", expiresAt → 0) when its refresh fails, leaving
+# a readable but empty credential. Both tokens empty/missing is affirmative local
+# evidence the account is logged out — distinct from transient read weather, which
+# never produces this shape. A garbage/unparseable blob is NOT this signature.
+credentials_logged_out() {
+  printf '%s' "$1" | jq -e '
+    type == "object" and (.claudeAiOauth | type == "object") and
+    ((.claudeAiOauth.accessToken // "") == "") and
+    ((.claudeAiOauth.refreshToken // "") == "")' >/dev/null 2>&1
+}
+
+# Record the logged-out ("login needed") verdict, mirroring Codex/Gemini's
+# auth_needed flag. Preserves the last usage buckets for provenance and drops any
+# stale auth.status so a wiped account never renders a cached "ok". Only callers
+# with affirmative local evidence (empty-token wipe signature or keychain
+# item-not-found, exit 44) may invoke this — never on 429/5xx/timeout weather.
+mark_auth_needed() {
+  local name="$1" cause="${2:-logged out}" file="$limits_dir/$1.json" tmp lock cached='{}'
+  mkdir -p "$limits_dir"
+  lock="$file.lock"
+  lock_acquire "$lock" || return 0
+  (
+    trap 'lock_release "$lock"' EXIT
+    tmp="$limits_dir/.$name.json.authneeded.$$"
+    if [ -r "$file" ] && jq -e 'type == "object"' "$file" >/dev/null 2>&1; then
+      cached=$(jq -c . "$file" 2>/dev/null) || cached='{}'
+    fi
+    if jq -cn --argjson old "$cached" --argjson now "$(date +%s)" --arg cause "$cause" '
+      ($old | del(.auth)) + {auth_needed: true, auth_checked_at: $now}
+      + (if $cause == "" then {} else {auth_cause: $cause} end)' > "$tmp" 2>/dev/null; then
+      if [ "$(cat "$tmp")" = "$cached" ]; then rm -f "$tmp"; else mv "$tmp" "$file" || rm -f "$tmp"; fi
+    else
+      rm -f "$tmp"
+    fi
+  ) || true
+}
+
+# Fire the logged-out verdict from a keychain read alone (no probe). Returns 0
+# only on the two affirmative shapes: item-not-found (security exit 44) or a
+# readable-but-empty-token wipe. Any other read error is weather → returns 1,
+# nothing written.
+detect_logged_out() {
+  local name="$1" cause="${2:-logged out}" service creds sec_rc
+  service=$(keychain_service "$name")
+  sec_rc=0
+  creds=$(security find-generic-password -s "$service" -w 2>/dev/null) || sec_rc=$?
+  if [ "$sec_rc" -eq 44 ]; then
+    mark_auth_needed "$name" 'no keychain credentials'
+    return 0
+  fi
+  if [ "$sec_rc" -eq 0 ] && credentials_logged_out "$creds"; then
+    mark_auth_needed "$name" "$cause"
+    return 0
+  fi
+  return 1
+}
+
 oauth_client_id="9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 oauth_token_url="${CLAUDEB_OAUTH_TOKEN_URL:-https://platform.claude.com/v1/oauth/token}"
 oauth_attempts_file="$base_dir/oauth-attempts.json"
 
 oauth_attempt_update() {
-  local name="$1" outcome="$2" retry_until="${3:-0}" credentials_expires_at="${4:-0}" warm_cause="${5:-}" http_status="${6:-0}" transport_rc="${7:-0}" lock="$oauth_attempts_file.lock" tmp now tries=0 lock_mtime stale_retake=false
+  local name="$1" outcome="$2" retry_until="${3:-0}" credentials_expires_at="${4:-0}" warm_cause="${5:-}" http_status="${6:-0}" transport_rc="${7:-0}" bypass_attempted_at="${8:-0}" lock="$oauth_attempts_file.lock" tmp now tries=0 lock_mtime stale_retake=false
   local max_tries="${CLAUDEB_LOCK_RETRIES:-10}" delay="${CLAUDEB_LOCK_DELAY:-0.2}"
   [[ "$max_tries" =~ ^[1-9][0-9]*$ ]] || max_tries=10
   mkdir -p "$base_dir" || return 0
@@ -352,16 +411,33 @@ oauth_attempt_update() {
   if jq -cn --argjson old "$([ -r "$oauth_attempts_file" ] && jq -c 'if type == "object" then . else {} end' "$oauth_attempts_file" 2>/dev/null || printf '{}')" \
     --arg name "$name" --arg outcome "$outcome" --argjson now "$now" --argjson retry "$retry_until" \
     --argjson credentials_expires_at "$credentials_expires_at" --arg warm_cause "$warm_cause" \
-    --argjson http_status "$http_status" --argjson transport_rc "$transport_rc" '
-    if $outcome == "success" then $old | del(.[$name])
+    --argjson http_status "$http_status" --argjson transport_rc "$transport_rc" \
+    --argjson bypass_attempted_at "$bypass_attempted_at" '
+    def strikes: if type == "number" and . >= 0 then floor else 0 end;
+    def cooldown($s):
+      (if $s < 1 then 1 else $s end) as $n |
+      (900 * (2 | pow(.; $n - 1))) | if . > 14400 then 14400 else . end;
+    ($old[$name] // {}) as $entry |
+    if $outcome == "success" then
+      if ($entry.bypass_attempted_at // 0) > 0
+      then $old + {($name): {bypass_attempted_at:$entry.bypass_attempted_at}}
+      else $old | del(.[$name]) end
+    elif $outcome == "success-adopted" then
+      $old + {($name): ({attempted_at:$now,outcome:$outcome,retry_after_until:0}
+        + (if ($entry.bypass_attempted_at // 0) > 0 then {bypass_attempted_at:$entry.bypass_attempted_at} else {} end))}
     elif $outcome == "warming" or $outcome == "warm-failed" then
-      $old + {($name): ((($old[$name] // {}) | del(.warm_cause)) + {warm_attempted_at:$now,warm_outcome:$outcome}
+      $old + {($name): (($entry | del(.warm_cause)) + {warm_attempted_at:$now,warm_outcome:$outcome}
         + (if $warm_cause == "" then {} else {warm_cause:$warm_cause} end))}
     else $old + {($name): (($old[$name] // {}) as $entry |
+      (($entry.strikes // 0) | strikes) as $old_strikes |
+      (if $outcome == "429" then ($old_strikes + 1) else $old_strikes end) as $new_strikes |
       (($entry | del(.attempted_at,.outcome,.retry_after_until,.credentials_expires_at,.http_status,.transport_rc))
       + (if ($entry.outcome // "") == "warming" or ($entry.outcome // "") == "warm-failed"
          then {warm_attempted_at:($entry.attempted_at // 0),warm_outcome:$entry.outcome} else {} end))
-      + {attempted_at:$now,outcome:$outcome,retry_after_until:$retry}
+      + {attempted_at:$now,outcome:$outcome,
+         retry_after_until:(if $outcome == "429" then ([$retry, ($now + cooldown($new_strikes))] | max) else $retry end)}
+      + (if $outcome == "429" then {strikes:$new_strikes} else {} end)
+      + (if $bypass_attempted_at > 0 then {bypass_attempted_at:$bypass_attempted_at} else {} end)
       + (if $credentials_expires_at > 0 then {credentials_expires_at:$credentials_expires_at} else {} end)
       + (if $outcome == "weather" and $http_status > 0 then {http_status:$http_status} else {} end)
       + (if $outcome == "weather" and $transport_rc > 0 then {transport_rc:$transport_rc} else {} end))} end' > "$tmp"; then
@@ -384,6 +460,11 @@ oauth_backoff_until() {
     if (.outcome // "") == "revoked" and $credentials_expires_at > (.credentials_expires_at // 0) then 0
     elif ((.outcome // "") | startswith("success")) then 0
     elif (.outcome // "") == "warming" or (.outcome // "") == "warm-failed" then 0
+    elif (.outcome // "") == "429" then
+      (((.strikes // 0) | if type != "number" or . < 1 then 1 else floor end) as $s |
+       (900 * (2 | pow(.; $s - 1)) | if . > 14400 then 14400 else . end) as $c |
+       ([((.attempted_at // 0) + $c), (.retry_after_until // 0)] | max) as $until |
+       if $until > $now then $until else 0 end)
     elif ((.retry_after_until // 0) > $now) then .retry_after_until
     elif (.outcome // "") != "success" and ($now - (.attempted_at // 0)) < 900
     then (.attempted_at + 900) else 0 end' "$oauth_attempts_file" 2>/dev/null || printf '0'
@@ -498,15 +579,26 @@ token_needs_refresh() {
 }
 
 oauth_attempt_begin() {
-  local name="$1" credentials="${2:-}" now until
+  local name="$1" credentials="${2:-}" now until bypass_attempted_at bypass_lock recorded_at
   now=$(date +%s)
-  # A single bounded weather retry (probe_accounts) must reach the endpoint even
-  # though the just-recorded 429/weather would otherwise self-gate it under the
-  # 900s floor; the caller scopes this to that one serial retry.
-  if [ "${CLAUDEB_OAUTH_BYPASS_BACKOFF:-}" = true ]; then
-    oauth_attempt_update "$name" attempting 0
-    return
-  fi
+  case "${CLAUDEB_OAUTH_BYPASS_BACKOFF:-false}" in
+    1|true|TRUE|yes|YES|on|ON)
+      bypass_lock="$oauth_attempts_file.bypass.$(printf '%s' "$name" | LC_ALL=C tr -c 'A-Za-z0-9._-' '_')"
+      lock_acquire "$bypass_lock" || return 1
+      bypass_attempted_at=$(jq -r --arg name "$name" '.[$name].bypass_attempted_at // 0' "$oauth_attempts_file" 2>/dev/null) || bypass_attempted_at=0
+      [[ "$bypass_attempted_at" =~ ^[0-9]+$ ]] || bypass_attempted_at=0
+      if [ "$((now - bypass_attempted_at))" -lt 60 ]; then
+        lock_release "$bypass_lock"
+        printf 'claudeb: %s: OAuth refresh bypass rate-limited until %s\n' "$name" "$(format_time "$((bypass_attempted_at + 60))")" >&2
+        return 1
+      fi
+      oauth_attempt_update "$name" attempting 0 0 '' 0 0 "$now"
+      recorded_at=$(jq -r --arg name "$name" '.[$name].bypass_attempted_at // 0' "$oauth_attempts_file" 2>/dev/null) || recorded_at=0
+      lock_release "$bypass_lock"
+      [ "$recorded_at" = "$now" ] || return 1
+      return
+      ;;
+  esac
   until=$(oauth_backoff_until "$name" "$credentials")
   if [ "$until" -gt "$now" ] 2>/dev/null; then
     printf 'claudeb: %s: OAuth refresh backoff active until %s\n' "$name" "$(format_time "$until")" >&2
@@ -699,10 +791,24 @@ probe_one() {
   # rc=255 is a sentinel: the usage curl never ran (no/blocked credentials), as
   # opposed to a real transport failure — the weather classifier must not treat
   # a backoff-gated or credential-less probe as retryable network weather.
-  local name="$1" dir="$2" allow_spend="$3" allow_refresh="${4:-true}" http=000 rc=255 attempt out
+  local name="$1" dir="$2" allow_spend="$3" allow_refresh="${4:-true}" http=000 rc=255 attempt out sec_rc
   local service credentials access_token now_ms expires_at refreshed=false refresh_rc
   service=$(keychain_service "$name")
-  if credentials=$(security find-generic-password -s "$service" -w 2>/dev/null); then
+  sec_rc=0
+  credentials=$(security find-generic-password -s "$service" -w 2>/dev/null) || sec_rc=$?
+  # Affirmative logged-out before any token operation: keychain item-not-found
+  # (exit 44) or a readable wipe (both tokens blank). No curl, no oauth-attempt.
+  if [ "$sec_rc" -eq 44 ]; then
+    mark_auth_needed "$name" 'no keychain credentials'
+    printf 'logged-out 0 000\n' > "$dir/$name.result"
+    return
+  fi
+  if [ "$sec_rc" -eq 0 ] && credentials_logged_out "$credentials"; then
+    mark_auth_needed "$name"
+    printf 'logged-out 0 000\n' > "$dir/$name.result"
+    return
+  fi
+  if [ "$sec_rc" -eq 0 ]; then
     now_ms=$(($(date +%s) * 1000))
     expires_at=$(printf '%s' "$credentials" | jq -r '.claudeAiOauth.expiresAt // 0 | floor' 2>/dev/null) || expires_at=0
     [[ "$expires_at" =~ ^[0-9]+$ ]] || expires_at=0
@@ -861,6 +967,12 @@ heal_one() {
   fi
   probe_one "$name" "$dir" false true
   read -r source rc http < "$dir/$name.result"
+  if [ "$source" = logged-out ]; then
+    # probe_one recorded auth_needed; do not let the capacity/refresh path below
+    # overwrite it with an "auth ok" verdict.
+    printf 'login\n' > "$dir/$name.display"
+    return
+  fi
   if [ "$source" = usage ] && merge_usage "$name" "$dir/$name.usage"; then
     printf 'live\n' > "$dir/$name.display"
     return
@@ -923,7 +1035,11 @@ heal_expired() {
 process_probe_result() {
   local name="$1" dir="$2" source rc http
   read -r source rc http < "$dir/$name.result"
-  if [ "$source" = usage ] && merge_usage "$name" "$dir/$name.usage"; then
+  if [ "$source" = logged-out ]; then
+    # probe_one already wrote the auth_needed verdict; a login-needed account is
+    # terminal, never a weather retry candidate.
+    printf 'login\n' > "$dir/$name.display"
+  elif [ "$source" = usage ] && merge_usage "$name" "$dir/$name.usage"; then
     printf 'live\n' > "$dir/$name.display"
   elif { [ "$http" = 401 ] || [ "$http" = 403 ]; }; then
     if [ "$source" = messages ]; then
@@ -946,6 +1062,7 @@ process_probe_result() {
 probe_weather_failed() {
   local name="$1" dir="$2" run_start="$3" source rc http outcome attempted_at
   read -r source rc http < "$dir/$name.result" 2>/dev/null || return 1
+  [ "$source" != logged-out ] || return 1
   if [ "$rc" != 0 ] && [ "$rc" != 255 ]; then return 0; fi
   # Usage-endpoint 429/5xx/000 (rc=0, valid token) leaves no oauth-attempts trace; 401/403 stay out via the caller's display gate.
   case "$http" in 000|429|5[0-9][0-9]) return 0 ;; esac
@@ -958,7 +1075,7 @@ probe_weather_failed() {
 oauth_retry_remaining() {
   local name="$1" now until
   now=$(date +%s)
-  until=$(jq -r --arg n "$name" '.[$n].retry_after_until // 0' "$oauth_attempts_file" 2>/dev/null) || until=0
+  until=$(oauth_backoff_until "$name")
   [[ "$until" =~ ^[0-9]+$ ]] || until=0
   if [ "$until" -gt "$now" ]; then printf '%s\n' "$((until - now))"; else printf '0\n'; fi
 }
@@ -983,6 +1100,9 @@ token_upkeep() {
   while IFS= read -r name; do
     service=$(keychain_service "$name")
     credentials=$(security find-generic-password -s "$service" -w 2>/dev/null) || continue
+    # A logged-out account has no token to refresh; skip it (item-not-found is
+    # already caught by the read above).
+    if credentials_logged_out "$credentials"; then continue; fi
     expires_at=$(printf '%s' "$credentials" | jq -r '.claudeAiOauth.expiresAt // 0 | floor' 2>/dev/null) || expires_at=0
     [[ "$expires_at" =~ ^[0-9]+$ ]] || expires_at=0
     [ "$expires_at" -le "$((now_ms + window_ms))" ] || continue
@@ -1055,7 +1175,7 @@ probe_accounts() {
     spent=$((spent + wait))
     for name in $retry_names; do
       [ "$(oauth_retry_remaining "$name")" -le 0 ] 2>/dev/null || continue
-      CLAUDEB_OAUTH_BYPASS_BACKOFF=true probe_one "$name" "$dir" "$allow_spend" "$allow_refresh"
+      probe_one "$name" "$dir" "$allow_spend" "$allow_refresh"
       process_probe_result "$name" "$dir"
     done
     round=$((round + 1))
@@ -1383,6 +1503,7 @@ warm_failure() {
 
 warm_accounts() {
   local name dir output session_rc reason failure_cause service credentials expires_at now started probe_dir source rc http asof failed=0 until probe_ok usage_rate_limited backoff_mode explicit=false refresh_rc start_window=false hreset arg
+  local CLAUDEB_OAUTH_BYPASS_BACKOFF="${CLAUDEB_OAUTH_BYPASS_BACKOFF:-false}"
   local -a names
   names=()
   for arg in "$@"; do
@@ -1410,7 +1531,10 @@ warm_accounts() {
       failed=1
       continue
     fi
-    until=$(oauth_warm_backoff_until "$name" "$backoff_mode")
+    case "$CLAUDEB_OAUTH_BYPASS_BACKOFF" in
+      1|true|TRUE|yes|YES|on|ON) until=0 ;;
+      *) until=$(oauth_warm_backoff_until "$name" "$backoff_mode") ;;
+    esac
     now=$(date +%s)
     if [ "$until" -gt "$now" ] 2>/dev/null; then
       warm_failure "$name" warm-429 "warm backoff active until $(format_time "$until")"
@@ -1426,6 +1550,13 @@ warm_accounts() {
     }
     dir="$prepared_profile_dir"
     service=$(keychain_service "$name")
+    # A wiped/absent credential is logged out, not warmable: record auth_needed
+    # and skip the warm session entirely (no token endpoint, no oauth-attempt).
+    if detect_logged_out "$name"; then
+      warm_failure "$name" needs-relogin 'logged out (no credentials)'
+      failed=1
+      continue
+    fi
     output=$(mktemp "${TMPDIR:-/tmp}/claudeb-warm.XXXXXX") || return 1
     oauth_attempt_update "$name" warming 0
     started=$(date +%s)
@@ -1530,6 +1661,14 @@ warm_accounts() {
     probe_dir=$(mktemp -d "${TMPDIR:-/tmp}/claudeb-warm-probe.XXXXXX") || return 1
     probe_one "$name" "$probe_dir" false false
     read -r source rc http < "$probe_dir/$name.result"
+    if [ "$source" = logged-out ]; then
+      # Credentials went missing after the warm session; auth_needed is already
+      # recorded — report and skip without writing an oauth-attempt entry.
+      rm -rf "$probe_dir"
+      warm_failure "$name" needs-relogin 'logged out (no credentials)'
+      failed=1
+      continue
+    fi
     probe_ok=false
     if [ "$source" = usage ] && merge_usage "$name" "$probe_dir/$name.usage"; then probe_ok=true; fi
     if [ "$probe_ok" = true ]; then
@@ -1868,6 +2007,7 @@ accounts_refresh_finish() {
 accounts_refresh_cause() {
   local name="$1" state="$2" outcome
   if [ "$state" = 'auth!' ]; then printf 'auth'; return; fi
+  if [ "$state" = login ]; then printf 'logged out'; return; fi
   outcome=$(oauth_backoff_outcome "$name")
   case "$outcome" in
     429) printf 'token 429' ;;
@@ -1925,7 +2065,7 @@ render_plain_accounts() {
     age_text=$(format_age "$age")
     if [ "$accounts_mode" = live ]; then
       probe_state=$(cat "$accounts_probe_dir/$name.display")
-      if [ "$probe_state" = live ] || [ "$probe_state" = 'live*' ] || [ "$probe_state" = 'auth!' ]; then
+      if [ "$probe_state" = live ] || [ "$probe_state" = 'live*' ] || [ "$probe_state" = 'auth!' ] || [ "$probe_state" = login ]; then
         age_text="$probe_state"
       else
         age_text="${age_text}!"
@@ -2047,7 +2187,7 @@ render_interactive_accounts() {
     age_text=$(format_age "$age")
     if [ "$accounts_mode" = live ]; then
       probe_state=$(cat "$accounts_probe_dir/$name.display")
-      if [ "$probe_state" = live ] || [ "$probe_state" = 'live*' ] || [ "$probe_state" = 'auth!' ]; then age_text="$probe_state"
+      if [ "$probe_state" = live ] || [ "$probe_state" = 'live*' ] || [ "$probe_state" = 'auth!' ] || [ "$probe_state" = login ]; then age_text="$probe_state"
       else age_text="${age_text}!"
       fi
     fi
@@ -2190,7 +2330,15 @@ case "${1:-}" in
     ;;
   warm)
     shift
-    warm_accounts "$@"
+    warm_target_count=0
+    for warm_arg in "$@"; do
+      case "$warm_arg" in --start-window) ;; *) warm_target_count=$((warm_target_count + 1)) ;; esac
+    done
+    if [ "$warm_target_count" -eq 1 ]; then
+      CLAUDEB_OAUTH_BYPASS_BACKOFF=true warm_accounts "$@"
+    else
+      warm_accounts "$@"
+    fi
     ;;
   token-upkeep)
     token_upkeep

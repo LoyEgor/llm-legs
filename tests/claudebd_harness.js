@@ -23,6 +23,7 @@ globalThis.testApi = {
   pinnedAt,
   markRejected,
   markAuthFailure,
+  markPlanIncapable,
   eligibleForScope,
   noAccountsBody,
   persist,
@@ -38,7 +39,8 @@ globalThis.testApi = {
   claimedUntil,
   setCurrent(value) { current = value; },
   getCurrent() { return current; },
-  getFableCurrent() { return currentByScope.fable; }
+  getFableCurrent() { return currentByScope.fable; },
+  getDaemonState() { return daemonState; }
 };`;
 function boot() {
   const context = vm.createContext({
@@ -444,36 +446,69 @@ const bigTiers = boot().capacityWallDurationsS;
 process.env.CLAUDEBD_CAPACITY_WALL_FIRST_MS = '1000';
 ok(bigTiers.every((s, i) => i === 0 || s >= bigTiers[i - 1]), 'capacity wall tiers stay monotonically non-decreasing for an oversized first-wall value');
 
+// Fable capability: proven only by affirmative live evidence, defaulting to
+// capable, and NEVER read back from the limits store (that read-back was the
+// self-perpetuating frozen loop).
+const tiersFile = path.join(fixture, 'account-tiers');
+try { fs.unlinkSync(tiersFile); } catch {}
 fs.writeFileSync(dsFile, '{}');
+fs.writeFileSync(path.join(tokensDir, 'cap'), 'fixture\n', { mode: 0o600 });
+fs.writeFileSync(path.join(limitsDir, 'cap.json'), '{}');
+// A polluted store value must be ignored entirely — this is the loop the fix breaks.
 fs.writeFileSync(mainLimitsFile, JSON.stringify({ vendors: { claude: { accounts: [
-  { account: 'capability-refresh', rotation: { usable: { fable: false } } }
+  { account: 'cap', rotation: { usable: { fable: false } } }
 ] } } }));
-fs.writeFileSync(path.join(tokensDir, 'capability-refresh'), 'fixture\n', { mode: 0o600 });
-fs.writeFileSync(path.join(limitsDir, 'capability-refresh.json'), '{}');
-fs.writeFileSync(disabledFile, fs.readdirSync(tokensDir).filter((name) => name !== 'capability-refresh').join('\n') + '\n');
-const api6 = boot();
-api6.scanAccounts();
-check(api6.states.get('capability-refresh').fable_capability, false, 'explicit false capability is loaded');
-check(api6.statusPayload().accounts['capability-refresh'].blocked.fable, 'no-capability', 'explicit false capability blocks fable selection');
-api6.states.get('capability-refresh').scopedWalls.fable = now + 1200;
-check(api6.statusPayload().walls.some((wall) => wall.account === 'capability-refresh' && wall.scope === 'fable'), false, 'incapable account fable wall is not reported');
-check(api6.statusPayload().accounts['capability-refresh'].fable_walled_until, 0, 'incapable account has no reported fable wall expiry');
-check(api6.statusPayload().all_walled_until.fable, null, 'incapable account is excluded from fable recovery time');
+fs.writeFileSync(disabledFile, fs.readdirSync(tokensDir).filter((name) => name !== 'cap').join('\n') + '\n');
+const apiCap = boot();
+apiCap.scanAccounts();
+check(apiCap.statusPayload().accounts.cap.blocked.fable, null, 'no evidence + polluted store ignored -> fable capable by default');
+check(apiCap.states.get('cap').fableIncapableAt, 0, 'polluted store never sets incapability (loop broken)');
 
-fs.writeFileSync(mainLimitsFile, JSON.stringify({ vendors: { claude: { accounts: [
-  { account: 'capability-refresh', rotation: { usable: {} } }
-] } } }));
-api6.scanAccounts();
-check(api6.states.get('capability-refresh').fable_capability, true, 'missing capability recovers on telemetry refresh');
-check(api6.statusPayload().accounts['capability-refresh'].blocked.fable, 'wall', 'recovered capability restores existing fable wall');
+apiCap.markPlanIncapable('cap', 403);
+ok(apiCap.states.get('cap').fableIncapableAt > 0, 'plan-rejection evidence records a timestamp');
+check(apiCap.statusPayload().accounts.cap.blocked.fable, 'no-capability', 'plan-rejection evidence blocks fable');
+check(apiCap.statusPayload().accounts.cap.blocked.general, null, 'plan-rejection never blocks general');
+const capPersisted = JSON.parse(fs.readFileSync(dsFile, 'utf8'));
+ok(typeof capPersisted.accounts.cap.fableIncapable.at === 'number', 'plan-incapability persisted to daemon-state.json');
+check(capPersisted.accounts.cap.fableIncapable.status, 403, 'persisted evidence carries the observed status');
 
-fs.writeFileSync(mainLimitsFile, JSON.stringify({ vendors: { claude: { accounts: [
-  { account: 'capability-refresh', rotation: { usable: { fable: false } } }
-] } } }));
-api6.scanAccounts();
-check(api6.states.get('capability-refresh').fable_capability, false, 'transient false is re-evaluated on refresh');
-fs.writeFileSync(mainLimitsFile, '{invalid');
-api6.scanAccounts();
-check(api6.states.get('capability-refresh').fable_capability, true, 'unreadable capability data defaults to capable');
+const apiCap2 = boot();
+apiCap2.scanAccounts();
+check(apiCap2.statusPayload().accounts.cap.blocked.fable, 'no-capability', 'plan-incapability is re-derived from evidence, survives restart');
+
+const staleDs = JSON.parse(fs.readFileSync(dsFile, 'utf8'));
+staleDs.accounts.cap.fableIncapable.at = now - 200000;
+fs.writeFileSync(dsFile, JSON.stringify(staleDs));
+const apiCap3 = boot();
+apiCap3.scanAccounts();
+check(apiCap3.statusPayload().accounts.cap.blocked.fable, null, 'stale evidence-free false decays back to capable');
+
+fs.writeFileSync(dsFile, '{}');
+const apiCap4 = boot();
+apiCap4.scanAccounts();
+apiCap4.markRejected('cap', {}, 'fable');
+check(apiCap4.states.get('cap').fableIncapableAt, 0, 'transient fable 429 never touches capability');
+check(apiCap4.statusPayload().accounts.cap.blocked.fable, 'wall', 'transient fable 429 is a temporary wall, not no-capability');
+
+apiCap4.states.get('cap').scopedWalls = {};
+apiCap4.states.get('cap').scopedWallReason = {};
+fs.writeFileSync(tiersFile, 'cap=20\n');
+apiCap4.scanAccounts();
+check(apiCap4.statusPayload().accounts.cap.blocked.fable, 'plan', 'tier below the fable minimum is a static plan gate from account-tiers');
+check(apiCap4.statusPayload().accounts.cap.blocked.general, null, 'plan tier gate never blocks general');
+try { fs.unlinkSync(tiersFile); } catch {}
+
+// A daemon-state entry for an account with no token file (a stray backup that
+// was briefly in tokens/) must be pruned on load, without dropping real ones.
+fs.writeFileSync(dsFile, JSON.stringify({
+  accounts: {
+    cap: { authFailedUntil: now + 100000 },
+    'phantom-backup.json': { authFailedUntil: now + 100000 }
+  },
+  pinnedAt: {}
+}));
+const apiPhantom = boot();
+ok(apiPhantom.getDaemonState().accounts.cap, 'real account state survives load');
+ok(!apiPhantom.getDaemonState().accounts['phantom-backup.json'], 'phantom account absent from tokens/ is pruned on load');
 
 process.stdout.write(`PASS: claudebd decision logic (${assertions} assertions)\n`);

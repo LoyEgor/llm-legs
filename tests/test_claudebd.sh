@@ -15,7 +15,7 @@ mkdir -p "$WORK/store"
 printf '{"vendors":{"claude":{"accounts":[]}}}\n' >"$WORK/llm-limits.json"
 OUTPUT=$(CLAUDEB_DIR="$WORK/store" LLM_LIMITS_FILE="$WORK/llm-limits.json" node "$ROOT/tests/claudebd_harness.js")
 printf '%s\n' "$OUTPUT"
-[[ "$OUTPUT" == "PASS: claudebd decision logic (108 assertions)" ]]
+[[ "$OUTPUT" == "PASS: claudebd decision logic (114 assertions)" ]]
 
 # Startup seeding of the fable-scope current from .claudeb-state-fable runs
 # after the harness bootstrap boundary, so it needs a real daemon boot on an

@@ -94,4 +94,18 @@ for tok in '000' '429' '5[0-9][0-9]'; do
   fi
 done
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes) and match %s\n' "$asserts" "$DOC"
+OAUTH_BASE=900; OAUTH_CAP=14400
+cb_oauth=$(sed -n '/^oauth_backoff_until()/,/^oauth_warm_backoff_until()/p' "$CLAUDEB")
+ll_oauth=$(sed -n '/^claude_stale_cause()/,/^}/p' "$LLMLIMITS")
+cb_base=$(printf '%s\n' "$cb_oauth" | grep -oE '[0-9]+ \* \(2 \| pow' | grep -oE '^[0-9]+' | head -n1)
+ll_base=$(printf '%s\n' "$ll_oauth" | grep -oE '[0-9]+ \* \(2 \| pow' | grep -oE '^[0-9]+' | head -n1)
+cb_cap=$(printf '%s\n' "$cb_oauth" | grep -oE 'if \. > [0-9]+ then [0-9]+' | grep -oE '[0-9]+' | sort -u)
+ll_cap=$(printf '%s\n' "$ll_oauth" | grep -oE 'if \. > [0-9]+ then [0-9]+' | grep -oE '[0-9]+' | sort -u)
+assert eq "$cb_base" "$OAUTH_BASE"
+assert eq "$ll_base" "$OAUTH_BASE"
+assert eq "$cb_cap" "$OAUTH_CAP"
+assert eq "$ll_cap" "$OAUTH_CAP"
+assert doc_has '`900 * 2^(max(1, strikes)-1)`'
+assert doc_has 'capped at `14400`s'
+
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown) and match %s\n' "$asserts" "$DOC"
