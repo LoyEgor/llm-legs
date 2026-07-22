@@ -420,6 +420,15 @@ if not tokenUpkeepOk then
     hs.alert.show("Token upkeep error")
 end
 
+local spotlightLayoutOk, spotlightLayoutError = pcall(function()
+    dofile(hs.configdir .. "/spotlight_layout.lua")
+end)
+
+if not spotlightLayoutOk then
+    print("ERROR: Spotlight layout failed to load:", spotlightLayoutError)
+    hs.alert.show("Spotlight layout error")
+end
+
 if _G.DockAutomation then
     local _, sidecarNow = screenStateSnapshot(hs.screen.allScreens())
     _G.DockAutomation.setAutoHide(not sidecarNow)
