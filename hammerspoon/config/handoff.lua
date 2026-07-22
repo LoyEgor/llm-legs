@@ -82,16 +82,30 @@ sleep 1
 ]] .. onScript
 
 -- Async force-enable (no off phase) — used by the watchdog auto-heal and by reconnect()
--- when Handoff is already off.
+-- when Handoff is already off. Checks the live state first and restarts useractivityd ONLY
+-- when Handoff is actually disabled; a no-op just logs. Restarting it unconditionally on every
+-- connect/monitor action destabilizes Continuity/Sidecar advertising.
 function HandoffGuard.forceEnable(onDone)
-    runShellAsync(onScript, function(ok)
-        HandoffGuard.refresh(function(enabled)
+    readEnabledAsync(function(alreadyEnabled)
+        if alreadyEnabled then
+            cachedEnabled = true
             if _G.Notify and _G.Notify.log then
-                _G.Notify.log("Handoff force-enabled (useractivityd restarted)")
+                _G.Notify.log("Handoff force-enable: already enabled, no restart")
             end
             if onDone then
-                onDone(ok and enabled == true)
+                onDone(true)
             end
+            return
+        end
+        runShellAsync(onScript, function(ok)
+            HandoffGuard.refresh(function(enabled)
+                if _G.Notify and _G.Notify.log then
+                    _G.Notify.log("Handoff force-enabled (useractivityd restarted)")
+                end
+                if onDone then
+                    onDone(ok and enabled == true)
+                end
+            end)
         end)
     end)
 end
@@ -242,6 +256,7 @@ killall sharingd 2>/dev/null
 ]]
 
 local healInFlight = false
+local healWaiters = {}
 
 -- Async so a hung System Settings can never freeze the whole HS main thread (a blocking
 -- hs.osascript.applescript would also stall the healCycle watchdog itself, since timers run
@@ -285,11 +300,15 @@ local function quitSystemSettings()
 end
 
 function HandoffGuard.healCycle(onDone)
+    -- Concurrent callers join the running cycle's real result instead of getting an immediate
+    -- (false, "already-running") that would let them connect while Settings is mid-toggle.
     if healInFlight then
-        if onDone then onDone(false, "already-running") end
+        if onDone then healWaiters[#healWaiters + 1] = onDone end
         return
     end
     healInFlight = true
+    healWaiters = {}
+    if onDone then healWaiters[#healWaiters + 1] = onDone end
 
     local finished = false
     local watchdog
@@ -309,7 +328,11 @@ function HandoffGuard.healCycle(onDone)
             _G.Notify.log("Handoff healCycle -> " .. tostring(variant) .. " ok=" .. tostring(ok))
         end
         HandoffGuard.refresh()
-        if onDone then onDone(ok, variant) end
+        local waiters = healWaiters
+        healWaiters = {}
+        for _, cb in ipairs(waiters) do
+            pcall(cb, ok, variant)
+        end
     end
 
     -- Hard stop: any stall in the chain below still resolves the caller and clears

@@ -22,14 +22,50 @@ local function step(attempt, text)
     appendLog(line)
 end
 
-local function runDoctorSummary()
-    local ok, output = pcall(function()
-        return hs.execute(doctorPath .. " 2>&1")
-    end)
-    if not ok or not output then
-        return "doctor: failed to run (" .. tostring(output) .. ")"
+-- The doctor shells out to `sidecar refresh`, which can hang; running it synchronously on
+-- the main thread would freeze all Hammerspoon automation. Run it as a task with a hard
+-- timeout and append its summary to the attempt trace/log when it lands. Held in a set so
+-- the fire-and-forget task is not GC-orphaned before its callback fires.
+local doctorTasks = {}
+
+local function runDoctorSummaryAsync(attempt)
+    local done = false
+    local task, watchdog
+    local function finishOnce(summary)
+        if done then
+            return
+        end
+        done = true
+        if watchdog then
+            watchdog:stop()
+            watchdog = nil
+        end
+        if task then
+            doctorTasks[task] = nil
+        end
+        step(attempt, summary)
     end
-    return "doctor summary:\n" .. output
+    task = hs.task.new(doctorPath, function(_, stdOut, stdErr)
+        local out = tostring(stdOut or "")
+        if out == "" then
+            out = tostring(stdErr or "")
+        end
+        finishOnce("doctor summary:\n" .. out)
+    end)
+    if not task then
+        finishOnce("doctor: failed to start")
+        return
+    end
+    doctorTasks[task] = true
+    if not task:start() then
+        doctorTasks[task] = nil
+        finishOnce("doctor: failed to start")
+        return
+    end
+    watchdog = hs.timer.doAfter(20, function()
+        pcall(function() task:terminate() end)
+        finishOnce("doctor timed out (>20s)")
+    end)
 end
 
 local function humanVerdict(message)
@@ -101,9 +137,6 @@ local function finalizeAttempt(attempt, connected, message)
     attempt.message = message
 
     step(attempt, "final verdict: " .. (connected and "CONNECTED" or "FAILED") .. " - " .. tostring(message))
-    if not connected then
-        step(attempt, runDoctorSummary())
-    end
 
     if attempt.unsubscribeLog then
         attempt.unsubscribeLog()
@@ -116,11 +149,13 @@ local function finalizeAttempt(attempt, connected, message)
 
     if connected then
         hs.alert.show("Sidecar: connected")
-    else
-        local verdict = humanVerdict(message)
-        hs.alert.show(verdict)
-        showFailureDialog(attempt)
+        return
     end
+
+    local verdict = humanVerdict(message)
+    hs.alert.show(verdict)
+    showFailureDialog(attempt)
+    runDoctorSummaryAsync(attempt)
 end
 
 function SidecarConnect.lastAttemptSlice()

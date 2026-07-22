@@ -48,6 +48,16 @@ local function virtualDisplayPresent()
     return false
 end
 
+-- Compact one-line snapshot of what the state machine currently believes, embedded into the
+-- notifications of events that need it (monitor/Jump/Sidecar).
+local function monitorStateLine()
+    local screenNames = {}
+    for _, screen in ipairs(hs.screen.allScreens()) do
+        screenNames[#screenNames + 1] = screen:name() or ""
+    end
+    return "Monitor: " .. tostring(currentState) .. " | screens: " .. table.concat(screenNames, ", ")
+end
+
 local function verifyApps(expectRunning, title, delay)
     nextPendingId = nextPendingId + 1
     local pendingId = nextPendingId
@@ -81,7 +91,7 @@ local function verifyApps(expectRunning, title, delay)
                 "Jump Desktop Connect: " .. (jumpRunning == expectRunning and expected or unexpected),
                 "Virtual display: " .. (virtualRunning and virtualExpected or virtualUnexpected),
             }
-            notify(title, table.concat(lines, "\n"), { priority = "high" })
+            notify(title, table.concat(lines, "\n") .. "\n" .. monitorStateLine(), { priority = "high" })
         end, { "-c", jumpUserProcessCommand })
         if not entry.task or not entry.task:start() then
             pending[pendingId] = nil
@@ -98,7 +108,8 @@ local function verifyApps(expectRunning, title, delay)
             end
             notify(title, "BetterDisplay: " .. (betterDisplayRunning and "✓ запущен" or "✗ не запущен")
                 .. "\nJump Desktop Connect: ✗ проверка не выполнена"
-                .. "\nVirtual display: " .. virtualStatus,
+                .. "\nVirtual display: " .. virtualStatus
+                .. "\n" .. monitorStateLine(),
                 { priority = "high" })
         end
     end)
@@ -226,11 +237,12 @@ local function evaluateScreenState()
         print("STATE:", newState)
 
         if previousState == nil then
-            notify("HS loaded", "Состояние монитора: " .. newState, { priority = "high" })
+            notify("HS loaded", "Состояние монитора: " .. newState,
+                { priority = "high", category = "monitor" })
         else
             local bothHeadless = previousState ~= "MONITOR_ON" and newState ~= "MONITOR_ON"
             notify("Monitor state", previousState .. " → " .. newState,
-                { priority = bothHeadless and "low" or "high" })
+                { priority = bothHeadless and "low" or "high", category = "monitor" })
         end
     end
 
@@ -284,6 +296,7 @@ _G.MonitorAutomation = {
     getState = function()
         return currentState
     end,
+    stateLine = monitorStateLine,
     physicalMonitorPresent = physicalMonitorPresent,
     isPhysicalOn = function()
         return currentState == "MONITOR_ON"

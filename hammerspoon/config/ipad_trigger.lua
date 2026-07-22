@@ -28,19 +28,52 @@ local function notifyLog(line)
     end
 end
 
+-- What the monitor state machine believes right now, appended to Sidecar verdicts so a
+-- connect notification also reports the display context it landed in.
+local function monitorStateSuffix()
+    if _G.MonitorAutomation and _G.MonitorAutomation.stateLine then
+        local ok, line = pcall(_G.MonitorAutomation.stateLine)
+        if ok and line then
+            return "\n" .. line
+        end
+    end
+    return ""
+end
+
+-- Single source of truth for /sidecar-status: the trace/verdict of the current or last run,
+-- populated regardless of entry point (menu via triggerConnect, or the /sidecar-on hook).
+local runTrace = {}
+local runVerdict = "none"
+
+local function traceReset(verdict)
+    runTrace = {}
+    runVerdict = verdict
+end
+
+-- Dispatch over a snapshot so a subscriber that unsubscribes itself mid-dispatch cannot
+-- shift the array and skip the next subscriber.
+local function dispatch(subscribers, ...)
+    local snapshot = {}
+    for i = 1, #subscribers do
+        snapshot[i] = subscribers[i]
+    end
+    for _, fn in ipairs(snapshot) do
+        pcall(fn, ...)
+    end
+end
+
 local function logSidecar(event, detail)
-    local file = io.open(hs.configdir .. "/ipad_trigger.log", "a")
-    if not file then
-        return
-    end
-
     local text = tostring(detail or ""):gsub("[\r\n]+", " ")
-    file:write(os.date("%Y-%m-%d %H:%M:%S"), " ", event, " ", text, "\n")
-    file:close()
+    local line = os.date("%Y-%m-%d %H:%M:%S") .. " " .. event .. " " .. text
+    runTrace[#runTrace + 1] = line
 
-    for _, fn in ipairs(logSubscribers) do
-        pcall(fn, event, text)
+    local file = io.open(hs.configdir .. "/ipad_trigger.log", "a")
+    if file then
+        file:write(line, "\n")
+        file:close()
     end
+
+    dispatch(logSubscribers, event, text)
 end
 
 -- Lets external callers (e.g. sidecar_connect.lua) observe this run's steps/outcome
@@ -345,26 +378,30 @@ local function finishSidecarRun(runId, connected, message)
         return
     end
 
+    -- Invalidate the run BEFORE terminating tasks: cancelSidecarTimers() terminates
+    -- launcherTask, whose exit callback checks runId == sidecarRunId. Bumping first means
+    -- that late callback sees a stale id and cannot resume the fallback into a second verdict.
+    sidecarRunId = sidecarRunId + 1
+
     cancelSidecarTimers()
     quitSystemSettingsAsync()
     sidecarInFlight = false
     sidecarRunStartedAt = nil
     sidecarActive = connected
     lastResult = message
+    runVerdict = connected and "CONNECTED" or "FAILED"
 
     if connected then
         logSidecar("verified", message)
         hs.alert.show("Sidecar: connected")
-        notify("Sidecar OK", message, { priority = "high" })
+        notify("Sidecar OK", message .. monitorStateSuffix(), { priority = "high" })
     else
         logSidecar("failed", message)
         hs.alert.show("Sidecar failed")
-        notify("Sidecar FAILED", message, { priority = "high" })
+        notify("Sidecar FAILED", message .. monitorStateSuffix(), { priority = "high" })
     end
 
-    for _, fn in ipairs(resultSubscribers) do
-        pcall(fn, connected, message)
-    end
+    dispatch(resultSubscribers, connected, message)
 end
 
 local function scheduleConnectionRetry(runId, attempt, reason)
@@ -680,18 +717,22 @@ local function startSidecarRun()
         sidecarInFlight = false
         sidecarRunStartedAt = nil
         lastResult = "already connected"
+        traceReset("CONNECTED")
         logSidecar("request", "already-connected")
-        notify("Sidecar", "Sidecar is already connected.", { priority = "low" })
-        return "already-connected"
+        notify("Sidecar OK", "Already connected." .. monitorStateSuffix(), { priority = "high" })
+        -- Resolve any observer still waiting on an earlier in-flight run so its attempt
+        -- unsubscribes and cannot stay IN PROGRESS forever.
+        dispatch(resultSubscribers, true, "already connected")
+        return "already-connected", "ALREADY: Sidecar active"
     end
 
     if sidecarInFlight then
-        local age = sidecarRunStartedAt and os.difftime(os.time(), sidecarRunStartedAt) or 0
+        local age = math.floor(sidecarRunStartedAt and os.difftime(os.time(), sidecarRunStartedAt) or 0)
         -- Duplicate requests share one run so display-control processes cannot overlap.
         if age <= 60 then
             logSidecar("request", "ignored-in-flight")
-            notify("Sidecar", "Connection is already in progress.", { priority = "low" })
-            return "in-progress"
+            notify("Sidecar", "Connection already in progress (" .. age .. "s).", { priority = "low" })
+            return "in-progress", "BUSY: attempt already running (" .. age .. "s)"
         end
         logSidecar("request", "wedged-restart age=" .. tostring(age))
         sidecarRunId = sidecarRunId + 1
@@ -708,6 +749,7 @@ local function startSidecarRun()
     sidecarRunHealed = false
     sidecarActive = false
     lastResult = "in progress"
+    traceReset("IN PROGRESS")
 
     -- Hard cap: no run may sit in-flight forever. If the state machine stalls (a hung heal,
     -- a wedged AppleScript), reset single-flight so the button works again and the status
@@ -720,7 +762,6 @@ local function startSidecarRun()
     end)
 
     logSidecar("request", "new-run")
-    notify("Sidecar", "Request received from iPad. Starting connection…", { priority = "low" })
 
     if _G.AutomationMenu and _G.AutomationMenu.show then
         _G.AutomationMenu.show()
@@ -762,7 +803,7 @@ local function startSidecarRun()
     else
         beginConnection(true)
     end
-    return "started"
+    return "started", "OK: connecting iPad…"
 end
 
 local function appRunning(name, processPattern)
@@ -818,8 +859,11 @@ server:setCallback(function(method, path, headers, body)
 
     if path == "/sidecar-on" then
         print("[ipad-trigger] sidecar-on", method, body or "")
+        -- Receipt ack on EVERY hook, before any branch, so a tap that reaches HS is always
+        -- acknowledged on the Mac even when the run itself is a no-op or throws.
+        notify("Sidecar", "Connection request received from iPad", { priority = "high" })
 
-        local started, outcome = pcall(function()
+        local started, outcome, humanMessage = pcall(function()
             return startSidecarRun()
         end)
 
@@ -829,20 +873,14 @@ server:setCallback(function(method, path, headers, body)
             sidecarInFlight = false
             sidecarRunStartedAt = nil
             lastResult = tostring(outcome)
+            runVerdict = "FAILED"
             print("[ipad-trigger] sidecar start exception:", outcome)
             logSidecar("failed", tostring(outcome))
-            notify("Sidecar FAILED", tostring(outcome), { priority = "high" })
-            return response("failed\n", 500)
+            notify("Sidecar FAILED", tostring(outcome) .. monitorStateSuffix(), { priority = "high" })
+            return response("ERROR: " .. tostring(outcome) .. "\n", 500)
         end
 
-        if outcome == "already-connected" then
-            return response("already connected\n", 200)
-        elseif outcome == "in-progress" then
-            return response("in progress\n", 200)
-        end
-
-        hs.alert.show("Sidecar: reconnecting")
-        return response("sidecar-on ok\n", 200)
+        return response((humanMessage or "OK: request accepted") .. "\n", 200)
     end
 
     if path == "/sidecar-open-displays" then
@@ -859,14 +897,7 @@ server:setCallback(function(method, path, headers, body)
     end
 
     if path == "/sidecar-status" and method == "GET" then
-        local text = "no attempt recorded yet"
-        if _G.SidecarConnect and _G.SidecarConnect.lastAttemptSlice then
-            local ok, slice = pcall(_G.SidecarConnect.lastAttemptSlice)
-            if ok and slice then
-                text = slice
-            end
-        end
-        return response(text, 200)
+        return response(IpadTrigger.lastRunSlice(), 200)
     end
 
     if path == "/test-notify" then
@@ -909,6 +940,15 @@ end
 
 function IpadTrigger.getSidecarActive()
     return sidecarPresentNow()
+end
+
+-- Trace/verdict of the current or last run, whatever entry point started it. Single source
+-- of truth behind GET /sidecar-status.
+function IpadTrigger.lastRunSlice()
+    if runVerdict == "none" then
+        return "no attempt recorded yet"
+    end
+    return "verdict: " .. runVerdict .. "\n" .. table.concat(runTrace, "\n")
 end
 
 -- Same entry point /sidecar-on uses; exposed so sidecar_connect.lua can drive it

@@ -38,6 +38,9 @@ func connectedDevices() -> [NSObject] {
 }
 
 func runCompletion(_ selector: Selector, _ device: NSObject, verb: String) {
+    guard manager.responds(to: selector) else {
+        fail("\(verb) not supported: SidecarDisplayManager does not respond to \(selector) (framework internals changed)", 5)
+    }
     let group = DispatchGroup()
     var completionError: NSError?
     group.enter()
@@ -46,7 +49,9 @@ func runCompletion(_ selector: Selector, _ device: NSObject, verb: String) {
         group.leave()
     }
     _ = manager.perform(selector, with: device, with: block)
-    group.wait()
+    if group.wait(timeout: .now() + 20) == .timedOut {
+        fail("\(verb) timed out after 20s (completion never fired)", 6)
+    }
     if let error = completionError {
         fail("\(verb) failed: \(error.description)", 4)
     }

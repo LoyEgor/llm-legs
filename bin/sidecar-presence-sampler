@@ -8,6 +8,7 @@ export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/us
 
 SIDECAR="$HOME/.local/bin/sidecar"
 LOG="$HOME/.hammerspoon/sidecar_presence.log"
+STATE="$HOME/.hammerspoon/sidecar_presence.state"
 MAXLINES=5000
 KEEPLINES=2000
 
@@ -67,12 +68,22 @@ fi
 
 line="$ts ipad=$ipad iphone=$iphone jump=$jump sidecar_display=$sidecar_display monitor=$monitor ssid=$ssid"
 
-prev=$(grep -v '^TRANSITION' "$LOG" 2>/dev/null | tail -1 | sed -n 's/.* ipad=\([^ ]*\).*/\1/p')
+# Prev state persists in its own file so a TRANSITION is never lost to log truncation or a
+# crash that leaves no derivable prior sample. Fall back to the log for the first run after
+# this file is introduced; an empty prev means unknown and yields no (fake) transition.
+prev=""
+if [ -f "$STATE" ]; then
+    prev=$(cat "$STATE" 2>/dev/null)
+fi
+if [ -z "$prev" ]; then
+    prev=$(grep -v '^TRANSITION' "$LOG" 2>/dev/null | tail -1 | sed -n 's/.* ipad=\([^ ]*\).*/\1/p')
+fi
 
 printf '%s\n' "$line" >> "$LOG"
 if [ -n "$prev" ] && [ "$prev" != "$ipad" ]; then
     printf 'TRANSITION: %s -> %s at %s\n' "$prev" "$ipad" "$ts" >> "$LOG"
 fi
+printf '%s\n' "$ipad" > "$STATE"
 
 lines=$(wc -l < "$LOG" 2>/dev/null | tr -d ' ')
 if [ -n "$lines" ] && [ "$lines" -gt "$MAXLINES" ]; then

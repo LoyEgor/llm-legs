@@ -71,6 +71,11 @@ function Notify.send(title, message, opts)
     message = tostring(message or "")
     append(title .. ": " .. message:gsub("\n", " / "))
 
+    -- Monitor-state/HS-loaded chatter is log-only unless explicitly enabled in config.
+    if opts.category == "monitor" and not (config and config.monitor_notifications) then
+        return
+    end
+
     if not config or type(config.ntfy_topic) ~= "string" or config.ntfy_topic == "" then
         print("NOTIFY:", title, message)
         return
