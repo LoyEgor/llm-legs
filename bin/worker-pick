@@ -151,6 +151,9 @@ summary=$(jq -r \
     .five_hour.origin? != "cached" and ($reset == null or $reset > $now);
   def auth_ok: .auth_needed != true and ((.auth.status? // "ok") | IN("expired", "failed") | not);
   def bucket_values: [eff(.five_hour), eff(.weekly)] | map(select(. != null));
+  def account_as_of:
+    [(.five_hour.as_of? | epoch), (.weekly.as_of? | epoch), (.fable.as_of? | epoch)] |
+    map(select(. != null));
   def is_floored: bucket_values | any(. >= $floor);
   def is_above_headroom: bucket_values | any(. >= $headroom);
   def pre_reset_cap:
@@ -161,14 +164,14 @@ summary=$(jq -r \
     else 0 end;
 
   (.fetched_at | epoch) as $fetched |
-  (if $fetched == null then "no timestamp"
-   elif ($now - $fetched) > 7200 then "STALE (\((([($now - $fetched), 0] | max) / 60) | floor) min old)"
-   else "fresh (\((([($now - $fetched), 0] | max) / 60) | floor) min old)" end) as $age |
-
   (.vendors.codex // {}) as $cx |
   (if $cx.available == true and (($cx.accounts | type) == "array") then $cx.accounts
    elif $cx.available == true then [{account:"main",five_hour:($cx.five_hour // {}),weekly:($cx.weekly // {})}]
    else [] end) as $cx_source |
+  ([($cx_source[] | account_as_of[]), (.vendors.claude.accounts[]? | account_as_of[])] | min // $fetched) as $data_as_of |
+  (if $data_as_of == null then "no timestamp"
+   elif ($now - $data_as_of) > 7200 then "STALE (\((([($now - $data_as_of), 0] | max) / 60) | floor) min old)"
+   else "fresh (\((([($now - $data_as_of), 0] | max) / 60) | floor) min old)" end) as $age |
   ([$cx_source[] | select(auth_ok) |
     bucket_values as $values |
     select(($values | length) > 0) |
@@ -206,6 +209,7 @@ summary=$(jq -r \
      auth_ok:auth_ok,general_usable:$general_usable,fable_capable:$fable_capable,
      h5:$h5,wk:$wk,fb:$fb,r5:reset_str(.five_hour),rw:reset_str(.weekly),rf:reset_str(.fable),
      floor:is_floored,headroom_hit:is_above_headroom,cap:pre_reset_cap,
+     as_of:(account_as_of | min // $fetched),
      base_safe:([safe_runway(.five_hour), safe_runway(.weekly)] | map(select(. != null)) |
                 if $r9_optimistic then $floor elif length > 0 then min else 0 end)} |
     .reserved = (.fable_capable and (.fb | type) == "number" and .fb <= $r2_fresh and
@@ -226,10 +230,11 @@ summary=$(jq -r \
                              (.r8_excluded | not)))) as $cl_candidates |
   ($cl_candidates | map(select((.floor | not) and (.headroom_hit | not)))) as $cl_eligible |
   (if ($cl_eligible | length) == 0 then null else $cl_eligible[0] end) as $rec |
-  (if ($rec == null) and (($cl_candidates | length) > 0) then
+  (($cl_candidates | length) > 0 and all($cl_candidates[]; .headroom_hit)) as $all_above_headroom |
+  (if ($rec == null) and $all_above_headroom then
      "WARN: no account below HEADROOM_PCT, using least-burnt"
    else null end) as $headroom_warn |
-  (if $headroom_warn != null then ($cl_candidates | map(select(.floor | not)) | .[0] // null) else $rec end) as $rec_final |
+  (if $headroom_warn != null then ($cl_candidates[0] // null) else $rec end) as $rec_final |
   (first($cl_accounts[] | select(.name == $pin)) // null) as $pin_account |
   (if $pin_account != null and ($pin_account.own | not) and $pin_account.enabled and $pin_account.auth_ok and
       $pin_account.general_usable and ($pin_account.floor | not) and ($pin_account.r8_excluded | not) and
@@ -241,7 +246,8 @@ summary=$(jq -r \
     .session_score = ((100 - .fb) * $session_fable_weight + (100 - .wk) * $session_weekly_weight)] |
     sort_by(-.session_score, -.tier, .name) | .[0] // null) as $session |
   (($cx_accounts + $cl_candidates) as $all | ($all | length) > 0 and all($all[]; .floor)) as $all_floored |
-  (if ($rec_final != null) and (($now - $fetched) > 300) and (($rec_final.cap < 20) or ($rec_final.cap > 80)) then "STALE-REFRESH" else null end) as $freshness_warn |
+  (if ($rec_final != null) and ($rec_final.as_of != null) and (($now - $rec_final.as_of) > 300) and
+      (($rec_final.cap < 20) or ($rec_final.cap > 80)) then "STALE-REFRESH" else null end) as $freshness_warn |
   {codex:$codex,
    claude_line:("claude: " + (if ($cl_accounts | length) == 0 then "no enabled accounts"
      else ($cl_accounts | map(
@@ -293,7 +299,7 @@ resolve_recommendation() {
   [ $idx -eq $base ] || demote_note=" [R8 demote: $(ladder_label $base)→$(ladder_label $idx); wk>fb]"
 }
 
-if [ "$all_floored" = yes ]; then
+if [ "$all_floored" = yes ] && [ -z "$rec" ]; then
   cb_next="ALL FLOORED, ask Egor"
   cb_cache="cb~?"
 elif [ -n "$cb_pin" ] && [ -n "$pin_rec" ]; then
@@ -326,7 +332,7 @@ case "$cx_state" in
   *) cx_mark="✗" ;;
 esac
 
-if [ "$all_floored" = yes ]; then
+if [ "$all_floored" = yes ] && [ -z "$rec" ]; then
   verdict="ALL FLOORED, ask Egor"
 else
   verdict="codex $cx_state"
@@ -344,7 +350,7 @@ case "$cb_effort" in medium) cb_eff_abbr=med ;; high) cb_eff_abbr=hi ;; xhigh) c
 case "$cb_model" in sonnet) cb_model_abbr=son ;; haiku) cb_model_abbr=hai ;; fable) cb_model_abbr=fab ;; *) cb_model_abbr=$cb_model ;; esac
 codex_model=$(codex_model_short_label); write_cache "$(printf 'cx%s%s·'"$codex_model"'·%s %s·%s·%s' "$cx_mark" "$cx_acct" "$cx_eff_abbr" "$cb_cache" "$cb_model_abbr" "$cb_eff_abbr")"
 
-if [ "$all_floored" = yes ]; then
+if [ "$all_floored" = yes ] && [ -z "$rec" ]; then
   printf 'NEXT: ALL FLOORED, ask Egor  |  codex — WALLED\n'
 else
   printf 'NEXT: %s  |  codex %s · %s — %s\n' "$cb_next" "${cx_acct:-unavailable}" "$cx_effort" "$cx_state"

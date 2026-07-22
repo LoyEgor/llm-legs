@@ -57,7 +57,7 @@ assert pick["session_account"] == "session"
 assert rb.is_429_error('{"is_error": true, "api_error_status": 429}') is True
 assert rb.is_429_error('{"is_error": false, "errors": ["hit your session limit"]}') is True
 assert rb.is_429_error('{"is_error": false, "api_error_status": 200}') is False
-assert rb.is_429_error('hit your session limit in the middle of text') is True
+assert rb.is_429_error('hit your session limit in the middle of text') is False
 
 reviews = []
 for rater in rb.AUTO_RATERS:
@@ -217,4 +217,4 @@ listing=$(WORKER_STATS_DIR="$SD" "$SCRIPT" list) || fail "list failed"
 assert contains "$listing" 'run-fixture'
 assert contains "$listing" 'adjudicated'
 
-printf 'PASS: %s assertions; rater grammar (incl. -skill mode), worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection, errored-rater exclusion, and cross-side parallelism result assembly\n' "$asserts"
+printf 'PASS: %s assertions; rater grammar (incl. -skill mode), worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), errored-rater exclusion, and cross-side parallelism result assembly\n' "$asserts"

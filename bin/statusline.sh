@@ -824,7 +824,9 @@ if [ -n "$session_id" ]; then
 fi
 
 
-# Review-bench liveness: marker exists, not stale (>2700s=45m), and process running.
+# Review-bench liveness: session-scoped marker exists and is not stale (>2700s=45m).
+# The PostToolUse hook removes the marker on completion; no pgrep — a global
+# process match would light up for another session's bench run.
 bench_part=""
 if [ -n "$session_id" ]; then
   bench_marker_dir="$HOME/.cache/claude-review-bench/$session_id"
@@ -832,11 +834,11 @@ if [ -n "$session_id" ]; then
   if [ -f "$bench_marker" ]; then
     bench_mtime=$(file_mtime "$bench_marker" 2>/dev/null)
     if [[ "$bench_mtime" =~ ^[0-9]+$ ]] && [ "$((now - bench_mtime))" -le 2700 ]; then
-      if pgrep -f 'review-bench run' >/dev/null 2>&1; then
-        IFS= read -r bench_label _ < "$bench_marker" 2>/dev/null || bench_label=""
-        if [ -n "$bench_label" ]; then
-          bench_part=" ${sep} ${MAGENTA}⚖${RESET} ${bench_label}"
-        fi
+      IFS= read -r bench_line < "$bench_marker" 2>/dev/null || bench_line=""
+      # Marker line is "<label with spaces> <epoch>" — drop the trailing epoch.
+      bench_label="${bench_line% *}"
+      if [ -n "$bench_label" ]; then
+        bench_part=" ${sep} ${MAGENTA}⚖${RESET} ${bench_label}"
       fi
     fi
   fi

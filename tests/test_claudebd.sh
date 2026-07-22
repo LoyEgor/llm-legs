@@ -12,9 +12,10 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$WORK/store"
-OUTPUT=$(CLAUDEB_DIR="$WORK/store" node "$ROOT/tests/claudebd_harness.js")
+printf '{"vendors":{"claude":{"accounts":[]}}}\n' >"$WORK/llm-limits.json"
+OUTPUT=$(CLAUDEB_DIR="$WORK/store" LLM_LIMITS_FILE="$WORK/llm-limits.json" node "$ROOT/tests/claudebd_harness.js")
 printf '%s\n' "$OUTPUT"
-[[ "$OUTPUT" == "PASS: claudebd decision logic (99 assertions)" ]]
+[[ "$OUTPUT" == "PASS: claudebd decision logic (108 assertions)" ]]
 
 # Startup seeding of the fable-scope current from .claudeb-state-fable runs
 # after the harness bootstrap boundary, so it needs a real daemon boot on an
@@ -28,7 +29,7 @@ jget() {
 boot_daemon() {
   PORT=$(free_port)
   case "$PORT" in ''|*[!0-9]*|45789) echo "FATAL: unsafe test port '$PORT'"; exit 1 ;; esac
-  CLAUDEB_DIR="$1" CLAUDEBD_PORT="$PORT" CLAUDEBD_UPSTREAM="http://127.0.0.1:9" node "$ROOT/bin/claudebd" &
+  CLAUDEB_DIR="$1" LLM_LIMITS_FILE="$WORK/llm-limits.json" CLAUDEBD_PORT="$PORT" CLAUDEBD_UPSTREAM="http://127.0.0.1:9" node "$ROOT/bin/claudebd" &
   DAEMON_PID=$!
   for _ in $(seq 1 40); do
     [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/claudebd/status" 2>/dev/null || true)" = "200" ] && return 0

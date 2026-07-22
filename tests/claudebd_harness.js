@@ -9,6 +9,8 @@ const vm = require('node:vm');
 const root = path.resolve(__dirname, '..');
 const fixture = process.env.CLAUDEB_DIR;
 assert.ok(fixture, 'CLAUDEB_DIR is required');
+const mainLimitsFile = process.env.LLM_LIMITS_FILE;
+assert.ok(mainLimitsFile, 'LLM_LIMITS_FILE is required');
 
 const source = fs.readFileSync(path.join(root, 'bin', 'claudebd'), 'utf8');
 const marker = '// Read the seeds before scanAccounts: its initial picks rewrite the state files.';
@@ -441,5 +443,37 @@ process.env.CLAUDEBD_CAPACITY_WALL_FIRST_MS = '600000';
 const bigTiers = boot().capacityWallDurationsS;
 process.env.CLAUDEBD_CAPACITY_WALL_FIRST_MS = '1000';
 ok(bigTiers.every((s, i) => i === 0 || s >= bigTiers[i - 1]), 'capacity wall tiers stay monotonically non-decreasing for an oversized first-wall value');
+
+fs.writeFileSync(dsFile, '{}');
+fs.writeFileSync(mainLimitsFile, JSON.stringify({ vendors: { claude: { accounts: [
+  { account: 'capability-refresh', rotation: { usable: { fable: false } } }
+] } } }));
+fs.writeFileSync(path.join(tokensDir, 'capability-refresh'), 'fixture\n', { mode: 0o600 });
+fs.writeFileSync(path.join(limitsDir, 'capability-refresh.json'), '{}');
+fs.writeFileSync(disabledFile, fs.readdirSync(tokensDir).filter((name) => name !== 'capability-refresh').join('\n') + '\n');
+const api6 = boot();
+api6.scanAccounts();
+check(api6.states.get('capability-refresh').fable_capability, false, 'explicit false capability is loaded');
+check(api6.statusPayload().accounts['capability-refresh'].blocked.fable, 'no-capability', 'explicit false capability blocks fable selection');
+api6.states.get('capability-refresh').scopedWalls.fable = now + 1200;
+check(api6.statusPayload().walls.some((wall) => wall.account === 'capability-refresh' && wall.scope === 'fable'), false, 'incapable account fable wall is not reported');
+check(api6.statusPayload().accounts['capability-refresh'].fable_walled_until, 0, 'incapable account has no reported fable wall expiry');
+check(api6.statusPayload().all_walled_until.fable, null, 'incapable account is excluded from fable recovery time');
+
+fs.writeFileSync(mainLimitsFile, JSON.stringify({ vendors: { claude: { accounts: [
+  { account: 'capability-refresh', rotation: { usable: {} } }
+] } } }));
+api6.scanAccounts();
+check(api6.states.get('capability-refresh').fable_capability, true, 'missing capability recovers on telemetry refresh');
+check(api6.statusPayload().accounts['capability-refresh'].blocked.fable, 'wall', 'recovered capability restores existing fable wall');
+
+fs.writeFileSync(mainLimitsFile, JSON.stringify({ vendors: { claude: { accounts: [
+  { account: 'capability-refresh', rotation: { usable: { fable: false } } }
+] } } }));
+api6.scanAccounts();
+check(api6.states.get('capability-refresh').fable_capability, false, 'transient false is re-evaluated on refresh');
+fs.writeFileSync(mainLimitsFile, '{invalid');
+api6.scanAccounts();
+check(api6.states.get('capability-refresh').fable_capability, true, 'unreadable capability data defaults to capable');
 
 process.stdout.write(`PASS: claudebd decision logic (${assertions} assertions)\n`);

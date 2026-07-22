@@ -33,6 +33,15 @@ printf '%s\n' 'burnt=100' 'fresh=100' 'ordinary=100' 'reserved=100' 'small=20' \
 run_case() {
   local name=$1
   jq -c --arg name "$name" '.[$name]' "$FIXTURES" >"$STORE" || fail "fixture $name missing"
+  run_store "$name"
+}
+run_filter() {
+  local name=$1 filter=$2
+  jq -c --arg name "$name" ".[\$name] | $filter" "$FIXTURES" >"$STORE" || fail "fixture $name transform failed"
+  run_store "$name"
+}
+run_store() {
+  local name=$1
   output=$(TZ=UTC HOME="$HOME_FIXTURE" LLM_LIMITS_FILE="$STORE" WORKER_PICK_CONFIG_FILE="$CONFIG" \
     WORKER_PICK_TIERS_FILE="$TIERS" WORKER_PICK_CACHE_DIR="$CACHE" WORKER_PICK_NOW=2000000000 \
     CLAUDE_LIMITS_ACCOUNT=session "$SCRIPT") || fail "worker-pick failed for $name"
@@ -126,8 +135,12 @@ assert contains "$output" 'FLOOR'
 assert not_contains "$(head -n1 <<<"$output")" 'claudeb at-floor '
 
 run_case all_floor
-assert test "$(head -n1 <<<"$output")" = 'NEXT: ALL FLOORED, ask Egor  |  codex — WALLED'
-assert contains "$output" 'POLICY: ALL FLOORED, ask Egor'
+assert contains "$(head -n1 <<<"$output")" 'NEXT: claudeb claude-floor '
+assert contains "$(head -n1 <<<"$output")" 'WARN: no account below HEADROOM_PCT, using least-burnt'
+
+run_filter floor '.vendors.claude.accounts |= map(.five_hour.used_pct = (if .account == "at-floor" then 96 else 92 end) | .weekly.used_pct = (if .account == "at-floor" then 10 else 92 end) | .fable.used_pct = .weekly.used_pct)'
+assert contains "$(head -n1 <<<"$output")" 'NEXT: claudeb safe '
+assert contains "$(head -n1 <<<"$output")" 'WARN: no account below HEADROOM_PCT, using least-burnt'
 
 run_case reset
 assert contains "$output" 'NEXT: claudeb soon '
@@ -152,6 +165,14 @@ assert contains "$output" 'NEXT: claudeb effective '
 assert contains "$output" 'effective($100) 5h 20% wk 20%'
 assert contains "$output" 'DATA: STALE (166 min old)'
 
+run_filter golden 'del(.fetched_at)'
+assert contains "$(head -n1 <<<"$output")" 'NEXT: claudeb worker '
+assert contains "$output" 'DATA: no timestamp'
+
+run_filter golden '.fetched_at = 2000000000 | .vendors.claude.accounts[] |= (if .account == "worker" then .five_hour.used_pct = 5 | .weekly.used_pct = 5 | .five_hour.as_of = 1999990000 | .weekly.as_of = 1999990000 | .fable.as_of = 1999990000 else . end)'
+assert contains "$(head -n1 <<<"$output")" 'STALE-REFRESH'
+assert contains "$output" 'DATA: STALE (166 min old)'
+
 run_case expired
 assert contains "$output" 'NEXT: claudeb expired '
 assert contains "$output" 'expired($100) 5h 0%'
@@ -167,7 +188,7 @@ assert test "$(sed -n '3p' <<<"$output" | cut -d: -f1)" = claude
 assert test "$(sed -n '4p' <<<"$output" | cut -d: -f1)" = POLICY
 assert test "$(sed -n '5p' <<<"$output" | cut -d: -f1)" = DATA
 assert test "$(sed -n '6p' <<<"$output" | cut -d: -f1)" = SESSION
-assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·hi cb~worker·opus·hi'
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~worker·opus·hi'
 assert test -z "$(find "$CACHE" -name '*.tmp.*' -print -quit)"
 assert cmp -s <(printf '%s\n' "$output") "$GOLDEN"
 

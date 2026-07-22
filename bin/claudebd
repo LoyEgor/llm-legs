@@ -15,6 +15,7 @@ const host = '127.0.0.1';
 const port = Number(process.env.CLAUDEBD_PORT || 45789);
 const upstream = new URL(process.env.CLAUDEBD_UPSTREAM || 'https://api.anthropic.com');
 const baseDir = process.env.CLAUDEB_DIR || path.join(os.homedir(), '.claude-profiles', '.claudeb');
+const mainLimitsFile = process.env.LLM_LIMITS_FILE || path.join(os.homedir(), '.llm-limits.json');
 const tokensDir = path.join(baseDir, 'tokens');
 const limitsDir = path.join(baseDir, 'limits');
 const logFile = path.join(baseDir, 'claudebd.log');
@@ -74,7 +75,7 @@ function number(value, fallback = 0) {
 
 function fableCapabilityFromMainLimits(name) {
   try {
-    const mainLimits = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.llm-limits.json'), 'utf8'));
+    const mainLimits = JSON.parse(fs.readFileSync(mainLimitsFile, 'utf8'));
     const account = mainLimits.vendors?.claude?.accounts?.find(a => a.account === name);
     if (account?.rotation?.usable?.fable === false) return false;
   } catch {}
@@ -157,6 +158,7 @@ function loadDaemonState() {
 function refreshTelemetry(name) {
   const state = states.get(name);
   if (!state) return;
+  state.fable_capability = fableCapabilityFromMainLimits(name);
   const file = path.join(limitsDir, `${name}.json`);
   let snapshot;
   let mtime = 0;
@@ -281,7 +283,7 @@ function blockReasonForScope(state, scope, now = Math.floor(Date.now() / 1000)) 
   if (state.h5 >= 97) return 'limit-5h';
   if (state.wk >= 99) return 'limit-weekly';
   if (scope === 'fable') {
-    if (!state.fable_capability) return 'no-capability';
+    if (state.fable_capability === false) return 'no-capability';
     if (fableTrustworthy(state) && number(state.fable?.resets_at) > now && number(state.fable?.used_percentage) >= 99) return 'limit-fable';
   }
   return null;
@@ -307,6 +309,7 @@ function nextEligibleAt(scope) {
   for (const name of accounts) {
     if (disabled.has(name)) continue;
     const state = effective(name);
+    if (scope === 'fable' && state.fable_capability === false) continue;
     let free = Math.max(
       state.authFailedUntil > now ? state.authFailedUntil : 0,
       state.h5 >= 97 ? state.hreset : 0,
@@ -835,6 +838,9 @@ function holdForEligibility(scope, res, tried) {
       scanAccounts();
       const account = selectAccountForScope(scope, tried, { spreadClaims: true });
       if (account) return finish(account, false);
+      if (scope === 'fable' && !accounts.some((name) => !disabled.has(name) && effective(name).fable_capability !== false)) {
+        return finish(null, false);
+      }
       // Stretch the give-up deadline to a knowable imminent recovery, recomputed
       // each poll (in-flight 429s push walls out); beyond the cap, hours-away
       // resets still fail fast at the base deadline.
@@ -1005,6 +1011,7 @@ function activeWalls() {
     if (state.forcedUntil > now) walls.push({ account: name, scope: 'general', until: new Date(state.forcedUntil * 1000).toISOString(), reason: state.forcedReason || 'unknown' });
     if (state.authFailedUntil > now) walls.push({ account: name, scope: 'general', until: new Date(state.authFailedUntil * 1000).toISOString(), reason: 'auth_failed' });
     for (const [scope, until] of Object.entries(state.scopedWalls || {})) {
+      if (scope === 'fable' && state.fable_capability === false) continue;
       if (until > now) walls.push({ account: name, scope, until: new Date(until * 1000).toISOString(), reason: state.scopedWallReason?.[scope] || 'unknown' });
     }
   }
@@ -1036,7 +1043,7 @@ function statusPayload() {
       wreset: state.wreset,
       walled: state.walled || state.scopedWalls.general > now,
       auth_failed_until: state.authFailedUntil > now ? state.authFailedUntil : 0,
-      fable_walled_until: Math.max(state.scopedWalls.fable > now ? state.scopedWalls.fable : 0, snapshotWall),
+      fable_walled_until: state.fable_capability === false ? 0 : Math.max(state.scopedWalls.fable > now ? state.scopedWalls.fable : 0, snapshotWall),
       usable: { general: blocked.general === null, fable: blocked.fable === null },
       blocked
     };

@@ -14,3 +14,7 @@ SESSION: session — fb 10%, wk 20%
 - Use the claudeb model and effort exactly as `NEXT:` prints them — R8 may have stepped them one rung down the ladder `opus·high → opus·medium → sonnet·high` to spare an account's Fable quota; override upward only when the task genuinely needs it.
 - claudeb sonnet runs at effort high or above — sonnet·medium and below are never used; opus may run at medium.
 - Always use the concrete account and pre-reset cap from `NEXT:`. Never route a worker to the session account.
+- Account selection is headroom-dominant for non-Fable work: prefer the account with the most 5h effective headroom to balance spend across accounts. Small-tier accounts (olx, $20/month) are full citizens for any non-Fable task at any effort.
+- Headroom cannot exceed HEADROOM_PCT (90%); if all candidates are above it, pick the least-burnt and note `WARN` in `NEXT`.
+- Multi-rater benchmarks re-check affordability before EACH rater and refresh stale account data to prevent re-selecting an exhausted account.
+- Code reviews run in benchmarked tiers: T0 quick = codex sol `low`; T1 default = sol `low` + claudeb opus `low` running /code-review, in parallel; T2 quality/risky diffs = sol `high` + opus `medium` /code-review. haiku and sonnet raters never; fable rater only on the user's explicit ask. Codex walled → the opus skill rater first, sol after reset. Skip review only for trivially unambiguous diffs.

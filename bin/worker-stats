@@ -233,12 +233,12 @@ def to_json(rows, global_median, outliers_excluded, ledger_path, delegations, le
 def aggregate_reviews(reviews):
     snapshot = {}
     for review in reviews:
-        key = (review.get("run_id"), review.get("rater_model"), review.get("rater_effort"))
+        key = (review.get("run_id"), review.get("rater"))
         if all(key):
             snapshot[key] = review
     buckets = {}
     for review in snapshot.values():
-        key = (review["rater_model"], review["rater_effort"])
+        key = (review["rater_model"], review["rater_effort"], review.get("rater", ""))
         bucket = buckets.setdefault(key, {
             "benches": 0, "findings": 0, "confirmed": 0, "false_positive": 0,
             "duplicate": 0, "unique_catches": 0, "misses": 0,
@@ -250,13 +250,14 @@ def aggregate_reviews(reviews):
                 bucket[field] += review[field]
 
     rows = []
-    for (model, effort), bucket in buckets.items():
+    for (model, effort, rater_spec), bucket in buckets.items():
         findings = bucket["findings"]
         catches = bucket["confirmed"] + bucket["duplicate"]
         opportunities = catches + bucket["misses"]
         rows.append({
             "rater_model": model,
             "rater_effort": effort,
+            "rater": rater_spec,
             **bucket,
             "findings_per_bench": findings / bucket["benches"],
             "confirmed_pct": bucket["confirmed"] / findings if findings else None,
@@ -266,7 +267,7 @@ def aggregate_reviews(reviews):
             "weighted_score": (bucket["p1"] * 5 + bucket["p2"] * 2 + bucket["p3"]) / bucket["benches"],
         })
     rows.sort(key=lambda row: (-row["weighted_score"], row["miss_rate"] if row["miss_rate"] is not None else 1,
-                               row["rater_model"], row["rater_effort"]))
+                               row["rater_model"], row["rater_effort"], row["rater"]))
     return rows
 
 
