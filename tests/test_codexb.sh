@@ -23,6 +23,7 @@ HOME="$WORK/home"
 FAKE_BIN="$WORK/bin"
 CODEX_CALLS="$WORK/codex-calls"
 export HOME CODEX_CALLS
+unset CODEX_HOME
 mkdir -p "$HOME/.codex/skills" "$HOME/.codex/plugins" "$FAKE_BIN"
 printf 'model = "fixture"\n' >"$HOME/.codex/config.toml"
 printf 'fixture agents\n' >"$HOME/.codex/AGENTS.md"
@@ -171,7 +172,7 @@ reopen_output=$(bash "$SCRIPT" p alpha 2>&1) || fail "reopen alpha failed"
 if grep -q "new profile" <<<"$reopen_output"; then fail "reopen reprinted the created note"; fi
 
 # Reserved words are rejected by BOTH the profile path and add, with parallel wording; no dir leaks.
-for reserved in profile p run add remove list status pick help; do
+for reserved in profile p run add remove list status pick help login; do
   assert_fails bash "$SCRIPT" profile "$reserved" </dev/null >/dev/null 2>&1
   assert_fails bash "$SCRIPT" add "$reserved" </dev/null >/dev/null 2>&1
 done
@@ -182,6 +183,32 @@ assert grep -qx "codexb: invalid profile name 'add'" <<<"$reserved_err"
 # An invalid charset on creation is rejected before any dir is made.
 assert_fails bash "$SCRIPT" profile Bad </dev/null >/dev/null 2>&1
 assert test ! -d "$HOME/.codex-profiles/Bad"
+assert_fails bash "$SCRIPT" add -h </dev/null >/dev/null 2>&1
+assert_fails bash "$SCRIPT" profile -dash </dev/null >/dev/null 2>&1
+assert test ! -e "$HOME/.codex-profiles/-h"
+assert test ! -e "$HOME/.codex-profiles/-dash"
+
+: >"$CODEX_CALLS"
+missing_login_err=$(bash "$SCRIPT" run login --device-auth </dev/null 2>&1); missing_login_rc=$?
+assert test "$missing_login_rc" -eq 2
+assert grep -qx "codexb: invalid profile name 'login'" <<<"$missing_login_err"
+assert test ! -e "$HOME/.codex-profiles/login"
+assert test ! -s "$CODEX_CALLS"
+
+mkdir -p "$HOME/.codex-profiles/pick"
+for route in profile p run; do
+  : >"$CODEX_CALLS"
+  bash "$SCRIPT" "$route" pick --reserved >/dev/null 2>&1 || fail "$route pick failed"
+  assert grep -qx "CALL account=pick home=$HOME/.codex-profiles/pick argc=1" "$CODEX_CALLS"
+  assert grep -qx 'ARG=--reserved' "$CODEX_CALLS"
+done
+: >"$CODEX_CALLS"
+bash "$SCRIPT" pick exec --reserved >/dev/null 2>&1 || fail "pick exec failed"
+assert grep -qx "CALL account=pick home=$HOME/.codex-profiles/pick argc=2" "$CODEX_CALLS"
+assert test "$(sed -n '2p' "$CODEX_CALLS")" = 'ARG=exec'
+assert test "$(sed -n '3p' "$CODEX_CALLS")" = 'ARG=--reserved'
+assert bash "$SCRIPT" remove pick
+assert test ! -e "$HOME/.codex-profiles/pick"
 
 # The bare `<name> exec` path never auto-creates: a typo'd account errors, makes no dir, execs nothing.
 : >"$CODEX_CALLS"
@@ -240,4 +267,4 @@ assert jq -e '([.accounts[].account] | index("gone") == null) and
 assert_fails bash "$SCRIPT" remove main
 assert_fails bash "$SCRIPT" remove never-existed
 
-echo "PASS: $asserts asserts; add and shared-link trap, list/status, quota-aware authenticated pick, reset credits, auth-needed cache markers, exact run environments/arguments, one-step profile auto-create with shared links, device-auth login passthrough, existing-profile relaunch stays quiet, reserved-name and charset rejection parity, multi-account cache compatibility, remove forgets the profile dir and prunes the cache entry (main refused)"
+echo "PASS: $asserts asserts; add and shared-link trap, list/status, quota-aware authenticated pick, reset credits, auth-needed cache markers, exact run environments/arguments, one-step profile auto-create with shared links, device-auth login passthrough and missing-name guard, existing-profile relaunch stays quiet, creation-only reserved-name guards, leading-hyphen and charset rejection parity, multi-account cache compatibility, remove forgets profiles including reserved legacy names and prunes the cache entry (main refused)"

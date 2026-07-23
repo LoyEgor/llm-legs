@@ -1345,8 +1345,8 @@ reserved_name() {
 
 add_account() {
   local name="${1:-}" token
-  if [ -z "$name" ] || ! [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || [ "$name" = main ] || reserved_name "$name"; then
-    printf 'usage: claudeb add <name> (letters, numbers, dots, underscores, and hyphens; not reserved words or "main")\n' >&2
+  if [ -z "$name" ] || ! [[ "$name" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]] || [ "$name" = main ] || reserved_name "$name"; then
+    printf 'usage: claudeb add <name> (must start with a letter, number, or underscore; use only letters, numbers, dots, underscores, and hyphens; not reserved words or "main")\n' >&2
     exit 2
   fi
   printf 'Run `claude setup-token` in any terminal, complete browser authentication, then paste the printed token here.\n'
@@ -1485,8 +1485,7 @@ remove_account() {
         ;;
     esac
   done
-  if [ -z "$name" ] || [ "$name" = main ] || reserved_name "$name" \
-     || ! [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  if [ -z "$name" ] || [ "$name" = main ] || ! [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]]; then
     printf 'usage: claudeb remove <name> [--force]\n' >&2
     exit 2
   fi
@@ -1592,13 +1591,21 @@ profile_command() {
     [ "$found" -eq 1 ] || printf '  (none yet — first run creates one)\n'
     return
   fi
-  if reserved_name "$profile"; then
-    printf "claudeb: invalid profile name '%s'\n" "$profile" >&2
+  if ! [[ "$profile" =~ ^[A-Za-z0-9._-]+$ ]] || [[ "$profile" = .* ]]; then
+    printf "claudeb: invalid profile name '%s' (must start with a letter, number, or underscore; use only letters, numbers, dots, underscores, and hyphens)\n" "$profile" >&2
     return 2
   fi
   shift
   dir="$profiles_dir/$profile"
   if [ ! -d "$dir" ]; then
+    if reserved_name "$profile"; then
+      printf "claudeb: invalid profile name '%s'\n" "$profile" >&2
+      return 2
+    fi
+    if ! [[ "$profile" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]]; then
+      printf "claudeb: invalid profile name '%s' (must start with a letter, number, or underscore; use only letters, numbers, dots, underscores, and hyphens)\n" "$profile" >&2
+      return 2
+    fi
     mkdir -p "$dir"
     printf "claudeb: new profile '%s' created at %s — Claude will ask you to log in once.\n" "$profile" "$dir" >&2
   fi

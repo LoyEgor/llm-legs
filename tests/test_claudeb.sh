@@ -210,6 +210,10 @@ for reserved in p run profile; do
     fail "add accepted reserved account name $reserved"
   fi
 done
+assert_fails env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" bash "$SCRIPT" add -h </dev/null >/dev/null 2>&1
+assert test ! -e "$CLAUDEB_DIR/tokens/-h"
+assert_fails env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" bash "$SCRIPT" profile -dash >/dev/null 2>&1
+assert test ! -e "$HOME/.claude-profiles/-dash"
 
 touch "$CLAUDEB_DIR/tokens/alpha" "$CLAUDEB_DIR/tokens/beta"
 future=$((now + 7200))
@@ -245,6 +249,19 @@ assert_fails grep -q '^ANTHROPIC_BASE_URL=' "$ENV_DUMP"
 assert_fails grep -q '^CLAUDE_CODE_OAUTH_TOKEN=' "$ENV_DUMP"
 assert grep -qx "CLAUDE_LIMITS_ACCOUNT=gamma" "$ENV_DUMP"
 assert grep -qx "CLAUDE_CONFIG_DIR=$HOME/.claude-profiles/gamma" "$ENV_DUMP"
+for reserved in p run; do
+  reserved_env_dump="$WORK/$reserved-env.txt"
+  mkdir -p "$HOME/.claude-profiles/$reserved"
+  cat >"$FAKE_BIN/claude" <<EOF
+#!/usr/bin/env bash
+env > "$reserved_env_dump"
+exit 0
+EOF
+  chmod +x "$FAKE_BIN/claude"
+  ( profile_command "$reserved" )
+  assert grep -qx "CLAUDE_LIMITS_ACCOUNT=$reserved" "$reserved_env_dump"
+  assert grep -qx "CLAUDE_CONFIG_DIR=$HOME/.claude-profiles/$reserved" "$reserved_env_dump"
+done
 for command in curl security claude; do
   printf '#!/usr/bin/env bash\nexit 97\n' >"$FAKE_BIN/$command"
   chmod +x "$FAKE_BIN/$command"
@@ -1775,8 +1792,18 @@ EOF
   assert test ! -e "$HOME/.claude-profiles/alive"
   assert test ! -e "$RMKC/$(svc_of alive)"
 
+  for reserved in p run; do
+    printf 'tok-%s' "$reserved" >"$CLAUDEB_DIR/tokens/$reserved"
+    mkdir -p "$HOME/.claude-profiles/$reserved"
+    printf '{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0}}' >"$RMKC/$(svc_of "$reserved")"
+    assert "$SCRIPT" remove "$reserved"
+    assert test ! -e "$CLAUDEB_DIR/tokens/$reserved"
+    assert test ! -e "$HOME/.claude-profiles/$reserved"
+    assert test ! -e "$RMKC/$(svc_of "$reserved")"
+  done
+
   assert_fails "$SCRIPT" remove main
   assert_fails "$SCRIPT" remove ghost-account
 ) || exit 1
 
-echo "PASS: $asserts asserts; reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth weather/backoff and lock behavior, reserved names, disabled-account timeline, out-of-rotation profile launch proceeds direct (proxy leaks stripped), generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent-rotation adoption, capacity weather clears stale expired auth for valid tokens, warm-first heal ordering and fallback, warm auth verdicts require current-run refresh evidence, start-windows opens a fresh window and reconcile locks the new resets_at without regressing it, start-windows skips a disabled account with an explicit cause, warm --start-window opens only an expired window for the explicit account (live window and flagless runs never ping; ping weather warns without an auth verdict), the paid haiku warm fallback stays off unless opted in, regular probes never warm, heal_expired covers disabled accounts with actionable causes, and heal_one writes expired only on current-run evidence (stale-token 401 defers to the token endpoint's verdict, fresh-token 401 is affirmative, weather never re-stamps a prior expired), and no-refresh probes plus daemon-token messages-probe 401s defer to the refresh outcome (stale token → weather no-write / invalid_grant expired, fresh token → affirmative), and interactive status account-row selection (bounded up/down navigation, name-stable across re-sort), Enter resolving to a \`claudeb profile <name>\` exec, row-scoped reverse-video highlight, and the non-tty path staying plain with no key loop or launch, status defaulting to cached (zero network; --live still probes), and the async refresh outcome summary (✓ when all enabled accounts are live/live*, else names stale accounts with a cause and excludes disabled ones, raw probe stderr confined to the log), refresh cancellation killing the probe process group, and first-pass results publishing in completion order"
+echo "PASS: $asserts asserts; reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth weather/backoff and lock behavior, creation-only reserved names and leading-hyphen rejection, disabled-account timeline, out-of-rotation profile launch proceeds direct (proxy leaks stripped), generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent-rotation adoption, capacity weather clears stale expired auth for valid tokens, warm-first heal ordering and fallback, warm auth verdicts require current-run refresh evidence, start-windows opens a fresh window and reconcile locks the new resets_at without regressing it, start-windows skips a disabled account with an explicit cause, warm --start-window opens only an expired window for the explicit account (live window and flagless runs never ping; ping weather warns without an auth verdict), the paid haiku warm fallback stays off unless opted in, regular probes never warm, heal_expired covers disabled accounts with actionable causes, and heal_one writes expired only on current-run evidence (stale-token 401 defers to the token endpoint's verdict, fresh-token 401 is affirmative, weather never re-stamps a prior expired), and no-refresh probes plus daemon-token messages-probe 401s defer to the refresh outcome (stale token → weather no-write / invalid_grant expired, fresh token → affirmative), and interactive status account-row selection (bounded up/down navigation, name-stable across re-sort), Enter resolving to a \`claudeb profile <name>\` exec, row-scoped reverse-video highlight, and the non-tty path staying plain with no key loop or launch, status defaulting to cached (zero network; --live still probes), and the async refresh outcome summary (✓ when all enabled accounts are live/live*, else names stale accounts with a cause and excludes disabled ones, raw probe stderr confined to the log), refresh cancellation killing the probe process group, first-pass results publishing in completion order, and reserved legacy profiles remaining launchable and removable"

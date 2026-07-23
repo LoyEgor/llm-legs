@@ -14,7 +14,12 @@ import subprocess
 import time
 
 WINDOWS = (("5h", 5 * 3600), ("24h", 24 * 3600), ("7d", 7 * 86400))
-USAGE_LIMIT_RE = "usage limit|rate.?limit|quota|too many requests|429"
+USAGE_LIMIT_RE = re.compile(
+    r"\busage limit\b|\brate[ -]?limit(?:s|ed|ing)?\b|\bquota\b|"
+    r"\btoo many requests\b|\bHTTP(?:/\d(?:\.\d)?)?\s+429\b|"
+    r"\b429\s+too many requests\b",
+    re.IGNORECASE,
+)
 
 
 def grok_home():
@@ -51,13 +56,41 @@ def aggregate(now):
         for label, span in WINDOWS:
             if age <= span:
                 bucket = buckets[label]
-                bucket["turns"] += 1
+                bucket["turns"] += usage.get("numTurns", 1)
                 bucket["input"] += usage.get("inputTokens", 0)
                 bucket["output"] += usage.get("outputTokens", 0)
                 bucket["total"] += usage.get("totalTokens", 0)
                 bucket["calls"] += usage.get("modelCalls", 0)
                 bucket["cost_usd"] += usage.get("costUsdTicks", 0) / 1e10
     return buckets
+
+
+def envelope_error_message(blob):
+    try:
+        envelope = json.loads(blob)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(envelope, dict):
+        return None
+    error = envelope.get("error")
+    if envelope.get("type") != "error" and not error and not envelope.get("is_error"):
+        return None
+    detail = envelope.get("message") or error
+    if isinstance(detail, dict):
+        detail = detail.get("message") or json.dumps(detail)
+    return str(detail or "structured Grok error")
+
+
+def classify_probe(returncode, stdout, stderr):
+    structured_error = envelope_error_message(stdout)
+    if structured_error:
+        status = "walled" if USAGE_LIMIT_RE.search(structured_error) else "error"
+        return status, structured_error[:200]
+    if returncode != 0:
+        detail = (stderr or stdout).strip()
+        status = "walled" if USAGE_LIMIT_RE.search(detail) else "error"
+        return status, detail[:200]
+    return "ok", ""
 
 
 def probe():
@@ -68,12 +101,7 @@ def probe():
                               capture_output=True, text=True, timeout=120)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return "error", str(exc)
-    blob = (proc.stdout + proc.stderr).lower()
-    if re.search(USAGE_LIMIT_RE, blob):
-        return "walled", (proc.stderr or proc.stdout).strip()[:200]
-    if proc.returncode != 0:
-        return "error", (proc.stderr or proc.stdout).strip()[:200]
-    return "ok", ""
+    return classify_probe(proc.returncode, proc.stdout, proc.stderr)
 
 
 def main():

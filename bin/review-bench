@@ -83,8 +83,8 @@ def parse_rater(spec):
     if not match:
         raise ValueError(
             f"invalid rater {spec!r}; expected sol-<effort>, "
-            "opus|sonnet|haiku|fable-<effort>, or a Claude -skill "
-            "variant such as opus-medium-skill"
+            "opus|sonnet|haiku|fable-<effort>, grok-<low|medium|high>, "
+            "or a Claude -skill variant such as opus-medium-skill"
         )
     model, effort, skill = match.groups()
     skill = bool(skill)
@@ -401,6 +401,17 @@ def normalize_claude_output(text, rater, repo):
     return normalize_findings(text, rater)
 
 
+def normalize_grok_output(text):
+    objects = [
+        value
+        for value in extract_json_values(text)
+        if isinstance(value, dict)
+    ]
+    if not objects:
+        return text
+    return "\n".join(json.dumps(value, ensure_ascii=False) for value in objects)
+
+
 def review_prompt(sha, focus):
     suffix = f"\nAdditional focus: {focus}" if focus else ""
     return (
@@ -639,33 +650,64 @@ def run_claude(rater, repo, sha, focus, run_dir, account, diff, retry_on_429=Tru
 def run_grok(rater, repo, sha, focus, run_dir, diff):
     raw_output = run_dir / f"raw-{rater['spec']}.json"
     prompt = review_prompt(sha, focus) + "\n\nCommit diff:\n" + diff
+    prompt_file = tempfile.NamedTemporaryFile(
+        mode="w", prefix=f"review-bench-{rater['spec']}-", suffix=".txt", delete=False
+    )
+    prompt_file.write(prompt)
+    prompt_file.close()
+    clone = None
     command = [
         command_path("REVIEW_BENCH_GROK_BIN", "grok"),
-        "-p", prompt, "--output-format", "json",
+        "--prompt-file", prompt_file.name, "--output-format", "json",
         "--reasoning-effort", rater["effort"],
-        "--cwd", str(repo), "--always-approve", "--disable-web-search",
+        "--always-approve", "--disable-web-search",
     ]
     started = time.monotonic()
     try:
-        proc = subprocess.run(command, cwd=repo, stdin=subprocess.DEVNULL,
-                              capture_output=True, text=True, timeout=RATER_TIMEOUT_S)
-    except subprocess.TimeoutExpired:
+        clone = seal_overlay_clone(repo, sha)
+        command += ["--cwd", clone]
+        try:
+            proc = subprocess.run(command, cwd=clone, stdin=subprocess.DEVNULL,
+                                  capture_output=True, text=True, timeout=RATER_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            duration = round((time.monotonic() - started) * 1000)
+            return 124, duration, "", f"rater timed out after {RATER_TIMEOUT_S}s", command
         duration = round((time.monotonic() - started) * 1000)
-        return 124, duration, "", f"rater timed out after {RATER_TIMEOUT_S}s", command
-    duration = round((time.monotonic() - started) * 1000)
-    raw_output.write_text(proc.stdout)
-    text = proc.stdout
-    try:
-        envelope = json.loads(proc.stdout)
+        raw_output.write_text(proc.stdout)
+        if proc.returncode != 0:
+            return proc.returncode, duration, proc.stdout, proc.stderr, command
+        try:
+            envelope = json.loads(proc.stdout)
+        except (json.JSONDecodeError, ValueError) as exc:
+            detail = f"grok returned malformed JSON envelope: {exc}"
+            stderr = f"{proc.stderr.rstrip()}\n{detail}".lstrip()
+            return 1, duration, "", stderr, command
+        if not isinstance(envelope, dict):
+            detail = "grok returned malformed JSON envelope: expected an object"
+            stderr = f"{proc.stderr.rstrip()}\n{detail}".lstrip()
+            return 1, duration, "", stderr, command
+        error = envelope.get("error")
+        if envelope.get("type") == "error" or error:
+            detail = envelope.get("message") or error
+            if isinstance(detail, dict):
+                detail = detail.get("message") or json.dumps(detail, ensure_ascii=False)
+            stderr = (
+                f"{proc.stderr.rstrip()}\ngrok returned an error envelope: {detail}"
+            ).lstrip()
+            return 1, duration, "", stderr, command
         usage = envelope.get("usage")
         if usage is not None:
             (run_dir / f"usage-{rater['spec']}.json").write_text(json.dumps(usage) + "\n")
         answer = envelope.get("text")
-        if isinstance(answer, str):
-            text = answer
-    except (json.JSONDecodeError, ValueError, AttributeError):
-        pass
-    return proc.returncode, duration, text, proc.stderr, command
+        if not isinstance(answer, str):
+            detail = "grok returned malformed JSON envelope: text is not a string"
+            stderr = f"{proc.stderr.rstrip()}\n{detail}".lstrip()
+            return 1, duration, "", stderr, command
+        return 0, duration, normalize_grok_output(answer), proc.stderr, command
+    finally:
+        Path(prompt_file.name).unlink(missing_ok=True)
+        if clone:
+            shutil.rmtree(clone, ignore_errors=True)
 
 
 def run_one(rater, repo, sha, focus, run_dir, accounts, diff):
@@ -738,7 +780,10 @@ def redact_command(rater, command):
     if rater["side"] == "codex":
         return shlex.join(command)
     if rater["side"] == "grok":
-        return shlex.join(command[:2] + ["<review-prompt-and-diff>"] + command[3:])
+        redacted = list(command)
+        prompt_index = redacted.index("--prompt-file") + 1
+        redacted[prompt_index] = "<review-prompt-file>"
+        return shlex.join(redacted)
     placeholder = "<worker-brief>" if rater["skill"] else "<review-prompt-and-diff>"
     return shlex.join(command[:4] + [placeholder] + command[5:])
 

@@ -36,7 +36,7 @@ account_home() {
 
 reserved_name() {
   case "$1" in
-    .*|*/*|help|add|remove|list|status|pick|profile|p|run) return 0 ;;
+    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -110,8 +110,8 @@ quota_snapshot() {
 
 add_account() {
   local name="${1:-}" directory status
-  if [ -z "$name" ] || ! [[ "$name" =~ ^[a-z0-9-]+$ ]] || [ "$name" = main ] || reserved_name "$name"; then
-    printf 'usage: codexb add <name> (lowercase letters, numbers, and hyphens; not reserved words or "main")\n' >&2
+  if [ -z "$name" ] || ! [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]] || [ "$name" = main ] || reserved_name "$name"; then
+    printf 'usage: codexb add <name> (must start with a lowercase letter or number; use only lowercase letters, numbers, and hyphens; not reserved words or "main")\n' >&2
     exit 2
   fi
   directory="$profiles_dir/$name"
@@ -205,7 +205,7 @@ pick_account() {
 
 run_account() {
   local allow_create="$1" name="${2:-}" directory
-  if [ "$name" = -h ] || [ "$name" = --help ]; then
+  if [ "$allow_create" = true ] && { [ "$name" = -h ] || [ "$name" = --help ]; }; then
     show_help
     return
   fi
@@ -213,8 +213,8 @@ run_account() {
     printf 'usage: codexb profile <name> [codex args...]\n' >&2
     exit 2
   fi
-  if reserved_name "$name"; then
-    printf "codexb: invalid profile name '%s'\n" "$name" >&2
+  if ! [[ "$name" =~ ^[a-z0-9-]+$ ]]; then
+    printf "codexb: invalid profile name '%s' (must start with a lowercase letter or number; use only lowercase letters, numbers, and hyphens)\n" "$name" >&2
     exit 2
   fi
   shift 2
@@ -229,8 +229,12 @@ run_account() {
       printf 'codexb: unknown account: %s\n' "$name" >&2
       exit 2
     fi
-    if ! [[ "$name" =~ ^[a-z0-9-]+$ ]]; then
-      printf "codexb: invalid profile name '%s' (lowercase letters, numbers, and hyphens)\n" "$name" >&2
+    if reserved_name "$name"; then
+      printf "codexb: invalid profile name '%s'\n" "$name" >&2
+      exit 2
+    fi
+    if ! [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+      printf "codexb: invalid profile name '%s' (must start with a lowercase letter or number; use only lowercase letters, numbers, and hyphens)\n" "$name" >&2
       exit 2
     fi
     mkdir -p "$directory"
@@ -253,6 +257,13 @@ show_help() {
 }
 
 ensure_profiles
+if [ "${2:-}" = exec ] && [ "${1:-}" != main ] \
+   && [[ "${1:-}" =~ ^[a-z0-9-]+$ ]] \
+   && [ -d "$profiles_dir/${1:-}" ]; then
+  name="$1"
+  shift 2
+  run_account false "$name" exec "$@"
+fi
 case "${1:-}" in
   add)
     shift
