@@ -124,6 +124,35 @@ add_account() {
   printf '%s: %s\n' "$name" "${status#*$'\t'}"
 }
 
+remove_account() {
+  local name="${1:-}" directory codex_cache tmp
+  if [ -z "$name" ] || [ "$name" = main ]; then
+    printf 'usage: codexb remove <name> (not "main")\n' >&2
+    exit 2
+  fi
+  directory="$profiles_dir/$name"
+  if [ ! -e "$directory" ] && [ ! -L "$directory" ]; then
+    printf 'codexb: unknown account: %s\n' "$name" >&2
+    exit 2
+  fi
+  rm -rf "$directory"
+  codex_cache="${LLM_LIMITS_CODEX_CACHE:-$HOME/.llm-limits-codex.json}"
+  if [ -r "$codex_cache" ]; then
+    tmp="$codex_cache.tmp.$$"
+    if jq -c --arg name "$name" '
+        if type == "object" then
+          (if (.accounts | type) == "array"
+           then .accounts |= map(select(.account != $name)) else . end)
+          | (if .current == $name then .current = "main" else . end)
+        else . end' "$codex_cache" > "$tmp" 2>/dev/null; then
+      mv "$tmp" "$codex_cache"
+    else
+      rm -f "$tmp"
+    fi
+  fi
+  printf 'codexb: removed %s\n' "$name"
+}
+
 list_accounts() {
   local name status
   while IFS= read -r name; do
@@ -190,6 +219,7 @@ run_account() {
 show_help() {
   printf '%s\n' \
     'codexb add <name>' \
+    'codexb remove <name>' \
     'codexb list' \
     'codexb status' \
     'codexb pick' \
@@ -203,6 +233,11 @@ case "${1:-}" in
     shift
     [ "$#" -eq 1 ] || { printf 'usage: codexb add <name>\n' >&2; exit 2; }
     add_account "$1"
+    ;;
+  remove)
+    shift
+    [ "$#" -eq 1 ] || { printf 'usage: codexb remove <name>\n' >&2; exit 2; }
+    remove_account "$1"
     ;;
   list)
     [ "$#" -eq 1 ] || { printf 'usage: codexb list\n' >&2; exit 2; }

@@ -108,4 +108,19 @@ assert eq "$ll_cap" "$OAUTH_CAP"
 assert doc_has '`900 * 2^(max(1, strikes)-1)`'
 assert doc_has 'capped at `14400`s'
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown) and match %s\n' "$asserts" "$DOC"
+# --- Row f: token-freeze file semantics --------------------------------------
+# Both implementations must gate on file existence, parse `.until // empty`,
+# apply the numeric guard, and treat a past `until` as inactive (`-gt now`).
+cb_fz=$(sed -n '/^token_freeze_active()/,/^}/p' "$CLAUDEB")
+ll_fz=$(sed -n '/^token_freeze_active_at()/,/^}/p' "$LLMLIMITS")
+[ -n "$cb_fz" ] || fail "row f: token_freeze_active not found in $CLAUDEB"
+[ -n "$ll_fz" ] || fail "row f: token_freeze_active_at not found in $LLMLIMITS"
+for probe in '[ -f "$' '.until // empty' '^[0-9]+$' '-gt'; do
+  assert grep -Fq -- "$probe" <<<"$cb_fz"
+  assert grep -Fq -- "$probe" <<<"$ll_fz"
+done
+assert grep -Fq -- 'token-freeze' "$CLAUDEB"
+assert grep -Fq -- 'token-freeze' "$LLMLIMITS"
+assert doc_has 'Token-freeze file semantics'
+
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics) and match %s\n' "$asserts" "$DOC"

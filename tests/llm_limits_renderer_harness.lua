@@ -359,6 +359,19 @@ local function runFirstItem(item, capture)
   return last
 end
 
+-- Captures every hs.task.new launch so the Remove… confirm item can be proven to
+-- fire the right vendor command (claudeb/codexb subcommand or the collector marker).
+local function captureTasks(sink)
+  return function(path, _, args)
+    table.insert(sink, { path = path, args = args or {} })
+    local task = {}
+    function task:setEnvironment() return self end
+    function task:start() return true end
+    function task:isRunning() return false end
+    return task
+  end
+end
+
 local claudeLoginFixture = { schema = 1, vendors = {
   claude = {
     available = true, source = "claudeb-store", daemon = { reachable = true },
@@ -381,42 +394,78 @@ local codexLoginFixture = { schema = 1, vendors = {
 
 -- Anti-divergence guard: every vendor's logged-out row is forced through the SAME
 -- shape here. Adding a 4th vendor to this table automatically subjects it to the
--- identical structural assertions (title, exactly {Log in…, Hard refresh} in order)
--- while still proving its own Log in… fires the right vendor mechanism. A future
--- change that splits one vendor's row away from the shared shape fails this loop.
+-- identical structural assertions (title, exactly {Log in…, Hard refresh, Remove…}
+-- in order, Remove… a one-item "Confirm remove <label>" submenu) while still proving
+-- its own Log in… fires the right login mechanism and Remove… the right remove
+-- command. A future change that splits one vendor's row away from the shared shape,
+-- or drops its confirm gate, fails this loop.
 local loginCases = {
-  { vendor = "claude", fixture = claudeLoginFixture, needle = "loggedout",
-    scriptContains = { "claudeb profile", "loggedout" } },
-  { vendor = "codex", fixture = codexLoginFixture, needle = "codexout",
-    scriptContains = { "codexb run", "codexout", "login" } },
-  { vendor = "gemini", fixture = geminiAuthFixture, needle = "Gemini",
-    scriptContains = { "agy" } },
+  { vendor = "claude", fixture = claudeLoginFixture, needle = "loggedout", label = "loggedout",
+    scriptContains = { "claudeb profile", "loggedout" },
+    removePath = "claudeb", removeArgs = { "remove", "loggedout" } },
+  { vendor = "codex", fixture = codexLoginFixture, needle = "codexout", label = "codexout",
+    scriptContains = { "codexb run", "codexout", "login" },
+    removePath = "codexb", removeArgs = { "remove", "codexout" } },
+  { vendor = "gemini", fixture = geminiAuthFixture, needle = "Gemini", label = "Gemini",
+    scriptContains = { "agy" },
+    removePath = "llm-limits.sh", removeArgs = { "--gemini-remove" } },
 }
 for _, case in ipairs(loginCases) do
   local capture = {}
-  local menu = loadModule(case.fixture, nil, nil, nil,
+  local tasks = {}
+  local menu = loadModule(case.fixture, captureTasks(tasks), nil, nil,
     function(script) table.insert(capture, script); return true, true, {} end).menuItems()
   local row = rowContaining(menu, case.needle)
   assert(titleText(row):find("login needed", 1, true),
     "logged-out " .. case.vendor .. " row did not render a login-needed row")
-  assert(#row.menu == 2, case.vendor .. " login row is not exactly {Log in…, Hard refresh}")
+  assert(#row.menu == 3,
+    case.vendor .. " login row is not exactly {Log in…, Hard refresh, Remove…}")
   assert(titleText(row.menu[1]) == "Log in…", case.vendor .. " first submenu item is not Log in…")
   assert(titleText(row.menu[2]) == "Hard refresh", case.vendor .. " second submenu item is not Hard refresh")
+  assert(titleText(row.menu[3]) == "Remove…", case.vendor .. " third submenu item is not Remove…")
+  local removeMenu = row.menu[3].menu
+  assert(type(removeMenu) == "table" and #removeMenu == 1,
+    case.vendor .. " Remove… is not a single-item confirm submenu")
+  assert(titleText(removeMenu[1]) == "Confirm remove " .. case.label,
+    case.vendor .. " confirm item is not \"Confirm remove " .. case.label .. "\"")
   local script = runFirstItem(row, capture)
   for _, needle in ipairs(case.scriptContains) do
     assert(script:find(needle, 1, true),
       case.vendor .. " Log in… lacks the vendor mechanism: " .. needle)
   end
+  while #tasks > 0 do table.remove(tasks) end
+  removeMenu[1].fn()
+  local launched = tasks[1]
+  assert(launched, case.vendor .. " Remove… did not launch a command")
+  assert(launched.path:find(case.removePath, 1, true),
+    case.vendor .. " Remove… launched the wrong command: " .. tostring(launched.path))
+  for index, expected in ipairs(case.removeArgs) do
+    assert(launched.args[index] == expected,
+      case.vendor .. " Remove… arg " .. index .. " is " .. tostring(launched.args[index])
+        .. " not " .. expected)
+  end
 end
 
--- Healthy accounts never get Log in…; the shared row only fires on auth_needed.
+-- Healthy accounts never get Log in… or Remove…; the shared row only fires on auth_needed.
 local claudeLoginMenu = loadModule(claudeLoginFixture).menuItems()
 for _, item in ipairs(claudeLoginMenu) do
   if titleText(item):find("healthy", 1, true) and type(item.menu) == "table" then
     for _, sub in ipairs(item.menu) do
       assert(titleText(sub) ~= "Log in…", "healthy account offered Log in…")
+      assert(titleText(sub) ~= "Remove…", "healthy account offered Remove…")
     end
   end
+end
+
+-- A removed single-account vendor is skipped entirely: no row, no login/hard-refresh
+-- controls, no refresh-error line — the same hook a future vendor would supply.
+local geminiRemovedFixture = { schema = 1, vendors = {
+  claude = { available = false },
+  codex = { available = false },
+  gemini = { available = false, removed = true, status = "removed" },
+}}
+for _, item in ipairs(loadModule(geminiRemovedFixture).menuItems()) do
+  assert(not titleText(item):find("Gemini", 1, true), "removed Gemini still rendered a row")
 end
 
 local geminiErrorFixture = { schema = 1, vendors = {

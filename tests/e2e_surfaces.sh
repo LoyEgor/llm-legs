@@ -319,8 +319,12 @@ while IFS= read -r reset; do
   [ -n "$reset" ] || continue
   reset_epoch=$(iso2epoch "$reset") || fail "cannot parse live reset timestamp: $reset"
   [ "$reset_epoch" -ge "$(($(date +%s) - 86400))" ] || ancient_count=$((ancient_count + 1))
-done < <(jq -r '.vendors[] | if ((.accounts? // []) | length) > 0 then
-  .accounts[]?.five_hour.resets_at? else .five_hour.resets_at? end | select(. != null)' <<<"$JSON")
+# A login-needed account (auth_needed, or a non-ok auth.status) renders a unified
+# login row with no 5h line at all, so its reset can never produce a dash row.
+done < <(jq -r 'def loginish: (.auth_needed == true) or ((.auth.status? | type) == "string" and .auth.status != "ok");
+  .vendors[] | if ((.accounts? // []) | length) > 0 then
+  (.accounts[]? | select(loginish | not) | .five_hour.resets_at?)
+  else (select(loginish | not) | .five_hour.resets_at?) end | select(. != null)' <<<"$JSON")
 if [ "$ancient_count" -gt 0 ]; then
   dash_count=$(grep -Ec '5h .* -$' <<<"$MENU_TXT")
   [ "$dash_count" -ge "$ancient_count" ] \

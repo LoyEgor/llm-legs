@@ -178,4 +178,15 @@ CODEX_QUOTA_TIMEOUT=2 "$HELPER" --all-accounts >/dev/null 2>&1 || true
 assert jq -e 'all(.accounts[]; .auth_needed == true and
   (has("five_hour") or has("weekly") or has("plan_type") | not))' "$CACHE" >/dev/null
 
-echo "PASS: $asserts asserts; add and shared-link trap, list/status, quota-aware authenticated pick, reset credits, auth-needed cache markers, exact run environments/arguments, multi-account cache compatibility"
+# remove: forgets the profile dir and prunes the codex cache entry; main is refused.
+bash "$SCRIPT" add gone >/dev/null || fail "add gone failed"
+assert test -d "$HOME/.codex-profiles/gone"
+printf '{"current":"gone","accounts":[{"account":"gone"},{"account":"main"}]}\n' >"$CACHE"
+assert bash "$SCRIPT" remove gone
+assert test ! -e "$HOME/.codex-profiles/gone"
+assert jq -e '([.accounts[].account] | index("gone") == null) and
+  ([.accounts[].account] | index("main") != null) and .current == "main"' "$CACHE"
+assert_fails bash "$SCRIPT" remove main
+assert_fails bash "$SCRIPT" remove never-existed
+
+echo "PASS: $asserts asserts; add and shared-link trap, list/status, quota-aware authenticated pick, reset credits, auth-needed cache markers, exact run environments/arguments, multi-account cache compatibility, remove forgets the profile dir and prunes the cache entry (main refused)"

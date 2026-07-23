@@ -826,6 +826,128 @@ chmod +x "$FAKE_BIN/security" "$FAKE_BIN/claude" "$FAKE_BIN/curl"
   assert_fails test -e "$limits_dir/tuweather.json"
 )
 
+# --- token-freeze experiment: robots off the token endpoint, journal every attempt ---
+(
+  fz_creds='{"claudeAiOauth":{"refreshToken":"rt-fz","accessToken":"at-fz","expiresAt":1,"scopes":["a"]}}'
+  cat >"$FAKE_BIN/security" <<EOF
+#!/usr/bin/env bash
+printf '%s' '$fz_creds'
+EOF
+  fz_curl="$WORK/fz-curl-calls"
+  cat >"$FAKE_BIN/curl" <<EOF
+#!/usr/bin/env bash
+printf 'called\n' >>'$fz_curl'
+case "\$*" in
+  *'/v1/oauth/token'*) printf '{"access_token":"at-new","expires_in":3600,"refresh_token":"rt-new"}\n200' ;;
+  *) exit 97 ;;
+esac
+EOF
+  fz_claude="$WORK/fz-claude-calls"
+  cat >"$FAKE_BIN/claude" <<EOF
+#!/usr/bin/env bash
+printf 'ran\n' >>'$fz_claude'
+exit 0
+EOF
+  chmod +x "$FAKE_BIN/security" "$FAKE_BIN/curl" "$FAKE_BIN/claude"
+
+  # 1: frozen oauth_refresh — zero curl, frozen-skip journal, no state change, no verdict.
+  : >"$fz_curl"; : >"$token_attempts_file"
+  printf '{"alpha":{"attempted_at":%s,"outcome":"429","retry_after_until":0,"strikes":2}}\n' "$now" >"$oauth_attempts_file"
+  printf '{"auth":{"status":"ok","checked_at":1}}' >"$limits_dir/alpha.json"
+  printf '{"started_at":%s,"reason":"token-freeze experiment"}\n' "$now" >"$token_freeze_file"
+  if oauth_refresh alpha svc "$fz_creds" >/dev/null 2>&1; then fz_rc=0; else fz_rc=$?; fi
+  assert test "$fz_rc" -eq 76
+  assert_fails test -s "$fz_curl"
+  assert jq -e '.alpha.outcome == "429" and .alpha.strikes == 2' "$oauth_attempts_file" >/dev/null
+  assert jq -e '.auth.status == "ok"' "$limits_dir/alpha.json" >/dev/null
+  assert jq -se 'any(.[]; .kind == "curl-refresh" and .outcome == "frozen-skip" and .account == "alpha")' "$token_attempts_file" >/dev/null
+
+  # 2: frozen token-upkeep exits 0, journals kind upkeep, touches nothing.
+  : >"$fz_curl"; : >"$token_attempts_file"
+  fz_tu_rc=0
+  token_upkeep >/dev/null 2>&1 || fz_tu_rc=$?
+  assert test "$fz_tu_rc" -eq 0
+  assert_fails test -s "$fz_curl"
+  assert jq -se 'any(.[]; .kind == "upkeep" and .outcome == "frozen-skip")' "$token_attempts_file" >/dev/null
+
+  # 3: frozen non-explicit warm skips every account, one journal line each, no session.
+  : >"$fz_claude"; : >"$token_attempts_file"
+  account_names() { printf 'fzA\nfzB\n'; }
+  is_disabled() { return 1; }
+  fz_warm_rc=0
+  warm_accounts >/dev/null 2>"$WORK/fz-warm.err" || fz_warm_rc=$?
+  assert test "$fz_warm_rc" -ne 0
+  assert_fails test -s "$fz_claude"
+  assert jq -se '[.[] | select(.kind == "warm" and .outcome == "frozen-skip")] | length == 2' "$token_attempts_file" >/dev/null
+  assert jq -se 'any(.[]; .kind == "warm" and .account == "fzA")' "$token_attempts_file" >/dev/null
+  assert grep -q 'warm skipped' "$WORK/fz-warm.err"
+
+  # 4: frozen single-explicit (menu Hard-refresh) warm still runs its CLI session.
+  : >"$fz_claude"; : >"$token_attempts_file"
+  touch "$CLAUDEB_DIR/tokens/fzM"
+  CLAUDEB_WARM_USER_EXPLICIT=true warm_accounts fzM >/dev/null 2>&1 || true
+  assert test -s "$fz_claude"
+  rm -f "$CLAUDEB_DIR/tokens/fzM"
+
+  # 5: expired `until` behaves unfrozen — curl runs, rc is a real verdict not 76.
+  : >"$fz_curl"; : >"$token_attempts_file"
+  printf '{}' >"$oauth_attempts_file"
+  printf '{"started_at":%s,"until":%s,"reason":"x"}\n' "$((now - 7200))" "$((now - 3600))" >"$token_freeze_file"
+  if oauth_refresh alpha svc "$fz_creds" >/dev/null 2>&1; then fz_er=0; else fz_er=$?; fi
+  assert test -s "$fz_curl"
+  assert test "$fz_er" -ne 76
+
+  # 6: normal (unfrozen) outcomes journal too — success, 429, adopt, warm; begin markers do not.
+  rm -f "$token_freeze_file"
+  : >"$token_attempts_file"
+  printf '{}' >"$oauth_attempts_file"
+  oauth_attempt_update j1 success
+  oauth_attempt_update j2 429 0
+  oauth_attempt_update j3 success-adopted 0
+  oauth_attempt_update j4 warm-failed 0 0 timeout
+  oauth_attempt_update j5 attempting 0
+  oauth_attempt_update j5 warming 0
+  CLAUDEB_JOURNAL_KIND=warm oauth_attempt_update jwarm success
+  assert jq -se 'any(.[]; .account == "j1" and .kind == "curl-refresh" and .outcome == "success")' "$token_attempts_file" >/dev/null
+  assert jq -se 'any(.[]; .account == "j2" and .kind == "curl-refresh" and .outcome == "429" and .http == "429")' "$token_attempts_file" >/dev/null
+  assert jq -se 'any(.[]; .account == "j3" and .kind == "adopt" and .outcome == "success-adopted")' "$token_attempts_file" >/dev/null
+  assert jq -se 'any(.[]; .account == "j4" and .kind == "warm" and .outcome == "warm-failed")' "$token_attempts_file" >/dev/null
+  assert_fails jq -se 'any(.[]; .account == "j5")' "$token_attempts_file" >/dev/null
+  # A CLI-warm success routes through the funnel with a caller kind hint → kind warm.
+  assert jq -se 'any(.[]; .account == "jwarm" and .kind == "warm" and .outcome == "success")' "$token_attempts_file" >/dev/null
+) || exit 1
+
+# --- token-freeze: heal writes no verdict from pre-freeze token-endpoint state ---
+(
+  printf '{"started_at":%s,"reason":"x"}\n' "$now" >"$token_freeze_file"
+  account_names() { printf 'fzh\n'; }
+  is_disabled() { return 1; }
+  touch "$CLAUDEB_DIR/tokens/fzh"
+  fzh_fresh='{"claudeAiOauth":{"refreshToken":"rt-h","accessToken":"at-h","expiresAt":9999999999999,"scopes":["a"]}}'
+  cat >"$FAKE_BIN/security" <<EOF
+#!/usr/bin/env bash
+printf '%s' '$fzh_fresh'
+EOF
+  chmod +x "$FAKE_BIN/security"
+  hd="$WORK/fz-heal"; mkdir -p "$hd"
+
+  # (a) a stale pre-freeze `revoked` + a frozen probe (HTTP 000) writes no verdict.
+  probe_one() { printf 'no-spend 255 000\n' >"$2/$1.result"; }
+  printf '{"fzh":{"attempted_at":%s,"outcome":"revoked","retry_after_until":%s,"credentials_expires_at":1}}\n' "$((now - 100))" "$((now + 21600))" >"$oauth_attempts_file"
+  printf '{"auth":{"status":"ok","checked_at":1}}' >"$limits_dir/fzh.json"
+  heal_one "$hd" fzh 2>"$WORK/fz-heal-a.err"
+  assert jq -e '.auth.status == "ok" and (.auth | has("cause") | not)' "$limits_dir/fzh.json" >/dev/null
+  assert grep -q 'frozen' "$WORK/fz-heal-a.err"
+
+  # (b) a fresh-token 401 is endpoint-independent live evidence → still affirmative.
+  probe_one() { printf 'no-spend 0 401\n' >"$2/$1.result"; }
+  printf '{}' >"$oauth_attempts_file"
+  printf '{"auth":{"status":"ok","checked_at":1}}' >"$limits_dir/fzh.json"
+  heal_one "$hd" fzh 2>/dev/null
+  assert jq -e '.auth.status == "expired"' "$limits_dir/fzh.json" >/dev/null
+  rm -f "$token_freeze_file" "$CLAUDEB_DIR/tokens/fzh"
+) || exit 1
+
 touch "$CLAUDEB_DIR/tokens/eta"
 (
   ETA_WARM_LOG="$WORK/eta-warm.log"
@@ -1064,12 +1186,16 @@ printf '{}' >"$oauth_attempts_file"
   : >"$warm_probe_calls"
   printf '{}' >"$oauth_attempts_file"
   printf '{}' >"$limits_dir/zeta.json"
+  : >"$token_attempts_file"
   run_warm_session() { return 0; }
   assert warm_accounts zeta >/dev/null 2>"$WORK/warm-refresh-success.err"
   assert test "$(wc -l <"$warm_refresh_calls" | tr -d ' ')" = 1
   assert test "$(wc -l <"$warm_probe_calls" | tr -d ' ')" = 1
   assert jq -e '.five_hour.used_percentage == 44 and .auth.status == "ok"' "$limits_dir/zeta.json" >/dev/null
   assert test "$(oauth_backoff_outcome zeta)" = ''
+  # The CLI-only warm success journals kind warm (the real curl refresh on this
+  # path journals its own curl-refresh line separately).
+  assert jq -se 'any(.[]; .account == "zeta" and .kind == "warm" and .outcome == "success")' "$token_attempts_file" >/dev/null
 )
 
 assert test -f "$WORK/regression-prior-revoked-generic"
@@ -1577,6 +1703,75 @@ EOF
   assert test -n "$aa_p"
   assert test -n "$bb_d"
   assert test "$aa_p" -lt "$bb_d"
+) || exit 1
+
+# remove: full-inventory cleanup, alive-creds guard + --force, rotation-state reset.
+(
+  RMKC="$WORK/rm-keychain"; mkdir -p "$RMKC"
+  svc_of() { printf 'Claude Code-credentials-%s' "$(printf '%s' "$HOME/.claude-profiles/$1" | shasum -a 256 | awk '{print substr($1, 1, 8)}')"; }
+  cat >"$FAKE_BIN/security" <<EOF
+#!/usr/bin/env bash
+KC='$RMKC'
+op="\$1"; shift
+svc=""
+while [ \$# -gt 0 ]; do case "\$1" in -s) shift; svc="\$1" ;; esac; shift; done
+case "\$op" in
+  find-generic-password) [ -r "\$KC/\$svc" ] || exit 44; cat "\$KC/\$svc" ;;
+  delete-generic-password) rm -f "\$KC/\$svc" ;;
+esac
+EOF
+  chmod +x "$FAKE_BIN/security"
+
+  # A fully wired logged-out account touching every store location the audit lists.
+  printf 'tok-rmv' >"$CLAUDEB_DIR/tokens/rmv"
+  touch "$CLAUDEB_DIR/tokens/keep"
+  printf '{}' >"$CLAUDEB_DIR/limits/rmv.json"
+  mkdir -p "$HOME/.claude-profiles/rmv/nested"; printf x >"$HOME/.claude-profiles/rmv/nested/f"
+  printf '{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0}}' >"$RMKC/$(svc_of rmv)"
+  printf '{"rmv":{"warm_outcome":"ok"},"keep":{"warm_outcome":"ok"}}' >"$CLAUDEB_DIR/oauth-attempts.json"
+  touch "$CLAUDEB_DIR/oauth-attempts.json.bypass.rmv"
+  printf 'rmv=1\nkeep=2\n' >"$CLAUDEB_DIR/account-tiers"
+  printf 'rmv\n' >"$CLAUDEB_DIR/disabled"
+  printf 'rmv\n' >"$CLAUDEB_DIR/.claudeb-state"
+  printf 'rmv\n' >"$CLAUDEB_DIR/.claudeb-state-fable"
+
+  assert "$SCRIPT" remove rmv
+  assert test ! -e "$CLAUDEB_DIR/tokens/rmv"
+  assert test ! -e "$CLAUDEB_DIR/limits/rmv.json"
+  assert test ! -e "$RMKC/$(svc_of rmv)"
+  assert test ! -e "$HOME/.claude-profiles/rmv"
+  assert test -e "$CLAUDEB_DIR/tokens/keep"
+  assert jq -e '.rmv == null and .keep != null' "$CLAUDEB_DIR/oauth-attempts.json"
+  assert test ! -e "$CLAUDEB_DIR/oauth-attempts.json.bypass.rmv"
+  assert grep -qx 'keep=2' "$CLAUDEB_DIR/account-tiers"
+  assert_fails grep -q '^rmv=' "$CLAUDEB_DIR/account-tiers"
+  assert_fails grep -qx rmv "$CLAUDEB_DIR/disabled"
+  assert test ! -e "$CLAUDEB_DIR/.claudeb-state"
+  assert test ! -e "$CLAUDEB_DIR/.claudeb-state-fable"
+
+  # State pointing at a surviving account is left intact when a different one is removed.
+  printf 'tok-other' >"$CLAUDEB_DIR/tokens/other"
+  printf '{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0}}' >"$RMKC/$(svc_of other)"
+  printf 'keep\n' >"$CLAUDEB_DIR/.claudeb-state"
+  assert "$SCRIPT" remove other
+  assert test ! -e "$CLAUDEB_DIR/tokens/other"
+  assert grep -qx keep "$CLAUDEB_DIR/.claudeb-state"
+
+  # Alive credentials are protected until --force.
+  printf 'tok-alive' >"$CLAUDEB_DIR/tokens/alive"
+  mkdir -p "$HOME/.claude-profiles/alive"
+  printf '{"claudeAiOauth":{"accessToken":"live-at","refreshToken":"live-rt","expiresAt":9999999999999}}' >"$RMKC/$(svc_of alive)"
+  assert_fails "$SCRIPT" remove alive
+  assert test -e "$CLAUDEB_DIR/tokens/alive"
+  assert test -e "$HOME/.claude-profiles/alive"
+  assert test -e "$RMKC/$(svc_of alive)"
+  assert "$SCRIPT" remove alive --force
+  assert test ! -e "$CLAUDEB_DIR/tokens/alive"
+  assert test ! -e "$HOME/.claude-profiles/alive"
+  assert test ! -e "$RMKC/$(svc_of alive)"
+
+  assert_fails "$SCRIPT" remove main
+  assert_fails "$SCRIPT" remove ghost-account
 ) || exit 1
 
 echo "PASS: $asserts asserts; reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth weather/backoff and lock behavior, reserved names, disabled-account timeline, out-of-rotation profile launch proceeds direct (proxy leaks stripped), generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent-rotation adoption, capacity weather clears stale expired auth for valid tokens, warm-first heal ordering and fallback, warm auth verdicts require current-run refresh evidence, start-windows opens a fresh window and reconcile locks the new resets_at without regressing it, start-windows skips a disabled account with an explicit cause, warm --start-window opens only an expired window for the explicit account (live window and flagless runs never ping; ping weather warns without an auth verdict), the paid haiku warm fallback stays off unless opted in, regular probes never warm, heal_expired covers disabled accounts with actionable causes, and heal_one writes expired only on current-run evidence (stale-token 401 defers to the token endpoint's verdict, fresh-token 401 is affirmative, weather never re-stamps a prior expired), and no-refresh probes plus daemon-token messages-probe 401s defer to the refresh outcome (stale token → weather no-write / invalid_grant expired, fresh token → affirmative), and interactive status account-row selection (bounded up/down navigation, name-stable across re-sort), Enter resolving to a \`claudeb profile <name>\` exec, row-scoped reverse-video highlight, and the non-tty path staying plain with no key loop or launch, status defaulting to cached (zero network; --live still probes), and the async refresh outcome summary (✓ when all enabled accounts are live/live*, else names stale accounts with a cause and excludes disabled ones, raw probe stderr confined to the log), refresh cancellation killing the probe process group, and first-pass results publishing in completion order"

@@ -2,6 +2,7 @@ local M = {
   cachePath = os.getenv("HOME") .. "/.llm-limits.json",
   collectorPath = "/Volumes/Work/Projects/llm-legs/llm-limits.sh",
   claudebCmd = "claudeb",
+  codexbCmd = "codexb",
   wallsLog = nil,
   onRefreshStateChanged = function() end,
 }
@@ -27,15 +28,20 @@ local function loginNeededTitle(account)
 end
 
 -- The one shared shape for a logged-out row: every vendor (claude/codex accounts,
--- gemini vendor row, any future vendor) is forced through this so the two actions
--- and their order can never silently diverge. Rotation/current/chat-switch all
--- need live credentials, so a logged-out row offers exactly {Log in…, Hard refresh}.
-local function loginNeededRow(label, loginFn, hardRefreshFn)
+-- gemini vendor row, any future vendor) is forced through this so the actions and
+-- their order can never silently diverge. Rotation/current/chat-switch all need live
+-- credentials, so a logged-out row offers exactly {Log in…, Hard refresh, Remove…}.
+-- Remove… is a one-item confirm submenu (misclick-safe without a modal dialog); its
+-- single item fires the vendor's own remove command, which owns all store cleanup.
+local function loginNeededRow(label, loginFn, hardRefreshFn, removeFn)
   return {
     title = loginNeededTitle(label),
     menu = {
       { title = "Log in…", fn = loginFn },
       { title = "Hard refresh", fn = hardRefreshFn },
+      { title = "Remove…", menu = {
+        { title = "Confirm remove " .. label, fn = removeFn },
+      } },
     },
   }
 end
@@ -379,19 +385,28 @@ end
 
 -- hs.task.new needs a launch path, not a PATH-resolved name; a bare command is taken from ~/.local/bin
 -- (where claudeb lives). The env PATH below still covers claudeb's own child processes.
-local function resolveClaudeb()
-  local cmd = M.claudebCmd or "claudeb"
+local function resolveCommand(cmd)
   if cmd:sub(1, 1) == "/" then
     return cmd
   end
   return os.getenv("HOME") .. "/.local/bin/" .. cmd
 end
 
-local function runClaudeb(args, failMessage)
-  local key = "account-action:" .. table.concat(args, "\0")
+local function resolveClaudeb()
+  return resolveCommand(M.claudebCmd or "claudeb")
+end
+
+local function resolveCodexb()
+  return resolveCommand(M.codexbCmd or "codexb")
+end
+
+-- Runs a vendor account command (claudeb/codexb) then re-collects so the row it
+-- changed disappears/updates immediately. Shared by the toggle/switch/remove wiring.
+local function runAccountCommand(launchPath, args, failMessage)
+  local key = "account-action:" .. launchPath .. "\0" .. table.concat(args, "\0")
   if taskForKey(key) then return end
   local id = reserveTask("account-action", 360, key)
-  local task = hs.task.new(resolveClaudeb(), function(exitCode, stdOut, stdErr)
+  local task = hs.task.new(launchPath, function(exitCode, stdOut, stdErr)
     if exitCode ~= 0 then
       finishTask(id, exitCode, stdOut, stdErr, failMessage)
       return
@@ -403,6 +418,14 @@ local function runClaudeb(args, failMessage)
   end, args)
   if task then task:setEnvironment(baseEnvironment()) end
   startTask(id, task, failMessage)
+end
+
+local function runClaudeb(args, failMessage)
+  runAccountCommand(resolveClaudeb(), args, failMessage)
+end
+
+local function runCodexb(args, failMessage)
+  runAccountCommand(resolveCodexb(), args, failMessage)
 end
 
 function M.switchAccount(name)
@@ -464,6 +487,13 @@ end
 function M.hardRefreshClaude(name) hardRefresh("claude/" .. name, true) end
 function M.hardRefreshCodex(name) hardRefresh("codex/" .. name) end
 function M.hardRefreshGemini() hardRefresh("gemini") end
+
+-- Vendor remove: each fires ONE command that owns all of its own store cleanup, then
+-- re-collects so the removed row vanishes on the next render. Gemini has no account
+-- CLI to forget, so its removal is a collector marker (see llm-limits.sh).
+function M.removeClaude(name) runClaudeb({ "remove", name }, "remove failed") end
+function M.removeCodex(name) runCodexb({ "remove", name }, "remove failed") end
+function M.removeGemini() refreshData({ "--gemini-remove" }, "gemini-remove", 360, "gemini-remove") end
 
 local function shellQuote(value)
   return "'" .. tostring(value):gsub("'", [['\'']]) .. "'"
@@ -583,11 +613,16 @@ function M.menuItems()
 
     for _, entry in ipairs(vendors) do
       local vendor = limits.vendors[entry.key]
-      if type(vendor) ~= "table" or vendor.available ~= true then
+      -- A removed single-account vendor (gemini marker) is skipped entirely until its
+      -- creds are valid again; llm-limits.sh clears the marker on that recovery.
+      if type(vendor) == "table" and vendor.removed == true then
+        vendor = nil
+      elseif type(vendor) ~= "table" or vendor.available ~= true then
         local authNeeded = type(vendor) == "table" and vendor.auth_needed == true
         local unavailableRow
         if entry.key == "gemini" and authNeeded then
-          unavailableRow = loginNeededRow(entry.label, M.loginGemini, M.hardRefreshGemini)
+          unavailableRow = loginNeededRow(entry.label, M.loginGemini, M.hardRefreshGemini,
+            M.removeGemini)
         else
           unavailableRow = {
             title = authNeeded and loginNeededTitle(entry.label)
@@ -658,7 +693,9 @@ function M.menuItems()
                 entry.key == "claude" and function() M.loginClaude(acct) end
                   or function() M.loginCodex(acct) end,
                 entry.key == "claude" and function() M.hardRefreshClaude(acct) end
-                  or function() M.hardRefreshCodex(acct) end)
+                  or function() M.hardRefreshCodex(acct) end,
+                entry.key == "claude" and function() M.removeClaude(acct) end
+                  or function() M.removeCodex(acct) end)
             else
               accountRow = {
                 title = accountTitle(acct .. resetSuffix .. (isCurrent and "  ●" or ""),

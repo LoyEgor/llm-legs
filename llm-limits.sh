@@ -12,6 +12,7 @@ write_cache=1
 refresh=0
 refresh_account=''
 start_windows=0
+gemini_remove=0
 sort_key=''
 sort_given=0
 while [ $# -gt 0 ]; do
@@ -25,6 +26,7 @@ while [ $# -gt 0 ]; do
     --refresh) refresh=1 ;;
     --refresh-account) shift; [ $# -gt 0 ] || { usage; exit 2; }; refresh=1; refresh_account=$1 ;;
     --start-windows) start_windows=1 ;;
+    --gemini-remove) gemini_remove=1 ;;
     *) usage; exit 2 ;;
   esac
   shift
@@ -112,6 +114,18 @@ format_reset_time() {
   fi
 }
 
+token_freeze_active_at() {
+  local dir=$1 f until now
+  f="$dir/token-freeze"
+  [ -f "$f" ] || return 1
+  until=$(jq -r '.until // empty' "$f" 2>/dev/null) || until=''
+  if [[ "$until" =~ ^[0-9]+$ ]]; then
+    now=${now_epoch:-$(date +%s)}
+    [ "$until" -gt "$now" ] || return 1
+  fi
+  return 0
+}
+
 claude_stale_cause() {
   local attempts_file=$1 name=$2 auth=${3:-ok} raw kind value
   raw=$(jq -r --arg n "$name" --arg auth "$auth" '
@@ -134,6 +148,8 @@ claude_stale_cause() {
     else
       printf 'token rate-limited, retry ~%s' "$(format_reset_time "$value")"
     fi
+  elif token_freeze_active_at "$(dirname "$attempts_file")"; then
+    printf 'auto-refresh frozen (experiment); enter the account to refresh'
   else
     printf '%s' "${value:-stale data kept}"
   fi
@@ -333,6 +349,7 @@ render_table() {
              rot: rotation, credits: "-", status: account_status})
        else {src: "claude", five: null, week: null, fable:null, age:"-", rot:"-", credits:"-", status:($v.claude.status // "-")} end),
       (("codex", "gemini") as $k | $v[$k]
+       | select(.removed != true)
        | if .available then
            if $k == "codex" and ((.accounts | type) == "array") and
               ((.accounts | length) > 1 or any(.accounts[]; .auth_needed == true)) then
@@ -414,6 +431,16 @@ gemini_wall=$(wall_for gemini)
 # bounded PTY and ask its authenticated localhost Connect RPC for the same summary as /usage.
 # Keep the last valid snapshot so ordinary menu opens remain file-only and instant.
 gemini_cache=${LLM_LIMITS_GEMINI_CACHE:-$HOME/.llm-limits-gemini.json}
+# "Remove" for the single-account Gemini vendor is a persistent marker, not a creds
+# wipe (the antigravity CLI owns its own opaque credential store — see the report).
+# While the marker exists AND creds stay invalid the vendor is skipped everywhere; a
+# later refresh that finds valid creds self-clears it below, so re-login heals with
+# no orphan state.
+gemini_removed_marker="${LLM_LIMITS_GEMINI_REMOVED:-${gemini_cache}.removed}"
+if [ "$gemini_remove" -eq 1 ]; then
+  mkdir -p "$(dirname "$gemini_removed_marker")" 2>/dev/null || true
+  : > "$gemini_removed_marker" 2>/dev/null || true
+fi
 gemini_refresh_error=''
 gemini_refresh_attempted=0
 refresh_gemini_quota() {
@@ -1088,6 +1115,14 @@ if [ -r "$gemini_cache" ]; then
         as_of:$as_of,as_of_epoch:$as_of_epoch,last_wall:$wall}')
   fi
 fi
+if [ -e "$gemini_removed_marker" ]; then
+  if printf '%s' "$gemini" | jq -e '.available == true and (.auth_needed != true)' >/dev/null 2>&1; then
+    rm -f "$gemini_removed_marker"
+  else
+    gemini=$(printf '%s' "$gemini" | jq -c \
+      '{available:false,removed:true,status:"removed",source:(.source // "agy-local-rpc"),last_wall:(.last_wall // null)}')
+  fi
+fi
 # Snapshots are passive: a window whose resets_at is already behind us has been reset
 # server-side, so its used_pct is stale noise. Flag it (values kept for provenance).
 global_refresh_error=''
@@ -1261,6 +1296,7 @@ else
       " | age " + ($row | compact_age($render_now)) +
       " | rot " + $rot + " | cr " + $credits + " | status " + $status;
     .vendors | to_entries[] |
+    select(.value.removed != true) |
     if .value.available then
       if .key == "claude" and (.value.accounts | type) == "array" then
         .value.accounts[] |

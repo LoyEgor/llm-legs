@@ -191,6 +191,40 @@ jq -e '.vendors.gemini.auth_needed == true and .vendors.gemini.stale_seconds > 1
   || fail "auth_needed preservation re-stamped the old snapshot's as_of as fresh"
 printf '%s\n' "$gemini_cache_saved" >"$GEMINI_CACHE"
 
+# Gemini "remove": a persistent marker hides the vendor everywhere while its creds stay
+# invalid, and self-clears the moment a refresh finds valid creds again (owner re-logged
+# in via the gemini CLI) — self-healing, no orphan state.
+GEMINI_MARKER="$GEMINI_CACHE.removed"
+LLM_LIMITS_GEMINI_REFRESH=1 LLM_LIMITS_GEMINI_CMD="$GEMINI_AUTH_HELPER" \
+  LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" \
+  /bin/bash "$SCRIPT" --refresh-account gemini --json >/dev/null
+gemini_removed=$(LLM_LIMITS_GEMINI_REFRESH=0 LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
+  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" /bin/bash "$SCRIPT" --gemini-remove --json)
+jq -e '.vendors.gemini.removed == true and .vendors.gemini.available == false' \
+  <<<"$gemini_removed" >/dev/null || fail "gemini-remove did not mark the vendor removed"
+[ -e "$GEMINI_MARKER" ] || fail "gemini-remove did not persist the removed marker"
+gemini_removed_table=$(LLM_LIMITS_GEMINI_REFRESH=0 LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
+  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" /bin/bash "$SCRIPT" --table)
+awk 'NR > 1 && $1 == "gemini"' <<<"$gemini_removed_table" | grep -q . \
+  && fail "removed gemini still rendered a table row"
+gemini_removed_plain=$(LLM_LIMITS_GEMINI_REFRESH=0 LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
+  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" /bin/bash "$SCRIPT" --plain)
+grep -q '^gemini:' <<<"$gemini_removed_plain" && fail "removed gemini still rendered a plain row"
+gemini_still=$(LLM_LIMITS_GEMINI_REFRESH=0 LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
+  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" /bin/bash "$SCRIPT" --json)
+jq -e '.vendors.gemini.removed == true' <<<"$gemini_still" >/dev/null \
+  || fail "removed gemini un-hid itself on a passive collect while still logged out"
+[ -e "$GEMINI_MARKER" ] || fail "passive collect cleared the marker while still logged out"
+gemini_healed=$(LLM_LIMITS_GEMINI_REFRESH=1 LLM_LIMITS_GEMINI_CMD="$GEMINI_HELPER" \
+  LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" \
+  /bin/bash "$SCRIPT" --refresh-account gemini --json)
+jq -e '.vendors.gemini.available == true and (.vendors.gemini | has("removed") | not) and
+  .vendors.gemini.weekly.used_pct == 25' <<<"$gemini_healed" >/dev/null \
+  || fail "valid gemini creds did not self-clear the removed marker"
+[ ! -e "$GEMINI_MARKER" ] || fail "valid gemini creds left the removed marker in place"
+rm -f "$GEMINI_SENTINEL"
+printf '%s\n' "$gemini_cache_saved" >"$GEMINI_CACHE"
+
 # agy-quota.py detection against a fake agy: the transient "not signed in" during
 # auto-sign-in must not read as login-needed (live regression: menu stuck after re-login).
 FAKE_AGY="$WORK/fake-agy"
@@ -348,6 +382,26 @@ HOME="$HOME_FIXTURE" CLAUDEB_DIR="$STALE_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/cl
   LLM_LIMITS_CACHE="$STALE_CACHE" /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1 || true
 jq -e '.vendors.claude | has("refresh_error") | not' "$STALE_CACHE" >/dev/null \
   || fail "fully fresh refresh did not clear the residual-staleness cause"
+
+# token-freeze experiment: a dark (stale) account renders the honest frozen cause,
+# never a generic "probe failed"; an expired `until` reverts to the normal cause.
+FREEZE_STORE="$WORK/claudeb-freeze-store"
+mkdir -p "$FREEZE_STORE/limits" "$FREEZE_STORE/tokens"
+: >"$FREEZE_STORE/tokens/frz"
+printf 'frz\n' >"$FREEZE_STORE/.claudeb-state"
+printf '{"five_hour":{"used_percentage":7,"resets_at":%s,"as_of":%s,"origin":"usage"}}\n' "$((now + 5000))" "$((now - 3600))" >"$FREEZE_STORE/limits/frz.json"
+printf '{}' >"$FREEZE_STORE/oauth-attempts.json"
+printf '{"started_at":%s,"reason":"token-freeze experiment"}\n' "$now" >"$FREEZE_STORE/token-freeze"
+FREEZE_CACHE="$WORK/freeze-cache.json"
+HOME="$HOME_FIXTURE" CLAUDEB_DIR="$FREEZE_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-noop" \
+  LLM_LIMITS_CACHE="$FREEZE_CACHE" /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1 || true
+jq -e '.vendors.claude.refresh_error.cause | contains("auto-refresh frozen (experiment); enter the account to refresh")' "$FREEZE_CACHE" >/dev/null \
+  || fail "frozen dark account not surfaced with the honest freeze cause"
+printf '{"started_at":%s,"until":%s,"reason":"x"}\n' "$((now - 7200))" "$((now - 3600))" >"$FREEZE_STORE/token-freeze"
+HOME="$HOME_FIXTURE" CLAUDEB_DIR="$FREEZE_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-noop" \
+  LLM_LIMITS_CACHE="$FREEZE_CACHE" /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1 || true
+jq -e '(.vendors.claude.refresh_error.cause // "" | contains("auto-refresh frozen")) | not' "$FREEZE_CACHE" >/dev/null \
+  || fail "expired token-freeze until must render as unfrozen"
 
 # Per-account staleness causes self-clear on passive collects; other shapes never drop.
 PASSIVE_STORE="$WORK/claudeb-passive-store"

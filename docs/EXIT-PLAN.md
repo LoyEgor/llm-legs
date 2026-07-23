@@ -54,3 +54,29 @@ and the replaced writer code paths. The daemon survives only in this branch.
 
 The judgment call between the two belongs to the session executing the exit, based on
 `~/.claude-profiles/.claudeb/selfcheck.log` history and the ledger's divergence record.
+
+## Token-freeze experiment
+
+decision-date: 2026-07-27
+
+Anthropic's OAuth token endpoint intermittently 429s our accounts. Hypothesis under
+test: our own automated refresh traffic (the 30-min upkeep timer, start-window warms,
+background probe refreshes across 4 accounts from one IP) earned the rate-limiting.
+Experiment: freeze every ROBOT path to the token endpoint for ~4 days; the owner enters
+accounts manually each morning (the real Claude Code CLI refreshes its own token, and
+claudeb adopts it from the keychain). Zero 429s and zero hangs during the freeze confirm
+the hypothesis.
+
+**Temporary inventory (what exits): the freeze FILE only** —
+`~/.claude-profiles/.claudeb/token-freeze`. The switch (`token_freeze_active`), the
+attempt journal (`token-attempts.jsonl` + `token_journal`), and the honest frozen
+stale-cause in `llm-limits.sh` are permanent and cheap; they stay.
+
+**Exit decision (one of two outcomes).** Review `token-attempts.jsonl` (only `frozen-skip`
+lines should appear during the freeze) plus the owner's morning-walk experience:
+
+- **Hypothesis rejected** (429s continued despite the freeze): delete the freeze file and
+  restore automation as-is; nothing else changes.
+- **Hypothesis confirmed** (freeze was clean): keep automation off and rebuild scheduled
+  refresh in "parasite mode" — piggy-back on the CLI's own refreshes instead of our own
+  token-endpoint traffic (separate task).
