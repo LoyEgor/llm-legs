@@ -34,8 +34,11 @@ account_home() {
   fi
 }
 
-account_exists() {
-  [ "$1" = main ] || [ -d "$profiles_dir/$1" ]
+reserved_name() {
+  case "$1" in
+    .*|*/*|help|add|remove|list|status|pick|profile|p|run) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 ensure_profile() {
@@ -107,8 +110,8 @@ quota_snapshot() {
 
 add_account() {
   local name="${1:-}" directory status
-  if [ -z "$name" ] || ! [[ "$name" =~ ^[a-z0-9-]+$ ]] || [ "$name" = main ]; then
-    printf 'usage: codexb add <name> (lowercase letters, numbers, and hyphens; not "main")\n' >&2
+  if [ -z "$name" ] || ! [[ "$name" =~ ^[a-z0-9-]+$ ]] || [ "$name" = main ] || reserved_name "$name"; then
+    printf 'usage: codexb add <name> (lowercase letters, numbers, and hyphens; not reserved words or "main")\n' >&2
     exit 2
   fi
   directory="$profiles_dir/$name"
@@ -201,30 +204,52 @@ pick_account() {
 }
 
 run_account() {
-  local name="${1:-}" home
+  local allow_create="$1" name="${2:-}" directory
+  if [ "$name" = -h ] || [ "$name" = --help ]; then
+    show_help
+    return
+  fi
   if [ -z "$name" ]; then
-    printf 'usage: codexb run <name> [codex args...]\n' >&2
+    printf 'usage: codexb profile <name> [codex args...]\n' >&2
     exit 2
   fi
-  account_exists "$name" || { printf 'codexb: unknown account: %s\n' "$name" >&2; exit 2; }
-  shift
-  home=$(account_home "$name")
+  if reserved_name "$name"; then
+    printf "codexb: invalid profile name '%s'\n" "$name" >&2
+    exit 2
+  fi
+  shift 2
   if [ "$name" = main ]; then
     exec env -u CODEX_HOME codex "$@"
-  else
-    exec env CODEX_HOME="$home" codex "$@"
   fi
+  directory="$profiles_dir/$name"
+  if [ ! -d "$directory" ]; then
+    # Only explicit entry verbs create; the bare `<name> exec` path must still
+    # reject an unknown account rather than mkdir a typo into existence.
+    if [ "$allow_create" != true ]; then
+      printf 'codexb: unknown account: %s\n' "$name" >&2
+      exit 2
+    fi
+    if ! [[ "$name" =~ ^[a-z0-9-]+$ ]]; then
+      printf "codexb: invalid profile name '%s' (lowercase letters, numbers, and hyphens)\n" "$name" >&2
+      exit 2
+    fi
+    mkdir -p "$directory"
+    printf "codexb: new profile '%s' created at %s — Codex will ask you to log in once.\n" "$name" "$directory" >&2
+  fi
+  ensure_profile "$directory"
+  exec env CODEX_HOME="$directory" codex "$@"
 }
 
 show_help() {
   printf '%s\n' \
-    'codexb add <name>' \
-    'codexb remove <name>' \
-    'codexb list' \
-    'codexb status' \
-    'codexb pick' \
-    'codexb profile <name> [codex args...]   (aliases: p, run)' \
-    'codexb <name> exec [args...]'
+    'codexb profile <name> [codex args...]  Open an isolated profile; creates it if missing (Codex asks you to log in once). Aliases: p, run.' \
+    'codexb profile <name> login --device-auth   Log in with a device code (menu Codex login uses this).' \
+    'codexb <name> exec [args...]' \
+    'codexb add <name>                      Create a profile without launching; prints the login command.' \
+    'codexb remove <name>                   Forget a profile and prune its cached quota.' \
+    'codexb list                            List profiles with login state.' \
+    'codexb status                          Per-account login state and quota.' \
+    'codexb pick                            Print the freest usable account.'
 }
 
 ensure_profiles
@@ -254,7 +279,7 @@ case "${1:-}" in
     ;;
   profile|p|run)
     shift
-    run_account "$@"
+    run_account true "$@"
     ;;
   help|-h|--help|'')
     show_help
@@ -266,6 +291,6 @@ case "${1:-}" in
       exit 2
     fi
     shift 2
-    run_account "$name" exec "$@"
+    run_account false "$name" exec "$@"
     ;;
 esac

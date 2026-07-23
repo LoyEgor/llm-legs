@@ -147,6 +147,57 @@ assert test "$(sed -n '2p' "$CODEX_CALLS")" = 'ARG=exec'
 assert test "$(sed -n '3p' "$CODEX_CALLS")" = 'ARG=--json'
 assert test "$(sed -n '4p' "$CODEX_CALLS")" = 'ARG=two\ words'
 
+# One-step profile: an unknown name is auto-created (mirrors claudeb profile) and codex launches.
+: >"$CODEX_CALLS"
+fresh_output=$(bash "$SCRIPT" profile fresh 2>&1) || fail "profile fresh failed"
+assert test -d "$HOME/.codex-profiles/fresh"
+assert grep -q "new profile 'fresh' created" <<<"$fresh_output"
+assert grep -qx "CALL account=fresh home=$HOME/.codex-profiles/fresh argc=0" "$CODEX_CALLS"
+for item in config.toml AGENTS.md skills plugins; do
+  assert test -L "$HOME/.codex-profiles/fresh/$item"
+done
+
+# The device-auth login the menu fires auto-creates the profile then passes the flags through.
+: >"$CODEX_CALLS"
+bash "$SCRIPT" run devauth login --device-auth >/dev/null 2>&1 || fail "device-auth login failed"
+assert test -d "$HOME/.codex-profiles/devauth"
+assert grep -qx "CALL account=devauth home=$HOME/.codex-profiles/devauth argc=2" "$CODEX_CALLS"
+assert grep -qx 'ARG=login' "$CODEX_CALLS"
+assert grep -qx 'ARG=--device-auth' "$CODEX_CALLS"
+
+# Relaunching an existing profile must not reprint the creation note.
+: >"$CODEX_CALLS"
+reopen_output=$(bash "$SCRIPT" p alpha 2>&1) || fail "reopen alpha failed"
+if grep -q "new profile" <<<"$reopen_output"; then fail "reopen reprinted the created note"; fi
+
+# Reserved words are rejected by BOTH the profile path and add, with parallel wording; no dir leaks.
+for reserved in profile p run add remove list status pick help; do
+  assert_fails bash "$SCRIPT" profile "$reserved" </dev/null >/dev/null 2>&1
+  assert_fails bash "$SCRIPT" add "$reserved" </dev/null >/dev/null 2>&1
+done
+assert test ! -d "$HOME/.codex-profiles/status"
+reserved_err=$(bash "$SCRIPT" profile add </dev/null 2>&1); reserved_rc=$?
+assert test "$reserved_rc" -eq 2
+assert grep -qx "codexb: invalid profile name 'add'" <<<"$reserved_err"
+# An invalid charset on creation is rejected before any dir is made.
+assert_fails bash "$SCRIPT" profile Bad </dev/null >/dev/null 2>&1
+assert test ! -d "$HOME/.codex-profiles/Bad"
+
+# The bare `<name> exec` path never auto-creates: a typo'd account errors, makes no dir, execs nothing.
+: >"$CODEX_CALLS"
+exec_err=$(bash "$SCRIPT" wrok exec --json </dev/null 2>&1); exec_rc=$?
+assert test "$exec_rc" -eq 2
+assert grep -qx 'codexb: unknown account: wrok' <<<"$exec_err"
+assert test ! -d "$HOME/.codex-profiles/wrok"
+assert test ! -s "$CODEX_CALLS"
+
+# `profile -h`/`--help` shows help (parity with claudeb) and creates nothing.
+for flag in -h --help; do
+  help_out=$(bash "$SCRIPT" profile "$flag" </dev/null) || fail "profile $flag failed"
+  assert grep -q 'codexb profile <name>' <<<"$help_out"
+  assert test ! -d "$HOME/.codex-profiles/$flag"
+done
+
 CACHE="$HOME/.llm-limits-codex.json"
 printf 'ok\n' >"$HOME/auth-trap"
 printf '{"primary":{"usedPercent":30,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":40,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"}\n' "$future" "$week" >"$HOME/quota-trap.json"
@@ -189,4 +240,4 @@ assert jq -e '([.accounts[].account] | index("gone") == null) and
 assert_fails bash "$SCRIPT" remove main
 assert_fails bash "$SCRIPT" remove never-existed
 
-echo "PASS: $asserts asserts; add and shared-link trap, list/status, quota-aware authenticated pick, reset credits, auth-needed cache markers, exact run environments/arguments, multi-account cache compatibility, remove forgets the profile dir and prunes the cache entry (main refused)"
+echo "PASS: $asserts asserts; add and shared-link trap, list/status, quota-aware authenticated pick, reset credits, auth-needed cache markers, exact run environments/arguments, one-step profile auto-create with shared links, device-auth login passthrough, existing-profile relaunch stays quiet, reserved-name and charset rejection parity, multi-account cache compatibility, remove forgets the profile dir and prunes the cache entry (main refused)"

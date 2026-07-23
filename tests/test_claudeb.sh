@@ -205,6 +205,11 @@ if HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" bash "$SCRIPT" add warm 
   fail "add accepted reserved account name warm"
 fi
 assert test ! -e "$CLAUDEB_DIR/tokens/warm"
+for reserved in p run profile; do
+  if HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" bash "$SCRIPT" add "$reserved" </dev/null >/dev/null 2>&1; then
+    fail "add accepted reserved account name $reserved"
+  fi
+done
 
 touch "$CLAUDEB_DIR/tokens/alpha" "$CLAUDEB_DIR/tokens/beta"
 future=$((now + 7200))

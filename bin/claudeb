@@ -1338,7 +1338,7 @@ reconcile_window() {
 
 reserved_name() {
   case "$1" in
-    .*|*/*|help|add|use|enable|disable|remove|pick|accounts|status|st|daemon|profile|warm|token-upkeep) return 0 ;;
+    .*|*/*|help|add|use|enable|disable|remove|pick|accounts|status|st|daemon|profile|p|run|warm|token-upkeep) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -1552,7 +1552,7 @@ show_help() {
   printf '  %s%sclaudeb --refresh [--spend] [--start-windows] [--heal]%s\n' "$bold" "$cyan" "$reset"
   printf '                                          %sFree refresh; --spend adds the 1-token fallback,%s\n' "$dim" "$reset"
   printf '                                          %s--start-windows pings expired 5h windows.%s\n' "$dim" "$reset"
-  printf '  %s%sclaudeb profile <name>%s                  %sOpen an isolated profile; alias: p.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
+  printf '  %s%sclaudeb profile <name>%s                  %sOpen an isolated profile; creates it if missing (Claude asks you to log in once). Alias: p.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb warm [--start-window] [names...]%s %sHeal profiles and limits; free: session init + /usage only;%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '                                          %sfalls back to a minimal paid prompt only if that fails.%s\n' "$dim" "$reset"
   printf '                                          %s--start-window pings an expired 5h window after a good warm.%s\n' "$dim" "$reset"

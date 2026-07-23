@@ -184,12 +184,14 @@ Same idea for OpenAI Codex CLI, without a proxy daemon: each extra account lives
 AGENTS.md, skills, plugins, rules are symlinked to `~/.codex`). The default `~/.codex` account is
 always available as `main` and is never modified.
 
-- `bin/codexb` → `~/.local/bin/codexb` — `add <name>` (create profile + print the login command),
-  `list`, `status` (per-account quota via the zero-spend app-server RPC), `pick` (freest usable
-  account), `run <name> [args...]` (exec codex under that account's home).
+- `bin/codexb` → `~/.local/bin/codexb` — `profile <name> [args...]` (create the profile if missing
+  and exec codex under it, so a bare launch prompts login; aliases `p`, `run`), `add <name>`
+  (create a profile without launching + print the login command), `list`, `status` (per-account
+  quota via the zero-spend app-server RPC), `pick` (freest usable account).
 
-Adding an account: `codexb add work`, run the login command it prints, then `codexb status` should
-show both accounts. Worker agents pick the freest account automatically (`codexb pick`) unless
+Adding an account: `codexb profile work` creates it and launches codex, which prompts login in one
+step (mirrors `claudeb profile <name>`); `codexb profile work login --device-auth` runs the device
+flow the menu uses. Afterward `codexb status` should show both accounts. Worker agents pick the freest account automatically (`codexb pick`) unless
 pinned via `codex_profile=` in the worker toggle file; the menubar shows per-account rows once more
 than one account exists.
 
