@@ -223,7 +223,7 @@ show_help() {
     'codexb list' \
     'codexb status' \
     'codexb pick' \
-    'codexb run <name> [codex args...]' \
+    'codexb profile <name> [codex args...]   (aliases: p, run)' \
     'codexb <name> exec [args...]'
 }
 
@@ -252,7 +252,7 @@ case "${1:-}" in
     selection=$(pick_account)
     printf '%s\n' "${selection:-main}"
     ;;
-  run)
+  profile|p|run)
     shift
     run_account "$@"
     ;;
