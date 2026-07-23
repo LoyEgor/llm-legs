@@ -253,4 +253,53 @@ module.sendKeys({ "cmd" }, "a")
 assert(ctx.activated == 1, "cmd chord skipped the activation path")
 print("✓ sendKeys cmd vs plain routing")
 
+-- sendCopy chord gating: the TUI copy chord (ctrl+x ctrl+y) only fires when
+-- ClaudeCmdKeys confirms Claude Code owns the foreground; a plain shell would
+-- otherwise receive destructive readline edits, so copy falls back to Cmd+C.
+local function verdictCK(verdict)
+    return { menuCopy = function() end, foregroundVerdict = function() return verdict end }
+end
+
+ctx = context({ target = terminal, front = "com.apple.Terminal", frontPid = 200,
+    claudeCmdKeys = verdictCK("claude") })
+module.sendCopy()
+assert(ctx:lastPath() == "menuCopy" and #ctx.sent == 0,
+    "confirmed-Claude Terminal did not use the copy chord")
+
+ctx = context({ target = terminal, front = "com.apple.Terminal", frontPid = 200,
+    claudeCmdKeys = verdictCK("not-claude") })
+module.sendCopy()
+assert(ctx:lastPath() == "native-cmd" and #ctx.sent == 1 and ctx.sent[1].key == "c"
+    and ctx.sent[1].mods[1] == "cmd", "non-Claude Terminal did not fall back to Cmd+C")
+
+-- Cold cache still uncertain after the deferred re-check -> Cmd+C, never chord.
+ctx = context({ target = terminal, front = "com.apple.Terminal", frontPid = 200,
+    claudeCmdKeys = verdictCK("uncertain") })
+module.sendCopy()
+assert(#ctx.sent == 0 and ctx:lastPath() == nil,
+    "uncertain verdict acted before its deferred re-check")
+ctx:runTimers()
+assert(ctx:lastPath() == "native-cmd" and #ctx.sent == 1 and ctx.sent[1].key == "c",
+    "still-uncertain verdict did not fall back to Cmd+C")
+
+-- Cold cache that resolves to Claude within the deferral -> chord.
+local flip = { verdict = "uncertain" }
+ctx = context({ target = terminal, front = "com.apple.Terminal", frontPid = 200,
+    claudeCmdKeys = { menuCopy = function() end,
+        foregroundVerdict = function() return flip.verdict end } })
+module.sendCopy()
+flip.verdict = "claude"
+ctx:runTimers()
+assert(ctx:lastPath() == "menuCopy" and #ctx.sent == 0,
+    "verdict that resolved to Claude after the deferral did not use the chord")
+
+-- A terminal ClaudeCmdKeys cannot detect keeps the unconditional chord.
+local iterm = fakeApp("com.googlecode.iterm2", 1, true, 210)
+ctx = context({ target = iterm, front = "com.googlecode.iterm2", frontPid = 210,
+    claudeCmdKeys = verdictCK("not-claude") })
+module.sendCopy()
+assert(ctx:lastPath() == "menuCopy" and #ctx.sent == 0,
+    "undetectable terminal lost its chord path")
+print("✓ sendCopy chord gating")
+
 print("All send actions tests passed")

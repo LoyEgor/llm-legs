@@ -978,6 +978,15 @@ function M.stop()
   end
 end
 
+-- Live Claude-vs-shell verdict for the frontmost Terminal tab, validated
+-- against the current context rather than the last resolved value:
+-- "claude" | "not-claude" | "uncertain". Reuses the same cache the physical
+-- Cmd+C path reads, at the same per-tab granularity. SendActions gates its copy
+-- chord on this so ctrl+x ctrl+y never reaches a plain shell.
+function M.foregroundVerdict()
+  return M.cachedVerdict(observeFrontmost(), cachedContext, now())
+end
+
 function M.status()
   return {
     running = started and eventTap ~= nil and eventTap:isEnabled() or false,

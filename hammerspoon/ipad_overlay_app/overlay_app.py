@@ -164,7 +164,7 @@ def log(msg):
     try:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         with open(LOG_FILE, "a") as f:
-            f.write("%s %s\n" % (time.strftime("%H:%M:%S"), msg))
+            f.write("%s %s\n" % (time.strftime("%Y-%m-%dT%H:%M:%S"), msg))
     except OSError:
         pass
 
@@ -499,8 +499,11 @@ class OverlayApp:
         self.root = None
         self.buttons = {}
         self.visible = False
-        self.voice_state = "offline"
+        self.voice_state = None
         self._optimistic_until = 0.0
+        self._wand_block_until = 0.0
+        self._voice_poll_now = threading.Event()
+        self._voice_poll_thread = None
         self._kb_optimistic_until = 0.0
         self._kb_expected = False
         self._kb_lock = threading.Lock()
@@ -509,6 +512,7 @@ class OverlayApp:
         self._target_frame = None
         self.hs_binary = self._resolve_hs()
         self._build_panel()
+        self._set_voice_state("offline")
         self.delegate = OverlayDelegate.alloc().initWithApp_(self)
         self.panel.setDelegate_(self.delegate)
         NSDistributedNotificationCenter.defaultCenter() \
@@ -756,9 +760,37 @@ class OverlayApp:
 
     def _send_hs(self, code):
         if not self.hs_binary:
+            return False
+        try:
+            subprocess.Popen([self.hs_binary, "-c", code],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except OSError as exc:
+            log("hs dispatch failed: %r" % exc)
+            return False
+
+    def _dispatch_voice(self, action, code):
+        state = self.voice_state or "unknown"
+        if not self.visible:
+            log("tap state=%s action=%s dispatch=hidden" % (state, action))
+            return None
+        dispatched = self._send_hs(code)
+        log("tap state=%s action=%s dispatch=%s" % (
+            state, action, "spawned" if dispatched else "unavailable"))
+        self._voice_poll_now.set()
+        return state
+
+    def _show_offline_feedback(self, name):
+        btn = self.buttons.get(name)
+        if not btn:
             return
-        subprocess.Popen([self.hs_binary, "-c", code],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        btn.set_tint("secondary")
+        btn.set_pulsing(True)
+
+        def settle():
+            if self.voice_state == "offline":
+                btn.set_pulsing(False)
+        on_main_later(0.7, settle)
 
     def _set_optimistic(self, state):
         # Give the daemon time to actually transition before the status poll
@@ -773,23 +805,43 @@ class OverlayApp:
             self._set_voice_state(state)
 
     def _on_mic(self):
-        state = self.voice_state
+        state = self.voice_state or "unknown"
         if state == "idle":
-            self._send_hs("_G.GptVoice.start()")
-            self._set_optimistic("recording")
+            if self._dispatch_voice("mic-start", "_G.GptVoice.start()") is not None:
+                self._set_optimistic("recording")
         elif state == "recording":
             # Second tap = submit: daemon stops, pastes, and presses Enter.
-            self._send_hs("_G.GptVoice.submit()")
-            self._set_optimistic("processing")
+            if self._dispatch_voice("mic-submit", "_G.GptVoice.submit()") is not None:
+                self._set_optimistic("processing")
         elif state in ("processing", "transforming"):
-            self._send_hs("_G.GptVoice.cancel()")
-            self._set_optimistic("idle")
+            if self._dispatch_voice("mic-cancel", "_G.GptVoice.cancel()") is not None:
+                self._set_optimistic("idle")
+        else:
+            if time.time() < self._optimistic_until:
+                log("tap state=%s action=mic-start dispatch=debounced" % state)
+                self._voice_poll_now.set()
+            elif self._dispatch_voice(
+                    "mic-start", "_G.GptVoice.start()") is not None:
+                self._optimistic_until = time.time() + 1.5
+            if self.visible:
+                self._show_offline_feedback("mic")
 
     def _on_wand(self):
-        if self.voice_state == "offline":
+        state = self.voice_state or "unknown"
+        # Own window, not _optimistic_until: a mic tap arms that one, and a
+        # wand tap right after a mic tap is a legit two-track flow.
+        if self.visible and time.time() < self._wand_block_until:
+            log("tap state=%s action=wand-transform dispatch=debounced" % state)
+            self._voice_poll_now.set()
             return
-        self._send_hs("_G.GptVoice.transform()")
-        self._set_optimistic("transforming")
+        state = self._dispatch_voice("wand-transform", "_G.GptVoice.transform()")
+        if state is None:
+            return
+        self._wand_block_until = time.time() + 1.5
+        if state in ("offline", "unknown"):
+            self._show_offline_feedback("wand")
+        else:
+            self._set_optimistic("transforming")
 
     # -- accessibility keyboard ------------------------------------------
 
@@ -861,6 +913,7 @@ class OverlayApp:
         if self._save_due is not None and time.time() >= self._save_due:
             self._save_due = None
             self._save_frame()
+        self._ensure_voice_polling()
         if not self.visible:
             return
         self._heal_offscreen()
@@ -889,15 +942,20 @@ class OverlayApp:
     def _set_voice_state(self, state):
         if state == self.voice_state:
             return
+        old_state = self.voice_state or "unknown"
         self.voice_state = state
+        log("voice state=%s->%s" % (old_state, state))
         mic = self.buttons.get("mic")
         wand = self.buttons.get("wand")
         if not mic or not wand:
             return
         offline = state == "offline"
-        mic.set_button_enabled(not offline)
-        wand.set_button_enabled(not offline)
-        if state == "recording":
+        mic.set_button_enabled(True)
+        wand.set_button_enabled(True)
+        if offline:
+            mic.set_tint("secondary")
+            mic.set_pulsing(False)
+        elif state == "recording":
             mic.set_tint("red")
             mic.set_pulsing(True)
         elif state in ("processing", "transforming"):
@@ -906,32 +964,50 @@ class OverlayApp:
         else:
             mic.set_tint(None)
             mic.set_pulsing(False)
-        if state == "transforming":
+        if offline:
+            wand.set_tint("secondary")
+            wand.set_pulsing(False)
+        elif state == "transforming":
             wand.set_tint("accent")
             wand.set_pulsing(True)
         else:
             wand.set_tint(None)
             wand.set_pulsing(False)
 
-    def _poll_voice(self):
-        while True:
-            if not self.visible:
-                time.sleep(1.0)
-                continue
-            state = "offline"
-            try:
-                sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                sock.settimeout(1.5)
+    def _ensure_voice_polling(self):
+        if self._voice_poll_thread and self._voice_poll_thread.is_alive():
+            return
+        if self._voice_poll_thread:
+            log("voice poller restarting")
+        self._voice_poll_thread = threading.Thread(
+            target=self._poll_voice, daemon=True)
+        self._voice_poll_thread.start()
+
+    def _read_voice_state(self):
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                sock.settimeout(0.75)
                 sock.connect(str(CONTROL_SOCK))
                 sock.sendall(b"status\n")
                 reply = sock.recv(64).decode("utf-8", "ignore").strip()
-                sock.close()
-                if reply in ("idle", "recording", "processing", "transforming"):
-                    state = reply
-            except OSError:
-                state = "offline"
-            on_main(self._apply_polled_voice_state, state)
-            time.sleep(1.0)
+            if reply in ("idle", "recording", "processing", "transforming"):
+                return reply
+        except OSError:
+            pass
+        except Exception as exc:
+            log("voice poll failed: %r" % exc)
+        return "offline"
+
+    def _poll_voice(self):
+        while True:
+            try:
+                self._voice_poll_now.wait(0.75 if self.visible else 5.0)
+                self._voice_poll_now.clear()
+                on_main(
+                    self._apply_polled_voice_state,
+                    self._read_voice_state())
+            except Exception as exc:
+                log("voice poller error: %r" % exc)
 
     # -- show / hide -------------------------------------------------------
 
@@ -939,6 +1015,7 @@ class OverlayApp:
         if self.visible:
             return
         self.visible = True
+        self._voice_poll_now.set()
         panel = self.panel
         final = self._clamp(self._target_frame or panel.frame())
         self._target_frame = final
@@ -1066,7 +1143,7 @@ class OverlayApp:
         threading.Thread(target=self._serve_control, daemon=True).start()
         if not show_now:
             threading.Thread(target=self._watch_parent, daemon=True).start()
-        threading.Thread(target=self._poll_voice, daemon=True).start()
+        self._ensure_voice_polling()
         if show_now:
             on_main(self.show)
         AppHelper.runEventLoop(installInterrupt=False)

@@ -339,20 +339,77 @@ function SendActions.targetIsTerminal()
     return isTerminalApp(pasteTarget)
 end
 
+-- Only com.apple.Terminal has both a Cmd+C -> chord rewrite and a
+-- Claude-vs-shell detector in ClaudeCmdKeys; other terminals keep the
+-- unconditional chord (there is no second detector to gate them on).
+local chordDetectBundle = "com.apple.Terminal"
+-- Cold-cache grace mirrors ClaudeCmdKeys' own pending-resolve window, so a
+-- just-focused tab has time to resolve before we give up and copy natively.
+local chordVerdictDeferral = 0.28
+
+local function fireChord(target, record)
+    local ck = _G.ClaudeCmdKeys
+    if ck and ck.menuCopy then
+        record.path = "menuCopy"
+        local ok = pcall(ck.menuCopy, target)
+        record.activation = ok and "-" or "error"
+        writeLog(record)
+        return
+    end
+    record.path = "chord-fallback"
+    local ok = pcall(function()
+        keyStroke({ "ctrl" }, "x", target, 20000)
+        keyStroke({ "ctrl" }, "y", target, 20000)
+    end)
+    record.activation = ok and "-" or "error"
+    writeLog(record)
+end
+
+local function nativeCopy(target, record)
+    record.path = "native-cmd"
+    deliverCmd({ "cmd" }, "c", target, record)
+end
+
+-- No terminal-native selection means the copy must come from a TUI. In a plain
+-- shell ctrl+x ctrl+y are readline edits that mutate the command line, so the
+-- Claude Code copy chord may fire only when ClaudeCmdKeys confirms Claude owns
+-- the terminal's foreground. Unknown (cold cache, even after its resolve
+-- window) copies natively - a no-op in a TUI but never destructive.
+local function copyFromTui(target, record)
+    local ck = _G.ClaudeCmdKeys
+    if bundleIDOf(target) ~= chordDetectBundle or not (ck and ck.foregroundVerdict) then
+        fireChord(target, record)
+        return
+    end
+    local verdict = ck.foregroundVerdict()
+    if verdict == "claude" then
+        fireChord(target, record)
+        return
+    end
+    if verdict ~= "uncertain" then
+        nativeCopy(target, record)
+        return
+    end
+    afterDelay(chordVerdictDeferral, function()
+        if ck.foregroundVerdict() == "claude" then
+            fireChord(target, record)
+        else
+            nativeCopy(target, record)
+        end
+    end)
+end
+
 function SendActions.sendCopy()
     local target = currentTarget()
     local record = beginRecord("sendCopy", target)
     if not record.terminal then
-        record.path = "native-cmd"
-        deliverCmd({ "cmd" }, "c", target, record)
+        nativeCopy(target, record)
         return
     end
     -- In a terminal running Claude Code the visible selection belongs to the TUI,
     -- not the terminal, so Cmd+C copies nothing (the TUI owns mouse reporting).
-    -- Claude Code exposes its copy as the ctrl+x ctrl+y chord (selection:copy in
-    -- ~/.claude/keybindings.json) - send that instead. A real terminal-native
-    -- selection is still copied with Cmd+C: it shows up as AXSelectedText, the
-    -- TUI's drawn selection does not.
+    -- A real terminal-native selection is still copied with Cmd+C: it shows up
+    -- as AXSelectedText, the TUI's drawn selection does not.
     local nativeSelection = false
     pcall(function()
         local axApp = hs.axuielement.applicationElement(target)
@@ -364,22 +421,10 @@ function SendActions.sendCopy()
         nativeSelection = type(sel) == "string" and #sel > 0
     end)
     if nativeSelection then
-        record.path = "native-cmd"
-        deliverCmd({ "cmd" }, "c", target, record)
-    elseif _G.ClaudeCmdKeys and _G.ClaudeCmdKeys.menuCopy then
-        record.path = "menuCopy"
-        local ok = pcall(_G.ClaudeCmdKeys.menuCopy, target)
-        record.activation = ok and "-" or "error"
-        writeLog(record)
-    else
-        record.path = "chord-fallback"
-        local ok = pcall(function()
-            keyStroke({ "ctrl" }, "x", target, 20000)
-            keyStroke({ "ctrl" }, "y", target, 20000)
-        end)
-        record.activation = ok and "-" or "error"
-        writeLog(record)
+        nativeCopy(target, record)
+        return
     end
+    copyFromTui(target, record)
 end
 
 -- Given the situation, choose the paste path. Pure: menuPasteSucceeded is the

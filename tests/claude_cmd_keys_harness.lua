@@ -578,6 +578,24 @@ integration.advance(11)
 module.handleEvent(vPress(false)); integration.resolve("claude"); integration.runDeferred()
 assert(integration.alerts() == 2, "TCC alert did not re-fire after the throttle window")
 
+-- foregroundVerdict wires observeFrontmost + the live cache into cachedVerdict.
+-- With no resolved cache, and for any non-Terminal frontmost, it must report
+-- "uncertain" so SendActions falls back to a plain Cmd+C.
+module.setTestHooks({
+  now = function() return 100 end,
+  observe = function()
+    return { bundleID = "com.apple.Terminal", windowID = 7, tabIndex = 1, tabElement = "tab-a" }
+  end,
+})
+assert(module.foregroundVerdict() == "uncertain",
+  "foreground verdict with no resolved cache was not uncertain")
+module.setTestHooks({
+  now = function() return 100 end,
+  observe = function() return { bundleID = "com.apple.Safari" } end,
+})
+assert(module.foregroundVerdict() == "uncertain",
+  "foreground verdict for a non-Terminal app was not uncertain")
+
 local copy = module.copyChordPlan()
 assert(#copy == 2, "copy chord length changed")
 assert(module.planBytes(copy) == string.char(24, 25), "copy bytes changed")
