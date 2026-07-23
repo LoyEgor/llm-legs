@@ -3,6 +3,7 @@ local M = {
   collectorPath = "/Volumes/Work/Projects/llm-legs/llm-limits.sh",
   claudebCmd = "claudeb",
   codexbCmd = "codexb",
+  geminibCmd = "geminib",
   wallsLog = nil,
   onRefreshStateChanged = function() end,
 }
@@ -400,7 +401,11 @@ local function resolveCodexb()
   return resolveCommand(M.codexbCmd or "codexb")
 end
 
--- Runs a vendor account command (claudeb/codexb) then re-collects so the row it
+local function resolveGeminib()
+  return resolveCommand(M.geminibCmd or "geminib")
+end
+
+-- Runs a vendor account command (claudeb/codexb/geminib) then re-collects so the row it
 -- changed disappears/updates immediately. Shared by the toggle/switch/remove wiring.
 local function runAccountCommand(launchPath, args, failMessage)
   local key = "account-action:" .. launchPath .. "\0" .. table.concat(args, "\0")
@@ -426,6 +431,10 @@ end
 
 local function runCodexb(args, failMessage)
   runAccountCommand(resolveCodexb(), args, failMessage)
+end
+
+local function runGeminib(args, failMessage)
+  runAccountCommand(resolveGeminib(), args, failMessage)
 end
 
 function M.switchAccount(name)
@@ -486,14 +495,17 @@ end
 -- Hard = full truth at any cost: opens the account's expired 5h window (tiny paid ping).
 function M.hardRefreshClaude(name) hardRefresh("claude/" .. name, true) end
 function M.hardRefreshCodex(name) hardRefresh("codex/" .. name) end
-function M.hardRefreshGemini() hardRefresh("gemini") end
+function M.hardRefreshGemini(name) hardRefresh("gemini/" .. (name or "main")) end
 
--- Vendor remove: each fires ONE command that owns all of its own store cleanup, then
--- re-collects so the removed row vanishes on the next render. Gemini has no account
--- CLI to forget, so its removal is a collector marker (see llm-limits.sh).
 function M.removeClaude(name) runClaudeb({ "remove", name }, "remove failed") end
 function M.removeCodex(name) runCodexb({ "remove", name }, "remove failed") end
-function M.removeGemini() refreshData({ "--gemini-remove" }, "gemini-remove", 360, "gemini-remove") end
+function M.removeGemini(name)
+  if not name or name == "main" then
+    refreshData({ "--gemini-remove" }, "gemini-remove", 360, "gemini-remove")
+  else
+    runGeminib({ "remove", name }, "remove failed")
+  end
+end
 
 local function shellQuote(value)
   return "'" .. tostring(value):gsub("'", [['\'']]) .. "'"
@@ -520,7 +532,9 @@ end
 function M.loginCodex(name)
   openLoginTerminal("codexb run " .. shellQuote(name) .. " login --device-auth")
 end
-function M.loginGemini() openLoginTerminal("agy") end
+function M.loginGemini(name)
+  openLoginTerminal((M.geminibCmd or "geminib") .. " profile " .. shellQuote(name or "main"))
+end
 
 local function refreshItems(menu)
   table.insert(menu, {
@@ -616,16 +630,20 @@ function M.menuItems()
 
     for _, entry in ipairs(vendors) do
       local vendor = limits.vendors[entry.key]
+      local hasGeminiAccounts = entry.key == "gemini" and type(vendor) == "table"
+        and type(vendor.accounts) == "table" and #vendor.accounts > 1
       -- A removed single-account vendor (gemini marker) is skipped entirely until its
       -- creds are valid again; llm-limits.sh clears the marker on that recovery.
       if type(vendor) == "table" and vendor.removed == true then
         vendor = nil
-      elseif type(vendor) ~= "table" or vendor.available ~= true then
+      elseif type(vendor) ~= "table" or (vendor.available ~= true and not hasGeminiAccounts) then
         local authNeeded = type(vendor) == "table" and vendor.auth_needed == true
         local unavailableRow
         if entry.key == "gemini" and authNeeded then
-          unavailableRow = loginNeededRow(entry.label, M.loginGemini, M.hardRefreshGemini,
-            M.removeGemini)
+          unavailableRow = loginNeededRow(entry.label,
+            function() M.loginGemini("main") end,
+            function() M.hardRefreshGemini("main") end,
+            function() M.removeGemini("main") end)
         else
           unavailableRow = {
             title = authNeeded and loginNeededTitle(entry.label)
@@ -634,16 +652,27 @@ function M.menuItems()
           }
           if entry.key == "gemini" then
             unavailableRow.disabled = nil
-            unavailableRow.menu = {{ title = "Hard refresh", fn = M.hardRefreshGemini }}
+            unavailableRow.menu = {{
+              title = "Hard refresh", fn = function() M.hardRefreshGemini("main") end,
+            }}
           end
         end
         table.insert(menu, unavailableRow)
       else
-        local blocks = (entry.key == "claude" or entry.key == "codex") and vendor.accounts or nil
+        local blocks = (entry.key == "claude" or entry.key == "codex" or entry.key == "gemini")
+          and vendor.accounts or nil
         local isClaudeAccounts = entry.key == "claude" and type(blocks) == "table" and #blocks > 0
         local isCodexAccounts = entry.key == "codex" and type(blocks) == "table" and #blocks > 0
-        local isAccountRows = isClaudeAccounts or isCodexAccounts
+        local isGeminiAccounts = entry.key == "gemini" and type(blocks) == "table" and #blocks > 1
+        local isAccountRows = isClaudeAccounts or isCodexAccounts or isGeminiAccounts
         local hasAccountControls = isClaudeAccounts and vendor.source == "claudeb-store"
+        if isGeminiAccounts then
+          local visible = {}
+          for _, block in ipairs(blocks) do
+            if block.removed ~= true then table.insert(visible, block) end
+          end
+          blocks = visible
+        end
         if not isAccountRows then
           blocks = {{ account = entry.label, five_hour = vendor.five_hour,
             weekly = vendor.weekly, fable = vendor.fable, as_of = vendor.as_of,
@@ -666,7 +695,7 @@ function M.menuItems()
           elseif entry.key == "codex" and type(account) == "string" and account ~= "" then
             refresh = function() M.hardRefreshCodex(account) end
           elseif entry.key == "gemini" then
-            refresh = M.hardRefreshGemini
+            refresh = function() M.hardRefreshGemini("main") end
           end
           if refresh then
             fallbackRow.disabled = nil
@@ -692,13 +721,21 @@ function M.menuItems()
               and string.format("  ↻%d", math.floor(resetCredits)) or ""
             local accountRow
             if authNeeded then
-              accountRow = loginNeededRow(acct,
-                entry.key == "claude" and function() M.loginClaude(acct) end
-                  or function() M.loginCodex(acct) end,
-                entry.key == "claude" and function() M.hardRefreshClaude(acct) end
-                  or function() M.hardRefreshCodex(acct) end,
-                entry.key == "claude" and function() M.removeClaude(acct) end
-                  or function() M.removeCodex(acct) end)
+              local loginFn, hardRefreshFn, removeFn
+              if entry.key == "claude" then
+                loginFn = function() M.loginClaude(acct) end
+                hardRefreshFn = function() M.hardRefreshClaude(acct) end
+                removeFn = function() M.removeClaude(acct) end
+              elseif entry.key == "codex" then
+                loginFn = function() M.loginCodex(acct) end
+                hardRefreshFn = function() M.hardRefreshCodex(acct) end
+                removeFn = function() M.removeCodex(acct) end
+              else
+                loginFn = function() M.loginGemini(acct) end
+                hardRefreshFn = function() M.hardRefreshGemini(acct) end
+                removeFn = function() M.removeGemini(acct) end
+              end
+              accountRow = loginNeededRow(acct, loginFn, hardRefreshFn, removeFn)
             else
               accountRow = {
                 title = accountTitle(acct .. resetSuffix .. (isCurrent and "  ●" or ""),
@@ -729,6 +766,12 @@ function M.menuItems()
                   { title = "Hard refresh",
                     fn = function() M.hardRefreshCodex(acct) end },
                 }
+              elseif isGeminiAccounts then
+                accountRow.disabled = nil
+                accountRow.menu = {
+                  { title = "Hard refresh",
+                    fn = function() M.hardRefreshGemini(acct) end },
+                }
               end
             end
             table.insert(menu, accountRow)
@@ -753,12 +796,22 @@ function M.menuItems()
               table.insert(menu, { title = tailRow("fb", block.fable, fableWalled, fableWarning), disabled = true })
             end
           end
+          if isGeminiAccounts then
+            local accountError = errorState(block.refresh_error)
+            if accountError then
+              table.insert(menu, {
+                title = infoTitle(refreshErrorTitle(accountError), false, true),
+                disabled = true,
+              })
+            end
+          end
         end
         if isAccountRows then
           table.insert(menu, { title = "-" })
         end
       end
-      local refreshError = errorState(type(vendor) == "table" and vendor.refresh_error or nil)
+      local refreshError = not hasGeminiAccounts
+        and errorState(type(vendor) == "table" and vendor.refresh_error or nil) or nil
       if refreshError then
         local entries = splitCauseEntries(refreshError.cause or "")
         if #entries > 1 then

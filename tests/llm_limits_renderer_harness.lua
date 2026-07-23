@@ -391,6 +391,24 @@ local codexLoginFixture = { schema = 1, vendors = {
   }},
   gemini = { available = false },
 }}
+local geminiMultiFixture = { schema = 1, vendors = {
+  claude = { available = false },
+  codex = { available = false },
+  gemini = { available = true, current_account = "main", accounts = {
+    { account = "main", is_current = true, five_hour = bucket(10), weekly = bucket(20) },
+    { account = "work", auth_needed = true,
+      refresh_error = { cause = "login needed (not signed in)", at = os.time() - 60 } },
+    { account = "removed", removed = true },
+  }},
+}}
+local geminiAllAuthFixture = { schema = 1, vendors = {
+  claude = { available = false },
+  codex = { available = false },
+  gemini = { available = false, auth_needed = true, accounts = {
+    { account = "main", is_current = true, auth_needed = true },
+    { account = "work", auth_needed = true },
+  }},
+}}
 
 -- Anti-divergence guard: every vendor's logged-out row is forced through the SAME
 -- shape here. Adding a 4th vendor to this table automatically subjects it to the
@@ -407,8 +425,17 @@ local loginCases = {
     scriptContains = { "codexb run", "codexout", "login" },
     removePath = "codexb", removeArgs = { "remove", "codexout" } },
   { vendor = "gemini", fixture = geminiAuthFixture, needle = "Gemini", label = "Gemini",
-    scriptContains = { "agy" },
+    scriptContains = { "geminib profile", "main" },
+    refreshArgs = { "--refresh-account", "gemini/main" },
     removePath = "llm-limits.sh", removeArgs = { "--gemini-remove" } },
+  { vendor = "gemini profile", fixture = geminiMultiFixture, needle = "work", label = "work",
+    scriptContains = { "geminib profile", "work" },
+    refreshArgs = { "--refresh-account", "gemini/work" },
+    removePath = "geminib", removeArgs = { "remove", "work" } },
+  { vendor = "gemini all-auth", fixture = geminiAllAuthFixture, needle = "work", label = "work",
+    scriptContains = { "geminib profile", "work" },
+    refreshArgs = { "--refresh-account", "gemini/work" },
+    removePath = "geminib", removeArgs = { "remove", "work" } },
 }
 for _, case in ipairs(loginCases) do
   local capture = {}
@@ -433,6 +460,18 @@ for _, case in ipairs(loginCases) do
     assert(script:find(needle, 1, true),
       case.vendor .. " Log in… lacks the vendor mechanism: " .. needle)
   end
+  if case.refreshArgs then
+    while #tasks > 0 do table.remove(tasks) end
+    row.menu[2].fn()
+    local launched = tasks[1]
+    assert(launched and launched.path:find("llm-limits.sh", 1, true),
+      case.vendor .. " Hard refresh did not launch the collector")
+    for index, expected in ipairs(case.refreshArgs) do
+      assert(launched.args[index] == expected,
+        case.vendor .. " Hard refresh arg " .. index .. " is "
+          .. tostring(launched.args[index]) .. " not " .. expected)
+    end
+  end
   while #tasks > 0 do table.remove(tasks) end
   removeMenu[1].fn()
   local launched = tasks[1]
@@ -456,6 +495,20 @@ for _, item in ipairs(claudeLoginMenu) do
     end
   end
 end
+local geminiMultiMenu = loadModule(geminiMultiFixture).menuItems()
+local geminiErrors = 0
+for _, item in ipairs(geminiMultiMenu) do
+  local text = titleText(item)
+  assert(not text:find("removed", 1, true), "removed Gemini profile still rendered a row")
+  if text:find("not signed in", 1, true) then geminiErrors = geminiErrors + 1 end
+  if text:find("main", 1, true) and type(item.menu) == "table" then
+    for _, sub in ipairs(item.menu) do
+      assert(titleText(sub) ~= "Log in…", "healthy Gemini profile offered Log in…")
+      assert(titleText(sub) ~= "Remove…", "healthy Gemini profile offered Remove…")
+    end
+  end
+end
+assert(geminiErrors == 1, "Gemini profile refresh cause did not render exactly once")
 
 -- A removed single-account vendor is skipped entirely: no row, no login/hard-refresh
 -- controls, no refresh-error line — the same hook a future vendor would supply.

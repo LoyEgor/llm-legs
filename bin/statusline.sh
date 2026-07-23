@@ -650,8 +650,8 @@ elif [ -n "$acct" ] && [ "$acct" != main ]; then
   cb_part=" ${DIM}cb:${RESET}${MAGENTA}${acct}${RESET}"
 fi
 
-worker=""; codex_effort=""; sonnet_effort=""; codex_profile=""; claudeb_profile=""
-claudeb_model=""; claudeb_effort=""
+worker=""; codex_effort=""; sonnet_effort=""; codex_profile=""; claudeb_profile=""; gemini_profile=""
+claudeb_model=""; claudeb_effort=""; gemini_model=""; gemini_effort=""
 worker_file="$HOME/.claude/worker-model"
 if [ -f "$worker_file" ]; then
   while IFS='=' read -r wkey wval; do
@@ -661,8 +661,11 @@ if [ -f "$worker_file" ]; then
       sonnet_effort) sonnet_effort=$wval ;;
       codex_profile) codex_profile=$wval ;;
       claudeb_profile) claudeb_profile=$wval ;;
+      gemini_profile) gemini_profile=$wval ;;
       claudeb_model) claudeb_model=$wval ;;
       claudeb_effort) claudeb_effort=$wval ;;
+      gemini_model) gemini_model=$wval ;;
+      gemini_effort) gemini_effort=$wval ;;
     esac
   done < "$worker_file"
 else
@@ -742,6 +745,15 @@ case "$worker" in
       wsel=$(head -n1 "$claudeb_dir/.claudeb-state" 2>/dev/null | tr -d '[:space:]')
       [ -n "$wsel" ] || wsel="?"
     fi
+    ;;
+  gemini)
+    wname=gem
+    if [ -n "$gemini_profile" ]; then
+      wpin=$gemini_profile
+    else
+      wsel=main
+    fi
+    wtier="${gemini_model:-pro}·$(abbrev_tier "${gemini_effort:-high}")"
     ;;
   sonnet)
     wname=son

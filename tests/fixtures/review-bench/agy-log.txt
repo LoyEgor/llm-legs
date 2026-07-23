@@ -1,0 +1,4 @@
+I0724 01:11:38.801183 model_config_manager.go:272] Propagating selected model override to backend: label="Gemini 3.6 Flash (Low)"
+I0724 01:11:38.989750 http_helpers.go:228] URL: https://example.invalid/v1internal:streamGenerateContent
+I0724 01:11:41.351047 conversation_manager.go:661] Stream completed
+I0724 01:11:41.351290 usage.go:10] promptTokenCount=120 candidatesTokenCount=30 totalTokenCount=150

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PreToolUse(Agent) for codex-/claudeb-worker spawns: rewrite the call's
+# PreToolUse(Agent) for relay-worker spawns: rewrite the call's
 # description to the canonical `<account> · [<model> · ]<effort>: <title>`
 # form deterministically — account from the pin/daemon/codexb, model+effort
 # from the brief's MODEL:/EFFORT: lines with worker-model defaults — instead
@@ -14,7 +14,7 @@ field() { printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null; }
 [ "$(field '.hook_event_name')" = PreToolUse ] || exit 0
 subagent=$(field '.tool_input.subagent_type')
 case "$subagent" in
-  codex-worker|claudeb-worker) ;;
+  codex-worker|claudeb-worker|gemini-worker) ;;
   *) exit 0 ;;
 esac
 
@@ -45,7 +45,7 @@ if [ "$subagent" = claudeb-worker ]; then
   [ -n "$effort" ] || effort=$(worker_conf claudeb_effort)
   [ -n "$effort" ] || effort=high
   prefix="$acct · $model · $effort"
-else
+elif [ "$subagent" = codex-worker ]; then
   acct=$(worker_conf codex_profile)
   [ -n "$acct" ] || acct=$("$HOME/.local/bin/codexb" pick 2>/dev/null | tail -n1 | tr -cd 'A-Za-z0-9_.-')
   [ -n "$acct" ] || acct=main
@@ -54,6 +54,17 @@ else
   [ -n "$effort" ] || effort=medium
   codex_model=$(codex_model_short_label)
   prefix="$acct · $codex_model · $effort"
+else
+  acct=$(worker_conf gemini_profile)
+  [ -n "$acct" ] || acct=$(brief_line ACCOUNT)
+  [ -n "$acct" ] || acct=main
+  model=$(brief_line MODEL)
+  [ -n "$model" ] || model=$(worker_conf gemini_model)
+  [ -n "$model" ] || model=pro
+  effort=$(brief_line EFFORT)
+  [ -n "$effort" ] || effort=$(worker_conf gemini_effort)
+  [ -n "$effort" ] || effort=high
+  prefix="$acct · $model · $effort"
 fi
 
 title=$(printf '%s' "$description" | sed -E 's/^[A-Za-z0-9_.?-]+( · [A-Za-z0-9_.-]+){1,3}(: | — )//')

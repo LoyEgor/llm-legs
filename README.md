@@ -34,8 +34,8 @@ decision-support) as a git submodule. One fix here propagates to every consumer 
 - **Billing traps disarmed:** stray `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` env vars are unset so
   calls never silently flip from subscription to API billing.
 - **Quota → exit 5:** "you've hit your usage limit" (codex) and quota signals (gemini) are
-  mapped to a distinct exit code; gemini's CLI-era hang-on-quota lesson is documented in the
-  wrapper headers.
+  mapped to a distinct exit code; agy's silent-quota behavior (rc 0 with empty output, the real
+  RESOURCE_EXHAUSTED only in its log) is documented in the wrapper headers.
 - **Read-only:** codex runs in a read-only sandbox; claude disallows mutating tools; gemini
   (agy) is print-mode only.
 - **Receipts where possible:** claude's served model is verified from `.modelUsage` (auxiliary
@@ -58,7 +58,7 @@ git submodule add https://github.com/LoyEgor/llm-legs lib/legs
 Tests: `python3 -m unittest discover tests`.
 
 ## Daily self-check
-`llm-selfcheck` runs the live zero-spend menubar refresh check, then the hermetic limits, claudeb, claudebd, and codexb suites every day at 10:30 local time.
+`llm-selfcheck` runs the live zero-spend menubar refresh check, then the hermetic limits, claudeb, claudebd, codexb, and geminib suites every day at 10:30 local time.
 Each run is recorded in `~/.claude-profiles/.claudeb/selfcheck.log`; failures also raise a Hammerspoon alert and a macOS notification.
 
 ## Subscription limit collector
@@ -94,8 +94,8 @@ llm-limits --plain
 ```
 
 `--refresh` is reserved for the manual Get Data & Refresh action. It always performs Claude's
-free usage-endpoint poll through `claudeb accounts --no-spend` and fetches Gemini quota through
-agy's authenticated localhost Connect RPC.
+free usage-endpoint poll through `claudeb accounts --no-spend` and fetches each Gemini profile's
+quota through agy's authenticated localhost Connect RPC.
 The Codex leg is a zero-spend usage query too: `codex-quota.py` asks the local
 `codex app-server` for `account/rateLimits/read` and the response is cached in
 `~/.llm-limits-codex.json`; rollout session files remain the passive fallback when they are
@@ -104,10 +104,11 @@ vendor whose five-hour window has already reset it issues one minimal model call
 `--refresh --start-windows`, a one-word `codex exec`, a one-word `agy --print`) to start a fresh
 window, then re-reads the free usage endpoints. Vendors that cannot be started are reported on
 stderr, never skipped silently.
-The Gemini request is the machine-readable equivalent of `/usage`; it consumes no model tokens
-and its last valid response is cached in `~/.llm-limits-gemini.json`. Without `--refresh`,
-collection remains token-free and external-network-free; it also reads the optional claudebd
-localhost status endpoint.
+The Gemini request is the machine-readable equivalent of `/usage`; it consumes no model tokens.
+The `main` profile keeps the legacy cache `~/.llm-limits-gemini.json`; named profiles use
+`~/.llm-limits-gemini/<name>.json`. `--refresh-account gemini/<name>` refreshes only that
+profile. Without `--refresh`, collection remains token-free and external-network-free; it also
+reads the optional claudebd localhost status endpoint.
 
 ### Machine contract
 
@@ -120,6 +121,9 @@ Never make availability decisions from raw `used_pct`.
 `vendors.codex.accounts` is always a non-empty array when Codex is available; legacy snapshots synthesize `main`.
 `vendors.codex.current_account` names the account whose buckets remain hoisted at vendor level.
 Each `vendors.codex.accounts[]` may expose `reset_credits` and `auth_needed`; auth-needed accounts have no usage buckets and are never usable.
+With only `main`, Gemini retains its legacy single-vendor shape. Once a named profile exists,
+`vendors.gemini.accounts` contains per-profile buckets, auth-needed state, refresh causes, and
+removed markers; `main` remains hoisted for compatibility.
 Raw usage values persist for provenance after a window expires, while `effective_pct` becomes 0.
 Claude `usable_now` considers enabled, authenticated accounts and their general 5h/weekly limits;
 the model-specific fable bucket does not block other Claude work.
@@ -159,13 +163,14 @@ local submenu = { title = "LLM Limits", menu = limits.menuItems() }
 |--------|-----------------|
 | Claude | Per-account claudeb file mtime; status-line snapshot fallback |
 | Codex | Live app-server rate-limits RPC on refresh; last rollout event otherwise |
-| Gemini | Last successful manual Get Data & Refresh through agy's localhost quota RPC |
+| Gemini | Per-profile last successful manual Get Data & Refresh through agy's localhost quota RPC |
 
-Gemini refresh launches `agy` under a bounded PTY, waits for normal authenticated startup, finds
-its localhost listener, and calls
+Gemini refresh launches `agy` under each profile's `HOME`, waits for normal authenticated startup,
+finds its localhost listener, and calls
 `LanguageServerService/RetrieveUserQuotaSummary`. Set `AGY_WORKDIR` to an already trusted folder
 if the repository itself has not been opened in agy. Overrides for tests or alternate installs:
-`AGY_BIN`, `LLM_LIMITS_GEMINI_CMD`, and `LLM_LIMITS_GEMINI_CACHE`.
+`AGY_BIN`, `LLM_LIMITS_GEMINI_CMD`, `LLM_LIMITS_GEMINI_CACHE`,
+`GEMINIB_PROFILES_DIR`, and `LLM_LIMITS_GEMINI_ACCOUNTS_DIR`.
 
 ## claudeb multi-account suite (`bin/`)
 
@@ -176,6 +181,11 @@ Canonical sources for the multi-account Claude Code tooling; installed via symli
 - `bin/statusline.sh` → `~/.claude/statusline.sh` — Claude Code statusline; also writes per-account limit snapshots on real usage.
 
 Snapshot store and schema live in `~/.claude-profiles/` (documented in its README). If this volume is not mounted at login, the daemon start is retried by the next `claudeb` invocation.
+
+- `bin/claude-resume-timer` → `~/.local/bin/claude-resume-timer` — `[app|terminal|auto] [extra-minutes]`
+  reads the given (or auto-detected) account's 5h window from `~/.llm-limits.json` and arms the
+  Hammerspoon `ClaudeContinue.startTimerFor` per-destination resume timer for that reset + extra
+  minutes (default +10), falling back to +15 minutes if the window is expired or unknown.
 
 ## codexb multi-account suite
 
@@ -195,7 +205,20 @@ flow the menu uses. Afterward `codexb status` should show both accounts. Worker 
 pinned via `codex_profile=` in the worker toggle file; the menubar shows per-account rows once more
 than one account exists.
 
-- `bin/claude-resume-timer` → `~/.local/bin/claude-resume-timer` — `[app|terminal|auto] [extra-minutes]`
-  reads the given (or auto-detected) account's 5h window from `~/.llm-limits.json` and arms the
-  Hammerspoon `ClaudeContinue.startTimerFor` per-destination resume timer for that reset + extra
-  minutes (default +10), falling back to +15 minutes if the window is expired or unknown.
+## geminib multi-account suite
+
+The existing Antigravity login is `main` and continues to use the real home directory unchanged.
+Named accounts live under `~/.gemini-profiles/<name>` and launch with
+`HOME=~/.gemini-profiles/<name>`; shared non-auth Gemini settings are symlinked from
+`~/.gemini`. Antigravity exposes no narrower supported profile flag or environment variable.
+
+- `bin/geminib` → `~/.local/bin/geminib` — `profile|p|run <name> [args...]` creates a missing
+  profile and launches agy for its one-time login, `add <name>` creates without launching,
+  `remove <name>` forgets any named profile but never `main`, and `list`/`status` report every
+  profile.
+
+Adding an account: `geminib profile work` opens an isolated, logged-out Antigravity profile and
+prompts for Google login. Then run `geminib status` and
+`llm-limits --refresh-account gemini/work --table`. Worker routing uses the same
+headroom/runway/staleness rules as before, prints `ACCOUNT: work`, and treats `main` as the
+last-resort profile unless `gemini_profile=` pins it.

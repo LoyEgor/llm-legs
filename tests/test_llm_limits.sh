@@ -116,7 +116,8 @@ gemini_live=$(GEMINI_SENTINEL="$GEMINI_SENTINEL" LLM_LIMITS_GEMINI_REFRESH=1 \
 jq -e '.vendors.gemini.available == true and .vendors.gemini.source == "agy-local-rpc" and
   .vendors.gemini.five_hour.used_pct == 1 and
   .vendors.gemini.weekly.used_pct == 25 and
-  .vendors.gemini.five_hour.resets_at == "2026-07-11T22:00:00Z"' <<<"$gemini_live" >/dev/null \
+  .vendors.gemini.five_hour.resets_at == "2026-07-11T22:00:00Z" and
+  (.vendors.gemini | has("accounts") | not)' <<<"$gemini_live" >/dev/null \
   || fail "Gemini quota normalization mismatch (used_pct must be an integer)"
 jq -e '.vendors.gemini.five_hour.origin == "usage" and .vendors.gemini.five_hour.stale == false and
   (.vendors.gemini.five_hour.as_of | type) == "number" and .vendors.gemini.stale == false and
@@ -143,9 +144,10 @@ jq -e --arg asof "$gemini_asof_before" \
   <<<"$gemini_failed" >/dev/null || fail "failed Gemini account refresh advanced real-data as_of or hid its error"
 printf '%s\n' "$gemini_cache_saved" >"$GEMINI_CACHE"
 
-# Logged-out Gemini is a vendor STATE (login needed), not a refresh failure: auth_needed is set,
-# no refresh_error, the prior snapshot's buckets stay in the helper cache for a clean recovery, and
-# the row renders "login needed" in table and plain. Exit stays 0 (other vendors are available).
+# Logged-out Gemini is a vendor STATE (login needed) that still carries an actionable cause,
+# exactly like an expired Claude account: auth_needed is set, the prior snapshot's buckets stay
+# in the helper cache for a clean recovery, the row renders "login needed" in table and plain,
+# and the helper's reason surfaces as a vendor refresh_error (a re-login clears it). Exit stays 0.
 GEMINI_AUTH_HELPER="$WORK/fake-agy-auth"
 cat >"$GEMINI_AUTH_HELPER" <<'EOF'
 #!/usr/bin/env bash
@@ -160,10 +162,11 @@ rc=$?
 [ "$rc" -eq 0 ] || fail "logged-out Gemini refresh: expected exit 0, got $rc"
 jq -e '.vendors.gemini.auth_needed == true and .vendors.gemini.available == false and
   .vendors.gemini.status == "login needed" and .vendors.gemini.usable_now == false and
-  (.vendors.gemini | has("refresh_error") | not)' <<<"$gemini_auth" >/dev/null \
-  || fail "logged-out Gemini did not classify as auth-needed without a refresh error"
-jq -e '.auth_needed == true and (.groups[0].buckets | length) == 2' "$GEMINI_CACHE" >/dev/null \
-  || fail "logged-out Gemini refresh dropped the prior snapshot buckets"
+  .vendors.gemini.refresh_error.cause == "login needed (not signed in)" and
+  (.vendors.gemini.refresh_error.at | type) == "number"' <<<"$gemini_auth" >/dev/null \
+  || fail "logged-out Gemini did not surface its login-needed cause as a refresh_error"
+jq -e '.auth_needed == true and .detail == "not signed in" and (.groups[0].buckets | length) == 2' "$GEMINI_CACHE" >/dev/null \
+  || fail "logged-out Gemini refresh dropped the prior snapshot buckets or its cause detail"
 gemini_auth_table=$(LLM_LIMITS_GEMINI_REFRESH=0 LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
   HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" /bin/bash "$SCRIPT" --table)
 awk 'NR > 1 && $1 == "gemini"' <<<"$gemini_auth_table" | grep -q 'login needed$' \
@@ -172,6 +175,12 @@ gemini_auth_plain=$(LLM_LIMITS_GEMINI_REFRESH=0 LLM_LIMITS_GEMINI_CACHE="$GEMINI
   HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" /bin/bash "$SCRIPT" --plain)
 grep -q '^gemini: .* | status login needed' <<<"$gemini_auth_plain" \
   || fail "logged-out Gemini plain STATUS missing login needed"
+# The login-needed cause persists across passive collects (no refresh), like Claude's auth cause.
+gemini_auth_passive=$(LLM_LIMITS_GEMINI_REFRESH=0 LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
+  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" /bin/bash "$SCRIPT" --json)
+jq -e '.vendors.gemini.auth_needed == true and
+  .vendors.gemini.refresh_error.cause == "login needed (not signed in)"' <<<"$gemini_auth_passive" >/dev/null \
+  || fail "logged-out Gemini lost its login-needed cause on a passive collect"
 gemini_recovered=$(LLM_LIMITS_GEMINI_REFRESH=1 LLM_LIMITS_GEMINI_CMD="$GEMINI_HELPER" \
   LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" \
   /bin/bash "$SCRIPT" --refresh-account gemini --json)
@@ -193,15 +202,17 @@ printf '%s\n' "$gemini_cache_saved" >"$GEMINI_CACHE"
 
 # Gemini "remove": a persistent marker hides the vendor everywhere while its creds stay
 # invalid, and self-clears the moment a refresh finds valid creds again (owner re-logged
-# in via the gemini CLI) — self-healing, no orphan state.
+# in via agy) — self-healing, no orphan state.
 GEMINI_MARKER="$GEMINI_CACHE.removed"
 LLM_LIMITS_GEMINI_REFRESH=1 LLM_LIMITS_GEMINI_CMD="$GEMINI_AUTH_HELPER" \
   LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" \
   /bin/bash "$SCRIPT" --refresh-account gemini --json >/dev/null
 gemini_removed=$(LLM_LIMITS_GEMINI_REFRESH=0 LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
   HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" /bin/bash "$SCRIPT" --gemini-remove --json)
-jq -e '.vendors.gemini.removed == true and .vendors.gemini.available == false' \
-  <<<"$gemini_removed" >/dev/null || fail "gemini-remove did not mark the vendor removed"
+jq -e '.vendors.gemini.removed == true and .vendors.gemini.available == false and
+  (.vendors.gemini | has("refresh_error") | not)' \
+  <<<"$gemini_removed" >/dev/null \
+  || fail "gemini-remove did not mark the vendor removed, or left a stale login-needed cause on a hidden row"
 [ -e "$GEMINI_MARKER" ] || fail "gemini-remove did not persist the removed marker"
 gemini_removed_table=$(LLM_LIMITS_GEMINI_REFRESH=0 LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
   HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" /bin/bash "$SCRIPT" --table)
@@ -224,6 +235,178 @@ jq -e '.vendors.gemini.available == true and (.vendors.gemini | has("removed") |
 [ ! -e "$GEMINI_MARKER" ] || fail "valid gemini creds left the removed marker in place"
 rm -f "$GEMINI_SENTINEL"
 printf '%s\n' "$gemini_cache_saved" >"$GEMINI_CACHE"
+
+GEMINI_PROFILES="$WORK/gemini-profiles"
+GEMINI_ACCOUNTS_CACHE="$WORK/gemini-accounts"
+GEMINI_MULTI_LOG="$WORK/gemini-multi.log"
+GEMINI_MULTI_HELPER="$WORK/fake-agy-multi"
+mkdir -p "$GEMINI_PROFILES/work" "$GEMINI_ACCOUNTS_CACHE"
+cat >"$GEMINI_MULTI_HELPER" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$HOME" >>"$GEMINI_MULTI_LOG"
+printf '%s\n' '{"groups":[{"displayName":"Gemini Models","buckets":[{"window":"weekly","remainingFraction":0.5,"resetTime":"2099-01-01T00:00:00Z"},{"window":"5h","remainingFraction":0.6,"resetTime":"2099-01-01T00:00:00Z"}]}]}'
+EOF
+GEMINI_MULTI_AUTH_HELPER="$WORK/fake-agy-multi-auth"
+cat >"$GEMINI_MULTI_AUTH_HELPER" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '{"auth_needed":true,"source":"agy-local-rpc","detail":"profile signed out"}'
+exit 2
+EOF
+chmod +x "$GEMINI_MULTI_HELPER" "$GEMINI_MULTI_AUTH_HELPER"
+multi_gemini=$(GEMINI_MULTI_LOG="$GEMINI_MULTI_LOG" GEMINIB_PROFILES_DIR="$GEMINI_PROFILES" \
+  LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$GEMINI_ACCOUNTS_CACHE" LLM_LIMITS_GEMINI_REFRESH=1 \
+  LLM_LIMITS_GEMINI_CMD="$GEMINI_MULTI_HELPER" LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
+  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" \
+  /bin/bash "$SCRIPT" --refresh-account gemini/work --json) \
+  || fail "targeted Gemini profile refresh failed"
+[ "$(cat "$GEMINI_MULTI_LOG")" = "$GEMINI_PROFILES/work" ] \
+  || fail "targeted Gemini profile refresh used the wrong HOME"
+jq -e '.vendors.gemini.available == true and .vendors.gemini.current_account == "main" and
+  (.vendors.gemini.accounts | length) == 2 and
+  [.vendors.gemini.accounts[] | select(.account == "main")][0].weekly.used_pct == 25 and
+  [.vendors.gemini.accounts[] | select(.account == "work")][0].weekly.used_pct == 50' \
+  <<<"$multi_gemini" >/dev/null || fail "Gemini profile snapshots were not isolated"
+[ -s "$GEMINI_ACCOUNTS_CACHE/work.json" ] || fail "Gemini profile cache was not created"
+if GEMINIB_PROFILES_DIR="$GEMINI_PROFILES" LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$GEMINI_ACCOUNTS_CACHE" \
+  LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" \
+  /bin/bash "$SCRIPT" --refresh-account gemini/missing --json >/dev/null 2>&1; then
+  fail "unknown Gemini profile refresh unexpectedly succeeded"
+fi
+
+multi_auth=$(GEMINIB_PROFILES_DIR="$GEMINI_PROFILES" \
+  LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$GEMINI_ACCOUNTS_CACHE" LLM_LIMITS_GEMINI_REFRESH=1 \
+  LLM_LIMITS_GEMINI_CMD="$GEMINI_MULTI_AUTH_HELPER" LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
+  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" \
+  /bin/bash "$SCRIPT" --refresh-account gemini/work --json)
+jq -e '[.vendors.gemini.accounts[] | select(.account == "work")][0] |
+  .auth_needed == true and .status == "login needed" and
+  .refresh_error.cause == "login needed (profile signed out)" and
+  .weekly.used_pct == 50' <<<"$multi_auth" >/dev/null \
+  || fail "Gemini profile login-needed state lost its cache or cause"
+multi_all_auth=$(GEMINIB_PROFILES_DIR="$GEMINI_PROFILES" \
+  LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$GEMINI_ACCOUNTS_CACHE" LLM_LIMITS_GEMINI_REFRESH=1 \
+  LLM_LIMITS_GEMINI_CMD="$GEMINI_MULTI_AUTH_HELPER" LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
+  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" \
+  /bin/bash "$SCRIPT" --refresh-account gemini/main --json)
+jq -e '.vendors.gemini.available == false and .vendors.gemini.auth_needed == true and
+  ([.vendors.gemini.accounts[] | select(.auth_needed == true)] | length) == 2' \
+  <<<"$multi_all_auth" >/dev/null || fail "all logged-out Gemini profiles were replaced by stale availability"
+GEMINIB_PROFILES_DIR="$GEMINI_PROFILES" \
+  LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$GEMINI_ACCOUNTS_CACHE" LLM_LIMITS_GEMINI_REFRESH=1 \
+  LLM_LIMITS_GEMINI_CMD="$GEMINI_HELPER" LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
+  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" \
+  /bin/bash "$SCRIPT" --refresh-account gemini/main --json >/dev/null
+multi_table=$(GEMINIB_PROFILES_DIR="$GEMINI_PROFILES" \
+  LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$GEMINI_ACCOUNTS_CACHE" LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
+  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" /bin/bash "$SCRIPT" --table)
+grep -q '^gemini/main\*' <<<"$multi_table" || fail "Gemini main profile row missing"
+grep '^gemini/work ' <<<"$multi_table" | grep -q 'login needed$' \
+  || fail "Gemini named profile login-needed table row missing"
+multi_plain=$(GEMINIB_PROFILES_DIR="$GEMINI_PROFILES" \
+  LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$GEMINI_ACCOUNTS_CACHE" LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
+  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" /bin/bash "$SCRIPT" --plain)
+grep -q '^gemini/main\*:' <<<"$multi_plain" || fail "Gemini main profile plain row missing"
+grep '^gemini/work:' <<<"$multi_plain" | grep -q '| status login needed$' \
+  || fail "Gemini named profile login-needed plain row missing"
+
+GEMINI_WORK_MARKER="$GEMINI_ACCOUNTS_CACHE/work.json.removed"
+: >"$GEMINI_WORK_MARKER"
+multi_removed=$(GEMINIB_PROFILES_DIR="$GEMINI_PROFILES" \
+  LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$GEMINI_ACCOUNTS_CACHE" LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
+  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" /bin/bash "$SCRIPT" --json)
+jq -e '[.vendors.gemini.accounts[] | select(.account == "work")][0] |
+  .removed == true and (. | has("refresh_error") | not)' <<<"$multi_removed" >/dev/null \
+  || fail "Gemini named profile removed marker was not preserved"
+multi_recovered=$(GEMINI_MULTI_LOG="$GEMINI_MULTI_LOG" GEMINIB_PROFILES_DIR="$GEMINI_PROFILES" \
+  LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$GEMINI_ACCOUNTS_CACHE" LLM_LIMITS_GEMINI_REFRESH=1 \
+  LLM_LIMITS_GEMINI_CMD="$GEMINI_MULTI_HELPER" LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
+  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" \
+  /bin/bash "$SCRIPT" --refresh-account gemini/work --json)
+jq -e '[.vendors.gemini.accounts[] | select(.account == "work")][0] |
+  .removed != true and .auth_needed != true and (. | has("refresh_error") | not)' \
+  <<<"$multi_recovered" >/dev/null || fail "Gemini named profile did not recover"
+[ ! -e "$GEMINI_WORK_MARKER" ] || fail "Gemini named profile recovery left its marker"
+
+# The three refresh failure modes stay distinct and never collapse: only a logged-out helper
+# (rc 2) is "login needed"; a crashed helper and a network failure (both rc 1) each keep their
+# own cause and are never misread as auth. Each run starts from the same valid snapshot.
+GEMINI_CRASH_HELPER="$WORK/fake-agy-crash"
+cat >"$GEMINI_CRASH_HELPER" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '{"error":"agy exited during startup: broken pipe","source":"agy-local-rpc"}' >&2
+exit 1
+EOF
+GEMINI_NET_HELPER="$WORK/fake-agy-net"
+cat >"$GEMINI_NET_HELPER" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '{"error":"127.0.0.1:52341 tls=False: [Errno 61] Connection refused","source":"agy-local-rpc"}' >&2
+exit 1
+EOF
+chmod +x "$GEMINI_CRASH_HELPER" "$GEMINI_NET_HELPER"
+run_gemini_refresh() {
+  printf '%s\n' "$gemini_cache_saved" >"$GEMINI_CACHE"
+  LLM_LIMITS_GEMINI_REFRESH=1 LLM_LIMITS_GEMINI_CMD="$1" LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
+    HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" /bin/bash "$SCRIPT" --refresh-account gemini --json 2>/dev/null
+}
+auth_json=$(run_gemini_refresh "$GEMINI_AUTH_HELPER")
+crash_json=$(run_gemini_refresh "$GEMINI_CRASH_HELPER")
+net_json=$(run_gemini_refresh "$GEMINI_NET_HELPER")
+printf '%s\n' "$gemini_cache_saved" >"$GEMINI_CACHE"
+jq -e '.vendors.gemini.auth_needed == true and
+  .vendors.gemini.refresh_error.cause == "login needed (not signed in)"' <<<"$auth_json" >/dev/null \
+  || fail "logged-out gemini (rc 2) is not classified login needed with its detail"
+jq -e '(.vendors.gemini | has("auth_needed") | not) and
+  .vendors.gemini.refresh_error.cause == "agy exited during startup: broken pipe"' <<<"$crash_json" >/dev/null \
+  || fail "a crashed gemini helper (rc 1) collapsed into login-needed or hid its distinct cause"
+jq -e '(.vendors.gemini | has("auth_needed") | not) and
+  (.vendors.gemini.refresh_error.cause | contains("Connection refused"))' <<<"$net_json" >/dev/null \
+  || fail "a network-weather gemini failure (rc 1) collapsed into login-needed or hid its cause"
+auth_cause=$(jq -r '.vendors.gemini.refresh_error.cause' <<<"$auth_json")
+crash_cause=$(jq -r '.vendors.gemini.refresh_error.cause' <<<"$crash_json")
+net_cause=$(jq -r '.vendors.gemini.refresh_error.cause' <<<"$net_json")
+[ "$auth_cause" != "$crash_cause" ] && [ "$crash_cause" != "$net_cause" ] && [ "$auth_cause" != "$net_cause" ] \
+  || fail "gemini failure causes collapsed: auth=[$auth_cause] crash=[$crash_cause] net=[$net_cause]"
+
+# --refresh-account bypasses the GLOBAL success gate, so a full --refresh is needed to prove the
+# login-needed verdict counts as a completed refresh: with Claude and Codex both failing, Gemini
+# resolving (login-needed, then healed) must NOT yield "all vendor refreshes failed", exactly
+# like a healed usage poll rescuing the run.
+GATE_HOME="$WORK/gate-home"; mkdir -p "$GATE_HOME/.claude"
+GATE_STORE="$WORK/gate-claudeb"; mkdir -p "$GATE_STORE/limits"
+printf 'gacct\n' >"$GATE_STORE/.claudeb-state"
+printf '{"five_hour":{"used_percentage":10,"resets_at":%s}}\n' "$((now + 5000))" >"$GATE_STORE/limits/gacct.json"
+GATE_CACHE="$WORK/gate-cache.json"
+GATE_GEMINI_CACHE="$WORK/gate-gemini.json"
+GATE_CODEX_FAIL="$WORK/gate-codex-fail"
+cat >"$GATE_CODEX_FAIL" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '{"error":"app-server unreachable","source":"codex-app-server"}' >&2
+exit 1
+EOF
+chmod +x "$GATE_CODEX_FAIL"
+run_full_refresh() { # $1 = gemini helper
+  LLM_LIMITS_GEMINI_REFRESH=1 LLM_LIMITS_GEMINI_CMD="$1" LLM_LIMITS_GEMINI_CACHE="$GATE_GEMINI_CACHE" \
+    LLM_LIMITS_CODEX_REFRESH=1 LLM_LIMITS_CODEX_QUOTA_CMD="$GATE_CODEX_FAIL" LLM_LIMITS_CODEX_CACHE="$WORK/gate-codex.json" \
+    LLM_LIMITS_CLAUDEB_CMD="$WORK/missing-claudeb" \
+    HOME="$GATE_HOME" CLAUDEB_DIR="$GATE_STORE" LLM_LIMITS_CACHE="$GATE_CACHE" \
+    /bin/bash "$SCRIPT" --refresh --json 2>/dev/null
+}
+gate_login=$(run_full_refresh "$GEMINI_AUTH_HELPER"); rc=$?
+[ "$rc" -eq 0 ] || fail "full refresh rescued by Gemini login-needed must exit 0 (partial), got $rc"
+jq -e '.vendors.claude.refresh_error.cause == "claudeb not found"' <<<"$gate_login" >/dev/null \
+  || fail "gate: Claude did not fail its refresh: $(jq -c '.vendors.claude.refresh_error' <<<"$gate_login")"
+jq -e '(.vendors.codex | has("refresh_error"))' <<<"$gate_login" >/dev/null \
+  || fail "gate: Codex did not fail its refresh: $(jq -c '.vendors.codex' <<<"$gate_login")"
+jq -e '.vendors.gemini.auth_needed == true' <<<"$gate_login" >/dev/null \
+  || fail "gate: Gemini not login-needed: $(jq -c '.vendors.gemini' <<<"$gate_login")"
+jq -e '((.refresh_error.cause // "") != "all vendor refreshes failed")' <<<"$gate_login" >/dev/null \
+  || fail "gate: Gemini login-needed did not count as a completed refresh (global gate fired)"
+gate_healed=$(run_full_refresh "$GEMINI_HELPER"); rc=$?
+[ "$rc" -eq 0 ] || fail "full refresh rescued by healed Gemini must exit 0, got $rc"
+jq -e '.vendors.gemini.available == true and (.vendors.gemini | has("refresh_error") | not) and
+  ((.refresh_error.cause // "") != "all vendor refreshes failed")' <<<"$gate_healed" >/dev/null \
+  || fail "healed Gemini did not clear its cause or feed the global success gate"
+rm -f "$GEMINI_SENTINEL"
 
 # agy-quota.py detection against a fake agy: the transient "not signed in" during
 # auto-sign-in must not read as login-needed (live regression: menu stuck after re-login).
@@ -1384,8 +1567,12 @@ HONEST_STORE="$WORK/honest-store"
 HONEST_HOME="$WORK/honest-home"
 mkdir -p "$HONEST_STORE/limits" "$HONEST_HOME"
 printf 'honest\n' >"$HONEST_STORE/.claudeb-state"
+# as_of is relative to a fresh capture, not the script-start `now`: the displayed age is
+# (collect time - as_of), so a script-start base would silently add all elapsed test seconds
+# and drift 1h1m -> 1h2m as the suite grows.
+honest_now=$(date +%s)
 printf '{"five_hour":{"used_percentage":100,"resets_at":%s,"as_of":%s,"origin":"usage"},"seven_day":{"used_percentage":44,"resets_at":%s,"as_of":%s,"origin":"usage"}}\n' \
-  "$((now + 5000))" "$((now - 3660))" "$((now - 60))" "$((now - 120))" >"$HONEST_STORE/limits/honest.json"
+  "$((honest_now + 5000))" "$((honest_now - 3660))" "$((honest_now - 60))" "$((honest_now - 120))" >"$HONEST_STORE/limits/honest.json"
 honest_table=$(HOME="$HONEST_HOME" CLAUDEB_DIR="$HONEST_STORE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) \
   || fail "honesty table fixture failed"
 honest_plain=$(HOME="$HONEST_HOME" CLAUDEB_DIR="$HONEST_STORE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain) \

@@ -122,7 +122,12 @@ age_short() {
 
 assert_account_ages() {
   local menu="$1" json="$2" vendor account auth asof expected row actual
-  for vendor in claude codex; do
+  for vendor in claude codex gemini; do
+    if [ "$vendor" = gemini ] &&
+       [ "$(jq -r '(.vendors.gemini.accounts | type) == "array" and
+          (.vendors.gemini.accounts | length) > 1' <<<"$json")" != true ]; then
+      continue
+    fi
     while IFS=$'\t' read -r account auth asof; do
       [ -n "$account" ] || continue
       row=$(awk -v account="$account" '$1 == account {print; exit}' <<<"$menu")
@@ -138,7 +143,8 @@ assert_account_ages() {
     done < <(jq -r --arg vendor "$vendor" '.vendors[$vendor].accounts[]? |
       [.account, (.auth_needed == true), (.as_of // "")] | @tsv' <<<"$json")
   done
-  if [ "$(jq -r '.vendors.gemini.available == true' <<<"$json")" = true ]; then
+  if [ "$(jq -r '.vendors.gemini.available == true and
+      ((.vendors.gemini.accounts | type) != "array" or (.vendors.gemini.accounts | length) <= 1)' <<<"$json")" = true ]; then
     row=$(awk '$1 == "Gemini" {print; exit}' <<<"$menu")
     [ -n "$row" ] || fail "Gemini vendor row missing for age check"
     expected=$(age_short "$(jq -r '.vendors.gemini.as_of // ""' <<<"$json")")
@@ -252,7 +258,7 @@ passive.callback(0, "", "")
 if changes ~= beforeCompletion + 1 then error("menu-open collector completion did not trigger a re-render") end
 if a.args[1] ~= "--refresh-account" or a.args[2] ~= "claude/com" then error("Claude fallback dispatch mismatch") end
 if b.args[1] ~= "--refresh-account" or b.args[2] ~= "codex/main" then error("Codex fallback dispatch mismatch") end
-if c.args[1] ~= "--refresh-account" or c.args[2] ~= "gemini" then error("Gemini fallback dispatch mismatch") end
+if c.args[1] ~= "--refresh-account" or c.args[2] ~= "gemini/main" then error("Gemini fallback dispatch mismatch") end
 local guardState = { starts = {}, alerts = {} }
 local guarded = loadModule({ schema = 1, vendors = {} }, guardState)
 guarded.hardRefreshClaude("com")
@@ -332,16 +338,19 @@ if [ "$ancient_count" -gt 0 ]; then
 fi
 claude_hard=$(jq 'if .vendors.claude.source == "claudeb-store" then (.vendors.claude.accounts | length) else 0 end' <<<"$JSON")
 codex_hard=$(jq 'if .vendors.codex.available == true then (.vendors.codex.accounts | length) else 0 end' <<<"$JSON")
+gemini_hard=$(jq 'if (.vendors.gemini.accounts | type) == "array" and
+    (.vendors.gemini.accounts | length) > 1
+  then [.vendors.gemini.accounts[] | select(.removed != true)] | length else 1 end' <<<"$JSON")
 hard_count=$(grep -Fxc '  Hard refresh' <<<"$MENU_TXT")
-[ "$hard_count" -eq "$((claude_hard + codex_hard + 1))" ] \
-  || fail "Hard refresh submenu count mismatch: expected $((claude_hard + codex_hard + 1)), got $hard_count"
+[ "$hard_count" -eq "$((claude_hard + codex_hard + gemini_hard))" ] \
+  || fail "Hard refresh submenu count mismatch: expected $((claude_hard + codex_hard + gemini_hard)), got $hard_count"
 pass "menu build: per-account ages and Hard refresh present; aggregate vendor age line absent"
 
 # 4. CLI surface: --table exits 0 with rows; bare output is valid JSON with schema fields.
 TABLE=$(llm-limits --table 2>/dev/null) || fail "llm-limits --table exited non-zero"
 grep -qE '^claude/[^ ]+ ' <<<"$TABLE" || fail "--table has no claude account rows"
 grep -qE '^codex(/| |$)' <<<"$TABLE" || fail "--table missing codex row"
-grep -qE '^gemini( |$)' <<<"$TABLE" || fail "--table missing gemini row"
+grep -qE '^gemini(/| |$)' <<<"$TABLE" || fail "--table missing gemini row"
 jq -e '.schema == 1 and (.vendors.claude.accounts | type == "array")
   and (.vendors.claude.accounts[0].five_hour | has("as_of"))
   and (.vendors.codex | has("five_hour")) and (.vendors.gemini | has("five_hour"))' \

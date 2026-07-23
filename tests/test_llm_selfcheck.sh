@@ -30,7 +30,7 @@ cp "$ROOT/bin/llm-selfcheck" "$FIXTURE/bin/llm-selfcheck"
 cp "$ROOT/bin/llm-shadow-divergence" "$FIXTURE/bin/llm-shadow-divergence"
 chmod +x "$FIXTURE/bin/llm-selfcheck" "$FIXTURE/bin/llm-shadow-divergence"
 
-for suite in e2e_surfaces.sh test_llm_limits.sh test_claudeb.sh test_claudebd.sh test_codexb.sh test_claudebd_live.sh; do
+for suite in e2e_surfaces.sh test_llm_limits.sh test_claudeb.sh test_claudebd.sh test_codexb.sh test_geminib.sh test_claudebd_live.sh; do
   cat >"$FIXTURE/tests/$suite" <<'EOF'
 #!/usr/bin/env bash
 name=$(basename "$0")
@@ -102,7 +102,7 @@ write_caches() {
 
 write_caches
 bash "$SCRIPT" || fail "successful run failed"
-assert test "$(paste -sd, "$CALLS")" = "e2e_surfaces.sh,test_llm_limits.sh,test_claudeb.sh,test_claudebd.sh,test_codexb.sh"
+assert test "$(paste -sd, "$CALLS")" = "e2e_surfaces.sh,test_llm_limits.sh,test_claudeb.sh,test_claudebd.sh,test_codexb.sh,test_geminib.sh"
 assert_fails grep -q test_claudebd_live.sh "$CALLS"
 assert grep -Eq '^timestamp=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{4} status=PASS failed_step=-$' "$LOG"
 assert grep -q 'status=PASS step=shadow-divergence detail=shadow-divergence: match' "$LOG"
@@ -204,14 +204,14 @@ assert test "$(cat "$LOG")" = "$FRESH_LOG_CONTENT"
 printf 'timestamp=%s status=PASS failed_step=-\n' "$(iso_from_epoch $((NOW - 22 * 3600)))" >"$LOG"
 : >"$CALLS"
 bash "$SCRIPT" || fail "catch-up bare invocation failed"
-assert test "$(paste -sd, "$CALLS")" = "e2e_surfaces.sh,test_llm_limits.sh,test_claudeb.sh,test_claudebd.sh,test_codexb.sh"
+assert test "$(paste -sd, "$CALLS")" = "e2e_surfaces.sh,test_llm_limits.sh,test_claudeb.sh,test_claudebd.sh,test_codexb.sh,test_geminib.sh"
 assert test ! -s "$ALERTS"
 
 printf 'timestamp=%s status=PASS failed_step=-\n' "$(iso_from_epoch $((NOW - 30 * 3600)))" >"$LOG"
 : >"$CALLS"
 : >"$ALERTS"
 bash "$SCRIPT" || fail "stale bare invocation failed"
-assert test "$(paste -sd, "$CALLS")" = "e2e_surfaces.sh,test_llm_limits.sh,test_claudeb.sh,test_claudebd.sh,test_codexb.sh"
+assert test "$(paste -sd, "$CALLS")" = "e2e_surfaces.sh,test_llm_limits.sh,test_claudeb.sh,test_claudebd.sh,test_codexb.sh,test_geminib.sh"
 assert grep -q 'stale since' "$ALERTS"
 
 rm -f "$HOME/.claude-profiles/.claudeb/selfcheck.state"

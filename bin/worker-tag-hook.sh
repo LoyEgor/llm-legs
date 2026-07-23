@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PreToolUse(Bash) inside codex-/claudeb-worker agents. Derives the
+# PreToolUse(Bash) inside relay-worker agents. Derives the
 # account·model·effort tag from the ACTUAL launch command text (claudeb/codex
 # CLI arguments + daemon state), never from the model's description discipline,
 # then prefixes the tag onto every Bash description so the UI activity line
@@ -14,7 +14,7 @@ field() { printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null; }
 [ "$(field '.hook_event_name')" = PreToolUse ] || exit 0
 agent_type=$(field '.agent_type')
 case "$agent_type" in
-  codex-worker|claudeb-worker) ;;
+  codex-worker|claudeb-worker|gemini-worker) ;;
   *) exit 0 ;;
 esac
 agent_id=$(field '.agent_id' | tr -cd 'A-Za-z0-9_-')
@@ -62,6 +62,19 @@ elif printf '%s' "$command" | grep -q 'claudeb' && printf '%s' "$command" | grep
   [ -n "$model" ] || model=opus
   effort=$(grab '\-\-effort[= ]+[a-z]+' | grep -oE '[a-z]+$')
   [ -n "$effort" ] || effort=$(worker_conf claudeb_effort)
+  [ -n "$effort" ] || effort=high
+  tag="$acct · $model · $effort"
+elif { printf '%s' "$command" | grep -qE '(^|[[:space:]/])agy([[:space:]]|$)' ||
+       printf '%s' "$command" | grep -qE '(^|[[:space:]/])geminib[[:space:]]+profile[[:space:]]+'; } &&
+     printf '%s' "$command" | grep -q -- '--print'; then
+  acct=$(grab 'geminib[[:space:]]+profile[[:space:]]+["'\'' ]*[A-Za-z0-9.-]+' | grep -oE '[A-Za-z0-9.-]+$')
+  [ -n "$acct" ] || acct=main
+  agy_model=$(grab '\-\-model(=|[[:space:]])gemini-[0-9.]+-(pro|flash)')
+  model=$(printf '%s' "$agy_model" | grep -oE '(pro|flash)$')
+  effort=$(grab '\-\-effort(=|[[:space:]])(high|medium|low)' | grep -oE '(high|medium|low)$')
+  [ -n "$model" ] || model=$(worker_conf gemini_model)
+  [ -n "$model" ] || model=pro
+  [ -n "$effort" ] || effort=$(worker_conf gemini_effort)
   [ -n "$effort" ] || effort=high
   tag="$acct · $model · $effort"
 fi

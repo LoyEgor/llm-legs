@@ -12,6 +12,8 @@ STATUSLINE="$ROOT/bin/statusline.sh"
 WORKERPICK="$ROOT/bin/worker-pick"
 LLMLIMITS="$ROOT/llm-limits.sh"
 HAMMER="$ROOT/hammerspoon/llm-limits.lua"
+WORKER_GATE="${WORKER_LIMIT_GATE:-$HOME/.claude/hooks/worker-limit-gate.sh}"
+WORKER_GATE_SETTINGS="${WORKER_GATE_SETTINGS:-$HOME/.claude/settings.json}"
 
 asserts=0
 fail() { printf 'FAIL: %s\n  (canonical values live in %s)\n' "$*" "$DOC" >&2; exit 1; }
@@ -64,7 +66,7 @@ assert doc_has '`keychain_service`'
 
 # --- Row c: worker-pick cache line format ------------------------------------
 # Producer printf and cb prefixes.
-assert grep -Fq 'cx%s%s·'\''"$codex_model"'\''·%s %s·%s·%s' "$WORKERPICK"
+assert grep -Fq 'cx%s%s·'\''"$codex_model"'\''·%s %s·%s·%s gx%s%s·%s·%s' "$WORKERPICK"
 assert grep -Eq 'cb_cache="cb~\$' "$WORKERPICK"
 assert grep -Eq 'cb_cache="cb@\$' "$WORKERPICK"
 assert grep -Fq 'cb_cache="cb~?"' "$WORKERPICK"
@@ -72,7 +74,7 @@ assert grep -Fq 'cb_cache="cb~?"' "$WORKERPICK"
 assert grep -q 'worker-pick.line' "$WORKERPICK"
 assert grep -q 'worker-pick.line' "$STATUSLINE"
 # Doc records the format.
-assert doc_has 'cx%s%s·<model>·%s %s·%s·%s'
+assert doc_has 'cx%s%s·<model>·%s %s·%s·%s gx%s%s·%s·%s'
 
 # --- Row d: weather HTTP classes ---------------------------------------------
 # probe_weather_failed's case pattern is the canonical class list.
@@ -123,4 +125,77 @@ assert grep -Fq -- 'token-freeze' "$CLAUDEB"
 assert grep -Fq -- 'token-freeze' "$LLMLIMITS"
 assert doc_has 'Token-freeze file semantics'
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics) and match %s\n' "$asserts" "$DOC"
+# --- Row g: Codex base-profile priority --------------------------------------
+CODEXB="$ROOT/bin/codexb"
+POLICY="$ROOT/share/worker-policy.md"
+assert grep -Fq 'main_last:(if (.account // "main") == "main" then 1 else 0 end)' "$WORKERPICK"
+assert test "$(grep -Fc 'sort_by(.main_last, -.score, .name)' "$WORKERPICK")" -eq 2
+assert grep -Fq 'main_last:(if $entry.account == "main" then 1 else 0 end)' "$CODEXB"
+assert grep -Fq 'sort -t $'\''\t'\'' -k2,2n -k3,3n -k4,4n -k1,1' "$CODEXB"
+assert grep -Fq 'Codex and Gemini `main` profiles as last-resort' "$POLICY"
+assert doc_has 'Codex/Gemini base-profile priority'
+
+REVIEWBENCH="$ROOT/bin/review-bench"
+for mapping in \
+  '"agy-pro": "gemini-3.1-pro"' \
+  '"agy-flash": "gemini-3.6-flash"' \
+  '"agy-flash35": "gemini-3.5-flash"'; do
+  assert grep -Fq -- "$mapping" "$REVIEWBENCH"
+done
+assert grep -Fq '"agy-pro": ("low", "high")' "$REVIEWBENCH"
+assert grep -Fq '"agy-flash": ("low", "medium", "high")' "$REVIEWBENCH"
+assert grep -Fq '"agy-flash35": ("low", "medium", "high")' "$REVIEWBENCH"
+assert grep -Fq 'agy-pro-<low|high>' "$ROOT/docs/DIAGNOSTICS.md"
+assert grep -Fq 'agy-flash-<low|medium|high>' "$ROOT/docs/DIAGNOSTICS.md"
+assert grep -Fq 'agy-flash35-<low|medium|high>' "$ROOT/docs/DIAGNOSTICS.md"
+assert doc_has '`agy-flash35-<effort>` → `--model gemini-3.5-flash --effort <effort>`'
+assert doc_has 'Antigravity review cell invocation mapping'
+
+# --- Row i: Gemini worker knobs ----------------------------------------------
+GEMINI_AGENT="${GEMINI_WORKER_AGENT:-$HOME/.claude/agents/gemini-worker.md}"
+WORKER_COMMAND="${WORKER_COMMAND_FILE:-$HOME/.claude/commands/worker.md}"
+assert test -r "$GEMINI_AGENT"
+assert test -r "$WORKER_COMMAND"
+for row in \
+  '| `pro` | `high` | `gemini-3.1-pro` | `high` |' \
+  '| `pro` | `low` | `gemini-3.1-pro` | `low` |' \
+  '| `flash` | `high` | `gemini-3.6-flash` | `high` |' \
+  '| `flash` | `medium` | `gemini-3.6-flash` | `medium` |' \
+  '| `flash` | `low` | `gemini-3.6-flash` | `low` |'; do
+  assert test "$(grep -Fc -- "$row" "$GEMINI_AGENT")" -eq 1
+done
+assert grep -Fq '`gemini_model=pro`, and `gemini_effort=high`' "$WORKER_COMMAND"
+assert grep -Fq 'Valid combinations are pro high/low and flash high/medium/low' "$WORKER_COMMAND"
+assert grep -Fq 'gm_model=$(conf gemini_model); gm_model=${gm_model:-pro}' "$WORKERPICK"
+assert grep -Fq 'gm_effort=$(conf gemini_effort); gm_effort=${gm_effort:-high}' "$WORKERPICK"
+assert grep -Fq 'canonical knob-to-agy mapping lives in `~/.claude/agents/gemini-worker.md`' "$POLICY"
+assert doc_has 'Gemini worker knobs'
+
+SPAWN_HOOK="$ROOT/bin/worker-spawn-hook.sh"
+assert grep -Fq 'gm_pin=$(conf gemini_profile)' "$WORKERPICK"
+assert grep -Fq 'acct=$(worker_conf gemini_profile)' "$SPAWN_HOOK"
+assert grep -Fq '[ -n "$acct" ] || acct=$(brief_line ACCOUNT)' "$SPAWN_HOOK"
+assert grep -Fq '[ -n "$acct" ] || acct=main' "$SPAWN_HOOK"
+assert grep -Fq '`gemini_profile=<name>`' "$WORKER_COMMAND"
+assert grep -Fq "s/^gemini_profile=//p" "$GEMINI_AGENT"
+assert grep -Fq 'Without a pin, use the exact profile from an `ACCOUNT: <name>` line' "$GEMINI_AGENT"
+assert doc_has 'Gemini account pin precedence'
+
+GATE_WARN=85; GATE_DENY=95
+assert test -x "$WORKER_GATE"
+assert eq "$(grep -E '^WARN_AT=[0-9]+$' "$WORKER_GATE" | cut -d= -f2)" "$GATE_WARN"
+assert eq "$(grep -E '^DENY_AT=[0-9]+$' "$WORKER_GATE" | cut -d= -f2)" "$GATE_DENY"
+assert test "$(grep -Ec '^WARN_AT=' "$WORKER_GATE")" -eq 1
+assert test "$(grep -Ec '^DENY_AT=' "$WORKER_GATE")" -eq 1
+for worker in claudeb-worker codex-worker gemini-worker; do
+  assert grep -Fq "$worker" "$WORKER_GATE"
+done
+assert grep -Fq 'effective_pct' "$WORKER_GATE"
+assert grep -Fq '$reset != null and $reset <= $now then 0' "$WORKER_GATE"
+assert test -r "$WORKER_GATE_SETTINGS"
+assert eq "$(jq '[.hooks.PreToolUse[] | select(.matcher == "Agent") | .hooks[] | select(.command == "~/.claude/hooks/worker-limit-gate.sh")] | length' "$WORKER_GATE_SETTINGS")" 1
+assert eq "$(jq '[.hooks.PreToolUse[] | .hooks[]? | select(.command | test("(claudeb|codex)-limit-gate"))] | length' "$WORKER_GATE_SETTINGS")" 0
+assert grep -Fq 'warn at `85`%; block at `95`%' "$ROOT/$DOC"
+assert doc_has 'Worker spawn pressure gate'
+
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs and account pin precedence, worker spawn pressure gate) and match %s\n' "$asserts" "$DOC"

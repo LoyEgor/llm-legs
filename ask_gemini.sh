@@ -2,9 +2,8 @@
 # Cross-vendor leg: Google, via the Antigravity CLI (`agy`), SUBSCRIPTION-ONLY.
 # Prompt as $1 or stdin; the model's text answer goes to stdout.
 #
-# 2026-06-12: the legacy Gemini CLI transport was retired early (Google kills that CLI
-# ~2026-06-18; owner decision to migrate now). The old multi-transport wrapper is preserved at
-# lib/legacy/ask_gemini_cli.sh. agy >=1.0.7 headless facts (measured here):
+# agy is the only Google backend (Antigravity CLI; there is no fallback transport).
+# agy >=1.0.7 headless facts (measured here):
 #   - `--print` works on plain pipes (no PTY workaround needed), ~8-15 s per simple call;
 #   - `--model "<label>"` pins the model per call (labels from `agy models`); the interactive
 #     /model command merely writes the same label to ~/.gemini/antigravity-cli/settings.json;

@@ -195,12 +195,15 @@ pick_account() {
        . as $entry |
        [effective(.five_hour), effective(.weekly)] | map(select(. != null)) as $known |
        select(($known | length) == 0 or ($known | max) < 100) |
-       {account:$entry.account,unknown:(if ($known | length) == 0 then 1 else 0 end),
+       {account:$entry.account,main_last:(if $entry.account == "main" then 1 else 0 end),
+        unknown:(if ($known | length) == 0 then 1 else 0 end),
         pressure:(if ($known | length) == 0 then 0 else ($known | max) end)}] | .[0] // empty |
-      [.account, .unknown, .pressure] | @tsv
+      [.account, .main_last, .unknown, .pressure] | @tsv
     ' <<<"$quotas")
     [ -z "$selected" ] || printf '%s\n' "$selected"
-  done < <(account_names) | LC_ALL=C sort -t $'\t' -k2,2n -k3,3n -k1,1 | awk -F '\t' 'NR == 1 {print $1}'
+  done < <(account_names) |
+    LC_ALL=C sort -t $'\t' -k2,2n -k3,3n -k4,4n -k1,1 |
+    awk -F '\t' 'NR == 1 {print $1}'
 }
 
 run_account() {
@@ -253,7 +256,7 @@ show_help() {
     'codexb remove <name>                   Forget a profile and prune its cached quota.' \
     'codexb list                            List profiles with login state.' \
     'codexb status                          Per-account login state and quota.' \
-    'codexb pick                            Print the freest usable account.'
+    'codexb pick                            Print the highest-priority usable account.'
 }
 
 ensure_profiles

@@ -23,7 +23,8 @@ CONFIG="$WORK/worker-model"
 TIERS="$WORK/account-tiers"
 CACHE="$WORK/cache"
 mkdir -p "$HOME_FIXTURE" "$CACHE"
-printf '%s\n' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' >"$CONFIG"
+printf '%s\n' 'worker=auto' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
+  'gemini_model=pro' 'gemini_effort=high' >"$CONFIG"
 printf '%s\n' 'burnt=100' 'fresh=100' 'ordinary=100' 'reserved=100' 'small=20' \
   'at-floor=100' 'safe=100' 'claude-floor=100' 'soon=100' 'later=100' \
   'effective=100' 'raw=100' 'expired=100' 'live=100' 'session=100' 'worker=20' \
@@ -49,9 +50,11 @@ run_store() {
 
 # Run a fixture with a non-default configured model/effort, then restore the default.
 run_case_cfg() {
-  printf '%s\n' 'codex_effort=high' "claudeb_model=$2" "claudeb_effort=$3" >"$CONFIG"
+  printf '%s\n' 'worker=auto' 'codex_effort=high' "claudeb_model=$2" "claudeb_effort=$3" \
+    'gemini_model=pro' 'gemini_effort=high' >"$CONFIG"
   run_case "$1"
-  printf '%s\n' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' >"$CONFIG"
+  printf '%s\n' 'worker=auto' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
+    'gemini_model=pro' 'gemini_effort=high' >"$CONFIG"
 }
 
 run_case r1
@@ -138,6 +141,13 @@ run_case all_floor
 assert contains "$(head -n1 <<<"$output")" 'NEXT: claudeb claude-floor '
 assert contains "$(head -n1 <<<"$output")" 'WARN: no account below HEADROOM_PCT, using least-burnt'
 
+run_filter all_floor '.vendors.gemini = {
+  available:true,group:"Gemini Models",
+  five_hour:{used_pct:20,as_of:2000000000},weekly:{used_pct:30,as_of:2000000000}}'
+assert contains "$(head -n1 <<<"$output")" 'gemini main · pro · high — ACCOUNT: main'
+assert not_contains "$(head -n1 <<<"$output")" 'ALL FLOORED'
+assert not_contains "$(sed -n '5p' <<<"$output")" 'ALL FLOORED'
+
 run_filter floor '.vendors.claude.accounts |= map(.five_hour.used_pct = (if .account == "at-floor" then 96 else 92 end) | .weekly.used_pct = (if .account == "at-floor" then 10 else 92 end) | .fable.used_pct = .weekly.used_pct)'
 assert contains "$(head -n1 <<<"$output")" 'NEXT: claudeb safe '
 assert contains "$(head -n1 <<<"$output")" 'WARN: no account below HEADROOM_PCT, using least-burnt'
@@ -160,12 +170,85 @@ run_case codex_tight
 assert contains "$(head -n1 <<<"$output")" 'codex tight · high — TIGHT'
 assert contains "$output" 'tight 85% runway 15% ↻0'
 
+run_case gemini_fresh
+assert contains "$(sed -n '3p' <<<"$output")" 'gemini: main 35% runway 65%'
+assert contains "$(head -n1 <<<"$output")" 'gemini main · pro · high — ACCOUNT: main; pre-reset cap 55% — FRESH'
+assert contains "$output" 'DATA: fresh (0 min old)'
+
+run_case gemini_stale
+assert contains "$(sed -n '3p' <<<"$output")" 'gemini: main 30% runway 70%'
+assert contains "$output" 'DATA: STALE (166 min old)'
+
+run_case gemini_floor
+assert contains "$(sed -n '3p' <<<"$output")" 'gemini: main 91% runway 9% FLOOR'
+assert contains "$(head -n1 <<<"$output")" 'gemini main · pro · high — WALLED'
+
+run_case gemini_wrong_group
+assert contains "$(sed -n '3p' <<<"$output")" 'gemini: no Gemini Models quota data'
+assert not_contains "$(head -n1 <<<"$output")" 'ACCOUNT: main'
+
+run_filter gemini_fresh '.vendors.gemini = {
+  available:true,accounts:[
+    {account:"main",group:"Gemini Models",five_hour:{used_pct:10,as_of:2000000000},weekly:{used_pct:10,as_of:2000000000}},
+    {account:"work",group:"Gemini Models",five_hour:{used_pct:40,as_of:2000000000},weekly:{used_pct:40,as_of:2000000000}}]}'
+assert contains "$(head -n1 <<<"$output")" 'gemini work · pro · high — ACCOUNT: work'
+assert contains "$(sed -n '3p' <<<"$output")" 'gemini: work 40% runway 60%'
+assert contains "$(sed -n '3p' <<<"$output")" 'main 10% runway 90%'
+
+run_filter gemini_fresh '.vendors.gemini = {
+  available:true,accounts:[
+    {account:"main",group:"Gemini Models",five_hour:{used_pct:10,as_of:2000000000},weekly:{used_pct:10,as_of:2000000000}},
+    {account:"work",group:"Gemini Models",auth_needed:true}]}'
+assert contains "$(head -n1 <<<"$output")" 'gemini main · pro · high — ACCOUNT: main'
+
+printf '%s\n' 'worker=auto' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
+  'gemini_model=pro' 'gemini_effort=high' 'gemini_profile=main' >"$CONFIG"
+run_filter gemini_fresh '.vendors.gemini = {
+  available:true,accounts:[
+    {account:"main",group:"Gemini Models",five_hour:{used_pct:10,as_of:2000000000},weekly:{used_pct:10,as_of:2000000000}},
+    {account:"work",group:"Gemini Models",five_hour:{used_pct:40,as_of:2000000000},weekly:{used_pct:40,as_of:2000000000}}]}'
+assert contains "$(head -n1 <<<"$output")" 'gemini main · pro · high — ACCOUNT: main'
+
+printf '%s\n' 'worker=auto' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
+  'gemini_model=pro' 'gemini_effort=high' 'gemini_profile=work' >"$CONFIG"
+run_filter gemini_fresh '.vendors.gemini = {
+  available:true,accounts:[
+    {account:"main",group:"Gemini Models",five_hour:{used_pct:10,as_of:2000000000},weekly:{used_pct:10,as_of:2000000000}},
+    {account:"work",group:"Gemini Models",auth_needed:true}]}'
+assert contains "$(head -n1 <<<"$output")" 'gemini pin work is not selectable, ask Egor'
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✗·sol·hi cb~?·opus·hi gx✗work·pro·hi'
+
+printf '%s\n' 'worker=gemini' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
+  'gemini_model=flash' 'gemini_effort=medium' >"$CONFIG"
+run_case gemini_fresh
+assert contains "$(head -n1 <<<"$output")" 'NEXT: gemini main · flash · medium — ACCOUNT: main'
+printf '%s\n' 'worker=auto' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
+  'gemini_model=pro' 'gemini_effort=high' >"$CONFIG"
+
+run_filter codex_plain '.vendors.codex.accounts = [
+  {account:"main",five_hour:{used_pct:0},weekly:{used_pct:0},reset_credits:3},
+  {account:"alpha",five_hour:{used_pct:40},weekly:{used_pct:40},reset_credits:0}]'
+assert contains "$(head -n1 <<<"$output")" 'codex alpha · high — FRESH'
+assert contains "$(sed -n '2p' <<<"$output")" 'codex: alpha 40% runway 60% ↻0'
+
+run_filter codex_plain '.vendors.codex.accounts = [
+  {account:"main",five_hour:{used_pct:48},weekly:{used_pct:48},reset_credits:0},
+  {account:"alpha",five_hour:{used_pct:90},weekly:{used_pct:10},reset_credits:0}]'
+assert contains "$(head -n1 <<<"$output")" 'codex main · high — FRESH'
+assert contains "$output" 'alpha 90% runway 10% ↻0 FLOOR'
+
+run_filter codex_plain '.vendors.codex.accounts = [
+  {account:"main",five_hour:{used_pct:0},weekly:{used_pct:0},reset_credits:3},
+  {account:"alpha",five_hour:{used_pct:89},weekly:{used_pct:20},reset_credits:0}]'
+assert contains "$(head -n1 <<<"$output")" 'codex alpha · high — TIGHT'
+assert contains "$(sed -n '2p' <<<"$output")" 'codex: alpha 89% runway 11% ↻0'
+
 run_case stale
 assert contains "$output" 'NEXT: claudeb effective '
 assert contains "$output" 'effective($100) 5h 20% wk 20%'
 assert contains "$output" 'DATA: STALE (166 min old)'
 
-run_filter golden 'del(.fetched_at)'
+run_filter golden 'del(.fetched_at, .vendors.gemini.five_hour.as_of, .vendors.gemini.weekly.as_of)'
 assert contains "$(head -n1 <<<"$output")" 'NEXT: claudeb worker '
 assert contains "$output" 'DATA: no timestamp'
 
@@ -184,11 +267,13 @@ assert contains "$output" 'session($100)*'
 assert contains "$output" 'SESSION: session — fb 10%, wk 20%'
 assert test "$(sed -n '1p' <<<"$output" | cut -d: -f1)" = NEXT
 assert test "$(sed -n '2p' <<<"$output" | cut -d: -f1)" = codex
-assert test "$(sed -n '3p' <<<"$output" | cut -d: -f1)" = claude
-assert test "$(sed -n '4p' <<<"$output" | cut -d: -f1)" = POLICY
-assert test "$(sed -n '5p' <<<"$output" | cut -d: -f1)" = DATA
-assert test "$(sed -n '6p' <<<"$output" | cut -d: -f1)" = SESSION
-assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~worker·opus·hi'
+assert test "$(sed -n '3p' <<<"$output" | cut -d: -f1)" = gemini
+assert test "$(sed -n '4p' <<<"$output" | cut -d: -f1)" = claude
+assert test "$(sed -n '5p' <<<"$output" | cut -d: -f1)" = POLICY
+assert contains "$(sed -n '5p' <<<"$output")" 'Codex main is last-resort'
+assert test "$(sed -n '6p' <<<"$output" | cut -d: -f1)" = DATA
+assert test "$(sed -n '7p' <<<"$output" | cut -d: -f1)" = SESSION
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~worker·opus·hi gx✓main·pro·hi'
 assert test -z "$(find "$CACHE" -name '*.tmp.*' -print -quit)"
 assert cmp -s <(printf '%s\n' "$output") "$GOLDEN"
 
@@ -200,6 +285,9 @@ assert contains "$policy" 'effort `medium`'
 assert contains "$policy" '`high` for genuinely complex work'
 assert contains "$policy" 'long or multi-step tasks'
 assert contains "$policy" 'repository conventions'
+assert contains "$policy" 'full implementation worker'
+assert contains "$policy" 'conservatively'
 assert contains "$policy" 'five of every ten'
+assert contains "$policy" 'every usable non-main account of the same vendor ranks ahead'
 
-printf 'PASS: %s assertions; R1-R9 scoring, Codex reset runway, stale data, output/cache golden contract, session and policy text\n' "$asserts"
+printf 'PASS: %s assertions; R1-R9 scoring, Codex reset runway and main-last priority, Gemini multi-account selection/pin/login exclusion/freshness/floor/toggle routing, output/cache golden contract, session and policy text\n' "$asserts"

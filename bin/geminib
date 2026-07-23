@@ -1,0 +1,281 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+base_home=$HOME
+profiles_dir="${GEMINIB_PROFILES_DIR:-$base_home/.gemini-profiles}"
+agy_bin="${AGY_BIN:-$base_home/.local/bin/agy}"
+
+resolve_root() {
+  local source="${BASH_SOURCE[0]}" directory
+  while [ -L "$source" ]; do
+    directory=$(cd -P "$(dirname "$source")" && pwd)
+    source=$(readlink "$source")
+    [[ "$source" = /* ]] || source="$directory/$source"
+  done
+  cd -P "$(dirname "$source")/.." && pwd
+}
+
+quota_helper="${GEMINIB_QUOTA_CMD:-$(resolve_root)/agy-quota.py}"
+
+account_names() {
+  local path
+  printf 'main\n'
+  if [ -d "$profiles_dir" ]; then
+    for path in "$profiles_dir"/*; do
+      [ -d "$path" ] && basename "$path"
+    done | LC_ALL=C sort
+  fi
+}
+
+account_home() {
+  if [ "$1" = main ]; then
+    printf '%s\n' "$base_home"
+  else
+    printf '%s\n' "$profiles_dir/$1"
+  fi
+}
+
+reserved_name() {
+  case "$1" in
+    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+ensure_profile() {
+  local directory="$1" item target
+  mkdir -p "$directory/.gemini/antigravity-cli"
+  for item in GEMINI.md config extensions extension_integrity.json settings.json trustedFolders.json; do
+    target="$directory/.gemini/$item"
+    if [ -e "$base_home/.gemini/$item" ] && [ ! -e "$target" ] && [ ! -L "$target" ]; then
+      ln -s "$base_home/.gemini/$item" "$target"
+    fi
+  done
+  target="$directory/.gemini/antigravity-cli/settings.json"
+  if [ -e "$base_home/.gemini/antigravity-cli/settings.json" ] && [ ! -e "$target" ] && [ ! -L "$target" ]; then
+    ln -s "$base_home/.gemini/antigravity-cli/settings.json" "$target"
+  fi
+}
+
+ensure_profiles() {
+  local name
+  while IFS= read -r name; do
+    [ "$name" = main ] || ensure_profile "$profiles_dir/$name"
+  done < <(account_names)
+}
+
+quota_snapshot() {
+  local name="$1" home output rc=0
+  home=$(account_home "$name")
+  if [ ! -x "$quota_helper" ]; then
+    printf '1\t{"error":"quota helper unavailable"}\n'
+    return
+  fi
+  output=$(env HOME="$home" AGY_BIN="$agy_bin" AGY_WORKDIR="${AGY_WORKDIR:-$(resolve_root)}" \
+    AGY_QUOTA_STARTUP_TIMEOUT="${GEMINIB_QUOTA_TIMEOUT:-8}" "$quota_helper" 2>/dev/null) || rc=$?
+  if ! jq -e 'type == "object"' >/dev/null 2>&1 <<<"$output"; then
+    output='{"error":"quota unavailable"}'
+    rc=1
+  fi
+  printf '%s\t%s\n' "$rc" "$output"
+}
+
+login_status() {
+  local snapshot rc data
+  snapshot=$(quota_snapshot "$1")
+  rc=${snapshot%%$'\t'*}
+  data=${snapshot#*$'\t'}
+  if [ "$rc" -eq 0 ]; then
+    printf '0\tLogged in\n'
+  elif [ "$rc" -eq 2 ] && jq -e '.auth_needed == true' >/dev/null 2>&1 <<<"$data"; then
+    printf '1\tNot logged in\n'
+  else
+    printf '1\tLogin status unavailable\n'
+  fi
+}
+
+format_reset_time() {
+  local timestamp="$1" epoch now delta weekday
+  local -a weekdays=(Sun Mon Tue Wed Thu Fri Sat)
+  epoch=$(jq -nr --arg value "$timestamp" '$value | fromdateiso8601? // 0')
+  if ! [ "$epoch" -gt 0 ] 2>/dev/null; then printf 'unknown'; return; fi
+  now=$(date +%s)
+  delta=$((epoch - now))
+  if [ "$delta" -lt 86400 ]; then
+    date -r "$epoch" '+%H:%M' 2>/dev/null || date -d "@$epoch" '+%H:%M' 2>/dev/null || printf 'unknown'
+  elif [ "$delta" -lt 604800 ]; then
+    weekday=$(date -r "$epoch" '+%w' 2>/dev/null || date -d "@$epoch" '+%w' 2>/dev/null) || { printf 'unknown'; return; }
+    printf '%s ' "${weekdays[$weekday]}"
+    date -r "$epoch" '+%H:%M' 2>/dev/null || date -d "@$epoch" '+%H:%M' 2>/dev/null || printf 'unknown'
+  else
+    date -r "$epoch" '+%m-%d %H:%M' 2>/dev/null || date -d "@$epoch" '+%m-%d %H:%M' 2>/dev/null || printf 'unknown'
+  fi
+}
+
+add_account() {
+  local name="${1:-}" directory status
+  if [ -z "$name" ] || ! [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]] || [ "$name" = main ] || reserved_name "$name"; then
+    printf 'usage: geminib add <name> (must start with a lowercase letter or number; use only lowercase letters, numbers, and hyphens; not reserved words or "main")\n' >&2
+    exit 2
+  fi
+  directory="$profiles_dir/$name"
+  if [ -e "$directory" ] || [ -L "$directory" ]; then
+    printf 'geminib: account already exists: %s\n' "$name" >&2
+    exit 2
+  fi
+  mkdir -p "$directory"
+  ensure_profile "$directory"
+  printf 'HOME=~/.gemini-profiles/%s agy\n' "$name"
+  status=$(login_status "$name")
+  printf '%s: %s\n' "$name" "${status#*$'\t'}"
+}
+
+remove_account() {
+  local name="${1:-}" directory cache_dir
+  if [ -z "$name" ] || [ "$name" = main ] ||
+     ! [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    printf 'usage: geminib remove <name> (not "main")\n' >&2
+    exit 2
+  fi
+  directory="$profiles_dir/$name"
+  if [ ! -e "$directory" ] && [ ! -L "$directory" ]; then
+    printf 'geminib: unknown account: %s\n' "$name" >&2
+    exit 2
+  fi
+  rm -rf "$directory"
+  cache_dir="${LLM_LIMITS_GEMINI_ACCOUNTS_DIR:-$base_home/.llm-limits-gemini}"
+  rm -f "$cache_dir/$name.json" "$cache_dir/$name.json.removed"
+  printf 'geminib: removed %s\n' "$name"
+}
+
+list_accounts() {
+  local name status
+  while IFS= read -r name; do
+    status=$(login_status "$name")
+    printf '%s: %s\n' "$name" "${status#*$'\t'}"
+  done < <(account_names)
+}
+
+show_status() {
+  local name snapshot rc data state hused wused hreset wreset
+  while IFS= read -r name; do
+    snapshot=$(quota_snapshot "$name")
+    rc=${snapshot%%$'\t'*}
+    data=${snapshot#*$'\t'}
+    if [ "$rc" -eq 0 ]; then
+      state='Logged in'
+      hused=$(jq -r '[.groups[]? | select(.displayName == "Gemini Models")][0] |
+        [.buckets[]? | select(.window == "5h")][0] |
+        if (.remainingFraction | type) == "number" then (((1 - .remainingFraction) * 100) | round | tostring) + "%" else "-" end' <<<"$data")
+      wused=$(jq -r '[.groups[]? | select(.displayName == "Gemini Models")][0] |
+        [.buckets[]? | select(.window == "weekly")][0] |
+        if (.remainingFraction | type) == "number" then (((1 - .remainingFraction) * 100) | round | tostring) + "%" else "-" end' <<<"$data")
+      hreset=$(format_reset_time "$(jq -r '[.groups[]? | select(.displayName == "Gemini Models")][0] |
+        [.buckets[]? | select(.window == "5h")][0].resetTime // empty' <<<"$data")")
+      wreset=$(format_reset_time "$(jq -r '[.groups[]? | select(.displayName == "Gemini Models")][0] |
+        [.buckets[]? | select(.window == "weekly")][0].resetTime // empty' <<<"$data")")
+    elif [ "$rc" -eq 2 ] && jq -e '.auth_needed == true' >/dev/null 2>&1 <<<"$data"; then
+      state='Not logged in'
+      hused=-; wused=-; hreset=unknown; wreset=unknown
+    else
+      state='Login status unavailable'
+      hused=-; wused=-; hreset=unknown; wreset=unknown
+    fi
+    printf '%s: %s | 5H %s reset %s | WEEKLY %s reset %s\n' \
+      "$name" "$state" "$hused" "$hreset" "$wused" "$wreset"
+  done < <(account_names)
+}
+
+run_account() {
+  local allow_create="$1" name="${2:-}" directory
+  if [ "$allow_create" = true ] && { [ "$name" = -h ] || [ "$name" = --help ]; }; then
+    show_help
+    return
+  fi
+  if [ -z "$name" ]; then
+    printf 'usage: geminib profile <name> [agy args...]\n' >&2
+    exit 2
+  fi
+  if ! [[ "$name" =~ ^[a-z0-9-]+$ ]]; then
+    printf "geminib: invalid profile name '%s' (must start with a lowercase letter or number; use only lowercase letters, numbers, and hyphens)\n" "$name" >&2
+    exit 2
+  fi
+  shift 2
+  if [ "$name" = main ]; then
+    exec env HOME="$base_home" "$agy_bin" "$@"
+  fi
+  directory="$profiles_dir/$name"
+  if [ ! -d "$directory" ]; then
+    if [ "$allow_create" != true ]; then
+      printf 'geminib: unknown account: %s\n' "$name" >&2
+      exit 2
+    fi
+    if reserved_name "$name"; then
+      printf "geminib: invalid profile name '%s'\n" "$name" >&2
+      exit 2
+    fi
+    if ! [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+      printf "geminib: invalid profile name '%s' (must start with a lowercase letter or number; use only lowercase letters, numbers, and hyphens)\n" "$name" >&2
+      exit 2
+    fi
+    mkdir -p "$directory"
+    printf "geminib: new profile '%s' created at %s — Antigravity will ask you to log in once.\n" "$name" "$directory" >&2
+  fi
+  ensure_profile "$directory"
+  exec env HOME="$directory" GEMINIB_BASE_HOME="$base_home" "$agy_bin" "$@"
+}
+
+show_help() {
+  printf '%s\n' \
+    'geminib profile <name> [agy args...]  Open an isolated profile; creates it if missing (Antigravity asks you to log in once). Aliases: p, run.' \
+    'geminib <name> exec [args...]' \
+    'geminib add <name>                    Create a profile without launching; prints the login command.' \
+    'geminib remove <name>                 Forget a profile and prune its cached quota.' \
+    'geminib list                          List profiles with login state.' \
+    'geminib status                        Per-account login state and quota.'
+}
+
+ensure_profiles
+if [ "${2:-}" = exec ] && [ "${1:-}" != main ] \
+   && [[ "${1:-}" =~ ^[a-z0-9-]+$ ]] \
+   && [ -d "$profiles_dir/${1:-}" ]; then
+  name="$1"
+  shift 2
+  run_account false "$name" exec "$@"
+fi
+case "${1:-}" in
+  add)
+    shift
+    [ "$#" -eq 1 ] || { printf 'usage: geminib add <name>\n' >&2; exit 2; }
+    add_account "$1"
+    ;;
+  remove)
+    shift
+    [ "$#" -eq 1 ] || { printf 'usage: geminib remove <name>\n' >&2; exit 2; }
+    remove_account "$1"
+    ;;
+  list)
+    [ "$#" -eq 1 ] || { printf 'usage: geminib list\n' >&2; exit 2; }
+    list_accounts
+    ;;
+  status)
+    [ "$#" -eq 1 ] || { printf 'usage: geminib status\n' >&2; exit 2; }
+    show_status
+    ;;
+  profile|p|run)
+    shift
+    run_account true "$@"
+    ;;
+  help|-h|--help|'')
+    show_help
+    ;;
+  *)
+    name="$1"
+    if [ "${2:-}" != exec ]; then
+      printf 'usage: geminib <name> exec [args...]\n' >&2
+      exit 2
+    fi
+    shift 2
+    run_account false "$name" exec "$@"
+    ;;
+esac

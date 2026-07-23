@@ -112,6 +112,7 @@ run_checks() {
     "test_claudeb.sh:${LLM_SELFCHECK_SUITE_TIMEOUT:-300}"
     "test_claudebd.sh:${LLM_SELFCHECK_SUITE_TIMEOUT:-300}"
     "test_codexb.sh:${LLM_SELFCHECK_SUITE_TIMEOUT:-300}"
+    "test_geminib.sh:${LLM_SELFCHECK_SUITE_TIMEOUT:-300}"
   )
   output=$(mktemp "${TMPDIR:-/tmp}/llm-selfcheck.XXXXXX") || exit 1
   cd "$repo_root" || exit 1

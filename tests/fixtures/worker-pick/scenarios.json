@@ -585,6 +585,18 @@
 					}
 				]
 			},
+			"gemini": {
+				"available": true,
+				"group": "Gemini Models",
+				"five_hour": {
+					"used_pct": 12,
+					"as_of": 2000000000
+				},
+				"weekly": {
+					"used_pct": 25,
+					"as_of": 2000000000
+				}
+			},
 			"claude": {
 				"available": true,
 				"accounts": [
@@ -887,6 +899,62 @@
 					}
 				]
 			}
+		}
+	},
+	"gemini_fresh": {
+		"schema": 1,
+		"fetched_at": 2000000000,
+		"vendors": {
+			"codex": { "available": false },
+			"gemini": {
+				"available": true,
+				"group": "Gemini Models",
+				"five_hour": { "used_pct": 15, "as_of": 2000000000 },
+				"weekly": { "used_pct": 35, "as_of": 2000000000 }
+			},
+			"claude": { "available": false, "accounts": [] }
+		}
+	},
+	"gemini_stale": {
+		"schema": 1,
+		"fetched_at": 2000000000,
+		"vendors": {
+			"codex": { "available": false },
+			"gemini": {
+				"available": true,
+				"group": "Gemini Models",
+				"five_hour": { "used_pct": 95, "effective_pct": 20, "stale": true, "as_of": 1999990000 },
+				"weekly": { "used_pct": 95, "effective_pct": 30, "stale": true, "as_of": 1999990000 }
+			},
+			"claude": { "available": false, "accounts": [] }
+		}
+	},
+	"gemini_floor": {
+		"schema": 1,
+		"fetched_at": 2000000000,
+		"vendors": {
+			"codex": { "available": false },
+			"gemini": {
+				"available": true,
+				"group": "Gemini Models",
+				"five_hour": { "used_pct": 91, "as_of": 2000000000 },
+				"weekly": { "used_pct": 40, "as_of": 2000000000 }
+			},
+			"claude": { "available": false, "accounts": [] }
+		}
+	},
+	"gemini_wrong_group": {
+		"schema": 1,
+		"fetched_at": 2000000000,
+		"vendors": {
+			"codex": { "available": false },
+			"gemini": {
+				"available": true,
+				"group": "Other Models",
+				"five_hour": { "used_pct": 1, "as_of": 2000000000 },
+				"weekly": { "used_pct": 1, "as_of": 2000000000 }
+			},
+			"claude": { "available": false, "accounts": [] }
 		}
 	}
 }

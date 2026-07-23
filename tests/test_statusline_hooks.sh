@@ -4,6 +4,7 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORKDIR_HOOK="$ROOT/bin/statusline-workdir-hook.sh"
 WORKER_HOOK="$ROOT/bin/worker-tag-hook.sh"
+SPAWN_HOOK="$ROOT/bin/worker-spawn-hook.sh"
 STATUSLINE="$ROOT/bin/statusline.sh"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -266,6 +267,20 @@ assert grep -Fq "w:cb${RESET} ${MAGENTA}@notcom${RESET}${DIM}·opus·hi${RESET}"
 printf 'worker=claudeb\ncodex_effort=high\n' > "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-cb-unres)")
 assert grep -Fq "w:cb${RESET} ${MAGENTA}~?${RESET}${DIM}·opus·hi${RESET}" <<< "$worker_out"
+
+printf 'worker=gemini\ngemini_model=flash\ngemini_effort=medium\n' > "$worker_file"
+worker_out=$(run_statusline "$(statusline_payload status-w-gemini)")
+assert grep -Fq "w:gem${RESET} ${MAGENTA}~main${RESET}${DIM}·flash·med${RESET}" <<< "$worker_out"
+
+printf 'worker=gemini\ngemini_profile=work\ngemini_model=flash\ngemini_effort=medium\n' > "$worker_file"
+worker_out=$(run_statusline "$(statusline_payload status-w-gemini-pin)")
+assert grep -Fq "w:gem${RESET} ${MAGENTA}@work${RESET}${DIM}·flash·med${RESET}" <<< "$worker_out"
+
+mkdir -p "$HOME/.cache"
+printf 'cx✓alt·sol·med cb~notcom·opus·hi gx✓main·pro·hi\n' > "$HOME/.cache/worker-pick.line.main"
+printf 'worker=auto\ngemini_model=pro\ngemini_effort=high\n' > "$worker_file"
+worker_out=$(run_statusline "$(statusline_payload status-w-auto)" main)
+assert grep -Fq 'gx✓main·pro·hi' <<< "$worker_out"
 
 printf 'worker=frobnicate\ncodex_effort=high\ncodex_profile=alt\n' > "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-bad)")
@@ -1047,6 +1062,24 @@ glob_later_output=$(printf '%s' "$glob_later" | "$WORKER_HOOK") || fail "glob-ta
 assert jq -e '.hookSpecificOutput.updatedInput.description == "com · sonnet · high — Run tests"' \
   <<< "$glob_later_output" >/dev/null
 
+gemini_seed=$(worker_payload gemini-worker worker/gemini 'Implement it' \
+  "$HOME/.local/bin/geminib profile work --model gemini-3.6-flash --effort medium --print-timeout 20m --dangerously-skip-permissions --print task")
+gemini_seed_output=$(printf '%s' "$gemini_seed" | "$WORKER_HOOK") || fail "gemini-tag seed exited nonzero"
+assert_eq 'work · flash · medium' "$(cat "$TAGDIR/workergemini")"
+assert jq -e '.hookSpecificOutput.updatedInput.description == "work · flash · medium — Implement it"' \
+  <<< "$gemini_seed_output" >/dev/null
+
+printf 'gemini_model=pro\ngemini_effort=high\n' > "$HOME/.claude/worker-model"
+spawn_payload=$(jq -cn '{
+  hook_event_name:"PreToolUse",session_id:"spawn-gemini",
+  tool_input:{subagent_type:"gemini-worker",description:"Implement fixture",
+              prompt:"ACCOUNT: second\nMODEL: flash\nEFFORT: medium\nWorking directory: /tmp"}}')
+spawn_output=$(printf '%s' "$spawn_payload" | "$SPAWN_HOOK") || fail "gemini spawn hook exited nonzero"
+assert jq -e '.hookSpecificOutput.updatedInput.description == "second · flash · medium: Implement fixture"' \
+  <<< "$spawn_output" >/dev/null
+assert_eq 'second · flash · medium' \
+  "$(cat "$HOME/.cache/claude-worker-tags/spawn-gemini/pending-gemini-worker")"
+
 # A stored tag carrying regex-special chars is matched literally, so an
 # already-prefixed description never stacks.
 mkdir -p "$TAGDIR"; printf 'com [1m] · high\n' > "$TAGDIR/workerbr"
@@ -1096,4 +1129,4 @@ other_output=$(run_statusline "$other_payload") || fail "bench other-session ren
 assert test "${other_output#*⚖}" = "$other_output"
 rm -rf "$bench_dir"
 
-echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, and worker tag propagation"
+echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, and Codex/claudeb/Gemini worker tag propagation"

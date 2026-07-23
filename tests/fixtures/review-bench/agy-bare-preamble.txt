@@ -1,0 +1,4 @@
+I reviewed the requested commit. Findings follow.
+
+{"severity":"P1","file":"src/auth.py","line":41,"summary":"Reject an empty bearer token before validation"}
+{"severity":"P3","file":"src/cache.py","line":18,"summary":"Preserve the cached timestamp on a passive read"}
