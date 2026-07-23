@@ -18,6 +18,7 @@ from pathlib import Path
 
 
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
+GROK_EFFORTS = ("low", "medium", "high")
 RATER_TIMEOUT_S = 1800
 AUTO_RATERS = tuple(
     f"{model}-{effort}"
@@ -28,7 +29,7 @@ CLAUDE_MODEL_IDS = {"fable": "claude-fable-5"}
 VERDICTS = {"confirmed", "false_positive", "duplicate"}
 WEIGHTS = {"P1": 5, "P2": 2, "P3": 1}
 RATER_RE = re.compile(
-    r"^(sol|opus|sonnet|haiku|fable)-(low|medium|high|xhigh|max)(-skill)?$"
+    r"^(sol|opus|sonnet|haiku|fable|grok)-(low|medium|high|xhigh|max)(-skill)?$"
 )
 PRIORITY_RE = re.compile(r"\b(P[123])\b", re.IGNORECASE)
 LOCATION_RE = re.compile(r"(?P<file>[^\s:]+\.[A-Za-z0-9]+):(?P<line>\d+)(?:-\d+)?")
@@ -87,9 +88,18 @@ def parse_rater(spec):
         )
     model, effort, skill = match.groups()
     skill = bool(skill)
-    side = "codex" if model == "sol" else "claude"
+    if model == "grok":
+        side = "grok"
+    elif model == "sol":
+        side = "codex"
+    else:
+        side = "claude"
     if skill and side != "claude":
         raise ValueError(f"invalid rater {spec!r}; -skill mode is Claude-only")
+    if model == "grok" and effort not in GROK_EFFORTS:
+        raise ValueError(
+            f"invalid rater {spec!r}; grok supports only low, medium, or high effort"
+        )
     canonical = f"{model}-{effort}-skill" if skill else f"{model}-{effort}"
     return {"spec": canonical, "model": model, "effort": effort,
             "side": side, "skill": skill}
@@ -169,6 +179,7 @@ def parse_affordability(output):
     return {
         "codex": codex_ok,
         "claude": claude_ok,
+        "grok": True,
         "claude_account": claude_account,
         "claude_cap": claude_cap,
         "session_account": session_account,
@@ -625,10 +636,45 @@ def run_claude(rater, repo, sha, focus, run_dir, account, diff, retry_on_429=Tru
             shutil.rmtree(clone, ignore_errors=True)
 
 
+def run_grok(rater, repo, sha, focus, run_dir, diff):
+    raw_output = run_dir / f"raw-{rater['spec']}.json"
+    prompt = review_prompt(sha, focus) + "\n\nCommit diff:\n" + diff
+    command = [
+        command_path("REVIEW_BENCH_GROK_BIN", "grok"),
+        "-p", prompt, "--output-format", "json",
+        "--reasoning-effort", rater["effort"],
+        "--cwd", str(repo), "--always-approve", "--disable-web-search",
+    ]
+    started = time.monotonic()
+    try:
+        proc = subprocess.run(command, cwd=repo, stdin=subprocess.DEVNULL,
+                              capture_output=True, text=True, timeout=RATER_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        duration = round((time.monotonic() - started) * 1000)
+        return 124, duration, "", f"rater timed out after {RATER_TIMEOUT_S}s", command
+    duration = round((time.monotonic() - started) * 1000)
+    raw_output.write_text(proc.stdout)
+    text = proc.stdout
+    try:
+        envelope = json.loads(proc.stdout)
+        usage = envelope.get("usage")
+        if usage is not None:
+            (run_dir / f"usage-{rater['spec']}.json").write_text(json.dumps(usage) + "\n")
+        answer = envelope.get("text")
+        if isinstance(answer, str):
+            text = answer
+    except (json.JSONDecodeError, ValueError, AttributeError):
+        pass
+    return proc.returncode, duration, text, proc.stderr, command
+
+
 def run_one(rater, repo, sha, focus, run_dir, accounts, diff):
     if rater["side"] == "codex":
         result = run_codex(rater, repo, sha, focus, run_dir, accounts["codex"])
         return rater, accounts["codex"], result
+    elif rater["side"] == "grok":
+        result = run_grok(rater, repo, sha, focus, run_dir, diff)
+        return rater, "supergrok", result
     else:
         result = run_claude(rater, repo, sha, focus, run_dir, accounts["claude"], diff)
         account_used = result[5] if len(result) > 5 else accounts["claude"]
@@ -638,6 +684,8 @@ def run_one(rater, repo, sha, focus, run_dir, accounts, diff):
 def run_rater_task(rater, repo, sha, focus, run_dir, codex_acct, diff):
     """Run a single rater as a task with its own account determination."""
     try:
+        if rater["side"] == "grok":
+            return run_one(rater, repo, sha, focus, run_dir, {"grok": "supergrok"}, diff)
         available = affordability()
         if rater["side"] == "codex":
             if not available["codex"]:
@@ -684,6 +732,17 @@ def handoff(run_id, paths):
     print(f"Record exactly with: {command}")
 
 
+def redact_command(rater, command):
+    if not command:
+        return ""
+    if rater["side"] == "codex":
+        return shlex.join(command)
+    if rater["side"] == "grok":
+        return shlex.join(command[:2] + ["<review-prompt-and-diff>"] + command[3:])
+    placeholder = "<worker-brief>" if rater["skill"] else "<review-prompt-and-diff>"
+    return shlex.join(command[:4] + [placeholder] + command[5:])
+
+
 def cmd_run(args):
     repo = Path(args.repo).resolve()
     if not (repo / ".git").exists() and subprocess.run(
@@ -691,24 +750,30 @@ def cmd_run(args):
     ).returncode != 0:
         raise ValueError(f"not a git repository: {repo}")
     sha = resolve_commit(repo, args.commitish)
-    available = affordability()
     reviews_path = state_dir() / "reviews.jsonl"
     if args.raters:
         requested = parse_raters(args.raters)
-        raters = [rater for rater in requested if available[rater["side"]]]
+        if all(rater["side"] == "grok" for rater in requested):
+            available = {"grok": True, "codex": False, "claude": False}
+        else:
+            available = affordability()
+        raters = [rater for rater in requested if available.get(rater["side"])]
         skipped = [
             (rater["spec"], f"{rater['side']} side is unaffordable")
-            for rater in requested if not available[rater["side"]]
+            for rater in requested if not available.get(rater["side"])
         ]
         if not raters:
             raise RuntimeError("no affordable requested raters")
         counts = review_counts(read_jsonl(reviews_path))
     else:
+        available = affordability()
         raters, counts, skipped = auto_pick(args.auto or 2, read_jsonl(reviews_path), available)
     print("selected raters:")
     for rater in raters:
         if rater["side"] == "claude":
             reason = f"account {available['claude_account']}, cap {available['claude_cap']:g}%"
+        elif rater["side"] == "grok":
+            reason = "single SuperGrok account"
         else:
             reason = "worker-pick reports Codex available"
         print(f"  {rater['spec']}: {counts[rater['spec']]} recorded bench row(s); {reason}")
@@ -737,7 +802,8 @@ def cmd_run(args):
         run_dir = state_dir() / "benches" / run_id
     run_dir.mkdir(parents=True)
     os.chmod(run_dir, 0o700)
-    diff = commit_diff(repo, sha) if any(rater["side"] == "claude" for rater in raters) else ""
+    diff = commit_diff(repo, sha) if any(
+        rater["side"] in ("claude", "grok") for rater in raters) else ""
 
     results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(raters)) as pool:
@@ -780,10 +846,7 @@ def cmd_run(args):
                 "rater": rater["spec"], "model": rater["model"], "effort": rater["effort"],
                 "side": rater["side"], "account": account, "duration_ms": duration,
                 "findings": 0, "exit_code": rc, "stderr": stderr[-2000:] if stderr else "",
-                "command": shlex.join(command) if rater["side"] == "codex" else
-                shlex.join(command[:4] + [
-                    "<worker-brief>" if rater["skill"] else "<review-prompt-and-diff>"
-                ] + command[5:]) if command else "",
+                "command": redact_command(rater, command),
                 "errored": True,
             })
             print(f"ERRORED (not recorded): {rater['spec']}; rerun: review-bench run {sha} --raters {rater['spec']}")
@@ -794,10 +857,7 @@ def cmd_run(args):
                 "rater": rater["spec"], "model": rater["model"], "effort": rater["effort"],
                 "side": rater["side"], "account": account, "duration_ms": duration,
                 "findings": len(findings), "exit_code": rc, "stderr": stderr[-2000:] if stderr else "",
-                "command": shlex.join(command) if rater["side"] == "codex" else
-                shlex.join(command[:4] + [
-                    "<worker-brief>" if rater["skill"] else "<review-prompt-and-diff>"
-                ] + command[5:]) if command else "",
+                "command": redact_command(rater, command),
             })
             print(f"{rater['spec']}: {len(findings)} finding(s), {duration} ms, exit {rc}")
 

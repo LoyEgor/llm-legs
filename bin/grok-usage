@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+"""Grok token consumption from local session logs (no official quota API exists).
+
+Aggregates per-turn usage recorded under $GROK_HOME/sessions/*/*/updates.jsonl.
+There is one SuperGrok account and no local quota/limit file, so this reports
+recent consumption, not remaining allowance. --probe spends real tokens.
+"""
+import argparse
+import glob
+import json
+import os
+import re
+import subprocess
+import time
+
+WINDOWS = (("5h", 5 * 3600), ("24h", 24 * 3600), ("7d", 7 * 86400))
+USAGE_LIMIT_RE = "usage limit|rate.?limit|quota|too many requests|429"
+
+
+def grok_home():
+    return os.environ.get("GROK_HOME", os.path.join(os.path.expanduser("~"), ".grok"))
+
+
+def iter_usage():
+    pattern = os.path.join(grok_home(), "sessions", "*", "*", "updates.jsonl")
+    for path in glob.glob(pattern):
+        try:
+            stream = open(path)
+        except OSError:
+            continue
+        with stream:
+            for line in stream:
+                line = line.strip()
+                if not line or '"usage"' not in line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                usage = row.get("params", {}).get("update", {}).get("usage")
+                ts = row.get("timestamp")
+                if isinstance(usage, dict) and isinstance(ts, (int, float)):
+                    yield float(ts), usage
+
+
+def aggregate(now):
+    buckets = {label: {"turns": 0, "input": 0, "output": 0, "total": 0,
+                       "calls": 0, "cost_usd": 0.0} for label, _ in WINDOWS}
+    for ts, usage in iter_usage():
+        age = now - ts
+        for label, span in WINDOWS:
+            if age <= span:
+                bucket = buckets[label]
+                bucket["turns"] += 1
+                bucket["input"] += usage.get("inputTokens", 0)
+                bucket["output"] += usage.get("outputTokens", 0)
+                bucket["total"] += usage.get("totalTokens", 0)
+                bucket["calls"] += usage.get("modelCalls", 0)
+                bucket["cost_usd"] += usage.get("costUsdTicks", 0) / 1e10
+    return buckets
+
+
+def probe():
+    command = ["grok", "-p", "reply with exactly: ok", "--output-format", "json",
+               "--reasoning-effort", "low", "--disable-web-search"]
+    try:
+        proc = subprocess.run(command, stdin=subprocess.DEVNULL,
+                              capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return "error", str(exc)
+    blob = (proc.stdout + proc.stderr).lower()
+    if re.search(USAGE_LIMIT_RE, blob):
+        return "walled", (proc.stderr or proc.stdout).strip()[:200]
+    if proc.returncode != 0:
+        return "error", (proc.stderr or proc.stdout).strip()[:200]
+    return "ok", ""
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Grok local token consumption")
+    parser.add_argument("--json", action="store_true", help="machine-readable output")
+    parser.add_argument("--probe", action="store_true",
+                        help="spend a one-word request to check ok/walled")
+    args = parser.parse_args()
+
+    now = time.time()
+    buckets = aggregate(now)
+    probe_result = probe() if args.probe else None
+
+    if args.json:
+        payload = {"account": "supergrok", "source": "local session logs",
+                   "windows": buckets}
+        if probe_result is not None:
+            payload["probe"] = {"status": probe_result[0], "detail": probe_result[1]}
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    print("grok usage (supergrok) — local session logs, recent consumption only")
+    print(f"{'window':<8}{'turns':>7}{'calls':>7}{'in':>12}{'out':>10}{'total':>12}{'cost $':>10}")
+    for label, _ in WINDOWS:
+        b = buckets[label]
+        print(f"{label:<8}{b['turns']:>7}{b['calls']:>7}{b['input']:>12,}"
+              f"{b['output']:>10,}{b['total']:>12,}{b['cost_usd']:>10.4f}")
+    if probe_result is not None:
+        status, detail = probe_result
+        print(f"probe: {status}" + (f" — {detail}" if detail else ""))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
