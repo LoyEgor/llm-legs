@@ -78,7 +78,7 @@ export PATH
 printf 'ok\n' >"$HOME/auth-main"
 add_output=$(bash "$SCRIPT" add alpha) || fail "add alpha failed"
 assert grep -qx 'CODEX_HOME=~/.codex-profiles/alpha codex login' <<<"$add_output"
-assert grep -qx 'CODEX_HOME=~/.codex-profiles/alpha codex login --device-auth' <<<"$add_output"
+if grep -q -- --device-auth <<<"$add_output"; then fail "add still advertises the device-code flow"; fi
 assert grep -qx 'alpha: Not logged in' <<<"$add_output"
 assert test -d "$HOME/.codex-profiles/alpha"
 for item in config.toml AGENTS.md skills plugins; do
@@ -173,12 +173,21 @@ for item in config.toml AGENTS.md skills plugins; do
   assert test -L "$HOME/.codex-profiles/fresh/$item"
 done
 
-# The device-auth login the menu fires auto-creates the profile then passes the flags through.
 : >"$CODEX_CALLS"
-bash "$SCRIPT" run devauth login --device-auth >/dev/null 2>&1 || fail "device-auth login failed"
-assert test -d "$HOME/.codex-profiles/devauth"
-assert grep -qx "CALL account=devauth home=$HOME/.codex-profiles/devauth argc=2" "$CODEX_CALLS"
+bash "$SCRIPT" run menulogin login >/dev/null 2>&1 || fail "menu login failed"
+assert test -d "$HOME/.codex-profiles/menulogin"
+assert grep -qx "CALL account=menulogin home=$HOME/.codex-profiles/menulogin argc=1" "$CODEX_CALLS"
 assert grep -qx 'ARG=login' "$CODEX_CALLS"
+assert grep -qF 'shellQuote(name) .. " login")' "$ROOT/hammerspoon/llm-limits.lua"
+# Whole file minus Lua comments: a line-scoped grep would miss a flag spliced in via a variable.
+if grep -v '^[[:space:]]*--' "$ROOT/hammerspoon/llm-limits.lua" | grep -q -- --device-auth; then
+  fail "menu Codex login reverted to device-auth"
+fi
+
+# The flag itself stays a working manual fallback: codexb passes codex arguments through verbatim.
+: >"$CODEX_CALLS"
+bash "$SCRIPT" run devauth login --device-auth >/dev/null 2>&1 || fail "manual device-auth login failed"
+assert grep -qx "CALL account=devauth home=$HOME/.codex-profiles/devauth argc=2" "$CODEX_CALLS"
 assert grep -qx 'ARG=--device-auth' "$CODEX_CALLS"
 
 # Relaunching an existing profile must not reprint the creation note.
@@ -204,7 +213,7 @@ assert test ! -e "$HOME/.codex-profiles/-h"
 assert test ! -e "$HOME/.codex-profiles/-dash"
 
 : >"$CODEX_CALLS"
-missing_login_err=$(bash "$SCRIPT" run login --device-auth </dev/null 2>&1); missing_login_rc=$?
+missing_login_err=$(bash "$SCRIPT" run login </dev/null 2>&1); missing_login_rc=$?
 assert test "$missing_login_rc" -eq 2
 assert grep -qx "codexb: invalid profile name 'login'" <<<"$missing_login_err"
 assert test ! -e "$HOME/.codex-profiles/login"
@@ -351,4 +360,4 @@ printf '{"tokens":{"access_token":"","refresh_token":""}}\n' >"$HOME/.codex-prof
 assert bash "$SCRIPT" remove deadcx
 assert test ! -e "$HOME/.codex-profiles/deadcx"
 
-echo "PASS: $asserts asserts; add and shared-link trap, list/status, quota-aware authenticated pick with main-last priority, reset credits, auth-needed cache markers, dead-token classification (short cause, no raw RPC blob) with list/status/pick honoring the marker over lying local auth.json, a transient non-auth error preserving the definite auth verdict while fresh weather on a never-marked account stays non-auth, and marker recovery only on a genuinely good probe, exact run environments/arguments, one-step profile auto-create with shared links, device-auth login passthrough and missing-name guard, existing-profile relaunch stays quiet, creation-only reserved-name guards, leading-hyphen and charset rejection parity, multi-account cache compatibility, remove forgets profiles including reserved legacy names and prunes the cache entry (main refused)"
+echo "PASS: $asserts asserts; add and shared-link trap, list/status, quota-aware authenticated pick with main-last priority, reset credits, auth-needed cache markers, dead-token classification (short cause, no raw RPC blob) with list/status/pick honoring the marker over lying local auth.json, a transient non-auth error preserving the definite auth verdict while fresh weather on a never-marked account stays non-auth, and marker recovery only on a genuinely good probe, exact run environments/arguments, one-step profile auto-create with shared links, browser-OAuth menu login passthrough with device-auth de-advertised everywhere yet still working manually, and missing-name guard, existing-profile relaunch stays quiet, creation-only reserved-name guards, leading-hyphen and charset rejection parity, multi-account cache compatibility, remove forgets profiles including reserved legacy names and prunes the cache entry (main refused)"

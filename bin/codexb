@@ -131,7 +131,6 @@ add_account() {
   mkdir -p "$directory"
   ensure_profile "$directory"
   printf 'CODEX_HOME=~/.codex-profiles/%s codex login\n' "$name"
-  printf 'CODEX_HOME=~/.codex-profiles/%s codex login --device-auth\n' "$name"
   status=$(login_status "$name")
   printf '%s: %s\n' "$name" "${status#*$'\t'}"
 }
@@ -296,7 +295,7 @@ run_account() {
 show_help() {
   printf '%s\n' \
     'codexb profile <name> [codex args...]  Open an isolated profile; creates it if missing (Codex asks you to log in once). Aliases: p, run.' \
-    'codexb profile <name> login --device-auth   Log in with a device code (menu Codex login uses this).' \
+    'codexb profile <name> login            Browser OAuth login for that account (menu Codex login uses this).' \
     'codexb <name> exec [args...]' \
     'codexb add <name>                      Create a profile without launching; prints the login command.' \
     'codexb remove <name> [--force]         Forget a profile and prune its cached quota; --force overrides the logged-in guard.' \

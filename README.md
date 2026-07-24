@@ -200,8 +200,8 @@ always available as `main` and is never modified.
   quota via the zero-spend app-server RPC), `pick` (freest usable account).
 
 Adding an account: `codexb profile work` creates it and launches codex, which prompts login in one
-step (mirrors `claudeb profile <name>`); `codexb profile work login --device-auth` runs the device
-flow the menu uses. Afterward `codexb status` should show both accounts. Worker agents pick the freest account automatically (`codexb pick`) unless
+step (mirrors `claudeb profile <name>`); `codexb profile work login` runs the browser OAuth flow the
+menu uses. Afterward `codexb status` should show both accounts. Worker agents pick the freest account automatically (`codexb pick`) unless
 pinned via `codex_profile=` in the worker toggle file; the menubar shows per-account rows once more
 than one account exists.
 

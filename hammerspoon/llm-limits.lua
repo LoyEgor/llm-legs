@@ -542,11 +542,10 @@ end
 function M.loginClaude(name)
   openLoginTerminal((M.claudebCmd or "claudeb") .. " profile " .. shellQuote(name))
 end
--- Device-auth, not the plain browser flow: OpenAI's risk engine phone-walls the
--- localhost OAuth flow for these accounts, and device codes clear it. Requires the
--- account's "Enable device code authorization for Codex" toggle (ChatGPT Security).
+-- Never `--device-auth` here: that flow needs a per-account ChatGPT Security toggle,
+-- so a menu click on a fresh account would dead-end in the web UI.
 function M.loginCodex(name)
-  openLoginTerminal("codexb run " .. shellQuote(name) .. " login --device-auth")
+  openLoginTerminal("codexb run " .. shellQuote(name) .. " login")
 end
 function M.loginGemini(name)
   openLoginTerminal((M.geminibCmd or "geminib") .. " profile " .. shellQuote(name or "main"))
