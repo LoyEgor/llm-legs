@@ -330,4 +330,25 @@ assert jq -e '([.accounts[].account] | index("gone") == null) and
 assert_fails bash "$SCRIPT" remove main
 assert_fails bash "$SCRIPT" remove never-existed
 
+# Path traversal: a name escaping the profiles dir is rejected before any rm -rf.
+canary_dir="$HOME/codexb-traversal-canary"
+mkdir -p "$canary_dir"
+assert_fails bash "$SCRIPT" remove ../codexb-traversal-canary
+assert_fails bash "$SCRIPT" remove ./x
+assert_fails bash "$SCRIPT" remove a/b
+assert test -d "$canary_dir"
+
+bash "$SCRIPT" add livecx >/dev/null || fail "add livecx failed"
+printf '{"tokens":{"access_token":"live","refresh_token":"r"}}\n' >"$HOME/.codex-profiles/livecx/auth.json"
+assert_fails bash "$SCRIPT" remove livecx
+assert test -d "$HOME/.codex-profiles/livecx"
+assert bash "$SCRIPT" remove livecx --force
+assert test ! -e "$HOME/.codex-profiles/livecx"
+
+# An empty-token auth.json is not "alive": removable without --force.
+bash "$SCRIPT" add deadcx >/dev/null || fail "add deadcx failed"
+printf '{"tokens":{"access_token":"","refresh_token":""}}\n' >"$HOME/.codex-profiles/deadcx/auth.json"
+assert bash "$SCRIPT" remove deadcx
+assert test ! -e "$HOME/.codex-profiles/deadcx"
+
 echo "PASS: $asserts asserts; add and shared-link trap, list/status, quota-aware authenticated pick with main-last priority, reset credits, auth-needed cache markers, dead-token classification (short cause, no raw RPC blob) with list/status/pick honoring the marker over lying local auth.json, a transient non-auth error preserving the definite auth verdict while fresh weather on a never-marked account stays non-auth, and marker recovery only on a genuinely good probe, exact run environments/arguments, one-step profile auto-create with shared links, device-auth login passthrough and missing-name guard, existing-profile relaunch stays quiet, creation-only reserved-name guards, leading-hyphen and charset rejection parity, multi-account cache compatibility, remove forgets profiles including reserved legacy names and prunes the cache entry (main refused)"

@@ -661,6 +661,26 @@ HOME="$HOME_FIXTURE" CLAUDEB_DIR="$FREEZE_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/c
 jq -e '(.vendors.claude.refresh_error.cause // "" | contains("auto-refresh frozen")) | not' "$FREEZE_CACHE" >/dev/null \
   || fail "expired token-freeze until must render as unfrozen"
 
+# Regression: a STALE pre-freeze 429 entry must not mask the active freeze — the
+# endpoint is frozen this run, so "token rate-limited" would be a lie. (This is the
+# exact live incident the battery previously failed to catch.)
+printf '{"started_at":%s,"reason":"token-freeze experiment"}\n' "$now" >"$FREEZE_STORE/token-freeze"
+printf '{"frz":{"attempted_at":%s,"outcome":"429","retry_after_until":%s,"strikes":6}}\n' "$((now - 10800))" "$((now + 3600))" >"$FREEZE_STORE/oauth-attempts.json"
+HOME="$HOME_FIXTURE" CLAUDEB_DIR="$FREEZE_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-noop" \
+  LLM_LIMITS_CACHE="$FREEZE_CACHE" /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1 || true
+jq -e '(.vendors.claude.refresh_error.cause | contains("auto-refresh frozen (experiment)"))
+       and (.vendors.claude.refresh_error.cause | contains("token rate-limited") | not)' "$FREEZE_CACHE" >/dev/null \
+  || fail "stale pre-freeze 429 masked the active freeze cause"
+
+# Auth-shaped cause (needs re-login) is actionable and must surface even under a
+# freeze — a genuinely logged-out account must not hide behind the frozen message.
+printf '{"frz":{"outcome":"warm-failed","warm_outcome":"warm-failed","warm_cause":"needs re-login"}}\n' >"$FREEZE_STORE/oauth-attempts.json"
+HOME="$HOME_FIXTURE" CLAUDEB_DIR="$FREEZE_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-noop" \
+  LLM_LIMITS_CACHE="$FREEZE_CACHE" /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1 || true
+jq -e '(.vendors.claude.refresh_error.cause | contains("needs re-login"))
+       and (.vendors.claude.refresh_error.cause | contains("auto-refresh frozen") | not)' "$FREEZE_CACHE" >/dev/null \
+  || fail "auth-shaped cause hidden by the frozen message"
+
 # Per-account staleness causes self-clear on passive collects; other shapes never drop.
 PASSIVE_STORE="$WORK/claudeb-passive-store"
 mkdir -p "$PASSIVE_STORE/limits" "$PASSIVE_STORE/tokens"

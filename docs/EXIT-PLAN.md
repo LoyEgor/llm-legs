@@ -72,8 +72,12 @@ the hypothesis.
 attempt journal (`token-attempts.jsonl` + `token_journal`), and the honest frozen
 stale-cause in `llm-limits.sh` are permanent and cheap; they stay.
 
-**Exit decision (one of two outcomes).** Review `token-attempts.jsonl` (only `frozen-skip`
-lines should appear during the freeze) plus the owner's morning-walk experience:
+**Exit decision (one of two outcomes).** Review `token-attempts.jsonl` plus the owner's
+morning-walk experience. Note the journal legitimately carries more than `frozen-skip`
+during the freeze: the exempt menu Hard-refresh warms (`kind=warm`) and any keychain
+adoptions the manual CLI sessions trigger (`kind=adopt`) are expected. What must NOT appear
+is an unbidden `curl-refresh` with a real HTTP outcome — that would mean a robot POSTed the
+token endpoint despite the freeze:
 
 - **Hypothesis rejected** (429s continued despite the freeze): delete the freeze file and
   restore automation as-is; nothing else changes.

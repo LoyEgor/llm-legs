@@ -1802,6 +1802,32 @@ EOF
     assert test ! -e "$RMKC/$(svc_of "$reserved")"
   done
 
+  # Setup-token account: no keychain item, the live token is tokens/<name>. The old
+  # keychain-only guard missed it; it must be protected until --force.
+  printf 'sk-ant-oat01-live' >"$CLAUDEB_DIR/tokens/setuptok"
+  assert_fails "$SCRIPT" remove setuptok
+  assert test -e "$CLAUDEB_DIR/tokens/setuptok"
+  assert "$SCRIPT" remove setuptok --force
+  assert test ! -e "$CLAUDEB_DIR/tokens/setuptok"
+
+  # Metadata-only orphans (a stale oauth-attempts entry / account-tiers line and
+  # nothing else) are prunable, not "unknown account".
+  printf '{"orphan":{"outcome":"429","strikes":2}}' >"$CLAUDEB_DIR/oauth-attempts.json"
+  assert "$SCRIPT" remove orphan
+  assert jq -e '.orphan == null' "$CLAUDEB_DIR/oauth-attempts.json"
+  printf 'tierorphan=3\nkeep=2\n' >"$CLAUDEB_DIR/account-tiers"
+  printf '{}' >"$CLAUDEB_DIR/oauth-attempts.json"
+  assert "$SCRIPT" remove tierorphan
+  assert_fails grep -q '^tierorphan=' "$CLAUDEB_DIR/account-tiers"
+
+  # The bypass lock is a DIRECTORY (mkdir-based lock); remove must rm -rf it —
+  # rm -f left an orphan dir behind.
+  printf 'tok-blk' >"$CLAUDEB_DIR/tokens/blk"
+  printf '{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0}}' >"$RMKC/$(svc_of blk)"
+  mkdir -p "$CLAUDEB_DIR/oauth-attempts.json.bypass.blk"
+  assert "$SCRIPT" remove blk
+  assert test ! -e "$CLAUDEB_DIR/oauth-attempts.json.bypass.blk"
+
   assert_fails "$SCRIPT" remove main
   assert_fails "$SCRIPT" remove ghost-account
 ) || exit 1

@@ -142,14 +142,22 @@ claude_stale_cause() {
          and ($e.warm_cause // "") != "" then ["cause", $e.warm_cause] | @tsv
     else ["cause", "stale data kept"] | @tsv end' "$attempts_file" 2>/dev/null) || raw=$'cause\tstale data kept'
   IFS=$'\t' read -r kind value <<<"$raw"
-  if [ "$kind" = 429 ]; then
+  # An auth-shaped cause (logged out / needs re-login) is actionable and must
+  # surface even under a freeze — the account is genuinely dead, not just paused.
+  case "$value" in
+    *relogin*|*re-login*|*"log in"*|*"logged out"*|*"login needed"*)
+      printf '%s' "$value"; return ;;
+  esac
+  if token_freeze_active_at "$(dirname "$attempts_file")"; then
+    # Freeze outranks a stale pre-freeze 429 (or generic weather/stale) cause:
+    # the endpoint is frozen this run, so nothing is really "rate-limited".
+    printf 'auto-refresh frozen (experiment); enter the account to refresh'
+  elif [ "$kind" = 429 ]; then
     if [ "$value" -le "${now_epoch:-$(date +%s)}" ] 2>/dev/null; then
       printf 'token rate-limited, retrying'
     else
       printf 'token rate-limited, retry ~%s' "$(format_reset_time "$value")"
     fi
-  elif token_freeze_active_at "$(dirname "$attempts_file")"; then
-    printf 'auto-refresh frozen (experiment); enter the account to refresh'
   else
     printf '%s' "${value:-stale data kept}"
   fi
@@ -459,9 +467,16 @@ gemini_accounts_list=$(
     fi
   } | awk 'NF && !seen[$0]++'
 )
+gemini_just_removed_marker=''
 if [ "$gemini_remove" -eq 1 ]; then
   mkdir -p "$(dirname "$gemini_legacy_removed")" 2>/dev/null || true
-  : > "$gemini_legacy_removed" 2>/dev/null || true
+  # A swallowed write turns removal into a silent no-op; surface it and fail.
+  if : > "$gemini_legacy_removed" 2>/dev/null; then
+    gemini_just_removed_marker="$gemini_legacy_removed"
+  else
+    echo "llm-limits.sh: failed to write gemini removed-marker: $gemini_legacy_removed" >&2
+    exit 1
+  fi
 fi
 gemini_refresh_error=''
 gemini_refresh_attempted=0
@@ -1243,7 +1258,12 @@ while IFS= read -r gemini_account; do
         status:"no quota snapshot",source:"agy-local-rpc"}')
   fi
   if [ -e "$gemini_removed_marker" ]; then
-    if printf '%s' "$gemini_account_json" | jq -e '.auth_needed != true and (.five_hour | type) == "object"' >/dev/null 2>&1; then
+    # Never self-clear the marker in the very run that set it: gemini removal is a
+    # UX hide with creds still valid, so the "creds look fine → un-remove" check
+    # would otherwise fire immediately and make removal a no-op. A later run (after
+    # a genuine re-login) still clears it.
+    if [ "$gemini_removed_marker" != "$gemini_just_removed_marker" ] \
+       && printf '%s' "$gemini_account_json" | jq -e '.auth_needed != true and (.five_hour | type) == "object"' >/dev/null 2>&1; then
       rm -f "$gemini_removed_marker"
     else
       gemini_account_json=$(jq -cn --arg account "$gemini_account" \

@@ -363,9 +363,10 @@ end
 -- fire the right vendor command (claudeb/codexb subcommand or the collector marker).
 local function captureTasks(sink)
   return function(path, _, args)
-    table.insert(sink, { path = path, args = args or {} })
+    local record = { path = path, args = args or {}, env = {} }
+    table.insert(sink, record)
     local task = {}
-    function task:setEnvironment() return self end
+    function task:setEnvironment(env) record.env = env or {}; return self end
     function task:start() return true end
     function task:isRunning() return false end
     return task
@@ -482,6 +483,44 @@ for _, case in ipairs(loginCases) do
     assert(launched.args[index] == expected,
       case.vendor .. " Remove… arg " .. index .. " is " .. tostring(launched.args[index])
         .. " not " .. expected)
+  end
+end
+
+-- codex `main` is not removable (codexb refuses it), so its logged-out row must omit
+-- the Remove… item — a login-needed row of exactly {Log in…, Hard refresh}, no dead action.
+local codexMainLoginFixture = { schema = 1, vendors = {
+  claude = { available = false },
+  codex = { available = true, accounts = {
+    { account = "main", is_current = true, auth_needed = true },
+  }},
+  gemini = { available = false },
+}}
+do
+  local menu = loadModule(codexMainLoginFixture).menuItems()
+  local row = rowContaining(menu, "main")
+  assert(row and titleText(row):find("login needed", 1, true),
+    "codex main did not render a login-needed row")
+  assert(#row.menu == 2,
+    "codex main login row must omit Remove… (expected exactly {Log in…, Hard refresh})")
+  for _, sub in ipairs(row.menu) do
+    assert(titleText(sub) ~= "Remove…", "codex main offered a dead Remove… action")
+  end
+end
+
+-- The menu Hard-refresh is the sole freeze exemption signal: it must inject
+-- CLAUDEB_WARM_USER_EXPLICIT=true into the collector env so llm-limits.sh's warm
+-- inherits it, while a passive/full refresh (automation) must NOT set it.
+do
+  local tasks = {}
+  local mod = loadModule(function() return fixture end, captureTasks(tasks))
+  mod.hardRefreshClaude("acct")
+  assert(tasks[1] and tasks[1].env.CLAUDEB_WARM_USER_EXPLICIT == "true",
+    "menu Hard refresh did not inject CLAUDEB_WARM_USER_EXPLICIT=true")
+  while #tasks > 0 do table.remove(tasks) end
+  mod.menuItems()
+  for _, t in ipairs(tasks) do
+    assert(t.env.CLAUDEB_WARM_USER_EXPLICIT == nil,
+      "a passive/automated refresh wrongly set the manual-warm freeze exemption")
   end
 end
 

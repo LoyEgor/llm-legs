@@ -35,16 +35,18 @@ end
 -- Remove… is a one-item confirm submenu (misclick-safe without a modal dialog); its
 -- single item fires the vendor's own remove command, which owns all store cleanup.
 local function loginNeededRow(label, loginFn, hardRefreshFn, removeFn)
-  return {
-    title = loginNeededTitle(label),
-    menu = {
-      { title = "Log in…", fn = loginFn },
-      { title = "Hard refresh", fn = hardRefreshFn },
-      { title = "Remove…", menu = {
-        { title = "Confirm remove " .. label, fn = removeFn },
-      } },
-    },
+  local menu = {
+    { title = "Log in…", fn = loginFn },
+    { title = "Hard refresh", fn = hardRefreshFn },
   }
+  -- A non-removable account (e.g. codex `main`, whose `remove` always refuses)
+  -- passes removeFn=nil so the row never offers a dead Remove action.
+  if removeFn then
+    table.insert(menu, { title = "Remove…", menu = {
+      { title = "Confirm remove " .. label, fn = removeFn },
+    } })
+  end
+  return { title = loginNeededTitle(label), menu = menu }
 end
 
 local function geminiLoginNeededRow(label, account)
@@ -230,12 +232,15 @@ local function baseEnvironment()
   }
 end
 
-local function newCollectorTask(callback, args)
+local function newCollectorTask(callback, args, envExtra)
   local task = hs.task.new(M.collectorPath, callback, args or {})
   if task then
     local environment = baseEnvironment()
     if M.wallsLog then
       environment.LLM_LIMITS_WALLS_LOG = M.wallsLog
+    end
+    if type(envExtra) == "table" then
+      for k, v in pairs(envExtra) do environment[k] = v end
     end
     task:setEnvironment(environment)
   end
@@ -484,19 +489,23 @@ function M.toggleAccount(name, currentlyEnabled)
   runClaudeb({ currentlyEnabled and "disable" or "enable", name }, "toggle failed")
 end
 
-local function refreshData(args, kind, budget, key)
+local function refreshData(args, kind, budget, key, envExtra)
   if taskForKey(key) then return end
   local id = reserveTask(kind, budget, key)
   local task = newCollectorTask(function(exitCode, stdOut, stdErr)
     finishTask(id, exitCode, stdOut, stdErr)
-  end, args)
+  end, args, envExtra)
   startTask(id, task, "collector could not start")
 end
 
+-- The menu Hard-refresh IS the genuine user signal that exempts a claudeb warm
+-- from the token freeze; inject it into the child env so llm-limits.sh's warm
+-- inherits it. Automated refreshes never pass through here, so they stay frozen.
 local function hardRefresh(target, startWindows)
   local args = { "--refresh-account", target }
   if startWindows then table.insert(args, "--start-windows") end
-  refreshData(args, "hard-refresh", 360, "hard:" .. target)
+  refreshData(args, "hard-refresh", 360, "hard:" .. target,
+    { CLAUDEB_WARM_USER_EXPLICIT = "true" })
 end
 
 -- Hard = full truth at any cost: opens the account's expired 5h window (tiny paid ping).
@@ -733,7 +742,8 @@ function M.menuItems()
               elseif entry.key == "codex" then
                 loginFn = function() M.loginCodex(acct) end
                 hardRefreshFn = function() M.hardRefreshCodex(acct) end
-                removeFn = function() M.removeCodex(acct) end
+                -- codexb refuses to remove `main` (the real ~/.codex); no Remove item.
+                if acct ~= "main" then removeFn = function() M.removeCodex(acct) end end
               else
                 accountRow = geminiLoginNeededRow(acct, acct)
               end

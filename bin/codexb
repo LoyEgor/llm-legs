@@ -136,16 +136,45 @@ add_account() {
   printf '%s: %s\n' "$name" "${status#*$'\t'}"
 }
 
+# Alive = a login token is present locally (codex stores it in auth.json). A
+# read/parse failure is treated as alive (fail closed) so a flaky read never
+# turns removal into an unguarded delete.
+codex_credentials_alive() {
+  local auth="$1/auth.json"
+  [ -f "$auth" ] || return 1
+  jq -e '((.tokens.access_token // "") != "") or ((.tokens.refresh_token // "") != "")
+         or ((.OPENAI_API_KEY // "") != "")' "$auth" >/dev/null 2>&1 && return 0
+  # auth.json exists but jq could not confirm empty tokens: fail closed.
+  jq -e 'true' "$auth" >/dev/null 2>&1 || return 0
+  return 1
+}
+
 remove_account() {
-  local name="${1:-}" directory codex_cache tmp
-  if [ -z "$name" ] || [ "$name" = main ]; then
-    printf 'usage: codexb remove <name> (not "main")\n' >&2
+  local name='' force=false arg directory codex_cache tmp
+  for arg in "$@"; do
+    case "$arg" in
+      --force) force=true ;;
+      -*) printf 'usage: codexb remove <name> [--force]\n' >&2; exit 2 ;;
+      *)
+        if [ -n "$name" ]; then printf 'usage: codexb remove <name> [--force]\n' >&2; exit 2; fi
+        name="$arg" ;;
+    esac
+  done
+  # Charset (not reserved_name): rejects path traversal (`../x`, leading dot,
+  # slashes) while still allowing removal of an account whose name became a
+  # reserved word only after it was created (creation is gated separately).
+  if [ -z "$name" ] || [ "$name" = main ] || ! [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    printf 'usage: codexb remove <name> [--force] (not "main"; lowercase letters, numbers, hyphens)\n' >&2
     exit 2
   fi
   directory="$profiles_dir/$name"
   if [ ! -e "$directory" ] && [ ! -L "$directory" ]; then
     printf 'codexb: unknown account: %s\n' "$name" >&2
     exit 2
+  fi
+  if [ "$force" != true ] && codex_credentials_alive "$directory"; then
+    printf 'codexb: refusing to remove %s: it is still logged in; run codex logout first or pass --force\n' "$name" >&2
+    exit 1
   fi
   rm -rf "$directory"
   codex_cache="${LLM_LIMITS_CODEX_CACHE:-$HOME/.llm-limits-codex.json}"
@@ -270,7 +299,7 @@ show_help() {
     'codexb profile <name> login --device-auth   Log in with a device code (menu Codex login uses this).' \
     'codexb <name> exec [args...]' \
     'codexb add <name>                      Create a profile without launching; prints the login command.' \
-    'codexb remove <name>                   Forget a profile and prune its cached quota.' \
+    'codexb remove <name> [--force]         Forget a profile and prune its cached quota; --force overrides the logged-in guard.' \
     'codexb list                            List profiles with login state.' \
     'codexb status                          Per-account login state and quota.' \
     'codexb pick                            Print the highest-priority usable account.'
@@ -292,8 +321,8 @@ case "${1:-}" in
     ;;
   remove)
     shift
-    [ "$#" -eq 1 ] || { printf 'usage: codexb remove <name>\n' >&2; exit 2; }
-    remove_account "$1"
+    [ "$#" -ge 1 ] || { printf 'usage: codexb remove <name> [--force]\n' >&2; exit 2; }
+    remove_account "$@"
     ;;
   list)
     [ "$#" -eq 1 ] || { printf 'usage: codexb list\n' >&2; exit 2; }
