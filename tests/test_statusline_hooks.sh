@@ -1068,8 +1068,8 @@ assert jq -e '.hookSpecificOutput.updatedInput.description == "com · sonnet · 
 gemini_seed=$(worker_payload gemini-worker worker/gemini 'Implement it' \
   "$HOME/.local/bin/geminib profile work --model gemini-3.6-flash --effort medium --print-timeout 20m --dangerously-skip-permissions --print task")
 gemini_seed_output=$(printf '%s' "$gemini_seed" | "$WORKER_HOOK") || fail "gemini-tag seed exited nonzero"
-assert_eq 'work · flash · medium' "$(cat "$TAGDIR/workergemini")"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "work · flash · medium — Implement it"' \
+assert_eq 'work · flash36 · medium' "$(cat "$TAGDIR/workergemini")"
+assert jq -e '.hookSpecificOutput.updatedInput.description == "work · flash36 · medium — Implement it"' \
   <<< "$gemini_seed_output" >/dev/null
 
 for gemini_launch in \
@@ -1080,9 +1080,9 @@ for gemini_launch in \
   gemini_form_output=$(printf '%s' "$gemini_form" | "$WORKER_HOOK") \
     || fail "gemini shorthand tag exited nonzero"
   expected_account=$(printf '%s\n' "$gemini_launch" | awk '{if ($2 == "p" || $2 == "run") print $3; else print $2}')
-  assert_eq "$expected_account · flash · medium" "$(cat "$TAGDIR/workergemini")"
+  assert_eq "$expected_account · flash36 · medium" "$(cat "$TAGDIR/workergemini")"
   assert jq -e --arg account "$expected_account" \
-    '.hookSpecificOutput.updatedInput.description == ($account + " · flash · medium — Resume it")' \
+    '.hookSpecificOutput.updatedInput.description == ($account + " · flash36 · medium — Resume it")' \
     <<<"$gemini_form_output" >/dev/null
 done
 
@@ -1092,9 +1092,9 @@ spawn_payload=$(jq -cn '{
   tool_input:{subagent_type:"gemini-worker",description:"Implement fixture",
               prompt:"ACCOUNT: second\nMODEL: flash\nEFFORT: medium\nWorking directory: /tmp"}}')
 spawn_output=$(printf '%s' "$spawn_payload" | "$SPAWN_HOOK") || fail "gemini spawn hook exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "second · flash · medium: Implement fixture"' \
+assert jq -e '.hookSpecificOutput.updatedInput.description == "second · flash36 · medium: Implement fixture"' \
   <<< "$spawn_output" >/dev/null
-assert_eq 'second · flash · medium' \
+assert_eq 'second · flash36 · medium' \
   "$(cat "$HOME/.cache/claude-worker-tags/spawn-gemini/pending-gemini-worker")"
 
 # A stored tag carrying regex-special chars is matched literally, so an

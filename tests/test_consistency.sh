@@ -140,19 +140,20 @@ assert doc_has 'Codex/Gemini base-profile priority'
 REVIEWBENCH="$ROOT/bin/review-bench"
 for mapping in \
   '"agy-pro": "gemini-3.1-pro"' \
-  '"agy-flash": "gemini-3.6-flash"' \
+  '"agy-flash36": "gemini-3.6-flash"' \
   '"agy-flash35": "gemini-3.5-flash"'; do
   assert grep -Fq -- "$mapping" "$REVIEWBENCH"
 done
 assert grep -Fq '"agy-pro": ("low", "high")' "$REVIEWBENCH"
-assert grep -Fq '"agy-flash": ("low", "medium", "high")' "$REVIEWBENCH"
+assert grep -Fq '"agy-flash36": ("low", "medium", "high")' "$REVIEWBENCH"
 assert grep -Fq '"agy-flash35": ("low", "medium", "high")' "$REVIEWBENCH"
 assert grep -Fq 'agy-pro-<low|high>' "$ROOT/docs/DIAGNOSTICS.md"
-assert grep -Fq 'agy-flash-<low|medium|high>' "$ROOT/docs/DIAGNOSTICS.md"
+assert grep -Fq 'agy-flash36-<low|medium|high>' "$ROOT/docs/DIAGNOSTICS.md"
 assert grep -Fq 'agy-flash35-<low|medium|high>' "$ROOT/docs/DIAGNOSTICS.md"
 assert grep -Fq 'if rater["model"] == "agy-flash35":' "$REVIEWBENCH"
 assert grep -Fq 'return f"{model}-{rater['\''effort'\'']}"' "$REVIEWBENCH"
 assert grep -Fq 'if rater["model"] != "agy-flash35":' "$REVIEWBENCH"
+assert doc_has '`agy-flash36-<effort>` → `--model gemini-3.6-flash --effort <effort>`'
 assert doc_has '`agy-flash35-<effort>` → `--model gemini-3.5-flash-<effort>` with no `--effort` flag'
 assert doc_has 'Antigravity review cell invocation mapping'
 
@@ -164,13 +165,16 @@ assert test -r "$WORKER_COMMAND"
 for row in \
   '| `pro` | `high` | `gemini-3.1-pro` | `high` |' \
   '| `pro` | `low` | `gemini-3.1-pro` | `low` |' \
-  '| `flash` | `high` | `gemini-3.6-flash` | `high` |' \
-  '| `flash` | `medium` | `gemini-3.6-flash` | `medium` |' \
-  '| `flash` | `low` | `gemini-3.6-flash` | `low` |'; do
+  '| `flash36` | `high` | `gemini-3.6-flash` | `high` |' \
+  '| `flash36` | `medium` | `gemini-3.6-flash` | `medium` |' \
+  '| `flash36` | `low` | `gemini-3.6-flash` | `low` |' \
+  '| `flash35` | `high` | `gemini-3.5-flash-high` | *(omit — see below)* |' \
+  '| `flash35` | `medium` | `gemini-3.5-flash-medium` | *(omit — see below)* |' \
+  '| `flash35` | `low` | `gemini-3.5-flash-low` | *(omit — see below)* |'; do
   assert test "$(grep -Fc -- "$row" "$GEMINI_AGENT")" -eq 1
 done
 assert grep -Fq '`gemini_model=pro`, and `gemini_effort=high`' "$WORKER_COMMAND"
-assert grep -Fq 'Valid combinations are pro high/low and flash high/medium/low' "$WORKER_COMMAND"
+assert grep -Fq 'Valid combinations are pro high/low, flash36 high/medium/low, and flash35 high/medium/low' "$WORKER_COMMAND"
 assert grep -Fq 'gm_model=$(conf gemini_model); gm_model=${gm_model:-pro}' "$WORKERPICK"
 assert grep -Fq 'gm_effort=$(conf gemini_effort); gm_effort=${gm_effort:-high}' "$WORKERPICK"
 assert grep -Fq 'canonical knob-to-agy mapping lives in `~/.claude/agents/gemini-worker.md`' "$POLICY"

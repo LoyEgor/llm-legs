@@ -47,7 +47,7 @@ assert rb.parse_rater("agy-pro-low") == {
     "side": "agy", "skill": False
 }
 assert rb.parse_rater("agy-pro-high-skill")["skill"] is True
-assert rb.parse_rater("agy-flash-medium")["side"] == "agy"
+assert rb.parse_rater("agy-flash36-medium")["side"] == "agy"
 for effort in ("low", "medium", "high"):
     for suffix, skill in (("", False), ("-skill", True)):
         rater = rb.parse_rater(f"agy-flash35-{effort}{suffix}")
@@ -68,7 +68,7 @@ for invalid in ("gpt-medium", "sol", "opus-ultra", "sol-mega", "",
         raise AssertionError(f"accepted invalid rater: {invalid}")
 for invalid, message in (
     ("agy-pro-medium", "agy-pro supports only low or high effort"),
-    ("agy-flash-xhigh", "agy-flash supports only low, medium, or high effort"),
+    ("agy-flash36-xhigh", "agy-flash36 supports only low, medium, or high effort"),
     ("agy-flash35-xhigh", "agy-flash35 supports only low, medium, or high effort"),
 ):
     try:
@@ -135,12 +135,12 @@ assert any(spec.startswith("agy-") for spec, _ in skipped)
 agy_gap_reviews = [
     {"rater": spec}
     for spec in rb.AUTO_RATERS
-    if spec != "agy-flash-low"
+    if spec != "agy-flash36-low"
 ]
 picked, _, _ = rb.auto_pick(
     1, agy_gap_reviews, {"codex": True, "claude": True, "agy": True}
 )
-assert picked[0]["spec"] == "agy-flash-low"
+assert picked[0]["spec"] == "agy-flash36-low"
 
 codex_stream = "\n".join([
     json.dumps({"type": "thread.started", "thread_id": "t"}),
@@ -159,11 +159,11 @@ assert claude == [{"severity": "P3", "file": "lib/task.py", "line": 17,
                    "summary": "Handle cancellation", "rater": "opus-medium"}]
 
 agy_bare = rb.normalize_agy_output(
-    (fixtures / "agy-bare-preamble.txt").read_text(), "agy-flash-low"
+    (fixtures / "agy-bare-preamble.txt").read_text(), "agy-flash36-low"
 )
 assert "I reviewed" not in agy_bare
 assert [(row["severity"], row["file"], row["line"]) for row in
-        rb.normalize_findings(agy_bare, "agy-flash-low")] == [
+        rb.normalize_findings(agy_bare, "agy-flash36-low")] == [
     ("P1", "src/auth.py", 41),
     ("P3", "src/cache.py", 18),
 ]
@@ -180,7 +180,7 @@ for malformed in (
     "\n".join((json.dumps(valid_finding), json.dumps(invalid_finding))),
 ):
     try:
-        rb.normalize_agy_output(malformed, "agy-flash-low")
+        rb.normalize_agy_output(malformed, "agy-flash36-low")
     except ValueError as exc:
         assert "invalid finding object" in str(exc)
     else:
@@ -190,32 +190,32 @@ line_zero = rb.normalize_agy_output(
         "severity": "P3", "file": "src/generated.py", "line": 0,
         "line_number": 99, "summary": "Keep the zero line sentinel",
     }),
-    "agy-flash-low",
+    "agy-flash36-low",
 )
-assert rb.normalize_findings(line_zero, "agy-flash-low")[0]["line"] == 0
+assert rb.normalize_findings(line_zero, "agy-flash36-low")[0]["line"] == 0
 finding_with_error = rb.normalize_agy_output(
     json.dumps({
         "severity": "P2", "file": "src/parser.py", "line": 8,
         "summary": "Retain the finding", "error": "describes the error path",
     }),
-    "agy-flash-low",
+    "agy-flash36-low",
 )
-assert rb.normalize_findings(finding_with_error, "agy-flash-low")[0]["summary"] == \
+assert rb.normalize_findings(finding_with_error, "agy-flash36-low")[0]["summary"] == \
     "Retain the finding"
 for malformed in ("", (fixtures / "agy-bare-malformed.txt").read_text()):
     try:
-        rb.normalize_agy_output(malformed, "agy-flash-low")
+        rb.normalize_agy_output(malformed, "agy-flash36-low")
     except ValueError as exc:
         assert "malformed JSON envelope" in str(exc)
     else:
         raise AssertionError("accepted malformed agy output")
 agy_clean = rb.normalize_agy_output(
-    (fixtures / "agy-bare-clean.json").read_text(), "agy-flash-low"
+    (fixtures / "agy-bare-clean.json").read_text(), "agy-flash36-low"
 )
-assert rb.normalize_findings(agy_clean, "agy-flash-low") == []
+assert rb.normalize_findings(agy_clean, "agy-flash36-low") == []
 try:
     rb.normalize_agy_output(
-        (fixtures / "agy-bare-error.json").read_text(), "agy-flash-low"
+        (fixtures / "agy-bare-error.json").read_text(), "agy-flash36-low"
     )
 except ValueError as exc:
     assert "agy returned an error envelope" in str(exc)
@@ -223,21 +223,21 @@ else:
     raise AssertionError("accepted agy error envelope")
 
 agy_skill = rb.normalize_agy_skill_output(
-    (fixtures / "agy-skill-output.md").read_text(), "agy-flash-low-skill"
+    (fixtures / "agy-skill-output.md").read_text(), "agy-flash36-low-skill"
 )
-skill_rows = rb.normalize_findings(agy_skill, "agy-flash-low-skill")
+skill_rows = rb.normalize_findings(agy_skill, "agy-flash36-low-skill")
 assert [(row["severity"], row["file"], row["line"]) for row in skill_rows] == [
     ("P1", "src/auth.py", 41),
     ("P3", "src/cache.py", 18),
 ]
 assert "anonymous request" in skill_rows[0]["summary"]
 agy_skill_clean = rb.normalize_agy_skill_output(
-    (fixtures / "agy-skill-clean.md").read_text(), "agy-flash-low-skill"
+    (fixtures / "agy-skill-clean.md").read_text(), "agy-flash36-low-skill"
 )
-assert rb.normalize_findings(agy_skill_clean, "agy-flash-low-skill") == []
+assert rb.normalize_findings(agy_skill_clean, "agy-flash36-low-skill") == []
 try:
     rb.normalize_agy_skill_output(
-        (fixtures / "agy-skill-no-repo.md").read_text(), "agy-flash-low-skill"
+        (fixtures / "agy-skill-no-repo.md").read_text(), "agy-flash36-low-skill"
     )
 except ValueError as exc:
     assert "did not enter the sealed git repository" in str(exc)
@@ -264,7 +264,7 @@ os.environ.update({
 bare_run = work / "agy-bare-run"
 bare_run.mkdir()
 os.environ["AGY_FIXTURE_STDOUT"] = str(fixtures / "agy-bare-preamble.txt")
-bare_rater = rb.parse_rater("agy-flash-low")
+bare_rater = rb.parse_rater("agy-flash36-low")
 rc, duration, text, stderr, command = rb.run_agy(
     bare_rater, repo, sha, "", bare_run, "fixture commit diff"
 )
@@ -282,9 +282,9 @@ assert command[:10] == [
     "--print-timeout", "10m",
 ]
 assert command[10] == "--log-file"
-assert pathlib.Path(command[11]) == bare_run / "agy-agy-flash-low.log"
+assert pathlib.Path(command[11]) == bare_run / "agy-agy-flash36-low.log"
 assert command[12:] == ["--print", rb.AGY_PRINT_INSTRUCTION]
-usage = json.loads((bare_run / "usage-agy-flash-low.jsonl").read_text())
+usage = json.loads((bare_run / "usage-agy-flash36-low.jsonl").read_text())
 assert usage["model"] == "gemini-3.6-flash"
 assert usage["duration_ms"] == duration
 assert usage["prompt_tokens"] == 120
@@ -330,7 +330,7 @@ I0724 01:11:43.000000 usage.go:10] promptTokenCount=240 candidatesTokenCount=60 
 """
 rb.write_agy_usage(usage_run, bare_rater, 12, repeated_log)
 repeated_usage = json.loads(
-    (usage_run / "usage-agy-flash-low.jsonl").read_text()
+    (usage_run / "usage-agy-flash36-low.jsonl").read_text()
 )
 assert repeated_usage["prompt_tokens"] == 240
 assert repeated_usage["output_tokens"] == 60
@@ -367,7 +367,7 @@ denied_run = work / "agy-denied-run"
 denied_run.mkdir()
 os.environ["AGY_FIXTURE_STDOUT"] = str(fixtures / "agy-empty.txt")
 os.environ["AGY_FIXTURE_STDERR"] = str(fixtures / "agy-headless-denied.txt")
-skill_rater = rb.parse_rater("agy-flash-low-skill")
+skill_rater = rb.parse_rater("agy-flash36-low-skill")
 rc, _, text, stderr, denied_command = rb.run_agy(
     skill_rater, repo, sha, "", denied_run, "ignored fixture diff"
 )

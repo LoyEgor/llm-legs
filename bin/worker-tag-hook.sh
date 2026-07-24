@@ -76,10 +76,18 @@ elif { printf '%s' "$command" | grep -qE '(^|[[:space:]/])agy([[:space:]]|$)' ||
   [ -n "$acct" ] || acct=$(grab 'geminib[[:space:]]+["'\'' ]*[a-z0-9][a-z0-9-]*["'\'' ]*[[:space:]]+exec' |
     grep -oE '[a-z0-9][a-z0-9-]*' | tail -n2 | head -n1)
   [ -n "$acct" ] || acct=main
-  agy_model=$(grab '\-\-model(=|[[:space:]])gemini-[0-9.]+-(pro|flash)')
-  model=$(printf '%s' "$agy_model" | grep -oE '(pro|flash)$')
+  agy_model=$(grab '\-\-model(=|[[:space:]])gemini-[0-9.]+-(pro|flash)(-(high|medium|low))?')
+  case "$agy_model" in
+    *gemini-3.6-flash*) model=flash36 ;;
+    *gemini-3.5-flash*) model=flash35 ;;
+    *-pro*) model=pro ;;
+    *) model='' ;;
+  esac
   effort=$(grab '\-\-effort(=|[[:space:]])(high|medium|low)' | grep -oE '(high|medium|low)$')
+  # flash35 carries its effort in the model id (gemini-3.5-flash-<effort>) with no --effort flag.
+  [ -n "$effort" ] || effort=$(printf '%s' "$agy_model" | grep -oE '(high|medium|low)$')
   [ -n "$model" ] || model=$(worker_conf gemini_model)
+  [ "$model" = flash ] && model=flash36
   [ -n "$model" ] || model=pro
   [ -n "$effort" ] || effort=$(worker_conf gemini_effort)
   [ -n "$effort" ] || effort=high

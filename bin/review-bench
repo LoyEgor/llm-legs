@@ -22,12 +22,12 @@ EFFORTS = ("low", "medium", "high", "xhigh", "max")
 GROK_EFFORTS = ("low", "medium", "high")
 AGY_EFFORTS = {
     "agy-pro": ("low", "high"),
-    "agy-flash": ("low", "medium", "high"),
+    "agy-flash36": ("low", "medium", "high"),
     "agy-flash35": ("low", "medium", "high"),
 }
 AGY_MODEL_IDS = {
     "agy-pro": "gemini-3.1-pro",
-    "agy-flash": "gemini-3.6-flash",
+    "agy-flash36": "gemini-3.6-flash",
     "agy-flash35": "gemini-3.5-flash",
 }
 RATER_TIMEOUT_S = 1800
@@ -44,7 +44,7 @@ CLAUDE_MODEL_IDS = {"fable": "claude-fable-5"}
 VERDICTS = {"confirmed", "false_positive", "duplicate"}
 WEIGHTS = {"P1": 5, "P2": 2, "P3": 1}
 RATER_RE = re.compile(
-    r"^(sol|opus|sonnet|haiku|fable|grok|agy-pro|agy-flash35|agy-flash)"
+    r"^(sol|opus|sonnet|haiku|fable|grok|agy-pro|agy-flash35|agy-flash36)"
     r"-(low|medium|high|xhigh|max)(-skill)?$"
 )
 PRIORITY_RE = re.compile(r"\b(P[123])\b", re.IGNORECASE)
@@ -104,7 +104,7 @@ def parse_rater(spec):
         raise ValueError(
             f"invalid rater {spec!r}; expected sol-<effort>, "
             "opus|sonnet|haiku|fable-<effort>, grok-<low|medium|high>, "
-            "agy-pro-<low|high>, agy-flash-<low|medium|high>, "
+            "agy-pro-<low|high>, agy-flash36-<low|medium|high>, "
             "agy-flash35-<low|medium|high>, "
             "or a Claude/agy -skill variant such as opus-medium-skill"
         )
@@ -147,6 +147,15 @@ def parse_raters(value):
     return parsed
 
 
+def normalize_legacy_rater(rater):
+    # The Gemini flash rater was renamed agy-flash -> agy-flash36 (versioned).
+    # Credit legacy persisted rows to the new id so --auto counts them as reviewed;
+    # agy-flash35 is unaffected (its next char is a digit, not a dash).
+    if rater.startswith("agy-flash-"):
+        return "agy-flash36-" + rater[len("agy-flash-"):]
+    return rater
+
+
 def review_counts(rows):
     counts = Counter()
     for row in rows:
@@ -157,7 +166,7 @@ def review_counts(rows):
             if model and effort:
                 rater = f"{model}-{effort}"
         if rater:
-            counts[rater] += 1
+            counts[normalize_legacy_rater(rater)] += 1
     return counts
 
 
