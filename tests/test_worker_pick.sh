@@ -258,6 +258,14 @@ run_filter codex_plain '.vendors.codex.accounts = [
 assert contains "$(head -n1 <<<"$output")" 'codex alpha · high — TIGHT'
 assert contains "$(sed -n '2p' <<<"$output")" 'codex: alpha 89% runway 11% ↻0'
 
+# Codex login-needed parity with Gemini: an all-auth-needed vendor reports "login needed",
+# not "no authenticated quota data", and never selects the account.
+run_filter codex_plain '.vendors.codex = {available:true,accounts:[
+  {account:"main",auth_needed:true,status:"login needed"}]}'
+assert contains "$output" 'codex: login needed'
+assert not_contains "$output" 'codex: no authenticated quota data'
+assert contains "$output" 'codex unavailable · high — WALLED'
+
 run_case stale
 assert contains "$output" 'NEXT: claudeb effective '
 assert contains "$output" 'effective($100) 5h 20% wk 20%'

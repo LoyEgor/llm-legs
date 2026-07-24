@@ -15,6 +15,15 @@ resolve_root() {
 }
 
 quota_helper="${CODEXB_QUOTA_CMD:-$(resolve_root)/codex-quota.py}"
+codex_cache="${LLM_LIMITS_CODEX_CACHE:-$HOME/.llm-limits-codex.json}"
+
+# A live token can be locally present yet invalidated; llm-limits.sh records that as an
+# auth-needed marker in the codex cache. Trust the marker over `codex login status`.
+auth_marker() {
+  [ -r "$codex_cache" ] || return 1
+  jq -e --arg n "$1" 'any(.accounts[]?; .account == $n and .auth_needed == true)' \
+    "$codex_cache" >/dev/null 2>&1
+}
 
 account_names() {
   local path
@@ -160,7 +169,11 @@ list_accounts() {
   local name status
   while IFS= read -r name; do
     status=$(login_status "$name")
-    printf '%s: %s\n' "$name" "${status#*$'\t'}"
+    if [ "${status%%$'\t'*}" -eq 0 ] && auth_marker "$name"; then
+      printf '%s: login needed\n' "$name"
+    else
+      printf '%s: %s\n' "$name" "${status#*$'\t'}"
+    fi
   done < <(account_names)
 }
 
@@ -168,8 +181,12 @@ show_status() {
   local quotas name status entry hused wused hreset wreset
   quotas=$(quota_snapshot)
   while IFS= read -r name; do
-    status=$(login_status "$name")
     entry=$(jq -c --arg account "$name" '[.accounts[] | select(.account == $account)][0] // {}' <<<"$quotas")
+    status=$(login_status "$name")
+    if [ "${status%%$'\t'*}" -eq 0 ] && jq -e '.auth_needed == true' <<<"$entry" >/dev/null 2>&1; then
+      printf '%s: login needed | 5H - reset unknown | WEEKLY - reset unknown\n' "$name"
+      continue
+    fi
     hused=$(jq -r 'if (.five_hour.used_pct | type) == "number" then (.five_hour.used_pct | round | tostring) + "%" else "-" end' <<<"$entry")
     wused=$(jq -r 'if (.weekly.used_pct | type) == "number" then (.weekly.used_pct | round | tostring) + "%" else "-" end' <<<"$entry")
     hreset=$(format_reset_time "$(jq -r '.five_hour.resets_at // 0' <<<"$entry")")
@@ -191,7 +208,7 @@ pick_account() {
         elif ($bucket.resets_at | type) == "number" and $bucket.resets_at <= $now then 0
         else $bucket.used_pct
         end;
-      [.accounts[] | select(.account == $account) |
+      [.accounts[] | select(.account == $account and (.auth_needed // false) != true) |
        . as $entry |
        [effective(.five_hour), effective(.weekly)] | map(select(. != null)) as $known |
        select(($known | length) == 0 or ($known | max) < 100) |

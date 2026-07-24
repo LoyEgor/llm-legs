@@ -1390,6 +1390,44 @@ grep -Eq '^codex/work\* +- +- +- +- +- +- +- +- +- +login needed$' <<<"$codex_au
 grep -q '^codex/work\*: .* | status login needed$' <<<"$codex_auth_plain" \
   || fail "Codex auth-needed plain status missing: $codex_auth_plain"
 
+# --refresh-account with an invalidated token: the helper reports auth (rc 2) with a SHORT
+# cause and no raw RPC blob; llm-limits.sh must persist the per-account auth-needed marker,
+# render login-needed, preserve the current account, and keep the raw 401 text out of every
+# user-visible cause.
+cat >"$CODEX_ACCOUNTS_CACHE" <<EOF
+{"schema":1,"fetched_at":"$(date -u '+%Y-%m-%dT%H:%M:%SZ')","accounts":[{"account":"beta","plan_type":"team","five_hour":{"used_pct":22,"resets_at":$five_reset_epoch},"weekly":{"used_pct":33,"resets_at":$week_reset_epoch},"as_of":$now},{"account":"alpha","plan_type":"plus","five_hour":{"used_pct":40,"resets_at":$five_reset_epoch},"weekly":{"used_pct":20,"resets_at":$week_reset_epoch},"as_of":$now}],"current":"alpha"}
+EOF
+cat >"$WORK/fake-codex-auth" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' '{"error":"rateLimits/read failed: 401 Unauthorized; token_invalidated","source":"codex-app-server","account":"beta"}' >&2
+printf '%s\n' '{"auth_needed":true,"cause":"login needed: token invalidated","accounts":[{"account":"beta","auth_needed":true,"as_of":$now,"cause":"login needed: token invalidated"},{"account":"alpha","plan_type":"plus","five_hour":{"used_pct":40,"resets_at":$five_reset_epoch},"weekly":{"used_pct":20,"resets_at":$week_reset_epoch},"as_of":$now}],"current":"beta"}'
+exit 2
+EOF
+chmod +x "$WORK/fake-codex-auth"
+CODEX_AUTH_LOG="$WORK/codex-auth.log"
+codex_target_auth=$(HOME="$CODEX_ACCOUNTS_HOME" \
+  LLM_LIMITS_CODEX_REFRESH=1 LLM_LIMITS_CODEX_QUOTA_CMD="$WORK/fake-codex-auth" LLM_LIMITS_CODEX_CACHE="$CODEX_ACCOUNTS_CACHE" \
+  LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --refresh-account codex/beta 2>"$CODEX_AUTH_LOG") \
+  || fail "Codex targeted auth refresh failed"
+# The raw RPC error survives in the log (HTTP/RPC context) even though the cache/UI keep only
+# the short cause.
+grep -q 'token_invalidated' "$CODEX_AUTH_LOG" \
+  || fail "targeted auth refresh dropped the raw RPC error from the log: $(cat "$CODEX_AUTH_LOG")"
+grep -q 'login needed: token invalidated' "$CODEX_AUTH_LOG" \
+  || fail "targeted auth refresh did not log the short cause"
+jq -e '.current == "alpha" and ([.accounts[] | select(.account == "beta")][0] |
+  .auth_needed == true and .cause == "login needed: token invalidated" and (has("error") | not))' \
+  "$CODEX_ACCOUNTS_CACHE" >/dev/null \
+  || fail "targeted auth refresh did not persist the codex auth marker or leaked a raw error"
+jq -e '.vendors.codex.available == true and .vendors.codex.current_account == "alpha" and
+  ([.vendors.codex.accounts[] | select(.account == "beta")][0] |
+    .auth_needed == true and .status == "login needed" and
+    .cause == "login needed: token invalidated") and
+  (.vendors.codex | has("refresh_error") | not)' <<<"$codex_target_auth" >/dev/null \
+  || fail "targeted auth refresh did not surface login-needed without a vendor error"
+[ -z "$(jq -r '.. | strings | select(test("token_invalidated|Unauthorized|rateLimits/read"))' <<<"$codex_target_auth")" ] \
+  || fail "raw RPC blob leaked into the unified codex cache"
+
 CODEX_LEGACY_CACHE="$WORK/codex-legacy.json"
 cat >"$CODEX_LEGACY_CACHE" <<EOF
 {"schema":1,"fetched_at":"$(date -u '+%Y-%m-%dT%H:%M:%SZ')","plan_type":"plus","five_hour":{"used_pct":31,"resets_at":$five_reset_epoch},"weekly":{"used_pct":64,"resets_at":$week_reset_epoch}}

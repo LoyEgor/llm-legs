@@ -129,14 +129,45 @@ def bucket_data(result: dict) -> tuple[dict, dict]:
     return normalized(five), normalized(weekly)
 
 
+# Only genuine auth signals — a dead/invalidated token or a not-logged-in session — map
+# to auth-needed. Weather (429/5xx/000) and network/timeout errors deliberately match
+# nothing here so they stay non-auth (see docs/DIAGNOSTICS.md 429 taxonomy). No bare digit
+# markers ("401"): a count in an unrelated error must not read as Unauthorized.
+_AUTH_MARKERS = (
+    "token_invalidated",
+    "token has been invalidated",
+    "not logged in",
+    "authentication required",
+    "unauthorized",
+    "invalid_grant",
+    "please sign in",
+    "sign in again",
+    "please log in",
+    "log in again",
+)
+
+
 def authentication_required(error: str | None) -> bool:
     message = (error or "").lower()
-    return "authentication required" in message or "not logged in" in message
+    return any(marker in message for marker in _AUTH_MARKERS)
+
+
+def auth_cause(error: str | None) -> str:
+    message = (error or "").lower()
+    if "invalidated" in message:
+        return "login needed: token invalidated"
+    if "not logged in" in message:
+        return "login needed: not logged in"
+    if "authentication required" in message:
+        return "login needed: authentication required"
+    if "unauthorized" in message:
+        return "login needed: unauthorized"
+    return "login needed"
 
 
 def account_entry(account: str, result: dict | None, as_of: int, error: str | None = None) -> dict:
     if authentication_required(error):
-        return {"account": account, "auth_needed": True, "as_of": as_of, "error": error}
+        return {"account": account, "auth_needed": True, "as_of": as_of, "cause": auth_cause(error)}
 
     five, weekly = bucket_data(result or {})
     limits = (result or {}).get("rateLimits")
@@ -208,7 +239,18 @@ def cache_payload(
 ) -> dict:
     current_result = next((result for account, result, _, _ in results if account == current and result), None)
     base = dict(current_result) if current_result else {key: value for key, value in old.items() if key not in ("accounts", "current")}
-    refreshed = [account_entry(account, result, as_of, error) for account, result, as_of, error in results]
+    old_by_name = {entry.get("account"): entry for entry in old.get("accounts", []) if isinstance(entry, dict)}
+    refreshed = []
+    for account, result, as_of, error in results:
+        entry = account_entry(account, result, as_of, error)
+        # A definite auth-needed verdict survives a later NON-auth failure (weather/network):
+        # only a genuine success or a fresh auth verdict may change it. Keep the prior entry
+        # verbatim (its as_of too) so the marker's recorded age stays honest.
+        if result is None and not authentication_required(error):
+            prior = old_by_name.get(account)
+            if isinstance(prior, dict) and prior.get("auth_needed") is True:
+                entry = prior
+        refreshed.append(entry)
     if replace_accounts:
         accounts = refreshed
     else:
@@ -280,7 +322,14 @@ def main() -> int:
 
     account, result, _, error = results[0]
     if result is None:
+        # The raw RPC blob is for the log (stderr) only; the auth verdict carried on
+        # stdout uses a short cause so no unparsed blob reaches a user-visible field.
         print(json.dumps({"error": error, "source": "codex-app-server", "account": account}), file=sys.stderr)
+        if authentication_required(error):
+            auth = {"auth_needed": True, "cause": auth_cause(error),
+                    "accounts": payload["accounts"], "current": account}
+            print(json.dumps(auth, ensure_ascii=False, separators=(",", ":")))
+            return 2
         return 1
     output = dict(result)
     output["accounts"] = payload["accounts"]

@@ -207,7 +207,8 @@ summary=$(jq -r \
      {state:"WALLED",acct:"",runway:0,credits:0,line:"codex: unavailable"}
    elif ($cx_eligible | length) == 0 then
      {state:"WALLED",acct:"",runway:0,credits:0,
-      line:("codex: " + (if ($cx_accounts | length) == 0 then "no authenticated quota data"
+      line:("codex: " + (if ($cx_accounts | length) == 0 then
+              (if any($cx_source[]; .auth_needed == true) then "login needed" else "no authenticated quota data" end)
             else ($cx_accounts | map("\(.name) \(.pressure | round)% FLOOR") | join(", ")) end))}
    else ($cx_eligible[0]) as $best |
      {state:(if $best.runway > $fresh_runway then "FRESH"

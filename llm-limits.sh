@@ -935,7 +935,7 @@ codex_refresh_error=''
 codex_refresh_attempted=0
 refresh_codex_quota() {
   local target=${1:-} codex_quota_cmd=${LLM_LIMITS_CODEX_QUOTA_CMD:-$script_dir/codex-quota.py}
-  local codex_tmp codex_err detail rc old_current
+  local codex_tmp codex_err detail rc old_current cause
   local -a helper_args=()
   if [ ! -x "$codex_quota_cmd" ]; then
     codex_refresh_error='helper not executable'
@@ -972,6 +972,31 @@ refresh_codex_quota() {
     if mv -f "$codex_tmp" "$codex_cache"; then
       rm -f "$codex_err"
       codex_refresh_error=''
+    else
+      codex_refresh_error='cache replace failed'
+      rm -f "$codex_tmp" "$codex_tmp.current" "$codex_err"
+      return 1
+    fi
+  elif [ "$rc" -eq 2 ] && jq -e '.auth_needed == true' "$codex_tmp" >/dev/null 2>&1; then
+    # An auth-needed verdict is a definite per-account state: persist the marker (short
+    # cause, never the raw blob) and count the probe as a success, exactly like Gemini.
+    # The full RPC error still goes to the log (stderr) so the HTTP/RPC context survives.
+    cause=$(jq -r '.cause // "login needed"' "$codex_tmp" 2>/dev/null || printf 'login needed')
+    detail=$(jq -r '.error // empty' "$codex_err" 2>/dev/null || true)
+    if [ -n "$target" ]; then
+      if ! jq --arg current "$old_current" '.current = $current' "$codex_tmp" >"$codex_tmp.current" \
+          || ! mv -f "$codex_tmp.current" "$codex_tmp"; then
+        codex_refresh_error='cache normalization failed'
+        rm -f "$codex_tmp" "$codex_tmp.current" "$codex_err"
+        return 1
+      fi
+    fi
+    if mv -f "$codex_tmp" "$codex_cache"; then
+      rm -f "$codex_err"
+      codex_refresh_error=''
+      printf 'llm-limits.sh: Codex%s %s%s\n' \
+        "$([ -n "$target" ] && printf ' account %s' "$target")" "$cause" \
+        "$([ -n "$detail" ] && printf ' (raw: %s)' "$detail")" >&2
     else
       codex_refresh_error='cache replace failed'
       rm -f "$codex_tmp" "$codex_tmp.current" "$codex_err"
@@ -1128,7 +1153,8 @@ if [ -n "$codex_event" ]; then
         ([$now - $account_asof, 0] | max) as $account_age |
         ({account:($a.account // "main"),is_current:(($a.account // "main") == $current),enabled:true} +
          (if $a.auth_needed == true then
-            {auth_needed:true} + (if ($a.error | type) == "string" then {error:$a.error} else {} end)
+            {auth_needed:true,status:"login needed"} +
+            (if ($a.cause | type) == "string" then {cause:$a.cause} else {} end)
           else
             {plan_type:($a.plan_type // $e.payload.rate_limits.plan_type // null),
              five_hour:bucket(($a.five_hour // {}); null; $account_asof; 1800),

@@ -50,7 +50,10 @@ if [ "${1:-}" = app-server ]; then
   while IFS= read -r line; do
     case "$line" in
       *account/rateLimits/read*)
-        if [ "$(cat "$HOME/auth-$account" 2>/dev/null)" != ok ]; then
+        if [ -r "$HOME/dead-$account" ]; then
+          jq -cn --arg m "$(cat "$HOME/dead-$account")" \
+            '{jsonrpc:"2.0",id:2,error:{code:-32603,message:$m}}'
+        elif [ "$(cat "$HOME/auth-$account" 2>/dev/null)" != ok ]; then
           jq -cn '{jsonrpc:"2.0",id:2,error:{code:-32600,message:"codex account authentication required to read rate limits"}}'
         elif [ -r "$HOME/quota-$account.json" ]; then
           jq -cn --slurpfile quota "$HOME/quota-$account.json" \
@@ -268,6 +271,54 @@ CODEX_QUOTA_TIMEOUT=2 "$HELPER" --all-accounts >/dev/null 2>&1 || true
 assert jq -e 'all(.accounts[]; .auth_needed == true and
   (has("five_hour") or has("weekly") or has("plan_type") | not))' "$CACHE" >/dev/null
 
+# A live-but-invalidated token: `codex login status` still says "Logged in" locally, yet the
+# rate-limits RPC 401s with token_invalidated. The helper must classify it auth-needed with a
+# SHORT cause (never the raw RPC blob), and codexb list/status/pick must honor the marker over
+# the lying local auth.json. Non-auth errors stay non-auth; a good probe clears the marker.
+printf 'ok\n' >"$HOME/auth-main"
+printf 'ok\n' >"$HOME/auth-alpha"
+printf 'ok\n' >"$HOME/auth-beta"
+blob='rateLimits/read failed: GET https://chatgpt.com/backend-api/wham/usage failed: 401 Unauthorized; {"code": "token_invalidated", "message": "Your authentication token has been invalidated. Please try signing in again."}'
+printf '%s\n' "$blob" >"$HOME/dead-beta"
+CODEX_QUOTA_TIMEOUT=2 "$HELPER" --all-accounts >/dev/null 2>&1 || true
+assert jq -e '[.accounts[] | select(.account == "beta")][0] |
+  .auth_needed == true and .cause == "login needed: token invalidated" and
+  (has("five_hour") or has("weekly") or has("error") | not)' "$CACHE" >/dev/null
+assert test -z "$(jq -r '.. | strings | select(test("token_invalidated|Unauthorized|backend-api|wham/usage"))' "$CACHE")"
+list_dead=$(bash "$SCRIPT" list) || fail "list (dead token) failed"
+assert grep -qx 'beta: login needed' <<<"$list_dead"
+assert grep -qx 'main: Logged in using ChatGPT' <<<"$list_dead"
+status_dead=$(bash "$SCRIPT" status) || fail "status (dead token) failed"
+assert grep -Eq '^beta: login needed( \||$)' <<<"$status_dead"
+printf '{"primary":{"usedPercent":0,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":0,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"}\n' "$future" "$week" >"$HOME/quota-main.json"
+assert test "$(bash "$SCRIPT" pick)" != beta
+# A transient NON-auth error (weather/network) must PRESERVE a definite auth-needed verdict:
+# a 503 on the already-marked beta (while another account succeeds and triggers the merged
+# write) does not clear its marker — only a genuine success does. status/pick keep honoring it.
+printf 'rateLimits/read failed: {"code": -32000, "message": "503 Service Unavailable"}\n' >"$HOME/dead-beta"
+CODEX_QUOTA_TIMEOUT=2 "$HELPER" --all-accounts >/dev/null 2>&1 || true
+assert jq -e '[.accounts[] | select(.account == "beta")][0] |
+  .auth_needed == true and .cause == "login needed: token invalidated"' "$CACHE" >/dev/null
+assert grep -Eq '^beta: login needed( \||$)' <<<"$(bash "$SCRIPT" status)"
+assert test "$(bash "$SCRIPT" pick)" != beta
+# A fresh 503 on a never-marked account (alpha) must NOT be misclassified as auth-needed.
+printf 'rateLimits/read failed: {"code": -32000, "message": "503 Service Unavailable"}\n' >"$HOME/dead-alpha"
+CODEX_QUOTA_TIMEOUT=2 "$HELPER" --all-accounts >/dev/null 2>&1 || true
+assert jq -e '[.accounts[] | select(.account == "alpha")][0] | .auth_needed != true' "$CACHE" >/dev/null
+assert jq -e '[.accounts[] | select(.account == "beta")][0] | .auth_needed == true' "$CACHE" >/dev/null
+# Recovery: only a genuinely successful probe of beta clears its marker.
+rm -f "$HOME/dead-beta" "$HOME/dead-alpha"
+printf '{"primary":{"usedPercent":5,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":5,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"}\n' "$future" "$week" >"$HOME/quota-beta.json"
+CODEX_QUOTA_TIMEOUT=2 "$HELPER" --all-accounts >/dev/null 2>&1 || true
+assert jq -e '[.accounts[] | select(.account == "beta")][0] |
+  (.auth_needed | not) and .five_hour.used_pct == 5' "$CACHE" >/dev/null
+assert grep -qx 'beta: Logged in using ChatGPT' <<<"$(bash "$SCRIPT" list)"
+
+# Reset the mock to the fully-signed-out state the remove section below expects.
+printf 'no\n' >"$HOME/auth-main"
+printf 'no\n' >"$HOME/auth-alpha"
+printf 'no\n' >"$HOME/auth-beta"
+
 # remove: forgets the profile dir and prunes the codex cache entry; main is refused.
 bash "$SCRIPT" add gone >/dev/null || fail "add gone failed"
 assert test -d "$HOME/.codex-profiles/gone"
@@ -279,4 +330,4 @@ assert jq -e '([.accounts[].account] | index("gone") == null) and
 assert_fails bash "$SCRIPT" remove main
 assert_fails bash "$SCRIPT" remove never-existed
 
-echo "PASS: $asserts asserts; add and shared-link trap, list/status, quota-aware authenticated pick with main-last priority, reset credits, auth-needed cache markers, exact run environments/arguments, one-step profile auto-create with shared links, device-auth login passthrough and missing-name guard, existing-profile relaunch stays quiet, creation-only reserved-name guards, leading-hyphen and charset rejection parity, multi-account cache compatibility, remove forgets profiles including reserved legacy names and prunes the cache entry (main refused)"
+echo "PASS: $asserts asserts; add and shared-link trap, list/status, quota-aware authenticated pick with main-last priority, reset credits, auth-needed cache markers, dead-token classification (short cause, no raw RPC blob) with list/status/pick honoring the marker over lying local auth.json, a transient non-auth error preserving the definite auth verdict while fresh weather on a never-marked account stays non-auth, and marker recovery only on a genuinely good probe, exact run environments/arguments, one-step profile auto-create with shared links, device-auth login passthrough and missing-name guard, existing-profile relaunch stays quiet, creation-only reserved-name guards, leading-hyphen and charset rejection parity, multi-account cache compatibility, remove forgets profiles including reserved legacy names and prunes the cache entry (main refused)"
