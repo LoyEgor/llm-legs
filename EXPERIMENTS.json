@@ -1,0 +1,12 @@
+[
+  {
+    "id": "token-freeze",
+    "what": "Every ROBOT path to the OAuth token endpoint is frozen so the owner's manual morning entries are the only refresh traffic; tests whether our own automation earned Anthropic's token-endpoint 429s",
+    "started": "2026-07-23",
+    "review_by": "2026-07-27",
+    "state_marker": "~/.claude-profiles/.claudeb/token-freeze",
+    "evidence": "~/.claude-profiles/.claudeb/token-attempts.jsonl",
+    "surfaces": ["llm-limits --table banner", "llm-limits --plain banner", "menubar LLM Limits header row"],
+    "how_to_remove": "follow docs/EXIT-PLAN.md § Token-freeze experiment: delete the token-freeze marker file, then apply the verdict branch (restore automation as-is, or rebuild refresh in parasite mode). The switch, the journal, and the frozen stale-cause are permanent by that plan's temporary inventory; delete this registry entry last."
+  }
+]

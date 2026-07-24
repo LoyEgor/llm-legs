@@ -636,6 +636,17 @@ function M.menuItems()
     table.insert(menu, { title = "-" })
   end
   local limits, readErrorReason = readLlmLimits()
+  -- Lines come from the collector: this renderer never reads the registry itself.
+  if limits and type(limits.experiments) == "table" then
+    local announced = false
+    for _, line in ipairs(limits.experiments) do
+      if type(line) == "string" and line ~= "" then
+        table.insert(menu, { title = infoTitle(line, true), disabled = true })
+        announced = true
+      end
+    end
+    if announced then table.insert(menu, { title = "-" }) end
+  end
   if limits and type(limits.vendors) == "table" then
     local vendors = {
       { key = "claude", label = "Claude" },

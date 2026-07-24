@@ -1689,7 +1689,9 @@ jq -e '.vendors.codex.five_hour.expired == true and .vendors.codex.five_hour.use
   (.vendors.claude.accounts[0].five_hour | has("expired") | not)' <<<"$expired_json" >/dev/null || fail "expired flag mismatch"
 expired_table=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) || fail "expired table collection failed"
 codex_row=$(awk 'NR > 1 && $1 == "codex"' <<<"$expired_table")
-grep -Eq '^codex +100%! +44% +- +[0-9]{2}:[0-9]{2}' <<<"$codex_row" || fail "expired window must keep its last known value and reset time: $codex_row"
+# The kept reset time may carry a weekday prefix: an expired window lies in the past, so
+# around midnight it renders as yesterday.
+grep -Eq '^codex +100%! +44% +- +([A-Za-z]{3} )?[0-9]{2}:[0-9]{2}' <<<"$codex_row" || fail "expired window must keep its last known value and reset time: $codex_row"
 expired_plain=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain) || fail "expired plain collection failed"
 grep -q 'codex: 5h 100%! @ .* | wk 44% @ ' <<<"$expired_plain" || fail "expired plain output must keep the raw value with a marker"
 expired_sorted=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table --sort 5h) || fail "expired sorted table collection failed"
@@ -1806,6 +1808,57 @@ for surface_name in table plain claudeb; do
   grep -Fq "$farweek_text" <<<"$surface" || fail "$surface_name: >24h reset tier changed ($farweek_text)"
 done
 
+# Header-origin week must render unknown, not as a number that walls the account.
+PROV_STORE="$WORK/prov-store"
+mkdir -p "$PROV_STORE/limits" "$PROV_STORE/tokens"
+printf 'prov\n' >"$PROV_STORE/.claudeb-state"
+: >"$PROV_STORE/tokens/prov"
+printf '{"five_hour":{"used_percentage":5,"resets_at":%s,"as_of":%s,"origin":"headers"},"seven_day":{"used_percentage":100,"resets_at":%s,"as_of":%s,"origin":"headers"},"auth":{"status":"ok","checked_at":%s}}\n' \
+  "$((now + 5000))" "$now" "$((now + 300000))" "$now" "$now" >"$PROV_STORE/limits/prov.json"
+prov_json=$(CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --no-write 2>/dev/null) \
+  || fail "header-origin weekly fixture failed"
+jq -e '.vendors.claude.accounts[0] | (.weekly == null) and .five_hour.used_pct == 5' <<<"$prov_json" >/dev/null \
+  || fail "a header-origin weekly bucket was reported instead of being dropped"
+printf '{"five_hour":{"used_percentage":5,"resets_at":%s,"as_of":%s,"origin":"headers"},"seven_day":{"used_percentage":76,"resets_at":%s,"as_of":%s,"origin":"session"},"auth":{"status":"ok","checked_at":%s}}\n' \
+  "$((now + 5000))" "$now" "$((now + 300000))" "$now" "$now" >"$PROV_STORE/limits/prov.json"
+prov_measured=$(CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --no-write 2>/dev/null) \
+  || fail "session-origin weekly fixture failed"
+jq -e '.vendors.claude.accounts[0].weekly.used_pct == 76' <<<"$prov_measured" >/dev/null \
+  || fail "a measured weekly reading was dropped"
+
+EXP_REG="$WORK/experiments.json"
+EXP_MARKER="$WORK/experiment-marker"
+printf '{"until":9999999999,"reason":"fixture"}\n' >"$EXP_MARKER"
+printf '[{"id":"trial-x","what":"fixture experiment for the banner contract","started":"2026-01-01","review_by":"2999-01-01","state_marker":"%s","surfaces":["fixture"],"how_to_remove":"delete the fixture"}]\n' "$EXP_MARKER" >"$EXP_REG"
+exp_json=$(EXPERIMENTS_REGISTRY="$EXP_REG" CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --no-write 2>/dev/null) \
+  || fail "experiment-registry fixture failed"
+jq -e '.experiments == ["EXPERIMENT trial-x until 2999-01-01 — temporary, see EXPERIMENTS.json"]' <<<"$exp_json" >/dev/null \
+  || fail "an active experiment is missing from the collector output"
+exp_table=$(EXPERIMENTS_REGISTRY="$EXP_REG" CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --table --no-write 2>/dev/null)
+grep -Fq 'EXPERIMENT trial-x until 2999-01-01' <<<"$exp_table" || fail "--table did not announce the active experiment"
+printf '[{"id":"spent","what":"fixture experiment whose review date has passed","started":"2026-01-01","review_by":"2026-01-02","state_marker":"%s","surfaces":["fixture"],"how_to_remove":"delete the fixture"}]\n' "$EXP_MARKER" >"$EXP_REG"
+exp_past=$(EXPERIMENTS_REGISTRY="$EXP_REG" CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --no-write 2>/dev/null)
+jq -e '.experiments == ["EXPERIMENT spent OVERDUE since 2026-01-02 — decide: remove or extend (EXPERIMENTS.json)"]' <<<"$exp_past" >/dev/null \
+  || fail "an overdue-but-live experiment is not announced as OVERDUE"
+
+printf '[{"id":"broken",,}]\n' >"$EXP_REG"
+exp_broken=$(EXPERIMENTS_REGISTRY="$EXP_REG" CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --no-write 2>/dev/null)
+jq -e '.experiments | length == 1 and (.[0] | startswith("EXPERIMENT registry unreadable"))' <<<"$exp_broken" >/dev/null \
+  || fail "an unreadable experiment registry was silently reported as no experiments"
+
+printf '[{"id":"trial-x","what":"fixture experiment for the banner contract","started":"2026-01-01","review_by":"2999-01-01","state_marker":"%s","surfaces":["fixture"],"how_to_remove":"delete the fixture"}]\n' "$EXP_MARKER" >"$EXP_REG"
+for spent_until in -1 1.5; do
+  printf '{"until":%s,"reason":"fixture"}\n' "$spent_until" >"$EXP_MARKER"
+  exp_numeric=$(EXPERIMENTS_REGISTRY="$EXP_REG" CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --no-write 2>/dev/null)
+  jq -e '.experiments == []' <<<"$exp_numeric" >/dev/null \
+    || fail "a marker with until=$spent_until is spent but still announced"
+done
+
+printf '{"until":1,"reason":"fixture"}\n' >"$EXP_MARKER"
+printf '[{"id":"resumed","what":"fixture experiment whose marker has expired","started":"2026-01-01","review_by":"2999-01-01","state_marker":"%s","surfaces":["fixture"],"how_to_remove":"delete the fixture"}]\n' "$EXP_MARKER" >"$EXP_REG"
+exp_spent_marker=$(EXPERIMENTS_REGISTRY="$EXP_REG" CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --no-write 2>/dev/null)
+jq -e '.experiments == []' <<<"$exp_spent_marker" >/dev/null || fail "an expired marker is still being announced"
+
 EMPTY="$WORK/empty-home"
 mkdir -p "$EMPTY"
 HOME="$EMPTY" bash "$SCRIPT" --no-write >/dev/null 2>&1
@@ -1840,5 +1893,5 @@ else
   echo "SKIP (hs unavailable): Hammerspoon projection contract"
 fi
 
-echo "PASS: schema, Claude unique accounts and fallback, Codex multi-account reset credits, auth-needed accounts and legacy cache, Claude daemon status and rotation passthrough, enabled flags, freshness contract, reset placeholder normalization, machine effective percentages and usability, refresh failure reasons, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, Hammerspoon projection contract, plain output, table output and sorts, reset tiers, expired windows, bare JSON default, atomic cache, missing exit 3"
+echo "PASS: schema, Claude unique accounts and fallback, Codex multi-account reset credits, auth-needed accounts and legacy cache, Claude daemon status and rotation passthrough, enabled flags, freshness contract, reset placeholder normalization, machine effective percentages and usability, refresh failure reasons, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, weekly bucket provenance, experiment announcements, Hammerspoon projection contract, plain output, table output and sorts, reset tiers, expired windows, bare JSON default, atomic cache, missing exit 3"
 exit 0

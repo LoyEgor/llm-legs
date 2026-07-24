@@ -120,17 +120,34 @@ age_short() {
   printf '%sd' "$((hours / 24))"
 }
 
+# Account names repeat across vendors (`main` exists for both Codex and Gemini), so a
+# row must be located inside its own vendor's section — a bare first-match lookup
+# silently compares one vendor's age against another's.
+vendor_section() {
+  local menu="$1" label="$2"
+  awk -v label="$label" '
+    index($0, label) == 1 { inside = 1; next }
+    inside && /^(Claude|Codex|Gemini)/ { inside = 0 }
+    inside { print }' <<<"$menu"
+}
+
 assert_account_ages() {
-  local menu="$1" json="$2" vendor account auth asof expected row actual
+  local menu="$1" json="$2" vendor account auth asof expected row actual section label
   for vendor in claude codex gemini; do
     if [ "$vendor" = gemini ] &&
        [ "$(jq -r '(.vendors.gemini.accounts | type) == "array" and
           (.vendors.gemini.accounts | length) > 1' <<<"$json")" != true ]; then
       continue
     fi
+    case "$vendor" in
+      claude) label=Claude ;;
+      codex) label=Codex ;;
+      gemini) label=Gemini ;;
+    esac
+    section=$(vendor_section "$menu" "$label")
     while IFS=$'\t' read -r account auth asof; do
       [ -n "$account" ] || continue
-      row=$(awk -v account="$account" '$1 == account {print; exit}' <<<"$menu")
+      row=$(awk -v account="$account" '$1 == account {print; exit}' <<<"$section")
       [ -n "$row" ] || fail "$vendor account row missing for age check: $account"
       [ "$auth" != true ] || continue
       expected=$(age_short "$asof")

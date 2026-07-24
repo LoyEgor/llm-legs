@@ -208,6 +208,25 @@ assert grep -Fq 'printf '\''%s\n'\'' "$gemini_base_home"' "$GEMINI_ACCOUNTS"
 assert grep -Fq 'printf '\''%s\n'\'' "$gemini_profiles_dir/$1"' "$GEMINI_ACCOUNTS"
 assert doc_has 'Gemini profile discovery and HOME mapping'
 
+# --- Row n: weekly bucket provenance ----------------------------------------
+CLAUDEBD="$ROOT/bin/claudebd"
+STATUSLINE="$ROOT/bin/statusline.sh"
+# No writer may mint a weekly percentage from headers: the header-learn paths must
+# not mention the weekly bucket at all.
+assert eq "$(awk '/^function updateFromHeaders/,/^}/' "$CLAUDEBD" | grep -Ec 'state\.wk *=|state\.sevenDay *=|learned\.seven_day')" 0
+assert eq "$(awk '/^merge_headers\(\)/,/^}/' "$ROOT/bin/claudeb" | grep -Ec 'seven_day: \{|used_percentage: 100')" 0
+assert grep -Fq 'def stamp: . + {as_of: $now, origin: "session"}' "$STATUSLINE"
+assert grep -Fq "if (key === 'seven_day') { delete learned[key]; continue; }" "$CLAUDEBD"
+assert grep -Fq "return week.origin === 'headers' ? undefined : week;" "$CLAUDEBD"
+assert test "$(grep -Fc '.seven_day.origin? == "headers"' "$ROOT/bin/claudeb")" -eq 2
+assert grep -Fq '.seven_day.origin? != "headers"' "$LLMLIMITS"
+assert grep -Fq '.seven_day.origin? == "headers"' "$LLMLIMITS"
+assert grep -Fq '[ "$wk_origin" = headers ]' "$STATUSLINE"
+assert grep -Fq 'if (.seven_day.origin? == "headers") then del(.seven_day) else . end) as $old' "$STATUSLINE"
+assert grep -Fq 'walk(if type == "object" and (.weekly.origin? == "headers") then del(.weekly) else . end)' "$WORKERPICK"
+assert doc_has 'Weekly bucket provenance'
+assert doc_has 'no writer may stamp `origin: "headers"` on `seven_day`'
+
 GATE_WARN=85; GATE_DENY=95
 assert test -x "$WORKER_GATE"
 assert eq "$(grep -E '^WARN_AT=[0-9]+$' "$WORKER_GATE" | cut -d= -f2)" "$GATE_WARN"
@@ -225,4 +244,4 @@ assert eq "$(jq '[.hooks.PreToolUse[] | .hooks[]? | select(.command | test("(cla
 assert grep -Fq 'warn at `85`%; block at `95`%' "$ROOT/$DOC"
 assert doc_has 'Worker spawn pressure gate'
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, account pin precedence, quota-group matching, shared profile mapping, and worker spawn pressure gate) and match %s\n' "$asserts" "$DOC"
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, account pin precedence, quota-group matching, shared profile mapping, weekly bucket provenance, and worker spawn pressure gate) and match %s\n' "$asserts" "$DOC"

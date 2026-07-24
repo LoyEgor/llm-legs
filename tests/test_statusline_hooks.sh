@@ -294,7 +294,7 @@ NOW=$(date +%s)
 bucket_json() {
   jq -cn --argjson now "$NOW" --argjson h5 "$1" --argjson wk "$2" --argjson h5_age "${3:-0}" '
     {five_hour:{used_percentage:$h5,resets_at:($now+3600),as_of:($now-$h5_age),origin:"headers"},
-     seven_day:{used_percentage:$wk,resets_at:($now+86400),as_of:$now,origin:"headers"},
+     seven_day:{used_percentage:$wk,resets_at:($now+86400),as_of:$now,origin:"session"},
      auth:{status:"ok",checked_at:$now}}'
 }
 
@@ -315,6 +315,23 @@ general_out=$(run_statusline "$general_payload") || fail "statusline rotating ge
 assert grep -Fq '~acctgen' <<< "$general_out"
 assert grep -Fq "${GREEN}44%" <<< "$general_out"
 assert_eq "$(bucket_json 44 22)" "$(cat "$CLAUDEB_FIX/limits/acctgen.json")"
+
+# A cached header-origin week is a number nobody measured (shared-invariants n): the render
+# must show `?`, and a real reading must replace it even though newer() would otherwise keep
+# the higher percentage for the rest of the weekly window.
+jq -cn --argjson now "$NOW" '
+  {five_hour:{used_percentage:7,resets_at:($now+3600),as_of:$now,origin:"headers"},
+   seven_day:{used_percentage:100,resets_at:($now+86400),as_of:$now,origin:"headers"},
+   auth:{status:"ok",checked_at:$now}}' > "$CLAUDEB_FIX/limits/acctgen.json"
+synth_out=$(run_statusline "$(statusline_payload status-synth-week '{"model":{"id":"claude-sonnet-5","display_name":"Sonnet"}}')") \
+  || fail "statusline synthetic-week render failed"
+assert grep -Fq "wk ${DIM}?" <<< "$synth_out"
+assert test "${synth_out#*100%}" = "$synth_out"
+measured_payload=$(statusline_payload status-synth-week-merge \
+  '{"model":{"id":"claude-sonnet-5","display_name":"Sonnet"},"rate_limits":{"five_hour":{"used_percentage":7,"resets_at":'"$((NOW + 3600))"'},"seven_day":{"used_percentage":76,"resets_at":'"$((NOW + 86400))"'}}}')
+run_statusline "$measured_payload" acctgen >/dev/null || fail "statusline measured-week merge failed"
+assert jq -e '.seven_day.used_percentage == 76 and .seven_day.origin == "session"' "$CLAUDEB_FIX/limits/acctgen.json" >/dev/null
+bucket_json 44 22 > "$CLAUDEB_FIX/limits/acctgen.json"
 
 printf 'worker=claudeb\ncodex_effort=high\n' > "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-cb-rot '{"model":{"id":"claude-fable-5","display_name":"Fable"}}')" main)

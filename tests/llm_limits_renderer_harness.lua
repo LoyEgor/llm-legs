@@ -896,4 +896,25 @@ assert(watchNotifies == 2, "store watcher throttle did not collapse a burst to t
 assert(watchStarts == 0, "store watcher must never start a collector task")
 assert(watchTasks == 0, "store watcher must never construct a collector task")
 
+local experimentFixture = {
+  schema = 1,
+  experiments = { "EXPERIMENT token-freeze until 2026-07-27 — temporary, see EXPERIMENTS.json" },
+  vendors = { claude = { available = false }, codex = { available = false }, gemini = { available = false } },
+}
+local experimentMenu = loadModule(experimentFixture).menuItems()
+local announcedRow
+for _, item in ipairs(experimentMenu) do
+  if titleText(item):match("EXPERIMENT token%-freeze until 2026%-07%-27") then announcedRow = item end
+end
+assert(announcedRow, "an active experiment is not announced in the menu")
+assert(announcedRow.disabled == true, "the experiment announcement must not be clickable")
+
+local quietFixture = {
+  schema = 1,
+  vendors = { claude = { available = false }, codex = { available = false }, gemini = { available = false } },
+}
+for _, item in ipairs(loadModule(quietFixture).menuItems()) do
+  assert(not titleText(item):match("EXPERIMENT"), "no experiment reported, yet the menu announced one")
+end
+
 return "PASS: Hammerspoon projection contract"

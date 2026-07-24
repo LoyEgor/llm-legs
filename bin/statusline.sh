@@ -140,7 +140,12 @@ rl_merge() {
   # such rewrites would keep re-freshening stale data over live probe merges.
   # Only a strictly newer window (or higher pct in the same window) is taken.
   merged_rl=$(jq -cn --argjson old "$old_rl" --argjson fresh "$rl_json" --argjson now "$(date +%s)" '
-    def stamp: . + {as_of: $now, origin: "headers"}
+    # A cached header-origin week is synthetic (shared-invariants n) and must not survive
+    # the merge: newer() only replaces on a HIGHER pct within the same window, so a
+    # leftover 100 would outlive every real reading until the weekly reset.
+    ($old | if (.seven_day.origin? == "headers") then del(.seven_day) else . end) as $old |
+    # `session`: measured readings from the harness payload, not header learning.
+    def stamp: . + {as_of: $now, origin: "session"}
       | (if (.used_percentage | type) == "number" then .used_percentage = (.used_percentage | round) else . end);
     def newer($k): ($fresh[$k] // null) as $f | ($old[$k] // null) as $o |
       ($f != null) and (
@@ -216,6 +221,10 @@ if [ -n "$rl_json" ]; then
       (.auth.status // "")
     ] | join("")' 2>/dev/null)
 fi
+
+# Rendering a header-origin week would print a percentage nobody measured — and one every
+# other surface discards (shared-invariants n). Show `?` instead.
+[ "$wk_origin" = headers ] && { wk_pct=""; wk_reset=""; }
 
 now=$(date +%s)
 h5_dim=""; wk_dim=""

@@ -63,6 +63,8 @@ account_data() {
     jq -c --arg name "$name" --argjson now "$now" --argjson age "$age" --argjson mtime "$modified" '
       def number_or_zero: if type == "number" then . else 0 end;
       def reset: if type == "number" then . else 0 end;
+      # Header-origin week = never measured (shared-invariants n) — week unknown.
+      (if (.seven_day.origin? == "headers") then del(.seven_day) else . end) |
       # Age is observation age (as_of), same metric as the menu/table — file mtime
       # moves on verdict merges without fresh data and would show younger than truth.
       (if (.five_hour.as_of | type) == "number" then ($now - .five_hour.as_of) else $age end) as $age |
@@ -208,24 +210,17 @@ header_value() {
   ' "$file"
 }
 
+# 5h only: this writer must never touch seven_day (shared-invariants n).
 merge_headers() {
   local name="$1" headers="$2" file="$limits_dir/$1.json"
-  local unified_status utilization hreset claim unified_reset tmp lock cached='{}'
-  unified_status=$(header_value "$headers" anthropic-ratelimit-unified-status)
+  local utilization hreset tmp lock cached='{}'
   utilization=$(header_value "$headers" anthropic-ratelimit-unified-5h-utilization)
   hreset=$(header_value "$headers" anthropic-ratelimit-unified-5h-reset)
-  claim=$(header_value "$headers" anthropic-ratelimit-unified-representative-claim)
-  unified_reset=$(header_value "$headers" anthropic-ratelimit-unified-reset)
   if ! jq -en --arg utilization "$utilization" --arg hreset "$hreset" '
     ($utilization | tonumber? // -1) as $u |
     ($hreset | tonumber? // 0) as $r |
     $u >= 0 and $u <= 1 and $r > 0' >/dev/null; then
     return 1
-  fi
-  if [ "$unified_status" != allowed ] && [ "$claim" = seven_day ]; then
-    if ! jq -en --arg reset "$unified_reset" '($reset | tonumber? // 0) > 0' >/dev/null; then
-      return 1
-    fi
   fi
   mkdir -p "$limits_dir"
   lock="$file.lock"
@@ -237,16 +232,13 @@ merge_headers() {
       cached=$(jq -c . "$file" 2>/dev/null) || cached='{}'
     fi
     if ! jq -n --arg utilization "$utilization" --arg hreset "$hreset" \
-      --arg unified_status "$unified_status" --arg claim "$claim" --arg unified_reset "$unified_reset" \
       --argjson old "$cached" --argjson now "$(date +%s)" '
-        $old + {five_hour: {
+        ($old | if (.seven_day.origin? == "headers") then del(.seven_day) else . end) +
+        {five_hour: {
           used_percentage: (($utilization | tonumber) * 100 | round),
           resets_at: ($hreset | tonumber),
           as_of: $now, origin: "headers"
         }} +
-        (if $unified_status != "allowed" and $claim == "seven_day" then
-          {seven_day: {used_percentage: 100, resets_at: ($unified_reset | tonumber), as_of: $now, origin: "headers"}}
-         else {} end) +
         {auth: {status: "ok", checked_at: $now}}' > "$tmp" 2>/dev/null; then
       rm -f "$tmp"
       return 1

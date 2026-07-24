@@ -41,7 +41,17 @@ week_epoch=$((now + 172800))
 date_epoch=$((now + 691200))
 weekdays=(Sun Mon Tue Wed Thu Fri Sat)
 weekday_number=$(date -r "$week_epoch" '+%w' 2>/dev/null || date -d "@$week_epoch" '+%w')
-assert test "$(format_reset_time "$short_epoch")" = "$(date -r "$short_epoch" '+%H:%M' 2>/dev/null || date -d "@$short_epoch" '+%H:%M')"
+# A within-24h reset keeps a bare clock only while it lands on today; one hour from now can
+# be tomorrow, and then the formatter correctly prefixes the weekday. Expecting a bare clock
+# unconditionally made this assertion fail during the last hour of every day.
+short_clock=$(date -r "$short_epoch" '+%H:%M' 2>/dev/null || date -d "@$short_epoch" '+%H:%M')
+if [ "$(date -r "$short_epoch" '+%F' 2>/dev/null || date -d "@$short_epoch" '+%F')" = "$(date '+%F')" ]; then
+  short_expected="$short_clock"
+else
+  short_weekday=$(date -r "$short_epoch" '+%w' 2>/dev/null || date -d "@$short_epoch" '+%w')
+  short_expected="${weekdays[$short_weekday]} $short_clock"
+fi
+assert test "$(format_reset_time "$short_epoch")" = "$short_expected"
 assert test "$(format_reset_time "$week_epoch")" = "${weekdays[$weekday_number]} $(date -r "$week_epoch" '+%H:%M' 2>/dev/null || date -d "@$week_epoch" '+%H:%M')"
 assert test "$(format_reset_time "$date_epoch")" = "$(date -r "$date_epoch" '+%m-%d %H:%M' 2>/dev/null || date -d "@$date_epoch" '+%m-%d %H:%M')"
 assert test "$(format_reset_time null)" = unknown
@@ -85,6 +95,35 @@ assert_fails merge_headers alpha "$headers"
 assert jq -e --argjson as_of "$cached_as_of" '.fable.used_percentage == 31 and .fable.as_of == $as_of' "$snapshot" >/dev/null
 rmdir "$snapshot.lock"
 unset CLAUDEB_LOCK_RETRIES CLAUDEB_LOCK_DELAY
+
+# Not even a warning or rejection naming the weekly bucket may mint one (invariant n).
+snapshot_wk="$CLAUDEB_DIR/limits/wkorigin.json"
+headers_wk="$WORK/headers-wk.txt"
+cat >"$headers_wk" <<EOF
+anthropic-ratelimit-unified-status: allowed_warning
+anthropic-ratelimit-unified-representative-claim: seven_day
+anthropic-ratelimit-unified-reset: $((now + 400000))
+anthropic-ratelimit-unified-5h-utilization: 0.07
+anthropic-ratelimit-unified-5h-reset: $((now + 7200))
+EOF
+cat >"$snapshot_wk" <<EOF
+{"seven_day":{"used_percentage":100,"resets_at":$((now + 400000)),"as_of":$now,"origin":"headers"}}
+EOF
+assert merge_headers wkorigin "$headers_wk"
+assert jq -e '.five_hour.used_percentage == 7 and (has("seven_day") | not)' "$snapshot_wk" >/dev/null
+cat >"$snapshot_wk" <<EOF
+{"seven_day":{"used_percentage":76,"resets_at":$((now + 400000)),"as_of":$now,"origin":"session"}}
+EOF
+assert merge_headers wkorigin "$headers_wk"
+assert jq -e '.seven_day.used_percentage == 76 and .seven_day.origin == "session"' "$snapshot_wk" >/dev/null
+cat >"$snapshot_wk" <<EOF
+{"five_hour":{"used_percentage":3,"resets_at":$((now + 7200)),"as_of":$now,"origin":"headers"},
+ "seven_day":{"used_percentage":100,"resets_at":$((now + 400000)),"as_of":$now,"origin":"headers"},
+ "auth":{"status":"ok","checked_at":$now}}
+EOF
+wk_row=$(account_data wkorigin)
+assert jq -e '.wk_raw == null and .wk == 0 and .walled == false' <<<"$wk_row" >/dev/null
+rm -f "$snapshot_wk"
 
 REAL_JQ=$(command -v jq)
 jq() {

@@ -442,6 +442,7 @@ gemini_main_cache=${LLM_LIMITS_GEMINI_CACHE:-$HOME/.llm-limits-gemini.json}
 gemini_legacy_removed="${LLM_LIMITS_GEMINI_REMOVED:-${gemini_main_cache}.removed}"
 agy_bin=${AGY_BIN:-$HOME/.local/bin/agy}
 . "$script_dir/share/gemini-accounts.sh"
+. "$script_dir/share/experiments.sh"
 
 gemini_account_cache() {
   if [ "$1" = main ]; then printf '%s\n' "$gemini_main_cache"
@@ -780,7 +781,9 @@ if [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
     if [ -r "$claudeb_disabled" ] && grep -qxF "$account" "$claudeb_disabled"; then enabled=false; fi
     # Snapshots without a valid five_hour bucket (e.g. auth-only after a failed probe) must
     # stay visible as unknown values, never vanish from the account list.
-    claude_data=$(jq -c 'select(type == "object")' "$claude_file" 2>/dev/null || true)
+    # Header-origin week = never measured (shared-invariants n): render unknown, not a number.
+    claude_data=$(jq -c 'select(type == "object")
+      | if (.seven_day.origin? == "headers") then del(.seven_day) else . end' "$claude_file" 2>/dev/null || true)
     mtime=$(file_mtime "$claude_file" || true)
     [ -n "$claude_data" ] && [ -n "$mtime" ] || continue
     has_five=0
@@ -894,13 +897,16 @@ else
   last_mtime=$(file_mtime "$claude_last" 2>/dev/null || echo 0)
   rl_mtime=$(file_mtime "$claude_rl" 2>/dev/null || echo 0)
   claude_data=''
+  # These caches can still hold a header-origin week written before invariant n existed.
+  measured_week='select((.five_hour.used_percentage|type)=="number"
+    and (.seven_day.used_percentage|type)=="number" and (.seven_day.origin? != "headers"))'
   if [ -r "$claude_last" ] && [ "${last_mtime:-0}" -ge "${rl_mtime:-0}" ]; then
     claude_file="$claude_last"; claude_source=statusline-last
-    claude_data=$(jq -c '.rate_limits | select((.five_hour.used_percentage|type)=="number" and (.seven_day.used_percentage|type)=="number")' "$claude_file" 2>/dev/null || true)
+    claude_data=$(jq -c ".rate_limits | $measured_week" "$claude_file" 2>/dev/null || true)
   fi
   if [ -z "$claude_data" ]; then
     claude_file="$claude_rl"; claude_source=statusline-cache
-    [ ! -r "$claude_file" ] || claude_data=$(jq -c 'select((.five_hour.used_percentage|type)=="number" and (.seven_day.used_percentage|type)=="number")' "$claude_file" 2>/dev/null || true)
+    [ ! -r "$claude_file" ] || claude_data=$(jq -c "$measured_week" "$claude_file" 2>/dev/null || true)
   fi
   if [ -n "$claude_data" ]; then
     mtime=$(file_mtime "$claude_file" || true)
@@ -1344,7 +1350,12 @@ if [ "$refresh" -eq 1 ] && [ -z "$refresh_account" ]; then
   fi
 fi
 
-if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson claude "$claude" \
+# Live experiments travel with the data so consumers need no repo knowledge.
+experiments_json=$(experiments_active_lines "$(experiments_registry_path "$script_dir")" \
+  | jq -Rsc 'split("\n") | map(select(length > 0))')
+[ -n "$experiments_json" ] || experiments_json='[]'
+
+if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$experiments_json" --argjson claude "$claude" \
   --argjson codex "$codex" --argjson gemini "$gemini" --argjson now "$now_epoch" \
   --argjson claude_daemon "$claude_daemon" \
   --argjson previous "$previous_cache" --argjson refresh "$refresh" --arg refresh_account "$refresh_account" \
@@ -1425,7 +1436,7 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson claude "$claude" 
        $current.auth_needed != true and $previous.vendors[$key].available == true
     then $previous.vendors[$key]
     else $current end;
-  {schema:1,fetched_at:$fetched_at,vendors:{
+  {schema:1,fetched_at:$fetched_at,experiments:$experiments,vendors:{
     claude:(vendor_data("claude"; ($claude + {daemon:$claude_daemon}); $claude_attempted; $claude_error) + {daemon:$claude_daemon}),
     codex:vendor_data("codex"; $codex; $codex_attempted; $codex_error),
     gemini:vendor_data("gemini"; $gemini; $gemini_attempted; $gemini_error)}}
@@ -1473,11 +1484,17 @@ if [ "$write_cache" -eq 1 ]; then
   trap - EXIT HUP INT TERM
 fi
 
+experiments_banner() {
+  experiments_active_lines "$(experiments_registry_path "$script_dir")"
+}
+
 if [ "$format" = json ]; then
   printf '%s\n' "$result"
 elif [ "$format" = table ]; then
+  experiments_banner
   render_table
 else
+  experiments_banner
   plain_dim=''
   plain_rst=''
   if [ -t 1 ]; then

@@ -120,6 +120,17 @@ function fableIncapable(state, now = Math.floor(Date.now() / 1000)) {
   return state.fableIncapableAt > 0 && now - state.fableIncapableAt <= fableEvidenceTtlS;
 }
 
+// Rate-limit headers publish NO weekly percentage — only a 5h utilization and, on a
+// rejection, a reset time — so a weekly bucket stamped origin `headers` was never
+// measured and counts as unknown (shared-invariants n). Real weekly percentages come
+// from the usage endpoint or Claude Code's own payload (`session`); a weekly BLOCK comes
+// from a rejection wall in markRejected, never from a written percentage.
+function measuredSevenDay(snapshot) {
+  const week = snapshot?.seven_day;
+  if (!week || typeof week !== 'object') return undefined;
+  return week.origin === 'headers' ? undefined : week;
+}
+
 function loadState(name) {
   let snapshot = {};
   try {
@@ -127,14 +138,15 @@ function loadState(name) {
   } catch {}
   const previous = states.get(name);
   const persisted = previous ? undefined : daemonState.accounts[name];
+  const sevenDay = measuredSevenDay(snapshot);
   let tokenMtime = 0;
   try { tokenMtime = fs.statSync(path.join(tokensDir, name)).mtimeMs; } catch {}
   return {
     h5: number(snapshot.five_hour?.used_percentage),
-    wk: number(snapshot.seven_day?.used_percentage),
+    wk: number(sevenDay?.used_percentage),
     hreset: number(snapshot.five_hour?.resets_at),
-    wreset: number(snapshot.seven_day?.resets_at),
-    sevenDay: snapshot.seven_day && typeof snapshot.seven_day === 'object' ? snapshot.seven_day : undefined,
+    wreset: number(sevenDay?.resets_at),
+    sevenDay,
     fable: snapshot.fable && typeof snapshot.fable === 'object' ? snapshot.fable : undefined,
     auth: snapshot.auth && typeof snapshot.auth === 'object' ? snapshot.auth : undefined,
     fablePlanGated: fablePlanGated(name),
@@ -226,9 +238,10 @@ function refreshTelemetry(name) {
     if (typeof snapshot.five_hour?.resets_at === 'number') state.hreset = snapshot.five_hour.resets_at;
   }
   if (mtime > state.wAt) {
-    if (typeof snapshot.seven_day?.used_percentage === 'number') state.wk = snapshot.seven_day.used_percentage;
-    if (typeof snapshot.seven_day?.resets_at === 'number') state.wreset = snapshot.seven_day.resets_at;
-    state.sevenDay = snapshot.seven_day && typeof snapshot.seven_day === 'object' ? snapshot.seven_day : undefined;
+    const sevenDay = measuredSevenDay(snapshot);
+    if (typeof sevenDay?.used_percentage === 'number') state.wk = sevenDay.used_percentage;
+    if (typeof sevenDay?.resets_at === 'number') state.wreset = sevenDay.resets_at;
+    state.sevenDay = sevenDay;
   }
   state.fable = snapshot.fable && typeof snapshot.fable === 'object' ? snapshot.fable : undefined;
   state.auth = snapshot.auth && typeof snapshot.auth === 'object' ? snapshot.auth : undefined;
@@ -492,6 +505,10 @@ function persist(name, learned) {
     }
     const stampedAt = Math.floor(Date.now() / 1000);
     for (const key of Object.keys(learned)) {
+      // Everything written here is stamped origin `headers`, and a weekly bucket may
+      // never carry that origin (shared-invariants n) — so this writer drops the key
+      // instead of trusting every caller to withhold it.
+      if (key === 'seven_day') { delete learned[key]; continue; }
       if (learned[key] && typeof learned[key] === 'object') {
         learned[key] = { ...learned[key], as_of: stampedAt, origin: 'headers' };
       }
@@ -614,8 +631,6 @@ function updateFromHeaders(name, headers) {
   const utilization = number(headers['anthropic-ratelimit-unified-5h-utilization'], NaN);
   const hreset = number(headers['anthropic-ratelimit-unified-5h-reset'], NaN);
   const status = String(headers['anthropic-ratelimit-unified-status'] || '');
-  const claim = String(headers['anthropic-ratelimit-unified-representative-claim'] || '');
-  const reset = number(headers['anthropic-ratelimit-unified-reset'], NaN);
   const learned = {};
   if (Number.isFinite(utilization)) state.h5 = Math.round(utilization * 100);
   if (Number.isFinite(hreset)) state.hreset = hreset;
@@ -623,13 +638,7 @@ function updateFromHeaders(name, headers) {
   if (Number.isFinite(utilization) && Number.isFinite(hreset)) {
     learned.five_hour = { used_percentage: state.h5, resets_at: state.hreset };
   }
-  if (status !== 'allowed' && claim === 'seven_day' && Number.isFinite(reset)) {
-    state.wk = 100;
-    state.wreset = reset;
-    state.sevenDay = { used_percentage: 100, resets_at: reset };
-    state.wAt = Date.now();
-    learned.seven_day = state.sevenDay;
-  }
+  // No weekly percentage here by design (shared-invariants n).
   if (Object.keys(learned).length > 0) persist(name, learned);
   if (name === current && effective(name).walled && !status.startsWith('rejected')) {
     switchAccount('limit threshold');

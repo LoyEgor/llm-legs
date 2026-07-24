@@ -23,6 +23,7 @@ globalThis.testApi = {
   pinnedAt,
   markRejected,
   markAuthFailure,
+  updateFromHeaders,
   markPlanIncapable,
   eligibleForScope,
   noAccountsBody,
@@ -289,9 +290,8 @@ api.persist('learned', {
 });
 const learned = JSON.parse(fs.readFileSync(learnedFile, 'utf8'));
 check(learned.five_hour.origin, 'headers', 'five-hour origin stamped');
-check(learned.seven_day.origin, 'headers', 'weekly origin stamped');
+ok(!('seven_day' in learned), 'persist drops a weekly bucket instead of stamping it origin=headers');
 ok(Number.isInteger(learned.five_hour.as_of), 'five-hour as_of stamped');
-ok(Number.isInteger(learned.seven_day.as_of), 'weekly as_of stamped');
 check(learned.fable.used_percentage, 12, 'unrelated snapshot bucket preserved');
 
 // --- daemon-state.json persistence across restarts ----------------------
@@ -510,5 +510,48 @@ fs.writeFileSync(dsFile, JSON.stringify({
 const apiPhantom = boot();
 ok(apiPhantom.getDaemonState().accounts.cap, 'real account state survives load');
 ok(!apiPhantom.getDaemonState().accounts['phantom-backup.json'], 'phantom account absent from tokens/ is pruned on load');
+
+// A warning naming the weekly bucket must teach 5h and nothing else: headers carry no
+// weekly percentage, and stamping one walled whole accounts (shared-invariants n).
+add('warn', state());
+api.updateFromHeaders('warn', {
+  'anthropic-ratelimit-unified-status': 'allowed_warning',
+  'anthropic-ratelimit-unified-representative-claim': 'seven_day',
+  'anthropic-ratelimit-unified-5h-utilization': '0.42',
+  'anthropic-ratelimit-unified-5h-reset': String(now + 3600),
+  'anthropic-ratelimit-unified-reset': String(now + 400000)
+});
+check(api.states.get('warn').h5, 42, 'headers still teach the 5h utilization');
+check(api.states.get('warn').wk, 0, 'a seven_day warning never invents a weekly percentage');
+check(api.states.get('warn').sevenDay, undefined, 'no synthetic seven_day bucket in state');
+const warnSnapshot = JSON.parse(fs.readFileSync(path.join(limitsDir, 'warn.json'), 'utf8'));
+ok(!('seven_day' in warnSnapshot), 'header learning never persists a seven_day bucket');
+api.scanAccounts();
+check(api.statusPayload().accounts.warn.blocked.general, null, 'a seven_day warning leaves general usable');
+check(api.statusPayload().accounts.warn.blocked.fable, null, 'a seven_day warning leaves fable usable');
+
+// A header-origin weekly reading on disk is synthetic and must be ignored, not obeyed.
+fs.writeFileSync(path.join(tokensDir, 'legacy'), 'fixture\n', { mode: 0o600 });
+fs.writeFileSync(path.join(limitsDir, 'legacy.json'), JSON.stringify({
+  five_hour: { used_percentage: 4, resets_at: now + 3600, as_of: now, origin: 'headers' },
+  seven_day: { used_percentage: 100, resets_at: now + 300000, as_of: now, origin: 'headers' },
+  auth: { status: 'ok', checked_at: now }
+}));
+const apiLegacy = boot();
+apiLegacy.scanAccounts();
+check(apiLegacy.states.get('legacy').wk, 0, 'header-origin weekly percentage is dropped on load');
+check(apiLegacy.statusPayload().accounts.legacy.blocked.general, null, 'a synthetic 100 no longer walls general');
+
+// The legitimate channel must keep working: a usage-endpoint reading of the same
+// bucket is a real measurement and still blocks routing.
+fs.writeFileSync(path.join(limitsDir, 'legacy.json'), JSON.stringify({
+  five_hour: { used_percentage: 4, resets_at: now + 3600, as_of: now, origin: 'headers' },
+  seven_day: { used_percentage: 100, resets_at: now + 300000, as_of: now, origin: 'usage' },
+  auth: { status: 'ok', checked_at: now }
+}));
+const apiUsage = boot();
+apiUsage.scanAccounts();
+check(apiUsage.states.get('legacy').wk, 100, 'usage-origin weekly percentage is trusted');
+check(apiUsage.statusPayload().accounts.legacy.blocked.general, 'limit-weekly', 'a measured 100 still walls general');
 
 process.stdout.write(`PASS: claudebd decision logic (${assertions} assertions)\n`);

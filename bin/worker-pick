@@ -173,6 +173,10 @@ summary=$(jq -r \
     elif (.reset_credits | type) == "number" then .reset_credits
     else 0 end;
 
+  # A weekly bucket stamped origin `headers` was never measured (shared-invariants n). The
+  # collector no longer emits one, but a cache written before that rule can still be on
+  # disk, and routing on a synthetic 100 floors an account that is actually free.
+  walk(if type == "object" and (.weekly.origin? == "headers") then del(.weekly) else . end) |
   (.fetched_at | epoch) as $fetched |
   (.vendors.codex // {}) as $cx |
   (.vendors.gemini // {}) as $gm |
