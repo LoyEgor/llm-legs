@@ -35,6 +35,10 @@ AUTO_RATERS = tuple(
     f"{model}-{effort}"
     for effort in ("medium", "high", "xhigh", "low", "max")
     for model in ("sol", "haiku", "sonnet", "opus")
+) + tuple(
+    f"{model}-{effort}"
+    for model, efforts in AGY_EFFORTS.items()
+    for effort in efforts
 )
 CLAUDE_MODEL_IDS = {"fable": "claude-fable-5"}
 VERDICTS = {"confirmed", "false_positive", "duplicate"}
@@ -46,6 +50,10 @@ RATER_RE = re.compile(
 PRIORITY_RE = re.compile(r"\b(P[123])\b", re.IGNORECASE)
 LOCATION_RE = re.compile(r"(?P<file>[^\s:]+\.[A-Za-z0-9]+):(?P<line>\d+)(?:-\d+)?")
 LIMITS_STALE_AGE_S = 600
+AGY_REVIEW_INPUT = ".review-bench-input.md"
+AGY_PRINT_INSTRUCTION = (
+    f"Read {AGY_REVIEW_INPUT} and follow its instructions exactly."
+)
 
 
 def utc_now():
@@ -164,7 +172,17 @@ def command_path(env_name, sibling):
 def parse_affordability(output):
     next_line = next((line for line in output.splitlines() if line.startswith("NEXT:")), "")
     codex_line = next((line for line in output.splitlines() if line.startswith("codex:")), "")
+    gemini_line = next((line for line in output.splitlines() if line.startswith("gemini:")), "")
     claude_line = next((line for line in output.splitlines() if line.startswith("claude:")), "")
+    next_segments = next_line.split(" | ")
+    next_codex = next(
+        (segment for segment in next_segments if re.search(r"\bcodex\b", segment, re.IGNORECASE)),
+        "",
+    )
+    next_gemini = next(
+        (segment for segment in next_segments if re.search(r"\bgemini\b", segment, re.IGNORECASE)),
+        "",
+    )
     account_match = re.search(r"ACCOUNT:\s*([^;|\s]+);\s*pre-reset cap\s+(\d+(?:\.\d+)?)%", next_line)
     claude_account = account_match.group(1) if account_match else None
     claude_cap = float(account_match.group(2)) if account_match else None
@@ -197,14 +215,23 @@ def parse_affordability(output):
     codex_ok = bool(
         codex_line
         and "unavailable" not in codex_line.lower()
-        and "WALLED" not in next_line.upper()
+        and "WALLED" not in next_codex.upper()
         and not re.match(r"codex:\s*unavailable", codex_line, re.IGNORECASE)
+    )
+    gemini_accounts = gemini_line.removeprefix("gemini:").split(" | ")
+    gemini_ok = bool(
+        any(
+            re.match(r"\s*[A-Za-z0-9._-]+\s+\d+(?:\.\d+)?%", segment)
+            and " FLOOR" not in segment
+            for segment in gemini_accounts
+        )
+        and "WALLED" not in next_gemini.upper()
     )
     return {
         "codex": codex_ok,
         "claude": claude_ok,
         "grok": True,
-        "agy": True,
+        "agy": gemini_ok,
         "claude_account": claude_account,
         "claude_cap": claude_cap,
         "session_account": session_account,
@@ -351,7 +378,9 @@ def finding_from_dict(value, rater):
         or location.get("file")
         or ""
     )
-    line = value.get("line") or value.get("line_number")
+    line = value.get("line")
+    if line is None:
+        line = value.get("line_number")
     line_range = location.get("line_range") or {}
     if line is None and isinstance(line_range, dict):
         line = line_range.get("start")
@@ -440,7 +469,9 @@ def normalize_grok_output(text):
 def agy_finding_from_dict(value, rater):
     severity = normalize_severity(value.get("severity") or value.get("priority"))
     file_name = value.get("file") or value.get("path")
-    line = value.get("line") or value.get("line_number")
+    line = value.get("line")
+    if line is None:
+        line = value.get("line_number")
     summary = value.get("summary") or value.get("description")
     try:
         line = int(line)
@@ -457,13 +488,25 @@ def agy_finding_from_dict(value, rater):
     }
 
 
+def agy_error_envelope(value):
+    if value.get("type") == "error":
+        return True
+    finding_keys = {
+        "findings", "severity", "priority", "file", "path",
+        "line", "line_number", "summary", "description",
+    }
+    return not finding_keys.intersection(value) and (
+        "error" in value or value.get("is_error") is True
+    )
+
+
 def normalize_agy_output(text, rater):
     findings = []
     recognized = False
     for value in extract_json_values(text):
         if not isinstance(value, dict):
-            continue
-        if value.get("type") == "error" or value.get("error") or value.get("is_error"):
+            raise ValueError("agy returned malformed JSON envelope: expected an object")
+        if agy_error_envelope(value):
             detail = value.get("message") or value.get("error") or value
             raise ValueError(f"agy returned an error envelope: {detail}")
         if "findings" in value:
@@ -472,17 +515,19 @@ def normalize_agy_output(text, rater):
                 raise ValueError("agy returned malformed JSON envelope: findings is not a list")
             parsed = [
                 agy_finding_from_dict(item, rater)
-                for item in nested if isinstance(item, dict)
+                if isinstance(item, dict) else None
+                for item in nested
             ]
-            if len(parsed) != len(nested):
+            if any(item is None for item in parsed):
                 raise ValueError("agy returned malformed JSON envelope: invalid finding object")
             findings.extend(parsed)
             recognized = True
             continue
         finding = agy_finding_from_dict(value, rater)
-        if finding:
-            findings.append(finding)
-            recognized = True
+        if finding is None:
+            raise ValueError("agy returned malformed JSON envelope: invalid finding object")
+        findings.append(finding)
+        recognized = True
     if not recognized:
         raise ValueError(
             'agy returned malformed JSON envelope: expected finding objects or {"findings":[]}'
@@ -585,7 +630,7 @@ def agy_review_prompt(sha, focus):
         f"Review commit {sha}. Return findings only, one JSON object per line, with exactly "
         "these fields: severity (P1, P2, or P3), file, line, summary. Use changed lines for "
         'locations. If there are no findings, return exactly {"findings":[]}. Do not modify '
-        "the repository."
+        "the repository. Review only the supplied commit diff without using tools or commands."
         + suffix
     )
 
@@ -913,10 +958,17 @@ def agy_failure_detail(stderr, log_text):
     return stderr.strip() or "agy returned empty output without an error detail"
 
 
+def agy_model_id(rater):
+    model = AGY_MODEL_IDS[rater["model"]]
+    if rater["model"] == "agy-flash35":
+        return f"{model}-{rater['effort']}"
+    return model
+
+
 def write_agy_usage(run_dir, rater, duration, log_text):
     usage = {
         "duration_ms": duration,
-        "model": AGY_MODEL_IDS[rater["model"]],
+        "model": agy_model_id(rater),
         "effort": rater["effort"],
     }
     labels = re.findall(r'Propagating selected model override.*?label="([^"]+)"', log_text)
@@ -940,7 +992,7 @@ def write_agy_usage(run_dir, rater, duration, log_text):
             rf'(?i)\b{log_key}\b["\s:=]+(\d+)', log_text
         )
         if matches:
-            usage[usage_key] = sum(map(int, matches))
+            usage[usage_key] = max(map(int, matches))
     path = run_dir / f"usage-{rater['spec']}.jsonl"
     path.write_text(json.dumps(usage, ensure_ascii=False) + "\n")
 
@@ -948,16 +1000,19 @@ def write_agy_usage(run_dir, rater, duration, log_text):
 def run_agy(rater, repo, sha, focus, run_dir, diff):
     raw_output = run_dir / f"raw-{rater['spec']}.md"
     log_file = run_dir / f"agy-{rater['spec']}.log"
-    model = AGY_MODEL_IDS[rater["model"]]
-    prompt = "/code-review" if rater["skill"] else (
+    model = agy_model_id(rater)
+    prompt = (
+        "/code-review" + (f"\nAdditional review focus: {focus}" if focus else "")
+        if rater["skill"] else
         agy_review_prompt(sha, focus) + "\n\nCommit diff:\n" + diff
     )
     command = [
         command_path("REVIEW_BENCH_AGY_BIN", "agy"),
         "--model", model,
-        "--effort", rater["effort"],
-        "--mode", "plan",
     ]
+    if rater["model"] != "agy-flash35":
+        command += ["--effort", rater["effort"]]
+    command += ["--mode", "plan"]
     if rater["skill"]:
         command += ["--new-project", "--dangerously-skip-permissions"]
     else:
@@ -966,21 +1021,23 @@ def run_agy(rater, repo, sha, focus, run_dir, diff):
         "--print-timeout", "10m",
         "--log-file", str(log_file),
     ]
-    transport = [
-        "/bin/sh", "-c", 'exec "$@" --print "$(cat)"',
-        "review-bench-agy", *command,
-    ]
-    displayed_command = command + ["--print", "<review-prompt-and-diff-stdin>"]
+    invocation_prompt = prompt if rater["skill"] else AGY_PRINT_INSTRUCTION
+    transport = command + ["--print", invocation_prompt]
+    displayed_command = list(transport)
     clone = None
     started = time.monotonic()
     try:
         clone = seal_overlay_clone(repo, sha)
         if rater["skill"]:
             prepare_agy_skill_clone(clone)
+        else:
+            prompt_path = Path(clone) / AGY_REVIEW_INPUT
+            prompt_path.write_text(prompt)
+            os.chmod(prompt_path, 0o600)
         try:
             proc = subprocess.run(
-                transport, cwd=clone, input=prompt, capture_output=True,
-                text=True, timeout=RATER_TIMEOUT_S
+                transport, cwd=clone, capture_output=True, text=True,
+                timeout=RATER_TIMEOUT_S
             )
         except subprocess.TimeoutExpired:
             duration = round((time.monotonic() - started) * 1000)
@@ -1111,6 +1168,7 @@ def cmd_run(args):
         available = {"grok": True, "agy": True, "codex": False, "claude": False}
         if any(rater["side"] in ("codex", "claude") for rater in requested):
             available.update(affordability())
+            available["agy"] = True
         raters = [rater for rater in requested if available.get(rater["side"])]
         skipped = [
             (rater["spec"], f"{rater['side']} side is unaffordable")

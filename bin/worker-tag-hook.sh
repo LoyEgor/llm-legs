@@ -31,6 +31,10 @@ tag_file="$cache_dir/$agent_id"
 
 worker_conf() { sed -n "s/^$1=//p" "$HOME/.claude/worker-model" 2>/dev/null | head -n1; }
 grab() { printf '%s' "$command" | grep -oE -e "$1" 2>/dev/null | head -n1; }
+is_geminib_launch() {
+  printf '%s' "$command" | grep -qE \
+    '(^|[[:space:]/])geminib[[:space:]]+((profile|p|run)[[:space:]]+["'\'']*[a-z0-9][a-z0-9-]*|["'\'']*[a-z0-9][a-z0-9-]*["'\'']*[[:space:]]+exec)'
+}
 
 # Derive codex model short label from ~/.codex/config.toml; fallback "sol" defined here.
 codex_model_short_label() {
@@ -65,9 +69,12 @@ elif printf '%s' "$command" | grep -q 'claudeb' && printf '%s' "$command" | grep
   [ -n "$effort" ] || effort=high
   tag="$acct · $model · $effort"
 elif { printf '%s' "$command" | grep -qE '(^|[[:space:]/])agy([[:space:]]|$)' ||
-       printf '%s' "$command" | grep -qE '(^|[[:space:]/])geminib[[:space:]]+profile[[:space:]]+'; } &&
+       is_geminib_launch; } &&
      printf '%s' "$command" | grep -q -- '--print'; then
-  acct=$(grab 'geminib[[:space:]]+profile[[:space:]]+["'\'' ]*[A-Za-z0-9.-]+' | grep -oE '[A-Za-z0-9.-]+$')
+  acct=$(grab 'geminib[[:space:]]+(profile|p|run)[[:space:]]+["'\'' ]*[a-z0-9][a-z0-9-]*' |
+    grep -oE '[a-z0-9][a-z0-9-]*' | tail -n1)
+  [ -n "$acct" ] || acct=$(grab 'geminib[[:space:]]+["'\'' ]*[a-z0-9][a-z0-9-]*["'\'' ]*[[:space:]]+exec' |
+    grep -oE '[a-z0-9][a-z0-9-]*' | tail -n2 | head -n1)
   [ -n "$acct" ] || acct=main
   agy_model=$(grab '\-\-model(=|[[:space:]])gemini-[0-9.]+-(pro|flash)')
   model=$(printf '%s' "$agy_model" | grep -oE '(pro|flash)$')

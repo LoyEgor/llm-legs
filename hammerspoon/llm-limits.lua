@@ -47,6 +47,13 @@ local function loginNeededRow(label, loginFn, hardRefreshFn, removeFn)
   }
 end
 
+local function geminiLoginNeededRow(label, account)
+  return loginNeededRow(label,
+    function() M.loginGemini(account) end,
+    function() M.hardRefreshGemini(account) end,
+    function() M.removeGemini(account) end)
+end
+
 local function truncateText(text, maxLength)
   if #text <= maxLength then
     return text
@@ -640,10 +647,7 @@ function M.menuItems()
         local authNeeded = type(vendor) == "table" and vendor.auth_needed == true
         local unavailableRow
         if entry.key == "gemini" and authNeeded then
-          unavailableRow = loginNeededRow(entry.label,
-            function() M.loginGemini("main") end,
-            function() M.hardRefreshGemini("main") end,
-            function() M.removeGemini("main") end)
+          unavailableRow = geminiLoginNeededRow(entry.label, "main")
         else
           unavailableRow = {
             title = authNeeded and loginNeededTitle(entry.label)
@@ -731,11 +735,11 @@ function M.menuItems()
                 hardRefreshFn = function() M.hardRefreshCodex(acct) end
                 removeFn = function() M.removeCodex(acct) end
               else
-                loginFn = function() M.loginGemini(acct) end
-                hardRefreshFn = function() M.hardRefreshGemini(acct) end
-                removeFn = function() M.removeGemini(acct) end
+                accountRow = geminiLoginNeededRow(acct, acct)
               end
-              accountRow = loginNeededRow(acct, loginFn, hardRefreshFn, removeFn)
+              if not accountRow then
+                accountRow = loginNeededRow(acct, loginFn, hardRefreshFn, removeFn)
+              end
             else
               accountRow = {
                 title = accountTitle(acct .. resetSuffix .. (isCurrent and "  ●" or ""),
@@ -796,7 +800,7 @@ function M.menuItems()
               table.insert(menu, { title = tailRow("fb", block.fable, fableWalled, fableWarning), disabled = true })
             end
           end
-          if isGeminiAccounts then
+          if isGeminiAccounts and not authNeeded then
             local accountError = errorState(block.refresh_error)
             if accountError then
               table.insert(menu, {

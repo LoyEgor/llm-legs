@@ -188,6 +188,14 @@ assert contains "$(sed -n '3p' <<<"$output")" 'gemini: no Gemini Models quota da
 assert not_contains "$(head -n1 <<<"$output")" 'ACCOUNT: main'
 
 run_filter gemini_fresh '.vendors.gemini = {
+  available:false,auth_needed:true,status:"login needed",source:"agy-local-rpc"}'
+assert contains "$(sed -n '3p' <<<"$output")" 'gemini: login needed'
+assert not_contains "$(sed -n '3p' <<<"$output")" 'unavailable'
+
+run_filter gemini_fresh '.vendors.gemini.group = "Google GEMINI quota"'
+assert contains "$(head -n1 <<<"$output")" 'gemini main · pro · high — ACCOUNT: main'
+
+run_filter gemini_fresh '.vendors.gemini = {
   available:true,accounts:[
     {account:"main",group:"Gemini Models",five_hour:{used_pct:10,as_of:2000000000},weekly:{used_pct:10,as_of:2000000000}},
     {account:"work",group:"Gemini Models",five_hour:{used_pct:40,as_of:2000000000},weekly:{used_pct:40,as_of:2000000000}}]}'
@@ -200,6 +208,13 @@ run_filter gemini_fresh '.vendors.gemini = {
     {account:"main",group:"Gemini Models",five_hour:{used_pct:10,as_of:2000000000},weekly:{used_pct:10,as_of:2000000000}},
     {account:"work",group:"Gemini Models",auth_needed:true}]}'
 assert contains "$(head -n1 <<<"$output")" 'gemini main · pro · high — ACCOUNT: main'
+
+run_filter gemini_fresh '
+  .vendors.codex = {available:false} |
+  .vendors.claude.accounts |= map(.enabled = false)'
+assert contains "$(head -n1 <<<"$output")" 'NEXT: gemini main · pro · high — ACCOUNT: main'
+assert contains "$(head -n1 <<<"$output")" 'claudeb unavailable'
+assert contains "$(head -n1 <<<"$output")" 'codex — WALLED'
 
 printf '%s\n' 'worker=auto' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
   'gemini_model=pro' 'gemini_effort=high' 'gemini_profile=main' >"$CONFIG"

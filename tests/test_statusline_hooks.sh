@@ -268,15 +268,17 @@ printf 'worker=claudeb\ncodex_effort=high\n' > "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-cb-unres)")
 assert grep -Fq "w:cb${RESET} ${MAGENTA}~?${RESET}${DIM}·opus·hi${RESET}" <<< "$worker_out"
 
+mkdir -p "$HOME/.cache"
+printf 'cx✓alt·sol·med cb~notcom·opus·hi gx✓work·flash·med\n' \
+  >"$HOME/.cache/worker-pick.line.main"
 printf 'worker=gemini\ngemini_model=flash\ngemini_effort=medium\n' > "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-gemini)")
-assert grep -Fq "w:gem${RESET} ${MAGENTA}~main${RESET}${DIM}·flash·med${RESET}" <<< "$worker_out"
+assert grep -Fq "w:gem${RESET} ${MAGENTA}~work${RESET}${DIM}·flash·med${RESET}" <<< "$worker_out"
 
 printf 'worker=gemini\ngemini_profile=work\ngemini_model=flash\ngemini_effort=medium\n' > "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-gemini-pin)")
 assert grep -Fq "w:gem${RESET} ${MAGENTA}@work${RESET}${DIM}·flash·med${RESET}" <<< "$worker_out"
 
-mkdir -p "$HOME/.cache"
 printf 'cx✓alt·sol·med cb~notcom·opus·hi gx✓main·pro·hi\n' > "$HOME/.cache/worker-pick.line.main"
 printf 'worker=auto\ngemini_model=pro\ngemini_effort=high\n' > "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-auto)" main)
@@ -320,6 +322,7 @@ assert grep -Fq "w:cb${RESET} ${MAGENTA}~acctgen${RESET}${DIM}·opus·hi${RESET}
 assert test "${worker_out#*acctfab}" = "$worker_out"
 
 jq -cn --argjson now "$NOW" '{vendors:{codex:{accounts:[
+  {account:"main",five_hour:{used_pct:0,resets_at:($now+3600|todateiso8601)},weekly:{used_pct:0,resets_at:($now+86400|todateiso8601)}},
   {account:"alpha",five_hour:{used_pct:90,resets_at:($now+3600|todateiso8601)},weekly:{used_pct:50,resets_at:($now+86400|todateiso8601)}},
   {account:"beta",five_hour:{used_pct:10,resets_at:($now+3600|todateiso8601)},weekly:{used_pct:20,resets_at:($now+86400|todateiso8601)}},
   {account:"mystery",five_hour:null,weekly:null},
@@ -1069,6 +1072,20 @@ assert_eq 'work · flash · medium' "$(cat "$TAGDIR/workergemini")"
 assert jq -e '.hookSpecificOutput.updatedInput.description == "work · flash · medium — Implement it"' \
   <<< "$gemini_seed_output" >/dev/null
 
+for gemini_launch in \
+  'geminib p short --model gemini-3.6-flash --effort medium --print task' \
+  'geminib run routed --model gemini-3.6-flash --effort medium --print task' \
+  'geminib direct exec --model gemini-3.6-flash --effort medium --print task'; do
+  gemini_form=$(worker_payload gemini-worker worker/gemini 'Resume it' "$gemini_launch")
+  gemini_form_output=$(printf '%s' "$gemini_form" | "$WORKER_HOOK") \
+    || fail "gemini shorthand tag exited nonzero"
+  expected_account=$(printf '%s\n' "$gemini_launch" | awk '{if ($2 == "p" || $2 == "run") print $3; else print $2}')
+  assert_eq "$expected_account · flash · medium" "$(cat "$TAGDIR/workergemini")"
+  assert jq -e --arg account "$expected_account" \
+    '.hookSpecificOutput.updatedInput.description == ($account + " · flash · medium — Resume it")' \
+    <<<"$gemini_form_output" >/dev/null
+done
+
 printf 'gemini_model=pro\ngemini_effort=high\n' > "$HOME/.claude/worker-model"
 spawn_payload=$(jq -cn '{
   hook_event_name:"PreToolUse",session_id:"spawn-gemini",
@@ -1129,4 +1146,4 @@ other_output=$(run_statusline "$other_payload") || fail "bench other-session ren
 assert test "${other_output#*⚖}" = "$other_output"
 rm -rf "$bench_dir"
 
-echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, and Codex/claudeb/Gemini worker tag propagation"
+echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, main-last and Gemini account predictions, and Codex/claudeb/Gemini worker tag propagation"

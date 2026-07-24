@@ -433,22 +433,7 @@ gemini_accounts_cache_dir="${LLM_LIMITS_GEMINI_ACCOUNTS_DIR:-$HOME/.llm-limits-g
 gemini_main_cache=${LLM_LIMITS_GEMINI_CACHE:-$HOME/.llm-limits-gemini.json}
 gemini_legacy_removed="${LLM_LIMITS_GEMINI_REMOVED:-${gemini_main_cache}.removed}"
 agy_bin=${AGY_BIN:-$HOME/.local/bin/agy}
-
-gemini_account_names() {
-  local path
-  printf 'main\n'
-  if [ -d "$gemini_profiles_dir" ]; then
-    for path in "$gemini_profiles_dir"/*; do
-      [ -d "$path" ] && basename "$path"
-    done | LC_ALL=C sort
-  fi
-}
-
-gemini_account_home() {
-  if [ "$1" = main ]; then printf '%s\n' "$gemini_base_home"
-  else printf '%s\n' "$gemini_profiles_dir/$1"
-  fi
-}
+. "$script_dir/share/gemini-accounts.sh"
 
 gemini_account_cache() {
   if [ "$1" = main ]; then printf '%s\n' "$gemini_main_cache"
@@ -462,7 +447,18 @@ gemini_account_marker() {
   fi
 }
 
-gemini_accounts_list=$(gemini_account_names)
+gemini_refresh_accounts_list=$(gemini_account_names)
+gemini_accounts_list=$(
+  {
+    printf '%s\n' "$gemini_refresh_accounts_list"
+    if [ -d "$gemini_accounts_cache_dir" ]; then
+      for gemini_removed_path in "$gemini_accounts_cache_dir"/*.json.removed; do
+        [ -e "$gemini_removed_path" ] || continue
+        basename "$gemini_removed_path" .json.removed
+      done
+    fi
+  } | awk 'NF && !seen[$0]++'
+)
 if [ "$gemini_remove" -eq 1 ]; then
   mkdir -p "$(dirname "$gemini_legacy_removed")" 2>/dev/null || true
   : > "$gemini_legacy_removed" 2>/dev/null || true
@@ -471,35 +467,53 @@ gemini_refresh_error=''
 gemini_refresh_attempted=0
 gemini_refresh_succeeded=0
 gemini_refresh_records='[]'
+gemini_refresh_results_dir=''
+gemini_refresh_result_index=0
+gemini_refresh_result_file=''
 
 record_gemini_refresh() {
-  gemini_refresh_records=$(jq -cn --argjson records "$gemini_refresh_records" \
-    --arg account "$1" --argjson attempted "$2" --argjson succeeded "$3" --arg error "$4" \
-    '$records + [{account:$account,attempted:$attempted,succeeded:$succeeded,error:$error}]')
+  jq -cn --arg account "$2" --argjson attempted "$3" --argjson succeeded "$4" --arg error "$5" \
+    '{account:$account,attempted:$attempted,succeeded:$succeeded,error:$error}' >"$1"
 }
 
+new_gemini_refresh_result() {
+  if [ -z "$gemini_refresh_results_dir" ]; then
+    gemini_refresh_results_dir=$(mktemp -d "${TMPDIR:-/tmp}/llm-limits-gemini.XXXXXX") || {
+      echo "llm-limits.sh: Gemini refresh result directory creation failed" >&2
+      exit 5
+    }
+  fi
+  gemini_refresh_result_index=$((gemini_refresh_result_index + 1))
+  printf -v gemini_refresh_result_file '%s/%08d.json' \
+    "$gemini_refresh_results_dir" "$gemini_refresh_result_index"
+}
+
+cleanup_gemini_refresh_results() {
+  [ -z "$gemini_refresh_results_dir" ] || rm -rf "$gemini_refresh_results_dir"
+}
+trap cleanup_gemini_refresh_results EXIT
+
 refresh_gemini_quota() {
-  local account=$1 gemini_cmd=${LLM_LIMITS_GEMINI_CMD:-$script_dir/agy-quota.py}
+  local account=$1 result_file=$2 gemini_cmd=${LLM_LIMITS_GEMINI_CMD:-$script_dir/agy-quota.py}
   local gemini_cache gemini_home gemini_tmp gemini_err detail auth_detail rc error=''
   gemini_cache=$(gemini_account_cache "$account")
   gemini_home=$(gemini_account_home "$account")
-  gemini_refresh_attempted=1
   if [ ! -x "$gemini_cmd" ]; then
-    record_gemini_refresh "$account" true false 'helper not executable'
+    record_gemini_refresh "$result_file" "$account" true false 'helper not executable'
     echo "llm-limits.sh: Gemini quota helper is not executable: $gemini_cmd" >&2
     return 1
   fi
   if ! mkdir -p "$(dirname "$gemini_cache")"; then
-    record_gemini_refresh "$account" true false 'cache directory failed'
+    record_gemini_refresh "$result_file" "$account" true false 'cache directory failed'
     return 1
   fi
   gemini_tmp=$(mktemp "${gemini_cache}.tmp.XXXXXX") || {
-    record_gemini_refresh "$account" true false 'cache temp failed'
+    record_gemini_refresh "$result_file" "$account" true false 'cache temp failed'
     return 1
   }
   gemini_err=$(mktemp "${gemini_cache}.err.XXXXXX") || {
     rm -f "$gemini_tmp"
-    record_gemini_refresh "$account" true false 'cache temp failed'
+    record_gemini_refresh "$result_file" "$account" true false 'cache temp failed'
     return 1
   }
   rc=0
@@ -514,16 +528,15 @@ refresh_gemini_quota() {
     fi
     if mv -f "$gemini_tmp" "$gemini_cache"; then
       rm -f "$gemini_err"
-      gemini_refresh_succeeded=1
       if [ -n "$auth_detail" ]; then
         error="login needed ($auth_detail)"
       else
         error='login needed'
       fi
-      record_gemini_refresh "$account" true true "$error"
+      record_gemini_refresh "$result_file" "$account" true true "$error"
     else
       rm -f "$gemini_tmp" "$gemini_tmp.auth" "$gemini_err"
-      record_gemini_refresh "$account" true false 'cache replace failed'
+      record_gemini_refresh "$result_file" "$account" true false 'cache replace failed'
       return 1
     fi
   elif [ "$rc" -eq 0 ] &&
@@ -536,18 +549,17 @@ refresh_gemini_quota() {
     ' "$gemini_tmp" >/dev/null 2>&1; then
     if mv -f "$gemini_tmp" "$gemini_cache"; then
       rm -f "$gemini_err"
-      gemini_refresh_succeeded=1
-      record_gemini_refresh "$account" true true ''
+      record_gemini_refresh "$result_file" "$account" true true ''
     else
       rm -f "$gemini_tmp" "$gemini_err"
-      record_gemini_refresh "$account" true false 'cache replace failed'
+      record_gemini_refresh "$result_file" "$account" true false 'cache replace failed'
       return 1
     fi
   else
     detail=$(jq -r '.error // empty' "$gemini_err" 2>/dev/null || true)
     [ -n "$detail" ] || detail='live query failed'
     rm -f "$gemini_tmp" "$gemini_err"
-    record_gemini_refresh "$account" true false "$detail"
+    record_gemini_refresh "$result_file" "$account" true false "$detail"
     printf 'llm-limits.sh: Gemini/%s refresh failed: %s\n' "$account" "$detail" >&2
     return 1
   fi
@@ -558,19 +570,25 @@ case "$refresh_account" in
   gemini) gemini_refresh_target=main ;;
   gemini/*) gemini_refresh_target=${refresh_account#gemini/} ;;
 esac
-if [ -n "$gemini_refresh_target" ] && ! grep -qxF "$gemini_refresh_target" <<<"$gemini_accounts_list"; then
+if [ -n "$gemini_refresh_target" ] && ! grep -qxF "$gemini_refresh_target" <<<"$gemini_refresh_accounts_list"; then
   printf 'llm-limits.sh: unknown Gemini account: %s\n' "$gemini_refresh_target" >&2
   exit 2
 fi
 if [ "$refresh" -eq 1 ] && { [ -z "$refresh_account" ] || [ -n "$gemini_refresh_target" ]; }; then
   if [ "${LLM_LIMITS_GEMINI_REFRESH:-1}" != 0 ]; then
+    gemini_refresh_pids=()
     while IFS= read -r gemini_account; do
       [ -z "$gemini_refresh_target" ] || [ "$gemini_account" = "$gemini_refresh_target" ] || continue
-      refresh_gemini_quota "$gemini_account" || true
-    done <<<"$gemini_accounts_list"
+      new_gemini_refresh_result
+      refresh_gemini_quota "$gemini_account" "$gemini_refresh_result_file" &
+      gemini_refresh_pids[${#gemini_refresh_pids[@]}]=$!
+    done <<<"$gemini_refresh_accounts_list"
+    for gemini_refresh_pid in "${gemini_refresh_pids[@]}"; do
+      wait "$gemini_refresh_pid" || true
+    done
   elif [ -n "$gemini_refresh_target" ]; then
-    gemini_refresh_attempted=1
-    record_gemini_refresh "$gemini_refresh_target" true false 'refresh disabled'
+    new_gemini_refresh_result
+    record_gemini_refresh "$gemini_refresh_result_file" "$gemini_refresh_target" true false 'refresh disabled'
     printf 'llm-limits.sh: Gemini refresh is disabled\n' >&2
   fi
 fi
@@ -594,21 +612,25 @@ if [ "$start_windows" -eq 1 ] && [ -z "$refresh_account" ]; then
         if [ -x "$agy_bin" ]; then
           (export HOME="$gemini_home"; cd "${AGY_WORKDIR:-$script_dir}" &&
             run_bounded 120 "$agy_bin" --print 'Reply with exactly: ok')
-          refresh_gemini_quota "$gemini_account" || true
+          new_gemini_refresh_result
+          refresh_gemini_quota "$gemini_account" "$gemini_refresh_result_file" || true
         else
           printf 'llm-limits.sh: agy not found; cannot start gemini/%s window\n' "$gemini_account" >&2
         fi
       fi
-    done <<<"$gemini_accounts_list"
+    done <<<"$gemini_refresh_accounts_list"
   fi
 fi
-gemini_refresh_error=$(jq -r '
-  group_by(.account) | map(last) | map(select(.error != "")) as $errors |
-  if ($errors | length) == 0 then ""
-  elif ($errors | length) == 1 and $errors[0].account == "main" then $errors[0].error
-  else $errors | map(.account + ": " + .error) | join("; ")
-  end
-' <<<"$gemini_refresh_records")
+if [ -n "$gemini_refresh_results_dir" ] &&
+   find "$gemini_refresh_results_dir" -name '*.json' -type f -print -quit | grep -q .; then
+  gemini_refresh_records=$(jq -sc '.' "$gemini_refresh_results_dir"/*.json)
+  if jq -e 'any(.[]; .attempted == true)' >/dev/null <<<"$gemini_refresh_records"; then
+    gemini_refresh_attempted=1
+  fi
+  if jq -e 'any(.[]; .succeeded == true)' >/dev/null <<<"$gemini_refresh_records"; then
+    gemini_refresh_succeeded=1
+  fi
+fi
 
 claude='{"available":false,"status":"no rate-limit snapshot","source":"none","last_wall":null}'
 claudeb_root="${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}"
@@ -1226,25 +1248,38 @@ gemini_accounts=$(printf '%s' "$gemini_account_lines" | jq -sc \
   | sort_by(if .account == "main" then 0 else 1 end, .account)
 ')
 
+gemini_refresh_error=$(jq -r '
+  [.[] | select(.removed != true) |
+   {account:.account,error:(.refresh_error.cause // "")} | select(.error != "")] as $errors |
+  if ($errors | length) == 0 then ""
+  elif ($errors | length) == 1 and $errors[0].account == "main" then $errors[0].error
+  else $errors | map(.account + ": " + .error) | join("; ")
+  end
+' <<<"$gemini_accounts")
+
 gemini=$(jq -cn --argjson accounts "$gemini_accounts" --argjson wall "$gemini_wall" '
   [$accounts[] | select(.removed != true)] as $visible |
-  [$visible[] | select(.auth_needed != true and (.five_hour | type) == "object" and (.weekly | type) == "object")] as $usable |
+  [$visible[] |
+   select(.auth_needed != true and
+          (.five_hour.used_pct | type) == "number" and
+          (.weekly.used_pct | type) == "number" and
+          .five_hour.used_pct < 100 and .weekly.used_pct < 100)] as $usable |
   (first($accounts[] | select(.account == "main")) // $accounts[0]) as $main |
+  ($usable | sort_by(if .account == "main" then 1 else 0 end,
+                     ([.five_hour.used_pct,.weekly.used_pct] | max), .account) | .[0]) as $selected |
   if ($accounts | length) == 1 then
     $main
     | del(.account,.is_current,.enabled)
-    | .available = (.removed != true and .auth_needed != true and (.five_hour | type) == "object")
+    | .available = (.removed != true and .auth_needed != true and
+                    (.five_hour | type) == "object" and (.weekly | type) == "object")
     | .last_wall = $wall
   else
     ({available:(($usable | length) > 0),current_account:"main",accounts:$accounts,
       source:"agy-local-rpc",last_wall:$wall} +
      (if ($usable | length) == 0 and any($visible[]; .auth_needed == true)
       then {auth_needed:true} else {} end) +
-     (if ($main.five_hour | type) == "object" then
-        {five_hour:$main.five_hour,weekly:$main.weekly,as_of:$main.as_of,
-         stale_seconds:$main.stale_seconds,group:($main.group // "Gemini Models")}
-      elif ($usable | length) > 0 then
-        ($usable[0] | {five_hour,weekly,as_of,stale_seconds,group})
+     (if $selected != null then
+        ($selected | {five_hour,weekly,as_of,stale_seconds,group})
       elif any($visible[]; .auth_needed == true) then {status:"login needed"}
       else {status:"no quota snapshot"} end))
   end
@@ -1292,15 +1327,20 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson claude "$claude" 
     else . end;
   def under_limit($bucket):
     ($bucket | type) != "object" or $bucket.effective_pct == null or $bucket.effective_pct < 100;
-  def account_usable:
+  def account_usable($key):
+    .removed != true and
     .enabled != false and
     .auth_needed != true and
     ((.auth.status? // "") != "expired" and (.auth.status? // "") != "failed") and
+    (if $key == "gemini" then
+       (.five_hour.effective_pct | type) == "number" and
+       (.weekly.effective_pct | type) == "number"
+     else true end) and
     under_limit(.five_hour) and under_limit(.weekly);
   def vendor_usable($key):
     if $key == "claude" or $key == "codex" or
        ($key == "gemini" and (.accounts | type) == "array") then
-      .available == true and ((.accounts | type) == "array") and any(.accounts[]; account_usable)
+      .available == true and ((.accounts | type) == "array") and any(.accounts[]; account_usable($key))
     else
       .available == true and .auth_needed != true and under_limit(.five_hour) and under_limit(.weekly)
     end;

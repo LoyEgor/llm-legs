@@ -80,12 +80,28 @@ for invalid, message in (
 
 pick = rb.parse_affordability("""NEXT: claudeb worker · opus · high — ACCOUNT: worker; pre-reset cap 22%  |  codex cx · medium — FRESH
 codex: cx 10% runway 80%
+gemini: main 25% runway 75% (5h→?, wk→?)
 claude: worker($100) 5h 10% wk 20% fb 30% score 90 cap 22% | session($100)* 5h 0% wk 0% fb 0% score 100 cap 90% | low($20) 5h 85% wk 20% fb 20% score 10 cap 5%
 """)
 assert pick["codex"] is True
+assert pick["agy"] is True
 assert pick["claude"] is True
 assert pick["claude_account"] == "worker"
 assert pick["session_account"] == "session"
+
+mixed_next = rb.parse_affordability("""NEXT: gemini main · pro · high — ACCOUNT: main; pre-reset cap 9% — WALLED  |  codex cx · medium — FRESH
+codex: cx 10% runway 80%
+gemini: main 91% runway 9% FLOOR (5h→?, wk→?)
+claude: unavailable
+""")
+assert mixed_next["codex"] is True
+assert mixed_next["agy"] is False
+login_needed = rb.parse_affordability("""NEXT: claudeb (rotating) — no eligible account  |  gemini unavailable
+codex: unavailable
+gemini: login needed
+claude: unavailable
+""")
+assert login_needed["agy"] is False
 
 assert rb.is_429_error('{"is_error": true, "api_error_status": 429}') is True
 assert rb.is_429_error('{"is_error": false, "errors": ["hit your session limit"]}') is True
@@ -103,16 +119,28 @@ for rater in rb.AUTO_RATERS:
     for index in range(count):
         reviews.append({"run_id": f"{rater}-{index}", "rater_model": model,
                         "rater_effort": effort})
-availability = {"codex": True, "claude": True}
+availability = {"codex": True, "claude": True, "agy": True}
 picked, counts, skipped = rb.auto_pick(2, reviews, availability)
 assert [row["spec"] for row in picked] == ["sol-medium", "haiku-medium"]
 assert [counts[row["spec"]] for row in picked] == [0, 1]
 assert not skipped
 
 availability["claude"] = False
+availability["agy"] = False
 picked, counts, skipped = rb.auto_pick(2, reviews, availability)
 assert all(row["side"] == "codex" for row in picked)
 assert any(spec.startswith("haiku-") for spec, _ in skipped)
+assert any(spec.startswith("agy-") for spec, _ in skipped)
+
+agy_gap_reviews = [
+    {"rater": spec}
+    for spec in rb.AUTO_RATERS
+    if spec != "agy-flash-low"
+]
+picked, _, _ = rb.auto_pick(
+    1, agy_gap_reviews, {"codex": True, "claude": True, "agy": True}
+)
+assert picked[0]["spec"] == "agy-flash-low"
 
 codex_stream = "\n".join([
     json.dumps({"type": "thread.started", "thread_id": "t"}),
@@ -139,6 +167,41 @@ assert [(row["severity"], row["file"], row["line"]) for row in
     ("P1", "src/auth.py", 41),
     ("P3", "src/cache.py", 18),
 ]
+valid_finding = {
+    "severity": "P2", "file": "src/auth.py", "line": 12,
+    "summary": "Preserve the complete review",
+}
+invalid_finding = {
+    "severity": "P2", "file": "src/auth.py",
+    "summary": "This object is missing its line number",
+}
+for malformed in (
+    json.dumps({"findings": [valid_finding, invalid_finding]}),
+    "\n".join((json.dumps(valid_finding), json.dumps(invalid_finding))),
+):
+    try:
+        rb.normalize_agy_output(malformed, "agy-flash-low")
+    except ValueError as exc:
+        assert "invalid finding object" in str(exc)
+    else:
+        raise AssertionError("accepted a partial agy review")
+line_zero = rb.normalize_agy_output(
+    json.dumps({
+        "severity": "P3", "file": "src/generated.py", "line": 0,
+        "line_number": 99, "summary": "Keep the zero line sentinel",
+    }),
+    "agy-flash-low",
+)
+assert rb.normalize_findings(line_zero, "agy-flash-low")[0]["line"] == 0
+finding_with_error = rb.normalize_agy_output(
+    json.dumps({
+        "severity": "P2", "file": "src/parser.py", "line": 8,
+        "summary": "Retain the finding", "error": "describes the error path",
+    }),
+    "agy-flash-low",
+)
+assert rb.normalize_findings(finding_with_error, "agy-flash-low")[0]["summary"] == \
+    "Retain the finding"
 for malformed in ("", (fixtures / "agy-bare-malformed.txt").read_text()):
     try:
         rb.normalize_agy_output(malformed, "agy-flash-low")
@@ -209,8 +272,7 @@ assert rc == 0 and duration >= 0 and not stderr
 assert len(rb.normalize_findings(text, bare_rater["spec"])) == 2
 assert (work / "agy-head").read_text().strip() == sha
 assert pathlib.Path((work / "agy-cwd").read_text().strip()) != repo
-assert "fixture commit diff" in (work / "agy-prompt").read_text()
-assert '{"findings":[]}' in (work / "agy-prompt").read_text()
+assert (work / "agy-prompt").read_text() == rb.AGY_PRINT_INSTRUCTION
 assert command[:10] == [
     str(fixtures / "fake-agy.sh"),
     "--model", "gemini-3.6-flash",
@@ -221,7 +283,7 @@ assert command[:10] == [
 ]
 assert command[10] == "--log-file"
 assert pathlib.Path(command[11]) == bare_run / "agy-agy-flash-low.log"
-assert command[12:] == ["--print", "<review-prompt-and-diff-stdin>"]
+assert command[12:] == ["--print", rb.AGY_PRINT_INSTRUCTION]
 usage = json.loads((bare_run / "usage-agy-flash-low.jsonl").read_text())
 assert usage["model"] == "gemini-3.6-flash"
 assert usage["duration_ms"] == duration
@@ -231,6 +293,51 @@ assert usage["total_tokens"] == 150
 assert usage["stream_generate_requests"] == 1
 assert usage["stream_completions"] == 1
 
+large_run = work / "agy-large-run"
+large_run.mkdir()
+large_diff = "fixture large diff\n" + ("x" * 1000000)
+kept_clones = []
+original_seal = rb.seal_overlay_clone
+original_rmtree = rb.shutil.rmtree
+def keep_sealed_clone(*args):
+    clone = original_seal(*args)
+    kept_clones.append(pathlib.Path(clone))
+    return clone
+rb.seal_overlay_clone = keep_sealed_clone
+rb.shutil.rmtree = lambda *args, **kwargs: None
+try:
+    rc, _, text, stderr, large_command = rb.run_agy(
+        bare_rater, repo, sha, "", large_run, large_diff
+    )
+    assert rc == 0 and text and not stderr
+    input_text = (kept_clones[-1] / rb.AGY_REVIEW_INPUT).read_text()
+    assert large_diff in input_text
+    assert '{"findings":[]}' in input_text
+    assert "without using tools or commands" in input_text
+    assert large_command[-2:] == ["--print", rb.AGY_PRINT_INSTRUCTION]
+    assert max(map(len, large_command)) < 4096
+finally:
+    rb.seal_overlay_clone = original_seal
+    rb.shutil.rmtree = original_rmtree
+    for clone in kept_clones:
+        original_rmtree(clone, ignore_errors=True)
+
+usage_run = work / "agy-usage-run"
+usage_run.mkdir()
+repeated_log = (fixtures / "agy-log.txt").read_text() + """
+I0724 01:11:42.000000 usage.go:10] promptTokenCount=100 candidatesTokenCount=20 totalTokenCount=120
+I0724 01:11:43.000000 usage.go:10] promptTokenCount=240 candidatesTokenCount=60 totalTokenCount=300 cachedContentTokenCount=40 thoughtsTokenCount=25
+"""
+rb.write_agy_usage(usage_run, bare_rater, 12, repeated_log)
+repeated_usage = json.loads(
+    (usage_run / "usage-agy-flash-low.jsonl").read_text()
+)
+assert repeated_usage["prompt_tokens"] == 240
+assert repeated_usage["output_tokens"] == 60
+assert repeated_usage["total_tokens"] == 300
+assert repeated_usage["cached_tokens"] == 40
+assert repeated_usage["reasoning_tokens"] == 25
+
 flash35_run = work / "agy-flash35-run"
 flash35_run.mkdir()
 flash35_rater = rb.parse_rater("agy-flash35-medium")
@@ -239,14 +346,12 @@ rc, _, text, stderr, flash35_command = rb.run_agy(
 )
 assert rc == 0 and not stderr
 assert len(rb.normalize_findings(text, flash35_rater["spec"])) == 2
-assert flash35_command[1:5] == [
-    "--model", "gemini-3.5-flash",
-    "--effort", "medium",
-]
+assert flash35_command[1:3] == ["--model", "gemini-3.5-flash-medium"]
+assert "--effort" not in flash35_command
 flash35_usage = json.loads(
     (flash35_run / "usage-agy-flash35-medium.jsonl").read_text()
 )
-assert flash35_usage["model"] == "gemini-3.5-flash"
+assert flash35_usage["model"] == "gemini-3.5-flash-medium"
 assert flash35_usage["effort"] == "medium"
 
 malformed_run = work / "agy-malformed-run"
@@ -288,11 +393,13 @@ skill_run = work / "agy-skill-run"
 skill_run.mkdir()
 os.environ["AGY_FIXTURE_STDOUT"] = str(fixtures / "agy-skill-output.md")
 rc, _, text, stderr, skill_command = rb.run_agy(
-    skill_rater, repo, sha, "", skill_run, "ignored fixture diff"
+    skill_rater, repo, sha, "Check cancellation handling",
+    skill_run, "ignored fixture diff"
 )
 assert rc == 0 and not stderr
 assert len(rb.normalize_findings(text, skill_rater["spec"])) == 2
-assert (work / "agy-prompt").read_text() == "/code-review"
+assert (work / "agy-prompt").read_text() == \
+    "/code-review\nAdditional review focus: Check cancellation handling"
 assert (work / "agy-origin-head").read_text().strip() == parent
 assert skill_command[:7] == [
     str(fixtures / "fake-agy.sh"),
@@ -312,10 +419,8 @@ rc, _, text, stderr, flash35_skill_command = rb.run_agy(
 )
 assert rc == 0 and not stderr
 assert len(rb.normalize_findings(text, flash35_skill_rater["spec"])) == 2
-assert flash35_skill_command[1:5] == [
-    "--model", "gemini-3.5-flash",
-    "--effort", "high",
-]
+assert flash35_skill_command[1:3] == ["--model", "gemini-3.5-flash-high"]
+assert "--effort" not in flash35_skill_command
 assert "--new-project" in flash35_skill_command
 assert "--dangerously-skip-permissions" in flash35_skill_command
 print("review-bench-unit-ok")

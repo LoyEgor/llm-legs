@@ -263,9 +263,11 @@ multi_gemini=$(GEMINI_MULTI_LOG="$GEMINI_MULTI_LOG" GEMINIB_PROFILES_DIR="$GEMIN
   || fail "targeted Gemini profile refresh used the wrong HOME"
 jq -e '.vendors.gemini.available == true and .vendors.gemini.current_account == "main" and
   (.vendors.gemini.accounts | length) == 2 and
+  .vendors.gemini.weekly.used_pct == 50 and
+  .vendors.gemini.five_hour.used_pct == 40 and
   [.vendors.gemini.accounts[] | select(.account == "main")][0].weekly.used_pct == 25 and
   [.vendors.gemini.accounts[] | select(.account == "work")][0].weekly.used_pct == 50' \
-  <<<"$multi_gemini" >/dev/null || fail "Gemini profile snapshots were not isolated"
+  <<<"$multi_gemini" >/dev/null || fail "Gemini profile snapshots were not isolated or selected-account buckets were not hoisted"
 [ -s "$GEMINI_ACCOUNTS_CACHE/work.json" ] || fail "Gemini profile cache was not created"
 if GEMINIB_PROFILES_DIR="$GEMINI_PROFILES" LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$GEMINI_ACCOUNTS_CACHE" \
   LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" \
@@ -283,6 +285,17 @@ jq -e '[.vendors.gemini.accounts[] | select(.account == "work")][0] |
   .refresh_error.cause == "login needed (profile signed out)" and
   .weekly.used_pct == 50' <<<"$multi_auth" >/dev/null \
   || fail "Gemini profile login-needed state lost its cache or cause"
+multi_main_recovered=$(GEMINI_SENTINEL="$GEMINI_SENTINEL" GEMINIB_PROFILES_DIR="$GEMINI_PROFILES" \
+  LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$GEMINI_ACCOUNTS_CACHE" LLM_LIMITS_GEMINI_REFRESH=1 \
+  LLM_LIMITS_GEMINI_CMD="$GEMINI_HELPER" LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
+  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" \
+  /bin/bash "$SCRIPT" --refresh-account gemini/main --json)
+jq -e '.vendors.gemini.refresh_error.cause == "work: login needed (profile signed out)" and
+  ([.vendors.gemini.accounts[] | select(.account == "work")][0] |
+   .auth_needed == true and .status == "login needed" and
+   .refresh_error.cause == "login needed (profile signed out)")' \
+  <<<"$multi_main_recovered" >/dev/null \
+  || fail "targeted Gemini refresh dropped an untouched profile status or refresh_error"
 multi_all_auth=$(GEMINIB_PROFILES_DIR="$GEMINI_PROFILES" \
   LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$GEMINI_ACCOUNTS_CACHE" LLM_LIMITS_GEMINI_REFRESH=1 \
   LLM_LIMITS_GEMINI_CMD="$GEMINI_MULTI_AUTH_HELPER" LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
@@ -326,6 +339,68 @@ jq -e '[.vendors.gemini.accounts[] | select(.account == "work")][0] |
   .removed != true and .auth_needed != true and (. | has("refresh_error") | not)' \
   <<<"$multi_recovered" >/dev/null || fail "Gemini named profile did not recover"
 [ ! -e "$GEMINI_WORK_MARKER" ] || fail "Gemini named profile recovery left its marker"
+
+GEMINI_REMOVED_ONLY_PROFILES="$WORK/gemini-removed-only-profiles"
+GEMINI_REMOVED_ONLY_CACHE="$WORK/gemini-removed-only-cache"
+mkdir -p "$GEMINI_REMOVED_ONLY_PROFILES/empty" "$GEMINI_REMOVED_ONLY_CACHE"
+printf '%s\n' '{"groups":[{"displayName":"Gemini Models","buckets":[{"window":"weekly","remainingFraction":0,"resetTime":"2099-01-01T00:00:00Z"},{"window":"5h","remainingFraction":0,"resetTime":"2099-01-01T00:00:00Z"}]}]}' \
+  >"$WORK/gemini-exhausted-main.json"
+: >"$GEMINI_REMOVED_ONLY_CACHE/gone.json.removed"
+gemini_unusable=$(GEMINIB_PROFILES_DIR="$GEMINI_REMOVED_ONLY_PROFILES" \
+  LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$GEMINI_REMOVED_ONLY_CACHE" \
+  LLM_LIMITS_GEMINI_CACHE="$WORK/gemini-exhausted-main.json" \
+  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" /bin/bash "$SCRIPT" --json)
+jq -e '.vendors.gemini.usable_now == false and
+  ([.vendors.gemini.accounts[] | select(.account == "empty" and .status == "no quota snapshot")] | length) == 1 and
+  ([.vendors.gemini.accounts[] | select(.account == "gone" and .removed == true)] | length) == 1' \
+  <<<"$gemini_unusable" >/dev/null \
+  || fail "bucketless or removed Gemini profile made an exhausted vendor usable"
+mkdir -p "$GEMINI_REMOVED_ONLY_PROFILES/gone"
+gemini_removed_healed=$(GEMINI_MULTI_LOG="$GEMINI_MULTI_LOG" \
+  GEMINIB_PROFILES_DIR="$GEMINI_REMOVED_ONLY_PROFILES" \
+  LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$GEMINI_REMOVED_ONLY_CACHE" LLM_LIMITS_GEMINI_REFRESH=1 \
+  LLM_LIMITS_GEMINI_CMD="$GEMINI_MULTI_HELPER" \
+  LLM_LIMITS_GEMINI_CACHE="$WORK/gemini-exhausted-main.json" \
+  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" \
+  /bin/bash "$SCRIPT" --refresh-account gemini/gone --json)
+jq -e '[.vendors.gemini.accounts[] | select(.account == "gone")][0] |
+  .removed != true and .weekly.used_pct == 50' <<<"$gemini_removed_healed" >/dev/null \
+  || fail "recreated Gemini profile did not clear its persistent removed marker"
+[ ! -e "$GEMINI_REMOVED_ONLY_CACHE/gone.json.removed" ] \
+  || fail "recreated Gemini profile left its removed marker"
+
+GEMINI_PARALLEL_PROFILES="$WORK/gemini-parallel-profiles"
+GEMINI_PARALLEL_CACHE="$WORK/gemini-parallel-cache"
+GEMINI_PARALLEL_GATE="$WORK/gemini-parallel-gate"
+GEMINI_PARALLEL_HELPER="$WORK/fake-agy-parallel"
+mkdir -p "$GEMINI_PARALLEL_PROFILES/work" "$GEMINI_PARALLEL_CACHE" "$GEMINI_PARALLEL_GATE"
+cat >"$GEMINI_PARALLEL_HELPER" <<'EOF'
+#!/usr/bin/env bash
+account=main
+[ "$HOME" = "$GEMINI_PARALLEL_MAIN_HOME" ] || account=$(basename "$HOME")
+touch "$GEMINI_PARALLEL_GATE/started-$account"
+ready=0
+for attempt in $(seq 1 50); do
+  set -- "$GEMINI_PARALLEL_GATE"/started-*
+  if [ -e "$1" ] && [ "$#" -ge 2 ]; then ready=1; break; fi
+  sleep 0.1
+done
+[ "$ready" -eq 1 ] || { printf '{"error":"profiles were refreshed sequentially"}\n' >&2; exit 1; }
+printf '%s\n' '{"groups":[{"displayName":"Gemini Models","buckets":[{"window":"weekly","remainingFraction":0.7,"resetTime":"2099-01-01T00:00:00Z"},{"window":"5h","remainingFraction":0.8,"resetTime":"2099-01-01T00:00:00Z"}]}]}'
+EOF
+chmod +x "$GEMINI_PARALLEL_HELPER"
+gemini_parallel=$(GEMINI_PARALLEL_MAIN_HOME="$HOME_FIXTURE" GEMINI_PARALLEL_GATE="$GEMINI_PARALLEL_GATE" \
+  GEMINIB_PROFILES_DIR="$GEMINI_PARALLEL_PROFILES" \
+  LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$GEMINI_PARALLEL_CACHE" LLM_LIMITS_GEMINI_REFRESH=1 \
+  LLM_LIMITS_GEMINI_CMD="$GEMINI_PARALLEL_HELPER" \
+  LLM_LIMITS_GEMINI_CACHE="$WORK/gemini-parallel-main.json" LLM_LIMITS_CODEX_REFRESH=0 \
+  LLM_LIMITS_CLAUDEB_CMD="$WORK/missing-claudeb" HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" \
+  /bin/bash "$SCRIPT" --refresh --json 2>/dev/null)
+jq -e '.vendors.gemini.available == true and
+  ([.vendors.gemini.accounts[] | select(.refresh_error != null)] | length) == 0 and
+  ([.vendors.gemini.accounts[] | select(.weekly.used_pct == 30)] | length) == 2' \
+  <<<"$gemini_parallel" >/dev/null \
+  || fail "full Gemini refresh did not complete all profiles concurrently"
 
 # The three refresh failure modes stay distinct and never collapse: only a logged-out helper
 # (rc 2) is "login needed"; a crashed helper and a network failure (both rc 1) each keep their

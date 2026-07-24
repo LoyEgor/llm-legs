@@ -159,6 +159,7 @@ summary=$(jq -r \
     .five_hour.stale? != true and .five_hour.expired? != true and
     .five_hour.origin? != "cached" and ($reset == null or $reset > $now);
   def auth_ok: .auth_needed != true and ((.auth.status? // "ok") | IN("expired", "failed") | not);
+  def gemini_group: ((.group // "") | ascii_downcase | contains("gemini"));
   def bucket_values: [eff(.five_hour), eff(.weekly)] | map(select(. != null));
   def account_as_of:
     [(.five_hour.as_of? | epoch), (.weekly.as_of? | epoch), (.fable.as_of? | epoch)] |
@@ -179,7 +180,7 @@ summary=$(jq -r \
    elif $cx.available == true then [{account:"main",five_hour:($cx.five_hour // {}),weekly:($cx.weekly // {})}]
    else [] end) as $cx_source |
   (if ($gm.accounts | type) == "array" then $gm.accounts
-   elif $gm.group == "Gemini Models" then
+   elif $gm.auth_needed == true or $gm.removed == true or ($gm | gemini_group) then
      [$gm + {account:"main",is_current:true,enabled:true}]
    else [] end) as $gm_source |
   ([($cx_source[] | account_as_of[]), ($gm_source[] | account_as_of[]),
@@ -217,7 +218,7 @@ summary=$(jq -r \
         "\(.name) \(.pressure | round)% runway \(.runway | round1)% ↻\(.credits)\(if .floor then " FLOOR" else "" end) (5h→\(.r5), wk→\(.rw))") | join(" | ")))}
    end) as $codex |
 
-  ([$gm_source[] | select(.removed != true and auth_ok and .group == "Gemini Models") |
+  ([$gm_source[] | select(.removed != true and auth_ok and gemini_group) |
     bucket_values as $values |
     select(($values | length) > 0) |
     ([raw_runway(.five_hour), raw_runway(.weekly)] | map(select(. != null)) | min) as $runway |
@@ -446,7 +447,9 @@ elif [ "$worker_mode" = gemini ]; then
   printf 'NEXT: %s  |  %s  |  codex %s · %s — %s\n' \
     "$gm_next" "$cb_next" "${cx_acct:-unavailable}" "$cx_effort" "$cx_state"
 elif [ "$worker_mode" = auto ]; then
-  if [ "$all_floored" = yes ] && [ -z "$rec" ]; then
+  if [ -z "$rec" ] && [ "$cx_state" = WALLED ] && [ "$gm_state" != WALLED ]; then
+    printf 'NEXT: %s  |  %s  |  codex — WALLED\n' "$gm_next" "$cb_next"
+  elif [ "$all_floored" = yes ] && [ -z "$rec" ]; then
     printf 'NEXT: %s  |  %s  |  codex — WALLED\n' "$gm_next" "$cb_next"
   else
     printf 'NEXT: %s  |  codex %s · %s — %s  |  %s\n' \

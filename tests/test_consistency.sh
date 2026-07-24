@@ -132,6 +132,8 @@ assert grep -Fq 'main_last:(if (.account // "main") == "main" then 1 else 0 end)
 assert test "$(grep -Fc 'sort_by(.main_last, -.score, .name)' "$WORKERPICK")" -eq 2
 assert grep -Fq 'main_last:(if $entry.account == "main" then 1 else 0 end)' "$CODEXB"
 assert grep -Fq 'sort -t $'\''\t'\'' -k2,2n -k3,3n -k4,4n -k1,1' "$CODEXB"
+assert grep -Fq 'main_last: (if .account == "main" then 1 else 0 end)' "$STATUSLINE"
+assert grep -Fq 'sort_by(.main_last, .unknown, .pressure, .account)' "$STATUSLINE"
 assert grep -Fq 'Codex and Gemini `main` profiles as last-resort' "$POLICY"
 assert doc_has 'Codex/Gemini base-profile priority'
 
@@ -148,7 +150,10 @@ assert grep -Fq '"agy-flash35": ("low", "medium", "high")' "$REVIEWBENCH"
 assert grep -Fq 'agy-pro-<low|high>' "$ROOT/docs/DIAGNOSTICS.md"
 assert grep -Fq 'agy-flash-<low|medium|high>' "$ROOT/docs/DIAGNOSTICS.md"
 assert grep -Fq 'agy-flash35-<low|medium|high>' "$ROOT/docs/DIAGNOSTICS.md"
-assert doc_has '`agy-flash35-<effort>` → `--model gemini-3.5-flash --effort <effort>`'
+assert grep -Fq 'if rater["model"] == "agy-flash35":' "$REVIEWBENCH"
+assert grep -Fq 'return f"{model}-{rater['\''effort'\'']}"' "$REVIEWBENCH"
+assert grep -Fq 'if rater["model"] != "agy-flash35":' "$REVIEWBENCH"
+assert doc_has '`agy-flash35-<effort>` → `--model gemini-3.5-flash-<effort>` with no `--effort` flag'
 assert doc_has 'Antigravity review cell invocation mapping'
 
 # --- Row i: Gemini worker knobs ----------------------------------------------
@@ -181,6 +186,24 @@ assert grep -Fq "s/^gemini_profile=//p" "$GEMINI_AGENT"
 assert grep -Fq 'Without a pin, use the exact profile from an `ACCOUNT: <name>` line' "$GEMINI_AGENT"
 assert doc_has 'Gemini account pin precedence'
 
+# --- Row l: Gemini quota group matching --------------------------------------
+assert grep -Fq 'def gemini_group: ((.group // "") | ascii_downcase | contains("gemini"));' "$WORKERPICK"
+assert test "$(grep -Fc 'ascii_downcase | contains("gemini")' "$LLMLIMITS")" -ge 3
+assert doc_has 'case-insensitive group label contains `gemini`'
+assert doc_has 'Gemini quota group matching'
+
+# --- Row m: Gemini account discovery and HOME mapping ------------------------
+GEMINI_ACCOUNTS="$ROOT/share/gemini-accounts.sh"
+GEMINIB="$ROOT/bin/geminib"
+assert test -r "$GEMINI_ACCOUNTS"
+assert grep -Fq '. "$(resolve_root)/share/gemini-accounts.sh"' "$GEMINIB"
+assert grep -Fq '. "$script_dir/share/gemini-accounts.sh"' "$LLMLIMITS"
+assert grep -q '^gemini_account_names()' "$GEMINI_ACCOUNTS"
+assert grep -q '^gemini_account_home()' "$GEMINI_ACCOUNTS"
+assert grep -Fq 'printf '\''%s\n'\'' "$gemini_base_home"' "$GEMINI_ACCOUNTS"
+assert grep -Fq 'printf '\''%s\n'\'' "$gemini_profiles_dir/$1"' "$GEMINI_ACCOUNTS"
+assert doc_has 'Gemini profile discovery and HOME mapping'
+
 GATE_WARN=85; GATE_DENY=95
 assert test -x "$WORKER_GATE"
 assert eq "$(grep -E '^WARN_AT=[0-9]+$' "$WORKER_GATE" | cut -d= -f2)" "$GATE_WARN"
@@ -198,4 +221,4 @@ assert eq "$(jq '[.hooks.PreToolUse[] | .hooks[]? | select(.command | test("(cla
 assert grep -Fq 'warn at `85`%; block at `95`%' "$ROOT/$DOC"
 assert doc_has 'Worker spawn pressure gate'
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs and account pin precedence, worker spawn pressure gate) and match %s\n' "$asserts" "$DOC"
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, account pin precedence, quota-group matching, shared profile mapping, and worker spawn pressure gate) and match %s\n' "$asserts" "$DOC"

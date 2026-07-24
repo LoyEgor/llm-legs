@@ -496,11 +496,15 @@ for _, item in ipairs(claudeLoginMenu) do
   end
 end
 local geminiMultiMenu = loadModule(geminiMultiFixture).menuItems()
-local geminiErrors = 0
+local geminiLoginNeededRows = 0
 for _, item in ipairs(geminiMultiMenu) do
   local text = titleText(item)
   assert(not text:find("removed", 1, true), "removed Gemini profile still rendered a row")
-  if text:find("not signed in", 1, true) then geminiErrors = geminiErrors + 1 end
+  if text:find("login needed", 1, true) then
+    geminiLoginNeededRows = geminiLoginNeededRows + 1
+  end
+  assert(not text:find("not signed in", 1, true),
+    "logged-out Gemini profile duplicated its login-needed cause")
   if text:find("main", 1, true) and type(item.menu) == "table" then
     for _, sub in ipairs(item.menu) do
       assert(titleText(sub) ~= "Log in…", "healthy Gemini profile offered Log in…")
@@ -508,7 +512,8 @@ for _, item in ipairs(geminiMultiMenu) do
     end
   end
 end
-assert(geminiErrors == 1, "Gemini profile refresh cause did not render exactly once")
+assert(geminiLoginNeededRows == 1,
+  "logged-out Gemini profile did not render its login-needed cause exactly once")
 
 -- A removed single-account vendor is skipped entirely: no row, no login/hard-refresh
 -- controls, no refresh-error line — the same hook a future vendor would supply.

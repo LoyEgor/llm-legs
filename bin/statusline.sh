@@ -705,9 +705,10 @@ codex_local_pick() {
             | ([(.five_hour | eff), (.weekly | eff)] | map(select(. != null))) as $known
             | select(($known | length) == 0 or ($known | max) < 100)
             | {account,
+               main_last: (if .account == "main" then 1 else 0 end),
                unknown: (if ($known | length) == 0 then 1 else 0 end),
                pressure: (if ($known | length) == 0 then 0 else ($known | max) end)} ]
-          | sort_by(.unknown, .pressure, .account)
+          | sort_by(.main_last, .unknown, .pressure, .account)
           | (.[0].account // "main"))
     end
   ' "$limits_file" 2>/dev/null
@@ -721,6 +722,18 @@ codex_model_short_label() {
     | sed 's/.*"\([^"]*\)".*/\1/; s/.*-//')
   [[ "$label" =~ ^[A-Za-z0-9]+$ ]] || label=sol
   printf '%s' "$label"
+}
+
+load_worker_pick_prediction() {
+  local pick_acct=$acct pick_cache pick_mtime
+  { [ "$pick_acct" = "-" ] || [ -z "$pick_acct" ]; } && pick_acct=main
+  pick_cache="$HOME/.cache/worker-pick.line.$pick_acct"
+  pick_mtime=$(file_mtime "$pick_cache" 2>/dev/null)
+  if ! [[ "$pick_mtime" =~ ^[0-9]+$ ]] || [ "$((now - pick_mtime))" -gt 90 ]; then
+    ("$HOME/.local/bin/worker-pick" >/dev/null 2>&1 &)
+  fi
+  worker_pick_prediction=""
+  [ -r "$pick_cache" ] && IFS= read -r worker_pick_prediction <"$pick_cache"
 }
 
 case "$worker" in
@@ -751,7 +764,10 @@ case "$worker" in
     if [ -n "$gemini_profile" ]; then
       wpin=$gemini_profile
     else
-      wsel=main
+      load_worker_pick_prediction
+      wsel=$(printf '%s\n' "$worker_pick_prediction" |
+        sed -nE 's/^.* gx.(main|[a-z0-9][a-z0-9-]*)·[^·]+·[^·]+$/\1/p')
+      [ -n "$wsel" ] || wsel="?"
     fi
     wtier="${gemini_model:-pro}·$(abbrev_tier "${gemini_effort:-high}")"
     ;;
@@ -764,15 +780,8 @@ case "$worker" in
     # Predictive display: what worker-pick would route to right now (codex
     # state+account, recommended claudeb account·model·effort). The cache is
     # per own-account because routing excludes the session's own account.
-    pick_acct=$acct
-    { [ "$pick_acct" = "-" ] || [ -z "$pick_acct" ]; } && pick_acct=main
-    pick_cache="$HOME/.cache/worker-pick.line.$pick_acct"
-    pick_mtime=$(file_mtime "$pick_cache" 2>/dev/null)
-    if ! [[ "$pick_mtime" =~ ^[0-9]+$ ]] || [ "$((now - pick_mtime))" -gt 90 ]; then
-      ("$HOME/.local/bin/worker-pick" >/dev/null 2>&1 &)
-    fi
-    auto_line=""
-    [ -r "$pick_cache" ] && IFS= read -r auto_line < "$pick_cache"
+    load_worker_pick_prediction
+    auto_line=$worker_pick_prediction
     ;;
   *) wname="?" ;;
 esac

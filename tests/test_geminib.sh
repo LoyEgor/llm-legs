@@ -44,6 +44,11 @@ cat >"$WORK/fake-quota" <<'EOF'
 #!/usr/bin/env bash
 account=main
 case "$HOME" in */.gemini-profiles/*) account=$(basename "$HOME") ;; esac
+if [ -n "${GEMINI_PROBE_LOG:-}" ]; then
+  printf 'START %s\n' "$account" >>"$GEMINI_PROBE_LOG"
+  sleep 1
+  printf 'END %s\n' "$account" >>"$GEMINI_PROBE_LOG"
+fi
 if [ "$(cat "${GEMINI_AUTH_DIR:?}/$account" 2>/dev/null)" != ok ]; then
   printf '{"auth_needed":true,"detail":"login screen"}\n'
   exit 2
@@ -67,7 +72,7 @@ printf 'ok\n' >"$GEMINI_AUTH_DIR/main"
 quota main 0.7 0.8
 
 add_output=$(bash "$SCRIPT" add alpha) || fail "add alpha failed"
-assert grep -qx 'HOME=~/.gemini-profiles/alpha agy' <<<"$add_output"
+assert grep -qx "HOME=$HOME/.gemini-profiles/alpha agy" <<<"$add_output"
 assert grep -qx 'alpha: Not logged in' <<<"$add_output"
 assert test -d "$HOME/.gemini-profiles/alpha/.gemini/antigravity-cli"
 for item in GEMINI.md config extensions settings.json; do
@@ -84,6 +89,11 @@ assert_fails bash "$SCRIPT" add main >/dev/null 2>&1
 assert_fails bash "$SCRIPT" add Bad >/dev/null 2>&1
 assert_fails bash "$SCRIPT" add alpha >/dev/null 2>&1
 
+custom_profiles="$WORK/custom-profiles"
+custom_output=$(GEMINIB_PROFILES_DIR="$custom_profiles" bash "$SCRIPT" add override) \
+  || fail "add with profiles override failed"
+assert grep -qx "HOME=$custom_profiles/override agy" <<<"$custom_output"
+
 bash "$SCRIPT" add beta >/dev/null || fail "add beta failed"
 printf 'ok\n' >"$GEMINI_AUTH_DIR/alpha"
 quota alpha 0.4 0.55
@@ -92,10 +102,22 @@ assert test "$(sed -n '1p' <<<"$list_output")" = 'main: Logged in'
 assert grep -qx 'alpha: Logged in' <<<"$list_output"
 assert grep -qx 'beta: Not logged in' <<<"$list_output"
 
+GEMINI_PROBE_LOG="$WORK/list-probes"
+export GEMINI_PROBE_LOG
+bash "$SCRIPT" list >/dev/null || fail "parallel list failed"
+assert test "$(awk '/^END / {print NR; exit}' "$GEMINI_PROBE_LOG")" -gt 4
+unset GEMINI_PROBE_LOG
+
 status_output=$(bash "$SCRIPT" status) || fail "status failed"
 assert grep -Eq '^main: Logged in \| 5H 30% reset .+ \| WEEKLY 20% reset .+$' <<<"$status_output"
 assert grep -Eq '^alpha: Logged in \| 5H 60% reset .+ \| WEEKLY 45% reset .+$' <<<"$status_output"
 assert grep -Eq '^beta: Not logged in \| 5H - reset unknown \| WEEKLY - reset unknown$' <<<"$status_output"
+
+GEMINI_PROBE_LOG="$WORK/status-probes"
+export GEMINI_PROBE_LOG
+bash "$SCRIPT" status >/dev/null || fail "parallel status failed"
+assert test "$(awk '/^END / {print NR; exit}' "$GEMINI_PROBE_LOG")" -gt 4
+unset GEMINI_PROBE_LOG
 
 : >"$AGY_CALLS"
 bash "$SCRIPT" run main --flag 'two words' '*' '' || fail "main run failed"
@@ -106,10 +128,9 @@ assert grep -qx "ARG=''" "$AGY_CALLS"
 
 : >"$AGY_CALLS"
 bash "$SCRIPT" alpha exec --json 'two words' || fail "profile shorthand failed"
-assert grep -qx "CALL home=$HOME/.gemini-profiles/alpha argc=3" "$AGY_CALLS"
-assert test "$(sed -n '2p' "$AGY_CALLS")" = 'ARG=exec'
-assert test "$(sed -n '3p' "$AGY_CALLS")" = 'ARG=--json'
-assert test "$(sed -n '4p' "$AGY_CALLS")" = 'ARG=two\ words'
+assert grep -qx "CALL home=$HOME/.gemini-profiles/alpha argc=2" "$AGY_CALLS"
+assert test "$(sed -n '2p' "$AGY_CALLS")" = 'ARG=--json'
+assert test "$(sed -n '3p' "$AGY_CALLS")" = 'ARG=two\ words'
 
 : >"$AGY_CALLS"
 fresh_output=$(bash "$SCRIPT" profile fresh 2>&1) || fail "profile fresh failed"
@@ -132,6 +153,8 @@ assert grep -qx "geminib: invalid profile name 'add'" <<<"$reserved_err"
 assert_fails bash "$SCRIPT" profile Bad </dev/null >/dev/null 2>&1
 assert_fails bash "$SCRIPT" add -h </dev/null >/dev/null 2>&1
 assert_fails bash "$SCRIPT" profile -dash </dev/null >/dev/null 2>&1
+mkdir -p "$HOME/.gemini-profiles/-existing"
+assert_fails bash "$SCRIPT" -existing exec </dev/null >/dev/null 2>&1
 assert test ! -e "$HOME/.gemini-profiles/-h"
 assert test ! -e "$HOME/.gemini-profiles/-dash"
 
@@ -143,7 +166,7 @@ for route in profile p run; do
 done
 : >"$AGY_CALLS"
 bash "$SCRIPT" pick exec --reserved >/dev/null 2>&1 || fail "pick exec failed"
-assert grep -qx "CALL home=$HOME/.gemini-profiles/pick argc=2" "$AGY_CALLS"
+assert grep -qx "CALL home=$HOME/.gemini-profiles/pick argc=1" "$AGY_CALLS"
 assert bash "$SCRIPT" remove pick
 assert test ! -e "$HOME/.gemini-profiles/pick"
 
@@ -167,9 +190,9 @@ printf 'removed\n' >"$cache_dir/alpha.json.removed"
 assert bash "$SCRIPT" remove alpha
 assert test ! -e "$HOME/.gemini-profiles/alpha"
 assert test ! -e "$cache_dir/alpha.json"
-assert test ! -e "$cache_dir/alpha.json.removed"
+assert test -e "$cache_dir/alpha.json.removed"
 assert_fails bash "$SCRIPT" remove main
 assert_fails bash "$SCRIPT" remove ../outside
 assert_fails bash "$SCRIPT" remove never-existed
 
-echo "PASS: $asserts asserts; base and isolated HOME routing, shared configuration links, list/status auth and quota, one-step creation, reserved-name parity, help short-circuit, legacy exec guard, and cache-pruning remove"
+echo "PASS: $asserts asserts; base and isolated HOME routing, shared configuration links, parallel ordered list/status probes, one-step creation, strict launch names, exec delimiter stripping, override-aware login hints, and persistent remove markers"
