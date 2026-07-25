@@ -175,11 +175,27 @@ class PriorityGate:
 
 OPENCODE_MAX_CONCURRENCY = max(1, int(os.environ.get("REVIEW_BENCH_OPENCODE_CONCURRENCY", "5")))
 OPENCODE_GATE = PriorityGate(OPENCODE_MAX_CONCURRENCY)
-# A 429 here is the subscription's own usage window, not weather: the plan is billed in
-# dollars per rolling window, so the honest response is to stop the run and come back
-# hours later. Without this the first wall would be followed by one doomed request per
-# remaining cell, which is how a wall gets deeper instead of waited out.
-OPENCODE_WALL = threading.Event()
+# A usage wall is that account's own billing window, not weather: the honest response is to retire
+# it for the rest of the run rather than send one doomed request per remaining cell, which is how
+# a wall gets deeper instead of waited out.
+WALLED_ACCOUNTS = set()
+WALLED_LOCK = threading.Lock()
+
+
+def wall_bucket(rater):
+    """Claude bills fable against its own quota, so a fable wall must not retire the account for
+    the opus and sonnet cells that still have theirs."""
+    return "fable" if rater["model"] == "fable" else "general"
+
+
+def mark_walled(side, account, bucket="general"):
+    with WALLED_LOCK:
+        WALLED_ACCOUNTS.add((side, account, bucket))
+
+
+def is_walled(side, account, bucket="general"):
+    with WALLED_LOCK:
+        return (side, account, bucket) in WALLED_ACCOUNTS
 
 
 def opencode_usage_wall(stderr):
@@ -495,56 +511,6 @@ def affordability():
     if proc.returncode != 0:
         raise RuntimeError(f"worker-pick failed: {proc.stderr.strip() or proc.returncode}")
     return parse_affordability(proc.stdout)
-
-
-def get_next_claude_account(worker_pick_output, exclude_account):
-    """Parse claude: line to find next non-blocked account different from exclude_account."""
-    claude_line = next((line for line in worker_pick_output.splitlines() if line.startswith("claude:")), "")
-    table_accounts = []
-    for segment in claude_line.removeprefix("claude:").split(" | "):
-        match = re.match(
-            r"\s*([A-Za-z0-9._-]+)\(\$[^)]*\)(\*)?.*?\bscore\s+(-?[0-9.]+)\s+cap\s+([0-9.]+)%",
-            segment,
-        )
-        if not match:
-            continue
-        account, session_mark, score, cap = match.groups()
-        if session_mark:
-            continue
-        blocked = any(flag in segment for flag in (" FLOOR", " blocked", " off", " HEADROOM"))
-        if not blocked and float(cap) >= 15 and account != exclude_account:
-            table_accounts.append((float(score), account, float(cap)))
-    if table_accounts:
-        table_accounts.sort(key=lambda item: (-item[0], item[1]))
-        return table_accounts[0][1]
-    return None
-
-
-def get_fable_capable_account(fallback_account):
-    """Select fable-capable account from llm-limits with lowest fable usage; fallback with warning."""
-    command = [command_path("REVIEW_BENCH_LIMITS_BIN", "llm-limits"), "--json", "--no-write"]
-    try:
-        proc = subprocess.run(command, capture_output=True, text=True, timeout=30)
-        if proc.returncode == 0:
-            data = json.loads(proc.stdout)
-            vendors = data.get("vendors", {})
-            claude_data = vendors.get("claude", {})
-            accounts_data = claude_data.get("accounts", [])
-            fable_accounts = []
-            for acc in accounts_data:
-                if (acc.get("rotation", {}).get("usable", {}).get("fable") is True and
-                    acc.get("auth", {}).get("status") == "ok"):
-                    fable_bucket = acc.get("fable", {})
-                    used_pct = fable_bucket.get("effective_pct") or fable_bucket.get("used_pct")
-                    if used_pct is not None:
-                        fable_accounts.append((used_pct, acc.get("account")))
-            if fable_accounts:
-                fable_accounts.sort()
-                return fable_accounts[0][1]
-    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError, KeyError, TypeError, ValueError):
-        pass
-    print(f"warning: no fable-capable account found; falling back to {fallback_account}")
-    return fallback_account
 
 
 def auto_pick(number, rows, available):
@@ -963,14 +929,6 @@ def prepare_agy_skill_clone(clone):
         )
 
 
-def codex_account():
-    command = [command_path("REVIEW_BENCH_CODEXB_BIN", "codexb"), "pick"]
-    proc = subprocess.run(command, capture_output=True, text=True, timeout=30)
-    if proc.returncode != 0:
-        raise RuntimeError(f"codexb pick failed: {proc.stderr.strip() or proc.returncode}")
-    return proc.stdout.strip().splitlines()[-1] if proc.stdout.strip() else "main"
-
-
 def codex_environment(account):
     env = os.environ.copy()
     if account == "main":
@@ -980,7 +938,7 @@ def codex_environment(account):
     return env
 
 
-def run_codex(rater, repo, sha, focus, run_dir, account):
+def run_codex(rater, repo, sha, focus, run_dir, diff, account, repeat=1):
     raw_final = tempfile.NamedTemporaryFile(
         dir=run_dir, prefix=f"raw-final-{rater['spec']}-", delete=False
     )
@@ -1084,7 +1042,7 @@ def refresh_limits(account):
         pass
 
 
-def run_claude(rater, repo, sha, focus, run_dir, account, diff, retry_on_429=True):
+def run_claude(rater, repo, sha, focus, run_dir, diff, account, repeat=1):
     raw_output = run_dir / f"raw-{rater['spec']}.json"
     clone = seal_overlay_clone(repo, sha)
     if rater["skill"]:
@@ -1105,47 +1063,16 @@ def run_claude(rater, repo, sha, focus, run_dir, account, diff, retry_on_429=Tru
                                   capture_output=True, text=True, timeout=RATER_TIMEOUT_S)
         except subprocess.TimeoutExpired:
             duration = round((time.monotonic() - started) * 1000)
-            return 124, duration, "", f"rater timed out after {RATER_TIMEOUT_S}s", command, account
+            return 124, duration, "", f"rater timed out after {RATER_TIMEOUT_S}s", command
         duration = round((time.monotonic() - started) * 1000)
         raw_output.write_text(proc.stdout)
-
-        if retry_on_429 and is_429_error(proc.stdout):
-            print(f"{rater['spec']}: got 429 on {account}, re-picking account")
-            try:
-                if rater["model"] == "fable":
-                    new_account = get_fable_capable_account(account)
-                else:
-                    pick = affordability()
-                    new_account = get_next_claude_account(pick["worker_pick"], account)
-                if new_account and new_account != account:
-                    print(f"{rater['spec']}: retrying on {new_account}")
-                    command_retry = list(command)
-                    command_retry[command_retry.index("profile") + 1] = new_account
-                    try:
-                        proc_retry = subprocess.run(
-                            command_retry, cwd=cwd, stdin=subprocess.DEVNULL,
-                            capture_output=True, text=True, timeout=RATER_TIMEOUT_S
-                        )
-                    except subprocess.TimeoutExpired:
-                        duration = round((time.monotonic() - started) * 1000)
-                        raw_output.write_text(f"timeout marker: rater timed out on retry after {RATER_TIMEOUT_S}s")
-                        return 124, duration, "", f"rater timed out on retry after {RATER_TIMEOUT_S}s", command_retry, account
-                    duration = round((time.monotonic() - started) * 1000)
-                    raw_output.write_text(proc_retry.stdout)
-                    return proc_retry.returncode, duration, proc_retry.stdout, proc_retry.stderr, command_retry, new_account
-                else:
-                    return 1, duration, "", "failed to find alternate account for 429 retry", command, account
-            except Exception as exc:
-                print(f"{rater['spec']}: 429 retry failed: {exc}")
-                return 1, duration, "", f"429 retry failed: {exc}", command, account
-
-        return proc.returncode, duration, proc.stdout, proc.stderr, command, account
+        return proc.returncode, duration, proc.stdout, proc.stderr, command
     finally:
         if clone:
             shutil.rmtree(clone, ignore_errors=True)
 
 
-def run_grok(rater, repo, sha, focus, run_dir, diff):
+def run_grok(rater, repo, sha, focus, run_dir, diff, account, repeat=1):
     raw_output = run_dir / f"raw-{rater['spec']}.json"
     prompt = review_prompt(sha, focus) + "\n\nCommit diff:\n" + diff
     prompt_file = tempfile.NamedTemporaryFile(
@@ -1293,7 +1220,7 @@ def merge_samples(batches):
     return merged
 
 
-def run_opencode_sampled(rater, repo, sha, focus, run_dir, diff, repeat):
+def run_opencode_sampled(rater, repo, sha, focus, run_dir, diff, account, repeat=1):
     """Union `repeat` independent samples of one OpenCode cell.
 
     Samples run one after another rather than at once: the plan is billed against a
@@ -1302,16 +1229,18 @@ def run_opencode_sampled(rater, repo, sha, focus, run_dir, diff, repeat):
     """
     batches, failures, duration, command, text = [], [], 0, [], ""
     for index in range(repeat):
-        result = run_opencode(rater, repo, sha, focus, run_dir, diff)
+        result = run_opencode(rater, repo, sha, focus, run_dir, diff, account)
         rc, sample_ms, sample_text, stderr, command = result
         duration += sample_ms
         if rc == 0:
             batches.append(normalize_findings(sample_text, rater["spec"]))
             text = sample_text
         else:
-            failures.append(f"sample {index + 1}/{repeat}: {stderr.strip()[-200:]}")
-            if OPENCODE_WALL.is_set():
+            detail = stderr.strip()[-200:]
+            if opencode_usage_wall(stderr):
+                failures.append(f"sample {index + 1}/{repeat}: usage limit reached; {detail}")
                 break
+            failures.append(f"sample {index + 1}/{repeat}: {detail}")
     if not batches:
         return 1, duration, "", "\n".join(failures) or "no samples succeeded", command
     merged = merge_samples(batches)
@@ -1323,7 +1252,7 @@ def run_opencode_sampled(rater, repo, sha, focus, run_dir, diff, repeat):
     return 0, duration, "\n".join(json.dumps(row) for row in merged), stderr, command
 
 
-def run_opencode(rater, repo, sha, focus, run_dir, diff):
+def run_opencode(rater, repo, sha, focus, run_dir, diff, account, repeat=1):
     raw_output = run_dir / f"raw-{rater['spec']}.json"
     prompt = review_prompt(sha, focus, rater["profile"]) + "\n\nCommit diff:\n" + diff
     prompt_file = tempfile.NamedTemporaryFile(
@@ -1331,9 +1260,6 @@ def run_opencode(rater, repo, sha, focus, run_dir, diff):
     )
     prompt_file.write(prompt)
     prompt_file.close()
-    if OPENCODE_WALL.is_set():
-        Path(prompt_file.name).unlink(missing_ok=True)
-        return (1, 0, "", "opencode usage wall already hit in this run; not retried", [])
     # Acquired before the clock starts so a queued rater reports its own
     # request latency, not the time it spent waiting for a gate slot.
     OPENCODE_GATE.acquire(opencode_expected_s(rater))
@@ -1375,8 +1301,6 @@ def run_opencode(rater, repo, sha, focus, run_dir, diff):
             if proc.returncode == 0 or not opencode_max_tokens_error(proc.stderr):
                 break
         if proc.returncode != 0:
-            if opencode_usage_wall(proc.stderr):
-                OPENCODE_WALL.set()
             return proc.returncode, duration, proc.stdout, proc.stderr, command
         try:
             envelope = json.loads(proc.stdout)
@@ -1656,7 +1580,7 @@ def write_agy_usage(run_dir, rater, duration, log_text):
     path.write_text(json.dumps(usage, ensure_ascii=False) + "\n")
 
 
-def run_agy(rater, repo, sha, focus, run_dir, diff):
+def run_agy(rater, repo, sha, focus, run_dir, diff, account, repeat=1):
     raw_output = run_dir / f"raw-{rater['spec']}.md"
     log_file = run_dir / f"agy-{rater['spec']}.log"
     model = agy_model_id(rater)
@@ -1665,8 +1589,10 @@ def run_agy(rater, repo, sha, focus, run_dir, diff):
         if rater["skill"] else
         agy_review_prompt(sha, focus) + "\n\nCommit diff:\n" + diff
     )
-    command = [
-        command_path("REVIEW_BENCH_AGY_BIN", "agy"),
+    # agy resolves its Google account from HOME and takes no account flag, so the profile has to be
+    # selected by launching it through geminib rather than by an argument.
+    command = [command_path("REVIEW_BENCH_GEMINIB_BIN", "geminib"), "profile", account]
+    command += [
         "--model", model,
     ]
     if rater["model"] != "agy-flash35":
@@ -1730,49 +1656,102 @@ def run_agy(rater, repo, sha, focus, run_dir, diff):
             shutil.rmtree(clone, ignore_errors=True)
 
 
-def run_one(rater, repo, sha, focus, run_dir, accounts, diff, repeat=1):
-    if rater["side"] == "codex":
-        result = run_codex(rater, repo, sha, focus, run_dir, accounts["codex"])
-        return rater, accounts["codex"], result
-    elif rater["side"] == "grok":
-        result = run_grok(rater, repo, sha, focus, run_dir, diff)
-        return rater, "supergrok", result
-    elif rater["side"] == "opencode":
-        result = run_opencode_sampled(rater, repo, sha, focus, run_dir, diff, repeat)
-        return rater, "opencode-go", result
-    elif rater["side"] == "agy":
-        result = run_agy(rater, repo, sha, focus, run_dir, diff)
-        return rater, "agy", result
-    else:
-        result = run_claude(rater, repo, sha, focus, run_dir, accounts["claude"], diff)
-        account_used = result[5] if len(result) > 5 else accounts["claude"]
-        return rater, account_used, result[:5]
+SIDE_RUNNERS = {
+    "claude": run_claude,
+    "codex": run_codex,
+    "agy": run_agy,
+    "grok": run_grok,
+    "opencode": run_opencode_sampled,
+}
+# Each vendor announces an exhausted account in its own words, and only its own words are
+# trusted: a rater that merely failed must not retire an account that still has quota.
+SIDE_WALL = {
+    "claude": lambda rc, text, stderr: is_429_error(text),
+    # `codex exec --json` reports an exhausted account as an event on stdout with nothing on
+    # stderr, so the structured token is looked for there too — but only that token, since the
+    # findings themselves travel in the same stream and would match a looser phrase.
+    "codex": lambda rc, text, stderr: bool(
+        re.search(r"\b429\b|usage limit|rate limit|quota exceeded", stderr or "", re.IGNORECASE)
+        or re.search(r"usage_limit_exceeded|rate_limit_exceeded", text or "", re.IGNORECASE)),
+    "agy": lambda rc, text, stderr: bool(
+        re.search(r"Individual quota reached|RESOURCE_EXHAUSTED", stderr or "", re.IGNORECASE)),
+    "grok": lambda rc, text, stderr: bool(
+        re.search(r"\b429\b|usage limit|rate limit|quota exceeded", stderr or "", re.IGNORECASE)),
+    "opencode": lambda rc, text, stderr: opencode_usage_wall(stderr),
+}
+# Sides billed as one subscription rather than per account, so worker-pick has nothing to say
+# about them and their single pseudo-account still flows through the shared wall handling.
+SIDE_FIXED_ACCOUNTS = {"grok": "supergrok", "opencode": "opencode-go"}
 
 
-def run_rater_task(rater, repo, sha, focus, run_dir, codex_acct, diff, repeat=1):
-    """Run a single rater as a task with its own account determination."""
+# The pool is asked rather than reproduced: worker-pick's prose output is not a contract, and a
+# second copy of the selection here is the per-tool mechanism the pool exists to replace.
+SIDE_POOL_VENDOR = {"claude": "claudeb", "codex": "codex", "agy": "gemini"}
+
+
+def pool_account(side, excluded):
+    """The pool's next account for this side, or None when it has nothing left to offer."""
+    if side in SIDE_FIXED_ACCOUNTS:
+        return SIDE_FIXED_ACCOUNTS[side] if not excluded else None
+    command = [command_path("REVIEW_BENCH_WORKER_PICK_BIN", "worker-pick"),
+               "--account", SIDE_POOL_VENDOR[side]]
+    if excluded:
+        command += ["--exclude", ",".join(sorted(excluded))]
     try:
-        if rater["side"] in ("grok", "opencode", "agy"):
-            accounts = {"grok": "supergrok", "opencode": "opencode-go", "agy": "agy"}
-            account = accounts[rater["side"]]
-            return run_one(rater, repo, sha, focus, run_dir, {rater["side"]: account},
-                           diff, repeat)
-        available = affordability()
-        if rater["side"] == "codex":
-            if not available["codex"]:
-                return (rater, None, (1, 0, "", "codex side is no longer affordable", []))
-            account = codex_acct
-        else:
-            if not available["claude"]:
-                return (rater, None, (1, 0, "", "claude side is no longer affordable", []))
-            if rater["model"] == "fable":
-                account = get_fable_capable_account(available["claude_account"])
-            else:
-                account = available["claude_account"]
-        result = run_one(rater, repo, sha, focus, run_dir, {rater["side"]: account}, diff)
-        return result
-    except Exception as exc:
-        return (rater, None, (1, 0, "", f"rater task crashed: {exc}", []))
+        proc = subprocess.run(command, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"worker-pick --account {SIDE_POOL_VENDOR[side]} failed: {exc}") from exc
+    # 3 is the pool's own "nothing selectable", which is an answer rather than a breakage.
+    if proc.returncode == 3:
+        return None
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"worker-pick --account {SIDE_POOL_VENDOR[side]}: "
+            f"{proc.stderr.strip() or proc.returncode}"
+        )
+    return proc.stdout.strip() or None
+
+
+def run_rater_task(rater, repo, sha, focus, run_dir, diff, repeat=1):
+    """Run one rater, asking the pool for another account each time one walls off."""
+    side = rater["side"]
+    bucket = wall_bucket(rater)
+    walled = set()
+    result = None
+    account = None
+    while True:
+        try:
+            candidate = pool_account(side, walled)
+        except Exception as exc:
+            return (rater, account, (1, 0, "", f"{side} account lookup failed: {exc}", []))
+        # A repeated candidate means the pool ignored the exclusion, which would otherwise spin.
+        if candidate is None or candidate in walled:
+            break
+        # Another rater may have retired this account since the pool last measured anything, so
+        # it is excluded and the pool asked again rather than the rater giving up on the side.
+        if is_walled(side, candidate, bucket):
+            walled.add(candidate)
+            continue
+        account = candidate
+        try:
+            result = SIDE_RUNNERS[side](
+                rater, repo, sha, focus, run_dir, diff, candidate, repeat
+            )
+        except Exception as exc:
+            return (rater, candidate, (1, 0, "", f"rater task crashed: {exc}", []))
+        rc, _, text, stderr, _ = result
+        if not SIDE_WALL[side](rc, text, stderr):
+            return (rater, candidate, result)
+        mark_walled(side, candidate, bucket)
+        walled.add(candidate)
+        print(f"{rater['spec']}: {side} account {candidate} hit its usage wall")
+        # A sampled cell can succeed on one sample and wall on the next: the review it did
+        # produce is kept, and only the account is retired.
+        if rc == 0:
+            return (rater, candidate, result)
+    if result is None:
+        return (rater, None, (1, 0, "", f"the pool has no {side} account left to run on", []))
+    return (rater, account, result)
 
 
 def resolve_commit(repo, commitish):
@@ -1852,22 +1831,9 @@ def cmd_run(args):
         raters, counts, skipped = auto_pick(args.auto or 2, read_jsonl(reviews_path), available)
     print("selected raters:")
     for rater in raters:
-        if rater["side"] == "claude":
-            reason = f"account {available['claude_account']}, cap {available['claude_cap']:g}%"
-        elif rater["side"] == "grok":
-            reason = "single SuperGrok account"
-        elif rater["side"] == "opencode":
-            reason = "OpenCode Go subscription"
-        elif rater["side"] == "agy":
-            reason = "single Antigravity account"
-        else:
-            reason = "worker-pick reports Codex available"
-        print(f"  {rater['spec']}: {counts[rater['spec']]} recorded bench row(s); {reason}")
+        print(f"  {rater['spec']}: {counts[rater['spec']]} recorded bench row(s)")
     for spec, reason in skipped:
         print(f"skipped {spec}: {reason}")
-    codex_acct = None
-    if any(rater["side"] == "codex" for rater in raters):
-        codex_acct = codex_account()
 
     if any(rater["side"] == "claude" for rater in raters):
         claude_acct = available["claude_account"]
@@ -1897,7 +1863,7 @@ def cmd_run(args):
         # queued on it, so the first cells to reach it would otherwise be decided by
         # thread scheduling. Submitting slowest-first makes the whole order its own.
         futures = {pool.submit(run_rater_task, rater, repo, sha, args.focus or "", run_dir,
-                               codex_acct, diff, args.repeat): rater
+                               diff, args.repeat): rater
                    for rater in sorted(raters, key=gate_admission_key)}
         for future in concurrent.futures.as_completed(futures):
             rater = futures[future]

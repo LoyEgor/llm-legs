@@ -215,6 +215,7 @@ assert pick["opencode"] is True
 assert pick["claude"] is True
 assert pick["claude_account"] == "worker"
 assert pick["session_account"] == "session"
+assert "accounts" not in pick
 
 mixed_next = rb.parse_affordability("""NEXT: gemini main · pro · high — ACCOUNT: main; pre-reset cap 9% — WALLED  |  codex cx · medium — FRESH
 codex: cx 10% runway 80%
@@ -396,7 +397,8 @@ try:
 finally:
     rb.shutil.rmtree(sealed_parent, ignore_errors=True)
 os.environ.update({
-    "REVIEW_BENCH_AGY_BIN": str(fixtures / "fake-agy.sh"),
+    "REVIEW_BENCH_GEMINIB_BIN": str(fixtures / "fake-geminib.sh"),
+    "GEMINIB_CAPTURE_PROFILE": str(work / "geminib-profile"),
     "AGY_FIXTURE_LOG": str(fixtures / "agy-log.txt"),
     "AGY_CAPTURE_PROMPT": str(work / "agy-prompt"),
     "AGY_CAPTURE_CWD": str(work / "agy-cwd"),
@@ -409,24 +411,25 @@ bare_run.mkdir()
 os.environ["AGY_FIXTURE_STDOUT"] = str(fixtures / "agy-bare-preamble.txt")
 bare_rater = rb.parse_rater("agy-flash36-low")
 rc, duration, text, stderr, command = rb.run_agy(
-    bare_rater, repo, sha, "", bare_run, "fixture commit diff"
+    bare_rater, repo, sha, "", bare_run, "fixture commit diff", "work"
 )
 assert rc == 0 and duration >= 0 and not stderr
 assert len(rb.normalize_findings(text, bare_rater["spec"])) == 2
 assert (work / "agy-head").read_text().strip() == sha
 assert pathlib.Path((work / "agy-cwd").read_text().strip()) != repo
 assert (work / "agy-prompt").read_text() == rb.AGY_PRINT_INSTRUCTION
-assert command[:10] == [
-    str(fixtures / "fake-agy.sh"),
+assert command[:12] == [
+    str(fixtures / "fake-geminib.sh"), "profile", "work",
     "--model", "gemini-3.6-flash",
     "--effort", "low",
     "--mode", "plan",
     "--sandbox",
     "--print-timeout", "10m",
 ]
-assert command[10] == "--log-file"
-assert pathlib.Path(command[11]) == bare_run / "agy-agy-flash36-low.log"
-assert command[12:] == ["--print", rb.AGY_PRINT_INSTRUCTION]
+assert (work / "geminib-profile").read_text() == "work"
+assert command[12] == "--log-file"
+assert pathlib.Path(command[13]) == bare_run / "agy-agy-flash36-low.log"
+assert command[14:] == ["--print", rb.AGY_PRINT_INSTRUCTION]
 usage = json.loads((bare_run / "usage-agy-flash36-low.jsonl").read_text())
 assert usage["model"] == "gemini-3.6-flash"
 assert usage["duration_ms"] == duration
@@ -450,7 +453,7 @@ rb.seal_overlay_clone = keep_sealed_clone
 rb.shutil.rmtree = lambda *args, **kwargs: None
 try:
     rc, _, text, stderr, large_command = rb.run_agy(
-        bare_rater, repo, sha, "", large_run, large_diff
+        bare_rater, repo, sha, "", large_run, large_diff, "work"
     )
     assert rc == 0 and text and not stderr
     input_text = (kept_clones[-1] / rb.AGY_REVIEW_INPUT).read_text()
@@ -485,11 +488,11 @@ flash35_run = work / "agy-flash35-run"
 flash35_run.mkdir()
 flash35_rater = rb.parse_rater("agy-flash35-medium")
 rc, _, text, stderr, flash35_command = rb.run_agy(
-    flash35_rater, repo, sha, "", flash35_run, "fixture commit diff"
+    flash35_rater, repo, sha, "", flash35_run, "fixture commit diff", "work"
 )
 assert rc == 0 and not stderr
 assert len(rb.normalize_findings(text, flash35_rater["spec"])) == 2
-assert flash35_command[1:3] == ["--model", "gemini-3.5-flash-medium"]
+assert flash35_command[3:5] == ["--model", "gemini-3.5-flash-medium"]
 assert "--effort" not in flash35_command
 flash35_usage = json.loads(
     (flash35_run / "usage-agy-flash35-medium.jsonl").read_text()
@@ -501,7 +504,7 @@ malformed_run = work / "agy-malformed-run"
 malformed_run.mkdir()
 os.environ["AGY_FIXTURE_STDOUT"] = str(fixtures / "agy-bare-malformed.txt")
 rc, _, text, stderr, _ = rb.run_agy(
-    bare_rater, repo, sha, "", malformed_run, "fixture commit diff"
+    bare_rater, repo, sha, "", malformed_run, "fixture commit diff", "work"
 )
 assert rc == 1 and not text
 assert "agy returned malformed JSON envelope" in stderr
@@ -512,7 +515,7 @@ os.environ["AGY_FIXTURE_STDOUT"] = str(fixtures / "agy-empty.txt")
 os.environ["AGY_FIXTURE_STDERR"] = str(fixtures / "agy-headless-denied.txt")
 skill_rater = rb.parse_rater("agy-flash36-low-skill")
 rc, _, text, stderr, denied_command = rb.run_agy(
-    skill_rater, repo, sha, "", denied_run, "ignored fixture diff"
+    skill_rater, repo, sha, "", denied_run, "ignored fixture diff", "work"
 )
 assert rc == 1 and not text
 assert "agy returned empty output" in stderr
@@ -527,7 +530,7 @@ no_repo_run = work / "agy-no-repo-run"
 no_repo_run.mkdir()
 os.environ["AGY_FIXTURE_STDOUT"] = str(fixtures / "agy-skill-no-repo.md")
 rc, _, text, stderr, _ = rb.run_agy(
-    skill_rater, repo, sha, "", no_repo_run, "ignored fixture diff"
+    skill_rater, repo, sha, "", no_repo_run, "ignored fixture diff", "work"
 )
 assert rc == 1 and not text
 assert "did not enter the sealed git repository" in stderr
@@ -537,15 +540,15 @@ skill_run.mkdir()
 os.environ["AGY_FIXTURE_STDOUT"] = str(fixtures / "agy-skill-output.md")
 rc, _, text, stderr, skill_command = rb.run_agy(
     skill_rater, repo, sha, "Check cancellation handling",
-    skill_run, "ignored fixture diff"
+    skill_run, "ignored fixture diff", "work"
 )
 assert rc == 0 and not stderr
 assert len(rb.normalize_findings(text, skill_rater["spec"])) == 2
 assert (work / "agy-prompt").read_text() == \
     "/code-review\nAdditional review focus: Check cancellation handling"
 assert (work / "agy-origin-head").read_text().strip() == parent
-assert skill_command[:7] == [
-    str(fixtures / "fake-agy.sh"),
+assert skill_command[:9] == [
+    str(fixtures / "fake-geminib.sh"), "profile", "work",
     "--model", "gemini-3.6-flash",
     "--effort", "low",
     "--mode", "plan",
@@ -558,14 +561,72 @@ flash35_skill_run = work / "agy-flash35-skill-run"
 flash35_skill_run.mkdir()
 flash35_skill_rater = rb.parse_rater("agy-flash35-high-skill")
 rc, _, text, stderr, flash35_skill_command = rb.run_agy(
-    flash35_skill_rater, repo, sha, "", flash35_skill_run, "ignored fixture diff"
+    flash35_skill_rater, repo, sha, "", flash35_skill_run, "ignored fixture diff", "work"
 )
 assert rc == 0 and not stderr
 assert len(rb.normalize_findings(text, flash35_skill_rater["spec"])) == 2
-assert flash35_skill_command[1:3] == ["--model", "gemini-3.5-flash-high"]
+assert flash35_skill_command[3:5] == ["--model", "gemini-3.5-flash-high"]
 assert "--effort" not in flash35_skill_command
 assert "--new-project" in flash35_skill_command
 assert "--dangerously-skip-permissions" in flash35_skill_command
+
+os.environ["REVIEW_BENCH_WORKER_PICK_BIN"] = str(fixtures / "fake-worker-pick.sh")
+os.environ["GEMINIB_EXHAUSTED_PROFILE"] = "work"
+os.environ["AGY_FIXTURE_STDOUT"] = str(fixtures / "agy-bare-preamble.txt")
+rotate_run = work / "agy-rotate-run"
+rotate_run.mkdir()
+(work / "geminib-profile").write_text("")
+_, rotate_account, rotate_result = rb.run_rater_task(
+    rb.parse_rater("agy-flash36-low"), repo, sha, "", rotate_run, "fixture commit diff"
+)
+assert rotate_account == "main", (rotate_account, rotate_result)
+assert rotate_result[0] == 0, rotate_result
+assert (work / "geminib-profile").read_text() == "workmain"
+assert rb.is_walled("agy", "work") and not rb.is_walled("agy", "main")
+rb.WALLED_ACCOUNTS.clear()
+
+# An account another rater already retired is excluded from the next request instead of ending
+# the search, so a second usable account is still reached.
+del os.environ["GEMINIB_EXHAUSTED_PROFILE"]
+inherited_run = work / "agy-inherited-wall-run"
+inherited_run.mkdir()
+(work / "geminib-profile").write_text("")
+rb.mark_walled("agy", "work")
+_, inherited_account, inherited_result = rb.run_rater_task(
+    rb.parse_rater("agy-flash36-low"), repo, sha, "", inherited_run, "fixture commit diff"
+)
+assert inherited_account == "main", (inherited_account, inherited_result)
+assert inherited_result[0] == 0 and (work / "geminib-profile").read_text() == "main"
+rb.WALLED_ACCOUNTS.clear()
+
+# A cell that answered and still reported an exhausted account keeps its review; only the
+# account is retired, so the next rater of that side does not spend it again.
+spent_run = work / "agy-spent-but-answered-run"
+spent_run.mkdir()
+spent_stderr = work / "agy-spent-stderr"
+spent_stderr.write_text("Individual quota reached for this account\n")
+os.environ["AGY_FIXTURE_STDERR"] = str(spent_stderr)
+_, spent_account, spent_result = rb.run_rater_task(
+    rb.parse_rater("agy-flash36-low"), repo, sha, "", spent_run, "fixture commit diff"
+)
+assert spent_result[0] == 0 and spent_account == "work", (spent_account, spent_result)
+assert len(rb.normalize_findings(spent_result[2], "agy-flash36-low")) == 2
+assert rb.is_walled("agy", "work")
+rb.WALLED_ACCOUNTS.clear()
+del os.environ["AGY_FIXTURE_STDERR"]
+
+# Claude bills fable separately, so a wall in one bucket must leave the other bucket alone.
+rb.mark_walled("claude", "com", "fable")
+assert rb.is_walled("claude", "com", "fable")
+assert not rb.is_walled("claude", "com")
+assert rb.wall_bucket(rb.parse_rater("fable-medium")) == "fable"
+assert rb.wall_bucket(rb.parse_rater("opus-medium")) == "general"
+rb.WALLED_ACCOUNTS.clear()
+
+assert rb.SIDE_WALL["grok"](1, "", "json parse error at char 4290") is False
+assert rb.SIDE_WALL["grok"](1, "", "HTTP 429 rate limit") is True
+assert rb.SIDE_WALL["codex"](1, '{"type":"error","code":"usage_limit_exceeded"}', "") is True
+del os.environ["REVIEW_BENCH_WORKER_PICK_BIN"]
 
 os.environ.update({
     "REVIEW_BENCH_OPENCODE_BIN": str(fixtures / "fake-opencode-go.sh"),
@@ -629,7 +690,7 @@ os.environ.update({
 codex_run = work / "codex-pin-run"
 codex_run.mkdir()
 rc, _, _, stderr, codex_command = rb.run_codex(
-    rb.parse_rater("sol-medium"), pin_repo, pin_sha, "", codex_run, "main"
+    rb.parse_rater("sol-medium"), pin_repo, pin_sha, "", codex_run, "", "main"
 )
 assert rc == 0 and not stderr
 codex_cwd = pathlib.Path((work / "rater-cwd").read_text().strip())
@@ -659,9 +720,8 @@ fake_claude.chmod(0o755)
 os.environ["REVIEW_BENCH_CLAUDEB_BIN"] = str(fake_claude)
 claude_run = work / "claude-pin-run"
 claude_run.mkdir()
-rc, _, _, stderr, claude_command, _ = rb.run_claude(
-    rb.parse_rater("opus-medium"), pin_repo, pin_sha, "", claude_run, "fixture",
-    pin_diff, retry_on_429=False
+rc, _, _, stderr, claude_command = rb.run_claude(
+    rb.parse_rater("opus-medium"), pin_repo, pin_sha, "", claude_run, pin_diff, "fixture"
 )
 assert rc == 0 and not stderr
 claude_cwd = pathlib.Path((work / "rater-cwd").read_text().strip())
@@ -682,7 +742,7 @@ pin_run = work / "opencode-pin-run"
 pin_run.mkdir()
 os.environ["OPENCODE_CAPTURE_PROMPT"] = str(work / "opencode-pin-prompt")
 rc, _, _, stderr, _ = rb.run_opencode(
-    opencode_rater, pin_repo, pin_sha, "", pin_run, pin_diff
+    opencode_rater, pin_repo, pin_sha, "", pin_run, pin_diff, "opencode-go"
 )
 assert rc == 0 and not stderr
 pin_prompt = (work / "opencode-pin-prompt").read_text()
@@ -712,7 +772,7 @@ os.environ["OPENCODE_CAPTURE_PROMPT"] = str(work / "opencode-prompt")
 os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-happy.json")
 large_diff = "fixture OpenCode diff\n" + ("x" * 1000000)
 rc, duration, text, stderr, command = rb.run_opencode(
-    opencode_rater, repo, sha, "", opencode_run, large_diff
+    opencode_rater, repo, sha, "", opencode_run, large_diff, "opencode-go"
 )
 assert rc == 0 and duration >= 0 and not stderr
 assert rb.normalize_findings(text, opencode_rater["spec"]) == [{
@@ -737,7 +797,7 @@ effort_run = work / "opencode-effort-run"
 effort_run.mkdir()
 effort_rater = rb.parse_rater("oc-dsv4pro-high")
 rc, _, text, stderr, effort_command = rb.run_opencode(
-    effort_rater, repo, sha, "", effort_run, "fixture commit diff"
+    effort_rater, repo, sha, "", effort_run, "fixture commit diff", "work"
 )
 assert rc == 0 and text and not stderr
 assert effort_command[effort_command.index("--effort") + 1] == "high"
@@ -747,7 +807,7 @@ assert "--no-reasoning" not in effort_command
 glm_effort_run = work / "opencode-glm-effort-run"
 glm_effort_run.mkdir()
 _, _, _, _, glm_effort_command = rb.run_opencode(
-    rb.parse_rater("oc-glm52-high"), repo, sha, "", glm_effort_run, "fixture commit diff"
+    rb.parse_rater("oc-glm52-high"), repo, sha, "", glm_effort_run, "fixture commit diff", "opencode-go"
 )
 assert "--no-reasoning" not in glm_effort_command
 assert glm_effort_command[glm_effort_command.index("--effort") + 1] == "high"
@@ -760,7 +820,7 @@ wait_run = work / "opencode-wait-run"
 wait_run.mkdir()
 wait_env = work / "opencode-wait-env"
 os.environ["OPENCODE_CAPTURE_ENV"] = str(wait_env)
-rb.run_opencode(rb.parse_rater("oc-mmm3"), repo, sha, "", wait_run, "fixture commit diff")
+rb.run_opencode(rb.parse_rater("oc-mmm3"), repo, sha, "", wait_run, "fixture commit diff", "opencode-go")
 del os.environ["OPENCODE_CAPTURE_ENV"]
 assert wait_env.read_text().strip() == str(
     rb.opencode_timeout_s(rb.parse_rater("oc-mmm3"))
@@ -770,7 +830,7 @@ length_run = work / "opencode-length-run"
 length_run.mkdir()
 os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-length.json")
 rc, _, text, stderr, _ = rb.run_opencode(
-    opencode_rater, repo, sha, "", length_run, "fixture commit diff"
+    opencode_rater, repo, sha, "", length_run, "fixture commit diff", "opencode-go"
 )
 assert rc == 1 and not text
 assert "empty content" in stderr and "finish_reason='length'" in stderr
@@ -781,7 +841,7 @@ think_run = work / "opencode-think-run"
 think_run.mkdir()
 os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-think.json")
 rc, _, text, stderr, _ = rb.run_opencode(
-    opencode_rater, repo, sha, "", think_run, "fixture commit diff"
+    opencode_rater, repo, sha, "", think_run, "fixture commit diff", "opencode-go"
 )
 assert rc == 0, stderr
 think_rows = rb.normalize_findings(text, "oc-glm52")
@@ -792,12 +852,12 @@ stream_run = work / "opencode-stream-run"
 stream_run.mkdir()
 os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-happy.json")
 rc, _, _, _, stream_command = rb.run_opencode(
-    stream_rater, repo, sha, "", stream_run, "fixture commit diff"
+    stream_rater, repo, sha, "", stream_run, "fixture commit diff", "opencode-go"
 )
 assert rc == 0 and "--stream" in stream_command
 assert "--no-reasoning" not in stream_command
 _, _, _, _, buffered_command = rb.run_opencode(
-    opencode_rater, repo, sha, "", stream_run, "fixture commit diff"
+    opencode_rater, repo, sha, "", stream_run, "fixture commit diff", "opencode-go"
 )
 assert "--stream" not in buffered_command
 assert "--no-reasoning" in buffered_command
@@ -807,7 +867,7 @@ preamble_run = work / "opencode-preamble-run"
 preamble_run.mkdir()
 os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-preamble.json")
 rc, _, text, stderr, _ = rb.run_opencode(
-    opencode_rater, repo, sha, "", preamble_run, "fixture commit diff"
+    opencode_rater, repo, sha, "", preamble_run, "fixture commit diff", "opencode-go"
 )
 assert rc == 1 and not text
 assert "no parseable findings" in stderr and "I'll review" in stderr
@@ -816,7 +876,7 @@ narration_run = work / "opencode-narration-run"
 narration_run.mkdir()
 os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-narration.json")
 rc, _, text, stderr, _ = rb.run_opencode(
-    opencode_rater, repo, sha, "", narration_run, "fixture commit diff"
+    opencode_rater, repo, sha, "", narration_run, "fixture commit diff", "opencode-go"
 )
 assert rc == 1 and not text
 assert "summarised the diff" in stderr, stderr
@@ -911,13 +971,14 @@ sample_run = work / "opencode-sample-run"
 sample_run.mkdir()
 os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-happy.json")
 rc, _, sample_text, sample_stderr, _ = rb.run_opencode_sampled(
-    opencode_rater, repo, sha, "", sample_run, "fixture commit diff", 3
+    opencode_rater, repo, sha, "", sample_run, "fixture commit diff", "opencode-go", 3
 )
 assert rc == 0 and "3/3 samples usable" in sample_stderr, sample_stderr
 # Three identical samples are one defect, not three.
 assert len(rb.normalize_findings(sample_text, "oc-glm52")) == \
     len(rb.normalize_findings(rb.run_opencode(
-        opencode_rater, repo, sha, "", sample_run, "fixture commit diff")[2], "oc-glm52"))
+        opencode_rater, repo, sha, "", sample_run, "fixture commit diff",
+        "opencode-go")[2], "oc-glm52"))
 
 # A 429 is the subscription's own dollar window, so the run stops instead of sending
 # one doomed request per remaining cell.
@@ -927,16 +988,20 @@ os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-happy.json")
 os.environ["OPENCODE_FIXTURE_RC"] = "1"
 os.environ["OPENCODE_FIXTURE_STDERR"] = "HTTP 429\n{\"error\":\"usage limit reached\"}"
 rc, _, _, wall_stderr, _ = rb.run_opencode(
+    opencode_rater, repo, sha, "", wall_run, "fixture commit diff", "opencode-go"
+)
+assert rc == 1 and rb.SIDE_WALL["opencode"](rc, "", wall_stderr), wall_stderr
+walled_rater, walled_account, walled_result = rb.run_rater_task(
     opencode_rater, repo, sha, "", wall_run, "fixture commit diff"
 )
-assert rc == 1 and rb.OPENCODE_WALL.is_set(), wall_stderr
+assert walled_account == "opencode-go" and rb.is_walled("opencode", "opencode-go")
+_, skipped_account, skipped_result = rb.run_rater_task(
+    opencode_rater, repo, sha, "", wall_run, "fixture commit diff"
+)
+assert skipped_account is None and "no opencode account left" in skipped_result[3], skipped_result
+rb.WALLED_ACCOUNTS.clear()
 del os.environ["OPENCODE_FIXTURE_RC"]
 del os.environ["OPENCODE_FIXTURE_STDERR"]
-rc, _, _, skipped_stderr, skipped_command = rb.run_opencode(
-    opencode_rater, repo, sha, "", wall_run, "fixture commit diff"
-)
-assert rc == 1 and skipped_command == [] and "already hit" in skipped_stderr, skipped_stderr
-rb.OPENCODE_WALL.clear()
 assert rb.opencode_usage_wall("HTTP 429") and rb.opencode_usage_wall("usage limit reached")
 assert not rb.opencode_usage_wall("HTTP 503 failover_exhausted")
 
@@ -944,7 +1009,7 @@ clean_run = work / "opencode-clean-run"
 clean_run.mkdir()
 os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-clean.json")
 rc, _, text, stderr, _ = rb.run_opencode(
-    opencode_rater, repo, sha, "", clean_run, "fixture commit diff"
+    opencode_rater, repo, sha, "", clean_run, "fixture commit diff", "opencode-go"
 )
 assert rc == 0 and rb.normalize_findings(text, "oc-glm52") == []
 
@@ -956,7 +1021,7 @@ os.environ["OPENCODE_CAPTURE_OVERLAP"] = str(overlap_log)
 with concurrent.futures.ThreadPoolExecutor(max_workers=5) as gate_pool:
     gate_results = list(gate_pool.map(
         lambda idx: rb.run_opencode(
-            opencode_rater, repo, sha, "", gate_run, f"fixture diff {idx}"
+            opencode_rater, repo, sha, "", gate_run, f"fixture diff {idx}", "opencode-go"
         )[0],
         range(5),
     ))
@@ -1014,7 +1079,7 @@ rejected_run.mkdir()
 os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-happy.json")
 os.environ["OPENCODE_REJECT_MODEL"] = "deepseek-v4-pro"
 rc, _, text, stderr, _ = rb.run_opencode(
-    effort_rater, repo, sha, "", rejected_run, "fixture commit diff"
+    effort_rater, repo, sha, "", rejected_run, "fixture commit diff", "opencode-go"
 )
 assert rc == 2 and not text
 assert "not in the OpenCode Go plan" in stderr
@@ -1025,7 +1090,7 @@ fallback_run.mkdir()
 os.environ["OPENCODE_MAX_CEILING"] = "8192"
 os.environ["OPENCODE_CAPTURE_MAX_TOKENS"] = str(work / "opencode-max-tokens")
 rc, _, text, stderr, fallback_command = rb.run_opencode(
-    opencode_rater, repo, sha, "", fallback_run, "fixture commit diff"
+    opencode_rater, repo, sha, "", fallback_run, "fixture commit diff", "opencode-go"
 )
 assert rc == 0 and text and not stderr
 assert (work / "opencode-max-tokens").read_text().splitlines() == [
@@ -1166,4 +1231,4 @@ oc_table="$("$SCRIPT" oc-models 2>&1)"
 assert contains "$oc_table" "measured capability"
 assert contains "$oc_table" "oc-grok45"
 
-printf 'PASS: %s assertions; rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), errored-rater exclusion, and cross-side parallelism result assembly\n' "$asserts"
+printf 'PASS: %s assertions; rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, and cross-side parallelism result assembly\n' "$asserts"
