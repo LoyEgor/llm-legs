@@ -40,7 +40,7 @@ ensure_profile() {
   if [ -e "$base_home/.gemini/antigravity-cli/settings.json" ] && [ ! -e "$target" ] && [ ! -L "$target" ]; then
     ln -s "$base_home/.gemini/antigravity-cli/settings.json" "$target"
   fi
-  gemini_link_keychain "$directory"
+  gemini_ensure_keychain "$directory"
 }
 
 ensure_profiles() {

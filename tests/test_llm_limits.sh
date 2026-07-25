@@ -249,17 +249,25 @@ cat >"$GEMINI_MULTI_AUTH_HELPER" <<'EOF'
 printf '%s\n' '{"auth_needed":true,"source":"agy-local-rpc","detail":"profile signed out"}'
 exit 2
 EOF
-chmod +x "$GEMINI_MULTI_HELPER" "$GEMINI_MULTI_AUTH_HELPER"
+GEMINI_SECURITY_STUB="$WORK/fake-security"
+cat >"$GEMINI_SECURITY_STUB" <<'EOF'
+#!/usr/bin/env bash
+[ "${1:-}" != create-keychain ] || printf '%s' "$3" >"$4"
+EOF
+chmod +x "$GEMINI_MULTI_HELPER" "$GEMINI_MULTI_AUTH_HELPER" "$GEMINI_SECURITY_STUB"
 multi_gemini=$(GEMINI_MULTI_LOG="$GEMINI_MULTI_LOG" GEMINIB_PROFILES_DIR="$GEMINI_PROFILES" \
   LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$GEMINI_ACCOUNTS_CACHE" LLM_LIMITS_GEMINI_REFRESH=1 \
   LLM_LIMITS_GEMINI_CMD="$GEMINI_MULTI_HELPER" LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
+  GEMINIB_SECURITY_CMD="$GEMINI_SECURITY_STUB" \
   HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" \
   /bin/bash "$SCRIPT" --refresh-account gemini/work --json) \
   || fail "targeted Gemini profile refresh failed"
 [ "$(cat "$GEMINI_MULTI_LOG")" = "$GEMINI_PROFILES/work" ] \
   || fail "targeted Gemini profile refresh used the wrong HOME"
-[ "$(readlink "$GEMINI_PROFILES/work/Library/Keychains")" = "$HOME_FIXTURE/Library/Keychains" ] \
+[ -f "$GEMINI_PROFILES/work/Library/Keychains/login.keychain-db" ] \
   || fail "Gemini profile refresh left the profile HOME without a keychain (macOS blocks the probe with a modal dialog)"
+[ ! -e "$HOME_FIXTURE/Library/Keychains/login.keychain-db" ] \
+  || fail "Gemini profile refresh reached into the base home keychain"
 jq -e '.vendors.gemini.available == true and .vendors.gemini.current_account == "main" and
   (.vendors.gemini.accounts | length) == 2 and
   .vendors.gemini.weekly.used_pct == 50 and
