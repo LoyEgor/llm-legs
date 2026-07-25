@@ -359,6 +359,140 @@ for command in curl security claude; do
   chmod +x "$FAKE_BIN/$command"
 done
 
+# --- headless routing and the worker pin ---
+# A program calling claudeb cannot know which account is affordable, so `-p` asks worker-pick;
+# an interactive run must still name a profile, which is the whole point of dropping rotation.
+touch "$CLAUDEB_DIR/tokens/routed"
+ROUTE_ENV="$WORK/route-env.txt"
+ROUTE_PICK="$FAKE_BIN/stub-worker-pick"
+cat >"$FAKE_BIN/claude" <<EOF
+#!/usr/bin/env bash
+env > "$ROUTE_ENV"
+printf 'launched\n' >>"$WORK/route-launches"
+exit 0
+EOF
+cat >"$ROUTE_PICK" <<'EOF'
+#!/usr/bin/env bash
+[ "$1" = --account ] && [ "$2" = claudeb ] || exit 9
+if [ -n "${STUB_PICK_FAIL:-}" ]; then
+  printf 'worker-pick: no selectable claudeb account (stub)\n' >&2
+  exit 3
+fi
+printf '%s\n' "${STUB_PICK_ACCOUNT:-routed}"
+EOF
+chmod +x "$FAKE_BIN/claude" "$ROUTE_PICK"
+IFS= read -r state_before_routing <"$CLAUDEB_DIR/.claudeb-state"
+route_run() { env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" \
+  CLAUDEB_WORKER_PICK="$1" WORKER_PICK_CONFIG_FILE="$WORK/worker-model" \
+  STUB_PICK_ACCOUNT="${STUB_PICK_ACCOUNT:-}" STUB_PICK_FAIL="${STUB_PICK_FAIL:-}" \
+  bash "$SCRIPT" "${@:2}"; }
+assert route_run "$ROUTE_PICK" -p --model sonnet 'hi' >"$WORK/route.out" 2>"$WORK/route.err"
+assert grep -q 'worker-pick selected routed' "$WORK/route.err"
+assert grep -qx "CLAUDE_LIMITS_ACCOUNT=routed" "$ROUTE_ENV"
+assert grep -qx "CLAUDE_CONFIG_DIR=$HOME/.claude-profiles/routed" "$ROUTE_ENV"
+# Routing is headless by definition and must not restamp "current" either.
+assert grep -qx "$state_before_routing" "$CLAUDEB_DIR/.claudeb-state"
+
+# Arguments alone do not authorize a launch: without -p there is nobody to pick for.
+rm -f "$WORK/route-launches"
+assert_fails route_run "$ROUTE_PICK" --model opus >"$WORK/route-interactive.out" 2>&1
+assert grep -q 'profile required' "$WORK/route-interactive.out"
+assert test ! -e "$WORK/route-launches"
+
+# No selectable account is an immediate refusal — never a request held until it turns into a 503.
+STUB_PICK_FAIL=1
+route_rc=0
+route_run "$ROUTE_PICK" -p 'hi' >"$WORK/route-fail.out" 2>&1 || route_rc=$?
+STUB_PICK_FAIL=
+# The query's exit 3 is passed through, not flattened into the usage error a broken install gets.
+assert test "$route_rc" -eq 3
+assert grep -q 'worker-pick selected no account' "$WORK/route-fail.out"
+assert grep -q 'no selectable claudeb account' "$WORK/route-fail.out"
+assert test ! -e "$WORK/route-launches"
+route_rc=0
+route_run "$WORK/absent-worker-pick" -p 'hi' >"$WORK/route-missing.out" 2>&1 || route_rc=$?
+assert test "$route_rc" -eq 2
+assert grep -q 'cannot route without worker-pick' "$WORK/route-missing.out"
+assert test ! -e "$WORK/route-launches"
+
+# A clean machine has no worker-model at all: the pin is optional and `use` is what creates the
+# file. Reading a missing one must not take the CLI down under `pipefail` — and this must be
+# asserted BEFORE any test writes the file, or the suite passes over a crash.
+MISSING_PIN="$WORK/absent-worker-model"
+pin_run() { env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" \
+  WORKER_PICK_CONFIG_FILE="$1" bash "$SCRIPT" "${@:2}"; }
+assert pin_run "$MISSING_PIN" use >"$WORK/pin-none.out" 2>&1
+assert grep -q 'no pin' "$WORK/pin-none.out"
+assert test ! -e "$MISSING_PIN"
+assert pin_run "$MISSING_PIN" use --clear >"$WORK/pin-none-clear.out" 2>&1
+assert grep -q 'no pin to clear' "$WORK/pin-none-clear.out"
+assert test ! -e "$MISSING_PIN"
+assert pin_run "$MISSING_PIN" use gamma >/dev/null 2>&1
+assert grep -qx 'claudeb_profile=gamma' "$MISSING_PIN"
+
+# Present but unreadable is NOT "no pin": reporting it as pinless would lie, and the write path
+# would then replace every other key in the file with a single line.
+UNREADABLE_PIN="$WORK/unreadable-worker-model"
+printf 'worker=auto\nclaudeb_model=opus\nclaudeb_profile=gamma\n' >"$UNREADABLE_PIN"
+chmod 000 "$UNREADABLE_PIN"
+if [ -r "$UNREADABLE_PIN" ]; then
+  printf 'SKIP: unreadable-pin case (running with read-everything privileges)\n'
+else
+  assert_fails pin_run "$UNREADABLE_PIN" use gamma >"$WORK/pin-unreadable.out" 2>&1
+  assert grep -q 'cannot be read' "$WORK/pin-unreadable.out"
+  assert_fails pin_run "$UNREADABLE_PIN" use --clear >"$WORK/pin-unreadable-clear.out" 2>&1
+  assert grep -q 'cannot be read' "$WORK/pin-unreadable-clear.out"
+  chmod 600 "$UNREADABLE_PIN"
+  assert grep -qx 'worker=auto' "$UNREADABLE_PIN"
+  assert grep -qx 'claudeb_model=opus' "$UNREADABLE_PIN"
+  assert grep -qx 'claudeb_profile=gamma' "$UNREADABLE_PIN"
+fi
+
+# `use` writes the pin every consumer already reads, and touches nothing else in that file.
+PIN_FILE="$WORK/worker-model"
+printf 'worker=auto\nclaudeb_model=opus\n' >"$PIN_FILE"
+assert env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" WORKER_PICK_CONFIG_FILE="$PIN_FILE" \
+  bash "$SCRIPT" use routed >"$WORK/pin.out" 2>&1
+assert grep -q 'pinned workers to routed' "$WORK/pin.out"
+assert grep -qx 'claudeb_profile=routed' "$PIN_FILE"
+assert grep -qx 'worker=auto' "$PIN_FILE"
+assert grep -qx 'claudeb_model=opus' "$PIN_FILE"
+assert env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" WORKER_PICK_CONFIG_FILE="$PIN_FILE" \
+  bash "$SCRIPT" use gamma >/dev/null 2>&1
+assert test "$(grep -c '^claudeb_profile=' "$PIN_FILE")" = 1
+assert grep -qx 'claudeb_profile=gamma' "$PIN_FILE"
+# gamma is out of the pool, and a pin worker-pick cannot honor must say so.
+assert env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" WORKER_PICK_CONFIG_FILE="$PIN_FILE" \
+  bash "$SCRIPT" use gamma >"$WORK/pin-disabled.out" 2>&1
+assert grep -q 'out of the worker pool' "$WORK/pin-disabled.out"
+assert env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" WORKER_PICK_CONFIG_FILE="$PIN_FILE" \
+  bash "$SCRIPT" use >"$WORK/pin-show.out" 2>&1
+assert grep -q 'pinned to gamma' "$WORK/pin-show.out"
+assert env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" WORKER_PICK_CONFIG_FILE="$PIN_FILE" \
+  bash "$SCRIPT" use --clear >"$WORK/pin-clear.out" 2>&1
+assert grep -q 'cleared the pin' "$WORK/pin-clear.out"
+assert_fails grep -q '^claudeb_profile=' "$PIN_FILE"
+assert grep -qx 'worker=auto' "$PIN_FILE"
+# Pinning a name that cannot be routed to is refused, not silently recorded.
+assert_fails env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" WORKER_PICK_CONFIG_FILE="$PIN_FILE" \
+  bash "$SCRIPT" use gamm >"$WORK/pin-unknown.out" 2>&1
+assert grep -q 'unknown account: gamm' "$WORK/pin-unknown.out"
+assert grep -q 'did you mean gamma' "$WORK/pin-unknown.out"
+assert_fails grep -q '^claudeb_profile=' "$PIN_FILE"
+# A path-shaped name reaches this from a web handler; it must not become a store lookup outside
+# the token dir, nor a line other consumers read back as an account.
+assert_fails env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" WORKER_PICK_CONFIG_FILE="$PIN_FILE" \
+  bash "$SCRIPT" use ../gamma >"$WORK/pin-path.out" 2>&1
+assert grep -q 'unknown account' "$WORK/pin-path.out"
+assert_fails grep -q '^claudeb_profile=' "$PIN_FILE"
+# `use` is a subcommand now, so it can never also be a profile name.
+assert reserved_name use
+rm -f "$WORK/route-launches" "$CLAUDEB_DIR/tokens/routed"
+for command in curl security claude; do
+  printf '#!/usr/bin/env bash\nexit 97\n' >"$FAKE_BIN/$command"
+  chmod +x "$FAKE_BIN/$command"
+done
+
 # --- generic lock: contention, release, stale retake ---
 export CLAUDEB_LOCK_RETRIES=1 CLAUDEB_LOCK_DELAY=0
 lockdir="$WORK/mylock"
@@ -1923,4 +2057,4 @@ EOF
   assert_fails "$SCRIPT" remove ghost-account
 ) || exit 1
 
-echo "PASS: $asserts asserts; profile-required launch guard, reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth weather/backoff and lock behavior, creation-only reserved names and leading-hyphen rejection, disabled-account timeline, disabled profile launch proceeds direct with inherited routing stripped, generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent token adoption, capacity weather clears stale expired auth for valid tokens, warm-first heal ordering and fallback, warm auth verdicts require current-run refresh evidence, start-windows opens a fresh window and reconcile locks the new resets_at without regressing it, start-windows skips a disabled account with an explicit cause, warm --start-window opens only an expired window for the explicit account (live window and flagless runs never ping; ping weather warns without an auth verdict), the paid haiku warm fallback stays off unless opted in, regular probes never warm, heal_expired covers disabled accounts with actionable causes, and heal_one writes expired only on current-run evidence (stale-token 401 defers to the token endpoint's verdict, fresh-token 401 is affirmative, weather never re-stamps a prior expired), and no-refresh probes plus messages-probe 401s defer to the refresh outcome (stale token → weather no-write / invalid_grant expired, fresh token → affirmative), and interactive status account-row selection (bounded up/down navigation, name-stable across re-sort), Enter resolving to a \`claudeb profile <name>\` exec, row-scoped reverse-video highlight, and the non-tty path staying plain with no key loop or launch, status defaulting to cached (zero network; --live still probes), and the async refresh outcome summary (✓ when all enabled accounts are live/live*, else names stale accounts with a cause and excludes disabled ones, raw probe stderr confined to the log), refresh cancellation killing the probe process group, first-pass results publishing in completion order, unknown profiles rejected, and reserved legacy profiles removable"
+echo "PASS: $asserts asserts; profile-required launch guard, reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth weather/backoff and lock behavior, creation-only reserved names and leading-hyphen rejection, disabled-account timeline, disabled profile launch proceeds direct with inherited routing stripped, generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent token adoption, capacity weather clears stale expired auth for valid tokens, warm-first heal ordering and fallback, warm auth verdicts require current-run refresh evidence, start-windows opens a fresh window and reconcile locks the new resets_at without regressing it, start-windows skips a disabled account with an explicit cause, warm --start-window opens only an expired window for the explicit account (live window and flagless runs never ping; ping weather warns without an auth verdict), the paid haiku warm fallback stays off unless opted in, regular probes never warm, heal_expired covers disabled accounts with actionable causes, and heal_one writes expired only on current-run evidence (stale-token 401 defers to the token endpoint's verdict, fresh-token 401 is affirmative, weather never re-stamps a prior expired), and no-refresh probes plus messages-probe 401s defer to the refresh outcome (stale token → weather no-write / invalid_grant expired, fresh token → affirmative), and interactive status account-row selection (bounded up/down navigation, name-stable across re-sort), Enter resolving to a \`claudeb profile <name>\` exec, row-scoped reverse-video highlight, and the non-tty path staying plain with no key loop or launch, status defaulting to cached (zero network; --live still probes), and the async refresh outcome summary (✓ when all enabled accounts are live/live*, else names stale accounts with a cause and excludes disabled ones, raw probe stderr confined to the log), refresh cancellation killing the probe process group, first-pass results publishing in completion order, unknown profiles rejected, and reserved legacy profiles removable, headless runs routed through worker-pick without restamping current (arguments alone still demand a profile; an unselectable pool or a missing worker-pick refuses instead of launching), and \`use\` writing the worker pin in place with an out-of-pool warning, a clear, and a refusal on an unroutable name"

@@ -20,6 +20,20 @@ CODEX_TIGHT_RUNWAY_PCT=5
 SESSION_FABLE_WEIGHT=0.70
 SESSION_WEEKLY_WEIGHT=0.30
 
+# `--account claudeb` is the machine-readable face of the same math: one bare account name on
+# stdout, nothing else, so a caller that must pick an account (claudeb's own headless routing)
+# shares this selection instead of reimplementing it. Only claudeb for now — extending it to
+# codex/gemini needs those vendors' worker-pool state first.
+query_vendor=""
+if [ "${1:-}" = --account ]; then
+  query_vendor="${2:-}"
+  case "$query_vendor" in
+    claudeb) ;;
+    '') printf 'usage: worker-pick --account claudeb\n' >&2; exit 2 ;;
+    *) printf 'worker-pick: --account supports only claudeb\n' >&2; exit 2 ;;
+  esac
+fi
+
 LIMITS_FILE="${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}"
 WORKER_FILE="${WORKER_PICK_CONFIG_FILE:-$HOME/.claude/worker-model}"
 TIERS_FILE="${WORKER_PICK_TIERS_FILE:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/account-tiers}"
@@ -70,6 +84,9 @@ cache_file="$CACHE_DIR/worker-pick.line.$own"
 mkdir -p "$CACHE_DIR" 2>/dev/null || true
 
 write_cache() {
+  # A query answers a caller; it does not announce a routing decision, so it leaves the
+  # statusline's prediction to the real invocation that owns that file.
+  [ -z "$query_vendor" ] || return 0
   # The statusline polls this file concurrently and must never observe a torn prediction.
   tmp="$cache_file.tmp.$$"
   printf '%s\n' "$1" >"$tmp" 2>/dev/null && mv -f "$tmp" "$cache_file" 2>/dev/null
@@ -81,6 +98,12 @@ print_policy() {
 }
 
 fail_safe() {
+  # A query has no fail-safe: printing a guessed account would send a caller at an account this
+  # data cannot vouch for. Fail loudly and let the caller name a profile itself.
+  if [ -n "$query_vendor" ]; then
+    printf 'worker-pick: cannot select a %s account (%s)\n' "$query_vendor" "$1" >&2
+    exit 3
+  fi
   case "$worker_mode" in
     gemini) printf 'NEXT: gemini main · %s · %s — unavailable (%s)\n' "$gm_model" "$gm_effort" "$1" ;;
     auto) printf 'NEXT: claudeb (rotating) — %s  |  gemini unavailable\n' "$1" ;;
@@ -390,6 +413,17 @@ elif [ -n "$rec" ]; then
 else
   cb_next="claudeb unavailable — no selectable non-session account"
   cb_cache="cb~?"
+fi
+
+# A pin that is not selectable stays an error rather than quietly resolving to another account:
+# the pin IS the caller's choice, and routing around it is what the removed proxy used to do.
+if [ -n "$query_vendor" ]; then
+  if [ -n "$rec" ]; then
+    printf '%s\n' "$rec"
+    exit 0
+  fi
+  printf 'worker-pick: no selectable claudeb account (%s)\n' "$cb_next" >&2
+  exit 3
 fi
 
 case "$cx_state" in

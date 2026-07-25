@@ -183,6 +183,75 @@ set_disabled() {
   mv "$tmp" "$disabled_file"
 }
 
+worker_model_file() { printf '%s' "${WORKER_PICK_CONFIG_FILE:-$HOME/.claude/worker-model}"; }
+
+# "No file yet" is a normal state — the pin is optional and `use` is what creates the file.
+# Without the guard `pipefail` turns sed's missing-file exit into an abort of the whole CLI.
+pinned_account() {
+  local file
+  file=$(worker_model_file)
+  [ -f "$file" ] || return 0
+  [ -r "$file" ] || return 1
+  sed -n 's/^claudeb_profile=//p' "$file" 2>/dev/null | head -n1 || true
+}
+
+# The pin is the one place a human says "this account", and every consumer already reads it:
+# worker-pick's routing, the worker spawn gate, the statusline. So `use` writes there instead
+# of keeping a second notion of "chosen" — and it deliberately leaves `worker=` alone, because
+# naming an account must not also re-route work to a different vendor.
+pin_account() {
+  local name="${1:-}" file tmp near current
+  file=$(worker_model_file)
+  # Absent is normal — `use` creates it. Present but unreadable must stop everything: treating
+  # that as "no pin" would both lie about the current pin and, on the write path below, replace
+  # every other key in the file with a single line.
+  if ! current=$(pinned_account); then
+    printf 'claudeb: %s exists but cannot be read; refusing to touch the pin\n' "$file" >&2
+    return 2
+  fi
+  case "$name" in
+    '')
+      if [ -n "$current" ]; then printf 'claudeb: workers are pinned to %s\n' "$current"
+      else printf 'claudeb: no pin — workers follow worker-pick\n'
+      fi
+      return 0
+      ;;
+    --clear)
+      if [ -z "$current" ]; then
+        printf 'claudeb: no pin to clear\n'
+        return 0
+      fi
+      ;;
+    *)
+      # Shape-checked before the store lookup: this is reached from a web handler
+      # (find-truth's account dropdown), where a path-shaped name must never become a lookup
+      # outside the token store or a line other consumers then read back as an account.
+      if ! [[ "$name" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]] || [ ! -f "$tokens_dir/$name" ]; then
+        printf 'claudeb: unknown account: %s\n' "$name" >&2
+        near=$(similar_account_names "$name" || true)
+        [ -z "$near" ] || printf 'claudeb: did you mean %s?\n' "$near" >&2
+        return 2
+      fi
+      ;;
+  esac
+  mkdir -p "$(dirname "$file")"
+  tmp="$file.tmp.$$"
+  {
+    if [ -r "$file" ]; then grep -v '^claudeb_profile=' "$file" || true; fi
+    [ "$name" = --clear ] || printf 'claudeb_profile=%s\n' "$name"
+  } > "$tmp"
+  mv "$tmp" "$file"
+  if [ "$name" = --clear ]; then
+    printf 'claudeb: cleared the pin — workers follow worker-pick again\n'
+    return 0
+  fi
+  printf 'claudeb: pinned workers to %s\n' "$name"
+  if is_disabled "$name"; then
+    printf 'claudeb: note: %s is out of the worker pool, so the pin is not selectable until you `claudeb enable %s`\n' \
+      "$name" "$name" >&2
+  fi
+}
+
 selection() {
   local state="" data name result picked all_walled reset disabled_json sticky_disabled=false
   if ! account_names | grep -q .; then
@@ -1428,7 +1497,7 @@ reconcile_window() {
 
 reserved_name() {
   case "$1" in
-    .*|*/*|help|add|enable|disable|remove|accounts|status|st|profile|p|run|warm|token-upkeep) return 0 ;;
+    .*|*/*|help|add|enable|disable|remove|use|accounts|status|st|profile|p|run|warm|token-upkeep) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -1639,6 +1708,7 @@ show_help() {
   fi
   printf '%sclaudeb%s — multi-account launcher for Claude Code.\n\n' "$bold" "$reset"
   printf '  %s%sclaudeb profile <name>%s                  %sLaunch Claude with an explicit profile. Alias: p.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
+  printf '  %s%sclaudeb -p <claude args...>%s             %sHeadless run; worker-pick chooses the account.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb --refresh [--spend] [--start-windows] [--heal]%s\n' "$bold" "$cyan" "$reset"
   printf '                                          %sFree refresh; --spend adds the 1-token fallback,%s\n' "$dim" "$reset"
   printf '                                          %s--start-windows pings expired 5h windows.%s\n' "$dim" "$reset"
@@ -1650,6 +1720,7 @@ show_help() {
   printf '                                          %sShow cached limits (no network); --live probes now. Aliases: st, accounts.%s\n' "$dim" "$reset"
   printf '  %s%sclaudeb enable <name>%s                   %sReturn an account to worker selection.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb disable <name>%s                  %sExclude an account from worker selection.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
+  printf '  %s%sclaudeb use <name>|--clear%s              %sPin worker selection to one account; no name prints the pin.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb add <name>%s                      %sValidate and save a setup-token.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb remove <name> [--force]%s          %sForget an account everywhere; --force overrides a live-creds guard.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s↑/↓%s select  %s⏎%s launch profile  %s←/→%s sort  %sr%s refresh (async)  %sq/Esc%s exit interactive status\n\n' "$yellow" "$reset" "$yellow" "$reset" "$yellow" "$reset" "$yellow" "$reset" "$yellow" "$reset"
@@ -1659,8 +1730,60 @@ show_help() {
   printf '  Guide:  ~/.claude-profiles/README.md\n'
 }
 
+# `-p`/`--print` is what separates a program calling claudeb from a human entering a session,
+# and both callers need that distinction: a human must name the profile (the whole point of
+# dropping rotation), a headless caller cannot know which account is affordable, and only an
+# interactive launch defines "current" for the markers.
+args_are_headless() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in -p|--print|--print=*) return 0 ;; esac
+  done
+  return 1
+}
+
+# The sibling of the resolved script is preferred so both halves of the query contract normally
+# come from one checkout; PATH is a fallback for an install that ships them separately, and there
+# the two CAN be different versions — hence the explicit exit-code handling at the call site.
+worker_pick_cmd() {
+  local self="${BASH_SOURCE[0]:-$0}" target sibling
+  if [ -n "${CLAUDEB_WORKER_PICK:-}" ]; then printf '%s' "$CLAUDEB_WORKER_PICK"; return 0; fi
+  while [ -L "$self" ]; do
+    target=$(readlink "$self")
+    case "$target" in /*) self=$target ;; *) self=$(dirname "$self")/$target ;; esac
+  done
+  sibling=$(cd "$(dirname "$self")" && pwd)/worker-pick
+  if [ -x "$sibling" ]; then printf '%s' "$sibling"; return 0; fi
+  command -v worker-pick 2>/dev/null || return 1
+}
+
+# Headless callers (find-truth, usage-ai-report, any script) get the account from the same
+# math the workers use. No wall, no hold, no retry: an unselectable pool is an immediate
+# refusal, never a request parked until it turns into a 503.
+routed_profile_command() {
+  local pick account rc=0
+  pick=$(worker_pick_cmd) || pick=""
+  if [ -z "$pick" ] || [ ! -x "$pick" ]; then
+    printf 'claudeb: cannot route without worker-pick; use `claudeb profile <name>`\n' >&2
+    return 2
+  fi
+  account=$("$pick" --account claudeb) || rc=$?
+  # The query's own exit 3 is passed through rather than flattened into a usage error: a caller
+  # deciding between "retry after the window resets" and "this is misconfigured" needs them apart.
+  if [ "$rc" -eq 3 ]; then
+    printf 'claudeb: worker-pick selected no account; use `claudeb profile <name>`\n' >&2
+    return 3
+  fi
+  if [ "$rc" -ne 0 ] || [ -z "$account" ]; then
+    printf 'claudeb: worker-pick failed (exit %s); use `claudeb profile <name>`\n' "$rc" >&2
+    return 2
+  fi
+  printf 'claudeb: worker-pick selected %s\n' "$account" >&2
+  profile_command "$account" "$@"
+}
+
 profile_command() {
-  local profiles_dir="$HOME/.claude-profiles" profile="${1:-}" dir found d f headless arg near cred_state
+  local profiles_dir="$HOME/.claude-profiles" profile="${1:-}" dir d f near cred_state
   if [ "$profile" = --direct ]; then
     printf 'claudeb: --direct was removed; use `claudeb profile <name>`\n' >&2
     return 2
@@ -1744,14 +1867,10 @@ profile_command() {
   if is_disabled "$profile"; then
     printf 'claudeb: note: %s is disabled for worker selection; using it directly\n' "$profile" >&2
   fi
-  # Only an interactive launch defines "current" for the `*`/`●`/`cb:` markers. Headless
-  # worker spawns run constantly on other accounts; letting them stamp the state file
-  # would make those markers name the last worker instead of the account the user sits in.
-  headless=false
-  for arg in "$@"; do
-    case "$arg" in -p|--print|--print=*) headless=true; break ;; esac
-  done
-  [ "$headless" = true ] || write_state_file "$profile"
+  # Headless worker spawns run constantly on other accounts; letting them stamp the state file
+  # would make the `*`/`●`/`cb:` markers name the last worker instead of the account the user
+  # sits in.
+  args_are_headless "$@" || write_state_file "$profile"
   exec env -u ANTHROPIC_BASE_URL -u CLAUDE_CODE_OAUTH_TOKEN \
     CLAUDE_CONFIG_DIR="$dir" CLAUDE_LIMITS_ACCOUNT="$profile" claude "$@"
 }
@@ -1772,6 +1891,7 @@ profile_required() {
   [ "$found" -eq 1 ] || printf '  (none found)\n' >&2
   printf '\nUse: claudeb profile <name>\n' >&2
   printf '     claudeb profile <name> --resume <session-id>\n' >&2
+  printf '\nOnly a headless run (-p) picks an account itself, through worker-pick.\n' >&2
   return 2
 }
 
@@ -2442,6 +2562,10 @@ case "${1:-}" in
     shift
     disable_account "${1:-}"
     ;;
+  use)
+    shift
+    pin_account "${1:-}"
+    ;;
   remove)
     shift
     remove_account "$@"
@@ -2492,11 +2616,16 @@ case "${1:-}" in
     profile_required
     ;;
   *)
+    if args_are_headless "$@"; then
+      routed_rc=0
+      routed_profile_command "$@" || routed_rc=$?
+      exit "$routed_rc"
+    fi
     # A near-miss on a read-only command runs: there is nothing to get wrong, and typing
     # `stauts` should not cost a second attempt. A near-miss on a mutating one only
     # suggests — autocorrecting into `remove` would eventually delete an account.
     # `|| true`: a failing awk must not take the whole CLI down under `set -e`.
-    typo_target=$(similar_names "${1:-}" status accounts help warm token-upkeep add enable disable remove || true)
+    typo_target=$(similar_names "${1:-}" status accounts help warm token-upkeep add enable disable remove use || true)
     case "$typo_target" in
       '') profile_required ;;
       status|accounts|help)

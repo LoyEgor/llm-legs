@@ -289,7 +289,11 @@ reserved_set() {
     head -n1 | tr '|' '\n' | grep -vE '^(main|\.\*|\*/\*)$' | sort -u | paste -sd' ' -
 }
 assert eq "$(reserved_set "$CLAUDEB")" "$(reserved_set "$ROOT/bin/claude-chat-switch")"
-assert grep -Fq 'help add enable disable remove accounts status st profile p run warm token-upkeep' "$ROOT/$DOC"
+# Compared against the code's own set rather than a third hand-maintained copy, so adding a
+# subcommand cannot leave the invariant's prose behind.
+doc_reserved=$(sed -nE 's/.*`(help[a-z -]*token-upkeep)`.*/\1/p' "$ROOT/$DOC" |
+  head -n1 | tr ' ' '\n' | sort -u | paste -sd' ' -)
+assert eq "$doc_reserved" "$(reserved_set "$CLAUDEB")"
 assert doc_has 'Reserved profile names'
 
 printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, account pin precedence, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, and worker spawn pressure gate) and match %s\n' "$asserts" "$DOC"

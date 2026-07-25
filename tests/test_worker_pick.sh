@@ -313,4 +313,64 @@ assert contains "$policy" 'conservatively'
 assert contains "$policy" 'five of every ten'
 assert contains "$policy" 'every usable non-main account of the same vendor ranks ahead'
 
-printf 'PASS: %s assertions; R1-R9 scoring, Codex reset runway and main-last priority, Gemini multi-account selection/pin/login exclusion/freshness/floor/toggle routing, output/cache golden contract, session and policy text\n' "$asserts"
+# `--account claudeb` is the machine-readable face of the same selection: exactly one bare
+# account name, so a caller routing a headless run cannot drift from what a worker would get.
+QUERY_CACHE="$WORK/query-cache"
+mkdir -p "$QUERY_CACHE"
+query_env=(TZ=UTC "HOME=$HOME_FIXTURE" "WORKER_PICK_CONFIG_FILE=$CONFIG"
+  "WORKER_PICK_TIERS_FILE=$TIERS" "WORKER_PICK_CACHE_DIR=$QUERY_CACHE" WORKER_PICK_NOW=2000000000
+  CLAUDE_LIMITS_ACCOUNT=session)
+query_account() {
+  jq -c --arg name "$1" '.[$name]' "$FIXTURES" >"$STORE" || fail "fixture $1 missing"
+  query_out=$(env "${query_env[@]}" "LLM_LIMITS_FILE=$STORE" "$SCRIPT" --account claudeb \
+    2>"$WORK/query.err")
+  query_rc=$?
+}
+write_config() {
+  printf '%s\n' 'worker=auto' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
+    'gemini_model=pro' 'gemini_effort=high' ${1:+"claudeb_profile=$1"} >"$CONFIG"
+}
+
+query_account golden
+assert test "$query_rc" -eq 0
+assert test "$query_out" = worker
+assert test ! -s "$WORK/query.err"
+# A query answers a caller; it does not announce a routing decision, so the statusline's
+# prediction stays owned by the real invocation.
+assert test -z "$(find "$QUERY_CACHE" -type f -print -quit)"
+
+# The pin is the caller's own choice, so a query honors it...
+write_config worker
+query_account golden
+assert test "$query_rc" -eq 0
+assert test "$query_out" = worker
+# ...and a pin it cannot honor fails, never quietly resolving to a different account — routing
+# around the pin is exactly what the removed proxy used to do.
+write_config session
+query_account golden
+assert test "$query_rc" -eq 3
+assert test -z "$query_out"
+assert grep -q 'no selectable claudeb account' "$WORK/query.err"
+write_config
+
+# Unusable data has no fail-safe here: a guessed account would send a caller at an account this
+# data cannot vouch for.
+missing_out=$(env "${query_env[@]}" "LLM_LIMITS_FILE=$WORK/absent.json" "$SCRIPT" \
+  --account claudeb 2>"$WORK/query-missing.err")
+missing_rc=$?
+assert test "$missing_rc" -eq 3
+assert test -z "$missing_out"
+assert grep -q 'cannot select a claudeb account' "$WORK/query-missing.err"
+
+# Codex and Gemini have no worker-pool state yet, so the query refuses them by name rather
+# than answering with a number nobody can honor.
+for vendor in codex gemini claude; do
+  vendor_out=$(env "${query_env[@]}" "LLM_LIMITS_FILE=$STORE" "$SCRIPT" --account "$vendor" \
+    2>"$WORK/query-vendor.err")
+  vendor_rc=$?
+  assert test "$vendor_rc" -eq 2
+  assert test -z "$vendor_out"
+  assert grep -q 'supports only claudeb' "$WORK/query-vendor.err"
+done
+
+printf 'PASS: %s assertions; R1-R9 scoring, Codex reset runway and main-last priority, Gemini multi-account selection/pin/login exclusion/freshness/floor/toggle routing, output/cache golden contract, session and policy text, and the --account query contract (bare name, pin honored or failed loudly, no cache write, no fail-safe guess, claudeb only)\n' "$asserts"
