@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # PreToolUse(Agent) for relay-worker spawns: rewrite the call's
 # description to the canonical `<account> · [<model> · ]<effort>: <title>`
-# form deterministically — account from the pin/daemon/codexb, model+effort
+# form deterministically — account from the pin/codexb, model+effort
 # from the brief's MODEL:/EFFORT: lines with worker-model defaults — instead
 # of trusting the orchestrating model to compose it. Fail-open: on any doubt
 # leave the call untouched.
@@ -36,15 +36,13 @@ codex_model_short_label() {
 if [ "$subagent" = claudeb-worker ]; then
   acct=$(worker_conf claudeb_profile)
   [ -n "$acct" ] || acct=$(brief_line ACCOUNT)
-  [ -n "$acct" ] || acct=$(curl -s --max-time 1 127.0.0.1:45789/claudebd/status 2>/dev/null | jq -r '.current // empty' 2>/dev/null)
-  [ -n "$acct" ] || acct='?'
   model=$(brief_line MODEL)
   [ -n "$model" ] || model=$(worker_conf claudeb_model)
   [ -n "$model" ] || model=opus
   effort=$(brief_line EFFORT)
   [ -n "$effort" ] || effort=$(worker_conf claudeb_effort)
   [ -n "$effort" ] || effort=high
-  prefix="$acct · $model · $effort"
+  if [ -n "$acct" ]; then prefix="$acct · $model · $effort"; else prefix="$model · $effort"; fi
 elif [ "$subagent" = codex-worker ]; then
   acct=$(worker_conf codex_profile)
   [ -n "$acct" ] || acct=$("$HOME/.local/bin/codexb" pick 2>/dev/null | tail -n1 | tr -cd 'A-Za-z0-9_.-')

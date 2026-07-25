@@ -35,6 +35,33 @@ export PATH
 
 source "$SCRIPT"
 
+# A bare invocation is now an error and must not launch Claude.
+mkdir -p "$HOME/.claude-profiles/com" "$HOME/.claude-profiles/notcom"
+touch "$CLAUDEB_DIR/tokens/com" "$CLAUDEB_DIR/tokens/notcom" "$CLAUDEB_DIR/tokens/-legacy"
+printf 'notcom\n-legacy\n' >"$CLAUDEB_DIR/disabled"
+NO_PROFILE_OUT="$WORK/no-profile.out"
+cat >"$FAKE_BIN/claude" <<EOF
+#!/usr/bin/env bash
+printf 'launched\n' >>"$WORK/claude-launches"
+exit 0
+EOF
+chmod +x "$FAKE_BIN/claude"
+assert_fails env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" bash "$SCRIPT" >"$NO_PROFILE_OUT" 2>&1
+assert grep -q 'profile required — rotation has been removed' "$NO_PROFILE_OUT"
+assert grep -q '  com (enabled)' "$NO_PROFILE_OUT"
+assert grep -q '  notcom (disabled)' "$NO_PROFILE_OUT"
+assert grep -q -- '  -legacy (disabled)' "$NO_PROFILE_OUT"
+assert grep -q 'claudeb profile <name>' "$NO_PROFILE_OUT"
+assert test ! -e "$WORK/claude-launches"
+assert_fails env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" bash "$SCRIPT" --direct profile com \
+  >"$WORK/direct-before.out" 2>&1
+assert grep -q -- '--direct was removed' "$WORK/direct-before.out"
+assert test ! -e "$WORK/claude-launches"
+assert_fails env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" bash "$SCRIPT" profile com --direct \
+  >"$WORK/direct-after.out" 2>&1
+assert grep -q -- '--direct was removed' "$WORK/direct-after.out"
+rm -f "$CLAUDEB_DIR/tokens/com" "$CLAUDEB_DIR/tokens/notcom" "$CLAUDEB_DIR/tokens/-legacy"
+
 now=$(date +%s)
 short_epoch=$((now + 3600))
 week_epoch=$((now + 172800))
@@ -266,9 +293,8 @@ assert test "$(selection | jq -r .picked)" = beta
 touch -t 202607120103 "$state_file"
 assert test "$(selection | jq -r .picked)" = alpha
 
-# An out-of-rotation (disabled) account launched via `profile` PROCEEDS direct:
-# prints the informational note and execs with the profile's own creds, with the
-# leaked proxy base URL and injected rotating token stripped.
+# A disabled account launched via `profile` proceeds direct and strips inherited
+# routing credentials.
 touch "$CLAUDEB_DIR/tokens/gamma"
 printf 'gamma\n' >"$disabled_file"
 ENV_DUMP="$WORK/gamma-env.txt"
@@ -278,29 +304,21 @@ env > "$ENV_DUMP"
 exit 0
 EOF
 chmod +x "$FAKE_BIN/claude"
-# Subshell so profile_command's exec replaces the subshell, not the test runner;
-# proxy-session leaks are set to prove they get stripped from the direct launch.
-note=$( ANTHROPIC_BASE_URL="http://127.0.0.1:45789" CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-leak" \
+# Subshell so profile_command's exec replaces the subshell, not the test runner.
+note=$( ANTHROPIC_BASE_URL="http://proxy.invalid" CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-leak" \
   profile_command gamma 2>&1 >/dev/null )
-assert grep -q 'out of rotation' <<<"$note"
+assert grep -q 'disabled for worker selection' <<<"$note"
 assert test -f "$ENV_DUMP"
 assert_fails grep -q '^ANTHROPIC_BASE_URL=' "$ENV_DUMP"
 assert_fails grep -q '^CLAUDE_CODE_OAUTH_TOKEN=' "$ENV_DUMP"
 assert grep -qx "CLAUDE_LIMITS_ACCOUNT=gamma" "$ENV_DUMP"
 assert grep -qx "CLAUDE_CONFIG_DIR=$HOME/.claude-profiles/gamma" "$ENV_DUMP"
-for reserved in p run; do
-  reserved_env_dump="$WORK/$reserved-env.txt"
-  mkdir -p "$HOME/.claude-profiles/$reserved"
-  cat >"$FAKE_BIN/claude" <<EOF
-#!/usr/bin/env bash
-env > "$reserved_env_dump"
-exit 0
-EOF
-  chmod +x "$FAKE_BIN/claude"
-  ( profile_command "$reserved" )
-  assert grep -qx "CLAUDE_LIMITS_ACCOUNT=$reserved" "$reserved_env_dump"
-  assert grep -qx "CLAUDE_CONFIG_DIR=$HOME/.claude-profiles/$reserved" "$reserved_env_dump"
-done
+assert grep -qx gamma "$CLAUDEB_DIR/.claudeb-state"
+mkdir -p "$HOME/.claude-profiles/gateway"
+rm -f "$ENV_DUMP"
+assert_fails profile_command gateway >"$WORK/unknown-profile.out" 2>&1
+assert grep -q "unknown account 'gateway'" "$WORK/unknown-profile.out"
+assert test ! -e "$ENV_DUMP"
 for command in curl security claude; do
   printf '#!/usr/bin/env bash\nexit 97\n' >"$FAKE_BIN/$command"
   chmod +x "$FAKE_BIN/$command"
@@ -945,6 +963,7 @@ EOF
 
   # 4: frozen single-explicit (menu Hard-refresh) warm still runs its CLI session.
   : >"$fz_claude"; : >"$token_attempts_file"
+  account_names() { printf 'fzM\n'; }
   touch "$CLAUDEB_DIR/tokens/fzM"
   CLAUDEB_WARM_USER_EXPLICIT=true warm_accounts fzM >/dev/null 2>&1 || true
   assert test -s "$fz_claude"
@@ -1452,7 +1471,7 @@ fresh_creds='{"claudeAiOauth":{"refreshToken":"rt-heal","accessToken":"at-heal",
 
 # --- no-refresh contexts and the messages probe never write an auth verdict on
 # unproven evidence: a hard-expired token with refresh disallowed is scheduled
-# expiry, and a daemon-token 401 is affirmative only when the token was fresh. ---
+# expiry, and a messages-probe 401 is affirmative only when the token was fresh. ---
 
 # probe_one with allow_refresh=false + hard-expired token → auth field untouched.
 (
@@ -1766,7 +1785,7 @@ EOF
   assert test "$aa_p" -lt "$bb_d"
 ) || exit 1
 
-# remove: full-inventory cleanup, alive-creds guard + --force, rotation-state reset.
+# remove: full-inventory cleanup, alive-creds guard + --force, account-state reset.
 (
   RMKC="$WORK/rm-keychain"; mkdir -p "$RMKC"
   svc_of() { printf 'Claude Code-credentials-%s' "$(printf '%s' "$HOME/.claude-profiles/$1" | shasum -a 256 | awk '{print substr($1, 1, 8)}')"; }
@@ -1790,7 +1809,6 @@ EOF
   mkdir -p "$HOME/.claude-profiles/rmv/nested"; printf x >"$HOME/.claude-profiles/rmv/nested/f"
   printf '{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0}}' >"$RMKC/$(svc_of rmv)"
   printf '{"rmv":{"warm_outcome":"ok"},"keep":{"warm_outcome":"ok"}}' >"$CLAUDEB_DIR/oauth-attempts.json"
-  touch "$CLAUDEB_DIR/oauth-attempts.json.bypass.rmv"
   printf 'rmv=1\nkeep=2\n' >"$CLAUDEB_DIR/account-tiers"
   printf 'rmv\n' >"$CLAUDEB_DIR/disabled"
   printf 'rmv\n' >"$CLAUDEB_DIR/.claudeb-state"
@@ -1803,7 +1821,6 @@ EOF
   assert test ! -e "$HOME/.claude-profiles/rmv"
   assert test -e "$CLAUDEB_DIR/tokens/keep"
   assert jq -e '.rmv == null and .keep != null' "$CLAUDEB_DIR/oauth-attempts.json"
-  assert test ! -e "$CLAUDEB_DIR/oauth-attempts.json.bypass.rmv"
   assert grep -qx 'keep=2' "$CLAUDEB_DIR/account-tiers"
   assert_fails grep -q '^rmv=' "$CLAUDEB_DIR/account-tiers"
   assert_fails grep -qx rmv "$CLAUDEB_DIR/disabled"
@@ -1871,4 +1888,4 @@ EOF
   assert_fails "$SCRIPT" remove ghost-account
 ) || exit 1
 
-echo "PASS: $asserts asserts; reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth weather/backoff and lock behavior, creation-only reserved names and leading-hyphen rejection, disabled-account timeline, out-of-rotation profile launch proceeds direct (proxy leaks stripped), generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent-rotation adoption, capacity weather clears stale expired auth for valid tokens, warm-first heal ordering and fallback, warm auth verdicts require current-run refresh evidence, start-windows opens a fresh window and reconcile locks the new resets_at without regressing it, start-windows skips a disabled account with an explicit cause, warm --start-window opens only an expired window for the explicit account (live window and flagless runs never ping; ping weather warns without an auth verdict), the paid haiku warm fallback stays off unless opted in, regular probes never warm, heal_expired covers disabled accounts with actionable causes, and heal_one writes expired only on current-run evidence (stale-token 401 defers to the token endpoint's verdict, fresh-token 401 is affirmative, weather never re-stamps a prior expired), and no-refresh probes plus daemon-token messages-probe 401s defer to the refresh outcome (stale token → weather no-write / invalid_grant expired, fresh token → affirmative), and interactive status account-row selection (bounded up/down navigation, name-stable across re-sort), Enter resolving to a \`claudeb profile <name>\` exec, row-scoped reverse-video highlight, and the non-tty path staying plain with no key loop or launch, status defaulting to cached (zero network; --live still probes), and the async refresh outcome summary (✓ when all enabled accounts are live/live*, else names stale accounts with a cause and excludes disabled ones, raw probe stderr confined to the log), refresh cancellation killing the probe process group, first-pass results publishing in completion order, and reserved legacy profiles remaining launchable and removable"
+echo "PASS: $asserts asserts; profile-required launch guard, reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth weather/backoff and lock behavior, creation-only reserved names and leading-hyphen rejection, disabled-account timeline, disabled profile launch proceeds direct with inherited routing stripped, generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent token adoption, capacity weather clears stale expired auth for valid tokens, warm-first heal ordering and fallback, warm auth verdicts require current-run refresh evidence, start-windows opens a fresh window and reconcile locks the new resets_at without regressing it, start-windows skips a disabled account with an explicit cause, warm --start-window opens only an expired window for the explicit account (live window and flagless runs never ping; ping weather warns without an auth verdict), the paid haiku warm fallback stays off unless opted in, regular probes never warm, heal_expired covers disabled accounts with actionable causes, and heal_one writes expired only on current-run evidence (stale-token 401 defers to the token endpoint's verdict, fresh-token 401 is affirmative, weather never re-stamps a prior expired), and no-refresh probes plus messages-probe 401s defer to the refresh outcome (stale token → weather no-write / invalid_grant expired, fresh token → affirmative), and interactive status account-row selection (bounded up/down navigation, name-stable across re-sort), Enter resolving to a \`claudeb profile <name>\` exec, row-scoped reverse-video highlight, and the non-tty path staying plain with no key loop or launch, status defaulting to cached (zero network; --live still probes), and the async refresh outcome summary (✓ when all enabled accounts are live/live*, else names stale accounts with a cause and excludes disabled ones, raw probe stderr confined to the log), refresh cancellation killing the probe process group, first-pass results publishing in completion order, unknown profiles rejected, and reserved legacy profiles removable"

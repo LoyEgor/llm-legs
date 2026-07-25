@@ -43,7 +43,7 @@ list_profiles() {
 # account dir). Keep this list in sync with reserved_name in bin/claudeb.
 is_reserved() {
   case "$1" in
-    main|help|add|use|enable|disable|pick|accounts|status|st|daemon|profile|warm) return 0 ;;
+    main|help|add|enable|disable|remove|accounts|status|st|profile|p|run|warm|token-upkeep) return 0 ;;
     .*|*/*) return 0 ;;
     *) return 1 ;;
   esac

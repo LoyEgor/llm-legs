@@ -14,7 +14,7 @@ MODEL:/EFFORT:/ACCOUNT:". That compression happens in the claude-setup chat, not
 Already present in ~/.llm-limits.json (verified 2026-07-20):
 - Per-account `fable` bucket alongside `five_hour`/`weekly` (used_pct, resets_at,
   effective_pct, staleness) — FB% column in the table.
-- `rotation.usable/blocked {general, fable}` flags per claude account.
+- `rotation.usable {general, fable}` flags per Claude account.
 - Codex: `reset_credits` (integer, ↻N in the table's CR column) and `plan_type`.
 
 Gaps to close:
@@ -83,8 +83,9 @@ constants in the script, unit-tested with frozen fixtures — never re-derived i
   keeps the existing conservative staleness rules. Separately (data layer, not scoring):
   diagnose WHY the weekly bucket is absent for this account class and fix collection if
   the API does expose it.
-  Acceptance: today's live olx snapshot (5h 0% fresh, weekly absent, fable 87% blocked
-  by plan, no-Fable) → ranks FIRST among worker candidates.
+  Acceptance: today's live olx snapshot (5h 0% fresh, weekly absent, fable
+  numeric but Pro plan) remains eligible for general work and ineligible for
+  Fable work.
 
 Same shape applies to codex (codexb accounts): tier/floor/reset logic where data
 exists; "prefer codex less as it nears limits" becomes a score, not prose.

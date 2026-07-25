@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
-# claudeb — multi-account launcher/balancer for Claude Code: picks the freest
-# account and runs sessions through the claudebd rotating proxy.
-# See ~/.claude-profiles/README.md before changing anything: snapshot schema,
-# account==profile naming, and CLAUDE_LIMITS_ACCOUNT semantics are coupled
-# with claudebd/statusline.sh.
+# claudeb — multi-account launcher for Claude Code.
+# See ~/.claude-profiles/README.md before changing anything: snapshot schema and
+# account==profile naming are shared with the limits and statusline surfaces.
 set -euo pipefail
 
 base_dir="${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}"
@@ -97,7 +95,7 @@ account_data() {
 }
 
 is_disabled() {
-  [ -r "$disabled_file" ] && grep -qxF "$1" "$disabled_file"
+  [ -r "$disabled_file" ] && grep -qxF -- "$1" "$disabled_file"
 }
 
 set_disabled() {
@@ -962,9 +960,8 @@ messages_probe_and_mark() {
     return 0
   fi
   if [ "$http" = 401 ] || [ "$http" = 403 ]; then
-    # The messages probe carries the daemon token, whose freshness we cannot read
-    # from the response; a 401 is affirmative only when the account's token is not
-    # due for refresh. Otherwise defer to the refresh outcome (weather → no write).
+    # The response does not expose token freshness; defer a 401 to the refresh
+    # outcome when the local access token is already due for refresh.
     if token_needs_refresh "$name"; then
       heal_refresh_verdict "$name" "messages probe $http"
     else
@@ -1010,7 +1007,7 @@ heal_refresh_verdict() {
   esac
 }
 
-# Disabled accounts are only out of ROTATION; the user still watches their
+# Disabled accounts are only out of the worker pool; the user still watches their
 # limits and wants them healed. Warm is zero-cost, so heal them too. The warm
 # path uses the `claude` CLI's own OAuth rotation, not the curl refresh, so a
 # token-endpoint 429/failed record must never gate it (see oauth_heal_backoff_until).
@@ -1357,7 +1354,7 @@ reconcile_window() {
 
 reserved_name() {
   case "$1" in
-    .*|*/*|help|add|use|enable|disable|remove|pick|accounts|status|st|daemon|profile|p|run|warm|token-upkeep) return 0 ;;
+    .*|*/*|help|add|enable|disable|remove|accounts|status|st|profile|p|run|warm|token-upkeep) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -1398,43 +1395,12 @@ add_account() {
   printf 'claudeb: saved and connected: %s\n' "$name"
 }
 
-use_account() {
-  local name="${1:-}" http body
-  if [ -z "$name" ]; then
-    printf 'usage: claudeb use <name>\n' >&2
-    exit 2
-  fi
-  if [ ! -f "$tokens_dir/$name" ]; then
-    printf 'claudeb: unknown account: %s\n' "$name" >&2
-    exit 2
-  fi
-  write_state_file "$name"
-  if daemon_query >/dev/null 2>&1; then
-    body=$(jq -cn --arg account "$name" '{account: $account}')
-    http=$(curl -s -m 1 -o /dev/null -w '%{http_code}' -X POST \
-      -H 'Content-Type: application/json' -d "$body" \
-      "http://127.0.0.1:$daemon_port/claudebd/use" 2>/dev/null || printf '000')
-    if [ "$http" != 200 ]; then
-      printf 'claudeb: daemon refused the switch (HTTP %s)\n' "$http" >&2
-      exit 1
-    fi
-  else
-    printf 'claudeb: daemon not running; will apply on next start\n' >&2
-  fi
-  printf 'claudeb: using %s\n' "$name"
-}
-
 write_state_file() {
   local name="$1" tmp
   mkdir -p "$base_dir"
   tmp="$state_file.tmp.$$"
   printf '%s\n' "$name" > "$tmp"
   mv "$tmp" "$state_file"
-}
-
-# A status GET makes a running daemon rescan and pick up store changes immediately.
-nudge_daemon_rescan() {
-  daemon_query >/dev/null 2>&1 || true
 }
 
 enable_account() {
@@ -1452,7 +1418,6 @@ enable_account() {
     return
   fi
   set_disabled "$name" off
-  nudge_daemon_rescan
   printf 'claudeb: enabled %s\n' "$name"
 }
 
@@ -1480,12 +1445,9 @@ disable_account() {
     exit 1
   fi
   set_disabled "$name" on
-  nudge_daemon_rescan
   printf 'claudeb: disabled %s\n' "$name"
 }
 
-# Forget an account across the whole store. A live daemon re-scans tokens/ on the
-# status GET nudged at the end, so it drops the account without a restart.
 remove_account() {
   local name='' force=false arg service creds tmp state sec_rc=0 exists=false alive=false attempts_lock
   local profiles_root="$HOME/.claude-profiles"
@@ -1530,7 +1492,7 @@ remove_account() {
   fi
   # Aliveness depends on the account kind, which the keychain read distinguishes:
   #   sec_rc 0  → keychain account: judge the keychain blob (tokens/<name> is only
-  #               the daemon's cached bearer, not proof of a live login);
+  #               the cached bearer, not proof of a live login);
   #   sec_rc 44 → no keychain item → setup-token account: a present, non-empty
   #               tokens/<name> IS its live token (claudeb add writes it there);
   #   other rc  → keychain read failed: cannot verify → fail closed (treat alive).
@@ -1553,8 +1515,8 @@ remove_account() {
   rm -rf "$profiles_root/$name"
 
   if [ -r "$oauth_attempts_file" ]; then
-    # Same lock oauth_attempt_update takes, so a concurrent daemon/CLI writer is
-    # not lost and the file is never left half-written.
+    # Same lock oauth_attempt_update takes, so a concurrent CLI writer is not
+    # lost and the file is never left half-written.
     attempts_lock="$oauth_attempts_file.lock"
     if lock_acquire "$attempts_lock"; then
       tmp="$oauth_attempts_file.tmp.$$"
@@ -1593,7 +1555,6 @@ remove_account() {
     [ "$state" = "$name" ] && rm -f "$fable_state_file"
   fi
 
-  nudge_daemon_rescan
   printf 'claudeb: removed %s\n' "$name"
 }
 
@@ -1602,27 +1563,21 @@ show_help() {
   if [ -t 1 ] && [ -n "${TERM:-}" ] && [ "${TERM:-}" != dumb ]; then
     bold=$'\033[1m'; cyan=$'\033[36m'; dim=$'\033[2m'; yellow=$'\033[33m'; reset=$'\033[0m'
   fi
-  printf '%sclaudeb%s — multi-account launcher and rotating proxy for Claude Code.\n\n' "$bold" "$reset"
-  printf '  %s%sclaudeb%s                                 %sLaunch through the rotating proxy.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
-  printf '  %s%sclaudeb --direct%s                        %sLaunch once without the proxy.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
+  printf '%sclaudeb%s — multi-account launcher for Claude Code.\n\n' "$bold" "$reset"
+  printf '  %s%sclaudeb profile <name>%s                  %sLaunch Claude with an explicit profile. Alias: p.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb --refresh [--spend] [--start-windows] [--heal]%s\n' "$bold" "$cyan" "$reset"
   printf '                                          %sFree refresh; --spend adds the 1-token fallback,%s\n' "$dim" "$reset"
   printf '                                          %s--start-windows pings expired 5h windows.%s\n' "$dim" "$reset"
-  printf '  %s%sclaudeb profile <name>%s                  %sOpen an isolated profile; creates it if missing (Claude asks you to log in once). Alias: p.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb warm [--start-window] [names...]%s %sHeal profiles and limits; free: session init + /usage only;%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '                                          %sfalls back to a minimal paid prompt only if that fails.%s\n' "$dim" "$reset"
   printf '                                          %s--start-window pings an expired 5h window after a good warm.%s\n' "$dim" "$reset"
   printf '  %s%sclaudeb token-upkeep%s                    %sRefresh tokens near expiry (no probes/spend); for wake/cron pre-warm.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb status [--live] [--plain] [--spend] [--start-windows] [--heal]%s\n' "$bold" "$cyan" "$reset"
   printf '                                          %sShow cached limits (no network); --live probes now. Aliases: st, accounts.%s\n' "$dim" "$reset"
-  printf '  %s%sclaudeb use <name>%s                      %sSwitch now without pinning.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
-  printf '  %s%sclaudeb enable <name>%s                   %sReturn an account to auto-rotation.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
-  printf '  %s%sclaudeb disable <name>%s                  %sExclude an account from auto-rotation.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
+  printf '  %s%sclaudeb enable <name>%s                   %sReturn an account to worker selection.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
+  printf '  %s%sclaudeb disable <name>%s                  %sExclude an account from worker selection.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb add <name>%s                      %sValidate and save a setup-token.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb remove <name> [--force]%s          %sForget an account everywhere; --force overrides a live-creds guard.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
-  printf '  %s%sclaudeb pick%s                            %sPrint the cached selection.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
-  printf '  %s%sclaudeb daemon status|start|stop|restart|log%s\n' "$bold" "$cyan" "$reset"
-  printf '  %s%sclaudeb daemon install|uninstall%s         %sManage launchd supervision.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s↑/↓%s select  %s⏎%s launch profile  %s←/→%s sort  %sr%s refresh (async)  %sq/Esc%s exit interactive status\n\n' "$yellow" "$reset" "$yellow" "$reset" "$yellow" "$reset" "$yellow" "$reset" "$yellow" "$reset"
   printf '%sDATA%s\n' "$bold" "$reset"
   printf '  Tokens: %s/tokens/<account>\n' "$base_dir"
@@ -1632,39 +1587,36 @@ show_help() {
 
 profile_command() {
   local profiles_dir="$HOME/.claude-profiles" profile="${1:-}" dir found d f
+  if [ "$profile" = --direct ]; then
+    printf 'claudeb: --direct was removed; use `claudeb profile <name>`\n' >&2
+    return 2
+  fi
   if [ "$profile" = -h ] || [ "$profile" = --help ]; then
     show_help
     return
   fi
   if [ -z "$profile" ]; then
-    printf 'usage: claudeb profile <profile> [claude args...]\n'
-    printf 'existing profiles:\n'
-    found=0
-    for d in "$profiles_dir"/*/; do
-      [ -d "$d" ] || continue
-      printf '  %s\n' "$(basename "$d")"
-      found=1
-    done
-    [ "$found" -eq 1 ] || printf '  (none yet — first run creates one)\n'
-    return
+    profile_required
+    return $?
   fi
+  for d in "$@"; do
+    if [ "$d" = --direct ]; then
+      printf 'claudeb: --direct was removed; use `claudeb profile <name>`\n' >&2
+      return 2
+    fi
+  done
   if ! [[ "$profile" =~ ^[A-Za-z0-9._-]+$ ]] || [[ "$profile" = .* ]]; then
-    printf "claudeb: invalid profile name '%s' (must start with a letter, number, or underscore; use only letters, numbers, dots, underscores, and hyphens)\n" "$profile" >&2
+    printf "claudeb: invalid profile name '%s' (use only letters, numbers, dots, underscores, and hyphens; names may not start with a dot)\n" "$profile" >&2
+    return 2
+  fi
+  if ! account_names | grep -qxF -- "$profile"; then
+    printf "claudeb: unknown account '%s'; choose a name from the configured accounts\n" "$profile" >&2
     return 2
   fi
   shift
   dir="$profiles_dir/$profile"
   if [ ! -d "$dir" ]; then
-    if reserved_name "$profile"; then
-      printf "claudeb: invalid profile name '%s'\n" "$profile" >&2
-      return 2
-    fi
-    if ! [[ "$profile" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]]; then
-      printf "claudeb: invalid profile name '%s' (must start with a letter, number, or underscore; use only letters, numbers, dots, underscores, and hyphens)\n" "$profile" >&2
-      return 2
-    fi
     mkdir -p "$dir"
-    printf "claudeb: new profile '%s' created at %s — Claude will ask you to log in once.\n" "$profile" "$dir" >&2
   fi
   # A profile isolates only auth (.claude.json + keychain entry); config AND
   # session data (resume transcripts, prompt history, rewind, plugins) are
@@ -1698,17 +1650,31 @@ profile_command() {
     prepared_profile_dir="$dir"
     return
   fi
-  # Explicit profile entry is "I want THIS account, now" — always direct on the
-  # profile's own keychain creds, independent of rotation membership. Rotation
-  # only governs the loop (proxy_launch); it must have zero effect here.
   if is_disabled "$profile"; then
-    printf 'claudeb: note: %s is out of rotation; using it directly\n' "$profile" >&2
+    printf 'claudeb: note: %s is disabled for worker selection; using it directly\n' "$profile" >&2
   fi
-  # env -u strips a proxy session's leaked ANTHROPIC_BASE_URL and injected
-  # CLAUDE_CODE_OAUTH_TOKEN; left in place they would silently route the profile
-  # through the rotating daemon (its scope eligibility, not this account's).
+  write_state_file "$profile"
   exec env -u ANTHROPIC_BASE_URL -u CLAUDE_CODE_OAUTH_TOKEN \
     CLAUDE_CONFIG_DIR="$dir" CLAUDE_LIMITS_ACCOUNT="$profile" claude "$@"
+}
+
+profile_required() {
+  local name found=0
+  printf 'claudeb: profile required — rotation has been removed.\n\n' >&2
+  printf 'Available profiles:\n' >&2
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    if is_disabled "$name"; then
+      printf '  %s (disabled)\n' "$name" >&2
+    else
+      printf '  %s (enabled)\n' "$name" >&2
+    fi
+    found=1
+  done < <(account_names)
+  [ "$found" -eq 1 ] || printf '  (none found)\n' >&2
+  printf '\nUse: claudeb profile <name>\n' >&2
+  printf '     claudeb profile <name> --resume <session-id>\n' >&2
+  return 2
 }
 
 run_warm_session() {
@@ -1950,229 +1916,6 @@ warm_accounts() {
     failed=1
   done
   return "$failed"
-}
-
-daemon_port="${CLAUDEBD_PORT:-45789}"
-daemon_url="http://127.0.0.1:$daemon_port/claudebd/status"
-daemon_log="$base_dir/claudebd.log"
-daemon_pid="$base_dir/claudebd.pid"
-daemon_label="com.claudeb.daemon"
-daemon_domain="gui/$(id -u)"
-daemon_service="$daemon_domain/$daemon_label"
-daemon_plist="$HOME/Library/LaunchAgents/$daemon_label.plist"
-daemon_json=""
-
-daemon_query() {
-  curl -fsS --max-time 0.3 "$daemon_url" 2>/dev/null
-}
-
-daemon_supervised() {
-  launchctl print "$daemon_service" >/dev/null 2>&1
-}
-
-daemon_wait() {
-  local i=0
-  while [ "$i" -lt 40 ]; do
-    if daemon_json=$(daemon_query); then return 0; fi
-    sleep 0.1
-    i=$((i + 1))
-  done
-  return 1
-}
-
-daemon_spawn_manual() {
-  mkdir -p "$base_dir"
-  if command -v setsid >/dev/null 2>&1; then
-    nohup setsid "$HOME/.local/bin/claudebd" >> "$daemon_log" 2>&1 </dev/null &
-  else
-    nohup "$HOME/.local/bin/claudebd" >> "$daemon_log" 2>&1 </dev/null &
-  fi
-  disown 2>/dev/null || true
-}
-
-daemon_start_impl() {
-  if daemon_json=$(daemon_query); then return 0; fi
-  if [ -f "$daemon_plist" ]; then
-    if ! daemon_supervised; then
-      launchctl bootstrap "$daemon_domain" "$daemon_plist" >/dev/null 2>&1 || return 1
-    fi
-    launchctl kickstart "$daemon_service" >/dev/null 2>&1 || return 1
-  else
-    daemon_spawn_manual
-  fi
-  daemon_wait
-}
-
-ensure_daemon() {
-  daemon_start_impl
-}
-
-daemon_stop() {
-  local pid="" i
-  [ -r "$daemon_pid" ] && IFS= read -r pid < "$daemon_pid" || true
-  if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
-    kill -TERM "$pid"
-  elif command -v lsof >/dev/null 2>&1; then
-    pid=$(lsof -ti "tcp:$daemon_port" 2>/dev/null | head -n 1)
-    [ -z "$pid" ] || kill -TERM "$pid"
-  fi
-  i=0
-  while daemon_query >/dev/null 2>&1 && [ "$i" -lt 20 ]; do
-    sleep 0.1
-    i=$((i + 1))
-  done
-  if daemon_query >/dev/null 2>&1; then
-    printf 'claudeb: daemon did not stop\n' >&2
-    return 1
-  fi
-  printf 'claudeb: daemon stopped\n'
-}
-
-daemon_install() {
-  local node_path
-  node_path=$(command -v node 2>/dev/null) || {
-    printf 'claudeb: node was not found\n' >&2
-    return 1
-  }
-  if daemon_query >/dev/null 2>&1; then daemon_stop; fi
-  mkdir -p "$HOME/Library/LaunchAgents" "$base_dir"
-  printf '%s\n' \
-    '<?xml version="1.0" encoding="UTF-8"?>' \
-    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
-    '<plist version="1.0">' \
-    '<dict>' \
-    '  <key>Label</key>' \
-    "  <string>$daemon_label</string>" \
-    '  <key>ProgramArguments</key>' \
-    '  <array>' \
-    "    <string>$node_path</string>" \
-    "    <string>$HOME/.local/bin/claudebd</string>" \
-    '  </array>' \
-    '  <key>RunAtLoad</key>' \
-    '  <true/>' \
-    '  <key>KeepAlive</key>' \
-    '  <dict>' \
-    '    <key>SuccessfulExit</key>' \
-    '    <false/>' \
-    '  </dict>' \
-    '  <key>StandardOutPath</key>' \
-    "  <string>$daemon_log</string>" \
-    '  <key>StandardErrorPath</key>' \
-    "  <string>$daemon_log</string>" \
-    '  <key>ProcessType</key>' \
-    '  <string>Background</string>' \
-    '</dict>' \
-    '</plist>' > "$daemon_plist"
-  plutil -lint "$daemon_plist" >/dev/null || return 1
-  launchctl bootout "$daemon_service" >/dev/null 2>&1 || true
-  launchctl bootstrap "$daemon_domain" "$daemon_plist" >/dev/null 2>&1 || return 1
-  launchctl kickstart "$daemon_service" >/dev/null 2>&1 || return 1
-  if daemon_wait; then
-    printf 'claudeb: launchd supervision installed and daemon started\n'
-  else
-    printf 'claudeb: launchd service did not become ready\n' >&2
-    return 1
-  fi
-}
-
-daemon_uninstall() {
-  launchctl bootout "$daemon_service" >/dev/null 2>&1 || true
-  rm -f "$daemon_plist"
-  printf 'claudeb: launchd supervision uninstalled\n'
-}
-
-daemon_command() {
-  local action="${1:-status}"
-  case "$action" in
-    status)
-      if daemon_json=$(daemon_query); then
-        printf '%s\n' "$daemon_json" | jq .
-      else
-        printf 'not running\n'
-      fi
-      # stderr keeps `daemon status | jq` parseable
-      if daemon_supervised; then
-        printf 'supervision: launchd (auto-restart on crash)\n' >&2
-      else
-        printf 'supervision: manual\n' >&2
-      fi
-      ;;
-    start)
-      if daemon_start_impl; then
-        printf 'claudeb: daemon started\n'
-      else
-        printf 'claudeb: daemon failed to start\n' >&2
-        return 1
-      fi
-      ;;
-    stop)
-      daemon_stop
-      ;;
-    restart)
-      daemon_stop || true
-      if daemon_start_impl; then
-        printf 'claudeb: daemon restarted\n'
-      else
-        printf 'claudeb: daemon failed to start\n' >&2
-        return 1
-      fi
-      ;;
-    install)
-      daemon_install
-      ;;
-    uninstall)
-      daemon_uninstall
-      ;;
-    log)
-      tail -50 "$daemon_log" 2>/dev/null || true
-      ;;
-    *)
-      printf 'usage: claudeb daemon status|start|stop|restart|log|install|uninstall\n' >&2
-      return 2
-      ;;
-  esac
-}
-
-direct_launch() {
-  local result picked row h5 wk age
-  result=$(selection)
-  picked=$(printf '%s' "$result" | jq -r .picked)
-  row=$(printf '%s' "$result" | jq -c --arg name "$picked" '.data[] | select(.name == $name)')
-  h5=$(printf '%s' "$row" | jq -r '.h5 | round')
-  wk=$(printf '%s' "$row" | jq -r '.wk | round')
-  age=$(printf '%s' "$row" | jq -r .age)
-  if ! daemon_query >/dev/null 2>&1; then write_state_file "$picked"; fi
-  if [ "$age" -lt 0 ]; then
-    printf 'claudeb: using %s (no limit data)\n' "$picked" >&2
-  else
-    printf 'claudeb: using %s (5h %s%%, wk %s%%)\n' "$picked" "$h5" "$wk" >&2
-  fi
-  export CLAUDE_LIMITS_ACCOUNT="$picked"
-  CLAUDE_CODE_OAUTH_TOKEN=$(cat "$tokens_dir/$picked")
-  export CLAUDE_CODE_OAUTH_TOKEN
-  # Drop a proxy session's leaked base URL so the injected token hits Anthropic
-  # directly instead of being re-signed and rerouted by the rotating daemon.
-  unset ANTHROPIC_BASE_URL
-  exec claude "$@"
-}
-
-proxy_launch() {
-  local picked
-  if ! ensure_daemon; then
-    printf 'claudeb: proxy unavailable; falling back to direct mode\n' >&2
-    direct_launch "$@"
-  fi
-  picked=$(printf '%s' "$daemon_json" | jq -r '.current // empty')
-  if [ -z "$picked" ] || [ ! -r "$tokens_dir/$picked" ]; then
-    printf 'claudeb: proxy has no usable current account; falling back to direct mode\n' >&2
-    direct_launch "$@"
-  fi
-  printf 'claudeb: via proxy on 127.0.0.1:%s (current: %s)\n' "$daemon_port" "$picked" >&2
-  CLAUDE_CODE_OAUTH_TOKEN=$(cat "$tokens_dir/$picked")
-  export CLAUDE_CODE_OAUTH_TOKEN
-  export CLAUDE_LIMITS_ACCOUNT="-"
-  export ANTHROPIC_BASE_URL="http://127.0.0.1:$daemon_port"
-  exec claude "$@"
 }
 
 accounts_reselect() {
@@ -2558,6 +2301,10 @@ show_accounts() {
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
 case "${1:-}" in
+  --direct)
+    printf 'claudeb: --direct was removed; use `claudeb profile <name>`\n' >&2
+    exit 2
+    ;;
   help|-h|--help)
     show_help
     ;;
@@ -2588,10 +2335,6 @@ case "${1:-}" in
   add)
     shift
     add_account "${1:-}"
-    ;;
-  use)
-    shift
-    use_account "${1:-}"
     ;;
   enable)
     shift
@@ -2630,13 +2373,6 @@ case "${1:-}" in
     done
     show_accounts "$accounts_mode_arg" "$accounts_plain_arg" "$accounts_spend_arg" "$accounts_windows_arg" "$accounts_heal_arg"
     ;;
-  pick)
-    selection | jq -r .picked
-    ;;
-  --direct)
-    shift
-    direct_launch "$@"
-    ;;
   --refresh)
     shift
     refresh_spend_arg=false
@@ -2654,12 +2390,11 @@ case "${1:-}" in
     done
     show_accounts live false "$refresh_spend_arg" "$refresh_windows_arg" "$refresh_heal_arg"
     ;;
-  daemon)
-    shift
-    daemon_command "${1:-status}"
+  '')
+    profile_required
     ;;
   *)
-    proxy_launch "$@"
+    profile_required
     ;;
 esac
 fi

@@ -3,9 +3,8 @@
 
 SHADOW MODE (step 2 of the migration): this daemon runs alongside the legacy bash/JSON
 orchestration and touches none of it. It owns its own sqlite ledger and writes a read-only
-projection to a SHADOW path (default ~/.llm-limits-shadow.json), never the real cache. It never
-binds the claudebd data-plane port (45789) and never writes into the real ~/.claude-profiles
-store.
+projection to a SHADOW path (default ~/.llm-limits-shadow.json), never the real cache or the
+real ~/.claude-profiles store.
 
 SQLite is the authority. The projection is an atomic, deterministic read-only view of ledger
 state — a pure function of the ledger, so identical ledger contents always yield byte-identical
@@ -442,10 +441,6 @@ class Ledger:
                 vobj["as_of"] = current["as_of"]
                 vobj["stale_seconds"] = current["stale_seconds"]
                 vobj["auth"] = current["auth"]
-            if vendor == "claude":
-                vobj["daemon"] = {"walls": [], "pins": [],
-                                  "all_walled_until": {"general": None, "fable": None},
-                                  "reachable": True}
             vendors[vendor] = vobj
         # Mirror the real cache, which always carries all three vendor keys — a vendor with no
         # observations is unavailable, not absent (matches llm-limits.sh's available:false shape).
@@ -570,21 +565,10 @@ def _project_bucket(b, window, proj_now, auth_expired):
 
 
 def _rotation(acc_obj):
-    def blocked(window):
-        b = acc_obj.get(window)
-        if b is None:
-            return None
-        if b.get("effective_pct") is not None and b["effective_pct"] >= 100:
-            return "limit-" + ("5h" if window == "five_hour" else window)
-        return None
-    if not acc_obj["enabled"]:
-        return {"usable": {"general": False, "fable": False},
-                "blocked": {"general": "disabled", "fable": "disabled"}}
-    auth_bad = acc_obj["auth"]["status"] != "ok"
-    gen = "auth" if auth_bad else (blocked("five_hour") or blocked("weekly"))
-    fab = "auth" if auth_bad else (blocked("fable") or gen)
-    return {"usable": {"general": gen is None, "fable": fab is None},
-            "blocked": {"general": gen, "fable": fab}}
+    fable_pct = (acc_obj.get("fable") or {}).get("used_pct")
+    fable_capable = isinstance(fable_pct, (int, float)) and not isinstance(fable_pct, bool)
+    general = acc_obj["enabled"] and acc_obj["auth"]["status"] == "ok"
+    return {"usable": {"general": general, "fable": fable_capable}}
 
 
 def _account_usable(acc_obj):

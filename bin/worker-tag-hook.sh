@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # PreToolUse(Bash) inside relay-worker agents. Derives the
 # account·model·effort tag from the ACTUAL launch command text (claudeb/codex
-# CLI arguments + daemon state), never from the model's description discipline,
+# CLI arguments), never from the model's description discipline,
 # then prefixes the tag onto every Bash description so the UI activity line
 # always names who is spending quota. Tag files are session-scoped so the
 # statusline can surface the live tag. Fail-open everywhere.
@@ -59,15 +59,13 @@ if printf '%s' "$command" | grep -q 'codex exec'; then
 elif printf '%s' "$command" | grep -q 'claudeb' && printf '%s' "$command" | grep -qE -- '--model|--print|-p '; then
   acct=$(grab 'claudeb["'\'' ]+profile["'\'' ]+[A-Za-z0-9_.-]+' | grep -oE '[A-Za-z0-9_.-]+$')
   [ -n "$acct" ] || acct=$(worker_conf claudeb_profile)
-  [ -n "$acct" ] || acct=$(curl -s --max-time 1 127.0.0.1:45789/claudebd/status 2>/dev/null | jq -r '.current // empty' 2>/dev/null)
-  [ -n "$acct" ] || acct='?'
   model=$(grab '\-\-model[= ]+[A-Za-z0-9_.-]+' | grep -oE '[A-Za-z0-9_.-]+$')
   [ -n "$model" ] || model=$(worker_conf claudeb_model)
   [ -n "$model" ] || model=opus
   effort=$(grab '\-\-effort[= ]+[a-z]+' | grep -oE '[a-z]+$')
   [ -n "$effort" ] || effort=$(worker_conf claudeb_effort)
   [ -n "$effort" ] || effort=high
-  tag="$acct · $model · $effort"
+  if [ -n "$acct" ]; then tag="$acct · $model · $effort"; else tag="$model · $effort"; fi
 elif { printf '%s' "$command" | grep -qE '(^|[[:space:]/])agy([[:space:]]|$)' ||
        is_geminib_launch; } &&
      printf '%s' "$command" | grep -q -- '--print'; then

@@ -249,8 +249,9 @@ for i, item in ipairs(expiredMenu) do
 end
 if not expiredRow or not title(expiredRow):match("%s–%s*$") then error("null reset did not render dash") end
 local color = expiredRow.title.attributes.color
-if not color or color.red ~= 0.55 or color.green ~= 0.55 or color.blue ~= 0.55 then
-  error("expired stale=false row was not dimmed")
+if not color or color.red ~= 0.9 or color.green ~= 0.25 or color.blue ~= 0.2
+    or color.alpha ~= 0.55 then
+  error("expired at-limit row was not dim red")
 end
 local fallbackState = { starts = {}, alerts = {} }
 local fallback = loadModule({ schema = 1, vendors = {
@@ -322,7 +323,10 @@ fi
 JSON=$(llm-limits 2>/dev/null) || fail "bare llm-limits failed"
 AVAIL=$(jq -r '.vendors | to_entries[] | select(.value.available == true) | .key' <<<"$JSON")
 [ -n "$AVAIL" ] || fail "no available vendor in store; cannot assert menu rows"
-grep -q ' · ' <<<"$MENU_TXT" && fail "banned aggregate vendor age line is still present"
+# A refresh-failure row legitimately joins cause and age with the same separator, so it is
+# excluded rather than widening the ban to any middot.
+grep -v 'refresh failed' <<<"$MENU_TXT" | grep -q ' · ' \
+  && fail "banned aggregate vendor age line is still present"
 grep -q '5h' <<<"$MENU_TXT" || fail "menu has no five-hour vendor rows"
 grep -Fxq 'Refresh' <<<"$MENU_TXT" || fail "menu missing 'Refresh' action item"
 grep -Fxq 'Refresh + Start Windows' <<<"$MENU_TXT" || fail "menu missing 'Refresh + Start Windows' action item"
@@ -376,7 +380,7 @@ pass "CLI surface: --table rows for claude/codex/gemini, bare JSON schema fields
 
 # 5. Consistency: claudeb status used% agrees with the store for every claude account.
 # --refresh re-syncs the store into ~/.llm-limits.json; claudeb status --cached reads the
-# same store without re-probing. A background daemon warm can bump a value between the two
+# same store without re-probing. A concurrent refresh can bump a value between the two
 # reads, so a mismatch retries on a fresh sync; a persistent disagreement fails loudly.
 consistency_attempt() {
   local json status hasfab a lh lw lf sh sw sf
@@ -454,7 +458,8 @@ done
 MENU2=$(hs_menu)
 assert_codex_account_rows "$MENU2" "$AFTER"
 assert_account_ages "$MENU2" "$AFTER"
-grep -q ' · ' <<<"$MENU2" && fail "aggregate vendor age line reappeared after refresh"
+grep -v 'refresh failed' <<<"$MENU2" | grep -q ' · ' \
+  && fail "aggregate vendor age line reappeared after refresh"
 if [ -n "$visible_failures" ]; then
   pass "free refresh: fetched_at advanced, no invisible failures; visible refresh_error(s):$visible_failures"
 else

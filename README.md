@@ -20,7 +20,7 @@ decision-support) as a git submodule. One fix here propagates to every consumer 
 - **Input:** prompt as `$1` or stdin. **Output:** the model's text answer on stdout.
 - **Exit codes:** `0` ok · `1` transport/leg failure · `3` weak-tier model refused (a weak model
   must never sit in a judgment seat) · `5` subscription quota exhausted (callers should drop the
-  leg for the rest of the run instead of retrying into the wall).
+  leg for the rest of the run instead of retrying after exhaustion).
 - **Audit:** every call appends `{ts, leg, requested, served, weak_tier}` to
   `$LLM_LEGS_DATA_DIR/served-models.jsonl` (default: `$PWD/data` — orchestrators invoke legs
   with cwd = project root; set `LLM_LEGS_DATA_DIR` explicitly for cron/launchd).
@@ -58,7 +58,7 @@ git submodule add https://github.com/LoyEgor/llm-legs lib/legs
 Tests: `python3 -m unittest discover tests`.
 
 ## Daily self-check
-`llm-selfcheck` runs the live zero-spend menubar refresh check, then the hermetic limits, claudeb, claudebd, codexb, and geminib suites every day at 10:30 local time.
+`llm-selfcheck` runs the live zero-spend menubar refresh check, then the hermetic limits, claudeb, codexb, and geminib suites every day at 10:30 local time.
 Each run is recorded in `~/.claude-profiles/.claudeb/selfcheck.log`; failures also raise a Hammerspoon alert and a macOS notification.
 
 ## Subscription limit collector
@@ -71,14 +71,15 @@ explicit `--json`, `--plain`, or `--table` always wins. The stable top level is
 `{schema, fetched_at, vendors}`. Claude includes
 `current_account`, an ordered `accounts` array, and the current account's `five_hour`, optional
 `weekly`, `as_of`, and `stale_seconds` hoisted at vendor level for compatibility. Each account has
-its own windows and freshness, plus an `enabled` flag reflecting its claudeb rotation membership
+its own windows and freshness, plus an `enabled` flag reflecting worker-selection membership
 (absent means enabled). Use `--plain` for a human-readable line per account or `--no-write` to
 leave the cache untouched. `--table` renders the same model as aligned columns: 5h, weekly, and
-Fable percentages and local reset times; account age; Claude rotation state; Codex reset credits;
+Fable percentages and local reset times; account age; Claude worker-pool state; Codex reset credits;
 and vendor status. Fable is `-` for rows without that bucket. `~` and `!` suffix percentage values
 whose snapshots are stale or whose reset has passed, without rewriting the last known `used_pct`.
-`ROT` is `off` for a disabled Claude account, the daemon-provided general block reason, an
-`fb:<reason>` for a Fable-only block, or `-` when unblocked or daemon rotation data is absent.
+`ROT` is `off` for a disabled Claude account, `limit-5h`/`limit-weekly`/`fb:limit-fable`
+when a local effective percentage reaches 100, or `-` otherwise. Transient upstream 429s
+are handled by the Claude CLI's own retry behavior.
 `CR` renders Codex reset credits as `↻N`. The current account is marked `*`; plan tags and Gemini
 quota-group labels are omitted. Percent columns are colorized only when stdout is a TTY; piped
 output stays plain text. `--sort
@@ -107,8 +108,7 @@ stderr, never skipped silently.
 The Gemini request is the machine-readable equivalent of `/usage`; it consumes no model tokens.
 The `main` profile keeps the legacy cache `~/.llm-limits-gemini.json`; named profiles use
 `~/.llm-limits-gemini/<name>.json`. `--refresh-account gemini/<name>` refreshes only that
-profile. Without `--refresh`, collection remains token-free and external-network-free; it also
-reads the optional claudebd localhost status endpoint.
+profile. Without `--refresh`, collection remains token-free and external-network-free.
 
 ### Machine contract
 
@@ -129,10 +129,6 @@ Claude `usable_now` considers enabled, authenticated accounts and their general 
 the model-specific fable bucket does not block other Claude work.
 Codex and Gemini additionally require `available == true`.
 Respect bucket and vendor `stale` flags when freshness matters.
-`vendors.claude.daemon.walls` reports active account/scope walls with their known deadline and
-reason. `all_walled_until.general` and `.fable` are non-null only when every known daemon account
-is walled for that scope; `reachable == false` means local daemon status was unavailable.
-
 Claude reads the `$CLAUDEB_DIR/limits/*.json` accounts (`CLAUDEB_DIR` defaults to
 `~/.claude-profiles/.claudeb`) and uses `.claudeb-state` to select the current account. `main`
 (the default plain-`claude` login, not a real claudeb token account) is excluded from every
@@ -141,12 +137,10 @@ reported. The terminal formats expose the same per-account windows, age, rotatio
 status fields. If the store is
 absent, it falls back to the freshest Claude status-line snapshot as a single `main` account.
 
-`claudeb disable <name>` takes an account out of auto-rotation and `claudeb enable <name>` puts
-it back; the set lives in `$CLAUDEB_DIR/disabled` (one name per line, missing file = all
-enabled). Disabled accounts are never auto-picked, but `claudeb use` (and the menu's Make
-Current) is independent of membership: a disabled account made current sticks until it hits a
-limit, then auto-rotation resumes among enabled accounts. The last enabled account cannot be
-disabled, and each JSON account carries the resulting `enabled` flag.
+`claudeb disable <name>` removes an account from worker selection and `claudeb enable <name>`
+puts it back; the set lives in `$CLAUDEB_DIR/disabled` (one name per line, missing file = all
+enabled). An explicit `claudeb profile <name>` launch bypasses membership. The last enabled
+account cannot be disabled, and each JSON account carries the resulting `enabled` flag.
 
 Set `LLM_LIMITS_WALLS_LOG` to a `served-models.jsonl` audit log to include the most recent
 exit-5 wall timestamp for each vendor. `LLM_LIMITS_CACHE` overrides the cache path.
@@ -177,10 +171,9 @@ if the repository itself has not been opened in agy. Overrides for tests or alte
 Canonical sources for the multi-account Claude Code tooling; installed via symlinks:
 
 - `bin/claudeb` → `~/.local/bin/claudeb` — account prober/launcher (OAuth auto-refresh, `--start-windows`, headless passthrough for worker agents).
-- `bin/claudebd` → `~/.local/bin/claudebd` — rotating proxy daemon on 127.0.0.1:45789 (launchd label `com.claudeb.daemon`; `claudeb daemon install`).
 - `bin/statusline.sh` → `~/.claude/statusline.sh` — Claude Code statusline; also writes per-account limit snapshots on real usage.
 
-Snapshot store and schema live in `~/.claude-profiles/` (documented in its README). If this volume is not mounted at login, the daemon start is retried by the next `claudeb` invocation.
+Snapshot store and schema live in `~/.claude-profiles/` (documented in its README).
 
 - `bin/claude-resume-timer` → `~/.local/bin/claude-resume-timer` — `[app|terminal|auto] [extra-minutes]`
   reads the given (or auto-detected) account's 5h window from `~/.llm-limits.json` and arms the

@@ -4,9 +4,7 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT="$ROOT/llm-limits.sh"
 WORK="$(mktemp -d)"
-daemon_pid=''
 cleanup() {
-  [ -z "$daemon_pid" ] || kill "$daemon_pid" 2>/dev/null || true
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -14,7 +12,6 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 # Unit fixtures must never discover and launch the developer's real agy binary.
 export LLM_LIMITS_GEMINI_REFRESH=0
 export LLM_LIMITS_CODEX_REFRESH=0
-export CLAUDEBD_PORT=1
 # Weather fixtures would otherwise spin claudeb's real convergence loop (240s of sleeps).
 export CLAUDEB_REFRESH_CONVERGE_S=0
 export CLAUDEB_WEATHER_RETRY_DELAY=0
@@ -562,11 +559,17 @@ CLAUDEB="$WORK/claudeb-store"
 mkdir -p "$CLAUDEB/limits" "$CLAUDEB/tokens"
 : >"$CLAUDEB/tokens/alona"
 printf 'alona\n' >"$CLAUDEB/.claudeb-state"
-printf '{"five_hour":{"used_percentage":7,"resets_at":%s},"fable":{"used_percentage":33,"resets_at":%s}}\n' "$((now + 5000))" "$((now + 5500))" >"$CLAUDEB/limits/alona.json"
+printf '{"five_hour":{"used_percentage":7,"resets_at":%s},"fable":{"used_percentage":33,"resets_at":%s},"auth":{"status":"ok","checked_at":%s}}\n' "$((now + 5000))" "$((now + 5500))" "$now" >"$CLAUDEB/limits/alona.json"
 printf '{"five_hour":{"used_percentage":21,"resets_at":%s},"seven_day":{"used_percentage":62,"resets_at":%s}}\n' "$((now + 6000))" "$((now + 7000))" >"$CLAUDEB/limits/main.json"
+printf '{"five_hour":{"used_percentage":99,"resets_at":%s}}\n' "$((now + 6000))" >"$CLAUDEB/limits/-.json"
 multi=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "claudeb collection failed"
 jq -e '.vendors.claude.source == "claudeb-store" and (.vendors.claude.accounts | length) == 1 and .vendors.claude.accounts[0].account == "alona" and .vendors.claude.accounts[0].is_current == true and (.vendors.claude.accounts[0] | has("weekly") | not) and .vendors.claude.five_hour == .vendors.claude.accounts[0].five_hour and (.vendors.claude | has("weekly") | not)' <<<"$multi" >/dev/null || fail "claudeb schema, uniqueness, or hoist mismatch"
-jq -e '.vendors.claude.accounts[0].fable.used_pct == 33 and .vendors.claude.fable.used_pct == 33 and all(.vendors.claude.accounts[]; .account != "main")' <<<"$multi" >/dev/null || fail "claudeb fable or unique-account mismatch"
+jq -e '.vendors.claude.accounts[0].fable.used_pct == 33 and .vendors.claude.fable.used_pct == 33 and
+  all(.vendors.claude.accounts[]; .account != "main" and .account != "-")' <<<"$multi" >/dev/null \
+  || fail "claudeb fable or unique-account mismatch"
+jq -e '.vendors.claude.accounts[0].rotation == {usable:{general:true,fable:true}} and
+  (.vendors.claude | has("daemon") | not)' <<<"$multi" >/dev/null \
+  || fail "local Claude rotation contract mismatch"
 
 HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CLAUDEB_CMD="$WORK/missing-claudeb" \
   LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --refresh >/dev/null 2>&1
@@ -753,183 +756,29 @@ logout_table=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$LOGOUT_STORE" LLM_LIMITS_CACHE
 awk 'NR > 1 && $1 == "claude/logout1"' <<<"$logout_table" | grep -q 'login needed' \
   || fail "logged-out claude account table STATUS missing login needed"
 
-DAEMON_PORT_FILE="$WORK/claudebd-fixture.port"
-cat >"$WORK/claudebd-fixture.py" <<'EOF'
-import http.server
-import json
-import os
-
-payload = {
-    "pid": 123,
-    "uptime_s": 60,
-    "port": 45789,
-    "current": "alona",
-    "current_fable": "alona",
-    "accounts": {
-        "alona": {"h5": 50, "wk": 10, "hreset": 4102444800, "wreset": 4102440000,
-                  "walled": True, "auth_failed_until": 0, "fable_walled_until": 0,
-                  "usable": {"general": False, "fable": True},
-                  "blocked": {"general": "wall", "fable": None}},
-        "fbonly": {"h5": 10, "wk": 20, "hreset": 4102444800, "wreset": 4102440000,
-                   "walled": False, "auth_failed_until": 0, "fable_walled_until": 4102445000,
-                   "usable": {"general": True, "fable": False},
-                   "blocked": {"general": None, "fable": "limit-fable"}},
-        "proacct": {"h5": 10, "wk": 20, "hreset": 4102444800, "wreset": 4102440000,
-                    "walled": False, "auth_failed_until": 0, "fable_walled_until": 0,
-                    "usable": {"general": True, "fable": True},
-                    "blocked": {"general": None, "fable": None}},
-    },
-    "scopes": {"general": None, "fable": "alona"},
-    "walls": [
-        {"account": "alona", "scope": "general", "until": "2100-01-01T01:00:00.000Z",
-         "reason": "transient"},
-    ],
-    "pins": [
-        {"account": "alona", "pinned_at": "2100-01-01T00:00:00.000Z"},
-    ],
-    "all_walled_until": {"general": 4102448400, "fable": None},
-}
-legacy_payload = {
-    "pid": 123,
-    "uptime_s": 61,
-    "port": 45789,
-    "current": "alona",
-    "current_fable": "alona",
-    "accounts": {
-        "alona": {"h5": 98, "wk": 40, "hreset": 4102444800, "wreset": 4102440000,
-                  "walled": True, "auth_failed_until": 0, "fable_walled_until": 4102445000},
-    },
-}
-
-class Handler(http.server.BaseHTTPRequestHandler):
-    requests = 0
-
-    def do_GET(self):
-        if self.path != "/claudebd/status":
-            self.send_error(404)
-            return
-        body = json.dumps(payload if Handler.requests < 3 else legacy_payload).encode()
-        Handler.requests += 1
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def log_message(self, *_):
-        pass
-
-server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-with open(os.environ["DAEMON_PORT_FILE"], "w") as port_file:
-    port_file.write(str(server.server_address[1]))
-server.serve_forever()
-EOF
-DAEMON_PORT_FILE="$DAEMON_PORT_FILE" python3 "$WORK/claudebd-fixture.py" &
-daemon_pid=$!
-for _ in {1..40}; do
-  [ -s "$DAEMON_PORT_FILE" ] && break
-  sleep 0.05
-done
-[ -s "$DAEMON_PORT_FILE" ] || fail "claudebd fixture server did not start"
-daemon_port=$(cat "$DAEMON_PORT_FILE")
-printf '{"five_hour":{"used_percentage":10,"resets_at":%s},"seven_day":{"used_percentage":20,"resets_at":%s},"fable":{"used_percentage":90,"resets_at":%s}}\n' \
-  "$((now + 5000))" "$((now + 7000))" "$((now + 8000))" >"$CLAUDEB/limits/fbonly.json"
-printf '{"five_hour":{"used_percentage":10,"resets_at":%s},"seven_day":{"used_percentage":20,"resets_at":%s},"fable":{"used_percentage":10,"resets_at":%s}}\n' \
-  "$((now + 5000))" "$((now + 7000))" "$((now + 8000))" >"$CLAUDEB/limits/proacct.json"
-PLAN_BIN="$WORK/plan-bin"
-mkdir -p "$PLAN_BIN"
-pro_profile="$HOME_FIXTURE/.claude-profiles/proacct"
-pro_hash=$(printf '%s' "$pro_profile" | shasum -a 256 | awk '{print substr($1, 1, 8)}')
-cat >"$PLAN_BIN/security" <<EOF
-#!/usr/bin/env bash
-service=''
-while [ \$# -gt 0 ]; do
-  if [ "\$1" = -s ] && [ \$# -gt 1 ]; then service=\$2; shift; fi
-  shift
-done
-[ "\$service" = "Claude Code-credentials-$pro_hash" ] || exit 1
-printf '%s\n' '{"claudeAiOauth":{"subscriptionType":"Pro"}}'
-EOF
-chmod +x "$PLAN_BIN/security"
-daemon_json=$(PATH="$PLAN_BIN:$PATH" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" CLAUDEBD_PORT="$daemon_port" \
-  LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "claudebd status collection failed"
-jq -e '.vendors.claude.daemon == {
-  walls:[
-    {account:"alona",scope:"general",until:"2100-01-01T01:00:00.000Z",reason:"transient"}
-  ],
-  pins:[{account:"alona",pinned_at:"2100-01-01T00:00:00.000Z"}],
-  all_walled_until:{general:4102448400,fable:null},
-  reachable:true
-}' <<<"$daemon_json" >/dev/null || fail "native daemon wall fields were not passed through"
-jq -e '.vendors.claude.accounts[0].rotation == {
-  usable:{general:false,fable:true},blocked:{general:"wall",fable:null}
-}' <<<"$daemon_json" >/dev/null || fail "daemon rotation projection was not merged into the matching account"
-jq -e '[.vendors.claude.accounts[] | select(.account == "proacct")][0] |
-  .plan_type == "pro" and
-  .rotation == {usable:{general:true,fable:false},blocked:{general:null,fable:"plan"}}' \
-  <<<"$daemon_json" >/dev/null || fail "Pro subscription did not disable Fable rotation"
-daemon_table=$(PATH="$PLAN_BIN:$PATH" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" CLAUDEBD_PORT="$daemon_port" \
-  LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) || fail "daemon rotation table failed"
-head -n 1 <<<"$daemon_table" | grep -Eq 'FB% +5H RESET +WK RESET +FB RESET +AGE +ROT +CR +STATUS' \
-  || fail "universal table columns missing"
-head -n 1 <<<"$daemon_table" | grep -q 'NOTE' && fail "NOTE column still present"
-awk '$1 == "claude/alona*" {print $(NF-2)}' <<<"$daemon_table" | grep -qx 'wall' \
-  || fail "general rotation block missing from ROT"
-awk '$1 == "claude/fbonly" {print $(NF-2)}' <<<"$daemon_table" | grep -qx 'fb:limit-fable' \
-  || fail "fable-only rotation block missing from ROT"
-awk '$1 == "claude/proacct" {print $(NF-2)}' <<<"$daemon_table" | grep -qx 'fb:plan' \
-  || fail "Pro-plan Fable block missing from ROT"
-daemon_plain=$(PATH="$PLAN_BIN:$PATH" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" CLAUDEBD_PORT="$daemon_port" \
-  LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain) || fail "daemon rotation plain failed"
-grep 'claude/alona\*:' <<<"$daemon_plain" | grep -q '| rot wall |' || fail "plain general rotation block missing"
-grep 'claude/fbonly:' <<<"$daemon_plain" | grep -q '| rot fb:limit-fable |' || fail "plain fable rotation block missing"
-grep 'claude/proacct:' <<<"$daemon_plain" | grep -q '| rot fb:plan |' || fail "plain Pro-plan Fable block missing"
-daemon_legacy=$(PATH="$PLAN_BIN:$PATH" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" CLAUDEBD_PORT="$daemon_port" \
-  LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "legacy claudebd status collection failed"
-jq -e '.vendors.claude.daemon == {
-  walls:[
-    {account:"alona",scope:"general",until:"2100-01-01T00:00:00Z",reason:"walled"},
-    {account:"alona",scope:"fable",until:"2100-01-01T00:03:20Z",reason:"fable_walled"}
-  ],
-  all_walled_until:{general:"2100-01-01T00:00:00Z",fable:"2100-01-01T00:03:20Z"},
-  reachable:true
-}' <<<"$daemon_legacy" >/dev/null || fail "legacy daemon wall derivation mismatch"
-jq -e 'all(.vendors.claude.accounts[]; has("rotation") | not)' <<<"$daemon_legacy" >/dev/null \
-  || fail "legacy daemon response fabricated account rotation fields"
-rm "$CLAUDEB/limits/fbonly.json"
-rm "$CLAUDEB/limits/proacct.json"
-kill "$daemon_pid" 2>/dev/null || true
-wait "$daemon_pid" 2>/dev/null || true
-daemon_pid=''
-daemon_down=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" CLAUDEBD_PORT="$daemon_port" \
-  LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "daemon-down collection failed"
-jq -e '.vendors.claude.daemon == {reachable:false} and
-  .vendors.claude.available == true and .vendors.claude.accounts[0].account == "alona" and
-  all(.vendors.claude.accounts[]; has("rotation") | not)' \
-  <<<"$daemon_down" >/dev/null || fail "daemon-down state blocked or damaged Claude collection"
-
 printf 'main\n' >"$CLAUDEB/.claudeb-state"
 invalid_current=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "invalid current fallback failed"
 jq -e '.vendors.claude.current_account == "alona" and all(.vendors.claude.accounts[]; .account != "main")' <<<"$invalid_current" >/dev/null || fail "invalid current did not fall back to the first real account"
 printf 'alona\n' >"$CLAUDEB/.claudeb-state"
 multi_plain=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain) || fail "claudeb plain collection failed"
 grep -q 'claude/alona\*: 5h 7% @ .* | wk - @ - | fb 33% @ ' <<<"$multi_plain" || fail "claudeb plain window output mismatch"
-grep 'claude/alona\*:' <<<"$multi_plain" | grep -q '| rot - |' || fail "daemon-absent plain ROT must be unknown"
+grep 'claude/alona\*:' <<<"$multi_plain" | grep -q '| rot - |' || fail "unblocked local ROT must render as -"
 grep -q 'claude/main' <<<"$multi_plain" && fail "main account leaked into plain output"
 jq -e 'all(.vendors.claude.accounts[]; .enabled == true)' <<<"$multi" >/dev/null || fail "missing disabled file must default to enabled:true"
 
-# Rotation membership: a name listed in $CLAUDEB_DIR/disabled flips enabled to false
-# for that account only, on the token-free passive path.
 CLAUDEB_DIS="$WORK/claudeb-disabled-store"
 mkdir -p "$CLAUDEB_DIS/limits"
 printf 'alona\n' >"$CLAUDEB_DIS/.claudeb-state"
-printf '{"five_hour":{"used_percentage":7,"resets_at":%s}}\n' "$((now + 5000))" >"$CLAUDEB_DIS/limits/alona.json"
-printf '{"five_hour":{"used_percentage":21,"resets_at":%s}}\n' "$((now + 6000))" >"$CLAUDEB_DIS/limits/bree.json"
+printf '{"five_hour":{"used_percentage":7,"resets_at":%s},"auth":{"status":"ok","checked_at":%s}}\n' "$((now + 5000))" "$now" >"$CLAUDEB_DIS/limits/alona.json"
+printf '{"five_hour":{"used_percentage":21,"resets_at":%s},"auth":{"status":"ok","checked_at":%s}}\n' "$((now + 6000))" "$now" >"$CLAUDEB_DIS/limits/bree.json"
 printf 'bree\n' >"$CLAUDEB_DIS/disabled"
 disabled_json=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_DIS" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "disabled-flag collection failed"
 jq -e '(.vendors.claude.accounts | length) == 2 and
-  ([.vendors.claude.accounts[] | select(.account == "alona")][0].enabled == true) and
-  ([.vendors.claude.accounts[] | select(.account == "bree")][0].enabled == false)' <<<"$disabled_json" >/dev/null || fail "disabled file did not map to enabled flags"
+  ([.vendors.claude.accounts[] | select(.account == "alona")][0] |
+    .enabled == true and .rotation == {usable:{general:true,fable:false}}) and
+  ([.vendors.claude.accounts[] | select(.account == "bree")][0] |
+    .enabled == false and .rotation == {usable:{general:false,fable:false}})' \
+  <<<"$disabled_json" >/dev/null || fail "disabled file did not map to local rotation usability"
 disabled_table=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_DIS" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) || fail "disabled table collection failed"
 awk '$1 == "claude/bree"' <<<"$disabled_table" | grep -q 'off' || fail "disabled account not marked off in table"
 awk '$1 == "claude/alona*"' <<<"$disabled_table" | grep -q 'off' && fail "enabled account wrongly marked off in table"
@@ -1072,7 +921,7 @@ OAUTH_BIN="$WORK/oauth-bin"
 OAUTH_SENTINEL="$WORK/oauth-curl-called"
 OAUTH_CLAUDE_SENTINEL="$WORK/oauth-claude-called"
 mkdir -p "$OAUTH_HOME/.claude-profiles/stuck" "$OAUTH_STORE/tokens" "$OAUTH_STORE/limits" "$OAUTH_BIN"
-printf 'fixture-daemon-token\n' >"$OAUTH_STORE/tokens/stuck"
+printf 'fixture-token\n' >"$OAUTH_STORE/tokens/stuck"
 printf 'stuck\n' >"$OAUTH_STORE/.claudeb-state"
 cat >"$OAUTH_BIN/security" <<'EOF'
 #!/usr/bin/env bash
@@ -1155,7 +1004,7 @@ fi
 rm -f "$OAUTH_STORE/oauth-attempts.json" "$OAUTH_SENTINEL"
 OAUTH_SENTINEL="$OAUTH_SENTINEL" OAUTH_CLAUDE_SENTINEL="$OAUTH_CLAUDE_SENTINEL" PATH="$OAUTH_BIN:$PATH" HOME="$OAUTH_HOME" CLAUDEB_DIR="$OAUTH_STORE" \
   bash "$CLAUDEB_BIN" --refresh --start-windows >/dev/null 2>/dev/null || fail "start-windows auth fallback fixture failed"
-grep -q 'api.anthropic.com/v1/messages' "$OAUTH_SENTINEL" || fail "start-windows did not use daemon-token messages fallback after auth failure"
+grep -q 'api.anthropic.com/v1/messages' "$OAUTH_SENTINEL" || fail "start-windows did not use the messages fallback after auth failure"
 
 WARM_HOME="$WORK/warm-home"
 WARM_STORE="$WORK/warm-store"
@@ -1718,36 +1567,75 @@ head -n 1 <<<"$honest_table" | grep -Eq 'FB RESET +AGE +ROT +CR +STATUS' || fail
 head -n 1 <<<"$honest_table" | grep -q 'NOTE' && fail "table NOTE column was not abolished"
 honest_row=$(awk '$1 == "claude/honest*"' <<<"$honest_table")
 grep -Eq '^claude/honest\* +100%~ +44%! ' <<<"$honest_row" || fail "honesty table rewrote raw used_pct or lost markers"
-grep -Eq ' +1h1m +- +- +-$' <<<"$honest_row" || fail "table age or explicit state fields missing: $honest_row"
+grep -Eq ' +1h1m +limit-5h +- +-$' <<<"$honest_row" || fail "table age or limit-derived state fields missing: $honest_row"
 grep -q 'claude/honest\*: 5h 100%~ @ .* | wk 44%! @ ' <<<"$honest_plain" || fail "honesty plain rewrote raw used_pct or lost markers"
-grep 'claude/honest\*:' <<<"$honest_plain" | grep -q '| age 1h1m | rot - | cr - | status -' \
+grep 'claude/honest\*:' <<<"$honest_plain" | grep -q '| age 1h1m | rot limit-5h | cr - | status -' \
   || fail "plain age or explicit state fields missing"
 
 USABLE_STORE="$WORK/usable-store"
 USABLE_HOME="$WORK/usable-home"
 mkdir -p "$USABLE_STORE/limits" "$USABLE_HOME/.codex/sessions"
 printf 'full\n' >"$USABLE_STORE/.claudeb-state"
-printf '{"five_hour":{"used_percentage":100,"resets_at":%s},"seven_day":{"used_percentage":100,"resets_at":%s}}\n' \
-  "$((now + 5000))" "$((now + 9000))" >"$USABLE_STORE/limits/full.json"
+printf '{"five_hour":{"used_percentage":100,"resets_at":%s},"seven_day":{"used_percentage":100,"resets_at":%s},"auth":{"status":"ok","checked_at":%s}}\n' \
+  "$((now + 5000))" "$((now + 9000))" "$now" >"$USABLE_STORE/limits/full.json"
 claude_full=$(HOME="$USABLE_HOME" CLAUDEB_DIR="$USABLE_STORE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "Claude exhausted usability collection failed"
 jq -e '.vendors.claude.usable_now == false' <<<"$claude_full" >/dev/null || fail "Claude all-exhausted usability mismatch"
-printf '{"five_hour":{"used_percentage":20,"resets_at":%s},"seven_day":{"used_percentage":30,"resets_at":%s}}\n' \
-  "$((now + 5000))" "$((now + 9000))" >"$USABLE_STORE/limits/free.json"
+jq -e '.vendors.claude.accounts[0].rotation == {usable:{general:true,fable:false}}' \
+  <<<"$claude_full" >/dev/null || fail "limit exhaustion leaked into local rotation eligibility"
+printf '{"five_hour":{"used_percentage":20,"resets_at":%s},"seven_day":{"used_percentage":30,"resets_at":%s},"auth":{"status":"ok","checked_at":%s}}\n' \
+  "$((now + 5000))" "$((now + 9000))" "$now" >"$USABLE_STORE/limits/free.json"
 claude_free=$(HOME="$USABLE_HOME" CLAUDEB_DIR="$USABLE_STORE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "Claude free-account usability collection failed"
 jq -e '.vendors.claude.usable_now == true' <<<"$claude_free" >/dev/null || fail "Claude one-free-account usability mismatch"
 printf 'free\n' >"$USABLE_STORE/disabled"
 claude_disabled=$(HOME="$USABLE_HOME" CLAUDEB_DIR="$USABLE_STORE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "Claude disabled-account usability collection failed"
 jq -e '.vendors.claude.usable_now == false' <<<"$claude_disabled" >/dev/null || fail "Disabled under-limit account must not make Claude usable"
+jq -e '.vendors.claude.accounts[] | select(.account == "free") |
+  .rotation == {usable:{general:false,fable:false}}' <<<"$claude_disabled" >/dev/null \
+  || fail "disabled account remained generally usable in local rotation metadata"
 rm "$USABLE_STORE/disabled"
 printf '{"five_hour":{"used_percentage":20,"resets_at":%s},"seven_day":{"used_percentage":30,"resets_at":%s},"auth":{"status":"expired"}}\n' \
   "$((now + 5000))" "$((now + 9000))" >"$USABLE_STORE/limits/free.json"
 claude_expired_auth=$(HOME="$USABLE_HOME" CLAUDEB_DIR="$USABLE_STORE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "Claude expired-auth usability collection failed"
 jq -e '.vendors.claude.usable_now == false' <<<"$claude_expired_auth" >/dev/null || fail "Expired-auth under-limit account must not make Claude usable"
 rm "$USABLE_STORE/limits/free.json"
-printf '{"five_hour":{"used_percentage":20,"resets_at":%s},"seven_day":{"used_percentage":30,"resets_at":%s},"fable":{"used_percentage":100,"resets_at":%s}}\n' \
-  "$((now + 5000))" "$((now + 9000))" "$((now + 6000))" >"$USABLE_STORE/limits/full.json"
+printf '{"five_hour":{"used_percentage":20,"resets_at":%s},"seven_day":{"used_percentage":30,"resets_at":%s},"fable":{"used_percentage":100,"resets_at":%s},"auth":{"status":"ok","checked_at":%s}}\n' \
+  "$((now + 5000))" "$((now + 9000))" "$((now + 6000))" "$now" >"$USABLE_STORE/limits/full.json"
 claude_fable=$(HOME="$USABLE_HOME" CLAUDEB_DIR="$USABLE_STORE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "Claude fable usability collection failed"
 jq -e '.vendors.claude.fable.effective_pct == 100 and .vendors.claude.usable_now == true' <<<"$claude_fable" >/dev/null || fail "Fable exhaustion must not block general Claude work"
+jq -e '.vendors.claude.accounts[0].rotation.usable.fable == true' <<<"$claude_fable" >/dev/null \
+  || fail "numeric Fable snapshot was not marked Fable-capable"
+
+PLAN_BIN="$WORK/plan-bin"
+PLAN_HOME="$WORK/plan-home"
+PLAN_STORE="$WORK/plan-store"
+mkdir -p "$PLAN_BIN" "$PLAN_HOME/.claude-profiles" "$PLAN_STORE/limits"
+printf 'pro\n' >"$PLAN_STORE/.claudeb-state"
+cat >"$PLAN_BIN/security" <<'EOF'
+#!/usr/bin/env bash
+case " $* " in
+  *" -w "*) printf '{"claudeAiOauth":{"subscriptionType":"%s"}}\n' "$PLAN_TYPE" ;;
+  *) exit 0 ;;
+esac
+EOF
+chmod +x "$PLAN_BIN/security"
+printf '{"five_hour":{"used_percentage":10,"resets_at":%s},"fable":{"used_percentage":42,"resets_at":%s},"auth":{"status":"ok"}}\n' \
+  "$((now + 5000))" "$((now + 6000))" >"$PLAN_STORE/limits/pro.json"
+pro_plan=$(PLAN_TYPE=pro PATH="$PLAN_BIN:$PATH" HOME="$PLAN_HOME" CLAUDE_PROFILES_DIR="$PLAN_HOME/.claude-profiles" \
+  CLAUDEB_DIR="$PLAN_STORE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) \
+  || fail "Pro-plan Fable fixture collection failed"
+jq -e '.vendors.claude.accounts[] | select(.account == "pro") |
+  .plan_type == "pro" and .rotation.usable.fable == false' <<<"$pro_plan" >/dev/null \
+  || fail "Pro-plan account with numeric Fable snapshot remained Fable-capable"
+rm -f "$PLAN_STORE/limits/pro.json"
+printf 'team\n' >"$PLAN_STORE/.claudeb-state"
+printf '{"five_hour":{"used_percentage":10,"resets_at":%s},"fable":{"used_percentage":42,"resets_at":%s},"auth":{"status":"ok"}}\n' \
+  "$((now + 5000))" "$((now + 6000))" >"$PLAN_STORE/limits/team.json"
+team_plan=$(PLAN_TYPE=team PATH="$PLAN_BIN:$PATH" HOME="$PLAN_HOME" CLAUDE_PROFILES_DIR="$PLAN_HOME/.claude-profiles" \
+  CLAUDEB_DIR="$PLAN_STORE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) \
+  || fail "non-Pro-plan Fable fixture collection failed"
+jq -e '.vendors.claude.accounts[] | select(.account == "team") |
+  .plan_type == "team" and .rotation.usable.fable == true' <<<"$team_plan" >/dev/null \
+  || fail "non-Pro account with numeric Fable snapshot was not Fable-capable"
 
 printf '{"timestamp":"%s","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":100,"resets_at":%s},"secondary":{"used_percent":40,"resets_at":%s}}}}\n' \
   "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$((now + 5000))" "$((now + 9000))" >"$USABLE_HOME/.codex/sessions/rollout-full.jsonl"
@@ -1895,5 +1783,5 @@ else
   echo "SKIP (hs unavailable): Hammerspoon projection contract"
 fi
 
-echo "PASS: schema, Claude unique accounts and fallback, Codex multi-account reset credits, auth-needed accounts and legacy cache, Claude daemon status and rotation passthrough, enabled flags, freshness contract, reset placeholder normalization, machine effective percentages and usability, refresh failure reasons, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, weekly bucket provenance, experiment announcements, Hammerspoon projection contract, plain output, table output and sorts, reset tiers, expired windows, bare JSON default, atomic cache, missing exit 3"
+echo "PASS: schema, Claude unique accounts and fallback, Codex multi-account reset credits, auth-needed accounts and legacy cache, local Claude rotation usability, enabled flags, freshness contract, reset placeholder normalization, machine effective percentages and usability, refresh failure reasons, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, weekly bucket provenance, experiment announcements, Hammerspoon projection contract, plain output, table output and sorts, reset tiers, expired windows, bare JSON default, atomic cache, missing exit 3"
 exit 0

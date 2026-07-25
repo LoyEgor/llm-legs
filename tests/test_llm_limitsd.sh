@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Hermetic tests for bin/llm-limitsd (SHADOW MODE control-plane ledger).
 # Everything runs against a temp sqlite db + a child daemon on an ephemeral port. Nothing here
-# touches the live daemon (45789), the real ~/.llm-limits.json, or the real .claudeb store.
+# touches the real ~/.llm-limits.json or the real .claudeb store.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -39,7 +39,6 @@ start_daemon() {
     perl -e 'select(undef,undef,undef,0.02)'
   done
   [ -n "$PORT" ] || { echo "daemon never announced a port" >&2; cat "$errlog" >&2; return 1; }
-  [ "$PORT" = "45789" ] && { echo "refusing data-plane port 45789" >&2; return 1; }
   B="127.0.0.1:$PORT"
 }
 
@@ -139,7 +138,7 @@ DB2="$WORK/auth.sqlite"; PROJ2="$WORK/auth.proj.json"
 stop_daemon; start_daemon "$DB2" "$PROJ2" || fail "auth daemon boot"
 t=$(now)
 # capacity weather (rc 75), even carrying verdict=expired, must be ignored for auth.
-POST "/observations" "{\"source\":\"claudebd\",\"vendor\":\"claude\",\"account\":\"m\",\"scope\":\"auth\",\"observed_at\":$t,\"payload\":{\"verdict\":\"expired\",\"evidence\":\"weather\",\"reason_code\":75}}" >/dev/null
+POST "/observations" "{\"source\":\"collector\",\"vendor\":\"claude\",\"account\":\"m\",\"scope\":\"auth\",\"observed_at\":$t,\"payload\":{\"verdict\":\"expired\",\"evidence\":\"weather\",\"reason_code\":75}}" >/dev/null
 au="$(GET /state | jqget 'print([a["auth"] for a in d["accounts"] if a["account"]=="m"][0])')"
 [ "$au" = "ok" ] || fail "weather observation flipped auth to $au"
 # an UNKNOWN evidence tag (default-deny) must also never move the verdict.
@@ -176,7 +175,8 @@ jq -e '.vendors.claude.five_hour.effective_pct == .vendors.claude.five_hour.used
   .vendors.claude.accounts[0].weekly.effective_pct == .vendors.claude.accounts[0].weekly.used_pct' "$PROJ3" >/dev/null || fail "live effective_pct mismatch"
 jq -e '(.vendors.claude.five_hour.as_of | type) == "number" and .vendors.claude.five_hour.stale == false and .vendors.claude.stale == false' "$PROJ3" >/dev/null || fail "freshness fields mismatch"
 jq -e '.vendors.claude.usable_now == true and .vendors.claude.current_account == "alona" and .vendors.claude.auth.status == "ok"' "$PROJ3" >/dev/null || fail "vendor rollup mismatch"
-jq -e '.vendors.claude.accounts[0].rotation.usable.general == true and .vendors.claude.daemon.reachable == true' "$PROJ3" >/dev/null || fail "rotation/daemon projection mismatch"
+jq -e '.vendors.claude.accounts[0].rotation.usable.general == true and
+  (.vendors.claude | has("daemon") | not)' "$PROJ3" >/dev/null || fail "rotation projection mismatch"
 jq -e '.vendors.claude.accounts[0].five_hour.origin == "usage" and (.vendors.claude.accounts[0].auth.status == "ok")' "$PROJ3" >/dev/null || fail "account bucket/auth mismatch"
 ok
 
@@ -202,8 +202,8 @@ echo "== is_current is last-wins per vendor =="
 DBc="$WORK/cur.sqlite"; PROJc="$WORK/cur.proj.json"
 stop_daemon; start_daemon "$DBc" "$PROJc" || fail "current daemon boot"
 t=$(now)
-POST "/observations" "{\"source\":\"claudebd\",\"vendor\":\"claude\",\"account\":\"one\",\"scope\":\"rotation\",\"observed_at\":$t,\"payload\":{\"is_current\":true}}" >/dev/null
-POST "/observations" "{\"source\":\"claudebd\",\"vendor\":\"claude\",\"account\":\"two\",\"scope\":\"rotation\",\"observed_at\":$((t+10)),\"payload\":{\"is_current\":true}}" >/dev/null
+POST "/observations" "{\"source\":\"collector\",\"vendor\":\"claude\",\"account\":\"one\",\"scope\":\"rotation\",\"observed_at\":$t,\"payload\":{\"is_current\":true}}" >/dev/null
+POST "/observations" "{\"source\":\"collector\",\"vendor\":\"claude\",\"account\":\"two\",\"scope\":\"rotation\",\"observed_at\":$((t+10)),\"payload\":{\"is_current\":true}}" >/dev/null
 jq -e '.vendors.claude.current_account == "two"' "$PROJc" >/dev/null || fail "current_account not last-wins"
 jq -e '[.vendors.claude.accounts[] | select(.is_current)] | length == 1 and (.[0].account == "two")' "$PROJc" >/dev/null || fail "is_current not cleared on the older account"
 ok

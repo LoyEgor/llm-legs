@@ -17,11 +17,10 @@ run_hook() {
 
 session="limits-nudge-test-$$-match"
 rm -f "/tmp/claude-limits-triage-nudge-${session}" "/tmp/claude-limits-triage-nudge-${session}.lock"
-output=$(run_hook "$session" "claudeb: no available accounts in rotation") || fail "matching fixture invocation failed"
+output=$(run_hook "$session" "Claude API: usage limit reached") || fail "matching fixture invocation failed"
 jq -e '.hookSpecificOutput.hookEventName == "PostToolUse" and
   (.hookSpecificOutput.additionalContext | contains("Limit-shaped error detected") and
    contains("llm-limits --table --no-write") and
-   contains("curl -s 127.0.0.1:45789/claudebd/status") and
    contains("DIAGNOSTICS.md"))' <<<"$output" >/dev/null \
   || fail "matching fixture did not produce the expected nudge"
 

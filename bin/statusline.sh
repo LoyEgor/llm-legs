@@ -3,8 +3,7 @@
 # rate_limits is absent from some renders and idle sessions re-send their last
 # copy forever; every path renders from a stamped merged cache (statusline-cache-rl
 # for main, limits/<acct>.json for claudeb accounts — ~/.claude-profiles/README.md),
-# never from raw headers alone. CLAUDE_LIMITS_ACCOUNT="-" (rotating proxy session)
-# never writes caches; it renders the daemon's current pick read-only.
+# never from raw headers alone.
 # Runs every 5s even while idle: GIT_OPTIONAL_LOCKS=0 keeps renders off index.lock.
 export GIT_OPTIONAL_LOCKS=0
 
@@ -122,15 +121,6 @@ if [ -n "$ctx_size" ] && [ "$ctx_size" -gt 0 ] 2>/dev/null && [ -n "$ctx_tokens"
   ctx_pct=$(( (ctx_tokens * 100 + ctx_size / 2) / ctx_size ))
 fi
 
-cb_current=""
-if [ "$acct" = "-" ]; then
-  cb_state="$claudeb_dir/.claudeb-state"
-  case "$model_id" in
-    claude-fable*) [ -s "$claudeb_dir/.claudeb-state-fable" ] && cb_state="$claudeb_dir/.claudeb-state-fable" ;;
-  esac
-  cb_current=$(head -n1 "$cb_state" 2>/dev/null | tr -d '[:space:]')
-fi
-
 rl_merge() {
   # An empty/invalid existing file must degrade to {}: feeding it to --argjson
   # makes jq fail every render and the corrupt file would never self-heal.
@@ -163,15 +153,7 @@ rl_merge() {
 
 rl_from_cache=""
 rl_mtime=""
-if [ "$acct" = "-" ]; then
-  rl_json=""
-  if [ -n "$cb_current" ]; then
-    pick_cache="$account_cache_dir/$cb_current.json"
-    rl_json=$(cat "$pick_cache" 2>/dev/null)
-    rl_from_cache=1
-    rl_mtime=$(file_mtime "$pick_cache")
-  fi
-elif [ -n "$rl_json" ]; then
+if [ -n "$rl_json" ]; then
   rl_target="$cache_rl"
   if [ "$acct" != main ]; then
     # main is not a claudeb account: never create limits/main.json.
@@ -242,9 +224,7 @@ if [ -n "$rl_json" ]; then
   [[ "$wk_as_of" =~ ^[0-9]+$ ]] && [ $((now - wk_as_of)) -gt 21600 ] && wk_dim=1
   stale_acct=""
   if [ -n "$rl_from_cache" ]; then
-    if [ "$acct" = "-" ]; then
-      stale_acct="$cb_current"
-    elif [ "$acct" != main ]; then
+    if [ "$acct" != main ]; then
       stale_acct="$acct"
     fi
   fi
@@ -396,7 +376,6 @@ sep="${DIM}│${RESET}"
 
 fable_part=""
 fable_account="$acct"
-[ "$fable_account" = "-" ] && fable_account="$cb_current"
 if [ -n "$fable_account" ] && [ "$fable_account" != main ]; then
   IFS='|' read -r fable_found fable_pct fable_reset fable_stale < <(jq -r --arg name "$fable_account" '
     .vendors.claude.accounts[]?
@@ -537,14 +516,10 @@ fi
 # The transcript pins the model of the cache but not the ACCOUNT, so the
 # account is stamped into cache-ttl-track-<sid> ("v2 <assist_ts> <acct>
 # <learned_upto>") whenever a response lands during a live render. Attribution
-# window 120s: renders run every few seconds while a session is alive, and the
-# account cannot change without restarting the session (/exit), so a response
-# older than that with no matching stamp is unattributable ("?") and renders
-# cold — this is what makes a menu/rotation account switch (resume under a new
-# profile, no stamp rewrite) reliably cold until the first new response.
+# window 120s: a response older than that with no matching stamp is
+# unattributable ("?") and renders cold.
 # Legacy v1 track files (prompt_id-based) are treated as absent.
 warm_acct="$acct"
-[ "$acct" = "-" ] && warm_acct="$cb_current"
 track_acct=""
 if [ -n "$session_id" ] && [ "$assist_ts" -gt 0 ] 2>/dev/null; then
   track="$HOME/.cache/claude-statusline/cache-ttl-track-$session_id"
@@ -653,9 +628,7 @@ if [ -n "$ctx_tokens" ] && [ "$ctx_tokens" -gt 0 ] 2>/dev/null; then
   ctx_tokens_part=" ${tok_color}$(( (ctx_tokens + 500) / 1000 ))k${RESET}${death_part}"
 fi
 cb_part=""
-if [ "$acct" = "-" ]; then
-  [ -n "$cb_current" ] && cb_part=" ${DIM}cb:${RESET}${MAGENTA}~${cb_current}${RESET}"
-elif [ -n "$acct" ] && [ "$acct" != main ]; then
+if [ -n "$acct" ] && [ "$acct" != main ]; then
   cb_part=" ${DIM}cb:${RESET}${MAGENTA}${acct}${RESET}"
 fi
 
@@ -762,9 +735,11 @@ case "$worker" in
     if [ -n "$claudeb_profile" ]; then
       wpin=$claudeb_profile
     else
-      # Workers run sonnet/opus: general-scope rotation state, never the
-      # .claudeb-state-fable file the cb: segment may use.
-      wsel=$(head -n1 "$claudeb_dir/.claudeb-state" 2>/dev/null | tr -d '[:space:]')
+      # The account a spawn will use is worker-pick's choice, not .claudeb-state (which
+      # only records the last profile launched and would render a stale prediction).
+      load_worker_pick_prediction
+      wsel=$(printf '%s\n' "$worker_pick_prediction" |
+        sed -nE 's/^.* cb.(main|[a-z0-9][a-z0-9-]*)·[^·]+·[^·]+( .*)?$/\1/p')
       [ -n "$wsel" ] || wsel="?"
     fi
     ;;

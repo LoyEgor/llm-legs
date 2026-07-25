@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Hermetic tests for bin/llm-limitsd-shadow-feed (read-only cache -> shadow-ledger bridge).
 # A fixture cache + a child daemon on an ephemeral port + a temp state file. Nothing here touches
-# the live daemon (45789/45791), the real ~/.llm-limits.json, or the real .claudeb store.
+# the live service, the real ~/.llm-limits.json, or the real .claudeb store.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -37,7 +37,6 @@ start_daemon() {
     perl -e 'select(undef,undef,undef,0.02)'
   done
   [ -n "$PORT" ] || { echo "daemon never announced a port" >&2; cat "$errlog" >&2; return 1; }
-  [ "$PORT" = "45789" ] && { echo "refusing data-plane port 45789" >&2; return 1; }
   B="127.0.0.1:$PORT"
 }
 

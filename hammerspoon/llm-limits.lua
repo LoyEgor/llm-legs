@@ -12,9 +12,9 @@ local grayColor = { red = 0.55, green = 0.55, blue = 0.55 }
 local redColor = { red = 0.9, green = 0.25, blue = 0.2 }
 local dimRedColor = { red = 0.9, green = 0.25, blue = 0.2, alpha = 0.55 }
 
-local function infoTitle(text, warning, gray, walled)
+local function infoTitle(text, warning, gray, atLimit)
   local attributes = { font = { name = "Menlo", size = 13 } }
-  if walled then
+  if atLimit then
     attributes.color = gray and dimRedColor or redColor
   elseif gray then
     attributes.color = grayColor
@@ -134,8 +134,8 @@ local function formatAccountAge(value)
   return string.format("%dd", math.floor(hours / 24))
 end
 
-local function accountTitle(text, age, walled)
-  local title = infoTitle(text, false, false, walled)
+local function accountTitle(text, age, atLimit)
+  local title = infoTitle(text, false, false, atLimit)
   if age then
     title = title .. infoTitle("  " .. age, false, true)
   end
@@ -181,7 +181,7 @@ local function usageBar(value)
   return string.rep("▓", filled) .. string.rep("░", 5 - filled)
 end
 
-local function rowTitle(account, label, bucket, gray, walled, barWarning)
+local function rowTitle(account, label, bucket, gray, atLimit, barWarning)
   bucket = type(bucket) == "table" and bucket or {}
   gray = gray or bucket.expired == true or resetIsPast(bucket.resets_at)
   local pct = tonumber(bucket.effective_pct)
@@ -190,12 +190,16 @@ local function rowTitle(account, label, bucket, gray, walled, barWarning)
   local prefix = string.format("%-6s  %-2s  ", account or "", label)
   local bar = usageBar(pct)
   local suffix = string.format("  %4s  %9s", pctText, reset)
-  if barWarning and not walled then
+  if barWarning and not atLimit then
     return infoTitle(prefix, false, gray, false)
       .. infoTitle(bar, true, false, false)
       .. infoTitle(suffix, false, gray, false)
   end
-  return infoTitle(prefix .. bar .. suffix, false, gray, walled)
+  return infoTitle(prefix .. bar .. suffix, false, gray, atLimit)
+end
+
+local function bucketAtLimit(bucket)
+  return type(bucket) == "table" and (tonumber(bucket.effective_pct) or 0) >= 100
 end
 
 local function readLlmLimits()
@@ -734,10 +738,7 @@ function M.menuItems()
           local enabled = block.enabled ~= false
           local authNeeded = block.auth_needed == true
           local accountAge = not authNeeded and formatAccountAge(block.as_of) or nil
-          local rotation = type(block.rotation) == "table" and block.rotation or {}
-          local blocked = type(rotation.blocked) == "table" and rotation.blocked or {}
-          local generalWalled = blocked.general ~= nil
-          local fableWalled = blocked.fable ~= nil
+          local generalAtLimit = bucketAtLimit(fiveHour) or bucketAtLimit(weekly)
           if isAccountRows then
             local resetCredits = tonumber(block.reset_credits)
             local resetSuffix = resetCredits and resetCredits > 0
@@ -763,14 +764,14 @@ function M.menuItems()
             else
               accountRow = {
                 title = accountTitle(acct .. resetSuffix .. (isCurrent and "  ●" or ""),
-                  accountAge, generalWalled),
+                  accountAge, generalAtLimit),
                 disabled = true,
               }
               if hasAccountControls then
                 accountRow.disabled = nil
                 accountRow.checked = enabled
                 accountRow.menu = {
-                  { title = "In rotation", checked = enabled,
+                  { title = "In worker pool", checked = enabled,
                     fn = function() M.toggleAccount(acct, enabled) end },
                   { title = "Make current", disabled = block.is_current,
                     fn = function() M.switchAccount(acct) end },
@@ -803,21 +804,21 @@ function M.menuItems()
           if not authNeeded then
             local fiveGray = isStale(fiveHour)
             local fiveRow = {
-              title = rowTitle("", "5h", fiveHour, fiveGray, generalWalled),
+              title = rowTitle("", "5h", fiveHour, fiveGray, bucketAtLimit(fiveHour)),
               disabled = true,
             }
             table.insert(menu, fiveRow)
-            local function tailRow(label, bucket, walled, barWarning)
+            local function tailRow(label, bucket, barWarning)
               if type(bucket) == "table" then
                 local gray = isStale(bucket)
-                return rowTitle("", label, bucket, gray, walled, barWarning)
+                return rowTitle("", label, bucket, gray, bucketAtLimit(bucket), barWarning)
               end
-              return rowTitle("", label, nil, false, walled, barWarning)
+              return rowTitle("", label, nil, false, false, barWarning)
             end
-            table.insert(menu, { title = tailRow("wk", weekly, generalWalled), disabled = true })
+            table.insert(menu, { title = tailRow("wk", weekly), disabled = true })
             if type(block.fable) == "table" then
               local fableWarning = (tonumber(block.fable.effective_pct) or 0) >= 80
-              table.insert(menu, { title = tailRow("fb", block.fable, fableWalled, fableWarning), disabled = true })
+              table.insert(menu, { title = tailRow("fb", block.fable, fableWarning), disabled = true })
             end
           end
           if isGeminiAccounts and not authNeeded then

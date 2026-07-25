@@ -100,58 +100,58 @@ local fixture = { schema = 1, vendors = {
   claude = {
     available = true,
     source = "claudeb-store",
-    daemon = { reachable = true },
     accounts = {
       {
         account = "full",
         five_hour = bucket(100, true), weekly = bucket(40), fable = bucket(30),
         rotation = {
-          usable = { general = false, fable = false },
-          blocked = { general = "limit-5h", fable = "limit-5h" },
+          usable = { general = true, fable = true },
         },
+      },
+      {
+        account = "weekly-full",
+        five_hour = bucket(20), weekly = bucket(100), fable = bucket(30),
+        rotation = { usable = { general = true, fable = true } },
+      },
+      {
+        account = "fable-full",
+        five_hour = bucket(20), weekly = bucket(30), fable = bucket(100),
+        rotation = { usable = { general = true, fable = true } },
       },
       {
         account = "fable85",
         five_hour = bucket(20), weekly = bucket(30), fable = bucket(85),
-        rotation = { usable = { general = true, fable = true }, blocked = {} },
-      },
-      {
-        account = "fablewall",
-        five_hour = bucket(20), weekly = bucket(30), fable = bucket(95),
-        rotation = {
-          usable = { general = true, fable = false },
-          blocked = { fable = "wall" },
-        },
+        rotation = { usable = { general = true, fable = true } },
       },
       {
         account = "fresh",
         five_hour = bucket(10), weekly = bucket(20), fable = bucket(30),
-        rotation = { usable = { general = true, fable = true }, blocked = {} },
+        rotation = { usable = { general = true, fable = true } },
       },
       {
         account = "no-stale",
         five_hour = { effective_pct = 10, resets_at = os.time() + 3600 },
-        rotation = { usable = { general = true, fable = true }, blocked = {} },
+        rotation = { usable = { general = true, fable = true } },
       },
       {
         account = "no-reset",
         five_hour = { effective_pct = 10, resets_at = nil, stale = false },
-        rotation = { usable = { general = true, fable = true }, blocked = {} },
+        rotation = { usable = { general = true, fable = true } },
       },
       {
         account = "past-reset",
         five_hour = { effective_pct = 0, resets_at = os.time() - 1800, stale = false, expired = true },
-        rotation = { usable = { general = true, fable = true }, blocked = {} },
+        rotation = { usable = { general = true, fable = true } },
       },
       {
         account = "past-reset-unflagged",
         five_hour = { effective_pct = 0, resets_at = os.time() - 1800, stale = false, expired = false },
-        rotation = { usable = { general = true, fable = true }, blocked = {} },
+        rotation = { usable = { general = true, fable = true } },
       },
       {
         account = "skew-reset",
         five_hour = { effective_pct = 0, resets_at = os.time() - 30, stale = false, expired = false },
-        rotation = { usable = { general = true, fable = true }, blocked = {} },
+        rotation = { usable = { general = true, fable = true } },
       },
     },
   },
@@ -163,9 +163,9 @@ local menu = loadModule(fixture).menuItems()
 local full = accountIndex(menu, "full")
 assert(#redRuns(menu[full].title) > 0, "at-limit account title is not red")
 assert(#redRuns(menu[full + 1].title) > 0, "at-limit five-hour row is not red")
-assert(hasDimRed(menu[full + 1].title), "blocked stale row did not retain dim-red styling")
-assert(#redRuns(menu[full + 2].title) > 0, "at-limit weekly row is not red")
-assert(#redRuns(menu[full + 3].title) > 0, "at-limit fable row is not red")
+assert(hasDimRed(menu[full + 1].title), "stale at-limit five-hour row was not dimmed")
+assertNoRed(menu[full + 2], "under-limit weekly row rendered red")
+assertNoRed(menu[full + 3], "under-limit fable row rendered red")
 
 local warning = accountIndex(menu, "fable85")
 assertNoRed(menu[warning], "fable warning colored the account title")
@@ -174,11 +174,17 @@ assertNoRed(menu[warning + 2], "fable warning colored the weekly row")
 local warningRuns = redRuns(menu[warning + 3].title)
 assert(#warningRuns == 1 and warningRuns[1] == "▓▓▓▓░", "fable warning did not color only its usage bar")
 
-local fableWall = accountIndex(menu, "fablewall")
-assertNoRed(menu[fableWall], "fable-only blockage colored the account title")
-assertNoRed(menu[fableWall + 1], "fable-only blockage colored the five-hour row")
-assertNoRed(menu[fableWall + 2], "fable-only blockage colored the weekly row")
-assert(#redRuns(menu[fableWall + 3].title) == 1, "fable-only blockage did not color the whole fable row")
+local weeklyFull = accountIndex(menu, "weekly-full")
+assert(#redRuns(menu[weeklyFull].title) > 0, "weekly exhaustion did not color the account title")
+assertNoRed(menu[weeklyFull + 1], "under-limit five-hour row rendered red")
+assert(#redRuns(menu[weeklyFull + 2].title) > 0, "at-limit weekly row is not red")
+assertNoRed(menu[weeklyFull + 3], "under-limit fable row rendered red")
+
+local fableFull = accountIndex(menu, "fable-full")
+assertNoRed(menu[fableFull], "fable-only exhaustion colored the account title")
+assertNoRed(menu[fableFull + 1], "under-limit five-hour row rendered red")
+assertNoRed(menu[fableFull + 2], "under-limit weekly row rendered red")
+assert(#redRuns(menu[fableFull + 3].title) > 0, "at-limit fable row is not red")
 
 local fresh = accountIndex(menu, "fresh")
 for offset = 0, 3 do
@@ -209,28 +215,6 @@ assert(not isGray(menu[skewReset + 1].title.attributes),
 local fresh5h = accountIndex(menu, "fresh")
 assert(not isGray(menu[fresh5h + 1].title.attributes),
   "future resets_at was rendered dim")
-
-local downFixture = { schema = 1, vendors = {
-  claude = {
-    available = true,
-    source = "claudeb-store",
-    daemon = { reachable = false },
-    accounts = {{
-      account = "daemon-down", five_hour = bucket(100), weekly = bucket(30), fable = bucket(40),
-    }},
-  },
-  codex = { available = false },
-  gemini = { available = false },
-}}
-local downMenu = loadModule(downFixture).menuItems()
-local down = accountIndex(downMenu, "daemon-down")
-for offset = 0, 3 do
-  assertNoRed(downMenu[down + offset], "daemon-unreachable cache fabricated rotation red")
-end
-for _, item in ipairs(downMenu) do
-  local text = titleText(item)
-  assert(not tostring(text):find("error", 1, true), "daemon-unreachable cache rendered an error")
-end
 
 local codexFixture = { schema = 1, vendors = {
   claude = { available = false },
@@ -375,11 +359,11 @@ end
 
 local claudeLoginFixture = { schema = 1, vendors = {
   claude = {
-    available = true, source = "claudeb-store", daemon = { reachable = true },
+    available = true, source = "claudeb-store",
     accounts = {
       { account = "loggedout", auth_needed = true },
       { account = "healthy", five_hour = bucket(10),
-        rotation = { usable = { general = true, fable = true }, blocked = {} } },
+        rotation = { usable = { general = true, fable = true } } },
     },
   },
   codex = { available = false },
@@ -767,14 +751,13 @@ local xmidFixture = { schema = 1, vendors = {
   claude = {
     available = true,
     source = "claudeb-store",
-    daemon = { reachable = true },
     accounts = {
       { account = "sameday", five_hour = { effective_pct = 10, resets_at = sameDay },
-        rotation = { usable = { general = true, fable = true }, blocked = {} } },
+        rotation = { usable = { general = true, fable = true } } },
       { account = "crossmid", five_hour = { effective_pct = 20, resets_at = crossMid },
-        rotation = { usable = { general = true, fable = true }, blocked = {} } },
+        rotation = { usable = { general = true, fable = true } } },
       { account = "farweek", five_hour = { effective_pct = 30, resets_at = farWeek },
-        rotation = { usable = { general = true, fable = true }, blocked = {} } },
+        rotation = { usable = { general = true, fable = true } } },
     },
   },
   codex = { available = false },

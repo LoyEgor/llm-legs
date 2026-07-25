@@ -110,7 +110,6 @@ run_checks() {
     "e2e_surfaces.sh:${LLM_SELFCHECK_E2E_TIMEOUT:-900}"
     "test_llm_limits.sh:${LLM_SELFCHECK_SUITE_TIMEOUT:-300}"
     "test_claudeb.sh:${LLM_SELFCHECK_SUITE_TIMEOUT:-300}"
-    "test_claudebd.sh:${LLM_SELFCHECK_SUITE_TIMEOUT:-300}"
     "test_codexb.sh:${LLM_SELFCHECK_SUITE_TIMEOUT:-300}"
     "test_geminib.sh:${LLM_SELFCHECK_SUITE_TIMEOUT:-300}"
   )

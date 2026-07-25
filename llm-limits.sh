@@ -318,9 +318,9 @@ render_table() {
       (if $window.expired == true then "!" else "" end);
     def rotation:
       if .enabled == false then "off"
-      elif (.rotation | type) != "object" then "-"
-      elif .rotation.blocked.general != null then .rotation.blocked.general
-      elif .rotation.blocked.fable != null then "fb:" + .rotation.blocked.fable
+      elif (.five_hour.effective_pct // 0) >= 100 then "limit-5h"
+      elif (.weekly.effective_pct // 0) >= 100 then "limit-weekly"
+      elif (.fable.effective_pct // 0) >= 100 then "fb:limit-fable"
       else "-" end;
     def account_status:
       if .auth_needed == true or
@@ -652,9 +652,6 @@ fi
 
 claude='{"available":false,"status":"no rate-limit snapshot","source":"none","last_wall":null}'
 claudeb_root="${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}"
-claudebd_url=${CLAUDEBD_URL:-http://127.0.0.1:${CLAUDEBD_PORT:-45789}/claudebd/status}
-claude_daemon='{"reachable":false}'
-claude_rotation='{}'
 claude_refresh_error=''
 claude_refresh_attempted=0
 claude_refresh_succeeded=0
@@ -723,51 +720,6 @@ if [ "$refresh" -eq 1 ] && { [ -z "$refresh_account" ] || [ -n "$claude_refresh_
     echo "llm-limits.sh: no claudeb store; cannot start claude windows" >&2
   fi
 fi
-claudebd_status=$(curl -fsS --connect-timeout 0.2 --max-time 0.5 "$claudebd_url" 2>/dev/null || true)
-if [ -n "$claudebd_status" ]; then
-  claude_rotation=$(jq -ce '
-    select(type == "object" and (.accounts | type) == "object") |
-    [.accounts | to_entries[] |
-      select((.value.usable | type) == "object" and (.value.blocked | type) == "object") |
-      {key:.key,value:{usable:.value.usable,blocked:.value.blocked}}] | from_entries
-  ' <<<"$claudebd_status" 2>/dev/null || printf '%s' '{}')
-  claude_daemon=$(jq -ce --argjson now "$now_epoch" '
-    select(type == "object" and (.accounts | type) == "object") |
-    def legacy_daemon:
-      (.accounts | to_entries) as $accounts |
-      def active_epoch: if type == "number" and . > $now then . else 0 end;
-      def general_until:
-        [(.auth_failed_until | active_epoch),
-         (if .walled == true and (.h5 | type) == "number" and .h5 >= 97
-          then (.hreset | active_epoch) else 0 end),
-         (if .walled == true and (.wk | type) == "number" and .wk >= 99
-          then (.wreset | active_epoch) else 0 end)] | max;
-      def iso_or_null: if . > $now then todateiso8601 else null end;
-      {walls:[$accounts[] | .key as $account | .value as $state |
-        (if $state.walled == true
-         then {account:$account,scope:"general",until:($state | general_until | iso_or_null),reason:"walled"}
-         else empty end),
-        (if ($state.auth_failed_until | active_epoch) > 0
-         then {account:$account,scope:"general",until:($state.auth_failed_until | todateiso8601),reason:"auth_failed"}
-         else empty end),
-        (if ($state.fable_walled_until | active_epoch) > 0
-         then {account:$account,scope:"fable",until:($state.fable_walled_until | todateiso8601),reason:"fable_walled"}
-         else empty end)],
-       all_walled_until:{
-         general:(if ($accounts | length) > 0 and all($accounts[]; (.value.walled == true or (.value.auth_failed_until | active_epoch) > 0))
-                  then ([$accounts[].value | general_until] |
-                        if all(.[]; . > $now) then (max | todateiso8601) else null end)
-                  else null end),
-         fable:(if ($accounts | length) > 0 and all($accounts[]; (.value.fable_walled_until | active_epoch) > 0)
-                then ([$accounts[].value.fable_walled_until] | max | todateiso8601)
-                else null end)},
-       reachable:true};
-    if has("walls") and has("pins") and has("all_walled_until")
-    then {walls:.walls,pins:.pins,all_walled_until:.all_walled_until,reachable:true}
-    else legacy_daemon
-    end
-  ' <<<"$claudebd_status" 2>/dev/null || printf '%s' '{"reachable":false}')
-fi
 shopt -s nullglob
 claudeb_files=("$claudeb_root/limits/"*.json)
 shopt -u nullglob
@@ -777,10 +729,10 @@ if [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
   accounts_lines=''
   for claude_file in "${claudeb_files[@]}"; do
     account=${claude_file##*/}; account=${account%.json}
-    [ "$account" != main ] || continue
+    [ "$account" != main ] && [ "$account" != - ] || continue
     plan_type=$(claude_subscription_type "$account")
     enabled=true
-    if [ -r "$claudeb_disabled" ] && grep -qxF "$account" "$claudeb_disabled"; then enabled=false; fi
+    if [ -r "$claudeb_disabled" ] && grep -qxF -- "$account" "$claudeb_disabled"; then enabled=false; fi
     # Snapshots without a valid five_hour bucket (e.g. auth-only after a failed probe) must
     # stay visible as unknown values, never vanish from the account list.
     # Header-origin week = never measured (shared-invariants n): render unknown, not a number.
@@ -834,7 +786,10 @@ if [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
       (if $has_week == 0 then {} else {weekly:({used_pct:$d.seven_day.used_percentage,
         resets_at:(if $week_reset == "" then null else $week_reset end)} + ($x.week // {}))} end) +
       (if $has_fable == 0 then {} else {fable:({used_pct:$d.fable.used_percentage,
-        resets_at:(if $fable_reset == "" then null else $fable_reset end)} + ($x.fable // {}))} end)' <<<"$claude_data")
+        resets_at:(if $fable_reset == "" then null else $fable_reset end)} + ($x.fable // {}))} end) +
+      {rotation:{usable:{general:($enabled and (($d.auth | type) == "object" and $d.auth.status == "ok")),
+                         fable:($enabled and (($d.auth | type) == "object" and $d.auth.status == "ok") and
+                                $has_fable == 1 and $plan_type != "pro")}}}' <<<"$claude_data")
     accounts_lines+="$account_json"$'\n'
   done
   accounts=$(jq -sc '.' <<<"$accounts_lines")
@@ -842,14 +797,8 @@ if [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
     if ! jq -e --arg current "$current" 'any(.account == $current)' <<<"$accounts" >/dev/null; then
       current=$(jq -r 'sort_by(.account)[0].account' <<<"$accounts")
     fi
-    accounts=$(jq -c --arg current "$current" --argjson rotation "$claude_rotation" '
-      map(.account as $account |
-        .is_current = (.account == $current) |
-        if ($rotation | has($account)) then .rotation = $rotation[$account] else . end |
-        if .plan_type == "pro" and (.rotation | type) == "object" then
-          .rotation.usable.fable = false |
-          .rotation.blocked.fable = "plan"
-        else . end) |
+    accounts=$(jq -c --arg current "$current" '
+      map(.is_current = (.account == $current)) |
       sort_by(if .is_current then 0 else 1 end, .account)
     ' <<<"$accounts")
     claude_bundle=$(jq -cn --argjson accounts "$accounts" --argjson wall "$claude_wall" '
@@ -1359,7 +1308,6 @@ experiments_json=$(experiments_active_lines "$(experiments_registry_path "$scrip
 
 if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$experiments_json" --argjson claude "$claude" \
   --argjson codex "$codex" --argjson gemini "$gemini" --argjson now "$now_epoch" \
-  --argjson claude_daemon "$claude_daemon" \
   --argjson previous "$previous_cache" --argjson refresh "$refresh" --arg refresh_account "$refresh_account" \
   --argjson claude_attempted "$claude_refresh_attempted" --argjson codex_attempted "$codex_refresh_attempted" \
   --argjson gemini_attempted "$gemini_refresh_attempted" --arg global_error "$global_refresh_error" \
@@ -1439,7 +1387,7 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
     then $previous.vendors[$key]
     else $current end;
   {schema:1,fetched_at:$fetched_at,experiments:$experiments,vendors:{
-    claude:(vendor_data("claude"; ($claude + {daemon:$claude_daemon}); $claude_attempted; $claude_error) + {daemon:$claude_daemon}),
+    claude:vendor_data("claude"; $claude; $claude_attempted; $claude_error),
     codex:vendor_data("codex"; $codex; $codex_attempted; $codex_error),
     gemini:vendor_data("gemini"; $gemini; $gemini_attempted; $gemini_error)}}
   | heal_claude_error(outcome_error($previous.vendors.claude.refresh_error; $claude_attempted; $claude_error); .vendors.claude.accounts) as $claude_outcome
@@ -1516,9 +1464,9 @@ else
       else (($window.resets_at | format_reset($render_now)) | dimmed($window)) end;
     def rotation:
       if .enabled == false then "off"
-      elif (.rotation | type) != "object" then "-"
-      elif .rotation.blocked.general != null then .rotation.blocked.general
-      elif .rotation.blocked.fable != null then "fb:" + .rotation.blocked.fable
+      elif (.five_hour.effective_pct // 0) >= 100 then "limit-5h"
+      elif (.weekly.effective_pct // 0) >= 100 then "limit-weekly"
+      elif (.fable.effective_pct // 0) >= 100 then "fb:limit-fable"
       else "-" end;
     def credits:
       if (.reset_credits | type) == "number" then "↻" + (.reset_credits | tostring) else "-" end;

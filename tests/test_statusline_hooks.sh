@@ -197,7 +197,7 @@ run_statusline() {
   # snapshot -> empty cache) so renders stay hermetic and deterministic. The
   # store merge-kick would otherwise spawn the real llm-limits.sh collector;
   # point it at a no-op (overridden per-case below where the kick is exercised).
-  printf '%s' "$1" | CLAUDE_LIMITS_ACCOUNT="${2:--}" CLAUDEB_DIR="$CLAUDEB_FIX" \
+  printf '%s' "$1" | CLAUDE_LIMITS_ACCOUNT="${2:-${RUN_STATUSLINE_DEFAULT_ACCOUNT:-main}}" CLAUDEB_DIR="$CLAUDEB_FIX" \
     LLM_LIMITS_FILE="$WORK/limits.json" STATUSLINE_PS=true STATUSLINE_LSOF=true \
     STATUSLINE_STORE_MERGE_CMD="${STORE_MERGE_CMD:-/usr/bin/true}" "$STATUSLINE"
 }
@@ -298,21 +298,21 @@ bucket_json() {
      auth:{status:"ok",checked_at:$now}}'
 }
 
-printf 'acctgen\n' > "$CLAUDEB_FIX/.claudeb-state"
-printf 'acctfab\n' > "$CLAUDEB_FIX/.claudeb-state-fable"
 bucket_json 33 11 > "$CLAUDEB_FIX/limits/acctfab.json"
 bucket_json 44 22 > "$CLAUDEB_FIX/limits/acctgen.json"
 
-fable_payload=$(statusline_payload status-rot-fable '{"model":{"id":"claude-fable-5[1m]","display_name":"Fable"}}')
-fable_out=$(run_statusline "$fable_payload") || fail "statusline rotating fable failed"
-assert grep -Fq '~acctfab' <<< "$fable_out"
+fable_payload=$(statusline_payload status-explicit-fable '{"model":{"id":"claude-fable-5[1m]","display_name":"Fable"}}')
+fable_out=$(run_statusline "$fable_payload" acctfab) || fail "statusline explicit fable failed"
+assert grep -Fq 'acctfab' <<< "$fable_out"
+assert test "${fable_out#*~acctfab}" = "$fable_out"
 assert grep -Fq "${GREEN}33%" <<< "$fable_out"
 assert grep -Fq "${GREEN}11%" <<< "$fable_out"
 
-general_payload=$(statusline_payload status-rot-gen \
-  '{"model":{"id":"claude-sonnet-5","display_name":"Sonnet"},"rate_limits":{"five_hour":{"used_percentage":99,"resets_at":'"$((NOW + 3600))"'}}}')
-general_out=$(run_statusline "$general_payload") || fail "statusline rotating general failed"
-assert grep -Fq '~acctgen' <<< "$general_out"
+general_payload=$(statusline_payload status-explicit-gen \
+  '{"model":{"id":"claude-sonnet-5","display_name":"Sonnet"}}')
+general_out=$(run_statusline "$general_payload" acctgen) || fail "statusline explicit general failed"
+assert grep -Fq 'acctgen' <<< "$general_out"
+assert test "${general_out#*~acctgen}" = "$general_out"
 assert grep -Fq "${GREEN}44%" <<< "$general_out"
 assert_eq "$(bucket_json 44 22)" "$(cat "$CLAUDEB_FIX/limits/acctgen.json")"
 
@@ -333,10 +333,23 @@ run_statusline "$measured_payload" acctgen >/dev/null || fail "statusline measur
 assert jq -e '.seven_day.used_percentage == 76 and .seven_day.origin == "session"' "$CLAUDEB_FIX/limits/acctgen.json" >/dev/null
 bucket_json 44 22 > "$CLAUDEB_FIX/limits/acctgen.json"
 
+# The unpinned w:cb prediction must come from the worker-pick cache, never from
+# .claudeb-state (the last profile launched): the two are seeded to different accounts
+# here so a regression back to the state file fails instead of silently going stale.
+printf 'acctgen\n' > "$CLAUDEB_FIX/.claudeb-state"
+printf 'cx✓alt·sol·med cb~acctpick·opus·hi gx✓main·pro·hi\n' > "$HOME/.cache/worker-pick.line.main"
 printf 'worker=claudeb\ncodex_effort=high\n' > "$worker_file"
-worker_out=$(run_statusline "$(statusline_payload status-w-cb-rot '{"model":{"id":"claude-fable-5","display_name":"Fable"}}')" main)
-assert grep -Fq "w:cb${RESET} ${MAGENTA}~acctgen${RESET}${DIM}·opus·hi${RESET}" <<< "$worker_out"
+worker_out=$(run_statusline "$(statusline_payload status-w-cb-pick '{"model":{"id":"claude-fable-5","display_name":"Fable"}}')" main)
+assert grep -Fq "w:cb${RESET} ${MAGENTA}~acctpick${RESET}${DIM}·opus·hi${RESET}" <<< "$worker_out"
+assert test "${worker_out#*acctgen}" = "$worker_out"
 assert test "${worker_out#*acctfab}" = "$worker_out"
+
+# No parsable cache → honest `?`, never a stale account from the state file.
+printf 'cx✓alt·sol·med gx✓main·pro·hi\n' > "$HOME/.cache/worker-pick.line.main"
+worker_out=$(run_statusline "$(statusline_payload status-w-cb-nocache '{"model":{"id":"claude-fable-5","display_name":"Fable"}}')" main)
+assert grep -Fq "w:cb${RESET} ${MAGENTA}~?${RESET}${DIM}·opus·hi${RESET}" <<< "$worker_out"
+assert test "${worker_out#*acctgen}" = "$worker_out"
+printf 'cx✓alt·sol·med cb~acctpick·opus·hi gx✓main·pro·hi\n' > "$HOME/.cache/worker-pick.line.main"
 
 jq -cn --argjson now "$NOW" '{vendors:{codex:{accounts:[
   {account:"main",five_hour:{used_pct:0,resets_at:($now+3600|todateiso8601)},weekly:{used_pct:0,resets_at:($now+86400|todateiso8601)}},
@@ -405,7 +418,7 @@ assert jq -e '.five_hour.used_percentage == 63 and .seven_day.used_percentage ==
 
 cost_payload=$(statusline_payload status-cost '{"cost":{"total_cost_usd":18.2007}}')
 cost_out=$(printf '%s' "$cost_payload" | env -u LANG LC_ALL=ru_RU.UTF-8 \
-  CLAUDE_LIMITS_ACCOUNT=- CLAUDEB_DIR="$CLAUDEB_FIX" LLM_LIMITS_FILE="$WORK/limits.json" \
+  CLAUDE_LIMITS_ACCOUNT=main CLAUDEB_DIR="$CLAUDEB_FIX" LLM_LIMITS_FILE="$WORK/limits.json" \
   "$STATUSLINE" 2>"$WORK/cost-stderr") || fail "statusline cost locale failed"
 assert grep -Fq '$18.20' <<< "$cost_out"
 assert_eq "" "$(cat "$WORK/cost-stderr")"
@@ -435,7 +448,7 @@ assert grep -Fq "ctx ${RED}90%${RESET}" <<< "$ctx_200k"
 # --- token-count color encodes prompt-cache warmth ---
 # Warmth anchors on completed responses: non-sidechain, non-<synthetic>
 # assistant entries (timestamp + message.model + message.usage). Fixture
-# renders resolve warm_acct=acctgen (rotating "-" + .claudeb-state).
+# renders use the explicit acctgen fixture.
 # cr = the cache_read tokens (input_tokens forced to 0 so ctx_tokens == cr).
 warm_extra() {
   jq -cn --arg tp "$1" --argjson pct "$2" --argjson cr "$3" '
@@ -457,6 +470,7 @@ t_assist() { # epoch [model] [cache_read] [cache_creation] [bucket 5m|1h|-]
 }
 t_boundary() { printf '{"type":"system","subtype":"compact_boundary","timestamp":"%s"}\n' "$(iso_utc "$1")" >> "$TRANSCRIPT"; }
 t_reset() { : > "$TRANSCRIPT"; rm -f "$STATE_DIR"/cache-ttl-track-*; }
+RUN_STATUSLINE_DEFAULT_ACCOUNT=acctgen
 
 # Warm cache: count and time both dim (time presence signals cache alive);
 # a fresh response inside the 120s attribution window self-stamps the account.
@@ -732,6 +746,7 @@ assert grep -Fq '"observed_ceiling_s":null' "$LEARNED"
 assert test "$(grep -oE '"updated_at":[0-9]+' "$LEARNED" | grep -oE '[0-9]+')" -ge "$NOW"
 rm -f "$LEARNED" "$STATE_DIR"/cache-ttl-track-*
 : > "$TRANSCRIPT"
+RUN_STATUSLINE_DEFAULT_ACCOUNT=
 
 # --- store merge-kick (bin/statusline.sh) ---
 KICK_STAMP="$STATE_DIR/store-merge-kick"
@@ -790,15 +805,6 @@ kick_start=$(date +%s)
 STORE_MERGE_CMD="$SLOW_COLLECTOR" run_statusline "$kick_payload" kickacct >/dev/null \
   || fail "statusline kick with slow collector exited nonzero"
 assert test "$(( $(date +%s) - kick_start ))" -lt 2
-
-# A rotating (proxy) session never writes caches, so it never kicks the store.
-kick_reset
-STORE_MERGE_CMD="$FAKE_COLLECTOR" run_statusline "$kick_payload" - >/dev/null \
-  || fail "statusline rotating render failed"
-sleep 0.2
-assert test ! -f "$KICK_MARK"
-assert test ! -f "$KICK_STAMP"
-kick_reset
 
 # --- statusline-freshness-gate.sh ---
 FRESH_GATE="$ROOT/bin/statusline-freshness-gate.sh"
@@ -1081,6 +1087,23 @@ glob_later=$(worker_payload claudeb-worker worker/two 'Run tests' true)
 glob_later_output=$(printf '%s' "$glob_later" | "$WORKER_HOOK") || fail "glob-tag rewrite exited nonzero"
 assert jq -e '.hookSpecificOutput.updatedInput.description == "com · sonnet · high — Run tests"' \
   <<< "$glob_later_output" >/dev/null
+
+printf 'claudeb_model=opus\nclaudeb_effort=high\n' > "$HOME/.claude/worker-model"
+unknown_spawn=$(jq -cn '{
+  hook_event_name:"PreToolUse",session_id:"spawn-claudeb-unknown",
+  tool_input:{subagent_type:"claudeb-worker",description:"Implement fixture",
+              prompt:"MODEL: opus\nEFFORT: high\nWorking directory: /tmp"}}')
+unknown_spawn_out=$(printf '%s' "$unknown_spawn" | "$SPAWN_HOOK") || fail "unknown-account spawn hook exited nonzero"
+assert jq -e '.hookSpecificOutput.updatedInput.description == "opus · high: Implement fixture"' \
+  <<<"$unknown_spawn_out" >/dev/null
+assert_eq 'opus · high' \
+  "$(cat "$HOME/.cache/claude-worker-tags/spawn-claudeb-unknown/pending-claudeb-worker")"
+
+unknown_tag=$(worker_payload claudeb-worker worker/unknown 'Run it' 'claudeb --model opus -p task')
+unknown_tag_out=$(printf '%s' "$unknown_tag" | "$WORKER_HOOK") || fail "unknown-account tag hook exited nonzero"
+assert_eq 'opus · high' "$(cat "$TAGDIR/workerunknown")"
+assert jq -e '.hookSpecificOutput.updatedInput.description == "opus · high — Run it"' \
+  <<<"$unknown_tag_out" >/dev/null
 
 gemini_seed=$(worker_payload gemini-worker worker/gemini 'Implement it' \
   "$HOME/.local/bin/geminib profile work --model gemini-3.6-flash --effort medium --print-timeout 20m --dangerously-skip-permissions --print task")

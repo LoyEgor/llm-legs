@@ -1,8 +1,8 @@
 # llm-legs
 
 Subscription-only multi-account/multi-vendor LLM orchestration: `llm-limits.sh` collects
-Claude/Codex/Gemini usage into `~/.llm-limits.json`; `bin/claudeb` + `bin/claudebd` (rotating
-proxy on `127.0.0.1:45789`) rotate and heal multiple Claude accounts; `bin/codexb` does the
+Claude/Codex/Gemini usage into `~/.llm-limits.json`; `bin/claudeb` manages explicit Claude
+profiles and heals their snapshots; `bin/codexb` does the
 same for Codex; `hammerspoon/llm-limits.lua` renders it all in the macOS menubar.
 
 **Before debugging anything here, read `docs/DIAGNOSTICS.md`** — it has the system map, a
@@ -28,13 +28,13 @@ experiment is removed completely per its `how_to_remove`, registry entry last. S
 procedure, so nothing about experiments needs to live in this file beyond this paragraph.
 
 Cardinal rules:
-- Never point a test or ad-hoc check at the real daemon on port 45789 or the real
-  `~/.claude-profiles/.claudeb` store — use `CLAUDEB_DIR`/`CLAUDEBD_PORT`/`CLAUDEBD_UPSTREAM`.
+- Never point a test or ad-hoc check at the real `~/.claude-profiles/.claudeb` store — use
+  `CLAUDEB_DIR` for fixtures.
 - Never mutate the live Hammerspoon singleton (`package.loaded["llm-limits"]`) — read-only
   calls (`menuItems()`) only, or the user's real menubar breaks silently.
 - Never commit without the user's explicit, per-commit permission.
 
-Run the suites: `bash tests/test_llm_limits.sh && bash tests/test_claudeb.sh && bash tests/test_claudebd.sh && bash tests/test_claudebd_live.sh && bash tests/e2e_surfaces.sh && bash tests/test_codexb.sh && bash tests/test_geminib.sh && bash tests/test_experiments_registry.sh`
+Run the suites: `bash tests/test_llm_limits.sh && bash tests/test_claudeb.sh && bash tests/e2e_surfaces.sh && bash tests/test_codexb.sh && bash tests/test_geminib.sh && bash tests/test_experiments_registry.sh`
 
 Cross-implementation invariants (values duplicated across bash/jq/Lua/prose) are guarded by
 `docs/shared-invariants.md` + `bash tests/test_consistency.sh` — run it after touching any

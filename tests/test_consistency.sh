@@ -209,15 +209,11 @@ assert grep -Fq 'printf '\''%s\n'\'' "$gemini_profiles_dir/$1"' "$GEMINI_ACCOUNT
 assert doc_has 'Gemini profile discovery and HOME mapping'
 
 # --- Row n: weekly bucket provenance ----------------------------------------
-CLAUDEBD="$ROOT/bin/claudebd"
 STATUSLINE="$ROOT/bin/statusline.sh"
 # No writer may mint a weekly percentage from headers: the header-learn paths must
 # not mention the weekly bucket at all.
-assert eq "$(awk '/^function updateFromHeaders/,/^}/' "$CLAUDEBD" | grep -Ec 'state\.wk *=|state\.sevenDay *=|learned\.seven_day')" 0
 assert eq "$(awk '/^merge_headers\(\)/,/^}/' "$ROOT/bin/claudeb" | grep -Ec 'seven_day: \{|used_percentage: 100')" 0
 assert grep -Fq 'def stamp: . + {as_of: $now, origin: "session"}' "$STATUSLINE"
-assert grep -Fq "if (key === 'seven_day') { delete learned[key]; continue; }" "$CLAUDEBD"
-assert grep -Fq "return week.origin === 'headers' ? undefined : week;" "$CLAUDEBD"
 assert test "$(grep -Fc '.seven_day.origin? == "headers"' "$ROOT/bin/claudeb")" -eq 2
 assert grep -Fq '.seven_day.origin? != "headers"' "$LLMLIMITS"
 assert grep -Fq '.seven_day.origin? == "headers"' "$LLMLIMITS"
@@ -226,6 +222,44 @@ assert grep -Fq 'if (.seven_day.origin? == "headers") then del(.seven_day) else 
 assert grep -Fq 'walk(if type == "object" and (.weekly.origin? == "headers") then del(.weekly) else . end)' "$WORKERPICK"
 assert doc_has 'Weekly bucket provenance'
 assert doc_has 'no writer may stamp `origin: "headers"` on `seven_day`'
+
+assert doc_has 'always emits boolean `rotation.usable.general` and `rotation.usable.fable`'
+EDGE_WORK=$(mktemp -d)
+EDGE_BIN="$EDGE_WORK/bin"
+EDGE_HOME="$EDGE_WORK/home"
+EDGE_STORE="$EDGE_WORK/store"
+mkdir -p "$EDGE_BIN" "$EDGE_HOME/.claude-profiles" "$EDGE_STORE/limits"
+cat >"$EDGE_BIN/security" <<'EOF'
+#!/usr/bin/env bash
+case " $* " in
+  *" -w "*) printf '%s\n' '{"claudeAiOauth":{"subscriptionType":"team"}}' ;;
+  *) exit 0 ;;
+esac
+EOF
+chmod +x "$EDGE_BIN/security"
+printf '{"five_hour":{"used_percentage":10,"resets_at":4102444800},"fable":{"used_percentage":20,"resets_at":4102444800}}\n' >"$EDGE_STORE/limits/missing-auth.json"
+printf '{"five_hour":{"used_percentage":10,"resets_at":4102444800},"fable":{"used_percentage":20,"resets_at":4102444800},"auth":{"status":"pending"}}\n' >"$EDGE_STORE/limits/bad-auth.json"
+printf '{"weekly":{"used_percentage":10,"resets_at":4102444800},"auth":{"status":"ok"}}\n' >"$EDGE_STORE/limits/missing-five.json"
+printf '{"five_hour":{"used_percentage":10,"resets_at":4102444800},"fable":{"used_percentage":"20","resets_at":4102444800},"auth":{"status":"ok"}}\n' >"$EDGE_STORE/limits/nonnumeric-fable.json"
+printf '{"five_hour":{"used_percentage":10,"resets_at":4102444800},"fable":{"used_percentage":20,"resets_at":4102444800},"auth":{"status":"ok"}}\n' >"$EDGE_STORE/limits/disabled.json"
+printf '{}\n' >"$EDGE_STORE/limits/empty.json"
+printf 'disabled\n' >"$EDGE_STORE/disabled"
+printf 'missing-auth\n' >"$EDGE_STORE/.claudeb-state"
+EDGE_JSON=$(PATH="$EDGE_BIN:$PATH" HOME="$EDGE_HOME" CLAUDE_PROFILES_DIR="$EDGE_HOME/.claude-profiles" \
+  CLAUDEB_DIR="$EDGE_STORE" LLM_LIMITS_CACHE="$EDGE_WORK/cache.json" \
+  LLM_LIMITS_CODEX_REFRESH=0 LLM_LIMITS_GEMINI_REFRESH=0 \
+  bash "$LLMLIMITS" --json --no-write) || fail "edge snapshot collection failed"
+assert jq -e '
+  (.vendors.claude.accounts | length) == 6 and
+  all(.vendors.claude.accounts[];
+    (.rotation.usable.general | type) == "boolean" and
+    (.rotation.usable.fable | type) == "boolean") and
+  (any(.vendors.claude.accounts[]; .account == "disabled" and
+    .rotation.usable.general == false and .rotation.usable.fable == false)) and
+  (any(.vendors.claude.accounts[]; .account == "nonnumeric-fable" and
+    .rotation.usable.fable == false))
+' <<<"$EDGE_JSON" >/dev/null
+rm -rf "$EDGE_WORK"
 
 GATE_WARN=85; GATE_DENY=95
 assert test -x "$WORKER_GATE"
@@ -244,4 +278,12 @@ assert eq "$(jq '[.hooks.PreToolUse[] | .hooks[]? | select(.command | test("(cla
 assert grep -Fq 'warn at `85`%; block at `95`%' "$ROOT/$DOC"
 assert doc_has 'Worker spawn pressure gate'
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, account pin precedence, quota-group matching, shared profile mapping, weekly bucket provenance, and worker spawn pressure gate) and match %s\n' "$asserts" "$DOC"
+reserved_set() {
+  sed -nE 's/^[[:space:]]*(main\|)?(\.\*\|\*\/\*\|)?([a-z|._-]*help[a-z|._-]*)\).*/\3/p' "$1" |
+    head -n1 | tr '|' '\n' | grep -vE '^(main|\.\*|\*/\*)$' | sort -u | paste -sd' ' -
+}
+assert eq "$(reserved_set "$CLAUDEB")" "$(reserved_set "$ROOT/bin/claude-chat-switch")"
+assert grep -Fq 'help add enable disable remove accounts status st profile p run warm token-upkeep' "$ROOT/$DOC"
+assert doc_has 'Reserved profile names'
+
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, account pin precedence, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, and worker spawn pressure gate) and match %s\n' "$asserts" "$DOC"
