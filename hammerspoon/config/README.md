@@ -17,6 +17,11 @@ System map (what loads what, all via `init.lua` pcall/dofile):
   persisted in `claude_continue_state.json`; consumed by repo `bin/claude-resume-timer`.
 - `claude_chat_switch.lua` — chat switch typing driver (menu-only feature).
 - `gpt_voice.lua` — GPT voice recording/transform states shown in the menubar title.
+- `gpt_voice_keys.lua` — `GptVoiceKeys.postKey/returnKey`: Enter/Esc stamped with
+  transcriptions-gpt's marker so its tap passes them through instead of treating
+  them as the stop/cancel trigger of a live dictation. Used by every module that
+  types into the frontmost window (`claude_continue`, `claude_chat_switch`, and
+  claude-setup's `claude_compact`/`claude_trash`).
 - `handoff.lua` — `HandoffGuard`: real macOS Handoff state (async defaults), reconnect cycle.
 - `ipad_trigger.lua` — HTTP server :8765 for iPad shortcuts; Sidecar connect via
   `~/.local/bin/SidecarLauncher` (private SidecarCore CLI, built from

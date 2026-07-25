@@ -1,6 +1,7 @@
 local ClaudeContinue = {}
 
 local ax = require("hs.axuielement")
+local gptVoiceKeys = require("gpt_voice_keys")
 
 local appName = "Claude"
 local terminalAppName = "Terminal"
@@ -612,7 +613,7 @@ local function runClaudeApp(pressReturnAfterPaste, onComplete, msgText, opts)
                     hs.timer.doAfter(pasteDelay, function()
                         logLine("paste-unverified", id, "attempt=1 claude-app")
                         if pressReturnAfterPaste then
-                            hs.eventtap.keyStroke({}, "return")
+                            gptVoiceKeys.returnKey()
                             logLine("return-sent", id, "app=Claude")
                             log("Claude App message sent")
                         else
@@ -688,7 +689,7 @@ local function runKimi(pressReturnAfterPaste, onComplete, msgText, opts)
                     hs.timer.doAfter(pasteDelay, function()
                         logLine("paste-unverified", id, "attempt=1 kimi-app")
                         if pressReturnAfterPaste then
-                            hs.eventtap.keyStroke({}, "return")
+                            gptVoiceKeys.returnKey()
                             logLine("return-sent", id, "app=Kimi")
                             log("Kimi message sent")
                         else
@@ -844,7 +845,7 @@ local function runTerminal(pressReturnAfterPaste, onComplete, msgText, opts)
                                 return
                             end
 
-                            hs.eventtap.keyStroke({}, "return")
+                            gptVoiceKeys.returnKey()
                             logLine("return-sent", id, "tty=" .. tostring(actualTty))
                             log("Terminal message sent")
                         else

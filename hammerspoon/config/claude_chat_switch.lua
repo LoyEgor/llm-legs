@@ -9,6 +9,8 @@
 
 local ClaudeChatSwitch = {}
 
+local gptVoiceKeys = require("gpt_voice_keys")
+
 local terminalAppName = "Terminal"
 local logPath = os.getenv("HOME") .. "/.hammerspoon/claude_chat_switch.log"
 
@@ -167,7 +169,7 @@ local function typeExit()
                 cleanup()
                 return
             end
-            hs.eventtap.keyStroke({}, "return")
+            gptVoiceKeys.returnKey()
             active.exitTypedAt = hs.timer.secondsSinceEpoch()
             logLine("exit-typed", "/exit sent to " .. active.tty)
         end)
@@ -235,7 +237,7 @@ local function typeCommand()
                 cleanup()
                 return
             end
-            hs.eventtap.keyStroke({}, "return")
+            gptVoiceKeys.returnKey()
             logLine("typed", cmd)
             hs.alert.show("Chat switch → " .. active.profile .. ": resume typed")
 
