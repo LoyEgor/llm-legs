@@ -257,7 +257,13 @@ assert jq -e '
   (any(.vendors.claude.accounts[]; .account == "disabled" and
     .rotation.usable.general == false and .rotation.usable.fable == false)) and
   (any(.vendors.claude.accounts[]; .account == "nonnumeric-fable" and
-    .rotation.usable.fable == false))
+    .rotation.usable.fable == false)) and
+  # worker-pick reads a missing key as true, so the fail-open direction needs its
+  # value asserted, not just its type: no auth object, a non-ok verdict, and an
+  # unreadable snapshot must all come out false.
+  (all(.vendors.claude.accounts[] | select(.account == "missing-auth" or
+       .account == "bad-auth" or .account == "empty");
+    .rotation.usable.general == false and .rotation.usable.fable == false))
 ' <<<"$EDGE_JSON" >/dev/null
 rm -rf "$EDGE_WORK"
 

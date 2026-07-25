@@ -344,6 +344,12 @@ assert grep -Fq "w:cb${RESET} ${MAGENTA}~acctpick${RESET}${DIM}·opus·hi${RESET
 assert test "${worker_out#*acctgen}" = "$worker_out"
 assert test "${worker_out#*acctfab}" = "$worker_out"
 
+# Profile names may hold underscores, dots and capitals (claudeb's own add rule), so the
+# extractor must not be narrower than the names it can receive.
+printf 'cx✓alt·sol·med cb~My_acct.2·opus·hi gx✓main·pro·hi\n' > "$HOME/.cache/worker-pick.line.main"
+worker_out=$(run_statusline "$(statusline_payload status-w-cb-oddname '{"model":{"id":"claude-fable-5","display_name":"Fable"}}')" main)
+assert grep -Fq "w:cb${RESET} ${MAGENTA}~My_acct.2${RESET}${DIM}·opus·hi${RESET}" <<< "$worker_out"
+
 # No parsable cache → honest `?`, never a stale account from the state file.
 printf 'cx✓alt·sol·med gx✓main·pro·hi\n' > "$HOME/.cache/worker-pick.line.main"
 worker_out=$(run_statusline "$(statusline_payload status-w-cb-nocache '{"model":{"id":"claude-fable-5","display_name":"Fable"}}')" main)

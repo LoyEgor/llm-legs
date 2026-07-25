@@ -453,10 +453,6 @@ local function runGeminib(args, failMessage)
   runAccountCommand(resolveGeminib(), args, failMessage)
 end
 
-function M.switchAccount(name)
-  runClaudeb({ "use", name }, "switch failed")
-end
-
 -- Arms a Hammerspoon one-shot for the chat in the frontmost Terminal tab; the
 -- arm itself is silent — claude_chat_switch.lua alerts on the outcome later.
 function M.switchChatTo(name)
@@ -773,8 +769,6 @@ function M.menuItems()
                 accountRow.menu = {
                   { title = "In worker pool", checked = enabled,
                     fn = function() M.toggleAccount(acct, enabled) end },
-                  { title = "Make current", disabled = block.is_current,
-                    fn = function() M.switchAccount(acct) end },
                   { title = "Hard refresh",
                     fn = function() M.hardRefreshClaude(acct) end },
                 }

@@ -565,10 +565,15 @@ def _project_bucket(b, window, proj_now, auth_expired):
 
 
 def _rotation(acc_obj):
+    # Fable eligibility rides on general eligibility: a disabled or unauthenticated
+    # account is unusable for every scope, so reporting fable-capable there would be
+    # fail-open for any consumer that checks only the fable flag. The Pro-plan gate
+    # llm-limits.sh applies is deliberately absent — that needs the keychain
+    # subscription type, which this collector never reads (shared-invariants o).
     fable_pct = (acc_obj.get("fable") or {}).get("used_pct")
     fable_capable = isinstance(fable_pct, (int, float)) and not isinstance(fable_pct, bool)
     general = acc_obj["enabled"] and acc_obj["auth"]["status"] == "ok"
-    return {"usable": {"general": general, "fable": fable_capable}}
+    return {"usable": {"general": general, "fable": general and fable_capable}}
 
 
 def _account_usable(acc_obj):

@@ -739,7 +739,7 @@ case "$worker" in
       # only records the last profile launched and would render a stale prediction).
       load_worker_pick_prediction
       wsel=$(printf '%s\n' "$worker_pick_prediction" |
-        sed -nE 's/^.* cb.(main|[a-z0-9][a-z0-9-]*)·[^·]+·[^·]+( .*)?$/\1/p')
+        sed -nE 's/^(.* )?cb[~@]([A-Za-z0-9_][A-Za-z0-9._-]*)·[^·]+·[^·]+( .*)?$/\2/p')
       [ -n "$wsel" ] || wsel="?"
     fi
     ;;

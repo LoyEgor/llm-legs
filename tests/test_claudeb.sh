@@ -314,11 +314,46 @@ assert_fails grep -q '^CLAUDE_CODE_OAUTH_TOKEN=' "$ENV_DUMP"
 assert grep -qx "CLAUDE_LIMITS_ACCOUNT=gamma" "$ENV_DUMP"
 assert grep -qx "CLAUDE_CONFIG_DIR=$HOME/.claude-profiles/gamma" "$ENV_DUMP"
 assert grep -qx gamma "$CLAUDEB_DIR/.claudeb-state"
+
+# A headless worker spawn must NOT restamp "current": those run on other accounts all day
+# and would make the `*`/`●`/`cb:` markers name the last worker, not the user's session.
+printf 'delta\n' >"$CLAUDEB_DIR/.claudeb-state"
+( profile_command gamma -p 'noop' >/dev/null 2>&1 )
+assert grep -qx delta "$CLAUDEB_DIR/.claudeb-state"
+( profile_command gamma --print 'noop' >/dev/null 2>&1 )
+assert grep -qx delta "$CLAUDEB_DIR/.claudeb-state"
+( profile_command gamma >/dev/null 2>&1 )
+assert grep -qx gamma "$CLAUDEB_DIR/.claudeb-state"
+
+# An unknown name is a NEW profile now, not an error: it must launch so the login can happen,
+# and say so first. The subshell is mandatory — profile_command execs, and without it the exec
+# replaces this test runner and the rest of the suite silently never runs.
 mkdir -p "$HOME/.claude-profiles/gateway"
 rm -f "$ENV_DUMP"
-assert_fails profile_command gateway >"$WORK/unknown-profile.out" 2>&1
-assert grep -q "unknown account 'gateway'" "$WORK/unknown-profile.out"
-assert test ! -e "$ENV_DUMP"
+# `security` exiting 44 is the only proof an account has no keychain entry.
+printf '#!/usr/bin/env bash\nexit 44\n' >"$FAKE_BIN/security"
+( profile_command gateway >/dev/null 2>"$WORK/unknown-profile.out" )
+assert grep -q 'gateway is new' "$WORK/unknown-profile.out"
+assert_fails grep -q "unknown account" "$WORK/unknown-profile.out"
+assert test -f "$ENV_DUMP"
+assert grep -qx "CLAUDE_LIMITS_ACCOUNT=gateway" "$ENV_DUMP"
+
+# A near-miss on an existing account is named before the login window opens.
+rm -f "$ENV_DUMP"
+( profile_command gamm >/dev/null 2>"$WORK/near-profile.out" )
+assert grep -q 'did you mean gamma' "$WORK/near-profile.out"
+
+# Any other `security` outcome means "could not check", and an unverifiable keychain must
+# never tell the user their established account is new.
+printf '#!/usr/bin/env bash\nexit 97\n' >"$FAKE_BIN/security"
+rm -f "$ENV_DUMP"
+( profile_command gateway >/dev/null 2>"$WORK/unverifiable.out" )
+assert_fails grep -q 'is new' "$WORK/unverifiable.out"
+assert test -f "$ENV_DUMP"
+
+# Reserved names may not become profiles: `main` is ~/.claude itself.
+assert_fails profile_command main >"$WORK/reserved-profile.out" 2>&1
+assert grep -q "'main' is reserved" "$WORK/reserved-profile.out"
 for command in curl security claude; do
   printf '#!/usr/bin/env bash\nexit 97\n' >"$FAKE_BIN/$command"
   chmod +x "$FAKE_BIN/$command"
