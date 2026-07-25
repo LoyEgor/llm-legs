@@ -380,15 +380,65 @@ assert test "$missing_rc" -eq 3
 assert test -z "$missing_out"
 assert grep -q 'cannot select a claudeb account' "$WORK/query-missing.err"
 
-# Codex and Gemini have no worker-pool state yet, so the query refuses them by name rather
-# than answering with a number nobody can honor.
-for vendor in codex gemini claude; do
-  vendor_out=$(env "${query_env[@]}" "LLM_LIMITS_FILE=$STORE" "$SCRIPT" --account "$vendor" \
-    2>"$WORK/query-vendor.err")
-  vendor_rc=$?
-  assert test "$vendor_rc" -eq 2
-  assert test -z "$vendor_out"
-  assert grep -q 'supports only claudeb' "$WORK/query-vendor.err"
+# Every vendor answers the same way, and an unknown one is refused by name rather than
+# answered with an account nobody asked about.
+query_vendor_account() {
+  jq -c --arg name "$1" '.[$name]' "$FIXTURES" >"$STORE" || fail "fixture $1 missing"
+  shift
+  query_out=$(env "${query_env[@]}" "LLM_LIMITS_FILE=$STORE" "$SCRIPT" "$@" \
+    2>"$WORK/query.err")
+  query_rc=$?
+}
+query_vendor_account codex_credit --account codex
+assert test "$query_rc" -eq 0
+assert test "$query_out" = with-credit
+# `--exclude` is how a caller that just watched an account wall asks for the next one.
+query_vendor_account codex_credit --account codex --exclude with-credit
+assert test "$query_rc" -eq 0
+assert test "$query_out" = plain
+query_vendor_account codex_credit --account codex --exclude with-credit,plain
+assert test "$query_rc" -eq 3
+assert test -z "$query_out"
+assert grep -q 'no selectable codex account' "$WORK/query.err"
+query_vendor_account gemini_fresh --account gemini
+assert test "$query_rc" -eq 0
+assert test "$query_out" = main
+query_vendor_account gemini_fresh --account gemini --exclude main
+assert test "$query_rc" -eq 3
+assert grep -q 'no selectable gemini account' "$WORK/query.err"
+query_vendor_account golden --account claudeb --exclude worker
+assert test "$query_rc" -eq 3
+assert grep -q 'no selectable claudeb account' "$WORK/query.err"
+
+# Exclusion is by name, not by substring: `com` and `notcom` coexist in the real store, so a
+# containment test would drop the wrong account.
+query_vendor_account golden --account claudeb --exclude worker2
+assert test "$query_rc" -eq 0
+assert test "$query_out" = worker
+# The pin is not a way around the exclusion — it reads from the same filtered candidate set.
+write_config worker
+query_vendor_account golden --account claudeb --exclude worker
+assert test "$query_rc" -eq 3
+assert test -z "$query_out"
+write_config
+
+# An argument that is silently ignored lets a caller believe it constrained the answer.
+# A value naming nothing would widen the query instead of narrowing it, so it is refused too.
+for bad in "--account nosuchvendor" "--exclude com" "--account" "--account claudeb --bogus x" "stray" \
+           "--account claudeb --exclude" "--exclude"; do
+  bad_out=$(env "${query_env[@]}" "LLM_LIMITS_FILE=$STORE" "$SCRIPT" $bad 2>"$WORK/query-bad.err")
+  bad_rc=$?
+  assert test "$bad_rc" -eq 2
+  assert test -z "$bad_out"
+  assert grep -q '^usage: worker-pick' "$WORK/query-bad.err"
+done
+for empty_exclude in "" ",,"; do
+  bad_out=$(env "${query_env[@]}" "LLM_LIMITS_FILE=$STORE" "$SCRIPT" --account claudeb \
+    --exclude "$empty_exclude" 2>"$WORK/query-bad.err")
+  bad_rc=$?
+  assert test "$bad_rc" -eq 2
+  assert test -z "$bad_out"
+  assert grep -q 'needs at least one account name' "$WORK/query-bad.err"
 done
 
-printf 'PASS: %s assertions; R1-R9 scoring, Codex and Gemini worker-pool exclusion still visible as `off`, Codex reset runway and main-last priority, Gemini multi-account selection/pin/login exclusion/freshness/floor/toggle routing, output/cache golden contract, session and policy text, and the --account query contract (bare name, pin honored or failed loudly, no cache write, no fail-safe guess, claudeb only)\n' "$asserts"
+printf 'PASS: %s assertions; R1-R9 scoring, Codex and Gemini worker-pool exclusion still visible as `off`, Codex reset runway and main-last priority, Gemini multi-account selection/pin/login exclusion/freshness/floor/toggle routing, output/cache golden contract, session and policy text, and the --account query contract (bare name per vendor, --exclude for the next-after-a-wall case, pin honored or failed loudly, no cache write, no fail-safe guess, unknown arguments refused)\n' "$asserts"

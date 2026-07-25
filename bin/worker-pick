@@ -20,18 +20,58 @@ CODEX_TIGHT_RUNWAY_PCT=5
 SESSION_FABLE_WEIGHT=0.70
 SESSION_WEEKLY_WEIGHT=0.30
 
-# `--account claudeb` is the machine-readable face of the same math: one bare account name on
-# stdout, nothing else, so a caller that must pick an account (claudeb's own headless routing)
-# shares this selection instead of reimplementing it. Only claudeb for now — extending it to
-# codex/gemini needs those vendors' worker-pool state first.
+# `--account <vendor>` is the machine-readable face of the same math: one bare account name on
+# stdout, nothing else, so a caller that must pick an account shares this selection instead of
+# reimplementing it. `--exclude` is how a caller that just watched an account wall says "the next
+# one, not that": the account is dropped from consideration for this query only, and running out
+# of candidates is exit 3 rather than a quieter answer.
+# Unknown arguments are refused rather than ignored — a silently dropped flag means the caller
+# believes it constrained the answer while it got the unconstrained one.
 query_vendor=""
-if [ "${1:-}" = --account ]; then
-  query_vendor="${2:-}"
-  case "$query_vendor" in
-    claudeb) ;;
-    '') printf 'usage: worker-pick --account claudeb\n' >&2; exit 2 ;;
-    *) printf 'worker-pick: --account supports only claudeb\n' >&2; exit 2 ;;
+query_exclude=""
+query_exclude_given=false
+usage() {
+  printf 'usage: worker-pick [--account claudeb|codex|gemini [--exclude name[,name...]]]\n' >&2
+  exit 2
+}
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --account)
+      [ "$#" -ge 2 ] || usage
+      query_vendor="$2"
+      case "$query_vendor" in
+        claudeb|codex|gemini) ;;
+        *) printf 'worker-pick: unknown vendor %s\n' "$query_vendor" >&2; usage ;;
+      esac
+      shift 2
+      ;;
+    --exclude)
+      [ "$#" -ge 2 ] || usage
+      query_exclude="$2"
+      query_exclude_given=true
+      shift 2
+      ;;
+    *) printf 'worker-pick: unexpected argument %s\n' "$1" >&2; usage ;;
   esac
+done
+if [ "$query_exclude_given" = true ] && [ -z "$query_vendor" ]; then
+  printf 'worker-pick: --exclude only means something with --account\n' >&2
+  usage
+fi
+query_exclude_json='[]'
+if [ "$query_exclude_given" = true ]; then
+  # Both failures below would hand back a WIDER answer than the caller asked for, which is the
+  # one outcome an exclusion must never produce: it would route straight back to the account the
+  # caller just watched wall.
+  # `-Rs`, not `-R`: with raw input jq sees no lines at all for an empty value and prints
+  # nothing, which would reach the selection as an unparsable argument instead of an empty list.
+  query_exclude_json=$(printf '%s' "$query_exclude" |
+    jq -Rsc 'rtrimstr("\n") | split(",") | map(select(length > 0))') ||
+    { printf 'worker-pick: could not read the --exclude list\n' >&2; exit 2; }
+  if [ -z "$query_exclude_json" ] || [ "$query_exclude_json" = '[]' ]; then
+    printf 'worker-pick: --exclude needs at least one account name\n' >&2
+    usage
+  fi
 fi
 
 LIMITS_FILE="${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}"
@@ -139,7 +179,8 @@ summary=$(jq -r \
   --argjson fresh_runway "$CODEX_FRESH_RUNWAY_PCT" --argjson ok_runway "$CODEX_OK_RUNWAY_PCT" \
   --argjson tight_runway "$CODEX_TIGHT_RUNWAY_PCT" \
   --argjson session_fable_weight "$SESSION_FABLE_WEIGHT" \
-  --argjson session_weekly_weight "$SESSION_WEEKLY_WEIGHT" '
+  --argjson session_weekly_weight "$SESSION_WEEKLY_WEIGHT" \
+  --argjson qx "$query_exclude_json" '
   def epoch:
     if type == "number" then .
     elif type == "string" then
@@ -229,7 +270,7 @@ summary=$(jq -r \
      cap:pre_reset_cap,
      r5:reset_str(.five_hour),rw:reset_str(.weekly)}] |
    sort_by(.main_last, -.score, .name)) as $cx_accounts |
-  ($cx_accounts | map(select((.floor | not) and .enabled))) as $cx_eligible |
+  ($cx_accounts | map(select((.floor | not) and .enabled and ((.name | IN($qx[])) | not)))) as $cx_eligible |
   (if ($cx.available // false) != true then
      {state:"WALLED",acct:"",runway:0,credits:0,line:"codex: unavailable"}
    elif ($cx_eligible | length) == 0 then
@@ -256,8 +297,9 @@ summary=$(jq -r \
      runway:$runway,score:$score,cap:pre_reset_cap,
      as_of:(account_as_of | min // $fetched),r5:reset_str(.five_hour),rw:reset_str(.weekly)}] |
    sort_by(.main_last, -.score, .name)) as $gm_accounts |
-  ($gm_accounts | map(select((.floor | not) and .enabled))) as $gm_eligible |
-  (first($gm_accounts[] | select(.name == $gm_pin and (.floor | not) and .enabled)) // null) as $gm_pinned |
+  ($gm_accounts | map(select((.floor | not) and .enabled and ((.name | IN($qx[])) | not)))) as $gm_eligible |
+  (first($gm_accounts[] | select(.name == $gm_pin and (.floor | not) and .enabled and
+                                 ((.name | IN($qx[])) | not))) // null) as $gm_pinned |
   (if $gm_pin != "" then $gm_pinned else ($gm_eligible[0] // null) end) as $gm_best |
   (if $gm_pin != "" and $gm_pinned == null then
      {state:"WALLED",acct:$gm_pin,runway:0,pressure:null,cap:0,as_of:null,
@@ -313,8 +355,8 @@ summary=$(jq -r \
     .r8_excluded = (.r8_demote and .r8_gap > $r8_gap_exclude)] |
     sort_by(-.headroom_score, -.score, .name)) as $cl_accounts |
   ($cl_accounts | map(select((.own | not) and .enabled and .auth_ok and .general_usable and
-                             (.h5 | type) == "number" and
-                             (.r8_excluded | not)))) as $cl_candidates |
+                             (.h5 | type) == "number" and (.r8_excluded | not) and
+                             ((.name | IN($qx[])) | not)))) as $cl_candidates |
   ($cl_candidates | map(select((.floor | not) and (.headroom_hit | not)))) as $cl_eligible |
   (if ($cl_eligible | length) == 0 then null else $cl_eligible[0] end) as $rec |
   (($cl_candidates | length) > 0 and all($cl_candidates[]; .headroom_hit)) as $all_above_headroom |
@@ -325,7 +367,7 @@ summary=$(jq -r \
   (first($cl_accounts[] | select(.name == $pin)) // null) as $pin_account |
   (if $pin_account != null and ($pin_account.own | not) and $pin_account.enabled and $pin_account.auth_ok and
       $pin_account.general_usable and ($pin_account.floor | not) and ($pin_account.r8_excluded | not) and
-      ($pin_account.h5 | type) == "number"
+      (($pin_account.name | IN($qx[])) | not) and ($pin_account.h5 | type) == "number"
    then $pin_account else null end) as $pin_rec |
   ([$cl_accounts[] | select(.auth_ok and .fable_capable and
                             (.fb | type) == "number" and (.wk | type) == "number" and
@@ -422,11 +464,24 @@ fi
 # A pin that is not selectable stays an error rather than quietly resolving to another account:
 # the pin IS the caller's choice, and routing around it is what the removed proxy used to do.
 if [ -n "$query_vendor" ]; then
-  if [ -n "$rec" ]; then
-    printf '%s\n' "$rec"
+  case "$query_vendor" in
+    claudeb) query_answer="$rec"; query_reason="$cb_next" ;;
+    codex)
+      query_answer=""
+      [ "$cx_state" = WALLED ] || query_answer="$cx_acct"
+      query_reason="$cx_line"
+      ;;
+    gemini)
+      query_answer=""
+      [ "$gm_state" = WALLED ] || query_answer="$gm_acct"
+      query_reason="$gm_line"
+      ;;
+  esac
+  if [ -n "$query_answer" ]; then
+    printf '%s\n' "$query_answer"
     exit 0
   fi
-  printf 'worker-pick: no selectable claudeb account (%s)\n' "$cb_next" >&2
+  printf 'worker-pick: no selectable %s account (%s)\n' "$query_vendor" "$query_reason" >&2
   exit 3
 fi
 
