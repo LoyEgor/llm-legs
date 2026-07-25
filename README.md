@@ -211,6 +211,10 @@ The existing Antigravity login is `main` and continues to use the real home dire
 Named accounts live under `~/.gemini-profiles/<name>` and launch with
 `HOME=~/.gemini-profiles/<name>`; shared non-auth Gemini settings are symlinked from
 `~/.gemini`. Antigravity exposes no narrower supported profile flag or environment variable.
+Each profile also symlinks `Library/Keychains` to the real one: macOS resolves the login
+keychain from `$HOME`, and a profile without it makes every token refresh raise the modal
+"A keychain cannot be found to store antigravity" dialog. The shared items are Antigravity's
+safe-storage encryption keys, not per-account credentials, so profiles stay isolated.
 
 - `bin/geminib` → `~/.local/bin/geminib` — `profile|p|run <name> [args...]` creates a missing
   profile and launches agy for its one-time login, `add <name>` creates without launching,

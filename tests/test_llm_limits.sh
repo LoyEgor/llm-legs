@@ -240,7 +240,7 @@ GEMINI_PROFILES="$WORK/gemini-profiles"
 GEMINI_ACCOUNTS_CACHE="$WORK/gemini-accounts"
 GEMINI_MULTI_LOG="$WORK/gemini-multi.log"
 GEMINI_MULTI_HELPER="$WORK/fake-agy-multi"
-mkdir -p "$GEMINI_PROFILES/work" "$GEMINI_ACCOUNTS_CACHE"
+mkdir -p "$GEMINI_PROFILES/work" "$GEMINI_ACCOUNTS_CACHE" "$HOME_FIXTURE/Library/Keychains"
 cat >"$GEMINI_MULTI_HELPER" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$HOME" >>"$GEMINI_MULTI_LOG"
@@ -261,6 +261,8 @@ multi_gemini=$(GEMINI_MULTI_LOG="$GEMINI_MULTI_LOG" GEMINIB_PROFILES_DIR="$GEMIN
   || fail "targeted Gemini profile refresh failed"
 [ "$(cat "$GEMINI_MULTI_LOG")" = "$GEMINI_PROFILES/work" ] \
   || fail "targeted Gemini profile refresh used the wrong HOME"
+[ "$(readlink "$GEMINI_PROFILES/work/Library/Keychains")" = "$HOME_FIXTURE/Library/Keychains" ] \
+  || fail "Gemini profile refresh left the profile HOME without a keychain (macOS blocks the probe with a modal dialog)"
 jq -e '.vendors.gemini.available == true and .vendors.gemini.current_account == "main" and
   (.vendors.gemini.accounts | length) == 2 and
   .vendors.gemini.weekly.used_pct == 50 and

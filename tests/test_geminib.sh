@@ -22,7 +22,8 @@ HOME="$WORK/home"
 FAKE_BIN="$WORK/bin"
 AGY_CALLS="$WORK/agy-calls"
 export HOME AGY_CALLS
-mkdir -p "$HOME/.gemini/antigravity-cli" "$HOME/.gemini/config" "$HOME/.gemini/extensions" "$FAKE_BIN"
+mkdir -p "$HOME/.gemini/antigravity-cli" "$HOME/.gemini/config" "$HOME/.gemini/extensions" "$FAKE_BIN" \
+  "$HOME/Library/Keychains"
 printf 'instructions\n' >"$HOME/.gemini/GEMINI.md"
 printf '{}\n' >"$HOME/.gemini/settings.json"
 printf '{}\n' >"$HOME/.gemini/antigravity-cli/settings.json"
@@ -79,12 +80,36 @@ for item in GEMINI.md config extensions settings.json; do
   assert test -L "$HOME/.gemini-profiles/alpha/.gemini/$item"
 done
 assert test -L "$HOME/.gemini-profiles/alpha/.gemini/antigravity-cli/settings.json"
+assert test "$(readlink "$HOME/.gemini-profiles/alpha/Library/Keychains")" = "$HOME/Library/Keychains"
 
-mkdir -p "$HOME/.gemini-profiles/trap/.gemini/config"
+mkdir -p "$HOME/.gemini-profiles/trap/.gemini/config" "$HOME/.gemini-profiles/trap/Library/Keychains"
 printf 'keep\n' >"$HOME/.gemini-profiles/trap/.gemini/config/value"
+printf 'own\n' >"$HOME/.gemini-profiles/trap/Library/Keychains/login.keychain-db"
 bash "$SCRIPT" list >/dev/null
 assert test ! -L "$HOME/.gemini-profiles/trap/.gemini/config"
 assert grep -qx keep "$HOME/.gemini-profiles/trap/.gemini/config/value"
+assert test ! -L "$HOME/.gemini-profiles/trap/Library/Keychains"
+assert grep -qx own "$HOME/.gemini-profiles/trap/Library/Keychains/login.keychain-db"
+
+gemini_base_home="$HOME"
+gemini_profiles_dir="$HOME/.gemini-profiles"
+. "$ROOT/share/gemini-accounts.sh"
+ln -sfn "$WORK/gone" "$HOME/.gemini-profiles/alpha/Library/Keychains"
+gemini_link_keychain "$HOME/.gemini-profiles/alpha"
+assert test "$(readlink "$HOME/.gemini-profiles/alpha/Library/Keychains")" = "$HOME/Library/Keychains"
+gemini_link_keychain "$HOME/.gemini-profiles/alpha"
+assert test "$(readlink "$HOME/.gemini-profiles/alpha/Library/Keychains")" = "$HOME/Library/Keychains"
+assert test ! -e "$HOME/Library/Keychains/Keychains"
+gemini_link_keychain "$HOME/.gemini-profiles/vanished"
+assert test ! -e "$HOME/.gemini-profiles/vanished"
+gemini_link_keychain "$HOME"
+assert test ! -e "$HOME/Library/Keychains/Keychains"
+
+rm -f "$HOME/.gemini-profiles/alpha/Library/Keychains"
+for _ in $(seq 1 40); do gemini_link_keychain "$HOME/.gemini-profiles/alpha" & done
+wait
+assert test "$(readlink "$HOME/.gemini-profiles/alpha/Library/Keychains")" = "$HOME/Library/Keychains"
+assert test ! -e "$HOME/Library/Keychains/Keychains"
 assert_fails bash "$SCRIPT" add main >/dev/null 2>&1
 assert_fails bash "$SCRIPT" add Bad >/dev/null 2>&1
 assert_fails bash "$SCRIPT" add alpha >/dev/null 2>&1
@@ -195,4 +220,4 @@ assert_fails bash "$SCRIPT" remove main
 assert_fails bash "$SCRIPT" remove ../outside
 assert_fails bash "$SCRIPT" remove never-existed
 
-echo "PASS: $asserts asserts; base and isolated HOME routing, shared configuration links, parallel ordered list/status probes, one-step creation, strict launch names, exec delimiter stripping, override-aware login hints, and persistent remove markers"
+echo "PASS: $asserts asserts; base and isolated HOME routing, shared configuration links, borrowed login keychain, parallel ordered list/status probes, one-step creation, strict launch names, exec delimiter stripping, override-aware login hints, and persistent remove markers"
