@@ -357,29 +357,20 @@ assert grep -Fq "w:cb${RESET} ${MAGENTA}~?${RESET}${DIM}·opus·hi${RESET}" <<< 
 assert test "${worker_out#*acctgen}" = "$worker_out"
 printf 'cx✓alt·sol·med cb~acctpick·opus·hi gx✓main·pro·hi\n' > "$HOME/.cache/worker-pick.line.main"
 
-jq -cn --argjson now "$NOW" '{vendors:{codex:{accounts:[
-  {account:"main",five_hour:{used_pct:0,resets_at:($now+3600|todateiso8601)},weekly:{used_pct:0,resets_at:($now+86400|todateiso8601)}},
-  {account:"alpha",five_hour:{used_pct:90,resets_at:($now+3600|todateiso8601)},weekly:{used_pct:50,resets_at:($now+86400|todateiso8601)}},
-  {account:"beta",five_hour:{used_pct:10,resets_at:($now+3600|todateiso8601)},weekly:{used_pct:20,resets_at:($now+86400|todateiso8601)}},
-  {account:"mystery",five_hour:null,weekly:null},
-  {account:"gone",auth_needed:true,five_hour:{used_pct:1,resets_at:($now+3600|todateiso8601)}},
-  {account:"full",five_hour:{used_pct:100,resets_at:($now+3600|todateiso8601)},weekly:{used_pct:5,resets_at:($now+86400|todateiso8601)}},
-  {account:"rolled",five_hour:{used_pct:99,resets_at:($now-60|todateiso8601)},weekly:{used_pct:5,resets_at:($now+86400|todateiso8601)}}
-]}}}' > "$WORK/limits.json"
 printf 'worker=codex\ncodex_effort=medium\n' > "$worker_file"
-worker_out=$(run_statusline "$(statusline_payload status-w-codex-rot)" main)
-assert grep -Fq "w:codex${RESET} ${MAGENTA}~rolled${RESET}${DIM}·sol·med${RESET}" <<< "$worker_out"
+worker_out=$(run_statusline "$(statusline_payload status-w-codex-pick)" main)
+assert grep -Fq "w:codex${RESET} ${MAGENTA}~alt${RESET}${DIM}·sol·med${RESET}" <<< "$worker_out"
 
-jq -cn --argjson now "$NOW" '{vendors:{codex:{accounts:[
-  {account:"full",five_hour:{used_pct:100,resets_at:($now+3600|todateiso8601)}},
-  {account:"gone",auth_needed:true}
-]}}}' > "$WORK/limits.json"
-worker_out=$(run_statusline "$(statusline_payload status-w-codex-fallback)" main)
-assert grep -Fq "w:codex${RESET} ${MAGENTA}~main${RESET}${DIM}·sol·med${RESET}" <<< "$worker_out"
-
-printf '{"vendors":{"claude":{}}}' > "$WORK/limits.json"
-worker_out=$(run_statusline "$(statusline_payload status-w-codex-novendor)" main)
+# codexb only ever creates lowercase-and-hyphen names, so a line carrying anything else is a
+# corrupt cache and must read as unknown rather than as a confident prediction.
+printf 'cx✓My_acct.2·sol·med cb~acctpick·opus·hi gx✓main·pro·hi\n' > "$HOME/.cache/worker-pick.line.main"
+worker_out=$(run_statusline "$(statusline_payload status-w-codex-oddname)" main)
 assert grep -Fq "w:codex${RESET} ${MAGENTA}~?${RESET}${DIM}·sol·med${RESET}" <<< "$worker_out"
+
+printf 'cx✗·? cb~? gx✗?·pro·hi\n' > "$HOME/.cache/worker-pick.line.main"
+worker_out=$(run_statusline "$(statusline_payload status-w-codex-nocache)" main)
+assert grep -Fq "w:codex${RESET} ${MAGENTA}~?${RESET}${DIM}·sol·med${RESET}" <<< "$worker_out"
+printf 'cx✓alt·sol·med cb~acctpick·opus·hi gx✓main·pro·hi\n' > "$HOME/.cache/worker-pick.line.main"
 rm -f "$WORK/limits.json" "$worker_file"
 
 cache_rl="$HOME/.claude/statusline-cache-rl"

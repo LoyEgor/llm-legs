@@ -666,37 +666,6 @@ abbrev_model() {
   esac
 }
 
-# Local mirror of `codexb pick` — no codexb/network per render. Same ordering
-# (expired reset -> 0, unknown after known, >=100 excluded, name tiebreak, main
-# fallback); auth and account list come from the snapshot's auth_needed, not
-# live `codex login status` (divergence documented in docs/DIAGNOSTICS.md —
-# keep in sync when pick changes).
-codex_local_pick() {
-  jq -r --argjson now "$now" '
-    def reset_epoch: (.resets_at? // null) |
-      if type == "number" then .
-      elif type == "string" then (try fromdateiso8601 catch null)
-      else null end;
-    def eff: . as $b | ($b | reset_epoch) as $r |
-      if (($b.used_pct? // null) | type) != "number" then null
-      elif $r != null and $r <= $now then 0
-      else $b.used_pct end;
-    if (.vendors.codex.accounts | type) != "array" then "?"
-    else ([ .vendors.codex.accounts[]
-            | select(.auth_needed != true)
-            | ([(.five_hour | eff), (.weekly | eff)] | map(select(. != null))) as $known
-            | select(($known | length) == 0 or ($known | max) < 100)
-            | {account,
-               main_last: (if .account == "main" then 1 else 0 end),
-               unknown: (if ($known | length) == 0 then 1 else 0 end),
-               pressure: (if ($known | length) == 0 then 0 else ($known | max) end)} ]
-          | sort_by(.main_last, .unknown, .pressure, .account)
-          | (.[0].account // "main"))
-    end
-  ' "$limits_file" 2>/dev/null
-}
-
-wname=""; wtier=""; wpin=""; wsel=""
 # Derive codex model short label from ~/.codex/config.toml; fallback "sol" defined here.
 codex_model_short_label() {
   local toml="${1:-$HOME/.codex/config.toml}" label=""
@@ -725,7 +694,9 @@ case "$worker" in
     if [ -n "$codex_profile" ]; then
       wpin=$codex_profile
     else
-      wsel=$(codex_local_pick)
+      load_worker_pick_prediction
+      wsel=$(printf '%s\n' "$worker_pick_prediction" |
+        sed -nE 's/^cx.([a-z0-9][a-z0-9-]*)·[^· ]+·[^· ]+( .*)?$/\1/p')
       [ -n "$wsel" ] || wsel="?"
     fi
     ;;

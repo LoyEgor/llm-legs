@@ -132,8 +132,6 @@ assert grep -Fq 'main_last:(if (.account // "main") == "main" then 1 else 0 end)
 assert test "$(grep -Fc 'sort_by(.main_last, -.score, .name)' "$WORKERPICK")" -eq 2
 assert grep -Fq 'main_last:(if $entry.account == "main" then 1 else 0 end)' "$CODEXB"
 assert grep -Fq 'sort -t $'\''\t'\'' -k2,2n -k3,3n -k4,4n -k1,1' "$CODEXB"
-assert grep -Fq 'main_last: (if .account == "main" then 1 else 0 end)' "$STATUSLINE"
-assert grep -Fq 'sort_by(.main_last, .unknown, .pressure, .account)' "$STATUSLINE"
 assert grep -Fq 'Codex and Gemini `main` profiles as last-resort' "$POLICY"
 assert doc_has 'Codex/Gemini base-profile priority'
 
