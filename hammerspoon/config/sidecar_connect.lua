@@ -42,6 +42,7 @@ local function runDoctorSummaryAsync(attempt)
         end
         if task then
             doctorTasks[task] = nil
+            task = nil
         end
         step(attempt, summary)
     end

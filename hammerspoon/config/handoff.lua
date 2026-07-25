@@ -11,7 +11,11 @@ local activeTasks = {}
 local function trackedTask(path, args, onComplete)
     local t
     t = hs.task.new(path, function(exitCode, stdOut, stdErr)
-        activeTasks[t] = nil
+        -- Clear the shared upvalue: hs.task holds the callback ref until the userdata
+        -- is finalized, so a callback still referencing `t` pins the task forever.
+        local self = t
+        t = nil
+        activeTasks[self] = nil
         if onComplete then
             onComplete(exitCode, stdOut, stdErr)
         end
@@ -22,6 +26,7 @@ local function trackedTask(path, args, onComplete)
     activeTasks[t] = true
     if not t:start() then
         activeTasks[t] = nil
+        t = nil
         return nil
     end
     return t

@@ -407,7 +407,13 @@ local function refreshProcess(tty, observed)
   local taskGeneration = generation
   local task
   task = hs.task.new("/bin/ps", function(exitCode, stdOut)
-    if psTask == task then
+    -- hs.task holds the callback ref until the userdata is finalized, so a callback
+    -- that still references `task` when it returns pins the task forever (registry ->
+    -- callback -> userdata cycle; hs.reload then spins in quadratic task_gc teardown).
+    -- Clear the shared upvalue on every exit path, here and in refreshTty.
+    local self = task
+    task = nil
+    if psTask == self then
       psTask = nil
     end
     if not started or taskGeneration ~= generation
@@ -430,6 +436,7 @@ local function refreshProcess(tty, observed)
   psTask = task
   if not task or not task:start() then
     psTask = nil
+    task = nil
   end
 end
 
@@ -441,7 +448,9 @@ local function refreshTty(observed)
   local taskGeneration = generation
   local task
   task = hs.task.new("/usr/bin/osascript", function(exitCode, stdOut)
-    if ttyTask == task then
+    local self = task
+    task = nil
+    if ttyTask == self then
       ttyTask = nil
     end
     if not started or taskGeneration ~= generation
@@ -466,6 +475,7 @@ local function refreshTty(observed)
   ttyTask = task
   if not task or not task:start() then
     ttyTask = nil
+    task = nil
   end
 end
 

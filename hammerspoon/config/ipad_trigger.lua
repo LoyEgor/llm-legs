@@ -571,6 +571,10 @@ local function runLauncherTask(runId, arguments, onExit, onTimeout)
     local task
     local watchdog
     task = hs.task.new(sidecarLauncherPath, function(exitCode, stdOut, stdErr)
+        -- Clear the shared upvalue (also unpins the watchdog closure's view of it):
+        -- a callback still referencing `task` pins the hs.task userdata forever.
+        local self = task
+        task = nil
         if finished then
             return
         end
@@ -579,7 +583,7 @@ local function runLauncherTask(runId, arguments, onExit, onTimeout)
             watchdog:stop()
             IpadTrigger.launcherWatchdogTimer = nil
         end
-        if IpadTrigger.launcherTask == task then
+        if IpadTrigger.launcherTask == self then
             IpadTrigger.launcherTask = nil
         end
         if runId == sidecarRunId then
@@ -588,6 +592,7 @@ local function runLauncherTask(runId, arguments, onExit, onTimeout)
     end, arguments)
 
     if not task or not task:start() then
+        task = nil
         return false
     end
 
