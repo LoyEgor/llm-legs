@@ -34,11 +34,16 @@ end
 -- credentials, so a logged-out row offers exactly {Log in…, Hard refresh, Remove…}.
 -- Remove… is a one-item confirm submenu (misclick-safe without a modal dialog); its
 -- single item fires the vendor's own remove command, which owns all store cleanup.
-local function loginNeededRow(label, loginFn, hardRefreshFn, removeFn)
+-- poolFn is optional: an account that needs login can also be out of the worker pool, and
+-- without the toggle here that row is the one place the state can be seen but not changed.
+local function loginNeededRow(label, loginFn, hardRefreshFn, removeFn, poolFn, inPool)
   local menu = {
     { title = "Log in…", fn = loginFn },
     { title = "Hard refresh", fn = hardRefreshFn },
   }
+  if poolFn then
+    table.insert(menu, 1, { title = "In worker pool", checked = inPool, fn = poolFn })
+  end
   -- A non-removable account (e.g. codex `main`, whose `remove` always refuses)
   -- passes removeFn=nil so the row never offers a dead Remove action.
   if removeFn then
@@ -49,11 +54,12 @@ local function loginNeededRow(label, loginFn, hardRefreshFn, removeFn)
   return { title = loginNeededTitle(label), menu = menu }
 end
 
-local function geminiLoginNeededRow(label, account)
+local function geminiLoginNeededRow(label, account, inPool)
   return loginNeededRow(label,
     function() M.loginGemini(account) end,
     function() M.hardRefreshGemini(account) end,
-    function() M.removeGemini(account) end)
+    function() M.removeGemini(account) end,
+    function() M.toggleGeminiAccount(account, inPool) end, inPool)
 end
 
 local function truncateText(text, maxLength)
@@ -489,6 +495,14 @@ function M.toggleAccount(name, currentlyEnabled)
   runClaudeb({ currentlyEnabled and "disable" or "enable", name }, "toggle failed")
 end
 
+function M.toggleCodexAccount(name, currentlyEnabled)
+  runCodexb({ currentlyEnabled and "disable" or "enable", name }, "toggle failed")
+end
+
+function M.toggleGeminiAccount(name, currentlyEnabled)
+  runGeminib({ currentlyEnabled and "disable" or "enable", name }, "toggle failed")
+end
+
 local function refreshData(args, kind, budget, key, envExtra)
   if taskForKey(key) then return end
   local id = reserveTask(kind, budget, key)
@@ -742,20 +756,23 @@ function M.menuItems()
             local accountRow
             if authNeeded then
               local loginFn, hardRefreshFn, removeFn
+              local poolFn
               if entry.key == "claude" then
                 loginFn = function() M.loginClaude(acct) end
                 hardRefreshFn = function() M.hardRefreshClaude(acct) end
                 removeFn = function() M.removeClaude(acct) end
+                if hasAccountControls then poolFn = function() M.toggleAccount(acct, enabled) end end
               elseif entry.key == "codex" then
                 loginFn = function() M.loginCodex(acct) end
                 hardRefreshFn = function() M.hardRefreshCodex(acct) end
+                poolFn = function() M.toggleCodexAccount(acct, enabled) end
                 -- codexb refuses to remove `main` (the real ~/.codex); no Remove item.
                 if acct ~= "main" then removeFn = function() M.removeCodex(acct) end end
               else
-                accountRow = geminiLoginNeededRow(acct, acct)
+                accountRow = geminiLoginNeededRow(acct, acct, enabled)
               end
               if not accountRow then
-                accountRow = loginNeededRow(acct, loginFn, hardRefreshFn, removeFn)
+                accountRow = loginNeededRow(acct, loginFn, hardRefreshFn, removeFn, poolFn, enabled)
               end
             else
               accountRow = {
@@ -781,13 +798,19 @@ function M.menuItems()
                 end
               elseif isCodexAccounts then
                 accountRow.disabled = nil
+                accountRow.checked = enabled
                 accountRow.menu = {
+                  { title = "In worker pool", checked = enabled,
+                    fn = function() M.toggleCodexAccount(acct, enabled) end },
                   { title = "Hard refresh",
                     fn = function() M.hardRefreshCodex(acct) end },
                 }
               elseif isGeminiAccounts then
                 accountRow.disabled = nil
+                accountRow.checked = enabled
                 accountRow.menu = {
+                  { title = "In worker pool", checked = enabled,
+                    fn = function() M.toggleGeminiAccount(acct, enabled) end },
                   { title = "Hard refresh",
                     fn = function() M.hardRefreshGemini(acct) end },
                 }

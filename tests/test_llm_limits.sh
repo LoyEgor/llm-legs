@@ -276,6 +276,41 @@ jq -e '.vendors.gemini.available == true and .vendors.gemini.current_account == 
   [.vendors.gemini.accounts[] | select(.account == "work")][0].weekly.used_pct == 50' \
   <<<"$multi_gemini" >/dev/null || fail "Gemini profile snapshots were not isolated or selected-account buckets were not hoisted"
 [ -s "$GEMINI_ACCOUNTS_CACHE/work.json" ] || fail "Gemini profile cache was not created"
+
+# Worker-pool membership is the user's own "don't burn this one", and the collector is where
+# every consumer reads it from — a hardcoded enabled:true would make the toggle decorative.
+mkdir -p "$GEMINI_PROFILES/.geminib"
+printf 'work\n' >"$GEMINI_PROFILES/.geminib/disabled"
+pool_gemini=$(GEMINIB_PROFILES_DIR="$GEMINI_PROFILES" \
+  LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$GEMINI_ACCOUNTS_CACHE" LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
+  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" /bin/bash "$SCRIPT" --json) \
+  || fail "collect with a Gemini pool exclusion failed"
+jq -e '([.vendors.gemini.accounts[] | select(.account == "work")][0].enabled == false) and
+  ([.vendors.gemini.accounts[] | select(.account == "main")][0].enabled == true)' \
+  <<<"$pool_gemini" >/dev/null || fail "Gemini worker-pool exclusion did not reach the snapshot"
+pool_table=$(GEMINIB_PROFILES_DIR="$GEMINI_PROFILES" \
+  LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$GEMINI_ACCOUNTS_CACHE" LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
+  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" /bin/bash "$SCRIPT" --plain) \
+  || fail "plain render with a Gemini pool exclusion failed"
+grep -q 'gemini/work.*rot off' <<<"$pool_table" \
+  || fail "the table hid the Gemini pool exclusion"
+rm -f "$GEMINI_PROFILES/.geminib/disabled"
+
+# With no named profiles the vendor collapses to its one account and the hoist drops the
+# account-identity keys; `enabled` must survive that collapse, or the exclusion is invisible to
+# every consumer that reads the vendor object rather than the accounts array.
+SOLO_PROFILES="$WORK/gemini-solo-profiles"
+mkdir -p "$SOLO_PROFILES/.geminib"
+printf 'main\n' >"$SOLO_PROFILES/.geminib/disabled"
+solo_gemini=$(GEMINIB_PROFILES_DIR="$SOLO_PROFILES" \
+  LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$GEMINI_ACCOUNTS_CACHE" LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
+  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" /bin/bash "$SCRIPT" --json) \
+  || fail "single-account Gemini collect with a pool exclusion failed"
+# One account means the legacy shape with no accounts array at all, which is exactly why the
+# hoist must keep `enabled`: worker-pick's fallback for that shape reads it off the vendor.
+jq -e '(.vendors.gemini | has("accounts") | not) and .vendors.gemini.enabled == false' \
+  <<<"$solo_gemini" >/dev/null \
+  || fail "single-account Gemini lost its worker-pool exclusion in the vendor hoist"
 if GEMINIB_PROFILES_DIR="$GEMINI_PROFILES" LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$GEMINI_ACCOUNTS_CACHE" \
   LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" \
   /bin/bash "$SCRIPT" --refresh-account gemini/missing --json >/dev/null 2>&1; then
@@ -558,6 +593,16 @@ grep -q 'claude/main\*: 5h 19% @ .* | wk 53% @ .* | fb - @ -' <<<"$plain" || fai
 grep -q 'codex: 5h 74%~ @ .* | wk 31%~ @ .* | fb - @ -' <<<"$plain" || fail "plain Codex values or stale markers missing"
 grep 'codex:' <<<"$plain" | grep -q '| age ' || fail "plain age field missing"
 grep -q '| rot - | cr - | status -' <<<"$plain" || fail "plain explicit state fields missing"
+
+# A vendor collapsed to a single account row still has to show that account's pool state; the
+# row is built from the vendor object, so it must reach into the one account it stands for.
+mkdir -p "$HOME_FIXTURE/.codex-profiles/.codexb"
+printf 'main\n' >"$HOME_FIXTURE/.codex-profiles/.codexb/disabled"
+pool_plain=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" LLM_LIMITS_WALLS_LOG="$WALLS" \
+  bash "$SCRIPT" --plain) || fail "plain collection with a Codex pool exclusion failed"
+grep -q '^codex: .* | rot off ' <<<"$pool_plain" \
+  || fail "the single-account Codex row hid its worker-pool exclusion"
+rm -f "$HOME_FIXTURE/.codex-profiles/.codexb/disabled"
 grep -q '^gemini: .* | status no quota snapshot | last wall 2026-07-11T08:00:00Z$' <<<"$plain" \
   || fail "plain unavailable vendor lost its last wall"
 fallback_table=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) || fail "fallback table collection failed"

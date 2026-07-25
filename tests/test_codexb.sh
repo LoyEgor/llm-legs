@@ -144,6 +144,97 @@ assert test "$(bash "$SCRIPT" pick)" = main
 printf 'ok\n' >"$HOME/auth-main"
 printf 'ok\n' >"$HOME/auth-alpha"
 
+# --- worker pool: the same "don't burn this one" state claudeb has ---
+# Output goes to a file rather than redirecting the assert itself: a redirected `assert` swallows
+# its own FAIL line and the suite then dies silently with no output at all.
+POOL_OUT="$WORK/pool.out"
+cx() { bash "$SCRIPT" "$@" >"$POOL_OUT" 2>&1; }
+# Exclusion speaks for automatic selection only, so `pick` must skip the account while a direct
+# run still reaches it.
+assert test "$(bash "$SCRIPT" pick)" = alpha
+assert cx disable alpha
+assert grep -qx alpha "$HOME/.codex-profiles/.codexb/disabled"
+assert test "$(bash "$SCRIPT" pick)" = main
+assert cx enable alpha
+assert test "$(bash "$SCRIPT" pick)" = alpha
+# The pool file lives beside the profiles and must never be read back as one.
+assert cx list
+assert_fails grep -q '^\.codexb:' "$POOL_OUT"
+# Visible where the state is owned, so the menu is not the only place it can be seen.
+assert cx disable alpha
+assert cx list
+assert grep -q 'alpha: .*(out of pool)' "$POOL_OUT"
+assert_fails grep -q 'main: .*(out of pool)' "$POOL_OUT"
+assert cx status
+assert grep -q 'alpha: .*(out of pool) | 5H' "$POOL_OUT"
+assert cx disable alpha
+assert grep -q 'already disabled' "$POOL_OUT"
+assert cx enable alpha
+assert cx enable alpha
+assert grep -q 'already enabled' "$POOL_OUT"
+assert_fails cx disable ghost-account
+assert_fails cx enable ghost-account
+assert_fails cx disable
+# An empty pool would leave `pick` nothing to answer and no way back except editing the file.
+for pool_profile in "$HOME/.codex-profiles"/*/; do
+  pool_profile=$(basename "$pool_profile")
+  case "$pool_profile" in .*) continue ;; esac
+  cx disable "$pool_profile" || true
+done
+assert_fails cx disable main
+assert grep -q 'last enabled account' "$POOL_OUT"
+assert test "$(bash "$SCRIPT" pick)" = main
+# The last-resort fallback to `main` must not resurrect an account the user excluded by hand.
+POOL_FILE="$HOME/.codex-profiles/.codexb/disabled"
+cp "$POOL_FILE" "$WORK/pool-backup"
+printf 'main\n' >>"$POOL_FILE"
+assert_fails cx pick
+assert grep -q 'no account in the worker pool is usable' "$POOL_OUT"
+# A pool file that exists but cannot be read fails CLOSED: reading it as "no exclusions" would
+# hand selection the very account the file exists to spare.
+cp "$WORK/pool-backup" "$POOL_FILE"
+chmod 000 "$POOL_FILE"
+if [ -r "$POOL_FILE" ]; then
+  printf 'SKIP: unreadable-pool case (running with read-everything privileges)\n'
+else
+  assert_fails cx pick
+  assert grep -q 'cannot be read' "$POOL_OUT"
+fi
+chmod 600 "$POOL_FILE"
+cp "$WORK/pool-backup" "$POOL_FILE"
+# Rewriting a pool file we could not read would publish a file holding only the new change,
+# silently dropping every exclusion already in it.
+chmod 000 "$POOL_FILE"
+if [ -r "$POOL_FILE" ]; then
+  printf 'SKIP: unreadable-pool write case (running with read-everything privileges)\n'
+else
+  # `enable`, not `disable`: with the file unreadable every account already reads as excluded,
+  # so only the un-exclude path reaches the write.
+  assert_fails cx enable beta
+  assert grep -q 'refusing to rewrite' "$POOL_OUT"
+  chmod 600 "$POOL_FILE"
+  assert test "$(cat "$POOL_FILE")" = "$(cat "$WORK/pool-backup")"
+fi
+chmod 600 "$POOL_FILE"
+# Exclusion is not unreachability: a direct run must still reach an excluded account.
+assert grep -qx alpha "$POOL_FILE"
+: >"$CODEX_CALLS"
+assert bash "$SCRIPT" alpha exec --pooled
+assert grep -q 'CALL account=alpha' "$CODEX_CALLS"
+# A pool entry must not outlive its account, or the last-member guard keeps counting a ghost
+# and a future account created under that name is silently excluded.
+bash "$SCRIPT" add poolghost >/dev/null || fail "add poolghost failed"
+assert cx disable poolghost
+assert grep -qx poolghost "$POOL_FILE"
+assert cx remove poolghost
+assert_fails grep -qx poolghost "$POOL_FILE"
+for pool_profile in "$HOME/.codex-profiles"/*/; do
+  pool_profile=$(basename "$pool_profile")
+  case "$pool_profile" in .*) continue ;; esac
+  cx enable "$pool_profile" || true
+done
+assert test "$(bash "$SCRIPT" pick)" = alpha
+
 status_output=$(bash "$SCRIPT" status) || fail "status failed"
 assert grep -Eq '^main: Logged in using ChatGPT \| 5H 10% reset .+ \| WEEKLY 50% reset .+$' <<<"$status_output"
 assert grep -Eq '^alpha: Logged in using ChatGPT \| 5H 10% reset .+ \| WEEKLY 20% reset .+$' <<<"$status_output"
@@ -360,4 +451,4 @@ printf '{"tokens":{"access_token":"","refresh_token":""}}\n' >"$HOME/.codex-prof
 assert bash "$SCRIPT" remove deadcx
 assert test ! -e "$HOME/.codex-profiles/deadcx"
 
-echo "PASS: $asserts asserts; add and shared-link trap, list/status, quota-aware authenticated pick with main-last priority, reset credits, auth-needed cache markers, dead-token classification (short cause, no raw RPC blob) with list/status/pick honoring the marker over lying local auth.json, a transient non-auth error preserving the definite auth verdict while fresh weather on a never-marked account stays non-auth, and marker recovery only on a genuinely good probe, exact run environments/arguments, one-step profile auto-create with shared links, browser-OAuth menu login passthrough with device-auth de-advertised everywhere yet still working manually, and missing-name guard, existing-profile relaunch stays quiet, creation-only reserved-name guards, leading-hyphen and charset rejection parity, multi-account cache compatibility, remove forgets profiles including reserved legacy names and prunes the cache entry (main refused)"
+echo "PASS: $asserts asserts; add and shared-link trap, worker-pool exclusion (pick skips it, direct run still reaches it, last member protected, visible in list/status), list/status, quota-aware authenticated pick with main-last priority, reset credits, auth-needed cache markers, dead-token classification (short cause, no raw RPC blob) with list/status/pick honoring the marker over lying local auth.json, a transient non-auth error preserving the definite auth verdict while fresh weather on a never-marked account stays non-auth, and marker recovery only on a genuinely good probe, exact run environments/arguments, one-step profile auto-create with shared links, browser-OAuth menu login passthrough with device-auth de-advertised everywhere yet still working manually, and missing-name guard, existing-profile relaunch stays quiet, creation-only reserved-name guards, leading-hyphen and charset rejection parity, multi-account cache compatibility, remove forgets profiles including reserved legacy names and prunes the cache entry (main refused)"

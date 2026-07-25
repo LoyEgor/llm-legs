@@ -4,11 +4,24 @@
 # account==profile naming are shared with the limits and statusline surfaces.
 set -euo pipefail
 
+resolve_root() {
+  local source="${BASH_SOURCE[0]}" directory
+  while [ -L "$source" ]; do
+    directory=$(cd -P "$(dirname "$source")" && pwd)
+    source=$(readlink "$source")
+    [[ "$source" = /* ]] || source="$directory/$source"
+  done
+  cd -P "$(dirname "$source")/.." && pwd
+}
+claudeb_root=$(resolve_root)
+. "$claudeb_root/share/worker-pool.sh"
+
 base_dir="${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}"
 tokens_dir="$base_dir/tokens"
 limits_dir="$base_dir/limits"
 state_file="$base_dir/.claudeb-state"
-disabled_file="$base_dir/disabled"
+pool_dir="$base_dir"
+disabled_file="$(worker_pool_file "$pool_dir")"
 
 account_names() {
   local path
@@ -168,20 +181,8 @@ account_data() {
   fi
 }
 
-is_disabled() {
-  [ -r "$disabled_file" ] && grep -qxF -- "$1" "$disabled_file"
-}
-
-set_disabled() {
-  local name="$1" mode="$2" tmp
-  mkdir -p "$base_dir"
-  tmp="$disabled_file.tmp.$$"
-  {
-    if [ -r "$disabled_file" ]; then grep -vxF -- "$name" "$disabled_file" || true; fi
-    if [ "$mode" = on ]; then printf '%s\n' "$name"; fi
-  } > "$tmp"
-  mv "$tmp" "$disabled_file"
-}
+is_disabled() { worker_pool_is_disabled "$pool_dir" "$1"; }
+set_disabled() { worker_pool_set_disabled "$pool_dir" "$1" "$2"; }
 
 worker_model_file() { printf '%s' "${WORKER_PICK_CONFIG_FILE:-$HOME/.claude/worker-model}"; }
 
@@ -1746,14 +1747,11 @@ args_are_headless() {
 # come from one checkout; PATH is a fallback for an install that ships them separately, and there
 # the two CAN be different versions — hence the explicit exit-code handling at the call site.
 worker_pick_cmd() {
-  local self="${BASH_SOURCE[0]:-$0}" target sibling
   if [ -n "${CLAUDEB_WORKER_PICK:-}" ]; then printf '%s' "$CLAUDEB_WORKER_PICK"; return 0; fi
-  while [ -L "$self" ]; do
-    target=$(readlink "$self")
-    case "$target" in /*) self=$target ;; *) self=$(dirname "$self")/$target ;; esac
-  done
-  sibling=$(cd "$(dirname "$self")" && pwd)/worker-pick
-  if [ -x "$sibling" ]; then printf '%s' "$sibling"; return 0; fi
+  if [ -x "$claudeb_root/bin/worker-pick" ]; then
+    printf '%s' "$claudeb_root/bin/worker-pick"
+    return 0
+  fi
   command -v worker-pick 2>/dev/null || return 1
 }
 

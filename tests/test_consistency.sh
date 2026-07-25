@@ -200,7 +200,7 @@ assert doc_has 'Gemini quota group matching'
 GEMINI_ACCOUNTS="$ROOT/share/gemini-accounts.sh"
 GEMINIB="$ROOT/bin/geminib"
 assert test -r "$GEMINI_ACCOUNTS"
-assert grep -Fq '. "$(resolve_root)/share/gemini-accounts.sh"' "$GEMINIB"
+assert grep -Eq '^\. "\$(\(resolve_root\)|geminib_root)/share/gemini-accounts\.sh"$' "$GEMINIB"
 assert grep -Fq '. "$script_dir/share/gemini-accounts.sh"' "$LLMLIMITS"
 assert grep -q '^gemini_account_names()' "$GEMINI_ACCOUNTS"
 assert grep -q '^gemini_account_home()' "$GEMINI_ACCOUNTS"
@@ -296,4 +296,34 @@ doc_reserved=$(sed -nE 's/.*`(help[a-z -]*token-upkeep)`.*/\1/p' "$ROOT/$DOC" |
 assert eq "$doc_reserved" "$(reserved_set "$CLAUDEB")"
 assert doc_has 'Reserved profile names'
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, account pin precedence, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, and worker spawn pressure gate) and match %s\n' "$asserts" "$DOC"
+# --- Row q: Worker-pool membership -------------------------------------------
+# One mechanism, or the same checkbox means three different things: every vendor must reach the
+# state through the shared helper rather than keeping its own copy of the file format.
+POOL="$ROOT/share/worker-pool.sh"
+assert test -r "$POOL"
+assert grep -q '^worker_pool_is_disabled()' "$POOL"
+assert grep -q '^worker_pool_set_disabled()' "$POOL"
+assert grep -q '^worker_pool_disabled_json()' "$POOL"
+assert test "$(grep -c '/disabled"' "$POOL")" -ge 3
+for pool_tool in claudeb codexb geminib; do
+  assert grep -Fq 'share/worker-pool.sh"' "$ROOT/bin/$pool_tool"
+  assert grep -Fq 'worker_pool_is_disabled "$pool' "$ROOT/bin/$pool_tool"
+  assert grep -Fq 'worker_pool_set_disabled "$pool' "$ROOT/bin/$pool_tool"
+  assert grep -Fq 'last enabled account' "$ROOT/bin/$pool_tool"
+  # No vendor may re-derive the file format locally.
+  assert test "$(grep -c 'grep -qxF -- ' "$ROOT/bin/$pool_tool")" -eq 0
+done
+assert grep -Fq 'share/worker-pool.sh"' "$LLMLIMITS"
+assert grep -Fq 'worker_pool_is_disabled' "$LLMLIMITS"
+assert grep -Fq 'worker_pool_disabled_json' "$LLMLIMITS"
+# Every vendor reaches the toggle through its own action, and each action is both defined and
+# wired into a row — a count of menu entries would only measure how many rows happen to exist.
+assert grep -Fq 'In worker pool' "$HAMMER"
+for pool_toggle in toggleAccount toggleCodexAccount toggleGeminiAccount; do
+  assert grep -Fq "function M.$pool_toggle(" "$HAMMER"
+  assert test "$(grep -cF "M.$pool_toggle(" "$HAMMER")" -ge 2
+done
+assert doc_has 'Worker-pool membership'
+assert doc_has '.claudeb`, `.codexb`, `.geminib'
+
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, account pin precedence, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, and worker-pool membership) and match %s\n' "$asserts" "$DOC"

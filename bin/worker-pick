@@ -208,7 +208,7 @@ summary=$(jq -r \
    else [] end) as $cx_source |
   (if ($gm.accounts | type) == "array" then $gm.accounts
    elif $gm.auth_needed == true or $gm.removed == true or ($gm | gemini_group) then
-     [$gm + {account:"main",is_current:true,enabled:true}]
+     [$gm + {account:"main",is_current:true,enabled:($gm.enabled != false)}]
    else [] end) as $gm_source |
   ([($cx_source[] | account_as_of[]), ($gm_source[] | account_as_of[]),
     (.vendors.claude.accounts[]? | account_as_of[])] | min // $fetched) as $data_as_of |
@@ -223,27 +223,27 @@ summary=$(jq -r \
     ([safe_runway(.five_hour), safe_runway(.weekly)] | map(select(. != null)) | min) as $safe |
     account_credits as $credits |
     {name:(.account // "main"),main_last:(if (.account // "main") == "main" then 1 else 0 end),
-     pressure:($values | max),floor:is_floored,
+     pressure:($values | max),floor:is_floored,enabled:(.enabled != false),
      credits:$credits,runway:($time_runway + ($credits * $credit_refill)),
      score:((if $r9_optimistic then $floor else $safe end) + ($credits * $credit_refill)),
      cap:pre_reset_cap,
      r5:reset_str(.five_hour),rw:reset_str(.weekly)}] |
    sort_by(.main_last, -.score, .name)) as $cx_accounts |
-  ($cx_accounts | map(select(.floor | not))) as $cx_eligible |
+  ($cx_accounts | map(select((.floor | not) and .enabled))) as $cx_eligible |
   (if ($cx.available // false) != true then
      {state:"WALLED",acct:"",runway:0,credits:0,line:"codex: unavailable"}
    elif ($cx_eligible | length) == 0 then
      {state:"WALLED",acct:"",runway:0,credits:0,
       line:("codex: " + (if ($cx_accounts | length) == 0 then
               (if any($cx_source[]; .auth_needed == true) then "login needed" else "no authenticated quota data" end)
-            else ($cx_accounts | map("\(.name) \(.pressure | round)% FLOOR") | join(", ")) end))}
+            else ($cx_accounts | map("\(.name) \(.pressure | round)%\(if .floor then " FLOOR" else "" end)\(if .enabled then "" else " off" end)") | join(", ")) end))}
    else ($cx_eligible[0]) as $best |
      {state:(if $best.runway > $fresh_runway then "FRESH"
              elif $best.runway > $ok_runway then "OK"
              elif $best.runway > $tight_runway then "TIGHT" else "WALLED" end),
       acct:$best.name,runway:$best.runway,credits:$best.credits,
       line:("codex: " + ($cx_accounts | map(
-        "\(.name) \(.pressure | round)% runway \(.runway | round1)% ↻\(.credits)\(if .floor then " FLOOR" else "" end) (5h→\(.r5), wk→\(.rw))") | join(" | ")))}
+        "\(.name) \(.pressure | round)% runway \(.runway | round1)% ↻\(.credits)\(if .floor then " FLOOR" else "" end)\(if .enabled then "" else " off" end) (5h→\(.r5), wk→\(.rw))") | join(" | ")))}
    end) as $codex |
 
   ([$gm_source[] | select(.removed != true and auth_ok and gemini_group) |
@@ -252,11 +252,12 @@ summary=$(jq -r \
     ([raw_runway(.five_hour), raw_runway(.weekly)] | map(select(. != null)) | min) as $runway |
     ([safe_runway(.five_hour), safe_runway(.weekly)] | map(select(. != null)) | min) as $score |
     {name:(.account // "main"),main_last:(if (.account // "main") == "main" then 1 else 0 end),
-     pressure:($values | max),floor:is_floored,runway:$runway,score:$score,cap:pre_reset_cap,
+     pressure:($values | max),floor:is_floored,enabled:(.enabled != false),
+     runway:$runway,score:$score,cap:pre_reset_cap,
      as_of:(account_as_of | min // $fetched),r5:reset_str(.five_hour),rw:reset_str(.weekly)}] |
    sort_by(.main_last, -.score, .name)) as $gm_accounts |
-  ($gm_accounts | map(select(.floor | not))) as $gm_eligible |
-  (first($gm_accounts[] | select(.name == $gm_pin and (.floor | not))) // null) as $gm_pinned |
+  ($gm_accounts | map(select((.floor | not) and .enabled))) as $gm_eligible |
+  (first($gm_accounts[] | select(.name == $gm_pin and (.floor | not) and .enabled)) // null) as $gm_pinned |
   (if $gm_pin != "" then $gm_pinned else ($gm_eligible[0] // null) end) as $gm_best |
   (if $gm_pin != "" and $gm_pinned == null then
      {state:"WALLED",acct:$gm_pin,runway:0,pressure:null,cap:0,as_of:null,
@@ -267,7 +268,7 @@ summary=$(jq -r \
        {state:"WALLED",acct:$best.name,runway:$best.runway,pressure:$best.pressure,
         cap:$best.cap,as_of:$best.as_of,
         line:("gemini: " + ($gm_accounts | map(
-          "\(.name) \(.pressure | round)% runway \(.runway | round1)% FLOOR (5h→\(.r5), wk→\(.rw))") | join(" | ")))}
+          "\(.name) \(.pressure | round)% runway \(.runway | round1)%\(if .floor then " FLOOR" else "" end)\(if .enabled then "" else " off" end) (5h→\(.r5), wk→\(.rw))") | join(" | ")))}
      else
        {state:"WALLED",acct:"",runway:0,pressure:null,cap:0,as_of:null,
         line:("gemini: " +
@@ -283,7 +284,7 @@ summary=$(jq -r \
       acct:$gm_best.name,runway:$gm_best.runway,pressure:$gm_best.pressure,cap:$gm_best.cap,
       as_of:$gm_best.as_of,
       line:("gemini: " + ($gm_accounts | map(
-        "\(.name) \(.pressure | round)% runway \(.runway | round1)%\(if .floor then " FLOOR" else "" end) (5h→\(.r5), wk→\(.rw))") | join(" | ")))}
+        "\(.name) \(.pressure | round)% runway \(.runway | round1)%\(if .floor then " FLOOR" else "" end)\(if .enabled then "" else " off" end) (5h→\(.r5), wk→\(.rw))") | join(" | ")))}
    end) as $gemini |
 
   ([.vendors.claude.accounts[]? |
@@ -331,7 +332,10 @@ summary=$(jq -r \
                             .fb < $floor and .wk < $floor) |
     .session_score = ((100 - .fb) * $session_fable_weight + (100 - .wk) * $session_weekly_weight)] |
     sort_by(-.session_score, -.tier, .name) | .[0] // null) as $session |
-  (($cx_accounts + $cl_candidates) as $all | ($all | length) > 0 and all($all[]; .floor)) as $all_floored |
+  # Only pool members count: an out-of-pool account that happens to be at 0% would otherwise
+  # hide an ALL FLOORED verdict behind quota nobody is allowed to spend.
+  ((($cx_accounts | map(select(.enabled))) + $cl_candidates) as $all |
+   ($all | length) > 0 and all($all[]; .floor)) as $all_floored |
   (if ($rec_final != null) and ($rec_final.as_of != null) and (($now - $rec_final.as_of) > 300) and
       (($rec_final.cap < 20) or ($rec_final.cap > 80)) then "STALE-REFRESH" else null end) as $freshness_warn |
   {codex:$codex,gemini:$gemini,

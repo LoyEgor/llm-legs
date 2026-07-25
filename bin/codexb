@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-profiles_dir="$HOME/.codex-profiles"
+profiles_dir="${CODEXB_PROFILES_DIR:-$HOME/.codex-profiles}"
+pool_dir="$profiles_dir/.codexb"
 shared_items=(config.toml AGENTS.md skills plugins rules)
 
 resolve_root() {
@@ -14,7 +15,14 @@ resolve_root() {
   cd -P "$(dirname "$source")/.." && pwd
 }
 
-quota_helper="${CODEXB_QUOTA_CMD:-$(resolve_root)/codex-quota.py}"
+codexb_root=$(resolve_root)
+. "$codexb_root/share/worker-pool.sh"
+
+is_disabled() { worker_pool_is_disabled "$pool_dir" "$1"; }
+set_disabled() { worker_pool_set_disabled "$pool_dir" "$1" "$2"; }
+pool_suffix() { if is_disabled "$1"; then printf ' (out of pool)'; fi; }
+
+quota_helper="${CODEXB_QUOTA_CMD:-$codexb_root/codex-quota.py}"
 codex_cache="${LLM_LIMITS_CODEX_CACHE:-$HOME/.llm-limits-codex.json}"
 
 # A live token can be locally present yet invalidated; llm-limits.sh records that as an
@@ -45,7 +53,7 @@ account_home() {
 
 reserved_name() {
   case "$1" in
-    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login) return 0 ;;
+    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login|enable|disable) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -176,6 +184,9 @@ remove_account() {
     exit 1
   fi
   rm -rf "$directory"
+  # A pool entry outliving its account keeps the last-member guard counting a ghost, and the
+  # name silently re-excludes a future account created under it.
+  if is_disabled "$name"; then set_disabled "$name" off; fi
   codex_cache="${LLM_LIMITS_CODEX_CACHE:-$HOME/.llm-limits-codex.json}"
   if [ -r "$codex_cache" ]; then
     tmp="$codex_cache.tmp.$$"
@@ -198,9 +209,9 @@ list_accounts() {
   while IFS= read -r name; do
     status=$(login_status "$name")
     if [ "${status%%$'\t'*}" -eq 0 ] && auth_marker "$name"; then
-      printf '%s: login needed\n' "$name"
+      printf '%s: login needed%s\n' "$name" "$(pool_suffix "$name")"
     else
-      printf '%s: %s\n' "$name" "${status#*$'\t'}"
+      printf '%s: %s%s\n' "$name" "${status#*$'\t'}" "$(pool_suffix "$name")"
     fi
   done < <(account_names)
 }
@@ -212,15 +223,66 @@ show_status() {
     entry=$(jq -c --arg account "$name" '[.accounts[] | select(.account == $account)][0] // {}' <<<"$quotas")
     status=$(login_status "$name")
     if [ "${status%%$'\t'*}" -eq 0 ] && jq -e '.auth_needed == true' <<<"$entry" >/dev/null 2>&1; then
-      printf '%s: login needed | 5H - reset unknown | WEEKLY - reset unknown\n' "$name"
+      printf '%s: login needed%s | 5H - reset unknown | WEEKLY - reset unknown\n' \
+        "$name" "$(pool_suffix "$name")"
       continue
     fi
     hused=$(jq -r 'if (.five_hour.used_pct | type) == "number" then (.five_hour.used_pct | round | tostring) + "%" else "-" end' <<<"$entry")
     wused=$(jq -r 'if (.weekly.used_pct | type) == "number" then (.weekly.used_pct | round | tostring) + "%" else "-" end' <<<"$entry")
     hreset=$(format_reset_time "$(jq -r '.five_hour.resets_at // 0' <<<"$entry")")
     wreset=$(format_reset_time "$(jq -r '.weekly.resets_at // 0' <<<"$entry")")
-    printf '%s: %s | 5H %s reset %s | WEEKLY %s reset %s\n' "$name" "${status#*$'\t'}" "$hused" "$hreset" "$wused" "$wreset"
+    printf '%s: %s%s | 5H %s reset %s | WEEKLY %s reset %s\n' \
+      "$name" "${status#*$'\t'}" "$(pool_suffix "$name")" "$hused" "$hreset" "$wused" "$wreset"
   done < <(account_names)
+}
+
+account_exists() { [ "$1" = main ] || [ -d "$profiles_dir/$1" ]; }
+
+enable_account() {
+  local name="${1:-}"
+  if [ -z "$name" ]; then
+    printf 'usage: codexb enable <name>\n' >&2
+    exit 2
+  fi
+  if ! account_exists "$name"; then
+    printf 'codexb: unknown account: %s\n' "$name" >&2
+    exit 2
+  fi
+  if ! is_disabled "$name"; then
+    printf 'codexb: %s is already enabled\n' "$name"
+    return
+  fi
+  set_disabled "$name" off
+  printf 'codexb: enabled %s\n' "$name"
+}
+
+disable_account() {
+  local name="${1:-}" other enabled_left=0
+  if [ -z "$name" ]; then
+    printf 'usage: codexb disable <name>\n' >&2
+    exit 2
+  fi
+  if ! account_exists "$name"; then
+    printf 'codexb: unknown account: %s\n' "$name" >&2
+    exit 2
+  fi
+  if is_disabled "$name"; then
+    printf 'codexb: %s is already disabled\n' "$name"
+    return
+  fi
+  # An empty pool would leave `pick` with nothing to answer and no way back except editing the
+  # file by hand, so the last member stays in — same guard claudeb has.
+  while IFS= read -r other; do
+    if [ "$other" != "$name" ] && ! is_disabled "$other"; then
+      enabled_left=$((enabled_left + 1))
+    fi
+  done < <(account_names)
+  if [ "$enabled_left" -eq 0 ]; then
+    printf 'codexb: refusing to disable %s: it is the last enabled account\n' "$name" >&2
+    exit 1
+  fi
+  set_disabled "$name" on
+  printf 'codexb: disabled %s\n' "$name"
 }
 
 pick_account() {
@@ -230,6 +292,7 @@ pick_account() {
   selected=''
   while IFS= read -r name; do
     authenticated "$name" || continue
+    if is_disabled "$name"; then continue; fi
     selected=$(jq -r --arg account "$name" --argjson now "$now" '
       def effective($bucket):
         if ($bucket.used_pct | type) != "number" then null
@@ -299,6 +362,8 @@ show_help() {
     'codexb <name> exec [args...]' \
     'codexb add <name>                      Create a profile without launching; prints the login command.' \
     'codexb remove <name> [--force]         Forget a profile and prune its cached quota; --force overrides the logged-in guard.' \
+    'codexb enable <name>                   Return an account to worker selection.' \
+    'codexb disable <name>                  Exclude an account from worker selection; it still runs when named.' \
     'codexb list                            List profiles with login state.' \
     'codexb status                          Per-account login state and quota.' \
     'codexb pick                            Print the highest-priority usable account.'
@@ -323,6 +388,14 @@ case "${1:-}" in
     [ "$#" -ge 1 ] || { printf 'usage: codexb remove <name> [--force]\n' >&2; exit 2; }
     remove_account "$@"
     ;;
+  enable)
+    shift
+    enable_account "${1:-}"
+    ;;
+  disable)
+    shift
+    disable_account "${1:-}"
+    ;;
   list)
     [ "$#" -eq 1 ] || { printf 'usage: codexb list\n' >&2; exit 2; }
     list_accounts
@@ -334,7 +407,16 @@ case "${1:-}" in
   pick)
     [ "$#" -eq 1 ] || { printf 'usage: codexb pick\n' >&2; exit 2; }
     selection=$(pick_account)
-    printf '%s\n' "${selection:-main}"
+    # `main` is the last-resort answer when nothing else qualifies — but not when the user
+    # excluded it, which would make `pick` hand back the one account it was told to spare.
+    if [ -z "$selection" ]; then
+      if is_disabled main; then
+        printf 'codexb: no account in the worker pool is usable\n' >&2
+        exit 3
+      fi
+      selection=main
+    fi
+    printf '%s\n' "$selection"
     ;;
   profile|p|run)
     shift

@@ -15,14 +15,68 @@ resolve_root() {
   cd -P "$(dirname "$source")/.." && pwd
 }
 
-quota_helper="${GEMINIB_QUOTA_CMD:-$(resolve_root)/agy-quota.py}"
+geminib_root=$(resolve_root)
+quota_helper="${GEMINIB_QUOTA_CMD:-$geminib_root/agy-quota.py}"
 gemini_base_home=$base_home
 gemini_profiles_dir=$profiles_dir
-. "$(resolve_root)/share/gemini-accounts.sh"
+pool_dir="$profiles_dir/.geminib"
+. "$geminib_root/share/gemini-accounts.sh"
+. "$geminib_root/share/worker-pool.sh"
+
+is_disabled() { worker_pool_is_disabled "$pool_dir" "$1"; }
+set_disabled() { worker_pool_set_disabled "$pool_dir" "$1" "$2"; }
+pool_suffix() { if is_disabled "$1"; then printf ' (out of pool)'; fi; }
+
+account_exists() { [ "$1" = main ] || [ -d "$profiles_dir/$1" ]; }
+
+enable_account() {
+  local name="${1:-}"
+  if [ -z "$name" ]; then
+    printf 'usage: geminib enable <name>\n' >&2
+    exit 2
+  fi
+  if ! account_exists "$name"; then
+    printf 'geminib: unknown account: %s\n' "$name" >&2
+    exit 2
+  fi
+  if ! is_disabled "$name"; then
+    printf 'geminib: %s is already enabled\n' "$name"
+    return
+  fi
+  set_disabled "$name" off
+  printf 'geminib: enabled %s\n' "$name"
+}
+
+disable_account() {
+  local name="${1:-}" other enabled_left=0
+  if [ -z "$name" ]; then
+    printf 'usage: geminib disable <name>\n' >&2
+    exit 2
+  fi
+  if ! account_exists "$name"; then
+    printf 'geminib: unknown account: %s\n' "$name" >&2
+    exit 2
+  fi
+  if is_disabled "$name"; then
+    printf 'geminib: %s is already disabled\n' "$name"
+    return
+  fi
+  while IFS= read -r other; do
+    if [ "$other" != "$name" ] && ! is_disabled "$other"; then
+      enabled_left=$((enabled_left + 1))
+    fi
+  done < <(gemini_account_names)
+  if [ "$enabled_left" -eq 0 ]; then
+    printf 'geminib: refusing to disable %s: it is the last enabled account\n' "$name" >&2
+    exit 1
+  fi
+  set_disabled "$name" on
+  printf 'geminib: disabled %s\n' "$name"
+}
 
 reserved_name() {
   case "$1" in
-    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login) return 0 ;;
+    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login|enable|disable) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -129,6 +183,7 @@ remove_account() {
     exit 2
   fi
   rm -rf "$directory"
+  if is_disabled "$name"; then set_disabled "$name" off; fi
   cache_dir="${LLM_LIMITS_GEMINI_ACCOUNTS_DIR:-$base_home/.llm-limits-gemini}"
   mkdir -p "$cache_dir"
   rm -f "$cache_dir/$name.json"
@@ -139,7 +194,7 @@ remove_account() {
 list_account_line() {
   local name=$1 status
   status=$(login_status "$name")
-  printf '%s: %s\n' "$name" "${status#*$'\t'}"
+  printf '%s: %s%s\n' "$name" "${status#*$'\t'}" "$(pool_suffix "$name")"
 }
 
 status_account_line() {
@@ -166,8 +221,8 @@ status_account_line() {
     state='Login status unavailable'
     hused=-; wused=-; hreset=unknown; wreset=unknown
   fi
-  printf '%s: %s | 5H %s reset %s | WEEKLY %s reset %s\n' \
-    "$name" "$state" "$hused" "$hreset" "$wused" "$wreset"
+  printf '%s: %s%s | 5H %s reset %s | WEEKLY %s reset %s\n' \
+    "$name" "$state" "$(pool_suffix "$name")" "$hused" "$hreset" "$wused" "$wreset"
 }
 
 parallel_account_output() {
@@ -245,6 +300,8 @@ show_help() {
     'geminib <name> exec [args...]' \
     'geminib add <name>                    Create a profile without launching; prints the login command.' \
     'geminib remove <name>                 Forget a profile and prune its cached quota.' \
+    'geminib enable <name>                 Return an account to worker selection.' \
+    'geminib disable <name>                Exclude an account from worker selection; it still runs when named.' \
     'geminib list                          List profiles with login state.' \
     'geminib status                        Per-account login state and quota.'
 }
@@ -267,6 +324,14 @@ case "${1:-}" in
     shift
     [ "$#" -eq 1 ] || { printf 'usage: geminib remove <name>\n' >&2; exit 2; }
     remove_account "$1"
+    ;;
+  enable)
+    shift
+    enable_account "${1:-}"
+    ;;
+  disable)
+    shift
+    disable_account "${1:-}"
     ;;
   list)
     [ "$#" -eq 1 ] || { printf 'usage: geminib list\n' >&2; exit 2; }

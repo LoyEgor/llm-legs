@@ -162,6 +162,24 @@ assert contains "$output" 'with-credit 48% runway 152% ↻1'
 assert contains "$output" 'plain 48% runway 52% ↻0'
 assert contains "$output" '↻1 manual'
 
+# Worker-pool membership is the user's own "don't burn this one", so it excludes an account from
+# selection for every vendor — and stays visible in the line, because an account that silently
+# vanished from the ranking is indistinguishable from a collector bug.
+run_filter codex_credit '.vendors.codex.accounts |= map(if .account == "with-credit" then .enabled = false else . end)'
+assert contains "$(head -n1 <<<"$output")" 'codex plain · '
+assert contains "$output" 'with-credit 48% runway 152% ↻1 off'
+run_filter codex_credit '.vendors.codex.accounts |= map(.enabled = false)'
+assert contains "$(head -n1 <<<"$output")" 'codex unavailable'
+assert contains "$output" 'with-credit 48% off'
+assert contains "$output" 'plain 48% off'
+
+run_filter gemini_fresh '.vendors.gemini.accounts = [(.vendors.gemini + {account:"main",enabled:false})]'
+assert contains "$output" 'gemini: main 35% runway 65% off'
+assert not_contains "$(head -n1 <<<"$output")" 'gemini main · pro · high — ACCOUNT'
+# The legacy single-account shape carries the flag at vendor level; it must not fail open.
+run_filter gemini_fresh '.vendors.gemini.enabled = false'
+assert contains "$output" 'gemini: main 35% runway 65% off'
+
 run_case codex_plain
 assert contains "$(head -n1 <<<"$output")" 'codex plain · high — FRESH'
 assert contains "$output" 'plain 48% runway 52% ↻0'
@@ -373,4 +391,4 @@ for vendor in codex gemini claude; do
   assert grep -q 'supports only claudeb' "$WORK/query-vendor.err"
 done
 
-printf 'PASS: %s assertions; R1-R9 scoring, Codex reset runway and main-last priority, Gemini multi-account selection/pin/login exclusion/freshness/floor/toggle routing, output/cache golden contract, session and policy text, and the --account query contract (bare name, pin honored or failed loudly, no cache write, no fail-safe guess, claudeb only)\n' "$asserts"
+printf 'PASS: %s assertions; R1-R9 scoring, Codex and Gemini worker-pool exclusion still visible as `off`, Codex reset runway and main-last priority, Gemini multi-account selection/pin/login exclusion/freshness/floor/toggle routing, output/cache golden contract, session and policy text, and the --account query contract (bare name, pin honored or failed loudly, no cache write, no fail-safe guess, claudeb only)\n' "$asserts"

@@ -363,12 +363,12 @@ render_table() {
            (.accounts[] | select(.removed != true)
               | {src: ($k + "/" + .account + (if .is_current then "*" else "" end)),
                  five: .five_hour, week: .weekly, fable:null,
-                 age: compact_age($render_now), rot:"-",
+                 age: compact_age($render_now), rot: rotation,
                  credits:(if $k == "codex" and (.reset_credits | type) == "number" then "↻" + (.reset_credits | tostring) else "-" end),
                  status:account_status})
          elif .available then
            {src: $k, five: .five_hour, week: .weekly, fable:null,
-            age: compact_age($render_now), rot:"-",
+            age: compact_age($render_now), rot: ((.accounts[0] // .) | rotation),
             credits:(if $k == "codex" and (.reset_credits | type) == "number" then "↻" + (.reset_credits | tostring) else "-" end),
             status:"-"}
            else
@@ -442,7 +442,11 @@ gemini_main_cache=${LLM_LIMITS_GEMINI_CACHE:-$HOME/.llm-limits-gemini.json}
 gemini_legacy_removed="${LLM_LIMITS_GEMINI_REMOVED:-${gemini_main_cache}.removed}"
 agy_bin=${AGY_BIN:-$HOME/.local/bin/agy}
 . "$script_dir/share/gemini-accounts.sh"
+. "$script_dir/share/worker-pool.sh"
 . "$script_dir/share/experiments.sh"
+
+codex_pool_dir="${CODEXB_PROFILES_DIR:-$HOME/.codex-profiles}/.codexb"
+gemini_pool_dir="$gemini_profiles_dir/.geminib"
 
 gemini_account_cache() {
   if [ "$1" = main ]; then printf '%s\n' "$gemini_main_cache"
@@ -732,7 +736,7 @@ if [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
     [ "$account" != main ] && [ "$account" != - ] || continue
     plan_type=$(claude_subscription_type "$account")
     enabled=true
-    if [ -r "$claudeb_disabled" ] && grep -qxF -- "$account" "$claudeb_disabled"; then enabled=false; fi
+    if worker_pool_is_disabled "$claudeb_root" "$account"; then enabled=false; fi
     # Snapshots without a valid five_hour bucket (e.g. auth-only after a failed probe) must
     # stay visible as unknown values, never vanish from the account list.
     # Header-origin week = never measured (shared-invariants n): render unknown, not a number.
@@ -1110,7 +1114,8 @@ if [ -n "$codex_event" ]; then
     codex=$(jq -cn --argjson e "$codex_event" --argjson wall "$codex_wall" --argjson now "$now_epoch" \
       --arg five_reset "$five_reset" --arg week_reset "$week_reset" \
       --arg as_of "$(epoch_iso "$codex_epoch")" --argjson as_of_epoch "$codex_epoch" \
-      --arg origin "$codex_origin" --arg source "$codex_source" --argjson stale "$stale" "$iso_def"'
+      --arg origin "$codex_origin" --arg source "$codex_source" --argjson stale "$stale" \
+      --argjson pool_out "$(worker_pool_disabled_json "$codex_pool_dir")" "$iso_def"'
       def reset_iso:
         if type == "number" then todateiso8601
         elif type == "string" then (iso2epoch | if . == null then null else todateiso8601 end)
@@ -1123,7 +1128,8 @@ if [ -n "$codex_event" ]; then
       def account($a; $current):
         (if ($a.as_of | type) == "number" then $a.as_of else $as_of_epoch end) as $account_asof |
         ([$now - $account_asof, 0] | max) as $account_age |
-        ({account:($a.account // "main"),is_current:(($a.account // "main") == $current),enabled:true} +
+        ({account:($a.account // "main"),is_current:(($a.account // "main") == $current),
+          enabled:($pool_out != null and ($pool_out | index($a.account // "main")) == null)} +
          (if $a.auth_needed == true then
             {auth_needed:true,status:"login needed"} +
             (if ($a.cause | type) == "string" then {cause:$a.cause} else {} end)
@@ -1145,7 +1151,7 @@ if [ -n "$codex_event" ]; then
          [$e.payload.rate_limits.accounts[] | account(.; $current)] |
          sort_by(if .is_current then 0 else 1 end, .account)
        else
-         [{account:"main",is_current:true,enabled:true,
+         [{account:"main",is_current:true,enabled:($pool_out != null and ($pool_out | index("main")) == null),
            plan_type:($e.payload.rate_limits.plan_type // null),
            five_hour:{used_pct:$e.payload.rate_limits.primary.used_percent,
                       resets_at:(if $five_reset == "" then null else $five_reset end),
@@ -1173,6 +1179,8 @@ gemini_account_lines=''
 while IFS= read -r gemini_account; do
   gemini_cache=$(gemini_account_cache "$gemini_account")
   gemini_removed_marker=$(gemini_account_marker "$gemini_account")
+  gemini_enabled=true
+  if worker_pool_is_disabled "$gemini_pool_dir" "$gemini_account"; then gemini_enabled=false; fi
   gemini_auth=''
   gemini_data=''
   gemini_mtime=$now_epoch
@@ -1191,13 +1199,13 @@ while IFS= read -r gemini_account; do
   fi
   if [ -n "$gemini_data" ]; then
     stale=$((now_epoch - gemini_mtime)); [ "$stale" -ge 0 ] || stale=0
-    gemini_account_json=$(jq -cn --arg account "$gemini_account" --argjson d "$gemini_data" \
+    gemini_account_json=$(jq -cn --arg account "$gemini_account" --argjson enabled "$gemini_enabled" --argjson d "$gemini_data" \
       --arg as_of "$(epoch_iso "$gemini_mtime")" --argjson as_of_epoch "$gemini_mtime" \
       --argjson stale "$stale" --arg auth "$gemini_auth" '
       def used($remaining):
         ((1 - $remaining) * 100) |
         (if . < 0 then 0 elif . > 100 then 100 else . end) | round;
-      {account:$account,is_current:($account == "main"),enabled:true,source:"agy-local-rpc",group:$d.group,
+      {account:$account,is_current:($account == "main"),enabled:$enabled,source:"agy-local-rpc",group:$d.group,
        five_hour:{used_pct:used($d.five.remainingFraction),resets_at:$d.five.resetTime,
                   as_of:$as_of_epoch,origin:"usage",stale:($stale > 1800)},
        weekly:{used_pct:used($d.week.remainingFraction),resets_at:$d.week.resetTime,
@@ -1205,13 +1213,13 @@ while IFS= read -r gemini_account; do
        as_of:$as_of,stale_seconds:$stale}
       | if $auth == "1" then . + {auth_needed:true,status:"login needed"} else . end')
   elif [ "$gemini_auth" = 1 ]; then
-    gemini_account_json=$(jq -cn --arg account "$gemini_account" \
+    gemini_account_json=$(jq -cn --arg account "$gemini_account" --argjson enabled "$gemini_enabled" \
       --arg as_of "$(epoch_iso "$gemini_mtime")" --argjson as_of_epoch "$gemini_mtime" \
-      '{account:$account,is_current:($account == "main"),enabled:true,auth_needed:true,
+      '{account:$account,is_current:($account == "main"),enabled:$enabled,auth_needed:true,
         status:"login needed",source:"agy-local-rpc",as_of:$as_of,as_of_epoch:$as_of_epoch}')
   else
-    gemini_account_json=$(jq -cn --arg account "$gemini_account" \
-      '{account:$account,is_current:($account == "main"),enabled:true,
+    gemini_account_json=$(jq -cn --arg account "$gemini_account" --argjson enabled "$gemini_enabled" \
+      '{account:$account,is_current:($account == "main"),enabled:$enabled,
         status:"no quota snapshot",source:"agy-local-rpc"}')
   fi
   if [ -e "$gemini_removed_marker" ]; then
@@ -1223,8 +1231,8 @@ while IFS= read -r gemini_account; do
        && printf '%s' "$gemini_account_json" | jq -e '.auth_needed != true and (.five_hour | type) == "object"' >/dev/null 2>&1; then
       rm -f "$gemini_removed_marker"
     else
-      gemini_account_json=$(jq -cn --arg account "$gemini_account" \
-        '{account:$account,is_current:($account == "main"),enabled:true,removed:true,
+      gemini_account_json=$(jq -cn --arg account "$gemini_account" --argjson enabled "$gemini_enabled" \
+        '{account:$account,is_current:($account == "main"),enabled:$enabled,removed:true,
           status:"removed",source:"agy-local-rpc"}')
     fi
   fi
@@ -1272,7 +1280,7 @@ gemini=$(jq -cn --argjson accounts "$gemini_accounts" --argjson wall "$gemini_wa
                      ([.five_hour.used_pct,.weekly.used_pct] | max), .account) | .[0]) as $selected |
   if ($accounts | length) == 1 then
     $main
-    | del(.account,.is_current,.enabled)
+    | del(.account,.is_current)
     | .available = (.removed != true and .auth_needed != true and
                     (.five_hour | type) == "object" and (.weekly | type) == "object")
     | .last_wall = $wall
@@ -1490,10 +1498,11 @@ else
          ((.value.accounts | length) > 1 or
           (.key == "codex" and any(.value.accounts[]; .auth_needed == true))) then
       .key as $key | .value.accounts[] | select(.removed != true) |
-      line($key + "/" + .account + (if .is_current then "*" else "" end); .; "-";
+      line($key + "/" + .account + (if .is_current then "*" else "" end); .; rotation;
         (if $key == "codex" then credits else "-" end); account_status)
     elif .value.available then
-      line(.key; .value; "-"; (if .key == "codex" then (.value | credits) else "-" end); "-")
+      line(.key; .value; ((.value.accounts[0] // .value) | rotation);
+        (if .key == "codex" then (.value | credits) else "-" end); "-")
     else line(.key; {}; "-"; "-";
       (if .value.auth_needed == true then "login needed" else (.value.status // "-") end)) +
       (if .value.last_wall then " | last wall " + .value.last_wall else "" end) end

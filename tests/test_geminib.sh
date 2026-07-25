@@ -241,6 +241,43 @@ for flag in -h --help; do
   assert test ! -d "$HOME/.gemini-profiles/$flag"
 done
 
+# --- worker pool: the same "don't burn this one" state claudeb and codexb have ---
+# Output goes to a file rather than redirecting the assert itself: a redirected `assert` swallows
+# its own FAIL line and the suite then dies silently with no output at all.
+POOL_OUT="$WORK/pool.out"
+gb() { bash "$SCRIPT" "$@" >"$POOL_OUT" 2>&1; }
+assert gb disable alpha
+assert grep -qx alpha "$HOME/.gemini-profiles/.geminib/disabled"
+# The pool file lives beside the profiles and must never be read back as one.
+assert gb list
+assert_fails grep -q '^\.geminib:' "$POOL_OUT"
+assert grep -q 'alpha: .*(out of pool)' "$POOL_OUT"
+assert_fails grep -q 'main: .*(out of pool)' "$POOL_OUT"
+assert gb status
+assert grep -q 'alpha: .*(out of pool) | 5H' "$POOL_OUT"
+assert gb disable alpha
+assert grep -q 'already disabled' "$POOL_OUT"
+assert gb enable alpha
+assert_fails grep -qx alpha "$HOME/.gemini-profiles/.geminib/disabled"
+assert gb enable alpha
+assert grep -q 'already enabled' "$POOL_OUT"
+assert_fails gb disable ghost-account
+assert_fails gb enable ghost-account
+assert_fails gb disable
+# An empty pool leaves selection with nothing to answer and no way back but editing the file.
+for pool_profile in "$HOME/.gemini-profiles"/*/; do
+  pool_profile=$(basename "$pool_profile")
+  case "$pool_profile" in .*) continue ;; esac
+  gb disable "$pool_profile" || true
+done
+assert_fails gb disable main
+assert grep -q 'last enabled account' "$POOL_OUT"
+for pool_profile in "$HOME/.gemini-profiles"/*/; do
+  pool_profile=$(basename "$pool_profile")
+  case "$pool_profile" in .*) continue ;; esac
+  gb enable "$pool_profile" || true
+done
+
 cache_dir="$HOME/.llm-limits-gemini"
 mkdir -p "$cache_dir"
 printf '{}\n' >"$cache_dir/alpha.json"
@@ -253,4 +290,4 @@ assert_fails bash "$SCRIPT" remove main
 assert_fails bash "$SCRIPT" remove ../outside
 assert_fails bash "$SCRIPT" remove never-existed
 
-echo "PASS: $asserts asserts; base and isolated HOME routing, shared configuration links, per-profile login keychain, parallel ordered list/status probes, one-step creation, strict launch names, exec delimiter stripping, override-aware login hints, and persistent remove markers"
+echo "PASS: $asserts asserts; base and isolated HOME routing, worker-pool exclusion (own file beside the profiles, last member protected, visible in list/status), shared configuration links, per-profile login keychain, parallel ordered list/status probes, one-step creation, strict launch names, exec delimiter stripping, override-aware login hints, and persistent remove markers"
