@@ -417,7 +417,9 @@ assert rc == 0 and duration >= 0 and not stderr
 assert len(rb.normalize_findings(text, bare_rater["spec"])) == 2
 assert (work / "agy-head").read_text().strip() == sha
 assert pathlib.Path((work / "agy-cwd").read_text().strip()) != repo
-assert (work / "agy-prompt").read_text() == rb.AGY_PRINT_INSTRUCTION
+bare_prompt = (work / "agy-prompt").read_text()
+assert "fixture commit diff" in bare_prompt
+assert "without using tools or commands" in bare_prompt
 assert command[:12] == [
     str(fixtures / "fake-geminib.sh"), "profile", "work",
     "--model", "gemini-3.6-flash",
@@ -429,7 +431,7 @@ assert command[:12] == [
 assert (work / "geminib-profile").read_text() == "work"
 assert command[12] == "--log-file"
 assert pathlib.Path(command[13]) == bare_run / "agy-agy-flash36-low.log"
-assert command[14:] == ["--print", rb.AGY_PRINT_INSTRUCTION]
+assert command[14:] == ["--print", "<review-prompt>"]
 usage = json.loads((bare_run / "usage-agy-flash36-low.jsonl").read_text())
 assert usage["model"] == "gemini-3.6-flash"
 assert usage["duration_ms"] == duration
@@ -439,34 +441,26 @@ assert usage["total_tokens"] == 150
 assert usage["stream_generate_requests"] == 1
 assert usage["stream_completions"] == 1
 
+sized_run = work / "agy-sized-run"
+sized_run.mkdir()
+fitting_diff = "fixture sized diff\n" + ("x" * (rb.AGY_ARGV_BUDGET // 2))
+rc, _, text, stderr, fitting_command = rb.run_agy(
+    bare_rater, repo, sha, "", sized_run, fitting_diff, "work"
+)
+assert rc == 0 and text and not stderr
+assert fitting_diff in (work / "agy-prompt").read_text()
+assert fitting_command[-2:] == ["--print", "<review-prompt>"]
+
 large_run = work / "agy-large-run"
 large_run.mkdir()
-large_diff = "fixture large diff\n" + ("x" * 1000000)
-kept_clones = []
-original_seal = rb.seal_overlay_clone
-original_rmtree = rb.shutil.rmtree
-def keep_sealed_clone(*args):
-    clone = original_seal(*args)
-    kept_clones.append(pathlib.Path(clone))
-    return clone
-rb.seal_overlay_clone = keep_sealed_clone
-rb.shutil.rmtree = lambda *args, **kwargs: None
-try:
-    rc, _, text, stderr, large_command = rb.run_agy(
-        bare_rater, repo, sha, "", large_run, large_diff, "work"
-    )
-    assert rc == 0 and text and not stderr
-    input_text = (kept_clones[-1] / rb.AGY_REVIEW_INPUT).read_text()
-    assert large_diff in input_text
-    assert '{"findings":[]}' in input_text
-    assert "without using tools or commands" in input_text
-    assert large_command[-2:] == ["--print", rb.AGY_PRINT_INSTRUCTION]
-    assert max(map(len, large_command)) < 4096
-finally:
-    rb.seal_overlay_clone = original_seal
-    rb.shutil.rmtree = original_rmtree
-    for clone in kept_clones:
-        original_rmtree(clone, ignore_errors=True)
+large_diff = "fixture large diff\n" + ("x" * rb.AGY_ARGV_BUDGET)
+rc, _, text, stderr, large_command = rb.run_agy(
+    bare_rater, repo, sha, "", large_run, large_diff, "work"
+)
+assert rc == 1 and not text
+assert "over agy's" in stderr and str(rb.AGY_ARGV_BUDGET) in stderr
+assert large_command[-2:] == ["--print", "<review-prompt>"]
+assert not (large_run / "agy-agy-flash36-low.log").exists()
 
 usage_run = work / "agy-usage-run"
 usage_run.mkdir()

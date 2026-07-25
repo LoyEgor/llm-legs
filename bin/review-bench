@@ -246,10 +246,7 @@ RATER_RE = re.compile(
 PRIORITY_RE = re.compile(r"\b(P[123])\b", re.IGNORECASE)
 LOCATION_RE = re.compile(r"(?P<file>[^\s:]+\.[A-Za-z0-9]+):(?P<line>\d+)(?:-\d+)?")
 LIMITS_STALE_AGE_S = 600
-AGY_REVIEW_INPUT = ".review-bench-input.md"
-AGY_PRINT_INSTRUCTION = (
-    f"Read {AGY_REVIEW_INPUT} and follow its instructions exactly."
-)
+AGY_ARGV_BUDGET = 512 * 1024
 
 
 def utc_now():
@@ -1606,19 +1603,24 @@ def run_agy(rater, repo, sha, focus, run_dir, diff, account, repeat=1):
         "--print-timeout", "10m",
         "--log-file", str(log_file),
     ]
-    invocation_prompt = prompt if rater["skill"] else AGY_PRINT_INSTRUCTION
-    transport = command + ["--print", invocation_prompt]
-    displayed_command = list(transport)
+    transport = command + ["--print", prompt]
+    displayed_command = command + ["--print", prompt if rater["skill"] else "<review-prompt>"]
+    # The diff has to travel on argv. Handing it over as a file in the sealed clone reads as the
+    # tidier option, but print mode soft-denies every tool confirmation, so the bare rater cannot
+    # open that file and answers from an empty context or gives up.
+    size = len(prompt.encode())
+    if size > AGY_ARGV_BUDGET:
+        return (
+            1, 0, "",
+            f"review prompt is {size} bytes, over agy's {AGY_ARGV_BUDGET}-byte argv budget",
+            displayed_command,
+        )
     clone = None
     started = time.monotonic()
     try:
         clone = seal_overlay_clone(repo, sha)
         if rater["skill"]:
             prepare_agy_skill_clone(clone)
-        else:
-            prompt_path = Path(clone) / AGY_REVIEW_INPUT
-            prompt_path.write_text(prompt)
-            os.chmod(prompt_path, 0o600)
         try:
             proc = subprocess.run(
                 transport, cwd=clone, capture_output=True, text=True,
