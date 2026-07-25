@@ -219,3 +219,21 @@ prompts for Google login. Then run `geminib status` and
 `llm-limits --refresh-account gemini/work --table`. Worker routing uses the same
 headroom/runway/staleness rules as before, prints `ACCOUNT: work`, and treats `main` as the
 last-resort profile unless `gemini_profile=` pins it.
+
+## OpenCode Go review models
+
+`bin/opencode-go` is a read-only client for the OpenCode Go subscription: an OpenAI-compatible
+gateway whose base URL is pinned, so pay-as-you-go Zen models can never be billed. The key comes
+from the macOS Keychain and never reaches curl's argv; `OPENCODE_GO_PROFILE=<name>` selects the
+service `opencode-go-<name>` when more than one subscription key exists. There is no usage
+endpoint — a spent window is only visible as an HTTP 429 naming `limitName`, so a wall means stop
+and come back later, never retry.
+
+- `opencode-go key` stores a key, `models` lists the plan, `run <model> …` reviews a prompt file,
+  `raw <path>` posts an arbitrary body. `--effort` and `--no-reasoning` are mutually exclusive:
+  the reasoning-off knob silently overwrites an effort, and which knob a model accepts varies
+  between requests, so the client negotiates per request rather than pinning a strategy.
+
+These models are review raters only, never workers: the client has no agentic loop. Their measured
+capability, the composition that survived strict adjudication, and the plan models that failed
+screening are printed by `review-bench oc-models`; a review runs as `review-bench run <sha> --leg`.

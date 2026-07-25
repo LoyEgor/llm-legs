@@ -1,0 +1,1 @@
+{"id":"verify-keep","object":"chat.completion","model":"kimi-k3","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"```json\n{\"code_matches\": true, \"is_defect\": true, \"why\": \"guard runs after the branch it protects\"}\n```"}}],"usage":{"prompt_tokens":900,"completion_tokens":30,"total_tokens":930}}

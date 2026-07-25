@@ -20,6 +20,170 @@ from pathlib import Path
 
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 GROK_EFFORTS = ("low", "medium", "high")
+OPENCODE_EFFORTS = ("low", "medium", "high")
+OPENCODE_MODEL_IDS = {
+    "oc-glm52": "glm-5.2",
+    "oc-dsv4pro": "deepseek-v4-pro",
+    "oc-grok45": "grok-4.5",
+    "oc-qwen37max": "qwen3.7-max",
+    "oc-kimik3": "kimi-k3",
+    "oc-kimik27code": "kimi-k2.7-code",
+    "oc-glm51": "glm-5.1",
+    "oc-dsv4flash": "deepseek-v4-flash",
+    "oc-qwen37plus": "qwen3.7-plus",
+    "oc-mmm3": "minimax-m3",
+    "oc-mimo25pro": "mimo-v2.5-pro",
+    "oc-mimo25": "mimo-v2.5",
+    "oc-hy3": "hy3",
+}
+OPENCODE_MAX_TOKENS = (32000, 16384, 8192)
+# A model whose thinking cannot be suppressed needs a ceiling above its thinking,
+# not below it: minimax-m3 spends ~38k tokens before it answers at all, so the
+# shared ladder guarantees it stops mid-thought and returns nothing (measured: 32k
+# ends at finish_reason=length with no review, 64k answers in ~690s).
+OPENCODE_MAX_TOKENS_BY_MODEL = {"oc-mmm3": (64000, 32000)}
+# Measured per model, not guessable: a buffered reply is dropped at the upstream
+# response deadline, while streaming lifts that deadline but makes some models
+# emit reasoning forever and never start the answer. Only models proven to need
+# streaming get it; everything else stays buffered and relies on 5xx retries.
+OPENCODE_STREAM_MODELS = frozenset({"oc-dsv4pro", "oc-grok45"})
+# Measured capability table — the module's own knowledge of a gateway whose models
+# behave differently, so nothing here is folklore. Probed 2026-07-25 with n=2 per mode
+# on a small reasoning task, and cross-checked against every recorded review run on
+# 143fc2f (`review-bench oc-models` prints this next to the live success rate).
+#   off     — whether `--no-reasoning` actually silences thinking. Measured as an
+#             answer of 2-4 tokens with no reasoning tokens; False means the knob is
+#             accepted and ignored, which on a large diff walks into the gateway's
+#             ~190s idle timeout.
+#   scales  — whether an effort visibly scales thinking (low < medium), so asking for
+#             more is meaningful rather than noise. No model on the plan REJECTS an
+#             effort: 104 probe calls produced zero 400s.
+#   off_s   — median review seconds with reasoning off on the 54k-token diff.
+#   low_s   — same at `--effort low`, None where not measured.
+# Reasoning stays off by default because it is 20x faster; the cost is correctness on
+# a task that needs thought (in the probe, every compliant model answered the puzzle
+# WRONG with reasoning off and right at any effort), which is why an effort cell is a
+# genuinely different reviewer rather than a duplicate.
+OPENCODE_MODEL_FACTS = {
+    "oc-glm52": {"off": True, "scales": False, "off_s": 13, "low_s": 234,
+                 "note": "1 true claim of 14 bare, 0 of 9 with a review profile; an effort costs 18x"},
+    "oc-glm51": {"off": True, "scales": False, "off_s": 14, "low_s": None,
+                 "note": "adjudicated 1 true claim of 11 over 3 passes, same defect glm-5.2 found"},
+    "oc-qwen37max": {"off": True, "scales": True, "off_s": 9, "low_s": None,
+                     "note": "1 true claim of 8 bare, 0 of 5 with a review profile; invents missing code"},
+    "oc-qwen37plus": {"off": True, "scales": True, "off_s": 8, "low_s": None,
+                      "note": "adjudicated 0 true claims of 10 over 3 passes: wholly speculative or narrative"},
+    "oc-kimik3": {"off": True, "scales": True, "off_s": 23, "low_s": 186,
+                  "note": "the leg's net and verifier: 5 true of 31, but 4 defects grok misses"},
+    "oc-kimik27code": {"off": False, "scales": False, "off_s": 10, "low_s": None,
+                       "note": "1-30 findings per run and failed 2 of 3 passes; kimi-k3 replaces it"},
+    "oc-mimo25": {"off": True, "scales": False, "off_s": 43, "low_s": None,
+                  "note": "adjudicated 0 true claims of 13 over 3 passes; narrates the diff"},
+    "oc-mimo25pro": {"off": True, "scales": False, "off_s": 14, "low_s": None,
+                     "note": "1 true claim of 17 bare, 0 of 4 with a review profile; thinks in text"},
+    "oc-hy3": {"off": True, "scales": True, "off_s": 14, "low_s": None,
+               "note": "effort scales cleanly, but adjudicated 1 true claim of 18 over 3 passes"},
+    "oc-mmm3": {"off": False, "scales": False, "off_s": 204, "low_s": None,
+                "note": "ignores every knob, needs the 64k ceiling; 1 of 7 runs completed"},
+    "oc-grok45": {"off": False, "scales": True, "off_s": None, "low_s": 87,
+                  "note": "the leg's precise half: 11 true claims of 15, 7 defects; no bare failure"},
+    "oc-dsv4pro": {"off": False, "scales": False, "off_s": 905, "low_s": None,
+                   "note": "precise but 2 of 12 runs completed, ~900s each; too slow for any tier"},
+    "oc-dsv4flash": {"off": False, "scales": False, "off_s": None, "low_s": None,
+                     "note": "0 of 8 review runs completed at any effort (tiny probes do finish)"},
+}
+# Derived, so the policy cannot drift from the measurement: a model that ignores the
+# reasoning-off knob AND is measurably fixed by a budget is offered only with one.
+OPENCODE_EFFORT_REQUIRED_MODELS = frozenset({"oc-grok45"})
+# Refused outright, with the evidence in the message. Not a taste call: no
+# configuration of these ever produced a review, so a cell would only spend the
+# subscription's window and the run's wall clock.
+OPENCODE_UNUSABLE_MODELS = {"oc-dsv4flash"}
+# The only OpenCode cells that survived strict adjudication on four commits: grok-4.5
+# is precise and repeats its real findings, kimi-k3 is the wide net, and kimi-k3 also
+# judges every claim against the file it cites. Every other cell scored at most one
+# true claim per three passes, so a wider leg costs the window and returns noise.
+OPENCODE_REVIEW_LEG = ("oc-grok45-low", "oc-kimik3")
+OPENCODE_VERIFIER = "oc-kimik3"
+# Highest effort a model has ever returned a review of a large diff at; None would mean
+# no effort at all. Empty by measurement, and it took a replication to keep it that way:
+# kimi-k3 at medium looked dead after two attempts with no output, then finished a third
+# in 623s once the client escalated a 236s buffered 503 to streaming. Only a model that
+# NEVER completes belongs here — a slow or flaky effort is priced, not refused.
+OPENCODE_EFFORT_CEILING = {}
+# Screened once each with reasoning off on the 143fc2f diff (2026-07-25) and NOT
+# adopted as cells: none produced a single true finding, so there is nothing to
+# benchmark yet. Kept here because "which plan models did we try" is the question
+# this table exists to answer — review-bench oc-models prints it. A single sample is
+# a screening, not a verdict: promoting one needs a real three-pass run.
+OPENCODE_SCREENED_MODELS = {
+    "glm-5": "19s, no findings and no no-issues marker",
+    "kimi-k2.5": "12s, narrated the diff instead of reviewing",
+    "kimi-k2.6": "10s, narrated the diff instead of reviewing",
+    "minimax-m2.5": "24s, empty completion",
+    "minimax-m2.7": "24s, empty completion",
+    "qwen3.5-plus": "40s, 5 findings, all false when read against the code",
+    "qwen3.6-plus": "202s, 1 finding, false when read against the code",
+    "hy3-preview": "HTTP 400: not served for completions on this plan",
+    "mimo-v2-omni": "HTTP 500 after the client's own retries",
+    "mimo-v2-pro": "HTTP 500 after the client's own retries",
+}
+# Reserved for a model that needs a think-tag prefix pinned from here. Empty by
+# measurement: which reasoning-off knob a model accepts turns out to vary between
+# requests for the same model, so the client negotiates per request and pinning a
+# strategy here would only defeat that. The prefix is also not free — a model can
+# read the closing tag as "the turn is over" and answer nothing.
+OPENCODE_PREFILL_MODELS = frozenset()
+OPENCODE_EXPECTED_DEFAULT_S = 60
+# A cell that asks for an effort asks for reasoning, which on this gateway means a
+# long generation, so it is expected to be slow whatever the model.
+OPENCODE_EFFORT_EXPECTED_S = 600
+
+
+class PriorityGate:
+    """Concurrency limiter that admits the longest expected job first.
+
+    One shared subscription gateway serves every OpenCode rater, so the bench
+    throttles itself instead of fanning out one request per selected cell. The
+    gateway itself parallelises fine; the makespan is decided by whether a slow
+    cell waits behind fast ones, hence priority instead of a plain semaphore.
+    """
+
+    def __init__(self, limit):
+        self.limit = limit
+        self.active = 0
+        self.waiting = []
+        self.seq = 0
+        self.cv = threading.Condition()
+
+    def acquire(self, priority=0):
+        with self.cv:
+            self.seq += 1
+            entry = (-priority, self.seq)
+            self.waiting.append(entry)
+            self.waiting.sort()
+            while self.active >= self.limit or self.waiting[0] != entry:
+                self.cv.wait()
+            self.waiting.remove(entry)
+            self.active += 1
+
+    def release(self):
+        with self.cv:
+            self.active -= 1
+            self.cv.notify_all()
+
+
+OPENCODE_MAX_CONCURRENCY = max(1, int(os.environ.get("REVIEW_BENCH_OPENCODE_CONCURRENCY", "5")))
+OPENCODE_GATE = PriorityGate(OPENCODE_MAX_CONCURRENCY)
+# A 429 here is the subscription's own usage window, not weather: the plan is billed in
+# dollars per rolling window, so the honest response is to stop the run and come back
+# hours later. Without this the first wall would be followed by one doomed request per
+# remaining cell, which is how a wall gets deeper instead of waited out.
+OPENCODE_WALL = threading.Event()
+
+
+def opencode_usage_wall(stderr):
+    return bool(re.search(r"HTTP 429|too many requests|usage limit", stderr or "", re.IGNORECASE))
 AGY_EFFORTS = {
     "agy-pro": ("low", "high"),
     "agy-flash36": ("low", "medium", "high"),
@@ -41,11 +205,27 @@ AUTO_RATERS = tuple(
     for effort in efforts
 )
 CLAUDE_MODEL_IDS = {"fable": "claude-fable-5"}
+READ_ONLY_REVIEW_INSTRUCTION = (
+    "You are read-only: do not run checkout, restore, reset, clean, stash, revert, commit, "
+    "or any other Git command that changes the tree or refs; return findings only."
+)
+# Toolless raters get a vendor review methodology injected into the prompt. The text
+# is read from the installed skill so a cell measures the real published guidance;
+# a missing file fails the cell instead of quietly reviewing without methodology.
+REVIEW_PROFILE_FILES = {
+    "anthropic": Path.home() / ".claude/plugins/marketplaces/claude-plugins-official"
+                 / "plugins/code-review/commands/code-review.md",
+    "google": Path.home() / ".gemini/extensions/code-review/skills"
+              / "code-review-commons/SKILL.md",
+}
+REVIEW_PROFILES = tuple(REVIEW_PROFILE_FILES)
 VERDICTS = {"confirmed", "false_positive", "duplicate"}
 WEIGHTS = {"P1": 5, "P2": 2, "P3": 1}
 RATER_RE = re.compile(
-    r"^(sol|opus|sonnet|haiku|fable|grok|agy-pro|agy-flash35|agy-flash36)"
-    r"-(low|medium|high|xhigh|max)(-skill)?$"
+    r"^(sol|opus|sonnet|haiku|fable|grok|agy-pro|agy-flash35|agy-flash36"
+    r"|oc-glm52|oc-glm51|oc-dsv4pro|oc-dsv4flash|oc-grok45|oc-qwen37max"
+    r"|oc-qwen37plus|oc-kimik3|oc-kimik27code|oc-mmm3|oc-mimo25pro|oc-mimo25|oc-hy3)"
+    r"(?:-(low|medium|high|xhigh|max))?(-skill|-anthropic|-google)?$"
 )
 PRIORITY_RE = re.compile(r"\b(P[123])\b", re.IGNORECASE)
 LOCATION_RE = re.compile(r"(?P<file>[^\s:]+\.[A-Za-z0-9]+):(?P<line>\d+)(?:-\d+)?")
@@ -106,21 +286,56 @@ def parse_rater(spec):
             "opus|sonnet|haiku|fable-<effort>, grok-<low|medium|high>, "
             "agy-pro-<low|high>, agy-flash36-<low|medium|high>, "
             "agy-flash35-<low|medium|high>, "
+            "oc-glm52|oc-kimik27code[-<low|medium|high>], "
+            "oc-grok45|oc-dsv4pro|oc-dsv4flash-<low|medium|high>, "
             "or a Claude/agy -skill variant such as opus-medium-skill"
         )
-    model, effort, skill = match.groups()
-    skill = bool(skill)
-    if model == "grok" or model in AGY_EFFORTS:
+    model, effort, suffix = match.groups()
+    profile = suffix[1:] if suffix and suffix != "-skill" else None
+    skill = suffix == "-skill"
+    if model in OPENCODE_MODEL_IDS:
+        side = "opencode"
+    elif model == "grok" or model in AGY_EFFORTS:
         side = "agy" if model.startswith("agy-") else "grok"
     elif model == "sol":
         side = "codex"
     else:
         side = "claude"
+    if side != "opencode" and effort is None:
+        raise ValueError(f"invalid rater {spec!r}; effort is required")
     if skill and side not in ("claude", "agy"):
         raise ValueError(f"invalid rater {spec!r}; -skill mode is Claude/agy-only")
+    if profile and side != "opencode":
+        raise ValueError(
+            f"invalid rater {spec!r}; -{profile} review profiles are OpenCode-only"
+        )
     if model == "grok" and effort not in GROK_EFFORTS:
         raise ValueError(
             f"invalid rater {spec!r}; grok supports only low, medium, or high effort"
+        )
+    if side == "opencode" and effort not in (None, *OPENCODE_EFFORTS):
+        raise ValueError(
+            f"invalid rater {spec!r}; OpenCode supports only low, medium, or high effort"
+        )
+    if model in OPENCODE_UNUSABLE_MODELS:
+        raise ValueError(
+            f"invalid rater {spec!r}; {OPENCODE_MODEL_IDS[model]} is measured unusable "
+            f"for review ({OPENCODE_MODEL_FACTS[model]['note']}) — see review-bench oc-models"
+        )
+    if model in OPENCODE_EFFORT_CEILING and effort is not None:
+        ceiling = OPENCODE_EFFORT_CEILING[model]
+        if ceiling is None or OPENCODE_EFFORTS.index(effort) > OPENCODE_EFFORTS.index(ceiling):
+            allowed = f"use {model}-{ceiling} or {model}" if ceiling else f"use {model}"
+            raise ValueError(
+                f"invalid rater {spec!r}; {OPENCODE_MODEL_IDS[model]} never finished a "
+                f"review at {effort} effort ({OPENCODE_MODEL_FACTS[model]['note']}) — "
+                f"{allowed}"
+            )
+    if model in OPENCODE_EFFORT_REQUIRED_MODELS and effort is None:
+        raise ValueError(
+            f"invalid rater {spec!r}; {OPENCODE_MODEL_IDS[model]} ignores reasoning "
+            f"suppression and stalls the gateway, so it needs an explicit budget: "
+            f"use {model}-low"
         )
     if model in AGY_EFFORTS and effort not in AGY_EFFORTS[model]:
         efforts = AGY_EFFORTS[model]
@@ -132,9 +347,15 @@ def parse_rater(spec):
         raise ValueError(
             f"invalid rater {spec!r}; {model} supports only {allowed} effort"
         )
-    canonical = f"{model}-{effort}-skill" if skill else f"{model}-{effort}"
+    canonical = model
+    if effort:
+        canonical += f"-{effort}"
+    if skill:
+        canonical += "-skill"
+    if profile:
+        canonical += f"-{profile}"
     return {"spec": canonical, "model": model, "effort": effort,
-            "side": side, "skill": skill}
+            "side": side, "skill": skill, "profile": profile}
 
 
 def parse_raters(value):
@@ -240,6 +461,7 @@ def parse_affordability(output):
         "codex": codex_ok,
         "claude": claude_ok,
         "grok": True,
+        "opencode": True,
         "agy": gemini_ok,
         "claude_account": claude_account,
         "claude_cap": claude_cap,
@@ -623,12 +845,38 @@ def normalize_agy_skill_output(text, rater):
     return "\n".join(json.dumps(row, ensure_ascii=False) for row in findings) or '{"findings":[]}'
 
 
-def review_prompt(sha, focus):
+def review_profile_text(profile):
+    override = os.environ.get("REVIEW_BENCH_PROFILE_DIR")
+    path = Path(override) / f"{profile}.md" if override else REVIEW_PROFILE_FILES[profile]
+    try:
+        text = path.read_text()
+    except OSError as exc:
+        raise RuntimeError(f"review profile {profile!r} unreadable at {path}: {exc}") from exc
+    if not text.strip():
+        raise RuntimeError(f"review profile {profile!r} is empty at {path}")
+    return text
+
+
+def review_prompt(sha, focus, profile=None):
     suffix = f"\nAdditional focus: {focus}" if focus else ""
-    return (
+    contract = (
         f"Review commit {sha}. Return findings only, one JSON object per line, with exactly "
         "these fields: severity (P1, P2, or P3), file, line, summary. Use changed lines for "
-        "locations. Return no text when there are no findings. Do not modify the repository."
+        f"locations. Return no text when there are no findings. {READ_ONLY_REVIEW_INSTRUCTION}"
+    )
+    if not profile:
+        return contract + suffix
+    return (
+        f"The following is the published {profile} code-review methodology.\n\n"
+        f"{review_profile_text(profile)}\n\n"
+        "Adaptation, which overrides the methodology wherever they conflict: you have no "
+        "tools, no subagents, no repository access and no network — only the commit diff "
+        "below. Ignore every instruction about delegating to agents, reading additional "
+        "files, inspecting git history, running builds, posting review comments, and ignore "
+        "its output format. Apply its review criteria, its severity guidance and above all "
+        "its false-positive exclusions; where it defines a confidence rubric, report only "
+        "findings you would score 80 or higher. Map its severities onto P1 (critical/high), "
+        f"P2 (medium) and P3 (low).\n\n{contract}"
         + suffix
     )
 
@@ -653,7 +901,7 @@ def skill_brief(sha, focus, repo_path):
         f"repository's tools (start from `git show {sha}`). Return findings only, one JSON "
         "object per line, with exactly these fields: severity (P1, P2, or P3), file, line, "
         "summary. Use changed lines for locations. Return no text when there are no findings. "
-        "Do not modify the repository."
+        f"{READ_ONLY_REVIEW_INSTRUCTION}"
         + suffix
     )
 
@@ -743,23 +991,33 @@ def run_codex(rater, repo, sha, focus, run_dir, account):
         "--commit", sha, "-m", "gpt-5.6-sol", "-c",
         f"model_reasoning_effort={rater['effort']}",
     ]
+    instruction = READ_ONLY_REVIEW_INSTRUCTION
     if focus:
-        instruction = json.dumps(f"Additional review focus: {focus}")
-        command += ["-c", f"developer_instructions={instruction}"]
+        instruction += f" Additional review focus: {focus}"
+    command += ["-c", f"developer_instructions={json.dumps(instruction)}"]
     command += ["--json", "-o", raw_final.name]
+    clone = None
     started = time.monotonic()
     try:
-        with open(raw_events, "w") as stdout:
-            proc = subprocess.run(command, cwd=repo, env=codex_environment(account), stdin=subprocess.DEVNULL,
-                                  stdout=stdout, stderr=subprocess.PIPE, text=True, timeout=RATER_TIMEOUT_S)
-    except subprocess.TimeoutExpired:
+        clone = seal_overlay_clone(repo, sha)
+        try:
+            with open(raw_events, "w") as stdout:
+                proc = subprocess.run(
+                    command, cwd=clone, env=codex_environment(account),
+                    stdin=subprocess.DEVNULL, stdout=stdout, stderr=subprocess.PIPE,
+                    text=True, timeout=RATER_TIMEOUT_S
+                )
+        except subprocess.TimeoutExpired:
+            duration = round((time.monotonic() - started) * 1000)
+            return 124, duration, "", f"rater timed out after {RATER_TIMEOUT_S}s", command
         duration = round((time.monotonic() - started) * 1000)
-        return 124, duration, "", f"rater timed out after {RATER_TIMEOUT_S}s", command
-    duration = round((time.monotonic() - started) * 1000)
-    text = Path(raw_final.name).read_text(errors="replace")
-    if raw_events.exists():
-        text += "\n" + raw_events.read_text(errors="replace")
-    return proc.returncode, duration, text, proc.stderr, command
+        text = Path(raw_final.name).read_text(errors="replace")
+        if raw_events.exists():
+            text += "\n" + raw_events.read_text(errors="replace")
+        return proc.returncode, duration, text, proc.stderr, command
+    finally:
+        if clone:
+            shutil.rmtree(clone, ignore_errors=True)
 
 
 def is_429_error(result_json_text):
@@ -828,13 +1086,12 @@ def refresh_limits(account):
 
 def run_claude(rater, repo, sha, focus, run_dir, account, diff, retry_on_429=True):
     raw_output = run_dir / f"raw-{rater['spec']}.json"
-    clone = seal_overlay_clone(repo, sha) if rater["skill"] else None
-    if clone:
+    clone = seal_overlay_clone(repo, sha)
+    if rater["skill"]:
         prompt = skill_brief(sha, focus, clone)
-        cwd = clone
     else:
         prompt = review_prompt(sha, focus) + "\n\nCommit diff:\n" + diff
-        cwd = repo
+    cwd = clone
     command = [
         command_path("REVIEW_BENCH_CLAUDEB_BIN", "claudeb"), "profile", account,
         "-p", prompt, "--output-format", "json",
@@ -949,6 +1206,399 @@ def run_grok(rater, repo, sha, focus, run_dir, diff):
         Path(prompt_file.name).unlink(missing_ok=True)
         if clone:
             shutil.rmtree(clone, ignore_errors=True)
+
+
+# A weak model asked to review a large diff sometimes summarises it instead: one
+# low-severity bullet per hunk, each phrased as a change description. Those parse
+# as findings and make the cell look productive, so they would otherwise consume a
+# whole adjudication round. Both signals are required, since a real review mixes
+# severities and states defects rather than changes.
+DIFF_NARRATION_RE = re.compile(
+    r"^(new file|added|adds|updated|updates|modified|modifies|extended|extends"
+    r"|refactored|refactors|renamed|renames|introduced|introduces|documented"
+    r"|documents|implemented|implements|removed|removes)\b",
+    re.IGNORECASE,
+)
+DIFF_NARRATION_MIN_ROWS = 5
+
+
+def is_diff_narration(findings):
+    if len(findings) < DIFF_NARRATION_MIN_ROWS:
+        return False
+    if any(row.get("severity") != "P3" for row in findings):
+        return False
+    return all(DIFF_NARRATION_RE.match((row.get("summary") or "").strip()) for row in findings)
+
+
+def opencode_max_tokens_error(stderr):
+    return bool(re.search(r"max(?:imum)?[_ -]?tokens?|token.{0,30}(?:limit|maximum)", stderr,
+                          re.IGNORECASE))
+
+
+def opencode_expected_s(rater):
+    """Measured cost of one review call, used to order gate admission and scale the
+    cell's deadline. A slow cell that starts last stretches the whole run by its own
+    duration, so the longest jobs are admitted first."""
+    facts = OPENCODE_MODEL_FACTS.get(rater["model"], {})
+    if rater["effort"]:
+        measured = facts.get("low_s") if rater["effort"] == "low" else None
+        return measured or OPENCODE_EFFORT_EXPECTED_S
+    return facts.get("off_s") or OPENCODE_EXPECTED_DEFAULT_S
+
+
+def gate_admission_key(rater):
+    """Sort key that starts the gated cells that take longest first.
+
+    Only OpenCode cells share a gate; every other side has its own account and its
+    own thread, so their submission order does not affect anything.
+    """
+    if rater["side"] != "opencode":
+        return (1, 0, rater["spec"])
+    return (0, -opencode_expected_s(rater), rater["spec"])
+
+
+def opencode_timeout_s(rater):
+    """Deadline for one OpenCode cell.
+
+    A hung cell holds a gate slot, and OpenCode latency is predictable from the
+    model, so waiting the shared 30-minute ceiling only delays every queued cell.
+    The multiplier still leaves room for a retry after a slow 5xx.
+    """
+    return min(RATER_TIMEOUT_S, max(420, opencode_expected_s(rater) * 8))
+
+
+# Identical calls to the same model return 1 to 30 findings on the same diff, so one
+# sample measures the dice, not the model. Sampling the cell a few times and unioning
+# the result is the cheap way to turn that variance into recall — and it also means a
+# single 503 costs a sample instead of the whole cell.
+def same_defect(left, right):
+    if left.get("file") != right.get("file"):
+        return False
+    try:
+        gap = abs(int(left.get("line")) - int(right.get("line")))
+    except (TypeError, ValueError):
+        gap = 999
+    ratio = SequenceMatcher(
+        None, str(left.get("summary", "")).lower(), str(right.get("summary", "")).lower()
+    ).ratio()
+    return ratio >= 0.6 or (gap <= 5 and ratio >= 0.35)
+
+
+def merge_samples(batches):
+    merged = []
+    for batch in batches:
+        for row in batch:
+            if not any(same_defect(row, kept) for kept in merged):
+                merged.append(row)
+    return merged
+
+
+def run_opencode_sampled(rater, repo, sha, focus, run_dir, diff, repeat):
+    """Union `repeat` independent samples of one OpenCode cell.
+
+    Samples run one after another rather than at once: the plan is billed against a
+    rolling window, so a cell that fans out its own retries is how a usage wall gets
+    hit early instead of waited out.
+    """
+    batches, failures, duration, command, text = [], [], 0, [], ""
+    for index in range(repeat):
+        result = run_opencode(rater, repo, sha, focus, run_dir, diff)
+        rc, sample_ms, sample_text, stderr, command = result
+        duration += sample_ms
+        if rc == 0:
+            batches.append(normalize_findings(sample_text, rater["spec"]))
+            text = sample_text
+        else:
+            failures.append(f"sample {index + 1}/{repeat}: {stderr.strip()[-200:]}")
+            if OPENCODE_WALL.is_set():
+                break
+    if not batches:
+        return 1, duration, "", "\n".join(failures) or "no samples succeeded", command
+    merged = merge_samples(batches)
+    note = (f"{len(batches)}/{repeat} samples usable, {sum(len(b) for b in batches)} raw "
+            f"findings merged to {len(merged)}")
+    stderr = "\n".join(failures + [note])
+    if len(batches) == 1:
+        return 0, duration, text, stderr, command
+    return 0, duration, "\n".join(json.dumps(row) for row in merged), stderr, command
+
+
+def run_opencode(rater, repo, sha, focus, run_dir, diff):
+    raw_output = run_dir / f"raw-{rater['spec']}.json"
+    prompt = review_prompt(sha, focus, rater["profile"]) + "\n\nCommit diff:\n" + diff
+    prompt_file = tempfile.NamedTemporaryFile(
+        mode="w", prefix=f"review-bench-{rater['spec']}-", suffix=".txt", delete=False
+    )
+    prompt_file.write(prompt)
+    prompt_file.close()
+    if OPENCODE_WALL.is_set():
+        Path(prompt_file.name).unlink(missing_ok=True)
+        return (1, 0, "", "opencode usage wall already hit in this run; not retried", [])
+    # Acquired before the clock starts so a queued rater reports its own
+    # request latency, not the time it spent waiting for a gate slot.
+    OPENCODE_GATE.acquire(opencode_expected_s(rater))
+    started = time.monotonic()
+    command = []
+    try:
+        for max_tokens in OPENCODE_MAX_TOKENS_BY_MODEL.get(rater["model"], OPENCODE_MAX_TOKENS):
+            command = [
+                command_path("REVIEW_BENCH_OPENCODE_BIN", "opencode-go"),
+                "run", OPENCODE_MODEL_IDS[rater["model"]],
+                "--prompt-file", prompt_file.name,
+                "--json", "--max-tokens", str(max_tokens),
+            ]
+            if rater["effort"]:
+                command += ["--effort", rater["effort"]]
+            if rater["model"] in OPENCODE_STREAM_MODELS:
+                command.append("--stream")
+            # An explicit effort is a request for reasoning; suppressing it would
+            # make every effort cell a silent duplicate of the effortless one.
+            if not rater["effort"]:
+                command.append("--no-reasoning")
+            if rater["model"] in OPENCODE_PREFILL_MODELS:
+                command += ["--prefill", "</think>"]
+            deadline = opencode_timeout_s(rater)
+            # The client's own buffered wall-clock cap must not fire before the cell's
+            # deadline, or a legitimately slow generation dies with nothing received
+            # while the cell still had time left.
+            env = dict(os.environ, OPENCODE_GO_MAX_WAIT_S=str(deadline))
+            try:
+                proc = subprocess.run(
+                    command, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                    timeout=deadline, env=env
+                )
+            except subprocess.TimeoutExpired:
+                duration = round((time.monotonic() - started) * 1000)
+                return 124, duration, "", f"rater timed out after {deadline}s", command
+            duration = round((time.monotonic() - started) * 1000)
+            raw_output.write_text(proc.stdout)
+            if proc.returncode == 0 or not opencode_max_tokens_error(proc.stderr):
+                break
+        if proc.returncode != 0:
+            if opencode_usage_wall(proc.stderr):
+                OPENCODE_WALL.set()
+            return proc.returncode, duration, proc.stdout, proc.stderr, command
+        try:
+            envelope = json.loads(proc.stdout)
+        except (json.JSONDecodeError, ValueError) as exc:
+            detail = f"opencode returned malformed JSON envelope: {exc}"
+            stderr = f"{proc.stderr.rstrip()}\n{detail}".lstrip()
+            return 1, duration, "", stderr, command
+        if not isinstance(envelope, dict):
+            detail = "opencode returned malformed JSON envelope: expected an object"
+            stderr = f"{proc.stderr.rstrip()}\n{detail}".lstrip()
+            return 1, duration, "", stderr, command
+        usage = envelope.get("usage")
+        if usage is not None:
+            (run_dir / f"usage-{rater['spec']}.json").write_text(
+                json.dumps(usage, ensure_ascii=False) + "\n"
+            )
+        choices = envelope.get("choices")
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            detail = "opencode returned malformed JSON envelope: missing choices[0]"
+            stderr = f"{proc.stderr.rstrip()}\n{detail}".lstrip()
+            return 1, duration, "", stderr, command
+        choice = choices[0]
+        message = choice.get("message")
+        answer = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(answer, str) or not answer.strip():
+            finish_reason = choice.get("finish_reason")
+            detail = f"opencode returned empty content (finish_reason={finish_reason!r})"
+            stderr = f"{proc.stderr.rstrip()}\n{detail}".lstrip()
+            return 1, duration, "", stderr, command
+        # The MiniMax family streams its reasoning inside the content itself.
+        answer = re.sub(r"<think>.*?</think>", "", answer, flags=re.DOTALL | re.IGNORECASE)
+        answer = re.sub(r"^\s*<think>.*", "", answer, flags=re.DOTALL | re.IGNORECASE)
+        normalized = normalize_grok_output(answer)
+        parsed = normalize_findings(normalized, rater["spec"])
+        if is_diff_narration(parsed):
+            detail = (
+                f"opencode summarised the diff instead of reviewing it ({len(parsed)} "
+                "low-severity change descriptions): "
+                + " ".join((parsed[0].get("summary") or "").split())[:120]
+            )
+            stderr = f"{proc.stderr.rstrip()}\n{detail}".lstrip()
+            return 1, duration, "", stderr, command
+        # An agentic-tuned model with no tools tends to answer with a bare preamble
+        # and stop; without this, such a non-review is recorded as a clean review.
+        if not parsed and not re.search(
+            r'"findings"\s*:\s*\[\s*\]|\bno issues found\b', answer, re.IGNORECASE
+        ):
+            detail = (
+                "opencode returned no parseable findings and no explicit no-issues result: "
+                + " ".join(answer.split())[:200]
+            )
+            stderr = f"{proc.stderr.rstrip()}\n{detail}".lstrip()
+            return 1, duration, "", stderr, command
+        return 0, duration, normalized, proc.stderr, command
+    finally:
+        OPENCODE_GATE.release()
+        Path(prompt_file.name).unlink(missing_ok=True)
+
+
+# A cheap in-plan model reviewing a large diff mostly produces claims about code
+# that is not there: of 59 adjudicated OpenCode findings on 143fc2f only 8 were real.
+# Handing that to an expensive reviewer costs more than the cheap review saves, so
+# every finding is checked back against the file it cites by another cheap call.
+# Measured with kimi-k3 on the same corpus: 46 of 51 false positives dropped, 6 of 8
+# real findings kept, 59 rows to adjudicate down to 15. The check fails open — an
+# unusable verifier answer keeps the finding, because losing a real defect to
+# infrastructure is worse than one more row to read.
+VERIFY_MAX_TOKENS = 2000
+VERIFY_WINDOW_LINES = 120
+VERIFY_WHOLE_FILE_LINES = 600
+VERIFY_TIMEOUT_S = 300
+
+
+def repo_tree(repo, sha):
+    proc = subprocess.run(["git", "ls-tree", "-r", "--name-only", sha],
+                          cwd=repo, capture_output=True, text=True)
+    return proc.stdout.splitlines() if proc.returncode == 0 else []
+
+
+def canonical_finding_path(path, tree):
+    """Raters cite files as markdown links, absolute paths or sealed-clone paths.
+
+    Those spellings point at real files but do not match the repository, which
+    silently breaks both deduplication and any check that reads the cited file.
+    """
+    path = (path or "").strip().strip("`").strip()
+    match = re.fullmatch(r"\[([^\]]+)\]\([^)]*\)", path)
+    if match:
+        path = match.group(1).strip().strip("`").strip()
+    if not path or path in tree:
+        return path
+    suffix_hits = [name for name in tree if path.endswith("/" + name)]
+    if suffix_hits:
+        return max(suffix_hits, key=len)
+    tail = path.rsplit("/", 1)[-1]
+    basename_hits = [name for name in tree if name.rsplit("/", 1)[-1] == tail]
+    if len(basename_hits) == 1:
+        return basename_hits[0]
+    return path
+
+
+def file_at_commit(repo, sha, path):
+    if not path:
+        return None
+    proc = subprocess.run(["git", "show", f"{sha}:{path}"], cwd=repo,
+                          capture_output=True, text=True)
+    return proc.stdout.splitlines() if proc.returncode == 0 else None
+
+
+def verify_prompt(finding, sha, path, lines):
+    claim = (f"[{finding.get('severity')}] {path}:{finding.get('line')} — "
+             f"{finding.get('summary')}")
+    if lines is None:
+        shown = f"The file {path or '(unnamed)'} does not exist in commit {sha}."
+    else:
+        try:
+            line = int(finding.get("line") or 0)
+        except (TypeError, ValueError):
+            line = 0
+        if len(lines) <= VERIFY_WHOLE_FILE_LINES:
+            low, high = 1, len(lines)
+        else:
+            low = max(1, (line or 1) - VERIFY_WINDOW_LINES)
+            high = min(len(lines), (line or 1) + VERIFY_WINDOW_LINES)
+        body = "\n".join(f"{number}: {lines[number - 1]}" for number in range(low, high + 1))
+        shown = (f"File {path} in commit {sha}, lines {low}-{high} of {len(lines)}:\n\n{body}")
+    return (
+        "You are checking one claim from a code review. Below is the claim and the actual "
+        "content of the file it points at, as it is in the reviewed commit.\n\n"
+        f"Claim: {claim}\n\n{shown}\n\n"
+        "Decide from the shown code alone:\n"
+        "1. code_matches — does the code actually do what the claim describes? False if the "
+        "claim describes behaviour the code does not have, cites the wrong place, or is "
+        "contradicted by the code shown.\n"
+        "2. is_defect — if the code does behave that way, would a maintainer treat the "
+        "consequence as a bug worth fixing? False for style preferences, restatements of "
+        "what the change does, and cases the code deliberately handles.\n"
+        "If the shown lines are not enough to decide, set the field you cannot decide to "
+        "true only when the claim is plausible on the visible evidence.\n\n"
+        "Answer with exactly one JSON object and nothing else:\n"
+        '{"code_matches": true|false, "is_defect": true|false, "why": "<max 15 words>"}'
+    )
+
+
+def parse_verify_answer(text):
+    for line in (text or "").splitlines():
+        line = line.strip().strip("`").strip()
+        if not line.startswith("{") or "code_matches" not in line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row.get("code_matches"), bool) and isinstance(row.get("is_defect"), bool):
+            return row
+    return None
+
+
+def verify_one(index, finding, repo, sha, model, lines):
+    prompt_file = tempfile.NamedTemporaryFile(
+        mode="w", prefix="review-bench-verify-", suffix=".txt", delete=False
+    )
+    prompt_file.write(verify_prompt(finding, sha, finding.get("file"), lines))
+    prompt_file.close()
+    command = [
+        command_path("REVIEW_BENCH_OPENCODE_BIN", "opencode-go"),
+        "run", OPENCODE_MODEL_IDS[model], "--prompt-file", prompt_file.name,
+        "--json", "--max-tokens", str(VERIFY_MAX_TOKENS), "--no-reasoning", "--retries", "2",
+    ]
+    OPENCODE_GATE.acquire(0)
+    try:
+        proc = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
+                              text=True, timeout=VERIFY_TIMEOUT_S)
+        answer = ""
+        if proc.returncode == 0:
+            try:
+                envelope = json.loads(proc.stdout)
+                answer = envelope["choices"][0]["message"]["content"] or ""
+            except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError):
+                answer = ""
+        judgment = parse_verify_answer(answer)
+    except subprocess.TimeoutExpired:
+        judgment = None
+        proc = None
+    finally:
+        OPENCODE_GATE.release()
+        Path(prompt_file.name).unlink(missing_ok=True)
+    row = {
+        "idx": index, "file": finding.get("file"), "line": finding.get("line"),
+        "severity": finding.get("severity"), "summary": finding.get("summary"),
+    }
+    if judgment is None:
+        row.update(kept=True, code_matches=None, is_defect=None,
+                   why="verifier gave no usable answer; finding kept")
+        return row
+    row.update(
+        kept=bool(judgment["code_matches"] and judgment["is_defect"]),
+        code_matches=judgment["code_matches"], is_defect=judgment["is_defect"],
+        why=str(judgment.get("why") or "")[:200],
+    )
+    return row
+
+
+def verify_findings(findings, repo, sha, model, tree):
+    """Return (kept findings, audit rows) after checking each claim against its file."""
+    cache = {}
+    for finding in findings:
+        path = finding.get("file")
+        if path not in cache:
+            cache[path] = file_at_commit(repo, sha, path)
+    audit = []
+    workers = min(OPENCODE_MAX_CONCURRENCY, max(1, len(findings)))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [
+            pool.submit(verify_one, index, finding, repo, sha, model, cache[finding.get("file")])
+            for index, finding in enumerate(findings)
+        ]
+        for future in concurrent.futures.as_completed(futures):
+            audit.append(future.result())
+    audit.sort(key=lambda row: row["idx"])
+    kept = [findings[row["idx"]] for row in audit if row["kept"]]
+    return kept, audit
 
 
 def agy_failure_detail(stderr, log_text):
@@ -1080,13 +1730,16 @@ def run_agy(rater, repo, sha, focus, run_dir, diff):
             shutil.rmtree(clone, ignore_errors=True)
 
 
-def run_one(rater, repo, sha, focus, run_dir, accounts, diff):
+def run_one(rater, repo, sha, focus, run_dir, accounts, diff, repeat=1):
     if rater["side"] == "codex":
         result = run_codex(rater, repo, sha, focus, run_dir, accounts["codex"])
         return rater, accounts["codex"], result
     elif rater["side"] == "grok":
         result = run_grok(rater, repo, sha, focus, run_dir, diff)
         return rater, "supergrok", result
+    elif rater["side"] == "opencode":
+        result = run_opencode_sampled(rater, repo, sha, focus, run_dir, diff, repeat)
+        return rater, "opencode-go", result
     elif rater["side"] == "agy":
         result = run_agy(rater, repo, sha, focus, run_dir, diff)
         return rater, "agy", result
@@ -1096,12 +1749,14 @@ def run_one(rater, repo, sha, focus, run_dir, accounts, diff):
         return rater, account_used, result[:5]
 
 
-def run_rater_task(rater, repo, sha, focus, run_dir, codex_acct, diff):
+def run_rater_task(rater, repo, sha, focus, run_dir, codex_acct, diff, repeat=1):
     """Run a single rater as a task with its own account determination."""
     try:
-        if rater["side"] in ("grok", "agy"):
-            account = "supergrok" if rater["side"] == "grok" else "agy"
-            return run_one(rater, repo, sha, focus, run_dir, {rater["side"]: account}, diff)
+        if rater["side"] in ("grok", "opencode", "agy"):
+            accounts = {"grok": "supergrok", "opencode": "opencode-go", "agy": "agy"}
+            account = accounts[rater["side"]]
+            return run_one(rater, repo, sha, focus, run_dir, {rater["side"]: account},
+                           diff, repeat)
         available = affordability()
         if rater["side"] == "codex":
             if not available["codex"]:
@@ -1153,7 +1808,7 @@ def redact_command(rater, command):
         return ""
     if rater["side"] == "codex":
         return shlex.join(command)
-    if rater["side"] == "grok":
+    if rater["side"] in ("grok", "opencode"):
         redacted = list(command)
         prompt_index = redacted.index("--prompt-file") + 1
         redacted[prompt_index] = "<review-prompt-file>"
@@ -1172,9 +1827,15 @@ def cmd_run(args):
         raise ValueError(f"not a git repository: {repo}")
     sha = resolve_commit(repo, args.commitish)
     reviews_path = state_dir() / "reviews.jsonl"
-    if args.raters:
-        requested = parse_raters(args.raters)
-        available = {"grok": True, "agy": True, "codex": False, "claude": False}
+    verify_model = args.verify
+    if args.leg:
+        verify_model = verify_model or OPENCODE_VERIFIER
+    if args.raters or args.leg:
+        requested = parse_raters(args.raters or ",".join(OPENCODE_REVIEW_LEG))
+        available = {
+            "grok": True, "opencode": True, "agy": True,
+            "codex": False, "claude": False,
+        }
         if any(rater["side"] in ("codex", "claude") for rater in requested):
             available.update(affordability())
             available["agy"] = True
@@ -1195,6 +1856,8 @@ def cmd_run(args):
             reason = f"account {available['claude_account']}, cap {available['claude_cap']:g}%"
         elif rater["side"] == "grok":
             reason = "single SuperGrok account"
+        elif rater["side"] == "opencode":
+            reason = "OpenCode Go subscription"
         elif rater["side"] == "agy":
             reason = "single Antigravity account"
         else:
@@ -1226,12 +1889,16 @@ def cmd_run(args):
     run_dir.mkdir(parents=True)
     os.chmod(run_dir, 0o700)
     diff = commit_diff(repo, sha) if any(
-        rater["side"] in ("claude", "grok", "agy") for rater in raters) else ""
+        rater["side"] in ("claude", "grok", "opencode", "agy") for rater in raters) else ""
 
     results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(raters)) as pool:
-        futures = {pool.submit(run_rater_task, rater, repo, sha, args.focus or "", run_dir, codex_acct, diff): rater
-                   for rater in raters}
+        # The OpenCode gate prefers the longest job, but only among the cells already
+        # queued on it, so the first cells to reach it would otherwise be decided by
+        # thread scheduling. Submitting slowest-first makes the whole order its own.
+        futures = {pool.submit(run_rater_task, rater, repo, sha, args.focus or "", run_dir,
+                               codex_acct, diff, args.repeat): rater
+                   for rater in sorted(raters, key=gate_admission_key)}
         for future in concurrent.futures.as_completed(futures):
             rater = futures[future]
             try:
@@ -1255,14 +1922,25 @@ def cmd_run(args):
     rater_meta = []
     errored_raters = set()
     failed = False
+    tree = repo_tree(repo, sha)
     for requested in raters:
         rater, account, result = result_by_spec[requested["spec"]]
         rc, duration, text, stderr, command = result
         findings = normalize_findings(text, rater["spec"])
+        findings = [
+            dict(row, file=canonical_finding_path(row.get("file"), tree)) for row in findings
+        ]
+        is_error = rc != 0 or (rc == 0 and text and is_429_error(text))
+        dropped = 0
+        if verify_model and findings and not is_error:
+            kept, audit = verify_findings(findings, repo, sha, verify_model, tree)
+            write_jsonl(run_dir / f"verified-{rater['spec']}.jsonl", audit)
+            dropped = len(findings) - len(kept)
+            findings = kept
+            print(f"{rater['spec']}: verifier kept {len(kept)} of {len(audit)} finding(s)")
         path = run_dir / f"findings-{rater['spec']}.jsonl"
         write_jsonl(path, findings)
 
-        is_error = rc != 0 or (rc == 0 and text and is_429_error(text))
         if is_error:
             errored_raters.add(rater["spec"])
             rater_meta.append({
@@ -1281,6 +1959,7 @@ def cmd_run(args):
                 "side": rater["side"], "account": account, "duration_ms": duration,
                 "findings": len(findings), "exit_code": rc, "stderr": stderr[-2000:] if stderr else "",
                 "command": redact_command(rater, command),
+                "verifier_dropped": dropped,
             })
             print(f"{rater['spec']}: {len(findings)} finding(s), {duration} ms, exit {rc}")
 
@@ -1290,6 +1969,7 @@ def cmd_run(args):
         "rater_runs": rater_meta,
         "durations": {row["rater"]: row["duration_ms"] for row in rater_meta},
         "started": started.isoformat(), "finished": iso_now(), "focus": args.focus or "",
+        "verifier": verify_model or "",
     }
     (run_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
     print(f"run id: {run_id}")
@@ -1412,6 +2092,88 @@ def cmd_record(args):
     return 0
 
 
+def opencode_health():
+    """Per-model success rate and latency from every recorded bench run.
+
+    The point is that the tool's knowledge of a flaky gateway stays measured: a model
+    that starts failing shows up here without anyone editing a table.
+    """
+    health = {}
+    benches = state_dir() / "benches"
+    if not benches.exists():
+        return health
+    for path in sorted(benches.iterdir()):
+        meta_path = path / "meta.json"
+        if not meta_path.exists():
+            continue
+        try:
+            meta = json.loads(meta_path.read_text())
+        except json.JSONDecodeError:
+            continue
+        for row in meta.get("rater_runs", []):
+            if row.get("side") != "opencode":
+                continue
+            # Keyed by cell, not model: the whole point is that the configuration
+            # decides whether a model works, so folding grok45 and grok45-low
+            # together would hide exactly the effect worth watching.
+            entry = health.setdefault(row.get("rater"), {
+                "runs": 0, "errors": 0, "seconds": [], "findings": [], "last_error": "",
+            })
+            entry["runs"] += 1
+            if row.get("errored"):
+                entry["errors"] += 1
+                detail = " ".join((row.get("stderr") or "").split())
+                entry["last_error"] = f"{meta.get('run_id', '?')}: {detail[-90:]}"
+            else:
+                if row.get("duration_ms"):
+                    entry["seconds"].append(round(row["duration_ms"] / 1000))
+                entry["findings"].append(row.get("findings") or 0)
+    return health
+
+
+def median(values):
+    if not values:
+        return None
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[middle]
+    return round((ordered[middle - 1] + ordered[middle]) / 2)
+
+
+def cmd_oc_models(args):
+    health = opencode_health()
+    print(f"recommended leg: {' '.join(OPENCODE_REVIEW_LEG)} --verify {OPENCODE_VERIFIER}")
+    print("  proven on 143fc2f, fabcae4, 8448a35 and 8553616; one pass is a dice roll, so"
+          " three passes union ~1.7x the true findings of one")
+    print("  run the leg BARE: on 143fc2f the bare cells found 8 distinct real defects against"
+          " 6 with the google profile and 1 with anthropic, which also broke grok in 2 of 3 passes")
+    print("\nmeasured capability (probe 2026-07-25, n=2 per mode; see docs/DIAGNOSTICS.md)")
+    print(f"{'cell':16} {'model':18} {'reasoning-off':>13} {'effort scales':>13} "
+          f"{'review s':>9}  note")
+    for model, facts in sorted(OPENCODE_MODEL_FACTS.items()):
+        seconds = facts.get("off_s") or facts.get("low_s")
+        print(f"{model:16} {OPENCODE_MODEL_IDS[model]:18} "
+              f"{('works' if facts['off'] else 'IGNORED'):>13} "
+              f"{('yes' if facts['scales'] else 'no'):>13} "
+              f"{(str(seconds) if seconds else '?'):>9}  {facts['note']}")
+    print("\nplan models screened once and not adopted as cells (no true finding each)")
+    for model, note in sorted(OPENCODE_SCREENED_MODELS.items()):
+        print(f"{'':16} {model:18} {note}")
+    print("\nrecorded health (every bench run in this state dir)")
+    if not health:
+        print("  no recorded OpenCode runs yet")
+        return 0
+    print(f"{'cell':22} {'runs':>4} {'failed':>6} {'median s':>8} {'median findings':>15}  "
+          f"last failure")
+    for model, entry in sorted(health.items(), key=lambda kv: -kv[1]["errors"]):
+        print(f"{model:22} {entry['runs']:>4} {entry['errors']:>6} "
+              f"{str(median(entry['seconds']) or '-'):>8} "
+              f"{str(median(entry['findings']) if entry['findings'] else '-'):>15}  "
+              f"{entry['last_error'][:70]}")
+    return 0
+
+
 def cmd_list(args):
     benches = state_dir() / "benches"
     reviews = read_jsonl(state_dir() / "reviews.jsonl")
@@ -1450,12 +2212,31 @@ def main():
     selection = run.add_mutually_exclusive_group()
     selection.add_argument("--raters", help="Comma-separated rater specs")
     selection.add_argument("--auto", type=int, metavar="N", help="Pick N least-reviewed cells")
+    selection.add_argument(
+        "--leg", action="store_true",
+        help="Run the measured OpenCode composition with its verifier — the only cells that "
+             "survived strict adjudication on four commits, and no vendor quota at all",
+    )
     run.add_argument("--focus", default="")
+    run.add_argument(
+        "--repeat", type=int, default=1, metavar="N",
+        help="Sample each OpenCode cell N times and union the findings, because identical "
+             "calls to one model differ by an order of magnitude on the same diff",
+    )
+    run.add_argument(
+        "--verify", metavar="MODEL", choices=sorted(OPENCODE_MODEL_IDS),
+        help="Check every finding back against the file it cites with this in-plan "
+             "OpenCode model, and keep only the claims that survive",
+    )
     run.set_defaults(func=cmd_run)
     record = subparsers.add_parser("record", help="Record blind adjudication verdicts")
     record.add_argument("run_id")
     record.add_argument("--verdicts", required=True)
     record.set_defaults(func=cmd_record)
+    oc_models = subparsers.add_parser(
+        "oc-models", help="Measured OpenCode capability table and recorded per-cell health"
+    )
+    oc_models.set_defaults(func=cmd_oc_models)
     listing = subparsers.add_parser("list", help="List recent benchmark runs")
     listing.add_argument("--limit", type=int, default=20)
     listing.set_defaults(func=cmd_list)

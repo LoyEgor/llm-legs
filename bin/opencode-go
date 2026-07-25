@@ -1,0 +1,349 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# Go-plan only by design: the base URL is fixed and run() rejects models outside
+# the plan's /models list, so pay-as-you-go Zen models can never be billed.
+BASE_URL=https://opencode.ai/zen/go/v1
+KEY_SERVICE="opencode-go${OPENCODE_GO_PROFILE:+-$OPENCODE_GO_PROFILE}"
+response=
+authcfg=
+trap 'rm -f ${response:+"$response"} ${authcfg:+"$authcfg"}' EXIT
+# The key must never reach curl's argv: ps exposes it to every local process.
+auth_config() {
+  authcfg=$(mktemp)
+  chmod 600 "$authcfg"
+  printf 'header = "Authorization: Bearer %s"\n' "$1" >"$authcfg"
+  printf 'header = "content-type: application/json"\n' >>"$authcfg"
+}
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  opencode-go key
+  opencode-go models [--json]
+  opencode-go run <model> (<prompt...> | --prompt-file <path>) [--system <text>] [--max-tokens N] [--effort low|medium|high | --no-reasoning] [--prefill <text>] [--retries N] [--stream] [--json]
+  opencode-go raw <path> [json-body]
+OPENCODE_GO_PROFILE=<name> selects the account: key/models/run then use the
+keychain service opencode-go-<name> (unset = the default opencode-go account).
+Only models included in the OpenCode Go subscription are allowed.
+Requests are buffered by default and retried on 5xx, because an upstream that
+drops a slow buffered reply usually answers on the next attempt. --stream
+survives generations longer than that deadline, but some models then emit
+reasoning only and never start the answer; --json assembles either mode into
+one completion envelope.
+--effort asks for reasoning and --no-reasoning suppresses it, so they cannot be
+combined: one would silently overwrite the other.
+EOF
+  exit 64
+}
+go_key() {
+  local key=
+  if [[ -n ${OPENCODE_GO_KEY:-} ]]; then
+    printf '%s' "$OPENCODE_GO_KEY"
+    return
+  fi
+  if command -v security >/dev/null 2>&1; then
+    key=$(security find-generic-password -s "$KEY_SERVICE" -w 2>/dev/null || true)
+    if [[ -n $key ]]; then
+      printf '%s' "$key"
+      return
+    fi
+  fi
+  if [[ -f ${HOME}/.config/opencode-go/key${OPENCODE_GO_PROFILE:+-$OPENCODE_GO_PROFILE} ]]; then
+    key=$(<"${HOME}/.config/opencode-go/key${OPENCODE_GO_PROFILE:+-$OPENCODE_GO_PROFILE}")
+    key="${key#"${key%%[![:space:]]*}"}"
+    key="${key%"${key##*[![:space:]]}"}"
+    if [[ -n $key ]]; then
+      printf '%s' "$key"
+      return
+    fi
+  fi
+  return 1
+}
+require_key() {
+  local key
+  if ! key=$(go_key); then
+    printf 'No OpenCode Go API key; run opencode-go key\n' >&2
+    exit 2
+  fi
+  printf '%s' "$key"
+}
+store_key() {
+  local key= stored=
+  if [[ -t 0 ]]; then
+    printf 'OpenCode Go API key: ' >&2
+    IFS= read -rs key || true
+    printf '\n' >&2
+  else
+    IFS= read -r key || [[ -n $key ]]
+  fi
+  if [[ -z $key ]]; then
+    printf 'API key must not be empty\n' >&2
+    exit 1
+  fi
+  if ! command -v security >/dev/null 2>&1; then
+    printf 'security command not found\n' >&2
+    exit 1
+  fi
+  security add-generic-password -U -a "$USER" -s "$KEY_SERVICE" -w "$key" >/dev/null
+  stored=$(security find-generic-password -s "$KEY_SERVICE" -w)
+  if [[ $stored != "$key" ]]; then
+    printf 'Keychain verification failed\n' >&2
+    exit 1
+  fi
+  printf 'stored (keychain: %s)\n' "$KEY_SERVICE"
+}
+models() {
+  local json=false
+  [[ $# -le 1 ]] || usage
+  if [[ ${1:-} == --json ]]; then
+    json=true
+  elif [[ $# -ne 0 ]]; then
+    usage
+  fi
+  if $json; then
+    curl -sS -m 120 "$BASE_URL/models"
+  else
+    curl -sS -m 120 "$BASE_URL/models" | jq -r '.data[].id' | sort
+  fi
+}
+sse_to_envelope() {
+  jq -Rs '
+    [ splits("\n")
+      | select(startswith("data:"))
+      | sub("^data:[ ]*"; "")
+      | select(. != "[DONE]")
+      | (try fromjson catch empty) ]
+    | reduce .[] as $chunk (
+        {id: null, model: null, content: "", reasoning: "", finish_reason: null,
+         usage: null, error: null, tool_calls: []};
+        .id = (.id // $chunk.id)
+        | .model = (.model // $chunk.model)
+        | .content += ((($chunk.choices // [])[0].delta.content) // "")
+        | .reasoning += ((($chunk.choices // [])[0].delta.reasoning_content) // "")
+        | .finish_reason = ((($chunk.choices // [])[0].finish_reason) // .finish_reason)
+        | .usage = ($chunk.usage // .usage)
+        | .error = (.error // $chunk.error)
+        | .tool_calls += ((($chunk.choices // [])[0].delta.tool_calls) // [])
+      )
+    | {id, object: "chat.completion", model, error,
+       choices: [{index: 0, finish_reason,
+                  message: {role: "assistant", content, reasoning_content: .reasoning,
+                            tool_calls: (if (.tool_calls | length) > 0 then .tool_calls else null end)}}],
+       usage}
+  ' "$1"
+}
+no_reasoning_body() {
+  local body=$1 strategy=$2
+  case $strategy in
+    effort-none) jq -c '. + {reasoning_effort:"none"}' <<<"$body" ;;
+    enable-thinking) jq -c '. + {chat_template_kwargs:{enable_thinking:false}}' <<<"$body" ;;
+    # An explicit --prefill already occupies the assistant turn; leave it alone.
+    close-think) jq -c 'if (.messages[-1].role == "assistant") then . else
+                          .messages += [{role:"assistant",content:"</think>"}] end' <<<"$body" ;;
+    plain) printf '%s' "$body" ;;
+    *) printf 'unknown reasoning-off strategy %s\n' "$strategy" >&2; exit 1 ;;
+  esac
+}
+require_go_model() {
+  local model=$1 cache=${TMPDIR:-/tmp}/opencode-go-models.$(id -u).txt tmp
+  # The plan's model list changes on a vendor's schedule, not between calls, and a
+  # batch of raters would otherwise re-fetch it once per request.
+  if [[ ! -s $cache ]] || (( $(date +%s) - $(stat -f %m "$cache" 2>/dev/null || echo 0) > 600 )); then
+    tmp=$(mktemp "${cache}.XXXXXX")
+    if curl -sS -m 120 "$BASE_URL/models" | jq -r '.data[].id' >"$tmp" && [[ -s $tmp ]]; then
+      mv -f "$tmp" "$cache"
+    else
+      rm -f "$tmp"
+      [[ -s $cache ]] || { printf 'Cannot read the OpenCode Go model list\n' >&2; exit 1; }
+    fi
+  fi
+  if ! grep -qxF "$model" "$cache"; then
+    printf 'Model %s is not in the OpenCode Go plan (see: opencode-go models)\n' "$model" >&2
+    exit 2
+  fi
+}
+run_model() {
+  [[ $# -ge 2 ]] || usage
+  local model=$1 key system= prompt= prompt_file= max_tokens=1024 effort= json=false status body
+  local retries=3 attempt=1 delay stream=false envelope no_reasoning=false prefill=
+  local max_wait=${OPENCODE_GO_MAX_WAIT_S:-900} stall_seconds=${OPENCODE_GO_STALL_S:-120}
+  local slow_switch=${OPENCODE_GO_SLOW_SWITCH_S:-120}
+  # How to silence reasoning differs per model and an unsupported knob is a hard
+  # 400, so the strategies are negotiated in order rather than guessed. The last
+  # one needs no API support: a chat template that has already opened a thinking
+  # block accepts a closing tag as the assistant turn's prefix and answers next.
+  local -a strategies=(effort-none enable-thinking close-think plain)
+  local -a prompt_parts=()
+  shift
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --prompt-file)
+        [[ $# -ge 2 ]] || usage; prompt_file=$2; shift 2 ;;
+      --system)
+        [[ $# -ge 2 ]] || usage; system=$2; shift 2 ;;
+      --max-tokens)
+        [[ $# -ge 2 && $2 =~ ^[1-9][0-9]*$ ]] || usage
+        max_tokens=$2; shift 2 ;;
+      --effort)
+        [[ $# -ge 2 && $2 =~ ^(low|medium|high)$ ]] || usage
+        effort=$2; shift 2 ;;
+      --retries)
+        [[ $# -ge 2 && $2 =~ ^[1-9][0-9]*$ ]] || usage
+        retries=$2; shift 2 ;;
+      --no-reasoning)
+        no_reasoning=true; shift ;;
+      --prefill)
+        [[ $# -ge 2 ]] || usage; prefill=$2; shift 2 ;;
+      --stream)
+        stream=true; shift ;;
+      --no-stream)
+        stream=false; shift ;;
+      --json)
+        json=true; shift ;;
+      --*)
+        usage ;;
+      *)
+        prompt_parts+=("$1"); shift ;;
+    esac
+  done
+  if $no_reasoning && [[ -n $effort ]]; then
+    printf -- '--effort and --no-reasoning contradict each other\n' >&2
+    usage
+  fi
+  if [[ -n $prompt_file ]]; then
+    [[ ${#prompt_parts[@]} -eq 0 && -r $prompt_file ]] || usage
+  else
+    [[ ${#prompt_parts[@]} -gt 0 ]] || usage
+    prompt="${prompt_parts[*]}"
+  fi
+  key=$(require_key)
+  require_go_model "$model"
+  local build='{model:$model,max_tokens:$max,
+    messages:((if $system == "" then [] else [{role:"system",content:$system}] end)
+              + [{role:"user",content:.}]
+              + (if $prefill == "" then [] else [{role:"assistant",content:$prefill}] end))}
+   + (if $effort == "" then {} else {reasoning_effort:$effort} end)'
+  if [[ -n $prompt_file ]]; then
+    body=$(jq -Rs --arg model "$model" --arg system "$system" --arg prefill "$prefill" \
+      --arg effort "$effort" --argjson max "$max_tokens" "$build" "$prompt_file")
+  else
+    body=$(printf '%s' "$prompt" | jq -Rs --arg model "$model" --arg system "$system" \
+      --arg prefill "$prefill" --arg effort "$effort" --argjson max "$max_tokens" "$build")
+  fi
+  if $stream; then
+    body=$(jq -c '. + {stream: true}' <<<"$body")
+  fi
+  response=$(mktemp)
+  auth_config "$key"
+  # A stream reports progress, so its stall detector IS its deadline; adding a
+  # wall-clock cap on top only kills a legitimately long generation (measured:
+  # deepseek-v4-pro needs ~1000s of streaming). A buffered reply sends nothing
+  # until the end, so it has no progress signal and needs the cap.
+  local -a stream_transfer=(-N --speed-limit 1 --speed-time "$stall_seconds")
+  local -a buffered_transfer=(-m "$max_wait")
+  local -a transfer=()
+  if $stream; then
+    transfer=("${stream_transfer[@]}")
+  else
+    transfer=("${buffered_transfer[@]}")
+  fi
+  local -a pending=()
+  local base_body=$body
+  if $no_reasoning; then
+    pending=("${strategies[@]}")
+    body=$(no_reasoning_body "$base_body" "${pending[0]}")
+  fi
+  local elapsed started_at
+  while :; do
+    started_at=$SECONDS
+    status=$(curl -sS "${transfer[@]}" -o "$response" -w '%{http_code}' \
+      --config "$authcfg" --data-binary @- "$BASE_URL/chat/completions" <<<"$body")
+    elapsed=$((SECONDS - started_at))
+    # A model that rejects one reasoning-off strategy may accept the next; only a
+    # 400 shaped like an invalid-parameter complaint is worth re-trying this way.
+    if [[ $status == 400 && ${#pending[@]} -gt 1 ]] \
+      && grep -q 'invalid_request' "$response"; then
+      pending=("${pending[@]:1}")
+      body=$(no_reasoning_body "$base_body" "${pending[0]}")
+      printf 'reasoning-off strategy rejected, falling back to %s\n' "${pending[0]}" >&2
+      continue
+    fi
+    # A model handed a closing think tag may treat the assistant turn as finished
+    # and answer nothing at all, so an empty 200 retires that strategy too.
+    if [[ $status == 2?? && ${#pending[@]} -gt 1 ]] && ! $stream \
+      && jq -e '((.choices[0].message.content // "") | length) == 0' "$response" >/dev/null 2>&1; then
+      pending=("${pending[@]:1}")
+      body=$(no_reasoning_body "$base_body" "${pending[0]}")
+      printf 'reasoning-off strategy answered nothing, falling back to %s\n' "${pending[0]}" >&2
+      continue
+    fi
+    # A buffered reply that 5xx's only after minutes was not an outage: the
+    # generation outlived the upstream response deadline, and repeating it
+    # buffered just pays the same wait again. Streaming has no such deadline.
+    if [[ $status == 5?? ]] && ! $stream && (( elapsed >= slow_switch )); then
+      stream=true
+      transfer=(-m "$max_wait" -N --speed-limit 1 --speed-time "$stall_seconds")
+      base_body=$(jq -c '. + {stream: true}' <<<"$base_body")
+      body=$(jq -c '. + {stream: true}' <<<"$body")
+      printf 'HTTP %s after %ds; the generation outlives the buffered deadline, streaming instead\n' \
+        "$status" "$elapsed" >&2
+    fi
+    # Gateway 5xx (failover_exhausted, inference_recovery_timeout) means the
+    # upstream inference pool was unavailable; the identical request usually
+    # succeeds on a later attempt. A 429 is a real Go usage wall and must
+    # surface immediately instead of being retried into a longer outage.
+    [[ $status == 5?? && $attempt -lt $retries ]] || break
+    delay=$((attempt * 15))
+    printf 'HTTP %s from provider (attempt %d/%d), retrying in %ds\n' \
+      "$status" "$attempt" "$retries" "$delay" >&2
+    attempt=$((attempt + 1))
+    sleep "$delay"
+  done
+  if [[ $status != 2?? ]]; then
+    printf 'HTTP %s\n' "$status" >&2
+    cat "$response" >&2
+    printf '\n' >&2
+    exit 1
+  fi
+  if $stream; then
+    if ! grep -q '^data:' "$response"; then
+      printf 'stream response carried no SSE data chunks\n' >&2
+      cat "$response" >&2
+      exit 1
+    fi
+    envelope=$(sse_to_envelope "$response")
+    if [[ $(jq -r '.error // "null"' <<<"$envelope") != null ]]; then
+      printf 'provider error inside stream: %s\n' "$(jq -c '.error' <<<"$envelope")" >&2
+      exit 1
+    fi
+    printf '%s' "$envelope" >"$response"
+  fi
+  if $json; then
+    cat "$response"
+  else
+    jq -r '.choices[0].message.content' "$response"
+  fi
+}
+raw_request() {
+  [[ $# -ge 1 && $# -le 2 ]] || usage
+  local path=${1#/} body=${2-} key status
+  key=$(require_key)
+  response=$(mktemp)
+  if [[ $# -eq 2 ]]; then
+    status=$(curl -sS -m 600 -o "$response" -w '%{http_code}' \
+      -H "Authorization: Bearer $key" -H 'content-type: application/json' \
+      -d "$body" "$BASE_URL/$path")
+  else
+    status=$(curl -sS -m 120 -o "$response" -w '%{http_code}' \
+      -H "Authorization: Bearer $key" "$BASE_URL/$path")
+  fi
+  printf 'HTTP %s\n' "$status" >&2
+  cat "$response"
+  [[ $status == 2?? ]]
+}
+case ${1:-} in
+  key) shift; [[ $# -eq 0 ]] || usage; store_key ;;
+  models) shift; models "$@" ;;
+  run) shift; run_model "$@" ;;
+  raw) shift; raw_request "$@" ;;
+  *) usage ;;
+esac
