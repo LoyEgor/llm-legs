@@ -45,12 +45,23 @@ assert rb.parse_rater("opus-medium-skill") == {
 }
 assert rb.parse_rater("sonnet-high-skill")["skill"] is True
 assert rb.parse_rater("haiku-medium-skill")["side"] == "claude"
-assert rb.parse_rater("agy-pro-low") == {
-    "spec": "agy-pro-low", "model": "agy-pro", "effort": "low",
-    "side": "agy", "skill": False, "profile": None
+assert rb.parse_rater("agy-pro-low-skill") == {
+    "spec": "agy-pro-low-skill", "model": "agy-pro", "effort": "low",
+    "side": "agy", "skill": True, "profile": None
 }
 assert rb.parse_rater("agy-pro-high-skill")["skill"] is True
-assert rb.parse_rater("agy-flash36-medium")["side"] == "agy"
+assert rb.parse_rater("agy-flash36-medium-skill")["side"] == "agy"
+# Every resolved rater set passes this gate, so no --raters spelling and no --auto pick can run
+# a skill-less agy cell; parsing one still works, or a stored bench run could never be recorded.
+for bare in ("agy-pro-low", "agy-flash36-medium", "agy-flash35-high"):
+    assert rb.parse_rater(bare)["skill"] is False
+    try:
+        rb.refuse_retired_cells([rb.parse_rater(bare)])
+    except RuntimeError as exc:
+        assert f"{bare}-skill" in str(exc), exc
+    else:
+        raise AssertionError(f"accepted a skill-less agy rater: {bare}")
+rb.refuse_retired_cells([rb.parse_rater(spec) for spec in rb.AUTO_RATERS])
 assert rb.parse_rater("oc-glm52") == {
     "spec": "oc-glm52", "model": "oc-glm52", "effort": None,
     "side": "opencode", "skill": False, "profile": None
@@ -173,16 +184,15 @@ for broken, reason in (("anthropic", "is empty"), ("missing", "unreadable")):
         raise AssertionError(f"review profile {broken} did not fail closed")
 del os.environ["REVIEW_BENCH_PROFILE_DIR"]
 for effort in ("low", "medium", "high"):
-    for suffix, skill in (("", False), ("-skill", True)):
-        rater = rb.parse_rater(f"agy-flash35-{effort}{suffix}")
-        assert rater == {
-            "spec": f"agy-flash35-{effort}{suffix}",
-            "model": "agy-flash35",
-            "effort": effort,
-            "side": "agy",
-            "skill": skill,
-            "profile": None,
-        }
+    rater = rb.parse_rater(f"agy-flash35-{effort}-skill")
+    assert rater == {
+        "spec": f"agy-flash35-{effort}-skill",
+        "model": "agy-flash35",
+        "effort": effort,
+        "side": "agy",
+        "skill": True,
+        "profile": None,
+    }
 for invalid in ("gpt-medium", "sol", "opus-ultra", "sol-mega", "",
                 "sol-medium-skill", "opus-skill", "opus-medium-turbo",
                 "oc-glm52-xhigh", "oc-glm52-high-skill"):
@@ -193,9 +203,9 @@ for invalid in ("gpt-medium", "sol", "opus-ultra", "sol-mega", "",
     else:
         raise AssertionError(f"accepted invalid rater: {invalid}")
 for invalid, message in (
-    ("agy-pro-medium", "agy-pro supports only low or high effort"),
-    ("agy-flash36-xhigh", "agy-flash36 supports only low, medium, or high effort"),
-    ("agy-flash35-xhigh", "agy-flash35 supports only low, medium, or high effort"),
+    ("agy-pro-medium-skill", "agy-pro supports only low or high effort"),
+    ("agy-flash36-xhigh-skill", "agy-flash36 supports only low, medium, or high effort"),
+    ("agy-flash35-xhigh-skill", "agy-flash35 supports only low, medium, or high effort"),
 ):
     try:
         rb.parse_rater(invalid)
@@ -263,12 +273,12 @@ assert any(spec.startswith("agy-") for spec, _ in skipped)
 agy_gap_reviews = [
     {"rater": spec}
     for spec in rb.AUTO_RATERS
-    if spec != "agy-flash36-low"
+    if spec != "agy-flash36-low-skill"
 ]
 picked, _, _ = rb.auto_pick(
     1, agy_gap_reviews, {"codex": True, "claude": True, "agy": True}
 )
-assert picked[0]["spec"] == "agy-flash36-low"
+assert picked[0]["spec"] == "agy-flash36-low-skill"
 
 codex_stream = "\n".join([
     json.dumps({"type": "thread.started", "thread_id": "t"}),
@@ -286,69 +296,6 @@ claude = rb.normalize_findings(claude_envelope, "opus-medium")
 assert claude == [{"severity": "P3", "file": "lib/task.py", "line": 17,
                    "summary": "Handle cancellation", "rater": "opus-medium"}]
 
-agy_bare = rb.normalize_agy_output(
-    (fixtures / "agy-bare-preamble.txt").read_text(), "agy-flash36-low"
-)
-assert "I reviewed" not in agy_bare
-assert [(row["severity"], row["file"], row["line"]) for row in
-        rb.normalize_findings(agy_bare, "agy-flash36-low")] == [
-    ("P1", "src/auth.py", 41),
-    ("P3", "src/cache.py", 18),
-]
-valid_finding = {
-    "severity": "P2", "file": "src/auth.py", "line": 12,
-    "summary": "Preserve the complete review",
-}
-invalid_finding = {
-    "severity": "P2", "file": "src/auth.py",
-    "summary": "This object is missing its line number",
-}
-for malformed in (
-    json.dumps({"findings": [valid_finding, invalid_finding]}),
-    "\n".join((json.dumps(valid_finding), json.dumps(invalid_finding))),
-):
-    try:
-        rb.normalize_agy_output(malformed, "agy-flash36-low")
-    except ValueError as exc:
-        assert "invalid finding object" in str(exc)
-    else:
-        raise AssertionError("accepted a partial agy review")
-line_zero = rb.normalize_agy_output(
-    json.dumps({
-        "severity": "P3", "file": "src/generated.py", "line": 0,
-        "line_number": 99, "summary": "Keep the zero line sentinel",
-    }),
-    "agy-flash36-low",
-)
-assert rb.normalize_findings(line_zero, "agy-flash36-low")[0]["line"] == 0
-finding_with_error = rb.normalize_agy_output(
-    json.dumps({
-        "severity": "P2", "file": "src/parser.py", "line": 8,
-        "summary": "Retain the finding", "error": "describes the error path",
-    }),
-    "agy-flash36-low",
-)
-assert rb.normalize_findings(finding_with_error, "agy-flash36-low")[0]["summary"] == \
-    "Retain the finding"
-for malformed in ("", (fixtures / "agy-bare-malformed.txt").read_text()):
-    try:
-        rb.normalize_agy_output(malformed, "agy-flash36-low")
-    except ValueError as exc:
-        assert "malformed JSON envelope" in str(exc)
-    else:
-        raise AssertionError("accepted malformed agy output")
-agy_clean = rb.normalize_agy_output(
-    (fixtures / "agy-bare-clean.json").read_text(), "agy-flash36-low"
-)
-assert rb.normalize_findings(agy_clean, "agy-flash36-low") == []
-try:
-    rb.normalize_agy_output(
-        (fixtures / "agy-bare-error.json").read_text(), "agy-flash36-low"
-    )
-except ValueError as exc:
-    assert "agy returned an error envelope" in str(exc)
-else:
-    raise AssertionError("accepted agy error envelope")
 
 agy_skill = rb.normalize_agy_skill_output(
     (fixtures / "agy-skill-output.md").read_text(), "agy-flash36-low-skill"
@@ -406,33 +353,31 @@ os.environ.update({
     "AGY_CAPTURE_ORIGIN_HEAD": str(work / "agy-origin-head"),
 })
 
-bare_run = work / "agy-bare-run"
-bare_run.mkdir()
-os.environ["AGY_FIXTURE_STDOUT"] = str(fixtures / "agy-bare-preamble.txt")
-bare_rater = rb.parse_rater("agy-flash36-low")
+transport_run = work / "agy-transport-run"
+transport_run.mkdir()
+os.environ["AGY_FIXTURE_STDOUT"] = str(fixtures / "agy-skill-output.md")
+transport_rater = rb.parse_rater("agy-flash36-low-skill")
 rc, duration, text, stderr, command = rb.run_agy(
-    bare_rater, repo, sha, "", bare_run, "fixture commit diff", "work"
+    transport_rater, repo, sha, "", transport_run, "ignored fixture diff", "work"
 )
 assert rc == 0 and duration >= 0 and not stderr
-assert len(rb.normalize_findings(text, bare_rater["spec"])) == 2
+assert len(rb.normalize_findings(text, transport_rater["spec"])) == 2
 assert (work / "agy-head").read_text().strip() == sha
 assert pathlib.Path((work / "agy-cwd").read_text().strip()) != repo
-bare_prompt = (work / "agy-prompt").read_text()
-assert "fixture commit diff" in bare_prompt
-assert "without using tools or commands" in bare_prompt
-assert command[:12] == [
+assert (work / "agy-prompt").read_text() == "/code-review"
+assert command[:13] == [
     str(fixtures / "fake-geminib.sh"), "profile", "work",
     "--model", "gemini-3.6-flash",
     "--effort", "low",
     "--mode", "plan",
-    "--sandbox",
+    "--new-project", "--dangerously-skip-permissions",
     "--print-timeout", "10m",
 ]
 assert (work / "geminib-profile").read_text() == "work"
-assert command[12] == "--log-file"
-assert pathlib.Path(command[13]) == bare_run / "agy-agy-flash36-low.log"
-assert command[14:] == ["--print", "<review-prompt>"]
-usage = json.loads((bare_run / "usage-agy-flash36-low.jsonl").read_text())
+assert command[13] == "--log-file"
+assert pathlib.Path(command[14]) == transport_run / "agy-agy-flash36-low-skill.log"
+assert command[15:] == ["--print", "/code-review"]
+usage = json.loads((transport_run / "usage-agy-flash36-low-skill.jsonl").read_text())
 assert usage["model"] == "gemini-3.6-flash"
 assert usage["duration_ms"] == duration
 assert usage["prompt_tokens"] == 120
@@ -441,36 +386,15 @@ assert usage["total_tokens"] == 150
 assert usage["stream_generate_requests"] == 1
 assert usage["stream_completions"] == 1
 
-sized_run = work / "agy-sized-run"
-sized_run.mkdir()
-fitting_diff = "fixture sized diff\n" + ("x" * (rb.AGY_ARGV_BUDGET // 2))
-rc, _, text, stderr, fitting_command = rb.run_agy(
-    bare_rater, repo, sha, "", sized_run, fitting_diff, "work"
-)
-assert rc == 0 and text and not stderr
-assert fitting_diff in (work / "agy-prompt").read_text()
-assert fitting_command[-2:] == ["--print", "<review-prompt>"]
-
-large_run = work / "agy-large-run"
-large_run.mkdir()
-large_diff = "fixture large diff\n" + ("x" * rb.AGY_ARGV_BUDGET)
-rc, _, text, stderr, large_command = rb.run_agy(
-    bare_rater, repo, sha, "", large_run, large_diff, "work"
-)
-assert rc == 1 and not text
-assert "over agy's" in stderr and str(rb.AGY_ARGV_BUDGET) in stderr
-assert large_command[-2:] == ["--print", "<review-prompt>"]
-assert not (large_run / "agy-agy-flash36-low.log").exists()
-
 usage_run = work / "agy-usage-run"
 usage_run.mkdir()
 repeated_log = (fixtures / "agy-log.txt").read_text() + """
 I0724 01:11:42.000000 usage.go:10] promptTokenCount=100 candidatesTokenCount=20 totalTokenCount=120
 I0724 01:11:43.000000 usage.go:10] promptTokenCount=240 candidatesTokenCount=60 totalTokenCount=300 cachedContentTokenCount=40 thoughtsTokenCount=25
 """
-rb.write_agy_usage(usage_run, bare_rater, 12, repeated_log)
+rb.write_agy_usage(usage_run, transport_rater, 12, repeated_log)
 repeated_usage = json.loads(
-    (usage_run / "usage-agy-flash36-low.jsonl").read_text()
+    (usage_run / "usage-agy-flash36-low-skill.jsonl").read_text()
 )
 assert repeated_usage["prompt_tokens"] == 240
 assert repeated_usage["output_tokens"] == 60
@@ -478,30 +402,14 @@ assert repeated_usage["total_tokens"] == 300
 assert repeated_usage["cached_tokens"] == 40
 assert repeated_usage["reasoning_tokens"] == 25
 
-flash35_run = work / "agy-flash35-run"
-flash35_run.mkdir()
-flash35_rater = rb.parse_rater("agy-flash35-medium")
-rc, _, text, stderr, flash35_command = rb.run_agy(
-    flash35_rater, repo, sha, "", flash35_run, "fixture commit diff", "work"
-)
-assert rc == 0 and not stderr
-assert len(rb.normalize_findings(text, flash35_rater["spec"])) == 2
-assert flash35_command[3:5] == ["--model", "gemini-3.5-flash-medium"]
-assert "--effort" not in flash35_command
-flash35_usage = json.loads(
-    (flash35_run / "usage-agy-flash35-medium.jsonl").read_text()
-)
-assert flash35_usage["model"] == "gemini-3.5-flash-medium"
-assert flash35_usage["effort"] == "medium"
-
 malformed_run = work / "agy-malformed-run"
 malformed_run.mkdir()
-os.environ["AGY_FIXTURE_STDOUT"] = str(fixtures / "agy-bare-malformed.txt")
+os.environ["AGY_FIXTURE_STDOUT"] = str(fixtures / "agy-skill-malformed.txt")
 rc, _, text, stderr, _ = rb.run_agy(
-    bare_rater, repo, sha, "", malformed_run, "fixture commit diff", "work"
+    transport_rater, repo, sha, "", malformed_run, "ignored fixture diff", "work"
 )
 assert rc == 1 and not text
-assert "agy returned malformed JSON envelope" in stderr
+assert "agy -skill returned malformed Markdown" in stderr
 
 denied_run = work / "agy-denied-run"
 denied_run.mkdir()
@@ -561,17 +469,22 @@ assert rc == 0 and not stderr
 assert len(rb.normalize_findings(text, flash35_skill_rater["spec"])) == 2
 assert flash35_skill_command[3:5] == ["--model", "gemini-3.5-flash-high"]
 assert "--effort" not in flash35_skill_command
+flash35_usage = json.loads(
+    (flash35_skill_run / "usage-agy-flash35-high-skill.jsonl").read_text()
+)
+assert flash35_usage["model"] == "gemini-3.5-flash-high"
+assert flash35_usage["effort"] == "high"
 assert "--new-project" in flash35_skill_command
 assert "--dangerously-skip-permissions" in flash35_skill_command
 
 os.environ["REVIEW_BENCH_WORKER_PICK_BIN"] = str(fixtures / "fake-worker-pick.sh")
 os.environ["GEMINIB_EXHAUSTED_PROFILE"] = "work"
-os.environ["AGY_FIXTURE_STDOUT"] = str(fixtures / "agy-bare-preamble.txt")
+os.environ["AGY_FIXTURE_STDOUT"] = str(fixtures / "agy-skill-output.md")
 rotate_run = work / "agy-rotate-run"
 rotate_run.mkdir()
 (work / "geminib-profile").write_text("")
 _, rotate_account, rotate_result = rb.run_rater_task(
-    rb.parse_rater("agy-flash36-low"), repo, sha, "", rotate_run, "fixture commit diff"
+    rb.parse_rater("agy-flash36-low-skill"), repo, sha, "", rotate_run, "ignored fixture diff"
 )
 assert rotate_account == "main", (rotate_account, rotate_result)
 assert rotate_result[0] == 0, rotate_result
@@ -587,7 +500,7 @@ inherited_run.mkdir()
 (work / "geminib-profile").write_text("")
 rb.mark_walled("agy", "work")
 _, inherited_account, inherited_result = rb.run_rater_task(
-    rb.parse_rater("agy-flash36-low"), repo, sha, "", inherited_run, "fixture commit diff"
+    rb.parse_rater("agy-flash36-low-skill"), repo, sha, "", inherited_run, "ignored fixture diff"
 )
 assert inherited_account == "main", (inherited_account, inherited_result)
 assert inherited_result[0] == 0 and (work / "geminib-profile").read_text() == "main"
@@ -601,10 +514,10 @@ spent_stderr = work / "agy-spent-stderr"
 spent_stderr.write_text("Individual quota reached for this account\n")
 os.environ["AGY_FIXTURE_STDERR"] = str(spent_stderr)
 _, spent_account, spent_result = rb.run_rater_task(
-    rb.parse_rater("agy-flash36-low"), repo, sha, "", spent_run, "fixture commit diff"
+    rb.parse_rater("agy-flash36-low-skill"), repo, sha, "", spent_run, "ignored fixture diff"
 )
 assert spent_result[0] == 0 and spent_account == "work", (spent_account, spent_result)
-assert len(rb.normalize_findings(spent_result[2], "agy-flash36-low")) == 2
+assert len(rb.normalize_findings(spent_result[2], "agy-flash36-low-skill")) == 2
 assert rb.is_walled("agy", "work")
 rb.WALLED_ACCOUNTS.clear()
 del os.environ["AGY_FIXTURE_STDERR"]

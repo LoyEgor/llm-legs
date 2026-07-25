@@ -216,7 +216,7 @@ AUTO_RATERS = tuple(
     for effort in ("medium", "high", "xhigh", "low", "max")
     for model in ("sol", "haiku", "sonnet", "opus")
 ) + tuple(
-    f"{model}-{effort}"
+    f"{model}-{effort}-skill"
     for model, efforts in AGY_EFFORTS.items()
     for effort in efforts
 )
@@ -246,7 +246,6 @@ RATER_RE = re.compile(
 PRIORITY_RE = re.compile(r"\b(P[123])\b", re.IGNORECASE)
 LOCATION_RE = re.compile(r"(?P<file>[^\s:]+\.[A-Za-z0-9]+):(?P<line>\d+)(?:-\d+)?")
 LIMITS_STALE_AGE_S = 600
-AGY_ARGV_BUDGET = 512 * 1024
 
 
 def utc_now():
@@ -297,8 +296,8 @@ def parse_rater(spec):
         raise ValueError(
             f"invalid rater {spec!r}; expected sol-<effort>, "
             "opus|sonnet|haiku|fable-<effort>, grok-<low|medium|high>, "
-            "agy-pro-<low|high>, agy-flash36-<low|medium|high>, "
-            "agy-flash35-<low|medium|high>, "
+            "agy-pro-<low|high>-skill, agy-flash36-<low|medium|high>-skill, "
+            "agy-flash35-<low|medium|high>-skill, "
             "oc-glm52|oc-kimik27code[-<low|medium|high>], "
             "oc-grok45|oc-dsv4pro|oc-dsv4flash-<low|medium|high>, "
             "or a Claude/agy -skill variant such as opus-medium-skill"
@@ -510,6 +509,17 @@ def affordability():
     return parse_affordability(proc.stdout)
 
 
+def refuse_retired_cells(raters):
+    # run_agy has no diff-only mode left to reach, so a skill-less agy spec would quietly run the
+    # skill and record the findings under a name claiming otherwise.
+    retired = [rater["spec"] for rater in raters if rater["side"] == "agy" and not rater["skill"]]
+    if retired:
+        raise RuntimeError(
+            "agy cells run the review skill; ask for "
+            + ", ".join(f"{spec}-skill" for spec in retired)
+        )
+
+
 def auto_pick(number, rows, available):
     if number < 1:
         raise ValueError("--auto must be at least 1")
@@ -660,75 +670,6 @@ def normalize_grok_output(text):
     return "\n".join(json.dumps(value, ensure_ascii=False) for value in objects)
 
 
-def agy_finding_from_dict(value, rater):
-    severity = normalize_severity(value.get("severity") or value.get("priority"))
-    file_name = value.get("file") or value.get("path")
-    line = value.get("line")
-    if line is None:
-        line = value.get("line_number")
-    summary = value.get("summary") or value.get("description")
-    try:
-        line = int(line)
-    except (TypeError, ValueError):
-        line = None
-    if not (severity and file_name and line is not None and summary):
-        return None
-    return {
-        "severity": severity,
-        "file": str(file_name),
-        "line": line,
-        "summary": " ".join(str(summary).split()),
-        "rater": rater,
-    }
-
-
-def agy_error_envelope(value):
-    if value.get("type") == "error":
-        return True
-    finding_keys = {
-        "findings", "severity", "priority", "file", "path",
-        "line", "line_number", "summary", "description",
-    }
-    return not finding_keys.intersection(value) and (
-        "error" in value or value.get("is_error") is True
-    )
-
-
-def normalize_agy_output(text, rater):
-    findings = []
-    recognized = False
-    for value in extract_json_values(text):
-        if not isinstance(value, dict):
-            raise ValueError("agy returned malformed JSON envelope: expected an object")
-        if agy_error_envelope(value):
-            detail = value.get("message") or value.get("error") or value
-            raise ValueError(f"agy returned an error envelope: {detail}")
-        if "findings" in value:
-            nested = value["findings"]
-            if not isinstance(nested, list):
-                raise ValueError("agy returned malformed JSON envelope: findings is not a list")
-            parsed = [
-                agy_finding_from_dict(item, rater)
-                if isinstance(item, dict) else None
-                for item in nested
-            ]
-            if any(item is None for item in parsed):
-                raise ValueError("agy returned malformed JSON envelope: invalid finding object")
-            findings.extend(parsed)
-            recognized = True
-            continue
-        finding = agy_finding_from_dict(value, rater)
-        if finding is None:
-            raise ValueError("agy returned malformed JSON envelope: invalid finding object")
-        findings.append(finding)
-        recognized = True
-    if not recognized:
-        raise ValueError(
-            'agy returned malformed JSON envelope: expected finding objects or {"findings":[]}'
-        )
-    return "\n".join(json.dumps(row, ensure_ascii=False) for row in findings) or '{"findings":[]}'
-
-
 AGY_SKILL_SEVERITIES = {
     "CRITICAL": "P1",
     "HIGH": "P1",
@@ -840,17 +781,6 @@ def review_prompt(sha, focus, profile=None):
         "its false-positive exclusions; where it defines a confidence rubric, report only "
         "findings you would score 80 or higher. Map its severities onto P1 (critical/high), "
         f"P2 (medium) and P3 (low).\n\n{contract}"
-        + suffix
-    )
-
-
-def agy_review_prompt(sha, focus):
-    suffix = f"\nAdditional focus: {focus}" if focus else ""
-    return (
-        f"Review commit {sha}. Return findings only, one JSON object per line, with exactly "
-        "these fields: severity (P1, P2, or P3), file, line, summary. Use changed lines for "
-        'locations. If there are no findings, return exactly {"findings":[]}. Do not modify '
-        "the repository. Review only the supplied commit diff without using tools or commands."
         + suffix
     )
 
@@ -1581,11 +1511,7 @@ def run_agy(rater, repo, sha, focus, run_dir, diff, account, repeat=1):
     raw_output = run_dir / f"raw-{rater['spec']}.md"
     log_file = run_dir / f"agy-{rater['spec']}.log"
     model = agy_model_id(rater)
-    prompt = (
-        "/code-review" + (f"\nAdditional review focus: {focus}" if focus else "")
-        if rater["skill"] else
-        agy_review_prompt(sha, focus) + "\n\nCommit diff:\n" + diff
-    )
+    prompt = "/code-review" + (f"\nAdditional review focus: {focus}" if focus else "")
     # agy resolves its Google account from HOME and takes no account flag, so the profile has to be
     # selected by launching it through geminib rather than by an argument.
     command = [command_path("REVIEW_BENCH_GEMINIB_BIN", "geminib"), "profile", account]
@@ -1594,33 +1520,19 @@ def run_agy(rater, repo, sha, focus, run_dir, diff, account, repeat=1):
     ]
     if rater["model"] != "agy-flash35":
         command += ["--effort", rater["effort"]]
-    command += ["--mode", "plan"]
-    if rater["skill"]:
-        command += ["--new-project", "--dangerously-skip-permissions"]
-    else:
-        command.append("--sandbox")
     command += [
+        "--mode", "plan",
+        "--new-project", "--dangerously-skip-permissions",
         "--print-timeout", "10m",
         "--log-file", str(log_file),
     ]
     transport = command + ["--print", prompt]
-    displayed_command = command + ["--print", prompt if rater["skill"] else "<review-prompt>"]
-    # The diff has to travel on argv. Handing it over as a file in the sealed clone reads as the
-    # tidier option, but print mode soft-denies every tool confirmation, so the bare rater cannot
-    # open that file and answers from an empty context or gives up.
-    size = len(prompt.encode())
-    if size > AGY_ARGV_BUDGET:
-        return (
-            1, 0, "",
-            f"review prompt is {size} bytes, over agy's {AGY_ARGV_BUDGET}-byte argv budget",
-            displayed_command,
-        )
+    displayed_command = list(transport)
     clone = None
     started = time.monotonic()
     try:
         clone = seal_overlay_clone(repo, sha)
-        if rater["skill"]:
-            prepare_agy_skill_clone(clone)
+        prepare_agy_skill_clone(clone)
         try:
             proc = subprocess.run(
                 transport, cwd=clone, capture_output=True, text=True,
@@ -1644,11 +1556,7 @@ def run_agy(rater, repo, sha, focus, run_dir, diff, account, repeat=1):
             detail = agy_failure_detail(proc.stderr, log_text)
             return 1, duration, "", f"agy returned empty output: {detail}", displayed_command
         try:
-            normalized = (
-                normalize_agy_skill_output(proc.stdout, rater["spec"])
-                if rater["skill"]
-                else normalize_agy_output(proc.stdout, rater["spec"])
-            )
+            normalized = normalize_agy_skill_output(proc.stdout, rater["spec"])
         except ValueError as exc:
             stderr = f"{proc.stderr.rstrip()}\n{exc}".lstrip()
             return 1, duration, "", stderr, displayed_command
@@ -1831,6 +1739,7 @@ def cmd_run(args):
     else:
         available = affordability()
         raters, counts, skipped = auto_pick(args.auto or 2, read_jsonl(reviews_path), available)
+    refuse_retired_cells(raters)
     print("selected raters:")
     for rater in raters:
         print(f"  {rater['spec']}: {counts[rater['spec']]} recorded bench row(s)")
@@ -1857,7 +1766,7 @@ def cmd_run(args):
     run_dir.mkdir(parents=True)
     os.chmod(run_dir, 0o700)
     diff = commit_diff(repo, sha) if any(
-        rater["side"] in ("claude", "grok", "opencode", "agy") for rater in raters) else ""
+        rater["side"] in ("claude", "grok", "opencode") for rater in raters) else ""
 
     results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(raters)) as pool:
