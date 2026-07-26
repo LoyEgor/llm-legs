@@ -2835,7 +2835,11 @@ def cmd_cluster(args):
             raise ValueError(f"group {number} lists no members")
         if not isinstance(group.get("file"), str) or not group["file"].strip():
             raise ValueError(f"group {number} names no file")
+        # Only members that actually cite a file can contradict the group: several early runs
+        # left the field empty and put the path in the summary, and an empty citation is not a
+        # disagreement — it is the absence of one.
         member_files = {by_id[member].get("file") for member in members if member in by_id}
+        member_files = {name for name in member_files if isinstance(name, str) and name.strip()}
         if member_files and group["file"] not in member_files:
             raise ValueError(
                 f"group {number} claims {group['file']}, which none of its members cite "

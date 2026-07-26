@@ -343,7 +343,12 @@ done
 CACHE="$HOME/.llm-limits-codex.json"
 printf 'ok\n' >"$HOME/auth-trap"
 printf '{"primary":{"usedPercent":30,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":40,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"}\n' "$future" "$week" >"$HOME/quota-trap.json"
+# codexb keeps its pool state in a dotted directory beside the accounts, and dotted names are
+# reserved from being accounts for that reason: publishing one as an account tells the user to
+# log in to a service directory.
+mkdir -p "$HOME/.codex-profiles/.codexb"
 CODEX_QUOTA_TIMEOUT=2 "$HELPER" --all-accounts >/dev/null || fail "all-account quota helper failed"
+assert jq -e '([.accounts[].account] | index(".codexb")) == null' "$CACHE"
 assert jq -e '.current == "main" and (.accounts | type) == "array" and
   ([.accounts[].account] | index("main") != null) and
   ([.accounts[].account] | index("alpha") != null) and

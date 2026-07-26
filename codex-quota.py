@@ -194,7 +194,13 @@ def profile_accounts(home: Path) -> list[tuple[str, str | None]]:
     profiles = home / ".codex-profiles"
     accounts: list[tuple[str, str | None]] = [("main", None)]
     if profiles.is_dir():
-        accounts.extend((path.name, str(path)) for path in sorted(profiles.iterdir()) if path.is_dir())
+        # `codexb` keeps its own pool state in `.codexb` alongside the accounts, and dotted
+        # names are reserved from being accounts for exactly that reason. Listing them anyway
+        # publishes a service directory as an account that the user is then told to log in to.
+        accounts.extend(
+            (path.name, str(path)) for path in sorted(profiles.iterdir())
+            if path.is_dir() and not path.name.startswith(".")
+        )
     return accounts
 
 

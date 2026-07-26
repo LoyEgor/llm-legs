@@ -2034,6 +2034,23 @@ printf '%s\n%s\n' \
   '{"members":["cl-one#2"],"file":"a.py","line":9,"severity":"P3","summary":"y"}' >"$WORK/cl-wrongfile.jsonl"
 WORKER_STATS_DIR="$CSD" "$SCRIPT" cluster "$CSHA" --groups "$WORK/cl-wrongfile.jsonl" >/dev/null 2>&1 \
   && fail "cluster accepted a group claiming a file none of its members cite"
+# A member that cites no file cannot contradict the group's: early runs left the field empty and
+# put the path in the summary, so refusing those would reject a correct grouping.
+printf '%s\n' '{"defect_id":"cl-one#3","file":"","line":null,"severity":"P3","summary":"path only in text","caught_by":["sol-low"]}' >>"$CSD/benches/cl-one/defects.jsonl"
+printf '%s\n%s\n%s\n' \
+  '{"members":["cl-one#1","cl-two#1"],"file":"a.py","line":3,"severity":"P2","summary":"x"}' \
+  '{"members":["cl-one#2"],"file":"a.py","line":9,"severity":"P3","summary":"y"}' \
+  '{"members":["cl-one#3"],"file":"a.py","line":1,"severity":"P3","summary":"z"}' >"$WORK/cl-nofile.jsonl"
+WORKER_STATS_DIR="$CSD" "$SCRIPT" cluster "$CSHA" --groups "$WORK/cl-nofile.jsonl" >/dev/null \
+  || fail "cluster refused a group whose member cites no file at all"
+rm -f "$CSD/defects/${CNAME}__${CSHA:0:7}.jsonl"
+python3 - "$CSD/benches/cl-one/defects.jsonl" <<'PY'
+import sys
+path = sys.argv[1]
+lines = [line for line in open(path) if '"cl-one#3"' not in line]
+open(path, "w").writelines(lines)
+PY
+
 # Trailing junk means the judge's output was truncated or doubled, not that the last group won.
 printf '%s\n%s\n' "$(cat "$CGROUPS")" 'not json at all' >"$WORK/cl-junk.jsonl"
 WORKER_STATS_DIR="$CSD" "$SCRIPT" cluster "$CSHA" --groups "$WORK/cl-junk.jsonl" >/dev/null 2>&1 \
