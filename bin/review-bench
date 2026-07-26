@@ -186,8 +186,10 @@ WALLED_LOCK = threading.Lock()
 
 
 def wall_bucket(rater):
-    """Claude bills fable against its own quota, so a fable wall must not retire the account for
-    the opus and sonnet cells that still have theirs."""
+    """Claude bills fable against its own quota and Gemini bills per model, so a wall on one
+    must not retire the account for the cells that still have theirs."""
+    if rater["side"] == "agy":
+        return rater["model"]
     return "fable" if rater["model"] == "fable" else "general"
 
 
@@ -798,12 +800,18 @@ def normalize_agy_skill_output(text, rater):
 # findings file, and only an explicit marker tells a result from a cell that must be rerun.
 CLEAN_REVIEW_MARKER = "NO FINDINGS"
 CLEAN_REVIEW_RE = re.compile(
-    r"\bno findings\b|\bno issues found\b|\"findings\"\s*:\s*\[\s*\]", re.IGNORECASE
+    r"no findings|no issues found|\{\s*\"findings\"\s*:\s*\[\s*\]\s*\}", re.IGNORECASE
 )
 
 
 def clean_review_declared(text):
-    return bool(CLEAN_REVIEW_RE.search(text or ""))
+    # The marker has to be the whole answer: matched anywhere, a rater that writes "found no
+    # findings there, but here is a real defect" and then rambles is recorded as a clean run.
+    body = (text or "").strip()
+    fence = re.fullmatch(r"```[A-Za-z]*\s*(.*?)\s*```", body, re.DOTALL)
+    if fence:
+        body = fence.group(1)
+    return bool(CLEAN_REVIEW_RE.fullmatch(body.strip().strip("`").strip().rstrip(".").strip()))
 
 
 def unusable_review(text, findings):
@@ -1503,15 +1511,18 @@ def verify_row(index, finding):
     }
 
 
+def unverified_row(index, finding, why):
+    row = verify_row(index, finding)
+    row.update(kept=True, code_matches=None, is_defect=None, walled=True, why=why)
+    return row
+
+
 def verify_one(index, finding, repo, sha, model, lines, ref=None):
     account = SIDE_FIXED_ACCOUNTS["opencode"]
     # The verifier spends the same subscription the cells do, so it obeys the same
     # stop-the-run rule; otherwise a wall fails every claim open and the run reads verified.
     if is_walled("opencode", account):
-        row = verify_row(index, finding)
-        row.update(kept=True, code_matches=None, is_defect=None, walled=True,
-                   why="verifier walled off; finding kept unverified")
-        return row
+        return unverified_row(index, finding, "verifier walled off; finding kept unverified")
     prompt_file = tempfile.NamedTemporaryFile(
         mode="w", prefix="review-bench-verify-", suffix=".txt", delete=False
     )
@@ -1524,6 +1535,12 @@ def verify_one(index, finding, repo, sha, model, lines, ref=None):
     ]
     OPENCODE_GATE.acquire(0)
     try:
+        # Re-checked after the gate for the same reason run_opencode does it: verifiers
+        # queued when the wall was set would each send one more doomed request.
+        if is_walled("opencode", account):
+            return unverified_row(
+                index, finding, "verifier walled off while queued; finding kept unverified"
+            )
         proc = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
                               text=True, timeout=VERIFY_TIMEOUT_S)
         answer = ""
@@ -1543,9 +1560,9 @@ def verify_one(index, finding, repo, sha, model, lines, ref=None):
     row = verify_row(index, finding)
     if proc is not None and proc.returncode != 0 and opencode_usage_wall(proc.stderr):
         mark_walled("opencode", account)
-        row.update(kept=True, code_matches=None, is_defect=None, walled=True,
-                   why="verifier hit the plan's usage wall; finding kept unverified")
-        return row
+        return unverified_row(
+            index, finding, "verifier hit the plan's usage wall; finding kept unverified"
+        )
     if judgment is None:
         row.update(kept=True, code_matches=None, is_defect=None,
                    why="verifier gave no usable answer; finding kept")
@@ -1719,8 +1736,11 @@ SIDE_WALL = {
     "codex": lambda rc, text, stderr: bool(
         re.search(r"\b429\b|usage limit|rate limit|quota exceeded", stderr or "", re.IGNORECASE)
         or re.search(r"usage_limit_exceeded|rate_limit_exceeded", text or "", re.IGNORECASE)),
+    # Gemini words a per-model exhaustion differently from an account-wide one, and a cell that
+    # fails instead of rotating is the whole point of asking the pool for another account.
     "agy": lambda rc, text, stderr: bool(
-        re.search(r"Individual quota reached|RESOURCE_EXHAUSTED", stderr or "", re.IGNORECASE)),
+        re.search(r"Individual quota reached|RESOURCE_EXHAUSTED"
+                  r"|exhausted your capacity on this model", stderr or "", re.IGNORECASE)),
     "grok": lambda rc, text, stderr: bool(
         re.search(r"\b429\b|usage limit|rate limit|quota exceeded", stderr or "", re.IGNORECASE)),
     "opencode": lambda rc, text, stderr: opencode_usage_wall(stderr),
@@ -2081,7 +2101,9 @@ def cmd_record(args):
     meta_by_rater = {row["rater"]: row for row in meta.get("rater_runs", [])}
     records = []
     for rater in meta["raters"]:
-        parsed = parse_rater(rater)
+        # A run stored under the pre-rename id must stay adjudicable; review_counts already
+        # credits those rows, and refusing them here is what strands the run entirely.
+        parsed = parse_rater(normalize_legacy_rater(rater))
         rows = findings[rater]
         values = [verdict_map[(rater, idx)] for idx in range(len(rows))]
         counts = Counter(values)
@@ -2221,7 +2243,12 @@ def cmd_list(args):
     for meta in entries[: args.limit]:
         total = len(meta.get("raters", []))
         done = min(recorded[meta.get("run_id")], total)
-        status = "adjudicated" if total and done == total else "pending"
+        # A run where every cell errored has nothing to adjudicate and can never leave
+        # `pending`, so calling it that buries the runs that genuinely await a verdict.
+        if not total:
+            status = "no raters (every cell errored)"
+        else:
+            status = "adjudicated" if done == total else "pending"
         print(f"{meta.get('run_id', '?'):<33} {meta.get('commit', '?')[:9]:<10} "
               f"{total:>6} {f'{done}/{total}':>12}  {status}")
     return 0

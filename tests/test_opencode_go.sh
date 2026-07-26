@@ -202,6 +202,17 @@ assert test "$out" = STREAMED
 assert grep -qx 'ARG=-N' <(call_args 2)
 assert_fails grep -qx 'ARG=-m' <(call_args 2)
 
+# The escalation is a different transport, not another go at the same one, so the retry
+# budget must not veto it — at --retries 1 every attempt is the last one.
+reset_calls
+{ printf '500|-|0\n'; printf '200|%s|0\n' "$WORK/answer.sse"; } >"$CURL_PLAN"
+out=$(OPENCODE_GO_SLOW_SWITCH_S=0 "$SCRIPT" run glm-5.2 hello --retries 1 2>"$WORK/err") \
+  || fail "escalation was vetoed by the retry budget: $(cat "$WORK/err")"
+assert test "$out" = STREAMED
+assert test "$(calls)" = 2
+# ...and it is sent at once: the buffered attempt already paid the wait.
+assert_fails grep -q 'retrying in' "$WORK/err"
+
 # Escalating on the last buffered attempt must still send the stream.
 reset_calls
 { printf '500|-|0\n'; printf '500|-|3\n'; printf '200|%s|0\n' "$WORK/answer.sse"; } >"$CURL_PLAN"

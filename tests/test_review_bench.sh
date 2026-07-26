@@ -489,7 +489,10 @@ _, rotate_account, rotate_result = rb.run_rater_task(
 assert rotate_account == "main", (rotate_account, rotate_result)
 assert rotate_result[0] == 0, rotate_result
 assert (work / "geminib-profile").read_text() == "workmain"
-assert rb.is_walled("agy", "work") and not rb.is_walled("agy", "main")
+flash_bucket = rb.wall_bucket(rb.parse_rater("agy-flash36-low-skill"))
+assert rb.is_walled("agy", "work", flash_bucket) and not rb.is_walled("agy", "main", flash_bucket)
+# Gemini bills per model, so retiring flash on that account must leave its pro cell alone.
+assert not rb.is_walled("agy", "work", rb.wall_bucket(rb.parse_rater("agy-pro-high-skill")))
 rb.WALLED_ACCOUNTS.clear()
 
 # An account another rater already retired is excluded from the next request instead of ending
@@ -498,7 +501,7 @@ del os.environ["GEMINIB_EXHAUSTED_PROFILE"]
 inherited_run = work / "agy-inherited-wall-run"
 inherited_run.mkdir()
 (work / "geminib-profile").write_text("")
-rb.mark_walled("agy", "work")
+rb.mark_walled("agy", "work", rb.wall_bucket(rb.parse_rater("agy-flash36-low-skill")))
 _, inherited_account, inherited_result = rb.run_rater_task(
     rb.parse_rater("agy-flash36-low-skill"), repo, sha, "", inherited_run, "ignored fixture diff"
 )
@@ -518,7 +521,7 @@ _, spent_account, spent_result = rb.run_rater_task(
 )
 assert spent_result[0] == 0 and spent_account == "work", (spent_account, spent_result)
 assert len(rb.normalize_findings(spent_result[2], "agy-flash36-low-skill")) == 2
-assert rb.is_walled("agy", "work")
+assert rb.is_walled("agy", "work", rb.wall_bucket(rb.parse_rater("agy-flash36-low-skill")))
 rb.WALLED_ACCOUNTS.clear()
 del os.environ["AGY_FIXTURE_STDERR"]
 
@@ -965,6 +968,32 @@ del os.environ["OPENCODE_FIXTURE_STDERR"]
 assert rb.opencode_usage_wall("HTTP 429") and rb.opencode_usage_wall("usage limit reached")
 assert not rb.opencode_usage_wall("HTTP 503 failover_exhausted")
 
+# Gemini bills per model and words a per-model exhaustion its own way, so that wording has to
+# retire the model on that account and nothing more: a walled 3.1 Pro must leave flash alone.
+assert rb.SIDE_WALL["agy"](1, "", "You have exhausted your capacity on this model")
+assert rb.SIDE_WALL["agy"](1, "", "Individual quota reached")
+assert not rb.SIDE_WALL["agy"](1, "", "jetski: no output produced")
+assert rb.wall_bucket(rb.parse_rater("agy-pro-high-skill")) == "agy-pro"
+assert rb.wall_bucket(rb.parse_rater("agy-flash35-medium-skill")) == "agy-flash35"
+assert rb.wall_bucket(rb.parse_rater("agy-pro-high-skill")) != \
+    rb.wall_bucket(rb.parse_rater("agy-flash35-medium-skill"))
+assert rb.wall_bucket(rb.parse_rater("fable-medium")) == "fable"
+assert rb.wall_bucket(rb.parse_rater("opus-high")) == "general"
+rb.mark_walled("agy", "work", rb.wall_bucket(rb.parse_rater("agy-pro-high-skill")))
+assert rb.is_walled("agy", "work", rb.wall_bucket(rb.parse_rater("agy-pro-high-skill")))
+assert not rb.is_walled("agy", "work", rb.wall_bucket(rb.parse_rater("agy-flash35-medium-skill")))
+rb.WALLED_ACCOUNTS.clear()
+
+# A run stored under the pre-rename agy id must stay adjudicable, or it is stranded forever.
+assert rb.normalize_legacy_rater("agy-flash-low-skill") == "agy-flash36-low-skill"
+assert rb.parse_rater(rb.normalize_legacy_rater("agy-flash-low-skill"))["model"] == "agy-flash36"
+try:
+    rb.parse_rater("agy-flash-low-skill")
+except ValueError:
+    pass
+else:
+    raise AssertionError("the legacy id must need normalising, or this guard proves nothing")
+
 clean_run = work / "opencode-clean-run"
 clean_run.mkdir()
 os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-clean.json")
@@ -1063,11 +1092,18 @@ assert rb.CLEAN_REVIEW_MARKER in rb.review_prompt("deadbee", "")
 assert rb.CLEAN_REVIEW_MARKER in rb.skill_brief("deadbee", "", "/repo")
 assert rb.unusable_review("NO FINDINGS", []) == ""
 assert rb.unusable_review('{"findings": []}', []) == ""
+assert rb.unusable_review('```json\n{"findings": []}\n```', []) == ""
+assert rb.unusable_review("No issues found.", []) == ""
 assert rb.unusable_review("", [{"severity": "P1"}]) == ""
 for stopped in ("", "Still waiting for the remaining agents before compiling final findings.",
                 "The commit looks reasonable overall; I did not spot anything alarming."):
     assert rb.unusable_review(stopped, []), stopped
 assert "(empty answer)" in rb.unusable_review("", [])
+# The marker has to be the whole answer; matched anywhere it hands prose a free pass and
+# undoes the very distinction it exists to draw.
+for rambling in ("I checked the rotation and found no findings for it, but the gate looks wrong.",
+                 "No issues found in run_opencode. The verifier, however, never re-checks."):
+    assert rb.unusable_review(rambling, []), rambling
 
 # Codex writes the location into the prose and leaves `file` empty, which leaves the claim
 # with nothing to be read, deduplicated or verified against.
@@ -1126,6 +1162,33 @@ assert all(row["kept"] is True and row.get("walled") for row in audit), audit
 assert rb.is_walled("opencode", "opencode-go")
 del os.environ["OPENCODE_FIXTURE_RC"]
 del os.environ["OPENCODE_FIXTURE_STDERR"]
+rb.WALLED_ACCOUNTS.clear()
+# A verifier already queued on the gate when the wall is set must not send one more request
+# either — the cells got that guard in this commit and the verifier was left without it.
+os.environ["OPENCODE_CAPTURE_ARGS"] = str(work / "queued-verify-args")
+for _ in range(rb.OPENCODE_MAX_CONCURRENCY):
+    rb.OPENCODE_GATE.acquire(0)
+queued = {}
+
+
+def queued_verify():
+    queued["row"] = rb.verify_one(0, verify_findings_input[0], repo, sha, "oc-kimik3", None)
+
+
+verifier_thread = threading.Thread(target=queued_verify)
+verifier_thread.start()
+blocked_by = time.monotonic() + 5
+while not rb.OPENCODE_GATE.waiting and time.monotonic() < blocked_by:
+    time.sleep(0.001)
+assert rb.OPENCODE_GATE.waiting, "the verifier never reached the gate"
+rb.mark_walled("opencode", "opencode-go")
+for _ in range(rb.OPENCODE_MAX_CONCURRENCY):
+    rb.OPENCODE_GATE.release()
+verifier_thread.join(10)
+assert queued["row"]["walled"] is True and queued["row"]["kept"] is True, queued
+assert "while queued" in queued["row"]["why"], queued
+assert not (work / "queued-verify-args").exists(), "a walled verifier still called opencode"
+os.environ["OPENCODE_CAPTURE_ARGS"] = str(work / "opencode-args")
 # A cell already queued on the gate when the wall was set must not send one more request.
 gate_wall_run = work / "opencode-gate-wall"
 gate_wall_run.mkdir()
@@ -1286,6 +1349,38 @@ again=$(WORKER_STATS_DIR="$SD" "$SCRIPT" record run-fixture --verdicts "$VERDICT
 assert contains "$again" 'recorded 0 rater row(s)'
 assert test "$(wc -l <"$SD/reviews.jsonl")" -eq 2
 
+# A run stored under the pre-rename agy id is otherwise stranded: review_counts credits it,
+# record refuses it, and no adjudication of it is possible at all.
+LEGACY_RUN="$SD/benches/legacy-fixture"
+mkdir -p "$LEGACY_RUN"
+python3 - "$LEGACY_RUN" "$WORK/legacy-verdicts.jsonl" <<'PY'
+import json
+import pathlib
+import sys
+
+run = pathlib.Path(sys.argv[1])
+(run / "meta.json").write_text(json.dumps({
+    "run_id": "legacy-fixture", "commit": "abcdef0123456789", "repo": "/repo",
+    "raters": ["agy-flash-low-skill"],
+    "rater_runs": [{"rater": "agy-flash-low-skill", "model": "agy-flash36", "effort": "low",
+                    "side": "agy", "exit_code": 0}],
+    "durations": {"agy-flash-low-skill": 4200},
+    "started": "2026-07-21T00:00:00+00:00", "finished": "2026-07-21T00:00:05+00:00", "focus": "",
+}))
+(run / "findings-agy-flash-low-skill.jsonl").write_text(json.dumps({
+    "severity": "P2", "file": "src/a.py", "line": 10, "summary": "Legacy id bug",
+    "rater": "agy-flash-low-skill",
+}) + "\n")
+pathlib.Path(sys.argv[2]).write_text(json.dumps({
+    "rater": "agy-flash-low-skill", "idx": 0, "verdict": "confirmed"}) + "\n")
+PY
+legacy=$(WORKER_STATS_DIR="$SD" "$SCRIPT" record legacy-fixture --verdicts "$WORK/legacy-verdicts.jsonl") \
+  || fail "record refused a run stored under the legacy agy id"
+assert contains "$legacy" 'recorded 1 rater row(s)'
+assert test "$(jq -r 'select(.run_id=="legacy-fixture") | .rater_model' "$SD/reviews.jsonl")" = agy-flash36
+assert test "$(wc -l <"$SD/reviews.jsonl")" -eq 3
+
+
 python3 - "$SD/benches/run-fixture/meta.json" <<'PY'
 import json
 import sys
@@ -1327,6 +1422,15 @@ assert contains "$table" 'sol/medium'
 listing=$(WORKER_STATS_DIR="$SD" "$SCRIPT" list) || fail "list failed"
 assert contains "$listing" 'run-fixture'
 assert contains "$listing" 'adjudicated'
+
+# A run where every cell errored can never leave `pending`, and calling it that buries the
+# runs that genuinely await a verdict.
+mkdir -p "$SD/benches/empty-fixture"
+python3 -c 'import json,sys; open(sys.argv[1],"w").write(json.dumps({"run_id":"empty-fixture","commit":"abcdef0123456789","raters":[],"rater_runs":[],"started":"2026-07-20T00:00:00+00:00"}))' \
+  "$SD/benches/empty-fixture/meta.json"
+empty_listing=$(WORKER_STATS_DIR="$SD" "$SCRIPT" list) || fail "list failed on a rater-less run"
+assert contains "$empty_listing" 'every cell errored'
+assert test "$(grep -c 'pending' <<<"$empty_listing")" -eq 0
 
 
 # Every option cmd_run reads must exist on the command line: a flag wired only into the

@@ -304,11 +304,13 @@ run_model() {
       transfer=("${stream_transfer[@]}")
       base_body=$(jq -c '. + {stream: true}' <<<"$base_body")
       body=$(jq -c '. + {stream: true}' <<<"$body")
-      # Streaming is a different transport, not another go at the same one: without
-      # a fresh budget an escalation on the last buffered attempt never gets sent.
+      # Streaming is a different transport, not another go at the same one, so it gets its
+      # own budget and is sent at once: bypassing the retry check is what makes the
+      # escalation reachable at --retries 1, and the buffered attempt already paid the wait.
       attempt=1
       printf 'HTTP %s after %ds; the generation outlives the buffered deadline, streaming instead\n' \
         "$status" "$elapsed" >&2
+      continue
     fi
     # Gateway 5xx (failover_exhausted, inference_recovery_timeout) means the
     # upstream inference pool was unavailable; the identical request usually
