@@ -22,12 +22,17 @@ gemini_profiles_dir=$profiles_dir
 pool_dir="$profiles_dir/.geminib"
 . "$geminib_root/share/gemini-accounts.sh"
 . "$geminib_root/share/worker-pool.sh"
+. "$geminib_root/share/worker-model.sh"
 
 is_disabled() { worker_pool_is_disabled "$pool_dir" "$1"; }
 set_disabled() { worker_pool_set_disabled "$pool_dir" "$1" "$2"; }
 pool_suffix() { if is_disabled "$1"; then printf ' (out of pool)'; fi; }
 
 account_exists() { [ "$1" = main ] || [ -d "$profiles_dir/$1" ]; }
+
+pin_account() {
+  worker_model_pin_account gemini_profile geminib gemini_account_names is_disabled "${1:-}"
+}
 
 enable_account() {
   local name="${1:-}"
@@ -76,7 +81,7 @@ disable_account() {
 
 reserved_name() {
   case "$1" in
-    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login|enable|disable) return 0 ;;
+    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login|enable|disable|use) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -97,27 +102,15 @@ ensure_profile() {
   gemini_ensure_keychain "$directory"
 }
 
-failed_profiles=""
-
-is_profile_failed() {
-  [[ " $failed_profiles " == *" $1 "* ]]
-}
-
 ensure_profiles() {
   local name
   while IFS= read -r name; do
-    if [ "$name" != main ] && ! ensure_profile "$profiles_dir/$name"; then
-      failed_profiles+=" $name "
-    fi
+    [ "$name" = main ] || ensure_profile "$profiles_dir/$name"
   done < <(gemini_account_names)
 }
 
 quota_snapshot() {
   local name="$1" home output rc=0
-  if is_profile_failed "$name"; then
-    printf '1\t{"error":"profile unavailable"}\n'
-    return
-  fi
   home=$(gemini_account_home "$name")
   if [ ! -x "$quota_helper" ]; then
     printf '1\t{"error":"quota helper unavailable"}\n'
@@ -176,9 +169,7 @@ add_account() {
     exit 2
   fi
   mkdir -p "$directory"
-  if ! ensure_profile "$directory"; then
-    failed_profiles+=" $name "
-  fi
+  ensure_profile "$directory"
   printf 'HOME=%q agy\n' "$directory"
   status=$(login_status "$name")
   printf '%s: %s\n' "$name" "${status#*$'\t'}"
@@ -316,6 +307,7 @@ show_help() {
     'geminib remove <name>                 Forget a profile and prune its cached quota.' \
     'geminib enable <name>                 Return an account to worker selection.' \
     'geminib disable <name>                Exclude an account from worker selection; it still runs when named.' \
+    'geminib use <name>|--clear            Pin worker selection to one account; no name prints the pin.' \
     'geminib list                          List profiles with login state.' \
     'geminib status                        Per-account login state and quota.'
 }
@@ -346,6 +338,10 @@ case "${1:-}" in
   disable)
     shift
     disable_account "${1:-}"
+    ;;
+  use)
+    shift
+    pin_account "${1:-}"
     ;;
   list)
     [ "$#" -eq 1 ] || { printf 'usage: geminib list\n' >&2; exit 2; }

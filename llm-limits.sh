@@ -518,12 +518,7 @@ refresh_gemini_quota() {
   local gemini_cache gemini_home gemini_tmp gemini_err detail auth_detail rc error=''
   gemini_cache=$(gemini_account_cache "$account")
   gemini_home=$(gemini_account_home "$account")
-  if ! gemini_ensure_keychain "$gemini_home"; then
-    record_gemini_refresh "$result_file" "$account" true false 'profile keychain unavailable'
-    printf 'llm-limits.sh: Gemini/%s refresh skipped: profile keychain unavailable\n' \
-      "$account" >&2
-    return 1
-  fi
+  gemini_ensure_keychain "$gemini_home"
   if [ ! -x "$gemini_cmd" ]; then
     record_gemini_refresh "$result_file" "$account" true false 'helper not executable'
     echo "llm-limits.sh: Gemini quota helper is not executable: $gemini_cmd" >&2
@@ -625,11 +620,7 @@ if [ "$start_windows" -eq 1 ] && [ -z "$refresh_account" ]; then
     while IFS= read -r gemini_account; do
       gemini_cache=$(gemini_account_cache "$gemini_account")
       gemini_home=$(gemini_account_home "$gemini_account")
-      if ! gemini_ensure_keychain "$gemini_home"; then
-        printf 'llm-limits.sh: gemini/%s window start skipped: profile keychain unavailable\n' \
-          "$gemini_account" >&2
-        continue
-      fi
+      gemini_ensure_keychain "$gemini_home"
       gemini_5h_reset=''
       if [ -r "$gemini_cache" ]; then
         gemini_5h_reset=$(int_or_empty "$(jq -r "$iso_def"'
