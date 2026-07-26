@@ -37,9 +37,10 @@ SECURITY_ACCOUNT_ONLY="$WORK/security-account-only"
 export CURL_ARGS CURL_CONFIG CURL_BODY CURL_COUNT CURL_PLAN
 export SECURITY_CALLS SECURITY_STORE SECURITY_ACCOUNT_ONLY
 
-# Plan lines, one per curl call: <http-code>|<body fixture or ->|<seconds to burn>.
-# <http-code> "fail" means a transport failure whose exit code is the second field,
-# which is what curl does on a timeout, a reset or an HTTP/2 error.
+# Plan lines, one per curl call: <http-code>|<body fixture or ->|<seconds to burn>[|<exit code>].
+# <http-code> "fail" means a transport failure whose exit code is the second field, which is
+# what curl does on a timeout, a reset or an HTTP/2 error. A fourth field instead exits
+# non-zero while still reporting the status curl did receive before the transfer broke.
 cat >"$FAKE_BIN/curl" <<'EOF'
 #!/usr/bin/env bash
 n=$(( $(cat "$CURL_COUNT" 2>/dev/null || echo 0) + 1 ))
@@ -72,7 +73,10 @@ plan=$(sed -n "${n}p" "$CURL_PLAN" 2>/dev/null)
 code=${plan%%|*}
 rest=${plan#*|}
 fixture=${rest%%|*}
-burn=${rest#*|}
+rest=${rest#*|}
+burn=${rest%%|*}
+rc=0
+[ "$rest" = "$burn" ] || rc=${rest#*|}
 [ "$burn" = 0 ] || /bin/sleep "$burn"
 if [ "$code" = fail ]; then
   printf '000'
@@ -80,6 +84,7 @@ if [ "$code" = fail ]; then
 fi
 [ "$fixture" = - ] || cp "$fixture" "$out"
 printf '%s' "$code"
+exit "$rc"
 EOF
 
 cat >"$FAKE_BIN/security" <<'EOF'
@@ -137,6 +142,11 @@ data: {"id":"x","choices":[{"delta":{},"finish_reason":"stop"}]}
 data: [DONE]
 EOF
 }
+cat >"$WORK/error.sse" <<'EOF'
+data: {"id":"x","model":"glm-5.2","error":{"message":"upstream failure"},"choices":[{"delta":{}}]}
+
+data: [DONE]
+EOF
 json_answer "$WORK/answer.json"
 json_empty "$WORK/empty.json"
 sse_answer "$WORK/answer.sse"
@@ -245,6 +255,30 @@ out=$("$SCRIPT" run glm-5.2 hello --no-reasoning --stream 2>"$WORK/err") \
   || fail "streamed answer rejected: $(cat "$WORK/err")"
 assert test "$out" = STREAMED
 assert test "$(calls)" = 1
+
+# A status curl received before the transfer broke is the status: overwritten with 000, a
+# usage wall becomes transient weather and gets retried into a deeper wall.
+reset_calls
+printf '429|-|0|18\n' >"$CURL_PLAN"
+assert_fails env "$SCRIPT" run glm-5.2 hello 2>"$WORK/err"
+assert test "$(calls)" = 1
+assert grep -q 'HTTP 429' "$WORK/err"
+
+# A provider error inside a stream carries no content either; retiring a reasoning-off
+# strategy for it burns the negotiation on an outage and hides the error.
+reset_calls
+{ printf '200|%s|0\n' "$WORK/error.sse"; printf '200|%s|0\n' "$WORK/answer.sse"; } >"$CURL_PLAN"
+assert_fails env "$SCRIPT" run glm-5.2 hello --no-reasoning --stream 2>"$WORK/err"
+assert test "$(calls)" = 1
+assert grep -q 'provider error inside stream' "$WORK/err"
+assert_fails grep -q 'answered nothing' "$WORK/err"
+
+# Every launchd context runs without USER, and set -u turns that into an instant death.
+reset_calls
+printf '200|%s|0\n' "$WORK/answer.json" >"$CURL_PLAN"
+out=$(env -u USER "$SCRIPT" run glm-5.2 hello 2>"$WORK/err") \
+  || fail "unset USER killed the script: $(cat "$WORK/err")"
+assert test "$out" = ANSWERED
 
 # A 429 is a real usage wall and must surface at once, never be retried.
 reset_calls

@@ -545,6 +545,14 @@ def verifier_model(spec):
             f"invalid verifier {spec!r}; the verifier prompt suppresses reasoning, so it "
             "cannot carry an effort"
         )
+    # A rater runs once; a verifier runs once per finding, against a much shorter deadline.
+    # A model that cannot answer inside it times out on every claim and fails them all open.
+    expected = opencode_expected_s(rater)
+    if expected > VERIFY_TIMEOUT_S:
+        raise ValueError(
+            f"invalid verifier {spec!r}; a review costs it {expected:.0f}s against the "
+            f"{VERIFY_TIMEOUT_S}s verifier deadline, so every finding would time out"
+        )
     return rater["model"]
 
 
@@ -1216,10 +1224,14 @@ def same_defect(left, right):
 
 
 def merge_samples(batches):
+    # Only rows from earlier samples suppress a row: same_defect is tuned to catch one defect
+    # worded twice, and applied inside a single sample it silently drops distinct findings the
+    # rater deliberately reported apart.
     merged = []
     for batch in batches:
+        seen_before = len(merged)
         for row in batch:
-            if not any(same_defect(row, kept) for kept in merged):
+            if not any(same_defect(row, kept) for kept in merged[:seen_before]):
                 merged.append(row)
     return merged
 
@@ -1391,9 +1403,15 @@ VERIFY_TIMEOUT_S = 300
 
 
 def repo_tree(repo, sha):
-    proc = subprocess.run(["git", "ls-tree", "-r", "--name-only", sha],
-                          cwd=repo, capture_output=True, text=True)
-    return proc.stdout.splitlines() if proc.returncode == 0 else []
+    # The parent's tree too, or a citation of a file the commit deletes resolves against
+    # nothing — and that citation is exactly the one file_at_commit reads from the parent.
+    names = []
+    for ref in (sha, f"{sha}^"):
+        proc = subprocess.run(["git", "ls-tree", "-r", "--name-only", ref],
+                              cwd=repo, capture_output=True, text=True)
+        if proc.returncode == 0:
+            names.extend(proc.stdout.splitlines())
+    return sorted(set(names))
 
 
 def resolve_in_tree(path, tree):

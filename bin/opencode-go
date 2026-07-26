@@ -4,6 +4,8 @@ set -euo pipefail
 # the plan's /models list, so pay-as-you-go Zen models can never be billed.
 BASE_URL=https://opencode.ai/zen/go/v1
 KEY_SERVICE="opencode-go${OPENCODE_GO_PROFILE:+-$OPENCODE_GO_PROFILE}"
+# set -u kills the script outright where USER is unset, which is every launchd context.
+KEY_ACCOUNT=${USER:-$(id -un)}
 response=
 authcfg=
 trap 'rm -f ${response:+"$response"} ${authcfg:+"$authcfg"}' EXIT
@@ -41,7 +43,7 @@ go_key() {
     return
   fi
   if command -v security >/dev/null 2>&1; then
-    key=$(security find-generic-password -a "$USER" -s "$KEY_SERVICE" -w 2>/dev/null \
+    key=$(security find-generic-password -a "$KEY_ACCOUNT" -s "$KEY_SERVICE" -w 2>/dev/null \
       || security find-generic-password -s "$KEY_SERVICE" -w 2>/dev/null || true)
     if [[ -n $key ]]; then
       printf '%s' "$key"
@@ -84,8 +86,8 @@ store_key() {
     printf 'security command not found\n' >&2
     exit 1
   fi
-  security add-generic-password -U -a "$USER" -s "$KEY_SERVICE" -w "$key" >/dev/null
-  stored=$(security find-generic-password -a "$USER" -s "$KEY_SERVICE" -w)
+  security add-generic-password -U -a "$KEY_ACCOUNT" -s "$KEY_SERVICE" -w "$key" >/dev/null
+  stored=$(security find-generic-password -a "$KEY_ACCOUNT" -s "$KEY_SERVICE" -w)
   if [[ $stored != "$key" ]]; then
     printf 'Keychain verification failed\n' >&2
     exit 1
@@ -139,10 +141,14 @@ sse_to_envelope() {
 transient_status() { [[ $1 == 5?? || $1 == 000 ]]; }
 answered_nothing() {
   local file=$1 streaming=$2
+  local envelope
   if [[ $streaming == true ]]; then
     grep -q '^data:' "$file" || return 1
-    sse_to_envelope "$file" \
-      | jq -e '((.choices[0].message.content // "") | length) == 0' >/dev/null 2>&1
+    envelope=$(sse_to_envelope "$file") || return 1
+    # A provider error inside the stream also carries no content. Retiring a reasoning-off
+    # strategy for it burns the negotiation on an outage and hides the error.
+    [[ $(jq -r '.error // "null"' <<<"$envelope") == null ]] || return 1
+    jq -e '((.choices[0].message.content // "") | length) == 0' <<<"$envelope" >/dev/null 2>&1
   else
     jq -e '((.choices[0].message.content // "") | length) == 0' "$file" >/dev/null 2>&1
   fi
@@ -276,8 +282,10 @@ run_model() {
       --config "$authcfg" --data-binary @- "$BASE_URL/chat/completions" <<<"$body") || curl_rc=$?
     elapsed=$((SECONDS - started_at))
     if (( curl_rc != 0 )); then
-      printf 'curl exit %d after %ds, no HTTP status\n' "$curl_rc" "$elapsed" >&2
-      status=000
+      # curl still reports a status it received before the transfer failed, and keeping it is
+      # what stops a 429 that died mid-body from being retried as transient weather.
+      [[ $status =~ ^[1-5][0-9][0-9]$ ]] || status=000
+      printf 'curl exit %d after %ds (HTTP %s)\n' "$curl_rc" "$elapsed" "$status" >&2
     fi
     # A model that rejects one reasoning-off strategy may accept the next; only a
     # 400 shaped like an invalid-parameter complaint is worth re-trying this way.

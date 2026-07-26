@@ -884,6 +884,13 @@ deleted_prompt = rb.verify_prompt(
 )
 assert "which deletes it" in deleted_prompt and "1: alpha" in deleted_prompt
 assert rb.file_at_commit(deleted_repo, deleted_sha, "never.sh") == (None, deleted_sha)
+# ...and the citation has to survive canonicalisation to get that far: a file the commit
+# deletes is absent from its own tree, so the parent's tree is part of the tree too.
+deleted_tree = rb.repo_tree(deleted_repo, deleted_sha)
+assert "gone.sh" in deleted_tree, deleted_tree
+assert rb.canonical_finding_path(
+    "/private/var/folders/x/review-bench-seal-ab12/gone.sh", deleted_tree
+) == "gone.sh"
 
 verify_findings_input = [
     {"severity": "P2", "file": "bin/review-bench", "line": 3, "summary": "first claim"},
@@ -930,6 +937,13 @@ merged = rb.merge_samples([
      {"file": "a", "line": 90, "summary": "usage totals are summed instead of maxed"}],
 ])
 assert [row["line"] for row in merged] == [5, 90], merged
+# Two findings a rater deliberately reported apart stay apart: same_defect exists to collapse
+# one defect worded twice across samples, not to second-guess a rater within one.
+one_sample = rb.merge_samples([[
+    {"file": "a", "line": 5, "summary": "the guard runs after the branch it protects"},
+    {"file": "a", "line": 7, "summary": "the guard runs after the branch it releases"},
+]])
+assert len(one_sample) == 2, one_sample
 sample_run = work / "opencode-sample-run"
 sample_run.mkdir()
 os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-happy.json")
@@ -1148,6 +1162,27 @@ for locked in sorted(rb.OPENCODE_EFFORT_REQUIRED_MODELS):
         raise AssertionError("the verifier prompt suppresses reasoning; an effort is a lie")
 assert rb.verifier_model(rb.OPENCODE_VERIFIER) == rb.OPENCODE_VERIFIER
 assert rb.OPENCODE_VERIFIER in rb.verifier_choices()
+# A rater runs once, a verifier runs once per finding against a far shorter deadline, so a
+# model that cannot answer inside it would time out on every claim and fail them all open.
+slow = []
+for candidate in rb.OPENCODE_MODEL_IDS:
+    try:
+        parsed_candidate = rb.parse_rater(candidate)
+    except ValueError:
+        continue
+    if rb.opencode_expected_s(parsed_candidate) > rb.VERIFY_TIMEOUT_S:
+        slow.append(candidate)
+assert slow, "no in-plan model is slower than the verifier deadline; this guard proves nothing"
+for sluggish in slow:
+    try:
+        rb.verifier_model(sluggish)
+    except ValueError as exc:
+        assert "would time out" in str(exc), exc
+    else:
+        raise AssertionError(f"{sluggish} cannot answer inside the verifier deadline")
+    assert sluggish not in rb.verifier_choices()
+assert all(rb.opencode_expected_s(rb.parse_rater(m)) <= rb.VERIFY_TIMEOUT_S
+           for m in rb.verifier_choices())
 
 # The verifier spends the same subscription the cells do, so it obeys the same stop-the-run
 # rule; otherwise a wall makes every claim fail open while the run reads as verified.
