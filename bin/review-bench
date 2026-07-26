@@ -116,6 +116,14 @@ OPENCODE_EFFORT_CEILING = {}
 # benchmark yet. Kept here because "which plan models did we try" is the question
 # this table exists to answer — review-bench oc-models prints it. A single sample is
 # a screening, not a verdict: promoting one needs a real three-pass run.
+WORTHLESS_CELLS = {
+    "oc-glm51": "26 claims over 2 commits, 1 true",
+    "oc-glm52": "33 claims over 2 commits, 3 true, never the only cell to find a defect",
+    "oc-hy3": "23 claims over 2 commits, 4 true",
+    "oc-kimik27code": "21 claims over 2 commits, 3 true",
+    "oc-qwen37max": "18 claims over 2 commits, 4 true",
+    "agy-flash36-low-skill": "16 claims over 10 commits, 0 true",
+}
 OPENCODE_SCREENED_MODELS = {
     "glm-5": "19s, no findings and no no-issues marker",
     "kimi-k2.5": "12s, narrated the diff instead of reviewing",
@@ -217,13 +225,19 @@ AGY_MODEL_IDS = {
 }
 RATER_TIMEOUT_S = 1800
 AUTO_RATERS = tuple(
-    f"{model}-{effort}"
-    for effort in ("medium", "high", "xhigh", "low", "max")
-    for model in ("sol", "haiku", "sonnet", "opus")
-) + tuple(
-    f"{model}-{effort}-skill"
-    for model, efforts in AGY_EFFORTS.items()
-    for effort in efforts
+    spec for spec in (
+        tuple(
+            f"{model}-{effort}"
+            for effort in ("medium", "high", "xhigh", "low", "max")
+            for model in ("sol", "sonnet", "opus")
+        ) + tuple(
+            f"{model}-{effort}-skill"
+            for model, efforts in AGY_EFFORTS.items()
+            for effort in efforts
+        )
+    )
+    # --auto must never offer a cell the run then refuses; the retirement list is the authority.
+    if spec not in WORTHLESS_CELLS
 )
 CLAUDE_MODEL_IDS = {"fable": "claude-fable-5"}
 READ_ONLY_REVIEW_INSTRUCTION = (
@@ -256,6 +270,71 @@ LOCATION_RE = re.compile(
     r":(?P<line>\d+)(?:[-–]\d+)?"
 )
 LIMITS_STALE_AGE_S = 600
+REVIEW_TIERS = {
+    "T0": {
+        "budget_min": 2,
+        "when": "Up to 20 changed lines in up to 2 files",
+        "cells": [
+            "oc-kimik3",
+            "oc-grok45-low",
+            "agy-pro-high-skill",
+            "agy-flash35-medium-skill",
+            "sol-low",
+        ],
+    },
+    "T1": {
+        "budget_min": 6,
+        "when": "Up to 150 changed lines, or any change under bin/ or tests/",
+        "cells": [
+            "oc-kimik3",
+            "oc-grok45-low",
+            "agy-pro-high-skill",
+            "agy-flash35-medium-skill",
+            "sol-low",
+            "sol-medium",
+            "agy-flash36-medium-skill",
+            "opus-medium-skill",
+        ],
+    },
+    "T2": {
+        "budget_min": 10,
+        "when": "Up to 600 changed lines, or a core measurement tool change",
+        "cells": [
+            "oc-kimik3",
+            "oc-grok45-low",
+            "agy-pro-high-skill",
+            "agy-flash35-medium-skill",
+            "sol-low",
+            "sol-medium",
+            "agy-flash36-medium-skill",
+            "opus-medium-skill",
+            "sol-high",
+            "opus-high-skill",
+            "sonnet-medium-skill",
+        ],
+    },
+    "T3": {
+        "budget_min": 20,
+        "when": "More than 600 changed lines",
+        "cells": [
+            "oc-kimik3",
+            "oc-grok45-low",
+            "agy-pro-high-skill",
+            "agy-flash35-medium-skill",
+            "sol-low",
+            "sol-medium",
+            "agy-flash36-medium-skill",
+            "opus-medium-skill",
+            "sol-high",
+            "opus-high-skill",
+            "sonnet-medium-skill",
+            "sol-xhigh",
+            "sol-max",
+            "opus-xhigh-skill",
+            "sonnet-xhigh-skill",
+        ],
+    },
+}
 
 
 def utc_now():
@@ -416,6 +495,18 @@ def parse_raters(value):
     return parsed
 
 
+def validate_review_tiers():
+    for tier_name, tier in REVIEW_TIERS.items():
+        for cell in tier["cells"]:
+            try:
+                rater = parse_rater(cell)
+            except ValueError as exc:
+                raise RuntimeError(f"{tier_name} contains invalid rater {cell!r}") from exc
+            reason = measured_worthless(rater)
+            if reason:
+                raise RuntimeError(f"{tier_name} contains retired rater {cell!r}: {reason}")
+
+
 def normalize_legacy_rater(rater):
     # The Gemini flash rater was renamed agy-flash -> agy-flash36 (versioned).
     # Credit legacy persisted rows to the new id so --auto counts them as reviewed;
@@ -545,6 +636,17 @@ def affordability():
     return parse_affordability(proc.stdout)
 
 
+def measured_worthless(rater):
+    """Cells the adjudicated corpus has already answered, so nobody spends quota re-asking.
+
+    Every entry is a count over recorded runs, not an opinion, and the reason is printed with the
+    refusal — this is the whole of the old prose anti-list, enforced instead of described.
+    """
+    if rater["model"] == "haiku":
+        return "caught 0 defects across 11 recorded runs while producing 11 false claims"
+    return WORTHLESS_CELLS.get(rater["spec"])
+
+
 def refuse_retired_cells(raters):
     # run_agy has no diff-only mode left to reach, so a skill-less agy spec would quietly run the
     # skill and record the findings under a name claiming otherwise.
@@ -554,16 +656,24 @@ def refuse_retired_cells(raters):
             "agy cells run the review skill; ask for "
             + ", ".join(f"{spec}-skill" for spec in retired)
         )
+    worthless = [(rater["spec"], measured_worthless(rater)) for rater in raters
+                 if measured_worthless(rater)]
+    if worthless:
+        raise RuntimeError(
+            "these cells are retired by measurement: "
+            + "; ".join(f"{spec} ({reason})" for spec, reason in worthless)
+        )
+
+
+validate_review_tiers()
 
 
 def verifier_model(spec):
-    """The measured refusals live in parse_rater, so the verifier goes through it too.
-
-    Otherwise a model that never finished a review, or one that ignores the reasoning
-    suppression the verifier prompt always sends, is refused as a rater and accepted here
-    — once per finding.
+    """Every refusal a rater faces applies here too, or the cheapest way to run a refused
+    model is to ask for it as the verifier — once per finding rather than once per run.
     """
     rater = parse_rater(spec)
+    refuse_retired_cells([rater])
     if rater["side"] != "opencode":
         raise ValueError(f"invalid verifier {spec!r}; the verifier is an in-plan OpenCode model")
     if rater["effort"]:
@@ -587,7 +697,7 @@ def verifier_choices():
     for model in sorted(OPENCODE_MODEL_IDS):
         try:
             verifier_model(model)
-        except ValueError:
+        except (ValueError, RuntimeError):
             continue
         usable.append(model)
     return usable
@@ -1974,6 +2084,163 @@ def commit_diff(repo, sha):
     return proc.stdout
 
 
+def diff_numstat(repo, revisions):
+    # Renames are detected, not expanded into a delete plus an add: a moved file with no edits is
+    # one file and zero lines, and counting it as 2N lines escalates a trivial move to T3. With -z
+    # a rename record ends with an empty path and carries the old and new names as the next two
+    # NUL-separated fields.
+    proc = subprocess.run(
+        ["git", "diff", "--numstat", "-z", "--find-renames", *revisions, "--"],
+        cwd=repo, capture_output=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.decode(errors="replace").strip() or "git diff failed")
+    fields = proc.stdout.split(b"\0")
+    changes = {}
+    sources = set()
+    index = 0
+    while index < len(fields):
+        record = fields[index]
+        index += 1
+        if not record:
+            continue
+        added, deleted, raw_path = record.split(b"\t", 2)
+        lines = 0 if added == b"-" or deleted == b"-" else int(added) + int(deleted)
+        if not raw_path:
+            if index + 1 >= len(fields):
+                break
+            sources.add(os.fsdecode(fields[index]))
+            raw_path = fields[index + 1]
+            index += 2
+        changes[os.fsdecode(raw_path)] = lines
+    return changes, sources
+
+
+def untracked_numstat(repo):
+    # --full-name so a --repo pointing at a subdirectory still yields repository-root paths, which
+    # is what the escalation rules match on.
+    proc = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard", "--full-name", "-z"],
+        cwd=repo, capture_output=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            proc.stderr.decode(errors="replace").strip() or "git ls-files failed"
+        )
+    root = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=repo,
+                          capture_output=True, text=True)
+    base = Path(root.stdout.strip()) if root.returncode == 0 and root.stdout.strip() else repo
+    changes = {}
+    for raw_path in proc.stdout.split(b"\0"):
+        if not raw_path:
+            continue
+        path = os.fsdecode(raw_path)
+        full_path = base / path
+        if full_path.is_symlink():
+            data = os.fsencode(os.readlink(full_path))
+        elif full_path.is_dir():
+            # An untracked nested repository is listed as one path; there is nothing to count
+            # in it, and reading it as a file would end the whole suggestion in an error.
+            changes[path] = 0
+            continue
+        else:
+            data = full_path.read_bytes()
+        # git counts no lines for a binary file, and a new PNG counted as thousands of lines
+        # would pick a tier from its pixels.
+        if b"\0" in data[:8000]:
+            changes[path] = 0
+            continue
+        changes[path] = data.count(b"\n") + int(bool(data) and not data.endswith(b"\n"))
+    return changes
+
+
+def suggest_tier(paths, changed_lines, touched=()):
+    if changed_lines <= 20 and len(paths) <= 2:
+        tier = "T0"
+    elif changed_lines <= 150:
+        tier = "T1"
+    elif changed_lines <= 600:
+        tier = "T2"
+    else:
+        tier = "T3"
+    rank = int(tier[1])
+    # Size comes from the changed files alone; escalation also looks at names that changed
+    # without contributing lines — the source of a rename, so moving a file out of bin/ counts.
+    paths = set(paths) | set(touched)
+    if any(path.startswith(("bin/", "tests/")) for path in paths):
+        rank = max(rank, 1)
+    core_tools = {
+        "bin/review-bench",
+        "bin/opencode-go",
+        "bin/claudeb",
+        "bin/codexb",
+        "bin/geminib",
+        "llm-limits.sh",
+    }
+    if core_tools.intersection(paths):
+        rank = max(rank, 2)
+    return f"T{rank}"
+
+
+def cmd_tiers(args):
+    for tier_name, tier in REVIEW_TIERS.items():
+        print(f"{tier_name} ({tier['budget_min']} min)")
+        print(f"  when: {tier['when']}")
+        print(f"  cells: {', '.join(tier['cells'])}")
+    return 0
+
+
+def cmd_review(args):
+    args.raters = ",".join(REVIEW_TIERS[args.tier]["cells"])
+    args.auto = None
+    args.leg = False
+    return cmd_run(args)
+
+
+def cmd_suggest(args):
+    repo = Path(args.repo).resolve()
+    if subprocess.run(
+        ["git", "rev-parse", "--git-dir"], cwd=repo, capture_output=True
+    ).returncode != 0:
+        raise ValueError(f"not a git repository: {repo}")
+    if args.range:
+        left, separator, right = args.range.partition("..")
+        if not separator or not left or not right or right.startswith("."):
+            raise ValueError("--range must be A..B")
+        base = resolve_commit(repo, left)
+        target = resolve_commit(repo, right)
+        changes, sources = diff_numstat(repo, [base, target])
+        command_target = target
+    else:
+        changes, sources = diff_numstat(repo, ["HEAD"])
+        # A staged change the working tree then reverted is invisible to `git diff HEAD` and is
+        # still what the next commit will contain, so the index is asked separately.
+        staged, staged_sources = diff_numstat(repo, ["--cached", "HEAD"])
+        for path, lines in staged.items():
+            changes[path] = max(changes.get(path, 0), lines)
+        sources |= staged_sources
+        changes.update(untracked_numstat(repo))
+        command_target = "HEAD"
+    if not changes:
+        print("nothing to review")
+        return 0
+    changed_lines = sum(changes.values())
+    tier_name = suggest_tier(changes, changed_lines, sources)
+    print(f"changed files: {len(changes)}")
+    print(f"changed lines: {changed_lines}")
+    print(f"tier: {tier_name}")
+    extra = ["--repo", str(repo)] if args.repo != "." else []
+    if args.range:
+        print(f"command: {shlex.join(['review-bench', 'review', command_target, '--tier', tier_name, *extra])}")
+        return 0
+    # Every rater reviews a sealed commit, so naming HEAD here would hand back a command that
+    # reviews the previous commit and reports the uncommitted diff as covered.
+    print("uncommitted: this diff has no commit to seal, so it cannot be reviewed as it stands")
+    print(f"next: commit it, then run "
+          f"{shlex.join(['review-bench', 'review', '<sha>', '--tier', tier_name, *extra])}")
+    return 0
+
+
 def handoff(run_id, paths):
     verdict_path = f"/tmp/review-bench-{run_id}-verdicts.jsonl"
     command = f"review-bench record {shlex.quote(run_id)} --verdicts {shlex.quote(verdict_path)}"
@@ -2456,6 +2723,20 @@ def cmd_list(args):
 def main():
     parser = argparse.ArgumentParser(description="Benchmark blind code-review raters")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    tiers = subparsers.add_parser("tiers", help="Print the canonical review tiers")
+    tiers.set_defaults(func=cmd_tiers)
+    review = subparsers.add_parser("review", help="Run a canonical review tier")
+    review.add_argument("commitish")
+    review.add_argument("--repo", default=".")
+    review.add_argument("--tier", choices=REVIEW_TIERS, required=True)
+    review.add_argument("--focus", default="")
+    review.add_argument("--repeat", type=int, default=1, metavar="N")
+    review.add_argument("--verify", metavar="MODEL", choices=verifier_choices())
+    review.set_defaults(func=cmd_review)
+    suggest = subparsers.add_parser("suggest", help="Suggest a review tier for a change")
+    suggest.add_argument("--repo", default=".")
+    suggest.add_argument("--range", metavar="A..B")
+    suggest.set_defaults(func=cmd_suggest)
     run = subparsers.add_parser("run", help="Run blind reviewers against one commit")
     run.add_argument("commitish")
     run.add_argument("--repo", default=".")

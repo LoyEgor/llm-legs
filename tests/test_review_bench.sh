@@ -52,6 +52,40 @@ assert rb.parse_rater("agy-pro-low-skill") == {
 }
 assert rb.parse_rater("agy-pro-high-skill")["skill"] is True
 assert rb.parse_rater("agy-flash36-medium-skill")["side"] == "agy"
+expected_tiers = {
+    "T0": [
+        "oc-kimik3", "oc-grok45-low", "agy-pro-high-skill",
+        "agy-flash35-medium-skill", "sol-low",
+    ],
+    "T1": [
+        "oc-kimik3", "oc-grok45-low", "agy-pro-high-skill",
+        "agy-flash35-medium-skill", "sol-low", "sol-medium",
+        "agy-flash36-medium-skill", "opus-medium-skill",
+    ],
+    "T2": [
+        "oc-kimik3", "oc-grok45-low", "agy-pro-high-skill",
+        "agy-flash35-medium-skill", "sol-low", "sol-medium",
+        "agy-flash36-medium-skill", "opus-medium-skill", "sol-high",
+        "opus-high-skill", "sonnet-medium-skill",
+    ],
+    "T3": [
+        "oc-kimik3", "oc-grok45-low", "agy-pro-high-skill",
+        "agy-flash35-medium-skill", "sol-low", "sol-medium",
+        "agy-flash36-medium-skill", "opus-medium-skill", "sol-high",
+        "opus-high-skill", "sonnet-medium-skill", "sol-xhigh", "sol-max",
+        "opus-xhigh-skill", "sonnet-xhigh-skill",
+    ],
+}
+assert list(rb.REVIEW_TIERS) == ["T0", "T1", "T2", "T3"]
+assert [tier["budget_min"] for tier in rb.REVIEW_TIERS.values()] == [2, 6, 10, 20]
+assert {
+    tier_name: tier["cells"] for tier_name, tier in rb.REVIEW_TIERS.items()
+} == expected_tiers
+for tier in rb.REVIEW_TIERS.values():
+    assert tier["when"]
+    assert [rb.parse_rater(cell)["spec"] for cell in tier["cells"]] == tier["cells"]
+for lower, upper in zip(("T0", "T1", "T2"), ("T1", "T2", "T3")):
+    assert set(rb.REVIEW_TIERS[lower]["cells"]) < set(rb.REVIEW_TIERS[upper]["cells"])
 # Every resolved rater set passes this gate, so no --raters spelling and no --auto pick can run
 # a skill-less agy cell; parsing one still works, or a stored bench run could never be recorded.
 for bare in ("agy-pro-low", "agy-flash36-medium", "agy-flash35-high"):
@@ -62,7 +96,30 @@ for bare in ("agy-pro-low", "agy-flash36-medium", "agy-flash35-high"):
         assert f"{bare}-skill" in str(exc), exc
     else:
         raise AssertionError(f"accepted a skill-less agy rater: {bare}")
+# The corpus has already answered some cells, so asking for one is refused with the count that
+# answered it — the prose anti-list, enforced instead of described.
+# --auto must never offer a cell the run then refuses, so the whole list has to survive the gate
+# as it stands: filtering it here first would assert nothing.
 rb.refuse_retired_cells([rb.parse_rater(spec) for spec in rb.AUTO_RATERS])
+assert "haiku-medium" not in rb.AUTO_RATERS and "haiku-max" not in rb.AUTO_RATERS
+assert "agy-flash36-low-skill" not in rb.AUTO_RATERS
+# The cheapest way to run a refused model would be to ask for it as the verifier.
+for dead_verifier in ("oc-glm52", "oc-kimik27code"):
+    try:
+        rb.verifier_model(dead_verifier)
+    except RuntimeError as exc:
+        assert dead_verifier in str(exc), exc
+    else:
+        raise AssertionError(f"accepted a retired verifier: {dead_verifier}")
+assert rb.verifier_model(rb.OPENCODE_VERIFIER) == rb.OPENCODE_VERIFIER
+for dead, needle in (("haiku-medium", "0 defects"), ("oc-glm52", "3 true"),
+                     ("agy-flash36-low-skill", "0 true")):
+    try:
+        rb.refuse_retired_cells([rb.parse_rater(dead)])
+    except RuntimeError as exc:
+        assert dead in str(exc) and needle in str(exc), exc
+    else:
+        raise AssertionError(f"accepted a cell the corpus retired: {dead}")
 assert rb.parse_rater("oc-glm52") == {
     "spec": "oc-glm52", "model": "oc-glm52", "effort": None,
     "side": "opencode", "skill": False, "profile": None
@@ -253,14 +310,14 @@ for rater in rb.AUTO_RATERS:
     count = 3
     if rater == "sol-medium":
         count = 0
-    elif rater == "haiku-medium":
+    elif rater == "sonnet-medium":
         count = 1
     for index in range(count):
         reviews.append({"run_id": f"{rater}-{index}", "rater_model": model,
                         "rater_effort": effort})
 availability = {"codex": True, "claude": True, "agy": True}
 picked, counts, skipped = rb.auto_pick(2, reviews, availability)
-assert [row["spec"] for row in picked] == ["sol-medium", "haiku-medium"]
+assert [row["spec"] for row in picked] == ["sol-medium", "sonnet-medium"]
 assert [counts[row["spec"]] for row in picked] == [0, 1]
 assert not skipped
 
@@ -268,18 +325,18 @@ availability["claude"] = False
 availability["agy"] = False
 picked, counts, skipped = rb.auto_pick(2, reviews, availability)
 assert all(row["side"] == "codex" for row in picked)
-assert any(spec.startswith("haiku-") for spec, _ in skipped)
+assert any(spec.startswith("sonnet-") for spec, _ in skipped)
 assert any(spec.startswith("agy-") for spec, _ in skipped)
 
 agy_gap_reviews = [
     {"rater": spec}
     for spec in rb.AUTO_RATERS
-    if spec != "agy-flash36-low-skill"
+    if spec != "agy-flash35-low-skill"
 ]
 picked, _, _ = rb.auto_pick(
     1, agy_gap_reviews, {"codex": True, "claude": True, "agy": True}
 )
-assert picked[0]["spec"] == "agy-flash36-low-skill"
+assert picked[0]["spec"] == "agy-flash35-low-skill"
 
 codex_stream = "\n".join([
     json.dumps({"type": "thread.started", "thread_id": "t"}),
@@ -1382,6 +1439,37 @@ model_state = model_store / "worker-stats"
 os.environ.pop("WORKER_STATS_DIR", None)
 os.environ["CLAUDEB_DIR"] = str(model_store)
 
+review_store = work / "review-tier-claudeb"
+os.environ["CLAUDEB_DIR"] = str(review_store)
+reviewed_cells = []
+
+
+def tier_runner(rater, repo_path, commit, focus, run_dir, diff, account, repeat=1):
+    reviewed_cells.append(rater["spec"])
+    return 0, 1, "NO FINDINGS", "", []
+
+
+for side in rb.SIDE_RUNNERS:
+    rb.SIDE_RUNNERS[side] = tier_runner
+rb.pool_account = lambda side, excluded: "fixture"
+rb.affordability = lambda: {
+    "claude": True, "codex": True, "agy": True, "grok": True, "opencode": True,
+    "claude_account": "fixture",
+}
+rb.check_limits_staleness = lambda account: False
+review_rc = rb.cmd_review(argparse.Namespace(
+    repo=str(pin_repo), commitish=pin_sha, tier="T1",
+    verify=None, focus=None, repeat=1,
+))
+review_meta_path = next((review_store / "worker-stats" / "benches").glob("*/meta.json"))
+review_meta = json.loads(review_meta_path.read_text())
+assert review_rc == 0
+assert review_meta["raters"] == expected_tiers["T1"], review_meta["raters"]
+assert sorted(reviewed_cells) == sorted(expected_tiers["T1"]), reviewed_cells
+
+os.environ["CLAUDEB_DIR"] = str(model_store)
+
+
 def model_runner(rater, repo_path, commit, focus, run_dir, diff, account, repeat=1):
     envelope = {
         "type": "result",
@@ -1433,6 +1521,154 @@ assert rb.resolved_model_from_envelope(alias_envelope) == "claude-opus-5", "alia
 assert (
     rb.resolved_model_from_envelope(pair_envelope) == "claude-opus-5+claude-sonnet-5"
 ), rb.resolved_model_from_envelope(pair_envelope)
+
+suggest_env = dict(
+    os.environ,
+    GIT_AUTHOR_NAME="t",
+    GIT_AUTHOR_EMAIL="t@example.test",
+    GIT_COMMITTER_NAME="t",
+    GIT_COMMITTER_EMAIL="t@example.test",
+)
+
+
+def make_suggest_repo(name, tracked=("tracked.txt",)):
+    path = work / name
+    path.mkdir()
+    subprocess.run(["git", "-C", str(path), "init", "-q", "-b", "main"],
+                   check=True, env=suggest_env)
+    for file_name in tracked:
+        full_path = path / file_name
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        full_path.write_text("base\n")
+    subprocess.run(["git", "-C", str(path), "add", "."], check=True, env=suggest_env)
+    subprocess.run(["git", "-C", str(path), "commit", "-qm", "base"],
+                   check=True, env=suggest_env)
+    return path
+
+
+def suggest(path, *extra):
+    proc = subprocess.run(
+        [sys.argv[1], "suggest", "--repo", str(path), *extra],
+        check=True, capture_output=True, text=True, env=suggest_env,
+    )
+    return proc.stdout.splitlines()
+
+
+def assert_suggestion(lines, files, changed_lines, tier, committed=False):
+    assert lines[:3] == [
+        f"changed files: {files}",
+        f"changed lines: {changed_lines}",
+        f"tier: {tier}",
+    ], lines
+    if committed:
+        assert lines[3].startswith("command: review-bench review "), lines
+        assert f"--tier {tier}" in lines[3], lines
+        return
+    # A rater reviews a sealed commit, so an uncommitted diff must not be handed a command that
+    # would review the previous one and report this change as covered.
+    assert lines[3].startswith("uncommitted: "), lines
+    assert lines[4].startswith("next: commit it, then run ") and "<sha>" in lines[4], lines
+    assert f"--tier {tier}" in lines[4], lines
+
+
+clean_suggest = make_suggest_repo("suggest-clean")
+assert suggest(clean_suggest) == ["nothing to review"]
+
+t0_suggest = make_suggest_repo("suggest-t0")
+(t0_suggest / "new.txt").write_text("line\n" * 20)
+assert_suggestion(suggest(t0_suggest), 1, 20, "T0")
+
+t1_size_suggest = make_suggest_repo("suggest-t1-size")
+(t1_size_suggest / "medium.txt").write_text("line\n" * 21)
+assert_suggestion(suggest(t1_size_suggest), 1, 21, "T1")
+
+t1_suggest = make_suggest_repo(
+    "suggest-t1", ("staged.txt", "unstaged.txt"),
+)
+(t1_suggest / "staged.txt").write_text("base\nstaged\n")
+subprocess.run(["git", "-C", str(t1_suggest), "add", "staged.txt"],
+               check=True, env=suggest_env)
+(t1_suggest / "unstaged.txt").write_text("base\nunstaged\n")
+(t1_suggest / "untracked.txt").write_text("untracked\n")
+assert_suggestion(suggest(t1_suggest), 3, 3, "T1")
+
+t2_suggest = make_suggest_repo("suggest-t2")
+(t2_suggest / "wide.txt").write_text("line\n" * 151)
+assert_suggestion(suggest(t2_suggest), 1, 151, "T2")
+
+t3_suggest = make_suggest_repo("suggest-t3")
+(t3_suggest / "huge.txt").write_text("line\n" * 601)
+assert_suggestion(suggest(t3_suggest), 1, 601, "T3")
+
+tests_suggest = make_suggest_repo("suggest-tests")
+(tests_suggest / "tests" / "new-test.sh").parent.mkdir()
+(tests_suggest / "tests" / "new-test.sh").write_text("true\n")
+assert_suggestion(suggest(tests_suggest), 1, 1, "T1")
+
+# A moved file is one file and no lines: expanded into a delete plus an add it would read as a
+# rewrite and pick a tier for work nobody did.
+rename_suggest = make_suggest_repo("suggest-rename", tracked=("moved.txt",))
+(rename_suggest / "moved.txt").write_text("line\n" * 400)
+subprocess.run(["git", "-C", str(rename_suggest), "commit", "-qam", "fill"],
+               check=True, env=suggest_env)
+subprocess.run(["git", "-C", str(rename_suggest), "mv", "moved.txt", "elsewhere.txt"],
+               check=True, env=suggest_env)
+assert_suggestion(suggest(rename_suggest), 1, 0, "T0")
+
+# An untracked binary has no lines to count, and counting its bytes would pick a tier from pixels.
+binary_suggest = make_suggest_repo("suggest-binary")
+(binary_suggest / "asset.png").write_bytes(b"\x89PNG\r\n\x1a\n" + bytes(4000))
+assert_suggestion(suggest(binary_suggest), 1, 0, "T0")
+
+# A staged change the working tree then reverted is what the next commit contains, however
+# invisible it is to `git diff HEAD`.
+staged_suggest = make_suggest_repo("suggest-staged")
+(staged_suggest / "tracked.txt").write_text("edited\n")
+subprocess.run(["git", "-C", str(staged_suggest), "add", "tracked.txt"],
+               check=True, env=suggest_env)
+(staged_suggest / "tracked.txt").write_text("base\n")
+assert_suggestion(suggest(staged_suggest), 1, 2, "T0")
+
+# Moving a file out of bin/ still touches bin/, so the escalation has to see the old name.
+moved_suggest = make_suggest_repo("suggest-moved", tracked=("bin/tool",))
+subprocess.run(["git", "-C", str(moved_suggest), "mv", "bin/tool", "tool"],
+               check=True, env=suggest_env)
+assert suggest(moved_suggest)[2] == "tier: T1", suggest(moved_suggest)
+
+# An untracked nested repository is one listed path with nothing to count, not a read error.
+nested_suggest = make_suggest_repo("suggest-nested")
+(nested_suggest / "nested").mkdir()
+subprocess.run(["git", "-C", str(nested_suggest / "nested"), "init", "-q"],
+               check=True, env=suggest_env)
+assert_suggestion(suggest(nested_suggest), 1, 0, "T0")
+
+for index, core_path in enumerate((
+    "bin/review-bench", "bin/opencode-go", "bin/claudeb", "bin/codexb",
+    "bin/geminib", "llm-limits.sh",
+)):
+    core_suggest = make_suggest_repo(f"suggest-core-{index}")
+    full_path = core_suggest / core_path
+    full_path.parent.mkdir(parents=True, exist_ok=True)
+    full_path.write_text("true\n")
+    assert_suggestion(suggest(core_suggest), 1, 1, "T2")
+
+range_suggest = make_suggest_repo("suggest-range")
+range_base = subprocess.run(
+    ["git", "-C", str(range_suggest), "rev-parse", "HEAD"],
+    check=True, capture_output=True, text=True, env=suggest_env,
+).stdout.strip()
+(range_suggest / "range.txt").write_text("line\n" * 151)
+subprocess.run(["git", "-C", str(range_suggest), "add", "range.txt"],
+               check=True, env=suggest_env)
+subprocess.run(["git", "-C", str(range_suggest), "commit", "-qm", "range"],
+               check=True, env=suggest_env)
+range_head = subprocess.run(
+    ["git", "-C", str(range_suggest), "rev-parse", "HEAD"],
+    check=True, capture_output=True, text=True, env=suggest_env,
+).stdout.strip()
+range_lines = suggest(range_suggest, "--range", f"{range_base}..{range_head}")
+assert_suggestion(range_lines, 1, 151, "T2", committed=True)
+assert range_head in range_lines[3], range_lines
 
 print("review-bench-unit-ok")
 PY
@@ -1686,10 +1922,23 @@ run_help="$("$SCRIPT" run --help 2>&1)"
 assert contains "$run_help" "--repeat"
 assert contains "$run_help" "--verify"
 assert contains "$run_help" "--leg"
+review_help="$("$SCRIPT" review --help 2>&1)"
+assert contains "$review_help" "--tier"
+assert contains "$review_help" "{T0,T1,T2,T3}"
 leg_conflict="$("$SCRIPT" run 143fc2f --leg --raters oc-kimik3 2>&1 || true)"
 assert contains "$leg_conflict" "not allowed with argument --leg"
 oc_table="$("$SCRIPT" oc-models 2>&1)"
 assert contains "$oc_table" "measured capability"
 assert contains "$oc_table" "oc-grok45"
+tiers_table="$("$SCRIPT" tiers 2>&1)"
+for tier_budget in "T0 (2 min)" "T1 (6 min)" "T2 (10 min)" "T3 (20 min)"; do
+  assert contains "$tiers_table" "$tier_budget"
+done
+for cell in oc-kimik3 oc-grok45-low agy-pro-high-skill agy-flash35-medium-skill \
+  sol-low sol-medium agy-flash36-medium-skill opus-medium-skill sol-high \
+  opus-high-skill sonnet-medium-skill sol-xhigh sol-max opus-xhigh-skill \
+  sonnet-xhigh-skill; do
+  assert contains "$tiers_table" "$cell"
+done
 
-printf 'PASS: %s assertions; rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, and cross-side parallelism result assembly\n' "$asserts"
+printf 'PASS: %s assertions; canonical nested review tiers with no retired cell in them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, and cross-side parallelism result assembly\n' "$asserts"
