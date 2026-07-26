@@ -23,13 +23,11 @@ local function notify(title, msg, opts)
     end
 end
 
--- Init from reality: hs.reload wipes the flag while the apps keep running.
 local jumpUserProcessCommand = [[/usr/bin/pgrep -fl JumpConnect | /usr/bin/awk '$2 == "/Applications/Jump" && $3 == "Desktop" && $4 == "Connect.app/Contents/MacOS/JumpConnect" && $0 !~ /--service/ { found=1 } END { exit(found ? 0 : 1) }']]
-local _, jumpUserProcessRunning = hs.execute(jumpUserProcessCommand)
-local dummyStarted = hs.application.get("BetterDisplay") ~= nil and jumpUserProcessRunning == true
 local pending = {}
 local nextPendingId = 0
 local actionGeneration = 0
+local appActionTasks = {}
 
 local function showAutomationMenu()
     if _G.AutomationMenu and _G.AutomationMenu.show then
@@ -111,26 +109,74 @@ local function verifyApps(expectRunning, title, delay)
     end)
 end
 
+local function cancelAppActionTasks()
+    local tasks = {}
+    for task in pairs(appActionTasks) do
+        tasks[#tasks + 1] = task
+    end
+    appActionTasks = {}
+    for _, task in ipairs(tasks) do
+        if task:isRunning() then
+            task:terminate()
+        end
+    end
+end
+
+local function runAppTasks(specs, expectRunning, title, delay)
+    cancelAppActionTasks()
+    local generation = actionGeneration
+    local remaining = #specs
+
+    local function finishTask(task, exitCode)
+        if task then
+            appActionTasks[task] = nil
+        end
+        if generation ~= actionGeneration then
+            return
+        end
+        if exitCode ~= 0 then
+            print("WARNING: iPad app action failed:", title, exitCode)
+        end
+        remaining = remaining - 1
+        if remaining == 0 then
+            verifyApps(expectRunning, title, delay)
+        end
+    end
+
+    for _, spec in ipairs(specs) do
+        local task
+        task = hs.task.new(spec.path, function(exitCode)
+            finishTask(task, exitCode)
+        end, spec.args)
+        if task then
+            appActionTasks[task] = true
+        end
+        if not task or not task:start() then
+            finishTask(task, -1)
+        end
+    end
+end
+
 local function enableDummy()
     actionGeneration = actionGeneration + 1
-    dummyStarted = true
     print("ACTION: ENABLE_DUMMY")
     if _G.HandoffGuard and _G.HandoffGuard.forceEnable then
         _G.HandoffGuard.forceEnable()
     end
-    os.execute('open -a BetterDisplay')
-    os.execute('open -a "Jump Desktop Connect"')
+    runAppTasks({
+        { path = "/usr/bin/open", args = { "-a", "BetterDisplay" } },
+        { path = "/usr/bin/open", args = { "-a", "Jump Desktop Connect" } },
+    }, true, "iPad connected", 10)
     showAutomationMenu()
-    verifyApps(true, "iPad connected", 10)
 end
 
 local function disableDummy()
     actionGeneration = actionGeneration + 1
-    dummyStarted = false
     print("ACTION: DISABLE_DUMMY")
-    os.execute('osascript -e \'quit app "BetterDisplay"\'')
-    os.execute('osascript -e \'quit app "Jump Desktop Connect"\'')
-    verifyApps(false, "iPad disconnected", 8)
+    runAppTasks({
+        { path = "/usr/bin/osascript", args = { "-e", 'quit app "BetterDisplay"' } },
+        { path = "/usr/bin/osascript", args = { "-e", 'quit app "Jump Desktop Connect"' } },
+    }, false, "iPad disconnected", 8)
 end
 
 local function sidecarPresent(screens)
@@ -143,18 +189,65 @@ local function sidecarPresent(screens)
     return false
 end
 
+local inputDeviceRetryDelays = { 2, 5, 10 }
+local inputDeviceRetryTimer = nil
+local inputDeviceGeneration = 0
+
 local function switchInputDevice(device)
-    if not (_G.GptVoice and _G.GptVoice.sendCommand) then
-        print("WARNING: transcription input-device command unavailable")
-        return
+    inputDeviceGeneration = inputDeviceGeneration + 1
+    local generation = inputDeviceGeneration
+    if inputDeviceRetryTimer then
+        inputDeviceRetryTimer:stop()
+        inputDeviceRetryTimer = nil
     end
-    _G.GptVoice.sendCommand("input-device " .. device, function(reply)
-        if reply == "offline" then
-            print("WARNING: transcription input-device connection failed")
-        elseif tostring(reply):match("^err%s") then
-            print("WARNING: transcription input-device failed:", reply)
+
+    local attempt
+    attempt = function(attemptNumber)
+        if generation ~= inputDeviceGeneration then
+            return
         end
-    end)
+
+        local function scheduleRetry()
+            if generation ~= inputDeviceGeneration or inputDeviceRetryTimer then
+                return
+            end
+            local delay = inputDeviceRetryDelays[attemptNumber]
+            if not delay then
+                print("WARNING: transcription input-device retries exhausted:", device)
+                return
+            end
+            inputDeviceRetryTimer = hs.timer.doAfter(delay, function()
+                inputDeviceRetryTimer = nil
+                attempt(attemptNumber + 1)
+            end)
+        end
+
+        if not (_G.GptVoice and _G.GptVoice.sendCommand) then
+            print("WARNING: transcription input-device command unavailable")
+            scheduleRetry()
+            return
+        end
+
+        local started = _G.GptVoice.sendCommand("input-device " .. device, function(reply)
+            if generation ~= inputDeviceGeneration then
+                return
+            end
+            reply = tostring(reply)
+            if reply == "offline" then
+                print("WARNING: transcription input-device connection failed")
+                scheduleRetry()
+            elseif reply:match("^err%s") then
+                print("WARNING: transcription input-device failed:", reply)
+            elseif not reply:match("^ok") then
+                print("WARNING: transcription input-device unexpected reply:", reply)
+            end
+        end)
+        if not started then
+            scheduleRetry()
+        end
+    end
+
+    attempt(1)
 end
 
 local function ipadConnected()

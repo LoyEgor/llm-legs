@@ -160,8 +160,9 @@ end
 buildMenu = function()
     local claude = _G.ClaudeContinue
     local handoff = getHandoffGuard()
-    local ipadAutomation = _G.IpadAutomation
+    local ipadMode = _G.IpadMode
     local ipadOverlay = _G.IpadOverlay
+    local ipadManualAvailable = ipadMode and type(ipadMode.setManual) == "function"
     local handoffEnabled = handoff and handoff.isEnabledCached and handoff.isEnabledCached()
 
     if not claude then
@@ -212,13 +213,17 @@ buildMenu = function()
         { title = "-" },
         {
             title = "iPad Connected",
-            disabled = not ipadAutomation,
-            fn = ipadAutomation and ipadAutomation.ipadConnected or nil,
+            disabled = not ipadManualAvailable,
+            fn = ipadManualAvailable and function()
+                ipadMode.setManual(true)
+            end or nil,
         },
         {
             title = "iPad Disconnected",
-            disabled = not ipadAutomation,
-            fn = ipadAutomation and ipadAutomation.ipadDisconnected or nil,
+            disabled = not ipadManualAvailable,
+            fn = ipadManualAvailable and function()
+                ipadMode.setManual(false)
+            end or nil,
         },
         {
             title = "Handoff",

@@ -110,7 +110,10 @@ KB_BUNDLE_ID = "com.apple.inputmethod.AssistiveControl"
 # SIGKILL editors/pagers merely holding this file's path in their argv. Not
 # "bin/python": the venv stub execs the framework binary, so the live argv0
 # is .../Python.app/Contents/MacOS/Python.
-HELPER_CMD_RE = r"^[^ ]*[Pp]ython[^ ]* [^ ]*/ipad_overlay_app/overlay_app\.py$"
+HELPER_CMD_RE = (
+    r"^[^ ]*[Pp]ython[^ ]* [^ ]*/ipad_overlay_app/overlay_app\.py"
+    r"( --parent-pid [0-9]+)?$"
+)
 
 
 # Live display bounds from the window server, in Cocoa (bottom-left origin)
@@ -1099,10 +1102,12 @@ class OverlayApp:
                 log("control socket error: %r" % exc)
                 time.sleep(0.5)
 
-    def _watch_parent(self):
-        parent = os.getppid()
+    def _watch_parent(self, parent):
+        parent = parent or os.getppid()
         while True:
-            if os.getppid() != parent:
+            try:
+                os.kill(parent, 0)
+            except OSError:
                 log("parent died, exiting")
                 on_main(self._shutdown)
                 return
@@ -1138,11 +1143,11 @@ class OverlayApp:
             except (OSError, ValueError):
                 pass
 
-    def run(self, show_now=False):
+    def run(self, show_now=False, parent_pid=None):
         self._kill_stale_instances()
         threading.Thread(target=self._serve_control, daemon=True).start()
         if not show_now:
-            threading.Thread(target=self._watch_parent, daemon=True).start()
+            threading.Thread(target=self._watch_parent, args=(parent_pid,), daemon=True).start()
         self._ensure_voice_polling()
         if show_now:
             on_main(self.show)
@@ -1170,12 +1175,13 @@ def main():
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--foreground", action="store_true",
                         help="show immediately (manual testing without Hammerspoon)")
+    parser.add_argument("--parent-pid", type=int)
     args = parser.parse_args()
 
     app = OverlayApp()
     if args.smoke:
         return app.smoke_test()
-    app.run(show_now=args.foreground)
+    app.run(show_now=args.foreground, parent_pid=args.parent_pid)
     return 0
 
 

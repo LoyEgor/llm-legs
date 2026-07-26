@@ -5,6 +5,7 @@ local PYTHON_PATH = "/Volumes/Work/Projects/transcriptions-gpt/.venv/bin/python"
 local SOCK_PATH = os.getenv("HOME") .. "/.local/state/ipad-overlay/control.sock"
 
 local task = nil
+local attachedHelper = false
 local visible = false
 local relaunch_backoff = 0.5
 local relaunch_max_backoff = 2.0
@@ -17,42 +18,74 @@ local onChangeHooks = {}
 local pendingSockets = {}
 local retryTimers = {}
 local retrySeq = 0
+local commandGeneration = 0
 
 -- hs.task stdin delivers EOF to the child immediately, so commands go over
 -- the helper's unix socket. Delivery is ack-based: connecting to a stale
 -- socket file of a dead helper "succeeds" but never answers, so only a
 -- reply counts and anything else retries (also covers the startup window).
 local sendCommand
-sendCommand = function(cmd, attempt)
+sendCommand = function(cmd, attempt, generation, callback)
     attempt = attempt or 1
+    generation = generation or commandGeneration
+    if generation ~= commandGeneration then
+        return
+    end
     local finished = false
     local sock
+    local timeoutKey
 
-    local function finish(delivered)
+    local function finish(delivered, reply)
         if finished then
             return
         end
         finished = true
+        if timeoutKey then
+            local timer = retryTimers[timeoutKey]
+            if timer then
+                timer:stop()
+                retryTimers[timeoutKey] = nil
+            end
+            timeoutKey = nil
+        end
         if sock then
             pcall(function() sock:disconnect() end)
             pendingSockets[sock] = nil
         end
-        if not delivered and attempt < 8 then
+        local willRetry = not delivered and attempt < 8 and generation == commandGeneration
+        if callback and (delivered or not willRetry) then
+            pcall(callback, delivered and reply or nil)
+        end
+        if willRetry then
             retrySeq = retrySeq + 1
             local key = "retry" .. retrySeq
             retryTimers[key] = hs.timer.doAfter(0.35 * attempt, function()
                 retryTimers[key] = nil
-                sendCommand(cmd, attempt + 1)
+                sendCommand(cmd, attempt + 1, generation, callback)
             end)
         end
     end
 
     local ok = pcall(function()
         sock = hs.socket.new(function(data)
-            finish(data ~= nil and #tostring(data) > 0)
+            local reply = tostring(data or ""):gsub("%s+$", "")
+            finish(reply ~= "", reply)
         end)
         pendingSockets[sock] = true
+        retrySeq = retrySeq + 1
+        timeoutKey = "timeout" .. retrySeq
+        retryTimers[timeoutKey] = hs.timer.doAfter(1.2, function()
+            if timeoutKey then
+                retryTimers[timeoutKey] = nil
+            end
+            timeoutKey = nil
+            finish(false)
+        end)
         local connected = sock:connect(SOCK_PATH, function()
+            if generation ~= commandGeneration then
+                finish(true)
+                return
+            end
             pcall(function()
                 sock:write(cmd .. "\n")
                 sock:read("\n")
@@ -61,12 +94,6 @@ sendCommand = function(cmd, attempt)
         if not connected then
             error("connect failed")
         end
-        retrySeq = retrySeq + 1
-        local tkey = "timeout" .. retrySeq
-        retryTimers[tkey] = hs.timer.doAfter(1.2, function()
-            retryTimers[tkey] = nil
-            finish(false)
-        end)
     end)
     if not ok then
         finish(false)
@@ -74,15 +101,21 @@ sendCommand = function(cmd, attempt)
 end
 IpadOverlay._sendCommand = sendCommand
 
--- A ghost helper (surviving hs.reload, or one still dying from an idle
--- quit) owns the control socket and would ACK the spawn-time "show" just
--- before the new helper's own sweep kills it — the command is lost and the
--- panel never appears. Clear ghosts synchronously before spawning. The
--- anchored pattern matches only the python helper invocation (argv0 is the
--- framework binary .../MacOS/Python — the venv stub execs it), never an
--- editor/pager holding the file path in its argv.
-local function killStrayHelpers()
-    hs.execute([[pkill -9 -f '^[^ ]*[Pp]ython[^ ]* [^ ]*/ipad_overlay_app/overlay_app\.py$' 2>/dev/null]])
+local function advanceCommandGeneration()
+    commandGeneration = commandGeneration + 1
+    for key, timer in pairs(retryTimers) do
+        timer:stop()
+        retryTimers[key] = nil
+    end
+    for sock in pairs(pendingSockets) do
+        pcall(function() sock:disconnect() end)
+        pendingSockets[sock] = nil
+    end
+    return commandGeneration
+end
+
+local function helperPresent()
+    return task ~= nil or attachedHelper
 end
 
 -- Visibility follows iPad connection automatically (connect shows,
@@ -91,6 +124,7 @@ end
 local idleQuitTimer = nil
 
 function IpadOverlay.show()
+    local generation = advanceCommandGeneration()
     if idleQuitTimer then
         idleQuitTimer:stop()
         idleQuitTimer = nil
@@ -102,18 +136,22 @@ function IpadOverlay.show()
     -- A show is fresh intent: restore the full crash-relaunch budget even if
     -- an earlier crash loop exhausted it.
     relaunch_attempts = 0
+    visible = true
 
-    if not task then
+    if not helperPresent() then
         IpadOverlay._launch_helper()
-    end
-
-    if task then
-        visible = true
-        sendCommand("show")
+    else
+        sendCommand("show", 1, generation, function(reply)
+            if not reply and generation == commandGeneration and visible and attachedHelper and not task then
+                attachedHelper = false
+                IpadOverlay._launch_helper()
+            end
+        end)
     end
 end
 
 function IpadOverlay.hide()
+    local generation = advanceCommandGeneration()
     visible = false
     -- A relaunch pending from a crash-while-visible would otherwise respawn
     -- a hidden helper with no idle-quit armed.
@@ -121,8 +159,8 @@ function IpadOverlay.hide()
         relaunch_timer:stop()
         relaunch_timer = nil
     end
-    if task then
-        sendCommand("hide")
+    if helperPresent() then
+        sendCommand("hide", 1, generation)
         -- The helper must cost nothing while the overlay stays hidden (no
         -- iPad connected): quit it entirely after a grace period; show()
         -- respawns it.
@@ -131,15 +169,16 @@ function IpadOverlay.hide()
         end
         idleQuitTimer = hs.timer.doAfter(60, function()
             idleQuitTimer = nil
-            if not visible and task then
+            if not visible and generation == commandGeneration and helperPresent() then
                 -- Single attempt (attempt=8 disables retries): a retry left
                 -- in flight could kill a helper that show() just respawned;
                 -- a lost quit merely leaves the helper idle until next time.
-                sendCommand("quit", 8)
+                sendCommand("quit", 8, generation)
                 -- Drop the handle now: a show() landing before the helper
                 -- finishes dying must respawn, not talk to a corpse (the
                 -- pre-spawn stray sweep reaps it if the quit got lost).
                 task = nil
+                attachedHelper = false
             end
         end)
     end
@@ -165,13 +204,25 @@ function IpadOverlay.onChange(callback)
 end
 
 function IpadOverlay._launch_helper()
-    killStrayHelpers()
-    local task_obj = hs.task.new(PYTHON_PATH, function(exit_code)
-        IpadOverlay._on_helper_exit(exit_code)
-    end, { HELPER_PATH })
+    attachedHelper = false
+    local command = '/usr/bin/nohup "' .. PYTHON_PATH .. '" "' .. HELPER_PATH
+        .. '" --parent-pid ' .. tostring(hs.processInfo.processID) .. ' >/dev/null 2>&1 &'
+    local taskObj
+    taskObj = hs.task.new("/bin/sh", function(exitCode)
+        if task == taskObj then
+            task = nil
+        end
+        if exitCode ~= 0 then
+            attachedHelper = false
+            IpadOverlay._on_helper_exit(exitCode)
+        end
+    end, { "-c", command })
 
-    if task_obj:start() then
-        task = task_obj
+    if taskObj then
+        task = taskObj
+    end
+    if taskObj and taskObj:start() then
+        attachedHelper = true
         -- Reset the crash-loop counter only after the helper proves stable;
         -- resetting at launch would make the retry cap unreachable.
         if backoff_reset_timer then
@@ -181,8 +232,11 @@ function IpadOverlay._launch_helper()
             relaunch_attempts = 0
         end)
         if visible then
-            sendCommand("show")
+            sendCommand("show", 1, commandGeneration)
         end
+    else
+        task = nil
+        IpadOverlay._on_helper_exit(-1)
     end
 end
 
@@ -190,6 +244,7 @@ function IpadOverlay._on_helper_exit(exit_code)
     if task then
         task = nil
     end
+    attachedHelper = false
 
     if visible and relaunch_attempts < max_relaunch_attempts then
         relaunch_attempts = relaunch_attempts + 1
@@ -218,17 +273,21 @@ function IpadOverlay._notifyChange()
     end
 end
 
-function IpadOverlay.init()
-    if _G.IpadMode then
-        if _G.IpadMode.isOn() then
-            IpadOverlay.show()
-        else
-            -- After hs.reload with the mode off nothing else would ever
-            -- reap a surviving helper (parent pid unchanged, no task
-            -- handle): it stays a visible orphan until the next show.
-            killStrayHelpers()
+local function attachExistingHelper()
+    local generation = commandGeneration
+    sendCommand("status", 8, generation, function(reply)
+        if generation ~= commandGeneration then
+            return
         end
-    end
+        if reply == "visible" or reply == "hidden" then
+            attachedHelper = true
+            visible = reply == "visible"
+        end
+    end)
+end
+
+function IpadOverlay.init()
+    attachExistingHelper()
 end
 
 _G.IpadOverlay = IpadOverlay

@@ -8,6 +8,7 @@ local liveProxyPids = {}
 local offsets = {}
 local partialLines = {}
 local previousSignals = nil
+local manualOverride = nil
 
 local function normalizeDir(path)
     return path:sub(-1) == "/" and path or (path .. "/")
@@ -21,6 +22,19 @@ local function logChange(value, reason)
     end
 end
 
+local function runAction(value)
+    if not _G.IpadAutomation then
+        return
+    end
+    local handler = value and _G.IpadAutomation.ipadConnected or _G.IpadAutomation.ipadDisconnected
+    if handler then
+        local ok, err = pcall(handler)
+        if not ok then
+            print("ERROR: iPad transition action failed:", err)
+        end
+    end
+end
+
 local function apply(value, reason)
     value = value == true
     if on == value then
@@ -28,15 +42,7 @@ local function apply(value, reason)
     end
     on = value
     logChange(on, reason)
-    if _G.IpadAutomation then
-        local handler = on and _G.IpadAutomation.ipadConnected or _G.IpadAutomation.ipadDisconnected
-        if handler then
-            local ok, err = pcall(handler)
-            if not ok then
-                print("ERROR: iPad transition action failed:", err)
-            end
-        end
-    end
+    runAction(on)
     return true
 end
 
@@ -193,11 +199,38 @@ end
 
 function IpadMode.recompute(reason, sidecar)
     local signals = signalSnapshot(sidecar)
+    local detected = derivedOn(signals)
+    if previousSignals == nil then
+        previousSignals = signals
+        on = detected
+        logChange(on, reason or "initial signals")
+        return on
+    end
     if signalsEqual(previousSignals, signals) then
         return on
     end
     previousSignals = signals
-    apply(derivedOn(signals), reason or "automatic signal")
+    if manualOverride ~= nil then
+        if detected == manualOverride then
+            manualOverride = nil
+        end
+        return on
+    end
+    apply(detected, reason or "automatic signal")
+    return on
+end
+
+function IpadMode.setManual(value)
+    value = value == true
+    manualOverride = value
+    if previousSignals and derivedOn(previousSignals) == value then
+        manualOverride = nil
+    end
+    if on ~= value then
+        on = value
+        logChange(on, "manual")
+    end
+    runAction(value)
     return on
 end
 

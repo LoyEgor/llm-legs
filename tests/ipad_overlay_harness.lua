@@ -2,150 +2,215 @@ local source = debug.getinfo(1, "S").source
 local root = source:match("^@(.+)/tests/[^/]+$")
 assert(root, "harness path is unavailable")
 
-local env = setmetatable({}, { __index = _G })
-env._G = env
-
-local task_launches = {}
-local task_exit_callbacks = {}
-local socket_writes = {}
-local exec_calls = {}
-
-env.hs = {
-    execute = function(cmd)
-        table.insert(exec_calls, cmd)
-        return "", true, "exit", 0
-    end,
-    timer = {
-        -- Immediate execution keeps the harness synchronous; retry paths
-        -- never trigger because the socket mock always connects. Long timers
-        -- (idle-quit, backoff reset) must NOT fire inline or hide() would
-        -- send quit synchronously.
-        doAfter = function(delay, fn)
-            if delay < 5 then
-                fn()
-            end
-            return { stop = function(self) end }
+local function newHarness(helperStatus)
+    local state = {
+        execCalls = {},
+        helperStatus = helperStatus,
+        socketWrites = {},
+        taskExitCallbacks = {},
+        taskLaunches = {},
+        timers = {},
+        failConnects = 0,
+    }
+    local env = setmetatable({}, { __index = _G })
+    env._G = env
+    env.hs = {
+        execute = function(cmd)
+            state.execCalls[#state.execCalls + 1] = cmd
+            return "", true, "exit", 0
         end,
-    },
-    settings = {
-        storage = {},
-        get = function(key)
-            return env.hs.settings.storage[key]
-        end,
-        set = function(key, value)
-            env.hs.settings.storage[key] = value
-        end,
-    },
-    task = {
-        new = function(cmd, exit_callback, args)
-            local t = {
-                _cmd = cmd,
-                _args = args,
-                start = function(self)
-                    table.insert(task_launches, { cmd = cmd, args = args })
-                    table.insert(task_exit_callbacks, exit_callback)
+        processInfo = {
+            processID = 123,
+        },
+        timer = {
+            doAfter = function(delay, fn)
+                local timer = {
+                    delay = delay,
+                    fn = fn,
+                    stopped = false,
+                    stop = function(self)
+                        self.stopped = true
+                    end,
+                }
+                state.timers[#state.timers + 1] = timer
+                return timer
+            end,
+        },
+        task = {
+            new = function(cmd, exitCallback, args)
+                return {
+                    start = function()
+                        state.taskLaunches[#state.taskLaunches + 1] = { cmd = cmd, args = args }
+                        state.taskExitCallbacks[#state.taskExitCallbacks + 1] = exitCallback
+                        state.helperStatus = "hidden"
+                        return true
+                    end,
+                }
+            end,
+        },
+        socket = {
+            new = function(readCallback)
+                local sock = {}
+                sock.connect = function(_, _, callback)
+                    if state.failConnects > 0 then
+                        state.failConnects = state.failConnects - 1
+                        return false
+                    end
+                    if state.helperStatus == nil then
+                        return false
+                    end
+                    callback()
                     return true
-                end,
-            }
-            return t
-        end,
-    },
-    socket = {
-        new = function(readCallback)
-            local sock = { _readCallback = readCallback }
-            sock.connect = function(self, path, fn)
-                sock._path = path
-                fn()
-                return true
+                end
+                sock.write = function(_, data)
+                    sock.command = data:gsub("%s+$", "")
+                    state.socketWrites[#state.socketWrites + 1] = data
+                end
+                sock.read = function()
+                    if sock.command == "status" then
+                        readCallback(state.helperStatus .. "\n")
+                    elseif sock.command == "show" then
+                        state.helperStatus = "visible"
+                        readCallback("ok\n")
+                    elseif sock.command == "hide" then
+                        state.helperStatus = "hidden"
+                        readCallback("ok\n")
+                    elseif sock.command == "quit" then
+                        state.helperStatus = nil
+                        readCallback("ok\n")
+                    end
+                end
+                sock.disconnect = function() end
+                return sock
+            end,
+        },
+    }
+
+    local chunk, err = loadfile(root .. "/hammerspoon/config/ipad_overlay.lua", "t", env)
+    assert(chunk, err)
+    return chunk(), state
+end
+
+local function retryTimerCount(module)
+    for index = 1, 20 do
+        local name, value = debug.getupvalue(module._sendCommand, index)
+        if name == "retryTimers" then
+            local count = 0
+            for _ in pairs(value) do
+                count = count + 1
             end
-            sock.write = function(self, data)
-                table.insert(socket_writes, data)
-            end
-            sock.read = function(self, delim)
-                sock._readCallback("ok\n")
-            end
-            sock.disconnect = function(self) end
-            return sock
-        end,
-    },
-}
+            return count
+        end
+    end
+    error("retryTimers upvalue not found")
+end
 
-env._G.IpadMode = {
-    _isOn = false,
-    isOn = function() return env._G.IpadMode._isOn end,
-}
+local function nextTimer(state, predicate)
+    for _, timer in ipairs(state.timers) do
+        if not timer.stopped and not timer.fired and predicate(timer.delay) then
+            return timer
+        end
+    end
+    return nil
+end
 
-local chunk, err = loadfile(root .. "/hammerspoon/config/ipad_overlay.lua", "t", env)
-assert(chunk, err)
-local module = chunk()
+local function fire(timer)
+    assert(timer, "timer unavailable")
+    timer.fired = true
+    timer.fn()
+end
 
-assert(module.show and module.hide and module.isShown and module.toggle
-    and module.onChange, "module misses required functions")
-print("✓ Module has required functions")
+local module, state = newHarness(nil)
+assert(module.show and module.hide and module.isShown and module.toggle and module.onChange)
+assert(module.isShown() == false)
+assert(#state.taskLaunches == 0 and #state.execCalls == 0)
+assert(retryTimerCount(module) == 0)
+print("✓ init has no lifecycle side effects")
 
-assert(module.isShown() == false, "starts hidden while IpadMode is off")
-assert(#task_launches == 0, "init with IpadMode off must not spawn the helper")
-print("✓ starts hidden, no helper spawn")
-
-assert(#exec_calls >= 1 and exec_calls[1]:match("pkill"),
-    "init with IpadMode off must sweep stray helpers")
-print("✓ init with iPad mode off sweeps stray helpers")
-
--- Manual toggle must force-show even without an iPad.
 module.toggle()
-assert(module.isShown() == true, "toggle must show without an iPad")
-assert(#task_launches == 1, "force-show must spawn the helper")
-assert(task_launches[1].cmd:match("python"), "helper runs under the venv python")
-assert(socket_writes[#socket_writes] == "show\n", "spawn must be followed by a show command")
-print("✓ manual toggle force-shows without iPad")
+assert(module.isShown() == true)
+assert(#state.taskLaunches == 1 and #state.execCalls == 0)
+assert(state.taskLaunches[1].cmd == "/bin/sh")
+assert(state.taskLaunches[1].args[2]:find("--parent-pid 123", 1, true))
+assert(state.socketWrites[#state.socketWrites] == "show\n")
+assert(retryTimerCount(module) == 0)
+print("✓ manual show launches once without timer leaks")
 
-local launches_before = #task_launches
-socket_writes = {}
+local launchesBefore = #state.taskLaunches
 module.show()
-assert(#task_launches == launches_before, "second show must not respawn")
-assert(socket_writes[#socket_writes] == "show\n", "second show still sends the command")
-print("✓ show() does not respawn on second call")
+assert(#state.taskLaunches == launchesBefore)
+assert(state.socketWrites[#state.socketWrites] == "show\n")
+assert(retryTimerCount(module) == 0)
+print("✓ repeated show reuses the helper")
 
-socket_writes = {}
-module.toggle()
-assert(module.isShown() == false, "toggle back must hide")
-assert(socket_writes[#socket_writes] == "hide\n", "hide must send hide command")
-print("✓ toggle back hides")
+module.hide()
+assert(module.isShown() == false)
+assert(state.socketWrites[#state.socketWrites] == "hide\n")
+assert(retryTimerCount(module) == 0)
+print("✓ hide succeeds without timer leaks")
 
-local callback_called = false
-module.onChange(function() callback_called = true end)
+state.failConnects = 1
+local writesBefore = #state.socketWrites
+module.show()
+local staleRetry = nextTimer(state, function(delay)
+    return delay == 0.35
+end)
+assert(staleRetry)
+module.hide()
+assert(staleRetry.stopped)
+fire(staleRetry)
+assert(#state.socketWrites == writesBefore + 1)
+assert(state.socketWrites[#state.socketWrites] == "hide\n")
+assert(module.isShown() == false)
+print("✓ hide invalidates a deferred show retry")
+
+local callbackCalled = false
+module.onChange(function()
+    callbackCalled = true
+end)
 module.toggle()
-assert(callback_called, "onChange callback should fire on toggle")
+assert(callbackCalled)
 print("✓ onChange callbacks fire")
 
--- Unexpected death while visible: exit callback must relaunch (timers run
--- synchronously in this harness).
-module.show()
-local launches = #task_launches
-socket_writes = {}
-task_exit_callbacks[#task_exit_callbacks](1)
-assert(#task_launches == launches + 1, "helper death while visible must relaunch")
-assert(socket_writes[#socket_writes] == "show\n", "relaunch must re-show")
-print("✓ helper death while visible respawns")
+state.helperStatus = nil
+local launches = #state.taskLaunches
+module._on_helper_exit(1)
+fire(nextTimer(state, function(delay)
+    return delay <= 2
+end))
+assert(#state.taskLaunches == launches + 1)
+assert(state.socketWrites[#state.socketWrites] == "show\n")
+print("✓ visible helper death respawns")
 
--- Death while hidden must NOT relaunch.
 module.hide()
-launches = #task_launches
-task_exit_callbacks[#task_exit_callbacks](0)
-assert(#task_launches == launches, "helper death while hidden must not relaunch")
-print("✓ helper death while hidden stays down")
+launches = #state.taskLaunches
+state.helperStatus = nil
+module._on_helper_exit(0)
+assert(nextTimer(state, function(delay)
+    return delay <= 2
+end) == nil)
+assert(#state.taskLaunches == launches)
+print("✓ hidden helper death stays down")
 
--- Every spawn must be preceded by a stray-helper sweep.
-assert(#exec_calls > #task_launches, "each launch must sweep strays first")
-print("✓ launches sweep stray helpers")
-
--- Crash-loop exhaustion must clear visible so isShown()/menu don't lie
--- (backoff timers <5s run inline here; the 10s attempt reset does not).
 module.show()
 for _ = 1, 4 do
-    task_exit_callbacks[#task_exit_callbacks](1)
+    state.helperStatus = nil
+    module._on_helper_exit(1)
+    local timer = nextTimer(state, function(delay)
+        return delay <= 2
+    end)
+    if timer then
+        fire(timer)
+    end
 end
-assert(module.isShown() == false, "exhausted crash loop must clear visible")
+assert(module.isShown() == false)
 print("✓ exhausted crash loop clears visible")
+
+local attachedModule, attachedState = newHarness("visible")
+assert(attachedModule.isShown() == true)
+assert(#attachedState.taskLaunches == 0 and #attachedState.execCalls == 0)
+assert(attachedState.socketWrites[1] == "status\n")
+assert(retryTimerCount(attachedModule) == 0)
+print("✓ init re-attaches to a visible helper without restart")
 
 print("All iPad overlay tests passed")
