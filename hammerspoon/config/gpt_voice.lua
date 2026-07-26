@@ -112,6 +112,8 @@ local function sendCommand(command, callback)
     return true
 end
 
+GptVoice.sendCommand = sendCommand
+
 local function stopPoller()
     if pollTimer then
         pollTimer:stop()

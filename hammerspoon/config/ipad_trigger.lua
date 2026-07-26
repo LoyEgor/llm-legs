@@ -28,13 +28,11 @@ local function notifyLog(line)
     end
 end
 
--- What the monitor state machine believes right now, appended to Sidecar verdicts so a
--- connect notification also reports the display context it landed in.
-local function monitorStateSuffix()
-    if _G.MonitorAutomation and _G.MonitorAutomation.stateLine then
-        local ok, line = pcall(_G.MonitorAutomation.stateLine)
-        if ok and line then
-            return "\n" .. line
+local function ipadPresenceSuffix()
+    if _G.IpadMode and _G.IpadMode.isOn then
+        local ok, present = pcall(_G.IpadMode.isOn)
+        if ok then
+            return "\niPad present: " .. tostring(present)
         end
     end
     return ""
@@ -394,11 +392,11 @@ local function finishSidecarRun(runId, connected, message)
     if connected then
         logSidecar("verified", message)
         hs.alert.show("Sidecar: connected")
-        notify("Sidecar OK", message .. monitorStateSuffix(), { priority = "high" })
+        notify("Sidecar OK", message .. ipadPresenceSuffix(), { priority = "high" })
     else
         logSidecar("failed", message)
         hs.alert.show("Sidecar failed")
-        notify("Sidecar FAILED", message .. monitorStateSuffix(), { priority = "high" })
+        notify("Sidecar FAILED", message .. ipadPresenceSuffix(), { priority = "high" })
     end
 
     dispatch(resultSubscribers, connected, message)
@@ -724,7 +722,7 @@ local function startSidecarRun()
         lastResult = "already connected"
         traceReset("CONNECTED")
         logSidecar("request", "already-connected")
-        notify("Sidecar OK", "Already connected." .. monitorStateSuffix(), { priority = "high" })
+        notify("Sidecar OK", "Already connected." .. ipadPresenceSuffix(), { priority = "high" })
         -- Resolve any observer still waiting on an earlier in-flight run so its attempt
         -- unsubscribes and cannot stay IN PROGRESS forever.
         dispatch(resultSubscribers, true, "already connected")
@@ -829,11 +827,11 @@ local function statusText()
     for _, screen in ipairs(hs.screen.allScreens()) do
         screenNames[#screenNames + 1] = screen:name() or ""
     end
-    local state = _G.MonitorAutomation and _G.MonitorAutomation.getState
-        and _G.MonitorAutomation.getState() or "UNKNOWN"
+    local ipadPresent = _G.IpadMode and _G.IpadMode.isOn
+        and _G.IpadMode.isOn() or false
     local recent = _G.Notify and _G.Notify.recent and _G.Notify.recent() or ""
     return table.concat({
-        "state: " .. tostring(state),
+        "ipadPresent: " .. tostring(ipadPresent),
         "screens: " .. table.concat(screenNames, ", "),
         "BetterDisplay: " .. (appRunning("BetterDisplay", "BetterDisplay.app") and "yes" or "no"),
         "Jump Desktop Connect: " .. (appRunning("Jump Desktop Connect", "JumpConnect") and "yes" or "no"),
@@ -881,7 +879,7 @@ server:setCallback(function(method, path, headers, body)
             runVerdict = "FAILED"
             print("[ipad-trigger] sidecar start exception:", outcome)
             logSidecar("failed", tostring(outcome))
-            notify("Sidecar FAILED", tostring(outcome) .. monitorStateSuffix(), { priority = "high" })
+            notify("Sidecar FAILED", tostring(outcome) .. ipadPresenceSuffix(), { priority = "high" })
             return response("ERROR: " .. tostring(outcome) .. "\n", 500)
         end
 

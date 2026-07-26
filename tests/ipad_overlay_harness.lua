@@ -73,7 +73,6 @@ env.hs = {
 env._G.IpadMode = {
     _isOn = false,
     isOn = function() return env._G.IpadMode._isOn end,
-    onChange = function(fn) env._G.IpadMode._hook = fn end,
 }
 
 local chunk, err = loadfile(root .. "/hammerspoon/config/ipad_overlay.lua", "t", env)
@@ -112,19 +111,6 @@ module.toggle()
 assert(module.isShown() == false, "toggle back must hide")
 assert(socket_writes[#socket_writes] == "hide\n", "hide must send hide command")
 print("✓ toggle back hides")
-
--- iPad connect / disconnect drives visibility automatically.
-env._G.IpadMode._isOn = true
-socket_writes = {}
-env._G.IpadMode._hook()
-assert(module.isShown() == true, "iPad connect must show")
-assert(socket_writes[#socket_writes] == "show\n", "iPad connect must send show")
-env._G.IpadMode._isOn = false
-socket_writes = {}
-env._G.IpadMode._hook()
-assert(module.isShown() == false, "iPad disconnect must hide")
-assert(socket_writes[#socket_writes] == "hide\n", "iPad disconnect must send hide")
-print("✓ iPad connect/disconnect drives visibility")
 
 local callback_called = false
 module.onChange(function() callback_called = true end)

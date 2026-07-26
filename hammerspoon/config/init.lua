@@ -23,7 +23,6 @@ local function notify(title, msg, opts)
     end
 end
 
-local currentState = nil
 -- Init from reality: hs.reload wipes the flag while the apps keep running.
 local jumpUserProcessCommand = [[/usr/bin/pgrep -fl JumpConnect | /usr/bin/awk '$2 == "/Applications/Jump" && $3 == "Desktop" && $4 == "Connect.app/Contents/MacOS/JumpConnect" && $0 !~ /--service/ { found=1 } END { exit(found ? 0 : 1) }']]
 local _, jumpUserProcessRunning = hs.execute(jumpUserProcessCommand)
@@ -31,7 +30,6 @@ local dummyStarted = hs.application.get("BetterDisplay") ~= nil and jumpUserProc
 local pending = {}
 local nextPendingId = 0
 local actionGeneration = 0
-local unknownNotified = {}
 
 local function showAutomationMenu()
     if _G.AutomationMenu and _G.AutomationMenu.show then
@@ -48,14 +46,12 @@ local function virtualDisplayPresent()
     return false
 end
 
--- Compact one-line snapshot of what the state machine currently believes, embedded into the
--- notifications of events that need it (monitor/Jump/Sidecar).
-local function monitorStateLine()
+local function displayStateLine()
     local screenNames = {}
     for _, screen in ipairs(hs.screen.allScreens()) do
         screenNames[#screenNames + 1] = screen:name() or ""
     end
-    return "Monitor: " .. tostring(currentState) .. " | screens: " .. table.concat(screenNames, ", ")
+    return "Screens: " .. table.concat(screenNames, ", ")
 end
 
 local function verifyApps(expectRunning, title, delay)
@@ -91,7 +87,7 @@ local function verifyApps(expectRunning, title, delay)
                 "Jump Desktop Connect: " .. (jumpRunning == expectRunning and expected or unexpected),
                 "Virtual display: " .. (virtualRunning and virtualExpected or virtualUnexpected),
             }
-            notify(title, table.concat(lines, "\n") .. "\n" .. monitorStateLine(), { priority = "high" })
+            notify(title, table.concat(lines, "\n") .. "\n" .. displayStateLine(), { priority = "high" })
         end, { "-c", jumpUserProcessCommand })
         if not entry.task or not entry.task:start() then
             pending[pendingId] = nil
@@ -109,7 +105,7 @@ local function verifyApps(expectRunning, title, delay)
             notify(title, "BetterDisplay: " .. (betterDisplayRunning and "✓ запущен" or "✗ не запущен")
                 .. "\nJump Desktop Connect: ✗ проверка не выполнена"
                 .. "\nVirtual display: " .. virtualStatus
-                .. "\n" .. monitorStateLine(),
+                .. "\n" .. displayStateLine(),
                 { priority = "high" })
         end
     end)
@@ -125,7 +121,7 @@ local function enableDummy()
     os.execute('open -a BetterDisplay')
     os.execute('open -a "Jump Desktop Connect"')
     showAutomationMenu()
-    verifyApps(true, "Monitor OFF action", 10)
+    verifyApps(true, "iPad connected", 10)
 end
 
 local function disableDummy()
@@ -134,136 +130,57 @@ local function disableDummy()
     print("ACTION: DISABLE_DUMMY")
     os.execute('osascript -e \'quit app "BetterDisplay"\'')
     os.execute('osascript -e \'quit app "Jump Desktop Connect"\'')
-    verifyApps(false, "Monitor ON action", 8)
+    verifyApps(false, "iPad disconnected", 8)
 end
 
-local function physicalMonitorPresent()
-    for _, s in ipairs(hs.screen.allScreens()) do
-        if s:name() == "PL3461WQ" then
+local function sidecarPresent(screens)
+    for _, screen in ipairs(screens) do
+        local name = screen:name() or ""
+        if name:find("Sidecar", 1, true) or name:find("iPad", 1, true) then
             return true
         end
     end
-
     return false
 end
 
-local function screenStateSnapshot(screens)
-    local hasPhysicalOn = false
-    local hasPhysicalOff = false
-    local hasSidecar = false
-
-    for _, screen in ipairs(screens) do
-        local name = screen:name()
-        if name == "PL3461WQ" then
-            hasPhysicalOn = true
-        elseif name == "" then
-            hasPhysicalOff = true
-        elseif (name or ""):find("Sidecar", 1, true) or (name or ""):find("iPad", 1, true) then
-            hasSidecar = true
-        end
-    end
-
-    if hasPhysicalOn then
-        return "MONITOR_ON", hasSidecar
-    elseif hasPhysicalOff then
-        return "MONITOR_OFF", hasSidecar
-    end
-    return "NO_PHYSICAL", hasSidecar
-end
-
-local function cancelDummyConfirmation()
-    local monitor = _G.MonitorAutomation
-    if monitor and monitor.dummyConfirmTimer then
-        monitor.dummyConfirmTimer:stop()
-        monitor.dummyConfirmTimer = nil
-    end
-end
-
-local function armDummyConfirmation()
-    local monitor = _G.MonitorAutomation
-    if not monitor or monitor.dummyConfirmTimer then
+local function switchInputDevice(device)
+    if not (_G.GptVoice and _G.GptVoice.sendCommand) then
+        print("WARNING: transcription input-device command unavailable")
         return
     end
-
-    -- Confirm against a fresh screen snapshot after transient Sidecar handshakes settle.
-    monitor.dummyConfirmTimer = hs.timer.doAfter(10, function()
-        monitor.dummyConfirmTimer = nil
-        local confirmedState, confirmedSidecar = screenStateSnapshot(hs.screen.allScreens())
-        if confirmedState ~= "MONITOR_ON" and not confirmedSidecar and not dummyStarted then
-            local sidecarInFlight = _G.IpadTrigger and _G.IpadTrigger.isInFlight
-                and _G.IpadTrigger.isInFlight()
-            if sidecarInFlight then
-                armDummyConfirmation()
-            else
-                enableDummy()
-            end
+    _G.GptVoice.sendCommand("input-device " .. device, function(reply)
+        if reply == "offline" then
+            print("WARNING: transcription input-device connection failed")
+        elseif tostring(reply):match("^err%s") then
+            print("WARNING: transcription input-device failed:", reply)
         end
     end)
 end
 
-local previousSidecar = nil
-
-local function evaluateScreenState()
-    local screens = hs.screen.allScreens()
-    local newState, hasSidecar = screenStateSnapshot(screens)
-    local stateChanged = newState ~= currentState
-    local unknownPresent = {}
-
-    for _, s in ipairs(screens) do
-        local name = s:name()
-
-        if name ~= "PL3461WQ" and name ~= "" and name ~= "Virtual 4:3"
-            and not (name or ""):find("Sidecar", 1, true)
-            and not (name or ""):find("iPad", 1, true) then
-            print("STATE: UNKNOWN_SCREEN:", name)
-            local unknownName = tostring(name)
-            unknownPresent[unknownName] = true
-            if not unknownNotified[unknownName] then
-                unknownNotified[unknownName] = true
-                notify("Unknown screen", "Неизвестный экран: " .. unknownName, { priority = "high" })
-            end
-        end
+local function ipadConnected()
+    enableDummy()
+    hs.execute([[open "sonobus://aoo.sonobus.net:10998/?g=egor-mic"]])
+    if _G.IpadOverlay then
+        _G.IpadOverlay.show()
     end
+    switchInputDevice("BlackHole 2ch")
+end
 
-    for name in pairs(unknownNotified) do
-        if not unknownPresent[name] then
-            unknownNotified[name] = nil
-        end
+local function ipadDisconnected()
+    switchInputDevice("default")
+    local sonoBus = hs.application.get("SonoBus")
+    if sonoBus then
+        sonoBus:kill()
     end
-
-    if newState ~= currentState then
-        local previousState = currentState
-        currentState = newState
-        print("STATE:", newState)
-
-        if previousState == nil then
-            notify("HS loaded", "Состояние монитора: " .. newState,
-                { priority = "high", category = "monitor" })
-        else
-            local bothHeadless = previousState ~= "MONITOR_ON" and newState ~= "MONITOR_ON"
-            notify("Monitor state", previousState .. " → " .. newState,
-                { priority = bothHeadless and "low" or "high", category = "monitor" })
-        end
+    disableDummy()
+    if _G.IpadOverlay then
+        _G.IpadOverlay.hide()
     end
+end
 
-    if newState == "MONITOR_ON" and dummyStarted then
-        cancelDummyConfirmation()
-        disableDummy()
-    elseif newState ~= "MONITOR_ON" and not hasSidecar and not dummyStarted then
-        armDummyConfirmation()
-    else
-        cancelDummyConfirmation()
-    end
-
-    -- Dock policy: auto-hide everywhere except during a live Sidecar session.
-    if _G.DockAutomation and previousSidecar ~= nil
-        and (stateChanged or hasSidecar ~= previousSidecar) then
-        _G.DockAutomation.setAutoHide(not hasSidecar)
-    end
-    previousSidecar = hasSidecar
-
+local function evaluateIpadPresence()
     if _G.IpadMode then
-        _G.IpadMode.recompute()
+        _G.IpadMode.recompute("Sidecar display signal", sidecarPresent(hs.screen.allScreens()))
     end
 end
 
@@ -275,45 +192,21 @@ local function scheduleScreenEvaluation()
     end
     screenDebounceTimer = hs.timer.doAfter(2, function()
         screenDebounceTimer = nil
-        evaluateScreenState()
+        evaluateIpadPresence()
     end)
-end
-
-local function checkNow()
-    if screenDebounceTimer then
-        screenDebounceTimer:stop()
-        screenDebounceTimer = nil
-    end
-    evaluateScreenState()
 end
 
 local watcher = hs.screen.watcher.new(scheduleScreenEvaluation)
 
-    -- Anchor long-lived objects globally: local-only references can be GC'd and silently die.
-_G.MonitorAutomation = {
-    watcher = watcher,
+_G.IpadAutomation = {
+    screenWatcher = watcher,
     pending = pending,
-    getState = function()
-        return currentState
-    end,
-    stateLine = monitorStateLine,
-    physicalMonitorPresent = physicalMonitorPresent,
-    isPhysicalOn = function()
-        return currentState == "MONITOR_ON"
-    end,
-    runMonitorOffAction = function()
-        enableDummy()
-        hs.alert.show("Monitor: off action started")
-    end,
-    runMonitorOnAction = function()
-        disableDummy()
-        hs.alert.show("Monitor: on action started")
-    end,
-    checkNow = checkNow,
+    ipadConnected = ipadConnected,
+    ipadDisconnected = ipadDisconnected,
 }
 
 watcher:start()
-evaluateScreenState()
+evaluateIpadPresence()
 
 local claudeOk, claudeError = pcall(function()
     dofile(hs.configdir .. "/claude_continue.lua")
@@ -440,9 +333,4 @@ end)
 if not spotlightLayoutOk then
     print("ERROR: Spotlight layout failed to load:", spotlightLayoutError)
     hs.alert.show("Spotlight layout error")
-end
-
-if _G.DockAutomation then
-    local _, sidecarNow = screenStateSnapshot(hs.screen.allScreens())
-    _G.DockAutomation.setAutoHide(not sidecarNow)
 end

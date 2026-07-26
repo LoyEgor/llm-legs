@@ -2,13 +2,12 @@ local IpadMode = {}
 
 local defaultLogDir = os.getenv("HOME") .. "/Library/Logs/Jump Desktop/"
 local logDir = defaultLogDir
-local on = false
+local on = nil
 local jumpConnected = false
 local liveProxyPids = {}
 local offsets = {}
 local partialLines = {}
 local previousSignals = nil
-local onChangeHooks = {}
 
 local function normalizeDir(path)
     return path:sub(-1) == "/" and path or (path .. "/")
@@ -22,12 +21,6 @@ local function logChange(value, reason)
     end
 end
 
-local function notifyChange()
-    for _, fn in ipairs(onChangeHooks) do
-        pcall(fn)
-    end
-end
-
 local function apply(value, reason)
     value = value == true
     if on == value then
@@ -35,15 +28,16 @@ local function apply(value, reason)
     end
     on = value
     logChange(on, reason)
-    notifyChange()
-    return true
-end
-
-local function monitorOnNow()
-    if _G.MonitorAutomation == nil then
-        return true
+    if _G.IpadAutomation then
+        local handler = on and _G.IpadAutomation.ipadConnected or _G.IpadAutomation.ipadDisconnected
+        if handler then
+            local ok, err = pcall(handler)
+            if not ok then
+                print("ERROR: iPad transition action failed:", err)
+            end
+        end
     end
-    return _G.MonitorAutomation.getState() == "MONITOR_ON"
+    return true
 end
 
 local function sidecarPresentNow()
@@ -51,23 +45,21 @@ local function sidecarPresentNow()
         and _G.IpadTrigger.getSidecarActive() == true
 end
 
-local function signalSnapshot()
+local function signalSnapshot(sidecar)
     return {
-        monitorOn = monitorOnNow(),
-        sidecar = sidecarPresentNow(),
+        sidecar = sidecar == nil and sidecarPresentNow() or sidecar == true,
         jump = jumpConnected,
     }
 end
 
 local function signalsEqual(left, right)
     return left ~= nil
-        and left.monitorOn == right.monitorOn
         and left.sidecar == right.sidecar
         and left.jump == right.jump
 end
 
 local function derivedOn(signals)
-    return not signals.monitorOn or signals.sidecar or signals.jump
+    return signals.sidecar or signals.jump
 end
 
 local function parseLine(line)
@@ -146,9 +138,6 @@ local function updateJumpConnected(reason)
     local wasConnected = jumpConnected
     jumpConnected = next(liveProxyPids) ~= nil
     if jumpConnected ~= wasConnected and previousSignals ~= nil then
-        if _G.DockAutomation then
-            _G.DockAutomation.setAutoHide(not sidecarPresentNow())
-        end
         IpadMode.recompute(reason)
     end
 end
@@ -199,31 +188,17 @@ local function restartWatcher()
 end
 
 function IpadMode.isOn()
-    return on
+    return on == true
 end
 
-function IpadMode.set(value)
-    apply(value, "manual")
-end
-
-function IpadMode.toggle()
-    IpadMode.set(not on)
-end
-
-function IpadMode.recompute(reason)
-    local signals = signalSnapshot()
+function IpadMode.recompute(reason, sidecar)
+    local signals = signalSnapshot(sidecar)
     if signalsEqual(previousSignals, signals) then
         return on
     end
     previousSignals = signals
     apply(derivedOn(signals), reason or "automatic signal")
     return on
-end
-
-function IpadMode.onChange(fn)
-    if type(fn) == "function" then
-        table.insert(onChangeHooks, fn)
-    end
 end
 
 function IpadMode.getJumpConnected()

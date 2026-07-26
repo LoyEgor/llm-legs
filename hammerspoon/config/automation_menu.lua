@@ -45,88 +45,6 @@ local function getHandoffGuard()
     return _G.HandoffGuard
 end
 
-local function getMonitorAutomation()
-    return _G.MonitorAutomation
-end
-
--- Blocking (AppleScript to System Events) — menu code must use dockAutoHideCache.
-local function dockAutoHideEnabled()
-    local ok, result = hs.osascript.applescript('tell application "System Events" to get autohide of dock preferences')
-
-    if ok then
-        return result == true
-    end
-
-    return nil
-end
-
-local dockAutoHideCache = nil
-local dockReadTask = nil
-local dockSetTask = nil
-
-local function refreshDockCache()
-    if dockReadTask and dockReadTask:isRunning() then
-        return
-    end
-    dockReadTask = hs.task.new("/usr/bin/defaults", function(exitCode, stdOut)
-        if exitCode == 0 then
-            dockAutoHideCache = tostring(stdOut or ""):match("^%s*(.-)%s*$") == "1"
-        else
-            -- Missing key = macOS default (auto-hide off).
-            dockAutoHideCache = false
-        end
-    end, { "read", "com.apple.dock", "autohide" })
-    dockReadTask:start()
-end
-
-local dockSetPending = nil
-
-local function setDockAutoHide(enabled)
-    if enabled == dockAutoHideCache then
-        return
-    end
-    -- Serialize: concurrent policy triggers (screen watcher, Jump watcher) must not
-    -- race two osascript tasks whose completion order is undefined.
-    if dockSetTask and dockSetTask:isRunning() then
-        dockSetPending = enabled
-        return
-    end
-    dockAutoHideCache = enabled
-    local script = 'tell application "System Events" to set autohide of dock preferences to '
-        .. (enabled and "true" or "false")
-    dockSetTask = hs.task.new("/usr/bin/osascript", function(exitCode)
-        if exitCode ~= 0 then
-            hs.alert.show("Dock auto-hide: error")
-        end
-        refreshDockCache()
-        local pendingValue = dockSetPending
-        dockSetPending = nil
-        if pendingValue ~= nil then
-            setDockAutoHide(pendingValue)
-        end
-    end, { "-e", script })
-    dockSetTask:start()
-end
-
-local function toggleDockAutoHide()
-    if dockAutoHideCache == nil then
-        hs.alert.show("Dock auto-hide: could not read state")
-        refreshDockCache()
-        return
-    end
-
-    setDockAutoHide(not dockAutoHideCache)
-end
-
-refreshDockCache()
-local dockCacheTimer = hs.timer.doEvery(60, refreshDockCache)
-
-_G.DockAutomation = {
-    autoHideEnabled = dockAutoHideEnabled,
-    setAutoHide = setDockAutoHide,
-    toggleAutoHide = toggleDockAutoHide,
-}
-
 local buildMenu
 local refreshTitle
 
@@ -242,9 +160,8 @@ end
 buildMenu = function()
     local claude = _G.ClaudeContinue
     local handoff = getHandoffGuard()
-    local monitor = getMonitorAutomation()
+    local ipadAutomation = _G.IpadAutomation
     local ipadOverlay = _G.IpadOverlay
-    local dockAutoHide = dockAutoHideCache
     local handoffEnabled = handoff and handoff.isEnabledCached and handoff.isEnabledCached()
 
     if not claude then
@@ -277,11 +194,6 @@ buildMenu = function()
         title = "Timers",
         menu = {},
     }
-    local monitorItem = {
-        title = "Monitor",
-        disabled = not monitor,
-        menu = {},
-    }
     local llmLimitsMenu = {
         { title = "module not found", disabled = true },
     }
@@ -298,7 +210,16 @@ buildMenu = function()
         { title = "-" },
         llmLimitsItem,
         { title = "-" },
-        monitorItem,
+        {
+            title = "iPad Connected",
+            disabled = not ipadAutomation,
+            fn = ipadAutomation and ipadAutomation.ipadConnected or nil,
+        },
+        {
+            title = "iPad Disconnected",
+            disabled = not ipadAutomation,
+            fn = ipadAutomation and ipadAutomation.ipadDisconnected or nil,
+        },
         {
             title = "Handoff",
             checked = handoffEnabled == true,
@@ -317,14 +238,6 @@ buildMenu = function()
                 else
                     hs.alert.show("Sidecar connect: module not loaded")
                 end
-            end,
-        },
-        {
-            title = "Dock auto-hide",
-            checked = dockAutoHide == true,
-            fn = function()
-                toggleDockAutoHide()
-                refreshTitle()
             end,
         },
         {
@@ -432,34 +345,16 @@ buildMenu = function()
         })
     end
 
-    if monitor then
-        table.insert(monitorItem.menu, {
-            title = "Run Monitor-Off Action",
-            fn = monitor.runMonitorOffAction,
-        })
-        table.insert(monitorItem.menu, {
-            title = "Run Monitor-On Action",
-            fn = monitor.runMonitorOnAction,
-        })
-        table.insert(monitorItem.menu, {
-            title = "Recheck Displays",
-            fn = monitor.checkNow,
-        })
-    end
-
     return menu
 end
 
 AutomationMenu.menuBar = menuBar
-AutomationMenu.dockCacheTimer = dockCacheTimer
 AutomationMenu.buildMenu = function()
     return buildMenu()
 end
 AutomationMenu.refresh = refreshTitle
 AutomationMenu.show = showMenu
 AutomationMenu.hide = hideMenu
-AutomationMenu.onMonitorOff = showMenu
-AutomationMenu.onMonitorOn = function() end
 AutomationMenu.isVisible = function()
     return menuVisible
 end

@@ -218,18 +218,8 @@ function IpadOverlay._notifyChange()
     end
 end
 
-function IpadOverlay._on_ipad_mode_change()
-    if _G.IpadMode and _G.IpadMode.isOn() then
-        IpadOverlay.show()
-    else
-        IpadOverlay.hide()
-    end
-    IpadOverlay._notifyChange()
-end
-
 function IpadOverlay.init()
     if _G.IpadMode then
-        _G.IpadMode.onChange(IpadOverlay._on_ipad_mode_change)
         if _G.IpadMode.isOn() then
             IpadOverlay.show()
         else

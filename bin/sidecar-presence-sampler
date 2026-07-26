@@ -48,14 +48,14 @@ fi
 
 jump=n/a
 sidecar_display=n/a
-monitor=n/a
+ipad_present=n/a
 if command -v hs >/dev/null 2>&1; then
-    ctx=$(hs -c 'local function rs(m,f) if _G[m] and type(_G[m][f])=="function" then local ok,v=pcall(_G[m][f]); if ok and v~=nil then return tostring(v) end end return "n/a" end; print(rs("IpadMode","getJumpConnected").."|"..rs("IpadTrigger","getSidecarActive").."|"..rs("MonitorAutomation","getState"))' 2>/dev/null | tail -1)
+    ctx=$(hs -c 'local function rs(m,f) if _G[m] and type(_G[m][f])=="function" then local ok,v=pcall(_G[m][f]); if ok and v~=nil then return tostring(v) end end return "n/a" end; print(rs("IpadMode","getJumpConnected").."|"..rs("IpadTrigger","getSidecarActive").."|"..rs("IpadMode","isOn"))' 2>/dev/null | tail -1)
     if [ -n "$ctx" ]; then
         jump=${ctx%%|*}
         rest=${ctx#*|}
         sidecar_display=${rest%%|*}
-        monitor=${rest#*|}
+        ipad_present=${rest#*|}
     fi
 fi
 
@@ -66,7 +66,7 @@ if [ -n "$wifi_dev" ]; then
     [ -n "$s" ] && ssid=$s
 fi
 
-line="$ts ipad=$ipad iphone=$iphone jump=$jump sidecar_display=$sidecar_display monitor=$monitor ssid=$ssid"
+line="$ts ipad=$ipad iphone=$iphone jump=$jump sidecar_display=$sidecar_display ipad_present=$ipad_present ssid=$ssid"
 
 # Prev state persists in its own file so a TRANSITION is never lost to log truncation or a
 # crash that leaves no derivable prior sample. Fall back to the log for the first run after
