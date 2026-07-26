@@ -14,6 +14,7 @@ contains() { grep -Fq -- "$2" <<<"$1"; }
 
 python3 - "$SCRIPT" "$ROOT/tests/fixtures/review-bench" "$ROOT" "$WORK" <<'PY'
 import concurrent.futures
+import argparse
 import importlib.machinery
 import importlib.util
 import json
@@ -1305,6 +1306,63 @@ for trial in range(80):
         racer.join(5)
     assert not stranded, f"trial {trial}: the second slot stayed idle while one cell ran"
 
+model_store = work / "model-claudeb"
+model_state = model_store / "worker-stats"
+os.environ.pop("WORKER_STATS_DIR", None)
+os.environ["CLAUDEB_DIR"] = str(model_store)
+
+def model_runner(rater, repo_path, commit, focus, run_dir, diff, account, repeat=1):
+    envelope = {
+        "type": "result",
+        "result": json.dumps({"findings": [{
+            "severity": "P3", "file": "pinned.txt", "line": 1,
+            "summary": f"{rater['model']} fixture finding",
+        }]}),
+    }
+    if rater["model"] == "opus":
+        envelope["modelUsage"] = {
+            "claude-opus-5": {"canonicalModel": "claude-opus-5"}
+        }
+    text = json.dumps(envelope)
+    (run_dir / f"raw-{rater['spec']}.json").write_text(text)
+    return 0, 1, text, "", ["fake"]
+
+rb.SIDE_RUNNERS["claude"] = model_runner
+rb.pool_account = lambda side, excluded: "fixture"
+rb.affordability = lambda: {
+    "claude": True, "codex": False, "claude_account": "fixture",
+}
+rb.check_limits_staleness = lambda account: False
+run_rc = rb.cmd_run(argparse.Namespace(
+    repo=str(pin_repo), commitish=pin_sha,
+    raters="opus-medium,sonnet-medium", leg=False, verify=None,
+    auto=None, focus=None, repeat=1,
+))
+model_meta_path = next((model_state / "benches").glob("*/meta.json"))
+model_runs = {
+    row["rater"]: row
+    for row in json.loads(model_meta_path.read_text())["rater_runs"]
+}
+assert (
+    run_rc == 0
+    and model_runs["opus-medium"].get("model_resolved") == "claude-opus-5"
+    and "model_resolved" not in model_runs["sonnet-medium"]
+), model_runs
+
+alias_envelope = pin_repo / "alias-envelope.json"
+alias_envelope.write_text(json.dumps({"modelUsage": {
+    "claude-opus-5[1m]": {"canonicalModel": "claude-opus-5"},
+}}))
+pair_envelope = pin_repo / "pair-envelope.json"
+pair_envelope.write_text(json.dumps({"modelUsage": {
+    "claude-opus-5[1m]": {"canonicalModel": "claude-opus-5"},
+    "claude-sonnet-5": {"inputTokens": 1},
+}}))
+assert rb.resolved_model_from_envelope(alias_envelope) == "claude-opus-5", "alias not canonicalised"
+assert (
+    rb.resolved_model_from_envelope(pair_envelope) == "claude-opus-5+claude-sonnet-5"
+), rb.resolved_model_from_envelope(pair_envelope)
+
 print("review-bench-unit-ok")
 PY
 assert test "$?" -eq 0
@@ -1322,7 +1380,8 @@ meta = {"run_id":"run-fixture","commit":"abcdef0123456789","repo":"/repo",
         "raters":["sol-medium","opus-medium"],
         "rater_runs":[
             {"rater":"sol-medium","model":"sol","effort":"medium","side":"codex","exit_code":0},
-            {"rater":"opus-medium","model":"opus","effort":"medium","side":"claude","exit_code":0},
+            {"rater":"opus-medium","model":"opus","model_resolved":"claude-opus-5",
+             "effort":"medium","side":"claude","exit_code":0},
         ],
         "durations":{"sol-medium":1200,"opus-medium":2400},
         "started":"2026-07-21T00:00:00+00:00","finished":"2026-07-21T00:00:03+00:00","focus":""}
@@ -1364,8 +1423,9 @@ recorded=$(WORKER_STATS_DIR="$SD" "$SCRIPT" record run-fixture --verdicts "$VERD
 assert contains "$recorded" 'recorded 2 rater row(s)'
 assert test "$(wc -l <"$SD/reviews.jsonl")" -eq 2
 
-python3 - "$SD/reviews.jsonl" <<'PY'
+python3 - "$SD/reviews.jsonl" "$RUN/verdicts.jsonl" "$RUN/defects.jsonl" <<'PY'
 import json
+import pathlib
 import sys
 rows = {f"{r['rater_model']}-{r['rater_effort']}":r for r in map(json.loads, open(sys.argv[1]))}
 sol = rows["sol-medium"]
@@ -1376,13 +1436,88 @@ assert (sol["unique_catches"], sol["misses"], sol["duration_ms"]) == (1, 1, 1200
 assert (opus["findings"], opus["p1"], opus["p2"], opus["p3"]) == (2, 0, 0, 1)
 assert (opus["confirmed"], opus["false_positive"], opus["duplicate"]) == (1, 0, 1)
 assert (opus["unique_catches"], opus["misses"], opus["duration_ms"]) == (1, 1, 2400)
+verdict_path = pathlib.Path(sys.argv[2])
+defect_path = pathlib.Path(sys.argv[3])
+verdicts = list(map(json.loads, verdict_path.read_text().splitlines())) \
+    if verdict_path.exists() else None
+defects = list(map(json.loads, defect_path.read_text().splitlines())) \
+    if defect_path.exists() else None
+assert (
+    verdicts == [
+        {"rater": "opus-medium", "idx": 0, "verdict": "duplicate"},
+        {"rater": "opus-medium", "idx": 1, "verdict": "confirmed"},
+        {"rater": "sol-medium", "idx": 0, "verdict": "confirmed"},
+        {"rater": "sol-medium", "idx": 1, "verdict": "confirmed"},
+        {"rater": "sol-medium", "idx": 2, "verdict": "false_positive"},
+    ]
+    and defects == [
+        {
+            "defect_id": "run-fixture#1", "file": "src/c.py", "line": 40,
+            "severity": "P3", "summary": "Opus-only bug",
+            "canonical_rater": "opus-medium", "canonical_idx": 1,
+            "caught_by": ["opus-medium"],
+        },
+        {
+            "defect_id": "run-fixture#2", "file": "src/a.py", "line": 10,
+            "severity": "P1", "summary": "Shared bug",
+            "canonical_rater": "sol-medium", "canonical_idx": 0,
+            "caught_by": ["opus-medium", "sol-medium"],
+        },
+        {
+            "defect_id": "run-fixture#3", "file": "src/b.py", "line": 20,
+            "severity": "P2", "summary": "Sol-only bug",
+            "canonical_rater": "sol-medium", "canonical_idx": 1,
+            "caught_by": ["sol-medium"],
+        },
+    ]
+    and opus.get("rater_model_resolved") == "claude-opus-5"
+    and "rater_model_resolved" not in sol
+), (verdicts, defects, rows)
 print("record-math-ok")
 PY
 assert test "$?" -eq 0
 
+record_artifacts_before="$(shasum "$RUN/verdicts.jsonl" "$RUN/defects.jsonl" 2>/dev/null || true)"
 again=$(WORKER_STATS_DIR="$SD" "$SCRIPT" record run-fixture --verdicts "$VERDICTS") || fail "record dedupe failed"
 assert contains "$again" 'recorded 0 rater row(s)'
 assert test "$(wc -l <"$SD/reviews.jsonl")" -eq 2
+record_artifacts_after="$(shasum "$RUN/verdicts.jsonl" "$RUN/defects.jsonl" 2>/dev/null || true)"
+assert test -n "$record_artifacts_before" -a "$record_artifacts_after" = "$record_artifacts_before"
+
+corpus_before="$(cat "$SD/reviews.jsonl")"
+mv "$RUN/defects.jsonl" "$WORK/defects-kept.jsonl"
+mkdir "$RUN/defects.jsonl"
+WORKER_STATS_DIR="$SD" "$SCRIPT" record run-fixture --verdicts "$VERDICTS" >/dev/null 2>&1 \
+  && fail "record succeeded although defects.jsonl could not be written"
+assert test "$(cat "$SD/reviews.jsonl")" = "$corpus_before"
+rmdir "$RUN/defects.jsonl"
+mv "$WORK/defects-kept.jsonl" "$RUN/defects.jsonl"
+
+python3 - "$VERDICTS" "$WORK/verdicts-corrected.jsonl" <<'PY'
+import json
+import sys
+rows = [json.loads(line) for line in open(sys.argv[1])]
+for row in rows:
+    if row["rater"] == "sol-medium" and row["idx"] == 2:
+        row["verdict"] = "confirmed"
+with open(sys.argv[2], "w") as stream:
+    for row in rows:
+        stream.write(json.dumps(row) + "\n")
+PY
+corrected=$(WORKER_STATS_DIR="$SD" "$SCRIPT" record run-fixture \
+  --verdicts "$WORK/verdicts-corrected.jsonl") || fail "re-adjudication failed"
+assert contains "$corrected" 're-adjudicated: replaced 2 row(s)'
+assert test "$(wc -l <"$SD/reviews.jsonl")" -eq 2
+python3 - "$SD/reviews.jsonl" <<'PY'
+import json
+import sys
+rows = {r["rater"]: r for r in map(json.loads, open(sys.argv[1]))}
+sol = rows["sol-medium"]
+assert (sol["confirmed"], sol["false_positive"]) == (3, 0), sol
+PY
+assert test "$?" -eq 0
+WORKER_STATS_DIR="$SD" "$SCRIPT" record run-fixture --verdicts "$VERDICTS" >/dev/null \
+  || fail "restoring the original adjudication failed"
 
 # A run stored under the pre-rename agy id is otherwise stranded: review_counts credits it,
 # record refuses it, and no adjudication of it is possible at all.
@@ -1406,8 +1541,14 @@ run = pathlib.Path(sys.argv[1])
     "severity": "P2", "file": "src/a.py", "line": 10, "summary": "Legacy id bug",
     "rater": "agy-flash-low-skill",
 }) + "\n")
-pathlib.Path(sys.argv[2]).write_text(json.dumps({
-    "rater": "agy-flash-low-skill", "idx": 0, "verdict": "confirmed"}) + "\n")
+pathlib.Path(sys.argv[2]).write_text(
+    json.dumps({"_recovered_from": "review-notes.md", "_matched_by": "file-line-summary"})
+    + "\n"
+    + json.dumps({
+        "rater": "agy-flash-low-skill", "idx": 0, "verdict": "confirmed"
+    })
+    + "\n"
+)
 PY
 legacy=$(WORKER_STATS_DIR="$SD" "$SCRIPT" record legacy-fixture --verdicts "$WORK/legacy-verdicts.jsonl") \
   || fail "record refused a run stored under the legacy agy id"
@@ -1480,4 +1621,4 @@ oc_table="$("$SCRIPT" oc-models 2>&1)"
 assert contains "$oc_table" "measured capability"
 assert contains "$oc_table" "oc-grok45"
 
-printf 'PASS: %s assertions; rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, and cross-side parallelism result assembly\n' "$asserts"
+printf 'PASS: %s assertions; rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, and cross-side parallelism result assembly\n' "$asserts"

@@ -300,6 +300,32 @@ def write_jsonl(path, rows):
             stream.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def resolved_model_from_envelope(path):
+    try:
+        envelope = json.loads(path.read_text())
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(envelope, dict):
+        return None
+    usage = envelope.get("modelUsage")
+    if not isinstance(usage, dict) or not usage:
+        return None
+    models = set()
+    for key, details in usage.items():
+        if not isinstance(key, str) or not key or key == "canonicalModel":
+            continue
+        # The key can be the alias the cell was launched with, so canonicalModel wins where
+        # both exist: recording `claude-opus-5[1m]` beside `claude-opus-5` splits one model
+        # into two names, which is the ambiguity this field exists to remove.
+        canonical = details.get("canonicalModel") if isinstance(details, dict) else None
+        models.add(canonical if isinstance(canonical, str) and canonical else key)
+    if not models:
+        canonical = usage.get("canonicalModel")
+        if isinstance(canonical, str) and canonical:
+            return canonical
+    return "+".join(sorted(models)) if models else None
+
+
 def parse_rater(spec):
     match = RATER_RE.fullmatch(spec.strip().lower())
     if not match:
@@ -1054,6 +1080,7 @@ def refresh_limits(account):
 
 def run_claude(rater, repo, sha, focus, run_dir, diff, account, repeat=1):
     raw_output = run_dir / f"raw-{rater['spec']}.json"
+    raw_output.unlink(missing_ok=True)
     clone = seal_overlay_clone(repo, sha)
     if rater["skill"]:
         prompt = skill_brief(sha, focus, clone)
@@ -1979,6 +2006,9 @@ def cmd_run(args):
     for requested in raters:
         rater, account, result = result_by_spec[requested["spec"]]
         rc, duration, text, stderr, command = result
+        model_resolved = resolved_model_from_envelope(
+            run_dir / f"raw-{rater['spec']}.json"
+        )
         findings = normalize_findings(text, rater["spec"])
         findings = [
             dict(row, file=canonical_finding_path(row.get("file"), tree)) for row in findings
@@ -2005,24 +2035,30 @@ def cmd_run(args):
 
         if is_error:
             errored_raters.add(rater["spec"])
-            rater_meta.append({
+            run_meta = {
                 "rater": rater["spec"], "model": rater["model"], "effort": rater["effort"],
                 "side": rater["side"], "account": account, "duration_ms": duration,
                 "findings": 0, "exit_code": rc, "stderr": stderr[-2000:] if stderr else "",
                 "command": redact_command(rater, command),
                 "errored": True,
-            })
+            }
+            if model_resolved:
+                run_meta["model_resolved"] = model_resolved
+            rater_meta.append(run_meta)
             print(f"ERRORED (not recorded): {rater['spec']}; rerun: review-bench run {sha} --raters {rater['spec']}")
         else:
             failed = failed or rc != 0
             paths.append(path)
-            rater_meta.append({
+            run_meta = {
                 "rater": rater["spec"], "model": rater["model"], "effort": rater["effort"],
                 "side": rater["side"], "account": account, "duration_ms": duration,
                 "findings": len(findings), "exit_code": rc, "stderr": stderr[-2000:] if stderr else "",
                 "command": redact_command(rater, command),
                 "verifier_dropped": dropped, "verifier_unverified": unverified,
-            })
+            }
+            if model_resolved:
+                run_meta["model_resolved"] = model_resolved
+            rater_meta.append(run_meta)
             print(f"{rater['spec']}: {len(findings)} finding(s), {duration} ms, exit {rc}")
 
     meta = {
@@ -2060,18 +2096,33 @@ def finding_similarity(left, right):
     ).ratio()
 
 
-def append_review_records(sd, records):
+def append_review_records(sd, records, replace_run=None):
+    """Append rows the corpus lacks, or replace a whole run's rows when told to.
+
+    Replacement rewrites the file, so it goes through a temp file and a rename: a crash
+    mid-write would otherwise truncate the only durable record of every bench ever run.
+    """
     sd.mkdir(parents=True, exist_ok=True)
     with open(sd / ".reviews.lock", "w") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        existing = read_jsonl(sd / "reviews.jsonl")
+        path = sd / "reviews.jsonl"
+        existing = read_jsonl(path)
+        if replace_run:
+            kept = [row for row in existing if row.get("run_id") != replace_run]
+            dropped = len(existing) - len(kept)
+            tmp = path.with_suffix(".jsonl.tmp")
+            with open(tmp, "w") as stream:
+                for row in kept + records:
+                    stream.write(json.dumps(row) + "\n")
+            os.replace(tmp, path)
+            return records, dropped
         keys = {(row.get("run_id"), row.get("rater")) for row in existing}
         fresh = [row for row in records if (row["run_id"], row["rater"]) not in keys]
         if fresh:
-            with open(sd / "reviews.jsonl", "a") as stream:
+            with open(path, "a") as stream:
                 for record in fresh:
                     stream.write(json.dumps(record) + "\n")
-    return fresh
+    return fresh, 0
 
 
 def cmd_record(args):
@@ -2081,7 +2132,10 @@ def cmd_record(args):
     if not meta_path.exists():
         raise ValueError(f"unknown run id: {args.run_id}")
     meta = json.loads(meta_path.read_text())
-    verdict_rows = read_jsonl(Path(args.verdicts))
+    verdict_rows = [
+        row for row in read_jsonl(Path(args.verdicts))
+        if "rater" in row
+    ]
     verdict_map = {}
     for row in verdict_rows:
         rater = row.get("rater")
@@ -2103,7 +2157,9 @@ def cmd_record(args):
             extra = sorted(supplied - expected)
             raise ValueError(f"verdict coverage mismatch for {rater}: missing={missing}, extra={extra}")
 
-    canonical = [key for key, verdict in verdict_map.items() if verdict == "confirmed"]
+    canonical = sorted(
+        key for key, verdict in verdict_map.items() if verdict == "confirmed"
+    )
     caught_by = {key: {key[0]} for key in canonical}
     for key, verdict in verdict_map.items():
         if verdict != "duplicate" or not canonical:
@@ -2150,9 +2206,41 @@ def cmd_record(args):
             "weighted_score": sum(priorities[p] * weight for p, weight in WEIGHTS.items()),
             "duration_ms": duration,
         }
+        model_resolved = meta_by_rater.get(rater, {}).get("model_resolved")
+        if model_resolved:
+            record["rater_model_resolved"] = model_resolved
         records.append(record)
-    fresh = append_review_records(sd, records)
-    print(f"recorded {len(fresh)} rater row(s); skipped {len(records) - len(fresh)} existing row(s)")
+    normalized_verdicts = [
+        {"rater": rater, "idx": idx, "verdict": verdict}
+        for (rater, idx), verdict in sorted(verdict_map.items())
+    ]
+    defects = []
+    for number, key in enumerate(canonical, 1):
+        finding = findings[key[0]][key[1]]
+        defects.append({
+            "defect_id": f"{args.run_id}#{number}",
+            "file": finding.get("file"),
+            "line": finding.get("line"),
+            "severity": finding.get("severity"),
+            "summary": finding.get("summary"),
+            "canonical_rater": key[0],
+            "canonical_idx": key[1],
+            "caught_by": sorted(caught_by[key]),
+        })
+    stored = [row for row in read_jsonl(run_dir / "verdicts.jsonl") if "rater" in row]
+    # The attribution artifacts land first: a corpus row claiming a run is recorded while its
+    # per-defect attribution failed to write is the state this whole flow exists to prevent.
+    write_jsonl(run_dir / "verdicts.jsonl", normalized_verdicts)
+    write_jsonl(run_dir / "defects.jsonl", defects)
+    readjudicated = bool(stored) and stored != normalized_verdicts
+    fresh, dropped = append_review_records(
+        sd, records, replace_run=args.run_id if readjudicated else None
+    )
+    if readjudicated:
+        print(f"re-adjudicated: replaced {dropped} row(s) with {len(fresh)} rater row(s)")
+    else:
+        print(f"recorded {len(fresh)} rater row(s); "
+              f"skipped {len(records) - len(fresh)} existing row(s)")
     return 0
 
 
