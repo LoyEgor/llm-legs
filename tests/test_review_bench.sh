@@ -66,14 +66,14 @@ expected_tiers = {
         "oc-kimik3", "oc-grok45-low", "agy-pro-high-skill",
         "agy-flash35-medium-skill", "sol-low", "sol-medium",
         "agy-flash36-medium-skill", "opus-medium-skill", "sol-high",
-        "opus-high-skill", "sonnet-medium-skill",
+        "opus-high-skill", "opus-medium", "sonnet-medium-skill",
     ],
     "T3": [
         "oc-kimik3", "oc-grok45-low", "agy-pro-high-skill",
         "agy-flash35-medium-skill", "sol-low", "sol-medium",
         "agy-flash36-medium-skill", "opus-medium-skill", "sol-high",
-        "opus-high-skill", "sonnet-medium-skill", "sol-xhigh", "sol-max",
-        "opus-xhigh-skill", "sonnet-xhigh-skill",
+        "opus-high-skill", "sonnet-medium-skill", "opus-medium", "sol-xhigh",
+        "sol-max", "opus-xhigh-skill", "opus-high", "sonnet-xhigh-skill",
     ],
 }
 assert list(rb.REVIEW_TIERS) == ["T0", "T1", "T2", "T3"]
@@ -103,6 +103,17 @@ for bare in ("agy-pro-low", "agy-flash36-medium", "agy-flash35-high"):
 rb.refuse_retired_cells([rb.parse_rater(spec) for spec in rb.AUTO_RATERS])
 assert "haiku-medium" not in rb.AUTO_RATERS and "haiku-max" not in rb.AUTO_RATERS
 assert "agy-flash36-low-skill" not in rb.AUTO_RATERS
+for bare_sonnet in ("sonnet-low", "sonnet-medium", "sonnet-high", "sonnet-xhigh"):
+    assert bare_sonnet not in rb.AUTO_RATERS, bare_sonnet
+    try:
+        rb.refuse_retired_cells([rb.parse_rater(bare_sonnet)])
+    except RuntimeError as exc:
+        assert f"{bare_sonnet}-skill" in str(exc), exc
+    else:
+        raise AssertionError(f"accepted a bare sonnet rater: {bare_sonnet}")
+rb.refuse_retired_cells([rb.parse_rater(spec) for spec in ("opus-medium", "opus-high")])
+assert "opus-medium" in rb.REVIEW_TIERS["T2"]["cells"]
+assert "opus-high" in rb.REVIEW_TIERS["T3"]["cells"]
 # The cheapest way to run a refused model would be to ask for it as the verifier.
 for dead_verifier in ("oc-glm52", "oc-kimik27code"):
     try:
@@ -310,14 +321,14 @@ for rater in rb.AUTO_RATERS:
     count = 3
     if rater == "sol-medium":
         count = 0
-    elif rater == "sonnet-medium":
+    elif rater == "opus-medium":
         count = 1
     for index in range(count):
         reviews.append({"run_id": f"{rater}-{index}", "rater_model": model,
                         "rater_effort": effort})
 availability = {"codex": True, "claude": True, "agy": True}
 picked, counts, skipped = rb.auto_pick(2, reviews, availability)
-assert [row["spec"] for row in picked] == ["sol-medium", "sonnet-medium"]
+assert [row["spec"] for row in picked] == ["sol-medium", "opus-medium"]
 assert [counts[row["spec"]] for row in picked] == [0, 1]
 assert not skipped
 
@@ -325,7 +336,7 @@ availability["claude"] = False
 availability["agy"] = False
 picked, counts, skipped = rb.auto_pick(2, reviews, availability)
 assert all(row["side"] == "codex" for row in picked)
-assert any(spec.startswith("sonnet-") for spec, _ in skipped)
+assert any(spec.startswith("opus-") for spec, _ in skipped)
 assert any(spec.startswith("agy-") for spec, _ in skipped)
 
 agy_gap_reviews = [
@@ -1496,7 +1507,7 @@ rb.affordability = lambda: {
 rb.check_limits_staleness = lambda account: False
 run_rc = rb.cmd_run(argparse.Namespace(
     repo=str(pin_repo), commitish=pin_sha,
-    raters="opus-medium,sonnet-medium", leg=False, verify=None,
+    raters="opus-medium,sonnet-medium-skill", leg=False, verify=None,
     auto=None, focus=None, repeat=1,
 ))
 model_meta_path = next((model_state / "benches").glob("*/meta.json"))
@@ -1508,9 +1519,9 @@ model_runs = {
 assert (
     run_rc == 1
     and model_meta["raters"] == ["opus-medium"]
-    and model_runs["sonnet-medium"].get("errored") is True
+    and model_runs["sonnet-medium-skill"].get("errored") is True
     and model_runs["opus-medium"].get("model_resolved") == "claude-opus-5"
-    and "model_resolved" not in model_runs["sonnet-medium"]
+    and "model_resolved" not in model_runs["sonnet-medium-skill"]
 ), model_runs
 
 alias_envelope = pin_repo / "alias-envelope.json"
@@ -1694,7 +1705,7 @@ meta = {"run_id":"run-fixture","commit":"abcdef0123456789","repo":"/repo",
             {"rater":"sol-medium","model":"sol","effort":"medium","side":"codex","exit_code":0},
             {"rater":"opus-medium","model":"opus","model_resolved":"claude-opus-5",
              "effort":"medium","side":"claude","exit_code":0},
-            {"rater":"sonnet-medium","model":"sonnet","effort":"medium","side":"claude",
+            {"rater":"sonnet-medium-skill","model":"sonnet","effort":"medium","side":"claude",
              "exit_code":1,"errored":True},
         ],
         "durations":{"sol-medium":1200,"opus-medium":2400},
@@ -1934,7 +1945,7 @@ assert contains "$review_help" "--tier"
 assert contains "$review_help" "{T0,T1,T2,T3}"
 leg_conflict="$("$SCRIPT" run 143fc2f --leg --raters oc-kimik3 2>&1 || true)"
 assert contains "$leg_conflict" "not allowed with argument --leg"
-oc_table="$("$SCRIPT" oc-models 2>&1)"
+oc_table="$(WORKER_STATS_DIR="$SD" CLAUDEB_DIR="$WORK/claudeb-fixture" "$SCRIPT" oc-models 2>&1)"
 assert contains "$oc_table" "measured capability"
 assert contains "$oc_table" "oc-grok45"
 tiers_table="$("$SCRIPT" tiers 2>&1)"

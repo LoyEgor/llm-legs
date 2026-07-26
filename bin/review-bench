@@ -229,7 +229,7 @@ AUTO_RATERS = tuple(
         tuple(
             f"{model}-{effort}"
             for effort in ("medium", "high", "xhigh", "low", "max")
-            for model in ("sol", "sonnet", "opus")
+            for model in ("sol", "opus")
         ) + tuple(
             f"{model}-{effort}-skill"
             for model, efforts in AGY_EFFORTS.items()
@@ -310,6 +310,7 @@ REVIEW_TIERS = {
             "opus-medium-skill",
             "sol-high",
             "opus-high-skill",
+            "opus-medium",
             "sonnet-medium-skill",
         ],
     },
@@ -328,9 +329,11 @@ REVIEW_TIERS = {
             "sol-high",
             "opus-high-skill",
             "sonnet-medium-skill",
+            "opus-medium",
             "sol-xhigh",
             "sol-max",
             "opus-xhigh-skill",
+            "opus-high",
             "sonnet-xhigh-skill",
         ],
     },
@@ -502,7 +505,7 @@ def validate_review_tiers():
                 rater = parse_rater(cell)
             except ValueError as exc:
                 raise RuntimeError(f"{tier_name} contains invalid rater {cell!r}") from exc
-            reason = measured_worthless(rater)
+            reason = measured_worthless(rater) or measured_skill_only(rater)
             if reason:
                 raise RuntimeError(f"{tier_name} contains retired rater {cell!r}: {reason}")
 
@@ -636,6 +639,20 @@ def affordability():
     return parse_affordability(proc.stdout)
 
 
+def measured_skill_only(rater):
+    """Sonnet answers almost nothing without the review skill, and nothing of its own.
+
+    Measured 2026-07-26 on 2ecc0bd and fabcae4, both variants at low/medium/high: bare sonnet
+    produced 5 claims to skill's 34, and on each commit the single defect it found was one the
+    skill cells also found — zero unique across both. Opus is the opposite and keeps both
+    variants: about a quarter of its defects on each commit came only from the bare cell.
+    """
+    if rater["model"] == "sonnet" and not rater["skill"]:
+        return ("sonnet reviews only through the skill: bare sonnet found 5 claims to skill's 34 "
+                "over two commits and not one defect the skill cells missed")
+    return None
+
+
 def measured_worthless(rater):
     """Cells the adjudicated corpus has already answered, so nobody spends quota re-asking.
 
@@ -651,10 +668,13 @@ def refuse_retired_cells(raters):
     # run_agy has no diff-only mode left to reach, so a skill-less agy spec would quietly run the
     # skill and record the findings under a name claiming otherwise.
     retired = [rater["spec"] for rater in raters if rater["side"] == "agy" and not rater["skill"]]
-    if retired:
+    skill_only = [(rater["spec"], measured_skill_only(rater)) for rater in raters
+                  if measured_skill_only(rater)]
+    if retired or skill_only:
+        asked = ", ".join(f"{spec}-skill" for spec in retired + [s for s, _ in skill_only])
+        why = "; ".join(reason for _, reason in skill_only)
         raise RuntimeError(
-            "agy cells run the review skill; ask for "
-            + ", ".join(f"{spec}-skill" for spec in retired)
+            f"these cells run the review skill; ask for {asked}" + (f" — {why}" if why else "")
         )
     worthless = [(rater["spec"], measured_worthless(rater)) for rater in raters
                  if measured_worthless(rater)]
