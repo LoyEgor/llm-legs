@@ -296,6 +296,64 @@ assert pick["claude_account"] == "worker"
 assert pick["session_account"] == "session"
 assert "accounts" not in pick
 
+# The session account has the best score and the most headroom in that fixture and is still
+# refused, because a bench must not quietly spend the quota the user is talking to. The
+# override exists for a measurement the user asked to run there, and only then.
+session_pick_text = """NEXT: claudeb (rotating) — no eligible account
+codex: unavailable
+gemini: login needed
+claude: session($100)* 5h 0% wk 8% fb 0% score 100 cap 82%
+"""
+assert rb.parse_affordability(session_pick_text)["claude"] is False
+os.environ["REVIEW_BENCH_ALLOW_SESSION_ACCOUNT"] = "1"
+allowed = rb.parse_affordability(session_pick_text)
+assert allowed["claude"] is True
+assert allowed["claude_account"] == "session"
+os.environ["REVIEW_BENCH_ALLOW_SESSION_ACCOUNT"] = "0"
+assert rb.parse_affordability(session_pick_text)["claude"] is False
+del os.environ["REVIEW_BENCH_ALLOW_SESSION_ACCOUNT"]
+
+# The permission to use the session account is not a permission to ignore the floor: when the
+# parse says the side is unaffordable, no account may be handed out on its strength.
+floored_pick = work / "floored-worker-pick.sh"
+floored_pick.write_text(
+    "#!/bin/sh\n"
+    'if [ "$1" = "--account" ]; then echo stub-pool; exit 0; fi\n'
+    "cat <<'OUT'\n"
+    "NEXT: claudeb (rotating) — ALL FLOORED\n"
+    "codex: unavailable\n"
+    "gemini: login needed\n"
+    "claude: session($100)* 5h 0% wk 8% fb 0% score 85 cap 82%\n"
+    "OUT\n"
+)
+floored_pick.chmod(0o755)
+previous_pick = os.environ.get("REVIEW_BENCH_WORKER_PICK_BIN")
+os.environ["REVIEW_BENCH_WORKER_PICK_BIN"] = str(floored_pick)
+os.environ["REVIEW_BENCH_ALLOW_SESSION_ACCOUNT"] = "1"
+rb._PERMITTED_CLAUDE.clear()
+assert rb.permitted_claude_account() is None
+# Read once per process: a rater retrying after a wall must not re-run the pool for an answer
+# the run already has.
+assert rb.permitted_claude_account() is None
+assert rb._PERMITTED_CLAUDE == [None], rb._PERMITTED_CLAUDE
+# With the side unaffordable the decision falls back to the pool, which owns selection.
+assert rb.pool_account("claude", set()) == "stub-pool"
+rb._PERMITTED_CLAUDE.clear()
+del os.environ["REVIEW_BENCH_ALLOW_SESSION_ACCOUNT"]
+if previous_pick is None:
+    del os.environ["REVIEW_BENCH_WORKER_PICK_BIN"]
+else:
+    os.environ["REVIEW_BENCH_WORKER_PICK_BIN"] = previous_pick
+
+# `agy` is the internal side name while worker-pick and the user say `gemini`; both spellings
+# have to reach the same exclusion or a reasonable one fails in silence.
+os.environ["REVIEW_BENCH_EXCLUDE_GEMINI"] = "work"
+assert rb.baseline_exclusions("agy") == {"work"}
+os.environ["REVIEW_BENCH_EXCLUDE_AGY"] = "main"
+assert rb.baseline_exclusions("agy") == {"main", "work"}
+del os.environ["REVIEW_BENCH_EXCLUDE_GEMINI"], os.environ["REVIEW_BENCH_EXCLUDE_AGY"]
+assert rb.baseline_exclusions("agy") == set()
+
 mixed_next = rb.parse_affordability("""NEXT: gemini main · pro · high — ACCOUNT: main; pre-reset cap 9% — WALLED  |  codex cx · medium — FRESH
 codex: cx 10% runway 80%
 gemini: main 91% runway 9% FLOOR (5h→?, wk→?)
@@ -1881,6 +1939,449 @@ assert contains "$legacy" 'recorded 1 rater row(s)'
 assert test "$(jq -r 'select(.run_id=="legacy-fixture") | .rater_model' "$SD/reviews.jsonl")" = agy-flash36
 assert test "$(wc -l <"$SD/reviews.jsonl")" -eq 3
 
+# A defect id counts from one inside its own run, so two runs of one commit cannot be compared
+# until a judge says which of their defects are the same defect. cluster is where that lands.
+CSD="$WORK/cluster-stats"
+CREPO="$WORK/cluster-repo"
+mkdir -p "$CSD/benches/cl-one" "$CSD/benches/cl-two" "$CREPO"
+git -C "$CREPO" init -q
+git -C "$CREPO" config user.email t@example.com
+git -C "$CREPO" config user.name Test
+printf 'one\n' >"$CREPO/a.py"
+git -C "$CREPO" add a.py
+git -C "$CREPO" commit -qm "fixture"
+CSHA=$(git -C "$CREPO" rev-parse HEAD)
+python3 - "$CSD" "$CREPO" "$CSHA" <<'PY'
+import json
+import pathlib
+import sys
+
+stats, repo, sha = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+runs = {
+    "cl-one": [
+        {"defect_id": "cl-one#1", "file": "a.py", "line": 3, "severity": "P2",
+         "summary": "shared bug", "caught_by": ["sol-low", "oc-kimik3"]},
+        {"defect_id": "cl-one#2", "file": "a.py", "line": 9, "severity": "P3",
+         "summary": "run one only", "caught_by": ["sol-low"]},
+    ],
+    "cl-two": [
+        {"defect_id": "cl-two#1", "file": "a.py", "line": 4, "severity": "P1",
+         "summary": "the same shared bug, worded differently", "caught_by": ["agy-pro-high-skill"]},
+    ],
+}
+for run, defects in runs.items():
+    directory = stats / "benches" / run
+    raters = sorted({rater for defect in defects for rater in defect["caught_by"]})
+    (directory / "meta.json").write_text(json.dumps({
+        "run_id": run, "commit": sha, "repo": repo, "raters": raters,
+        "rater_runs": [{"rater": rater, "duration_ms": 1000, "exit_code": 0} for rater in raters],
+        "durations": {rater: 1000 for rater in raters},
+        "started": "2026-07-26T00:00:00+00:00", "finished": "2026-07-26T00:00:01+00:00",
+    }))
+    with open(directory / "defects.jsonl", "w") as handle:
+        for defect in defects:
+            handle.write(json.dumps(defect) + "\n")
+PY
+
+printf '#!/bin/sh\necho "worker-pick must not run" >&2\nexit 1\n' >"$WORK/exploding-worker-pick.sh"
+chmod +x "$WORK/exploding-worker-pick.sh"
+
+CGROUPS="$WORK/cluster-groups.jsonl"
+cat >"$CGROUPS" <<'JSON'
+{"members":["cl-one#1","cl-two#1"],"file":"a.py","line":3,"severity":"P3","summary":"shared bug"}
+{"members":["cl-one#2"],"file":"a.py","line":9,"severity":"P3","summary":"run one only"}
+JSON
+clustered=$(WORKER_STATS_DIR="$CSD" "$SCRIPT" cluster "$CSHA" --groups "$CGROUPS") \
+  || fail "cluster refused a well-formed grouping"
+assert contains "$clustered" '3 run-level defect(s) -> 2 canonical (1 merged'
+CNAME=$(basename "$CREPO")
+python3 - "$CSD/defects/${CNAME}__${CSHA:0:7}.jsonl" "$CSHA" <<'PY'
+import json
+import sys
+
+rows = [json.loads(line) for line in open(sys.argv[0 + 1])]
+merged, single = rows
+# The union across runs is the whole point: one cell ran in each run and neither list alone
+# names all three cells that found this defect.
+assert merged["caught_by"] == ["agy-pro-high-skill", "oc-kimik3", "sol-low"], merged
+assert [c["run_id"] for c in merged["catches"]] == ["cl-one", "cl-one", "cl-two"], merged
+# The judge wrote P3 while a member was adjudicated P1; the members decide.
+assert merged["severity"] == "P1", merged
+assert merged["commit"] == sys.argv[2], merged
+assert single["caught_by"] == ["sol-low"], single
+assert single["members"] == ["cl-one#2"], single
+assert merged["defect_id"].endswith("#1") and single["defect_id"].endswith("#2"), rows
+print("cluster-ok")
+PY
+assert test "$?" -eq 0
+
+# Each of these leaves the canonical list silently wrong, so each is refused rather than merged.
+printf '%s\n' '{"members":["cl-one#1","cl-two#1"],"file":"a.py","severity":"P2","summary":"x"}' >"$WORK/cl-missing.jsonl"
+WORKER_STATS_DIR="$CSD" "$SCRIPT" cluster "$CSHA" --groups "$WORK/cl-missing.jsonl" >/dev/null 2>&1 \
+  && fail "cluster accepted a grouping that left a defect out"
+printf '%s\n%s\n' \
+  '{"members":["cl-one#1","cl-two#1"],"file":"a.py","severity":"P2","summary":"x"}' \
+  '{"members":["cl-one#1","cl-one#2"],"file":"a.py","severity":"P2","summary":"y"}' >"$WORK/cl-dup.jsonl"
+WORKER_STATS_DIR="$CSD" "$SCRIPT" cluster "$CSHA" --groups "$WORK/cl-dup.jsonl" >/dev/null 2>&1 \
+  && fail "cluster accepted a defect placed in two groups"
+printf '%s\n' '{"members":["cl-one#1","cl-one#2","cl-two#1","cl-three#1"],"file":"a.py","severity":"P2","summary":"x"}' >"$WORK/cl-unknown.jsonl"
+WORKER_STATS_DIR="$CSD" "$SCRIPT" cluster "$CSHA" --groups "$WORK/cl-unknown.jsonl" >/dev/null 2>&1 \
+  && fail "cluster accepted a group naming a defect the commit never recorded"
+# A group naming a file none of its members cite would place the canonical defect in code the
+# raters never mentioned, which reads downstream exactly like a defect that is really there.
+printf '%s\n%s\n' \
+  '{"members":["cl-one#1","cl-two#1"],"file":"elsewhere.py","line":3,"severity":"P2","summary":"x"}' \
+  '{"members":["cl-one#2"],"file":"a.py","line":9,"severity":"P3","summary":"y"}' >"$WORK/cl-wrongfile.jsonl"
+WORKER_STATS_DIR="$CSD" "$SCRIPT" cluster "$CSHA" --groups "$WORK/cl-wrongfile.jsonl" >/dev/null 2>&1 \
+  && fail "cluster accepted a group claiming a file none of its members cite"
+# Trailing junk means the judge's output was truncated or doubled, not that the last group won.
+printf '%s\n%s\n' "$(cat "$CGROUPS")" 'not json at all' >"$WORK/cl-junk.jsonl"
+WORKER_STATS_DIR="$CSD" "$SCRIPT" cluster "$CSHA" --groups "$WORK/cl-junk.jsonl" >/dev/null 2>&1 \
+  && fail "cluster accepted a groups file with trailing junk"
+# A run of this commit that was never adjudicated leaves the canonical list short, and short is
+# indistinguishable from complete once it is written.
+mv "$CSD/benches/cl-two/defects.jsonl" "$WORK/cl-two-defects.jsonl"
+# The grouping must cover only what remains, or the refusal under test is masked by the
+# unknown-member guard firing on cl-two's now-absent defect instead.
+printf '%s\n%s\n' \
+  '{"members":["cl-one#1"],"file":"a.py","line":3,"severity":"P2","summary":"x"}' \
+  '{"members":["cl-one#2"],"file":"a.py","line":9,"severity":"P3","summary":"y"}' >"$WORK/cl-short.jsonl"
+WORKER_STATS_DIR="$CSD" "$SCRIPT" cluster "$CSHA" --groups "$WORK/cl-short.jsonl" >/dev/null 2>&1 \
+  && fail "cluster accepted a commit with an unadjudicated run"
+mv "$WORK/cl-two-defects.jsonl" "$CSD/benches/cl-two/defects.jsonl"
+
+# The same sha reachable from two repositories is the failure that made a whole night's
+# analysis silently skip two commits; merging across them would repeat it.
+mkdir -p "$CSD/benches/cl-three"
+python3 - "$CSD/benches/cl-three" "$CSHA" <<'PY'
+import json
+import pathlib
+import sys
+
+directory = pathlib.Path(sys.argv[1])
+(directory / "meta.json").write_text(json.dumps({
+    "run_id": "cl-three", "commit": sys.argv[2], "repo": "/nonexistent-repo", "raters": [],
+    "rater_runs": [], "durations": {},
+    "started": "2026-07-26T00:00:00+00:00", "finished": "2026-07-26T00:00:01+00:00",
+}))
+(directory / "defects.jsonl").write_text(json.dumps({
+    "defect_id": "cl-three#1", "file": "a.py", "line": 1, "severity": "P2",
+    "summary": "elsewhere", "caught_by": ["sol-low"],
+}) + "\n")
+PY
+printf '%s\n' '{"run_id":"cl-three","rater":"sol-low","repo":"another-repo"}' >>"$CSD/reviews.jsonl"
+WORKER_STATS_DIR="$CSD" "$SCRIPT" cluster "$CSHA" --groups "$CGROUPS" >/dev/null 2>&1 \
+  && fail "cluster merged defects from two repositories under one commit"
+# A run that confirmed nothing still names the commit and repository it reviewed, so it has to
+# count towards the refusals: otherwise the foreign repository hides behind an empty list.
+: >"$CSD/benches/cl-three/defects.jsonl"
+WORKER_STATS_DIR="$CSD" "$SCRIPT" cluster "$CSHA" --groups "$CGROUPS" >/dev/null 2>&1 \
+  && fail "cluster ignored a second repository whose run confirmed no defects"
+rm -rf "$CSD/benches/cl-three"
+: >"$CSD/reviews.jsonl"
+
+# The repository a run actually reviewed wins over what the corpus remembers: the corpus is the
+# fallback for a reviewed copy that is gone, not an override that hides a genuine move.
+printf '%s\n%s\n' \
+  '{"run_id":"cl-one","rater":"sol-low","repo":"stale-name"}' \
+  '{"run_id":"cl-two","rater":"sol-low","repo":"stale-name"}' >"$CSD/reviews.jsonl"
+# Cleared first: the happy path above already wrote this file, and finding it afterwards would
+# hold whichever name the code chose.
+rm -f "$CSD/defects/${CNAME}__${CSHA:0:7}.jsonl" "$CSD/defects/stale-name__${CSHA:0:7}.jsonl"
+WORKER_STATS_DIR="$CSD" "$SCRIPT" cluster "$CSHA" --groups "$CGROUPS" >/dev/null \
+  || fail "cluster refused a grouping whose runs still resolve"
+assert test -f "$CSD/defects/${CNAME}__${CSHA:0:7}.jsonl"
+assert test "$(jq -r -s '.[0].repo' "$CSD/defects/${CNAME}__${CSHA:0:7}.jsonl")" = "$CNAME"
+assert test ! -f "$CSD/defects/stale-name__${CSHA:0:7}.jsonl"
+: >"$CSD/reviews.jsonl"
+rm -f "$CSD/defects/${CNAME}__${CSHA:0:7}.jsonl"
+
+# The frontier engine decides which cells go into a review tier, so its arithmetic is asserted
+# against numbers worked out by hand rather than against whatever it happens to print.
+FSD="$WORK/frontier-stats"
+mkdir -p "$FSD/defects"
+python3 - "$FSD" <<'PY'
+import json
+import pathlib
+import sys
+
+stats = pathlib.Path(sys.argv[1])
+# fast was attempted four times on each commit, slow once: the union of everything fast ever
+# found would rank it above slow purely for having been sampled four times as often. One of
+# fast's attempts on bbbbbbb errored, which is an attempt that found nothing, not a non-attempt.
+attempts = []
+for commit in ("aaaaaaa", "bbbbbbb"):
+    for attempt in range(1, 5):
+        errored = commit == "bbbbbbb" and attempt == 4
+        attempts.append((f"{commit}-fast-{attempt}", commit, "oc-kimik3", 30_000, errored))
+    attempts.append((f"{commit}-slow", commit, "sol-max", 600_000, False))
+    # Recorded under the pre-rename spec, the way the real legacy runs did: the denominator
+    # lands under the current name only because normalisation is applied to both sides.
+    attempts.append((f"{commit}-mid", commit, "agy-flash-medium-skill", 120_000, False))
+# Present on one commit only, so it may never be compared with the others.
+attempts.append(("aaaaaaa-partial", "aaaaaaa", "sol-low", 60_000, False))
+
+rows = []
+for run_id, commit, rater, duration, errored in attempts:
+    directory = stats / "benches" / run_id
+    directory.mkdir(parents=True, exist_ok=True)
+    # `raters` lists only the cells that answered, so an errored attempt survives solely in
+    # `rater_runs` — reading `raters` for the denominator is how a failure becomes invisible.
+    (directory / "meta.json").write_text(json.dumps({
+        "run_id": run_id, "commit": commit, "repo": "/fixture",
+        "raters": [] if errored else [rater],
+        "rater_runs": [{"rater": rater, "duration_ms": duration, "exit_code": 1 if errored else 0,
+                        **({"errored": True} if errored else {})}],
+        "durations": {rater: duration},
+        "started": "2026-07-26T00:00:00+00:00", "finished": "2026-07-26T00:00:01+00:00",
+    }))
+    (directory / "defects.jsonl").write_text("")
+    if not errored:
+        rows.append({"run_id": run_id, "commit": commit, "rater": rater,
+                     "duration_ms": duration, "repo": "fixture"})
+with open(stats / "reviews.jsonl", "w") as handle:
+    for row in rows:
+        handle.write(json.dumps(row) + "\n")
+
+def catches(pairs):
+    return [{"run_id": run, "rater": rater} for rater, run in pairs]
+
+defects = {
+    "aaaaaaa": [
+        # fast found this in two of its four runs -> rate 1/2; slow in its only run -> rate 1.
+        {"defect_id": "fixture@aaaaaaa#1", "repo": "fixture", "commit": "aaaaaaa",
+         "file": "a.py", "line": 1, "severity": "P1", "summary": "both",
+         "caught_by": ["oc-kimik3", "sol-max"],
+         "catches": catches([("oc-kimik3", "aaaaaaa-fast-1"), ("oc-kimik3", "aaaaaaa-fast-3"),
+                             ("sol-max", "aaaaaaa-slow")])},
+        # Only the legacy-named agy cell found it, under the pre-rename spec.
+        {"defect_id": "fixture@aaaaaaa#2", "repo": "fixture", "commit": "aaaaaaa",
+         "file": "a.py", "line": 2, "severity": "P2", "summary": "legacy name",
+         "caught_by": ["agy-flash-medium-skill"],
+         "catches": catches([("agy-flash-medium-skill", "aaaaaaa-mid")])},
+        # Nobody comparable found it: it must still count against the total.
+        {"defect_id": "fixture@aaaaaaa#3", "repo": "fixture", "commit": "aaaaaaa",
+         "file": "a.py", "line": 3, "severity": "P3", "summary": "missed by all",
+         "caught_by": [], "catches": []},
+    ],
+    "bbbbbbb": [
+        {"defect_id": "fixture@bbbbbbb#1", "repo": "fixture", "commit": "bbbbbbb",
+         "file": "b.py", "line": 1, "severity": "P2", "summary": "slow only",
+         "caught_by": ["sol-max"], "catches": catches([("sol-max", "bbbbbbb-slow")])},
+    ],
+}
+for commit, rows in defects.items():
+    with open(stats / "defects" / f"fixture__{commit}.jsonl", "w") as handle:
+        for row in rows:
+            handle.write(json.dumps(row) + "\n")
+PY
+
+python3 - "$SCRIPT" "$FSD" <<'PY'
+import importlib.machinery
+import importlib.util
+import pathlib
+import sys
+
+spec = importlib.util.spec_from_loader(
+    "rb", importlib.machinery.SourceFileLoader("rb", sys.argv[1])
+)
+rb = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(rb)
+stats = pathlib.Path(sys.argv[2])
+
+(by_commit, cells, minutes, excluded, run_counts, errors,
+ counted_runs) = rb.frontier_inputs(stats)
+# sol-low ran on one commit only and is therefore not comparable with the rest.
+assert cells == ["agy-flash36-medium-skill", "oc-kimik3", "sol-max"], cells
+assert excluded == ["sol-low"], excluded
+# Four attempts on each commit, including the one on bbbbbbb that errored and left no row.
+assert run_counts[("aaaaaaa", "oc-kimik3")] == 4, run_counts
+assert run_counts[("bbbbbbb", "oc-kimik3")] == 4, run_counts
+assert errors[("bbbbbbb", "oc-kimik3")] == 1, errors
+assert minutes["oc-kimik3"] == 0.5 and minutes["sol-max"] == 10.0, minutes
+
+rates = rb.hit_rates(by_commit, run_counts, counted_runs)
+# Two of four runs found it, so one fresh run has an even chance — not the certainty the
+# union of all four runs would imply.
+assert rates["fixture@aaaaaaa#1"]["oc-kimik3"] == 0.5, rates["fixture@aaaaaaa#1"]
+assert rates["fixture@aaaaaaa#1"]["sol-max"] == 1.0, rates["fixture@aaaaaaa#1"]
+# The legacy spec in `catches` resolves to the name the corpus counts runs under.
+assert rates["fixture@aaaaaaa#2"] == {"agy-flash36-medium-skill": 1.0}, rates["fixture@aaaaaaa#2"]
+assert rates["fixture@aaaaaaa#3"] == {}, rates["fixture@aaaaaaa#3"]
+# A catch naming a run the denominator never counted is a numerator with no denominator: it
+# produced a rate of 900% and a negative coverage before it was dropped.
+phantom = dict(by_commit)
+phantom["aaaaaaa"] = list(by_commit["aaaaaaa"])
+phantom["aaaaaaa"][0] = dict(
+    phantom["aaaaaaa"][0],
+    catches=phantom["aaaaaaa"][0]["catches"] + [{"run_id": "never-ran", "rater": "oc-kimik3"}],
+)
+phantom_rates = rb.hit_rates(phantom, run_counts, counted_runs)
+assert phantom_rates["fixture@aaaaaaa#1"]["oc-kimik3"] == 0.5, phantom_rates["fixture@aaaaaaa#1"]
+assert all(0.0 <= rate <= 1.0 for per in phantom_rates.values() for rate in per.values())
+phantom_found, _ = rb.composition_coverage(phantom, phantom_rates, ["oc-kimik3"] * 2)
+assert 0.0 <= phantom_found <= 4.0, phantom_found
+
+found, total = rb.composition_coverage(by_commit, rates, ["oc-kimik3"])
+assert total == 4, total
+assert abs(found - 0.5) < 1e-9, found
+# Naming it twice is two independent runs: 1 - 0.5^2.
+found_twice, _ = rb.composition_coverage(by_commit, rates, ["oc-kimik3", "oc-kimik3"])
+assert abs(found_twice - 0.75) < 1e-9, found_twice
+found_pair, _ = rb.composition_coverage(by_commit, rates, ["oc-kimik3", "sol-max"])
+assert abs(found_pair - 2.0) < 1e-9, found_pair
+
+# At half a minute only the fast cell fits, and repeating it is the only way to buy coverage.
+chosen, covered, proven = rb.best_composition(by_commit, rates, cells, minutes, 0.5, 3)
+assert chosen == ["oc-kimik3"] * 3, chosen
+assert abs(covered - 0.875) < 1e-9, covered
+assert proven is True, proven
+# The cap is what stops it, not the data: one more run would still add coverage.
+capped, capped_covered, _ = rb.best_composition(by_commit, rates, cells, minutes, 0.5, 1)
+assert capped == ["oc-kimik3"] and abs(capped_covered - 0.5) < 1e-9, (capped, capped_covered)
+# Nothing slower than the budget may appear, whatever it would have contributed. sol-max is
+# the strongest cell in the fixture and takes ten minutes, so a budget under that must exclude
+# it — asserting against a budget no cell exceeds would hold with the filter deleted.
+tight, _, _ = rb.best_composition(by_commit, rates, cells, minutes, 2.5, 3)
+assert tight and all(minutes[cell] <= 2.5 for cell in tight), tight
+assert "sol-max" not in tight, tight
+roomy, _, _ = rb.best_composition(by_commit, rates, cells, minutes, 10.0, 3)
+assert "sol-max" in roomy, roomy
+assert rb.best_composition(by_commit, rates, cells, minutes, 0.1, 3) == ([], 0.0, True)
+
+# Greedy takes the cell with the largest immediate gain and cannot recover from it; the
+# exhaustive path must, or the tool reports a heuristic as the answer. a+b cover three
+# defects, c+d cover four, and greedy starts with a.
+counter_rates = {
+    "d1": {"a": 1.0, "b": 1.0, "d": 1.0},
+    "d2": {"a": 1.0, "c": 1.0},
+    "d3": {"b": 1.0, "c": 1.0},
+    "d4": {"d": 1.0},
+}
+counter_defects = {"z": [{"defect_id": name} for name in ("d1", "d2", "d3", "d4")]}
+counter_minutes = {name: 1.0 for name in "abcd"}
+counter_best, counter_covered, counter_proven = rb.best_composition(
+    counter_defects, counter_rates, list("abcd"), counter_minutes, 1.0, 2
+)
+assert abs(counter_covered - 4.0) < 1e-9, (counter_best, counter_covered)
+assert counter_proven is True, counter_proven
+
+# A side billed as one subscription has no pool to ask, and naming its pseudo-account is the
+# only way to take that side off the table.
+import os
+assert rb.pool_account("opencode", set()) == "opencode-go"
+os.environ["REVIEW_BENCH_EXCLUDE_OPENCODE"] = "opencode-go"
+assert rb.pool_account("opencode", set()) is None
+del os.environ["REVIEW_BENCH_EXCLUDE_OPENCODE"]
+# The greedy fallback is what runs on the real corpus, where the candidate space is far past
+# the exhaustive threshold, and no fixture would ever reach it: the threshold is lowered so the
+# path is exercised, and it must return a real composition and admit it is not proven optimal.
+exhaustive_limit = rb.EXHAUSTIVE_COMPOSITIONS
+rb.EXHAUSTIVE_COMPOSITIONS = 1
+greedy, greedy_covered, greedy_proven = rb.best_composition(
+    by_commit, rates, cells, minutes, 10.0, 3
+)
+assert greedy and greedy_covered > 0, (greedy, greedy_covered)
+assert greedy_proven is False, greedy_proven
+rb.EXHAUSTIVE_COMPOSITIONS = exhaustive_limit
+print("frontier-ok")
+PY
+assert test "$?" -eq 0
+
+# The CLI is what a person runs, and it carries the honesty label and the error column that the
+# functions underneath know nothing about.
+frontier_out=$(WORKER_STATS_DIR="$FSD" "$SCRIPT" frontier --budgets 0.5,10 --max-cells 2) \
+  || fail "frontier refused a fixture corpus"
+assert contains "$frontier_out" '(4 canonical defect(s))'
+assert contains "$frontier_out" 'excluded (did not run on every commit): 1 cell(s)'
+assert contains "$frontier_out" '— best'
+assert contains "$frontier_out" 'errored 1/8'
+WORKER_STATS_DIR="$FSD" "$SCRIPT" frontier --commits nosuch >/dev/null 2>&1 \
+  && fail "frontier accepted a commit with no canonical list"
+
+# Two repositories whose sha7 collide would merge into one denominator, and the merge would look
+# exactly like a cell that ran on both.
+# An unreadable meta.json used to be skipped, taking its attempts out of the denominator while
+# their catches stayed in the numerator — the state that produced a 900% rate.
+mkdir -p "$FSD/benches/corrupt-run"
+printf '{ not json' >"$FSD/benches/corrupt-run/meta.json"
+WORKER_STATS_DIR="$FSD" "$SCRIPT" frontier --budgets 10 >/dev/null 2>&1 \
+  && fail "frontier accepted a corpus containing an unreadable run"
+rm -rf "$FSD/benches/corrupt-run"
+
+cp "$FSD/defects/fixture__aaaaaaa.jsonl" "$FSD/defects/other__aaaaaaa.jsonl"
+WORKER_STATS_DIR="$FSD" "$SCRIPT" frontier --budgets 10 >/dev/null 2>&1 \
+  && fail "frontier merged two repositories sharing a commit prefix"
+rm -f "$FSD/defects/other__aaaaaaa.jsonl"
+
+# record stamps the repository a run reviewed, or says plainly that it cannot be traced.
+REPO_RUN="$CSD/benches/repo-fixture"
+mkdir -p "$REPO_RUN"
+python3 - "$REPO_RUN" "$CREPO" "$CSHA" "$WORK/repo-verdicts.jsonl" <<'PY'
+import json
+import pathlib
+import sys
+
+directory = pathlib.Path(sys.argv[1])
+(directory / "meta.json").write_text(json.dumps({
+    "run_id": "repo-fixture", "commit": sys.argv[3], "repo": sys.argv[2],
+    "raters": ["sol-low"],
+    "rater_runs": [{"rater": "sol-low", "model": "sol", "effort": "low", "side": "codex",
+                    "exit_code": 0}],
+    "durations": {"sol-low": 1000},
+    "started": "2026-07-26T00:00:00+00:00", "finished": "2026-07-26T00:00:01+00:00", "focus": "",
+}))
+(directory / "findings-sol-low.jsonl").write_text(json.dumps({
+    "severity": "P2", "file": "a.py", "line": 1, "summary": "traceable", "rater": "sol-low",
+}) + "\n")
+pathlib.Path(sys.argv[4]).write_text(
+    json.dumps({"rater": "sol-low", "idx": 0, "verdict": "confirmed"}) + "\n"
+)
+PY
+WORKER_STATS_DIR="$CSD" "$SCRIPT" record repo-fixture --verdicts "$WORK/repo-verdicts.jsonl" \
+  >/dev/null || fail "record failed on a resolvable repository"
+assert test "$(jq -r 'select(.run_id=="repo-fixture") | .repo' "$CSD/reviews.jsonl")" = "$CNAME"
+python3 - "$REPO_RUN/meta.json" <<'PY'
+import json
+import sys
+
+meta = json.loads(open(sys.argv[1]).read())
+meta["repo"] = "/gone"
+open(sys.argv[1], "w").write(json.dumps(meta))
+PY
+# A crash between writing the artifacts and appending to the corpus leaves rows with no verdict
+# file; a later correction then has to replace them rather than write artifacts over stale rows.
+rm -f "$REPO_RUN/verdicts.jsonl"
+printf '%s\n' '{"rater":"sol-low","idx":0,"verdict":"duplicate"}' >"$WORK/repo-verdicts-3.jsonl"
+orphaned=$(WORKER_STATS_DIR="$CSD" "$SCRIPT" record repo-fixture \
+  --verdicts "$WORK/repo-verdicts-3.jsonl") || fail "record failed on rows with no verdict file"
+assert contains "$orphaned" 're-adjudicated'
+assert test "$(jq -r 'select(.run_id=="repo-fixture") | .duplicate' "$CSD/reviews.jsonl")" = 1
+assert test "$(grep -c 'repo-fixture' "$CSD/reviews.jsonl")" -eq 1
+
+# Re-adjudicating a run whose sealed copy has since been deleted rewrites its rows, and must
+# keep the repository the corpus already knows: seven runs in the real corpus name a temporary
+# clone that is long gone, so resolving to nothing here would strip what a migration filled in.
+printf '%s\n' '{"rater":"sol-low","idx":0,"verdict":"false_positive"}' >"$WORK/repo-verdicts-2.jsonl"
+readjudicated=$(WORKER_STATS_DIR="$CSD" "$SCRIPT" record repo-fixture \
+  --verdicts "$WORK/repo-verdicts-2.jsonl") || fail "re-adjudication failed on a deleted sealed copy"
+assert contains "$readjudicated" 're-adjudicated'
+assert test "$(jq -r 'select(.run_id=="repo-fixture") | .repo' "$CSD/reviews.jsonl")" = "$CNAME"
+: >"$CSD/reviews.jsonl"
+untraceable=$(WORKER_STATS_DIR="$CSD" "$SCRIPT" record repo-fixture \
+  --verdicts "$WORK/repo-verdicts.jsonl") || fail "record failed on an unresolvable repository"
+assert contains "$untraceable" 'cannot be traced back to code'
+assert test "$(jq -r 'select(.run_id=="repo-fixture") | has("repo")' "$CSD/reviews.jsonl")" = false
+
+# --repeat is accepted by every runner and honoured by one, so asking for it elsewhere is refused
+# rather than recording a single run as several agreeing ones. The refusal must land before any
+# account is consulted: reaching the real worker-pick here would read the live account store.
+repeat_refusal=$(WORKER_STATS_DIR="$CSD" CLAUDEB_DIR="$WORK/no-such-store" \
+  REVIEW_BENCH_WORKER_PICK_BIN="$WORK/exploding-worker-pick.sh" \
+  "$SCRIPT" review "$CSHA" --repo "$CREPO" --tier T0 --repeat 3 2>&1)
+assert contains "$repeat_refusal" 'implemented for the OpenCode side only'
+assert test "$(printf '%s' "$repeat_refusal" | grep -c 'worker-pick must not run')" -eq 0
+
 
 python3 - "$SD/benches/run-fixture/meta.json" <<'PY'
 import json
@@ -1959,4 +2460,4 @@ for cell in oc-kimik3 oc-grok45-low agy-pro-high-skill agy-flash35-medium-skill 
   assert contains "$tiers_table" "$cell"
 done
 
-printf 'PASS: %s assertions; canonical nested review tiers with no retired cell in them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, and cross-side parallelism result assembly\n' "$asserts"
+printf 'PASS: %s assertions; canonical nested review tiers with no retired cell in them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, --repeat refused for the sides that ignore it, the session account usable only behind its opt-in and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, and cross-side parallelism result assembly\n' "$asserts"

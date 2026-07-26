@@ -7,12 +7,15 @@ import os
 import re
 import shlex
 import shutil
+import itertools
+import math
+import statistics
 import subprocess
 import sys
 import tempfile
 import threading
 import time
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -377,9 +380,13 @@ def read_jsonl(path):
 
 
 def write_jsonl(path, rows):
-    with open(path, "w") as stream:
+    """Written through a temp file: a kill mid-write would otherwise leave a file that parses
+    cleanly and is missing rows, which no reader downstream can tell from a complete one."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w") as stream:
         for row in rows:
             stream.write(json.dumps(row, ensure_ascii=False) + "\n")
+    os.replace(tmp, path)
 
 
 def resolved_model_from_envelope(path):
@@ -571,7 +578,11 @@ def parse_affordability(output):
         if session_mark:
             session_account = account
         blocked = any(flag in segment for flag in (" FLOOR", " blocked", " off", " HEADROOM"))
-        if not session_mark and not blocked and float(cap) >= 15:
+        # The session account is excluded because a bench that quietly spends the quota the
+        # user is talking to is indistinguishable from one that found a spare account. Naming
+        # it stays possible, but only on purpose.
+        usable = allow_session_account() if session_mark else True
+        if usable and not blocked and float(cap) >= 15:
             table_accounts.append((float(score), account, float(cap)))
     table_accounts.sort(key=lambda item: (-item[0], item[1]))
     next_is_eligible = next(
@@ -610,6 +621,16 @@ def parse_affordability(output):
         "session_account": session_account,
         "worker_pick": output,
     }
+
+
+def allow_session_account():
+    """Whether the account this session runs on may serve bench raters.
+
+    Off by default: spending the quota the user is holding a conversation on is exactly the
+    surprise the exclusion exists to prevent. Set REVIEW_BENCH_ALLOW_SESSION_ACCOUNT=1 for a
+    measurement the user asked to run there.
+    """
+    return os.environ.get("REVIEW_BENCH_ALLOW_SESSION_ACCOUNT", "") not in ("", "0", "no")
 
 
 def parse_worker_pick(output):
@@ -1994,6 +2015,9 @@ SIDE_RUNNERS = {
     "grok": run_grok,
     "opencode": run_opencode_sampled,
 }
+# Every runner accepts `repeat`, and only this one samples more than once. The others take
+# the argument and drop it, so `--repeat 3` on them records one run as three.
+REPEAT_CAPABLE_SIDES = frozenset({"opencode"})
 # Each vendor announces an exhausted account in its own words, and only its own words are
 # trusted: a rater that merely failed must not retire an account that still has quota.
 SIDE_WALL = {
@@ -2023,10 +2047,56 @@ SIDE_FIXED_ACCOUNTS = {"grok": "supergrok", "opencode": "opencode-go"}
 SIDE_POOL_VENDOR = {"claude": "claudeb", "codex": "codex", "agy": "gemini"}
 
 
+_PERMITTED_CLAUDE = []
+
+
+def permitted_claude_account():
+    """The Claude account the affordability parse allows, session account included.
+
+    Read once per process: every rater would otherwise re-run `worker-pick` for an answer that
+    the run already made, and the wall handling that does change during a run travels in the
+    caller's exclusion set instead.
+    """
+    if not _PERMITTED_CLAUDE:
+        available = affordability()
+        _PERMITTED_CLAUDE.append(
+            available.get("claude_account") if available.get("claude") else None
+        )
+    return _PERMITTED_CLAUDE[0]
+
+
+def baseline_exclusions(side):
+    """Accounts the caller has taken off the table for this side before the pool is asked.
+
+    Steering a measurement onto one account is narrowing what the pool may choose from, not
+    choosing instead of it: the ranking, the walls and the floors all still apply.
+    """
+    names = [side]
+    vendor = SIDE_POOL_VENDOR.get(side)
+    if vendor and vendor != side:
+        # `agy` is the internal side name and `gemini` is what worker-pick and the user call it;
+        # accepting only one of them makes a reasonable spelling fail silently.
+        names.append(vendor)
+    excluded = set()
+    for name in names:
+        raw = os.environ.get(f"REVIEW_BENCH_EXCLUDE_{name.upper()}", "")
+        excluded |= {part.strip() for part in raw.split(",") if part.strip()}
+    return excluded
+
+
 def pool_account(side, excluded):
     """The pool's next account for this side, or None when it has nothing left to offer."""
+    excluded = set(excluded) | baseline_exclusions(side)
+    if side == "claude" and allow_session_account():
+        # worker-pick never offers the session account, so the opt-in would otherwise grant a
+        # permission the pool cannot act on. The account comes from the same table parse that
+        # granted it rather than from a third selector, and the parse's own verdict comes with
+        # it: naming an account while the side is unaffordable would walk straight past the floor.
+        permitted = permitted_claude_account()
+        if permitted and permitted not in excluded:
+            return permitted
     if side in SIDE_FIXED_ACCOUNTS:
-        return SIDE_FIXED_ACCOUNTS[side] if not excluded else None
+        return SIDE_FIXED_ACCOUNTS[side] if SIDE_FIXED_ACCOUNTS[side] not in excluded else None
     command = [command_path("REVIEW_BENCH_WORKER_PICK_BIN", "worker-pick"),
                "--account", SIDE_POOL_VENDOR[side]]
     if excluded:
@@ -2084,7 +2154,9 @@ def run_rater_task(rater, repo, sha, focus, run_dir, diff, repeat=1):
         if rc == 0:
             return (rater, candidate, result)
     if result is None:
-        return (rater, None, (1, 0, "", f"the pool has no {side} account left to run on", []))
+        baseline = baseline_exclusions(side)
+        why = f"; excluded by REVIEW_BENCH_EXCLUDE_{side.upper()}: {', '.join(sorted(baseline))}" if baseline else ""
+        return (rater, None, (1, 0, "", f"the pool has no {side} account left to run on{why}", []))
     return (rater, account, result)
 
 
@@ -2289,6 +2361,23 @@ def redact_command(rater, command):
     return shlex.join(command[:4] + [placeholder] + command[5:])
 
 
+def refuse_unsupported_repeat(raters, repeat):
+    """Refuse a repeat count the selected sides do not honour.
+
+    A silently ignored --repeat is worse than no flag: the caller measuring how much one
+    cell varies between samples records a single run as several agreeing ones.
+    """
+    if not repeat or repeat <= 1:
+        return
+    ignored = sorted({rater["spec"] for rater in raters
+                      if rater["side"] not in REPEAT_CAPABLE_SIDES})
+    if ignored:
+        raise RuntimeError(
+            f"--repeat {repeat} is implemented for the OpenCode side only; these cells would "
+            f"run once and be recorded as repeated: {', '.join(ignored)}"
+        )
+
+
 def cmd_run(args):
     repo = Path(args.repo).resolve()
     if not (repo / ".git").exists() and subprocess.run(
@@ -2304,6 +2393,9 @@ def cmd_run(args):
         verify_model = verifier_model(verify_model)
     if args.raters or args.leg:
         requested = parse_raters(args.raters or ",".join(OPENCODE_REVIEW_LEG))
+        # Before any account is consulted: an unhonoured --repeat is a mistake in the request,
+        # and answering it costs nothing to discover.
+        refuse_unsupported_repeat(requested, args.repeat)
         available = {
             "grok": True, "opencode": True, "agy": True,
             "codex": False, "claude": False,
@@ -2323,6 +2415,7 @@ def cmd_run(args):
         available = affordability()
         raters, counts, skipped = auto_pick(args.auto or 2, read_jsonl(reviews_path), available)
     refuse_retired_cells(raters)
+    refuse_unsupported_repeat(raters, args.repeat)
     print("selected raters:")
     for rater in raters:
         print(f"  {rater['spec']}: {counts[rater['spec']]} recorded bench row(s)")
@@ -2505,6 +2598,29 @@ def append_review_records(sd, records, replace_run=None):
     return fresh, 0
 
 
+def repo_identity(path):
+    """Name the repository a run reviewed, or nothing when the code cannot be traced.
+
+    Benches run across several repositories and against sealed temporary copies, so a
+    corpus row carrying only a commit sha cannot be resolved back to code: analysis
+    silently assumes one repository and drops every finding whose paths it cannot find.
+    Guessing a name from a dead path is what makes that failure quiet, so an unresolvable
+    repository is recorded as absent instead.
+    """
+    if not isinstance(path, str) or not path or not Path(path).is_dir():
+        return None
+    proc = subprocess.run(["git", "rev-parse", "--git-common-dir"],
+                          cwd=path, capture_output=True, text=True, timeout=10)
+    if proc.returncode != 0:
+        return None
+    # The common dir is shared by every linked worktree, so its parent names the one repository
+    # they all belong to; the worktree's own directory name would split it into several.
+    common = Path(proc.stdout.strip())
+    if not common.is_absolute():
+        common = (Path(path) / common).resolve()
+    return common.parent.name if common.name == ".git" else common.name
+
+
 def cmd_record(args):
     sd = state_dir()
     run_dir = sd / "benches" / args.run_id
@@ -2553,6 +2669,19 @@ def cmd_record(args):
         )
         caught_by[target].add(key[0])
     meta_by_rater = {row["rater"]: row for row in meta.get("rater_runs", [])}
+    repo_name = repo_identity(meta.get("repo"))
+    if not repo_name:
+        # A run whose meta names a sealed copy that has since been deleted still has a known
+        # repository in the corpus, and re-adjudication replaces its rows: resolving to
+        # nothing here is what would quietly strip an already-established one.
+        repo_name = next(
+            (row["repo"] for row in read_jsonl(sd / "reviews.jsonl")
+             if row.get("run_id") == args.run_id and row.get("repo")),
+            None,
+        )
+    if not repo_name:
+        print(f"warning: {args.run_id} reviewed {meta.get('repo') or 'an unrecorded repository'}, "
+              f"which no longer resolves; its rows cannot be traced back to code")
     records = []
     for rater in meta["raters"]:
         # A run stored under the pre-rename id must stay adjudicable; review_counts already
@@ -2589,6 +2718,8 @@ def cmd_record(args):
         model_resolved = meta_by_rater.get(rater, {}).get("model_resolved")
         if model_resolved:
             record["rater_model_resolved"] = model_resolved
+        if repo_name:
+            record["repo"] = repo_name
         records.append(record)
     normalized_verdicts = [
         {"rater": rater, "idx": idx, "verdict": verdict}
@@ -2608,11 +2739,16 @@ def cmd_record(args):
             "caught_by": sorted(caught_by[key]),
         })
     stored = [row for row in read_jsonl(run_dir / "verdicts.jsonl") if "rater" in row]
+    # A crash between writing the artifacts and appending to the corpus leaves rows with no
+    # verdict file: without this the correction writes artifacts and leaves the rows stale.
+    already_recorded = any(row.get("run_id") == args.run_id
+                           for row in read_jsonl(sd / "reviews.jsonl"))
     # The attribution artifacts land first: a corpus row claiming a run is recorded while its
     # per-defect attribution failed to write is the state this whole flow exists to prevent.
     write_jsonl(run_dir / "verdicts.jsonl", normalized_verdicts)
     write_jsonl(run_dir / "defects.jsonl", defects)
-    readjudicated = bool(stored) and stored != normalized_verdicts
+    readjudicated = (bool(stored) and stored != normalized_verdicts) or (
+        already_recorded and not stored)
     fresh, dropped = append_review_records(
         sd, records, replace_run=args.run_id if readjudicated else None
     )
@@ -2621,6 +2757,357 @@ def cmd_record(args):
     else:
         print(f"recorded {len(fresh)} rater row(s); "
               f"skipped {len(records) - len(fresh)} existing row(s)")
+    return 0
+
+
+def commit_defect_rows(sd, commitish):
+    """Every run-level canonical defect recorded for one commit, and the repositories seen.
+
+    Runs of the same commit each number their defects from one, so a defect id identifies a
+    defect only inside its own run. Comparing two cells that ran in different runs is
+    impossible until those per-run lists are reconciled, and this is the whole input the
+    reconciliation has to work from.
+    """
+    repo_by_run = {row["run_id"]: row["repo"] for row in read_jsonl(sd / "reviews.jsonl")
+                   if row.get("repo") and row.get("run_id")}
+    rows, repos, shas = [], set(), set()
+    benches = sd / "benches"
+    for path in sorted(benches.iterdir()) if benches.exists() else []:
+        meta_path = path / "meta.json"
+        if not meta_path.exists():
+            continue
+        try:
+            meta = json.loads(meta_path.read_text())
+        except json.JSONDecodeError:
+            continue
+        sha = str(meta.get("commit") or "")
+        if not sha.startswith(commitish):
+            continue
+        run_id = meta.get("run_id") or path.name
+        # A run of this commit whose adjudication never landed leaves the canonical list
+        # incomplete, and an incomplete list is indistinguishable from a complete one later.
+        if not (path / "defects.jsonl").exists():
+            raise ValueError(
+                f"{run_id} reviewed {sha[:7]} and has no defects.jsonl; adjudicate it with "
+                "`record` first, or the canonical list will silently omit what it found"
+            )
+        repo = repo_identity(meta.get("repo")) or repo_by_run.get(run_id)
+        # Recorded per matching run rather than per defect: a run that confirmed nothing still
+        # says which commit and repository it reviewed, and skipping it is how an ambiguous
+        # prefix or a second repository slips past the refusals below.
+        shas.add(sha)
+        if repo:
+            repos.add(repo)
+        for defect in read_jsonl(path / "defects.jsonl"):
+            rows.append(dict(defect, run_id=run_id))
+    return rows, repos, shas
+
+
+def cmd_cluster(args):
+    """Reconcile per-run defect lists for one commit into a single canonical list.
+
+    The grouping decision comes from a judge that read the sealed code, the same way
+    `record` takes its verdicts: which run-level defects are the same defect is a judgement
+    about code, and text similarity was measured to split one defect into several.
+    """
+    sd = state_dir()
+    defects, repos, shas = commit_defect_rows(sd, args.commit)
+    if not defects:
+        raise ValueError(f"no adjudicated defects recorded for {args.commit}")
+    if len(repos) != 1:
+        raise ValueError(
+            f"{args.commit} resolves to {len(repos)} repositories ({', '.join(sorted(repos)) or 'none'}); "
+            "a commit-level defect list cannot span repositories"
+        )
+    if len(shas) != 1:
+        raise ValueError(f"{args.commit} is ambiguous across {len(shas)} commits: {', '.join(sorted(shas))}")
+    repo = repos.pop()
+    sha = shas.pop()
+    by_id = {defect["defect_id"]: defect for defect in defects}
+    if len(by_id) != len(defects):
+        raise ValueError("run-level defect ids collide; the runs cannot be reconciled")
+
+    groups = read_jsonl(Path(args.groups))
+    placed = {}
+    for number, group in enumerate(groups, 1):
+        members = group.get("members")
+        if not isinstance(members, list) or not members:
+            raise ValueError(f"group {number} lists no members")
+        if not isinstance(group.get("file"), str) or not group["file"].strip():
+            raise ValueError(f"group {number} names no file")
+        member_files = {by_id[member].get("file") for member in members if member in by_id}
+        if member_files and group["file"] not in member_files:
+            raise ValueError(
+                f"group {number} claims {group['file']}, which none of its members cite "
+                f"({', '.join(sorted(str(name) for name in member_files))})"
+            )
+        if not isinstance(group.get("summary"), str) or not group["summary"].strip():
+            raise ValueError(f"group {number} has no summary")
+        for member in members:
+            if member not in by_id:
+                raise ValueError(f"group {number} names a defect this commit never recorded: {member}")
+            if member in placed:
+                raise ValueError(f"{member} is in both group {placed[member]} and group {number}")
+            placed[member] = number
+    unplaced = sorted(set(by_id) - set(placed))
+    if unplaced:
+        raise ValueError(f"these defects were left out of every group: {', '.join(unplaced)}")
+
+    rows = []
+    for number, group in enumerate(groups, 1):
+        members = group["members"]
+        catches = sorted(
+            ({"run_id": by_id[member]["run_id"], "rater": rater}
+             for member in members for rater in by_id[member].get("caught_by", [])),
+            key=lambda catch: (catch["run_id"], catch["rater"]),
+        )
+        # The judge is asked for the most severe reading, and it is taken here rather than
+        # trusted: a group whose severity disagrees with its own members is silent bad data.
+        severities = [by_id[member].get("severity") for member in members]
+        severity = next((name for name in ("P1", "P2", "P3") if name in severities),
+                        group.get("severity"))
+        rows.append({
+            "defect_id": f"{repo}@{sha[:7]}#{number}",
+            "repo": repo, "commit": sha,
+            "file": group.get("file"), "line": group.get("line"),
+            "severity": severity, "summary": group.get("summary"),
+            "caught_by": sorted({catch["rater"] for catch in catches}),
+            "catches": catches,
+            "members": sorted(members),
+        })
+    target = sd / "defects"
+    target.mkdir(parents=True, exist_ok=True)
+    path = target / f"{repo}__{sha[:7]}.jsonl"
+    write_jsonl(path, rows)
+    merged = sum(1 for row in rows if len(row["members"]) > 1)
+    print(f"{path}: {len(defects)} run-level defect(s) -> {len(rows)} canonical "
+          f"({merged} merged from more than one run)")
+    return 0
+
+
+def frontier_inputs(sd, commits=None):
+    """Per-commit canonical defects and per-cell durations, over cells comparable across them.
+
+    A cell that never ran on a commit found nothing there, which is indistinguishable from
+    finding nothing — so only cells present on every selected commit may be compared, and the
+    rest are reported as excluded rather than silently scored as weak.
+    """
+    defect_dir = sd / "defects"
+    available, source = {}, {}
+    for path in sorted(defect_dir.glob("*.jsonl")) if defect_dir.exists() else []:
+        rows = read_jsonl(path)
+        if not rows:
+            continue
+        key = rows[0]["commit"][:7]
+        # Two repositories sharing a seven-character prefix would otherwise merge into one
+        # denominator, and the merge would look exactly like a cell that ran on both.
+        if key in available:
+            raise ValueError(
+                f"{path.name} and {source[key]} both resolve to commit {key}; "
+                "name the commits explicitly with --commits to disambiguate"
+            )
+        available[key], source[key] = rows, path.name
+    if commits:
+        missing = [commit for commit in commits if commit not in available]
+        if missing:
+            raise ValueError(
+                f"no canonical defect list for {', '.join(missing)}; run `cluster` on them first"
+            )
+        available = {commit: available[commit] for commit in commits}
+    if not available:
+        raise ValueError("no canonical defect lists recorded; run `cluster` first")
+
+    ran = defaultdict(set)
+    durations = defaultdict(list)
+    counted_runs = defaultdict(set)
+    # Attempts, not successes. A cell that errored produced no corpus row, so counting rows
+    # scores a cell that failed two of three attempts as having found things every time —
+    # which is precisely how an unreliable cell would look strongest.
+    run_counts = Counter()
+    errors = Counter()
+    benches = sd / "benches"
+    for path in sorted(benches.iterdir()) if benches.exists() else []:
+        meta_path = path / "meta.json"
+        if not meta_path.exists():
+            continue
+        try:
+            meta = json.loads(meta_path.read_text())
+        except json.JSONDecodeError as exc:
+            # Skipping it silently removes attempts from the denominator while their catches
+            # stay in the numerator, which is how a rate of 900% and a negative coverage arise.
+            raise ValueError(f"{meta_path} is unreadable ({exc.msg}); repair or remove that run")
+        commit = str(meta.get("commit") or "")[:7]
+        if commit not in available:
+            continue
+        run_id = meta.get("run_id") or path.name
+        # `raters` holds the cells that answered; `rater_runs` holds every attempt, errored ones
+        # included. An attempt that failed found nothing, which is the outcome a composition
+        # actually delivers, so it belongs in the denominator.
+        for entry in meta.get("rater_runs", ()):
+            rater = entry.get("rater")
+            if not rater:
+                continue
+            # Two specs in one run may normalise to the same cell, so an attempt is identified
+            # by the name it ran under: collapsing them would count two attempts and one catch.
+            counted_runs[commit].add((run_id, rater))
+            rater = normalize_legacy_rater(rater)
+            ran[commit].add(rater)
+            run_counts[(commit, rater)] += 1
+            if entry.get("errored"):
+                errors[(commit, rater)] += 1
+            if entry.get("duration_ms"):
+                durations[rater].append(entry["duration_ms"] / 60000)
+    comparable = set.intersection(*ran.values()) if ran else set()
+    comparable = {rater for rater in comparable if durations.get(rater)}
+    excluded = sorted(set().union(*ran.values()) - comparable) if ran else []
+    minutes = {rater: statistics.median(durations[rater]) for rater in comparable}
+    return (available, sorted(comparable), minutes, excluded, dict(run_counts),
+            dict(errors), {key: set(value) for key, value in counted_runs.items()})
+
+
+def hit_rates(defects_by_commit, run_counts, counted_runs=None):
+    """Per defect and cell, the share of that cell's runs on that commit which found it.
+
+    The union of everything a cell ever found is not what one run of it finds, and cells in
+    this corpus were run between five and fifteen times: scoring them by that union ranks a
+    cheap cell that ran fifteen times above a strong one that ran five. A rate is what
+    survives the difference in how often each cell happened to be sampled.
+    """
+    rates = {}
+    for commit, rows in defects_by_commit.items():
+        for row in rows:
+            attempted = counted_runs.get(commit) if counted_runs is not None else None
+            runs_with = defaultdict(set)
+            for catch in row.get("catches", ()):
+                key = (catch["run_id"], catch["rater"])
+                # Only catches from attempts the denominator counted: one from a run the
+                # denominator never saw is a numerator without a denominator, and the rate it
+                # produces can exceed one and drive coverage negative.
+                if attempted is not None and key not in attempted:
+                    continue
+                # The corpus counts runs under the current rater name, and `catches` preserves
+                # whatever name the run recorded: an unnormalised key misses its denominator
+                # and silently drops that cell's catch instead of crediting it.
+                runs_with[normalize_legacy_rater(catch["rater"])].add(key)
+            rates[row["defect_id"]] = {
+                rater: len(found) / run_counts[(commit, rater)]
+                for rater, found in runs_with.items()
+                if run_counts.get((commit, rater))
+            }
+    return rates
+
+
+def composition_coverage(defects_by_commit, rates, cells):
+    """Defects the composition is expected to find, counting one fresh run per named cell.
+
+    A cell named twice is two independent runs of it, which is the only honest way to price
+    "run this one again" against "add a different one".
+    """
+    counted = Counter(cells)
+    expected = total = 0.0
+    for rows in defects_by_commit.values():
+        for row in rows:
+            total += 1
+            missed = 1.0
+            per_defect = rates.get(row["defect_id"], {})
+            for cell, times in counted.items():
+                missed *= (1 - per_defect.get(cell, 0.0)) ** times
+            expected += 1 - missed
+    return expected, total
+
+
+EXHAUSTIVE_COMPOSITIONS = 200_000
+
+
+def best_composition(defects_by_commit, rates, cells, minutes, budget, limit):
+    """The best composition that fits the budget, and whether it is proven best.
+
+    Cells run at once, so a composition costs the slowest of them, and a cell may be named more
+    than once: running one twice competes with adding another on equal terms. Every multiset is
+    enumerated while that is cheap; beyond that greedy plus single swaps returns a lower bound,
+    and the caller is told which of the two it got — greedy demonstrably misses combinations
+    that only pay off together, so reporting its answer as the optimum would be a lie.
+
+    Returns (composition, coverage, proven).
+    """
+    affordable = sorted(cell for cell in cells if minutes[cell] <= budget)
+    if not affordable:
+        return [], 0.0, True
+    defect_count = sum(len(rows) for rows in defects_by_commit.values()) or 1
+    total_multisets = math.comb(len(affordable) + limit, limit) if limit else 1
+    # Each candidate is scored against every defect, so the count alone understates the work.
+    if total_multisets * defect_count <= EXHAUSTIVE_COMPOSITIONS:
+        best = ([], 0.0)
+        for size in range(1, limit + 1):
+            for candidate in itertools.combinations_with_replacement(affordable, size):
+                found, _ = composition_coverage(defects_by_commit, rates, candidate)
+                if found > best[1] + 1e-9:
+                    best = (sorted(candidate), found)
+        return best[0], best[1], True
+    chosen = []
+    covered = 0.0
+    while len(chosen) < limit:
+        best = None
+        for cell in affordable:
+            found, _ = composition_coverage(defects_by_commit, rates, chosen + [cell])
+            if found > covered + 1e-9 and (best is None or found > best[0]):
+                best = (found, cell)
+        if not best:
+            break
+        covered, cell = best
+        chosen.append(cell)
+    improved = True
+    while improved:
+        improved = False
+        for index in range(len(chosen)):
+            for cell in affordable:
+                candidate = list(chosen)
+                if candidate[index] == cell:
+                    continue
+                candidate[index] = cell
+                found, _ = composition_coverage(defects_by_commit, rates, candidate)
+                if found > covered + 1e-9:
+                    chosen, covered, improved = candidate, found, True
+                    break
+            if improved:
+                break
+    return sorted(chosen), covered, False
+
+
+def cmd_frontier(args):
+    commits = [part.strip() for part in args.commits.split(",") if part.strip()] if args.commits else None
+    budgets = [float(part) for part in args.budgets.split(",") if part.strip()]
+    sd = state_dir()
+    (defects_by_commit, cells, minutes, excluded, run_counts, errors,
+     counted_runs) = frontier_inputs(sd, commits)
+    rates = hit_rates(defects_by_commit, run_counts, counted_runs)
+    total = sum(len(rows) for rows in defects_by_commit.values())
+    print(f"commits: {', '.join(sorted(defects_by_commit))} ({total} canonical defect(s))")
+    print(f"comparable cells: {len(cells)}; coverage is what one fresh run of each is expected to find")
+    if excluded:
+        print(f"excluded (did not run on every commit): {len(excluded)} cell(s)")
+    print()
+    for budget in budgets:
+        chosen, covered, proven = best_composition(
+            defects_by_commit, rates, cells, minutes, budget, args.max_cells
+        )
+        if not chosen:
+            fits = [cell for cell in cells if minutes[cell] <= budget]
+            reason = ("no cell finishes this fast" if not fits
+                      else f"{len(fits)} cell(s) fit, and none of them found anything")
+            print(f"{budget:g} min: {reason}")
+            continue
+        slowest = max(minutes[cell] for cell in chosen)
+        quality = "best" if proven else "best found (not proven optimal)"
+        print(f"{budget:g} min: {covered:.1f}/{total} ({covered / total * 100:.0f}%) "
+              f"in {slowest:.1f} min with {len(chosen)} run(s) — {quality}")
+        for cell, times in sorted(Counter(chosen).items()):
+            alone, _ = composition_coverage(defects_by_commit, rates, [cell])
+            label = f"{cell} x{times}" if times > 1 else cell
+            attempts = sum(count for (_, rater), count in run_counts.items() if rater == cell)
+            failed = sum(count for (_, rater), count in errors.items() if rater == cell)
+            flaky = f"  errored {failed}/{attempts}" if failed else ""
+            print(f"    {label:30s} {minutes[cell]:5.1f} min  one run finds {alone:5.1f}{flaky}")
     return 0
 
 
@@ -2784,6 +3271,19 @@ def main():
     record.add_argument("run_id")
     record.add_argument("--verdicts", required=True)
     record.set_defaults(func=cmd_record)
+    cluster = subparsers.add_parser(
+        "cluster", help="Reconcile one commit's per-run defect lists into a canonical list"
+    )
+    cluster.add_argument("commit")
+    cluster.add_argument("--groups", required=True)
+    cluster.set_defaults(func=cmd_cluster)
+    frontier = subparsers.add_parser(
+        "frontier", help="Best measured rater composition for each waiting time"
+    )
+    frontier.add_argument("--commits", default="", metavar="A,B,C")
+    frontier.add_argument("--budgets", default="2,6,10,20", metavar="MIN,MIN")
+    frontier.add_argument("--max-cells", type=int, default=8, metavar="N")
+    frontier.set_defaults(func=cmd_frontier)
     oc_models = subparsers.add_parser(
         "oc-models", help="Measured OpenCode capability table and recorded per-cell health"
     )
