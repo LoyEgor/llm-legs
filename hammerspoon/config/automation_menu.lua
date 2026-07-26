@@ -41,10 +41,6 @@ local function getClaude()
     return _G.ClaudeContinue
 end
 
-local function getHandoffGuard()
-    return _G.HandoffGuard
-end
-
 local buildMenu
 local refreshTitle
 
@@ -159,11 +155,9 @@ end
 
 buildMenu = function()
     local claude = _G.ClaudeContinue
-    local handoff = getHandoffGuard()
     local ipadMode = _G.IpadMode
     local ipadOverlay = _G.IpadOverlay
     local ipadManualAvailable = ipadMode and type(ipadMode.setManual) == "function"
-    local handoffEnabled = handoff and handoff.isEnabledCached and handoff.isEnabledCached()
 
     if not claude then
         return {
@@ -224,26 +218,6 @@ buildMenu = function()
             fn = ipadManualAvailable and function()
                 ipadMode.setManual(false)
             end or nil,
-        },
-        {
-            title = "Handoff",
-            checked = handoffEnabled == true,
-            disabled = not handoff,
-            fn = function()
-                if handoff then
-                    handoff.reconnect()
-                end
-            end,
-        },
-        {
-            title = "Connect iPad",
-            fn = function()
-                if _G.SidecarConnect and _G.SidecarConnect.connect then
-                    _G.SidecarConnect.connect()
-                else
-                    hs.alert.show("Sidecar connect: module not loaded")
-                end
-            end,
         },
         {
             title = "iPad Overlay",

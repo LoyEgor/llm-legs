@@ -24,10 +24,26 @@ local function notify(title, msg, opts)
 end
 
 local jumpUserProcessCommand = [[/usr/bin/pgrep -fl JumpConnect | /usr/bin/awk '$2 == "/Applications/Jump" && $3 == "Desktop" && $4 == "Connect.app/Contents/MacOS/JumpConnect" && $0 !~ /--service/ { found=1 } END { exit(found ? 0 : 1) }']]
+local jumpUserPidCommand = [[/usr/bin/pgrep -fl JumpConnect | /usr/bin/awk '$2 == "/Applications/Jump" && $3 == "Desktop" && $4 == "Connect.app/Contents/MacOS/JumpConnect" && $0 !~ /--service/ { print $1 }']]
+local serviceLogDir = "/Library/Logs/Jump Desktop/"
 local pending = {}
 local nextPendingId = 0
 local actionGeneration = 0
 local appActionTasks = {}
+local teardownGeneration = 0
+local teardownTasks = {}
+local teardownTimers = {}
+local savedDefaultInputDevice = nil
+local serviceLogOffsets = {}
+local serviceLogInodes = {}
+local serviceLogPartialLines = {}
+local serviceLogWatcher = nil
+local serviceLogPollingTimer = nil
+local screenDebounceTimer = nil
+local audioInputWatcher = nil
+local audioInputMirrorTimer = nil
+local sendInputDeviceCommand
+local restoreSystemInputDevice
 
 local function showAutomationMenu()
     if _G.AutomationMenu and _G.AutomationMenu.show then
@@ -76,10 +92,10 @@ local function verifyApps(expectRunning, title, delay)
 
             local jumpRunning = exitCode == 0
             local virtualRunning = virtualDisplayPresent()
-            local expected = expectRunning and "✓ запущен" or "✓ завершён"
-            local unexpected = expectRunning and "✗ не запущен" or "✗ всё ещё запущен"
-            local virtualExpected = expectRunning and "✓ появился" or "✗ всё ещё активен"
-            local virtualUnexpected = expectRunning and "✗ не появился" or "✓ выключен"
+            local expected = expectRunning and "✓ running" or "✓ stopped"
+            local unexpected = expectRunning and "✗ not running" or "✗ still running"
+            local virtualExpected = expectRunning and "✓ present" or "✗ still present"
+            local virtualUnexpected = expectRunning and "✗ not present" or "✓ absent"
             local lines = {
                 "BetterDisplay: " .. (betterDisplayRunning == expectRunning and expected or unexpected),
                 "Jump Desktop Connect: " .. (jumpRunning == expectRunning and expected or unexpected),
@@ -96,12 +112,12 @@ local function verifyApps(expectRunning, title, delay)
             local virtualRunning = virtualDisplayPresent()
             local virtualStatus
             if expectRunning then
-                virtualStatus = virtualRunning and "✓ появился" or "✗ не появился"
+                virtualStatus = virtualRunning and "✓ present" or "✗ not present"
             else
-                virtualStatus = virtualRunning and "✗ всё ещё активен" or "✓ выключен"
+                virtualStatus = virtualRunning and "✗ still present" or "✓ absent"
             end
-            notify(title, "BetterDisplay: " .. (betterDisplayRunning and "✓ запущен" or "✗ не запущен")
-                .. "\nJump Desktop Connect: ✗ проверка не выполнена"
+            notify(title, "BetterDisplay: " .. (betterDisplayRunning and "✓ running" or "✗ not running")
+                .. "\nJump Desktop Connect: ✗ check failed"
                 .. "\nVirtual display: " .. virtualStatus
                 .. "\n" .. displayStateLine(),
                 { priority = "high" })
@@ -122,10 +138,43 @@ local function cancelAppActionTasks()
     end
 end
 
+local function cancelPendingWork()
+    actionGeneration = actionGeneration + 1
+    for id, entry in pairs(pending) do
+        if entry.timer then
+            entry.timer:stop()
+        end
+        if entry.task and entry.task:isRunning() then
+            entry.task:terminate()
+        end
+        pending[id] = nil
+    end
+    cancelAppActionTasks()
+end
+
+local function cancelTeardown()
+    teardownGeneration = teardownGeneration + 1
+    for timer in pairs(teardownTimers) do
+        timer:stop()
+    end
+    teardownTimers = {}
+    for task in pairs(teardownTasks) do
+        if task:isRunning() then
+            task:terminate()
+        end
+        teardownTasks[task] = nil
+    end
+end
+
 local function runAppTasks(specs, expectRunning, title, delay)
     cancelAppActionTasks()
     local generation = actionGeneration
     local remaining = #specs
+
+    if remaining == 0 then
+        verifyApps(expectRunning, title, delay)
+        return
+    end
 
     local function finishTask(task, exitCode)
         if task then
@@ -157,12 +206,156 @@ local function runAppTasks(specs, expectRunning, title, delay)
     end
 end
 
+local function scheduleTeardown(generation, delay, callback)
+    local timer
+    timer = hs.timer.doAfter(delay, function()
+        teardownTimers[timer] = nil
+        if generation == teardownGeneration then
+            callback()
+        end
+    end)
+    teardownTimers[timer] = true
+end
+
+local function stopAppReliably(appName, generation, onDone)
+    local gracePolls = 6
+    local killPolls = 4
+    local killSent = false
+
+    local function isRunning()
+        local ok, app = pcall(hs.application.get, appName)
+        return ok and app ~= nil, app
+    end
+
+    local function finish()
+        if generation == teardownGeneration then
+            onDone()
+        end
+    end
+
+    local function poll()
+        if generation ~= teardownGeneration then
+            return
+        end
+        local running, app = isRunning()
+        if not running then
+            finish()
+            return
+        end
+        if not killSent and gracePolls > 0 then
+            gracePolls = gracePolls - 1
+            scheduleTeardown(generation, 0.5, poll)
+            return
+        end
+        if not killSent then
+            killSent = true
+            if app then
+                pcall(function()
+                    app:kill()
+                end)
+            end
+        end
+        if killPolls > 0 then
+            killPolls = killPolls - 1
+            scheduleTeardown(generation, 0.5, poll)
+            return
+        end
+        print("WARNING: could not stop application:", appName)
+        finish()
+    end
+
+    local task
+    task = hs.task.new("/usr/bin/osascript", function()
+        teardownTasks[task] = nil
+    end, { "-e", 'quit app "' .. appName .. '"' })
+    if task then
+        teardownTasks[task] = true
+    end
+    if task and task:start() then
+        scheduleTeardown(generation, 0, poll)
+    else
+        if task then
+            teardownTasks[task] = nil
+        end
+        scheduleTeardown(generation, 0, poll)
+    end
+end
+
+local function jumpUserPids()
+    local output, ok = hs.execute(jumpUserPidCommand)
+    if not ok then
+        return {}
+    end
+    local pids = {}
+    for pid in tostring(output):gmatch("%d+") do
+        pids[#pids + 1] = pid
+    end
+    return pids
+end
+
+local function stopJumpUserReliably(generation, onDone)
+    local gracePolls = 6
+    local killPolls = 4
+    local killSent = false
+
+    local function poll()
+        if generation ~= teardownGeneration then
+            return
+        end
+        local pids = jumpUserPids()
+        if #pids == 0 then
+            onDone()
+            return
+        end
+        if not killSent and gracePolls > 0 then
+            gracePolls = gracePolls - 1
+            scheduleTeardown(generation, 0.5, poll)
+            return
+        end
+        if not killSent then
+            killSent = true
+            for _, pid in ipairs(pids) do
+                hs.execute("/bin/kill -TERM " .. pid)
+            end
+        end
+        if killPolls > 0 then
+            killPolls = killPolls - 1
+            scheduleTeardown(generation, 0.5, poll)
+            return
+        end
+        for _, pid in ipairs(pids) do
+            hs.execute("/bin/kill -KILL " .. pid)
+        end
+        scheduleTeardown(generation, 0.5, function()
+            if #jumpUserPids() > 0 then
+                print("WARNING: Jump Desktop Connect user agent is still running")
+            end
+            onDone()
+        end)
+    end
+
+    local task
+    task = hs.task.new("/usr/bin/osascript", function()
+        teardownTasks[task] = nil
+    end, { "-e", 'quit app "Jump Desktop Connect"' })
+    if task then
+        teardownTasks[task] = true
+    end
+    if task and task:start() then
+        scheduleTeardown(generation, 0, poll)
+    else
+        if task then
+            teardownTasks[task] = nil
+        end
+        scheduleTeardown(generation, 0, poll)
+    end
+end
+
 local function enableDummy()
+    cancelTeardown()
+    cancelPendingWork()
     actionGeneration = actionGeneration + 1
     print("ACTION: ENABLE_DUMMY")
-    if _G.HandoffGuard and _G.HandoffGuard.forceEnable then
-        _G.HandoffGuard.forceEnable()
-    end
     runAppTasks({
         { path = "/usr/bin/open", args = { "-a", "BetterDisplay" } },
         { path = "/usr/bin/open", args = { "-a", "Jump Desktop Connect" } },
@@ -170,13 +363,70 @@ local function enableDummy()
     showAutomationMenu()
 end
 
+local function runTeardownStep(label, callback)
+    local ok, err = pcall(callback)
+    if not ok then
+        print("WARNING: teardown step failed:", label, err)
+    end
+end
+
 local function disableDummy()
+    cancelTeardown()
+    cancelPendingWork()
     actionGeneration = actionGeneration + 1
     print("ACTION: DISABLE_DUMMY")
-    runAppTasks({
-        { path = "/usr/bin/osascript", args = { "-e", 'quit app "BetterDisplay"' } },
-        { path = "/usr/bin/osascript", args = { "-e", 'quit app "Jump Desktop Connect"' } },
-    }, false, "iPad disconnected", 8)
+    if screenDebounceTimer then
+        screenDebounceTimer:stop()
+        screenDebounceTimer = nil
+    end
+    runTeardownStep("restore input device", restoreSystemInputDevice)
+    runTeardownStep("hide overlay", function()
+        if _G.IpadOverlay then
+            _G.IpadOverlay.hide()
+        end
+    end)
+
+    local remaining = 3
+    local function stopped()
+        remaining = remaining - 1
+        if remaining == 0 then
+            notify("iPad disconnected",
+                "SonoBus: " .. (hs.application.get("SonoBus") and "✗ still running" or "✓ stopped")
+                .. "\nBetterDisplay: " .. (hs.application.get("BetterDisplay") and "✗ still running" or "✓ stopped")
+                .. "\nVirtual display: " .. (virtualDisplayPresent() and "✗ still present" or "✓ absent")
+                .. "\nJump Desktop Connect: " .. (#jumpUserPids() == 0 and "✓ stopped" or "✗ still running")
+                .. "\n" .. displayStateLine(),
+                { priority = "high" })
+        end
+    end
+    local generation = teardownGeneration
+    runTeardownStep("stop SonoBus", function()
+        stopAppReliably("SonoBus", generation, stopped)
+    end)
+    runTeardownStep("stop BetterDisplay", function()
+        stopAppReliably("BetterDisplay", generation, stopped)
+    end)
+    runTeardownStep("stop Jump Desktop Connect", function()
+        stopJumpUserReliably(generation, stopped)
+    end)
+    scheduleTeardown(generation, 7, function()
+        for _, appName in ipairs({ "SonoBus", "BetterDisplay" }) do
+            local app = hs.application.get(appName)
+            if app then
+                pcall(function()
+                    app:kill()
+                end)
+            end
+        end
+        for _, pid in ipairs(jumpUserPids()) do
+            hs.execute("/bin/kill -TERM " .. pid)
+        end
+        scheduleTeardown(generation, 1, function()
+            for _, pid in ipairs(jumpUserPids()) do
+                hs.execute("/bin/kill -KILL " .. pid)
+            end
+        end)
+    end)
 end
 
 local function sidecarPresent(screens)
@@ -189,11 +439,192 @@ local function sidecarPresent(screens)
     return false
 end
 
+local function listServiceLogs()
+    local files = {}
+    local ok, iterator, directory = pcall(hs.fs.dir, serviceLogDir)
+    if ok and iterator then
+        for name in iterator, directory do
+            if name:match("^Service_.*%.log$") then
+                files[#files + 1] = name
+            end
+        end
+    end
+    if #files == 0 then
+        files[1] = "Service_" .. os.date("%Y_%m_%d") .. ".log"
+        files[2] = "Service_" .. os.date("%Y_%m_%d", os.time() - 86400) .. ".log"
+    end
+    table.sort(files)
+    return files
+end
+
+local function wakeOnJumpAttempt(line)
+    if line:find("[rtc_server] Launching new proxy server", 1, true)
+        and _G.IpadMode and _G.IpadMode.wakeOnAttempt then
+        _G.IpadMode.wakeOnAttempt()
+    end
+end
+
+local function readServiceLogAppended(fileName)
+    local path = serviceLogDir .. fileName
+    local size = hs.fs.attributes(path, "size")
+    local inode = hs.fs.attributes(path, "ino")
+    if not size then
+        return
+    end
+    local offset = serviceLogOffsets[fileName] or 0
+    if size < offset or (serviceLogInodes[fileName] and inode ~= serviceLogInodes[fileName]) then
+        offset = 0
+        serviceLogPartialLines[fileName] = nil
+    end
+    serviceLogInodes[fileName] = inode
+    if size == offset then
+        return
+    end
+    local file = io.open(path, "rb")
+    if not file then
+        return
+    end
+    file:seek("set", offset)
+    local appended = file:read("*a") or ""
+    file:close()
+    serviceLogOffsets[fileName] = offset + #appended
+
+    local content = (serviceLogPartialLines[fileName] or "") .. appended
+    local startAt = 1
+    while true do
+        local newlineAt = content:find("\n", startAt, true)
+        if not newlineAt then
+            serviceLogPartialLines[fileName] = content:sub(startAt)
+            break
+        end
+        wakeOnJumpAttempt(content:sub(startAt, newlineAt - 1):gsub("\r$", ""))
+        startAt = newlineAt + 1
+    end
+end
+
+local function scanServiceLogs()
+    for _, fileName in ipairs(listServiceLogs()) do
+        readServiceLogAppended(fileName)
+    end
+end
+
+local function baselineServiceLogs()
+    for _, fileName in ipairs(listServiceLogs()) do
+        local path = serviceLogDir .. fileName
+        local size = hs.fs.attributes(path, "size")
+        if size then
+            serviceLogOffsets[fileName] = size
+            serviceLogInodes[fileName] = hs.fs.attributes(path, "ino")
+        end
+    end
+end
+
+local function startJumpAttemptWatcher()
+    baselineServiceLogs()
+    local ok, watcher = pcall(hs.pathwatcher.new, serviceLogDir, scanServiceLogs)
+    if ok and watcher then
+        local startOk, startResult = pcall(function()
+            return watcher:start()
+        end)
+        if startOk and startResult ~= false then
+            serviceLogWatcher = watcher
+        end
+    end
+    serviceLogPollingTimer = hs.timer.doEvery(4, scanServiceLogs)
+    if _G.IpadAutomation then
+        _G.IpadAutomation.serviceLogWatcher = serviceLogWatcher
+        _G.IpadAutomation.serviceLogPollingTimer = serviceLogPollingTimer
+    end
+end
+
+local function switchSystemInputDevice(deviceName)
+    if not savedDefaultInputDevice then
+        local ok, current = pcall(function()
+            return hs.audiodevice.defaultInputDevice()
+        end)
+        if ok then
+            local nameOk, currentName = pcall(function()
+                return current and current:name()
+            end)
+            if nameOk and currentName and not currentName:find("BlackHole", 1, true) then
+                savedDefaultInputDevice = current
+            end
+        else
+            print("WARNING: could not save the default input device:", current)
+        end
+    end
+
+    local ok, target = pcall(function()
+        return hs.audiodevice.findInputByName(deviceName)
+    end)
+    if not ok or not target then
+        print("WARNING: audio input device not found:", deviceName)
+        return
+    end
+
+    local setOk, result = pcall(function()
+        return target:setDefaultInputDevice()
+    end)
+    if not setOk or result == false then
+        print("WARNING: could not set the default input device:", deviceName)
+    end
+end
+
+restoreSystemInputDevice = function()
+    local ok, current = pcall(function()
+        return hs.audiodevice.defaultInputDevice()
+    end)
+    if not ok then
+        savedDefaultInputDevice = nil
+        print("WARNING: could not inspect the current default input device")
+        return
+    end
+
+    local currentName = current and current:name() or nil
+    if not currentName or not currentName:find("BlackHole", 1, true) then
+        savedDefaultInputDevice = nil
+        return
+    end
+
+    local candidates = {}
+    if savedDefaultInputDevice then
+        candidates[#candidates + 1] = savedDefaultInputDevice
+    end
+    local allInputsOk, allInputs = pcall(function()
+        return hs.audiodevice.allInputDevices()
+    end)
+    if allInputsOk then
+        for _, device in ipairs(allInputs) do
+            local nameOk, name = pcall(function()
+                return device:name()
+            end)
+            if nameOk and name and not name:find("BlackHole", 1, true) then
+                candidates[#candidates + 1] = device
+            end
+        end
+    end
+
+    local restored = false
+    for _, device in ipairs(candidates) do
+        local setOk, result = pcall(function()
+            return device:setDefaultInputDevice()
+        end)
+        if setOk and result ~= false then
+            restored = true
+            break
+        end
+    end
+    if not restored then
+        print("WARNING: previous default input device is unavailable; leaving the system default untouched")
+    end
+    savedDefaultInputDevice = nil
+end
+
 local inputDeviceRetryDelays = { 2, 5, 10 }
 local inputDeviceRetryTimer = nil
 local inputDeviceGeneration = 0
 
-local function switchInputDevice(device)
+sendInputDeviceCommand = function(device)
     inputDeviceGeneration = inputDeviceGeneration + 1
     local generation = inputDeviceGeneration
     if inputDeviceRetryTimer then
@@ -250,34 +681,95 @@ local function switchInputDevice(device)
     attempt(1)
 end
 
+local function scheduleAudioInputMirror()
+    if audioInputMirrorTimer then
+        audioInputMirrorTimer:stop()
+    end
+    audioInputMirrorTimer = hs.timer.doAfter(0.75, function()
+        audioInputMirrorTimer = nil
+        local ok, device = pcall(function()
+            return hs.audiodevice.defaultInputDevice()
+        end)
+        if not ok or not device then
+            return
+        end
+        local nameOk, name = pcall(function()
+            return device:name()
+        end)
+        if not nameOk or not name then
+            return
+        end
+        if _G.IpadMode and _G.IpadMode.isOn()
+            and not name:find("BlackHole", 1, true) then
+            local targetOk, target = pcall(function()
+                return hs.audiodevice.findInputByName("BlackHole 2ch")
+            end)
+            if targetOk and target then
+                print("audio mirror: re-asserting BlackHole (stolen by " .. name .. ")")
+                local setOk, result = pcall(function()
+                    return target:setDefaultInputDevice()
+                end)
+                if not setOk or result == false then
+                    print("WARNING: audio mirror could not re-assert BlackHole")
+                end
+                return
+            end
+        end
+        if sendInputDeviceCommand then
+            sendInputDeviceCommand(name)
+        end
+    end)
+end
+
+local function audioInputWatcherCallback(event)
+    if event == "dIn " then
+        scheduleAudioInputMirror()
+    end
+end
+
+local function startAudioInputMirror()
+    local watcher = hs.audiodevice.watcher
+    pcall(watcher.stop)
+    watcher.setCallback(audioInputWatcherCallback)
+    watcher.start()
+    audioInputWatcher = watcher
+    if _G.IpadAutomation then
+        _G.IpadAutomation.audioInputWatcher = watcher
+    end
+end
+
+-- BlackHole stores its volume persistently; a stray 39% once attenuated the
+-- whole mic chain by ~40dB (write x read) and silenced dictation.
+local function assertBlackHoleVolume()
+    local outOk, out = pcall(hs.audiodevice.findOutputByName, "BlackHole 2ch")
+    if outOk and out then
+        pcall(function() out:setVolume(100) end)
+    end
+    local inOk, input = pcall(hs.audiodevice.findInputByName, "BlackHole 2ch")
+    if inOk and input then
+        pcall(function() input:setInputVolume(100) end)
+    end
+end
+
 local function ipadConnected()
     enableDummy()
     hs.execute([[open "sonobus://aoo.sonobus.net:10998/?g=egor-mic"]])
     if _G.IpadOverlay then
         _G.IpadOverlay.show()
     end
-    switchInputDevice("BlackHole 2ch")
+    assertBlackHoleVolume()
+    switchSystemInputDevice("BlackHole 2ch")
 end
 
 local function ipadDisconnected()
-    switchInputDevice("default")
-    local sonoBus = hs.application.get("SonoBus")
-    if sonoBus then
-        sonoBus:kill()
-    end
     disableDummy()
-    if _G.IpadOverlay then
-        _G.IpadOverlay.hide()
-    end
 end
 
 local function evaluateIpadPresence()
-    if _G.IpadMode then
-        _G.IpadMode.recompute("Sidecar display signal", sidecarPresent(hs.screen.allScreens()))
+    if _G.IpadMode and _G.IpadAutomation and _G.IpadAutomation.getSidecarPresent then
+        _G.IpadMode.recompute("Sidecar display signal", _G.IpadAutomation.getSidecarPresent())
     end
 end
-
-local screenDebounceTimer = nil
 
 local function scheduleScreenEvaluation()
     if screenDebounceTimer then
@@ -296,10 +788,14 @@ _G.IpadAutomation = {
     pending = pending,
     ipadConnected = ipadConnected,
     ipadDisconnected = ipadDisconnected,
+    getSidecarPresent = function()
+        return sidecarPresent(hs.screen.allScreens())
+    end,
 }
 
 watcher:start()
 evaluateIpadPresence()
+startAudioInputMirror()
 
 local claudeOk, claudeError = pcall(function()
     dofile(hs.configdir .. "/claude_continue.lua")
@@ -338,33 +834,6 @@ if not gptVoiceOk then
     hs.alert.show("GPT Voice automation error")
 end
 
-local handoffOk, handoffError = pcall(function()
-    dofile(hs.configdir .. "/handoff.lua")
-end)
-
-if not handoffOk then
-    print("ERROR: Handoff guard failed to load:", handoffError)
-    hs.alert.show("Handoff guard error")
-end
-
-local ipadTriggerOk, ipadTriggerError = pcall(function()
-    dofile(hs.configdir .. "/ipad_trigger.lua")
-end)
-
-if not ipadTriggerOk then
-    print("ERROR: iPad trigger failed to load:", ipadTriggerError)
-    hs.alert.show("iPad trigger error")
-end
-
-local sidecarConnectOk, sidecarConnectError = pcall(function()
-    dofile(hs.configdir .. "/sidecar_connect.lua")
-end)
-
-if not sidecarConnectOk then
-    print("ERROR: Sidecar connect failed to load:", sidecarConnectError)
-    hs.alert.show("Sidecar connect error")
-end
-
 local ipadModeOk, ipadModeError = pcall(function()
     dofile(hs.configdir .. "/ipad_mode.lua")
 end)
@@ -372,6 +841,8 @@ end)
 if not ipadModeOk then
     print("ERROR: iPad mode failed to load:", ipadModeError)
     hs.alert.show("iPad mode error")
+else
+    startJumpAttemptWatcher()
 end
 
 local sidecarPresenceOk, sidecarPresenceError = pcall(function()

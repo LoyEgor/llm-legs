@@ -8,8 +8,8 @@ INTO `~/.hammerspoon` to deploy; copy FROM it to refresh the mirror before a com
 System map (what loads what, all via `init.lua` pcall/dofile):
 
 - `init.lua` — Sidecar screen watcher and unified iPad connect/disconnect actions:
-  BetterDisplay dummy, Jump Desktop Connect, SonoBus group, transcription input device,
-  and iPad overlay.
+  conditional BetterDisplay dummy, Jump Desktop Connect, SonoBus group, transcription
+  input device, iPad overlay, and Jump service wake-on-attempt watcher.
 - `notify.lua` — `Notify.send/log`, log at `~/.hammerspoon/notify.log`.
 - `claude_continue.lua` — `ClaudeContinue`: two resume-timer slots (app, terminal),
   persisted in `claude_continue_state.json`; consumed by repo `bin/claude-resume-timer`.
@@ -20,16 +20,11 @@ System map (what loads what, all via `init.lua` pcall/dofile):
   them as the stop/cancel trigger of a live dictation. Used by every module that
   types into the frontmost window (`claude_continue`, `claude_chat_switch`, and
   claude-setup's `claude_compact`/`claude_trash`).
-- `handoff.lua` — `HandoffGuard`: real macOS Handoff state (async defaults), reconnect cycle.
-- `ipad_trigger.lua` — HTTP server :8765 for iPad shortcuts; Sidecar connect via
-  `~/.local/bin/SidecarLauncher` (private SidecarCore CLI, built from
-  github.com/Ocasio-J/SidecarLauncher) with AppleScript Displays UI as fallback;
-  single-flight; instant HTTP replies (the iPad shortcut displays the response).
 - `ipad_mode.lua` — `IpadMode`: iPad-present flag (Sidecar OR Jump client);
   Jump sessions detected event-based from `~/Library/Logs/Jump Desktop/Agent_*.log`
   via hs.pathwatcher (proxy-mode pids only), with midnight-rollover recovery and a
   60s pid-liveness recheck.
-- `automation_menu.lua` — the menubar: timers UI, iPad/Handoff block,
+- `automation_menu.lua` — the menubar: timers UI, iPad controls,
   LLM Limits submenu (repo `hammerspoon/llm-limits.lua`), iPad-only items
   (Copy / Paste / Enter / GPT Voice / GPT Transform) visible only in iPad mode.
 - `type_whisper.lua` — typing helper.
