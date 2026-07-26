@@ -323,5 +323,12 @@ for pool_toggle in toggleAccount toggleCodexAccount toggleGeminiAccount; do
 done
 assert doc_has 'Worker-pool membership'
 assert doc_has '.claudeb`, `.codexb`, `.geminib'
+assert doc_has 'including a `claudeb_profile`, `codex_profile`, or `gemini_profile` pin'
+assert grep -Fq 'cb_pin=$(conf claudeb_profile)' "$WORKERPICK"
+assert grep -Fq 'cx_pin=$(conf codex_profile)' "$WORKERPICK"
+assert grep -Fq 'gm_pin=$(conf gemini_profile)' "$WORKERPICK"
+assert grep -Fq '.name == $cx_pin and (.walled | not)' "$WORKERPICK"
+assert grep -Fq '.name == $gm_pin and (.walled | not)' "$WORKERPICK"
+assert grep -Fq '$pin_account != null and ($pin_account.own | not) and $pin_account.auth_ok' "$WORKERPICK"
 
 printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, account pin precedence, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, and worker-pool membership) and match %s\n' "$asserts" "$DOC"

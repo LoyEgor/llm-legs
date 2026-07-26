@@ -34,16 +34,14 @@ end
 -- credentials, so a logged-out row offers exactly {Log in…, Hard refresh, Remove…}.
 -- Remove… is a one-item confirm submenu (misclick-safe without a modal dialog); its
 -- single item fires the vendor's own remove command, which owns all store cleanup.
--- poolFn is optional: an account that needs login can also be out of the worker pool, and
--- without the toggle here that row is the one place the state can be seen but not changed.
-local function loginNeededRow(label, loginFn, hardRefreshFn, removeFn, poolFn, inPool)
+-- No worker-pool toggle here: pool membership only means anything for an account automatic
+-- selection could actually reach, so offering it on a logged-out row claims an availability
+-- that does not hold. The stored exclusion survives and reappears once the account is back.
+local function loginNeededRow(label, loginFn, hardRefreshFn, removeFn)
   local menu = {
     { title = "Log in…", fn = loginFn },
     { title = "Hard refresh", fn = hardRefreshFn },
   }
-  if poolFn then
-    table.insert(menu, 1, { title = "In worker pool", checked = inPool, fn = poolFn })
-  end
   -- A non-removable account (e.g. codex `main`, whose `remove` always refuses)
   -- passes removeFn=nil so the row never offers a dead Remove action.
   if removeFn then
@@ -54,12 +52,11 @@ local function loginNeededRow(label, loginFn, hardRefreshFn, removeFn, poolFn, i
   return { title = loginNeededTitle(label), menu = menu }
 end
 
-local function geminiLoginNeededRow(label, account, inPool)
+local function geminiLoginNeededRow(label, account)
   return loginNeededRow(label,
     function() M.loginGemini(account) end,
     function() M.hardRefreshGemini(account) end,
-    function() M.removeGemini(account) end,
-    function() M.toggleGeminiAccount(account, inPool) end, inPool)
+    function() M.removeGemini(account) end)
 end
 
 local function truncateText(text, maxLength)
@@ -756,23 +753,20 @@ function M.menuItems()
             local accountRow
             if authNeeded then
               local loginFn, hardRefreshFn, removeFn
-              local poolFn
               if entry.key == "claude" then
                 loginFn = function() M.loginClaude(acct) end
                 hardRefreshFn = function() M.hardRefreshClaude(acct) end
                 removeFn = function() M.removeClaude(acct) end
-                if hasAccountControls then poolFn = function() M.toggleAccount(acct, enabled) end end
               elseif entry.key == "codex" then
                 loginFn = function() M.loginCodex(acct) end
                 hardRefreshFn = function() M.hardRefreshCodex(acct) end
-                poolFn = function() M.toggleCodexAccount(acct, enabled) end
                 -- codexb refuses to remove `main` (the real ~/.codex); no Remove item.
                 if acct ~= "main" then removeFn = function() M.removeCodex(acct) end end
               else
-                accountRow = geminiLoginNeededRow(acct, acct, enabled)
+                accountRow = geminiLoginNeededRow(acct, acct)
               end
               if not accountRow then
-                accountRow = loginNeededRow(acct, loginFn, hardRefreshFn, removeFn, poolFn, enabled)
+                accountRow = loginNeededRow(acct, loginFn, hardRefreshFn, removeFn)
               end
             else
               accountRow = {

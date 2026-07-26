@@ -38,6 +38,7 @@ source "$SCRIPT"
 # A bare invocation is now an error and must not launch Claude.
 mkdir -p "$HOME/.claude-profiles/com" "$HOME/.claude-profiles/notcom"
 touch "$CLAUDEB_DIR/tokens/com" "$CLAUDEB_DIR/tokens/notcom" "$CLAUDEB_DIR/tokens/-legacy"
+mkdir -p "$CLAUDEB_DIR/tokens/.claudeb" "$CLAUDEB_DIR/tokens/.junk"
 printf 'notcom\n-legacy\n' >"$CLAUDEB_DIR/disabled"
 NO_PROFILE_OUT="$WORK/no-profile.out"
 cat >"$FAKE_BIN/claude" <<EOF
@@ -51,6 +52,8 @@ assert grep -q 'profile required — rotation has been removed' "$NO_PROFILE_OUT
 assert grep -q '  com (enabled)' "$NO_PROFILE_OUT"
 assert grep -q '  notcom (disabled)' "$NO_PROFILE_OUT"
 assert grep -q -- '  -legacy (disabled)' "$NO_PROFILE_OUT"
+assert_fails grep -q '\.claudeb' "$NO_PROFILE_OUT"
+assert_fails grep -q '\.junk' "$NO_PROFILE_OUT"
 assert grep -q 'claudeb profile <name>' "$NO_PROFILE_OUT"
 assert test ! -e "$WORK/claude-launches"
 assert_fails env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" bash "$SCRIPT" --direct profile com \
@@ -461,10 +464,10 @@ assert env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" WORKER_PICK_CONF
   bash "$SCRIPT" use gamma >/dev/null 2>&1
 assert test "$(grep -c '^claudeb_profile=' "$PIN_FILE")" = 1
 assert grep -qx 'claudeb_profile=gamma' "$PIN_FILE"
-# gamma is out of the pool, and a pin worker-pick cannot honor must say so.
 assert env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" WORKER_PICK_CONFIG_FILE="$PIN_FILE" \
   bash "$SCRIPT" use gamma >"$WORK/pin-disabled.out" 2>&1
 assert grep -q 'out of the worker pool' "$WORK/pin-disabled.out"
+assert grep -q 'direct pin still overrides automatic pool exclusion' "$WORK/pin-disabled.out"
 assert env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" WORKER_PICK_CONFIG_FILE="$PIN_FILE" \
   bash "$SCRIPT" use >"$WORK/pin-show.out" 2>&1
 assert grep -q 'pinned to gamma' "$WORK/pin-show.out"
@@ -1860,6 +1863,7 @@ EOF
       >"$st_store/limits/$a.json"
   done
 
+  mkdir -p "$st_store/tokens/.claudeb" "$st_store/tokens/.junk"
   rm -f "$net_log"
   out=$(PATH="$st_bin:$PATH" HOME="$st_home" CLAUDEB_DIR="$st_store" bash "$SCRIPT" status --plain) \
     || fail "status --plain (cached default) failed"
@@ -1867,6 +1871,12 @@ EOF
   assert grep -qF NAME <<<"$out"
   assert grep -q '^aa ' <<<"$out"
   assert grep -q '^bb ' <<<"$out"
+  assert_fails grep -q '\.claudeb' <<<"$out"
+  assert_fails grep -q '\.junk' <<<"$out"
+  acc_out=$(PATH="$st_bin:$PATH" HOME="$st_home" CLAUDEB_DIR="$st_store" bash "$SCRIPT" accounts --no-spend) \
+    || fail "accounts --no-spend failed"
+  assert_fails grep -q '\.claudeb' <<<"$acc_out"
+  assert_fails grep -q '\.junk' <<<"$acc_out"
 
   rm -f "$net_log"
   PATH="$st_bin:$PATH" HOME="$st_home" CLAUDEB_DIR="$st_store" bash "$SCRIPT" status --plain --cached >/dev/null \
@@ -2063,4 +2073,4 @@ EOF
   assert_fails "$SCRIPT" remove ghost-account
 ) || exit 1
 
-echo "PASS: $asserts asserts; profile-required launch guard, reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth weather/backoff and lock behavior, creation-only reserved names and leading-hyphen rejection, disabled-account timeline, disabled profile launch proceeds direct with inherited routing stripped, generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent token adoption, capacity weather clears stale expired auth for valid tokens, warm-first heal ordering and fallback, warm auth verdicts require current-run refresh evidence, start-windows opens a fresh window and reconcile locks the new resets_at without regressing it, start-windows skips a disabled account with an explicit cause, warm --start-window opens only an expired window for the explicit account (live window and flagless runs never ping; ping weather warns without an auth verdict), the paid haiku warm fallback stays off unless opted in, regular probes never warm, heal_expired covers disabled accounts with actionable causes, and heal_one writes expired only on current-run evidence (stale-token 401 defers to the token endpoint's verdict, fresh-token 401 is affirmative, weather never re-stamps a prior expired), and no-refresh probes plus messages-probe 401s defer to the refresh outcome (stale token → weather no-write / invalid_grant expired, fresh token → affirmative), and interactive status account-row selection (bounded up/down navigation, name-stable across re-sort), Enter resolving to a \`claudeb profile <name>\` exec, row-scoped reverse-video highlight, and the non-tty path staying plain with no key loop or launch, status defaulting to cached (zero network; --live still probes), and the async refresh outcome summary (✓ when all enabled accounts are live/live*, else names stale accounts with a cause and excludes disabled ones, raw probe stderr confined to the log), refresh cancellation killing the probe process group, first-pass results publishing in completion order, unknown profiles rejected, and reserved legacy profiles removable, headless runs routed through worker-pick without restamping current (arguments alone still demand a profile; an unselectable pool or a missing worker-pick refuses instead of launching), and \`use\` writing the worker pin in place with an out-of-pool warning, a clear, and a refusal on an unroutable name"
+echo "PASS: $asserts asserts; profile-required launch guard, reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth weather/backoff and lock behavior, creation-only reserved names and leading-hyphen rejection, disabled-account timeline, disabled profile launch proceeds direct with inherited routing stripped, generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent token adoption, capacity weather clears stale expired auth for valid tokens, warm-first heal ordering and fallback, warm auth verdicts require current-run refresh evidence, start-windows opens a fresh window and reconcile locks the new resets_at without regressing it, start-windows skips a disabled account with an explicit cause, warm --start-window opens only an expired window for the explicit account (live window and flagless runs never ping; ping weather warns without an auth verdict), the paid haiku warm fallback stays off unless opted in, regular probes never warm, heal_expired covers disabled accounts with actionable causes, and heal_one writes expired only on current-run evidence (stale-token 401 defers to the token endpoint's verdict, fresh-token 401 is affirmative, weather never re-stamps a prior expired), and no-refresh probes plus messages-probe 401s defer to the refresh outcome (stale token → weather no-write / invalid_grant expired, fresh token → affirmative), and interactive status account-row selection (bounded up/down navigation, name-stable across re-sort), Enter resolving to a \`claudeb profile <name>\` exec, row-scoped reverse-video highlight, and the non-tty path staying plain with no key loop or launch, status defaulting to cached (zero network; --live still probes), and the async refresh outcome summary (✓ when all enabled accounts are live/live*, else names stale accounts with a cause and excludes disabled ones, raw probe stderr confined to the log), refresh cancellation killing the probe process group, first-pass results publishing in completion order, unknown profiles rejected, and reserved legacy profiles removable, headless runs routed through worker-pick without restamping current (arguments alone still demand a profile; an unselectable pool or a missing worker-pick refuses instead of launching), and \`use\` writing the worker pin in place with an out-of-pool direct-pin note, a clear, and a refusal on an unroutable name"

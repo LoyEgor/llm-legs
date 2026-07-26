@@ -468,15 +468,18 @@ for _, case in ipairs(loginCases) do
   local row = rowContaining(menu, case.needle)
   assert(titleText(row):find("login needed", 1, true),
     "logged-out " .. case.vendor .. " row did not render a login-needed row")
-  -- Pool membership is independent of login state, and this row used to be the one place the
-  -- state could be seen but never changed — a logged-out account could not be put back in.
-  assert(#row.menu == 4,
-    case.vendor .. " login row is not exactly {In worker pool, Log in…, Hard refresh, Remove…}")
-  assert(titleText(row.menu[1]) == "In worker pool", case.vendor .. " login row lost the pool toggle")
-  assert(titleText(row.menu[2]) == "Log in…", case.vendor .. " second submenu item is not Log in…")
-  assert(titleText(row.menu[3]) == "Hard refresh", case.vendor .. " third submenu item is not Hard refresh")
-  assert(titleText(row.menu[4]) == "Remove…", case.vendor .. " fourth submenu item is not Remove…")
-  local removeMenu = row.menu[4].menu
+  assert(#row.menu == 3,
+    case.vendor .. " login row is not exactly {Log in…, Hard refresh, Remove…}")
+  assert(titleText(row.menu[1]) == "Log in…", case.vendor .. " first submenu item is not Log in…")
+  assert(titleText(row.menu[2]) == "Hard refresh", case.vendor .. " second submenu item is not Hard refresh")
+  assert(titleText(row.menu[3]) == "Remove…", case.vendor .. " third submenu item is not Remove…")
+  -- Offering the worker pool here would claim an availability a logged-out account does not
+  -- have; the stored exclusion is still there and shows up again once it is logged back in.
+  for _, sub in ipairs(row.menu) do
+    assert(titleText(sub) ~= "In worker pool",
+      case.vendor .. " login row offered the worker-pool toggle")
+  end
+  local removeMenu = row.menu[3].menu
   assert(type(removeMenu) == "table" and #removeMenu == 1,
     case.vendor .. " Remove… is not a single-item confirm submenu")
   assert(titleText(removeMenu[1]) == "Confirm remove " .. case.label,
@@ -488,7 +491,7 @@ for _, case in ipairs(loginCases) do
   end
   if case.refreshArgs then
     while #tasks > 0 do table.remove(tasks) end
-    row.menu[3].fn()
+    row.menu[2].fn()
     local launched = tasks[1]
     assert(launched and launched.path:find("llm-limits.sh", 1, true),
       case.vendor .. " Hard refresh did not launch the collector")
@@ -525,8 +528,8 @@ do
   local row = rowContaining(menu, "main")
   assert(row and titleText(row):find("login needed", 1, true),
     "codex main did not render a login-needed row")
-  assert(#row.menu == 3,
-    "codex main login row must omit Remove… (expected exactly {In worker pool, Log in…, Hard refresh})")
+  assert(#row.menu == 2,
+    "codex main login row must omit Remove… (expected exactly {Log in…, Hard refresh})")
   for _, sub in ipairs(row.menu) do
     assert(titleText(sub) ~= "Remove…", "codex main offered a dead Remove… action")
   end

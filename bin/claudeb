@@ -248,8 +248,8 @@ pin_account() {
   fi
   printf 'claudeb: pinned workers to %s\n' "$name"
   if is_disabled "$name"; then
-    printf 'claudeb: note: %s is out of the worker pool, so the pin is not selectable until you `claudeb enable %s`\n' \
-      "$name" "$name" >&2
+    printf 'claudeb: note: %s is out of the worker pool; the direct pin still overrides automatic pool exclusion\n' \
+      "$name" >&2
   fi
 }
 

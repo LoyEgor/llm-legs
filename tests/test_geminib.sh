@@ -329,12 +329,19 @@ gb() { bash "$SCRIPT" "$@" >"$POOL_OUT" 2>&1; }
 assert gb disable alpha
 assert grep -qx alpha "$HOME/.gemini-profiles/.geminib/disabled"
 # The pool file lives beside the profiles and must never be read back as one.
+mkdir -p "$HOME/.gemini-profiles/.junk"
 assert gb list
 assert_fails grep -q '^\.geminib:' "$POOL_OUT"
+assert_fails grep -q '^\.junk:' "$POOL_OUT"
 assert grep -q 'alpha: .*(out of pool)' "$POOL_OUT"
 assert_fails grep -q 'main: .*(out of pool)' "$POOL_OUT"
 assert gb status
+assert_fails grep -q '^\.geminib:' "$POOL_OUT"
+assert_fails grep -q '^\.junk:' "$POOL_OUT"
 assert grep -q 'alpha: .*(out of pool) | 5H' "$POOL_OUT"
+gemini_names=$(gemini_profiles_dir="$HOME/.gemini-profiles" gemini_base_home="$HOME" bash -c '. "'"$ROOT"'/share/gemini-accounts.sh" && gemini_account_names')
+assert_fails grep -q '^\.geminib$' <<<"$gemini_names"
+assert_fails grep -q '^\.junk$' <<<"$gemini_names"
 assert gb disable alpha
 assert grep -q 'already disabled' "$POOL_OUT"
 assert gb enable alpha

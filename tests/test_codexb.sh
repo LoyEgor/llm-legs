@@ -346,9 +346,18 @@ printf '{"primary":{"usedPercent":30,"windowDurationMins":300,"resetsAt":%s},"se
 # codexb keeps its pool state in a dotted directory beside the accounts, and dotted names are
 # reserved from being accounts for that reason: publishing one as an account tells the user to
 # log in to a service directory.
-mkdir -p "$HOME/.codex-profiles/.codexb"
+mkdir -p "$HOME/.codex-profiles/.codexb" "$HOME/.codex-profiles/.junk"
 CODEX_QUOTA_TIMEOUT=2 "$HELPER" --all-accounts >/dev/null || fail "all-account quota helper failed"
 assert jq -e '([.accounts[].account] | index(".codexb")) == null' "$CACHE"
+list_dots=$(bash "$SCRIPT" list) || fail "list with dotted dirs failed"
+assert_fails grep -q '^\.codexb:' <<<"$list_dots"
+assert_fails grep -q '^\.junk:' <<<"$list_dots"
+status_dots=$(bash "$SCRIPT" status) || fail "status with dotted dirs failed"
+assert_fails grep -q '^\.codexb:' <<<"$status_dots"
+assert_fails grep -q '^\.junk:' <<<"$status_dots"
+pick_dots=$(bash "$SCRIPT" pick) || fail "pick with dotted dirs failed"
+assert test "$pick_dots" != ".codexb"
+assert test "$pick_dots" != ".junk"
 assert jq -e '.current == "main" and (.accounts | type) == "array" and
   ([.accounts[].account] | index("main") != null) and
   ([.accounts[].account] | index("alpha") != null) and

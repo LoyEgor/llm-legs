@@ -47,6 +47,10 @@ run_store() {
     WORKER_PICK_TIERS_FILE="$TIERS" WORKER_PICK_CACHE_DIR="$CACHE" WORKER_PICK_NOW=2000000000 \
     CLAUDE_LIMITS_ACCOUNT=session "$SCRIPT") || fail "worker-pick failed for $name"
 }
+write_config() {
+  printf '%s\n' 'worker=auto' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
+    'gemini_model=pro' 'gemini_effort=high' ${1:+"claudeb_profile=$1"} >"$CONFIG"
+}
 
 printf '%s\n' 'worker=gemini' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
   'gemini_model=pro' 'gemini_effort=high' 'gemini_profile=work' >"$CONFIG"
@@ -162,7 +166,7 @@ assert contains "$(head -n1 <<<"$output")" 'WARN: no account below HEADROOM_PCT,
 
 run_case reset
 assert contains "$output" 'NEXT: claudeb soon '
-assert contains "$(head -n1 <<<"$output")" 'pre-reset cap 40%'
+assert contains "$(head -n1 <<<"$output")" 'pre-reset cap 50%'
 
 run_case codex_credit
 assert contains "$(head -n1 <<<"$output")" 'codex with-credit · high — FRESH'
@@ -256,8 +260,9 @@ run_filter gemini_fresh '.vendors.gemini = {
   available:true,accounts:[
     {account:"main",group:"Gemini Models",five_hour:{used_pct:10,as_of:2000000000},weekly:{used_pct:10,as_of:2000000000}},
     {account:"work",group:"Gemini Models",auth_needed:true}]}'
-assert contains "$(head -n1 <<<"$output")" 'gemini pin work is not selectable, ask Egor'
-assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✗·sol·hi cb~?·opus·hi gx✗work·pro·hi'
+assert contains "$(head -n1 <<<"$output")" 'gemini pin work auth unavailable → main'
+assert contains "$(sed -n '3p' <<<"$output")" 'gemini: pin work auth unavailable → main'
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✗·sol·hi cb~?·opus·hi gx✓main·pro·hi'
 
 printf '%s\n' 'worker=gemini' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
   'gemini_model=flash' 'gemini_effort=medium' >"$CONFIG"
@@ -292,6 +297,61 @@ assert contains "$output" 'codex: login needed'
 assert not_contains "$output" 'codex: no authenticated quota data'
 assert contains "$output" 'codex unavailable · high — WALLED'
 
+# Night-window floor relaxation tests
+output=$(TZ=UTC HOME="$HOME_FIXTURE" LLM_LIMITS_FILE="$STORE" WORKER_PICK_CONFIG_FILE="$CONFIG" \
+  WORKER_PICK_TIERS_FILE="$TIERS" WORKER_PICK_CACHE_DIR="$CACHE" WORKER_PICK_NOW=1785074400 \
+  CLAUDE_LIMITS_ACCOUNT=session jq -c '.codex_plain | .vendors.codex.accounts = [
+    {account:"main",five_hour:{used_pct:48},weekly:{used_pct:48}},
+    {account:"alpha",five_hour:{used_pct:92,resets_at:1785247200},weekly:{used_pct:10}}]' "$FIXTURES" | \
+  env LLM_LIMITS_FILE=/dev/stdin TZ=UTC WORKER_PICK_NOW=1785074400 HOME="$HOME_FIXTURE" \
+    WORKER_PICK_CONFIG_FILE="$CONFIG" WORKER_PICK_TIERS_FILE="$TIERS" WORKER_PICK_CACHE_DIR="$CACHE" \
+    CLAUDE_LIMITS_ACCOUNT=session "$SCRIPT")
+assert contains "$output" 'alpha 92%'
+assert contains "$output" 'FLOOR'
+assert not_contains "$(head -n1 <<<"$output")" 'alpha'
+
+output=$(TZ=UTC HOME="$HOME_FIXTURE" LLM_LIMITS_FILE="$STORE" WORKER_PICK_CONFIG_FILE="$CONFIG" \
+  WORKER_PICK_TIERS_FILE="$TIERS" WORKER_PICK_CACHE_DIR="$CACHE" WORKER_PICK_NOW=1785029400 \
+  CLAUDE_LIMITS_ACCOUNT=session jq -c '.codex_plain | .vendors.codex.accounts = [
+    {account:"main",five_hour:{used_pct:48},weekly:{used_pct:48}},
+    {account:"alpha",five_hour:{used_pct:92,resets_at:1785052800},weekly:{used_pct:10}}]' "$FIXTURES" | \
+  env LLM_LIMITS_FILE=/dev/stdin TZ=UTC WORKER_PICK_NOW=1785029400 HOME="$HOME_FIXTURE" \
+    WORKER_PICK_CONFIG_FILE="$CONFIG" WORKER_PICK_TIERS_FILE="$TIERS" WORKER_PICK_CACHE_DIR="$CACHE" \
+    CLAUDE_LIMITS_ACCOUNT=session "$SCRIPT")
+assert contains "$(head -n1 <<<"$output")" 'codex alpha · high'
+assert not_contains "$output" 'alpha 92% runway 8% ↻0 FLOOR'
+
+output=$(TZ=UTC HOME="$HOME_FIXTURE" LLM_LIMITS_FILE="$STORE" WORKER_PICK_CONFIG_FILE="$CONFIG" \
+  WORKER_PICK_TIERS_FILE="$TIERS" WORKER_PICK_CACHE_DIR="$CACHE" WORKER_PICK_NOW=1785038400 \
+  CLAUDE_LIMITS_ACCOUNT=session jq -c '.codex_plain | .vendors.codex.accounts = [
+    {account:"main",five_hour:{used_pct:48},weekly:{used_pct:48}},
+    {account:"alpha",five_hour:{used_pct:92,resets_at:1785052800},weekly:{used_pct:10}}]' "$FIXTURES" | \
+  env LLM_LIMITS_FILE=/dev/stdin TZ=UTC WORKER_PICK_NOW=1785038400 HOME="$HOME_FIXTURE" \
+    WORKER_PICK_CONFIG_FILE="$CONFIG" WORKER_PICK_TIERS_FILE="$TIERS" WORKER_PICK_CACHE_DIR="$CACHE" \
+    CLAUDE_LIMITS_ACCOUNT=session "$SCRIPT")
+assert contains "$(head -n1 <<<"$output")" 'codex alpha · high'
+
+output=$(TZ=UTC HOME="$HOME_FIXTURE" LLM_LIMITS_FILE="$STORE" WORKER_PICK_CONFIG_FILE="$CONFIG" \
+  WORKER_PICK_TIERS_FILE="$TIERS" WORKER_PICK_CACHE_DIR="$CACHE" WORKER_PICK_NOW=1785029400 \
+  CLAUDE_LIMITS_ACCOUNT=session jq -c '.codex_plain | .vendors.codex.accounts = [
+    {account:"main",five_hour:{used_pct:48},weekly:{used_pct:48}},
+    {account:"alpha",five_hour:{used_pct:10},weekly:{used_pct:92,resets_at:1785500000}}]' "$FIXTURES" | \
+  env LLM_LIMITS_FILE=/dev/stdin TZ=UTC WORKER_PICK_NOW=1785029400 HOME="$HOME_FIXTURE" \
+    WORKER_PICK_CONFIG_FILE="$CONFIG" WORKER_PICK_TIERS_FILE="$TIERS" WORKER_PICK_CACHE_DIR="$CACHE" \
+    CLAUDE_LIMITS_ACCOUNT=session "$SCRIPT")
+assert contains "$output" 'alpha 92%'
+assert contains "$output" 'FLOOR'
+
+output=$(TZ=UTC HOME="$HOME_FIXTURE" LLM_LIMITS_FILE="$STORE" WORKER_PICK_CONFIG_FILE="$CONFIG" \
+  WORKER_PICK_TIERS_FILE="$TIERS" WORKER_PICK_CACHE_DIR="$CACHE" WORKER_PICK_NOW=1785106800 \
+  CLAUDE_LIMITS_ACCOUNT=session jq -c '.codex_plain | .vendors.codex.accounts = [
+    {account:"main",five_hour:{used_pct:48},weekly:{used_pct:48}},
+    {account:"alpha",five_hour:{used_pct:92,resets_at:1785121200},weekly:{used_pct:10}}]' "$FIXTURES" | \
+  env LLM_LIMITS_FILE=/dev/stdin TZ=UTC WORKER_PICK_NOW=1785106800 WORKER_PICK_SLEEP_START_H=22 WORKER_PICK_SLEEP_END_H=6 HOME="$HOME_FIXTURE" \
+    WORKER_PICK_CONFIG_FILE="$CONFIG" WORKER_PICK_TIERS_FILE="$TIERS" WORKER_PICK_CACHE_DIR="$CACHE" \
+    CLAUDE_LIMITS_ACCOUNT=session "$SCRIPT")
+assert contains "$(head -n1 <<<"$output")" 'codex alpha · high'
+
 run_case stale
 assert contains "$output" 'NEXT: claudeb effective '
 assert contains "$output" 'effective($100) 5h 20% wk 20%'
@@ -310,6 +370,7 @@ assert contains "$output" 'NEXT: claudeb expired '
 assert contains "$output" 'expired($100) 5h 0%'
 
 run_case golden
+unpinned_next=$(head -n1 <<<"$output")
 assert contains "$(head -n1 <<<"$output")" 'ACCOUNT: worker'
 assert not_contains "$(head -n1 <<<"$output")" 'claudeb session '
 assert contains "$output" 'session($100)*'
@@ -339,6 +400,98 @@ assert contains "$policy" 'conservatively'
 assert contains "$policy" 'five of every ten'
 assert contains "$policy" 'every usable non-main account of the same vendor ranks ahead'
 
+PIN_NOW=1785074400
+write_vendor_pin() {
+  printf '%s\n' 'worker=auto' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
+    'gemini_model=pro' 'gemini_effort=high' "${1}_profile=$2" >"$CONFIG"
+}
+run_pin_filter() {
+  local name=$1 filter=$2
+  jq -c --arg name "$name" --argjson pin_now "$PIN_NOW" \
+    ".[\$name] | .fetched_at = \$pin_now | $filter" "$FIXTURES" >"$STORE" ||
+    fail "pin fixture $name transform failed"
+  output=$(TZ=UTC HOME="$HOME_FIXTURE" LLM_LIMITS_FILE="$STORE" WORKER_PICK_CONFIG_FILE="$CONFIG" \
+    WORKER_PICK_TIERS_FILE="$TIERS" WORKER_PICK_CACHE_DIR="$CACHE" WORKER_PICK_NOW="$PIN_NOW" \
+    CLAUDE_LIMITS_ACCOUNT=session "$SCRIPT") || fail "worker-pick failed for pinned $name"
+}
+
+write_vendor_pin codex main
+run_pin_filter codex_plain '.vendors.codex.accounts = [
+  {account:"alpha",five_hour:{used_pct:20},weekly:{used_pct:20}},
+  {account:"main",five_hour:{used_pct:91},weekly:{used_pct:20}}]'
+assert contains "$(head -n1 <<<"$output")" 'codex main · high — TIGHT'
+assert contains "$(sed -n '2p' <<<"$output")" 'main 91% runway 9% ↻0 PINNED FLOOR'
+
+run_pin_filter codex_plain '.vendors.codex.accounts = [
+  {account:"alpha",five_hour:{used_pct:20},weekly:{used_pct:20}},
+  {account:"main",five_hour:{used_pct:96,resets_at:1785765600},weekly:{used_pct:20}}]'
+assert contains "$(head -n1 <<<"$output")" 'codex main · high — WALLED PINNED; pre-reset cap 4%'
+assert contains "$(sed -n '2p' <<<"$output")" 'main 96% runway 4% ↻0 PINNED FLOOR'
+near_dry_out=$(TZ=UTC HOME="$HOME_FIXTURE" LLM_LIMITS_FILE="$STORE" WORKER_PICK_CONFIG_FILE="$CONFIG" \
+  WORKER_PICK_TIERS_FILE="$TIERS" WORKER_PICK_CACHE_DIR="$CACHE" WORKER_PICK_NOW="$PIN_NOW" \
+  CLAUDE_LIMITS_ACCOUNT=session "$SCRIPT" --account codex 2>"$WORK/near-dry.err")
+near_dry_rc=$?
+assert test "$near_dry_rc" -eq 0
+assert test "$near_dry_out" = main
+assert test ! -s "$WORK/near-dry.err"
+
+run_pin_filter codex_plain '.vendors.codex.accounts = [
+  {account:"alpha",five_hour:{used_pct:20},weekly:{used_pct:20}},
+  {account:"main",enabled:false,five_hour:{used_pct:40},weekly:{used_pct:40}}]'
+assert contains "$(head -n1 <<<"$output")" 'codex main · high'
+assert contains "$(sed -n '2p' <<<"$output")" 'main 40% runway 60% ↻0 PINNED off'
+
+run_pin_filter codex_plain '.vendors.codex.accounts = [
+  {account:"alpha",five_hour:{used_pct:20},weekly:{used_pct:20}},
+  {account:"main",five_hour:{used_pct:100},weekly:{used_pct:20}}]'
+assert contains "$(head -n1 <<<"$output")" 'codex alpha · high'
+assert contains "$(sed -n '2p' <<<"$output")" 'codex: pin main exhausted → alpha'
+
+run_pin_filter codex_plain '.vendors.codex.accounts = [
+  {account:"alpha",five_hour:{used_pct:20},weekly:{used_pct:20}},
+  {account:"main",auth_needed:true,five_hour:{used_pct:20},weekly:{used_pct:20}}]'
+assert contains "$(sed -n '2p' <<<"$output")" 'codex: pin main auth unavailable → alpha'
+
+run_pin_filter codex_plain '.vendors.codex.accounts = [
+  {account:"alpha",five_hour:{used_pct:20},weekly:{used_pct:20}}]'
+assert contains "$(sed -n '2p' <<<"$output")" 'codex: pin main absent → alpha'
+
+write_vendor_pin gemini work
+run_pin_filter gemini_fresh '.vendors.gemini = {available:true,accounts:[
+  {account:"main",group:"Gemini Models",five_hour:{used_pct:20},weekly:{used_pct:20}},
+  {account:"work",enabled:false,group:"Gemini Models",five_hour:{used_pct:91},weekly:{used_pct:20}}]}'
+assert contains "$(head -n1 <<<"$output")" 'gemini work · pro · high'
+assert contains "$(head -n1 <<<"$output")" 'pre-reset cap 9%'
+assert contains "$(sed -n '3p' <<<"$output")" 'work 91% runway 9% PINNED FLOOR off'
+
+run_pin_filter gemini_fresh '.vendors.gemini = {available:true,accounts:[
+  {account:"main",group:"Gemini Models",five_hour:{used_pct:20},weekly:{used_pct:20}},
+  {account:"work",group:"Gemini Models",five_hour:{used_pct:100},weekly:{used_pct:20}}]}'
+assert contains "$(head -n1 <<<"$output")" 'gemini pin work exhausted → main'
+assert contains "$(sed -n '3p' <<<"$output")" 'gemini: pin work exhausted → main'
+
+write_vendor_pin claudeb gappy
+run_pin_filter r8_exclude '.vendors.claude.accounts |= map(
+  if .account == "gappy" then .enabled = false | .weekly.used_pct = 91 else . end)'
+assert contains "$(head -n1 <<<"$output")" 'claudeb gappy · opus · medium (pinned'
+assert contains "$(head -n1 <<<"$output")" 'pre-reset cap 9%'
+assert contains "$(sed -n '4p' <<<"$output")" 'gappy($100) 5h 40% wk 91%'
+assert contains "$(sed -n '4p' <<<"$output")" 'cap 9% PINNED Fable-gap-excluded FLOOR HEADROOM off'
+assert contains "$(sed -n '4p' <<<"$output")" 'clean($100) 5h 30% wk 30% fb 30% score 60 cap 60%'
+
+run_pin_filter r8_exclude '.vendors.claude.accounts |= map(
+  if .account == "gappy" then .weekly.used_pct = 100 else . end)'
+assert contains "$(head -n1 <<<"$output")" 'claudeb pin gappy exhausted → clean'
+assert contains "$(sed -n '4p' <<<"$output")" 'claude: pin gappy exhausted → clean'
+
+run_pin_filter r8_exclude '.vendors.claude.accounts |= map(
+  if .account == "gappy" then .auth.status = "expired" else . end)'
+assert contains "$(sed -n '4p' <<<"$output")" 'claude: pin gappy auth unavailable → clean'
+
+write_config
+run_case golden
+assert test "$(head -n1 <<<"$output")" = "$unpinned_next"
+
 # `--account claudeb` is the machine-readable face of the same selection: exactly one bare
 # account name, so a caller routing a headless run cannot drift from what a worker would get.
 QUERY_CACHE="$WORK/query-cache"
@@ -352,11 +505,6 @@ query_account() {
     2>"$WORK/query.err")
   query_rc=$?
 }
-write_config() {
-  printf '%s\n' 'worker=auto' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
-    'gemini_model=pro' 'gemini_effort=high' ${1:+"claudeb_profile=$1"} >"$CONFIG"
-}
-
 query_account golden
 assert test "$query_rc" -eq 0
 assert test "$query_out" = worker
@@ -365,18 +513,14 @@ assert test ! -s "$WORK/query.err"
 # prediction stays owned by the real invocation.
 assert test -z "$(find "$QUERY_CACHE" -type f -print -quit)"
 
-# The pin is the caller's own choice, so a query honors it...
 write_config worker
 query_account golden
 assert test "$query_rc" -eq 0
 assert test "$query_out" = worker
-# ...and a pin it cannot honor fails, never quietly resolving to a different account — routing
-# around the pin is exactly what the removed proxy used to do.
 write_config session
 query_account golden
-assert test "$query_rc" -eq 3
-assert test -z "$query_out"
-assert grep -q 'no selectable claudeb account' "$WORK/query.err"
+assert test "$query_rc" -eq 0
+assert test "$query_out" = worker
 write_config
 
 # Unusable data has no fail-safe here: a guessed account would send a caller at an account this
@@ -397,6 +541,32 @@ query_vendor_account() {
     2>"$WORK/query.err")
   query_rc=$?
 }
+write_vendor_pin codex main
+jq -c --argjson pin_now "$PIN_NOW" '.codex_plain | .fetched_at = $pin_now |
+  .vendors.codex.accounts = [
+    {account:"alpha",five_hour:{used_pct:20},weekly:{used_pct:20}},
+    {account:"main",five_hour:{used_pct:91},weekly:{used_pct:20}}]' "$FIXTURES" >"$STORE"
+query_out=$(env "${query_env[@]}" WORKER_PICK_NOW="$PIN_NOW" "LLM_LIMITS_FILE=$STORE" \
+  "$SCRIPT" --account codex 2>"$WORK/query.err")
+query_rc=$?
+assert test "$query_rc" -eq 0
+assert test "$query_out" = main
+assert test "$(wc -l <<<"$query_out" | tr -d ' ')" -eq 1
+
+query_out=$(env "${query_env[@]}" WORKER_PICK_NOW="$PIN_NOW" "LLM_LIMITS_FILE=$STORE" \
+  "$SCRIPT" --account codex --exclude main 2>"$WORK/query.err")
+query_rc=$?
+assert test "$query_rc" -eq 0
+assert test "$query_out" = alpha
+
+query_out=$(env "${query_env[@]}" WORKER_PICK_NOW="$PIN_NOW" "LLM_LIMITS_FILE=$STORE" \
+  "$SCRIPT" --account codex --exclude main,alpha 2>"$WORK/query.err")
+query_rc=$?
+assert test "$query_rc" -eq 3
+assert test -z "$query_out"
+assert grep -q 'no selectable codex account' "$WORK/query.err"
+write_config
+
 query_vendor_account codex_credit --account codex
 assert test "$query_rc" -eq 0
 assert test "$query_out" = with-credit
@@ -449,4 +619,4 @@ for empty_exclude in "" ",,"; do
   assert grep -q 'needs at least one account name' "$WORK/query-bad.err"
 done
 
-printf 'PASS: %s assertions; R1-R9 scoring, Codex and Gemini worker-pool exclusion still visible as `off`, Codex reset runway and main-last priority, Gemini multi-account selection/pin/login exclusion/freshness/floor/toggle routing, output/cache golden contract, session and policy text, and the --account query contract (bare name per vendor, --exclude for the next-after-a-wall case, pin honored or failed loudly, no cache write, no fail-safe guess, unknown arguments refused)\n' "$asserts"
+printf 'PASS: %s assertions; R1-R9 scoring, automatic worker-pool exclusion, Codex reset runway and main-last priority, unified Codex/Gemini/Claude pin soft-gate override, pinned cap-to-100 reporting, hard-gate lapse routing, output/cache golden contract, session and policy text, and the --account query contract (bare name per vendor, selected independently of health state, pin or fallback selection, --exclude precedence, no cache write, no fail-safe guess, unknown arguments refused)\n' "$asserts"
