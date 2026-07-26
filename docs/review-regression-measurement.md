@@ -63,12 +63,64 @@ Also of note: the test-audit reviewer independently broke a copy of the tool to 
 nine of the new assertions really fail when the behaviour they name regresses. That is the only
 check so far on whether this repository's tests are load-bearing, and it is worth repeating.
 
+### Round 2 — 2026-07-26, two commits: `72b876b` (transcriptions-gpt input-device) and `3865199` (llm-legs iPad automation)
+
+First pass: `review-bench review --tier T2` on each commit, 8 raters and 6 raters respectively
+(the four opus/sonnet cells were skipped as unaffordable). 38 claims total, adjudicated by two
+independent judge passes per run (sol high on codex/main and codex/work) per
+`review-adjudication.md`; the orchestrator broke the four splits against the sealed code. 10 real
+defects (7 daemon, 3 Hammerspoon), 24 false, 4 duplicates. Recorded as
+`20260726T160350Z-72b876b` and `20260726T160350Z-3865199`.
+
+All 10 fixed, then the fix surface was pre-registered by function name BEFORE any second-pass
+reviewer reported. Second pass was the cheap form this file asked for: three reviewers reading
+only the fixed units, blind — sol high (codex/main) and gemini pro high (gemini/work) on the
+daemon, sol high (codex/work) on the Hammerspoon side.
+
+| | count |
+| --- | --- |
+| real defects found by the second pass | 10 |
+| of those, **regressions the first pass's fixes introduced** | 3 |
+| of those, code the first pass saw and missed | 7 |
+| findings rejected on inspection | 4 |
+
+The three regressions were all in the daemon, all in pre-registered functions, and all in the
+same fix: the refresh permission was computed at request start instead of at the refresh point,
+so a take starting in that window still lost its PortAudio stream; the "ok queued" reply was set
+before the request was enqueued, letting a later request overtake an earlier one and break the
+FIFO/last-wins contract the fix had just introduced; and a failed or timed-out request bumped the
+resolution generation without publishing a replacement, stranding the reported device at
+`resolving (...)` forever. The Hammerspoon fixes introduced none.
+
+The seven missed defects are the more interesting half. The loudest: `NativeMicRecorder`'s
+device selection — which runs between the hotkey and capture start — still enumerated PortAudio
+devices and called `_terminate()`/`_initialize()` inline. The first pass had named that hazard
+elsewhere and the fix closed it in the resolver only, leaving it in the hottest path in the
+repository. Also missed: an open stream leaked when `stop()`/`abort()` raised, the ffmpeg
+default-fallback inheriting an already-spent capture deadline, the picker dictation path setting
+its in-use flag after opening the recorder, and on the Lua side an overlay module whose `init`
+performed side effects on load — the same class of bug as the headline defect the first pass did
+catch, one file over.
+
+Two of the four rejections are worth recording because both judges' framing mattered: a claim
+that numeric device indices regressed described behaviour that predated the feature, and a claim
+that a repeated manual menu click re-fires its action described the manual fallback's entire
+purpose.
+
 ## Reading it so far
 
-Two rounds, four regressions from fixes, both times found only because someone looked again.
-That is not yet enough to price a mandatory second pass, but it is enough that "review, fix,
-commit" should not be called reviewed. The cheap form — one fast cell re-reading only the fix
-delta — is what the next round should try, so the cost of the answer stops being a full pass.
+Three rounds, seven regressions from fixes, every one found only because someone looked again.
+That is enough to stop calling "review, fix, commit" reviewed. Round 2 also priced the cheap
+form the previous round asked for: three reviewers reading only the pre-registered fix units cost
+roughly a third of the 14-rater first pass and returned as many real defects as it did — but
+only 3 of its 10 were regressions. The rest were defects the wide first pass had in front of it
+and missed, which suggests the second pass earns its keep less by auditing the fixes than by
+being narrow: a reviewer told which functions matter reads them properly, where a broad panel
+samples a whole diff and skims each unit.
+
+If that holds in later rounds, the conclusion is not "always double-review" but "spend the second
+pass as a focused re-read of the units the first pass touched", which is cheap enough to be
+routine.
 
 ## Continuing this
 
