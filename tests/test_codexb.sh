@@ -469,6 +469,7 @@ PIN_CONFIG="$WORK/worker-model-use"
 printf 'worker=auto\nclaudeb_profile=claude-a\ngemini_profile=gemini-a\n' >"$PIN_CONFIG"
 assert env WORKER_PICK_CONFIG_FILE="$PIN_CONFIG" bash "$SCRIPT" use main
 assert grep -qx 'codex_profile=main' "$PIN_CONFIG"
+assert test -f "$PIN_CONFIG.lock"
 assert env WORKER_PICK_CONFIG_FILE="$PIN_CONFIG" bash "$SCRIPT" use alpha
 assert grep -qx 'codex_profile=alpha' "$PIN_CONFIG"
 assert test "$(grep -c '^codex_profile=' "$PIN_CONFIG")" = 1

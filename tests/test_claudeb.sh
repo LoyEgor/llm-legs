@@ -458,6 +458,7 @@ assert env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" WORKER_PICK_CONF
   bash "$SCRIPT" use routed >"$WORK/pin.out" 2>&1
 assert grep -q 'pinned workers to routed' "$WORK/pin.out"
 assert grep -qx 'claudeb_profile=routed' "$PIN_FILE"
+assert test -f "$PIN_FILE.lock"
 assert grep -qx 'worker=auto' "$PIN_FILE"
 assert grep -qx 'claudeb_model=opus' "$PIN_FILE"
 assert env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" WORKER_PICK_CONFIG_FILE="$PIN_FILE" \
@@ -488,6 +489,39 @@ assert_fails env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" WORKER_PIC
   bash "$SCRIPT" use ../gamma >"$WORK/pin-path.out" 2>&1
 assert grep -q 'unknown account' "$WORK/pin-path.out"
 assert_fails grep -q '^claudeb_profile=' "$PIN_FILE"
+
+LOCKED_PIN="$WORK/worker-model-locked"
+LOCK_READY="$WORK/worker-model-lock-ready"
+LOCK_RELEASE="$WORK/worker-model-lock-release"
+printf 'worker=auto\n' >"$LOCKED_PIN"
+(
+  /usr/bin/lockf -s 9 || exit 1
+  : >"$LOCK_READY"
+  while [ ! -e "$LOCK_RELEASE" ]; do sleep 0.01; done
+) 9>"$LOCKED_PIN.lock" &
+lock_holder=$!
+for _ in $(seq 1 100); do
+  [ -e "$LOCK_READY" ] && break
+  sleep 0.01
+done
+assert test -e "$LOCK_READY"
+env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" WORKER_PICK_CONFIG_FILE="$LOCKED_PIN" \
+  bash "$SCRIPT" use routed >"$WORK/locked-claude.out" 2>&1 &
+locked_claude_pid=$!
+env HOME="$HOME" PATH="$PATH" WORKER_PICK_CONFIG_FILE="$LOCKED_PIN" \
+  bash "$ROOT/bin/codexb" use main >"$WORK/locked-codex.out" 2>&1 &
+locked_codex_pid=$!
+sleep 0.1
+assert kill -0 "$locked_claude_pid"
+assert kill -0 "$locked_codex_pid"
+: >"$LOCK_RELEASE"
+assert wait "$lock_holder"
+assert wait "$locked_claude_pid"
+assert wait "$locked_codex_pid"
+assert grep -qx 'claudeb_profile=routed' "$LOCKED_PIN"
+assert grep -qx 'codex_profile=main' "$LOCKED_PIN"
+assert test -f "$LOCKED_PIN.lock"
+
 # `use` is a subcommand now, so it can never also be a profile name.
 assert reserved_name use
 rm -f "$WORK/route-launches" "$CLAUDEB_DIR/tokens/routed"

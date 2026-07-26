@@ -49,14 +49,14 @@ worker_model_account_exists() {
 
 worker_model_pin_account() {
   local key="$1" vendor="$2" list_fn="$3" disabled_fn="$4" name="${5:-}"
-  local file current near tmp
+  local file current near
   file=$(worker_model_file)
-  if ! current=$(worker_model_pinned_account "$key"); then
-    printf '%s: %s exists but cannot be read; refusing to touch the pin\n' "$vendor" "$file" >&2
-    return 2
-  fi
   case "$name" in
     '')
+      if ! current=$(worker_model_pinned_account "$key"); then
+        printf '%s: %s exists but cannot be read; refusing to touch the pin\n' "$vendor" "$file" >&2
+        return 2
+      fi
       if [ -n "$current" ]; then
         printf '%s: workers are pinned to %s\n' "$vendor" "$current"
       else
@@ -65,10 +65,6 @@ worker_model_pin_account() {
       return 0
       ;;
     --clear)
-      if [ -z "$current" ]; then
-        printf '%s: no pin to clear\n' "$vendor"
-        return 0
-      fi
       ;;
     *)
       if ! [[ "$name" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]]; then
@@ -85,20 +81,36 @@ worker_model_pin_account() {
       fi
       ;;
   esac
-  mkdir -p "$(dirname "$file")"
-  tmp="$file.tmp.$$"
-  {
-    if [ -r "$file" ]; then grep -v "^${key}=" "$file" || true; fi
-    [ "$name" = --clear ] || printf '%s=%s\n' "$key" "$name"
-  } >"$tmp"
-  mv "$tmp" "$file"
-  if [ "$name" = --clear ]; then
-    printf '%s: cleared the pin — workers follow worker-pick again\n' "$vendor"
-    return 0
-  fi
-  printf '%s: pinned workers to %s\n' "$vendor" "$name"
-  if "$disabled_fn" "$name"; then
-    printf '%s: note: %s is out of the worker pool; the direct pin still overrides automatic pool exclusion\n' \
-      "$vendor" "$name" >&2
-  fi
+  mkdir -p "$(dirname "$file")" || return 2
+  (
+    local tmp="$file.tmp.$$"
+    if ! "${WORKER_MODEL_LOCKF:-/usr/bin/lockf}" -s 9; then
+      printf '%s: failed to lock %s\n' "$vendor" "$file.lock" >&2
+      return 2
+    fi
+    if ! current=$(worker_model_pinned_account "$key"); then
+      printf '%s: %s exists but cannot be read; refusing to touch the pin\n' "$vendor" "$file" >&2
+      return 2
+    fi
+    if [ "$name" = --clear ] && [ -z "$current" ]; then
+      printf '%s: no pin to clear\n' "$vendor"
+      return 0
+    fi
+    trap 'rm -f "$tmp"' EXIT
+    {
+      if [ -r "$file" ]; then grep -v "^${key}=" "$file" || true; fi
+      [ "$name" = --clear ] || printf '%s=%s\n' "$key" "$name"
+    } >"$tmp" || return 2
+    mv "$tmp" "$file" || return 2
+    trap - EXIT
+    if [ "$name" = --clear ]; then
+      printf '%s: cleared the pin — workers follow worker-pick again\n' "$vendor"
+      return 0
+    fi
+    printf '%s: pinned workers to %s\n' "$vendor" "$name"
+    if "$disabled_fn" "$name"; then
+      printf '%s: note: %s is out of the worker pool; the direct pin still overrides automatic pool exclusion\n' \
+        "$vendor" "$name" >&2
+    fi
+  ) 9>"$file.lock"
 }

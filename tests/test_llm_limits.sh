@@ -621,6 +621,7 @@ jq -e '.vendors.claude.accounts[0].fable.used_pct == 33 and .vendors.claude.fabl
   all(.vendors.claude.accounts[]; .account != "main" and .account != "-")' <<<"$multi" >/dev/null \
   || fail "claudeb fable or unique-account mismatch"
 jq -e '.vendors.claude.accounts[0].rotation == {usable:{general:true,fable:true}} and
+  .vendors.claude.accounts[0].blocked == false and
   (.vendors.claude | has("daemon") | not)' <<<"$multi" >/dev/null \
   || fail "local Claude rotation contract mismatch"
 
@@ -828,9 +829,11 @@ printf 'bree\n' >"$CLAUDEB_DIS/disabled"
 disabled_json=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_DIS" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "disabled-flag collection failed"
 jq -e '(.vendors.claude.accounts | length) == 2 and
   ([.vendors.claude.accounts[] | select(.account == "alona")][0] |
-    .enabled == true and .rotation == {usable:{general:true,fable:false}}) and
+    .enabled == true and .blocked == false and
+    .rotation == {usable:{general:true,fable:false}}) and
   ([.vendors.claude.accounts[] | select(.account == "bree")][0] |
-    .enabled == false and .rotation == {usable:{general:false,fable:false}})' \
+    .enabled == false and .blocked == true and
+    .rotation == {usable:{general:false,fable:false}})' \
   <<<"$disabled_json" >/dev/null || fail "disabled file did not map to local rotation usability"
 disabled_table=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_DIS" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) || fail "disabled table collection failed"
 awk '$1 == "claude/bree"' <<<"$disabled_table" | grep -q 'off' || fail "disabled account not marked off in table"
@@ -851,6 +854,8 @@ printf '{"five_hour":{"used_percentage":11,"resets_at":%s,"as_of":%s,"origin":"c
   "$((now + 5000))" "$now" >"$CLAUDEB_FRESH/limits/cachedorigin.json"
 printf '{"five_hour":{"used_percentage":13,"resets_at":%s,"as_of":%s,"origin":"usage"},"auth":{"status":"expired","checked_at":%s}}\n' \
   "$((now + 5000))" "$now" "$now" >"$CLAUDEB_FRESH/limits/badauth.json"
+printf '{"five_hour":{"used_percentage":14,"resets_at":%s,"as_of":%s,"origin":"usage"},"auth":{"status":"failed","checked_at":%s}}\n' \
+  "$((now + 5000))" "$now" "$now" >"$CLAUDEB_FRESH/limits/failedauth.json"
 printf '{"five_hour":{"used_percentage":17,"resets_at":%s}}\n' "$((now + 5000))" >"$CLAUDEB_FRESH/limits/legacy.json"
 touch -t 202607110500 "$CLAUDEB_FRESH/limits/legacy.json"
 printf '{"auth":{"status":"expired","checked_at":%s}}\n' "$now" >"$CLAUDEB_FRESH/limits/authonly.json"
@@ -865,8 +870,13 @@ jq -e '[.vendors.claude.accounts[] | select(.account == "cachedorigin")][0]
   | .five_hour.origin == "cached" and .five_hour.stale == true' <<<"$fresh_json" >/dev/null \
   || fail "cached origin must mark the bucket stale"
 jq -e '[.vendors.claude.accounts[] | select(.account == "badauth")][0]
-  | .auth.status == "expired" and .five_hour.stale == true' <<<"$fresh_json" >/dev/null \
-  || fail "expired auth must mark buckets stale and pass auth through"
+  | .auth.status == "expired" and .auth_needed == true and .blocked == true and
+    .five_hour.stale == true' <<<"$fresh_json" >/dev/null \
+  || fail "expired auth must reach the projection as auth_needed and blocked"
+jq -e '[.vendors.claude.accounts[] | select(.account == "failedauth")][0]
+  | .auth.status == "failed" and .auth_needed == true and .blocked == true' \
+  <<<"$fresh_json" >/dev/null \
+  || fail "failed auth must reach the projection as auth_needed and blocked"
 jq -e '[.vendors.claude.accounts[] | select(.account == "legacy")][0]
   | (.five_hour.as_of | type) == "number" and .five_hour.stale == true' <<<"$fresh_json" >/dev/null \
   || fail "missing as_of must fall back to snapshot mtime"
@@ -874,7 +884,9 @@ jq -e '.vendors.claude.stale == true and .vendors.claude.auth.status == "ok"' <<
   || fail "vendor-level stale/auth hoist mismatch"
 # Auth-only snapshot (failed probe, no five_hour): the account stays visible as unknown.
 jq -e '[.vendors.claude.accounts[] | select(.account == "authonly")][0]
-  | .five_hour.used_pct == null and .five_hour.effective_pct == null and .five_hour.stale == true and .auth.status == "expired"' <<<"$fresh_json" >/dev/null \
+  | .five_hour.used_pct == null and .five_hour.effective_pct == null and
+    .five_hour.stale == true and .auth.status == "expired" and
+    .auth_needed == true and .blocked == true' <<<"$fresh_json" >/dev/null \
   || fail "auth-only snapshot must stay visible with unknown values"
 printf 'authonly\n' >"$CLAUDEB_FRESH/.claudeb-state"
 cat >"$WORK/success-claudeb" <<'EOF'

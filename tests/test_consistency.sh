@@ -184,6 +184,7 @@ assert doc_has 'Gemini worker knobs'
 
 SPAWN_HOOK="$ROOT/bin/worker-spawn-hook.sh"
 assert grep -Fq 'gm_pin=$(conf gemini_profile)' "$WORKERPICK"
+assert grep -Fq 'WORKER_PICK="${WORKER_SPAWN_WORKER_PICK:-$HOME/.local/bin/worker-pick}"' "$SPAWN_HOOK"
 assert grep -Fq 'acct=$(brief_line ACCOUNT)' "$SPAWN_HOOK"
 for vendor in claudeb codex gemini; do
   assert grep -Fq '[ -n "$acct" ] || acct=$(route_account '"$vendor"')' "$SPAWN_HOOK"
@@ -239,7 +240,7 @@ assert grep -Fq 'walk(if type == "object" and (.weekly.origin? == "headers") the
 assert doc_has 'Weekly bucket provenance'
 assert doc_has 'no writer may stamp `origin: "headers"` on `seven_day`'
 
-assert doc_has 'always emits boolean `rotation.usable.general` and `rotation.usable.fable`'
+assert doc_has 'always emits boolean `rotation.usable.general`, `rotation.usable.fable`, and `blocked == (rotation.usable.general \| not)`'
 EDGE_WORK=$(mktemp -d)
 EDGE_BIN="$EDGE_WORK/bin"
 EDGE_HOME="$EDGE_WORK/home"
@@ -269,7 +270,9 @@ assert jq -e '
   (.vendors.claude.accounts | length) == 6 and
   all(.vendors.claude.accounts[];
     (.rotation.usable.general | type) == "boolean" and
-    (.rotation.usable.fable | type) == "boolean") and
+    (.rotation.usable.fable | type) == "boolean" and
+    (.blocked | type) == "boolean" and
+    .blocked == (.rotation.usable.general | not)) and
   (any(.vendors.claude.accounts[]; .account == "disabled" and
     .rotation.usable.general == false and .rotation.usable.fable == false)) and
   (any(.vendors.claude.accounts[]; .account == "nonnumeric-fable" and

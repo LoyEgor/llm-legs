@@ -827,6 +827,9 @@ function M.menuItems()
 
     for _, entry in ipairs(vendors) do
       local vendor = limits.vendors[entry.key]
+      local pinnedAccount = pins[entry.key]
+      local renderedPin = false
+      local renderedAccountRows = false
       local hasGeminiAccounts = entry.key == "gemini" and type(vendor) == "table"
         and type(vendor.accounts) == "table" and #vendor.accounts > 1
       -- A removed single-account vendor (gemini marker) is skipped entirely until its
@@ -837,7 +840,8 @@ function M.menuItems()
         local authNeeded = type(vendor) == "table" and vendor.auth_needed == true
         local unavailableRow
         if entry.key == "gemini" and authNeeded then
-          unavailableRow = geminiLoginNeededRow(entry.label, "main", pins.gemini == "main")
+          unavailableRow = geminiLoginNeededRow(entry.label, "main", pinnedAccount == "main")
+          renderedPin = pinnedAccount == "main"
         else
           unavailableRow = {
             title = authNeeded and loginNeededTitle(entry.label, false)
@@ -859,6 +863,7 @@ function M.menuItems()
         local isCodexAccounts = entry.key == "codex" and type(blocks) == "table" and #blocks > 0
         local isGeminiAccounts = entry.key == "gemini" and type(blocks) == "table" and #blocks > 1
         local isAccountRows = isClaudeAccounts or isCodexAccounts or isGeminiAccounts
+        renderedAccountRows = isAccountRows
         local hasAccountControls = isClaudeAccounts and vendor.source == "claudeb-store"
         if isGeminiAccounts then
           local visible = {}
@@ -895,6 +900,25 @@ function M.menuItems()
             fallbackRow.disabled = nil
             fallbackRow.menu = {{ title = "Hard refresh", fn = refresh }}
           end
+          if entry.key == "gemini" then
+            local pinExists = pinnedAccount == "main"
+            local pinHonoured = pinExists
+              and not bucketAtLimit(vendor.five_hour) and not bucketAtLimit(vendor.weekly)
+            if pinExists then
+              fallbackRow.title = fallbackRow.title
+                .. infoTitle("  ●", false, not pinHonoured)
+              renderedPin = true
+            end
+            fallbackRow.disabled = nil
+            fallbackRow.menu = {
+              {
+                title = "Pin for workers",
+                checked = pinExists,
+                fn = function() M.pinGemini("main", pinExists) end,
+              },
+              { title = "Hard refresh", fn = refresh },
+            }
+          end
           table.insert(menu, fallbackRow)
         end
         for _, block in ipairs(blocks) do
@@ -907,7 +931,7 @@ function M.menuItems()
           local generalAtLimit = bucketAtLimit(fiveHour) or bucketAtLimit(weekly)
           local pinExists = pins[entry.key] == acct
           local pinHonoured = pinExists and block.removed ~= true
-            and not authNeeded and not generalAtLimit
+            and block.blocked ~= true and not authNeeded and not generalAtLimit
           local pinFn
           if entry.key == "claude" then
             pinFn = function(pinned) M.pinClaude(acct, pinned) end
@@ -917,6 +941,7 @@ function M.menuItems()
             pinFn = function(pinned) M.pinGemini(acct, pinned) end
           end
           if isAccountRows then
+            if pinExists then renderedPin = true end
             local resetCredits = tonumber(block.reset_credits)
             local resetSuffix = resetCredits and resetCredits > 0
               and string.format("  ↻%d", math.floor(resetCredits)) or ""
@@ -1024,9 +1049,23 @@ function M.menuItems()
             end
           end
         end
-        if isAccountRows then
-          table.insert(menu, { title = "-" })
+      end
+      if type(pinnedAccount) == "string" and pinnedAccount ~= "" and not renderedPin then
+        local clearPin
+        if entry.key == "claude" then
+          clearPin = function() M.pinClaude(pinnedAccount, true) end
+        elseif entry.key == "codex" then
+          clearPin = function() M.pinCodex(pinnedAccount, true) end
+        else
+          clearPin = function() M.pinGemini(pinnedAccount, true) end
         end
+        table.insert(menu, {
+          title = infoTitle(pinnedAccount .. "  ●", false, true),
+          menu = {{ title = "Pin for workers", checked = true, fn = clearPin }},
+        })
+      end
+      if renderedAccountRows then
+        table.insert(menu, { title = "-" })
       end
       local refreshError = not hasGeminiAccounts
         and errorState(type(vendor) == "table" and vendor.refresh_error or nil) or nil

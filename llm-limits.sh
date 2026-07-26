@@ -766,6 +766,9 @@ if [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
       --arg week_reset "$week_reset" --arg fable_reset "$fable_reset" \
       --argjson stale "$stale" --arg plan_type "$plan_type" '
       (($d.auth | type) == "object" and $d.auth.status == "expired") as $expired |
+      ($enabled and (($d.auth | type) == "object" and $d.auth.status == "ok")) as $general_usable |
+      (($d.auth | type) == "object" and
+       ($d.auth.status == "expired" or $d.auth.status == "failed")) as $auth_needed |
       (if ($d.five_hour.as_of | type) == "number" then $d.five_hour.as_of else $mtime end) as $account_asof |
       def meta($b; $thr):
         if ($b | type) != "object" then null else
@@ -785,14 +788,15 @@ if [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
                         resets_at:(if $five_reset == "" then null else $five_reset end)} + ($x.five // {}) end),
        as_of:($account_asof | todateiso8601),stale_seconds:($now - $account_asof)} +
       (if $plan_type == "" then {} else {plan_type:$plan_type} end) +
-      (if $d.auth_needed == true then {auth_needed:true} else {} end) +
+      {blocked:($general_usable | not)} +
+      (if $d.auth_needed == true or $auth_needed then {auth_needed:true} else {} end) +
       (if $x.auth then {auth:$x.auth} else {} end) +
       (if $has_week == 0 then {} else {weekly:({used_pct:$d.seven_day.used_percentage,
         resets_at:(if $week_reset == "" then null else $week_reset end)} + ($x.week // {}))} end) +
       (if $has_fable == 0 then {} else {fable:({used_pct:$d.fable.used_percentage,
         resets_at:(if $fable_reset == "" then null else $fable_reset end)} + ($x.fable // {}))} end) +
-      {rotation:{usable:{general:($enabled and (($d.auth | type) == "object" and $d.auth.status == "ok")),
-                         fable:($enabled and (($d.auth | type) == "object" and $d.auth.status == "ok") and
+      {rotation:{usable:{general:$general_usable,
+                         fable:($general_usable and
                                 $has_fable == 1 and $plan_type != "pro")}}}' <<<"$claude_data")
     accounts_lines+="$account_json"$'\n'
   done

@@ -324,6 +324,11 @@ local limitLapsedMenu = claudePinMenu({
 })
 assert(accountHasMarker(limitLapsedMenu, "pinned"), "at-limit pin hid ●")
 assert(accountMarkerIsGray(limitLapsedMenu, "pinned"), "at-limit pin marker was not gray")
+local blockedLapsedMenu = claudePinMenu({
+  account = "pinned", blocked = true, five_hour = bucket(10),
+})
+assert(accountHasMarker(blockedLapsedMenu, "pinned"), "blocked pin hid ●")
+assert(accountMarkerIsGray(blockedLapsedMenu, "pinned"), "blocked pin marker was not gray")
 local honouredMenu = claudePinMenu({
   account = "pinned", five_hour = bucket(10),
 })
@@ -579,6 +584,81 @@ do
       case.account .. " pin toggle launched the wrong command")
     assert(launched.args[1] == "use" and launched.args[2] == case.arg,
       case.account .. " pin toggle launched the wrong use action")
+  end
+end
+
+do
+  local fixture = { schema = 1, vendors = {
+    claude = { available = false },
+    codex = { available = false },
+    gemini = { available = true, five_hour = bucket(10), weekly = bucket(20) },
+  }}
+  local tasks = {}
+  local pinnedMenu = loadModule(fixture, captureTasks(tasks), nil, nil, nil,
+    "gemini_profile=main").menuItems()
+  local pinnedRow = accountItem(pinnedMenu, "Gemini")
+  local pinnedToggle = submenuItem(pinnedRow, "Pin for workers")
+  assert(pinnedToggle and pinnedToggle.checked == true,
+    "single-account Gemini pin toggle was not checked")
+  assert(submenuItem(pinnedRow, "In worker pool") == nil,
+    "single-account Gemini row offered a worker-pool toggle")
+  assert(accountHasMarker(pinnedMenu, "Gemini"), "single-account Gemini pin hid ●")
+  while #tasks > 0 do table.remove(tasks) end
+  pinnedToggle.fn()
+  assert(tasks[1] and tasks[1].path:find("geminib", 1, true)
+      and tasks[1].args[1] == "use" and tasks[1].args[2] == "--clear",
+    "single-account Gemini pin clear launched the wrong action")
+
+  tasks = {}
+  local unpinnedMenu = loadModule(fixture, captureTasks(tasks), nil, nil, nil, "").menuItems()
+  local unpinnedToggle = submenuItem(accountItem(unpinnedMenu, "Gemini"), "Pin for workers")
+  assert(unpinnedToggle and unpinnedToggle.checked == false,
+    "single-account Gemini unpinned toggle was not clear")
+  while #tasks > 0 do table.remove(tasks) end
+  unpinnedToggle.fn()
+  assert(tasks[1] and tasks[1].path:find("geminib", 1, true)
+      and tasks[1].args[1] == "use" and tasks[1].args[2] == "main",
+    "single-account Gemini pin launched the wrong action")
+end
+
+do
+  local fixture = { schema = 1, vendors = {
+    claude = { available = true, source = "claudeb-store", accounts = {
+      { account = "claude-live", five_hour = bucket(10) },
+    }},
+    codex = { available = true, accounts = {
+      { account = "codex-live", five_hour = bucket(10) },
+    }},
+    gemini = { available = true, accounts = {
+      { account = "main", five_hour = bucket(10), weekly = bucket(20) },
+      { account = "gemini-orphan", removed = true },
+    }},
+  }}
+  local config = table.concat({
+    "claudeb_profile=claude-orphan",
+    "codex_profile=codex-orphan",
+    "gemini_profile=gemini-orphan",
+  }, "\n")
+  local tasks = {}
+  local menu = loadModule(fixture, captureTasks(tasks), nil, nil, nil, config).menuItems()
+  local cases = {
+    { account = "claude-orphan", command = "claudeb" },
+    { account = "codex-orphan", command = "codexb" },
+    { account = "gemini-orphan", command = "geminib" },
+  }
+  for _, case in ipairs(cases) do
+    local row = accountItem(menu, case.account)
+    assert(accountMarkerIsGray(menu, case.account),
+      case.account .. " orphaned pin marker was not gray")
+    assert(#row.menu == 1, case.account .. " orphaned pin row offered extra actions")
+    local pin = submenuItem(row, "Pin for workers")
+    assert(pin and pin.checked == true,
+      case.account .. " orphaned pin did not offer a checked clear action")
+    while #tasks > 0 do table.remove(tasks) end
+    pin.fn()
+    assert(tasks[1] and tasks[1].path:find(case.command, 1, true)
+        and tasks[1].args[1] == "use" and tasks[1].args[2] == "--clear",
+      case.account .. " orphaned pin clear launched the wrong action")
   end
 end
 

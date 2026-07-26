@@ -8,7 +8,7 @@
 set -u
 
 input=$(cat) || exit 0
-WORKER_PICK="${WORKER_SPAWN_WORKER_PICK:-/Volumes/Work/Projects/llm-legs/bin/worker-pick}"
+WORKER_PICK="${WORKER_SPAWN_WORKER_PICK:-$HOME/.local/bin/worker-pick}"
 
 field() { printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null; }
 
