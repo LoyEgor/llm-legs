@@ -100,7 +100,7 @@ ensure_profile() {
 ensure_profiles() {
   local name
   while IFS= read -r name; do
-    [ "$name" = main ] || ensure_profile "$profiles_dir/$name"
+    [ "$name" = main ] || ensure_profile "$profiles_dir/$name" || true
   done < <(gemini_account_names)
 }
 
