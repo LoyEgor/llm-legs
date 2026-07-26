@@ -1156,7 +1156,7 @@ heal_refresh_verdict() {
 # path uses the `claude` CLI's own OAuth rotation, not the curl refresh, so a
 # token-endpoint 429/failed record must never gate it (see oauth_heal_backoff_until).
 heal_one() {
-  local dir="$1" name="$2" until_heal now_heal warm_out warm_cause cause source rc http until_refresh outcome retry_until warm_gated=false
+  local dir="$1" name="$2" until_heal now_heal warm_out warm_skip_dir warm_cause cause source rc http until_refresh outcome retry_until warm_gated=false
   local warm_reason='' retry_delay
   until_heal=$(oauth_heal_backoff_until "$name")
   now_heal=$(date +%s)
@@ -1167,10 +1167,18 @@ heal_one() {
     warm_gated=false
     warm_cause='warm failed'
   fi
-  if warm_out=$(CLAUDEB_WARM_FREE_ONLY=true CLAUDEB_WARM_BACKOFF_MODE=heal warm_accounts "$name" 2>/dev/null); then
-    printf 'live\n' > "$dir/$name.display"
-    return
+  warm_skip_dir=$(mktemp -d "${TMPDIR:-/tmp}/claudeb-warm-skip.XXXXXX")
+  if warm_out=$(CLAUDEB_WARM_FREE_ONLY=true CLAUDEB_WARM_BACKOFF_MODE=heal \
+    CLAUDEB_WARM_SKIP_MARKER="$warm_skip_dir/skipped" warm_accounts "$name" 2>/dev/null); then
+    # The marker is written by the skip itself, so a freeze that lifts between the call and
+    # this check cannot turn a warm that never ran into a live account.
+    if [ ! -e "$warm_skip_dir/skipped" ]; then
+      rm -rf "$warm_skip_dir"
+      printf 'live\n' > "$dir/$name.display"
+      return
+    fi
   fi
+  rm -rf "$warm_skip_dir"
   warm_reason=$(oauth_warm_cause "$name")
   # Under a freeze a re-warm can only frozen-skip again, so the capacity retry
   # (a 20s sleep + repeat) is pure dead time, and a pre-freeze capacity-shaped
@@ -1939,10 +1947,20 @@ warm_accounts() {
   if [ "$warm_single_explicit" = true ] && [ "${CLAUDEB_WARM_USER_EXPLICIT:-false}" = true ]; then warm_manual_explicit=true; fi
   if [ "$warm_manual_explicit" != true ] && token_freeze_active; then
     for name in "${names[@]}"; do
+      # An account that does not exist is a failure whether or not the freeze is on: skipping
+      # first would report a refresh of a typo as successfully skipped.
+      if [ ! -f "$tokens_dir/$name" ]; then
+        warm_failure "$name" unknown-account 'unknown account'
+        failed=1
+        continue
+      fi
       token_journal "$name" warm frozen-skip
       printf 'claudeb: %s: warm skipped — token-endpoint auto-refresh frozen (experiment)\n' "$name" >&2
+      # The caller cannot tell a skip from a success by re-reading the freeze, which may lift
+      # between the two reads; this says it happened, once, from inside the skip.
+      [ -n "${CLAUDEB_WARM_SKIP_MARKER:-}" ] && : > "$CLAUDEB_WARM_SKIP_MARKER"
     done
-    return 1
+    return "$failed"
   fi
   for name in "${names[@]}"; do
     if [ ! -f "$tokens_dir/$name" ]; then

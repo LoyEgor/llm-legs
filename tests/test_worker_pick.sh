@@ -48,6 +48,14 @@ run_store() {
     CLAUDE_LIMITS_ACCOUNT=session "$SCRIPT") || fail "worker-pick failed for $name"
 }
 
+printf '%s\n' 'worker=gemini' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
+  'gemini_model=pro' 'gemini_effort=high' 'gemini_profile=work' >"$CONFIG"
+printf 'not-json\n' >"$STORE"
+run_store malformed
+assert contains "$(head -n1 <<<"$output")" 'NEXT: gemini work · pro · high — unavailable (limits parse failed)'
+printf '%s\n' 'worker=auto' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
+  'gemini_model=pro' 'gemini_effort=high' >"$CONFIG"
+
 # Run a fixture with a non-default configured model/effort, then restore the default.
 run_case_cfg() {
   printf '%s\n' 'worker=auto' 'codex_effort=high' "claudeb_model=$2" "claudeb_effort=$3" \

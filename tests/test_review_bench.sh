@@ -1471,6 +1471,8 @@ os.environ["CLAUDEB_DIR"] = str(model_store)
 
 
 def model_runner(rater, repo_path, commit, focus, run_dir, diff, account, repeat=1):
+    if rater["model"] == "sonnet":
+        return 1, 1, "", "fixture failure", ["fake"]
     envelope = {
         "type": "result",
         "result": json.dumps({"findings": [{
@@ -1498,12 +1500,15 @@ run_rc = rb.cmd_run(argparse.Namespace(
     auto=None, focus=None, repeat=1,
 ))
 model_meta_path = next((model_state / "benches").glob("*/meta.json"))
+model_meta = json.loads(model_meta_path.read_text())
 model_runs = {
     row["rater"]: row
-    for row in json.loads(model_meta_path.read_text())["rater_runs"]
+    for row in model_meta["rater_runs"]
 }
 assert (
-    run_rc == 0
+    run_rc == 1
+    and model_meta["raters"] == ["opus-medium"]
+    and model_runs["sonnet-medium"].get("errored") is True
     and model_runs["opus-medium"].get("model_resolved") == "claude-opus-5"
     and "model_resolved" not in model_runs["sonnet-medium"]
 ), model_runs
@@ -1689,6 +1694,8 @@ meta = {"run_id":"run-fixture","commit":"abcdef0123456789","repo":"/repo",
             {"rater":"sol-medium","model":"sol","effort":"medium","side":"codex","exit_code":0},
             {"rater":"opus-medium","model":"opus","model_resolved":"claude-opus-5",
              "effort":"medium","side":"claude","exit_code":0},
+            {"rater":"sonnet-medium","model":"sonnet","effort":"medium","side":"claude",
+             "exit_code":1,"errored":True},
         ],
         "durations":{"sol-medium":1200,"opus-medium":2400},
         "started":"2026-07-21T00:00:00+00:00","finished":"2026-07-21T00:00:03+00:00","focus":""}

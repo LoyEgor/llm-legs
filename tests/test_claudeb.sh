@@ -1118,13 +1118,16 @@ EOF
   assert_fails test -s "$fz_curl"
   assert jq -se 'any(.[]; .kind == "upkeep" and .outcome == "frozen-skip")' "$token_attempts_file" >/dev/null
 
-  # 3: frozen non-explicit warm skips every account, one journal line each, no session.
+  # 3: frozen non-explicit warm skips every account successfully, one journal line each, no session.
   : >"$fz_claude"; : >"$token_attempts_file"
+  # The accounts have to exist: a freeze skips real accounts, and reporting a typo as skipped
+  # is what the existence check ahead of the skip prevents.
+  printf 'tok' >"$tokens_dir/fzA"; printf 'tok' >"$tokens_dir/fzB"
   account_names() { printf 'fzA\nfzB\n'; }
   is_disabled() { return 1; }
   fz_warm_rc=0
   warm_accounts >/dev/null 2>"$WORK/fz-warm.err" || fz_warm_rc=$?
-  assert test "$fz_warm_rc" -ne 0
+  assert test "$fz_warm_rc" -eq 0
   assert_fails test -s "$fz_claude"
   assert jq -se '[.[] | select(.kind == "warm" and .outcome == "frozen-skip")] | length == 2' "$token_attempts_file" >/dev/null
   assert jq -se 'any(.[]; .kind == "warm" and .account == "fzA")' "$token_attempts_file" >/dev/null
@@ -1164,6 +1167,9 @@ EOF
   assert_fails jq -se 'any(.[]; .account == "j5")' "$token_attempts_file" >/dev/null
   # A CLI-warm success routes through the funnel with a caller kind hint → kind warm.
   assert jq -se 'any(.[]; .account == "jwarm" and .kind == "warm" and .outcome == "success")' "$token_attempts_file" >/dev/null
+  fz_real_failure_rc=0
+  warm_accounts missing-account >/dev/null 2>&1 || fz_real_failure_rc=$?
+  assert test "$fz_real_failure_rc" -eq 1
 ) || exit 1
 
 # --- token-freeze: heal writes no verdict from pre-freeze token-endpoint state ---

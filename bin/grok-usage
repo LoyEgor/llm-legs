@@ -30,7 +30,7 @@ def iter_usage():
     pattern = os.path.join(grok_home(), "sessions", "*", "*", "updates.jsonl")
     for path in glob.glob(pattern):
         try:
-            stream = open(path)
+            stream = open(path, encoding="utf-8", errors="replace")
         except OSError:
             continue
         with stream:
@@ -54,7 +54,7 @@ def aggregate(now):
     for ts, usage in iter_usage():
         age = now - ts
         for label, span in WINDOWS:
-            if age <= span:
+            if 0 <= age <= span:
                 bucket = buckets[label]
                 bucket["turns"] += usage.get("numTurns", 1)
                 bucket["input"] += usage.get("inputTokens", 0)
