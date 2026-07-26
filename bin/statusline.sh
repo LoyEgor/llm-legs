@@ -820,9 +820,68 @@ if [ -n "$session_id" ]; then
   fi
 fi
 
+review_tier_part=""
+if [ -n "$active_top" ]; then
+  review_probe_self="$0"
+  [ -L "$review_probe_self" ] && review_probe_self=$(readlink "$review_probe_self")
+  case "$review_probe_self" in /*) ;; *) review_probe_self="$(dirname "$0")/$review_probe_self" ;; esac
+  review_bench_bin="${STATUSLINE_REVIEW_BENCH_BIN:-$(dirname "$review_probe_self")/review-bench}"
+  review_cache_dir="$HOME/.cache/claude-statusline"
+  # Keyed on the repository root, so prompting from two subdirectories of one repo shares the
+  # cache instead of starting a second background refresh; the basename keeps a checksum
+  # collision from showing one repository's tier under another's name.
+  review_repo_key="$(basename "$active_top")-$(printf '%s' "$active_top" | cksum 2>/dev/null | awk '{print $1}')"
+  if [ -x "$review_bench_bin" ] && [[ "$review_repo_key" =~ -[0-9]+$ ]]; then
+    review_cache="$review_cache_dir/review-tier-$review_repo_key"
+    review_lock="$review_cache.lock"
+    review_mtime=$(file_mtime "$review_cache" 2>/dev/null)
+    if { ! [[ "$review_mtime" =~ ^[0-9]+$ ]] || [ "$((now - review_mtime))" -gt 5 ]; }; then
+      mkdir -p "$review_cache_dir" 2>/dev/null
+      review_lock_mtime=$(file_mtime "$review_lock" 2>/dev/null)
+      if [ ! -d "$review_lock" ] ||
+        { [[ "$review_lock_mtime" =~ ^[0-9]+$ ]] && [ "$((now - review_lock_mtime))" -gt 120 ]; }; then
+        (
+          snapshot_lock_acquire "$review_lock" || exit 0
+          trap 'rmdir "$review_lock" 2>/dev/null' EXIT
+          timeout_bin=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
+          suggestion=""
+          if [ -n "$timeout_bin" ]; then
+            suggestion=$("$timeout_bin" 3 "$review_bench_bin" suggest --repo "$active_top" 2>/dev/null) || suggestion=""
+          else
+            # No timeout binary on a stock macOS, and skipping the probe there would hide the
+            # segment forever. Job control makes the probe its own process group, so the watchdog
+            # can take its children with it — review-bench spawns git, and killing only the parent
+            # leaves a hung grandchild for the next render to queue behind.
+            set -m
+            "$review_bench_bin" suggest --repo "$active_top" >"$review_cache.out" 2>/dev/null &
+            review_probe_pid=$!
+            set +m
+            ( sleep 3; kill -TERM -"$review_probe_pid" 2>/dev/null ) >/dev/null 2>&1 &
+            review_watchdog_pid=$!
+            wait "$review_probe_pid" 2>/dev/null && suggestion=$(cat "$review_cache.out" 2>/dev/null)
+            kill "$review_watchdog_pid" 2>/dev/null
+            rm -f "$review_cache.out" 2>/dev/null
+          fi
+          tier=$(printf '%s\n' "$suggestion" | sed -nE 's/^tier: (T[0-3])$/\1/p' | tail -n1)
+          tmp_review_cache="$review_cache.tmp.${BASHPID:-$$}"
+          printf '%s\n' "$tier" > "$tmp_review_cache" 2>/dev/null &&
+            mv -f "$tmp_review_cache" "$review_cache" 2>/dev/null ||
+            rm -f "$tmp_review_cache" 2>/dev/null
+        ) >/dev/null 2>&1 &
+      fi
+    fi
+    if [[ "$review_mtime" =~ ^[0-9]+$ ]] && [ "$((now - review_mtime))" -le 15 ]; then
+      IFS= read -r review_tier < "$review_cache" 2>/dev/null || review_tier=""
+      case "$review_tier" in
+        T[0-3]) review_tier_part=" ${sep} ${MAGENTA}⚖${RESET} review ${review_tier}" ;;
+      esac
+    fi
+  fi
+fi
+
 # Two lines: identity/work (model, account, dir/branch/diff, workers) on top,
 # usage (ctx, 5h, weekly, fable, cost) below.
-line1="${CYAN}${model}${model_suffix}${RESET}${fast_part}${cb_part} ${sep} ${dir_part}${branch_part}${ports_part}${worker_part}${bench_part}"
+line1="${CYAN}${model}${model_suffix}${RESET}${fast_part}${cb_part} ${sep} ${dir_part}${branch_part}${ports_part}${worker_part}${bench_part}${review_tier_part}"
 
 line2="ctx $(pct_colored "$ctx_pct" "" 40)${ctx_tokens_part} ${sep} 5h $(pct_colored "$h5_pct" "$h5_dim")${h5_arrow} ${sep} wk $(pct_colored "$wk_pct" "$wk_dim")${wk_arrow}${fable_part}"
 

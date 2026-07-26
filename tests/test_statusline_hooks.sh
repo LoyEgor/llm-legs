@@ -184,8 +184,9 @@ assert test ! -e "$STATE_DIR/workdir-session-ss-agent"
 
 statusline_payload() {
   local extra="${2-}"
+  local cwd="${3:-$REPO_A}"
   [ -n "$extra" ] || extra='{}'
-  jq -cn --arg session "$1" --arg cwd "$REPO_A" --argjson extra "$extra" '
+  jq -cn --arg session "$1" --arg cwd "$cwd" --argjson extra "$extra" '
     {session_id:$session,cwd:$cwd,workspace:{current_dir:$cwd,project_dir:$cwd},
      model:{display_name:"Fixture"},effort:{level:"high"},
      context_window:{used_percentage:12,current_usage:{input_tokens:1000}}}
@@ -1183,4 +1184,77 @@ other_output=$(run_statusline "$other_payload") || fail "bench other-session ren
 assert test "${other_output#*⚖}" = "$other_output"
 rm -rf "$bench_dir"
 
-echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, main-last and Gemini account predictions, and Codex/claudeb/Gemini worker tag propagation"
+REVIEW_DIRTY="$FIXTURES/review-dirty"
+mkdir -p "$REVIEW_DIRTY"
+git -C "$REVIEW_DIRTY" init -q -b main
+printf 'base\n' > "$REVIEW_DIRTY/tracked.txt"
+git -C "$REVIEW_DIRTY" add tracked.txt
+git -C "$REVIEW_DIRTY" -c user.name=Fixture -c user.email=fixture@example.com commit -qm initial
+printf 'line\n%.0s' {1..21} > "$REVIEW_DIRTY/change.txt"
+review_dirty_payload=$(statusline_payload review-dirty "" "$REVIEW_DIRTY")
+run_statusline "$review_dirty_payload" >/dev/null || fail "review dirty first render failed"
+review_dirty_out=""
+for _ in $(seq 1 20); do
+  sleep 0.2
+  review_dirty_out=$(run_statusline "$review_dirty_payload") || fail "review dirty render failed"
+  grep -Fq 'review T1' <<< "$review_dirty_out" && break
+done
+assert grep -Fq 'review T1' <<< "$review_dirty_out"
+
+REVIEW_CLEAN="$FIXTURES/review-clean"
+git clone -q "$REPO_A" "$REVIEW_CLEAN"
+review_clean_out=$(run_statusline "$(statusline_payload review-clean "" "$REVIEW_CLEAN")") \
+  || fail "review clean render failed"
+assert test "${review_clean_out#*review T}" = "$review_clean_out"
+
+review_nongit_out=$(run_statusline "$(statusline_payload review-nongit "" "$NON_GIT")") \
+  || fail "review non-git render failed"
+assert test "${review_nongit_out#*review T}" = "$review_nongit_out"
+
+# A cache the render may no longer trust is not shown: past the staleness window the segment
+# disappears rather than repeating a tier that predates the current diff.
+# The age rule is proved by the pair: the same cache renders while it is young and disappears once
+# it is not, with the probe pointed at nothing so no refresh can rewrite it mid-assertion.
+REVIEW_STUB="$FIXTURES/review-stub.sh"
+printf '#!/usr/bin/env bash\nprintf "tier: T3\\n"\n' > "$REVIEW_STUB"
+chmod +x "$REVIEW_STUB"
+rm -f "$HOME/.cache/claude-statusline"/review-tier-*
+review_fresh_out=""
+for _ in $(seq 1 20); do
+  sleep 0.2
+  review_fresh_out=$(STATUSLINE_REVIEW_BENCH_BIN="$REVIEW_STUB" \
+    run_statusline "$review_dirty_payload") || fail "review stub render failed"
+  grep -Fq 'review T3' <<< "$review_fresh_out" && break
+done
+assert grep -Fq 'review T3' <<< "$review_fresh_out"
+review_cache_file=$(ls "$HOME/.cache/claude-statusline"/review-tier-* 2>/dev/null | head -n1)
+assert test -n "$review_cache_file"
+touch -t 200001010000 "$review_cache_file"
+review_stale_out=$(STATUSLINE_REVIEW_BENCH_BIN="$FIXTURES/absent-review-bench" \
+  run_statusline "$review_dirty_payload") || fail "review stale render failed"
+assert test "${review_stale_out#*review T}" = "$review_stale_out"
+
+# A probe that fails or answers with something else leaves no tier behind.
+REVIEW_BROKEN="$FIXTURES/review-broken.sh"
+printf '#!/usr/bin/env bash\nprintf "totally unexpected\\n"\nexit 0\n' > "$REVIEW_BROKEN"
+chmod +x "$REVIEW_BROKEN"
+rm -f "$HOME/.cache/claude-statusline"/review-tier-*
+for _ in $(seq 1 20); do
+  sleep 0.2
+  review_broken_out=$(STATUSLINE_REVIEW_BENCH_BIN="$REVIEW_BROKEN" \
+    run_statusline "$review_dirty_payload") || fail "review broken render failed"
+done
+assert test "${review_broken_out#*review T}" = "$review_broken_out"
+
+REVIEW_FAILING="$FIXTURES/review-failing.sh"
+printf '#!/usr/bin/env bash\nexit 3\n' > "$REVIEW_FAILING"
+chmod +x "$REVIEW_FAILING"
+rm -f "$HOME/.cache/claude-statusline"/review-tier-*
+for _ in $(seq 1 20); do
+  sleep 0.2
+  review_failing_out=$(STATUSLINE_REVIEW_BENCH_BIN="$REVIEW_FAILING" \
+    run_statusline "$review_dirty_payload") || fail "review failing render failed"
+done
+assert test "${review_failing_out#*review T}" = "$review_failing_out"
+
+echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, the review-tier segment with its staleness and probe-failure cases, main-last and Gemini account predictions, and Codex/claudeb/Gemini worker tag propagation"
