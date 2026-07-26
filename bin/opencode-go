@@ -41,7 +41,8 @@ go_key() {
     return
   fi
   if command -v security >/dev/null 2>&1; then
-    key=$(security find-generic-password -s "$KEY_SERVICE" -w 2>/dev/null || true)
+    key=$(security find-generic-password -a "$USER" -s "$KEY_SERVICE" -w 2>/dev/null \
+      || security find-generic-password -s "$KEY_SERVICE" -w 2>/dev/null || true)
     if [[ -n $key ]]; then
       printf '%s' "$key"
       return
@@ -84,7 +85,7 @@ store_key() {
     exit 1
   fi
   security add-generic-password -U -a "$USER" -s "$KEY_SERVICE" -w "$key" >/dev/null
-  stored=$(security find-generic-password -s "$KEY_SERVICE" -w)
+  stored=$(security find-generic-password -a "$USER" -s "$KEY_SERVICE" -w)
   if [[ $stored != "$key" ]]; then
     printf 'Keychain verification failed\n' >&2
     exit 1
@@ -130,6 +131,21 @@ sse_to_envelope() {
                             tool_calls: (if (.tool_calls | length) > 0 then .tool_calls else null end)}}],
        usage}
   ' "$1"
+}
+# curl prints 000 when the transfer never reached an HTTP status (timeout, reset,
+# HTTP/2 error). Every such failure must travel the same retry and escalation path
+# as a gateway 5xx: a hang with no status is precisely the case the buffered->stream
+# escalation exists for.
+transient_status() { [[ $1 == 5?? || $1 == 000 ]]; }
+answered_nothing() {
+  local file=$1 streaming=$2
+  if [[ $streaming == true ]]; then
+    grep -q '^data:' "$file" || return 1
+    sse_to_envelope "$file" \
+      | jq -e '((.choices[0].message.content // "") | length) == 0' >/dev/null 2>&1
+  else
+    jq -e '((.choices[0].message.content // "") | length) == 0' "$file" >/dev/null 2>&1
+  fi
 }
 no_reasoning_body() {
   local body=$1 strategy=$2
@@ -252,12 +268,17 @@ run_model() {
     pending=("${strategies[@]}")
     body=$(no_reasoning_body "$base_body" "${pending[0]}")
   fi
-  local elapsed started_at
+  local elapsed started_at curl_rc
   while :; do
     started_at=$SECONDS
+    curl_rc=0
     status=$(curl -sS "${transfer[@]}" -o "$response" -w '%{http_code}' \
-      --config "$authcfg" --data-binary @- "$BASE_URL/chat/completions" <<<"$body")
+      --config "$authcfg" --data-binary @- "$BASE_URL/chat/completions" <<<"$body") || curl_rc=$?
     elapsed=$((SECONDS - started_at))
+    if (( curl_rc != 0 )); then
+      printf 'curl exit %d after %ds, no HTTP status\n' "$curl_rc" "$elapsed" >&2
+      status=000
+    fi
     # A model that rejects one reasoning-off strategy may accept the next; only a
     # 400 shaped like an invalid-parameter complaint is worth re-trying this way.
     if [[ $status == 400 && ${#pending[@]} -gt 1 ]] \
@@ -269,8 +290,7 @@ run_model() {
     fi
     # A model handed a closing think tag may treat the assistant turn as finished
     # and answer nothing at all, so an empty 200 retires that strategy too.
-    if [[ $status == 2?? && ${#pending[@]} -gt 1 ]] && ! $stream \
-      && jq -e '((.choices[0].message.content // "") | length) == 0' "$response" >/dev/null 2>&1; then
+    if [[ $status == 2?? && ${#pending[@]} -gt 1 ]] && answered_nothing "$response" "$stream"; then
       pending=("${pending[@]:1}")
       body=$(no_reasoning_body "$base_body" "${pending[0]}")
       printf 'reasoning-off strategy answered nothing, falling back to %s\n' "${pending[0]}" >&2
@@ -279,11 +299,14 @@ run_model() {
     # A buffered reply that 5xx's only after minutes was not an outage: the
     # generation outlived the upstream response deadline, and repeating it
     # buffered just pays the same wait again. Streaming has no such deadline.
-    if [[ $status == 5?? ]] && ! $stream && (( elapsed >= slow_switch )); then
+    if transient_status "$status" && ! $stream && (( elapsed >= slow_switch )); then
       stream=true
-      transfer=(-m "$max_wait" -N --speed-limit 1 --speed-time "$stall_seconds")
+      transfer=("${stream_transfer[@]}")
       base_body=$(jq -c '. + {stream: true}' <<<"$base_body")
       body=$(jq -c '. + {stream: true}' <<<"$body")
+      # Streaming is a different transport, not another go at the same one: without
+      # a fresh budget an escalation on the last buffered attempt never gets sent.
+      attempt=1
       printf 'HTTP %s after %ds; the generation outlives the buffered deadline, streaming instead\n' \
         "$status" "$elapsed" >&2
     fi
@@ -291,7 +314,7 @@ run_model() {
     # upstream inference pool was unavailable; the identical request usually
     # succeeds on a later attempt. A 429 is a real Go usage wall and must
     # surface immediately instead of being retried into a longer outage.
-    [[ $status == 5?? && $attempt -lt $retries ]] || break
+    transient_status "$status" && [[ $attempt -lt $retries ]] || break
     delay=$((attempt * 15))
     printf 'HTTP %s from provider (attempt %d/%d), retrying in %ds\n' \
       "$status" "$attempt" "$retries" "$delay" >&2
@@ -325,16 +348,20 @@ run_model() {
 }
 raw_request() {
   [[ $# -ge 1 && $# -le 2 ]] || usage
-  local path=${1#/} body=${2-} key status
+  local path=${1#/} body=${2-} key status curl_rc=0
   key=$(require_key)
   response=$(mktemp)
+  auth_config "$key"
   if [[ $# -eq 2 ]]; then
     status=$(curl -sS -m 600 -o "$response" -w '%{http_code}' \
-      -H "Authorization: Bearer $key" -H 'content-type: application/json' \
-      -d "$body" "$BASE_URL/$path")
+      --config "$authcfg" --data-binary @- "$BASE_URL/$path" <<<"$body") || curl_rc=$?
   else
     status=$(curl -sS -m 120 -o "$response" -w '%{http_code}' \
-      -H "Authorization: Bearer $key" "$BASE_URL/$path")
+      --config "$authcfg" "$BASE_URL/$path") || curl_rc=$?
+  fi
+  if (( curl_rc != 0 )); then
+    printf 'curl exit %d, no HTTP status\n' "$curl_rc" >&2
+    status=000
   fi
   printf 'HTTP %s\n' "$status" >&2
   cat "$response"

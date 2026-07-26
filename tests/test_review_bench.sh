@@ -795,6 +795,11 @@ assert not rb.is_diff_narration([
 assert not rb.is_diff_narration([
     {"severity": "P3", "file": "a.sh", "line": i, "summary": "Added a row"} for i in range(4)
 ])
+# Bold or backticked narration is still narration; the leading markup must not hide it.
+assert rb.is_diff_narration([
+    {"severity": "P3", "file": "a.sh", "line": i, "summary": "**Added** a helper row"}
+    for i in range(6)
+])
 
 # Findings cite files as markdown links, absolute paths and sealed-clone paths; those
 # spellings read as different files, so both deduplication and the verifier's file
@@ -813,10 +818,22 @@ assert rb.canonical_finding_path("bin/absent.sh", tree) == "bin/absent.sh"
 assert rb.canonical_finding_path("", tree) == ""
 assert rb.canonical_finding_path(None, tree) == ""
 
+# A link's text is prose as often as it is a path, so the target is the citation.
+assert rb.canonical_finding_path("[Line 42](bin/geminib)", tree) == "bin/geminib"
+assert rb.canonical_finding_path("[the gate](tests/run.sh#L42)", tree) == "tests/run.sh"
+# ...and the text is the fallback when the target is not a repository path at all.
+assert rb.canonical_finding_path(
+    "[bin/statusline.sh](https://example.invalid/blob/main/x)", tree
+) == "bin/statusline.sh"
+
 assert rb.parse_verify_answer(
     '```json\n{"code_matches": true, "is_defect": false, "why": "style only"}\n```'
 ) == {"code_matches": True, "is_defect": False, "why": "style only"}
 assert rb.parse_verify_answer('Sure!\n{"code_matches": false, "is_defect": true}')["is_defect"]
+# A verifier that pretty-prints its verdict is answering correctly, not unusably.
+assert rb.parse_verify_answer(
+    '{\n  "code_matches": true,\n  "is_defect": true,\n  "why": "guard is missing"\n}'
+) == {"code_matches": True, "is_defect": True, "why": "guard is missing"}
 for unusable in ('{"code_matches": "yes", "is_defect": true}', "no verdict", "",
                  '{"is_defect": true}'):
     assert rb.parse_verify_answer(unusable) is None, unusable
@@ -828,6 +845,42 @@ assert "3: gamma" in verify_text and "bin/review-bench:3 — claim" in verify_te
 assert "code_matches" in verify_text and "is_defect" in verify_text
 missing_text = rb.verify_prompt(verify_finding, "deadbee", "bin/gone", None)
 assert "does not exist in commit deadbee" in missing_text
+# A line past the end of the file is the most obviously bogus claim there is, and an
+# unclamped window hands the verifier an empty excerpt it cannot refute.
+long_file = [f"line {n}" for n in range(1, 801)]
+bogus = {"severity": "P2", "file": "bin/review-bench", "line": 9999, "summary": "claim"}
+bogus_text = rb.verify_prompt(bogus, "deadbee", "bin/review-bench", long_file)
+assert "lines 680-800 of 800" in bogus_text, bogus_text
+assert "800: line 800" in bogus_text
+# A commit that deletes a file is where a finding about that file belongs, so the
+# verifier reads the parent rather than being told the file does not exist.
+deleted_repo = work / "deleted-repo"
+deleted_repo.mkdir()
+git_env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
+               GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
+
+
+def git(*argv):
+    return subprocess.run(["git", "-C", str(deleted_repo), *argv], check=True,
+                          capture_output=True, text=True, env=git_env).stdout.strip()
+
+
+git("init", "-q", "-b", "main")
+(deleted_repo / "gone.sh").write_text("alpha\nbeta\n")
+git("add", "gone.sh")
+git("commit", "-qm", "add")
+(deleted_repo / "gone.sh").unlink()
+git("add", "-A")
+git("commit", "-qm", "remove")
+deleted_sha = git("rev-parse", "HEAD")
+lines, ref = rb.file_at_commit(deleted_repo, deleted_sha, "gone.sh")
+assert lines == ["alpha", "beta"] and ref == f"{deleted_sha}^", (lines, ref)
+deleted_prompt = rb.verify_prompt(
+    {"severity": "P2", "file": "gone.sh", "line": 1, "summary": "claim"},
+    deleted_sha, "gone.sh", lines, ref,
+)
+assert "which deletes it" in deleted_prompt and "1: alpha" in deleted_prompt
+assert rb.file_at_commit(deleted_repo, deleted_sha, "never.sh") == (None, deleted_sha)
 
 verify_findings_input = [
     {"severity": "P2", "file": "bin/review-bench", "line": 3, "summary": "first claim"},
@@ -1004,6 +1057,156 @@ assert (work / "opencode-max-tokens").read_text().splitlines() == [
     "32000", "16384", "8192",
 ]
 assert fallback_command[fallback_command.index("--max-tokens") + 1] == "8192"
+# A clean review and a rater that answered in prose or stopped mid-turn are the same empty
+# findings file; without an explicit marker the second is recorded as the first.
+assert rb.CLEAN_REVIEW_MARKER in rb.review_prompt("deadbee", "")
+assert rb.CLEAN_REVIEW_MARKER in rb.skill_brief("deadbee", "", "/repo")
+assert rb.unusable_review("NO FINDINGS", []) == ""
+assert rb.unusable_review('{"findings": []}', []) == ""
+assert rb.unusable_review("", [{"severity": "P1"}]) == ""
+for stopped in ("", "Still waiting for the remaining agents before compiling final findings.",
+                "The commit looks reasonable overall; I did not spot anything alarming."):
+    assert rb.unusable_review(stopped, []), stopped
+assert "(empty answer)" in rb.unusable_review("", [])
+
+# Codex writes the location into the prose and leaves `file` empty, which leaves the claim
+# with nothing to be read, deduplicated or verified against.
+recovered = rb.normalize_findings(json.dumps({
+    "severity": "P1", "file": "", "summary":
+    "Keep API keys out of raw-request argv — "
+    "/private/var/folders/x/review-bench-seal-ab12/bin/opencode-go:332-337",
+}), "sol-high")
+assert len(recovered) == 1, recovered
+assert recovered[0]["file"].endswith("/bin/opencode-go"), recovered
+assert recovered[0]["line"] == 332, recovered
+assert rb.canonical_finding_path(recovered[0]["file"], ["bin/opencode-go"]) == "bin/opencode-go"
+# An extensionless path is the common case in this repository, not the exotic one.
+assert rb.normalize_findings("P2 bin/claudeb:88 warm path skips the mutex", "sol-high") == [{
+    "severity": "P2", "file": "bin/claudeb", "line": 88,
+    "summary": "warm path skips the mutex", "rater": "sol-high",
+}]
+
+# The measured refusals live in parse_rater, so a verifier goes through it too — otherwise
+# a model refused as a rater is accepted here and sent once per finding.
+for refused in sorted(rb.OPENCODE_UNUSABLE_MODELS):
+    try:
+        rb.verifier_model(refused)
+    except ValueError as exc:
+        assert "measured unusable" in str(exc), exc
+    else:
+        raise AssertionError(f"{refused} is measured unusable and cannot verify")
+    assert refused not in rb.verifier_choices()
+for locked in sorted(rb.OPENCODE_EFFORT_REQUIRED_MODELS):
+    try:
+        rb.verifier_model(locked)
+    except ValueError as exc:
+        assert f"{locked}-low" in str(exc), exc
+    else:
+        raise AssertionError(f"{locked} ignores reasoning suppression and cannot verify")
+    assert locked not in rb.verifier_choices()
+    try:
+        rb.verifier_model(f"{locked}-low")
+    except ValueError as exc:
+        assert "cannot carry an effort" in str(exc), exc
+    else:
+        raise AssertionError("the verifier prompt suppresses reasoning; an effort is a lie")
+assert rb.verifier_model(rb.OPENCODE_VERIFIER) == rb.OPENCODE_VERIFIER
+assert rb.OPENCODE_VERIFIER in rb.verifier_choices()
+
+# The verifier spends the same subscription the cells do, so it obeys the same stop-the-run
+# rule; otherwise a wall makes every claim fail open while the run reads as verified.
+verify_wall_run = work / "verify-wall"
+verify_wall_run.mkdir()
+os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-happy.json")
+os.environ["OPENCODE_FIXTURE_RC"] = "1"
+os.environ["OPENCODE_FIXTURE_STDERR"] = "HTTP 429 usage limit reached"
+kept, audit = rb.verify_findings(verify_findings_input, repo, sha, "oc-kimik3", tree)
+assert kept == verify_findings_input
+assert all(row["kept"] is True and row.get("walled") for row in audit), audit
+assert rb.is_walled("opencode", "opencode-go")
+del os.environ["OPENCODE_FIXTURE_RC"]
+del os.environ["OPENCODE_FIXTURE_STDERR"]
+# A cell already queued on the gate when the wall was set must not send one more request.
+gate_wall_run = work / "opencode-gate-wall"
+gate_wall_run.mkdir()
+os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-happy.json")
+os.environ["OPENCODE_CAPTURE_ARGS"] = str(work / "walled-args")
+rc, _, _, walled_stderr, _ = rb.run_opencode(
+    opencode_rater, repo, sha, "", gate_wall_run, "fixture commit diff", "opencode-go"
+)
+assert rc == 1 and "waited for a gate slot" in walled_stderr, walled_stderr
+assert not (work / "walled-args").exists()
+os.environ["OPENCODE_CAPTURE_ARGS"] = str(work / "opencode-args")
+rb.WALLED_ACCOUNTS.clear()
+
+# Every sample keeps its own artifacts, and what the cell returns is the merged union it
+# reports — not one sample's raw text with a note claiming a merge happened.
+repeat_run = work / "opencode-repeat-run"
+repeat_run.mkdir()
+rc, _, repeat_text, repeat_stderr, _ = rb.run_opencode_sampled(
+    opencode_rater, repo, sha, "", repeat_run, "fixture commit diff", "opencode-go", 2
+)
+assert rc == 0 and "2/2 samples usable" in repeat_stderr, repeat_stderr
+for sample in (1, 2):
+    assert (repeat_run / f"raw-oc-glm52-s{sample}.json").exists()
+    assert (repeat_run / f"usage-oc-glm52-s{sample}.json").exists()
+repeat_rows = [json.loads(line) for line in repeat_text.splitlines()]
+assert len(repeat_rows) == 1 and repeat_rows[0]["rater"] == "oc-glm52", repeat_rows
+# A single sample takes the same path, or the cell's text and its note disagree.
+single_run = work / "opencode-single-run"
+single_run.mkdir()
+_, _, single_text, _, _ = rb.run_opencode_sampled(
+    opencode_rater, repo, sha, "", single_run, "fixture commit diff", "opencode-go", 1
+)
+assert [json.loads(line)["rater"] for line in single_text.splitlines()] == ["oc-glm52"]
+assert (single_run / "raw-oc-glm52.json").exists()
+# A union of clean samples is a clean review, not a cell that said nothing.
+clean_sample_run = work / "opencode-clean-sample-run"
+clean_sample_run.mkdir()
+os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-clean.json")
+_, _, clean_sample_text, _, _ = rb.run_opencode_sampled(
+    opencode_rater, repo, sha, "", clean_sample_run, "fixture commit diff", "opencode-go", 1
+)
+assert rb.unusable_review(clean_sample_text, []) == "", clean_sample_text
+os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-happy.json")
+
+# Taking a slot also changes who the queue head is, and a waiter blocks on being the head
+# as much as on a free slot. A waiter that re-checked just before the head left has no
+# wake-up pending, so the second slot sits idle for as long as the first cell runs. The
+# interleaving is racy, so it is sampled rather than staged.
+for trial in range(80):
+    trial_gate = rb.PriorityGate(2)
+    trial_gate.acquire(0)
+    trial_gate.acquire(0)
+    hold, slow_admitted, fast_admitted = threading.Event(), threading.Event(), threading.Event()
+
+    def slow(gate=trial_gate, admitted=slow_admitted, release_when=hold):
+        gate.acquire(5)
+        admitted.set()
+        release_when.wait(10)
+        gate.release()
+
+    def fast(gate=trial_gate, admitted=fast_admitted):
+        gate.acquire(1)
+        admitted.set()
+        gate.release()
+
+    racers = [threading.Thread(target=slow), threading.Thread(target=fast)]
+    for racer in racers:
+        racer.start()
+    queued_by = time.monotonic() + 5
+    while len(trial_gate.waiting) < 2 and time.monotonic() < queued_by:
+        time.sleep(0.001)
+    assert len(trial_gate.waiting) == 2, trial_gate.waiting
+    trial_gate.release()
+    trial_gate.release()
+    assert slow_admitted.wait(5), f"trial {trial}: the high-priority cell never started"
+    stranded = not fast_admitted.wait(0.5)
+    hold.set()
+    for racer in racers:
+        racer.join(5)
+    assert not stranded, f"trial {trial}: the second slot stayed idle while one cell ran"
+
 print("review-bench-unit-ok")
 PY
 assert test "$?" -eq 0

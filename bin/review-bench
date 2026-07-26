@@ -166,6 +166,9 @@ class PriorityGate:
                 self.cv.wait()
             self.waiting.remove(entry)
             self.active += 1
+            # Waiters block on being the head as much as on a free slot, and leaving the
+            # queue changes the head: without this a freed slot idles for a whole cell.
+            self.cv.notify_all()
 
     def release(self):
         with self.cv:
@@ -244,7 +247,12 @@ RATER_RE = re.compile(
     r"(?:-(low|medium|high|xhigh|max))?(-skill|-anthropic|-google)?$"
 )
 PRIORITY_RE = re.compile(r"\b(P[123])\b", re.IGNORECASE)
-LOCATION_RE = re.compile(r"(?P<file>[^\s:]+\.[A-Za-z0-9]+):(?P<line>\d+)(?:-\d+)?")
+# Half this repository's files have no extension, so a cited path is anything carrying a
+# directory separator as well as anything carrying a suffix.
+LOCATION_RE = re.compile(
+    r"(?P<file>[^\s:()\[\]{}<>,]+/[^\s:()\[\]{}<>,]+|[^\s:()\[\]{}<>,]+\.[A-Za-z0-9]+)"
+    r":(?P<line>\d+)(?:[-–]\d+)?"
+)
 LIMITS_STALE_AGE_S = 600
 
 
@@ -520,6 +528,35 @@ def refuse_retired_cells(raters):
         )
 
 
+def verifier_model(spec):
+    """The measured refusals live in parse_rater, so the verifier goes through it too.
+
+    Otherwise a model that never finished a review, or one that ignores the reasoning
+    suppression the verifier prompt always sends, is refused as a rater and accepted here
+    — once per finding.
+    """
+    rater = parse_rater(spec)
+    if rater["side"] != "opencode":
+        raise ValueError(f"invalid verifier {spec!r}; the verifier is an in-plan OpenCode model")
+    if rater["effort"]:
+        raise ValueError(
+            f"invalid verifier {spec!r}; the verifier prompt suppresses reasoning, so it "
+            "cannot carry an effort"
+        )
+    return rater["model"]
+
+
+def verifier_choices():
+    usable = []
+    for model in sorted(OPENCODE_MODEL_IDS):
+        try:
+            verifier_model(model)
+        except ValueError:
+            continue
+        usable.append(model)
+    return usable
+
+
 def auto_pick(number, rows, available):
     if number < 1:
         raise ValueError("--auto must be at least 1")
@@ -596,6 +633,14 @@ def finding_from_dict(value, rater):
     summary = PRIORITY_RE.sub("", str(summary), count=1).strip(" []:-")
     if not summary:
         return None
+    # Codex writes the location into the prose and leaves `file` empty; unrecovered, the
+    # claim has nowhere to be verified or deduplicated against.
+    if not file_name:
+        location = LOCATION_RE.search(summary)
+        if location:
+            file_name = location.group("file").strip("`'\"()[],.")
+            if line is None:
+                line = int(location.group("line"))
     return {"severity": severity, "file": str(file_name), "line": line,
             "summary": " ".join(summary.split()), "rater": rater}
 
@@ -749,6 +794,26 @@ def normalize_agy_skill_output(text, rater):
     return "\n".join(json.dumps(row, ensure_ascii=False) for row in findings) or '{"findings":[]}'
 
 
+# A clean review and a rater that answered in prose or stopped mid-turn are the same empty
+# findings file, and only an explicit marker tells a result from a cell that must be rerun.
+CLEAN_REVIEW_MARKER = "NO FINDINGS"
+CLEAN_REVIEW_RE = re.compile(
+    r"\bno findings\b|\bno issues found\b|\"findings\"\s*:\s*\[\s*\]", re.IGNORECASE
+)
+
+
+def clean_review_declared(text):
+    return bool(CLEAN_REVIEW_RE.search(text or ""))
+
+
+def unusable_review(text, findings):
+    """Why this cell must be rerun rather than recorded, or "" when it is a real result."""
+    if findings or clean_review_declared(text):
+        return ""
+    return ("rater produced no parseable finding and did not declare a clean review: "
+            + (" ".join((text or "").split())[:200] or "(empty answer)"))
+
+
 def review_profile_text(profile):
     override = os.environ.get("REVIEW_BENCH_PROFILE_DIR")
     path = Path(override) / f"{profile}.md" if override else REVIEW_PROFILE_FILES[profile]
@@ -766,7 +831,8 @@ def review_prompt(sha, focus, profile=None):
     contract = (
         f"Review commit {sha}. Return findings only, one JSON object per line, with exactly "
         "these fields: severity (P1, P2, or P3), file, line, summary. Use changed lines for "
-        f"locations. Return no text when there are no findings. {READ_ONLY_REVIEW_INSTRUCTION}"
+        f"locations. Reply with exactly {CLEAN_REVIEW_MARKER} and nothing else when the commit "
+        f"has no findings. {READ_ONLY_REVIEW_INSTRUCTION}"
     )
     if not profile:
         return contract + suffix
@@ -793,7 +859,8 @@ def skill_brief(sha, focus, repo_path):
         "/code-review skill and follow its methodology, inspecting the changed code with the "
         f"repository's tools (start from `git show {sha}`). Return findings only, one JSON "
         "object per line, with exactly these fields: severity (P1, P2, or P3), file, line, "
-        "summary. Use changed lines for locations. Return no text when there are no findings. "
+        "summary. Use changed lines for locations. Reply with exactly "
+        f"{CLEAN_REVIEW_MARKER} and nothing else when the commit has no findings. "
         f"{READ_ONLY_REVIEW_INSTRUCTION}"
         + suffix
     )
@@ -1081,7 +1148,9 @@ def is_diff_narration(findings):
         return False
     if any(row.get("severity") != "P3" for row in findings):
         return False
-    return all(DIFF_NARRATION_RE.match((row.get("summary") or "").strip()) for row in findings)
+    return all(
+        DIFF_NARRATION_RE.match((row.get("summary") or "").strip(" \t*_`#>-")) for row in findings
+    )
 
 
 def opencode_max_tokens_error(stderr):
@@ -1154,14 +1223,20 @@ def run_opencode_sampled(rater, repo, sha, focus, run_dir, diff, account, repeat
     rolling window, so a cell that fans out its own retries is how a usage wall gets
     hit early instead of waited out.
     """
-    batches, failures, duration, command, text = [], [], 0, [], ""
+    batches, failures, duration, command = [], [], 0, []
+    tree = repo_tree(repo, sha)
     for index in range(repeat):
-        result = run_opencode(rater, repo, sha, focus, run_dir, diff, account)
+        result = run_opencode(rater, repo, sha, focus, run_dir, diff, account,
+                              sample=index + 1 if repeat > 1 else None)
         rc, sample_ms, sample_text, stderr, command = result
         duration += sample_ms
         if rc == 0:
-            batches.append(normalize_findings(sample_text, rater["spec"]))
-            text = sample_text
+            # Canonicalised before the union, not in cmd_run after it: same_defect compares
+            # file strings, so one defect cited three ways would survive as three findings.
+            batches.append([
+                dict(row, file=canonical_finding_path(row.get("file"), tree))
+                for row in normalize_findings(sample_text, rater["spec"])
+            ])
         else:
             detail = stderr.strip()[-200:]
             if opencode_usage_wall(stderr):
@@ -1174,13 +1249,16 @@ def run_opencode_sampled(rater, repo, sha, focus, run_dir, diff, account, repeat
     note = (f"{len(batches)}/{repeat} samples usable, {sum(len(b) for b in batches)} raw "
             f"findings merged to {len(merged)}")
     stderr = "\n".join(failures + [note])
-    if len(batches) == 1:
-        return 0, duration, text, stderr, command
-    return 0, duration, "\n".join(json.dumps(row) for row in merged), stderr, command
+    # An empty union is the clean review the samples agreed on, not a silent cell.
+    body = "\n".join(json.dumps(row) for row in merged) or CLEAN_REVIEW_MARKER
+    return 0, duration, body, stderr, command
 
 
-def run_opencode(rater, repo, sha, focus, run_dir, diff, account, repeat=1):
-    raw_output = run_dir / f"raw-{rater['spec']}.json"
+def run_opencode(rater, repo, sha, focus, run_dir, diff, account, repeat=1, sample=None):
+    # Per-sample artifacts: the finish_reason trail is per attempt, and usage is the only
+    # local record of spend on a plan with no usage endpoint.
+    tag = rater["spec"] if sample is None else f"{rater['spec']}-s{sample}"
+    raw_output = run_dir / f"raw-{tag}.json"
     prompt = review_prompt(sha, focus, rater["profile"]) + "\n\nCommit diff:\n" + diff
     prompt_file = tempfile.NamedTemporaryFile(
         mode="w", prefix=f"review-bench-{rater['spec']}-", suffix=".txt", delete=False
@@ -1193,6 +1271,11 @@ def run_opencode(rater, repo, sha, focus, run_dir, diff, account, repeat=1):
     started = time.monotonic()
     command = []
     try:
+        # Re-checked after the gate: cells already queued when the wall was set would each
+        # send one more doomed request, deepening the wall by the queue's depth.
+        if is_walled("opencode", account):
+            return (1, 0, "", "the OpenCode plan walled off while this cell waited for a "
+                    "gate slot", command)
         for max_tokens in OPENCODE_MAX_TOKENS_BY_MODEL.get(rater["model"], OPENCODE_MAX_TOKENS):
             command = [
                 command_path("REVIEW_BENCH_OPENCODE_BIN", "opencode-go"),
@@ -1241,7 +1324,7 @@ def run_opencode(rater, repo, sha, focus, run_dir, diff, account, repeat=1):
             return 1, duration, "", stderr, command
         usage = envelope.get("usage")
         if usage is not None:
-            (run_dir / f"usage-{rater['spec']}.json").write_text(
+            (run_dir / f"usage-{tag}.json").write_text(
                 json.dumps(usage, ensure_ascii=False) + "\n"
             )
         choices = envelope.get("choices")
@@ -1272,9 +1355,7 @@ def run_opencode(rater, repo, sha, focus, run_dir, diff, account, repeat=1):
             return 1, duration, "", stderr, command
         # An agentic-tuned model with no tools tends to answer with a bare preamble
         # and stop; without this, such a non-review is recorded as a clean review.
-        if not parsed and not re.search(
-            r'"findings"\s*:\s*\[\s*\]|\bno issues found\b', answer, re.IGNORECASE
-        ):
+        if not parsed and not clean_review_declared(answer):
             detail = (
                 "opencode returned no parseable findings and no explicit no-issues result: "
                 + " ".join(answer.split())[:200]
@@ -1307,17 +1388,10 @@ def repo_tree(repo, sha):
     return proc.stdout.splitlines() if proc.returncode == 0 else []
 
 
-def canonical_finding_path(path, tree):
-    """Raters cite files as markdown links, absolute paths or sealed-clone paths.
-
-    Those spellings point at real files but do not match the repository, which
-    silently breaks both deduplication and any check that reads the cited file.
-    """
-    path = (path or "").strip().strip("`").strip()
-    match = re.fullmatch(r"\[([^\]]+)\]\([^)]*\)", path)
-    if match:
-        path = match.group(1).strip().strip("`").strip()
-    if not path or path in tree:
+def resolve_in_tree(path, tree):
+    if not path:
+        return None
+    if path in tree:
         return path
     suffix_hits = [name for name in tree if path.endswith("/" + name)]
     if suffix_hits:
@@ -1326,18 +1400,50 @@ def canonical_finding_path(path, tree):
     basename_hits = [name for name in tree if name.rsplit("/", 1)[-1] == tail]
     if len(basename_hits) == 1:
         return basename_hits[0]
-    return path
+    return None
+
+
+def canonical_finding_path(path, tree):
+    """Raters cite files as markdown links, absolute paths or sealed-clone paths.
+
+    Those spellings point at real files but do not match the repository, which
+    silently breaks both deduplication and any check that reads the cited file.
+    """
+    path = (path or "").strip().strip("`").strip()
+    candidates = [path]
+    match = re.fullmatch(r"\[([^\]]*)\]\(([^)]*)\)", path)
+    if match:
+        # A link's text is prose as often as it is a path ("[Line 42](src/foo.py)"), so the
+        # target is the citation and the text is only what is left when the target is a URL.
+        candidates = [
+            match.group(2).strip().strip("`").split("#", 1)[0].strip(),
+            match.group(1).strip().strip("`").strip(),
+        ]
+    for candidate in candidates:
+        resolved = resolve_in_tree(candidate, tree)
+        if resolved:
+            return resolved
+    return next((candidate for candidate in candidates if candidate), path)
 
 
 def file_at_commit(repo, sha, path):
+    """Return (lines, ref) for a cited file, falling back to the commit's parent.
+
+    A commit that deletes a file is exactly where a finding about that file belongs, and
+    reading only the reviewed commit leaves the verifier nothing to judge such a claim on.
+    """
     if not path:
-        return None
-    proc = subprocess.run(["git", "show", f"{sha}:{path}"], cwd=repo,
-                          capture_output=True, text=True)
-    return proc.stdout.splitlines() if proc.returncode == 0 else None
+        return None, sha
+    for ref in (sha, f"{sha}^"):
+        proc = subprocess.run(["git", "show", f"{ref}:{path}"], cwd=repo,
+                              capture_output=True, text=True)
+        if proc.returncode == 0:
+            return proc.stdout.splitlines(), ref
+    return None, sha
 
 
-def verify_prompt(finding, sha, path, lines):
+def verify_prompt(finding, sha, path, lines, ref=None):
+    ref = ref or sha
     claim = (f"[{finding.get('severity')}] {path}:{finding.get('line')} — "
              f"{finding.get('summary')}")
     if lines is None:
@@ -1350,10 +1456,17 @@ def verify_prompt(finding, sha, path, lines):
         if len(lines) <= VERIFY_WHOLE_FILE_LINES:
             low, high = 1, len(lines)
         else:
-            low = max(1, (line or 1) - VERIFY_WINDOW_LINES)
-            high = min(len(lines), (line or 1) + VERIFY_WINDOW_LINES)
+            # Unclamped, a line past the end of the file yields an empty excerpt, so the
+            # most obviously bogus claim is the one the verifier cannot refute.
+            line = min(max(line or 1, 1), len(lines))
+            low = max(1, line - VERIFY_WINDOW_LINES)
+            high = min(len(lines), line + VERIFY_WINDOW_LINES)
         body = "\n".join(f"{number}: {lines[number - 1]}" for number in range(low, high + 1))
-        shown = (f"File {path} in commit {sha}, lines {low}-{high} of {len(lines)}:\n\n{body}")
+        origin = (
+            f"File {path} in commit {sha}" if ref == sha
+            else f"File {path} as it stands in {ref}, the parent of {sha}, which deletes it"
+        )
+        shown = f"{origin}, lines {low}-{high} of {len(lines)}:\n\n{body}"
     return (
         "You are checking one claim from a code review. Below is the claim and the actual "
         "content of the file it points at, as it is in the reviewed commit.\n\n"
@@ -1373,24 +1486,36 @@ def verify_prompt(finding, sha, path, lines):
 
 
 def parse_verify_answer(text):
-    for line in (text or "").splitlines():
-        line = line.strip().strip("`").strip()
-        if not line.startswith("{") or "code_matches" not in line:
+    # A verifier that pretty-prints its verdict is answering correctly, so the object is
+    # scanned for rather than matched line by line.
+    for value in extract_json_values(text or ""):
+        if not isinstance(value, dict):
             continue
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(row.get("code_matches"), bool) and isinstance(row.get("is_defect"), bool):
-            return row
+        if isinstance(value.get("code_matches"), bool) and isinstance(value.get("is_defect"), bool):
+            return value
     return None
 
 
-def verify_one(index, finding, repo, sha, model, lines):
+def verify_row(index, finding):
+    return {
+        "idx": index, "file": finding.get("file"), "line": finding.get("line"),
+        "severity": finding.get("severity"), "summary": finding.get("summary"),
+    }
+
+
+def verify_one(index, finding, repo, sha, model, lines, ref=None):
+    account = SIDE_FIXED_ACCOUNTS["opencode"]
+    # The verifier spends the same subscription the cells do, so it obeys the same
+    # stop-the-run rule; otherwise a wall fails every claim open and the run reads verified.
+    if is_walled("opencode", account):
+        row = verify_row(index, finding)
+        row.update(kept=True, code_matches=None, is_defect=None, walled=True,
+                   why="verifier walled off; finding kept unverified")
+        return row
     prompt_file = tempfile.NamedTemporaryFile(
         mode="w", prefix="review-bench-verify-", suffix=".txt", delete=False
     )
-    prompt_file.write(verify_prompt(finding, sha, finding.get("file"), lines))
+    prompt_file.write(verify_prompt(finding, sha, finding.get("file"), lines, ref))
     prompt_file.close()
     command = [
         command_path("REVIEW_BENCH_OPENCODE_BIN", "opencode-go"),
@@ -1415,10 +1540,12 @@ def verify_one(index, finding, repo, sha, model, lines):
     finally:
         OPENCODE_GATE.release()
         Path(prompt_file.name).unlink(missing_ok=True)
-    row = {
-        "idx": index, "file": finding.get("file"), "line": finding.get("line"),
-        "severity": finding.get("severity"), "summary": finding.get("summary"),
-    }
+    row = verify_row(index, finding)
+    if proc is not None and proc.returncode != 0 and opencode_usage_wall(proc.stderr):
+        mark_walled("opencode", account)
+        row.update(kept=True, code_matches=None, is_defect=None, walled=True,
+                   why="verifier hit the plan's usage wall; finding kept unverified")
+        return row
     if judgment is None:
         row.update(kept=True, code_matches=None, is_defect=None,
                    why="verifier gave no usable answer; finding kept")
@@ -1441,12 +1568,21 @@ def verify_findings(findings, repo, sha, model, tree):
     audit = []
     workers = min(OPENCODE_MAX_CONCURRENCY, max(1, len(findings)))
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [
-            pool.submit(verify_one, index, finding, repo, sha, model, cache[finding.get("file")])
-            for index, finding in enumerate(findings)
-        ]
+        futures = {}
+        for index, finding in enumerate(findings):
+            lines, ref = cache[finding.get("file")]
+            futures[pool.submit(verify_one, index, finding, repo, sha, model, lines, ref)] = index
         for future in concurrent.futures.as_completed(futures):
-            audit.append(future.result())
+            index = futures[future]
+            try:
+                audit.append(future.result())
+            except Exception as exc:
+                # The raters already spent their quota: a crashed verifier costs the run its
+                # filtering, never the findings file it has not written yet.
+                row = verify_row(index, findings[index])
+                row.update(kept=True, code_matches=None, is_defect=None,
+                           why=f"verifier crashed: {exc}"[:200])
+                audit.append(row)
     audit.sort(key=lambda row: row["idx"])
     kept = [findings[row["idx"]] for row in audit if row["kept"]]
     return kept, audit
@@ -1719,6 +1855,8 @@ def cmd_run(args):
     verify_model = args.verify
     if args.leg:
         verify_model = verify_model or OPENCODE_VERIFIER
+    if verify_model:
+        verify_model = verifier_model(verify_model)
     if args.raters or args.leg:
         requested = parse_raters(args.raters or ",".join(OPENCODE_REVIEW_LEG))
         available = {
@@ -1808,13 +1946,22 @@ def cmd_run(args):
             dict(row, file=canonical_finding_path(row.get("file"), tree)) for row in findings
         ]
         is_error = rc != 0 or (rc == 0 and text and is_429_error(text))
+        unusable = "" if is_error else unusable_review(text, findings)
+        if unusable:
+            is_error = True
+            stderr = "\n".join(part for part in ((stderr or "").rstrip(), unusable) if part)
         dropped = 0
+        unverified = 0
         if verify_model and findings and not is_error:
             kept, audit = verify_findings(findings, repo, sha, verify_model, tree)
             write_jsonl(run_dir / f"verified-{rater['spec']}.jsonl", audit)
             dropped = len(findings) - len(kept)
+            unverified = sum(1 for row in audit if row.get("walled"))
             findings = kept
             print(f"{rater['spec']}: verifier kept {len(kept)} of {len(audit)} finding(s)")
+            if unverified:
+                print(f"{rater['spec']}: {unverified} finding(s) went unverified — "
+                      "the verifier's plan walled off mid-run")
         path = run_dir / f"findings-{rater['spec']}.jsonl"
         write_jsonl(path, findings)
 
@@ -1836,7 +1983,7 @@ def cmd_run(args):
                 "side": rater["side"], "account": account, "duration_ms": duration,
                 "findings": len(findings), "exit_code": rc, "stderr": stderr[-2000:] if stderr else "",
                 "command": redact_command(rater, command),
-                "verifier_dropped": dropped,
+                "verifier_dropped": dropped, "verifier_unverified": unverified,
             })
             print(f"{rater['spec']}: {len(findings)} finding(s), {duration} ms, exit {rc}")
 
@@ -2101,7 +2248,7 @@ def main():
              "calls to one model differ by an order of magnitude on the same diff",
     )
     run.add_argument(
-        "--verify", metavar="MODEL", choices=sorted(OPENCODE_MODEL_IDS),
+        "--verify", metavar="MODEL", choices=verifier_choices(),
         help="Check every finding back against the file it cites with this in-plan "
              "OpenCode model, and keep only the claims that survive",
     )
