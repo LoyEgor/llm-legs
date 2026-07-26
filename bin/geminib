@@ -97,15 +97,27 @@ ensure_profile() {
   gemini_ensure_keychain "$directory"
 }
 
+failed_profiles=""
+
+is_profile_failed() {
+  [[ " $failed_profiles " == *" $1 "* ]]
+}
+
 ensure_profiles() {
   local name
   while IFS= read -r name; do
-    [ "$name" = main ] || ensure_profile "$profiles_dir/$name" || true
+    if [ "$name" != main ] && ! ensure_profile "$profiles_dir/$name"; then
+      failed_profiles+=" $name "
+    fi
   done < <(gemini_account_names)
 }
 
 quota_snapshot() {
   local name="$1" home output rc=0
+  if is_profile_failed "$name"; then
+    printf '1\t{"error":"profile unavailable"}\n'
+    return
+  fi
   home=$(gemini_account_home "$name")
   if [ ! -x "$quota_helper" ]; then
     printf '1\t{"error":"quota helper unavailable"}\n'
@@ -164,7 +176,9 @@ add_account() {
     exit 2
   fi
   mkdir -p "$directory"
-  ensure_profile "$directory"
+  if ! ensure_profile "$directory"; then
+    failed_profiles+=" $name "
+  fi
   printf 'HOME=%q agy\n' "$directory"
   status=$(login_status "$name")
   printf '%s: %s\n' "$name" "${status#*$'\t'}"

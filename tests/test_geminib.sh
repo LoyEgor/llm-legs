@@ -46,6 +46,11 @@ GEMINIB_TEST_BASE_HOME="$HOME"
 export SECURITY_CALLS GEMINIB_SECURITY_CMD SECURITY_LIST_FILE GEMINIB_TEST_BASE_HOME
 cat >"$FAKE_BIN/security" <<'EOF'
 #!/usr/bin/env bash
+if [ "${1:-}" = -i ]; then
+  cmd=$(cat)
+  printf 'CALL home=%s %s\n' "$HOME" "$cmd" >>"$SECURITY_CALLS"
+  exit 0
+fi
 printf 'CALL home=%s %s\n' "$HOME" "$*" >>"$SECURITY_CALLS"
 if [ "${1:-}" = list-keychains ]; then
   if [ "${4:-}" = -s ] && [ "$HOME" = "$GEMINIB_TEST_BASE_HOME" ]; then
@@ -128,6 +133,8 @@ assert_fails grep -q "CALL home=$HOME create-keychain" "$SECURITY_CALLS"
 mkdir -p "$HOME/.gemini-profiles/trap/.gemini/config" "$HOME/.gemini-profiles/trap/Library/Keychains"
 printf 'keep\n' >"$HOME/.gemini-profiles/trap/.gemini/config/value"
 printf 'own\n' >"$HOME/.gemini-profiles/trap/Library/Keychains/login.keychain-db"
+(umask 077; printf '2\n' >"$HOME/.gemini-profiles/trap/.keychain-version")
+(umask 077; printf 'trap-pass' >"$HOME/.gemini-profiles/trap/.keychain-password")
 bash "$SCRIPT" list >/dev/null
 assert test ! -L "$HOME/.gemini-profiles/trap/.gemini/config"
 assert grep -qx keep "$HOME/.gemini-profiles/trap/.gemini/config/value"
@@ -143,12 +150,41 @@ printf 'legacy\n' >"$migrate_home/Library/Keychains/login.keychain-db"
 (umask 077; printf 'migration-password' >"$migrate_home/.keychain-password")
 gemini_ensure_keychain "$migrate_home"
 assert grep -qx 2 "$migrate_home/.keychain-version"
-assert grep -qx legacy "$migrate_home/Library/Keychains/.geminib-legacy.keychain-db"
+assert test ! -e "$migrate_home/Library/Keychains/.geminib-legacy.keychain-db"
 assert grep -qx migration-password "$migrate_home/Library/Keychains/login.keychain-db"
 assert grep -q 'add-generic-password -U -s gemini -a antigravity -w fixture-oauth-token' \
   "$SECURITY_CALLS"
 gemini_ensure_keychain "$migrate_home"
 assert test ! -e "$migrate_home/Library/Keychains/.geminib-unlock.keychain-db"
+
+rm -rf "$migrate_home"
+mkdir -p "$migrate_home/Library/Keychains"
+printf 'legacy-content-a\n' >"$migrate_home/Library/Keychains/.geminib-legacy.keychain-db"
+printf 'half-rebuilt\n' >"$migrate_home/Library/Keychains/login.keychain-db"
+(umask 077; printf 'migration-password' >"$migrate_home/.keychain-password")
+gemini_ensure_keychain "$migrate_home"
+assert grep -qx 2 "$migrate_home/.keychain-version"
+assert test ! -e "$migrate_home/Library/Keychains/.geminib-legacy.keychain-db"
+assert grep -qx migration-password "$migrate_home/Library/Keychains/login.keychain-db"
+
+rm -rf "$migrate_home"
+mkdir -p "$migrate_home/Library/Keychains"
+printf 'legacy-content-b\n' >"$migrate_home/Library/Keychains/.geminib-legacy.keychain-db"
+(umask 077; printf 'migration-password' >"$migrate_home/.keychain-password")
+gemini_ensure_keychain "$migrate_home"
+assert grep -qx 2 "$migrate_home/.keychain-version"
+assert test ! -e "$migrate_home/Library/Keychains/.geminib-legacy.keychain-db"
+assert grep -qx migration-password "$migrate_home/Library/Keychains/login.keychain-db"
+
+stale_home="$WORK/stale-home"
+mkdir -p "$stale_home/Library/Keychains"
+printf 'keychain-content\n' >"$stale_home/Library/Keychains/login.keychain-db"
+printf 'stale-unlock\n' >"$stale_home/Library/Keychains/.geminib-unlock.keychain-db"
+(umask 077; printf '2\n' >"$stale_home/.keychain-version")
+(umask 077; printf 'stale-password' >"$stale_home/.keychain-password")
+gemini_ensure_keychain "$stale_home"
+assert test ! -e "$stale_home/Library/Keychains/.geminib-unlock.keychain-db"
+assert grep -qx keychain-content "$stale_home/Library/Keychains/login.keychain-db"
 
 rm -rf "$HOME/.gemini-profiles/alpha/Library/Keychains" "$HOME/.gemini-profiles/alpha/.keychain-password"
 ln -sfn "$HOME/Library/Keychains" "$HOME/.gemini-profiles/alpha/Library/Keychains"
@@ -333,5 +369,24 @@ assert test -e "$cache_dir/alpha.json.removed"
 assert_fails bash "$SCRIPT" remove main
 assert_fails bash "$SCRIPT" remove ../outside
 assert_fails bash "$SCRIPT" remove never-existed
+
+mkdir -p "$HOME/.gemini-profiles/broken/Library/Keychains"
+chmod 555 "$HOME/.gemini-profiles/broken/Library/Keychains"
+GEMINI_PROBE_LOG="$WORK/broken-probe.log"
+export GEMINI_PROBE_LOG
+: >"$GEMINI_PROBE_LOG"
+list_broken=$(bash "$SCRIPT" list)
+assert grep -q 'broken: Login status unavailable' <<<"$list_broken"
+assert_fails grep -q 'START broken' "$GEMINI_PROBE_LOG"
+assert grep -q 'START main' "$GEMINI_PROBE_LOG"
+
+: >"$GEMINI_PROBE_LOG"
+status_broken=$(bash "$SCRIPT" status)
+assert grep -q 'broken: Login status unavailable | 5H - reset unknown | WEEKLY - reset unknown' <<<"$status_broken"
+assert_fails grep -q 'START broken' "$GEMINI_PROBE_LOG"
+assert grep -q 'START main' "$GEMINI_PROBE_LOG"
+chmod 755 "$HOME/.gemini-profiles/broken/Library/Keychains"
+rm -rf "$HOME/.gemini-profiles/broken"
+unset GEMINI_PROBE_LOG
 
 echo "PASS: $asserts asserts; base and isolated HOME routing, worker-pool exclusion (own file beside the profiles, last member protected, visible in list/status), shared configuration links, isolated per-profile keychain creation/unlock and search-list healing, parallel ordered list/status probes, one-step creation, strict launch names, exec delimiter stripping, override-aware login hints, and persistent remove markers"

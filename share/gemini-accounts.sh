@@ -79,6 +79,9 @@ gemini_ensure_keychain() {
     if [ ! -f "$keychain" ] && [ -f "$unlock_path" ]; then
       mv "$unlock_path" "$keychain" || return 1
     fi
+    if [ ! -f "$keychain" ] && [ -f "$legacy_path" ]; then
+      mv "$legacy_path" "$keychain" || return 1
+    fi
     if [ -f "$keychain" ]; then
       if [ ! -s "$password_file" ]; then
         printf 'geminib: %s has a keychain but no saved password; sign the profile in again.\n' \
@@ -90,7 +93,11 @@ gemini_ensure_keychain() {
       if [ "$version" != 2 ]; then
         # Staged hard links are separate keychain handles on macOS. Rebuilding at the final path
         # preserves the token and makes later rename-based unlocks affect agy's handle.
-        if [ -e "$legacy_path" ] || ! mv "$keychain" "$legacy_path"; then
+        if [ -f "$legacy_path" ]; then
+          rm -f "$keychain"
+          mv "$legacy_path" "$keychain" || return 1
+        fi
+        if ! mv "$keychain" "$legacy_path"; then
           printf 'geminib: could not migrate the keychain for %s.\n' "$name" >&2
           return 1
         fi
@@ -114,8 +121,8 @@ gemini_ensure_keychain() {
         HOME="$home" "$security_cmd" list-keychains -d user -s "$keychain" >/dev/null 2>&1 || true
         HOME="$home" "$security_cmd" default-keychain -d user -s "$keychain" >/dev/null 2>&1 || true
         if [ -n "$token" ] &&
-          ! HOME="$home" "$security_cmd" add-generic-password -U \
-            -s gemini -a antigravity -w "$token" >/dev/null 2>&1; then
+          ! printf 'add-generic-password -U -s gemini -a antigravity -w %q\n' "$token" |
+            HOME="$home" "$security_cmd" -i >/dev/null 2>&1; then
           rm -f "$keychain"
           mv "$legacy_path" "$keychain" || true
           HOME="$home" "$security_cmd" list-keychains -d user -s "$keychain" >/dev/null 2>&1 || true
@@ -123,13 +130,15 @@ gemini_ensure_keychain() {
           printf 'geminib: could not migrate the token for %s.\n' "$name" >&2
           return 1
         fi
+        rm -f "$legacy_path"
         (umask 077; printf '2\n' >"$version_file")
         token=''
         return 0
       fi
       HOME="$home" "$security_cmd" list-keychains -d user -s "$keychain" >/dev/null 2>&1 || true
       HOME="$home" "$security_cmd" default-keychain -d user -s "$keychain" >/dev/null 2>&1 || true
-      if [ -e "$unlock_path" ] || ! mv "$keychain" "$unlock_path"; then
+      rm -f "$unlock_path"
+      if ! mv "$keychain" "$unlock_path"; then
         printf 'geminib: could not prepare the keychain for %s.\n' "$name" >&2
         return 1
       fi
