@@ -9,7 +9,7 @@
 - When Codex is FRESH, route roughly five of every ten suitable tasks to Codex. Reduce that share as the data-driven verdict tightens.
 - Use the claudeb model and effort exactly as `NEXT:` prints them — R8 may have stepped them one rung down the ladder `opus·high → opus·medium → sonnet·high` to spare an account's Fable quota; override upward only when the task genuinely needs it.
 - claudeb sonnet runs at effort high or above — sonnet·medium and below are never used; opus may run at medium.
-- Always use the concrete account and pre-reset cap from `NEXT:`. Never route a worker to the session account.
+- Always use the concrete account and pre-reset cap from `NEXT:`. Never route a worker to the session account unless an explicit pin names it — a pin overrides the session-account exclusion; hard walls (effective 100%, dead auth) still apply.
 - Treat the Codex and Gemini `main` profiles as last-resort: every usable non-main account of the same vendor ranks ahead of its `main`.
 - Account selection is headroom-dominant for non-Fable work: prefer the account with the most 5h effective headroom to balance spend across accounts. Small-tier accounts (olx, $20/month) are full citizens for any non-Fable task at any effort.
 - Headroom cannot exceed HEADROOM_PCT (90%); if all candidates are above it, pick the least-burnt and note `WARN` in `NEXT`.

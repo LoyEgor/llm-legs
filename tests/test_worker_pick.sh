@@ -374,6 +374,7 @@ unpinned_next=$(head -n1 <<<"$output")
 assert contains "$(head -n1 <<<"$output")" 'ACCOUNT: worker'
 assert not_contains "$(head -n1 <<<"$output")" 'claudeb session '
 assert contains "$output" 'session($100)*'
+assert contains "$(sed -n '4p' <<<"$output")" '(* = this session account, excluded from automatic worker routing)'
 assert contains "$output" 'SESSION: session — fb 10%, wk 20%'
 assert test "$(sed -n '1p' <<<"$output" | cut -d: -f1)" = NEXT
 assert test "$(sed -n '2p' <<<"$output" | cut -d: -f1)" = codex
@@ -399,6 +400,7 @@ assert contains "$policy" 'full implementation worker'
 assert contains "$policy" 'conservatively'
 assert contains "$policy" 'five of every ten'
 assert contains "$policy" 'every usable non-main account of the same vendor ranks ahead'
+assert contains "$policy" 'unless an explicit pin names it'
 
 PIN_NOW=1785074400
 write_vendor_pin() {
@@ -473,7 +475,7 @@ assert contains "$(sed -n '3p' <<<"$output")" 'gemini: pin work exhausted → ma
 write_vendor_pin claudeb gappy
 run_pin_filter r8_exclude '.vendors.claude.accounts |= map(
   if .account == "gappy" then .enabled = false | .weekly.used_pct = 91 else . end)'
-assert contains "$(head -n1 <<<"$output")" 'claudeb gappy · opus · medium (pinned'
+assert contains "$(head -n1 <<<"$output")" 'claudeb gappy · opus · medium (PINNED'
 assert contains "$(head -n1 <<<"$output")" 'pre-reset cap 9%'
 assert contains "$(sed -n '4p' <<<"$output")" 'gappy($100) 5h 40% wk 91%'
 assert contains "$(sed -n '4p' <<<"$output")" 'cap 9% PINNED Fable-gap-excluded FLOOR HEADROOM off'
@@ -487,6 +489,24 @@ assert contains "$(sed -n '4p' <<<"$output")" 'claude: pin gappy exhausted → c
 run_pin_filter r8_exclude '.vendors.claude.accounts |= map(
   if .account == "gappy" then .auth.status = "expired" else . end)'
 assert contains "$(sed -n '4p' <<<"$output")" 'claude: pin gappy auth unavailable → clean'
+
+write_vendor_pin claudeb session
+run_pin_filter golden '.'
+assert contains "$(head -n1 <<<"$output")" 'NEXT: claudeb session · opus · medium (PINNED'
+assert contains "$(sed -n '4p' <<<"$output")" 'session($100)* 5h 20% wk 20% fb 10%'
+assert contains "$(sed -n '4p' <<<"$output")" 'PINNED'
+own_pin_out=$(TZ=UTC HOME="$HOME_FIXTURE" LLM_LIMITS_FILE="$STORE" WORKER_PICK_CONFIG_FILE="$CONFIG" \
+  WORKER_PICK_TIERS_FILE="$TIERS" WORKER_PICK_CACHE_DIR="$CACHE" WORKER_PICK_NOW="$PIN_NOW" \
+  CLAUDE_LIMITS_ACCOUNT=session "$SCRIPT" --account claudeb 2>"$WORK/own-pin.err")
+own_pin_rc=$?
+assert test "$own_pin_rc" -eq 0
+assert test "$own_pin_out" = session
+assert test ! -s "$WORK/own-pin.err"
+
+run_pin_filter golden '.vendors.claude.accounts |= map(
+  if .account == "session" then .five_hour.effective_pct = 100 else . end)'
+assert contains "$(head -n1 <<<"$output")" 'claudeb pin session exhausted → worker'
+assert contains "$(sed -n '4p' <<<"$output")" 'claude: pin session exhausted → worker'
 
 write_config
 run_case golden
@@ -520,8 +540,17 @@ assert test "$query_out" = worker
 write_config session
 query_account golden
 assert test "$query_rc" -eq 0
-assert test "$query_out" = worker
+assert test "$query_out" = session
 write_config
+
+jq -c '.golden | .vendors.claude.accounts |= map(select(.account == "session"))' \
+  "$FIXTURES" >"$STORE"
+query_out=$(env "${query_env[@]}" "LLM_LIMITS_FILE=$STORE" "$SCRIPT" --account claudeb \
+  2>"$WORK/query-own-only.err")
+query_rc=$?
+assert test "$query_rc" -eq 3
+assert test -z "$query_out"
+assert grep -q 'no selectable claudeb account' "$WORK/query-own-only.err"
 
 # Unusable data has no fail-safe here: a guessed account would send a caller at an account this
 # data cannot vouch for.

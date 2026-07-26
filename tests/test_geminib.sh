@@ -297,4 +297,44 @@ assert_fails bash "$SCRIPT" remove main
 assert_fails bash "$SCRIPT" remove ../outside
 assert_fails bash "$SCRIPT" remove never-existed
 
-echo "PASS: $asserts asserts; base and isolated HOME routing, worker-pool exclusion (own file beside the profiles, last member protected, visible in list/status), shared configuration links, per-profile login keychain, parallel ordered list/status probes, one-step creation, strict launch names, exec delimiter stripping, override-aware login hints, and persistent remove markers"
+assert bash "$SCRIPT" add pinacct >/dev/null
+PIN_CONFIG="$WORK/worker-model-use"
+printf 'worker=auto\nclaudeb_profile=claude-a\ncodex_profile=codex-a\n' >"$PIN_CONFIG"
+assert env WORKER_PICK_CONFIG_FILE="$PIN_CONFIG" bash "$SCRIPT" use main
+assert grep -qx 'gemini_profile=main' "$PIN_CONFIG"
+assert env WORKER_PICK_CONFIG_FILE="$PIN_CONFIG" bash "$SCRIPT" use pinacct
+assert grep -qx 'gemini_profile=pinacct' "$PIN_CONFIG"
+assert test "$(grep -c '^gemini_profile=' "$PIN_CONFIG")" = 1
+assert grep -qx 'worker=auto' "$PIN_CONFIG"
+assert grep -qx 'claudeb_profile=claude-a' "$PIN_CONFIG"
+assert grep -qx 'codex_profile=codex-a' "$PIN_CONFIG"
+pin_output=$(env WORKER_PICK_CONFIG_FILE="$PIN_CONFIG" bash "$SCRIPT" use)
+assert grep -qx 'geminib: workers are pinned to pinacct' <<<"$pin_output"
+assert env WORKER_PICK_CONFIG_FILE="$PIN_CONFIG" bash "$SCRIPT" use --clear
+assert_fails grep -q '^gemini_profile=' "$PIN_CONFIG"
+assert grep -qx 'worker=auto' "$PIN_CONFIG"
+pin_rc=0
+env WORKER_PICK_CONFIG_FILE="$PIN_CONFIG" bash "$SCRIPT" use missing >/dev/null 2>&1 || pin_rc=$?
+assert test "$pin_rc" -eq 2
+pin_rc=0
+env WORKER_PICK_CONFIG_FILE="$PIN_CONFIG" bash "$SCRIPT" use ../pinacct >/dev/null 2>&1 || pin_rc=$?
+assert test "$pin_rc" -eq 2
+assert_fails grep -q '^gemini_profile=' "$PIN_CONFIG"
+UNREADABLE_PIN="$WORK/worker-model-unreadable"
+printf 'worker=auto\ngemini_profile=pinacct\n' >"$UNREADABLE_PIN"
+chmod 000 "$UNREADABLE_PIN"
+if [ -r "$UNREADABLE_PIN" ]; then
+  printf 'SKIP: unreadable-pin case (running with read-everything privileges)\n'
+else
+  pin_rc=0
+  env WORKER_PICK_CONFIG_FILE="$UNREADABLE_PIN" bash "$SCRIPT" use --clear \
+    >"$WORK/unreadable-pin.out" 2>&1 || pin_rc=$?
+  assert test "$pin_rc" -eq 2
+  assert grep -q 'exists but cannot be read' "$WORK/unreadable-pin.out"
+  chmod 600 "$UNREADABLE_PIN"
+  assert grep -qx 'worker=auto' "$UNREADABLE_PIN"
+  assert grep -qx 'gemini_profile=pinacct' "$UNREADABLE_PIN"
+fi
+chmod 600 "$UNREADABLE_PIN"
+
+echo "PASS: $asserts asserts; base and isolated HOME routing, worker-pool exclusion (own file beside the profiles, last member protected, visible in list/status), shared configuration links, per-profile login keychain, parallel ordered list/status probes, one-step creation, strict launch names, exec delimiter stripping, override-aware login hints, persistent remove markers, and use pin set/show/clear/refusal parity"

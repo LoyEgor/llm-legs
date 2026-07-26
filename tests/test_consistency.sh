@@ -157,8 +157,12 @@ assert doc_has 'Antigravity review cell invocation mapping'
 
 # --- Row i: Gemini worker knobs ----------------------------------------------
 GEMINI_AGENT="${GEMINI_WORKER_AGENT:-$HOME/.claude/agents/gemini-worker.md}"
+CODEX_AGENT="${CODEX_WORKER_AGENT:-$HOME/.claude/agents/codex-worker.md}"
+CLAUDEB_AGENT="${CLAUDEB_WORKER_AGENT:-$HOME/.claude/agents/claudeb-worker.md}"
 WORKER_COMMAND="${WORKER_COMMAND_FILE:-$HOME/.claude/commands/worker.md}"
 assert test -r "$GEMINI_AGENT"
+assert test -r "$CODEX_AGENT"
+assert test -r "$CLAUDEB_AGENT"
 assert test -r "$WORKER_COMMAND"
 for row in \
   '| `pro` | `high` | `gemini-3.1-pro` | `high` |' \
@@ -180,13 +184,27 @@ assert doc_has 'Gemini worker knobs'
 
 SPAWN_HOOK="$ROOT/bin/worker-spawn-hook.sh"
 assert grep -Fq 'gm_pin=$(conf gemini_profile)' "$WORKERPICK"
-assert grep -Fq 'acct=$(worker_conf gemini_profile)' "$SPAWN_HOOK"
-assert grep -Fq '[ -n "$acct" ] || acct=$(brief_line ACCOUNT)' "$SPAWN_HOOK"
+assert grep -Fq 'acct=$(brief_line ACCOUNT)' "$SPAWN_HOOK"
+for vendor in claudeb codex gemini; do
+  assert grep -Fq '[ -n "$acct" ] || acct=$(route_account '"$vendor"')' "$SPAWN_HOOK"
+done
 assert grep -Fq '[ -n "$acct" ] || acct=main' "$SPAWN_HOOK"
 assert grep -Fq '`gemini_profile=<name>`' "$WORKER_COMMAND"
-assert grep -Fq "s/^gemini_profile=//p" "$GEMINI_AGENT"
-assert grep -Fq 'Without a pin, use the exact profile from an `ACCOUNT: <name>` line' "$GEMINI_AGENT"
-assert doc_has 'Gemini account pin precedence'
+for spec in \
+  "$CLAUDEB_AGENT|claudeb|claudeb_profile" \
+  "$CODEX_AGENT|codex|codex_profile" \
+  "$GEMINI_AGENT|gemini|gemini_profile"; do
+  agent=${spec%%|*}
+  rest=${spec#*|}
+  vendor=${rest%%|*}
+  pin_key=${rest#*|}
+  assert grep -Fq "s/^${pin_key}=//p" "$agent"
+  assert grep -Fq 'An `ACCOUNT: <name>` line in the brief wins.' "$agent"
+  assert grep -Fq "worker-pick --account $vendor" "$agent"
+  assert grep -Fq 'Exit 3 means nothing is selectable' "$agent"
+  assert grep -Fq 'State in the report that account resolution fell back' "$agent"
+done
+assert doc_has 'Worker account resolution'
 
 # --- Row l: Gemini quota group matching --------------------------------------
 assert grep -Fq 'def gemini_group: ((.group // "") | ascii_downcase | contains("gemini"));' "$WORKERPICK"
@@ -274,12 +292,22 @@ assert test "$(grep -Ec '^DENY_AT=' "$WORKER_GATE")" -eq 1
 for worker in claudeb-worker codex-worker gemini-worker; do
   assert grep -Fq "$worker" "$WORKER_GATE"
 done
+for vendor in claudeb codex gemini; do
+  assert grep -Fq "vendor=$vendor" "$WORKER_GATE"
+done
+assert grep -Fq '"$WORKER_PICK" --account "$vendor"' "$WORKER_GATE"
+assert grep -Fq '[ "$router_rc" -eq 3 ]' "$WORKER_GATE"
+assert grep -Fq '$pct >= 100' "$WORKER_GATE"
+assert grep -Fq '$pct >= $warn' "$WORKER_GATE"
+assert grep -Fq 'fell back to local thresholds' "$WORKER_GATE"
 assert grep -Fq 'effective_pct' "$WORKER_GATE"
 assert grep -Fq '$reset != null and $reset <= $now then 0' "$WORKER_GATE"
 assert test -r "$WORKER_GATE_SETTINGS"
 assert eq "$(jq '[.hooks.PreToolUse[] | select(.matcher == "Agent") | .hooks[] | select(.command == "~/.claude/hooks/worker-limit-gate.sh")] | length' "$WORKER_GATE_SETTINGS")" 1
 assert eq "$(jq '[.hooks.PreToolUse[] | .hooks[]? | select(.command | test("(claudeb|codex)-limit-gate"))] | length' "$WORKER_GATE_SETTINGS")" 0
-assert grep -Fq 'warn at `85`%; block at `95`%' "$ROOT/$DOC"
+assert grep -Fq 'warned from `85`%' "$ROOT/$DOC"
+assert grep -Fq '`95`% is the protective block only when worker-pick is unavailable or fails' "$ROOT/$DOC"
+assert grep -Fq 'hard `100`% wall' "$ROOT/$DOC"
 assert doc_has 'Worker spawn pressure gate'
 
 reserved_set() {
@@ -329,6 +357,11 @@ assert grep -Fq 'cx_pin=$(conf codex_profile)' "$WORKERPICK"
 assert grep -Fq 'gm_pin=$(conf gemini_profile)' "$WORKERPICK"
 assert grep -Fq '.name == $cx_pin and (.walled | not)' "$WORKERPICK"
 assert grep -Fq '.name == $gm_pin and (.walled | not)' "$WORKERPICK"
-assert grep -Fq '$pin_account != null and ($pin_account.own | not) and $pin_account.auth_ok' "$WORKERPICK"
+assert grep -Fq '$pin_account != null and $pin_account.auth_ok and $pin_account.general_usable' "$WORKERPICK"
+# Own-account exclusion is automatic-selection-only (Egor, 2026-07-27): a pin reaches the
+# session's own account, so the gate must not regain an `.own` test and the footnote must
+# keep saying "automatic".
+assert test "$(grep -cF 'pin_account.own' "$WORKERPICK")" -eq 0
+assert grep -Fq 'excluded from automatic worker routing' "$WORKERPICK"
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, account pin precedence, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, and worker-pool membership) and match %s\n' "$asserts" "$DOC"
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, and worker-pool membership) and match %s\n' "$asserts" "$DOC"

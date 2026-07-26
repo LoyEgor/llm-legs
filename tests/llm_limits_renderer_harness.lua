@@ -23,11 +23,12 @@ function Styled.__concat(left, right)
   return result
 end
 
-local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptFn)
+local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptFn,
+    workerModel, fsAttributes)
   local mock = {
     alert = { show = alertFn or function() end },
     execute = function() return true end,
-    fs = { attributes = function() return nil end },
+    fs = { attributes = fsAttributes or function() return nil end },
     json = { decode = function()
       return type(fixture) == "function" and fixture() or fixture
     end },
@@ -36,8 +37,13 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
     task = { new = taskFactory or function() return nil end },
   }
   local fakeIo = setmetatable({
-    open = function()
-      return { read = function() return "fixture" end, close = function() end }
+    open = function(path)
+      local contents = "fixture"
+      if path:match("/%.claude/worker%-model$") then
+        if workerModel == nil then return nil end
+        contents = workerModel
+      end
+      return { read = function() return contents end, close = function() end }
     end,
   }, { __index = io })
   local env = setmetatable({ hs = mock, io = fakeIo }, { __index = _G })
@@ -67,6 +73,42 @@ local function accountIndex(menu, account)
   error("account row missing: " .. account)
 end
 
+local function accountHasMarker(menu, account)
+  for _, item in ipairs(menu) do
+    local text = titleText(item)
+    if text:sub(1, #account) == account
+        and (text:len() == #account or text:sub(#account + 1, #account + 1):match("%s")) then
+      return text:find("●", 1, true) ~= nil
+    end
+  end
+  error("account row missing: " .. account)
+end
+
+local function accountItem(menu, account)
+  for _, item in ipairs(menu) do
+    local text = titleText(item)
+    if text:sub(1, #account) == account
+        and (text:len() == #account or text:sub(#account + 1, #account + 1):match("%s")) then
+      return item
+    end
+  end
+  error("account row missing: " .. account)
+end
+
+local function submenuItem(row, title)
+  for _, item in ipairs(row.menu or {}) do
+    if titleText(item) == title then return item end
+  end
+  return nil
+end
+
+local function routingItem(menu)
+  for _, item in ipairs(menu) do
+    if titleText(item) == "Routing" then return item end
+  end
+  error("Routing row missing")
+end
+
 local function isRed(attributes)
   local color = attributes and attributes.color
   return color and color.red == 0.9 and color.green == 0.25 and color.blue == 0.2
@@ -90,6 +132,14 @@ end
 local function isGray(attributes)
   local color = attributes and attributes.color
   return color and color.red == 0.55 and color.green == 0.55 and color.blue == 0.55
+end
+
+local function accountMarkerIsGray(menu, account)
+  local item = accountItem(menu, account)
+  for _, run in ipairs(item.title.runs or {}) do
+    if run.text:find("●", 1, true) then return isGray(run.attributes) end
+  end
+  error("account marker missing: " .. account)
 end
 
 local function assertNoRed(item, message)
@@ -216,26 +266,140 @@ local fresh5h = accountIndex(menu, "fresh")
 assert(not isGray(menu[fresh5h + 1].title.attributes),
   "future resets_at was rendered dim")
 
-local codexFixture = { schema = 1, vendors = {
-  claude = { available = false },
+local pinFixture = { schema = 1, vendors = {
+  claude = { available = true, source = "claudeb-store", accounts = {
+    { account = "claude-current", is_current = true, five_hour = bucket(10) },
+    { account = "claude-pin", is_current = false, five_hour = bucket(20) },
+  } },
   codex = {
     available = true,
-    current_account = "wrong",
     accounts = {
-      { account = "marked", is_current = true, five_hour = bucket(10) },
-      { account = "wrong", is_current = false, five_hour = bucket(20) },
+      { account = "codex-current", is_current = true, five_hour = bucket(10) },
+      { account = "codex-pin", is_current = false, five_hour = bucket(20) },
     },
   },
+  gemini = { available = true, accounts = {
+    { account = "gemini-current", is_current = true, five_hour = bucket(10) },
+    { account = "gemini-pin", is_current = false, five_hour = bucket(20) },
+  } },
+}}
+local pinConfig = table.concat({
+  "claudeb_profile=claude-pin",
+  "codex_profile=codex-pin",
+  "gemini_profile=gemini-pin",
+}, "\n")
+local pinMenu = loadModule(pinFixture, nil, nil, nil, nil, pinConfig).menuItems()
+for _, vendor in ipairs({ "claude", "codex", "gemini" }) do
+  assert(accountHasMarker(pinMenu, vendor .. "-pin"), vendor .. " pin did not render ●")
+  assert(not accountHasMarker(pinMenu, vendor .. "-current"),
+    vendor .. " is_current rendered ● without a pin")
+  local pinnedToggle = submenuItem(accountItem(pinMenu, vendor .. "-pin"), "Pin for workers")
+  local unpinnedToggle = submenuItem(accountItem(pinMenu, vendor .. "-current"), "Pin for workers")
+  assert(pinnedToggle and pinnedToggle.checked == true,
+    vendor .. " pinned account did not render a checked pin toggle")
+  assert(unpinnedToggle and unpinnedToggle.checked == false,
+    vendor .. " unpinned account did not render an unchecked pin toggle")
+end
+
+local function claudePinMenu(block)
+  return loadModule({ schema = 1, vendors = {
+    claude = { available = true, source = "claudeb-store", accounts = { block } },
+    codex = { available = false },
+    gemini = { available = false },
+  } }, nil, nil, nil, nil, "claudeb_profile=pinned").menuItems()
+end
+
+local authLapsedMenu = claudePinMenu({
+  account = "pinned", auth_needed = true,
+})
+assert(accountHasMarker(authLapsedMenu, "pinned"), "auth-needed pin hid ●")
+assert(accountMarkerIsGray(authLapsedMenu, "pinned"), "auth-needed pin marker was not gray")
+local removedLapsedMenu = claudePinMenu({
+  account = "pinned", removed = true, five_hour = bucket(10),
+})
+assert(accountHasMarker(removedLapsedMenu, "pinned"), "removed pin hid ●")
+assert(accountMarkerIsGray(removedLapsedMenu, "pinned"), "removed pin marker was not gray")
+local limitLapsedMenu = claudePinMenu({
+  account = "pinned", five_hour = bucket(100),
+})
+assert(accountHasMarker(limitLapsedMenu, "pinned"), "at-limit pin hid ●")
+assert(accountMarkerIsGray(limitLapsedMenu, "pinned"), "at-limit pin marker was not gray")
+local honouredMenu = claudePinMenu({
+  account = "pinned", five_hour = bucket(10),
+})
+assert(accountHasMarker(honouredMenu, "pinned"), "honoured pin lost ●")
+assert(not accountMarkerIsGray(honouredMenu, "pinned"), "honoured pin marker was gray")
+local excludedHonouredMenu = claudePinMenu({
+  account = "pinned", enabled = false, five_hour = bucket(10),
+})
+assert(accountHasMarker(excludedHonouredMenu, "pinned"), "pool-excluded pin lost ●")
+assert(not accountMarkerIsGray(excludedHonouredMenu, "pinned"),
+  "pool-excluded honoured pin marker was gray")
+
+local routingNow = 200000
+local routingText = table.concat({
+  "NEXT: claudeb alpha  |  codex beta  |  gemini gamma",
+  "codex: beta  · exact spacing | main 5h 10%",
+  "gemini: gamma | main",
+  "claude: alpha | session*   (* = this session account, excluded from worker routing)",
+  "POLICY: preserve this text verbatim",
+  "DATA: 4 min old",
+  "SESSION: main — fb 12%, wk 34%",
+  "",
+  "# Worker routing policy",
+  "This must never render.",
+}, "\n")
+local routingFixture = { schema = 1, vendors = {
+  claude = { available = false },
+  codex = { available = false },
   gemini = { available = false },
 }}
-local codexMenu = loadModule(codexFixture).menuItems()
-local markedSeen, wrongSeen = false, false
-for _, item in ipairs(codexMenu) do
-  local text = titleText(item)
-  if text:find("marked", 1, true) then markedSeen = text:find("●", 1, true) ~= nil end
-  if text:find("wrong", 1, true) then wrongSeen = text:find("●", 1, true) ~= nil end
+local freshRouting = loadModule(routingFixture, nil, routingNow)
+freshRouting.routingCache = { text = routingText, at = routingNow }
+local freshRoutingMenu = routingItem(freshRouting.menuItems()).menu
+local expectedRouting = {
+  "NEXT: claudeb alpha",
+  "  codex beta",
+  "  gemini gamma",
+  "codex:",
+  "  beta  · exact spacing",
+  "  main 5h 10%",
+  "gemini:",
+  "  gamma",
+  "  main",
+  "claude:",
+  "  alpha",
+  "  session*",
+  "  (* = this session account, excluded from worker routing)",
+  "POLICY: preserve this text verbatim",
+  "DATA: 4 min old",
+  "SESSION: main — fb 12%, wk 34%",
+}
+assert(titleText(freshRoutingMenu[1]) == "as of " .. os.date("%H:%M", routingNow),
+  "routing cache caption changed")
+assert(#freshRoutingMenu == #expectedRouting + 1,
+  "routing policy heading or trailing lines were not truncated")
+for index, expected in ipairs(expectedRouting) do
+  assert(titleText(freshRoutingMenu[index + 1]) == expected,
+    "routing line was not rendered verbatim: " .. expected)
+  assert(freshRoutingMenu[index + 1].disabled == true, "routing line is clickable")
 end
-assert(markedSeen and not wrongSeen, "Codex marker did not trust is_current alone")
+
+local staleRouting = loadModule(routingFixture, nil, routingNow, nil, nil, nil,
+  function(path)
+    if path:match("%.llm%-limits%.json$") then return { modification = routingNow } end
+    return nil
+  end)
+staleRouting.routingCache = { text = routingText, at = routingNow - 1 }
+for _, item in ipairs(routingItem(staleRouting.menuItems()).menu) do
+  assert(isGray(item.title.attributes), "stale routing cache line was not dimmed")
+end
+
+local unavailableRouting = loadModule(routingFixture, nil, routingNow)
+local unavailableMenu = routingItem(unavailableRouting.menuItems()).menu
+assert(#unavailableMenu == 1 and titleText(unavailableMenu[1]) == "routing unavailable",
+  "missing routing cache did not render the unavailable row")
+assert(isGray(unavailableMenu[1].title.attributes), "routing unavailable row was not dimmed")
 
 -- Pool membership is one control with one meaning for every vendor, so the toggle has to exist
 -- on the Codex and Gemini rows too; without it the state is only reachable from a terminal.
@@ -395,6 +559,29 @@ local function captureTasks(sink)
   end
 end
 
+do
+  local tasks = {}
+  local mod = loadModule(pinFixture, captureTasks(tasks), nil, nil, nil, pinConfig)
+  local menu = mod.menuItems()
+  local cases = {
+    { account = "claude-pin", command = "claudeb", arg = "--clear" },
+    { account = "claude-current", command = "claudeb", arg = "claude-current" },
+    { account = "codex-pin", command = "codexb", arg = "--clear" },
+    { account = "codex-current", command = "codexb", arg = "codex-current" },
+    { account = "gemini-pin", command = "geminib", arg = "--clear" },
+    { account = "gemini-current", command = "geminib", arg = "gemini-current" },
+  }
+  for _, case in ipairs(cases) do
+    while #tasks > 0 do table.remove(tasks) end
+    submenuItem(accountItem(menu, case.account), "Pin for workers").fn()
+    local launched = tasks[1]
+    assert(launched and launched.path:find(case.command, 1, true),
+      case.account .. " pin toggle launched the wrong command")
+    assert(launched.args[1] == "use" and launched.args[2] == case.arg,
+      case.account .. " pin toggle launched the wrong use action")
+  end
+end
+
 local claudeLoginFixture = { schema = 1, vendors = {
   claude = {
     available = true, source = "claudeb-store",
@@ -433,7 +620,45 @@ local geminiAllAuthFixture = { schema = 1, vendors = {
   }},
 }}
 
--- Anti-divergence guard: every vendor's logged-out row is forced through the SAME
+do
+  local cases = {
+    {
+      vendor = "claude", fixture = claudeLoginFixture, account = "loggedout",
+      config = "claudeb_profile=loggedout", command = "claudeb",
+    },
+    {
+      vendor = "codex", fixture = codexLoginFixture, account = "codexout",
+      config = "codex_profile=codexout", command = "codexb",
+    },
+    {
+      vendor = "gemini", fixture = geminiMultiFixture, account = "work",
+      config = "gemini_profile=work", command = "geminib",
+    },
+  }
+  for _, case in ipairs(cases) do
+    local tasks = {}
+    local pinnedMenu = loadModule(case.fixture, captureTasks(tasks), nil, nil, nil,
+      case.config).menuItems()
+    local pinnedRow = accountItem(pinnedMenu, case.account)
+    local pin = submenuItem(pinnedRow, "Pin for workers")
+    assert(pin and pin.checked == true,
+      case.vendor .. " logged-out pin did not render a checked clear action")
+    assert(accountMarkerIsGray(pinnedMenu, case.account),
+      case.vendor .. " logged-out pin marker was not gray")
+    while #tasks > 0 do table.remove(tasks) end
+    pin.fn()
+    local launched = tasks[1]
+    assert(launched and launched.path:find(case.command, 1, true),
+      case.vendor .. " logged-out pin clear launched the wrong command")
+    assert(launched.args[1] == "use" and launched.args[2] == "--clear",
+      case.vendor .. " logged-out pin action was not clear-only")
+    local unpinnedMenu = loadModule(case.fixture, nil, nil, nil, nil, "").menuItems()
+    assert(submenuItem(accountItem(unpinnedMenu, case.account), "Pin for workers") == nil,
+      case.vendor .. " logged-out unpinned row offered pinning")
+  end
+end
+
+-- Anti-divergence guard: every vendor's unpinned logged-out row is forced through the SAME
 -- shape here. Adding a 4th vendor to this table automatically subjects it to the
 -- identical structural assertions (title, exactly {Log in…, Hard refresh, Remove…}
 -- in order, Remove… a one-item "Confirm remove <label>" submenu) while still proving
@@ -877,20 +1102,22 @@ assert(#upkeepTasks == 3, "periodic run past the throttle window did not fire")
 -- (never a collector — that writes the store and would loop), throttled so a
 -- burst of atomic rewrites collapses to few re-renders.
 local watchClock = { now = 1000 }
-local watchStarts, watchTasks = 0, 0
-local capturedPath, capturedFn, watcherStarted
+local watchStarts = 0
+local watchTasks = {}
+local watchCallbacks = {}
+local watcherStarted = {}
 local watchHs = {
   pathwatcher = {
     new = function(path, fn)
-      capturedPath = path
-      capturedFn = fn
-      return { start = function() watcherStarted = true end }
+      watchCallbacks[path] = fn
+      return { start = function() watcherStarted[path] = true end }
     end,
   },
-  task = { new = function()
-    watchTasks = watchTasks + 1
+  task = { new = function(path, callback, args)
+    local record = { path = path, callback = callback, args = args }
+    table.insert(watchTasks, record)
     return {
-      setEnvironment = function() end,
+      setEnvironment = function(_, env) record.env = env end,
       start = function() watchStarts = watchStarts + 1 return true end,
       isRunning = function() return false end,
     }
@@ -910,18 +1137,37 @@ assert(watchModule.shouldRerenderOnStoreChange(11, 10) == false, "sub-throttle s
 assert(watchModule.shouldRerenderOnStoreChange(12, 10) == true, "throttle-boundary store change must re-render")
 assert(watchModule.shouldRerenderOnStoreChange("x", 0) == false, "non-numeric clock must not re-render")
 
-assert(capturedPath == watchModule.cachePath, "watcher did not watch the store path")
-assert(watcherStarted, "store watcher was not started")
+assert(watchCallbacks[watchModule.cachePath], "watcher did not watch the store path")
+assert(watcherStarted[watchModule.cachePath], "store watcher was not started")
 assert(watchModule.storeWatcher ~= nil, "store watcher must be module-scoped so it is not GC'd")
+assert(watchCallbacks[watchModule.workerModelPath], "watcher did not watch worker-model")
+assert(watcherStarted[watchModule.workerModelPath], "worker-model watcher was not started")
+assert(watchModule.workerModelWatcher ~= nil,
+  "worker-model watcher must be module-scoped so it is not GC'd")
+assert(#watchTasks == 1 and watchStarts == 1, "startup did not refresh routing exactly once")
+assert(watchTasks[1].path == watchModule.workerPickPath, "startup launched the wrong routing command")
+assert(watchTasks[1].env.WORKER_PICK_CACHE_DIR == "/dev/null",
+  "routing refresh did not suppress worker-pick cache writes")
 
 local watchNotifies = 0
 watchModule.onRefreshStateChanged = function() watchNotifies = watchNotifies + 1 end
-watchClock.now = 2000; capturedFn()
-watchClock.now = 2001; capturedFn()
-watchClock.now = 2002; capturedFn()
+watchClock.now = 2000; watchCallbacks[watchModule.cachePath]()
+watchClock.now = 2001; watchCallbacks[watchModule.cachePath]()
+watchClock.now = 2002; watchCallbacks[watchModule.cachePath]()
 assert(watchNotifies == 2, "store watcher throttle did not collapse a burst to two re-renders")
-assert(watchStarts == 0, "store watcher must never start a collector task")
-assert(watchTasks == 0, "store watcher must never construct a collector task")
+assert(#watchTasks == 1 and watchStarts == 1,
+  "store watcher did not coalesce refreshes behind the startup task")
+watchTasks[1].callback(0, routingText)
+assert(watchNotifies == 3, "routing completion did not re-render the menu")
+assert(#watchTasks == 2 and watchStarts == 2,
+  "store watcher lost the routing refresh queued behind the startup task")
+for _, task in ipairs(watchTasks) do
+  assert(task.path == watchModule.workerPickPath, "watcher constructed a collector task")
+end
+watchTasks[2].callback(0, routingText)
+watchCallbacks[watchModule.workerModelPath]()
+assert(watchNotifies == 5, "worker-model watcher did not re-render the menu")
+assert(#watchTasks == 3 and watchStarts == 3, "worker-model watcher did not refresh routing")
 
 local experimentFixture = {
   schema = 1,

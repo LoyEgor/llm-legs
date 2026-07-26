@@ -17,6 +17,7 @@ resolve_root() {
 
 codexb_root=$(resolve_root)
 . "$codexb_root/share/worker-pool.sh"
+. "$codexb_root/share/worker-model.sh"
 
 is_disabled() { worker_pool_is_disabled "$pool_dir" "$1"; }
 set_disabled() { worker_pool_set_disabled "$pool_dir" "$1" "$2"; }
@@ -53,7 +54,7 @@ account_home() {
 
 reserved_name() {
   case "$1" in
-    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login|enable|disable) return 0 ;;
+    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login|enable|disable|use) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -238,6 +239,10 @@ show_status() {
 
 account_exists() { [ "$1" = main ] || [ -d "$profiles_dir/$1" ]; }
 
+pin_account() {
+  worker_model_pin_account codex_profile codexb account_names is_disabled "${1:-}"
+}
+
 enable_account() {
   local name="${1:-}"
   if [ -z "$name" ]; then
@@ -364,6 +369,7 @@ show_help() {
     'codexb remove <name> [--force]         Forget a profile and prune its cached quota; --force overrides the logged-in guard.' \
     'codexb enable <name>                   Return an account to worker selection.' \
     'codexb disable <name>                  Exclude an account from worker selection; it still runs when named.' \
+    'codexb use <name>|--clear              Pin worker selection to one account; no name prints the pin.' \
     'codexb list                            List profiles with login state.' \
     'codexb status                          Per-account login state and quota.' \
     'codexb pick                            Print the highest-priority usable account.'
@@ -395,6 +401,10 @@ case "${1:-}" in
   disable)
     shift
     disable_account "${1:-}"
+    ;;
+  use)
+    shift
+    pin_account "${1:-}"
     ;;
   list)
     [ "$#" -eq 1 ] || { printf 'usage: codexb list\n' >&2; exit 2; }

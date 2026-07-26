@@ -4,6 +4,9 @@ local M = {
   claudebCmd = "claudeb",
   codexbCmd = "codexb",
   geminibCmd = "geminib",
+  workerModelPath = os.getenv("HOME") .. "/.claude/worker-model",
+  workerPickPath = os.getenv("HOME") .. "/.local/bin/worker-pick",
+  routingFailed = false,
   wallsLog = nil,
   onRefreshStateChanged = function() end,
 }
@@ -24,24 +27,22 @@ local function infoTitle(text, warning, gray, atLimit)
   return hs.styledtext.new(text, attributes)
 end
 
-local function loginNeededTitle(account)
-  return infoTitle(account) .. infoTitle("  login needed", false, true)
+local function loginNeededTitle(account, pinned)
+  local title = infoTitle(account)
+  if pinned then title = title .. infoTitle("  ●", false, true) end
+  return title .. infoTitle("  login needed", false, true)
 end
 
--- The one shared shape for a logged-out row: every vendor (claude/codex accounts,
--- gemini vendor row, any future vendor) is forced through this so the actions and
--- their order can never silently diverge. Rotation/current/chat-switch all need live
--- credentials, so a logged-out row offers exactly {Log in…, Hard refresh, Remove…}.
--- Remove… is a one-item confirm submenu (misclick-safe without a modal dialog); its
--- single item fires the vendor's own remove command, which owns all store cleanup.
--- No worker-pool toggle here: pool membership only means anything for an account automatic
--- selection could actually reach, so offering it on a logged-out row claims an availability
--- that does not hold. The stored exclusion survives and reappears once the account is back.
-local function loginNeededRow(label, loginFn, hardRefreshFn, removeFn)
+-- Keep logged-out vendor actions in one constructor so their UX cannot drift; a pin action is
+-- clear-only because logged-out accounts must never become newly pinnable.
+local function loginNeededRow(label, loginFn, hardRefreshFn, removeFn, clearPinFn)
   local menu = {
     { title = "Log in…", fn = loginFn },
     { title = "Hard refresh", fn = hardRefreshFn },
   }
+  if clearPinFn then
+    table.insert(menu, { title = "Pin for workers", checked = true, fn = clearPinFn })
+  end
   -- A non-removable account (e.g. codex `main`, whose `remove` always refuses)
   -- passes removeFn=nil so the row never offers a dead Remove action.
   if removeFn then
@@ -49,14 +50,17 @@ local function loginNeededRow(label, loginFn, hardRefreshFn, removeFn)
       { title = "Confirm remove " .. label, fn = removeFn },
     } })
   end
-  return { title = loginNeededTitle(label), menu = menu }
+  return { title = loginNeededTitle(label, clearPinFn ~= nil), menu = menu }
 end
 
-local function geminiLoginNeededRow(label, account)
+local function geminiLoginNeededRow(label, account, pinned)
+  local clearPinFn
+  if pinned then clearPinFn = function() M.pinGemini(account, true) end end
   return loginNeededRow(label,
     function() M.loginGemini(account) end,
     function() M.hardRefreshGemini(account) end,
-    function() M.removeGemini(account) end)
+    function() M.removeGemini(account) end,
+    clearPinFn)
 end
 
 local function truncateText(text, maxLength)
@@ -232,6 +236,28 @@ local function readLlmLimits()
   return nil, "error reading cache: " .. tostring(result)
 end
 
+local function readWorkerPins()
+  local ok, pins = pcall(function()
+    local result = {}
+    local file = io.open(M.workerModelPath, "r")
+    if not file then return result end
+    local contents = file:read("*a")
+    file:close()
+    for line in tostring(contents):gmatch("[^\r\n]+") do
+      local key, value = line:match("^([%w_]+)=(.*)$")
+      if key == "claudeb_profile" then
+        result.claude = value
+      elseif key == "codex_profile" then
+        result.codex = value
+      elseif key == "gemini_profile" then
+        result.gemini = value
+      end
+    end
+    return result
+  end)
+  return ok and pins or {}
+end
+
 local function baseEnvironment()
   return {
     HOME = os.getenv("HOME"),
@@ -302,6 +328,45 @@ end
 
 local function notifyRefreshState()
   pcall(M.onRefreshStateChanged)
+end
+
+local routingTask = nil
+local routingRefreshPending = false
+
+function M.refreshRouting()
+  if routingTask then
+    routingRefreshPending = true
+    return
+  end
+  local task = hs.task.new(M.workerPickPath, function(exitCode, stdOut)
+    routingTask = nil
+    if exitCode == 0 and type(stdOut) == "string" and stdOut ~= "" then
+      M.routingCache = { text = stdOut, at = os.time() }
+      M.routingFailed = false
+    else
+      M.routingFailed = true
+    end
+    notifyRefreshState()
+    if routingRefreshPending then
+      routingRefreshPending = false
+      M.refreshRouting()
+    end
+  end, {})
+  if not task then
+    M.routingFailed = true
+    notifyRefreshState()
+    return
+  end
+  local environment = baseEnvironment()
+  environment.WORKER_PICK_CACHE_DIR = "/dev/null"
+  task:setEnvironment(environment)
+  routingTask = task
+  local ok, started = pcall(task.start, task)
+  if not ok or not started then
+    routingTask = nil
+    M.routingFailed = true
+    notifyRefreshState()
+  end
 end
 
 local function reserveTask(kind, budget, key)
@@ -500,6 +565,18 @@ function M.toggleGeminiAccount(name, currentlyEnabled)
   runGeminib({ currentlyEnabled and "disable" or "enable", name }, "toggle failed")
 end
 
+function M.pinClaude(name, currentlyPinned)
+  runClaudeb({ "use", currentlyPinned and "--clear" or name }, "pin failed")
+end
+
+function M.pinCodex(name, currentlyPinned)
+  runCodexb({ "use", currentlyPinned and "--clear" or name }, "pin failed")
+end
+
+function M.pinGemini(name, currentlyPinned)
+  runGeminib({ "use", currentlyPinned and "--clear" or name }, "pin failed")
+end
+
 local function refreshData(args, kind, budget, key, envExtra)
   if taskForKey(key) then return end
   local id = reserveTask(kind, budget, key)
@@ -624,6 +701,83 @@ local function splitCauseEntries(cause)
   return parts
 end
 
+local function splitLiteral(text, separator)
+  local parts, start = {}, 1
+  while true do
+    local first, last = text:find(separator, start, true)
+    if not first then
+      parts[#parts + 1] = text:sub(start)
+      return parts
+    end
+    parts[#parts + 1] = text:sub(start, first - 1)
+    start = last + 1
+  end
+end
+
+local function routingDisplayLines(lines)
+  local result = {}
+  for _, line in ipairs(lines) do
+    if line:sub(1, 6) == "NEXT: " then
+      local parts = splitLiteral(line, "  |  ")
+      result[#result + 1] = parts[1]
+      for index = 2, #parts do result[#result + 1] = "  " .. parts[index] end
+    else
+      local vendor, accounts = line:match("^(%a+): (.*)$")
+      if vendor == "codex" or vendor == "gemini" or vendor == "claude" then
+        local footnote
+        if vendor == "claude" then
+          local marker = "   (* = this session account"
+          local footnoteStart = accounts:find(marker, 1, true)
+          if footnoteStart then
+            footnote = accounts:sub(footnoteStart + 3)
+            accounts = accounts:sub(1, footnoteStart - 1)
+          end
+        end
+        result[#result + 1] = vendor .. ":"
+        for _, account in ipairs(splitLiteral(accounts, " | ")) do
+          result[#result + 1] = "  " .. account
+        end
+        if footnote then result[#result + 1] = "  " .. footnote end
+      else
+        result[#result + 1] = line
+      end
+    end
+  end
+  return result
+end
+
+local function routingSubmenu()
+  local cache = M.routingCache
+  if type(cache) ~= "table" or type(cache.text) ~= "string"
+      or type(cache.at) ~= "number" then
+    return {{ title = infoTitle("routing unavailable", false, true), disabled = true }}
+  end
+  local store = hs.fs.attributes(M.cachePath)
+  local gray = M.routingFailed == true
+    or (type(store) == "table" and type(store.modification) == "number"
+      and cache.at < store.modification)
+  local lines = {}
+  local normalized = cache.text:gsub("\r\n", "\n"):gsub("\r", "\n")
+  for line in (normalized .. "\n"):gmatch("(.-)\n") do
+    if line == "# Worker routing policy" then break end
+    table.insert(lines, line)
+  end
+  while #lines > 0 and lines[#lines]:match("^%s*$") do
+    table.remove(lines)
+  end
+  if #lines == 0 then
+    return {{ title = infoTitle("routing unavailable", false, true), disabled = true }}
+  end
+  local menu = {{
+    title = infoTitle("as of " .. os.date("%H:%M", cache.at), false, gray),
+    disabled = true,
+  }}
+  for _, line in ipairs(routingDisplayLines(lines)) do
+    table.insert(menu, { title = infoTitle(line, false, gray), disabled = true })
+  end
+  return menu
+end
+
 function M.menuItems()
   collectOnOpen()
 
@@ -658,7 +812,13 @@ function M.menuItems()
     end
     if announced then table.insert(menu, { title = "-" }) end
   end
+  table.insert(menu, {
+    title = infoTitle("Routing"),
+    menu = routingSubmenu(),
+  })
+  table.insert(menu, { title = "-" })
   if limits and type(limits.vendors) == "table" then
+    local pins = readWorkerPins()
     local vendors = {
       { key = "claude", label = "Claude" },
       { key = "codex", label = "Codex" },
@@ -677,10 +837,10 @@ function M.menuItems()
         local authNeeded = type(vendor) == "table" and vendor.auth_needed == true
         local unavailableRow
         if entry.key == "gemini" and authNeeded then
-          unavailableRow = geminiLoginNeededRow(entry.label, "main")
+          unavailableRow = geminiLoginNeededRow(entry.label, "main", pins.gemini == "main")
         else
           unavailableRow = {
-            title = authNeeded and loginNeededTitle(entry.label)
+            title = authNeeded and loginNeededTitle(entry.label, false)
               or infoTitle(string.format("%-6s  no live data", entry.label)),
             disabled = true,
           }
@@ -741,11 +901,21 @@ function M.menuItems()
           local fiveHour = block.five_hour or {}
           local weekly = block.weekly
           local acct = block.account or entry.label
-          local isCurrent = block.is_current == true
           local enabled = block.enabled ~= false
           local authNeeded = block.auth_needed == true
           local accountAge = not authNeeded and formatAccountAge(block.as_of) or nil
           local generalAtLimit = bucketAtLimit(fiveHour) or bucketAtLimit(weekly)
+          local pinExists = pins[entry.key] == acct
+          local pinHonoured = pinExists and block.removed ~= true
+            and not authNeeded and not generalAtLimit
+          local pinFn
+          if entry.key == "claude" then
+            pinFn = function(pinned) M.pinClaude(acct, pinned) end
+          elseif entry.key == "codex" then
+            pinFn = function(pinned) M.pinCodex(acct, pinned) end
+          else
+            pinFn = function(pinned) M.pinGemini(acct, pinned) end
+          end
           if isAccountRows then
             local resetCredits = tonumber(block.reset_credits)
             local resetSuffix = resetCredits and resetCredits > 0
@@ -763,15 +933,20 @@ function M.menuItems()
                 -- codexb refuses to remove `main` (the real ~/.codex); no Remove item.
                 if acct ~= "main" then removeFn = function() M.removeCodex(acct) end end
               else
-                accountRow = geminiLoginNeededRow(acct, acct)
+                accountRow = geminiLoginNeededRow(acct, acct, pinExists)
               end
               if not accountRow then
-                accountRow = loginNeededRow(acct, loginFn, hardRefreshFn, removeFn)
+                local clearPinFn
+                if pinExists then clearPinFn = function() pinFn(true) end end
+                accountRow = loginNeededRow(acct, loginFn, hardRefreshFn, removeFn, clearPinFn)
               end
             else
+              local title = accountTitle(acct .. resetSuffix, accountAge, generalAtLimit)
+              if pinExists then
+                title = title .. infoTitle("  ●", false, not pinHonoured)
+              end
               accountRow = {
-                title = accountTitle(acct .. resetSuffix .. (isCurrent and "  ●" or ""),
-                  accountAge, generalAtLimit),
+                title = title,
                 disabled = true,
               }
               if hasAccountControls then
@@ -808,6 +983,13 @@ function M.menuItems()
                   { title = "Hard refresh",
                     fn = function() M.hardRefreshGemini(acct) end },
                 }
+              end
+              if accountRow.menu and (block.removed ~= true or pinExists) then
+                table.insert(accountRow.menu, 2, {
+                  title = "Pin for workers",
+                  checked = pinExists,
+                  fn = function() pinFn(pinExists) end,
+                })
               end
             end
             table.insert(menu, accountRow)
@@ -905,6 +1087,12 @@ local function onStoreChanged()
   local now = os.time()
   if not M.shouldRerenderOnStoreChange(now, lastStoreRenderEpoch) then return end
   lastStoreRenderEpoch = now
+  M.refreshRouting()
+  notifyRefreshState()
+end
+
+local function onWorkerModelChanged()
+  M.refreshRouting()
   notifyRefreshState()
 end
 
@@ -914,6 +1102,9 @@ end
 if hs.pathwatcher then
   M.storeWatcher = hs.pathwatcher.new(M.cachePath, onStoreChanged)
   if M.storeWatcher then M.storeWatcher:start() end
+  M.workerModelWatcher = hs.pathwatcher.new(M.workerModelPath, onWorkerModelChanged)
+  if M.workerModelWatcher then M.workerModelWatcher:start() end
+  M.refreshRouting()
 end
 
 return M

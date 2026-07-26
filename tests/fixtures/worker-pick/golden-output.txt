@@ -1,7 +1,7 @@
 NEXT: claudeb worker · opus · high — ACCOUNT: worker; pre-reset cap 50%  |  codex main · high — FRESH  |  gemini main · pro · high — ACCOUNT: main; pre-reset cap 65% — FRESH
 codex: main 48% runway 152% ↻1 (5h→?, wk→?)
 gemini: main 25% runway 75% (5h→?, wk→?)
-claude: session($100)* 5h 20% wk 20% fb 10% score 70 cap 70% | worker($20) 5h 30% wk 40% fb 70% score 20 cap 50% no-Fable   (* = this session account, excluded from worker routing)
+claude: session($100)* 5h 20% wk 20% fb 10% score 70 cap 70% | worker($20) 5h 30% wk 40% fb 70% score 20 cap 50% no-Fable   (* = this session account, excluded from automatic worker routing)
 POLICY: Codex main is last-resort; codex FRESH (main, runway 152%, ↻1 manual); claudeb worker score 20; gemini FRESH (main, runway 75%); Gemini auto-routing remains conservative until benchmarked
 DATA: fresh (0 min old)
 SESSION: session — fb 10%, wk 20%
@@ -17,7 +17,7 @@ SESSION: session — fb 10%, wk 20%
 - When Codex is FRESH, route roughly five of every ten suitable tasks to Codex. Reduce that share as the data-driven verdict tightens.
 - Use the claudeb model and effort exactly as `NEXT:` prints them — R8 may have stepped them one rung down the ladder `opus·high → opus·medium → sonnet·high` to spare an account's Fable quota; override upward only when the task genuinely needs it.
 - claudeb sonnet runs at effort high or above — sonnet·medium and below are never used; opus may run at medium.
-- Always use the concrete account and pre-reset cap from `NEXT:`. Never route a worker to the session account.
+- Always use the concrete account and pre-reset cap from `NEXT:`. Never route a worker to the session account unless an explicit pin names it — a pin overrides the session-account exclusion; hard walls (effective 100%, dead auth) still apply.
 - Treat the Codex and Gemini `main` profiles as last-resort: every usable non-main account of the same vendor ranks ahead of its `main`.
 - Account selection is headroom-dominant for non-Fable work: prefer the account with the most 5h effective headroom to balance spend across accounts. Small-tier accounts (olx, $20/month) are full citizens for any non-Fable task at any effort.
 - Headroom cannot exceed HEADROOM_PCT (90%); if all candidates are above it, pick the least-burnt and note `WARN` in `NEXT`.

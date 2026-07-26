@@ -465,4 +465,43 @@ printf '{"tokens":{"access_token":"","refresh_token":""}}\n' >"$HOME/.codex-prof
 assert bash "$SCRIPT" remove deadcx
 assert test ! -e "$HOME/.codex-profiles/deadcx"
 
-echo "PASS: $asserts asserts; add and shared-link trap, worker-pool exclusion (pick skips it, direct run still reaches it, last member protected, visible in list/status), list/status, quota-aware authenticated pick with main-last priority, reset credits, auth-needed cache markers, dead-token classification (short cause, no raw RPC blob) with list/status/pick honoring the marker over lying local auth.json, a transient non-auth error preserving the definite auth verdict while fresh weather on a never-marked account stays non-auth, and marker recovery only on a genuinely good probe, exact run environments/arguments, one-step profile auto-create with shared links, browser-OAuth menu login passthrough with device-auth de-advertised everywhere yet still working manually, and missing-name guard, existing-profile relaunch stays quiet, creation-only reserved-name guards, leading-hyphen and charset rejection parity, multi-account cache compatibility, remove forgets profiles including reserved legacy names and prunes the cache entry (main refused)"
+PIN_CONFIG="$WORK/worker-model-use"
+printf 'worker=auto\nclaudeb_profile=claude-a\ngemini_profile=gemini-a\n' >"$PIN_CONFIG"
+assert env WORKER_PICK_CONFIG_FILE="$PIN_CONFIG" bash "$SCRIPT" use main
+assert grep -qx 'codex_profile=main' "$PIN_CONFIG"
+assert env WORKER_PICK_CONFIG_FILE="$PIN_CONFIG" bash "$SCRIPT" use alpha
+assert grep -qx 'codex_profile=alpha' "$PIN_CONFIG"
+assert test "$(grep -c '^codex_profile=' "$PIN_CONFIG")" = 1
+assert grep -qx 'worker=auto' "$PIN_CONFIG"
+assert grep -qx 'claudeb_profile=claude-a' "$PIN_CONFIG"
+assert grep -qx 'gemini_profile=gemini-a' "$PIN_CONFIG"
+pin_output=$(env WORKER_PICK_CONFIG_FILE="$PIN_CONFIG" bash "$SCRIPT" use)
+assert grep -qx 'codexb: workers are pinned to alpha' <<<"$pin_output"
+assert env WORKER_PICK_CONFIG_FILE="$PIN_CONFIG" bash "$SCRIPT" use --clear
+assert_fails grep -q '^codex_profile=' "$PIN_CONFIG"
+assert grep -qx 'worker=auto' "$PIN_CONFIG"
+pin_rc=0
+env WORKER_PICK_CONFIG_FILE="$PIN_CONFIG" bash "$SCRIPT" use missing >/dev/null 2>&1 || pin_rc=$?
+assert test "$pin_rc" -eq 2
+pin_rc=0
+env WORKER_PICK_CONFIG_FILE="$PIN_CONFIG" bash "$SCRIPT" use ../alpha >/dev/null 2>&1 || pin_rc=$?
+assert test "$pin_rc" -eq 2
+assert_fails grep -q '^codex_profile=' "$PIN_CONFIG"
+UNREADABLE_PIN="$WORK/worker-model-unreadable"
+printf 'worker=auto\ncodex_profile=alpha\n' >"$UNREADABLE_PIN"
+chmod 000 "$UNREADABLE_PIN"
+if [ -r "$UNREADABLE_PIN" ]; then
+  printf 'SKIP: unreadable-pin case (running with read-everything privileges)\n'
+else
+  pin_rc=0
+  env WORKER_PICK_CONFIG_FILE="$UNREADABLE_PIN" bash "$SCRIPT" use --clear \
+    >"$WORK/unreadable-pin.out" 2>&1 || pin_rc=$?
+  assert test "$pin_rc" -eq 2
+  assert grep -q 'exists but cannot be read' "$WORK/unreadable-pin.out"
+  chmod 600 "$UNREADABLE_PIN"
+  assert grep -qx 'worker=auto' "$UNREADABLE_PIN"
+  assert grep -qx 'codex_profile=alpha' "$UNREADABLE_PIN"
+fi
+chmod 600 "$UNREADABLE_PIN"
+
+echo "PASS: $asserts asserts; add and shared-link trap, worker-pool exclusion (pick skips it, direct run still reaches it, last member protected, visible in list/status), list/status, quota-aware authenticated pick with main-last priority, reset credits, auth-needed cache markers, dead-token classification (short cause, no raw RPC blob) with list/status/pick honoring the marker over lying local auth.json, a transient non-auth error preserving the definite auth verdict while fresh weather on a never-marked account stays non-auth, and marker recovery only on a genuinely good probe, exact run environments/arguments, one-step profile auto-create with shared links, browser-OAuth menu login passthrough with device-auth de-advertised everywhere yet still working manually, and missing-name guard, existing-profile relaunch stays quiet, creation-only reserved-name guards, leading-hyphen and charset rejection parity, multi-account cache compatibility, remove forgets profiles including reserved legacy names and prunes the cache entry (main refused), and use pin set/show/clear/refusal parity"

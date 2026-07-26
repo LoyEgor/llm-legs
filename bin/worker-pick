@@ -445,14 +445,13 @@ summary=$(jq -r \
    else null end) as $headroom_warn |
   (if $headroom_warn != null then ($cl_candidates[0] // null) else $rec end) as $rec_final |
   (first($cl_accounts[] | select(.name == $pin)) // null) as $pin_account |
-  (if $pin_account != null and ($pin_account.own | not) and $pin_account.auth_ok and
-      $pin_account.general_usable and ($pin_account.walled | not) and
+  (if $pin_account != null and $pin_account.auth_ok and $pin_account.general_usable and
+      ($pin_account.walled | not) and
       (($pin_account.name | IN($qx[])) | not) and ($pin_account.h5 | type) == "number"
    then ($pin_account | .cap = .pin_cap) else null end) as $pin_rec |
   (if $pin == "" or $pin_rec != null then ""
    elif ($pin | IN($qx[])) then "excluded"
    elif $pin_account == null then "absent"
-   elif $pin_account.own then "session-owned"
    elif ($pin_account.auth_ok | not) then "auth unavailable"
    elif ($pin_account.general_usable | not) then "blocked"
    elif $pin_account.walled then "exhausted"
@@ -551,7 +550,7 @@ if [ -n "$cb_pin" ] && [ -n "$pin_rec" ]; then
   rec_reserved=$pin_reserved
   rec_demote=$pin_demote
   resolve_recommendation
-  cb_next="claudeb $pin_rec · $cb_model · $cb_effort (pinned; pre-reset cap ${pin_cap}%)$demote_note"
+  cb_next="claudeb $pin_rec · $cb_model · $cb_effort (PINNED; pre-reset cap ${pin_cap}%)$demote_note"
   cb_cache="cb@$pin_rec"
 elif [ -n "$cb_pin" ]; then
   if [ -n "$rec" ]; then
@@ -676,7 +675,7 @@ else
 fi
 printf '%s\n' "$cx_line"
 printf '%s\n' "$gm_line"
-printf '%s   (* = this session account, excluded from worker routing)\n' "$cl_line"
+printf '%s   (* = this session account, excluded from automatic worker routing)\n' "$cl_line"
 printf 'POLICY: %s\n' "$verdict"
 printf 'DATA: %s\n' "$age"
 if [ -n "$session_acct" ]; then

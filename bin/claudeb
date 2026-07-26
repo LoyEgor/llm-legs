@@ -15,6 +15,7 @@ resolve_root() {
 }
 claudeb_root=$(resolve_root)
 . "$claudeb_root/share/worker-pool.sh"
+. "$claudeb_root/share/worker-model.sh"
 
 base_dir="${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}"
 tokens_dir="$base_dir/tokens"
@@ -184,73 +185,12 @@ account_data() {
 is_disabled() { worker_pool_is_disabled "$pool_dir" "$1"; }
 set_disabled() { worker_pool_set_disabled "$pool_dir" "$1" "$2"; }
 
-worker_model_file() { printf '%s' "${WORKER_PICK_CONFIG_FILE:-$HOME/.claude/worker-model}"; }
-
-# "No file yet" is a normal state — the pin is optional and `use` is what creates the file.
-# Without the guard `pipefail` turns sed's missing-file exit into an abort of the whole CLI.
 pinned_account() {
-  local file
-  file=$(worker_model_file)
-  [ -f "$file" ] || return 0
-  [ -r "$file" ] || return 1
-  sed -n 's/^claudeb_profile=//p' "$file" 2>/dev/null | head -n1 || true
+  worker_model_pinned_account claudeb_profile
 }
 
-# The pin is the one place a human says "this account", and every consumer already reads it:
-# worker-pick's routing, the worker spawn gate, the statusline. So `use` writes there instead
-# of keeping a second notion of "chosen" — and it deliberately leaves `worker=` alone, because
-# naming an account must not also re-route work to a different vendor.
 pin_account() {
-  local name="${1:-}" file tmp near current
-  file=$(worker_model_file)
-  # Absent is normal — `use` creates it. Present but unreadable must stop everything: treating
-  # that as "no pin" would both lie about the current pin and, on the write path below, replace
-  # every other key in the file with a single line.
-  if ! current=$(pinned_account); then
-    printf 'claudeb: %s exists but cannot be read; refusing to touch the pin\n' "$file" >&2
-    return 2
-  fi
-  case "$name" in
-    '')
-      if [ -n "$current" ]; then printf 'claudeb: workers are pinned to %s\n' "$current"
-      else printf 'claudeb: no pin — workers follow worker-pick\n'
-      fi
-      return 0
-      ;;
-    --clear)
-      if [ -z "$current" ]; then
-        printf 'claudeb: no pin to clear\n'
-        return 0
-      fi
-      ;;
-    *)
-      # Shape-checked before the store lookup: this is reached from a web handler
-      # (find-truth's account dropdown), where a path-shaped name must never become a lookup
-      # outside the token store or a line other consumers then read back as an account.
-      if ! [[ "$name" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]] || [ ! -f "$tokens_dir/$name" ]; then
-        printf 'claudeb: unknown account: %s\n' "$name" >&2
-        near=$(similar_account_names "$name" || true)
-        [ -z "$near" ] || printf 'claudeb: did you mean %s?\n' "$near" >&2
-        return 2
-      fi
-      ;;
-  esac
-  mkdir -p "$(dirname "$file")"
-  tmp="$file.tmp.$$"
-  {
-    if [ -r "$file" ]; then grep -v '^claudeb_profile=' "$file" || true; fi
-    [ "$name" = --clear ] || printf 'claudeb_profile=%s\n' "$name"
-  } > "$tmp"
-  mv "$tmp" "$file"
-  if [ "$name" = --clear ]; then
-    printf 'claudeb: cleared the pin — workers follow worker-pick again\n'
-    return 0
-  fi
-  printf 'claudeb: pinned workers to %s\n' "$name"
-  if is_disabled "$name"; then
-    printf 'claudeb: note: %s is out of the worker pool; the direct pin still overrides automatic pool exclusion\n' \
-      "$name" >&2
-  fi
+  worker_model_pin_account claudeb_profile claudeb account_names is_disabled "${1:-}"
 }
 
 selection() {

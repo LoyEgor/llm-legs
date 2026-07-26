@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # PreToolUse(Agent) for relay-worker spawns: rewrite the call's
 # description to the canonical `<account> · [<model> · ]<effort>: <title>`
-# form deterministically — account from the pin/codexb, model+effort
+# form deterministically — account from the brief/router fallback, model+effort
 # from the brief's MODEL:/EFFORT: lines with worker-model defaults — instead
 # of trusting the orchestrating model to compose it. Fail-open: on any doubt
 # leave the call untouched.
 set -u
 
 input=$(cat) || exit 0
+WORKER_PICK="${WORKER_SPAWN_WORKER_PICK:-/Volumes/Work/Projects/llm-legs/bin/worker-pick}"
 
 field() { printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null; }
 
@@ -23,6 +24,10 @@ prompt=$(field '.tool_input.prompt')
 
 worker_conf() { sed -n "s/^$1=//p" "$HOME/.claude/worker-model" 2>/dev/null | head -n1; }
 brief_line() { printf '%s' "$prompt" | grep -m1 -oE "^$1:[[:space:]]*[A-Za-z0-9_.-]+" | sed -E "s/^$1:[[:space:]]*//"; }
+route_account() {
+  [ -x "$WORKER_PICK" ] || return 0
+  "$WORKER_PICK" --account "$1" 2>/dev/null || true
+}
 
 # Derive codex model short label: from ~/.codex/config.toml model id last dash-segment, fallback 'sol'.
 codex_model_short_label() {
@@ -34,8 +39,9 @@ codex_model_short_label() {
 }
 
 if [ "$subagent" = claudeb-worker ]; then
-  acct=$(worker_conf claudeb_profile)
-  [ -n "$acct" ] || acct=$(brief_line ACCOUNT)
+  acct=$(brief_line ACCOUNT)
+  [ -n "$acct" ] || acct=$(route_account claudeb)
+  [ -n "$acct" ] || acct=$(worker_conf claudeb_profile)
   model=$(brief_line MODEL)
   [ -n "$model" ] || model=$(worker_conf claudeb_model)
   [ -n "$model" ] || model=opus
@@ -44,8 +50,9 @@ if [ "$subagent" = claudeb-worker ]; then
   [ -n "$effort" ] || effort=high
   if [ -n "$acct" ]; then prefix="$acct · $model · $effort"; else prefix="$model · $effort"; fi
 elif [ "$subagent" = codex-worker ]; then
-  acct=$(worker_conf codex_profile)
-  [ -n "$acct" ] || acct=$("$HOME/.local/bin/codexb" pick 2>/dev/null | tail -n1 | tr -cd 'A-Za-z0-9_.-')
+  acct=$(brief_line ACCOUNT)
+  [ -n "$acct" ] || acct=$(route_account codex)
+  [ -n "$acct" ] || acct=$(worker_conf codex_profile)
   [ -n "$acct" ] || acct=main
   effort=$(brief_line EFFORT)
   [ -n "$effort" ] || effort=$(worker_conf codex_effort)
@@ -53,8 +60,9 @@ elif [ "$subagent" = codex-worker ]; then
   codex_model=$(codex_model_short_label)
   prefix="$acct · $codex_model · $effort"
 else
-  acct=$(worker_conf gemini_profile)
-  [ -n "$acct" ] || acct=$(brief_line ACCOUNT)
+  acct=$(brief_line ACCOUNT)
+  [ -n "$acct" ] || acct=$(route_account gemini)
+  [ -n "$acct" ] || acct=$(worker_conf gemini_profile)
   [ -n "$acct" ] || acct=main
   model=$(brief_line MODEL)
   [ -n "$model" ] || model=$(worker_conf gemini_model)
