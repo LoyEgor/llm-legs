@@ -264,6 +264,18 @@ assert_fails env "$SCRIPT" run glm-5.2 hello 2>"$WORK/err"
 assert test "$(calls)" = 1
 assert grep -q 'HTTP 429' "$WORK/err"
 
+# ...but a 2xx that died mid-body promised success and delivered a truncated one, so it goes
+# back down the transport-failure path instead of being parsed as a complete answer.
+reset_calls
+printf '{"id":"x","choices":[{"index":0,"message":{"role":"assist' >"$WORK/truncated.json"
+{ printf '200|%s|0|18\n' "$WORK/truncated.json"; printf '200|%s|0\n' "$WORK/answer.json"; } \
+  >"$CURL_PLAN"
+out=$("$SCRIPT" run glm-5.2 hello 2>"$WORK/err") \
+  || fail "a failed 2xx was not retried: $(cat "$WORK/err")"
+assert test "$out" = ANSWERED
+assert test "$(calls)" = 2
+assert grep -q 'HTTP 000' "$WORK/err"
+
 # A provider error inside a stream carries no content either; retiring a reasoning-off
 # strategy for it burns the negotiation on an outage and hides the error.
 reset_calls

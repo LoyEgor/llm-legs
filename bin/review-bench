@@ -838,14 +838,55 @@ CLEAN_REVIEW_RE = re.compile(
 )
 
 
-def clean_review_declared(text):
-    # The marker has to be the whole answer: matched anywhere, a rater that writes "found no
-    # findings there, but here is a real defect" and then rambles is recorded as a clean run.
+ANSWER_KEYS = frozenset({"result", "message", "text", "content", "answer", "output"})
+
+
+def clean_marker_candidates(text):
     body = (text or "").strip()
     fence = re.fullmatch(r"```[A-Za-z]*\s*(.*?)\s*```", body, re.DOTALL)
     if fence:
         body = fence.group(1)
-    return bool(CLEAN_REVIEW_RE.fullmatch(body.strip().strip("`").strip().rstrip(".").strip()))
+    yield body
+    # Claude hands over its whole result envelope and Codex appends event JSON to the answer,
+    # so a clean review arrives as a string inside JSON rather than as the entire text. Only the
+    # keys that carry the answer are read: offering every string would let
+    # {"status": "NO FINDINGS", "detail": "<a real defect>"} pass as a clean review.
+    prose = []
+    for line in (body.splitlines() if "\n" in body else [body]):
+        line = line.strip()
+        document = None
+        if line[:1] in ("{", "["):
+            try:
+                document = json.loads(line)
+            except ValueError:
+                document = None
+        if document is None:
+            if line:
+                prose.append(line)
+            continue
+        stack = [document]
+        while stack:
+            item = stack.pop()
+            if isinstance(item, dict):
+                for key, value in item.items():
+                    if isinstance(value, str) and key in ANSWER_KEYS:
+                        yield value
+                    else:
+                        stack.append(value)
+            elif isinstance(item, list):
+                stack.extend(item)
+    # What is left once the machine events are dropped is the answer the rater actually wrote.
+    if prose:
+        yield "\n".join(prose)
+
+
+def clean_review_declared(text):
+    # The marker has to be the whole answer: matched anywhere, a rater that writes "found no
+    # findings there, but here is a real defect" and then rambles is recorded as a clean run.
+    for candidate in clean_marker_candidates(text):
+        if CLEAN_REVIEW_RE.fullmatch(candidate.strip().strip("`").strip().rstrip(".").strip()):
+            return True
+    return False
 
 
 def unusable_review(text, findings):
@@ -1432,28 +1473,70 @@ VERIFY_TIMEOUT_S = 300
 def repo_tree(repo, sha):
     # The parent's tree too, or a citation of a file the commit deletes resolves against
     # nothing — and that citation is exactly the one file_at_commit reads from the parent.
-    names = []
+    # The two stay separate tiers: merged, a commit adding `new/foo.sh` beside the parent's
+    # `old/foo.sh` makes a bare `foo.sh` citation ambiguous and it resolves to neither.
+    tiers = []
     for ref in (sha, f"{sha}^"):
         proc = subprocess.run(["git", "ls-tree", "-r", "--name-only", ref],
                               cwd=repo, capture_output=True, text=True)
-        if proc.returncode == 0:
-            names.extend(proc.stdout.splitlines())
-    return sorted(set(names))
+        tiers.append(sorted(set(proc.stdout.splitlines())) if proc.returncode == 0 else [])
+    return {"reviewed": tiers[0], "parent": tiers[1]}
+
+
+def tree_tiers(tree):
+    if isinstance(tree, dict):
+        return [tier for tier in (tree.get("reviewed"), tree.get("parent")) if tier]
+    return [tree]
+
+
+def _exact_in_tier(path, tree):
+    return path if path in tree else None
+
+
+def _suffix_across_tiers(path, tiers):
+    # The longest suffix is the most specific spelling of the same file, so it outranks tier
+    # order: asked tier by tier, an absolute citation of the parent's `old/foo.sh` would answer
+    # with a bare `foo.sh` the reviewed tree happens to have.
+    hits = [(index, name) for index, tier in enumerate(tiers)
+            for name in tier if path.endswith("/" + name)]
+    if not hits:
+        return None
+    return max(hits, key=lambda hit: (len(hit[1]), -hit[0]))[1]
+
+
+def _basename_across_tiers(path, tiers):
+    """The loosest rule, so ambiguity is judged across every tier at once.
+
+    Asking one tier at a time would answer a citation the reviewed tree cannot place with a
+    same-named file from it anyway, and would call a basename unique that the parent also has.
+    """
+    tail = path.rsplit("/", 1)[-1]
+    hits = [(index, name) for index, tier in enumerate(tiers)
+            for name in tier if name.rsplit("/", 1)[-1] == tail]
+    if len(hits) == 1:
+        return hits[0][1]
+    deeper = [hit for hit in hits if hit[1].endswith(path)]
+    if len(deeper) == 1:
+        return deeper[0][1]
+    reviewed = [hit for hit in (deeper or hits) if hit[0] == 0]
+    return reviewed[0][1] if len(reviewed) == 1 else None
 
 
 def resolve_in_tree(path, tree):
+    """Exact spellings win everywhere before any guess is made anywhere.
+
+    Ordering the tiers inside each rule instead of the rules inside each tier is what keeps a
+    precise citation of a file only the parent has from being rewritten to a same-named file
+    the reviewed commit introduces.
+    """
     if not path:
         return None
-    if path in tree:
-        return path
-    suffix_hits = [name for name in tree if path.endswith("/" + name)]
-    if suffix_hits:
-        return max(suffix_hits, key=len)
-    tail = path.rsplit("/", 1)[-1]
-    basename_hits = [name for name in tree if name.rsplit("/", 1)[-1] == tail]
-    if len(basename_hits) == 1:
-        return basename_hits[0]
-    return None
+    tiers = tree_tiers(tree)
+    for tier in tiers:
+        hit = _exact_in_tier(path, tier)
+        if hit:
+            return hit
+    return _suffix_across_tiers(path, tiers) or _basename_across_tiers(path, tiers)
 
 
 def canonical_finding_path(path, tree):
@@ -1579,6 +1662,7 @@ def verify_one(index, finding, repo, sha, model, lines, ref=None):
         "--json", "--max-tokens", str(VERIFY_MAX_TOKENS), "--no-reasoning", "--retries", "2",
     ]
     OPENCODE_GATE.acquire(0)
+    proc, judgment, walled = None, None, False
     try:
         # Re-checked after the gate for the same reason run_opencode does it: verifiers
         # queued when the wall was set would each send one more doomed request.
@@ -1600,11 +1684,17 @@ def verify_one(index, finding, repo, sha, model, lines, ref=None):
         judgment = None
         proc = None
     finally:
+        # The wall is recorded before the gate is released, or a verifier queued on this slot
+        # acquires it in between, passes the post-gate check and sends one more doomed request.
+        walled = bool(
+            proc is not None and proc.returncode != 0 and opencode_usage_wall(proc.stderr)
+        )
+        if walled:
+            mark_walled("opencode", account)
         OPENCODE_GATE.release()
         Path(prompt_file.name).unlink(missing_ok=True)
     row = verify_row(index, finding)
-    if proc is not None and proc.returncode != 0 and opencode_usage_wall(proc.stderr):
-        mark_walled("opencode", account)
+    if walled:
         return unverified_row(
             index, finding, "verifier hit the plan's usage wall; finding kept unverified"
         )
@@ -1656,6 +1746,9 @@ def agy_failure_detail(stderr, log_text):
         r"jetski: no output produced[^\n]*",
         r"Individual quota reached[^\n]*",
         r"RESOURCE_EXHAUSTED[^\n]*",
+        # Antigravity reports a per-model exhaustion only in its log, and SIDE_WALL reads the
+        # stderr this detail becomes: unrecognised here, the wall never retires the account.
+        r"exhausted your capacity on this model[^\n]*",
         r"You are not logged into Antigravity[^\n]*",
         r"tool required the .command. permission[^\n]*",
     )

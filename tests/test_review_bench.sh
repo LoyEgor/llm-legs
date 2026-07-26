@@ -888,10 +888,31 @@ assert rb.file_at_commit(deleted_repo, deleted_sha, "never.sh") == (None, delete
 # ...and the citation has to survive canonicalisation to get that far: a file the commit
 # deletes is absent from its own tree, so the parent's tree is part of the tree too.
 deleted_tree = rb.repo_tree(deleted_repo, deleted_sha)
-assert "gone.sh" in deleted_tree, deleted_tree
+assert "gone.sh" in rb.tree_tiers(deleted_tree)[-1], deleted_tree
 assert rb.canonical_finding_path(
     "/private/var/folders/x/review-bench-seal-ab12/gone.sh", deleted_tree
 ) == "gone.sh"
+
+# The tiers stay ordered: a basename the reviewed commit introduces wins over the same
+# basename the parent already had, which a merged tree resolved to neither.
+ambiguous_tree = {"reviewed": ["new/foo.sh"], "parent": ["old/foo.sh"]}
+assert rb.canonical_finding_path("foo.sh", ambiguous_tree) == "new/foo.sh"
+assert rb.canonical_finding_path("old/foo.sh", ambiguous_tree) == "old/foo.sh"
+# The looser the rule, the wider the ambiguity check has to be: a deeper citation the reviewed
+# tree cannot place belongs to the parent's file, not to a same-named file in the reviewed one...
+assert rb.canonical_finding_path(
+    "sub/bar.py", {"reviewed": ["other/bar.py"], "parent": ["dir/sub/bar.py"]}
+) == "dir/sub/bar.py"
+# ...and a basename the reviewed tree itself cannot place uniquely stays unresolved rather than
+# being answered from the parent.
+assert rb.canonical_finding_path(
+    "foo.sh", {"reviewed": ["dirA/foo.sh", "dirB/foo.sh"], "parent": ["old/foo.sh"]}
+) == "foo.sh"
+# The longest suffix is the most specific spelling of one file, so it outranks tier order: an
+# absolute citation of the parent's file must not answer with a bare name the reviewed tree has.
+suffix_tree = {"reviewed": ["foo.sh"], "parent": ["old/foo.sh"]}
+assert rb.canonical_finding_path("/tmp/seal-1/old/foo.sh", suffix_tree) == "old/foo.sh"
+assert rb.canonical_finding_path("/tmp/seal-1/foo.sh", suffix_tree) == "foo.sh"
 
 verify_findings_input = [
     {"severity": "P2", "file": "bin/review-bench", "line": 3, "summary": "first claim"},
@@ -977,6 +998,35 @@ _, skipped_account, skipped_result = rb.run_rater_task(
     opencode_rater, repo, sha, "", wall_run, "fixture commit diff"
 )
 assert skipped_account is None and "no opencode account left" in skipped_result[3], skipped_result
+
+# A verifier that walls has to record the wall before it lets the next one through the gate:
+# released first, a queued verifier takes the slot, passes the post-gate check and sends one
+# more doomed request.
+rb.WALLED_ACCOUNTS.clear()
+gate_saw = []
+real_gate = rb.OPENCODE_GATE
+
+
+class WallOrderGate:
+    def acquire(self, *args):
+        real_gate.acquire(*args)
+
+    def release(self):
+        gate_saw.append(rb.is_walled("opencode", rb.SIDE_FIXED_ACCOUNTS["opencode"]))
+        real_gate.release()
+
+
+rb.OPENCODE_GATE = WallOrderGate()
+try:
+    walled_verify = rb.verify_one(
+        0, {"severity": "P2", "file": "bin/review-bench", "line": 3, "summary": "claim"},
+        repo, sha, "oc-kimik3", ["line"],
+    )
+finally:
+    rb.OPENCODE_GATE = real_gate
+assert gate_saw == [True], gate_saw
+assert walled_verify["walled"] and walled_verify["kept"], walled_verify
+
 rb.WALLED_ACCOUNTS.clear()
 del os.environ["OPENCODE_FIXTURE_RC"]
 del os.environ["OPENCODE_FIXTURE_STDERR"]
@@ -988,6 +1038,13 @@ assert not rb.opencode_usage_wall("HTTP 503 failover_exhausted")
 assert rb.SIDE_WALL["agy"](1, "", "You have exhausted your capacity on this model")
 assert rb.SIDE_WALL["agy"](1, "", "Individual quota reached")
 assert not rb.SIDE_WALL["agy"](1, "", "jetski: no output produced")
+# Antigravity reports that exhaustion only in its log, and the empty-output path turns
+# agy_failure_detail into the stderr SIDE_WALL reads: unrecognised there, no rotation happens.
+capacity_log = "some progress\nYou have exhausted your capacity on this model\nmore log\n"
+assert rb.agy_failure_detail("", capacity_log) == "exhausted your capacity on this model"
+assert rb.SIDE_WALL["agy"](
+    1, "", f"agy returned empty output: {rb.agy_failure_detail('', capacity_log)}"
+)
 assert rb.wall_bucket(rb.parse_rater("agy-pro-high-skill")) == "agy-pro"
 assert rb.wall_bucket(rb.parse_rater("agy-flash35-medium-skill")) == "agy-flash35"
 assert rb.wall_bucket(rb.parse_rater("agy-pro-high-skill")) != \
@@ -1119,6 +1176,20 @@ assert "(empty answer)" in rb.unusable_review("", [])
 for rambling in ("I checked the rotation and found no findings for it, but the gate looks wrong.",
                  "No issues found in run_opencode. The verifier, however, never re-checks."):
     assert rb.unusable_review(rambling, []), rambling
+# Claude hands over its whole envelope and Codex appends event JSON, so a clean review that
+# arrives inside a JSON string still has to count as one.
+for enveloped in ('{"type": "result", "subtype": "success", "result": "NO FINDINGS"}',
+                  '{"result": "No issues found."}',
+                  '{"msg": {"type": "agent_message", "message": "NO FINDINGS"}}',
+                  'NO FINDINGS\n{"type":"token_count","info":{"total":10}}'):
+    assert rb.unusable_review(enveloped, []) == "", enveloped
+# ...while prose inside an envelope stays unusable, exactly as prose outside one does, and only
+# the fields that carry the answer are read: a marker in some other field alongside a described
+# defect is exactly the free pass the whole-answer rule exists to deny.
+assert rb.unusable_review('{"result": "Found no findings there, but the gate looks wrong."}', [])
+assert rb.unusable_review(
+    '{"status": "NO FINDINGS", "detail": "run_opencode drops the wall before the gate"}', []
+)
 
 # Codex writes the location into the prose and leaves `file` empty, which leaves the claim
 # with nothing to be read, deduplicated or verified against.
@@ -1621,4 +1692,4 @@ oc_table="$("$SCRIPT" oc-models 2>&1)"
 assert contains "$oc_table" "measured capability"
 assert contains "$oc_table" "oc-grok45"
 
-printf 'PASS: %s assertions; rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, and cross-side parallelism result assembly\n' "$asserts"
+printf 'PASS: %s assertions; rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, and cross-side parallelism result assembly\n' "$asserts"
