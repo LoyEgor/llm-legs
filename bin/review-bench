@@ -452,37 +452,63 @@ def review_receipt(repo):
     return receipt if proc.returncode == 0 and proc.stdout.strip() == "tree" else None
 
 
-def write_review_receipt(repo, sha, run_id, errored):
+def persist_review_receipt(repo, tree, sha, run_id, errored, timestamp=None):
     tmp = None
     try:
         name = receipt_file_name(repo)
         if not name:
             raise RuntimeError("repository identity is unavailable")
-        proc = subprocess.run(
-            ["git", "rev-parse", f"{sha}^{{tree}}"],
-            cwd=repo, capture_output=True, text=True,
-        )
-        if proc.returncode != 0 or not proc.stdout.strip():
-            raise RuntimeError("reviewed tree is unavailable")
         directory = state_dir() / RECEIPT_DIR
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / name
         tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
         receipt = {
-            "repo": str(repo), "tree": proc.stdout.strip(), "commit": sha,
-            "run_id": run_id, "ts": iso_now(), "errored": errored,
+            "repo": str(repo), "tree": tree, "commit": sha,
+            "run_id": run_id, "ts": timestamp or iso_now(), "errored": errored,
         }
         tmp.write_text(json.dumps(receipt) + "\n")
         os.replace(tmp, path)
         tmp = None
-    except Exception as exc:
-        print(f"warning: could not write review receipt: {exc}", file=sys.stderr)
+        return path
     finally:
         if tmp is not None:
             try:
                 tmp.unlink(missing_ok=True)
             except OSError:
                 pass
+
+
+def write_review_receipt(repo, sha, run_id, errored):
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", f"{sha}^{{tree}}"],
+            cwd=repo, capture_output=True, text=True,
+        )
+        if proc.returncode != 0 or not proc.stdout.strip():
+            raise RuntimeError("reviewed tree is unavailable")
+        return persist_review_receipt(repo, proc.stdout.strip(), sha, run_id, errored)
+    except Exception as exc:
+        print(f"warning: could not write review receipt: {exc}", file=sys.stderr)
+        return None
+
+
+def working_tree_tree(repo):
+    with tempfile.TemporaryDirectory(prefix="review-bench-index-") as directory:
+        env = dict(os.environ, GIT_INDEX_FILE=str(Path(directory) / "index"))
+        for command in (("read-tree", "HEAD"), ("add", "-A")):
+            proc = subprocess.run(
+                ["git", *command], cwd=repo, env=env, capture_output=True, text=True,
+            )
+            if proc.returncode != 0:
+                detail = proc.stderr.strip() or proc.stdout.strip() or "git failed"
+                raise RuntimeError(f"could not compute working tree: {detail}")
+        proc = subprocess.run(
+            ["git", "write-tree"], cwd=repo, env=env, capture_output=True, text=True,
+        )
+        if proc.returncode != 0 or not proc.stdout.strip():
+            detail = proc.stderr.strip() or proc.stdout.strip() or "git write-tree failed"
+            raise RuntimeError(f"could not compute working tree: {detail}")
+        return proc.stdout.strip()
 
 
 def read_jsonl(path):
@@ -2474,6 +2500,26 @@ def cmd_review(args):
     return cmd_run(args)
 
 
+def cmd_reviewed(args):
+    requested = Path(args.repo).resolve()
+    proc = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        cwd=requested, capture_output=True, text=True,
+    )
+    if proc.returncode != 0 or not proc.stdout.strip():
+        raise ValueError(f"not a git repository: {requested}")
+    repo = Path(proc.stdout.strip()).resolve()
+    sha = resolve_commit(repo, "HEAD")
+    tree = working_tree_tree(repo)
+    now = utc_now()
+    run_id = f"stamped-{now.strftime('%Y%m%dT%H%M%SZ')}"
+    path = persist_review_receipt(
+        repo, tree, sha, run_id, 0, timestamp=now.isoformat(),
+    )
+    print(f"review receipt: {path}; stamped tree {tree[:7]}")
+    return 0
+
+
 def cmd_suggest(args):
     repo = Path(args.repo).resolve()
     if subprocess.run(
@@ -3464,6 +3510,11 @@ def main():
     review.add_argument("--repeat", type=int, default=1, metavar="N")
     review.add_argument("--verify", metavar="MODEL", choices=verifier_choices())
     review.set_defaults(func=cmd_review)
+    reviewed = subparsers.add_parser(
+        "reviewed", help="Stamp the current working tree as reviewed"
+    )
+    reviewed.add_argument("--repo", default=".")
+    reviewed.set_defaults(func=cmd_reviewed)
     suggest = subparsers.add_parser("suggest", help="Suggest a review tier for a change")
     suggest.add_argument("--repo", default=".")
     suggest.add_argument("--range", metavar="A..B")

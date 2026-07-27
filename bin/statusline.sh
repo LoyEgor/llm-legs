@@ -69,6 +69,38 @@ receipt_file_name() {
   printf '%s__%s.json' "$repo_name" "$repo_hash"
 }
 
+worktree_matches_tree() {
+  local repo="$1" tree="$2" path entry mode type object actual_mode actual_object
+  local -a excludes=()
+  while IFS= read -r -d '' path; do
+    entry=$(git -C "$repo" ls-tree "$tree" -- "$path" 2>/dev/null) || return 1
+    [ -n "$entry" ] || return 1
+    entry=${entry%%$'\t'*}
+    read -r mode type object <<< "$entry"
+    case "$mode" in
+      160000)
+        actual_mode=160000
+        actual_object=$(git -C "$repo/$path" rev-parse HEAD 2>/dev/null) || return 1
+        ;;
+      120000)
+        [ -L "$repo/$path" ] || return 1
+        actual_mode=120000
+        actual_object=$(git -C "$repo" hash-object -- "$path" 2>/dev/null) || return 1
+        ;;
+      100*)
+        [ -f "$repo/$path" ] && [ ! -L "$repo/$path" ] || return 1
+        [ -x "$repo/$path" ] && actual_mode=100755 || actual_mode=100644
+        actual_object=$(git -C "$repo" hash-object -- "$path" 2>/dev/null) || return 1
+        ;;
+      *) return 1 ;;
+    esac
+    [ "$actual_mode" = "$mode" ] && [ "$actual_object" = "$object" ] || return 1
+    excludes+=(":(top,literal,exclude)$path")
+  done < <(git -C "$repo" ls-files --others --exclude-standard -z 2>/dev/null)
+  git -C "$repo" diff --quiet --no-ext-diff --no-renames "$tree" -- . "${excludes[@]}" \
+    2>/dev/null
+}
+
 # Propagate just-merged headers to all surfaces via the zero-network collector
 # (never --refresh); full contract: docs/statusline-contract.md "Store merge-kick".
 # Every failure is silent — the statusline must never break because a nudge failed.
@@ -859,7 +891,7 @@ if [ -n "$session_id" ]; then
       # Marker line is "<label with spaces> <epoch>" — drop the trailing epoch.
       bench_label="${bench_line% *}"
       if [ -n "$bench_label" ]; then
-        bench_part=" ${sep} ${MAGENTA}⚖${RESET} ${bench_label}"
+        bench_part=" ${sep} ${YELLOW}${bench_label}${RESET}"
       fi
     fi
   fi
@@ -950,8 +982,10 @@ if [ -n "$active_top" ]; then
     receipt_common=$(git_common_dir "$receipt_repo" 2>/dev/null)
     if [ -n "$active_common" ] && [ "$receipt_common" = "$active_common" ]; then
       head_tree=$(git -C "$active_top" rev-parse 'HEAD^{tree}' 2>/dev/null)
-      if [ -n "$head_tree" ] && [ "$receipt_tree" = "$head_tree" ] &&
-        [ "$git_status_rc" -eq 0 ] && [ -z "$git_status" ]; then
+      if [ -n "$head_tree" ] &&
+        { { [ "$receipt_tree" = "$head_tree" ] && [ "$git_status_rc" -eq 0 ] &&
+            [ -z "$git_status" ]; } ||
+          worktree_matches_tree "$active_top" "$receipt_tree"; }; then
         receipt_reviewed=1
       fi
     fi
@@ -967,7 +1001,7 @@ fi
 
 # Two lines: identity/work (model, account, dir/branch/diff, workers) on top,
 # usage (ctx, 5h, weekly, fable, cost) below.
-line1="${CYAN}${model}${model_suffix}${RESET}${fast_part}${cb_part} ${sep} ${dir_part}${branch_part}${review_part}${ports_part}${worker_part}${bench_part}"
+line1="${CYAN}${model}${model_suffix}${RESET}${fast_part}${cb_part} ${sep} ${dir_part}${branch_part}${review_part}${bench_part}${ports_part}${worker_part}"
 
 line2="ctx $(pct_colored "$ctx_pct" "$ctx_dim" 40)${ctx_tokens_part} ${sep} 5h $(pct_colored "$h5_pct" "$h5_dim")${h5_arrow} ${sep} wk $(pct_colored "$wk_pct" "$wk_dim")${wk_arrow}${fable_part}"
 

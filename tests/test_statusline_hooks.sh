@@ -1207,54 +1207,13 @@ review_hook_payload() {
      tool_input:{command:$command,description:$description,timeout:42}}'
 }
 
-review_sha=$(git -C "$REPO_A" rev-parse --short=7 HEAD)
-review_repo=$(basename "$REPO_A")
+# The hook only maintains the bench marker; a description rewrite was tried and removed
+# (the user reads the statusline, not the transcript) — a PreToolUse call must stay silent.
 review_payload=$(review_hook_payload \
   "$ROOT/bin/review-bench review T2" "LLM-authored title" "$REPO_A")
 review_output=$(printf '%s' "$review_payload" | "$REVIEW_HOOK") \
-  || fail "review hook tier rewrite exited nonzero"
-
-# A caller may pass cwd on the Bash call itself instead of the session envelope.
-review_fallback_payload=$(jq -cn --arg command "$ROOT/bin/review-bench review T2" --arg cwd "$REPO_A" '
-  {hook_event_name:"PreToolUse",tool_name:"Bash",session_id:"review-hook",
-   tool_input:{command:$command,description:"x",cwd:$cwd}}')
-review_fallback_output=$(printf '%s' "$review_fallback_payload" | "$REVIEW_HOOK") \
-  || fail "review hook tool_input.cwd fallback exited nonzero"
-assert jq -e --arg expected "review T2 · $review_repo@$review_sha" \
-  '.hookSpecificOutput.updatedInput.description == $expected' <<< "$review_fallback_output"
-assert jq -e --arg expected "review T2 · $review_repo@$review_sha" '
-  .hookSpecificOutput.hookEventName == "PreToolUse" and
-  .hookSpecificOutput.permissionDecision == "allow" and
-  .hookSpecificOutput.updatedInput.description == $expected and
-  .hookSpecificOutput.updatedInput.timeout == 42' <<< "$review_output" >/dev/null
-
-review_cli_payload=$(review_hook_payload \
-  "$ROOT/bin/review-bench review HEAD --tier T2" "CLI title" "$REPO_A")
-review_cli_output=$(printf '%s' "$review_cli_payload" | "$REVIEW_HOOK") \
-  || fail "review hook CLI rewrite exited nonzero"
-assert jq -e --arg expected "review T2 · $review_repo@$review_sha" \
-  '.hookSpecificOutput.updatedInput.description == $expected' <<< "$review_cli_output" >/dev/null
-
-run_payload=$(review_hook_payload \
-  "./bin/review-bench run HEAD --raters sol-high,opus-medium,agy-pro-high,oc-grok45-low,sol-low &" \
-  "Another title" "$REPO_A" | jq -c '.tool_input.run_in_background = true')
-run_output=$(printf '%s' "$run_payload" | "$REVIEW_HOOK") \
-  || fail "review hook run rewrite exited nonzero"
-assert jq -e --arg expected \
-  "review run · $review_repo@$review_sha · sol-high,opus-medium,agy-pro-high,+2" \
-  '.hookSpecificOutput.updatedInput.description == $expected and
-   .hookSpecificOutput.updatedInput.run_in_background == true' <<< "$run_output" >/dev/null
-
-other_payload=$(review_hook_payload "printf 'review later'" "Keep this" "$REPO_A")
-other_output=$(printf '%s' "$other_payload" | "$REVIEW_HOOK") \
-  || fail "review hook unrelated command exited nonzero"
-assert_eq "" "$other_output"
-
-failed_git_payload=$(review_hook_payload "review-bench run HEAD --raters sol-high" \
-  "Keep failed resolution" "$NON_GIT")
-failed_git_output=$(printf '%s' "$failed_git_payload" | "$REVIEW_HOOK") \
-  || fail "review hook failed-resolution call exited nonzero"
-assert_eq "" "$failed_git_output"
+  || fail "review hook PreToolUse exited nonzero"
+assert_eq "" "$review_output"
 
 # --- review-bench segment (bin/statusline.sh) ---
 bench_session=bench-seg
@@ -1262,24 +1221,29 @@ bench_dir="$HOME/.cache/claude-review-bench/$bench_session"
 bench_payload=$(statusline_payload "$bench_session")
 
 no_marker_output=$(run_statusline "$bench_payload") || fail "bench no-marker render failed"
-assert test "${no_marker_output#*⚖}" = "$no_marker_output"
+assert test "${no_marker_output#*bench 8553616:}" = "$no_marker_output"
 
 mkdir -p "$bench_dir"
 printf 'bench 8553616: sol-high,opus-medium-skill %s\n' "$(date +%s)" > "$bench_dir/running"
 marker_output=$(run_statusline "$bench_payload") || fail "bench marker render failed"
-assert grep -Fq '⚖' <<< "$marker_output"
-assert grep -Fq 'bench 8553616: sol-high,opus-medium-skill' <<< "$marker_output"
+marker_label='bench 8553616: sol-high,opus-medium-skill'
+marker_line="${marker_output%%$'\n'*}"
+assert grep -Fq "${YELLOW}${marker_label}${RESET}" <<< "$marker_line"
+assert test "${marker_line#*⚖}" = "$marker_line"
+assert grep -Fq \
+  " ${DIM}│${RESET} review ${DIM}│${RESET} ${YELLOW}${marker_label}${RESET} ${DIM}│${RESET} ${DIM}w:" \
+  <<< "$marker_line"
 epoch_in_marker=$(awk '{print $NF}' "$bench_dir/running")
 assert test "${marker_output#*"$epoch_in_marker"}" = "$marker_output"
 
 touch -t 202001010000 "$bench_dir/running"
 stale_output=$(run_statusline "$bench_payload") || fail "bench stale render failed"
-assert test "${stale_output#*⚖}" = "$stale_output"
+assert test "${stale_output#*"$marker_label"}" = "$stale_output"
 
 other_payload=$(statusline_payload bench-other-session)
 printf 'bench 8553616: sol-low %s\n' "$(date +%s)" > "$bench_dir/running"
 other_output=$(run_statusline "$other_payload") || fail "bench other-session render failed"
-assert test "${other_output#*⚖}" = "$other_output"
+assert test "${other_output#*bench 8553616: sol-low}" = "$other_output"
 rm -rf "$bench_dir"
 
 REVIEW_DIRTY="$FIXTURES/review-dirty"
@@ -1373,6 +1337,31 @@ assert grep -Fq "$review_segment" <<< "$review_missing_out"
 review_nongit_out=$(run_statusline "$(statusline_payload review-nongit "" "$NON_GIT")") \
   || fail "review non-git render failed"
 assert test "${review_nongit_out#*review T}" = "$review_nongit_out"
+
+REVIEW_STAMP="$FIXTURES/review-stamp"
+git clone -q "$REPO_A" "$REVIEW_STAMP"
+printf 'stamped dirty\n' >> "$REVIEW_STAMP/tracked.txt"
+printf 'stamped untracked\n' > "$REVIEW_STAMP/untracked.txt"
+stamp_output=$(CLAUDEB_DIR="$CLAUDEB_FIX" "$ROOT/bin/review-bench" reviewed \
+  --repo "$REVIEW_STAMP") || fail "reviewed stamp failed"
+assert grep -Fq 'stamped tree ' <<< "$stamp_output"
+review_stamp_payload=$(statusline_payload review-stamp "" "$REVIEW_STAMP")
+review_stamp_out=$(run_statusline "$review_stamp_payload") \
+  || fail "reviewed dirty render failed"
+assert test "${review_stamp_out#*"$review_delimited"}" = "$review_stamp_out"
+
+printf 'extra edit\n' >> "$REVIEW_STAMP/tracked.txt"
+review_stamp_changed_out=$(run_statusline "$review_stamp_payload") \
+  || fail "reviewed changed render failed"
+assert grep -Fq "$review_delimited" <<< "$review_stamp_changed_out"
+
+printf 'fixture\nstamped dirty\n' > "$REVIEW_STAMP/tracked.txt"
+git -C "$REVIEW_STAMP" add -A
+git -C "$REVIEW_STAMP" -c user.name=Fixture -c user.email=fixture@example.com \
+  commit -qm stamped
+review_stamp_committed_out=$(run_statusline "$review_stamp_payload") \
+  || fail "reviewed identical commit render failed"
+assert test "${review_stamp_committed_out#*"$review_delimited"}" = "$review_stamp_committed_out"
 
 # A cache the render may no longer trust is not shown: past the staleness window the segment
 # disappears rather than repeating a tier that predates the current diff.

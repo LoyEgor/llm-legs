@@ -22,9 +22,11 @@ import io
 import json
 import os
 import pathlib
+import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -1730,6 +1732,76 @@ collision_names = {
 assert len(collision_names) == 2, collision_names
 assert all(name.startswith("same-name__") and len(name) == len("same-name__.json") + 8
            for name in collision_names), collision_names
+
+stamp_repo = work / "reviewed-repo"
+stamp_repo.mkdir()
+subprocess.run(["git", "-C", str(stamp_repo), "init", "-q", "-b", "main"], check=True)
+(stamp_repo / "tracked.txt").write_text("base\n")
+subprocess.run(["git", "-C", str(stamp_repo), "add", "tracked.txt"], check=True)
+subprocess.run(
+    ["git", "-C", str(stamp_repo), "-c", "user.name=Fixture",
+     "-c", "user.email=fixture@example.com", "commit", "-qm", "initial"],
+    check=True,
+)
+(stamp_repo / "tracked.txt").write_text("dirty\n")
+(stamp_repo / "untracked.txt").write_text("new\n")
+stamp_store = work / "reviewed-store"
+stamp_env = dict(os.environ, WORKER_STATS_DIR=str(stamp_store))
+with tempfile.TemporaryDirectory(dir=work) as index_dir:
+    expected_env = dict(stamp_env, GIT_INDEX_FILE=str(pathlib.Path(index_dir) / "index"))
+    subprocess.run(
+        ["git", "-C", str(stamp_repo), "read-tree", "HEAD"],
+        check=True, env=expected_env,
+    )
+    subprocess.run(
+        ["git", "-C", str(stamp_repo), "add", "-A"],
+        check=True, env=expected_env,
+    )
+    expected_stamp_tree = subprocess.run(
+        ["git", "-C", str(stamp_repo), "write-tree"],
+        check=True, capture_output=True, text=True, env=expected_env,
+    ).stdout.strip()
+stamp_proc = subprocess.run(
+    [sys.argv[1], "reviewed", "--repo", str(stamp_repo)],
+    capture_output=True, text=True, env=stamp_env,
+)
+stamp_receipt_path = (
+    stamp_store / rb.RECEIPT_DIR / rb.receipt_file_name(stamp_repo)
+)
+stamp_receipt = json.loads(stamp_receipt_path.read_text())
+stamp_head = subprocess.run(
+    ["git", "-C", str(stamp_repo), "rev-parse", "HEAD"],
+    check=True, capture_output=True, text=True,
+).stdout.strip()
+assert stamp_proc.returncode == 0, stamp_proc.stderr
+assert stamp_receipt == {
+    "repo": str(stamp_repo.resolve()), "tree": expected_stamp_tree,
+    "commit": stamp_head, "run_id": stamp_receipt["run_id"],
+    "ts": stamp_receipt["ts"], "errored": 0,
+}, stamp_receipt
+assert re.fullmatch(r"stamped-\d{8}T\d{6}Z", stamp_receipt["run_id"])
+assert str(stamp_receipt_path) in stamp_proc.stdout
+assert expected_stamp_tree[:7] in stamp_proc.stdout
+saved_stats_dir = os.environ.get("WORKER_STATS_DIR")
+os.environ["WORKER_STATS_DIR"] = str(stamp_store)
+assert rb.review_receipt(stamp_repo)["tree"] == expected_stamp_tree
+if saved_stats_dir is None:
+    os.environ.pop("WORKER_STATS_DIR")
+else:
+    os.environ["WORKER_STATS_DIR"] = saved_stats_dir
+
+nonrepo = work / "reviewed-nonrepo"
+nonrepo.mkdir()
+nonrepo_store = work / "reviewed-nonrepo-store"
+nonrepo_proc = subprocess.run(
+    [sys.argv[1], "reviewed", "--repo", str(nonrepo)],
+    capture_output=True, text=True,
+    env=dict(os.environ, WORKER_STATS_DIR=str(nonrepo_store)),
+)
+assert nonrepo_proc.returncode != 0
+assert "not a git repository" in nonrepo_proc.stderr
+assert not nonrepo_store.exists(), list(nonrepo_store.rglob("*")) \
+    if nonrepo_store.exists() else []
 
 raw_opencode_store = work / "raw-opencode-claudeb"
 os.environ["CLAUDEB_DIR"] = str(raw_opencode_store)
