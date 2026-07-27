@@ -42,12 +42,18 @@ chmod +x "$FAKE_BIN/agy"
 SECURITY_CALLS="$WORK/security-calls"
 GEMINIB_SECURITY_CMD="$FAKE_BIN/security"
 export SECURITY_CALLS GEMINIB_SECURITY_CMD
-# Writes the password it was given into the keychain file, so a test can prove the stored
-# password belongs to the keychain that survived a race rather than to one that was overwritten.
+# Writes the password it was given into the keychain file, so a test can prove the stored password
+# belongs to the keychain that survived a race, and refuses an unlock that presents another one —
+# the difference the real security draws between a keychain geminib can open and one it must
+# replace. HOME is logged because pinning it on every call is what keeps profile keychains out of
+# the session's own search list.
 cat >"$FAKE_BIN/security" <<'EOF'
 #!/usr/bin/env bash
-printf 'CALL %s\n' "$*" >>"$SECURITY_CALLS"
-[ "${1:-}" != create-keychain ] || printf '%s' "$3" >"$4"
+printf 'CALL home=%s %s\n' "$HOME" "$*" >>"$SECURITY_CALLS"
+case "${1:-}" in
+  create-keychain) printf '%s' "$3" >"$4" ;;
+  unlock-keychain) [ "$(cat "$4" 2>/dev/null)" = "$3" ] || exit 51 ;;
+esac
 EOF
 chmod +x "$FAKE_BIN/security"
 AGY_BIN="$FAKE_BIN/agy"
@@ -93,17 +99,32 @@ for item in GEMINI.md config extensions settings.json; do
 done
 assert test -L "$HOME/.gemini-profiles/alpha/.gemini/antigravity-cli/settings.json"
 assert test ! -L "$HOME/.gemini-profiles/alpha/Library/Keychains"
-assert test -f "$HOME/.gemini-profiles/alpha/Library/Keychains/login.keychain-db"
+assert test -f "$HOME/.gemini-profiles/alpha/Library/Keychains/gemini.keychain-db"
+assert test "$(readlink "$HOME/.gemini-profiles/alpha/Library/Keychains/login.keychain-db")" \
+  = gemini.keychain-db
 assert test "$(stat -f %Lp "$HOME/.gemini-profiles/alpha/.keychain-password")" = 600
+# The unlock is the whole fix, and it only works when it names the real file rather than the
+# symlink agy opens; a call under the base HOME would put the profile keychain in the real
+# session's search list.
+assert grep -q "unlock-keychain -p .* $HOME/.gemini-profiles/alpha/Library/Keychains/gemini.keychain-db" \
+  "$SECURITY_CALLS"
+assert grep -q "list-keychains -d user -s $HOME/.gemini-profiles/alpha/Library/Keychains/login.keychain-db" \
+  "$SECURITY_CALLS"
+assert_fails grep -q "CALL home=$HOME " "$SECURITY_CALLS"
 
 mkdir -p "$HOME/.gemini-profiles/trap/.gemini/config" "$HOME/.gemini-profiles/trap/Library/Keychains"
 printf 'keep\n' >"$HOME/.gemini-profiles/trap/.gemini/config/value"
 printf 'own\n' >"$HOME/.gemini-profiles/trap/Library/Keychains/login.keychain-db"
+(umask 077; printf 'own\n' >"$HOME/.gemini-profiles/trap/.keychain-password")
 bash "$SCRIPT" list >/dev/null
 assert test ! -L "$HOME/.gemini-profiles/trap/.gemini/config"
 assert grep -qx keep "$HOME/.gemini-profiles/trap/.gemini/config/value"
 assert test ! -L "$HOME/.gemini-profiles/trap/Library/Keychains"
-assert grep -qx own "$HOME/.gemini-profiles/trap/Library/Keychains/login.keychain-db"
+# An openable keychain is migrated under the addressable name, never rebuilt: rebuilding one that
+# still has its password would throw away a working profile for nothing.
+assert grep -qx own "$HOME/.gemini-profiles/trap/Library/Keychains/gemini.keychain-db"
+assert test "$(readlink "$HOME/.gemini-profiles/trap/Library/Keychains/login.keychain-db")" \
+  = gemini.keychain-db
 
 gemini_base_home="$HOME"
 gemini_profiles_dir="$HOME/.gemini-profiles"
@@ -112,37 +133,68 @@ rm -rf "$HOME/.gemini-profiles/alpha/Library/Keychains" "$HOME/.gemini-profiles/
 ln -sfn "$HOME/Library/Keychains" "$HOME/.gemini-profiles/alpha/Library/Keychains"
 warning=$(gemini_ensure_keychain "$HOME/.gemini-profiles/alpha" 2>&1 >/dev/null)
 assert test ! -L "$HOME/.gemini-profiles/alpha/Library/Keychains"
-assert test -f "$HOME/.gemini-profiles/alpha/Library/Keychains/login.keychain-db"
+assert test -f "$HOME/.gemini-profiles/alpha/Library/Keychains/gemini.keychain-db"
 assert grep -q 'sign it in again' <<<"$warning"
 assert test ! -e "$HOME/Library/Keychains/Keychains"
 assert test ! -e "$HOME/Library/Keychains/login.keychain-db"
+assert test ! -e "$HOME/Library/Keychains/gemini.keychain-db"
 
-printf 'existing\n' >"$HOME/.gemini-profiles/alpha/Library/Keychains/login.keychain-db"
+ALPHA_KC="$HOME/.gemini-profiles/alpha/Library/Keychains"
+# agy recreates login.keychain-db as a real file whenever it is missing, so the next run has to
+# adopt that file rather than leave agy writing to something nothing can unlock.
+rm -f "$ALPHA_KC/login.keychain-db" "$ALPHA_KC/gemini.keychain-db"
+printf 'adopted\n' >"$ALPHA_KC/login.keychain-db"
+(umask 077; printf 'adopted\n' >"$HOME/.gemini-profiles/alpha/.keychain-password")
 gemini_ensure_keychain "$HOME/.gemini-profiles/alpha"
-assert grep -qx existing "$HOME/.gemini-profiles/alpha/Library/Keychains/login.keychain-db"
+assert grep -qx adopted "$ALPHA_KC/gemini.keychain-db"
+assert test "$(readlink "$ALPHA_KC/login.keychain-db")" = gemini.keychain-db
+
+# A symlink left pointing anywhere else is the shared-account bug in file form.
+ln -sfn "$HOME/Library/Keychains/login.keychain-db" "$ALPHA_KC/login.keychain-db"
+gemini_ensure_keychain "$HOME/.gemini-profiles/alpha"
+assert test "$(readlink "$ALPHA_KC/login.keychain-db")" = gemini.keychain-db
+assert grep -qx adopted "$ALPHA_KC/gemini.keychain-db"
+
+# Every launch unlocks again, because the keychain is locked by the next boot.
+: >"$SECURITY_CALLS"
+gemini_ensure_keychain "$HOME/.gemini-profiles/alpha"
+assert grep -q "unlock-keychain -p adopted $ALPHA_KC/gemini.keychain-db" "$SECURITY_CALLS"
+
 gemini_ensure_keychain "$HOME/.gemini-profiles/vanished"
 assert test ! -e "$HOME/.gemini-profiles/vanished"
 gemini_ensure_keychain "$HOME"
 assert test ! -e "$HOME/Library/Keychains/login.keychain-db"
 
+# A keychain whose password is gone can never be unlocked, so it is replaced rather than left to
+# prompt forever; the same for one whose stored password no longer opens it.
 rm -f "$HOME/.gemini-profiles/alpha/.keychain-password"
-warning=$(gemini_ensure_keychain "$HOME/.gemini-profiles/alpha" 2>&1 >/dev/null)
-assert grep -q 'no saved password' <<<"$warning"
-
-rm -rf "$HOME/.gemini-profiles/alpha/Library/Keychains"
-warning=$(GEMINIB_SECURITY_CMD=/usr/bin/false gemini_ensure_keychain "$HOME/.gemini-profiles/alpha" 2>&1 >/dev/null)
-assert test ! -e "$HOME/.gemini-profiles/alpha/Library/Keychains/login.keychain-db"
-assert grep -q 'could not create a keychain' <<<"$warning"
-
-# A run killed mid-creation leaves staging behind; the next one must still produce a keychain.
-mkdir -p "$HOME/.gemini-profiles/alpha/Library/Keychains/.staging.crashed"
-for _ in $(seq 1 40); do gemini_ensure_keychain "$HOME/.gemini-profiles/alpha" & done
-wait
-assert test -f "$HOME/.gemini-profiles/alpha/Library/Keychains/login.keychain-db"
-assert test "$(cat "$HOME/.gemini-profiles/alpha/Library/Keychains/login.keychain-db")" \
+gemini_ensure_keychain "$HOME/.gemini-profiles/alpha"
+assert test -s "$HOME/.gemini-profiles/alpha/.keychain-password"
+assert test "$(cat "$ALPHA_KC/gemini.keychain-db")" \
   = "$(cat "$HOME/.gemini-profiles/alpha/.keychain-password")"
 assert test "$(stat -f %Lp "$HOME/.gemini-profiles/alpha/.keychain-password")" = 600
-assert test "$(ls -A "$HOME/.gemini-profiles/alpha/Library/Keychains" | grep -c '^\.staging\.[A-Za-z0-9]\{6\}$')" = 0
+printf 'stale\n' >"$ALPHA_KC/gemini.keychain-db"
+gemini_ensure_keychain "$HOME/.gemini-profiles/alpha"
+assert_fails grep -qx stale "$ALPHA_KC/gemini.keychain-db"
+assert test "$(cat "$ALPHA_KC/gemini.keychain-db")" \
+  = "$(cat "$HOME/.gemini-profiles/alpha/.keychain-password")"
+
+rm -rf "$ALPHA_KC"
+warning=$(GEMINIB_SECURITY_CMD=/usr/bin/false gemini_ensure_keychain "$HOME/.gemini-profiles/alpha" 2>&1 >/dev/null)
+assert test ! -e "$ALPHA_KC/gemini.keychain-db"
+assert grep -q 'could not create a keychain' <<<"$warning"
+
+# A run killed mid-repair leaves a bare directory or a stray real file; the next one must still
+# converge, and forty at once must agree on one keychain.
+rm -rf "$ALPHA_KC"; mkdir -p "$ALPHA_KC"
+printf 'crashed\n' >"$ALPHA_KC/gemini.keychain-db"
+for _ in $(seq 1 40); do gemini_ensure_keychain "$HOME/.gemini-profiles/alpha" & done
+wait
+assert test "$(readlink "$ALPHA_KC/login.keychain-db")" = gemini.keychain-db
+assert test -f "$ALPHA_KC/gemini.keychain-db"
+assert test "$(cat "$ALPHA_KC/gemini.keychain-db")" \
+  = "$(cat "$HOME/.gemini-profiles/alpha/.keychain-password")"
+assert test "$(stat -f %Lp "$HOME/.gemini-profiles/alpha/.keychain-password")" = 600
 assert_fails bash "$SCRIPT" add main >/dev/null 2>&1
 assert_fails bash "$SCRIPT" add Bad >/dev/null 2>&1
 assert_fails bash "$SCRIPT" add alpha >/dev/null 2>&1
@@ -337,4 +389,4 @@ else
 fi
 chmod 600 "$UNREADABLE_PIN"
 
-echo "PASS: $asserts asserts; base and isolated HOME routing, worker-pool exclusion (own file beside the profiles, last member protected, visible in list/status), shared configuration links, per-profile login keychain, parallel ordered list/status probes, one-step creation, strict launch names, exec delimiter stripping, override-aware login hints, persistent remove markers, and use pin set/show/clear/refusal parity"
+echo "PASS: $asserts asserts; base and isolated HOME routing, worker-pool exclusion (own file beside the profiles, last member protected, visible in list/status), shared configuration links, per-profile keychain kept unlockable behind a login.keychain-db symlink, parallel ordered list/status probes, one-step creation, strict launch names, exec delimiter stripping, override-aware login hints, persistent remove markers, and use pin set/show/clear/refusal parity"

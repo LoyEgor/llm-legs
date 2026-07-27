@@ -16,19 +16,19 @@ gemini_account_home() {
   fi
 }
 
-# agy stores its OAuth token in the login keychain macOS resolves from $HOME — item svce="gemini",
-# acct="antigravity" — and prefers it over the profile's own antigravity-oauth-token file, so
-# profiles sharing a keychain silently share one Google account however isolated their HOMEs are.
-# Owning one is the only alternative: with no keychain at all agy raises a modal "A keychain cannot
-# be found to store antigravity" dialog on every token refresh. It must be named login.keychain-db
-# for agy to find it, which is also why nothing here unlocks it — macOS routes
-# `security unlock-keychain` on that name to the session's own keychain and rejects the password,
-# and unlocking a renamed copy does not carry over when the file is renamed back, so the
-# keychain stays locked and agy's own prompt is the only thing that opens it. HOME is pinned on
-# every security call: create-keychain otherwise registers the profile keychain in the real
-# session's search list, where a locked entry makes unrelated lookups prompt.
+# agy keeps its OAuth token in the keychain macOS resolves from $HOME — item svce="gemini",
+# acct="antigravity" — and opens it strictly as Library/Keychains/login.keychain-db, so profiles
+# sharing a keychain silently share one Google account however isolated their HOMEs are. That
+# basename is the trap: macOS routes every `security` command naming it — absolute path included —
+# to the session's own keychain, so a profile keychain called login.keychain-db can never be
+# unlocked, and unlocking a renamed copy does not survive renaming it back. The database therefore
+# lives under a name security can address, login.keychain-db is only a symlink to it, and every
+# launch unlocks it by the real name. Measured 2026-07-27 across reboots: without that unlock agy's
+# token refresh — a write — raises the modal keychain password dialog on the first run after every
+# boot; with it nothing prompts. HOME is pinned on every security call, or the profile keychain
+# lands in the real session's search list where a locked entry makes unrelated lookups prompt too.
 gemini_ensure_keychain() {
-  local home="$1" keychains="$1/Library/Keychains" name staging password
+  local home="$1" keychains="$1/Library/Keychains" name
   local security_cmd="${GEMINIB_SECURITY_CMD:-/usr/bin/security}"
   [ "$home" != "$gemini_base_home" ] || return 0
   # A profile removed between listing and probing must stay removed, not be rebuilt as a ghost.
@@ -40,33 +40,66 @@ gemini_ensure_keychain() {
     printf 'geminib: %s shared the main keychain and was signed in as its account; sign it in again.\n' \
       "$name" >&2
   fi
-  if [ -f "$keychains/login.keychain-db" ]; then
-    if [ ! -s "$home/.keychain-password" ]; then
-      printf 'geminib: %s has a keychain but no saved password; it cannot be unlocked, so sign the profile in again if agy asks.\n' \
-        "$name" >&2
-    fi
-    return 0
-  fi
   mkdir -p "$keychains" 2>/dev/null || return 0
-  # Probes run in parallel. Staging the keychain and publishing it with a hard link elects one
-  # winner atomically, and a run killed before the link leaves only a stray staging directory —
-  # a lock would survive the same crash and keep the profile keychain-less forever. The password
-  # follows the link rather than leading it: a loser that had written it first would strand the
-  # winner's keychain behind a password nobody kept.
-  staging=$(mktemp -d "$keychains/.staging.XXXXXX" 2>/dev/null) || return 0
-  password=$(head -c 24 /dev/urandom 2>/dev/null | base64 | tr -dc 'A-Za-z0-9') || password=''
-  if [ -n "$password" ] &&
-    (umask 077; printf '%s' "$password" >"$staging/password") &&
-    HOME="$home" "$security_cmd" create-keychain -p "$password" "$staging/login.keychain-db" \
-      >/dev/null 2>&1 &&
-    HOME="$home" "$security_cmd" set-keychain-settings -u "$staging/login.keychain-db" \
-      >/dev/null 2>&1; then
-    if ln "$staging/login.keychain-db" "$keychains/login.keychain-db" 2>/dev/null; then
-      mv -f "$staging/password" "$home/.keychain-password" || true
-    fi
+  # Probes run in parallel and the lock only orders them: every step below repairs whatever the
+  # previous run left behind, so a machine without lockf is better served by racing than by
+  # skipping the unlock and prompting.
+  if [ -x /usr/bin/lockf ]; then
+    (
+      /usr/bin/lockf -s -t 15 9 2>/dev/null || exit 1
+      gemini_prepare_keychain "$home" "$name" "$security_cmd"
+    ) 9>"$home/.geminib-keychain.lock"
   else
-    printf 'geminib: could not create a keychain for %s; agy will ask for one on its next token refresh.\n' \
-      "$name" >&2
+    gemini_prepare_keychain "$home" "$name" "$security_cmd"
   fi
-  rm -rf "$staging"
+}
+
+gemini_prepare_keychain() {
+  local home="$1" name="$2" security_cmd="$3"
+  local keychains="$1/Library/Keychains"
+  local real="$keychains/gemini.keychain-db" link="$keychains/login.keychain-db"
+  local password_file="$home/.keychain-password" password usable=0
+  # agy recreates login.keychain-db as a real file whenever it is missing, so a real file at that
+  # path is always the database it has been writing and outranks whatever this function left there.
+  if [ ! -L "$link" ] && [ -f "$link" ]; then
+    rm -f "$real"
+    mv "$link" "$real" 2>/dev/null || return 1
+  fi
+  [ -L "$real" ] && rm -f "$real"
+  if [ ! -L "$link" ] && [ -e "$link" ]; then
+    rm -rf "$link" 2>/dev/null || return 1
+  fi
+  if [ "$(readlink "$link" 2>/dev/null)" != gemini.keychain-db ]; then
+    rm -f "$link" 2>/dev/null
+    ln -s gemini.keychain-db "$link" 2>/dev/null || return 1
+  fi
+  if [ -f "$real" ] && [ -s "$password_file" ]; then
+    password=$(cat "$password_file" 2>/dev/null) || password=''
+    if [ -n "$password" ] &&
+      HOME="$home" "$security_cmd" unlock-keychain -p "$password" "$real" >/dev/null 2>&1; then
+      usable=1
+    fi
+  fi
+  # A keychain whose password nobody holds can only be replaced: it can never be unlocked, so agy
+  # would prompt for it after every boot, and it holds nothing the profile's own
+  # antigravity-oauth-token file does not — that file, not the keychain, is what agy signs in with.
+  if [ "$usable" -eq 0 ]; then
+    rm -f "$real"
+    password=$(head -c 24 /dev/urandom 2>/dev/null | base64 | tr -dc 'A-Za-z0-9') || password=''
+    if [ -z "$password" ] ||
+      ! (umask 077; printf '%s' "$password" >"$password_file") ||
+      ! HOME="$home" "$security_cmd" create-keychain -p "$password" "$real" >/dev/null 2>&1; then
+      printf 'geminib: could not create a keychain for %s; agy will ask for its password on the next token refresh.\n' \
+        "$name" >&2
+      return 1
+    fi
+    # create-keychain already leaves it unlocked; asked again so that "every run ends with an
+    # unlocked keychain" holds by construction rather than by trusting that.
+    HOME="$home" "$security_cmd" unlock-keychain -p "$password" "$real" >/dev/null 2>&1 || true
+  fi
+  # Registered under the symlink because that is the path agy opens, and left without a lock
+  # timeout so one unlock covers every run until the next boot.
+  HOME="$home" "$security_cmd" list-keychains -d user -s "$link" >/dev/null 2>&1 || true
+  HOME="$home" "$security_cmd" default-keychain -d user -s "$link" >/dev/null 2>&1 || true
+  HOME="$home" "$security_cmd" set-keychain-settings -u "$real" >/dev/null 2>&1 || true
 }
