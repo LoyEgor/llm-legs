@@ -5,7 +5,6 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORKDIR_HOOK="$ROOT/bin/statusline-workdir-hook.sh"
 WORKER_HOOK="$ROOT/bin/worker-tag-hook.sh"
 SPAWN_HOOK="$ROOT/bin/worker-spawn-hook.sh"
-REVIEW_HOOK="$ROOT/bin/review-bench-hook.sh"
 STATUSLINE="$ROOT/bin/statusline.sh"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -1200,51 +1199,6 @@ assert_eq "" "$wrong_rewrite_output"
 
 broken_output=$(printf '{broken' | "$WORKER_HOOK") || fail "broken JSON exited nonzero"
 assert_eq "" "$broken_output"
-
-review_hook_payload() {
-  jq -cn --arg command "$1" --arg description "$2" --arg cwd "$3" '
-    {hook_event_name:"PreToolUse",tool_name:"Bash",session_id:"review-hook",cwd:$cwd,
-     tool_input:{command:$command,description:$description,timeout:42}}'
-}
-
-# The hook only maintains the bench marker; a description rewrite was tried and removed
-# (the user reads the statusline, not the transcript) — a PreToolUse call must stay silent.
-review_payload=$(review_hook_payload \
-  "$ROOT/bin/review-bench review T2" "LLM-authored title" "$REPO_A")
-review_output=$(printf '%s' "$review_payload" | "$REVIEW_HOOK") \
-  || fail "review hook PreToolUse exited nonzero"
-assert_eq "" "$review_output"
-
-# --- review-bench segment (bin/statusline.sh) ---
-bench_session=bench-seg
-bench_dir="$HOME/.cache/claude-review-bench/$bench_session"
-bench_payload=$(statusline_payload "$bench_session")
-
-no_marker_output=$(run_statusline "$bench_payload") || fail "bench no-marker render failed"
-assert test "${no_marker_output#*bench 8553616:}" = "$no_marker_output"
-
-mkdir -p "$bench_dir"
-printf 'bench 8553616: sol-high,opus-medium-skill %s\n' "$(date +%s)" > "$bench_dir/running"
-marker_output=$(run_statusline "$bench_payload") || fail "bench marker render failed"
-marker_label='bench 8553616: sol-high,opus-medium-skill'
-marker_line="${marker_output%%$'\n'*}"
-assert grep -Fq "${YELLOW}${marker_label}${RESET}" <<< "$marker_line"
-assert test "${marker_line#*⚖}" = "$marker_line"
-assert grep -Fq \
-  " ${DIM}│${RESET} review ${DIM}│${RESET} ${YELLOW}${marker_label}${RESET} ${DIM}│${RESET} ${DIM}w:" \
-  <<< "$marker_line"
-epoch_in_marker=$(awk '{print $NF}' "$bench_dir/running")
-assert test "${marker_output#*"$epoch_in_marker"}" = "$marker_output"
-
-touch -t 202001010000 "$bench_dir/running"
-stale_output=$(run_statusline "$bench_payload") || fail "bench stale render failed"
-assert test "${stale_output#*"$marker_label"}" = "$stale_output"
-
-other_payload=$(statusline_payload bench-other-session)
-printf 'bench 8553616: sol-low %s\n' "$(date +%s)" > "$bench_dir/running"
-other_output=$(run_statusline "$other_payload") || fail "bench other-session render failed"
-assert test "${other_output#*bench 8553616: sol-low}" = "$other_output"
-rm -rf "$bench_dir"
 
 REVIEW_DIRTY="$FIXTURES/review-dirty"
 mkdir -p "$REVIEW_DIRTY"

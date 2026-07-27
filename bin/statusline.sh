@@ -876,27 +876,6 @@ if [ -n "$session_id" ]; then
   fi
 fi
 
-
-# Review-bench liveness: session-scoped marker exists and is not stale (>2700s=45m).
-# The PostToolUse hook removes the marker on completion; no pgrep — a global
-# process match would light up for another session's bench run.
-bench_part=""
-if [ -n "$session_id" ]; then
-  bench_marker_dir="$HOME/.cache/claude-review-bench/$session_id"
-  bench_marker="$bench_marker_dir/running"
-  if [ -f "$bench_marker" ]; then
-    bench_mtime=$(file_mtime "$bench_marker" 2>/dev/null)
-    if [[ "$bench_mtime" =~ ^[0-9]+$ ]] && [ "$((now - bench_mtime))" -le 2700 ]; then
-      IFS= read -r bench_line < "$bench_marker" 2>/dev/null || bench_line=""
-      # Marker line is "<label with spaces> <epoch>" — drop the trailing epoch.
-      bench_label="${bench_line% *}"
-      if [ -n "$bench_label" ]; then
-        bench_part=" ${sep} ${YELLOW}${bench_label}${RESET}"
-      fi
-    fi
-  fi
-fi
-
 review_tier=""
 if [ -n "$active_top" ]; then
   review_probe_self="$0"
@@ -1001,7 +980,7 @@ fi
 
 # Two lines: identity/work (model, account, dir/branch/diff, workers) on top,
 # usage (ctx, 5h, weekly, fable, cost) below.
-line1="${CYAN}${model}${model_suffix}${RESET}${fast_part}${cb_part} ${sep} ${dir_part}${branch_part}${review_part}${bench_part}${ports_part}${worker_part}"
+line1="${CYAN}${model}${model_suffix}${RESET}${fast_part}${cb_part} ${sep} ${dir_part}${branch_part}${review_part}${ports_part}${worker_part}"
 
 line2="ctx $(pct_colored "$ctx_pct" "$ctx_dim" 40)${ctx_tokens_part} ${sep} 5h $(pct_colored "$h5_pct" "$h5_dim")${h5_arrow} ${sep} wk $(pct_colored "$wk_pct" "$wk_dim")${wk_arrow}${fable_part}"
 
