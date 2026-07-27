@@ -432,13 +432,14 @@ fi
 #     marks it with a system/compact_boundary entry; its injected summary is a
 #     user entry (isCompactSummary) and its continuation user entry is
 #     unmarked, which is why warmth anchors on ASSISTANT entries only.
-# One jq pass over the tail extracts everything; any parse failure degrades to
-# cold — never to a false warm. Emits: newest-response epoch + model + its
+# One jq pass over the tail extracts everything; incomplete streaming entries
+# are ignored, while no qualifying parsed response degrades to cold. Emits:
+# newest-response epoch + model + its
 # forkedFrom session (branched chats copy the parent's entries), TTL bucket
 # seconds, post-compact flag, and one TTL-learning evidence tuple (the newest
 # turn's first response after idle gap G, pre-guarded in jq for "no boundary
 # inside the gap" and "same model across the gap").
-assist_ts=0; assist_model="-"; fork_sid="-"; ttl_bucket=0; post_compact=0
+assist_ts=0; assist_model="-"; fork_sid="-"; ttl_bucket=0; post_compact=0; ctx_stale=1
 ev_valid=0; ev_ts=0; ev_gap=0; ev_cr=0; ev_cc=0
 if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
   cache_scan=$(tail -c 262144 "$transcript_path" 2>/dev/null | jq -Rrn '
@@ -450,7 +451,8 @@ if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
         | ((.n | tonumber) * (if .u == "m" then 60 else 3600 end))) // 0);
     reduce (inputs | fromjson? | select(type == "object" and .isSidechain != true)) as $x (
       {la: 0, pm: "", pg: -1, pa: 0, lb: 0, ats: 0, am: "-", afk: "", bk: 0,
-       cgap: 0, ccr: 0, ccc: 0, cets: 0, cpm: "", cem: "", cpa: 0, chas: 0};
+       cgap: 0, ccr: 0, ccc: 0, cets: 0, cpm: "", cem: "", cpa: 0, chas: 0,
+       own: 0};
       ((($x.timestamp? // "") | if type == "string" then ep else null end)) as $ts
       | if $ts == null then .
         elif $x.type == "system" and $x.subtype == "compact_boundary" then
@@ -471,6 +473,8 @@ if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
                | .am = (($x.message?.model? // "") | if . == "" then "-" else . end)
                | .afk = (($x.forkedFrom?.sessionId? // "") | tostring)
              else . end)
+          | (if (($x.forkedFrom?.sessionId? // "") | tostring) == "" and $ts > .own
+             then .own = $ts else . end)
           | .pm = ($x.message?.model? // "")
           | (if $bs > 0 then .bk = $bs else . end)
           | (if $ts > .la then .la = $ts else . end)
@@ -479,10 +483,11 @@ if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
         (if .lb > 0 and .lb >= .ats then 1 else 0 end),
         (if .chas == 1 and .cgap > 0 and .cpm != "" and .cpm == .cem
             and (.lb == 0 or .lb <= .cpa or .lb >= .cets) then 1 else 0 end),
-        .cets, .cgap, .ccr, .ccc ]
+        .cets, .cgap, .ccr, .ccc,
+        (if .own == 0 or (.lb > 0 and .own <= .lb) then 1 else 0 end) ]
     | map(tostring) | join(" ")' 2>/dev/null)
   if [ -n "$cache_scan" ]; then
-    read -r assist_ts assist_model fork_sid ttl_bucket post_compact ev_valid ev_ts ev_gap ev_cr ev_cc <<< "$cache_scan" || :
+    read -r assist_ts assist_model fork_sid ttl_bucket post_compact ev_valid ev_ts ev_gap ev_cr ev_cc ctx_stale <<< "$cache_scan" || :
     [[ "$assist_ts" =~ ^[0-9]+$ ]] || assist_ts=0
     [[ "$fork_sid" =~ ^[A-Za-z0-9_-]+$ ]] || fork_sid="-"
     [[ "$ttl_bucket" =~ ^[0-9]+$ ]] || ttl_bucket=0
@@ -490,8 +495,11 @@ if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
     [[ "$ev_gap" =~ ^[0-9]+$ ]] || ev_gap=0
     [[ "$ev_cr" =~ ^[0-9]+$ ]] || ev_cr=0
     [[ "$ev_cc" =~ ^[0-9]+$ ]] || ev_cc=0
+    [[ "$ctx_stale" =~ ^[01]$ ]] || ctx_stale=1
   fi
 fi
+ctx_dim=""
+[ "$ctx_stale" = 1 ] && ctx_dim=1
 cache_ttl_seed=3600
 seed_override=""
 # `[ -r ]` guards the read: a `< missing-file` redirect prints its own error
@@ -625,6 +633,7 @@ if [ -n "$ctx_tokens" ] && [ "$ctx_tokens" -gt 0 ] 2>/dev/null; then
     else tok_color="$RED"
     fi
   fi
+  [ "$ctx_stale" = 1 ] && tok_color="$DIM"
   ctx_tokens_part=" ${tok_color}$(( (ctx_tokens + 500) / 1000 ))k${RESET}${death_part}"
 fi
 cb_part=""
@@ -883,7 +892,7 @@ fi
 # usage (ctx, 5h, weekly, fable, cost) below.
 line1="${CYAN}${model}${model_suffix}${RESET}${fast_part}${cb_part} ${sep} ${dir_part}${branch_part}${ports_part}${worker_part}${bench_part}${review_tier_part}"
 
-line2="ctx $(pct_colored "$ctx_pct" "" 40)${ctx_tokens_part} ${sep} 5h $(pct_colored "$h5_pct" "$h5_dim")${h5_arrow} ${sep} wk $(pct_colored "$wk_pct" "$wk_dim")${wk_arrow}${fable_part}"
+line2="ctx $(pct_colored "$ctx_pct" "$ctx_dim" 40)${ctx_tokens_part} ${sep} 5h $(pct_colored "$h5_pct" "$h5_dim")${h5_arrow} ${sep} wk $(pct_colored "$wk_pct" "$wk_dim")${wk_arrow}${fable_part}"
 
 if [ -n "$cost_raw" ]; then
   line2="${line2} ${sep} ${DIM}\$$(LC_ALL=C printf '%.2f' "$cost_raw")${RESET}"

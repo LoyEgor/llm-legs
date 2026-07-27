@@ -422,7 +422,13 @@ assert grep -Fq '$18.20' <<< "$cost_out"
 assert_eq "" "$(cat "$WORK/cost-stderr")"
 
 # --- ctx color (% colored by pct: green <40, yellow 40–79, red ≥80; token count cold cache) ---
-ctx_case() { statusline_payload "$1" '{"context_window":{"used_percentage":'"$2"',"current_usage":{"input_tokens":'"$3"'}}}'; }
+CTX_TRUTH_TRANSCRIPT="$WORK/ctx-truth.jsonl"
+printf '{"type":"assistant","timestamp":"%s","message":{"role":"assistant","model":"fixmodel","usage":{}}}\n' \
+  "$(TZ=UTC date -r "$NOW" +%Y-%m-%dT%H:%M:%S.000Z)" > "$CTX_TRUTH_TRANSCRIPT"
+ctx_case() {
+  statusline_payload "$1" "$(jq -cn --arg tp "$CTX_TRUTH_TRANSCRIPT" --argjson pct "$2" --argjson tokens "$3" \
+    '{transcript_path:$tp,context_window:{used_percentage:$pct,current_usage:{input_tokens:$tokens}}}')"
+}
 ctx_lo=$(run_statusline "$(ctx_case ctx-lo 39 50000)")
 assert grep -Fq "ctx ${GREEN}39%${RESET}" <<< "$ctx_lo"
 assert grep -Fq "${DIM}50k${RESET}" <<< "$ctx_lo"
@@ -436,11 +442,13 @@ assert grep -Fq "${YELLOW}180k${RESET}" <<< "$ctx_red"
 # With window size present the % is computed from raw usage: the harness's
 # used_percentage says 100 on a 1m session at 248k — render must show 25%.
 ctx_1m=$(run_statusline "$(statusline_payload ctx-1m \
-  '{"context_window":{"used_percentage":100,"context_window_size":1000000,"current_usage":{"input_tokens":248000}}}')")
+  "$(jq -cn --arg tp "$CTX_TRUTH_TRANSCRIPT" \
+    '{transcript_path:$tp,context_window:{used_percentage:100,context_window_size:1000000,current_usage:{input_tokens:248000}}}')")")
 assert grep -Fq "ctx ${GREEN}25%${RESET}" <<< "$ctx_1m"
 assert grep -Fq "${YELLOW}248k${RESET}" <<< "$ctx_1m"
 ctx_200k=$(run_statusline "$(statusline_payload ctx-200k \
-  '{"context_window":{"used_percentage":10,"context_window_size":200000,"current_usage":{"input_tokens":180000}}}')")
+  "$(jq -cn --arg tp "$CTX_TRUTH_TRANSCRIPT" \
+    '{transcript_path:$tp,context_window:{used_percentage:10,context_window_size:200000,current_usage:{input_tokens:180000}}}')")")
 assert grep -Fq "ctx ${RED}90%${RESET}" <<< "$ctx_200k"
 
 # --- token-count color encodes prompt-cache warmth ---
@@ -503,11 +511,19 @@ ts_warm=$(run_statusline "$(statusline_payload ctx-ts-warm "$(warm_extra "$TRANS
 ts_death=$(TZ=Europe/Kyiv date -r $((NOW - 60 + 3600)) +%H:%M)
 assert grep -Fq "${DIM}50k${RESET}${DIM}→${ts_death}${RESET}" <<< "$ts_warm"
 
+# A partially written final entry must not hide the preceding completed response.
+t_reset; t_assist $((NOW - 20))
+printf '{"type":"assistant","timestamp":"' >> "$TRANSCRIPT"
+streaming_out=$(run_statusline "$(statusline_payload ctx-streaming "$(warm_extra "$TRANSCRIPT" 20 50000)")")
+streaming_death=$(TZ=Europe/Kyiv date -r $((NOW - 20 + 3600)) +%H:%M)
+assert grep -Fq "ctx ${GREEN}20%${RESET} ${DIM}50k${RESET}${DIM}→${streaming_death}${RESET}" <<< "$streaming_out"
+
 # Sidechain (subagent) entries hit different cache prefixes — not this chat's warmth.
 t_reset; t_user $((NOW - 172800))
 printf '{"type":"assistant","isSidechain":true,"timestamp":"%s","message":{"role":"assistant","model":"fixmodel","usage":{"cache_read_input_tokens":50000}}}\n' "$(iso_utc "$NOW")" >> "$TRANSCRIPT"
 side_cold=$(run_statusline "$(statusline_payload ctx-sidechain "$(warm_extra "$TRANSCRIPT" 55 111000)")")
-assert grep -Fq "${YELLOW}111k${RESET}" <<< "$side_cold"
+assert grep -Fq "ctx ${DIM}55%${RESET} ${DIM}111k${RESET}" <<< "$side_cold"
+assert test "${side_cold#*→}" = "$side_cold"
 
 # <synthetic> assistant entries (API-error placeholders) are not responses.
 t_reset; t_assist $((NOW - 172799)); t_assist "$NOW" '<synthetic>' 0 0
@@ -561,11 +577,21 @@ t_reset; t_assist $((NOW - 60)); t_boundary $((NOW - 30))
 printf '{"type":"user","isCompactSummary":true,"timestamp":"%s","message":{"role":"user"}}\n' "$(iso_utc $((NOW - 29)))" >> "$TRANSCRIPT"
 t_user $((NOW - 28))
 compact_cold=$(run_statusline "$(statusline_payload ctx-compact "$(warm_extra "$TRANSCRIPT" 55 111000)")")
-assert grep -Fq "${YELLOW}111k${RESET}" <<< "$compact_cold"
+assert grep -Fq "ctx ${DIM}55%${RESET} ${DIM}111k${RESET}" <<< "$compact_cold"
+assert test "${compact_cold#*→}" = "$compact_cold"
 # The first response after the boundary re-warms.
 t_assist $((NOW - 5))
 compact_warm=$(run_statusline "$(statusline_payload ctx-compact "$(warm_extra "$TRANSCRIPT" 55 111000)")")
 assert grep -Fq "${DIM}111k${RESET}${DIM}→" <<< "$compact_warm"
+compact_current=$(run_statusline "$(statusline_payload ctx-compact-current \
+  "$(jq -cn --arg tp "$TRANSCRIPT" \
+    '{transcript_path:$tp,context_window:{used_percentage:55,current_usage:{input_tokens:111000}}}')")")
+assert grep -Fq "ctx ${YELLOW}55%${RESET} ${YELLOW}111k${RESET}" <<< "$compact_current"
+
+t_reset; t_assist $((NOW - 30)); t_boundary $((NOW - 30))
+compact_equal=$(run_statusline "$(statusline_payload ctx-compact-equal "$(warm_extra "$TRANSCRIPT" 55 111000)")")
+assert grep -Fq "ctx ${DIM}55%${RESET} ${DIM}111k${RESET}" <<< "$compact_equal"
+assert test "${compact_equal#*→}" = "$compact_equal"
 
 # --- branched (forked) chats inherit warmth from the parent's stamp ---
 # Copied entries carry forkedFrom.sessionId; the anchor response was produced
@@ -577,6 +603,10 @@ t_assist_fork() { # epoch parent_sid
 # Tail fork: parent's stamp points at the exact copied response -> inherit
 # account + learning cursor, warm; own track written with the inherited stamp.
 t_reset; t_assist_fork $((NOW - 600)) parent-sid
+fork_only=$(run_statusline "$(statusline_payload ctx-fork-only \
+  "$(jq -cn --arg tp "$TRANSCRIPT" \
+    '{transcript_path:$tp,context_window:{used_percentage:55,current_usage:{input_tokens:111000}}}')")")
+assert grep -Fq "ctx ${DIM}55%${RESET} ${DIM}111k${RESET}" <<< "$fork_only"
 printf 'v2 %s acctgen 7\n' "$((NOW - 600))" > "$STATE_DIR/cache-ttl-track-parent-sid"
 fork_warm=$(run_statusline "$(statusline_payload ctx-fork "$(warm_extra "$TRANSCRIPT" 55 111000)")")
 assert grep -Fq "${DIM}111k${RESET}${DIM}→" <<< "$fork_warm"
@@ -585,17 +615,20 @@ assert grep -q '^v2 [0-9]* acctgen 7' "$STATE_DIR/cache-ttl-track-ctx-fork"
 t_reset; t_assist_fork $((NOW - 600)) parent-sid
 printf 'v2 %s acctgen 0\n' "$((NOW - 300))" > "$STATE_DIR/cache-ttl-track-parent-sid"
 fork_moved=$(run_statusline "$(statusline_payload ctx-fork-moved "$(warm_extra "$TRANSCRIPT" 55 111000)")")
-assert grep -Fq "${YELLOW}111k${RESET}" <<< "$fork_moved"
+assert grep -Fq "ctx ${DIM}55%${RESET} ${DIM}111k${RESET}" <<< "$fork_moved"
+assert test "${fork_moved#*→}" = "$fork_moved"
 assert grep -q '^v2 [0-9]* ? ' "$STATE_DIR/cache-ttl-track-ctx-fork-moved"
 # No parent track at all -> "?" cold.
 t_reset; t_assist_fork $((NOW - 600)) parent-sid
 fork_orphan=$(run_statusline "$(statusline_payload ctx-fork-orphan "$(warm_extra "$TRANSCRIPT" 55 111000)")")
-assert grep -Fq "${YELLOW}111k${RESET}" <<< "$fork_orphan"
+assert grep -Fq "ctx ${DIM}55%${RESET} ${DIM}111k${RESET}" <<< "$fork_orphan"
+assert test "${fork_orphan#*→}" = "$fork_orphan"
 # A FRESH copied anchor (inside the 120s window) still must not self-stamp:
 # without a matching parent stamp it stays "?" cold.
 t_reset; t_assist_fork $((NOW - 10)) parent-sid
 fork_fresh=$(run_statusline "$(statusline_payload ctx-fork-fresh "$(warm_extra "$TRANSCRIPT" 55 111000)")")
-assert grep -Fq "${YELLOW}111k${RESET}" <<< "$fork_fresh"
+assert grep -Fq "ctx ${DIM}55%${RESET} ${DIM}111k${RESET}" <<< "$fork_fresh"
+assert test "${fork_fresh#*→}" = "$fork_fresh"
 assert grep -q '^v2 [0-9]* ? ' "$STATE_DIR/cache-ttl-track-ctx-fork-fresh"
 # The fork's own NEW response (no forkedFrom) resumes normal self-stamping.
 t_assist $((NOW - 5))
@@ -632,6 +665,15 @@ assert grep -Fq "${DIM}60k${RESET}" <<< "$warm_d"
 # (e) no transcript path -> dim (unknown is not warm).
 warm_e=$(run_statusline "$(statusline_payload ctx-nopath "$(warm_extra "" 20 50000)")")
 assert grep -Fq "${DIM}50k${RESET}" <<< "$warm_e"
+
+t_reset
+printf 'not-json\n' > "$TRANSCRIPT"
+garbage_out=$(run_statusline "$(statusline_payload ctx-garbage \
+  "$(jq -cn --arg tp "$TRANSCRIPT" \
+    '{transcript_path:$tp,context_window:{used_percentage:55,current_usage:{input_tokens:111000}}}')")")
+garbage_rc=$?
+assert_eq 0 "$garbage_rc"
+assert grep -Fq "ctx ${DIM}55%${RESET} ${DIM}111k${RESET}" <<< "$garbage_out"
 
 # (f) TTL override file respected: response 200s ago, override TTL 100 -> cold
 # (would be warm under the default 3600).
