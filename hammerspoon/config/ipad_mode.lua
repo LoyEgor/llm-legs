@@ -1,13 +1,14 @@
 local IpadMode = {}
 
 local defaultLogDir = os.getenv("HOME") .. "/Library/Logs/Jump Desktop/"
-local disconnectCooldownSeconds = 180
+local disconnectCooldownSeconds = 90
 local disconnectDebounceSeconds = 60
 local logDir = defaultLogDir
 local on = nil
 local jumpConnected = false
 local liveProxyPids = {}
 local offsets = {}
+local inodes = {}
 local partialLines = {}
 local previousSignals = nil
 local manualOverride = nil
@@ -18,6 +19,8 @@ local wakeDeadlineTimer = nil
 local wakeConfirmationSeconds = 90
 local cooldownSettingKey = "IpadMode.cooldownUntil"
 local scheduleCooldownExpiry
+local scanAppends
+local scanAppendsForDecision
 
 do
     local ok, stored = pcall(function()
@@ -153,6 +156,8 @@ local function debounceDisconnect(reason)
     end
     disconnectDebounceTimer = hs.timer.doAfter(disconnectDebounceSeconds, function()
         disconnectDebounceTimer = nil
+        scanAppendsForDecision()
+        IpadMode.recheckJumpLiveness(true)
         local signals = signalSnapshot()
         previousSignals = signals
         if derivedOn(signals) or manualOverride ~= nil or cooldownActive() then
@@ -199,15 +204,17 @@ end
 local function readAppended(fileName)
     local path = logDir .. fileName
     local size = hs.fs.attributes(path, "size")
+    local inode = hs.fs.attributes(path, "ino")
     if not size then
         return
     end
 
     local offset = offsets[fileName] or 0
-    if size < offset then
+    if size < offset or (inodes[fileName] and inode ~= inodes[fileName]) then
         offset = 0
         partialLines[fileName] = nil
     end
+    inodes[fileName] = inode
     if size == offset then
         return
     end
@@ -242,11 +249,19 @@ local function updateJumpConnected(reason, suppressRecompute)
     end
 end
 
-local function scanAppends()
+local function ingestAppends(suppressRecompute)
     for _, fileName in ipairs(listAgentLogs()) do
         readAppended(fileName)
     end
-    updateJumpConnected("Jump Desktop signal")
+    updateJumpConnected("Jump Desktop signal", suppressRecompute)
+end
+
+scanAppends = function()
+    ingestAppends(false)
+end
+
+scanAppendsForDecision = function()
+    ingestAppends(true)
 end
 
 local function pidAlive(pid)
@@ -257,6 +272,7 @@ end
 local function recoverToday()
     liveProxyPids = {}
     offsets = {}
+    inodes = {}
     partialLines = {}
 
     local todayFile = "Agent_" .. os.date("%Y_%m_%d") .. ".log"
@@ -267,6 +283,7 @@ local function recoverToday()
             readAppended(fileName)
         else
             offsets[fileName] = size
+            inodes[fileName] = hs.fs.attributes(logDir .. fileName, "ino")
         end
     end
 
@@ -325,6 +342,25 @@ function IpadMode.recompute(reason, sidecar, force)
     return on
 end
 
+local baselineReconciled = false
+
+function IpadMode.reconcileBaseline()
+    if baselineReconciled or not _G.IpadAutomation then
+        return on
+    end
+    if previousSignals == nil then
+        IpadMode.recompute("initial signals")
+    end
+    baselineReconciled = true
+    if on then
+        runAction(true)
+    elseif _G.IpadAutomation.ipadJunkPresent
+        and _G.IpadAutomation.ipadJunkPresent() then
+        runAction(false)
+    end
+    return on
+end
+
 function IpadMode.setManual(value)
     value = value == true
     cancelDisconnectDebounce()
@@ -361,6 +397,7 @@ function IpadMode.wakeOnAttempt()
     if not derivedOn(signals) then
         wakeDeadlineTimer = hs.timer.doAfter(wakeConfirmationSeconds, function()
             wakeDeadlineTimer = nil
+            scanAppendsForDecision()
             IpadMode.recheckJumpLiveness(true)
             local currentSignals = signalSnapshot()
             previousSignals = currentSignals

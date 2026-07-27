@@ -220,6 +220,15 @@ buildMenu = function()
             end or nil,
         },
         {
+            title = "Rejoin SonoBus",
+            disabled = not (_G.IpadAutomation and _G.IpadAutomation.rejoinSonoBus),
+            fn = function()
+                if _G.IpadAutomation and _G.IpadAutomation.rejoinSonoBus then
+                    _G.IpadAutomation.rejoinSonoBus()
+                end
+            end,
+        },
+        {
             title = "iPad Overlay",
             checked = ipadOverlay ~= nil and ipadOverlay.isShown(),
             disabled = not ipadOverlay,

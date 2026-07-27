@@ -25,6 +25,7 @@ end
 
 local jumpUserProcessCommand = [[/usr/bin/pgrep -fl JumpConnect | /usr/bin/awk '$2 == "/Applications/Jump" && $3 == "Desktop" && $4 == "Connect.app/Contents/MacOS/JumpConnect" && $0 !~ /--service/ { found=1 } END { exit(found ? 0 : 1) }']]
 local jumpUserPidCommand = [[/usr/bin/pgrep -fl JumpConnect | /usr/bin/awk '$2 == "/Applications/Jump" && $3 == "Desktop" && $4 == "Connect.app/Contents/MacOS/JumpConnect" && $0 !~ /--service/ { print $1 }']]
+local sonobusGroupUrl = "sonobus://aoo.sonobus.net:10998/?g=egor-mic"
 local serviceLogDir = "/Library/Logs/Jump Desktop/"
 local pending = {}
 local nextPendingId = 0
@@ -220,7 +221,7 @@ end
 local function stopAppReliably(appName, generation, onDone)
     local gracePolls = 6
     local killPolls = 4
-    local killSent = false
+    local termSent = false
 
     local function isRunning()
         local ok, app = pcall(hs.application.get, appName)
@@ -242,17 +243,18 @@ local function stopAppReliably(appName, generation, onDone)
             finish()
             return
         end
-        if not killSent and gracePolls > 0 then
+        if not termSent and gracePolls > 0 then
             gracePolls = gracePolls - 1
             scheduleTeardown(generation, 0.5, poll)
             return
         end
-        if not killSent then
-            killSent = true
-            if app then
-                pcall(function()
-                    app:kill()
-                end)
+        -- Real signals by pid: NSRunningApplication-style app:kill() is a
+        -- polite terminate that a modal dialog (SonoBus quit confirm) ignores.
+        local pid = app and app:pid()
+        if not termSent then
+            termSent = true
+            if pid then
+                hs.execute("/bin/kill -TERM " .. pid)
             end
         end
         if killPolls > 0 then
@@ -260,8 +262,15 @@ local function stopAppReliably(appName, generation, onDone)
             scheduleTeardown(generation, 0.5, poll)
             return
         end
-        print("WARNING: could not stop application:", appName)
-        finish()
+        if pid then
+            hs.execute("/bin/kill -KILL " .. pid)
+        end
+        scheduleTeardown(generation, 0.5, function()
+            if isRunning() then
+                print("WARNING: could not stop application:", appName)
+            end
+            finish()
+        end)
     end
 
     local task
@@ -281,6 +290,25 @@ local function stopAppReliably(appName, generation, onDone)
     end
 end
 
+local function stopSonoBusReliably(generation, onDone)
+    if generation ~= teardownGeneration then
+        return
+    end
+    local ok, app = pcall(hs.application.get, "SonoBus")
+    local disconnected = false
+    if ok and app then
+        local selectOk, selected = pcall(app.selectMenuItem, app, { "Connect", "Disconnect" })
+        disconnected = selectOk and selected and true or false
+    end
+    if disconnected then
+        scheduleTeardown(generation, 0.7, function()
+            stopAppReliably("SonoBus", generation, onDone)
+        end)
+    else
+        stopAppReliably("SonoBus", generation, onDone)
+    end
+end
+
 local function jumpUserPids()
     local output, ok = hs.execute(jumpUserPidCommand)
     if not ok then
@@ -291,6 +319,12 @@ local function jumpUserPids()
         pids[#pids + 1] = pid
     end
     return pids
+end
+
+local function ipadJunkPresent()
+    return hs.application.get("SonoBus") ~= nil
+        or #jumpUserPids() > 0
+        or virtualDisplayPresent()
 end
 
 local function stopJumpUserReliably(generation, onDone)
@@ -360,6 +394,34 @@ local function enableDummy()
         { path = "/usr/bin/open", args = { "-a", "BetterDisplay" } },
         { path = "/usr/bin/open", args = { "-a", "Jump Desktop Connect" } },
     }, true, "iPad connected", 10)
+    local generation = actionGeneration
+    nextPendingId = nextPendingId + 1
+    local pendingId = nextPendingId
+    local entry = {}
+    pending[pendingId] = entry
+    entry.timer = hs.timer.doAfter(7, function()
+        entry.timer = nil
+        pending[pendingId] = nil
+        if generation ~= actionGeneration then
+            return
+        end
+        local specs = {}
+        if hs.application.get("BetterDisplay") == nil then
+            print("WARNING: iPad connect re-launching BetterDisplay")
+            specs[#specs + 1] = { path = "/usr/bin/open", args = { "-a", "BetterDisplay" } }
+        end
+        if #jumpUserPids() == 0 then
+            print("WARNING: iPad connect re-launching Jump Desktop Connect")
+            specs[#specs + 1] = { path = "/usr/bin/open", args = { "-a", "Jump Desktop Connect" } }
+        end
+        if hs.application.get("SonoBus") == nil then
+            print("WARNING: iPad connect re-launching SonoBus")
+            specs[#specs + 1] = { path = "/usr/bin/open", args = { sonobusGroupUrl } }
+        end
+        if #specs > 0 then
+            runAppTasks(specs, true, "iPad connected retry", 3)
+        end
+    end)
     showAutomationMenu()
 end
 
@@ -401,7 +463,7 @@ local function disableDummy()
     end
     local generation = teardownGeneration
     runTeardownStep("stop SonoBus", function()
-        stopAppReliably("SonoBus", generation, stopped)
+        stopSonoBusReliably(generation, stopped)
     end)
     runTeardownStep("stop BetterDisplay", function()
         stopAppReliably("BetterDisplay", generation, stopped)
@@ -410,20 +472,22 @@ local function disableDummy()
         stopJumpUserReliably(generation, stopped)
     end)
     scheduleTeardown(generation, 7, function()
+        local stragglerPids = {}
         for _, appName in ipairs({ "SonoBus", "BetterDisplay" }) do
             local app = hs.application.get(appName)
-            if app then
-                pcall(function()
-                    app:kill()
-                end)
+            local pid = app and app:pid()
+            if pid then
+                stragglerPids[#stragglerPids + 1] = pid
+                hs.execute("/bin/kill -TERM " .. pid)
             end
         end
         for _, pid in ipairs(jumpUserPids()) do
+            stragglerPids[#stragglerPids + 1] = pid
             hs.execute("/bin/kill -TERM " .. pid)
         end
         scheduleTeardown(generation, 1, function()
-            for _, pid in ipairs(jumpUserPids()) do
-                hs.execute("/bin/kill -KILL " .. pid)
+            for _, pid in ipairs(stragglerPids) do
+                hs.execute("/bin/kill -KILL " .. pid .. " 2>/dev/null")
             end
         end)
     end)
@@ -736,6 +800,7 @@ local function startAudioInputMirror()
     if _G.IpadAutomation then
         _G.IpadAutomation.audioInputWatcher = watcher
     end
+    scheduleAudioInputMirror()
 end
 
 -- BlackHole stores its volume persistently; a stray 39% once attenuated the
@@ -753,7 +818,7 @@ end
 
 local function ipadConnected()
     enableDummy()
-    hs.execute([[open "sonobus://aoo.sonobus.net:10998/?g=egor-mic"]])
+    hs.execute([[/usr/bin/open "]] .. sonobusGroupUrl .. [["]])
     if _G.IpadOverlay then
         _G.IpadOverlay.show()
     end
@@ -763,6 +828,25 @@ end
 
 local function ipadDisconnected()
     disableDummy()
+end
+
+local rejoinSonoBusTimer = nil
+
+-- Both SonoBus ends go stale after the iPad app dies mid-session; rejoining
+-- the group on the Mac side is half of the recovery (the iPad app restart is
+-- the other half).
+local function rejoinSonoBus()
+    local app = hs.application.get("SonoBus")
+    if app then
+        pcall(app.selectMenuItem, app, { "Connect", "Disconnect" })
+    end
+    if rejoinSonoBusTimer then
+        rejoinSonoBusTimer:stop()
+    end
+    rejoinSonoBusTimer = hs.timer.doAfter(app and 2 or 0, function()
+        rejoinSonoBusTimer = nil
+        hs.execute([[/usr/bin/open "]] .. sonobusGroupUrl .. [["]])
+    end)
 end
 
 local function evaluateIpadPresence()
@@ -788,14 +872,14 @@ _G.IpadAutomation = {
     pending = pending,
     ipadConnected = ipadConnected,
     ipadDisconnected = ipadDisconnected,
+    ipadJunkPresent = ipadJunkPresent,
+    rejoinSonoBus = rejoinSonoBus,
     getSidecarPresent = function()
         return sidecarPresent(hs.screen.allScreens())
     end,
 }
 
 watcher:start()
-evaluateIpadPresence()
-startAudioInputMirror()
 
 local claudeOk, claudeError = pcall(function()
     dofile(hs.configdir .. "/claude_continue.lua")
@@ -841,8 +925,6 @@ end)
 if not ipadModeOk then
     print("ERROR: iPad mode failed to load:", ipadModeError)
     hs.alert.show("iPad mode error")
-else
-    startJumpAttemptWatcher()
 end
 
 local sidecarPresenceOk, sidecarPresenceError = pcall(function()
@@ -879,6 +961,17 @@ end)
 if not menuOk then
     print("ERROR: Automation menu failed to load:", menuError)
     hs.alert.show("Automation menu error")
+end
+
+if ipadModeOk then
+    local reconcileOk, reconcileError = pcall(_G.IpadMode.reconcileBaseline)
+    if not reconcileOk then
+        print("ERROR: iPad baseline reconciliation failed:", reconcileError)
+        hs.alert.show("iPad baseline reconciliation error")
+    else
+        startJumpAttemptWatcher()
+        startAudioInputMirror()
+    end
 end
 
 local tokenUpkeepOk, tokenUpkeepError = pcall(function()
