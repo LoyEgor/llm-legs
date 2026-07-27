@@ -305,15 +305,24 @@ LOCATION_RE = re.compile(
     r":(?P<line>\d+)(?:[-–]\d+)?"
 )
 LIMITS_STALE_AGE_S = 600
+# Every tier carries the same OpenCode and Gemini block: those cells are fast, effectively
+# free, and keep a tier productive when a paid side is walled (owner's rule, 2026-07-28).
+REVIEW_TIER_FLOOR = [
+    "oc-kimik3 x2",
+    "oc-grok45-low",
+    "agy-pro-high-skill",
+    "agy-flash35-medium-skill",
+    "agy-flash35-high-skill",
+    "agy-flash36-medium-skill",
+]
+# Tiers are measured compositions per time budget, not nested supersets: a cell that earns
+# its seat at 6 minutes can lose it at 10 to a repeat of a stronger one.
 REVIEW_TIERS = {
     "T0": {
         "budget_min": 2,
         "when": "Up to 20 changed lines in up to 2 files",
         "cells": [
-            "oc-kimik3",
-            "oc-grok45-low",
-            "agy-pro-high-skill",
-            "agy-flash35-medium-skill",
+            *REVIEW_TIER_FLOOR,
             "sol-low",
         ],
     },
@@ -321,31 +330,22 @@ REVIEW_TIERS = {
         "budget_min": 6,
         "when": "Up to 150 changed lines, or any change under bin/ or tests/",
         "cells": [
-            "oc-kimik3",
-            "oc-grok45-low",
-            "agy-pro-high-skill",
-            "agy-flash35-medium-skill",
+            *REVIEW_TIER_FLOOR,
             "sol-low",
             "sol-medium",
-            "agy-flash36-medium-skill",
-            "opus-medium-skill",
+            "opus-low-skill",
+            "sonnet-medium-skill",
         ],
     },
     "T2": {
         "budget_min": 10,
         "when": "Up to 600 changed lines, or a core measurement tool change",
         "cells": [
-            "oc-kimik3",
-            "oc-grok45-low",
-            "agy-pro-high-skill",
-            "agy-flash35-medium-skill",
-            "sol-low",
-            "sol-medium",
-            "agy-flash36-medium-skill",
-            "opus-medium-skill",
+            *REVIEW_TIER_FLOOR,
             "sol-high",
-            "opus-high-skill",
-            "opus-medium",
+            "sol-xhigh",
+            "opus-medium-skill x3",
+            "opus-low-skill",
             "sonnet-medium-skill",
         ],
     },
@@ -353,23 +353,13 @@ REVIEW_TIERS = {
         "budget_min": 20,
         "when": "More than 600 changed lines",
         "cells": [
-            "oc-kimik3",
-            "oc-grok45-low",
-            "agy-pro-high-skill",
-            "agy-flash35-medium-skill",
-            "sol-low",
-            "sol-medium",
-            "agy-flash36-medium-skill",
-            "opus-medium-skill",
+            *REVIEW_TIER_FLOOR,
             "sol-high",
+            "sol-max x2",
+            "opus-medium-skill x2",
             "opus-high-skill",
-            "sonnet-medium-skill",
-            "opus-medium",
-            "sol-xhigh",
-            "sol-max",
-            "opus-xhigh-skill",
-            "opus-high",
-            "sonnet-xhigh-skill",
+            "opus-low-skill",
+            "sonnet-high-skill",
         ],
     },
 }
@@ -2810,6 +2800,11 @@ def cmd_run(args):
         raters, counts, skipped = auto_pick(args.auto or 2, read_jsonl(reviews_path), available)
     refuse_retired_cells(raters)
     refuse_unsupported_repeat(raters, args.repeat)
+    if verify_model and not any(rater["side"] == "opencode" for rater in raters):
+        raise RuntimeError(
+            "--verify checks OpenCode findings only (docs/verifier-tuning.md measured no "
+            "other side); this run has no OpenCode cell"
+        )
     print("selected raters:")
     for rater in raters:
         count = counts[normalize_legacy_rater(rater["spec"])]
@@ -2929,7 +2924,9 @@ def cmd_run(args):
             dropped = 0
             unverified = 0
             verify_ms = None
-            if verify_model and findings and not is_error:
+            # The verifier's error rate is measured on the OpenCode leg only
+            # (docs/verifier-tuning.md); other sides' findings pass unverified until measured.
+            if verify_model and findings and not is_error and rater["side"] == "opencode":
                 verify_started = time.monotonic()
                 kept, audit = verify_findings(findings, repo, sha, verify_model, tree)
                 verify_ms = round((time.monotonic() - verify_started) * 1000)

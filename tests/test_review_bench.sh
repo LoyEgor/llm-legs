@@ -82,30 +82,26 @@ for duplicate in ("sol-high,sol-high", "sol-high x2,sol-high", "sol-high x2,sol-
         assert "duplicates" in str(exc), (duplicate, exc)
     else:
         raise AssertionError(f"accepted duplicate rater: {duplicate}")
+expected_floor = [
+    "oc-kimik3 x2", "oc-grok45-low", "agy-pro-high-skill",
+    "agy-flash35-medium-skill", "agy-flash35-high-skill",
+    "agy-flash36-medium-skill",
+]
 expected_tiers = {
-    "T0": [
-        "oc-kimik3", "oc-grok45-low", "agy-pro-high-skill",
-        "agy-flash35-medium-skill", "sol-low",
+    "T0": expected_floor + ["sol-low"],
+    "T1": expected_floor + [
+        "sol-low", "sol-medium", "opus-low-skill", "sonnet-medium-skill",
     ],
-    "T1": [
-        "oc-kimik3", "oc-grok45-low", "agy-pro-high-skill",
-        "agy-flash35-medium-skill", "sol-low", "sol-medium",
-        "agy-flash36-medium-skill", "opus-medium-skill",
+    "T2": expected_floor + [
+        "sol-high", "sol-xhigh", "opus-medium-skill x3", "opus-low-skill",
+        "sonnet-medium-skill",
     ],
-    "T2": [
-        "oc-kimik3", "oc-grok45-low", "agy-pro-high-skill",
-        "agy-flash35-medium-skill", "sol-low", "sol-medium",
-        "agy-flash36-medium-skill", "opus-medium-skill", "sol-high",
-        "opus-high-skill", "opus-medium", "sonnet-medium-skill",
-    ],
-    "T3": [
-        "oc-kimik3", "oc-grok45-low", "agy-pro-high-skill",
-        "agy-flash35-medium-skill", "sol-low", "sol-medium",
-        "agy-flash36-medium-skill", "opus-medium-skill", "sol-high",
-        "opus-high-skill", "sonnet-medium-skill", "opus-medium", "sol-xhigh",
-        "sol-max", "opus-xhigh-skill", "opus-high", "sonnet-xhigh-skill",
+    "T3": expected_floor + [
+        "sol-high", "sol-max x2", "opus-medium-skill x2", "opus-high-skill",
+        "opus-low-skill", "sonnet-high-skill",
     ],
 }
+assert rb.REVIEW_TIER_FLOOR == expected_floor
 assert list(rb.REVIEW_TIERS) == ["T0", "T1", "T2", "T3"]
 assert [tier["budget_min"] for tier in rb.REVIEW_TIERS.values()] == [2, 6, 10, 20]
 assert {
@@ -124,8 +120,8 @@ try:
 finally:
     del rb.REVIEW_TIERS["TX"]
 print("rater-repeat-parse-tier-ok")
-for lower, upper in zip(("T0", "T1", "T2"), ("T1", "T2", "T3")):
-    assert set(rb.REVIEW_TIERS[lower]["cells"]) < set(rb.REVIEW_TIERS[upper]["cells"])
+for tier in rb.REVIEW_TIERS.values():
+    assert tier["cells"][:len(rb.REVIEW_TIER_FLOOR)] == rb.REVIEW_TIER_FLOOR, tier["cells"]
 # Every resolved rater set passes this gate, so no --raters spelling and no --auto pick can run
 # a skill-less agy cell; parsing one still works, or a stored bench run could never be recorded.
 for bare in ("agy-pro-low", "agy-flash36-medium", "agy-flash35-high"):
@@ -152,8 +148,6 @@ for bare_sonnet in ("sonnet-low", "sonnet-medium", "sonnet-high", "sonnet-xhigh"
     else:
         raise AssertionError(f"accepted a bare sonnet rater: {bare_sonnet}")
 rb.refuse_retired_cells([rb.parse_rater(spec) for spec in ("opus-medium", "opus-high")])
-assert "opus-medium" in rb.REVIEW_TIERS["T2"]["cells"]
-assert "opus-high" in rb.REVIEW_TIERS["T3"]["cells"]
 # The cheapest way to run a refused model would be to ask for it as the verifier.
 for dead_verifier in ("oc-glm52", "oc-kimik27code"):
     try:
@@ -1752,14 +1746,19 @@ review_rc = rb.cmd_review(argparse.Namespace(
 review_run_dir = next((review_store / "worker-stats" / "benches").iterdir())
 review_meta_path = review_run_dir / "meta.json"
 review_meta = json.loads(review_meta_path.read_text())
+expected_t1_runs = [
+    rater["spec"] for rater in rb.parse_raters(",".join(expected_tiers["T1"]))
+]
 assert review_rc == 0
-assert review_meta["raters"] == expected_tiers["T1"], review_meta["raters"]
-assert sorted(reviewed_cells) == sorted(expected_tiers["T1"]), reviewed_cells
+assert review_meta["raters"] == expected_t1_runs, review_meta["raters"]
+assert sorted(reviewed_cells) == sorted(expected_t1_runs), reviewed_cells
 assert review_meta["verifier"] == "oc-kimik3", \
     f"tier review verifier: {review_meta['verifier']!r}"
-for cell in expected_tiers["T1"]:
-    if rb.parse_rater(cell)["side"] == "opencode":
-        assert (review_run_dir / f"verified-{cell}.jsonl").exists(), cell
+for spec in expected_t1_runs:
+    if rb.parse_rater(spec.split("#")[0])["side"] == "opencode":
+        assert (review_run_dir / f"verified-{spec}.jsonl").exists(), spec
+    else:
+        assert not (review_run_dir / f"verified-{spec}.jsonl").exists(), spec
 review_receipt_path = (
     review_store / "worker-stats" / rb.RECEIPT_DIR
     / rb.receipt_file_name(pin_repo)
@@ -2129,8 +2128,17 @@ os.environ["CLAUDEB_DIR"] = str(verify_timing_store)
 os.environ["OPENCODE_CAPTURE_ARGS"] = str(work / "verify-timing-args")
 os.environ["OPENCODE_CAPTURE_PROMPT"] = str(work / "verify-timing-prompt")
 os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-verify-keep.json")
+try:
+    rb.cmd_run(argparse.Namespace(
+        repo=str(pin_repo), commitish=pin_sha, raters="sol-medium",
+        leg=False, verify="oc-kimik3", auto=None, focus=None, repeat=1,
+    ))
+except RuntimeError as exc:
+    assert "no OpenCode cell" in str(exc), exc
+else:
+    raise AssertionError("--verify accepted a run with no OpenCode cell")
 verify_timing_rc = rb.cmd_run(argparse.Namespace(
-    repo=str(pin_repo), commitish=pin_sha, raters="sol-medium",
+    repo=str(pin_repo), commitish=pin_sha, raters="oc-kimik3",
     leg=False, verify="oc-kimik3", auto=None, focus=None, repeat=1,
 ))
 verify_timing_run = next((verify_timing_store / "worker-stats" / "benches").iterdir())
@@ -2140,7 +2148,7 @@ assert verify_timing_rc == 0 and type(verify_timing_entry.get("verify_ms")) is i
     verify_timing_entry
 verify_timing_verdicts = work / "verify-timing-verdicts.jsonl"
 verify_timing_verdicts.write_text(json.dumps({
-    "rater": "sol-medium", "idx": 0, "verdict": "confirmed",
+    "rater": "oc-kimik3", "idx": 0, "verdict": "confirmed",
 }) + "\n")
 assert rb.cmd_record(argparse.Namespace(
     run_id=verify_timing_meta["run_id"], verdicts=str(verify_timing_verdicts),
@@ -3214,7 +3222,7 @@ assert test "$(jq -r 'select(.run_id=="repo-fixture") | has("repo")' "$CSD/revie
 repeat_refusal=$(WORKER_STATS_DIR="$CSD" CLAUDEB_DIR="$WORK/no-such-store" \
   REVIEW_BENCH_WORKER_PICK_BIN="$WORK/exploding-worker-pick.sh" \
   "$SCRIPT" review "$CSHA" --repo "$CREPO" --tier T0 --repeat 3 2>&1)
-assert contains "$repeat_refusal" 'implemented for the OpenCode side only'
+assert contains "$repeat_refusal" 'cannot be combined with rater repetition'
 assert test "$(printf '%s' "$repeat_refusal" | grep -c 'worker-pick must not run')" -eq 0
 
 
@@ -3313,11 +3321,11 @@ tiers_table="$("$SCRIPT" tiers 2>&1)"
 for tier_budget in "T0 (2 min)" "T1 (6 min)" "T2 (10 min)" "T3 (20 min)"; do
   assert contains "$tiers_table" "$tier_budget"
 done
-for cell in oc-kimik3 oc-grok45-low agy-pro-high-skill agy-flash35-medium-skill \
-  sol-low sol-medium agy-flash36-medium-skill opus-medium-skill sol-high \
-  opus-high-skill sonnet-medium-skill sol-xhigh sol-max opus-xhigh-skill \
-  sonnet-xhigh-skill; do
+for cell in "oc-kimik3 x2" oc-grok45-low agy-pro-high-skill agy-flash35-medium-skill \
+  agy-flash35-high-skill agy-flash36-medium-skill sol-low sol-medium sol-high \
+  sol-xhigh "sol-max x2" "opus-medium-skill x3" opus-low-skill opus-high-skill \
+  sonnet-medium-skill sonnet-high-skill; do
   assert contains "$tiers_table" "$cell"
 done
 
-printf 'PASS: %s assertions; canonical nested review tiers with no retired cell in them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative suggestions with missing-object fallback, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, --repeat refused for the sides that ignore it, the session account usable only behind its opt-in and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, and cross-side parallelism result assembly\n' "$asserts"
+printf 'PASS: %s assertions; canonical review tiers sharing one OpenCode/Gemini floor with no retired cell in them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative suggestions with missing-object fallback, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, --repeat refused for the sides that ignore it, the session account usable only behind its opt-in and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, and cross-side parallelism result assembly\n' "$asserts"
