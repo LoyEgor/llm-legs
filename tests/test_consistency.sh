@@ -125,11 +125,13 @@ assert grep -Fq -- 'token-freeze' "$CLAUDEB"
 assert grep -Fq -- 'token-freeze' "$LLMLIMITS"
 assert doc_has 'Token-freeze file semantics'
 
-# --- Row g: Codex base-profile priority --------------------------------------
+# --- Row g: Codex/Gemini base-profile and worker display priority -------------
 CODEXB="$ROOT/bin/codexb"
 POLICY="$ROOT/share/worker-policy.md"
 assert grep -Fq 'main_last:(if (.account // "main") == "main" then 1 else 0 end)' "$WORKERPICK"
 assert test "$(grep -Fc 'sort_by(.main_last, -.score, .name)' "$WORKERPICK")" -eq 2
+assert grep -Fq 'def display_band($selected; $eligible; $soft_skipped): if .name == $selected then 0 elif $eligible then 1 elif $soft_skipped then 2 else 3 end;' "$WORKERPICK"
+assert test "$(grep -Fc 'sort_by(display_band(' "$WORKERPICK")" -eq 5
 assert grep -Fq 'main_last:(if $entry.account == "main" then 1 else 0 end)' "$CODEXB"
 assert grep -Fq 'sort -t $'\''\t'\'' -k2,2n -k3,3n -k4,4n -k1,1' "$CODEXB"
 assert grep -Fq 'Codex and Gemini `main` profiles as last-resort' "$POLICY"
@@ -206,6 +208,13 @@ for spec in \
   assert grep -Fq 'State in the report that account resolution fell back' "$agent"
 done
 assert doc_has 'Worker account resolution'
+
+# ask_claude.sh seds this stderr literal into its audit account field, so the wording is a
+# three-site contract, not free prose.
+assert grep -Fq "printf 'claudeb: worker-pick selected %s\\n'" "$CLAUDEB"
+assert grep -Fq 's/^claudeb: worker-pick selected \([^[:space:]]*\)$/\1/p' "$ROOT/ask_claude.sh"
+assert grep -Fq "printf 'claudeb: worker-pick selected %s\\n'" "$ROOT/tests/test_legs_routing.sh"
+assert doc_has 'claudeb: worker-pick selected'
 
 # --- Row l: Gemini quota group matching --------------------------------------
 assert grep -Fq 'def gemini_group: ((.group // "") | ascii_downcase | contains("gemini"));' "$WORKERPICK"

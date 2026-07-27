@@ -43,33 +43,58 @@ QUOTA_RE='quota|exhausted|capacity|rate.?limit|resource.?exhausted|429'
 QUOTA_LOG_RE='RESOURCE_EXHAUSTED|Individual quota reached|\(code 429\)'
 
 log() { # $1 requested, $2 served, $3 weak(0/1)
-  printf '{"ts":"%s","leg":"gemini","transport":"agy","requested":"%s","served":"%s","weak_tier":%s}\n' \
-    "$(date -u +%FT%TZ)" "$1" "$2" "${3:-0}" >> "$LOG" 2>/dev/null || true
+  printf '{"ts":"%s","leg":"gemini","transport":"agy","requested":"%s","served":"%s","weak_tier":%s,"account":"%s"}\n' \
+    "$(date -u +%FT%TZ)" "$1" "$2" "${3:-0}" "$ACCOUNT" >> "$LOG" 2>/dev/null || true
 }
 is_weak() { printf '%s' "$1" | grep -qiE "$WEAK_RE"; }
 
+ACCOUNT=main
+GEMINI_CMD=(agy)
+# Missing routing tools are a cron/launchd portability case; preserve the bare-CLI contract.
+if command -v worker-pick >/dev/null 2>&1; then
+  pick_rc=0
+  account="$(WORKER_PICK_CACHE_DIR=/dev/null worker-pick --account gemini)" || pick_rc=$?
+  if [ "$pick_rc" -eq 3 ]; then
+    # Falling back here would spend quota the router deliberately reserved.
+    echo "ask_gemini.sh: no selectable Gemini account — leg unavailable" >&2
+    exit 6
+  elif [ "$pick_rc" -eq 2 ]; then
+    echo "ask_gemini.sh: worker-pick unusable (exit 2); falling back to bare agy on the main account" >&2
+  elif [ "$pick_rc" -ne 0 ] || [ -z "$account" ]; then
+    echo "ask_gemini.sh: worker-pick failed (exit $pick_rc) — leg unavailable" >&2
+    exit 6
+  elif command -v geminib >/dev/null 2>&1; then
+    ACCOUNT="$account"
+    GEMINI_CMD=(geminib profile "$ACCOUNT")
+  else
+    echo "ask_gemini.sh: geminib not installed; falling back to bare agy on the main account" >&2
+  fi
+else
+  echo "ask_gemini.sh: worker-pick not installed; falling back to bare agy on the main account" >&2
+fi
+
 case "${1:-}" in
   --list-models)
-    agy models; exit $? ;;
+    "${GEMINI_CMD[@]}" models; exit $? ;;
   --probe)
-    if ! command -v agy >/dev/null 2>&1; then
+    if [ "${GEMINI_CMD[0]}" = agy ] && ! command -v agy >/dev/null 2>&1; then
       echo "gemini leg: agy CLI not installed — leg unavailable" >&2
       exit 1
     fi
-    MODELS="$(agy models 2>/dev/null)"
+    MODELS="$("${GEMINI_CMD[@]}" models 2>/dev/null)"
     if ! printf '%s' "$MODELS" | grep -qF "$AGY_MODEL"; then
       echo "gemini leg: pinned model '$AGY_MODEL' not in 'agy models' list:" >&2
       printf '%s\n' "$MODELS" >&2
       exit 3
     fi
-    echo "gemini leg alive: agy $(agy --version 2>/dev/null | head -1), model pinned: $AGY_MODEL (no probe call — quota economy)"
+    echo "gemini leg alive: agy $("${GEMINI_CMD[@]}" --version 2>/dev/null | head -1), model pinned: $AGY_MODEL (no probe call — quota economy)"
     exit 0 ;;
 esac
 
 PROMPT="${1:-}"
 [ -z "$PROMPT" ] && PROMPT="$(cat)"
 
-if ! command -v agy >/dev/null 2>&1; then
+if [ "${GEMINI_CMD[0]}" = agy ] && ! command -v agy >/dev/null 2>&1; then
   echo "ask_gemini.sh: agy CLI not installed — leg unavailable" >&2
   log "$AGY_MODEL" "MISSING_CLI" 0
   exit 1
@@ -90,7 +115,7 @@ for MODEL in "$AGY_MODEL" "$AGY_MODEL_FALLBACK"; do
   # --log-file: quota exhaustion prints NOTHING to stdout/stderr (rc 0); its only trace is
   # RESOURCE_EXHAUSTED/429 in agy's internal log, so route it to a temp file we can grep.
   : > "$LOGF"  # agy appends — truncate so we inspect only THIS model's log
-  out="$(agy --print "$PROMPT" --model "$MODEL" --print-timeout "$AGY_PRINT_TIMEOUT" --sandbox --log-file "$LOGF" </dev/null 2>"$ERRF")"
+  out="$("${GEMINI_CMD[@]}" --print "$PROMPT" --model "$MODEL" --print-timeout "$AGY_PRINT_TIMEOUT" --sandbox --log-file "$LOGF" </dev/null 2>"$ERRF")"
   if [ -n "$(printf '%s' "$out" | tr -d '[:space:]')" ]; then
     log "$MODEL" "antigravity:pinned:$MODEL (unverified)" 0
     printf '%s\n' "$out"

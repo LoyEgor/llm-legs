@@ -718,9 +718,9 @@ local function routingDisplayLines(lines)
   local result = {}
   for _, line in ipairs(lines) do
     if line:sub(1, 6) == "NEXT: " then
-      local parts = splitLiteral(line, "  |  ")
-      result[#result + 1] = parts[1]
-      for index = 2, #parts do result[#result + 1] = "  " .. parts[index] end
+      local parts = splitLiteral(line:sub(7), "  |  ")
+      result[#result + 1] = "NEXT:"
+      for _, part in ipairs(parts) do result[#result + 1] = "  " .. part end
     else
       local vendor, accounts = line:match("^(%a+): (.*)$")
       if vendor == "codex" or vendor == "gemini" or vendor == "claude" then

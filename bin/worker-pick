@@ -258,6 +258,8 @@ summary=$(jq -r \
     else ($reset | strflocaltime("%b %d %H:%M")) end;
   def round1: (. * 10 | round) / 10;
   def bool_or($value; $fallback): if ($value | type) == "boolean" then $value else $fallback end;
+  # Display bands are applied only while rendering; routing keeps the selection arrays unchanged.
+  def display_band($selected; $eligible; $soft_skipped): if .name == $selected then 0 elif $eligible then 1 elif $soft_skipped then 2 else 3 end;
   def fresh_five_hour:
     eff(.five_hour) as $pct |
     ((.five_hour.resets_at // null) | epoch) as $reset |
@@ -341,7 +343,11 @@ summary=$(jq -r \
         (if $cx_pin_lapse != "" then "pin \($cx_pin) \($cx_pin_lapse) → no selectable account | " else "" end) +
         (if ($cx_accounts | length) == 0 then
               (if any($cx_source[]; .auth_needed == true) then "login needed" else "no authenticated quota data" end)
-            else ($cx_accounts | map("\(.name) \(.pressure | round)%\(if .floor then " FLOOR" else "" end)\(if .enabled then "" else " off" end)") | join(", ")) end))}
+            else ($cx_accounts |
+              sort_by(display_band($cx_best.name;
+                ((.floor | not) and .enabled and ((.name | IN($qx[])) | not));
+                ((.walled | not) and .enabled and ((.name | IN($qx[])) | not)))) |
+              map("\(.name) \(.pressure | round)%\(if .floor then " FLOOR" else "" end)\(if .enabled then "" else " off" end)") | join(", ")) end))}
    else
      {state:(if $cx_best.runway > $fresh_runway then "FRESH"
              elif $cx_best.runway > $ok_runway then "OK"
@@ -350,7 +356,11 @@ summary=$(jq -r \
       acct:$cx_best.name,runway:$cx_best.runway,credits:$cx_best.credits,cap:$cx_best.cap,
       line:("codex: " +
         (if $cx_pin_lapse != "" then "pin \($cx_pin) \($cx_pin_lapse) → \($cx_best.name) | " else "" end) +
-        ($cx_accounts | map(
+        ($cx_accounts |
+          sort_by(display_band($cx_best.name;
+            ((.floor | not) and .enabled and ((.name | IN($qx[])) | not));
+            ((.walled | not) and .enabled and ((.name | IN($qx[])) | not)))) |
+          map(
           "\(.name) \(.pressure | round)% runway \(.runway | round1)% ↻\(.credits)\(if .name == $cx_pin and $cx_pinned != null then " PINNED" else "" end)\(if .floor then " FLOOR" else "" end)\(if .enabled then "" else " off" end) (5h→\(.r5), wk→\(.rw))") | join(" | ")))}
    end) as $codex |
 
@@ -384,7 +394,11 @@ summary=$(jq -r \
         cap:$best.cap,as_of:$best.as_of,
         line:("gemini: " +
           (if $gm_pin_lapse != "" then "pin \($gm_pin) \($gm_pin_lapse) → no selectable account | " else "" end) +
-          ($gm_accounts | map(
+          ($gm_accounts |
+            sort_by(display_band($gm_best.name;
+              ((.floor | not) and .enabled and ((.name | IN($qx[])) | not));
+              ((.walled | not) and .enabled and ((.name | IN($qx[])) | not)))) |
+            map(
           "\(.name) \(.pressure | round)% runway \(.runway | round1)%\(if .floor then " FLOOR" else "" end)\(if .enabled then "" else " off" end) (5h→\(.r5), wk→\(.rw))") | join(" | ")))}
      else
        {state:"WALLED",selected:false,acct:"",runway:0,pressure:null,cap:0,as_of:null,
@@ -404,7 +418,11 @@ summary=$(jq -r \
       as_of:$gm_best.as_of,
       line:("gemini: " +
         (if $gm_pin_lapse != "" then "pin \($gm_pin) \($gm_pin_lapse) → \($gm_best.name) | " else "" end) +
-        ($gm_accounts | map(
+        ($gm_accounts |
+          sort_by(display_band($gm_best.name;
+            ((.floor | not) and .enabled and ((.name | IN($qx[])) | not));
+            ((.walled | not) and .enabled and ((.name | IN($qx[])) | not)))) |
+          map(
           "\(.name) \(.pressure | round)% runway \(.runway | round1)%\(if .name == $gm_pin and $gm_pinned != null then " PINNED" else "" end)\(if .floor then " FLOOR" else "" end)\(if .enabled then "" else " off" end) (5h→\(.r5), wk→\(.rw))") | join(" | ")))}
    end) as $gemini |
 
@@ -473,7 +491,16 @@ summary=$(jq -r \
         "pin \($pin) \($pin_lapse) → \(if $rec_final == null then "no selectable account" else $rec_final.name end) | "
       else "" end) +
      (if ($cl_accounts | length) == 0 then "no enabled accounts"
-     else ($cl_accounts | map(
+     else ($cl_accounts |
+       sort_by(display_band(
+         (if $pin_rec != null then $pin_rec.name else $rec_final.name end);
+         ((.own | not) and .enabled and .auth_ok and .general_usable and
+          (.h5 | type) == "number" and (.r8_excluded | not) and
+          ((.name | IN($qx[])) | not) and (.floor | not) and (.headroom_hit | not));
+         ((.own | not) and .enabled and .auth_ok and .general_usable and
+          (.h5 | type) == "number" and (.r8_excluded | not) and
+          ((.name | IN($qx[])) | not) and (.walled | not)))) |
+       map(
        "\(.name)($\(.tier))\(if .own then "*" else "" end) 5h \(if (.h5 | type) == "number" then (.h5 | round | tostring) + "%" else "?" end) wk \(if (.wk | type) == "number" then (.wk | round | tostring) + "%" else "?" end) fb \(if (.fb | type) == "number" then (.fb | round | tostring) + "%" else "?" end) score \(.score | round1) cap \((if .name == $pin and $pin_rec != null then .pin_cap else .cap end) | round1)%\(if .name == $pin and $pin_rec != null then " PINNED" else "" end)\(if .reserved then " Fable-reserved" else "" end)\(if .r8_excluded then " Fable-gap-excluded" else "" end)\(if .fable_capable then "" else " no-Fable" end)\(if .floor then " FLOOR" else "" end)\(if .headroom_hit then " HEADROOM" else "" end)\(if (.general_usable | not) then " blocked" else "" end)\(if .enabled then "" else " off" end)") | join(" | ")) end)),
    rec:$rec_final,pin:$pin_rec,session:$session,age:$age,all_floored:$all_floored,headroom_warn:$headroom_warn,freshness_warn:$freshness_warn}
   | [.codex.state,.codex.acct,(.codex.runway | round1 | tostring),(.codex.credits | tostring),

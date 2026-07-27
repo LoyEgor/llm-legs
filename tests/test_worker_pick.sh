@@ -16,6 +16,11 @@ assert() {
 }
 contains() { grep -Fq -- "$2" <<<"$1"; }
 not_contains() { ! grep -Fq -- "$2" <<<"$1"; }
+before() {
+  local text=$1 left=$2 right=$3 suffix
+  suffix=${text#*"$left"}
+  [ "$suffix" != "$text" ] && [[ "$suffix" == *"$right"* ]]
+}
 
 HOME_FIXTURE="$WORK/home"
 STORE="$WORK/limits.json"
@@ -419,6 +424,15 @@ run_pin_filter() {
 
 write_vendor_pin codex main
 run_pin_filter codex_plain '.vendors.codex.accounts = [
+  {account:"work",enabled:false,five_hour:{used_pct:100},weekly:{used_pct:20}},
+  {account:"work2",enabled:false,five_hour:{used_pct:91},weekly:{used_pct:20}},
+  {account:"main",five_hour:{used_pct:5},weekly:{used_pct:5}}]'
+codex_order=$(sed -n '2p' <<<"$output")
+assert contains "$(head -n1 <<<"$output")" 'codex main · high — FRESH'
+assert before "$codex_order" 'main 5% runway 95% ↻0 PINNED' 'work 100% runway 0% ↻0 FLOOR off'
+assert before "$codex_order" 'work 100% runway 0% ↻0 FLOOR off' 'work2 91% runway 9% ↻0 FLOOR off'
+
+run_pin_filter codex_plain '.vendors.codex.accounts = [
   {account:"alpha",five_hour:{used_pct:20},weekly:{used_pct:20}},
   {account:"main",five_hour:{used_pct:91},weekly:{used_pct:20}}]'
 assert contains "$(head -n1 <<<"$output")" 'codex main · high — TIGHT'
@@ -511,6 +525,14 @@ assert contains "$(sed -n '4p' <<<"$output")" 'claude: pin session exhausted →
 write_config
 run_case golden
 assert test "$(head -n1 <<<"$output")" = "$unpinned_next"
+
+run_filter golden '.vendors.claude.accounts += [{
+  account:"blocked",enabled:true,rotation:{usable:{general:false,fable:false}},
+  five_hour:{used_pct:0},weekly:{used_pct:0},fable:{used_pct:0}}]'
+claude_order=$(sed -n '4p' <<<"$output")
+assert before "$claude_order" 'worker($20)' 'blocked($100)'
+assert before "$claude_order" 'blocked($100)' 'session($100)*'
+assert contains "$claude_order" 'blocked'
 
 # `--account claudeb` is the machine-readable face of the same selection: exactly one bare
 # account name, so a caller routing a headless run cannot drift from what a worker would get.

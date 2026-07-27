@@ -343,7 +343,7 @@ assert(not accountMarkerIsGray(excludedHonouredMenu, "pinned"),
 
 local routingNow = 200000
 local routingText = table.concat({
-  "NEXT: claudeb alpha  |  codex beta  |  gemini gamma",
+  "NEXT: claudeb alpha · opus · high  |  codex beta · high — FRESH PINNED  |  gemini gamma · pro · high",
   "codex: beta  · exact spacing | main 5h 10%",
   "gemini: gamma | main",
   "claude: alpha | session*   (* = this session account, excluded from worker routing)",
@@ -363,9 +363,10 @@ local freshRouting = loadModule(routingFixture, nil, routingNow)
 freshRouting.routingCache = { text = routingText, at = routingNow }
 local freshRoutingMenu = routingItem(freshRouting.menuItems()).menu
 local expectedRouting = {
-  "NEXT: claudeb alpha",
-  "  codex beta",
-  "  gemini gamma",
+  "NEXT:",
+  "  claudeb alpha · opus · high",
+  "  codex beta · high — FRESH PINNED",
+  "  gemini gamma · pro · high",
   "codex:",
   "  beta  · exact spacing",
   "  main 5h 10%",

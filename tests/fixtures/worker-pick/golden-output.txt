@@ -1,7 +1,7 @@
 NEXT: claudeb worker · opus · high — ACCOUNT: worker; pre-reset cap 50%  |  codex main · high — FRESH  |  gemini main · pro · high — ACCOUNT: main; pre-reset cap 65% — FRESH
 codex: main 48% runway 152% ↻1 (5h→?, wk→?)
 gemini: main 25% runway 75% (5h→?, wk→?)
-claude: session($100)* 5h 20% wk 20% fb 10% score 70 cap 70% | worker($20) 5h 30% wk 40% fb 70% score 20 cap 50% no-Fable   (* = this session account, excluded from automatic worker routing)
+claude: worker($20) 5h 30% wk 40% fb 70% score 20 cap 50% no-Fable | session($100)* 5h 20% wk 20% fb 10% score 70 cap 70%   (* = this session account, excluded from automatic worker routing)
 POLICY: Codex main is last-resort; codex FRESH (main, runway 152%, ↻1 manual); claudeb worker score 20; gemini FRESH (main, runway 75%); Gemini auto-routing remains conservative until benchmarked
 DATA: fresh (0 min old)
 SESSION: session — fb 10%, wk 20%

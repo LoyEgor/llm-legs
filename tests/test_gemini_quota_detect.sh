@@ -63,7 +63,7 @@ exit 0
 STUB
 chmod +x "$STUBDIR/agy"
 
-export PATH="$STUBDIR:$PATH"
+export PATH="$STUBDIR:/usr/bin:/bin"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
