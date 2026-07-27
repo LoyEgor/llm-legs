@@ -179,10 +179,31 @@ assert_fails grep -qx stale "$ALPHA_KC/gemini.keychain-db"
 assert test "$(cat "$ALPHA_KC/gemini.keychain-db")" \
   = "$(cat "$HOME/.gemini-profiles/alpha/.keychain-password")"
 
+# A password file left behind with loose permissions is rewritten, not truncated in place.
+chmod 644 "$HOME/.gemini-profiles/alpha/.keychain-password"
+printf 'wrong\n' >"$HOME/.gemini-profiles/alpha/.keychain-password"
+gemini_ensure_keychain "$HOME/.gemini-profiles/alpha"
+assert test "$(stat -f %Lp "$HOME/.gemini-profiles/alpha/.keychain-password")" = 600
+assert test "$(cat "$ALPHA_KC/gemini.keychain-db")" \
+  = "$(cat "$HOME/.gemini-profiles/alpha/.keychain-password")"
+
+# A directory squatting on either path is repaired instead of failing every future run.
+rm -rf "$ALPHA_KC"; mkdir -p "$ALPHA_KC/gemini.keychain-db"
+gemini_ensure_keychain "$HOME/.gemini-profiles/alpha"
+assert test -f "$ALPHA_KC/gemini.keychain-db"
+assert test "$(readlink "$ALPHA_KC/login.keychain-db")" = gemini.keychain-db
+
 rm -rf "$ALPHA_KC"
+saved_password=$(cat "$HOME/.gemini-profiles/alpha/.keychain-password")
 warning=$(GEMINIB_SECURITY_CMD=/usr/bin/false gemini_ensure_keychain "$HOME/.gemini-profiles/alpha" 2>&1 >/dev/null)
 assert test ! -e "$ALPHA_KC/gemini.keychain-db"
 assert grep -q 'could not create a keychain' <<<"$warning"
+# A keychain that cannot be built is a warning, never a reason to refuse the account: callers run
+# under `set -e`, and a nonzero return here would take geminib and the limits refresh down with it.
+GEMINIB_SECURITY_CMD=/usr/bin/false gemini_ensure_keychain "$HOME/.gemini-profiles/alpha" 2>/dev/null
+assert test "$?" = 0
+assert test ! -e "$HOME/.gemini-profiles/alpha/.keychain-password.new"
+assert grep -qx "$saved_password" "$HOME/.gemini-profiles/alpha/.keychain-password"
 
 # A run killed mid-repair leaves a bare directory or a stray real file; the next one must still
 # converge, and forty at once must agree on one keychain.

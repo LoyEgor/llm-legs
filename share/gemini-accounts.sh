@@ -28,7 +28,7 @@ gemini_account_home() {
 # boot; with it nothing prompts. HOME is pinned on every security call, or the profile keychain
 # lands in the real session's search list where a locked entry makes unrelated lookups prompt too.
 gemini_ensure_keychain() {
-  local home="$1" keychains="$1/Library/Keychains" name
+  local home="$1" keychains="$1/Library/Keychains" name status
   local security_cmd="${GEMINIB_SECURITY_CMD:-/usr/bin/security}"
   [ "$home" != "$gemini_base_home" ] || return 0
   # A profile removed between listing and probing must stay removed, not be rebuilt as a ghost.
@@ -42,30 +42,38 @@ gemini_ensure_keychain() {
   fi
   mkdir -p "$keychains" 2>/dev/null || return 0
   # Probes run in parallel and the lock only orders them: every step below repairs whatever the
-  # previous run left behind, so a machine without lockf is better served by racing than by
-  # skipping the unlock and prompting.
+  # previous run left behind, so a machine without lockf, or a run that waited out the timeout, is
+  # better served by racing than by skipping the unlock and letting agy prompt.
+  status=97
   if [ -x /usr/bin/lockf ]; then
     (
-      /usr/bin/lockf -s -t 15 9 2>/dev/null || exit 1
+      /usr/bin/lockf -s -t 15 9 2>/dev/null || exit 97
       gemini_prepare_keychain "$home" "$name" "$security_cmd"
-    ) 9>"$home/.geminib-keychain.lock"
-  else
-    gemini_prepare_keychain "$home" "$name" "$security_cmd"
+    ) 9>"$home/.geminib-keychain.lock" || status=$?
   fi
+  [ "$status" != 97 ] || gemini_prepare_keychain "$home" "$name" "$security_cmd" || true
+  # Callers run under `set -e` and a keychain that could not be prepared is a reason to warn, never
+  # a reason to leave the account unusable: agy signs in from its own token file either way.
+  return 0
 }
 
 gemini_prepare_keychain() {
   local home="$1" name="$2" security_cmd="$3"
   local keychains="$1/Library/Keychains"
   local real="$keychains/gemini.keychain-db" link="$keychains/login.keychain-db"
-  local password_file="$home/.keychain-password" password usable=0
+  local password_file="$home/.keychain-password" password_tmp="$home/.keychain-password.new"
+  local password usable=0
   # agy recreates login.keychain-db as a real file whenever it is missing, so a real file at that
   # path is always the database it has been writing and outranks whatever this function left there.
+  # `mv -f` rather than a delete first: nothing is thrown away until the replacement is in place.
   if [ ! -L "$link" ] && [ -f "$link" ]; then
-    rm -f "$real"
-    mv "$link" "$real" 2>/dev/null || return 1
+    mv -f "$link" "$real" 2>/dev/null || return 1
   fi
-  [ -L "$real" ] && rm -f "$real"
+  # rm -rf throughout: a directory sitting on either path would otherwise survive every repair and
+  # fail create-keychain forever.
+  if [ -L "$real" ]; then
+    rm -rf "$real"
+  fi
   if [ ! -L "$link" ] && [ -e "$link" ]; then
     rm -rf "$link" 2>/dev/null || return 1
   fi
@@ -84,11 +92,16 @@ gemini_prepare_keychain() {
   # would prompt for it after every boot, and it holds nothing the profile's own
   # antigravity-oauth-token file does not — that file, not the keychain, is what agy signs in with.
   if [ "$usable" -eq 0 ]; then
-    rm -f "$real"
+    rm -rf "$real"
     password=$(head -c 24 /dev/urandom 2>/dev/null | base64 | tr -dc 'A-Za-z0-9') || password=''
+    # The password reaches its file only once the keychain it opens exists, and by rename from a
+    # fresh 0600 file: writing in place would both keep the mode of a pre-existing loose file and
+    # leave a password behind that matches no keychain when create-keychain fails.
     if [ -z "$password" ] ||
-      ! (umask 077; printf '%s' "$password" >"$password_file") ||
-      ! HOME="$home" "$security_cmd" create-keychain -p "$password" "$real" >/dev/null 2>&1; then
+      ! (umask 077; rm -f "$password_tmp"; printf '%s' "$password" >"$password_tmp") ||
+      ! HOME="$home" "$security_cmd" create-keychain -p "$password" "$real" >/dev/null 2>&1 ||
+      ! mv -f "$password_tmp" "$password_file"; then
+      rm -f "$password_tmp"
       printf 'geminib: could not create a keychain for %s; agy will ask for its password on the next token refresh.\n' \
         "$name" >&2
       return 1
