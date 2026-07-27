@@ -1821,6 +1821,14 @@ def verify_prompt(finding, sha, path, lines, ref=None):
         "what the change does, and cases the code deliberately handles.\n"
         "If the shown lines are not enough to decide, set the field you cannot decide to "
         "true only when the claim is plausible on the visible evidence.\n\n"
+        "Known failure modes of the reviewer — check each:\n"
+        "1. Treat documented behavior or code with explicit explanatory comments as intended "
+        "design, not a defect.\n"
+        "2. Rigorously re-check boolean logic, edge-case conditions, and sort/ordering direction "
+        "against what the code actually computes, line by line.\n"
+        "3. Trace variable state through short-circuit branches and string filters to confirm "
+        "the claimed failure can occur in practice.\n"
+        "4. Reject findings resting on speculative or highly unlikely environment states.\n\n"
         "Answer with exactly one JSON object and nothing else:\n"
         '{"code_matches": true|false, "is_defect": true|false, "why": "<max 15 words>"}'
     )
@@ -2582,8 +2590,11 @@ def cmd_run(args):
             stderr = "\n".join(part for part in ((stderr or "").rstrip(), unusable) if part)
         dropped = 0
         unverified = 0
+        verify_ms = None
         if verify_model and findings and not is_error:
+            verify_started = time.monotonic()
             kept, audit = verify_findings(findings, repo, sha, verify_model, tree)
+            verify_ms = round((time.monotonic() - verify_started) * 1000)
             write_jsonl(run_dir / f"verified-{rater['spec']}.jsonl", audit)
             dropped = len(findings) - len(kept)
             unverified = sum(1 for row in audit if row.get("walled"))
@@ -2618,6 +2629,8 @@ def cmd_run(args):
                 "command": redact_command(rater, command),
                 "verifier_dropped": dropped, "verifier_unverified": unverified,
             }
+            if verify_ms is not None:
+                run_meta["verify_ms"] = verify_ms
             if model_resolved:
                 run_meta["model_resolved"] = model_resolved
             rater_meta.append(run_meta)
@@ -2796,6 +2809,7 @@ def cmd_record(args):
         duration = meta_by_rater.get(rater, {}).get(
             "duration_ms", meta.get("durations", {}).get(rater)
         )
+        verify_ms = meta_by_rater.get(rater, {}).get("verify_ms")
         record = {
             "run_id": args.run_id, "ts": iso_now(), "commit": meta["commit"],
             "rater": rater, "rater_model": parsed["model"], "rater_effort": parsed["effort"],
@@ -2809,6 +2823,8 @@ def cmd_record(args):
             "weighted_score": sum(priorities[p] * weight for p, weight in WEIGHTS.items()),
             "duration_ms": duration,
         }
+        if verify_ms is not None:
+            record["verify_ms"] = verify_ms
         model_resolved = meta_by_rater.get(rater, {}).get("model_resolved")
         if model_resolved:
             record["rater_model_resolved"] = model_resolved

@@ -1091,6 +1091,15 @@ verify_text = rb.verify_prompt(verify_finding, "deadbee", "bin/review-bench",
                                ["alpha", "beta", "gamma"])
 assert "3: gamma" in verify_text and "bin/review-bench:3 — claim" in verify_text
 assert "code_matches" in verify_text and "is_defect" in verify_text
+known_failures = """Known failure modes of the reviewer — check each:
+1. Treat documented behavior or code with explicit explanatory comments as intended design, not a defect.
+2. Rigorously re-check boolean logic, edge-case conditions, and sort/ordering direction against what the code actually computes, line by line.
+3. Trace variable state through short-circuit branches and string filters to confirm the claimed failure can occur in practice.
+4. Reject findings resting on speculative or highly unlikely environment states."""
+answer_instruction = """Answer with exactly one JSON object and nothing else:
+{"code_matches": true|false, "is_defect": true|false, "why": "<max 15 words>"}"""
+assert verify_text.endswith(f"{known_failures}\n\n{answer_instruction}"), verify_text
+(work / "prompt-v1-ok").touch()
 missing_text = rb.verify_prompt(verify_finding, "deadbee", "bin/gone", None)
 assert "does not exist in commit deadbee" in missing_text
 # A line past the end of the file is the most obviously bogus claim there is, and an
@@ -1751,6 +1760,34 @@ assert rb.cmd_record(argparse.Namespace(
 )) == 0
 repeat_corpus = rb.read_jsonl(repeat_store / "worker-stats" / "reviews.jsonl")
 assert [row["rater"] for row in repeat_corpus] == ["sol-medium", "sol-medium#2"], repeat_corpus
+
+verify_timing_store = work / "verify-timing-claudeb"
+os.environ["CLAUDEB_DIR"] = str(verify_timing_store)
+os.environ["OPENCODE_CAPTURE_ARGS"] = str(work / "verify-timing-args")
+os.environ["OPENCODE_CAPTURE_PROMPT"] = str(work / "verify-timing-prompt")
+os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-verify-keep.json")
+verify_timing_rc = rb.cmd_run(argparse.Namespace(
+    repo=str(pin_repo), commitish=pin_sha, raters="sol-medium",
+    leg=False, verify="oc-kimik3", auto=None, focus=None, repeat=1,
+))
+verify_timing_run = next((verify_timing_store / "worker-stats" / "benches").iterdir())
+verify_timing_meta = json.loads((verify_timing_run / "meta.json").read_text())
+verify_timing_entry = verify_timing_meta["rater_runs"][0]
+assert verify_timing_rc == 0 and type(verify_timing_entry.get("verify_ms")) is int, \
+    verify_timing_entry
+verify_timing_verdicts = work / "verify-timing-verdicts.jsonl"
+verify_timing_verdicts.write_text(json.dumps({
+    "rater": "sol-medium", "idx": 0, "verdict": "confirmed",
+}) + "\n")
+assert rb.cmd_record(argparse.Namespace(
+    run_id=verify_timing_meta["run_id"], verdicts=str(verify_timing_verdicts),
+)) == 0
+verify_timing_corpus = rb.read_jsonl(
+    verify_timing_store / "worker-stats" / "reviews.jsonl"
+)
+assert verify_timing_corpus[0]["verify_ms"] == verify_timing_entry["verify_ms"], \
+    verify_timing_corpus
+(work / "verify-ms-ok").touch()
 
 account_picks.clear()
 try:
@@ -2730,6 +2767,8 @@ assert opus["weighted_score"] == 1
 print("worker-stats-review-math-ok")
 PY
 assert test "$?" -eq 0
+assert test -f "$WORK/prompt-v1-ok"
+assert test -f "$WORK/verify-ms-ok"
 
 table=$(WORKER_STATS_DIR="$SD" "$STATS") || fail "worker-stats static view failed"
 assert contains "$table" 'Fable-rework leaderboard'
