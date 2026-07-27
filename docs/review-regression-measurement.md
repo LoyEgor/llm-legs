@@ -107,6 +107,28 @@ that numeric device indices regressed described behaviour that predated the feat
 that a repeated manual menu click re-fires its action described the manual fallback's entire
 purpose.
 
+### Round 2 — 2026-07-27, the review-receipt diff (receipt, statusline segment, suggest delta)
+First pass on ~310 changed lines: sol high (codex/work4) + gemini pro high (gemini/main),
+6 unique defects (1 found by both). All fixed in one follow-up session; fix areas
+pre-registered before the second pass.
+
+Second pass, blind, one reviewer (gemini pro high): 1 real defect — an unguarded
+`subprocess.run(cwd=...)` on a receipt whose recorded repository path no longer exists.
+Against the pre-registered key it is NEITHER a regression from the fixes NOR a first-pass
+miss: sol's first pass had reported it, and the orchestrator dropped that half of the
+finding while consolidating six findings into the fix brief.
+
+| | count |
+| --- | --- |
+| regressions the fixes introduced | 0 |
+| first-pass misses found by the second pass | 0 |
+| findings lost between review and fix brief | 1 |
+
+New failure class for this experiment: **consolidation loss** — a finding survives review
+and dies in the orchestrator's summary. The second pass is currently the only thing that
+catches it; a cheaper guard would be diffing the fix brief against the first-pass findings
+list before dispatch.
+
 ## Reading it so far
 
 Three rounds, seven regressions from fixes, every one found only because someone looked again.

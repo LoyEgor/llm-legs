@@ -1672,6 +1672,11 @@ reviewed_cells = []
 
 def tier_runner(rater, repo_path, commit, focus, run_dir, diff, account, repeat=1):
     reviewed_cells.append(rater["spec"])
+    if rater["side"] == "opencode":
+        return 0, 1, json.dumps({
+            "severity": "P2", "file": "pinned.txt", "line": 1,
+            "summary": f"{rater['spec']} fixture finding",
+        }), "", []
     return 0, 1, "NO FINDINGS", "", []
 
 
@@ -1683,15 +1688,76 @@ rb.affordability = lambda: {
     "claude_account": "fixture",
 }
 rb.check_limits_staleness = lambda account: False
+os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-verify-keep.json")
 review_rc = rb.cmd_review(argparse.Namespace(
     repo=str(pin_repo), commitish=pin_sha, tier="T1",
     verify=None, focus=None, repeat=1,
 ))
-review_meta_path = next((review_store / "worker-stats" / "benches").glob("*/meta.json"))
+review_run_dir = next((review_store / "worker-stats" / "benches").iterdir())
+review_meta_path = review_run_dir / "meta.json"
 review_meta = json.loads(review_meta_path.read_text())
 assert review_rc == 0
 assert review_meta["raters"] == expected_tiers["T1"], review_meta["raters"]
 assert sorted(reviewed_cells) == sorted(expected_tiers["T1"]), reviewed_cells
+assert review_meta["verifier"] == "oc-kimik3", \
+    f"tier review verifier: {review_meta['verifier']!r}"
+for cell in expected_tiers["T1"]:
+    if rb.parse_rater(cell)["side"] == "opencode":
+        assert (review_run_dir / f"verified-{cell}.jsonl").exists(), cell
+review_receipt_path = (
+    review_store / "worker-stats" / rb.RECEIPT_DIR
+    / rb.receipt_file_name(pin_repo)
+)
+review_receipt = json.loads(review_receipt_path.read_text())
+pin_tree = subprocess.run(
+    ["git", "-C", str(pin_repo), "rev-parse", f"{pin_sha}^{{tree}}"],
+    check=True, capture_output=True, text=True,
+).stdout.strip()
+assert review_receipt == {
+    "repo": str(pin_repo.resolve()), "tree": pin_tree, "commit": pin_sha,
+    "run_id": review_meta["run_id"], "ts": review_receipt["ts"], "errored": 0,
+}, review_receipt
+assert review_receipt["ts"]
+
+collision_left = work / "receipt-collision-left" / "same-name"
+collision_right = work / "receipt-collision-right" / "same-name"
+for collision_repo in (collision_left, collision_right):
+    collision_repo.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(collision_repo)], check=True)
+collision_names = {
+    rb.receipt_file_name(collision_left), rb.receipt_file_name(collision_right),
+}
+assert len(collision_names) == 2, collision_names
+assert all(name.startswith("same-name__") and len(name) == len("same-name__.json") + 8
+           for name in collision_names), collision_names
+
+raw_opencode_store = work / "raw-opencode-claudeb"
+os.environ["CLAUDEB_DIR"] = str(raw_opencode_store)
+raw_opencode_rc = rb.cmd_run(argparse.Namespace(
+    repo=str(pin_repo), commitish=pin_sha, raters="oc-kimik3,oc-grok45-low",
+    leg=False, verify=None, auto=None, focus=None, repeat=1,
+))
+raw_opencode_run = next((raw_opencode_store / "worker-stats" / "benches").iterdir())
+raw_opencode_meta = json.loads((raw_opencode_run / "meta.json").read_text())
+assert raw_opencode_rc == 0, raw_opencode_meta
+assert raw_opencode_meta["verifier"] == "", \
+    f"raw run verifier: {raw_opencode_meta['verifier']!r}"
+assert not list(raw_opencode_run.glob("verified-*.jsonl")), \
+    "raw run wrote verified artifacts"
+
+explicit_verify_store = work / "explicit-review-verify-claudeb"
+os.environ["CLAUDEB_DIR"] = str(explicit_verify_store)
+explicit_verify_rc = rb.cmd_review(argparse.Namespace(
+    repo=str(pin_repo), commitish=pin_sha, tier="T0",
+    verify="oc-mimo25", focus=None, repeat=1,
+))
+explicit_verify_run = next(
+    (explicit_verify_store / "worker-stats" / "benches").iterdir()
+)
+explicit_verify_meta = json.loads((explicit_verify_run / "meta.json").read_text())
+assert explicit_verify_rc == 0, explicit_verify_meta
+assert explicit_verify_meta["verifier"] == "oc-mimo25", \
+    f"explicit review verifier: {explicit_verify_meta['verifier']!r}"
 
 repeat_store = work / "dispatcher-repeat-claudeb"
 os.environ["CLAUDEB_DIR"] = str(repeat_store)
@@ -1882,6 +1948,71 @@ assert (
     and "model_resolved" not in model_runs["sonnet-medium-skill"]
 ), model_runs
 
+model_receipt_path = (
+    model_store / "worker-stats" / rb.RECEIPT_DIR / rb.receipt_file_name(pin_repo)
+)
+model_receipt = json.loads(model_receipt_path.read_text())
+assert model_receipt["errored"] == 1, \
+    f"partial receipt errored: {model_receipt['errored']}"
+successful_receipt_rc = rb.cmd_run(argparse.Namespace(
+    repo=str(pin_repo), commitish=pin_sha,
+    raters="opus-medium", leg=False, verify=None,
+    auto=None, focus=None, repeat=1,
+))
+successful_receipt = json.loads(model_receipt_path.read_text())
+assert successful_receipt_rc == 0 and successful_receipt["errored"] == 0, \
+    f"successful receipt: rc={successful_receipt_rc}, errored={successful_receipt['errored']}"
+model_receipt_path.unlink()
+time.sleep(1.1)
+all_error_before = set((model_store / "worker-stats" / "benches").iterdir())
+all_error_rc = rb.cmd_run(argparse.Namespace(
+    repo=str(pin_repo), commitish=pin_sha,
+    raters="sonnet-medium-skill", leg=False, verify=None,
+    auto=None, focus=None, repeat=1,
+))
+all_error_after = set((model_store / "worker-stats" / "benches").iterdir())
+all_error_run_dir, = all_error_after - all_error_before
+all_error_meta_path = all_error_run_dir / "meta.json"
+all_error_meta = json.loads(all_error_meta_path.read_text())
+assert all_error_rc == 1 and all_error_meta["raters"] == [], all_error_meta
+assert not model_receipt_path.exists(), "all-errored run rewrote receipt"
+
+receipt_failure_store = work / "receipt-failure-claudeb"
+os.environ["CLAUDEB_DIR"] = str(receipt_failure_store)
+saved_mkdir = pathlib.Path.mkdir
+
+
+def receipt_mkdir_failure(path, *args, **kwargs):
+    if path.name == rb.RECEIPT_DIR:
+        raise OSError("fixture ENOSPC")
+    return saved_mkdir(path, *args, **kwargs)
+
+
+pathlib.Path.mkdir = receipt_mkdir_failure
+receipt_failure_stdout = io.StringIO()
+receipt_failure_stderr = io.StringIO()
+receipt_failure_exception = None
+try:
+    with contextlib.redirect_stdout(receipt_failure_stdout), \
+            contextlib.redirect_stderr(receipt_failure_stderr):
+        receipt_failure_rc = rb.cmd_run(argparse.Namespace(
+            repo=str(pin_repo), commitish=pin_sha,
+            raters="opus-medium", leg=False, verify=None,
+            auto=None, focus=None, repeat=1,
+        ))
+except Exception as exc:
+    receipt_failure_exception = exc
+finally:
+    pathlib.Path.mkdir = saved_mkdir
+assert receipt_failure_exception is None, \
+    f"receipt failure aborted run: {receipt_failure_exception}"
+assert receipt_failure_rc == 0, receipt_failure_stderr.getvalue()
+assert "warning: could not write review receipt: fixture ENOSPC" \
+    in receipt_failure_stderr.getvalue(), receipt_failure_stderr.getvalue()
+assert "run id:" in receipt_failure_stdout.getvalue() \
+    and "ADJUDICATION HANDOFF" in receipt_failure_stdout.getvalue(), \
+    receipt_failure_stdout.getvalue()
+
 alias_envelope = pin_repo / "alias-envelope.json"
 alias_envelope.write_text(json.dumps({"modelUsage": {
     "claude-opus-5[1m]": {"canonicalModel": "claude-opus-5"},
@@ -1928,21 +2059,27 @@ def suggest(path, *extra):
     return proc.stdout.splitlines()
 
 
-def assert_suggestion(lines, files, changed_lines, tier, committed=False):
+def assert_suggestion(lines, files, changed_lines, tier, committed=False, receipt=None):
     assert lines[:3] == [
         f"changed files: {files}",
         f"changed lines: {changed_lines}",
         f"tier: {tier}",
     ], lines
+    offset = 3
+    if receipt:
+        assert lines[offset] == (
+            f"unreviewed delta vs review {receipt}; staged content is compared "
+            "with the same reviewed tree"
+        ), lines
+        offset += 1
     if committed:
-        assert lines[3].startswith("command: review-bench review "), lines
-        assert f"--tier {tier}" in lines[3], lines
+        assert lines[offset].startswith("command: review-bench review "), lines
+        assert f"--tier {tier}" in lines[offset], lines
         return
-    # A rater reviews a sealed commit, so an uncommitted diff must not be handed a command that
-    # would review the previous one and report this change as covered.
-    assert lines[3].startswith("uncommitted: "), lines
-    assert lines[4].startswith("next: commit it, then run ") and "<sha>" in lines[4], lines
-    assert f"--tier {tier}" in lines[4], lines
+    assert lines[offset].startswith("uncommitted: "), lines
+    assert lines[offset + 1].startswith("next: commit it, then run ") \
+        and "<sha>" in lines[offset + 1], lines
+    assert f"--tier {tier}" in lines[offset + 1], lines
 
 
 clean_suggest = make_suggest_repo("suggest-clean")
@@ -2015,6 +2152,56 @@ nested_suggest = make_suggest_repo("suggest-nested")
 subprocess.run(["git", "-C", str(nested_suggest / "nested"), "init", "-q"],
                check=True, env=suggest_env)
 assert_suggestion(suggest(nested_suggest), 1, 0, "T0")
+
+receipt_suggest = make_suggest_repo("suggest-receipt")
+(receipt_suggest / "reviewed.txt").write_text("reviewed\n" * 80)
+subprocess.run(["git", "-C", str(receipt_suggest), "add", "reviewed.txt"],
+               check=True, env=suggest_env)
+subprocess.run(["git", "-C", str(receipt_suggest), "commit", "-qm", "reviewed"],
+               check=True, env=suggest_env)
+receipt_sha = subprocess.run(
+    ["git", "-C", str(receipt_suggest), "rev-parse", "HEAD"],
+    check=True, capture_output=True, text=True, env=suggest_env,
+).stdout.strip()
+receipt_tree = subprocess.run(
+    ["git", "-C", str(receipt_suggest), "rev-parse", "HEAD^{tree}"],
+    check=True, capture_output=True, text=True, env=suggest_env,
+).stdout.strip()
+receipt_dir = pathlib.Path(suggest_env["CLAUDEB_DIR"]) / "worker-stats" / rb.RECEIPT_DIR
+receipt_dir.mkdir(parents=True, exist_ok=True)
+receipt_run_id = "receipt-fixture"
+(receipt_dir / rb.receipt_file_name(receipt_suggest)).write_text(json.dumps({
+    "repo": str(receipt_suggest), "tree": receipt_tree, "commit": receipt_sha,
+    "run_id": receipt_run_id, "ts": "2026-07-27T00:00:00+00:00", "errored": 0,
+}) + "\n")
+subprocess.run(["git", "-C", str(receipt_suggest), "reset", "-q", "--soft", "HEAD^"],
+               check=True, env=suggest_env)
+(receipt_suggest / "tracked.txt").write_text("changed\n")
+assert_suggestion(
+    suggest(receipt_suggest), 1, 2, "T0", receipt=receipt_run_id,
+)
+
+missing_tree_suggest = make_suggest_repo("suggest-missing-tree")
+(missing_tree_suggest / "tracked.txt").write_text("changed\n")
+(receipt_dir / rb.receipt_file_name(missing_tree_suggest)).write_text(json.dumps({
+    "repo": str(missing_tree_suggest), "tree": "0" * len(receipt_tree),
+    "commit": receipt_sha, "run_id": "missing-tree",
+    "ts": "2026-07-27T00:00:00+00:00", "errored": 0,
+}) + "\n")
+missing_tree_lines = suggest(missing_tree_suggest)
+assert_suggestion(missing_tree_lines, 1, 2, "T0")
+assert not any("unreviewed delta vs review" in line for line in missing_tree_lines)
+
+vanished_repo_suggest = make_suggest_repo("suggest-vanished-repo")
+(vanished_repo_suggest / "tracked.txt").write_text("changed\n")
+(receipt_dir / rb.receipt_file_name(vanished_repo_suggest)).write_text(json.dumps({
+    "repo": str(vanished_repo_suggest / "no-such-dir"), "tree": receipt_tree,
+    "commit": receipt_sha, "run_id": "vanished-repo",
+    "ts": "2026-07-27T00:00:00+00:00", "errored": 0,
+}) + "\n")
+vanished_repo_lines = suggest(vanished_repo_suggest)
+assert_suggestion(vanished_repo_lines, 1, 2, "T0")
+assert not any("unreviewed delta vs review" in line for line in vanished_repo_lines)
 
 for index, core_path in enumerate((
     "bin/review-bench", "bin/opencode-go", "bin/claudeb", "bin/codexb",
@@ -2493,7 +2680,7 @@ for commit, rows in defects.items():
             handle.write(json.dumps(row) + "\n")
 PY
 
-python3 - "$SCRIPT" "$FSD" <<'PY'
+HOME="$WORK/home" python3 - "$SCRIPT" "$FSD" <<'PY'
 import importlib.machinery
 import importlib.util
 import json
@@ -2837,4 +3024,4 @@ for cell in oc-kimik3 oc-grok45-low agy-pro-high-skill agy-flash35-medium-skill 
   assert contains "$tiers_table" "$cell"
 done
 
-printf 'PASS: %s assertions; canonical nested review tiers with no retired cell in them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, --repeat refused for the sides that ignore it, the session account usable only behind its opt-in and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, and cross-side parallelism result assembly\n' "$asserts"
+printf 'PASS: %s assertions; canonical nested review tiers with no retired cell in them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative suggestions with missing-object fallback, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, --repeat refused for the sides that ignore it, the session account usable only behind its opt-in and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, and cross-side parallelism result assembly\n' "$asserts"

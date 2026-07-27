@@ -2,6 +2,7 @@
 import argparse
 import concurrent.futures
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -373,6 +374,10 @@ REVIEW_TIERS = {
     },
 }
 
+RECEIPT_DIR = "receipts"
+RECEIPT_FIELDS = ("repo", "tree", "commit", "run_id", "ts")
+RECEIPT_HASH_HEX = 8
+
 
 def utc_now():
     return datetime.now(timezone.utc)
@@ -390,6 +395,94 @@ def state_dir():
         "CLAUDEB_DIR", str(Path.home() / ".claude-profiles" / ".claudeb")
     )
     return Path(base) / "worker-stats"
+
+
+def git_common_dir(repo):
+    # A receipt may record a repository path that no longer exists; subprocess with a
+    # missing cwd raises instead of failing, so the guard is here, for every caller.
+    if not Path(repo).is_dir():
+        return None
+    proc = subprocess.run(
+        ["git", "rev-parse", "--git-common-dir"],
+        cwd=repo, capture_output=True, text=True,
+    )
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    common = Path(proc.stdout.strip())
+    if not common.is_absolute():
+        common = Path(repo) / common
+    try:
+        return common.resolve(strict=True)
+    except OSError:
+        return None
+
+
+def receipt_file_name(repo):
+    repo_path = str(Path(repo).resolve())
+    repo_name = repo_identity(repo_path)
+    if not repo_name:
+        return None
+    repo_hash = hashlib.sha1(repo_path.encode()).hexdigest()[:RECEIPT_HASH_HEX]
+    return f"{repo_name}__{repo_hash}.json"
+
+
+def review_receipt(repo):
+    name = receipt_file_name(repo)
+    if not name:
+        return None
+    path = state_dir() / RECEIPT_DIR / name
+    try:
+        receipt = json.loads(path.read_text())
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(receipt, dict) or any(
+        not isinstance(receipt.get(field), str) or not receipt[field]
+        for field in RECEIPT_FIELDS
+    ):
+        return None
+    if isinstance(receipt.get("errored"), bool) or not isinstance(receipt.get("errored"), int) \
+            or receipt["errored"] < 0:
+        return None
+    if git_common_dir(repo) != git_common_dir(receipt["repo"]):
+        return None
+    proc = subprocess.run(
+        ["git", "cat-file", "-t", receipt["tree"]],
+        cwd=repo, capture_output=True, text=True,
+    )
+    return receipt if proc.returncode == 0 and proc.stdout.strip() == "tree" else None
+
+
+def write_review_receipt(repo, sha, run_id, errored):
+    tmp = None
+    try:
+        name = receipt_file_name(repo)
+        if not name:
+            raise RuntimeError("repository identity is unavailable")
+        proc = subprocess.run(
+            ["git", "rev-parse", f"{sha}^{{tree}}"],
+            cwd=repo, capture_output=True, text=True,
+        )
+        if proc.returncode != 0 or not proc.stdout.strip():
+            raise RuntimeError("reviewed tree is unavailable")
+        directory = state_dir() / RECEIPT_DIR
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / name
+        tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+        receipt = {
+            "repo": str(repo), "tree": proc.stdout.strip(), "commit": sha,
+            "run_id": run_id, "ts": iso_now(), "errored": errored,
+        }
+        tmp.write_text(json.dumps(receipt) + "\n")
+        os.replace(tmp, path)
+        tmp = None
+    except Exception as exc:
+        print(f"warning: could not write review receipt: {exc}", file=sys.stderr)
+    finally:
+        if tmp is not None:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def read_jsonl(path):
@@ -2373,6 +2466,11 @@ def cmd_review(args):
     args.raters = ",".join(REVIEW_TIERS[args.tier]["cells"])
     args.auto = None
     args.leg = False
+    # Tier reviews verify OpenCode cells here so measurement runs deliberately stay raw.
+    if args.verify is None and any(
+        rater["side"] == "opencode" for rater in parse_raters(args.raters)
+    ):
+        args.verify = OPENCODE_VERIFIER
     return cmd_run(args)
 
 
@@ -2390,24 +2488,33 @@ def cmd_suggest(args):
         target = resolve_commit(repo, right)
         changes, sources = diff_numstat(repo, [base, target])
         command_target = target
+        receipt = None
     else:
-        changes, sources = diff_numstat(repo, ["HEAD"])
-        # A staged change the working tree then reverted is invisible to `git diff HEAD` and is
-        # still what the next commit will contain, so the index is asked separately.
-        staged, staged_sources = diff_numstat(repo, ["--cached", "HEAD"])
+        receipt = review_receipt(repo)
+        baseline = receipt["tree"] if receipt else "HEAD"
+        changes, sources = diff_numstat(repo, [baseline])
+        # A staged change that the working tree then reverts is absent from the baseline-to-files
+        # diff but is still what the next commit will contain, so the index is asked separately.
+        staged, staged_sources = diff_numstat(repo, ["--cached", baseline])
         for path, lines in staged.items():
             changes[path] = max(changes.get(path, 0), lines)
         sources |= staged_sources
         changes.update(untracked_numstat(repo))
         command_target = "HEAD"
     if not changes:
-        print("nothing to review")
+        if receipt:
+            print(f"nothing to review; tree matches review {receipt['run_id']}")
+        else:
+            print("nothing to review")
         return 0
     changed_lines = sum(changes.values())
     tier_name = suggest_tier(changes, changed_lines, sources)
     print(f"changed files: {len(changes)}")
     print(f"changed lines: {changed_lines}")
     print(f"tier: {tier_name}")
+    if receipt:
+        print(f"unreviewed delta vs review {receipt['run_id']}; staged content is compared "
+              "with the same reviewed tree")
     extra = ["--repo", str(repo)] if args.repo != "." else []
     if args.range:
         print(f"command: {shlex.join(['review-bench', 'review', command_target, '--tier', tier_name, *extra])}")
@@ -2645,6 +2752,8 @@ def cmd_run(args):
         "verifier": verify_model or "",
     }
     (run_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
+    if meta["raters"]:
+        write_review_receipt(repo, sha, run_id, len(errored_raters))
     if errored_raters:
         rerun = ",".join(collapse_rater_attempts(
             rater["spec"] for rater in raters if rater["spec"] in errored_raters

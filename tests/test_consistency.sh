@@ -386,4 +386,27 @@ assert grep -Fq 'local parts, start, sep = {}, 1, "; "' "$HAMMER"
 assert doc_has 'User-entry refresh classification'
 assert doc_has 'including multiple Claude auth failures, uses `"; "` between entries'
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, and user-entry refresh classification) and match %s\n' "$asserts" "$DOC"
+assert grep -Fq 'RECEIPT_DIR = "receipts"' "$REVIEWBENCH"
+assert grep -Fq 'RECEIPT_FIELDS = ("repo", "tree", "commit", "run_id", "ts")' "$REVIEWBENCH"
+rb_receipt_name=$(sed -n '/^def receipt_file_name(repo):/,/^$/p' "$REVIEWBENCH")
+sl_receipt_name=$(sed -n '/^receipt_file_name()/,/^}/p' "$STATUSLINE")
+rb_receipt_hash_len=$(grep -E '^RECEIPT_HASH_HEX = [0-9]+$' "$REVIEWBENCH" | awk '{print $3}')
+sl_receipt_hash_len=$(grep -E '^RECEIPT_HASH_HEX=[0-9]+$' "$STATUSLINE" | cut -d= -f2)
+assert eq "$rb_receipt_hash_len" 8
+assert eq "$sl_receipt_hash_len" "$rb_receipt_hash_len"
+assert grep -Fq 'hashlib.sha1(repo_path.encode()).hexdigest()[:RECEIPT_HASH_HEX]' \
+  <<<"$rb_receipt_name"
+assert grep -Fq 'shasum -a 1' <<<"$sl_receipt_name"
+assert grep -Fq 'awk -v n="$RECEIPT_HASH_HEX" '\''{print substr($1, 1, n)}' <<<"$sl_receipt_name"
+assert grep -Fq 'return f"{repo_name}__{repo_hash}.json"' <<<"$rb_receipt_name"
+assert grep -Fq 'printf '\''%s__%s.json'\'' "$repo_name" "$repo_hash"' <<<"$sl_receipt_name"
+assert grep -Fq 'path = state_dir() / RECEIPT_DIR / name' "$REVIEWBENCH"
+assert grep -Fq 'receipt_file="$worker_stats_dir/receipts/$receipt_name"' "$STATUSLINE"
+assert grep -Fq '[.repo,.tree,.commit,.run_id,.ts,(.errored | tostring)]' "$STATUSLINE"
+assert grep -Fq 'status --porcelain' "$STATUSLINE"
+assert test "$(grep -Ec 'GIT_INDEX_FILE|git -C "\\$repo" add -A|current_tree_hash' "$STATUSLINE")" -eq 0
+assert doc_has '<state_dir>/receipts/<repoName>__<repoHash>.json'
+assert doc_has '`repo`, `tree`, `commit`, `run_id`, and `ts`, non-negative integer `errored`'
+assert doc_has "tree\` is the reviewed commit's Git tree object"
+
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, and review receipt schema) and match %s\n' "$asserts" "$DOC"

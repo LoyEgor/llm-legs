@@ -20,7 +20,9 @@ fi
 claudeb_dir="${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}"
 account_cache_dir="$claudeb_dir/limits"
 account_cache="$account_cache_dir/$acct.json"
+worker_stats_dir="${WORKER_STATS_DIR:-$claudeb_dir/worker-stats}"
 limits_file="${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}"
+RECEIPT_HASH_HEX=8
 
 file_mtime() {
   stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null
@@ -35,6 +37,36 @@ snapshot_lock_acquire() {
   [ "$((now - mtime))" -gt 120 ] || return 1
   rmdir "$lock" 2>/dev/null || return 1
   mkdir "$lock" 2>/dev/null
+}
+
+git_common_dir() {
+  local repo="$1" common
+  common=$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null) || return 1
+  case "$common" in
+    /*) ;;
+    *) common="$repo/$common" ;;
+  esac
+  (cd "$common" 2>/dev/null && pwd -P)
+}
+
+repo_identity_name() {
+  local common
+  common=$(git_common_dir "$1") || return 1
+  if [ "$(basename "$common")" = .git ]; then
+    basename "$(dirname "$common")"
+  else
+    basename "$common"
+  fi
+}
+
+receipt_file_name() {
+  local repo="$1" repo_name repo_hash
+  repo=$(cd "$repo" 2>/dev/null && pwd -P) || return 1
+  repo_name=$(repo_identity_name "$repo") || return 1
+  repo_hash=$(printf '%s' "$repo" | shasum -a 1 2>/dev/null |
+    awk -v n="$RECEIPT_HASH_HEX" '{print substr($1, 1, n)}')
+  [[ "$repo_hash" =~ ^[0-9a-f]{8}$ ]] || return 1
+  printf '%s__%s.json' "$repo_name" "$repo_hash"
 }
 
 # Propagate just-merged headers to all surfaces via the zero-network collector
@@ -276,7 +308,11 @@ if [ -n "$active_top" ] && [ "$active_top" != "$project_top" ]; then
 fi
 
 branch_part=""
+git_status=""
+git_status_rc=1
 if [ -n "$active_top" ]; then
+  git_status=$(git -C "$active_top" status --porcelain 2>/dev/null)
+  git_status_rc=$?
   branch=$(git -C "$git_dir" rev-parse --abbrev-ref HEAD 2>/dev/null)
   if [ "$branch" = HEAD ]; then
     short_sha=$(git -C "$git_dir" rev-parse --short HEAD 2>/dev/null)
@@ -888,9 +924,45 @@ if [ -n "$active_top" ]; then
   fi
 fi
 
+review_receipt_part=""
+if [ -n "$active_top" ]; then
+  review_receipt_part=" ${sep} ${MAGENTA}review${RESET}"
+  active_common=$(git_common_dir "$active_top" 2>/dev/null)
+  receipt_name=$(receipt_file_name "$active_top" 2>/dev/null)
+  receipt_file="$worker_stats_dir/receipts/$receipt_name"
+  receipt_values=$(jq -er '
+    select(type == "object"
+      and (.repo | type) == "string"
+      and (.tree | type) == "string"
+      and (.commit | type) == "string"
+      and (.run_id | type) == "string"
+      and (.ts | type) == "string"
+      and (.errored | type) == "number"
+      and .errored >= 0
+      and (.errored | floor) == .errored)
+    | [.repo,.tree,.commit,.run_id,.ts,(.errored | tostring)] | join("\u001f")
+  ' "$receipt_file" 2>/dev/null)
+  if [ -n "$receipt_values" ]; then
+    IFS=$'\x1f' read -r receipt_repo receipt_tree receipt_commit receipt_run_id receipt_ts receipt_errored \
+      <<< "$receipt_values"
+    receipt_common=$(git_common_dir "$receipt_repo" 2>/dev/null)
+    if [ -n "$active_common" ] && [ "$receipt_common" = "$active_common" ]; then
+      head_tree=$(git -C "$active_top" rev-parse 'HEAD^{tree}' 2>/dev/null)
+      if [ -n "$head_tree" ] && [ "$receipt_tree" = "$head_tree" ] &&
+        [ "$git_status_rc" -eq 0 ] && [ -z "$git_status" ]; then
+        if [ "$receipt_errored" -gt 0 ]; then
+          review_receipt_part=" ${sep} ${DIM}review${RESET}"
+        else
+          review_receipt_part=""
+        fi
+      fi
+    fi
+  fi
+fi
+
 # Two lines: identity/work (model, account, dir/branch/diff, workers) on top,
 # usage (ctx, 5h, weekly, fable, cost) below.
-line1="${CYAN}${model}${model_suffix}${RESET}${fast_part}${cb_part} ${sep} ${dir_part}${branch_part}${ports_part}${worker_part}${bench_part}${review_tier_part}"
+line1="${CYAN}${model}${model_suffix}${RESET}${fast_part}${cb_part} ${sep} ${dir_part}${branch_part}${ports_part}${worker_part}${bench_part}${review_receipt_part}${review_tier_part}"
 
 line2="ctx $(pct_colored "$ctx_pct" "$ctx_dim" 40)${ctx_tokens_part} ${sep} 5h $(pct_colored "$h5_pct" "$h5_dim")${h5_arrow} ${sep} wk $(pct_colored "$wk_pct" "$wk_dim")${wk_arrow}${fable_part}"
 
