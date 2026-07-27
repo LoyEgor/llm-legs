@@ -223,4 +223,17 @@ for spec in \
   assert grep -Eq 'served:|leg alive:' "$WORK/probe-$leg.out"
 done
 
-echo "PASS: $asserts asserts; all legs route selected accounts through vendor profile launchers, refuse an unselectable pool without a vendor call, degrade to bare main-account CLIs when worker-pick is absent, audit the answering account, and keep probes on the routed path"
+# Listing model labels spends no quota, so it must answer even when nothing is selectable
+# and without spending a routing query.
+: >"$CALL_LOG"
+: >"$PICK_LOG"
+STUB_PICK_ACCOUNT=unused
+STUB_PICK_RC=3
+rc=0
+run_leg "$ROUTED_PATH" "$WORK/list-models" "$ROOT/ask_gemini.sh" --list-models \
+  >"$WORK/list-models.out" 2>"$WORK/list-models.err" || rc=$?
+assert test "$rc" -eq 0
+assert grep -q 'Gemini 3.1 Pro (High)' "$WORK/list-models.out"
+assert test ! -s "$PICK_LOG"
+
+echo "PASS: $asserts asserts; all legs route selected accounts through vendor profile launchers, refuse an unselectable pool without a vendor call, degrade to bare main-account CLIs when worker-pick is absent, audit the answering account, keep probes on the routed path, and answer --list-models without a selectable account"

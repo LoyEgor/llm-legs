@@ -50,6 +50,10 @@ is_weak() { printf '%s' "$1" | grep -qiE "$WEAK_RE"; }
 
 ACCOUNT=main
 GEMINI_CMD=(agy)
+# Listing model labels spends no quota and must not depend on a selectable account.
+if [ "${1:-}" = --list-models ]; then
+  agy models; exit $?
+fi
 # Missing routing tools are a cron/launchd portability case; preserve the bare-CLI contract.
 if command -v worker-pick >/dev/null 2>&1; then
   pick_rc=0

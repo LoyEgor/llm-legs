@@ -49,7 +49,9 @@ end
 local out = {}
 for _, it in ipairs(menu) do
   table.insert(out, s(it.title))
-  if type(it.menu) == "table" then
+  -- Routing holds worker-pick output verbatim; its middots are not renderer-authored prose,
+  -- and the aggregate-age ban below must keep guarding only what the renderer words itself.
+  if type(it.menu) == "table" and s(it.title) ~= "Routing" then
     for _, sub in ipairs(it.menu) do table.insert(out, "  " .. s(sub.title)) end
   end
 end
@@ -151,7 +153,8 @@ assert_account_ages() {
       [ -n "$row" ] || fail "$vendor account row missing for age check: $account"
       [ "$auth" != true ] || continue
       expected=$(age_short "$asof")
-      actual=$(awk '{print $NF}' <<<"$row")
+      # A pinned account carries a trailing ● after the age; the age is still the fact under test.
+      actual=$(sed -E 's/[[:space:]]*●$//' <<<"$row" | awk '{print $NF}')
       if [ -n "$expected" ]; then
         [ "$actual" = "$expected" ] || fail "$vendor/$account age mismatch: expected $expected, row=$row"
       elif [[ "$actual" =~ ^[0-9]+[mhd]$ ]]; then
@@ -165,7 +168,7 @@ assert_account_ages() {
     row=$(awk '$1 == "Gemini" {print; exit}' <<<"$menu")
     [ -n "$row" ] || fail "Gemini vendor row missing for age check"
     expected=$(age_short "$(jq -r '.vendors.gemini.as_of // ""' <<<"$json")")
-    actual=$(awk '{print $NF}' <<<"$row")
+    actual=$(sed -E 's/[[:space:]]*●$//' <<<"$row" | awk '{print $NF}')
     if [ -n "$expected" ]; then
       [ "$actual" = "$expected" ] || fail "Gemini age mismatch: expected $expected, row=$row"
     elif [[ "$actual" =~ ^[0-9]+[mhd]$ ]]; then
@@ -263,7 +266,11 @@ local changes = 0
 fallback.onRefreshStateChanged = function() changes = changes + 1 end
 for _, item in ipairs(fallback.menuItems()) do
   local name = title(item)
-  if (name == "Claude" or name == "Codex" or name == "Gemini") and item.menu then item.menu[1].fn() end
+  if (name == "Claude" or name == "Codex" or name == "Gemini") and item.menu then
+    for _, sub in ipairs(item.menu) do
+      if title(sub) == "Hard refresh" then sub.fn() end
+    end
+  end
 end
 if #fallbackState.starts ~= 4 then error("menu collect and fallback actions did not start four tasks") end
 local passive, a, b, c = fallbackState.starts[1], fallbackState.starts[2], fallbackState.starts[3], fallbackState.starts[4]
