@@ -1076,6 +1076,9 @@ cat <<'SNAP'
 1004 1000 node ./mcp/server.mjs
 1005 1000 agy --model gemini
 1006 1005 node /opt/agy/rpc.js
+1007 1000 codex exec
+1008 1007 node /srv/dev-server
+1009 1000 /Users/john doe/bin/agy --model x
 9999 1 claude
 SNAP
 PSEOF
@@ -1092,6 +1095,8 @@ node     1003 u   24u  IPv4  0t0      TCP *:5173 (LISTEN)
 node     1004 u   23u  IPv6  0t0      TCP [::1]:9999 (LISTEN)
 agy      1005 u   10u  IPv4  0t0      TCP 127.0.0.1:61609 (LISTEN)
 node     1006 u   11u  IPv4  0t0      TCP 127.0.0.1:61610 (LISTEN)
+node     1008 u   12u  IPv4  0t0      TCP *:5174 (LISTEN)
+agy      1009 u   13u  IPv4  0t0      TCP 127.0.0.1:61611 (LISTEN)
 OUT
 LSEOF
 chmod +x "$FAKE_LSOF"
@@ -1103,9 +1108,10 @@ run_probe() {
   STATUSLINE_PS="$FAKE_PS" STATUSLINE_LSOF="$FAKE_LSOF" "$PORTS_PROBE" "$1" "$2"
 }
 run_probe pp-parse 1001
-# 61609/61610 are an LLM tool's own RPC — the agy process and a node it spawned — and neither
-# is a place a human can go, so the probe drops both while keeping the two real servers.
-assert_eq '5173 8123' "$(cat "$STATE_DIR/ports-pp-parse")"
+# 61609/61610/61611 are an LLM tool talking to itself — an agy process, a node it spawned, and
+# an agy under a home directory with a space in it — while 5174 is a dev server a codex worker
+# started, which is exactly the kind of place the segment exists to point at.
+assert_eq '5173 8123 5174' "$(cat "$STATE_DIR/ports-pp-parse")"
 
 # 4-digit PID alignment test: ps right-aligns columns, causing leading spaces.
 # Verify the regex handles leading whitespace correctly.
@@ -1420,6 +1426,19 @@ write_progress "$$" T2 3 8 2026-07-27T22:00:00+00:00
 progress_live_out=$(progress_render live)
 assert grep -Fq 'review T2 3/8' <<< "$progress_live_out"
 rm -f "$review_receipt_file"
+
+# review-bench keys the file name on the path it was handed, so a run started from a
+# subdirectory lands under a name no render can predict — and a repository whose directory name
+# begins with a dot hides from a bare glob. The repository recorded inside the file is the match.
+mkdir -p "$REVIEW_CLEAN/sub"
+progress_alias="$PROGRESS_DIR/.sub__0badc0de-$$.json"
+jq -cn --arg repo "$REVIEW_CLEAN/sub" --argjson pid "$$" \
+  '{repo:$repo,pid:$pid,run_id:"alias",tier:"T3",target:"x",cells:["a","b","c"],done:["a"],
+    failed:0,started:"2026-07-28T00:00:00+00:00",ts:"2026-07-28T00:00:00+00:00"}' \
+  > "$progress_alias"
+progress_alias_out=$(progress_render alias)
+assert grep -Fq 'review T3 1/3' <<< "$progress_alias_out"
+rm -f "$progress_alias"
 
 # An --auto run carries no tier; the counter still renders.
 write_progress "$$" "" 1 5 2026-07-27T22:00:00+00:00

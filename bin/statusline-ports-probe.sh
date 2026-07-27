@@ -79,14 +79,22 @@ fi
 
 # Passed as files, not awk -v: -v rejects the newlines a multi-line lsof dump would carry.
 ports=$(awk -v root="$root" '
+  # Anchored on a path boundary rather than split on spaces: a home directory with a space in it
+  # would otherwise leave the tool unrecognised, and a bare substring would match "legacy".
+  function tool_cmd(pid) {
+    return (cmd[pid] ~ /(^|\/)(agy|opencode|opencode-go|grok|codex)([ \t]|$)/)
+  }
   # The segment answers "where do I go to look at the work", so a port earns a place only if a
-  # human can open it. The LLM tools a session drives — agy, opencode, grok, codex — each listen
-  # on localhost for their own RPC, at any depth below themselves, and lead nowhere worth going.
-  function tool_owned(pid,   depth, m, t, q, u, base) {
-    depth = 0
+  # human can open it. The LLM tools a session drives each listen on localhost for their own RPC
+  # and lead nowhere worth going. Their descendants are a different matter: a dev server a worker
+  # started IS the work, so below a tool only ephemeral ports (49152+, where no dev server binds
+  # and every RPC socket does) are dropped.
+  function tool_owned(pid, port,   depth) {
+    if (tool_cmd(pid)) return 1
+    if (port + 0 < 49152) return 0
+    pid = ppid[pid]; depth = 0
     while (pid != "" && pid + 0 > 1 && pid != root && depth < 30) {
-      m = split(cmd[pid], t, /[ \t]/); q = split(t[1], u, "/"); base = u[q]
-      if (base ~ /^(agy|opencode|opencode-go|grok|codex)$/) return 1
+      if (tool_cmd(pid)) return 1
       pid = ppid[pid]; depth++
     }
     return 0
@@ -104,7 +112,7 @@ ports=$(awk -v root="$root" '
     if (c ~ /mcp|figma|codex|chrome-devtools|chrome_crashpad/) next
     m=split(c, t, /[ \t]/); q=split(t[1], u, "/"); base=u[q]
     if (base == "claude") next
-    if (tool_owned(pid)) next
+    if (tool_owned(pid, port)) next
     if (!(port in seen)) { seen[port]=1; order[++k]=port }
   }
   END {

@@ -131,14 +131,18 @@ receipt_file_name() {
 
 # ps reports elapsed time as [[dd-]hh:]mm:ss; the render needs the instant the process started.
 process_start_epoch() {
-  local pid="$1" now="$2" elapsed days=0 hours=0 mins secs
+  local pid="$1" now="$2" elapsed days=0 hours=0 mins secs field
   elapsed=$(ps -o etime= -p "$pid" 2>/dev/null | tr -d '[:space:]')
   case "$elapsed" in *:*) ;; *) return 1 ;; esac
   case "$elapsed" in *-*) days=${elapsed%%-*}; elapsed=${elapsed#*-} ;; esac
   case "$elapsed" in *:*:*) hours=${elapsed%%:*}; elapsed=${elapsed#*:} ;; esac
   mins=${elapsed%%:*}
   secs=${elapsed##*:}
-  [[ "$days$hours$mins$secs" =~ ^[0-9]+$ ]] || return 1
+  # Each field on its own: concatenating them lets an empty one hide behind its neighbours and
+  # reach the arithmetic below as the bare prefix `10#`, which is a syntax error, not a failure.
+  for field in "$days" "$hours" "$mins" "$secs"; do
+    [[ "$field" =~ ^[0-9]+$ ]] || return 1
+  done
   printf '%s' "$((now - (10#$days * 86400 + 10#$hours * 3600 + 10#$mins * 60 + 10#$secs)))"
 }
 
@@ -1106,42 +1110,44 @@ if [ -n "$active_top" ]; then
   progress_tier=""
   progress_newest=""
   progress_dir="$worker_stats_dir/progress"
-  if [ -n "$receipt_name" ] && [ -n "$active_common" ] && [ -d "$progress_dir" ]; then
-    progress_prefix="${receipt_name%.json}-"
+  if [ -n "$active_common" ] && [ -d "$progress_dir" ]; then
+    # Every file is read and matched on the repository recorded inside it, never on its name:
+    # review-bench keys the name on the path it was handed, so a run started from a subdirectory
+    # writes a name this render cannot predict. dotglob for the same reason — the key carries the
+    # repository's own directory name, and a dotted one would slip past a bare glob.
+    progress_dotglob=$(shopt -p dotglob)
+    shopt -s dotglob
     for progress_file in "$progress_dir"/*.json; do
       [ -f "$progress_file" ] || continue
-      progress_base=${progress_file##*/}
-      # Literal prefix match, not a glob: a repository named with pattern metacharacters
-      # would otherwise match its neighbours' files.
-      [[ "$progress_base" == "$progress_prefix"* ]] || continue
-      progress_pid=${progress_base#"$progress_prefix"}
-      progress_pid=${progress_pid%.json}
-      [[ "$progress_pid" =~ ^[0-9]+$ ]] || continue
-      kill -0 "$progress_pid" 2>/dev/null || continue
       progress_mtime=$(file_mtime "$progress_file" 2>/dev/null)
       [[ "$progress_mtime" =~ ^[0-9]+$ ]] || continue
       # A run whose slowest cell is still out writes nothing for as long as that cell takes,
       # so there is no tight staleness window here; this is only the wall that stops a wedged
       # process from holding the segment for a day.
       [ "$((now - progress_mtime))" -le 7200 ] || continue
-      progress_start=$(process_start_epoch "$progress_pid" "$now") || continue
-      # The slack absorbs ps's whole-second resolution, not a real gap: pids are handed out
-      # sequentially and wrap near 100k, so a reuse this close to the last write cannot happen.
-      [ "$progress_start" -le "$((progress_mtime + 5))" ] || continue
       progress_values=$(jq -er '
         select(type == "object"
           and (.repo | type) == "string"
+          and (.pid | type) == "number"
+          and (.pid | floor) == .pid
+          and .pid > 0
           and (.cells | type) == "array"
           and (.done | type) == "array"
           and (.cells | length) > 0
           and (.done | length) <= (.cells | length)
           and (.started | type) == "string"
           and ((.tier | type) == "string" or .tier == null))
-        | [.repo, (.tier // ""), (.done | length | tostring), (.cells | length | tostring), .started]
+        | [.repo, (.pid | tostring), (.tier // ""),
+           (.done | length | tostring), (.cells | length | tostring), .started]
         | join("\u001f")
       ' "$progress_file" 2>/dev/null) || continue
-      IFS=$'\x1f' read -r progress_repo progress_run_tier progress_run_done progress_run_total \
-        progress_started <<< "$progress_values"
+      IFS=$'\x1f' read -r progress_repo progress_pid progress_run_tier progress_run_done \
+        progress_run_total progress_started <<< "$progress_values"
+      kill -0 "$progress_pid" 2>/dev/null || continue
+      progress_start=$(process_start_epoch "$progress_pid" "$now") || continue
+      # The slack absorbs ps's whole-second resolution, not a real gap: pids are handed out
+      # sequentially and wrap near 100k, so a reuse this close to the last write cannot happen.
+      [ "$progress_start" -le "$((progress_mtime + 5))" ] || continue
       [ "$(git_common_dir "$progress_repo" 2>/dev/null)" = "$active_common" ] || continue
       case "$progress_run_tier" in
         T[0-3]) ;;
@@ -1154,6 +1160,7 @@ if [ -n "$active_top" ]; then
         progress_tier=$progress_run_tier
       fi
     done
+    eval "$progress_dotglob"
   fi
   if [ -n "$progress_total" ]; then
     review_part=" ${sep} review"
