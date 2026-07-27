@@ -64,6 +64,10 @@ SCRIPT="$FIXTURE/bin/llm-selfcheck"
 LOG="$HOME/.claude-profiles/.claudeb/selfcheck.log"
 REAL="$HOME/.llm-limits.json"
 SHADOW="$HOME/.llm-limits-shadow.json"
+TRIPWIRE_DIR="$WORK/tripwire"
+LLM_SELFCHECK_TRIPWIRE_GLOBS="$TRIPWIRE_DIR/*.md"
+LLM_SELFCHECK_TRIPWIRE_STATE="$WORK/config-tripwire.state"
+export LLM_SELFCHECK_TRIPWIRE_GLOBS LLM_SELFCHECK_TRIPWIRE_STATE
 NOW=$(date '+%s')
 FETCHED=$(date -u -r "$NOW" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -d "@$NOW" '+%Y-%m-%dT%H:%M:%SZ')
 
@@ -100,11 +104,31 @@ write_caches() {
   }' >"$SHADOW"
 }
 
+mkdir -p "$TRIPWIRE_DIR"
+printf 'safe\n' >"$TRIPWIRE_DIR/worker.md"
 write_caches
 bash "$SCRIPT" || fail "successful run failed"
 assert test "$(paste -sd, "$CALLS")" = "e2e_surfaces.sh,test_llm_limits.sh,test_claudeb.sh,test_codexb.sh,test_geminib.sh"
 assert grep -Eq '^timestamp=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{4} status=PASS failed_step=-$' "$LOG"
 assert grep -q 'status=PASS step=shadow-divergence detail=shadow-divergence: match' "$LOG"
+assert grep -q 'status=PASS step=config-tripwire detail=baseline' "$LOG"
+assert test -s "$LLM_SELFCHECK_TRIPWIRE_STATE"
+assert test ! -s "$ALERTS"
+
+: >"$CALLS"
+bash "$SCRIPT" run --force || fail "unchanged tripwire run failed"
+assert tail -n 3 "$LOG" | grep -q 'status=PASS step=config-tripwire detail=unchanged'
+
+printf 'damaged\n' >"$TRIPWIRE_DIR/worker.md"
+: >"$ALERTS"
+bash "$SCRIPT" run --force || fail "changed tripwire run failed"
+assert tail -n 3 "$LOG" | grep -q "status=WARN step=config-tripwire detail=$TRIPWIRE_DIR/worker.md"
+assert grep -q 'LLM self-check: 1 config file(s) changed since last snapshot' "$ALERTS"
+assert grep -q "$(shasum "$TRIPWIRE_DIR/worker.md")" "$LLM_SELFCHECK_TRIPWIRE_STATE"
+
+: >"$ALERTS"
+bash "$SCRIPT" run --force || fail "rebaselined tripwire run failed"
+assert tail -n 3 "$LOG" | grep -q 'status=PASS step=config-tripwire detail=unchanged'
 assert test ! -s "$ALERTS"
 
 write_caches 12 13
@@ -266,4 +290,4 @@ assert grep -q 'step=exit-plan-review' "$LOG"
 assert grep -q 'e2e_surfaces.sh' "$CALLS"
 rm -rf "$FIXTURE/docs"
 
-echo "PASS: $asserts asserts; shadow divergence, ordered suites and skip list, log format and trimming, failure alerts, debounce/catch-up/stale-alert dedup, install and uninstall plist, exit-plan reminder"
+echo "PASS: $asserts asserts; config tripwire, shadow divergence, ordered suites and skip list, log format and trimming, failure alerts, debounce/catch-up/stale-alert dedup, install and uninstall plist, exit-plan reminder"

@@ -99,6 +99,7 @@ Facts below are grounded in the code as of 2026-07-16 (line numbers may drift �
 
 | Symptom | Look here |
 |---|---|
+| Unexplained `~/.claude` config damage | Check `config-tripwire` WARNs in `~/.claude-profiles/.claudeb/selfcheck.log` for the timestamp |
 | Menu entry gray (stale), unsure why | `jq '.vendors.claude.accounts' ~/.llm-limits.json` for per-account `as_of`/`stale`/`origin` and local `enabled`/`rotation.usable` state |
 | Auth expired / re-login loops | `jq '.auth' ~/.claude-profiles/.claudeb/limits/*.json`; inspect the last CLI warm output in `~/.claude-profiles/.claudeb/warm-logs/<account>.log`; `cat ~/.claude-profiles/.claudeb/oauth-attempts.json` — `outcome` values: `attempting/success/success-adopted/failed/429/revoked/warming/warm-failed`; only `revoked` (invalid_grant + unrotated refresh token, 6h/21600s backoff) sets `cause=needs re-login` in claudeb's own logs — `auth.status` itself is only ever `"ok"` or `"expired"` |
 | One account shows zeroed/phantom buckets | Distinguish a genuinely-disabled/auth-needed account (`~/.claude-profiles/.claudeb/disabled`, Codex's `auth_needed: true` + no usage buckets in `codexb status` / `codex-quota.py`, or Gemini profile `auth_needed`) from a stale-but-real snapshot (has `as_of`, just old). Run `geminib status` and inspect `jq '.vendors.gemini.accounts' ~/.llm-limits.json`; Gemini routing accepts only `group == "Gemini Models"` |

@@ -97,6 +97,7 @@ maybe_run() {
 
 run_checks() {
   local name path seconds output rc detail step_status exit_plan exit_date
+  local tripwire_globs tripwire_state tripwire_snapshot changed_paths changed_count
   # Scaffolding self-reminder (docs/EXIT-PLAN.md): after the decision date, nag daily
   # until the exit plan is executed — this block is removed together with it.
   exit_plan="$repo_root/docs/EXIT-PLAN.md"
@@ -104,6 +105,31 @@ run_checks() {
   if [ -n "$exit_date" ] && ! [ "$(date +%Y-%m-%d)" \< "$exit_date" ]; then
     write_step_log WARN exit-plan-review "due since $exit_date — see docs/EXIT-PLAN.md"
     send_alert "LLM limits: exit-plan review due — docs/EXIT-PLAN.md"
+  fi
+  tripwire_globs="${LLM_SELFCHECK_TRIPWIRE_GLOBS:-$HOME/.claude/CLAUDE.md $HOME/.claude/worker-model $HOME/.claude/settings.json $HOME/.claude/agents/*.md $HOME/.claude/commands/*.md}"
+  tripwire_state="${LLM_SELFCHECK_TRIPWIRE_STATE:-$log_dir/config-tripwire.state}"
+  mkdir -p "$(dirname "$tripwire_state")" 2>/dev/null || true
+  if tripwire_snapshot=$(mktemp "$tripwire_state.XXXXXX" 2>/dev/null); then
+    # Unquoted on purpose: the entries are globs and must expand; spaced paths are out of scope.
+    for path in $tripwire_globs; do
+      [ -f "$path" ] && shasum "$path"
+    done | sort >"$tripwire_snapshot"
+    if [ ! -f "$tripwire_state" ]; then
+      mv "$tripwire_snapshot" "$tripwire_state"
+      write_step_log PASS config-tripwire baseline
+    elif cmp -s "$tripwire_state" "$tripwire_snapshot"; then
+      rm -f "$tripwire_snapshot"
+      write_step_log PASS config-tripwire unchanged
+    else
+      changed_paths=$(comm -3 <(sort "$tripwire_state") "$tripwire_snapshot" | sed -E 's/^[[:space:]]*[0-9a-fA-F]+[[:space:]]{2}//' | sort -u)
+      changed_count=$(printf '%s\n' "$changed_paths" | awk 'NF { count++ } END { print count + 0 }')
+      detail=$(printf '%s\n' "$changed_paths" | paste -sd, -)
+      write_step_log WARN config-tripwire "$detail"
+      send_alert "LLM self-check: $changed_count config file(s) changed since last snapshot — see selfcheck.log"
+      mv "$tripwire_snapshot" "$tripwire_state"
+    fi
+  else
+    write_step_log WARN config-tripwire 'state dir unwritable — tripwire skipped'
   fi
   local -a steps=(
     "shadow-divergence:${LLM_SELFCHECK_SHADOW_TIMEOUT:-30}"
