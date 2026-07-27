@@ -1445,7 +1445,7 @@ def codex_environment(account):
     return env
 
 
-def run_codex(rater, repo, sha, focus, run_dir, diff, account, repeat=1):
+def run_codex(rater, repo, sha, focus, run_dir, diff, account):
     raw_final = tempfile.NamedTemporaryFile(
         dir=run_dir, prefix=f"raw-final-{rater['spec']}-", delete=False
     )
@@ -1549,7 +1549,7 @@ def refresh_limits(account):
         pass
 
 
-def run_claude(rater, repo, sha, focus, run_dir, diff, account, repeat=1):
+def run_claude(rater, repo, sha, focus, run_dir, diff, account):
     raw_output = run_dir / f"raw-{rater['spec']}.json"
     raw_output.unlink(missing_ok=True)
     clone = seal_overlay_clone(repo, sha)
@@ -1580,7 +1580,7 @@ def run_claude(rater, repo, sha, focus, run_dir, diff, account, repeat=1):
             shutil.rmtree(clone, ignore_errors=True)
 
 
-def run_grok(rater, repo, sha, focus, run_dir, diff, account, repeat=1):
+def run_grok(rater, repo, sha, focus, run_dir, diff, account):
     raw_output = run_dir / f"raw-{rater['spec']}.json"
     prompt = review_prompt(sha, focus) + "\n\nCommit diff:\n" + diff
     prompt_file = tempfile.NamedTemporaryFile(
@@ -1704,79 +1704,8 @@ def opencode_timeout_s(rater):
     return min(RATER_TIMEOUT_S, max(420, opencode_expected_s(rater) * 8))
 
 
-# Identical calls to the same model return 1 to 30 findings on the same diff, so one
-# sample measures the dice, not the model. Sampling the cell a few times and unioning
-# the result is the cheap way to turn that variance into recall — and it also means a
-# single 503 costs a sample instead of the whole cell.
-def same_defect(left, right):
-    if left.get("file") != right.get("file"):
-        return False
-    try:
-        gap = abs(int(left.get("line")) - int(right.get("line")))
-    except (TypeError, ValueError):
-        gap = 999
-    ratio = SequenceMatcher(
-        None, str(left.get("summary", "")).lower(), str(right.get("summary", "")).lower()
-    ).ratio()
-    return ratio >= 0.6 or (gap <= 5 and ratio >= 0.35)
-
-
-def merge_samples(batches):
-    # Only rows from earlier samples suppress a row: same_defect is tuned to catch one defect
-    # worded twice, and applied inside a single sample it silently drops distinct findings the
-    # rater deliberately reported apart.
-    merged = []
-    for batch in batches:
-        seen_before = len(merged)
-        for row in batch:
-            if not any(same_defect(row, kept) for kept in merged[:seen_before]):
-                merged.append(row)
-    return merged
-
-
-def run_opencode_sampled(rater, repo, sha, focus, run_dir, diff, account, repeat=1):
-    """Union `repeat` independent samples of one OpenCode cell.
-
-    Samples run one after another rather than at once: the plan is billed against a
-    rolling window, so a cell that fans out its own retries is how a usage wall gets
-    hit early instead of waited out.
-    """
-    batches, failures, duration, command = [], [], 0, []
-    tree = repo_tree(repo, sha)
-    for index in range(repeat):
-        result = run_opencode(rater, repo, sha, focus, run_dir, diff, account,
-                              sample=index + 1 if repeat > 1 else None)
-        rc, sample_ms, sample_text, stderr, command = result
-        duration += sample_ms
-        if rc == 0:
-            # Canonicalised before the union, not in cmd_run after it: same_defect compares
-            # file strings, so one defect cited three ways would survive as three findings.
-            batches.append([
-                dict(row, file=canonical_finding_path(row.get("file"), tree))
-                for row in normalize_findings(sample_text, rater["spec"])
-            ])
-        else:
-            detail = stderr.strip()[-200:]
-            if opencode_usage_wall(stderr):
-                failures.append(f"sample {index + 1}/{repeat}: usage limit reached; {detail}")
-                break
-            failures.append(f"sample {index + 1}/{repeat}: {detail}")
-    if not batches:
-        return 1, duration, "", "\n".join(failures) or "no samples succeeded", command
-    merged = merge_samples(batches)
-    note = (f"{len(batches)}/{repeat} samples usable, {sum(len(b) for b in batches)} raw "
-            f"findings merged to {len(merged)}")
-    stderr = "\n".join(failures + [note])
-    # An empty union is the clean review the samples agreed on, not a silent cell.
-    body = "\n".join(json.dumps(row) for row in merged) or CLEAN_REVIEW_MARKER
-    return 0, duration, body, stderr, command
-
-
-def run_opencode(rater, repo, sha, focus, run_dir, diff, account, repeat=1, sample=None):
-    # Per-sample artifacts: the finish_reason trail is per attempt, and usage is the only
-    # local record of spend on a plan with no usage endpoint.
-    tag = rater["spec"] if sample is None else f"{rater['spec']}-s{sample}"
-    raw_output = run_dir / f"raw-{tag}.json"
+def run_opencode(rater, repo, sha, focus, run_dir, diff, account):
+    raw_output = run_dir / f"raw-{rater['spec']}.json"
     prompt = review_prompt(sha, focus, rater["profile"]) + "\n\nCommit diff:\n" + diff
     prompt_file = tempfile.NamedTemporaryFile(
         mode="w", prefix=f"review-bench-{rater['spec']}-", suffix=".txt", delete=False
@@ -1842,7 +1771,7 @@ def run_opencode(rater, repo, sha, focus, run_dir, diff, account, repeat=1, samp
             return 1, duration, "", stderr, command
         usage = envelope.get("usage")
         if usage is not None:
-            (run_dir / f"usage-{tag}.json").write_text(
+            (run_dir / f"usage-{rater['spec']}.json").write_text(
                 json.dumps(usage, ensure_ascii=False) + "\n"
             )
         choices = envelope.get("choices")
@@ -2247,7 +2176,7 @@ def write_agy_usage(run_dir, rater, duration, log_text):
     return usage
 
 
-def run_agy(rater, repo, sha, focus, run_dir, diff, account, repeat=1):
+def run_agy(rater, repo, sha, focus, run_dir, diff, account):
     raw_output = run_dir / f"raw-{rater['spec']}.md"
     log_file = run_dir / f"agy-{rater['spec']}.log"
     model = agy_model_id(rater)
@@ -2320,11 +2249,8 @@ SIDE_RUNNERS = {
     "codex": run_codex,
     "agy": run_agy,
     "grok": run_grok,
-    "opencode": run_opencode_sampled,
+    "opencode": run_opencode,
 }
-# Every runner accepts `repeat`, and only this one samples more than once. The others take
-# the argument and drop it, so `--repeat 3` on them records one run as three.
-REPEAT_CAPABLE_SIDES = frozenset({"opencode"})
 # Each vendor announces an exhausted account in its own words, and only its own words are
 # trusted: a rater that merely failed must not retire an account that still has quota.
 SIDE_WALL = {
@@ -2428,7 +2354,7 @@ def pool_account(side, excluded):
     return proc.stdout.strip() or None
 
 
-def run_rater_task(rater, repo, sha, focus, run_dir, diff, repeat=1):
+def run_rater_task(rater, repo, sha, focus, run_dir, diff):
     """Run one rater, asking the pool for another account each time one walls off."""
     side = rater["side"]
     bucket = wall_bucket(rater)
@@ -2450,9 +2376,7 @@ def run_rater_task(rater, repo, sha, focus, run_dir, diff, repeat=1):
             continue
         account = candidate
         try:
-            result = SIDE_RUNNERS[side](
-                rater, repo, sha, focus, run_dir, diff, candidate, repeat
-            )
+            result = SIDE_RUNNERS[side](rater, repo, sha, focus, run_dir, diff, candidate)
         except Exception as exc:
             return (rater, candidate, (1, 0, "", f"rater task crashed: {exc}", []))
         rc, _, text, stderr, _ = result
@@ -2461,8 +2385,8 @@ def run_rater_task(rater, repo, sha, focus, run_dir, diff, repeat=1):
         mark_walled(side, candidate, bucket)
         walled.add(candidate)
         print(f"{rater['spec']}: {side} account {candidate} hit its usage wall")
-        # A sampled cell can succeed on one sample and wall on the next: the review it did
-        # produce is kept, and only the account is retired.
+        # A run can succeed while its output already carries the wall wording: the review is
+        # kept and only the account is retired.
         if rc == 0:
             return (rater, candidate, result)
     if result is None:
@@ -2705,32 +2629,6 @@ def redact_command(rater, command):
     return shlex.join(command[:4] + [placeholder] + command[5:])
 
 
-def refuse_unsupported_repeat(raters, repeat):
-    """Refuse a repeat count the selected sides do not honour.
-
-    A silently ignored --repeat is worse than no flag: the caller measuring how much one
-    cell varies between samples records a single run as several agreeing ones.
-    """
-    if not repeat or repeat <= 1:
-        return
-    repeated = sorted({
-        RATER_ATTEMPT_RE.sub("", rater["spec"])
-        for rater in raters if RATER_ATTEMPT_RE.search(rater["spec"])
-    })
-    if repeated:
-        raise RuntimeError(
-            f"--repeat {repeat} cannot be combined with rater repetition (xN): "
-            f"{', '.join(repeated)}"
-        )
-    ignored = sorted({rater["spec"] for rater in raters
-                      if rater["side"] not in REPEAT_CAPABLE_SIDES})
-    if ignored:
-        raise RuntimeError(
-            f"--repeat {repeat} is implemented for the OpenCode side only; these cells would "
-            f"run once and be recorded as repeated: {', '.join(ignored)}"
-        )
-
-
 def commit_mode_command(args):
     tier = getattr(args, "tier", None)
     if tier:
@@ -2747,8 +2645,6 @@ def commit_mode_command(args):
         command += ["--repo", str(Path(args.repo).resolve())]
     if args.focus:
         command += ["--focus", args.focus]
-    if args.repeat != 1:
-        command += ["--repeat", str(args.repeat)]
     if args.verify:
         command += ["--verify", args.verify]
     return shlex.join(command)
@@ -2777,9 +2673,6 @@ def cmd_run(args):
         verify_model = verifier_model(verify_model)
     if args.raters or args.leg:
         requested = parse_raters(args.raters or ",".join(OPENCODE_REVIEW_LEG))
-        # Before any account is consulted: an unhonoured --repeat is a mistake in the request,
-        # and answering it costs nothing to discover.
-        refuse_unsupported_repeat(requested, args.repeat)
         available = {
             "grok": True, "opencode": True, "agy": True,
             "codex": False, "claude": False,
@@ -2799,7 +2692,6 @@ def cmd_run(args):
         available = affordability()
         raters, counts, skipped = auto_pick(args.auto or 2, read_jsonl(reviews_path), available)
     refuse_retired_cells(raters)
-    refuse_unsupported_repeat(raters, args.repeat)
     if verify_model and not any(rater["side"] == "opencode" for rater in raters):
         raise RuntimeError(
             "--verify checks OpenCode findings only (docs/verifier-tuning.md measured no "
@@ -2870,7 +2762,7 @@ def cmd_run(args):
             futures = {
                 pool.submit(
                     run_rater_task, rater, repo, sha, args.focus or "", run_dir,
-                    diff, args.repeat,
+                    diff,
                 ): rater
                 for rater in submitted_raters
             }
@@ -3707,7 +3599,6 @@ def main():
     review.add_argument("--repo", default=".")
     review.add_argument("--tier", choices=REVIEW_TIERS, required=True)
     review.add_argument("--focus", default="")
-    review.add_argument("--repeat", type=int, default=1, metavar="N")
     review.add_argument("--verify", metavar="MODEL", choices=verifier_choices())
     review.set_defaults(func=cmd_review)
     reviewed = subparsers.add_parser(
@@ -3735,11 +3626,6 @@ def main():
              "survived strict adjudication on four commits, and no vendor quota at all",
     )
     run.add_argument("--focus", default="")
-    run.add_argument(
-        "--repeat", type=int, default=1, metavar="N",
-        help="Sample each OpenCode cell N times and union the findings, because identical "
-             "calls to one model differ by an order of magnitude on the same diff",
-    )
     run.add_argument(
         "--verify", metavar="MODEL", choices=verifier_choices(),
         help="Check every finding back against the file it cites with this in-plan "

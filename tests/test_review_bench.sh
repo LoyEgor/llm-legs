@@ -1242,46 +1242,6 @@ os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-happy.json")
 verify_args = (work / "opencode-args").read_text().split("\n")
 assert "--no-reasoning" in verify_args and "run" == verify_args[0]
 
-# Identical calls to one model differ by an order of magnitude, so a cell can be
-# sampled and unioned; two wordings of the same defect must collapse to one row.
-assert rb.same_defect(
-    {"file": "bin/a.sh", "line": 751, "summary": "Unpinned worker=gemini always renders main"},
-    {"file": "bin/a.sh", "line": 749, "summary": "worker=gemini without a pin always renders main"},
-)
-assert not rb.same_defect(
-    {"file": "bin/a.sh", "line": 10, "summary": "regex accepts a leading hyphen"},
-    {"file": "bin/b.sh", "line": 10, "summary": "regex accepts a leading hyphen"},
-)
-assert not rb.same_defect(
-    {"file": "bin/a.sh", "line": 10, "summary": "regex accepts a leading hyphen"},
-    {"file": "bin/a.sh", "line": 400, "summary": "quota probes run sequentially per profile"},
-)
-merged = rb.merge_samples([
-    [{"file": "a", "line": 5, "summary": "guard runs after the branch"}],
-    [{"file": "a", "line": 5, "summary": "the guard runs after the branch it protects"},
-     {"file": "a", "line": 90, "summary": "usage totals are summed instead of maxed"}],
-])
-assert [row["line"] for row in merged] == [5, 90], merged
-# Two findings a rater deliberately reported apart stay apart: same_defect exists to collapse
-# one defect worded twice across samples, not to second-guess a rater within one.
-one_sample = rb.merge_samples([[
-    {"file": "a", "line": 5, "summary": "the guard runs after the branch it protects"},
-    {"file": "a", "line": 7, "summary": "the guard runs after the branch it releases"},
-]])
-assert len(one_sample) == 2, one_sample
-sample_run = work / "opencode-sample-run"
-sample_run.mkdir()
-os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-happy.json")
-rc, _, sample_text, sample_stderr, _ = rb.run_opencode_sampled(
-    opencode_rater, repo, sha, "", sample_run, "fixture commit diff", "opencode-go", 3
-)
-assert rc == 0 and "3/3 samples usable" in sample_stderr, sample_stderr
-# Three identical samples are one defect, not three.
-assert len(rb.normalize_findings(sample_text, "oc-glm52")) == \
-    len(rb.normalize_findings(rb.run_opencode(
-        opencode_rater, repo, sha, "", sample_run, "fixture commit diff",
-        "opencode-go")[2], "oc-glm52"))
-
 # A 429 is the subscription's own dollar window, so the run stops instead of sending
 # one doomed request per remaining cell.
 wall_run = work / "opencode-wall-run"
@@ -1642,37 +1602,6 @@ assert not (work / "walled-args").exists()
 os.environ["OPENCODE_CAPTURE_ARGS"] = str(work / "opencode-args")
 rb.WALLED_ACCOUNTS.clear()
 
-# Every sample keeps its own artifacts, and what the cell returns is the merged union it
-# reports — not one sample's raw text with a note claiming a merge happened.
-repeat_run = work / "opencode-repeat-run"
-repeat_run.mkdir()
-rc, _, repeat_text, repeat_stderr, _ = rb.run_opencode_sampled(
-    opencode_rater, repo, sha, "", repeat_run, "fixture commit diff", "opencode-go", 2
-)
-assert rc == 0 and "2/2 samples usable" in repeat_stderr, repeat_stderr
-for sample in (1, 2):
-    assert (repeat_run / f"raw-oc-glm52-s{sample}.json").exists()
-    assert (repeat_run / f"usage-oc-glm52-s{sample}.json").exists()
-repeat_rows = [json.loads(line) for line in repeat_text.splitlines()]
-assert len(repeat_rows) == 1 and repeat_rows[0]["rater"] == "oc-glm52", repeat_rows
-# A single sample takes the same path, or the cell's text and its note disagree.
-single_run = work / "opencode-single-run"
-single_run.mkdir()
-_, _, single_text, _, _ = rb.run_opencode_sampled(
-    opencode_rater, repo, sha, "", single_run, "fixture commit diff", "opencode-go", 1
-)
-assert [json.loads(line)["rater"] for line in single_text.splitlines()] == ["oc-glm52"]
-assert (single_run / "raw-oc-glm52.json").exists()
-# A union of clean samples is a clean review, not a cell that said nothing.
-clean_sample_run = work / "opencode-clean-sample-run"
-clean_sample_run.mkdir()
-os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-clean.json")
-_, _, clean_sample_text, _, _ = rb.run_opencode_sampled(
-    opencode_rater, repo, sha, "", clean_sample_run, "fixture commit diff", "opencode-go", 1
-)
-assert rb.unusable_review(clean_sample_text, []) == "", clean_sample_text
-os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-happy.json")
-
 # Taking a slot also changes who the queue head is, and a waiter blocks on being the head
 # as much as on a free slot. A waiter that re-checked just before the head left has no
 # wake-up pending, so the second slot sits idle for as long as the first cell runs. The
@@ -1720,7 +1649,7 @@ os.environ["CLAUDEB_DIR"] = str(review_store)
 reviewed_cells = []
 
 
-def tier_runner(rater, repo_path, commit, focus, run_dir, diff, account, repeat=1):
+def tier_runner(rater, repo_path, commit, focus, run_dir, diff, account):
     reviewed_cells.append(rater["spec"])
     if rater["side"] == "opencode":
         return 0, 1, json.dumps({
@@ -1741,7 +1670,7 @@ rb.check_limits_staleness = lambda account: False
 os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-verify-keep.json")
 review_rc = rb.cmd_review(argparse.Namespace(
     repo=str(pin_repo), commitish=pin_sha, tier="T1",
-    verify=None, focus=None, repeat=1,
+    verify=None, focus=None,
 ))
 review_run_dir = next((review_store / "worker-stats" / "benches").iterdir())
 review_meta_path = review_run_dir / "meta.json"
@@ -1779,7 +1708,7 @@ os.environ["CLAUDEB_DIR"] = str(progress_capture_store)
 captured_progress = []
 
 
-def progress_capture_runner(rater, repo_path, commit, focus, run_dir, diff, account, repeat=1):
+def progress_capture_runner(rater, repo_path, commit, focus, run_dir, diff, account):
     progress_files = list(
         (progress_capture_store / "worker-stats" / rb.PROGRESS_DIR).glob("*.json")
     )
@@ -1795,7 +1724,7 @@ rb.affordability = lambda: {
 }
 assert rb.cmd_run(argparse.Namespace(
     repo=str(pin_repo), commitish=pin_sha, raters="sol-medium,opus-medium",
-    leg=False, verify=None, auto=None, focus=None, repeat=1,
+    leg=False, verify=None, auto=None, focus=None,
 )) == 0
 assert captured_progress[0]["cells"] == ["sol-medium"], captured_progress
 assert captured_progress[0]["tier"] is None
@@ -1816,7 +1745,7 @@ worktree_stdout = io.StringIO()
 with contextlib.redirect_stdout(worktree_stdout):
     worktree_rc = rb.cmd_run(argparse.Namespace(
         repo=str(pin_repo), commitish=None, worktree=True, raters="sol-medium",
-        leg=False, verify=None, auto=None, focus=None, repeat=1,
+        leg=False, verify=None, auto=None, focus=None,
     ))
 worktree_run_dir = next(
     (worktree_run_store / "worker-stats" / "benches").iterdir()
@@ -1840,10 +1769,10 @@ assert rb.is_worktree_snapshot(pin_repo, snapshot_sha)
 assert not rb.is_worktree_snapshot(pin_repo, pin_sha)
 
 
-def snapshot_rerun_runner(rater, repo_path, commit, focus, run_dir, diff, account, repeat=1):
+def snapshot_rerun_runner(rater, repo_path, commit, focus, run_dir, diff, account):
     if rater["spec"] == "sol-high":
         return 1, 1, "", "fixture rater failure", []
-    return tier_runner(rater, repo_path, commit, focus, run_dir, diff, account, repeat)
+    return tier_runner(rater, repo_path, commit, focus, run_dir, diff, account)
 
 
 for side in rb.SIDE_RUNNERS:
@@ -1854,7 +1783,7 @@ snapshot_rerun_stdout = io.StringIO()
 with contextlib.redirect_stdout(snapshot_rerun_stdout):
     snapshot_rerun_rc = rb.cmd_run(argparse.Namespace(
         repo=str(pin_repo), commitish=snapshot_sha, raters="sol-medium,sol-high",
-        leg=False, verify=None, auto=None, focus=None, repeat=1,
+        leg=False, verify=None, auto=None, focus=None,
     ))
 snapshot_rerun_run_dir = next(
     (snapshot_rerun_store / "worker-stats" / "benches").iterdir()
@@ -2009,7 +1938,7 @@ raw_opencode_store = work / "raw-opencode-claudeb"
 os.environ["CLAUDEB_DIR"] = str(raw_opencode_store)
 raw_opencode_rc = rb.cmd_run(argparse.Namespace(
     repo=str(pin_repo), commitish=pin_sha, raters="oc-kimik3,oc-grok45-low",
-    leg=False, verify=None, auto=None, focus=None, repeat=1,
+    leg=False, verify=None, auto=None, focus=None,
 ))
 raw_opencode_run = next((raw_opencode_store / "worker-stats" / "benches").iterdir())
 raw_opencode_meta = json.loads((raw_opencode_run / "meta.json").read_text())
@@ -2023,7 +1952,7 @@ explicit_verify_store = work / "explicit-review-verify-claudeb"
 os.environ["CLAUDEB_DIR"] = str(explicit_verify_store)
 explicit_verify_rc = rb.cmd_review(argparse.Namespace(
     repo=str(pin_repo), commitish=pin_sha, tier="T0",
-    verify="oc-mimo25", focus=None, repeat=1,
+    verify="oc-mimo25", focus=None,
 ))
 explicit_verify_run = next(
     (explicit_verify_store / "worker-stats" / "benches").iterdir()
@@ -2038,7 +1967,7 @@ os.environ["CLAUDEB_DIR"] = str(repeat_store)
 account_picks = []
 
 
-def dispatcher_repeat_runner(rater, repo_path, commit, focus, run_dir, diff, account, repeat=1):
+def dispatcher_repeat_runner(rater, repo_path, commit, focus, run_dir, diff, account):
     duration = 101 if rater["spec"] == "sol-medium" else 202
     envelope = {
         "type": "result",
@@ -2066,7 +1995,7 @@ rb.affordability = lambda: {
 }
 repeat_rc = rb.cmd_run(argparse.Namespace(
     repo=str(pin_repo), commitish=pin_sha, raters="sol-medium x2",
-    leg=False, verify=None, auto=None, focus=None, repeat=1,
+    leg=False, verify=None, auto=None, focus=None,
 ))
 repeat_run_dir = next((repeat_store / "worker-stats" / "benches").iterdir())
 repeat_meta = json.loads((repeat_run_dir / "meta.json").read_text())
@@ -2131,7 +2060,7 @@ os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-verify-keep.jso
 try:
     rb.cmd_run(argparse.Namespace(
         repo=str(pin_repo), commitish=pin_sha, raters="sol-medium",
-        leg=False, verify="oc-kimik3", auto=None, focus=None, repeat=1,
+        leg=False, verify="oc-kimik3", auto=None, focus=None,
     ))
 except RuntimeError as exc:
     assert "no OpenCode cell" in str(exc), exc
@@ -2139,7 +2068,7 @@ else:
     raise AssertionError("--verify accepted a run with no OpenCode cell")
 verify_timing_rc = rb.cmd_run(argparse.Namespace(
     repo=str(pin_repo), commitish=pin_sha, raters="oc-kimik3",
-    leg=False, verify="oc-kimik3", auto=None, focus=None, repeat=1,
+    leg=False, verify="oc-kimik3", auto=None, focus=None,
 ))
 verify_timing_run = next((verify_timing_store / "worker-stats" / "benches").iterdir())
 verify_timing_meta = json.loads((verify_timing_run / "meta.json").read_text())
@@ -2159,18 +2088,6 @@ verify_timing_corpus = rb.read_jsonl(
 assert verify_timing_corpus[0]["verify_ms"] == verify_timing_entry["verify_ms"], \
     verify_timing_corpus
 (work / "verify-ms-ok").touch()
-
-account_picks.clear()
-try:
-    rb.cmd_run(argparse.Namespace(
-        repo=str(pin_repo), commitish=pin_sha, raters="oc-kimik3 x2",
-        leg=False, verify=None, auto=None, focus=None, repeat=2,
-    ))
-except RuntimeError as exc:
-    assert "cannot be combined with rater repetition (xN)" in str(exc), exc
-else:
-    raise AssertionError("--repeat combined with xN was accepted")
-assert account_picks == [], account_picks
 
 assert rb.collapse_rater_attempts(
     ["sol-high", "sol-high#2"]
@@ -2193,7 +2110,7 @@ rerun_stdout = io.StringIO()
 with contextlib.redirect_stdout(rerun_stdout):
     rerun_rc = rb.cmd_run(argparse.Namespace(
         repo=str(pin_repo), commitish=pin_sha, raters="sol-high x2",
-        leg=False, verify=None, auto=None, focus=None, repeat=1,
+        leg=False, verify=None, auto=None, focus=None,
     ))
 rerun_output = rerun_stdout.getvalue()
 rerun_arg = next(
@@ -2210,7 +2127,7 @@ print("dispatcher-rater-repeat-ok")
 os.environ["CLAUDEB_DIR"] = str(model_store)
 
 
-def model_runner(rater, repo_path, commit, focus, run_dir, diff, account, repeat=1):
+def model_runner(rater, repo_path, commit, focus, run_dir, diff, account):
     if rater["model"] == "sonnet":
         return 1, 1, "", "fixture failure", ["fake"]
     envelope = {
@@ -2237,7 +2154,7 @@ rb.check_limits_staleness = lambda account: False
 run_rc = rb.cmd_run(argparse.Namespace(
     repo=str(pin_repo), commitish=pin_sha,
     raters="opus-medium,sonnet-medium-skill", leg=False, verify=None,
-    auto=None, focus=None, repeat=1,
+    auto=None, focus=None,
 ))
 model_meta_path = next((model_state / "benches").glob("*/meta.json"))
 model_meta = json.loads(model_meta_path.read_text())
@@ -2262,7 +2179,7 @@ assert model_receipt["errored"] == 1, \
 successful_receipt_rc = rb.cmd_run(argparse.Namespace(
     repo=str(pin_repo), commitish=pin_sha,
     raters="opus-medium", leg=False, verify=None,
-    auto=None, focus=None, repeat=1,
+    auto=None, focus=None,
 ))
 successful_receipt = json.loads(model_receipt_path.read_text())
 assert successful_receipt_rc == 0 and successful_receipt["errored"] == 0, \
@@ -2273,7 +2190,7 @@ all_error_before = set((model_store / "worker-stats" / "benches").iterdir())
 all_error_rc = rb.cmd_run(argparse.Namespace(
     repo=str(pin_repo), commitish=pin_sha,
     raters="sonnet-medium-skill", leg=False, verify=None,
-    auto=None, focus=None, repeat=1,
+    auto=None, focus=None,
 ))
 all_error_after = set((model_store / "worker-stats" / "benches").iterdir())
 all_error_run_dir, = all_error_after - all_error_before
@@ -2303,7 +2220,7 @@ try:
         receipt_failure_rc = rb.cmd_run(argparse.Namespace(
             repo=str(pin_repo), commitish=pin_sha,
             raters="opus-medium", leg=False, verify=None,
-            auto=None, focus=None, repeat=1,
+            auto=None, focus=None,
         ))
 except Exception as exc:
     receipt_failure_exception = exc
@@ -3216,16 +3133,6 @@ untraceable=$(WORKER_STATS_DIR="$CSD" "$SCRIPT" record repo-fixture \
 assert contains "$untraceable" 'cannot be traced back to code'
 assert test "$(jq -r 'select(.run_id=="repo-fixture") | has("repo")' "$CSD/reviews.jsonl")" = false
 
-# --repeat is accepted by every runner and honoured by one, so asking for it elsewhere is refused
-# rather than recording a single run as several agreeing ones. The refusal must land before any
-# account is consulted: reaching the real worker-pick here would read the live account store.
-repeat_refusal=$(WORKER_STATS_DIR="$CSD" CLAUDEB_DIR="$WORK/no-such-store" \
-  REVIEW_BENCH_WORKER_PICK_BIN="$WORK/exploding-worker-pick.sh" \
-  "$SCRIPT" review "$CSHA" --repo "$CREPO" --tier T0 --repeat 3 2>&1)
-assert contains "$repeat_refusal" 'cannot be combined with rater repetition'
-assert test "$(printf '%s' "$repeat_refusal" | grep -c 'worker-pick must not run')" -eq 0
-
-
 python3 - "$SD/benches/run-fixture/meta.json" <<'PY'
 import json
 import sys
@@ -3283,7 +3190,6 @@ assert test "$(grep -c 'pending' <<<"$empty_listing")" -eq 0
 # Every option cmd_run reads must exist on the command line: a flag wired only into the
 # code path crashes the whole run at the first cell.
 run_help="$("$SCRIPT" run --help 2>&1)"
-assert contains "$run_help" "--repeat"
 assert contains "$run_help" "--verify"
 assert contains "$run_help" "--leg"
 review_help="$("$SCRIPT" review --help 2>&1)"
@@ -3328,4 +3234,4 @@ for cell in "oc-kimik3 x2" oc-grok45-low agy-pro-high-skill agy-flash35-medium-s
   assert contains "$tiers_table" "$cell"
 done
 
-printf 'PASS: %s assertions; canonical review tiers sharing one OpenCode/Gemini floor with no retired cell in them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative suggestions with missing-object fallback, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, --repeat refused for the sides that ignore it, the session account usable only behind its opt-in and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, and cross-side parallelism result assembly\n' "$asserts"
+printf 'PASS: %s assertions; canonical review tiers sharing one OpenCode/Gemini floor with no retired cell in them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative suggestions with missing-object fallback, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account usable only behind its opt-in and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, and cross-side parallelism result assembly\n' "$asserts"
