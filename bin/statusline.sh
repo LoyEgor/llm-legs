@@ -1113,11 +1113,10 @@ if [ -n "$active_top" ]; then
   if [ -n "$active_common" ] && [ -d "$progress_dir" ]; then
     # Every file is read and matched on the repository recorded inside it, never on its name:
     # review-bench keys the name on the path it was handed, so a run started from a subdirectory
-    # writes a name this render cannot predict. dotglob for the same reason — the key carries the
-    # repository's own directory name, and a dotted one would slip past a bare glob.
-    progress_dotglob=$(shopt -p dotglob)
-    shopt -s dotglob
-    for progress_file in "$progress_dir"/*.json; do
+    # writes a name this render cannot predict. The second pattern covers a repository whose own
+    # directory name begins with a dot; toggling dotglob instead would leave the option set for
+    # the rest of the render if anything ever returns early from this loop.
+    for progress_file in "$progress_dir"/*.json "$progress_dir"/.*.json; do
       [ -f "$progress_file" ] || continue
       progress_mtime=$(file_mtime "$progress_file" 2>/dev/null)
       [[ "$progress_mtime" =~ ^[0-9]+$ ]] || continue
@@ -1160,7 +1159,6 @@ if [ -n "$active_top" ]; then
         progress_tier=$progress_run_tier
       fi
     done
-    eval "$progress_dotglob"
   fi
   if [ -n "$progress_total" ]; then
     review_part=" ${sep} review"

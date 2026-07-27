@@ -79,10 +79,12 @@ fi
 
 # Passed as files, not awk -v: -v rejects the newlines a multi-line lsof dump would carry.
 ports=$(awk -v root="$root" '
-  # Anchored on a path boundary rather than split on spaces: a home directory with a space in it
-  # would otherwise leave the tool unrecognised, and a bare substring would match "legacy".
+  # Anchored at argv[0] and matched on its last path segment: a bare substring would read
+  # "legacy" as agy, and letting the match float would classify a dev server by its own
+  # arguments — `node serve.js --dir /tmp/codex` is not codex. The cost of the anchor is a tool
+  # whose own path carries a space, which is the same blind spot the claude check above has.
   function tool_cmd(pid) {
-    return (cmd[pid] ~ /(^|\/)(agy|opencode|opencode-go|grok|codex)([ \t]|$)/)
+    return (cmd[pid] ~ /^([^ \t]*\/)?(agy|opencode|opencode-go|grok|codex)([ \t]|$)/)
   }
   # The segment answers "where do I go to look at the work", so a port earns a place only if a
   # human can open it. The LLM tools a session drives each listen on localhost for their own RPC

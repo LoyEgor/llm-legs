@@ -1078,7 +1078,7 @@ cat <<'SNAP'
 1006 1005 node /opt/agy/rpc.js
 1007 1000 codex exec
 1008 1007 node /srv/dev-server
-1009 1000 /Users/john doe/bin/agy --model x
+1009 1000 node serve.js --dir /srv/agy
 9999 1 claude
 SNAP
 PSEOF
@@ -1096,7 +1096,7 @@ node     1004 u   23u  IPv6  0t0      TCP [::1]:9999 (LISTEN)
 agy      1005 u   10u  IPv4  0t0      TCP 127.0.0.1:61609 (LISTEN)
 node     1006 u   11u  IPv4  0t0      TCP 127.0.0.1:61610 (LISTEN)
 node     1008 u   12u  IPv4  0t0      TCP *:5174 (LISTEN)
-agy      1009 u   13u  IPv4  0t0      TCP 127.0.0.1:61611 (LISTEN)
+node     1009 u   13u  IPv4  0t0      TCP *:8080 (LISTEN)
 OUT
 LSEOF
 chmod +x "$FAKE_LSOF"
@@ -1108,10 +1108,10 @@ run_probe() {
   STATUSLINE_PS="$FAKE_PS" STATUSLINE_LSOF="$FAKE_LSOF" "$PORTS_PROBE" "$1" "$2"
 }
 run_probe pp-parse 1001
-# 61609/61610/61611 are an LLM tool talking to itself — an agy process, a node it spawned, and
-# an agy under a home directory with a space in it — while 5174 is a dev server a codex worker
-# started, which is exactly the kind of place the segment exists to point at.
-assert_eq '5173 8123 5174' "$(cat "$STATE_DIR/ports-pp-parse")"
+# 61609 and 61610 are an LLM tool talking to itself, an agy process and a node it spawned. The
+# two that stay are what the segment exists for: 5174 is a dev server a codex worker started,
+# and 8080 is one whose own arguments merely mention a path ending in agy.
+assert_eq '5173 8123 5174 8080' "$(cat "$STATE_DIR/ports-pp-parse")"
 
 # 4-digit PID alignment test: ps right-aligns columns, causing leading spaces.
 # Verify the regex handles leading whitespace correctly.
