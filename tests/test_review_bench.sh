@@ -604,6 +604,33 @@ assert flash35_usage["effort"] == "high"
 assert "--new-project" in flash35_skill_command
 assert "--dangerously-skip-permissions" in flash35_skill_command
 
+pro_skill_run = work / "agy-pro-skill-run"
+pro_skill_run.mkdir()
+pro_skill_rater = rb.parse_rater("agy-pro-high-skill")
+rc, _, text, stderr, pro_skill_command = rb.run_agy(
+    pro_skill_rater, repo, sha, "", pro_skill_run, "ignored fixture diff", "work"
+)
+assert rc == 0 and not stderr
+assert pro_skill_command[3:5] == ["--model", "Gemini 3.1 Pro (High)"]
+assert "--effort" not in pro_skill_command
+pro_usage = json.loads((pro_skill_run / "usage-agy-pro-high-skill.jsonl").read_text())
+assert pro_usage["resolved_model_label"] == "Gemini 3.1 Pro (High)"
+assert "model_mismatch" not in pro_usage
+
+substituted_run = work / "agy-substituted-run"
+substituted_run.mkdir()
+os.environ["AGY_FIXTURE_LABEL"] = "Gemini 3.6 Flash (High)"
+rc, _, text, stderr, _ = rb.run_agy(
+    pro_skill_rater, repo, sha, "", substituted_run, "ignored fixture diff", "work"
+)
+del os.environ["AGY_FIXTURE_LABEL"]
+assert rc == 1 and not text
+assert stderr == "agy served Gemini 3.6 Flash (High) instead of Gemini 3.1 Pro (High)"
+substituted_usage = json.loads(
+    (substituted_run / "usage-agy-pro-high-skill.jsonl").read_text()
+)
+assert substituted_usage["model_mismatch"] == ["Gemini 3.6 Flash (High)"]
+
 os.environ["REVIEW_BENCH_WORKER_PICK_BIN"] = str(fixtures / "fake-worker-pick.sh")
 os.environ["GEMINIB_EXHAUSTED_PROFILE"] = "work"
 os.environ["AGY_FIXTURE_STDOUT"] = str(fixtures / "agy-skill-output.md")

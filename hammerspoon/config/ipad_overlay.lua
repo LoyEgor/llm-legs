@@ -3,6 +3,11 @@ local IpadOverlay = {}
 local HELPER_PATH = "/Volumes/Work/Projects/llm-legs/hammerspoon/ipad_overlay_app/overlay_app.py"
 local PYTHON_PATH = "/Volumes/Work/Projects/transcriptions-gpt/.venv/bin/python"
 local SOCK_PATH = os.getenv("HOME") .. "/.local/state/ipad-overlay/control.sock"
+-- Same anchored cmdline match the helper uses for its singleton sweep, so both
+-- sides agree on what counts as a live helper.
+local HELPER_PGREP = "/usr/bin/pgrep -f "
+    .. "'^[^ ]*[Pp]ython[^ ]* [^ ]*/ipad_overlay_app/overlay_app\\.py'"
+    .. " >/dev/null 2>&1"
 
 local task = nil
 local attachedHelper = false
@@ -118,6 +123,35 @@ local function helperPresent()
     return task ~= nil or attachedHelper
 end
 
+local function helperProcessAlive()
+    local ok, alive = pcall(function()
+        local _, status = hs.execute(HELPER_PGREP)
+        return status == true
+    end)
+    return ok and alive == true
+end
+
+-- hs.reload replays the iPad-connected action, which would switch the overlay
+-- back on after a manual hide, so the last explicit visibility outranks the
+-- replay. It is stamped with the pid because a reload keeps it: a foreign pid
+-- means an earlier Hammerspoon, where the iPad connection decides alone again.
+local VISIBILITY_SETTING = "IpadOverlay.visibility"
+
+local function storeVisibility(value)
+    pcall(hs.settings.set, VISIBILITY_SETTING, {
+        visible = value == true,
+        pid = hs.processInfo.processID,
+    })
+end
+
+local function storedVisibility()
+    local ok, stored = pcall(hs.settings.get, VISIBILITY_SETTING)
+    if not ok or type(stored) ~= "table" or stored.pid ~= hs.processInfo.processID then
+        return nil
+    end
+    return stored.visible == true
+end
+
 -- Visibility follows iPad connection automatically (connect shows,
 -- disconnect hides), but the menu toggle is a manual override in both
 -- directions: force-show without an iPad, force-hide with one.
@@ -137,6 +171,16 @@ function IpadOverlay.show()
     -- an earlier crash loop exhausted it.
     relaunch_attempts = 0
     visible = true
+    storeVisibility(true)
+
+    -- A python crash is invisible from here (the sh wrapper exits at spawn, so
+    -- its exit code says nothing about the helper): drop one that died behind
+    -- our back instead of spending the retry budget on an ack that can never
+    -- come. Clears the belief only — adopting a process this module did not
+    -- launch is what would keep hs.reload from reloading the helper.
+    if attachedHelper and task == nil and not helperProcessAlive() then
+        attachedHelper = false
+    end
 
     if not helperPresent() then
         IpadOverlay._launch_helper()
@@ -153,6 +197,7 @@ end
 function IpadOverlay.hide()
     local generation = advanceCommandGeneration()
     visible = false
+    storeVisibility(false)
     -- A relaunch pending from a crash-while-visible would otherwise respawn
     -- a hidden helper with no idle-quit armed.
     if relaunch_timer then
@@ -205,8 +250,13 @@ end
 
 function IpadOverlay._launch_helper()
     attachedHelper = false
+    -- Visibility travels in the argv, never as a follow-up command: a
+    -- predecessor still holding the shared socket would ack that command
+    -- moments before the newcomer's singleton sweep SIGKILLs it, leaving the
+    -- replacement hidden and the state claiming otherwise.
     local command = '/usr/bin/nohup "' .. PYTHON_PATH .. '" "' .. HELPER_PATH
-        .. '" --parent-pid ' .. tostring(hs.processInfo.processID) .. ' >/dev/null 2>&1 &'
+        .. '" --parent-pid ' .. tostring(hs.processInfo.processID)
+        .. (visible and " --show" or "") .. ' >/dev/null 2>&1 &'
     local taskObj
     taskObj = hs.task.new("/bin/sh", function(exitCode)
         if task == taskObj then
@@ -231,9 +281,6 @@ function IpadOverlay._launch_helper()
         backoff_reset_timer = hs.timer.doAfter(10, function()
             relaunch_attempts = 0
         end)
-        if visible then
-            sendCommand("show", 1, commandGeneration)
-        end
     else
         task = nil
         IpadOverlay._on_helper_exit(-1)
@@ -273,21 +320,21 @@ function IpadOverlay._notifyChange()
     end
 end
 
-local function attachExistingHelper()
-    local generation = commandGeneration
-    sendCommand("status", 8, generation, function(reply)
-        if generation ~= commandGeneration then
-            return
-        end
-        if reply == "visible" or reply == "hidden" then
-            attachedHelper = true
-            visible = reply == "visible"
-        end
-    end)
+function IpadOverlay.hasStoredVisibility()
+    return storedVisibility() ~= nil
 end
 
+-- A helper alive at load time belongs to the previous incarnation of this
+-- module, so hs.reload reloads it too: it is replaced by a freshly launched
+-- one (new code, already showing) or shut down, never adopted. Only the last
+-- explicit visibility crosses the reload.
 function IpadOverlay.init()
-    attachExistingHelper()
+    if storedVisibility() then
+        IpadOverlay.show()
+    elseif helperProcessAlive() then
+        -- Single attempt: a lost quit is reaped by the next launch's sweep.
+        sendCommand("quit", 8, commandGeneration)
+    end
 end
 
 _G.IpadOverlay = IpadOverlay

@@ -1939,15 +1939,11 @@ def write_agy_usage(run_dir, rater, duration, log_text):
     labels = re.findall(r'Propagating selected model override.*?label="([^"]+)"', log_text)
     if labels:
         usage["resolved_model_label"] = labels[-1]
-        # A spelling agy cannot resolve is served as another model without any error, so a cell
-        # would record one model's findings under another's name.
-        if labels[-1] != agy_expected_label(rater):
-            usage["model_mismatch"] = True
-            print(
-                f"review-bench: WARNING {rater['spec']} asked for "
-                f"{agy_expected_label(rater)} but agy served {labels[-1]}",
-                file=sys.stderr,
-            )
+        # A spelling agy cannot resolve is served as another model without any error, and one run
+        # can switch models mid-flight, so every propagated label has to match, not just the last.
+        served = [label for label in dict.fromkeys(labels) if label != agy_expected_label(rater)]
+        if served:
+            usage["model_mismatch"] = served
     requests = len(re.findall(r"\bstreamGenerateContent\b", log_text))
     completions = len(re.findall(r"\bStream completed\b", log_text))
     if requests:
@@ -1969,6 +1965,7 @@ def write_agy_usage(run_dir, rater, duration, log_text):
             usage[usage_key] = max(map(int, matches))
     path = run_dir / f"usage-{rater['spec']}.jsonl"
     path.write_text(json.dumps(usage, ensure_ascii=False) + "\n")
+    return usage
 
 
 def run_agy(rater, repo, sha, focus, run_dir, diff, account, repeat=1):
@@ -2013,7 +2010,16 @@ def run_agy(rater, repo, sha, focus, run_dir, diff, account, repeat=1):
         duration = round((time.monotonic() - started) * 1000)
         raw_output.write_text(proc.stdout)
         log_text = log_file.read_text(errors="replace") if log_file.exists() else ""
-        write_agy_usage(run_dir, rater, duration, log_text)
+        usage = write_agy_usage(run_dir, rater, duration, log_text)
+        # Fail closed like every other unusable answer: findings produced by a model the cell did
+        # not ask for are a false measurement, which is worse for a benchmark than a missing one.
+        if usage.get("model_mismatch"):
+            served = ", ".join(usage["model_mismatch"])
+            return (
+                1, duration, "",
+                f"agy served {served} instead of {agy_expected_label(rater)}",
+                displayed_command,
+            )
         if proc.returncode != 0:
             return proc.returncode, duration, proc.stdout, proc.stderr, displayed_command
         if not proc.stdout.strip():

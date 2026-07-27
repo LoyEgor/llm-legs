@@ -80,13 +80,15 @@ local function clearDisconnectCooldown()
     end
 end
 
-local function runAction(value)
+-- baseline = the state replay right after a load, not a live transition; the
+-- handlers use it to leave anything the user already decided alone.
+local function runAction(value, baseline)
     if not _G.IpadAutomation then
         return
     end
     local handler = value and _G.IpadAutomation.ipadConnected or _G.IpadAutomation.ipadDisconnected
     if handler then
-        local ok, err = pcall(handler)
+        local ok, err = pcall(handler, baseline == true)
         if not ok then
             print("ERROR: iPad transition action failed:", err)
         end
@@ -353,10 +355,10 @@ function IpadMode.reconcileBaseline()
     end
     baselineReconciled = true
     if on then
-        runAction(true)
+        runAction(true, true)
     elseif _G.IpadAutomation.ipadJunkPresent
         and _G.IpadAutomation.ipadJunkPresent() then
-        runAction(false)
+        runAction(false, true)
     end
     return on
 end

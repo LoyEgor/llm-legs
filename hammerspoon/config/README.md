@@ -24,6 +24,12 @@ System map (what loads what, all via `init.lua` pcall/dofile):
   Jump sessions detected event-based from `~/Library/Logs/Jump Desktop/Agent_*.log`
   via hs.pathwatcher (proxy-mode pids only), with midnight-rollover recovery and a
   60s pid-liveness recheck.
+- `ipad_overlay.lua` — supervisor for the PyObjC panel in
+  `../ipad_overlay_app/`. Reload contract: a helper alive at load time is
+  replaced by a fresh one (launched with `--show`) or shut down — never
+  adopted, so `hs.reload()` really reloads its code. What crosses the reload is
+  the last explicit visibility, stored with the Hammerspoon pid so the replayed
+  iPad-connected action cannot switch a hidden overlay back on.
 - `automation_menu.lua` — the menubar: timers UI, iPad controls,
   LLM Limits submenu (repo `hammerspoon/llm-limits.lua`), iPad-only items
   (Copy / Paste / Enter / GPT Voice / GPT Transform) visible only in iPad mode.

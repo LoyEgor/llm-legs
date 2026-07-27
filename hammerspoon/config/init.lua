@@ -432,7 +432,7 @@ local function runTeardownStep(label, callback)
     end
 end
 
-local function disableDummy()
+local function disableDummy(baseline)
     cancelTeardown()
     cancelPendingWork()
     actionGeneration = actionGeneration + 1
@@ -443,7 +443,7 @@ local function disableDummy()
     end
     runTeardownStep("restore input device", restoreSystemInputDevice)
     runTeardownStep("hide overlay", function()
-        if _G.IpadOverlay then
+        if _G.IpadOverlay and not (baseline and _G.IpadOverlay.hasStoredVisibility()) then
             _G.IpadOverlay.hide()
         end
     end)
@@ -816,18 +816,21 @@ local function assertBlackHoleVolume()
     end
 end
 
-local function ipadConnected()
+local function ipadConnected(baseline)
     enableDummy()
     hs.execute([[/usr/bin/open "]] .. sonobusGroupUrl .. [["]])
-    if _G.IpadOverlay then
+    -- On a baseline replay the overlay has already restored the visibility the
+    -- user last chose (ipad_overlay.lua); showing here would switch an overlay
+    -- they hid back on every hs.reload.
+    if _G.IpadOverlay and not (baseline and _G.IpadOverlay.hasStoredVisibility()) then
         _G.IpadOverlay.show()
     end
     assertBlackHoleVolume()
     switchSystemInputDevice("BlackHole 2ch")
 end
 
-local function ipadDisconnected()
-    disableDummy()
+local function ipadDisconnected(baseline)
+    disableDummy(baseline)
 end
 
 local rejoinSonoBusTimer = nil

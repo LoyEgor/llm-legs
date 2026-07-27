@@ -2,9 +2,14 @@ local source = debug.getinfo(1, "S").source
 local root = source:match("^@(.+)/tests/[^/]+$")
 assert(root, "harness path is unavailable")
 
-local function newHarness(helperStatus)
+-- opts.settings carries an hs.settings store between harnesses, which is how a
+-- reload looks to the module: fresh Lua state, same pid, same stored settings.
+local function newHarness(helperStatus, opts)
+    opts = opts or {}
     local state = {
         execCalls = {},
+        settings = opts.settings or {},
+        pid = opts.pid or 123,
         helperStatus = helperStatus,
         socketWrites = {},
         taskExitCallbacks = {},
@@ -17,10 +22,21 @@ local function newHarness(helperStatus)
     env.hs = {
         execute = function(cmd)
             state.execCalls[#state.execCalls + 1] = cmd
-            return "", true, "exit", 0
+            -- The only exec the module makes is the helper-process pgrep, and
+            -- a fake helper exists exactly while it has a status to report.
+            local alive = state.helperStatus ~= nil
+            return "", alive, "exit", alive and 0 or 1
         end,
         processInfo = {
-            processID = 123,
+            processID = state.pid,
+        },
+        settings = {
+            set = function(key, value)
+                state.settings[key] = value
+            end,
+            get = function(key)
+                return state.settings[key]
+            end,
         },
         timer = {
             doAfter = function(delay, fn)
@@ -42,7 +58,10 @@ local function newHarness(helperStatus)
                     start = function()
                         state.taskLaunches[#state.taskLaunches + 1] = { cmd = cmd, args = args }
                         state.taskExitCallbacks[#state.taskExitCallbacks + 1] = exitCallback
-                        state.helperStatus = "hidden"
+                        -- A launched helper replaces whatever ran before and
+                        -- comes up already showing when argv says so.
+                        state.helperStatus = args[2]:find("--show", 1, true)
+                            and "visible" or "hidden"
                         return true
                     end,
                 }
@@ -123,18 +142,20 @@ end
 local module, state = newHarness(nil)
 assert(module.show and module.hide and module.isShown and module.toggle and module.onChange)
 assert(module.isShown() == false)
-assert(#state.taskLaunches == 0 and #state.execCalls == 0)
+assert(#state.taskLaunches == 0 and #state.socketWrites == 0)
+assert(#state.execCalls == 1 and state.execCalls[1]:find("pgrep", 1, true))
 assert(retryTimerCount(module) == 0)
 print("✓ init has no lifecycle side effects")
 
 module.toggle()
 assert(module.isShown() == true)
-assert(#state.taskLaunches == 1 and #state.execCalls == 0)
+assert(#state.taskLaunches == 1 and #state.socketWrites == 0)
 assert(state.taskLaunches[1].cmd == "/bin/sh")
 assert(state.taskLaunches[1].args[2]:find("--parent-pid 123", 1, true))
-assert(state.socketWrites[#state.socketWrites] == "show\n")
+assert(state.taskLaunches[1].args[2]:find("--show", 1, true))
+assert(state.helperStatus == "visible")
 assert(retryTimerCount(module) == 0)
-print("✓ manual show launches once without timer leaks")
+print("✓ manual show launches once, already showing, without timer leaks")
 
 local launchesBefore = #state.taskLaunches
 module.show()
@@ -179,7 +200,8 @@ fire(nextTimer(state, function(delay)
     return delay <= 2
 end))
 assert(#state.taskLaunches == launches + 1)
-assert(state.socketWrites[#state.socketWrites] == "show\n")
+assert(state.taskLaunches[#state.taskLaunches].args[2]:find("--show", 1, true))
+assert(state.helperStatus == "visible")
 print("✓ visible helper death respawns")
 
 module.hide()
@@ -206,11 +228,41 @@ end
 assert(module.isShown() == false)
 print("✓ exhausted crash loop clears visible")
 
-local attachedModule, attachedState = newHarness("visible")
-assert(attachedModule.isShown() == true)
-assert(#attachedState.taskLaunches == 0 and #attachedState.execCalls == 0)
-assert(attachedState.socketWrites[1] == "status\n")
-assert(retryTimerCount(attachedModule) == 0)
-print("✓ init re-attaches to a visible helper without restart")
+-- Every load replays the iPad-connected action, so the last explicit
+-- visibility has to survive a reload in both directions — and the helper
+-- itself must be reloaded, never adopted with the previous incarnation's code.
+local shownStore = {}
+local beforeShown, beforeShownState = newHarness(nil, { settings = shownStore })
+beforeShown.show()
+assert(beforeShownState.helperStatus == "visible")
+
+local reloadedShown, reloadedShownState = newHarness("visible", { settings = shownStore })
+assert(reloadedShown.isShown() == true)
+assert(#reloadedShownState.taskLaunches == 1)
+assert(reloadedShownState.taskLaunches[1].args[2]:find("--show", 1, true))
+assert(#reloadedShownState.socketWrites == 0)
+assert(reloadedShownState.helperStatus == "visible")
+print("✓ reload relaunches the helper of a shown overlay, already showing")
+
+local hiddenStore = {}
+local beforeHidden, beforeHiddenState = newHarness(nil, { settings = hiddenStore })
+beforeHidden.show()
+beforeHidden.hide()
+assert(beforeHiddenState.helperStatus == "hidden")
+
+local reloadedHidden, reloadedHiddenState = newHarness("hidden", { settings = hiddenStore })
+assert(reloadedHidden.hasStoredVisibility() == true)
+assert(reloadedHidden.isShown() == false)
+assert(#reloadedHiddenState.taskLaunches == 0)
+assert(reloadedHiddenState.socketWrites[#reloadedHiddenState.socketWrites] == "quit\n")
+assert(reloadedHiddenState.helperStatus == nil)
+print("✓ reload keeps a hidden overlay hidden and shuts its helper down")
+
+local coldStart, coldStartState = newHarness("visible", { settings = shownStore, pid = 999 })
+assert(coldStart.hasStoredVisibility() == false)
+assert(coldStart.isShown() == false)
+assert(#coldStartState.taskLaunches == 0)
+assert(coldStartState.helperStatus == nil)
+print("✓ a fresh Hammerspoon ignores the previous process's visibility")
 
 print("All iPad overlay tests passed")

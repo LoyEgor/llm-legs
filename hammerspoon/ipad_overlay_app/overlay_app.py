@@ -110,9 +110,11 @@ KB_BUNDLE_ID = "com.apple.inputmethod.AssistiveControl"
 # SIGKILL editors/pagers merely holding this file's path in their argv. Not
 # "bin/python": the venv stub execs the framework binary, so the live argv0
 # is .../Python.app/Contents/MacOS/Python.
+# Exactly the supervisor's argv, so a --smoke or --foreground run started by
+# hand is never swept away by a helper launching next to it.
 HELPER_CMD_RE = (
     r"^[^ ]*[Pp]ython[^ ]* [^ ]*/ipad_overlay_app/overlay_app\.py"
-    r"( --parent-pid [0-9]+)?$"
+    r"( --parent-pid [0-9]+)?( --show)?$"
 )
 
 
@@ -505,6 +507,8 @@ class OverlayApp:
         self.voice_state = None
         self._optimistic_until = 0.0
         self._wand_block_until = 0.0
+        self._wand_open = False
+        self._wand_grace_until = 0.0
         self._voice_poll_now = threading.Event()
         self._voice_poll_thread = None
         self._kb_optimistic_until = 0.0
@@ -806,6 +810,17 @@ class OverlayApp:
         # landing between enqueue and execution must win over the stale poll.
         if time.time() >= self._optimistic_until:
             self._set_voice_state(state)
+        # The status word gives the voice track priority, so it speaks about
+        # the transform track only while no take is live. Inside a tap's grace
+        # window it may confirm the tapped direction, never undo it (the
+        # keyboard indicator's rule) — and confirming ends the window, so the
+        # next tap reads reality instead of a belief frozen for the rest of it.
+        if state in ("idle", "transforming"):
+            polled_open = state == "transforming"
+            if polled_open == self._wand_open:
+                self._wand_grace_until = 0.0
+            elif time.time() >= self._wand_grace_until:
+                self._set_wand_open(polled_open)
 
     def _on_mic(self):
         state = self.voice_state or "unknown"
@@ -830,6 +845,10 @@ class OverlayApp:
                 self._show_offline_feedback("mic")
 
     def _on_wand(self):
+        # The daemon's `transform` is a toggle: it opens the picker, or shuts
+        # an open one. So the tint flips at tap time, like the keyboard button
+        # — a tap on the lit wand goes plain and closes at once instead of
+        # waiting out an optimistic "transforming" that outlives the picker.
         state = self.voice_state or "unknown"
         # Own window, not _optimistic_until: a mic tap arms that one, and a
         # wand tap right after a mic tap is a legit two-track flow.
@@ -837,14 +856,18 @@ class OverlayApp:
             log("tap state=%s action=wand-transform dispatch=debounced" % state)
             self._voice_poll_now.set()
             return
-        state = self._dispatch_voice("wand-transform", "_G.GptVoice.transform()")
-        if state is None:
+        closing = self._wand_open
+        if self._dispatch_voice("wand-close" if closing else "wand-transform",
+                                "_G.GptVoice.transform()") is None:
             return
-        self._wand_block_until = time.time() + 1.5
+        # Covers the dispatch round-trip only: until the daemon has the picker
+        # up, a second tap reads as "open" there and queues a second picker.
+        self._wand_block_until = time.time() + 0.5
         if state in ("offline", "unknown"):
             self._show_offline_feedback("wand")
-        else:
-            self._set_optimistic("transforming")
+            return
+        self._wand_grace_until = time.time() + 1.5
+        self._set_wand_open(not closing)
 
     # -- accessibility keyboard ------------------------------------------
 
@@ -967,15 +990,30 @@ class OverlayApp:
         else:
             mic.set_tint(None)
             mic.set_pulsing(False)
-        if offline:
+        self._apply_wand_state()
+
+    # The wand tracks the transform track on its own, the way the keyboard
+    # button tracks AssistiveControl: the status word reports a live take in
+    # preference to a transform, so deriving the tint from it would blank the
+    # wand whenever dictation and a transform overlap.
+    def _apply_wand_state(self):
+        wand = self.buttons.get("wand")
+        if not wand:
+            return
+        if self.voice_state == "offline":
             wand.set_tint("secondary")
             wand.set_pulsing(False)
-        elif state == "transforming":
-            wand.set_tint("accent")
-            wand.set_pulsing(True)
         else:
-            wand.set_tint(None)
-            wand.set_pulsing(False)
+            wand.set_tint("accent" if self._wand_open else None)
+            wand.set_pulsing(self._wand_open)
+        CATransaction.flush()
+
+    def _set_wand_open(self, value):
+        value = bool(value)
+        if value == self._wand_open:
+            return
+        self._wand_open = value
+        self._apply_wand_state()
 
     def _ensure_voice_polling(self):
         if self._voice_poll_thread and self._voice_poll_thread.is_alive():
@@ -1146,7 +1184,10 @@ class OverlayApp:
     def run(self, show_now=False, parent_pid=None):
         self._kill_stale_instances()
         threading.Thread(target=self._serve_control, daemon=True).start()
-        if not show_now:
+        # The watchdog follows the supervisor, not the mode: a helper launched
+        # already showing is still Hammerspoon's and must die with it, while
+        # --foreground (manual testing) has no supervisor to watch.
+        if parent_pid is not None:
             threading.Thread(target=self._watch_parent, args=(parent_pid,), daemon=True).start()
         self._ensure_voice_polling()
         if show_now:
@@ -1175,13 +1216,15 @@ def main():
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--foreground", action="store_true",
                         help="show immediately (manual testing without Hammerspoon)")
+    parser.add_argument("--show", action="store_true",
+                        help="show as soon as the panel is built")
     parser.add_argument("--parent-pid", type=int)
     args = parser.parse_args()
 
     app = OverlayApp()
     if args.smoke:
         return app.smoke_test()
-    app.run(show_now=args.foreground, parent_pid=args.parent_pid)
+    app.run(show_now=args.foreground or args.show, parent_pid=args.parent_pid)
     return 0
 
 
