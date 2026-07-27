@@ -59,6 +59,53 @@ repo_identity_name() {
   fi
 }
 
+# One git call per directory for everything the render needs about its repository:
+# REPO_TOP (this working tree), REPO_COMMON (identity — shared by all worktrees of
+# a repo), REPO_ROOT (the main checkout), REPO_NAME, REPO_IS_WT (this directory is
+# a linked worktree). Fails on anything without a working tree, as the render's
+# whole repository cluster does.
+repo_dirs() {
+  local out rest common gitdir
+  out=$(git -C "$1" rev-parse --show-toplevel --git-common-dir --absolute-git-dir 2>/dev/null) || return 1
+  REPO_TOP=${out%%$'\n'*}
+  rest=${out#*$'\n'}
+  common=${rest%%$'\n'*}
+  gitdir=${rest#*$'\n'}
+  [ -n "$REPO_TOP" ] && [ -n "$common" ] && [ -n "$gitdir" ] || return 1
+  case "$common" in
+    /*) ;;
+    *) common="$1/$common" ;;
+  esac
+  # Unequal strings mean a linked worktree OR the same dir reached through a
+  # symlink or a relative common dir — only then is resolving worth the forks.
+  if [ "$common" != "$gitdir" ]; then
+    common=$(cd "$common" 2>/dev/null && pwd -P) || return 1
+    gitdir=$(cd "$gitdir" 2>/dev/null && pwd -P) || return 1
+  fi
+  REPO_COMMON="$common"
+  REPO_ROOT="${common%/.git}"
+  REPO_NAME="${REPO_ROOT##*/}"
+  if [ "$common" != "$gitdir" ]; then REPO_IS_WT=1; else REPO_IS_WT=0; fi
+}
+
+# Does the branch name carry every word of the worktree directory name? Decides
+# whether the branch is redundant with the directory label or a surprise worth
+# printing (`WUT-254-portal-mobile` covered by `WUT-254_feat_portal-mobile`,
+# not by `staging`).
+name_covered_by_branch() {
+  local words branch word
+  words=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' ' ')
+  branch=" $(printf '%s' "$2" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' ' ') "
+  [ -n "${words// /}" ] || return 1
+  for word in $words; do
+    case "$branch" in
+      *" $word "*) ;;
+      *) return 1 ;;
+    esac
+  done
+  return 0
+}
+
 receipt_file_name() {
   local repo="$1" repo_name repo_hash
   repo=$(cd "$repo" 2>/dev/null && pwd -P) || return 1
@@ -305,6 +352,14 @@ if [ -n "$rl_json" ]; then
 fi
 
 dir=$(basename "$dir_path")
+project_top=""; project_common=""; project_root=""; project_name=""; project_is_wt=0
+if repo_dirs "$dir_path"; then
+  project_top="$REPO_TOP"; project_common="$REPO_COMMON"
+  project_root="$REPO_ROOT"; project_name="$REPO_NAME"; project_is_wt="$REPO_IS_WT"
+  # A chat launched inside a linked worktree would otherwise be labelled by the
+  # worktree's own name, hiding which project it belongs to.
+  [ "$project_is_wt" = 1 ] && [ -n "$project_name" ] && dir="$project_name"
+fi
 
 model_suffix=""
 [ -n "$effort" ] && model_suffix=" ${effort}"
@@ -312,34 +367,63 @@ fast_part=""
 [ -n "$fast_mode" ] && fast_part=" ${YELLOW}⚡${RESET}"
 
 git_dir="$current_dir"
-active_top=""
+active_top=""; active_common=""; active_root=""; active_name=""; active_is_wt=0
+lost_dir=""
+adopt_repo_dirs() {
+  active_top="$REPO_TOP"; active_common="$REPO_COMMON"
+  active_root="$REPO_ROOT"; active_name="$REPO_NAME"; active_is_wt="$REPO_IS_WT"
+}
 workdir_state="$HOME/.cache/claude-statusline/workdir-$session_id"
 if [ -n "$session_id" ] && [ -f "$workdir_state" ]; then
   IFS= read -r active_dir < "$workdir_state"
-  state_top=""
-  [ -n "$active_dir" ] && state_top=$(git -C "$active_dir" rev-parse --show-toplevel 2>/dev/null)
-  if [ -n "$state_top" ]; then
+  if [ -n "$active_dir" ] && repo_dirs "$active_dir"; then
     git_dir="$active_dir"
-    active_top="$state_top"
+    adopt_repo_dirs
   else
+    # The tracked directory stopped resolving — a removed worktree, usually.
+    # Falling back to the project dir without a word made the strip report the
+    # main checkout's branch as if work had moved there; the breadcrumb lives
+    # until the hook tracks a live directory again.
+    [ -n "$active_dir" ] && printf '%s\n' "$active_dir" > "$workdir_state.gone"
     rm -f "$workdir_state"
   fi
 fi
-project_top=$(git -C "$dir_path" rev-parse --show-toplevel 2>/dev/null)
+if [ -n "$session_id" ] && [ -z "$active_top" ] && [ -f "$workdir_state.gone" ]; then
+  IFS= read -r lost_dir < "$workdir_state.gone"
+fi
 if [ -z "$active_top" ]; then
   if [ "$git_dir" = "$dir_path" ]; then
-    active_top="$project_top"
-  else
-    active_top=$(git -C "$git_dir" rev-parse --show-toplevel 2>/dev/null)
+    active_top="$project_top"; active_common="$project_common"
+    active_root="$project_root"; active_name="$project_name"; active_is_wt="$project_is_wt"
+  elif repo_dirs "$git_dir"; then
+    adopt_repo_dirs
   fi
 fi
 
 dir_part="${BLUE}${dir}${RESET}"
-if [ -n "$active_top" ] && [ "$active_top" != "$project_top" ]; then
-  dir_part="${DIM}${dir}${RESET} ${MAGENTA}»${RESET} ${BLUE}$(basename "$active_top")${RESET}"
+wt_part=""
+if [ -n "$active_top" ]; then
+  # Repository identity, not toplevel: every worktree of the project shares its
+  # common dir, so `»` fires on a genuinely foreign repository only.
+  if [ "$active_common" != "$project_common" ]; then
+    dir_part="${DIM}${dir}${RESET} ${MAGENTA}»${RESET} ${BLUE}${active_name}${RESET}"
+  fi
+  if [ "$active_is_wt" = 1 ]; then
+    # Worktrees belong at <repo>/.claude/worktrees/<name>; a harness-made one or
+    # a sibling of the repo sits somewhere Egor did not put it, and no other part
+    # of the setup reports where a worktree physically lives.
+    case "$active_top" in
+      "$active_root"/.claude/worktrees/*) wt_color="$BLUE" ;;
+      *) wt_color="$RED" ;;
+    esac
+    wt_part=" ${wt_color}⧉ ${active_top##*/}${RESET}"
+  fi
 fi
+[ -n "$lost_dir" ] && wt_part=" ${DIM}⧉ $(basename "$lost_dir") ✗${RESET}"
+dir_part="${dir_part}${wt_part}"
 
 branch_part=""
+head_known=0
 git_status=""
 git_status_rc=1
 if [ -n "$active_top" ]; then
@@ -349,14 +433,29 @@ if [ -n "$active_top" ]; then
   if [ "$branch" = HEAD ]; then
     short_sha=$(git -C "$git_dir" rev-parse --short HEAD 2>/dev/null)
     branch_part=" ${BLUE}⎇${RESET} ${RED}@${short_sha}${RESET}"
+    head_known=1
   elif [ -n "$branch" ]; then
+    head_known=1
     branch_color="$BLUE"
+    show_branch=1
     case "$branch" in
       claude/*|worktree-*) branch_color="$RED" ;;
+      *)
+        # In a worktree the directory label already names the work, so the
+        # branch is printed only when it is not the one that label implies —
+        # that is the case where commits land somewhere unexpected.
+        if [ "$active_is_wt" = 1 ]; then
+          if name_covered_by_branch "${active_top##*/}" "$branch"; then
+            show_branch=0
+          else
+            branch_color="$YELLOW"
+          fi
+        fi
+        ;;
     esac
-    branch_part=" ${branch_color}⎇ ${branch}${RESET}"
+    [ "$show_branch" = 1 ] && branch_part=" ${branch_color}⎇ ${branch}${RESET}"
   fi
-  if [ -n "$branch_part" ]; then
+  if [ "$head_known" = 1 ]; then
     # Uncommitted volume in the ACTIVE repo, whoever wrote it: staged+unstaged
     # vs HEAD plus untracked files. Lines: numstat + untracked text lines
     # (grep -cI yields 0 and BSD grep prints nothing for binaries; numstat "-"
@@ -940,7 +1039,9 @@ review_part=""
 if [ -n "$active_top" ]; then
   receipt_reviewed=""
   receipt_errored=0
-  active_common=$(git_common_dir "$active_top" 2>/dev/null)
+  # Already resolved with the repository identity above in all but the odd case
+  # where git_dir resolved and active_top did not come from it.
+  [ -n "$active_common" ] || active_common=$(git_common_dir "$active_top" 2>/dev/null)
   receipt_name=$(receipt_file_name "$active_top" 2>/dev/null)
   receipt_file="$worker_stats_dir/receipts/$receipt_name"
   receipt_values=$(jq -er '

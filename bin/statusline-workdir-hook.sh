@@ -47,7 +47,7 @@ if [ "$hook_event" = SessionStart ]; then
   # A fresh shell starts in the project dir — surviving state would lie until
   # the first cd. compact keeps the shell and its cwd, so its state stays valid.
   case "$start_source" in
-    startup|resume|clear) rm -f "$state_file" ;;
+    startup|resume|clear) rm -f "$state_file" "$state_file.gone" ;;
   esac
   exit 0
 fi
@@ -59,7 +59,7 @@ fi
 
 case "$tool_name" in
   ExitWorktree)
-    rm -f "$state_file"
+    rm -f "$state_file" "$state_file.gone"
     exit 0
     ;;
   EnterWorktree)
@@ -123,7 +123,8 @@ mkdir -p "$cache_dir" || exit 0
 umask 077
 tmp_file="$state_file.tmp.$$"
 trap 'rm -f "$tmp_file" 2>/dev/null; exit 0' EXIT
-printf '%s\n' "$toplevel" > "$tmp_file" && mv -f "$tmp_file" "$state_file"
+printf '%s\n' "$toplevel" > "$tmp_file" && mv -f "$tmp_file" "$state_file" &&
+  rm -f "$state_file.gone"
 
 marker="$cache_dir/.workdir-prune"
 now=$(date +%s 2>/dev/null)

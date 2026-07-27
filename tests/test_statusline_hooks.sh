@@ -35,13 +35,30 @@ git -C "$REPO_A" add tracked.txt
 git -C "$REPO_A" -c user.name=Fixture -c user.email=fixture@example.com commit -qm initial
 git -C "$REPO_A" worktree add -q -b feature-x "$REPO_B"
 git -C "$REPO_A" worktree add -q --detach "$REPO_C"
+# The convention under test: worktrees live at <repo>/.claude/worktrees/<name>,
+# git-excluded so they never count as untracked content of the parent repo.
+printf '.claude/worktrees/\n' >> "$REPO_A/.git/info/exclude"
+REPO_E="$REPO_A/.claude/worktrees/feature-y"
+git -C "$REPO_A" worktree add -q -b feature-y "$REPO_E"
+REPO_F="$REPO_A/.claude/worktrees/auto-slug"
+git -C "$REPO_A" worktree add -q -b claude/agitated-fixture "$REPO_F"
+REPO_D="$FIXTURES/repo-d"
+mkdir -p "$REPO_D"
+git -C "$REPO_D" init -q -b main
+printf 'other\n' > "$REPO_D/other.txt"
+git -C "$REPO_D" add other.txt
+git -C "$REPO_D" -c user.name=Fixture -c user.email=fixture@example.com commit -qm initial
 ln -s "$REPO_B" "$HOME/project"
 TOP_A=$(git -C "$REPO_A" rev-parse --show-toplevel)
 TOP_B=$(git -C "$REPO_B" rev-parse --show-toplevel)
 TOP_C=$(git -C "$REPO_C" rev-parse --show-toplevel)
+TOP_D=$(git -C "$REPO_D" rev-parse --show-toplevel)
+TOP_E=$(git -C "$REPO_E" rev-parse --show-toplevel)
+TOP_F=$(git -C "$REPO_F" rev-parse --show-toplevel)
 SHORT_SHA=$(git -C "$REPO_C" rev-parse --short HEAD)
 
 DIM=$'\033[2m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; RED=$'\033[31m'; MAGENTA=$'\033[35m'; RESET=$'\033[0m'
+BLUE=$'\033[34m'
 STATE_DIR="$HOME/.cache/claude-statusline"
 
 workdir_payload() {
@@ -210,11 +227,42 @@ assert_eq "$control_one" "$control_two"
 assert grep -Fq main <<< "$control_one"
 assert test "${control_one#*»}" = "$control_one"
 
+# A worktree of the project is `⧉ <dir>`, never `»` — that arrow is reserved for
+# a foreign repository. This one sits outside <repo>/.claude/worktrees (red) and
+# its name is not carried by branch `feature-x`, so the branch is printed too.
 printf '%s\n' "$TOP_B" > "$STATE_DIR/workdir-status-override"
 override_output=$(run_statusline "$status_payload") || fail "statusline override failed"
-assert grep -Fq '»' <<< "$override_output"
-assert grep -Fq feature-x <<< "$override_output"
-assert grep -Fq "$(basename "$TOP_B")" <<< "$override_output"
+assert test "${override_output#*»}" = "$override_output"
+assert grep -Fq "${RED}⧉ $(basename "$TOP_B")" <<< "$override_output"
+assert grep -Fq "${YELLOW}⎇ feature-x" <<< "$override_output"
+
+# Canonical location and a branch that carries the directory's words: blue icon,
+# branch folded away as redundant.
+printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-status-canon"
+canon_output=$(run_statusline "$(statusline_payload status-canon)") || fail "statusline canonical worktree failed"
+assert grep -Fq "${BLUE}⧉ feature-y" <<< "$canon_output"
+assert test "${canon_output#*⎇}" = "$canon_output"
+
+# An auto-slug branch is the one thing the fold must never hide: harness-made
+# worktrees always land on `claude/*`, and this strip is the only place the global
+# CLAUDE.md rule about renaming them is visible.
+printf '%s\n' "$TOP_F" > "$STATE_DIR/workdir-status-autoslug"
+autoslug_output=$(run_statusline "$(statusline_payload status-autoslug)") || fail "statusline auto-slug failed"
+assert grep -Fq "${BLUE}⧉ auto-slug" <<< "$autoslug_output"
+assert grep -Fq "${RED}⎇ claude/agitated-fixture" <<< "$autoslug_output"
+
+# Same worktree, chat launched inside it: the project it belongs to stays visible.
+in_wt_output=$(run_statusline "$(statusline_payload status-in-wt '' "$REPO_E")") || fail "statusline in-worktree failed"
+assert grep -Fq "$(basename "$TOP_A")" <<< "$in_wt_output"
+assert grep -Fq "${BLUE}⧉ feature-y" <<< "$in_wt_output"
+
+# A foreign repository keeps `»` and always shows its branch.
+printf '%s\n' "$TOP_D" > "$STATE_DIR/workdir-status-foreign"
+foreign_output=$(run_statusline "$(statusline_payload status-foreign)") || fail "statusline foreign repo failed"
+assert grep -Fq "»" <<< "$foreign_output"
+assert grep -Fq "$(basename "$TOP_D")" <<< "$foreign_output"
+assert grep -Fq '⎇ main' <<< "$foreign_output"
+assert test "${foreign_output#*⧉}" = "$foreign_output"
 
 same_payload=$(statusline_payload status-same)
 printf '%s\n' "$TOP_A" > "$STATE_DIR/workdir-status-same"
@@ -222,11 +270,29 @@ same_output=$(run_statusline "$same_payload") || fail "statusline same-repo fail
 assert grep -Fq main <<< "$same_output"
 assert test "${same_output#*»}" = "$same_output"
 
+# A tracked directory that stopped resolving (removed worktree): the fallback to
+# the project dir is announced instead of silently reporting its branch, and the
+# breadcrumb survives later renders.
 printf '%s\n' "$FIXTURES/vanished" > "$STATE_DIR/workdir-status-dangling"
 dangling_output=$(run_statusline "$(statusline_payload status-dangling)") || fail "statusline dangling failed"
 assert grep -Fq main <<< "$dangling_output"
 assert test "${dangling_output#*»}" = "$dangling_output"
+assert grep -Fq "${DIM}⧉ vanished ✗" <<< "$dangling_output"
 assert test ! -e "$STATE_DIR/workdir-status-dangling"
+assert_eq "$FIXTURES/vanished" "$(cat "$STATE_DIR/workdir-status-dangling.gone")"
+dangling_again=$(run_statusline "$(statusline_payload status-dangling)") || fail "statusline dangling rerender failed"
+assert grep -Fq "${DIM}⧉ vanished ✗" <<< "$dangling_again"
+
+# Tracking a live directory again clears the breadcrumb.
+run_workdir_hook "$(workdir_payload Bash status-dangling "$REPO_A" "cd '$REPO_A'")"
+assert test ! -e "$STATE_DIR/workdir-status-dangling.gone"
+recovered=$(run_statusline "$(statusline_payload status-dangling)") || fail "statusline recovery failed"
+assert test "${recovered#*✗}" = "$recovered"
+
+printf 'stale\n' > "$STATE_DIR/workdir-status-gone-reset.gone"
+run_workdir_hook "$(jq -cn --arg session status-gone-reset --arg cwd "$REPO_A" \
+  '{hook_event_name:"SessionStart",session_id:$session,cwd:$cwd,source:"startup"}')"
+assert test ! -e "$STATE_DIR/workdir-status-gone-reset.gone"
 
 printf '%s\n' "$TOP_C" > "$STATE_DIR/workdir-status-detached"
 detached_output=$(run_statusline "$(statusline_payload status-detached)") || fail "statusline detached failed"
