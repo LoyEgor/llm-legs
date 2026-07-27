@@ -15,11 +15,14 @@ contains() { grep -Fq -- "$2" <<<"$1"; }
 python3 - "$SCRIPT" "$ROOT/tests/fixtures/review-bench" "$ROOT" "$WORK" <<'PY'
 import concurrent.futures
 import argparse
+import contextlib
 import importlib.machinery
 import importlib.util
+import io
 import json
 import os
 import pathlib
+import shlex
 import subprocess
 import sys
 import threading
@@ -32,6 +35,9 @@ loader.exec_module(rb)
 fixtures = pathlib.Path(sys.argv[2])
 repo = pathlib.Path(sys.argv[3])
 work = pathlib.Path(sys.argv[4])
+fixture_home = work / "home"
+fixture_home.mkdir()
+os.environ["HOME"] = str(fixture_home)
 
 assert rb.parse_rater("sol-medium") == {
     "spec": "sol-medium", "model": "sol", "effort": "medium", "side": "codex",
@@ -52,6 +58,27 @@ assert rb.parse_rater("agy-pro-low-skill") == {
 }
 assert rb.parse_rater("agy-pro-high-skill")["skill"] is True
 assert rb.parse_rater("agy-flash36-medium-skill")["side"] == "agy"
+repeated = rb.parse_raters("sol-high x2")
+assert [rater["spec"] for rater in repeated] == ["sol-high", "sol-high#2"], repeated
+assert repeated[0]["model"] == repeated[1]["model"] == "sol"
+assert repeated[0]["effort"] == repeated[1]["effort"] == "high"
+for invalid in (
+    "sol-high x1", "sol-high x0", "sol-high x10", "sol-high xno",
+    "sol-high X2", "sol-high  x2",
+):
+    try:
+        rb.parse_raters(invalid)
+    except ValueError as exc:
+        assert "invalid rater" in str(exc), (invalid, exc)
+    else:
+        raise AssertionError(f"accepted invalid repeat suffix: {invalid}")
+for duplicate in ("sol-high,sol-high", "sol-high x2,sol-high", "sol-high x2,sol-high x2"):
+    try:
+        rb.parse_raters(duplicate)
+    except ValueError as exc:
+        assert "duplicates" in str(exc), (duplicate, exc)
+    else:
+        raise AssertionError(f"accepted duplicate rater: {duplicate}")
 expected_tiers = {
     "T0": [
         "oc-kimik3", "oc-grok45-low", "agy-pro-high-skill",
@@ -81,9 +108,19 @@ assert [tier["budget_min"] for tier in rb.REVIEW_TIERS.values()] == [2, 6, 10, 2
 assert {
     tier_name: tier["cells"] for tier_name, tier in rb.REVIEW_TIERS.items()
 } == expected_tiers
-for tier in rb.REVIEW_TIERS.values():
-    assert tier["when"]
-    assert [rb.parse_rater(cell)["spec"] for cell in tier["cells"]] == tier["cells"]
+rb.REVIEW_TIERS["TX"] = {"budget_min": 1, "when": "fixture", "cells": ["sol-medium x2"]}
+try:
+    rb.validate_review_tiers()
+    for tier in rb.REVIEW_TIERS.values():
+        assert tier["when"]
+        for cell in tier["cells"]:
+            expanded = rb.parse_raters(cell)
+            assert rb.collapse_rater_attempts(
+                rater["spec"] for rater in expanded
+            ) == [cell], (cell, expanded)
+finally:
+    del rb.REVIEW_TIERS["TX"]
+print("rater-repeat-parse-tier-ok")
 for lower, upper in zip(("T0", "T1", "T2"), ("T1", "T2", "T3")):
     assert set(rb.REVIEW_TIERS[lower]["cells"]) < set(rb.REVIEW_TIERS[upper]["cells"])
 # Every resolved rater set passes this gate, so no --raters spelling and no --auto pick can run
@@ -701,6 +738,60 @@ os.environ.update({
 opencode_run = work / "opencode-run"
 opencode_run.mkdir()
 opencode_rater = rb.parse_rater("oc-glm52")
+profiles_path = fixture_home / ".config/opencode-go/profiles"
+default_profile_capture = work / "opencode-default-profile"
+os.environ["OPENCODE_CAPTURE_PROFILE"] = str(default_profile_capture)
+os.environ["OPENCODE_GO_PROFILE"] = "ambient"
+rb.run_opencode(
+    opencode_rater, repo, sha, "", opencode_run, "fixture commit diff",
+    rb.pool_account("opencode", set()),
+)
+assert rb.opencode_profiles() == ["-"] and rb.pool_account("opencode", set()) == \
+    "opencode-go" and default_profile_capture.read_text().strip() == "unset"
+del os.environ["OPENCODE_GO_PROFILE"]
+
+profiles_path.parent.mkdir(parents=True)
+profiles_path.write_text("# preferred order\n\n-\n  # spare key\nsecond\n")
+assert rb.opencode_profiles() == ["-", "second"]
+failover_profile_capture = work / "opencode-failover-profiles"
+os.environ["OPENCODE_CAPTURE_PROFILE"] = str(failover_profile_capture)
+os.environ["OPENCODE_WALL_DEFAULT"] = "1"
+failover_rater, failover_account, failover_result = rb.run_rater_task(
+    opencode_rater, repo, sha, "", opencode_run, "fixture commit diff"
+)
+assert failover_rater == opencode_rater and failover_account == "opencode-go-second" and \
+    failover_result[0] == 0 and rb.is_walled("opencode", "opencode-go") and \
+    failover_profile_capture.read_text().splitlines() == ["unset", "second"]
+del os.environ["OPENCODE_WALL_DEFAULT"]
+
+verifier_profile_capture = work / "opencode-verifier-profile"
+os.environ["OPENCODE_CAPTURE_PROFILE"] = str(verifier_profile_capture)
+verifier_profile_result = rb.verify_one(
+    0, {"severity": "P2", "file": "bin/review-bench", "line": 3, "summary": "claim"},
+    repo, sha, "oc-kimik3", ["line"],
+)
+assert not verifier_profile_result.get("walled") and \
+    verifier_profile_capture.read_text().strip() == "second"
+
+os.environ["OPENCODE_FIXTURE_RC"] = "1"
+os.environ["OPENCODE_FIXTURE_STDERR"] = "HTTP 429 usage limit reached"
+both_walled_rater, both_walled_account, both_walled_result = rb.run_rater_task(
+    opencode_rater, repo, sha, "", opencode_run, "fixture commit diff"
+)
+assert both_walled_rater == opencode_rater and both_walled_account == \
+    "opencode-go-second" and rb.SIDE_WALL["opencode"](
+        both_walled_result[0], both_walled_result[2], both_walled_result[3]
+    ) and rb.is_walled("opencode", "opencode-go-second")
+_, exhausted_account, exhausted_result = rb.run_rater_task(
+    opencode_rater, repo, sha, "", opencode_run, "fixture commit diff"
+)
+assert exhausted_account is None and "no opencode account left" in exhausted_result[3]
+del os.environ["OPENCODE_FIXTURE_RC"]
+del os.environ["OPENCODE_FIXTURE_STDERR"]
+rb.WALLED_ACCOUNTS.clear()
+profiles_path.unlink()
+del os.environ["OPENCODE_CAPTURE_PROFILE"]
+
 pin_repo = work / "sha-pinned-repo"
 pin_repo.mkdir()
 subprocess.run(["git", "init", "-q", str(pin_repo)], check=True)
@@ -1165,7 +1256,7 @@ class WallOrderGate:
         real_gate.acquire(*args)
 
     def release(self):
-        gate_saw.append(rb.is_walled("opencode", rb.SIDE_FIXED_ACCOUNTS["opencode"]))
+        gate_saw.append(rb.is_walled("opencode", "opencode-go"))
         real_gate.release()
 
 
@@ -1448,6 +1539,36 @@ verifier_thread.join(10)
 assert queued["row"]["walled"] is True and queued["row"]["kept"] is True, queued
 assert "while queued" in queued["row"]["why"], queued
 assert not (work / "queued-verify-args").exists(), "a walled verifier still called opencode"
+
+rb.WALLED_ACCOUNTS.clear()
+profiles_path.write_text("-\nsecond\n")
+queued_profile_capture = work / "queued-verifier-profile"
+os.environ["OPENCODE_CAPTURE_PROFILE"] = str(queued_profile_capture)
+for _ in range(rb.OPENCODE_MAX_CONCURRENCY):
+    rb.OPENCODE_GATE.acquire(0)
+queued_failover = {}
+
+
+def queued_failover_verify():
+    queued_failover["row"] = rb.verify_one(
+        0, verify_findings_input[0], repo, sha, "oc-kimik3", None
+    )
+
+
+failover_thread = threading.Thread(target=queued_failover_verify)
+failover_thread.start()
+blocked_by = time.monotonic() + 5
+while not rb.OPENCODE_GATE.waiting and time.monotonic() < blocked_by:
+    time.sleep(0.001)
+assert rb.OPENCODE_GATE.waiting, "the failover verifier never reached the gate"
+rb.mark_walled("opencode", "opencode-go")
+for _ in range(rb.OPENCODE_MAX_CONCURRENCY):
+    rb.OPENCODE_GATE.release()
+failover_thread.join(10)
+assert not queued_failover["row"].get("walled"), queued_failover
+assert queued_profile_capture.read_text().strip() == "second"
+profiles_path.unlink()
+del os.environ["OPENCODE_CAPTURE_PROFILE"]
 os.environ["OPENCODE_CAPTURE_ARGS"] = str(work / "opencode-args")
 # A cell already queued on the gate when the wall was set must not send one more request.
 gate_wall_run = work / "opencode-gate-wall"
@@ -1562,6 +1683,121 @@ review_meta = json.loads(review_meta_path.read_text())
 assert review_rc == 0
 assert review_meta["raters"] == expected_tiers["T1"], review_meta["raters"]
 assert sorted(reviewed_cells) == sorted(expected_tiers["T1"]), reviewed_cells
+
+repeat_store = work / "dispatcher-repeat-claudeb"
+os.environ["CLAUDEB_DIR"] = str(repeat_store)
+account_picks = []
+
+
+def dispatcher_repeat_runner(rater, repo_path, commit, focus, run_dir, diff, account, repeat=1):
+    duration = 101 if rater["spec"] == "sol-medium" else 202
+    envelope = {
+        "type": "result",
+        "result": json.dumps({"findings": [{
+            "severity": "P3", "file": "pinned.txt", "line": 1,
+            "summary": f"{rater['spec']} fixture finding",
+        }]}),
+        "attempt": rater["spec"],
+    }
+    text = json.dumps(envelope)
+    (run_dir / f"raw-{rater['spec']}.json").write_text(text)
+    return 0, duration, text, "", ["fake", rater["spec"]]
+
+
+def dispatcher_repeat_account(side, excluded):
+    account_picks.append((side, tuple(sorted(excluded))))
+    return "fixture"
+
+
+rb.SIDE_RUNNERS["codex"] = dispatcher_repeat_runner
+rb.pool_account = dispatcher_repeat_account
+rb.affordability = lambda: {
+    "claude": False, "codex": True, "agy": True, "grok": True, "opencode": True,
+    "claude_account": None,
+}
+repeat_rc = rb.cmd_run(argparse.Namespace(
+    repo=str(pin_repo), commitish=pin_sha, raters="sol-medium x2",
+    leg=False, verify=None, auto=None, focus=None, repeat=1,
+))
+repeat_run_dir = next((repeat_store / "worker-stats" / "benches").iterdir())
+repeat_meta = json.loads((repeat_run_dir / "meta.json").read_text())
+assert repeat_rc == 0
+assert repeat_meta["raters"] == ["sol-medium", "sol-medium#2"], repeat_meta
+assert [row["rater"] for row in repeat_meta["rater_runs"]] == [
+    "sol-medium", "sol-medium#2",
+], repeat_meta["rater_runs"]
+assert repeat_meta["durations"] == {"sol-medium": 101, "sol-medium#2": 202}
+assert len(account_picks) == 2, account_picks
+for rater in ("sol-medium", "sol-medium#2"):
+    raw = repeat_run_dir / f"raw-{rater}.json"
+    findings = repeat_run_dir / f"findings-{rater}.jsonl"
+    assert raw.exists() and findings.exists(), rater
+    assert json.loads(raw.read_text())["attempt"] == rater
+    rows = [json.loads(line) for line in findings.read_text().splitlines()]
+    assert len(rows) == 1 and rows[0]["rater"] == rater, rows
+assert (
+    (repeat_run_dir / "raw-sol-medium.json").read_text()
+    != (repeat_run_dir / "raw-sol-medium#2.json").read_text()
+)
+repeat_verdicts = work / "dispatcher-repeat-verdicts.jsonl"
+repeat_verdicts.write_text(
+    "\n".join(
+        json.dumps({"rater": rater, "idx": 0, "verdict": "confirmed"})
+        for rater in ("sol-medium", "sol-medium#2")
+    ) + "\n"
+)
+assert rb.cmd_record(argparse.Namespace(
+    run_id=repeat_meta["run_id"], verdicts=str(repeat_verdicts),
+)) == 0
+repeat_corpus = rb.read_jsonl(repeat_store / "worker-stats" / "reviews.jsonl")
+assert [row["rater"] for row in repeat_corpus] == ["sol-medium", "sol-medium#2"], repeat_corpus
+
+account_picks.clear()
+try:
+    rb.cmd_run(argparse.Namespace(
+        repo=str(pin_repo), commitish=pin_sha, raters="oc-kimik3 x2",
+        leg=False, verify=None, auto=None, focus=None, repeat=2,
+    ))
+except RuntimeError as exc:
+    assert "cannot be combined with rater repetition (xN)" in str(exc), exc
+else:
+    raise AssertionError("--repeat combined with xN was accepted")
+assert account_picks == [], account_picks
+
+assert rb.collapse_rater_attempts(
+    ["sol-high", "sol-high#2"]
+) == ["sol-high x2"]
+assert [rater["spec"] for rater in rb.parse_raters("sol-high x2")] == [
+    "sol-high", "sol-high#2",
+]
+
+
+def dispatcher_rerun_runner(rater, *args, **kwargs):
+    if rater["spec"] == "sol-high#2":
+        return 1, 303, "", "fixture failure", ["fake", rater["spec"]]
+    return dispatcher_repeat_runner(rater, *args, **kwargs)
+
+
+rerun_store = work / "dispatcher-rerun-claudeb"
+os.environ["CLAUDEB_DIR"] = str(rerun_store)
+rb.SIDE_RUNNERS["codex"] = dispatcher_rerun_runner
+rerun_stdout = io.StringIO()
+with contextlib.redirect_stdout(rerun_stdout):
+    rerun_rc = rb.cmd_run(argparse.Namespace(
+        repo=str(pin_repo), commitish=pin_sha, raters="sol-high x2",
+        leg=False, verify=None, auto=None, focus=None, repeat=1,
+    ))
+rerun_output = rerun_stdout.getvalue()
+rerun_arg = next(
+    line.split("--raters ", 1)[1]
+    for line in rerun_output.splitlines()
+    if line.startswith("rerun: review-bench run ")
+)
+rerun_values = shlex.split(rerun_arg)
+assert rerun_rc == 1 and "ERRORED (not recorded): sol-high#2" in rerun_output, rerun_output
+assert len(rerun_values) == 1
+assert [rater["spec"] for rater in rb.parse_raters(rerun_values[0])] == ["sol-high"]
+print("dispatcher-rater-repeat-ok")
 
 os.environ["CLAUDEB_DIR"] = str(model_store)
 
@@ -2223,6 +2459,7 @@ PY
 python3 - "$SCRIPT" "$FSD" <<'PY'
 import importlib.machinery
 import importlib.util
+import json
 import pathlib
 import sys
 
@@ -2265,6 +2502,40 @@ assert phantom_rates["fixture@aaaaaaa#1"]["oc-kimik3"] == 0.5, phantom_rates["fi
 assert all(0.0 <= rate <= 1.0 for per in phantom_rates.values() for rate in per.values())
 phantom_found, _ = rb.composition_coverage(phantom, phantom_rates, ["oc-kimik3"] * 2)
 assert 0.0 <= phantom_found <= 4.0, phantom_found
+
+repeat_stats = stats.parent / "frontier-repeat-stats"
+(repeat_stats / "defects").mkdir(parents=True)
+(repeat_stats / "benches" / "repeat-run").mkdir(parents=True)
+repeat_defect = {
+    "defect_id": "fixture@ccccccc#1", "repo": "fixture", "commit": "ccccccc",
+    "file": "c.py", "line": 1, "severity": "P2", "summary": "one catch",
+    "caught_by": ["sol-high"],
+    "catches": [{"run_id": "repeat-run", "rater": "sol-high"}],
+}
+(repeat_stats / "defects" / "fixture__ccccccc.jsonl").write_text(
+    json.dumps(repeat_defect) + "\n"
+)
+(repeat_stats / "benches" / "repeat-run" / "meta.json").write_text(json.dumps({
+    "run_id": "repeat-run", "commit": "ccccccc", "repo": "/fixture",
+    "raters": ["sol-high", "sol-high#2"],
+    "rater_runs": [
+        {"rater": "sol-high", "duration_ms": 1000, "exit_code": 0},
+        {"rater": "sol-high#2", "duration_ms": 1200, "exit_code": 0},
+    ],
+    "durations": {"sol-high": 1000, "sol-high#2": 1200},
+    "started": "2026-07-26T00:00:00+00:00",
+    "finished": "2026-07-26T00:00:01+00:00",
+}))
+(repeat_by_commit, repeat_cells, _, _, repeat_counts, _,
+ repeat_counted) = rb.frontier_inputs(repeat_stats)
+assert repeat_cells == ["sol-high"], repeat_cells
+assert repeat_counts[("ccccccc", "sol-high")] == 2, repeat_counts
+assert repeat_counted["ccccccc"] == {
+    ("repeat-run", "sol-high"), ("repeat-run", "sol-high#2"),
+}, repeat_counted
+repeat_rates = rb.hit_rates(repeat_by_commit, repeat_counts, repeat_counted)
+assert repeat_rates["fixture@ccccccc#1"]["sol-high"] == 0.5, repeat_rates
+print("frontier-rater-repeat-ok")
 
 found, total = rb.composition_coverage(by_commit, rates, ["oc-kimik3"])
 assert total == 4, total
@@ -2490,6 +2761,29 @@ assert contains "$review_help" "--tier"
 assert contains "$review_help" "{T0,T1,T2,T3}"
 leg_conflict="$("$SCRIPT" run 143fc2f --leg --raters oc-kimik3 2>&1 || true)"
 assert contains "$leg_conflict" "not allowed with argument --leg"
+OCSD="$WORK/oc-repeat-health"
+mkdir -p "$OCSD/benches/repeat-fixture"
+python3 - "$OCSD/benches/repeat-fixture/meta.json" <<'PY'
+import json
+import sys
+
+rows = [
+    {
+        "rater": "oc-kimik3", "side": "opencode", "duration_ms": 1000,
+        "findings": 2, "errored": False,
+    },
+    {
+        "rater": "oc-kimik3#2", "side": "opencode", "duration_ms": 3000,
+        "findings": 0, "errored": True, "stderr": "fixture failure",
+    },
+]
+with open(sys.argv[1], "w") as handle:
+    json.dump({"run_id": "repeat-fixture", "rater_runs": rows}, handle)
+PY
+oc_repeat_table="$(WORKER_STATS_DIR="$OCSD" CLAUDEB_DIR="$WORK/claudeb-fixture" \
+  "$SCRIPT" oc-models 2>&1)"
+assert test "$(grep -Ec '^oc-kimik3 +2 +1 ' <<<"$oc_repeat_table")" -eq 1
+assert test "$(grep -c '^oc-kimik3#2 ' <<<"$oc_repeat_table")" -eq 0
 oc_table="$(WORKER_STATS_DIR="$SD" CLAUDEB_DIR="$WORK/claudeb-fixture" "$SCRIPT" oc-models 2>&1)"
 assert contains "$oc_table" "measured capability"
 assert contains "$oc_table" "oc-grok45"

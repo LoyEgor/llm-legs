@@ -233,6 +233,10 @@ service `opencode-go-<name>` when more than one subscription key exists. There i
 endpoint — a spent window is only visible as an HTTP 429 naming `limitName`, so a wall means stop
 and come back later, never retry.
 
+`review-bench` reads key priority from `~/.config/opencode-go/profiles`, one profile name per
+line. A line containing only `-` selects the default unnamed key; blank lines and lines beginning
+with `#` are ignored. If the file is missing, only the default key is used.
+
 - `opencode-go key` stores a key, `models` lists the plan, `run <model> …` reviews a prompt file,
   `raw <path>` posts an arbitrary body. `--effort` and `--no-reasoning` are mutually exclusive:
   the reasoning-off knob silently overwrites an effort, and which knob a model accepts varies

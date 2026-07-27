@@ -32,6 +32,9 @@ fi
 if [[ -n ${OPENCODE_CAPTURE_ENV:-} ]]; then
   printf '%s\n' "${OPENCODE_GO_MAX_WAIT_S:-unset}" >"$OPENCODE_CAPTURE_ENV"
 fi
+if [[ -n ${OPENCODE_CAPTURE_PROFILE:-} ]]; then
+  printf '%s\n' "${OPENCODE_GO_PROFILE:-unset}" >>"$OPENCODE_CAPTURE_PROFILE"
+fi
 if [[ -n ${OPENCODE_CAPTURE_MAX_TOKENS:-} ]]; then
   printf '%s\n' "$max_tokens" >>"$OPENCODE_CAPTURE_MAX_TOKENS"
 fi
@@ -42,6 +45,10 @@ fi
 if [[ -n ${OPENCODE_MAX_CEILING:-} && $max_tokens -gt $OPENCODE_MAX_CEILING ]]; then
   printf 'HTTP 400: max_tokens must be less than or equal to %s\n' \
     "$OPENCODE_MAX_CEILING" >&2
+  exit 1
+fi
+if [[ -n ${OPENCODE_WALL_DEFAULT:-} && -z ${OPENCODE_GO_PROFILE:-} ]]; then
+  printf 'HTTP 429\n{"error":"usage limit reached"}\n' >&2
   exit 1
 fi
 if [[ -n ${OPENCODE_FIXTURE_STDERR:-} ]]; then

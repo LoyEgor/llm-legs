@@ -216,6 +216,31 @@ def is_walled(side, account, bucket="general"):
 
 def opencode_usage_wall(stderr):
     return bool(re.search(r"HTTP 429|too many requests|usage limit", stderr or "", re.IGNORECASE))
+
+
+def opencode_profiles():
+    path = Path(os.environ.get("HOME") or Path.home()) / ".config/opencode-go/profiles"
+    if not path.exists():
+        return ["-"]
+    return [
+        line for raw in path.read_text().splitlines()
+        if (line := raw.strip()) and not line.startswith("#")
+    ]
+
+
+def opencode_account(profile):
+    return "opencode-go" if profile == "-" else f"opencode-go-{profile}"
+
+
+def opencode_env(account, **values):
+    env = dict(os.environ, **values)
+    if account == "opencode-go":
+        env.pop("OPENCODE_GO_PROFILE", None)
+    else:
+        env["OPENCODE_GO_PROFILE"] = account.removeprefix("opencode-go-")
+    return env
+
+
 AGY_EFFORTS = {
     "agy-pro": ("low", "high"),
     "agy-flash36": ("low", "medium", "high"),
@@ -269,6 +294,8 @@ RATER_RE = re.compile(
     r"|oc-qwen37plus|oc-kimik3|oc-kimik27code|oc-mmm3|oc-mimo25pro|oc-mimo25|oc-hy3)"
     r"(?:-(low|medium|high|xhigh|max))?(-skill|-anthropic|-google)?$"
 )
+RATER_REPEAT_RE = re.compile(r"^(\S+) x([2-9])$")
+RATER_ATTEMPT_RE = re.compile(r"#[2-9]$")
 PRIORITY_RE = re.compile(r"\b(P[123])\b", re.IGNORECASE)
 # Half this repository's files have no extension, so a cited path is anything carrying a
 # directory separator as well as anything carrying a suffix.
@@ -503,9 +530,20 @@ def parse_raters(value):
     specs = [item.strip() for item in value.split(",") if item.strip()]
     if not specs:
         raise ValueError("--raters must contain at least one rater")
-    parsed = [parse_rater(spec) for spec in specs]
-    if len({item["spec"] for item in parsed}) != len(parsed):
-        raise ValueError("--raters contains duplicates")
+    parsed = []
+    seen = set()
+    for spec in specs:
+        match = RATER_REPEAT_RE.fullmatch(spec)
+        base, repeat = (match.group(1), int(match.group(2))) if match else (spec, 1)
+        rater = parse_rater(base)
+        if rater["spec"] in seen:
+            raise ValueError("--raters contains duplicates")
+        seen.add(rater["spec"])
+        for attempt in range(1, repeat + 1):
+            instance = dict(rater)
+            if attempt > 1:
+                instance["spec"] = f"{rater['spec']}#{attempt}"
+            parsed.append(instance)
     return parsed
 
 
@@ -513,21 +551,33 @@ def validate_review_tiers():
     for tier_name, tier in REVIEW_TIERS.items():
         for cell in tier["cells"]:
             try:
-                rater = parse_rater(cell)
+                raters = parse_raters(cell)
             except ValueError as exc:
                 raise RuntimeError(f"{tier_name} contains invalid rater {cell!r}") from exc
-            reason = measured_worthless(rater) or measured_skill_only(rater)
-            if reason:
-                raise RuntimeError(f"{tier_name} contains retired rater {cell!r}: {reason}")
+            for rater in raters:
+                reason = measured_worthless(rater) or measured_skill_only(rater)
+                if reason:
+                    raise RuntimeError(f"{tier_name} contains retired rater {cell!r}: {reason}")
 
 
 def normalize_legacy_rater(rater):
+    rater = RATER_ATTEMPT_RE.sub("", rater)
     # The Gemini flash rater was renamed agy-flash -> agy-flash36 (versioned).
     # Credit legacy persisted rows to the new id so --auto counts them as reviewed;
     # agy-flash35 is unaffected (its next char is a digit, not a dash).
     if rater.startswith("agy-flash-"):
         return "agy-flash36-" + rater[len("agy-flash-"):]
     return rater
+
+
+def collapse_rater_attempts(raters):
+    normalized = [normalize_legacy_rater(rater) for rater in raters]
+    counts = Counter(normalized)
+    ordered = dict.fromkeys(normalized)
+    return [
+        f"{rater} x{counts[rater]}" if counts[rater] > 1 else rater
+        for rater in ordered
+    ]
 
 
 def review_counts(rows):
@@ -686,7 +736,7 @@ def measured_worthless(rater):
     """
     if rater["model"] == "haiku":
         return "caught 0 defects across 11 recorded runs while producing 11 false claims"
-    return WORTHLESS_CELLS.get(rater["spec"])
+    return WORTHLESS_CELLS.get(normalize_legacy_rater(rater["spec"]))
 
 
 def refuse_retired_cells(raters):
@@ -1540,7 +1590,7 @@ def run_opencode(rater, repo, sha, focus, run_dir, diff, account, repeat=1, samp
             # The client's own buffered wall-clock cap must not fire before the cell's
             # deadline, or a legitimately slow generation dies with nothing received
             # while the cell still had time left.
-            env = dict(os.environ, OPENCODE_GO_MAX_WAIT_S=str(deadline))
+            env = opencode_env(account, OPENCODE_GO_MAX_WAIT_S=str(deadline))
             try:
                 proc = subprocess.run(
                     command, stdin=subprocess.DEVNULL, capture_output=True, text=True,
@@ -1801,11 +1851,6 @@ def unverified_row(index, finding, why):
 
 
 def verify_one(index, finding, repo, sha, model, lines, ref=None):
-    account = SIDE_FIXED_ACCOUNTS["opencode"]
-    # The verifier spends the same subscription the cells do, so it obeys the same
-    # stop-the-run rule; otherwise a wall fails every claim open and the run reads verified.
-    if is_walled("opencode", account):
-        return unverified_row(index, finding, "verifier walled off; finding kept unverified")
     prompt_file = tempfile.NamedTemporaryFile(
         mode="w", prefix="review-bench-verify-", suffix=".txt", delete=False
     )
@@ -1817,16 +1862,17 @@ def verify_one(index, finding, repo, sha, model, lines, ref=None):
         "--json", "--max-tokens", str(VERIFY_MAX_TOKENS), "--no-reasoning", "--retries", "2",
     ]
     OPENCODE_GATE.acquire(0)
-    proc, judgment, walled = None, None, False
+    account, proc, judgment, walled = None, None, None, False
     try:
-        # Re-checked after the gate for the same reason run_opencode does it: verifiers
-        # queued when the wall was set would each send one more doomed request.
-        if is_walled("opencode", account):
+        account = pool_account("opencode", set())
+        if account is None or is_walled("opencode", account):
             return unverified_row(
                 index, finding, "verifier walled off while queued; finding kept unverified"
             )
-        proc = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
-                              text=True, timeout=VERIFY_TIMEOUT_S)
+        proc = subprocess.run(
+            command, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            timeout=VERIFY_TIMEOUT_S, env=opencode_env(account)
+        )
         answer = ""
         if proc.returncode == 0:
             try:
@@ -1844,7 +1890,7 @@ def verify_one(index, finding, repo, sha, model, lines, ref=None):
         walled = bool(
             proc is not None and proc.returncode != 0 and opencode_usage_wall(proc.stderr)
         )
-        if walled:
+        if walled and account is not None:
             mark_walled("opencode", account)
         OPENCODE_GATE.release()
         Path(prompt_file.name).unlink(missing_ok=True)
@@ -2065,9 +2111,8 @@ SIDE_WALL = {
         re.search(r"\b429\b|usage limit|rate limit|quota exceeded", stderr or "", re.IGNORECASE)),
     "opencode": lambda rc, text, stderr: opencode_usage_wall(stderr),
 }
-# Sides billed as one subscription rather than per account, so worker-pick has nothing to say
-# about them and their single pseudo-account still flows through the shared wall handling.
-SIDE_FIXED_ACCOUNTS = {"grok": "supergrok", "opencode": "opencode-go"}
+# Grok has one subscription, so its pseudo-account still flows through shared wall handling.
+SIDE_FIXED_ACCOUNTS = {"grok": "supergrok"}
 
 
 # The pool is asked rather than reproduced: worker-pick's prose output is not a contract, and a
@@ -2115,6 +2160,12 @@ def baseline_exclusions(side):
 def pool_account(side, excluded):
     """The pool's next account for this side, or None when it has nothing left to offer."""
     excluded = set(excluded) | baseline_exclusions(side)
+    if side == "opencode":
+        for profile in opencode_profiles():
+            account = opencode_account(profile)
+            if account not in excluded and not is_walled(side, account):
+                return account
+        return None
     if side == "claude" and allow_session_account():
         # worker-pick never offers the session account, so the opt-in would otherwise grant a
         # permission the pool cannot act on. The account comes from the same table parse that
@@ -2397,6 +2448,15 @@ def refuse_unsupported_repeat(raters, repeat):
     """
     if not repeat or repeat <= 1:
         return
+    repeated = sorted({
+        RATER_ATTEMPT_RE.sub("", rater["spec"])
+        for rater in raters if RATER_ATTEMPT_RE.search(rater["spec"])
+    })
+    if repeated:
+        raise RuntimeError(
+            f"--repeat {repeat} cannot be combined with rater repetition (xN): "
+            f"{', '.join(repeated)}"
+        )
     ignored = sorted({rater["spec"] for rater in raters
                       if rater["side"] not in REPEAT_CAPABLE_SIDES})
     if ignored:
@@ -2446,7 +2506,8 @@ def cmd_run(args):
     refuse_unsupported_repeat(raters, args.repeat)
     print("selected raters:")
     for rater in raters:
-        print(f"  {rater['spec']}: {counts[rater['spec']]} recorded bench row(s)")
+        count = counts[normalize_legacy_rater(rater["spec"])]
+        print(f"  {rater['spec']}: {count} recorded bench row(s)")
     for spec, reason in skipped:
         print(f"skipped {spec}: {reason}")
 
@@ -2546,7 +2607,7 @@ def cmd_run(args):
             if model_resolved:
                 run_meta["model_resolved"] = model_resolved
             rater_meta.append(run_meta)
-            print(f"ERRORED (not recorded): {rater['spec']}; rerun: review-bench run {sha} --raters {rater['spec']}")
+            print(f"ERRORED (not recorded): {rater['spec']}")
         else:
             failed = failed or rc != 0
             paths.append(path)
@@ -2571,6 +2632,11 @@ def cmd_run(args):
         "verifier": verify_model or "",
     }
     (run_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
+    if errored_raters:
+        rerun = ",".join(collapse_rater_attempts(
+            rater["spec"] for rater in raters if rater["spec"] in errored_raters
+        ))
+        print(f"rerun: review-bench run {sha} --raters {shlex.quote(rerun)}")
     print(f"run id: {run_id}")
     handoff(run_id, paths)
     return 1 if (failed or errored_raters) else 0
@@ -3167,7 +3233,8 @@ def opencode_health():
             # Keyed by cell, not model: the whole point is that the configuration
             # decides whether a model works, so folding grok45 and grok45-low
             # together would hide exactly the effect worth watching.
-            entry = health.setdefault(row.get("rater"), {
+            rater = normalize_legacy_rater(row.get("rater") or "")
+            entry = health.setdefault(rater, {
                 "runs": 0, "errors": 0, "seconds": [], "findings": [], "last_error": "",
             })
             entry["runs"] += 1
@@ -3280,7 +3347,10 @@ def main():
     run.add_argument("commitish")
     run.add_argument("--repo", default=".")
     selection = run.add_mutually_exclusive_group()
-    selection.add_argument("--raters", help="Comma-separated rater specs")
+    selection.add_argument(
+        "--raters",
+        help="Comma-separated rater specs; append ' xN' with N from 2 to 9 to repeat a cell",
+    )
     selection.add_argument("--auto", type=int, metavar="N", help="Pick N least-reviewed cells")
     selection.add_argument(
         "--leg", action="store_true",
