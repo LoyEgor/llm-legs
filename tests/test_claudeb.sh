@@ -1114,9 +1114,11 @@ chmod +x "$FAKE_BIN/security" "$FAKE_BIN/claude" "$FAKE_BIN/curl"
 # --- token-freeze experiment: robots off the token endpoint, journal every attempt ---
 (
   fz_creds='{"claudeAiOauth":{"refreshToken":"rt-fz","accessToken":"at-fz","expiresAt":1,"scopes":["a"]}}'
+  fz_fresh_creds=$(printf '{"claudeAiOauth":{"refreshToken":"rt-fresh","accessToken":"at-fresh","expiresAt":%s,"scopes":["a"]}}' "$(((now + 3600) * 1000))")
+  fz_claude="$WORK/fz-claude-calls"
   cat >"$FAKE_BIN/security" <<EOF
 #!/usr/bin/env bash
-printf '%s' '$fz_creds'
+if [ -s '$fz_claude' ]; then printf '%s' '$fz_fresh_creds'; else printf '%s' '$fz_creds'; fi
 EOF
   fz_curl="$WORK/fz-curl-calls"
   cat >"$FAKE_BIN/curl" <<EOF
@@ -1124,10 +1126,19 @@ EOF
 printf 'called\n' >>'$fz_curl'
 case "\$*" in
   *'/v1/oauth/token'*) printf '{"access_token":"at-new","expires_in":3600,"refresh_token":"rt-new"}\n200' ;;
+  *'/api/oauth/usage'*)
+    previous=
+    output=
+    for argument in "\$@"; do
+      if [ "\$previous" = -o ]; then output="\$argument"; fi
+      previous="\$argument"
+    done
+    printf '{"five_hour":{"utilization":0,"resets_at":null},"seven_day":{"utilization":0,"resets_at":null},"limits":[]}' >"\$output"
+    printf '200'
+    ;;
   *) exit 97 ;;
 esac
 EOF
-  fz_claude="$WORK/fz-claude-calls"
   cat >"$FAKE_BIN/claude" <<EOF
 #!/usr/bin/env bash
 printf 'ran\n' >>'$fz_claude'
@@ -1170,16 +1181,25 @@ EOF
   assert jq -se 'any(.[]; .kind == "warm" and .account == "fzA")' "$token_attempts_file" >/dev/null
   assert grep -q 'warm skipped' "$WORK/fz-warm.err"
 
-  # 4: frozen single-explicit (menu Hard-refresh) warm still runs its CLI session.
   : >"$fz_claude"; : >"$token_attempts_file"
-  account_names() { printf 'fzM\n'; }
-  touch "$CLAUDEB_DIR/tokens/fzM"
-  CLAUDEB_WARM_USER_EXPLICIT=true warm_accounts fzM >/dev/null 2>&1 || true
-  assert test -s "$fz_claude"
-  rm -f "$CLAUDEB_DIR/tokens/fzM"
+  account_names() { printf 'fzM\nfzN\n'; }
+  touch "$CLAUDEB_DIR/tokens/fzM" "$CLAUDEB_DIR/tokens/fzN"
+  fz_manual_rc=0
+  CLAUDEB_WARM_USER_EXPLICIT=true warm_accounts fzM fzN >/dev/null 2>&1 || fz_manual_rc=$?
+  assert test "$fz_manual_rc" -eq 0
+  assert test "$(wc -l <"$fz_claude" | tr -d ' ')" -eq 2
+  assert_fails jq -se 'any(.[]; .kind == "warm" and .outcome == "frozen-skip")' "$token_attempts_file" >/dev/null
+  rm -f "$CLAUDEB_DIR/tokens/fzM" "$CLAUDEB_DIR/tokens/fzN"
+
+  # The user signal never exempts the direct curl refresh path.
+  : >"$fz_curl"; : >"$token_attempts_file"
+  if CLAUDEB_WARM_USER_EXPLICIT=true oauth_refresh alpha svc "$fz_creds" >/dev/null 2>&1; then fz_direct_rc=0; else fz_direct_rc=$?; fi
+  assert test "$fz_direct_rc" -eq 76
+  assert_fails test -s "$fz_curl"
+  assert jq -se 'any(.[]; .kind == "curl-refresh" and .outcome == "frozen-skip")' "$token_attempts_file" >/dev/null
 
   # 5: expired `until` behaves unfrozen — curl runs, rc is a real verdict not 76.
-  : >"$fz_curl"; : >"$token_attempts_file"
+  : >"$fz_curl"; : >"$fz_claude"; : >"$token_attempts_file"
   printf '{}' >"$oauth_attempts_file"
   printf '{"started_at":%s,"until":%s,"reason":"x"}\n' "$((now - 7200))" "$((now - 3600))" >"$token_freeze_file"
   if oauth_refresh alpha svc "$fz_creds" >/dev/null 2>&1; then fz_er=0; else fz_er=$?; fi
@@ -1276,6 +1296,8 @@ EOF
   printf '%s' "$eta_snapshot_before" >"$limits_dir/eta.json"
   heal_one "$heal_dir_eta" eta
   assert test "$(grep -cx warm "$ETA_WARM_LOG")" = 2
+  assert grep -Eq '^timestamp=.* outcome=failed exit_code=1$' "$CLAUDEB_DIR/warm-logs/eta.log"
+  assert grep -qx 'error: 429 too many requests' "$CLAUDEB_DIR/warm-logs/eta.log"
   assert_fails test -s "$ETA_TOKEN_LOG"
   assert jq -e '.marker == "untouched" and .five_hour.used_percentage == 5
     and .auth.status == "ok" and (.auth | has("cause") | not)' "$limits_dir/eta.json" >/dev/null
@@ -1479,10 +1501,12 @@ printf '{}' >"$oauth_attempts_file"
   printf '{}' >"$oauth_attempts_file"
   printf '{}' >"$limits_dir/zeta.json"
   : >"$token_attempts_file"
-  run_warm_session() { return 0; }
+  run_warm_session() { printf '{"result":"warm fixture"}\n' >"$3"; return 0; }
   assert warm_accounts zeta >/dev/null 2>"$WORK/warm-refresh-success.err"
   assert test "$(wc -l <"$warm_refresh_calls" | tr -d ' ')" = 1
   assert test "$(wc -l <"$warm_probe_calls" | tr -d ' ')" = 1
+  assert grep -Eq '^timestamp=.* outcome=success exit_code=0$' "$CLAUDEB_DIR/warm-logs/zeta.log"
+  assert grep -qx '{"result":"warm fixture"}' "$CLAUDEB_DIR/warm-logs/zeta.log"
   assert jq -e '.five_hour.used_percentage == 44 and .auth.status == "ok"' "$limits_dir/zeta.json" >/dev/null
   assert test "$(oauth_backoff_outcome zeta)" = ''
   # The CLI-only warm success journals kind warm (the real curl refresh on this

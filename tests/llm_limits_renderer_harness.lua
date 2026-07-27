@@ -470,6 +470,55 @@ end
 assert(deadErrorSeen, "structured vendor refresh error did not render")
 assert(errorModule.refreshState().prefix == "⚠ ", "vendor error did not warn in the title state")
 
+local entryCause = "alona: not refreshed (auto-refresh frozen (experiment) — enter the account to refresh)"
+local entryFixture = { schema = 1, vendors = {
+  claude = {
+    available = true,
+    source = "claudeb-store",
+    refresh_error = { cause = entryCause, at = os.time() - 600, needs_user_entry = true },
+    accounts = {{
+      account = "alona",
+      enabled = true,
+      as_of = os.date("!%Y-%m-%dT%H:%M:%SZ", os.time() - 600),
+      needs_user_entry = true,
+      five_hour = bucket(10, true),
+    }},
+  },
+  codex = { available = false },
+  gemini = { available = false },
+}}
+local entryModule = loadModule(entryFixture)
+assert(entryModule.refreshState().prefix == "",
+  "entry-only vendor error lit the global warning title")
+local entryMenu = entryModule.menuItems()
+local entryRow = accountItem(entryMenu, "alona")
+assert(titleText(entryRow):find("10m", 1, true) and titleText(entryRow):find("!", 1, true),
+  "entry-only account row lacks its age-adjacent ! marker")
+local entryErrorSeen = false
+for _, item in ipairs(entryMenu) do
+  if titleText(item):find("refresh failed", 1, true)
+      and titleText(item):find("auto-refresh frozen", 1, true) then
+    entryErrorSeen = true
+  end
+end
+assert(entryErrorSeen, "entry-only error text disappeared from the vendor section")
+
+local mixedFixture = { schema = 1, vendors = {
+  claude = {
+    available = true,
+    source = "claudeb-store",
+    refresh_error = {
+      cause = entryCause .. "; bree: not refreshed (network weather)",
+      at = os.time() - 600,
+    },
+    accounts = entryFixture.vendors.claude.accounts,
+  },
+  codex = { available = false },
+  gemini = { available = false },
+}}
+assert(loadModule(mixedFixture).refreshState().prefix == "⚠ ",
+  "mixed entry/fault vendor error did not light the global warning title")
+
 local clearModule = loadModule(fixture)
 assert(clearModule.refreshState().prefix == "", "successful cache retained a warning title")
 for _, item in ipairs(clearModule.menuItems()) do
@@ -841,9 +890,6 @@ do
   end
 end
 
--- The menu Hard-refresh is the sole freeze exemption signal: it must inject
--- CLAUDEB_WARM_USER_EXPLICIT=true into the collector env so llm-limits.sh's warm
--- inherits it, while a passive/full refresh (automation) must NOT set it.
 do
   local tasks = {}
   local mod = loadModule(function() return fixture end, captureTasks(tasks))
@@ -851,10 +897,18 @@ do
   assert(tasks[1] and tasks[1].env.CLAUDEB_WARM_USER_EXPLICIT == "true",
     "menu Hard refresh did not inject CLAUDEB_WARM_USER_EXPLICIT=true")
   while #tasks > 0 do table.remove(tasks) end
-  mod.menuItems()
-  for _, t in ipairs(tasks) do
-    assert(t.env.CLAUDEB_WARM_USER_EXPLICIT == nil,
-      "a passive/automated refresh wrongly set the manual-warm freeze exemption")
+  local menu = mod.menuItems()
+  assert(tasks[1] and tasks[1].env.CLAUDEB_WARM_USER_EXPLICIT == nil,
+    "passive menu collect inherited the manual-warm freeze exemption")
+  for _, item in ipairs(menu) do
+    if titleText(item) == "Refresh" or titleText(item) == "Refresh + Start Windows" then
+      item.fn()
+    end
+  end
+  assert(#tasks == 3, "global menu refresh actions did not start two collector tasks")
+  for index = 2, 3 do
+    assert(tasks[index].env.CLAUDEB_WARM_USER_EXPLICIT == "true",
+      "global menu refresh did not inject CLAUDEB_WARM_USER_EXPLICIT=true")
   end
 end
 
@@ -1252,13 +1306,13 @@ assert(#watchTasks == 3 and watchStarts == 3, "worker-model watcher did not refr
 
 local experimentFixture = {
   schema = 1,
-  experiments = { "EXPERIMENT token-freeze until 2026-07-27 — temporary, see EXPERIMENTS.json" },
+  experiments = { "EXPERIMENT token-freeze until 2026-08-03 — temporary, see EXPERIMENTS.json" },
   vendors = { claude = { available = false }, codex = { available = false }, gemini = { available = false } },
 }
 local experimentMenu = loadModule(experimentFixture).menuItems()
 local announcedRow
 for _, item in ipairs(experimentMenu) do
-  if titleText(item):match("EXPERIMENT token%-freeze until 2026%-07%-27") then announcedRow = item end
+  if titleText(item):match("EXPERIMENT token%-freeze until 2026%-08%-03") then announcedRow = item end
 end
 assert(announcedRow, "an active experiment is not announced in the menu")
 assert(announcedRow.disabled == true, "the experiment announcement must not be clickable")

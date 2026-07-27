@@ -151,7 +151,7 @@ claude_stale_cause() {
   if token_freeze_active_at "$(dirname "$attempts_file")"; then
     # Freeze outranks a stale pre-freeze 429 (or generic weather/stale) cause:
     # the endpoint is frozen this run, so nothing is really "rate-limited".
-    printf 'auto-refresh frozen (experiment); enter the account to refresh'
+    printf 'auto-refresh frozen (experiment) — enter the account to refresh'
   elif [ "$kind" = 429 ]; then
     if [ "$value" -le "${now_epoch:-$(date +%s)}" ] 2>/dev/null; then
       printf 'token rate-limited, retrying'
@@ -818,7 +818,7 @@ if [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
       (if $current.weekly then {weekly:$current.weekly} else {} end) +
       (if $current.fable then {fable:$current.fable} else {} end)) as $claude |
       {claude:$claude,auth_failures:([$accounts[] | select(.auth.status? == "expired") |
-        (.account + " auth" + (if (.auth.cause? // "") == "" then "" else " (" + .auth.cause + ")" end))] | join(", "))}')
+        (.account + " auth" + (if (.auth.cause? // "") == "" then "" else " (" + .auth.cause + ")" end))] | join("; "))}')
     claude=$(jq -c .claude <<<"$claude_bundle")
     auth_failures=$(jq -r .auth_failures <<<"$claude_bundle")
     if [ "$claude_refresh_attempted" -eq 1 ] && [ -n "$auth_failures" ]; then
@@ -916,7 +916,7 @@ codex_refresh_attempted=0
 refresh_codex_quota() {
   local target=${1:-} codex_quota_cmd=${LLM_LIMITS_CODEX_QUOTA_CMD:-$script_dir/codex-quota.py}
   local codex_tmp codex_err detail rc old_current cause
-  local -a helper_args=()
+  local -a helper_args=(--all-accounts)
   if [ ! -x "$codex_quota_cmd" ]; then
     codex_refresh_error='helper not executable'
     echo "llm-limits.sh: Codex quota helper is not executable: $codex_quota_cmd" >&2
@@ -933,9 +933,12 @@ refresh_codex_quota() {
     helper_args=(--profile "$target" --no-cache)
   fi
   rc=0
-  # ${arr[@]+...} keeps bash 3.2 (set -u) from dying on the empty no-target case;
-  # the menu's hs.task PATH resolves `env bash` to /bin/bash 3.2, not homebrew 5.
-  "$codex_quota_cmd" ${helper_args[@]+"${helper_args[@]}"} >"$codex_tmp" 2>"$codex_err" || rc=$?
+  if [ -n "$target" ]; then
+    "$codex_quota_cmd" "${helper_args[@]}" >"$codex_tmp" 2>"$codex_err" || rc=$?
+  else
+    CODEX_QUOTA_TIMEOUT="${LLM_LIMITS_CODEX_QUOTA_TIMEOUT:-10}" \
+      "$codex_quota_cmd" "${helper_args[@]}" >"$codex_tmp" 2>"$codex_err" || rc=$?
+  fi
   if [ "$rc" -eq 0 ] &&
     jq -e '([.rateLimits.primary?, .rateLimits.secondary?]
             | any((.usedPercent | type) == "number")) or
@@ -1377,6 +1380,64 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
     if $attempted == 1 then
       if $cause == "" then null else {cause:$cause,at:$now} end
     else old_error($old) end;
+  def user_entry_cause:
+    . == "auto-refresh frozen (experiment) — enter the account to refresh" or
+    . == "needs-relogin" or . == "needs re-login" or
+    startswith("login needed");
+  def user_entry_error:
+    if (.cause | type) != "string" then false
+    else
+      [.cause | split("; ")[] |
+       if test("^[^:]+: not refreshed \\(.*\\)$") then
+         capture("^[^:]+: not refreshed \\((?<detail>.*)\\)$").detail | user_entry_cause
+       elif test("^[^:]+: login needed(?: \\(.*\\))?$") then
+         capture("^[^:]+: (?<detail>.*)$").detail | user_entry_cause
+       elif test("^.+ auth(?: \\(.*\\))?$") then true
+       else user_entry_cause
+       end] as $classes |
+      ($classes | length) > 0 and all($classes[]; .)
+    end;
+  def classify_error:
+    if (. | type) == "object" and user_entry_error
+    then . + {needs_user_entry:true}
+    elif (. | type) == "object" then del(.needs_user_entry)
+    else .
+    end;
+  def mark_user_entry_accounts($vendor):
+    if (.accounts | type) != "array" then
+      if .auth_needed == true or (.refresh_error.needs_user_entry // false)
+      then . + {needs_user_entry:true}
+      else del(.needs_user_entry) end
+    elif $vendor == "claude" then
+      ([.refresh_error.cause // "" | split("; ")[] |
+        if test("^[^:]+: not refreshed \\(.*\\)$") then
+          capture("^(?<account>[^:]+): not refreshed \\((?<detail>.*)\\)$") |
+          select(.detail | user_entry_cause) | .account
+        elif test("^.+ auth(?: \\(.*\\))?$") then
+          capture("^(?<account>.+) auth(?: \\(.*\\))?$").account
+        else empty
+        end]) as $accounts |
+      .accounts |= map(.account as $account |
+        if .auth_needed == true or ($accounts | index($account))
+        then . + {needs_user_entry:true}
+        else del(.needs_user_entry) end)
+    elif $vendor == "gemini" then
+      .accounts |= map(
+        if (.refresh_error | type) == "object" then
+          (.refresh_error |= classify_error) |
+          if .auth_needed == true
+          then . + {needs_user_entry:true} | .refresh_error.needs_user_entry = true
+          elif .refresh_error.needs_user_entry == true
+          then . + {needs_user_entry:true}
+          else del(.needs_user_entry) end
+        elif .auth_needed == true then . + {needs_user_entry:true}
+        else del(.needs_user_entry)
+        end)
+    else
+      .accounts |= map(
+        if .auth_needed == true then . + {needs_user_entry:true}
+        else del(.needs_user_entry) end)
+    end;
   # A "<name>: not refreshed (...)" entry self-clears once its snapshot as_of moves past the failed run; other shapes are unprovable-healed, carried verbatim.
   def heal_claude_error($err; $accounts):
     if ($err | type) != "object" or ($err.cause | type) != "string" or ($err.at | type) != "number" then $err
@@ -1409,6 +1470,10 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
   | if $codex_outcome == null then . else .vendors.codex.refresh_error = $codex_outcome end
   | if $gemini_outcome == null then . else .vendors.gemini.refresh_error = $gemini_outcome end
   | if .vendors.gemini.removed == true then .vendors.gemini |= del(.refresh_error) else . end
+  | .vendors |= with_entries(
+      (if (.value.refresh_error | type) == "object"
+       then .value.refresh_error |= classify_error else . end) |
+      .key as $key | .value |= mark_user_entry_accounts($key))
   | .vendors |= with_entries(if .value.available == true then .value += {stale: (.value | vendor_stale)} else . end)
   | walk(mark)
   | .vendors |= with_entries(.key as $key | .value.usable_now = (.value | vendor_usable($key)))

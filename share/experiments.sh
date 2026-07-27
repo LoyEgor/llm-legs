@@ -1,16 +1,19 @@
 # Active-experiment surfacing (registry: EXPERIMENTS.json; rules: the `experiment` skill).
 #
-# Liveness comes from the marker file, never from the review date: an experiment that
-# outlived its deadline is the case that most needs announcing, so it gets LOUDER
-# (OVERDUE) rather than dropped. A marker whose numeric `until` has passed is spent — the
-# experiment self-resumed and stops advertising itself (invariant f semantics).
+# Liveness comes from the marker file, never from the review date. A live experiment
+# inside its review window stays OFF the banner (the owner reads these surfaces daily and
+# an "until" line he cannot act on is noise; the affected sites announce themselves, e.g.
+# the frozen stale-cause) — the banner's job is the OVERDUE line that forces a decision.
+# An experiment with no review date cannot ever become overdue, so it keeps announcing.
+# A marker whose numeric `until` has passed is spent — the experiment self-resumed and
+# stops advertising itself (invariant f semantics).
 
 experiments_registry_path() {
   printf '%s\n' "${EXPERIMENTS_REGISTRY:-$1/EXPERIMENTS.json}"
 }
 
 experiments_active_lines() {
-  local registry="$1" today="${EXPERIMENTS_TODAY_OVERRIDE:-$(date '+%Y-%m-%d')}" id review marker home
+  local registry="$1" today="${EXPERIMENTS_TODAY_OVERRIDE:-$(date '+%Y-%m-%d')}" line rest id review marker home
   [ -e "$registry" ] || return 0
   # A stray comma must not read as "no experiments running": say the registry is unreadable.
   if ! jq -e 'type == "array"' "$registry" >/dev/null 2>&1; then
@@ -18,16 +21,20 @@ experiments_active_lines() {
     return 0
   fi
   home="${HOME:-}"
-  while IFS=$'\t' read -r id review marker; do
+  # Manual tab splitting: `IFS=$'\t' read` collapses adjacent tabs, so an empty
+  # review_by would shift the marker path into the review field.
+  while IFS= read -r line; do
+    id=${line%%$'\t'*}; rest=${line#*$'\t'}
+    review=${rest%%$'\t'*}; marker=${rest#*$'\t'}
     [ -n "$id" ] || continue
     if [ -n "$marker" ]; then
       case "$marker" in "~/"*) marker="$home/${marker#\~/}" ;; esac
       experiments_marker_live "$marker" || continue
     fi
-    if [ -n "$review" ] && [ "$review" \< "$today" ]; then
-      printf 'EXPERIMENT %s OVERDUE since %s — decide: remove or extend (EXPERIMENTS.json)\n' "$id" "$review"
-    else
+    if [ -z "$review" ]; then
       printf 'EXPERIMENT %s until %s — temporary, see EXPERIMENTS.json\n' "$id" "$review"
+    elif [ "$review" \< "$today" ]; then
+      printf 'EXPERIMENT %s OVERDUE since %s — decide: remove or extend (EXPERIMENTS.json)\n' "$id" "$review"
     fi
   done < <(jq -r '.[]? | [(.id // ""), (.review_by // ""), (.state_marker // "")] | @tsv' "$registry" 2>/dev/null)
 }

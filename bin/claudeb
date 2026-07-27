@@ -1848,6 +1848,24 @@ run_warm_session() {
     claude -p "$prompt" "$@" --output-format json >"$output" 2>&1
 }
 
+persist_warm_output() {
+  local name="$1" rc="$2" output="$3" log_dir="$base_dir/warm-logs" temporary outcome
+  [ "$rc" -eq 0 ] && outcome=success || outcome=failed
+  mkdir -p "$log_dir" || return 1
+  temporary=$(mktemp "$log_dir/.${name}.log.XXXXXX") || return 1
+  {
+    printf 'timestamp=%s outcome=%s exit_code=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$outcome" "$rc"
+    cat "$output"
+  } >"$temporary" || {
+    rm -f "$temporary"
+    return 1
+  }
+  if ! mv -f "$temporary" "$log_dir/$name.log"; then
+    rm -f "$temporary"
+    return 1
+  fi
+}
+
 warm_failure() {
   local name="$1" cause="$2" detail="$3"
   if [ "${warm_single_explicit:-false}" = true ]; then
@@ -1881,10 +1899,8 @@ warm_accounts() {
   fi
   warm_single_explicit=false
   if [ "$explicit" = true ] && [ "${#names[@]}" -eq 1 ]; then warm_single_explicit=true; fi
-  # warm_single_explicit is also true for heal_one's internal single-account warm,
-  # which is automation, not the user; only a warm invoked from the top-level `warm`
-  # subcommand (the menu Hard-refresh) may run a CLI session while frozen.
-  if [ "$warm_single_explicit" = true ] && [ "${CLAUDEB_WARM_USER_EXPLICIT:-false}" = true ]; then warm_manual_explicit=true; fi
+  # Every refresh menu click supplies this signal; background callers do not.
+  if [ "${CLAUDEB_WARM_USER_EXPLICIT:-false}" = true ]; then warm_manual_explicit=true; fi
   if [ "$warm_manual_explicit" != true ] && token_freeze_active; then
     for name in "${names[@]}"; do
       # An account that does not exist is a failure whether or not the freeze is on: skipping
@@ -1951,6 +1967,9 @@ warm_accounts() {
       && [ "${CLAUDEB_WARM_ALLOW_PAID:-false}" = true ] && [ "${CLAUDEB_WARM_FREE_ONLY:-false}" != true ]; then
       session_rc=0
       if run_warm_session "$dir" "$name" "$output" ok --model haiku; then :; else session_rc=$?; fi
+    fi
+    if ! persist_warm_output "$name" "$session_rc" "$output"; then
+      printf 'claudeb: %s: failed to persist warm output\n' "$name" >&2
     fi
     if [ "$session_rc" -ne 0 ]; then
       reason="session exit $session_rc"
@@ -2492,11 +2511,8 @@ case "${1:-}" in
     for warm_arg in "$@"; do
       case "$warm_arg" in --start-window) ;; *) warm_target_count=$((warm_target_count + 1)) ;; esac
     done
-    # The freeze manual-exemption is NOT granted by reaching this subcommand — that
-    # cannot tell a human's menu Hard-refresh from a script (llm-limits
-    # --refresh-account, review-bench) calling the same `warm`. Only the genuine
-    # user path sets CLAUDEB_WARM_USER_EXPLICIT=true in the environment (the menu
-    # injects it); here we merely honor whatever the caller inherited.
+    # Reaching this subcommand does not prove a user click; menu refreshes carry the
+    # explicit signal in their child environment.
     if [ "$warm_target_count" -eq 1 ]; then
       CLAUDEB_OAUTH_BYPASS_BACKOFF=true warm_accounts "$@"
     else

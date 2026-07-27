@@ -27,15 +27,17 @@ local function infoTitle(text, warning, gray, atLimit)
   return hs.styledtext.new(text, attributes)
 end
 
-local function loginNeededTitle(account, pinned)
+local function loginNeededTitle(account, pinned, age, needsUserEntry)
   local title = infoTitle(account)
+  if age then title = title .. infoTitle("  " .. age, false, true) end
+  if needsUserEntry then title = title .. infoTitle("  !", false, true) end
   if pinned then title = title .. infoTitle("  ●", false, true) end
   return title .. infoTitle("  login needed", false, true)
 end
 
 -- Keep logged-out vendor actions in one constructor so their UX cannot drift; a pin action is
 -- clear-only because logged-out accounts must never become newly pinnable.
-local function loginNeededRow(label, loginFn, hardRefreshFn, removeFn, clearPinFn)
+local function loginNeededRow(label, loginFn, hardRefreshFn, removeFn, clearPinFn, age, needsUserEntry)
   local menu = {
     { title = "Log in…", fn = loginFn },
     { title = "Hard refresh", fn = hardRefreshFn },
@@ -50,17 +52,20 @@ local function loginNeededRow(label, loginFn, hardRefreshFn, removeFn, clearPinF
       { title = "Confirm remove " .. label, fn = removeFn },
     } })
   end
-  return { title = loginNeededTitle(label, clearPinFn ~= nil), menu = menu }
+  return {
+    title = loginNeededTitle(label, clearPinFn ~= nil, age, needsUserEntry),
+    menu = menu,
+  }
 end
 
-local function geminiLoginNeededRow(label, account, pinned)
+local function geminiLoginNeededRow(label, account, pinned, age, needsUserEntry)
   local clearPinFn
   if pinned then clearPinFn = function() M.pinGemini(account, true) end end
   return loginNeededRow(label,
     function() M.loginGemini(account) end,
     function() M.hardRefreshGemini(account) end,
     function() M.removeGemini(account) end,
-    clearPinFn)
+    clearPinFn, age, needsUserEntry)
 end
 
 local function truncateText(text, maxLength)
@@ -141,10 +146,13 @@ local function formatAccountAge(value)
   return string.format("%dd", math.floor(hours / 24))
 end
 
-local function accountTitle(text, age, atLimit)
+local function accountTitle(text, age, atLimit, needsUserEntry)
   local title = infoTitle(text, false, false, atLimit)
   if age then
     title = title .. infoTitle("  " .. age, false, true)
+  end
+  if needsUserEntry then
+    title = title .. infoTitle("  !", false, true)
   end
   return title
 end
@@ -287,7 +295,11 @@ local runtimeGlobalError = nil
 
 local function errorState(value)
   if type(value) == "table" and type(value.cause) == "string" then
-    return { cause = value.cause, at = tonumber(value.at) }
+    return {
+      cause = value.cause,
+      at = tonumber(value.at),
+      needsUserEntry = value.needs_user_entry == true,
+    }
   end
   if type(value) == "string" and value ~= "" then
     return { cause = value }
@@ -447,7 +459,15 @@ function M.refreshState()
       if err then vendorErrors[name] = err end
     end
   end
-  local warning = globalError ~= nil or next(vendorErrors) ~= nil
+  local warning = globalError ~= nil
+  if not warning then
+    for _, err in pairs(vendorErrors) do
+      if not err.needsUserEntry then
+        warning = true
+        break
+      end
+    end
+  end
   return {
     busy = busy,
     warning = warning,
@@ -586,9 +606,7 @@ local function refreshData(args, kind, budget, key, envExtra)
   startTask(id, task, "collector could not start")
 end
 
--- The menu Hard-refresh IS the genuine user signal that exempts a claudeb warm
--- from the token freeze; inject it into the child env so llm-limits.sh's warm
--- inherits it. Automated refreshes never pass through here, so they stay frozen.
+-- A refresh menu click is the user signal that exempts claudeb warms from the freeze.
 local function hardRefresh(target, startWindows)
   local args = { "--refresh-account", target }
   if startWindows then table.insert(args, "--start-windows") end
@@ -643,13 +661,17 @@ local function refreshItems(menu)
   table.insert(menu, {
     title = "Refresh",
     disabled = M.refreshState().busy,
-    fn = function() refreshData({ "--refresh" }, "refresh", 360, "refresh") end,
+    fn = function()
+      refreshData({ "--refresh" }, "refresh", 360, "refresh",
+        { CLAUDEB_WARM_USER_EXPLICIT = "true" })
+    end,
   })
   table.insert(menu, {
     title = "Refresh + Start Windows",
     disabled = M.refreshState().busy,
     fn = function()
-      refreshData({ "--refresh", "--start-windows" }, "start-windows", 1200, "start-windows")
+      refreshData({ "--refresh", "--start-windows" }, "start-windows", 1200, "start-windows",
+        { CLAUDEB_WARM_USER_EXPLICIT = "true" })
     end,
   })
 end
@@ -840,11 +862,13 @@ function M.menuItems()
         local authNeeded = type(vendor) == "table" and vendor.auth_needed == true
         local unavailableRow
         if entry.key == "gemini" and authNeeded then
-          unavailableRow = geminiLoginNeededRow(entry.label, "main", pinnedAccount == "main")
+          unavailableRow = geminiLoginNeededRow(entry.label, "main", pinnedAccount == "main",
+            formatAccountAge(vendor.as_of), vendor.needs_user_entry == true)
           renderedPin = pinnedAccount == "main"
         else
           unavailableRow = {
-            title = authNeeded and loginNeededTitle(entry.label, false)
+            title = authNeeded and loginNeededTitle(entry.label, false,
+              formatAccountAge(vendor.as_of), vendor.needs_user_entry == true)
               or infoTitle(string.format("%-6s  no live data", entry.label)),
             disabled = true,
           }
@@ -884,7 +908,8 @@ function M.menuItems()
           })
         else
           local fallbackRow = {
-            title = accountTitle(entry.label, formatAccountAge(vendor.as_of)),
+            title = accountTitle(entry.label, formatAccountAge(vendor.as_of), false,
+              vendor.needs_user_entry == true),
             disabled = true,
           }
           local account = vendor.current_account or vendor.account
@@ -927,7 +952,7 @@ function M.menuItems()
           local acct = block.account or entry.label
           local enabled = block.enabled ~= false
           local authNeeded = block.auth_needed == true
-          local accountAge = not authNeeded and formatAccountAge(block.as_of) or nil
+          local accountAge = formatAccountAge(block.as_of)
           local generalAtLimit = bucketAtLimit(fiveHour) or bucketAtLimit(weekly)
           local pinExists = pins[entry.key] == acct
           local pinHonoured = pinExists and block.removed ~= true
@@ -958,15 +983,18 @@ function M.menuItems()
                 -- codexb refuses to remove `main` (the real ~/.codex); no Remove item.
                 if acct ~= "main" then removeFn = function() M.removeCodex(acct) end end
               else
-                accountRow = geminiLoginNeededRow(acct, acct, pinExists)
+                accountRow = geminiLoginNeededRow(acct, acct, pinExists,
+                  accountAge, block.needs_user_entry == true)
               end
               if not accountRow then
                 local clearPinFn
                 if pinExists then clearPinFn = function() pinFn(true) end end
-                accountRow = loginNeededRow(acct, loginFn, hardRefreshFn, removeFn, clearPinFn)
+                accountRow = loginNeededRow(acct, loginFn, hardRefreshFn, removeFn, clearPinFn,
+                  accountAge, block.needs_user_entry == true)
               end
             else
-              local title = accountTitle(acct .. resetSuffix, accountAge, generalAtLimit)
+              local title = accountTitle(acct .. resetSuffix, accountAge, generalAtLimit,
+                block.needs_user_entry == true)
               if pinExists then
                 title = title .. infoTitle("  ●", false, not pinHonoured)
               end

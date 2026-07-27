@@ -137,6 +137,7 @@ rc=$?
 [ "$rc" -eq 0 ] || fail "failed Gemini account refresh: expected partial exit 0, got $rc"
 jq -e --arg asof "$gemini_asof_before" \
   '.vendors.gemini.as_of == $asof and .vendors.gemini.refresh_error.cause == "live query failed" and
+   (.vendors.gemini.refresh_error | has("needs_user_entry") | not) and
    (.vendors.gemini.refresh_error.at | type) == "number"' \
   <<<"$gemini_failed" >/dev/null || fail "failed Gemini account refresh advanced real-data as_of or hid its error"
 printf '%s\n' "$gemini_cache_saved" >"$GEMINI_CACHE"
@@ -159,7 +160,9 @@ rc=$?
 [ "$rc" -eq 0 ] || fail "logged-out Gemini refresh: expected exit 0, got $rc"
 jq -e '.vendors.gemini.auth_needed == true and .vendors.gemini.available == false and
   .vendors.gemini.status == "login needed" and .vendors.gemini.usable_now == false and
+  .vendors.gemini.needs_user_entry == true and
   .vendors.gemini.refresh_error.cause == "login needed (not signed in)" and
+  .vendors.gemini.refresh_error.needs_user_entry == true and
   (.vendors.gemini.refresh_error.at | type) == "number"' <<<"$gemini_auth" >/dev/null \
   || fail "logged-out Gemini did not surface its login-needed cause as a refresh_error"
 jq -e '.auth_needed == true and .detail == "not signed in" and (.groups[0].buckets | length) == 2' "$GEMINI_CACHE" >/dev/null \
@@ -176,7 +179,9 @@ grep -q '^gemini: .* | status login needed' <<<"$gemini_auth_plain" \
 gemini_auth_passive=$(LLM_LIMITS_GEMINI_REFRESH=0 LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
   HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" /bin/bash "$SCRIPT" --json)
 jq -e '.vendors.gemini.auth_needed == true and
-  .vendors.gemini.refresh_error.cause == "login needed (not signed in)"' <<<"$gemini_auth_passive" >/dev/null \
+  .vendors.gemini.needs_user_entry == true and
+  .vendors.gemini.refresh_error.cause == "login needed (not signed in)" and
+  .vendors.gemini.refresh_error.needs_user_entry == true' <<<"$gemini_auth_passive" >/dev/null \
   || fail "logged-out Gemini lost its login-needed cause on a passive collect"
 gemini_recovered=$(LLM_LIMITS_GEMINI_REFRESH=1 LLM_LIMITS_GEMINI_CMD="$GEMINI_HELPER" \
   LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" \
@@ -324,6 +329,7 @@ multi_auth=$(GEMINIB_PROFILES_DIR="$GEMINI_PROFILES" \
   /bin/bash "$SCRIPT" --refresh-account gemini/work --json)
 jq -e '[.vendors.gemini.accounts[] | select(.account == "work")][0] |
   .auth_needed == true and .status == "login needed" and
+  .needs_user_entry == true and .refresh_error.needs_user_entry == true and
   .refresh_error.cause == "login needed (profile signed out)" and
   .weekly.used_pct == 50' <<<"$multi_auth" >/dev/null \
   || fail "Gemini profile login-needed state lost its cache or cause"
@@ -333,8 +339,9 @@ multi_main_recovered=$(GEMINI_SENTINEL="$GEMINI_SENTINEL" GEMINIB_PROFILES_DIR="
   HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" \
   /bin/bash "$SCRIPT" --refresh-account gemini/main --json)
 jq -e '.vendors.gemini.refresh_error.cause == "work: login needed (profile signed out)" and
+  .vendors.gemini.refresh_error.needs_user_entry == true and
   ([.vendors.gemini.accounts[] | select(.account == "work")][0] |
-   .auth_needed == true and .status == "login needed" and
+   .auth_needed == true and .status == "login needed" and .needs_user_entry == true and
    .refresh_error.cause == "login needed (profile signed out)")' \
   <<<"$multi_main_recovered" >/dev/null \
   || fail "targeted Gemini refresh dropped an untouched profile status or refresh_error"
@@ -344,7 +351,8 @@ multi_all_auth=$(GEMINIB_PROFILES_DIR="$GEMINI_PROFILES" \
   HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" \
   /bin/bash "$SCRIPT" --refresh-account gemini/main --json)
 jq -e '.vendors.gemini.available == false and .vendors.gemini.auth_needed == true and
-  ([.vendors.gemini.accounts[] | select(.auth_needed == true)] | length) == 2' \
+  ([.vendors.gemini.accounts[] | select(.auth_needed == true and .needs_user_entry == true and
+    .refresh_error.needs_user_entry == true)] | length) == 2' \
   <<<"$multi_all_auth" >/dev/null || fail "all logged-out Gemini profiles were replaced by stale availability"
 GEMINIB_PROFILES_DIR="$GEMINI_PROFILES" \
   LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$GEMINI_ACCOUNTS_CACHE" LLM_LIMITS_GEMINI_REFRESH=1 \
@@ -700,6 +708,44 @@ HOME="$HOME_FIXTURE" CLAUDEB_DIR="$STALE_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/cl
 jq -e '.vendors.claude | has("refresh_error") | not' "$STALE_CACHE" >/dev/null \
   || fail "fully fresh refresh did not clear the residual-staleness cause"
 
+AUTH_CLASS_STORE="$WORK/claudeb-auth-class-store"
+mkdir -p "$AUTH_CLASS_STORE/limits" "$AUTH_CLASS_STORE/tokens"
+: >"$AUTH_CLASS_STORE/tokens/alpha"
+printf 'alpha\n' >"$AUTH_CLASS_STORE/.claudeb-state"
+printf '{"five_hour":{"used_percentage":7,"resets_at":%s,"as_of":%s,"origin":"usage"},"auth":{"status":"expired","checked_at":%s,"cause":"needs re-login"}}\n' \
+  "$((now + 5000))" "$now" "$now" >"$AUTH_CLASS_STORE/limits/alpha.json"
+AUTH_CLASS_CACHE="$WORK/auth-class-cache.json"
+HOME="$HOME_FIXTURE" CLAUDEB_DIR="$AUTH_CLASS_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-noop" \
+  LLM_LIMITS_CACHE="$AUTH_CLASS_CACHE" /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1 || true
+jq -e '.vendors.claude.refresh_error.cause == "alpha auth (needs re-login)" and
+  .vendors.claude.refresh_error.needs_user_entry == true and
+  ([.vendors.claude.accounts[] | select(.account == "alpha")][0].needs_user_entry == true)' \
+  "$AUTH_CLASS_CACHE" >/dev/null || fail "single Claude auth fragment was not classified for user entry"
+: >"$AUTH_CLASS_STORE/tokens/beta"
+printf '{"five_hour":{"used_percentage":9,"resets_at":%s,"as_of":%s,"origin":"usage"},"auth":{"status":"expired","checked_at":%s}}\n' \
+  "$((now + 5000))" "$now" "$now" >"$AUTH_CLASS_STORE/limits/beta.json"
+HOME="$HOME_FIXTURE" CLAUDEB_DIR="$AUTH_CLASS_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-noop" \
+  LLM_LIMITS_CACHE="$AUTH_CLASS_CACHE" /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1 || true
+jq -e '.vendors.claude.refresh_error.cause == "alpha auth (needs re-login); beta auth" and
+  .vendors.claude.refresh_error.needs_user_entry == true and
+  ([.vendors.claude.accounts[] |
+    select((.account == "alpha" or .account == "beta") and .needs_user_entry == true)] | length) == 2' \
+  "$AUTH_CLASS_CACHE" >/dev/null || fail "multiple Claude auth fragments lost classification or separator"
+: >"$AUTH_CLASS_STORE/tokens/network"
+printf '{"five_hour":{"used_percentage":11,"resets_at":%s,"as_of":%s,"origin":"usage"},"auth":{"status":"ok","checked_at":%s}}\n' \
+  "$((now + 5000))" "$((now - 3600))" "$now" >"$AUTH_CLASS_STORE/limits/network.json"
+printf '{"network":{"attempted_at":%s,"outcome":"weather","retry_after_until":0}}\n' "$now" \
+  >"$AUTH_CLASS_STORE/oauth-attempts.json"
+HOME="$HOME_FIXTURE" CLAUDEB_DIR="$AUTH_CLASS_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-noop" \
+  LLM_LIMITS_CACHE="$AUTH_CLASS_CACHE" /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1 || true
+jq -e '(.vendors.claude.refresh_error.cause |
+    contains("alpha auth (needs re-login); beta auth; network: not refreshed (network weather)")) and
+  (.vendors.claude.refresh_error | has("needs_user_entry") | not) and
+  ([.vendors.claude.accounts[] |
+    select((.account == "alpha" or .account == "beta") and .needs_user_entry == true)] | length) == 2 and
+  ([.vendors.claude.accounts[] | select(.account == "network")][0].needs_user_entry // false) == false' \
+  "$AUTH_CLASS_CACHE" >/dev/null || fail "mixed Claude entry/fault cause was globally misclassified"
+
 # token-freeze experiment: a dark (stale) account renders the honest frozen cause,
 # never a generic "probe failed"; an expired `until` reverts to the normal cause.
 FREEZE_STORE="$WORK/claudeb-freeze-store"
@@ -712,13 +758,21 @@ printf '{"started_at":%s,"reason":"token-freeze experiment"}\n' "$now" >"$FREEZE
 FREEZE_CACHE="$WORK/freeze-cache.json"
 HOME="$HOME_FIXTURE" CLAUDEB_DIR="$FREEZE_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-noop" \
   LLM_LIMITS_CACHE="$FREEZE_CACHE" /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1 || true
-jq -e '.vendors.claude.refresh_error.cause | contains("auto-refresh frozen (experiment); enter the account to refresh")' "$FREEZE_CACHE" >/dev/null \
+jq -e '.vendors.claude.refresh_error.cause |
+  contains("auto-refresh frozen (experiment) — enter the account to refresh")' "$FREEZE_CACHE" >/dev/null \
   || fail "frozen dark account not surfaced with the honest freeze cause"
+jq -e '.vendors.claude.refresh_error.needs_user_entry == true and
+  ([.vendors.claude.accounts[] | select(.account == "frz")][0].needs_user_entry == true) and
+  (.vendors.claude.refresh_error.cause | contains("; ") | not)' "$FREEZE_CACHE" >/dev/null \
+  || fail "frozen stale cause was not classed for account entry or contained the join separator"
 printf '{"started_at":%s,"until":%s,"reason":"x"}\n' "$((now - 7200))" "$((now - 3600))" >"$FREEZE_STORE/token-freeze"
 HOME="$HOME_FIXTURE" CLAUDEB_DIR="$FREEZE_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-noop" \
   LLM_LIMITS_CACHE="$FREEZE_CACHE" /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1 || true
 jq -e '(.vendors.claude.refresh_error.cause // "" | contains("auto-refresh frozen")) | not' "$FREEZE_CACHE" >/dev/null \
   || fail "expired token-freeze until must render as unfrozen"
+jq -e '(.vendors.claude.refresh_error.needs_user_entry // false) == false and
+       ([.vendors.claude.accounts[] | select(.account == "frz")][0].needs_user_entry // false) == false' \
+  "$FREEZE_CACHE" >/dev/null || fail "expired token-freeze retained the user-entry classification"
 
 # Regression: a STALE pre-freeze 429 entry must not mask the active freeze — the
 # endpoint is frozen this run, so "token rate-limited" would be a lie. (This is the
@@ -739,6 +793,10 @@ HOME="$HOME_FIXTURE" CLAUDEB_DIR="$FREEZE_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/c
 jq -e '(.vendors.claude.refresh_error.cause | contains("needs re-login"))
        and (.vendors.claude.refresh_error.cause | contains("auto-refresh frozen") | not)' "$FREEZE_CACHE" >/dev/null \
   || fail "auth-shaped cause hidden by the frozen message"
+jq -e '.vendors.claude.refresh_error.needs_user_entry == true and
+  ([.vendors.claude.accounts[] | select(.account == "frz")][0].needs_user_entry == true)' \
+  "$FREEZE_CACHE" >/dev/null \
+  || fail "needs-relogin cause was not classed for account entry"
 
 # Per-account staleness causes self-clear on passive collects; other shapes never drop.
 PASSIVE_STORE="$WORK/claudeb-passive-store"
@@ -1152,7 +1210,7 @@ EOF
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" >>"$CODEX_SENTINEL"\n' >"$FAKE_BIN/codex"
 cat >"$WORK/fake-codex-quota" <<EOF
 #!/usr/bin/env bash
-printf 'called\n' >>"\$CODEX_QUOTA_SENTINEL"
+printf '%s\n' "\$*" >>"\$CODEX_QUOTA_SENTINEL"
 printf '%s\n' '{"rateLimits":{"primary":{"usedPercent":31,"windowDurationMins":300,"resetsAt":$((now + 4000))},"secondary":{"usedPercent":64,"windowDurationMins":10080,"resetsAt":$((now + 90000))},"planType":"plus"}}'
 EOF
 chmod +x "$FAKE_BIN/claudeb" "$FAKE_BIN/codex" "$WORK/fake-codex-quota"
@@ -1162,12 +1220,10 @@ chmod +x "$FAKE_BIN/claudeb" "$FAKE_BIN/codex" "$WORK/fake-codex-quota"
 refresh_out=$(CLAUDEB_SENTINEL="$SENTINEL" CODEX_SENTINEL="$CODEX_SENTINEL" CODEX_QUOTA_SENTINEL="$CODEX_QUOTA_SENTINEL" \
   LLM_LIMITS_CODEX_REFRESH=1 LLM_LIMITS_CODEX_QUOTA_CMD="$WORK/fake-codex-quota" LLM_LIMITS_CODEX_CACHE="$CODEX_CACHE" \
   PATH="$FAKE_BIN:$PATH" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" /bin/bash "$SCRIPT" --refresh) || fail "refresh collection failed"
-# /bin/bash (3.2) is deliberate here and above: the menu's hs.task PATH resolves `env bash`
-# to the system bash, where an empty-array expansion under set -u is fatal — every menu
-# Refresh exited 1 on the no-target codex path for two days while suites ran on bash 5.
 [ -s "$SENTINEL" ] || fail "--refresh did not invoke claudeb accounts"
 grep -q 'accounts --no-spend' "$SENTINEL" || fail "Claude refresh was not tier-1-only"
-[ -s "$CODEX_QUOTA_SENTINEL" ] || fail "--refresh did not invoke the codex quota helper"
+grep -qx -- '--all-accounts' "$CODEX_QUOTA_SENTINEL" \
+  || fail "--refresh did not ask the codex quota helper to discover all accounts"
 [ ! -e "$CODEX_SENTINEL" ] || fail "--refresh must be zero-spend but codex exec was invoked"
 jq -e '.vendors.codex.five_hour.used_pct == 31 and .vendors.codex.weekly.used_pct == 64 and
   .vendors.codex.five_hour.origin == "usage" and .vendors.codex.source == "codex-app-server" and
@@ -1239,10 +1295,69 @@ jq -e '(. | has("refresh_error") | not) and all(.vendors[]; has("refresh_error")
 
 CODEX_ACCOUNTS_HOME="$WORK/codex-accounts-home"
 CODEX_ACCOUNTS_CACHE="$WORK/codex-accounts.json"
-mkdir -p "$CODEX_ACCOUNTS_HOME"
+mkdir -p "$CODEX_ACCOUNTS_HOME/.codex-profiles/work3"
 five_reset_epoch=$((now + 4000))
 expired_reset_epoch=$((now - 60))
 week_reset_epoch=$((now + 90000))
+cat >"$CODEX_ACCOUNTS_CACHE" <<EOF
+{"accounts":[{"account":"alpha","plan_type":"plus","five_hour":{"used_pct":40,"resets_at":$five_reset_epoch},"weekly":{"used_pct":20,"resets_at":$week_reset_epoch},"as_of":$now}],"current":"alpha"}
+EOF
+CODEX_DISCOVERY_SENTINEL="$WORK/codex-discovery-called"
+cat >"$WORK/fake-codex-discovery" <<EOF
+#!/usr/bin/env bash
+printf 'args=%s timeout=%s\n' "\$*" "\${CODEX_QUOTA_TIMEOUT-}" >"$CODEX_DISCOVERY_SENTINEL"
+test -d "\$HOME/.codex-profiles/work3" || exit 90
+printf '%s\n' '{"rateLimits":{"primary":{"usedPercent":11,"windowDurationMins":300,"resetsAt":$five_reset_epoch},"secondary":{"usedPercent":12,"windowDurationMins":10080,"resetsAt":$week_reset_epoch},"planType":"plus"},"accounts":[{"account":"main","plan_type":"plus","five_hour":{"used_pct":11,"resets_at":$five_reset_epoch},"weekly":{"used_pct":12,"resets_at":$week_reset_epoch},"as_of":$now},{"account":"alpha","plan_type":"plus","five_hour":{"used_pct":40,"resets_at":$five_reset_epoch},"weekly":{"used_pct":20,"resets_at":$week_reset_epoch},"as_of":$now},{"account":"work3","plan_type":"plus","five_hour":{"used_pct":3,"resets_at":$five_reset_epoch},"weekly":{"used_pct":4,"resets_at":$week_reset_epoch},"as_of":$now}],"current":"main"}'
+EOF
+chmod +x "$WORK/fake-codex-discovery"
+HOME="$CODEX_ACCOUNTS_HOME" LLM_LIMITS_CODEX_REFRESH=1 \
+  LLM_LIMITS_CODEX_QUOTA_CMD="$WORK/fake-codex-discovery" LLM_LIMITS_CODEX_CACHE="$CODEX_ACCOUNTS_CACHE" \
+  LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --refresh --no-write >/dev/null \
+  || fail "Codex discovery refresh failed"
+grep -qx -- 'args=--all-accounts timeout=10' "$CODEX_DISCOVERY_SENTINEL" \
+  || fail "Codex discovery refresh did not use --all-accounts"
+jq -e '.current == "main" and ([.accounts[] | select(.account == "work3")] | length) == 1' \
+  "$CODEX_ACCOUNTS_CACHE" >/dev/null \
+  || fail "Codex discovery refresh did not add the disk profile or preserve all-account current semantics"
+CODEX_PARTIAL_HOME="$WORK/codex-partial-home"
+CODEX_PARTIAL_CACHE="$WORK/codex-partial-cache.json"
+mkdir -p "$CODEX_PARTIAL_HOME/.codex-profiles/a" "$CODEX_PARTIAL_HOME/.codex-profiles/b"
+cat >"$CODEX_PARTIAL_CACHE" <<EOF
+{"accounts":[{"account":"main","five_hour":{"used_pct":1,"resets_at":$five_reset_epoch},"weekly":{"used_pct":2,"resets_at":$week_reset_epoch},"as_of":$((now - 300))},{"account":"a","five_hour":{"used_pct":3,"resets_at":$five_reset_epoch},"weekly":{"used_pct":4,"resets_at":$week_reset_epoch},"as_of":$((now - 400))},{"account":"b","five_hour":{"used_pct":61,"resets_at":$five_reset_epoch},"weekly":{"used_pct":62,"resets_at":$week_reset_epoch},"as_of":$((now - 700))},{"account":"removed","five_hour":{"used_pct":81,"resets_at":$five_reset_epoch},"weekly":{"used_pct":82,"resets_at":$week_reset_epoch},"as_of":$((now - 800))}],"current":"main"}
+EOF
+PYTHONDONTWRITEBYTECODE=1 python3 - "$ROOT/codex-quota.py" "$CODEX_PARTIAL_HOME" "$CODEX_PARTIAL_CACHE" "$now" >"$WORK/codex-partial-result.json" <<'PY'
+import importlib.util
+import json
+from pathlib import Path
+import sys
+
+spec = importlib.util.spec_from_file_location("codex_quota", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+home = Path(sys.argv[2])
+old = json.loads(Path(sys.argv[3]).read_text())
+now = int(sys.argv[4])
+accounts = module.profile_accounts(home)
+results = []
+for account, _ in accounts:
+    if account == "b":
+        results.append((account, None, now, "codex app-server timed out"))
+    else:
+        results.append((account, {
+            "rateLimits": {
+                "primary": {"usedPercent": 10, "windowDurationMins": 300, "resetsAt": now + 4000},
+                "secondary": {"usedPercent": 20, "windowDurationMins": 10080, "resetsAt": now + 90000},
+            }
+        }, now, None))
+print(json.dumps(module.cache_payload(results, old, True, "main")))
+PY
+jq -e --argjson old_as_of "$((now - 700))" '
+  ([.accounts[] | select(.account == "b")][0] |
+    .five_hour.used_pct == 61 and .weekly.used_pct == 62 and
+    .as_of == $old_as_of and (has("error") | not)) and
+  ([.accounts[] | select(.account == "removed")] | length) == 0
+' "$WORK/codex-partial-result.json" >/dev/null \
+  || fail "Codex all-account partial failure lost cached buckets or retained a removed profile"
 cat >"$CODEX_ACCOUNTS_CACHE" <<EOF
 {"schema":1,"fetched_at":"$(date -u '+%Y-%m-%dT%H:%M:%SZ')","plan_type":"plus","five_hour":{"used_pct":100,"resets_at":$five_reset_epoch},"weekly":{"used_pct":20,"resets_at":$week_reset_epoch},"accounts":[{"account":"beta","plan_type":"team","reset_credits":0,"five_hour":{"used_pct":100,"resets_at":$expired_reset_epoch},"weekly":{"used_pct":100,"resets_at":$week_reset_epoch},"as_of":$((now - 22000))},{"account":"alpha","plan_type":"plus","reset_credits":2,"five_hour":{"used_pct":100,"resets_at":$five_reset_epoch},"weekly":{"used_pct":20,"resets_at":$week_reset_epoch},"as_of":$((now - 1900))}],"current":"alpha"}
 EOF
@@ -1358,7 +1473,7 @@ jq -e '.current == "alpha" and ([.accounts[] | select(.account == "beta")][0] |
 jq -e '.vendors.codex.available == true and .vendors.codex.current_account == "alpha" and
   ([.vendors.codex.accounts[] | select(.account == "beta")][0] |
     .auth_needed == true and .status == "login needed" and
-    .cause == "login needed: token invalidated") and
+    .cause == "login needed: token invalidated" and .needs_user_entry == true) and
   (.vendors.codex | has("refresh_error") | not)' <<<"$codex_target_auth" >/dev/null \
   || fail "targeted auth refresh did not surface login-needed without a vendor error"
 [ -z "$(jq -r '.. | strings | select(test("token_invalidated|Unauthorized|rateLimits/read"))' <<<"$codex_target_auth")" ] \
@@ -1425,7 +1540,7 @@ grep -qx -- '--sandbox' "$CODEX_SENTINEL" && grep -qx 'read-only' "$CODEX_SENTIN
 grep -qx 'model_reasoning_effort="low"' "$CODEX_SENTINEL" || fail "codex window start did not request low reasoning effort"
 grep -qx -- '-m' "$CODEX_SENTINEL" || fail "codex model override flag was not passed"
 grep -qx 'fixture model' "$CODEX_SENTINEL" || fail "codex model override was not passed as one argument"
-[ "$(grep -c called "$CODEX_QUOTA_SENTINEL")" -eq 2 ] || fail "codex quota was not re-read after the window start"
+[ "$(wc -l <"$CODEX_QUOTA_SENTINEL" | tr -d ' ')" -eq 2 ] || fail "codex quota was not re-read after the window start"
 jq -e '.vendors.codex.five_hour.used_pct == 12' <<<"$spend_out" >/dev/null || fail "post-spend codex snapshot was not picked up"
 rm -f "$CODEX_CACHE" "$WORK/codex-quota-state"
 
@@ -1787,10 +1902,14 @@ printf '{"until":9999999999,"reason":"fixture"}\n' >"$EXP_MARKER"
 printf '[{"id":"trial-x","what":"fixture experiment for the banner contract","started":"2026-01-01","review_by":"2999-01-01","state_marker":"%s","surfaces":["fixture"],"how_to_remove":"delete the fixture"}]\n' "$EXP_MARKER" >"$EXP_REG"
 exp_json=$(EXPERIMENTS_REGISTRY="$EXP_REG" CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --no-write 2>/dev/null) \
   || fail "experiment-registry fixture failed"
-jq -e '.experiments == ["EXPERIMENT trial-x until 2999-01-01 — temporary, see EXPERIMENTS.json"]' <<<"$exp_json" >/dev/null \
-  || fail "an active experiment is missing from the collector output"
+jq -e '.experiments == []' <<<"$exp_json" >/dev/null \
+  || fail "an in-date experiment must stay off the banner"
 exp_table=$(EXPERIMENTS_REGISTRY="$EXP_REG" CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --table --no-write 2>/dev/null)
-grep -Fq 'EXPERIMENT trial-x until 2999-01-01' <<<"$exp_table" || fail "--table did not announce the active experiment"
+! grep -Fq 'EXPERIMENT trial-x' <<<"$exp_table" || fail "--table announced an in-date experiment"
+printf '[{"id":"undated","what":"fixture experiment with no review date","started":"2026-01-01","state_marker":"%s","surfaces":["fixture"],"how_to_remove":"delete the fixture"}]\n' "$EXP_MARKER" >"$EXP_REG"
+exp_undated=$(EXPERIMENTS_REGISTRY="$EXP_REG" CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --no-write 2>/dev/null)
+jq -e '.experiments == ["EXPERIMENT undated until  — temporary, see EXPERIMENTS.json"]' <<<"$exp_undated" >/dev/null \
+  || fail "an experiment without review_by must keep announcing (it can never go OVERDUE)"
 printf '[{"id":"spent","what":"fixture experiment whose review date has passed","started":"2026-01-01","review_by":"2026-01-02","state_marker":"%s","surfaces":["fixture"],"how_to_remove":"delete the fixture"}]\n' "$EXP_MARKER" >"$EXP_REG"
 exp_past=$(EXPERIMENTS_REGISTRY="$EXP_REG" CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --no-write 2>/dev/null)
 jq -e '.experiments == ["EXPERIMENT spent OVERDUE since 2026-01-02 — decide: remove or extend (EXPERIMENTS.json)"]' <<<"$exp_past" >/dev/null \

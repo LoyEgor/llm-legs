@@ -57,15 +57,16 @@ The judgment call between the two belongs to the session executing the exit, bas
 
 ## Token-freeze experiment
 
-decision-date: 2026-07-27
+decision-date: 2026-08-03
 
 Anthropic's OAuth token endpoint intermittently 429s our accounts. Hypothesis under
-test: our own automated refresh traffic (the 30-min upkeep timer, start-window warms,
-background probe refreshes across 4 accounts from one IP) earned the rate-limiting.
-Experiment: freeze every ROBOT path to the token endpoint for ~4 days; the owner enters
-accounts manually each morning (the real Claude Code CLI refreshes its own token, and
-claudeb adopts it from the keychain). Zero 429s and zero hangs during the freeze confirm
-the hypothesis.
+test: our own automated refresh traffic earned the rate-limiting. Phase 1 froze every
+ROBOT path and produced zero token-endpoint 429s from 2026-07-23 through 2026-07-27.
+Phase 2 runs through 2026-08-03: scheduled automation remains frozen, while every
+user-initiated menu refresh is allowed to drive the real Claude CLI warm path. On
+2026-07-27 the global `Refresh` and `Refresh + Start Windows` actions began carrying the
+same explicit user signal as per-account Hard refresh. Direct `oauth_refresh()` POSTs
+remain frozen; the experiment now isolates manual warm traffic from scheduled traffic.
 
 **Temporary inventory (what exits): the freeze FILE only** —
 `~/.claude-profiles/.claudeb/token-freeze`. The switch (`token_freeze_active`), the
@@ -73,14 +74,13 @@ attempt journal (`token-attempts.jsonl` + `token_journal`), and the honest froze
 stale-cause in `llm-limits.sh` are permanent and cheap; they stay.
 
 **Exit decision (one of two outcomes).** Review `token-attempts.jsonl` plus the owner's
-morning-walk experience. Note the journal legitimately carries more than `frozen-skip`
-during the freeze: the exempt menu Hard-refresh warms (`kind=warm`) and any keychain
-adoptions the manual CLI sessions trigger (`kind=adopt`) are expected. What must NOT appear
-is an unbidden `curl-refresh` with a real HTTP outcome — that would mean a robot POSTed the
-token endpoint despite the freeze:
+menu-refresh experience. The journal legitimately carries more than `frozen-skip`:
+user-initiated menu warms (`kind=warm`) and keychain adoptions from manual CLI sessions
+(`kind=adopt`) are expected. What must NOT appear is an unbidden `curl-refresh` with a
+real HTTP outcome — that would mean a robot POSTed the token endpoint despite the freeze:
 
-- **Hypothesis rejected** (429s continued despite the freeze): delete the freeze file and
-  restore automation as-is; nothing else changes.
-- **Hypothesis confirmed** (freeze was clean): keep automation off and rebuild scheduled
-  refresh in "parasite mode" — piggy-back on the CLI's own refreshes instead of our own
-  token-endpoint traffic (separate task).
+- **Hypothesis holds** (manual refreshes stay 429-free through the window): keep
+  automation off and make its measured reintroduction a separate parasite-mode task,
+  piggy-backing on the CLI's own refreshes instead of posting independently.
+- **Hypothesis rejected or incomplete** (429s return under manual-only traffic): our
+  automation was not the sole cause; delete the freeze file and restore automation as-is.

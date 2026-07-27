@@ -1,9 +1,9 @@
 [
   {
     "id": "token-freeze",
-    "what": "Every ROBOT path to the OAuth token endpoint is frozen so the owner's manual morning entries are the only refresh traffic; tests whether our own automation earned Anthropic's token-endpoint 429s",
+    "what": "Phase 2 keeps robots off the OAuth token endpoint while allowing all user-initiated menu refreshes; tests whether manual-only refresh traffic stays free of Anthropic token-endpoint 429s",
     "started": "2026-07-23",
-    "review_by": "2026-07-27",
+    "review_by": "2026-08-03",
     "state_marker": "~/.claude-profiles/.claudeb/token-freeze",
     "evidence": "~/.claude-profiles/.claudeb/token-attempts.jsonl",
     "surfaces": ["llm-limits --table banner", "llm-limits --plain banner", "menubar LLM Limits header row"],

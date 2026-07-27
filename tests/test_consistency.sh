@@ -378,4 +378,12 @@ assert grep -Fq '$pin_account != null and $pin_account.auth_ok and $pin_account.
 assert test "$(grep -cF 'pin_account.own' "$WORKERPICK")" -eq 0
 assert grep -Fq 'excluded from automatic worker routing' "$WORKERPICK"
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, and worker-pool membership) and match %s\n' "$asserts" "$DOC"
+assert grep -Fq 'needs_user_entry:true' "$LLMLIMITS"
+assert grep -Fq 'needs_user_entry == true' "$HAMMER"
+assert grep -Fq 'split("; ")' "$LLMLIMITS"
+assert grep -Fq 'end))] | join("; "))}' "$LLMLIMITS"
+assert grep -Fq 'local parts, start, sep = {}, 1, "; "' "$HAMMER"
+assert doc_has 'User-entry refresh classification'
+assert doc_has 'including multiple Claude auth failures, uses `"; "` between entries'
+
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, and user-entry refresh classification) and match %s\n' "$asserts" "$DOC"

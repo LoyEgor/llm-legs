@@ -90,13 +90,23 @@ return "MISSING"
 }
 
 assert_codex_account_rows() {
-  local menu="$1" json="$2" count account auth credits row
+  local menu="$1" json="$2" count account auth credits needs_entry row
   count=$(jq '.vendors.codex.accounts | length' <<<"$json")
   while IFS= read -r account; do
     auth=$(jq -r --arg account "$account" '.vendors.codex.accounts[] | select(.account == $account) | .auth_needed == true' <<<"$json")
     credits=$(jq -r --arg account "$account" '.vendors.codex.accounts[] | select(.account == $account) | .reset_credits // 0' <<<"$json")
     if [ "$auth" = true ]; then
-      grep -Fxq "$account  login needed" <<<"$menu" || fail "Codex auth-needed row is not name plus login needed: $account"
+      needs_entry=$(jq -r --arg account "$account" '.vendors.codex.accounts[] |
+        select(.account == $account) | .needs_user_entry == true' <<<"$json")
+      row=$(awk -v account="$account" '$1 == account {print; exit}' <<<"$menu")
+      [ -n "$row" ] || fail "Codex auth-needed row missing: $account"
+      [[ "$row" == *"login needed" ]] || fail "Codex auth-needed row lost login needed: $row"
+      if [ "$needs_entry" = true ]; then
+        [[ "$row" == *"!"* ]] || fail "Codex auth-needed row lacks the user-entry marker: $row"
+      else
+        [ "$row" = "$account  login needed" ] \
+          || fail "Codex auth-needed row is not name plus login needed: $row"
+      fi
     else
       row=$(awk -v account="$account" '$1 == account {print; exit}' <<<"$menu")
       [ -n "$row" ] || fail "Codex account row missing: $account"
@@ -154,7 +164,7 @@ assert_account_ages() {
       [ "$auth" != true ] || continue
       expected=$(age_short "$asof")
       # A pinned account carries a trailing ● after the age; the age is still the fact under test.
-      actual=$(sed -E 's/[[:space:]]*●$//' <<<"$row" | awk '{print $NF}')
+      actual=$(sed -E 's/([[:space:]]+(●|!))+$//' <<<"$row" | awk '{print $NF}')
       if [ -n "$expected" ]; then
         [ "$actual" = "$expected" ] || fail "$vendor/$account age mismatch: expected $expected, row=$row"
       elif [[ "$actual" =~ ^[0-9]+[mhd]$ ]]; then
@@ -168,7 +178,7 @@ assert_account_ages() {
     row=$(awk '$1 == "Gemini" {print; exit}' <<<"$menu")
     [ -n "$row" ] || fail "Gemini vendor row missing for age check"
     expected=$(age_short "$(jq -r '.vendors.gemini.as_of // ""' <<<"$json")")
-    actual=$(sed -E 's/[[:space:]]*●$//' <<<"$row" | awk '{print $NF}')
+    actual=$(sed -E 's/([[:space:]]+(●|!))+$//' <<<"$row" | awk '{print $NF}')
     if [ -n "$expected" ]; then
       [ "$actual" = "$expected" ] || fail "Gemini age mismatch: expected $expected, row=$row"
     elif [[ "$actual" =~ ^[0-9]+[mhd]$ ]]; then
@@ -213,7 +223,10 @@ local function loadModule(fixture, state)
   }
   mock.task.new = function(command, callback, args)
     local task = { command = command, callback = callback, args = args or {} }
-    function task:setEnvironment() return self end
+    function task:setEnvironment(environment)
+      self.environment = environment or {}
+      return self
+    end
     function task:start()
       self.running = true
       table.insert(state.starts, self)
@@ -227,7 +240,12 @@ local function loadModule(fixture, state)
       return { read = function() return "fixture" end, close = function() end }
     end,
   }, { __index = io })
-  local fakeOs = setmetatable({ time = function() return state.now end }, { __index = os })
+  local fakeOs = setmetatable({
+    time = function(value)
+      if value then return os.time(value) end
+      return state.now
+    end,
+  }, { __index = os })
   local env = setmetatable({ hs = mock, io = fakeIo, os = fakeOs }, { __index = _G })
   env._G = env
   local chunk, err = loadfile(path, "t", env)
@@ -255,6 +273,36 @@ local color = expiredRow.title.attributes.color
 if not color or color.red ~= 0.9 or color.green ~= 0.25 or color.blue ~= 0.2
     or color.alpha ~= 0.55 then
   error("expired at-limit row was not dim red")
+end
+local entryState = { starts = {}, alerts = {} }
+local entryCause = "alona: not refreshed (auto-refresh frozen (experiment) — enter the account to refresh)"
+local entry = loadModule({ schema = 1, vendors = {
+  claude = {
+    available = true,
+    source = "claudeb-store",
+    refresh_error = { cause = entryCause, at = now - 600, needs_user_entry = true },
+    accounts = {{
+      account = "alona",
+      enabled = true,
+      as_of = os.date("!%Y-%m-%dT%H:%M:%SZ", now - 600),
+      needs_user_entry = true,
+      five_hour = { effective_pct = 10, resets_at = now + 3600, stale = true },
+    }},
+  },
+  codex = { available = false }, gemini = { available = false },
+}}, entryState)
+if entry.refreshState().prefix ~= "" then error("entry-only cause lit the global warning") end
+local entryRow, entryError
+for _, item in ipairs(entry.menuItems()) do
+  local text = title(item)
+  if text:match("^alona%s") then entryRow = text end
+  if text:find("refresh failed", 1, true) then entryError = text end
+end
+if not entryRow or not entryRow:find("10m", 1, true) or not entryRow:find("!", 1, true) then
+  error("entry-only account row lacks age-adjacent ! marker: " .. tostring(entryRow))
+end
+if not entryError or not entryError:find("auto-refresh frozen", 1, true) then
+  error("entry-only error text disappeared")
 end
 local fallbackState = { starts = {}, alerts = {} }
 local fallback = loadModule({ schema = 1, vendors = {
@@ -284,6 +332,26 @@ if changes ~= beforeCompletion + 1 then error("menu-open collector completion di
 if a.args[1] ~= "--refresh-account" or a.args[2] ~= "claude/com" then error("Claude fallback dispatch mismatch") end
 if b.args[1] ~= "--refresh-account" or b.args[2] ~= "codex/main" then error("Codex fallback dispatch mismatch") end
 if c.args[1] ~= "--refresh-account" or c.args[2] ~= "gemini/main" then error("Gemini fallback dispatch mismatch") end
+if a.environment.CLAUDEB_WARM_USER_EXPLICIT ~= "true"
+    or b.environment.CLAUDEB_WARM_USER_EXPLICIT ~= "true"
+    or c.environment.CLAUDEB_WARM_USER_EXPLICIT ~= "true" then
+  error("Hard refresh did not carry the user-explicit warm signal")
+end
+local globalState = { starts = {}, alerts = {} }
+local global = loadModule({ schema = 1, vendors = {} }, globalState)
+local globalMenu = global.menuItems()
+for _, item in ipairs(globalMenu) do
+  if title(item) == "Refresh" or title(item) == "Refresh + Start Windows" then item.fn() end
+end
+if #globalState.starts ~= 3 then error("global refresh actions did not start two collector tasks") end
+if globalState.starts[1].environment.CLAUDEB_WARM_USER_EXPLICIT ~= nil then
+  error("passive menu collect inherited the user-explicit warm signal")
+end
+for index = 2, 3 do
+  if globalState.starts[index].environment.CLAUDEB_WARM_USER_EXPLICIT ~= "true" then
+    error("global refresh action omitted the user-explicit warm signal")
+  end
+end
 local guardState = { starts = {}, alerts = {} }
 local guarded = loadModule({ schema = 1, vendors = {} }, guardState)
 guarded.hardRefreshClaude("com")

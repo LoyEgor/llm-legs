@@ -243,18 +243,23 @@ def cache_payload(
     replace_accounts: bool,
     current: str,
 ) -> dict:
+    def has_usage(entry: dict) -> bool:
+        return any(
+            isinstance(bucket, dict)
+            and isinstance(bucket.get("used_pct"), (int, float))
+            and not isinstance(bucket.get("used_pct"), bool)
+            for bucket in (entry.get("five_hour"), entry.get("weekly"))
+        )
+
     current_result = next((result for account, result, _, _ in results if account == current and result), None)
     base = dict(current_result) if current_result else {key: value for key, value in old.items() if key not in ("accounts", "current")}
     old_by_name = {entry.get("account"): entry for entry in old.get("accounts", []) if isinstance(entry, dict)}
     refreshed = []
     for account, result, as_of, error in results:
         entry = account_entry(account, result, as_of, error)
-        # A definite auth-needed verdict survives a later NON-auth failure (weather/network):
-        # only a genuine success or a fresh auth verdict may change it. Keep the prior entry
-        # verbatim (its as_of too) so the marker's recorded age stays honest.
         if result is None and not authentication_required(error):
             prior = old_by_name.get(account)
-            if isinstance(prior, dict) and prior.get("auth_needed") is True:
+            if isinstance(prior, dict) and (prior.get("auth_needed") is True or has_usage(prior)):
                 entry = prior
         refreshed.append(entry)
     if replace_accounts:
