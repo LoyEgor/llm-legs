@@ -1074,6 +1074,8 @@ cat <<'SNAP'
 1002 1000 node /Users/x/.nvm/codex mcp-server
 1003 1000 python3 -m http.server 8123
 1004 1000 node ./mcp/server.mjs
+1005 1000 agy --model gemini
+1006 1005 node /opt/agy/rpc.js
 9999 1 claude
 SNAP
 PSEOF
@@ -1088,6 +1090,8 @@ node     1002 u   21u  IPv4  0t0      TCP 127.0.0.1:7000 (LISTEN)
 python3  1003 u   22u  IPv4  0t0      TCP *:8123 (LISTEN)
 node     1003 u   24u  IPv4  0t0      TCP *:5173 (LISTEN)
 node     1004 u   23u  IPv6  0t0      TCP [::1]:9999 (LISTEN)
+agy      1005 u   10u  IPv4  0t0      TCP 127.0.0.1:61609 (LISTEN)
+node     1006 u   11u  IPv4  0t0      TCP 127.0.0.1:61610 (LISTEN)
 OUT
 LSEOF
 chmod +x "$FAKE_LSOF"
@@ -1099,6 +1103,8 @@ run_probe() {
   STATUSLINE_PS="$FAKE_PS" STATUSLINE_LSOF="$FAKE_LSOF" "$PORTS_PROBE" "$1" "$2"
 }
 run_probe pp-parse 1001
+# 61609/61610 are an LLM tool's own RPC — the agy process and a node it spawned — and neither
+# is a place a human can go, so the probe drops both while keeping the two real servers.
 assert_eq '5173 8123' "$(cat "$STATE_DIR/ports-pp-parse")"
 
 # 4-digit PID alignment test: ps right-aligns columns, causing leading spaces.
@@ -1386,6 +1392,82 @@ assert grep -Fq "$review_segment" <<< "$review_missing_out"
 review_nongit_out=$(run_statusline "$(statusline_payload review-nongit "" "$NON_GIT")") \
   || fail "review non-git render failed"
 assert test "${review_nongit_out#*review T}" = "$review_nongit_out"
+
+PROGRESS_DIR="$CLAUDEB_FIX/worker-stats/progress"
+mkdir -p "$PROGRESS_DIR"
+progress_prefix="${review_receipt_name%.json}-"
+write_progress() { # pid tier done total started [repo]
+  jq -cn --arg repo "${6:-$REVIEW_CLEAN}" --argjson pid "$1" --arg tier "$2" \
+    --argjson done_cells "$3" --argjson total "$4" --arg started "$5" '
+    {repo:$repo, pid:$pid, run_id:"progress-fixture",
+     tier:(if $tier == "" then null else $tier end), target:"abc1234",
+     cells:[range($total) | "cell-\(.)"], done:[range($done_cells) | "cell-\(.)"],
+     failed:0, started:$started, ts:$started}' \
+    > "$PROGRESS_DIR/$progress_prefix$1.json"
+}
+progress_render() {
+  run_statusline "$(statusline_payload "review-progress-$1" "" "$REVIEW_CLEAN")" \
+    || fail "review progress render failed: $1"
+}
+
+# The live run owns the slot even when a receipt says the tree is already covered: a re-review
+# in flight is what the eye needs, and the receipt verdict is one render away once it ends.
+jq -cn --arg repo "$REVIEW_CLEAN" --arg tree "$review_clean_tree" \
+  --arg commit "$review_clean_sha" --arg run_id receipt-match \
+  '{repo:$repo,tree:$tree,commit:$commit,run_id:$run_id,ts:"2026-07-27T00:00:00+00:00",errored:0}' \
+  > "$review_receipt_file"
+write_progress "$$" T2 3 8 2026-07-27T22:00:00+00:00
+progress_live_out=$(progress_render live)
+assert grep -Fq 'review T2 3/8' <<< "$progress_live_out"
+rm -f "$review_receipt_file"
+
+# An --auto run carries no tier; the counter still renders.
+write_progress "$$" "" 1 5 2026-07-27T22:00:00+00:00
+progress_untiered_out=$(progress_render untiered)
+assert grep -Fq 'review 1/5' <<< "$progress_untiered_out"
+assert test "${progress_untiered_out#*review T}" = "$progress_untiered_out"
+
+progress_second_pid=$( (sleep 30 >/dev/null 2>&1 & echo $!) )
+write_progress "$$" T1 2 6 2026-07-27T22:00:00+00:00
+write_progress "$progress_second_pid" T3 5 9 2026-07-27T23:30:00+00:00
+progress_two_out=$(progress_render two-runs)
+assert grep -Fq 'review T3 5/9' <<< "$progress_two_out"
+assert test "${progress_two_out#*review T1}" = "$progress_two_out"
+assert_eq 1 "$(grep -o 'review T3' <<< "$progress_two_out" | wc -l | tr -d ' ')"
+rm -f "$PROGRESS_DIR/$progress_prefix$$.json"
+
+# A pid the run no longer owns renders nothing: the file outlives kill -9, and the process now
+# holding that pid necessarily started after the dead run's last write.
+progress_recent=$(date -v-10M +%Y%m%d%H%M.%S 2>/dev/null || date -d '10 minutes ago' +%Y%m%d%H%M.%S)
+touch -t "$progress_recent" "$PROGRESS_DIR/$progress_prefix$progress_second_pid.json"
+progress_recycled_out=$(progress_render recycled)
+assert test "${progress_recycled_out#*5/9}" = "$progress_recycled_out"
+assert grep -Fq "$review_segment" <<< "$progress_recycled_out"
+kill "$progress_second_pid" 2>/dev/null
+rm -f "$PROGRESS_DIR/$progress_prefix$progress_second_pid.json"
+
+write_progress 99999999 T2 4 7 2026-07-27T22:00:00+00:00
+progress_dead_out=$(progress_render dead-pid)
+assert test "${progress_dead_out#*4/7}" = "$progress_dead_out"
+rm -f "$PROGRESS_DIR/${progress_prefix}99999999.json"
+
+write_progress "$$" T2 4 7 2026-07-27T22:00:00+00:00 "$REVIEW_DIRTY"
+progress_foreign_out=$(progress_render foreign-repo)
+assert test "${progress_foreign_out#*4/7}" = "$progress_foreign_out"
+
+write_progress "$$" T2 9 7 2026-07-27T22:00:00+00:00
+progress_overrun_out=$(progress_render overrun)
+assert test "${progress_overrun_out#*9/7}" = "$progress_overrun_out"
+
+printf 'not json\n' > "$PROGRESS_DIR/$progress_prefix$$.json"
+progress_corrupt_out=$(progress_render corrupt)
+assert grep -Fq "$review_segment" <<< "$progress_corrupt_out"
+rm -f "$PROGRESS_DIR/$progress_prefix$$.json"
+
+progress_gone_out=$(progress_render gone)
+assert_eq 0 \
+  "$(grep -Eco 'review (T[0-3] )?[0-9]+/[0-9]+' <<< "$progress_gone_out" | tr -d ' ')"
+assert grep -Fq "$review_segment" <<< "$progress_gone_out"
 
 REVIEW_STAMP="$FIXTURES/review-stamp"
 git clone -q "$REPO_A" "$REVIEW_STAMP"

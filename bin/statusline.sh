@@ -129,6 +129,19 @@ receipt_file_name() {
   printf '%s__%s.json' "$repo_name" "$repo_hash"
 }
 
+# ps reports elapsed time as [[dd-]hh:]mm:ss; the render needs the instant the process started.
+process_start_epoch() {
+  local pid="$1" now="$2" elapsed days=0 hours=0 mins secs
+  elapsed=$(ps -o etime= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+  case "$elapsed" in *:*) ;; *) return 1 ;; esac
+  case "$elapsed" in *-*) days=${elapsed%%-*}; elapsed=${elapsed#*-} ;; esac
+  case "$elapsed" in *:*:*) hours=${elapsed%%:*}; elapsed=${elapsed#*:} ;; esac
+  mins=${elapsed%%:*}
+  secs=${elapsed##*:}
+  [[ "$days$hours$mins$secs" =~ ^[0-9]+$ ]] || return 1
+  printf '%s' "$((now - (10#$days * 86400 + 10#$hours * 3600 + 10#$mins * 60 + 10#$secs)))"
+}
+
 worktree_matches_tree() {
   local repo="$1" tree="$2" path entry mode type object actual_mode actual_object
   local -a excludes=()
@@ -1083,6 +1096,73 @@ if [ -n "$active_top" ]; then
   # where git_dir resolved and active_top did not come from it.
   [ -n "$active_common" ] || active_common=$(git_common_dir "$active_top" 2>/dev/null)
   receipt_name=$(receipt_file_name "$active_top" 2>/dev/null)
+  # A run in flight owns the slot: review-bench writes one progress file per run, and while it
+  # lives the label reports that panel instead of the receipt verdict. Liveness is derived here,
+  # never declared by the writer — the file survives kill -9, a crash and a closed terminal, so
+  # the pid must be alive AND the process holding it must have started no later than the file's
+  # last write, which a pid reused after that run died cannot satisfy.
+  progress_done=""
+  progress_total=""
+  progress_tier=""
+  progress_newest=""
+  progress_dir="$worker_stats_dir/progress"
+  if [ -n "$receipt_name" ] && [ -n "$active_common" ] && [ -d "$progress_dir" ]; then
+    progress_prefix="${receipt_name%.json}-"
+    for progress_file in "$progress_dir"/*.json; do
+      [ -f "$progress_file" ] || continue
+      progress_base=${progress_file##*/}
+      # Literal prefix match, not a glob: a repository named with pattern metacharacters
+      # would otherwise match its neighbours' files.
+      [[ "$progress_base" == "$progress_prefix"* ]] || continue
+      progress_pid=${progress_base#"$progress_prefix"}
+      progress_pid=${progress_pid%.json}
+      [[ "$progress_pid" =~ ^[0-9]+$ ]] || continue
+      kill -0 "$progress_pid" 2>/dev/null || continue
+      progress_mtime=$(file_mtime "$progress_file" 2>/dev/null)
+      [[ "$progress_mtime" =~ ^[0-9]+$ ]] || continue
+      # A run whose slowest cell is still out writes nothing for as long as that cell takes,
+      # so there is no tight staleness window here; this is only the wall that stops a wedged
+      # process from holding the segment for a day.
+      [ "$((now - progress_mtime))" -le 7200 ] || continue
+      progress_start=$(process_start_epoch "$progress_pid" "$now") || continue
+      # The slack absorbs ps's whole-second resolution, not a real gap: pids are handed out
+      # sequentially and wrap near 100k, so a reuse this close to the last write cannot happen.
+      [ "$progress_start" -le "$((progress_mtime + 5))" ] || continue
+      progress_values=$(jq -er '
+        select(type == "object"
+          and (.repo | type) == "string"
+          and (.cells | type) == "array"
+          and (.done | type) == "array"
+          and (.cells | length) > 0
+          and (.done | length) <= (.cells | length)
+          and (.started | type) == "string"
+          and ((.tier | type) == "string" or .tier == null))
+        | [.repo, (.tier // ""), (.done | length | tostring), (.cells | length | tostring), .started]
+        | join("\u001f")
+      ' "$progress_file" 2>/dev/null) || continue
+      IFS=$'\x1f' read -r progress_repo progress_run_tier progress_run_done progress_run_total \
+        progress_started <<< "$progress_values"
+      [ "$(git_common_dir "$progress_repo" 2>/dev/null)" = "$active_common" ] || continue
+      case "$progress_run_tier" in
+        T[0-3]) ;;
+        *) progress_run_tier="" ;;
+      esac
+      if [ -z "$progress_newest" ] || [[ "$progress_started" > "$progress_newest" ]]; then
+        progress_newest=$progress_started
+        progress_done=$progress_run_done
+        progress_total=$progress_run_total
+        progress_tier=$progress_run_tier
+      fi
+    done
+  fi
+  if [ -n "$progress_total" ]; then
+    review_part=" ${sep} review"
+    [ -n "$progress_tier" ] && review_part="${review_part} ${progress_tier}"
+    review_part="${review_part} ${progress_done}/${progress_total}"
+  fi
+fi
+
+if [ -n "$active_top" ] && [ -z "$progress_total" ]; then
   receipt_file="$worker_stats_dir/receipts/$receipt_name"
   receipt_values=$(jq -er '
     select(type == "object"

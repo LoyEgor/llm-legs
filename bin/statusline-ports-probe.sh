@@ -78,8 +78,22 @@ $("$LSOF_CMD" -a -iTCP -sTCP:LISTEN -nP -p "$chunk" 2>/dev/null)"
 fi
 
 # Passed as files, not awk -v: -v rejects the newlines a multi-line lsof dump would carry.
-ports=$(awk '
-  FNR==NR { line=$0; sub(/^[ \t]*[0-9]+[ \t]+[0-9]+[ \t]+/,"",line); cmd[$1]=tolower(line); next }
+ports=$(awk -v root="$root" '
+  # The segment answers "where do I go to look at the work", so a port earns a place only if a
+  # human can open it. The LLM tools a session drives — agy, opencode, grok, codex — each listen
+  # on localhost for their own RPC, at any depth below themselves, and lead nowhere worth going.
+  function tool_owned(pid,   depth, m, t, q, u, base) {
+    depth = 0
+    while (pid != "" && pid + 0 > 1 && pid != root && depth < 30) {
+      m = split(cmd[pid], t, /[ \t]/); q = split(t[1], u, "/"); base = u[q]
+      if (base ~ /^(agy|opencode|opencode-go|grok|codex)$/) return 1
+      pid = ppid[pid]; depth++
+    }
+    return 0
+  }
+  FNR==NR {
+    line=$0; sub(/^[ \t]*[0-9]+[ \t]+[0-9]+[ \t]+/,"",line); cmd[$1]=tolower(line); ppid[$1]=$2; next
+  }
   {
     if ($0 == "" || $0 ~ /^COMMAND/) next
     if (!match($0, /:[0-9]+ \(LISTEN\)/)) next
@@ -90,6 +104,7 @@ ports=$(awk '
     if (c ~ /mcp|figma|codex|chrome-devtools|chrome_crashpad/) next
     m=split(c, t, /[ \t]/); q=split(t[1], u, "/"); base=u[q]
     if (base == "claude") next
+    if (tool_owned(pid)) next
     if (!(port in seen)) { seen[port]=1; order[++k]=port }
   }
   END {
