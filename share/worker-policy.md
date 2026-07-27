@@ -13,5 +13,4 @@
 - Treat the Codex and Gemini `main` profiles as last-resort: every usable non-main account of the same vendor ranks ahead of its `main`.
 - Account selection is headroom-dominant for non-Fable work: prefer the account with the most 5h effective headroom to balance spend across accounts. Small-tier accounts (olx, $20/month) are full citizens for any non-Fable task at any effort.
 - Headroom cannot exceed HEADROOM_PCT (90%); if all candidates are above it, pick the least-burnt and note `WARN` in `NEXT`.
-- Multi-rater benchmarks re-check affordability before EACH rater and refresh stale account data to prevent re-selecting an exhausted account.
 - Code reviews: tier and cell composition come from `review-bench suggest` / `review-bench tiers`, never from prose. The human-side rules (phrase mapping, fable-on-explicit-ask, adjudication duty) live in `~/.claude/docs/review-tiers.md`. Skip review only for trivially unambiguous diffs.
