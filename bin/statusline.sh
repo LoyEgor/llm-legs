@@ -865,7 +865,7 @@ if [ -n "$session_id" ]; then
   fi
 fi
 
-review_tier_part=""
+review_tier=""
 if [ -n "$active_top" ]; then
   review_probe_self="$0"
   [ -L "$review_probe_self" ] && review_probe_self=$(readlink "$review_probe_self")
@@ -918,15 +918,17 @@ if [ -n "$active_top" ]; then
     if [[ "$review_mtime" =~ ^[0-9]+$ ]] && [ "$((now - review_mtime))" -le 15 ]; then
       IFS= read -r review_tier < "$review_cache" 2>/dev/null || review_tier=""
       case "$review_tier" in
-        T[0-3]) review_tier_part=" ${sep} ${MAGENTA}⚖${RESET} review ${review_tier}" ;;
+        T[0-3]) ;;
+        *) review_tier="" ;;
       esac
     fi
   fi
 fi
 
-review_receipt_part=""
+review_part=""
 if [ -n "$active_top" ]; then
-  review_receipt_part=" ${sep} ${MAGENTA}review${RESET}"
+  receipt_reviewed=""
+  receipt_errored=0
   active_common=$(git_common_dir "$active_top" 2>/dev/null)
   receipt_name=$(receipt_file_name "$active_top" 2>/dev/null)
   receipt_file="$worker_stats_dir/receipts/$receipt_name"
@@ -950,19 +952,22 @@ if [ -n "$active_top" ]; then
       head_tree=$(git -C "$active_top" rev-parse 'HEAD^{tree}' 2>/dev/null)
       if [ -n "$head_tree" ] && [ "$receipt_tree" = "$head_tree" ] &&
         [ "$git_status_rc" -eq 0 ] && [ -z "$git_status" ]; then
-        if [ "$receipt_errored" -gt 0 ]; then
-          review_receipt_part=" ${sep} ${DIM}review${RESET}"
-        else
-          review_receipt_part=""
-        fi
+        receipt_reviewed=1
       fi
     fi
+  fi
+  if [ -n "$receipt_reviewed" ]; then
+    [ "$receipt_errored" -gt 0 ] &&
+      review_part=" ${sep} ${DIM}review${RESET}"
+  else
+    review_part=" ${sep} review"
+    [ -n "$review_tier" ] && review_part="${review_part} ${review_tier}"
   fi
 fi
 
 # Two lines: identity/work (model, account, dir/branch/diff, workers) on top,
 # usage (ctx, 5h, weekly, fable, cost) below.
-line1="${CYAN}${model}${model_suffix}${RESET}${fast_part}${cb_part} ${sep} ${dir_part}${branch_part}${ports_part}${worker_part}${bench_part}${review_receipt_part}${review_tier_part}"
+line1="${CYAN}${model}${model_suffix}${RESET}${fast_part}${cb_part} ${sep} ${dir_part}${branch_part}${review_part}${ports_part}${worker_part}${bench_part}"
 
 line2="ctx $(pct_colored "$ctx_pct" "$ctx_dim" 40)${ctx_tokens_part} ${sep} 5h $(pct_colored "$h5_pct" "$h5_dim")${h5_arrow} ${sep} wk $(pct_colored "$wk_pct" "$wk_dim")${wk_arrow}${fable_part}"
 

@@ -1248,8 +1248,20 @@ git clone -q "$REPO_A" "$REVIEW_CLEAN"
 review_clean_out=$(run_statusline "$(statusline_payload review-clean "" "$REVIEW_CLEAN")") \
   || fail "review clean render failed"
 assert test "${review_clean_out#*review T}" = "$review_clean_out"
-review_segment="${MAGENTA}review${RESET}"
+review_segment="review"
 assert grep -Fq "$review_segment" <<< "$review_clean_out"
+assert test "${review_clean_out#*⚖}" = "$review_clean_out"
+review_clean_line="${review_clean_out%%$'\n'*}"
+review_delimited=" ${DIM}│${RESET} review"
+review_before="${review_clean_line%%"$review_delimited"*}"
+review_after="${review_clean_line#*"$review_delimited"}"
+assert grep -Fq "$(basename "$REVIEW_CLEAN")" <<< "$review_before"
+assert test "${review_before#*"${DIM}w:"}" = "$review_before"
+assert grep -Fq "${DIM}w:" <<< "$review_after"
+
+review_clean_root=$(cd "$REVIEW_CLEAN" && pwd -P)
+review_clean_hash=$(printf '%s' "$review_clean_root" | shasum -a 1 | awk '{print substr($1,1,8)}')
+review_receipt_name="$(basename "$REVIEW_CLEAN")__${review_clean_hash}.json"
 
 RECEIPT_DIR="$CLAUDEB_FIX/worker-stats/receipts"
 mkdir -p "$RECEIPT_DIR"
@@ -1257,26 +1269,30 @@ review_clean_sha=$(git -C "$REVIEW_CLEAN" rev-parse HEAD)
 review_clean_tree=$(git -C "$REVIEW_CLEAN" rev-parse HEAD^{tree})
 review_clean_index_before=$(git -C "$REVIEW_CLEAN" hash-object .git/index)
 review_clean_objects_before=$(find "$REVIEW_CLEAN/.git/objects" -type f | wc -l | tr -d ' ')
-review_clean_root=$(cd "$REVIEW_CLEAN" && pwd -P)
-review_clean_hash=$(printf '%s' "$review_clean_root" | shasum -a 1 | awk '{print substr($1,1,8)}')
-review_receipt_file="$RECEIPT_DIR/$(basename "$REVIEW_CLEAN")__${review_clean_hash}.json"
+review_receipt_file="$RECEIPT_DIR/$review_receipt_name"
 jq -cn --arg repo "$REVIEW_CLEAN" --arg tree "$review_clean_tree" \
   --arg commit "$review_clean_sha" --arg run_id receipt-match \
   '{repo:$repo,tree:$tree,commit:$commit,run_id:$run_id,ts:"2026-07-27T00:00:00+00:00",errored:0}' \
   > "$review_receipt_file"
+review_clean_repo_key="$(basename "$REVIEW_CLEAN")-$(printf '%s' "$REVIEW_CLEAN" | cksum | awk '{print $1}')"
+review_clean_cache="$HOME/.cache/claude-statusline/review-tier-$review_clean_repo_key"
+mkdir -p "$(dirname "$review_clean_cache")"
+printf 'T2\n' > "$review_clean_cache"
 review_match_out=$(run_statusline "$(statusline_payload review-match "" "$REVIEW_CLEAN")") \
   || fail "review matching receipt render failed"
-assert test "${review_match_out#*"$review_segment"}" = "$review_match_out"
+assert test "${review_match_out#*"$review_delimited"}" = "$review_match_out"
+assert test "${review_match_out#*review T2}" = "$review_match_out"
 assert_eq "$review_clean_index_before" "$(git -C "$REVIEW_CLEAN" hash-object .git/index)"
 assert_eq "$review_clean_objects_before" \
   "$(find "$REVIEW_CLEAN/.git/objects" -type f | wc -l | tr -d ' ')"
+rm -f "$review_clean_cache"
 
 jq '.errored = 1' "$review_receipt_file" > "$review_receipt_file.tmp"
 mv "$review_receipt_file.tmp" "$review_receipt_file"
 review_partial_out=$(run_statusline "$(statusline_payload review-partial "" "$REVIEW_CLEAN")") \
   || fail "review partial receipt render failed"
 assert grep -Fq "${DIM}review${RESET}" <<< "$review_partial_out"
-assert test "${review_partial_out#*"$review_segment"}" = "$review_partial_out"
+assert test "${review_partial_out#*review T}" = "$review_partial_out"
 
 jq '.errored = 0' "$review_receipt_file" > "$review_receipt_file.tmp"
 mv "$review_receipt_file.tmp" "$review_receipt_file"
@@ -1348,4 +1364,4 @@ for _ in $(seq 1 20); do
 done
 assert test "${review_failing_out#*review T}" = "$review_failing_out"
 
-echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, live review-receipt state, the review-tier segment with its staleness and probe-failure cases, main-last and Gemini account predictions, and Codex/claudeb/Gemini worker tag propagation"
+echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, the merged review lifecycle with precedence and staleness cases, main-last and Gemini account predictions, and Codex/claudeb/Gemini worker tag propagation"
