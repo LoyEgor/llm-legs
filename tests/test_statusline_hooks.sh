@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORKDIR_HOOK="$ROOT/bin/statusline-workdir-hook.sh"
 WORKER_HOOK="$ROOT/bin/worker-tag-hook.sh"
 SPAWN_HOOK="$ROOT/bin/worker-spawn-hook.sh"
+REVIEW_HOOK="$ROOT/bin/review-bench-hook.sh"
 STATUSLINE="$ROOT/bin/statusline.sh"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -1199,6 +1200,61 @@ assert_eq "" "$wrong_rewrite_output"
 
 broken_output=$(printf '{broken' | "$WORKER_HOOK") || fail "broken JSON exited nonzero"
 assert_eq "" "$broken_output"
+
+review_hook_payload() {
+  jq -cn --arg command "$1" --arg description "$2" --arg cwd "$3" '
+    {hook_event_name:"PreToolUse",tool_name:"Bash",session_id:"review-hook",cwd:$cwd,
+     tool_input:{command:$command,description:$description,timeout:42}}'
+}
+
+review_sha=$(git -C "$REPO_A" rev-parse --short=7 HEAD)
+review_repo=$(basename "$REPO_A")
+review_payload=$(review_hook_payload \
+  "$ROOT/bin/review-bench review T2" "LLM-authored title" "$REPO_A")
+review_output=$(printf '%s' "$review_payload" | "$REVIEW_HOOK") \
+  || fail "review hook tier rewrite exited nonzero"
+
+# A caller may pass cwd on the Bash call itself instead of the session envelope.
+review_fallback_payload=$(jq -cn --arg command "$ROOT/bin/review-bench review T2" --arg cwd "$REPO_A" '
+  {hook_event_name:"PreToolUse",tool_name:"Bash",session_id:"review-hook",
+   tool_input:{command:$command,description:"x",cwd:$cwd}}')
+review_fallback_output=$(printf '%s' "$review_fallback_payload" | "$REVIEW_HOOK") \
+  || fail "review hook tool_input.cwd fallback exited nonzero"
+assert jq -e --arg expected "review T2 · $review_repo@$review_sha" \
+  '.hookSpecificOutput.updatedInput.description == $expected' <<< "$review_fallback_output"
+assert jq -e --arg expected "review T2 · $review_repo@$review_sha" '
+  .hookSpecificOutput.hookEventName == "PreToolUse" and
+  .hookSpecificOutput.permissionDecision == "allow" and
+  .hookSpecificOutput.updatedInput.description == $expected and
+  .hookSpecificOutput.updatedInput.timeout == 42' <<< "$review_output" >/dev/null
+
+review_cli_payload=$(review_hook_payload \
+  "$ROOT/bin/review-bench review HEAD --tier T2" "CLI title" "$REPO_A")
+review_cli_output=$(printf '%s' "$review_cli_payload" | "$REVIEW_HOOK") \
+  || fail "review hook CLI rewrite exited nonzero"
+assert jq -e --arg expected "review T2 · $review_repo@$review_sha" \
+  '.hookSpecificOutput.updatedInput.description == $expected' <<< "$review_cli_output" >/dev/null
+
+run_payload=$(review_hook_payload \
+  "./bin/review-bench run HEAD --raters sol-high,opus-medium,agy-pro-high,oc-grok45-low,sol-low &" \
+  "Another title" "$REPO_A" | jq -c '.tool_input.run_in_background = true')
+run_output=$(printf '%s' "$run_payload" | "$REVIEW_HOOK") \
+  || fail "review hook run rewrite exited nonzero"
+assert jq -e --arg expected \
+  "review run · $review_repo@$review_sha · sol-high,opus-medium,agy-pro-high,+2" \
+  '.hookSpecificOutput.updatedInput.description == $expected and
+   .hookSpecificOutput.updatedInput.run_in_background == true' <<< "$run_output" >/dev/null
+
+other_payload=$(review_hook_payload "printf 'review later'" "Keep this" "$REPO_A")
+other_output=$(printf '%s' "$other_payload" | "$REVIEW_HOOK") \
+  || fail "review hook unrelated command exited nonzero"
+assert_eq "" "$other_output"
+
+failed_git_payload=$(review_hook_payload "review-bench run HEAD --raters sol-high" \
+  "Keep failed resolution" "$NON_GIT")
+failed_git_output=$(printf '%s' "$failed_git_payload" | "$REVIEW_HOOK") \
+  || fail "review hook failed-resolution call exited nonzero"
+assert_eq "" "$failed_git_output"
 
 # --- review-bench segment (bin/statusline.sh) ---
 bench_session=bench-seg
