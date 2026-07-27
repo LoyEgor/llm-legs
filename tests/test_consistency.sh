@@ -139,7 +139,7 @@ assert doc_has 'Codex/Gemini base-profile priority'
 
 REVIEWBENCH="$ROOT/bin/review-bench"
 for mapping in \
-  '"agy-pro": "gemini-3.1-pro"' \
+  '"agy-pro": "Gemini 3.1 Pro"' \
   '"agy-flash36": "gemini-3.6-flash"' \
   '"agy-flash35": "gemini-3.5-flash"'; do
   assert grep -Fq -- "$mapping" "$REVIEWBENCH"
@@ -152,7 +152,9 @@ assert grep -Fq 'agy-flash36-<low|medium|high>' "$ROOT/docs/DIAGNOSTICS.md"
 assert grep -Fq 'agy-flash35-<low|medium|high>' "$ROOT/docs/DIAGNOSTICS.md"
 assert grep -Fq 'if rater["model"] == "agy-flash35":' "$REVIEWBENCH"
 assert grep -Fq 'return f"{model}-{rater['\''effort'\'']}"' "$REVIEWBENCH"
-assert grep -Fq 'if rater["model"] != "agy-flash35":' "$REVIEWBENCH"
+assert grep -Fq 'if rater["model"] not in ("agy-flash35", "agy-pro"):' "$REVIEWBENCH"
+assert doc_has '`agy-pro-<effort>` → `--model "Gemini 3.1 Pro (<Effort>)"` with no `--effort` flag'
+assert grep -Fq 'if rater["model"] == "agy-pro":' "$REVIEWBENCH"
 assert doc_has '`agy-flash36-<effort>` → `--model gemini-3.6-flash --effort <effort>`'
 assert doc_has '`agy-flash35-<effort>` → `--model gemini-3.5-flash-<effort>` with no `--effort` flag'
 assert doc_has 'Antigravity review cell invocation mapping'
@@ -167,8 +169,8 @@ assert test -r "$CODEX_AGENT"
 assert test -r "$CLAUDEB_AGENT"
 assert test -r "$WORKER_COMMAND"
 for row in \
-  '| `pro` | `high` | `gemini-3.1-pro` | `high` |' \
-  '| `pro` | `low` | `gemini-3.1-pro` | `low` |' \
+  '| `pro` | `high` | `Gemini 3.1 Pro (High)` | *(omit — see below)* |' \
+  '| `pro` | `low` | `Gemini 3.1 Pro (Low)` | *(omit — see below)* |' \
   '| `flash36` | `high` | `gemini-3.6-flash` | `high` |' \
   '| `flash36` | `medium` | `gemini-3.6-flash` | `medium` |' \
   '| `flash36` | `low` | `gemini-3.6-flash` | `low` |' \

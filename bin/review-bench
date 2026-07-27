@@ -221,8 +221,12 @@ AGY_EFFORTS = {
     "agy-flash36": ("low", "medium", "high"),
     "agy-flash35": ("low", "medium", "high"),
 }
+# Pro is named by its human-readable label, the flashes by their id, because that is what each
+# spelling actually reaches the backend as: measured 2026-07-27 on two accounts, every
+# `gemini-3.1-pro*` id misses agy's local catalog and is silently served as Gemini 3.6 Flash,
+# while the flash ids resolve correctly. The propagated label in the agy log is the only proof.
 AGY_MODEL_IDS = {
-    "agy-pro": "gemini-3.1-pro",
+    "agy-pro": "Gemini 3.1 Pro",
     "agy-flash36": "gemini-3.6-flash",
     "agy-flash35": "gemini-3.5-flash",
 }
@@ -1912,9 +1916,18 @@ def agy_failure_detail(stderr, log_text):
 
 def agy_model_id(rater):
     model = AGY_MODEL_IDS[rater["model"]]
+    if rater["model"] == "agy-pro":
+        return f"{model} ({rater['effort'].capitalize()})"
     if rater["model"] == "agy-flash35":
         return f"{model}-{rater['effort']}"
     return model
+
+
+def agy_expected_label(rater):
+    if rater["model"] == "agy-pro":
+        return f"Gemini 3.1 Pro ({rater['effort'].capitalize()})"
+    version = "3.6" if rater["model"] == "agy-flash36" else "3.5"
+    return f"Gemini {version} Flash ({rater['effort'].capitalize()})"
 
 
 def write_agy_usage(run_dir, rater, duration, log_text):
@@ -1926,6 +1939,15 @@ def write_agy_usage(run_dir, rater, duration, log_text):
     labels = re.findall(r'Propagating selected model override.*?label="([^"]+)"', log_text)
     if labels:
         usage["resolved_model_label"] = labels[-1]
+        # A spelling agy cannot resolve is served as another model without any error, so a cell
+        # would record one model's findings under another's name.
+        if labels[-1] != agy_expected_label(rater):
+            usage["model_mismatch"] = True
+            print(
+                f"review-bench: WARNING {rater['spec']} asked for "
+                f"{agy_expected_label(rater)} but agy served {labels[-1]}",
+                file=sys.stderr,
+            )
     requests = len(re.findall(r"\bstreamGenerateContent\b", log_text))
     completions = len(re.findall(r"\bStream completed\b", log_text))
     if requests:
@@ -1960,7 +1982,7 @@ def run_agy(rater, repo, sha, focus, run_dir, diff, account, repeat=1):
     command += [
         "--model", model,
     ]
-    if rater["model"] != "agy-flash35":
+    if rater["model"] not in ("agy-flash35", "agy-pro"):
         command += ["--effort", rater["effort"]]
     command += [
         "--mode", "plan",
