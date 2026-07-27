@@ -106,7 +106,9 @@ run_checks() {
     write_step_log WARN exit-plan-review "due since $exit_date — see docs/EXIT-PLAN.md"
     send_alert "LLM limits: exit-plan review due — docs/EXIT-PLAN.md"
   fi
-  tripwire_globs="${LLM_SELFCHECK_TRIPWIRE_GLOBS:-$HOME/.claude/CLAUDE.md $HOME/.claude/worker-model $HOME/.claude/settings.json $HOME/.claude/agents/*.md $HOME/.claude/commands/*.md}"
+  # Profile roots are watched alongside ~/.claude: agents live in ~/.claude-profiles/<name>/
+  # and a mutation there is exactly the event this tripwire exists to catch.
+  tripwire_globs="${LLM_SELFCHECK_TRIPWIRE_GLOBS:-$HOME/.claude/CLAUDE.md $HOME/.claude/worker-model $HOME/.claude/settings.json $HOME/.claude/agents/*.md $HOME/.claude/commands/*.md $HOME/.claude-profiles/*/CLAUDE.md $HOME/.claude-profiles/*/settings.json $HOME/.claude-profiles/*/agents/*.md $HOME/.claude-profiles/*/commands/*.md}"
   tripwire_state="${LLM_SELFCHECK_TRIPWIRE_STATE:-$log_dir/config-tripwire.state}"
   mkdir -p "$(dirname "$tripwire_state")" 2>/dev/null || true
   if tripwire_snapshot=$(mktemp "$tripwire_state.XXXXXX" 2>/dev/null); then

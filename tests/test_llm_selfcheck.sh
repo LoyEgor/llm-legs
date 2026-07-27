@@ -104,6 +104,9 @@ write_caches() {
   }' >"$SHADOW"
 }
 
+assert grep -q 'HOME/.claude-profiles/\*/CLAUDE.md' "$SCRIPT"
+assert grep -q 'HOME/.claude-profiles/\*/agents/\*.md' "$SCRIPT"
+
 mkdir -p "$TRIPWIRE_DIR"
 printf 'safe\n' >"$TRIPWIRE_DIR/worker.md"
 write_caches
