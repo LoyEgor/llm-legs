@@ -375,6 +375,7 @@ REVIEW_TIERS = {
 }
 
 RECEIPT_DIR = "receipts"
+PROGRESS_DIR = "progress"
 RECEIPT_FIELDS = ("repo", "tree", "commit", "run_id", "ts")
 RECEIPT_HASH_HEX = 8
 
@@ -424,6 +425,82 @@ def receipt_file_name(repo):
         return None
     repo_hash = hashlib.sha1(repo_path.encode()).hexdigest()[:RECEIPT_HASH_HEX]
     return f"{repo_name}__{repo_hash}.json"
+
+
+def progress_file_name(repo, pid=None):
+    receipt_name = receipt_file_name(repo)
+    if not receipt_name:
+        return None
+    return f"{receipt_name[:-5]}-{pid if pid is not None else os.getpid()}.json"
+
+
+def review_progress_document(repo, run_id, tier, target, cells, started=None, pid=None):
+    timestamp = started or iso_now()
+    return {
+        "repo": str(Path(repo).resolve()),
+        "pid": pid if pid is not None else os.getpid(),
+        "run_id": run_id,
+        "tier": tier,
+        "target": target,
+        "cells": list(cells),
+        "done": [],
+        "failed": 0,
+        "started": timestamp,
+        "ts": timestamp,
+    }
+
+
+def complete_review_progress(progress, cell, failed, timestamp=None):
+    progress["done"].append(cell)
+    if failed:
+        progress["failed"] += 1
+    progress["ts"] = timestamp or iso_now()
+    return progress
+
+
+def persist_review_progress(path, progress, timestamp=None):
+    tmp = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        progress["ts"] = timestamp or iso_now()
+        tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+        tmp.write_text(json.dumps(progress) + "\n")
+        os.replace(tmp, path)
+        tmp = None
+        return path
+    finally:
+        if tmp is not None:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def prune_review_progress(repo, directory=None):
+    directory = directory or state_dir() / PROGRESS_DIR
+    directory.mkdir(parents=True, exist_ok=True)
+    own_name = progress_file_name(repo)
+    if not own_name:
+        raise RuntimeError("repository identity is unavailable")
+    prefix = own_name.rsplit("-", 1)[0]
+    pattern = re.compile(rf"^{re.escape(prefix)}-(\d+)\.json$")
+    # iterdir, not glob(f"{prefix}-*.json"): a repository directory named with glob
+    # metacharacters would turn the prefix into a pattern and the prune would miss its files.
+    for path in directory.iterdir():
+        match = pattern.fullmatch(path.name)
+        if not match:
+            continue
+        try:
+            os.kill(int(match.group(1)), 0)
+        except ProcessLookupError:
+            # An unlink that fails must not abort the caller's progress init over one
+            # stale file another process may have just removed or locked.
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        except (PermissionError, OSError):
+            pass
 
 
 def review_receipt(repo):
@@ -509,6 +586,45 @@ def working_tree_tree(repo):
             detail = proc.stderr.strip() or proc.stdout.strip() or "git write-tree failed"
             raise RuntimeError(f"could not compute working tree: {detail}")
         return proc.stdout.strip()
+
+
+def worktree_snapshot_commit(repo, clean_command=None):
+    tree = working_tree_tree(repo)
+    head = resolve_commit(repo, "HEAD")
+    head_tree = subprocess.run(
+        ["git", "rev-parse", "HEAD^{tree}"],
+        cwd=repo, capture_output=True, text=True,
+    )
+    if head_tree.returncode != 0 or not head_tree.stdout.strip():
+        raise RuntimeError(head_tree.stderr.strip() or "HEAD tree is unavailable")
+    if tree == head_tree.stdout.strip():
+        raise ValueError(
+            "working tree matches HEAD; review the commit instead: "
+            + (clean_command or "review-bench review HEAD --tier <tier>")
+        )
+    fixed = {
+        "GIT_AUTHOR_NAME": "review-bench",
+        "GIT_AUTHOR_EMAIL": "review-bench@local",
+        "GIT_AUTHOR_DATE": "2005-04-07T22:13:13 +0000",
+        "GIT_COMMITTER_NAME": "review-bench",
+        "GIT_COMMITTER_EMAIL": "review-bench@local",
+        "GIT_COMMITTER_DATE": "2005-04-07T22:13:13 +0000",
+    }
+    proc = subprocess.run(
+        ["git", "commit-tree", tree, "-p", head, "-m", "review-bench worktree snapshot"],
+        cwd=repo, env=dict(os.environ, **fixed), capture_output=True, text=True,
+    )
+    if proc.returncode != 0 or not proc.stdout.strip():
+        raise RuntimeError(proc.stderr.strip() or "could not create worktree snapshot")
+    return proc.stdout.strip()
+
+
+def is_worktree_snapshot(repo, sha):
+    # A rerun of an errored worktree cell is pinned to the snapshot sha and arrives through
+    # the commit path; the fixed committer identity is what keeps it out of the corpus.
+    proc = subprocess.run(["git", "show", "-s", "--format=%ce", sha],
+                          cwd=repo, capture_output=True, text=True)
+    return proc.returncode == 0 and proc.stdout.strip() == "review-bench@local"
 
 
 def read_jsonl(path):
@@ -2565,15 +2681,12 @@ def cmd_suggest(args):
     if args.range:
         print(f"command: {shlex.join(['review-bench', 'review', command_target, '--tier', tier_name, *extra])}")
         return 0
-    # Every rater reviews a sealed commit, so naming HEAD here would hand back a command that
-    # reviews the previous commit and reports the uncommitted diff as covered.
-    print("uncommitted: this diff has no commit to seal, so it cannot be reviewed as it stands")
-    print(f"next: commit it, then run "
-          f"{shlex.join(['review-bench', 'review', '<sha>', '--tier', tier_name, *extra])}")
+    print(f"command: "
+          f"{shlex.join(['review-bench', 'review', '--worktree', '--tier', tier_name, *extra])}")
     return 0
 
 
-def handoff(run_id, paths):
+def handoff(run_id, paths, worktree=False):
     verdict_path = f"/tmp/review-bench-{run_id}-verdicts.jsonl"
     command = f"review-bench record {shlex.quote(run_id)} --verdicts {shlex.quote(verdict_path)}"
     print("\nADJUDICATION HANDOFF")
@@ -2582,7 +2695,8 @@ def handoff(run_id, paths):
         print(f"  {path}")
     print("Merge and deduplicate the findings blind. Write one verdict per zero-based finding "
           "index as {rater, idx, verdict}, where verdict is confirmed, false_positive, or duplicate.")
-    print(f"Record exactly with: {command}")
+    if not worktree:
+        print(f"Record exactly with: {command}")
 
 
 def redact_command(rater, command):
@@ -2627,13 +2741,44 @@ def refuse_unsupported_repeat(raters, repeat):
         )
 
 
+def commit_mode_command(args):
+    tier = getattr(args, "tier", None)
+    if tier:
+        command = ["review-bench", "review", "HEAD", "--tier", tier]
+    else:
+        command = ["review-bench", "run", "HEAD"]
+        if args.raters:
+            command += ["--raters", args.raters]
+        elif args.auto:
+            command += ["--auto", str(args.auto)]
+        elif args.leg:
+            command.append("--leg")
+    if args.repo != ".":
+        command += ["--repo", str(Path(args.repo).resolve())]
+    if args.focus:
+        command += ["--focus", args.focus]
+    if args.repeat != 1:
+        command += ["--repeat", str(args.repeat)]
+    if args.verify:
+        command += ["--verify", args.verify]
+    return shlex.join(command)
+
+
 def cmd_run(args):
     repo = Path(args.repo).resolve()
     if not (repo / ".git").exists() and subprocess.run(
         ["git", "rev-parse", "--git-dir"], cwd=repo, capture_output=True
     ).returncode != 0:
         raise ValueError(f"not a git repository: {repo}")
-    sha = resolve_commit(repo, args.commitish)
+    worktree_mode = bool(getattr(args, "worktree", False))
+    commitish = getattr(args, "commitish", None)
+    if bool(commitish) == worktree_mode:
+        raise ValueError("exactly one of commitish and --worktree must be given")
+    sha = (
+        worktree_snapshot_commit(repo, clean_command=commit_mode_command(args))
+        if worktree_mode else resolve_commit(repo, commitish)
+    )
+    worktree_mode = worktree_mode or is_worktree_snapshot(repo, sha)
     reviews_path = state_dir() / "reviews.jsonl"
     verify_model = args.verify
     if args.leg:
@@ -2694,120 +2839,173 @@ def cmd_run(args):
     diff = commit_diff(repo, sha) if any(
         rater["side"] in ("claude", "grok", "opencode") for rater in raters) else ""
 
-    results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(raters)) as pool:
-        # The OpenCode gate prefers the longest job, but only among the cells already
-        # queued on it, so the first cells to reach it would otherwise be decided by
-        # thread scheduling. Submitting slowest-first makes the whole order its own.
-        futures = {pool.submit(run_rater_task, rater, repo, sha, args.focus or "", run_dir,
-                               diff, args.repeat): rater
-                   for rater in sorted(raters, key=gate_admission_key)}
-        for future in concurrent.futures.as_completed(futures):
-            rater = futures[future]
+    submitted_raters = sorted(raters, key=gate_admission_key)
+    progress_path = None
+    progress = None
+    progress_warned = False
+
+    def warn_progress(exc):
+        nonlocal progress_warned
+        if not progress_warned:
+            print(f"warning: could not update review progress: {exc}", file=sys.stderr)
+            progress_warned = True
+
+    try:
+        try:
+            progress_name = progress_file_name(repo)
+            if progress_name is None:
+                raise RuntimeError("repository identity is unavailable")
+            progress_path = state_dir() / PROGRESS_DIR / progress_name
+            progress = review_progress_document(
+                repo, run_id, getattr(args, "tier", None),
+                "worktree" if worktree_mode else sha[:7],
+                [rater["spec"] for rater in submitted_raters],
+                started=started.isoformat(),
+            )
+            prune_review_progress(repo, progress_path.parent)
+            persist_review_progress(progress_path, progress)
+        except Exception as exc:
+            warn_progress(exc)
+
+        results = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(submitted_raters)) as pool:
+            # The OpenCode gate prefers the longest job, but only among the cells already
+            # queued on it, so the first cells to reach it would otherwise be decided by
+            # thread scheduling. Submitting slowest-first makes the whole order its own.
+            futures = {
+                pool.submit(
+                    run_rater_task, rater, repo, sha, args.focus or "", run_dir,
+                    diff, args.repeat,
+                ): rater
+                for rater in submitted_raters
+            }
+            for future in concurrent.futures.as_completed(futures):
+                rater = futures[future]
+                try:
+                    result = future.result()
+                    results.append(result)
+                    cell_failed = result[2][0] != 0
+                except Exception as exc:
+                    results.append((rater, None, (1, 0, "", f"task exception: {exc}", [])))
+                    cell_failed = True
+                if progress is not None and progress_path is not None:
+                    try:
+                        complete_review_progress(progress, rater["spec"], cell_failed)
+                        persist_review_progress(progress_path, progress)
+                    except Exception as exc:
+                        warn_progress(exc)
+
+        result_by_spec = {}
+        for rater, account, result in results:
+            result_by_spec[rater["spec"]] = (rater, account, result)
+
+        for spec in [r["spec"] for r in raters]:
+            if spec not in result_by_spec:
+                results.append((next(r for r in raters if r["spec"] == spec), None,
+                               (1, 0, "", f"rater {spec} missing from results", [])))
+                result_by_spec[spec] = (next(r for r in raters if r["spec"] == spec), None,
+                                       (1, 0, "", f"rater {spec} missing from results", []))
+
+        paths = []
+        rater_meta = []
+        errored_raters = set()
+        failed = False
+        tree = repo_tree(repo, sha)
+        for requested in raters:
+            rater, account, result = result_by_spec[requested["spec"]]
+            rc, duration, text, stderr, command = result
+            model_resolved = resolved_model_from_envelope(
+                run_dir / f"raw-{rater['spec']}.json"
+            )
+            findings = normalize_findings(text, rater["spec"])
+            findings = [
+                dict(row, file=canonical_finding_path(row.get("file"), tree)) for row in findings
+            ]
+            is_error = rc != 0 or (rc == 0 and text and is_429_error(text))
+            unusable = "" if is_error else unusable_review(text, findings)
+            if unusable:
+                is_error = True
+                stderr = "\n".join(part for part in ((stderr or "").rstrip(), unusable) if part)
+            dropped = 0
+            unverified = 0
+            verify_ms = None
+            if verify_model and findings and not is_error:
+                verify_started = time.monotonic()
+                kept, audit = verify_findings(findings, repo, sha, verify_model, tree)
+                verify_ms = round((time.monotonic() - verify_started) * 1000)
+                write_jsonl(run_dir / f"verified-{rater['spec']}.jsonl", audit)
+                dropped = len(findings) - len(kept)
+                unverified = sum(1 for row in audit if row.get("walled"))
+                findings = kept
+                print(f"{rater['spec']}: verifier kept {len(kept)} of {len(audit)} finding(s)")
+                if unverified:
+                    print(f"{rater['spec']}: {unverified} finding(s) went unverified — "
+                          "the verifier's plan walled off mid-run")
+            path = run_dir / f"findings-{rater['spec']}.jsonl"
+            write_jsonl(path, findings)
+
+            if is_error:
+                errored_raters.add(rater["spec"])
+                run_meta = {
+                    "rater": rater["spec"], "model": rater["model"], "effort": rater["effort"],
+                    "side": rater["side"], "account": account, "duration_ms": duration,
+                    "findings": 0, "exit_code": rc, "stderr": stderr[-2000:] if stderr else "",
+                    "command": redact_command(rater, command),
+                    "errored": True,
+                }
+                if model_resolved:
+                    run_meta["model_resolved"] = model_resolved
+                rater_meta.append(run_meta)
+                print(f"ERRORED (not recorded): {rater['spec']}")
+            else:
+                failed = failed or rc != 0
+                paths.append(path)
+                run_meta = {
+                    "rater": rater["spec"], "model": rater["model"], "effort": rater["effort"],
+                    "side": rater["side"], "account": account, "duration_ms": duration,
+                    "findings": len(findings), "exit_code": rc,
+                    "stderr": stderr[-2000:] if stderr else "",
+                    "command": redact_command(rater, command),
+                    "verifier_dropped": dropped, "verifier_unverified": unverified,
+                }
+                if verify_ms is not None:
+                    run_meta["verify_ms"] = verify_ms
+                if model_resolved:
+                    run_meta["model_resolved"] = model_resolved
+                rater_meta.append(run_meta)
+                print(f"{rater['spec']}: {len(findings)} finding(s), {duration} ms, exit {rc}")
+
+        meta = {
+            "run_id": run_id, "commit": sha, "repo": str(repo),
+            "raters": [rater["spec"] for rater in raters
+                       if rater["spec"] not in errored_raters],
+            "rater_runs": rater_meta,
+            "durations": {row["rater"]: row["duration_ms"] for row in rater_meta},
+            "started": started.isoformat(), "finished": iso_now(), "focus": args.focus or "",
+            "verifier": verify_model or "",
+        }
+        if worktree_mode:
+            meta["worktree"] = True
+        (run_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
+        if meta["raters"]:
+            write_review_receipt(repo, sha, run_id, len(errored_raters))
+        if errored_raters:
+            rerun = ",".join(collapse_rater_attempts(
+                rater["spec"] for rater in raters if rater["spec"] in errored_raters
+            ))
+            # Always the sha, even for --worktree: the tree can drift before the rerun, and
+            # only the snapshot commit pins the errored cells to what the others reviewed.
+            print(f"rerun: "
+                  f"{shlex.join(['review-bench', 'run', sha, '--raters', rerun])}")
+        print(f"run id: {run_id}")
+        handoff(run_id, paths, worktree=worktree_mode)
+        return 1 if (failed or errored_raters) else 0
+    finally:
+        if progress_path is not None:
             try:
-                result = future.result()
-                results.append(result)
+                progress_path.unlink(missing_ok=True)
             except Exception as exc:
-                results.append((rater, None, (1, 0, "", f"task exception: {exc}", [])))
-
-    result_by_spec = {}
-    for rater, account, result in results:
-        result_by_spec[rater["spec"]] = (rater, account, result)
-
-    for spec in [r["spec"] for r in raters]:
-        if spec not in result_by_spec:
-            results.append((next(r for r in raters if r["spec"] == spec), None,
-                           (1, 0, "", f"rater {spec} missing from results", [])))
-            result_by_spec[spec] = (next(r for r in raters if r["spec"] == spec), None,
-                                   (1, 0, "", f"rater {spec} missing from results", []))
-
-    paths = []
-    rater_meta = []
-    errored_raters = set()
-    failed = False
-    tree = repo_tree(repo, sha)
-    for requested in raters:
-        rater, account, result = result_by_spec[requested["spec"]]
-        rc, duration, text, stderr, command = result
-        model_resolved = resolved_model_from_envelope(
-            run_dir / f"raw-{rater['spec']}.json"
-        )
-        findings = normalize_findings(text, rater["spec"])
-        findings = [
-            dict(row, file=canonical_finding_path(row.get("file"), tree)) for row in findings
-        ]
-        is_error = rc != 0 or (rc == 0 and text and is_429_error(text))
-        unusable = "" if is_error else unusable_review(text, findings)
-        if unusable:
-            is_error = True
-            stderr = "\n".join(part for part in ((stderr or "").rstrip(), unusable) if part)
-        dropped = 0
-        unverified = 0
-        verify_ms = None
-        if verify_model and findings and not is_error:
-            verify_started = time.monotonic()
-            kept, audit = verify_findings(findings, repo, sha, verify_model, tree)
-            verify_ms = round((time.monotonic() - verify_started) * 1000)
-            write_jsonl(run_dir / f"verified-{rater['spec']}.jsonl", audit)
-            dropped = len(findings) - len(kept)
-            unverified = sum(1 for row in audit if row.get("walled"))
-            findings = kept
-            print(f"{rater['spec']}: verifier kept {len(kept)} of {len(audit)} finding(s)")
-            if unverified:
-                print(f"{rater['spec']}: {unverified} finding(s) went unverified — "
-                      "the verifier's plan walled off mid-run")
-        path = run_dir / f"findings-{rater['spec']}.jsonl"
-        write_jsonl(path, findings)
-
-        if is_error:
-            errored_raters.add(rater["spec"])
-            run_meta = {
-                "rater": rater["spec"], "model": rater["model"], "effort": rater["effort"],
-                "side": rater["side"], "account": account, "duration_ms": duration,
-                "findings": 0, "exit_code": rc, "stderr": stderr[-2000:] if stderr else "",
-                "command": redact_command(rater, command),
-                "errored": True,
-            }
-            if model_resolved:
-                run_meta["model_resolved"] = model_resolved
-            rater_meta.append(run_meta)
-            print(f"ERRORED (not recorded): {rater['spec']}")
-        else:
-            failed = failed or rc != 0
-            paths.append(path)
-            run_meta = {
-                "rater": rater["spec"], "model": rater["model"], "effort": rater["effort"],
-                "side": rater["side"], "account": account, "duration_ms": duration,
-                "findings": len(findings), "exit_code": rc, "stderr": stderr[-2000:] if stderr else "",
-                "command": redact_command(rater, command),
-                "verifier_dropped": dropped, "verifier_unverified": unverified,
-            }
-            if verify_ms is not None:
-                run_meta["verify_ms"] = verify_ms
-            if model_resolved:
-                run_meta["model_resolved"] = model_resolved
-            rater_meta.append(run_meta)
-            print(f"{rater['spec']}: {len(findings)} finding(s), {duration} ms, exit {rc}")
-
-    meta = {
-        "run_id": run_id, "commit": sha, "repo": str(repo),
-        "raters": [rater["spec"] for rater in raters if rater["spec"] not in errored_raters],
-        "rater_runs": rater_meta,
-        "durations": {row["rater"]: row["duration_ms"] for row in rater_meta},
-        "started": started.isoformat(), "finished": iso_now(), "focus": args.focus or "",
-        "verifier": verify_model or "",
-    }
-    (run_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
-    if meta["raters"]:
-        write_review_receipt(repo, sha, run_id, len(errored_raters))
-    if errored_raters:
-        rerun = ",".join(collapse_rater_attempts(
-            rater["spec"] for rater in raters if rater["spec"] in errored_raters
-        ))
-        print(f"rerun: review-bench run {sha} --raters {shlex.quote(rerun)}")
-    print(f"run id: {run_id}")
-    handoff(run_id, paths)
-    return 1 if (failed or errored_raters) else 0
+                warn_progress(exc)
 
 
 def finding_rows(run_dir, rater):
@@ -2890,6 +3088,10 @@ def cmd_record(args):
     if not meta_path.exists():
         raise ValueError(f"unknown run id: {args.run_id}")
     meta = json.loads(meta_path.read_text())
+    if meta.get("worktree") is True:
+        raise ValueError(
+            "worktree snapshots are not durable corpus commits and cannot be recorded"
+        )
     verdict_rows = [
         row for row in read_jsonl(Path(args.verdicts))
         if "rater" in row
@@ -3503,7 +3705,8 @@ def main():
     tiers = subparsers.add_parser("tiers", help="Print the canonical review tiers")
     tiers.set_defaults(func=cmd_tiers)
     review = subparsers.add_parser("review", help="Run a canonical review tier")
-    review.add_argument("commitish")
+    review.add_argument("commitish", nargs="?")
+    review.add_argument("--worktree", action="store_true")
     review.add_argument("--repo", default=".")
     review.add_argument("--tier", choices=REVIEW_TIERS, required=True)
     review.add_argument("--focus", default="")
@@ -3520,7 +3723,8 @@ def main():
     suggest.add_argument("--range", metavar="A..B")
     suggest.set_defaults(func=cmd_suggest)
     run = subparsers.add_parser("run", help="Run blind reviewers against one commit")
-    run.add_argument("commitish")
+    run.add_argument("commitish", nargs="?")
+    run.add_argument("--worktree", action="store_true")
     run.add_argument("--repo", default=".")
     selection = run.add_mutually_exclusive_group()
     selection.add_argument(

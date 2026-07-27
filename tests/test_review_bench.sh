@@ -12,7 +12,7 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
 contains() { grep -Fq -- "$2" <<<"$1"; }
 
-python3 - "$SCRIPT" "$ROOT/tests/fixtures/review-bench" "$ROOT" "$WORK" <<'PY'
+python3 - "$SCRIPT" "$ROOT/tests/fixtures/review-bench" "$ROOT" "$WORK" "$$" <<'PY'
 import concurrent.futures
 import argparse
 import contextlib
@@ -37,6 +37,7 @@ loader.exec_module(rb)
 fixtures = pathlib.Path(sys.argv[2])
 repo = pathlib.Path(sys.argv[3])
 work = pathlib.Path(sys.argv[4])
+live_shell_pid = int(sys.argv[5])
 fixture_home = work / "home"
 fixture_home.mkdir()
 os.environ["HOME"] = str(fixture_home)
@@ -818,6 +819,59 @@ pin_descendant_sha = subprocess.run(
 ).stdout.strip()
 pin_file.write_text("working tree marker\n")
 pin_diff = rb.commit_diff(pin_repo, pin_sha)
+snapshot_status = subprocess.run(
+    ["git", "-C", str(pin_repo), "status", "--porcelain=v1", "-z"],
+    check=True, capture_output=True,
+).stdout
+snapshot_tree = rb.working_tree_tree(pin_repo)
+snapshot_sha = rb.worktree_snapshot_commit(pin_repo)
+assert rb.worktree_snapshot_commit(pin_repo) == snapshot_sha
+assert subprocess.run(
+    ["git", "-C", str(pin_repo), "rev-parse", f"{snapshot_sha}^"],
+    check=True, capture_output=True, text=True,
+).stdout.strip() == pin_descendant_sha
+assert subprocess.run(
+    ["git", "-C", str(pin_repo), "rev-parse", f"{snapshot_sha}^{{tree}}"],
+    check=True, capture_output=True, text=True,
+).stdout.strip() == snapshot_tree
+assert subprocess.run(
+    ["git", "-C", str(pin_repo), "status", "--porcelain=v1", "-z"],
+    check=True, capture_output=True,
+).stdout == snapshot_status
+
+snapshot_clean = work / "snapshot-clean"
+snapshot_clean.mkdir()
+subprocess.run(["git", "-C", str(snapshot_clean), "init", "-q"], check=True)
+(snapshot_clean / "clean.txt").write_text("clean\n")
+subprocess.run(["git", "-C", str(snapshot_clean), "add", "clean.txt"], check=True)
+subprocess.run(
+    ["git", "-C", str(snapshot_clean), "-c", "user.name=Fixture",
+     "-c", "user.email=fixture@example.com", "commit", "-qm", "clean"],
+    check=True,
+)
+clean_worktree = subprocess.run(
+    [sys.argv[1], "run", "--worktree", "--repo", str(snapshot_clean),
+     "--raters", "oc-kimik3"],
+    capture_output=True, text=True,
+)
+assert clean_worktree.returncode != 0
+assert "working tree matches HEAD" in clean_worktree.stderr, clean_worktree.stderr
+assert "review-bench run HEAD --raters oc-kimik3 --repo" in clean_worktree.stderr, \
+    clean_worktree.stderr
+clean_review = subprocess.run(
+    [sys.argv[1], "review", "--worktree", "--repo", str(snapshot_clean), "--tier", "T0"],
+    capture_output=True, text=True,
+)
+assert clean_review.returncode != 0
+assert "review-bench review HEAD --tier T0 --repo" in clean_review.stderr, clean_review.stderr
+for command in (
+    [sys.argv[1], "review", "HEAD", "--worktree", "--repo", str(snapshot_clean),
+     "--tier", "T0"],
+    [sys.argv[1], "review", "--repo", str(snapshot_clean), "--tier", "T0"],
+):
+    conflict = subprocess.run(command, capture_output=True, text=True)
+    assert conflict.returncode != 0
+    assert "exactly one of commitish and --worktree" in conflict.stderr, conflict.stderr
 
 fake_codex = work / "fake-codex"
 fake_codex.write_text("""#!/usr/bin/env bash
@@ -1721,6 +1775,100 @@ assert review_receipt == {
 }, review_receipt
 assert review_receipt["ts"]
 
+progress_capture_store = work / "progress-capture-claudeb"
+os.environ["CLAUDEB_DIR"] = str(progress_capture_store)
+captured_progress = []
+
+
+def progress_capture_runner(rater, repo_path, commit, focus, run_dir, diff, account, repeat=1):
+    progress_files = list(
+        (progress_capture_store / "worker-stats" / rb.PROGRESS_DIR).glob("*.json")
+    )
+    assert len(progress_files) == 1, progress_files
+    captured_progress.append(json.loads(progress_files[0].read_text()))
+    return 0, 1, "NO FINDINGS", "", []
+
+
+rb.SIDE_RUNNERS["codex"] = progress_capture_runner
+rb.affordability = lambda: {
+    "claude": False, "codex": True, "agy": True, "grok": True, "opencode": True,
+    "claude_account": None,
+}
+assert rb.cmd_run(argparse.Namespace(
+    repo=str(pin_repo), commitish=pin_sha, raters="sol-medium,opus-medium",
+    leg=False, verify=None, auto=None, focus=None, repeat=1,
+)) == 0
+assert captured_progress[0]["cells"] == ["sol-medium"], captured_progress
+assert captured_progress[0]["tier"] is None
+assert captured_progress[0]["target"] == pin_sha[:7]
+assert captured_progress[0]["done"] == [] and captured_progress[0]["failed"] == 0
+assert not list(
+    (progress_capture_store / "worker-stats" / rb.PROGRESS_DIR).glob("*.json")
+)
+rb.SIDE_RUNNERS["codex"] = tier_runner
+rb.affordability = lambda: {
+    "claude": True, "codex": True, "agy": True, "grok": True, "opencode": True,
+    "claude_account": "fixture",
+}
+
+worktree_run_store = work / "worktree-run-claudeb"
+os.environ["CLAUDEB_DIR"] = str(worktree_run_store)
+worktree_stdout = io.StringIO()
+with contextlib.redirect_stdout(worktree_stdout):
+    worktree_rc = rb.cmd_run(argparse.Namespace(
+        repo=str(pin_repo), commitish=None, worktree=True, raters="sol-medium",
+        leg=False, verify=None, auto=None, focus=None, repeat=1,
+    ))
+worktree_run_dir = next(
+    (worktree_run_store / "worker-stats" / "benches").iterdir()
+)
+worktree_meta = json.loads((worktree_run_dir / "meta.json").read_text())
+worktree_receipt = json.loads((
+    worktree_run_store / "worker-stats" / rb.RECEIPT_DIR
+    / rb.receipt_file_name(pin_repo)
+).read_text())
+assert worktree_rc == 0
+assert worktree_meta["worktree"] is True
+assert worktree_meta["commit"] == snapshot_sha
+assert worktree_receipt["commit"] == snapshot_sha
+assert worktree_receipt["tree"] == snapshot_tree
+assert "Record exactly with:" not in worktree_stdout.getvalue()
+assert "Merge and deduplicate the findings blind." in worktree_stdout.getvalue()
+progress_run_dir = worktree_run_store / "worker-stats" / rb.PROGRESS_DIR
+assert not list(progress_run_dir.glob("*.json")), list(progress_run_dir.glob("*.json"))
+
+assert rb.is_worktree_snapshot(pin_repo, snapshot_sha)
+assert not rb.is_worktree_snapshot(pin_repo, pin_sha)
+
+
+def snapshot_rerun_runner(rater, repo_path, commit, focus, run_dir, diff, account, repeat=1):
+    if rater["spec"] == "sol-high":
+        return 1, 1, "", "fixture rater failure", []
+    return tier_runner(rater, repo_path, commit, focus, run_dir, diff, account, repeat)
+
+
+for side in rb.SIDE_RUNNERS:
+    rb.SIDE_RUNNERS[side] = snapshot_rerun_runner
+snapshot_rerun_store = work / "snapshot-rerun-claudeb"
+os.environ["CLAUDEB_DIR"] = str(snapshot_rerun_store)
+snapshot_rerun_stdout = io.StringIO()
+with contextlib.redirect_stdout(snapshot_rerun_stdout):
+    snapshot_rerun_rc = rb.cmd_run(argparse.Namespace(
+        repo=str(pin_repo), commitish=snapshot_sha, raters="sol-medium,sol-high",
+        leg=False, verify=None, auto=None, focus=None, repeat=1,
+    ))
+snapshot_rerun_run_dir = next(
+    (snapshot_rerun_store / "worker-stats" / "benches").iterdir()
+)
+snapshot_rerun_meta = json.loads((snapshot_rerun_run_dir / "meta.json").read_text())
+assert snapshot_rerun_rc == 1
+assert snapshot_rerun_meta["worktree"] is True, snapshot_rerun_meta
+assert f"rerun: review-bench run {snapshot_sha} --raters sol-high" \
+    in snapshot_rerun_stdout.getvalue(), snapshot_rerun_stdout.getvalue()
+assert "Record exactly with:" not in snapshot_rerun_stdout.getvalue()
+for side in rb.SIDE_RUNNERS:
+    rb.SIDE_RUNNERS[side] = tier_runner
+
 collision_left = work / "receipt-collision-left" / "same-name"
 collision_right = work / "receipt-collision-right" / "same-name"
 for collision_repo in (collision_left, collision_right):
@@ -1732,6 +1880,61 @@ collision_names = {
 assert len(collision_names) == 2, collision_names
 assert all(name.startswith("same-name__") and len(name) == len("same-name__.json") + 8
            for name in collision_names), collision_names
+
+progress_name = rb.progress_file_name(pin_repo, 12345)
+assert progress_name == rb.receipt_file_name(pin_repo)[:-5] + "-12345.json", progress_name
+progress = rb.review_progress_document(
+    pin_repo, "20260727T120000Z-2ecc0bd", "T2", "2ecc0bd",
+    ["oc-kimik3", "sol-low"],
+    started="2026-07-27T12:00:00+00:00", pid=12345,
+)
+assert progress == {
+    "repo": str(pin_repo.resolve()),
+    "pid": 12345,
+    "run_id": "20260727T120000Z-2ecc0bd",
+    "tier": "T2",
+    "target": "2ecc0bd",
+    "cells": ["oc-kimik3", "sol-low"],
+    "done": [],
+    "failed": 0,
+    "started": "2026-07-27T12:00:00+00:00",
+    "ts": "2026-07-27T12:00:00+00:00",
+}, progress
+rb.complete_review_progress(
+    progress, "sol-low", True, timestamp="2026-07-27T12:03:11+00:00",
+)
+assert progress["done"] == ["sol-low"] and progress["failed"] == 1
+assert progress["ts"] == "2026-07-27T12:03:11+00:00"
+progress_dir = work / "progress-helpers"
+progress_path = progress_dir / progress_name
+rb.persist_review_progress(
+    progress_path, progress, timestamp="2026-07-27T12:04:00+00:00",
+)
+assert json.loads(progress_path.read_text())["ts"] == "2026-07-27T12:04:00+00:00"
+dead_pid = 99999999
+try:
+    os.kill(dead_pid, 0)
+except ProcessLookupError:
+    pass
+else:
+    raise AssertionError(f"fixture pid unexpectedly alive: {dead_pid}")
+dead_progress = progress_dir / rb.progress_file_name(pin_repo, dead_pid)
+live_progress = progress_dir / rb.progress_file_name(pin_repo, live_shell_pid)
+dead_progress.write_text("{}\n")
+live_progress.write_text("{}\n")
+rb.prune_review_progress(pin_repo, progress_dir)
+assert not dead_progress.exists()
+assert live_progress.exists()
+
+metachar_repo = work / "prune-meta[char]-repo"
+metachar_repo.mkdir()
+subprocess.run(["git", "init", "-q", str(metachar_repo)], check=True)
+metachar_dir = work / "prune-metachar-progress"
+metachar_dead = metachar_dir / rb.progress_file_name(metachar_repo, dead_pid)
+metachar_dir.mkdir()
+metachar_dead.write_text("{}\n")
+rb.prune_review_progress(metachar_repo, metachar_dir)
+assert not metachar_dead.exists()
 
 stamp_repo = work / "reviewed-repo"
 stamp_repo.mkdir()
@@ -1898,6 +2101,28 @@ assert rb.cmd_record(argparse.Namespace(
 )) == 0
 repeat_corpus = rb.read_jsonl(repeat_store / "worker-stats" / "reviews.jsonl")
 assert [row["rater"] for row in repeat_corpus] == ["sol-medium", "sol-medium#2"], repeat_corpus
+
+worktree_record_dir = (
+    repeat_store / "worker-stats" / "benches" / "worktree-record-fixture"
+)
+worktree_record_dir.mkdir()
+(worktree_record_dir / "meta.json").write_text(json.dumps({
+    "run_id": "worktree-record-fixture",
+    "commit": snapshot_sha,
+    "repo": str(pin_repo),
+    "raters": [],
+    "worktree": True,
+}) + "\n")
+empty_verdicts = work / "worktree-empty-verdicts.jsonl"
+empty_verdicts.write_text("")
+try:
+    rb.cmd_record(argparse.Namespace(
+        run_id="worktree-record-fixture", verdicts=str(empty_verdicts),
+    ))
+except ValueError as exc:
+    assert "worktree snapshots are not durable corpus commits" in str(exc), exc
+else:
+    raise AssertionError("record accepted a worktree snapshot")
 
 verify_timing_store = work / "verify-timing-claudeb"
 os.environ["CLAUDEB_DIR"] = str(verify_timing_store)
@@ -2148,10 +2373,9 @@ def assert_suggestion(lines, files, changed_lines, tier, committed=False, receip
         assert lines[offset].startswith("command: review-bench review "), lines
         assert f"--tier {tier}" in lines[offset], lines
         return
-    assert lines[offset].startswith("uncommitted: "), lines
-    assert lines[offset + 1].startswith("next: commit it, then run ") \
-        and "<sha>" in lines[offset + 1], lines
-    assert f"--tier {tier}" in lines[offset + 1], lines
+    assert lines[offset].startswith("command: review-bench review --worktree "), lines
+    assert f"--tier {tier}" in lines[offset], lines
+    assert not any("cannot be reviewed" in line for line in lines), lines
 
 
 clean_suggest = make_suggest_repo("suggest-clean")
