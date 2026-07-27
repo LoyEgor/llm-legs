@@ -42,6 +42,17 @@ REPO_E="$REPO_A/.claude/worktrees/feature-y"
 git -C "$REPO_A" worktree add -q -b feature-y "$REPO_E"
 REPO_F="$REPO_A/.claude/worktrees/auto-slug"
 git -C "$REPO_A" worktree add -q -b claude/agitated-fixture "$REPO_F"
+# A repository whose git dir lives outside the checkout: `<common>/..` is NOT the
+# main worktree, so the canonical-location check must ask git, not strip `/.git`.
+REPO_G="$FIXTURES/repo-g"
+mkdir -p "$REPO_G"
+git -C "$REPO_G" init -q --separate-git-dir "$FIXTURES/repo-g-gitdir" -b main
+printf 'sep\n' > "$REPO_G/tracked.txt"
+git -C "$REPO_G" add tracked.txt
+git -C "$REPO_G" -c user.name=Fixture -c user.email=fixture@example.com commit -qm initial
+printf '.claude/worktrees/\n' >> "$FIXTURES/repo-g-gitdir/info/exclude"
+REPO_H="$REPO_G/.claude/worktrees/sep-work"
+git -C "$REPO_G" worktree add -q -b sep-work "$REPO_H"
 REPO_D="$FIXTURES/repo-d"
 mkdir -p "$REPO_D"
 git -C "$REPO_D" init -q -b main
@@ -55,6 +66,7 @@ TOP_C=$(git -C "$REPO_C" rev-parse --show-toplevel)
 TOP_D=$(git -C "$REPO_D" rev-parse --show-toplevel)
 TOP_E=$(git -C "$REPO_E" rev-parse --show-toplevel)
 TOP_F=$(git -C "$REPO_F" rev-parse --show-toplevel)
+TOP_H=$(git -C "$REPO_H" rev-parse --show-toplevel)
 SHORT_SHA=$(git -C "$REPO_C" rev-parse --short HEAD)
 
 DIM=$'\033[2m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; RED=$'\033[31m'; MAGENTA=$'\033[35m'; RESET=$'\033[0m'
@@ -256,6 +268,19 @@ in_wt_output=$(run_statusline "$(statusline_payload status-in-wt '' "$REPO_E")")
 assert grep -Fq "$(basename "$TOP_A")" <<< "$in_wt_output"
 assert grep -Fq "${BLUE}⧉ feature-y" <<< "$in_wt_output"
 
+# Separate git dir: the location check must resolve the main worktree through git,
+# not by stripping `/.git` off the common dir, or an in-convention worktree reads
+# as misplaced.
+printf '%s\n' "$TOP_H" > "$STATE_DIR/workdir-status-sepdir"
+sepdir_output=$(run_statusline "$(statusline_payload status-sepdir '' "$REPO_G")") || fail "statusline separate-git-dir failed"
+assert grep -Fq "${BLUE}⧉ sep-work" <<< "$sepdir_output"
+
+# A live worktree label survives a stale breadcrumb.
+printf '%s\n' "$FIXTURES/vanished" > "$STATE_DIR/workdir-status-wt-live.gone"
+wt_live_output=$(run_statusline "$(statusline_payload status-wt-live '' "$REPO_E")") || fail "statusline live worktree over breadcrumb failed"
+assert grep -Fq "${BLUE}⧉ feature-y" <<< "$wt_live_output"
+assert test "${wt_live_output#*✗}" = "$wt_live_output"
+
 # A foreign repository keeps `»` and always shows its branch.
 printf '%s\n' "$TOP_D" > "$STATE_DIR/workdir-status-foreign"
 foreign_output=$(run_statusline "$(statusline_payload status-foreign)") || fail "statusline foreign repo failed"
@@ -282,6 +307,10 @@ assert test ! -e "$STATE_DIR/workdir-status-dangling"
 assert_eq "$FIXTURES/vanished" "$(cat "$STATE_DIR/workdir-status-dangling.gone")"
 dangling_again=$(run_statusline "$(statusline_payload status-dangling)") || fail "statusline dangling rerender failed"
 assert grep -Fq "${DIM}⧉ vanished ✗" <<< "$dangling_again"
+# Written once, not on every render, so the cache prune can age the file out.
+printf '%s\n' "$FIXTURES/vanished-later" > "$STATE_DIR/workdir-status-dangling"
+dangling_third=$(run_statusline "$(statusline_payload status-dangling)") || fail "statusline dangling third failed"
+assert_eq "$FIXTURES/vanished" "$(cat "$STATE_DIR/workdir-status-dangling.gone")"
 
 # Tracking a live directory again clears the breadcrumb.
 run_workdir_hook "$(workdir_payload Bash status-dangling "$REPO_A" "cd '$REPO_A'")"

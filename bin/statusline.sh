@@ -65,27 +65,40 @@ repo_identity_name() {
 # a linked worktree). Fails on anything without a working tree, as the render's
 # whole repository cluster does.
 repo_dirs() {
-  local out rest common gitdir
+  local out rest common gitdir resolved main_wt
   out=$(git -C "$1" rev-parse --show-toplevel --git-common-dir --absolute-git-dir 2>/dev/null) || return 1
   REPO_TOP=${out%%$'\n'*}
   rest=${out#*$'\n'}
   common=${rest%%$'\n'*}
   gitdir=${rest#*$'\n'}
   [ -n "$REPO_TOP" ] && [ -n "$common" ] && [ -n "$gitdir" ] || return 1
+  # `--git-common-dir` comes back relative to the CWD whenever it sits inside the
+  # tree (`.git` at the root, `../../.git` from a subdirectory).
   case "$common" in
     /*) ;;
     *) common="$1/$common" ;;
   esac
-  # Unequal strings mean a linked worktree OR the same dir reached through a
-  # symlink or a relative common dir — only then is resolving worth the forks.
-  if [ "$common" != "$gitdir" ]; then
-    common=$(cd "$common" 2>/dev/null && pwd -P) || return 1
-    gitdir=$(cd "$gitdir" 2>/dev/null && pwd -P) || return 1
-  fi
+  # All three must be compared with each other (identity, worktree detection, the
+  # `.claude/worktrees` prefix test), so all three are resolved the same way. One
+  # subshell for the lot: the paths are absolute, so the `cd`s do not compound.
+  resolved=$({ cd "$common" && pwd -P && cd "$gitdir" && pwd -P && cd "$REPO_TOP" && pwd -P; } 2>/dev/null)
+  { IFS= read -r common; IFS= read -r gitdir; IFS= read -r REPO_TOP; } <<< "$resolved"
+  [ -n "$common" ] && [ -n "$gitdir" ] && [ -n "$REPO_TOP" ] || return 1
   REPO_COMMON="$common"
-  REPO_ROOT="${common%/.git}"
+  if [ "$common" != "$gitdir" ]; then
+    REPO_IS_WT=1
+    # The main checkout is NOT derivable from the common dir — `--separate-git-dir`
+    # and a custom `GIT_DIR` both break `<root>/.git`. `worktree list` names it,
+    # main worktree first.
+    main_wt=$(git -C "$1" worktree list --porcelain 2>/dev/null |
+      { IFS= read -r line; printf '%s' "${line#worktree }"; })
+    REPO_ROOT=$({ cd "$main_wt" && pwd -P; } 2>/dev/null) || REPO_ROOT=""
+    [ -n "$REPO_ROOT" ] || REPO_ROOT="$REPO_TOP"
+  else
+    REPO_IS_WT=0
+    REPO_ROOT="$REPO_TOP"
+  fi
   REPO_NAME="${REPO_ROOT##*/}"
-  if [ "$common" != "$gitdir" ]; then REPO_IS_WT=1; else REPO_IS_WT=0; fi
 }
 
 # Does the branch name carry every word of the worktree directory name? Decides
@@ -373,18 +386,34 @@ adopt_repo_dirs() {
   active_top="$REPO_TOP"; active_common="$REPO_COMMON"
   active_root="$REPO_ROOT"; active_name="$REPO_NAME"; active_is_wt="$REPO_IS_WT"
 }
+adopt_project_dirs() {
+  active_top="$project_top"; active_common="$project_common"
+  active_root="$project_root"; active_name="$project_name"; active_is_wt="$project_is_wt"
+}
 workdir_state="$HOME/.cache/claude-statusline/workdir-$session_id"
 if [ -n "$session_id" ] && [ -f "$workdir_state" ]; then
   IFS= read -r active_dir < "$workdir_state"
-  if [ -n "$active_dir" ] && repo_dirs "$active_dir"; then
+  if [ -z "$active_dir" ]; then
+    :
+  elif [ "$active_dir" = "$dir_path" ] && [ -n "$project_top" ]; then
+    git_dir="$active_dir"
+    adopt_project_dirs
+  elif repo_dirs "$active_dir"; then
     git_dir="$active_dir"
     adopt_repo_dirs
-  else
+  fi
+  if [ -z "$active_top" ]; then
     # The tracked directory stopped resolving — a removed worktree, usually.
     # Falling back to the project dir without a word made the strip report the
-    # main checkout's branch as if work had moved there; the breadcrumb lives
-    # until the hook tracks a live directory again.
-    [ -n "$active_dir" ] && printf '%s\n' "$active_dir" > "$workdir_state.gone"
+    # main checkout's branch as if work had moved there. Written once, and with
+    # the hook's tmp+mv, so the 7-day prune can age it out and no reader sees a
+    # half-written path.
+    if [ -n "$active_dir" ] && [ ! -f "$workdir_state.gone" ]; then
+      if printf '%s\n' "$active_dir" > "$workdir_state.gone.$$" 2>/dev/null; then
+        mv -f "$workdir_state.gone.$$" "$workdir_state.gone" 2>/dev/null ||
+          rm -f "$workdir_state.gone.$$" 2>/dev/null
+      fi
+    fi
     rm -f "$workdir_state"
   fi
 fi
@@ -393,8 +422,7 @@ if [ -n "$session_id" ] && [ -z "$active_top" ] && [ -f "$workdir_state.gone" ];
 fi
 if [ -z "$active_top" ]; then
   if [ "$git_dir" = "$dir_path" ]; then
-    active_top="$project_top"; active_common="$project_common"
-    active_root="$project_root"; active_name="$project_name"; active_is_wt="$project_is_wt"
+    adopt_project_dirs
   elif repo_dirs "$git_dir"; then
     adopt_repo_dirs
   fi
@@ -411,15 +439,27 @@ if [ -n "$active_top" ]; then
   if [ "$active_is_wt" = 1 ]; then
     # Worktrees belong at <repo>/.claude/worktrees/<name>; a harness-made one or
     # a sibling of the repo sits somewhere Egor did not put it, and no other part
-    # of the setup reports where a worktree physically lives.
+    # of the setup reports where a worktree physically lives. Two roots satisfy
+    # the rule: the repository's own main checkout, and — for a worktree of the
+    # project — the session's checkout, which git cannot always name itself
+    # (`worktree list` reports the git dir, not the checkout, under
+    # --separate-git-dir).
+    wt_color="$RED"
     case "$active_top" in
       "$active_root"/.claude/worktrees/*) wt_color="$BLUE" ;;
-      *) wt_color="$RED" ;;
     esac
+    if [ "$wt_color" = "$RED" ] && [ -n "$project_root" ]; then
+      case "$active_top" in
+        "$project_root"/.claude/worktrees/*) wt_color="$BLUE" ;;
+      esac
+    fi
     wt_part=" ${wt_color}⧉ ${active_top##*/}${RESET}"
   fi
 fi
-[ -n "$lost_dir" ] && wt_part=" ${DIM}⧉ $(basename "$lost_dir") ✗${RESET}"
+# Never over the label of a worktree that IS live: the fallback directory can be
+# one itself, and a breadcrumb must not rename it.
+[ -n "$lost_dir" ] && [ "$active_is_wt" != 1 ] &&
+  wt_part=" ${DIM}⧉ ${lost_dir##*/} ✗${RESET}"
 dir_part="${dir_part}${wt_part}"
 
 branch_part=""
