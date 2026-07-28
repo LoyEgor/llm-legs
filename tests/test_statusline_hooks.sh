@@ -518,11 +518,11 @@ assert_eq "" "$(cat "$WORK/cost-stderr")"
 
 # --- ctx color (% colored by pct: green <40, yellow 40–79, red ≥80; token count cold cache) ---
 CTX_TRUTH_TRANSCRIPT="$WORK/ctx-truth.jsonl"
-printf '{"type":"assistant","timestamp":"%s","message":{"role":"assistant","model":"fixmodel","usage":{}}}\n' \
-  "$(TZ=UTC date -r "$NOW" +%Y-%m-%dT%H:%M:%S.000Z)" > "$CTX_TRUTH_TRANSCRIPT"
+printf '{"type":"assistant","timestamp":"%s","uuid":"ctx-truth","message":{"role":"assistant","model":"fixmodel","usage":{"cache_read_input_tokens":1000,"cache_creation_input_tokens":1,"cache_creation":{"ephemeral_1h_input_tokens":1,"ephemeral_5m_input_tokens":0}}}}\n' \
+  "$(TZ=UTC date -r $((NOW - 4000)) +%Y-%m-%dT%H:%M:%S.000Z)" > "$CTX_TRUTH_TRANSCRIPT"
 ctx_case() {
   statusline_payload "$1" "$(jq -cn --arg tp "$CTX_TRUTH_TRANSCRIPT" --argjson pct "$2" --argjson tokens "$3" \
-    '{transcript_path:$tp,context_window:{used_percentage:$pct,current_usage:{input_tokens:$tokens}}}')"
+    '{transcript_path:$tp,model:{id:"fixmodel"},context_window:{used_percentage:$pct,current_usage:{input_tokens:$tokens}}}')"
 }
 ctx_lo=$(run_statusline "$(ctx_case ctx-lo 39 50000)")
 assert grep -Fq "ctx ${GREEN}39%${RESET}" <<< "$ctx_lo"
@@ -538,15 +538,14 @@ assert grep -Fq "${YELLOW}180k${RESET}" <<< "$ctx_red"
 # used_percentage says 100 on a 1m session at 248k — render must show 25%.
 ctx_1m=$(run_statusline "$(statusline_payload ctx-1m \
   "$(jq -cn --arg tp "$CTX_TRUTH_TRANSCRIPT" \
-    '{transcript_path:$tp,context_window:{used_percentage:100,context_window_size:1000000,current_usage:{input_tokens:248000}}}')")")
+    '{transcript_path:$tp,model:{id:"fixmodel"},context_window:{used_percentage:100,context_window_size:1000000,current_usage:{input_tokens:248000}}}')")")
 assert grep -Fq "ctx ${GREEN}25%${RESET}" <<< "$ctx_1m"
 assert grep -Fq "${YELLOW}248k${RESET}" <<< "$ctx_1m"
 ctx_200k=$(run_statusline "$(statusline_payload ctx-200k \
   "$(jq -cn --arg tp "$CTX_TRUTH_TRANSCRIPT" \
-    '{transcript_path:$tp,context_window:{used_percentage:10,context_window_size:200000,current_usage:{input_tokens:180000}}}')")")
+    '{transcript_path:$tp,model:{id:"fixmodel"},context_window:{used_percentage:10,context_window_size:200000,current_usage:{input_tokens:180000}}}')")")
 assert grep -Fq "ctx ${RED}90%${RESET}" <<< "$ctx_200k"
 
-# --- token-count color encodes prompt-cache warmth ---
 # Warmth anchors on completed responses: non-sidechain, non-<synthetic>
 # assistant entries (timestamp + message.model + message.usage). Fixture
 # renders use the explicit acctgen fixture.
@@ -560,30 +559,46 @@ warm_extra() {
 TRANSCRIPT="$WORK/transcript.jsonl"
 iso_utc() { TZ=UTC date -r "$1" +%Y-%m-%dT%H:%M:%S.000Z; }
 t_user() { printf '{"type":"user","timestamp":"%s","message":{"role":"user"}}\n' "$(iso_utc "$1")" >> "$TRANSCRIPT"; }
-t_assist() { # epoch [model] [cache_read] [cache_creation] [bucket 5m|1h|-]
-  local ts="$1" m="${2:-fixmodel}" cr="${3:-50000}" cc="${4:-500}" bk="${5:--}" b=""
+t_assist() {
+  local ts="$1" m="${2:-fixmodel}" cr="${3:-50000}" cc="${4:-500}" bk="${5:-1h}"
+  local uuid="${6:-a-$ts-$m-$cr-$cc-$bk}" b=""
   case "$bk" in
     5m) b=',"cache_creation":{"ephemeral_5m_input_tokens":'"$cc"',"ephemeral_1h_input_tokens":0}' ;;
     1h) b=',"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":'"$cc"'}' ;;
+    mixed) b=',"cache_creation":{"ephemeral_5m_input_tokens":1,"ephemeral_1h_input_tokens":'"$cc"'}' ;;
   esac
-  printf '{"type":"assistant","timestamp":"%s","message":{"role":"assistant","model":"%s","usage":{"cache_read_input_tokens":%s,"cache_creation_input_tokens":%s%s}}}\n' \
-    "$(iso_utc "$ts")" "$m" "$cr" "$cc" "$b" >> "$TRANSCRIPT"
+  printf '{"type":"assistant","timestamp":"%s","uuid":"%s","message":{"role":"assistant","model":"%s","usage":{"cache_read_input_tokens":%s,"cache_creation_input_tokens":%s%s}}}\n' \
+    "$(iso_utc "$ts")" "$uuid" "$m" "$cr" "$cc" "$b" >> "$TRANSCRIPT"
+  LAST_ASSIST_TS="$ts"; LAST_ASSIST_MODEL="$m"; LAST_ASSIST_UUID="$uuid"
+  case "$bk" in 5m|mixed) LAST_ASSIST_TTL=300 ;; 1h) LAST_ASSIST_TTL=3600 ;; *) LAST_ASSIST_TTL=0 ;; esac
 }
 t_boundary() { printf '{"type":"system","subtype":"compact_boundary","timestamp":"%s"}\n' "$(iso_utc "$1")" >> "$TRANSCRIPT"; }
 t_reset() { : > "$TRANSCRIPT"; rm -f "$STATE_DIR"/cache-ttl-track-*; }
+t_stamp() {
+  printf 'v2 %s acctgen 0 %s %s %s 262144 %s acctgen\n' \
+    "$LAST_ASSIST_TS" "$LAST_ASSIST_TTL" "$LAST_ASSIST_MODEL" "$LAST_ASSIST_UUID" \
+    "$LAST_ASSIST_TS" > "$STATE_DIR/cache-ttl-track-$1"
+}
 RUN_STATUSLINE_DEFAULT_ACCOUNT=acctgen
 
-# Warm cache: count and time both dim (time presence signals cache alive);
-# a fresh response inside the 120s attribution window self-stamps the account.
-t_reset; t_assist $((NOW - 20))
+t_reset; t_assist $((NOW - 20)); t_stamp ctx-warm-lo
 warm_a=$(run_statusline "$(statusline_payload ctx-warm-lo "$(warm_extra "$TRANSCRIPT" 20 50000)")")
 a_death=$(TZ=Europe/Kyiv date -r $((NOW - 20 + 3600)) +%H:%M)
-assert grep -Fq "${DIM}50k${RESET}${DIM}→${a_death}${RESET}" <<< "$warm_a"
+assert grep -Fq "ctx ${GREEN}20%${RESET} ${DIM}→${a_death}${RESET}" <<< "$warm_a"
+assert test "${warm_a#*50k}" = "$warm_a"
 assert grep -q '^v2 [0-9]* acctgen ' "$STATE_DIR/cache-ttl-track-ctx-warm-lo"
 
-# Warm cache with large token count: still dim.
+payload_zero_extra=$(jq -cn --arg tp "$TRANSCRIPT" '
+  {transcript_path:$tp,model:{id:"fixmodel"},
+   context_window:{used_percentage:20,current_usage:{input_tokens:50000}}}')
+t_stamp ctx-payload-zero
+payload_zero=$(run_statusline "$(statusline_payload ctx-payload-zero "$payload_zero_extra")")
+assert grep -Fq "${DIM}→${a_death}${RESET}" <<< "$payload_zero"
+
+t_stamp ctx-warm-hi
 warm_b=$(run_statusline "$(statusline_payload ctx-warm-hi "$(warm_extra "$TRANSCRIPT" 60 350000)")")
-assert grep -Fq "${DIM}350k${RESET}" <<< "$warm_b"
+assert grep -Fq "ctx ${YELLOW}60%${RESET} ${DIM}→" <<< "$warm_b"
+assert test "${warm_b#*350k}" = "$warm_b"
 
 # Response older than the TTL -> cold (dim: 50k < 90k), no death time.
 t_reset; t_assist $((NOW - 4000))
@@ -600,24 +615,36 @@ assert grep -Fq "${YELLOW}111k${RESET}" <<< "$resume_lie"
 assert test 0 -eq "$(grep -c '→' <<< "$resume_lie")"
 
 # Fresh real response wins over an older mtime (entries are the source of truth).
-t_reset; t_user $((NOW - 65)); t_assist $((NOW - 60))
+t_reset; t_user $((NOW - 65)); t_assist $((NOW - 60)); t_stamp ctx-ts-warm
 touch -t "$(date -r $((NOW - 4000)) +%Y%m%d%H%M.%S)" "$TRANSCRIPT"
 ts_warm=$(run_statusline "$(statusline_payload ctx-ts-warm "$(warm_extra "$TRANSCRIPT" 20 50000)")")
 ts_death=$(TZ=Europe/Kyiv date -r $((NOW - 60 + 3600)) +%H:%M)
-assert grep -Fq "${DIM}50k${RESET}${DIM}→${ts_death}${RESET}" <<< "$ts_warm"
+assert grep -Fq "${DIM}→${ts_death}${RESET}" <<< "$ts_warm"
 
 # A partially written final entry must not hide the preceding completed response.
-t_reset; t_assist $((NOW - 20))
+t_reset; t_assist $((NOW - 20)); t_stamp ctx-streaming
 printf '{"type":"assistant","timestamp":"' >> "$TRANSCRIPT"
 streaming_out=$(run_statusline "$(statusline_payload ctx-streaming "$(warm_extra "$TRANSCRIPT" 20 50000)")")
 streaming_death=$(TZ=Europe/Kyiv date -r $((NOW - 20 + 3600)) +%H:%M)
-assert grep -Fq "ctx ${GREEN}20%${RESET} ${DIM}50k${RESET}${DIM}→${streaming_death}${RESET}" <<< "$streaming_out"
+assert grep -Fq "ctx ${GREEN}20%${RESET} ${DIM}→${streaming_death}${RESET}" <<< "$streaming_out"
+
+printf '\n{"type":"system","subtype":"local_command","timestamp":"%s"}\n' "$(iso_utc "$NOW")" >> "$TRANSCRIPT"
+shell_only=$(run_statusline "$(statusline_payload ctx-streaming "$(warm_extra "$TRANSCRIPT" 20 50000)")")
+assert grep -Fq "${DIM}→${streaming_death}${RESET}" <<< "$shell_only"
+
+t_reset; t_assist $((NOW - 20)); t_stamp ctx-tool-tail
+printf '{"type":"tool-result","timestamp":"%s","content":"' "$(iso_utc "$NOW")" >> "$TRANSCRIPT"
+head -c 350000 /dev/zero | tr '\0' x >> "$TRANSCRIPT"
+printf '"}\n' >> "$TRANSCRIPT"
+tool_tail=$(run_statusline "$(statusline_payload ctx-tool-tail "$(warm_extra "$TRANSCRIPT" 20 50000)")")
+tool_tail_death=$(TZ=Europe/Kyiv date -r $((NOW - 20 + 3600)) +%H:%M)
+assert grep -Fq "${DIM}→${tool_tail_death}${RESET}" <<< "$tool_tail"
 
 # Sidechain (subagent) entries hit different cache prefixes — not this chat's warmth.
 t_reset; t_user $((NOW - 172800))
 printf '{"type":"assistant","isSidechain":true,"timestamp":"%s","message":{"role":"assistant","model":"fixmodel","usage":{"cache_read_input_tokens":50000}}}\n' "$(iso_utc "$NOW")" >> "$TRANSCRIPT"
 side_cold=$(run_statusline "$(statusline_payload ctx-sidechain "$(warm_extra "$TRANSCRIPT" 55 111000)")")
-assert grep -Fq "ctx ${DIM}55%${RESET} ${DIM}111k${RESET}" <<< "$side_cold"
+assert grep -Fq "ctx ${DIM}55%${RESET} ${YELLOW}111k${RESET}" <<< "$side_cold"
 assert test "${side_cold#*→}" = "$side_cold"
 
 # <synthetic> assistant entries (API-error placeholders) are not responses.
@@ -625,9 +652,14 @@ t_reset; t_assist $((NOW - 172799)); t_assist "$NOW" '<synthetic>' 0 0
 synth_cold=$(run_statusline "$(statusline_payload ctx-synth "$(warm_extra "$TRANSCRIPT" 55 111000)")")
 assert grep -Fq "${YELLOW}111k${RESET}" <<< "$synth_cold"
 
+t_reset; t_assist $((NOW - 20)); t_stamp ctx-zero-error
+printf '{"type":"assistant","timestamp":"%s","uuid":"zero-error","message":{"role":"assistant","model":"fixmodel","usage":{"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}}\n' \
+  "$(iso_utc "$NOW")" >> "$TRANSCRIPT"
+zero_error=$(run_statusline "$(statusline_payload ctx-zero-error "$(warm_extra "$TRANSCRIPT" 20 50000)")")
+zero_error_death=$(TZ=Europe/Kyiv date -r $((NOW - 20 + 3600)) +%H:%M)
+assert grep -Fq "${DIM}→${zero_error_death}${RESET}" <<< "$zero_error"
+
 # --- account switch invalidates the cache (per-organization on Anthropic) ---
-# Recorded stamp (alona) != current (acctgen), response outside the 120s
-# attribution window -> cold despite being well inside the TTL.
 t_reset; t_assist $((NOW - 600))
 printf 'v2 %s alona 0\n' "$((NOW - 600))" > "$STATE_DIR/cache-ttl-track-ctx-swacct"
 sw_out=$(run_statusline "$(statusline_payload ctx-swacct "$(warm_extra "$TRANSCRIPT" 55 111000)")")
@@ -635,35 +667,65 @@ assert grep -Fq "${YELLOW}111k${RESET}" <<< "$sw_out"
 # A NEW response under the current account re-warms and re-stamps it.
 t_assist $((NOW - 5))
 sw2_out=$(run_statusline "$(statusline_payload ctx-swacct "$(warm_extra "$TRANSCRIPT" 55 111000)")")
-assert grep -Fq "${DIM}111k${RESET}${DIM}→" <<< "$sw2_out"
+assert grep -Fq "${DIM}→" <<< "$sw2_out"
+assert test "${sw2_out#*111k}" = "$sw2_out"
 assert grep -q '^v2 [0-9]* acctgen ' "$STATE_DIR/cache-ttl-track-ctx-swacct"
 
-# Menu-switch resume: no track at all + response outside the attribution
-# window -> unattributable ("?"), cold until the first new response.
 t_reset; t_assist $((NOW - 600))
 noattr_out=$(run_statusline "$(statusline_payload ctx-noattr "$(warm_extra "$TRANSCRIPT" 55 111000)")")
-assert grep -Fq "${YELLOW}111k${RESET}" <<< "$noattr_out"
+assert grep -Fq "${YELLOW}? 111k${RESET}" <<< "$noattr_out"
+assert test "${noattr_out#*→}" = "$noattr_out"
 assert grep -q '^v2 [0-9]* ? 0' "$STATE_DIR/cache-ttl-track-ctx-noattr"
 
-# Legacy v1 track (prompt_id-based) is treated as absent: same "?" cold path.
 t_reset; t_assist $((NOW - 600))
 printf 'pidsame %s alona\n' "$((NOW - 600))" > "$STATE_DIR/cache-ttl-track-ctx-legacy"
 legacy_out=$(run_statusline "$(statusline_payload ctx-legacy "$(warm_extra "$TRANSCRIPT" 55 111000)")")
-assert grep -Fq "${YELLOW}111k${RESET}" <<< "$legacy_out"
+assert grep -Fq "${YELLOW}? 111k${RESET}" <<< "$legacy_out"
+assert test "${legacy_out#*→}" = "$legacy_out"
 assert grep -q '^v2 [0-9]* ? ' "$STATE_DIR/cache-ttl-track-ctx-legacy"
 
+t_reset; t_assist $((NOW - 5))
+fresh_noattr=$(run_statusline "$(statusline_payload ctx-fresh-noattr "$(warm_extra "$TRANSCRIPT" 55 111000)")")
+assert grep -Fq "${YELLOW}? 111k${RESET}" <<< "$fresh_noattr"
+assert test "${fresh_noattr#*→}" = "$fresh_noattr"
+assert grep -q '^v2 [0-9]* ? ' "$STATE_DIR/cache-ttl-track-ctx-fresh-noattr"
+
+t_reset; t_assist $((NOW - 5))
+printf 'pidsame %s alona\n' "$((NOW - 5))" > "$STATE_DIR/cache-ttl-track-ctx-fresh-legacy"
+fresh_legacy=$(run_statusline "$(statusline_payload ctx-fresh-legacy "$(warm_extra "$TRANSCRIPT" 55 111000)")")
+assert grep -Fq "${YELLOW}? 111k${RESET}" <<< "$fresh_legacy"
+assert test "${fresh_legacy#*→}" = "$fresh_legacy"
+assert grep -q '^v2 [0-9]* ? ' "$STATE_DIR/cache-ttl-track-ctx-fresh-legacy"
+
 # --- model switch invalidates the cache (per-model on Anthropic) ---
-t_reset; t_assist $((NOW - 20))
+t_reset; t_assist $((NOW - 20)); t_stamp ctx-model-sw
 model_extra=$(warm_extra "$TRANSCRIPT" 55 111000 | jq -c '.model.id = "othermodel"')
 model_cold=$(run_statusline "$(statusline_payload ctx-model-sw "$model_extra")")
 assert grep -Fq "${YELLOW}111k${RESET}" <<< "$model_cold"
 # Switching back to the model that built the cache re-warms (cache still alive).
 model_warm=$(run_statusline "$(statusline_payload ctx-model-sw "$(warm_extra "$TRANSCRIPT" 55 111000)")")
-assert grep -Fq "${DIM}111k${RESET}${DIM}→" <<< "$model_warm"
-# A payload without model.id cannot check the model — other gates still apply.
+assert grep -Fq "${DIM}→" <<< "$model_warm"
+
+t_reset; t_assist $((NOW - 60)) fixmodel
+fix_uuid="$LAST_ASSIST_UUID"
+t_assist $((NOW - 30)) othermodel
+t_stamp ctx-model-current
+printf 'v1 %s acctgen 3600 %s 262144\n' "$((NOW - 60))" "$fix_uuid" \
+  > "$STATE_DIR/cache-ttl-track-ctx-model-current.model-fixmodel"
+current_fix=$(run_statusline "$(statusline_payload ctx-model-current "$(warm_extra "$TRANSCRIPT" 55 111000)")")
+fix_death=$(TZ=Europe/Kyiv date -r $((NOW - 60 + 3600)) +%H:%M)
+assert grep -Fq "${DIM}→${fix_death}${RESET}" <<< "$current_fix"
+current_other_extra=$(warm_extra "$TRANSCRIPT" 55 111000 | jq -c '.model.id = "othermodel"')
+current_other=$(run_statusline "$(statusline_payload ctx-model-current "$current_other_extra")")
+other_death=$(TZ=Europe/Kyiv date -r $((NOW - 30 + 3600)) +%H:%M)
+assert grep -Fq "${DIM}→${other_death}${RESET}" <<< "$current_other"
+current_fix_again=$(run_statusline "$(statusline_payload ctx-model-current "$(warm_extra "$TRANSCRIPT" 55 111000)")")
+assert grep -Fq "${DIM}→${fix_death}${RESET}" <<< "$current_fix_again"
+
 noid_extra=$(warm_extra "$TRANSCRIPT" 20 50000 | jq -c 'del(.model)')
 noid_out=$(run_statusline "$(statusline_payload ctx-model-noid "$noid_extra")")
-assert grep -Fq "${DIM}50k${RESET}${DIM}→" <<< "$noid_out"
+assert grep -Fq "${DIM}? 50k${RESET}" <<< "$noid_out"
+assert test "${noid_out#*→}" = "$noid_out"
 
 # --- /compact kills the cache until the next response ---
 t_reset; t_assist $((NOW - 60)); t_boundary $((NOW - 30))
@@ -672,73 +734,181 @@ t_reset; t_assist $((NOW - 60)); t_boundary $((NOW - 30))
 printf '{"type":"user","isCompactSummary":true,"timestamp":"%s","message":{"role":"user"}}\n' "$(iso_utc $((NOW - 29)))" >> "$TRANSCRIPT"
 t_user $((NOW - 28))
 compact_cold=$(run_statusline "$(statusline_payload ctx-compact "$(warm_extra "$TRANSCRIPT" 55 111000)")")
-assert grep -Fq "ctx ${DIM}55%${RESET} ${DIM}111k${RESET}" <<< "$compact_cold"
+assert grep -Fq "ctx ${DIM}55%${RESET} ${YELLOW}111k${RESET}" <<< "$compact_cold"
 assert test "${compact_cold#*→}" = "$compact_cold"
 # The first response after the boundary re-warms.
 t_assist $((NOW - 5))
 compact_warm=$(run_statusline "$(statusline_payload ctx-compact "$(warm_extra "$TRANSCRIPT" 55 111000)")")
-assert grep -Fq "${DIM}111k${RESET}${DIM}→" <<< "$compact_warm"
+assert grep -Fq "${DIM}→" <<< "$compact_warm"
 compact_current=$(run_statusline "$(statusline_payload ctx-compact-current \
   "$(jq -cn --arg tp "$TRANSCRIPT" \
     '{transcript_path:$tp,context_window:{used_percentage:55,current_usage:{input_tokens:111000}}}')")")
-assert grep -Fq "ctx ${YELLOW}55%${RESET} ${YELLOW}111k${RESET}" <<< "$compact_current"
+assert grep -Fq "ctx ${YELLOW}55%${RESET} ${YELLOW}? 111k${RESET}" <<< "$compact_current"
 
 t_reset; t_assist $((NOW - 30)); t_boundary $((NOW - 30))
 compact_equal=$(run_statusline "$(statusline_payload ctx-compact-equal "$(warm_extra "$TRANSCRIPT" 55 111000)")")
-assert grep -Fq "ctx ${DIM}55%${RESET} ${DIM}111k${RESET}" <<< "$compact_equal"
+assert grep -Fq "ctx ${DIM}55%${RESET} ${YELLOW}111k${RESET}" <<< "$compact_equal"
 assert test "${compact_equal#*→}" = "$compact_equal"
 
-# --- branched (forked) chats inherit warmth from the parent's stamp ---
-# Copied entries carry forkedFrom.sessionId; the anchor response was produced
-# by the parent, so it must never self-stamp the current account.
-t_assist_fork() { # epoch parent_sid
-  printf '{"type":"assistant","timestamp":"%s","forkedFrom":{"sessionId":"%s"},"message":{"role":"assistant","model":"fixmodel","usage":{"cache_read_input_tokens":50000,"cache_creation_input_tokens":500}}}\n' \
-    "$(iso_utc "$1")" "$2" >> "$TRANSCRIPT"
+PARENT_TRANSCRIPT="$WORK/parent-sid.jsonl"
+t_assist_fork() {
+  printf '{"type":"assistant","timestamp":"%s","uuid":"%s","forkedFrom":{"sessionId":"%s","messageUuid":"%s"},"message":{"role":"assistant","model":"fixmodel","usage":{"cache_read_input_tokens":50000,"cache_creation_input_tokens":500,"cache_creation":{"ephemeral_1h_input_tokens":500,"ephemeral_5m_input_tokens":0}}}}\n' \
+    "$(iso_utc "$1")" "$3" "$2" "$3" >> "$TRANSCRIPT"
 }
-# Tail fork: parent's stamp points at the exact copied response -> inherit
-# account + learning cursor, warm; own track written with the inherited stamp.
-t_reset; t_assist_fork $((NOW - 600)) parent-sid
+parent_assist() {
+  printf '{"type":"assistant","timestamp":"%s","uuid":"%s","message":{"role":"assistant","model":"fixmodel","usage":{"cache_read_input_tokens":50000,"cache_creation_input_tokens":500,"cache_creation":{"ephemeral_1h_input_tokens":500,"ephemeral_5m_input_tokens":0}}}}\n' \
+    "$(iso_utc "$1")" "$2" >> "$PARENT_TRANSCRIPT"
+}
+
+t_reset; : > "$PARENT_TRANSCRIPT"; parent_assist $((NOW - 600)) fork-anchor
+t_assist_fork $((NOW - 600)) parent-sid fork-anchor
 fork_only=$(run_statusline "$(statusline_payload ctx-fork-only \
   "$(jq -cn --arg tp "$TRANSCRIPT" \
-    '{transcript_path:$tp,context_window:{used_percentage:55,current_usage:{input_tokens:111000}}}')")")
-assert grep -Fq "ctx ${DIM}55%${RESET} ${DIM}111k${RESET}" <<< "$fork_only"
-printf 'v2 %s acctgen 7\n' "$((NOW - 600))" > "$STATE_DIR/cache-ttl-track-parent-sid"
+    '{transcript_path:$tp,model:{id:"fixmodel"},context_window:{used_percentage:55,current_usage:{input_tokens:111000}}}')")")
+assert grep -Fq "ctx ${DIM}55%${RESET} ${YELLOW}? 111k${RESET}" <<< "$fork_only"
+assert test "${fork_only#*→}" = "$fork_only"
+
+t_reset; : > "$PARENT_TRANSCRIPT"; parent_assist $((NOW - 600)) fork-anchor
+t_assist_fork $((NOW - 600)) parent-sid fork-anchor
+printf '{"type":"system","subtype":"local_command","timestamp":"%s","uuid":"branch-own","parentUuid":"fork-anchor"}\n' \
+  "$(iso_utc $((NOW - 500)))" >> "$TRANSCRIPT"
+parent_assist $((NOW - 300)) parent-new
+printf 'v2 %s acctgen 7 3600 fixmodel parent-new 262144\n' "$((NOW - 300))" > "$STATE_DIR/cache-ttl-track-parent-sid"
+printf 'v1 %s acctgen 3600 parent-new\n' "$((NOW - 300))" > "$STATE_DIR/cache-ttl-track-parent-sid.model-fixmodel"
 fork_warm=$(run_statusline "$(statusline_payload ctx-fork "$(warm_extra "$TRANSCRIPT" 55 111000)")")
-assert grep -Fq "${DIM}111k${RESET}${DIM}→" <<< "$fork_warm"
-assert grep -q '^v2 [0-9]* acctgen 7' "$STATE_DIR/cache-ttl-track-ctx-fork"
-# Parent moved past the fork point (stamp ts != copied response ts) -> "?" cold.
-t_reset; t_assist_fork $((NOW - 600)) parent-sid
-printf 'v2 %s acctgen 0\n' "$((NOW - 300))" > "$STATE_DIR/cache-ttl-track-parent-sid"
-fork_moved=$(run_statusline "$(statusline_payload ctx-fork-moved "$(warm_extra "$TRANSCRIPT" 55 111000)")")
-assert grep -Fq "ctx ${DIM}55%${RESET} ${DIM}111k${RESET}" <<< "$fork_moved"
-assert test "${fork_moved#*→}" = "$fork_moved"
-assert grep -q '^v2 [0-9]* ? ' "$STATE_DIR/cache-ttl-track-ctx-fork-moved"
-# No parent track at all -> "?" cold.
-t_reset; t_assist_fork $((NOW - 600)) parent-sid
-fork_orphan=$(run_statusline "$(statusline_payload ctx-fork-orphan "$(warm_extra "$TRANSCRIPT" 55 111000)")")
-assert grep -Fq "ctx ${DIM}55%${RESET} ${DIM}111k${RESET}" <<< "$fork_orphan"
-assert test "${fork_orphan#*→}" = "$fork_orphan"
-# A FRESH copied anchor (inside the 120s window) still must not self-stamp:
-# without a matching parent stamp it stays "?" cold.
-t_reset; t_assist_fork $((NOW - 10)) parent-sid
+fork_death=$(TZ=Europe/Kyiv date -r $((NOW - 300 + 3600)) +%H:%M)
+assert grep -Fq "${DIM}→${fork_death}${RESET}" <<< "$fork_warm"
+assert test "${fork_warm#*111k}" = "$fork_warm"
+assert test "$(awk '{print NF}' "$STATE_DIR/cache-ttl-track-ctx-fork")" -ge 10
+
+t_reset; : > "$PARENT_TRANSCRIPT"; parent_assist $((NOW - 600)) fork-anchor
+t_assist_fork $((NOW - 600)) parent-sid fork-anchor
+parent_assist $((NOW - 550)) skipped-parent-response
+printf '{"type":"system","subtype":"local_command","timestamp":"%s","uuid":"branch-own","parentUuid":"fork-anchor"}\n' \
+  "$(iso_utc $((NOW - 500)))" >> "$TRANSCRIPT"
+printf 'v2 %s acctgen 0 3600 fixmodel skipped-parent-response 262144\n' "$((NOW - 550))" > "$STATE_DIR/cache-ttl-track-parent-sid"
+printf 'v1 %s acctgen 3600 skipped-parent-response\n' "$((NOW - 550))" > "$STATE_DIR/cache-ttl-track-parent-sid.model-fixmodel"
+fork_mid=$(run_statusline "$(statusline_payload ctx-fork-mid "$(warm_extra "$TRANSCRIPT" 55 111000)")")
+assert grep -Fq "${YELLOW}? 111k${RESET}" <<< "$fork_mid"
+assert test "${fork_mid#*→}" = "$fork_mid"
+
+t_reset; : > "$PARENT_TRANSCRIPT"; parent_assist $((NOW - 600)) fork-anchor
+printf '{"type":"system","subtype":"compact_boundary","timestamp":"%s"}\n' \
+  "$(iso_utc $((NOW - 500)))" >> "$PARENT_TRANSCRIPT"
+parent_assist $((NOW - 300)) post-compact
+t_assist_fork $((NOW - 600)) parent-sid fork-anchor
+printf '{"type":"system","subtype":"local_command","timestamp":"%s","uuid":"branch-own"}\n' \
+  "$(iso_utc $((NOW - 400)))" >> "$TRANSCRIPT"
+printf 'v1 %s acctgen 3600 post-compact\n' "$((NOW - 300))" \
+  > "$STATE_DIR/cache-ttl-track-parent-sid.model-fixmodel"
+fork_compact=$(run_statusline "$(statusline_payload ctx-fork-parent-compact "$(warm_extra "$TRANSCRIPT" 55 111000)")")
+assert grep -Fq "${YELLOW}111k${RESET}" <<< "$fork_compact"
+assert test "${fork_compact#*→}" = "$fork_compact"
+
+t_reset; : > "$PARENT_TRANSCRIPT"; parent_assist $((NOW - 10)) fork-anchor
+t_assist_fork $((NOW - 10)) parent-sid fork-anchor
 fork_fresh=$(run_statusline "$(statusline_payload ctx-fork-fresh "$(warm_extra "$TRANSCRIPT" 55 111000)")")
-assert grep -Fq "ctx ${DIM}55%${RESET} ${DIM}111k${RESET}" <<< "$fork_fresh"
-assert test "${fork_fresh#*→}" = "$fork_fresh"
-assert grep -q '^v2 [0-9]* ? ' "$STATE_DIR/cache-ttl-track-ctx-fork-fresh"
+assert grep -Fq "${YELLOW}? 111k${RESET}" <<< "$fork_fresh"
 # The fork's own NEW response (no forkedFrom) resumes normal self-stamping.
 t_assist $((NOW - 5))
 fork_own=$(run_statusline "$(statusline_payload ctx-fork-fresh "$(warm_extra "$TRANSCRIPT" 55 111000)")")
-assert grep -Fq "${DIM}111k${RESET}${DIM}→" <<< "$fork_own"
+assert grep -Fq "${DIM}→" <<< "$fork_own"
 assert grep -q '^v2 [0-9]* acctgen ' "$STATE_DIR/cache-ttl-track-ctx-fork-fresh"
+
+t_reset; t_assist $((NOW - 600)) fixmodel; t_assist $((NOW - 5)) othermodel
+printf 'v2 %s alona 0\n' "$((NOW - 700))" > "$STATE_DIR/cache-ttl-track-ctx-model-fallback"
+fallback_model=$(run_statusline "$(statusline_payload ctx-model-fallback "$(warm_extra "$TRANSCRIPT" 55 111000)")")
+assert grep -Fq "${YELLOW}? 111k${RESET}" <<< "$fallback_model"
+assert test "${fallback_model#*→}" = "$fallback_model"
+
+PARENT_TRANSCRIPT="$WORK/parent-cache.jsonl"
+t_reset; : > "$PARENT_TRANSCRIPT"; parent_assist $((NOW - 300)) cache-anchor
+t_assist_fork $((NOW - 300)) parent-cache cache-anchor
+printf '{"type":"system","subtype":"local_command","timestamp":"%s","uuid":"branch-own"}\n' \
+  "$(iso_utc $((NOW - 250)))" >> "$TRANSCRIPT"
+printf 'v1 %s acctgen 3600 cache-anchor\n' "$((NOW - 300))" \
+  > "$STATE_DIR/cache-ttl-track-parent-cache.model-fixmodel"
+TAIL_BIN="$WORK/tail-bin"; TAIL_LOG="$WORK/tail.log"
+mkdir -p "$TAIL_BIN"
+printf '#!/usr/bin/env bash\nif [ "$1" = "-c" ]; then printf "%%s|%%s\\n" "$2" "$3" >> "$TAIL_LOG"; fi\nexec /usr/bin/tail "$@"\n' \
+  > "$TAIL_BIN/tail"
+chmod +x "$TAIL_BIN/tail"
+rm -f "$TAIL_LOG"
+PATH="$TAIL_BIN:$PATH" TAIL_LOG="$TAIL_LOG" \
+  run_statusline "$(statusline_payload ctx-fork-cache "$(warm_extra "$TRANSCRIPT" 55 111000)")" >/dev/null
+PATH="$TAIL_BIN:$PATH" TAIL_LOG="$TAIL_LOG" \
+  run_statusline "$(statusline_payload ctx-fork-cache "$(warm_extra "$TRANSCRIPT" 55 111000)")" >/dev/null
+assert_eq 1 "$(grep -Fc "$PARENT_TRANSCRIPT" "$TAIL_LOG")"
+printf '{"type":"system","subtype":"compact_boundary","timestamp":"%s"}\n' \
+  "$(iso_utc $((NOW - 200)))" >> "$PARENT_TRANSCRIPT"
+fork_cache_changed=$(PATH="$TAIL_BIN:$PATH" TAIL_LOG="$TAIL_LOG" \
+  run_statusline "$(statusline_payload ctx-fork-cache "$(warm_extra "$TRANSCRIPT" 55 111000)")")
+assert grep -Fq "${YELLOW}111k${RESET}" <<< "$fork_cache_changed"
+assert test "${fork_cache_changed#*→}" = "$fork_cache_changed"
+assert_eq 2 "$(grep -Fc "$PARENT_TRANSCRIPT" "$TAIL_LOG")"
+
+CROSS_ROOT="$WORK/projects"
+CROSS_CHILD="$CROSS_ROOT/child-project"
+CROSS_PARENT="$CROSS_ROOT/parent-project"
+mkdir -p "$CROSS_CHILD" "$CROSS_PARENT"
+TRANSCRIPT="$CROSS_CHILD/child.jsonl"
+PARENT_TRANSCRIPT="$CROSS_PARENT/parent-cross.jsonl"
+t_reset; : > "$PARENT_TRANSCRIPT"; parent_assist $((NOW - 300)) cross-anchor
+t_assist_fork $((NOW - 300)) parent-cross cross-anchor
+printf '{"type":"system","subtype":"local_command","timestamp":"%s","uuid":"branch-own"}\n' \
+  "$(iso_utc "$NOW")" >> "$TRANSCRIPT"
+printf 'v1 %s acctgen 3600 cross-anchor\n' "$((NOW - 300))" \
+  > "$STATE_DIR/cache-ttl-track-parent-cross.model-fixmodel"
+cross_fork=$(run_statusline "$(statusline_payload ctx-cross-fork "$(warm_extra "$TRANSCRIPT" 55 111000)")")
+assert grep -Fq "${DIM}→" <<< "$cross_fork"
+
+TRANSCRIPT="$WORK/empty-session-child.jsonl"
+PARENT_TRANSCRIPT="$WORK/empty-session-parent-sid.jsonl"
+t_reset; : > "$PARENT_TRANSCRIPT"; parent_assist $((NOW - 300)) empty-anchor
+t_assist_fork $((NOW - 300)) empty-session-parent-sid empty-anchor
+printf '{"type":"system","subtype":"local_command","timestamp":"%s","uuid":"branch-own"}\n' \
+  "$(iso_utc "$NOW")" >> "$TRANSCRIPT"
+printf 'v1 %s acctgen 3600 empty-anchor\n' "$((NOW - 300))" \
+  > "$STATE_DIR/cache-ttl-track-empty-session-parent-sid.model-fixmodel"
+empty_session_fork=$(run_statusline "$(statusline_payload "" "$(warm_extra "$TRANSCRIPT" 55 111000)")")
+assert grep -Fq "${DIM}→" <<< "$empty_session_fork"
+
+TRANSCRIPT="$WORK/transcript.jsonl"
+
+TRANSCRIPT="$WORK/scan-memory.jsonl"
+t_reset; t_assist $((NOW - 20)); t_stamp ctx-scan-memory
+printf '{"type":"tool-result","timestamp":"%s","content":"' "$(iso_utc "$NOW")" >> "$TRANSCRIPT"
+head -c 350000 /dev/zero | tr '\0' x >> "$TRANSCRIPT"
+printf '"}\n' >> "$TRANSCRIPT"
+rm -f "$TAIL_LOG"
+PATH="$TAIL_BIN:$PATH" TAIL_LOG="$TAIL_LOG" \
+  run_statusline "$(statusline_payload ctx-scan-memory "$(warm_extra "$TRANSCRIPT" 20 50000)")" >/dev/null
+assert_eq 1048576 "$(awk '{print $6}' "$STATE_DIR/cache-ttl-track-ctx-scan-memory.model-fixmodel")"
+rm -f "$TAIL_LOG"
+PATH="$TAIL_BIN:$PATH" TAIL_LOG="$TAIL_LOG" \
+  run_statusline "$(statusline_payload ctx-scan-memory "$(warm_extra "$TRANSCRIPT" 20 50000)")" >/dev/null
+assert_eq 262144 "$(head -n1 "$TAIL_LOG" | cut -d'|' -f1)"
+assert_eq 1048576 "$(sed -n '2p' "$TAIL_LOG" | cut -d'|' -f1)"
+t_assist $((NOW - 5))
+rm -f "$TAIL_LOG"
+PATH="$TAIL_BIN:$PATH" TAIL_LOG="$TAIL_LOG" \
+  run_statusline "$(statusline_payload ctx-scan-memory "$(warm_extra "$TRANSCRIPT" 20 50000)")" >/dev/null
+assert_eq 262144 "$(awk '{print $6}' "$STATE_DIR/cache-ttl-track-ctx-scan-memory.model-fixmodel")"
+rm -f "$TAIL_LOG"
+PATH="$TAIL_BIN:$PATH" TAIL_LOG="$TAIL_LOG" \
+  run_statusline "$(statusline_payload ctx-scan-memory "$(warm_extra "$TRANSCRIPT" 20 50000)")" >/dev/null
+assert_eq 1 "$(wc -l < "$TAIL_LOG" | tr -d ' ')"
+assert_eq 262144 "$(head -n1 "$TAIL_LOG" | cut -d'|' -f1)"
 
 # Cold cache color tests: count colored by size (no cache = cache fields are 0).
 cold_extra() {
   jq -cn --arg tp "$1" --argjson pct "$2" --argjson it "$3" '
-    {transcript_path:$tp,
+    {transcript_path:$tp,model:{id:"fixmodel"},
      context_window:{used_percentage:$pct,
        current_usage:{input_tokens:$it,cache_creation_input_tokens:0,cache_read_input_tokens:0}}}'
 }
 
+t_reset
 # Cold <90k -> dim
 cold_lo=$(run_statusline "$(statusline_payload ctx-cold-lo "$(cold_extra "$TRANSCRIPT" 20 50000)")")
 assert grep -Fq "${DIM}50k${RESET}" <<< "$cold_lo"
@@ -753,69 +923,59 @@ assert grep -Fq "${RED}350k${RESET}" <<< "$cold_hi"
 
 # (d) cache fields 0 (only plain input tokens) -> dim.
 d_extra=$(jq -cn --arg tp "$TRANSCRIPT" '
-  {transcript_path:$tp,context_window:{used_percentage:20,current_usage:{input_tokens:60000}}}')
+  {transcript_path:$tp,model:{id:"fixmodel"},context_window:{used_percentage:20,current_usage:{input_tokens:60000}}}')
 warm_d=$(run_statusline "$(statusline_payload ctx-nocache "$d_extra")")
 assert grep -Fq "${DIM}60k${RESET}" <<< "$warm_d"
 
-# (e) no transcript path -> dim (unknown is not warm).
 warm_e=$(run_statusline "$(statusline_payload ctx-nopath "$(warm_extra "" 20 50000)")")
-assert grep -Fq "${DIM}50k${RESET}" <<< "$warm_e"
+assert grep -Fq "${DIM}? 50k${RESET}" <<< "$warm_e"
+assert test "${warm_e#*→}" = "$warm_e"
+
+UNREADABLE_TRANSCRIPT="$WORK/unreadable.jsonl"
+printf '{}\n' > "$UNREADABLE_TRANSCRIPT"
+chmod 000 "$UNREADABLE_TRANSCRIPT"
+unreadable_out=$(run_statusline "$(statusline_payload ctx-unreadable "$(warm_extra "$UNREADABLE_TRANSCRIPT" 20 50000)")")
+assert grep -Fq "${DIM}? 50k${RESET}" <<< "$unreadable_out"
+chmod 600 "$UNREADABLE_TRANSCRIPT"
 
 t_reset
+clear_out=$(run_statusline "$(statusline_payload ctx-clear "$(warm_extra "$TRANSCRIPT" 20 50000)")")
+assert grep -Fq "${DIM}50k${RESET}" <<< "$clear_out"
+assert test "${clear_out#*→}" = "$clear_out"
+
 printf 'not-json\n' > "$TRANSCRIPT"
 garbage_out=$(run_statusline "$(statusline_payload ctx-garbage \
   "$(jq -cn --arg tp "$TRANSCRIPT" \
-    '{transcript_path:$tp,context_window:{used_percentage:55,current_usage:{input_tokens:111000}}}')")")
+    '{transcript_path:$tp,model:{id:"fixmodel"},context_window:{used_percentage:55,current_usage:{input_tokens:111000}}}')")")
 garbage_rc=$?
 assert_eq 0 "$garbage_rc"
-assert grep -Fq "ctx ${DIM}55%${RESET} ${DIM}111k${RESET}" <<< "$garbage_out"
+assert grep -Fq "ctx ${DIM}55%${RESET} ${YELLOW}111k${RESET}" <<< "$garbage_out"
 
-# (f) TTL override file respected: response 200s ago, override TTL 100 -> cold
-# (would be warm under the default 3600).
-t_reset; t_assist $((NOW - 200))
-printf '100\n' > "$HOME/.claude/statusline-cache-ttl"
-warm_f=$(run_statusline "$(statusline_payload ctx-ttl "$(warm_extra "$TRANSCRIPT" 20 50000)")")
-assert grep -Fq "${DIM}50k${RESET}" <<< "$warm_f"
-assert test "${warm_f#*→}" = "$warm_f"
-rm -f "$HOME/.claude/statusline-cache-ttl"
-
-# --- effective cache TTL: API bucket > (seed clamped by learned bounds) ---
 LEARNED="$STATE_DIR/cache-ttl-learned"
 rm -f "$LEARNED"
 
-# The response's own cache_creation bucket IS the TTL: 5m -> death = ts+300.
-t_reset; t_assist $((NOW - 30)) fixmodel 100000 500 5m
+t_reset; t_assist $((NOW - 30)) fixmodel 100000 500 5m; t_stamp ctx-bk5
 bk5_out=$(run_statusline "$(statusline_payload ctx-bk5 "$(warm_extra "$TRANSCRIPT" 20 100000)")")
 bk5_death=$(TZ=Europe/Kyiv date -r $((NOW - 30 + 300)) +%H:%M)
-assert grep -Fq "${DIM}100k${RESET}${DIM}→${bk5_death}${RESET}" <<< "$bk5_out"
-# ...and it beats both a learned ceiling and a seed override: 1h bucket stays 3600.
+assert grep -Fq "${DIM}→${bk5_death}${RESET}${YELLOW}↓5m${RESET}" <<< "$bk5_out"
+assert test "${bk5_out#*100k}" = "$bk5_out"
+
+t_reset; t_assist $((NOW - 30)) fixmodel 100000 500 mixed; t_stamp ctx-mixed
+mixed_out=$(run_statusline "$(statusline_payload ctx-mixed "$(warm_extra "$TRANSCRIPT" 20 100000)")")
+assert grep -Fq "${DIM}→${bk5_death}${RESET}${YELLOW}↓5m${RESET}" <<< "$mixed_out"
+
 printf '{"observed_floor_s":0,"observed_ceiling_s":600,"updated_at":%s}\n' "$NOW" > "$LEARNED"
-printf '900\n' > "$HOME/.claude/statusline-cache-ttl"
-t_reset; t_assist $((NOW - 30)) fixmodel 100000 500 1h
+t_reset; t_assist $((NOW - 30)) fixmodel 100000 500 1h; t_stamp ctx-bk1
 bk1_out=$(run_statusline "$(statusline_payload ctx-bk1 "$(warm_extra "$TRANSCRIPT" 20 100000)")")
 bk1_death=$(TZ=Europe/Kyiv date -r $((NOW - 30 + 3600)) +%H:%M)
-assert grep -Fq "${DIM}100k${RESET}${DIM}→${bk1_death}${RESET}" <<< "$bk1_out"
-rm -f "$HOME/.claude/statusline-cache-ttl" "$LEARNED"
+assert grep -Fq "${DIM}→${bk1_death}${RESET}" <<< "$bk1_out"
 
-# No bucket in the tail: seed override widens the death time to ts+7200.
-t_reset; t_assist $((NOW - 50))
+t_reset; t_assist $((NOW - 50)) fixmodel 50000 500 -; t_stamp ctx-no-bucket
 printf '7200\n' > "$HOME/.claude/statusline-cache-ttl"
-ov_out=$(run_statusline "$(statusline_payload ctx-seedov "$(warm_extra "$TRANSCRIPT" 20 50000)")")
-ov_death=$(TZ=Europe/Kyiv date -r $((NOW - 50 + 7200)) +%H:%M)
-assert grep -Fq "${DIM}50k${RESET}${DIM}→${ov_death}${RESET}" <<< "$ov_out"
+no_bucket=$(run_statusline "$(statusline_payload ctx-no-bucket "$(warm_extra "$TRANSCRIPT" 20 50000)")")
+assert grep -Fq "${DIM}? 50k${RESET}" <<< "$no_bucket"
+assert test "${no_bucket#*→}" = "$no_bucket"
 rm -f "$HOME/.claude/statusline-cache-ttl"
-
-# A learned ceiling narrows the no-bucket TTL below the seed: ceiling 600 ->
-# death = ts+600 (not ts+3600), still warm at a 50s-old response.
-printf '{"observed_floor_s":0,"observed_ceiling_s":600,"updated_at":%s}\n' "$NOW" > "$LEARNED"
-clamp_out=$(run_statusline "$(statusline_payload ctx-clamp "$(warm_extra "$TRANSCRIPT" 20 50000)")")
-clamp_death=$(TZ=Europe/Kyiv date -r $((NOW - 50 + 600)) +%H:%M)
-assert grep -Fq "${DIM}50k${RESET}${DIM}→${clamp_death}${RESET}" <<< "$clamp_out"
-# And a ceiling below the response age flips warmth off (dim, no time).
-printf '{"observed_floor_s":0,"observed_ceiling_s":50,"updated_at":%s}\n' "$NOW" > "$LEARNED"
-clampdim_out=$(run_statusline "$(statusline_payload ctx-clampdim "$(warm_extra "$TRANSCRIPT" 20 50000)")")
-assert grep -Fq "${DIM}50k${RESET} " <<< "$clampdim_out"
-assert test "${clampdim_out#*→}" = "$clampdim_out"
 rm -f "$LEARNED"
 
 # --- TTL learning from transcript evidence (newest turn's first response) ---
@@ -834,6 +994,7 @@ learn_case() { # sid prev_assist_gap user_at ev_cr ev_cc [ev_model] [boundary_at
 rm -f "$LEARNED"
 learn_case learn-hit $((NOW - 500)) $((NOW - 200)) 50000 100
 assert grep -Fq '"observed_floor_s":300' "$LEARNED"
+assert_eq "$((NOW - 199))" "$(awk '{print $4}' "$STATE_DIR/cache-ttl-track-learn-hit")"
 
 # ...and a HIT after a gap longer than the believed ceiling disproves it.
 printf '{"observed_floor_s":0,"observed_ceiling_s":200,"updated_at":%s}\n' "$NOW" > "$LEARNED"
@@ -843,6 +1004,36 @@ assert grep -Fq '"observed_ceiling_s":null' "$LEARNED"
 # MISS (full rebuild) after a 600s gap lowers the ceiling to 600.
 rm -f "$LEARNED"
 learn_case learn-miss $((NOW - 800)) $((NOW - 200)) 0 50000
+assert grep -Fq '"observed_ceiling_s":600' "$LEARNED"
+
+FRESH_LEARNED="$WORK/fresh-cache/deep/cache-ttl-learned"
+rm -rf "$WORK/fresh-cache"
+t_reset; t_assist $((NOW - 800)) fixmodel 60000 300
+t_user $((NOW - 200)); t_assist $((NOW - 199)) fixmodel 0 50000
+printf 'v2 %s acctgen 0\n' $((NOW - 199)) > "$STATE_DIR/cache-ttl-track-fresh-lock"
+STATUSLINE_CACHE_TTL_LEARNED="$FRESH_LEARNED" \
+  run_statusline "$(statusline_payload fresh-lock "$(warm_extra "$TRANSCRIPT" 20 50000)")" >/dev/null
+assert test -f "$FRESH_LEARNED"
+
+CONC_A="$WORK/learn-concurrent-a.jsonl"
+CONC_B="$WORK/learn-concurrent-b.jsonl"
+saved_transcript="$TRANSCRIPT"
+TRANSCRIPT="$CONC_A"; : > "$TRANSCRIPT"
+t_assist $((NOW - 700)) fixmodel 60000 300
+t_user $((NOW - 400)); t_assist $((NOW - 399)) fixmodel 50000 100
+TRANSCRIPT="$CONC_B"; : > "$TRANSCRIPT"
+t_assist $((NOW - 900)) fixmodel 60000 300
+t_user $((NOW - 300)); t_assist $((NOW - 299)) fixmodel 0 50000
+TRANSCRIPT="$saved_transcript"
+printf 'v2 %s acctgen 0\n' $((NOW - 399)) > "$STATE_DIR/cache-ttl-track-learn-concurrent-a"
+printf 'v2 %s acctgen 0\n' $((NOW - 299)) > "$STATE_DIR/cache-ttl-track-learn-concurrent-b"
+rm -f "$LEARNED"
+run_statusline "$(statusline_payload learn-concurrent-a "$(warm_extra "$CONC_A" 20 50000)")" >/dev/null &
+learn_pid_a=$!
+run_statusline "$(statusline_payload learn-concurrent-b "$(warm_extra "$CONC_B" 20 50000)")" >/dev/null &
+learn_pid_b=$!
+wait "$learn_pid_a" "$learn_pid_b"
+assert grep -Fq '"observed_floor_s":300' "$LEARNED"
 assert grep -Fq '"observed_ceiling_s":600' "$LEARNED"
 
 # Each response is consumed once (learned_upto): manually zero the floor,

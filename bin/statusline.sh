@@ -8,6 +8,7 @@
 export GIT_OPTIONAL_LOCKS=0
 
 input=$(cat)
+statusline_cache_dir="${STATUSLINE_CACHE_DIR:-$HOME/.cache/claude-statusline}"
 cache_rl="$HOME/.claude/statusline-cache-rl"
 acct="${CLAUDE_LIMITS_ACCOUNT:-}"
 if [ -z "$acct" ]; then
@@ -191,7 +192,7 @@ store_merge_kick() {
     collector="$(dirname "$self")/../llm-limits.sh"
   fi
   [ -x "$collector" ] || return 0
-  kick_dir="$HOME/.cache/claude-statusline"
+  kick_dir="$statusline_cache_dir"
   stamp="$kick_dir/store-merge-kick"
   now_ts=$(date +%s 2>/dev/null) || return 0
   age=$(file_mtime "$stamp" 2>/dev/null)
@@ -235,7 +236,7 @@ pct_colored() {
 # \x1f (unit separator) instead of tab: bash `read` collapses consecutive tab
 # delimiters (tab is IFS-whitespace), which misaligns fields whenever a middle
 # one (e.g. fast_mode, commonly empty) is blank.
-IFS=$'\x1f' read -r model model_id effort fast_mode ctx_size dir_path current_dir session_id ctx_pct ctx_tokens cost_raw rl_json cache_create cache_read transcript_path < <(printf '%s' "$input" | jq -r '
+IFS=$'\x1f' read -r model model_id effort fast_mode ctx_size dir_path current_dir session_id ctx_pct ctx_tokens cost_raw rl_json transcript_path < <(printf '%s' "$input" | jq -r '
   def num0: if . == null then "" else (.+0|round|tostring) end;
   def str0: if . == null then "" else tostring end;
   [ (.model.display_name // "?"),
@@ -251,8 +252,6 @@ IFS=$'\x1f' read -r model model_id effort fast_mode ctx_size dir_path current_di
       (((.input_tokens//0)+(.cache_creation_input_tokens//0)+(.cache_read_input_tokens//0))|tostring) end),
     (.cost.total_cost_usd | str0),
     ((.rate_limits // null) | if . == null then "" else tojson end),
-    ((.context_window.current_usage // null) | if . == null then "0" else (.cache_creation_input_tokens//0|tostring) end),
-    ((.context_window.current_usage // null) | if . == null then "0" else (.cache_read_input_tokens//0|tostring) end),
     (.transcript_path // "")
   ] | join("")')
 
@@ -407,7 +406,7 @@ adopt_project_dirs() {
   active_top="$project_top"; active_common="$project_common"
   active_root="$project_root"; active_name="$project_name"; active_is_wt="$project_is_wt"
 }
-workdir_state="$HOME/.cache/claude-statusline/workdir-$session_id"
+workdir_state="$statusline_cache_dir/workdir-$session_id"
 if [ -n "$session_id" ] && [ -f "$workdir_state" ]; then
   IFS= read -r active_dir < "$workdir_state"
   if [ -z "$active_dir" ]; then
@@ -644,221 +643,477 @@ if [ -n "$fable_account" ] && [ "$fable_account" != main ]; then
   fi
 fi
 
-# Prompt-cache warmth. Anthropic's cache is scoped per ORGANIZATION and per
-# MODEL, its TTL is not in the statusline payload, and the transcript file
-# mtime lies (--resume touches it before any request). The only trustworthy
-# evidence is the transcript entries themselves:
-#   - a completed API response = a non-sidechain, non-<synthetic> assistant
-#     entry (timestamp, message.model, message.usage);
-#   - the usage cache_creation ephemeral_5m/1h split is the API's OWN TTL
-#     declaration for the newest cache write — no guessing needed when present;
-#   - /compact rewrites the prefix (cache dead until the next response) and
-#     marks it with a system/compact_boundary entry; its injected summary is a
-#     user entry (isCompactSummary) and its continuation user entry is
-#     unmarked, which is why warmth anchors on ASSISTANT entries only.
-# One jq pass over the tail extracts everything; incomplete streaming entries
-# are ignored, while no qualifying parsed response degrades to cold. Emits:
-# newest-response epoch + model + its
-# forkedFrom session (branched chats copy the parent's entries), TTL bucket
-# seconds, post-compact flag, and one TTL-learning evidence tuple (the newest
-# turn's first response after idle gap G, pre-guarded in jq for "no boundary
-# inside the gap" and "same model across the gap").
-assist_ts=0; assist_model="-"; fork_sid="-"; ttl_bucket=0; post_compact=0; ctx_stale=1
+# User/tool activity and payload cache counters cannot prove server cache warmth.
+assist_ts=0; assist_model="-"; assist_uuid="-"; fork_sid="-"; ttl_bucket=0
+post_compact=0; ctx_stale=1; boundary_ts=0
 ev_valid=0; ev_ts=0; ev_gap=0; ev_cr=0; ev_cc=0
-if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
-  cache_scan=$(tail -c 262144 "$transcript_path" 2>/dev/null | jq -Rrn '
-    def ep: try (sub("\\.[0-9]+Z$"; "Z") | fromdate) catch null;
-    def bucket_secs:
-      (((.cache_creation? // {}) | to_entries | map(select((.value? // 0) > 0))
-        | max_by(.value) | (.key // "")
-        | capture("ephemeral_(?<n>[0-9]+)(?<u>[mh])_")?
-        | ((.n | tonumber) * (if .u == "m" then 60 else 3600 end))) // 0);
-    reduce (inputs | fromjson? | select(type == "object" and .isSidechain != true)) as $x (
-      {la: 0, pm: "", pg: -1, pa: 0, lb: 0, ats: 0, am: "-", afk: "", bk: 0,
-       cgap: 0, ccr: 0, ccc: 0, cets: 0, cpm: "", cem: "", cpa: 0, chas: 0,
-       own: 0};
-      ((($x.timestamp? // "") | if type == "string" then ep else null end)) as $ts
-      | if $ts == null then .
-        elif $x.type == "system" and $x.subtype == "compact_boundary" then
-          (if $ts > .lb then .lb = $ts else . end)
-        elif $x.type == "user" and ($x.isCompactSummary? != true) then
-          (if .la > 0 and .pg < 0 then .pg = ($ts - .la) | .pa = .la else . end)
-          | (if $ts > .la then .la = $ts else . end)
-        elif $x.type == "assistant" and (($x.message?.model? // "") != "<synthetic>") then
-          ($x.message?.usage? // {}) as $u
-          | ($u | bucket_secs) as $bs
-          | (if .pg >= 0 then
-               .cgap = .pg | .ccr = ($u.cache_read_input_tokens? // 0)
-               | .ccc = ($u.cache_creation_input_tokens? // 0)
-               | .cets = $ts | .cpm = .pm | .cem = ($x.message?.model? // "")
-               | .cpa = .pa | .chas = 1 | .pg = -1
-             else . end)
-          | (if $ts >= .ats then .ats = $ts
-               | .am = (($x.message?.model? // "") | if . == "" then "-" else . end)
-               | .afk = (($x.forkedFrom?.sessionId? // "") | tostring)
-             else . end)
-          | (if (($x.forkedFrom?.sessionId? // "") | tostring) == "" and $ts > .own
-             then .own = $ts else . end)
-          | .pm = ($x.message?.model? // "")
-          | (if $bs > 0 then .bk = $bs else . end)
-          | (if $ts > .la then .la = $ts else . end)
-        else . end)
-    | [ .ats, .am, (.afk | if . == "" then "-" else . end), .bk,
-        (if .lb > 0 and .lb >= .ats then 1 else 0 end),
-        (if .chas == 1 and .cgap > 0 and .cpm != "" and .cpm == .cem
-            and (.lb == 0 or .lb <= .cpa or .lb >= .cets) then 1 else 0 end),
-        .cets, .cgap, .ccr, .ccc,
-        (if .own == 0 or (.lb > 0 and .own <= .lb) then 1 else 0 end) ]
-    | map(tostring) | join(" ")' 2>/dev/null)
-  if [ -n "$cache_scan" ]; then
-    read -r assist_ts assist_model fork_sid ttl_bucket post_compact ev_valid ev_ts ev_gap ev_cr ev_cc ctx_stale <<< "$cache_scan" || :
-    [[ "$assist_ts" =~ ^[0-9]+$ ]] || assist_ts=0
-    [[ "$fork_sid" =~ ^[A-Za-z0-9_-]+$ ]] || fork_sid="-"
-    [[ "$ttl_bucket" =~ ^[0-9]+$ ]] || ttl_bucket=0
-    [[ "$ev_ts" =~ ^[0-9]+$ ]] || ev_ts=0
-    [[ "$ev_gap" =~ ^[0-9]+$ ]] || ev_gap=0
-    [[ "$ev_cr" =~ ^[0-9]+$ ]] || ev_cr=0
-    [[ "$ev_cc" =~ ^[0-9]+$ ]] || ev_cc=0
-    [[ "$ctx_stale" =~ ^[01]$ ]] || ctx_stale=1
-  fi
-fi
-ctx_dim=""
-[ "$ctx_stale" = 1 ] && ctx_dim=1
-cache_ttl_seed=3600
-seed_override=""
-# `[ -r ]` guards the read: a `< missing-file` redirect prints its own error
-# that `2>/dev/null` on the read cannot suppress.
-seed_file="$HOME/.claude/statusline-cache-ttl"
-[ -r "$seed_file" ] && { read -r seed_override < "$seed_file" 2>/dev/null || seed_override=""; }
-[[ "$seed_override" =~ ^[0-9]+$ ]] && [ "$seed_override" -gt 0 ] && cache_ttl_seed="$seed_override"
-
-learned_file="$HOME/.cache/claude-statusline/cache-ttl-learned"
-ttl_floor=0; ttl_ceiling=""; learned_at=""
-if [ -r "$learned_file" ] && read -r learned_raw < "$learned_file" 2>/dev/null; then
-  [[ "$learned_raw" =~ \"observed_floor_s\":([0-9]+) ]] && ttl_floor="${BASH_REMATCH[1]}"
-  [[ "$learned_raw" =~ \"observed_ceiling_s\":([0-9]+) ]] && ttl_ceiling="${BASH_REMATCH[1]}"
-  [[ "$learned_raw" =~ \"updated_at\":([0-9]+) ]] && learned_at="${BASH_REMATCH[1]}"
-fi
-bounds_changed=""
-# Anthropic can change the real TTL; bounds older than 7d are no longer trusted.
-if [[ "$learned_at" =~ ^[0-9]+$ ]] && [ $((now - learned_at)) -gt 604800 ]; then
-  ttl_floor=0; ttl_ceiling=""; bounds_changed=1
-fi
-
-# The transcript pins the model of the cache but not the ACCOUNT, so the
-# account is stamped into cache-ttl-track-<sid> ("v2 <assist_ts> <acct>
-# <learned_upto>") whenever a response lands during a live render. Attribution
-# window 120s: a response older than that with no matching stamp is
-# unattributable ("?") and renders cold.
-# Legacy v1 track files (prompt_id-based) are treated as absent.
-warm_acct="$acct"
-track_acct=""
-if [ -n "$session_id" ] && [ "$assist_ts" -gt 0 ] 2>/dev/null; then
-  track="$HOME/.cache/claude-statusline/cache-ttl-track-$session_id"
-  t1=""; t2=""; t3=""; t4=""
-  [ -r "$track" ] && { read -r t1 t2 t3 t4 < "$track" 2>/dev/null || :; }
-  rec_ts=0; rec_acct=""; learned_upto=0
+fork_anchor_uuid="-"; fork_own_ts=0
+latest_ts=0; latest_model="-"; latest_ttl=0; latest_uuid="-"; latest_fork="-"
+learned_file="${STATUSLINE_CACHE_TTL_LEARNED:-$statusline_cache_dir/cache-ttl-learned}"
+warm_acct="$acct"; track_acct=""; learned_upto=0
+rec_ts=0; rec_acct=""; rec_ttl=0; rec_model="-"; rec_uuid="-"; rec_scan=262144
+seen_upto=0; seen_acct=""; track_ready=0
+track=""; t1=""; t2=""; t3=""; t4=""; t5=""; t6=""; t7=""; t8=""; t9=""; t10=""
+if [ -n "$session_id" ]; then
+  track="$statusline_cache_dir/cache-ttl-track-$session_id"
+  [ -r "$track" ] && { read -r t1 t2 t3 t4 t5 t6 t7 t8 t9 t10 < "$track" 2>/dev/null || :; }
   if [ "$t1" = v2 ]; then
     [[ "$t2" =~ ^[0-9]+$ ]] && rec_ts="$t2"
     rec_acct="$t3"
     [[ "$t4" =~ ^[0-9]+$ ]] && learned_upto="$t4"
+    [[ "$t5" =~ ^[0-9]+$ ]] && rec_ttl="$t5"
+    [ -n "$t6" ] && rec_model="$t6"
+    [ -n "$t7" ] && rec_uuid="$t7"
+    [[ "$t8" =~ ^[0-9]+$ ]] && rec_scan="$t8"
+    [[ "$t9" =~ ^[0-9]+$ ]] && seen_upto="$t9"
+    seen_acct="$t10"
   fi
-  # A branched chat copies the parent's history (entries keep the parent id in
-  # forkedFrom.sessionId), so its own track starts empty. When the anchor
-  # response is a copied one and the PARENT's stamp still points at that exact
-  # response (the parent has not moved past the fork point), the fork shares
-  # the parent's cached prefix — inherit the parent's account stamp and
-  # learning cursor. Anything less exact stays "?" (cold): a fork from an
-  # earlier message provably rebuilds all but the static prefix.
-  if [ "$t1" != v2 ] && [ "$fork_sid" != "-" ] && [ "$fork_sid" != "$session_id" ]; then
-    p1=""; p2=""; p3=""; p4=""
-    ptrack="$HOME/.cache/claude-statusline/cache-ttl-track-$fork_sid"
-    [ -r "$ptrack" ] && { read -r p1 p2 p3 p4 < "$ptrack" 2>/dev/null || :; }
-    if [ "$p1" = v2 ] && [ "$p2" = "$assist_ts" ] && [ -n "$p3" ] && [ "$p3" != "?" ]; then
-      rec_ts="$p2"; rec_acct="$p3"
-      [[ "$p4" =~ ^[0-9]+$ ]] && learned_upto="$p4"
+fi
+
+model_key=""
+[ -n "$model_id" ] && model_key=${model_id//[^A-Za-z0-9_.-]/_}
+model_track=""
+model_rec_ts=0; model_rec_acct=""; model_rec_ttl=0; model_rec_uuid="-"; model_rec_scan=0
+m1=""; m2=""; m3=""; m4=""; m5=""; m6=""
+if [ -n "$track" ] && [ -n "$model_key" ]; then
+  model_track="$track.model-${model_key:0:80}"
+  [ -r "$model_track" ] && { read -r m1 m2 m3 m4 m5 m6 < "$model_track" 2>/dev/null || :; }
+  if [ "$m1" = v1 ]; then
+    [[ "$m2" =~ ^[0-9]+$ ]] && model_rec_ts="$m2"
+    model_rec_acct="$m3"
+    [[ "$m4" =~ ^[0-9]+$ ]] && model_rec_ttl="$m4"
+    [ -n "$m5" ] && model_rec_uuid="$m5"
+    [[ "$m6" =~ ^[0-9]+$ ]] && model_rec_scan="$m6"
+  fi
+fi
+
+scan_found=0; scan_complete=0; scan_bytes=262144; saved_scan_bytes=262144
+scan_max=8388608; transcript_size=0
+if [ "$model_rec_scan" -ge 262144 ] 2>/dev/null && [ "$model_rec_scan" -le "$scan_max" ] 2>/dev/null; then
+  saved_scan_bytes="$model_rec_scan"
+elif [ "$rec_scan" -ge 262144 ] 2>/dev/null && [ "$rec_scan" -le "$scan_max" ] 2>/dev/null; then
+  saved_scan_bytes="$rec_scan"
+fi
+
+file_size() {
+  stat -f %z "$1" 2>/dev/null || stat -c %s "$1" 2>/dev/null
+}
+
+resolve_parent_transcript() {
+  local sibling root candidate found=""
+  sibling="$(dirname "$transcript_path")/$fork_sid.jsonl"
+  if [ -r "$sibling" ]; then
+    printf '%s\n' "$sibling"
+    return 0
+  fi
+  case "$transcript_path" in
+    */projects/*/*.jsonl) root="${transcript_path%%/projects/*}/projects" ;;
+    *) root="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects" ;;
+  esac
+  [ -d "$root" ] || return 1
+  for candidate in "$root"/*/"$fork_sid.jsonl"; do
+    [ -r "$candidate" ] || continue
+    [ -z "$found" ] || return 1
+    found="$candidate"
+  done
+  [ -n "$found" ] || return 1
+  printf '%s\n' "$found"
+}
+
+if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
+  transcript_size=$(file_size "$transcript_path")
+  [[ "$transcript_size" =~ ^[0-9]+$ ]] || transcript_size=0
+  while :; do
+    cache_scan=$(
+      tail -c "$scan_bytes" "$transcript_path" 2>/dev/null |
+        {
+          [ "$scan_bytes" -ge "$transcript_size" ] || IFS= read -r _ || :
+          cat
+        } |
+        jq -Rrn --arg model "$model_id" '
+          def ep: try (sub("\\.[0-9]+Z$"; "Z") | fromdate) catch null;
+          def num: if type == "number" then . else 0 end;
+          def buckets:
+            [((.cache_creation? // {}) | to_entries[]?
+              | select((.value | num) > 0)
+              | .key | capture("ephemeral_(?<n>[0-9]+)(?<u>[mh])_")?
+              | ((.n | tonumber) * (if .u == "m" then 60 else 3600 end)))] as $v
+            | {ttl: ($v | if length == 0 then 0 else min end)};
+          reduce (inputs | fromjson? | select(type == "object" and .isSidechain != true)) as $x (
+            {la:0, pm:"", pg:-1, pa:0, lb:0, ats:0, am:"-", au:"-", afk:"", bk:0,
+             cgap:0, ccr:0, ccc:0, cets:0, cpm:"", cem:"", cpa:0, chas:0, own:0,
+             sawf:0, fas:"", fau:"", fot:0, lts:0, lm:"-", lbk:0, lu:"-", lfk:""};
+            (($x.forkedFrom?.sessionId? // "") | tostring) as $fs
+            | (($x.forkedFrom?.messageUuid? // "") | tostring) as $fu
+            | ((($x.timestamp? // "") | if type == "string" then ep else null end)) as $ts
+            | (if $fs != "" then
+                 .sawf = 1 | .fas = $fs | (if $fu != "" then .fau = $fu else . end)
+               elif .sawf == 1 and .fot == 0 and $ts != null then .fot = $ts
+               else . end)
+            | if $ts == null then .
+              elif $x.type == "system" and $x.subtype == "compact_boundary" then
+                (if $ts > .lb then .lb = $ts else . end)
+              elif $x.type == "user" and ($x.isCompactSummary? != true) then
+                (if .la > 0 and .pg < 0 then .pg = ($ts - .la) | .pa = .la else . end)
+                | (if $ts > .la then .la = $ts else . end)
+              elif $x.type == "assistant" and (($x.message?.model? // "") != "<synthetic>") then
+                ($x.message?.usage? // null) as $u
+                | (($u.cache_read_input_tokens? // 0) | num) as $cr
+                | (($u.cache_creation_input_tokens? // 0) | num) as $cc
+                | ($u | buckets) as $bs
+                | (($x.message?.model? // "") | tostring) as $xm
+                | (($x.uuid? // "") | tostring) as $xu
+                | if ($u | type) != "object" or ($cr + $cc) <= 0 or $xm == "" then .
+                  else
+                    (if .pg >= 0 then
+                       .cgap = .pg | .ccr = $cr | .ccc = $cc | .cets = $ts
+                       | .cpm = .pm | .cem = $xm | .cpa = .pa | .chas = 1 | .pg = -1
+                     else . end)
+                    | (if $ts >= .lts then
+                         .lts = $ts | .lm = $xm | .lbk = $bs.ttl
+                         | .lu = (if $xu == "" then "-" else $xu end) | .lfk = $fs
+                       else . end)
+                    | (if $model != "" and $xm == $model and $ts >= .ats then
+                         .ats = $ts | .am = $xm | .au = (if $xu == "" then "-" else $xu end)
+                         | .afk = $fs | .bk = $bs.ttl
+                       else . end)
+                    | (if $fs == "" and $ts > .own then .own = $ts else . end)
+                    | .pm = $xm
+                    | (if $ts > .la then .la = $ts else . end)
+                  end
+              else . end)
+          | [ (if .ats > 0 then 1 else 0 end), .ats, .am, .au,
+              (.afk | if . == "" then "-" else . end), .bk,
+              (if .lb > 0 and .lb >= .ats then 1 else 0 end),
+              (if .chas == 1 and .cgap > 0 and .cpm != "" and .cpm == .cem
+                  and (.lb == 0 or .lb <= .cpa or .lb >= .cets) then 1 else 0 end),
+              .cets, .cgap, .ccr, .ccc,
+              (if .own == 0 or (.lb > 0 and .own <= .lb) then 1 else 0 end),
+              .lb, (.fau | if . == "" then "-" else . end), .fot,
+              .lts, .lm, .lbk, .lu, (.lfk | if . == "" then "-" else . end) ]
+          | map(tostring) | join("")' 2>/dev/null
+    )
+    if [ -n "$cache_scan" ]; then
+      IFS=$'\x1f' read -r scan_found assist_ts assist_model assist_uuid fork_sid ttl_bucket \
+        post_compact ev_valid ev_ts ev_gap ev_cr ev_cc ctx_stale boundary_ts fork_anchor_uuid \
+        fork_own_ts latest_ts latest_model latest_ttl latest_uuid latest_fork <<< "$cache_scan" || :
+    fi
+    [ "$scan_found" = 1 ] && break
+    if [ "$scan_bytes" -ge "$transcript_size" ]; then scan_complete=1; break; fi
+    [ "$boundary_ts" -gt 0 ] 2>/dev/null && { scan_complete=1; break; }
+    [ "$scan_bytes" -ge "$scan_max" ] && break
+    if [ "$scan_bytes" -eq 262144 ] && [ "$saved_scan_bytes" -gt "$scan_bytes" ]; then
+      scan_bytes="$saved_scan_bytes"
+    else
+      scan_bytes=$((scan_bytes * 4))
+    fi
+    [ "$scan_bytes" -gt "$scan_max" ] && scan_bytes="$scan_max"
+  done
+fi
+
+for scan_num in assist_ts ttl_bucket post_compact ev_valid ev_ts ev_gap ev_cr ev_cc \
+  ctx_stale boundary_ts fork_own_ts latest_ts latest_ttl; do
+  [[ "${!scan_num}" =~ ^[0-9]+$ ]] || printf -v "$scan_num" %s 0
+done
+[[ "$fork_sid" =~ ^[A-Za-z0-9_-]+$ ]] || fork_sid="-"
+[[ "$latest_fork" =~ ^[A-Za-z0-9_-]+$ ]] || latest_fork="-"
+ctx_dim=""
+[ "$ctx_stale" = 1 ] && ctx_dim=1
+
+if [ "$scan_found" = 1 ] && [ "$fork_sid" = "-" ]; then
+  if [ "$model_rec_ts" -eq "$assist_ts" ] && [ "$model_rec_uuid" = "$assist_uuid" ] \
+     && [ -n "$model_rec_acct" ] && [ "$model_rec_acct" != "?" ]; then
+    track_acct="$model_rec_acct"
+  elif [ "$rec_ts" -eq "$assist_ts" ] \
+       && { [ "$rec_model" = "-" ] || [ "$rec_model" = "$assist_model" ]; } \
+       && [ -n "$rec_acct" ] && [ "$rec_acct" != "?" ]; then
+    track_acct="$rec_acct"
+  elif [ "$seen_acct" = "$warm_acct" ] && [ "$assist_ts" -gt "$seen_upto" ] 2>/dev/null; then
+    track_acct="$warm_acct"
+  else
+    track_acct="?"
+  fi
+fi
+
+if [ -n "$track" ] && [ "$latest_ts" -gt 0 ] && [ "$latest_fork" = "-" ]; then
+  latest_acct="?"
+  if [ "$rec_ts" -eq "$latest_ts" ] \
+     && { [ "$rec_model" = "-" ] || [ "$rec_model" = "$latest_model" ]; } \
+     && [ -n "$rec_acct" ] && [ "$rec_acct" != "?" ]; then
+    latest_acct="$rec_acct"
+  elif [ "$latest_model" = "$assist_model" ] && [ "$latest_ts" -eq "$assist_ts" ] \
+       && [ -n "$track_acct" ] && [ "$track_acct" != "?" ]; then
+    latest_acct="$track_acct"
+  elif [ "$seen_acct" = "$warm_acct" ] && [ "$latest_ts" -gt "$seen_upto" ] 2>/dev/null; then
+    latest_acct="$warm_acct"
+  fi
+  rec_ts="$latest_ts"; rec_acct="$latest_acct"; rec_ttl="$latest_ttl"
+  rec_model="$latest_model"; rec_uuid="$latest_uuid"; rec_scan="$scan_bytes"
+  seen_upto="$latest_ts"; seen_acct="$warm_acct"; track_ready=1
+  if [ "$latest_model" = "$model_id" ] && [ -n "$model_track" ]; then
+    if [ "$model_rec_ts" -ne "$latest_ts" ] || [ "$model_rec_acct" != "$latest_acct" ] \
+       || [ "$model_rec_ttl" -ne "$latest_ttl" ] || [ "$model_rec_uuid" != "$latest_uuid" ] \
+       || [ "$model_rec_scan" -ne "$scan_bytes" ]; then
+      mkdir -p "$(dirname "$model_track")" 2>/dev/null
+      printf 'v1 %s %s %s %s %s\n' "$latest_ts" "$latest_acct" "$latest_ttl" "$latest_uuid" "$scan_bytes" \
+        > "$model_track.tmp.$$" 2>/dev/null && mv "$model_track.tmp.$$" "$model_track" 2>/dev/null \
+        || rm -f "$model_track.tmp.$$" 2>/dev/null
+    fi
+    track_acct="$latest_acct"
+  fi
+fi
+
+if [ -n "$track" ] && [ "$scan_found" = 0 ] && [ "$scan_complete" = 1 ] \
+   && [ "$latest_ts" -eq 0 ]; then
+  rec_ts=0; rec_acct="$warm_acct"; rec_ttl=0; rec_model="-"; rec_uuid="-"; rec_scan="$scan_bytes"
+  seen_upto=0; seen_acct="$warm_acct"; track_ready=1
+fi
+
+if [ "$scan_found" = 1 ] && [ "$fork_sid" = "-" ] && [ -n "$model_track" ] \
+   && [ -n "$track_acct" ] && [ "$track_acct" != "?" ] \
+   && { [ "$model_rec_ts" -ne "$assist_ts" ] || [ "$model_rec_acct" != "$track_acct" ] \
+        || [ "$model_rec_ttl" -ne "$ttl_bucket" ] || [ "$model_rec_uuid" != "$assist_uuid" ] \
+        || [ "$model_rec_scan" -ne "$scan_bytes" ]; }; then
+  mkdir -p "$(dirname "$model_track")" 2>/dev/null
+  printf 'v1 %s %s %s %s %s\n' "$assist_ts" "$track_acct" "$ttl_bucket" "$assist_uuid" "$scan_bytes" \
+    > "$model_track.tmp.$$" 2>/dev/null && mv "$model_track.tmp.$$" "$model_track" 2>/dev/null \
+    || rm -f "$model_track.tmp.$$" 2>/dev/null
+fi
+
+warm_ts="$assist_ts"; warm_ttl="$ttl_bucket"; fork_state=none
+if [ "$scan_found" = 1 ] && [ "$fork_sid" != "-" ] && [ "$fork_sid" != "$session_id" ]; then
+  fork_state=unknown
+  parent_file=""; parent_size=0; parent_mtime=0; parent_boundary=0
+  parent_assist_ts=0; parent_assist_uuid="-"; parent_assist_ttl=0; parent_anchor_ts=0
+  fork_cache=""; fork_cache_valid=0
+  [ -n "$track" ] && fork_cache="$track.fork"
+  fc1=""; fc2=""; fc3=""; fc4=""; fc5=""; fc6=""; fc7=""; fc8=""; fc9=""
+  fc10=""; fc11=""; fc12=""; fc13=""
+  if [ -n "$fork_cache" ] && [ -r "$fork_cache" ]; then
+    IFS=$'\x1f' read -r fc1 fc2 fc3 fc4 fc5 fc6 fc7 fc8 fc9 fc10 fc11 fc12 fc13 \
+      < "$fork_cache" 2>/dev/null || :
+    if [ "$fc1" = v2 ] && [ "$fc2" = "$fork_sid" ] && [ "$fc3" = "$fork_anchor_uuid" ] \
+       && [ "$fc4" = "$fork_own_ts" ] && [ -r "$fc5" ]; then
+      parent_size=$(file_size "$fc5")
+      parent_mtime=$(file_mtime "$fc5")
+      if [ "$parent_size" = "$fc6" ] && [ "$parent_mtime" = "$fc7" ]; then
+        parent_file="$fc5"; fork_state="$fc8"; parent_boundary="$fc9"
+        parent_assist_ts="$fc10"; parent_assist_uuid="$fc11"; parent_assist_ttl="$fc12"
+        parent_anchor_ts="$fc13"
+        fork_cache_valid=1
+      fi
     fi
   fi
-  track_acct="$rec_acct"
-  if [ "$assist_ts" -gt "$rec_ts" ]; then
-    # Self-attribution only for responses this session produced itself: a
-    # copied (forked) anchor was produced by the parent — even a fresh one
-    # must inherit, never stamp the current account.
-    if [ $((now - assist_ts)) -le 120 ] && [ -n "$warm_acct" ] && [ "$fork_sid" = "-" ]; then
-      track_acct="$warm_acct"
+  if [ "$fork_cache_valid" = 0 ] && [ "$fork_anchor_uuid" != "-" ]; then
+    parent_file=$(resolve_parent_transcript 2>/dev/null) || parent_file=""
+    if [ -r "$parent_file" ]; then
+      parent_size=$(file_size "$parent_file")
+      parent_mtime=$(file_mtime "$parent_file")
+      [[ "$parent_size" =~ ^[0-9]+$ ]] || parent_size=0
+      [[ "$parent_mtime" =~ ^[0-9]+$ ]] || parent_mtime=0
+      parent_bytes="$parent_size"
+      [ "$parent_bytes" -gt "$scan_max" ] 2>/dev/null && parent_bytes="$scan_max"
+      parent_tail=$(
+        tail -c "$parent_bytes" "$parent_file" 2>/dev/null |
+          {
+            [ "$parent_bytes" -ge "$parent_size" ] || IFS= read -r _ || :
+            cat
+          } |
+          jq -Rrn --arg anchor "$fork_anchor_uuid" --arg model "$model_id" \
+            --argjson cutoff "$fork_own_ts" '
+            def ep: try (sub("\\.[0-9]+Z$"; "Z") | fromdate) catch null;
+            def num: if type == "number" then . else 0 end;
+            def buckets:
+              [((.cache_creation? // {}) | to_entries[]?
+                | select((.value | num) > 0)
+                | .key | capture("ephemeral_(?<n>[0-9]+)(?<u>[mh])_")?
+                | ((.n | tonumber) * (if .u == "m" then 60 else 3600 end)))] as $v
+              | ($v | if length == 0 then 0 else min end);
+            reduce (inputs | fromjson? | select(type == "object" and .isSidechain != true)) as $x (
+              {seen:0,last:"",boundary:0,ats:0,au:"-",ttl:0,anchor_ts:0};
+              ((($x.timestamp? // "") | if type == "string" then ep else null end)) as $ts
+              | (($x.uuid? // "") | tostring) as $uuid
+              | (if $uuid == $anchor and $ts != null then .anchor_ts = $ts else . end)
+              | (if $ts != null and $x.type == "system" and $x.subtype == "compact_boundary"
+                   and $ts > .boundary then .boundary = $ts else . end)
+              | (if $ts != null and $x.type == "assistant"
+                   and (($x.message?.model? // "") == $model)
+                   and (($x.message?.model? // "") != "<synthetic>") then
+                   ($x.message?.usage? // null) as $u
+                   | (($u.cache_read_input_tokens? // 0) | num) as $cr
+                   | (($u.cache_creation_input_tokens? // 0) | num) as $cc
+                   | if ($u | type) == "object" and ($cr + $cc) > 0 and $ts >= .ats then
+                       .ats = $ts | .au = (if $uuid == "" then "-" else $uuid end)
+                       | .ttl = ($u | buckets)
+                     else . end
+                 else . end)
+              | if $uuid == "" or ($cutoff > 0 and $ts != null and $ts > $cutoff) then .
+                else .last = $uuid | (if $uuid == $anchor then .seen = 1 else . end)
+                end)
+            | [.seen, .last, .boundary, .ats, .au, .ttl, .anchor_ts] | @tsv' 2>/dev/null
+      )
+      parent_seen=""; parent_last=""
+      IFS=$'\t' read -r parent_seen parent_last parent_boundary parent_assist_ts \
+        parent_assist_uuid parent_assist_ttl parent_anchor_ts <<< "$parent_tail" || :
+      if [ "$parent_bytes" -ge "$parent_size" ] && [ "$parent_seen" = 1 ] \
+         && [ "$parent_last" = "$fork_anchor_uuid" ]; then
+        fork_state=tail
+      elif [ "$parent_bytes" -ge "$parent_size" ]; then
+        fork_state=mid
+      else
+        fork_state=unknown
+      fi
+      if [ -n "$fork_cache" ]; then
+        mkdir -p "$(dirname "$fork_cache")" 2>/dev/null
+        printf 'v2\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' \
+          "$fork_sid" "$fork_anchor_uuid" "$fork_own_ts" "$parent_file" "$parent_size" \
+          "$parent_mtime" "$fork_state" "$parent_boundary" "$parent_assist_ts" \
+          "$parent_assist_uuid" "$parent_assist_ttl" "$parent_anchor_ts" \
+          > "$fork_cache.tmp.$$" 2>/dev/null \
+          && mv "$fork_cache.tmp.$$" "$fork_cache" 2>/dev/null || rm -f "$fork_cache.tmp.$$" 2>/dev/null
+      fi
+    fi
+  fi
+  for parent_num in parent_boundary parent_assist_ts parent_assist_ttl parent_anchor_ts; do
+    [[ "${!parent_num}" =~ ^[0-9]+$ ]] || printf -v "$parent_num" %s 0
+  done
+  if [ "$fork_state" = tail ]; then
+    ptrack="$statusline_cache_dir/cache-ttl-track-$fork_sid"
+    pmodel_track="$ptrack.model-${model_key:0:80}"
+    p1=""; p2=""; p3=""; p4=""; p5=""; p6=""; p7=""
+    pm1=""; pm2=""; pm3=""; pm4=""; pm5=""; pm6=""
+    [ -r "$ptrack" ] && { read -r p1 p2 p3 p4 p5 p6 p7 < "$ptrack" 2>/dev/null || :; }
+    [ -r "$pmodel_track" ] && { read -r pm1 pm2 pm3 pm4 pm5 pm6 < "$pmodel_track" 2>/dev/null || :; }
+    if [ "$pm1" = v1 ] && [ "$pm2" = "$parent_assist_ts" ] \
+       && [ "$pm5" = "$parent_assist_uuid" ] && [ -n "$pm3" ] && [ "$pm3" != "?" ]; then
+      track_acct="$pm3"
+    elif [ "$p1" = v2 ] && [ "$p2" = "$parent_assist_ts" ] && [ "$p6" = "$model_id" ] \
+         && [ "$p7" = "$parent_assist_uuid" ] && [ -n "$p3" ] && [ "$p3" != "?" ]; then
+      track_acct="$p3"
     else
       track_acct="?"
     fi
-  fi
-  [ -n "$track_acct" ] || track_acct="?"
-  # TTL learning feeds the no-bucket fallback. Evidence (from the jq pass, which
-  # already guarded same-model-across-gap and no-boundary-inside-gap): the
-  # newest turn's first response after idle gap G. A large cache_read proves the
-  # cache survived G (floor up; a survival past the believed ceiling disproves
-  # it); a full rebuild after G >= 120s proves it died within G (ceiling down —
-  # sub-2min rebuilds are prefix invalidations, not TTL expiry). An account
-  # switch across the gap is not TTL evidence; each response is consumed once.
-  if [ "$ev_valid" = 1 ] && [ "$ev_ts" -gt "$learned_upto" ] 2>/dev/null \
-     && [ -n "$rec_acct" ] && [ "$rec_acct" != "?" ] && [ "$rec_acct" = "$warm_acct" ]; then
-    if [ "$ev_cr" -ge 1000 ] 2>/dev/null && [ "$ev_cr" -ge "$ev_cc" ] 2>/dev/null; then
-      [ "$ev_gap" -gt "$ttl_floor" ] 2>/dev/null && { ttl_floor=$ev_gap; bounds_changed=1; }
-      if [ -n "$ttl_ceiling" ] && [ "$ev_gap" -gt "$ttl_ceiling" ] 2>/dev/null; then ttl_ceiling=""; bounds_changed=1; fi
-    elif [ "$ev_cr" -lt 1000 ] 2>/dev/null && [ "$ev_cc" -ge 20000 ] 2>/dev/null && [ "$ev_gap" -ge 120 ] 2>/dev/null; then
-      if [ -z "$ttl_ceiling" ] || [ "$ev_gap" -lt "$ttl_ceiling" ] 2>/dev/null; then ttl_ceiling=$ev_gap; bounds_changed=1; fi
+    warm_ts="$parent_assist_ts"; warm_ttl="$parent_assist_ttl"
+    if [ "$parent_anchor_ts" -le 0 ] 2>/dev/null; then
+      track_acct="?"
+    elif [ "$parent_boundary" -gt 0 ] 2>/dev/null \
+       && [ "$parent_boundary" -ge "$parent_anchor_ts" ] 2>/dev/null; then
+      post_compact=1
     fi
-  fi
-  [ "$ev_ts" -gt "$learned_upto" ] 2>/dev/null && learned_upto="$ev_ts"
-  if [ "$t1" != v2 ] || [ "$track_acct" != "$rec_acct" ] || [ "$assist_ts" -ne "$rec_ts" ] || [ "$learned_upto" != "${t4:-}" ]; then
-    printf 'v2 %s %s %s\n' "$assist_ts" "$track_acct" "$learned_upto" > "$track.tmp.$$" 2>/dev/null \
-      && mv "$track.tmp.$$" "$track" 2>/dev/null || rm -f "$track.tmp.$$" 2>/dev/null
-  fi
-fi
-
-if [ -n "$bounds_changed" ]; then
-  ceil_json=null; [ -n "$ttl_ceiling" ] && ceil_json="$ttl_ceiling"
-  mkdir -p "$HOME/.cache/claude-statusline" 2>/dev/null
-  printf '{"observed_floor_s":%s,"observed_ceiling_s":%s,"updated_at":%s}\n' "$ttl_floor" "$ceil_json" "$now" \
-    > "$learned_file.tmp.$$" 2>/dev/null && mv "$learned_file.tmp.$$" "$learned_file" 2>/dev/null || rm -f "$learned_file.tmp.$$" 2>/dev/null
-fi
-
-# The API's own declaration wins: the newest response's cache_creation bucket
-# (ephemeral_5m/1h field name) IS the TTL of the newest cache write, and reads
-# refresh that same bucket. Seed + learned bounds are the fallback for tails
-# whose entries carry no bucket.
-if [ "$ttl_bucket" -gt 0 ] 2>/dev/null; then
-  cache_ttl="$ttl_bucket"
-else
-  cache_ttl="$cache_ttl_seed"
-  [ "$cache_ttl" -lt "$ttl_floor" ] 2>/dev/null && cache_ttl="$ttl_floor"
-  [ -n "$ttl_ceiling" ] && [ "$cache_ttl" -gt "$ttl_ceiling" ] 2>/dev/null && cache_ttl="$ttl_ceiling"
-fi
-
-# Cache warm: token count and time both dim (time presence signals alive cache).
-# Cache not warm: count colored by size — <90k dim, 90–299k yellow, >=300k red.
-# Warm requires ALL of: a completed response visible in the tail, cache tokens
-# in the payload, response within TTL, no compact boundary at/after it, same
-# model (payload model.id vs the response entry's model — Anthropic caches are
-# per-model), and a verified same-account stamp ("?" is cold, never warm).
-ctx_tokens_part=""
-if [ -n "$ctx_tokens" ] && [ "$ctx_tokens" -gt 0 ] 2>/dev/null; then
-  death_part=""
-  cache_live=$(( ${cache_create:-0} + ${cache_read:-0} ))
-  if [ "$cache_live" -gt 0 ] 2>/dev/null && [ "$assist_ts" -gt 0 ] 2>/dev/null \
-     && [ "$post_compact" = 0 ] \
-     && [ "$((now - assist_ts))" -le "$cache_ttl" ] 2>/dev/null \
-     && [ -n "$track_acct" ] && [ "$track_acct" != "?" ] && [ "$track_acct" = "$warm_acct" ] \
-     && { [ -z "$model_id" ] || [ "$assist_model" = "-" ] || [ "$assist_model" = "$model_id" ]; }; then
-    tok_color="$DIM"
-    death_time=$(TZ=Europe/Kyiv date -r "$((assist_ts + cache_ttl))" +%H:%M 2>/dev/null)
-    [ -n "$death_time" ] && death_part="${DIM}→${death_time}${RESET}"
   else
-    if [ "$ctx_tokens" -lt 90000 ]; then tok_color="$DIM"
-    elif [ "$ctx_tokens" -lt 300000 ]; then tok_color="$YELLOW"
-    else tok_color="$RED"
-    fi
+    track_acct="?"
   fi
-  [ "$ctx_stale" = 1 ] && tok_color="$DIM"
-  ctx_tokens_part=" ${tok_color}$(( (ctx_tokens + 500) / 1000 ))k${RESET}${death_part}"
+  if [ -n "$track" ]; then
+    rec_ts="$latest_ts"; rec_acct="$track_acct"; rec_ttl="$latest_ttl"
+    rec_model="$latest_model"; rec_uuid="$latest_uuid"; rec_scan="$scan_bytes"
+    seen_upto="$latest_ts"; seen_acct="$warm_acct"; track_ready=1
+  fi
+fi
+
+shared_bounds_lock="$learned_file.lock"
+bounds_need_decay=""
+if [ -r "$learned_file" ] && read -r learned_probe < "$learned_file" 2>/dev/null \
+   && [[ "$learned_probe" =~ \"updated_at\":([0-9]+) ]] \
+   && [ $((now - BASH_REMATCH[1])) -gt 604800 ]; then
+  bounds_need_decay=1
+fi
+learn_event=""
+if [ "$ev_valid" = 1 ] && [ "$ev_ts" -gt "$learned_upto" ] 2>/dev/null \
+   && [ -n "$track_acct" ] && [ "$track_acct" != "?" ] && [ "$track_acct" = "$warm_acct" ]; then
+  learn_event=1
+fi
+if [ -n "$learn_event" ] || [ -n "$bounds_need_decay" ]; then
+  mkdir -p "$(dirname "$learned_file")" 2>/dev/null
+  lock_tries=0
+  while ! snapshot_lock_acquire "$shared_bounds_lock"; do
+    lock_tries=$((lock_tries + 1))
+    [ "$lock_tries" -lt 20 ] || break
+    sleep 0.01
+  done
+  if [ -d "$shared_bounds_lock" ] && [ "$lock_tries" -lt 20 ]; then
+    ttl_floor=0; ttl_ceiling=""; learned_at=""; bounds_changed=""
+    if [ -r "$learned_file" ] && read -r learned_raw < "$learned_file" 2>/dev/null; then
+      [[ "$learned_raw" =~ \"observed_floor_s\":([0-9]+) ]] && ttl_floor="${BASH_REMATCH[1]}"
+      [[ "$learned_raw" =~ \"observed_ceiling_s\":([0-9]+) ]] && ttl_ceiling="${BASH_REMATCH[1]}"
+      [[ "$learned_raw" =~ \"updated_at\":([0-9]+) ]] && learned_at="${BASH_REMATCH[1]}"
+    fi
+    if [[ "$learned_at" =~ ^[0-9]+$ ]] && [ $((now - learned_at)) -gt 604800 ]; then
+      ttl_floor=0; ttl_ceiling=""; bounds_changed=1
+    fi
+    if [ -n "$learn_event" ]; then
+      if [ "$ev_cr" -ge 1000 ] 2>/dev/null && [ "$ev_cr" -ge "$ev_cc" ] 2>/dev/null; then
+        [ "$ev_gap" -gt "$ttl_floor" ] 2>/dev/null && { ttl_floor=$ev_gap; bounds_changed=1; }
+        if [ -n "$ttl_ceiling" ] && [ "$ev_gap" -gt "$ttl_ceiling" ] 2>/dev/null; then ttl_ceiling=""; bounds_changed=1; fi
+      elif [ "$ev_cr" -lt 1000 ] 2>/dev/null && [ "$ev_cc" -ge 20000 ] 2>/dev/null && [ "$ev_gap" -ge 120 ] 2>/dev/null; then
+        if [ -z "$ttl_ceiling" ] || [ "$ev_gap" -lt "$ttl_ceiling" ] 2>/dev/null; then ttl_ceiling=$ev_gap; bounds_changed=1; fi
+      fi
+    fi
+    if [ -n "$bounds_changed" ]; then
+      ceil_json=null; [ -n "$ttl_ceiling" ] && ceil_json="$ttl_ceiling"
+      printf '{"observed_floor_s":%s,"observed_ceiling_s":%s,"updated_at":%s}\n' \
+        "$ttl_floor" "$ceil_json" "$now" > "$learned_file.tmp.$$" 2>/dev/null \
+        && mv "$learned_file.tmp.$$" "$learned_file" 2>/dev/null || rm -f "$learned_file.tmp.$$" 2>/dev/null
+    fi
+    [ -n "$learn_event" ] && learned_upto="$ev_ts"
+    rmdir "$shared_bounds_lock" 2>/dev/null
+  fi
+fi
+
+if [ -n "$track" ] && [ "$track_ready" = 1 ] \
+   && { [ "$t1" != v2 ] || [ "$rec_ts" != "${t2:-}" ] || [ "$rec_acct" != "${t3:-}" ] \
+        || [ "$learned_upto" != "${t4:-}" ] || [ "$rec_ttl" != "${t5:-}" ] \
+        || [ "$rec_model" != "${t6:-}" ] || [ "$rec_uuid" != "${t7:-}" ] \
+        || [ "$rec_scan" != "${t8:-}" ] || [ "$seen_upto" != "${t9:-}" ] \
+        || [ "$seen_acct" != "${t10:-}" ]; }; then
+  mkdir -p "$(dirname "$track")" 2>/dev/null
+  printf 'v2 %s %s %s %s %s %s %s %s %s\n' "$rec_ts" "${rec_acct:-?}" "$learned_upto" \
+    "$rec_ttl" "$rec_model" "$rec_uuid" "$rec_scan" "$seen_upto" "$seen_acct" \
+    > "$track.tmp.$$" 2>/dev/null && mv "$track.tmp.$$" "$track" 2>/dev/null \
+    || rm -f "$track.tmp.$$" 2>/dev/null
+fi
+
+cache_state=unknown
+if [ -z "$model_id" ]; then
+  cache_state=unknown
+elif [ "$scan_found" = 0 ]; then
+  if [ "$scan_complete" = 1 ]; then cache_state=cold; fi
+elif [ "$post_compact" = 1 ]; then
+  cache_state=cold
+elif [ "$warm_ttl" -le 0 ] 2>/dev/null; then
+  cache_state=unknown
+elif [ "$warm_ts" -le "$now" ] 2>/dev/null \
+     && [ "$((now - warm_ts))" -ge "$warm_ttl" ] 2>/dev/null; then
+  cache_state=cold
+elif [ -z "$track_acct" ] || [ "$track_acct" = "?" ]; then
+  cache_state=unknown
+elif [ "$track_acct" != "$warm_acct" ]; then
+  cache_state=cold
+elif [ "$warm_ts" -le "$now" ] 2>/dev/null && [ "$((now - warm_ts))" -lt "$warm_ttl" ] 2>/dev/null; then
+  cache_state=warm
+else
+  cache_state=cold
+fi
+
+ctx_tokens_part=""
+if [ "$cache_state" = warm ]; then
+  death_time=$(TZ=Europe/Kyiv date -r "$((warm_ts + warm_ttl))" +%H:%M 2>/dev/null)
+  if [ -n "$death_time" ]; then
+    ctx_tokens_part=" ${DIM}→${death_time}${RESET}"
+    [ "$warm_ttl" -lt 3600 ] 2>/dev/null && ctx_tokens_part="${ctx_tokens_part}${YELLOW}↓5m${RESET}"
+  fi
+elif [ -n "$ctx_tokens" ] && [ "$ctx_tokens" -gt 0 ] 2>/dev/null; then
+  ctx_tokens_k=$(( (ctx_tokens + 500) / 1000 ))
+  if [ "$ctx_tokens" -lt 90000 ]; then tok_color="$DIM"
+  elif [ "$ctx_tokens" -lt 300000 ]; then tok_color="$YELLOW"
+  else tok_color="$RED"
+  fi
+  if [ "$cache_state" = unknown ]; then
+    ctx_tokens_part=" ${tok_color}? ${ctx_tokens_k}k${RESET}"
+  else
+    ctx_tokens_part=" ${tok_color}${ctx_tokens_k}k${RESET}"
+  fi
+elif [ "$cache_state" = unknown ]; then
+  ctx_tokens_part=" ${DIM}?${RESET}"
 fi
 cb_part=""
 if [ -n "$acct" ] && [ "$acct" != main ]; then
@@ -1011,7 +1266,7 @@ if [ -n "$session_id" ]; then
   [ -L "$probe_self" ] && probe_self=$(readlink "$probe_self")
   case "$probe_self" in /*) ;; *) probe_self="$(dirname "$0")/$(basename "$probe_self")" ;; esac
   probe_bin="$(dirname "$probe_self")/statusline-ports-probe.sh"
-  ports_cache="$HOME/.cache/claude-statusline/ports-$session_id"
+  ports_cache="$statusline_cache_dir/ports-$session_id"
   ports_mtime=$(file_mtime "$ports_cache" 2>/dev/null)
   if { ! [[ "$ports_mtime" =~ ^[0-9]+$ ]] || [ "$((now - ports_mtime))" -gt 15 ]; } && [ -x "$probe_bin" ]; then
     ( "$probe_bin" "$session_id" "$PPID" >/dev/null 2>&1 & ) 2>/dev/null
@@ -1038,7 +1293,7 @@ if [ -n "$active_top" ]; then
   [ -L "$review_probe_self" ] && review_probe_self=$(readlink "$review_probe_self")
   case "$review_probe_self" in /*) ;; *) review_probe_self="$(dirname "$0")/$review_probe_self" ;; esac
   review_bench_bin="${STATUSLINE_REVIEW_BENCH_BIN:-$(dirname "$review_probe_self")/review-bench}"
-  review_cache_dir="$HOME/.cache/claude-statusline"
+  review_cache_dir="$statusline_cache_dir"
   # Keyed on the repository root, so prompting from two subdirectories of one repo shares the
   # cache instead of starting a second background refresh; the basename keeps a checksum
   # collision from showing one repository's tier under another's name.
