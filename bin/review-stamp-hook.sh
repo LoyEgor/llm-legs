@@ -29,8 +29,10 @@ case "$command" in *commit*) ;; *) exit 0 ;; esac
 top=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null) || exit 0
 
 self="$0"
-[ -L "$self" ] && self=$(readlink "$self")
-case "$self" in /*) ;; *) self="$(dirname "$0")/$self" ;; esac
+if [ -L "$self" ]; then
+  target=$(readlink "$self")
+  case "$target" in /*) self="$target" ;; *) self="$(dirname "$self")/$target" ;; esac
+fi
 review_bench="${REVIEW_STAMP_HOOK_BENCH:-$(dirname "$self")/review-bench}"
 [ -x "$review_bench" ] || exit 0
 
