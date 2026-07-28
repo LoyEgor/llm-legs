@@ -58,6 +58,21 @@ local function afterDelay(delay, fn)
     return hs.timer.doAfter(delay, fn)
 end
 
+-- hs.timer.doAfter userdata that nothing references is GC'd before it fires;
+-- a collected delivery-poll timer once froze the FIFO queue forever (24 pastes
+-- queued behind a job whose finish() never ran). Anchor every one-shot timer
+-- until it fires.
+local timerAnchors = {}
+local function afterDelayRetained(delay, fn)
+    local t
+    t = afterDelay(delay, function()
+        if t then timerAnchors[t] = nil end
+        fn()
+    end)
+    if t then timerAnchors[t] = true end
+    return t
+end
+
 local function activateApp(app)
     if hooks and hooks.activate then return hooks.activate(app) end
     app:activate()
@@ -156,7 +171,7 @@ local function writeLog(record)
         return
     end
     print("[SendActions] " .. line)
-    afterDelay(0, function()
+    afterDelayRetained(0, function()
         pcall(function()
             local attrs = hs.fs.attributes(logPath)
             if attrs and attrs.size and attrs.size > logMaxBytes then
@@ -211,7 +226,12 @@ local activatePoll = 0.05
 
 local deliveryQueue = {}
 local deliveryActive = false
+local deliveryStartedAt = 0
+local deliverySeq = 0
 local runDelivery
+-- A delivery with live timers always finishes within activateTimeout; one
+-- alive longer than this lost its poll chain and will never finish on its own.
+local deliveryStallAfter = activateTimeout + 2.0
 
 local function processNext()
     local job = table.remove(deliveryQueue, 1)
@@ -225,7 +245,14 @@ end
 runDelivery = function(job)
     local mods, key, app, record = job.mods, job.key, job.app, job.record
 
+    deliverySeq = deliverySeq + 1
+    deliveryStartedAt = nowSeconds()
+    local mySeq = deliverySeq
+
+    -- A stale finish (queue recovery already invalidated this job) must not
+    -- advance the queue a second time.
     local function finish(activation, sentFront)
+        if deliverySeq ~= mySeq then return end
         record.activation = activation
         record.sentFront = sentFront
         writeLog(record)
@@ -234,8 +261,11 @@ runDelivery = function(job)
 
     -- Re-check liveness immediately before every send: the target can quit
     -- during the poll, and a global cmd keystroke into whatever replaced it
-    -- could act on the wrong app, so a dead target sends nothing.
+    -- could act on the wrong app, so a dead target sends nothing. The seq
+    -- check must come before the keystroke, not just in finish: a stale poll
+    -- from a recovered-away delivery would otherwise still fire its send.
     local function sendTargeted(activation)
+        if deliverySeq ~= mySeq then return end
         if not appIsRunning(app) then
             finish("target-quit")
             return
@@ -268,6 +298,7 @@ runDelivery = function(job)
     local deadline = nowSeconds() + activateTimeout
     local poll
     poll = function()
+        if deliverySeq ~= mySeq then return end
         if frontmostPid() == targetPid then
             sendTargeted("activated")
             return
@@ -276,14 +307,26 @@ runDelivery = function(job)
             sendTargeted("timeout")
             return
         end
-        afterDelay(activatePoll, poll)
+        afterDelayRetained(activatePoll, poll)
     end
-    afterDelay(activatePoll, poll)
+    afterDelayRetained(activatePoll, poll)
 end
 
 local function deliverCmd(mods, key, app, record)
     local job = { mods = mods, key = key, app = app, record = record }
     if deliveryActive then
+        if nowSeconds() - deliveryStartedAt > deliveryStallAfter then
+            -- The stalled job and everything queued behind it are stale user
+            -- intents; replaying them now would burst-fire keystrokes into
+            -- the target. Drop them all and serve the live tap instead.
+            deliverySeq = deliverySeq + 1
+            local dropped = 1 + #deliveryQueue
+            deliveryQueue = {}
+            writeLog({ action = "queue-recovery",
+                       path = "dropped:" .. dropped, clipboard = "-" })
+            runDelivery(job)
+            return
+        end
         deliveryQueue[#deliveryQueue + 1] = job
         return
     end
@@ -390,7 +433,7 @@ local function copyFromTui(target, record)
         nativeCopy(target, record)
         return
     end
-    afterDelay(chordVerdictDeferral, function()
+    afterDelayRetained(chordVerdictDeferral, function()
         if ck.foregroundVerdict() == "claude" then
             fireChord(target, record)
         else
@@ -479,6 +522,8 @@ function SendActions.setTestHooks(newHooks)
     pasteTarget = nil
     deliveryQueue = {}
     deliveryActive = false
+    deliveryStartedAt = 0
+    timerAnchors = {}
 end
 
 _G.SendActions = SendActions

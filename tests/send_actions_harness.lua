@@ -235,6 +235,40 @@ assert(#ctx.sent == 2 and ctx.sent[1].key == "1" and ctx.sent[2].key == "2",
     "overlapping deliveries lost FIFO order")
 print("✓ deliverCmd serializes FIFO")
 
+-- A delivery whose poll chain died (GC'd timer, seen live with 24 pastes
+-- queued forever) must not wedge the queue: the next call past the stall
+-- window drops the dead job and its stale queue, then serves the live tap.
+ctx = context({ target = regular, front = "com.other.app", frontPid = 999 })
+module.sendKeys({ "cmd" }, "1")
+module.sendKeys({ "cmd" }, "2")
+ctx.timers = {} -- the poll chain is gone; nothing will ever finish job 1
+ctx.clock = ctx.clock + 5
+ctx.front = "com.regular.app"; ctx.frontPid = 100
+module.sendKeys({ "cmd" }, "3")
+ctx:runTimers()
+assert(#ctx.sent == 1 and ctx.sent[1].key == "3",
+    "recovery replayed stale jobs or dropped the live one")
+local sawRecovery = false
+for _, line in ipairs(ctx.logs) do
+    if line:find("queue%-recovery") and line:find("dropped:2") then sawRecovery = true end
+end
+assert(sawRecovery, "stalled queue recovery was not logged")
+print("✓ stalled delivery recovery")
+
+-- A recovered-away delivery whose poll timer was merely LATE (not GC'd) must
+-- not fire its stale keystroke when that timer finally runs.
+ctx = context({ target = regular, front = "com.other.app", frontPid = 999 })
+module.sendKeys({ "cmd" }, "1")
+ctx.clock = ctx.clock + 5
+ctx.front = "com.regular.app"; ctx.frontPid = 100
+module.sendKeys({ "cmd" }, "3")
+assert(#ctx.sent == 1 and ctx.sent[1].key == "3",
+    "recovery did not serve the live tap first")
+ctx:runTimers() -- job 1's poll chain finally fires, after invalidation
+assert(#ctx.sent == 1,
+    "a stale poll from a recovered-away delivery still sent its keystroke")
+print("✓ stale poll cannot fire after recovery")
+
 -- sendKeys: plain (non-cmd) key keeps direct delivery, no activation dance,
 -- and does not classify the clipboard.
 ctx = context({ target = regular, front = "com.other.app", frontPid = 999,
