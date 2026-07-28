@@ -1375,6 +1375,24 @@ review_partial_out=$(run_statusline "$(statusline_payload review-partial "" "$RE
 assert grep -Fq "${DIM}review${RESET}" <<< "$review_partial_out"
 assert test "${review_partial_out#*review T}" = "$review_partial_out"
 
+# One silent cell out of nine is a rater mangling its own output, not the coverage loss the mark
+# exists for; a third of the panel going quiet is. A receipt predating the panel field keeps the
+# any-error mark, which is what the case above just proved.
+jq '.errored = 1 | .panel = 9' "$review_receipt_file" > "$review_receipt_file.tmp"
+mv "$review_receipt_file.tmp" "$review_receipt_file"
+review_one_silent_out=$(run_statusline "$(statusline_payload review-one-silent "" "$REVIEW_CLEAN")") \
+  || fail "review one-silent-cell render failed"
+assert test "${review_one_silent_out#*"$review_delimited"}" = "$review_one_silent_out"
+
+jq '.errored = 4 | .panel = 9' "$review_receipt_file" > "$review_receipt_file.tmp"
+mv "$review_receipt_file.tmp" "$review_receipt_file"
+review_many_silent_out=$(run_statusline "$(statusline_payload review-many-silent "" "$REVIEW_CLEAN")") \
+  || fail "review many-silent-cells render failed"
+assert grep -Fq "${DIM}review${RESET}" <<< "$review_many_silent_out"
+
+jq 'del(.panel)' "$review_receipt_file" > "$review_receipt_file.tmp"
+mv "$review_receipt_file.tmp" "$review_receipt_file"
+
 jq '.errored = 0' "$review_receipt_file" > "$review_receipt_file.tmp"
 mv "$review_receipt_file.tmp" "$review_receipt_file"
 printf 'staged content\n' > "$REVIEW_CLEAN/tracked.txt"
@@ -1513,6 +1531,79 @@ review_stamp_committed_out=$(run_statusline "$review_stamp_payload") \
   || fail "reviewed identical commit render failed"
 assert test "${review_stamp_committed_out#*"$review_delimited"}" = "$review_stamp_committed_out"
 
+# --- review-stamp-hook.sh ---
+# The label can only go out if something ends the review cycle: fixes change the tree, so the
+# panel's own findings relight it forever. The hook stamps exactly one moment - a commit sitting
+# directly on the reviewed content while a review that confirmed defects is this repository's
+# receipt - and nothing else.
+STAMP_HOOK="$ROOT/bin/review-stamp-hook.sh"
+HOOK_REPO="$FIXTURES/stamp-hook-repo"
+mkdir -p "$HOOK_REPO"
+git -C "$HOOK_REPO" init -q -b main
+printf 'one\n' > "$HOOK_REPO/a.txt"
+git -C "$HOOK_REPO" add -A
+git -C "$HOOK_REPO" -c user.name=Fixture -c user.email=fixture@example.com commit -qm base
+hook_root=$(cd "$HOOK_REPO" && pwd -P)
+hook_receipt="$CLAUDEB_FIX/worker-stats/receipts/$(basename "$hook_root")__$(printf '%s' "$hook_root" | shasum -a 1 | awk '{print substr($1,1,8)}').json"
+hook_corpus="$CLAUDEB_FIX/worker-stats/reviews.jsonl"
+hook_commit() { # message
+  git -C "$HOOK_REPO" add -A
+  git -C "$HOOK_REPO" -c user.name=Fixture -c user.email=fixture@example.com commit -qm "$1"
+}
+arm_review() { # run_id confirmed tree
+  jq -cn --arg repo "$hook_root" --arg tree "$3" --arg run "$1" \
+    '{repo:$repo,tree:$tree,commit:"0000000",run_id:$run,
+      ts:"2026-07-28T00:00:00+00:00",errored:0,panel:9}' > "$hook_receipt"
+  jq -cn --arg run "$1" --argjson confirmed "$2" \
+    '{run_id:$run,rater:"sol-low",confirmed:$confirmed}' > "$hook_corpus"
+}
+fire_hook() { # command
+  jq -cn --arg cwd "$HOOK_REPO" --arg cmd "${1:-git commit -m x}" \
+    '{hook_event_name:"PostToolUse",tool_name:"Bash",cwd:$cwd,tool_input:{command:$cmd}}' |
+    CLAUDEB_DIR="$CLAUDEB_FIX" REVIEW_STAMP_HOOK_BENCH="$ROOT/bin/review-bench" "$STAMP_HOOK"
+}
+receipt_tree() { jq -r '.tree' "$hook_receipt"; }
+head_tree() { git -C "$HOOK_REPO" rev-parse 'HEAD^{tree}'; }
+
+arm_review run-fixes 1 "$(head_tree)"
+printf 'one\nfix\n' > "$HOOK_REPO/a.txt"
+hook_commit fixes
+fire_hook
+assert_eq "$(head_tree)" "$(receipt_tree)"
+assert grep -q '^stamped-' <<< "$(jq -r '.run_id' "$hook_receipt")"
+
+# Work written after that stamp is nobody's fix: the receipt no longer names an adjudicated run,
+# so the next commit leaves it alone and the label lights for the new code.
+stamped_tree=$(receipt_tree)
+printf 'one\nfix\nfeature\n' > "$HOOK_REPO/a.txt"
+hook_commit feature
+fire_hook
+assert_eq "$stamped_tree" "$(receipt_tree)"
+
+# A review that confirmed nothing provokes no fixes, so it must not arm the stamp either.
+arm_review run-clean 0 "$(head_tree)"
+printf 'brand new\n' > "$HOOK_REPO/b.txt"
+hook_commit newwork
+fire_hook
+assert_eq run-clean "$(jq -r '.run_id' "$hook_receipt")"
+
+# The stamp covers the whole working tree, so anything left uncommitted would ride along with the
+# fixes; and a Bash call that was not a commit is not the moment this hook exists for.
+arm_review run-dirty 2 "$(git -C "$HOOK_REPO" rev-parse 'HEAD~1^{tree}')"
+printf 'leftover\n' > "$HOOK_REPO/untracked.txt"
+fire_hook
+assert_eq run-dirty "$(jq -r '.run_id' "$hook_receipt")"
+rm -f "$HOOK_REPO/untracked.txt"
+fire_hook "git status --porcelain"
+assert_eq run-dirty "$(jq -r '.run_id' "$hook_receipt")"
+fire_hook
+assert grep -q '^stamped-' <<< "$(jq -r '.run_id' "$hook_receipt")"
+rm -f "$hook_receipt" "$hook_corpus"
+
+# A repository nobody reviewed has no receipt to read, and the hook must stay silent over it.
+fire_hook
+assert test ! -f "$hook_receipt"
+
 # A cache the render may no longer trust is not shown: past the staleness window the segment
 # disappears rather than repeating a tier that predates the current diff.
 # The age rule is proved by the pair: the same cache renders while it is young and disappears once
@@ -1559,4 +1650,4 @@ for _ in $(seq 1 20); do
 done
 assert test "${review_failing_out#*review T}" = "$review_failing_out"
 
-echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, the merged review lifecycle with precedence and staleness cases, main-last and Gemini account predictions, and Codex/claudeb/Gemini worker tag propagation"
+echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, the merged review lifecycle with precedence, staleness and live-progress cases, the stamp hook that ends a review cycle at the fix commit, main-last and Gemini account predictions, and Codex/claudeb/Gemini worker tag propagation"

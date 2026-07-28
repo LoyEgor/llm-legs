@@ -519,7 +519,7 @@ def review_receipt(repo):
     return receipt if proc.returncode == 0 and proc.stdout.strip() == "tree" else None
 
 
-def persist_review_receipt(repo, tree, sha, run_id, errored, timestamp=None):
+def persist_review_receipt(repo, tree, sha, run_id, errored, timestamp=None, panel=None):
     tmp = None
     try:
         name = receipt_file_name(repo)
@@ -533,6 +533,10 @@ def persist_review_receipt(repo, tree, sha, run_id, errored, timestamp=None):
             "repo": str(repo), "tree": tree, "commit": sha,
             "run_id": run_id, "ts": timestamp or iso_now(), "errored": errored,
         }
+        # The reader weighs errored cells against the panel they came from: one silent cell out
+        # of nine is not the same coverage loss as four, and only the run knows how many it sent.
+        if isinstance(panel, int) and not isinstance(panel, bool) and panel > 0:
+            receipt["panel"] = panel
         tmp.write_text(json.dumps(receipt) + "\n")
         os.replace(tmp, path)
         tmp = None
@@ -545,7 +549,7 @@ def persist_review_receipt(repo, tree, sha, run_id, errored, timestamp=None):
                 pass
 
 
-def write_review_receipt(repo, sha, run_id, errored):
+def write_review_receipt(repo, sha, run_id, errored, panel=None):
     try:
         proc = subprocess.run(
             ["git", "rev-parse", f"{sha}^{{tree}}"],
@@ -553,7 +557,7 @@ def write_review_receipt(repo, sha, run_id, errored):
         )
         if proc.returncode != 0 or not proc.stdout.strip():
             raise RuntimeError("reviewed tree is unavailable")
-        return persist_review_receipt(repo, proc.stdout.strip(), sha, run_id, errored)
+        return persist_review_receipt(repo, proc.stdout.strip(), sha, run_id, errored, panel=panel)
     except Exception as exc:
         print(f"warning: could not write review receipt: {exc}", file=sys.stderr)
         return None
@@ -2530,6 +2534,23 @@ def cmd_review(args):
     return cmd_run(args)
 
 
+def cmd_receipt(args):
+    """Print this repository's review receipt, with the confirmed-defect count its run was
+    adjudicated to. The stamp hook reads it instead of deriving the receipt path itself, which
+    is the third place that derivation would otherwise have to stay in step with.
+    """
+    receipt = review_receipt(Path(args.repo).resolve())
+    if not receipt:
+        return 1
+    confirmed = sum(
+        row["confirmed"] for row in read_jsonl(state_dir() / "reviews.jsonl")
+        if row.get("run_id") == receipt["run_id"] and isinstance(row.get("confirmed"), int)
+        and not isinstance(row.get("confirmed"), bool)
+    )
+    print(json.dumps(dict(receipt, confirmed=confirmed)))
+    return 0
+
+
 def cmd_reviewed(args):
     requested = Path(args.repo).resolve()
     proc = subprocess.run(
@@ -2877,7 +2898,7 @@ def cmd_run(args):
             meta["worktree"] = True
         (run_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
         if meta["raters"]:
-            write_review_receipt(repo, sha, run_id, len(errored_raters))
+            write_review_receipt(repo, sha, run_id, len(errored_raters), panel=len(raters))
         if errored_raters:
             rerun = ",".join(collapse_rater_attempts(
                 rater["spec"] for rater in raters if rater["spec"] in errored_raters
@@ -3606,6 +3627,11 @@ def main():
     )
     reviewed.add_argument("--repo", default=".")
     reviewed.set_defaults(func=cmd_reviewed)
+    receipt = subparsers.add_parser(
+        "receipt", help="Print this repository's review receipt as JSON"
+    )
+    receipt.add_argument("--repo", default=".")
+    receipt.set_defaults(func=cmd_receipt)
     suggest = subparsers.add_parser("suggest", help="Suggest a review tier for a change")
     suggest.add_argument("--repo", default=".")
     suggest.add_argument("--range", metavar="A..B")

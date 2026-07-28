@@ -1096,6 +1096,7 @@ review_part=""
 if [ -n "$active_top" ]; then
   receipt_reviewed=""
   receipt_errored=0
+  receipt_panel=""
   # Already resolved with the repository identity above in all but the odd case
   # where git_dir resolved and active_top did not come from it.
   [ -n "$active_common" ] || active_common=$(git_common_dir "$active_top" 2>/dev/null)
@@ -1179,11 +1180,14 @@ if [ -n "$active_top" ] && [ -z "$progress_total" ]; then
       and (.errored | type) == "number"
       and .errored >= 0
       and (.errored | floor) == .errored)
-    | [.repo,.tree,.commit,.run_id,.ts,(.errored | tostring)] | join("\u001f")
+    | [.repo,.tree,.commit,.run_id,.ts,(.errored | tostring),
+       (if (.panel | type) == "number" and (.panel | floor) == .panel and .panel > 0
+        then (.panel | tostring) else "" end)]
+    | join("\u001f")
   ' "$receipt_file" 2>/dev/null)
   if [ -n "$receipt_values" ]; then
-    IFS=$'\x1f' read -r receipt_repo receipt_tree receipt_commit receipt_run_id receipt_ts receipt_errored \
-      <<< "$receipt_values"
+    IFS=$'\x1f' read -r receipt_repo receipt_tree receipt_commit receipt_run_id receipt_ts \
+      receipt_errored receipt_panel <<< "$receipt_values"
     receipt_common=$(git_common_dir "$receipt_repo" 2>/dev/null)
     if [ -n "$active_common" ] && [ "$receipt_common" = "$active_common" ]; then
       head_tree=$(git -C "$active_top" rev-parse 'HEAD^{tree}' 2>/dev/null)
@@ -1196,8 +1200,14 @@ if [ -n "$active_top" ] && [ -z "$progress_total" ]; then
     fi
   fi
   if [ -n "$receipt_reviewed" ]; then
-    [ "$receipt_errored" -gt 0 ] &&
+    # A silent cell is a coverage loss worth a mark only when it took a real share of the panel
+    # with it: one rater out of nine that mangled its own output format is noise, and a label
+    # that answers "not everybody reported" to that is a label nobody can ever turn off.
+    # A receipt from before the panel size was recorded keeps the old any-error behaviour.
+    if [ "$receipt_errored" -gt 0 ] &&
+      { [ -z "$receipt_panel" ] || [ "$((receipt_errored * 3))" -gt "$receipt_panel" ]; }; then
       review_part=" ${sep} ${DIM}review${RESET}"
+    fi
   else
     review_part=" ${sep} review"
     [ -n "$review_tier" ] && review_part="${review_part} ${review_tier}"

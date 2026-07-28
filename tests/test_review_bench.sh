@@ -1700,6 +1700,7 @@ pin_tree = subprocess.run(
 assert review_receipt == {
     "repo": str(pin_repo.resolve()), "tree": pin_tree, "commit": pin_sha,
     "run_id": review_meta["run_id"], "ts": review_receipt["ts"], "errored": 0,
+    "panel": len(review_meta["raters"]),
 }, review_receipt
 assert review_receipt["ts"]
 

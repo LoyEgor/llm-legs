@@ -402,11 +402,14 @@ assert grep -Fq 'return f"{repo_name}__{repo_hash}.json"' <<<"$rb_receipt_name"
 assert grep -Fq 'printf '\''%s__%s.json'\'' "$repo_name" "$repo_hash"' <<<"$sl_receipt_name"
 assert grep -Fq 'path = state_dir() / RECEIPT_DIR / name' "$REVIEWBENCH"
 assert grep -Fq 'receipt_file="$worker_stats_dir/receipts/$receipt_name"' "$STATUSLINE"
-assert grep -Fq '[.repo,.tree,.commit,.run_id,.ts,(.errored | tostring)]' "$STATUSLINE"
+assert grep -Fq '[.repo,.tree,.commit,.run_id,.ts,(.errored | tostring),' "$STATUSLINE"
+assert grep -Fq '(if (.panel | type) == "number" and (.panel | floor) == .panel and .panel > 0' "$STATUSLINE"
+assert grep -Fq '"panel"' "$REVIEWBENCH"
 assert grep -Fq 'status --porcelain' "$STATUSLINE"
 assert test "$(grep -Ec 'GIT_INDEX_FILE|git -C "\\$repo" add -A|current_tree_hash' "$STATUSLINE")" -eq 0
 assert doc_has '<state_dir>/receipts/<repoName>__<repoHash>.json'
 assert doc_has '`repo`, `tree`, `commit`, `run_id`, and `ts`, non-negative integer `errored`'
+assert doc_has 'optional positive integer `panel`'
 assert doc_has "tree\` is the reviewed commit's Git tree object"
 
 printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, and review receipt schema) and match %s\n' "$asserts" "$DOC"
