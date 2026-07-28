@@ -326,13 +326,20 @@ REVIEW_TIER_FLOOR_SLOW = [
     "agy-flash35-low-skill",
     "agy-pro-low-skill",
 ]
-# 2026-07-28, 7 equalized commits, 165 canonical defects: paid cells computed by frontier —
-# recompute, don't hand-edit. sol-max stays single: its second run bought 2 defects.
+# Eco is the minimum paid composition at <=5pp coverage loss; the free layer is never trimmed
+# (owner rule), computed 2026-07-28 — recompute with frontier, don't hand-edit.
 REVIEW_TIERS = {
     "T0": {
         "budget_min": 2,
         "when": "Up to 20 changed lines in up to 2 files",
+        "coverage_pct": {"eco": 44, "max": 44},
         "cells": [
+            *REVIEW_TIER_FLOOR,
+            "opus-low",
+            "opus-low-skill x2",
+            "sol-low",
+        ],
+        "cells_max": [
             *REVIEW_TIER_FLOOR,
             "opus-low",
             "opus-low-skill x2",
@@ -342,7 +349,15 @@ REVIEW_TIERS = {
     "T1": {
         "budget_min": 6,
         "when": "Up to 150 changed lines, or any change under bin/ or tests/",
+        "coverage_pct": {"eco": 50, "max": 54},
         "cells": [
+            *REVIEW_TIER_FLOOR,
+            *REVIEW_TIER_FLOOR_SLOW,
+            "opus-medium",
+            "sol-low",
+            "sol-medium",
+        ],
+        "cells_max": [
             *REVIEW_TIER_FLOOR,
             *REVIEW_TIER_FLOOR_SLOW,
             "opus-low-skill",
@@ -355,7 +370,16 @@ REVIEW_TIERS = {
     "T2": {
         "budget_min": 10,
         "when": "Up to 600 changed lines, or a core measurement tool change",
+        "coverage_pct": {"eco": 65, "max": 69},
         "cells": [
+            *REVIEW_TIER_FLOOR,
+            *REVIEW_TIER_FLOOR_SLOW,
+            "opus-high",
+            "opus-medium-skill x2",
+            "sol-high",
+            "sol-xhigh",
+        ],
+        "cells_max": [
             *REVIEW_TIER_FLOOR,
             *REVIEW_TIER_FLOOR_SLOW,
             "opus-high",
@@ -369,7 +393,19 @@ REVIEW_TIERS = {
     "T3": {
         "budget_min": 20,
         "when": "More than 600 changed lines",
+        "coverage_pct": {"eco": 71, "max": 75},
         "cells": [
+            *REVIEW_TIER_FLOOR,
+            *REVIEW_TIER_FLOOR_SLOW,
+            "opus-high",
+            "opus-high-skill",
+            "opus-low-skill",
+            "opus-medium-skill",
+            "sol-high",
+            "sol-max",
+            "sol-xhigh",
+        ],
+        "cells_max": [
             *REVIEW_TIER_FLOOR,
             *REVIEW_TIER_FLOOR_SLOW,
             "opus-high",
@@ -570,7 +606,7 @@ def persist_review_receipt(repo, tree, sha, run_id, errored, timestamp=None, pan
                 pass
 
 
-def write_review_receipt(repo, sha, run_id, errored, panel=None):
+def write_review_receipt(repo, sha, run_id, errored, panel=None, worktree=False):
     try:
         proc = subprocess.run(
             ["git", "rev-parse", f"{sha}^{{tree}}"],
@@ -578,7 +614,22 @@ def write_review_receipt(repo, sha, run_id, errored, panel=None):
         )
         if proc.returncode != 0 or not proc.stdout.strip():
             raise RuntimeError("reviewed tree is unavailable")
-        return persist_review_receipt(repo, proc.stdout.strip(), sha, run_id, errored, panel=panel)
+        tree = proc.stdout.strip()
+        # A bench run of a historical commit must not move the repository's receipt
+        # backwards: it reviewed old code, not the current state. Worktree runs review
+        # the current state by construction (sha is the snapshot commit).
+        if not worktree:
+            head = subprocess.run(
+                ["git", "rev-parse", "HEAD^{tree}"],
+                cwd=repo, capture_output=True, text=True,
+            )
+            if head.returncode == 0 and head.stdout.strip() and head.stdout.strip() != tree:
+                print(
+                    "receipt not written: the reviewed tree is not the repository's "
+                    "current state (historical bench run)", file=sys.stderr,
+                )
+                return None
+        return persist_review_receipt(repo, tree, sha, run_id, errored, panel=panel)
     except Exception as exc:
         print(f"warning: could not write review receipt: {exc}", file=sys.stderr)
         return None
@@ -799,15 +850,22 @@ def parse_raters(value):
 
 def validate_review_tiers():
     for tier_name, tier in REVIEW_TIERS.items():
-        for cell in tier["cells"]:
-            try:
-                raters = parse_raters(cell)
-            except ValueError as exc:
-                raise RuntimeError(f"{tier_name} contains invalid rater {cell!r}") from exc
-            for rater in raters:
-                reason = measured_worthless(rater) or measured_skill_only(rater)
-                if reason:
-                    raise RuntimeError(f"{tier_name} contains retired rater {cell!r}: {reason}")
+        for composition in ("cells", "cells_max"):
+            if composition not in tier:
+                raise RuntimeError(f"{tier_name} is missing {composition}")
+            for cell in tier[composition]:
+                try:
+                    raters = parse_raters(cell)
+                except ValueError as exc:
+                    raise RuntimeError(
+                        f"{tier_name} {composition} contains invalid rater {cell!r}"
+                    ) from exc
+                for rater in raters:
+                    reason = measured_worthless(rater) or measured_skill_only(rater)
+                    if reason:
+                        raise RuntimeError(
+                            f"{tier_name} {composition} contains retired rater {cell!r}: {reason}"
+                        )
 
 
 def normalize_legacy_rater(rater):
@@ -2658,16 +2716,104 @@ def suggest_tier(paths, changed_lines, touched=()):
     return f"T{rank}"
 
 
+def compact_tier_cell(rater):
+    model = rater["model"]
+    effort = {"medium": "med"}.get(rater["effort"], rater["effort"] or "")
+    skill = "-skill" if rater["skill"] else ""
+    if rater["side"] == "opencode":
+        name = {"oc-kimik3": "kimi", "oc-grok45": "grok"}.get(model, model.removeprefix("oc-"))
+        return f"{name}-{effort}" if effort else name
+    if rater["side"] == "agy":
+        return f"{model.removeprefix('agy-')}-{effort}{skill}"
+    if rater["side"] == "codex":
+        return f"{effort}{skill}"
+    return f"{model}-{effort}{skill}"
+
+
+def tier_table_vendor_cells(cells):
+    grouped = {side: Counter() for side in ("opencode", "agy", "codex", "claude")}
+    for cell in cells:
+        for rater in parse_raters(cell):
+            base = normalize_legacy_rater(rater["spec"])
+            grouped[rater["side"]][base] += 1
+    columns = []
+    for side in ("opencode", "agy", "codex", "claude"):
+        values = []
+        for spec, count in grouped[side].items():
+            rater = parse_rater(spec)
+            label = compact_tier_cell(rater)
+            values.append(f"{label} x{count}" if count > 1 else label)
+        columns.append(", ".join(values) or "—")
+    return columns
+
+
+def cmd_tiers_table():
+    rows = []
+    for tier_name, tier in REVIEW_TIERS.items():
+        variants = ("eco", "max") if tier_name != "T0" else ("eco",)
+        for variant in variants:
+            cells = tier["cells" if variant == "eco" else "cells_max"]
+            vendors = tier_table_vendor_cells(cells)
+            rows.append([
+                tier_name if variant == "eco" else f"{tier_name} max",
+                *vendors,
+                f"{tier['coverage_pct'][variant]}%",
+                str(sum(
+                    1 for cell in cells
+                    for rater in parse_raters(cell)
+                    if rater["side"] in ("claude", "codex")
+                )),
+            ])
+    headers = ["tier", "OpenCode", "Gemini", "Codex", "Claude", "cover", "paid runs"]
+    widths = [
+        max(len(header), *(len(row[index]) for row in rows))
+        for index, header in enumerate(headers)
+    ]
+    print("  ".join(header.ljust(widths[index]) for index, header in enumerate(headers)))
+    print("  ".join("-" * width for width in widths))
+    for row in rows:
+        print("  ".join(value.ljust(widths[index]) for index, value in enumerate(row)))
+
+
 def cmd_tiers(args):
+    if getattr(args, "table", False):
+        cmd_tiers_table()
+        return 0
     for tier_name, tier in REVIEW_TIERS.items():
         print(f"{tier_name} ({tier['budget_min']} min)")
         print(f"  when: {tier['when']}")
-        print(f"  cells: {', '.join(tier['cells'])}")
+        print(f"  eco (default): {', '.join(tier['cells'])}")
+        print(f"  max: {', '.join(tier['cells_max'])}")
     return 0
 
 
+def guard_tier_foreground(args, tier_name):
+    if tier_name and tier_name not in REVIEW_TIERS:
+        raise ValueError(f"unknown tier {tier_name!r}")
+    if (
+        tier_name
+        and REVIEW_TIERS[tier_name]["budget_min"] >= 10
+        and not os.isatty(1)
+        and not getattr(args, "foreground", False)
+    ):
+        budget = REVIEW_TIERS[tier_name]["budget_min"]
+        raise ValueError(
+            f"{tier_name} runs ~{budget} min; foreground harness commands are killed at 10 — "
+            "relaunch this exact command as a background task (run_in_background) and add "
+            "--foreground: the flag asserts your runner has no 10-minute kill window, and a "
+            "background task is exactly that."
+        )
+
+
 def cmd_review(args):
-    args.raters = ",".join(REVIEW_TIERS[args.tier]["cells"])
+    tier_name = getattr(args, "tier", None)
+    use_max = bool(getattr(args, "max", False))
+    if use_max and not tier_name:
+        raise ValueError("--max requires --tier")
+    guard_tier_foreground(args, tier_name)
+    args.raters = ",".join(
+        REVIEW_TIERS[tier_name]["cells_max" if use_max else "cells"]
+    )
     args.auto = None
     args.leg = False
     # Tier reviews verify OpenCode cells here so measurement runs deliberately stay raw.
@@ -2757,11 +2903,23 @@ def cmd_suggest(args):
         print(f"unreviewed delta vs review {receipt['run_id']}; staged content is compared "
               "with the same reviewed tree")
     extra = ["--repo", str(repo)] if args.repo != "." else []
+    # Long tiers are launched as background tasks (no TTY), where the guard demands the
+    # flag — a suggested command must survive being copied verbatim.
+    long_tier = ["--foreground"] if REVIEW_TIERS[tier_name]["budget_min"] >= 10 else []
     if args.range:
-        print(f"command: {shlex.join(['review-bench', 'review', command_target, '--tier', tier_name, *extra])}")
+        command = ["review-bench", "review", command_target, "--tier", tier_name,
+                   *extra, *long_tier]
+        max_command = list(command)
+        max_command.insert(max_command.index("--tier") + 2, "--max")
+        print(f"command: {shlex.join(command)}")
+        print(f"max: {shlex.join(max_command)}")
         return 0
-    print(f"command: "
-          f"{shlex.join(['review-bench', 'review', '--worktree', '--tier', tier_name, *extra])}")
+    command = ["review-bench", "review", "--worktree", "--tier", tier_name,
+               *extra, *long_tier]
+    max_command = list(command)
+    max_command.insert(max_command.index("--tier") + 2, "--max")
+    print(f"command: {shlex.join(command)}")
+    print(f"max: {shlex.join(max_command)}")
     return 0
 
 
@@ -2798,6 +2956,10 @@ def commit_mode_command(args):
     tier = getattr(args, "tier", None)
     if tier:
         command = ["review-bench", "review", "HEAD", "--tier", tier]
+        if getattr(args, "max", False):
+            command.append("--max")
+        if getattr(args, "foreground", False):
+            command.append("--foreground")
     else:
         command = ["review-bench", "run", "HEAD"]
         if args.raters:
@@ -2806,6 +2968,8 @@ def commit_mode_command(args):
             command += ["--auto", str(args.auto)]
         elif args.leg:
             command.append("--leg")
+        if getattr(args, "foreground", False):
+            command.append("--foreground")
     if args.repo != ".":
         command += ["--repo", str(Path(args.repo).resolve())]
     if args.focus:
@@ -2816,6 +2980,15 @@ def commit_mode_command(args):
 
 
 def cmd_run(args):
+    tier_name = getattr(args, "tier", None)
+    use_max = bool(getattr(args, "max", False))
+    if use_max and not tier_name:
+        raise ValueError("--max requires --tier")
+    guard_tier_foreground(args, tier_name)
+    if tier_name:
+        args.raters = ",".join(
+            REVIEW_TIERS[tier_name]["cells_max" if use_max else "cells"]
+        )
     repo = Path(args.repo).resolve()
     if not (repo / ".git").exists() and subprocess.run(
         ["git", "rev-parse", "--git-dir"], cwd=repo, capture_output=True
@@ -3042,7 +3215,8 @@ def cmd_run(args):
             meta["worktree"] = True
         (run_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
         if meta["raters"]:
-            write_review_receipt(repo, sha, run_id, len(errored_raters), panel=len(raters))
+            write_review_receipt(repo, sha, run_id, len(errored_raters),
+                                 panel=len(raters), worktree=worktree_mode)
         if errored_raters:
             rerun = ",".join(collapse_rater_attempts(
                 rater["spec"] for rater in raters if rater["spec"] in errored_raters
@@ -3757,12 +3931,18 @@ def main():
     parser = argparse.ArgumentParser(description="Benchmark blind code-review raters")
     subparsers = parser.add_subparsers(dest="command", required=True)
     tiers = subparsers.add_parser("tiers", help="Print the canonical review tiers")
+    tiers.add_argument("--table", action="store_true", help="Print the owner composition table")
     tiers.set_defaults(func=cmd_tiers)
     review = subparsers.add_parser("review", help="Run a canonical review tier")
     review.add_argument("commitish", nargs="?")
     review.add_argument("--worktree", action="store_true")
     review.add_argument("--repo", default=".")
     review.add_argument("--tier", choices=REVIEW_TIERS, required=True)
+    review.add_argument("--max", action="store_true", help="Use the full tier composition")
+    review.add_argument(
+        "--foreground", action="store_true",
+        help="Allow long tiers when stdout is not a terminal",
+    )
     review.add_argument("--focus", default="")
     review.add_argument("--verify", metavar="MODEL", choices=verifier_choices())
     review.set_defaults(func=cmd_review)
@@ -3785,6 +3965,7 @@ def main():
     run.add_argument("--worktree", action="store_true")
     run.add_argument("--repo", default=".")
     selection = run.add_mutually_exclusive_group()
+    selection.add_argument("--tier", choices=REVIEW_TIERS)
     selection.add_argument(
         "--raters",
         help="Comma-separated rater specs; append ' xN' with N from 2 to 9 to repeat a cell",
@@ -3794,6 +3975,11 @@ def main():
         "--leg", action="store_true",
         help="Run the measured OpenCode composition with its verifier — the only cells that "
              "survived strict adjudication on four commits, and no vendor quota at all",
+    )
+    run.add_argument("--max", action="store_true", help="Use the full tier composition")
+    run.add_argument(
+        "--foreground", action="store_true",
+        help="Allow long tiers when stdout is not a terminal",
     )
     run.add_argument("--focus", default="")
     run.add_argument(

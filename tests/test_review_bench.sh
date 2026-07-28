@@ -94,6 +94,21 @@ expected_tier_cells = {
         "opus-low", "opus-low-skill x2", "sol-low",
     ],
     "T1": expected_floor + expected_floor_slow + [
+        "opus-medium", "sol-low", "sol-medium",
+    ],
+    "T2": expected_floor + expected_floor_slow + [
+        "opus-high", "opus-medium-skill x2", "sol-high", "sol-xhigh",
+    ],
+    "T3": expected_floor + expected_floor_slow + [
+        "opus-high", "opus-high-skill", "opus-low-skill", "opus-medium-skill",
+        "sol-high", "sol-max", "sol-xhigh",
+    ],
+}
+expected_tier_max_cells = {
+    "T0": expected_floor + [
+        "opus-low", "opus-low-skill x2", "sol-low",
+    ],
+    "T1": expected_floor + expected_floor_slow + [
         "opus-low-skill", "opus-medium", "sol-low", "sol-medium",
         "sonnet-medium-skill x2",
     ],
@@ -107,6 +122,12 @@ expected_tier_cells = {
         "sonnet-high-skill",
     ],
 }
+expected_coverage_pct = {
+    "T0": {"eco": 44, "max": 44},
+    "T1": {"eco": 50, "max": 54},
+    "T2": {"eco": 65, "max": 69},
+    "T3": {"eco": 71, "max": 75},
+}
 floor_counts = Counter({
     "oc-kimik3": 4, "oc-grok45-low": 3, "agy-flash35-high-skill": 1,
     "agy-flash35-medium-skill": 2, "agy-flash36-medium-skill": 1,
@@ -114,6 +135,21 @@ floor_counts = Counter({
 })
 slow_counts = Counter({"agy-flash35-low-skill": 1, "agy-pro-low-skill": 1})
 expected_tier_multisets = {
+    "T0": floor_counts + Counter({
+        "opus-low": 1, "opus-low-skill": 2, "sol-low": 1,
+    }),
+    "T1": floor_counts + slow_counts + Counter({
+        "opus-medium": 1, "sol-low": 1, "sol-medium": 1,
+    }),
+    "T2": floor_counts + slow_counts + Counter({
+        "opus-high": 1, "opus-medium-skill": 2, "sol-high": 1, "sol-xhigh": 1,
+    }),
+    "T3": floor_counts + slow_counts + Counter({
+        "opus-high": 1, "opus-high-skill": 1, "opus-low-skill": 1,
+        "opus-medium-skill": 1, "sol-high": 1, "sol-max": 1, "sol-xhigh": 1,
+    }),
+}
+expected_tier_max_multisets = {
     "T0": floor_counts + Counter({
         "opus-low": 1, "opus-low-skill": 2, "sol-low": 1,
     }),
@@ -138,33 +174,51 @@ assert [tier["budget_min"] for tier in rb.REVIEW_TIERS.values()] == [2, 6, 10, 2
 assert {
     tier_name: tier["cells"] for tier_name, tier in rb.REVIEW_TIERS.items()
 } == expected_tier_cells
+assert {
+    tier_name: tier["cells_max"] for tier_name, tier in rb.REVIEW_TIERS.items()
+} == expected_tier_max_cells
+assert {
+    tier_name: tier["coverage_pct"] for tier_name, tier in rb.REVIEW_TIERS.items()
+} == expected_coverage_pct
+assert all(
+    set(tier["coverage_pct"]) == {"eco", "max"}
+    for tier in rb.REVIEW_TIERS.values()
+)
 expanded_floor = Counter(
     rb.normalize_legacy_rater(rater["spec"])
     for rater in rb.parse_raters(",".join(expected_floor))
 )
-for tier_name, tier in rb.REVIEW_TIERS.items():
-    prefix = tier["cells"][:len(expected_floor)]
-    assert [
-        rb.parse_raters(cell)[0]["spec"] for cell in prefix
-    ] == [
-        rb.parse_raters(cell)[0]["spec"] for cell in expected_floor
-    ], (tier_name, prefix)
-    expanded = Counter(
-        rb.normalize_legacy_rater(rater["spec"])
-        for rater in rb.parse_raters(",".join(tier["cells"]))
-    )
-    assert expanded_floor <= expanded, (tier_name, expanded_floor, expanded)
-    assert expanded == expected_tier_multisets[tier_name], (tier_name, expanded)
-rb.REVIEW_TIERS["TX"] = {"budget_min": 1, "when": "fixture", "cells": ["sol-medium x2"]}
+for composition, expected_cells, expected_multisets in (
+    ("cells", expected_tier_cells, expected_tier_multisets),
+    ("cells_max", expected_tier_max_cells, expected_tier_max_multisets),
+):
+    for tier_name, tier in rb.REVIEW_TIERS.items():
+        prefix = tier[composition][:len(expected_floor)]
+        assert [
+            rb.parse_raters(cell)[0]["spec"] for cell in prefix
+        ] == [
+            rb.parse_raters(cell)[0]["spec"] for cell in expected_floor
+        ], (tier_name, composition, prefix)
+        expanded = Counter(
+            rb.normalize_legacy_rater(rater["spec"])
+            for rater in rb.parse_raters(",".join(tier[composition]))
+        )
+        assert expanded_floor <= expanded, (tier_name, composition, expanded_floor, expanded)
+        assert expanded == expected_multisets[tier_name], (tier_name, composition, expanded)
+rb.REVIEW_TIERS["TX"] = {
+    "budget_min": 1, "when": "fixture", "cells": ["sol-medium x2"],
+    "cells_max": ["sol-medium x2"],
+}
 try:
     rb.validate_review_tiers()
     for tier in rb.REVIEW_TIERS.values():
         assert tier["when"]
-        for cell in tier["cells"]:
-            expanded = rb.parse_raters(cell)
-            assert rb.collapse_rater_attempts(
-                rater["spec"] for rater in expanded
-            ) == [cell], (cell, expanded)
+        for composition in ("cells", "cells_max"):
+            for cell in tier[composition]:
+                expanded = rb.parse_raters(cell)
+                assert rb.collapse_rater_attempts(
+                    rater["spec"] for rater in expanded
+                ) == [cell], (composition, cell, expanded)
 finally:
     del rb.REVIEW_TIERS["TX"]
 print("rater-repeat-parse-tier-ok")
@@ -922,6 +976,23 @@ clean_review = subprocess.run(
 )
 assert clean_review.returncode != 0
 assert "review-bench review HEAD --tier T0 --repo" in clean_review.stderr, clean_review.stderr
+max_clean_review = subprocess.run(
+    [sys.argv[1], "review", "--worktree", "--repo", str(snapshot_clean),
+     "--tier", "T2", "--max", "--foreground"],
+    capture_output=True, text=True,
+)
+assert max_clean_review.returncode != 0
+assert "review-bench review HEAD --tier T2 --max --foreground --repo" in max_clean_review.stderr, \
+    max_clean_review.stderr
+foreground_clean_review = subprocess.run(
+    [sys.argv[1], "review", "--worktree", "--repo", str(snapshot_clean),
+     "--tier", "T2", "--foreground"],
+    capture_output=True, text=True,
+)
+assert foreground_clean_review.returncode != 0
+assert "working tree matches HEAD" in foreground_clean_review.stderr, \
+    foreground_clean_review.stderr
+assert "foreground harness commands are killed" not in foreground_clean_review.stderr
 for command in (
     [sys.argv[1], "review", "HEAD", "--worktree", "--repo", str(snapshot_clean),
      "--tier", "T0"],
@@ -1775,7 +1846,7 @@ rb.affordability = lambda: {
 rb.check_limits_staleness = lambda account: False
 os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-verify-keep.json")
 review_rc = rb.cmd_review(argparse.Namespace(
-    repo=str(pin_repo), commitish=pin_sha, tier="T1",
+    repo=str(pin_repo), commitish=pin_descendant_sha, tier="T1",
     verify=None, focus=None,
 ))
 review_run_dir = next((review_store / "worker-stats" / "benches").iterdir())
@@ -1799,12 +1870,13 @@ review_receipt_path = (
     / rb.receipt_file_name(pin_repo)
 )
 review_receipt = json.loads(review_receipt_path.read_text())
-pin_tree = subprocess.run(
-    ["git", "-C", str(pin_repo), "rev-parse", f"{pin_sha}^{{tree}}"],
+pin_descendant_tree = subprocess.run(
+    ["git", "-C", str(pin_repo), "rev-parse", f"{pin_descendant_sha}^{{tree}}"],
     check=True, capture_output=True, text=True,
 ).stdout.strip()
 assert review_receipt == {
-    "repo": str(pin_repo.resolve()), "tree": pin_tree, "commit": pin_sha,
+    "repo": str(pin_repo.resolve()), "tree": pin_descendant_tree,
+    "commit": pin_descendant_sha,
     "run_id": review_meta["run_id"], "ts": review_receipt["ts"], "errored": 0,
     "panel": len(review_meta["raters"]),
 }, review_receipt
@@ -2282,7 +2354,7 @@ rb.affordability = lambda: {
 }
 rb.check_limits_staleness = lambda account: False
 run_rc = rb.cmd_run(argparse.Namespace(
-    repo=str(pin_repo), commitish=pin_sha,
+    repo=str(pin_repo), commitish=pin_descendant_sha,
     raters="opus-medium,sonnet-medium-skill", leg=False, verify=None,
     auto=None, focus=None,
 ))
@@ -2307,7 +2379,7 @@ model_receipt = json.loads(model_receipt_path.read_text())
 assert model_receipt["errored"] == 1, \
     f"partial receipt errored: {model_receipt['errored']}"
 successful_receipt_rc = rb.cmd_run(argparse.Namespace(
-    repo=str(pin_repo), commitish=pin_sha,
+    repo=str(pin_repo), commitish=pin_descendant_sha,
     raters="opus-medium", leg=False, verify=None,
     auto=None, focus=None,
 ))
@@ -2318,7 +2390,7 @@ model_receipt_path.unlink()
 time.sleep(1.1)
 all_error_before = set((model_store / "worker-stats" / "benches").iterdir())
 all_error_rc = rb.cmd_run(argparse.Namespace(
-    repo=str(pin_repo), commitish=pin_sha,
+    repo=str(pin_repo), commitish=pin_descendant_sha,
     raters="sonnet-medium-skill", leg=False, verify=None,
     auto=None, focus=None,
 ))
@@ -2348,7 +2420,7 @@ try:
     with contextlib.redirect_stdout(receipt_failure_stdout), \
             contextlib.redirect_stderr(receipt_failure_stderr):
         receipt_failure_rc = rb.cmd_run(argparse.Namespace(
-            repo=str(pin_repo), commitish=pin_sha,
+            repo=str(pin_repo), commitish=pin_descendant_sha,
             raters="opus-medium", leg=False, verify=None,
             auto=None, focus=None,
         ))
@@ -2364,6 +2436,24 @@ assert "warning: could not write review receipt: fixture ENOSPC" \
 assert "run id:" in receipt_failure_stdout.getvalue() \
     and "ADJUDICATION HANDOFF" in receipt_failure_stdout.getvalue(), \
     receipt_failure_stdout.getvalue()
+
+# A bench run of a historical commit (pin_sha has a descendant) must not move the
+# repository's receipt backwards: no receipt file, an explanatory note instead.
+receipt_history_store = work / "receipt-history-claudeb"
+os.environ["CLAUDEB_DIR"] = str(receipt_history_store)
+history_stderr = io.StringIO()
+with contextlib.redirect_stdout(io.StringIO()), \
+        contextlib.redirect_stderr(history_stderr):
+    history_rc = rb.cmd_run(argparse.Namespace(
+        repo=str(pin_repo), commitish=pin_sha,
+        raters="opus-medium", leg=False, verify=None,
+        auto=None, focus=None,
+    ))
+assert history_rc == 0, history_stderr.getvalue()
+assert "receipt not written" in history_stderr.getvalue(), history_stderr.getvalue()
+assert not (receipt_history_store / "worker-stats" / rb.RECEIPT_DIR
+            / rb.receipt_file_name(pin_repo)).exists(), \
+    "historical bench run wrote a receipt"
 
 alias_envelope = pin_repo / "alias-envelope.json"
 alias_envelope.write_text(json.dumps({"modelUsage": {
@@ -3357,6 +3447,8 @@ tiers_table="$("$SCRIPT" tiers 2>&1)"
 for tier_budget in "T0 (2 min)" "T1 (6 min)" "T2 (10 min)" "T3 (20 min)"; do
   assert contains "$tiers_table" "$tier_budget"
 done
+assert contains "$tiers_table" "eco (default):"
+assert contains "$tiers_table" "max:"
 for cell in "oc-kimik3 x4" "oc-grok45-low x3" agy-pro-high-skill \
   "agy-flash35-medium-skill x2" agy-flash35-high-skill agy-flash36-medium-skill \
   opus-low "opus-low-skill x2" sol-low agy-flash35-low-skill agy-pro-low-skill \
@@ -3365,5 +3457,15 @@ for cell in "oc-kimik3 x4" "oc-grok45-low x3" agy-pro-high-skill \
   "opus-medium-skill x2" sol-max sonnet-high-skill; do
   assert contains "$tiers_table" "$cell"
 done
+owner_table="$("$SCRIPT" tiers --table 2>&1)"
+assert contains "$owner_table" "T1 max"
+assert contains "$owner_table" "kimi x4"
+assert contains "$owner_table" "cover"
+assert test "$(grep -c '^T0 max' <<<"$owner_table")" -eq 0
+max_without_tier="$("$SCRIPT" run HEAD --max 2>&1 || true)"
+assert contains "$max_without_tier" "--max requires --tier"
+tier_guard="$("$SCRIPT" run HEAD --tier T2 2>&1 || true)"
+assert contains "$tier_guard" "T2 runs ~10 min"
+assert contains "$tier_guard" "run_in_background"
 
 printf 'PASS: %s assertions; canonical review tiers sharing one OpenCode/Gemini floor with no retired cell in them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative suggestions with missing-object fallback, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account usable only behind its opt-in and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, and cross-side parallelism result assembly\n' "$asserts"

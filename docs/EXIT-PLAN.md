@@ -1,6 +1,11 @@
 # EXIT-PLAN — temporary scaffolding and its dismantling
 
-decision-date: 2026-07-26
+decision-date: 2026-08-03
+
+The date is bound to the token-freeze experiment's phase-2 `review_by` (EXPERIMENTS.json,
+same day, owner's instruction 2026-07-28): the freeze verdict decides how much refresh
+traffic the permanent design must carry, so neither decision is to be made without the
+other — review them together.
 
 This file is the authoritative inventory of everything in llm-legs that exists ONLY for
 the shadow trial / stabilization period. None of it is meant to survive. Any session

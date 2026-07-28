@@ -72,6 +72,15 @@ the identical V1 prompt:
 Standing verdict: `oc-kimik3` with the V1 prompt, single call per finding, for both leg
 cells. Beat it on defect-level losses AND false-kill rate before replacing it.
 
+Rejected 2026-07-28 — cross-vendor consensus bypass: findings independently reported by
+raters of >=2 vendors auto-keep, the verifier cutting only singletons. Offline replay on
+the 199-item labeled set: recovers ~1 of the 3 lost defects but fp-kill collapses to 52.4%
+(54.4% for the stricter paid+free-agreement variant), because multi-vendor agreement
+clusters on identical false positives — the same wrong claim at the same file and line
+from different models. Vendor agreement is not evidence of truth in this corpus. Caveat:
+defect exports were missing for 8 of 17 commits, so the defect-loss side is partly
+extrapolated (36/42 mapped); the fp side is measured directly and sinks the idea alone.
+
 ## Open at the time of writing
 
 - Verifier wall-clock is not recorded anywhere (`duration_ms` is the rater alone); a
