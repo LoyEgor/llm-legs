@@ -15,6 +15,7 @@ contains() { grep -Fq -- "$2" <<<"$1"; }
 python3 - "$SCRIPT" "$ROOT/tests/fixtures/review-bench" "$ROOT" "$WORK" "$$" <<'PY'
 import concurrent.futures
 import argparse
+from collections import Counter
 import contextlib
 import importlib.machinery
 import importlib.util
@@ -83,30 +84,77 @@ for duplicate in ("sol-high,sol-high", "sol-high x2,sol-high", "sol-high x2,sol-
     else:
         raise AssertionError(f"accepted duplicate rater: {duplicate}")
 expected_floor = [
-    "oc-kimik3 x2", "oc-grok45-low", "agy-pro-high-skill",
-    "agy-flash35-medium-skill", "agy-flash35-high-skill",
+    "oc-kimik3 x4", "oc-grok45-low x3", "agy-pro-high-skill",
+    "agy-flash35-medium-skill x2", "agy-flash35-high-skill",
     "agy-flash36-medium-skill",
 ]
-expected_tiers = {
-    "T0": expected_floor + ["sol-low"],
-    "T1": expected_floor + [
-        "sol-low", "sol-medium", "opus-low-skill", "sonnet-medium-skill",
+expected_floor_slow = ["agy-flash35-low-skill", "agy-pro-low-skill"]
+expected_tier_cells = {
+    "T0": expected_floor + [
+        "opus-low", "opus-low-skill x2", "sol-low",
     ],
-    "T2": expected_floor + [
-        "sol-high", "sol-xhigh", "opus-medium-skill x3", "opus-low-skill",
-        "sonnet-medium-skill",
+    "T1": expected_floor + expected_floor_slow + [
+        "opus-low-skill", "opus-medium", "sol-low", "sol-medium",
+        "sonnet-medium-skill x2",
     ],
-    "T3": expected_floor + [
-        "sol-high", "sol-max x2", "opus-medium-skill x2", "opus-high-skill",
-        "opus-low-skill", "sonnet-high-skill",
+    "T2": expected_floor + expected_floor_slow + [
+        "opus-high", "opus-low-skill", "opus-medium",
+        "opus-medium-skill x3", "sol-high", "sol-xhigh",
+    ],
+    "T3": expected_floor + expected_floor_slow + [
+        "opus-high", "opus-high-skill", "opus-low-skill", "opus-medium",
+        "opus-medium-skill x2", "sol-high", "sol-max", "sol-xhigh",
+        "sonnet-high-skill",
     ],
 }
+floor_counts = Counter({
+    "oc-kimik3": 4, "oc-grok45-low": 3, "agy-flash35-high-skill": 1,
+    "agy-flash35-medium-skill": 2, "agy-flash36-medium-skill": 1,
+    "agy-pro-high-skill": 1,
+})
+slow_counts = Counter({"agy-flash35-low-skill": 1, "agy-pro-low-skill": 1})
+expected_tier_multisets = {
+    "T0": floor_counts + Counter({
+        "opus-low": 1, "opus-low-skill": 2, "sol-low": 1,
+    }),
+    "T1": floor_counts + slow_counts + Counter({
+        "opus-low-skill": 1, "opus-medium": 1, "sol-low": 1, "sol-medium": 1,
+        "sonnet-medium-skill": 2,
+    }),
+    "T2": floor_counts + slow_counts + Counter({
+        "opus-high": 1, "opus-low-skill": 1, "opus-medium": 1,
+        "opus-medium-skill": 3, "sol-high": 1, "sol-xhigh": 1,
+    }),
+    "T3": floor_counts + slow_counts + Counter({
+        "opus-high": 1, "opus-high-skill": 1, "opus-low-skill": 1,
+        "opus-medium": 1, "opus-medium-skill": 2, "sol-high": 1, "sol-max": 1,
+        "sol-xhigh": 1, "sonnet-high-skill": 1,
+    }),
+}
 assert rb.REVIEW_TIER_FLOOR == expected_floor
+assert rb.REVIEW_TIER_FLOOR_SLOW == expected_floor_slow
 assert list(rb.REVIEW_TIERS) == ["T0", "T1", "T2", "T3"]
 assert [tier["budget_min"] for tier in rb.REVIEW_TIERS.values()] == [2, 6, 10, 20]
 assert {
     tier_name: tier["cells"] for tier_name, tier in rb.REVIEW_TIERS.items()
-} == expected_tiers
+} == expected_tier_cells
+expanded_floor = Counter(
+    rb.normalize_legacy_rater(rater["spec"])
+    for rater in rb.parse_raters(",".join(expected_floor))
+)
+for tier_name, tier in rb.REVIEW_TIERS.items():
+    prefix = tier["cells"][:len(expected_floor)]
+    assert [
+        rb.parse_raters(cell)[0]["spec"] for cell in prefix
+    ] == [
+        rb.parse_raters(cell)[0]["spec"] for cell in expected_floor
+    ], (tier_name, prefix)
+    expanded = Counter(
+        rb.normalize_legacy_rater(rater["spec"])
+        for rater in rb.parse_raters(",".join(tier["cells"]))
+    )
+    assert expanded_floor <= expanded, (tier_name, expanded_floor, expanded)
+    assert expanded == expected_tier_multisets[tier_name], (tier_name, expanded)
 rb.REVIEW_TIERS["TX"] = {"budget_min": 1, "when": "fixture", "cells": ["sol-medium x2"]}
 try:
     rb.validate_review_tiers()
@@ -120,8 +168,6 @@ try:
 finally:
     del rb.REVIEW_TIERS["TX"]
 print("rater-repeat-parse-tier-ok")
-for tier in rb.REVIEW_TIERS.values():
-    assert tier["cells"][:len(rb.REVIEW_TIER_FLOOR)] == rb.REVIEW_TIER_FLOOR, tier["cells"]
 # Every resolved rater set passes this gate, so no --raters spelling and no --auto pick can run
 # a skill-less agy cell; parsing one still works, or a stored bench run could never be recorded.
 for bare in ("agy-pro-low", "agy-flash36-medium", "agy-flash35-high"):
@@ -157,14 +203,32 @@ for dead_verifier in ("oc-glm52", "oc-kimik27code"):
     else:
         raise AssertionError(f"accepted a retired verifier: {dead_verifier}")
 assert rb.verifier_model(rb.OPENCODE_VERIFIER) == rb.OPENCODE_VERIFIER
-for dead, needle in (("haiku-medium", "0 defects"), ("oc-glm52", "3 true"),
-                     ("agy-flash36-low-skill", "0 true")):
+for dead, needle in (
+    ("haiku-medium", "0 defects"),
+    ("oc-glm52", "3 true"),
+    ("oc-grok45-medium", "one-line announce"),
+    ("agy-flash36-low-skill", "0 true"),
+):
     try:
         rb.refuse_retired_cells([rb.parse_rater(dead)])
     except RuntimeError as exc:
         assert dead in str(exc) and needle in str(exc), exc
     else:
         raise AssertionError(f"accepted a cell the corpus retired: {dead}")
+retired_grok = subprocess.run(
+    [
+        sys.argv[1], "run", "HEAD", "--repo", str(repo),
+        "--raters", "oc-grok45-medium",
+    ],
+    text=True,
+    capture_output=True,
+)
+retired_grok_reason = (
+    "answers with a one-line announce and stops (10-token completions, findings leak into "
+    "reasoning_content); 0 parseable reviews in 3 runs on 2026-07-28"
+)
+assert retired_grok.returncode != 0, retired_grok
+assert retired_grok_reason in retired_grok.stderr, retired_grok.stderr
 assert rb.parse_rater("oc-glm52") == {
     "spec": "oc-glm52", "model": "oc-glm52", "effort": None,
     "side": "opencode", "skill": False, "profile": None
@@ -1429,6 +1493,21 @@ assert rb.unusable_review("NO FINDINGS", []) == ""
 assert rb.unusable_review('{"findings": []}', []) == ""
 assert rb.unusable_review('```json\n{"findings": []}\n```', []) == ""
 assert rb.unusable_review("No issues found.", []) == ""
+for paraphrase in (
+    "I reviewed the diff and found no issues.",
+    "No defects found in this commit.",
+    "The targeted tests pass, and no actionable regression was identified.",
+    "The changes are covered, and no functional regressions were found.",
+    "\u0420\u0430\u0437\u0431\u0435\u0440\u0443 \u043a\u043e\u043c\u043c\u0438\u0442 "
+    "\u0438 \u0441\u0432\u0435\u0440\u044e \u0438\u0437\u043c\u0435\u043d\u0435\u043d\u0438\u044f "
+    "\u0441 \u043e\u043a\u0440\u0443\u0436\u0430\u044e\u0449\u0438\u043c "
+    "\u043a\u043e\u0434\u043e\u043c.No findings.",
+    "Reviewing the commit diff for logic/correctness issues in the changed code.NO FINDINGS",
+    "The added tests directly cover successful receipt lookup, confirmed-count aggregation, "
+    "and the missing-receipt exit status. The targeted test suite passes, and the change "
+    "introduces no functional regression.",
+):
+    assert rb.unusable_review(paraphrase, []) == "", paraphrase
 assert rb.unusable_review("", [{"severity": "P1"}]) == ""
 for stopped in ("", "Still waiting for the remaining agents before compiling final findings.",
                 "The commit looks reasonable overall; I did not spot anything alarming."):
@@ -1437,8 +1516,35 @@ assert "(empty answer)" in rb.unusable_review("", [])
 # The marker has to be the whole answer; matched anywhere it hands prose a free pass and
 # undoes the very distinction it exists to draw.
 for rambling in ("I checked the rotation and found no findings for it, but the gate looks wrong.",
-                 "No issues found in run_opencode. The verifier, however, never re-checks."):
+                 "No issues found in run_opencode. The verifier, however, never re-checks.",
+                 "I reviewed the diff and found no issues. The retry loop drops an account.",
+                 "No issues except the retry loop drops an account.",
+                 "One real defect was found. No findings.",
+                 "Review complete: one finding reported, but no functional bugs found.",
+                 "The retry loop drops the account on a single 429 without rescheduling it. "
+                 "No other issues found.",
+                 "verify_one ignores OPENCODE_WALL and keeps calling a walled account. "
+                 "Otherwise no bugs found in this commit.",
+                 "Severity P2: receipt path collides for same-named repos. No further findings.",
+                 "I could not access the diff, so no findings.",
+                 # T1 worktree review of this detector found each of these slipping through:
+                 # a newline is a sentence boundary, "though" is a contrast, a praise token
+                 # does not vouch for defect prose sharing its sentence.
+                 "I found defects in the implementation\nNo findings",
+                 "No security issues were found, though the retry logic could exhaust "
+                 "resources under load.",
+                 "The fix correctly handles X while silently dropping Y. No issues found.",
+                 "The retry loop drops requests; no findings.",
+                 "No issues found. Authentication handles invalid tokens incorrectly.",
+                 "Checked bin/statusline.sh thoroughly.NO FINDINGS",
+                 # Round-4 focused re-read: bare infinitive defect verbs, "has defects"
+                 # assertions, and defect nouns inside praise sentences all slipped through.
+                 "The fix can break requests. No findings",
+                 "The implementation has defects. No findings",
+                 "No findings. The implementation handles requests, defects remain."):
     assert rb.unusable_review(rambling, []), rambling
+assert rb.unusable_review("**No issues found.**", []) == ""
+assert rb.unusable_review("No problems were found.", []) == ""
 # Claude hands over its whole envelope and Codex appends event JSON, so a clean review that
 # arrives inside a JSON string still has to count as one.
 for enveloped in ('{"type": "result", "subtype": "success", "result": "NO FINDINGS"}',
@@ -1676,7 +1782,7 @@ review_run_dir = next((review_store / "worker-stats" / "benches").iterdir())
 review_meta_path = review_run_dir / "meta.json"
 review_meta = json.loads(review_meta_path.read_text())
 expected_t1_runs = [
-    rater["spec"] for rater in rb.parse_raters(",".join(expected_tiers["T1"]))
+    rater["spec"] for rater in rb.parse_raters(",".join(expected_tier_cells["T1"]))
 ]
 assert review_rc == 0
 assert review_meta["raters"] == expected_t1_runs, review_meta["raters"]
@@ -3251,10 +3357,12 @@ tiers_table="$("$SCRIPT" tiers 2>&1)"
 for tier_budget in "T0 (2 min)" "T1 (6 min)" "T2 (10 min)" "T3 (20 min)"; do
   assert contains "$tiers_table" "$tier_budget"
 done
-for cell in "oc-kimik3 x2" oc-grok45-low agy-pro-high-skill agy-flash35-medium-skill \
-  agy-flash35-high-skill agy-flash36-medium-skill sol-low sol-medium sol-high \
-  sol-xhigh "sol-max x2" "opus-medium-skill x3" opus-low-skill opus-high-skill \
-  sonnet-medium-skill sonnet-high-skill; do
+for cell in "oc-kimik3 x4" "oc-grok45-low x3" agy-pro-high-skill \
+  "agy-flash35-medium-skill x2" agy-flash35-high-skill agy-flash36-medium-skill \
+  opus-low "opus-low-skill x2" sol-low agy-flash35-low-skill agy-pro-low-skill \
+  opus-medium sol-medium "sonnet-medium-skill x2" opus-high \
+  "opus-medium-skill x3" sol-high sol-xhigh opus-high-skill \
+  "opus-medium-skill x2" sol-max sonnet-high-skill; do
   assert contains "$tiers_table" "$cell"
 done
 

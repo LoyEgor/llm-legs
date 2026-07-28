@@ -151,3 +151,31 @@ names T0–T3 from measured cell compositions. It has no notion of "already revi
 sizes the whole diff, not the part no reviewer has seen. Giving it that would need a receipt —
 the tool recording which tree state a review covered — and until it exists, step 3 above is done
 by hand.
+
+## Round 4 — pre-registration (2026-07-28, clean-review detector)
+
+First pass: T1 worktree review of the widened clean-review detector (run
+20260728T104914Z-0917a9a, 11 cells, 19 raw findings, 5 fix-worthy). Fix units, registered
+before the second pass reports:
+
+1. `CLEAN_CONTRAST_TOKENS` — added though/although/yet/nevertheless/nonetheless/that said.
+2. `CLEAN_DEFECT_VERBS` — new list (breaks/drops/leaks/… + incorrect/wrong/improper adverb
+   forms), folded into both `CLEAN_ANNOUNCE_BLOCKERS` and `CLEAN_PROSE_BLOCKERS`.
+3. `clean_review_sentences` — newline is now a sentence boundary; fragments without a word
+   character are dropped.
+4. `announce_clean_review` / `prose_clean_review` — casefold removed from both path checks.
+5. `CLEAN_ANNOUNCE_PATH_RE` — announce preamble path test narrowed to dotted names only.
+6. `tests/test_review_bench.sh` — the review's counterexamples pinned as must-error cases plus
+   `**No issues found.**` as must-clean.
+
+Second pass: one reviewer, focused re-read of these units only (the round-2 conclusion applied).
+
+Round 4 outcome: the focused second pass (one reviewer, fix units only, every candidate string
+executed before reporting) returned 3 confirmed P1 holes left open by the fixes — bare
+infinitive defect verbs ("can break"), assertion verbs missing has/have/contains/remain
+("has defects"), and a defect noun surviving inside a praise sentence ("handles requests,
+defects remain") — plus one recall nit ("problems" absent from the defect-noun list). Zero
+regressions introduced by the fix units themselves. Classification: all three are
+incomplete-fix holes, not regressions and not first-pass misses (the first pass had no such
+strings in front of it; the second pass manufactured and executed them). The focused-re-read
+form again paid for itself: ~120 executed adversarial strings against six registered units.

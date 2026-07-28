@@ -123,6 +123,10 @@ OPENCODE_EFFORT_CEILING = {}
 WORTHLESS_CELLS = {
     "oc-glm51": "26 claims over 2 commits, 1 true",
     "oc-glm52": "33 claims over 2 commits, 3 true, never the only cell to find a defect",
+    "oc-grok45-medium": (
+        "answers with a one-line announce and stops (10-token completions, findings leak into "
+        "reasoning_content); 0 parseable reviews in 3 runs on 2026-07-28"
+    ),
     "oc-hy3": "23 claims over 2 commits, 4 true",
     "oc-kimik27code": "21 claims over 2 commits, 3 true",
     "oc-qwen37max": "18 claims over 2 commits, 4 true",
@@ -305,24 +309,33 @@ LOCATION_RE = re.compile(
     r":(?P<line>\d+)(?:[-–]\d+)?"
 )
 LIMITS_STALE_AGE_S = 600
-# Every tier carries the same OpenCode and Gemini block: those cells are fast, effectively
-# free, and keep a tier productive when a paid side is walled (owner's rule, 2026-07-28).
+# Every tier carries the maximum measured OpenCode and Gemini block (owner's rule,
+# 2026-07-28): those cells are effectively free and add no wall-clock, so they are never
+# trimmed for budget — repeat counts stop at what multi-attempt runs have validated.
 REVIEW_TIER_FLOOR = [
-    "oc-kimik3 x2",
-    "oc-grok45-low",
+    "oc-kimik3 x4",
+    "oc-grok45-low x3",
     "agy-pro-high-skill",
-    "agy-flash35-medium-skill",
+    "agy-flash35-medium-skill x2",
     "agy-flash35-high-skill",
     "agy-flash36-medium-skill",
 ]
-# Tiers are measured compositions per time budget, not nested supersets: a cell that earns
-# its seat at 6 minutes can lose it at 10 to a repeat of a stronger one.
+# flash35-low (3.5 min) and pro-low (2.2 min) overrun T0's 2-minute budget; every slower
+# tier carries them on top of the floor.
+REVIEW_TIER_FLOOR_SLOW = [
+    "agy-flash35-low-skill",
+    "agy-pro-low-skill",
+]
+# 2026-07-28, 7 equalized commits, 165 canonical defects: paid cells computed by frontier —
+# recompute, don't hand-edit. sol-max stays single: its second run bought 2 defects.
 REVIEW_TIERS = {
     "T0": {
         "budget_min": 2,
         "when": "Up to 20 changed lines in up to 2 files",
         "cells": [
             *REVIEW_TIER_FLOOR,
+            "opus-low",
+            "opus-low-skill x2",
             "sol-low",
         ],
     },
@@ -331,10 +344,12 @@ REVIEW_TIERS = {
         "when": "Up to 150 changed lines, or any change under bin/ or tests/",
         "cells": [
             *REVIEW_TIER_FLOOR,
+            *REVIEW_TIER_FLOOR_SLOW,
+            "opus-low-skill",
+            "opus-medium",
             "sol-low",
             "sol-medium",
-            "opus-low-skill",
-            "sonnet-medium-skill",
+            "sonnet-medium-skill x2",
         ],
     },
     "T2": {
@@ -342,11 +357,13 @@ REVIEW_TIERS = {
         "when": "Up to 600 changed lines, or a core measurement tool change",
         "cells": [
             *REVIEW_TIER_FLOOR,
+            *REVIEW_TIER_FLOOR_SLOW,
+            "opus-high",
+            "opus-low-skill",
+            "opus-medium",
+            "opus-medium-skill x3",
             "sol-high",
             "sol-xhigh",
-            "opus-medium-skill x3",
-            "opus-low-skill",
-            "sonnet-medium-skill",
         ],
     },
     "T3": {
@@ -354,11 +371,15 @@ REVIEW_TIERS = {
         "when": "More than 600 changed lines",
         "cells": [
             *REVIEW_TIER_FLOOR,
-            "sol-high",
-            "sol-max x2",
-            "opus-medium-skill x2",
+            *REVIEW_TIER_FLOOR_SLOW,
+            "opus-high",
             "opus-high-skill",
             "opus-low-skill",
+            "opus-medium",
+            "opus-medium-skill x2",
+            "sol-high",
+            "sol-max",
+            "sol-xhigh",
             "sonnet-high-skill",
         ],
     },
@@ -1270,6 +1291,53 @@ CLEAN_REVIEW_MARKER = "NO FINDINGS"
 CLEAN_REVIEW_RE = re.compile(
     r"no findings|no issues found|\{\s*\"findings\"\s*:\s*\[\s*\]\s*\}", re.IGNORECASE
 )
+CLEAN_ASSERTION_VERBS = (
+    "found", "was", "were", "is", "are", "exists", "detected", "identified", "confirmed",
+    "has", "have", "contains", "contain", "remains", "remain",
+)
+CLEAN_NEGATION_TOKENS = ("no", "not", "don't", "do not", "none", "without")
+CLEAN_DEFECT_TOKENS = (
+    "finding", "findings", "issue", "issues", "defect", "defects", "bug", "bugs",
+    "regression", "regressions", "problem", "problems",
+)
+CLEAN_CLAIM_QUANTIFIERS = (
+    "a", "an", "one", "two", "three", "four", "five", "some", "several", "multiple",
+)
+CLEAN_PRAISE_TOKENS = (
+    "correctly", "correct", "passes", "pass", "covers", "cover", "coverage", "validates",
+    "valid", "sound", "safe", "as intended", "matches", "hermetic", "addresses", "handles",
+)
+CLEAN_CONTRAST_TOKENS = (
+    "except", "but", "however", "other than", "aside", "apart", "though", "although",
+    "yet", "nevertheless", "nonetheless", "that said",
+)
+CLEAN_FAILURE_TOKENS = (
+    "could not", "couldn't", "unable", "cannot", "can't", "failed", "error", "timed out",
+)
+# A praise word does not vouch for the rest of its sentence: "correctly handles X while
+# silently dropping Y" is a defect claim, so defect verbs block the whole answer.
+CLEAN_DEFECT_VERBS = (
+    "break", "breaks", "broken", "leak", "leaks", "leaking", "crash", "crashes", "crashing",
+    "drop", "drops", "dropping", "violate", "violates", "regress", "regresses",
+    "corrupt", "corrupts", "lose", "loses", "exhaust", "exhausts",
+    "incorrect", "incorrectly", "wrong", "wrongly", "improper", "improperly",
+)
+CLEAN_SEVERITY_TOKENS = ("p1", "p2", "p3", "severity")
+CLEAN_ANNOUNCE_BLOCKERS = (
+    CLEAN_ASSERTION_VERBS + CLEAN_CLAIM_QUANTIFIERS + CLEAN_CONTRAST_TOKENS
+    + CLEAN_FAILURE_TOKENS + CLEAN_SEVERITY_TOKENS + CLEAN_DEFECT_VERBS
+)
+CLEAN_PROSE_BLOCKERS = (
+    CLEAN_CONTRAST_TOKENS + CLEAN_FAILURE_TOKENS + CLEAN_SEVERITY_TOKENS
+    + CLEAN_DEFECT_VERBS
+)
+CLEAN_MARKER_TAIL_RE = re.compile(r"no findings\.?$", re.IGNORECASE)
+CLEAN_PATH_RE = re.compile(r"\S+\.[a-z]{2,4}\b|\w+/\w+")
+# Announce preambles say things like "for logic/correctness issues"; only a dotted file
+# name is a location signal there, while prose answers keep the stricter slash test.
+CLEAN_ANNOUNCE_PATH_RE = re.compile(r"\S+\.[a-z]{2,4}\b")
+CLEAN_LINE_RE = re.compile(r"\bline\s+\d+\b|:\d+\b", re.IGNORECASE)
+CLEAN_TRUNCATION_RE = re.compile(r"\btruncat\w*", re.IGNORECASE)
 
 
 ANSWER_KEYS = frozenset({"result", "message", "text", "content", "answer", "output"})
@@ -1314,11 +1382,87 @@ def clean_marker_candidates(text):
         yield "\n".join(prose)
 
 
+def contains_clean_token(text, tokens):
+    return any(
+        re.search(rf"(?<!\w){re.escape(token)}(?!\w)", text, re.IGNORECASE)
+        for token in tokens
+    )
+
+
+def clean_review_sentences(text):
+    # A newline ends a sentence too: "…defects in the implementation\nNo findings" must not
+    # merge into one sentence whose negation vouches for the defect half. Fragments without
+    # a word character (stray markdown like "**") are not sentences.
+    return [
+        sentence.strip()
+        for sentence in re.split(r"[.!?\n]+", text)
+        if re.search(r"\w", sentence)
+    ]
+
+
+def announce_clean_review(text):
+    marker = CLEAN_MARKER_TAIL_RE.search(text)
+    if not marker:
+        return False
+    preamble = text[:marker.start()].strip()
+    if not preamble:
+        return True
+    return (
+        len(preamble) <= 200
+        and len(clean_review_sentences(preamble)) == 1
+        and not contains_clean_token(preamble, CLEAN_ANNOUNCE_BLOCKERS)
+        and not CLEAN_TRUNCATION_RE.search(preamble)
+        and not any(character.isdigit() for character in preamble)
+        and not CLEAN_ANNOUNCE_PATH_RE.search(preamble)
+        and not CLEAN_LINE_RE.search(preamble)
+    )
+
+
+def prose_clean_review(text):
+    sentences = clean_review_sentences(text)
+    if (
+        contains_clean_token(text, CLEAN_PROSE_BLOCKERS)
+        or CLEAN_TRUNCATION_RE.search(text)
+        or CLEAN_PATH_RE.search(text)
+        or CLEAN_LINE_RE.search(text)
+        or any(
+            contains_clean_token(sentence, CLEAN_DEFECT_TOKENS)
+            and contains_clean_token(sentence, CLEAN_CLAIM_QUANTIFIERS)
+            for sentence in sentences
+        )
+    ):
+        return False
+    declared = False
+    for sentence in sentences:
+        clean = (
+            contains_clean_token(sentence, CLEAN_NEGATION_TOKENS)
+            and contains_clean_token(sentence, CLEAN_DEFECT_TOKENS)
+        )
+        declared = declared or clean
+        # A praise word does not clear a sentence that names a defect noun without negating
+        # it: "handles requests, defects remain" must keep the answer errored.
+        if not clean and (
+            not contains_clean_token(sentence, CLEAN_PRAISE_TOKENS)
+            or contains_clean_token(sentence, CLEAN_DEFECT_TOKENS)
+        ):
+            return False
+    return declared
+
+
 def clean_review_declared(text):
     # The marker has to be the whole answer: matched anywhere, a rater that writes "found no
     # findings there, but here is a real defect" and then rambles is recorded as a clean run.
     for candidate in clean_marker_candidates(text):
-        if CLEAN_REVIEW_RE.fullmatch(candidate.strip().strip("`").strip().rstrip(".").strip()):
+        candidate = candidate.strip().strip("`").strip()
+        if CLEAN_REVIEW_RE.fullmatch(candidate.rstrip(".").strip()):
+            return True
+        try:
+            document = json.loads(candidate)
+        except ValueError:
+            document = None
+        if isinstance(document, (dict, list)):
+            continue
+        if announce_clean_review(candidate) or prose_clean_review(candidate):
             return True
     return False
 
