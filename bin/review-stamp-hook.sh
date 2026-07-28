@@ -28,11 +28,14 @@ case "$command" in *commit*) ;; *) exit 0 ;; esac
 [ -n "$cwd" ] || exit 0
 top=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null) || exit 0
 
+# ~/.claude/hooks is itself a symlink into the config repository, and the entry there is a
+# symlink into this one; a chain is the normal case, so follow it rather than the first hop.
 self="$0"
-if [ -L "$self" ]; then
+for _ in 1 2 3 4 5; do
+  [ -L "$self" ] || break
   target=$(readlink "$self")
   case "$target" in /*) self="$target" ;; *) self="$(dirname "$self")/$target" ;; esac
-fi
+done
 review_bench="${REVIEW_STAMP_HOOK_BENCH:-$(dirname "$self")/review-bench}"
 [ -x "$review_bench" ] || exit 0
 
