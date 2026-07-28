@@ -281,6 +281,8 @@ class KeyButton(NSView):
         self._app = app
         self._btn_enabled = True
         self._pressed = False
+        self._show_pressed = False
+        self._pressed_at = 0.0
         self._tint_key = None
         self._pulsing = False
 
@@ -339,7 +341,7 @@ class KeyButton(NSView):
     def _fill_color(self):
         dark = is_dark()
         base = NSColor.whiteColor() if dark else NSColor.blackColor()
-        if self._pressed:
+        if self._show_pressed:
             return base.colorWithAlphaComponent_(0.34 if dark else 0.25)
         # Resting key fill: touch/pencil input has no hover (a Pencil tap
         # would leave a "hover" stuck on the key until the next tap), so
@@ -398,6 +400,8 @@ class KeyButton(NSView):
             self.window().performWindowDragWithEvent_(event)
             return
         self._pressed = True
+        self._show_pressed = True
+        self._pressed_at = time.time()
         self._refresh_fill(0.06)
         self._press_icon(True)
 
@@ -406,6 +410,7 @@ class KeyButton(NSView):
         if not self._pressed:
             return
         self._pressed = False
+        self._show_pressed = False
         # Slow fade back so even an instantaneous tap leaves a visible
         # afterglow — a quick tap otherwise shows nothing.
         self._refresh_fill(0.45)
@@ -419,6 +424,20 @@ class KeyButton(NSView):
             except Exception as exc:
                 log("action %s failed: %r" % (self._symbol, exc))
 
+    # mouseUp is not guaranteed: on Sidecar the window server sometimes never
+    # delivers it (observed live: copy stuck highlighted for minutes, callback
+    # never fired), so a press outliving any real tap is cleared by the 1s tick.
+    # Only the visual resets: _pressed stays set so a slow deliberate hold that
+    # outlives the watchdog still fires its action on release.
+    @objc.python_method
+    def clear_stuck_press(self, max_age=3.0):
+        if not self._show_pressed or time.time() - self._pressed_at < max_age:
+            return False
+        self._show_pressed = False
+        self._refresh_fill(0.45)
+        self._press_icon(False)
+        return True
+
     @objc.python_method
     def set_button_enabled(self, value):
         value = bool(value)
@@ -428,6 +447,7 @@ class KeyButton(NSView):
         if not value:
             was_pressed = self._pressed
             self._pressed = False
+            self._show_pressed = False
             self._refresh_fill()
             if was_pressed:
                 # _mouse_up early-returns once _pressed is cleared, so the
@@ -940,6 +960,10 @@ class OverlayApp:
             self._save_due = None
             self._save_frame()
         self._ensure_voice_polling()
+        for name, btn in self.buttons.items():
+            if btn.clear_stuck_press():
+                log("press watchdog: cleared stuck %s (mouseUp never arrived)" % name)
+                CATransaction.flush()
         if not self.visible:
             return
         self._heal_offscreen()
