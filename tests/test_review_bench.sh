@@ -1922,6 +1922,29 @@ if saved_stats_dir is None:
 else:
     os.environ["WORKER_STATS_DIR"] = saved_stats_dir
 
+# The stamp hook reads the receipt through this command rather than deriving its path a third
+# time, and it decides on the confirmed count the run was adjudicated to.
+receipt_proc = subprocess.run(
+    [sys.argv[1], "receipt", "--repo", str(stamp_repo)],
+    capture_output=True, text=True, env=stamp_env,
+)
+assert receipt_proc.returncode == 0, receipt_proc.stderr
+receipt_json = json.loads(receipt_proc.stdout)
+assert receipt_json["tree"] == expected_stamp_tree
+assert receipt_json["confirmed"] == 0, receipt_json
+(stamp_store / "reviews.jsonl").write_text("\n".join(
+    json.dumps({"run_id": stamp_receipt["run_id"], "rater": rater, "confirmed": count})
+    for rater, count in (("sol-low", 2), ("oc-kimik3", 1))
+) + "\n")
+assert json.loads(subprocess.run(
+    [sys.argv[1], "receipt", "--repo", str(stamp_repo)],
+    check=True, capture_output=True, text=True, env=stamp_env,
+).stdout)["confirmed"] == 3
+assert subprocess.run(
+    [sys.argv[1], "receipt", "--repo", str(pin_repo)],
+    capture_output=True, text=True, env=dict(os.environ, WORKER_STATS_DIR=str(work / "empty-store")),
+).returncode == 1
+
 nonrepo = work / "reviewed-nonrepo"
 nonrepo.mkdir()
 nonrepo_store = work / "reviewed-nonrepo-store"
