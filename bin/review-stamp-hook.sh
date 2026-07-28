@@ -11,16 +11,20 @@
 # Fail-open everywhere: a hook that cannot tell stays silent and leaves the label lit.
 set -u
 
+# One jq for the whole payload: this runs after every Bash call in every session, and three
+# more interpreter starts per call buy nothing.
 input=$(cat) || exit 0
-field() { printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null; }
+values=$(printf '%s' "$input" | jq -r '
+  [(.hook_event_name // ""), (.tool_name // ""), (.cwd // ""), (.tool_input.command // "")]
+  | join("\u001f")' 2>/dev/null) || exit 0
+# -d '': a commit command is routinely a heredoc, and a plain read would stop at its first line.
+IFS=$'\x1f' read -r -d '' hook_event tool_name cwd command <<< "$values" || :
 
-[ "$(field '.hook_event_name')" = PostToolUse ] || exit 0
-[ "$(field '.tool_name')" = Bash ] || exit 0
+[ "$hook_event" = PostToolUse ] || exit 0
+[ "$tool_name" = Bash ] || exit 0
 # Substring, not a parse of the command line: `git -C x commit`, `git commit -F -` and a commit
 # behind `&&` all read the same here, and the git checks below refuse everything that is not one.
-case "$(field '.tool_input.command')" in *commit*) ;; *) exit 0 ;; esac
-
-cwd=$(field '.cwd')
+case "$command" in *commit*) ;; *) exit 0 ;; esac
 [ -n "$cwd" ] || exit 0
 top=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null) || exit 0
 
