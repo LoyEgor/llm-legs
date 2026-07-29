@@ -44,10 +44,23 @@ state_file="$cache_dir/workdir-$session_id"
 # Before the agent filter on purpose: SessionStart's agent_type means a
 # top-level `claude --agent` session, not a subagent.
 if [ "$hook_event" = SessionStart ]; then
-  # A fresh shell starts in the project dir — surviving state would lie until
-  # the first cd. compact keeps the shell and its cwd, so its state stays valid.
+  # Cleared AND re-seeded from the session's starting cwd: with no state, the
+  # first cd/edit anywhere adopts THAT dir as home (a one-off cd into a sibling
+  # worktree retargets the ports segment), and the worktree stickiness below can
+  # only protect a home that already exists. compact keeps the shell and its
+  # cwd, so its state stays valid and is left alone.
   case "$start_source" in
-    startup|resume|clear) rm -f "$state_file" "$state_file.gone" ;;
+    startup|resume|clear)
+      rm -f "$state_file" "$state_file.gone"
+      seed=$(git -C "${base_dir:-.}" rev-parse --show-toplevel 2>/dev/null) &&
+        seed=$(cd "$seed" 2>/dev/null && pwd -P) && [ -n "$seed" ] && {
+          umask 077
+          mkdir -p "$cache_dir" 2>/dev/null &&
+            printf '%s\n' "$seed" > "$state_file.tmp.$$" 2>/dev/null &&
+            mv -f "$state_file.tmp.$$" "$state_file" 2>/dev/null ||
+            rm -f "$state_file.tmp.$$" 2>/dev/null
+        }
+      ;;
   esac
   exit 0
 fi
@@ -126,29 +139,16 @@ toplevel=$(git -C "$resolved" rev-parse --show-toplevel 2>/dev/null) || exit 0
 [ -d "$toplevel" ] || exit 0
 toplevel=$(cd "$toplevel" 2>/dev/null && pwd -P) || exit 0
 
-# A worktree home is sticky within its repository: sessions routinely cd/edit
-# into a sibling worktree or the main checkout for one-off surgery, and adopting
-# that path retargets the statusline (and its ports segment) to another chat's
-# workspace. Only EnterWorktree moves a worktree-homed session inside the same
-# repo; ExitWorktree and SessionStart still clear the state above.
+# A worktree home is absolutely sticky: it is a deliberate, harness-created
+# context, and a cd/edit anywhere else — sibling worktree, main checkout, or a
+# different repository entirely (test runs, config surgery) — is one-off work
+# that used to retarget the statusline (and its ports segment) to another
+# workspace. Only EnterWorktree moves such a home; ExitWorktree clears it and
+# SessionStart re-seeds it above. Non-worktree homes still follow every cd.
 if [ "$tool_name" != EnterWorktree ] && [ -f "$state_file" ]; then
   IFS= read -r prev_home < "$state_file" || :
   case "$prev_home" in
-    */.claude/worktrees/*)
-      if [ "$toplevel" != "$prev_home" ]; then
-        prev_repo=${prev_home%%/.claude/worktrees/*}
-        case "$toplevel" in
-          "$prev_repo" | "$prev_repo"/*)
-            # Path prefix alone would also pin a SEPARATE repository nested under
-            # the project dir; repository identity (common dir) tells them apart.
-            # An unresolvable identity (deleted home) falls back to staying put.
-            new_common=$(git -C "$toplevel" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
-            prev_common=$(git -C "$prev_repo" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
-            [ -n "$new_common" ] && [ -n "$prev_common" ] && [ "$new_common" != "$prev_common" ] || exit 0
-            ;;
-        esac
-      fi
-      ;;
+    */.claude/worktrees/*) [ "$toplevel" = "$prev_home" ] || exit 0 ;;
   esac
 fi
 

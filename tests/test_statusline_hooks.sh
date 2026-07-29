@@ -208,11 +208,13 @@ payload=$(workdir_payload Edit session-sticky-edit "$REPO_E" "$REPO_F/other.txt"
 run_workdir_hook "$payload"
 assert_eq "$TOP_E" "$(cat "$STATE_DIR/workdir-session-sticky-edit")"
 
-# A genuinely different repository still retargets.
+# A different repository does not retarget either: a worktree-homed session
+# cd-ing into another repo is one-off surgery (test runs, config edits), and
+# following it used to hand the ports segment to that repo mid-task.
 printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-session-sticky-repo"
 payload=$(workdir_payload Bash session-sticky-repo "$REPO_E" "cd '$REPO_D'")
 run_workdir_hook "$payload"
-assert_eq "$TOP_D" "$(cat "$STATE_DIR/workdir-session-sticky-repo")"
+assert_eq "$TOP_E" "$(cat "$STATE_DIR/workdir-session-sticky-repo")"
 
 # EnterWorktree is the deliberate move and bypasses stickiness.
 printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-session-sticky-enter"
@@ -237,8 +239,8 @@ run_workdir_hook "$payload"
 assert_eq "$TOP_E" "$(cat "$STATE_DIR/workdir-session-claude-symlink")"
 rm -f "$HOME/.claude/hooks"
 
-# A SEPARATE repository nested under the project dir is not "the same repo":
-# stickiness compares repository identity, not path prefixes.
+# A non-worktree home still follows into any repository, including a SEPARATE
+# one nested under the project dir.
 NESTED="$REPO_A/vendored"
 mkdir -p "$NESTED"
 git -C "$NESTED" init -q -b main
@@ -246,22 +248,25 @@ printf 'nested\n' > "$NESTED/n.txt"
 git -C "$NESTED" add n.txt
 git -C "$NESTED" -c user.name=Fixture -c user.email=fixture@example.com commit -qm initial
 TOP_NESTED=$(git -C "$NESTED" rev-parse --show-toplevel)
-printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-session-nested-repo"
-payload=$(workdir_payload Bash session-nested-repo "$REPO_E" "cd '$NESTED'")
+printf '%s\n' "$TOP_A" > "$STATE_DIR/workdir-session-nested-repo"
+payload=$(workdir_payload Bash session-nested-repo "$REPO_A" "cd '$NESTED'")
 run_workdir_hook "$payload"
 assert_eq "$TOP_NESTED" "$(cat "$STATE_DIR/workdir-session-nested-repo")"
 # The nested repo is an untracked entry in repo A; later renders assert a clean tree.
 rm -rf "$NESTED"
 
 session_start_payload() {
-  jq -cn --arg source "$1" --arg session "$2" --arg cwd "$REPO_A" \
+  jq -cn --arg source "$1" --arg session "$2" --arg cwd "${3:-$REPO_A}" \
     '{hook_event_name:"SessionStart",source:$source,session_id:$session,cwd:$cwd}'
 }
 
+# startup/resume/clear replace any surviving state with a seed from the
+# session's own starting cwd — an empty home would let the first one-off
+# cd/edit anywhere adopt a foreign dir before stickiness can protect anything.
 for src in startup resume clear; do
   printf '%s\n' "$TOP_B" > "$STATE_DIR/workdir-session-ss-$src"
   run_workdir_hook "$(session_start_payload "$src" "session-ss-$src")"
-  assert test ! -e "$STATE_DIR/workdir-session-ss-$src"
+  assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-ss-$src")"
 done
 
 printf '%s\n' "$TOP_B" > "$STATE_DIR/workdir-session-ss-compact"
@@ -271,7 +276,20 @@ assert_eq "$TOP_B" "$(cat "$STATE_DIR/workdir-session-ss-compact")"
 printf '%s\n' "$TOP_B" > "$STATE_DIR/workdir-session-ss-agent"
 payload=$(session_start_payload startup session-ss-agent | jq -c '. + {agent_type:"reviewer"}')
 run_workdir_hook "$payload"
-assert test ! -e "$STATE_DIR/workdir-session-ss-agent"
+assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-ss-agent")"
+
+# Non-git cwd: state is cleared and nothing is seeded.
+printf '%s\n' "$TOP_B" > "$STATE_DIR/workdir-session-ss-nogit"
+run_workdir_hook "$(session_start_payload startup session-ss-nogit "$WORK")"
+assert test ! -e "$STATE_DIR/workdir-session-ss-nogit"
+
+# The live failure this seed exists for: a session born in a worktree runs a
+# one-off cd into a sibling — the seeded home must hold through stickiness.
+run_workdir_hook "$(session_start_payload startup session-ss-seed-sticky "$REPO_E")"
+assert_eq "$TOP_E" "$(cat "$STATE_DIR/workdir-session-ss-seed-sticky")"
+payload=$(workdir_payload Bash session-ss-seed-sticky "$REPO_E" "cd '$REPO_A' && git status")
+run_workdir_hook "$payload"
+assert_eq "$TOP_E" "$(cat "$STATE_DIR/workdir-session-ss-seed-sticky")"
 
 statusline_payload() {
   local extra="${2-}"

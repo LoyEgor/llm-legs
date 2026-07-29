@@ -94,4 +94,4 @@ fi
 tokens=$((delta / 4))
 monthly=$((tokens * reads))
 
-deny "Instruction-bloat gate: this file is re-read by LLMs (~${reads} reads/month). Growth +${delta} bytes ≈ +${tokens} tokens per read ≈ ~${monthly} tokens/month at Egor's daily usage. His standing rule: prefer a hook/mechanical control over prose; if prose is genuinely required, compress it hard, and QUOTE THIS COST to Egor and get his explicit OK. After his OK, retry the identical edit — the gate passes the exact retry once."
+deny "Instruction-bloat gate: this file is re-read by LLMs (~${reads} reads/month). Growth +${delta} bytes ≈ +${tokens} tokens per read ≈ ~${monthly} tokens/month at Egor's daily usage. His standing rule: (1) prefer a hook/mechanical control over prose; (2) if prose is genuinely required, compress it hard; (3) present Egor the NET BALANCE, not just this cost — estimate what the rule SAVES per month (avoided repeated output, avoided corrections, avoided worker calls) and compare; a rule that saves less than it costs does not get written. Wait for his explicit OK, then retry the identical edit — the gate passes the exact retry once."
