@@ -3068,7 +3068,8 @@ def compact_tier_cell(rater):
     if rater["side"] == "agy":
         return f"{model.removeprefix('agy-')}-{effort}{skill}"
     if rater["side"] == "codex":
-        return f"{effort}{skill}"
+        bare = "-bare" if rater.get("bare") else ""
+        return f"{effort}{skill}{bare}"
     return f"{model}-{effort}{skill}"
 
 

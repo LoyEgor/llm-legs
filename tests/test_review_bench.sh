@@ -159,6 +159,8 @@ assert rb.parse_rater("sol-low-bare") == {
     "spec": "sol-low-bare", "model": "sol", "effort": "low", "side": "codex",
     "skill": False, "bare": True, "profile": None
 }
+assert rb.compact_tier_cell(rb.parse_rater("sol-low")) == "low"
+assert rb.compact_tier_cell(rb.parse_rater("sol-low-bare")) == "low-bare"
 assert rb.parse_rater("opus-xhigh")["side"] == "claude"
 assert rb.parse_rater("opus-xhigh")["skill"] is False
 assert rb.parse_rater("fable-medium")["model"] == "fable"
