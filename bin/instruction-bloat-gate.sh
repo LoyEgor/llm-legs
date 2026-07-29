@@ -43,6 +43,7 @@ case "$file_path" in
   */MEMORY.md|*/CLAUDE.md|*/CLAUDE.local.md) reads=240 ;;      # every session
   */.claude/instructions/*) reads=40 ;;                        # loaded on topic
   */SKILL.md|*/.claude/skills/*) reads=40 ;;                   # loaded on trigger
+  "$HOME"/.claude/docs/*) reads=40 ;;                          # protocol docs, read per task type
   "$HOME"/.claude/agents/*) reads=150 ;;                       # per worker spawn
   *) exit 0 ;;
 esac
