@@ -89,3 +89,13 @@ real HTTP outcome — that would mean a robot POSTed the token endpoint despite 
   piggy-backing on the CLI's own refreshes instead of posting independently.
 - **Hypothesis rejected or incomplete** (429s return under manual-only traffic): our
   automation was not the sole cause; delete the freeze file and restore automation as-is.
+
+**Deferred to this decision — staleness threshold recalibration.** The freeze exposed that
+account age used to track the NEWEST window while passive `origin:"session"` traffic kept
+`five_hour` perpetually fresh, so hours-old weekly/fable readings rendered as minutes-old.
+The age itself was fixed in ecfbf85 (account/vendor age = oldest window carrying a non-null
+`used_pct`), but the staleness thresholds (five_hour 1800s, weekly/fable 21600s —
+`docs/shared-invariants.md` row a) still assume the auto-refresh era: under manual-only
+refresh, 3h-old fable data renders unmarked and worker-pick trusts it. Whichever outcome is
+chosen sets the real refresh cadence — recalibrate (or re-affirm) those thresholds against
+it as part of executing this exit, not before.
