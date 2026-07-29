@@ -232,42 +232,41 @@ expected_floor = [
 expected_floor_slow = ["agy-flash35-low-skill", "agy-pro-low-skill"]
 expected_tier_cells = {
     "T0": expected_floor + [
-        "opus-low", "opus-low-skill x2", "sol-low",
+        "opus-low", "sol-low", "sol-low-bare",
     ],
     "T1": expected_floor + expected_floor_slow + [
-        "opus-medium", "sol-low", "sol-medium",
+        "opus-medium", "sol-low", "sol-low-bare", "sol-medium-bare",
     ],
     "T2": expected_floor + expected_floor_slow + [
-        "opus-high", "opus-medium-skill x2", "sol-high", "sol-xhigh",
+        "opus-medium", "sol-high", "sol-high-bare x2", "sol-xhigh",
+        "sol-xhigh-bare",
     ],
     "T3": expected_floor + expected_floor_slow + [
-        "opus-high", "opus-high-skill", "opus-low-skill", "opus-medium-skill",
-        "sol-high", "sol-max", "sol-xhigh",
+        "opus-medium", "sol-high", "sol-high-bare", "sol-max x2", "sol-max-bare",
+        "sol-xhigh-bare",
     ],
 }
 expected_tier_max_cells = {
     "T0": expected_floor + [
-        "opus-low", "opus-low-skill x2", "sol-low",
+        "opus-low", "sol-low", "sol-low-bare",
     ],
     "T1": expected_floor + expected_floor_slow + [
-        "opus-low-skill", "opus-medium", "sol-low", "sol-medium",
-        "sonnet-medium-skill x2",
+        "opus-low", "opus-medium", "sol-low", "sol-low-bare", "sol-medium-bare",
     ],
     "T2": expected_floor + expected_floor_slow + [
-        "opus-high", "opus-low-skill", "opus-medium",
-        "opus-medium-skill x3", "sol-high", "sol-xhigh",
+        "opus-high", "opus-medium", "sol-high", "sol-high-bare x2", "sol-xhigh",
+        "sol-xhigh-bare",
     ],
     "T3": expected_floor + expected_floor_slow + [
-        "opus-high", "opus-high-skill", "opus-low-skill", "opus-medium",
-        "opus-medium-skill x2", "sol-high", "sol-max", "sol-xhigh",
-        "sonnet-high-skill",
+        "opus-high", "opus-medium", "sol-high", "sol-max x2", "sol-max-bare",
+        "sol-xhigh-bare", "sol-xhigh",
     ],
 }
 expected_coverage_pct = {
-    "T0": {"eco": 44, "max": 44},
-    "T1": {"eco": 50, "max": 54},
-    "T2": {"eco": 65, "max": 69},
-    "T3": {"eco": 71, "max": 75},
+    "T0": {"eco": 29.7, "max": 29.7},
+    "T1": {"eco": 40.3, "max": 41.4},
+    "T2": {"eco": 56.3, "max": 59.7},
+    "T3": {"eco": 67.6, "max": 70.5},
 }
 floor_counts = Counter({
     "oc-kimik3": 4, "oc-grok45-low": 3, "agy-flash35-high-skill": 1,
@@ -277,35 +276,36 @@ floor_counts = Counter({
 slow_counts = Counter({"agy-flash35-low-skill": 1, "agy-pro-low-skill": 1})
 expected_tier_multisets = {
     "T0": floor_counts + Counter({
-        "opus-low": 1, "opus-low-skill": 2, "sol-low": 1,
+        "opus-low": 1, "sol-low": 1, "sol-low-bare": 1,
     }),
     "T1": floor_counts + slow_counts + Counter({
-        "opus-medium": 1, "sol-low": 1, "sol-medium": 1,
+        "opus-medium": 1, "sol-low": 1, "sol-low-bare": 1,
+        "sol-medium-bare": 1,
     }),
     "T2": floor_counts + slow_counts + Counter({
-        "opus-high": 1, "opus-medium-skill": 2, "sol-high": 1, "sol-xhigh": 1,
+        "opus-medium": 1, "sol-high": 1, "sol-high-bare": 2, "sol-xhigh": 1,
+        "sol-xhigh-bare": 1,
     }),
     "T3": floor_counts + slow_counts + Counter({
-        "opus-high": 1, "opus-high-skill": 1, "opus-low-skill": 1,
-        "opus-medium-skill": 1, "sol-high": 1, "sol-max": 1, "sol-xhigh": 1,
+        "opus-medium": 1, "sol-high": 1, "sol-high-bare": 1, "sol-max": 2,
+        "sol-max-bare": 1, "sol-xhigh-bare": 1,
     }),
 }
 expected_tier_max_multisets = {
     "T0": floor_counts + Counter({
-        "opus-low": 1, "opus-low-skill": 2, "sol-low": 1,
+        "opus-low": 1, "sol-low": 1, "sol-low-bare": 1,
     }),
     "T1": floor_counts + slow_counts + Counter({
-        "opus-low-skill": 1, "opus-medium": 1, "sol-low": 1, "sol-medium": 1,
-        "sonnet-medium-skill": 2,
+        "opus-low": 1, "opus-medium": 1, "sol-low": 1, "sol-low-bare": 1,
+        "sol-medium-bare": 1,
     }),
     "T2": floor_counts + slow_counts + Counter({
-        "opus-high": 1, "opus-low-skill": 1, "opus-medium": 1,
-        "opus-medium-skill": 3, "sol-high": 1, "sol-xhigh": 1,
+        "opus-high": 1, "opus-medium": 1, "sol-high": 1, "sol-high-bare": 2,
+        "sol-xhigh": 1, "sol-xhigh-bare": 1,
     }),
     "T3": floor_counts + slow_counts + Counter({
-        "opus-high": 1, "opus-high-skill": 1, "opus-low-skill": 1,
-        "opus-medium": 1, "opus-medium-skill": 2, "sol-high": 1, "sol-max": 1,
-        "sol-xhigh": 1, "sonnet-high-skill": 1,
+        "opus-high": 1, "opus-medium": 1, "sol-high": 1, "sol-max": 2,
+        "sol-max-bare": 1, "sol-xhigh-bare": 1, "sol-xhigh": 1,
     }),
 }
 assert rb.REVIEW_TIER_FLOOR == expected_floor
@@ -4075,10 +4075,9 @@ assert contains "$tiers_table" "eco (default):"
 assert contains "$tiers_table" "max:"
 for cell in "oc-kimik3 x4" "oc-grok45-low x3" agy-pro-high-skill \
   "agy-flash35-medium-skill x2" agy-flash35-high-skill agy-flash36-medium-skill \
-  opus-low "opus-low-skill x2" sol-low agy-flash35-low-skill agy-pro-low-skill \
-  opus-medium sol-medium "sonnet-medium-skill x2" opus-high \
-  "opus-medium-skill x3" sol-high sol-xhigh opus-high-skill \
-  "opus-medium-skill x2" sol-max sonnet-high-skill; do
+  opus-low sol-low sol-low-bare agy-flash35-low-skill agy-pro-low-skill \
+  opus-medium sol-medium-bare opus-high sol-high "sol-high-bare x2" sol-xhigh \
+  sol-xhigh-bare sol-high-bare "sol-max x2" sol-max-bare; do
   assert contains "$tiers_table" "$cell"
 done
 owner_table="$("$SCRIPT" tiers --table 2>&1)"
