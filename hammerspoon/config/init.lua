@@ -27,6 +27,7 @@ local jumpUserProcessCommand = [[/usr/bin/pgrep -fl JumpConnect | /usr/bin/awk '
 local jumpUserPidCommand = [[/usr/bin/pgrep -fl JumpConnect | /usr/bin/awk '$2 == "/Applications/Jump" && $3 == "Desktop" && $4 == "Connect.app/Contents/MacOS/JumpConnect" && $0 !~ /--service/ { print $1 }']]
 local sonobusGroupUrl = "sonobus://aoo.sonobus.net:10998/?g=egor-mic"
 local serviceLogDir = "/Library/Logs/Jump Desktop/"
+local enforceSettingKey = "IpadAutomation.enforce"
 local pending = {}
 local nextPendingId = 0
 local actionGeneration = 0
@@ -50,6 +51,30 @@ local function showAutomationMenu()
     if _G.AutomationMenu and _G.AutomationMenu.show then
         _G.AutomationMenu.show()
     end
+end
+
+local function refreshAutomationMenu()
+    if _G.AutomationMenu and _G.AutomationMenu.refresh then
+        _G.AutomationMenu.refresh()
+    end
+end
+
+-- Master "Enforce iPad mode" gate: every watcher/timer that re-asserts system
+-- state while the iPad is connected must check this. Off = freeze, never revert.
+local function enforceEnabled()
+    local ok, stored = pcall(hs.settings.get, enforceSettingKey)
+    if not ok or stored == nil then
+        return true
+    end
+    return stored == true
+end
+
+local function storeEnforce(value)
+    local ok, err = pcall(hs.settings.set, enforceSettingKey, value == true)
+    if not ok then
+        print("WARNING: could not store iPad enforcement setting:", err)
+    end
+    return enforceEnabled()
 end
 
 local function virtualDisplayPresent()
@@ -392,7 +417,8 @@ local function enableDummy()
     print("ACTION: ENABLE_DUMMY")
     runAppTasks({
         { path = "/usr/bin/open", args = { "-a", "BetterDisplay" } },
-        { path = "/usr/bin/open", args = { "-a", "Jump Desktop Connect" } },
+        -- -j -g: Jump Connect's status window pops on every plain launch; it is never used here.
+        { path = "/usr/bin/open", args = { "-j", "-g", "-a", "Jump Desktop Connect" } },
     }, true, "iPad connected", 10)
     local generation = actionGeneration
     nextPendingId = nextPendingId + 1
@@ -412,7 +438,7 @@ local function enableDummy()
         end
         if #jumpUserPids() == 0 then
             print("WARNING: iPad connect re-launching Jump Desktop Connect")
-            specs[#specs + 1] = { path = "/usr/bin/open", args = { "-a", "Jump Desktop Connect" } }
+            specs[#specs + 1] = { path = "/usr/bin/open", args = { "-j", "-g", "-a", "Jump Desktop Connect" } }
         end
         if hs.application.get("SonoBus") == nil then
             print("WARNING: iPad connect re-launching SonoBus")
@@ -420,6 +446,10 @@ local function enableDummy()
         end
         if #specs > 0 then
             runAppTasks(specs, true, "iPad connected retry", 3)
+        end
+        local jump = hs.application.get("Jump Desktop Connect")
+        if jump then
+            jump:hide()
         end
     end)
     showAutomationMenu()
@@ -763,7 +793,8 @@ local function scheduleAudioInputMirror()
         if not nameOk or not name then
             return
         end
-        if _G.IpadMode and _G.IpadMode.isOn()
+        if enforceEnabled()
+            and _G.IpadMode and _G.IpadMode.isOn()
             and not name:find("BlackHole", 1, true) then
             local targetOk, target = pcall(function()
                 return hs.audiodevice.findInputByName("BlackHole 2ch")
@@ -816,8 +847,32 @@ local function assertBlackHoleVolume()
     end
 end
 
+local function enforceAudio()
+    assertBlackHoleVolume()
+    switchSystemInputDevice("BlackHole 2ch")
+end
+
+local function setEnforce(value)
+    local active = storeEnforce(value)
+    if _G.DisplayMirror then
+        _G.DisplayMirror.reconcile("enforcement changed")
+    end
+    if active and _G.IpadMode and _G.IpadMode.isOn() then
+        enforceAudio()
+    end
+    refreshAutomationMenu()
+    return active
+end
+
 local function ipadConnected(baseline)
+    if not baseline then
+        storeEnforce(true)
+        refreshAutomationMenu()
+    end
     enableDummy()
+    if _G.DisplayMirror then
+        _G.DisplayMirror.reconcile("iPad connected")
+    end
     hs.execute([[/usr/bin/open "]] .. sonobusGroupUrl .. [["]])
     -- On a baseline replay the overlay has already restored the visibility the
     -- user last chose (ipad_overlay.lua); showing here would switch an overlay
@@ -825,12 +880,22 @@ local function ipadConnected(baseline)
     if _G.IpadOverlay and not (baseline and _G.IpadOverlay.hasStoredVisibility()) then
         _G.IpadOverlay.show()
     end
-    assertBlackHoleVolume()
-    switchSystemInputDevice("BlackHole 2ch")
+    if enforceEnabled() then
+        enforceAudio()
+    end
 end
 
 local function ipadDisconnected(baseline)
-    disableDummy(baseline)
+    if _G.DisplayMirror and _G.DisplayMirror.prepareDisconnect then
+        -- BetterDisplay must finish unmirroring before the disconnect teardown can quit it.
+        _G.DisplayMirror.prepareDisconnect(function()
+            if not (_G.IpadMode and _G.IpadMode.isOn()) then
+                disableDummy(baseline)
+            end
+        end)
+    else
+        disableDummy(baseline)
+    end
 end
 
 local rejoinSonoBusTimer = nil
@@ -873,6 +938,8 @@ local watcher = hs.screen.watcher.new(scheduleScreenEvaluation)
 _G.IpadAutomation = {
     screenWatcher = watcher,
     pending = pending,
+    enforceEnabled = enforceEnabled,
+    setEnforce = setEnforce,
     ipadConnected = ipadConnected,
     ipadDisconnected = ipadDisconnected,
     ipadJunkPresent = ipadJunkPresent,
@@ -928,6 +995,15 @@ end)
 if not ipadModeOk then
     print("ERROR: iPad mode failed to load:", ipadModeError)
     hs.alert.show("iPad mode error")
+end
+
+local displayMirrorOk, displayMirrorError = pcall(function()
+    dofile(hs.configdir .. "/display_mirror.lua")
+end)
+
+if not displayMirrorOk then
+    print("ERROR: Display mirror failed to load:", displayMirrorError)
+    hs.alert.show("Display mirror error")
 end
 
 local sidecarPresenceOk, sidecarPresenceError = pcall(function()

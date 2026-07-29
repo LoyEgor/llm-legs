@@ -157,7 +157,11 @@ buildMenu = function()
     local claude = _G.ClaudeContinue
     local ipadMode = _G.IpadMode
     local ipadOverlay = _G.IpadOverlay
+    local ipadAutomation = _G.IpadAutomation
     local ipadManualAvailable = ipadMode and type(ipadMode.setManual) == "function"
+    local enforceAvailable = ipadAutomation
+        and type(ipadAutomation.enforceEnabled) == "function"
+        and type(ipadAutomation.setEnforce) == "function"
 
     if not claude then
         return {
@@ -235,6 +239,17 @@ buildMenu = function()
             fn = function()
                 if ipadOverlay then
                     ipadOverlay.toggle()
+                    refreshTitle()
+                end
+            end,
+        },
+        {
+            title = "Enforce iPad mode",
+            checked = enforceAvailable and ipadAutomation.enforceEnabled(),
+            disabled = not enforceAvailable,
+            fn = function()
+                if enforceAvailable then
+                    ipadAutomation.setEnforce(not ipadAutomation.enforceEnabled())
                     refreshTitle()
                 end
             end,
