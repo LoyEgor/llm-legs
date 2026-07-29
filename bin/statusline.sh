@@ -1365,6 +1365,7 @@ if [ -n "$active_top" ]; then
   progress_total=""
   progress_tier=""
   progress_max=""
+  progress_late=""
   progress_newest=""
   progress_dir="$worker_stats_dir/progress"
   if [ -n "$active_common" ] && [ -d "$progress_dir" ]; then
@@ -1381,7 +1382,7 @@ if [ -n "$active_top" ]; then
       # so there is no tight staleness window here; this is only the wall that stops a wedged
       # process from holding the segment for a day.
       [ "$((now - progress_mtime))" -le 7200 ] || continue
-      progress_values=$(jq -er '
+      progress_values=$(jq -er --argjson now "$now" '
         select(type == "object"
           and (.repo | type) == "string"
           and (.pid | type) == "number"
@@ -1394,12 +1395,30 @@ if [ -n "$active_top" ]; then
           and (.started | type) == "string"
           and ((.tier | type) == "string" or .tier == null)
           and ((.max | type) == "boolean" or .max == null))
+        | . as $run
+        | (if (($run.started_epoch | type) == "number"
+                   and ($run.started_epoch | floor) == $run.started_epoch
+                   and $run.started_epoch > 0)
+           then $run.started_epoch else null end) as $started_epoch
+        | (if (($run.expected | type) == "object") then $run.expected else {} end) as $expected
+        | ([
+            $run.cells[] as $cell
+            | select(($cell | type) == "string")
+            | select(($run.done | index($cell)) == null)
+            | $expected[$cell]
+            | select(type == "number" and . >= 0) as $expected_ms
+            | select($started_epoch != null
+                and (($now - $started_epoch) * 1000
+                     > ([3 * $expected_ms, 120000] | max)))
+          ] | length > 0) as $late
         | [.repo, (.pid | tostring), (.tier // ""), (if .max then "max" else "" end),
-           (.done | length | tostring), (.cells | length | tostring), .started]
+           (.done | length | tostring), (.cells | length | tostring), .started,
+           (if $late then "late" else "" end)]
         | join("\u001f")
       ' "$progress_file" 2>/dev/null) || continue
       IFS=$'\x1f' read -r progress_repo progress_pid progress_run_tier progress_run_max \
-        progress_run_done progress_run_total progress_started <<< "$progress_values"
+        progress_run_done progress_run_total progress_started progress_run_late \
+        <<< "$progress_values"
       kill -0 "$progress_pid" 2>/dev/null || continue
       progress_start=$(process_start_epoch "$progress_pid" "$now") || continue
       # The slack absorbs ps's whole-second resolution, not a real gap: pids are handed out
@@ -1416,19 +1435,25 @@ if [ -n "$active_top" ]; then
         progress_total=$progress_run_total
         progress_tier=$progress_run_tier
         progress_max=$progress_run_max
+        progress_late=$progress_run_late
       fi
     done
   fi
   if [ -n "$progress_total" ]; then
-    review_part=" ${sep} review"
+    progress_label="review"
     # The max panel is a variant of a tier, never a run of its own: --max is refused without
     # --tier, so an untiered run carrying it is a corrupt file and its mark is dropped with the
     # tier rather than rendered as a panel size nothing names.
     if [ -n "$progress_tier" ]; then
-      review_part="${review_part} ${progress_tier}"
-      [ -n "$progress_max" ] && review_part="${review_part} ${progress_max}"
+      progress_label="${progress_label} ${progress_tier}"
+      [ -n "$progress_max" ] && progress_label="${progress_label} ${progress_max}"
     fi
-    review_part="${review_part} ${progress_done}/${progress_total}"
+    progress_label="${progress_label} ${progress_done}/${progress_total}"
+    if [ -n "$progress_late" ]; then
+      review_part=" ${RED}│ ${progress_label}${RESET}"
+    else
+      review_part=" ${sep} ${progress_label}"
+    fi
   fi
 fi
 

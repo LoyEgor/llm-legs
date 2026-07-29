@@ -70,6 +70,35 @@ repeated = rb.parse_raters("sol-high x2")
 assert [rater["spec"] for rater in repeated] == ["sol-high", "sol-high#2"], repeated
 assert repeated[0]["model"] == repeated[1]["model"] == "sol"
 assert repeated[0]["effort"] == repeated[1]["effort"] == "high"
+duration_medians = rb.review_duration_medians([
+    {"rater": "sol-high", "duration_ms": 1000},
+    {"rater": "sol-high#2", "duration_ms": 9000},
+    {"rater": "sol-high", "duration_ms": 2000},
+    {"rater": "opus-medium", "duration_ms": 4000},
+    {"rater": "opus-medium#2", "duration_ms": 8000},
+    {"rater": "missing-duration"},
+])
+assert duration_medians == {"sol-high": 2000, "opus-medium": 6000}, duration_medians
+expected_durations = rb.expected_review_durations(
+    ["sol-high", "sol-high#2", "opus-medium", "no-history"], duration_medians
+)
+assert expected_durations == {
+    "sol-high": 2000, "sol-high#2": 2000, "opus-medium": 6000,
+}, expected_durations
+assert "no-history" not in expected_durations
+late_report = io.StringIO()
+with contextlib.redirect_stdout(late_report):
+    assert rb.report_late_review("sol-high", 150001, 50000)
+    assert rb.report_late_review("sol-high", 120001, 1000)
+assert late_report.getvalue().splitlines() == [
+    "LATE: sol-high took 150.001s against a 50s median",
+    "LATE: sol-high took 120.001s against a 1s median",
+]
+on_time_report = io.StringIO()
+with contextlib.redirect_stdout(on_time_report):
+    assert rb.report_late_review("sol-high", 150000, 50000) is None
+    assert rb.report_late_review("sol-high", 120000, 1000) is None
+assert on_time_report.getvalue() == ""
 for invalid in (
     "sol-high x1", "sol-high x0", "sol-high x10", "sol-high xno",
     "sol-high X2", "sol-high  x2",
@@ -252,6 +281,24 @@ for bare_sonnet in ("sonnet-low", "sonnet-medium", "sonnet-high", "sonnet-xhigh"
     else:
         raise AssertionError(f"accepted a bare sonnet rater: {bare_sonnet}")
 rb.refuse_retired_cells([rb.parse_rater(spec) for spec in ("opus-medium", "opus-high")])
+standalone_grok_reason = (
+    "the standalone grok account is disconnected; grok reviews run as OpenCode cells "
+    "(oc-grok45-*); the plumbing stays for a future account"
+)
+try:
+    rb.refuse_retired_cells([rb.parse_rater("grok-low")])
+except RuntimeError as exc:
+    assert str(exc) == standalone_grok_reason, exc
+else:
+    raise AssertionError("accepted a standalone grok rater")
+rb.refuse_retired_cells([rb.parse_rater("oc-grok45-low")])
+standalone_grok = subprocess.run(
+    [sys.argv[1], "run", "HEAD", "--repo", str(repo), "--raters", "grok-low"],
+    text=True,
+    capture_output=True,
+)
+assert standalone_grok.returncode != 0, standalone_grok
+assert standalone_grok_reason in standalone_grok.stderr, standalone_grok.stderr
 # The cheapest way to run a refused model would be to ask for it as the verifier.
 for dead_verifier in ("oc-glm52", "oc-kimik27code"):
     try:
@@ -1966,6 +2013,11 @@ assert review_receipt["ts"]
 
 progress_capture_store = work / "progress-capture-claudeb"
 os.environ["CLAUDEB_DIR"] = str(progress_capture_store)
+(progress_capture_store / "worker-stats").mkdir(parents=True)
+(progress_capture_store / "worker-stats" / "reviews.jsonl").write_text(
+    json.dumps({"rater": "sol-medium", "duration_ms": 3000}) + "\n"
+    + json.dumps({"rater": "sol-medium#2", "duration_ms": 5000}) + "\n"
+)
 captured_progress = []
 
 
@@ -1983,10 +2035,18 @@ rb.affordability = lambda: {
     "claude": False, "codex": True, "agy": True, "grok": True, "opencode": True,
     "claude_account": None,
 }
-assert rb.cmd_run(argparse.Namespace(
-    repo=str(pin_repo), commitish=pin_sha, raters="sol-medium,opus-medium",
-    leg=False, verify=None, auto=None, focus=None,
-)) == 0
+# time.time() is shifted for this one call so the epoch's origin is provable: cmd_run's start
+# datetime comes from datetime.now(), which the shift does not touch, so only a document built
+# from a stray second clock read would carry the shifted value.
+_real_time = time.time
+time.time = lambda: _real_time() + 7200
+try:
+    assert rb.cmd_run(argparse.Namespace(
+        repo=str(pin_repo), commitish=pin_sha, raters="sol-medium,opus-medium",
+        leg=False, verify=None, auto=None, focus=None,
+    )) == 0
+finally:
+    time.time = _real_time
 assert captured_progress[0]["cells"] == ["sol-medium"], captured_progress
 assert captured_progress[0]["tier"] is None
 # A plain `run` Namespace carries neither attribute, and the progress document is written from
@@ -1994,6 +2054,24 @@ assert captured_progress[0]["tier"] is None
 assert captured_progress[0]["max"] is False
 assert captured_progress[0]["target"] == pin_sha[:7]
 assert captured_progress[0]["done"] == [] and captured_progress[0]["failed"] == 0
+assert captured_progress[0]["expected"] == {"sol-medium": 4000}, captured_progress[0]
+assert isinstance(captured_progress[0]["started_epoch"], int)
+# Both start fields must name the same clock read: an epoch stamped separately drifts from the
+# ISO string by however long setup took, and the reader's late math inherits the drift. The
+# wiring check above ran with time.time() shifted two hours, so a document built from a second
+# clock read instead of cmd_run's own start would carry the shifted value and fail here.
+import datetime as _dt
+assert abs(captured_progress[0]["started_epoch"] - int(
+    _dt.datetime.fromisoformat(captured_progress[0]["started"]).timestamp()
+)) <= 2, captured_progress[0]
+_past = "2026-01-01T00:00:00+00:00"
+_past_doc = rb.review_progress_document(
+    str(pin_repo), "epoch-rid", None, "t", [], started=_past,
+    started_epoch=_dt.datetime.fromisoformat(_past).timestamp(),
+)
+assert _past_doc["started_epoch"] == int(
+    _dt.datetime.fromisoformat(_past).timestamp()
+), _past_doc
 assert not list(
     (progress_capture_store / "worker-stats" / rb.PROGRESS_DIR).glob("*.json")
 )
@@ -2083,11 +2161,14 @@ assert all(name.startswith("same-name__") and len(name) == len("same-name__.json
 
 progress_name = rb.progress_file_name(pin_repo, 12345)
 assert progress_name == rb.receipt_file_name(pin_repo)[:-5] + "-12345.json", progress_name
+progress_epoch_min = int(time.time())
 progress = rb.review_progress_document(
     pin_repo, "20260727T120000Z-2ecc0bd", "T2", "2ecc0bd",
     ["oc-kimik3", "sol-low"],
     started="2026-07-27T12:00:00+00:00", pid=12345,
+    expected={"oc-kimik3": 23000},
 )
+progress_epoch_max = int(time.time())
 assert progress == {
     "repo": str(pin_repo.resolve()),
     "pid": 12345,
@@ -2097,10 +2178,13 @@ assert progress == {
     "target": "2ecc0bd",
     "cells": ["oc-kimik3", "sol-low"],
     "done": [],
+    "expected": {"oc-kimik3": 23000},
     "failed": 0,
     "started": "2026-07-27T12:00:00+00:00",
+    "started_epoch": progress["started_epoch"],
     "ts": "2026-07-27T12:00:00+00:00",
 }, progress
+assert progress_epoch_min <= progress["started_epoch"] <= progress_epoch_max
 # The statusline reads this to tell a T2 max panel from a T2 one, and it validates the key as a
 # boolean: a truthy flag object passed straight through would be dropped as a corrupt file.
 max_progress = rb.review_progress_document(

@@ -1276,6 +1276,7 @@ cat <<'SNAP'
 1015 1 node /proj/rpc.js
 1016 1000 8080 --serve
 1017 1000 COMMANDER --serve
+1018 1000 COMMAND --serve
 1013 1000 claude
 1014 1013 node /path/to/vite-worker
 9999 1 claude
@@ -1319,6 +1320,7 @@ node     1014 u   33u  IPv4  0t0      TCP *:4500 (LISTEN)
 node     1015 u   34u  IPv4  0t0      TCP 127.0.0.1:62150 (LISTEN)
 8080     1016 u   35u  IPv4  0t0      TCP *:4600 (LISTEN)
 COMMANDER 1017 u  36u  IPv4  0t0      TCP *:4700 (LISTEN)
+COMMAND   1018 u  37u  IPv4  0t0      TCP *:4800 (LISTEN)
 OUT
 LSEOF
 chmod +x "$FAKE_LSOF"
@@ -1337,8 +1339,9 @@ run_probe pp-parse 1001
 # not end the walk, or every server a worker starts reads as a sibling chat's. 1010-1012 are
 # orphans and no repository was given, so nothing places them. 4600 belongs to a process whose own
 # name is all digits, which the pid scan must not mistake for the pid column, and 4700 to one whose
-# name merely starts with the word the header line is recognised by.
-assert_eq '5173 8123 5174 8080 4500 4600 4700' "$(cat "$STATE_DIR/ports-pp-parse")"
+# name merely starts with the header word. A real process exactly named COMMAND also survives
+# because the listener filter makes the header check redundant.
+assert_eq '5173 8123 5174 8080 4500 4600 4700 4800' "$(cat "$STATE_DIR/ports-pp-parse")"
 
 # A server backgrounded from a tool call is reparented to launchd as soon as that call returns —
 # the case the ancestry walk alone could never see, and the one every dev server actually hits.
@@ -1347,7 +1350,7 @@ assert_eq '5173 8123 5174 8080 4500 4600 4700' "$(cat "$STATE_DIR/ports-pp-parse
 # the right directory and the wrong port: a directory is weaker evidence than a parent, and every
 # editor RPC socket started from the repository would otherwise fill the segment.
 run_probe pp-orphan 1001 /proj
-assert_eq '5173 8123 5174 8080 4254 4500 4600 4700' "$(cat "$STATE_DIR/ports-pp-orphan")"
+assert_eq '5173 8123 5174 8080 4254 4500 4600 4700 4800' "$(cat "$STATE_DIR/ports-pp-orphan")"
 
 # The repository places an orphan, never someone else's session: 1001-1009 hang off the other
 # claude, and a repository argument must not turn them into this session's servers. 4500 sits under
@@ -1698,6 +1701,46 @@ progress_live_out=$(progress_render live)
 assert grep -Fq 'review T2 3/8' <<< "$progress_live_out"
 assert test "${progress_live_out#*review T2 max}" = "$progress_live_out"
 rm -f "$review_receipt_file"
+
+write_progress "$$" T2 0 1 2026-07-27T22:00:00+00:00
+jq --argjson started_epoch "$((NOW - 121))" \
+  '. + {started_epoch:$started_epoch,expected:{"cell-0":1000}}' \
+  "$PROGRESS_DIR/$progress_prefix$$.json" \
+  > "$PROGRESS_DIR/$progress_prefix$$.json.tmp"
+mv "$PROGRESS_DIR/$progress_prefix$$.json.tmp" "$PROGRESS_DIR/$progress_prefix$$.json"
+progress_late_out=$(progress_render late)
+assert grep -Fq " ${RED}│ review T2 0/1${RESET}" <<< "$progress_late_out"
+
+jq --argjson started_epoch "$NOW" '.started_epoch = $started_epoch' \
+  "$PROGRESS_DIR/$progress_prefix$$.json" \
+  > "$PROGRESS_DIR/$progress_prefix$$.json.tmp"
+mv "$PROGRESS_DIR/$progress_prefix$$.json.tmp" "$PROGRESS_DIR/$progress_prefix$$.json"
+progress_fresh_out=$(progress_render fresh)
+assert grep -Fq " ${DIM}│${RESET} review T2 0/1" <<< "$progress_fresh_out"
+assert test "${progress_fresh_out#*"${RED}│ review"}" = "$progress_fresh_out"
+
+jq --argjson started_epoch "$((NOW - 121))" \
+  '.started_epoch = $started_epoch | .done = ["cell-0"]' \
+  "$PROGRESS_DIR/$progress_prefix$$.json" \
+  > "$PROGRESS_DIR/$progress_prefix$$.json.tmp"
+mv "$PROGRESS_DIR/$progress_prefix$$.json.tmp" "$PROGRESS_DIR/$progress_prefix$$.json"
+progress_done_late_out=$(progress_render done-late)
+assert grep -Fq " ${DIM}│${RESET} review T2 1/1" <<< "$progress_done_late_out"
+assert test "${progress_done_late_out#*"${RED}│ review"}" = "$progress_done_late_out"
+
+write_progress "$$" T2 0 1 2026-07-27T22:00:00+00:00
+jq --argjson started_epoch "$((NOW - 121))" '.started_epoch = $started_epoch' \
+  "$PROGRESS_DIR/$progress_prefix$$.json" \
+  > "$PROGRESS_DIR/$progress_prefix$$.json.tmp"
+mv "$PROGRESS_DIR/$progress_prefix$$.json.tmp" "$PROGRESS_DIR/$progress_prefix$$.json"
+progress_no_expected_out=$(progress_render no-expected)
+assert grep -Fq " ${DIM}│${RESET} review T2 0/1" <<< "$progress_no_expected_out"
+assert test "${progress_no_expected_out#*"${RED}│ review"}" = "$progress_no_expected_out"
+
+write_progress "$$" T2 0 1 2026-07-27T22:00:00+00:00
+progress_legacy_out=$(progress_render legacy)
+assert grep -Fq " ${DIM}│${RESET} review T2 0/1" <<< "$progress_legacy_out"
+assert test "${progress_legacy_out#*"${RED}│ review"}" = "$progress_legacy_out"
 
 # The max panel is a variant of the same tier at the same time budget, so a T2 max run must not
 # read as the T2 it is not: it buys a wider panel, and the label is where that is visible.

@@ -427,6 +427,8 @@ RECEIPT_FIELDS = ("repo", "tree", "commit", "run_id", "ts")
 # T1's size ceiling, named rather than left a literal inside the tier ladder.
 T1_MAX_LINES = 150
 RECEIPT_HASH_HEX = 8
+REVIEW_LATE_MULTIPLIER = 3
+REVIEW_LATE_FLOOR_S = 120
 
 
 def utc_now():
@@ -484,7 +486,7 @@ def progress_file_name(repo, pid=None):
 
 
 def review_progress_document(repo, run_id, tier, target, cells, started=None, pid=None,
-                             max_panel=False):
+                             max_panel=False, expected=None, started_epoch=None):
     timestamp = started or iso_now()
     return {
         "repo": str(Path(repo).resolve()),
@@ -495,8 +497,12 @@ def review_progress_document(repo, run_id, tier, target, cells, started=None, pi
         "target": target,
         "cells": list(cells),
         "done": [],
+        "expected": dict(expected or {}),
         "failed": 0,
         "started": timestamp,
+        # One moment, one clock read: an epoch stamped here a second read later would let the
+        # two start fields disagree about when the run began.
+        "started_epoch": int(started_epoch if started_epoch is not None else time.time()),
         "ts": timestamp,
     }
 
@@ -911,6 +917,59 @@ def review_counts(rows):
     return counts
 
 
+def review_duration_medians(rows):
+    durations = defaultdict(list)
+    for row in rows:
+        rater = row.get("rater")
+        duration = row.get("duration_ms")
+        if (
+            isinstance(rater, str)
+            and rater
+            and isinstance(duration, (int, float))
+            and not isinstance(duration, bool)
+            and duration >= 0
+        ):
+            durations[normalize_legacy_rater(rater)].append(duration)
+    return {
+        rater: statistics.median(values)
+        for rater, values in durations.items()
+    }
+
+
+def expected_review_durations(cells, medians):
+    return {
+        cell: medians[normalize_legacy_rater(cell)]
+        for cell in cells
+        if normalize_legacy_rater(cell) in medians
+    }
+
+
+def late_review_line(spec, duration_ms, median_ms):
+    values = (duration_ms, median_ms)
+    if any(
+        not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0
+        for value in values
+    ):
+        return None
+    threshold_ms = max(
+        REVIEW_LATE_MULTIPLIER * median_ms,
+        REVIEW_LATE_FLOOR_S * 1000,
+    )
+    if duration_ms <= threshold_ms:
+        return None
+    return (
+        f"LATE: {spec} took {duration_ms / 1000:g}s "
+        f"against a {median_ms / 1000:g}s median"
+    )
+
+
+def report_late_review(spec, duration_ms, median_ms):
+    line = late_review_line(spec, duration_ms, median_ms)
+    if line:
+        print(line)
+    return line
+
+
 def command_path(env_name, sibling):
     override = os.environ.get(env_name)
     if override:
@@ -1057,6 +1116,11 @@ def measured_worthless(rater):
 
 
 def refuse_retired_cells(raters):
+    if any(rater["side"] == "grok" for rater in raters):
+        raise RuntimeError(
+            "the standalone grok account is disconnected; grok reviews run as OpenCode cells "
+            "(oc-grok45-*); the plumbing stays for a future account"
+        )
     # run_agy has no diff-only mode left to reach, so a skill-less agy spec would quietly run the
     # skill and record the findings under a name claiming otherwise.
     retired = [rater["spec"] for rater in raters if rater["side"] == "agy" and not rater["skill"]]
@@ -3257,6 +3321,7 @@ def cmd_run(args):
     )
     worktree_mode = worktree_mode or is_worktree_snapshot(repo, sha)
     reviews_path = state_dir() / "reviews.jsonl"
+    review_rows = read_jsonl(reviews_path)
     verify_model = args.verify
     if args.leg:
         verify_model = verify_model or OPENCODE_VERIFIER
@@ -3278,10 +3343,10 @@ def cmd_run(args):
         ]
         if not raters:
             raise RuntimeError("no affordable requested raters")
-        counts = review_counts(read_jsonl(reviews_path))
+        counts = review_counts(review_rows)
     else:
         available = affordability()
-        raters, counts, skipped = auto_pick(args.auto or 2, read_jsonl(reviews_path), available)
+        raters, counts, skipped = auto_pick(args.auto or 2, review_rows, available)
     refuse_retired_cells(raters)
     if verify_model and not any(rater["side"] == "opencode" for rater in raters):
         raise RuntimeError(
@@ -3319,6 +3384,10 @@ def cmd_run(args):
         for rater in raters) else ""
 
     submitted_raters = sorted(raters, key=gate_admission_key)
+    expected_durations = expected_review_durations(
+        [rater["spec"] for rater in submitted_raters],
+        review_duration_medians(review_rows),
+    )
     progress_path = None
     progress = None
     progress_warned = False
@@ -3340,7 +3409,9 @@ def cmd_run(args):
                 "worktree" if worktree_mode else sha[:7],
                 [rater["spec"] for rater in submitted_raters],
                 started=started.isoformat(),
+                started_epoch=started.timestamp(),
                 max_panel=bool(getattr(args, "max", False)),
+                expected=expected_durations,
             )
             prune_review_progress(repo, progress_path.parent)
             persist_review_progress(progress_path, progress)
@@ -3456,6 +3527,9 @@ def cmd_run(args):
                     run_meta["model_resolved"] = model_resolved
                 rater_meta.append(run_meta)
                 print(f"{rater['spec']}: {len(findings)} finding(s), {duration} ms, exit {rc}")
+            report_late_review(
+                rater["spec"], duration, expected_durations.get(rater["spec"])
+            )
 
         meta = {
             "run_id": run_id, "commit": sha, "repo": str(repo),

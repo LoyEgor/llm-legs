@@ -143,10 +143,8 @@ ports=$(awk -v root="$root" -v top="$project_top" '
     next
   }
   {
-    # The header is the line whose first field IS the word, not one that merely starts with it: a
-    # process named COMMANDER would otherwise have its ports skipped. The pid scan starts past the
-    # command name for the mirror of that reason — an all-numeric command name is not a pid.
-    if ($0 == "" || $1 == "COMMAND") next
+    # The pid scan starts at field 2 because an all-numeric command name is not a pid.
+    if ($0 == "") next
     if (!match($0, /:[0-9]+ \(LISTEN\)/)) next
     port=substr($0, RSTART+1, RLENGTH-1); sub(/ .*/,"",port)
     pid=""
