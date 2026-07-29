@@ -1269,7 +1269,7 @@ if [ -n "$session_id" ]; then
   ports_cache="$statusline_cache_dir/ports-$session_id"
   ports_mtime=$(file_mtime "$ports_cache" 2>/dev/null)
   if { ! [[ "$ports_mtime" =~ ^[0-9]+$ ]] || [ "$((now - ports_mtime))" -gt 15 ]; } && [ -x "$probe_bin" ]; then
-    ( "$probe_bin" "$session_id" "$PPID" >/dev/null 2>&1 & ) 2>/dev/null
+    ( "$probe_bin" "$session_id" "$PPID" "$active_top" >/dev/null 2>&1 & ) 2>/dev/null
   fi
   if [[ "$ports_mtime" =~ ^[0-9]+$ ]] && [ "$((now - ports_mtime))" -le 60 ]; then
     # `read` still sets the var on a newline-less EOF; ignore the nonzero return.
@@ -1364,6 +1364,7 @@ if [ -n "$active_top" ]; then
   progress_done=""
   progress_total=""
   progress_tier=""
+  progress_max=""
   progress_newest=""
   progress_dir="$worker_stats_dir/progress"
   if [ -n "$active_common" ] && [ -d "$progress_dir" ]; then
@@ -1391,13 +1392,14 @@ if [ -n "$active_top" ]; then
           and (.cells | length) > 0
           and (.done | length) <= (.cells | length)
           and (.started | type) == "string"
-          and ((.tier | type) == "string" or .tier == null))
-        | [.repo, (.pid | tostring), (.tier // ""),
+          and ((.tier | type) == "string" or .tier == null)
+          and ((.max | type) == "boolean" or .max == null))
+        | [.repo, (.pid | tostring), (.tier // ""), (if .max then "max" else "" end),
            (.done | length | tostring), (.cells | length | tostring), .started]
         | join("\u001f")
       ' "$progress_file" 2>/dev/null) || continue
-      IFS=$'\x1f' read -r progress_repo progress_pid progress_run_tier progress_run_done \
-        progress_run_total progress_started <<< "$progress_values"
+      IFS=$'\x1f' read -r progress_repo progress_pid progress_run_tier progress_run_max \
+        progress_run_done progress_run_total progress_started <<< "$progress_values"
       kill -0 "$progress_pid" 2>/dev/null || continue
       progress_start=$(process_start_epoch "$progress_pid" "$now") || continue
       # The slack absorbs ps's whole-second resolution, not a real gap: pids are handed out
@@ -1413,12 +1415,19 @@ if [ -n "$active_top" ]; then
         progress_done=$progress_run_done
         progress_total=$progress_run_total
         progress_tier=$progress_run_tier
+        progress_max=$progress_run_max
       fi
     done
   fi
   if [ -n "$progress_total" ]; then
     review_part=" ${sep} review"
-    [ -n "$progress_tier" ] && review_part="${review_part} ${progress_tier}"
+    # The max panel is a variant of a tier, never a run of its own: --max is refused without
+    # --tier, so an untiered run carrying it is a corrupt file and its mark is dropped with the
+    # tier rather than rendered as a panel size nothing names.
+    if [ -n "$progress_tier" ]; then
+      review_part="${review_part} ${progress_tier}"
+      [ -n "$progress_max" ] && review_part="${review_part} ${progress_max}"
+    fi
     review_part="${review_part} ${progress_done}/${progress_total}"
   fi
 fi
@@ -1471,7 +1480,7 @@ fi
 
 # Two lines: identity/work (model, account, dir/branch/diff, workers) on top,
 # usage (ctx, 5h, weekly, fable, cost) below.
-line1="${CYAN}${model}${model_suffix}${RESET}${fast_part}${cb_part} ${sep} ${dir_part}${branch_part}${review_part}${ports_part}${worker_part}"
+line1="${CYAN}${model}${model_suffix}${RESET}${fast_part}${cb_part} ${sep} ${dir_part}${branch_part}${ports_part}${review_part}${worker_part}"
 
 line2="ctx $(pct_colored "$ctx_pct" "$ctx_dim" 40)${ctx_tokens_part} ${sep} 5h $(pct_colored "$h5_pct" "$h5_dim")${h5_arrow} ${sep} wk $(pct_colored "$wk_pct" "$wk_dim")${wk_arrow}${fable_part}"
 
