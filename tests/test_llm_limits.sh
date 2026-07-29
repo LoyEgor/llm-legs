@@ -917,6 +917,10 @@ printf '{"five_hour":{"used_percentage":14,"resets_at":%s,"as_of":%s,"origin":"u
 printf '{"five_hour":{"used_percentage":17,"resets_at":%s}}\n' "$((now + 5000))" >"$CLAUDEB_FRESH/limits/legacy.json"
 touch -t 202607110500 "$CLAUDEB_FRESH/limits/legacy.json"
 printf '{"auth":{"status":"expired","checked_at":%s}}\n' "$now" >"$CLAUDEB_FRESH/limits/authonly.json"
+printf '{"five_hour":{"used_percentage":21,"resets_at":%s,"as_of":%s,"origin":"session"},"seven_day":{"used_percentage":31,"resets_at":%s,"as_of":%s,"origin":"usage"},"fable":{"used_percentage":41,"resets_at":%s,"as_of":%s,"origin":"usage"},"auth":{"status":"ok","checked_at":%s}}\n' \
+  "$((now + 5000))" "$((now - 300))" "$((now + 90000))" "$((now - 600))" \
+  "$((now + 90000))" "$((now - 10800))" "$now" >"$CLAUDEB_FRESH/limits/divergent.json"
+printf 'divergent\n' >"$CLAUDEB_FRESH/.claudeb-state"
 fresh_json=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_FRESH" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "freshness-contract collection failed"
 jq -e --argjson asof "$((now - 3000))" '
   [.vendors.claude.accounts[] | select(.account == "aged")][0] as $a |
@@ -938,13 +942,25 @@ jq -e '[.vendors.claude.accounts[] | select(.account == "failedauth")][0]
 jq -e '[.vendors.claude.accounts[] | select(.account == "legacy")][0]
   | (.five_hour.as_of | type) == "number" and .five_hour.stale == true' <<<"$fresh_json" >/dev/null \
   || fail "missing as_of must fall back to snapshot mtime"
-jq -e '.vendors.claude.stale == true and .vendors.claude.auth.status == "ok"' <<<"$fresh_json" >/dev/null \
+jq -e --argjson oldest "$((now - 10800))" --argjson now "$now" '
+  [.vendors.claude.accounts[] | select(.account == "divergent")][0] as $a |
+  ($a.as_of | fromdateiso8601) == $oldest and
+  $a.stale_seconds >= ($now - $oldest) and
+  ($a.stale_seconds < ($now - $oldest + 60)) and
+  (.vendors.claude.as_of | fromdateiso8601) == $oldest and
+  .vendors.claude.stale_seconds == $a.stale_seconds and
+  .vendors.claude.stale == true and .vendors.claude.auth.status == "ok"' <<<"$fresh_json" >/dev/null \
   || fail "vendor-level stale/auth hoist mismatch"
+fresh_table=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_FRESH" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) \
+  || fail "divergent-window table collection failed"
+awk '$1 == "claude/divergent*" {print $(NF-3)}' <<<"$fresh_table" | grep -Eq '^3h([0-9]+m)?$' \
+  || fail "AGE did not render the oldest data-carrying window"
 # Auth-only snapshot (failed probe, no five_hour): the account stays visible as unknown.
 jq -e '[.vendors.claude.accounts[] | select(.account == "authonly")][0]
   | .five_hour.used_pct == null and .five_hour.effective_pct == null and
     .five_hour.stale == true and .auth.status == "expired" and
-    .auth_needed == true and .blocked == true' <<<"$fresh_json" >/dev/null \
+    .auth_needed == true and .blocked == true and
+    (has("as_of") or has("stale_seconds") | not)' <<<"$fresh_json" >/dev/null \
   || fail "auth-only snapshot must stay visible with unknown values"
 printf 'authonly\n' >"$CLAUDEB_FRESH/.claudeb-state"
 cat >"$WORK/success-claudeb" <<'EOF'
@@ -1396,6 +1412,28 @@ codex_accounts_plain=$(HOME="$CODEX_ACCOUNTS_HOME" LLM_LIMITS_CODEX_CACHE="$CODE
   LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain) || fail "Codex multi-account plain failed"
 grep 'codex/alpha\*:' <<<"$codex_accounts_plain" | grep -q '| cr ↻2 |' || fail "plain Codex credits missing"
 grep 'codex/beta:' <<<"$codex_accounts_plain" | grep -q '| cr ↻0 |' || fail "plain zero Codex credits missing"
+CODEX_NULL_CACHE="$WORK/codex-null-window.json"
+cat >"$CODEX_NULL_CACHE" <<EOF
+{"accounts":[{"account":"main","reset_credits":1,"five_hour":{"used_pct":null,"resets_at":$five_reset_epoch,"as_of":$((now - 20000))},"weekly":{"used_pct":33,"resets_at":$week_reset_epoch,"as_of":$((now - 600))},"as_of":$((now - 100))}],"current":"main"}
+EOF
+codex_null=$(HOME="$CODEX_ACCOUNTS_HOME" LLM_LIMITS_CODEX_CACHE="$CODEX_NULL_CACHE" \
+  LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "Codex null-window collection failed"
+jq -e --argjson data_as_of "$((now - 600))" --argjson credits_as_of "$((now - 100))" '
+  .vendors.codex.accounts[0] as $a |
+  $a.five_hour.used_pct == null and $a.five_hour.as_of < $data_as_of and
+  ($a.as_of | fromdateiso8601) == $data_as_of and
+  (.vendors.codex.as_of | fromdateiso8601) == $data_as_of and
+  $a.reset_credits_as_of == $credits_as_of and $a.reset_credits_stale == false' \
+  <<<"$codex_null" >/dev/null || fail "null Codex window affected data age or reset-credit freshness"
+codex_null_table=$(HOME="$CODEX_ACCOUNTS_HOME" LLM_LIMITS_CODEX_CACHE="$CODEX_NULL_CACHE" \
+  LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) || fail "Codex null-window table failed"
+codex_null_age=$(awk '$1 == "codex" {print $(NF-3)}' <<<"$codex_null_table")
+codex_null_minutes=${codex_null_age%m}
+codex_null_expected=$(( ($(date +%s) - (now - 600)) / 60 ))
+[[ "$codex_null_minutes" =~ ^[0-9]+$ ]] &&
+  [ "$codex_null_minutes" -ge "$((codex_null_expected - 1))" ] &&
+  [ "$codex_null_minutes" -le "$codex_null_expected" ] \
+  || fail "Codex AGE included a null window: $codex_null_table"
 CODEX_TARGET_SENTINEL="$WORK/codex-target-called"
 cat >"$WORK/fake-codex-target" <<EOF
 #!/usr/bin/env bash

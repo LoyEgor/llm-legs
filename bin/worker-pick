@@ -272,7 +272,9 @@ summary=$(jq -r \
   # General workers do not bill the Fable bucket, so Fable exhaustion alone is not a wall.
   def buckets: [.five_hour, .weekly] | map(select(eff(.) != null));
   def account_as_of:
-    [(.five_hour.as_of? | epoch), (.weekly.as_of? | epoch), (.fable.as_of? | epoch)] |
+    [.five_hour?, .weekly?, .fable? |
+      select(type == "object" and (.used_pct | type) == "number") |
+      (.as_of? | epoch)] |
     map(select(. != null));
   def is_floored: buckets | any(eff(.) >= effective_floor(.));
   def is_walled: buckets | any(eff(.) >= 100);

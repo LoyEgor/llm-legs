@@ -165,9 +165,9 @@ DB3="$WORK/proj3.sqlite"; PROJ3="$WORK/proj3.json"
 stop_daemon; start_daemon "$DB3" "$PROJ3" || fail "proj daemon boot"
 t=$(now); f5=$((t+3600)); fw=$((t+7200)); ff=$((t+9000))
 POST "/observations" "{\"source\":\"claudeb\",\"vendor\":\"claude\",\"account\":\"alona\",\"scope\":\"auth\",\"observed_at\":$t,\"payload\":{\"verdict\":\"ok\",\"evidence\":\"affirmative\"}}" >/dev/null
-POST "/observations" "{\"source\":\"claudeb\",\"vendor\":\"claude\",\"account\":\"alona\",\"scope\":\"window\",\"observed_at\":$t,\"payload\":{\"window\":\"five_hour\",\"used_pct\":12,\"resets_at\":$f5,\"origin\":\"usage\"}}" >/dev/null
-POST "/observations" "{\"source\":\"claudeb\",\"vendor\":\"claude\",\"account\":\"alona\",\"scope\":\"window\",\"observed_at\":$t,\"payload\":{\"window\":\"weekly\",\"used_pct\":40,\"resets_at\":$fw,\"origin\":\"usage\"}}" >/dev/null
-POST "/observations" "{\"source\":\"claudeb\",\"vendor\":\"claude\",\"account\":\"alona\",\"scope\":\"window\",\"observed_at\":$t,\"payload\":{\"window\":\"fable\",\"used_pct\":41,\"resets_at\":$ff,\"origin\":\"usage\"}}" >/dev/null
+POST "/observations" "{\"source\":\"claudeb\",\"vendor\":\"claude\",\"account\":\"alona\",\"scope\":\"window\",\"observed_at\":$((t-300)),\"payload\":{\"window\":\"five_hour\",\"used_pct\":12,\"resets_at\":$f5,\"origin\":\"usage\"}}" >/dev/null
+POST "/observations" "{\"source\":\"claudeb\",\"vendor\":\"claude\",\"account\":\"alona\",\"scope\":\"window\",\"observed_at\":$((t-600)),\"payload\":{\"window\":\"weekly\",\"used_pct\":40,\"resets_at\":$fw,\"origin\":\"usage\"}}" >/dev/null
+POST "/observations" "{\"source\":\"claudeb\",\"vendor\":\"claude\",\"account\":\"alona\",\"scope\":\"window\",\"observed_at\":$((t-10800)),\"payload\":{\"window\":\"fable\",\"used_pct\":41,\"resets_at\":$ff,\"origin\":\"usage\"}}" >/dev/null
 POST "/observations" "{\"source\":\"claudeb\",\"vendor\":\"claude\",\"account\":\"alona\",\"scope\":\"rotation\",\"observed_at\":$t,\"payload\":{\"is_current\":true,\"enabled\":true}}" >/dev/null
 jq -e '.schema == 1 and (.vendors | has("claude"))' "$PROJ3" >/dev/null || fail "schema/vendors mismatch"
 jq -e '(.vendors.claude.accounts | type) == "array" and (.vendors.claude.accounts | length) == 1' "$PROJ3" >/dev/null || fail "accounts array mismatch"
@@ -178,6 +178,11 @@ jq -e '.vendors.claude.usable_now == true and .vendors.claude.current_account ==
 jq -e '.vendors.claude.accounts[0].rotation.usable.general == true and
   (.vendors.claude | has("daemon") | not)' "$PROJ3" >/dev/null || fail "rotation projection mismatch"
 jq -e '.vendors.claude.accounts[0].five_hour.origin == "usage" and (.vendors.claude.accounts[0].auth.status == "ok")' "$PROJ3" >/dev/null || fail "account bucket/auth mismatch"
+jq -e --argjson oldest "$((t-10800))" '
+  (.vendors.claude.accounts[0].as_of | fromdateiso8601) == $oldest and
+  (.vendors.claude.as_of | fromdateiso8601) == $oldest and
+  .vendors.claude.stale_seconds == .vendors.claude.accounts[0].stale_seconds' \
+  "$PROJ3" >/dev/null || fail "account/vendor age did not use the oldest data window"
 ok
 
 echo "== projection always carries all three vendors (unobserved = unavailable) =="
@@ -217,6 +222,19 @@ POST "/observations" "{\"source\":\"shadow-feed\",\"vendor\":\"gemini\",\"accoun
 jq -e '.vendors.gemini.five_hour.used_pct == 0 and .vendors.gemini.weekly.used_pct == 75' "$PROJg" >/dev/null || fail "accountless vendor buckets not projected at vendor level"
 jq -e '.vendors.gemini | has("accounts") | not' "$PROJg" >/dev/null || fail "accountless vendor got a fake accounts array"
 jq -e '.vendors.gemini.available == true' "$PROJg" >/dev/null || fail "accountless vendor not available"
+ok
+
+echo "== null window does not affect account or vendor age =="
+t=$(now); gr=$((t + 3600))
+POST "/observations" "{\"source\":\"shadow-feed\",\"vendor\":\"codex\",\"account\":\"null-age\",\"scope\":\"window\",\"observed_at\":$((t-20000)),\"payload\":{\"window\":\"five_hour\",\"used_pct\":null,\"resets_at\":$gr,\"origin\":\"usage\"}}" >/dev/null
+POST "/observations" "{\"source\":\"shadow-feed\",\"vendor\":\"codex\",\"account\":\"null-age\",\"scope\":\"window\",\"observed_at\":$((t-600)),\"payload\":{\"window\":\"weekly\",\"used_pct\":25,\"resets_at\":$gr,\"origin\":\"usage\"}}" >/dev/null
+POST "/observations" "{\"source\":\"shadow-feed\",\"vendor\":\"codex\",\"account\":\"null-age\",\"scope\":\"rotation\",\"observed_at\":$t,\"payload\":{\"is_current\":true}}" >/dev/null
+jq -e --argjson data_as_of "$((t-600))" '
+  [.vendors.codex.accounts[] | select(.account == "null-age")][0] as $a |
+  $a.five_hour.used_pct == null and
+  ($a.as_of | fromdateiso8601) == $data_as_of and
+  (.vendors.codex.as_of | fromdateiso8601) == $data_as_of' \
+  "$PROJg" >/dev/null || fail "null window affected account/vendor age"
 ok
 
 echo "== needs_relogin verdict surfaces auth_needed and is not usable =="

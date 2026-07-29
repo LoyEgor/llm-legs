@@ -1129,9 +1129,12 @@ if [ -n "$codex_event" ]; then
         else null
         end;
       def bucket($b; $fallback_reset; $asof; $threshold):
+        (if ($b.as_of | type) == "number" then $b.as_of
+         elif ($b.as_of | type) == "string" then (($b.as_of | iso2epoch) // $asof)
+         else $asof end) as $bucket_asof |
         {used_pct:($b.used_pct // $b.used_percent // null),
          resets_at:(($b.resets_at // $fallback_reset // null) | reset_iso),
-         as_of:$asof,origin:$origin,stale:(($now - $asof) > $threshold)};
+         as_of:$bucket_asof,origin:$origin,stale:(($now - $bucket_asof) > $threshold)};
       def account($a; $current):
         (if ($a.as_of | type) == "number" then $a.as_of else $as_of_epoch end) as $account_asof |
         ([$now - $account_asof, 0] | max) as $account_age |
@@ -1347,6 +1350,17 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
       else . + {effective_pct:.used_pct}
       end
     else . end;
+  def data_as_of:
+    [.five_hour?, .weekly?, .fable? |
+      select(type == "object" and (.used_pct | type) == "number") |
+      (.as_of | if type == "number" then . elif type == "string" then iso2epoch else null end)] |
+    map(select(. != null)) | min;
+  def set_data_age:
+    data_as_of as $asof |
+    if $asof == null then del(.as_of, .stale_seconds)
+    else .as_of = ($asof | todateiso8601) |
+      .stale_seconds = ([$now - $asof, 0] | max)
+    end;
   def under_limit($bucket):
     ($bucket | type) != "object" or $bucket.effective_pct == null or $bucket.effective_pct < 100;
   def account_usable($key):
@@ -1470,6 +1484,10 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
   | if $codex_outcome == null then . else .vendors.codex.refresh_error = $codex_outcome end
   | if $gemini_outcome == null then . else .vendors.gemini.refresh_error = $gemini_outcome end
   | if .vendors.gemini.removed == true then .vendors.gemini |= del(.refresh_error) else . end
+  | .vendors |= with_entries(
+      .value |= (
+        if (.accounts | type) == "array" then .accounts |= map(set_data_age) else . end
+        | set_data_age))
   | .vendors |= with_entries(
       (if (.value.refresh_error | type) == "object"
        then .value.refresh_error |= classify_error else . end) |

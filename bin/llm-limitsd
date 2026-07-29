@@ -438,8 +438,9 @@ class Ledger:
                 for field in ("five_hour", "weekly", "fable"):
                     if field in current:
                         vobj[field] = current[field]
-                vobj["as_of"] = current["as_of"]
-                vobj["stale_seconds"] = current["stale_seconds"]
+                for field in ("as_of", "stale_seconds"):
+                    if field in current:
+                        vobj[field] = current[field]
                 vobj["auth"] = current["auth"]
             vendors[vendor] = vobj
         # Mirror the real cache, which always carries all three vendor keys — a vendor with no
@@ -451,15 +452,20 @@ class Ledger:
         return {"schema": 1, "fetched_at": epoch_iso(proj_now), "vendors": vendors}
 
     def _project_account(self, acc, proj_now):
+        data_times = [b["as_of"] for b in acc["buckets"].values()
+                      if isinstance(b["used_pct"], (int, float))
+                      and not isinstance(b["used_pct"], bool)]
         obj = {
             "account": acc["account"],
             "is_current": acc["is_current"],
             "enabled": acc["enabled"],
-            "as_of": epoch_iso(acc["newest_at"]),
-            "stale_seconds": max(int(proj_now - acc["newest_at"]), 0),
             "auth": {"status": "expired" if acc["auth"] in ("expired", "needs_relogin") else "ok",
                      "checked_at": int(acc["auth_checked_at"]) if acc["auth_checked_at"] else None},
         }
+        if data_times:
+            data_as_of = min(data_times)
+            obj["as_of"] = epoch_iso(data_as_of)
+            obj["stale_seconds"] = max(int(proj_now - data_as_of), 0)
         # needs_relogin is codex's login-needed signal: surfaced as the real cache's account-level
         # auth_needed flag, distinct from claude's auth.status=expired.
         if acc["auth"] == "needs_relogin":
@@ -473,8 +479,10 @@ class Ledger:
     def _project_accountless(self, acc, proj_now):
         a = self._project_account(acc, proj_now)
         vobj = {"available": True, "source": "limitsd-shadow", "last_wall": None,
-                "stale": bool(_account_stale(a)), "usable_now": _account_usable(a),
-                "as_of": a["as_of"], "stale_seconds": a["stale_seconds"]}
+                "stale": bool(_account_stale(a)), "usable_now": _account_usable(a)}
+        for field in ("as_of", "stale_seconds"):
+            if field in a:
+                vobj[field] = a[field]
         for field in ("five_hour", "weekly", "fable"):
             if field in a:
                 vobj[field] = a[field]

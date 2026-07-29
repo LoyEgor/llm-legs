@@ -119,6 +119,20 @@ def _windows(obs, vendor, account, holder, at):
         }))
 
 
+def _newest_data_at(holder, fallback):
+    times = []
+    for window in WINDOWS:
+        bucket = holder.get(window)
+        if not isinstance(bucket, dict):
+            continue
+        used_pct = bucket.get("used_pct")
+        if not isinstance(used_pct, (int, float)) or isinstance(used_pct, bool):
+            continue
+        timestamp = to_epoch(bucket.get("as_of"))
+        times.append(fallback if timestamp is None else timestamp)
+    return max(times) if times else fallback
+
+
 def _auth(obs, unknown, vendor, account, acc, at):
     # codex signals a login-needed account with a top-level auth_needed flag, not an auth object.
     if acc.get("auth_needed") is True:
@@ -153,24 +167,26 @@ def build_observations(cache):
                 if not name:
                     continue
                 acc_at = to_epoch(acc.get("as_of")) or fallback
+                auth_at = _newest_data_at(acc, fallback)
                 _windows(obs, vendor, name, acc, acc_at)
-                obs.append((vendor, name, "rotation", acc_at, {
+                obs.append((vendor, name, "rotation", fallback, {
                     "enabled": bool(acc.get("enabled", True)),
                     "is_current": bool(acc.get("is_current", False)),
                 }))
-                _auth(obs, unknown, vendor, name, acc, acc_at)
+                _auth(obs, unknown, vendor, name, acc, auth_at)
         else:
             # Accountless vendor (gemini): usage lives at vendor level, no accounts array.
             v_at = to_epoch(vdata.get("as_of")) or fallback
+            auth_at = _newest_data_at(vdata, fallback)
             if vdata.get("auth_needed") is True:
-                _auth(obs, unknown, vendor, ACCOUNTLESS, vdata, v_at)
+                _auth(obs, unknown, vendor, ACCOUNTLESS, vdata, auth_at)
             else:
                 _windows(obs, vendor, ACCOUNTLESS, vdata, v_at)
                 # A successful vendor RPC (buckets collected) is affirmative evidence the auth
                 # works; without it the newest verdict stays needs_relogin forever after a
                 # re-login, so mirror it as ok exactly like claude's evidenced auth.status=ok.
                 if any(isinstance(vdata.get(w), dict) for w in WINDOWS):
-                    obs.append((vendor, ACCOUNTLESS, "auth", v_at,
+                    obs.append((vendor, ACCOUNTLESS, "auth", auth_at,
                                 {"verdict": "ok", "evidence": "affirmative"}))
     return obs, unknown
 

@@ -54,6 +54,13 @@ print(sqlite3.connect(sys.argv[1]).execute(
     (sys.argv[2], sys.argv[3])).fetchone()[0])
 PY
 }
+obs_epoch() { python3 - "$1" "$2" "$3" <<'PY'
+import sqlite3, sys
+print(int(sqlite3.connect(sys.argv[1]).execute(
+    "SELECT MAX(observed_at) FROM observations WHERE account=? AND scope=?",
+    (sys.argv[2], sys.argv[3])).fetchone()[0]))
+PY
+}
 gemini_auth_verdict() { python3 - "$1" <<'PY'
 import sqlite3, sys, json
 row = sqlite3.connect(sys.argv[1]).execute(
@@ -92,7 +99,16 @@ cat >"$CACHE" <<JSON
          "five_hour": {"used_pct": 5, "resets_at": "$r5", "as_of": $now, "origin": "usage"}},
         {"account": "weird", "is_current": false, "enabled": true,
          "as_of": "$fetched", "auth": {"status": "zombie", "checked_at": $now},
-         "five_hour": {"used_pct": 7, "resets_at": "$r5", "as_of": $now, "origin": "usage"}}
+         "five_hour": {"used_pct": 7, "resets_at": "$r5", "as_of": $now, "origin": "usage"}},
+        {"account": "age", "is_current": false, "enabled": true,
+         "as_of": "$(date -u -r $((now - 10800)) +%Y-%m-%dT%H:%M:%SZ)",
+         "auth": {"status": "ok"},
+         "five_hour": {"used_pct": 8, "resets_at": "$r5", "as_of": $((now - 300)), "origin": "usage"},
+         "weekly": {"used_pct": 9, "resets_at": "$rw", "as_of": $((now - 10800)), "origin": "usage"}},
+        {"account": "missing-asof", "is_current": false, "enabled": true,
+         "auth": {"status": "expired"},
+         "five_hour": {"used_pct": 6, "resets_at": "$r5", "origin": "usage"},
+         "weekly": {"used_pct": 7, "resets_at": "$rw", "as_of": $((now - 10800)), "origin": "usage"}}
       ]
     },
     "codex": {
@@ -133,6 +149,19 @@ GET /state | jq -e '.accounts[] | select(.account=="alona" and .vendor=="claude"
    | .buckets.weekly.used_pct == 40' >/dev/null || fail "alona weekly not mirrored"
 GET /state | jq -e '.accounts[] | select(.account=="main" and .vendor=="codex")
    | .buckets.five_hour.used_pct == null' >/dev/null || fail "codex null used_pct not posted as null"
+ok
+
+echo "== data age and metadata timestamps stay independent =="
+jq -e --argjson oldest "$((now-10800))" '
+  [.vendors.claude.accounts[] | select(.account=="age")][0] |
+  (.as_of | fromdateiso8601) == $oldest' "$PROJ" >/dev/null \
+  || fail "shadow projection did not retain the oldest data-window age"
+[ "$(obs_epoch "$DB" age rotation)" = "$now" ] \
+  || fail "rotation inherited account data age"
+[ "$(obs_epoch "$DB" age auth)" = "$((now - 300))" ] \
+  || fail "auth fallback did not use the newest data-bearing window"
+[ "$(obs_epoch "$DB" missing-asof auth)" = "$now" ] \
+  || fail "auth fallback ignored cache time for a data-bearing window without as_of"
 ok
 
 echo "== auth: evidenced ok and expired both mirrored; absent auth object posts nothing =="

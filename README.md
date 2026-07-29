@@ -71,7 +71,9 @@ explicit `--json`, `--plain`, or `--table` always wins. The stable top level is
 `{schema, fetched_at, vendors}`. Claude includes
 `current_account`, an ordered `accounts` array, and the current account's `five_hour`, optional
 `weekly`, `as_of`, and `stale_seconds` hoisted at vendor level for compatibility. Each account has
-its own windows and freshness, plus an `enabled` flag reflecting worker-selection membership
+its own windows and freshness; account and vendor age use the oldest `as_of` among windows with a
+numeric `used_pct`, ignoring absent and null-valued windows. Each account also has an `enabled`
+flag reflecting worker-selection membership
 (absent means enabled). Use `--plain` for a human-readable line per account or `--no-write` to
 leave the cache untouched. `--table` renders the same model as aligned columns: 5h, weekly, and
 Fable percentages and local reset times; account age; Claude worker-pool state; Codex reset credits;

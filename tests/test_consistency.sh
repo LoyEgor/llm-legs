@@ -11,6 +11,8 @@ CLAUDEB="$ROOT/bin/claudeb"
 STATUSLINE="$ROOT/bin/statusline.sh"
 WORKERPICK="$ROOT/bin/worker-pick"
 LLMLIMITS="$ROOT/llm-limits.sh"
+LIMITSD="$ROOT/bin/llm-limitsd"
+SHADOW_FEED="$ROOT/bin/llm-limitsd-shadow-feed"
 HAMMER="$ROOT/hammerspoon/llm-limits.lua"
 WORKER_GATE="${WORKER_LIMIT_GATE:-$HOME/.claude/hooks/worker-limit-gate.sh}"
 WORKER_GATE_SETTINGS="${WORKER_GATE_SETTINGS:-$HOME/.claude/settings.json}"
@@ -430,4 +432,15 @@ assert doc_has 'Late review threshold'
 assert doc_has '`3` ×'
 assert doc_has '`120`s (`120000`ms) floor'
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, and late review thresholds) and match %s\n' "$asserts" "$DOC"
+assert grep -Fq 'def data_as_of:' "$LLMLIMITS"
+assert grep -Fq 'select(type == "object" and (.used_pct | type) == "number")' "$LLMLIMITS"
+assert grep -Fq 'map(set_data_age)' "$LLMLIMITS"
+assert grep -Fq 'select(type == "object" and (.used_pct | type) == "number")' "$WORKERPICK"
+assert grep -Fq 'data_times = [b["as_of"] for b in acc["buckets"].values()' "$LIMITSD"
+assert grep -Fq 'and not isinstance(b["used_pct"], bool)' "$LIMITSD"
+assert grep -Fq 'def _newest_data_at(holder, fallback):' "$SHADOW_FEED"
+assert grep -Fq 'obs.append((vendor, name, "rotation", fallback, {' "$SHADOW_FEED"
+assert doc_has 'Account data age'
+assert doc_has 'Absent and null-valued windows do not participate'
+
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, and account data age) and match %s\n' "$asserts" "$DOC"

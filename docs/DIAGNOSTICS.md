@@ -82,7 +82,9 @@ Facts below are grounded in the code as of 2026-07-16 (line numbers may drift �
   observations to `LLM_LIMITSD_URL` (default `http://127.0.0.1:45791`): a `window` observation per
   present `five_hour`/`weekly`/`fable` bucket, a `rotation` observation (`enabled`+`is_current`), and
   — claude-only, default-deny — an `auth` `expired`/`affirmative` observation ONLY when
-  `auth.status=="expired"` (never manufactures an "ok"). Idempotent: it stores the cache's
+  `auth.status=="expired"` (never manufactures an "ok"). Rotation uses cache `fetched_at`; auth
+  uses its own `checked_at` or the newest data-bearing window, never account data age. Idempotent:
+  it stores the cache's
   `fetched_at` in `~/.claude-profiles/.claudeb/shadow-feed.state` (override `LLM_SHADOW_FEED_STATE`)
   and no-ops with zero HTTP when unchanged; state advances only on a fully-successful run, so any
   failure (unreachable daemon, non-2xx, malformed cache) exits nonzero and retries the whole batch.
@@ -158,7 +160,7 @@ Treat `stale`, `expired`, `as_of`, and `effective_pct` as the data-honesty contr
 - **Refresh failure** = vendor `refresh_error` is `{cause:string,at:epoch}` from the collector, with `needs_user_entry:true` only when every joined cause requires a human account entry. It renders as the same dim `refresh failed <cause> · <age>` line inside that vendor section and persists across passive menu-open collects until that vendor refresh succeeds. Entry-only errors do not raise the global menubar `⚠`; real faults and mixed errors do. The affected account carries the same flag and renders `!` beside its data age. Top-level `refresh_error` keeps the base shape and renders as a red top row; it is reserved for no available vendor data or a full refresh with zero successful vendors. The menu also renders an observed nonzero collector exit as a red runtime error when no cache-level global error exists; any later successful task, including a passive collect, clears that runtime residue after reading a valid cache without a top-level error.
 - **Red** = usage warning colors only. Claude rotation metadata is computed locally from the enabled flag and snapshot auth status; wall metadata no longer exists.
 - **Fable early warning** = when an `fb` bucket is at least 80%, only its usage-bar substring is red. The rest of the row retains its normal or stale color.
-- **Table model and markers** = every row has first-class `5H%`/`WK%`/`FB%` and matching reset columns, plus `AGE`, `ROT`, `CR`, and `STATUS`; there is no `NOTE`. Rows without Fable render `-`. A `~` suffix marks a stale bucket and `!` marks an expired bucket; both may appear, and displayed percentages remain raw `used_pct` values. `AGE` comes from that row's account/vendor `as_of` (`2m`, `1h48m`, and similar).
+- **Table model and markers** = every row has first-class `5H%`/`WK%`/`FB%` and matching reset columns, plus `AGE`, `ROT`, `CR`, and `STATUS`; there is no `NOTE`. Rows without Fable render `-`. A `~` suffix marks a stale bucket and `!` marks an expired bucket; both may appear, and displayed percentages remain raw `used_pct` values. `AGE` comes from that row's account/vendor `as_of`, which is the oldest timestamp among windows with a numeric `used_pct`; absent and null-valued windows do not participate (`2m`, `1h48m`, and similar).
 - **Table rotation and credits** = `ROT` is `off` when the account is out of its vendor's worker pool (all three vendors), `limit-5h`/`limit-weekly`/`fb:limit-fable` when a local effective percentage reaches 100, otherwise `-`. Claude `rotation.usable.general` and `.fable` remain available to worker-pick; the account projection also exposes their general hard gate as `blocked`. `CR` renders a numeric Codex `reset_credits` as `↻N`, including `↻0`.
 - **Table status** = `STATUS` is `login needed` for a Codex account with `auth_needed == true`, a Claude account with a present non-`ok` `auth.status`, or a logged-out Gemini profile (`auth_needed == true`, collector-owned status `login needed`); other unavailable rows show their collector-owned status text; all other rows render `-`. A logged-out Gemini profile records its own `refresh_error` cause from the agy helper; a successful profile refresh clears it without changing sibling snapshots.
 - **Gemini account rows** = with only `main`, the legacy single Gemini row keeps its compact layout but adds `Pin for workers`; it has no pool checkbox because the sole member cannot leave the pool. Once a named profile exists, every non-removed profile gets its own account, 5h, and weekly rows. A logged-out profile uses the shared `Log in…`/`Hard refresh`/`Remove…` submenu; login opens `geminib profile <name>`, hard refresh targets `gemini/<name>`, and `main` cannot be removed through geminib.
@@ -183,9 +185,10 @@ marker when it differs from the launch repo. Rules:
 - EnterWorktree records the toplevel of the `worktree at <absolute path>` in `.tool_response`
   (string or object); ExitWorktree deletes the session's state file. tmp/system/`~/.claude*`/
   node_modules paths are excluded; records older than 7 days are pruned.
-- Also registered for SessionStart: `source` `startup`/`resume`/`clear` deletes the session's
-  workdir state file (a fresh shell starts in the project dir, so surviving state would lie
-  until the first cd); `compact` keeps it — the shell and its cwd survive `/compact`. This
+- Also registered for SessionStart: `source` `startup`/`resume`/`clear` clears the session's
+  workdir state file and re-seeds it from the starting cwd's git toplevel (without a seed the
+  first cd anywhere would adopt THAT dir as home, and worktree stickiness can only protect a
+  home that already exists); `compact` keeps it — the shell and its cwd survive `/compact`. This
   runs before the agent filter on purpose: `agent_type` on SessionStart means a top-level
   `claude --agent` session, not a subagent.
 The statusline itself unlinks a state file that no longer points at a git dir.
