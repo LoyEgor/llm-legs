@@ -191,6 +191,68 @@ payload=$(jq -cn --arg session session-wt --arg cwd "$REPO_B" \
 run_workdir_hook "$payload"
 assert test ! -e "$STATE_DIR/workdir-session-wt"
 
+# Sticky worktree home: cd/edit into a sibling worktree or the main checkout of
+# the same repository must NOT retarget a session homed in .claude/worktrees.
+printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-session-sticky-cd"
+payload=$(workdir_payload Bash session-sticky-cd "$REPO_E" "cd '$REPO_F' && git status")
+run_workdir_hook "$payload"
+assert_eq "$TOP_E" "$(cat "$STATE_DIR/workdir-session-sticky-cd")"
+
+printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-session-sticky-main"
+payload=$(workdir_payload Bash session-sticky-main "$REPO_E" "cd '$REPO_A'")
+run_workdir_hook "$payload"
+assert_eq "$TOP_E" "$(cat "$STATE_DIR/workdir-session-sticky-main")"
+
+printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-session-sticky-edit"
+payload=$(workdir_payload Edit session-sticky-edit "$REPO_E" "$REPO_F/other.txt")
+run_workdir_hook "$payload"
+assert_eq "$TOP_E" "$(cat "$STATE_DIR/workdir-session-sticky-edit")"
+
+# A genuinely different repository still retargets.
+printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-session-sticky-repo"
+payload=$(workdir_payload Bash session-sticky-repo "$REPO_E" "cd '$REPO_D'")
+run_workdir_hook "$payload"
+assert_eq "$TOP_D" "$(cat "$STATE_DIR/workdir-session-sticky-repo")"
+
+# EnterWorktree is the deliberate move and bypasses stickiness.
+printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-session-sticky-enter"
+payload=$(jq -cn --arg session session-sticky-enter --arg cwd "$REPO_E" --arg resp "Created worktree at $REPO_F" \
+  '{hook_event_name:"PostToolUse",tool_name:"EnterWorktree",session_id:$session,cwd:$cwd,tool_input:{},tool_response:$resp}')
+run_workdir_hook "$payload"
+assert_eq "$TOP_F" "$(cat "$STATE_DIR/workdir-session-sticky-enter")"
+
+# A main-checkout home is not sticky: moving into a worktree adopts it.
+printf '%s\n' "$TOP_A" > "$STATE_DIR/workdir-session-main-to-wt"
+payload=$(workdir_payload Bash session-main-to-wt "$REPO_A" "cd '$REPO_E'")
+run_workdir_hook "$payload"
+assert_eq "$TOP_E" "$(cat "$STATE_DIR/workdir-session-main-to-wt")"
+
+# ~/.claude paths are excluded on the LOGICAL path, before symlink resolution:
+# ~/.claude/hooks really is a symlink into a config repo, and resolving first
+# used to adopt that repo as the session home.
+ln -s "$REPO_D" "$HOME/.claude/hooks"
+printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-session-claude-symlink"
+payload=$(workdir_payload Write session-claude-symlink "$REPO_E" "$HOME/.claude/hooks/some-hook.sh")
+run_workdir_hook "$payload"
+assert_eq "$TOP_E" "$(cat "$STATE_DIR/workdir-session-claude-symlink")"
+rm -f "$HOME/.claude/hooks"
+
+# A SEPARATE repository nested under the project dir is not "the same repo":
+# stickiness compares repository identity, not path prefixes.
+NESTED="$REPO_A/vendored"
+mkdir -p "$NESTED"
+git -C "$NESTED" init -q -b main
+printf 'nested\n' > "$NESTED/n.txt"
+git -C "$NESTED" add n.txt
+git -C "$NESTED" -c user.name=Fixture -c user.email=fixture@example.com commit -qm initial
+TOP_NESTED=$(git -C "$NESTED" rev-parse --show-toplevel)
+printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-session-nested-repo"
+payload=$(workdir_payload Bash session-nested-repo "$REPO_E" "cd '$NESTED'")
+run_workdir_hook "$payload"
+assert_eq "$TOP_NESTED" "$(cat "$STATE_DIR/workdir-session-nested-repo")"
+# The nested repo is an untracked entry in repo A; later renders assert a clean tree.
+rm -rf "$NESTED"
+
 session_start_payload() {
   jq -cn --arg source "$1" --arg session "$2" --arg cwd "$REPO_A" \
     '{hook_event_name:"SessionStart",source:$source,session_id:$session,cwd:$cwd}'

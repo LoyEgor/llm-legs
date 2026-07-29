@@ -96,6 +96,13 @@ case "$candidate" in
   '~/'*) candidate="$HOME/${candidate#\~/}" ;;
 esac
 
+# Checked on the logical path too, not only on $resolved below: ~/.claude/hooks
+# is a symlink into the claude-setup checkout, so after pwd -P the exclusion no
+# longer matches and a hook-file write retargets the statusline to that repo.
+case "$candidate" in
+  "$HOME"/.cache|"$HOME"/.cache/*|"$HOME"/.claude*) exit 0 ;;
+esac
+
 [ -n "$base_dir" ] || base_dir=.
 if [[ "$candidate" = /* ]]; then
   resolved=$(cd "$candidate" 2>/dev/null && pwd -P) || exit 0
@@ -118,6 +125,32 @@ esac
 toplevel=$(git -C "$resolved" rev-parse --show-toplevel 2>/dev/null) || exit 0
 [ -d "$toplevel" ] || exit 0
 toplevel=$(cd "$toplevel" 2>/dev/null && pwd -P) || exit 0
+
+# A worktree home is sticky within its repository: sessions routinely cd/edit
+# into a sibling worktree or the main checkout for one-off surgery, and adopting
+# that path retargets the statusline (and its ports segment) to another chat's
+# workspace. Only EnterWorktree moves a worktree-homed session inside the same
+# repo; ExitWorktree and SessionStart still clear the state above.
+if [ "$tool_name" != EnterWorktree ] && [ -f "$state_file" ]; then
+  IFS= read -r prev_home < "$state_file" || :
+  case "$prev_home" in
+    */.claude/worktrees/*)
+      if [ "$toplevel" != "$prev_home" ]; then
+        prev_repo=${prev_home%%/.claude/worktrees/*}
+        case "$toplevel" in
+          "$prev_repo" | "$prev_repo"/*)
+            # Path prefix alone would also pin a SEPARATE repository nested under
+            # the project dir; repository identity (common dir) tells them apart.
+            # An unresolvable identity (deleted home) falls back to staying put.
+            new_common=$(git -C "$toplevel" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+            prev_common=$(git -C "$prev_repo" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+            [ -n "$new_common" ] && [ -n "$prev_common" ] && [ "$new_common" != "$prev_common" ] || exit 0
+            ;;
+        esac
+      fi
+      ;;
+  esac
+fi
 
 mkdir -p "$cache_dir" || exit 0
 umask 077
