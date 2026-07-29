@@ -45,20 +45,24 @@ os.environ["HOME"] = str(fixture_home)
 
 assert rb.parse_rater("sol-medium") == {
     "spec": "sol-medium", "model": "sol", "effort": "medium", "side": "codex",
-    "skill": False, "profile": None
+    "skill": False, "bare": False, "profile": None
+}
+assert rb.parse_rater("sol-low-bare") == {
+    "spec": "sol-low-bare", "model": "sol", "effort": "low", "side": "codex",
+    "skill": False, "bare": True, "profile": None
 }
 assert rb.parse_rater("opus-xhigh")["side"] == "claude"
 assert rb.parse_rater("opus-xhigh")["skill"] is False
 assert rb.parse_rater("fable-medium")["model"] == "fable"
 assert rb.parse_rater("opus-medium-skill") == {
     "spec": "opus-medium-skill", "model": "opus", "effort": "medium",
-    "side": "claude", "skill": True, "profile": None
+    "side": "claude", "skill": True, "bare": False, "profile": None
 }
 assert rb.parse_rater("sonnet-high-skill")["skill"] is True
 assert rb.parse_rater("haiku-medium-skill")["side"] == "claude"
 assert rb.parse_rater("agy-pro-low-skill") == {
     "spec": "agy-pro-low-skill", "model": "agy-pro", "effort": "low",
-    "side": "agy", "skill": True, "profile": None
+    "side": "agy", "skill": True, "bare": False, "profile": None
 }
 assert rb.parse_rater("agy-pro-high-skill")["skill"] is True
 assert rb.parse_rater("agy-flash36-medium-skill")["side"] == "agy"
@@ -285,16 +289,16 @@ assert retired_grok.returncode != 0, retired_grok
 assert retired_grok_reason in retired_grok.stderr, retired_grok.stderr
 assert rb.parse_rater("oc-glm52") == {
     "spec": "oc-glm52", "model": "oc-glm52", "effort": None,
-    "side": "opencode", "skill": False, "profile": None
+    "side": "opencode", "skill": False, "bare": False, "profile": None
 }
 assert rb.parse_rater("oc-glm52-low")["effort"] == "low"
 assert rb.parse_rater("oc-dsv4pro-high") == {
     "spec": "oc-dsv4pro-high", "model": "oc-dsv4pro", "effort": "high",
-    "side": "opencode", "skill": False, "profile": None
+    "side": "opencode", "skill": False, "bare": False, "profile": None
 }
 assert rb.parse_rater("oc-grok45-low") == {
     "spec": "oc-grok45-low", "model": "oc-grok45", "effort": "low",
-    "side": "opencode", "skill": False, "profile": None
+    "side": "opencode", "skill": False, "bare": False, "profile": None
 }
 assert rb.OPENCODE_MODEL_IDS["oc-grok45"] == "grok-4.5"
 # The capability table is the module's own knowledge of a gateway whose models behave
@@ -377,7 +381,7 @@ assert rb.opencode_expected_s(rb.parse_rater("oc-grok45-low")) < rb.OPENCODE_EFF
 assert rb.opencode_expected_s(rb.parse_rater("oc-grok45-high")) == rb.OPENCODE_EFFORT_EXPECTED_S
 assert rb.parse_rater("oc-glm52-google") == {
     "spec": "oc-glm52-google", "model": "oc-glm52", "effort": None,
-    "side": "opencode", "skill": False, "profile": "google"
+    "side": "opencode", "skill": False, "bare": False, "profile": "google"
 }
 assert rb.parse_rater("oc-glm52-high-anthropic")["profile"] == "anthropic"
 for invalid in ("opus-low-google", "agy-pro-low-anthropic", "sol-medium-google"):
@@ -412,11 +416,13 @@ for effort in ("low", "medium", "high"):
         "effort": effort,
         "side": "agy",
         "skill": True,
+        "bare": False,
         "profile": None,
     }
 for invalid in ("gpt-medium", "sol", "opus-ultra", "sol-mega", "",
                 "sol-medium-skill", "opus-skill", "opus-medium-turbo",
-                "oc-glm52-xhigh", "oc-glm52-high-skill"):
+                "oc-glm52-xhigh", "oc-glm52-high-skill",
+                "opus-low-bare", "oc-kimik3-bare"):
     try:
         rb.parse_rater(invalid)
     except ValueError:
@@ -589,6 +595,31 @@ agy_skill_clean = rb.normalize_agy_skill_output(
     (fixtures / "agy-skill-clean.md").read_text(), "agy-flash36-low-skill"
 )
 assert rb.normalize_findings(agy_skill_clean, "agy-flash36-low-skill") == []
+agy_empty_comments_answer = (fixtures / "agy-skill-empty-comments.md").read_text()
+agy_empty_comments = rb.normalize_agy_skill_output(
+    agy_empty_comments_answer, "agy-pro-high-skill"
+)
+assert rb.clean_review_declared(agy_empty_comments)
+assert rb.normalize_findings(agy_empty_comments, "agy-pro-high-skill") == []
+try:
+    rb.normalize_agy_skill_output(
+        agy_empty_comments_answer + "\nHowever, the change drops failed requests.",
+        "agy-pro-high-skill",
+    )
+except ValueError as exc:
+    assert "malformed Markdown" in str(exc)
+else:
+    raise AssertionError("accepted empty comments followed by defect prose as a clean review")
+agy_linked_finding = rb.normalize_agy_skill_output(
+    (fixtures / "agy-skill-linked-finding.md").read_text(),
+    "agy-flash35-high-skill",
+)
+linked_rows = rb.normalize_findings(agy_linked_finding, "agy-flash35-high-skill")
+assert len(linked_rows) == 1
+assert linked_rows[0]["severity"] == "P2"
+assert linked_rows[0]["line"] == 66
+assert "/bin/statusline-ports-probe.sh" in linked_rows[0]["file"]
+assert linked_rows[0]["summary"].startswith("Fallible PID parsing for numeric command names.")
 try:
     rb.normalize_agy_skill_output(
         (fixtures / "agy-skill-no-repo.md").read_text(), "agy-flash36-low-skill"
@@ -1006,6 +1037,8 @@ fake_codex = work / "fake-codex"
 fake_codex.write_text("""#!/usr/bin/env bash
 set -eu
 printf '%s\n' "$PWD" >"$RATER_CAPTURE_CWD"
+printf '%s\\0' "$@" >"$RATER_CAPTURE_ARGS"
+cat >"$RATER_CAPTURE_STDIN"
 git rev-parse HEAD >"$RATER_CAPTURE_HEAD"
 git rev-list --all >"$RATER_CAPTURE_REFS"
 cat pinned.txt >"$RATER_CAPTURE_CONTENT"
@@ -1023,6 +1056,8 @@ fake_codex.chmod(0o755)
 os.environ.update({
     "REVIEW_BENCH_CODEX_BIN": str(fake_codex),
     "RATER_CAPTURE_CWD": str(work / "rater-cwd"),
+    "RATER_CAPTURE_ARGS": str(work / "rater-args"),
+    "RATER_CAPTURE_STDIN": str(work / "rater-stdin"),
     "RATER_CAPTURE_HEAD": str(work / "rater-head"),
     "RATER_CAPTURE_REFS": str(work / "rater-refs"),
     "RATER_CAPTURE_CONTENT": str(work / "rater-content"),
@@ -1046,6 +1081,25 @@ assert any(
     and rb.READ_ONLY_REVIEW_INSTRUCTION in arg
     for arg in codex_command
 )
+bare_run = work / "codex-bare-run"
+bare_run.mkdir()
+bare_diff = "diff --git a/pinned.txt b/pinned.txt\n"
+rc, _, _, stderr, bare_command = rb.run_codex(
+    rb.parse_rater("sol-low-bare"), pin_repo, pin_sha, "", bare_run, bare_diff, "main"
+)
+assert rc == 0 and not stderr
+captured_args = (work / "rater-args").read_bytes().split(b"\0")[:-1]
+captured_args = [arg.decode() for arg in captured_args]
+assert "review" not in captured_args, captured_args
+assert captured_args[0] == "exec", captured_args
+assert "-" in captured_args, captured_args
+assert not any(bare_diff in arg for arg in captured_args), captured_args
+captured_stdin = (work / "rater-stdin").read_text()
+assert "Review commit" in captured_stdin, captured_stdin
+assert "Commit diff:" in captured_stdin, captured_stdin
+assert bare_diff in captured_stdin, captured_stdin
+assert not any("Commit diff:" in arg for arg in bare_command), bare_command
+assert not any(arg.startswith("developer_instructions=") for arg in bare_command), bare_command
 
 fake_claude = work / "fake-claudeb"
 fake_claude.write_text("""#!/usr/bin/env bash
@@ -1612,10 +1666,38 @@ for rambling in ("I checked the rotation and found no findings for it, but the g
                  # assertions, and defect nouns inside praise sentences all slipped through.
                  "The fix can break requests. No findings",
                  "The implementation has defects. No findings",
-                 "No findings. The implementation handles requests, defects remain."):
+                 "No findings. The implementation handles requests, defects remain.",
+                 # Round 6: "successfully"/"consistent" are praise, but never vouch for a
+                 # sentence carrying a path, a contrast, or a defect verb — and praise alone,
+                 # with no negated-defect declaration anywhere, is not a clean review.
+                 "No issues found. The write completes successfully. bin/review-bench:70 leaks handles.",
+                 "No defects. Consistent naming, but the loop breaks retries.",
+                 "The changes are internally consistent, cover the affected review lifecycle "
+                 "and statusline behavior, and the relevant review-bench and statusline test "
+                 "suites pass.",
+                 # A defect noun as a leading label is a finding, not an announcement.
+                 "Regression: the cap now misprices commits. No findings.",
+                 "Bug: retries drop the account. No findings.",
+                 # Round 7 (T2 fix-review adversarials): "while" is a contrast, loss/bypass/
+                 # omit inflections are defect claims, and a defect noun in an announce
+                 # preamble is a stated finding unless it names what was searched for.
+                 "No findings. The retry completes successfully while losing requests.",
+                 "No issues. The request successfully bypasses authentication.",
+                 "Regression tests pass while omitting the failing case. No findings.",
+                 "The migration risks data loss. No findings."):
     assert rb.unusable_review(rambling, []), rambling
+assert rb.unusable_review("Checked for bugs and race conditions. No findings.", []) == ""
+assert rb.unusable_review("No data loss. No findings.", []) == ""
 assert rb.unusable_review("**No issues found.**", []) == ""
 assert rb.unusable_review("No problems were found.", []) == ""
+assert rb.unusable_review(
+    "No actionable correctness issues were identified in the changed code. The relevant "
+    "review-bench tests completed successfully, and the remaining changes are consistent "
+    "with the documented behavior.", []) == ""
+assert rb.unusable_review(
+    "No actionable correctness defects were identified in the changed code. The primary "
+    "review-bench tests completed successfully, and the remaining changes appear "
+    "consistent with their added regression coverage.", []) == ""
 # Claude hands over its whole envelope and Codex appends event JSON, so a clean review that
 # arrives inside a JSON string still has to count as one.
 for enveloped in ('{"type": "result", "subtype": "success", "result": "NO FINDINGS"}',
@@ -1907,11 +1989,22 @@ assert rb.cmd_run(argparse.Namespace(
 )) == 0
 assert captured_progress[0]["cells"] == ["sol-medium"], captured_progress
 assert captured_progress[0]["tier"] is None
+# A plain `run` Namespace carries neither attribute, and the progress document is written from
+# both without them existing — the reader would drop the file if either came out non-boolean.
+assert captured_progress[0]["max"] is False
 assert captured_progress[0]["target"] == pin_sha[:7]
 assert captured_progress[0]["done"] == [] and captured_progress[0]["failed"] == 0
 assert not list(
     (progress_capture_store / "worker-stats" / rb.PROGRESS_DIR).glob("*.json")
 )
+# cmd_review hands its own Namespace to cmd_run, so the variant it was asked for has to survive
+# the trip: the statusline names it from this file and from nothing else.
+assert rb.cmd_run(argparse.Namespace(
+    repo=str(pin_repo), commitish=pin_sha, raters="sol-medium",
+    leg=False, verify=None, auto=None, focus=None, tier="T2", max=True, foreground=True,
+)) == 0
+assert captured_progress[1]["tier"] == "T2" and captured_progress[1]["max"] is True, \
+    captured_progress[1]
 rb.SIDE_RUNNERS["codex"] = tier_runner
 rb.affordability = lambda: {
     "claude": True, "codex": True, "agy": True, "grok": True, "opencode": True,
@@ -2000,6 +2093,7 @@ assert progress == {
     "pid": 12345,
     "run_id": "20260727T120000Z-2ecc0bd",
     "tier": "T2",
+    "max": False,
     "target": "2ecc0bd",
     "cells": ["oc-kimik3", "sol-low"],
     "done": [],
@@ -2007,6 +2101,13 @@ assert progress == {
     "started": "2026-07-27T12:00:00+00:00",
     "ts": "2026-07-27T12:00:00+00:00",
 }, progress
+# The statusline reads this to tell a T2 max panel from a T2 one, and it validates the key as a
+# boolean: a truthy flag object passed straight through would be dropped as a corrupt file.
+max_progress = rb.review_progress_document(
+    pin_repo, "20260727T120000Z-2ecc0bd", "T2", "2ecc0bd", ["oc-kimik3"],
+    started="2026-07-27T12:00:00+00:00", pid=12345, max_panel="yes",
+)
+assert max_progress["max"] is True, max_progress
 rb.complete_review_progress(
     progress, "sol-low", True, timestamp="2026-07-27T12:03:11+00:00",
 )
@@ -2493,6 +2594,27 @@ def make_suggest_repo(name, tracked=("tracked.txt",)):
     return path
 
 
+def review_found(run_id, confirmed=0, findings=0):
+    """Make the corpus say what a run found. The tier cap only applies to work over a review that
+    found something, so a fixture asserting the cap has to be explicit about it: an adjudicated
+    confirmed count for a commit review, findings files for a worktree one, which the corpus refuses.
+    """
+    corpus = pathlib.Path(suggest_env["CLAUDEB_DIR"]) / "worker-stats" / "reviews.jsonl"
+    if confirmed:
+        corpus.parent.mkdir(parents=True, exist_ok=True)
+        with corpus.open("a") as stream:
+            stream.write(json.dumps(
+                {"run_id": run_id, "rater": "sol-low", "confirmed": confirmed}
+            ) + "\n")
+    if findings:
+        run_dir = pathlib.Path(suggest_env["CLAUDEB_DIR"]) / "worker-stats" / "benches" / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "findings-sol-high.jsonl").write_text("".join(
+            json.dumps({"severity": "P2", "file": "x", "line": n, "summary": "f"}) + "\n"
+            for n in range(findings)
+        ))
+
+
 def suggest(path, *extra):
     proc = subprocess.run(
         [sys.argv[1], "suggest", "--repo", str(path), *extra],
@@ -2501,17 +2623,33 @@ def suggest(path, *extra):
     return proc.stdout.splitlines()
 
 
-def assert_suggestion(lines, files, changed_lines, tier, committed=False, receipt=None):
+def assert_suggestion(lines, files, changed_lines, tier, committed=False, receipt=None,
+                      worktree_receipt=None, fix_capped=False):
     assert lines[:3] == [
         f"changed files: {files}",
         f"changed lines: {changed_lines}",
         f"tier: {tier}",
     ], lines
     offset = 3
+    if fix_capped:
+        run = receipt or worktree_receipt
+        assert lines[offset] == (
+            f"work over review {run}, so {tier} regardless of what it touches"
+        ), lines
+        offset += 1
+    else:
+        assert not any(line.startswith("work over review ") for line in lines), lines
     if receipt:
         assert lines[offset] == (
-            f"unreviewed delta vs review {receipt}; staged content is compared "
-            "with the same reviewed tree"
+            f"unreviewed delta vs review {receipt}; staged content is compared with the same "
+            "reviewed tree"
+        ), lines
+        offset += 1
+    elif worktree_receipt:
+        assert lines[offset] == (
+            f"unreviewed delta vs review {worktree_receipt}; the working tree is compared with the "
+            "reviewed snapshot as one tree against another, so staged and untracked content is "
+            "counted once"
         ), lines
         offset += 1
     if committed:
@@ -2615,11 +2753,233 @@ receipt_run_id = "receipt-fixture"
     "repo": str(receipt_suggest), "tree": receipt_tree, "commit": receipt_sha,
     "run_id": receipt_run_id, "ts": "2026-07-27T00:00:00+00:00", "errored": 0,
 }) + "\n")
+review_found(receipt_run_id, confirmed=2)
 subprocess.run(["git", "-C", str(receipt_suggest), "reset", "-q", "--soft", "HEAD^"],
                check=True, env=suggest_env)
 (receipt_suggest / "tracked.txt").write_text("changed\n")
+# The reviewed commit was rewound with its content left staged, so HEAD is no longer where the panel
+# stood and this is not a follow-up delta: the cap does not apply and the ordinary rules price it.
 assert_suggestion(
     suggest(receipt_suggest), 1, 2, "T0", receipt=receipt_run_id,
+)
+
+# A worktree review is stamped with a snapshot of uncommitted content, reachable from nothing. The
+# index still holds the committed base, so asking it what it adds over that snapshot answers with
+# the whole reviewed delta reversed — 21 already-reviewed lines across two files, which used to be
+# added to the one line that is genuinely new and escalated the tier by the size of the review that
+# had just finished.
+wt_receipt_suggest = make_suggest_repo(
+    "suggest-worktree-receipt", ("tracked.txt", "second.txt"),
+)
+(wt_receipt_suggest / "tracked.txt").write_text("line\n" * 20)
+(wt_receipt_suggest / "second.txt").write_text("changed\n")
+subprocess.run(["git", "-C", str(wt_receipt_suggest), "add", "."],
+               check=True, env=suggest_env)
+wt_snapshot_tree = subprocess.run(
+    ["git", "-C", str(wt_receipt_suggest), "write-tree"],
+    check=True, capture_output=True, text=True, env=suggest_env,
+).stdout.strip()
+wt_snapshot_sha = subprocess.run(
+    ["git", "-C", str(wt_receipt_suggest), "commit-tree", wt_snapshot_tree,
+     "-p", "HEAD", "-m", "review-bench worktree snapshot"],
+    check=True, capture_output=True, text=True,
+    env=dict(suggest_env, GIT_COMMITTER_NAME="review-bench",
+             GIT_COMMITTER_EMAIL="review-bench@local"),
+).stdout.strip()
+subprocess.run(["git", "-C", str(wt_receipt_suggest), "reset", "-q", "HEAD"],
+               check=True, env=suggest_env)
+(receipt_dir / rb.receipt_file_name(wt_receipt_suggest)).write_text(json.dumps({
+    "repo": str(wt_receipt_suggest), "tree": wt_snapshot_tree, "commit": wt_snapshot_sha,
+    "run_id": "worktree-fixture", "ts": "2026-07-27T00:00:00+00:00", "errored": 0,
+}) + "\n")
+review_found("worktree-fixture", findings=3)
+worktree_run_dir = (
+    pathlib.Path(suggest_env["CLAUDEB_DIR"]) / "worker-stats" / "benches" / "worktree-fixture"
+)
+(worktree_run_dir / "findings-sol-max.jsonl").write_text(
+    json.dumps({"severity": "P1", "file": "x", "line": 1, "summary": "discarded"}) + "\n"
+)
+(worktree_run_dir / "meta.json").write_text(json.dumps({
+    "rater_runs": [
+        {"rater": "sol-high", "errored": False},
+        {"rater": "sol-max", "errored": True},
+    ],
+}) + "\n")
+assert rb.review_outcome(wt_receipt_suggest, {
+    "commit": wt_snapshot_sha, "run_id": "worktree-fixture",
+}) == (True, 0, 3)
+# A row from another repository sharing seven hex characters is a different commit: full-sha
+# equality only, or confirmed counts bleed between repos through the shared corpus.
+with (pathlib.Path(suggest_env["CLAUDEB_DIR"]) / "worker-stats" / "reviews.jsonl").open("a") as stream:
+    stream.write(json.dumps({
+        "run_id": "prefix-collider", "rater": "sol-low", "confirmed": 9,
+        "commit": wt_snapshot_sha[:7] + "f" * (len(wt_snapshot_sha) - 7),
+    }) + "\n")
+assert rb.review_outcome(wt_receipt_suggest, {
+    "commit": wt_snapshot_sha, "run_id": "worktree-fixture",
+}) == (True, 0, 3)
+(wt_receipt_suggest / "tracked.txt").write_text("line\n" * 19 + "new\n")
+# Staged after the review and then dropped from the working tree: not counted, and deliberately so.
+# Both trees compared here are built from the working tree, exactly as review-bench builds the
+# snapshot a panel reviews, so a path only the index still holds was never reviewed and no review of
+# this repository can cover it — counting it would light a label nothing could clear.
+(wt_receipt_suggest / "staged-after.txt").write_text("late\n")
+subprocess.run(["git", "-C", str(wt_receipt_suggest), "add", "staged-after.txt"],
+               check=True, env=suggest_env)
+(wt_receipt_suggest / "staged-after.txt").unlink()
+assert_suggestion(
+    suggest(wt_receipt_suggest), 1, 2, "T0", worktree_receipt="worktree-fixture",
+    fix_capped=True,
+)
+
+# The escalation that made one review become three: 30 lines inside a core measurement tool is a
+# fresh T2 by the ordinary rules, and as this review's own fixes it is a T0.
+fix_core_suggest = make_suggest_repo("suggest-fix-core", ("bin/review-bench",))
+# The cap holds only while the delta is no larger than the diff the panel read, so the reviewed
+# commit has to be one of this repository's own, with a parent and enough lines in it.
+(fix_core_suggest / "bin" / "review-bench").write_text("reviewed\n" * 40)
+subprocess.run(["git", "-C", str(fix_core_suggest), "commit", "-aqm", "reviewed"],
+               check=True, env=suggest_env)
+fix_core_sha, fix_core_tree = (subprocess.run(
+    ["git", "-C", str(fix_core_suggest), "rev-parse", ref],
+    check=True, capture_output=True, text=True, env=suggest_env,
+).stdout.strip() for ref in ("HEAD", "HEAD^{tree}"))
+(receipt_dir / rb.receipt_file_name(fix_core_suggest)).write_text(json.dumps({
+    "repo": str(fix_core_suggest), "tree": fix_core_tree, "commit": fix_core_sha,
+    "run_id": "fix-core-fixture", "ts": "2026-07-27T00:00:00+00:00", "errored": 0,
+}) + "\n")
+review_found("fix-core-fixture", confirmed=1)
+(fix_core_suggest / "bin" / "review-bench").write_text("reviewed\n" * 40 + "fix\n")
+assert_suggestion(
+    suggest(fix_core_suggest), 1, 1, "T0", receipt="fix-core-fixture", fix_capped=True,
+)
+
+# A small new path immediately after a large reviewed commit is not evidence that the review
+# provoked it. The receipt may cap only work that overlaps what the panel read.
+unrelated_suggest = make_suggest_repo("suggest-unrelated-fix")
+(unrelated_suggest / "tracked.txt").write_text("reviewed\n" * 250)
+subprocess.run(["git", "-C", str(unrelated_suggest), "commit", "-aqm", "reviewed"],
+               check=True, env=suggest_env)
+unrelated_sha, unrelated_tree = (subprocess.run(
+    ["git", "-C", str(unrelated_suggest), "rev-parse", ref],
+    check=True, capture_output=True, text=True, env=suggest_env,
+).stdout.strip() for ref in ("HEAD", "HEAD^{tree}"))
+(receipt_dir / rb.receipt_file_name(unrelated_suggest)).write_text(json.dumps({
+    "repo": str(unrelated_suggest), "tree": unrelated_tree, "commit": unrelated_sha,
+    "run_id": "unrelated-fixture", "ts": "2026-07-27T00:00:00+00:00", "errored": 0,
+}) + "\n")
+review_found("unrelated-fixture", confirmed=1)
+(unrelated_suggest / "tests").mkdir()
+(unrelated_suggest / "tests" / "new.sh").write_text("new\n")
+assert_suggestion(
+    suggest(unrelated_suggest), 1, 1, "T1", receipt="unrelated-fixture",
+)
+
+# Nor is it follow-up once anything has been committed since: the panel stood on HEAD, and a receipt
+# left behind must not cheapen later work — including work on another branch — just by sitting there.
+subprocess.run(["git", "-C", str(fix_core_suggest), "commit", "-aqm", "moved on"],
+               check=True, env=suggest_env)
+(fix_core_suggest / "bin" / "review-bench").write_text("reviewed\n" * 40 + "fix\n" * 2)
+assert_suggestion(
+    suggest(fix_core_suggest), 1, 2, "T2", receipt="fix-core-fixture",
+)
+subprocess.run(["git", "-C", str(fix_core_suggest), "reset", "-q", "--hard", "HEAD^"],
+               check=True, env=suggest_env)
+
+# Once more has been written than the panel read, this is not that review's follow-up any more and
+# the cap lets go — otherwise a receipt nothing ever restamps prices the whole repository forever.
+(fix_core_suggest / "bin" / "review-bench").write_text("fresh\n" * 300)
+assert_suggestion(
+    suggest(fix_core_suggest), 1, 340, "T2", receipt="fix-core-fixture",
+)
+
+# A review that found nothing provokes no fixes and is never restamped, so capping work over it
+# would put a ceiling on the repository that never lifts: 201 fresh lines in a measurement tool
+# would come out T1 forever instead of the T2 they earn.
+clean_review_suggest = make_suggest_repo("suggest-clean-review", ("bin/review-bench",))
+clean_review_tree = subprocess.run(
+    ["git", "-C", str(clean_review_suggest), "rev-parse", "HEAD^{tree}"],
+    check=True, capture_output=True, text=True, env=suggest_env,
+).stdout.strip()
+(receipt_dir / rb.receipt_file_name(clean_review_suggest)).write_text(json.dumps({
+    "repo": str(clean_review_suggest), "tree": clean_review_tree, "commit": receipt_sha,
+    "run_id": "clean-review-fixture", "ts": "2026-07-27T00:00:00+00:00", "errored": 0,
+}) + "\n")
+(clean_review_suggest / "bin" / "review-bench").write_text("line\n" * 200)
+assert_suggestion(
+    suggest(clean_review_suggest), 1, 201, "T2", receipt="clean-review-fixture",
+)
+
+# A manual stamp is a declaration that the tree was looked at, not a review that found things, so
+# what lands after it is fresh work and earns its tier the ordinary way.
+stamp_suggest = make_suggest_repo("suggest-after-stamp", ("bin/review-bench",))
+stamp_tree = subprocess.run(
+    ["git", "-C", str(stamp_suggest), "rev-parse", "HEAD^{tree}"],
+    check=True, capture_output=True, text=True, env=suggest_env,
+).stdout.strip()
+(receipt_dir / rb.receipt_file_name(stamp_suggest)).write_text(json.dumps({
+    "repo": str(stamp_suggest), "tree": stamp_tree, "commit": receipt_sha,
+    "run_id": "stamped-20260728T000000Z", "ts": "2026-07-27T00:00:00+00:00", "errored": 0,
+}) + "\n")
+(stamp_suggest / "bin" / "review-bench").write_text("line\n" * 30)
+assert_suggestion(
+    suggest(stamp_suggest), 1, 31, "T2", receipt="stamped-20260728T000000Z",
+)
+
+# A delta that outgrew what T1 covers still stays inside the two tiers a review's follow-up can
+# reach: T1, never the T2 the ordinary rules would price 200 lines at.
+fix_big_suggest = make_suggest_repo("suggest-fix-big")
+(fix_big_suggest / "tracked.txt").write_text("reviewed\n" * 250)
+subprocess.run(["git", "-C", str(fix_big_suggest), "commit", "-aqm", "reviewed"],
+               check=True, env=suggest_env)
+fix_big_sha, fix_big_tree = (subprocess.run(
+    ["git", "-C", str(fix_big_suggest), "rev-parse", ref],
+    check=True, capture_output=True, text=True, env=suggest_env,
+).stdout.strip() for ref in ("HEAD", "HEAD^{tree}"))
+(receipt_dir / rb.receipt_file_name(fix_big_suggest)).write_text(json.dumps({
+    "repo": str(fix_big_suggest), "tree": fix_big_tree, "commit": fix_big_sha,
+    "run_id": "fix-big-fixture", "ts": "2026-07-27T00:00:00+00:00", "errored": 0,
+}) + "\n")
+review_found("fix-big-fixture", confirmed=1)
+(fix_big_suggest / "tracked.txt").write_text("reviewed\n" * 100 + "fix\n" * 100)
+assert_suggestion(
+    suggest(fix_big_suggest), 1, 250, "T1", receipt="fix-big-fixture", fix_capped=True,
+)
+
+# A snapshot holds untracked content too, because that is how review-bench builds one. Asking the
+# index and the working tree about it separately answered with a phantom deletion of every untracked
+# file and then added its line count back on top: with nothing changed since the panel ran, suggest
+# claimed a whole tier of work.
+wt_untracked_suggest = make_suggest_repo("suggest-worktree-untracked")
+(wt_untracked_suggest / "extra.txt").write_text("line\n" * 40)
+subprocess.run(["git", "-C", str(wt_untracked_suggest), "add", "."],
+               check=True, env=suggest_env)
+wt_untracked_tree = subprocess.run(
+    ["git", "-C", str(wt_untracked_suggest), "write-tree"],
+    check=True, capture_output=True, text=True, env=suggest_env,
+).stdout.strip()
+wt_untracked_sha = subprocess.run(
+    ["git", "-C", str(wt_untracked_suggest), "commit-tree", wt_untracked_tree,
+     "-p", "HEAD", "-m", "review-bench worktree snapshot"],
+    check=True, capture_output=True, text=True,
+    env=dict(suggest_env, GIT_COMMITTER_NAME="review-bench",
+             GIT_COMMITTER_EMAIL="review-bench@local"),
+).stdout.strip()
+subprocess.run(["git", "-C", str(wt_untracked_suggest), "reset", "-q", "HEAD"],
+               check=True, env=suggest_env)
+(receipt_dir / rb.receipt_file_name(wt_untracked_suggest)).write_text(json.dumps({
+    "repo": str(wt_untracked_suggest), "tree": wt_untracked_tree, "commit": wt_untracked_sha,
+    "run_id": "untracked-fixture", "ts": "2026-07-27T00:00:00+00:00", "errored": 0,
+}) + "\n")
+review_found("untracked-fixture", findings=2)
+assert suggest(wt_untracked_suggest) == [
+    "nothing to review; tree matches review untracked-fixture"
+], suggest(wt_untracked_suggest)
+# And one line written after that review is one line of work, not forty-one.
+(wt_untracked_suggest / "extra.txt").write_text("line\n" * 40 + "new\n")
+assert_suggestion(
+    suggest(wt_untracked_suggest), 1, 1, "T0", worktree_receipt="untracked-fixture",
+    fix_capped=True,
 )
 
 missing_tree_suggest = make_suggest_repo("suggest-missing-tree")
@@ -3278,6 +3638,18 @@ assert contains "$frontier_out" '— best'
 assert contains "$frontier_out" 'errored 1/8'
 WORKER_STATS_DIR="$FSD" "$SCRIPT" frontier --commits nosuch >/dev/null 2>&1 \
   && fail "frontier accepted a commit with no canonical list"
+
+sed 's/"repo": "fixture"/"repo": "foreign"/; s/"commit": "aaaaaaa"/"commit": "ccccccc"/' \
+  "$FSD/defects/fixture__aaaaaaa.jsonl" >"$FSD/defects/foreign__ccccccc.jsonl"
+frontier_multi=$(
+  WORKER_STATS_DIR="$FSD" "$SCRIPT" frontier --budgets 10 2>&1
+) && fail "frontier accepted a repository-spanning default corpus"
+assert contains "$frontier_multi" 'fixture [aaaaaaa, bbbbbbb]'
+assert contains "$frontier_multi" 'foreign [ccccccc]'
+assert contains "$frontier_multi" 'pass --commits'
+WORKER_STATS_DIR="$FSD" "$SCRIPT" frontier --commits aaaaaaa,bbbbbbb --budgets 10 \
+  >/dev/null || fail "frontier refused an explicit single-repository corpus"
+rm -f "$FSD/defects/foreign__ccccccc.jsonl"
 
 # Two repositories whose sha7 collide would merge into one denominator, and the merge would look
 # exactly like a cell that ran on both.

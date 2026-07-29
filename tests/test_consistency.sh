@@ -405,6 +405,8 @@ assert grep -Fq 'receipt_file="$worker_stats_dir/receipts/$receipt_name"' "$STAT
 assert grep -Fq '[.repo,.tree,.commit,.run_id,.ts,(.errored | tostring),' "$STATUSLINE"
 assert grep -Fq '(if (.panel | type) == "number" and (.panel | floor) == .panel and .panel > 0' "$STATUSLINE"
 assert grep -Fq '"panel"' "$REVIEWBENCH"
+assert grep -Fq '"max": bool(max_panel)' "$REVIEWBENCH"
+assert grep -Fq 'and ((.max | type) == "boolean" or .max == null))' "$STATUSLINE"
 assert grep -Fq 'status --porcelain' "$STATUSLINE"
 assert test "$(grep -Ec 'GIT_INDEX_FILE|git -C "\\$repo" add -A|current_tree_hash' "$STATUSLINE")" -eq 0
 assert doc_has '<state_dir>/receipts/<repoName>__<repoHash>.json'

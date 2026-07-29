@@ -1270,6 +1270,14 @@ cat <<'SNAP'
 1007 1000 codex exec
 1008 1007 node /srv/dev-server
 1009 1000 node serve.js --dir /srv/agy
+1010 1 node /proj/node_modules/.bin/next start --port 4254
+1011 1 node /elsewhere/server.js
+1012 1 node /projx/server.js
+1015 1 node /proj/rpc.js
+1016 1000 8080 --serve
+1017 1000 COMMANDER --serve
+1013 1000 claude
+1014 1013 node /path/to/vite-worker
 9999 1 claude
 SNAP
 PSEOF
@@ -1277,6 +1285,22 @@ chmod +x "$FAKE_PS"
 FAKE_LSOF="$FIXTURES/ports-lsof"
 cat > "$FAKE_LSOF" <<'LSEOF'
 #!/usr/bin/env bash
+# The probe asks this twice: once for the listeners, once for the working directory of each
+# listening process, and the second answer is -F field output, not a table.
+for arg in "$@"; do
+  [ "$arg" = cwd ] || continue
+  cat <<'CWD'
+p1010
+n/proj
+p1011
+n/elsewhere
+p1012
+n/projx
+p1015
+n/proj
+CWD
+  exit 0
+done
 cat <<'OUT'
 COMMAND   PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME
 node     1001 u   20u  IPv4  0t0      TCP *:5173 (LISTEN)
@@ -1288,6 +1312,13 @@ agy      1005 u   10u  IPv4  0t0      TCP 127.0.0.1:61609 (LISTEN)
 node     1006 u   11u  IPv4  0t0      TCP 127.0.0.1:61610 (LISTEN)
 node     1008 u   12u  IPv4  0t0      TCP *:5174 (LISTEN)
 node     1009 u   13u  IPv4  0t0      TCP *:8080 (LISTEN)
+node     1010 u   30u  IPv4  0t0      TCP *:4254 (LISTEN)
+node     1011 u   31u  IPv4  0t0      TCP *:4300 (LISTEN)
+node     1012 u   32u  IPv4  0t0      TCP *:4400 (LISTEN)
+node     1014 u   33u  IPv4  0t0      TCP *:4500 (LISTEN)
+node     1015 u   34u  IPv4  0t0      TCP 127.0.0.1:62150 (LISTEN)
+8080     1016 u   35u  IPv4  0t0      TCP *:4600 (LISTEN)
+COMMANDER 1017 u  36u  IPv4  0t0      TCP *:4700 (LISTEN)
 OUT
 LSEOF
 chmod +x "$FAKE_LSOF"
@@ -1296,13 +1327,33 @@ printf '#!/usr/bin/env bash\nprintf "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NO
 chmod +x "$FAKE_LSOF_EMPTY"
 
 run_probe() {
-  STATUSLINE_PS="$FAKE_PS" STATUSLINE_LSOF="$FAKE_LSOF" "$PORTS_PROBE" "$1" "$2"
+  STATUSLINE_PS="$FAKE_PS" STATUSLINE_LSOF="$FAKE_LSOF" "$PORTS_PROBE" "$1" "$2" "${3:-}"
 }
 run_probe pp-parse 1001
 # 61609 and 61610 are an LLM tool talking to itself, an agy process and a node it spawned. The
 # two that stay are what the segment exists for: 5174 is a dev server a codex worker started,
-# and 8080 is one whose own arguments merely mention a path ending in agy.
-assert_eq '5173 8123 5174 8080' "$(cat "$STATE_DIR/ports-pp-parse")"
+# and 8080 is one whose own arguments merely mention a path ending in agy. 4500 belongs to a
+# claudeb worker of this session, which is itself a claude process — passing one on the way up must
+# not end the walk, or every server a worker starts reads as a sibling chat's. 1010-1012 are
+# orphans and no repository was given, so nothing places them. 4600 belongs to a process whose own
+# name is all digits, which the pid scan must not mistake for the pid column, and 4700 to one whose
+# name merely starts with the word the header line is recognised by.
+assert_eq '5173 8123 5174 8080 4500 4600 4700' "$(cat "$STATE_DIR/ports-pp-parse")"
+
+# A server backgrounded from a tool call is reparented to launchd as soon as that call returns —
+# the case the ancestry walk alone could never see, and the one every dev server actually hits.
+# Its working directory is inside the repository being shown, so it is claimed back; the one
+# elsewhere is not, and neither is /projx, whose name merely starts with the repository's. 62150 has
+# the right directory and the wrong port: a directory is weaker evidence than a parent, and every
+# editor RPC socket started from the repository would otherwise fill the segment.
+run_probe pp-orphan 1001 /proj
+assert_eq '5173 8123 5174 8080 4254 4500 4600 4700' "$(cat "$STATE_DIR/ports-pp-orphan")"
+
+# The repository places an orphan, never someone else's session: 1001-1009 hang off the other
+# claude, and a repository argument must not turn them into this session's servers. 4500 sits under
+# a worker of that other session and is just as much theirs.
+run_probe pp-orphan-other 9999 /proj
+assert_eq '4254' "$(cat "$STATE_DIR/ports-pp-orphan-other")"
 
 # 4-digit PID alignment test: ps right-aligns columns, causing leading spaces.
 # Verify the regex handles leading whitespace correctly.
@@ -1608,14 +1659,25 @@ review_nongit_out=$(run_statusline "$(statusline_payload review-nongit "" "$NON_
   || fail "review non-git render failed"
 assert test "${review_nongit_out#*review T}" = "$review_nongit_out"
 
+# A port belongs to the project and its diff, not to a review of it, so it takes the slot right
+# after the repository cluster and the review label follows it.
+printf '5173\n' > "$STATE_DIR/ports-r-order"
+rorder_out=$(run_statusline "$(statusline_payload r-order "" "$REVIEW_DIRTY")")
+assert grep -Fq ":5173" <<< "$rorder_out"
+assert grep -Fq "$review_delimited" <<< "$rorder_out"
+# Cut on the delimited segment, not on the bare word: this fixture repository is itself named
+# review-dirty, and its own label would answer first.
+assert grep -Fq ":5173" <<< "${rorder_out%%"$review_delimited"*}"
+
 PROGRESS_DIR="$CLAUDEB_FIX/worker-stats/progress"
 mkdir -p "$PROGRESS_DIR"
 progress_prefix="${review_receipt_name%.json}-"
-write_progress() { # pid tier done total started [repo]
+write_progress() { # pid tier done total started [repo] [max]
   jq -cn --arg repo "${6:-$REVIEW_CLEAN}" --argjson pid "$1" --arg tier "$2" \
-    --argjson done_cells "$3" --argjson total "$4" --arg started "$5" '
+    --argjson done_cells "$3" --argjson total "$4" --arg started "$5" \
+    --argjson max "${7:-false}" '
     {repo:$repo, pid:$pid, run_id:"progress-fixture",
-     tier:(if $tier == "" then null else $tier end), target:"abc1234",
+     tier:(if $tier == "" then null else $tier end), max:$max, target:"abc1234",
      cells:[range($total) | "cell-\(.)"], done:[range($done_cells) | "cell-\(.)"],
      failed:0, started:$started, ts:$started}' \
     > "$PROGRESS_DIR/$progress_prefix$1.json"
@@ -1634,7 +1696,21 @@ jq -cn --arg repo "$REVIEW_CLEAN" --arg tree "$review_clean_tree" \
 write_progress "$$" T2 3 8 2026-07-27T22:00:00+00:00
 progress_live_out=$(progress_render live)
 assert grep -Fq 'review T2 3/8' <<< "$progress_live_out"
+assert test "${progress_live_out#*review T2 max}" = "$progress_live_out"
 rm -f "$review_receipt_file"
+
+# The max panel is a variant of the same tier at the same time budget, so a T2 max run must not
+# read as the T2 it is not: it buys a wider panel, and the label is where that is visible.
+write_progress "$$" T2 5 16 2026-07-27T22:00:00+00:00 "" true
+progress_max_out=$(progress_render max)
+assert grep -Fq 'review T2 max 5/16' <<< "$progress_max_out"
+
+# --max is refused without --tier, so a file claiming the variant without the tier is corrupt in
+# that field; the counter still renders and no bare variant name takes the tier's place.
+write_progress "$$" "" 2 4 2026-07-27T22:00:00+00:00 "" true
+progress_max_untiered_out=$(progress_render max-untiered)
+assert grep -Fq 'review 2/4' <<< "$progress_max_untiered_out"
+assert test "${progress_max_untiered_out#*review max}" = "$progress_max_untiered_out"
 
 # review-bench keys the file name on the path it was handed, so a run started from a
 # subdirectory lands under a name no render can predict — and a repository whose directory name
@@ -1753,6 +1829,29 @@ fire_hook() { # command
     '{hook_event_name:"PostToolUse",tool_name:"Bash",cwd:$cwd,tool_input:{command:$cmd}}' |
     CLAUDEB_DIR="$CLAUDEB_FIX" REVIEW_STAMP_HOOK_BENCH="$ROOT/bin/review-bench" "$STAMP_HOOK"
 }
+# A worktree review, the way review-bench really stamps one: the receipt names a snapshot commit
+# whose committer identity is what marks it, and the findings live in the run directory because the
+# corpus refuses the run.
+arm_worktree_review() { # run_id findings base
+  local tree snapshot run_dir
+  git -C "$HOOK_REPO" add -A
+  tree=$(git -C "$HOOK_REPO" write-tree)
+  snapshot=$(git -C "$HOOK_REPO" -c user.name=review-bench -c user.email=review-bench@local \
+    commit-tree "$tree" -p "$3" -m 'review-bench worktree snapshot')
+  jq -cn --arg repo "$hook_root" --arg tree "$tree" --arg commit "$snapshot" --arg run "$1" \
+    '{repo:$repo,tree:$tree,commit:$commit,run_id:$run,
+      ts:"2026-07-28T00:00:00+00:00",errored:0,panel:16}' > "$hook_receipt"
+  run_dir="$CLAUDEB_FIX/worker-stats/benches/$1"
+  rm -rf "$run_dir"
+  if [ "$2" -gt 0 ]; then
+    mkdir -p "$run_dir"
+    : > "$run_dir/findings-sol-high.jsonl"
+    for line in $(seq 1 "$2"); do
+      jq -cn --argjson n "$line" '{severity:"P2",file:"a.txt",line:$n,summary:"finding"}' \
+        >> "$run_dir/findings-sol-high.jsonl"
+    done
+  fi
+}
 receipt_tree() { jq -r '.tree' "$hook_receipt"; }
 head_tree() { git -C "$HOOK_REPO" rev-parse 'HEAD^{tree}'; }
 
@@ -1789,6 +1888,122 @@ fire_hook "git status --porcelain"
 assert_eq run-dirty "$(jq -r '.run_id' "$hook_receipt")"
 fire_hook
 assert grep -q '^stamped-' <<< "$(jq -r '.run_id' "$hook_receipt")"
+
+# A review of an uncommitted tree opens a cycle nothing else can close: its reviewed tree is the
+# tree of no commit, so no commit will ever have it as a parent, and the corpus refuses the run, so
+# its confirmed count stays 0 forever. The clean tree descending from the base it was taken on is
+# the work it reviewed having landed, fixes and all.
+wt_base=$(git -C "$HOOK_REPO" rev-parse HEAD)
+printf 'reviewed-dirty\n' >> "$HOOK_REPO/a.txt"
+arm_worktree_review wt-found 2 "$wt_base"
+printf 'the-fix\n' >> "$HOOK_REPO/a.txt"
+hook_commit wt-fixes
+fire_hook
+assert_eq "$(head_tree)" "$(receipt_tree)"
+assert grep -q '^stamped-' <<< "$(jq -r '.run_id' "$hook_receipt")"
+
+# And it closes the cycle without switching the label off for good: the stamp rewrote the receipt
+# against HEAD, an ordinary commit with nothing adjudicated, so the next change lights it again.
+wt_stamped=$(receipt_tree)
+printf 'after-the-stamp\n' >> "$HOOK_REPO/a.txt"
+hook_commit wt-after
+fire_hook
+assert_eq "$wt_stamped" "$(receipt_tree)"
+
+# A worktree review that found nothing provoked no fixes, so the commit that lands the work it saw
+# is not the end of a cycle that never opened.
+wt_base=$(git -C "$HOOK_REPO" rev-parse HEAD)
+printf 'clean-run\n' >> "$HOOK_REPO/a.txt"
+arm_worktree_review wt-clean 0 "$wt_base"
+hook_commit wt-clean-work
+fire_hook
+assert_eq wt-clean "$(jq -r '.run_id' "$hook_receipt")"
+
+# Reflexivity is not landing: --is-ancestor holds when the base IS HEAD, so a tree that went clean
+# by discarding the reviewed work must not close the cycle. The panel reviewed the snapshot, never
+# the base it was taken on.
+wt_base=$(git -C "$HOOK_REPO" rev-parse HEAD)
+printf 'discarded\n' >> "$HOOK_REPO/a.txt"
+arm_worktree_review wt-discard 1 "$wt_base"
+git -C "$HOOK_REPO" reset -q --hard >/dev/null
+fire_hook
+assert_eq wt-discard "$(jq -r '.run_id' "$hook_receipt")"
+
+# A fix that renames a reviewed file must still close the cycle: with rename detection on, the diff
+# would list only the destination and the path the review knew would look like it never landed.
+wt_base=$(git -C "$HOOK_REPO" rev-parse HEAD)
+printf 'renamed-away\n' >> "$HOOK_REPO/a.txt"
+arm_worktree_review wt-rename 1 "$wt_base"
+git -C "$HOOK_REPO" mv a.txt renamed.txt
+printf 'and-fixed\n' >> "$HOOK_REPO/renamed.txt"
+hook_commit wt-renamed
+fire_hook
+assert grep -q '^stamped-' <<< "$(jq -r '.run_id' "$hook_receipt")"
+
+# Never-reviewed code must not ride along: the cycle closes on the commit that lands the reviewed
+# work, not on anything further down the branch.
+wt_base=$(git -C "$HOOK_REPO" rev-parse HEAD)
+printf 'reviewed-then-more\n' >> "$HOOK_REPO/renamed.txt"
+arm_worktree_review wt-tooLate 1 "$wt_base"
+hook_commit wt-lands
+printf 'never-reviewed\n' > "$HOOK_REPO/extra.txt"
+hook_commit wt-extra
+fire_hook
+assert_eq wt-tooLate "$(jq -r '.run_id' "$hook_receipt")"
+
+# Descending from the base is not carrying what was reviewed: stash the reviewed work, commit
+# something else, and the tree is clean one commit past the base with every other gate satisfied.
+# The paths the snapshot changed are not in what landed, so the cycle stays open.
+wt_base=$(git -C "$HOOK_REPO" rev-parse HEAD)
+printf 'stashed-away\n' >> "$HOOK_REPO/a.txt"
+arm_worktree_review wt-elsewhere 1 "$wt_base"
+git -C "$HOOK_REPO" reset -q --hard >/dev/null
+printf 'unrelated\n' > "$HOOK_REPO/c.txt"
+hook_commit wt-unrelated
+fire_hook
+assert_eq wt-elsewhere "$(jq -r '.run_id' "$hook_receipt")"
+
+# A snapshot taken on a base this history does not contain says nothing about what just landed.
+wt_orphan=$(git -C "$HOOK_REPO" -c user.name=Fixture -c user.email=fixture@example.com \
+  commit-tree "$(head_tree)" -m orphan)
+printf 'foreign\n' >> "$HOOK_REPO/a.txt"
+arm_worktree_review wt-foreign 1 "$wt_orphan"
+hook_commit wt-foreign-work
+fire_hook
+assert_eq wt-foreign "$(jq -r '.run_id' "$hook_receipt")"
+
+# A mode-only commit keeps every reviewed path in base..HEAD even after its content is restored to
+# the base blob. It landed none of the reviewed work and must leave the cycle open.
+wt_base=$(git -C "$HOOK_REPO" rev-parse HEAD)
+printf 'reviewed-but-reverted\n' >> "$HOOK_REPO/a.txt"
+arm_worktree_review wt-reverted 1 "$wt_base"
+git -C "$HOOK_REPO" checkout -q "$wt_base" -- .
+chmod +x "$HOOK_REPO/a.txt"
+hook_commit wt-reverted-mode
+fire_hook
+assert_eq wt-reverted "$(jq -r '.run_id' "$hook_receipt")"
+
+# Landing the snapshot untouched applies no fixes: the findings stand, the label stays lit.
+wt_base=$(git -C "$HOOK_REPO" rev-parse HEAD)
+printf 'committed-as-is\n' >> "$HOOK_REPO/a.txt"
+arm_worktree_review wt-asis 1 "$wt_base"
+hook_commit wt-asis-commit
+fire_hook
+assert_eq wt-asis "$(jq -r '.run_id' "$hook_receipt")"
+
+# A fix that reverts ONE reviewed path while landing work on another still closes the cycle.
+wt_base=$(git -C "$HOOK_REPO" rev-parse HEAD)
+printf 'reviewed-one\n' >> "$HOOK_REPO/a.txt"
+printf 'reviewed-two\n' >> "$HOOK_REPO/c.txt"
+arm_worktree_review wt-partial 1 "$wt_base"
+git -C "$HOOK_REPO" checkout -q "$wt_base" -- a.txt
+printf 'fixed\n' >> "$HOOK_REPO/c.txt"
+hook_commit wt-partial-fix
+fire_hook
+wt_partial_run=$(jq -r '.run_id' "$hook_receipt")
+assert test "$wt_partial_run" != wt-partial
+assert test "${wt_partial_run#stamped-}" != "$wt_partial_run"
+
 rm -f "$hook_receipt" "$hook_corpus"
 
 # A repository nobody reviewed has no receipt to read, and the hook must stay silent over it.

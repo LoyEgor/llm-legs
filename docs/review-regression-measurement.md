@@ -179,3 +179,43 @@ regressions introduced by the fix units themselves. Classification: all three ar
 incomplete-fix holes, not regressions and not first-pass misses (the first pass had no such
 strings in front of it; the second pass manufactured and executed them). The focused-re-read
 form again paid for itself: ~120 executed adversarial strings against six registered units.
+
+## Round 5 — 2026-07-29, field audit of errored reviews
+
+Audited all 25 errored rater runs from 2026-07-28 against their verbatim answers. Four were
+detector misses: three pre-14:59 runs are already covered by detector v2, while the fourth
+exposed an empty `{"comments":[]}` clean envelope. The same audit found one real finding whose
+`[L66](...): [MEDIUM]` heading was outside the agy adapter grammar. Both code gaps are now
+fixture-pinned and fixed. The systematic `agy-flash35-low-skill` failures were backend
+low-to-medium model substitutions; the existing model-mismatch refusal failed closed as designed.
+
+## Round 6 — 2026-07-29, pre-registered fix units for the T1-review fixes
+
+The 2026-07-28 T1 self-review (runs 20260728T2*Z-500a9ff) confirmed 7 findings; the fixes below
+went in unreviewed and are registered here BEFORE their second pass, per this document's rule:
+
+1. `review_outcome` meta.json tolerance (bin/review-bench, try/except around meta parse).
+2. `reviewed_diff_paths` -z NUL parsing (bin/review-bench).
+3. stamp-hook -z path handling rewritten to direct pipes after the first attempt broke on
+   bash command substitution dropping NUL bytes — that first attempt was itself a live
+   fix-introduced regression, caught by tests/test_statusline_hooks.sh assert 393.
+4. agy linked-range grammar `[L12-L15]` (bin/review-bench issue_re).
+5. bare-codex diff inclusion (`rater["bare"]` added to the diff-need condition) — every
+   prior bare run had an empty "Commit diff:" section.
+6. Detector round-6 edits: CLEAN_PRAISE_TOKENS +successfully/+consistent,
+   CLEAN_BENIGN_COMPOUND_RE, CLEAN_DEFECT_LABEL_RE in announce branch.
+
+Second pass: the suggested worktree review over this delta; classify each finding against
+these units as regression / incomplete fix / pre-existing.
+
+Round 6 second pass (T1 over the six fixes, run 20260728T233914Z-b83130e, judged by the
+fixer per the no-judges rule): 15 claims, 4 real. Two were regressions of the round's own
+fixes (review_outcome's commit[:7] prefix match imported confirmed counts across
+repositories — five raters converged on it independently; the run_id fallback accepted a
+directory naming a different commit), one an incomplete fix (the announce "for" exemption
+scrubbed 60 characters and could hide a stated finding), and one a first-pass miss in the
+pre-existing worktree stamp branch (committing the snapshot untouched cleared the label
+while its findings stood — P1). All four fixed and pinned same session; 11 rejected with
+reasons (generic resource claims, already-safe code verified by execution, deliberate
+receipt-trust design, one foreign file). The verifier walled mid-run and passed five kimi
+findings unverified — behavior worth its own decision.

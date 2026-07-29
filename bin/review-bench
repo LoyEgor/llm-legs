@@ -297,7 +297,7 @@ RATER_RE = re.compile(
     r"^(sol|opus|sonnet|haiku|fable|grok|agy-pro|agy-flash35|agy-flash36"
     r"|oc-glm52|oc-glm51|oc-dsv4pro|oc-dsv4flash|oc-grok45|oc-qwen37max"
     r"|oc-qwen37plus|oc-kimik3|oc-kimik27code|oc-mmm3|oc-mimo25pro|oc-mimo25|oc-hy3)"
-    r"(?:-(low|medium|high|xhigh|max))?(-skill|-anthropic|-google)?$"
+    r"(?:-(low|medium|high|xhigh|max))?(-skill|-bare|-anthropic|-google)?$"
 )
 RATER_REPEAT_RE = re.compile(r"^(\S+) x([2-9])$")
 RATER_ATTEMPT_RE = re.compile(r"#[2-9]$")
@@ -424,6 +424,8 @@ REVIEW_TIERS = {
 RECEIPT_DIR = "receipts"
 PROGRESS_DIR = "progress"
 RECEIPT_FIELDS = ("repo", "tree", "commit", "run_id", "ts")
+# T1's size ceiling, named rather than left a literal inside the tier ladder.
+T1_MAX_LINES = 150
 RECEIPT_HASH_HEX = 8
 
 
@@ -481,13 +483,15 @@ def progress_file_name(repo, pid=None):
     return f"{receipt_name[:-5]}-{pid if pid is not None else os.getpid()}.json"
 
 
-def review_progress_document(repo, run_id, tier, target, cells, started=None, pid=None):
+def review_progress_document(repo, run_id, tier, target, cells, started=None, pid=None,
+                             max_panel=False):
     timestamp = started or iso_now()
     return {
         "repo": str(Path(repo).resolve()),
         "pid": pid if pid is not None else os.getpid(),
         "run_id": run_id,
         "tier": tier,
+        "max": bool(max_panel),
         "target": target,
         "cells": list(cells),
         "done": [],
@@ -751,7 +755,7 @@ def parse_rater(spec):
     match = RATER_RE.fullmatch(spec.strip().lower())
     if not match:
         raise ValueError(
-            f"invalid rater {spec!r}; expected sol-<effort>, "
+            f"invalid rater {spec!r}; expected sol-<effort>[-bare], "
             "opus|sonnet|haiku|fable-<effort>, grok-<low|medium|high>, "
             "agy-pro-<low|high>-skill, agy-flash36-<low|medium|high>-skill, "
             "agy-flash35-<low|medium|high>-skill, "
@@ -760,8 +764,9 @@ def parse_rater(spec):
             "or a Claude/agy -skill variant such as opus-medium-skill"
         )
     model, effort, suffix = match.groups()
-    profile = suffix[1:] if suffix and suffix != "-skill" else None
+    profile = suffix[1:] if suffix in ("-anthropic", "-google") else None
     skill = suffix == "-skill"
+    bare = suffix == "-bare"
     if model in OPENCODE_MODEL_IDS:
         side = "opencode"
     elif model == "grok" or model in AGY_EFFORTS:
@@ -774,6 +779,8 @@ def parse_rater(spec):
         raise ValueError(f"invalid rater {spec!r}; effort is required")
     if skill and side not in ("claude", "agy"):
         raise ValueError(f"invalid rater {spec!r}; -skill mode is Claude/agy-only")
+    if bare and side != "codex":
+        raise ValueError(f"invalid rater {spec!r}; -bare mode is Sol-only")
     if profile and side != "opencode":
         raise ValueError(
             f"invalid rater {spec!r}; -{profile} review profiles are OpenCode-only"
@@ -821,10 +828,12 @@ def parse_rater(spec):
         canonical += f"-{effort}"
     if skill:
         canonical += "-skill"
+    if bare:
+        canonical += "-bare"
     if profile:
         canonical += f"-{profile}"
     return {"spec": canonical, "model": model, "effort": effort,
-            "side": side, "skill": skill, "profile": profile}
+            "side": side, "skill": skill, "bare": bare, "profile": profile}
 
 
 def parse_raters(value):
@@ -1277,6 +1286,39 @@ AGY_SKILL_SEVERITIES = {
 }
 
 
+def agy_structured_clean_review(text):
+    body = (text or "").strip()
+    output = re.search(
+        r"(?:^|\n)<OUTPUT>\s*(.*?)\s*</OUTPUT>\s*$", body,
+        re.IGNORECASE | re.DOTALL,
+    )
+    candidate = output.group(1).strip() if output else body
+    surrounding = body[:output.start()].strip() if output else ""
+    fence = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", candidate, re.IGNORECASE | re.DOTALL)
+    if fence:
+        candidate = fence.group(1).strip()
+    try:
+        document = json.loads(candidate)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(document, dict) or not document:
+        return False
+    if not set(document).issubset({"comments", "findings"}):
+        return False
+    if not all(value == [] for value in document.values()):
+        return False
+    if (
+        contains_clean_token(surrounding, CLEAN_PROSE_BLOCKERS)
+        or CLEAN_TRUNCATION_RE.search(surrounding)
+    ):
+        return False
+    return not any(
+        contains_clean_token(sentence, CLEAN_DEFECT_TOKENS)
+        and not contains_clean_token(sentence, CLEAN_NEGATION_TOKENS)
+        for sentence in clean_review_sentences(surrounding)
+    )
+
+
 def normalize_agy_skill_output(text, rater):
     if re.search(r"\bNo git repository detected\b", text, re.IGNORECASE):
         raise ValueError("agy -skill did not enter the sealed git repository")
@@ -1285,7 +1327,9 @@ def normalize_agy_skill_output(text, rater):
     lines = text.splitlines()
     file_re = re.compile(r"^##\s+File:\s+(.+?)\s*$", re.IGNORECASE)
     issue_re = re.compile(
-        r"^###\s+L(\d+)(?:-\d+)?\s*:\s*\[([A-Za-z0-9]+)\]\s*(.+?)\s*$"
+        r"^###\s+(?:L(?P<plain>\d+)(?:-L?\d+)?|"
+        r"\[L(?P<linked>\d+)(?:-L?\d+)?\]\([^)]+\))"
+        r"\s*:\s*\[(?P<severity>[A-Za-z0-9]+)\]\s*(?P<title>.+?)\s*$"
     )
     for index, line in enumerate(lines):
         file_match = file_re.match(line.strip())
@@ -1295,7 +1339,9 @@ def normalize_agy_skill_output(text, rater):
         issue_match = issue_re.match(line.strip())
         if not issue_match or not current_file:
             continue
-        line_number, raw_severity, title = issue_match.groups()
+        line_number = issue_match.group("plain") or issue_match.group("linked")
+        raw_severity = issue_match.group("severity")
+        title = issue_match.group("title")
         severity = AGY_SKILL_SEVERITIES.get(raw_severity.upper())
         if not severity:
             continue
@@ -1334,7 +1380,10 @@ def normalize_agy_skill_output(text, rater):
                     "summary": " ".join(summary.split()),
                     "rater": rater,
                 })
-    clean = re.search(r"\bNo issues found\b", text, re.IGNORECASE)
+    clean = (
+        re.search(r"\bNo issues found\b", text, re.IGNORECASE)
+        or agy_structured_clean_review(text)
+    )
     if not findings and not clean:
         raise ValueError(
             "agy -skill returned malformed Markdown: expected /code-review findings "
@@ -1356,7 +1405,7 @@ CLEAN_ASSERTION_VERBS = (
 CLEAN_NEGATION_TOKENS = ("no", "not", "don't", "do not", "none", "without")
 CLEAN_DEFECT_TOKENS = (
     "finding", "findings", "issue", "issues", "defect", "defects", "bug", "bugs",
-    "regression", "regressions", "problem", "problems",
+    "regression", "regressions", "problem", "problems", "loss", "losses",
 )
 CLEAN_CLAIM_QUANTIFIERS = (
     "a", "an", "one", "two", "three", "four", "five", "some", "several", "multiple",
@@ -1364,6 +1413,7 @@ CLEAN_CLAIM_QUANTIFIERS = (
 CLEAN_PRAISE_TOKENS = (
     "correctly", "correct", "passes", "pass", "covers", "cover", "coverage", "validates",
     "valid", "sound", "safe", "as intended", "matches", "hermetic", "addresses", "handles",
+    "successfully", "consistent",
 )
 CLEAN_CONTRAST_TOKENS = (
     "except", "but", "however", "other than", "aside", "apart", "though", "although",
@@ -1371,14 +1421,17 @@ CLEAN_CONTRAST_TOKENS = (
 )
 CLEAN_FAILURE_TOKENS = (
     "could not", "couldn't", "unable", "cannot", "can't", "failed", "error", "timed out",
+    "fail", "fails", "failing", "failure", "failures",
 )
 # A praise word does not vouch for the rest of its sentence: "correctly handles X while
 # silently dropping Y" is a defect claim, so defect verbs block the whole answer.
 CLEAN_DEFECT_VERBS = (
     "break", "breaks", "broken", "leak", "leaks", "leaking", "crash", "crashes", "crashing",
     "drop", "drops", "dropping", "violate", "violates", "regress", "regresses",
-    "corrupt", "corrupts", "lose", "loses", "exhaust", "exhausts",
+    "corrupt", "corrupts", "lose", "loses", "losing", "lost", "exhaust", "exhausts",
     "incorrect", "incorrectly", "wrong", "wrongly", "improper", "improperly",
+    "bypass", "bypasses", "bypassed", "bypassing", "omit", "omits", "omitted", "omitting",
+    "skip", "skips", "skipped", "skipping", "ignore", "ignores", "ignored", "ignoring",
 )
 CLEAN_SEVERITY_TOKENS = ("p1", "p2", "p3", "severity")
 CLEAN_ANNOUNCE_BLOCKERS = (
@@ -1390,6 +1443,12 @@ CLEAN_PROSE_BLOCKERS = (
     + CLEAN_DEFECT_VERBS
 )
 CLEAN_MARKER_TAIL_RE = re.compile(r"no findings\.?$", re.IGNORECASE)
+# "Regression: …"/"Bug: …" is a finding stated as a label, not an announcement of intent —
+# but a defect noun elsewhere in a preamble stays legal ("Reviewing the diff for issues").
+CLEAN_DEFECT_LABEL_RE = re.compile(
+    rf"^(?:{'|'.join(re.escape(token) for token in CLEAN_DEFECT_TOKENS)})\s*:",
+    re.IGNORECASE,
+)
 CLEAN_PATH_RE = re.compile(r"\S+\.[a-z]{2,4}\b|\w+/\w+")
 # Announce preambles say things like "for logic/correctness issues"; only a dotted file
 # name is a location signal there, while prose answers keep the stricter slash test.
@@ -1440,7 +1499,16 @@ def clean_marker_candidates(text):
         yield "\n".join(prose)
 
 
+# "regression tests/coverage" is a test artifact, not a defect declaration; masked before
+# token matching so the compound never trips the defect-noun rule, while a bare "regression"
+# (introduced, caused, found) still does.
+CLEAN_BENIGN_COMPOUND_RE = re.compile(
+    r"(?<!\w)regressions? (test(s|ing)?|suites?|coverage|pins?)(?!\w)", re.IGNORECASE
+)
+
+
 def contains_clean_token(text, tokens):
+    text = CLEAN_BENIGN_COMPOUND_RE.sub("testing", text)
     return any(
         re.search(rf"(?<!\w){re.escape(token)}(?!\w)", text, re.IGNORECASE)
         for token in tokens
@@ -1465,10 +1533,19 @@ def announce_clean_review(text):
     preamble = text[:marker.start()].strip()
     if not preamble:
         return True
+    # A defect noun in the preamble is a stated finding ("risks data loss") unless it names
+    # what was searched FOR ("reviewing for issues"), which stays a legal announcement. Only
+    # the noun itself is exempted, not everything after "for" — a wide scrub hid findings.
+    scanned = re.sub(
+        rf"\bfor\s+(?:[\w/,'-]+\s+){{0,3}}?(?:{'|'.join(CLEAN_DEFECT_TOKENS)})\b",
+        "", preamble, flags=re.IGNORECASE,
+    )
     return (
         len(preamble) <= 200
         and len(clean_review_sentences(preamble)) == 1
         and not contains_clean_token(preamble, CLEAN_ANNOUNCE_BLOCKERS)
+        and not contains_clean_token(scanned, CLEAN_DEFECT_TOKENS)
+        and not CLEAN_DEFECT_LABEL_RE.match(preamble)
         and not CLEAN_TRUNCATION_RE.search(preamble)
         and not any(character.isdigit() for character in preamble)
         and not CLEAN_ANNOUNCE_PATH_RE.search(preamble)
@@ -1657,15 +1734,24 @@ def run_codex(rater, repo, sha, focus, run_dir, diff, account):
     )
     raw_final.close()
     raw_events = run_dir / f"raw-events-{rater['spec']}.jsonl"
-    command = [
-        command_path("REVIEW_BENCH_CODEX_BIN", "codex"), "exec", "review",
-        "--commit", sha, "-m", "gpt-5.6-sol", "-c",
-        f"model_reasoning_effort={rater['effort']}",
-    ]
-    instruction = READ_ONLY_REVIEW_INSTRUCTION
-    if focus:
-        instruction += f" Additional review focus: {focus}"
-    command += ["-c", f"developer_instructions={json.dumps(instruction)}"]
+    command = [command_path("REVIEW_BENCH_CODEX_BIN", "codex"), "exec"]
+    prompt_input = None
+    if rater["bare"]:
+        prompt_input = review_prompt(sha, focus) + "\n\nCommit diff:\n" + diff
+        command += [
+            "-m", "gpt-5.6-sol", "-c",
+            f"model_reasoning_effort={rater['effort']}",
+            "-",
+        ]
+    else:
+        command += [
+            "review", "--commit", sha, "-m", "gpt-5.6-sol", "-c",
+            f"model_reasoning_effort={rater['effort']}",
+        ]
+        instruction = READ_ONLY_REVIEW_INSTRUCTION
+        if focus:
+            instruction += f" Additional review focus: {focus}"
+        command += ["-c", f"developer_instructions={json.dumps(instruction)}"]
     command += ["--json", "-o", raw_final.name]
     clone = None
     started = time.monotonic()
@@ -1673,11 +1759,18 @@ def run_codex(rater, repo, sha, focus, run_dir, diff, account):
         clone = seal_overlay_clone(repo, sha)
         try:
             with open(raw_events, "w") as stdout:
-                proc = subprocess.run(
-                    command, cwd=clone, env=codex_environment(account),
-                    stdin=subprocess.DEVNULL, stdout=stdout, stderr=subprocess.PIPE,
-                    text=True, timeout=RATER_TIMEOUT_S
-                )
+                if prompt_input is None:
+                    proc = subprocess.run(
+                        command, cwd=clone, env=codex_environment(account),
+                        stdin=subprocess.DEVNULL, stdout=stdout, stderr=subprocess.PIPE,
+                        text=True, timeout=RATER_TIMEOUT_S
+                    )
+                else:
+                    proc = subprocess.run(
+                        command, cwd=clone, env=codex_environment(account),
+                        input=prompt_input, stdout=stdout, stderr=subprocess.PIPE,
+                        text=True, timeout=RATER_TIMEOUT_S
+                    )
         except subprocess.TimeoutExpired:
             duration = round((time.monotonic() - started) * 1000)
             return 124, duration, "", f"rater timed out after {RATER_TIMEOUT_S}s", command
@@ -2688,16 +2781,21 @@ def untracked_numstat(repo):
     return changes
 
 
-def suggest_tier(paths, changed_lines, touched=()):
+def size_tier(paths, changed_lines):
+    """The ladder on size alone, before any escalation. Read separately by the cap on a review's own
+    follow-up work, which wants the T0 ceiling and must not inherit the escalations.
+    """
     if changed_lines <= 20 and len(paths) <= 2:
-        tier = "T0"
-    elif changed_lines <= 150:
-        tier = "T1"
-    elif changed_lines <= 600:
-        tier = "T2"
-    else:
-        tier = "T3"
-    rank = int(tier[1])
+        return "T0"
+    if changed_lines <= T1_MAX_LINES:
+        return "T1"
+    if changed_lines <= 600:
+        return "T2"
+    return "T3"
+
+
+def suggest_tier(paths, changed_lines, touched=()):
+    rank = int(size_tier(paths, changed_lines)[1])
     # Size comes from the changed files alone; escalation also looks at names that changed
     # without contributing lines — the source of a rename, so moving a file out of bin/ counts.
     paths = set(paths) | set(touched)
@@ -2824,20 +2922,121 @@ def cmd_review(args):
     return cmd_run(args)
 
 
-def cmd_receipt(args):
-    """Print this repository's review receipt, with the confirmed-defect count its run was
-    adjudicated to. The stamp hook reads it instead of deriving the receipt path itself, which
-    is the third place that derivation would otherwise have to stay in step with.
+def same_commit(repo, left, right):
+    """Whether two revisions name the same commit, false when either cannot be resolved."""
+    resolved = []
+    for revision in (left, right):
+        proc = subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{revision}^{{commit}}"],
+                              cwd=repo, capture_output=True, text=True)
+        if proc.returncode != 0 or not proc.stdout.strip():
+            return False
+        resolved.append(proc.stdout.strip())
+    return resolved[0] == resolved[1]
+
+
+def reviewed_diff_lines(repo, commit):
+    """How many lines the panel actually read: the diff of the commit the receipt names, which for a
+    worktree run is its snapshot against the base it was taken on. None when that cannot be measured
+    — a root commit has no parent — and callers then decline to lean on the number.
     """
-    receipt = review_receipt(Path(args.repo).resolve())
-    if not receipt:
-        return 1
+    if subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{commit}^"],
+                      cwd=repo, capture_output=True).returncode != 0:
+        return None
+    try:
+        changes, _ = diff_numstat(repo, [f"{commit}^", commit])
+    except RuntimeError:
+        return None
+    return sum(changes.values())
+
+
+def reviewed_diff_paths(repo, commit):
+    # -z: without it git quotes paths with special characters, and a quoted name never
+    # intersects the literal paths in `changes`.
+    proc = subprocess.run(
+        ["git", "diff", "--no-renames", "--name-only", "-z", f"{commit}^", commit],
+        cwd=repo, capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        return set()
+    return {path for path in proc.stdout.split("\0") if path}
+
+
+def review_outcome(repo, receipt):
+    """What the run behind this receipt produced: the confirmed count it was adjudicated to and,
+    for a worktree run — which the corpus refuses, so it can never have one — the findings its
+    panel wrote. Both readers of a receipt need this to tell a review that provoked work from one
+    that found nothing, and neither should derive it a second time.
+    """
+    # Aggregated over every run of the receipt's commit, not the receipt's run alone: a
+    # targeted rerun of one errored cell rewrites the receipt, and reading only that run
+    # would score a panel that found defects as a review that found nothing.
+    sd = state_dir()
+    commit = str(receipt.get("commit") or "")
+    # Full-sha equality, never a prefix: reviews.jsonl spans every repository, and two repos
+    # sharing seven hex characters would import each other's confirmed counts.
     confirmed = sum(
-        row["confirmed"] for row in read_jsonl(state_dir() / "reviews.jsonl")
-        if row.get("run_id") == receipt["run_id"] and isinstance(row.get("confirmed"), int)
+        row["confirmed"] for row in read_jsonl(sd / "reviews.jsonl")
+        if (row.get("run_id") == receipt["run_id"]
+            or (commit and str(row.get("commit") or "") == commit))
+        and isinstance(row.get("confirmed"), int)
         and not isinstance(row.get("confirmed"), bool)
     )
-    print(json.dumps(dict(receipt, confirmed=confirmed)))
+    worktree = is_worktree_snapshot(repo, commit)
+    findings = 0
+    if worktree:
+        benches = sd / "benches"
+        for run_dir in sorted(benches.iterdir()) if benches.exists() else []:
+            meta_path = run_dir / "meta.json"
+            meta = {}
+            if meta_path.exists():
+                try:
+                    meta = json.loads(meta_path.read_text())
+                except (OSError, json.JSONDecodeError):
+                    # An unreadable run proves nothing; counting its findings files would
+                    # trust exactly the raters its meta may have marked errored.
+                    continue
+            meta_commit = str(meta.get("commit") or "")
+            # The run_id fallback exists for artifacts with no commit stamped at all; a run
+            # that NAMES a different commit is a different review, whatever its directory.
+            if meta_commit:
+                if meta_commit != commit:
+                    continue
+            elif (meta.get("run_id") or run_dir.name) != receipt.get("run_id"):
+                continue
+            errored = {
+                entry.get("rater") for entry in meta.get("rater_runs", ())
+                if entry.get("errored") and entry.get("rater")
+            }
+            findings += sum(
+                len(read_jsonl(path)) for path in sorted(run_dir.glob("findings-*.jsonl"))
+                if path.name[len("findings-"):-len(".jsonl")] not in errored
+            )
+    return worktree, confirmed, findings
+
+
+def cmd_receipt(args):
+    """Print this repository's review receipt, with what the stamp hook needs to decide whether a
+    commit ends the review cycle: the confirmed-defect count its run was adjudicated to, whether
+    the run reviewed an uncommitted tree, and for such a run what it found and what it was based
+    on. The hook reads it instead of deriving any of this itself, which is the third place every
+    one of these derivations would otherwise have to stay in step with.
+    """
+    repo = Path(args.repo).resolve()
+    receipt = review_receipt(repo)
+    if not receipt:
+        return 1
+    worktree, confirmed, findings = review_outcome(repo, receipt)
+    extra = {"worktree": worktree}
+    if worktree:
+        extra["findings"] = findings
+        # The commit the snapshot was taken on top of. Its own tree is nowhere in the history, so
+        # this is the only fixed point a later commit can be compared with.
+        proc = subprocess.run(
+            ["git", "rev-parse", f"{receipt['commit']}^"],
+            cwd=repo, capture_output=True, text=True,
+        )
+        extra["base"] = proc.stdout.strip() if proc.returncode == 0 else ""
+    print(json.dumps(dict(receipt, confirmed=confirmed, **extra)))
     return 0
 
 
@@ -2867,6 +3066,8 @@ def cmd_suggest(args):
         ["git", "rev-parse", "--git-dir"], cwd=repo, capture_output=True
     ).returncode != 0:
         raise ValueError(f"not a git repository: {repo}")
+    # Defined for every path through the branch below, because the report at the end reads it.
+    snapshot_baseline = False
     if args.range:
         left, separator, right = args.range.partition("..")
         if not separator or not left or not right or right.startswith("."):
@@ -2878,15 +3079,28 @@ def cmd_suggest(args):
         receipt = None
     else:
         receipt = review_receipt(repo)
-        baseline = receipt["tree"] if receipt else "HEAD"
-        changes, sources = diff_numstat(repo, [baseline])
-        # A staged change that the working tree then reverts is absent from the baseline-to-files
-        # diff but is still what the next commit will contain, so the index is asked separately.
-        staged, staged_sources = diff_numstat(repo, ["--cached", baseline])
-        for path, lines in staged.items():
-            changes[path] = max(changes.get(path, 0), lines)
-        sources |= staged_sources
-        changes.update(untracked_numstat(repo))
+        snapshot_baseline = bool(receipt) and is_worktree_snapshot(repo, receipt["commit"])
+        if snapshot_baseline:
+            # One tree against another, both built the way the snapshot the panel reviewed was
+            # built. A snapshot holds tracked and untracked content alike, so asking the index and
+            # the working tree about it separately answered with a phantom deletion of every
+            # untracked file and then added its line count back on top — the tier inflated by the
+            # size of the review that had just finished, which is the loop that made one review
+            # become three.
+            changes, sources = diff_numstat(
+                repo, [receipt["tree"], working_tree_tree(repo)]
+            )
+        else:
+            baseline = receipt["tree"] if receipt else "HEAD"
+            changes, sources = diff_numstat(repo, [baseline])
+            # A staged change that the working tree then reverts is absent from the
+            # baseline-to-files diff but is still what the next commit will contain, so the index
+            # is asked separately.
+            staged, staged_sources = diff_numstat(repo, ["--cached", baseline])
+            for path, lines in staged.items():
+                changes[path] = max(changes.get(path, 0), lines)
+            sources |= staged_sources
+            changes.update(untracked_numstat(repo))
         command_target = "HEAD"
     if not changes:
         if receipt:
@@ -2896,12 +3110,51 @@ def cmd_suggest(args):
         return 0
     changed_lines = sum(changes.values())
     tier_name = suggest_tier(changes, changed_lines, sources)
+    # A delta measured against a review that FOUND something is the work that review provoked:
+    # nothing else has happened since the panel ran on this very tree. Pricing it by the ordinary
+    # rules is the whole loop where one review becomes three — a correction inside just-reviewed
+    # code came out a fresh T2 because it touched a measurement tool. So it is priced by size alone
+    # and never above T1.
+    # Two bounds, and neither of them relies on the stamp hook firing, because it fires on one shape
+    # of commit only. A review that found nothing provoked no work, so a delta over it is not
+    # follow-up at all — capping those put a ceiling on the repository that never lifted, measured
+    # at 5002 fresh lines priced T1 where they earn T3. And once the delta is larger than the diff
+    # the panel actually read, more has been written than was reviewed, so it stops being follow-up
+    # too. A manual stamp is a declaration rather than a review, and never opens this.
+    fix_delta = False
+    if receipt and not receipt["run_id"].startswith("stamped-"):
+        outcome_worktree, outcome_confirmed, outcome_findings = review_outcome(repo, receipt)
+        if outcome_findings > 0 if outcome_worktree else outcome_confirmed > 0:
+            # Still standing where the panel stood: a worktree review was taken on top of HEAD, a
+            # commit review on HEAD itself. Once anything has been committed the cycle is over, and
+            # without this the receipt cheapened every later delta in the repository — including work
+            # on another branch — for as long as the file happened to sit there.
+            review_point = f"{receipt['commit']}^" if outcome_worktree else receipt["commit"]
+            reviewed_lines = reviewed_diff_lines(repo, receipt["commit"])
+            # A worktree review read this very tree, so anything written on it is follow-up;
+            # a commit review caps only work overlapping the paths the panel actually read —
+            # a new unrelated path right after a large commit is not evidence it was provoked.
+            fix_delta = (
+                bool(reviewed_lines) and changed_lines <= reviewed_lines
+                and same_commit(repo, "HEAD", review_point)
+                and (outcome_worktree
+                     or bool(set(changes) & reviewed_diff_paths(repo, receipt["commit"])))
+            )
+    if fix_delta:
+        # T0 by the ladder's own T0 rule, so raising T1's ceiling can never quietly send a larger
+        # delta to T0's two-minute panel; T1 for everything else.
+        tier_name = "T0" if size_tier(changes, changed_lines) == "T0" else "T1"
     print(f"changed files: {len(changes)}")
     print(f"changed lines: {changed_lines}")
     print(f"tier: {tier_name}")
+    if fix_delta:
+        print(f"work over review {receipt['run_id']}, so {tier_name} regardless of what it touches")
     if receipt:
-        print(f"unreviewed delta vs review {receipt['run_id']}; staged content is compared "
-              "with the same reviewed tree")
+        print(f"unreviewed delta vs review {receipt['run_id']}; "
+              + ("the working tree is compared with the reviewed snapshot as one tree against "
+                 "another, so staged and untracked content is counted once"
+                 if snapshot_baseline
+                 else "staged content is compared with the same reviewed tree"))
     extra = ["--repo", str(repo)] if args.repo != "." else []
     # Long tiers are launched as background tasks (no TTY), where the guard demands the
     # flag — a suggested command must survive being copied verbatim.
@@ -3062,7 +3315,8 @@ def cmd_run(args):
     run_dir.mkdir(parents=True)
     os.chmod(run_dir, 0o700)
     diff = commit_diff(repo, sha) if any(
-        rater["side"] in ("claude", "grok", "opencode") for rater in raters) else ""
+        rater["side"] in ("claude", "grok", "opencode") or rater["bare"]
+        for rater in raters) else ""
 
     submitted_raters = sorted(raters, key=gate_admission_key)
     progress_path = None
@@ -3086,6 +3340,7 @@ def cmd_run(args):
                 "worktree" if worktree_mode else sha[:7],
                 [rater["spec"] for rater in submitted_raters],
                 started=started.isoformat(),
+                max_panel=bool(getattr(args, "max", False)),
             )
             prune_review_progress(repo, progress_path.parent)
             persist_review_progress(progress_path, progress)
@@ -3592,11 +3847,27 @@ def frontier_inputs(sd, commits=None):
     rest are reported as excluded rather than silently scored as weak.
     """
     defect_dir = sd / "defects"
-    available, source = {}, {}
+    loaded = []
+    repositories = defaultdict(set)
     for path in sorted(defect_dir.glob("*.jsonl")) if defect_dir.exists() else []:
         rows = read_jsonl(path)
         if not rows:
             continue
+        loaded.append((path, rows))
+        for row in rows:
+            repositories[str(row.get("repo") or "<unknown>")].add(
+                str(row.get("commit") or "")[:7]
+            )
+    if commits is None and len(repositories) > 1:
+        details = "; ".join(
+            f"{repo} [{', '.join(sorted(shas))}]" for repo, shas in sorted(repositories.items())
+        )
+        raise ValueError(
+            f"default frontier corpus spans multiple repositories: {details}; pass --commits "
+            "to select the intended corpus"
+        )
+    available, source = {}, {}
+    for path, rows in loaded:
         key = rows[0]["commit"][:7]
         # Two repositories sharing a seven-character prefix would otherwise merge into one
         # denominator, and the merge would look exactly like a cell that ran on both.
