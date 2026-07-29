@@ -234,19 +234,19 @@ buildMenu = function()
                 end
             end,
         },
-        {
-            title = "Enforce iPad mode",
-            checked = enforceAvailable and ipadAutomation.enforceEnabled(),
-            disabled = not enforceAvailable,
-            fn = function()
-                if enforceAvailable then
-                    ipadAutomation.setEnforce(not ipadAutomation.enforceEnabled())
-                    refreshTitle()
-                end
-            end,
-        },
         { title = "-" },
     }
+
+    if enforceAvailable and ipadMode and type(ipadMode.isOn) == "function" and ipadMode.isOn() then
+        table.insert(menu, #menu, {
+            title = "Enforce iPad mode",
+            checked = ipadAutomation.enforceEnabled(),
+            fn = function()
+                ipadAutomation.setEnforce(not ipadAutomation.enforceEnabled())
+                refreshTitle()
+            end,
+        })
+    end
 
     if hasEnabledDestination then
         table.insert(menu, 2, firstRunItem)

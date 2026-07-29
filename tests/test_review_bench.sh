@@ -196,6 +196,185 @@ assert expected_durations == {
     "sol-high": 2000, "sol-high#2": 2000, "opus-medium": 6000,
 }, expected_durations
 assert "no-history" not in expected_durations
+assert rb.adaptive_timeout_seconds(None) == 600
+assert rb.adaptive_timeout_seconds(100_000) == 180
+assert rb.adaptive_timeout_seconds(200_000) == 300
+assert rb.adaptive_timeout_seconds(500_000) == 600
+timeout_history = work / "agy-timeout-history"
+for run_id, rows in {
+    "one": [
+        {"rater": "agy-flash36-medium-skill", "side": "agy", "duration_ms": 200_000,
+         "findings": 0, "exit_code": 0},
+        {"rater": "agy-flash36-low-skill", "side": "agy", "duration_ms": 35_000,
+         "findings": 2, "exit_code": 0},
+    ],
+    "two": [
+        {"rater": "agy-flash36-medium-skill#2", "side": "agy", "duration_ms": 254_715,
+         "findings": 1, "exit_code": 0},
+        {"rater": "agy-flash36-high-skill", "side": "agy", "duration_ms": 599_000,
+         "findings": 0, "exit_code": 1},
+        {"rater": "agy-pro-low-skill", "side": "agy", "duration_ms": 450_000,
+         "findings": 0, "exit_code": 0, "errored": True},
+        {"rater": "agy-pro-high-skill", "side": "agy", "duration_ms": 500_000,
+         "exit_code": 0},
+    ],
+}.items():
+    directory = timeout_history / run_id
+    directory.mkdir(parents=True)
+    (directory / "meta.json").write_text(json.dumps({"rater_runs": rows}))
+timeout_maxima = rb.completed_agy_duration_maxima(timeout_history)
+assert timeout_maxima == {
+    "agy-flash36-medium-skill": 254_715,
+    "agy-flash36-low-skill": 35_000,
+}, timeout_maxima
+adaptive_timeouts = rb.adaptive_agy_timeouts(timeout_history)
+assert adaptive_timeouts["agy-flash36-medium-skill"] == 383
+assert adaptive_timeouts["agy-flash36-low-skill"] == 180
+assert adaptive_timeouts["agy-flash36-high-skill"] == 600
+assert adaptive_timeouts["agy-pro-high-skill"] == 600
+for run_id, timeout_s, expected in (
+    ("x-three", 383, 575),
+    ("y-four", 575, 600),
+):
+    directory = timeout_history / run_id
+    directory.mkdir()
+    (directory / "meta.json").write_text(json.dumps({"rater_runs": [{
+        "rater": "agy-flash36-medium-skill", "side": "agy",
+        "duration_ms": timeout_s * 1000, "timeout_s": timeout_s,
+        "findings": 0, "exit_code": 124, "errored": True,
+        "stderr": f"rater timed out after {timeout_s}s",
+    }]}))
+    assert rb.adaptive_agy_timeouts(timeout_history)[
+        "agy-flash36-medium-skill"
+    ] == expected
+completion = timeout_history / "z-five"
+completion.mkdir()
+(completion / "meta.json").write_text(json.dumps({"rater_runs": [{
+    "rater": "agy-flash36-medium-skill", "side": "agy",
+    "duration_ms": 240_000, "findings": 1, "exit_code": 0,
+}]}))
+assert rb.adaptive_agy_timeouts(timeout_history)[
+    "agy-flash36-medium-skill"
+] == 383
+for run_id, finished, row in (
+    (
+        "20260730T120000Z-zzzzzzz",
+        "2026-07-30T12:00:01Z",
+        {
+            "rater": "agy-flash36-medium-skill", "side": "agy",
+            "duration_ms": 240_000, "findings": 1, "exit_code": 0,
+        },
+    ),
+    (
+        "20260730T120000Z-aaaaaaa",
+        "2026-07-30T12:00:02+00:00",
+        {
+            "rater": "agy-flash36-medium-skill", "side": "agy",
+            "duration_ms": 383_000, "timeout_s": 383, "findings": 0,
+            "exit_code": 124, "errored": True, "stderr": "timed out after 383s",
+        },
+    ),
+):
+    directory = timeout_history / run_id
+    directory.mkdir()
+    (directory / "meta.json").write_text(json.dumps({
+        "started": "2026-07-30T12:00:00Z",
+        "finished": finished,
+        "rater_runs": [row],
+    }))
+assert rb.adaptive_agy_timeouts(timeout_history)[
+    "agy-flash36-medium-skill"
+] == 575
+assert rb.human_cell_name("agy-flash35-medium-skill") == \
+    "Gemini 3.5 Flash medium skill"
+assert rb.human_cell_name("sol-high-bare") == "Sol high bare"
+max_tier_rows = [
+    {
+        "rater": rater["spec"], "side": rater["side"], "duration_ms": 1000,
+        "findings": 0, "exit_code": 0,
+    }
+    for rater in rb.parse_raters(",".join(rb.REVIEW_TIERS["T3"]["cells_max"]))
+]
+max_tier_meta = {
+    "run_id": "max-tier", "tier": "T3", "max": True,
+    "raters": [row["rater"] for row in max_tier_rows],
+    "rater_runs": max_tier_rows,
+    "started": "2026-07-30T00:00:00+00:00",
+    "finished": "2026-07-30T00:00:01+00:00",
+}
+max_tier_dir = work / "max-tier-report"
+max_tier_dir.mkdir()
+assert rb.tier_from_meta(max_tier_meta) == "T3 max"
+assert rb.review_log_event("run", max_tier_dir, max_tier_meta)["tier"] == "T3 max"
+assert rb.report_lines(max_tier_dir, max_tier_meta)[0].startswith("T3 max · ")
+partial_tier_meta = dict(max_tier_meta, rater_runs=max_tier_rows[:1])
+assert rb.tier_from_meta(partial_tier_meta) == "T3 max"
+legacy_t2_raters = [
+    rater["spec"]
+    for rater in rb.parse_raters(",".join(rb.REVIEW_TIERS["T2"]["cells"]))
+]
+assert rb.tier_from_meta({"raters": legacy_t2_raters}) == "T2"
+assert rb.tier_from_meta({"raters": ["sol-low"]}) is None
+newest_fixture = work / "newest-runs"
+for name, started, finished in (
+    ("older", "2026-07-30T12:00:00Z", "2026-07-30T12:01:00Z"),
+    ("newer", "2026-07-30T13:00:00", "2026-07-30T13:01:00"),
+    ("aborted", "2026-07-30T14:00:00Z", None),
+):
+    directory = newest_fixture / name
+    directory.mkdir(parents=True)
+    meta = {"run_id": name, "started": started}
+    if finished:
+        meta["finished"] = finished
+    (directory / "meta.json").write_text(json.dumps(meta))
+assert rb.newest_run_dir(newest_fixture).name == "newer"
+duration_dir = work / "duration-report"
+duration_dir.mkdir()
+duration_meta = {
+    "raters": ["sol-max", "sol-low"],
+    "rater_runs": [
+        {"rater": "sol-max", "exit_code": 0, "findings": 0},
+        {"rater": "sol-low", "exit_code": 0, "findings": 0, "duration_ms": 1000},
+    ],
+    "started": "2026-07-30T00:00:00Z",
+    "finished": "2026-07-30T00:00:02Z",
+}
+duration_header = rb.report_lines(duration_dir, duration_meta)[0]
+assert "slowest completed: Sol low 1 sec" in duration_header
+assert "0 sec" not in duration_header
+unknown_duration_meta = dict(
+    duration_meta,
+    raters=["sol-max"],
+    rater_runs=[{"rater": "sol-max", "exit_code": 0, "findings": 0}],
+)
+assert "completed durations unknown" in rb.report_lines(
+    duration_dir, unknown_duration_meta
+)[0]
+not_run_meta = dict(
+    duration_meta,
+    raters=["sol-low"],
+    completed_raters=[],
+    rater_runs=[],
+)
+not_run_report = "\n".join(rb.report_lines(duration_dir, not_run_meta))
+assert any(
+    line.startswith("not run:") and line.endswith("Sol low")
+    for line in not_run_report.splitlines()
+)
+assert "errored:" not in not_run_report
+real_append_review_log = rb.append_review_log
+real_review_log_event = rb.review_log_event
+for target in ("append", "event"):
+    if target == "append":
+        rb.append_review_log = lambda event: (_ for _ in ()).throw(OSError("fixture append"))
+    else:
+        rb.review_log_event = lambda *args: (_ for _ in ()).throw(ValueError("fixture event"))
+    warning = io.StringIO()
+    with contextlib.redirect_stderr(warning):
+        rb.log_review_event("run", max_tier_dir, max_tier_meta)
+    assert "warning: could not write review log:" in warning.getvalue()
+    rb.append_review_log = real_append_review_log
+    rb.review_log_event = real_review_log_event
 late_report = io.StringIO()
 with contextlib.redirect_stdout(late_report):
     assert rb.report_late_review("sol-high", 150001, 50000)
@@ -231,19 +410,23 @@ expected_floor = [
     "agy-flash35-medium-skill x2", "agy-flash35-high-skill",
     "agy-flash36-medium-skill",
 ]
-expected_floor_slow = ["agy-flash35-low-skill", "agy-pro-low-skill"]
+expected_floor_slow = [
+    "oc-kimik3 x4", "oc-grok45-low x3", "agy-pro-high-skill",
+    "agy-flash35-medium-skill x3", "agy-flash35-high-skill",
+    "agy-flash36-medium-skill", "agy-pro-low-skill",
+]
 expected_tier_cells = {
     "T0": expected_floor + [
         "opus-low", "sol-low", "sol-low-bare",
     ],
-    "T1": expected_floor + expected_floor_slow + [
+    "T1": expected_floor_slow + [
         "opus-medium", "sol-low", "sol-low-bare", "sol-medium-bare",
     ],
-    "T2": expected_floor + expected_floor_slow + [
+    "T2": expected_floor_slow + [
         "opus-medium", "sol-high", "sol-high-bare x2", "sol-xhigh",
         "sol-xhigh-bare",
     ],
-    "T3": expected_floor + expected_floor_slow + [
+    "T3": expected_floor_slow + [
         "opus-medium", "sol-high", "sol-high-bare", "sol-max x2", "sol-max-bare",
         "sol-xhigh-bare",
     ],
@@ -252,14 +435,14 @@ expected_tier_max_cells = {
     "T0": expected_floor + [
         "opus-low", "sol-low", "sol-low-bare",
     ],
-    "T1": expected_floor + expected_floor_slow + [
+    "T1": expected_floor_slow + [
         "opus-low", "opus-medium", "sol-low", "sol-low-bare", "sol-medium-bare",
     ],
-    "T2": expected_floor + expected_floor_slow + [
+    "T2": expected_floor_slow + [
         "opus-high", "opus-medium", "sol-high", "sol-high-bare x2", "sol-xhigh",
         "sol-xhigh-bare",
     ],
-    "T3": expected_floor + expected_floor_slow + [
+    "T3": expected_floor_slow + [
         "opus-high", "opus-medium", "sol-high", "sol-max x2", "sol-max-bare",
         "sol-xhigh-bare", "sol-xhigh",
     ],
@@ -275,20 +458,24 @@ floor_counts = Counter({
     "agy-flash35-medium-skill": 2, "agy-flash36-medium-skill": 1,
     "agy-pro-high-skill": 1,
 })
-slow_counts = Counter({"agy-flash35-low-skill": 1, "agy-pro-low-skill": 1})
+slow_counts = Counter({
+    "oc-kimik3": 4, "oc-grok45-low": 3, "agy-flash35-high-skill": 1,
+    "agy-flash35-medium-skill": 3, "agy-flash36-medium-skill": 1,
+    "agy-pro-high-skill": 1, "agy-pro-low-skill": 1,
+})
 expected_tier_multisets = {
     "T0": floor_counts + Counter({
         "opus-low": 1, "sol-low": 1, "sol-low-bare": 1,
     }),
-    "T1": floor_counts + slow_counts + Counter({
+    "T1": slow_counts + Counter({
         "opus-medium": 1, "sol-low": 1, "sol-low-bare": 1,
         "sol-medium-bare": 1,
     }),
-    "T2": floor_counts + slow_counts + Counter({
+    "T2": slow_counts + Counter({
         "opus-medium": 1, "sol-high": 1, "sol-high-bare": 2, "sol-xhigh": 1,
         "sol-xhigh-bare": 1,
     }),
-    "T3": floor_counts + slow_counts + Counter({
+    "T3": slow_counts + Counter({
         "opus-medium": 1, "sol-high": 1, "sol-high-bare": 1, "sol-max": 2,
         "sol-max-bare": 1, "sol-xhigh-bare": 1,
     }),
@@ -297,15 +484,15 @@ expected_tier_max_multisets = {
     "T0": floor_counts + Counter({
         "opus-low": 1, "sol-low": 1, "sol-low-bare": 1,
     }),
-    "T1": floor_counts + slow_counts + Counter({
+    "T1": slow_counts + Counter({
         "opus-low": 1, "opus-medium": 1, "sol-low": 1, "sol-low-bare": 1,
         "sol-medium-bare": 1,
     }),
-    "T2": floor_counts + slow_counts + Counter({
+    "T2": slow_counts + Counter({
         "opus-high": 1, "opus-medium": 1, "sol-high": 1, "sol-high-bare": 2,
         "sol-xhigh": 1, "sol-xhigh-bare": 1,
     }),
-    "T3": floor_counts + slow_counts + Counter({
+    "T3": slow_counts + Counter({
         "opus-high": 1, "opus-medium": 1, "sol-high": 1, "sol-max": 2,
         "sol-max-bare": 1, "sol-xhigh-bare": 1, "sol-xhigh": 1,
     }),
@@ -382,6 +569,32 @@ for bare in ("agy-pro-low", "agy-flash36-medium", "agy-flash35-high"):
 rb.refuse_retired_cells([rb.parse_rater(spec) for spec in rb.AUTO_RATERS])
 assert "haiku-medium" not in rb.AUTO_RATERS and "haiku-max" not in rb.AUTO_RATERS
 assert "agy-flash36-low-skill" not in rb.AUTO_RATERS
+assert "agy-flash35-low-skill" not in rb.AUTO_RATERS
+assert all(
+    "agy-flash35-low-skill" not in {
+        rb.rater_family(rater["spec"])
+        for cell in tier[composition]
+        for rater in rb.parse_raters(cell)
+    }
+    for tier in rb.REVIEW_TIERS.values()
+    for composition in ("cells", "cells_max")
+)
+try:
+    rb.refuse_retired_cells([rb.parse_rater("agy-flash35-low-skill")])
+except RuntimeError as exc:
+    assert rb.EXCLUDED_CELLS["agy-flash35-low-skill"] in str(exc), exc
+else:
+    raise AssertionError("accepted an explicitly excluded cell")
+rb.WORTHLESS_CELLS["agy-flash35-low-skill"] = "fixture measurement reason"
+try:
+    rb.refuse_retired_cells([rb.parse_rater("agy-flash35-low-skill")])
+except RuntimeError as exc:
+    assert rb.EXCLUDED_CELLS["agy-flash35-low-skill"] in str(exc), exc
+    assert "fixture measurement reason" not in str(exc), exc
+else:
+    raise AssertionError("measurement reason overrode an explicit exclusion")
+finally:
+    del rb.WORTHLESS_CELLS["agy-flash35-low-skill"]
 assert [spec for spec in rb.AUTO_RATERS if spec.endswith("-bare")] == [
     "sol-low-bare", "sol-medium-bare", "sol-high-bare", "sol-xhigh-bare", "sol-max-bare",
 ]
@@ -718,12 +931,12 @@ assert any(spec.startswith("agy-") for spec, _ in skipped)
 agy_gap_reviews = [
     {"rater": spec}
     for spec in rb.AUTO_RATERS
-    if spec != "agy-flash35-low-skill"
+    if spec != "agy-flash35-high-skill"
 ]
 picked, _, _ = rb.auto_pick(
     1, agy_gap_reviews, {"codex": True, "claude": True, "agy": True}
 )
-assert picked[0]["spec"] == "agy-flash35-low-skill"
+assert picked[0]["spec"] == "agy-flash35-high-skill"
 
 codex_stream = "\n".join([
     json.dumps({"type": "thread.started", "thread_id": "t"}),
@@ -855,6 +1068,30 @@ assert usage["output_tokens"] == 30
 assert usage["total_tokens"] == 150
 assert usage["stream_generate_requests"] == 1
 assert usage["stream_completions"] == 1
+
+adaptive_run = work / "agy-adaptive-run"
+adaptive_run.mkdir()
+adaptive_rater = dict(transport_rater, timeout_s=383)
+real_subprocess_run = rb.subprocess.run
+agy_subprocess_timeouts = []
+
+
+def capture_agy_timeout(command, *args, **kwargs):
+    if command and command[0] == str(fixtures / "fake-geminib.sh"):
+        agy_subprocess_timeouts.append(kwargs.get("timeout"))
+    return real_subprocess_run(command, *args, **kwargs)
+
+
+rb.subprocess.run = capture_agy_timeout
+try:
+    rc, _, _, stderr, adaptive_command = rb.run_agy(
+        adaptive_rater, repo, sha, "", adaptive_run, "ignored fixture diff", "work"
+    )
+finally:
+    rb.subprocess.run = real_subprocess_run
+assert rc == 0 and not stderr
+assert adaptive_command[adaptive_command.index("--print-timeout") + 1] == "383s"
+assert agy_subprocess_timeouts == [413], agy_subprocess_timeouts
 
 usage_run = work / "agy-usage-run"
 usage_run.mkdir()
@@ -2123,9 +2360,11 @@ os.environ["CLAUDEB_DIR"] = str(model_store)
 review_store = work / "review-tier-claudeb"
 os.environ["CLAUDEB_DIR"] = str(review_store)
 reviewed_cells = []
+launch_meta_seen = []
 
 
 def tier_runner(rater, repo_path, commit, focus, run_dir, diff, account):
+    launch_meta_seen.append(json.loads((run_dir / "meta.json").read_text()))
     reviewed_cells.append(rater["spec"])
     if rater["side"] == "opencode":
         return 0, 1, json.dumps({
@@ -2155,10 +2394,32 @@ expected_t1_runs = [
     rater["spec"] for rater in rb.parse_raters(",".join(expected_tier_cells["T1"]))
 ]
 assert review_rc == 0
+assert review_meta["tier"] == "T1" and review_meta["max"] is False
 assert review_meta["raters"] == expected_t1_runs, review_meta["raters"]
+assert review_meta["completed_raters"] == expected_t1_runs
 assert sorted(reviewed_cells) == sorted(expected_t1_runs), reviewed_cells
+assert all(
+    meta["tier"] == "T1"
+    and meta["max"] is False
+    and meta["raters"] == expected_t1_runs
+    and meta["completed_raters"] == []
+    and meta["rater_runs"] == []
+    for meta in launch_meta_seen
+), launch_meta_seen
 assert review_meta["verifier"] == "oc-kimik3", \
     f"tier review verifier: {review_meta['verifier']!r}"
+review_log_rows = [
+    json.loads(line)
+    for line in (review_store / "worker-stats" / "review-log.jsonl").read_text().splitlines()
+]
+assert len(review_log_rows) == 1, review_log_rows
+review_log_event = review_log_rows[0]
+assert review_log_event["event"] == "run" and review_log_event["tier"] == "T1"
+assert review_log_event["run_id"] == review_meta["run_id"]
+assert review_log_event["findings"] == 7
+assert review_log_event["confirmed"] == review_log_event["duplicate"] == 0
+assert review_log_event["false_positive"] == review_log_event["token_estimate"] == 0
+assert all(cell["status"] == "completed" for cell in review_log_event["cells"])
 for spec in expected_t1_runs:
     if rb.parse_rater(spec.split("#")[0])["side"] == "opencode":
         assert (review_run_dir / f"verified-{spec}.jsonl").exists(), spec
@@ -2280,7 +2541,10 @@ assert worktree_meta["worktree"] is True
 assert worktree_meta["commit"] == snapshot_sha
 assert worktree_receipt["commit"] == snapshot_sha
 assert worktree_receipt["tree"] == snapshot_tree
-assert "Record exactly with:" not in worktree_stdout.getvalue()
+assert (
+    f"Record exactly with: review-bench record {worktree_meta['run_id']} "
+    f"--verdicts /tmp/review-bench-{worktree_meta['run_id']}-verdicts.jsonl"
+) in worktree_stdout.getvalue()
 assert "Merge and deduplicate the findings blind." in worktree_stdout.getvalue()
 progress_run_dir = worktree_run_store / "worker-stats" / rb.PROGRESS_DIR
 assert not list(progress_run_dir.glob("*.json")), list(progress_run_dir.glob("*.json"))
@@ -2313,7 +2577,10 @@ assert snapshot_rerun_rc == 1
 assert snapshot_rerun_meta["worktree"] is True, snapshot_rerun_meta
 assert f"rerun: review-bench run {snapshot_sha} --raters sol-high" \
     in snapshot_rerun_stdout.getvalue(), snapshot_rerun_stdout.getvalue()
-assert "Record exactly with:" not in snapshot_rerun_stdout.getvalue()
+assert (
+    f"Record exactly with: review-bench record {snapshot_rerun_meta['run_id']} "
+    f"--verdicts /tmp/review-bench-{snapshot_rerun_meta['run_id']}-verdicts.jsonl"
+) in snapshot_rerun_stdout.getvalue()
 for side in rb.SIDE_RUNNERS:
     rb.SIDE_RUNNERS[side] = tier_runner
 
@@ -2600,14 +2867,17 @@ worktree_record_dir.mkdir()
 }) + "\n")
 empty_verdicts = work / "worktree-empty-verdicts.jsonl"
 empty_verdicts.write_text("")
-try:
-    rb.cmd_record(argparse.Namespace(
+worktree_record_stdout = io.StringIO()
+with contextlib.redirect_stdout(worktree_record_stdout):
+    assert rb.cmd_record(argparse.Namespace(
         run_id="worktree-record-fixture", verdicts=str(empty_verdicts),
-    ))
-except ValueError as exc:
-    assert "worktree snapshots are not durable corpus commits" in str(exc), exc
-else:
-    raise AssertionError("record accepted a worktree snapshot")
+    )) == 0
+assert "corpus skipped" in worktree_record_stdout.getvalue()
+assert not (worktree_record_dir / "defects.jsonl").exists()
+assert (worktree_record_dir / "verdicts.jsonl").read_text() == ""
+assert [row["rater"] for row in rb.read_jsonl(
+    repeat_store / "worker-stats" / "reviews.jsonl"
+)] == ["sol-medium", "sol-medium#2"]
 
 verify_timing_store = work / "verify-timing-claudeb"
 os.environ["CLAUDEB_DIR"] = str(verify_timing_store)
@@ -2721,7 +2991,8 @@ model_runs = {
 }
 assert (
     run_rc == 1
-    and model_meta["raters"] == ["opus-medium"]
+    and model_meta["raters"] == ["opus-medium", "sonnet-medium-skill"]
+    and model_meta["completed_raters"] == ["opus-medium"]
     and model_runs["sonnet-medium-skill"].get("errored") is True
     and model_runs["opus-medium"].get("model_resolved") == "claude-opus-5"
     and "model_resolved" not in model_runs["sonnet-medium-skill"]
@@ -2753,7 +3024,11 @@ all_error_after = set((model_store / "worker-stats" / "benches").iterdir())
 all_error_run_dir, = all_error_after - all_error_before
 all_error_meta_path = all_error_run_dir / "meta.json"
 all_error_meta = json.loads(all_error_meta_path.read_text())
-assert all_error_rc == 1 and all_error_meta["raters"] == [], all_error_meta
+assert (
+    all_error_rc == 1
+    and all_error_meta["raters"] == ["sonnet-medium-skill"]
+    and all_error_meta["completed_raters"] == []
+), all_error_meta
 assert not model_receipt_path.exists(), "all-errored run rewrote receipt"
 
 receipt_failure_store = work / "receipt-failure-claudeb"
@@ -3290,6 +3565,154 @@ print("review-bench-unit-ok")
 PY
 assert test "$?" -eq 0
 
+REPORT_SD="$WORK/report-state"
+mkdir -p "$REPORT_SD/benches/report-adjudicated" "$REPORT_SD/benches/report-worktree"
+python3 - "$REPORT_SD" "$WORK/report-worktree-verdicts.jsonl" <<'PY'
+import json
+import pathlib
+import sys
+
+state = pathlib.Path(sys.argv[1])
+adjudicated = state / "benches" / "report-adjudicated"
+adjudicated_meta = {
+    "run_id": "report-adjudicated", "commit": "a" * 40, "repo": "/fixture",
+    "tier": "T2", "raters": ["sol-high", "oc-kimik3"],
+    "rater_runs": [
+        {"rater": "sol-high", "model": "sol", "effort": "high", "side": "codex",
+         "exit_code": 0},
+        {"rater": "oc-kimik3", "model": "oc-kimik3", "effort": None, "side": "opencode",
+         "duration_ms": 45_000, "findings": 2, "exit_code": 0},
+        {"rater": "agy-flash36-medium-skill", "model": "agy-flash36", "effort": "medium",
+         "side": "agy", "duration_ms": 240_000, "timeout_s": 240, "findings": 0,
+         "exit_code": 124, "errored": True, "stderr": "rater timed out after 240s"},
+        {"rater": "agy-flash35-low-skill", "model": "agy-flash35", "effort": "low",
+         "side": "agy", "duration_ms": 30_000, "findings": 0, "exit_code": 1,
+         "errored": True,
+         "stderr": "agy served Gemini 3.5 Flash (Medium) instead of Gemini 3.5 Flash (Low)"},
+        {"rater": "opus-medium", "model": "opus", "effort": "medium", "side": "claude",
+         "duration_ms": 15_000, "findings": 0, "exit_code": 2, "errored": True,
+         "stderr": "fixture failure"},
+    ],
+    "durations": {"sol-high": 120_000}, "started": "2026-07-30T00:00:00+00:00",
+    "finished": "2026-07-30T00:05:30+00:00", "focus": "",
+}
+(adjudicated / "meta.json").write_text(json.dumps(adjudicated_meta))
+findings = {
+    "sol-high": [
+        {"severity": "P1", "file": "a.py", "line": 1, "summary": "confirmed",
+         "rater": "sol-high"},
+        {"severity": "P3", "file": "a.py", "line": 2, "summary": "false",
+         "rater": "sol-high"},
+    ],
+    "oc-kimik3": [
+        {"severity": "P1", "file": "a.py", "line": 1, "summary": "duplicate",
+         "rater": "oc-kimik3"},
+        {"severity": "P2", "file": "b.py", "line": 3, "summary": "false",
+         "rater": "oc-kimik3"},
+    ],
+}
+for rater, rows in findings.items():
+    (adjudicated / f"findings-{rater}.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows)
+    )
+verdicts = [
+    {"rater": "sol-high", "idx": 0, "verdict": "confirmed"},
+    {"rater": "sol-high", "idx": 1, "verdict": "false_positive"},
+    {"rater": "oc-kimik3", "idx": 0, "verdict": "duplicate"},
+    {"rater": "oc-kimik3", "idx": 1, "verdict": "false_positive"},
+]
+(adjudicated / "verdicts.jsonl").write_text(
+    "".join(json.dumps(row) + "\n" for row in verdicts)
+)
+
+worktree = state / "benches" / "report-worktree"
+worktree_meta = {
+    "run_id": "report-worktree", "commit": "b" * 40, "repo": "/fixture",
+    "tier": "T0", "worktree": True, "raters": ["oc-kimik3", "oc-kimik3#2"],
+    "rater_runs": [
+        {"rater": "oc-kimik3", "model": "oc-kimik3", "effort": None,
+         "side": "opencode", "duration_ms": 10_000, "findings": 1, "exit_code": 0},
+        {"rater": "oc-kimik3#2", "model": "oc-kimik3", "effort": None,
+         "side": "opencode", "duration_ms": 20_000, "findings": 2, "exit_code": 0},
+        {"rater": "agy-pro-high-skill", "model": "agy-pro", "effort": "high",
+         "side": "agy", "duration_ms": 180_000, "timeout_s": 180, "findings": 0,
+         "exit_code": 124, "errored": True, "stderr": "rater timed out after 180s"},
+    ],
+    "durations": {}, "started": "2026-07-29T00:00:00+00:00",
+    "finished": "2026-07-29T00:00:30+00:00", "focus": "",
+}
+(worktree / "meta.json").write_text(json.dumps(worktree_meta))
+for rater, count in (("oc-kimik3", 1), ("oc-kimik3#2", 2)):
+    rows = [
+        {"severity": "P2", "file": "w.py", "line": index + 1,
+         "summary": f"finding {index}", "rater": rater}
+        for index in range(count)
+    ]
+    (worktree / f"findings-{rater}.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows)
+    )
+pathlib.Path(sys.argv[2]).write_text("".join(
+    json.dumps({"rater": rater, "idx": index, "verdict": "confirmed"}) + "\n"
+    for rater, count in (("oc-kimik3", 1), ("oc-kimik3#2", 2))
+    for index in range(count)
+))
+
+aborted = state / "benches" / "report-aborted"
+aborted.mkdir()
+(aborted / "meta.json").write_text(json.dumps({
+    "run_id": "report-aborted", "commit": "c" * 40, "repo": "/fixture",
+    "raters": ["sol-low"], "completed_raters": [], "rater_runs": [],
+    "started": "2026-07-31T00:00:00Z",
+}))
+PY
+
+report_output=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" report report-adjudicated) \
+  || fail "adjudicated report failed"
+expected_report=$'T2 · 5.5 min wall · slowest completed: Sol high 2 min\nconfirmed 1:  P1 1\nrejected:     1 duplicate  ~400 tok\n              2 false      ~3k tok\nfalse by:     Kimi K3 ×1 · Sol high ×1\nerrored:      Opus medium (exit 2)\ntimeout:      Gemini 3.6 Flash medium skill\nmismatch:     Gemini 3.5 Flash low skill'
+assert test "$report_output" = "$expected_report"
+assert contains "$report_output" $'rejected:     1 duplicate  ~400 tok\n              2 false      ~3k tok'
+assert contains "$report_output" $'false by:     Kimi K3 ×1 · Sol high ×1\nerrored:      Opus medium (exit 2)\ntimeout:      Gemini 3.6 Flash medium skill\nmismatch:     Gemini 3.5 Flash low skill'
+last_report=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" report --last) \
+  || fail "last report failed"
+assert test "$last_report" = "$expected_report"
+worktree_report=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" report report-worktree) \
+  || fail "worktree report failed"
+expected_worktree_report=$'T0 · 30 sec wall · slowest completed: Kimi K3 20 sec\nfindings:  Kimi K3 ×2 3\nnote:      not adjudicated yet\ntimeout:   Gemini 3.1 Pro high skill'
+assert test "$worktree_report" = "$expected_worktree_report"
+worktree_recorded=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" record report-worktree \
+  --verdicts "$WORK/report-worktree-verdicts.jsonl") || fail "worktree record failed"
+assert contains "$worktree_recorded" "corpus skipped"
+assert test ! -e "$REPORT_SD/reviews.jsonl"
+worktree_recorded_again=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" record report-worktree \
+  --verdicts "$WORK/report-worktree-verdicts.jsonl") || fail "worktree record replay failed"
+assert contains "$worktree_recorded_again" "corpus skipped"
+worktree_listing=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" list)
+worktree_listing_row=$(grep 'report-worktree' <<<"$worktree_listing")
+assert contains "$worktree_listing_row" "2/2  adjudicated"
+aborted_listing_row=$(grep 'report-aborted' <<<"$worktree_listing")
+assert contains "$aborted_listing_row" "aborted"
+python3 - "$REPORT_SD" <<'PY'
+import json
+import pathlib
+import sys
+
+state = pathlib.Path(sys.argv[1])
+rows = [
+    json.loads(line)
+    for line in (state / "review-log.jsonl").read_text().splitlines()
+]
+assert len(rows) == 1, rows
+event = rows[0]
+assert event["event"] == "adjudicated" and event["run_id"] == "report-worktree"
+assert event["tier"] == "T0"
+assert (event["findings"], event["confirmed"], event["duplicate"],
+        event["false_positive"], event["token_estimate"]) == (3, 3, 0, 0, 0)
+assert [cell["status"] for cell in event["cells"]] == [
+    "completed", "completed", "timed_out",
+]
+PY
+assert test "$?" -eq 0
+
 SD="$WORK/state"
 RUN="$SD/benches/run-fixture"
 mkdir -p "$RUN"
@@ -3348,7 +3771,8 @@ recorded=$(WORKER_STATS_DIR="$SD" "$SCRIPT" record run-fixture --verdicts "$VERD
 assert contains "$recorded" 'recorded 2 rater row(s)'
 assert test "$(wc -l <"$SD/reviews.jsonl")" -eq 2
 
-python3 - "$SD/reviews.jsonl" "$RUN/verdicts.jsonl" "$RUN/defects.jsonl" <<'PY'
+python3 - "$SD/reviews.jsonl" "$RUN/verdicts.jsonl" "$RUN/defects.jsonl" \
+  "$SD/review-log.jsonl" <<'PY'
 import json
 import pathlib
 import sys
@@ -3367,6 +3791,7 @@ verdicts = list(map(json.loads, verdict_path.read_text().splitlines())) \
     if verdict_path.exists() else None
 defects = list(map(json.loads, defect_path.read_text().splitlines())) \
     if defect_path.exists() else None
+events = list(map(json.loads, pathlib.Path(sys.argv[4]).read_text().splitlines()))
 assert (
     verdicts == [
         {"rater": "opus-medium", "idx": 0, "verdict": "duplicate"},
@@ -3397,6 +3822,11 @@ assert (
     ]
     and opus.get("rater_model_resolved") == "claude-opus-5"
     and "rater_model_resolved" not in sol
+    and len(events) == 1
+    and events[0]["event"] == "adjudicated"
+    and events[0]["run_id"] == "run-fixture"
+    and (events[0]["findings"], events[0]["confirmed"], events[0]["duplicate"],
+         events[0]["false_positive"], events[0]["token_estimate"]) == (5, 3, 1, 1, 1900)
 ), (verdicts, defects, rows)
 print("record-math-ok")
 PY
@@ -3406,6 +3836,7 @@ record_artifacts_before="$(shasum "$RUN/verdicts.jsonl" "$RUN/defects.jsonl" 2>/
 again=$(WORKER_STATS_DIR="$SD" "$SCRIPT" record run-fixture --verdicts "$VERDICTS") || fail "record dedupe failed"
 assert contains "$again" 'recorded 0 rater row(s)'
 assert test "$(wc -l <"$SD/reviews.jsonl")" -eq 2
+assert test "$(wc -l <"$SD/review-log.jsonl")" -eq 1
 record_artifacts_after="$(shasum "$RUN/verdicts.jsonl" "$RUN/defects.jsonl" 2>/dev/null || true)"
 assert test -n "$record_artifacts_before" -a "$record_artifacts_after" = "$record_artifacts_before"
 
@@ -3987,8 +4418,8 @@ meta = json.loads(open(sys.argv[1]).read())
 assert isinstance(meta.get("rater_runs"), list)
 for run in meta["rater_runs"]:
     if run.get("errored"):
-        assert run["rater"] not in meta["raters"], \
-            f"errored rater {run['rater']} should not be in meta['raters']"
+        assert run["rater"] not in meta.get("completed_raters", meta["raters"]), \
+            f"errored rater {run['rater']} should not be completed"
 print("errored-rater-exclusion-ok")
 PY
 assert test "$?" -eq 0
@@ -4026,7 +4457,7 @@ assert contains "$listing" 'adjudicated'
 # A run where every cell errored can never leave `pending`, and calling it that buries the
 # runs that genuinely await a verdict.
 mkdir -p "$SD/benches/empty-fixture"
-python3 -c 'import json,sys; open(sys.argv[1],"w").write(json.dumps({"run_id":"empty-fixture","commit":"abcdef0123456789","raters":[],"rater_runs":[],"started":"2026-07-20T00:00:00+00:00"}))' \
+python3 -c 'import json,sys; open(sys.argv[1],"w").write(json.dumps({"run_id":"empty-fixture","commit":"abcdef0123456789","raters":[],"rater_runs":[],"started":"2026-07-20T00:00:00+00:00","finished":"2026-07-20T00:01:00+00:00"}))' \
   "$SD/benches/empty-fixture/meta.json"
 empty_listing=$(WORKER_STATS_DIR="$SD" "$SCRIPT" list) || fail "list failed on a rater-less run"
 assert contains "$empty_listing" 'every cell errored'
@@ -4076,16 +4507,21 @@ done
 assert contains "$tiers_table" "eco (default):"
 assert contains "$tiers_table" "max:"
 for cell in "oc-kimik3 x4" "oc-grok45-low x3" agy-pro-high-skill \
-  "agy-flash35-medium-skill x2" agy-flash35-high-skill agy-flash36-medium-skill \
-  opus-low sol-low sol-low-bare agy-flash35-low-skill agy-pro-low-skill \
+  "agy-flash35-medium-skill x2" "agy-flash35-medium-skill x3" \
+  agy-flash35-high-skill agy-flash36-medium-skill \
+  opus-low sol-low sol-low-bare agy-pro-low-skill \
   opus-medium sol-medium-bare opus-high sol-high "sol-high-bare x2" sol-xhigh \
   sol-xhigh-bare sol-high-bare "sol-max x2" sol-max-bare; do
   assert contains "$tiers_table" "$cell"
 done
+assert contains "$tiers_table" \
+  "agy-flash35-low-skill: server serves Medium for the low model id (model_mismatch, 2026-07)"
+assert test "$(grep -Ec '^  (eco \\(default\\)|max):.*agy-flash35-low-skill' <<<"$tiers_table")" -eq 0
 owner_table="$("$SCRIPT" tiers --table 2>&1)"
 assert contains "$owner_table" "T1 max"
 assert contains "$owner_table" "kimi x4"
 assert contains "$owner_table" "cover"
+assert contains "$owner_table" "agy-flash35-low-skill:"
 assert test "$(grep -c '^T0 max' <<<"$owner_table")" -eq 0
 max_without_tier="$("$SCRIPT" run HEAD --max 2>&1 || true)"
 assert contains "$max_without_tier" "--max requires --tier"

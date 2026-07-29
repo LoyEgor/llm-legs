@@ -132,6 +132,14 @@ WORTHLESS_CELLS = {
     "oc-qwen37max": "18 claims over 2 commits, 4 true",
     "agy-flash36-low-skill": "16 claims over 10 commits, 0 true",
 }
+EXCLUDED_CELLS = {
+    "agy-flash35-low-skill": (
+        "server serves Medium for the low model id (model_mismatch, 2026-07)"
+    ),
+}
+EXCLUDED_CELL_REPLACEMENTS = {
+    "agy-flash35-low-skill": "agy-flash35-medium-skill",
+}
 OPENCODE_SCREENED_MODELS = {
     "glm-5": "19s, no findings and no no-issues marker",
     "kimi-k2.5": "12s, narrated the diff instead of reviewing",
@@ -386,6 +394,10 @@ AGY_MODEL_IDS = {
     "agy-flash35": "gemini-3.5-flash",
 }
 RATER_TIMEOUT_S = 1800
+AGY_TIMEOUT_MULTIPLIER = 1.5
+AGY_TIMEOUT_MIN_S = 180
+AGY_TIMEOUT_MAX_S = 600
+AGY_TIMEOUT_GRACE_S = 30
 AUTO_RATERS = tuple(
     spec for spec in (
         tuple(
@@ -402,7 +414,7 @@ AUTO_RATERS = tuple(
         )
     )
     # --auto must never offer a cell the run then refuses; the retirement list is the authority.
-    if spec not in WORTHLESS_CELLS
+    if spec not in WORTHLESS_CELLS and spec not in EXCLUDED_CELLS
 )
 CLAUDE_MODEL_IDS = {"fable": "claude-fable-5"}
 READ_ONLY_REVIEW_INSTRUCTION = (
@@ -421,6 +433,20 @@ REVIEW_PROFILE_FILES = {
 REVIEW_PROFILES = tuple(REVIEW_PROFILE_FILES)
 VERDICTS = {"confirmed", "false_positive", "duplicate"}
 WEIGHTS = {"P1": 5, "P2": 2, "P3": 1}
+ADJUDICATION_TOK_ESTIMATE = {"duplicate": 400, "false_positive": 1500}
+MODEL_DISPLAY_NAMES = {
+    "agy-pro": "Gemini 3.1 Pro",
+    "agy-flash35": "Gemini 3.5 Flash",
+    "agy-flash36": "Gemini 3.6 Flash",
+    "oc-kimik3": "Kimi K3",
+    "oc-grok45": "Grok 4.5",
+    "sol": "Sol",
+    "opus": "Opus",
+    "sonnet": "Sonnet",
+    "haiku": "Haiku",
+    "fable": "Fable",
+    "grok": "Grok",
+}
 RATER_RE = re.compile(
     r"^(sol|opus|sonnet|haiku|fable|grok|agy-pro|agy-flash35|agy-flash36"
     r"|oc-glm52|oc-glm51|oc-dsv4pro|oc-dsv4flash|oc-grok45|oc-qwen37max"
@@ -448,10 +474,13 @@ REVIEW_TIER_FLOOR = [
     "agy-flash35-high-skill",
     "agy-flash36-medium-skill",
 ]
-# flash35-low (3.5 min) and pro-low (2.2 min) overrun T0's 2-minute budget; every slower
-# tier carries them on top of the floor.
 REVIEW_TIER_FLOOR_SLOW = [
-    "agy-flash35-low-skill",
+    "oc-kimik3 x4",
+    "oc-grok45-low x3",
+    "agy-pro-high-skill",
+    "agy-flash35-medium-skill x3",
+    "agy-flash35-high-skill",
+    "agy-flash36-medium-skill",
     "agy-pro-low-skill",
 ]
 # Eco is the minimum paid composition at <=5pp coverage loss; the free layer is never trimmed
@@ -479,7 +508,6 @@ REVIEW_TIERS = {
         "when": "Up to 150 changed lines, or any change under bin/ or tests/",
         "coverage_pct": {"eco": 40.3, "max": 41.4},
         "cells": [
-            *REVIEW_TIER_FLOOR,
             *REVIEW_TIER_FLOOR_SLOW,
             "opus-medium",
             "sol-low",
@@ -487,7 +515,6 @@ REVIEW_TIERS = {
             "sol-medium-bare",
         ],
         "cells_max": [
-            *REVIEW_TIER_FLOOR,
             *REVIEW_TIER_FLOOR_SLOW,
             "opus-low",
             "opus-medium",
@@ -501,7 +528,6 @@ REVIEW_TIERS = {
         "when": "Up to 600 changed lines, or a core measurement tool change",
         "coverage_pct": {"eco": 56.3, "max": 59.7},
         "cells": [
-            *REVIEW_TIER_FLOOR,
             *REVIEW_TIER_FLOOR_SLOW,
             "opus-medium",
             "sol-high",
@@ -510,7 +536,6 @@ REVIEW_TIERS = {
             "sol-xhigh-bare",
         ],
         "cells_max": [
-            *REVIEW_TIER_FLOOR,
             *REVIEW_TIER_FLOOR_SLOW,
             "opus-high",
             "opus-medium",
@@ -525,7 +550,6 @@ REVIEW_TIERS = {
         "when": "More than 600 changed lines",
         "coverage_pct": {"eco": 67.6, "max": 70.5},
         "cells": [
-            *REVIEW_TIER_FLOOR,
             *REVIEW_TIER_FLOOR_SLOW,
             "opus-medium",
             "sol-high",
@@ -535,7 +559,6 @@ REVIEW_TIERS = {
             "sol-xhigh-bare",
         ],
         "cells_max": [
-            *REVIEW_TIER_FLOOR,
             *REVIEW_TIER_FLOOR_SLOW,
             "opus-high",
             "opus-medium",
@@ -1003,7 +1026,11 @@ def validate_review_tiers():
                         f"{tier_name} {composition} contains invalid rater {cell!r}"
                     ) from exc
                 for rater in raters:
-                    reason = measured_worthless(rater) or measured_skill_only(rater)
+                    reason = (
+                        EXCLUDED_CELLS.get(normalize_legacy_rater(rater["spec"]))
+                        or measured_worthless(rater)
+                        or measured_skill_only(rater)
+                    )
                     if reason:
                         raise RuntimeError(
                             f"{tier_name} {composition} contains retired rater {cell!r}: {reason}"
@@ -1069,6 +1096,544 @@ def expected_review_durations(cells, medians):
         for cell in cells
         if normalize_legacy_rater(cell) in medians
     }
+
+
+def rater_family(spec):
+    return normalize_legacy_rater(spec) if isinstance(spec, str) else ""
+
+
+def agy_cell_families():
+    return tuple(
+        f"{model}-{effort}-skill"
+        for model, efforts in AGY_EFFORTS.items()
+        for effort in efforts
+    )
+
+
+def agy_timeout_history(benches):
+    maxima = {}
+    latest = {}
+    runs = []
+    for directory in benches.iterdir() if benches.exists() else ():
+        meta_path = directory / "meta.json"
+        if not meta_path.exists():
+            continue
+        try:
+            meta = json.loads(meta_path.read_text())
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        timestamp = (
+            parse_iso_timestamp(meta.get("finished") or meta.get("finished_at"))
+            or parse_iso_timestamp(meta.get("started") or meta.get("started_at"))
+            or datetime.min.replace(tzinfo=timezone.utc)
+        )
+        runs.append((timestamp, directory.name, meta))
+    for _, _, meta in sorted(runs):
+        outcomes = {}
+        for row in meta.get("rater_runs", ()):
+            if row.get("side") != "agy":
+                continue
+            family = rater_family(row.get("rater"))
+            if not family:
+                continue
+            duration = row.get("duration_ms")
+            findings = row.get("findings")
+            completed = (
+                row.get("exit_code") == 0
+                and not row.get("errored")
+                and isinstance(findings, int)
+                and not isinstance(findings, bool)
+                and findings >= 0
+                and isinstance(duration, (int, float))
+                and not isinstance(duration, bool)
+                and duration >= 0
+            )
+            if completed:
+                maxima[family] = max(duration, maxima.get(family, duration))
+                outcomes[family] = ("completed", None)
+            elif (
+                cell_status(row) == "timed_out"
+                and outcomes.get(family, (None,))[0] != "completed"
+            ):
+                limit = timeout_seconds_from_row(row)
+                prior = outcomes.get(family)
+                if limit is not None:
+                    limit = max(limit, prior[1] if prior and prior[1] is not None else limit)
+                outcomes[family] = ("timed_out", limit)
+            elif family not in outcomes:
+                outcomes[family] = ("other", None)
+        latest.update(outcomes)
+    return maxima, latest
+
+
+def completed_agy_duration_maxima(benches):
+    return agy_timeout_history(benches)[0]
+
+
+def adaptive_timeout_seconds(duration_ms):
+    if duration_ms is None:
+        return AGY_TIMEOUT_MAX_S
+    scaled = math.ceil(float(duration_ms) / 1000 * AGY_TIMEOUT_MULTIPLIER)
+    return min(AGY_TIMEOUT_MAX_S, max(AGY_TIMEOUT_MIN_S, scaled))
+
+
+def adaptive_agy_timeouts(benches):
+    maxima, latest = agy_timeout_history(benches)
+    timeouts = {}
+    for family in agy_cell_families():
+        timeout = adaptive_timeout_seconds(maxima.get(family))
+        outcome, limit = latest.get(family, (None, None))
+        if outcome == "timed_out" and limit is not None:
+            timeout = max(timeout, adaptive_timeout_seconds(limit * 1000))
+        timeouts[family] = timeout
+    return timeouts
+
+
+def tier_cell_counter(cells):
+    counts = Counter()
+    for cell in cells:
+        for rater in parse_raters(cell):
+            family = rater_family(rater["spec"])
+            family = EXCLUDED_CELL_REPLACEMENTS.get(family, family)
+            counts[family] += 1
+    return counts
+
+
+def completed_raters_from_meta(meta):
+    if "completed_raters" in meta:
+        return list(meta.get("completed_raters") or ())
+    rows = [row for row in meta.get("rater_runs", ()) if row.get("rater")]
+    if rows:
+        return [row["rater"] for row in rows if cell_status(row) == "completed"]
+    return list(meta.get("raters", ()))
+
+
+def rater_specs_counter(specs):
+    counts = Counter()
+    for spec in specs:
+        family = rater_family(spec)
+        family = EXCLUDED_CELL_REPLACEMENTS.get(family, family)
+        counts[family] += 1
+    return counts
+
+
+def legacy_tier_match(actual):
+    matches = set()
+    actual_sides = {
+        parse_rater(family)["side"]
+        for family in actual
+    }
+    for tier_name, tier in REVIEW_TIERS.items():
+        for composition in ("cells", "cells_max"):
+            expected = tier_cell_counter(tier[composition])
+            if expected == actual:
+                matches.add((tier_name, composition))
+                continue
+            missing = expected - actual
+            if actual - expected or not missing:
+                continue
+            missing_sides = {
+                parse_rater(family)["side"]
+                for family in missing
+            }
+            if len(missing_sides) == 1 and missing_sides.isdisjoint(actual_sides):
+                matches.add((tier_name, composition))
+    tiers = {tier_name for tier_name, _ in matches}
+    if len(tiers) != 1:
+        return None
+    tier_name = next(iter(tiers))
+    compositions = {composition for _, composition in matches}
+    return f"{tier_name} max" if compositions == {"cells_max"} else tier_name
+
+
+def tier_from_meta(meta):
+    explicit = meta.get("tier")
+    if explicit in REVIEW_TIERS:
+        return f"{explicit} max" if bool(meta.get("max")) else explicit
+    specs = list(meta.get("raters", ()))
+    if "completed_raters" not in meta:
+        attempts = [
+            row.get("rater") for row in meta.get("rater_runs", ())
+            if row.get("rater")
+        ]
+        if attempts:
+            specs = attempts
+    return legacy_tier_match(rater_specs_counter(specs)) if specs else None
+
+
+def cell_status(row):
+    if row.get("not_run"):
+        return "not_run"
+    stderr = str(row.get("stderr") or "")
+    if row.get("exit_code") == 0 and not row.get("errored"):
+        return "completed"
+    if re.search(r"\bserved\b.+\binstead of\b", stderr, re.IGNORECASE | re.DOTALL):
+        return "model_mismatch"
+    if row.get("exit_code") == 124 or re.search(
+        r"\btime(?:d|out|out waiting)\b|timeout", stderr, re.IGNORECASE
+    ):
+        return "timed_out"
+    return "nonzero_exit" if row.get("exit_code") not in (None, 0) else "errored"
+
+
+def timeout_seconds_from_row(row):
+    timeout = row.get("timeout_s")
+    if isinstance(timeout, (int, float)) and not isinstance(timeout, bool) and timeout > 0:
+        return float(timeout)
+    text = f"{row.get('command') or ''}\n{row.get('stderr') or ''}"
+    match = re.search(r"--print-timeout\s+['\"]?(\d+(?:\.\d+)?)([sm])", text)
+    if not match:
+        match = re.search(r"timed out after\s+(\d+(?:\.\d+)?)s", text, re.IGNORECASE)
+        return float(match.group(1)) if match else None
+    value = float(match.group(1))
+    return value * 60 if match.group(2) == "m" else value
+
+
+def human_cell_name(spec):
+    family = rater_family(spec)
+    try:
+        rater = parse_rater(family)
+    except ValueError:
+        return family or str(spec)
+    name = MODEL_DISPLAY_NAMES.get(rater["model"])
+    if not name:
+        return family
+    if rater["effort"]:
+        name += f" {rater['effort']}"
+    if rater["skill"]:
+        name += " skill"
+    if rater["bare"]:
+        name += " bare"
+    if rater["profile"]:
+        name += f" {rater['profile']}"
+    return name
+
+
+def parse_iso_timestamp(value):
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def bench_summary(run_dir, meta):
+    cells = []
+    rows = [dict(row) for row in meta.get("rater_runs", ()) if isinstance(row, dict)]
+    seen = {row.get("rater") for row in rows if row.get("rater")}
+    successful = set(completed_raters_from_meta(meta))
+    for rater in (*meta.get("raters", ()), *meta.get("durations", {})):
+        if rater and rater not in seen:
+            row = {"rater": rater}
+            if rater in successful:
+                row["exit_code"] = 0
+            else:
+                row["not_run"] = True
+            rows.append(row)
+            seen.add(rater)
+    durations = meta.get("durations", {})
+    for row in rows:
+        rater = row.get("rater")
+        if rater in successful and "exit_code" not in row and not row.get("errored"):
+            row["exit_code"] = 0
+        findings = row.get("findings")
+        if (not isinstance(findings, int) or isinstance(findings, bool)) and rater:
+            findings = len(finding_rows(run_dir, rater))
+        if not isinstance(findings, int) or isinstance(findings, bool):
+            findings = 0
+        duration = row.get("duration_ms")
+        if (
+            not isinstance(duration, (int, float))
+            or isinstance(duration, bool)
+            or duration < 0
+        ):
+            duration = durations.get(rater)
+        cells.append({
+            "rater": rater,
+            "duration_ms": duration,
+            "status": cell_status(row),
+            "findings": findings,
+            "exit_code": row.get("exit_code"),
+            "timeout_s": timeout_seconds_from_row(row),
+            "stderr": row.get("stderr"),
+        })
+    verdict_path = run_dir / "verdicts.jsonl"
+    verdicts = [
+        row for row in read_jsonl(verdict_path)
+        if row.get("rater") and row.get("verdict") in VERDICTS
+    ] if verdict_path.exists() else []
+    verdict_counts = Counter(row["verdict"] for row in verdicts)
+    severities = Counter()
+    false_by = Counter()
+    findings_by_rater = {}
+    for row in verdicts:
+        if row["verdict"] == "false_positive":
+            false_by[rater_family(row["rater"])] += 1
+        if row["verdict"] != "confirmed":
+            continue
+        rater = row["rater"]
+        if rater not in findings_by_rater:
+            findings_by_rater[rater] = finding_rows(run_dir, rater)
+        idx = row.get("idx")
+        if isinstance(idx, int) and 0 <= idx < len(findings_by_rater[rater]):
+            severity = findings_by_rater[rater][idx].get("severity")
+            if severity in WEIGHTS:
+                severities[severity] += 1
+    rejected_tokens = sum(
+        verdict_counts[verdict] * estimate
+        for verdict, estimate in ADJUDICATION_TOK_ESTIMATE.items()
+    )
+    started = parse_iso_timestamp(meta.get("started") or meta.get("started_at"))
+    finished = parse_iso_timestamp(meta.get("finished") or meta.get("finished_at"))
+    return {
+        "tier": tier_from_meta(meta),
+        "cells": cells,
+        "findings": sum(cell["findings"] for cell in cells),
+        "adjudicated": verdict_path.exists(),
+        "confirmed": verdict_counts["confirmed"],
+        "duplicate": verdict_counts["duplicate"],
+        "false_positive": verdict_counts["false_positive"],
+        "severities": severities,
+        "false_by": false_by,
+        "token_estimate": rejected_tokens,
+        "wall_seconds": max(0, (finished - started).total_seconds())
+        if started and finished else None,
+    }
+
+
+def review_log_event(event, run_dir, meta):
+    summary = bench_summary(run_dir, meta)
+    payload = {
+        "event": event,
+        "run_id": meta.get("run_id") or run_dir.name,
+        "ts": iso_now(),
+        "started": meta.get("started") or meta.get("started_at"),
+        "finished": meta.get("finished") or meta.get("finished_at"),
+        "cells": summary["cells"],
+        "findings": summary["findings"],
+        "confirmed": summary["confirmed"],
+        "duplicate": summary["duplicate"],
+        "false_positive": summary["false_positive"],
+        "token_estimate": summary["token_estimate"],
+    }
+    if summary["tier"]:
+        payload["tier"] = summary["tier"]
+    return payload
+
+
+def append_review_log(event):
+    path = state_dir() / "review-log.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = (json.dumps(event, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        os.write(fd, payload)
+    finally:
+        os.close(fd)
+
+
+def log_review_event(event, run_dir, meta):
+    try:
+        append_review_log(review_log_event(event, run_dir, meta))
+    except Exception as exc:
+        print(f"warning: could not write review log: {exc}", file=sys.stderr)
+
+
+def format_seconds(seconds):
+    if seconds is None:
+        return "unknown time"
+    if seconds >= 60:
+        value = f"{seconds / 60:.1f}".rstrip("0").rstrip(".")
+        return f"{value} min"
+    value = f"{seconds:.1f}".rstrip("0").rstrip(".")
+    return f"{value} sec"
+
+
+def estimated_tokens_text(tokens):
+    if tokens < 1000:
+        return f"~{tokens} tok"
+    return f"~{math.floor(tokens / 1000 + 0.5)}k tok"
+
+
+def aligned_report_lines(rows):
+    width = max((len(label) for label, _ in rows), default=0)
+    return [
+        f"{label:<{width}}  {value}" if value else label
+        for label, value in rows
+    ]
+
+
+def report_lines(run_dir, meta):
+    summary = bench_summary(run_dir, meta)
+    completed = [
+        row for row in summary["cells"]
+        if row["status"] == "completed"
+    ]
+    timed_completed = [
+        row for row in completed
+        if (
+            isinstance(row.get("duration_ms"), (int, float))
+            and not isinstance(row.get("duration_ms"), bool)
+            and row["duration_ms"] >= 0
+        )
+    ]
+    tier = summary["tier"] or "untiered"
+    if timed_completed:
+        slowest = max(timed_completed, key=lambda row: row["duration_ms"])
+        slowest_text = (
+            f"slowest completed: {human_cell_name(slowest.get('rater'))} "
+            f"{format_seconds(slowest['duration_ms'] / 1000)}"
+        )
+    elif completed:
+        slowest_text = "completed durations unknown"
+    else:
+        slowest_text = "no cells completed"
+    lines = [
+        f"{tier} · {format_seconds(summary['wall_seconds'])} wall · {slowest_text}"
+    ]
+    errored = Counter()
+    timed_out = Counter()
+    mismatched = Counter()
+    not_run = Counter()
+    for row in summary["cells"]:
+        status = row["status"]
+        if status == "completed":
+            continue
+        name = human_cell_name(row.get("rater"))
+        if status == "not_run":
+            not_run[name] += 1
+        elif status == "timed_out":
+            timed_out[(name, timeout_seconds_from_row(row))] += 1
+        elif status == "model_mismatch":
+            mismatched[name] += 1
+        elif status == "nonzero_exit":
+            errored[f"{name} (exit {row.get('exit_code')})"] += 1
+        else:
+            errored[f"{name} (error)"] += 1
+    rows = []
+    if summary["adjudicated"]:
+        severity = " · ".join(
+            f"{level} {summary['severities'][level]}"
+            for level in ("P1", "P2", "P3")
+            if summary["severities"][level]
+        )
+        rows.append((f"confirmed {summary['confirmed']}:", severity))
+        rejected_counts = [
+            ("duplicate", summary["duplicate"]),
+            ("false", summary["false_positive"]),
+        ]
+        rejected_counts = [
+            (verdict, count) for verdict, count in rejected_counts if count
+        ]
+        if rejected_counts:
+            count_width = max(len(str(count)) for _, count in rejected_counts)
+            verdict_width = max(len(verdict) for verdict, _ in rejected_counts)
+            for index, (verdict, count) in enumerate(rejected_counts):
+                tokens = count * ADJUDICATION_TOK_ESTIMATE[
+                    "false_positive" if verdict == "false" else verdict
+                ]
+                value = (
+                    f"{count:>{count_width}} {verdict:<{verdict_width}}  "
+                    f"{estimated_tokens_text(tokens)}"
+                )
+                rows.append(("rejected:" if index == 0 else "", value))
+        if summary["false_positive"] and summary["false_by"]:
+            false_by = " · ".join(
+                f"{human_cell_name(rater)} ×{count}"
+                for rater, count in sorted(
+                    summary["false_by"].items(),
+                    key=lambda item: (-item[1], human_cell_name(item[0])),
+                )
+            )
+            rows.append(("false by:", false_by))
+    else:
+        grouped = {}
+        for row in completed:
+            family = rater_family(row.get("rater"))
+            entry = grouped.setdefault(family, [0, 0])
+            entry[0] += 1
+            findings = row.get("findings")
+            if isinstance(findings, int) and not isinstance(findings, bool):
+                entry[1] += findings
+        findings_parts = []
+        for family, (attempts, findings) in grouped.items():
+            name = human_cell_name(family)
+            if attempts > 1:
+                name += f" ×{attempts}"
+            findings_parts.append(f"{name} {findings}")
+        for index, value in enumerate(findings_parts or ["none"]):
+            rows.append(("findings:" if index == 0 else "", value))
+        rows.append(("note:", "not adjudicated yet"))
+    if errored:
+        rows.append((
+            "errored:",
+            " · ".join(
+                f"{detail} ×{count}" if count > 1 else detail
+                for detail, count in errored.items()
+            ),
+        ))
+    if timed_out:
+        show_limits = len({timeout for _, timeout in timed_out}) > 1
+        timeout_parts = []
+        for (name, timeout), count in timed_out.items():
+            detail = f"{name} ({format_seconds(timeout)})" if show_limits else name
+            timeout_parts.append(f"{detail} ×{count}" if count > 1 else detail)
+        rows.append(("timeout:", " · ".join(timeout_parts)))
+    if mismatched:
+        rows.append((
+            "mismatch:",
+            " · ".join(
+                f"{name} ×{count}" if count > 1 else name
+                for name, count in mismatched.items()
+            ),
+        ))
+    if not_run:
+        rows.append((
+            "not run:",
+            " · ".join(
+                f"{name} ×{count}" if count > 1 else name
+                for name, count in not_run.items()
+            ),
+        ))
+    lines.extend(aligned_report_lines(rows))
+    return lines
+
+
+def newest_run_dir(benches):
+    candidates = []
+    for directory in benches.iterdir() if benches.exists() else ():
+        meta_path = directory / "meta.json"
+        if not meta_path.exists():
+            continue
+        try:
+            meta = json.loads(meta_path.read_text())
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        started = parse_iso_timestamp(meta.get("started") or meta.get("started_at"))
+        finished = parse_iso_timestamp(meta.get("finished") or meta.get("finished_at"))
+        if started is None or finished is None:
+            continue
+        candidates.append((started, directory.name, directory))
+    return max(candidates)[2] if candidates else None
+
+
+def cmd_report(args):
+    if bool(args.run_id) == bool(args.last):
+        raise ValueError("give exactly one of run-id or --last")
+    benches = state_dir() / "benches"
+    run_dir = newest_run_dir(benches) if args.last else benches / args.run_id
+    if run_dir is None or not (run_dir / "meta.json").exists():
+        target = "last run" if args.last else f"run id {args.run_id}"
+        raise ValueError(f"unknown {target}")
+    meta = json.loads((run_dir / "meta.json").read_text())
+    for line in report_lines(run_dir, meta):
+        print(line)
+    return 0
 
 
 def late_review_line(spec, duration_ms, median_ms):
@@ -1258,6 +1823,16 @@ def refuse_retired_cells(raters):
         why = "; ".join(reason for _, reason in skill_only)
         raise RuntimeError(
             f"these cells run the review skill; ask for {asked}" + (f" — {why}" if why else "")
+        )
+    excluded = [
+        (rater["spec"], EXCLUDED_CELLS.get(normalize_legacy_rater(rater["spec"])))
+        for rater in raters
+        if EXCLUDED_CELLS.get(normalize_legacy_rater(rater["spec"]))
+    ]
+    if excluded:
+        raise RuntimeError(
+            "these cells are excluded: "
+            + "; ".join(f"{spec} ({reason})" for spec, reason in excluded)
         )
     worthless = [(rater["spec"], measured_worthless(rater)) for rater in raters
                  if measured_worthless(rater)]
@@ -2726,6 +3301,8 @@ def run_agy(rater, repo, sha, focus, run_dir, diff, account):
     raw_output = run_dir / f"raw-{rater['spec']}.md"
     log_file = run_dir / f"agy-{rater['spec']}.log"
     model = agy_model_id(rater)
+    timeout_s = rater.get("timeout_s", AGY_TIMEOUT_MAX_S)
+    print_timeout = f"{timeout_s // 60}m" if timeout_s % 60 == 0 else f"{timeout_s}s"
     prompt = "/code-review" + (f"\nAdditional review focus: {focus}" if focus else "")
     # agy resolves its Google account from HOME and takes no account flag, so the profile has to be
     # selected by launching it through geminib rather than by an argument.
@@ -2738,7 +3315,7 @@ def run_agy(rater, repo, sha, focus, run_dir, diff, account):
     command += [
         "--mode", "plan",
         "--new-project", "--dangerously-skip-permissions",
-        "--print-timeout", "10m",
+        "--print-timeout", print_timeout,
         "--log-file", str(log_file),
     ]
     transport = command + ["--print", prompt]
@@ -2751,10 +3328,10 @@ def run_agy(rater, repo, sha, focus, run_dir, diff, account):
         try:
             proc = subprocess.run(
                 transport, cwd=clone, capture_output=True, text=True,
-                timeout=RATER_TIMEOUT_S
+                timeout=timeout_s + AGY_TIMEOUT_GRACE_S
             )
         except subprocess.TimeoutExpired as exc:
-            result = rater_timeout(exc, started, RATER_TIMEOUT_S, displayed_command)
+            result = rater_timeout(exc, started, timeout_s, displayed_command)
             duration = result[1]
             log_text = log_file.read_text(errors="replace") if log_file.exists() else ""
             write_agy_usage(run_dir, rater, duration, log_text)
@@ -3121,12 +3698,15 @@ def cmd_tiers_table():
 def cmd_tiers(args):
     if getattr(args, "table", False):
         cmd_tiers_table()
-        return 0
-    for tier_name, tier in REVIEW_TIERS.items():
-        print(f"{tier_name} ({tier['budget_min']} min)")
-        print(f"  when: {tier['when']}")
-        print(f"  eco (default): {', '.join(tier['cells'])}")
-        print(f"  max: {', '.join(tier['cells_max'])}")
+    else:
+        for tier_name, tier in REVIEW_TIERS.items():
+            print(f"{tier_name} ({tier['budget_min']} min)")
+            print(f"  when: {tier['when']}")
+            print(f"  eco (default): {', '.join(tier['cells'])}")
+            print(f"  max: {', '.join(tier['cells_max'])}")
+    print("\nexcluded:")
+    for cell, reason in EXCLUDED_CELLS.items():
+        print(f"  {cell}: {reason}")
     return 0
 
 
@@ -3421,7 +4001,7 @@ def cmd_suggest(args):
     return 0
 
 
-def handoff(run_id, paths, worktree=False):
+def handoff(run_id, paths):
     verdict_path = f"/tmp/review-bench-{run_id}-verdicts.jsonl"
     command = f"review-bench record {shlex.quote(run_id)} --verdicts {shlex.quote(verdict_path)}"
     print("\nADJUDICATION HANDOFF")
@@ -3430,8 +4010,7 @@ def handoff(run_id, paths, worktree=False):
         print(f"  {path}")
     print("Merge and deduplicate the findings blind. Write one verdict per zero-based finding "
           "index as {rater, idx, verdict}, where verdict is confirmed, false_positive, or duplicate.")
-    if not worktree:
-        print(f"Record exactly with: {command}")
+    print(f"Record exactly with: {command}")
 
 
 def redact_command(rater, command):
@@ -3553,6 +4132,13 @@ def cmd_run(args):
                 raise RuntimeError("account no longer affordable after limits refresh")
 
     started = utc_now()
+    if any(rater["side"] == "agy" for rater in raters):
+        agy_timeouts = adaptive_agy_timeouts(state_dir() / "benches")
+        for rater in raters:
+            if rater["side"] == "agy":
+                rater["timeout_s"] = agy_timeouts.get(
+                    rater_family(rater["spec"]), AGY_TIMEOUT_MAX_S
+                )
     run_id = f"{started.strftime('%Y%m%dT%H%M%SZ')}-{sha[:7]}"
     run_dir = state_dir() / "benches" / run_id
     if run_dir.exists():
@@ -3560,6 +4146,20 @@ def cmd_run(args):
         run_dir = state_dir() / "benches" / run_id
     run_dir.mkdir(parents=True)
     os.chmod(run_dir, 0o700)
+    requested_raters = [rater["spec"] for rater in raters]
+    launch_meta = {
+        "run_id": run_id, "commit": sha, "repo": str(repo),
+        "raters": requested_raters, "completed_raters": [],
+        "rater_runs": [], "durations": {},
+        "started": started.isoformat(), "focus": args.focus or "",
+        "verifier": verify_model or "",
+    }
+    if worktree_mode:
+        launch_meta["worktree"] = True
+    if tier_name:
+        launch_meta["tier"] = tier_name
+        launch_meta["max"] = use_max
+    (run_dir / "meta.json").write_text(json.dumps(launch_meta, indent=2) + "\n")
     diff = commit_diff(repo, sha) if any(
         rater["side"] in ("claude", "grok", "opencode") or rater["bare"]
         for rater in raters) else ""
@@ -3687,6 +4287,8 @@ def cmd_run(args):
                     "command": redact_command(rater, command),
                     "errored": True,
                 }
+                if rater["side"] == "agy":
+                    run_meta["timeout_s"] = rater["timeout_s"]
                 if model_resolved:
                     run_meta["model_resolved"] = model_resolved
                 rater_meta.append(run_meta)
@@ -3702,6 +4304,8 @@ def cmd_run(args):
                     "command": redact_command(rater, command),
                     "verifier_dropped": dropped, "verifier_unverified": unverified,
                 }
+                if rater["side"] == "agy":
+                    run_meta["timeout_s"] = rater["timeout_s"]
                 if verify_ms is not None:
                     run_meta["verify_ms"] = verify_ms
                 if model_resolved:
@@ -3714,8 +4318,11 @@ def cmd_run(args):
 
         meta = {
             "run_id": run_id, "commit": sha, "repo": str(repo),
-            "raters": [rater["spec"] for rater in raters
-                       if rater["spec"] not in errored_raters],
+            "raters": requested_raters,
+            "completed_raters": [
+                rater["spec"] for rater in raters
+                if rater["spec"] not in errored_raters
+            ],
             "rater_runs": rater_meta,
             "durations": {row["rater"]: row["duration_ms"] for row in rater_meta},
             "started": started.isoformat(), "finished": iso_now(), "focus": args.focus or "",
@@ -3723,8 +4330,12 @@ def cmd_run(args):
         }
         if worktree_mode:
             meta["worktree"] = True
+        if tier_name:
+            meta["tier"] = tier_name
+            meta["max"] = use_max
         (run_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
-        if meta["raters"]:
+        log_review_event("run", run_dir, meta)
+        if meta["completed_raters"]:
             write_review_receipt(repo, sha, run_id, len(errored_raters),
                                  panel=len(raters), worktree=worktree_mode)
         if errored_raters:
@@ -3736,7 +4347,7 @@ def cmd_run(args):
             print(f"rerun: "
                   f"{shlex.join(['review-bench', 'run', sha, '--raters', rerun])}")
         print(f"run id: {run_id}")
-        handoff(run_id, paths, worktree=worktree_mode)
+        handoff(run_id, paths)
         return 1 if (failed or errored_raters) else 0
     finally:
         if progress_path is not None:
@@ -3826,10 +4437,8 @@ def cmd_record(args):
     if not meta_path.exists():
         raise ValueError(f"unknown run id: {args.run_id}")
     meta = json.loads(meta_path.read_text())
-    if meta.get("worktree") is True:
-        raise ValueError(
-            "worktree snapshots are not durable corpus commits and cannot be recorded"
-        )
+    worktree = meta.get("worktree") is True
+    record_raters = completed_raters_from_meta(meta)
     verdict_rows = [
         row for row in read_jsonl(Path(args.verdicts))
         if "rater" in row
@@ -3839,14 +4448,19 @@ def cmd_record(args):
         rater = row.get("rater")
         idx = row.get("idx")
         verdict = row.get("verdict")
-        if rater not in meta["raters"] or not isinstance(idx, int) or idx < 0 or verdict not in VERDICTS:
+        if (
+            rater not in record_raters
+            or not isinstance(idx, int)
+            or idx < 0
+            or verdict not in VERDICTS
+        ):
             raise ValueError(f"invalid verdict row: {row}")
         key = (rater, idx)
         if key in verdict_map:
             raise ValueError(f"duplicate verdict for {rater} index {idx}")
         verdict_map[key] = verdict
 
-    findings = {rater: finding_rows(run_dir, rater) for rater in meta["raters"]}
+    findings = {rater: finding_rows(run_dir, rater) for rater in record_raters}
     for rater, rows in findings.items():
         expected = {(rater, idx) for idx in range(len(rows))}
         supplied = {key for key in verdict_map if key[0] == rater}
@@ -3858,6 +4472,23 @@ def cmd_record(args):
     canonical = sorted(
         key for key, verdict in verdict_map.items() if verdict == "confirmed"
     )
+    normalized_verdicts = [
+        {"rater": rater, "idx": idx, "verdict": verdict}
+        for (rater, idx), verdict in sorted(verdict_map.items())
+    ]
+    verdict_path = run_dir / "verdicts.jsonl"
+    verdict_existed = verdict_path.exists()
+    stored = [row for row in read_jsonl(verdict_path) if "rater" in row]
+    verdicts_changed = not verdict_existed or stored != normalized_verdicts
+    if worktree:
+        if verdicts_changed:
+            write_jsonl(verdict_path, normalized_verdicts)
+            log_review_event("adjudicated", run_dir, meta)
+        print(
+            "recorded worktree adjudication; corpus skipped because worktree snapshots "
+            "are not durable corpus commits"
+        )
+        return 0
     caught_by = {key: {key[0]} for key in canonical}
     for key, verdict in verdict_map.items():
         if verdict != "duplicate" or not canonical:
@@ -3885,7 +4516,7 @@ def cmd_record(args):
         print(f"warning: {args.run_id} reviewed {meta.get('repo') or 'an unrecorded repository'}, "
               f"which no longer resolves; its rows cannot be traced back to code")
     records = []
-    for rater in meta["raters"]:
+    for rater in record_raters:
         # A run stored under the pre-rename id must stay adjudicable; review_counts already
         # credits those rows, and refusing them here is what strands the run entirely.
         parsed = parse_rater(normalize_legacy_rater(rater))
@@ -3926,10 +4557,6 @@ def cmd_record(args):
         if repo_name:
             record["repo"] = repo_name
         records.append(record)
-    normalized_verdicts = [
-        {"rater": rater, "idx": idx, "verdict": verdict}
-        for (rater, idx), verdict in sorted(verdict_map.items())
-    ]
     defects = []
     for number, key in enumerate(canonical, 1):
         finding = findings[key[0]][key[1]]
@@ -3943,20 +4570,21 @@ def cmd_record(args):
             "canonical_idx": key[1],
             "caught_by": sorted(caught_by[key]),
         })
-    stored = [row for row in read_jsonl(run_dir / "verdicts.jsonl") if "rater" in row]
     # A crash between writing the artifacts and appending to the corpus leaves rows with no
     # verdict file: without this the correction writes artifacts and leaves the rows stale.
     already_recorded = any(row.get("run_id") == args.run_id
                            for row in read_jsonl(sd / "reviews.jsonl"))
     # The attribution artifacts land first: a corpus row claiming a run is recorded while its
     # per-defect attribution failed to write is the state this whole flow exists to prevent.
-    write_jsonl(run_dir / "verdicts.jsonl", normalized_verdicts)
+    write_jsonl(verdict_path, normalized_verdicts)
     write_jsonl(run_dir / "defects.jsonl", defects)
-    readjudicated = (bool(stored) and stored != normalized_verdicts) or (
-        already_recorded and not stored)
+    readjudicated = (verdict_existed and stored != normalized_verdicts) or (
+        already_recorded and not verdict_existed)
     fresh, dropped = append_review_records(
         sd, records, replace_run=args.run_id if readjudicated else None
     )
+    if verdicts_changed or fresh:
+        log_review_event("adjudicated", run_dir, meta)
     if readjudicated:
         print(f"re-adjudicated: replaced {dropped} row(s) with {len(fresh)} rater row(s)")
     else:
@@ -4433,18 +5061,30 @@ def cmd_list(args):
                 meta = json.loads(meta_path.read_text())
             except json.JSONDecodeError:
                 continue
-            entries.append(meta)
-    entries.sort(key=lambda item: item.get("started", item.get("started_at", "")), reverse=True)
+            entries.append((meta, path))
+    entries.sort(
+        key=lambda item: (
+            parse_iso_timestamp(item[0].get("started") or item[0].get("started_at"))
+            or datetime.min.replace(tzinfo=timezone.utc),
+            item[1].name,
+        ),
+        reverse=True,
+    )
     if not entries:
         print("no benchmark runs")
         return 0
     print(f"{'run id':<33} {'commit':<10} {'raters':>6} {'adjudicated':>12}  status")
-    for meta in entries[: args.limit]:
-        total = len(meta.get("raters", []))
-        done = min(recorded[meta.get("run_id")], total)
+    for meta, run_dir in entries[: args.limit]:
+        total = len(completed_raters_from_meta(meta))
+        if meta.get("worktree") is True and (run_dir / "verdicts.jsonl").exists():
+            done = total
+        else:
+            done = min(recorded[meta.get("run_id")], total)
         # A run where every cell errored has nothing to adjudicate and can never leave
         # `pending`, so calling it that buries the runs that genuinely await a verdict.
-        if not total:
+        if parse_iso_timestamp(meta.get("finished") or meta.get("finished_at")) is None:
+            status = "aborted"
+        elif not total:
             status = "no raters (every cell errored)"
         else:
             status = "adjudicated" if done == total else "pending"
@@ -4482,6 +5122,10 @@ def main():
     )
     receipt.add_argument("--repo", default=".")
     receipt.set_defaults(func=cmd_receipt)
+    report = subparsers.add_parser("report", help="Print a compact benchmark run report")
+    report.add_argument("run_id", nargs="?")
+    report.add_argument("--last", action="store_true", help="Report the newest run")
+    report.set_defaults(func=cmd_report)
     suggest = subparsers.add_parser("suggest", help="Suggest a review tier for a change")
     suggest.add_argument("--repo", default=".")
     suggest.add_argument("--range", metavar="A..B")
