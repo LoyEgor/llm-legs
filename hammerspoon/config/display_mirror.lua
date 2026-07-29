@@ -81,19 +81,19 @@ local function resetVirtualConnectRetries()
     end
 end
 
-local function scheduleVirtualConnectRetry(generation)
+local function scheduleVirtualConnectRetry()
     if virtualConnectAttempts >= VIRTUAL_CONNECT_MAX_ATTEMPTS
         or virtualConnectRetryTimer then
         return
     end
     virtualConnectRetryTimer = hs.timer.doAfter(5, function()
         virtualConnectRetryTimer = nil
-        if generation ~= reconcileGeneration then
-            return
-        end
         local current = topology()
         if current.virtualName or not desiredMirrored(current, false) then
             resetVirtualConnectRetries()
+            return
+        end
+        if virtualConnectAttempts >= VIRTUAL_CONNECT_MAX_ATTEMPTS then
             return
         end
         DisplayMirror.reconcile("virtual display connect retry")
@@ -143,13 +143,12 @@ local function storedResolution()
     return value:match("^(%d+x%d+)$")
 end
 
--- Unknown BetterDisplay arguments can hang, so every task gets an in-process watchdog.
+-- The watchdog owns completion because a SIGTERM-immune CLI would otherwise pin activeTask forever.
 local function runCli(args, generation, completion)
     state.lastCommand = commandText(args)
 
     local task
     local watchdog
-    local timedOut = false
     task = hs.task.new(CLI_PATH, function(exitCode, stdOut, stdErr)
         local self = task
         task = nil
@@ -173,10 +172,6 @@ local function runCli(args, generation, completion)
             beginReconcile()
             return
         end
-        if timedOut then
-            callback(124, stdOut, "BetterDisplay CLI timed out")
-            return
-        end
         callback(exitCode, stdOut, stdErr)
     end, args)
     activeTask = task
@@ -191,11 +186,38 @@ local function runCli(args, generation, completion)
             if activeWatchdog == timer then
                 activeWatchdog = nil
             end
-            timedOut = true
-            local runningTask = task
-            if runningTask and activeTask == runningTask and runningTask:isRunning() then
-                runningTask:terminate()
+            local callback = completion
+            completion = nil
+            if not callback then
+                return
             end
+            local runningTask = task
+            task = nil
+            if activeTask == runningTask then
+                activeTask = nil
+            end
+            if runningTask then
+                local pidOk, pid = pcall(function()
+                    return runningTask:pid()
+                end)
+                local runningOk, isRunning = pcall(function()
+                    return runningTask:isRunning()
+                end)
+                if runningOk and isRunning then
+                    pcall(function()
+                        runningTask:terminate()
+                    end)
+                    pid = pidOk and tonumber(pid) or nil
+                    if pid and pid > 0 then
+                        hs.execute("/bin/kill -KILL " .. tostring(math.floor(pid)) .. " 2>/dev/null")
+                    end
+                end
+            end
+            if generation ~= reconcileGeneration then
+                beginReconcile()
+                return
+            end
+            callback(124, "", "BetterDisplay CLI timed out")
         end)
         activeWatchdog = watchdog
         return true
@@ -389,7 +411,7 @@ end
 
 local function finishVirtualConnect(generation, action, err, retry)
     if retry then
-        scheduleVirtualConnectRetry(generation)
+        scheduleVirtualConnectRetry()
     end
     finishReconcile(generation, action, err)
 end
@@ -428,15 +450,15 @@ local function connectVirtualDisplay(generation, current)
             "virtual display connect retry limit reached", false)
         return
     end
-    virtualConnectAttempts = virtualConnectAttempts + 1
     if hs.application.get("BetterDisplay") == nil then
         finishVirtualConnect(generation, "waiting for BetterDisplay",
             "BetterDisplay is not running", true)
         return
     end
+    virtualConnectAttempts = virtualConnectAttempts + 1
     virtualDisplayName(generation, function(virtualName, err)
         if not virtualName then
-            finishVirtualConnect(generation, "virtual display connect failed", err, false)
+            finishVirtualConnect(generation, "virtual display connect failed", err, true)
             return
         end
         runCli({

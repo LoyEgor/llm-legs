@@ -864,6 +864,25 @@ local function setEnforce(value)
     return active
 end
 
+local rejoinSonoBusTimer = nil
+
+-- Both SonoBus ends go stale after the iPad app dies mid-session; rejoining
+-- the group on the Mac side is half of the recovery (the iPad app restart is
+-- the other half).
+local function rejoinSonoBus()
+    local app = hs.application.get("SonoBus")
+    if app then
+        pcall(app.selectMenuItem, app, { "Connect", "Disconnect" })
+    end
+    if rejoinSonoBusTimer then
+        rejoinSonoBusTimer:stop()
+    end
+    rejoinSonoBusTimer = hs.timer.doAfter(app and 2 or 0, function()
+        rejoinSonoBusTimer = nil
+        hs.execute([[/usr/bin/open "]] .. sonobusGroupUrl .. [["]])
+    end)
+end
+
 local function ipadConnected(baseline)
     if not baseline then
         storeEnforce(true)
@@ -873,7 +892,13 @@ local function ipadConnected(baseline)
     if _G.DisplayMirror then
         _G.DisplayMirror.reconcile("iPad connected")
     end
-    hs.execute([[/usr/bin/open "]] .. sonobusGroupUrl .. [["]])
+    if baseline then
+        -- A baseline replay must not bounce a live SonoBus connection; joining
+        -- the current group again is a no-op.
+        hs.execute([[/usr/bin/open "]] .. sonobusGroupUrl .. [["]])
+    else
+        rejoinSonoBus()
+    end
     -- On a baseline replay the overlay has already restored the visibility the
     -- user last chose (ipad_overlay.lua); showing here would switch an overlay
     -- they hid back on every hs.reload.
@@ -896,25 +921,6 @@ local function ipadDisconnected(baseline)
     else
         disableDummy(baseline)
     end
-end
-
-local rejoinSonoBusTimer = nil
-
--- Both SonoBus ends go stale after the iPad app dies mid-session; rejoining
--- the group on the Mac side is half of the recovery (the iPad app restart is
--- the other half).
-local function rejoinSonoBus()
-    local app = hs.application.get("SonoBus")
-    if app then
-        pcall(app.selectMenuItem, app, { "Connect", "Disconnect" })
-    end
-    if rejoinSonoBusTimer then
-        rejoinSonoBusTimer:stop()
-    end
-    rejoinSonoBusTimer = hs.timer.doAfter(app and 2 or 0, function()
-        rejoinSonoBusTimer = nil
-        hs.execute([[/usr/bin/open "]] .. sonobusGroupUrl .. [["]])
-    end)
 end
 
 local function evaluateIpadPresence()
@@ -943,7 +949,6 @@ _G.IpadAutomation = {
     ipadConnected = ipadConnected,
     ipadDisconnected = ipadDisconnected,
     ipadJunkPresent = ipadJunkPresent,
-    rejoinSonoBus = rejoinSonoBus,
     getSidecarPresent = function()
         return sidecarPresent(hs.screen.allScreens())
     end,
