@@ -43,6 +43,114 @@ fixture_home = work / "home"
 fixture_home.mkdir()
 os.environ["HOME"] = str(fixture_home)
 
+
+def clear_walls():
+    rb.WALLED_ACCOUNTS.clear()
+    rb._WALL_TIMESTAMPS.clear()
+    rb._WALL_CACHE_PATH = None
+    rb._WALL_CACHE_STAT = None
+    (rb.state_dir() / rb.WALL_STATE_FILE).unlink(missing_ok=True)
+
+
+wall_probe = r"""
+import importlib.machinery
+import importlib.util
+import os
+import sys
+
+loader = importlib.machinery.SourceFileLoader("review_bench_probe", sys.argv[1])
+spec = importlib.util.spec_from_loader("review_bench_probe", loader)
+module = importlib.util.module_from_spec(spec)
+loader.exec_module(module)
+side, account, bucket = sys.argv[3:6]
+if sys.argv[2] == "mark":
+    module.mark_walled(side, account, bucket)
+elif sys.argv[2] == "reload":
+    assert not module.is_walled(side, account, bucket)
+    child = os.fork()
+    if child == 0:
+        module.mark_walled(side, account, bucket)
+        os._exit(0)
+    _, status = os.waitpid(child, 0)
+    assert os.waitstatus_to_exitcode(status) == 0
+elif sys.argv[2] == "delete":
+    assert module.is_walled(side, account, bucket)
+    (module.state_dir() / module.WALL_STATE_FILE).unlink()
+print(int(module.is_walled(side, account, bucket)))
+"""
+
+
+def probe_wall(state, action, side="agy", account="work", bucket="agy-pro", ttl=None):
+    env = dict(os.environ, WORKER_STATS_DIR=str(state))
+    env.pop("REVIEW_BENCH_WALL_TTL_S", None)
+    if ttl is not None:
+        env["REVIEW_BENCH_WALL_TTL_S"] = str(ttl)
+    return subprocess.run(
+        [sys.executable, "-c", wall_probe, sys.argv[1], action, side, account, bucket],
+        check=True, capture_output=True, text=True, env=env,
+    ).stdout.strip()
+
+
+persisted_wall_state = work / "persisted-wall-state"
+assert probe_wall(persisted_wall_state, "mark") == "1"
+assert probe_wall(persisted_wall_state, "check") == "1"
+persisted_row = json.loads(
+    (persisted_wall_state / rb.WALL_STATE_FILE).read_text().splitlines()[-1]
+)
+assert persisted_row["side"] == "agy" and persisted_row["account"] == "work"
+assert persisted_row["bucket"] == "agy-pro" and persisted_row["detected_at"] > 0
+
+expired_wall_state = work / "expired-wall-state"
+expired_wall_state.mkdir()
+(expired_wall_state / rb.WALL_STATE_FILE).write_text(json.dumps({
+    "side": "agy", "account": "work", "bucket": "agy-pro",
+    "detected_at": time.time() - 10,
+}) + "\n")
+assert probe_wall(expired_wall_state, "check", ttl=1) == "0"
+
+corrupt_wall_state = work / "corrupt-wall-state"
+corrupt_wall_state.mkdir()
+(corrupt_wall_state / rb.WALL_STATE_FILE).write_text("{not json\n")
+assert probe_wall(corrupt_wall_state, "check") == "0"
+
+mixed_wall_state = work / "mixed-wall-state"
+mixed_wall_state.mkdir()
+(mixed_wall_state / rb.WALL_STATE_FILE).write_text(
+    "{not json\n" + json.dumps({
+        "side": "agy", "account": "work", "bucket": "agy-pro",
+        "detected_at": time.time(),
+    }) + "\n"
+)
+assert probe_wall(mixed_wall_state, "check") == "1"
+
+reloaded_wall_state = work / "reloaded-wall-state"
+assert probe_wall(reloaded_wall_state, "reload", account="second") == "1"
+
+deleted_wall_state = work / "deleted-wall-state"
+assert probe_wall(deleted_wall_state, "mark") == "1"
+assert probe_wall(deleted_wall_state, "delete") == "0"
+
+compacted_wall_state = work / "compacted-wall-state"
+compacted_wall_state.mkdir()
+compacted_path = compacted_wall_state / rb.WALL_STATE_FILE
+expired_rows = [
+    {
+        "side": "agy", "account": f"expired-{index}", "bucket": "agy-pro",
+        "detected_at": time.time() - 7200,
+    }
+    for index in range(80)
+]
+live_row = {
+    "side": "agy", "account": "live", "bucket": "agy-pro",
+    "detected_at": time.time(),
+}
+compacted_path.write_text(
+    "".join(json.dumps(row) + "\n" for row in expired_rows + [live_row])
+)
+assert compacted_path.stat().st_size > rb.WALL_COMPACT_BYTES
+assert probe_wall(compacted_wall_state, "check", account="live") == "1"
+assert [json.loads(line) for line in compacted_path.read_text().splitlines()] == [live_row]
+
 assert rb.parse_rater("sol-medium") == {
     "spec": "sol-medium", "model": "sol", "effort": "medium", "side": "codex",
     "skill": False, "bare": False, "profile": None
@@ -272,6 +380,9 @@ for bare in ("agy-pro-low", "agy-flash36-medium", "agy-flash35-high"):
 rb.refuse_retired_cells([rb.parse_rater(spec) for spec in rb.AUTO_RATERS])
 assert "haiku-medium" not in rb.AUTO_RATERS and "haiku-max" not in rb.AUTO_RATERS
 assert "agy-flash36-low-skill" not in rb.AUTO_RATERS
+assert [spec for spec in rb.AUTO_RATERS if spec.endswith("-bare")] == [
+    "sol-low-bare", "sol-medium-bare", "sol-high-bare", "sol-xhigh-bare", "sol-max-bare",
+]
 for bare_sonnet in ("sonnet-low", "sonnet-medium", "sonnet-high", "sonnet-xhigh"):
     assert bare_sonnet not in rb.AUTO_RATERS, bare_sonnet
     try:
@@ -877,7 +988,7 @@ flash_bucket = rb.wall_bucket(rb.parse_rater("agy-flash36-low-skill"))
 assert rb.is_walled("agy", "work", flash_bucket) and not rb.is_walled("agy", "main", flash_bucket)
 # Gemini bills per model, so retiring flash on that account must leave its pro cell alone.
 assert not rb.is_walled("agy", "work", rb.wall_bucket(rb.parse_rater("agy-pro-high-skill")))
-rb.WALLED_ACCOUNTS.clear()
+clear_walls()
 
 # An account another rater already retired is excluded from the next request instead of ending
 # the search, so a second usable account is still reached.
@@ -891,7 +1002,7 @@ _, inherited_account, inherited_result = rb.run_rater_task(
 )
 assert inherited_account == "main", (inherited_account, inherited_result)
 assert inherited_result[0] == 0 and (work / "geminib-profile").read_text() == "main"
-rb.WALLED_ACCOUNTS.clear()
+clear_walls()
 
 # A cell that answered and still reported an exhausted account keeps its review; only the
 # account is retired, so the next rater of that side does not spend it again.
@@ -906,7 +1017,7 @@ _, spent_account, spent_result = rb.run_rater_task(
 assert spent_result[0] == 0 and spent_account == "work", (spent_account, spent_result)
 assert len(rb.normalize_findings(spent_result[2], "agy-flash36-low-skill")) == 2
 assert rb.is_walled("agy", "work", rb.wall_bucket(rb.parse_rater("agy-flash36-low-skill")))
-rb.WALLED_ACCOUNTS.clear()
+clear_walls()
 del os.environ["AGY_FIXTURE_STDERR"]
 
 # Claude bills fable separately, so a wall in one bucket must leave the other bucket alone.
@@ -915,11 +1026,31 @@ assert rb.is_walled("claude", "com", "fable")
 assert not rb.is_walled("claude", "com")
 assert rb.wall_bucket(rb.parse_rater("fable-medium")) == "fable"
 assert rb.wall_bucket(rb.parse_rater("opus-medium")) == "general"
-rb.WALLED_ACCOUNTS.clear()
+clear_walls()
 
 assert rb.SIDE_WALL["grok"](1, "", "json parse error at char 4290") is False
 assert rb.SIDE_WALL["grok"](1, "", "HTTP 429 rate limit") is True
-assert rb.SIDE_WALL["codex"](1, '{"type":"error","code":"usage_limit_exceeded"}', "") is True
+codex_limit_content = json.dumps({
+    "type": "item.completed",
+    "item": {"type": "agent_message", "text": json.dumps([{
+        "severity": "P1", "file": "src/limits.py", "line": 1,
+        "summary": "Handle usage_limit_exceeded",
+    }])},
+})
+codex_limit_error = json.dumps({
+    "type": "error", "message": "usage_limit_exceeded",
+})
+codex_limit_code = json.dumps({
+    "type": "error", "code": "usage_limit_exceeded",
+})
+codex_capacity_error = json.dumps({
+    "type": "turn.failed",
+    "error": {"message": "Selected model is at capacity. Please try a different model."},
+})
+assert rb.SIDE_WALL["codex"](0, codex_limit_content, "") is False
+assert rb.SIDE_WALL["codex"](1, codex_limit_error, "") is True
+assert rb.SIDE_WALL["codex"](1, codex_limit_code, "") is True
+assert rb.SIDE_WALL["codex"](1, codex_capacity_error, "") is False
 del os.environ["REVIEW_BENCH_WORKER_PICK_BIN"]
 
 os.environ.update({
@@ -981,7 +1112,7 @@ _, exhausted_account, exhausted_result = rb.run_rater_task(
 assert exhausted_account is None and "no opencode account left" in exhausted_result[3]
 del os.environ["OPENCODE_FIXTURE_RC"]
 del os.environ["OPENCODE_FIXTURE_STDERR"]
-rb.WALLED_ACCOUNTS.clear()
+clear_walls()
 profiles_path.unlink()
 del os.environ["OPENCODE_CAPTURE_PROFILE"]
 
@@ -1501,7 +1632,7 @@ assert skipped_account is None and "no opencode account left" in skipped_result[
 # A verifier that walls has to record the wall before it lets the next one through the gate:
 # released first, a queued verifier takes the slot, passes the post-gate check and sends one
 # more doomed request.
-rb.WALLED_ACCOUNTS.clear()
+clear_walls()
 gate_saw = []
 real_gate = rb.OPENCODE_GATE
 
@@ -1526,11 +1657,48 @@ finally:
 assert gate_saw == [True], gate_saw
 assert walled_verify["walled"] and walled_verify["kept"], walled_verify
 
-rb.WALLED_ACCOUNTS.clear()
+clear_walls()
 del os.environ["OPENCODE_FIXTURE_RC"]
 del os.environ["OPENCODE_FIXTURE_STDERR"]
 assert rb.opencode_usage_wall("HTTP 429") and rb.opencode_usage_wall("usage limit reached")
 assert not rb.opencode_usage_wall("HTTP 503 failover_exhausted")
+
+real_subprocess_run = rb.subprocess.run
+real_opencode_timeout_s = rb.opencode_timeout_s
+timeout_stderr = b"HTTP 429 usage limit reached"
+
+
+def timeout_run(command, **kwargs):
+    raise subprocess.TimeoutExpired(
+        command, kwargs["timeout"], output=b"partial output", stderr=timeout_stderr
+    )
+
+
+rb.subprocess.run = timeout_run
+rb.opencode_timeout_s = lambda rater: 1
+try:
+    timeout_wall_run = work / "opencode-timeout-wall"
+    timeout_wall_run.mkdir()
+    _, timeout_account, timeout_result = rb.run_rater_task(
+        opencode_rater, repo, sha, "", timeout_wall_run, "fixture commit diff"
+    )
+    assert timeout_account == "opencode-go" and timeout_result[0] == 124, timeout_result
+    assert "rater timed out after 1s" in timeout_result[3], timeout_result
+    assert rb.is_walled("opencode", "opencode-go")
+
+    clear_walls()
+    timeout_stderr = b"transport stalled without a response"
+    timeout_plain_run = work / "opencode-timeout-plain"
+    timeout_plain_run.mkdir()
+    _, timeout_account, timeout_result = rb.run_rater_task(
+        opencode_rater, repo, sha, "", timeout_plain_run, "fixture commit diff"
+    )
+    assert timeout_account == "opencode-go" and timeout_result[0] == 124, timeout_result
+    assert not rb.is_walled("opencode", "opencode-go")
+finally:
+    rb.subprocess.run = real_subprocess_run
+    rb.opencode_timeout_s = real_opencode_timeout_s
+    clear_walls()
 
 # Gemini bills per model and words a per-model exhaustion its own way, so that wording has to
 # retire the model on that account and nothing more: a walled 3.1 Pro must leave flash alone.
@@ -1553,7 +1721,7 @@ assert rb.wall_bucket(rb.parse_rater("opus-high")) == "general"
 rb.mark_walled("agy", "work", rb.wall_bucket(rb.parse_rater("agy-pro-high-skill")))
 assert rb.is_walled("agy", "work", rb.wall_bucket(rb.parse_rater("agy-pro-high-skill")))
 assert not rb.is_walled("agy", "work", rb.wall_bucket(rb.parse_rater("agy-flash35-medium-skill")))
-rb.WALLED_ACCOUNTS.clear()
+clear_walls()
 
 # A run stored under the pre-rename agy id must stay adjudicable, or it is stranded forever.
 assert rb.normalize_legacy_rater("agy-flash-low-skill") == "agy-flash36-low-skill"
@@ -1838,7 +2006,7 @@ assert all(row["kept"] is True and row.get("walled") for row in audit), audit
 assert rb.is_walled("opencode", "opencode-go")
 del os.environ["OPENCODE_FIXTURE_RC"]
 del os.environ["OPENCODE_FIXTURE_STDERR"]
-rb.WALLED_ACCOUNTS.clear()
+clear_walls()
 # A verifier already queued on the gate when the wall is set must not send one more request
 # either — the cells got that guard in this commit and the verifier was left without it.
 os.environ["OPENCODE_CAPTURE_ARGS"] = str(work / "queued-verify-args")
@@ -1865,7 +2033,7 @@ assert queued["row"]["walled"] is True and queued["row"]["kept"] is True, queued
 assert "while queued" in queued["row"]["why"], queued
 assert not (work / "queued-verify-args").exists(), "a walled verifier still called opencode"
 
-rb.WALLED_ACCOUNTS.clear()
+clear_walls()
 profiles_path.write_text("-\nsecond\n")
 queued_profile_capture = work / "queued-verifier-profile"
 os.environ["OPENCODE_CAPTURE_PROFILE"] = str(queued_profile_capture)
@@ -1906,7 +2074,7 @@ rc, _, _, walled_stderr, _ = rb.run_opencode(
 assert rc == 1 and "waited for a gate slot" in walled_stderr, walled_stderr
 assert not (work / "walled-args").exists()
 os.environ["OPENCODE_CAPTURE_ARGS"] = str(work / "opencode-args")
-rb.WALLED_ACCOUNTS.clear()
+clear_walls()
 
 # Taking a slot also changes who the queue head is, and a waiter blocks on being the head
 # as much as on a free slot. A waiter that re-checked just before the head left has no
@@ -3565,7 +3733,7 @@ for commit, rows in defects.items():
             handle.write(json.dumps(row) + "\n")
 PY
 
-HOME="$WORK/home" python3 - "$SCRIPT" "$FSD" <<'PY'
+HOME="$WORK/home" WORKER_STATS_DIR="$FSD" python3 - "$SCRIPT" "$FSD" <<'PY'
 import importlib.machinery
 import importlib.util
 import json

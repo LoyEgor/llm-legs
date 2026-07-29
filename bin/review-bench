@@ -199,6 +199,11 @@ OPENCODE_GATE = PriorityGate(OPENCODE_MAX_CONCURRENCY)
 # a wall gets deeper instead of waited out.
 WALLED_ACCOUNTS = set()
 WALLED_LOCK = threading.Lock()
+WALL_STATE_FILE = "walls.jsonl"
+WALL_COMPACT_BYTES = 4096
+_WALL_TIMESTAMPS = {}
+_WALL_CACHE_PATH = None
+_WALL_CACHE_STAT = None
 
 
 def wall_bucket(rater):
@@ -210,13 +215,133 @@ def wall_bucket(rater):
 
 
 def mark_walled(side, account, bucket="general"):
+    key = (side, account, bucket)
+    detected_at = time.time()
+    path = state_dir() / WALL_STATE_FILE
+    entry = {
+        "side": side, "account": account, "bucket": bucket,
+        "detected_at": detected_at,
+    }
     with WALLED_LOCK:
-        WALLED_ACCOUNTS.add((side, account, bucket))
+        WALLED_ACCOUNTS.add(key)
+        _WALL_TIMESTAMPS[key] = detected_at
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = (json.dumps(entry, separators=(",", ":")) + "\n").encode()
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            try:
+                os.write(fd, payload)
+            finally:
+                os.close(fd)
+        except (OSError, TypeError, ValueError):
+            pass
+
+
+def wall_ttl_s():
+    try:
+        ttl = float(os.environ.get("REVIEW_BENCH_WALL_TTL_S", "3600"))
+    except (TypeError, ValueError):
+        return 3600
+    return max(0, ttl) if math.isfinite(ttl) else 3600
+
+
+def compact_walls(path, walls):
+    tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    try:
+        with tmp.open("w", encoding="utf-8") as stream:
+            for (side, account, bucket), detected_at in sorted(walls.items()):
+                stream.write(json.dumps({
+                    "side": side, "account": account, "bucket": bucket,
+                    "detected_at": detected_at,
+                }, separators=(",", ":")) + "\n")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+        tmp = None
+    except OSError:
+        pass
+    finally:
+        if tmp is not None:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def persisted_walls(path):
+    walls = {}
+    now = time.time()
+    ttl = wall_ttl_s()
+    entries = 0
+    expired = 0
+    try:
+        with path.open(encoding="utf-8", errors="replace") as stream:
+            for raw in stream:
+                try:
+                    row = json.loads(raw)
+                    side = row["side"]
+                    account = row["account"]
+                    bucket = row["bucket"]
+                    detected_at = float(row["detected_at"])
+                    if not all(isinstance(value, str) for value in (side, account, bucket)):
+                        raise ValueError("invalid wall key")
+                    if not math.isfinite(detected_at):
+                        raise ValueError("invalid wall timestamp")
+                except (ValueError, KeyError, TypeError):
+                    continue
+                entries += 1
+                if now - detected_at <= ttl:
+                    key = (side, account, bucket)
+                    walls[key] = max(detected_at, walls.get(key, detected_at))
+                else:
+                    expired += 1
+    except (OSError, UnicodeError):
+        # This cache is advisory; any persistence failure must leave accounts usable.
+        return {}
+    try:
+        oversized = path.stat().st_size > WALL_COMPACT_BYTES
+    except OSError:
+        oversized = False
+    if oversized and expired > entries / 2:
+        compact_walls(path, walls)
+    return walls
 
 
 def is_walled(side, account, bucket="general"):
+    global _WALL_CACHE_PATH, _WALL_CACHE_STAT
+    key = (side, account, bucket)
     with WALLED_LOCK:
-        return (side, account, bucket) in WALLED_ACCOUNTS
+        path = state_dir() / WALL_STATE_FILE
+        missing = False
+        try:
+            stat = path.stat()
+            cache_stat = (stat.st_mtime_ns, stat.st_size)
+        except FileNotFoundError:
+            cache_stat = None
+            missing = True
+        except OSError:
+            cache_stat = _WALL_CACHE_STAT if path == _WALL_CACHE_PATH else None
+        deleted = (
+            missing and path == _WALL_CACHE_PATH and _WALL_CACHE_STAT is not None
+        )
+        if path != _WALL_CACHE_PATH or cache_stat != _WALL_CACHE_STAT:
+            loaded = persisted_walls(path)
+            if deleted:
+                WALLED_ACCOUNTS.clear()
+                _WALL_TIMESTAMPS.clear()
+            for loaded_key, detected_at in loaded.items():
+                WALLED_ACCOUNTS.add(loaded_key)
+                _WALL_TIMESTAMPS[loaded_key] = max(
+                    detected_at, _WALL_TIMESTAMPS.get(loaded_key, detected_at)
+                )
+            _WALL_CACHE_PATH = path
+            _WALL_CACHE_STAT = cache_stat
+        if key in WALLED_ACCOUNTS:
+            detected_at = _WALL_TIMESTAMPS.get(key)
+            if detected_at is None or time.time() - detected_at <= wall_ttl_s():
+                return True
+            WALLED_ACCOUNTS.discard(key)
+            _WALL_TIMESTAMPS.pop(key, None)
+        return key in WALLED_ACCOUNTS
 
 
 def opencode_usage_wall(stderr):
@@ -267,6 +392,9 @@ AUTO_RATERS = tuple(
             f"{model}-{effort}"
             for effort in ("medium", "high", "xhigh", "low", "max")
             for model in ("sol", "opus")
+        ) + tuple(
+            f"sol-{effort}-bare"
+            for effort in EFFORTS
         ) + tuple(
             f"{model}-{effort}-skill"
             for model, efforts in AGY_EFFORTS.items()
@@ -1792,6 +1920,36 @@ def codex_environment(account):
     return env
 
 
+def subprocess_text(value):
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode(errors="replace")
+    return str(value)
+
+
+def text_file_tail(path, limit=65536):
+    try:
+        with Path(path).open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            stream.seek(max(0, stream.tell() - limit))
+            return stream.read().decode(errors="replace")
+    except OSError:
+        return ""
+
+
+def rater_timeout(exc, started, timeout_s, command, extra_stdout=""):
+    duration = round((time.monotonic() - started) * 1000)
+    stdout = "\n".join(
+        part for part in (subprocess_text(exc.stdout).rstrip(), extra_stdout.rstrip()) if part
+    )
+    stderr = f"rater timed out after {timeout_s}s"
+    partial_stderr = subprocess_text(exc.stderr).rstrip()
+    if partial_stderr:
+        stderr += f"\n{partial_stderr}"
+    return 124, duration, stdout, stderr, command
+
+
 def run_codex(rater, repo, sha, focus, run_dir, diff, account):
     raw_final = tempfile.NamedTemporaryFile(
         dir=run_dir, prefix=f"raw-final-{rater['spec']}-", delete=False
@@ -1835,9 +1993,15 @@ def run_codex(rater, repo, sha, focus, run_dir, diff, account):
                         input=prompt_input, stdout=stdout, stderr=subprocess.PIPE,
                         text=True, timeout=RATER_TIMEOUT_S
                     )
-        except subprocess.TimeoutExpired:
-            duration = round((time.monotonic() - started) * 1000)
-            return 124, duration, "", f"rater timed out after {RATER_TIMEOUT_S}s", command
+        except subprocess.TimeoutExpired as exc:
+            output_tail = "\n".join(
+                part for part in (
+                    text_file_tail(raw_final.name), text_file_tail(raw_events)
+                ) if part
+            )
+            return rater_timeout(
+                exc, started, RATER_TIMEOUT_S, command, extra_stdout=output_tail
+            )
         duration = round((time.monotonic() - started) * 1000)
         text = Path(raw_final.name).read_text(errors="replace")
         if raw_events.exists():
@@ -1846,6 +2010,27 @@ def run_codex(rater, repo, sha, focus, run_dir, diff, account):
     finally:
         if clone:
             shutil.rmtree(clone, ignore_errors=True)
+
+
+def codex_usage_wall(events, stderr):
+    pattern = (
+        r"\b429\b|\b(?:usage|rate)[ _-]limit(?:[ _-]exceeded)?\b"
+        r"|\bquota[ _-]exceeded\b"
+    )
+    if re.search(pattern, stderr or "", re.IGNORECASE):
+        return True
+    for raw in (events or "").splitlines():
+        try:
+            event = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") not in ("error", "turn.failed"):
+            continue
+        if re.search(pattern, json.dumps(event), re.IGNORECASE):
+            return True
+    return False
 
 
 def is_429_error(result_json_text):
@@ -1932,9 +2117,8 @@ def run_claude(rater, repo, sha, focus, run_dir, diff, account):
         try:
             proc = subprocess.run(command, cwd=cwd, stdin=subprocess.DEVNULL,
                                   capture_output=True, text=True, timeout=RATER_TIMEOUT_S)
-        except subprocess.TimeoutExpired:
-            duration = round((time.monotonic() - started) * 1000)
-            return 124, duration, "", f"rater timed out after {RATER_TIMEOUT_S}s", command
+        except subprocess.TimeoutExpired as exc:
+            return rater_timeout(exc, started, RATER_TIMEOUT_S, command)
         duration = round((time.monotonic() - started) * 1000)
         raw_output.write_text(proc.stdout)
         return proc.returncode, duration, proc.stdout, proc.stderr, command
@@ -1965,9 +2149,8 @@ def run_grok(rater, repo, sha, focus, run_dir, diff, account):
         try:
             proc = subprocess.run(command, cwd=clone, stdin=subprocess.DEVNULL,
                                   capture_output=True, text=True, timeout=RATER_TIMEOUT_S)
-        except subprocess.TimeoutExpired:
-            duration = round((time.monotonic() - started) * 1000)
-            return 124, duration, "", f"rater timed out after {RATER_TIMEOUT_S}s", command
+        except subprocess.TimeoutExpired as exc:
+            return rater_timeout(exc, started, RATER_TIMEOUT_S, command)
         duration = round((time.monotonic() - started) * 1000)
         raw_output.write_text(proc.stdout)
         if proc.returncode != 0:
@@ -2113,9 +2296,8 @@ def run_opencode(rater, repo, sha, focus, run_dir, diff, account):
                     command, stdin=subprocess.DEVNULL, capture_output=True, text=True,
                     timeout=deadline, env=env
                 )
-            except subprocess.TimeoutExpired:
-                duration = round((time.monotonic() - started) * 1000)
-                return 124, duration, "", f"rater timed out after {deadline}s", command
+            except subprocess.TimeoutExpired as exc:
+                return rater_timeout(exc, started, deadline, command)
             duration = round((time.monotonic() - started) * 1000)
             raw_output.write_text(proc.stdout)
             if proc.returncode == 0 or not opencode_max_tokens_error(proc.stderr):
@@ -2387,7 +2569,7 @@ def verify_one(index, finding, repo, sha, model, lines, ref=None):
         "--json", "--max-tokens", str(VERIFY_MAX_TOKENS), "--no-reasoning", "--retries", "2",
     ]
     OPENCODE_GATE.acquire(0)
-    account, proc, judgment, walled = None, None, None, False
+    account, proc, judgment, walled, timeout_stderr = None, None, None, False, ""
     try:
         account = pool_account("opencode", set())
         if account is None or is_walled("opencode", account):
@@ -2406,14 +2588,16 @@ def verify_one(index, finding, repo, sha, model, lines, ref=None):
             except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError):
                 answer = ""
         judgment = parse_verify_answer(answer)
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
         judgment = None
         proc = None
+        timeout_stderr = subprocess_text(exc.stderr)
     finally:
         # The wall is recorded before the gate is released, or a verifier queued on this slot
         # acquires it in between, passes the post-gate check and sends one more doomed request.
         walled = bool(
-            proc is not None and proc.returncode != 0 and opencode_usage_wall(proc.stderr)
+            (proc is not None and proc.returncode != 0 and opencode_usage_wall(proc.stderr))
+            or opencode_usage_wall(timeout_stderr)
         )
         if walled and account is not None:
             mark_walled("opencode", account)
@@ -2570,14 +2754,12 @@ def run_agy(rater, repo, sha, focus, run_dir, diff, account):
                 transport, cwd=clone, capture_output=True, text=True,
                 timeout=RATER_TIMEOUT_S
             )
-        except subprocess.TimeoutExpired:
-            duration = round((time.monotonic() - started) * 1000)
+        except subprocess.TimeoutExpired as exc:
+            result = rater_timeout(exc, started, RATER_TIMEOUT_S, displayed_command)
+            duration = result[1]
             log_text = log_file.read_text(errors="replace") if log_file.exists() else ""
             write_agy_usage(run_dir, rater, duration, log_text)
-            return (
-                124, duration, "", f"rater timed out after {RATER_TIMEOUT_S}s",
-                displayed_command,
-            )
+            return result
         duration = round((time.monotonic() - started) * 1000)
         raw_output.write_text(proc.stdout)
         log_text = log_file.read_text(errors="replace") if log_file.exists() else ""
@@ -2618,12 +2800,7 @@ SIDE_RUNNERS = {
 # trusted: a rater that merely failed must not retire an account that still has quota.
 SIDE_WALL = {
     "claude": lambda rc, text, stderr: is_429_error(text),
-    # `codex exec --json` reports an exhausted account as an event on stdout with nothing on
-    # stderr, so the structured token is looked for there too — but only that token, since the
-    # findings themselves travel in the same stream and would match a looser phrase.
-    "codex": lambda rc, text, stderr: bool(
-        re.search(r"\b429\b|usage limit|rate limit|quota exceeded", stderr or "", re.IGNORECASE)
-        or re.search(r"usage_limit_exceeded|rate_limit_exceeded", text or "", re.IGNORECASE)),
+    "codex": lambda rc, events, stderr: codex_usage_wall(events, stderr),
     # Gemini words a per-model exhaustion differently from an account-wide one, and a cell that
     # fails instead of rotating is the whole point of asking the pool for another account.
     "agy": lambda rc, text, stderr: bool(
@@ -2743,7 +2920,11 @@ def run_rater_task(rater, repo, sha, focus, run_dir, diff):
         except Exception as exc:
             return (rater, candidate, (1, 0, "", f"rater task crashed: {exc}", []))
         rc, _, text, stderr, _ = result
-        if not SIDE_WALL[side](rc, text, stderr):
+        wall_text = (
+            text_file_tail(run_dir / f"raw-events-{rater['spec']}.jsonl")
+            if side == "codex" else text
+        )
+        if not SIDE_WALL[side](rc, wall_text, stderr):
             return (rater, candidate, result)
         mark_walled(side, candidate, bucket)
         walled.add(candidate)
