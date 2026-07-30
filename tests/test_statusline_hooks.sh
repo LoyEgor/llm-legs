@@ -308,15 +308,26 @@ printf '%s\n' "$FIXTURES/vanished" > "$STATE_DIR/workdir-session-ss-resume-gone.
 run_workdir_hook "$(session_start_payload resume session-ss-resume-gone)"
 assert_eq "$TOP_E" "$(cat "$STATE_DIR/workdir-session-ss-resume-gone")"
 assert test ! -e "$STATE_DIR/workdir-session-ss-resume-gone.gone"
-# Existence, not gitness: a worktree directory that outlived its git link (no
-# repository above it either) is kept, so the render reports it dim `⧉ … ✗`.
-# Reseeding would silently claim the work had moved to the launch checkout.
-UNLINKED="$FIXTURES/unlinked-holder/.claude/worktrees/leftover"
-mkdir -p "$UNLINKED"
+# A worktree directory that outlived its git link is NOT a live home: it sits
+# inside the parent checkout, so git discovery ascends and keeping it would make
+# the strip report the main checkout's branch — no `⧉`, no `✗`, nothing dim — as
+# if that were the workspace. Reseeding at least names where the shell is.
+UNLINKED="$REPO_A/.claude/worktrees/lost-link"
+git -C "$REPO_A" worktree add -q -b lost-link "$UNLINKED"
+rm -f "$UNLINKED/.git"
 printf '%s\n' "$UNLINKED" > "$STATE_DIR/workdir-session-ss-resume-unlinked"
 run_workdir_hook "$(session_start_payload resume session-ss-resume-unlinked)"
-assert_eq "$UNLINKED" "$(cat "$STATE_DIR/workdir-session-ss-resume-unlinked")"
-rm -rf "$FIXTURES/unlinked-holder"
+assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-ss-resume-unlinked")"
+rm -rf "$UNLINKED"
+git -C "$REPO_A" worktree prune
+git -C "$REPO_A" branch -qD lost-link
+# Same for a `.claude/worktrees/` path under no repository at all.
+NO_REPO="$FIXTURES/orphan-holder/.claude/worktrees/leftover"
+mkdir -p "$NO_REPO"
+printf '%s\n' "$NO_REPO" > "$STATE_DIR/workdir-session-ss-resume-norepo"
+run_workdir_hook "$(session_start_payload resume session-ss-resume-norepo)"
+assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-ss-resume-norepo")"
+rm -rf "$FIXTURES/orphan-holder"
 # No state and empty state are the seeding paths, not keeping ones.
 rm -f "$STATE_DIR/workdir-session-ss-resume-fresh"
 run_workdir_hook "$(session_start_payload resume session-ss-resume-fresh)"

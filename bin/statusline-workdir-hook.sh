@@ -57,11 +57,20 @@ if [ "$hook_event" = SessionStart ]; then
       if [ "$start_source" = resume ] && [ -f "$state_file" ]; then
         IFS= read -r prev_home < "$state_file" || :
         case "$prev_home" in
-          # The breadcrumb still goes: keeping the home means the work is live,
-          # and the render writes `.gone` only once, so a survivor would later be
-          # reported as the dir that went away.
+          # Its own toplevel, not merely a surviving directory: a worktree that
+          # lost its `.git` link still sits inside the parent checkout, so git
+          # discovery ascends and the kept home would report that checkout's
+          # branch as the workspace — no `⧉`, no `✗`, nothing dim. A kept home
+          # drops the breadcrumb too: the render writes `.gone` once, so a
+          # survivor would later be named as the dir that went away.
           */.claude/worktrees/*)
-            [ -d "$prev_home" ] && { rm -f "$state_file.gone"; exit 0; } ;;
+            prev_top=$(git -C "$prev_home" rev-parse --show-toplevel 2>/dev/null) &&
+              prev_top=$(cd "$prev_top" 2>/dev/null && pwd -P) &&
+              [ "$prev_top" = "$(cd "$prev_home" 2>/dev/null && pwd -P)" ] && {
+                rm -f "$state_file.gone"
+                exit 0
+              }
+            ;;
         esac
       fi
       rm -f "$state_file" "$state_file.gone"

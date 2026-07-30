@@ -189,8 +189,10 @@ marker when it differs from the launch repo. Rules:
   workdir state file and re-seeds it from the starting cwd's git toplevel (without a seed the
   first cd anywhere would adopt THAT dir as home, and worktree stickiness can only protect a
   home that already exists); `resume` is the one exception — a home under `.claude/worktrees/`
-  that still exists on disk is kept, because the resume cwd is where the chat was relaunched
-  (usually the main checkout), not where its work lives; `compact` keeps it — the shell and its
+  that still resolves as its own worktree toplevel is kept, because the resume cwd is where the
+  chat was relaunched (usually the main checkout), not where its work lives; a surviving
+  directory is not enough (without its `.git` link it resolves up into the parent checkout, whose
+  branch would then be shown as the workspace); `compact` keeps it — the shell and its
   cwd survive `/compact`. This runs before the agent filter on purpose: `agent_type` on
   SessionStart means a top-level `claude --agent` session, not a subagent.
 The statusline itself unlinks a state file that no longer points at a git dir.
