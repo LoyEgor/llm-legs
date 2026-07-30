@@ -88,6 +88,11 @@ run_workdir_hook() {
   assert_eq "" "$output"
 }
 
+# Every write the hook makes goes to the session cache under $HOME, which these
+# cases redirect; a hardcoded absolute redirect (a debug probe left in) escapes
+# the sandbox entirely and no behavioural case below can see it.
+assert_eq "" "$(grep -nE '(^|[[:space:]])>>?[[:space:]]*/' "$WORKDIR_HOOK" | grep -v '/dev/null')"
+
 payload=$(workdir_payload Bash session-cd "$REPO_A" "cd '$REPO_A' && make")
 run_workdir_hook "$payload"
 assert test -f "$STATE_DIR/workdir-session-cd"
@@ -282,6 +287,43 @@ assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-ss-agent")"
 printf '%s\n' "$TOP_B" > "$STATE_DIR/workdir-session-ss-nogit"
 run_workdir_hook "$(session_start_payload startup session-ss-nogit "$WORK")"
 assert test ! -e "$STATE_DIR/workdir-session-ss-nogit"
+
+# resume keeps a live worktree home: the event's cwd is the launch dir (often
+# the main checkout), not where the work lives — reseeding would retarget the
+# ports segment on every resume. clear still reseeds, and so does a resume
+# whose worktree home no longer exists on disk.
+printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-session-ss-resume-wt"
+run_workdir_hook "$(session_start_payload resume session-ss-resume-wt)"
+assert_eq "$TOP_E" "$(cat "$STATE_DIR/workdir-session-ss-resume-wt")"
+printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-session-ss-clear-wt"
+run_workdir_hook "$(session_start_payload clear session-ss-clear-wt)"
+assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-ss-clear-wt")"
+printf '%s\n' "$REPO_A/.claude/worktrees/vanished-wt" > "$STATE_DIR/workdir-session-ss-resume-dead"
+run_workdir_hook "$(session_start_payload resume session-ss-resume-dead)"
+assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-ss-resume-dead")"
+# A kept home still drops the breadcrumb, like every reseeding path: the render
+# writes `.gone` once, so a survivor would later be reported as the lost dir.
+printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-session-ss-resume-gone"
+printf '%s\n' "$FIXTURES/vanished" > "$STATE_DIR/workdir-session-ss-resume-gone.gone"
+run_workdir_hook "$(session_start_payload resume session-ss-resume-gone)"
+assert_eq "$TOP_E" "$(cat "$STATE_DIR/workdir-session-ss-resume-gone")"
+assert test ! -e "$STATE_DIR/workdir-session-ss-resume-gone.gone"
+# Existence, not gitness: a worktree directory that outlived its git link (no
+# repository above it either) is kept, so the render reports it dim `⧉ … ✗`.
+# Reseeding would silently claim the work had moved to the launch checkout.
+UNLINKED="$FIXTURES/unlinked-holder/.claude/worktrees/leftover"
+mkdir -p "$UNLINKED"
+printf '%s\n' "$UNLINKED" > "$STATE_DIR/workdir-session-ss-resume-unlinked"
+run_workdir_hook "$(session_start_payload resume session-ss-resume-unlinked)"
+assert_eq "$UNLINKED" "$(cat "$STATE_DIR/workdir-session-ss-resume-unlinked")"
+rm -rf "$FIXTURES/unlinked-holder"
+# No state and empty state are the seeding paths, not keeping ones.
+rm -f "$STATE_DIR/workdir-session-ss-resume-fresh"
+run_workdir_hook "$(session_start_payload resume session-ss-resume-fresh)"
+assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-ss-resume-fresh")"
+: > "$STATE_DIR/workdir-session-ss-resume-empty"
+run_workdir_hook "$(session_start_payload resume session-ss-resume-empty)"
+assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-ss-resume-empty")"
 
 # The live failure this seed exists for: a session born in a worktree runs a
 # one-off cd into a sibling — the seeded home must hold through stickiness.

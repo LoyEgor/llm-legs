@@ -48,9 +48,22 @@ if [ "$hook_event" = SessionStart ]; then
   # first cd/edit anywhere adopts THAT dir as home (a one-off cd into a sibling
   # worktree retargets the ports segment), and the worktree stickiness below can
   # only protect a home that already exists. compact keeps the shell and its
-  # cwd, so its state stays valid and is left alone.
+  # cwd, so its state stays valid and is left alone. resume keeps a live
+  # worktree home: the event's cwd is the dir the chat was LAUNCHED in (often
+  # the main checkout), not where the work lives — reseeding from it would
+  # retarget the strip and ports to the wrong workspace on every resume.
   case "$start_source" in
     startup|resume|clear)
+      if [ "$start_source" = resume ] && [ -f "$state_file" ]; then
+        IFS= read -r prev_home < "$state_file" || :
+        case "$prev_home" in
+          # The breadcrumb still goes: keeping the home means the work is live,
+          # and the render writes `.gone` only once, so a survivor would later be
+          # reported as the dir that went away.
+          */.claude/worktrees/*)
+            [ -d "$prev_home" ] && { rm -f "$state_file.gone"; exit 0; } ;;
+        esac
+      fi
       rm -f "$state_file" "$state_file.gone"
       seed=$(git -C "${base_dir:-.}" rev-parse --show-toplevel 2>/dev/null) &&
         seed=$(cd "$seed" 2>/dev/null && pwd -P) && [ -n "$seed" ] && {
