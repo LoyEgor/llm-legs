@@ -810,6 +810,14 @@ local function scheduleAudioInputMirror()
                 return
             end
         end
+        -- A reboot mid-iPad-session skips the disconnect handler, leaving
+        -- BlackHole as the system default with no iPad behind it.
+        if name:find("BlackHole", 1, true)
+            and not (_G.IpadMode and _G.IpadMode.isOn()) then
+            print("audio mirror: no iPad, restoring the default input away from BlackHole")
+            restoreSystemInputDevice()
+            return
+        end
         if sendInputDeviceCommand then
             sendInputDeviceCommand(name)
         end
