@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import concurrent.futures
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -109,6 +110,12 @@ OPENCODE_UNUSABLE_MODELS = {"oc-dsv4flash"}
 # true claim per three passes, so a wider leg costs the window and returns noise.
 OPENCODE_REVIEW_LEG = ("oc-grok45-low", "oc-kimik3")
 OPENCODE_VERIFIER = "oc-kimik3"
+# Fallbacks for a verifier the gateway is refusing, in measured order. Scored 2026-07-31 on 24
+# hand-adjudicated findings: kimi kept 10 of 12 real defects and dropped 6 of 12 false ones,
+# qwen 9 and 6, mmm3 9 and 5. The other two permitted verifiers are worse than none at all and
+# are deliberately absent — mimo25 threw away 5 real defects of 12, and mimo25pro dropped 1
+# false one of 12 while taking longer than any other cell in the table.
+OPENCODE_VERIFIER_CHAIN = ["oc-kimik3", "oc-qwen37plus", "oc-mmm3"]
 REPORT_BEGIN = "REVIEW-REPORT-BEGIN"
 REPORT_END = "REVIEW-REPORT-END"
 # Highest effort a model has ever returned a review of a large diff at; None would mean
@@ -188,9 +195,19 @@ class PriorityGate:
             entry = (-priority, self.seq)
             self.waiting.append(entry)
             self.waiting.sort()
-            while self.active >= self.limit or self.waiting[0] != entry:
-                self.cv.wait()
-            self.waiting.remove(entry)
+            admitted = False
+            try:
+                while self.active >= self.limit or self.waiting[0] != entry:
+                    self.cv.wait()
+                admitted = True
+            finally:
+                # An abandoned entry stays at the head forever, and every other waiter blocks
+                # on not being the head: one interrupted acquire would freeze the whole gate.
+                # In the finally rather than an except clause because an async exception can
+                # land after the loop exits and before the entry is off the queue.
+                self.waiting.remove(entry)
+                if not admitted:
+                    self.cv.notify_all()
             self.active += 1
             # Waiters block on being the head as much as on a free slot, and leaving the
             # queue changes the head: without this a freed slot idles for a whole cell.
@@ -204,16 +221,48 @@ class PriorityGate:
 
 OPENCODE_MAX_CONCURRENCY = max(1, int(os.environ.get("REVIEW_BENCH_OPENCODE_CONCURRENCY", "5")))
 OPENCODE_GATE = PriorityGate(OPENCODE_MAX_CONCURRENCY)
+# Matched exactly by run_rater_task, which is what turns this into another lap of the pool
+# loop: the account walled while this cell queued, so the cell rotates instead of dying.
+GATE_WALL_STDERR = "the OpenCode plan walled off while this cell waited for a gate slot"
 # A usage wall is that account's own billing window, not weather: the honest response is to retire
 # it for the rest of the run rather than send one doomed request per remaining cell, which is how
 # a wall gets deeper instead of waited out.
-WALLED_ACCOUNTS = set()
-WALLED_LOCK = threading.Lock()
 WALL_STATE_FILE = "walls.jsonl"
+WALL_LOCK_FILE = ".walls.lock"
 WALL_COMPACT_BYTES = 4096
-_WALL_TIMESTAMPS = {}
-_WALL_CACHE_PATH = None
-_WALL_CACHE_STAT = None
+# A provider that names its own reset horizon is believed over the flat TTL, but only so far:
+# a garbled far-future date would retire an account until someone notices by hand.
+WALL_MAX_TTL_S = 7 * 24 * 3600
+
+
+@contextlib.contextmanager
+def wall_file_lock(path):
+    """Serialise wall appends against compaction, across processes as well as threads.
+
+    Yields whether the lock was actually taken, because the two callers want opposite
+    things from a failure: an append must still happen (losing a wall is worse than racing
+    one), while a compaction that rewrites the file unlocked is the very race it exists to
+    prevent, and skips instead.
+    """
+    lock_path = path.with_name(WALL_LOCK_FILE)
+    handle = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(lock_path, "w")
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    except OSError:
+        if handle is not None:
+            handle.close()
+            handle = None
+    try:
+        yield handle is not None
+    finally:
+        if handle is not None:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+            handle.close()
 
 
 def wall_bucket(rater):
@@ -224,27 +273,28 @@ def wall_bucket(rater):
     return "fable" if rater["model"] == "fable" else "general"
 
 
-def mark_walled(side, account, bucket="general"):
-    key = (side, account, bucket)
+def mark_walled(side, account, bucket="general", reset_at=None):
     detected_at = time.time()
     path = state_dir() / WALL_STATE_FILE
     entry = {
         "side": side, "account": account, "bucket": bucket,
         "detected_at": detected_at,
     }
-    with WALLED_LOCK:
-        WALLED_ACCOUNTS.add(key)
-        _WALL_TIMESTAMPS[key] = detected_at
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            payload = (json.dumps(entry, separators=(",", ":")) + "\n").encode()
+    if reset_at is not None:
+        entry["reset_at"] = clamped_reset_at(detected_at, reset_at)
+    try:
+        payload = (json.dumps(entry, separators=(",", ":")) + "\n").encode()
+        with wall_file_lock(path):  # an unlocked append still beats a lost wall
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
             try:
                 os.write(fd, payload)
             finally:
                 os.close(fd)
-        except (OSError, TypeError, ValueError):
-            pass
+    except (OSError, TypeError, ValueError) as exc:
+        # The file is the only record, so this wall is lost and its account will be tried
+        # again. Saying so beats a silent retry loop nobody can explain afterwards.
+        print(f"review-bench: could not record the {side} wall on {account}: {exc}",
+              file=sys.stderr)
 
 
 def wall_ttl_s():
@@ -255,18 +305,82 @@ def wall_ttl_s():
     return max(0, ttl) if math.isfinite(ttl) else 3600
 
 
-def compact_walls(path, walls):
-    tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+def clamped_reset_at(detected_at, reset_at):
     try:
-        with tmp.open("w", encoding="utf-8") as stream:
-            for (side, account, bucket), detected_at in sorted(walls.items()):
-                stream.write(json.dumps({
-                    "side": side, "account": account, "bucket": bucket,
-                    "detected_at": detected_at,
-                }, separators=(",", ":")) + "\n")
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, path)
-        tmp = None
+        reset_at = float(reset_at)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(reset_at):
+        return None
+    return min(reset_at, detected_at + WALL_MAX_TTL_S)
+
+
+def wall_expiry(detected_at, reset_at, ttl=None):
+    """When this wall stops standing.
+
+    The flat TTL is a guess about a window nobody reported. Applying it to a wall whose
+    reset the provider stated re-probes a weekly limit hourly, and every probe is a cell
+    that dies for nothing.
+    """
+    if reset_at is not None:
+        return reset_at
+    return detected_at + (wall_ttl_s() if ttl is None else ttl)
+
+
+def wall_rank(detected_at, reset_at):
+    """Which of two rows for one account is the better evidence, dated first."""
+    return (reset_at is not None, wall_expiry(detected_at, reset_at))
+
+
+def wall_still_standing(detected_at, reset_at, now=None, ttl=None):
+    return (time.time() if now is None else now) <= wall_expiry(detected_at, reset_at, ttl)
+
+
+def compact_walls(path):
+    """Rewrite the file with only the walls that still stand.
+
+    The rows are re-read here rather than taken from the caller: between that read and
+    this rename another process may have appended a wall, and replacing the file with a
+    stale snapshot is how a live wall silently disappears.
+    """
+    tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    compacted = None
+    try:
+        with wall_file_lock(path) as locked:
+            # Rewriting the file unlocked is exactly the race this lock exists to prevent,
+            # so an unavailable lock means leaving the rows alone, not compacting anyway.
+            if not locked:
+                return None
+            # An append whose own lock attempt failed goes ahead unlocked, because losing a wall
+            # is worse than racing one. Such a row can land while the rows below are being read,
+            # and replacing the file would drop it: the account would walk back into the pool
+            # with its plan spent. Measured before the read so the check spans it, and deferring
+            # to the writer costs nothing, since compaction is only housekeeping.
+            try:
+                size_before = path.stat().st_size
+            except OSError:
+                return None
+            walls = read_wall_rows(path)
+            if walls is None:
+                return None
+            with tmp.open("w", encoding="utf-8") as stream:
+                for (side, account, bucket), (detected_at, reset_at) in sorted(walls.items()):
+                    row = {
+                        "side": side, "account": account, "bucket": bucket,
+                        "detected_at": detected_at,
+                    }
+                    if reset_at is not None:
+                        row["reset_at"] = reset_at
+                    stream.write(json.dumps(row, separators=(",", ":")) + "\n")
+            os.chmod(tmp, 0o600)
+            try:
+                if path.stat().st_size != size_before:
+                    return None
+            except OSError:
+                return None
+            os.replace(tmp, path)
+            tmp = None
+            compacted = walls
     except OSError:
         pass
     finally:
@@ -275,87 +389,178 @@ def compact_walls(path, walls):
                 tmp.unlink(missing_ok=True)
             except OSError:
                 pass
+    return compacted
+
+
+def read_wall_rows(path):
+    """Standing walls as {key: (detected_at, reset_at)}, or None when the file is unreadable.
+
+    None and {} have to stay distinguishable: an empty file means every account is clear,
+    while an unreadable one is no evidence at all and must not clear anything.
+    """
+    walls = {}
+    try:
+        with path.open(encoding="utf-8", errors="replace") as stream:
+            rows = stream.readlines()
+    except FileNotFoundError:
+        return {}
+    except (OSError, UnicodeError):
+        return None
+    for raw in rows:
+        try:
+            row = json.loads(raw)
+            side = row["side"]
+            account = row["account"]
+            bucket = row["bucket"]
+            detected_at = float(row["detected_at"])
+            if not all(isinstance(value, str) for value in (side, account, bucket)):
+                raise ValueError("invalid wall key")
+            if not math.isfinite(detected_at):
+                raise ValueError("invalid wall timestamp")
+        except (ValueError, KeyError, TypeError):
+            continue
+        reset_at = clamped_reset_at(detected_at, row.get("reset_at")) \
+            if row.get("reset_at") is not None else None
+        if not wall_still_standing(detected_at, reset_at):
+            continue
+        key = (side, account, bucket)
+        known = walls.get(key)
+        # What the provider stated beats what we guessed, in both directions. A plain wall
+        # recorded after a dated one must not throw away the horizon we were given and put a
+        # weekly limit back in the pool an hour later; equally, the flat hour must not sit on
+        # top of a reset the provider put a minute away. Within one kind, longest wins.
+        if known is None or wall_rank(detected_at, reset_at) > wall_rank(*known):
+            walls[key] = (detected_at, reset_at)
+    return walls
 
 
 def persisted_walls(path):
-    walls = {}
-    now = time.time()
-    ttl = wall_ttl_s()
-    entries = 0
-    expired = 0
-    try:
-        with path.open(encoding="utf-8", errors="replace") as stream:
-            for raw in stream:
-                try:
-                    row = json.loads(raw)
-                    side = row["side"]
-                    account = row["account"]
-                    bucket = row["bucket"]
-                    detected_at = float(row["detected_at"])
-                    if not all(isinstance(value, str) for value in (side, account, bucket)):
-                        raise ValueError("invalid wall key")
-                    if not math.isfinite(detected_at):
-                        raise ValueError("invalid wall timestamp")
-                except (ValueError, KeyError, TypeError):
-                    continue
-                entries += 1
-                if now - detected_at <= ttl:
-                    key = (side, account, bucket)
-                    walls[key] = max(detected_at, walls.get(key, detected_at))
-                else:
-                    expired += 1
-    except (OSError, UnicodeError):
+    walls = read_wall_rows(path)
+    if walls is None:
         # This cache is advisory; any persistence failure must leave accounts usable.
-        return {}
+        return None
     try:
-        oversized = path.stat().st_size > WALL_COMPACT_BYTES
+        stat = path.stat()
+        oversized = stat.st_size > WALL_COMPACT_BYTES
     except OSError:
         oversized = False
-    if oversized and expired > entries / 2:
-        compact_walls(path, walls)
+    if oversized:
+        # Rows are one line each, so a file this size holding few standing walls is mostly
+        # expired rows.
+        try:
+            with path.open(encoding="utf-8", errors="replace") as stream:
+                entries = sum(1 for line in stream if line.strip())
+        except (OSError, UnicodeError):
+            entries = 0
+        if entries - len(walls) > entries / 2:
+            # Compaction re-reads under its lock, so its result is the fresher snapshot:
+            # it can hold a wall appended after the read above.
+            compacted = compact_walls(path)
+            if compacted is not None:
+                walls = compacted
     return walls
 
 
 def is_walled(side, account, bucket="general"):
-    global _WALL_CACHE_PATH, _WALL_CACHE_STAT
-    key = (side, account, bucket)
-    with WALLED_LOCK:
-        path = state_dir() / WALL_STATE_FILE
-        missing = False
-        try:
-            stat = path.stat()
-            cache_stat = (stat.st_mtime_ns, stat.st_size)
-        except FileNotFoundError:
-            cache_stat = None
-            missing = True
-        except OSError:
-            cache_stat = _WALL_CACHE_STAT if path == _WALL_CACHE_PATH else None
-        deleted = (
-            missing and path == _WALL_CACHE_PATH and _WALL_CACHE_STAT is not None
-        )
-        if path != _WALL_CACHE_PATH or cache_stat != _WALL_CACHE_STAT:
-            loaded = persisted_walls(path)
-            if deleted:
-                WALLED_ACCOUNTS.clear()
-                _WALL_TIMESTAMPS.clear()
-            for loaded_key, detected_at in loaded.items():
-                WALLED_ACCOUNTS.add(loaded_key)
-                _WALL_TIMESTAMPS[loaded_key] = max(
-                    detected_at, _WALL_TIMESTAMPS.get(loaded_key, detected_at)
-                )
-            _WALL_CACHE_PATH = path
-            _WALL_CACHE_STAT = cache_stat
-        if key in WALLED_ACCOUNTS:
-            detected_at = _WALL_TIMESTAMPS.get(key)
-            if detected_at is None or time.time() - detected_at <= wall_ttl_s():
-                return True
-            WALLED_ACCOUNTS.discard(key)
-            _WALL_TIMESTAMPS.pop(key, None)
-        return key in WALLED_ACCOUNTS
+    """Whether this account's window is still shut, answered from the file every time.
+
+    Other processes append to that file, so any copy in memory has to be revalidated against
+    it on every call anyway; at a handful of rows and tens of calls per run the read costs
+    nothing, while keeping the two in step cost eight of the twenty-one defects found in this
+    code. An unreadable file leaves accounts usable: the record is advisory, and refusing to
+    run on a failed read would empty the pool over a transient error.
+    """
+    walls = persisted_walls(state_dir() / WALL_STATE_FILE)
+    return (side, account, bucket) in (walls or {})
 
 
 def opencode_usage_wall(stderr):
-    return bool(re.search(r"HTTP 429|too many requests|usage limit", stderr or "", re.IGNORECASE))
+    """A spent subscription, told apart from the status code both of its causes share.
+
+    Retiring an account needs the gateway to have said the plan is out; a bare 429 is equally
+    the provider throttling the model behind it, and treating that as the account's own window
+    is what empties the pool of accounts with their whole quota intact. The unnamed case is
+    retried as transient instead, which costs one lap and cannot lose an account.
+    """
+    return bool(OPENCODE_PLAN_WALL_RE.search(stderr or ""))
+
+
+# The gateway answers 429 for two unrelated things: the subscription's own window is spent
+# (days away from resetting), and the provider behind it is throttling a burst (seconds).
+# Retiring an account for the second is how a healthy account disappears mid-run.
+OPENCODE_PLAN_WALL_RE = re.compile(
+    r"GoUsageLimitError|\blimitName\b|usage limit|out of credits|insufficient balance",
+    re.IGNORECASE,
+)
+OPENCODE_TRANSIENT_RE = re.compile(
+    r"provider rate limit|rate limit exceeded|too many requests"
+    r"|\b(?:429|500|502|503|529)\b|overloaded|at capacity|temporarily unavailable",
+    re.IGNORECASE,
+)
+CODEX_TRANSIENT_RE = re.compile(
+    r"at capacity|temporarily unavailable|\b(?:500|502|503|529)\b|overloaded"
+    r"|stream (?:disconnected|closed) before completion",
+    re.IGNORECASE,
+)
+WALL_RESET_RE = re.compile(
+    r"resets? in\s+(\d+(?:\.\d+)?)\s*(second|minute|hour|day|week)s?", re.IGNORECASE
+)
+WALL_RESET_UNITS = {
+    "second": 1, "minute": 60, "hour": 3600, "day": 86400, "week": 604800,
+}
+
+
+# Matched exactly by opencode_transient_failure, which is what makes another lap reachable:
+# a run that stopped before reviewing is the model's hiccup, not an answer to record.
+OPENCODE_STUB_STDERR = "opencode stopped before reviewing"
+# Recorded stubs run 51 to 192 characters; the shortest recorded real non-review is over 2000.
+OPENCODE_STUB_MAX_CHARS = 400
+
+
+OPENCODE_BURST_RE = re.compile(
+    r"provider_rate_limit_exceeded|rate_limit_error|provider rate limit"
+    r"|rate limit exceeded|too many requests",
+    re.IGNORECASE,
+)
+
+
+def opencode_burst_throttle(stderr):
+    """Being refused for asking too fast, as opposed to a spent subscription.
+
+    Matched on the wording as well as the machine-readable code, because the gateway sends
+    both shapes: keying only on the code leaves the plain-text throttle to be retried and
+    then mistaken for the account's own window. The bench is usually the burst itself, so
+    this can outlast any retry budget, and retiring the account for it would empty the pool
+    of accounts that still have their whole quota.
+    """
+    text = stderr or ""
+    if OPENCODE_PLAN_WALL_RE.search(text):
+        return False
+    return bool(OPENCODE_BURST_RE.search(text))
+
+
+def opencode_transient_failure(stderr):
+    text = stderr or ""
+    if OPENCODE_PLAN_WALL_RE.search(text):
+        return False
+    if OPENCODE_STUB_STDERR in text:
+        return True
+    return bool(OPENCODE_TRANSIENT_RE.search(text))
+
+
+def codex_transient_failure(events, stderr):
+    text = f"{stderr or ''}\n{events or ''}"
+    if codex_usage_wall(events, stderr):
+        return False
+    return bool(CODEX_TRANSIENT_RE.search(text))
+
+
+def wall_reset_at(text):
+    """Epoch the provider says the window reopens, or None when it did not say."""
+    match = WALL_RESET_RE.search(text or "")
+    if not match:
+        return None
+    return time.time() + float(match.group(1)) * WALL_RESET_UNITS[match.group(2).lower()]
 
 
 def opencode_profiles():
@@ -1221,9 +1426,12 @@ def rater_specs_counter(specs):
 
 def legacy_tier_match(actual):
     matches = set()
+    # Recorded specs are read leniently and tier specs strictly: a cell retired since the run
+    # was written would otherwise make parse_rater refuse the whole report, and a run stays
+    # readable long after its cells stop being runnable. The tiers below come from
+    # REVIEW_TIERS, which is validated at import, so nothing there can fail to parse.
     actual_sides = {
-        parse_rater(family)["side"]
-        for family in actual
+        side for side in (rater_side(family) for family in actual) if side
     }
     for tier_name, tier in REVIEW_TIERS.items():
         for composition in ("cells", "cells_max"):
@@ -1276,6 +1484,68 @@ def cell_status(row):
     ):
         return "timed_out"
     return "nonzero_exit" if row.get("exit_code") not in (None, 0) else "errored"
+
+
+FAILURE_REASONS = (
+    # Ordered by how specific the wording is, not by how often the cause occurs: a pool-empty
+    # message quotes the error of the last account it tried, so any later pattern would claim it.
+    ("pool empty", re.compile(r"has no \w+ account left", re.IGNORECASE)),
+    ("plan wall", re.compile(
+        r"GoUsageLimitError|limitName|usage limit|out of credits|usage balance exhaust"
+        r"|402 Payment Required|Individual quota reached|RESOURCE_EXHAUSTED"
+        r"|exhausted your capacity on this model|walled off while", re.IGNORECASE)),
+    ("throttled", re.compile(
+        r"provider_rate_limit_exceeded|rate_limit_error|provider rate limit"
+        r"|rate limit exceeded|too many requests", re.IGNORECASE)),
+    # Kept apart from a throttle on purpose: a bare 429 is equally a spent plan, and the code
+    # that stopped retiring accounts over one would be undone by a table that calls it a throttle.
+    ("bare 429", re.compile(r"\b429\b")),
+    ("unparseable", re.compile(
+        r"no parseable finding|malformed (?:Markdown|JSON)|no explicit no-issues"
+        r"|did not declare a clean review|stopped before reviewing|returned empty content",
+        re.IGNORECASE)),
+    ("capacity", re.compile(r"at capacity|temporarily unavailable|overloaded", re.IGNORECASE)),
+    ("server error", re.compile(r"\b(?:500|502|503|529)\b")),
+    ("root commit", re.compile(r"root commit", re.IGNORECASE)),
+    ("permission", re.compile(r"tool required the .command. permission", re.IGNORECASE)),
+    ("bad command", re.compile(r"cannot be used with", re.IGNORECASE)),
+    ("crashed", re.compile(
+        r"rater task crashed|account lookup failed|codex_core::", re.IGNORECASE)),
+    ("auth", re.compile(r"not logged in|unauthor|forbidden|\b40[13]\b", re.IGNORECASE)),
+)
+
+
+def failure_reason(stderr):
+    """The cause a failure's own text names, in the one word a report column can hold.
+
+    This reads the text after the fact and never decides control flow; the side-specific wall
+    and transient predicates do that. Separating the two is what lets this name causes those
+    predicates deliberately refuse to tell apart, a bare 429 above all.
+    """
+    text = stderr or ""
+    for reason, pattern in FAILURE_REASONS:
+        if pattern.search(text):
+            return reason
+    return "unclassified" if text.strip() else "no output"
+
+
+STATUS_REASONS = {"not_run": "not run", "timed_out": "timeout", "model_mismatch": "mismatch"}
+
+
+def cell_failure_reason(cell):
+    """Why one cell that did not complete failed, in the report's own vocabulary."""
+    status = cell.get("status")
+    if status in STATUS_REASONS:
+        return STATUS_REASONS[status]
+    return failure_reason(cell.get("stderr"))
+
+
+def rater_side(spec):
+    """Which pool a cell draws from, for rows recorded before the side was written down."""
+    try:
+        return parse_rater(spec)["side"] if spec else None
+    except ValueError:
+        return None
 
 
 def timeout_seconds_from_row(row):
@@ -1363,6 +1633,8 @@ def bench_summary(run_dir, meta):
             "exit_code": row.get("exit_code"),
             "timeout_s": timeout_seconds_from_row(row),
             "stderr": row.get("stderr"),
+            "side": row.get("side") or rater_side(rater),
+            "account": row.get("account"),
         })
     verdict_path = run_dir / "verdicts.jsonl"
     verdicts = [
@@ -1520,10 +1792,14 @@ def report_lines(run_dir, meta):
             timed_out[(name, timeout_seconds_from_row(row))] += 1
         elif status == "model_mismatch":
             mismatched[name] += 1
-        elif status == "nonzero_exit":
-            errored[f"{name} (exit {row.get('exit_code')})"] += 1
         else:
-            errored[f"{name} (error)"] += 1
+            # An exit code says a cell failed, which the line it sits on already said. The
+            # cause is what decides whether to look further, so it goes in its place, and the
+            # code comes back only for a wording nothing here recognises.
+            detail = cell_failure_reason(row)
+            if detail == "unclassified" and row.get("exit_code") not in (None, 0):
+                detail = f"exit {row['exit_code']}"
+            errored[f"{name} ({detail})"] += 1
     rows = []
     if summary["adjudicated"]:
         severity = " · ".join(
@@ -1650,6 +1926,127 @@ def cmd_report(args):
         raise ValueError(f"unknown {target}")
     meta = json.loads((run_dir / "meta.json").read_text())
     emit_report(run_dir, meta)
+    return 0
+
+
+HEALTH_DEFAULT_RUNS = 20
+HEALTH_WORST_CELLS = 12
+
+
+def run_health(run_dir, meta):
+    """One run reduced to why its cells failed, counted the way the report counts them."""
+    by_side = defaultdict(Counter)
+    by_cell = defaultdict(Counter)
+    accounts = defaultdict(Counter)
+    for cell in bench_summary(run_dir, meta)["cells"]:
+        side = cell.get("side") or "?"
+        reason = "ok" if cell["status"] == "completed" else cell_failure_reason(cell)
+        by_side[side][reason] += 1
+        by_cell[rater_family(cell.get("rater")) or "?"][reason] += 1
+        if cell.get("account"):
+            accounts[(side, cell["account"])]["ok" if reason == "ok" else "failed"] += 1
+    return {"by_side": by_side, "by_cell": by_cell, "accounts": accounts}
+
+
+def health_runs(benches, limit=0):
+    """Recorded runs, oldest last, as (name, health) pairs.
+
+    Run directories are named by start time, so sorting them by name is already chronological
+    and the window can be cut before any metadata is read.
+    """
+    directories = sorted(
+        path for path in (benches.iterdir() if benches.exists() else ())
+        if (path / "meta.json").exists()
+    )
+    if limit > 0:
+        directories = directories[-limit:]
+    runs = []
+    for directory in directories:
+        try:
+            meta = json.loads((directory / "meta.json").read_text())
+        except (OSError, ValueError):
+            continue
+        if not meta.get("rater_runs") and not meta.get("raters"):
+            continue
+        runs.append((directory.name, run_health(directory, meta)))
+    return runs
+
+
+def health_tally(counts):
+    total = sum(counts.values())
+    failed = total - counts["ok"]
+    share = f"{100 * failed / total:3.0f}%" if total else "   -"
+    detail = " · ".join(
+        f"{reason} {count}" for reason, count in counts.most_common() if reason != "ok"
+    )
+    return f"{failed:>3}/{total:<3} {share}  {detail}".rstrip()
+
+
+def health_lines(runs):
+    if not runs:
+        return ["no recorded runs"]
+    by_side = defaultdict(Counter)
+    by_cell = defaultdict(Counter)
+    accounts = defaultdict(Counter)
+    per_run = []
+    everything = Counter()
+    for name, health in runs:
+        counts = Counter()
+        for side, side_counts in health["by_side"].items():
+            by_side[side] += side_counts
+            counts += side_counts
+        for cell, cell_counts in health["by_cell"].items():
+            by_cell[cell] += cell_counts
+        for key, key_counts in health["accounts"].items():
+            accounts[key] += key_counts
+        everything += counts
+        per_run.append((name, health_tally(counts)))
+    per_run.append(("all runs", health_tally(everything)))
+    lines = [f"per run (newest last, {len(runs)} runs)"]
+    lines += aligned_report_lines(per_run)
+
+    ranked_sides = sorted(
+        by_side.items(), key=lambda item: -(sum(item[1].values()) - item[1]["ok"])
+    )
+    lines += ["", "by side"]
+    lines += aligned_report_lines([(side, health_tally(counts)) for side, counts in ranked_sides])
+
+    account_rows = []
+    for side, _ in ranked_sides:
+        entries = sorted(
+            ((account, counts) for (row_side, account), counts in accounts.items()
+             if row_side == side),
+            key=lambda item: (-sum(item[1].values()), item[0]),
+        )
+        if entries:
+            account_rows.append((side, " · ".join(
+                f"{account} {counts['failed']}/{sum(counts.values())}"
+                for account, counts in entries
+            )))
+    if account_rows:
+        # Every account that was tried, the ones that never failed included: a pool that handed
+        # all its cells to a single account reads as a single row, and that is the thing to see.
+        lines += ["", "by account (failed/attempts)"]
+        lines += aligned_report_lines(account_rows)
+
+    worst = [
+        (human_cell_name(cell), health_tally(counts))
+        for cell, counts in sorted(
+            by_cell.items(), key=lambda item: -(sum(item[1].values()) - item[1]["ok"])
+        )
+        if sum(counts.values()) > counts["ok"]
+    ][:HEALTH_WORST_CELLS]
+    if worst:
+        lines += ["", "worst cells"]
+        lines += aligned_report_lines(worst)
+    return lines
+
+
+def cmd_health(args):
+    if args.limit < 0:
+        raise ValueError("--limit cannot be negative")
+    for line in health_lines(health_runs(state_dir() / "benches", args.limit)):
+        print(line)
     return 0
 
 
@@ -2595,12 +2992,38 @@ def run_codex(rater, repo, sha, focus, run_dir, diff, account):
             )
         duration = round((time.monotonic() - started) * 1000)
         text = Path(raw_final.name).read_text(errors="replace")
-        if raw_events.exists():
-            text += "\n" + raw_events.read_text(errors="replace")
-        return proc.returncode, duration, text, proc.stderr, command
+        events = raw_events.read_text(errors="replace") if raw_events.exists() else ""
+        if events:
+            text += "\n" + events
+        stderr = proc.stderr
+        if proc.returncode != 0 and not (stderr or "").strip():
+            stderr = codex_failure_reason(events) or stderr
+        return proc.returncode, duration, text, stderr, command
     finally:
         if clone:
             shutil.rmtree(clone, ignore_errors=True)
+
+
+def codex_failure_reason(events):
+    """What the run actually failed on, for a CLI that says so only in its event stream.
+
+    Codex exits non-zero with an empty stderr, so a failure recorded from stderr alone reads as
+    a silent death and cannot be classified afterwards: 31 of the runs on record are exactly
+    that, and every one of them turned out to be the same recoverable capacity refusal.
+    """
+    reason = ""
+    for raw in (events or "").splitlines():
+        try:
+            event = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(event, dict) or event.get("type") not in ("error", "turn.failed"):
+            continue
+        error = event.get("error")
+        message = event.get("message") or (error.get("message") if isinstance(error, dict) else None)
+        if isinstance(message, str) and message.strip():
+            reason = message.strip()
+    return reason
 
 
 def codex_usage_wall(events, stderr):
@@ -2858,8 +3281,7 @@ def run_opencode(rater, repo, sha, focus, run_dir, diff, account):
         # Re-checked after the gate: cells already queued when the wall was set would each
         # send one more doomed request, deepening the wall by the queue's depth.
         if is_walled("opencode", account):
-            return (1, 0, "", "the OpenCode plan walled off while this cell waited for a "
-                    "gate slot", command)
+            return (1, 0, "", GATE_WALL_STDERR, command)
         for max_tokens in OPENCODE_MAX_TOKENS_BY_MODEL.get(rater["model"], OPENCODE_MAX_TOKENS):
             command = [
                 command_path("REVIEW_BENCH_OPENCODE_BIN", "opencode-go"),
@@ -2939,9 +3361,19 @@ def run_opencode(rater, repo, sha, focus, run_dir, diff, account):
         # An agentic-tuned model with no tools tends to answer with a bare preamble
         # and stop; without this, such a non-review is recorded as a clean review.
         if not parsed and not clean_review_declared(answer):
+            body = " ".join(answer.split())
+            # Told apart because only one of the two is worth another lap. Thirteen of the
+            # fourteen recorded OpenCode parse failures are grok-4.5 stopping one line in
+            # ("Examining the commit diff for bugs.", ten completion tokens, finish_reason
+            # "stop") on a model that succeeded 136 other times, so nothing is wrong with the
+            # account and there is no review to salvage. A model that wrote at length and
+            # still parsed to nothing has answered, just not with findings, and asking again
+            # buys a second full review of the same prose.
+            stub = len(body) <= OPENCODE_STUB_MAX_CHARS
             detail = (
+                f"{OPENCODE_STUB_STDERR}: {body[:200]}" if stub else
                 "opencode returned no parseable findings and no explicit no-issues result: "
-                + " ".join(answer.split())[:200]
+                + body[:200]
             )
             stderr = f"{proc.stderr.rstrip()}\n{detail}".lstrip()
             return 1, duration, "", stderr, command
@@ -3148,37 +3580,54 @@ def unverified_row(index, finding, why):
     return row
 
 
+def verifier_chain(model):
+    return [model] + [name for name in OPENCODE_VERIFIER_CHAIN if name != model]
+
+
 def verify_one(index, finding, repo, sha, model, lines, ref=None):
     prompt_file = tempfile.NamedTemporaryFile(
         mode="w", prefix="review-bench-verify-", suffix=".txt", delete=False
     )
     prompt_file.write(verify_prompt(finding, sha, finding.get("file"), lines, ref))
     prompt_file.close()
-    command = [
-        command_path("REVIEW_BENCH_OPENCODE_BIN", "opencode-go"),
-        "run", OPENCODE_MODEL_IDS[model], "--prompt-file", prompt_file.name,
-        "--json", "--max-tokens", str(VERIFY_MAX_TOKENS), "--no-reasoning", "--retries", "2",
-    ]
     OPENCODE_GATE.acquire(0)
     account, proc, judgment, walled, timeout_stderr = None, None, None, False, ""
+    answered_by = model
     try:
-        account = pool_account("opencode", set())
+        account = pool_account("opencode", set(), index)
         if account is None or is_walled("opencode", account):
             return unverified_row(
                 index, finding, "verifier walled off while queued; finding kept unverified"
             )
-        proc = subprocess.run(
-            command, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-            timeout=VERIFY_TIMEOUT_S, env=opencode_env(account)
-        )
-        answer = ""
-        if proc.returncode == 0:
-            try:
-                envelope = json.loads(proc.stdout)
-                answer = envelope["choices"][0]["message"]["content"] or ""
-            except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError):
-                answer = ""
-        judgment = parse_verify_answer(answer)
+        for candidate in verifier_chain(model):
+            answered_by = candidate
+            command = [
+                command_path("REVIEW_BENCH_OPENCODE_BIN", "opencode-go"),
+                "run", OPENCODE_MODEL_IDS[candidate], "--prompt-file", prompt_file.name,
+                "--json", "--max-tokens", str(VERIFY_MAX_TOKENS), "--no-reasoning",
+                "--retries", "2",
+            ]
+            proc = subprocess.run(
+                command, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                timeout=VERIFY_TIMEOUT_S, env=opencode_env(account)
+            )
+            answer = ""
+            if proc.returncode == 0:
+                try:
+                    envelope = json.loads(proc.stdout)
+                    answer = envelope["choices"][0]["message"]["content"] or ""
+                except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError):
+                    answer = ""
+            judgment = parse_verify_answer(answer)
+            if judgment is not None:
+                break
+            # Only a refusal aimed at the model is worth asking a different one. A walled
+            # account is walled for everything on it, while a throttle belongs to the model
+            # upstream: measured 2026-07-31, kimi-k3 was refused on a brand-new account while
+            # grok-4.5 answered on that same one. Anything else — a bad answer, a broken
+            # envelope — repeats on the next model and would only triple the requests.
+            if not opencode_burst_throttle(proc.stderr or ""):
+                break
     except subprocess.TimeoutExpired as exc:
         judgment = None
         proc = None
@@ -3186,12 +3635,17 @@ def verify_one(index, finding, repo, sha, model, lines, ref=None):
     finally:
         # The wall is recorded before the gate is released, or a verifier queued on this slot
         # acquires it in between, passes the post-gate check and sends one more doomed request.
+        # A named burst throttle is not this account's window, here either: the verifier
+        # gives up on the finding rather than retiring an account that still has quota.
+        wall_stderr = "\n".join(filter(None, [
+            proc.stderr if proc is not None and proc.returncode != 0 else "",
+            timeout_stderr,
+        ]))
         walled = bool(
-            (proc is not None and proc.returncode != 0 and opencode_usage_wall(proc.stderr))
-            or opencode_usage_wall(timeout_stderr)
+            opencode_usage_wall(wall_stderr) and not opencode_burst_throttle(wall_stderr)
         )
         if walled and account is not None:
-            mark_walled("opencode", account)
+            mark_walled("opencode", account, reset_at=wall_reset_at(wall_stderr))
         OPENCODE_GATE.release()
         Path(prompt_file.name).unlink(missing_ok=True)
     row = verify_row(index, finding)
@@ -3203,10 +3657,13 @@ def verify_one(index, finding, repo, sha, model, lines, ref=None):
         row.update(kept=True, code_matches=None, is_defect=None,
                    why="verifier gave no usable answer; finding kept")
         return row
+    why = str(judgment.get("why") or "")[:200]
+    if answered_by != model:
+        why = f"[verified by {answered_by}] {why}"[:200]
     row.update(
         kept=bool(judgment["code_matches"] and judgment["is_defect"]),
         code_matches=judgment["code_matches"], is_defect=judgment["is_defect"],
-        why=str(judgment.get("why") or "")[:200],
+        why=why,
     )
     return row
 
@@ -3407,12 +3864,42 @@ SIDE_WALL = {
 SIDE_FIXED_ACCOUNTS = {"grok": "supergrok"}
 
 
+def _never_transient(rc, text, stderr):
+    return False
+
+
+# Only the sides whose gateways are measured to answer this way: a side listed here without
+# a matching classifier would turn every ordinary failure into a retry and triple the run.
+SIDE_TRANSIENT = {
+    "opencode": lambda rc, text, stderr: opencode_transient_failure(stderr),
+    "codex": lambda rc, events, stderr: codex_transient_failure(events, stderr),
+}
+
+
+def transient_backoffs():
+    """Waits between retries of a transient failure, shortest first."""
+    raw = os.environ.get("REVIEW_BENCH_TRANSIENT_BACKOFF_S", "15,30")
+    delays = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            delay = float(part)
+        except ValueError:
+            continue
+        if math.isfinite(delay) and delay >= 0:
+            delays.append(delay)
+    return delays
+
+
 # The pool is asked rather than reproduced: worker-pick's prose output is not a contract, and a
 # second copy of the selection here is the per-tool mechanism the pool exists to replace.
 SIDE_POOL_VENDOR = {"claude": "claudeb", "codex": "codex", "agy": "gemini"}
 
 
 _PERMITTED_CLAUDE = []
+_PERMITTED_CLAUDE_LOCK = threading.Lock()
 
 
 def permitted_claude_account():
@@ -3422,12 +3909,13 @@ def permitted_claude_account():
     the run already made, and the wall handling that does change during a run travels in the
     caller's exclusion set instead.
     """
-    if not _PERMITTED_CLAUDE:
-        available = affordability()
-        _PERMITTED_CLAUDE.append(
-            available.get("claude_account") if available.get("claude") else None
-        )
-    return _PERMITTED_CLAUDE[0]
+    with _PERMITTED_CLAUDE_LOCK:
+        if not _PERMITTED_CLAUDE:
+            available = affordability()
+            _PERMITTED_CLAUDE.append(
+                available.get("claude_account") if available.get("claude") else None
+            )
+        return _PERMITTED_CLAUDE[0]
 
 
 def baseline_exclusions(side):
@@ -3449,25 +3937,7 @@ def baseline_exclusions(side):
     return excluded
 
 
-def pool_account(side, excluded):
-    """The pool's next account for this side, or None when it has nothing left to offer."""
-    excluded = set(excluded) | baseline_exclusions(side)
-    if side == "opencode":
-        for profile in opencode_profiles():
-            account = opencode_account(profile)
-            if account not in excluded and not is_walled(side, account):
-                return account
-        return None
-    if side == "claude" and allow_session_account():
-        # worker-pick never offers the session account, so the opt-in would otherwise grant a
-        # permission the pool cannot act on. The account comes from the same table parse that
-        # granted it rather than from a third selector, and the parse's own verdict comes with
-        # it: naming an account while the side is unaffordable would walk straight past the floor.
-        permitted = permitted_claude_account()
-        if permitted and permitted not in excluded:
-            return permitted
-    if side in SIDE_FIXED_ACCOUNTS:
-        return SIDE_FIXED_ACCOUNTS[side] if SIDE_FIXED_ACCOUNTS[side] not in excluded else None
+def worker_pick_account(side, excluded):
     command = [command_path("REVIEW_BENCH_WORKER_PICK_BIN", "worker-pick"),
                "--account", SIDE_POOL_VENDOR[side]]
     if excluded:
@@ -3487,6 +3957,88 @@ def pool_account(side, excluded):
     return proc.stdout.strip() or None
 
 
+_SIDE_ROSTER = {}
+_SIDE_ROSTER_LOCK = threading.Lock()
+ROSTER_MAX = 8
+
+
+def side_roster(side, baseline):
+    """Every account the pool will offer this side, in the pool's own order.
+
+    Enumerated by asking again with the previous answers excluded, rather than reading the
+    limits table here: the ranking, the floors and the session-account rule stay the pool's
+    to decide. Memoised for the process because a per-cell enumeration would spawn one
+    worker-pick per account per cell for an answer the run already has.
+    """
+    key = (side, tuple(sorted(baseline)))
+    with _SIDE_ROSTER_LOCK:
+        cached = _SIDE_ROSTER.get(key)
+    if cached is not None:
+        return cached
+    roster = []
+    seen = set(baseline)
+    while len(roster) < ROSTER_MAX:
+        account = worker_pick_account(side, seen)
+        # A repeated answer means the pool ignored the exclusion, which would otherwise spin.
+        if account is None or account in seen:
+            break
+        roster.append(account)
+        seen.add(account)
+    with _SIDE_ROSTER_LOCK:
+        return _SIDE_ROSTER.setdefault(key, roster)
+
+
+def spread_accounts():
+    return os.environ.get("REVIEW_BENCH_SPREAD_ACCOUNTS", "1").strip() not in ("0", "no", "off")
+
+
+def pool_account(side, excluded, slot=0):
+    """The pool's account for this cell, or None when it has nothing left to offer.
+
+    Cells of one side start at different points in the roster instead of all taking its head:
+    the pool ranks accounts but does not know how many cells are about to ask, so one answer
+    handed to every cell puts a whole run's concurrency on a single account and leaves the
+    rest of the roster idle.
+    """
+    excluded = set(excluded) | baseline_exclusions(side)
+    spread = spread_accounts()
+    if side == "opencode":
+        profiles = [opencode_account(profile) for profile in opencode_profiles()]
+        return first_free_account(side, profiles, excluded, slot if spread else 0)
+    if side == "claude" and allow_session_account():
+        # worker-pick never offers the session account, so the opt-in would otherwise grant a
+        # permission the pool cannot act on. The account comes from the same table parse that
+        # granted it rather than from a third selector, and the parse's own verdict comes with
+        # it: naming an account while the side is unaffordable would walk straight past the floor.
+        permitted = permitted_claude_account()
+        if permitted and permitted not in excluded:
+            return permitted
+    if side in SIDE_FIXED_ACCOUNTS:
+        return SIDE_FIXED_ACCOUNTS[side] if SIDE_FIXED_ACCOUNTS[side] not in excluded else None
+    if not spread:
+        return worker_pick_account(side, excluded)
+    roster = side_roster(side, baseline_exclusions(side))
+    if not roster:
+        return None
+    return first_free_account(side, roster, excluded, slot)
+
+
+def first_free_account(side, roster, excluded, slot):
+    """This cell's share of the accounts that can actually take work.
+
+    Retired accounts are dropped before the slot is applied, not skipped after it: a roster
+    position that cannot run would otherwise hand its cells to whichever account follows it
+    and load that one twice over while the rest of the pool sits idle.
+    """
+    usable = [
+        account for account in roster
+        if account and account not in excluded and not is_walled(side, account)
+    ]
+    if not usable:
+        return None
+    return usable[slot % len(usable)]
+
+
 def run_rater_task(rater, repo, sha, focus, run_dir, diff):
     """Run one rater, asking the pool for another account each time one walls off."""
     side = rater["side"]
@@ -3494,9 +4046,14 @@ def run_rater_task(rater, repo, sha, focus, run_dir, diff):
     walled = set()
     result = None
     account = None
+    # Per account, and remembered for every account this cell visits: a budget spent waiting
+    # out one account's throttle would leave the next account with no retries and wall it on
+    # its first hiccup, while re-creating it whenever the pool comes back to an account it
+    # already tried would let the two refill each other and spin the cell forever.
+    budgets = defaultdict(lambda: list(transient_backoffs()))
     while True:
         try:
-            candidate = pool_account(side, walled)
+            candidate = pool_account(side, walled, rater.get("slot", 0))
         except Exception as exc:
             return (rater, account, (1, 0, "", f"{side} account lookup failed: {exc}", []))
         # A repeated candidate means the pool ignored the exclusion, which would otherwise spin.
@@ -3513,13 +4070,31 @@ def run_rater_task(rater, repo, sha, focus, run_dir, diff):
         except Exception as exc:
             return (rater, candidate, (1, 0, "", f"rater task crashed: {exc}", []))
         rc, _, text, stderr, _ = result
+        # The account walled while this cell sat in the gate queue. Nothing was sent, so this
+        # is not evidence against the account, and the side may still have other accounts.
+        if side == "opencode" and stderr == GATE_WALL_STDERR:
+            walled.add(candidate)
+            continue
         wall_text = (
             text_file_tail(run_dir / f"raw-events-{rater['spec']}.jsonl")
             if side == "codex" else text
         )
+        # A server-side hiccup, a burst throttle and a spent subscription arrive as the same
+        # status code. Retiring an account for either of the first two empties the pool of
+        # accounts that were never out of quota, so they are waited out here and only the
+        # wall predicate below, which insists on the plan wording, can retire anything.
+        if rc != 0 and budgets[candidate] and SIDE_TRANSIENT.get(side, _never_transient)(
+            rc, wall_text, stderr
+        ):
+            delay = budgets[candidate].pop(0)
+            print(f"{rater['spec']}: {side} account {candidate} answered with a transient "
+                  f"failure ({failure_reason(stderr)}); retrying in {delay:g}s")
+            if delay:
+                time.sleep(delay)
+            continue
         if not SIDE_WALL[side](rc, wall_text, stderr):
             return (rater, candidate, result)
-        mark_walled(side, candidate, bucket)
+        mark_walled(side, candidate, bucket, wall_reset_at(f"{stderr or ''}\n{wall_text or ''}"))
         walled.add(candidate)
         print(f"{rater['spec']}: {side} account {candidate} hit its usage wall")
         # A run can succeed while its output already carries the wall wording: the review is
@@ -4222,6 +4797,10 @@ def cmd_run(args):
             warn_progress(exc)
 
         results = []
+        slots = Counter()
+        for rater in submitted_raters:
+            rater["slot"] = slots[rater["side"]]
+            slots[rater["side"]] += 1
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(submitted_raters)) as pool:
             # The OpenCode gate prefers the longest job, but only among the cells already
             # queued on it, so the first cells to reach it would otherwise be decided by
@@ -5204,6 +5783,14 @@ def main():
         "oc-models", help="Measured OpenCode capability table and recorded per-cell health"
     )
     oc_models.set_defaults(func=cmd_oc_models)
+    health = subparsers.add_parser(
+        "health", help="Why recorded cells failed, per run, side, account and cell"
+    )
+    health.add_argument(
+        "--limit", type=int, default=HEALTH_DEFAULT_RUNS, metavar="N",
+        help=f"only the newest N runs (default {HEALTH_DEFAULT_RUNS}; 0 for every run)",
+    )
+    health.set_defaults(func=cmd_health)
     listing = subparsers.add_parser("list", help="List recent benchmark runs")
     listing.add_argument("--limit", type=int, default=20)
     listing.set_defaults(func=cmd_list)

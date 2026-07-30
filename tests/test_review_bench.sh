@@ -49,10 +49,6 @@ os.environ["HOME"] = str(fixture_home)
 
 
 def clear_walls():
-    rb.WALLED_ACCOUNTS.clear()
-    rb._WALL_TIMESTAMPS.clear()
-    rb._WALL_CACHE_PATH = None
-    rb._WALL_CACHE_STAT = None
     (rb.state_dir() / rb.WALL_STATE_FILE).unlink(missing_ok=True)
 
 
@@ -79,6 +75,15 @@ elif sys.argv[2] == "reload":
     assert os.waitstatus_to_exitcode(status) == 0
 elif sys.argv[2] == "delete":
     assert module.is_walled(side, account, bucket)
+    (module.state_dir() / module.WALL_STATE_FILE).unlink()
+elif sys.argv[2] == "truncate":
+    assert module.is_walled(side, account, bucket)
+    (module.state_dir() / module.WALL_STATE_FILE).write_text("")
+elif sys.argv[2] == "recreate":
+    # No file, then one this process creates, then none again: a cache that records the
+    # first "no file here" compares equal to the last and never reloads.
+    assert not module.is_walled(side, account, bucket)
+    module.mark_walled(side, account, bucket)
     (module.state_dir() / module.WALL_STATE_FILE).unlink()
 print(int(module.is_walled(side, account, bucket)))
 """
@@ -154,6 +159,225 @@ compacted_path.write_text(
 assert compacted_path.stat().st_size > rb.WALL_COMPACT_BYTES
 assert probe_wall(compacted_wall_state, "check", account="live") == "1"
 assert [json.loads(line) for line in compacted_path.read_text().splitlines()] == [live_row]
+
+# The row that stands longest wins the merge: a plain wall recorded after a dated one must not
+# throw the provider's horizon away and put a weekly limit back in the pool an hour later.
+horizon_wall_state = work / "horizon-wall-state"
+horizon_wall_state.mkdir()
+horizon_path = horizon_wall_state / rb.WALL_STATE_FILE
+horizon_path.write_text(
+    json.dumps({
+        "side": "opencode", "account": "go", "bucket": "general",
+        "detected_at": time.time() - 600, "reset_at": time.time() + 3 * 86400,
+    }) + "\n" + json.dumps({
+        "side": "opencode", "account": "go", "bucket": "general",
+        "detected_at": time.time(),
+    }) + "\n"
+)
+horizon_rows = rb.read_wall_rows(horizon_path)
+assert horizon_rows[("opencode", "go", "general")][1] > time.time() + 2 * 86400, horizon_rows
+
+# The record is advisory: a read that fails leaves accounts usable, because refusing to run on
+# a transient error empties the pool of accounts that were never out of quota.
+unreadable_state = work / "unreadable-wall-state"
+unreadable_state.mkdir()
+unreadable_path = unreadable_state / rb.WALL_STATE_FILE
+unreadable_path.write_text("")
+real_read_wall_rows = rb.read_wall_rows
+rb.read_wall_rows = lambda path: None
+os.environ["WORKER_STATS_DIR"] = str(unreadable_state)
+try:
+    assert not rb.is_walled("opencode", "go")
+finally:
+    rb.read_wall_rows = real_read_wall_rows
+    del os.environ["WORKER_STATS_DIR"]
+
+# Every answer comes from the file, so a wall another process appends is seen at once and one
+# this process recorded is gone the moment the file is cleared.
+live_state = work / "live-wall-state"
+live_state.mkdir()
+os.environ["WORKER_STATS_DIR"] = str(live_state)
+try:
+    assert not rb.is_walled("opencode", "shared")
+    (live_state / rb.WALL_STATE_FILE).write_text(json.dumps({
+        "side": "opencode", "account": "shared", "bucket": "general",
+        "detected_at": time.time(),
+    }) + "\n")
+    assert rb.is_walled("opencode", "shared")
+    (live_state / rb.WALL_STATE_FILE).unlink()
+    assert not rb.is_walled("opencode", "shared")
+finally:
+    del os.environ["WORKER_STATS_DIR"]
+
+# Compaction that cannot take the lock leaves the rows alone: rewriting the file unlocked is
+# the very race the lock exists to prevent.
+unlocked_state = work / "unlocked-wall-state"
+unlocked_state.mkdir()
+unlocked_path = unlocked_state / rb.WALL_STATE_FILE
+unlocked_rows = "".join(json.dumps({
+    "side": "agy", "account": f"expired-{index}", "bucket": "agy-pro",
+    "detected_at": time.time() - 7200,
+}) + "\n" for index in range(3))
+unlocked_path.write_text(unlocked_rows)
+
+
+@contextlib.contextmanager
+def refuse_the_lock(path):
+    yield False
+
+
+real_wall_file_lock = rb.wall_file_lock
+rb.wall_file_lock = refuse_the_lock
+try:
+    assert rb.compact_walls(unlocked_path) is None
+finally:
+    rb.wall_file_lock = real_wall_file_lock
+assert unlocked_path.read_text() == unlocked_rows
+
+# The provider's own horizon beats the flat guess in both directions: a plain wall recorded later
+# must not shorten a dated one, and the flat hour must not sit on top of a reset a minute away.
+rank_state = work / "wall-rank-state"
+rank_state.mkdir()
+rank_path = rank_state / rb.WALL_STATE_FILE
+now = time.time()
+rank_path.write_text(
+    json.dumps({"side": "agy", "account": "a", "bucket": "agy-pro",
+                "detected_at": now - 10, "reset_at": now + 30}) + "\n"
+    + json.dumps({"side": "agy", "account": "a", "bucket": "agy-pro",
+                  "detected_at": now}) + "\n"
+    + json.dumps({"side": "agy", "account": "b", "bucket": "agy-pro",
+                  "detected_at": now - 10, "reset_at": now + 3 * 86400}) + "\n"
+    + json.dumps({"side": "agy", "account": "b", "bucket": "agy-pro",
+                  "detected_at": now}) + "\n"
+)
+ranked = rb.read_wall_rows(rank_path)
+assert ranked[("agy", "a", "agy-pro")][1] == now + 30, ranked
+assert ranked[("agy", "b", "agy-pro")][1] == now + 3 * 86400, ranked
+
+# A wall the provider dated outlives the flat TTL, and a garbled date does not outlive the cap.
+assert rb.wall_still_standing(time.time() - 7200, time.time() + 3600, ttl=1)
+assert not rb.wall_still_standing(time.time() - 7200, None, ttl=1)
+assert not rb.wall_still_standing(time.time() - 7200, time.time() - 60, ttl=86400)
+assert rb.clamped_reset_at(1000.0, 1000.0 + 99 * 86400) == 1000.0 + rb.WALL_MAX_TTL_S
+assert rb.clamped_reset_at(1000.0, "not a time") is None
+assert rb.wall_reset_at("Weekly usage limit reached. Resets in 3 days.") > time.time() + 2 * 86400
+assert rb.wall_reset_at("Resets in 45 minutes") < time.time() + 3600
+assert rb.wall_reset_at("HTTP 429 rate limited") is None
+
+dated_wall_state = work / "dated-wall-state"
+dated_wall_state.mkdir()
+(dated_wall_state / rb.WALL_STATE_FILE).write_text(json.dumps({
+    "side": "agy", "account": "work", "bucket": "agy-pro",
+    "detected_at": time.time() - 7200, "reset_at": time.time() + 3600,
+}) + "\n")
+assert probe_wall(dated_wall_state, "check", ttl=1) == "1"
+
+# The file is the record: a wall cleared on disk must not survive in memory until the TTL.
+truncated_wall_state = work / "truncated-wall-state"
+assert probe_wall(truncated_wall_state, "mark") == "1"
+assert probe_wall(truncated_wall_state, "truncate") == "0"
+assert probe_wall(work / "recreated-wall-state", "recreate") == "0"
+
+# An append that cannot reach disk says so rather than failing quietly: the file is the only
+# record, so that wall is lost and its account will be tried again.
+unwritten_state = work / "unwritten-wall-state"
+unwritten_state.mkdir()
+os.environ["WORKER_STATS_DIR"] = str(unwritten_state)
+unwritten_warning = io.StringIO()
+real_wall_file_lock_2 = rb.wall_file_lock
+
+
+@contextlib.contextmanager
+def unwritable_wall(path):
+    raise OSError("read-only state dir")
+    yield True
+
+
+rb.wall_file_lock = unwritable_wall
+try:
+    with contextlib.redirect_stderr(unwritten_warning):
+        rb.mark_walled("opencode", "unwritten")
+finally:
+    rb.wall_file_lock = real_wall_file_lock_2
+    del os.environ["WORKER_STATS_DIR"]
+assert "could not record" in unwritten_warning.getvalue(), unwritten_warning.getvalue()
+clear_walls()
+
+# Compaction re-reads under its lock, so a wall appended after any earlier snapshot survives it.
+compact_race_state = work / "compact-race-state"
+compact_race_state.mkdir()
+race_path = compact_race_state / rb.WALL_STATE_FILE
+race_path.write_text("".join(json.dumps({
+    "side": "agy", "account": f"expired-{index}", "bucket": "agy-pro",
+    "detected_at": time.time() - 7200,
+}) + "\n" for index in range(80)))
+assert race_path.stat().st_size > rb.WALL_COMPACT_BYTES
+appended_row = {
+    "side": "agy", "account": "appended", "bucket": "agy-pro", "detected_at": time.time(),
+}
+with race_path.open("a", encoding="utf-8") as stream:
+    stream.write(json.dumps(appended_row) + "\n")
+rb.compact_walls(race_path)
+assert [json.loads(line) for line in race_path.read_text().splitlines()] == [appended_row]
+
+# An append whose own lock attempt failed goes ahead unlocked, so it can land after compaction
+# has already read the rows. Replacing the file then drops a standing wall and puts a spent
+# account back in the pool, so a file that moved under compaction defers to the writer.
+late_race_state = work / "late-append-race-state"
+late_race_state.mkdir()
+late_path = late_race_state / rb.WALL_STATE_FILE
+late_rows = "".join(json.dumps({
+    "side": "agy", "account": f"expired-{index}", "bucket": "agy-pro",
+    "detected_at": time.time() - 7200,
+}) + "\n" for index in range(80))
+late_path.write_text(late_rows)
+late_wall = {
+    "side": "agy", "account": "late", "bucket": "agy-pro", "detected_at": time.time(),
+}
+real_read_rows = rb.read_wall_rows
+
+
+def append_while_reading(path):
+    rows = real_read_rows(path)
+    if path == late_path:
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(late_wall) + "\n")
+    return rows
+
+
+rb.read_wall_rows = append_while_reading
+try:
+    assert rb.compact_walls(late_path) is None
+finally:
+    rb.read_wall_rows = real_read_rows
+assert late_path.read_text() == late_rows + json.dumps(late_wall) + "\n"
+assert rb.read_wall_rows(late_path) == {
+    ("agy", "late", "agy-pro"): (late_wall["detected_at"], None)
+}
+
+# An interrupted waiter must take its queue entry with it; left behind it is the permanent head
+# and every other waiter blocks on never being it.
+interrupted_gate = rb.PriorityGate(1)
+interrupted_gate.acquire(0)
+real_wait = interrupted_gate.cv.wait
+
+
+def refuse_to_wait(timeout=None):
+    raise RuntimeError("interrupted while queued")
+
+
+interrupted_gate.cv.wait = refuse_to_wait
+try:
+    interrupted_gate.acquire(5)
+except RuntimeError:
+    pass
+else:
+    raise AssertionError("the interrupted acquire should have propagated")
+interrupted_gate.cv.wait = real_wait
+assert interrupted_gate.waiting == [], interrupted_gate.waiting
+interrupted_gate.release()
+interrupted_gate.acquire(0)
+interrupted_gate.release()
 
 assert rb.parse_rater("sol-medium") == {
     "spec": "sol-medium", "model": "sol", "effort": "medium", "side": "codex",
@@ -371,6 +595,120 @@ assert any(
     for line in not_run_report.splitlines()
 )
 assert "errored:" not in not_run_report
+reason_meta = dict(
+    duration_meta,
+    raters=["sol-low", "oc-kimik3"],
+    rater_runs=[
+        {"rater": "sol-low", "exit_code": 1, "errored": True,
+         "stderr": 'HTTP 429 {"error":{"code":"provider_rate_limit_exceeded"}}'},
+        {"rater": "oc-kimik3", "exit_code": 3, "errored": True, "stderr": "boom"},
+    ],
+)
+reason_report = "\n".join(rb.report_lines(duration_dir, reason_meta))
+assert "Sol low (throttled)" in reason_report, reason_report
+# Nothing recognisable in the text leaves the exit code as the only fact left to print.
+assert "Kimi K3 (exit 3)" in reason_report, reason_report
+
+# --- health: why recorded cells failed -------------------------------------------------------
+for text, expected in (
+    ("review-bench: this run has no opencode account left", "pool empty"),
+    # A pool-empty message quotes the error of the last account it tried, so the specific
+    # wording has to win over the cause it carries.
+    ("has no codex account left\nGoUsageLimitError: limitName=plan", "pool empty"),
+    ("GoUsageLimitError limitName=opencode-plan", "plan wall"),
+    (rb.GATE_WALL_STDERR, "plan wall"),
+    ("Error: You have exhausted your capacity on this model. Resets in 0s.", "plan wall"),
+    ("API error (status 402 Payment Required): Grok Build usage balance exhausted", "plan wall"),
+    ('HTTP 429\n{"code":"provider_rate_limit_exceeded"}', "throttled"),
+    # The named cause wins; on its own the status code says only that something refused.
+    ("HTTP 429", "bare 429"),
+    ("rater produced no parseable finding and did not declare a clean review: prose",
+     "unparseable"),
+    # Both numbers are in use across the sides, so the rule is the stem, not either message.
+    ("no parseable finding here", "unparseable"),
+    ("opencode returned no parseable findings", "unparseable"),
+    ("agy -skill returned malformed Markdown: expected /code-review findings", "unparseable"),
+    ("opencode returned empty content (finish_reason='length')", "unparseable"),
+    ("opencode stopped before reviewing", "unparseable"),
+    ("the model is at capacity", "capacity"),
+    ("gateway said 503", "server error"),
+    ("cannot review the root commit", "root commit"),
+    ('a tool required the "command" permission that headless runs cannot grant', "permission"),
+    ("error: the argument '--commit <SHA>' cannot be used with '[PROMPT]'", "bad command"),
+    ("ERROR codex_core::session: failed to record rollout items", "crashed"),
+    ("You are not logged into Antigravity", "auth"),
+    ("", "no output"),
+    ("   \n ", "no output"),
+    ("something nobody has seen before", "unclassified"),
+):
+    assert rb.failure_reason(text) == expected, (text, rb.failure_reason(text))
+# A status the report already assigns is not re-derived from the text behind it.
+assert rb.cell_failure_reason({"status": "timed_out", "stderr": "HTTP 429"}) == "timeout"
+assert rb.cell_failure_reason({"status": "model_mismatch", "stderr": ""}) == "mismatch"
+assert rb.cell_failure_reason({"status": "not_run", "stderr": ""}) == "not run"
+assert rb.cell_failure_reason({"status": "errored", "stderr": "HTTP 429"}) == "bare 429"
+health_dir = work / "health-runs"
+health_dir.mkdir()
+
+
+def write_health_run(name, rows, raters=None):
+    directory = health_dir / name
+    directory.mkdir()
+    meta = {"rater_runs": rows, "raters": raters if raters is not None else
+            [row["rater"] for row in rows]}
+    (directory / "meta.json").write_text(json.dumps(meta))
+    return directory
+
+
+health_first = write_health_run("20260101T000000Z-aaa", [
+    {"rater": "sol-low", "side": "codex", "account": "work", "exit_code": 0, "findings": 1},
+    {"rater": "sol-high", "side": "codex", "account": "work", "exit_code": 1,
+     "errored": True, "stderr": 'HTTP 429 {"code":"provider_rate_limit_exceeded"}'},
+])
+health_second = write_health_run("20260102T000000Z-bbb", [
+    {"rater": "oc-kimik3", "side": "opencode", "account": "prod", "exit_code": 1,
+     "errored": True, "stderr": rb.GATE_WALL_STDERR},
+    {"rater": "oc-kimik3", "side": "opencode", "account": "alt", "exit_code": 0, "findings": 0},
+])
+(health_dir / "not-a-run").mkdir()
+health_all = rb.health_runs(health_dir, 0)
+assert [name for name, _ in health_all] == [
+    "20260101T000000Z-aaa", "20260102T000000Z-bbb"
+], health_all
+assert [name for name, _ in rb.health_runs(health_dir, 1)] == ["20260102T000000Z-bbb"]
+assert rb.health_runs(work / "no-such-benches", 0) == []
+assert rb.run_health(health_first, json.loads(
+    (health_first / "meta.json").read_text()))["by_side"]["codex"] == {"ok": 1, "throttled": 1}
+# Column widths are cosmetic and would make these assertions break on any new run name.
+health_text = "\n".join(" ".join(line.split()) for line in rb.health_lines(health_all))
+assert "20260101T000000Z-aaa 1/2 50% throttled 1" in health_text, health_text
+assert "all runs 2/4 50% throttled 1 · plan wall 1" in health_text, health_text
+assert "codex work 1/2" in health_text, health_text
+# Both accounts show even though one of them never failed: a pool that stopped rotating is
+# read off this section, and an account that vanishes when it works cannot show that.
+assert "opencode alt 0/1 · prod 1/1" in health_text, health_text
+assert "Sol high 1/1 100% throttled 1" in health_text, health_text
+# A cell that never failed has no place in a list of the worst ones.
+assert "Sol low" not in health_text, health_text
+assert rb.health_lines([]) == ["no recorded runs"]
+# A cell retired since the run was recorded must not make the whole run unreadable.
+retired_dir = write_health_run("20260103T000000Z-ccc", [
+    {"rater": "oc-dsv4flash", "side": "opencode", "account": "prod", "exit_code": 0,
+     "findings": 0},
+])
+retired_meta = json.loads((retired_dir / "meta.json").read_text())
+assert rb.tier_from_meta(retired_meta) is None
+retired_cells = rb.bench_summary(retired_dir, retired_meta)["cells"]
+assert retired_cells[0]["status"] == "completed"
+assert retired_cells[0]["side"] == "opencode" and retired_cells[0]["account"] == "prod"
+# The side is recoverable from the spec for rows recorded before it was written down.
+legacy_side_dir = write_health_run("20260104T000000Z-ddd", [
+    {"rater": "sol-low", "exit_code": 0, "findings": 0},
+])
+legacy_side_meta = json.loads((legacy_side_dir / "meta.json").read_text())
+assert rb.bench_summary(legacy_side_dir, legacy_side_meta)["cells"][0]["side"] == "codex"
+assert rb.rater_side("oc-dsv4flash") is None and rb.rater_side("") is None
+
 real_append_review_log = rb.append_review_log
 real_review_log_event = rb.review_log_event
 for target in ("append", "event"):
@@ -1238,6 +1576,33 @@ assert rb.is_walled("agy", "work", flash_bucket) and not rb.is_walled("agy", "ma
 assert not rb.is_walled("agy", "work", rb.wall_bucket(rb.parse_rater("agy-pro-high-skill")))
 clear_walls()
 
+# The pool ranks accounts but cannot know how many cells are about to ask, so every cell taking
+# its head puts a whole run's concurrency on one account while the rest of the roster idles.
+os.environ["WORKER_PICK_FAKE_ACCOUNTS"] = "a1 a2 a3"
+rb._SIDE_ROSTER.clear()
+assert rb.side_roster("agy", frozenset()) == ["a1", "a2", "a3"], rb.side_roster("agy", frozenset())
+spread_picks = [rb.pool_account("agy", set(), slot) for slot in range(4)]
+assert spread_picks == ["a1", "a2", "a3", "a1"], spread_picks
+# Rotation is unchanged: a cell whose own slot is retired walks the rest of the roster.
+rb.mark_walled("agy", "a1", "general")
+assert rb.pool_account("agy", set(), 0) == "a2", rb.pool_account("agy", set(), 0)
+assert rb.pool_account("agy", {"a2"}, 0) == "a3", rb.pool_account("agy", {"a2"}, 0)
+assert rb.pool_account("agy", {"a2", "a3"}, 0) is None
+clear_walls()
+# The roster is enumerated once per process: a per-cell enumeration would spawn one worker-pick
+# per account per cell for an answer the run already has.
+os.environ["WORKER_PICK_FAKE_ACCOUNTS"] = "b1 b2"
+assert rb.pool_account("agy", set(), 0) == "a1", "roster re-enumerated mid-run"
+rb._SIDE_ROSTER.clear()
+assert rb.side_roster("agy", frozenset()) == ["b1", "b2"]
+# Off, every cell gets the pool's head, which is what the measurement compares against.
+os.environ["REVIEW_BENCH_SPREAD_ACCOUNTS"] = "0"
+flat_picks = [rb.pool_account("agy", set(), slot) for slot in range(3)]
+assert flat_picks == ["b1", "b1", "b1"], flat_picks
+del os.environ["REVIEW_BENCH_SPREAD_ACCOUNTS"]
+del os.environ["WORKER_PICK_FAKE_ACCOUNTS"]
+rb._SIDE_ROSTER.clear()
+
 # An account another rater already retired is excluded from the next request instead of ending
 # the search, so a second usable account is still reached.
 del os.environ["GEMINIB_EXHAUSTED_PROFILE"]
@@ -1477,6 +1842,12 @@ while [[ $# -gt 0 ]]; do
 done
 : >"$output"
 printf '%s\n' '{"type":"thread.started","thread_id":"fixture"}'
+# Codex reports a refusal in its event stream and leaves stderr empty, which is what makes
+# such a run unclassifiable unless the reason is recovered.
+if [[ -n ${CODEX_FIXTURE_TURN_FAILED:-} ]]; then
+  printf '{"type":"turn.failed","error":{"message":"%s"}}\\n' "$CODEX_FIXTURE_TURN_FAILED"
+  exit 1
+fi
 """)
 fake_codex.chmod(0o755)
 os.environ.update({
@@ -1526,6 +1897,19 @@ assert "Commit diff:" in captured_stdin, captured_stdin
 assert bare_diff in captured_stdin, captured_stdin
 assert not any("Commit diff:" in arg for arg in bare_command), bare_command
 assert not any(arg.startswith("developer_instructions=") for arg in bare_command), bare_command
+
+# A refusal Codex reported only in its event stream still reaches stderr, or the run is recorded
+# as a silent death that no later classification can retry or even name.
+os.environ["CODEX_FIXTURE_TURN_FAILED"] = "Selected model is at capacity. Please try a different model."
+silent_run = work / "codex-silent-failure-run"
+silent_run.mkdir()
+silent_rc, _, _, silent_stderr, _ = rb.run_codex(
+    rb.parse_rater("sol-medium"), pin_repo, pin_sha, "", silent_run, "", "main"
+)
+del os.environ["CODEX_FIXTURE_TURN_FAILED"]
+assert silent_rc != 0, silent_rc
+assert "at capacity" in silent_stderr, repr(silent_stderr)
+assert rb.codex_transient_failure("", silent_stderr), silent_stderr
 
 fake_claude = work / "fake-claudeb"
 fake_claude.write_text("""#!/usr/bin/env bash
@@ -1690,7 +2074,27 @@ rc, _, text, stderr, _ = rb.run_opencode(
     opencode_rater, repo, sha, "", preamble_run, "fixture commit diff", "opencode-go"
 )
 assert rc == 1 and not text
-assert "no parseable findings" in stderr and "I'll review" in stderr
+# Stopping one line in is the model's hiccup on a cell that works the rest of the time, so the
+# cell is worth another lap; recorded as a plain non-review it was written off after one try.
+assert rb.OPENCODE_STUB_STDERR in stderr and "I'll review" in stderr
+assert rb.opencode_transient_failure(stderr), stderr
+
+# Answering at length and still parsing to nothing is an answer, just not one with findings:
+# asking again buys a second full review of the same prose, so that one is not retried.
+long_prose_run = work / "opencode-long-prose-run"
+long_prose_run.mkdir()
+long_prose = work / "opencode-long-prose.json"
+long_prose.write_text(json.dumps({"choices": [{"message": {
+    "content": "This change is broadly reasonable. " * 40
+}}]}))
+os.environ["OPENCODE_FIXTURE_STDOUT"] = str(long_prose)
+rc, _, text, long_stderr, _ = rb.run_opencode(
+    opencode_rater, repo, sha, "", long_prose_run, "fixture commit diff", "opencode-go"
+)
+assert rc == 1 and not text
+assert "no parseable findings" in long_stderr, long_stderr
+assert not rb.opencode_transient_failure(long_stderr), long_stderr
+os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-preamble.json")
 
 narration_run = work / "opencode-narration-run"
 narration_run.mkdir()
@@ -1908,8 +2312,300 @@ assert walled_verify["walled"] and walled_verify["kept"], walled_verify
 clear_walls()
 del os.environ["OPENCODE_FIXTURE_RC"]
 del os.environ["OPENCODE_FIXTURE_STDERR"]
-assert rb.opencode_usage_wall("HTTP 429") and rb.opencode_usage_wall("usage limit reached")
+assert rb.opencode_usage_wall("usage limit reached")
+assert rb.opencode_usage_wall('{"type":"GoUsageLimitError","limitName":"weekly"}')
 assert not rb.opencode_usage_wall("HTTP 503 failover_exhausted")
+# A bare status code is as much the provider throttling the model as the plan running out, and
+# only one of those readings can cost an account that still has its whole quota.
+assert not rb.opencode_usage_wall("HTTP 429")
+assert not rb.opencode_usage_wall("HTTP 429 too many requests")
+assert rb.opencode_transient_failure("HTTP 429")
+
+# The gateway answers 429 both for a spent subscription and for a burst throttle; only the
+# first is the account's own window, and only it may retire the account.
+assert rb.opencode_transient_failure(
+    'HTTP 429 {"error":{"message":"Provider rate limit exceeded"}}'
+)
+assert not rb.opencode_transient_failure(
+    'HTTP 429 {"error":{"type":"GoUsageLimitError","message":"Weekly usage limit reached"}}'
+)
+assert not rb.opencode_transient_failure("opencode returned malformed JSON envelope")
+assert rb.codex_transient_failure("", "Selected model is at capacity")
+assert not rb.codex_transient_failure("", "HTTP 429 usage limit exceeded")
+
+# Codex exits non-zero with an empty stderr and says why only in its event stream, so a run
+# recorded from stderr alone is unclassifiable afterwards. Both shapes are from recorded runs.
+capacity = "Selected model is at capacity. Please try a different model."
+assert rb.codex_failure_reason(
+    '{"type":"item.completed","item":{"type":"error","message":"stream disconnected"}}\n'
+    '{"type":"error","message":"%s"}\n'
+    '{"type":"turn.failed","error":{"message":"%s"}}' % (capacity, capacity)
+) == capacity
+assert rb.codex_failure_reason(
+    '{"type":"turn.failed","error":{"message":"%s"}}' % capacity
+) == capacity
+assert rb.codex_failure_reason('{"type":"item.completed","item":{}}') == ""
+assert rb.codex_failure_reason('not json\n{"type":"turn.failed","error":"plain string"}') == ""
+# Recovered onto stderr it reaches the classifier, which is what makes the retry reachable.
+assert rb.codex_transient_failure("", rb.codex_failure_reason(
+    '{"type":"turn.failed","error":{"message":"%s"}}' % capacity
+))
+assert rb.transient_backoffs() == [15, 30]
+os.environ["REVIEW_BENCH_TRANSIENT_BACKOFF_S"] = "0,0"
+assert rb.transient_backoffs() == [0, 0]
+
+# A named burst throttle is the bench asking too fast, not the account's window closing.
+burst_stderr = ('HTTP 429 {"error":{"message":"Provider rate limit exceeded",'
+                '"type":"rate_limit_error","code":"provider_rate_limit_exceeded"}}')
+assert rb.opencode_burst_throttle(burst_stderr)
+
+# A verifier the gateway is throttling is asked of the next model in the chain, because that
+# refusal belongs to the model upstream, not to the account: on 2026-07-31 kimi-k3 was refused
+# on a brand-new account while grok-4.5 answered on that same one. Every other kind of failure
+# stops the chain, or one bad answer would cost three requests instead of one.
+assert rb.verifier_chain("oc-kimik3") == ["oc-kimik3", "oc-qwen37plus", "oc-mmm3"]
+assert rb.verifier_chain("oc-mimo25")[0] == "oc-mimo25", rb.verifier_chain("oc-mimo25")
+assert len(rb.verifier_chain("oc-mimo25")) == 4
+chain_models = []
+real_run = subprocess.run
+
+
+def chain_fixture(command, **kwargs):
+    model = command[command.index("run") + 1]
+    chain_models.append(model)
+    if model == rb.OPENCODE_MODEL_IDS["oc-kimik3"]:
+        return subprocess.CompletedProcess(command, 1, "", (
+            'HTTP 429 {"error":{"code":"provider_rate_limit_exceeded"}}'
+        ))
+    return subprocess.CompletedProcess(command, 0, json.dumps({"choices": [{"message": {
+        "content": json.dumps({"code_matches": True, "is_defect": False, "why": "not a defect"})
+    }}]}), "")
+
+
+subprocess.run = chain_fixture
+try:
+    chain_row = rb.verify_one(
+        0, {"severity": "P2", "file": "bin/review-bench", "line": 3, "summary": "claim"},
+        repo, sha, "oc-kimik3", ["line one"],
+    )
+finally:
+    subprocess.run = real_run
+assert chain_models == [rb.OPENCODE_MODEL_IDS["oc-kimik3"],
+                        rb.OPENCODE_MODEL_IDS["oc-qwen37plus"]], chain_models
+assert chain_row["kept"] is False, chain_row
+assert "verified by oc-qwen37plus" in chain_row["why"], chain_row
+clear_walls()
+
+# A model that simply answered badly is not asked again of anyone else.
+once_models = []
+
+
+def once_fixture(command, **kwargs):
+    once_models.append(command[command.index("run") + 1])
+    return subprocess.CompletedProcess(command, 0, json.dumps({"choices": [{"message": {
+        "content": "I could not tell."
+    }}]}), "")
+
+
+subprocess.run = once_fixture
+try:
+    rb.verify_one(
+        0, {"severity": "P2", "file": "bin/review-bench", "line": 3, "summary": "claim"},
+        repo, sha, "oc-kimik3", ["line one"],
+    )
+finally:
+    subprocess.run = real_run
+assert once_models == [rb.OPENCODE_MODEL_IDS["oc-kimik3"]], once_models
+clear_walls()
+
+# A refused cell waits on its own: making the other cells of the model wait too only pays if the
+# run is the cause, and probing kimi-k3 at 5, 20 and 60 second gaps on 2026-07-30 refused all
+# eighteen while grok-4.5 answered throughout, so the pressure was upstream and unshareable.
+throttle_slept = []
+real_sleep = time.sleep
+time.sleep = throttle_slept.append
+burst_backoff_run = work / "opencode-burst-backoff-run"
+burst_backoff_run.mkdir()
+backoff_was = os.environ.get("REVIEW_BENCH_TRANSIENT_BACKOFF_S")
+os.environ["REVIEW_BENCH_TRANSIENT_BACKOFF_S"] = "7"
+os.environ["OPENCODE_FIXTURE_RC"] = "1"
+os.environ["OPENCODE_FIXTURE_STDERR"] = (
+    'HTTP 429 {"error":{"code":"provider_rate_limit_exceeded"}}'
+)
+backoff_log = io.StringIO()
+try:
+    with contextlib.redirect_stdout(backoff_log):
+        _, backoff_account, backoff_result = rb.run_rater_task(
+            opencode_rater, repo, sha, "", burst_backoff_run, "fixture commit diff"
+        )
+finally:
+    time.sleep = real_sleep
+    if backoff_was is None:
+        del os.environ["REVIEW_BENCH_TRANSIENT_BACKOFF_S"]
+    else:
+        os.environ["REVIEW_BENCH_TRANSIENT_BACKOFF_S"] = backoff_was
+    del os.environ["OPENCODE_FIXTURE_RC"]
+    del os.environ["OPENCODE_FIXTURE_STDERR"]
+assert throttle_slept == [7], throttle_slept
+# The retry names the cause, so a log of waits says which of them are worth acting on.
+assert "transient failure (throttled); retrying in 7s" in backoff_log.getvalue(), \
+    backoff_log.getvalue()
+# The account keeps its place in the pool: a throttle is never evidence the plan is spent.
+assert not rb.is_walled("opencode", backoff_account), backoff_account
+assert backoff_result[0] == 1, backoff_result
+clear_walls()
+
+assert not rb.opencode_burst_throttle(
+    'HTTP 429 {"error":{"type":"GoUsageLimitError","message":"Weekly usage limit reached"}}'
+)
+assert not rb.opencode_burst_throttle("HTTP 503 failover_exhausted")
+clear_walls()
+os.environ["OPENCODE_FIXTURE_RC"] = "1"
+os.environ["OPENCODE_FIXTURE_STDERR"] = burst_stderr
+burst_run = work / "opencode-burst-run"
+burst_run.mkdir()
+_, burst_account, burst_result = rb.run_rater_task(
+    opencode_rater, repo, sha, "", burst_run, "fixture commit diff"
+)
+assert burst_account == "opencode-go" and burst_result[0] == 1, burst_result
+assert not rb.is_walled("opencode", "opencode-go")
+del os.environ["OPENCODE_FIXTURE_RC"]
+del os.environ["OPENCODE_FIXTURE_STDERR"]
+clear_walls()
+
+# A throttle that clears is waited out on the same account: retiring it would empty the pool
+# of accounts that were never out of quota.
+clear_walls()
+transient_left = work / "opencode-transient-left"
+transient_left.write_text("2\n")
+os.environ["OPENCODE_TRANSIENT_LEFT_FILE"] = str(transient_left)
+transient_run = work / "opencode-transient-run"
+transient_run.mkdir()
+_, transient_account, transient_result = rb.run_rater_task(
+    opencode_rater, repo, sha, "", transient_run, "fixture commit diff"
+)
+assert transient_account == "opencode-go" and transient_result[0] == 0, transient_result
+assert not rb.is_walled("opencode", "opencode-go")
+assert transient_left.read_text().strip() == "0"
+
+# A throttle that never clears costs the cell, never the account: the run is asking too fast,
+# which is no evidence at all about the subscription behind the account.
+clear_walls()
+transient_left.write_text("9\n")
+persistent_run = work / "opencode-persistent-throttle"
+persistent_run.mkdir()
+_, persistent_account, persistent_result = rb.run_rater_task(
+    opencode_rater, repo, sha, "", persistent_run, "fixture commit diff"
+)
+assert persistent_account == "opencode-go" and persistent_result[0] == 1, persistent_result
+assert not rb.is_walled("opencode", "opencode-go")
+assert transient_left.read_text().strip() == "6", transient_left.read_text()
+del os.environ["OPENCODE_TRANSIENT_LEFT_FILE"]
+clear_walls()
+
+# A server-side failure is retried on its own budget and, being no statement about quota
+# either, leaves the account in the pool once the budget is spent.
+server_error_capture = work / "opencode-server-error-profile"
+os.environ["OPENCODE_CAPTURE_PROFILE"] = str(server_error_capture)
+os.environ["OPENCODE_FIXTURE_RC"] = "1"
+os.environ["OPENCODE_FIXTURE_STDERR"] = "HTTP 503 upstream unavailable"
+server_error_run = work / "opencode-server-error-run"
+server_error_run.mkdir()
+_, server_error_account, server_error_result = rb.run_rater_task(
+    opencode_rater, repo, sha, "", server_error_run, "fixture commit diff"
+)
+assert server_error_account == "opencode-go" and server_error_result[0] == 1
+assert not rb.is_walled("opencode", "opencode-go")
+assert len(server_error_capture.read_text().splitlines()) == 3, \
+    server_error_capture.read_text()
+del os.environ["OPENCODE_FIXTURE_RC"]
+del os.environ["OPENCODE_FIXTURE_STDERR"]
+del os.environ["OPENCODE_CAPTURE_PROFILE"]
+clear_walls()
+
+# A spent plan is not retried, and the reset it names outlives the flat TTL.
+dated_profile_capture = work / "opencode-dated-profile"
+os.environ["OPENCODE_CAPTURE_PROFILE"] = str(dated_profile_capture)
+os.environ["OPENCODE_FIXTURE_RC"] = "1"
+os.environ["OPENCODE_FIXTURE_STDERR"] = (
+    'HTTP 429 {"type":"error","error":{"type":"GoUsageLimitError",'
+    '"message":"Weekly usage limit reached. Resets in 3 days."}}'
+)
+dated_run = work / "opencode-dated-run"
+dated_run.mkdir()
+rb.run_rater_task(opencode_rater, repo, sha, "", dated_run, "fixture commit diff")
+assert dated_profile_capture.read_text().splitlines() == ["unset"], \
+    dated_profile_capture.read_text()
+assert rb.is_walled("opencode", "opencode-go")
+dated_key = ("opencode", "opencode-go", "general")
+dated_rows = rb.read_wall_rows(rb.state_dir() / rb.WALL_STATE_FILE)
+assert dated_rows[dated_key][1] > time.time() + 2 * 86400, dated_rows
+os.environ["REVIEW_BENCH_WALL_TTL_S"] = "1"
+try:
+    assert rb.is_walled("opencode", "opencode-go")
+finally:
+    del os.environ["REVIEW_BENCH_WALL_TTL_S"]
+del os.environ["OPENCODE_FIXTURE_RC"]
+del os.environ["OPENCODE_FIXTURE_STDERR"]
+del os.environ["OPENCODE_CAPTURE_PROFILE"]
+clear_walls()
+
+# An account that walls while the cell sits in the gate queue costs the cell nothing: it was
+# never sent, so the cell rotates onto another account instead of failing the side.
+profiles_path.write_text("-\nsecond\n")
+queued_gate_real = rb.OPENCODE_GATE
+
+
+class WallWhileQueuedGate:
+    def __init__(self):
+        self.marked = False
+
+    def acquire(self, *args):
+        queued_gate_real.acquire(*args)
+        if not self.marked:
+            self.marked = True
+            rb.mark_walled("opencode", "opencode-go", "general")
+
+    def release(self):
+        queued_gate_real.release()
+
+
+rb.OPENCODE_GATE = WallWhileQueuedGate()
+queued_run = work / "opencode-queued-wall"
+queued_run.mkdir()
+try:
+    _, queued_account, queued_result = rb.run_rater_task(
+        opencode_rater, repo, sha, "", queued_run, "fixture commit diff"
+    )
+finally:
+    rb.OPENCODE_GATE = queued_gate_real
+assert queued_account == "opencode-go-second" and queued_result[0] == 0, queued_result
+
+# The retry budget belongs to the account, not the cell: the default profile spends a whole
+# budget on transient answers and then walls, and the spare it rotates onto must still get
+# retries of its own rather than being retired on its first hiccup.
+clear_walls()
+budget_dir = work / "opencode-budget-counters"
+budget_dir.mkdir()
+(budget_dir / "default").write_text("2\n")
+(budget_dir / "second").write_text("2\n")
+os.environ["OPENCODE_TRANSIENT_DIR"] = str(budget_dir)
+os.environ["OPENCODE_WALL_DEFAULT"] = "1"
+budget_run = work / "opencode-budget-run"
+budget_run.mkdir()
+_, budget_account, budget_result = rb.run_rater_task(
+    opencode_rater, repo, sha, "", budget_run, "fixture commit diff"
+)
+assert budget_account == "opencode-go-second" and budget_result[0] == 0, budget_result
+assert (budget_dir / "default").read_text().strip() == "0"
+assert (budget_dir / "second").read_text().strip() == "0"
+assert rb.is_walled("opencode", "opencode-go")
+del os.environ["OPENCODE_WALL_DEFAULT"]
+del os.environ["OPENCODE_TRANSIENT_DIR"]
+
+profiles_path.unlink()
+clear_walls()
+del os.environ["REVIEW_BENCH_TRANSIENT_BACKOFF_S"]
 
 real_subprocess_run = rb.subprocess.run
 real_opencode_timeout_s = rb.opencode_timeout_s
@@ -2385,7 +3081,7 @@ def tier_runner(rater, repo_path, commit, focus, run_dir, diff, account):
 
 for side in rb.SIDE_RUNNERS:
     rb.SIDE_RUNNERS[side] = tier_runner
-rb.pool_account = lambda side, excluded: "fixture"
+rb.pool_account = lambda side, excluded, slot=0: "fixture"
 rb.affordability = lambda: {
     "claude": True, "codex": True, "agy": True, "grok": True, "opencode": True,
     "claude_account": "fixture",
@@ -2851,7 +3547,7 @@ def dispatcher_repeat_runner(rater, repo_path, commit, focus, run_dir, diff, acc
     return 0, duration, text, "", ["fake", rater["spec"]]
 
 
-def dispatcher_repeat_account(side, excluded):
+def dispatcher_repeat_account(side, excluded, slot=0):
     account_picks.append((side, tuple(sorted(excluded))))
     return "fixture"
 
@@ -3025,7 +3721,7 @@ def model_runner(rater, repo_path, commit, focus, run_dir, diff, account):
     return 0, 1, text, "", ["fake"]
 
 rb.SIDE_RUNNERS["claude"] = model_runner
-rb.pool_account = lambda side, excluded: "fixture"
+rb.pool_account = lambda side, excluded, slot=0: "fixture"
 rb.affordability = lambda: {
     "claude": True, "codex": False, "claude_account": "fixture",
 }

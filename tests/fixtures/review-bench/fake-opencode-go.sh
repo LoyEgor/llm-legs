@@ -47,6 +47,21 @@ if [[ -n ${OPENCODE_MAX_CEILING:-} && $max_tokens -gt $OPENCODE_MAX_CEILING ]]; 
     "$OPENCODE_MAX_CEILING" >&2
   exit 1
 fi
+transient_file=
+if [[ -n ${OPENCODE_TRANSIENT_DIR:-} ]]; then
+  transient_file="$OPENCODE_TRANSIENT_DIR/${OPENCODE_GO_PROFILE:-default}"
+elif [[ -n ${OPENCODE_TRANSIENT_LEFT_FILE:-} ]]; then
+  transient_file=$OPENCODE_TRANSIENT_LEFT_FILE
+fi
+# Ahead of the wall so one account can spend a retry budget before it walls.
+if [[ -n $transient_file ]]; then
+  left=$(cat "$transient_file" 2>/dev/null || printf 0)
+  if [[ $left -gt 0 ]]; then
+    printf '%s\n' "$((left - 1))" >"$transient_file"
+    printf 'HTTP 429\n{"error":{"message":"Error from provider (Console Go): Provider rate limit exceeded"}}\n' >&2
+    exit 1
+  fi
+fi
 if [[ -n ${OPENCODE_WALL_DEFAULT:-} && -z ${OPENCODE_GO_PROFILE:-} ]]; then
   printf 'HTTP 429\n{"error":"usage limit reached"}\n' >&2
   exit 1
