@@ -35,6 +35,10 @@ loader = importlib.machinery.SourceFileLoader("review_bench", sys.argv[1])
 spec = importlib.util.spec_from_loader("review_bench", loader)
 rb = importlib.util.module_from_spec(spec)
 loader.exec_module(rb)
+assert rb.REPORT_BEGIN == "REVIEW-REPORT-BEGIN"
+assert rb.REPORT_END == "REVIEW-REPORT-END"
+rb.REPORT_BEGIN = "FIXTURE-REVIEW-REPORT-BEGIN"
+rb.REPORT_END = "FIXTURE-REVIEW-REPORT-END"
 fixtures = pathlib.Path(sys.argv[2])
 repo = pathlib.Path(sys.argv[3])
 work = pathlib.Path(sys.argv[4])
@@ -307,6 +311,11 @@ max_tier_dir.mkdir()
 assert rb.tier_from_meta(max_tier_meta) == "T3 max"
 assert rb.review_log_event("run", max_tier_dir, max_tier_meta)["tier"] == "T3 max"
 assert rb.report_lines(max_tier_dir, max_tier_meta)[0].startswith("T3 max · ")
+marked_report = io.StringIO()
+with contextlib.redirect_stdout(marked_report):
+    rb.emit_report(max_tier_dir, max_tier_meta)
+marked_lines = marked_report.getvalue().splitlines()
+assert marked_lines[0] == rb.REPORT_BEGIN and marked_lines[-1] == rb.REPORT_END
 partial_tier_meta = dict(max_tier_meta, rater_runs=max_tier_rows[:1])
 assert rb.tier_from_meta(partial_tier_meta) == "T3 max"
 legacy_t2_raters = [
@@ -2383,10 +2392,14 @@ rb.affordability = lambda: {
 }
 rb.check_limits_staleness = lambda account: False
 os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-verify-keep.json")
-review_rc = rb.cmd_review(argparse.Namespace(
-    repo=str(pin_repo), commitish=pin_descendant_sha, tier="T1",
-    verify=None, focus=None,
-))
+review_stdout = io.StringIO()
+with contextlib.redirect_stdout(review_stdout):
+    review_rc = rb.cmd_review(argparse.Namespace(
+        repo=str(pin_repo), commitish=pin_descendant_sha, tier="T1",
+        verify=None, focus=None,
+    ))
+assert review_stdout.getvalue().count(rb.REPORT_BEGIN) == 1
+assert review_stdout.getvalue().count(rb.REPORT_END) == 1
 review_run_dir = next((review_store / "worker-stats" / "benches").iterdir())
 review_meta_path = review_run_dir / "meta.json"
 review_meta = json.loads(review_meta_path.read_text())
@@ -2441,6 +2454,38 @@ assert review_receipt == {
     "panel": len(review_meta["raters"]),
 }, review_receipt
 assert review_receipt["ts"]
+
+filtered_review_store = work / "filtered-review-claudeb"
+os.environ["CLAUDEB_DIR"] = str(filtered_review_store)
+os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-verify-drop.json")
+filtered_stdout = io.StringIO()
+with contextlib.redirect_stdout(filtered_stdout):
+    assert rb.cmd_review(argparse.Namespace(
+        repo=str(pin_repo), commitish=pin_descendant_sha, tier="T0",
+        verify=None, focus=None,
+    )) == 0
+filtered_run = next((filtered_review_store / "worker-stats" / "benches").iterdir())
+filtered_meta = json.loads((filtered_run / "meta.json").read_text())
+opencode_specs = [
+    row["rater"] for row in filtered_meta["rater_runs"]
+    if row["side"] == "opencode"
+]
+assert filtered_meta["verifier"] == rb.OPENCODE_VERIFIER
+assert sum(
+    row.get("verifier_dropped", 0) for row in filtered_meta["rater_runs"]
+) == len(opencode_specs) == 7
+assert all(rb.read_jsonl(filtered_run / f"findings-{rater}.jsonl") == []
+           for rater in opencode_specs)
+assert all(
+    len(rb.read_jsonl(filtered_run / f"verified-{rater}.jsonl")) == 1
+    and rb.read_jsonl(filtered_run / f"verified-{rater}.jsonl")[0]["kept"] is False
+    for rater in opencode_specs
+)
+filtered_output = filtered_stdout.getvalue()
+assert filtered_output.count(rb.REPORT_BEGIN) == filtered_output.count(rb.REPORT_END) == 1
+assert "verifier rejected:  7" in filtered_output
+assert "fixture finding" not in filtered_output
+assert rb.bench_summary(filtered_run, filtered_meta)["findings"] == 0
 
 progress_capture_store = work / "progress-capture-claudeb"
 os.environ["CLAUDEB_DIR"] = str(progress_capture_store)
@@ -2848,9 +2893,13 @@ repeat_verdicts.write_text(
         for rater in ("sol-medium", "sol-medium#2")
     ) + "\n"
 )
-assert rb.cmd_record(argparse.Namespace(
-    run_id=repeat_meta["run_id"], verdicts=str(repeat_verdicts),
-)) == 0
+repeat_record_stdout = io.StringIO()
+with contextlib.redirect_stdout(repeat_record_stdout):
+    assert rb.cmd_record(argparse.Namespace(
+        run_id=repeat_meta["run_id"], verdicts=str(repeat_verdicts),
+    )) == 0
+assert "confirmed 2:" in repeat_record_stdout.getvalue()
+assert "not adjudicated yet" not in repeat_record_stdout.getvalue()
 repeat_corpus = rb.read_jsonl(repeat_store / "worker-stats" / "reviews.jsonl")
 assert [row["rater"] for row in repeat_corpus] == ["sol-medium", "sol-medium#2"], repeat_corpus
 
@@ -2873,6 +2922,8 @@ with contextlib.redirect_stdout(worktree_record_stdout):
         run_id="worktree-record-fixture", verdicts=str(empty_verdicts),
     )) == 0
 assert "corpus skipped" in worktree_record_stdout.getvalue()
+assert worktree_record_stdout.getvalue().count(rb.REPORT_BEGIN) == 1
+assert worktree_record_stdout.getvalue().count(rb.REPORT_END) == 1
 assert not (worktree_record_dir / "defects.jsonl").exists()
 assert (worktree_record_dir / "verdicts.jsonl").read_text() == ""
 assert [row["rater"] for row in rb.read_jsonl(
@@ -2947,6 +2998,7 @@ rerun_arg = next(
 )
 rerun_values = shlex.split(rerun_arg)
 assert rerun_rc == 1 and "ERRORED (not recorded): sol-high#2" in rerun_output, rerun_output
+assert rerun_output.count(rb.REPORT_BEGIN) == rerun_output.count(rb.REPORT_END) == 1
 assert len(rerun_values) == 1
 assert [rater["spec"] for rater in rb.parse_raters(rerun_values[0])] == ["sol-high"]
 print("dispatcher-rater-repeat-ok")
@@ -3181,6 +3233,12 @@ def assert_suggestion(lines, files, changed_lines, tier, committed=False, receip
             "counted once"
         ), lines
         offset += 1
+    background = rb.REVIEW_TIERS[tier]["budget_min"] >= 10
+    assert lines[offset] == (
+        f"spawn: Bash run_in_background={'true' if background else 'false'}; "
+        "preserve the complete final stdout"
+    ), lines
+    offset += 1
     if committed:
         assert lines[offset].startswith("command: review-bench review "), lines
         assert f"--tier {tier}" in lines[offset], lines
@@ -3559,7 +3617,7 @@ range_head = subprocess.run(
 ).stdout.strip()
 range_lines = suggest(range_suggest, "--range", f"{range_base}..{range_head}")
 assert_suggestion(range_lines, 1, 151, "T2", committed=True)
-assert range_head in range_lines[3], range_lines
+assert range_head in range_lines[4], range_lines
 
 print("review-bench-unit-ok")
 PY
@@ -3668,7 +3726,7 @@ PY
 
 report_output=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" report report-adjudicated) \
   || fail "adjudicated report failed"
-expected_report=$'T2 · 5.5 min wall · slowest completed: Sol high 2 min\nconfirmed 1:  P1 1\nrejected:     1 duplicate  ~400 tok\n              2 false      ~3k tok\nfalse by:     Kimi K3 ×1 · Sol high ×1\nerrored:      Opus medium (exit 2)\ntimeout:      Gemini 3.6 Flash medium skill\nmismatch:     Gemini 3.5 Flash low skill'
+expected_report=$'REVIEW-REPORT-BEGIN\nT2 · 5.5 min wall · slowest completed: Sol high 2 min\nconfirmed 1:  P1 1\nrejected:     1 duplicate  ~400 tok\n              2 false      ~3k tok\nfalse by:     Kimi K3 ×1 · Sol high ×1\nerrored:      Opus medium (exit 2)\ntimeout:      Gemini 3.6 Flash medium skill\nmismatch:     Gemini 3.5 Flash low skill\nREVIEW-REPORT-END'
 assert test "$report_output" = "$expected_report"
 assert contains "$report_output" $'rejected:     1 duplicate  ~400 tok\n              2 false      ~3k tok'
 assert contains "$report_output" $'false by:     Kimi K3 ×1 · Sol high ×1\nerrored:      Opus medium (exit 2)\ntimeout:      Gemini 3.6 Flash medium skill\nmismatch:     Gemini 3.5 Flash low skill'
@@ -3677,11 +3735,13 @@ last_report=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" report --last) \
 assert test "$last_report" = "$expected_report"
 worktree_report=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" report report-worktree) \
   || fail "worktree report failed"
-expected_worktree_report=$'T0 · 30 sec wall · slowest completed: Kimi K3 20 sec\nfindings:  Kimi K3 ×2 3\nnote:      not adjudicated yet\ntimeout:   Gemini 3.1 Pro high skill'
+expected_worktree_report=$'REVIEW-REPORT-BEGIN\nT0 · 30 sec wall · slowest completed: Kimi K3 20 sec\nfindings:  Kimi K3 ×2 3\nnote:      not adjudicated yet\ntimeout:   Gemini 3.1 Pro high skill\nREVIEW-REPORT-END'
 assert test "$worktree_report" = "$expected_worktree_report"
 worktree_recorded=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" record report-worktree \
   --verdicts "$WORK/report-worktree-verdicts.jsonl") || fail "worktree record failed"
 assert contains "$worktree_recorded" "corpus skipped"
+assert contains "$worktree_recorded" "REVIEW-REPORT-BEGIN"
+assert contains "$worktree_recorded" "REVIEW-REPORT-END"
 assert test ! -e "$REPORT_SD/reviews.jsonl"
 worktree_recorded_again=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" record report-worktree \
   --verdicts "$WORK/report-worktree-verdicts.jsonl") || fail "worktree record replay failed"
@@ -4528,5 +4588,21 @@ assert contains "$max_without_tier" "--max requires --tier"
 tier_guard="$("$SCRIPT" run HEAD --tier T2 2>&1 || true)"
 assert contains "$tier_guard" "T2 runs ~10 min"
 assert contains "$tier_guard" "run_in_background"
+
+REPORT_HOOK="${REVIEW_REPORT_HOOK:-"$ROOT/../claude-setup/hooks/review-report-nudge.sh"}"
+if test -x "$REPORT_HOOK"; then
+  for hook_tool in Bash Read; do
+    hook_output="$(jq -nc --arg tool "$hook_tool" \
+      --arg output $'before\nREVIEW-REPORT-BEGIN\nT1 report\nREVIEW-REPORT-END\nafter' \
+      '{tool_name:$tool,tool_response:{stdout:$output}}' | "$REPORT_HOOK")"
+    assert test "$(jq -r '.hookSpecificOutput.additionalContext' <<<"$hook_output")" = \
+      "Paste the block between REVIEW-REPORT-BEGIN and REVIEW-REPORT-END verbatim as a fenced code block. Do not restate statistics in prose. Discuss only confirmed findings and actions."
+  done
+  hook_without_output="$(jq -n --rawfile source "$SCRIPT" \
+    '{tool_name:"Read",tool_response:{content:$source}}' | "$REPORT_HOOK")"
+  assert test -z "$hook_without_output"
+else
+  printf 'SKIP: review report hook behavior (%s is unavailable)\n' "$REPORT_HOOK"
+fi
 
 printf 'PASS: %s assertions; canonical review tiers sharing one OpenCode/Gemini floor with no retired cell in them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative suggestions with missing-object fallback, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account usable only behind its opt-in and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, and cross-side parallelism result assembly\n' "$asserts"

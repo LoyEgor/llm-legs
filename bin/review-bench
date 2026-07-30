@@ -109,6 +109,8 @@ OPENCODE_UNUSABLE_MODELS = {"oc-dsv4flash"}
 # true claim per three passes, so a wider leg costs the window and returns noise.
 OPENCODE_REVIEW_LEG = ("oc-grok45-low", "oc-kimik3")
 OPENCODE_VERIFIER = "oc-kimik3"
+REPORT_BEGIN = "REVIEW-REPORT-BEGIN"
+REPORT_END = "REVIEW-REPORT-END"
 # Highest effort a model has ever returned a review of a large diff at; None would mean
 # no effort at all. Empty by measurement, and it took a replication to keep it that way:
 # kimi-k3 at medium looked dead after two attempts with no output, then finished a third
@@ -1357,6 +1359,7 @@ def bench_summary(run_dir, meta):
             "duration_ms": duration,
             "status": cell_status(row),
             "findings": findings,
+            "verifier_dropped": row.get("verifier_dropped", 0),
             "exit_code": row.get("exit_code"),
             "timeout_s": timeout_seconds_from_row(row),
             "stderr": row.get("stderr"),
@@ -1393,6 +1396,12 @@ def bench_summary(run_dir, meta):
         "tier": tier_from_meta(meta),
         "cells": cells,
         "findings": sum(cell["findings"] for cell in cells),
+        "verifier_dropped": sum(
+            cell["verifier_dropped"] for cell in cells
+            if isinstance(cell["verifier_dropped"], int)
+            and not isinstance(cell["verifier_dropped"], bool)
+            and cell["verifier_dropped"] > 0
+        ),
         "adjudicated": verdict_path.exists(),
         "confirmed": verdict_counts["confirmed"],
         "duplicate": verdict_counts["duplicate"],
@@ -1569,6 +1578,8 @@ def report_lines(run_dir, meta):
         for index, value in enumerate(findings_parts or ["none"]):
             rows.append(("findings:" if index == 0 else "", value))
         rows.append(("note:", "not adjudicated yet"))
+    if summary["verifier_dropped"]:
+        rows.append(("verifier rejected:", str(summary["verifier_dropped"])))
     if errored:
         rows.append((
             "errored:",
@@ -1604,6 +1615,13 @@ def report_lines(run_dir, meta):
     return lines
 
 
+def emit_report(run_dir, meta):
+    print(REPORT_BEGIN)
+    for line in report_lines(run_dir, meta):
+        print(line)
+    print(REPORT_END)
+
+
 def newest_run_dir(benches):
     candidates = []
     for directory in benches.iterdir() if benches.exists() else ():
@@ -1631,8 +1649,7 @@ def cmd_report(args):
         target = "last run" if args.last else f"run id {args.run_id}"
         raise ValueError(f"unknown {target}")
     meta = json.loads((run_dir / "meta.json").read_text())
-    for line in report_lines(run_dir, meta):
-        print(line)
+    emit_report(run_dir, meta)
     return 0
 
 
@@ -3983,7 +4000,12 @@ def cmd_suggest(args):
     extra = ["--repo", str(repo)] if args.repo != "." else []
     # Long tiers are launched as background tasks (no TTY), where the guard demands the
     # flag — a suggested command must survive being copied verbatim.
-    long_tier = ["--foreground"] if REVIEW_TIERS[tier_name]["budget_min"] >= 10 else []
+    background = REVIEW_TIERS[tier_name]["budget_min"] >= 10
+    long_tier = ["--foreground"] if background else []
+    print(
+        f"spawn: Bash run_in_background={'true' if background else 'false'}; "
+        "preserve the complete final stdout"
+    )
     if args.range:
         command = ["review-bench", "review", command_target, "--tier", tier_name,
                    *extra, *long_tier]
@@ -4348,6 +4370,7 @@ def cmd_run(args):
                   f"{shlex.join(['review-bench', 'run', sha, '--raters', rerun])}")
         print(f"run id: {run_id}")
         handoff(run_id, paths)
+        emit_report(run_dir, meta)
         return 1 if (failed or errored_raters) else 0
     finally:
         if progress_path is not None:
@@ -4488,6 +4511,7 @@ def cmd_record(args):
             "recorded worktree adjudication; corpus skipped because worktree snapshots "
             "are not durable corpus commits"
         )
+        emit_report(run_dir, meta)
         return 0
     caught_by = {key: {key[0]} for key in canonical}
     for key, verdict in verdict_map.items():
@@ -4590,6 +4614,7 @@ def cmd_record(args):
     else:
         print(f"recorded {len(fresh)} rater row(s); "
               f"skipped {len(records) - len(fresh)} existing row(s)")
+    emit_report(run_dir, meta)
     return 0
 
 
