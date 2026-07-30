@@ -485,17 +485,23 @@ token_freeze_active() {
   return 0
 }
 
+user_refresh_explicit() {
+  [ "${CLAUDEB_WARM_USER_EXPLICIT:-false}" = true ]
+}
+
 # Append-only evidence of every token-endpoint-relevant event (real attempts and
 # their outcomes, warm outcomes, adoptions, freeze skips). Single-line O_APPEND
 # writes stay atomic under PIPE_BUF, so no lock; a failed write never breaks a
 # refresh path.
 token_journal() {
-  local account="$1" kind="$2" outcome="$3" http="${4:-}" ts line sz max_bytes
+  local account="$1" kind="$2" outcome="$3" http="${4:-}" ts line sz max_bytes user=false
+  user_refresh_explicit && user=true
   ts=$(date +%Y-%m-%dT%H:%M:%S%z 2>/dev/null) || ts=''
   line=$(jq -cn --arg ts "$ts" --arg account "$account" --arg kind "$kind" \
-    --arg outcome "$outcome" --arg http "$http" --argjson pid "$$" '
+    --arg outcome "$outcome" --arg http "$http" --argjson pid "$$" --argjson user "$user" '
     {ts:$ts, account:$account, kind:$kind, outcome:$outcome}
     + (if $http == "" then {} else {http:$http} end)
+    + (if $user then {user:true} else {} end)
     + {pid:$pid}') || return 0
   mkdir -p "$base_dir" 2>/dev/null || return 0
   # Permanent but bounded: roll to one .1 generation past the cap so the journal
@@ -529,7 +535,8 @@ oauth_attempt_update() {
       [ -n "${CLAUDEB_JOURNAL_KIND:-}" ] && jkind="$CLAUDEB_JOURNAL_KIND"
       jhttp=''
       if [ "$outcome" = 429 ]; then jhttp=429
-      elif [ "${http_status:-0}" != 0 ]; then jhttp="$http_status"; fi
+      elif [ "${http_status:-0}" != 0 ] \
+          && { user_refresh_explicit || [ "$outcome" = weather ]; }; then jhttp="$http_status"; fi
       token_journal "$name" "$jkind" "$outcome" "$jhttp"
       ;;
   esac
@@ -584,7 +591,7 @@ oauth_attempt_update() {
       + (if $outcome == "429" then {strikes:$new_strikes} else {} end)
       + (if $bypass_attempted_at > 0 then {bypass_attempted_at:$bypass_attempted_at} else {} end)
       + (if $credentials_expires_at > 0 then {credentials_expires_at:$credentials_expires_at} else {} end)
-      + (if $outcome == "weather" and $http_status > 0 then {http_status:$http_status} else {} end)
+      + (if ($outcome == "weather" or $outcome == "failed") and $http_status > 0 then {http_status:$http_status} else {} end)
       + (if $outcome == "weather" and $transport_rc > 0 then {transport_rc:$transport_rc} else {} end))} end' > "$tmp"; then
     mv "$tmp" "$oauth_attempts_file" 2>/dev/null || true
   fi
@@ -661,6 +668,14 @@ oauth_heal_backoff_until() {
 
 oauth_backoff_outcome() {
   jq -r --arg name "$1" '.[$name].outcome // ""' "$oauth_attempts_file" 2>/dev/null || true
+}
+
+oauth_rejection_since() {
+  jq -e --arg name "$1" --argjson since "$2" '
+    .[$name] as $e |
+    (($e.outcome // "") == "revoked" or ($e.outcome // "") == "auth-failed") and
+    (($e.attempted_at | type) == "number" and $e.attempted_at >= $since)' \
+    "$oauth_attempts_file" >/dev/null 2>&1
 }
 
 oauth_backoff_http() {
@@ -769,11 +784,11 @@ keychain_write() {
 # keychain write logs the profile out of Claude Code, so the write is verified by
 # re-read and the previous JSON is restored on any mismatch.
 oauth_refresh() {
-  local name="$1" service="$2" prev="$3" body response new_creds readback headers http rc=0 retry='' retry_until=0 weather_http=0 refresh_rc=1
+  local name="$1" service="$2" prev="$3" body response new_creds readback headers http rc=0 retry='' retry_until=0 weather_http=0 http_num=0 refresh_rc=1
   local prev_rt prev_expires_at current current_rt rlock='' lock_trap glock glock_held spacing
   # Freeze is weather, not a verdict: journal the skip, write no auth verdict, no
   # strike, no oauth-attempts change; the distinct rc 76 surfaces as cause `frozen`.
-  if token_freeze_active; then
+  if token_freeze_active && ! user_refresh_explicit; then
     token_journal "$name" curl-refresh frozen-skip
     return 76
   fi
@@ -848,6 +863,7 @@ oauth_refresh() {
     http=${response##*$'\n'}
     response=${response%$'\n'*}
     if [ "$rc" -ne 0 ] || [ "$http" != 200 ]; then
+      [[ "$http" =~ ^[0-9]{3}$ ]] && http_num=$((10#$http))
       if [ "$http" = 429 ]; then
         retry=$(header_value "$headers" retry-after)
         if [[ "$retry" =~ ^[0-9]+$ ]]; then retry_until=$(($(date +%s) + retry)); fi
@@ -878,7 +894,7 @@ oauth_refresh() {
         oauth_attempt_update "$name" weather 0 0 '' "$weather_http"
         refresh_rc=75
       else
-        oauth_attempt_update "$name" failed
+        oauth_attempt_update "$name" failed 0 0 '' "$http_num"
       fi
       rm -f "$headers"
       return "$refresh_rc"
@@ -1065,19 +1081,20 @@ messages_probe_and_mark() {
 # the token still lives (auth ok), revoked/auth-failed is a real rejection
 # (expired), and 429/weather/unresolved leaves the auth field untouched.
 heal_refresh_verdict() {
-  local name="$1" warm_cause="$2" service credentials refreshed outcome
+  local name="$1" warm_cause="$2" service credentials refreshed outcome refresh_run_start
   # Under a freeze oauth_refresh returns 76/empty without touching the endpoint,
   # so the fall-through below would read a stale PRE-freeze revoked/auth-failed
   # outcome and stamp a false `expired`. Every caller reaches here only when the
   # token was already due for refresh, so there is no live fresh-token verdict to
   # salvage — end as weather, no auth write. (Mirrors heal_one's freeze guard for
   # the twin callers messages_probe_and_mark / process_probe_result.)
-  if token_freeze_active; then
+  if token_freeze_active && ! user_refresh_explicit; then
     printf 'claudeb: %s: capacity (%s, token endpoint frozen) — no auth verdict\n' "$name" "$warm_cause" >&2
     return
   fi
   service=$(keychain_service "$name")
   credentials=$(security find-generic-password -s "$service" -w 2>/dev/null) || credentials=''
+  refresh_run_start=$(date +%s)
   if refreshed=$(oauth_refresh "$name" "$service" "$credentials" 2>/dev/null) && [ -n "$refreshed" ]; then
     mark_auth "$name" ok
     printf 'claudeb: %s: capacity (%s) — token refreshed, auth ok\n' "$name" "$warm_cause" >&2
@@ -1085,7 +1102,13 @@ heal_refresh_verdict() {
   fi
   outcome=$(oauth_backoff_outcome "$name")
   case "$outcome" in
-    revoked|auth-failed) mark_auth "$name" expired "$warm_cause, refresh token rejected" ;;
+    revoked|auth-failed)
+      if oauth_rejection_since "$name" "$refresh_run_start"; then
+        mark_auth "$name" expired "$warm_cause, refresh token rejected"
+      else
+        printf 'claudeb: %s: capacity (%s) — token refresh unresolved, no auth verdict\n' "$name" "$warm_cause" >&2
+      fi
+      ;;
     429|weather) printf 'claudeb: %s: capacity (%s, token refresh weather) — no auth verdict\n' "$name" "$warm_cause" >&2 ;;
     *) printf 'claudeb: %s: capacity (%s) — token refresh unresolved, no auth verdict\n' "$name" "$warm_cause" >&2 ;;
   esac
@@ -1096,8 +1119,9 @@ heal_refresh_verdict() {
 # path uses the `claude` CLI's own OAuth rotation, not the curl refresh, so a
 # token-endpoint 429/failed record must never gate it (see oauth_heal_backoff_until).
 heal_one() {
-  local dir="$1" name="$2" until_heal now_heal warm_out warm_skip_dir warm_cause cause source rc http until_refresh outcome retry_until warm_gated=false
+  local dir="$1" name="$2" until_heal now_heal warm_out warm_skip_dir warm_cause cause source rc http until_refresh outcome retry_until run_start warm_gated=false
   local warm_reason='' retry_delay
+  run_start=$(date +%s)
   until_heal=$(oauth_heal_backoff_until "$name")
   now_heal=$(date +%s)
   if [ "$until_heal" -gt "$now_heal" ] 2>/dev/null; then
@@ -1124,7 +1148,7 @@ heal_one() {
   # (a 20s sleep + repeat) is pure dead time, and a pre-freeze capacity-shaped
   # warm_cause is stale, not this run's evidence. Skip both capacity blocks and
   # fall through to the probe + freeze verdict below.
-  if ! token_freeze_active; then
+  if user_refresh_explicit || ! token_freeze_active; then
     if [ "$warm_gated" != true ] && warm_class_is_capacity "$warm_reason"; then
       retry_delay="${CLAUDEB_WARM_RETRY_DELAY:-20}"
       [[ "$retry_delay" =~ ^[0-9]+$ ]] || retry_delay=20
@@ -1158,7 +1182,7 @@ heal_one() {
   # Under a freeze the token endpoint never ran this cycle, so a stale backoff or
   # rejection outcome is pre-freeze, not current-run evidence — end as weather. A
   # live 4xx on a still-fresh token is endpoint-independent and still counts.
-  if token_freeze_active; then
+  if token_freeze_active && ! user_refresh_explicit; then
     if { [ "$http" = 401 ] || [ "$http" = 403 ]; } && ! token_needs_refresh "$name"; then
       mark_auth "$name" expired "fresh token rejected ($http)"
     else
@@ -1169,7 +1193,7 @@ heal_one() {
   now_heal=$(date +%s)
   until_refresh=$(oauth_backoff_until "$name")
   outcome=$(oauth_backoff_outcome "$name")
-  if [ "$outcome" = revoked ]; then
+  if [ "$outcome" = revoked ] && oauth_rejection_since "$name" "$run_start"; then
     mark_auth "$name" expired 'needs re-login'
     return
   fi
@@ -1284,7 +1308,7 @@ converge_backoff() {
 # weather failures wait for the next upkeep. No probes, no spend.
 token_upkeep() {
   local name service credentials expires_at now_ms window_ms
-  if token_freeze_active; then
+  if token_freeze_active && ! user_refresh_explicit; then
     token_journal all upkeep frozen-skip
     return 0
   fi
@@ -1900,7 +1924,7 @@ warm_accounts() {
   warm_single_explicit=false
   if [ "$explicit" = true ] && [ "${#names[@]}" -eq 1 ]; then warm_single_explicit=true; fi
   # Every refresh menu click supplies this signal; background callers do not.
-  if [ "${CLAUDEB_WARM_USER_EXPLICIT:-false}" = true ]; then warm_manual_explicit=true; fi
+  if user_refresh_explicit; then warm_manual_explicit=true; fi
   if [ "$warm_manual_explicit" != true ] && token_freeze_active; then
     for name in "${names[@]}"; do
       # An account that does not exist is a failure whether or not the freeze is on: skipping

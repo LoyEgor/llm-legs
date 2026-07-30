@@ -692,6 +692,22 @@ jq -e --arg retry "$(date -r "$((now + 900))" '+%H:%M' 2>/dev/null || date -d "@
   .vendors.claude.refresh_error.cause == ("alona: not refreshed (token rate-limited, retry ~" + $retry + ")") and
   (.vendors.claude.refresh_error.cause | contains("probe failed") | not)' "$STALE_CACHE" >/dev/null \
   || fail "targeted Claude refresh did not scope the legacy-429 ETA to its account"
+printf '{"alona":{"attempted_at":%s,"outcome":"weather","http_status":500,"warm_attempted_at":%s,"warm_outcome":"warm-failed","warm_cause":"usage-probe-failed"}}\n' \
+  "$((now - 86400))" "$now" >"$STALE_STORE/oauth-attempts.json"
+CLAUDEB_WARM_USER_EXPLICIT=true HOME="$HOME_FIXTURE" CLAUDEB_DIR="$STALE_STORE" \
+  LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-target-fail" LLM_LIMITS_CACHE="$STALE_CACHE" \
+  /bin/bash "$SCRIPT" --refresh-account claude/alona >/dev/null 2>&1 || true
+jq -e '(.vendors.claude.refresh_error.cause | contains("usage probe failed")) and
+  (.vendors.claude.refresh_error.cause | contains("token refresh HTTP 500") | not)' "$STALE_CACHE" >/dev/null \
+  || fail "newer warm failure did not outrank older token-refresh weather"
+printf '{"alona":{"attempted_at":%s,"outcome":"weather","http_status":500,"warm_attempted_at":%s,"warm_outcome":"warm-failed","warm_cause":"usage-probe-failed"}}\n' \
+  "$now" "$((now - 86400))" >"$STALE_STORE/oauth-attempts.json"
+CLAUDEB_WARM_USER_EXPLICIT=true HOME="$HOME_FIXTURE" CLAUDEB_DIR="$STALE_STORE" \
+  LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-target-fail" LLM_LIMITS_CACHE="$STALE_CACHE" \
+  /bin/bash "$SCRIPT" --refresh-account claude/alona >/dev/null 2>&1 || true
+jq -e '(.vendors.claude.refresh_error.cause | contains("token refresh HTTP 500")) and
+  (.vendors.claude.refresh_error.cause | contains("usage probe failed") | not)' "$STALE_CACHE" >/dev/null \
+  || fail "newer token-refresh weather did not outrank older warm failure"
 cat >"$WORK/claudeb-fresh" <<EOF
 #!/usr/bin/env bash
 printf '{"five_hour":{"used_percentage":7,"resets_at":%s,"as_of":9999999999,"origin":"usage"}}\n' "$((now + 5000))" >"$STALE_STORE/limits/alona.json"
@@ -765,6 +781,42 @@ jq -e '.vendors.claude.refresh_error.needs_user_entry == true and
   ([.vendors.claude.accounts[] | select(.account == "frz")][0].needs_user_entry == true) and
   (.vendors.claude.refresh_error.cause | contains("; ") | not)' "$FREEZE_CACHE" >/dev/null \
   || fail "frozen stale cause was not classed for account entry or contained the join separator"
+
+USER_CHILD_LOG="$WORK/user-claudeb-child.log"
+cat >"$WORK/user-signal-claudeb" <<'EOF'
+#!/usr/bin/env bash
+printf '%s|%s\n' "${CLAUDEB_WARM_USER_EXPLICIT:-unset}" "$*" >>"$USER_CHILD_LOG"
+if [ "${1:-}" = --help ]; then
+  printf 'claudeb warm [--start-window] [names...]\nclaudeb --refresh [--start-windows]\n'
+  exit 0
+fi
+printf '{"frz":{"warm_outcome":"warm-failed","warm_cause":"usage-probe-failed"}}\n' >"$CLAUDEB_DIR/oauth-attempts.json"
+exit 1
+EOF
+chmod +x "$WORK/user-signal-claudeb"
+export USER_CHILD_LOG
+: >"$USER_CHILD_LOG"
+CLAUDEB_WARM_USER_EXPLICIT=true HOME="$HOME_FIXTURE" CLAUDEB_DIR="$FREEZE_STORE" \
+  LLM_LIMITS_CLAUDEB_CMD="$WORK/user-signal-claudeb" LLM_LIMITS_CACHE="$FREEZE_CACHE" \
+  /bin/bash "$SCRIPT" --refresh-account claude/frz --start-windows >/dev/null 2>&1 || true
+jq -e '(.vendors.claude.refresh_error.cause | contains("usage probe failed")) and
+  (.vendors.claude.refresh_error.cause | contains("auto-refresh frozen") | not)' "$FREEZE_CACHE" >/dev/null \
+  || fail "user-explicit hard refresh surfaced the robot freeze cause instead of the failing step"
+CLAUDEB_WARM_USER_EXPLICIT=true HOME="$HOME_FIXTURE" CLAUDEB_DIR="$FREEZE_STORE" \
+  LLM_LIMITS_CLAUDEB_CMD="$WORK/user-signal-claudeb" LLM_LIMITS_CACHE="$FREEZE_CACHE" \
+  /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1 || true
+CLAUDEB_WARM_USER_EXPLICIT=true HOME="$HOME_FIXTURE" CLAUDEB_DIR="$FREEZE_STORE" \
+  LLM_LIMITS_CLAUDEB_CMD="$WORK/user-signal-claudeb" LLM_LIMITS_CACHE="$FREEZE_CACHE" \
+  /bin/bash "$SCRIPT" --refresh --start-windows >/dev/null 2>&1 || true
+awk -F'|' '$1 != "true" { bad = 1 } END { exit bad }' "$USER_CHILD_LOG" \
+  || fail "a user-explicit collector spawned claudeb without the signal"
+grep -Fqx 'true|warm --start-window frz' "$USER_CHILD_LOG" \
+  || fail "per-account Hard refresh lost the user signal"
+grep -Fqx 'true|accounts --no-spend --heal' "$USER_CHILD_LOG" \
+  || fail "global Refresh lost the user signal"
+grep -Fqx 'true|--refresh --start-windows --heal' "$USER_CHILD_LOG" \
+  || fail "Refresh + Start Windows lost the user signal"
+
 printf '{"started_at":%s,"until":%s,"reason":"x"}\n' "$((now - 7200))" "$((now - 3600))" >"$FREEZE_STORE/token-freeze"
 HOME="$HOME_FIXTURE" CLAUDEB_DIR="$FREEZE_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-noop" \
   LLM_LIMITS_CACHE="$FREEZE_CACHE" /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1 || true

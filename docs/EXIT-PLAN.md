@@ -68,10 +68,11 @@ Anthropic's OAuth token endpoint intermittently 429s our accounts. Hypothesis un
 test: our own automated refresh traffic earned the rate-limiting. Phase 1 froze every
 ROBOT path and produced zero token-endpoint 429s from 2026-07-23 through 2026-07-27.
 Phase 2 runs through 2026-08-03: scheduled automation remains frozen, while every
-user-initiated menu refresh is allowed to drive the real Claude CLI warm path. On
+user-initiated menu refresh is allowed to drive the full refresh chain. On
 2026-07-27 the global `Refresh` and `Refresh + Start Windows` actions began carrying the
-same explicit user signal as per-account Hard refresh. Direct `oauth_refresh()` POSTs
-remain frozen; the experiment now isolates manual warm traffic from scheduled traffic.
+same explicit user signal as per-account Hard refresh. That signal exempts the invocation's
+warm, heal, and direct `oauth_refresh()` POSTs from the freeze; its journal entries carry
+`"user":true`. The experiment isolates user-bidden traffic from scheduled traffic.
 
 **Temporary inventory (what exits): the freeze FILE only** —
 `~/.claude-profiles/.claudeb/token-freeze`. The switch (`token_freeze_active`), the
@@ -81,8 +82,10 @@ stale-cause in `llm-limits.sh` are permanent and cheap; they stay.
 **Exit decision (one of two outcomes).** Review `token-attempts.jsonl` plus the owner's
 menu-refresh experience. The journal legitimately carries more than `frozen-skip`:
 user-initiated menu warms (`kind=warm`) and keychain adoptions from manual CLI sessions
-(`kind=adopt`) are expected. What must NOT appear is an unbidden `curl-refresh` with a
-real HTTP outcome — that would mean a robot POSTed the token endpoint despite the freeze:
+(`kind=adopt`) are expected. User-bidden curl refreshes are also expected and carry
+`"user":true`. What must NOT appear is an unbidden `curl-refresh` — one without the user
+marker — with a real HTTP outcome; that would mean a robot POSTed the token endpoint despite
+the freeze:
 
 - **Hypothesis holds** (manual refreshes stay 429-free through the window): keep
   automation off and make its measured reintroduction a separate parasite-mode task,

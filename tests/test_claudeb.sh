@@ -1157,6 +1157,7 @@ EOF
   assert jq -e '.alpha.outcome == "429" and .alpha.strikes == 2' "$oauth_attempts_file" >/dev/null
   assert jq -e '.auth.status == "ok"' "$limits_dir/alpha.json" >/dev/null
   assert jq -se 'any(.[]; .kind == "curl-refresh" and .outcome == "frozen-skip" and .account == "alpha")' "$token_attempts_file" >/dev/null
+  assert jq -se 'all(.[]; has("user") | not)' "$token_attempts_file" >/dev/null
 
   # 2: frozen token-upkeep exits 0, journals kind upkeep, touches nothing.
   : >"$fz_curl"; : >"$token_attempts_file"
@@ -1165,6 +1166,7 @@ EOF
   assert test "$fz_tu_rc" -eq 0
   assert_fails test -s "$fz_curl"
   assert jq -se 'any(.[]; .kind == "upkeep" and .outcome == "frozen-skip")' "$token_attempts_file" >/dev/null
+  assert jq -se 'all(.[]; has("user") | not)' "$token_attempts_file" >/dev/null
 
   # 3: frozen non-explicit warm skips every account successfully, one journal line each, no session.
   : >"$fz_claude"; : >"$token_attempts_file"
@@ -1179,6 +1181,7 @@ EOF
   assert_fails test -s "$fz_claude"
   assert jq -se '[.[] | select(.kind == "warm" and .outcome == "frozen-skip")] | length == 2' "$token_attempts_file" >/dev/null
   assert jq -se 'any(.[]; .kind == "warm" and .account == "fzA")' "$token_attempts_file" >/dev/null
+  assert jq -se 'all(.[]; has("user") | not)' "$token_attempts_file" >/dev/null
   assert grep -q 'warm skipped' "$WORK/fz-warm.err"
 
   : >"$fz_claude"; : >"$token_attempts_file"
@@ -1191,12 +1194,37 @@ EOF
   assert_fails jq -se 'any(.[]; .kind == "warm" and .outcome == "frozen-skip")' "$token_attempts_file" >/dev/null
   rm -f "$CLAUDEB_DIR/tokens/fzM" "$CLAUDEB_DIR/tokens/fzN"
 
-  # The user signal never exempts the direct curl refresh path.
-  : >"$fz_curl"; : >"$token_attempts_file"
-  if CLAUDEB_WARM_USER_EXPLICIT=true oauth_refresh alpha svc "$fz_creds" >/dev/null 2>&1; then fz_direct_rc=0; else fz_direct_rc=$?; fi
-  assert test "$fz_direct_rc" -eq 76
-  assert_fails test -s "$fz_curl"
-  assert jq -se 'any(.[]; .kind == "curl-refresh" and .outcome == "frozen-skip")' "$token_attempts_file" >/dev/null
+  (
+    user_name=fzUser
+    user_credentials="$WORK/fz-user-credentials"
+    user_curl="$WORK/fz-user-curl"
+    printf '%s' "$fz_creds" >"$user_credentials"
+    : >"$user_curl"
+    : >"$token_attempts_file"
+    printf '{}' >"$oauth_attempts_file"
+    printf 'tok' >"$tokens_dir/$user_name"
+    security() { cat "$user_credentials"; }
+    keychain_write() { printf '%s' "$2" >"$user_credentials"; }
+    curl() {
+      printf 'token\n' >>"$user_curl"
+      printf '{"access_token":"at-user","expires_in":3600,"refresh_token":"rt-user"}\n200'
+    }
+    profile_command() {
+      prepared_profile_dir="$WORK/fz-user-profile"
+      mkdir -p "$prepared_profile_dir"
+    }
+    run_warm_session() { : >"$3"; }
+    probe_one() {
+      printf 'usage 0 200\n' >"$2/$1.result"
+      printf '%s\n' '{"five_hour":{"utilization":1,"resets_at":null},"seven_day":{"utilization":2,"resets_at":null},"limits":[{"kind":"weekly_scoped","scope":{"model":{"display_name":"Fable"}},"percent":3,"resets_at":null}]}' >"$2/$1.usage"
+    }
+    CLAUDEB_WARM_USER_EXPLICIT=true warm_accounts "$user_name" >/dev/null 2>"$WORK/fz-user.err" \
+      || fail "user-explicit frozen warm failed: $(cat "$WORK/fz-user.err")"
+    assert test "$(wc -l <"$user_curl" | tr -d ' ')" -eq 1
+    assert_fails grep -q 'frozen' "$WORK/fz-user.err"
+    assert jq -se 'any(.[]; .account == "fzUser" and .kind == "curl-refresh" and .outcome == "success" and .user == true)' "$token_attempts_file" >/dev/null
+    assert jq -se 'any(.[]; .account == "fzUser" and .kind == "warm" and .outcome == "success" and .user == true)' "$token_attempts_file" >/dev/null
+  )
 
   # 5: expired `until` behaves unfrozen — curl runs, rc is a real verdict not 76.
   : >"$fz_curl"; : >"$fz_claude"; : >"$token_attempts_file"
@@ -1221,6 +1249,7 @@ EOF
   assert jq -se 'any(.[]; .account == "j2" and .kind == "curl-refresh" and .outcome == "429" and .http == "429")' "$token_attempts_file" >/dev/null
   assert jq -se 'any(.[]; .account == "j3" and .kind == "adopt" and .outcome == "success-adopted")' "$token_attempts_file" >/dev/null
   assert jq -se 'any(.[]; .account == "j4" and .kind == "warm" and .outcome == "warm-failed")' "$token_attempts_file" >/dev/null
+  assert jq -se 'all(.[]; has("user") | not)' "$token_attempts_file" >/dev/null
   assert_fails jq -se 'any(.[]; .account == "j5")' "$token_attempts_file" >/dev/null
   # A CLI-warm success routes through the funnel with a caller kind hint → kind warm.
   assert jq -se 'any(.[]; .account == "jwarm" and .kind == "warm" and .outcome == "success")' "$token_attempts_file" >/dev/null
@@ -1258,6 +1287,56 @@ EOF
   heal_one "$hd" fzh 2>/dev/null
   assert jq -e '.auth.status == "expired"' "$limits_dir/fzh.json" >/dev/null
   rm -f "$token_freeze_file" "$CLAUDEB_DIR/tokens/fzh"
+) || exit 1
+
+(
+  heal_name=fzHealUser
+  heal_credentials="$WORK/fz-heal-user-credentials"
+  heal_curl="$WORK/fz-heal-user-curl"
+  heal_dir="$WORK/fz-heal-user"
+  mkdir -p "$heal_dir"
+  printf '%s' '{"claudeAiOauth":{"refreshToken":"rt-heal","accessToken":"at-heal","expiresAt":1,"scopes":["a"]}}' >"$heal_credentials"
+  printf '{"started_at":%s,"reason":"x"}\n' "$now" >"$token_freeze_file"
+  printf '{}' >"$oauth_attempts_file"
+  : >"$token_attempts_file"
+  : >"$heal_curl"
+  printf '{"auth":{"status":"expired","checked_at":1}}' >"$limits_dir/$heal_name.json"
+  security() { cat "$heal_credentials"; }
+  keychain_write() { printf '%s' "$2" >"$heal_credentials"; }
+  curl() {
+    printf 'token\n' >>"$heal_curl"
+    printf '{"access_token":"at-healed","expires_in":3600,"refresh_token":"rt-healed"}\n200'
+  }
+  warm_accounts() { return 1; }
+  oauth_warm_cause() { printf 'needs-relogin\n'; }
+  oauth_heal_backoff_until() { printf '0\n'; }
+  probe_one() { printf 'no-spend 0 401\n' >"$2/$1.result"; }
+  token_needs_refresh() { return 0; }
+  CLAUDEB_WARM_USER_EXPLICIT=true heal_one "$heal_dir" "$heal_name"
+  assert test "$(wc -l <"$heal_curl" | tr -d ' ')" -eq 1
+  assert jq -e '.auth.status == "ok"' "$limits_dir/$heal_name.json" >/dev/null
+  assert jq -se 'any(.[]; .account == "fzHealUser" and .kind == "curl-refresh" and .outcome == "success" and .user == true)' "$token_attempts_file" >/dev/null
+  rm -f "$token_freeze_file"
+) || exit 1
+
+(
+  heal_name=fzHealStale
+  heal_dir="$WORK/fz-heal-stale"
+  refresh_marker="$WORK/fz-heal-stale-refresh"
+  mkdir -p "$heal_dir"
+  printf '{"started_at":%s,"reason":"x"}\n' "$now" >"$token_freeze_file"
+  printf '{"fzHealStale":{"attempted_at":%s,"outcome":"revoked","retry_after_until":%s,"credentials_expires_at":1}}\n' \
+    "$((now - 600))" "$((now + 21600))" >"$oauth_attempts_file"
+  printf '{"auth":{"status":"ok","checked_at":717,"cause":"prior verdict"}}' >"$limits_dir/$heal_name.json"
+  warm_accounts() { return 1; }
+  oauth_warm_cause() { printf '\n'; }
+  probe_one() { printf 'no-spend 0 000\n' >"$2/$1.result"; }
+  token_needs_refresh() { return 0; }
+  oauth_refresh() { : >"$refresh_marker"; return 2; }
+  CLAUDEB_WARM_USER_EXPLICIT=true heal_one "$heal_dir" "$heal_name" 2>/dev/null
+  assert jq -e '.auth.status == "ok" and .auth.checked_at == 717 and .auth.cause == "prior verdict"' "$limits_dir/$heal_name.json" >/dev/null
+  assert_fails test -e "$refresh_marker"
+  rm -f "$token_freeze_file"
 ) || exit 1
 
 touch "$CLAUDEB_DIR/tokens/eta"

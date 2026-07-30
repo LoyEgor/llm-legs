@@ -131,16 +131,34 @@ claude_stale_cause() {
   raw=$(jq -r --arg n "$name" --arg auth "$auth" '
     (.[$n] // null) as $e |
     if $e == null then ["cause", (if $auth == "failed" then "stale data kept" else "usage weather" end)] | @tsv
+    else
+      (if ($e.attempted_at | type) == "number" then $e.attempted_at else 0 end) as $outcome_at |
+      (if ($e.warm_outcome // "") == "warm-failed"
+       then (if ($e.warm_attempted_at | type) == "number" then $e.warm_attempted_at else 0 end)
+       elif ($e.outcome // "") == "warm-failed"
+       then $outcome_at
+       else 0 end) as $warm_at |
+      (($e.warm_outcome // "") == "warm-failed" or ($e.outcome // "") == "warm-failed") as $has_warm |
+      (($e.outcome // "") == "429" or ($e.outcome // "") == "weather" or
+       (($e.outcome // "") == "failed" and (($e.http_status // 0) > 0))) as $has_outcome |
+    if $has_warm and ($e.warm_cause // "") != "" and
+       (($has_outcome | not) or $warm_at > $outcome_at)
+      then ["cause", $e.warm_cause] | @tsv
     elif ($e.outcome // "") == "429" then
       (((($e.strikes // 0) | if type != "number" or . < 1 then 1 else floor end)) as $s |
        (900 * (2 | pow(.; $s - 1)) | if . > 14400 then 14400 else . end) as $c |
-       ([((if ($e.attempted_at | type) == "number" then $e.attempted_at else 0 end) + $c),
+       ([($outcome_at + $c),
          (if ($e.retry_after_until | type) == "number" then $e.retry_after_until else 0 end)] | max) as $until |
        ["429", $until] | @tsv)
+    elif ($e.outcome // "") == "weather" and (($e.http_status // 0) > 0)
+      then ["cause", ("token refresh HTTP " + ($e.http_status | tostring))] | @tsv
+    elif ($e.outcome // "") == "weather" and (($e.transport_rc // 0) > 0)
+      then ["cause", ("token refresh transport error (curl " + ($e.transport_rc | tostring) + ")")] | @tsv
     elif ($e.outcome // "") == "weather" then ["cause", "network weather"] | @tsv
-    elif (($e.warm_outcome // "") == "warm-failed" or ($e.outcome // "") == "warm-failed")
-         and ($e.warm_cause // "") != "" then ["cause", $e.warm_cause] | @tsv
-    else ["cause", "stale data kept"] | @tsv end' "$attempts_file" 2>/dev/null) || raw=$'cause\tstale data kept'
+    elif ($e.outcome // "") == "failed" and (($e.http_status // 0) > 0)
+      then ["cause", ("token refresh HTTP " + ($e.http_status | tostring))] | @tsv
+    elif $has_warm and ($e.warm_cause // "") != "" then ["cause", $e.warm_cause] | @tsv
+    else ["cause", "stale data kept"] | @tsv end end' "$attempts_file" 2>/dev/null) || raw=$'cause\tstale data kept'
   IFS=$'\t' read -r kind value <<<"$raw"
   # An auth-shaped cause (logged out / needs re-login) is actionable and must
   # surface even under a freeze — the account is genuinely dead, not just paused.
@@ -148,7 +166,15 @@ claude_stale_cause() {
     *relogin*|*re-login*|*"log in"*|*"logged out"*|*"login needed"*)
       printf '%s' "$value"; return ;;
   esac
-  if token_freeze_active_at "$(dirname "$attempts_file")"; then
+  case "$value" in
+    usage-probe-failed) value='usage probe failed' ;;
+    timeout) value='warm timeout' ;;
+    warm-failed) value='warm session failed' ;;
+    warm-429) value='warm HTTP 429' ;;
+    frozen) value='refresh produced no current outcome' ;;
+  esac
+  if [ "${CLAUDEB_WARM_USER_EXPLICIT:-false}" != true ] \
+      && token_freeze_active_at "$(dirname "$attempts_file")"; then
     # Freeze outranks a stale pre-freeze 429 (or generic weather/stale) cause:
     # the endpoint is frozen this run, so nothing is really "rate-limited".
     printf 'auto-refresh frozen (experiment) — enter the account to refresh'
@@ -672,18 +698,22 @@ if [ "$refresh" -eq 1 ] && { [ -z "$refresh_account" ] || [ -n "$claude_refresh_
     claude_refresh_run_start=$(date +%s)
     claudeb_cmd=$(command -v "${LLM_LIMITS_CLAUDEB_CMD:-claudeb}" 2>/dev/null || true)
     if [ -n "$claudeb_cmd" ]; then
+      claudeb_child=("$claudeb_cmd")
+      if [ "${CLAUDEB_WARM_USER_EXPLICIT:-false}" = true ]; then
+        claudeb_child=(env CLAUDEB_WARM_USER_EXPLICIT=true "$claudeb_cmd")
+      fi
       if [ -n "$claude_refresh_target" ]; then
         warm_args=(warm)
         if [ "$start_windows" -eq 1 ]; then
           # Feature-detect; the trailing ] keeps old builds' [--start-windows] from matching.
-          if "$claudeb_cmd" --help 2>/dev/null | grep -q -- '--start-window]'; then
+          if "${claudeb_child[@]}" --help 2>/dev/null | grep -q -- '--start-window]'; then
             warm_args+=(--start-window)
           else
             echo "llm-limits.sh: claudeb warm lacks --start-window; free account refresh only" >&2
           fi
         fi
         if run_bounded_claude "$claude_refresh_timeout" "account refresh ($claude_refresh_target)" \
-            "$claudeb_cmd" "${warm_args[@]}" "$claude_refresh_target"; then
+            "${claudeb_child[@]}" "${warm_args[@]}" "$claude_refresh_target"; then
           claude_refresh_succeeded=1
         else
           [ -n "$claude_refresh_error" ] || claude_refresh_error=$(claude_stale_cause "$claudeb_root/oauth-attempts.json" "$claude_refresh_target" ok)
@@ -691,22 +721,22 @@ if [ "$refresh" -eq 1 ] && { [ -z "$refresh_account" ] || [ -n "$claude_refresh_
         fi
       elif [ "$start_windows" -eq 1 ]; then
         # Feature-detect: older claudeb builds predate --start-windows and would die on it.
-        if "$claudeb_cmd" --help 2>/dev/null | grep -q -- '--start-windows'; then
-          if run_bounded_claude "$claude_sw_timeout" 'refresh + start-windows + heal' "$claudeb_cmd" --refresh --start-windows --heal; then
+        if "${claudeb_child[@]}" --help 2>/dev/null | grep -q -- '--start-windows'; then
+          if run_bounded_claude "$claude_sw_timeout" 'refresh + start-windows + heal' "${claudeb_child[@]}" --refresh --start-windows --heal; then
             claude_refresh_succeeded=1
           else
             [ -n "$claude_refresh_error" ] || claude_refresh_error='probe failed'
           fi
         else
           echo "llm-limits.sh: claudeb lacks --start-windows; claude windows not started (free refresh only)" >&2
-          if run_bounded_claude "$claude_refresh_timeout" 'free refresh (no start-windows support)' "$claudeb_cmd" accounts --no-spend; then
+          if run_bounded_claude "$claude_refresh_timeout" 'free refresh (no start-windows support)' "${claudeb_child[@]}" accounts --no-spend; then
             claude_refresh_succeeded=1
           else
             [ -n "$claude_refresh_error" ] || claude_refresh_error='probe failed'
           fi
         fi
       else
-        if run_bounded_claude "$claude_refresh_timeout" 'free refresh + heal' "$claudeb_cmd" accounts --no-spend --heal; then
+        if run_bounded_claude "$claude_refresh_timeout" 'free refresh + heal' "${claudeb_child[@]}" accounts --no-spend --heal; then
           claude_refresh_succeeded=1
         else
           [ -n "$claude_refresh_error" ] || claude_refresh_error='probe failed'

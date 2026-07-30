@@ -606,12 +606,14 @@ local function refreshData(args, kind, budget, key, envExtra)
   startTask(id, task, "collector could not start")
 end
 
--- A refresh menu click is the user signal that exempts claudeb warms from the freeze.
+local function userRefreshData(args, kind, budget, key)
+  refreshData(args, kind, budget, key, { CLAUDEB_WARM_USER_EXPLICIT = "true" })
+end
+
 local function hardRefresh(target, startWindows)
   local args = { "--refresh-account", target }
   if startWindows then table.insert(args, "--start-windows") end
-  refreshData(args, "hard-refresh", 360, "hard:" .. target,
-    { CLAUDEB_WARM_USER_EXPLICIT = "true" })
+  userRefreshData(args, "hard-refresh", 360, "hard:" .. target)
 end
 
 -- Hard = full truth at any cost: opens the account's expired 5h window (tiny paid ping).
@@ -662,16 +664,14 @@ local function refreshItems(menu)
     title = "Refresh",
     disabled = M.refreshState().busy,
     fn = function()
-      refreshData({ "--refresh" }, "refresh", 360, "refresh",
-        { CLAUDEB_WARM_USER_EXPLICIT = "true" })
+      userRefreshData({ "--refresh" }, "refresh", 360, "refresh")
     end,
   })
   table.insert(menu, {
     title = "Refresh + Start Windows",
     disabled = M.refreshState().busy,
     fn = function()
-      refreshData({ "--refresh", "--start-windows" }, "start-windows", 1200, "start-windows",
-        { CLAUDEB_WARM_USER_EXPLICIT = "true" })
+      userRefreshData({ "--refresh", "--start-windows" }, "start-windows", 1200, "start-windows")
     end,
   })
 end
