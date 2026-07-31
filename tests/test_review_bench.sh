@@ -39,6 +39,8 @@ assert rb.REPORT_BEGIN == "REVIEW-REPORT-BEGIN"
 assert rb.REPORT_END == "REVIEW-REPORT-END"
 rb.REPORT_BEGIN = "FIXTURE-REVIEW-REPORT-BEGIN"
 rb.REPORT_END = "FIXTURE-REVIEW-REPORT-END"
+assert rb.TRIAGE_PENDING == "REVIEW-TRIAGE-PENDING"
+rb.TRIAGE_PENDING = "FIXTURE-REVIEW-TRIAGE-PENDING"
 fixtures = pathlib.Path(sys.argv[2])
 repo = pathlib.Path(sys.argv[3])
 work = pathlib.Path(sys.argv[4])
@@ -581,9 +583,23 @@ max_tier_dir.mkdir()
 assert rb.tier_from_meta(max_tier_meta) == "T3 max"
 assert rb.review_log_event("run", max_tier_dir, max_tier_meta)["tier"] == "T3 max"
 assert rb.report_lines(max_tier_dir, max_tier_meta)[0].startswith("T3 max · ")
+pending_report = io.StringIO()
+with contextlib.redirect_stdout(pending_report):
+    rb.emit_report(max_tier_dir, max_tier_meta)
+# An untriaged run gets no markers: they are what the report hook keys on, and a run of cells
+# carrying them is exactly the empty report that used to reach the reader.
+assert rb.REPORT_BEGIN not in pending_report.getvalue()
+assert rb.REPORT_END not in pending_report.getvalue()
+pending_report_lines = pending_report.getvalue().splitlines()
+assert pending_report_lines[0] == (
+    f"{rb.TRIAGE_PENDING} max-tier-report · 0 finding(s) to triage"
+)
+assert pending_report_lines[1] == (
+    "report with: review-bench record max-tier-report --no-corpus"
+)
 marked_report = io.StringIO()
 with contextlib.redirect_stdout(marked_report):
-    rb.emit_report(max_tier_dir, max_tier_meta)
+    rb.emit_report(max_tier_dir, max_tier_meta, [])
 marked_lines = marked_report.getvalue().splitlines()
 assert marked_lines[0] == rb.REPORT_BEGIN and marked_lines[-1] == rb.REPORT_END
 partial_tier_meta = dict(max_tier_meta, rater_runs=max_tier_rows[:1])
@@ -683,7 +699,7 @@ chain_report = "\n".join(rb.report_lines(duration_dir, dict(
          "verifier_by_model": {"oc-qwen37plus": 2}},
     ],
 )))
-assert "verifier:  Kimi K3 3 · oc-qwen37plus 2 — 5 checked, 3 rejected" in chain_report, \
+assert "verifier:     Kimi K3 3 · oc-qwen37plus 2 — 5 checked, 3 rejected" in chain_report, \
     chain_report
 walled_report = "\n".join(rb.report_lines(duration_dir, dict(
     duration_meta,
@@ -694,7 +710,7 @@ walled_report = "\n".join(rb.report_lines(duration_dir, dict(
          "verifier_dropped": 0, "verifier_audited": 2, "verifier_by_model": {}},
     ],
 )))
-assert "verifier:  Kimi K3 — 0 checked, 0 rejected, 2 kept unchecked" in walled_report, \
+assert "verifier:     Kimi K3 — 0 checked, 0 rejected, 2 kept unchecked" in walled_report, \
     walled_report
 # A run recorded before the verifier logged its own counts keeps only the drop total, and a
 # report that reads its absence as "nothing to check" would deny checks that did happen.
@@ -707,7 +723,7 @@ legacy_verifier_report = "\n".join(rb.report_lines(duration_dir, dict(
          "verifier_dropped": 4},
     ],
 )))
-assert "verifier:  Kimi K3 — 4 rejected" in legacy_verifier_report, legacy_verifier_report
+assert "verifier:     Kimi K3 — 4 rejected" in legacy_verifier_report, legacy_verifier_report
 # 3 of the 205 runs on disk are that same legacy record with nothing rejected: reading the zero
 # as "the verifier never ran" reports every finding it cleared as unchecked. verify_ms is what
 # says it ran, and it has been recorded per cell since c011911.
@@ -720,7 +736,7 @@ legacy_kept_all_report = "\n".join(rb.report_lines(duration_dir, dict(
          "verifier_dropped": 0, "verifier_unverified": 0, "verify_ms": 4000},
     ],
 )))
-assert "verifier:  Kimi K3 — 0 rejected" in legacy_kept_all_report.splitlines(), \
+assert "verifier:     Kimi K3 — 0 rejected" in legacy_kept_all_report.splitlines(), \
     legacy_kept_all_report
 # 7 of those legacy runs walled the verifier partway. The wall total is the only unchecked count
 # they kept, so a line that prints the drops alone reports a partial pass as a complete one.
@@ -733,7 +749,7 @@ legacy_walled_report = "\n".join(rb.report_lines(duration_dir, dict(
          "verifier_dropped": 1, "verifier_unverified": 3, "verify_ms": 4000},
     ],
 )))
-assert "verifier:  Kimi K3 — 1 rejected, 3 kept unchecked" in legacy_walled_report, \
+assert "verifier:     Kimi K3 — 1 rejected, 3 kept unchecked" in legacy_walled_report, \
     legacy_walled_report
 # A wall before the first rejection leaves the wall count as the only evidence the verifier ran,
 # so a guard reading the drop total alone reports those findings as never offered to it.
@@ -746,7 +762,7 @@ legacy_wall_only_report = "\n".join(rb.report_lines(duration_dir, dict(
          "verifier_dropped": 0, "verifier_unverified": 2},
     ],
 )))
-assert "verifier:  Kimi K3 — 0 rejected, 2 kept unchecked" in legacy_wall_only_report, \
+assert "verifier:     Kimi K3 — 0 rejected, 2 kept unchecked" in legacy_wall_only_report, \
     legacy_wall_only_report
 # Every count is read back out of a file anyone can hand-edit, so each is sanitised where it is
 # read, not only where it is summed: a bool reaching one cell field and not its neighbour is the
@@ -770,19 +786,19 @@ nothing_report = "\n".join(rb.report_lines(duration_dir, dict(
     raters=["oc-kimik3"],
     rater_runs=[{"rater": "oc-kimik3", "side": "opencode", "exit_code": 0, "findings": 0}],
 )))
-assert "verifier:  Kimi K3 — nothing to check" in nothing_report, nothing_report
+assert "verifier:     Kimi K3 — nothing to check" in nothing_report, nothing_report
 empty_off_report = "\n".join(rb.report_lines(duration_dir, dict(
     duration_meta,
     raters=["oc-kimik3"],
     rater_runs=[{"rater": "oc-kimik3", "side": "opencode", "exit_code": 0, "findings": 0}],
 )))
-assert "verifier:  off — nothing to check" in empty_off_report, empty_off_report
+assert "verifier:     off — nothing to check" in empty_off_report, empty_off_report
 off_report = "\n".join(rb.report_lines(duration_dir, dict(
     duration_meta,
     raters=["oc-kimik3"],
     rater_runs=[{"rater": "oc-kimik3", "side": "opencode", "exit_code": 0, "findings": 3}],
 )))
-assert "verifier:  off — 3 OpenCode finding(s) unchecked" in off_report, off_report
+assert "verifier:     off — 3 OpenCode finding(s) unchecked" in off_report, off_report
 # The verifier reaches OpenCode findings only, so a panel without one is not a run whose
 # verifier stayed off — there was nothing it was allowed to touch, and the line would mislead.
 assert "verifier:" not in "\n".join(rb.report_lines(duration_dir, duration_meta))
@@ -2099,6 +2115,13 @@ verifier_profile_result = rb.verify_one(
 )
 assert not verifier_profile_result.get("walled") and \
     verifier_profile_capture.read_text().strip() == "second"
+# The verifier answers a verdict object, not findings, and it reaches the same transport: without
+# its own shape an announce-only reply stops on the first strategy and the claim is kept unchecked,
+# which reads exactly like a verified one.
+verify_args = (work / "opencode-args").read_text().splitlines()
+assert verify_args[verify_args.index("--answer-must-match") + 1] == rb.OPENCODE_VERDICT_SHAPE, \
+    verify_args
+assert rb.OPENCODE_VERDICT_SHAPE != rb.OPENCODE_ANSWER_SHAPE
 
 os.environ["OPENCODE_FIXTURE_RC"] = "1"
 os.environ["OPENCODE_FIXTURE_STDERR"] = "HTTP 429 usage limit reached"
@@ -2408,6 +2431,11 @@ import re as _re
 assert _re.search(shape, '{"severity":"P2"}', _re.IGNORECASE), shape
 assert _re.search(shape, rb.CLEAN_REVIEW_MARKER, _re.IGNORECASE), shape
 assert not _re.search(shape, "Checking how cmd_review emits reports.", _re.IGNORECASE), shape
+# A bare brace is not the contract: an announce that quotes the requested format carries one, and
+# taking that for an answer stops the negotiation on the strategy that produced no review.
+assert not _re.search(
+    shape, "I will return findings as {severity, file, line, summary}.", _re.IGNORECASE
+), shape
 assert max(map(len, command)) < 4096
 usage = json.loads((opencode_run / "usage-oc-glm52.json").read_text())
 assert usage == {
@@ -3527,8 +3555,11 @@ with contextlib.redirect_stdout(review_stdout):
         repo=str(pin_repo), commitish=pin_descendant_sha, tier="T1",
         verify=None, focus=None,
     ))
-assert review_stdout.getvalue().count(rb.REPORT_BEGIN) == 1
-assert review_stdout.getvalue().count(rb.REPORT_END) == 1
+# A review owes a triage, not a report: the marked block belongs to the verdicts, so a run that
+# has none prints the line the hooks turn into the missing pass.
+assert rb.REPORT_BEGIN not in review_stdout.getvalue()
+assert rb.REPORT_END not in review_stdout.getvalue()
+assert review_stdout.getvalue().count(rb.TRIAGE_PENDING) == 1
 review_run_dir = next((review_store / "worker-stats" / "benches").iterdir())
 review_meta_path = review_run_dir / "meta.json"
 review_meta = json.loads(review_meta_path.read_text())
@@ -3611,14 +3642,16 @@ assert all(
     for rater in opencode_specs
 )
 filtered_output = filtered_stdout.getvalue()
-assert filtered_output.count(rb.REPORT_BEGIN) == filtered_output.count(rb.REPORT_END) == 1
+assert rb.REPORT_BEGIN not in filtered_output and rb.REPORT_END not in filtered_output
+assert filtered_output.count(rb.TRIAGE_PENDING) == 1
 assert all(
     row["verifier_by_model"] == {rb.OPENCODE_VERIFIER: 1} and row["verifier_audited"] == 1
     for row in filtered_meta["rater_runs"] if row["side"] == "opencode"
 ), filtered_meta["rater_runs"]
 # Who judged, not just how many were dropped: the chain advances per finding, so a report
 # naming no model leaves the reader unable to tell which verifier produced the rejections.
-assert "verifier:  Kimi K3 — 7 checked, 7 rejected" in filtered_output, filtered_output
+filtered_report = "\n".join(rb.report_lines(filtered_run, filtered_meta, []))
+assert "verifier:     Kimi K3 — 7 checked, 7 rejected" in filtered_report, filtered_report
 assert "fixture finding" not in filtered_output
 assert rb.bench_summary(filtered_run, filtered_meta)["findings"] == 0
 
@@ -4278,7 +4311,8 @@ rerun_arg = next(
 )
 rerun_values = shlex.split(rerun_arg)
 assert rerun_rc == 1 and "ERRORED (not recorded): sol-high#2" in rerun_output, rerun_output
-assert rerun_output.count(rb.REPORT_BEGIN) == rerun_output.count(rb.REPORT_END) == 1
+assert rerun_output.count(rb.TRIAGE_PENDING) == 1
+assert rb.REPORT_BEGIN not in rerun_output and rb.REPORT_END not in rerun_output
 assert len(rerun_values) == 1
 assert [rater["spec"] for rater in rb.parse_raters(rerun_values[0])] == ["sol-high"]
 print("dispatcher-rater-repeat-ok")
@@ -5015,7 +5049,7 @@ last_report=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" report --last) \
 assert test "$last_report" = "$expected_report"
 worktree_report=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" report report-worktree) \
   || fail "worktree report failed"
-expected_worktree_report=$'REVIEW-REPORT-BEGIN\nT0 · 30 sec wall · slowest completed: Kimi K3 20 sec\nfindings:  Kimi K3 ×2 3\nnote:      not adjudicated \u2014 optional, and keeps until the corpus is wanted\nverifier:  off — 3 OpenCode finding(s) unchecked\ntimeout:   Gemini 3.1 Pro high skill\nREVIEW-REPORT-END'
+expected_worktree_report=$'REVIEW-TRIAGE-PENDING report-worktree · 3 finding(s) to triage · 1 cell(s) did not complete\nreport with: review-bench record report-worktree --no-corpus --verdicts /tmp/review-bench-report-worktree-verdicts.jsonl'
 assert test "$worktree_report" = "$expected_worktree_report"
 worktree_recorded=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" record report-worktree \
   --verdicts "$WORK/report-worktree-verdicts.jsonl") || fail "worktree record failed"

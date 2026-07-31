@@ -144,6 +144,11 @@ sse_to_envelope() {
 # as a gateway 5xx: a hang with no status is precisely the case the buffered->stream
 # escalation exists for.
 transient_status() { [[ $1 == 5?? || $1 == 000 ]]; }
+# The MiniMax family streams its reasoning inside the content, and the caller strips it before
+# parsing. Matching the caller's contract against text the caller will delete would call a
+# reasoning block an answer: findings that live only in there still carry the shape.
+ANSWER_CONTENT_FILTER='(.choices[0].message.content // "")
+  | gsub("(?s)<think>.*?</think>"; "") | sub("(?s)^\\s*<think>.*"; "")'
 answered_nothing() {
   local file=$1 streaming=$2 must_match=${3:-}
   local envelope content
@@ -153,9 +158,9 @@ answered_nothing() {
     # A provider error inside the stream also carries no content. Retiring a reasoning-off
     # strategy for it burns the negotiation on an outage and hides the error.
     [[ $(jq -r '.error // "null"' <<<"$envelope") == null ]] || return 1
-    content=$(jq -r '.choices[0].message.content // ""' <<<"$envelope") || return 1
+    content=$(jq -r "$ANSWER_CONTENT_FILTER" <<<"$envelope") || return 1
   else
-    content=$(jq -r '.choices[0].message.content // ""' "$file") || return 1
+    content=$(jq -r "$ANSWER_CONTENT_FILTER" "$file") || return 1
   fi
   [[ -n $content ]] || return 0
   # A model that answers inside its reasoning field leaves a one-line announce here: non-empty,
@@ -163,7 +168,13 @@ answered_nothing() {
   # like is the caller's to say, never this script's — the same run() serves prose prompts,
   # where any text at all is the answer.
   [[ -n $must_match ]] || return 1
-  grep -Eqi -- "$must_match" <<<"$content" && return 1 || return 0
+  local hit=0
+  grep -Eqi -- "$must_match" <<<"$content" || hit=$?
+  # grep exits 2 on a pattern it cannot compile, and reading that as "no match" would retire a
+  # working strategy on every 2xx instead of saying so. The flag is validated where it is parsed;
+  # this is the second half of that guard, because a silent burn of the ladder is unattributable.
+  (( hit <= 1 )) || return 1
+  (( hit == 1 ))
 }
 no_reasoning_body() {
   local body=$1 strategy=$2
@@ -199,7 +210,7 @@ run_model() {
   [[ $# -ge 2 ]] || usage
   local model=$1 key system= prompt= prompt_file= max_tokens=1024 effort= json=false status body
   local retries=3 attempt=1 delay stream=false envelope no_reasoning=false prefill=
-  local answer_must_match=
+  local answer_must_match= pattern_rc
   local max_wait=${OPENCODE_GO_MAX_WAIT_S:-900} stall_seconds=${OPENCODE_GO_STALL_S:-120}
   local slow_switch=${OPENCODE_GO_SLOW_SWITCH_S:-120}
   # How to silence reasoning differs per model and an unsupported knob is a hard
@@ -229,7 +240,17 @@ run_model() {
       --prefill)
         [[ $# -ge 2 ]] || usage; prefill=$2; shift 2 ;;
       --answer-must-match)
-        [[ $# -ge 2 && -n $2 ]] || usage; answer_must_match=$2; shift 2 ;;
+        [[ $# -ge 2 && -n $2 ]] || usage
+        # A pattern grep cannot compile would otherwise reach answered_nothing, where an
+        # uncompilable regex and a genuine miss look alike; refusing it here is the only place
+        # the caller still hears about it.
+        pattern_rc=0
+        printf '' | grep -Eq -- "$2" || pattern_rc=$?
+        if (( pattern_rc > 1 )); then
+          printf -- '--answer-must-match is not a usable extended regex: %s\n' "$2" >&2
+          usage
+        fi
+        answer_must_match=$2; shift 2 ;;
       --stream)
         stream=true; shift ;;
       --no-stream)

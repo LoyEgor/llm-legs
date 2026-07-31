@@ -282,6 +282,40 @@ out=$("$SCRIPT" run glm-5.2 hello --no-reasoning --answer-must-match '\{|no find
 assert test "$out" = "NO FINDINGS"
 assert test "$(calls)" = 1
 
+# A reasoning block the caller will strip is not an answer: findings living only inside it still
+# carry the contract's shape, which is the very failure the flag exists to catch.
+reset_calls
+cat >"$WORK/thinking.json" <<'EOF'
+{"id":"x","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"<think>{\"severity\":\"P2\",\"file\":\"a\"}</think>Checking the diff."}}]}
+EOF
+{ printf '200|%s|0\n' "$WORK/thinking.json"; printf '200|%s|0\n' "$WORK/finding.json"; } >"$CURL_PLAN"
+"$SCRIPT" run glm-5.2 hello --no-reasoning --answer-must-match '"severity"|no findings' \
+  >/dev/null 2>"$WORK/err" || fail "a think-only answer was not retried: $(cat "$WORK/err")"
+assert test "$(calls)" = 2
+assert grep -q 'answered nothing, falling back to enable-thinking' "$WORK/err"
+
+# An uncompilable pattern is refused where it is given. Reaching answered_nothing, it would make
+# grep exit 2, which reads as a miss and burns the whole ladder without ever saying why.
+reset_calls
+printf '200|%s|0\n' "$WORK/finding.json" >"$CURL_PLAN"
+assert_fails env "$SCRIPT" run glm-5.2 hello --answer-must-match 'severity[' 2>"$WORK/err"
+assert grep -q 'not a usable extended regex' "$WORK/err"
+assert test "$(calls)" = 0
+
+# The second half of that guard: should grep fail to compile a pattern anyway, its exit 2 must not
+# read as a miss, or every 2xx retires a strategy and the ladder burns with nothing said. Only the
+# predicate's own invocation passes -Eqi, so the stub leaves the rest of the script's greps alone.
+printf '#!/usr/bin/env bash\nfor a in "$@"; do [[ $a == -Eqi ]] && exit 2; done\nexec /usr/bin/grep "$@"\n' \
+  >"$FAKE_BIN/grep"
+chmod +x "$FAKE_BIN/grep"
+reset_calls
+{ printf '200|%s|0\n' "$WORK/announce.json"; printf '200|%s|0\n' "$WORK/finding.json"; } >"$CURL_PLAN"
+"$SCRIPT" run glm-5.2 hello --no-reasoning --answer-must-match '"severity"' \
+  >/dev/null 2>"$WORK/err" || fail "an uncompilable pattern killed the run: $(cat "$WORK/err")"
+assert test "$(calls)" = 1
+rm -f "$FAKE_BIN/grep"
+assert_fails grep -q 'answered nothing' "$WORK/err"
+
 # Without the flag this script is a prose CLI: any text is the answer, and reading a contract
 # into it would retire a working strategy on every ordinary reply.
 reset_calls

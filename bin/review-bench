@@ -118,6 +118,15 @@ OPENCODE_VERIFIER = "oc-kimik3"
 OPENCODE_VERIFIER_CHAIN = ["oc-kimik3", "oc-qwen37plus", "oc-mmm3"]
 REPORT_BEGIN = "REVIEW-REPORT-BEGIN"
 REPORT_END = "REVIEW-REPORT-END"
+# A run without verdicts has no report to print: the triage that decides what to fix is what
+# makes one. It gets this line instead, and the hooks key on it to demand the missing pass —
+# the marked block used to be printed either way, and a list of cells was what reached Egor.
+TRIAGE_PENDING = "REVIEW-TRIAGE-PENDING"
+# Hours a worktree run keeps owing its report. Past that the diff it reviewed is stale, so the
+# gate stops asking rather than dragging an old run into an unrelated turn.
+TRIAGE_GATE_HOURS = 6
+REPORT_RECEIPT = "reported.json"
+TRIAGE_NUDGED = "report-nudged"
 # Highest effort a model has ever returned a review of a large diff at; None would mean
 # no effort at all. Empty by measurement, and it took a replication to keep it that way:
 # kimi-k3 at medium looked dead after two attempts with no output, then finished a third
@@ -1910,62 +1919,40 @@ def report_lines(run_dir, meta, verdicts=None):
                 detail = f"exit {row['exit_code']}"
             errored[f"{name} ({detail})"] += 1
     rows = []
-    if summary["adjudicated"]:
-        severity = " · ".join(
-            f"{level} {summary['severities'][level]}"
-            for level in ("P1", "P2", "P3")
-            if summary["severities"][level]
-        )
-        rows.append((f"confirmed {summary['confirmed']}:", severity))
-        rejected_counts = [
-            ("duplicate", summary["duplicate"]),
-            ("false", summary["false_positive"]),
-        ]
-        rejected_counts = [
-            (verdict, count) for verdict, count in rejected_counts if count
-        ]
-        if rejected_counts:
-            count_width = max(len(str(count)) for _, count in rejected_counts)
-            verdict_width = max(len(verdict) for verdict, _ in rejected_counts)
-            for index, (verdict, count) in enumerate(rejected_counts):
-                tokens = count * ADJUDICATION_TOK_ESTIMATE[
-                    "false_positive" if verdict == "false" else verdict
-                ]
-                value = (
-                    f"{count:>{count_width}} {verdict:<{verdict_width}}  "
-                    f"{estimated_tokens_text(tokens)}"
-                )
-                rows.append(("rejected:" if index == 0 else "", value))
-        if summary["false_positive"] and summary["false_by"]:
-            false_by = " · ".join(
-                f"{human_cell_name(rater)} ×{count}"
-                for rater, count in sorted(
-                    summary["false_by"].items(),
-                    key=lambda item: (-item[1], human_cell_name(item[0])),
-                )
+    severity = " · ".join(
+        f"{level} {summary['severities'][level]}"
+        for level in ("P1", "P2", "P3")
+        if summary["severities"][level]
+    )
+    rows.append((f"confirmed {summary['confirmed']}:", severity))
+    rejected_counts = [
+        ("duplicate", summary["duplicate"]),
+        ("false", summary["false_positive"]),
+    ]
+    rejected_counts = [
+        (verdict, count) for verdict, count in rejected_counts if count
+    ]
+    if rejected_counts:
+        count_width = max(len(str(count)) for _, count in rejected_counts)
+        verdict_width = max(len(verdict) for verdict, _ in rejected_counts)
+        for index, (verdict, count) in enumerate(rejected_counts):
+            tokens = count * ADJUDICATION_TOK_ESTIMATE[
+                "false_positive" if verdict == "false" else verdict
+            ]
+            value = (
+                f"{count:>{count_width}} {verdict:<{verdict_width}}  "
+                f"{estimated_tokens_text(tokens)}"
             )
-            rows.append(("false by:", false_by))
-    else:
-        grouped = {}
-        for row in completed:
-            family = rater_family(row.get("rater"))
-            entry = grouped.setdefault(family, [0, 0])
-            entry[0] += 1
-            findings = row.get("findings")
-            if isinstance(findings, int) and not isinstance(findings, bool):
-                entry[1] += findings
-        findings_parts = []
-        for family, (attempts, findings) in grouped.items():
-            name = human_cell_name(family)
-            if attempts > 1:
-                name += f" ×{attempts}"
-            findings_parts.append(f"{name} {findings}")
-        for index, value in enumerate(findings_parts or ["none"]):
-            rows.append(("findings:" if index == 0 else "", value))
-        # "yet" read as a step still owed, and the reader paid for it every run: adjudication
-        # is what builds the corpus, not what finishes a review, and it keeps on disk until
-        # someone wants the corpus. Saying so here is the only place every reader passes.
-        rows.append(("note:", "not adjudicated — optional, and keeps until the corpus is wanted"))
+            rows.append(("rejected:" if index == 0 else "", value))
+    if summary["false_positive"] and summary["false_by"]:
+        false_by = " · ".join(
+            f"{human_cell_name(rater)} ×{count}"
+            for rater, count in sorted(
+                summary["false_by"].items(),
+                key=lambda item: (-item[1], human_cell_name(item[0])),
+            )
+        )
+        rows.append(("false by:", false_by))
     verifier_value = verifier_report_value(summary)
     if verifier_value:
         rows.append(("verifier:", verifier_value))
@@ -2004,7 +1991,73 @@ def report_lines(run_dir, meta, verdicts=None):
     return lines
 
 
+def verdict_scratch_path(run_id):
+    return f"/tmp/review-bench-{run_id}-verdicts.jsonl"
+
+
+def triage_command(run_id, findings):
+    command = f"review-bench record {shlex.quote(run_id)} --no-corpus"
+    if findings:
+        command += f" --verdicts {shlex.quote(verdict_scratch_path(run_id))}"
+    return command
+
+
+def pending_lines(run_dir, meta):
+    """Two lines an un-triaged run gets in place of a report: how much there is to judge, and the
+    command that prints the real block once it is judged."""
+    summary = bench_summary(run_dir, meta)
+    run_id = run_dir.name
+    findings = summary["findings"]
+    incomplete = sum(1 for row in summary["cells"] if row["status"] != "completed")
+    head = f"{TRIAGE_PENDING} {run_id} · {findings} finding(s) to triage"
+    if incomplete:
+        head += f" · {incomplete} cell(s) did not complete"
+    return [head, f"report with: {triage_command(run_id, findings)}"]
+
+
+def write_report_receipt(run_dir, verdicts):
+    (run_dir / REPORT_RECEIPT).write_text(json.dumps({
+        "reported_at": iso_now(),
+        "verdicts": len(verdicts),
+        "confirmed": sum(1 for row in verdicts if row.get("verdict") == "confirmed"),
+    }) + "\n")
+
+
+def triage_pending_run():
+    """The newest worktree run if it still owes its triaged report, else None.
+
+    Only the newest one is ever asked for: an older run judged a diff that has since moved, and a
+    queue of them would block turns with nothing to do with the review.
+    """
+    benches = state_dir() / "benches"
+    for run_dir in sorted(benches.iterdir(), reverse=True) if benches.exists() else ():
+        meta_path = run_dir / "meta.json"
+        if not meta_path.exists():
+            continue
+        try:
+            meta = json.loads(meta_path.read_text())
+        except json.JSONDecodeError:
+            continue
+        if meta.get("worktree") is not True:
+            continue
+        if (run_dir / "verdicts.jsonl").exists() or (run_dir / REPORT_RECEIPT).exists():
+            return None
+        finished = parse_iso_timestamp(meta.get("finished") or meta.get("finished_at"))
+        if finished is None:
+            return None
+        if (datetime.now(timezone.utc) - finished).total_seconds() > TRIAGE_GATE_HOURS * 3600:
+            return None
+        return run_dir, meta
+    return None
+
+
 def emit_report(run_dir, meta, verdicts=None):
+    # The markers are what the report hook keys on, so only a triaged run may carry them. Printed
+    # either way, they made a list of cells look like a report, and that is what reached Egor.
+    if verdicts is None and not (run_dir / "verdicts.jsonl").exists():
+        for line in pending_lines(run_dir, meta):
+            print(line)
+        return
     print(REPORT_BEGIN)
     for line in report_lines(run_dir, meta, verdicts):
         print(line)
@@ -2772,7 +2825,13 @@ CLEAN_REVIEW_RE = re.compile(
 # --answer-must-match. Kept beside CLEAN_REVIEW_RE because it is the same contract read by the
 # transport: a model whose answer went into its reasoning field leaves a one-line announce that
 # matches neither, and only that lets the reasoning-off negotiation move to its next strategy.
-OPENCODE_ANSWER_SHAPE = r"\{|no findings|no issues found"
+# Named fields, not a bare brace: an announce that quotes the requested format carries one, and
+# accepting it is how the negotiation stops on the strategy that produced no review.
+OPENCODE_ANSWER_SHAPE = r"\"severity\"|\"findings\"|no findings|no issues found"
+# The verifier answers a verdict object, not findings, so it needs its own shape or the same
+# announce-only reply stops on the first strategy and the finding is kept unchecked: a fail-open
+# row reads exactly like a verified one.
+OPENCODE_VERDICT_SHAPE = r"\"code_matches\""
 CLEAN_ASSERTION_VERBS = (
     "found", "was", "were", "is", "are", "exists", "detected", "identified", "confirmed",
     "has", "have", "contains", "contain", "remains", "remain",
@@ -3813,6 +3872,7 @@ def verify_one(index, finding, repo, sha, model, lines, ref=None):
                 command_path("REVIEW_BENCH_OPENCODE_BIN", "opencode-go"),
                 "run", OPENCODE_MODEL_IDS[candidate], "--prompt-file", prompt_file.name,
                 "--json", "--max-tokens", str(VERIFY_MAX_TOKENS), "--no-reasoning",
+                "--answer-must-match", OPENCODE_VERDICT_SHAPE,
                 "--retries", "2",
             ]
             proc = subprocess.run(
@@ -4726,6 +4786,24 @@ def cmd_reviewed(args):
     return 0
 
 
+def cmd_pending_report(args):
+    pending = triage_pending_run()
+    if pending is None:
+        return 1
+    run_dir, meta = pending
+    marker = run_dir / TRIAGE_NUDGED
+    # Asked for once. A gate that keeps blocking a turn it cannot unblock is worse than the
+    # missing report: the triage may be impossible right now, and only the human can say so.
+    if marker.exists():
+        return 1
+    if args.mark:
+        marker.write_text(iso_now() + "\n")
+    findings = bench_summary(run_dir, meta)["findings"]
+    print(f"{run_dir.name} {findings}")
+    print(triage_command(run_dir.name, findings))
+    return 0
+
+
 def cmd_suggest(args):
     repo = Path(args.repo).resolve()
     if subprocess.run(
@@ -4848,7 +4926,7 @@ def cmd_suggest(args):
 
 
 def handoff(run_id, paths):
-    verdict_path = f"/tmp/review-bench-{run_id}-verdicts.jsonl"
+    verdict_path = verdict_scratch_path(run_id)
     command = f"review-bench record {shlex.quote(run_id)} --verdicts {shlex.quote(verdict_path)}"
     print("\nADJUDICATION HANDOFF")
     print("Read these files without revealing one rater's output to another:")
@@ -5312,10 +5390,13 @@ def cmd_record(args):
     meta = json.loads(meta_path.read_text())
     worktree = meta.get("worktree") is True
     record_raters = completed_raters_from_meta(meta)
+    # A run nobody found anything in still owes a report, and demanding an empty file for it is
+    # the friction that got the whole pass skipped. Coverage below still refuses a missing file
+    # the moment there is one finding to judge.
     verdict_rows = [
         row for row in read_jsonl(Path(args.verdicts))
         if "rater" in row
-    ]
+    ] if args.verdicts else []
     verdict_map = {}
     for row in verdict_rows:
         rater = row.get("rater")
@@ -5334,6 +5415,10 @@ def cmd_record(args):
         verdict_map[key] = verdict
 
     findings = {rater: finding_rows(run_dir, rater) for rater in record_raters}
+    if not args.verdicts:
+        total = sum(len(rows) for rows in findings.values())
+        if total:
+            raise ValueError(f"--verdicts is required: {total} finding(s) to judge")
     for rater, rows in findings.items():
         expected = {(rater, idx) for idx in range(len(rows))}
         supplied = {key for key in verdict_map if key[0] == rater}
@@ -5369,6 +5454,10 @@ def cmd_record(args):
             f"--no-corpus: reported {len(normalized_verdicts)} verdict(s) and recorded "
             "nothing; this run's stored state is unchanged"
         )
+        # The one thing it does leave: proof the report was printed, so the stop gate stops
+        # asking. Nothing reads this name but the gate, which is why it can exist without
+        # putting the run into the half-adjudicated state the comment above refuses.
+        write_report_receipt(run_dir, normalized_verdicts)
         emit_report(run_dir, meta, normalized_verdicts)
         return 0
     if worktree:
@@ -6022,6 +6111,15 @@ def main():
     report.add_argument("run_id", nargs="?")
     report.add_argument("--last", action="store_true", help="Report the newest run")
     report.set_defaults(func=cmd_report)
+    pending = subparsers.add_parser(
+        "pending-report",
+        help="Name the worktree run still owing a triaged report (exit 1 if none)",
+    )
+    pending.add_argument(
+        "--mark", action="store_true",
+        help="Record that the run was asked for, so it is asked for only once",
+    )
+    pending.set_defaults(func=cmd_pending_report)
     suggest = subparsers.add_parser("suggest", help="Suggest a review tier for a change")
     suggest.add_argument("--repo", default=".")
     suggest.add_argument("--range", metavar="A..B")
@@ -6064,7 +6162,10 @@ def main():
     run.set_defaults(func=cmd_run)
     record = subparsers.add_parser("record", help="Record blind adjudication verdicts")
     record.add_argument("run_id")
-    record.add_argument("--verdicts", required=True)
+    record.add_argument(
+        "--verdicts",
+        help="Verdict file; may be omitted only for a run with no findings to judge",
+    )
     record.add_argument(
         "--no-corpus", action="store_true",
         help="report the verdicts without writing a corpus row (a fix round's own triage)"
