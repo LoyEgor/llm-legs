@@ -5349,18 +5349,12 @@ def cmd_record(args):
     # found nothing — while a later ordinary record finds the file already matching and skips
     # the corpus row it owes.
     if getattr(args, "no_corpus", False):
-        # The run's own state, not the flag's intent: a fix round reporting over a run that was
-        # already adjudicated would otherwise be told it is pending, which is the opposite of
-        # what is on disk — and the report it prints is the handed-in triage, not those rows.
-        settled = verdict_existed or any(
-            row.get("run_id") == args.run_id for row in read_jsonl(sd / "reviews.jsonl")
-        )
+        # One sentence that holds in every state, because narrating the run's state here was
+        # wrong three review rounds running: pending or adjudicated, worktree or durable, the
+        # fact this line owes the reader is that the command changed nothing.
         print(
-            f"reported {len(normalized_verdicts)} verdict(s); nothing recorded because "
-            "--no-corpus" + (
-                "; the verdicts and corpus rows this run already has are untouched" if settled
-                else ", so the run stays pending for a two-judge adjudication"
-            )
+            f"--no-corpus: reported {len(normalized_verdicts)} verdict(s) and recorded "
+            "nothing; this run's stored state is unchanged"
         )
         emit_report(run_dir, meta, normalized_verdicts)
         return 0
