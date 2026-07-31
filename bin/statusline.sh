@@ -255,6 +255,12 @@ IFS=$'\x1f' read -r model model_id effort fast_mode ctx_size dir_path current_di
     (.transcript_path // "")
   ] | join("")')
 
+# The harness marks a 1M-context session by suffixing its model id
+# (claude-opus-5[1m]) while the transcript records the bare id the server
+# returned, so warmth attribution must compare the stripped form or every
+# 1M session reads permanently cold.
+case "$model_id" in *\[*\]) model_id="${model_id%\[*}" ;; esac
+
 # The harness's used_percentage is denominator-blind on >200k windows (a 1m
 # session at 248k reports 100%); raw usage over window size is the truth.
 if [ -n "$ctx_size" ] && [ "$ctx_size" -gt 0 ] 2>/dev/null && [ -n "$ctx_tokens" ] && [ "$ctx_tokens" -gt 0 ] 2>/dev/null; then

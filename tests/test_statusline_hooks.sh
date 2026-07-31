@@ -830,6 +830,22 @@ assert grep -Fq "${YELLOW}? 111k${RESET}" <<< "$fresh_legacy"
 assert test "${fresh_legacy#*→}" = "$fresh_legacy"
 assert grep -q '^v2 [0-9]* ? ' "$STATE_DIR/cache-ttl-track-ctx-fresh-legacy"
 
+# --- a 1M-context session still matches its bare transcript model id ---
+t_reset; t_assist $((NOW - 20)); t_stamp ctx-model-1m
+onem_extra=$(warm_extra "$TRANSCRIPT" 55 111000 | jq -c '.model.id = "fixmodel[1m]"')
+onem_out=$(run_statusline "$(statusline_payload ctx-model-1m "$onem_extra")")
+onem_death=$(TZ=Europe/Kyiv date -r $((NOW - 20 + 3600)) +%H:%M)
+assert grep -Fq "${DIM}→${onem_death}${RESET}" <<< "$onem_out"
+assert test "${onem_out#*111k}" = "$onem_out"
+onem_other=$(warm_extra "$TRANSCRIPT" 55 111000 | jq -c '.model.id = "othermodel[1m]"')
+onem_cold=$(run_statusline "$(statusline_payload ctx-model-1m "$onem_other")")
+assert grep -Fq "${YELLOW}111k${RESET}" <<< "$onem_cold"
+# Only a trailing bracketed suffix is a context-window marker: a bracket mid-id
+# stays part of the name, so it must not be truncated into a false match.
+onem_mid=$(warm_extra "$TRANSCRIPT" 55 111000 | jq -c '.model.id = "fixmodel[1m]-east"')
+onem_mid_out=$(run_statusline "$(statusline_payload ctx-model-1m "$onem_mid")")
+assert grep -Fq "${YELLOW}111k${RESET}" <<< "$onem_mid_out"
+
 # --- model switch invalidates the cache (per-model on Anthropic) ---
 t_reset; t_assist $((NOW - 20)); t_stamp ctx-model-sw
 model_extra=$(warm_extra "$TRANSCRIPT" 55 111000 | jq -c '.model.id = "othermodel"')
