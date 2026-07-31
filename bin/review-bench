@@ -3148,7 +3148,14 @@ def run_codex(rater, repo, sha, focus, run_dir, diff, account):
             "review", "--commit", sha, "-m", "gpt-5.6-sol", "-c",
             f"model_reasoning_effort={rater['effort']}",
         ]
-        instruction = READ_ONLY_REVIEW_INSTRUCTION
+        # The native review command carries no output contract of its own, so a clean review
+        # comes back as prose — in whichever language the account's config answers in — and the
+        # cell is recorded as a failure instead of an empty result: 27 of 226 non-bare cells on
+        # record against 0 of 136 bare ones, which get this sentence from review_prompt.
+        instruction = (
+            f"{READ_ONLY_REVIEW_INSTRUCTION} Reply with exactly {CLEAN_REVIEW_MARKER} and "
+            "nothing else when the commit has no findings."
+        )
         if focus:
             instruction += f" Additional review focus: {focus}"
         command += ["-c", f"developer_instructions={json.dumps(instruction)}"]

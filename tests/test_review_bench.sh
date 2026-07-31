@@ -2268,6 +2268,24 @@ assert any(
     and rb.READ_ONLY_REVIEW_INSTRUCTION in arg
     for arg in codex_command
 )
+# Without the marker the native review command answers a clean review in prose, which the cell
+# records as a failure and the corpus then never counts as an empty result.
+codex_instruction = next(
+    arg for arg in codex_command if arg.startswith("developer_instructions=")
+)
+assert rb.CLEAN_REVIEW_MARKER in codex_instruction, codex_instruction
+assert rb.clean_review_declared(rb.CLEAN_REVIEW_MARKER), rb.CLEAN_REVIEW_MARKER
+focus_run = work / "codex-focus-run"
+focus_run.mkdir()
+rc, _, _, stderr, focus_command = rb.run_codex(
+    rb.parse_rater("sol-medium"), pin_repo, pin_sha, "line 7", focus_run, "", "main"
+)
+assert rc == 0 and not stderr
+focus_instruction = next(
+    arg for arg in focus_command if arg.startswith("developer_instructions=")
+)
+assert rb.CLEAN_REVIEW_MARKER in focus_instruction, focus_instruction
+assert "line 7" in focus_instruction, focus_instruction
 bare_run = work / "codex-bare-run"
 bare_run.mkdir()
 bare_diff = "diff --git a/pinned.txt b/pinned.txt\n"
