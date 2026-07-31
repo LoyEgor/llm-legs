@@ -253,6 +253,26 @@ rank_path.write_text(
 ranked = rb.read_wall_rows(rank_path)
 assert ranked[("agy", "a", "agy-pro")][1] == now + 30, ranked
 assert ranked[("agy", "b", "agy-pro")][1] == now + 3 * 86400, ranked
+# Once the provider's horizon passes the account is open, and an older flat guess must not
+# outlive it — that guess was made about a window the provider has since answered for.
+assert rb.standing_wall([(now - 1800, None), (now - 600, now - 60)]) is None
+# What was recorded after that reset is about the window that came next, so it still closes it.
+assert rb.standing_wall(
+    [(now - 1800, None), (now - 600, now - 60), (now - 30, None)]
+) == (now - 30, None)
+# And a plain wall recorded later than a dated one does not shorten it to the flat hour.
+assert rb.standing_wall([(now - 600, now + 3 * 86400), (now, None)])[1] == now + 3 * 86400
+
+# A horizon is read out of the gateway's channel only. The review this repo's own cells write
+# quotes reset wording from the code under review, and taken as the provider's word it retires
+# an account that never said anything of the kind.
+review_prose = "the test asserts it resets in 3 days"
+assert rb.wall_reset_at(rb.wall_reset_source("opencode", "HTTP 429", review_prose)) is None
+assert rb.wall_reset_at(rb.wall_reset_source("agy", "", review_prose)) is None
+assert rb.wall_reset_at(rb.wall_reset_source("opencode", "quota resets in 2 hours", "")) \
+    is not None
+# Codex says it in the events rather than on stderr, so there the tail is the gateway.
+assert rb.wall_reset_at(rb.wall_reset_source("codex", "", "resets in 2 hours")) is not None
 
 # A wall the provider dated outlives the flat TTL, and a garbled date does not outlive the cap.
 assert rb.wall_still_standing(time.time() - 7200, time.time() + 3600, ttl=1)
@@ -606,8 +626,15 @@ reason_meta = dict(
 )
 reason_report = "\n".join(rb.report_lines(duration_dir, reason_meta))
 assert "Sol low (throttled)" in reason_report, reason_report
-# Nothing recognisable in the text leaves the exit code as the only fact left to print.
+# Nothing recognisable in the text leaves the exit code as the only fact left to print, and a
+# cell that said nothing at all is the same case: naming the silence discards that last fact.
 assert "Kimi K3 (exit 3)" in reason_report, reason_report
+silent_meta = dict(
+    duration_meta,
+    raters=["sol-low"],
+    rater_runs=[{"rater": "sol-low", "exit_code": 5, "errored": True, "stderr": ""}],
+)
+assert "Sol low (exit 5)" in "\n".join(rb.report_lines(duration_dir, silent_meta))
 
 # --- health: why recorded cells failed -------------------------------------------------------
 for text, expected in (
@@ -1596,10 +1623,98 @@ assert rb.pool_account("agy", set(), 0) == "a1", "roster re-enumerated mid-run"
 rb._SIDE_ROSTER.clear()
 assert rb.side_roster("agy", frozenset()) == ["b1", "b2"]
 # Off, every cell gets the pool's head, which is what the measurement compares against.
+# Saved rather than deleted: the caller may have set it, and a test that reads the ambient
+# environment for a default it also asserts on passes or fails by accident.
+spread_was = os.environ.get("REVIEW_BENCH_SPREAD_ACCOUNTS")
 os.environ["REVIEW_BENCH_SPREAD_ACCOUNTS"] = "0"
 flat_picks = [rb.pool_account("agy", set(), slot) for slot in range(3)]
 assert flat_picks == ["b1", "b1", "b1"], flat_picks
-del os.environ["REVIEW_BENCH_SPREAD_ACCOUNTS"]
+if spread_was is None:
+    del os.environ["REVIEW_BENCH_SPREAD_ACCOUNTS"]
+else:
+    os.environ["REVIEW_BENCH_SPREAD_ACCOUNTS"] = spread_was
+rb._SIDE_ROSTER.clear()
+
+# The cell's own bucket decides what counts as retired. Gemini walls per model, so a pro wall
+# hides the account from a pro cell and must leave a flash cell its whole roster.
+os.environ["WORKER_PICK_FAKE_ACCOUNTS"] = "c1 c2"
+rb._SIDE_ROSTER.clear()
+bucket_pro = rb.wall_bucket(rb.parse_rater("agy-pro-high-skill"))
+bucket_flash = rb.wall_bucket(rb.parse_rater("agy-flash36-low-skill"))
+rb.mark_walled("agy", "c1", bucket_pro)
+assert rb.pool_account("agy", set(), 0, bucket_pro) == "c2", rb.pool_account("agy", set(), 0, bucket_pro)
+assert rb.pool_account("agy", set(), 0, bucket_flash) == "c1"
+# The cell must ask for its own bucket, not settle for the loop noticing afterwards: rotation
+# reaches the same account either way, so the pre-filter working is visible only as the pool
+# being asked once instead of twice.
+bucket_asks = []
+real_pool_account = rb.pool_account
+
+
+def counting_pool_account(side, excluded, slot=0, bucket="general"):
+    bucket_asks.append(bucket)
+    return real_pool_account(side, excluded, slot, bucket)
+
+
+rb.pool_account = counting_pool_account
+bucket_run = work / "agy-bucket-run"
+bucket_run.mkdir()
+try:
+    _, bucket_account, _ = rb.run_rater_task(
+        rb.parse_rater("agy-pro-high-skill"), repo, sha, "", bucket_run, "ignored fixture diff"
+    )
+finally:
+    rb.pool_account = real_pool_account
+assert bucket_account == "c2", bucket_account
+assert bucket_asks == [bucket_pro], bucket_asks
+clear_walls()
+
+# An empty answer is the pool's momentary state, not a fact about the run: cached, it would
+# turn one bad instant into a side that has nothing to offer for the rest of the process.
+rb._SIDE_ROSTER.clear()
+os.environ["WORKER_PICK_FAKE_ACCOUNTS"] = "d1"
+assert rb.side_roster("agy", frozenset({"d1"})) == []
+os.environ["WORKER_PICK_FAKE_ACCOUNTS"] = "d1 d2"
+assert rb.side_roster("agy", frozenset({"d1"})) == ["d2"], "an empty roster was cached"
+
+# The pool's ranking is a live verdict about floors that a long run keeps invalidating, so the
+# cache holds it for a window rather than for the process.
+rb._SIDE_ROSTER.clear()
+os.environ["WORKER_PICK_FAKE_ACCOUNTS"] = "e1"
+assert rb.side_roster("agy", frozenset()) == ["e1"]
+os.environ["WORKER_PICK_FAKE_ACCOUNTS"] = "e2"
+assert rb.side_roster("agy", frozenset()) == ["e1"], "re-asked inside its own window"
+roster_ttl_was = rb.ROSTER_TTL_S
+rb.ROSTER_TTL_S = 0
+try:
+    assert rb.side_roster("agy", frozenset()) == ["e2"], "the pool is never re-asked"
+finally:
+    rb.ROSTER_TTL_S = roster_ttl_was
+
+# Every cell of a side starts at once and misses together, so the enumeration happens under the
+# lock: beside it, each of them would spawn its own worker-pick per account.
+rb._SIDE_ROSTER.clear()
+os.environ["WORKER_PICK_FAKE_ACCOUNTS"] = "f1 f2"
+roster_picks = []
+real_worker_pick_account = rb.worker_pick_account
+
+
+def counting_worker_pick(side, excluded):
+    roster_picks.append(side)
+    return real_worker_pick_account(side, excluded)
+
+
+rb.worker_pick_account = counting_worker_pick
+try:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as roster_pool:
+        rosters = list(roster_pool.map(
+            lambda _: rb.side_roster("agy", frozenset()), range(4)
+        ))
+finally:
+    rb.worker_pick_account = real_worker_pick_account
+assert all(roster == ["f1", "f2"] for roster in rosters), rosters
+# Two answers and the one that ends the walk, once for the side rather than once per cell.
+assert len(roster_picks) == 3, roster_picks
 del os.environ["WORKER_PICK_FAKE_ACCOUNTS"]
 rb._SIDE_ROSTER.clear()
 
@@ -2350,6 +2465,12 @@ assert rb.codex_failure_reason('not json\n{"type":"turn.failed","error":"plain s
 assert rb.codex_transient_failure("", rb.codex_failure_reason(
     '{"type":"turn.failed","error":{"message":"%s"}}' % capacity
 ))
+# Codex answers the same status code for a spent plan and a throttled provider, so a bare 429
+# retires nothing there either; the named wording still does.
+assert not rb.codex_usage_wall("", "HTTP 429 from provider")
+assert rb.codex_transient_failure("", "HTTP 429 from provider")
+assert rb.codex_usage_wall("", "You have hit your usage limit")
+assert not rb.codex_transient_failure("", "You have hit your usage limit")
 assert rb.transient_backoffs() == [15, 30]
 os.environ["REVIEW_BENCH_TRANSIENT_BACKOFF_S"] = "0,0"
 assert rb.transient_backoffs() == [0, 0]
@@ -3081,7 +3202,7 @@ def tier_runner(rater, repo_path, commit, focus, run_dir, diff, account):
 
 for side in rb.SIDE_RUNNERS:
     rb.SIDE_RUNNERS[side] = tier_runner
-rb.pool_account = lambda side, excluded, slot=0: "fixture"
+rb.pool_account = lambda side, excluded, slot=0, bucket="general": "fixture"
 rb.affordability = lambda: {
     "claude": True, "codex": True, "agy": True, "grok": True, "opencode": True,
     "claude_account": "fixture",
@@ -3547,7 +3668,7 @@ def dispatcher_repeat_runner(rater, repo_path, commit, focus, run_dir, diff, acc
     return 0, duration, text, "", ["fake", rater["spec"]]
 
 
-def dispatcher_repeat_account(side, excluded, slot=0):
+def dispatcher_repeat_account(side, excluded, slot=0, bucket="general"):
     account_picks.append((side, tuple(sorted(excluded))))
     return "fixture"
 
@@ -3721,7 +3842,7 @@ def model_runner(rater, repo_path, commit, focus, run_dir, diff, account):
     return 0, 1, text, "", ["fake"]
 
 rb.SIDE_RUNNERS["claude"] = model_runner
-rb.pool_account = lambda side, excluded, slot=0: "fixture"
+rb.pool_account = lambda side, excluded, slot=0, bucket="general": "fixture"
 rb.affordability = lambda: {
     "claude": True, "codex": False, "claude_account": "fixture",
 }

@@ -195,23 +195,19 @@ class PriorityGate:
             entry = (-priority, self.seq)
             self.waiting.append(entry)
             self.waiting.sort()
-            admitted = False
             try:
                 while self.active >= self.limit or self.waiting[0] != entry:
                     self.cv.wait()
-                admitted = True
             finally:
-                # An abandoned entry stays at the head forever, and every other waiter blocks
-                # on not being the head: one interrupted acquire would freeze the whole gate.
-                # In the finally rather than an except clause because an async exception can
-                # land after the loop exits and before the entry is off the queue.
+                # Waiters block on being the head as much as on a free slot, so an abandoned
+                # entry freezes the gate and leaving the queue is itself the news. Both are
+                # unconditional and in the finally, because an async exception can land after
+                # the loop exits: an acquire that got in and never returned would otherwise
+                # take the freed head away in silence. One notify covers the increment below
+                # too — nobody can act on it until this releases the lock.
                 self.waiting.remove(entry)
-                if not admitted:
-                    self.cv.notify_all()
+                self.cv.notify_all()
             self.active += 1
-            # Waiters block on being the head as much as on a free slot, and leaving the
-            # queue changes the head: without this a freed slot idles for a whole cell.
-            self.cv.notify_all()
 
     def release(self):
         with self.cv:
@@ -327,11 +323,6 @@ def wall_expiry(detected_at, reset_at, ttl=None):
     return detected_at + (wall_ttl_s() if ttl is None else ttl)
 
 
-def wall_rank(detected_at, reset_at):
-    """Which of two rows for one account is the better evidence, dated first."""
-    return (reset_at is not None, wall_expiry(detected_at, reset_at))
-
-
 def wall_still_standing(detected_at, reset_at, now=None, ttl=None):
     return (time.time() if now is None else now) <= wall_expiry(detected_at, reset_at, ttl)
 
@@ -421,17 +412,31 @@ def read_wall_rows(path):
             continue
         reset_at = clamped_reset_at(detected_at, row.get("reset_at")) \
             if row.get("reset_at") is not None else None
-        if not wall_still_standing(detected_at, reset_at):
-            continue
-        key = (side, account, bucket)
-        known = walls.get(key)
-        # What the provider stated beats what we guessed, in both directions. A plain wall
-        # recorded after a dated one must not throw away the horizon we were given and put a
-        # weekly limit back in the pool an hour later; equally, the flat hour must not sit on
-        # top of a reset the provider put a minute away. Within one kind, longest wins.
-        if known is None or wall_rank(detected_at, reset_at) > wall_rank(*known):
-            walls[key] = (detected_at, reset_at)
-    return walls
+        walls.setdefault((side, account, bucket), []).append((detected_at, reset_at))
+    return {
+        key: standing for key, rows in walls.items()
+        if (standing := standing_wall(rows)) is not None
+    }
+
+
+def standing_wall(rows):
+    """The row that still describes this account's window, or None when it is open again.
+
+    A horizon the provider stated supersedes every guess made before it reopens, in both
+    directions: a plain wall recorded an hour after a weekly one must not shorten it to the
+    flat hour, and the flat hour must not sit on top of a reset the provider put a minute
+    away. Once that horizon passes the account is open, and only what was recorded after it
+    can close it again — an older flat guess outliving a reset the provider already gave is
+    how a healthy account keeps being skipped.
+    """
+    dated = [row for row in rows if row[1] is not None]
+    newest_dated = max(dated, key=lambda row: row[0]) if dated else None
+    if newest_dated is not None:
+        if wall_still_standing(*newest_dated):
+            return newest_dated
+        rows = [row for row in rows if row[0] > wall_expiry(*newest_dated)]
+    standing = [row for row in rows if wall_still_standing(*row)]
+    return max(standing, key=lambda row: wall_expiry(*row)) if standing else None
 
 
 def persisted_walls(path):
@@ -498,7 +503,7 @@ OPENCODE_TRANSIENT_RE = re.compile(
     re.IGNORECASE,
 )
 CODEX_TRANSIENT_RE = re.compile(
-    r"at capacity|temporarily unavailable|\b(?:500|502|503|529)\b|overloaded"
+    r"at capacity|temporarily unavailable|\b(?:429|500|502|503|529)\b|overloaded"
     r"|stream (?:disconnected|closed) before completion",
     re.IGNORECASE,
 )
@@ -553,6 +558,17 @@ def codex_transient_failure(events, stderr):
     if codex_usage_wall(events, stderr):
         return False
     return bool(CODEX_TRANSIENT_RE.search(text))
+
+
+def wall_reset_source(side, stderr, wall_text):
+    """The text a reset horizon may be read out of: what the gateway said, never the review.
+
+    wall_text is the rater's own answer everywhere but codex, and a model reviewing code about
+    reset windows writes "resets in N days" in prose that would become this account's horizon
+    and retire a healthy account for up to a week. Codex states its wall in the event stream,
+    so for that side alone the tail is the gateway's channel rather than the model's.
+    """
+    return f"{stderr or ''}\n{wall_text or '' if side == 'codex' else ''}"
 
 
 def wall_reset_at(text):
@@ -1529,6 +1545,10 @@ def failure_reason(stderr):
     return "unclassified" if text.strip() else "no output"
 
 
+# The two answers that name no cause, so a caller with anything else to say should say it.
+UNNAMED_REASONS = ("unclassified", "no output")
+
+
 STATUS_REASONS = {"not_run": "not run", "timed_out": "timeout", "model_mismatch": "mismatch"}
 
 
@@ -1795,9 +1815,10 @@ def report_lines(run_dir, meta):
         else:
             # An exit code says a cell failed, which the line it sits on already said. The
             # cause is what decides whether to look further, so it goes in its place, and the
-            # code comes back only for a wording nothing here recognises.
+            # code comes back whenever the classifier names no cause — an unknown wording and
+            # a silent failure both leave it as the only fact recorded about the cell.
             detail = cell_failure_reason(row)
-            if detail == "unclassified" and row.get("exit_code") not in (None, 0):
+            if detail in UNNAMED_REASONS and row.get("exit_code") not in (None, 0):
                 detail = f"exit {row['exit_code']}"
             errored[f"{name} ({detail})"] += 1
     rows = []
@@ -3027,8 +3048,11 @@ def codex_failure_reason(events):
 
 
 def codex_usage_wall(events, stderr):
+    # No bare 429, for the reason opencode_usage_wall gives: the status code is what a spent
+    # plan and a throttled provider both answer, and only one of them is the account's own
+    # window. Named wording still retires the account; an unnamed 429 is retried as transient.
     pattern = (
-        r"\b429\b|\b(?:usage|rate)[ _-]limit(?:[ _-]exceeded)?\b"
+        r"\b(?:usage|rate)[ _-]limit(?:[ _-]exceeded)?\b"
         r"|\bquota[ _-]exceeded\b"
     )
     if re.search(pattern, stderr or "", re.IGNORECASE):
@@ -3960,6 +3984,9 @@ def worker_pick_account(side, excluded):
 _SIDE_ROSTER = {}
 _SIDE_ROSTER_LOCK = threading.Lock()
 ROSTER_MAX = 8
+# Long enough that a run's cells share one enumeration, short enough that a floor crossed
+# mid-run is noticed while the run is still going.
+ROSTER_TTL_S = 60
 
 
 def side_roster(side, baseline):
@@ -3967,32 +3994,40 @@ def side_roster(side, baseline):
 
     Enumerated by asking again with the previous answers excluded, rather than reading the
     limits table here: the ranking, the floors and the session-account rule stay the pool's
-    to decide. Memoised for the process because a per-cell enumeration would spawn one
-    worker-pick per account per cell for an answer the run already has.
+    to decide. Cached briefly because a per-cell enumeration would spawn one worker-pick per
+    account per cell for an answer the run already has.
+
+    Briefly, and never when it came out empty: the answer is a live verdict about floors that
+    the run itself keeps invalidating, so holding it for the process would both keep feeding
+    cells to an account that has since crossed its floor and freeze one empty moment into a
+    side with nothing to offer for good. Enumerated under the lock, because every cell of a
+    side misses the cache at once and would otherwise enumerate in parallel — the per-cell
+    fan-out of worker-pick processes this cache exists to prevent.
     """
     key = (side, tuple(sorted(baseline)))
     with _SIDE_ROSTER_LOCK:
         cached = _SIDE_ROSTER.get(key)
-    if cached is not None:
-        return cached
-    roster = []
-    seen = set(baseline)
-    while len(roster) < ROSTER_MAX:
-        account = worker_pick_account(side, seen)
-        # A repeated answer means the pool ignored the exclusion, which would otherwise spin.
-        if account is None or account in seen:
-            break
-        roster.append(account)
-        seen.add(account)
-    with _SIDE_ROSTER_LOCK:
-        return _SIDE_ROSTER.setdefault(key, roster)
+        if cached is not None and time.monotonic() - cached[0] < ROSTER_TTL_S:
+            return cached[1]
+        roster = []
+        seen = set(baseline)
+        while len(roster) < ROSTER_MAX:
+            account = worker_pick_account(side, seen)
+            # A repeated answer means the pool ignored the exclusion, which would otherwise spin.
+            if account is None or account in seen:
+                break
+            roster.append(account)
+            seen.add(account)
+        if roster:
+            _SIDE_ROSTER[key] = (time.monotonic(), roster)
+        return roster
 
 
 def spread_accounts():
     return os.environ.get("REVIEW_BENCH_SPREAD_ACCOUNTS", "1").strip() not in ("0", "no", "off")
 
 
-def pool_account(side, excluded, slot=0):
+def pool_account(side, excluded, slot=0, bucket="general"):
     """The pool's account for this cell, or None when it has nothing left to offer.
 
     Cells of one side start at different points in the roster instead of all taking its head:
@@ -4004,7 +4039,7 @@ def pool_account(side, excluded, slot=0):
     spread = spread_accounts()
     if side == "opencode":
         profiles = [opencode_account(profile) for profile in opencode_profiles()]
-        return first_free_account(side, profiles, excluded, slot if spread else 0)
+        return first_free_account(side, profiles, excluded, slot if spread else 0, bucket)
     if side == "claude" and allow_session_account():
         # worker-pick never offers the session account, so the opt-in would otherwise grant a
         # permission the pool cannot act on. The account comes from the same table parse that
@@ -4020,19 +4055,23 @@ def pool_account(side, excluded, slot=0):
     roster = side_roster(side, baseline_exclusions(side))
     if not roster:
         return None
-    return first_free_account(side, roster, excluded, slot)
+    return first_free_account(side, roster, excluded, slot, bucket)
 
 
-def first_free_account(side, roster, excluded, slot):
+def first_free_account(side, roster, excluded, slot, bucket="general"):
     """This cell's share of the accounts that can actually take work.
 
     Retired accounts are dropped before the slot is applied, not skipped after it: a roster
     position that cannot run would otherwise hand its cells to whichever account follows it
     and load that one twice over while the rest of the pool sits idle.
+
+    The cell's own bucket decides what counts as retired. Gemini walls per model and Claude
+    bills fable separately, so asking about the general bucket answers about a quota this
+    cell does not spend: for those sides the filter would drop nobody at all.
     """
     usable = [
         account for account in roster
-        if account and account not in excluded and not is_walled(side, account)
+        if account and account not in excluded and not is_walled(side, account, bucket)
     ]
     if not usable:
         return None
@@ -4053,7 +4092,7 @@ def run_rater_task(rater, repo, sha, focus, run_dir, diff):
     budgets = defaultdict(lambda: list(transient_backoffs()))
     while True:
         try:
-            candidate = pool_account(side, walled, rater.get("slot", 0))
+            candidate = pool_account(side, walled, rater.get("slot", 0), bucket)
         except Exception as exc:
             return (rater, account, (1, 0, "", f"{side} account lookup failed: {exc}", []))
         # A repeated candidate means the pool ignored the exclusion, which would otherwise spin.
@@ -4094,7 +4133,8 @@ def run_rater_task(rater, repo, sha, focus, run_dir, diff):
             continue
         if not SIDE_WALL[side](rc, wall_text, stderr):
             return (rater, candidate, result)
-        mark_walled(side, candidate, bucket, wall_reset_at(f"{stderr or ''}\n{wall_text or ''}"))
+        mark_walled(side, candidate, bucket,
+                    wall_reset_at(wall_reset_source(side, stderr, wall_text)))
         walled.add(candidate)
         print(f"{rater['spec']}: {side} account {candidate} hit its usage wall")
         # A run can succeed while its output already carries the wall wording: the review is
