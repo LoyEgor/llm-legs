@@ -662,6 +662,89 @@ silent_meta = dict(
 )
 assert "Sol low (exit 5)" in "\n".join(rb.report_lines(duration_dir, silent_meta))
 
+# Counts come back out of a JSON file anyone can hand-edit, and `True` is an int in Python:
+# a hand-written `"verifier_dropped": true` would otherwise report one rejected finding.
+assert rb.counted_int(3) == 3
+assert rb.counted_int(True) == rb.counted_int(-1) == rb.counted_int("3") == 0
+assert rb.counted_int(None) == 0
+
+# The verifier changes model per finding when the gateway throttles one, so the report names
+# who actually judged rather than who was configured, and says so even when nobody answered.
+chain_report = "\n".join(rb.report_lines(duration_dir, dict(
+    duration_meta,
+    verifier="oc-kimik3",
+    raters=["oc-kimik3", "oc-grok45-low"],
+    rater_runs=[
+        {"rater": "oc-kimik3", "side": "opencode", "exit_code": 0, "findings": 1,
+         "verifier_dropped": 2, "verifier_audited": 3,
+         "verifier_by_model": {"oc-kimik3": 3}},
+        {"rater": "oc-grok45-low", "side": "opencode", "exit_code": 0, "findings": 1,
+         "verifier_dropped": 1, "verifier_audited": 2,
+         "verifier_by_model": {"oc-qwen37plus": 2}},
+    ],
+)))
+assert "verifier:  Kimi K3 3 · oc-qwen37plus 2 — 5 checked, 3 rejected" in chain_report, \
+    chain_report
+walled_report = "\n".join(rb.report_lines(duration_dir, dict(
+    duration_meta,
+    verifier="oc-kimik3",
+    raters=["oc-kimik3"],
+    rater_runs=[
+        {"rater": "oc-kimik3", "side": "opencode", "exit_code": 0, "findings": 2,
+         "verifier_dropped": 0, "verifier_audited": 2, "verifier_by_model": {}},
+    ],
+)))
+assert "verifier:  Kimi K3 — 0 checked, 0 rejected, 2 kept unchecked" in walled_report, \
+    walled_report
+# A run recorded before the verifier logged its own counts keeps only the drop total, and a
+# report that reads its absence as "nothing to check" would deny checks that did happen.
+legacy_verifier_report = "\n".join(rb.report_lines(duration_dir, dict(
+    duration_meta,
+    verifier="oc-kimik3",
+    raters=["oc-kimik3"],
+    rater_runs=[
+        {"rater": "oc-kimik3", "side": "opencode", "exit_code": 0, "findings": 1,
+         "verifier_dropped": 4},
+    ],
+)))
+assert "verifier:  Kimi K3 — 4 rejected" in legacy_verifier_report, legacy_verifier_report
+# 3 of the 205 runs on disk are that same legacy record with nothing rejected: reading the zero
+# as "the verifier never ran" reports every finding it cleared as unchecked. verify_ms is what
+# says it ran, and it has been recorded per cell since c011911.
+legacy_kept_all_report = "\n".join(rb.report_lines(duration_dir, dict(
+    duration_meta,
+    verifier="oc-kimik3",
+    raters=["oc-kimik3"],
+    rater_runs=[
+        {"rater": "oc-kimik3", "side": "opencode", "exit_code": 0, "findings": 2,
+         "verifier_dropped": 0, "verifier_unverified": 0, "verify_ms": 4000},
+    ],
+)))
+assert "verifier:  Kimi K3 — 0 rejected" in legacy_kept_all_report, legacy_kept_all_report
+# Nothing was offered to it, so "unchecked" would name material that does not exist.
+nothing_report = "\n".join(rb.report_lines(duration_dir, dict(
+    duration_meta,
+    verifier="oc-kimik3",
+    raters=["oc-kimik3"],
+    rater_runs=[{"rater": "oc-kimik3", "side": "opencode", "exit_code": 0, "findings": 0}],
+)))
+assert "verifier:  Kimi K3 — nothing to check" in nothing_report, nothing_report
+empty_off_report = "\n".join(rb.report_lines(duration_dir, dict(
+    duration_meta,
+    raters=["oc-kimik3"],
+    rater_runs=[{"rater": "oc-kimik3", "side": "opencode", "exit_code": 0, "findings": 0}],
+)))
+assert "verifier:  off — nothing to check" in empty_off_report, empty_off_report
+off_report = "\n".join(rb.report_lines(duration_dir, dict(
+    duration_meta,
+    raters=["oc-kimik3"],
+    rater_runs=[{"rater": "oc-kimik3", "side": "opencode", "exit_code": 0, "findings": 3}],
+)))
+assert "verifier:  off — 3 OpenCode finding(s) unchecked" in off_report, off_report
+# The verifier reaches OpenCode findings only, so a panel without one is not a run whose
+# verifier stayed off — there was nothing it was allowed to touch, and the line would mislead.
+assert "verifier:" not in "\n".join(rb.report_lines(duration_dir, duration_meta))
+
 # --- findings: one entry per place, agreement first --------------------------------------
 findings_dir = work / "findings-view"
 findings_dir.mkdir()
@@ -685,15 +768,54 @@ write_findings("oc-kimik3", [
 write_findings("oc-kimik3#2", [
     {"file": "z.py", "line": 10, "severity": "P2", "summary": "shared claim once more"},
 ])
+# A model writes the line as a number or as text as it pleases, and sorting the two kinds
+# against each other raises rather than misorders.
+write_findings("opus-medium", [
+    {"file": "z.py", "line": "10", "severity": "P1", "summary": "worst claim at the place"},
+])
 findings_text = "\n".join(rb.findings_lines(findings_dir))
-assert findings_text.startswith("4 findings from 2 cells at 2 places"), findings_text
+assert findings_text.startswith("5 findings from 3 cells at 2 places"), findings_text
+# The worst severity claimed at a place, and the summary of whoever claimed it: taking the
+# first entry hands both to whichever cell's filename sorted first.
+assert "P1 ×3 (4 claims)  z.py:10" in findings_text, findings_text
+assert "worst claim at the place" in findings_text, findings_text
 # The place several cells reached independently comes first, whatever its severity: that is
 # where a real defect usually is, and reading in file order buries it.
 place_order = [line for line in findings_text.splitlines() if line.startswith("P")]
 # z.py sorts last by name, so file order and agreement order disagree here on purpose.
-assert place_order[0].startswith("P2 ×3  z.py:10  oc-kimik3, sol-low"), place_order
+assert place_order[0].startswith(
+    "P1 ×3 (4 claims)  z.py:10  oc-kimik3, opus-medium, sol-low"), place_order
 assert place_order[1].startswith("P1 ×1  a.py:1  sol-low"), place_order
+# Only one summary is printed per place, so a cell that made a second claim there would vanish
+# without the count; a place where every cell spoke once carries no count to read past.
+assert "×1 (" not in findings_text, findings_text
 assert rb.findings_lines(work / "findings-empty-run") == ["no findings recorded"]
+# Corroboration is cells, not rows: one cell making three claims about a line is still one cell,
+# and ranking by rows puts it above a place two cells reached independently.
+order_dir = work / "findings-order"
+order_dir.mkdir()
+(order_dir / "findings-sol-low.jsonl").write_text("".join(
+    json.dumps({"file": "m.py", "line": 5, "severity": "P2", "summary": f"claim {index}"}) + "\n"
+    for index in range(3)
+))
+for order_cell in ("oc-kimik3", "opus-medium"):
+    (order_dir / f"findings-{order_cell}.jsonl").write_text(
+        json.dumps({"file": "n.py", "line": 7, "severity": "P2", "summary": "two cells"}) + "\n"
+    )
+order_places = [line for line in rb.findings_lines(order_dir) if line.startswith("P")]
+assert order_places[0].startswith("P2 ×2  n.py:7"), order_places
+# The group key holds the line as text so the two spellings of one line merge; ordering that
+# text as text reads line 10 as earlier than line 2.
+line_order_dir = work / "findings-line-order"
+line_order_dir.mkdir()
+(line_order_dir / "findings-sol-low.jsonl").write_text("".join(
+    json.dumps({"file": "f.py", "line": line, "severity": "P2", "summary": f"at {line}"}) + "\n"
+    for line in (10, 2, "9", None)
+))
+line_places = [line for line in rb.findings_lines(line_order_dir) if line.startswith("P")]
+assert [place.split("  ")[1] for place in line_places] == [
+    "f.py:2", "f.py:9", "f.py:10", "f.py:None"], line_places
+assert order_places[1].startswith("P2 ×1 (3 claims)  m.py:5"), order_places
 
 # --- health: why recorded cells failed -------------------------------------------------------
 for text, expected in (
@@ -2629,6 +2751,13 @@ assert chain_models == [rb.OPENCODE_MODEL_IDS["oc-kimik3"],
                         rb.OPENCODE_MODEL_IDS["oc-qwen37plus"]], chain_models
 assert chain_row["kept"] is False, chain_row
 assert "verified by oc-qwen37plus" in chain_row["why"], chain_row
+assert chain_row["verifier"] == "oc-qwen37plus", chain_row
+assert rb.verifier_tally([
+    {"code_matches": True, "verifier": "oc-kimik3"},
+    {"code_matches": False, "verifier": "oc-qwen37plus"},
+    {"code_matches": True},
+    {"code_matches": None, "walled": True, "verifier": "oc-kimik3"},
+], "oc-kimik3") == {"oc-kimik3": 2, "oc-qwen37plus": 1}
 clear_walls()
 
 # A model that simply answered badly is not asked again of anyone else.
@@ -3414,7 +3543,13 @@ assert all(
 )
 filtered_output = filtered_stdout.getvalue()
 assert filtered_output.count(rb.REPORT_BEGIN) == filtered_output.count(rb.REPORT_END) == 1
-assert "verifier rejected:  7" in filtered_output
+assert all(
+    row["verifier_by_model"] == {rb.OPENCODE_VERIFIER: 1} and row["verifier_audited"] == 1
+    for row in filtered_meta["rater_runs"] if row["side"] == "opencode"
+), filtered_meta["rater_runs"]
+# Who judged, not just how many were dropped: the chain advances per finding, so a report
+# naming no model leaves the reader unable to tell which verifier produced the rejections.
+assert "verifier:  Kimi K3 — 7 checked, 7 rejected" in filtered_output, filtered_output
 assert "fixture finding" not in filtered_output
 assert rb.bench_summary(filtered_run, filtered_meta)["findings"] == 0
 
@@ -3557,6 +3692,32 @@ assert (
     f"Record exactly with: review-bench record {snapshot_rerun_meta['run_id']} "
     f"--verdicts /tmp/review-bench-{snapshot_rerun_meta['run_id']}-verdicts.jsonl"
 ) in snapshot_rerun_stdout.getvalue()
+# The panel decides the verifier default, so a rerun of one cell that omits the flag filters
+# findings the run it completes reported raw — while a rerun holding no OpenCode cell is refused
+# outright if the flag is passed, so the reproduce line carries it only where it applies.
+assert "--verify" not in snapshot_rerun_stdout.getvalue().split("rerun:")[1].splitlines()[0]
+
+
+def oc_rerun_runner(rater, repo_path, commit, focus, run_dir, diff, account):
+    return 1, 1, "", "fixture rater failure", []
+
+
+for side in rb.SIDE_RUNNERS:
+    rb.SIDE_RUNNERS[side] = oc_rerun_runner
+for oc_rerun_name, oc_rerun_flag, oc_rerun_no_verify in (
+    ("default", "--verify oc-kimik3", False),
+    ("raw", "--no-verify", True),
+):
+    oc_rerun_store = work / f"oc-rerun-{oc_rerun_name}-claudeb"
+    os.environ["CLAUDEB_DIR"] = str(oc_rerun_store)
+    oc_rerun_stdout = io.StringIO()
+    with contextlib.redirect_stdout(oc_rerun_stdout):
+        rb.cmd_run(argparse.Namespace(
+            repo=str(pin_repo), commitish=pin_sha, raters="oc-kimik3,sol-medium",
+            leg=False, verify=None, no_verify=oc_rerun_no_verify, auto=None, focus=None,
+        ))
+    assert f"rerun: review-bench run {pin_sha} --raters oc-kimik3,sol-medium " \
+        f"{oc_rerun_flag}" in oc_rerun_stdout.getvalue(), oc_rerun_stdout.getvalue()
 for side in rb.SIDE_RUNNERS:
     rb.SIDE_RUNNERS[side] = tier_runner
 
@@ -4684,16 +4845,16 @@ PY
 
 report_output=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" report report-adjudicated) \
   || fail "adjudicated report failed"
-expected_report=$'REVIEW-REPORT-BEGIN\nT2 · 5.5 min wall · slowest completed: Sol high 2 min\nconfirmed 1:  P1 1\nrejected:     1 duplicate  ~400 tok\n              2 false      ~3k tok\nfalse by:     Kimi K3 ×1 · Sol high ×1\nerrored:      Opus medium (exit 2)\ntimeout:      Gemini 3.6 Flash medium skill\nmismatch:     Gemini 3.5 Flash low skill\nREVIEW-REPORT-END'
+expected_report=$'REVIEW-REPORT-BEGIN\nT2 · 5.5 min wall · slowest completed: Sol high 2 min\nconfirmed 1:  P1 1\nrejected:     1 duplicate  ~400 tok\n              2 false      ~3k tok\nfalse by:     Kimi K3 ×1 · Sol high ×1\nverifier:     off — 2 OpenCode finding(s) unchecked\nerrored:      Opus medium (exit 2)\ntimeout:      Gemini 3.6 Flash medium skill\nmismatch:     Gemini 3.5 Flash low skill\nREVIEW-REPORT-END'
 assert test "$report_output" = "$expected_report"
 assert contains "$report_output" $'rejected:     1 duplicate  ~400 tok\n              2 false      ~3k tok'
-assert contains "$report_output" $'false by:     Kimi K3 ×1 · Sol high ×1\nerrored:      Opus medium (exit 2)\ntimeout:      Gemini 3.6 Flash medium skill\nmismatch:     Gemini 3.5 Flash low skill'
+assert contains "$report_output" $'false by:     Kimi K3 ×1 · Sol high ×1\nverifier:     off — 2 OpenCode finding(s) unchecked\nerrored:      Opus medium (exit 2)\ntimeout:      Gemini 3.6 Flash medium skill\nmismatch:     Gemini 3.5 Flash low skill'
 last_report=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" report --last) \
   || fail "last report failed"
 assert test "$last_report" = "$expected_report"
 worktree_report=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" report report-worktree) \
   || fail "worktree report failed"
-expected_worktree_report=$'REVIEW-REPORT-BEGIN\nT0 · 30 sec wall · slowest completed: Kimi K3 20 sec\nfindings:  Kimi K3 ×2 3\nnote:      not adjudicated \u2014 optional, and keeps until the corpus is wanted\ntimeout:   Gemini 3.1 Pro high skill\nREVIEW-REPORT-END'
+expected_worktree_report=$'REVIEW-REPORT-BEGIN\nT0 · 30 sec wall · slowest completed: Kimi K3 20 sec\nfindings:  Kimi K3 ×2 3\nnote:      not adjudicated \u2014 optional, and keeps until the corpus is wanted\nverifier:  off — 3 OpenCode finding(s) unchecked\ntimeout:   Gemini 3.1 Pro high skill\nREVIEW-REPORT-END'
 assert test "$worktree_report" = "$expected_worktree_report"
 worktree_recorded=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" record report-worktree \
   --verdicts "$WORK/report-worktree-verdicts.jsonl") || fail "worktree record failed"

@@ -1601,6 +1601,13 @@ def timeout_seconds_from_row(row):
     return value * 60 if match.group(2) == "m" else value
 
 
+def counted_int(value):
+    """A count read back out of someone else's JSON: bools are ints in Python."""
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        return 0
+    return value
+
+
 def human_cell_name(spec):
     family = rater_family(spec)
     try:
@@ -1670,6 +1677,12 @@ def bench_summary(run_dir, meta):
             "status": cell_status(row),
             "findings": findings,
             "verifier_dropped": row.get("verifier_dropped", 0),
+            "verifier_audited": counted_int(row.get("verifier_audited")),
+            "verifier_ran": row.get("verify_ms") is not None,
+            "verifier_by_model": {
+                str(model): counted_int(count)
+                for model, count in (row.get("verifier_by_model") or {}).items()
+            } if isinstance(row.get("verifier_by_model"), dict) else {},
             "exit_code": row.get("exit_code"),
             "timeout_s": timeout_seconds_from_row(row),
             "stderr": row.get("stderr"),
@@ -1708,12 +1721,12 @@ def bench_summary(run_dir, meta):
         "tier": tier_from_meta(meta),
         "cells": cells,
         "findings": sum(cell["findings"] for cell in cells),
-        "verifier_dropped": sum(
-            cell["verifier_dropped"] for cell in cells
-            if isinstance(cell["verifier_dropped"], int)
-            and not isinstance(cell["verifier_dropped"], bool)
-            and cell["verifier_dropped"] > 0
-        ),
+        "verifier": str(meta.get("verifier") or ""),
+        "verifier_dropped": sum(counted_int(cell["verifier_dropped"]) for cell in cells),
+        "verifier_audited": sum(cell["verifier_audited"] for cell in cells),
+        "verifier_by_model": dict(sum(
+            (Counter(cell["verifier_by_model"]) for cell in cells), Counter()
+        )),
         "adjudicated": verdict_path.exists(),
         "confirmed": verdict_counts["confirmed"],
         "duplicate": verdict_counts["duplicate"],
@@ -1787,6 +1800,43 @@ def aligned_report_lines(rows):
         f"{label:<{width}}  {value}" if value else label
         for label, value in rows
     ]
+
+
+def verifier_report_value(summary):
+    """None only when the panel held no cell the verifier is allowed to touch. Anywhere else the
+    line stays, including where no verifier ran: a silent line and a verified run read alike.
+    """
+    eligible = [cell for cell in summary["cells"] if cell["side"] == "opencode"]
+    if not eligible:
+        return None
+    if not summary["verifier"]:
+        unchecked = sum(counted_int(cell["findings"]) for cell in eligible)
+        if not unchecked:
+            return "off — nothing to check"
+        return f"off — {unchecked} OpenCode finding(s) unchecked"
+    by_model = summary["verifier_by_model"]
+    judged = sum(by_model.values())
+    audited = max(summary["verifier_audited"], judged)
+    if len(by_model) > 1:
+        names = " · ".join(
+            f"{human_cell_name(model)} {count}"
+            for model, count in sorted(by_model.items(), key=lambda item: (-item[1], item[0]))
+        )
+    else:
+        # The configured model whenever none answered: a walled verifier still owes the reader
+        # the name of the model to look at, and it is the only name a pre-2026-08 run kept.
+        names = human_cell_name(next(iter(by_model), summary["verifier"]))
+    if not audited:
+        # Whether the verifier ran, not whether it rejected anything: a run recorded before the
+        # tally existed keeps only its drop total, and reading a zero there as "never ran" tells
+        # the reader nothing was checked on 3 of the 205 runs on disk, where everything was.
+        if any(cell["verifier_ran"] for cell in eligible) or summary["verifier_dropped"]:
+            return f"{names} — {summary['verifier_dropped']} rejected"
+        return f"{names} — nothing to check"
+    counts = [f"{judged} checked", f"{summary['verifier_dropped']} rejected"]
+    if audited > judged:
+        counts.append(f"{audited - judged} kept unchecked")
+    return f"{names} — {', '.join(counts)}"
 
 
 def report_lines(run_dir, meta):
@@ -1898,8 +1948,9 @@ def report_lines(run_dir, meta):
         # is what builds the corpus, not what finishes a review, and it keeps on disk until
         # someone wants the corpus. Saying so here is the only place every reader passes.
         rows.append(("note:", "not adjudicated — optional, and keeps until the corpus is wanted"))
-    if summary["verifier_dropped"]:
-        rows.append(("verifier rejected:", str(summary["verifier_dropped"])))
+    verifier_value = verifier_report_value(summary)
+    if verifier_value:
+        rows.append(("verifier:", verifier_value))
     if errored:
         rows.append((
             "errored:",
@@ -2087,6 +2138,14 @@ def health_lines(runs):
 
 
 FINDINGS_SUMMARY_CHARS = 300
+SEVERITY_ORDER = {"P1": 0, "P2": 1, "P3": 2}
+
+
+def line_sort_key(text):
+    """One panel writes a line number as a number and as a string, so the group key holds it as
+    text — which orders line 10 ahead of line 2 unless the digits are read back out.
+    """
+    return (0, int(text), "") if text.isdigit() else (1, 0, text)
 
 
 def findings_lines(run_dir):
@@ -2107,21 +2166,36 @@ def findings_lines(run_dir):
         return ["no findings recorded"]
     places = defaultdict(list)
     for cell, row in rows:
-        places[(str(row.get("file") or "?"), row.get("line"))].append((cell, row))
+        places[(str(row.get("file") or "?"), str(row.get("line")))].append((cell, row))
     ordered = sorted(
         places.items(),
-        key=lambda item: (-len(item[1]), item[0][0], item[0][1] or 0),
+        # By how many distinct cells reached the place, not how many rows landed on it: one cell
+        # repeated, or one that made two claims about the same line, is not corroboration.
+        key=lambda item: (-len({cell for cell, _ in item[1]}), item[0][0],
+                          line_sort_key(item[0][1])),
     )
     cells = {cell for cell, _ in rows}
     lines = [
         f"{len(rows)} findings from {len(cells)} cells at {len(places)} places"
     ]
     for (path, line), entries in ordered:
-        row = entries[0][1]
-        named = ", ".join(sorted({cell for cell, _ in entries}))
+        # The worst severity claimed here, and the summary of whoever claimed it. Taking the
+        # first entry hands both to whichever cell's filename sorted first, so a P1 shows as a
+        # P3 because of a name.
+        cell_names = sorted({cell for cell, _ in entries})
+        row = min(
+            (row for _, row in entries),
+            key=lambda row: SEVERITY_ORDER.get(row.get("severity"), len(SEVERITY_ORDER)),
+        )
         lines.append("")
+        # ×N is the agreement, so the claim count comes back whenever a cell said more than one
+        # thing here: only one summary is printed, and without it the rest are invisible.
+        agreement = f"×{len(cell_names)}"
+        if len(entries) > len(cell_names):
+            agreement += f" ({len(entries)} claims)"
         lines.append(
-            f"{row.get('severity') or '??'} ×{len(entries)}  {path}:{line}  {named}"
+            f"{row.get('severity') or '??'} {agreement}  {path}:{line}  "
+            f"{', '.join(cell_names)}"
         )
         summary = " ".join(str(row.get("summary") or "").split())
         lines.append(f"    {summary[:FINDINGS_SUMMARY_CHARS]}")
@@ -3766,9 +3840,20 @@ def verify_one(index, finding, repo, sha, model, lines, ref=None):
     row.update(
         kept=bool(judgment["code_matches"] and judgment["is_defect"]),
         code_matches=judgment["code_matches"], is_defect=judgment["is_defect"],
-        why=why,
+        why=why, verifier=answered_by,
     )
     return row
+
+
+def verifier_tally(audit, configured):
+    """Which model answered, counted per finding. The chain advances on a burst throttle, so
+    one cell's claims can be judged by two models, and a row that fails open was judged by
+    nobody — crediting the configured model for either would name a model that never ran.
+    """
+    return dict(Counter(
+        row.get("verifier") or configured
+        for row in audit if row.get("code_matches") is not None
+    ))
 
 
 def verify_findings(findings, repo, sha, model, tree):
@@ -4783,6 +4868,10 @@ def commit_mode_command(args):
         command += ["--focus", args.focus]
     if args.verify:
         command += ["--verify", args.verify]
+    # A refusal the reproduce line cannot express is a refusal it ignores: replaying without it
+    # verifies findings the run it claims to reproduce reported raw.
+    elif getattr(args, "no_verify", False):
+        command.append("--no-verify")
     return shlex.join(command)
 
 
@@ -5001,6 +5090,8 @@ def cmd_run(args):
             dropped = 0
             unverified = 0
             verify_ms = None
+            audited = 0
+            verified_by = {}
             # The verifier's error rate is measured on the OpenCode leg only
             # (docs/verifier-tuning.md); other sides' findings pass unverified until measured.
             if verify_model and findings and not is_error and rater["side"] == "opencode":
@@ -5010,6 +5101,8 @@ def cmd_run(args):
                 write_jsonl(run_dir / f"verified-{rater['spec']}.jsonl", audit)
                 dropped = len(findings) - len(kept)
                 unverified = sum(1 for row in audit if row.get("walled"))
+                audited = len(audit)
+                verified_by = verifier_tally(audit, verify_model)
                 findings = kept
                 print(f"{rater['spec']}: verifier kept {len(kept)} of {len(audit)} finding(s)")
                 if unverified:
@@ -5048,6 +5141,8 @@ def cmd_run(args):
                     run_meta["timeout_s"] = rater["timeout_s"]
                 if verify_ms is not None:
                     run_meta["verify_ms"] = verify_ms
+                    run_meta["verifier_audited"] = audited
+                    run_meta["verifier_by_model"] = verified_by
                 if model_resolved:
                     run_meta["model_resolved"] = model_resolved
                 rater_meta.append(run_meta)
@@ -5079,13 +5174,19 @@ def cmd_run(args):
             write_review_receipt(repo, sha, run_id, len(errored_raters),
                                  panel=len(raters), worktree=worktree_mode)
         if errored_raters:
-            rerun = ",".join(collapse_rater_attempts(
-                rater["spec"] for rater in raters if rater["spec"] in errored_raters
-            ))
+            errored = [rater for rater in raters if rater["spec"] in errored_raters]
+            rerun = ",".join(collapse_rater_attempts(rater["spec"] for rater in errored))
             # Always the sha, even for --worktree: the tree can drift before the rerun, and
             # only the snapshot commit pins the errored cells to what the others reviewed.
-            print(f"rerun: "
-                  f"{shlex.join(['review-bench', 'run', sha, '--raters', rerun])}")
+            rerun_command = ["review-bench", "run", sha, "--raters", rerun]
+            # The verifier default is decided by the panel, so a rerun of one cell would filter
+            # findings the run it completes reported raw. The flag is refused outright when no
+            # OpenCode cell is being replayed, so it goes on only when it applies.
+            if any(rater["side"] == "opencode" for rater in errored):
+                rerun_command += (
+                    ["--verify", verify_model] if verify_model else ["--no-verify"]
+                )
+            print(f"rerun: {shlex.join(rerun_command)}")
         print(f"run id: {run_id}")
         handoff(run_id, paths)
         emit_report(run_dir, meta)
