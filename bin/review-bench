@@ -1676,7 +1676,8 @@ def bench_summary(run_dir, meta):
             "duration_ms": duration,
             "status": cell_status(row),
             "findings": findings,
-            "verifier_dropped": row.get("verifier_dropped", 0),
+            "verifier_dropped": counted_int(row.get("verifier_dropped")),
+            "verifier_unverified": counted_int(row.get("verifier_unverified")),
             "verifier_audited": counted_int(row.get("verifier_audited")),
             "verifier_ran": row.get("verify_ms") is not None,
             "verifier_by_model": {
@@ -1722,7 +1723,8 @@ def bench_summary(run_dir, meta):
         "cells": cells,
         "findings": sum(cell["findings"] for cell in cells),
         "verifier": str(meta.get("verifier") or ""),
-        "verifier_dropped": sum(counted_int(cell["verifier_dropped"]) for cell in cells),
+        "verifier_dropped": sum(cell["verifier_dropped"] for cell in cells),
+        "verifier_unverified": sum(cell["verifier_unverified"] for cell in cells),
         "verifier_audited": sum(cell["verifier_audited"] for cell in cells),
         "verifier_by_model": dict(sum(
             (Counter(cell["verifier_by_model"]) for cell in cells), Counter()
@@ -1828,10 +1830,15 @@ def verifier_report_value(summary):
         names = human_cell_name(next(iter(by_model), summary["verifier"]))
     if not audited:
         # Whether the verifier ran, not whether it rejected anything: a run recorded before the
-        # tally existed keeps only its drop total, and reading a zero there as "never ran" tells
-        # the reader nothing was checked on 3 of the 205 runs on disk, where everything was.
+        # tally existed keeps only its drop and wall totals, and reading a zero drop as "never
+        # ran" tells the reader nothing was checked on 3 of the 205 runs on disk, where
+        # everything was. The wall total is the only unchecked count such a run kept, and 7 of
+        # them have one — without it a partly walled verifier reads as a complete pass.
         if any(cell["verifier_ran"] for cell in eligible) or summary["verifier_dropped"]:
-            return f"{names} — {summary['verifier_dropped']} rejected"
+            counts = [f"{summary['verifier_dropped']} rejected"]
+            if summary["verifier_unverified"]:
+                counts.append(f"{summary['verifier_unverified']} kept unchecked")
+            return f"{names} — {', '.join(counts)}"
         return f"{names} — nothing to check"
     counts = [f"{judged} checked", f"{summary['verifier_dropped']} rejected"]
     if audited > judged:
@@ -5180,8 +5187,8 @@ def cmd_run(args):
             # only the snapshot commit pins the errored cells to what the others reviewed.
             rerun_command = ["review-bench", "run", sha, "--raters", rerun]
             # The verifier default is decided by the panel, so a rerun of one cell would filter
-            # findings the run it completes reported raw. The flag is refused outright when no
-            # OpenCode cell is being replayed, so it goes on only when it applies.
+            # findings the run it completes reported raw. Only a rerun holding an OpenCode cell
+            # can carry the flag at all: --verify is refused outright without one.
             if any(rater["side"] == "opencode" for rater in errored):
                 rerun_command += (
                     ["--verify", verify_model] if verify_model else ["--no-verify"]
@@ -5322,14 +5329,19 @@ def cmd_record(args):
     verdict_existed = verdict_path.exists()
     stored = [row for row in read_jsonl(verdict_path) if "rater" in row]
     verdicts_changed = not verdict_existed or stored != normalized_verdicts
-    if worktree:
+    # The fixer's own triage is what makes the report readable at the end of a round, and it is
+    # not what the corpus is for: judged against a checkout that already holds the fixes, it is a
+    # different ruler from the two sealed judges reviews.jsonl is built on. Skipping the corpus
+    # keeps both — without this the choice is a useless report or a mixed ruler.
+    if worktree or getattr(args, "no_corpus", False):
         if verdicts_changed:
             write_jsonl(verdict_path, normalized_verdicts)
             log_review_event("adjudicated", run_dir, meta)
-        print(
-            "recorded worktree adjudication; corpus skipped because worktree snapshots "
-            "are not durable corpus commits"
+        reason = (
+            "worktree snapshots are not durable corpus commits" if worktree
+            else "--no-corpus"
         )
+        print(f"recorded adjudication; corpus skipped because {reason}")
         emit_report(run_dir, meta)
         return 0
     caught_by = {key: {key[0]} for key in canonical}
@@ -6016,6 +6028,10 @@ def main():
     record = subparsers.add_parser("record", help="Record blind adjudication verdicts")
     record.add_argument("run_id")
     record.add_argument("--verdicts", required=True)
+    record.add_argument(
+        "--no-corpus", action="store_true",
+        help="report the verdicts without writing a corpus row (a fix round's own triage)"
+    )
     record.set_defaults(func=cmd_record)
     cluster = subparsers.add_parser(
         "cluster", help="Reconcile one commit's per-run defect lists into a canonical list"

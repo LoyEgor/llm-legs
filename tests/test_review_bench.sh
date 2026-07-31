@@ -720,7 +720,36 @@ legacy_kept_all_report = "\n".join(rb.report_lines(duration_dir, dict(
          "verifier_dropped": 0, "verifier_unverified": 0, "verify_ms": 4000},
     ],
 )))
-assert "verifier:  Kimi K3 — 0 rejected" in legacy_kept_all_report, legacy_kept_all_report
+assert "verifier:  Kimi K3 — 0 rejected" in legacy_kept_all_report.splitlines(), \
+    legacy_kept_all_report
+# 7 of those legacy runs walled the verifier partway. The wall total is the only unchecked count
+# they kept, so a line that prints the drops alone reports a partial pass as a complete one.
+legacy_walled_report = "\n".join(rb.report_lines(duration_dir, dict(
+    duration_meta,
+    verifier="oc-kimik3",
+    raters=["oc-kimik3"],
+    rater_runs=[
+        {"rater": "oc-kimik3", "side": "opencode", "exit_code": 0, "findings": 5,
+         "verifier_dropped": 1, "verifier_unverified": 3, "verify_ms": 4000},
+    ],
+)))
+assert "verifier:  Kimi K3 — 1 rejected, 3 kept unchecked" in legacy_walled_report, \
+    legacy_walled_report
+# Every count is read back out of a file anyone can hand-edit, so each is sanitised where it is
+# read, not only where it is summed: a bool reaching one cell field and not its neighbour is the
+# inconsistency that makes the next edit trust the wrong one.
+sanitised_cells = rb.bench_summary(duration_dir, dict(
+    duration_meta,
+    verifier="oc-kimik3",
+    raters=["oc-kimik3"],
+    rater_runs=[
+        {"rater": "oc-kimik3", "side": "opencode", "exit_code": 0, "findings": 1,
+         "verifier_dropped": True, "verifier_unverified": -2, "verifier_audited": True},
+    ],
+))["cells"]
+assert sanitised_cells[0]["verifier_dropped"] == 0, sanitised_cells
+assert sanitised_cells[0]["verifier_unverified"] == 0, sanitised_cells
+assert sanitised_cells[0]["verifier_audited"] == 0, sanitised_cells
 # Nothing was offered to it, so "unchecked" would name material that does not exist.
 nothing_report = "\n".join(rb.report_lines(duration_dir, dict(
     duration_meta,
@@ -4048,6 +4077,32 @@ assert (worktree_record_dir / "verdicts.jsonl").read_text() == ""
 assert [row["rater"] for row in rb.read_jsonl(
     repeat_store / "worker-stats" / "reviews.jsonl"
 )] == ["sol-medium", "sol-medium#2"]
+
+# A fix round's own triage is what makes the end-of-round report readable, and it is judged
+# against a checkout that already holds the fixes — a different ruler from the two sealed judges
+# reviews.jsonl is built on. Without a way to report it and skip the corpus, the choice is a
+# useless report or a mixed ruler, so the flag reaches a durable commit too.
+no_corpus_dir = repeat_store / "worker-stats" / "benches" / "no-corpus-fixture"
+no_corpus_dir.mkdir()
+(no_corpus_dir / "meta.json").write_text(json.dumps({
+    "run_id": "no-corpus-fixture", "commit": pin_sha, "repo": str(pin_repo), "raters": [],
+}) + "\n")
+no_corpus_stdout = io.StringIO()
+with contextlib.redirect_stdout(no_corpus_stdout):
+    assert rb.cmd_record(argparse.Namespace(
+        run_id="no-corpus-fixture", verdicts=str(empty_verdicts), no_corpus=True,
+    )) == 0
+assert "corpus skipped because --no-corpus" in no_corpus_stdout.getvalue(), \
+    no_corpus_stdout.getvalue()
+assert no_corpus_stdout.getvalue().count(rb.REPORT_BEGIN) == 1
+assert (no_corpus_dir / "verdicts.jsonl").exists()
+assert [row["rater"] for row in rb.read_jsonl(
+    repeat_store / "worker-stats" / "reviews.jsonl"
+)] == ["sol-medium", "sol-medium#2"]
+# The reason is not interchangeable: a worktree run says why its snapshot cannot be a corpus row,
+# and reading the flag's wording there would deny the durable-commit rule it actually followed.
+assert "worktree snapshots are not durable corpus commits" in \
+    worktree_record_stdout.getvalue(), worktree_record_stdout.getvalue()
 
 verify_timing_store = work / "verify-timing-claudeb"
 os.environ["CLAUDEB_DIR"] = str(verify_timing_store)
