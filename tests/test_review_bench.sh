@@ -4120,8 +4120,8 @@ with contextlib.redirect_stdout(no_corpus_stdout):
 # The verdicts reach the report without reaching the disk: printing the pre-adjudication shape
 # here is what sent the reader back to a list of cells, which is why the flag exists.
 assert "confirmed 1:  P1 1" in no_corpus_stdout.getvalue(), no_corpus_stdout.getvalue()
-assert "nothing recorded because --no-corpus" in no_corpus_stdout.getvalue(), \
-    no_corpus_stdout.getvalue()
+assert "nothing recorded because --no-corpus, so the run stays pending" in \
+    no_corpus_stdout.getvalue(), no_corpus_stdout.getvalue()
 assert no_corpus_stdout.getvalue().count(rb.REPORT_BEGIN) == 1
 assert not (no_corpus_dir / "verdicts.jsonl").exists(), "a verdict file was left behind"
 # Handed-in rows go through the same schema filter as a file's: nothing stops a caller passing
@@ -4167,14 +4167,44 @@ rb.write_jsonl(repeat_store / "worker-stats" / "reviews.jsonl", recorded_reviews
 rb.write_jsonl(work / "recorded-no-corpus-verdicts.jsonl", [
     {"rater": "sol-medium", "idx": 0, "verdict": "false_positive"},
 ])
-with contextlib.redirect_stdout(io.StringIO()):
+recorded_no_corpus_stdout = io.StringIO()
+with contextlib.redirect_stdout(recorded_no_corpus_stdout):
     assert rb.cmd_record(argparse.Namespace(
         run_id="recorded-no-corpus-fixture",
         verdicts=str(work / "recorded-no-corpus-verdicts.jsonl"), no_corpus=True,
     )) == 0
+# Telling the reader this run "stays pending" would state the opposite of what is on disk, and
+# the report printed beside it is the handed-in triage rather than those recorded rows.
+assert "already has are untouched" in recorded_no_corpus_stdout.getvalue(), \
+    recorded_no_corpus_stdout.getvalue()
+assert "stays pending" not in recorded_no_corpus_stdout.getvalue(), \
+    recorded_no_corpus_stdout.getvalue()
 assert rb.read_jsonl(recorded_no_corpus_dir / "verdicts.jsonl") == [
     {"rater": "sol-medium", "idx": 0, "verdict": "confirmed"}
 ], rb.read_jsonl(recorded_no_corpus_dir / "verdicts.jsonl")
+# A crash between appending the corpus row and writing the verdict file leaves rows with no file
+# — the state the ordinary path already corrects — so the file alone does not decide whether a
+# run is settled, or that run would be called pending while its numbers are in the ruler.
+crashed_dir = repeat_store / "worker-stats" / "benches" / "crashed-record-fixture"
+crashed_dir.mkdir()
+(crashed_dir / "meta.json").write_text(json.dumps({
+    "run_id": "crashed-record-fixture", "commit": pin_sha, "repo": str(pin_repo),
+    "raters": ["sol-medium"], "completed_raters": ["sol-medium"],
+    "rater_runs": [{"rater": "sol-medium", "exit_code": 0, "findings": 1}],
+}) + "\n")
+rb.write_jsonl(crashed_dir / "findings-sol-medium.jsonl", [
+    {"file": "a.py", "line": 1, "severity": "P2", "summary": "recorded, file lost"},
+])
+rb.write_jsonl(repeat_store / "worker-stats" / "reviews.jsonl", rb.read_jsonl(
+    repeat_store / "worker-stats" / "reviews.jsonl"
+) + [{"run_id": "crashed-record-fixture", "rater": "sol-medium", "confirmed": 1}])
+crashed_stdout = io.StringIO()
+with contextlib.redirect_stdout(crashed_stdout):
+    assert rb.cmd_record(argparse.Namespace(
+        run_id="crashed-record-fixture",
+        verdicts=str(work / "recorded-no-corpus-verdicts.jsonl"), no_corpus=True,
+    )) == 0
+assert "stays pending" not in crashed_stdout.getvalue(), crashed_stdout.getvalue()
 assert [row.get("confirmed") for row in rb.read_jsonl(
     repeat_store / "worker-stats" / "reviews.jsonl"
 ) if row.get("run_id") == "recorded-no-corpus-fixture"] == [1]
