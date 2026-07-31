@@ -24,11 +24,12 @@ function Styled.__concat(left, right)
 end
 
 local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptFn,
-    workerModel, fsAttributes)
+    workerModel, fsAttributes, interfaceStyle)
   local mock = {
     alert = { show = alertFn or function() end },
     execute = function() return true end,
     fs = { attributes = fsAttributes or function() return nil end },
+    host = { interfaceStyle = function() return interfaceStyle end },
     json = { decode = function()
       return type(fixture) == "function" and fixture() or fixture
     end },
@@ -36,8 +37,18 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
     styledtext = { new = styled },
     task = { new = taskFactory or function() return nil end },
   }
+  -- Writes stay in the harness: the module appends to its action log through this, and a test
+  -- reading the real ~/.hammerspoon log would both miss the lines and dirty a live file.
+  local writes = {}
   local fakeIo = setmetatable({
-    open = function(path)
+    open = function(path, mode)
+      if type(mode) == "string" and (mode:find("a", 1, true) or mode:find("w", 1, true)) then
+        writes[path] = writes[path] or {}
+        return {
+          write = function(_, text) table.insert(writes[path], text); return true end,
+          close = function() end,
+        }
+      end
       local contents = "fixture"
       if path:match("/%.claude/worker%-model$") then
         if workerModel == nil then return nil end
@@ -55,7 +66,9 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
   env._G = env
   local chunk, err = loadfile(root .. "/hammerspoon/llm-limits.lua", "t", env)
   assert(chunk, err)
-  return chunk()
+  local module = chunk()
+  module.__writes = writes
+  return module
 end
 
 local function bucket(pct, stale)
@@ -134,12 +147,35 @@ local function isGray(attributes)
   return color and color.red == 0.55 and color.green == 0.55 and color.blue == 0.55
 end
 
-local function accountMarkerIsGray(menu, account)
+-- The dim tone is the menu's own text colour at 55%, so it flips with the appearance; anything
+-- pinned to one appearance would be invisible in the other.
+local function isDim(attributes, level)
+  local color = attributes and attributes.color
+  return type(color) == "table" and color.alpha == 0.55
+    and color.red == level and color.green == level and color.blue == level
+end
+
+-- The pin keeps the full label colour in every state, honoured or not: an ignored pin is already
+-- visible in the row itself, and a mark nobody can see is worse than a mark that overstates.
+local function accountMarkerRun(menu, account)
   local item = accountItem(menu, account)
-  for _, run in ipairs(item.title.runs or {}) do
-    if run.text:find("●", 1, true) then return isGray(run.attributes) end
+  for index, run in ipairs(item.title.runs or {}) do
+    if run.text:find("●", 1, true) then return run, index end
   end
   error("account marker missing: " .. account)
+end
+
+-- No colour of its own: the pin inherits the row's, which is the only way it reads as strong as
+-- everything else in both appearances.
+local function accountMarkerIsLabel(menu, account)
+  local run = accountMarkerRun(menu, account)
+  return run.attributes ~= nil and run.attributes.color == nil
+end
+
+-- Straight after the name, ahead of the age and the warnings.
+local function accountMarkerIsFirst(menu, account)
+  local _, index = accountMarkerRun(menu, account)
+  return index == 2
 end
 
 local function assertNoRed(item, message)
@@ -313,33 +349,34 @@ local authLapsedMenu = claudePinMenu({
   account = "pinned", auth_needed = true,
 })
 assert(accountHasMarker(authLapsedMenu, "pinned"), "auth-needed pin hid ●")
-assert(accountMarkerIsGray(authLapsedMenu, "pinned"), "auth-needed pin marker was not gray")
+assert(accountMarkerIsLabel(authLapsedMenu, "pinned"), "auth-needed pin marker was dimmed")
 local removedLapsedMenu = claudePinMenu({
   account = "pinned", removed = true, five_hour = bucket(10),
 })
 assert(accountHasMarker(removedLapsedMenu, "pinned"), "removed pin hid ●")
-assert(accountMarkerIsGray(removedLapsedMenu, "pinned"), "removed pin marker was not gray")
+assert(accountMarkerIsLabel(removedLapsedMenu, "pinned"), "removed pin marker was dimmed")
 local limitLapsedMenu = claudePinMenu({
   account = "pinned", five_hour = bucket(100),
 })
 assert(accountHasMarker(limitLapsedMenu, "pinned"), "at-limit pin hid ●")
-assert(accountMarkerIsGray(limitLapsedMenu, "pinned"), "at-limit pin marker was not gray")
+assert(accountMarkerIsLabel(limitLapsedMenu, "pinned"), "at-limit pin marker was dimmed")
 local blockedLapsedMenu = claudePinMenu({
   account = "pinned", blocked = true, five_hour = bucket(10),
 })
 assert(accountHasMarker(blockedLapsedMenu, "pinned"), "blocked pin hid ●")
-assert(accountMarkerIsGray(blockedLapsedMenu, "pinned"), "blocked pin marker was not gray")
+assert(accountMarkerIsLabel(blockedLapsedMenu, "pinned"), "blocked pin marker was dimmed")
 local honouredMenu = claudePinMenu({
   account = "pinned", five_hour = bucket(10),
 })
 assert(accountHasMarker(honouredMenu, "pinned"), "honoured pin lost ●")
-assert(not accountMarkerIsGray(honouredMenu, "pinned"), "honoured pin marker was gray")
+assert(accountMarkerIsLabel(honouredMenu, "pinned"), "honoured pin marker was dimmed")
+assert(accountMarkerIsFirst(honouredMenu, "pinned"), "pin did not sit right after the name")
 local excludedHonouredMenu = claudePinMenu({
   account = "pinned", enabled = false, five_hour = bucket(10),
 })
 assert(accountHasMarker(excludedHonouredMenu, "pinned"), "pool-excluded pin lost ●")
-assert(not accountMarkerIsGray(excludedHonouredMenu, "pinned"),
-  "pool-excluded honoured pin marker was gray")
+assert(accountMarkerIsLabel(excludedHonouredMenu, "pinned"),
+  "pool-excluded honoured pin marker was dimmed")
 
 local routingNow = 200000
 local routingText = table.concat({
@@ -420,14 +457,20 @@ local poolFixture = { schema = 1, vendors = {
     { account = "work", is_current = false, enabled = false, five_hour = bucket(20) },
   } },
 }}
+local function isPoolItem(item)
+  local text = item and (type(item.title) == "string" and item.title or titleText(item)) or ""
+  return text == "In worker pool"
+end
+
 local poolRows = {}
 for _, item in ipairs(loadModule(poolFixture).menuItems()) do
   local text = titleText(item)
   for _, name in ipairs({ "main", "spare", "work" }) do
     if text:find(name, 1, true) and item.menu then
       for _, sub in ipairs(item.menu) do
-        if sub.title == "In worker pool" then
-          poolRows[#poolRows + 1] = { name = name, checked = sub.checked, rowChecked = item.checked }
+        if isPoolItem(sub) then
+          poolRows[#poolRows + 1] = { name = name, checked = sub.checked, rowChecked = item.checked,
+            title = sub.title }
         end
       end
     end
@@ -494,6 +537,20 @@ local entryMenu = entryModule.menuItems()
 local entryRow = accountItem(entryMenu, "alona")
 assert(titleText(entryRow):find("10m", 1, true) and titleText(entryRow):find("!", 1, true),
   "entry-only account row lacks its age-adjacent ! marker")
+-- The age and the marks beside it follow the menu's own secondary label colour: the fixed gray
+-- they used to carry washed out against the menu instead of reading as the rest of the row.
+for _, run in ipairs(entryRow.title.runs or {}) do
+  if run.text:find("10m", 1, true) or run.text:find("!", 1, true) then
+    assert(isDim(run.attributes, 0), "age or ! marker was not dim black in the light appearance")
+  end
+end
+local darkEntryRow = accountItem(
+  loadModule(entryFixture, nil, nil, nil, nil, nil, nil, "Dark").menuItems(), "alona")
+for _, run in ipairs(darkEntryRow.title.runs or {}) do
+  if run.text:find("10m", 1, true) or run.text:find("!", 1, true) then
+    assert(isDim(run.attributes, 1), "age or ! marker stayed black in the dark appearance")
+  end
+end
 local entryErrorSeen = false
 for _, item in ipairs(entryMenu) do
   if titleText(item):find("refresh failed", 1, true)
@@ -602,6 +659,20 @@ end
 
 -- Captures every hs.task.new launch so the Remove… confirm item can be proven to
 -- fire the right vendor command (claudeb/codexb subcommand or the collector marker).
+-- Keeps the completion callback, so a test can finish a task and watch what the module does with
+-- the result: the optimistic pool state and the log both live on that path.
+local function driveTasks(sink)
+  return function(path, callback, args)
+    local record = { path = path, args = args or {}, env = {}, callback = callback, running = false }
+    table.insert(sink, record)
+    local task = {}
+    function task:setEnvironment(env) record.env = env or {}; return self end
+    function task:start() record.running = true; return true end
+    function task:isRunning() return record.running end
+    return task
+  end
+end
+
 local function captureTasks(sink)
   return function(path, _, args)
     local record = { path = path, args = args or {}, env = {} }
@@ -612,6 +683,52 @@ local function captureTasks(sink)
     function task:isRunning() return false end
     return task
   end
+end
+
+-- A toggle that succeeded has to show in the very next menu, not only after the collect lands:
+-- the stale checkmark is what made a second click look necessary, and that second click was then
+-- swallowed by the in-flight guard without a word. Live cost: an account was added to the pool by
+-- the click meant to take it out, twice in one evening.
+do
+  local tasks = {}
+  local alerts = {}
+  local mod = loadModule(poolFixture, driveTasks(tasks), nil,
+    function(text) table.insert(alerts, text) end)
+  local function poolItemFor(module, account)
+    for _, item in ipairs(module.menuItems()) do
+      if titleText(item):find(account, 1, true) then
+        for _, sub in ipairs(item.menu or {}) do
+          if isPoolItem(sub) then return sub end
+        end
+      end
+    end
+  end
+  local before = poolItemFor(mod, "spare")
+  assert(before and before.checked == false, "codex spare did not start out of the pool")
+  -- Building the menu already launched a passive collect; the toggle is what the sink must hold.
+  while #tasks > 0 do table.remove(tasks) end
+  before.fn()
+  local launched = tasks[1]
+  assert(launched and launched.path:find("codexb", 1, true)
+      and launched.args[1] == "enable" and launched.args[2] == "spare",
+    "pool toggle launched the wrong command")
+  before.fn()
+  assert(#tasks == 1, "a second click while the first was in flight launched a duplicate command")
+  assert(#alerts == 1 and alerts[1]:find("still running", 1, true),
+    "a click swallowed by the in-flight guard stayed silent")
+  launched.callback(0, "", "")
+  local after = poolItemFor(mod, "spare")
+  assert(after and after.checked == true,
+    "a successful toggle did not show in the next menu build")
+  local collect = tasks[2]
+  assert(collect and collect.path:find("llm%-limits", 1, false),
+    "a successful vendor command did not start the follow-up collect")
+  collect.callback(0, "", "")
+  local logPath = os.getenv("HOME") .. "/.hammerspoon/llm_limits_actions.log"
+  local logged = table.concat(mod.__writes[logPath] or {}, "")
+  assert(logged:find("codexb enable spare", 1, true), "the launched action was not logged")
+  assert(logged:find("already-running", 1, true), "the swallowed click was not logged")
+  assert(logged:find("collect", 1, true), "the follow-up collect was not logged")
 end
 
 do
@@ -650,8 +767,9 @@ do
   local pinnedToggle = submenuItem(pinnedRow, "Pin for workers")
   assert(pinnedToggle and pinnedToggle.checked == true,
     "single-account Gemini pin toggle was not checked")
-  assert(submenuItem(pinnedRow, "In worker pool") == nil,
-    "single-account Gemini row offered a worker-pool toggle")
+  for _, sub in ipairs(pinnedRow.menu or {}) do
+    assert(not isPoolItem(sub), "single-account Gemini row offered a worker-pool toggle")
+  end
   assert(accountHasMarker(pinnedMenu, "Gemini"), "single-account Gemini pin hid ●")
   while #tasks > 0 do table.remove(tasks) end
   pinnedToggle.fn()
@@ -698,8 +816,8 @@ do
   }
   for _, case in ipairs(cases) do
     local row = accountItem(menu, case.account)
-    assert(accountMarkerIsGray(menu, case.account),
-      case.account .. " orphaned pin marker was not gray")
+    assert(accountMarkerIsLabel(menu, case.account),
+      case.account .. " orphaned pin marker was dimmed")
     assert(#row.menu == 1, case.account .. " orphaned pin row offered extra actions")
     local pin = submenuItem(row, "Pin for workers")
     assert(pin and pin.checked == true,
@@ -773,8 +891,10 @@ do
     local pin = submenuItem(pinnedRow, "Pin for workers")
     assert(pin and pin.checked == true,
       case.vendor .. " logged-out pin did not render a checked clear action")
-    assert(accountMarkerIsGray(pinnedMenu, case.account),
-      case.vendor .. " logged-out pin marker was not gray")
+    assert(accountMarkerIsLabel(pinnedMenu, case.account),
+      case.vendor .. " logged-out pin marker was dimmed")
+    assert(accountMarkerIsFirst(pinnedMenu, case.account),
+      case.vendor .. " logged-out pin did not sit right after the name")
     while #tasks > 0 do table.remove(tasks) end
     pin.fn()
     local launched = tasks[1]
@@ -831,8 +951,7 @@ for _, case in ipairs(loginCases) do
   -- Offering the worker pool here would claim an availability a logged-out account does not
   -- have; the stored exclusion is still there and shows up again once it is logged back in.
   for _, sub in ipairs(row.menu) do
-    assert(titleText(sub) ~= "In worker pool",
-      case.vendor .. " login row offered the worker-pool toggle")
+    assert(not isPoolItem(sub), case.vendor .. " login row offered the worker-pool toggle")
   end
   local removeMenu = row.menu[3].menu
   assert(type(removeMenu) == "table" and #removeMenu == 1,

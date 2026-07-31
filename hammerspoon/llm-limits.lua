@@ -14,9 +14,37 @@ local M = {
 local grayColor = { red = 0.55, green = 0.55, blue = 0.55 }
 local redColor = { red = 0.9, green = 0.25, blue = 0.2 }
 local dimRedColor = { red = 0.9, green = 0.25, blue = 0.2, alpha = 0.55 }
+local menuFont = { name = "Menlo", size = 13 }
+
+-- A fixed 0.55 gray washed out against the menu, and NSColor's own secondaryLabelColor is worse
+-- here: hs.styledtext resolves it once, and it came back as dark-mode white while the system was
+-- light, which would paint the age white on a light menu. So the dim tone is the menu's own text
+-- colour at 55%, derived per render from the appearance the menu is about to be drawn in.
+local function dimColor()
+  -- hs.host is absent from the isolated loaders the surface tests build, and a menu that throws
+  -- while rendering a row is worse than one rendered for the light appearance.
+  local host = hs.host
+  local dark = type(host) == "table" and type(host.interfaceStyle) == "function"
+    and host.interfaceStyle() == "Dark"
+  local level = dark and 1 or 0
+  return { red = level, green = level, blue = level, alpha = 0.55 }
+end
+
+-- Everything trailing an account name that is not the pin: age, "!", "login needed".
+local function metaTitle(text)
+  return hs.styledtext.new(text, { font = menuFont, color = dimColor() })
+end
+
+-- The pin carries no colour of its own, which is what makes it read exactly as strong as the rest
+-- of the row in either appearance. It stays that way even where the router will not honour it: an
+-- ignored pin always sits on a row that says so itself (red at-limit name, "!", "login needed"),
+-- so nothing is lost by making the mark unmissable.
+local function pinTitle()
+  return hs.styledtext.new("  ●", { font = menuFont })
+end
 
 local function infoTitle(text, warning, gray, atLimit)
-  local attributes = { font = { name = "Menlo", size = 13 } }
+  local attributes = { font = menuFont }
   if atLimit then
     attributes.color = gray and dimRedColor or redColor
   elseif gray then
@@ -29,10 +57,10 @@ end
 
 local function loginNeededTitle(account, pinned, age, needsUserEntry)
   local title = infoTitle(account)
-  if age then title = title .. infoTitle("  " .. age, false, true) end
-  if needsUserEntry then title = title .. infoTitle("  !", false, true) end
-  if pinned then title = title .. infoTitle("  ●", false, true) end
-  return title .. infoTitle("  login needed", false, true)
+  if pinned then title = title .. pinTitle() end
+  if age then title = title .. metaTitle("  " .. age) end
+  if needsUserEntry then title = title .. metaTitle("  !") end
+  return title .. metaTitle("  login needed")
 end
 
 -- Keep logged-out vendor actions in one constructor so their UX cannot drift; a pin action is
@@ -146,13 +174,23 @@ local function formatAccountAge(value)
   return string.format("%dd", math.floor(hours / 24))
 end
 
-local function accountTitle(text, age, atLimit, needsUserEntry)
+-- The pin goes straight after the name, ahead of the age and the warnings: it says which account
+-- the workers are held to, and reading that must not mean scanning past everything else on the row.
+local function accountTitle(text, age, atLimit, needsUserEntry, pinned, suffix)
   local title = infoTitle(text, false, false, atLimit)
+  if pinned then
+    title = title .. pinTitle()
+  end
+  -- The reset-credit suffix belongs to the account, but the pin comes first: folding the suffix
+  -- into `text` put it between the name and the pin.
+  if suffix and suffix ~= "" then
+    title = title .. infoTitle(suffix, false, false, atLimit)
+  end
   if age then
-    title = title .. infoTitle("  " .. age, false, true)
+    title = title .. metaTitle("  " .. age)
   end
   if needsUserEntry then
-    title = title .. infoTitle("  !", false, true)
+    title = title .. metaTitle("  !")
   end
   return title
 end
@@ -286,6 +324,50 @@ local function newCollectorTask(callback, args, envExtra)
     task:setEnvironment(environment)
   end
   return task
+end
+
+local actionLogPath = os.getenv("HOME") .. "/.hammerspoon/llm_limits_actions.log"
+
+-- Every vendor command the menu launches, with its exit code and the exit code of the collect
+-- that follows it. Without this the only trace an action left was the mtime of the pool file,
+-- which records effective changes and says nothing about a click that did nothing.
+local function logAction(event, detail)
+  local ok = pcall(function()
+    local file = io.open(actionLogPath, "a")
+    if not file then return end
+    file:write(string.format("%s  %-18s %s\n", os.date("%Y-%m-%d %H:%M:%S"), event,
+      tostring(detail or "")))
+    file:close()
+  end)
+  return ok
+end
+
+-- What the menu shows for "in the worker pool" comes from the collector cache, so between a
+-- successful toggle and the collect that follows it the rebuilt menu still showed the old state —
+-- and clicking again, which is the natural response, produced the same command, which the
+-- in-flight guard in runAccountCommand then swallowed in silence. The value the command just
+-- established wins until a collect confirms it, and never longer than this TTL, so a command that
+-- silently changed nothing cannot keep the menu lying.
+local poolOverrides = {}
+local poolOverrideTtl = 30
+
+local function poolOverrideKey(vendor, account)
+  return tostring(vendor) .. "\0" .. tostring(account)
+end
+
+local function setPoolOverride(vendor, account, enabled)
+  poolOverrides[poolOverrideKey(vendor, account)] = { enabled = enabled, at = os.time() }
+end
+
+local function poolStateFor(vendor, account, cached)
+  local key = poolOverrideKey(vendor, account)
+  local override = poolOverrides[key]
+  if not override then return cached end
+  if override.enabled == cached or os.time() - override.at > poolOverrideTtl then
+    poolOverrides[key] = nil
+    return cached
+  end
+  return override.enabled
 end
 
 local taskRegistry = {}
@@ -511,16 +593,28 @@ end
 
 -- Runs a vendor account command (claudeb/codexb/geminib) then re-collects so the row it
 -- changed disappears/updates immediately. Shared by the toggle/switch/remove wiring.
-local function runAccountCommand(launchPath, args, failMessage)
+local function runAccountCommand(launchPath, args, failMessage, onSuccess)
+  local label = (launchPath:match("[^/]+$") or launchPath) .. " " .. table.concat(args, " ")
   local key = "account-action:" .. launchPath .. "\0" .. table.concat(args, "\0")
-  if taskForKey(key) then return end
+  -- Saying nothing here is what made a repeated click look like a dead menu.
+  if taskForKey(key) then
+    logAction("already-running", label)
+    hs.alert.show("llm-limits: " .. label .. " is still running")
+    return
+  end
+  logAction("launch", label)
   local id = reserveTask("account-action", 360, key)
   local task = hs.task.new(launchPath, function(exitCode, stdOut, stdErr)
     if exitCode ~= 0 then
+      logAction("failed", string.format("%s exit=%s %s", label, tostring(exitCode),
+        tostring((stdErr or stdOut or ""):gsub("%s+", " "):sub(1, 160))))
       finishTask(id, exitCode, stdOut, stdErr, failMessage)
       return
     end
+    logAction("done", label .. " exit=0")
+    if onSuccess then onSuccess() end
     local reread = newCollectorTask(function(collectExit, collectOut, collectErr)
+      logAction("collect", label .. " collect_exit=" .. tostring(collectExit))
       finishTask(id, collectExit, collectOut, collectErr, "collect failed")
     end, {})
     startTask(id, reread, "collect could not start")
@@ -529,16 +623,16 @@ local function runAccountCommand(launchPath, args, failMessage)
   startTask(id, task, failMessage)
 end
 
-local function runClaudeb(args, failMessage)
-  runAccountCommand(resolveClaudeb(), args, failMessage)
+local function runClaudeb(args, failMessage, onSuccess)
+  runAccountCommand(resolveClaudeb(), args, failMessage, onSuccess)
 end
 
-local function runCodexb(args, failMessage)
-  runAccountCommand(resolveCodexb(), args, failMessage)
+local function runCodexb(args, failMessage, onSuccess)
+  runAccountCommand(resolveCodexb(), args, failMessage, onSuccess)
 end
 
-local function runGeminib(args, failMessage)
-  runAccountCommand(resolveGeminib(), args, failMessage)
+local function runGeminib(args, failMessage, onSuccess)
+  runAccountCommand(resolveGeminib(), args, failMessage, onSuccess)
 end
 
 -- Arms a Hammerspoon one-shot for the chat in the frontmost Terminal tab; the
@@ -574,15 +668,18 @@ function M.cancelPendingSwitch()
 end
 
 function M.toggleAccount(name, currentlyEnabled)
-  runClaudeb({ currentlyEnabled and "disable" or "enable", name }, "toggle failed")
+  runClaudeb({ currentlyEnabled and "disable" or "enable", name }, "toggle failed",
+    function() setPoolOverride("claude", name, not currentlyEnabled) end)
 end
 
 function M.toggleCodexAccount(name, currentlyEnabled)
-  runCodexb({ currentlyEnabled and "disable" or "enable", name }, "toggle failed")
+  runCodexb({ currentlyEnabled and "disable" or "enable", name }, "toggle failed",
+    function() setPoolOverride("codex", name, not currentlyEnabled) end)
 end
 
 function M.toggleGeminiAccount(name, currentlyEnabled)
-  runGeminib({ currentlyEnabled and "disable" or "enable", name }, "toggle failed")
+  runGeminib({ currentlyEnabled and "disable" or "enable", name }, "toggle failed",
+    function() setPoolOverride("gemini", name, not currentlyEnabled) end)
 end
 
 function M.pinClaude(name, currentlyPinned)
@@ -907,9 +1004,12 @@ function M.menuItems()
             disabled = true,
           })
         else
+          -- Gemini's pin has to be known before the row is built now that the mark lives inside
+          -- the title instead of being appended behind the age.
+          local geminiPinned = entry.key == "gemini" and pinnedAccount == "main"
           local fallbackRow = {
             title = accountTitle(entry.label, formatAccountAge(vendor.as_of), false,
-              vendor.needs_user_entry == true),
+              vendor.needs_user_entry == true, geminiPinned),
             disabled = true,
           }
           local account = vendor.current_account or vendor.account
@@ -926,14 +1026,8 @@ function M.menuItems()
             fallbackRow.menu = {{ title = "Hard refresh", fn = refresh }}
           end
           if entry.key == "gemini" then
-            local pinExists = pinnedAccount == "main"
-            local pinHonoured = pinExists
-              and not bucketAtLimit(vendor.five_hour) and not bucketAtLimit(vendor.weekly)
-            if pinExists then
-              fallbackRow.title = fallbackRow.title
-                .. infoTitle("  ●", false, not pinHonoured)
-              renderedPin = true
-            end
+            local pinExists = geminiPinned
+            if pinExists then renderedPin = true end
             fallbackRow.disabled = nil
             fallbackRow.menu = {
               {
@@ -950,13 +1044,11 @@ function M.menuItems()
           local fiveHour = block.five_hour or {}
           local weekly = block.weekly
           local acct = block.account or entry.label
-          local enabled = block.enabled ~= false
+          local enabled = poolStateFor(entry.key, acct, block.enabled ~= false)
           local authNeeded = block.auth_needed == true
           local accountAge = formatAccountAge(block.as_of)
           local generalAtLimit = bucketAtLimit(fiveHour) or bucketAtLimit(weekly)
           local pinExists = pins[entry.key] == acct
-          local pinHonoured = pinExists and block.removed ~= true
-            and block.blocked ~= true and not authNeeded and not generalAtLimit
           local pinFn
           if entry.key == "claude" then
             pinFn = function(pinned) M.pinClaude(acct, pinned) end
@@ -993,11 +1085,8 @@ function M.menuItems()
                   accountAge, block.needs_user_entry == true)
               end
             else
-              local title = accountTitle(acct .. resetSuffix, accountAge, generalAtLimit,
-                block.needs_user_entry == true)
-              if pinExists then
-                title = title .. infoTitle("  ●", false, not pinHonoured)
-              end
+              local title = accountTitle(acct, accountAge, generalAtLimit,
+                block.needs_user_entry == true, pinExists, resetSuffix)
               accountRow = {
                 title = title,
                 disabled = true,
@@ -1088,7 +1177,7 @@ function M.menuItems()
           clearPin = function() M.pinGemini(pinnedAccount, true) end
         end
         table.insert(menu, {
-          title = infoTitle(pinnedAccount .. "  ●", false, true),
+          title = metaTitle(pinnedAccount) .. pinTitle(),
           menu = {{ title = "Pin for workers", checked = true, fn = clearPin }},
         })
       end
