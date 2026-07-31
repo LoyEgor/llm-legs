@@ -5903,6 +5903,150 @@ tier_guard="$("$SCRIPT" run HEAD --tier T2 2>&1 || true)"
 assert contains "$tier_guard" "T2 runs ~10 min"
 assert contains "$tier_guard" "run_in_background"
 
+# The report is owed, not offered: a worktree run keeps owing one until its own triage is
+# reported, and every part of that is the tool's answer so the hooks stay wrappers.
+GATE_SD="$WORK/gate-state"
+GATE_REPO="$WORK/gate-repo"
+GATE_OTHER_REPO="$WORK/gate-other-repo"
+git init -q "$GATE_REPO"
+git init -q "$GATE_OTHER_REPO"
+export GATE_REPO
+gate_run() {
+  mkdir -p "$GATE_SD/benches/$1"
+  python3 - "$GATE_SD/benches/$1" "$1" "$2" "$3" <<'GATEPY'
+import json
+import os
+import pathlib
+import sys
+from datetime import datetime, timedelta, timezone
+
+run = pathlib.Path(sys.argv[1])
+finished = datetime.now(timezone.utc) - timedelta(hours=float(sys.argv[3]))
+findings = int(sys.argv[4])
+(run / "meta.json").write_text(json.dumps({
+    "run_id": sys.argv[2], "worktree": True, "tier": "T1", "raters": ["oc-kimik3"],
+    "repo": os.environ.get("GATE_REPO", ""),
+    "rater_runs": [{
+        "rater": "oc-kimik3", "side": "opencode", "exit_code": 0,
+        "findings": findings, "duration_ms": 1000,
+    }],
+    "started": finished.isoformat(), "finished": finished.isoformat(),
+}) + "\n")
+if findings:
+    (run / "findings-oc-kimik3.jsonl").write_text("\n".join(
+        json.dumps({"severity": "P2", "file": "a.py", "line": index + 1,
+                    "summary": f"claim {index}"})
+        for index in range(findings)
+    ) + "\n")
+GATEPY
+}
+gate_run 20260731T000000Z-gatefresh 0 0
+gate_pending=$(WORKER_STATS_DIR="$GATE_SD" "$SCRIPT" pending-report --repo "$GATE_REPO") \
+  || fail "pending-report missed an untriaged worktree run"
+assert contains "$gate_pending" "20260731T000000Z-gatefresh 0"
+assert contains "$gate_pending" "record 20260731T000000Z-gatefresh --no-corpus"
+# A run nobody found anything in still owes a report, and an empty verdict file for it was the
+# friction that got the pass skipped outright.
+gate_reported=$(WORKER_STATS_DIR="$GATE_SD" "$SCRIPT" record 20260731T000000Z-gatefresh \
+  --no-corpus) || fail "no-corpus record without verdicts failed"
+assert contains "$gate_reported" "REVIEW-REPORT-BEGIN"
+assert contains "$gate_reported" "confirmed 0:"
+assert test -e "$GATE_SD/benches/20260731T000000Z-gatefresh/reported.json"
+# --no-corpus still leaves the run pending to `list`: only the receipt the gate reads is written.
+assert test ! -e "$GATE_SD/benches/20260731T000000Z-gatefresh/verdicts.jsonl"
+gate_after=$(WORKER_STATS_DIR="$GATE_SD" "$SCRIPT" pending-report --repo "$GATE_REPO" || true)
+assert test -z "$gate_after"
+# Findings without verdicts is the one case the shortcut must refuse.
+gate_run 20260731T010000Z-gatefindings 0 2
+gate_refused=$(WORKER_STATS_DIR="$GATE_SD" "$SCRIPT" record 20260731T010000Z-gatefindings \
+  --no-corpus 2>&1 || true)
+assert contains "$gate_refused" "--verdicts is required: 2 finding(s) to judge"
+# Asked a bounded number of times, not once: a stop hook fires on an interrupted turn too, and a
+# single ask was spent there instead of at the end of the turn it was meant to gate. And not
+# forever: a triage that cannot be done must not wedge every stop that follows.
+for gate_ask in 1 2 3; do
+  gate_marked=$(WORKER_STATS_DIR="$GATE_SD" "$SCRIPT" pending-report --repo "$GATE_REPO" --mark) \
+    || fail "pending-report --mark gave up after $gate_ask ask(s)"
+  assert contains "$gate_marked" "20260731T010000Z-gatefindings 2"
+done
+gate_marked_again=$(WORKER_STATS_DIR="$GATE_SD" "$SCRIPT" pending-report --repo "$GATE_REPO" --mark || true)
+assert test -z "$gate_marked_again"
+# Every ask is its own appended line, so two stop hooks firing at once cannot lose an increment
+# the way a read-incremented number does, and a marker left by an older build counts as an ask
+# rather than a fresh allowance.
+assert test "$(grep -c . "$GATE_SD/benches/20260731T010000Z-gatefindings/report-nudged")" = "3"
+# A marker the gate cannot read leaves it blind, and blind means quiet: blocking a stop it can
+# never release is the one failure worse than a missing report.
+mkdir -p "$GATE_SD/benches/20260731T040000Z-gateunreadable"
+GATE_SD="$GATE_SD" gate_run 20260731T040000Z-gateunreadable 0 0
+mkdir -p "$GATE_SD/benches/20260731T040000Z-gateunreadable/report-nudged"
+gate_unreadable=$(WORKER_STATS_DIR="$GATE_SD" "$SCRIPT" pending-report --repo "$GATE_REPO" --mark 2>/dev/null || true)
+assert test -z "$gate_unreadable"
+# The bench state is shared by every chat: a session in another repository must not be handed
+# this run, spend its asks, and leave the session that owes the report unasked.
+OTHER_SD="$WORK/gate-other"
+GATE_SD="$OTHER_SD" GATE_REPO="$GATE_OTHER_REPO" gate_run 20260731T050000Z-gateother 0 0
+gate_other=$(WORKER_STATS_DIR="$OTHER_SD" "$SCRIPT" pending-report --repo "$GATE_REPO" --mark \
+  || true)
+assert test -z "$gate_other"
+gate_own=$(WORKER_STATS_DIR="$OTHER_SD" "$SCRIPT" pending-report --repo "$GATE_OTHER_REPO") \
+  || fail "pending-report missed the run of its own repository"
+assert contains "$gate_own" "20260731T050000Z-gateother 0"
+# An old run reviewed a diff that has since moved; asking for its triage now is noise.
+STALE_SD="$WORK/gate-stale"
+GATE_SD="$STALE_SD" gate_run 20260730T000000Z-gatestale 48 1
+gate_stale=$(WORKER_STATS_DIR="$STALE_SD" "$SCRIPT" pending-report --repo "$GATE_REPO" || true)
+assert test -z "$gate_stale"
+
+TRIAGE_HOOK="${REVIEW_TRIAGE_HOOK:-"$ROOT/../claude-setup/hooks/review-triage-nudge.sh"}"
+if test -x "$TRIAGE_HOOK"; then
+  triage_hook_output="$(jq -nc \
+    --arg output $'run id: x\nREVIEW-TRIAGE-PENDING x · 1 finding(s) to triage\nreport with: y' \
+    '{tool_name:"Bash",tool_response:{stdout:$output}}' | "$TRIAGE_HOOK")"
+  assert contains "$(jq -r '.hookSpecificOutput.additionalContext' <<<"$triage_hook_output")" \
+    "not a report"
+  # The suite's own fixture marker is prefixed, and a hook firing on it would nudge on every
+  # test run that prints one.
+  triage_hook_fixture="$(jq -nc \
+    --arg output $'FIXTURE-REVIEW-TRIAGE-PENDING x · 0 finding(s) to triage' \
+    '{tool_name:"Bash",tool_response:{stdout:$output}}' | "$TRIAGE_HOOK")"
+  assert test -z "$triage_hook_fixture"
+  triage_hook_report="$(jq -nc \
+    --arg output $'REVIEW-REPORT-BEGIN\nconfirmed 0:\nREVIEW-REPORT-END' \
+    '{tool_name:"Bash",tool_response:{stdout:$output}}' | "$TRIAGE_HOOK")"
+  assert test -z "$triage_hook_report"
+else
+  printf 'SKIP: review triage hook behavior (%s is unavailable)\n' "$TRIAGE_HOOK"
+fi
+
+GATE_HOOK="${REVIEW_REPORT_GATE:-"$ROOT/../claude-setup/hooks/review-report-gate.sh"}"
+if test -x "$GATE_HOOK"; then
+  GATE_HOOK_SD="$WORK/gate-hook-state"
+  GATE_SD="$GATE_HOOK_SD" gate_run 20260731T020000Z-gatehook 0 0
+  gate_hook_payload=$(jq -nc --arg cwd "$GATE_REPO" '{stop_hook_active:false,cwd:$cwd}')
+  gate_hook_out="$(printf '%s' "$gate_hook_payload" \
+    | PATH="$ROOT/bin:$PATH" WORKER_STATS_DIR="$GATE_HOOK_SD" "$GATE_HOOK")"
+  assert test "$(jq -r '.decision' <<<"$gate_hook_out")" = "block"
+  assert contains "$(jq -r '.reason' <<<"$gate_hook_out")" "20260731T020000Z-gatehook"
+  assert contains "$(jq -r '.reason' <<<"$gate_hook_out")" "--no-corpus"
+  # Bounded by the tool's ask allowance, so a stop it could not unblock stops being blocked.
+  for gate_hook_ask in 2 3; do
+    gate_hook_again="$(printf '%s' "$gate_hook_payload" \
+      | PATH="$ROOT/bin:$PATH" WORKER_STATS_DIR="$GATE_HOOK_SD" "$GATE_HOOK")"
+    assert test "$(jq -r '.decision' <<<"$gate_hook_again")" = "block"
+  done
+  gate_hook_spent="$(printf '%s' "$gate_hook_payload" \
+    | PATH="$ROOT/bin:$PATH" WORKER_STATS_DIR="$GATE_HOOK_SD" "$GATE_HOOK")"
+  assert test -z "$gate_hook_spent"
+  GATE_SD="$GATE_HOOK_SD" gate_run 20260731T030000Z-gateloop 0 0
+  # The harness says a stop hook already ran; blocking again from inside that is the loop.
+  gate_hook_loop="$(printf '%s' "$(jq -nc --arg cwd "$GATE_REPO" '{stop_hook_active:true,cwd:$cwd}')" \
+    | PATH="$ROOT/bin:$PATH" WORKER_STATS_DIR="$GATE_HOOK_SD" "$GATE_HOOK")"
+  assert test -z "$gate_hook_loop"
+else
+  printf 'SKIP: review report gate behavior (%s is unavailable)\n' "$GATE_HOOK"
+fi
+
 REPORT_HOOK="${REVIEW_REPORT_HOOK:-"$ROOT/../claude-setup/hooks/review-report-nudge.sh"}"
 if test -x "$REPORT_HOOK"; then
   for hook_tool in Bash Read; do
@@ -5930,4 +6074,4 @@ else
   printf 'SKIP: review report hook behavior (%s is unavailable)\n' "$REPORT_HOOK"
 fi
 
-printf 'PASS: %s assertions; canonical review tiers sharing one OpenCode/Gemini floor with no retired cell in them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative suggestions with missing-object fallback, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account usable only behind its opt-in and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, and cross-side parallelism result assembly\n' "$asserts"
+printf 'PASS: %s assertions; canonical review tiers sharing one OpenCode/Gemini floor with no retired cell in them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative suggestions with missing-object fallback, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account usable only behind its opt-in and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask, the lookup scoped to the repository so another chat cannot answer for it, and both review hooks keyed so exactly one fires\n' "$asserts"

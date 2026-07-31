@@ -127,6 +127,11 @@ TRIAGE_PENDING = "REVIEW-TRIAGE-PENDING"
 TRIAGE_GATE_HOURS = 6
 REPORT_RECEIPT = "reported.json"
 TRIAGE_NUDGED = "report-nudged"
+# How many times a run may be asked for its report before the gate gives up. Not once: a stop
+# hook also fires when the turn is interrupted, and a single ask was spent there instead of at the
+# end of the turn it was meant to gate (seen live 2026-07-31). Still bounded, because a triage
+# that genuinely cannot be done must not block every stop that follows.
+TRIAGE_GATE_ASKS = 3
 # Highest effort a model has ever returned a review of a large diff at; None would mean
 # no effort at all. Empty by measurement, and it took a replication to keep it that way:
 # kimi-k3 at medium looked dead after two attempts with no output, then finished a third
@@ -2023,13 +2028,18 @@ def write_report_receipt(run_dir, verdicts):
     }) + "\n")
 
 
-def triage_pending_run():
-    """The newest worktree run if it still owes its triaged report, else None.
+def triage_pending_run(repo=None):
+    """The newest worktree run of `repo` if it still owes its triaged report, else None.
 
     Only the newest one is ever asked for: an older run judged a diff that has since moved, and a
     queue of them would block turns with nothing to do with the review.
+
+    Scoped to one repository because the state directory is shared by every chat: unscoped, a
+    session in another project answers for this run, spends its asks, and the session that owes
+    the report is never asked at all.
     """
     benches = state_dir() / "benches"
+    common = git_common_dir(repo) if repo else None
     for run_dir in sorted(benches.iterdir(), reverse=True) if benches.exists() else ():
         meta_path = run_dir / "meta.json"
         if not meta_path.exists():
@@ -2040,6 +2050,12 @@ def triage_pending_run():
             continue
         if meta.get("worktree") is not True:
             continue
+        if repo is not None:
+            # Same rule as the review receipt: a git worktree of the repository is the repository,
+            # and an unresolvable path on either side is not a match, so the gate stays quiet
+            # rather than blocking a session over somebody else's review.
+            if common is None or git_common_dir(meta.get("repo")) != common:
+                continue
         if (run_dir / "verdicts.jsonl").exists() or (run_dir / REPORT_RECEIPT).exists():
             return None
         finished = parse_iso_timestamp(meta.get("finished") or meta.get("finished_at"))
@@ -4787,17 +4803,26 @@ def cmd_reviewed(args):
 
 
 def cmd_pending_report(args):
-    pending = triage_pending_run()
+    pending = triage_pending_run(args.repo)
     if pending is None:
         return 1
     run_dir, meta = pending
     marker = run_dir / TRIAGE_NUDGED
-    # Asked for once. A gate that keeps blocking a turn it cannot unblock is worse than the
-    # missing report: the triage may be impossible right now, and only the human can say so.
-    if marker.exists():
+    # One appended line per ask, counted back. A number read, incremented and rewritten loses an
+    # increment whenever two stop hooks fire together — Egor runs several chats at once — and the
+    # allowance quietly stretches. A marker that cannot be read counts as spent: a gate blind to
+    # its own state must go quiet rather than block a stop it can never release.
+    try:
+        asked = sum(1 for line in marker.read_text().splitlines() if line.strip())
+    except FileNotFoundError:
+        asked = 0
+    except (OSError, UnicodeDecodeError):
+        asked = TRIAGE_GATE_ASKS
+    if asked >= TRIAGE_GATE_ASKS:
         return 1
     if args.mark:
-        marker.write_text(iso_now() + "\n")
+        with marker.open("a") as handle:
+            handle.write(iso_now() + "\n")
     findings = bench_summary(run_dir, meta)["findings"]
     print(f"{run_dir.name} {findings}")
     print(triage_command(run_dir.name, findings))
@@ -6115,9 +6140,10 @@ def main():
         "pending-report",
         help="Name the worktree run still owing a triaged report (exit 1 if none)",
     )
+    pending.add_argument("--repo", default=".", help="Only runs of this repository")
     pending.add_argument(
         "--mark", action="store_true",
-        help="Record that the run was asked for, so it is asked for only once",
+        help=f"Count this ask, so a run is asked for at most {TRIAGE_GATE_ASKS} times",
     )
     pending.set_defaults(func=cmd_pending_report)
     suggest = subparsers.add_parser("suggest", help="Suggest a review tier for a change")
