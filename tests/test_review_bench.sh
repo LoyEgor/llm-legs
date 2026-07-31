@@ -959,7 +959,7 @@ assert "Sol low" not in health_text, health_text
 assert rb.health_lines([]) == ["no recorded runs"]
 # A cell retired since the run was recorded must not make the whole run unreadable.
 retired_dir = write_health_run("20260103T000000Z-ccc", [
-    {"rater": "oc-dsv4flash", "side": "opencode", "account": "prod", "exit_code": 0,
+    {"rater": "oc-dsv4flash-medium", "side": "opencode", "account": "prod", "exit_code": 0,
      "findings": 0},
 ])
 retired_meta = json.loads((retired_dir / "meta.json").read_text())
@@ -973,7 +973,7 @@ legacy_side_dir = write_health_run("20260104T000000Z-ddd", [
 ])
 legacy_side_meta = json.loads((legacy_side_dir / "meta.json").read_text())
 assert rb.bench_summary(legacy_side_dir, legacy_side_meta)["cells"][0]["side"] == "codex"
-assert rb.rater_side("oc-dsv4flash") is None and rb.rater_side("") is None
+assert rb.rater_side("oc-dsv4flash-medium") is None and rb.rater_side("") is None
 
 real_append_review_log = rb.append_review_log
 real_review_log_event = rb.review_log_event
@@ -1337,6 +1337,11 @@ for cell, ceiling in rb.OPENCODE_EFFORT_CEILING.items():
             raise AssertionError(f"{cell}-{effort} never completed and must be refused")
     if ceiling:
         assert rb.parse_rater(f"{cell}-{ceiling}")["effort"] == ceiling
+# Nothing is refused outright since deepseek-v4-flash was revived, and a loop over an empty
+# set passes without testing the refusal it exists to test. One member is injected so the
+# path stays covered until a measurement puts a real model back in the set.
+real_unusable = rb.OPENCODE_UNUSABLE_MODELS
+rb.OPENCODE_UNUSABLE_MODELS = real_unusable or {"oc-mimo25"}
 for unusable in sorted(rb.OPENCODE_UNUSABLE_MODELS):
     for spec in (unusable, f"{unusable}-low"):
         try:
@@ -1345,6 +1350,7 @@ for unusable in sorted(rb.OPENCODE_UNUSABLE_MODELS):
             assert "measured unusable" in str(exc), exc
         else:
             raise AssertionError(f"{spec} is measured unusable and must be refused")
+rb.OPENCODE_UNUSABLE_MODELS = real_unusable
 # The expected cost has to come from the table, not a second copy of it.
 assert rb.opencode_expected_s(rb.parse_rater("oc-glm52")) == \
     rb.OPENCODE_MODEL_FACTS["oc-glm52"]["off_s"]
@@ -3352,6 +3358,8 @@ assert rb.normalize_findings("P2 bin/claudeb:88 warm path skips the mutex", "sol
 
 # The measured refusals live in parse_rater, so a verifier goes through it too — otherwise
 # a model refused as a rater is accepted here and sent once per finding.
+verifier_real_unusable = rb.OPENCODE_UNUSABLE_MODELS
+rb.OPENCODE_UNUSABLE_MODELS = verifier_real_unusable or {"oc-mimo25"}
 for refused in sorted(rb.OPENCODE_UNUSABLE_MODELS):
     try:
         rb.verifier_model(refused)
@@ -3360,6 +3368,7 @@ for refused in sorted(rb.OPENCODE_UNUSABLE_MODELS):
     else:
         raise AssertionError(f"{refused} is measured unusable and cannot verify")
     assert refused not in rb.verifier_choices()
+rb.OPENCODE_UNUSABLE_MODELS = verifier_real_unusable
 for locked in sorted(rb.OPENCODE_EFFORT_REQUIRED_MODELS):
     try:
         rb.verifier_model(locked)

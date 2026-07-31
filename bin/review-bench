@@ -94,8 +94,9 @@ OPENCODE_MODEL_FACTS = {
                   "note": "the leg's precise half: 11 true claims of 15, 7 defects; no bare failure"},
     "oc-dsv4pro": {"off": False, "scales": False, "off_s": 905, "low_s": None,
                    "note": "precise but 2 of 12 runs completed, ~900s each; too slow for any tier"},
-    "oc-dsv4flash": {"off": False, "scales": False, "off_s": None, "low_s": None,
-                     "note": "0 of 8 review runs completed at any effort (tiny probes do finish)"},
+    "oc-dsv4flash": {"off": True, "scales": True, "off_s": 12, "low_s": 79,
+                     "note": "19 true claims of 80 over 6 passes on 2 commits, revived 2026-07-31 "
+                             "by the plan's China-hosted opt-in; 1 of 4 off runs looped one claim 385x"},
 }
 # Derived, so the policy cannot drift from the measurement: a model that ignores the
 # reasoning-off knob AND is measurably fixed by a budget is offered only with one.
@@ -103,7 +104,7 @@ OPENCODE_EFFORT_REQUIRED_MODELS = frozenset({"oc-grok45"})
 # Refused outright, with the evidence in the message. Not a taste call: no
 # configuration of these ever produced a review, so a cell would only spend the
 # subscription's window and the run's wall clock.
-OPENCODE_UNUSABLE_MODELS = {"oc-dsv4flash"}
+OPENCODE_UNUSABLE_MODELS = set()
 # The only OpenCode cells that survived strict adjudication on four commits: grok-4.5
 # is precise and repeats its real findings, kimi-k3 is the wide net, and kimi-k3 also
 # judges every claim against the file it cites. Every other cell scored at most one
@@ -133,11 +134,14 @@ TRIAGE_NUDGED = "report-nudged"
 # that genuinely cannot be done must not block every stop that follows.
 TRIAGE_GATE_ASKS = 3
 # Highest effort a model has ever returned a review of a large diff at; None would mean
-# no effort at all. Empty by measurement, and it took a replication to keep it that way:
-# kimi-k3 at medium looked dead after two attempts with no output, then finished a third
-# in 623s once the client escalated a 236s buffered 503 to streaming. Only a model that
-# NEVER completes belongs here — a slow or flaky effort is priced, not refused.
-OPENCODE_EFFORT_CEILING = {}
+# no effort at all. An entry needs a replication, because one silent attempt is not a
+# ceiling: kimi-k3 at medium looked dead after two attempts with no output, then finished a
+# third in 623s once the client escalated a 236s buffered 503 to streaming, and it is
+# deliberately absent. deepseek-v4-flash earned its entry twice per effort on the 143fc2f
+# diff — medium spent all 32k tokens on reasoning in 234s and again in 2176s, high lost the
+# stream after a 236s 503 and then spent the budget the same way. Only a model that NEVER
+# completes belongs here — a slow or flaky effort is priced, not refused.
+OPENCODE_EFFORT_CEILING = {"oc-dsv4flash": "low"}
 # Screened once each with reasoning off on the 143fc2f diff (2026-07-25) and NOT
 # adopted as cells: none produced a single true finding, so there is nothing to
 # benchmark yet. Kept here because "which plan models did we try" is the question
