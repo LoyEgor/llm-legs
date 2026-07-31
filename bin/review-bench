@@ -430,11 +430,14 @@ def standing_wall(rows):
     how a healthy account keeps being skipped.
     """
     dated = [row for row in rows if row[1] is not None]
-    newest_dated = max(dated, key=lambda row: row[0]) if dated else None
-    if newest_dated is not None:
-        if wall_still_standing(*newest_dated):
-            return newest_dated
-        rows = [row for row in rows if row[0] > wall_expiry(*newest_dated)]
+    # The longest of the stated horizons, not the most recently recorded one: two cells can hit
+    # the same account seconds apart and be told different things, and a weekly limit does not
+    # stop being spent because a shorter refusal was written down after it.
+    longest_dated = max(dated, key=lambda row: wall_expiry(*row)) if dated else None
+    if longest_dated is not None:
+        if wall_still_standing(*longest_dated):
+            return longest_dated
+        rows = [row for row in rows if row[0] > wall_expiry(*longest_dated)]
     standing = [row for row in rows if wall_still_standing(*row)]
     return max(standing, key=lambda row: wall_expiry(*row)) if standing else None
 
@@ -464,6 +467,19 @@ def persisted_walls(path):
             if compacted is not None:
                 walls = compacted
     return walls
+
+
+def walled_accounts(side, bucket="general"):
+    """The side's retired accounts for this bucket, in one read of the record.
+
+    Callers filtering a whole roster ask here rather than per account: the file is read on every
+    question by design, and asking it once per candidate turns one answer into as many reads.
+    """
+    walls = persisted_walls(state_dir() / WALL_STATE_FILE) or {}
+    return {
+        row_account for row_side, row_account, row_bucket in walls
+        if row_side == side and row_bucket == bucket
+    }
 
 
 def is_walled(side, account, bucket="general"):
@@ -504,6 +520,7 @@ OPENCODE_TRANSIENT_RE = re.compile(
 )
 CODEX_TRANSIENT_RE = re.compile(
     r"at capacity|temporarily unavailable|\b(?:429|500|502|503|529)\b|overloaded"
+    r"|rate[ _-]limit|too many requests"
     r"|stream (?:disconnected|closed) before completion",
     re.IGNORECASE,
 )
@@ -554,7 +571,9 @@ def opencode_transient_failure(stderr):
 
 
 def codex_transient_failure(events, stderr):
-    text = f"{stderr or ''}\n{events or ''}"
+    # The error events, not the whole stream: it also carries the review, and a cell reviewing
+    # this file would classify itself off the status codes its own answer discusses.
+    text = f"{stderr or ''}\n{codex_failure_reason(events)}"
     if codex_usage_wall(events, stderr):
         return False
     return bool(CODEX_TRANSIENT_RE.search(text))
@@ -563,12 +582,13 @@ def codex_transient_failure(events, stderr):
 def wall_reset_source(side, stderr, wall_text):
     """The text a reset horizon may be read out of: what the gateway said, never the review.
 
-    wall_text is the rater's own answer everywhere but codex, and a model reviewing code about
-    reset windows writes "resets in N days" in prose that would become this account's horizon
-    and retire a healthy account for up to a week. Codex states its wall in the event stream,
-    so for that side alone the tail is the gateway's channel rather than the model's.
+    wall_text is the rater's own answer, and a model reviewing code about reset windows writes
+    "resets in N days" in prose that would become this account's horizon and retire a healthy
+    account for up to a week. Codex states its wall in the event stream, but that stream is its
+    whole stdout and carries the review too — the file this run recorded holds the model's text
+    and the string 429 alike — so the gateway's channel there is the error events alone.
     """
-    return f"{stderr or ''}\n{wall_text or '' if side == 'codex' else ''}"
+    return f"{stderr or ''}\n{codex_failure_reason(wall_text) if side == 'codex' else ''}"
 
 
 def wall_reset_at(text):
@@ -1874,7 +1894,10 @@ def report_lines(run_dir, meta):
             findings_parts.append(f"{name} {findings}")
         for index, value in enumerate(findings_parts or ["none"]):
             rows.append(("findings:" if index == 0 else "", value))
-        rows.append(("note:", "not adjudicated yet"))
+        # "yet" read as a step still owed, and the reader paid for it every run: adjudication
+        # is what builds the corpus, not what finishes a review, and it keeps on disk until
+        # someone wants the corpus. Saying so here is the only place every reader passes.
+        rows.append(("note:", "not adjudicated — optional, and keeps until the corpus is wanted"))
     if summary["verifier_dropped"]:
         rows.append(("verifier rejected:", str(summary["verifier_dropped"])))
     if errored:
@@ -3048,13 +3071,11 @@ def codex_failure_reason(events):
 
 
 def codex_usage_wall(events, stderr):
-    # No bare 429, for the reason opencode_usage_wall gives: the status code is what a spent
-    # plan and a throttled provider both answer, and only one of them is the account's own
-    # window. Named wording still retires the account; an unnamed 429 is retried as transient.
-    pattern = (
-        r"\b(?:usage|rate)[ _-]limit(?:[ _-]exceeded)?\b"
-        r"|\bquota[ _-]exceeded\b"
-    )
+    # Neither a bare 429 nor rate-limit wording, for the reason opencode_usage_wall gives: both
+    # are what a throttled provider answers as much as a spent plan, and only one of them is the
+    # account's own window. "provider rate limit exceeded" is the throttle's own phrase upstream.
+    # What names the plan still retires the account; the rest is retried as transient.
+    pattern = r"\busage[ _-]limit(?:[ _-]exceeded)?\b|\bquota[ _-]exceeded\b"
     if re.search(pattern, stderr or "", re.IGNORECASE):
         return True
     for raw in (events or "").splitlines():
@@ -3983,6 +4004,10 @@ def worker_pick_account(side, excluded):
 
 _SIDE_ROSTER = {}
 _SIDE_ROSTER_LOCK = threading.Lock()
+# One gate per roster, not one for all of them: enumeration spawns a worker-pick per account
+# and a slow pool would otherwise hold every other side out of its own answer for the duration.
+# _SIDE_ROSTER_LOCK guards only the two dict lookups and is never held across a subprocess.
+_SIDE_ROSTER_GATES = {}
 ROSTER_MAX = 8
 # Long enough that a run's cells share one enumeration, short enough that a floor crossed
 # mid-run is noticed while the run is still going.
@@ -4006,9 +4031,15 @@ def side_roster(side, baseline):
     """
     key = (side, tuple(sorted(baseline)))
     with _SIDE_ROSTER_LOCK:
-        cached = _SIDE_ROSTER.get(key)
-        if cached is not None and time.monotonic() - cached[0] < ROSTER_TTL_S:
-            return cached[1]
+        fresh = cached_roster(key)
+        if fresh is not None:
+            return fresh
+        gate = _SIDE_ROSTER_GATES.setdefault(key, threading.Lock())
+    with gate:
+        with _SIDE_ROSTER_LOCK:
+            fresh = cached_roster(key)
+        if fresh is not None:
+            return fresh
         roster = []
         seen = set(baseline)
         while len(roster) < ROSTER_MAX:
@@ -4018,9 +4049,17 @@ def side_roster(side, baseline):
                 break
             roster.append(account)
             seen.add(account)
-        if roster:
-            _SIDE_ROSTER[key] = (time.monotonic(), roster)
+        with _SIDE_ROSTER_LOCK:
+            if roster:
+                _SIDE_ROSTER[key] = (time.monotonic(), roster)
         return roster
+
+
+def cached_roster(key):
+    cached = _SIDE_ROSTER.get(key)
+    if cached is None or time.monotonic() - cached[0] >= ROSTER_TTL_S:
+        return None
+    return cached[1]
 
 
 def spread_accounts():
@@ -4069,9 +4108,10 @@ def first_free_account(side, roster, excluded, slot, bucket="general"):
     bills fable separately, so asking about the general bucket answers about a quota this
     cell does not spend: for those sides the filter would drop nobody at all.
     """
+    walled = walled_accounts(side, bucket)
     usable = [
         account for account in roster
-        if account and account not in excluded and not is_walled(side, account, bucket)
+        if account and account not in excluded and account not in walled
     ]
     if not usable:
         return None
@@ -4720,8 +4760,6 @@ def cmd_run(args):
     reviews_path = state_dir() / "reviews.jsonl"
     review_rows = read_jsonl(reviews_path)
     verify_model = args.verify
-    if args.leg:
-        verify_model = verify_model or OPENCODE_VERIFIER
     if verify_model:
         verify_model = verifier_model(verify_model)
     if args.raters or args.leg:
@@ -4745,11 +4783,19 @@ def cmd_run(args):
         available = affordability()
         raters, counts, skipped = auto_pick(args.auto or 2, review_rows, available)
     refuse_retired_cells(raters)
-    if verify_model and not any(rater["side"] == "opencode" for rater in raters):
+    has_opencode = any(rater["side"] == "opencode" for rater in raters)
+    if verify_model and not has_opencode:
         raise RuntimeError(
             "--verify checks OpenCode findings only (docs/verifier-tuning.md measured no "
             "other side); this run has no OpenCode cell"
         )
+    # On unless refused, and only once the composition is known, since asking for it where it
+    # cannot apply is an error rather than a default. Every failure path of the verifier keeps
+    # the finding, so the worst it costs is a minute and a run identical to the one without it;
+    # what it buys is the OpenCode claims that cite code as it is not, dropped before a reader
+    # spends context on them.
+    if not verify_model and has_opencode and not getattr(args, "no_verify", False):
+        verify_model = verifier_model(OPENCODE_VERIFIER)
     print("selected raters:")
     for rater in raters:
         count = counts[normalize_legacy_rater(rater["spec"])]
@@ -5798,8 +5844,13 @@ def main():
     run.add_argument("--focus", default="")
     run.add_argument(
         "--verify", metavar="MODEL", choices=verifier_choices(),
-        help="Check every finding back against the file it cites with this in-plan "
-             "OpenCode model, and keep only the claims that survive",
+        help=f"Check every finding back against the file it cites with this in-plan "
+             f"OpenCode model, and keep only the claims that survive (default "
+             f"{OPENCODE_VERIFIER})",
+    )
+    run.add_argument(
+        "--no-verify", action="store_true",
+        help="Report every finding unchecked, including the ones that cite code as it is not",
     )
     run.set_defaults(func=cmd_run)
     record = subparsers.add_parser("record", help="Record blind adjudication verdicts")

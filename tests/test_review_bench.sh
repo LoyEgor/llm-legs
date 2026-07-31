@@ -262,6 +262,11 @@ assert rb.standing_wall(
 ) == (now - 30, None)
 # And a plain wall recorded later than a dated one does not shorten it to the flat hour.
 assert rb.standing_wall([(now - 600, now + 3 * 86400), (now, None)])[1] == now + 3 * 86400
+# Two cells can be told different things seconds apart, and a weekly limit does not stop being
+# spent because a shorter refusal was written down after it.
+assert rb.standing_wall(
+    [(now - 600, now + 3 * 86400), (now, now + 60)]
+)[1] == now + 3 * 86400
 
 # A horizon is read out of the gateway's channel only. The review this repo's own cells write
 # quotes reset wording from the code under review, and taken as the provider's word it retires
@@ -271,8 +276,21 @@ assert rb.wall_reset_at(rb.wall_reset_source("opencode", "HTTP 429", review_pros
 assert rb.wall_reset_at(rb.wall_reset_source("agy", "", review_prose)) is None
 assert rb.wall_reset_at(rb.wall_reset_source("opencode", "quota resets in 2 hours", "")) \
     is not None
-# Codex says it in the events rather than on stderr, so there the tail is the gateway.
-assert rb.wall_reset_at(rb.wall_reset_source("codex", "", "resets in 2 hours")) is not None
+# Codex says it in the events rather than on stderr, but that stream is its whole stdout: the
+# gateway's channel is the error events, and the review travelling beside them is not.
+codex_wall_event = json.dumps({"type": "turn.failed",
+                               "error": {"message": "usage limit, resets in 2 hours"}})
+codex_review_event = json.dumps({"type": "item.completed",
+                                 "item": {"text": "the wall resets in 6 days"}})
+assert rb.wall_reset_at(rb.wall_reset_source("codex", "", codex_wall_event)) is not None
+assert rb.wall_reset_at(rb.wall_reset_source("codex", "", codex_review_event)) is None
+# The same stream decides retries, and a review that discusses status codes is not a refusal.
+assert not rb.codex_transient_failure(
+    json.dumps({"type": "item.completed", "item": {"text": "handles HTTP 429 and 503"}}), ""
+)
+assert rb.codex_transient_failure(
+    json.dumps({"type": "error", "message": "model is at capacity"}), ""
+)
 
 # A wall the provider dated outlives the flat TTL, and a garbled date does not outlive the cap.
 assert rb.wall_still_standing(time.time() - 7200, time.time() + 3600, ttl=1)
@@ -1715,6 +1733,58 @@ finally:
 assert all(roster == ["f1", "f2"] for roster in rosters), rosters
 # Two answers and the one that ends the walk, once for the side rather than once per cell.
 assert len(roster_picks) == 3, roster_picks
+
+# The gate is per roster: enumeration spawns a worker-pick per account, and one slow pool must
+# not hold every other side out of its own answer for as long as that takes.
+rb._SIDE_ROSTER.clear()
+rb._SIDE_ROSTER_GATES.clear()
+slow_side_entered = threading.Event()
+slow_side_release = threading.Event()
+
+
+def blocking_worker_pick(side, excluded):
+    if side == "codex":
+        slow_side_entered.set()
+        slow_side_release.wait(10)
+    return real_worker_pick_account(side, excluded)
+
+
+rb.worker_pick_account = blocking_worker_pick
+gate_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+try:
+    blocked = gate_pool.submit(rb.side_roster, "codex", frozenset())
+    assert slow_side_entered.wait(10), "the slow side never started"
+    # Waited on with a deadline rather than asserted directly: a shared gate does not answer
+    # this call wrongly, it never answers it, and a test that hangs reports nothing.
+    try:
+        free_roster = gate_pool.submit(rb.side_roster, "agy", frozenset()).result(5)
+    except concurrent.futures.TimeoutError:
+        free_roster = "blocked"
+finally:
+    slow_side_release.set()
+    rb.worker_pick_account = real_worker_pick_account
+    gate_pool.shutdown(wait=True)
+assert free_roster == ["f1", "f2"], "one side blocked another"
+assert blocked.result(10) == ["f1", "f2"]
+
+# The roster is filtered against one read of the record, not one read per candidate.
+rb._SIDE_ROSTER.clear()
+os.environ["WORKER_PICK_FAKE_ACCOUNTS"] = "g1 g2 g3"
+wall_reads = []
+real_persisted_walls = rb.persisted_walls
+
+
+def counting_persisted_walls(path):
+    wall_reads.append(path)
+    return real_persisted_walls(path)
+
+
+rb.persisted_walls = counting_persisted_walls
+try:
+    assert rb.pool_account("agy", set(), 0) == "g1"
+finally:
+    rb.persisted_walls = real_persisted_walls
+assert len(wall_reads) == 1, wall_reads
 del os.environ["WORKER_PICK_FAKE_ACCOUNTS"]
 rb._SIDE_ROSTER.clear()
 
@@ -2471,6 +2541,9 @@ assert not rb.codex_usage_wall("", "HTTP 429 from provider")
 assert rb.codex_transient_failure("", "HTTP 429 from provider")
 assert rb.codex_usage_wall("", "You have hit your usage limit")
 assert not rb.codex_transient_failure("", "You have hit your usage limit")
+# "rate limit" is the throttle's own phrase upstream, so it retires nothing here either.
+assert not rb.codex_usage_wall("", "provider rate limit exceeded")
+assert rb.codex_transient_failure("", "provider rate limit exceeded")
 assert rb.transient_backoffs() == [15, 30]
 os.environ["REVIEW_BENCH_TRANSIENT_BACKOFF_S"] = "0,0"
 assert rb.transient_backoffs() == [0, 0]
@@ -3620,19 +3693,46 @@ assert "not a git repository" in nonrepo_proc.stderr
 assert not nonrepo_store.exists(), list(nonrepo_store.rglob("*")) \
     if nonrepo_store.exists() else []
 
+# The verifier is on unless refused: every one of its failure paths keeps the finding, so the
+# cost of having it is a minute and the cost of not having it is unchecked claims read in full.
 raw_opencode_store = work / "raw-opencode-claudeb"
 os.environ["CLAUDEB_DIR"] = str(raw_opencode_store)
 raw_opencode_rc = rb.cmd_run(argparse.Namespace(
     repo=str(pin_repo), commitish=pin_sha, raters="oc-kimik3,oc-grok45-low",
-    leg=False, verify=None, auto=None, focus=None,
+    leg=False, verify=None, no_verify=False, auto=None, focus=None,
 ))
 raw_opencode_run = next((raw_opencode_store / "worker-stats" / "benches").iterdir())
 raw_opencode_meta = json.loads((raw_opencode_run / "meta.json").read_text())
 assert raw_opencode_rc == 0, raw_opencode_meta
-assert raw_opencode_meta["verifier"] == "", \
+assert raw_opencode_meta["verifier"] == rb.OPENCODE_VERIFIER, \
     f"raw run verifier: {raw_opencode_meta['verifier']!r}"
-assert not list(raw_opencode_run.glob("verified-*.jsonl")), \
-    "raw run wrote verified artifacts"
+
+refused_verify_store = work / "refused-verify-claudeb"
+os.environ["CLAUDEB_DIR"] = str(refused_verify_store)
+refused_verify_rc = rb.cmd_run(argparse.Namespace(
+    repo=str(pin_repo), commitish=pin_sha, raters="oc-kimik3,oc-grok45-low",
+    leg=False, verify=None, no_verify=True, auto=None, focus=None,
+))
+refused_verify_run = next((refused_verify_store / "worker-stats" / "benches").iterdir())
+refused_verify_meta = json.loads((refused_verify_run / "meta.json").read_text())
+assert refused_verify_rc == 0, refused_verify_meta
+assert refused_verify_meta["verifier"] == "", refused_verify_meta["verifier"]
+assert not list(refused_verify_run.glob("verified-*.jsonl")), \
+    "a refused verifier wrote verified artifacts"
+
+# Asking for it where it cannot apply is an error; defaulting into that would refuse every run
+# whose composition happens to have no OpenCode cell.
+no_oc_store = work / "no-opencode-claudeb"
+os.environ["CLAUDEB_DIR"] = str(no_oc_store)
+no_oc_rc = rb.cmd_run(argparse.Namespace(
+    repo=str(pin_repo), commitish=pin_sha, raters="sol-low",
+    leg=False, verify=None, no_verify=False, auto=None, focus=None,
+))
+no_oc_meta = json.loads(
+    (next((no_oc_store / "worker-stats" / "benches").iterdir()) / "meta.json").read_text()
+)
+assert no_oc_rc == 0, no_oc_meta
+assert no_oc_meta["verifier"] == "", no_oc_meta["verifier"]
 
 explicit_verify_store = work / "explicit-review-verify-claudeb"
 os.environ["CLAUDEB_DIR"] = str(explicit_verify_store)
@@ -3716,7 +3816,7 @@ with contextlib.redirect_stdout(repeat_record_stdout):
         run_id=repeat_meta["run_id"], verdicts=str(repeat_verdicts),
     )) == 0
 assert "confirmed 2:" in repeat_record_stdout.getvalue()
-assert "not adjudicated yet" not in repeat_record_stdout.getvalue()
+assert "not adjudicated" not in repeat_record_stdout.getvalue()
 repeat_corpus = rb.read_jsonl(repeat_store / "worker-stats" / "reviews.jsonl")
 assert [row["rater"] for row in repeat_corpus] == ["sol-medium", "sol-medium#2"], repeat_corpus
 
@@ -4552,7 +4652,7 @@ last_report=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" report --last) \
 assert test "$last_report" = "$expected_report"
 worktree_report=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" report report-worktree) \
   || fail "worktree report failed"
-expected_worktree_report=$'REVIEW-REPORT-BEGIN\nT0 · 30 sec wall · slowest completed: Kimi K3 20 sec\nfindings:  Kimi K3 ×2 3\nnote:      not adjudicated yet\ntimeout:   Gemini 3.1 Pro high skill\nREVIEW-REPORT-END'
+expected_worktree_report=$'REVIEW-REPORT-BEGIN\nT0 · 30 sec wall · slowest completed: Kimi K3 20 sec\nfindings:  Kimi K3 ×2 3\nnote:      not adjudicated \u2014 optional, and keeps until the corpus is wanted\ntimeout:   Gemini 3.1 Pro high skill\nREVIEW-REPORT-END'
 assert test "$worktree_report" = "$expected_worktree_report"
 worktree_recorded=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" record report-worktree \
   --verdicts "$WORK/report-worktree-verdicts.jsonl") || fail "worktree record failed"
@@ -5412,9 +5512,20 @@ if test -x "$REPORT_HOOK"; then
     hook_output="$(jq -nc --arg tool "$hook_tool" \
       --arg output $'before\nREVIEW-REPORT-BEGIN\nT1 report\nREVIEW-REPORT-END\nafter' \
       '{tool_name:$tool,tool_response:{stdout:$output}}' | "$REPORT_HOOK")"
-    assert test "$(jq -r '.hookSpecificOutput.additionalContext' <<<"$hook_output")" = \
-      "Paste the block between REVIEW-REPORT-BEGIN and REVIEW-REPORT-END verbatim as a fenced code block. Do not restate statistics in prose. Discuss only confirmed findings and actions."
+    assert contains "$(jq -r '.hookSpecificOutput.additionalContext' <<<"$hook_output")" \
+      "verbatim as a fenced code block"
   done
+  # A run read back with `tail -N` can land one line short of the opening marker, and a hook
+  # keyed on the pair goes quiet on exactly the output that most needs the nudge.
+  hook_truncated="$(jq -nc \
+    --arg output $'T1 report\nfindings: none\nREVIEW-REPORT-END' \
+    '{tool_name:"Bash",tool_response:{stdout:$output}}' | "$REPORT_HOOK")"
+  assert contains "$(jq -r '.hookSpecificOutput.additionalContext' <<<"$hook_truncated")" \
+    "re-read the block"
+  # The marker has to be the whole line: a report is not what a sentence mentioning one is.
+  hook_inline="$(jq -nc --arg output 'talking about REVIEW-REPORT-END in passing' \
+    '{tool_name:"Bash",tool_response:{stdout:$output}}' | "$REPORT_HOOK")"
+  assert test -z "$hook_inline"
   hook_without_output="$(jq -n --rawfile source "$SCRIPT" \
     '{tool_name:"Read",tool_response:{content:$source}}' | "$REPORT_HOOK")"
   assert test -z "$hook_without_output"
