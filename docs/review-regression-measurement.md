@@ -129,6 +129,42 @@ and dies in the orchestrator's summary. The second pass is currently the only th
 catches it; a cheaper guard would be diffing the fix brief against the first-pass findings
 list before dispatch.
 
+### Round 3 — 2026-07-31, six chained rounds over the verifier-reporting work
+Not one first pass and one second: six rounds, each a T2 over the previous round's fixes.
+`753b98f → 979bdbb → 7009141 → 285c531 → 9510b85 → 93fc7f0`, confirmed per round
+4 → 5 → 3 → 3 → 1 → 3. Every fix mutation-tested before the next round ran.
+
+| | count |
+| --- | --- |
+| regressions the fixes introduced | 9 of 19 confirmed |
+| P1 regressions | 2, both in code written in the previous round |
+| rounds that produced nothing new | 0 |
+
+The two P1s are the pattern this file exists for. A flag added to keep a fix round's triage out
+of the corpus took the worktree early-return path, so it wrote `verdicts.jsonl` and left the
+corpus alone — a state `list` reads as pending, `cluster` refuses for the missing
+`defects.jsonl`, and `review_outcome` scores as a review that found nothing, while a later
+ordinary `record` finds the file already matching and skips the row it owes. Nothing was wrong
+with the fix's own logic; what was wrong is that **every state between pending and adjudicated
+is read by something**, and the readers were never opened. Same shape as the five regressions
+earlier that night: a fix made code call something whose body nobody read.
+
+Three rounds in a row then found a new mistake in the one status line the previous round had
+just corrected. That is the signal to cut, not to correct: `93fc7f0` deleted the branching for
+one sentence true in every state, and with it the reads and fixtures the branches needed.
+Rule: a place corrected in two consecutive rounds gets simplified in the third.
+
+Two numbers from the corpus, for choosing what to review at all:
+
+- Yield falls hard with diff size. Panels of 8+ cells, adjudicated llm-legs runs: **2.56**
+  confirmed per 100 changed lines at ≤250 lines, **1.91** at 251–900, **0.49** at >900. A
+  re-review of a large already-reviewed pool is the least productive shape measured here.
+- Severity is a property of the cell, not the code: the share of a cell's own claims it labels
+  P1 runs from **56%** (agy-pro-high-skill) to **2%** (opus-medium), over 40+ claims each, and
+  adjudication never checks severity — only `code_matches` and `is_defect`. So "review until no
+  P1" stops when the P1-generous cells happen to be quiet. Stop on a round with no confirmed
+  defect instead.
+
 ## Reading it so far
 
 Three rounds, seven regressions from fixes, every one found only because someone looked again.
