@@ -2086,6 +2086,60 @@ def health_lines(runs):
     return lines
 
 
+FINDINGS_SUMMARY_CHARS = 300
+
+
+def findings_lines(run_dir):
+    """One entry per place the panel pointed at, the cells that pointed there named.
+
+    Grouped because a reader who takes the per-cell files as they are reads the same claim once
+    per cell that made it — a third of them on the runs recorded so far — and pays for every
+    repeat. Agreement first, since a place several cells reached independently is where a real
+    defect usually is; strictly by file and line, because merging neighbours on a similarity
+    score is how two distinct defects become one entry nobody looks at twice.
+    """
+    rows = []
+    for path in sorted(run_dir.glob("findings-*.jsonl")):
+        cell = rater_family(path.name[len("findings-"):-len(".jsonl")])
+        for row in read_jsonl(path):
+            rows.append((cell, row))
+    if not rows:
+        return ["no findings recorded"]
+    places = defaultdict(list)
+    for cell, row in rows:
+        places[(str(row.get("file") or "?"), row.get("line"))].append((cell, row))
+    ordered = sorted(
+        places.items(),
+        key=lambda item: (-len(item[1]), item[0][0], item[0][1] or 0),
+    )
+    cells = {cell for cell, _ in rows}
+    lines = [
+        f"{len(rows)} findings from {len(cells)} cells at {len(places)} places"
+    ]
+    for (path, line), entries in ordered:
+        row = entries[0][1]
+        named = ", ".join(sorted({cell for cell, _ in entries}))
+        lines.append("")
+        lines.append(
+            f"{row.get('severity') or '??'} ×{len(entries)}  {path}:{line}  {named}"
+        )
+        summary = " ".join(str(row.get("summary") or "").split())
+        lines.append(f"    {summary[:FINDINGS_SUMMARY_CHARS]}")
+    return lines
+
+
+def cmd_findings(args):
+    if bool(args.run_id) == bool(args.last):
+        raise ValueError("give exactly one of run-id or --last")
+    benches = state_dir() / "benches"
+    run_dir = newest_run_dir(benches) if args.last else benches / args.run_id
+    if run_dir is None or not (run_dir / "meta.json").exists():
+        raise ValueError(f"unknown {'last run' if args.last else f'run id {args.run_id}'}")
+    for line in findings_lines(run_dir):
+        print(line)
+    return 0
+
+
 def cmd_health(args):
     if args.limit < 0:
         raise ValueError("--limit cannot be negative")
@@ -3054,8 +3108,12 @@ def codex_failure_reason(events):
     Codex exits non-zero with an empty stderr, so a failure recorded from stderr alone reads as
     a silent death and cannot be classified afterwards: 31 of the runs on record are exactly
     that, and every one of them turned out to be the same recoverable capacity refusal.
+
+    Every such message, not the last one. The named cause usually arrives first and a generic
+    turn.failed follows it, so keeping only the last is how "model is at capacity" — the whole
+    reason this exists — stops reaching the retry classifier that reads nothing else.
     """
-    reason = ""
+    reasons = []
     for raw in (events or "").splitlines():
         try:
             event = json.loads(raw)
@@ -3065,9 +3123,9 @@ def codex_failure_reason(events):
             continue
         error = event.get("error")
         message = event.get("message") or (error.get("message") if isinstance(error, dict) else None)
-        if isinstance(message, str) and message.strip():
-            reason = message.strip()
-    return reason
+        if isinstance(message, str) and message.strip() and message.strip() not in reasons:
+            reasons.append(message.strip())
+    return "\n".join(reasons)
 
 
 def codex_usage_wall(events, stderr):
@@ -4411,11 +4469,6 @@ def cmd_review(args):
     )
     args.auto = None
     args.leg = False
-    # Tier reviews verify OpenCode cells here so measurement runs deliberately stay raw.
-    if args.verify is None and any(
-        rater["side"] == "opencode" for rater in parse_raters(args.raters)
-    ):
-        args.verify = OPENCODE_VERIFIER
     return cmd_run(args)
 
 
@@ -5800,7 +5853,10 @@ def main():
         help="Allow long tiers when stdout is not a terminal",
     )
     review.add_argument("--focus", default="")
-    review.add_argument("--verify", metavar="MODEL", choices=verifier_choices())
+    # cmd_review hands off to cmd_run, so a refusal it cannot express is a refusal it ignores.
+    review_verify = review.add_mutually_exclusive_group()
+    review_verify.add_argument("--verify", metavar="MODEL", choices=verifier_choices())
+    review_verify.add_argument("--no-verify", action="store_true")
     review.set_defaults(func=cmd_review)
     reviewed = subparsers.add_parser(
         "reviewed", help="Stamp the current working tree as reviewed"
@@ -5842,13 +5898,16 @@ def main():
         help="Allow long tiers when stdout is not a terminal",
     )
     run.add_argument("--focus", default="")
-    run.add_argument(
+    # Exclusive, or `--verify X --no-verify` runs the verifier and says nothing about having
+    # ignored the refusal.
+    run_verify = run.add_mutually_exclusive_group()
+    run_verify.add_argument(
         "--verify", metavar="MODEL", choices=verifier_choices(),
         help=f"Check every finding back against the file it cites with this in-plan "
              f"OpenCode model, and keep only the claims that survive (default "
              f"{OPENCODE_VERIFIER})",
     )
-    run.add_argument(
+    run_verify.add_argument(
         "--no-verify", action="store_true",
         help="Report every finding unchecked, including the ones that cite code as it is not",
     )
@@ -5874,6 +5933,12 @@ def main():
         "oc-models", help="Measured OpenCode capability table and recorded per-cell health"
     )
     oc_models.set_defaults(func=cmd_oc_models)
+    findings = subparsers.add_parser(
+        "findings", help="A run's findings grouped by the place they point at, agreement first"
+    )
+    findings.add_argument("run_id", nargs="?")
+    findings.add_argument("--last", action="store_true", help="The newest run")
+    findings.set_defaults(func=cmd_findings)
     health = subparsers.add_parser(
         "health", help="Why recorded cells failed, per run, side, account and cell"
     )

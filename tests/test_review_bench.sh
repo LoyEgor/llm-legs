@@ -291,6 +291,14 @@ assert not rb.codex_transient_failure(
 assert rb.codex_transient_failure(
     json.dumps({"type": "error", "message": "model is at capacity"}), ""
 )
+# Every error message, not the last: the named cause arrives first and a bare turn.failed
+# follows it, so keeping one drops the very wording the retry classifier reads.
+capacity_then_generic = "\n".join([
+    json.dumps({"type": "error", "message": "model is at capacity"}),
+    json.dumps({"type": "turn.failed", "error": {"message": "the turn failed"}}),
+])
+assert "at capacity" in rb.codex_failure_reason(capacity_then_generic)
+assert rb.codex_transient_failure(capacity_then_generic, "")
 
 # A wall the provider dated outlives the flat TTL, and a garbled date does not outlive the cap.
 assert rb.wall_still_standing(time.time() - 7200, time.time() + 3600, ttl=1)
@@ -653,6 +661,39 @@ silent_meta = dict(
     rater_runs=[{"rater": "sol-low", "exit_code": 5, "errored": True, "stderr": ""}],
 )
 assert "Sol low (exit 5)" in "\n".join(rb.report_lines(duration_dir, silent_meta))
+
+# --- findings: one entry per place, agreement first --------------------------------------
+findings_dir = work / "findings-view"
+findings_dir.mkdir()
+(findings_dir / "meta.json").write_text(json.dumps({"rater_runs": []}))
+
+
+def write_findings(cell, rows):
+    (findings_dir / f"findings-{cell}.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows)
+    )
+
+
+write_findings("sol-low", [
+    {"file": "z.py", "line": 10, "severity": "P2", "summary": "shared claim"},
+    {"file": "a.py", "line": 1, "severity": "P1", "summary": "only sol saw this"},
+])
+write_findings("oc-kimik3", [
+    {"file": "z.py", "line": 10, "severity": "P2", "summary": "shared claim, said again"},
+])
+# A repeat of the same cell is one cell agreeing with itself, not two cells agreeing.
+write_findings("oc-kimik3#2", [
+    {"file": "z.py", "line": 10, "severity": "P2", "summary": "shared claim once more"},
+])
+findings_text = "\n".join(rb.findings_lines(findings_dir))
+assert findings_text.startswith("4 findings from 2 cells at 2 places"), findings_text
+# The place several cells reached independently comes first, whatever its severity: that is
+# where a real defect usually is, and reading in file order buries it.
+place_order = [line for line in findings_text.splitlines() if line.startswith("P")]
+# z.py sorts last by name, so file order and agreement order disagree here on purpose.
+assert place_order[0].startswith("P2 ×3  z.py:10  oc-kimik3, sol-low"), place_order
+assert place_order[1].startswith("P1 ×1  a.py:1  sol-low"), place_order
+assert rb.findings_lines(work / "findings-empty-run") == ["no findings recorded"]
 
 # --- health: why recorded cells failed -------------------------------------------------------
 for text, expected in (
