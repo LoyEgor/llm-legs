@@ -21,7 +21,7 @@ usage() {
 Usage:
   opencode-go key
   opencode-go models [--json]
-  opencode-go run <model> (<prompt...> | --prompt-file <path>) [--system <text>] [--max-tokens N] [--effort low|medium|high | --no-reasoning] [--prefill <text>] [--retries N] [--stream] [--json]
+  opencode-go run <model> (<prompt...> | --prompt-file <path>) [--system <text>] [--max-tokens N] [--effort low|medium|high | --no-reasoning] [--prefill <text>] [--answer-must-match <ere>] [--retries N] [--stream] [--json]
   opencode-go raw <path> [json-body]
 OPENCODE_GO_PROFILE=<name> selects the account: key/models/run then use the
 keychain service opencode-go-<name> (unset = the default opencode-go account).
@@ -33,6 +33,11 @@ reasoning only and never start the answer; --json assembles either mode into
 one completion envelope.
 --effort asks for reasoning and --no-reasoning suppresses it, so they cannot be
 combined: one would silently overwrite the other.
+--answer-must-match names, as an extended regex, what a real answer looks like
+for the caller's own contract: a 2xx whose content does not match retires the
+reasoning-off strategy the same way an empty one does, which is how a model that
+answers inside its reasoning field reaches the next strategy instead of being
+recorded as having answered. Unset, only an empty content counts as nothing.
 EOF
   exit 64
 }
@@ -140,18 +145,25 @@ sse_to_envelope() {
 # escalation exists for.
 transient_status() { [[ $1 == 5?? || $1 == 000 ]]; }
 answered_nothing() {
-  local file=$1 streaming=$2
-  local envelope
+  local file=$1 streaming=$2 must_match=${3:-}
+  local envelope content
   if [[ $streaming == true ]]; then
     grep -q '^data:' "$file" || return 1
     envelope=$(sse_to_envelope "$file") || return 1
     # A provider error inside the stream also carries no content. Retiring a reasoning-off
     # strategy for it burns the negotiation on an outage and hides the error.
     [[ $(jq -r '.error // "null"' <<<"$envelope") == null ]] || return 1
-    jq -e '((.choices[0].message.content // "") | length) == 0' <<<"$envelope" >/dev/null 2>&1
+    content=$(jq -r '.choices[0].message.content // ""' <<<"$envelope") || return 1
   else
-    jq -e '((.choices[0].message.content // "") | length) == 0' "$file" >/dev/null 2>&1
+    content=$(jq -r '.choices[0].message.content // ""' "$file") || return 1
   fi
+  [[ -n $content ]] || return 0
+  # A model that answers inside its reasoning field leaves a one-line announce here: non-empty,
+  # so emptiness alone reads it as a working strategy, and useless. What a real answer looks
+  # like is the caller's to say, never this script's — the same run() serves prose prompts,
+  # where any text at all is the answer.
+  [[ -n $must_match ]] || return 1
+  grep -Eqi -- "$must_match" <<<"$content" && return 1 || return 0
 }
 no_reasoning_body() {
   local body=$1 strategy=$2
@@ -187,6 +199,7 @@ run_model() {
   [[ $# -ge 2 ]] || usage
   local model=$1 key system= prompt= prompt_file= max_tokens=1024 effort= json=false status body
   local retries=3 attempt=1 delay stream=false envelope no_reasoning=false prefill=
+  local answer_must_match=
   local max_wait=${OPENCODE_GO_MAX_WAIT_S:-900} stall_seconds=${OPENCODE_GO_STALL_S:-120}
   local slow_switch=${OPENCODE_GO_SLOW_SWITCH_S:-120}
   # How to silence reasoning differs per model and an unsupported knob is a hard
@@ -215,6 +228,8 @@ run_model() {
         no_reasoning=true; shift ;;
       --prefill)
         [[ $# -ge 2 ]] || usage; prefill=$2; shift 2 ;;
+      --answer-must-match)
+        [[ $# -ge 2 && -n $2 ]] || usage; answer_must_match=$2; shift 2 ;;
       --stream)
         stream=true; shift ;;
       --no-stream)
@@ -301,7 +316,8 @@ run_model() {
     fi
     # A model handed a closing think tag may treat the assistant turn as finished
     # and answer nothing at all, so an empty 200 retires that strategy too.
-    if [[ $status == 2?? && ${#pending[@]} -gt 1 ]] && answered_nothing "$response" "$stream"; then
+    if [[ $status == 2?? && ${#pending[@]} -gt 1 ]] \
+      && answered_nothing "$response" "$stream" "$answer_must_match"; then
       pending=("${pending[@]:1}")
       body=$(no_reasoning_body "$base_body" "${pending[0]}")
       printf 'reasoning-off strategy answered nothing, falling back to %s\n' "${pending[0]}" >&2

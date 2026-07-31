@@ -2399,6 +2399,15 @@ assert "--prompt-file" in command
 assert "--json" in command
 assert command[command.index("--max-tokens") + 1] == "32000"
 assert "--effort" not in command
+# The transport negotiates reasoning off but cannot know what a review looks like, so the
+# contract travels with the call: without it a cell that answered inside its reasoning field
+# leaves a non-empty announce and the negotiation stops on a strategy that produced nothing.
+shape = command[command.index("--answer-must-match") + 1]
+assert shape == rb.OPENCODE_ANSWER_SHAPE, shape
+import re as _re
+assert _re.search(shape, '{"severity":"P2"}', _re.IGNORECASE), shape
+assert _re.search(shape, rb.CLEAN_REVIEW_MARKER, _re.IGNORECASE), shape
+assert not _re.search(shape, "Checking how cmd_review emits reports.", _re.IGNORECASE), shape
 assert max(map(len, command)) < 4096
 usage = json.loads((opencode_run / "usage-oc-glm52.json").read_text())
 assert usage == {

@@ -248,6 +248,49 @@ out=$("$SCRIPT" run glm-5.2 hello --no-reasoning 2>"$WORK/err") \
 assert test "$out" = ANSWERED
 assert test "$(calls)" = 2
 
+# A model that answered inside its reasoning field leaves a non-empty one-line announce here,
+# so emptiness alone reads it as a working strategy. The caller's contract catches it.
+reset_calls
+cat >"$WORK/announce.json" <<'EOF'
+{"id":"x","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Checking how cmd_review emits reports.","reasoning_content":"{\"severity\":\"P2\",\"file\":\"a\",\"line\":1,\"summary\":\"s\"}"}}]}
+EOF
+cat >"$WORK/finding.json" <<'EOF'
+{"id":"x","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"{\"severity\":\"P2\",\"file\":\"a\",\"line\":1,\"summary\":\"s\"}"}}]}
+EOF
+{ printf '200|%s|0\n' "$WORK/announce.json"; printf '200|%s|0\n' "$WORK/finding.json"; } >"$CURL_PLAN"
+out=$("$SCRIPT" run glm-5.2 hello --no-reasoning --answer-must-match '\{|no findings' \
+  2>"$WORK/err") || fail "an announce-only answer was not retried: $(cat "$WORK/err")"
+assert test "$(calls)" = 2
+assert grep -q 'answered nothing, falling back to enable-thinking' "$WORK/err"
+
+# An answer in the caller's own shape ends the negotiation, and a clean review is short by
+# design: matching it against the announce case is what would burn the ladder on every no-issues
+# result. Both accepted shapes are tested, since only one of them looks like data.
+reset_calls
+printf '200|%s|0\n' "$WORK/finding.json" >"$CURL_PLAN"
+"$SCRIPT" run glm-5.2 hello --no-reasoning --answer-must-match '\{|no findings' \
+  >/dev/null 2>"$WORK/err" || fail "a findings answer was retried: $(cat "$WORK/err")"
+assert test "$(calls)" = 1
+assert_fails grep -q 'answered nothing' "$WORK/err"
+reset_calls
+cat >"$WORK/clean.json" <<'EOF'
+{"id":"x","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"NO FINDINGS"}}]}
+EOF
+printf '200|%s|0\n' "$WORK/clean.json" >"$CURL_PLAN"
+out=$("$SCRIPT" run glm-5.2 hello --no-reasoning --answer-must-match '\{|no findings' \
+  2>"$WORK/err") || fail "a clean review was retried: $(cat "$WORK/err")"
+assert test "$out" = "NO FINDINGS"
+assert test "$(calls)" = 1
+
+# Without the flag this script is a prose CLI: any text is the answer, and reading a contract
+# into it would retire a working strategy on every ordinary reply.
+reset_calls
+printf '200|%s|0\n' "$WORK/announce.json" >"$CURL_PLAN"
+"$SCRIPT" run glm-5.2 hello --no-reasoning >/dev/null 2>"$WORK/err" \
+  || fail "a prose answer was rejected: $(cat "$WORK/err")"
+assert test "$(calls)" = 1
+assert_fails grep -q 'answered nothing' "$WORK/err"
+
 # A non-empty answer is never mistaken for an exhausted strategy.
 reset_calls
 printf '200|%s|0\n' "$WORK/answer.sse" >"$CURL_PLAN"

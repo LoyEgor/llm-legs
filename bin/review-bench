@@ -2768,6 +2768,11 @@ CLEAN_REVIEW_MARKER = "NO FINDINGS"
 CLEAN_REVIEW_RE = re.compile(
     r"no findings|no issues found|\{\s*\"findings\"\s*:\s*\[\s*\]\s*\}", re.IGNORECASE
 )
+# The two shapes the review contract accepts, as an extended regex for opencode-go's
+# --answer-must-match. Kept beside CLEAN_REVIEW_RE because it is the same contract read by the
+# transport: a model whose answer went into its reasoning field leaves a one-line announce that
+# matches neither, and only that lets the reasoning-off negotiation move to its next strategy.
+OPENCODE_ANSWER_SHAPE = r"\{|no findings|no issues found"
 CLEAN_ASSERTION_VERBS = (
     "found", "was", "were", "is", "are", "exists", "detected", "identified", "confirmed",
     "has", "have", "contains", "contain", "remains", "remain",
@@ -3490,6 +3495,7 @@ def run_opencode(rater, repo, sha, focus, run_dir, diff, account):
                 "run", OPENCODE_MODEL_IDS[rater["model"]],
                 "--prompt-file", prompt_file.name,
                 "--json", "--max-tokens", str(max_tokens),
+                "--answer-must-match", OPENCODE_ANSWER_SHAPE,
             ]
             if rater["effort"]:
                 command += ["--effort", rater["effort"]]
