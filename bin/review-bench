@@ -1640,7 +1640,7 @@ def parse_iso_timestamp(value):
     return parsed.astimezone(timezone.utc)
 
 
-def bench_summary(run_dir, meta):
+def bench_summary(run_dir, meta, verdicts=None):
     cells = []
     rows = [dict(row) for row in meta.get("rater_runs", ()) if isinstance(row, dict)]
     seen = {row.get("rater") for row in rows if row.get("rater")}
@@ -1691,10 +1691,17 @@ def bench_summary(run_dir, meta):
             "account": row.get("account"),
         })
     verdict_path = run_dir / "verdicts.jsonl"
+    # Verdicts handed in rather than read back are a triage that is deliberately not recorded:
+    # reporting it must leave no file behind, or the run reads as half-adjudicated to `list`,
+    # `cluster` and the receipt logic, each of which decides on what is on disk.
+    adjudicated = True if verdicts is not None else verdict_path.exists()
+    supplied = verdicts if verdicts is not None else (
+        read_jsonl(verdict_path) if verdict_path.exists() else []
+    )
     verdicts = [
-        row for row in read_jsonl(verdict_path)
+        row for row in supplied
         if row.get("rater") and row.get("verdict") in VERDICTS
-    ] if verdict_path.exists() else []
+    ]
     verdict_counts = Counter(row["verdict"] for row in verdicts)
     severities = Counter()
     false_by = Counter()
@@ -1729,7 +1736,7 @@ def bench_summary(run_dir, meta):
         "verifier_by_model": dict(sum(
             (Counter(cell["verifier_by_model"]) for cell in cells), Counter()
         )),
-        "adjudicated": verdict_path.exists(),
+        "adjudicated": adjudicated,
         "confirmed": verdict_counts["confirmed"],
         "duplicate": verdict_counts["duplicate"],
         "false_positive": verdict_counts["false_positive"],
@@ -1832,9 +1839,13 @@ def verifier_report_value(summary):
         # Whether the verifier ran, not whether it rejected anything: a run recorded before the
         # tally existed keeps only its drop and wall totals, and reading a zero drop as "never
         # ran" tells the reader nothing was checked on 3 of the 205 runs on disk, where
-        # everything was. The wall total is the only unchecked count such a run kept, and 7 of
-        # them have one — without it a partly walled verifier reads as a complete pass.
-        if any(cell["verifier_ran"] for cell in eligible) or summary["verifier_dropped"]:
+        # everything was. Either total is evidence it ran: a wall before the first rejection
+        # leaves only the wall count, and 7 runs on disk carry one.
+        if (
+            any(cell["verifier_ran"] for cell in eligible)
+            or summary["verifier_dropped"]
+            or summary["verifier_unverified"]
+        ):
             counts = [f"{summary['verifier_dropped']} rejected"]
             if summary["verifier_unverified"]:
                 counts.append(f"{summary['verifier_unverified']} kept unchecked")
@@ -1846,8 +1857,8 @@ def verifier_report_value(summary):
     return f"{names} — {', '.join(counts)}"
 
 
-def report_lines(run_dir, meta):
-    summary = bench_summary(run_dir, meta)
+def report_lines(run_dir, meta, verdicts=None):
+    summary = bench_summary(run_dir, meta, verdicts)
     completed = [
         row for row in summary["cells"]
         if row["status"] == "completed"
@@ -1993,9 +2004,9 @@ def report_lines(run_dir, meta):
     return lines
 
 
-def emit_report(run_dir, meta):
+def emit_report(run_dir, meta, verdicts=None):
     print(REPORT_BEGIN)
-    for line in report_lines(run_dir, meta):
+    for line in report_lines(run_dir, meta, verdicts):
         print(line)
     print(REPORT_END)
 
@@ -5331,17 +5342,27 @@ def cmd_record(args):
     verdicts_changed = not verdict_existed or stored != normalized_verdicts
     # The fixer's own triage is what makes the report readable at the end of a round, and it is
     # not what the corpus is for: judged against a checkout that already holds the fixes, it is a
-    # different ruler from the two sealed judges reviews.jsonl is built on. Skipping the corpus
-    # keeps both — without this the choice is a useless report or a mixed ruler.
-    if worktree or getattr(args, "no_corpus", False):
+    # different ruler from the two sealed judges reviews.jsonl is built on. It is reported and
+    # then dropped, because every state between pending and adjudicated is read by something:
+    # a verdict file alone leaves `list` calling the run pending, `cluster` refusing its whole
+    # commit for the missing defects.jsonl, and the receipt logic scoring it as a review that
+    # found nothing — while a later ordinary record finds the file already matching and skips
+    # the corpus row it owes.
+    if getattr(args, "no_corpus", False):
+        print(
+            f"reported {len(normalized_verdicts)} verdict(s); nothing recorded because "
+            "--no-corpus, so the run stays pending for a two-judge adjudication"
+        )
+        emit_report(run_dir, meta, normalized_verdicts)
+        return 0
+    if worktree:
         if verdicts_changed:
             write_jsonl(verdict_path, normalized_verdicts)
             log_review_event("adjudicated", run_dir, meta)
-        reason = (
-            "worktree snapshots are not durable corpus commits" if worktree
-            else "--no-corpus"
+        print(
+            "recorded worktree adjudication; corpus skipped because worktree snapshots "
+            "are not durable corpus commits"
         )
-        print(f"recorded adjudication; corpus skipped because {reason}")
         emit_report(run_dir, meta)
         return 0
     caught_by = {key: {key[0]} for key in canonical}

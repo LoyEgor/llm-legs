@@ -735,6 +735,19 @@ legacy_walled_report = "\n".join(rb.report_lines(duration_dir, dict(
 )))
 assert "verifier:  Kimi K3 — 1 rejected, 3 kept unchecked" in legacy_walled_report, \
     legacy_walled_report
+# A wall before the first rejection leaves the wall count as the only evidence the verifier ran,
+# so a guard reading the drop total alone reports those findings as never offered to it.
+legacy_wall_only_report = "\n".join(rb.report_lines(duration_dir, dict(
+    duration_meta,
+    verifier="oc-kimik3",
+    raters=["oc-kimik3"],
+    rater_runs=[
+        {"rater": "oc-kimik3", "side": "opencode", "exit_code": 0, "findings": 2,
+         "verifier_dropped": 0, "verifier_unverified": 2},
+    ],
+)))
+assert "verifier:  Kimi K3 — 0 rejected, 2 kept unchecked" in legacy_wall_only_report, \
+    legacy_wall_only_report
 # Every count is read back out of a file anyone can hand-edit, so each is sanitised where it is
 # read, not only where it is summed: a bool reaching one cell field and not its neighbour is the
 # inconsistency that makes the next edit trust the wrong one.
@@ -4080,22 +4093,47 @@ assert [row["rater"] for row in rb.read_jsonl(
 
 # A fix round's own triage is what makes the end-of-round report readable, and it is judged
 # against a checkout that already holds the fixes — a different ruler from the two sealed judges
-# reviews.jsonl is built on. Without a way to report it and skip the corpus, the choice is a
-# useless report or a mixed ruler, so the flag reaches a durable commit too.
+# reviews.jsonl is built on. So it is reported and dropped: every state between pending and
+# adjudicated is read by something, and a verdict file with no corpus row is read as a review
+# that found nothing by `list`, `cluster` and the receipt logic alike.
 no_corpus_dir = repeat_store / "worker-stats" / "benches" / "no-corpus-fixture"
 no_corpus_dir.mkdir()
 (no_corpus_dir / "meta.json").write_text(json.dumps({
-    "run_id": "no-corpus-fixture", "commit": pin_sha, "repo": str(pin_repo), "raters": [],
+    "run_id": "no-corpus-fixture", "commit": pin_sha, "repo": str(pin_repo),
+    "raters": ["sol-medium"], "completed_raters": ["sol-medium"],
+    "rater_runs": [{"rater": "sol-medium", "exit_code": 0, "findings": 2}],
 }) + "\n")
+rb.write_jsonl(no_corpus_dir / "findings-sol-medium.jsonl", [
+    {"file": "a.py", "line": 1, "severity": "P1", "summary": "real"},
+    {"file": "b.py", "line": 2, "severity": "P3", "summary": "noise"},
+])
+no_corpus_verdicts = work / "no-corpus-verdicts.jsonl"
+rb.write_jsonl(no_corpus_verdicts, [
+    {"rater": "sol-medium", "idx": 0, "verdict": "confirmed"},
+    {"rater": "sol-medium", "idx": 1, "verdict": "false_positive"},
+])
 no_corpus_stdout = io.StringIO()
 with contextlib.redirect_stdout(no_corpus_stdout):
     assert rb.cmd_record(argparse.Namespace(
-        run_id="no-corpus-fixture", verdicts=str(empty_verdicts), no_corpus=True,
+        run_id="no-corpus-fixture", verdicts=str(no_corpus_verdicts), no_corpus=True,
     )) == 0
-assert "corpus skipped because --no-corpus" in no_corpus_stdout.getvalue(), \
+# The verdicts reach the report without reaching the disk: printing the pre-adjudication shape
+# here is what sent the reader back to a list of cells, which is why the flag exists.
+assert "confirmed 1:  P1 1" in no_corpus_stdout.getvalue(), no_corpus_stdout.getvalue()
+assert "nothing recorded because --no-corpus" in no_corpus_stdout.getvalue(), \
     no_corpus_stdout.getvalue()
 assert no_corpus_stdout.getvalue().count(rb.REPORT_BEGIN) == 1
-assert (no_corpus_dir / "verdicts.jsonl").exists()
+assert not (no_corpus_dir / "verdicts.jsonl").exists(), "a verdict file was left behind"
+# Handed-in rows go through the same schema filter as a file's: nothing stops a caller passing
+# raw triage notes, and an unfiltered row would be counted under a verdict that does not exist.
+assert rb.bench_summary(no_corpus_dir, json.loads(
+    (no_corpus_dir / "meta.json").read_text()
+), [
+    {"rater": "sol-medium", "idx": 0, "verdict": "confirmed"},
+    {"rater": "sol-medium", "idx": 1, "verdict": "maybe"},
+    {"idx": 1, "verdict": "confirmed"},
+])["confirmed"] == 1
+assert not (no_corpus_dir / "defects.jsonl").exists(), "a defect file was left behind"
 assert [row["rater"] for row in rb.read_jsonl(
     repeat_store / "worker-stats" / "reviews.jsonl"
 )] == ["sol-medium", "sol-medium#2"]
@@ -4103,6 +4141,43 @@ assert [row["rater"] for row in rb.read_jsonl(
 # and reading the flag's wording there would deny the durable-commit rule it actually followed.
 assert "worktree snapshots are not durable corpus commits" in \
     worktree_record_stdout.getvalue(), worktree_record_stdout.getvalue()
+# A run that was properly adjudicated keeps both its verdict file and its corpus rows when a
+# later fix round reports over it: rewriting the file alone would leave the rows built from
+# verdicts nobody can read, and the ordinary record that should replace them keys on the file
+# having changed — it would find it already matching, so the stale rows would stand for good.
+recorded_no_corpus_dir = (
+    repeat_store / "worker-stats" / "benches" / "recorded-no-corpus-fixture"
+)
+recorded_no_corpus_dir.mkdir()
+(recorded_no_corpus_dir / "meta.json").write_text(json.dumps({
+    "run_id": "recorded-no-corpus-fixture", "commit": pin_sha, "repo": str(pin_repo),
+    "raters": ["sol-medium"], "completed_raters": ["sol-medium"],
+    "rater_runs": [{"rater": "sol-medium", "exit_code": 0, "findings": 1}],
+}) + "\n")
+rb.write_jsonl(recorded_no_corpus_dir / "findings-sol-medium.jsonl", [
+    {"file": "a.py", "line": 1, "severity": "P2", "summary": "sealed judges called it true"},
+])
+rb.write_jsonl(recorded_no_corpus_dir / "verdicts.jsonl", [
+    {"rater": "sol-medium", "idx": 0, "verdict": "confirmed"},
+])
+recorded_reviews = rb.read_jsonl(repeat_store / "worker-stats" / "reviews.jsonl")
+rb.write_jsonl(repeat_store / "worker-stats" / "reviews.jsonl", recorded_reviews + [
+    {"run_id": "recorded-no-corpus-fixture", "rater": "sol-medium", "confirmed": 1},
+])
+rb.write_jsonl(work / "recorded-no-corpus-verdicts.jsonl", [
+    {"rater": "sol-medium", "idx": 0, "verdict": "false_positive"},
+])
+with contextlib.redirect_stdout(io.StringIO()):
+    assert rb.cmd_record(argparse.Namespace(
+        run_id="recorded-no-corpus-fixture",
+        verdicts=str(work / "recorded-no-corpus-verdicts.jsonl"), no_corpus=True,
+    )) == 0
+assert rb.read_jsonl(recorded_no_corpus_dir / "verdicts.jsonl") == [
+    {"rater": "sol-medium", "idx": 0, "verdict": "confirmed"}
+], rb.read_jsonl(recorded_no_corpus_dir / "verdicts.jsonl")
+assert [row.get("confirmed") for row in rb.read_jsonl(
+    repeat_store / "worker-stats" / "reviews.jsonl"
+) if row.get("run_id") == "recorded-no-corpus-fixture"] == [1]
 
 verify_timing_store = work / "verify-timing-claudeb"
 os.environ["CLAUDEB_DIR"] = str(verify_timing_store)
