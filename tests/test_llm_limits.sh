@@ -401,7 +401,7 @@ gemini_unusable=$(GEMINIB_PROFILES_DIR="$GEMINI_REMOVED_ONLY_PROFILES" \
   LLM_LIMITS_GEMINI_CACHE="$WORK/gemini-exhausted-main.json" \
   HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" /bin/bash "$SCRIPT" --json)
 jq -e '.vendors.gemini.usable_now == false and
-  ([.vendors.gemini.accounts[] | select(.account == "empty" and .status == "no quota snapshot")] | length) == 1 and
+  ([.vendors.gemini.accounts[] | select(.account == "empty")] | length) == 0 and
   ([.vendors.gemini.accounts[] | select(.account == "gone" and .removed == true)] | length) == 1' \
   <<<"$gemini_unusable" >/dev/null \
   || fail "bucketless or removed Gemini profile made an exhausted vendor usable"

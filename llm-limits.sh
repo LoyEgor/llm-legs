@@ -1258,9 +1258,10 @@ while IFS= read -r gemini_account; do
       '{account:$account,is_current:($account == "main"),enabled:$enabled,auth_needed:true,
         status:"login needed",source:"agy-local-rpc",as_of:$as_of,as_of_epoch:$as_of_epoch}')
   else
-    gemini_account_json=$(jq -cn --arg account "$gemini_account" --argjson enabled "$gemini_enabled" \
-      '{account:$account,is_current:($account == "main"),enabled:$enabled,
-        status:"no quota snapshot",source:"agy-local-rpc"}')
+    # No cache and no auth marker = the account has never been refreshed. Emit
+    # nothing, matching claude/codex: accounts exist for the menu only via their
+    # vendor cache; the add/create announce hook is what first populates it.
+    gemini_account_json=''
   fi
   if [ -e "$gemini_removed_marker" ]; then
     # Never self-clear the marker in the very run that set it: gemini removal is a
@@ -1276,6 +1277,7 @@ while IFS= read -r gemini_account; do
           status:"removed",source:"agy-local-rpc"}')
     fi
   fi
+  [ -n "$gemini_account_json" ] || continue
   gemini_account_lines="${gemini_account_lines}${gemini_account_json}"$'\n'
 done <<<"$gemini_accounts_list"
 
@@ -1299,14 +1301,20 @@ gemini_accounts=$(printf '%s' "$gemini_account_lines" | jq -sc \
   | sort_by(if .account == "main" then 0 else 1 end, .account)
 ')
 
-gemini_refresh_error=$(jq -r '
-  [.[] | select(.removed != true) |
-   {account:.account,error:(.refresh_error.cause // "")} | select(.error != "")] as $errors |
+gemini_refresh_error=$(jq -rn --argjson rows "$gemini_accounts" --argjson records "$gemini_refresh_records" '
+  ($rows | map(.account)) as $listed |
+  # A failed refresh of an account with no emitted row (never cached) must still
+  # surface as a vendor error, like claude/codex vendor-level refresh errors.
+  ($records | group_by(.account) | map(last) |
+   map(select((.error // "") != "" and (.account as $a | $listed | index($a) | not)) |
+       {account:.account,error:.error})) as $orphans |
+  (([$rows[] | select(.removed != true) |
+     {account:.account,error:(.refresh_error.cause // "")} | select(.error != "")]) + $orphans) as $errors |
   if ($errors | length) == 0 then ""
   elif ($errors | length) == 1 and $errors[0].account == "main" then $errors[0].error
   else $errors | map(.account + ": " + .error) | join("; ")
   end
-' <<<"$gemini_accounts")
+')
 
 gemini=$(jq -cn --argjson accounts "$gemini_accounts" --argjson wall "$gemini_wall" '
   [$accounts[] | select(.removed != true)] as $visible |
@@ -1318,7 +1326,9 @@ gemini=$(jq -cn --argjson accounts "$gemini_accounts" --argjson wall "$gemini_wa
   (first($accounts[] | select(.account == "main")) // $accounts[0]) as $main |
   ($usable | sort_by(if .account == "main" then 1 else 0 end,
                      ([.five_hour.used_pct,.weekly.used_pct] | max), .account) | .[0]) as $selected |
-  if ($accounts | length) == 1 then
+  if ($accounts | length) == 0 then
+    {available:false,status:"no quota snapshot",source:"agy-local-rpc",last_wall:$wall}
+  elif ($accounts | length) == 1 then
     $main
     | del(.account,.is_current)
     | .available = (.removed != true and .auth_needed != true and

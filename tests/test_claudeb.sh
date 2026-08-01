@@ -33,6 +33,25 @@ done
 PATH="$FAKE_BIN:$PATH"
 export PATH
 
+ANNOUNCE_LOG="$WORK/announce-log"
+LLM_LIMITS_ANNOUNCE_CMD="$WORK/fake-announce"
+export ANNOUNCE_LOG LLM_LIMITS_ANNOUNCE_CMD
+cat >"$LLM_LIMITS_ANNOUNCE_CMD" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$ANNOUNCE_LOG"
+EOF
+chmod +x "$LLM_LIMITS_ANNOUNCE_CMD"
+# The announce hook is detached; give it a beat before reading the log.
+wait_announce() {
+  local expected="$1" tries=0
+  while [ "$tries" -lt 50 ]; do
+    grep -qxF -- "$expected" "$ANNOUNCE_LOG" 2>/dev/null && return 0
+    tries=$((tries + 1))
+    sleep 0.1
+  done
+  return 1
+}
+
 source "$SCRIPT"
 
 # A bare invocation is now an error and must not launch Claude.
@@ -283,6 +302,13 @@ assert_fails env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" bash "$SCR
 assert test ! -e "$CLAUDEB_DIR/tokens/-h"
 assert_fails env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" bash "$SCRIPT" profile -dash >/dev/null 2>&1
 assert test ! -e "$HOME/.claude-profiles/-dash"
+
+# A successful add announces the new account to the limits collector.
+printf 'sk-ant-oat01-test\n' | HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" \
+  bash "$SCRIPT" add hooked >/dev/null 2>&1 || fail "add hooked failed"
+assert test -s "$CLAUDEB_DIR/tokens/hooked"
+assert wait_announce '--refresh-account claude/hooked'
+rm -f "$CLAUDEB_DIR/tokens/hooked" "$CLAUDEB_DIR/limits/hooked.json"
 
 touch "$CLAUDEB_DIR/tokens/alpha" "$CLAUDEB_DIR/tokens/beta"
 future=$((now + 7200))

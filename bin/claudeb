@@ -16,6 +16,7 @@ resolve_root() {
 claudeb_root=$(resolve_root)
 . "$claudeb_root/share/worker-pool.sh"
 . "$claudeb_root/share/worker-model.sh"
+. "$claudeb_root/share/account-announce.sh"
 
 base_dir="${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}"
 tokens_dir="$base_dir/tokens"
@@ -1509,6 +1510,7 @@ add_account() {
   (umask 077; printf '%s' "$token" > "$tokens_dir/$name")
   chmod 600 "$tokens_dir/$name"
   printf 'claudeb: saved and connected: %s\n' "$name"
+  announce_account_added "$claudeb_root" claude "$name"
 }
 
 write_state_file() {

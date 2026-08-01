@@ -23,6 +23,7 @@ pool_dir="$profiles_dir/.geminib"
 . "$geminib_root/share/gemini-accounts.sh"
 . "$geminib_root/share/worker-pool.sh"
 . "$geminib_root/share/worker-model.sh"
+. "$geminib_root/share/account-announce.sh"
 
 is_disabled() { worker_pool_is_disabled "$pool_dir" "$1"; }
 set_disabled() { worker_pool_set_disabled "$pool_dir" "$1" "$2"; }
@@ -170,6 +171,7 @@ add_account() {
   fi
   mkdir -p "$directory"
   ensure_profile "$directory"
+  announce_account_added "$geminib_root" gemini "$name"
   printf 'HOME=%q agy\n' "$directory"
   status=$(login_status "$name")
   printf '%s: %s\n' "$name" "${status#*$'\t'}"
@@ -261,7 +263,7 @@ show_status() {
 }
 
 run_account() {
-  local allow_create="$1" name="${2:-}" directory
+  local allow_create="$1" name="${2:-}" directory created=false
   if [ "$allow_create" = true ] && { [ "$name" = -h ] || [ "$name" = --help ]; }; then
     show_help
     return
@@ -293,9 +295,11 @@ run_account() {
       exit 2
     fi
     mkdir -p "$directory"
+    created=true
     printf "geminib: new profile '%s' created at %s — Antigravity will ask you to log in once.\n" "$name" "$directory" >&2
   fi
   ensure_profile "$directory"
+  [ "$created" != true ] || announce_account_added "$geminib_root" gemini "$name"
   exec env HOME="$directory" GEMINIB_BASE_HOME="$base_home" "$agy_bin" "$@"
 }
 

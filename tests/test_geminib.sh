@@ -59,6 +59,25 @@ chmod +x "$FAKE_BIN/security"
 AGY_BIN="$FAKE_BIN/agy"
 export AGY_BIN
 
+ANNOUNCE_LOG="$WORK/announce-log"
+LLM_LIMITS_ANNOUNCE_CMD="$WORK/fake-announce"
+export ANNOUNCE_LOG LLM_LIMITS_ANNOUNCE_CMD
+cat >"$LLM_LIMITS_ANNOUNCE_CMD" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$ANNOUNCE_LOG"
+EOF
+chmod +x "$LLM_LIMITS_ANNOUNCE_CMD"
+# The announce hook is detached; give it a beat before reading the log.
+wait_announce() {
+  local expected="$1" tries=0
+  while [ "$tries" -lt 50 ]; do
+    grep -qxF -- "$expected" "$ANNOUNCE_LOG" 2>/dev/null && return 0
+    tries=$((tries + 1))
+    sleep 0.1
+  done
+  return 1
+}
+
 cat >"$WORK/fake-quota" <<'EOF'
 #!/usr/bin/env bash
 account=main
@@ -91,6 +110,7 @@ printf 'ok\n' >"$GEMINI_AUTH_DIR/main"
 quota main 0.7 0.8
 
 add_output=$(bash "$SCRIPT" add alpha) || fail "add alpha failed"
+assert wait_announce '--refresh-account gemini/alpha'
 assert grep -qx "HOME=$HOME/.gemini-profiles/alpha agy" <<<"$add_output"
 assert grep -qx 'alpha: Not logged in' <<<"$add_output"
 assert test -d "$HOME/.gemini-profiles/alpha/.gemini/antigravity-cli"
@@ -268,10 +288,13 @@ fresh_output=$(bash "$SCRIPT" profile fresh 2>&1) || fail "profile fresh failed"
 assert test -d "$HOME/.gemini-profiles/fresh"
 assert grep -q "new profile 'fresh' created" <<<"$fresh_output"
 assert grep -qx "CALL home=$HOME/.gemini-profiles/fresh argc=0" "$AGY_CALLS"
+assert wait_announce '--refresh-account gemini/fresh'
 
 : >"$AGY_CALLS"
 reopen_output=$(bash "$SCRIPT" p alpha 2>&1) || fail "reopen alpha failed"
 if grep -q "new profile" <<<"$reopen_output"; then fail "reopen reprinted the created note"; fi
+sleep 0.3
+assert test "$(grep -cxF -- '--refresh-account gemini/alpha' "$ANNOUNCE_LOG")" = 1
 
 for reserved in profile p run add remove list status pick help login; do
   assert_fails bash "$SCRIPT" profile "$reserved" </dev/null >/dev/null 2>&1

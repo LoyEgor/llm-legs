@@ -75,8 +75,28 @@ chmod +x "$FAKE_BIN/codex"
 PATH="$FAKE_BIN:$PATH"
 export PATH
 
+ANNOUNCE_LOG="$WORK/announce-log"
+LLM_LIMITS_ANNOUNCE_CMD="$WORK/fake-announce"
+export ANNOUNCE_LOG LLM_LIMITS_ANNOUNCE_CMD
+cat >"$LLM_LIMITS_ANNOUNCE_CMD" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$ANNOUNCE_LOG"
+EOF
+chmod +x "$LLM_LIMITS_ANNOUNCE_CMD"
+# The announce hook is detached; give it a beat before reading the log.
+wait_announce() {
+  local expected="$1" tries=0
+  while [ "$tries" -lt 50 ]; do
+    grep -qxF -- "$expected" "$ANNOUNCE_LOG" 2>/dev/null && return 0
+    tries=$((tries + 1))
+    sleep 0.1
+  done
+  return 1
+}
+
 printf 'ok\n' >"$HOME/auth-main"
 add_output=$(bash "$SCRIPT" add alpha) || fail "add alpha failed"
+assert wait_announce '--refresh-account codex/alpha'
 assert grep -qx 'CODEX_HOME=~/.codex-profiles/alpha codex login' <<<"$add_output"
 if grep -q -- --device-auth <<<"$add_output"; then fail "add still advertises the device-code flow"; fi
 assert grep -qx 'alpha: Not logged in' <<<"$add_output"
@@ -259,6 +279,7 @@ assert test "$(sed -n '4p' "$CODEX_CALLS")" = 'ARG=two\ words'
 fresh_output=$(bash "$SCRIPT" profile fresh 2>&1) || fail "profile fresh failed"
 assert test -d "$HOME/.codex-profiles/fresh"
 assert grep -q "new profile 'fresh' created" <<<"$fresh_output"
+assert wait_announce '--refresh-account codex/fresh'
 assert grep -qx "CALL account=fresh home=$HOME/.codex-profiles/fresh argc=0" "$CODEX_CALLS"
 for item in config.toml AGENTS.md skills plugins; do
   assert test -L "$HOME/.codex-profiles/fresh/$item"
@@ -285,6 +306,8 @@ assert grep -qx 'ARG=--device-auth' "$CODEX_CALLS"
 : >"$CODEX_CALLS"
 reopen_output=$(bash "$SCRIPT" p alpha 2>&1) || fail "reopen alpha failed"
 if grep -q "new profile" <<<"$reopen_output"; then fail "reopen reprinted the created note"; fi
+sleep 0.3
+assert test "$(grep -cxF -- '--refresh-account codex/alpha' "$ANNOUNCE_LOG")" = 1
 
 # Reserved words are rejected by BOTH the profile path and add, with parallel wording; no dir leaks.
 for reserved in profile p run add remove list status pick help login; do
