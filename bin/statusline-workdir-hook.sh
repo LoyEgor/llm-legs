@@ -40,6 +40,7 @@ IFS=$'\x1f' read -r hook_event tool_name session_id base_dir agent_flag candidat
 
 cache_dir="$HOME/.cache/claude-statusline"
 state_file="$cache_dir/workdir-$session_id"
+away_file="$state_file.away"
 
 # Before the agent filter on purpose: SessionStart's agent_type means a
 # top-level `claude --agent` session, not a subagent.
@@ -67,13 +68,13 @@ if [ "$hook_event" = SessionStart ]; then
             prev_top=$(git -C "$prev_home" rev-parse --show-toplevel 2>/dev/null) &&
               prev_top=$(cd "$prev_top" 2>/dev/null && pwd -P) &&
               [ "$prev_top" = "$(cd "$prev_home" 2>/dev/null && pwd -P)" ] && {
-                rm -f "$state_file.gone"
+                rm -f "$state_file.gone" "$away_file"
                 exit 0
               }
             ;;
         esac
       fi
-      rm -f "$state_file" "$state_file.gone"
+      rm -f "$state_file" "$state_file.gone" "$away_file"
       seed=$(git -C "${base_dir:-.}" rev-parse --show-toplevel 2>/dev/null) &&
         seed=$(cd "$seed" 2>/dev/null && pwd -P) && [ -n "$seed" ] && {
           umask 077
@@ -94,7 +95,7 @@ fi
 
 case "$tool_name" in
   ExitWorktree)
-    rm -f "$state_file" "$state_file.gone"
+    rm -f "$state_file" "$state_file.gone" "$away_file"
     exit 0
     ;;
   EnterWorktree)
@@ -161,16 +162,55 @@ toplevel=$(git -C "$resolved" rev-parse --show-toplevel 2>/dev/null) || exit 0
 [ -d "$toplevel" ] || exit 0
 toplevel=$(cd "$toplevel" 2>/dev/null && pwd -P) || exit 0
 
-# A worktree home is absolutely sticky: it is a deliberate, harness-created
-# context, and a cd/edit anywhere else — sibling worktree, main checkout, or a
-# different repository entirely (test runs, config surgery) — is one-off work
-# that used to retarget the statusline (and its ports segment) to another
-# workspace. Only EnterWorktree moves such a home; ExitWorktree clears it and
-# SessionStart re-seeds it above. Non-worktree homes still follow every cd.
+# A worktree home is sticky: it is a deliberate context, and a cd/edit anywhere
+# else — sibling worktree, main checkout, or a different repository entirely
+# (test runs, config surgery) — is one-off work that used to retarget the
+# statusline (and its ports segment) to another workspace. EnterWorktree moves
+# such a home outright; ExitWorktree clears it and SessionStart re-seeds it
+# above. Non-worktree homes still follow every cd.
+#
+# Sticky is not permanent, though: a worktree made by hand (`git worktree add`,
+# not the harness tool) will never see an ExitWorktree, so a session that
+# finishes there and moves on used to be pinned for its whole life — naming a
+# branch and a clean tree that were not the ones being edited. WRITES, and only
+# writes, break the pin: three edits in a row into the same other toplevel are
+# sustained work, not an excursion. cds never break it, however
+# many — reading and running tests elsewhere is exactly the noise stickiness
+# exists to absorb.
 if [ "$tool_name" != EnterWorktree ] && [ -f "$state_file" ]; then
   IFS= read -r prev_home < "$state_file" || :
   case "$prev_home" in
-    */.claude/worktrees/*) [ "$toplevel" = "$prev_home" ] || exit 0 ;;
+    */.claude/worktrees/*)
+      if [ "$toplevel" != "$prev_home" ]; then
+        case "$tool_name" in
+          Edit|Write|NotebookEdit) ;;
+          *) exit 0 ;;
+        esac
+        # The run is APPENDED, one line per write, and read back from the tail —
+        # never incremented in place. A turn that edits several files issues them
+        # as one parallel batch, which is precisely the burst this rule is meant
+        # to catch, and those hooks run concurrently: a read-modify-write counter
+        # had all three of them read the same value and write 1, so a batch of
+        # three never reached the threshold at all and the pin held forever.
+        # Single short appends do not interleave.
+        mkdir -p "$cache_dir" || exit 0
+        umask 077
+        printf '%s\n' "$toplevel" >> "$away_file" 2>/dev/null || exit 0
+        run=$(tail -n 3 "$away_file" 2>/dev/null | grep -cxF "$toplevel")
+        if [ "${run:-0}" -lt 3 ]; then
+          # Writes that keep alternating between two foreign repos never reach the
+          # threshold, so without this the file grows for the life of the session.
+          # Rare by construction, which is what keeps the rewrite off the hot path
+          # where it would reintroduce the race it replaced.
+          if [ "$(wc -l < "$away_file" 2>/dev/null || printf 0)" -gt 64 ]; then
+            tail -n 3 "$away_file" > "$away_file.tmp.$$" 2>/dev/null &&
+              mv -f "$away_file.tmp.$$" "$away_file" 2>/dev/null ||
+              rm -f "$away_file.tmp.$$" 2>/dev/null
+          fi
+          exit 0
+        fi
+      fi
+      ;;
   esac
 fi
 
@@ -179,7 +219,7 @@ umask 077
 tmp_file="$state_file.tmp.$$"
 trap 'rm -f "$tmp_file" 2>/dev/null; exit 0' EXIT
 printf '%s\n' "$toplevel" > "$tmp_file" && mv -f "$tmp_file" "$state_file" &&
-  rm -f "$state_file.gone"
+  rm -f "$state_file.gone" "$away_file"
 
 marker="$cache_dir/.workdir-prune"
 now=$(date +%s 2>/dev/null)

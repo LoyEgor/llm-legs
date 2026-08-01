@@ -221,6 +221,94 @@ payload=$(workdir_payload Bash session-sticky-repo "$REPO_E" "cd '$REPO_D'")
 run_workdir_hook "$payload"
 assert_eq "$TOP_E" "$(cat "$STATE_DIR/workdir-session-sticky-repo")"
 
+# Sticky is not permanent. A worktree made by hand never sees an ExitWorktree,
+# so a session that finishes there and works on in the main checkout used to be
+# pinned for life, naming a branch and a clean tree that were not the edited
+# ones. Three edits in a row into the same other toplevel move the home; the
+# first two only accumulate.
+S="$STATE_DIR/workdir-session-away-move"
+printf '%s\n' "$TOP_E" > "$S"
+run_workdir_hook "$(workdir_payload Edit session-away-move "$REPO_E" "$REPO_A/tracked.txt")"
+assert_eq "$TOP_E" "$(cat "$S")"
+run_workdir_hook "$(workdir_payload Write session-away-move "$REPO_E" "$REPO_A/new.txt")"
+assert_eq "$TOP_E" "$(cat "$S")"
+assert_eq "$TOP_A
+$TOP_A" "$(cat "$S.away")"
+run_workdir_hook "$(workdir_payload Edit session-away-move "$REPO_E" "$REPO_A/tracked.txt")"
+assert_eq "$TOP_A" "$(cat "$S")"
+assert test ! -e "$S.away"
+
+# The run is appended and read from the tail, never incremented in place: a turn
+# that edits several files issues them as ONE parallel batch, and a
+# read-modify-write counter had all of those hooks read the same value and write
+# 1, so the batch this rule exists to catch never reached the threshold at all.
+S="$STATE_DIR/workdir-session-away-parallel"
+printf '%s\n' "$TOP_E" > "$S"
+for n in 1 2 3; do
+  printf '%s' "$(workdir_payload Edit session-away-parallel "$REPO_E" "$REPO_A/f$n.txt")" | "$WORKDIR_HOOK" &
+done
+wait
+assert_eq "$TOP_A" "$(cat "$S")"
+
+# Alternating writes never reach the threshold, so the run file would otherwise
+# grow for the life of the session.
+S="$STATE_DIR/workdir-session-away-trim"
+printf '%s\n' "$TOP_E" > "$S"
+for _ in $(seq 1 70); do
+  run_workdir_hook "$(workdir_payload Edit session-away-trim "$REPO_E" "$REPO_A/tracked.txt")"
+  run_workdir_hook "$(workdir_payload Edit session-away-trim "$REPO_E" "$REPO_D/other.txt")"
+done
+assert_eq "$TOP_E" "$(cat "$S")"
+assert test "$(wc -l < "$S.away")" -le 64
+
+# The run must be consecutive AND in one place: edits alternating between two
+# foreign repos are excursions, not a move.
+S="$STATE_DIR/workdir-session-away-split"
+printf '%s\n' "$TOP_E" > "$S"
+run_workdir_hook "$(workdir_payload Edit session-away-split "$REPO_E" "$REPO_A/tracked.txt")"
+run_workdir_hook "$(workdir_payload Edit session-away-split "$REPO_E" "$REPO_D/other.txt")"
+run_workdir_hook "$(workdir_payload Edit session-away-split "$REPO_E" "$REPO_A/tracked.txt")"
+assert_eq "$TOP_E" "$(cat "$S")"
+
+# Any work back home clears the run — an edit in the worktree, or a plain cd
+# into it, which writes the home afresh.
+S="$STATE_DIR/workdir-session-away-reset"
+printf '%s\n' "$TOP_E" > "$S"
+run_workdir_hook "$(workdir_payload Edit session-away-reset "$REPO_E" "$REPO_A/tracked.txt")"
+run_workdir_hook "$(workdir_payload Edit session-away-reset "$REPO_E" "$REPO_A/tracked.txt")"
+run_workdir_hook "$(workdir_payload Bash session-away-reset "$REPO_A" "cd '$REPO_E'")"
+assert test ! -e "$S.away"
+run_workdir_hook "$(workdir_payload Edit session-away-reset "$REPO_E" "$REPO_A/tracked.txt")"
+run_workdir_hook "$(workdir_payload Edit session-away-reset "$REPO_E" "$REPO_A/tracked.txt")"
+assert_eq "$TOP_E" "$(cat "$S")"
+
+# Reads never break the pin, however many: cd-ing out to run tests or grep
+# another repo is exactly the noise stickiness exists to absorb.
+S="$STATE_DIR/workdir-session-away-cds"
+printf '%s\n' "$TOP_E" > "$S"
+for _ in 1 2 3 4 5; do
+  run_workdir_hook "$(workdir_payload Bash session-away-cds "$REPO_E" "cd '$REPO_A' && make test")"
+done
+assert_eq "$TOP_E" "$(cat "$S")"
+assert test ! -e "$S.away"
+
+# A half-finished run is session state, not history: it dies with the home.
+S="$STATE_DIR/workdir-session-away-exit"
+printf '%s\n' "$TOP_E" > "$S"
+run_workdir_hook "$(workdir_payload Edit session-away-exit "$REPO_E" "$REPO_A/tracked.txt")"
+assert test -e "$S.away"
+run_workdir_hook "$(jq -cn --arg session session-away-exit --arg cwd "$REPO_E" \
+  '{hook_event_name:"PostToolUse",tool_name:"ExitWorktree",session_id:$session,cwd:$cwd,tool_input:{},tool_response:""}')"
+assert test ! -e "$S.away"
+
+S="$STATE_DIR/workdir-session-away-clear"
+printf '%s\n' "$TOP_E" > "$S"
+run_workdir_hook "$(workdir_payload Edit session-away-clear "$REPO_E" "$REPO_A/tracked.txt")"
+assert test -e "$S.away"
+run_workdir_hook "$(jq -cn --arg session session-away-clear --arg cwd "$REPO_E" \
+  '{hook_event_name:"SessionStart",session_id:$session,cwd:$cwd,source:"clear"}')"
+assert test ! -e "$S.away"
+
 # EnterWorktree is the deliberate move and bypasses stickiness.
 printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-session-sticky-enter"
 payload=$(jq -cn --arg session session-sticky-enter --arg cwd "$REPO_E" --arg resp "Created worktree at $REPO_F" \
