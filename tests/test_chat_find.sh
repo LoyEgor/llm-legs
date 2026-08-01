@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+# Hermetic tests for bin/chat-find against a fixture corpus. The point of the tool
+# is that it answers with the LAST REAL MESSAGE and a verbatim quote, so those are
+# what the assertions pin — plus every way a match can be a lie: tool output that
+# merely mentions the word, a subagent that said it, machinery text, and a file
+# whose mtime says today while nothing was said for weeks.
+#
+# TZ is fixed: the fixture timestamps are UTC and the tool prints local time, so a
+# floating zone would move the dates the assertions match. Dates sit far in the
+# past so --days comparisons do not depend on when the suite runs.
+set -u
+export TZ=UTC
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SCRIPT="$ROOT/bin/chat-find"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+asserts=0
+fail() { echo "FAIL: $*" >&2; exit 1; }
+assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
+
+CORPUS="$WORK/projects/-tmp-proj"
+mkdir -p "$CORPUS"
+
+# emit <file> <python-dict-literal> [compact|spaced] — appends one transcript line.
+# Claude Code writes compact JSON; "spaced" proves the byte prefilter does not
+# depend on that, since a transcript is only ever as regular as its writer.
+emit() {
+  local file=$1 expr=$2 style=${3:-compact}
+  python3 -c "
+import json, sys
+sep = (',', ':') if sys.argv[2] == 'compact' else None
+print(json.dumps(eval(sys.argv[1]), ensure_ascii=False, separators=sep))
+" "$expr" "$style" >> "$file"
+}
+
+said() {  # said <file> <ts> <role> <text> [style]
+  local file=$1 ts=$2 role=$3 text=$4 style=${5:-compact}
+  if [ "$role" = user ]; then
+    emit "$file" "{'type':'user','cwd':'/tmp/proj','timestamp':'$ts','message':{'role':'user','content':'''$text'''}}" "$style"
+  else
+    emit "$file" "{'type':'assistant','cwd':'/tmp/proj','timestamp':'$ts','message':{'role':'assistant','content':[{'type':'text','text':'''$text'''}]}}" "$style"
+  fi
+}
+
+# The chat he is looking for. It went quiet on Jan 20 and ends with a huge tool
+# result — the shape that used to hide the last spoken line from the tail scan.
+REAL="$CORPUS/11111111-1111-1111-1111-111111111111.jsonl"
+said "$REAL" 2026-01-20T09:00:00.000Z user 'почему оверлей моргает при подключении'
+said "$REAL" 2026-01-20T09:01:00.000Z assistant 'смотрю логи оверлея'
+said "$REAL" 2026-01-20T09:02:00.000Z user 'ок, оставим так'
+python3 -c "
+import json
+print(json.dumps({'type':'user','cwd':'/tmp/proj','timestamp':'2026-01-20T09:03:00.000Z',
+                  'message':{'role':'user','content':[{'type':'tool_result','content':'x' * 900000}]}},
+                 separators=(',', ':')))" >> "$REAL"
+# ...and it was opened again today without a word being said: the false visit that
+# makes file mtime useless as an indicator.
+touch "$REAL"
+
+# A prompt with a screenshot attached: the text arrives as blocks, and it is speech.
+BLOCKS="$CORPUS/44444444-4444-4444-4444-444444444444.jsonl"
+emit "$BLOCKS" "{'type':'user','cwd':'/tmp/proj','timestamp':'2026-01-18T08:00:00.000Z','message':{'role':'user','content':[{'type':'image','source':{'type':'base64','data':'AAAA'}},{'type':'text','text':'вот скриншот, оверлей съезжает'}]}}"
+
+# Only tool output ever saw the word — a file the chat happened to read.
+TOOL="$CORPUS/22222222-2222-2222-2222-222222222222.jsonl"
+emit "$TOOL" "{'type':'user','cwd':'/tmp/proj','timestamp':'2026-01-25T10:00:00.000Z','message':{'role':'user','content':[{'type':'tool_result','content':'local x = require(\"оверлей\")'}]}}"
+said "$TOOL" 2026-01-25T10:01:00.000Z user 'спасибо'
+
+# Only a subagent said it.
+SIDE="$CORPUS/33333333-3333-3333-3333-333333333333.jsonl"
+emit "$SIDE" "{'type':'user','isSidechain':True,'cwd':'/tmp/proj','timestamp':'2026-01-26T10:00:00.000Z','message':{'role':'user','content':'проверь оверлей и вернись с отчётом'}}"
+said "$SIDE" 2026-01-26T10:01:00.000Z user 'готово?'
+
+# Machinery, not speech: a slash command echoed into the transcript. Written with
+# spaces after the colons, which also exercises the encoder-agnostic prefilter.
+MACH="$CORPUS/55555555-5555-5555-5555-555555555555.jsonl"
+said "$MACH" 2026-01-27T10:00:00.000Z user '<command-name>/оверлей</command-name>' spaced
+said "$MACH" 2026-01-27T10:01:00.000Z user 'дальше' spaced
+
+run() { OUT=$("$SCRIPT" --account acct --root "$WORK/projects" "$@" 2>&1); RC=$?; }
+
+# --- the spoken match wins and carries its real date ------------------------
+run оверлей
+assert test "$RC" -eq 0
+assert grep -q 'LAST 2026-01-20 09:02' <<<"$OUT"
+assert grep -q "resume:      cd '/tmp/proj' && claudeb profile acct --resume 11111111-1111-1111-1111-111111111111" <<<"$OUT"
+# his own words, quoted back, not a paraphrase
+assert grep -q 'почему оверлей моргает' <<<"$OUT"
+assert grep -q 'opened with: почему оверлей моргает' <<<"$OUT"
+
+# --- a false visit must not pass for a fresh conversation -------------------
+assert test -z "$(grep -o "LAST $(date +%Y-%m-%d)" <<<"$OUT")"
+
+# --- a prompt whose text came in blocks is findable -------------------------
+assert grep -q '4444-4444' <<<"$OUT"
+assert grep -q 'вот скриншот, оверлей съезжает' <<<"$OUT"
+
+# --- tool output, subagents and machinery are not conversation --------------
+assert test -z "$(grep -o '2222-2222' <<<"$OUT")"
+assert test -z "$(grep -o '3333-3333' <<<"$OUT")"
+assert test -z "$(grep -o '5555-5555' <<<"$OUT")"
+
+# --all widens to what tools printed
+run --all оверлей
+assert grep -q '2222-2222' <<<"$OUT"
+
+# --- nothing found says so, and says how to widen ---------------------------
+run абракадабра
+assert test "$RC" -eq 0
+assert grep -q 'no chat matched' <<<"$OUT"
+assert grep -q -- '--all' <<<"$OUT"
+
+# --- --days cuts by the last real message, not by mtime ---------------------
+run --days 1 оверлей
+assert grep -q 'no chat matched' <<<"$OUT"
+# 0 is a real bound, not a missing one
+run --days 0 оверлей
+assert grep -q 'no chat matched' <<<"$OUT"
+
+# --- no usable profile falls back to a runnable command --------------------
+# "main" is not a claudeb profile, so `claudeb profile main` would be refused.
+OUT=$(env -u CLAUDE_LIMITS_ACCOUNT HOME="$(mktemp -d)" "$SCRIPT" --root "$WORK/projects" оверлей 2>&1)
+assert grep -q 'claude --resume 11111111' <<<"$OUT"
+assert test -z "$(grep -o 'profile main' <<<"$OUT")"
+
+echo "PASS: chat-find ($asserts assertions)"

@@ -1,0 +1,364 @@
+#!/usr/bin/env python3
+"""Find past Claude Code chats by what was SAID in them.
+
+Reports the last real message of each chat, never file mtime: resuming a chat
+rewrites its transcript, so the freshest-looking file is often one that was
+opened, glanced at and closed. Prints the matched line verbatim — a quote of his
+own words identifies a chat, a summary of it does not.
+"""
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+
+ROOT = os.environ.get("CHAT_FIND_ROOT") or os.path.expanduser("~/.claude/projects")
+STATE = os.path.expanduser("~/.claude-profiles/.claudeb/.claudeb-state")
+HEAD_LINES = 400
+SNIPPET_PAD = 70
+# Speech can be a long paste, so the cap is generous; what must never be parsed
+# is tool output, and that is ruled out on the raw bytes instead of by size.
+MAX_LINE = 4 * 1024 * 1024
+MAX_HITS_PER_FILE = 200
+# A transcript can end with megabytes of tool output after the last word spoken,
+# so the backward scan grows until it finds speech instead of trusting one window.
+TAIL_WINDOWS = (512 * 1024, 4 * 1024 * 1024, 32 * 1024 * 1024)
+# String-content user entries that are machinery, not something he typed.
+MACHINERY = ("<command-name>", "<local-command", "<system-reminder>", "Caveat:")
+# Openers that describe the session rather than open a conversation. Compact
+# summaries stay searchable (they are a faithful digest of a chat that has one),
+# they just never stand in for what he said.
+NOT_A_TITLE = MACHINERY + ("You are ", "This session is being continued")
+PROFILE_OK = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def die(message):
+    print("chat-find: " + message, file=sys.stderr)
+    raise SystemExit(1)
+
+
+def account():
+    """The claudeb profile to resume under, or None for the plain launcher.
+
+    "main" is not a claudeb profile and a name with shell metacharacters has no
+    business in a line he is meant to paste — both fall back to bare `claude`.
+    """
+    name = os.environ.get("CLAUDE_LIMITS_ACCOUNT")
+    if not name:
+        try:
+            with open(STATE, encoding="utf-8") as handle:
+                name = handle.readline().strip()
+        except OSError:
+            name = ""
+    if name and name != "main" and PROFILE_OK.match(name):
+        return name
+    return None
+
+
+def visible_text(entry, include_all):
+    """The conversation text of one transcript line, or None if it is not speech.
+
+    Tool results and file reads carry the words of whatever was being worked on,
+    not of the conversation, and matching them is how a search for "sidecar"
+    turns into every chat that ever opened a file mentioning it.
+    """
+    # A sidechain is a subagent talking to itself inside a session — never a
+    # conversation he could remember having.
+    if entry.get("isSidechain"):
+        return None
+    kind = entry.get("type")
+    content = (entry.get("message") or {}).get("content")
+    if kind == "user" and isinstance(content, str):
+        if entry.get("isMeta"):
+            return None
+        if not include_all and content.lstrip().startswith(MACHINERY):
+            return None
+        return content
+    if kind in ("user", "assistant") and isinstance(content, list):
+        # A prompt with a screenshot attached arrives as blocks, and so does every
+        # assistant reply; tool_result blocks carry no "text" and drop out here.
+        parts = [b.get("text", "") for b in content
+                 if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str)]
+        if parts:
+            return "\n".join(parts)
+    if include_all and isinstance(content, str):
+        return content
+    if include_all and isinstance(content, list):
+        return "\n".join(
+            b.get("text") or b.get("content") or ""
+            for b in content
+            if isinstance(b, dict) and isinstance(b.get("text") or b.get("content"), str)
+        )
+    return None
+
+
+def stamp(entry):
+    value = entry.get("timestamp")
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone()
+    except ValueError:
+        return None
+
+
+def maybe_speech(raw, include_all):
+    """Cheap byte test: is this line worth JSON-parsing at all?
+
+    Tool results are the multi-megabyte majority of every transcript, and
+    parsing them is the difference between half a second and a minute. The
+    role markers are matched without assuming a space after the colon, so a
+    transcript written by any JSON encoder still scans.
+    """
+    if len(raw) > MAX_LINE:
+        return False
+    if include_all:
+        return True
+    if b'"tool_result"' in raw:
+        return False
+    return b'"user"' in raw or b'"assistant"' in raw
+
+
+def split_hit(raw):
+    """Split a matcher line into (path, json payload).
+
+    Anchored on ":{" rather than the first colon so a path containing one still
+    parses; transcript slugs cannot, but --root is free to point anywhere.
+    """
+    at = raw.find(b":{")
+    if at < 0:
+        return None, None
+    return raw[:at].decode("utf-8", "replace"), raw[at + 1:]
+
+
+def searcher():
+    """(argv, executable) for the fastest available matcher.
+
+    On transcripts — multi-megabyte JSON lines — ripgrep beats BSD grep by two
+    orders of magnitude (0.3s vs 40s over the corpus). There is usually no rg on
+    PATH here, but Claude Code carries one inside its own binary and serves it
+    when argv[0] is "rg", which is exactly what `executable=` lets us do.
+    """
+    real = shutil.which("rg")
+    if real:
+        return ["rg", "-g", "*.jsonl", "--no-heading", "--no-line-number", "--no-messages"], real
+    for candidate in (os.environ.get("CLAUDE_CODE_EXECPATH"),
+                      os.path.expanduser("~/.local/bin/claude"),
+                      shutil.which("claude")):
+        if candidate and os.path.exists(candidate):
+            return ["rg", "-g", "*.jsonl", "--no-heading", "--no-line-number", "--no-messages"], candidate
+    grep = shutil.which("grep")
+    return ["grep", "-r", "--include=*.jsonl"], grep
+
+
+def scan_matches(terms, include_all, root):
+    """One streaming pass over the corpus, reduced to per-file match state.
+
+    The output is consumed line by line: a common term can match gigabytes, and
+    buffering all of it before filtering would trade a fast search for an OOM.
+    """
+    argv, binary = searcher()
+    if not binary:
+        die("neither rg nor grep is available to search with")
+    command = argv + ["-a", "-i", "-H", "-F"]
+    for term in terms:
+        command += ["-e", term]
+    command.append(root)
+
+    lowered = [t.lower() for t in terms]
+    found = {}
+    proc = subprocess.Popen(command, executable=binary, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL)
+    for raw in proc.stdout:
+        raw = raw.rstrip(b"\n")
+        if not maybe_speech(raw, include_all):
+            continue
+        path, payload = split_hit(raw)
+        if payload is None:
+            continue
+        state = found.get(path)
+        if state is not None and state["hits"] >= MAX_HITS_PER_FILE:
+            state["capped"] = True
+            continue
+        try:
+            entry = json.loads(payload.decode("utf-8", "replace"))
+        except ValueError:
+            continue
+        text = visible_text(entry, include_all)
+        if not text:
+            continue
+        low = text.lower()
+        hit = [t for t in lowered if t in low]
+        if not hit:
+            continue
+        if state is None:
+            state = found.setdefault(path, {"hits": 0, "terms": set(), "snippet": None,
+                                            "spoke": None, "capped": False, "rank": -1})
+        state["hits"] += 1
+        state["terms"].update(hit)
+        when = stamp(entry)
+        if when and (state["spoke"] is None or when > state["spoke"]):
+            state["spoke"] = when
+        # His own wording is what he recognises: a line he typed outranks an
+        # assistant reply, which outranks a compact summary — a summary quotes the
+        # conversation back in the model's words, which is the paraphrase this
+        # tool exists to replace.
+        rank = 2 if entry.get("type") == "user" else 1
+        if text.lstrip().startswith(NOT_A_TITLE):
+            rank = 0
+        if state["snippet"] is None or rank >= state["rank"]:
+            state["snippet"] = snippet(text, hit[0])
+            state["rank"] = rank
+    proc.stdout.close()
+    if proc.wait() not in (0, 1):
+        die("search failed (%s exited %d)" % (argv[0], proc.returncode))
+    return found
+
+
+def snippet(text, term):
+    flat = " ".join(text.split())
+    at = flat.lower().find(term)
+    if at < 0:
+        return flat[: SNIPPET_PAD * 2] + ("…" if len(flat) > SNIPPET_PAD * 2 else "")
+    start = max(0, at - SNIPPET_PAD)
+    end = min(len(flat), at + len(term) + SNIPPET_PAD)
+    return ("…" if start else "") + flat[start:end] + ("…" if end < len(flat) else "")
+
+
+def head_facts(path):
+    cwd, title = None, None
+    try:
+        with open(path, "rb") as handle:
+            for _ in range(HEAD_LINES):
+                raw = handle.readline()
+                if not raw:
+                    break
+                if len(raw) > MAX_LINE:
+                    continue
+                try:
+                    entry = json.loads(raw.decode("utf-8", "replace"))
+                except ValueError:
+                    continue
+                cwd = cwd or entry.get("cwd")
+                if title is None and entry.get("type") == "user":
+                    text = visible_text(entry, False)
+                    if text and not text.lstrip().startswith(NOT_A_TITLE):
+                        title = " ".join(text.split())[:110]
+                if cwd and title:
+                    break
+    except OSError:
+        pass
+    return cwd, title
+
+
+def tail_speech(path, size, window):
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(max(0, size - window))
+            chunk = handle.read(window)
+    except OSError:
+        return None
+    lines = chunk.split(b"\n")
+    if window < size:
+        lines = lines[1:]
+    for raw in reversed(lines):
+        if not raw.startswith(b"{") or not maybe_speech(raw, False):
+            continue
+        try:
+            entry = json.loads(raw.decode("utf-8", "replace"))
+        except ValueError:
+            continue
+        if visible_text(entry, False):
+            when = stamp(entry)
+            if when:
+                return when
+    return None
+
+
+def last_spoken(path):
+    """Timestamp of the last real message, read backward from the end."""
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return None
+    for window in TAIL_WINDOWS:
+        when = tail_speech(path, size, window)
+        if when or window >= size:
+            return when
+    return None
+
+
+def ago(when, now):
+    minutes = (now - when).total_seconds() / 60
+    if minutes < 90:
+        return "%dm ago" % max(0, int(minutes))
+    if minutes < 60 * 36:
+        return "%.0fh ago" % (minutes / 60)
+    return "%.0fd ago" % (minutes / 1440)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="chat-find",
+        description="Find past chats by what was said in them; every hit carries the date of its last real message.",
+    )
+    parser.add_argument("terms", nargs="+", help="words he would have typed; a chat matching more of them ranks higher")
+    parser.add_argument("--days", type=float, help="only chats whose last message is within N days")
+    parser.add_argument("--limit", type=int, default=8, help="candidates to print (default 8)")
+    parser.add_argument("--all", action="store_true", help="also match tool output and file contents")
+    parser.add_argument("--account", default=None, help="claudeb profile for the resume line")
+    parser.add_argument("--root", default=ROOT, help=argparse.SUPPRESS)
+    args = parser.parse_args()
+
+    if not os.path.isdir(args.root):
+        die("no transcript corpus at " + args.root)
+
+    started = time.time()
+    found = scan_matches(args.terms, args.all, args.root)
+    now = datetime.now(timezone.utc).astimezone()
+
+    rows = []
+    for path, state in found.items():
+        when = last_spoken(path) or state["spoke"]
+        if when is None:
+            continue
+        if args.days is not None and (now - when).total_seconds() > args.days * 86400:
+            continue
+        rows.append((when, path, state))
+    # Relevance first, recency to break ties — but the date is printed for every
+    # candidate either way, because that is what he recognises a chat by.
+    rows.sort(key=lambda r: (len(r[2]["terms"]), r[2]["hits"], r[0]), reverse=True)
+
+    if not rows:
+        scope = "" if args.all else " (visible conversation only; --all widens to tool output)"
+        print("no chat matched %s%s" % (", ".join(args.terms), scope))
+        return
+
+    profile = args.account or account()
+    shown = rows[: args.limit]
+    for when, path, state in shown:
+        cwd, title = head_facts(path)
+        session = os.path.basename(path)[: -len(".jsonl")]
+        launcher = ("claudeb profile %s --resume %s" % (profile, session)) if profile \
+            else ("claude --resume %s" % session)
+        print("LAST %s (%s) · %d%s hit%s · %s" % (
+            when.strftime("%Y-%m-%d %H:%M"), ago(when, now), state["hits"],
+            "+" if state["capped"] else "", "" if state["hits"] == 1 else "s",
+            ",".join(sorted(state["terms"]))))
+        if title:
+            print("  opened with: " + title)
+        print("  said:        " + (state["snippet"] or ""))
+        print("  resume:      cd %s && %s" % ("'" + (cwd or ".").replace("'", "'\\''") + "'", launcher))
+        print()
+
+    print("%d chat(s) matched, %d shown, %.1fs — LAST is the last real message; file mtime is not it "
+          "(opening a chat bumps mtime with nothing said)" % (len(rows), len(shown), time.time() - started))
+
+
+if __name__ == "__main__":
+    main()
