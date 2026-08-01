@@ -4743,6 +4743,37 @@ subprocess.run(["git", "-C", str(moved_suggest), "mv", "bin/tool", "tool"],
 assert suggest(moved_suggest)[2] == "tier: T1", suggest(moved_suggest)
 
 # An untracked nested repository is one listed path with nothing to count, not a read error.
+# A bare repository has no working tree, and a `--range` suggestion never needed one: it reads two
+# committed trees out of the object database. Keying repositories on `--show-toplevel` for the sake
+# of telling linked worktrees apart refused these outright until the fallback was added back.
+bare_source = make_suggest_repo("suggest-bare-source")
+(bare_source / "wide.txt").write_text("line\n" * 151)
+subprocess.run(["git", "-C", str(bare_source), "add", "wide.txt"], check=True, env=suggest_env)
+subprocess.run(["git", "-C", str(bare_source), "commit", "-qm", "wide"],
+               check=True, env=suggest_env)
+bare_clone = bare_source.parent / "suggest-bare.git"
+subprocess.run(["git", "clone", "-q", "--bare", str(bare_source), str(bare_clone)],
+               check=True, env=suggest_env)
+assert_suggestion(
+    suggest(bare_clone, "--range", "HEAD~1..HEAD"), 1, 151, "T2", committed=True,
+)
+# A stamp declares a working tree reviewed, so it is the one caller that must still refuse one.
+bare_stamp = subprocess.run(
+    [sys.argv[1], "reviewed", "--repo", str(bare_clone)],
+    capture_output=True, text=True, env=suggest_env,
+)
+assert bare_stamp.returncode != 0, bare_stamp.stdout
+assert "working tree" in bare_stamp.stderr, bare_stamp.stderr
+
+# `Path("").is_dir()` is True and `subprocess(cwd="")` raises, so an empty --repo used to reach git
+# as a cwd and die there instead of being read as the directory the caller is standing in.
+empty_repo_arg = subprocess.run(
+    [sys.argv[1], "suggest", "--repo", ""],
+    capture_output=True, text=True, cwd=str(bare_source), env=suggest_env,
+)
+assert empty_repo_arg.returncode == 0, empty_repo_arg.stderr
+assert "FileNotFoundError" not in empty_repo_arg.stderr, empty_repo_arg.stderr
+
 nested_suggest = make_suggest_repo("suggest-nested")
 (nested_suggest / "nested").mkdir()
 subprocess.run(["git", "-C", str(nested_suggest / "nested"), "init", "-q"],
