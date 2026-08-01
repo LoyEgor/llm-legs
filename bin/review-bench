@@ -832,6 +832,17 @@ REVIEW_TIERS = {
     },
 }
 
+# The two heaviest panels are the owner's to start, and no agent's: tier T3, and any tier's --max
+# composition. Enforcement is code on both sides — `bin/review-owner-gate.sh` turns Egor's own
+# words into a grant and denies the command without one, and the guard below refuses the same two
+# panels wherever that hook does not run (a worker's own process, a plain shell). The ceiling is
+# what an agent may reach on its own judgement.
+OWNER_TIERS = ("T3",)
+AUTO_TIER_CEILING = "T2"
+OWNER_GRANT_DIR = "review-grants"
+OWNER_GRANT_TTL_S = 1800
+OWNER_GRANT_RETRY_S = 1200
+
 RECEIPT_DIR = "receipts"
 PROGRESS_DIR = "progress"
 RECEIPT_FIELDS = ("repo", "tree", "commit", "run_id", "ts")
@@ -4636,6 +4647,96 @@ def cmd_tiers(args):
     return 0
 
 
+def owner_grant_dir():
+    return state_dir() / OWNER_GRANT_DIR
+
+
+def owner_grants(now=None):
+    """One scope set per live grant `review-owner-gate.sh` wrote out of Egor's own words. Per
+    grant, never merged: the gate answers one file at a time, and a merged view would print a
+    `T3 --max` command out of two separate words that the gate then denies. A grant already spent
+    answers for its own retry window only. Anything unreadable or misshapen opens nothing.
+    """
+    now = time.time() if now is None else now
+    grants = []
+    try:
+        entries = sorted(owner_grant_dir().iterdir())
+    except OSError:
+        return grants
+    for path in entries:
+        try:
+            grant = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(grant, dict):
+            continue
+        stamp = grant.get("ts")
+        spent = grant.get("used_at")
+        if isinstance(spent, bool) or not isinstance(spent, (int, float)):
+            if isinstance(stamp, bool) or not isinstance(stamp, (int, float)):
+                continue
+            if not 0 <= now - stamp <= OWNER_GRANT_TTL_S:
+                continue
+        elif not 0 <= now - spent <= OWNER_GRANT_RETRY_S:
+            continue
+        scopes = grant.get("scopes")
+        if not isinstance(scopes, (list, tuple)):
+            continue
+        grants.append(frozenset(scope for scope in scopes if isinstance(scope, str)))
+    return grants
+
+
+def owner_allows(wanted, grants=None):
+    """Whether one single grant covers everything asked for, which is the gate's own rule."""
+    grants = owner_grants() if grants is None else grants
+    return any(set(wanted) <= grant for grant in grants)
+
+
+def owner_tier(tier_name, grants):
+    """The tier to run: the ladder's answer, capped below the owner-only tiers until Egor asks,
+    and raised to the tier he asked for when he has — his word is a floor as much as a key.
+    """
+    if owner_allows({"t3"}, grants):
+        return max(tier_name, *OWNER_TIERS)
+    return AUTO_TIER_CEILING if tier_name in OWNER_TIERS else tier_name
+
+
+def owner_at_keyboard():
+    """Egor's own shell: a terminal on both ends, and no agent runtime around it. Claude Code
+    exports CLAUDECODE into every command it runs, so a pseudo-terminal an agent opens for itself
+    is not mistaken for him.
+    """
+    if os.environ.get("CLAUDECODE") or os.environ.get("CLAUDE_CODE_ENTRYPOINT"):
+        return False
+    return all(
+        getattr(stream, "isatty", lambda: False)()
+        for stream in (sys.stdin, sys.stdout)
+        if stream is not None
+    ) and None not in (sys.stdin, sys.stdout)
+
+
+def guard_tier_owner(tier_name, use_max):
+    wanted = {"t3"} if tier_name in OWNER_TIERS else set()
+    if use_max:
+        wanted.add("max")
+    if not wanted:
+        return
+    if owner_at_keyboard():
+        return
+    if owner_allows(wanted):
+        return
+    asked = " and ".join(
+        sorted(
+            {"t3": tier_name, "max": "--max"}[scope] for scope in wanted
+        )
+    )
+    raise ValueError(
+        f"{asked} is the owner's to start: it runs only after Egor has asked for it by name. "
+        f"Run what `review-bench suggest` prints as its `command:` line (at most "
+        f"{AUTO_TIER_CEILING}), and if this change looks worth more, ask him in one line."
+    )
+
+
 def guard_tier_foreground(args, tier_name):
     if tier_name and tier_name not in REVIEW_TIERS:
         raise ValueError(f"unknown tier {tier_name!r}")
@@ -4659,6 +4760,7 @@ def cmd_review(args):
     use_max = bool(getattr(args, "max", False))
     if use_max and not tier_name:
         raise ValueError("--max requires --tier")
+    guard_tier_owner(tier_name, use_max)
     guard_tier_foreground(args, tier_name)
     args.raters = ",".join(
         REVIEW_TIERS[tier_name]["cells_max" if use_max else "cells"]
@@ -4928,29 +5030,44 @@ def cmd_suggest(args):
                  "another, so staged and untracked content is counted once"
                  if snapshot_baseline
                  else "staged content is compared with the same reviewed tree"))
+    granted = owner_grants()
+    run_tier = owner_tier(tier_name, granted)
+    # Only out of one grant: two separate words are two separate permissions, and the gate would
+    # deny the command this line printed.
+    run_max = owner_allows({"max", "t3"} if run_tier in OWNER_TIERS else {"max"}, granted)
+    if run_tier < tier_name:
+        print(f"{tier_name} is the owner's to start, and he has not asked for it, so the panel "
+              f"below is {run_tier}")
+    elif run_tier > tier_name:
+        print(f"Egor asked for {run_tier}, which is his to raise, so the panel below is {run_tier} "
+              f"rather than the {tier_name} this change sizes to")
     extra = ["--repo", str(repo)] if args.repo != "." else []
-    # Long tiers are launched as background tasks (no TTY), where the guard demands the
-    # flag — a suggested command must survive being copied verbatim.
-    background = REVIEW_TIERS[tier_name]["budget_min"] >= 10
-    long_tier = ["--foreground"] if background else []
+    target = command_target if args.range else "--worktree"
+
+    def command_for(tier, use_max):
+        # Long tiers are launched as background tasks (no TTY), where the guard demands the
+        # flag — a suggested command must survive being copied verbatim.
+        long_tier = ["--foreground"] if REVIEW_TIERS[tier]["budget_min"] >= 10 else []
+        return shlex.join([
+            "review-bench", "review", target, "--tier", tier,
+            *(["--max"] if use_max else []), *extra, *long_tier,
+        ])
+
+    background = REVIEW_TIERS[run_tier]["budget_min"] >= 10
     print(
         f"spawn: Bash run_in_background={'true' if background else 'false'}; "
         "preserve the complete final stdout"
     )
-    if args.range:
-        command = ["review-bench", "review", command_target, "--tier", tier_name,
-                   *extra, *long_tier]
-        max_command = list(command)
-        max_command.insert(max_command.index("--tier") + 2, "--max")
-        print(f"command: {shlex.join(command)}")
-        print(f"max: {shlex.join(max_command)}")
-        return 0
-    command = ["review-bench", "review", "--worktree", "--tier", tier_name,
-               *extra, *long_tier]
-    max_command = list(command)
-    max_command.insert(max_command.index("--tier") + 2, "--max")
-    print(f"command: {shlex.join(command)}")
-    print(f"max: {shlex.join(max_command)}")
+    print(f"command: {command_for(run_tier, run_max)}")
+    # The heavier panels are printed for Egor to reach for, never as work to pick up: the gate
+    # denies them to anyone he has not told, and a line the reader must not follow says so.
+    owner_only = []
+    if run_tier < tier_name:
+        owner_only.append(command_for(tier_name, run_max))
+    if not run_max and REVIEW_TIERS[run_tier]["cells"] != REVIEW_TIERS[run_tier]["cells_max"]:
+        owner_only.append(command_for(run_tier, True))
+    for command in owner_only:
+        print(f"owner-only, run only if Egor asked for it by name: {command}")
     return 0
 
 
@@ -5018,6 +5135,7 @@ def cmd_run(args):
     use_max = bool(getattr(args, "max", False))
     if use_max and not tier_name:
         raise ValueError("--max requires --tier")
+    guard_tier_owner(tier_name, use_max)
     guard_tier_foreground(args, tier_name)
     if tier_name:
         args.raters = ",".join(

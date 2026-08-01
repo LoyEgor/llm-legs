@@ -443,4 +443,38 @@ assert grep -Fq 'obs.append((vendor, name, "rotation", fallback, {' "$SHADOW_FEE
 assert doc_has 'Account data age'
 assert doc_has 'Absent and null-valued windows do not participate'
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, and account data age) and match %s\n' "$asserts" "$DOC"
+# --- Row w: owner-only review panels -----------------------------------------
+OWNER_GATE="$ROOT/bin/review-owner-gate.sh"
+assert grep -Fq 'OWNER_TIERS = ("T3",)' "$REVIEWBENCH"
+assert grep -Fq 'AUTO_TIER_CEILING = "T2"' "$REVIEWBENCH"
+assert grep -Fq 'OWNER_GRANT_DIR = "review-grants"' "$REVIEWBENCH"
+rb_grant_ttl=$(grep -E '^OWNER_GRANT_TTL_S = [0-9]+$' "$REVIEWBENCH" | awk '{print $3}')
+rb_grant_retry=$(grep -E '^OWNER_GRANT_RETRY_S = [0-9]+$' "$REVIEWBENCH" | awk '{print $3}')
+gate_grant_ttl=$(grep -E '^GRANT_TTL_S=[0-9]+$' "$OWNER_GATE" | cut -d= -f2)
+gate_grant_retry=$(grep -E '^GRANT_RETRY_S=[0-9]+$' "$OWNER_GATE" | cut -d= -f2)
+assert eq "$rb_grant_ttl" 1800
+assert eq "$gate_grant_ttl" "$rb_grant_ttl"
+assert eq "$gate_grant_retry" 1200
+assert eq "$rb_grant_retry" "$gate_grant_retry"
+# One grant at a time on both sides, and the keyboard exemption is his shell, not any terminal.
+assert grep -Fq 'any(set(wanted) <= grant for grant in grants)' "$REVIEWBENCH"
+assert grep -Fq '(($wanted - (.scopes // [])) | length) == 0' "$OWNER_GATE"
+assert grep -Fq 'os.environ.get("CLAUDECODE")' "$REVIEWBENCH"
+# One directory, one schema, both sides.
+assert grep -Fq "printf '%s/review-grants' \"\$(state_dir)\"" "$OWNER_GATE"
+assert grep -Fq 'state_dir() / OWNER_GRANT_DIR' "$REVIEWBENCH"
+assert grep -Fq '{session: $session, ts: $ts, scopes: $scopes}' "$OWNER_GATE"
+assert grep -Fq 'grant.get("scopes")' "$REVIEWBENCH"
+# The same two scope names name the same two panels on both sides.
+assert grep -Fq 'wanted = {"t3"} if tier_name in OWNER_TIERS else set()' "$REVIEWBENCH"
+assert grep -Fq 'scopes+=(t3)' "$OWNER_GATE"
+assert grep -Fq 'scopes+=(max)' "$OWNER_GATE"
+assert grep -Fq 'wanted+=(t3)' "$OWNER_GATE"
+assert grep -Fq 'wanted+=(max)' "$OWNER_GATE"
+# Both hook registrations, or half the gate is silently off.
+assert grep -Fq 'review-owner-gate.sh prompt' "$WORKER_GATE_SETTINGS"
+assert grep -Fq 'review-owner-gate.sh bash' "$WORKER_GATE_SETTINGS"
+assert doc_has 'Owner-only review panels'
+assert doc_has '`<state_dir>/review-grants/<session>.json`'
+
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, and owner-only review panels) and match %s\n' "$asserts" "$DOC"

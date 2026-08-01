@@ -30,6 +30,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 
 loader = importlib.machinery.SourceFileLoader("review_bench", sys.argv[1])
 spec = importlib.util.spec_from_loader("review_bench", loader)
@@ -52,6 +53,19 @@ os.environ["HOME"] = str(fixture_home)
 
 def clear_walls():
     (rb.state_dir() / rb.WALL_STATE_FILE).unlink(missing_ok=True)
+
+
+def grant_owner_panels(*scopes, age=0.0):
+    """The grant review-owner-gate.sh writes out of Egor's own words, in the store the current
+    environment points at — the owner-only panels are refused without one.
+    """
+    directory = rb.owner_grant_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "fixture.json"
+    path.write_text(json.dumps(
+        {"session": "fixture", "ts": time.time() - age, "scopes": list(scopes)}
+    ))
+    return path
 
 
 wall_probe = r"""
@@ -2217,6 +2231,7 @@ clean_review = subprocess.run(
 )
 assert clean_review.returncode != 0
 assert "review-bench review HEAD --tier T0 --repo" in clean_review.stderr, clean_review.stderr
+max_grant = grant_owner_panels("max")
 max_clean_review = subprocess.run(
     [sys.argv[1], "review", "--worktree", "--repo", str(snapshot_clean),
      "--tier", "T2", "--max", "--foreground"],
@@ -2225,6 +2240,32 @@ max_clean_review = subprocess.run(
 assert max_clean_review.returncode != 0
 assert "review-bench review HEAD --tier T2 --max --foreground --repo" in max_clean_review.stderr, \
     max_clean_review.stderr
+# The same command with no grant behind it never reaches any of that: --max and T3 are the
+# owner's, and the refusal is the tool's own, not an instruction a caller may skip.
+max_grant.unlink()
+ungranted_max = subprocess.run(
+    [sys.argv[1], "review", "--worktree", "--repo", str(snapshot_clean),
+     "--tier", "T2", "--max", "--foreground"],
+    capture_output=True, text=True, stdin=subprocess.DEVNULL,
+)
+assert ungranted_max.returncode != 0
+assert "--max is the owner's to start" in ungranted_max.stderr, ungranted_max.stderr
+ungranted_t3 = subprocess.run(
+    [sys.argv[1], "review", "--worktree", "--repo", str(snapshot_clean),
+     "--tier", "T3", "--foreground"],
+    capture_output=True, text=True, stdin=subprocess.DEVNULL,
+)
+assert ungranted_t3.returncode != 0
+assert "T3 is the owner's to start" in ungranted_t3.stderr, ungranted_t3.stderr
+grant_owner_panels("t3", age=rb.OWNER_GRANT_TTL_S + 60)
+stale_grant_t3 = subprocess.run(
+    [sys.argv[1], "review", "--worktree", "--repo", str(snapshot_clean),
+     "--tier", "T3", "--foreground"],
+    capture_output=True, text=True, stdin=subprocess.DEVNULL,
+)
+assert stale_grant_t3.returncode != 0
+assert "T3 is the owner's to start" in stale_grant_t3.stderr, stale_grant_t3.stderr
+rb.owner_grant_dir().joinpath("fixture.json").unlink()
 foreground_clean_review = subprocess.run(
     [sys.argv[1], "review", "--worktree", "--repo", str(snapshot_clean),
      "--tier", "T2", "--foreground"],
@@ -3730,6 +3771,7 @@ assert not list(
 )
 # cmd_review hands its own Namespace to cmd_run, so the variant it was asked for has to survive
 # the trip: the statusline names it from this file and from nothing else.
+grant_owner_panels("max")
 assert rb.cmd_run(argparse.Namespace(
     repo=str(pin_repo), commitish=pin_sha, raters="sol-medium",
     leg=False, verify=None, auto=None, focus=None, tier="T2", max=True, foreground=True,
@@ -4528,7 +4570,8 @@ def suggest(path, *extra):
 
 
 def assert_suggestion(lines, files, changed_lines, tier, committed=False, receipt=None,
-                      worktree_receipt=None, fix_capped=False):
+                      worktree_receipt=None, fix_capped=False, runs=None):
+    runs = runs or tier
     assert lines[:3] == [
         f"changed files: {files}",
         f"changed lines: {changed_lines}",
@@ -4556,18 +4599,46 @@ def assert_suggestion(lines, files, changed_lines, tier, committed=False, receip
             "counted once"
         ), lines
         offset += 1
-    background = rb.REVIEW_TIERS[tier]["budget_min"] >= 10
+    if runs < tier:
+        assert lines[offset] == (
+            f"{tier} is the owner's to start, and he has not asked for it, so the panel below "
+            f"is {runs}"
+        ), lines
+        offset += 1
+    elif runs > tier:
+        assert lines[offset] == (
+            f"Egor asked for {runs}, which is his to raise, so the panel below is {runs} rather "
+            f"than the {tier} this change sizes to"
+        ), lines
+        offset += 1
+    else:
+        assert not any(line.startswith(f"{tier} is the owner's") for line in lines), lines
+    background = rb.REVIEW_TIERS[runs]["budget_min"] >= 10
     assert lines[offset] == (
         f"spawn: Bash run_in_background={'true' if background else 'false'}; "
         "preserve the complete final stdout"
     ), lines
     offset += 1
+    prefix = "command: review-bench review " if committed else (
+        "command: review-bench review --worktree "
+    )
+    assert lines[offset].startswith(prefix), lines
+    assert f"--tier {runs}" in lines[offset], lines
+    assert "--max" not in lines[offset], lines
+    offset += 1
+    # Everything heavier than the followed command is printed as the owner's to reach for, and
+    # named as such on its own line.
+    owner_only = [
+        line.split(": ", 1)[1] for line in lines[offset:]
+        if line.startswith("owner-only, run only if Egor asked for it by name: ")
+    ]
+    assert len(owner_only) == len(lines[offset:]), lines
+    if runs < tier:
+        assert any(f"--tier {tier}" in line and "--max" not in line for line in owner_only), lines
+    wider = rb.REVIEW_TIERS[runs]["cells"] != rb.REVIEW_TIERS[runs]["cells_max"]
+    assert any(f"--tier {runs} --max" in line for line in owner_only) == wider, lines
     if committed:
-        assert lines[offset].startswith("command: review-bench review "), lines
-        assert f"--tier {tier}" in lines[offset], lines
         return
-    assert lines[offset].startswith("command: review-bench review --worktree "), lines
-    assert f"--tier {tier}" in lines[offset], lines
     assert not any("cannot be reviewed" in line for line in lines), lines
 
 
@@ -4596,9 +4667,75 @@ t2_suggest = make_suggest_repo("suggest-t2")
 (t2_suggest / "wide.txt").write_text("line\n" * 151)
 assert_suggestion(suggest(t2_suggest), 1, 151, "T2")
 
+# T3 is the owner's to start, so what the ladder answers and what an agent may run part ways
+# here: the tier line stays truthful (the statusline reads it), the command drops to the ceiling.
 t3_suggest = make_suggest_repo("suggest-t3")
 (t3_suggest / "huge.txt").write_text("line\n" * 601)
+assert_suggestion(suggest(t3_suggest), 1, 601, "T3", runs=rb.AUTO_TIER_CEILING)
+
+# Egor's own word, as review-owner-gate.sh records it, is what moves T3 and --max from the
+# owner-only lines into the command the reader is meant to run — and only for as long as it lives.
+t3_grant = grant_owner_panels("t3")
 assert_suggestion(suggest(t3_suggest), 1, 601, "T3")
+grant_owner_panels("t3", age=rb.OWNER_GRANT_TTL_S + 60)
+assert_suggestion(suggest(t3_suggest), 1, 601, "T3", runs=rb.AUTO_TIER_CEILING)
+grant_owner_panels("t3", "max")
+granted_max = suggest(t3_suggest)
+assert any(
+    line.startswith("command: ") and "--tier T3 --max" in line for line in granted_max
+), granted_max
+assert not any(line.startswith("owner-only") for line in granted_max), granted_max
+# Valid JSON of the wrong shape is as unreadable as broken JSON, and neither may crash the tool
+# that every other review path goes through.
+for shape in ("not json at all", "[]", "null", '{"ts": 1, "scopes": 5}', '{"scopes": ["t3"]}'):
+    t3_grant.write_text(shape)
+    assert_suggestion(suggest(t3_suggest), 1, 601, "T3", runs=rb.AUTO_TIER_CEILING)
+    assert rb.owner_grants() == [], shape
+# Two words are two permissions: separate t3 and max grants must not add up to a `T3 --max`
+# command, because the gate weighs one grant at a time and would deny exactly that command.
+t3_grant.write_text(json.dumps({"session": "a", "ts": time.time(), "scopes": ["t3"]}))
+(rb.owner_grant_dir() / "second.json").write_text(
+    json.dumps({"session": "b", "ts": time.time(), "scopes": ["max"]})
+)
+split_grants = suggest(t3_suggest)
+assert any(
+    line.startswith("command: ") and "--tier T3" in line and "--max" not in line
+    for line in split_grants
+), split_grants
+(rb.owner_grant_dir() / "second.json").unlink()
+# His word is a floor as much as a key: asked for by name, T3 runs on a diff that sizes to T1.
+small_t3 = make_suggest_repo("suggest-small-t3")
+(small_t3 / "small.txt").write_text("line\n" * 30)
+assert_suggestion(suggest(small_t3), 1, 30, "T1", runs="T3")
+# A spent grant answers for its own retry window, and for nothing after it.
+t3_grant.write_text(json.dumps({
+    "session": "a", "ts": time.time() - rb.OWNER_GRANT_TTL_S + 5, "scopes": ["t3"],
+    "used_at": time.time(), "used_cmd": "0" * 16,
+}))
+assert rb.owner_allows({"t3"})
+t3_grant.write_text(json.dumps({
+    "session": "a", "ts": time.time(), "scopes": ["t3"],
+    "used_at": time.time() - rb.OWNER_GRANT_RETRY_S - 60, "used_cmd": "0" * 16,
+}))
+assert not rb.owner_allows({"t3"})
+t3_grant.unlink()
+# The keyboard exemption is Egor's shell, not any terminal: Claude Code marks every command it
+# runs, so a pseudo-terminal an agent opens for itself is not him.
+_ttys = types.SimpleNamespace(isatty=lambda: True)
+_saved_streams, _saved_env = (sys.stdin, sys.stdout), os.environ.get("CLAUDECODE")
+sys.stdin = sys.stdout = _ttys
+try:
+    os.environ.pop("CLAUDECODE", None)
+    os.environ.pop("CLAUDE_CODE_ENTRYPOINT", None)
+    assert rb.owner_at_keyboard()
+    os.environ["CLAUDECODE"] = "1"
+    assert not rb.owner_at_keyboard()
+finally:
+    sys.stdin, sys.stdout = _saved_streams
+    if _saved_env is None:
+        os.environ.pop("CLAUDECODE", None)
+    else:
+        os.environ["CLAUDECODE"] = _saved_env
 
 tests_suggest = make_suggest_repo("suggest-tests")
 (tests_suggest / "tests" / "new-test.sh").parent.mkdir()
