@@ -910,18 +910,17 @@ end
 
 -- Anti-divergence guard: every vendor's unpinned logged-out row is forced through the SAME
 -- shape here. Adding a 4th vendor to this table automatically subjects it to the
--- identical structural assertions (title, exactly {Log in…, Hard refresh, Remove…}
--- in order, Remove… a one-item "Confirm remove <label>" submenu) while still proving
--- its own Log in… fires the right login mechanism and Remove… the right remove
--- command. A future change that splits one vendor's row away from the shared shape,
--- or drops its confirm gate, fails this loop.
+-- identical structural assertions (title, exactly {Log in…, Hard refresh, Remove <label>} in
+-- order) while still proving its own Log in… fires the right login mechanism and Remove the
+-- right remove command. A future change that splits one vendor's row away from the shared
+-- shape fails this loop.
 local loginCases = {
   { vendor = "claude", fixture = claudeLoginFixture, needle = "loggedout", label = "loggedout",
     scriptContains = { "claudeb profile", "loggedout" },
-    removePath = "claudeb", removeArgs = { "remove", "loggedout" } },
+    removePath = "claudeb", removeArgs = { "remove", "loggedout", "--force" } },
   { vendor = "codex", fixture = codexLoginFixture, needle = "codexout", label = "codexout",
     scriptContains = { "codexb run", "codexout", "login" },
-    removePath = "codexb", removeArgs = { "remove", "codexout" } },
+    removePath = "codexb", removeArgs = { "remove", "codexout", "--force" } },
   { vendor = "gemini", fixture = geminiAuthFixture, needle = "Gemini", label = "Gemini",
     scriptContains = { "geminib profile", "main" },
     refreshArgs = { "--refresh-account", "gemini/main" },
@@ -944,20 +943,18 @@ for _, case in ipairs(loginCases) do
   assert(titleText(row):find("login needed", 1, true),
     "logged-out " .. case.vendor .. " row did not render a login-needed row")
   assert(#row.menu == 3,
-    case.vendor .. " login row is not exactly {Log in…, Hard refresh, Remove…}")
+    case.vendor .. " login row is not exactly {Log in…, Hard refresh, Remove <label>}")
   assert(titleText(row.menu[1]) == "Log in…", case.vendor .. " first submenu item is not Log in…")
   assert(titleText(row.menu[2]) == "Hard refresh", case.vendor .. " second submenu item is not Hard refresh")
-  assert(titleText(row.menu[3]) == "Remove…", case.vendor .. " third submenu item is not Remove…")
+  -- One click, no nested confirm: the item names the account so the destination is unambiguous.
+  assert(titleText(row.menu[3]) == "Remove " .. case.label,
+    case.vendor .. " third submenu item is not \"Remove " .. case.label .. "\"")
+  assert(row.menu[3].menu == nil, case.vendor .. " Remove regrew a confirm submenu")
   -- Offering the worker pool here would claim an availability a logged-out account does not
   -- have; the stored exclusion is still there and shows up again once it is logged back in.
   for _, sub in ipairs(row.menu) do
     assert(not isPoolItem(sub), case.vendor .. " login row offered the worker-pool toggle")
   end
-  local removeMenu = row.menu[3].menu
-  assert(type(removeMenu) == "table" and #removeMenu == 1,
-    case.vendor .. " Remove… is not a single-item confirm submenu")
-  assert(titleText(removeMenu[1]) == "Confirm remove " .. case.label,
-    case.vendor .. " confirm item is not \"Confirm remove " .. case.label .. "\"")
   local script = runFirstItem(row, capture)
   for _, needle in ipairs(case.scriptContains) do
     assert(script:find(needle, 1, true),
@@ -976,14 +973,16 @@ for _, case in ipairs(loginCases) do
     end
   end
   while #tasks > 0 do table.remove(tasks) end
-  removeMenu[1].fn()
+  row.menu[3].fn()
   local launched = tasks[1]
-  assert(launched, case.vendor .. " Remove… did not launch a command")
+  assert(launched, case.vendor .. " Remove did not launch a command")
   assert(launched.path:find(case.removePath, 1, true),
-    case.vendor .. " Remove… launched the wrong command: " .. tostring(launched.path))
+    case.vendor .. " Remove launched the wrong command: " .. tostring(launched.path))
+  assert(#launched.args == #case.removeArgs,
+    case.vendor .. " Remove passed " .. #launched.args .. " args, not " .. #case.removeArgs)
   for index, expected in ipairs(case.removeArgs) do
     assert(launched.args[index] == expected,
-      case.vendor .. " Remove… arg " .. index .. " is " .. tostring(launched.args[index])
+      case.vendor .. " Remove arg " .. index .. " is " .. tostring(launched.args[index])
         .. " not " .. expected)
   end
 end

@@ -76,9 +76,7 @@ local function loginNeededRow(label, loginFn, hardRefreshFn, removeFn, clearPinF
   -- A non-removable account (e.g. codex `main`, whose `remove` always refuses)
   -- passes removeFn=nil so the row never offers a dead Remove action.
   if removeFn then
-    table.insert(menu, { title = "Remove…", menu = {
-      { title = "Confirm remove " .. label, fn = removeFn },
-    } })
+    table.insert(menu, { title = "Remove " .. label, fn = removeFn })
   end
   return {
     title = loginNeededTitle(label, clearPinFn ~= nil, age, needsUserEntry),
@@ -718,8 +716,12 @@ function M.hardRefreshClaude(name) hardRefresh("claude/" .. name, true) end
 function M.hardRefreshCodex(name) hardRefresh("codex/" .. name) end
 function M.hardRefreshGemini(name) hardRefresh("gemini/" .. (name or "main")) end
 
-function M.removeClaude(name) runClaudeb({ "remove", name }, "remove failed") end
-function M.removeCodex(name) runCodexb({ "remove", name }, "remove failed") end
+-- --force is mandatory here, not a convenience: both CLIs' alive-guards only test that a
+-- token STRING is present, so a revoked login (exactly the state this row renders) can never
+-- satisfy them and the unforced remove refuses forever. Remove is offered only on
+-- login-needed rows, so the guard has nothing left to protect.
+function M.removeClaude(name) runClaudeb({ "remove", name, "--force" }, "remove failed") end
+function M.removeCodex(name) runCodexb({ "remove", name, "--force" }, "remove failed") end
 function M.removeGemini(name)
   if not name or name == "main" then
     refreshData({ "--gemini-remove" }, "gemini-remove", 360, "gemini-remove")
