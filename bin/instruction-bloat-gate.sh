@@ -7,7 +7,17 @@ set -u
 [ -n "${HOME:-}" ] || exit 0
 
 THRESHOLD_BYTES=120
-STAMP_DIR="$HOME/.cache/claude-instruction-gate"
+STAMP_DIR="${INSTRUCTION_BLOAT_GATE_STAMPS:-$HOME/.cache/claude-instruction-gate}"
+
+# ~/.claude/hooks is a symlink into the config repository and the entry there is a symlink into
+# this one, so follow the chain rather than the first hop.
+self=$0
+for _ in 1 2 3 4 5; do
+  [ -L "$self" ] || break
+  target=$(readlink "$self")
+  case "$target" in /*) self=$target ;; *) self=$(dirname "$self")/$target ;; esac
+done
+. "$(dirname "$self")/../share/instruction-files.sh" 2>/dev/null || exit 0
 
 deny() {
   jq -cn --arg r "$1" \
@@ -36,17 +46,74 @@ case "$file_path" in
     ;;
 esac
 
-# Reads-per-month factor by how often the file class lands in a context window.
-# Rough daily-use estimates; the point is the order of magnitude, not precision.
-reads=0
-case "$file_path" in
-  */MEMORY.md|*/CLAUDE.md|*/CLAUDE.local.md) reads=240 ;;      # every session
-  */.claude/instructions/*) reads=40 ;;                        # loaded on topic
-  */SKILL.md|*/.claude/skills/*) reads=40 ;;                   # loaded on trigger
-  "$HOME"/.claude/docs/*) reads=40 ;;                          # protocol docs, read per task type
-  "$HOME"/.claude/agents/*) reads=150 ;;                       # per worker spawn
-  *) exit 0 ;;
-esac
+# Full-price read equivalents per month, measured over the 31 days to 2026-07-31
+# (1954 sessions, 132386 requests). The numbers look large because content in the
+# cached system prefix is re-read on EVERY request at 0.1x, not once per session:
+# 0.1 * requests + 1.25 * sessions. On-demand classes are measured loads times
+# (1.25 + 0.1 * requests left in the session) — two orders of magnitude cheaper,
+# which is why moving prose out of an always-on file is the whole game.
+# Only the global CLAUDE.md is in EVERY session. A project's CLAUDE.md or memory index rides
+# along in that project's sessions alone: the busiest measured project ran 389 of the 1954,
+# so 8.05 * 389. Quieter projects cost proportionally less; this is the ceiling, not the mean.
+GLOBAL_CLAUDE="$HOME/.claude/CLAUDE.md"
+GLOBAL_CLAUDE_REAL=$(realpath "$GLOBAL_CLAUDE" 2>/dev/null) || GLOBAL_CLAUDE_REAL=$GLOBAL_CLAUDE
+is_global() {
+  case "$1" in "$GLOBAL_CLAUDE"|"$GLOBAL_CLAUDE_REAL") return 0 ;; esac
+  return 1
+}
+classify() {
+  case "$1" in
+    */MEMORY.md|*/CLAUDE.md|*/CLAUDE.local.md) printf 3131 ;;  # every session of one project
+    */.claude/instructions/*) printf 160 ;;                    # loaded on topic
+    */SKILL.md|*/.claude/skills/*) printf 90 ;;                # loaded on trigger
+    "$HOME"/.claude/docs/*) printf 160 ;;                      # protocol docs, read per task type
+    "$HOME"/.claude/agents/*) printf 2500 ;;                   # per spawn of a busy worker
+  esac
+}
+# The global file answers to more names than two: every profile directory carries its own symlink
+# to it. Asking the generic project pattern first would price all of those at a fifth of the real
+# cost, so the question "is this the global one" is settled before anything else — and settled on
+# the resolved name, which is the only spelling they all share.
+reads=''
+if is_global "$file_path"; then
+  reads=15682
+else
+  case "$file_path" in
+    */CLAUDE.md)
+      file_real=$(realpath "$file_path" 2>/dev/null)
+      [ -n "$file_real" ] && is_global "$file_real" && reads=15682
+      ;;
+  esac
+fi
+[ -n "$reads" ] || reads=$(classify "$file_path")
+# ~/.claude/docs and ~/.claude/agents are symlinks into the config repository, so the same file
+# has a second absolute path that matches none of the patterns above — and that repository path
+# is the one anybody editing the repo actually types. Resolving the directory (not the file:
+# a Write may be creating it) is what closes that.
+if [ -z "$reads" ]; then
+  case "$file_path" in
+    *.md)
+      # A Write creates the file, and may be creating its directory too, so the walk goes up to
+      # the nearest ancestor that exists: a new subdirectory of docs/ is still under docs/.
+      # CDPATH makes cd print where it landed, which would ride along in the captured path.
+      probe=$(dirname "$file_path")
+      file_dir=''
+      while [ -n "$probe" ] && [ "$probe" != / ] && [ "$probe" != . ]; do
+        file_dir=$(CDPATH= cd -- "$probe" 2>/dev/null && pwd -P) && [ -n "$file_dir" ] && break
+        file_dir=''
+        probe=$(dirname "$probe")
+      done
+      if [ -n "$file_dir" ]; then
+        for pair in docs:160 agents:2500 instructions:160 skills:90; do
+          guarded=$(CDPATH= cd -- "$HOME/.claude/${pair%%:*}" 2>/dev/null && pwd -P) || continue
+          [ -n "$guarded" ] || continue
+          case "$file_dir" in "$guarded"|"$guarded"/*) reads=${pair##*:}; break ;; esac
+        done
+      fi
+      ;;
+  esac
+fi
+[ -n "$reads" ] || exit 0
 
 # All sizes in UTF-8 bytes via files + wc -c; jq's `length` counts codepoints
 # and silently understates multibyte (Cyrillic) growth against the threshold.
@@ -81,17 +148,15 @@ fi
 
 [ "$delta" -gt "$THRESHOLD_BYTES" ] 2>/dev/null || exit 0
 
-hash=$(printf '%s\n%s\n' "$file_path" "$(jq -r '.tool_input | tostring' "$input_file" 2>/dev/null)" | shasum -a 256 | cut -c1-16)
-mkdir -p "$STAMP_DIR" 2>/dev/null || exit 0
-find "$STAMP_DIR" -mindepth 1 -maxdepth 1 -mmin +1440 -exec rm -rf {} + 2>/dev/null
-stamp="$STAMP_DIR/$hash"
-# mkdir is the atomic claim: creator denies, anyone finding it existing passes once.
-if ! mkdir "$stamp" 2>/dev/null; then
-  rmdir "$stamp" 2>/dev/null
-  exit 0
-fi
+# The session is part of the key, exactly as it is in the write gate: approval Egor gave in one
+# chat is not approval a parallel or later one inherits for the same edit.
+# -S sorts the keys: the retry is the same edit, but nothing promises it arrives with its JSON
+# keys in the same order, and an unsorted fingerprint would deny the very retry it exists to pass.
+sid=$(jq -r '.session_id // ""' "$input_file" 2>/dev/null) || sid=''
+hash=$(printf '%s\n%s\n%s\n' "$sid" "$file_path" "$(jq -Sc '.tool_input' "$input_file" 2>/dev/null)" | shasum -a 256 | cut -c1-16)
+instruction_claim_stamp "$STAMP_DIR" "$hash" && exit 0
 
 tokens=$((delta / 4))
 monthly=$((tokens * reads))
 
-deny "Instruction-bloat gate: this file is re-read by LLMs (~${reads} reads/month). Growth +${delta} bytes ≈ +${tokens} tokens per read ≈ ~${monthly} tokens/month at Egor's daily usage. His standing rule: (1) prefer a hook/mechanical control over prose; (2) if prose is genuinely required, compress it hard; (3) present Egor the NET BALANCE, not just this cost — estimate what the rule SAVES per month (avoided repeated output, avoided corrections, avoided worker calls) and compare; a rule that saves less than it costs does not get written. Wait for his explicit OK, then retry the identical edit — the gate passes the exact retry once."
+deny "Instruction-bloat gate: LLMs re-read this file ~${reads}x/month at full-read price (measured; content in the cached prefix is re-read on every request, not once per session). Growth +${delta} bytes ≈ +${tokens} tokens per read ≈ ~${monthly} tokens/month at Egor's daily usage. His standing rule: (1) prefer a hook/mechanical control over prose; (2) if prose is genuinely required, compress it hard; (3) present Egor the NET BALANCE, not just this cost — estimate what the rule SAVES per month (avoided repeated output, avoided corrections, avoided worker calls) and compare; a rule that saves less than it costs does not get written. Wait for his explicit OK, then retry the identical edit — the gate passes the exact retry once."
