@@ -1526,21 +1526,32 @@ write_state_file() {
 # every launch picks up whatever the previous session left behind.
 harvest_session_accounts() {
   local dir="$1" profile="$2" ledger="$base_dir/session-accounts.log"
-  local marker session known started
+  local lock seen fresh session started
   [ -d "$dir/session-env" ] || return 0
   mkdir -p "$base_dir" 2>/dev/null || return 0
-  known=""
-  [ -f "$ledger" ] && known=$(cut -f2 "$ledger" 2>/dev/null)
-  for marker in "$dir"/session-env/*; do
-    [ -e "$marker" ] || continue
-    session="${marker##*/}"
-    case "$known" in *"$session"*) continue ;; esac
-    started=$(stat -f '%Sm' -t '%Y-%m-%dT%H:%M:%SZ' "$marker" 2>/dev/null) || started=""
+  lock="$ledger.lock"
+  lock_acquire "$lock" 5 || return 0
+  seen=$(mktemp) && fresh=$(mktemp) || { lock_release "$lock"; return 0; }
+  # A session resumed under a second profile is stamped in both, and both are evidence: the
+  # key is the pair, so an account switch is recorded instead of being masked by whichever
+  # marker happened to be harvested first.
+  ls -1 "$dir/session-env" 2>/dev/null | awk -v p="$profile" 'NF {print $0 "\t" p}' | sort >"$seen"
+  if [ -s "$ledger" ]; then
+    # Sorting both sides keeps a launch cheap: matching each marker against the whole ledger
+    # cost half a second on a profile with a thousand of them, on the path to every session.
+    cut -f2,3 "$ledger" 2>/dev/null | sort | comm -23 "$seen" - >"$fresh"
+  else
+    cp "$seen" "$fresh"
+  fi
+  while IFS=$'\t' read -r session _; do
+    [ -n "$session" ] || continue
+    started=$(TZ=UTC stat -f '%Sm' -t '%Y-%m-%dT%H:%M:%SZ' "$dir/session-env/$session" 2>/dev/null) \
+      || started=""
     [ -n "$started" ] || started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    printf '%s\t%s\t%s\n' "$started" "$session" "$profile" >> "$ledger"
-    known="$known
-$session"
-  done
+    printf '%s\t%s\t%s\n' "$started" "$session" "$profile" >>"$ledger"
+  done <"$fresh"
+  rm -f "$seen" "$fresh"
+  lock_release "$lock"
 }
 
 enable_account() {
@@ -1630,6 +1641,10 @@ remove_account() {
     printf 'claudeb: unknown account: %s\n' "$name" >&2
     exit 2
   fi
+  # A launch harvests the markers left by earlier sessions, so the newest session of a
+  # profile is still only in its marker directory. Removing the profile would delete the
+  # sole record of which account paid for it.
+  harvest_session_accounts "$profiles_root/$name" "$name" || true
   # Aliveness depends on the account kind, which the keychain read distinguishes:
   #   sec_rc 0  → keychain account: judge the keychain blob (tokens/<name> is only
   #               the cached bearer, not proof of a live login);
