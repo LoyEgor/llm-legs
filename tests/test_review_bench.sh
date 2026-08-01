@@ -55,17 +55,17 @@ def clear_walls():
     (rb.state_dir() / rb.WALL_STATE_FILE).unlink(missing_ok=True)
 
 
-def grant_owner_panels(*scopes, age=0.0):
-    """The grant review-owner-gate.sh writes out of Egor's own words, in the store the current
-    environment points at — the owner-only panels are refused without one.
+def grant_owner_panels(*panels, age=0.0):
+    """The markers review-owner-gate.sh touches when Egor names a panel, in the store the current
+    environment points at — the owner-only panels are refused without them.
     """
     directory = rb.owner_grant_dir()
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / "fixture.json"
-    path.write_text(json.dumps(
-        {"session": "fixture", "ts": time.time() - age, "scopes": list(scopes)}
-    ))
-    return path
+    for panel in panels:
+        path = directory / panel
+        path.touch()
+        os.utime(path, (time.time() - age,) * 2)
+    return directory
 
 
 wall_probe = r"""
@@ -2242,7 +2242,7 @@ assert "review-bench review HEAD --tier T2 --max --foreground --repo" in max_cle
     max_clean_review.stderr
 # The same command with no grant behind it never reaches any of that: --max and T3 are the
 # owner's, and the refusal is the tool's own, not an instruction a caller may skip.
-max_grant.unlink()
+(rb.owner_grant_dir() / "max").unlink()
 ungranted_max = subprocess.run(
     [sys.argv[1], "review", "--worktree", "--repo", str(snapshot_clean),
      "--tier", "T2", "--max", "--foreground"],
@@ -2265,7 +2265,7 @@ stale_grant_t3 = subprocess.run(
 )
 assert stale_grant_t3.returncode != 0
 assert "T3 is the owner's to start" in stale_grant_t3.stderr, stale_grant_t3.stderr
-rb.owner_grant_dir().joinpath("fixture.json").unlink()
+(rb.owner_grant_dir() / "t3").unlink()
 foreground_clean_review = subprocess.run(
     [sys.argv[1], "review", "--worktree", "--repo", str(snapshot_clean),
      "--tier", "T2", "--foreground"],
@@ -4599,16 +4599,9 @@ def assert_suggestion(lines, files, changed_lines, tier, committed=False, receip
             "counted once"
         ), lines
         offset += 1
-    if runs < tier:
+    if runs != tier:
         assert lines[offset] == (
-            f"{tier} is the owner's to start, and he has not asked for it, so the panel below "
-            f"is {runs}"
-        ), lines
-        offset += 1
-    elif runs > tier:
-        assert lines[offset] == (
-            f"Egor asked for {runs}, which is his to raise, so the panel below is {runs} rather "
-            f"than the {tier} this change sizes to"
+            f"{tier} is the owner's to start, so the panel below is {runs}"
         ), lines
         offset += 1
     else:
@@ -4633,8 +4626,11 @@ def assert_suggestion(lines, files, changed_lines, tier, committed=False, receip
         if line.startswith("owner-only, run only if Egor asked for it by name: ")
     ]
     assert len(owner_only) == len(lines[offset:]), lines
-    if runs < tier:
-        assert any(f"--tier {tier}" in line and "--max" not in line for line in owner_only), lines
+    # The owner's tier is offered at every size, so his "run T3" needs no command assembled by hand.
+    for owner_only_tier in rb.OWNER_TIERS:
+        assert any(
+            f"--tier {owner_only_tier}" in line and "--max" not in line for line in owner_only
+        ) == (owner_only_tier != runs), lines
     wider = rb.REVIEW_TIERS[runs]["cells"] != rb.REVIEW_TIERS[runs]["cells_max"]
     assert any(f"--tier {runs} --max" in line for line in owner_only) == wider, lines
     if committed:
@@ -4673,52 +4669,19 @@ t3_suggest = make_suggest_repo("suggest-t3")
 (t3_suggest / "huge.txt").write_text("line\n" * 601)
 assert_suggestion(suggest(t3_suggest), 1, 601, "T3", runs=rb.AUTO_TIER_CEILING)
 
-# Egor's own word, as review-owner-gate.sh records it, is what moves T3 and --max from the
-# owner-only lines into the command the reader is meant to run — and only for as long as it lives.
-t3_grant = grant_owner_panels("t3")
-assert_suggestion(suggest(t3_suggest), 1, 601, "T3")
-grant_owner_panels("t3", age=rb.OWNER_GRANT_TTL_S + 60)
-assert_suggestion(suggest(t3_suggest), 1, 601, "T3", runs=rb.AUTO_TIER_CEILING)
+# A named panel unblocks the gate and changes nothing here: what this prints is the same with a
+# marker as without one, which is what keeps a passing mention of T3 from becoming what runs.
 grant_owner_panels("t3", "max")
-granted_max = suggest(t3_suggest)
-assert any(
-    line.startswith("command: ") and "--tier T3 --max" in line for line in granted_max
-), granted_max
-assert not any(line.startswith("owner-only") for line in granted_max), granted_max
-# Valid JSON of the wrong shape is as unreadable as broken JSON, and neither may crash the tool
-# that every other review path goes through.
-for shape in ("not json at all", "[]", "null", '{"ts": 1, "scopes": 5}', '{"scopes": ["t3"]}'):
-    t3_grant.write_text(shape)
-    assert_suggestion(suggest(t3_suggest), 1, 601, "T3", runs=rb.AUTO_TIER_CEILING)
-    assert rb.owner_grants() == [], shape
-# Two words are two permissions: separate t3 and max grants must not add up to a `T3 --max`
-# command, because the gate weighs one grant at a time and would deny exactly that command.
-t3_grant.write_text(json.dumps({"session": "a", "ts": time.time(), "scopes": ["t3"]}))
-(rb.owner_grant_dir() / "second.json").write_text(
-    json.dumps({"session": "b", "ts": time.time(), "scopes": ["max"]})
-)
-split_grants = suggest(t3_suggest)
-assert any(
-    line.startswith("command: ") and "--tier T3" in line and "--max" not in line
-    for line in split_grants
-), split_grants
-(rb.owner_grant_dir() / "second.json").unlink()
-# His word is a floor as much as a key: asked for by name, T3 runs on a diff that sizes to T1.
-small_t3 = make_suggest_repo("suggest-small-t3")
-(small_t3 / "small.txt").write_text("line\n" * 30)
-assert_suggestion(suggest(small_t3), 1, 30, "T1", runs="T3")
-# A spent grant answers for its own retry window, and for nothing after it.
-t3_grant.write_text(json.dumps({
-    "session": "a", "ts": time.time() - rb.OWNER_GRANT_TTL_S + 5, "scopes": ["t3"],
-    "used_at": time.time(), "used_cmd": "0" * 16,
-}))
-assert rb.owner_allows({"t3"})
-t3_grant.write_text(json.dumps({
-    "session": "a", "ts": time.time(), "scopes": ["t3"],
-    "used_at": time.time() - rb.OWNER_GRANT_RETRY_S - 60, "used_cmd": "0" * 16,
-}))
-assert not rb.owner_allows({"t3"})
-t3_grant.unlink()
+assert_suggestion(suggest(t3_suggest), 1, 601, "T3", runs=rb.AUTO_TIER_CEILING)
+assert rb.owner_named("t3") and not rb.owner_named("nothing")
+grant_owner_panels("t3", age=rb.OWNER_GRANT_TTL_S + 60)
+assert not rb.owner_named("t3")
+# A marker stamped ahead of this clock is fresh by any reading: refusing it would deny the panel
+# Egor just named because two clocks disagree by a millisecond.
+grant_owner_panels("t3", age=-30)
+assert rb.owner_named("t3")
+for marker in ("t3", "max"):
+    (rb.owner_grant_dir() / marker).unlink()
 # The keyboard exemption is Egor's shell, not any terminal: Claude Code marks every command it
 # runs, so a pseudo-terminal an agent opens for itself is not him.
 _ttys = types.SimpleNamespace(isatty=lambda: True)

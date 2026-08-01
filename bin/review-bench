@@ -833,15 +833,14 @@ REVIEW_TIERS = {
 }
 
 # The two heaviest panels are the owner's to start, and no agent's: tier T3, and any tier's --max
-# composition. Enforcement is code on both sides — `bin/review-owner-gate.sh` turns Egor's own
-# words into a grant and denies the command without one, and the guard below refuses the same two
-# panels wherever that hook does not run (a worker's own process, a plain shell). The ceiling is
-# what an agent may reach on its own judgement.
+# composition. Enforcement is code on both sides — `bin/review-owner-gate.sh` denies the command
+# until Egor names the panel himself, and the guard below refuses the same two panels wherever
+# that hook does not run (a worker's own process, a plain shell). Naming one only unblocks it:
+# `suggest` proposes the ceiling regardless, so a passing mention never becomes what runs.
 OWNER_TIERS = ("T3",)
 AUTO_TIER_CEILING = "T2"
 OWNER_GRANT_DIR = "review-grants"
 OWNER_GRANT_TTL_S = 1800
-OWNER_GRANT_RETRY_S = 1200
 
 RECEIPT_DIR = "receipts"
 PROGRESS_DIR = "progress"
@@ -4651,54 +4650,19 @@ def owner_grant_dir():
     return state_dir() / OWNER_GRANT_DIR
 
 
-def owner_grants(now=None):
-    """One scope set per live grant `review-owner-gate.sh` wrote out of Egor's own words. Per
-    grant, never merged: the gate answers one file at a time, and a merged view would print a
-    `T3 --max` command out of two separate words that the gate then denies. A grant already spent
-    answers for its own retry window only. Anything unreadable or misshapen opens nothing.
+def owner_named(panel, now=None):
+    """Whether Egor named this panel recently enough for `review-owner-gate.sh` to have left its
+    marker there. A marker only unblocks — nothing in this tool ever proposes these panels — so
+    it needs no content, no spending and no shape to validate: its mtime is the whole permission.
     """
     now = time.time() if now is None else now
-    grants = []
     try:
-        entries = sorted(owner_grant_dir().iterdir())
+        # No lower bound: a marker stamped a moment ahead of this clock — the gate touching it
+        # while `now` was already read, a filesystem whose timestamps run fine-grained — is fresh
+        # by any reading, and refusing it would deny the panel Egor just named.
+        return now - (owner_grant_dir() / panel).stat().st_mtime <= OWNER_GRANT_TTL_S
     except OSError:
-        return grants
-    for path in entries:
-        try:
-            grant = json.loads(path.read_text())
-        except (OSError, ValueError):
-            continue
-        if not isinstance(grant, dict):
-            continue
-        stamp = grant.get("ts")
-        spent = grant.get("used_at")
-        if isinstance(spent, bool) or not isinstance(spent, (int, float)):
-            if isinstance(stamp, bool) or not isinstance(stamp, (int, float)):
-                continue
-            if not 0 <= now - stamp <= OWNER_GRANT_TTL_S:
-                continue
-        elif not 0 <= now - spent <= OWNER_GRANT_RETRY_S:
-            continue
-        scopes = grant.get("scopes")
-        if not isinstance(scopes, (list, tuple)):
-            continue
-        grants.append(frozenset(scope for scope in scopes if isinstance(scope, str)))
-    return grants
-
-
-def owner_allows(wanted, grants=None):
-    """Whether one single grant covers everything asked for, which is the gate's own rule."""
-    grants = owner_grants() if grants is None else grants
-    return any(set(wanted) <= grant for grant in grants)
-
-
-def owner_tier(tier_name, grants):
-    """The tier to run: the ladder's answer, capped below the owner-only tiers until Egor asks,
-    and raised to the tier he asked for when he has — his word is a floor as much as a key.
-    """
-    if owner_allows({"t3"}, grants):
-        return max(tier_name, *OWNER_TIERS)
-    return AUTO_TIER_CEILING if tier_name in OWNER_TIERS else tier_name
+        return False
 
 
 def owner_at_keyboard():
@@ -4723,7 +4687,7 @@ def guard_tier_owner(tier_name, use_max):
         return
     if owner_at_keyboard():
         return
-    if owner_allows(wanted):
+    if all(owner_named(panel) for panel in wanted):
         return
     asked = " and ".join(
         sorted(
@@ -5030,17 +4994,12 @@ def cmd_suggest(args):
                  "another, so staged and untracked content is counted once"
                  if snapshot_baseline
                  else "staged content is compared with the same reviewed tree"))
-    granted = owner_grants()
-    run_tier = owner_tier(tier_name, granted)
-    # Only out of one grant: two separate words are two separate permissions, and the gate would
-    # deny the command this line printed.
-    run_max = owner_allows({"max", "t3"} if run_tier in OWNER_TIERS else {"max"}, granted)
-    if run_tier < tier_name:
-        print(f"{tier_name} is the owner's to start, and he has not asked for it, so the panel "
-              f"below is {run_tier}")
-    elif run_tier > tier_name:
-        print(f"Egor asked for {run_tier}, which is his to raise, so the panel below is {run_tier} "
-              f"rather than the {tier_name} this change sizes to")
+    # What this line proposes never depends on whether Egor has named a panel: an owner-only tier
+    # is his to choose out of the lines below, so a passing mention of one can never become the
+    # command that runs.
+    run_tier = AUTO_TIER_CEILING if tier_name in OWNER_TIERS else tier_name
+    if run_tier != tier_name:
+        print(f"{tier_name} is the owner's to start, so the panel below is {run_tier}")
     extra = ["--repo", str(repo)] if args.repo != "." else []
     target = command_target if args.range else "--worktree"
 
@@ -5058,13 +5017,13 @@ def cmd_suggest(args):
         f"spawn: Bash run_in_background={'true' if background else 'false'}; "
         "preserve the complete final stdout"
     )
-    print(f"command: {command_for(run_tier, run_max)}")
+    print(f"command: {command_for(run_tier, False)}")
     # The heavier panels are printed for Egor to reach for, never as work to pick up: the gate
     # denies them to anyone he has not told, and a line the reader must not follow says so.
-    owner_only = []
-    if run_tier < tier_name:
-        owner_only.append(command_for(tier_name, run_max))
-    if not run_max and REVIEW_TIERS[run_tier]["cells"] != REVIEW_TIERS[run_tier]["cells_max"]:
+    # Every size prints them, not just the ones that size into T3: when he asks for T3 on a small
+    # change, the command he asked for has to be here to run rather than assembled by hand.
+    owner_only = [command_for(tier, False) for tier in OWNER_TIERS if tier != run_tier]
+    if REVIEW_TIERS[run_tier]["cells"] != REVIEW_TIERS[run_tier]["cells_max"]:
         owner_only.append(command_for(run_tier, True))
     for command in owner_only:
         print(f"owner-only, run only if Egor asked for it by name: {command}")

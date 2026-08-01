@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# bin/review-owner-gate.sh: tier T3 and any tier's --max run only after Egor has asked for one by
-# name. No network, no daemon; every grant is written into a fixture store.
+# bin/review-owner-gate.sh: tier T3 and any tier's --max are denied until Egor names one himself.
+# No network, no daemon; every marker is written into a fixture store.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -16,135 +16,77 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
 contains() { grep -Fq -- "$2" <<<"$1"; }
 lacks() { ! grep -Fq -- "$2" <<<"$1"; }
+denied() { contains "$1" '"permissionDecision":"deny"'; }
+allowed() { lacks "$1" '"permissionDecision"'; }
 
 bash_event() {
   jq -cn --arg c "$1" \
-    '{hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: {command: $c}}' \
-    | "$GATE" bash
+    '{hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: {command: $c}}' | "$GATE" bash
 }
 
 prompt_event() {
-  jq -cn --arg s "${2:-session-1}" --arg p "$1" \
-    '{hook_event_name: "UserPromptSubmit", session_id: $s, prompt: $p}' \
+  jq -cn --arg p "$1" '{hook_event_name: "UserPromptSubmit", session_id: "s", prompt: $p}' \
     | "$GATE" prompt
 }
 
-denied() { contains "$1" '"permissionDecision":"deny"'; }
+T3_COMMAND='review-bench review --worktree --tier T3 --foreground'
+MAX_COMMAND='review-bench review HEAD --tier T2 --max --foreground'
 
-# --- Ungranted: the two owner-only panels are refused, everything else passes through ----------
-assert denied "$(bash_event 'review-bench review --worktree --tier T3 --foreground')"
-assert denied "$(bash_event 'review-bench review HEAD --tier T2 --max --foreground')"
+# --- Unnamed: the two owner-only panels are refused, everything else passes through ------------
+assert denied "$(bash_event "$T3_COMMAND")"
+assert denied "$(bash_event "$MAX_COMMAND")"
 assert denied "$(bash_event 'review-bench run HEAD --tier T3 --foreground')"
 assert denied "$(bash_event 'review-bench review --worktree --tier=T3')"
-for allowed in \
+for ordinary in \
   'review-bench review --worktree --tier T2 --foreground' \
   'review-bench suggest --repo .' \
   'review-bench tiers --table' \
   'review-bench run HEAD --raters oc-kimik3 --max-tokens 32000' \
   "grep -n -- '--max' bin/review-bench" \
-  'rg "review-bench review --tier T3" docs'; do
-  assert lacks "$(bash_event "$allowed")" '"permissionDecision"'
+  'rg "review-bench review --tier T3" docs' \
+  "echo '--tier T3' && review-bench review --worktree --tier T2"; do
+  assert allowed "$(bash_event "$ordinary")"
 done
 
-# A grant is written from Egor's words alone, and an ordinary prompt writes none.
+# An ordinary prompt names nothing.
 assert lacks "$(prompt_event 'почини тесты и покажи диф')" 'additionalContext'
 assert test ! -d "$GRANTS"
 
-# Naming a panel is not asking for one: a refusal, a question, or a pasted diff that mentions T3
-# must open nothing, or his own question comes back as the heavy command he was questioning.
-for mention in \
-  'не запускай T3, хватит T2' \
-  'почему T3 не запускается?' \
-  'объясни, чем T3 отличается от T2' \
-  'do not run T3 here' \
-  'в доке написано: «risky or wide diff → T3»' \
-  'запусти тесты, но без максимального ревью'; do
-  assert lacks "$(prompt_event "$mention" mention)" 'additionalContext'
-done
+# --- Named: the block lifts, and stays lifted for the window ----------------------------------
+assert contains "$(prompt_event 'прогони T3 по этому диффу')" 'additionalContext'
+assert test -f "$GRANTS/t3"
+assert allowed "$(bash_event "$T3_COMMAND")"
+# Naming T3 is not naming --max.
+assert denied "$(bash_event "$MAX_COMMAND")"
+# One naming covers every run in its window: nothing is spent, so a rerun needs no new word.
+assert allowed "$(bash_event "$T3_COMMAND")"
+assert allowed "$(bash_event 'review-bench run HEAD --tier T3 --foreground')"
+# ...and stops covering anything once it goes stale.
+touch -t 202001010000 "$GRANTS/t3"
+assert denied "$(bash_event "$T3_COMMAND")"
+rm -rf "$GRANTS"
+
+# A Cyrillic word ending in the keyword's letters is not the keyword: the boundary is whitespace
+# or punctuation, not "anything outside A-Za-z0-9", which every Cyrillic letter satisfies.
+assert lacks "$(prompt_event 'проверь планет3 и комнат3')" 'additionalContext'
 assert test ! -d "$GRANTS"
-# The shortest way he can ask is the keyword by itself.
-assert contains "$(prompt_event 'T3' bare)" 'additionalContext'
-rm -rf "$GRANTS"
 
-# --- His word opens exactly one run ------------------------------------------------------------
-granted=$(prompt_event 'прогони T3 по этому диффу')
-assert contains "$granted" 'additionalContext'
-assert test -f "$GRANTS/session-1.json"
-assert test "$(jq -r '.scopes | join(",")' "$GRANTS/session-1.json")" = t3
-
-t3_command='review-bench review --worktree --tier T3 --foreground'
-assert lacks "$(bash_event "$t3_command")" '"permissionDecision"'
-# Spent, and recorded as spent: the identical command may still be retried after a crash or a
-# wall, anything else needs his word again.
-assert test "$(jq -r '.used_cmd | length' "$GRANTS/session-1.json")" = 16
-assert lacks "$(bash_event "$t3_command")" '"permissionDecision"'
-assert denied "$(bash_event 'review-bench review --worktree --tier T3 --max --foreground')"
-# A t3 grant is not a max grant.
-assert denied "$(bash_event 'review-bench review --worktree --tier T2 --max --foreground')"
-
-# --- Scopes and languages ----------------------------------------------------------------------
-for phrase in 'давай максимальное ревью' 'run a max review of the diff' 'полное ревью, пожалуйста'; do
+for phrase in 'давай максимальное ревью' 'run a max review of the diff' 'полное ревью' \
+  'ревью на макс'; do
   rm -rf "$GRANTS"
-  assert contains "$(prompt_event "$phrase" session-max)" 'additionalContext'
-  assert test "$(jq -r '.scopes | join(",")' "$GRANTS/session-max.json")" = max
-  assert lacks "$(bash_event 'review-bench review --worktree --tier T2 --max --foreground')" \
-    '"permissionDecision"'
+  assert contains "$(prompt_event "$phrase")" 'additionalContext'
+  assert test -f "$GRANTS/max"
+  assert allowed "$(bash_event "$MAX_COMMAND")"
 done
 rm -rf "$GRANTS"
-assert contains "$(prompt_event 'сделай T3, и максимальное ревью' session-both)" 'additionalContext'
-assert test "$(jq -r '.scopes | sort | join(",")' "$GRANTS/session-both.json")" = max,t3
 
-# --- Spending, retrying, racing --------------------------------------------------------------
-# A grant spent at the very end of its TTL still answers for the full retry window: the run it
-# allowed may have died at minute 29.
-rm -rf "$GRANTS"; mkdir -p "$GRANTS"
-old_ts=$(($(date +%s) - 1790))
-cmd_hash=$(printf '%s' "$t3_command" | shasum -a 1 | cut -c1-16)
-jq -cn --argjson ts "$old_ts" --argjson used "$(date +%s)" --arg hash "$cmd_hash" \
-  '{session: "late", ts: $ts, scopes: ["t3"], used_at: $used, used_cmd: $hash}' \
-  >"$GRANTS/late.json"
-assert lacks "$(bash_event "$t3_command")" '"permissionDecision"'
-# ...but a spent grant answers for nothing else, however fresh it is.
-assert denied "$(bash_event 'review-bench run HEAD --tier T3 --foreground')"
-
-# Quoting a gated flag earlier in a compound command must not deny the ordinary review after it.
-rm -rf "$GRANTS"
-assert lacks "$(bash_event "echo '--tier T3' && review-bench review --worktree --tier T2")" \
-  '"permissionDecision"'
-
-# Two hooks racing for one grant: exactly one wins, because the claim is a rename.
-rm -rf "$GRANTS"
-assert contains "$(prompt_event 'прогони T3' racer)" 'additionalContext'
-race_out="$WORK/race"
-mkdir -p "$race_out"
-for n in 1 2; do
-  ( bash_event "review-bench review --worktree --tier T3 --repo /race-$n" >"$race_out/$n" ) &
-done
-wait
-assert test "$(cat "$race_out"/1 "$race_out"/2 | grep -c 'permissionDecision')" -eq 1
-
-# A grant older than its window opens nothing, and neither does a corrupt one.
-rm -rf "$GRANTS"
-mkdir -p "$GRANTS"
-jq -cn --argjson ts "$(($(date +%s) - 3600))" \
-  '{session: "old", ts: $ts, scopes: ["t3"]}' >"$GRANTS/old.json"
-assert denied "$(bash_event "$t3_command")"
-printf 'not json\n' >"$GRANTS/old.json"
-assert denied "$(bash_event "$t3_command")"
-
-# A grant from another chat still counts: it is Egor's word either way, and a review is often
-# launched from a session other than the one he said it in.
-rm -rf "$GRANTS"
-assert contains "$(prompt_event 'прогони t3' other-chat)" 'additionalContext'
-assert lacks "$(bash_event "$t3_command")" '"permissionDecision"'
-
-# --- Fail-open ----------------------------------------------------------------------------------
+# --- Fail-open ---------------------------------------------------------------------------------
 # A malformed event, another tool's event, and an unknown mode all pass through silently rather
 # than blocking ordinary work.
-assert lacks "$(printf 'not json' | "$GATE" bash)" '"permissionDecision"'
-assert lacks "$(jq -cn '{hook_event_name: "PreToolUse", tool_name: "Edit"}' | "$GATE" bash)" \
-  '"permissionDecision"'
-assert lacks "$(jq -cn '{hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: {command: "review-bench review --tier T3"}}' | "$GATE" nonsense)" \
-  '"permissionDecision"'
+assert allowed "$(printf 'not json' | "$GATE" bash)"
+assert allowed "$(jq -cn '{hook_event_name: "PreToolUse", tool_name: "Edit"}' | "$GATE" bash)"
+assert allowed "$(jq -cn --arg c "$T3_COMMAND" \
+  '{hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: {command: $c}}' \
+  | "$GATE" nonsense)"
 
-printf 'PASS: %s asserts; T3 and --max are refused without a grant, opened by Egor'\''s own words for one run, and every other command and event passes through\n' "$asserts"
+printf 'PASS: %s asserts; T3 and --max are refused until Egor names one, then unblocked for the window, and every other command and event passes through\n' "$asserts"
