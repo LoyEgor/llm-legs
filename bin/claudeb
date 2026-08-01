@@ -1519,6 +1519,30 @@ write_state_file() {
   mv "$tmp" "$state_file"
 }
 
+# A transcript records no account, so the only evidence of who paid for a session is the
+# marker directory Claude Code stamps inside the profile home it ran under. Those markers
+# live with the rest of a profile's session data and are pruned with it; this ledger is not,
+# which is what lets spend still be attributed to an account months later. Harvesting on
+# every launch picks up whatever the previous session left behind.
+harvest_session_accounts() {
+  local dir="$1" profile="$2" ledger="$base_dir/session-accounts.log"
+  local marker session known started
+  [ -d "$dir/session-env" ] || return 0
+  mkdir -p "$base_dir" 2>/dev/null || return 0
+  known=""
+  [ -f "$ledger" ] && known=$(cut -f2 "$ledger" 2>/dev/null)
+  for marker in "$dir"/session-env/*; do
+    [ -e "$marker" ] || continue
+    session="${marker##*/}"
+    case "$known" in *"$session"*) continue ;; esac
+    started=$(stat -f '%Sm' -t '%Y-%m-%dT%H:%M:%SZ' "$marker" 2>/dev/null) || started=""
+    [ -n "$started" ] || started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    printf '%s\t%s\t%s\n' "$started" "$session" "$profile" >> "$ledger"
+    known="$known
+$session"
+  done
+}
+
 enable_account() {
   local name="${1:-}"
   if [ -z "$name" ]; then
@@ -1840,6 +1864,7 @@ profile_command() {
   # Headless worker spawns run constantly on other accounts; letting them stamp the state file
   # would make the `*`/`●`/`cb:` markers name the last worker instead of the account the user
   # sits in.
+  harvest_session_accounts "$dir" "$profile" || true
   args_are_headless "$@" || write_state_file "$profile"
   exec env -u ANTHROPIC_BASE_URL -u CLAUDE_CODE_OAUTH_TOKEN \
     CLAUDE_CONFIG_DIR="$dir" CLAUDE_LIMITS_ACCOUNT="$profile" claude "$@"
