@@ -890,6 +890,24 @@ def git_common_dir(repo):
         return None
 
 
+def repo_worktree_top(path):
+    """The working tree `path` sits in, which is the identity a receipt and a progress file are
+    keyed on. Resolving no further than `Path.resolve()` keyed them on the directory the caller
+    happened to stand in, so a run started from a subdirectory wrote a name nothing could predict
+    and a reader had to fall back to matching on the repository — which is shared by every linked
+    worktree, and made one worktree's review show up in its siblings.
+    """
+    if not Path(path).is_dir():
+        return None
+    proc = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        cwd=path, capture_output=True, text=True,
+    )
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    return Path(proc.stdout.strip()).resolve()
+
+
 def receipt_file_name(repo):
     repo_path = str(Path(repo).resolve())
     repo_name = repo_identity(repo_path)
@@ -4833,7 +4851,7 @@ def cmd_receipt(args):
     on. The hook reads it instead of deriving any of this itself, which is the third place every
     one of these derivations would otherwise have to stay in step with.
     """
-    repo = Path(args.repo).resolve()
+    repo = repo_worktree_top(args.repo) or Path(args.repo).resolve()
     receipt = review_receipt(repo)
     if not receipt:
         return 1
@@ -4853,14 +4871,9 @@ def cmd_receipt(args):
 
 
 def cmd_reviewed(args):
-    requested = Path(args.repo).resolve()
-    proc = subprocess.run(
-        ["git", "rev-parse", "--show-toplevel"],
-        cwd=requested, capture_output=True, text=True,
-    )
-    if proc.returncode != 0 or not proc.stdout.strip():
-        raise ValueError(f"not a git repository: {requested}")
-    repo = Path(proc.stdout.strip()).resolve()
+    repo = repo_worktree_top(args.repo)
+    if repo is None:
+        raise ValueError(f"not a git repository: {Path(args.repo).resolve()}")
     sha = resolve_commit(repo, "HEAD")
     tree = working_tree_tree(repo)
     now = utc_now()
@@ -4900,11 +4913,9 @@ def cmd_pending_report(args):
 
 
 def cmd_suggest(args):
-    repo = Path(args.repo).resolve()
-    if subprocess.run(
-        ["git", "rev-parse", "--git-dir"], cwd=repo, capture_output=True
-    ).returncode != 0:
-        raise ValueError(f"not a git repository: {repo}")
+    repo = repo_worktree_top(args.repo)
+    if repo is None:
+        raise ValueError(f"not a git repository: {Path(args.repo).resolve()}")
     # Defined for every path through the branch below, because the report at the end reads it.
     snapshot_baseline = False
     if args.range:
@@ -5102,11 +5113,9 @@ def cmd_run(args):
         args.raters = ",".join(
             REVIEW_TIERS[tier_name]["cells_max" if use_max else "cells"]
         )
-    repo = Path(args.repo).resolve()
-    if not (repo / ".git").exists() and subprocess.run(
-        ["git", "rev-parse", "--git-dir"], cwd=repo, capture_output=True
-    ).returncode != 0:
-        raise ValueError(f"not a git repository: {repo}")
+    repo = repo_worktree_top(args.repo)
+    if repo is None:
+        raise ValueError(f"not a git repository: {Path(args.repo).resolve()}")
     worktree_mode = bool(getattr(args, "worktree", False))
     commitish = getattr(args, "commitish", None)
     if bool(commitish) == worktree_mode:

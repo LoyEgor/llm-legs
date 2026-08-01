@@ -2039,6 +2039,22 @@ write_progress "$$" T2 4 7 2026-07-27T22:00:00+00:00 "$REVIEW_DIRTY"
 progress_foreign_out=$(progress_render foreign-repo)
 assert test "${progress_foreign_out#*4/7}" = "$progress_foreign_out"
 
+# A linked worktree is another chat's working tree, and matching on the repository could not tell
+# the two apart: `--git-common-dir` is one path for all of them, so a review running in a sibling
+# rendered here too. The pair proves the distinction is the working tree and not the repository —
+# the sibling is refused, and a subdirectory of THIS tree (the case that forced content matching
+# in the first place, since its file name is unpredictable) still renders.
+PROGRESS_WT="$FIXTURES/review-clean-wt"
+git -C "$REVIEW_CLEAN" worktree add -q "$PROGRESS_WT" -b progress-sibling
+write_progress "$$" T2 4 7 2026-07-27T22:00:00+00:00 "$PROGRESS_WT"
+progress_sibling_out=$(progress_render sibling-worktree)
+assert test "${progress_sibling_out#*4/7}" = "$progress_sibling_out"
+
+mkdir -p "$REVIEW_CLEAN/nested/deeper"
+write_progress "$$" T2 4 7 2026-07-27T22:00:00+00:00 "$REVIEW_CLEAN/nested/deeper"
+progress_subdir_out=$(progress_render subdirectory)
+assert grep -Fq 'review T2 4/7' <<< "$progress_subdir_out"
+
 write_progress "$$" T2 9 7 2026-07-27T22:00:00+00:00
 progress_overrun_out=$(progress_render overrun)
 assert test "${progress_overrun_out#*9/7}" = "$progress_overrun_out"

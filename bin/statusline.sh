@@ -50,6 +50,15 @@ git_common_dir() {
   (cd "$common" 2>/dev/null && pwd -P)
 }
 
+# The working tree a path belongs to, resolved the way repo_dirs resolves REPO_TOP so the two
+# compare. This is the identity anything chat-scoped matches on: `--git-common-dir` is shared by
+# every linked worktree, so a review running in one of them would render in all of them.
+git_worktree_top() {
+  local top
+  top=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null) || return 1
+  (cd "$top" 2>/dev/null && pwd -P)
+}
+
 repo_identity_name() {
   local common
   common=$(git_common_dir "$1") || return 1
@@ -1358,9 +1367,6 @@ if [ -n "$active_top" ]; then
   receipt_reviewed=""
   receipt_errored=0
   receipt_panel=""
-  # Already resolved with the repository identity above in all but the odd case
-  # where git_dir resolved and active_top did not come from it.
-  [ -n "$active_common" ] || active_common=$(git_common_dir "$active_top" 2>/dev/null)
   receipt_name=$(receipt_file_name "$active_top" 2>/dev/null)
   # A run in flight owns the slot: review-bench writes one progress file per run, and while it
   # lives the label reports that panel instead of the receipt verdict. Liveness is derived here,
@@ -1374,7 +1380,7 @@ if [ -n "$active_top" ]; then
   progress_late=""
   progress_newest=""
   progress_dir="$worker_stats_dir/progress"
-  if [ -n "$active_common" ] && [ -d "$progress_dir" ]; then
+  if [ -d "$progress_dir" ]; then
     # Every file is read and matched on the repository recorded inside it, never on its name:
     # review-bench keys the name on the path it was handed, so a run started from a subdirectory
     # writes a name this render cannot predict. The second pattern covers a repository whose own
@@ -1430,7 +1436,9 @@ if [ -n "$active_top" ]; then
       # The slack absorbs ps's whole-second resolution, not a real gap: pids are handed out
       # sequentially and wrap near 100k, so a reuse this close to the last write cannot happen.
       [ "$progress_start" -le "$((progress_mtime + 5))" ] || continue
-      [ "$(git_common_dir "$progress_repo" 2>/dev/null)" = "$active_common" ] || continue
+      # The working tree, not the repository: a run in a sibling worktree is another chat's news,
+      # and a subdirectory the run was started from still resolves to the tree it belongs to.
+      [ "$(git_worktree_top "$progress_repo" 2>/dev/null)" = "$active_top" ] || continue
       case "$progress_run_tier" in
         T[0-3]) ;;
         *) progress_run_tier="" ;;
@@ -1483,8 +1491,8 @@ if [ -n "$active_top" ] && [ -z "$progress_total" ]; then
   if [ -n "$receipt_values" ]; then
     IFS=$'\x1f' read -r receipt_repo receipt_tree receipt_commit receipt_run_id receipt_ts \
       receipt_errored receipt_panel <<< "$receipt_values"
-    receipt_common=$(git_common_dir "$receipt_repo" 2>/dev/null)
-    if [ -n "$active_common" ] && [ "$receipt_common" = "$active_common" ]; then
+    receipt_top=$(git_worktree_top "$receipt_repo" 2>/dev/null)
+    if [ "$receipt_top" = "$active_top" ]; then
       head_tree=$(git -C "$active_top" rev-parse 'HEAD^{tree}' 2>/dev/null)
       if [ -n "$head_tree" ] &&
         { { [ "$receipt_tree" = "$head_tree" ] && [ "$git_status_rc" -eq 0 ] &&
