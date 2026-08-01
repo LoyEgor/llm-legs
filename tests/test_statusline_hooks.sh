@@ -2295,7 +2295,9 @@ assert test ! -f "$hook_receipt"
 # The age rule is proved by the pair: the same cache renders while it is young and disappears once
 # it is not, with the probe pointed at nothing so no refresh can rewrite it mid-assertion.
 REVIEW_STUB="$FIXTURES/review-stub.sh"
-printf '#!/usr/bin/env bash\nprintf "tier: T3\\n"\n' > "$REVIEW_STUB"
+# T2 rather than T3 because `suggest` caps its `tier:` line at the panel it will actually launch,
+# and a stub answering what the tool cannot answer is where a divergence hides from its own test.
+printf '#!/usr/bin/env bash\nprintf "tier: T2\\n"\n' > "$REVIEW_STUB"
 chmod +x "$REVIEW_STUB"
 rm -f "$HOME/.cache/claude-statusline"/review-tier-*
 review_fresh_out=""
@@ -2303,9 +2305,9 @@ for _ in $(seq 1 20); do
   sleep 0.2
   review_fresh_out=$(STATUSLINE_REVIEW_BENCH_BIN="$REVIEW_STUB" \
     run_statusline "$review_dirty_payload") || fail "review stub render failed"
-  grep -Fq 'review T3' <<< "$review_fresh_out" && break
+  grep -Fq 'review T2' <<< "$review_fresh_out" && break
 done
-assert grep -Fq 'review T3' <<< "$review_fresh_out"
+assert grep -Fq 'review T2' <<< "$review_fresh_out"
 review_cache_file=$(ls "$HOME/.cache/claude-statusline"/review-tier-* 2>/dev/null | head -n1)
 assert test -n "$review_cache_file"
 touch -t 200001010000 "$review_cache_file"

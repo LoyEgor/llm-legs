@@ -4985,21 +4985,23 @@ def cmd_suggest(args):
         tier_name = "T0" if size_tier(changes, changed_lines) == "T0" else "T1"
     print(f"changed files: {len(changes)}")
     print(f"changed lines: {changed_lines}")
-    print(f"tier: {tier_name}")
+    # Exactly one tier is named here, and it is the one that runs. The cap on an owner-only tier
+    # holds whatever Egor has said, so a passing mention never becomes the command — and printing
+    # the ladder's own answer beside it put two tiers in front of a reader who acts on one: the
+    # statusline reads this line, and showed a panel nothing was going to launch.
+    run_tier = AUTO_TIER_CEILING if tier_name in OWNER_TIERS else tier_name
+    print(f"tier: {run_tier}")
+    if run_tier != tier_name:
+        print(f"the ladder sizes this at {tier_name}, which is the owner's to start, "
+              f"so the panel is {run_tier}")
     if fix_delta:
-        print(f"work over review {receipt['run_id']}, so {tier_name} regardless of what it touches")
+        print(f"work over review {receipt['run_id']}, so {run_tier} regardless of what it touches")
     if receipt:
         print(f"unreviewed delta vs review {receipt['run_id']}; "
               + ("the working tree is compared with the reviewed snapshot as one tree against "
                  "another, so staged and untracked content is counted once"
                  if snapshot_baseline
                  else "staged content is compared with the same reviewed tree"))
-    # What this line proposes never depends on whether Egor has named a panel: an owner-only tier
-    # is his to choose out of the lines below, so a passing mention of one can never become the
-    # command that runs.
-    run_tier = AUTO_TIER_CEILING if tier_name in OWNER_TIERS else tier_name
-    if run_tier != tier_name:
-        print(f"{tier_name} is the owner's to start, so the panel below is {run_tier}")
     extra = ["--repo", str(repo)] if args.repo != "." else []
     target = command_target if args.range else "--worktree"
 

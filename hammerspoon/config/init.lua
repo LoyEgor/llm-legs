@@ -712,6 +712,9 @@ restoreSystemInputDevice = function()
         print("WARNING: previous default input device is unavailable; leaving the system default untouched")
     end
     savedDefaultInputDevice = nil
+    if sendInputDeviceCommand then
+        sendInputDeviceCommand("default")
+    end
 end
 
 local inputDeviceRetryDelays = { 2, 5, 10 }

@@ -4572,12 +4572,22 @@ def suggest(path, *extra):
 def assert_suggestion(lines, files, changed_lines, tier, committed=False, receipt=None,
                       worktree_receipt=None, fix_capped=False, runs=None):
     runs = runs or tier
+    # `tier:` names the panel that runs, never the ladder's own answer: the statusline reads this
+    # line, and a number nothing is going to launch is a number the reader acts on wrongly. The
+    # ladder's answer survives as prose below, for a reader deciding whether to ask for more.
     assert lines[:3] == [
         f"changed files: {files}",
         f"changed lines: {changed_lines}",
-        f"tier: {tier}",
+        f"tier: {runs}",
     ], lines
     offset = 3
+    if runs != tier:
+        assert lines[offset] == (
+            f"the ladder sizes this at {tier}, which is the owner's to start, so the panel is {runs}"
+        ), lines
+        offset += 1
+    else:
+        assert not any("is the owner's to start" in line for line in lines), lines
     if fix_capped:
         run = receipt or worktree_receipt
         assert lines[offset] == (
@@ -4599,13 +4609,6 @@ def assert_suggestion(lines, files, changed_lines, tier, committed=False, receip
             "counted once"
         ), lines
         offset += 1
-    if runs != tier:
-        assert lines[offset] == (
-            f"{tier} is the owner's to start, so the panel below is {runs}"
-        ), lines
-        offset += 1
-    else:
-        assert not any(line.startswith(f"{tier} is the owner's") for line in lines), lines
     background = rb.REVIEW_TIERS[runs]["budget_min"] >= 10
     assert lines[offset] == (
         f"spawn: Bash run_in_background={'true' if background else 'false'}; "
@@ -4618,6 +4621,10 @@ def assert_suggestion(lines, files, changed_lines, tier, committed=False, receip
     assert lines[offset].startswith(prefix), lines
     assert f"--tier {runs}" in lines[offset], lines
     assert "--max" not in lines[offset], lines
+    # The invariant the statusline depends on, asserted against the two lines themselves rather
+    # than against what this helper was told: one tier is named, and it is the one that launches.
+    named = [line.split(": ", 1)[1] for line in lines if line.startswith("tier: ")]
+    assert named == re.findall(r"--tier (\S+)", lines[offset]), lines
     offset += 1
     # Everything heavier than the followed command is printed as the owner's to reach for, and
     # named as such on its own line.
