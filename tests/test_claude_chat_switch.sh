@@ -21,18 +21,36 @@ export HOME HS_CAPTURE
 mkdir -p "$HOME/.claude-profiles/com" "$HOME/.claude-profiles/olx" \
          "$HOME/.claude/projects" "$FAKE_BIN"
 
-# Stub hs: record the raw args (script always calls `hs -c "<lua>"`).
+# Stub hs: record the raw args (script always calls `hs -c "<lua>"`) and answer the
+# way a real arm does — a module console line first, the sentinel last.
 cat >"$FAKE_BIN/hs" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" > "$HS_CAPTURE"
+printf '[claude-chat-switch]\tarmed\tprofile=x\narmed\n'
 exit 0
 EOF
 # Stub ps so find_claude_pid returns immediately: any comm query answers "claude".
+# The tty query is --self's, and it lands on the resolved claude pid — the only point
+# where the fixture learns that pid, so the sessions-registry entry a live chat would
+# have is written there, with the procStart lstart= reports back.
+STUB_LSTART="Sat Aug  1 11:11:04 2026"
+export STUB_LSTART
 cat >"$FAKE_BIN/ps" <<'EOF'
 #!/usr/bin/env bash
+for arg in "$@"; do pid=$arg; done
 case "$*" in
   *comm=*) echo "claude" ;;
   *ppid=*) echo "1" ;;
+  *tty=*)
+    if [ -z "${STUB_NO_REGISTRY:-}" ]; then
+      reg="$HOME/.claude/sessions/$pid.json"
+      mkdir -p "${reg%/*}"
+      printf '{"pid":%s,"sessionId":"stub-session-0001","cwd":"/tmp","procStart":"%s","status":"idle"}\n' \
+        "$pid" "$STUB_LSTART" > "$reg"
+    fi
+    echo "ttys009"
+    ;;
+  *lstart=*) echo "$STUB_LSTART" ;;
 esac
 EOF
 chmod +x "$FAKE_BIN/hs" "$FAKE_BIN/ps"
@@ -69,8 +87,10 @@ assert grep -qi "not a valid profile name" <<<"$OUT"
 run_switch -- olx 11111111-2222-3333-4444-555555555555
 assert test "$RC" -eq 0
 assert grep -q 'ClaudeChatSwitch.switchChat("olx", "11111111-2222-3333-4444-555555555555", ' <<<"$PAYLOAD"
-# third arg is the resolved claude pid — a bare integer, closing the call
-assert grep -Eq ', [0-9]+\)$' <<<"$PAYLOAD"
+# third arg is the resolved claude pid — a bare integer; passive mode has no tty
+assert grep -Eq ', [0-9]+, nil, \{cwd="' <<<"$PAYLOAD"
+# the arm is confirmed by the returned sentinel, not by scanning the console output
+assert grep -q "and 'armed' or 'refused'" <<<"$PAYLOAD"
 assert grep -q 'armed' <<<"$OUT"
 assert grep -q 'claudeb profile olx --resume 11111111-2222-3333-4444-555555555555' <<<"$OUT"
 
@@ -101,6 +121,75 @@ assert test $? -eq 0
 run_switch -- olx 'bad/../id'
 assert test "$RC" -eq 1
 assert grep -qi "unexpected characters" <<<"$OUT"
+
+# --- --self: own tab, own tty, cwd + registry opts -------------------------
+# The tab handover path: the target session lives in another project, so the resume
+# has to carry its cwd or claude would look for the transcript under the wrong slug.
+FOREIGN="$WORK/foreign"; mkdir -p "$FOREIGN"
+# the script normalizes --cwd through `pwd -P`, and $TMPDIR is a /var symlink
+FOREIGN_REAL=$(cd "$FOREIGN" && pwd -P)
+FSLUG=$(slug_of "$FOREIGN")
+mkdir -p "$HOME/.claude/projects/$FSLUG"
+FSID="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+touch "$HOME/.claude/projects/$FSLUG/$FSID.jsonl"
+
+run_switch -- --self --cwd "$FOREIGN" olx "$FSID"
+assert test "$RC" -eq 0
+assert grep -q "ClaudeChatSwitch.switchChat(\"olx\", \"$FSID\", " <<<"$PAYLOAD"
+assert grep -q '"/dev/ttys009", {cwd="' <<<"$PAYLOAD"
+assert grep -q "cwd=\"$FOREIGN_REAL\", registry=\"$HOME/.claude/sessions/" <<<"$PAYLOAD"
+assert grep -q "cd '$FOREIGN_REAL' && claudeb profile olx --resume $FSID" <<<"$OUT"
+
+# --- passive mode carries --cwd too ----------------------------------------
+# He exits the chat himself, so nothing is typed until then — but the resume still
+# has to land in the target's project or claude cannot find that transcript.
+run_switch -- --cwd "$FOREIGN" olx "$FSID"
+assert test "$RC" -eq 0
+assert grep -q "cwd=\"$FOREIGN_REAL\"" <<<"$PAYLOAD"
+assert grep -q "cd '$FOREIGN_REAL' && claudeb profile olx --resume $FSID" <<<"$OUT"
+
+# --- --cwd picks the newest chat of the TARGET project ---------------------
+touch -t 202601010900 "$HOME/.claude/projects/$FSLUG/older-one.jsonl"
+touch -t 202601010905 "$HOME/.claude/projects/$FSLUG/$FSID.jsonl"
+run_switch -- --cwd "$FOREIGN" olx
+assert test "$RC" -eq 0
+assert grep -q "\"$FSID\"" <<<"$PAYLOAD"
+
+# --- --cwd without the target's transcript -> error ------------------------
+run_switch -- --self --cwd "$WORK" olx "$FSID"
+assert test "$RC" -eq 1
+assert grep -q "no transcript under" <<<"$OUT"
+assert test -z "$PAYLOAD"
+
+# --- flag validation -------------------------------------------------------
+run_switch -- --front --self olx "$FSID"
+assert test "$RC" -eq 1
+assert grep -q "mutually exclusive" <<<"$OUT"
+
+run_switch -- --bogus olx "$FSID"
+assert test "$RC" -eq 2
+assert grep -q "usage: claude-chat-switch" <<<"$OUT"
+
+run_switch -- --cwd
+assert test "$RC" -eq 2
+
+# --- --self refuses without a live registry --------------------------------
+# It exits the chat that armed it, usually mid-turn: no registry, no idle signal.
+run_switch STUB_NO_REGISTRY=1 -- --self --cwd "$FOREIGN" olx "$FSID"
+assert test "$RC" -eq 1
+assert grep -q "no live sessions-registry entry" <<<"$OUT"
+assert test -z "$PAYLOAD"
+
+# --- a path the error sentinel used to trip over ---------------------------
+# The armed console line echoes the cwd back, so "error" in a directory name must
+# not read as a failed arm.
+TRAP="$WORK/error not found"; mkdir -p "$TRAP"
+TRAP_REAL=$(cd "$TRAP" && pwd -P)
+TSLUG=$(slug_of "$TRAP"); mkdir -p "$HOME/.claude/projects/$TSLUG"
+touch "$HOME/.claude/projects/$TSLUG/$FSID.jsonl"
+run_switch -- --cwd "$TRAP" olx "$FSID"
+assert test "$RC" -eq 0
+assert grep -q "cwd=\"$TRAP_REAL\"" <<<"$PAYLOAD"
 
 # --- hs missing on PATH -> error ------------------------------------------
 NOHS="$WORK/nohs"; mkdir -p "$NOHS"
