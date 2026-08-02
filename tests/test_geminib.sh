@@ -444,4 +444,165 @@ else
 fi
 chmod 600 "$UNREADABLE_PIN"
 
-echo "PASS: $asserts asserts; base and isolated HOME routing, worker-pool exclusion (own file beside the profiles, last member protected, visible in list/status), shared configuration and Playwright caches, per-profile keychain kept unlockable behind a login.keychain-db symlink, parallel ordered list/status probes, one-step creation, strict launch names, exec delimiter stripping, override-aware login hints, persistent remove markers, and use pin set/show/clear/refusal parity"
+IMAGE_SCRIPT="$ROOT/bin/gemini-image"
+IMAGE_BIN="$WORK/image-bin"
+IMAGE_CALLS="$WORK/image-calls"
+IMAGE_PROMPT="$WORK/image-prompt"
+IMAGE_PICK_CALLS="$WORK/image-pick-calls"
+IMAGE_MAGICK_CALLS="$WORK/image-magick-calls"
+IMAGE_SIPS_CALLS="$WORK/image-sips-calls"
+IMAGE_REPLY="$WORK/generated.jpg"
+export IMAGE_CALLS IMAGE_PROMPT IMAGE_PICK_CALLS IMAGE_MAGICK_CALLS IMAGE_SIPS_CALLS IMAGE_REPLY
+mkdir -p "$IMAGE_BIN" "$WORK/image-output" "$HOME/.claude"
+: >"$IMAGE_PICK_CALLS"
+: >"$IMAGE_MAGICK_CALLS"
+: >"$IMAGE_SIPS_CALLS"
+
+cat >"$IMAGE_BIN/geminib" <<'EOF'
+#!/usr/bin/env bash
+previous=''
+before_previous=''
+for argument in "$@"; do
+  before_previous=$previous
+  previous=$argument
+done
+printf 'account=%s\nprint_flag=%s\n' "$2" "$before_previous" >>"$IMAGE_CALLS"
+printf '%s' "$previous" >"$IMAGE_PROMPT"
+if [ "${IMAGE_MODE:-reply}" = rescue ]; then
+  # The real tool names the file after the instruction's ImageName; the rescue
+  # search keys on that, so the fake must honor it too.
+  image_name=$(printf '%s' "$previous" | sed -n 's/^ImageName: //p')
+  mkdir -p "$(dirname "$IMAGE_RESCUE_FILE")"
+  printf 'rescued\n' >"$(dirname "$IMAGE_RESCUE_FILE")/${image_name:-rescued}.jpg"
+  printf 'status\n/nonexistent/generated.jpg\n'
+else
+  printf 'generated:%s\n' "$2" >"$IMAGE_REPLY"
+  printf 'status\n%s\n' "$IMAGE_REPLY"
+fi
+EOF
+chmod +x "$IMAGE_BIN/geminib"
+
+cat >"$IMAGE_BIN/worker-pick" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$IMAGE_PICK_CALLS"
+case "${IMAGE_PICK_MODE:-ok}" in
+  ok) printf '%s\n' "${IMAGE_PICK_ACCOUNT:-picked}" ;;
+  limit) exit 3 ;;
+  fail) exit 7 ;;
+esac
+EOF
+chmod +x "$IMAGE_BIN/worker-pick"
+
+cat >"$IMAGE_BIN/magick" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$IMAGE_MAGICK_CALLS"
+case "$*" in
+  *-format*info:) printf 'srgb(7,246,5)'; exit 0 ;;
+esac
+for output in "$@"; do :; done
+output=${output#PNG:}
+printf 'converted\n' >"$output"
+EOF
+chmod +x "$IMAGE_BIN/magick"
+
+cat >"$IMAGE_BIN/sips" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$IMAGE_SIPS_CALLS"
+printf '  pixelWidth: 1024\n  pixelHeight: 768\n  format: jpeg\n'
+EOF
+chmod +x "$IMAGE_BIN/sips"
+
+IMAGE_PATH="$IMAGE_BIN:/usr/bin:/bin"
+IMAGE_OUT="$WORK/image.out"
+IMAGE_ERR="$WORK/image.err"
+image_run() {
+  env PATH="$IMAGE_PATH" IMAGE_MODE="${IMAGE_MODE:-reply}" \
+    IMAGE_PICK_MODE="${IMAGE_PICK_MODE:-ok}" IMAGE_PICK_ACCOUNT="${IMAGE_PICK_ACCOUNT:-picked}" \
+    IMAGE_RESCUE_FILE="${IMAGE_RESCUE_FILE:-}" WORKER_PICK_CONFIG_FILE="$HOME/.claude/worker-model" \
+    bash "$IMAGE_SCRIPT" "$@" >"$IMAGE_OUT" 2>"$IMAGE_ERR"
+}
+
+image_rc=0
+image_run --dest "$WORK/image-output/bad.jpg" --prompt badge --aspect 5:4 || image_rc=$?
+assert test "$image_rc" -eq 2
+assert grep -q '^usage: gemini-image ' "$IMAGE_ERR"
+
+printf 'reference\n' >"$WORK/reference.jpg"
+: >"$IMAGE_PICK_CALLS"
+image_rc=0
+image_run --dest "$WORK/image-output/alpha.jpg" --prompt 'simple badge' --transparent || image_rc=$?
+assert test "$image_rc" -eq 2
+assert grep -q 'requires a .png destination' "$IMAGE_ERR"
+assert image_run --dest "$WORK/image-output/alpha.png" --prompt 'simple badge' \
+  --aspect 16:9 --ref "$WORK/reference.jpg" --transparent --account explicit
+assert grep -q '#00FF00' "$IMAGE_PROMPT"
+assert_fails grep -qi transparent "$IMAGE_PROMPT"
+assert grep -q 'generate_image' "$IMAGE_PROMPT"
+assert grep -q 'exactly once' "$IMAGE_PROMPT"
+assert test "$(grep -o 'generate_image' "$IMAGE_PROMPT" | wc -l | tr -d ' ')" = 1
+assert grep -q 'AspectRatio: 16:9' "$IMAGE_PROMPT"
+assert grep -q -- "- $WORK/reference.jpg" "$IMAGE_PROMPT"
+assert grep -qx 'account=explicit' "$IMAGE_CALLS"
+assert grep -qx 'print_flag=--print' "$IMAGE_CALLS"
+assert test ! -s "$IMAGE_PICK_CALLS"
+assert grep -qF -- "-format %[pixel:p{2,2}] info:" "$IMAGE_MAGICK_CALLS"
+assert grep -q -- "-fuzz 12% -transparent srgb(7,246,5) .*/keyed.png" "$IMAGE_MAGICK_CALLS"
+assert grep -q -- "-alpha extract -morphology EdgeIn Octagon:2 .*/edge.png" "$IMAGE_MAGICK_CALLS"
+assert grep -qF -- "-channel G -fx min(g,max(r,b)) +channel" "$IMAGE_MAGICK_CALLS"
+assert grep -q -- "despilled.png .*/edge.png -composite PNG:$WORK/image-output/alpha.png" "$IMAGE_MAGICK_CALLS"
+assert grep -qx "dest=$WORK/image-output/alpha.png" "$IMAGE_OUT"
+assert grep -qx 'size=1024x768' "$IMAGE_OUT"
+assert grep -qx 'account=explicit' "$IMAGE_OUT"
+assert grep -q "$WORK/image-output/alpha.png" "$IMAGE_SIPS_CALLS"
+
+image_rc=0
+image_run --dest "$WORK/image-output/refs.jpg" --prompt badge \
+  --ref "$WORK/reference.jpg" --ref "$WORK/reference.jpg" \
+  --ref "$WORK/reference.jpg" --ref "$WORK/reference.jpg" || image_rc=$?
+assert test "$image_rc" -eq 2
+
+: >"$IMAGE_CALLS"
+: >"$IMAGE_MAGICK_CALLS"
+IMAGE_PICK_MODE=ok
+IMAGE_PICK_ACCOUNT=poolacct
+export IMAGE_PICK_MODE IMAGE_PICK_ACCOUNT
+assert image_run --dest "$WORK/image-output/picked.jpg" --prompt landscape
+assert grep -qx 'account=poolacct' "$IMAGE_OUT"
+assert grep -qx -- '--account gemini' "$IMAGE_PICK_CALLS"
+assert grep -qx 'generated:poolacct' "$WORK/image-output/picked.jpg"
+assert test ! -s "$IMAGE_MAGICK_CALLS"
+
+printf 'gemini_profile=pinacct\n' >"$HOME/.claude/worker-model"
+IMAGE_PICK_MODE=fail
+export IMAGE_PICK_MODE
+assert image_run --dest "$WORK/image-output/pin.jpg" --prompt portrait
+assert grep -qx 'account=pinacct' "$IMAGE_OUT"
+assert grep -q 'falling back to account pinacct' "$IMAGE_ERR"
+
+printf 'worker=gemini\n' >"$HOME/.claude/worker-model"
+assert image_run --dest "$WORK/image-output/main.jpg" --prompt portrait
+assert grep -qx 'account=main' "$IMAGE_OUT"
+assert grep -q 'falling back to account main' "$IMAGE_ERR"
+
+IMAGE_PICK_MODE=limit
+export IMAGE_PICK_MODE
+image_rc=0
+image_run --dest "$WORK/image-output/limit.jpg" --prompt portrait || image_rc=$?
+assert test "$image_rc" -eq 3
+assert grep -qx GEMINI_USAGE_LIMIT "$IMAGE_ERR"
+
+IMAGE_PICK_MODE=ok
+IMAGE_MODE=rescue
+IMAGE_RESCUE_FILE="$HOME/.gemini-profiles/rescue/.gemini/antigravity-cli/brain/conversation/rescued.jpg"
+export IMAGE_PICK_MODE IMAGE_MODE IMAGE_RESCUE_FILE
+assert image_run --dest "$WORK/image-output/rescued.jpg" --prompt landscape --account rescue
+assert grep -qx rescued "$WORK/image-output/rescued.jpg"
+
+IMAGE_MODE=reply
+export IMAGE_MODE
+: >"$IMAGE_MAGICK_CALLS"
+assert image_run --dest "$WORK/image-output/converted.png" --prompt landscape --account main
+assert grep -q "$IMAGE_REPLY $WORK/image-output/converted.png" "$IMAGE_MAGICK_CALLS"
+assert grep -qx converted "$WORK/image-output/converted.png"
+
+echo "PASS: $asserts asserts; base and isolated HOME routing, worker-pool exclusion (own file beside the profiles, last member protected, visible in list/status), shared configuration and Playwright caches, per-profile keychain kept unlockable behind a login.keychain-db symlink, parallel ordered list/status probes, one-step creation, strict launch names, exec delimiter stripping, override-aware login hints, persistent remove markers, use pin set/show/clear/refusal parity, and one-image generation routing, prompt, rescue, and conversion"

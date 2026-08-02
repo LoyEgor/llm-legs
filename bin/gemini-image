@@ -1,0 +1,216 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  printf 'usage: gemini-image --dest <absolute path> --prompt <description> [--aspect <1:1|2:3|3:2|3:4|4:3|9:16|16:9>] [--ref <absolute image path>]... [--transparent] [--account <profile>]\n' >&2
+  exit 2
+}
+
+resolve_root() {
+  local source="${BASH_SOURCE[0]}" directory
+  while [ -L "$source" ]; do
+    directory=$(cd -P "$(dirname "$source")" && pwd)
+    source=$(readlink "$source")
+    [[ "$source" = /* ]] || source="$directory/$source"
+  done
+  cd -P "$(dirname "$source")/.." && pwd
+}
+
+dest=''
+prompt=''
+aspect='1:1'
+account=''
+remove_green=false
+refs=()
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dest)
+      [ "$#" -ge 2 ] || usage
+      dest=$2
+      shift 2
+      ;;
+    --prompt)
+      [ "$#" -ge 2 ] || usage
+      prompt=$2
+      shift 2
+      ;;
+    --aspect)
+      [ "$#" -ge 2 ] || usage
+      aspect=$2
+      shift 2
+      ;;
+    --ref)
+      [ "$#" -ge 2 ] || usage
+      refs+=("$2")
+      shift 2
+      ;;
+    --transparent)
+      remove_green=true
+      shift
+      ;;
+    --account)
+      [ "$#" -ge 2 ] || usage
+      account=$2
+      shift 2
+      ;;
+    *) usage ;;
+  esac
+done
+
+[ -n "$dest" ] && [ -n "$prompt" ] || usage
+[[ "$dest" = /* ]] || usage
+[ -d "$(dirname "$dest")" ] || usage
+if [ "$remove_green" = true ]; then
+  case "$(printf '%s' "${dest##*.}" | tr '[:upper:]' '[:lower:]')" in
+    png) ;;
+    *)
+      printf 'gemini-image: --transparent requires a .png destination\n' >&2
+      exit 2
+      ;;
+  esac
+fi
+case "$aspect" in
+  1:1|2:3|3:2|3:4|4:3|9:16|16:9) ;;
+  *) usage ;;
+esac
+ref_count=${#refs[@]}
+[ "$ref_count" -le 3 ] || usage
+if [ "$ref_count" -gt 0 ]; then
+  for ref in "${refs[@]}"; do
+    [[ "$ref" = /* ]] && [ -f "$ref" ] || usage
+  done
+fi
+if [ -n "$account" ] && ! [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+  usage
+fi
+
+base_home=$HOME
+root=$(resolve_root)
+gemini_base_home=$base_home
+gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$base_home/.gemini-profiles}"
+. "$root/share/gemini-accounts.sh"
+
+if [ -z "$account" ]; then
+  pick_rc=0
+  if command -v worker-pick >/dev/null 2>&1; then
+    account=$(worker-pick --account gemini 2>/dev/null) || pick_rc=$?
+  else
+    pick_rc=127
+  fi
+  if [ "$pick_rc" -eq 3 ]; then
+    printf 'GEMINI_USAGE_LIMIT\n' >&2
+    exit 3
+  fi
+  if [ "$pick_rc" -ne 0 ] || ! [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    worker_file="${WORKER_PICK_CONFIG_FILE:-$base_home/.claude/worker-model}"
+    account=$(sed -n 's/^gemini_profile=//p' "$worker_file" 2>/dev/null | head -n1) || account=''
+    account=${account:-main}
+    if ! [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+      account=main
+    fi
+    printf 'gemini-image: worker-pick unavailable; falling back to account %s\n' "$account" >&2
+  fi
+fi
+
+profile_home=$(gemini_account_home "$account")
+brain_dir="$profile_home/.gemini/antigravity-cli/brain"
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/gemini-image.XXXXXX")
+trap 'rm -rf "$tmp_dir"' EXIT
+launch_marker="$tmp_dir/launch"
+stdout_file="$tmp_dir/stdout"
+log_file="$tmp_dir/agy.log"
+content=$prompt
+if [ "$remove_green" = true ]; then
+  content=$(printf '%s' "$content" | sed 's/[Tt][Rr][Aa][Nn][Ss][Pp][Aa][Rr][Ee][Nn][Tt]//g')
+  content="$content on a flat solid #00FF00 green background"
+fi
+
+if [ "$ref_count" -eq 0 ]; then
+  image_paths='Omit ImagePaths.'
+else
+  image_paths='ImagePaths:'
+  for ref in "${refs[@]}"; do
+    image_paths+=$'\n- '
+    image_paths+="$ref"
+  done
+fi
+# Unique per invocation: the fallback search below keys on it, and concurrent
+# generations on one account share a single brain directory.
+image_name="gemini-image-$$-$(date +%s)"
+instruction="Generate one image with this content:
+$content
+
+Call generate_image exactly once with these parameters:
+ImageName: $image_name
+AspectRatio: $aspect
+$image_paths
+Reply with ONLY the absolute path of the generated file on the last line."
+
+# Backdated a second: -newer misses files that land in the marker's own mtime quantum.
+: >"$launch_marker"
+touch -A -01 "$launch_marker" 2>/dev/null || true
+if ! geminib profile "$account" --model gemini-3.6-flash-low --print-timeout 8m \
+  --dangerously-skip-permissions --log-file "$log_file" --print "$instruction" >"$stdout_file"; then
+  printf 'gemini-image: generation failed\n' >&2
+  tail -n 20 "$stdout_file" >&2
+  exit 1
+fi
+
+generated=$(tail -n 1 "$stdout_file" | tr -d '\r')
+if [[ "$generated" != /* ]] || [ ! -f "$generated" ] || [ "$generated" -ot "$launch_marker" ]; then
+  generated=''
+fi
+if [ -z "$generated" ] && [ -d "$brain_dir" ]; then
+  while IFS= read -r candidate; do
+    if [ -z "$generated" ] || [ "$candidate" -nt "$generated" ]; then
+      generated=$candidate
+    fi
+  done < <(find "$brain_dir" -type f -iname "${image_name}*" \
+    \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' \) \
+    -newer "$launch_marker" -print 2>/dev/null)
+fi
+if [ -z "$generated" ]; then
+  printf 'gemini-image: generated file not found\n' >&2
+  tail -n 20 "$stdout_file" >&2
+  exit 1
+fi
+
+normalized_extension() {
+  local value
+  value=$(printf '%s' "${1##*.}" | tr '[:upper:]' '[:lower:]')
+  case "$value" in jpeg) printf 'jpg' ;; *) printf '%s' "$value" ;; esac
+}
+extension=$(normalized_extension "$dest")
+if [ "$remove_green" = true ] || [ "$extension" = png ] \
+    || [ "$extension" != "$(normalized_extension "$generated")" ]; then
+  command -v magick >/dev/null 2>&1 || {
+    printf 'gemini-image: magick is required for this output\n' >&2
+    exit 1
+  }
+  if [ "$remove_green" = true ]; then
+    # The model never hits #00FF00 exactly; keying on a corner sample plus a green
+    # despill kills the fringe that a fixed key color leaves on anti-aliased edges.
+    # The despill is masked to a 2px inner edge band: applied globally it would
+    # dull every legitimately green object in the image.
+    key=$(magick "$generated" -format '%[pixel:p{2,2}]' info:)
+    magick "$generated" -fuzz 12% -transparent "$key" "$tmp_dir/keyed.png"
+    magick "$tmp_dir/keyed.png" -alpha extract -morphology EdgeIn Octagon:2 "$tmp_dir/edge.png"
+    magick "$tmp_dir/keyed.png" -channel G -fx 'min(g,max(r,b))' +channel "$tmp_dir/despilled.png"
+    magick "$tmp_dir/keyed.png" "$tmp_dir/despilled.png" "$tmp_dir/edge.png" -composite "PNG:$dest"
+  else
+    magick "$generated" "$dest"
+  fi
+else
+  cp "$generated" "$dest"
+fi
+
+sips_output=$(sips -g pixelWidth -g pixelHeight -g format "$dest")
+width=$(awk '/pixelWidth:/ {print $2; exit}' <<<"$sips_output")
+height=$(awk '/pixelHeight:/ {print $2; exit}' <<<"$sips_output")
+format=$(awk '/format:/ {print $2; exit}' <<<"$sips_output")
+[ -n "$width" ] && [ -n "$height" ] && [ -n "$format" ] || {
+  printf 'gemini-image: could not inspect output\n' >&2
+  exit 1
+}
+printf 'dest=%s\nsize=%sx%s\nformat=%s\naccount=%s\n' "$dest" "$width" "$height" "$format" "$account"
