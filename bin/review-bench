@@ -705,6 +705,10 @@ LENS_FLAG_HELP = (
     "Review with this registered lens instead of the raters' own methodology "
     "(review-bench lens list)"
 )
+SCOPE_FLAG_HELP = (
+    "Review only the working-tree changes under these pathspecs (--worktree only); the run "
+    "answers to a receipt of its own and never marks the repository reviewed"
+)
 VERDICTS = {"confirmed", "false_positive", "duplicate"}
 WEIGHTS = {"P1": 5, "P2": 2, "P3": 1}
 ADJUDICATION_TOK_ESTIMATE = {"duplicate": 400, "false_positive": 1500}
@@ -861,6 +865,7 @@ RECEIPT_FIELDS = ("repo", "tree", "commit", "run_id", "ts")
 # T1's size ceiling, named rather than left a literal inside the tier ladder.
 T1_MAX_LINES = 150
 RECEIPT_HASH_HEX = 8
+SCOPE_TRAILER = "Scope-Path: "
 REVIEW_LATE_MULTIPLIER = 3
 REVIEW_LATE_FLOOR_S = 120
 
@@ -933,12 +938,19 @@ def resolve_repo_arg(path, require_worktree=False):
     return repo if inside.returncode == 0 else None
 
 
-def receipt_file_name(repo, lens=None):
-    """The repository's review receipt, or a lens's own beside it. A lens run read the same
-    tree by a methodology the tool did not write, so it may not answer for the review cycle:
-    the ordinary receipt is what `suggest` sizes the next change against and what the stamp
-    hook reads, and one lens run sharing it would declare the repository reviewed.
+def scope_receipt_slug(scope):
+    return hashlib.sha1("\0".join(scope).encode()).hexdigest()[:RECEIPT_HASH_HEX]
+
+
+def receipt_file_name(repo, lens=None, scope=None):
+    """The repository's review receipt, or a lens's or a scope's own beside it. Neither of those
+    read what the ordinary receipt answers for: a lens run read the tree by a methodology the tool
+    did not write, and a scoped run read only some of it. The ordinary receipt is what `suggest`
+    sizes the next change against and what the stamp hook reads, so either one sharing it would
+    declare the whole repository reviewed.
     """
+    if lens and scope:
+        raise ValueError("a receipt answers for a lens or for a scope, never both")
     repo_path = str(Path(repo).resolve())
     repo_name = repo_identity(repo_path)
     if not repo_name:
@@ -946,6 +958,8 @@ def receipt_file_name(repo, lens=None):
     repo_hash = hashlib.sha1(repo_path.encode()).hexdigest()[:RECEIPT_HASH_HEX]
     if lens:
         return f"{repo_name}__{repo_hash}__lens-{lens}.json"
+    if scope:
+        return f"{repo_name}__{repo_hash}__scope-{scope_receipt_slug(scope)}.json"
     return f"{repo_name}__{repo_hash}.json"
 
 
@@ -1031,8 +1045,8 @@ def prune_review_progress(repo, directory=None):
             pass
 
 
-def review_receipt(repo, lens=None):
-    name = receipt_file_name(repo, lens)
+def review_receipt(repo, lens=None, scope=None):
+    name = receipt_file_name(repo, lens, scope)
     if not name:
         return None
     path = state_dir() / RECEIPT_DIR / name
@@ -1058,10 +1072,10 @@ def review_receipt(repo, lens=None):
 
 
 def persist_review_receipt(repo, tree, sha, run_id, errored, timestamp=None, panel=None,
-                           lens=None):
+                           lens=None, scope=None):
     tmp = None
     try:
-        name = receipt_file_name(repo, lens)
+        name = receipt_file_name(repo, lens, scope)
         if not name:
             raise RuntimeError("repository identity is unavailable")
         directory = state_dir() / RECEIPT_DIR
@@ -1081,6 +1095,10 @@ def persist_review_receipt(repo, tree, sha, run_id, errored, timestamp=None, pan
         # methodology, and the reader has only the receipt it was handed.
         if lens:
             receipt["lens"] = lens
+        # The name carries only a hash of the scope, and a reader handed the receipt has to be
+        # able to say which files the run behind it actually read.
+        if scope:
+            receipt["scope"] = list(scope)
         tmp.write_text(json.dumps(receipt) + "\n")
         os.replace(tmp, path)
         tmp = None
@@ -1093,7 +1111,8 @@ def persist_review_receipt(repo, tree, sha, run_id, errored, timestamp=None, pan
                 pass
 
 
-def write_review_receipt(repo, sha, run_id, errored, panel=None, worktree=False, lens=None):
+def write_review_receipt(repo, sha, run_id, errored, panel=None, worktree=False, lens=None,
+                         scope=None):
     try:
         proc = subprocess.run(
             ["git", "rev-parse", f"{sha}^{{tree}}"],
@@ -1116,21 +1135,79 @@ def write_review_receipt(repo, sha, run_id, errored, panel=None, worktree=False,
                     "current state (historical bench run)", file=sys.stderr,
                 )
                 return None
-        return persist_review_receipt(repo, tree, sha, run_id, errored, panel=panel, lens=lens)
+        return persist_review_receipt(repo, tree, sha, run_id, errored, panel=panel, lens=lens,
+                                      scope=scope)
     except Exception as exc:
         print(f"warning: could not write review receipt: {exc}", file=sys.stderr)
         return None
 
 
-def working_tree_tree(repo):
+def scope_path_relative(top, candidate):
+    """`candidate` as a path under `top`, or None when it lies outside. Lexical first and only
+    lexically for anything that already reads as inside: a pathspec is matched by git against the
+    repository's own paths, so following a symlink out of the tree would hand git a path it does
+    not know. The resolved retry exists for the reverse case only — `/var/x` and `/private/var/x`
+    are the same directory, and a caller who typed one while the repository was discovered as the
+    other is naming a path inside it.
+    """
+    for base, target in ((top, candidate), (Path(top).resolve(), Path(candidate).resolve())):
+        relative = os.path.relpath(os.path.normpath(str(target)), str(base))
+        if relative != os.pardir and not relative.startswith(os.pardir + os.sep):
+            return relative
+    return None
+
+
+def normalize_scope_paths(repo, paths):
+    """The scope as the snapshot records it and as its receipt is named: repository-relative,
+    lexically canonical, deduplicated and sorted, so two callers naming the same files differently
+    — a different order, a `.`/`..` segment, an absolute path — review the same tree and answer to
+    the same receipt.
+
+    A relative pathspec is resolved the way the caller's shell would read it, against the current
+    directory, since a caller standing in a subdirectory means the file beside them. Only a caller
+    standing outside the repository has no such meaning to offer, and is read repository-relative.
+    """
+    top = Path(repo).resolve()
+    try:
+        cwd = Path.cwd()
+    except OSError:
+        cwd = top
+    base = cwd if cwd == top or top in cwd.parents else top
+    normalized = set()
+    for raw in paths:
+        path = str(raw).strip()
+        if not path:
+            raise ValueError(f"--paths names no path: {raw!r}")
+        # The snapshot records one trailer per path, and a trailer is a line: a path carrying a
+        # newline would be read back as a scope nobody asked for.
+        if "\n" in path or "\r" in path:
+            raise ValueError("--paths entries may not contain newlines")
+        relative = scope_path_relative(
+            top, path if os.path.isabs(path) else os.path.join(str(base), path)
+        )
+        if relative is None:
+            raise ValueError(f"--paths names a path outside the repository: {raw}")
+        if relative == os.curdir:
+            raise ValueError(f"--paths names no path: {raw!r}")
+        normalized.add(relative)
+    if not normalized:
+        raise ValueError("--paths needs at least one path")
+    return sorted(normalized)
+
+
+def working_tree_tree(repo, paths=None):
+    scope = list(paths or [])
     with tempfile.TemporaryDirectory(prefix="review-bench-index-") as directory:
         env = dict(os.environ, GIT_INDEX_FILE=str(Path(directory) / "index"))
-        for command in (("read-tree", "HEAD"), ("add", "-A")):
+        add = ("add", "-A", "--", *scope) if scope else ("add", "-A")
+        for command in (("read-tree", "HEAD"), add):
             proc = subprocess.run(
                 ["git", *command], cwd=repo, env=env, capture_output=True, text=True,
             )
             if proc.returncode != 0:
                 detail = proc.stderr.strip() or proc.stdout.strip() or "git failed"
+                if scope and "did not match any files" in detail:
+                    raise ValueError(f"--paths matched nothing: {detail}")
                 raise RuntimeError(f"could not compute working tree: {detail}")
         proc = subprocess.run(
             ["git", "write-tree"], cwd=repo, env=env, capture_output=True, text=True,
@@ -1141,8 +1218,9 @@ def working_tree_tree(repo):
         return proc.stdout.strip()
 
 
-def worktree_snapshot_commit(repo, clean_command=None):
-    tree = working_tree_tree(repo)
+def worktree_snapshot_commit(repo, clean_command=None, paths=None):
+    scope = list(paths or [])
+    tree = working_tree_tree(repo, scope)
     head = resolve_commit(repo, "HEAD")
     head_tree = subprocess.run(
         ["git", "rev-parse", "HEAD^{tree}"],
@@ -1151,10 +1229,20 @@ def worktree_snapshot_commit(repo, clean_command=None):
     if head_tree.returncode != 0 or not head_tree.stdout.strip():
         raise RuntimeError(head_tree.stderr.strip() or "HEAD tree is unavailable")
     if tree == head_tree.stdout.strip():
+        if scope:
+            raise ValueError(
+                "no changes under the given paths: " + " ".join(scope)
+                + "; widen --paths or drop it to review the whole working tree"
+            )
         raise ValueError(
             "working tree matches HEAD; review the commit instead: "
             + (clean_command or "review-bench review HEAD --tier <tier>")
         )
+    message = "review-bench worktree snapshot"
+    if scope:
+        # Carried in the commit rather than on the rerun line: a rerun names the snapshot sha and
+        # nothing else, so a scope kept outside it would silently widen to the whole tree.
+        message += "\n\n" + "".join(f"{SCOPE_TRAILER}{path}\n" for path in scope)
     fixed = {
         "GIT_AUTHOR_NAME": "review-bench",
         "GIT_AUTHOR_EMAIL": "review-bench@local",
@@ -1164,12 +1252,35 @@ def worktree_snapshot_commit(repo, clean_command=None):
         "GIT_COMMITTER_DATE": "2005-04-07T22:13:13 +0000",
     }
     proc = subprocess.run(
-        ["git", "commit-tree", tree, "-p", head, "-m", "review-bench worktree snapshot"],
+        ["git", "commit-tree", tree, "-p", head, "-m", message],
         cwd=repo, env=dict(os.environ, **fixed), capture_output=True, text=True,
     )
     if proc.returncode != 0 or not proc.stdout.strip():
         raise RuntimeError(proc.stderr.strip() or "could not create worktree snapshot")
     return proc.stdout.strip()
+
+
+def snapshot_scope_paths(repo, sha):
+    """The paths a worktree snapshot was scoped to, empty for an unscoped one. A rerun is pinned
+    to the snapshot sha and carries no flags, so this is the only place its scope comes from.
+    """
+    proc = subprocess.run(["git", "show", "-s", "--format=%B", sha],
+                          cwd=repo, capture_output=True, text=True)
+    # Never an empty scope on a failed read: an unreadable message is indistinguishable from an
+    # unscoped snapshot, and guessing the wrong one widens the rerun to the whole tree and stamps
+    # the repository's own receipt with it.
+    if proc.returncode != 0:
+        raise RuntimeError(
+            proc.stderr.strip() or f"could not read the snapshot message of {sha}"
+        )
+    scope = []
+    for line in proc.stdout.splitlines():
+        if not line.startswith(SCOPE_TRAILER):
+            continue
+        path = line[len(SCOPE_TRAILER):].strip()
+        if path:
+            scope.append(path)
+    return scope
 
 
 def is_worktree_snapshot(repo, sha):
@@ -5219,12 +5330,16 @@ def cmd_receipt(args):
     the run reviewed an uncommitted tree, and for such a run what it found and what it was based
     on. The hook reads it instead of deriving any of this itself, which is the third place every
     one of these derivations would otherwise have to stay in step with.
+
+    `--lens` and `--scope` print those runs' own receipts, which the hook never asks for: neither
+    read the whole tree the stamp would cover, so a commit must not end the review cycle on one.
     """
     repo = resolve_repo_arg(args.repo) or Path(args.repo).resolve()
     # Resolved rather than taken as typed: the receipt was written under the canonical slug,
     # and a former slug is exactly what a reader still has in hand.
     lens = resolve_lens(args.lens)["name"] if getattr(args, "lens", "") else None
-    receipt = review_receipt(repo, lens)
+    scope = normalize_scope_paths(repo, args.scope) if getattr(args, "scope", None) else None
+    receipt = review_receipt(repo, lens, scope)
     if not receipt:
         return 1
     worktree, confirmed, findings = review_outcome(repo, receipt)
@@ -5496,11 +5611,29 @@ def cmd_run(args):
     commitish = getattr(args, "commitish", None)
     if bool(commitish) == worktree_mode:
         raise ValueError("exactly one of commitish and --worktree must be given")
-    sha = (
-        worktree_snapshot_commit(repo, clean_command=commit_mode_command(args))
-        if worktree_mode else resolve_commit(repo, commitish)
-    )
+    requested_scope = list(getattr(args, "paths", None) or [])
+    if requested_scope and not worktree_mode:
+        raise ValueError("--paths narrows the working tree; it cannot narrow a commit")
+    # Refused rather than named a receipt of its own: a scope and a lens each need one, and a
+    # receipt answering for both is a name no reader was built to recognise. Before the snapshot,
+    # so a refused run leaves no commit object behind.
+    if requested_scope and lens:
+        raise ValueError("scoped lens runs are not supported")
+    if worktree_mode:
+        scope = normalize_scope_paths(repo, requested_scope) if requested_scope else []
+        sha = worktree_snapshot_commit(
+            repo, clean_command=commit_mode_command(args), paths=scope,
+        )
+    else:
+        scope = []
+        sha = resolve_commit(repo, commitish)
     worktree_mode = worktree_mode or is_worktree_snapshot(repo, sha)
+    if worktree_mode and not scope:
+        scope = snapshot_scope_paths(repo, sha)
+    # Refused a second time, because a rerun pinned to a scoped snapshot names no paths at all and
+    # its scope is only known once the trailers have been read.
+    if scope and lens:
+        raise ValueError("scoped lens runs are not supported")
     reviews_path = state_dir() / "reviews.jsonl"
     # The corpus that picks `--auto` cells and prices how long they take, and it is the tool's
     # own reviews even when this run carries a lens: a cell is chosen for how it performs at
@@ -5596,6 +5729,8 @@ def cmd_run(args):
     }
     if worktree_mode:
         launch_meta["worktree"] = True
+        if scope:
+            launch_meta["scope"] = scope
     if tier_name:
         launch_meta["tier"] = tier_name
         launch_meta["max"] = use_max
@@ -5790,6 +5925,8 @@ def cmd_run(args):
         }
         if worktree_mode:
             meta["worktree"] = True
+            if scope:
+                meta["scope"] = scope
         if tier_name:
             meta["tier"] = tier_name
             meta["max"] = use_max
@@ -5799,7 +5936,8 @@ def cmd_run(args):
         if meta["completed_raters"]:
             write_review_receipt(repo, sha, run_id, len(errored_raters),
                                  panel=len(raters), worktree=worktree_mode,
-                                 lens=lens["name"] if lens else None)
+                                 lens=lens["name"] if lens else None,
+                                 scope=scope)
         if errored_raters:
             errored = [rater for rater in raters if rater["spec"] in errored_raters]
             rerun = ",".join(collapse_rater_attempts(rater["spec"] for rater in errored))
@@ -6665,6 +6803,7 @@ def main():
         help="Allow long tiers when stdout is not a terminal",
     )
     review.add_argument("--focus", default="")
+    review.add_argument("--paths", nargs="+", metavar="PATH", help=SCOPE_FLAG_HELP)
     review.add_argument("--lens", default="", metavar="SLUG", help=LENS_FLAG_HELP)
     # cmd_review hands off to cmd_run, so a refusal it cannot express is a refusal it ignores.
     review_verify = review.add_mutually_exclusive_group()
@@ -6683,6 +6822,10 @@ def main():
     receipt.add_argument(
         "--lens", default="", metavar="SLUG",
         help="Print that lens's own receipt instead of the repository's review receipt",
+    )
+    receipt.add_argument(
+        "--scope", nargs="+", metavar="PATH",
+        help="Print that scope's own receipt instead of the repository's review receipt",
     )
     receipt.set_defaults(func=cmd_receipt)
     report = subparsers.add_parser("report", help="Print a compact benchmark run report")
@@ -6725,6 +6868,7 @@ def main():
         help="Allow long tiers when stdout is not a terminal",
     )
     run.add_argument("--focus", default="")
+    run.add_argument("--paths", nargs="+", metavar="PATH", help=SCOPE_FLAG_HELP)
     run.add_argument("--lens", default="", metavar="SLUG", help=LENS_FLAG_HELP)
     # Exclusive, or `--verify X --no-verify` runs the verifier and says nothing about having
     # ignored the refusal.

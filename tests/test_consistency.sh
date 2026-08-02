@@ -398,7 +398,7 @@ assert doc_has 'including multiple Claude auth failures, uses `"; "` between ent
 
 assert grep -Fq 'RECEIPT_DIR = "receipts"' "$REVIEWBENCH"
 assert grep -Fq 'RECEIPT_FIELDS = ("repo", "tree", "commit", "run_id", "ts")' "$REVIEWBENCH"
-rb_receipt_name=$(sed -n '/^def receipt_file_name(repo, lens=None):/,/^$/p' "$REVIEWBENCH")
+rb_receipt_name=$(sed -n '/^def receipt_file_name(repo, lens=None, scope=None):/,/^$/p' "$REVIEWBENCH")
 sl_receipt_name=$(sed -n '/^receipt_file_name()/,/^}/p' "$STATUSLINE")
 rb_receipt_hash_len=$(grep -E '^RECEIPT_HASH_HEX = [0-9]+$' "$REVIEWBENCH" | awk '{print $3}')
 sl_receipt_hash_len=$(grep -E '^RECEIPT_HASH_HEX=[0-9]+$' "$STATUSLINE" | cut -d= -f2)
@@ -415,6 +415,13 @@ assert grep -Fq 'printf '\''%s__%s.json'\'' "$repo_name" "$repo_hash"' <<<"$sl_r
 # the tool did not write.
 assert grep -Fq 'return f"{repo_name}__{repo_hash}__lens-{lens}.json"' <<<"$rb_receipt_name"
 assert test "$(grep -c 'lens' "$STATUSLINE")" -eq 0
+# And so is a scope's, for the same reason plus one: a run that read part of the tree must not
+# advance the receipt the next full-tree review is sized against.
+assert grep -Fq 'return f"{repo_name}__{repo_hash}__scope-{scope_receipt_slug(scope)}.json"' \
+  <<<"$rb_receipt_name"
+assert grep -Fq 'hashlib.sha1("\0".join(scope).encode()).hexdigest()[:RECEIPT_HASH_HEX]' \
+  "$REVIEWBENCH"
+assert test "$(grep -c '__scope-' "$STATUSLINE")" -eq 0
 assert grep -Fq 'path = state_dir() / RECEIPT_DIR / name' "$REVIEWBENCH"
 assert grep -Fq 'receipt_file="$worker_stats_dir/receipts/$receipt_name"' "$STATUSLINE"
 assert grep -Fq '[.repo,.tree,.commit,.run_id,.ts,(.errored | tostring),' "$STATUSLINE"
@@ -426,6 +433,8 @@ assert grep -Fq 'status --porcelain' "$STATUSLINE"
 assert test "$(grep -Ec 'GIT_INDEX_FILE|git -C "\\$repo" add -A|current_tree_hash' "$STATUSLINE")" -eq 0
 assert doc_has '<state_dir>/receipts/<repoName>__<repoHash>.json'
 assert doc_has '<repoName>__<repoHash>__lens-<slug>.json'
+assert doc_has '<repoName>__<repoHash>__scope-<slug>.json'
+assert doc_has 'SHA-1 over its normalized paths joined with NUL'
 assert doc_has '`repo`, `tree`, `commit`, `run_id`, and `ts`, non-negative integer `errored`'
 assert doc_has 'optional positive integer `panel`'
 assert doc_has "tree\` is the reviewed commit's Git tree object"

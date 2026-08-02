@@ -4136,6 +4136,238 @@ for oc_rerun_name, oc_rerun_flag, oc_rerun_no_verify in (
 for side in rb.SIDE_RUNNERS:
     rb.SIDE_RUNNERS[side] = tier_runner
 
+# --- scoped worktree runs ---------------------------------------------------------------------
+# A review of part of the working tree is not a review of the repository. Its snapshot must hold
+# only the paths it was given, and its receipt must never be the one `suggest` and the statusline
+# read — or the rest of the tree comes out already reviewed without a panel ever having read it.
+scope_repo = work / "scoped-worktree"
+scope_repo.mkdir()
+subprocess.run(["git", "init", "-q", str(scope_repo)], check=True)
+subprocess.run(["git", "-C", str(scope_repo), "config", "user.email", "bench@example.test"],
+               check=True)
+subprocess.run(["git", "-C", str(scope_repo), "config", "user.name", "Review Bench"], check=True)
+for scope_name in ("alpha.txt", "beta.txt", "gamma.txt"):
+    (scope_repo / scope_name).write_text("base\n")
+(scope_repo / "sub").mkdir()
+(scope_repo / "sub" / "inner.txt").write_text("base\n")
+subprocess.run(["git", "-C", str(scope_repo), "add", "-A"], check=True)
+subprocess.run(["git", "-C", str(scope_repo), "commit", "-qm", "initial"], check=True)
+scope_head = subprocess.run(
+    ["git", "-C", str(scope_repo), "rev-parse", "HEAD"],
+    check=True, capture_output=True, text=True,
+).stdout.strip()
+scope_head_tree = subprocess.run(
+    ["git", "-C", str(scope_repo), "rev-parse", "HEAD^{tree}"],
+    check=True, capture_output=True, text=True,
+).stdout.strip()
+for scope_name in ("alpha.txt", "beta.txt"):
+    (scope_repo / scope_name).write_text("changed\n")
+
+# One spelling of a path, whatever the caller typed: two callers naming the same files must land
+# on the same snapshot and the same receipt.
+assert rb.normalize_scope_paths(
+    scope_repo, ["./beta.txt", "alpha.txt", "beta.txt/", "alpha.txt"]
+) == ["alpha.txt", "beta.txt"]
+assert rb.normalize_scope_paths(scope_repo, [str(scope_repo / "alpha.txt")]) == ["alpha.txt"]
+# `..` collapses lexically, so one file spelled two ways is one scope: a receipt slug that moved
+# with the spelling would let the same change be reviewed twice and stamped as two.
+assert rb.normalize_scope_paths(scope_repo, ["sub/../alpha.txt"]) == ["alpha.txt"]
+assert rb.receipt_file_name(
+    scope_repo, scope=rb.normalize_scope_paths(scope_repo, ["./sub/../alpha.txt"])
+) == rb.receipt_file_name(scope_repo, scope=["alpha.txt"])
+# Glob pathspecs are git's to expand; canonicalization must reach them literally.
+assert rb.normalize_scope_paths(scope_repo, ["sub/*.txt"]) == ["sub/*.txt"]
+scope_normalize_errors = []
+for scope_bad in ([""], ["   "], ["with\nnewline"], [str(work / "outside.txt")],
+                  ["../outside.txt"], ["a/../../outside.txt"], ["sub/.."]):
+    try:
+        rb.normalize_scope_paths(scope_repo, scope_bad)
+        scope_normalize_errors.append("")
+    except ValueError as exc:
+        scope_normalize_errors.append(str(exc))
+assert all(scope_normalize_errors), scope_normalize_errors
+# Canonicalized before the boundary is checked, or a `..` walks out of the repository and reaches
+# git as a pathspec nobody meant to review.
+for scope_escape in (3, 4, 5):
+    assert "outside the repository" in scope_normalize_errors[scope_escape], scope_normalize_errors
+assert "names no path" in scope_normalize_errors[6], scope_normalize_errors
+
+# A relative pathspec means what the caller's shell means by it: standing in sub/, `inner.txt` is
+# the file beside them, not a root-level one that may not even exist.
+scope_cwd = os.getcwd()
+try:
+    os.chdir(scope_repo / "sub")
+    assert rb.normalize_scope_paths(scope_repo, ["inner.txt"]) == ["sub/inner.txt"]
+    assert rb.normalize_scope_paths(scope_repo, ["../alpha.txt"]) == ["alpha.txt"]
+    try:
+        rb.normalize_scope_paths(scope_repo, ["../../outside.txt"])
+        scope_cwd_escape = ""
+    except ValueError as exc:
+        scope_cwd_escape = str(exc)
+    assert "outside the repository" in scope_cwd_escape, scope_cwd_escape
+finally:
+    os.chdir(scope_cwd)
+# A caller standing outside the repository has no such meaning to offer, so the root is the base.
+assert rb.normalize_scope_paths(scope_repo, ["sub/inner.txt"]) == ["sub/inner.txt"]
+
+scope_only_sha = rb.worktree_snapshot_commit(scope_repo, paths=["alpha.txt"])
+scope_only_names = subprocess.run(
+    ["git", "-C", str(scope_repo), "show", "--name-only", "--format=", scope_only_sha],
+    check=True, capture_output=True, text=True,
+).stdout.split()
+assert scope_only_names == ["alpha.txt"], scope_only_names
+# Same tree, same paths, same sha: a rerun is pinned to this sha, and a snapshot that moved under
+# it would review something the first panel never saw.
+assert rb.worktree_snapshot_commit(scope_repo, paths=["alpha.txt"]) == scope_only_sha
+scope_both_sha = rb.worktree_snapshot_commit(scope_repo, paths=["alpha.txt", "beta.txt"])
+assert scope_both_sha != scope_only_sha
+assert sorted(subprocess.run(
+    ["git", "-C", str(scope_repo), "show", "--name-only", "--format=", scope_both_sha],
+    check=True, capture_output=True, text=True,
+).stdout.split()) == ["alpha.txt", "beta.txt"]
+scope_full_sha = rb.worktree_snapshot_commit(scope_repo)
+assert rb.snapshot_scope_paths(scope_repo, scope_only_sha) == ["alpha.txt"]
+assert rb.snapshot_scope_paths(scope_repo, scope_both_sha) == ["alpha.txt", "beta.txt"]
+assert rb.snapshot_scope_paths(scope_repo, scope_full_sha) == []
+assert rb.snapshot_scope_paths(scope_repo, scope_head) == []
+assert rb.is_worktree_snapshot(scope_repo, scope_only_sha)
+assert rb.worktree_snapshot_commit(
+    scope_repo, paths=rb.normalize_scope_paths(scope_repo, ["./sub/../alpha.txt"])
+) == scope_only_sha
+# Fail closed on an unreadable message: an empty scope and an unscoped snapshot look alike from
+# here, and guessing the second widens a rerun to the whole tree and stamps the flat receipt.
+try:
+    rb.snapshot_scope_paths(scope_repo, "f" * 40)
+    scope_unreadable = ""
+except RuntimeError as exc:
+    scope_unreadable = str(exc)
+assert scope_unreadable, "an unreadable snapshot message was read as an unscoped one"
+
+scope_refusals = {}
+for scope_label, scope_paths in (("missing", ["nowhere.txt"]), ("unchanged", ["gamma.txt"])):
+    try:
+        rb.worktree_snapshot_commit(scope_repo, paths=scope_paths)
+        scope_refusals[scope_label] = ""
+    except ValueError as exc:
+        scope_refusals[scope_label] = str(exc)
+assert "--paths matched nothing" in scope_refusals["missing"], scope_refusals
+# Its own refusal: a scope holding no change is not a clean working tree, and telling the caller
+# to review the commit instead answers a question nobody asked.
+assert "no changes under the given paths" in scope_refusals["unchanged"], scope_refusals
+assert "working tree matches HEAD" not in scope_refusals["unchanged"], scope_refusals
+
+scope_store = work / "scope-run-claudeb"
+os.environ["CLAUDEB_DIR"] = str(scope_store)
+scope_flat_name = rb.receipt_file_name(scope_repo)
+scope_receipt_name = rb.receipt_file_name(scope_repo, scope=["alpha.txt"])
+assert scope_receipt_name == "{}__scope-{}.json".format(
+    scope_flat_name[:-len(".json")], hashlib.sha1(b"alpha.txt").hexdigest()[:8]
+), scope_receipt_name
+assert rb.receipt_file_name(scope_repo, scope=["alpha.txt", "beta.txt"]) == "{}__scope-{}.json".format(
+    scope_flat_name[:-len(".json")], hashlib.sha1(b"alpha.txt\0beta.txt").hexdigest()[:8]
+)
+assert rb.receipt_file_name(scope_repo, scope=["alpha.txt", "beta.txt"]) != scope_receipt_name
+try:
+    rb.receipt_file_name(scope_repo, "edge-cases", ["alpha.txt"])
+    scope_both_selectors = ""
+except ValueError as exc:
+    scope_both_selectors = str(exc)
+assert scope_both_selectors, "a receipt named for a lens AND a scope has no reader"
+
+scope_stdout = io.StringIO()
+with contextlib.redirect_stdout(scope_stdout):
+    scope_rc = rb.cmd_run(argparse.Namespace(
+        repo=str(scope_repo), commitish=None, worktree=True, paths=["alpha.txt"],
+        raters="sol-medium", leg=False, verify=None, auto=None, focus=None,
+    ))
+assert scope_rc == 0, scope_stdout.getvalue()
+scope_receipt_dir = scope_store / "worker-stats" / rb.RECEIPT_DIR
+assert sorted(path.name for path in scope_receipt_dir.iterdir()) == [scope_receipt_name], \
+    sorted(path.name for path in scope_receipt_dir.iterdir())
+scope_run_meta = json.loads(
+    (next((scope_store / "worker-stats" / "benches").iterdir()) / "meta.json").read_text()
+)
+assert scope_run_meta["worktree"] is True and scope_run_meta["scope"] == ["alpha.txt"], \
+    scope_run_meta
+assert scope_run_meta["commit"] == scope_only_sha, scope_run_meta
+scope_receipt_doc = json.loads((scope_receipt_dir / scope_receipt_name).read_text())
+assert scope_receipt_doc["scope"] == ["alpha.txt"], scope_receipt_doc
+assert scope_receipt_doc["commit"] == scope_only_sha, scope_receipt_doc
+assert rb.review_receipt(scope_repo) is None, "a scoped run wrote the repository's own receipt"
+assert rb.review_receipt(scope_repo, None, ["alpha.txt"])["scope"] == ["alpha.txt"]
+# The rerun line names the snapshot and no flags, so the scope has to come back out of the commit.
+scope_rerun_store = work / "scope-rerun-claudeb"
+os.environ["CLAUDEB_DIR"] = str(scope_rerun_store)
+with contextlib.redirect_stdout(io.StringIO()):
+    assert rb.cmd_run(argparse.Namespace(
+        repo=str(scope_repo), commitish=scope_only_sha, raters="sol-medium",
+        leg=False, verify=None, auto=None, focus=None,
+    )) == 0
+scope_rerun_receipts = sorted(
+    path.name for path in (scope_rerun_store / "worker-stats" / rb.RECEIPT_DIR).iterdir()
+)
+assert scope_rerun_receipts == [scope_receipt_name], scope_rerun_receipts
+scope_rerun_meta = json.loads(
+    (next((scope_rerun_store / "worker-stats" / "benches").iterdir()) / "meta.json").read_text()
+)
+assert scope_rerun_meta["scope"] == ["alpha.txt"], scope_rerun_meta
+
+# A repository already carrying a full review keeps it byte for byte: a scoped run advancing that
+# receipt would declare beta.txt reviewed by a panel that was never shown it.
+scope_guard_store = work / "scope-guard-claudeb"
+os.environ["CLAUDEB_DIR"] = str(scope_guard_store)
+rb.persist_review_receipt(scope_repo, scope_head_tree, scope_head, "prior-full-run", 0)
+scope_flat_path = scope_guard_store / "worker-stats" / rb.RECEIPT_DIR / scope_flat_name
+scope_flat_before = scope_flat_path.read_bytes()
+with contextlib.redirect_stdout(io.StringIO()):
+    assert rb.cmd_run(argparse.Namespace(
+        repo=str(scope_repo), commitish=None, worktree=True, paths=["alpha.txt"],
+        raters="sol-medium", leg=False, verify=None, auto=None, focus=None,
+    )) == 0
+assert scope_flat_path.read_bytes() == scope_flat_before, "a scoped run rewrote the flat receipt"
+assert sorted(path.name for path in scope_flat_path.parent.iterdir()) == sorted(
+    [scope_flat_name, scope_receipt_name]
+)
+scope_suggest_stdout = io.StringIO()
+with contextlib.redirect_stdout(scope_suggest_stdout):
+    rb.cmd_suggest(argparse.Namespace(repo=str(scope_repo), range=None))
+# Both files, not one: the baseline is the full review, and the scoped run left it where it was.
+assert "changed files: 2" in scope_suggest_stdout.getvalue(), scope_suggest_stdout.getvalue()
+
+def scope_commit_objects():
+    listed = subprocess.run(
+        ["git", "-C", str(scope_repo), "cat-file", "--batch-all-objects",
+         "--batch-check=%(objectname) %(objecttype)"],
+        check=True, capture_output=True, text=True,
+    )
+    return {line.split()[0] for line in listed.stdout.splitlines() if line.endswith(" commit")}
+
+
+scope_objects_before = scope_commit_objects()
+scope_reject = {}
+for scope_label, scope_kwargs in (
+    ("commitish", {"commitish": scope_head, "worktree": False, "paths": ["alpha.txt"]}),
+    # beta.txt alone has never been snapshotted here, so the object this run would have written
+    # is one the repository does not already hold.
+    ("lens", {"commitish": None, "worktree": True, "lens": "edge-cases",
+              "paths": ["beta.txt"]}),
+):
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            rb.cmd_run(argparse.Namespace(
+                repo=str(scope_repo), raters="sol-medium",
+                leg=False, verify=None, auto=None, focus=None, **scope_kwargs,
+            ))
+        scope_reject[scope_label] = ""
+    except ValueError as exc:
+        scope_reject[scope_label] = str(exc)
+assert "cannot narrow a commit" in scope_reject["commitish"], scope_reject
+assert scope_reject["lens"] == "scoped lens runs are not supported", scope_reject
+# The refusal comes before the snapshot: a run that cannot start must leave no commit behind.
+assert scope_commit_objects() == scope_objects_before, "a refused scoped run wrote a commit"
+scope_beta_sha = rb.worktree_snapshot_commit(scope_repo, paths=["beta.txt"])
+assert scope_beta_sha not in scope_objects_before, scope_beta_sha
+
 collision_left = work / "receipt-collision-left" / "same-name"
 collision_right = work / "receipt-collision-right" / "same-name"
 for collision_repo in (collision_left, collision_right):
@@ -6727,6 +6959,28 @@ GATE_SD="$STALE_SD" gate_run 20260730T000000Z-gatestale 48 1
 gate_stale=$(WORKER_STATS_DIR="$STALE_SD" "$SCRIPT" pending-report --repo "$GATE_REPO" || true)
 assert test -z "$gate_stale"
 
+# A scoped run is exactly as invisible to the stamp hook as a lens run: `receipt` with no
+# selector answers for the repository, a review of part of the tree cannot, so the hook finds
+# nothing and the label stays lit. The scope's own receipt is readable only when asked for by name.
+SCOPE_REPO="$WORK/scoped-worktree"
+SCOPE_SD="$WORK/scope-run-claudeb/worker-stats"
+scope_receipt_rc=0
+WORKER_STATS_DIR="$SCOPE_SD" "$SCRIPT" receipt --repo "$SCOPE_REPO" >/dev/null 2>&1 \
+  || scope_receipt_rc=$?
+assert test "$scope_receipt_rc" -eq 1
+scope_named_receipt=$(WORKER_STATS_DIR="$SCOPE_SD" "$SCRIPT" receipt --repo "$SCOPE_REPO" \
+  --scope alpha.txt) || fail "the scope's own receipt is unreadable"
+assert test "$(jq -r '.scope | join(",")' <<<"$scope_named_receipt")" = "alpha.txt"
+assert test "$(jq -r '.worktree' <<<"$scope_named_receipt")" = "true"
+STAMP_HOOK="$ROOT/bin/review-stamp-hook.sh"
+jq -nc --arg cwd "$SCOPE_REPO" \
+  '{hook_event_name:"PostToolUse",tool_name:"Bash",cwd:$cwd,
+    tool_input:{command:"git commit -m fixes"}}' \
+  | WORKER_STATS_DIR="$SCOPE_SD" REVIEW_STAMP_HOOK_BENCH="$SCRIPT" "$STAMP_HOOK" >/dev/null 2>&1
+scope_receipt_files=$(ls "$SCOPE_SD/receipts")
+assert test "$(wc -l <<<"$scope_receipt_files" | tr -d ' ')" -eq 1
+assert contains "$scope_receipt_files" '__scope-'
+
 TRIAGE_HOOK="${REVIEW_TRIAGE_HOOK:-"$ROOT/../claude-setup/hooks/review-triage-nudge.sh"}"
 if test -x "$TRIAGE_HOOK"; then
   triage_hook_output="$(jq -nc \
@@ -6803,4 +7057,4 @@ else
   printf 'SKIP: review report hook behavior (%s is unavailable)\n' "$REPORT_HOOK"
 fi
 
-printf 'PASS: %s assertions; canonical review tiers sharing one OpenCode/Gemini floor with no retired cell in them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative suggestions with missing-object fallback, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account usable only behind its opt-in and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, carried from there into the corpus row, the report header and a receipt of the lens'"'"'s own while every lens row stays out of the canonical defect list, the frontier denominators, the composition corpus and the default leaderboard, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask, the lookup scoped to the repository so another chat cannot answer for it, and both review hooks keyed so exactly one fires\n' "$asserts"
+printf 'PASS: %s assertions; canonical review tiers sharing one OpenCode/Gemini floor with no retired cell in them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative suggestions with missing-object fallback, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account usable only behind its opt-in and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, carried from there into the corpus row, the report header and a receipt of the lens'"'"'s own while every lens row stays out of the canonical defect list, the frontier denominators, the composition corpus and the default leaderboard, worktree runs narrowed to named paths whose snapshot holds only those paths, is deterministic per path set, spelled against the directory the caller stands in and lexically canonicalized so a `..` can neither walk out of the repository nor split one file into two scopes, carries its scope as commit trailers a failed read refuses rather than widens, so a rerun by sha stays inside it, refuses a commitish, a lens, a pathspec matching nothing and a scope holding no change — the lens refusal before any snapshot object is written — and writes only a receipt of its own — leaving the repository'"'"'s receipt untouched byte for byte, the suggest baseline whole and the stamp hook with nothing to read, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask, the lookup scoped to the repository so another chat cannot answer for it, and both review hooks keyed so exactly one fires\n' "$asserts"
