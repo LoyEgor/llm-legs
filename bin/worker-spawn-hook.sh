@@ -85,6 +85,12 @@ if mkdir -p "$pending_dir" 2>/dev/null; then
   tmp_pending="$pending_dir/pending-$subagent.tmp.$$"
   printf '%s\n' "$prefix" > "$tmp_pending" 2>/dev/null && mv -f "$tmp_pending" "$pending_dir/pending-$subagent" 2>/dev/null
   rm -f "$tmp_pending" 2>/dev/null
+  if printf '%s' "$prompt" | grep -qE '^GIT-CLEANUP:[[:space:]]*allowed'; then
+    git_unlock="$pending_dir/git-unlock-$subagent"
+    tmp_unlock="$git_unlock.tmp.$$"
+    : > "$tmp_unlock" 2>/dev/null && mv -f "$tmp_unlock" "$git_unlock" 2>/dev/null
+    rm -f "$tmp_unlock" 2>/dev/null
+  fi
 fi
 
 updated="$prefix: $title"
