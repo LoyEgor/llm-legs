@@ -26,6 +26,7 @@ import os
 import pathlib
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -3216,7 +3217,9 @@ finally:
         os.environ["REVIEW_BENCH_TRANSIENT_BACKOFF_S"] = backoff_was
     del os.environ["OPENCODE_FIXTURE_RC"]
     del os.environ["OPENCODE_FIXTURE_STDERR"]
-assert throttle_slept == [7], throttle_slept
+# Patched sleep catches everyone's naps: subprocess.run(timeout=...) polls its child with
+# sub-millisecond sleeps under load, and those are not the backoff being measured.
+assert [s for s in throttle_slept if s >= 1] == [7], throttle_slept
 # The retry names the cause, so a log of waits says which of them are worth acting on.
 assert "transient failure (throttled); retrying in 7s" in backoff_log.getvalue(), \
     backoff_log.getvalue()
@@ -4367,6 +4370,108 @@ assert scope_reject["lens"] == "scoped lens runs are not supported", scope_rejec
 assert scope_commit_objects() == scope_objects_before, "a refused scoped run wrote a commit"
 scope_beta_sha = rb.worktree_snapshot_commit(scope_repo, paths=["beta.txt"])
 assert scope_beta_sha not in scope_objects_before, scope_beta_sha
+
+# --- root commits: a repository whose only commit has no parent -------------------------------
+# Every diff review-bench takes is against a parent, and a day-one repository has none. Read as an
+# unmeasurable diff it reviewed an empty change; the base a root commit really has is the empty
+# tree, because its whole content is what it introduced.
+root_repo = work / "root-commit-repo"
+root_repo.mkdir()
+subprocess.run(["git", "init", "-q", str(root_repo)], check=True)
+subprocess.run(["git", "-C", str(root_repo), "config", "user.email", "bench@example.test"],
+               check=True)
+subprocess.run(["git", "-C", str(root_repo), "config", "user.name", "Review Bench"], check=True)
+(root_repo / "day-one.txt").write_text("".join(f"line {n}\n" for n in range(1, 401)))
+(root_repo / "nested").mkdir()
+(root_repo / "nested" / "deep.txt").write_text("only\n")
+subprocess.run(["git", "-C", str(root_repo), "add", "-A"], check=True)
+subprocess.run(["git", "-C", str(root_repo), "commit", "-qm", "day one"], check=True)
+root_sha = subprocess.run(
+    ["git", "-C", str(root_repo), "rev-parse", "HEAD"],
+    check=True, capture_output=True, text=True,
+).stdout.strip()
+assert subprocess.run(
+    ["git", "-C", str(root_repo), "rev-parse", "--verify", "--quiet", "HEAD^"],
+    capture_output=True,
+).returncode != 0, "the fixture's only commit must have no parent"
+root_empty_tree = rb.empty_tree_hash(root_repo)
+assert root_empty_tree == hashlib.sha1(b"tree 0\0").hexdigest(), root_empty_tree
+assert rb.diff_base(root_repo, root_sha) == root_empty_tree
+# The sites that already handled a root commit, pinned so they keep doing it.
+assert "day one" in rb.commit_diff(root_repo, root_sha)
+root_clone = rb.seal_overlay_clone(root_repo, root_sha)
+try:
+    assert subprocess.run(
+        ["git", "-C", root_clone, "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip() == root_sha
+    # The vendor skill reads origin/HEAD..HEAD, so it needs a base commit that exists; built in
+    # the sealed clone and never in the repository under review.
+    rb.prepare_agy_skill_clone(root_clone)
+    root_origin = subprocess.run(
+        ["git", "-C", root_clone, "rev-parse", "refs/remotes/origin/HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    assert subprocess.run(
+        ["git", "-C", root_clone, "cat-file", "-t", root_origin],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip() == "commit"
+    assert subprocess.run(
+        ["git", "-C", root_clone, "rev-parse", f"{root_origin}^{{tree}}"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip() == rb.empty_tree_hash(root_clone)
+    assert sorted(subprocess.run(
+        ["git", "-C", root_clone, "diff", "refs/remotes/origin/HEAD", "HEAD", "--name-only"],
+        check=True, capture_output=True, text=True,
+    ).stdout.split()) == ["day-one.txt", "nested/deep.txt"]
+finally:
+    shutil.rmtree(root_clone, ignore_errors=True)
+root_clone_again = rb.seal_overlay_clone(root_repo, root_sha)
+try:
+    rb.prepare_agy_skill_clone(root_clone_again)
+    assert subprocess.run(
+        ["git", "-C", root_clone_again, "rev-parse", "refs/remotes/origin/HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip() == root_origin, "the empty base commit is not deterministic"
+finally:
+    shutil.rmtree(root_clone_again, ignore_errors=True)
+
+assert rb.reviewed_diff_lines(root_repo, root_sha) == 401
+assert rb.reviewed_diff_paths(root_repo, root_sha) == {"day-one.txt", "nested/deep.txt"}
+
+root_store = work / "root-commit-claudeb"
+os.environ["CLAUDEB_DIR"] = str(root_store)
+root_stdout = io.StringIO()
+with contextlib.redirect_stdout(root_stdout):
+    root_rc = rb.cmd_run(argparse.Namespace(
+        repo=str(root_repo), commitish=root_sha, raters="sol-medium",
+        leg=False, verify=None, auto=None, focus=None,
+    ))
+assert root_rc == 0, root_stdout.getvalue()
+root_receipt = rb.review_receipt(root_repo)
+assert root_receipt and root_receipt["commit"] == root_sha, root_receipt
+root_run_meta = json.loads(
+    (next((root_store / "worker-stats" / "benches").iterdir()) / "meta.json").read_text()
+)
+assert root_run_meta["commit"] == root_sha and "worktree" not in root_run_meta, root_run_meta
+
+# The paths a root-commit review read are what tells work it provoked from unrelated work, and
+# reading them as none priced every correction inside just-reviewed code as fresh.
+rb.write_jsonl(rb.state_dir() / "reviews.jsonl", [
+    {"run_id": root_receipt["run_id"], "commit": root_sha, "rater": "sol-low", "confirmed": 3},
+])
+(root_repo / "day-one.txt").write_text(
+    "".join(f"line {n} corrected\n" for n in range(1, 201))
+    + "".join(f"line {n}\n" for n in range(201, 401))
+)
+root_suggest = io.StringIO()
+with contextlib.redirect_stdout(root_suggest):
+    rb.cmd_suggest(argparse.Namespace(repo=str(root_repo), range=None))
+assert "changed files: 1" in root_suggest.getvalue(), root_suggest.getvalue()
+assert f"work over review {root_receipt['run_id']}" in root_suggest.getvalue(), \
+    root_suggest.getvalue()
+assert "tier: T1" in root_suggest.getvalue(), root_suggest.getvalue()
+subprocess.run(["git", "-C", str(root_repo), "checkout", "--", "day-one.txt"], check=True)
 
 collision_left = work / "receipt-collision-left" / "same-name"
 collision_right = work / "receipt-collision-right" / "same-name"
@@ -6981,6 +7086,88 @@ scope_receipt_files=$(ls "$SCOPE_SD/receipts")
 assert test "$(wc -l <<<"$scope_receipt_files" | tr -d ' ')" -eq 1
 assert contains "$scope_receipt_files" '__scope-'
 
+# A day-one repository must be able to FINISH a review, not only start one. Both shapes end here,
+# through the real hook: a commit review whose fixes land on top of the root commit, and a snapshot
+# taken on no parent at all — its base is the empty tree, and the work it reviewed lands as the
+# repository's own first commit.
+root_hook_receipt_path() { # top statedir
+  printf '%s/receipts/%s__%s.json' "$2" "$(basename "$1")" \
+    "$(printf '%s' "$1" | shasum -a 1 | awk '{print substr($1, 1, 8)}')"
+}
+root_hook_fire() { # repo statedir
+  jq -nc --arg cwd "$1" '{hook_event_name:"PostToolUse",tool_name:"Bash",cwd:$cwd,
+    tool_input:{command:"git commit -m fixes"}}' \
+    | WORKER_STATS_DIR="$2" REVIEW_STAMP_HOOK_BENCH="$SCRIPT" "$STAMP_HOOK" >/dev/null 2>&1
+}
+ROOT_COMMIT_REPO="$WORK/root-hook-commit"
+ROOT_COMMIT_SD="$WORK/root-hook-commit-state"
+mkdir -p "$ROOT_COMMIT_REPO" "$ROOT_COMMIT_SD/receipts"
+git -C "$ROOT_COMMIT_REPO" init -q -b main
+printf 'day one\n' >"$ROOT_COMMIT_REPO/a.txt"
+git -C "$ROOT_COMMIT_REPO" add -A
+git -C "$ROOT_COMMIT_REPO" -c user.name=Fixture -c user.email=fixture@example.com commit -qm root
+root_commit_top=$(cd "$ROOT_COMMIT_REPO" && pwd -P)
+root_commit_receipt=$(root_hook_receipt_path "$root_commit_top" "$ROOT_COMMIT_SD")
+jq -cn --arg repo "$root_commit_top" \
+  --arg tree "$(git -C "$ROOT_COMMIT_REPO" rev-parse 'HEAD^{tree}')" \
+  --arg commit "$(git -C "$ROOT_COMMIT_REPO" rev-parse HEAD)" \
+  '{repo:$repo,tree:$tree,commit:$commit,run_id:"root-commit-run",
+    ts:"2026-08-02T00:00:00+00:00",errored:0,panel:9}' >"$root_commit_receipt"
+jq -cn '{run_id:"root-commit-run",rater:"sol-low",confirmed:2}' \
+  >"$ROOT_COMMIT_SD/reviews.jsonl"
+printf 'day one fixed\n' >"$ROOT_COMMIT_REPO/a.txt"
+git -C "$ROOT_COMMIT_REPO" add -A
+git -C "$ROOT_COMMIT_REPO" -c user.name=Fixture -c user.email=fixture@example.com commit -qm fixes
+root_hook_fire "$ROOT_COMMIT_REPO" "$ROOT_COMMIT_SD"
+assert grep -q '^stamped-' <<<"$(jq -r '.run_id' "$root_commit_receipt")"
+
+# The snapshot shape. Its base is the empty tree, which the receipt has to name for the hook to
+# have any fixed point at all — an empty base is what left this cycle open forever.
+for root_wt_case in lands rides; do
+  ROOT_WT_REPO="$WORK/root-hook-wt-$root_wt_case"
+  ROOT_WT_SD="$WORK/root-hook-wt-$root_wt_case-state"
+  mkdir -p "$ROOT_WT_REPO" "$ROOT_WT_SD/receipts" "$ROOT_WT_SD/benches/root-wt-run"
+  git -C "$ROOT_WT_REPO" init -q -b main
+  printf 'reviewed\n' >"$ROOT_WT_REPO/a.txt"
+  git -C "$ROOT_WT_REPO" add -A
+  root_wt_tree=$(git -C "$ROOT_WT_REPO" write-tree)
+  # commit-tree with no -p: the shape review-bench itself cannot produce, and the one whose
+  # receipt reported an empty base and could never be answered.
+  root_wt_snapshot=$(git -C "$ROOT_WT_REPO" -c user.name=review-bench \
+    -c user.email=review-bench@local commit-tree "$root_wt_tree" \
+    -m 'review-bench worktree snapshot')
+  root_wt_top=$(cd "$ROOT_WT_REPO" && pwd -P)
+  root_wt_receipt=$(root_hook_receipt_path "$root_wt_top" "$ROOT_WT_SD")
+  jq -cn --arg repo "$root_wt_top" --arg tree "$root_wt_tree" --arg commit "$root_wt_snapshot" \
+    '{repo:$repo,tree:$tree,commit:$commit,run_id:"root-wt-run",
+      ts:"2026-08-02T00:00:00+00:00",errored:0,panel:9}' >"$root_wt_receipt"
+  jq -cn --arg commit "$root_wt_snapshot" \
+    '{run_id:"root-wt-run",commit:$commit,repo:"fixture",raters:["sol-high"],
+      rater_runs:[],worktree:true}' >"$ROOT_WT_SD/benches/root-wt-run/meta.json"
+  jq -cn '{severity:"P2",file:"a.txt",line:1,summary:"finding"}' \
+    >"$ROOT_WT_SD/benches/root-wt-run/findings-sol-high.jsonl"
+  root_wt_base=$(WORKER_STATS_DIR="$ROOT_WT_SD" "$SCRIPT" receipt --repo "$ROOT_WT_REPO" \
+    | jq -r '.base')
+  assert test "$root_wt_base" = "$(git -C "$ROOT_WT_REPO" hash-object -t tree /dev/null)"
+  if test "$root_wt_case" = rides; then
+    # Never-reviewed code landing first: the snapshot was taken on nothing, so anything under HEAD
+    # that is not the reviewed work would be stamped along with it.
+    printf 'unrelated\n' >"$ROOT_WT_REPO/b.txt"
+    git -C "$ROOT_WT_REPO" add -A
+    git -C "$ROOT_WT_REPO" -c user.name=Fixture -c user.email=fixture@example.com commit -qm seed
+  fi
+  printf 'reviewed and fixed\n' >"$ROOT_WT_REPO/a.txt"
+  git -C "$ROOT_WT_REPO" add -A
+  git -C "$ROOT_WT_REPO" -c user.name=Fixture -c user.email=fixture@example.com commit -qm fixes
+  root_hook_fire "$ROOT_WT_REPO" "$ROOT_WT_SD"
+  root_wt_after=$(jq -r '.run_id' "$root_wt_receipt")
+  if test "$root_wt_case" = lands; then
+    assert grep -q '^stamped-' <<<"$root_wt_after"
+  else
+    assert test "$root_wt_after" = root-wt-run
+  fi
+done
+
 TRIAGE_HOOK="${REVIEW_TRIAGE_HOOK:-"$ROOT/../claude-setup/hooks/review-triage-nudge.sh"}"
 if test -x "$TRIAGE_HOOK"; then
   triage_hook_output="$(jq -nc \
@@ -7057,4 +7244,4 @@ else
   printf 'SKIP: review report hook behavior (%s is unavailable)\n' "$REPORT_HOOK"
 fi
 
-printf 'PASS: %s assertions; canonical review tiers sharing one OpenCode/Gemini floor with no retired cell in them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative suggestions with missing-object fallback, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account usable only behind its opt-in and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, carried from there into the corpus row, the report header and a receipt of the lens'"'"'s own while every lens row stays out of the canonical defect list, the frontier denominators, the composition corpus and the default leaderboard, worktree runs narrowed to named paths whose snapshot holds only those paths, is deterministic per path set, spelled against the directory the caller stands in and lexically canonicalized so a `..` can neither walk out of the repository nor split one file into two scopes, carries its scope as commit trailers a failed read refuses rather than widens, so a rerun by sha stays inside it, refuses a commitish, a lens, a pathspec matching nothing and a scope holding no change — the lens refusal before any snapshot object is written — and writes only a receipt of its own — leaving the repository'"'"'s receipt untouched byte for byte, the suggest baseline whole and the stamp hook with nothing to read, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask, the lookup scoped to the repository so another chat cannot answer for it, and both review hooks keyed so exactly one fires\n' "$asserts"
+printf 'PASS: %s assertions; canonical review tiers sharing one OpenCode/Gemini floor with no retired cell in them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative suggestions with missing-object fallback, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account usable only behind its opt-in and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, carried from there into the corpus row, the report header and a receipt of the lens'"'"'s own while every lens row stays out of the canonical defect list, the frontier denominators, the composition corpus and the default leaderboard, worktree runs narrowed to named paths whose snapshot holds only those paths, is deterministic per path set, spelled against the directory the caller stands in and lexically canonicalized so a `..` can neither walk out of the repository nor split one file into two scopes, carries its scope as commit trailers a failed read refuses rather than widens, so a rerun by sha stays inside it, refuses a commitish, a lens, a pathspec matching nothing and a scope holding no change — the lens refusal before any snapshot object is written — and writes only a receipt of its own — leaving the repository'"'"'s receipt untouched byte for byte, the suggest baseline whole and the stamp hook with nothing to read, a day-one repository reviewed end to end — its root commit sealed and cloned, given a deterministic empty base commit inside that clone so the vendor skill diffs its whole content, measured in lines and paths against the empty tree rather than as an unmeasurable diff, so a correction inside it prices as follow-up, and closed by the real stamp hook in both shapes while never-reviewed code riding along still refuses it, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask, the lookup scoped to the repository so another chat cannot answer for it, and both review hooks keyed so exactly one fires\n' "$asserts"

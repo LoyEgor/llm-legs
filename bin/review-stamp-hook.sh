@@ -64,8 +64,14 @@ if [ -n "$worktree" ]; then
   [[ "$base" =~ ^[0-9a-f]{40}$ ]] || exit 0
   # Exactly one commit past the base, the same bound the commit branch gets from comparing against
   # HEAD~1: without it any amount of never-reviewed code may ride along in later commits and be
-  # stamped as reviewed with the fixes.
-  [ "$base" = "$(git -C "$top" rev-parse 'HEAD~1' 2>/dev/null)" ] || exit 0
+  # stamped as reviewed with the fixes. A snapshot taken on no parent at all reports the empty tree
+  # as its base, and the work it reviewed lands as this repository's FIRST commit — so there the
+  # same bound is HEAD having no parent of its own. Everything else refuses.
+  if [ "$base" = "$(git -C "$top" hash-object -t tree /dev/null 2>/dev/null)" ]; then
+    git -C "$top" rev-parse --verify --quiet 'HEAD^' >/dev/null 2>&1 && exit 0
+  else
+    [ "$base" = "$(git -C "$top" rev-parse 'HEAD~1' 2>/dev/null)" ] || exit 0
+  fi
   # And that commit has to carry what was reviewed. --no-renames on both sides so a fix that renames
   # or deletes a reviewed file still lists the path it started from; with detection on, a rename
   # shows only its destination and the gate would never open again. A snapshot that changed nothing

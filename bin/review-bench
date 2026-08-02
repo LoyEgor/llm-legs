@@ -866,6 +866,16 @@ RECEIPT_FIELDS = ("repo", "tree", "commit", "run_id", "ts")
 T1_MAX_LINES = 150
 RECEIPT_HASH_HEX = 8
 SCOPE_TRAILER = "Scope-Path: "
+# One identity and one clock behind every commit object review-bench writes, so the same input
+# always answers with the same sha. The email is also how a snapshot is told from a real commit.
+FIXED_COMMIT_IDENTITY = {
+    "GIT_AUTHOR_NAME": "review-bench",
+    "GIT_AUTHOR_EMAIL": "review-bench@local",
+    "GIT_AUTHOR_DATE": "2005-04-07T22:13:13 +0000",
+    "GIT_COMMITTER_NAME": "review-bench",
+    "GIT_COMMITTER_EMAIL": "review-bench@local",
+    "GIT_COMMITTER_DATE": "2005-04-07T22:13:13 +0000",
+}
 REVIEW_LATE_MULTIPLIER = 3
 REVIEW_LATE_FLOOR_S = 120
 
@@ -1195,6 +1205,28 @@ def normalize_scope_paths(repo, paths):
     return sorted(normalized)
 
 
+def empty_tree_hash(repo):
+    # Asked of the repository rather than written down: the well-known 4b825dc… is the SHA-1
+    # answer, and a repository on another object format has its own.
+    proc = subprocess.run(["git", "hash-object", "-t", "tree", os.devnull],
+                          cwd=repo, capture_output=True, text=True)
+    if proc.returncode != 0 or not proc.stdout.strip():
+        raise RuntimeError(proc.stderr.strip() or "could not compute the empty tree hash")
+    return proc.stdout.strip()
+
+
+def diff_base(repo, commit):
+    """What `commit` is a change against: its parent, or the empty tree when it has none. A root
+    commit introduces its whole content, and reading it as an unmeasurable diff instead is what
+    made a day-one repository review as an empty change.
+    """
+    proc = subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{commit}^"],
+                          cwd=repo, capture_output=True, text=True)
+    if proc.returncode == 0 and proc.stdout.strip():
+        return proc.stdout.strip()
+    return empty_tree_hash(repo)
+
+
 def working_tree_tree(repo, paths=None):
     scope = list(paths or [])
     with tempfile.TemporaryDirectory(prefix="review-bench-index-") as directory:
@@ -1243,17 +1275,10 @@ def worktree_snapshot_commit(repo, clean_command=None, paths=None):
         # Carried in the commit rather than on the rerun line: a rerun names the snapshot sha and
         # nothing else, so a scope kept outside it would silently widen to the whole tree.
         message += "\n\n" + "".join(f"{SCOPE_TRAILER}{path}\n" for path in scope)
-    fixed = {
-        "GIT_AUTHOR_NAME": "review-bench",
-        "GIT_AUTHOR_EMAIL": "review-bench@local",
-        "GIT_AUTHOR_DATE": "2005-04-07T22:13:13 +0000",
-        "GIT_COMMITTER_NAME": "review-bench",
-        "GIT_COMMITTER_EMAIL": "review-bench@local",
-        "GIT_COMMITTER_DATE": "2005-04-07T22:13:13 +0000",
-    }
     proc = subprocess.run(
         ["git", "commit-tree", tree, "-p", head, "-m", message],
-        cwd=repo, env=dict(os.environ, **fixed), capture_output=True, text=True,
+        cwd=repo, env=dict(os.environ, **FIXED_COMMIT_IDENTITY),
+        capture_output=True, text=True,
     )
     if proc.returncode != 0 or not proc.stdout.strip():
         raise RuntimeError(proc.stderr.strip() or "could not create worktree snapshot")
@@ -3654,14 +3679,28 @@ def seal_overlay_clone(repo, sha):
 
 def prepare_agy_skill_clone(clone):
     proc = subprocess.run(
-        ["git", "-C", clone, "rev-parse", "HEAD^"],
+        ["git", "-C", clone, "rev-parse", "--verify", "--quiet", "HEAD^"],
         capture_output=True, text=True, timeout=30
     )
-    if proc.returncode != 0:
-        raise RuntimeError("agy -skill cannot review a root commit")
+    base = proc.stdout.strip()
+    if not base:
+        # The skill reads origin/HEAD..HEAD, and a root commit has nothing to point that at. An
+        # empty commit built in the sealed clone — never in the repository under review — makes
+        # the diff the root commit's whole content, which is exactly what it introduced.
+        empty = subprocess.run(
+            ["git", "-C", clone, "commit-tree", empty_tree_hash(clone),
+             "-m", "review-bench empty base"],
+            env=dict(os.environ, **FIXED_COMMIT_IDENTITY), stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, timeout=30,
+        )
+        base = empty.stdout.strip()
+        if empty.returncode != 0 or not base:
+            raise RuntimeError(
+                f"agy -skill could not build a root-commit base: "
+                f"{empty.stderr.strip() or empty.returncode}"
+            )
     proc = subprocess.run(
-        ["git", "-C", clone, "update-ref", "refs/remotes/origin/HEAD",
-         proc.stdout.strip()],
+        ["git", "-C", clone, "update-ref", "refs/remotes/origin/HEAD", base],
         capture_output=True, text=True, timeout=30
     )
     if proc.returncode != 0:
@@ -5241,24 +5280,25 @@ def same_commit(repo, left, right):
 
 def reviewed_diff_lines(repo, commit):
     """How many lines the panel actually read: the diff of the commit the receipt names, which for a
-    worktree run is its snapshot against the base it was taken on. None when that cannot be measured
-    — a root commit has no parent — and callers then decline to lean on the number.
+    worktree run is its snapshot against the base it was taken on and for a root commit is its whole
+    content. None when that cannot be measured, and callers then decline to lean on the number.
     """
-    if subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{commit}^"],
-                      cwd=repo, capture_output=True).returncode != 0:
-        return None
     try:
-        changes, _ = diff_numstat(repo, [f"{commit}^", commit])
+        changes, _ = diff_numstat(repo, [diff_base(repo, commit), commit])
     except RuntimeError:
         return None
     return sum(changes.values())
 
 
 def reviewed_diff_paths(repo, commit):
+    try:
+        base = diff_base(repo, commit)
+    except RuntimeError:
+        return set()
     # -z: without it git quotes paths with special characters, and a quoted name never
     # intersects the literal paths in `changes`.
     proc = subprocess.run(
-        ["git", "diff", "--no-renames", "--name-only", "-z", f"{commit}^", commit],
+        ["git", "diff", "--no-renames", "--name-only", "-z", base, commit],
         cwd=repo, capture_output=True, text=True,
     )
     if proc.returncode != 0:
@@ -5347,12 +5387,13 @@ def cmd_receipt(args):
     if worktree:
         extra["findings"] = findings
         # The commit the snapshot was taken on top of. Its own tree is nowhere in the history, so
-        # this is the only fixed point a later commit can be compared with.
-        proc = subprocess.run(
-            ["git", "rev-parse", f"{receipt['commit']}^"],
-            cwd=repo, capture_output=True, text=True,
-        )
-        extra["base"] = proc.stdout.strip() if proc.returncode == 0 else ""
+        # this is the only fixed point a later commit can be compared with; a snapshot with no
+        # parent was taken on nothing, and the empty tree is that fixed point. Left empty only
+        # when even that cannot be answered, which the hook reads as "do not stamp".
+        try:
+            extra["base"] = diff_base(repo, receipt["commit"])
+        except RuntimeError:
+            extra["base"] = ""
     print(json.dumps(dict(receipt, confirmed=confirmed, **extra)))
     return 0
 
