@@ -82,6 +82,10 @@ workdir_payload() {
                    else {file_path:$value} end)}'
 }
 
+agent_payload() {
+  workdir_payload "$@" | jq -c '. + {agent_id:"a1",agent_type:"claudeb-worker"}'
+}
+
 run_workdir_hook() {
   local payload=$1 output
   output=$(printf '%s' "$payload" | "$WORKDIR_HOOK") || fail "workdir hook exited nonzero"
@@ -122,6 +126,52 @@ assert_eq "$TOP_B" "$(cat "$STATE_DIR/workdir-session-cd-nl")"
 payload=$(workdir_payload Bash session-cd-amp "$REPO_A" "true & cd '$REPO_B'")
 run_workdir_hook "$payload"
 assert_eq "$TOP_B" "$(cat "$STATE_DIR/workdir-session-cd-amp")"
+
+# `(cd /x && cmd)` is the form the cd-guard hook tells sessions to use instead of
+# a persistent cd, so it is the most common cd there is — and the one that never
+# moves the session: it dies with the command. It earns the home only as
+# sustained work, three in a row, like an away write. All three spellings feed
+# the same run; the unquoted one also proves the closing paren stays out of the
+# path, since a swallowed `)` would resolve nowhere and break the run.
+S="$STATE_DIR/workdir-session-cd-subshell"
+printf '%s\n' "$TOP_A" > "$S"
+run_workdir_hook "$(workdir_payload Bash session-cd-subshell "$REPO_A" "(cd '$REPO_B' && make)")"
+assert_eq "$TOP_A" "$(cat "$S")"
+run_workdir_hook "$(workdir_payload Bash session-cd-subshell "$REPO_A" "true && (cd '$REPO_B' && make)")"
+assert_eq "$TOP_A" "$(cat "$S")"
+run_workdir_hook "$(workdir_payload Bash session-cd-subshell "$REPO_A" "(cd $REPO_B)")"
+assert_eq "$TOP_B" "$(cat "$S")"
+assert test ! -e "$S.away"
+
+S="$STATE_DIR/workdir-session-cd-subshell-split"
+printf '%s\n' "$TOP_A" > "$S"
+for _ in 1 2 3; do
+  run_workdir_hook "$(workdir_payload Bash session-cd-subshell-split "$REPO_A" "(cd '$REPO_B' && make)")"
+  run_workdir_hook "$(workdir_payload Bash session-cd-subshell-split "$REPO_A" "(cd '$REPO_D' && make)")"
+done
+assert_eq "$TOP_A" "$(cat "$S")"
+
+# A persistent cd does move the session, so it still retargets on the first one,
+# and so does a mutating `git -C`.
+S="$STATE_DIR/workdir-session-cd-persistent"
+printf '%s\n' "$TOP_A" > "$S"
+run_workdir_hook "$(workdir_payload Bash session-cd-persistent "$REPO_A" "cd '$REPO_B' && make")"
+assert_eq "$TOP_B" "$(cat "$S")"
+
+S="$STATE_DIR/workdir-session-git-mut-home"
+printf '%s\n' "$TOP_A" > "$S"
+run_workdir_hook "$(workdir_payload Bash session-git-mut-home "$REPO_A" "(git -C '$REPO_B' checkout main)")"
+assert_eq "$TOP_B" "$(cat "$S")"
+
+# The worktree pin ignores subshell cds outright, at any count: they are the
+# excursions — test runs, greps — stickiness exists to absorb.
+S="$STATE_DIR/workdir-session-subshell-sticky"
+printf '%s\n' "$TOP_E" > "$S"
+for _ in 1 2 3 4; do
+  run_workdir_hook "$(workdir_payload Bash session-subshell-sticky "$REPO_E" "(cd '$REPO_A' && make test)")"
+done
+assert_eq "$TOP_E" "$(cat "$S")"
+assert test ! -e "$S.away"
 
 payload=$(workdir_payload Bash session-pushd "$REPO_A" "pushd '$REPO_B' && make")
 run_workdir_hook "$payload"
@@ -174,6 +224,69 @@ assert test ! -e "$HOME/.cache/evil"
 payload=$(workdir_payload Bash session-agent "$REPO_A" "cd '$REPO_B'" | jq -c '. + {agent_id:"a1",agent_type:"claudeb-worker"}')
 run_workdir_hook "$payload"
 assert test ! -e "$STATE_DIR/workdir-session-agent"
+
+# A subagent's cds stay invisible however many there are: the worker runs
+# wherever it was dispatched, and its shell is not the session's.
+S="$STATE_DIR/workdir-session-agent-cds"
+printf '%s\n' "$TOP_A" > "$S"
+for _ in 1 2 3 4; do
+  run_workdir_hook "$(agent_payload Bash session-agent-cds "$REPO_A" "cd '$REPO_B' && make")"
+done
+assert_eq "$TOP_A" "$(cat "$S")"
+assert test ! -e "$S.away"
+
+# Its WRITES are heard, but only as sustained work — in orchestrator mode every
+# substantive edit is a subagent's, so ignoring them left the statusline behind.
+# The proof is the same three-in-a-row run as the worktree pin, and it applies to
+# a plain main-checkout home too: a worker starts at a path the session never
+# visited, so one write there is no evidence the work has moved.
+S="$STATE_DIR/workdir-session-agent-edit"
+printf '%s\n' "$TOP_A" > "$S"
+run_workdir_hook "$(agent_payload Edit session-agent-edit "$REPO_A" "$REPO_D/other.txt")"
+assert_eq "$TOP_A" "$(cat "$S")"
+run_workdir_hook "$(agent_payload Write session-agent-edit "$REPO_A" "$REPO_D/new.txt")"
+assert_eq "$TOP_A" "$(cat "$S")"
+run_workdir_hook "$(agent_payload Edit session-agent-edit "$REPO_A" "$REPO_D/other.txt")"
+assert_eq "$TOP_D" "$(cat "$S")"
+assert test ! -e "$S.away"
+
+S="$STATE_DIR/workdir-session-agent-split"
+printf '%s\n' "$TOP_A" > "$S"
+run_workdir_hook "$(agent_payload Edit session-agent-split "$REPO_A" "$REPO_D/other.txt")"
+run_workdir_hook "$(agent_payload Edit session-agent-split "$REPO_A" "$REPO_B/tracked.txt")"
+run_workdir_hook "$(agent_payload Edit session-agent-split "$REPO_A" "$REPO_D/other.txt")"
+assert_eq "$TOP_A" "$(cat "$S")"
+
+# Writing where the session already lives is not away work at all.
+S="$STATE_DIR/workdir-session-agent-home"
+printf '%s\n' "$TOP_A" > "$S"
+run_workdir_hook "$(agent_payload Edit session-agent-home "$REPO_A" "$REPO_A/tracked.txt")"
+assert_eq "$TOP_A" "$(cat "$S")"
+assert test ! -e "$S.away"
+
+# With no home yet there is nothing to protect, so the first write adopts.
+run_workdir_hook "$(agent_payload Edit session-agent-fresh "$REPO_A" "$REPO_D/other.txt")"
+assert_eq "$TOP_D" "$(cat "$STATE_DIR/workdir-session-agent-fresh")"
+
+# The standing exclusions come first for subagents too, so a worker editing hooks
+# or caches never accumulates a run.
+S="$STATE_DIR/workdir-session-agent-excluded"
+printf '%s\n' "$TOP_A" > "$S"
+for _ in 1 2 3; do
+  run_workdir_hook "$(agent_payload Write session-agent-excluded "$REPO_A" "$HOME/.claude/settings.json")"
+done
+assert_eq "$TOP_A" "$(cat "$S")"
+assert test ! -e "$S.away"
+
+# One run, whoever writes: a worktree pin sees parent and subagent writes as the
+# same sustained work.
+S="$STATE_DIR/workdir-session-agent-wt"
+printf '%s\n' "$TOP_E" > "$S"
+run_workdir_hook "$(workdir_payload Edit session-agent-wt "$REPO_E" "$REPO_A/tracked.txt")"
+run_workdir_hook "$(agent_payload Edit session-agent-wt "$REPO_E" "$REPO_A/tracked.txt")"
+assert_eq "$TOP_E" "$(cat "$S")"
+run_workdir_hook "$(agent_payload Write session-agent-wt "$REPO_E" "$REPO_A/new.txt")"
+assert_eq "$TOP_A" "$(cat "$S")"
 
 payload=$(jq -cn --arg session session-wt --arg cwd "$REPO_A" --arg resp "Created worktree at $REPO_B" \
   '{hook_event_name:"PostToolUse",tool_name:"EnterWorktree",session_id:$session,cwd:$cwd,tool_input:{},tool_response:$resp}')

@@ -1088,3 +1088,23 @@ if not spotlightLayoutOk then
     print("ERROR: Spotlight layout failed to load:", spotlightLayoutError)
     hs.alert.show("Spotlight layout error")
 end
+
+-- require, not dofile: compact-auto.sh reaches the module through require, and a
+-- second copy would keep its pending operation in its own private state
+local compactResumeOk, compactResumeError = pcall(function()
+    local compact = require("claude_compact")
+    -- global on purpose: an unreferenced hs.timer can be GC'd before it fires,
+    -- and the init chunk's locals die when the chunk returns
+    CompactResumeTimer = hs.timer.doAfter(5, function()
+        local ok, err = pcall(compact.resumePending)
+        if not ok then
+            print("ERROR: Claude compact resume failed:", err)
+            hs.alert.show("Claude compact resume error")
+        end
+    end)
+end)
+
+if not compactResumeOk then
+    print("ERROR: Claude compact resume failed to load:", compactResumeError)
+    hs.alert.show("Claude compact resume error")
+end

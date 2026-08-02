@@ -183,10 +183,19 @@ Treat `stale`, `expired`, `as_of`, and `effective_pct` as the data-honesty contr
 `statusline-workdir-hook.sh` (PostToolUse matcher `Bash|Edit|Write|NotebookEdit|EnterWorktree|ExitWorktree`)
 records the git toplevel a session actually works in; the status line shows it with a magenta `»`
 marker when it differs from the launch repo. Rules:
-- Events carrying `agent_id`/`agent_type` are ignored — subagent tool calls report the PARENT
-  `session_id` and must never retarget the parent's display.
-- Bash: the LAST `cd`/`git -C` in the command wins (`;`, `&`, `|`, `&&`, `||`, and
-  newline-separated all match). `git -C <dir>` counts only when followed by a mutating
+- Events carrying `agent_id`/`agent_type` report the PARENT `session_id`, so a subagent's Bash
+  (and every non-write tool) is ignored — a worker's stray `cd` must never retarget the parent's
+  display. Its Edit/Write/NotebookEdit events do count, but only through the sustained-work run
+  below: three writes in a row into the same other toplevel, in ANY home (worktree or not),
+  since a worker starts where it was dispatched, not where the session lives. With no state file
+  at all a subagent write adopts its toplevel at once, like any other event.
+- Bash: the LAST `cd`/`git -C` in the command wins (`;`, `&`, `|`, `&&`, `||`, `(`-subshell, and
+  newline-separated all match; `(cd /path && cmd)` is the form the cd-guard hook prescribes).
+  A winning cd that sits after `(` is a subshell one and dies with the command — the session's
+  own cwd never moves — so it retargets only through the same sustained-work run: three
+  consecutive subshell cds into the SAME toplevel (a worktree-pinned home ignores them entirely,
+  like any other cd). A persistent `cd`/`pushd`, and `git -C <dir>`, still retarget on the first
+  one. `git -C <dir>` counts only when followed by a mutating
   subcommand (worktree/checkout/switch/commit/merge/rebase/cherry-pick/revert/restore/stash/
   am/reset/pull); read-only `git -C ... status/log/diff` never retargets.
 - EnterWorktree records the toplevel of the `worktree at <absolute path>` in `.tool_response`

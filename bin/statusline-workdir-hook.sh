@@ -5,37 +5,43 @@ exec >/dev/null 2>&1
 input=$(cat) || exit 0
 parsed=$(printf '%s' "$input" | jq -r '
   def value: if . == null then "" else tostring end;
-  def bash_path:
-    "\\\"(?:\\\\.|[^\\\"])*\\\"|\\x27[^\\x27]*\\x27|[^[:space:];&|]+" as $tok
+  def bash_hit:
+    # `(` is a separator and is barred from unquoted tokens: the cd-guard hook
+    # steers persistent `cd` into `(cd /path && cmd)`, where the path token
+    # would otherwise swallow the closing paren. That separator is reported
+    # because such a cd dies with the command — see the away run below.
+    "\\\"(?:\\\\.|[^\\\"])*\\\"|\\x27[^\\x27]*\\x27|[^[:space:];&|()]+" as $tok
     | (.tool_input.command // "")
-    | [match("(^|[;&|\\n])[[:space:]]*((cd|pushd)[[:space:]]+(?<cd>" + $tok + ")|git[[:space:]]+-C[[:space:]]+(?<dir>" + $tok + ")([[:space:]]+(?<sub>[A-Za-z][A-Za-z-]*))?)"; "g")]
+    | [match("(^|[;&|(\\n])[[:space:]]*((cd|pushd)[[:space:]]+(?<cd>" + $tok + ")|git[[:space:]]+-C[[:space:]]+(?<dir>" + $tok + ")([[:space:]]+(?<sub>[A-Za-z][A-Za-z-]*))?)"; "g")]
     | map(
         ([.captures[] | select(.name == "cd" and .string != null) | .string][0] // "") as $cd
         | ([.captures[] | select(.name == "dir" and .string != null) | .string][0] // "") as $dir
         | ([.captures[] | select(.name == "sub" and .string != null) | .string][0] // "") as $sub
-        | if $cd != "" then $cd
-          elif $dir != "" and (["worktree","checkout","switch","commit","merge","rebase","cherry-pick","revert","restore","stash","am","reset","pull"] | index($sub) != null) then $dir
-          else "" end)
-    | map(select(. != ""))
-    | (last // "");
+        | (.captures[0].string // "") as $sep
+        | if $cd != "" then {path: $cd, sep: $sep}
+          elif $dir != "" and (["worktree","checkout","switch","commit","merge","rebase","cherry-pick","revert","restore","stash","am","reset","pull"] | index($sub) != null) then {path: $dir, sep: ""}
+          else empty end)
+    | (last // {path: "", sep: ""});
   def worktree_path:
     (.tool_response // "")
     | (if type == "string" then . elif type == "object" then ([.. | strings] | join("\n")) else "" end)
     | ([capture("worktree at (?<wt>/[^\\n]+)")] | (.[0].wt // ""))
     | gsub("[[:space:]]+$"; "");
-  [(.hook_event_name | value), (.tool_name | value), (.session_id | value | gsub("[^A-Za-z0-9_-]"; "")),
+  (if .tool_name == "Bash" then bash_hit else {path: "", sep: ""} end) as $bash
+  | [(.hook_event_name | value), (.tool_name | value), (.session_id | value | gsub("[^A-Za-z0-9_-]"; "")),
    (.cwd | value),
    (if (.agent_id | value) != "" or (.agent_type | value) != "" then "1" else "" end),
    (if .tool_name == "Edit" or .tool_name == "Write" then (.tool_input.file_path | value)
     elif .tool_name == "NotebookEdit" then (.tool_input.notebook_path | value)
-    elif .tool_name == "Bash" then bash_path
+    elif .tool_name == "Bash" then $bash.path
     elif .tool_name == "EnterWorktree" then worktree_path
     else "" end),
-   (.source | value)]
+   (.source | value),
+   (if $bash.sep == "(" then "1" else "" end)]
   | join("")
 ' 2>/dev/null) || exit 0
 
-IFS=$'\x1f' read -r hook_event tool_name session_id base_dir agent_flag candidate start_source <<< "$parsed"
+IFS=$'\x1f' read -r hook_event tool_name session_id base_dir agent_flag candidate start_source bash_subshell <<< "$parsed"
 [ -n "$session_id" ] || exit 0
 
 cache_dir="$HOME/.cache/claude-statusline"
@@ -89,9 +95,17 @@ if [ "$hook_event" = SessionStart ]; then
 fi
 
 [ "$hook_event" = PostToolUse ] || exit 0
-# Subagent tool events carry the PARENT session_id: letting them through
-# would retarget the parent's statusline to wherever a worker happened to cd.
-[ -z "$agent_flag" ] || exit 0
+# Subagent tool events carry the PARENT session_id, so a worker's stray `cd`
+# would retarget the parent's statusline: only its WRITES are heard, and only as
+# sustained work (the away run below), never its cds. Dropping them wholesale
+# left the statusline behind in orchestrator mode, where every substantive edit
+# is made by a subagent.
+if [ -n "$agent_flag" ]; then
+  case "$tool_name" in
+    Edit|Write|NotebookEdit) ;;
+    *) exit 0 ;;
+  esac
+fi
 
 case "$tool_name" in
   ExitWorktree)
@@ -177,41 +191,50 @@ toplevel=$(cd "$toplevel" 2>/dev/null && pwd -P) || exit 0
 # sustained work, not an excursion. cds never break it, however
 # many — reading and running tests elsewhere is exactly the noise stickiness
 # exists to absorb.
+#
+# Subagent writes need the same proof in ANY home, worktree or not: a worker is
+# dispatched at a path the parent never visited, so one write there is no
+# evidence the session has moved. So does a subshell cd — `(cd /other && make)`
+# cannot outlive the command, so the session's own cwd never moved at all.
 if [ "$tool_name" != EnterWorktree ] && [ -f "$state_file" ]; then
   IFS= read -r prev_home < "$state_file" || :
+  sustained=$agent_flag
   case "$prev_home" in
-    */.claude/worktrees/*)
-      if [ "$toplevel" != "$prev_home" ]; then
-        case "$tool_name" in
-          Edit|Write|NotebookEdit) ;;
-          *) exit 0 ;;
-        esac
-        # The run is APPENDED, one line per write, and read back from the tail —
-        # never incremented in place. A turn that edits several files issues them
-        # as one parallel batch, which is precisely the burst this rule is meant
-        # to catch, and those hooks run concurrently: a read-modify-write counter
-        # had all three of them read the same value and write 1, so a batch of
-        # three never reached the threshold at all and the pin held forever.
-        # Single short appends do not interleave.
-        mkdir -p "$cache_dir" || exit 0
-        umask 077
-        printf '%s\n' "$toplevel" >> "$away_file" 2>/dev/null || exit 0
-        run=$(tail -n 3 "$away_file" 2>/dev/null | grep -cxF "$toplevel")
-        if [ "${run:-0}" -lt 3 ]; then
-          # Writes that keep alternating between two foreign repos never reach the
-          # threshold, so without this the file grows for the life of the session.
-          # Rare by construction, which is what keeps the rewrite off the hot path
-          # where it would reintroduce the race it replaced.
-          if [ "$(wc -l < "$away_file" 2>/dev/null || printf 0)" -gt 64 ]; then
-            tail -n 3 "$away_file" > "$away_file.tmp.$$" 2>/dev/null &&
-              mv -f "$away_file.tmp.$$" "$away_file" 2>/dev/null ||
-              rm -f "$away_file.tmp.$$" 2>/dev/null
-          fi
-          exit 0
-        fi
-      fi
-      ;;
+    */.claude/worktrees/*) sustained=1 ;;
   esac
+  if { [ -n "$sustained" ] || [ -n "$bash_subshell" ]; } && [ "$toplevel" != "$prev_home" ]; then
+    # Only the pin and the agent regimes are writes-only; the subshell case is a
+    # Bash cd by construction and this filter would drop it.
+    if [ -n "$sustained" ]; then
+      case "$tool_name" in
+        Edit|Write|NotebookEdit) ;;
+        *) exit 0 ;;
+      esac
+    fi
+    # The run is APPENDED, one line per write, and read back from the tail —
+    # never incremented in place. A turn that edits several files issues them
+    # as one parallel batch, which is precisely the burst this rule is meant
+    # to catch, and those hooks run concurrently: a read-modify-write counter
+    # had all three of them read the same value and write 1, so a batch of
+    # three never reached the threshold at all and the pin held forever.
+    # Single short appends do not interleave.
+    mkdir -p "$cache_dir" || exit 0
+    umask 077
+    printf '%s\n' "$toplevel" >> "$away_file" 2>/dev/null || exit 0
+    run=$(tail -n 3 "$away_file" 2>/dev/null | grep -cxF "$toplevel")
+    if [ "${run:-0}" -lt 3 ]; then
+      # Writes that keep alternating between two foreign repos never reach the
+      # threshold, so without this the file grows for the life of the session.
+      # Rare by construction, which is what keeps the rewrite off the hot path
+      # where it would reintroduce the race it replaced.
+      if [ "$(wc -l < "$away_file" 2>/dev/null || printf 0)" -gt 64 ]; then
+        tail -n 3 "$away_file" > "$away_file.tmp.$$" 2>/dev/null &&
+          mv -f "$away_file.tmp.$$" "$away_file" 2>/dev/null ||
+          rm -f "$away_file.tmp.$$" 2>/dev/null
+      fi
+      exit 0
+    fi
+  fi
 fi
 
 mkdir -p "$cache_dir" || exit 0
