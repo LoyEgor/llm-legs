@@ -5225,6 +5225,15 @@ def assert_suggestion(lines, files, changed_lines, tier, committed=False, receip
     named = [line.split(": ", 1)[1] for line in lines if line.startswith("tier: ")]
     assert named == re.findall(r"--tier (\S+)", lines[offset]), lines
     offset += 1
+    # The one line that tells a reader --paths exists. This output is the whole of what the skill
+    # says to obey, so a run in a tree holding someone else's work has no other way to learn it can
+    # be narrowed; a commit is not the working tree and cannot be.
+    scoped = [line for line in lines if line.startswith("scoped: ")]
+    assert len(scoped) == (0 if committed else 1), lines
+    if not committed:
+        assert lines[offset] == scoped[0], lines
+        assert "--paths <path> ..." in scoped[0], lines
+        offset += 1
     # Everything heavier than the followed command is printed as the owner's to reach for, and
     # named as such on its own line.
     owner_only = [

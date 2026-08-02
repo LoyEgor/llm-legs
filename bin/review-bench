@@ -5560,6 +5560,14 @@ def cmd_suggest(args):
         "preserve the complete final stdout"
     )
     print(f"command: {command_for(run_tier, False)}")
+    # Named here because this output is the only place a reader looks: the skill says to run
+    # suggest and obey it, so a flag absent from the printed command does not exist. Left as the
+    # exception rather than the default — narrowing a review that could have read everything
+    # loses the defects that live between files.
+    if not args.range:
+        print("scoped: if part of this tree is another agent's live work, repeat the command "
+              "with --paths <path> ... naming only your own files; a scoped run reviews and "
+              "stamps only those and leaves the repository's own receipt alone")
     # The heavier panels are printed for Egor to reach for, never as work to pick up: the gate
     # denies them to anyone he has not told, and a line the reader must not follow says so.
     # Every size prints them, not just the ones that size into T3: when he asks for T3 on a small
