@@ -230,9 +230,23 @@ def to_json(rows, global_median, outliers_excluded, ledger_path, delegations, le
     }
 
 
-def aggregate_reviews(reviews):
+def review_lenses(reviews):
+    return sorted({
+        review["lens"] for review in reviews
+        if isinstance(review.get("lens"), str) and review["lens"]
+    })
+
+
+def aggregate_reviews(reviews, lens=None):
+    """The leaderboard for one methodology: the tool's own when `lens` is None.
+
+    Grouped by slug across every version of a lens file rather than by the hash of the text
+    that ran: a lens is edited between runs, and per-hash rows would each hold one bench.
+    """
     snapshot = {}
     for review in reviews:
+        if review.get("lens") != lens:
+            continue
         key = (review.get("run_id"), review.get("rater"))
         if all(key):
             snapshot[key] = review
@@ -275,8 +289,9 @@ def percent(value):
     return "—" if value is None else f"{value * 100:.1f}"
 
 
-def print_reviews_table(rows, reviews_path, reviews):
-    print("Review benchmark leaderboard — model x effort, weighted score first")
+def print_reviews_table(rows, reviews_path, reviews, lens=None):
+    scope = f"lens {lens}" if lens else "model x effort"
+    print(f"Review benchmark leaderboard — {scope}, weighted score first")
     header = (f"{'model/effort':<22}{'bench':>7}{'find/b':>9}{'confirm%':>10}{'FP%':>7}"
               f"{'unique%':>9}{'miss%':>8}{'score':>8}")
     print(header)
@@ -294,7 +309,8 @@ def print_reviews_table(rows, reviews_path, reviews):
         updated = datetime.fromtimestamp(reviews_path.stat().st_mtime, timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     else:
         updated = "(no reviews ledger)"
-    print(f"data: reviews {updated} | {len(reviews)} rater rows")
+    counted = sum(1 for review in reviews if review.get("lens") == lens)
+    print(f"data: reviews {updated} | {counted} rater rows")
 
 
 def interactive_tables(implementation, reviews):
@@ -330,20 +346,34 @@ def cmd_view(args):
     reviews_path = sd / "reviews.jsonl"
     reviews = read_jsonl(reviews_path)
     review_rows = aggregate_reviews(reviews)
+    lenses = review_lenses(reviews)
+
+    def print_review_views():
+        print_reviews_table(review_rows, reviews_path, reviews)
+        for lens in lenses:
+            print()
+            print_reviews_table(
+                aggregate_reviews(reviews, lens), reviews_path, reviews, lens=lens
+            )
+
     if args.json:
         payload = to_json(rows, global_median, outliers_excluded, ledger_path, delegations, ledger)
-        payload["reviews"] = {"rows": review_rows, "rater_rows": len(reviews)}
+        payload["reviews"] = {
+            "rows": review_rows,
+            "rater_rows": sum(1 for review in reviews if not review.get("lens")),
+            "lenses": {lens: aggregate_reviews(reviews, lens) for lens in lenses},
+        }
         json.dump(payload, sys.stdout, indent=2)
         sys.stdout.write("\n")
     elif sys.stdout.isatty() and sys.stdin.isatty():
         interactive_tables(
             lambda: print_table(rows, global_median, outliers_excluded, ledger_path, delegations, ledger),
-            lambda: print_reviews_table(review_rows, reviews_path, reviews),
+            print_review_views,
         )
     else:
         print_table(rows, global_median, outliers_excluded, ledger_path, delegations, ledger)
         print()
-        print_reviews_table(review_rows, reviews_path, reviews)
+        print_review_views()
 
 
 def worker_corpus_path():

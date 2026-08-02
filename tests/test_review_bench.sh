@@ -5320,6 +5320,99 @@ assert "lens" not in plain_lens_meta and "lens_hash" not in plain_lens_meta, pla
 assert any(spec.startswith("oc-") for spec in plain_lens_meta["raters"]), plain_lens_meta
 assert set(lens_seen.values()) == {""}, lens_seen
 
+# The corpus row is where a lens run stops being indistinguishable from an ordinary one, and
+# an absent field rather than a null is what every reader below keys on.
+lens_empty_verdicts = work / "lens-empty-verdicts.jsonl"
+lens_empty_verdicts.write_text("")
+plain_lens_run_dir = next((plain_lens_store / "worker-stats" / "benches").iterdir())
+with contextlib.redirect_stdout(io.StringIO()):
+    assert rb.cmd_record(argparse.Namespace(
+        run_id=plain_lens_meta["run_id"], verdicts=str(lens_empty_verdicts),
+    )) == 0
+plain_lens_corpus = rb.read_jsonl(plain_lens_store / "worker-stats" / "reviews.jsonl")
+assert plain_lens_corpus and not any(
+    "lens" in row or "lens_hash" in row for row in plain_lens_corpus
+), plain_lens_corpus
+os.environ["CLAUDEB_DIR"] = str(lens_store)
+with contextlib.redirect_stdout(io.StringIO()):
+    assert rb.cmd_record(argparse.Namespace(
+        run_id=lens_meta["run_id"], verdicts=str(lens_empty_verdicts),
+    )) == 0
+lens_corpus = rb.read_jsonl(lens_store / "worker-stats" / "reviews.jsonl")
+assert lens_corpus and all(
+    row["lens"] == "edge-cases" and row["lens_hash"] == lens_meta["lens_hash"]
+    for row in lens_corpus
+), lens_corpus
+# The tier alone names a panel, and these severities were awarded by another methodology.
+assert rb.report_lines(lens_run_dir, lens_meta)[0].startswith("T1 · lens edge-cases · "), \
+    rb.report_lines(lens_run_dir, lens_meta)
+assert "lens" not in rb.report_lines(plain_lens_run_dir, plain_lens_meta)[0], \
+    rb.report_lines(plain_lens_run_dir, plain_lens_meta)
+
+# A lens receipt sits beside the repository's own and never as it: the receipt is what decides
+# whether the working tree counts as reviewed, and the statusline reads only the plain name.
+os.environ["CLAUDEB_DIR"] = str(work / "lens-receipt-claudeb")
+lens_receipt_name = rb.receipt_file_name(pin_repo, "edge-cases")
+plain_receipt_name = rb.receipt_file_name(pin_repo)
+assert lens_receipt_name != plain_receipt_name, lens_receipt_name
+assert lens_receipt_name == f"{plain_receipt_name[:-len('.json')]}__lens-edge-cases.json", \
+    lens_receipt_name
+rb.persist_review_receipt(pin_repo, snapshot_tree, pin_sha, "lens-run", 0, lens="edge-cases")
+assert rb.review_receipt(pin_repo) is None, "a lens run wrote the repository's own receipt"
+assert rb.review_receipt(pin_repo, "edge-cases")["lens"] == "edge-cases"
+rb.persist_review_receipt(pin_repo, snapshot_tree, pin_sha, "plain-run", 0)
+rb.write_jsonl(rb.state_dir() / "reviews.jsonl", [
+    {"run_id": "plain-run", "commit": pin_sha, "rater": "sol-low", "confirmed": 1},
+    {"run_id": "lens-run", "commit": pin_sha, "rater": "sol-low", "confirmed": 9,
+     "lens": "edge-cases"},
+])
+# Aggregated per commit, so without the filter the lens run's nine would price the next change
+# as work provoked by a review that never ran under the tool's own methodology.
+assert rb.review_outcome(pin_repo, rb.review_receipt(pin_repo))[1] == 1
+assert rb.review_outcome(pin_repo, rb.review_receipt(pin_repo, "edge-cases"))[1] == 9
+
+# Nothing a lens run adjudicated may reach the canonical defect list or the frontier built on
+# it: a lens adjudication moving a tier composition is the one thing lens runs must not do.
+os.environ["CLAUDEB_DIR"] = str(work / "lens-frontier-claudeb")
+lens_frontier_sd = rb.state_dir()
+lens_frontier_commit = "c" * 40
+for run_name, lens_fields in (("plain-run", {}), ("lens-run", {"lens": "edge-cases"})):
+    directory = lens_frontier_sd / "benches" / run_name
+    directory.mkdir(parents=True)
+    (directory / "meta.json").write_text(json.dumps({
+        "run_id": run_name, "commit": lens_frontier_commit, "repo": str(pin_repo),
+        "raters": ["sol-low"],
+        "rater_runs": [{"rater": "sol-low", "duration_ms": 60_000, "exit_code": 0}],
+        "durations": {"sol-low": 60_000},
+        "started": "2026-08-01T00:00:00+00:00", "finished": "2026-08-01T00:00:01+00:00",
+        **lens_fields,
+    }))
+    rb.write_jsonl(directory / "defects.jsonl", [{
+        "defect_id": f"{run_name}#1", "file": "a.py", "line": 1, "severity": "P1",
+        "summary": run_name, "canonical_rater": "sol-low", "canonical_idx": 0,
+        "caught_by": ["sol-low"],
+    }])
+lens_defect_rows, _, _ = rb.commit_defect_rows(lens_frontier_sd, lens_frontier_commit[:7])
+assert [row["run_id"] for row in lens_defect_rows] == ["plain-run"], lens_defect_rows
+(lens_frontier_sd / "defects").mkdir(parents=True, exist_ok=True)
+rb.write_jsonl(lens_frontier_sd / "defects" / "fixture__ccccccc.jsonl", [{
+    "defect_id": "fixture@ccccccc#1", "repo": "fixture", "commit": lens_frontier_commit,
+    "file": "a.py", "line": 1, "severity": "P1", "summary": "one",
+    "caught_by": ["sol-low"],
+    "catches": [{"run_id": "plain-run", "rater": "sol-low"},
+                {"run_id": "lens-run", "rater": "sol-low"}],
+}])
+(lens_by_commit, lens_cells, _, _, lens_run_counts, _,
+ lens_counted) = rb.frontier_inputs(lens_frontier_sd)
+assert lens_cells == ["sol-low"], lens_cells
+assert lens_run_counts[("ccccccc", "sol-low")] == 1, lens_run_counts
+assert lens_counted["ccccccc"] == {("plain-run", "sol-low")}, lens_counted
+# The lens run's catch has no denominator and is dropped whole; counting it would put the cell
+# at twice the rate one fresh ordinary run of it actually delivers.
+assert rb.hit_rates(lens_by_commit, lens_run_counts, lens_counted) == {
+    "fixture@ccccccc#1": {"sol-low": 1.0}
+}, rb.hit_rates(lens_by_commit, lens_run_counts, lens_counted)
+
 print("review-bench-unit-ok")
 PY
 assert test "$?" -eq 0
@@ -6211,6 +6304,37 @@ assert contains "$table" 'Fable-rework leaderboard'
 assert contains "$table" 'Review benchmark leaderboard'
 assert contains "$table" 'sol/medium'
 
+# Lens rows are a leaderboard of their own: mixed into the default one they would score cells
+# on a methodology nobody chose them for, and split by lens_hash every edit of the lens file
+# would start the count again.
+LENS_STATS_SD="$WORK/lens-stats"
+mkdir -p "$LENS_STATS_SD"
+cat >"$LENS_STATS_SD/reviews.jsonl" <<'JSONL'
+{"run_id":"r1","rater":"sol-low","rater_model":"sol","rater_effort":"low","findings":2,"confirmed":1,"false_positive":1,"duplicate":0,"unique_catches":1,"misses":0,"p1":1,"p2":0,"p3":0}
+{"run_id":"r2","rater":"sol-low","rater_model":"sol","rater_effort":"low","findings":2,"confirmed":2,"false_positive":0,"duplicate":0,"unique_catches":2,"misses":0,"p1":2,"p2":0,"p3":0,"lens":"edge-cases","lens_hash":"aaa"}
+{"run_id":"r3","rater":"opus-medium","rater_model":"opus","rater_effort":"medium","findings":1,"confirmed":1,"false_positive":0,"duplicate":0,"unique_catches":1,"misses":0,"p1":0,"p2":1,"p3":0,"lens":"edge-cases","lens_hash":"bbb"}
+JSONL
+lens_stats_json=$(WORKER_STATS_DIR="$LENS_STATS_SD" "$STATS" --json) \
+  || fail "worker-stats lens JSON failed"
+python3 - "$lens_stats_json" <<'PY'
+import json
+import sys
+
+reviews = json.loads(sys.argv[1])["reviews"]
+assert [row["rater"] for row in reviews["rows"]] == ["sol-low"], reviews["rows"]
+assert reviews["rows"][0]["benches"] == 1, reviews["rows"]
+assert reviews["rater_rows"] == 1, reviews
+lens = reviews["lenses"]["edge-cases"]
+assert {row["rater"]: row["benches"] for row in lens} == {
+    "sol-low": 1, "opus-medium": 1
+}, lens
+print("worker-stats-lens-ok")
+PY
+assert test "$?" -eq 0
+lens_table=$(WORKER_STATS_DIR="$LENS_STATS_SD" "$STATS") || fail "worker-stats lens view failed"
+assert contains "$lens_table" 'Review benchmark leaderboard — lens edge-cases'
+assert contains "$lens_table" 'opus/medium'
+
 listing=$(WORKER_STATS_DIR="$SD" "$SCRIPT" list) || fail "list failed"
 assert contains "$listing" 'run-fixture'
 assert contains "$listing" 'adjudicated'
@@ -6510,4 +6634,4 @@ else
   printf 'SKIP: review report hook behavior (%s is unavailable)\n' "$REPORT_HOOK"
 fi
 
-printf 'PASS: %s assertions; canonical review tiers sharing one OpenCode/Gemini floor with no retired cell in them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative suggestions with missing-object fallback, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account usable only behind its opt-in and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask, the lookup scoped to the repository so another chat cannot answer for it, and both review hooks keyed so exactly one fires\n' "$asserts"
+printf 'PASS: %s assertions; canonical review tiers sharing one OpenCode/Gemini floor with no retired cell in them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative suggestions with missing-object fallback, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account usable only behind its opt-in and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, carried from there into the corpus row, the report header and a receipt of the lens'"'"'s own while every lens row stays out of the canonical defect list, the frontier denominators, the composition corpus and the default leaderboard, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask, the lookup scoped to the repository so another chat cannot answer for it, and both review hooks keyed so exactly one fires\n' "$asserts"

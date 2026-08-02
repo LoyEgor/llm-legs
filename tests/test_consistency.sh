@@ -398,7 +398,7 @@ assert doc_has 'including multiple Claude auth failures, uses `"; "` between ent
 
 assert grep -Fq 'RECEIPT_DIR = "receipts"' "$REVIEWBENCH"
 assert grep -Fq 'RECEIPT_FIELDS = ("repo", "tree", "commit", "run_id", "ts")' "$REVIEWBENCH"
-rb_receipt_name=$(sed -n '/^def receipt_file_name(repo):/,/^$/p' "$REVIEWBENCH")
+rb_receipt_name=$(sed -n '/^def receipt_file_name(repo, lens=None):/,/^$/p' "$REVIEWBENCH")
 sl_receipt_name=$(sed -n '/^receipt_file_name()/,/^}/p' "$STATUSLINE")
 rb_receipt_hash_len=$(grep -E '^RECEIPT_HASH_HEX = [0-9]+$' "$REVIEWBENCH" | awk '{print $3}')
 sl_receipt_hash_len=$(grep -E '^RECEIPT_HASH_HEX=[0-9]+$' "$STATUSLINE" | cut -d= -f2)
@@ -410,6 +410,11 @@ assert grep -Fq 'shasum -a 1' <<<"$sl_receipt_name"
 assert grep -Fq 'awk -v n="$RECEIPT_HASH_HEX" '\''{print substr($1, 1, n)}' <<<"$sl_receipt_name"
 assert grep -Fq 'return f"{repo_name}__{repo_hash}.json"' <<<"$rb_receipt_name"
 assert grep -Fq 'printf '\''%s__%s.json'\'' "$repo_name" "$repo_hash"' <<<"$sl_receipt_name"
+# A lens receipt is a sibling of that name, never the name itself: the statusline knows only
+# the plain one, and a lens sharing it would show a repository as reviewed by a methodology
+# the tool did not write.
+assert grep -Fq 'return f"{repo_name}__{repo_hash}__lens-{lens}.json"' <<<"$rb_receipt_name"
+assert test "$(grep -c 'lens' "$STATUSLINE")" -eq 0
 assert grep -Fq 'path = state_dir() / RECEIPT_DIR / name' "$REVIEWBENCH"
 assert grep -Fq 'receipt_file="$worker_stats_dir/receipts/$receipt_name"' "$STATUSLINE"
 assert grep -Fq '[.repo,.tree,.commit,.run_id,.ts,(.errored | tostring),' "$STATUSLINE"

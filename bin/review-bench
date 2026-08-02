@@ -933,12 +933,19 @@ def resolve_repo_arg(path, require_worktree=False):
     return repo if inside.returncode == 0 else None
 
 
-def receipt_file_name(repo):
+def receipt_file_name(repo, lens=None):
+    """The repository's review receipt, or a lens's own beside it. A lens run read the same
+    tree by a methodology the tool did not write, so it may not answer for the review cycle:
+    the ordinary receipt is what `suggest` sizes the next change against and what the stamp
+    hook reads, and one lens run sharing it would declare the repository reviewed.
+    """
     repo_path = str(Path(repo).resolve())
     repo_name = repo_identity(repo_path)
     if not repo_name:
         return None
     repo_hash = hashlib.sha1(repo_path.encode()).hexdigest()[:RECEIPT_HASH_HEX]
+    if lens:
+        return f"{repo_name}__{repo_hash}__lens-{lens}.json"
     return f"{repo_name}__{repo_hash}.json"
 
 
@@ -1024,8 +1031,8 @@ def prune_review_progress(repo, directory=None):
             pass
 
 
-def review_receipt(repo):
-    name = receipt_file_name(repo)
+def review_receipt(repo, lens=None):
+    name = receipt_file_name(repo, lens)
     if not name:
         return None
     path = state_dir() / RECEIPT_DIR / name
@@ -1050,10 +1057,11 @@ def review_receipt(repo):
     return receipt if proc.returncode == 0 and proc.stdout.strip() == "tree" else None
 
 
-def persist_review_receipt(repo, tree, sha, run_id, errored, timestamp=None, panel=None):
+def persist_review_receipt(repo, tree, sha, run_id, errored, timestamp=None, panel=None,
+                           lens=None):
     tmp = None
     try:
-        name = receipt_file_name(repo)
+        name = receipt_file_name(repo, lens)
         if not name:
             raise RuntimeError("repository identity is unavailable")
         directory = state_dir() / RECEIPT_DIR
@@ -1068,6 +1076,11 @@ def persist_review_receipt(repo, tree, sha, run_id, errored, timestamp=None, pan
         # of nine is not the same coverage loss as four, and only the run knows how many it sent.
         if isinstance(panel, int) and not isinstance(panel, bool) and panel > 0:
             receipt["panel"] = panel
+        # Carried in the document as well as the name: everything the receipt is weighed
+        # against — its run's corpus rows, its findings — has to come from the same
+        # methodology, and the reader has only the receipt it was handed.
+        if lens:
+            receipt["lens"] = lens
         tmp.write_text(json.dumps(receipt) + "\n")
         os.replace(tmp, path)
         tmp = None
@@ -1080,7 +1093,7 @@ def persist_review_receipt(repo, tree, sha, run_id, errored, timestamp=None, pan
                 pass
 
 
-def write_review_receipt(repo, sha, run_id, errored, panel=None, worktree=False):
+def write_review_receipt(repo, sha, run_id, errored, panel=None, worktree=False, lens=None):
     try:
         proc = subprocess.run(
             ["git", "rev-parse", f"{sha}^{{tree}}"],
@@ -1103,7 +1116,7 @@ def write_review_receipt(repo, sha, run_id, errored, panel=None, worktree=False)
                     "current state (historical bench run)", file=sys.stderr,
                 )
                 return None
-        return persist_review_receipt(repo, tree, sha, run_id, errored, panel=panel)
+        return persist_review_receipt(repo, tree, sha, run_id, errored, panel=panel, lens=lens)
     except Exception as exc:
         print(f"warning: could not write review receipt: {exc}", file=sys.stderr)
         return None
@@ -1953,8 +1966,11 @@ def report_lines(run_dir, meta, verdicts=None):
         slowest_text = "completed durations unknown"
     else:
         slowest_text = "no cells completed"
+    # Beside the tier, because the tier alone names a panel and the reader would price these
+    # findings as the tool's own: a lens run's severities were awarded by another methodology.
+    scope = f"{tier} · lens {meta['lens']}" if meta.get("lens") else tier
     lines = [
-        f"{tier} · {format_seconds(summary['wall_seconds'])} wall · {slowest_text}"
+        f"{scope} · {format_seconds(summary['wall_seconds'])} wall · {slowest_text}"
     ]
     errored = Counter()
     timed_out = Counter()
@@ -3318,6 +3334,16 @@ def lens_panel(raters, lens):
         if seen[base] <= lens["repeats"]:
             trimmed.append(rater)
     return trimmed
+
+
+def lens_rows(rows, lens=None):
+    """Corpus rows measured under one methodology: the tool's own when `lens` is None.
+
+    A lens run answers a different question from the tool's own reviews, so mixing the two
+    would let a methodology nobody benchmarked pick the cells of an ordinary panel and decide
+    when a repository counts as reviewed.
+    """
+    return [row for row in rows if row.get("lens") == lens]
 
 
 def uses_skill_brief(rater):
@@ -5050,10 +5076,13 @@ def review_outcome(repo, receipt):
     # would score a panel that found defects as a review that found nothing.
     sd = state_dir()
     commit = str(receipt.get("commit") or "")
+    # Only what was measured the way this receipt was: a lens run of the same commit answers a
+    # different question, and counting it would let one declare an ordinary review's work done.
+    lens = receipt.get("lens")
     # Full-sha equality, never a prefix: reviews.jsonl spans every repository, and two repos
     # sharing seven hex characters would import each other's confirmed counts.
     confirmed = sum(
-        row["confirmed"] for row in read_jsonl(sd / "reviews.jsonl")
+        row["confirmed"] for row in lens_rows(read_jsonl(sd / "reviews.jsonl"), lens)
         if (row.get("run_id") == receipt["run_id"]
             or (commit and str(row.get("commit") or "") == commit))
         and isinstance(row.get("confirmed"), int)
@@ -5073,6 +5102,8 @@ def review_outcome(repo, receipt):
                     # An unreadable run proves nothing; counting its findings files would
                     # trust exactly the raters its meta may have marked errored.
                     continue
+            if meta.get("lens") != lens:
+                continue
             meta_commit = str(meta.get("commit") or "")
             # The run_id fallback exists for artifacts with no commit stamped at all; a run
             # that NAMES a different commit is a different review, whatever its directory.
@@ -5100,7 +5131,10 @@ def cmd_receipt(args):
     one of these derivations would otherwise have to stay in step with.
     """
     repo = resolve_repo_arg(args.repo) or Path(args.repo).resolve()
-    receipt = review_receipt(repo)
+    # Resolved rather than taken as typed: the receipt was written under the canonical slug,
+    # and a former slug is exactly what a reader still has in hand.
+    lens = resolve_lens(args.lens)["name"] if getattr(args, "lens", "") else None
+    receipt = review_receipt(repo, lens)
     if not receipt:
         return 1
     worktree, confirmed, findings = review_outcome(repo, receipt)
@@ -5378,7 +5412,10 @@ def cmd_run(args):
     )
     worktree_mode = worktree_mode or is_worktree_snapshot(repo, sha)
     reviews_path = state_dir() / "reviews.jsonl"
-    review_rows = read_jsonl(reviews_path)
+    # The corpus that picks `--auto` cells and prices how long they take, and it is the tool's
+    # own reviews even when this run carries a lens: a cell is chosen for how it performs at
+    # the methodology the panel is built around, not at whichever lens ran most recently.
+    review_rows = lens_rows(read_jsonl(reviews_path))
     verify_model = args.verify
     if verify_model:
         verify_model = verifier_model(verify_model)
@@ -5663,7 +5700,8 @@ def cmd_run(args):
         log_review_event("run", run_dir, meta)
         if meta["completed_raters"]:
             write_review_receipt(repo, sha, run_id, len(errored_raters),
-                                 panel=len(raters), worktree=worktree_mode)
+                                 panel=len(raters), worktree=worktree_mode,
+                                 lens=lens["name"] if lens else None)
         if errored_raters:
             errored = [rater for rater in raters if rater["spec"] in errored_raters]
             rerun = ",".join(collapse_rater_attempts(rater["spec"] for rater in errored))
@@ -5922,6 +5960,12 @@ def cmd_record(args):
             record["rater_model_resolved"] = model_resolved
         if repo_name:
             record["repo"] = repo_name
+        # The hash beside the slug because a lens is edited between runs: the slug is what the
+        # rows are grouped by, and the hash is the only way to tell which text was measured.
+        if meta.get("lens"):
+            record["lens"] = meta["lens"]
+            if meta.get("lens_hash"):
+                record["lens_hash"] = meta["lens_hash"]
         records.append(record)
     defects = []
     for number, key in enumerate(canonical, 1):
@@ -5982,6 +6026,11 @@ def commit_defect_rows(sd, commitish):
             continue
         sha = str(meta.get("commit") or "")
         if not sha.startswith(commitish):
+            continue
+        # A lens run judged this commit by a methodology of its own, so its defects are not
+        # part of the canonical list the tool's cells are scored against — and the frontier
+        # this list feeds is what decides tier compositions.
+        if meta.get("lens"):
             continue
         run_id = meta.get("run_id") or path.name
         # A run of this commit whose adjudication never landed leaves the canonical list
@@ -6158,6 +6207,10 @@ def frontier_inputs(sd, commits=None):
             raise ValueError(f"{meta_path} is unreadable ({exc.msg}); repair or remove that run")
         commit = str(meta.get("commit") or "")[:7]
         if commit not in available:
+            continue
+        # Cluster leaves a lens run out of the canonical defects, so counting its attempts
+        # here would put a denominator under a numerator that can never exist.
+        if meta.get("lens"):
             continue
         run_id = meta.get("run_id") or path.name
         # `raters` holds the cells that answered; `rater_runs` holds every attempt, errored ones
@@ -6532,6 +6585,10 @@ def main():
         "receipt", help="Print this repository's review receipt as JSON"
     )
     receipt.add_argument("--repo", default=".")
+    receipt.add_argument(
+        "--lens", default="", metavar="SLUG",
+        help="Print that lens's own receipt instead of the repository's review receipt",
+    )
     receipt.set_defaults(func=cmd_receipt)
     report = subparsers.add_parser("report", help="Print a compact benchmark run report")
     report.add_argument("run_id", nargs="?")
