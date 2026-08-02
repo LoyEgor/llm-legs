@@ -1474,6 +1474,12 @@ for frontmatter, body, reason in (
     # the run is then scored on a vocabulary the lens never claimed.
     ("name: ok-lens", "Report every defect you find.\n", "never maps P1, P2, P3"),
     ("name: ok-lens", "Crashes are P1, everything else P2.\n", "never maps P3"),
+    ("name: ok-lens\naliases: keeper\n- extra", lens_body, "both a value and list items"),
+    # A list where a path or a digest belongs reaches Path() and a hash comparison intact, and
+    # fails there — far from the file that wrote it.
+    (f"name: ok-lens\nsource: [{lens_source}, other.md]", lens_body,
+     "source must be a single value"),
+    ("name: ok-lens\nsource_hash: [abc]", lens_body, "source_hash must be a single value"),
     ("name: edge-cases", lens_body, "claimed by both"),
     ("name: ok-lens\naliases: [edge]", lens_body, "claimed by both"),
 ):
@@ -1483,7 +1489,32 @@ broken_lens.write_text("no frontmatter at all\n" + lens_body)
 assert "no `---` frontmatter block" in lens_refusal(rb.load_lenses)
 broken_lens.write_text("---\nname edge\n---\n" + lens_body)
 assert "not `key: value`" in lens_refusal(rb.load_lenses)
+# A lens whose own bytes are not text has no body to give a rater, and read_bytes is what says
+# so — read_text() would raise past every refusal this registry makes.
+broken_lens.write_bytes(b"---\nname: ok-lens\n---\nP1 P2 P3 \xff\n")
+assert "not valid UTF-8" in lens_refusal(rb.load_lenses)
 broken_lens.unlink()
+# The documented block-list form: the key on its own line, its values under it.
+write_lens("block-list.md", "name: block-list\naliases:\n  - blocklist\n  - bl")
+assert rb.resolve_lens("bl")["name"] == "block-list"
+assert rb.resolve_lens("block-list")["aliases"] == ["blocklist", "bl"]
+(lens_registry / "block-list.md").unlink()
+# A file repeating a slug of its own claims nothing against itself; only another file does.
+write_lens("self-alias.md", "name: self-alias\naliases: [self-alias, sa, sa]")
+assert rb.resolve_lens("sa")["name"] == "self-alias"
+assert rb.resolve_lens("self-alias")["aliases"] == ["sa"]
+(lens_registry / "self-alias.md").unlink()
+# The digest is over the file's bytes, so it is the one shasum prints; hashing decoded text
+# would translate CRLF away and disagree with every other reader of the same file.
+crlf_lens = lens_registry / "crlf-lens.md"
+crlf_lens.write_bytes(
+    f"---\nname: crlf-lens\n---\n{lens_body}".replace("\n", "\r\n").encode()
+)
+assert rb.resolve_lens("crlf-lens")["hash"] == hashlib.sha256(
+    crlf_lens.read_bytes()
+).hexdigest()
+assert rb.resolve_lens("crlf-lens")["body"].startswith("EDGE CASE METHODOLOGY BODY")
+crlf_lens.unlink()
 lens_prompt = rb.review_prompt("deadbee", "", lens=edge_lens)
 assert "EDGE CASE METHODOLOGY BODY" in lens_prompt, lens_prompt
 assert rb.CLEAN_REVIEW_MARKER in lens_prompt and "one JSON object per line" in lens_prompt
@@ -1505,16 +1536,39 @@ skill_cell["lens"] = edge_lens
 assert not rb.uses_skill_brief(skill_cell)
 assert "<review-prompt-and-diff>" in rb.redact_command(skill_cell, skill_redacted)
 lens_mixed = rb.parse_raters("opus-medium,sol-low,oc-kimik3,agy-pro-high-skill")
-assert [rater["spec"] for rater in rb.lens_panel(lens_mixed, edge_lens)] == [
-    "opus-medium", "sol-low"], lens_mixed
+lens_kept, lens_dropped = rb.lens_panel(lens_mixed, edge_lens)
+assert [rater["spec"] for rater in lens_kept] == ["opus-medium", "sol-low"], lens_mixed
+# A cell the panel drops is a cell the run has to name: silently, the tier still reads as run
+# whole and nobody can tell the panel from the composition it was asked for.
+assert [spec for spec, _ in lens_dropped] == ["oc-kimik3", "agy-pro-high-skill"], lens_dropped
+assert all("out of a lens's reach" in reason for _, reason in lens_dropped), lens_dropped
 assert "no cell to run" in lens_refusal(
     rb.lens_panel, rb.parse_raters("oc-kimik3,agy-pro-high-skill"), edge_lens
 )
-assert [
-    rater["spec"] for rater in
-    rb.lens_panel(rb.parse_raters("sol-low x4,opus-medium x2"), rb.resolve_lens("repeat-lens"))
-] == ["sol-low", "sol-low#2", "opus-medium", "opus-medium#2"]
-assert len(rb.lens_panel(rb.parse_raters("sol-low x4"), edge_lens)) == 4
+repeat_kept, repeat_dropped = rb.lens_panel(
+    rb.parse_raters("sol-low x4,opus-medium x2"), rb.resolve_lens("repeat-lens")
+)
+assert [rater["spec"] for rater in repeat_kept] == [
+    "sol-low", "sol-low#2", "opus-medium", "opus-medium#2"]
+assert [spec for spec, _ in repeat_dropped] == ["sol-low#3", "sol-low#4"], repeat_dropped
+assert all("repeats=2" in reason for _, reason in repeat_dropped), repeat_dropped
+assert len(rb.lens_panel(rb.parse_raters("sol-low x4"), edge_lens)[0]) == 4
+# Under a lens the -skill cell takes the plain prompt, so it is the plain cell: kept as its own
+# spec it would be paid for twice and recorded as a skill run that never happened.
+skill_kept, skill_dropped = rb.lens_panel(
+    rb.parse_raters("opus-medium-skill,opus-medium,opus-high-skill"), edge_lens
+)
+assert [rater["spec"] for rater in skill_kept] == ["opus-medium", "opus-high"], skill_kept
+assert not any(rater["skill"] for rater in skill_kept), skill_kept
+assert [spec for spec, _ in skill_dropped] == ["opus-medium"], skill_dropped
+assert "already on the panel" in skill_dropped[0][1], skill_dropped
+# A cell measured usable only through the skill has nothing left to run once a lens takes the
+# skill away, and saying so here is the only place that does not read as "ask for what you asked".
+sonnet_kept, sonnet_dropped = rb.lens_panel(
+    rb.parse_raters("sonnet-medium-skill,opus-medium"), edge_lens
+)
+assert [rater["spec"] for rater in sonnet_kept] == ["opus-medium"], sonnet_kept
+assert "only through the skill" in sonnet_dropped[0][1], sonnet_dropped
 assert rb.lens_source_status(edge_lens) == "current"
 assert rb.lens_source_status(rb.resolve_lens("repeat-lens")) == "no source recorded"
 lens_source.write_text("ORIGIN SKILL TEXT, EDITED\n")
@@ -1525,6 +1579,24 @@ write_lens("gone-source.md", "name: gone-source\nsource: /nonexistent/skill.md")
 assert rb.lens_source_status(rb.resolve_lens("gone-source")).startswith("source missing at ")
 write_lens("no-hash.md", f"name: no-hash\nsource: {lens_source}")
 assert rb.lens_source_status(rb.resolve_lens("no-hash")) == "source hash not recorded"
+# A source is any file the lens was distilled from, so drift is a question about its bytes: a
+# source that does not decode is a status this reports, never a crash of `lens check`.
+binary_source = work / "lens-binary-source.bin"
+binary_source.write_bytes(b"\xff\xfe not text at all\n")
+binary_digest = hashlib.sha256(binary_source.read_bytes()).hexdigest()
+write_lens("binary-source.md", "\n".join([
+    "name: binary-source",
+    f"source: {binary_source}",
+    f"source_hash: {binary_digest}",
+]))
+assert rb.lens_source_status(rb.resolve_lens("binary-source")) == "current"
+assert binary_digest in "\n".join(rb.lens_check_lines("binary-source"))
+binary_source.unlink()
+assert rb.lens_source_status(
+    rb.resolve_lens("binary-source")
+).startswith("source missing at ")
+assert "(unreadable)" in "\n".join(rb.lens_check_lines("binary-source"))
+(lens_registry / "binary-source.md").unlink()
 lens_listing = rb.lens_list_lines()
 assert any(
     line.startswith("edge-cases") and "repeats=tier" in line and line.endswith("current")
@@ -5256,12 +5328,13 @@ rb.affordability = lambda: {
     "claude": True, "codex": True, "agy": True, "grok": True, "opencode": True,
     "claude_account": "fixture",
 }
-with contextlib.redirect_stdout(io.StringIO()):
+with contextlib.redirect_stdout(io.StringIO()) as lens_tier_out:
     lens_tier_rc = rb.cmd_review(argparse.Namespace(
         repo=str(pin_repo), commitish=pin_sha, tier="T1",
         verify=None, focus=None, lens="edge",
     ))
 assert lens_tier_rc == 0
+assert "out of a lens's reach" in lens_tier_out.getvalue(), lens_tier_out.getvalue()
 lens_run_dir = next((lens_store / "worker-stats" / "benches").iterdir())
 lens_meta = json.loads((lens_run_dir / "meta.json").read_text())
 # An alias was asked for; the canonical slug is what the run has to carry.
@@ -5272,6 +5345,11 @@ assert lens_meta["tier"] == "T1"
 assert lens_meta["raters"] and not any(
     spec.startswith(("oc-", "agy-")) for spec in lens_meta["raters"]
 ), lens_meta["raters"]
+# The tier the run records names a composition wider than the panel it launched, so the cells
+# the lens took out are recorded beside it.
+assert lens_meta["lens_panel_dropped"] and all(
+    spec.startswith(("oc-", "agy-")) for spec in lens_meta["lens_panel_dropped"]
+), lens_meta
 assert set(lens_seen.values()) == {"edge-cases"}, lens_seen
 assert lens_seen.keys() == set(lens_meta["raters"]), lens_seen
 # A run reading its own meta while the cells are still out — a progress view, or an abort —
@@ -5297,6 +5375,45 @@ repeat_lens_meta = json.loads(
 )
 assert repeat_lens_meta["raters"] == ["sol-low", "sol-low#2"], repeat_lens_meta
 assert repeat_lens_meta["lens"] == "repeat-lens", repeat_lens_meta
+assert repeat_lens_meta["lens_panel_dropped"] == ["oc-kimik3", "sol-low#3"], repeat_lens_meta
+
+# --auto picks from the cells a lens can actually reach: picking first and filtering after left
+# the run short of the number asked for while eligible cells sat unpicked.
+auto_lens_store = work / "lens-auto-claudeb"
+os.environ["CLAUDEB_DIR"] = str(auto_lens_store)
+rb.state_dir().mkdir(parents=True, exist_ok=True)
+rb.write_jsonl(rb.state_dir() / "reviews.jsonl", [
+    {"run_id": "seed", "commit": pin_sha, "rater": spec}
+    for spec in rb.AUTO_RATERS if not spec.startswith("agy-")
+])
+with contextlib.redirect_stdout(io.StringIO()):
+    assert rb.cmd_run(argparse.Namespace(
+        repo=str(pin_repo), commitish=pin_sha, raters="", leg=False,
+        verify=None, auto=3, focus=None, lens="edge-cases",
+    )) == 0
+auto_lens_meta = json.loads(
+    (next((auto_lens_store / "worker-stats" / "benches").iterdir()) / "meta.json").read_text()
+)
+assert len(auto_lens_meta["raters"]) == 3, auto_lens_meta
+assert not any(spec.startswith(("oc-", "agy-")) for spec in auto_lens_meta["raters"]), \
+    auto_lens_meta
+assert auto_lens_meta["lens_panel_dropped"] == [], auto_lens_meta
+
+# A -skill cell runs the plain prompt under a lens, and the spec it is recorded under says so.
+skill_lens_store = work / "lens-skill-claudeb"
+os.environ["CLAUDEB_DIR"] = str(skill_lens_store)
+lens_seen.clear()
+with contextlib.redirect_stdout(io.StringIO()):
+    assert rb.cmd_run(argparse.Namespace(
+        repo=str(pin_repo), commitish=pin_sha, raters="opus-medium-skill,opus-medium",
+        leg=False, verify=None, auto=None, focus=None, lens="edge-cases",
+    )) == 0
+skill_lens_meta = json.loads(
+    (next((skill_lens_store / "worker-stats" / "benches").iterdir()) / "meta.json").read_text()
+)
+assert skill_lens_meta["raters"] == ["opus-medium"], skill_lens_meta
+assert skill_lens_meta["lens_panel_dropped"] == ["opus-medium"], skill_lens_meta
+assert lens_seen == {"opus-medium": "edge-cases"}, lens_seen
 try:
     rb.cmd_run(argparse.Namespace(
         repo=str(pin_repo), commitish=pin_sha, raters="oc-kimik3,agy-pro-high-skill",
@@ -5344,8 +5461,10 @@ assert lens_corpus and all(
     for row in lens_corpus
 ), lens_corpus
 # The tier alone names a panel, and these severities were awarded by another methodology.
-assert rb.report_lines(lens_run_dir, lens_meta)[0].startswith("T1 · lens edge-cases · "), \
-    rb.report_lines(lens_run_dir, lens_meta)
+lens_report_head = rb.report_lines(lens_run_dir, lens_meta)[0]
+assert lens_report_head.startswith("T1 · lens edge-cases"), lens_report_head
+# The panel is narrower than the tier beside it, and the report is the surface that says so.
+assert f"−{len(lens_meta['lens_panel_dropped'])} cell(s)" in lens_report_head, lens_report_head
 assert "lens" not in rb.report_lines(plain_lens_run_dir, plain_lens_meta)[0], \
     rb.report_lines(plain_lens_run_dir, plain_lens_meta)
 

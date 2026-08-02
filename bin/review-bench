@@ -1969,6 +1969,9 @@ def report_lines(run_dir, meta, verdicts=None):
     # Beside the tier, because the tier alone names a panel and the reader would price these
     # findings as the tool's own: a lens run's severities were awarded by another methodology.
     scope = f"{tier} · lens {meta['lens']}" if meta.get("lens") else tier
+    dropped = meta.get("lens_panel_dropped") or []
+    if dropped:
+        scope += f" (−{len(dropped)} cell(s) the lens dropped)"
     lines = [
         f"{scope} · {format_seconds(summary['wall_seconds'])} wall · {slowest_text}"
     ]
@@ -2627,15 +2630,21 @@ def verifier_choices():
     return usable
 
 
-def auto_pick(number, rows, available):
+def auto_pick(number, rows, available, unreachable=None):
+    """`unreachable` maps a side to why this run cannot use it at all, keeping such cells out of
+    the pool rather than picked and dropped later — a pick spent on one is a cell short of what
+    was asked for while eligible cells sat unpicked."""
     if number < 1:
         raise ValueError("--auto must be at least 1")
     counts = review_counts(rows)
     eligible = []
     skipped = []
+    unreachable = unreachable or {}
     for order, spec in enumerate(AUTO_RATERS):
         rater = parse_rater(spec)
-        if available[rater["side"]]:
+        if rater["side"] in unreachable:
+            skipped.append((spec, unreachable[rater["side"]]))
+        elif available[rater["side"]]:
             eligible.append((counts[spec], order, rater))
         else:
             skipped.append((spec, f"{rater['side']} side is unaffordable"))
@@ -3175,7 +3184,9 @@ def parse_frontmatter(block):
         if line.startswith("- "):
             if key is None:
                 raise ValueError(f"list item before any key: {line!r}")
-            fields.setdefault(key, [])
+            # `key:` on its own line is the header of a block list, not a key holding "".
+            if fields[key] == "":
+                fields[key] = []
             if not isinstance(fields[key], list):
                 raise ValueError(f"key {key!r} has both a value and list items")
             fields[key].append(unquote_scalar(line[2:]))
@@ -3201,7 +3212,16 @@ def lens_dir():
 
 def read_lens(path):
     """One registered lens, or the reason a run must not launch against it."""
-    text = path.read_text()
+    # Hashed as bytes and decoded once: read_text() would translate newlines, and its digest
+    # would then disagree with what shasum reports for the same file.
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise RuntimeError(f"lens {path} is unreadable: {exc}") from exc
+    try:
+        text = data.decode()
+    except UnicodeDecodeError as exc:
+        raise RuntimeError(f"lens {path} is not valid UTF-8: {exc}") from exc
     block, body = split_frontmatter(text)
     if block is None:
         raise RuntimeError(f"lens {path} has no `---` frontmatter block")
@@ -3228,6 +3248,14 @@ def read_lens(path):
     for alias in aliases:
         if not LENS_SLUG_RE.fullmatch(alias):
             raise RuntimeError(f"lens {name}: alias {alias!r} is not a lowercase slug")
+    # A file naming one slug twice — or naming its own name as an alias — claims nothing against
+    # itself; only another file claiming the same slug is the ambiguity load_lenses refuses.
+    aliases = [alias for alias in dict.fromkeys(aliases) if alias != name]
+    for key in ("source", "source_hash"):
+        if not isinstance(fields.get(key, ""), str):
+            raise RuntimeError(
+                f"lens {name}: {key} must be a single value, got {fields[key]!r}"
+            )
     repeats = fields.get("repeats", "")
     if repeats == "" or repeats == []:
         repeats = None
@@ -3253,7 +3281,7 @@ def read_lens(path):
         "name": name,
         "path": path,
         "body": body.strip(),
-        "hash": hashlib.sha256(text.encode()).hexdigest(),
+        "hash": hashlib.sha256(data).hexdigest(),
         "repeats": repeats,
         "source": fields.get("source") or "",
         "source_hash": fields.get("source_hash") or "",
@@ -3298,42 +3326,88 @@ def lens_source_path(lens):
     return path if path.is_absolute() else lens["path"].parent / path
 
 
+def lens_source_digest(path):
+    """The source's digest over its bytes — the one shasum would print — or None when the file
+    cannot be read. A source is any file, so it is never required to be text at all."""
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
 def lens_source_status(lens):
     """Whether the skill this lens was distilled from still reads the way it did. Informational
     on every path: a drifted source makes the lens older than its origin, not unusable."""
     path = lens_source_path(lens)
     if path is None:
         return "no source recorded"
-    try:
-        text = path.read_text()
-    except OSError:
+    digest = lens_source_digest(path)
+    if digest is None:
         return f"source missing at {path}"
     if not lens["source_hash"]:
         return "source hash not recorded"
-    digest = hashlib.sha256(text.encode()).hexdigest()
     return "current" if digest == lens["source_hash"] else f"drifted from {path}"
 
 
+def lens_plain_cell(rater):
+    """The cell as a lens run actually launches it. A -skill cell takes the plain prompt under a
+    lens, so carrying the -skill spec would count it apart from its bare twin — two paid runs of
+    one cell — and record a skill run that never happened."""
+    if not rater["skill"]:
+        return rater
+    plain = dict(rater)
+    plain["skill"] = False
+    plain["spec"] = rater["spec"].replace("-skill", "", 1)
+    return plain
+
+
 def lens_panel(raters, lens):
-    """The cells a lens run may launch: the sides a lens can actually reach, trimmed to the
-    lens's own repeat count. Applied after tier resolution, so a tier stays one composition
-    rather than growing a lens variant."""
-    kept = [rater for rater in raters if rater["side"] not in LENS_EXCLUDED_SIDES]
+    """The cells a lens run may launch, and the ones it dropped getting there: the sides a lens
+    can actually reach, as the plain cells they run as, trimmed to the lens's own repeat count.
+    Applied after tier resolution, so a tier stays one composition rather than growing a lens
+    variant."""
+    dropped = []
+    kept = []
+    for rater in raters:
+        if rater["side"] in LENS_EXCLUDED_SIDES:
+            dropped.append((rater["spec"], f"{rater['side']} side is out of a lens's reach"))
+        else:
+            kept.append(rater)
     if not kept:
         raise RuntimeError(
             f"lens {lens['name']} has no cell to run: every requested cell is on the "
             f"{' or '.join(LENS_EXCLUDED_SIDES)} side, which a lens cannot reach"
         )
+    plain = []
+    specs = set()
+    for rater in kept:
+        cell = lens_plain_cell(rater)
+        # Dropped here rather than left to refuse_retired_cells, which would answer a lens run of
+        # this cell by telling the reader to ask for the -skill spec they already asked for.
+        if rater["skill"] and measured_skill_only(cell):
+            dropped.append(
+                (rater["spec"], "reviews only through the skill a lens replaces")
+            )
+            continue
+        if cell["spec"] in specs:
+            dropped.append(
+                (rater["spec"], f"runs as {cell['spec']} under a lens, already on the panel")
+            )
+            continue
+        specs.add(cell["spec"])
+        plain.append(cell)
     if not lens["repeats"]:
-        return kept
+        return plain, dropped
     seen = Counter()
     trimmed = []
-    for rater in kept:
+    for rater in plain:
         base = normalize_legacy_rater(rater["spec"])
         seen[base] += 1
         if seen[base] <= lens["repeats"]:
             trimmed.append(rater)
-    return trimmed
+        else:
+            dropped.append((rater["spec"], f"over lens {lens['name']} repeats={lens['repeats']}"))
+    return trimmed, dropped
 
 
 def lens_rows(rows, lens=None):
@@ -5438,9 +5512,15 @@ def cmd_run(args):
         counts = review_counts(review_rows)
     else:
         available = affordability()
-        raters, counts, skipped = auto_pick(args.auto or 2, review_rows, available)
+        raters, counts, skipped = auto_pick(
+            args.auto or 2, review_rows, available,
+            {side: f"{side} side is out of a lens's reach" for side in LENS_EXCLUDED_SIDES}
+            if lens else None,
+        )
+    lens_dropped = []
     if lens:
-        raters = lens_panel(raters, lens)
+        raters, lens_dropped = lens_panel(raters, lens)
+        skipped = list(skipped) + lens_dropped
         for rater in raters:
             rater["lens"] = lens
     refuse_retired_cells(raters)
@@ -5509,6 +5589,8 @@ def cmd_run(args):
         "lens": lens["name"],
         "lens_hash": lens["hash"],
         "lens_source_status": lens_source_status(lens),
+        # Named cells, because the tier beside them names a composition this run did not launch.
+        "lens_panel_dropped": [spec for spec, _ in lens_dropped],
     }
     launch_meta.update(lens_meta)
     (run_dir / "meta.json").write_text(json.dumps(launch_meta, indent=2) + "\n")
@@ -6527,10 +6609,7 @@ def lens_list_lines():
 def lens_check_lines(slug):
     lens = resolve_lens(slug)
     path = lens_source_path(lens)
-    try:
-        current = hashlib.sha256(path.read_text().encode()).hexdigest() if path else ""
-    except OSError:
-        current = ""
+    current = (lens_source_digest(path) or "") if path else ""
     lines = [f"{lens['name']}  {lens['path']}"]
     if lens["aliases"]:
         lines.append(f"  aliases:  {', '.join(lens['aliases'])}")
