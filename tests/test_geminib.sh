@@ -23,7 +23,7 @@ FAKE_BIN="$WORK/bin"
 AGY_CALLS="$WORK/agy-calls"
 export HOME AGY_CALLS
 mkdir -p "$HOME/.gemini/antigravity-cli" "$HOME/.gemini/config" "$HOME/.gemini/extensions" "$FAKE_BIN" \
-  "$HOME/Library/Keychains"
+  "$HOME/Library/Keychains" "$HOME/Library/Caches/ms-playwright-go" "$HOME/Library/Caches/ms-playwright"
 printf 'instructions\n' >"$HOME/.gemini/GEMINI.md"
 printf '{}\n' >"$HOME/.gemini/settings.json"
 printf '{}\n' >"$HOME/.gemini/antigravity-cli/settings.json"
@@ -118,6 +118,10 @@ for item in GEMINI.md config extensions settings.json; do
   assert test -L "$HOME/.gemini-profiles/alpha/.gemini/$item"
 done
 assert test -L "$HOME/.gemini-profiles/alpha/.gemini/antigravity-cli/settings.json"
+assert test "$(readlink "$HOME/.gemini-profiles/alpha/Library/Caches/ms-playwright-go")" \
+  = "$HOME/Library/Caches/ms-playwright-go"
+assert test "$(readlink "$HOME/.gemini-profiles/alpha/Library/Caches/ms-playwright")" \
+  = "$HOME/Library/Caches/ms-playwright"
 assert test ! -L "$HOME/.gemini-profiles/alpha/Library/Keychains"
 assert test -f "$HOME/.gemini-profiles/alpha/Library/Keychains/gemini.keychain-db"
 assert test "$(readlink "$HOME/.gemini-profiles/alpha/Library/Keychains/login.keychain-db")" \
@@ -133,12 +137,16 @@ assert grep -q "list-keychains -d user -s $HOME/.gemini-profiles/alpha/Library/K
 assert_fails grep -q "CALL home=$HOME " "$SECURITY_CALLS"
 
 mkdir -p "$HOME/.gemini-profiles/trap/.gemini/config" "$HOME/.gemini-profiles/trap/Library/Keychains"
+mkdir -p "$HOME/.gemini-profiles/trap/Library/Caches/ms-playwright-go"
 printf 'keep\n' >"$HOME/.gemini-profiles/trap/.gemini/config/value"
+printf 'own\n' >"$HOME/.gemini-profiles/trap/Library/Caches/ms-playwright-go/marker"
 printf 'own\n' >"$HOME/.gemini-profiles/trap/Library/Keychains/login.keychain-db"
 (umask 077; printf 'own\n' >"$HOME/.gemini-profiles/trap/.keychain-password")
 bash "$SCRIPT" list >/dev/null
 assert test ! -L "$HOME/.gemini-profiles/trap/.gemini/config"
 assert grep -qx keep "$HOME/.gemini-profiles/trap/.gemini/config/value"
+assert test ! -L "$HOME/.gemini-profiles/trap/Library/Caches/ms-playwright-go"
+assert grep -qx own "$HOME/.gemini-profiles/trap/Library/Caches/ms-playwright-go/marker"
 assert test ! -L "$HOME/.gemini-profiles/trap/Library/Keychains"
 # An openable keychain is migrated under the addressable name, never rebuilt: rebuilding one that
 # still has its password would throw away a working profile for nothing.
@@ -389,6 +397,9 @@ assert bash "$SCRIPT" remove alpha
 assert test ! -e "$HOME/.gemini-profiles/alpha"
 assert test ! -e "$cache_dir/alpha.json"
 assert test -e "$cache_dir/alpha.json.removed"
+# Removal announces a passive collect (no args) so the menu row drops without a
+# manual refresh.
+assert wait_announce ''
 assert_fails bash "$SCRIPT" remove main
 assert_fails bash "$SCRIPT" remove ../outside
 assert_fails bash "$SCRIPT" remove never-existed
@@ -433,4 +444,4 @@ else
 fi
 chmod 600 "$UNREADABLE_PIN"
 
-echo "PASS: $asserts asserts; base and isolated HOME routing, worker-pool exclusion (own file beside the profiles, last member protected, visible in list/status), shared configuration links, per-profile keychain kept unlockable behind a login.keychain-db symlink, parallel ordered list/status probes, one-step creation, strict launch names, exec delimiter stripping, override-aware login hints, persistent remove markers, and use pin set/show/clear/refusal parity"
+echo "PASS: $asserts asserts; base and isolated HOME routing, worker-pool exclusion (own file beside the profiles, last member protected, visible in list/status), shared configuration and Playwright caches, per-profile keychain kept unlockable behind a login.keychain-db symlink, parallel ordered list/status probes, one-step creation, strict launch names, exec delimiter stripping, override-aware login hints, persistent remove markers, and use pin set/show/clear/refusal parity"

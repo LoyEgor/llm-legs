@@ -82,7 +82,7 @@ elif { printf '%s' "$command" | grep -qE '(^|[[:space:]/])agy([[:space:]]|$)' ||
     *) model='' ;;
   esac
   effort=$(grab '\-\-effort(=|[[:space:]])(high|medium|low)' | grep -oE '(high|medium|low)$')
-  # flash35 carries its effort in the model id (gemini-3.5-flash-<effort>) with no --effort flag.
+  # Versioned Gemini ids carry effort; the pro-high label falls back to the configured high tier.
   [ -n "$effort" ] || effort=$(printf '%s' "$agy_model" | grep -oE '(high|medium|low)$')
   [ -n "$model" ] || model=$(worker_conf gemini_model)
   [ "$model" = flash ] && model=flash36

@@ -53,8 +53,9 @@ if [ -n "${AGY_FIXTURE_LABEL:-}" ]; then
 else
   case "$model" in
     "Gemini "*) label=$model ;;
+    gemini-3.1-pro-*) label="Gemini 3.1 Pro ($(printf '%s' "${model##*-}" | awk '{print toupper(substr($0,1,1)) substr($0,2)}'))" ;;
     gemini-3.5-flash-*) label="Gemini 3.5 Flash ($(printf '%s' "${model##*-}" | awk '{print toupper(substr($0,1,1)) substr($0,2)}'))" ;;
-    gemini-3.6-flash) label="Gemini 3.6 Flash ($(printf '%s' "$effort" | awk '{print toupper(substr($0,1,1)) substr($0,2)}'))" ;;
+    gemini-3.6-flash-*) label="Gemini 3.6 Flash ($(printf '%s' "${model##*-}" | awk '{print toupper(substr($0,1,1)) substr($0,2)}'))" ;;
     *) label=$model ;;
   esac
 fi

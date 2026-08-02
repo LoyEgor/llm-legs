@@ -205,7 +205,8 @@ than one account exists.
 The existing Antigravity login is `main` and continues to use the real home directory unchanged.
 Named accounts live under `~/.gemini-profiles/<name>` and launch with
 `HOME=~/.gemini-profiles/<name>`; shared non-auth Gemini settings are symlinked from
-`~/.gemini`. Antigravity exposes no narrower supported profile flag or environment variable.
+`~/.gemini`, and Playwright driver/browser caches are shared from the base HOME. Antigravity
+exposes no narrower supported profile flag or environment variable.
 Each profile also gets its **own** `Library/Keychains/login.keychain-db`, created on first use
 with a random password kept in the profile's `.keychain-password`. agy stores its OAuth token in
 the login keychain macOS resolves from `$HOME` and prefers it over the profile's token file, so a

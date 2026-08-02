@@ -141,7 +141,7 @@ assert doc_has 'Codex/Gemini base-profile priority'
 
 REVIEWBENCH="$ROOT/bin/review-bench"
 for mapping in \
-  '"agy-pro": "Gemini 3.1 Pro"' \
+  '"agy-pro": "gemini-3.1-pro"' \
   '"agy-flash36": "gemini-3.6-flash"' \
   '"agy-flash35": "gemini-3.5-flash"'; do
   assert grep -Fq -- "$mapping" "$REVIEWBENCH"
@@ -152,13 +152,14 @@ assert grep -Fq '"agy-flash35": ("low", "medium", "high")' "$REVIEWBENCH"
 assert grep -Fq 'agy-pro-<low|high>' "$ROOT/docs/DIAGNOSTICS.md"
 assert grep -Fq 'agy-flash36-<low|medium|high>' "$ROOT/docs/DIAGNOSTICS.md"
 assert grep -Fq 'agy-flash35-<low|medium|high>' "$ROOT/docs/DIAGNOSTICS.md"
-assert grep -Fq 'if rater["model"] == "agy-flash35":' "$REVIEWBENCH"
 assert grep -Fq 'return f"{model}-{rater['\''effort'\'']}"' "$REVIEWBENCH"
-assert grep -Fq 'if rater["model"] not in ("agy-flash35", "agy-pro"):' "$REVIEWBENCH"
-assert doc_has '`agy-pro-<effort>` → `--model "Gemini 3.1 Pro (<Effort>)"` with no `--effort` flag'
-assert grep -Fq 'if rater["model"] == "agy-pro":' "$REVIEWBENCH"
-assert doc_has '`agy-flash36-<effort>` → `--model gemini-3.6-flash --effort <effort>`'
-assert doc_has '`agy-flash35-<effort>` → `--model gemini-3.5-flash-<effort>` with no `--effort` flag'
+assert grep -Fq 'if rater["model"] == "agy-pro" and rater["effort"] == "high":' "$REVIEWBENCH"
+assert doc_has '`agy-pro-low` → `--model gemini-3.1-pro-low`'
+assert doc_has '`agy-pro-high` → `--model "Gemini 3.1 Pro (High)"`'
+assert doc_has '`agy-flash36-<effort>` → `--model gemini-3.6-flash-<effort>`'
+assert doc_has '`agy-flash35-<effort>` → `--model gemini-3.5-flash-<effort>`'
+assert doc_has 'Every cell omits `--effort`'
+assert test "$(sed -n '/^def run_agy(/,/^def /p' "$REVIEWBENCH" | grep -Fc '"--effort"')" -eq 0
 assert doc_has 'Antigravity review cell invocation mapping'
 
 # --- Row i: Gemini worker knobs ----------------------------------------------
@@ -171,14 +172,14 @@ assert test -r "$CODEX_AGENT"
 assert test -r "$CLAUDEB_AGENT"
 assert test -r "$WORKER_COMMAND"
 for row in \
-  '| `pro` | `high` | `Gemini 3.1 Pro (High)` | *(omit — see below)* |' \
-  '| `pro` | `low` | `Gemini 3.1 Pro (Low)` | *(omit — see below)* |' \
-  '| `flash36` | `high` | `gemini-3.6-flash` | `high` |' \
-  '| `flash36` | `medium` | `gemini-3.6-flash` | `medium` |' \
-  '| `flash36` | `low` | `gemini-3.6-flash` | `low` |' \
-  '| `flash35` | `high` | `gemini-3.5-flash-high` | *(omit — see below)* |' \
-  '| `flash35` | `medium` | `gemini-3.5-flash-medium` | *(omit — see below)* |' \
-  '| `flash35` | `low` | `gemini-3.5-flash-low` | *(omit — see below)* |'; do
+  '| `pro` | `high` | `Gemini 3.1 Pro (High)` | *(omit)* |' \
+  '| `pro` | `low` | `gemini-3.1-pro-low` | *(omit)* |' \
+  '| `flash36` | `high` | `gemini-3.6-flash-high` | *(omit)* |' \
+  '| `flash36` | `medium` | `gemini-3.6-flash-medium` | *(omit)* |' \
+  '| `flash36` | `low` | `gemini-3.6-flash-low` | *(omit)* |' \
+  '| `flash35` | `high` | `gemini-3.5-flash-high` | *(omit)* |' \
+  '| `flash35` | `medium` | `gemini-3.5-flash-medium` | *(omit)* |' \
+  '| `flash35` | `low` | `gemini-3.5-flash-low` | *(omit)* |'; do
   assert test "$(grep -Fc -- "$row" "$GEMINI_AGENT")" -eq 1
 done
 assert grep -Fq '`gemini_model=pro`, and `gemini_effort=high`' "$WORKER_COMMAND"
@@ -470,4 +471,18 @@ assert grep -Fq 'review-owner-gate.sh bash' "$WORKER_GATE_SETTINGS"
 assert doc_has 'Owner-only review panels'
 assert doc_has '`<state_dir>/review-grants/<panel>`'
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, and owner-only review panels) and match %s\n' "$asserts" "$DOC"
+# --- Row x: claude account existence -----------------------------------------
+# One enumerator over every claudeb store, main/- filtered on both surfaces,
+# and the announce hooks wired into all three vendors' birth/death moments.
+assert grep -Fq 'if [ -d "$tokens_dir" ]; then' "$CLAUDEB"
+assert grep -Fq 'for path in "$limits_dir"/*.json; do' "$CLAUDEB"
+assert grep -Fq 'for path in "$profiles_root"/*; do' "$CLAUDEB"
+assert grep -Fq 'grep -vx -e main -e -' "$CLAUDEB"
+assert grep -Fq '[ "$account" != main ] && [ "$account" != - ]' "$LLMLIMITS"
+assert grep -Fq 'announce_account_added' "$CLAUDEB"
+assert grep -Fq 'announce_account_removed' "$CLAUDEB"
+assert grep -Fq 'announce_account_removed' "$ROOT/bin/codexb"
+assert grep -Fq 'announce_account_removed' "$ROOT/bin/geminib"
+assert doc_has 'Claude account existence'
+
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, and claude account existence) and match %s\n' "$asserts" "$DOC"

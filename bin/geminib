@@ -88,7 +88,7 @@ reserved_name() {
 }
 
 ensure_profile() {
-  local directory="$1" item target
+  local directory="$1" item source target
   mkdir -p "$directory/.gemini/antigravity-cli"
   for item in GEMINI.md config extensions extension_integrity.json settings.json trustedFolders.json; do
     target="$directory/.gemini/$item"
@@ -100,6 +100,15 @@ ensure_profile() {
   if [ -e "$base_home/.gemini/antigravity-cli/settings.json" ] && [ ! -e "$target" ] && [ ! -L "$target" ]; then
     ln -s "$base_home/.gemini/antigravity-cli/settings.json" "$target"
   fi
+  mkdir -p "$directory/Library/Caches"
+  for item in ms-playwright-go ms-playwright; do
+    # Linked even before the base cache exists: a dangling link makes the first driver
+    # install write through into the shared cache instead of a private per-profile copy.
+    target="$directory/Library/Caches/$item"
+    if [ ! -e "$target" ] && [ ! -L "$target" ]; then
+      ln -s "$base_home/Library/Caches/$item" "$target"
+    fi
+  done
   gemini_ensure_keychain "$directory"
 }
 
@@ -195,6 +204,7 @@ remove_account() {
   mkdir -p "$cache_dir"
   rm -f "$cache_dir/$name.json"
   : >"$cache_dir/$name.json.removed"
+  announce_account_removed "$geminib_root"
   printf 'geminib: removed %s\n' "$name"
 }
 

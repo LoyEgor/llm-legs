@@ -645,12 +645,9 @@ AGY_EFFORTS = {
     "agy-flash36": ("low", "medium", "high"),
     "agy-flash35": ("low", "medium", "high"),
 }
-# Pro is named by its human-readable label, the flashes by their id, because that is what each
-# spelling actually reaches the backend as: measured 2026-07-27 on two accounts, every
-# `gemini-3.1-pro*` id misses agy's local catalog and is silently served as Gemini 3.6 Flash,
-# while the flash ids resolve correctly. The propagated label in the agy log is the only proof.
+# v1.1.9 still misroutes the pro-high slug to Flash; every other id carries its effort.
 AGY_MODEL_IDS = {
-    "agy-pro": "Gemini 3.1 Pro",
+    "agy-pro": "gemini-3.1-pro",
     "agy-flash36": "gemini-3.6-flash",
     "agy-flash35": "gemini-3.5-flash",
 }
@@ -4058,11 +4055,9 @@ def agy_failure_detail(stderr, log_text):
 
 def agy_model_id(rater):
     model = AGY_MODEL_IDS[rater["model"]]
-    if rater["model"] == "agy-pro":
-        return f"{model} ({rater['effort'].capitalize()})"
-    if rater["model"] == "agy-flash35":
-        return f"{model}-{rater['effort']}"
-    return model
+    if rater["model"] == "agy-pro" and rater["effort"] == "high":
+        return "Gemini 3.1 Pro (High)"
+    return f"{model}-{rater['effort']}"
 
 
 def agy_expected_label(rater):
@@ -4123,8 +4118,6 @@ def run_agy(rater, repo, sha, focus, run_dir, diff, account):
     command += [
         "--model", model,
     ]
-    if rater["model"] not in ("agy-flash35", "agy-pro"):
-        command += ["--effort", rater["effort"]]
     command += [
         "--mode", "plan",
         "--new-project", "--dangerously-skip-permissions",

@@ -1681,20 +1681,19 @@ assert len(rb.normalize_findings(text, transport_rater["spec"])) == 2
 assert (work / "agy-head").read_text().strip() == sha
 assert pathlib.Path((work / "agy-cwd").read_text().strip()) != repo
 assert (work / "agy-prompt").read_text() == "/code-review"
-assert command[:13] == [
+assert command[:11] == [
     str(fixtures / "fake-geminib.sh"), "profile", "work",
-    "--model", "gemini-3.6-flash",
-    "--effort", "low",
+    "--model", "gemini-3.6-flash-low",
     "--mode", "plan",
     "--new-project", "--dangerously-skip-permissions",
     "--print-timeout", "10m",
 ]
 assert (work / "geminib-profile").read_text() == "work"
-assert command[13] == "--log-file"
-assert pathlib.Path(command[14]) == transport_run / "agy-agy-flash36-low-skill.log"
-assert command[15:] == ["--print", "/code-review"]
+assert command[11] == "--log-file"
+assert pathlib.Path(command[12]) == transport_run / "agy-agy-flash36-low-skill.log"
+assert command[13:] == ["--print", "/code-review"]
 usage = json.loads((transport_run / "usage-agy-flash36-low-skill.jsonl").read_text())
-assert usage["model"] == "gemini-3.6-flash"
+assert usage["model"] == "gemini-3.6-flash-low"
 assert usage["duration_ms"] == duration
 assert usage["prompt_tokens"] == 120
 assert usage["output_tokens"] == 30
@@ -1789,10 +1788,9 @@ assert len(rb.normalize_findings(text, skill_rater["spec"])) == 2
 assert (work / "agy-prompt").read_text() == \
     "/code-review\nAdditional review focus: Check cancellation handling"
 assert (work / "agy-origin-head").read_text().strip() == parent
-assert skill_command[:9] == [
+assert skill_command[:7] == [
     str(fixtures / "fake-geminib.sh"), "profile", "work",
-    "--model", "gemini-3.6-flash",
-    "--effort", "low",
+    "--model", "gemini-3.6-flash-low",
     "--mode", "plan",
 ]
 assert "--sandbox" not in skill_command
@@ -1826,6 +1824,7 @@ rc, _, text, stderr, pro_skill_command = rb.run_agy(
 assert rc == 0 and not stderr
 assert pro_skill_command[3:5] == ["--model", "Gemini 3.1 Pro (High)"]
 assert "--effort" not in pro_skill_command
+assert rb.agy_model_id(rb.parse_rater("agy-pro-low-skill")) == "gemini-3.1-pro-low"
 pro_usage = json.loads((pro_skill_run / "usage-agy-pro-high-skill.jsonl").read_text())
 assert pro_usage["resolved_model_label"] == "Gemini 3.1 Pro (High)"
 assert "model_mismatch" not in pro_usage
