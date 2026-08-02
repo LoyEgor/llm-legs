@@ -88,13 +88,24 @@ if mkdir -p "$pending_dir" 2>/dev/null; then
 fi
 
 updated="$prefix: $title"
-[ "$updated" = "$description" ] && exit 0
 
-printf '%s' "$input" | jq -c --arg description "$updated" '
+# Workers produce code; instruction/context .md files are curated by the orchestrator.
+# Inject the guard unless the brief explicitly unlocks editing; briefs carrying their own
+# MD-GUARD (a re-injection on RESUME) are left alone too.
+md_guard=''
+if ! printf '%s' "$prompt" | grep -qE '^(MD-EDIT:[[:space:]]*allowed|MD-GUARD)'; then
+  md_guard="MD-GUARD (hook-injected): CLAUDE.md / CLAUDE.local.md / MEMORY.md / files in memory/ dirs / anything under ~/.claude are READ-ONLY for this task. If your change makes one of them stale, return a DOCS IMPACT note proposing the edit instead of applying it. Only an explicit 'MD-EDIT: allowed' line in the brief unlocks them."
+fi
+
+[ "$updated" = "$description" ] && [ -z "$md_guard" ] && exit 0
+
+printf '%s' "$input" | jq -c --arg description "$updated" --arg guard "$md_guard" '
   {hookSpecificOutput: {
     hookEventName: "PreToolUse",
     permissionDecision: "allow",
-    updatedInput: (.tool_input | .description = $description)
+    updatedInput: (.tool_input
+      | .description = $description
+      | if $guard != "" then .prompt = (.prompt + "\n\n" + $guard) else . end)
   }}
 ' 2>/dev/null
 exit 0

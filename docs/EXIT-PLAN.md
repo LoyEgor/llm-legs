@@ -93,6 +93,21 @@ the freeze:
 - **Hypothesis rejected or incomplete** (429s return under manual-only traffic): our
   automation was not the sole cause; delete the freeze file and restore automation as-is.
 
+**Decisive finding 2026-07-31 (~03:35, owner at the keyboard) — read before choosing a
+branch.** The 429 is NOT a per-account vendor window; it targets OUR OWN direct curl POST
+to the token endpoint. From `token-attempts.jsonl`: three user-bidden curl refreshes on
+alona 429'd (03:20–03:34, Retry-After 1800s, only ~3 POSTs went out — we were not
+hammering), yet an INTERACTIVE CLI entry at ~03:35 rotated the same account's token
+instantly, and the next hard refresh succeeded with fresh data. A headless
+`claude -p /usage` never rotates a token at all (num_turns 0, proven twice in warm-logs);
+only an interactive session does. Consequences: manual-traffic 429s do NOT justify the
+plain "rejected → restore automation as-is" branch — "our automation was the sole cause"
+is rejected only for the curl path, and the curl path itself is the wrong mechanism. The
+evidence-backed direction is the parasite-mode branch, and its blocker is that a parasite
+needs a real-session driver (the owner floated letting it open terminals and enter
+accounts). Do not reuse the 2026-07-23 model ("inside a block window nothing refreshes,
+interactive hangs too") — it came from a different failure.
+
 **Deferred to this decision — staleness threshold recalibration.** The freeze exposed that
 account age used to track the NEWEST window while passive `origin:"session"` traffic kept
 `five_hour` perpetually fresh, so hours-old weekly/fable readings rendered as minutes-old.

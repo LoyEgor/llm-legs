@@ -68,6 +68,9 @@ local function topology()
 end
 
 local function desiredMirrored(current, mirrored)
+    -- While mirrored, allScreens() lists only the mirror set's primary, so
+    -- physicalPresent goes false; without the `or mirrored` term the module
+    -- would unmirror and re-mirror forever.
     return current.enforceEnabled
         and current.ipadConnected
         and (current.physicalPresent or mirrored == true)
