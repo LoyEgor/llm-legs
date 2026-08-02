@@ -2556,7 +2556,7 @@ def measured_worthless(rater):
     return WORTHLESS_CELLS.get(normalize_legacy_rater(rater["spec"]))
 
 
-def refuse_retired_cells(raters):
+def refuse_retired_cells(raters, lens=None):
     if any(rater["side"] == "grok" for rater in raters):
         raise RuntimeError(
             "the standalone grok account is disconnected; grok reviews run as OpenCode cells "
@@ -2568,6 +2568,12 @@ def refuse_retired_cells(raters):
     skill_only = [(rater["spec"], measured_skill_only(rater)) for rater in raters
                   if measured_skill_only(rater)]
     if retired or skill_only:
+        if lens:
+            specs = ", ".join(retired + [spec for spec, _ in skill_only])
+            raise RuntimeError(
+                f"these cells are unreachable under lens {lens['name']}: {specs} require the "
+                "review skill the lens replaces; choose a different cell"
+            )
         asked = ", ".join(f"{spec}-skill" for spec in retired + [s for s, _ in skill_only])
         why = "; ".join(reason for _, reason in skill_only)
         raise RuntimeError(
@@ -2650,6 +2656,11 @@ def auto_pick(number, rows, available, unreachable=None):
             skipped.append((spec, f"{rater['side']} side is unaffordable"))
     eligible.sort(key=lambda item: (item[0], item[1]))
     if len(eligible) < number:
+        if unreachable:
+            raise RuntimeError(
+                f"only {len(eligible)} benchmark cells are within the lens's reach for "
+                f"--auto {number}; OpenCode and Antigravity cells are excluded"
+            )
         raise RuntimeError(
             f"only {len(eligible)} affordable benchmark cells are available for --auto {number}"
         )
@@ -3357,7 +3368,10 @@ def lens_plain_cell(rater):
         return rater
     plain = dict(rater)
     plain["skill"] = False
-    plain["spec"] = rater["spec"].replace("-skill", "", 1)
+    model_spec, separator, attempt = rater["spec"].partition("#")
+    if model_spec.endswith("-skill"):
+        model_spec = model_spec[:-len("-skill")]
+    plain["spec"] = model_spec + (separator + attempt if separator else "")
     return plain
 
 
@@ -3373,11 +3387,6 @@ def lens_panel(raters, lens):
             dropped.append((rater["spec"], f"{rater['side']} side is out of a lens's reach"))
         else:
             kept.append(rater)
-    if not kept:
-        raise RuntimeError(
-            f"lens {lens['name']} has no cell to run: every requested cell is on the "
-            f"{' or '.join(LENS_EXCLUDED_SIDES)} side, which a lens cannot reach"
-        )
     plain = []
     specs = set()
     for rater in kept:
@@ -3395,18 +3404,25 @@ def lens_panel(raters, lens):
             )
             continue
         specs.add(cell["spec"])
-        plain.append(cell)
+        plain.append((cell, rater["spec"]))
     if not lens["repeats"]:
-        return plain, dropped
-    seen = Counter()
-    trimmed = []
-    for rater in plain:
-        base = normalize_legacy_rater(rater["spec"])
-        seen[base] += 1
-        if seen[base] <= lens["repeats"]:
-            trimmed.append(rater)
-        else:
-            dropped.append((rater["spec"], f"over lens {lens['name']} repeats={lens['repeats']}"))
+        trimmed = [cell for cell, _ in plain]
+    else:
+        seen = Counter()
+        trimmed = []
+        for rater, requested_spec in plain:
+            base = normalize_legacy_rater(rater["spec"])
+            seen[base] += 1
+            if seen[base] <= lens["repeats"]:
+                trimmed.append(rater)
+            else:
+                dropped.append(
+                    (requested_spec, f"over lens {lens['name']} repeats={lens['repeats']}")
+                )
+    if not trimmed:
+        raise RuntimeError(
+            f"lens {lens['name']} has no cell to run after applying its panel constraints"
+        )
     return trimmed, dropped
 
 
@@ -5523,7 +5539,7 @@ def cmd_run(args):
         skipped = list(skipped) + lens_dropped
         for rater in raters:
             rater["lens"] = lens
-    refuse_retired_cells(raters)
+    refuse_retired_cells(raters, lens=lens)
     has_opencode = any(rater["side"] == "opencode" for rater in raters)
     if verify_model and not has_opencode:
         raise RuntimeError(

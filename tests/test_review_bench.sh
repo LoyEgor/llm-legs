@@ -1545,6 +1545,10 @@ assert all("out of a lens's reach" in reason for _, reason in lens_dropped), len
 assert "no cell to run" in lens_refusal(
     rb.lens_panel, rb.parse_raters("oc-kimik3,agy-pro-high-skill"), edge_lens
 )
+# --- lens empty after skill-only drops --------------------------------------------------------
+assert "no cell to run" in lens_refusal(
+    rb.lens_panel, rb.parse_raters("sonnet-medium-skill"), edge_lens
+)
 repeat_kept, repeat_dropped = rb.lens_panel(
     rb.parse_raters("sol-low x4,opus-medium x2"), rb.resolve_lens("repeat-lens")
 )
@@ -1552,7 +1556,18 @@ assert [rater["spec"] for rater in repeat_kept] == [
     "sol-low", "sol-low#2", "opus-medium", "opus-medium#2"]
 assert [spec for spec, _ in repeat_dropped] == ["sol-low#3", "sol-low#4"], repeat_dropped
 assert all("repeats=2" in reason for _, reason in repeat_dropped), repeat_dropped
+# --- lens repeat drops retain requested specs ------------------------------------------------
+skill_repeat_kept, skill_repeat_dropped = rb.lens_panel(
+    rb.parse_raters("opus-medium-skill x3"), rb.resolve_lens("repeat-lens")
+)
+assert [rater["spec"] for rater in skill_repeat_kept] == ["opus-medium", "opus-medium#2"]
+assert [spec for spec, _ in skill_repeat_dropped] == ["opus-medium-skill#3"]
 assert len(rb.lens_panel(rb.parse_raters("sol-low x4"), edge_lens)[0]) == 4
+# --- lens skill stripping is suffix-only -----------------------------------------------------
+third_skill_attempt = rb.parse_raters("opus-medium-skill x3")[2]
+assert rb.lens_plain_cell(third_skill_attempt)["spec"] == "opus-medium#3"
+mid_name_skill = dict(third_skill_attempt, spec="opus-skill-medium#3")
+assert rb.lens_plain_cell(mid_name_skill)["spec"] == "opus-skill-medium#3"
 # Under a lens the -skill cell takes the plain prompt, so it is the plain cell: kept as its own
 # spec it would be paid for twice and recorded as a skill run that never happened.
 skill_kept, skill_dropped = rb.lens_panel(
@@ -1575,6 +1590,13 @@ lens_source.write_text("ORIGIN SKILL TEXT, EDITED\n")
 assert rb.lens_source_status(rb.resolve_lens("edge-cases")).startswith("drifted from ")
 lens_source.write_text("ORIGIN SKILL TEXT\n")
 assert rb.lens_source_status(rb.resolve_lens("edge-cases")) == "current"
+
+# --- lens retired-cell refusal offers reachable advice --------------------------------------
+lens_retired = lens_refusal(
+    rb.refuse_retired_cells, [rb.parse_rater("sonnet-medium")], edge_lens
+)
+assert "unreachable under lens edge-cases" in lens_retired, lens_retired
+assert "choose a different cell" in lens_retired and "ask for" not in lens_retired, lens_retired
 write_lens("gone-source.md", "name: gone-source\nsource: /nonexistent/skill.md")
 assert rb.lens_source_status(rb.resolve_lens("gone-source")).startswith("source missing at ")
 write_lens("no-hash.md", f"name: no-hash\nsource: {lens_source}")
@@ -1768,6 +1790,19 @@ picked, _, _ = rb.auto_pick(
     1, agy_gap_reviews, {"codex": True, "claude": True, "agy": True}
 )
 assert picked[0]["spec"] == "agy-flash35-high-skill"
+
+# --- lens auto shortfall names reach, not affordability --------------------------------------
+try:
+    rb.auto_pick(
+        len(rb.AUTO_RATERS), reviews, {"codex": True, "claude": True, "agy": True},
+        {side: f"{side} side is out of a lens's reach" for side in rb.LENS_EXCLUDED_SIDES},
+    )
+except RuntimeError as exc:
+    assert "within the lens's reach" in str(exc), exc
+    assert "OpenCode and Antigravity cells are excluded" in str(exc), exc
+    assert "affordable" not in str(exc), exc
+else:
+    raise AssertionError("lens-constrained --auto shortfall was accepted")
 
 codex_stream = "\n".join([
     json.dumps({"type": "thread.started", "thread_id": "t"}),
@@ -5364,18 +5399,21 @@ assert lens_meta["verifier"] == "", lens_meta
 
 repeat_lens_store = work / "lens-repeat-claudeb"
 os.environ["CLAUDEB_DIR"] = str(repeat_lens_store)
-with contextlib.redirect_stdout(io.StringIO()):
+with contextlib.redirect_stdout(io.StringIO()) as repeat_lens_out:
     lens_repeat_rc = rb.cmd_run(argparse.Namespace(
-        repo=str(pin_repo), commitish=pin_sha, raters="sol-low x3,oc-kimik3",
+        repo=str(pin_repo), commitish=pin_sha, raters="opus-medium-skill x3,oc-kimik3",
         leg=False, verify=None, auto=None, focus=None, lens="repeat-lens",
     ))
 assert lens_repeat_rc == 0
 repeat_lens_meta = json.loads(
     (next((repeat_lens_store / "worker-stats" / "benches").iterdir()) / "meta.json").read_text()
 )
-assert repeat_lens_meta["raters"] == ["sol-low", "sol-low#2"], repeat_lens_meta
+assert repeat_lens_meta["raters"] == ["opus-medium", "opus-medium#2"], repeat_lens_meta
 assert repeat_lens_meta["lens"] == "repeat-lens", repeat_lens_meta
-assert repeat_lens_meta["lens_panel_dropped"] == ["oc-kimik3", "sol-low#3"], repeat_lens_meta
+assert repeat_lens_meta["lens_panel_dropped"] == [
+    "oc-kimik3", "opus-medium-skill#3",
+], repeat_lens_meta
+assert "skipped opus-medium-skill#3:" in repeat_lens_out.getvalue(), repeat_lens_out.getvalue()
 
 # --auto picks from the cells a lens can actually reach: picking first and filtering after left
 # the run short of the number asked for while eligible cells sat unpicked.
@@ -5414,6 +5452,18 @@ skill_lens_meta = json.loads(
 assert skill_lens_meta["raters"] == ["opus-medium"], skill_lens_meta
 assert skill_lens_meta["lens_panel_dropped"] == ["opus-medium"], skill_lens_meta
 assert lens_seen == {"opus-medium": "edge-cases"}, lens_seen
+empty_lens_store = work / "lens-empty-claudeb"
+os.environ["CLAUDEB_DIR"] = str(empty_lens_store)
+try:
+    rb.cmd_run(argparse.Namespace(
+        repo=str(pin_repo), commitish=pin_sha, raters="sonnet-medium-skill",
+        leg=False, verify=None, auto=None, focus=None, lens="edge-cases",
+    ))
+except RuntimeError as exc:
+    assert "no cell to run" in str(exc), exc
+else:
+    raise AssertionError("a lens run emptied by skill-only drops was accepted")
+assert not (empty_lens_store / "worker-stats" / "benches").exists()
 try:
     rb.cmd_run(argparse.Namespace(
         repo=str(pin_repo), commitish=pin_sha, raters="oc-kimik3,agy-pro-high-skill",
