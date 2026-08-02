@@ -425,6 +425,7 @@ assert grep -Fq 'and ((.max | type) == "boolean" or .max == null))' "$STATUSLINE
 assert grep -Fq 'status --porcelain' "$STATUSLINE"
 assert test "$(grep -Ec 'GIT_INDEX_FILE|git -C "\\$repo" add -A|current_tree_hash' "$STATUSLINE")" -eq 0
 assert doc_has '<state_dir>/receipts/<repoName>__<repoHash>.json'
+assert doc_has '<repoName>__<repoHash>__lens-<slug>.json'
 assert doc_has '`repo`, `tree`, `commit`, `run_id`, and `ts`, non-negative integer `errored`'
 assert doc_has 'optional positive integer `panel`'
 assert doc_has "tree\` is the reviewed commit's Git tree object"
@@ -527,4 +528,10 @@ assert grep -Fq 'LLM_LIMITS_ANNOUNCE_SUPPRESS=1' "$LLMLIMITS"
 assert grep -Fq 'export CLAUDEB_WARM_USER_EXPLICIT=true' "$CLAUDEB"
 assert doc_has 'One limits view'
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, and one limits view) and match %s\n' "$asserts" "$DOC"
+# --- Row z: lens registry location -------------------------------------------
+assert grep -Fq 'LENS_DIR = Path(__file__).resolve().parent.parent / "lenses"' "$REVIEWBENCH"
+assert grep -Fq 'os.environ.get("REVIEW_BENCH_LENS_DIR")' "$REVIEWBENCH"
+assert doc_has 'Lens registry location'
+assert doc_has '`REVIEW_BENCH_LENS_DIR` overrides'
+
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, and lens registry location) and match %s\n' "$asserts" "$DOC"
