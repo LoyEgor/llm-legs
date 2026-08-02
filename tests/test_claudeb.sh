@@ -83,6 +83,9 @@ assert_fails env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" bash "$SCR
   >"$WORK/direct-after.out" 2>&1
 assert grep -q -- '--direct was removed' "$WORK/direct-after.out"
 rm -f "$CLAUDEB_DIR/tokens/com" "$CLAUDEB_DIR/tokens/notcom" "$CLAUDEB_DIR/tokens/-legacy"
+# Profile dirs count as accounts now (union enumeration); drop them so later
+# fixtures control the full account set.
+rm -rf "$HOME/.claude-profiles/com" "$HOME/.claude-profiles/notcom"
 
 now=$(date +%s)
 short_epoch=$((now + 3600))
@@ -310,6 +313,39 @@ assert test -s "$CLAUDEB_DIR/tokens/hooked"
 assert wait_announce '--refresh-account claude/hooked'
 rm -f "$CLAUDEB_DIR/tokens/hooked" "$CLAUDEB_DIR/limits/hooked.json"
 
+# Account existence is one set across every store: a setup token, a limits
+# snapshot (all a keychain browser login leaves visible), and a bare profile dir
+# each make the account real for status/enable/disable/warm — while `main` and
+# `-` stay reserved non-accounts. Enumerating tokens alone hid keychain logins
+# from every claudeb surface while the limits menu still showed them.
+(
+  HOME="$WORK/union-home"
+  CLAUDEB_DIR="$WORK/union-store"
+  mkdir -p "$HOME/.claude-profiles/dironly" "$CLAUDEB_DIR/tokens" "$CLAUDEB_DIR/limits"
+  touch "$CLAUDEB_DIR/tokens/tokonly"
+  printf '{"five_hour":{"used_percentage":5,"resets_at":0}}' >"$CLAUDEB_DIR/limits/snaponly.json"
+  printf '{}' >"$CLAUDEB_DIR/limits/-.json"
+  printf '{}' >"$CLAUDEB_DIR/limits/main.json"
+  source "$SCRIPT"
+  assert test "$(account_names | paste -sd, -)" = 'dironly,snaponly,tokonly'
+  assert account_exists snaponly
+  assert_fails account_exists main
+  assert_fails account_exists ghost
+  UNION_STATUS="$WORK/union-status.out"
+  env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" bash "$SCRIPT" status --plain \
+    </dev/null >"$UNION_STATUS" 2>&1 || fail "status --plain failed on the union store"
+  for shown in dironly snaponly tokonly; do
+    assert grep -q "$shown" "$UNION_STATUS"
+  done
+  # The pool checkbox drives exactly these commands, so they must accept the
+  # same set the listing shows.
+  assert env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" bash "$SCRIPT" disable snaponly >/dev/null 2>&1
+  assert grep -qx snaponly "$CLAUDEB_DIR/disabled"
+  assert env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" bash "$SCRIPT" enable snaponly >/dev/null 2>&1
+  assert_fails grep -qx snaponly "$CLAUDEB_DIR/disabled"
+  assert_fails env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" bash "$SCRIPT" disable ghost >/dev/null 2>&1
+) || exit 1
+
 touch "$CLAUDEB_DIR/tokens/alpha" "$CLAUDEB_DIR/tokens/beta"
 future=$((now + 7200))
 printf '{"five_hour":{"used_percentage":80,"resets_at":%s}}\n' "$future" >"$CLAUDEB_DIR/limits/alpha.json"
@@ -371,6 +407,12 @@ assert grep -qx "CLAUDE_LIMITS_ACCOUNT=gateway" "$ENV_DUMP"
 rm -f "$ENV_DUMP"
 ( profile_command gamm >/dev/null 2>"$WORK/near-profile.out" )
 assert grep -q 'did you mean gamma' "$WORK/near-profile.out"
+# First-launch profile creation is an account-birth moment and must announce it
+# to the limits collector, like `add` (and codexb/geminib run-create) do.
+assert wait_announce '--refresh-account claude/gamm'
+# The launch created a real (dir-only) gamm account; drop it so the unknown-name
+# refusal tests below still have an unknown name to refuse.
+rm -rf "$HOME/.claude-profiles/gamm"
 
 # Any other `security` outcome means "could not check", and an unverifiable keychain must
 # never tell the user their established account is new.
@@ -1222,6 +1264,7 @@ EOF
 
   (
     user_name=fzUser
+    account_names() { printf 'fzUser\n'; }
     user_credentials="$WORK/fz-user-credentials"
     user_curl="$WORK/fz-user-curl"
     printf '%s' "$fz_creds" >"$user_credentials"
@@ -1250,7 +1293,7 @@ EOF
     assert_fails grep -q 'frozen' "$WORK/fz-user.err"
     assert jq -se 'any(.[]; .account == "fzUser" and .kind == "curl-refresh" and .outcome == "success" and .user == true)' "$token_attempts_file" >/dev/null
     assert jq -se 'any(.[]; .account == "fzUser" and .kind == "warm" and .outcome == "success" and .user == true)' "$token_attempts_file" >/dev/null
-  )
+  ) || fail "user-explicit frozen warm block failed"
 
   # 5: expired `until` behaves unfrozen — curl runs, rc is a real verdict not 76.
   : >"$fz_curl"; : >"$fz_claude"; : >"$token_attempts_file"
@@ -1727,7 +1770,10 @@ for n in alpha beta gamma delta; do
 done
 printf 'alpha\n' >"$disabled_file"
 now=$(date +%s)
-printf '{"delta":{"attempted_at":%s,"outcome":"revoked","retry_after_until":0}}\n' "$now" >"$oauth_attempts_file"
+# attempted_at is stamped before heal_one captures its run_start, and the
+# rejection-since gate needs attempted_at >= run_start: a second rolling over in
+# between failed this intermittently. A small future stamp keeps it current-run.
+printf '{"delta":{"attempted_at":%s,"outcome":"revoked","retry_after_until":0}}\n' "$((now + 5))" >"$oauth_attempts_file"
 : >"$WARM_CALLS"
 heal_expired "$heal_dir"
 assert test "$(cat "$heal_dir/alpha.display")" = live
@@ -2174,6 +2220,9 @@ EOF
   assert_fails grep -qx rmv "$CLAUDEB_DIR/disabled"
   assert test ! -e "$CLAUDEB_DIR/.claudeb-state"
   assert test ! -e "$CLAUDEB_DIR/.claudeb-state-fable"
+  # Removal announces a passive collect (no args) so the menu's cached row drops
+  # without a manual refresh.
+  assert wait_announce ''
 
   # State pointing at a surviving account is left intact when a different one is removed.
   printf 'tok-other' >"$CLAUDEB_DIR/tokens/other"
@@ -2223,6 +2272,11 @@ EOF
   printf '{}' >"$CLAUDEB_DIR/oauth-attempts.json"
   assert "$SCRIPT" remove tierorphan
   assert_fails grep -q '^tierorphan=' "$CLAUDEB_DIR/account-tiers"
+  # A limits snapshot alone (interrupted remove, or a keychain login whose other
+  # stores are gone) is likewise prunable, not "unknown account".
+  printf '{}' >"$CLAUDEB_DIR/limits/snaporphan.json"
+  assert "$SCRIPT" remove snaporphan
+  assert test ! -e "$CLAUDEB_DIR/limits/snaporphan.json"
 
   # The bypass lock is a DIRECTORY (mkdir-based lock); remove must rm -rf it —
   # rm -f left an orphan dir behind.

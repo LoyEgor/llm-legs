@@ -204,6 +204,7 @@ remove_account() {
       rm -f "$tmp"
     fi
   fi
+  announce_account_removed "$codexb_root"
   printf 'codexb: removed %s\n' "$name"
 }
 

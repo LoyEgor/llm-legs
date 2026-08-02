@@ -347,6 +347,9 @@ assert test "$(sed -n '2p' "$CODEX_CALLS")" = 'ARG=exec'
 assert test "$(sed -n '3p' "$CODEX_CALLS")" = 'ARG=--reserved'
 assert bash "$SCRIPT" remove pick
 assert test ! -e "$HOME/.codex-profiles/pick"
+# Removal announces a passive collect (no args) so the menu row drops without a
+# manual refresh.
+assert wait_announce ''
 
 # The bare `<name> exec` path never auto-creates: a typo'd account errors, makes no dir, execs nothing.
 : >"$CODEX_CALLS"

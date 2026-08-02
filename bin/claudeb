@@ -21,19 +21,46 @@ claudeb_root=$(resolve_root)
 base_dir="${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}"
 tokens_dir="$base_dir/tokens"
 limits_dir="$base_dir/limits"
+profiles_root="$HOME/.claude-profiles"
 state_file="$base_dir/.claudeb-state"
 pool_dir="$base_dir"
 disabled_file="$(worker_pool_file "$pool_dir")"
 
+# An account exists when ANY store knows it: a setup token, a limits snapshot, or a
+# profile directory. A browser login writes only the keychain entry and the profile
+# dir, so enumerating tokens alone hid such accounts from status/enable/warm while
+# the limits menu (which reads snapshots) still showed them. `main` and `-` are
+# reserved non-accounts on every surface.
 account_names() {
-  local path
-  if [ -d "$tokens_dir" ]; then
-    for path in "$tokens_dir"/*; do
-      if [ -f "$path" ]; then
-        basename "$path"
-      fi
-    done | LC_ALL=C sort
-  fi
+  local path name
+  {
+    if [ -d "$tokens_dir" ]; then
+      for path in "$tokens_dir"/*; do
+        if [ -f "$path" ]; then basename "$path"; fi
+      done
+    fi
+    if [ -d "$limits_dir" ]; then
+      for path in "$limits_dir"/*.json; do
+        if [ -f "$path" ]; then
+          name=$(basename "$path")
+          printf '%s\n' "${name%.json}"
+        fi
+      done
+    fi
+    if [ -d "$profiles_root" ]; then
+      for path in "$profiles_root"/*; do
+        if [ -d "$path" ]; then basename "$path"; fi
+      done
+    fi
+  } | LC_ALL=C sort -u | { grep -vx -e main -e - || true; }
+}
+
+account_exists() {
+  local name
+  while IFS= read -r name; do
+    [ "$name" = "$1" ] && return 0
+  done < <(account_names)
+  return 1
 }
 
 # Two independent ways a profile becomes real: `add` writes a setup token, a browser login
@@ -169,7 +196,7 @@ account_data() {
        then .fable.used_percentage else null end) as $fable |
       {name: $name, h5: $h5, wk: $wk, hreset: $hreset, wreset: $wreset,
        fable: $fable, freset: $freset, age: $age,
-       h5_raw: (.five_hour.used_percentage | number_or_zero),
+       h5_raw: (if (.five_hour.used_percentage | type) == "number" then .five_hour.used_percentage else null end),
        wk_raw: (if (.seven_day.used_percentage | type) == "number" then .seven_day.used_percentage else null end),
        fable_raw: (if (.fable.used_percentage | type) == "number" then .fable.used_percentage else null end),
        h5_dim: (($hreset <= $now) or is_stale(.five_hour; 1800)),
@@ -179,7 +206,7 @@ account_data() {
        walled: ($h5 >= 97 or $wk >= 99)}' "$file"
   else
     jq -cn --arg name "$name" '{name: $name, h5: 0, wk: 0, hreset: 0, wreset: 0, fable: null, freset: 0, age: -1,
-      h5_raw: 0, wk_raw: null, fable_raw: null, h5_dim: true, wk_dim: true, fable_dim: true, auth: "ok", walled: false}'
+      h5_raw: null, wk_raw: null, fable_raw: null, h5_dim: true, wk_dim: true, fable_dim: true, auth: "ok", walled: false}'
   fi
 }
 
@@ -945,8 +972,19 @@ oauth_refresh() {
 }
 
 messages_probe() {
-  local name="$1" dir="$2" http=000 rc=0
-  if http=$(printf 'header = "Authorization: Bearer %s"\n' "$(cat "$tokens_dir/$name")" | \
+  local name="$1" dir="$2" http=000 rc=0 bearer
+  # Keychain accounts have no setup token; probing with an empty Bearer would turn
+  # a capacity failure into a fake 401 and stamp a false auth verdict downstream.
+  bearer=$(cat "$tokens_dir/$name" 2>/dev/null) || bearer=''
+  if [ -z "$bearer" ]; then
+    bearer=$(security find-generic-password -s "$(keychain_service "$name")" -w 2>/dev/null \
+      | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null) || bearer=''
+  fi
+  if [ -z "$bearer" ]; then
+    printf '255 000'
+    return
+  fi
+  if http=$(printf 'header = "Authorization: Bearer %s"\n' "$bearer" | \
     curl -sK - -m 10 -D "$dir/$name.headers" -o /dev/null -w '%{http_code}' -X POST \
       -H 'anthropic-beta: oauth-2025-04-20' -H 'anthropic-version: 2023-06-01' \
       -H 'Content-Type: application/json' \
@@ -1562,7 +1600,7 @@ enable_account() {
     printf 'usage: claudeb enable <name>\n' >&2
     exit 2
   fi
-  if [ ! -f "$tokens_dir/$name" ]; then
+  if ! account_exists "$name"; then
     printf 'claudeb: unknown account: %s\n' "$name" >&2
     exit 2
   fi
@@ -1580,7 +1618,7 @@ disable_account() {
     printf 'usage: claudeb disable <name>\n' >&2
     exit 2
   fi
-  if [ ! -f "$tokens_dir/$name" ]; then
+  if ! account_exists "$name"; then
     printf 'claudeb: unknown account: %s\n' "$name" >&2
     exit 2
   fi
@@ -1603,7 +1641,6 @@ disable_account() {
 
 remove_account() {
   local name='' force=false arg service creds tmp state sec_rc=0 exists=false alive=false attempts_lock
-  local profiles_root="$HOME/.claude-profiles"
   local tiers_file="$base_dir/account-tiers"
   local fable_state_file="$base_dir/.claudeb-state-fable"
   for arg in "$@"; do
@@ -1633,6 +1670,7 @@ remove_account() {
   # still be pruned after the token/profile/keychain are already gone.
   [ -f "$tokens_dir/$name" ] && exists=true
   [ -d "$profiles_root/$name" ] && exists=true
+  [ -f "$limits_dir/$name.json" ] && exists=true
   [ -n "$creds" ] && exists=true
   if [ "$exists" != true ] && [ -r "$oauth_attempts_file" ] \
      && jq -e --arg n "$name" 'type == "object" and has($n)' "$oauth_attempts_file" >/dev/null 2>&1; then exists=true; fi
@@ -1712,6 +1750,7 @@ remove_account() {
     [ "$state" = "$name" ] && rm -f "$fable_state_file"
   fi
 
+  announce_account_removed "$claudeb_root"
   printf 'claudeb: removed %s\n' "$name"
 }
 
@@ -1794,7 +1833,7 @@ routed_profile_command() {
 }
 
 profile_command() {
-  local profiles_dir="$HOME/.claude-profiles" profile="${1:-}" dir d f near cred_state
+  local profile="${1:-}" dir d f near cred_state created=false
   if [ "$profile" = --direct ]; then
     printf 'claudeb: --direct was removed; use `claudeb profile <name>`\n' >&2
     return 2
@@ -1836,13 +1875,11 @@ profile_command() {
     [ -z "$near" ] || printf 'claudeb: did you mean %s?\n' "$near" >&2
   fi
   shift
-  dir="$profiles_dir/$profile"
+  dir="$profiles_root/$profile"
   if [ ! -d "$dir" ]; then
     mkdir -p "$dir"
+    created=true
   fi
-  # Restamp on every launch so a login that is being retried cannot age past the unclaimed
-  # grace period and be pruned by a `status` running in another terminal mid-login.
-  touch "$dir" 2>/dev/null || true
   # A profile isolates only auth (.claude.json + keychain entry); config AND
   # session data (resume transcripts, prompt history, rewind, plugins) are
   # shared with ~/.claude. Links are re-ensured on every launch so new shared
@@ -1875,6 +1912,7 @@ profile_command() {
     prepared_profile_dir="$dir"
     return
   fi
+  [ "$created" != true ] || announce_account_added "$claudeb_root" claude "$profile"
   if is_disabled "$profile"; then
     printf 'claudeb: note: %s is disabled for worker selection; using it directly\n' "$profile" >&2
   fi
@@ -1971,7 +2009,7 @@ warm_accounts() {
     for name in "${names[@]}"; do
       # An account that does not exist is a failure whether or not the freeze is on: skipping
       # first would report a refresh of a typo as successfully skipped.
-      if [ ! -f "$tokens_dir/$name" ]; then
+      if ! account_exists "$name"; then
         warm_failure "$name" unknown-account 'unknown account'
         failed=1
         continue
@@ -1985,7 +2023,7 @@ warm_accounts() {
     return "$failed"
   fi
   for name in "${names[@]}"; do
-    if [ ! -f "$tokens_dir/$name" ]; then
+    if ! account_exists "$name"; then
       warm_failure "$name" unknown-account 'unknown account'
       failed=1
       continue
@@ -2295,7 +2333,8 @@ render_plain_accounts() {
   fi
   while IFS= read -r row; do
     IFS=$'\x1f' read -r name h5 wk fable hreset wreset age h5_dim wk_dim fable_dim disabled < <(printf '%s' "$row" | jq -r '
-      [.name, (.h5_raw | round | tostring),
+      [.name,
+       (if .h5_raw == null then "-" else ((.h5_raw | round | tostring) + "%") end),
        (if .wk_raw == null then "-" else ((.wk_raw | round | tostring) + "%") end),
        (if .fable_raw == null then "-" else ((.fable_raw | round | tostring) + "%") end),
        (.hreset | tostring), (.wreset | tostring), (.age | tostring),
@@ -2314,9 +2353,10 @@ render_plain_accounts() {
     [ "$name" = "$accounts_picked" ] && marker="*"
     [ "$disabled" != true ] || marker="off"
     # Cells are padded before the SGR wrap so escape bytes never skew columns.
-    h5_cell=$(printf '%6s%%' "$h5")
+    h5_cell=$(printf '%7s' "$h5")
     hcell=$(printf '%-11s' "$(format_reset_time "$hreset")")
-    if [ "$h5_dim" = true ] && [ -n "$dim" ]; then h5_cell="${dim}${h5_cell}${sgr0}"; hcell="${dim}${hcell}${sgr0}"; fi
+    if [ "$h5_dim" = true ] && [ "$h5" != "-" ] && [ -n "$dim" ]; then h5_cell="${dim}${h5_cell}${sgr0}"; fi
+    if [ "$h5_dim" = true ] && [ -n "$dim" ]; then hcell="${dim}${hcell}${sgr0}"; fi
     wk_cell=$(printf '%7s' "$wk")
     wcell=$(printf '%-11s' "$(format_reset_time "$wreset")")
     if [ "$wk_dim" = true ] && [ "$wk" != "-" ] && [ -n "$dim" ]; then wk_cell="${dim}${wk_cell}${sgr0}"; fi
@@ -2417,7 +2457,8 @@ render_interactive_accounts() {
   filter=$(accounts_sort_filter "$sort_key")
   while IFS= read -r row; do
     IFS=$'\x1f' read -r name h5 wk fable hreset wreset age h5_dim wk_dim fable_dim disabled < <(printf '%s' "$row" | jq -r '
-      [.name, (.h5_raw | round | tostring),
+      [.name,
+       (if .h5_raw == null then "" else (.h5_raw | round | tostring) end),
        (if .wk_raw == null then "" else (.wk_raw | round | tostring) end),
        (if .fable_raw == null then "" else (.fable_raw | round | tostring) end),
        (.hreset | tostring), (.wreset | tostring), (.age | tostring),
@@ -2440,7 +2481,8 @@ render_interactive_accounts() {
     [ "$wk_dim" != true ] || wcell=$'\033[2m'"$wcell"$'\033[0m'
     row_out=$(
       printf '%s %-16s ' "$marker" "$name"
-      colored_percent "$h5" "$h5_dim"; printf '  '
+      if [ -n "$h5" ]; then colored_percent "$h5" "$h5_dim"; else printf '%4s' -; fi
+      printf '  '
       if [ -n "$wk" ]; then printf '  '; colored_percent "$wk" "$wk_dim"; else printf '%6s' -; fi
       printf '  '
       if [ "$accounts_show_fable" = true ]; then
