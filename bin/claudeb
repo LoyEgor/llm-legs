@@ -1920,9 +1920,12 @@ profile_command() {
   # would make the `*`/`●`/`cb:` markers name the last worker instead of the account the user
   # sits in.
   harvest_session_accounts "$dir" "$profile" || true
-  args_are_headless "$@" || write_state_file "$profile"
+  # A headless run is a worker, and its own subagents inherit the marker: hooks that must treat
+  # worker sessions differently from Egor's live chat (worker-git-guard) key off it.
+  local worker_env=()
+  if args_are_headless "$@"; then worker_env=(CLAUDEB_WORKER=1); else write_state_file "$profile"; fi
   exec env -u ANTHROPIC_BASE_URL -u CLAUDE_CODE_OAUTH_TOKEN \
-    CLAUDE_CONFIG_DIR="$dir" CLAUDE_LIMITS_ACCOUNT="$profile" claude "$@"
+    CLAUDE_CONFIG_DIR="$dir" CLAUDE_LIMITS_ACCOUNT="$profile" "${worker_env[@]}" claude "$@"
 }
 
 profile_required() {

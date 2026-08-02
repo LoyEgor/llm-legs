@@ -12,7 +12,9 @@ field() { printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null; }
 agent_type=$(field '.agent_type')
 case "$agent_type" in
   codex-worker|claudeb-worker|gemini-worker) ;;
-  *) exit 0 ;;
+  # A headless claudeb run is a worker session itself, not a subagent of one, so its
+  # agent_type is empty; claudeb marks it so the guard still covers it.
+  *) [ "${CLAUDEB_WORKER:-}" = 1 ] && agent_type=claudeb-headless || exit 0 ;;
 esac
 
 session_id=$(field '.session_id')
