@@ -689,6 +689,22 @@ REVIEW_PROFILE_FILES = {
               / "code-review-commons/SKILL.md",
 }
 REVIEW_PROFILES = tuple(REVIEW_PROFILE_FILES)
+# A lens swaps the reviewer's methodology for a registered one while the rest of the pipeline —
+# targets, severities, recording — stays the tool's. Registered rather than passed as a file so
+# a run records a slug whose text is reconstructible, and versioned next to the tool that reads
+# it; REVIEW_BENCH_LENS_DIR redirects the whole registry for tests.
+LENS_DIR = Path(__file__).resolve().parent.parent / "lenses"
+LENS_SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+LENS_FRONTMATTER_KEYS = ("name", "source", "source_hash", "repeats", "aliases")
+LENS_SEVERITIES = ("P1", "P2", "P3")
+# The OpenCode raters already spend their prompt on a vendor profile and the Antigravity raters
+# receive no methodology at all — they run their own installed review skill from a literal
+# "/code-review". Either one would record a lens against a panel that never read it.
+LENS_EXCLUDED_SIDES = ("opencode", "agy")
+LENS_FLAG_HELP = (
+    "Review with this registered lens instead of the raters' own methodology "
+    "(review-bench lens list)"
+)
 VERDICTS = {"confirmed", "false_positive", "duplicate"}
 WEIGHTS = {"P1": 5, "P2": 2, "P3": 1}
 ADJUDICATION_TOK_ESTIMATE = {"duplicate": 400, "false_positive": 1500}
@@ -3113,7 +3129,225 @@ def review_profile_text(profile):
     return text
 
 
-def review_prompt(sha, focus, profile=None):
+def split_frontmatter(text):
+    """The leading `---` block of a registered markdown file and the body after it, or
+    (None, text) when the file carries no block at all."""
+    lines = text.splitlines(keepends=True)
+    if not lines or lines[0].strip() != "---":
+        return None, text
+    for index in range(1, len(lines)):
+        if lines[index].strip() == "---":
+            return "".join(lines[1:index]), "".join(lines[index + 1:])
+    return None, text
+
+
+def unquote_scalar(value):
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+        return value[1:-1]
+    return value
+
+
+def parse_frontmatter(block):
+    """`key: value`, an inline `[a, b]` list, or a `- item` block under the preceding key."""
+    fields = {}
+    key = None
+    for raw in block.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("- "):
+            if key is None:
+                raise ValueError(f"list item before any key: {line!r}")
+            fields.setdefault(key, [])
+            if not isinstance(fields[key], list):
+                raise ValueError(f"key {key!r} has both a value and list items")
+            fields[key].append(unquote_scalar(line[2:]))
+            continue
+        if ":" not in line:
+            raise ValueError(f"line is not `key: value`: {line!r}")
+        key, _, value = line.partition(":")
+        key = key.strip()
+        value = value.strip()
+        if value.startswith("[") and value.endswith("]"):
+            fields[key] = [
+                unquote_scalar(part) for part in value[1:-1].split(",") if part.strip()
+            ]
+        else:
+            fields[key] = unquote_scalar(value)
+    return fields
+
+
+def lens_dir():
+    override = os.environ.get("REVIEW_BENCH_LENS_DIR")
+    return Path(override) if override else LENS_DIR
+
+
+def read_lens(path):
+    """One registered lens, or the reason a run must not launch against it."""
+    text = path.read_text()
+    block, body = split_frontmatter(text)
+    if block is None:
+        raise RuntimeError(f"lens {path} has no `---` frontmatter block")
+    try:
+        fields = parse_frontmatter(block)
+    except ValueError as exc:
+        raise RuntimeError(f"lens {path} frontmatter: {exc}") from exc
+    unknown = sorted(set(fields) - set(LENS_FRONTMATTER_KEYS))
+    if unknown:
+        raise RuntimeError(
+            f"lens {path} has unknown frontmatter key(s): {', '.join(unknown)}; "
+            f"known keys are {', '.join(LENS_FRONTMATTER_KEYS)}"
+        )
+    name = fields.get("name")
+    # The slug is the stats identity, so it is the file's to declare and not the filename's:
+    # renaming a file must not split one lens's record in two.
+    if not isinstance(name, str) or not LENS_SLUG_RE.fullmatch(name):
+        raise RuntimeError(
+            f"lens {path} needs a frontmatter `name` that is a lowercase slug; got {name!r}"
+        )
+    aliases = fields.get("aliases", [])
+    if isinstance(aliases, str):
+        aliases = [aliases] if aliases else []
+    for alias in aliases:
+        if not LENS_SLUG_RE.fullmatch(alias):
+            raise RuntimeError(f"lens {name}: alias {alias!r} is not a lowercase slug")
+    repeats = fields.get("repeats", "")
+    if repeats == "" or repeats == []:
+        repeats = None
+    else:
+        try:
+            repeats = int(repeats)
+        except (TypeError, ValueError):
+            raise RuntimeError(
+                f"lens {name}: repeats must be an integer, got {fields['repeats']!r}"
+            ) from None
+        if repeats < 1:
+            raise RuntimeError(f"lens {name}: repeats must be at least 1, got {repeats}")
+    missing = [
+        level for level in LENS_SEVERITIES
+        if not re.search(rf"\b{level}\b", body, re.IGNORECASE)
+    ]
+    if missing:
+        raise RuntimeError(
+            f"lens {name} at {path} never maps {', '.join(missing)}: a lens body has to say "
+            "how its own findings land on P1, P2 and P3"
+        )
+    return {
+        "name": name,
+        "path": path,
+        "body": body.strip(),
+        "hash": hashlib.sha256(text.encode()).hexdigest(),
+        "repeats": repeats,
+        "source": fields.get("source") or "",
+        "source_hash": fields.get("source_hash") or "",
+        "aliases": list(aliases),
+    }
+
+
+def load_lenses():
+    """Every registered lens by canonical slug. A registry with a broken or ambiguous entry
+    fails whole: a slug resolving to whichever file sorted first is a run recorded under a
+    methodology it did not use."""
+    directory = lens_dir()
+    lenses = {}
+    owners = {}
+    for path in sorted(directory.glob("*.md")) if directory.is_dir() else []:
+        lens = read_lens(path)
+        for slug in (lens["name"], *lens["aliases"]):
+            if slug in owners:
+                raise RuntimeError(
+                    f"lens slug {slug!r} is claimed by both {owners[slug]} and {path}"
+                )
+            owners[slug] = path
+        lenses[lens["name"]] = lens
+    return lenses
+
+
+def resolve_lens(slug):
+    lenses = load_lenses()
+    if slug in lenses:
+        return lenses[slug]
+    for lens in lenses.values():
+        if slug in lens["aliases"]:
+            return lens
+    known = ", ".join(sorted(lenses)) or "none registered"
+    raise ValueError(f"unknown lens {slug!r}; registered: {known} (in {lens_dir()})")
+
+
+def lens_source_path(lens):
+    if not lens["source"]:
+        return None
+    path = Path(lens["source"]).expanduser()
+    return path if path.is_absolute() else lens["path"].parent / path
+
+
+def lens_source_status(lens):
+    """Whether the skill this lens was distilled from still reads the way it did. Informational
+    on every path: a drifted source makes the lens older than its origin, not unusable."""
+    path = lens_source_path(lens)
+    if path is None:
+        return "no source recorded"
+    try:
+        text = path.read_text()
+    except OSError:
+        return f"source missing at {path}"
+    if not lens["source_hash"]:
+        return "source hash not recorded"
+    digest = hashlib.sha256(text.encode()).hexdigest()
+    return "current" if digest == lens["source_hash"] else f"drifted from {path}"
+
+
+def lens_panel(raters, lens):
+    """The cells a lens run may launch: the sides a lens can actually reach, trimmed to the
+    lens's own repeat count. Applied after tier resolution, so a tier stays one composition
+    rather than growing a lens variant."""
+    kept = [rater for rater in raters if rater["side"] not in LENS_EXCLUDED_SIDES]
+    if not kept:
+        raise RuntimeError(
+            f"lens {lens['name']} has no cell to run: every requested cell is on the "
+            f"{' or '.join(LENS_EXCLUDED_SIDES)} side, which a lens cannot reach"
+        )
+    if not lens["repeats"]:
+        return kept
+    seen = Counter()
+    trimmed = []
+    for rater in kept:
+        base = normalize_legacy_rater(rater["spec"])
+        seen[base] += 1
+        if seen[base] <= lens["repeats"]:
+            trimmed.append(rater)
+    return trimmed
+
+
+def uses_skill_brief(rater):
+    """A -skill cell runs the vendor's own review skill, which is the one thing a lens run
+    cannot let it do — the lens is the methodology, so the cell takes the plain prompt."""
+    return rater["skill"] and not rater.get("lens")
+
+
+def methodology_adaptation(diff_only):
+    """What an injected methodology may not keep: its own output format, and — where the rater
+    was handed a diff rather than a repository — everything it says about going and looking."""
+    scope = (
+        "you have no tools, no subagents, no repository access and no network — only the "
+        "commit diff below. Ignore every instruction about delegating to agents, reading "
+        "additional files, inspecting git history, running builds, posting review comments, "
+        "and ignore its output format."
+        if diff_only else
+        "ignore every instruction about delegating to agents, about posting review comments, "
+        "and ignore its output format."
+    )
+    return (
+        f"Adaptation, which overrides the methodology wherever they conflict: {scope} Apply "
+        "its review criteria, its severity guidance and above all its false-positive "
+        "exclusions; where it defines a confidence rubric, report only findings you would "
+        "score 80 or higher. Map its severities onto P1 (critical/high), P2 (medium) and "
+        "P3 (low)."
+    )
+
+
+def review_prompt(sha, focus, profile=None, lens=None):
     suffix = f"\nAdditional focus: {focus}" if focus else ""
     contract = (
         f"Review commit {sha}. Return findings only, one JSON object per line, with exactly "
@@ -3121,19 +3355,19 @@ def review_prompt(sha, focus, profile=None):
         f"locations. Reply with exactly {CLEAN_REVIEW_MARKER} and nothing else when the commit "
         f"has no findings. {READ_ONLY_REVIEW_INSTRUCTION}"
     )
+    # A lens replaces the methodology rather than joining it: two of them in one prompt would
+    # be a cell measuring neither.
+    if lens:
+        return (
+            f"The following is the {lens['name']} code-review methodology.\n\n"
+            f"{lens['body']}\n\n{methodology_adaptation(True)}\n\n{contract}"
+            + suffix
+        )
     if not profile:
         return contract + suffix
     return (
         f"The following is the published {profile} code-review methodology.\n\n"
-        f"{review_profile_text(profile)}\n\n"
-        "Adaptation, which overrides the methodology wherever they conflict: you have no "
-        "tools, no subagents, no repository access and no network — only the commit diff "
-        "below. Ignore every instruction about delegating to agents, reading additional "
-        "files, inspecting git history, running builds, posting review comments, and ignore "
-        "its output format. Apply its review criteria, its severity guidance and above all "
-        "its false-positive exclusions; where it defines a confidence rubric, report only "
-        "findings you would score 80 or higher. Map its severities onto P1 (critical/high), "
-        f"P2 (medium) and P3 (low).\n\n{contract}"
+        f"{review_profile_text(profile)}\n\n{methodology_adaptation(True)}\n\n{contract}"
         + suffix
     )
 
@@ -3257,8 +3491,9 @@ def run_codex(rater, repo, sha, focus, run_dir, diff, account):
     raw_events = run_dir / f"raw-events-{rater['spec']}.jsonl"
     command = [command_path("REVIEW_BENCH_CODEX_BIN", "codex"), "exec"]
     prompt_input = None
+    lens = rater.get("lens")
     if rater["bare"]:
-        prompt_input = review_prompt(sha, focus) + "\n\nCommit diff:\n" + diff
+        prompt_input = review_prompt(sha, focus, lens=lens) + "\n\nCommit diff:\n" + diff
         command += [
             "-m", "gpt-5.6-sol", "-c",
             f"model_reasoning_effort={rater['effort']}",
@@ -3279,6 +3514,14 @@ def run_codex(rater, repo, sha, focus, run_dir, diff, account):
         )
         if focus:
             instruction += f" Additional review focus: {focus}"
+        # The native review command builds its own prompt, so the developer instructions are
+        # the only channel a lens has into this cell; without this the cell would run the
+        # vendor's stock review and be recorded under the lens's slug.
+        if lens:
+            instruction = (
+                f"Review with the following methodology.\n\n{lens['body']}\n\n"
+                f"{methodology_adaptation(False)}\n\n{instruction}"
+            )
         command += ["-c", f"developer_instructions={json.dumps(instruction)}"]
     command += ["--json", "-o", raw_final.name]
     clone = None
@@ -3438,10 +3681,10 @@ def run_claude(rater, repo, sha, focus, run_dir, diff, account):
     raw_output = run_dir / f"raw-{rater['spec']}.json"
     raw_output.unlink(missing_ok=True)
     clone = seal_overlay_clone(repo, sha)
-    if rater["skill"]:
+    if uses_skill_brief(rater):
         prompt = skill_brief(sha, focus, clone)
     else:
-        prompt = review_prompt(sha, focus) + "\n\nCommit diff:\n" + diff
+        prompt = review_prompt(sha, focus, lens=rater.get("lens")) + "\n\nCommit diff:\n" + diff
     cwd = clone
     command = [
         command_path("REVIEW_BENCH_CLAUDEB_BIN", "claudeb"), "profile", account,
@@ -3466,7 +3709,7 @@ def run_claude(rater, repo, sha, focus, run_dir, diff, account):
 
 def run_grok(rater, repo, sha, focus, run_dir, diff, account):
     raw_output = run_dir / f"raw-{rater['spec']}.json"
-    prompt = review_prompt(sha, focus) + "\n\nCommit diff:\n" + diff
+    prompt = review_prompt(sha, focus, lens=rater.get("lens")) + "\n\nCommit diff:\n" + diff
     prompt_file = tempfile.NamedTemporaryFile(
         mode="w", prefix=f"review-bench-{rater['spec']}-", suffix=".txt", delete=False
     )
@@ -5073,7 +5316,7 @@ def redact_command(rater, command):
         return shlex.join(redacted)
     if rater["side"] == "agy":
         return shlex.join(command)
-    placeholder = "<worker-brief>" if rater["skill"] else "<review-prompt-and-diff>"
+    placeholder = "<worker-brief>" if uses_skill_brief(rater) else "<review-prompt-and-diff>"
     return shlex.join(command[:4] + [placeholder] + command[5:])
 
 
@@ -5099,6 +5342,8 @@ def commit_mode_command(args):
         command += ["--repo", str(Path(args.repo).resolve())]
     if args.focus:
         command += ["--focus", args.focus]
+    if getattr(args, "lens", ""):
+        command += ["--lens", args.lens]
     if args.verify:
         command += ["--verify", args.verify]
     # A refusal the reproduce line cannot express is a refusal it ignores: replaying without it
@@ -5111,6 +5356,7 @@ def commit_mode_command(args):
 def cmd_run(args):
     tier_name = getattr(args, "tier", None)
     use_max = bool(getattr(args, "max", False))
+    lens = resolve_lens(args.lens) if getattr(args, "lens", "") else None
     if use_max and not tier_name:
         raise ValueError("--max requires --tier")
     guard_tier_owner(tier_name, use_max)
@@ -5156,6 +5402,10 @@ def cmd_run(args):
     else:
         available = affordability()
         raters, counts, skipped = auto_pick(args.auto or 2, review_rows, available)
+    if lens:
+        raters = lens_panel(raters, lens)
+        for rater in raters:
+            rater["lens"] = lens
     refuse_retired_cells(raters)
     has_opencode = any(rater["side"] == "opencode" for rater in raters)
     if verify_model and not has_opencode:
@@ -5216,6 +5466,14 @@ def cmd_run(args):
     if tier_name:
         launch_meta["tier"] = tier_name
         launch_meta["max"] = use_max
+    # Recorded once, at launch: the registry can be edited while a run is in flight, and the
+    # slug alone does not say which text the cells were given.
+    lens_meta = {} if lens is None else {
+        "lens": lens["name"],
+        "lens_hash": lens["hash"],
+        "lens_source_status": lens_source_status(lens),
+    }
+    launch_meta.update(lens_meta)
     (run_dir / "meta.json").write_text(json.dumps(launch_meta, indent=2) + "\n")
     diff = commit_diff(repo, sha) if any(
         rater["side"] in ("claude", "grok", "opencode") or rater["bare"]
@@ -5400,6 +5658,7 @@ def cmd_run(args):
         if tier_name:
             meta["tier"] = tier_name
             meta["max"] = use_max
+        meta.update(lens_meta)
         (run_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
         log_review_event("run", run_dir, meta)
         if meta["completed_raters"]:
@@ -5411,6 +5670,9 @@ def cmd_run(args):
             # Always the sha, even for --worktree: the tree can drift before the rerun, and
             # only the snapshot commit pins the errored cells to what the others reviewed.
             rerun_command = ["review-bench", "run", sha, "--raters", rerun]
+            # A rerun without the lens completes a lens run with a stock review of the cell.
+            if lens:
+                rerun_command += ["--lens", lens["name"]]
             # The verifier default is decided by the panel, so a rerun of one cell would filter
             # findings the run it completes reported raw. Only a rerun holding an OpenCode cell
             # can carry the flag at all: --verify is refused outright without one.
@@ -6198,6 +6460,46 @@ def cmd_list(args):
     return 0
 
 
+def lens_list_lines():
+    lenses = load_lenses()
+    if not lenses:
+        return [f"no lenses registered in {lens_dir()}"]
+    return [
+        f"{name:<20} {lens['path']}  repeats={lens['repeats'] or 'tier'}  "
+        f"{lens_source_status(lens)}"
+        for name, lens in sorted(lenses.items())
+    ]
+
+
+def lens_check_lines(slug):
+    lens = resolve_lens(slug)
+    path = lens_source_path(lens)
+    try:
+        current = hashlib.sha256(path.read_text().encode()).hexdigest() if path else ""
+    except OSError:
+        current = ""
+    lines = [f"{lens['name']}  {lens['path']}"]
+    if lens["aliases"]:
+        lines.append(f"  aliases:  {', '.join(lens['aliases'])}")
+    lines.append(f"  source:   {path or '(none recorded)'}")
+    lines.append(f"  recorded: {lens['source_hash'] or '(none recorded)'}")
+    lines.append(f"  current:  {current or '(unreadable)'}")
+    lines.append(f"  status:   {lens_source_status(lens)}")
+    return lines
+
+
+def cmd_lens(args):
+    if args.action == "check":
+        if not args.slug:
+            raise ValueError("review-bench lens check needs a lens slug")
+        lines = lens_check_lines(args.slug)
+    else:
+        lines = lens_list_lines()
+    for line in lines:
+        print(line)
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description="Benchmark blind code-review raters")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -6215,6 +6517,7 @@ def main():
         help="Allow long tiers when stdout is not a terminal",
     )
     review.add_argument("--focus", default="")
+    review.add_argument("--lens", default="", metavar="SLUG", help=LENS_FLAG_HELP)
     # cmd_review hands off to cmd_run, so a refusal it cannot express is a refusal it ignores.
     review_verify = review.add_mutually_exclusive_group()
     review_verify.add_argument("--verify", metavar="MODEL", choices=verifier_choices())
@@ -6270,6 +6573,7 @@ def main():
         help="Allow long tiers when stdout is not a terminal",
     )
     run.add_argument("--focus", default="")
+    run.add_argument("--lens", default="", metavar="SLUG", help=LENS_FLAG_HELP)
     # Exclusive, or `--verify X --no-verify` runs the verifier and says nothing about having
     # ignored the refusal.
     run_verify = run.add_mutually_exclusive_group()
@@ -6326,6 +6630,12 @@ def main():
         help=f"only the newest N runs (default {HEALTH_DEFAULT_RUNS}; 0 for every run)",
     )
     health.set_defaults(func=cmd_health)
+    lens = subparsers.add_parser(
+        "lens", help="Registered review lenses and whether each still matches its source"
+    )
+    lens.add_argument("action", choices=("list", "check"))
+    lens.add_argument("slug", nargs="?", help="The lens to check")
+    lens.set_defaults(func=cmd_lens)
     listing = subparsers.add_parser("list", help="List recent benchmark runs")
     listing.add_argument("--limit", type=int, default=20)
     listing.set_defaults(func=cmd_list)

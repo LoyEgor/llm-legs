@@ -17,6 +17,7 @@ import concurrent.futures
 import argparse
 from collections import Counter
 import contextlib
+import hashlib
 import importlib.machinery
 import importlib.util
 import io
@@ -1414,6 +1415,131 @@ for broken, reason in (("anthropic", "is empty"), ("missing", "unreadable")):
     else:
         raise AssertionError(f"review profile {broken} did not fail closed")
 del os.environ["REVIEW_BENCH_PROFILE_DIR"]
+
+# --- lenses: a registered methodology in place of the rater's own ----------------------------
+lens_registry = work / "lenses"
+lens_registry.mkdir()
+os.environ["REVIEW_BENCH_LENS_DIR"] = str(lens_registry)
+lens_body = (
+    "EDGE CASE METHODOLOGY BODY\n\n"
+    "Report a crash as P1, a wrong result as P2 and a rough edge as P3.\n"
+)
+lens_source = work / "lens-origin-skill.md"
+lens_source.write_text("ORIGIN SKILL TEXT\n")
+lens_source_digest = hashlib.sha256(lens_source.read_bytes()).hexdigest()
+
+
+def write_lens(filename, frontmatter, body=lens_body):
+    path = lens_registry / filename
+    path.write_text(f"---\n{frontmatter}\n---\n{body}")
+    return path
+
+
+def lens_refusal(call, *call_args):
+    try:
+        call(*call_args)
+    except (RuntimeError, ValueError) as exc:
+        return str(exc)
+    raise AssertionError(f"the lens registry accepted {call_args!r}")
+
+
+write_lens("edge-cases.md", "\n".join([
+    "name: edge-cases",
+    f"source: {lens_source}",
+    f"source_hash: {lens_source_digest}",
+    "aliases: [edgecases, edge]",
+]))
+write_lens("repeat-lens.md", "name: repeat-lens\nrepeats: 2")
+edge_lens = rb.resolve_lens("edge-cases")
+assert edge_lens["body"].startswith("EDGE CASE METHODOLOGY BODY"), edge_lens["body"]
+assert edge_lens["repeats"] is None and edge_lens["aliases"] == ["edgecases", "edge"]
+assert edge_lens["hash"] == hashlib.sha256(
+    (lens_registry / "edge-cases.md").read_bytes()
+).hexdigest()
+# A former slug keeps resolving to the one record, so a rename does not split a lens's stats.
+for alias in ("edgecases", "edge"):
+    assert rb.resolve_lens(alias)["name"] == "edge-cases", alias
+assert rb.resolve_lens("repeat-lens")["repeats"] == 2
+assert sorted(rb.load_lenses()) == ["edge-cases", "repeat-lens"]
+assert "unknown lens" in lens_refusal(rb.resolve_lens, "nosuch")
+broken_lens = lens_registry / "broken.md"
+for frontmatter, body, reason in (
+    (f"source: {lens_source}", lens_body, "frontmatter `name`"),
+    ("name: Edge Cases", lens_body, "frontmatter `name`"),
+    ("name: ok-lens\nrepeats: many", lens_body, "repeats must be an integer"),
+    ("name: ok-lens\nrepeats: 0", lens_body, "repeats must be at least 1"),
+    ("name: ok-lens\nflavour: bold", lens_body, "unknown frontmatter key"),
+    ("name: ok-lens\naliases: [Edge]", lens_body, "not a lowercase slug"),
+    # A body that never says where its findings land leaves the severities to the rater, and
+    # the run is then scored on a vocabulary the lens never claimed.
+    ("name: ok-lens", "Report every defect you find.\n", "never maps P1, P2, P3"),
+    ("name: ok-lens", "Crashes are P1, everything else P2.\n", "never maps P3"),
+    ("name: edge-cases", lens_body, "claimed by both"),
+    ("name: ok-lens\naliases: [edge]", lens_body, "claimed by both"),
+):
+    broken_lens.write_text(f"---\n{frontmatter}\n---\n{body}")
+    assert reason in lens_refusal(rb.load_lenses), (frontmatter, reason)
+broken_lens.write_text("no frontmatter at all\n" + lens_body)
+assert "no `---` frontmatter block" in lens_refusal(rb.load_lenses)
+broken_lens.write_text("---\nname edge\n---\n" + lens_body)
+assert "not `key: value`" in lens_refusal(rb.load_lenses)
+broken_lens.unlink()
+lens_prompt = rb.review_prompt("deadbee", "", lens=edge_lens)
+assert "EDGE CASE METHODOLOGY BODY" in lens_prompt, lens_prompt
+assert rb.CLEAN_REVIEW_MARKER in lens_prompt and "one JSON object per line" in lens_prompt
+assert "only the commit diff below" in lens_prompt, lens_prompt
+os.environ["REVIEW_BENCH_PROFILE_DIR"] = str(profile_dir)
+# A lens replaces the vendor methodology rather than stacking on it: a prompt carrying both
+# measures neither.
+stacked = rb.review_prompt("deadbee", "line 7", "google", lens=edge_lens)
+assert "GOOGLE METHODOLOGY BODY" not in stacked, stacked
+assert "EDGE CASE METHODOLOGY BODY" in stacked and "line 7" in stacked, stacked
+del os.environ["REVIEW_BENCH_PROFILE_DIR"]
+skill_redacted = ["claudeb", "profile", "acct", "-p", "brief", "--output-format", "json"]
+skill_cell = rb.parse_rater("opus-medium-skill")
+assert rb.uses_skill_brief(skill_cell)
+assert "<worker-brief>" in rb.redact_command(skill_cell, skill_redacted)
+# The -skill path hands the cell the vendor's own /code-review, which is the one methodology a
+# lens run must not let it reach.
+skill_cell["lens"] = edge_lens
+assert not rb.uses_skill_brief(skill_cell)
+assert "<review-prompt-and-diff>" in rb.redact_command(skill_cell, skill_redacted)
+lens_mixed = rb.parse_raters("opus-medium,sol-low,oc-kimik3,agy-pro-high-skill")
+assert [rater["spec"] for rater in rb.lens_panel(lens_mixed, edge_lens)] == [
+    "opus-medium", "sol-low"], lens_mixed
+assert "no cell to run" in lens_refusal(
+    rb.lens_panel, rb.parse_raters("oc-kimik3,agy-pro-high-skill"), edge_lens
+)
+assert [
+    rater["spec"] for rater in
+    rb.lens_panel(rb.parse_raters("sol-low x4,opus-medium x2"), rb.resolve_lens("repeat-lens"))
+] == ["sol-low", "sol-low#2", "opus-medium", "opus-medium#2"]
+assert len(rb.lens_panel(rb.parse_raters("sol-low x4"), edge_lens)) == 4
+assert rb.lens_source_status(edge_lens) == "current"
+assert rb.lens_source_status(rb.resolve_lens("repeat-lens")) == "no source recorded"
+lens_source.write_text("ORIGIN SKILL TEXT, EDITED\n")
+assert rb.lens_source_status(rb.resolve_lens("edge-cases")).startswith("drifted from ")
+lens_source.write_text("ORIGIN SKILL TEXT\n")
+assert rb.lens_source_status(rb.resolve_lens("edge-cases")) == "current"
+write_lens("gone-source.md", "name: gone-source\nsource: /nonexistent/skill.md")
+assert rb.lens_source_status(rb.resolve_lens("gone-source")).startswith("source missing at ")
+write_lens("no-hash.md", f"name: no-hash\nsource: {lens_source}")
+assert rb.lens_source_status(rb.resolve_lens("no-hash")) == "source hash not recorded"
+lens_listing = rb.lens_list_lines()
+assert any(
+    line.startswith("edge-cases") and "repeats=tier" in line and line.endswith("current")
+    for line in lens_listing
+), lens_listing
+assert any(
+    line.startswith("repeat-lens") and "repeats=2" in line for line in lens_listing
+), lens_listing
+lens_checked = "\n".join(rb.lens_check_lines("edge"))
+assert lens_checked.startswith("edge-cases ") and lens_source_digest in lens_checked
+assert "aliases:  edgecases, edge" in lens_checked, lens_checked
+assert "status:   current" in lens_checked, lens_checked
+(lens_registry / "gone-source.md").unlink()
+(lens_registry / "no-hash.md").unlink()
+
 for effort in ("low", "medium", "high"):
     rater = rb.parse_rater(f"agy-flash35-{effort}-skill")
     assert rater == {
@@ -2374,6 +2500,36 @@ assert "Commit diff:" in captured_stdin, captured_stdin
 assert bare_diff in captured_stdin, captured_stdin
 assert not any("Commit diff:" in arg for arg in bare_command), bare_command
 assert not any(arg.startswith("developer_instructions=") for arg in bare_command), bare_command
+
+# The native review command writes its own prompt, so the developer instructions are the only
+# channel a lens has into a non-bare Sol cell; without them the cell runs the stock review and
+# is still recorded under the lens's slug.
+codex_lens_run = work / "codex-lens-run"
+codex_lens_run.mkdir()
+codex_lens_cell = rb.parse_rater("sol-medium")
+codex_lens_cell["lens"] = rb.resolve_lens("edge-cases")
+rc, _, _, stderr, codex_lens_command = rb.run_codex(
+    codex_lens_cell, pin_repo, pin_sha, "", codex_lens_run, "", "main"
+)
+assert rc == 0 and not stderr
+codex_lens_instruction = next(
+    arg for arg in codex_lens_command if arg.startswith("developer_instructions=")
+)
+assert "EDGE CASE METHODOLOGY BODY" in codex_lens_instruction, codex_lens_instruction
+assert rb.CLEAN_REVIEW_MARKER in codex_lens_instruction, codex_lens_instruction
+# This cell has the repository, so the diff-only clause the prompt paths carry would be a lie.
+assert "only the commit diff below" not in codex_lens_instruction, codex_lens_instruction
+codex_lens_bare_run = work / "codex-lens-bare-run"
+codex_lens_bare_run.mkdir()
+codex_lens_bare = rb.parse_rater("sol-low-bare")
+codex_lens_bare["lens"] = rb.resolve_lens("edge-cases")
+rc, _, _, stderr, _ = rb.run_codex(
+    codex_lens_bare, pin_repo, pin_sha, "", codex_lens_bare_run, bare_diff, "main"
+)
+assert rc == 0 and not stderr
+codex_lens_stdin = (work / "rater-stdin").read_text()
+assert "EDGE CASE METHODOLOGY BODY" in codex_lens_stdin, codex_lens_stdin
+assert "only the commit diff below" in codex_lens_stdin, codex_lens_stdin
 
 # A refusal Codex reported only in its event stream still reaches stderr, or the run is recorded
 # as a silent death that no later classification can retry or even name.
@@ -5079,6 +5235,91 @@ range_lines = suggest(range_suggest, "--range", f"{range_base}..{range_head}")
 assert_suggestion(range_lines, 1, 151, "T2", committed=True)
 assert range_head in range_lines[4], range_lines
 
+# --- lenses: a run launched and recorded under the methodology it was given -------------------
+lens_store = work / "lens-claudeb"
+os.environ["CLAUDEB_DIR"] = str(lens_store)
+os.environ.pop("WORKER_STATS_DIR", None)
+lens_seen = {}
+lens_launch_meta = []
+
+
+def lens_run_runner(rater, repo_path, commit, focus, run_dir, diff, account):
+    lens_seen[rater["spec"]] = (rater.get("lens") or {}).get("name", "")
+    lens_launch_meta.append(json.loads((run_dir / "meta.json").read_text()))
+    return 0, 1, "NO FINDINGS", "", []
+
+
+for side in rb.SIDE_RUNNERS:
+    rb.SIDE_RUNNERS[side] = lens_run_runner
+rb.pool_account = lambda side, excluded, slot=0, bucket="general": "fixture"
+rb.affordability = lambda: {
+    "claude": True, "codex": True, "agy": True, "grok": True, "opencode": True,
+    "claude_account": "fixture",
+}
+with contextlib.redirect_stdout(io.StringIO()):
+    lens_tier_rc = rb.cmd_review(argparse.Namespace(
+        repo=str(pin_repo), commitish=pin_sha, tier="T1",
+        verify=None, focus=None, lens="edge",
+    ))
+assert lens_tier_rc == 0
+lens_run_dir = next((lens_store / "worker-stats" / "benches").iterdir())
+lens_meta = json.loads((lens_run_dir / "meta.json").read_text())
+# An alias was asked for; the canonical slug is what the run has to carry.
+assert lens_meta["lens"] == "edge-cases", lens_meta
+assert lens_meta["lens_hash"] == rb.resolve_lens("edge-cases")["hash"], lens_meta
+assert lens_meta["lens_source_status"] == "current", lens_meta
+assert lens_meta["tier"] == "T1"
+assert lens_meta["raters"] and not any(
+    spec.startswith(("oc-", "agy-")) for spec in lens_meta["raters"]
+), lens_meta["raters"]
+assert set(lens_seen.values()) == {"edge-cases"}, lens_seen
+assert lens_seen.keys() == set(lens_meta["raters"]), lens_seen
+# A run reading its own meta while the cells are still out — a progress view, or an abort —
+# has to find the lens there too, not only in what the finished run wrote.
+assert all(
+    launched["lens"] == "edge-cases" and launched["lens_hash"] == lens_meta["lens_hash"]
+    and launched["lens_source_status"] == "current"
+    for launched in lens_launch_meta
+), lens_launch_meta
+# The verifier reaches OpenCode findings only, and a lens run has no OpenCode cell to reach.
+assert lens_meta["verifier"] == "", lens_meta
+
+repeat_lens_store = work / "lens-repeat-claudeb"
+os.environ["CLAUDEB_DIR"] = str(repeat_lens_store)
+with contextlib.redirect_stdout(io.StringIO()):
+    lens_repeat_rc = rb.cmd_run(argparse.Namespace(
+        repo=str(pin_repo), commitish=pin_sha, raters="sol-low x3,oc-kimik3",
+        leg=False, verify=None, auto=None, focus=None, lens="repeat-lens",
+    ))
+assert lens_repeat_rc == 0
+repeat_lens_meta = json.loads(
+    (next((repeat_lens_store / "worker-stats" / "benches").iterdir()) / "meta.json").read_text()
+)
+assert repeat_lens_meta["raters"] == ["sol-low", "sol-low#2"], repeat_lens_meta
+assert repeat_lens_meta["lens"] == "repeat-lens", repeat_lens_meta
+try:
+    rb.cmd_run(argparse.Namespace(
+        repo=str(pin_repo), commitish=pin_sha, raters="oc-kimik3,agy-pro-high-skill",
+        leg=False, verify=None, auto=None, focus=None, lens="edge-cases",
+    ))
+except RuntimeError as exc:
+    assert "no cell to run" in str(exc), exc
+else:
+    raise AssertionError("a lens run of cells no lens can reach must be refused")
+plain_lens_store = work / "lens-absent-claudeb"
+os.environ["CLAUDEB_DIR"] = str(plain_lens_store)
+lens_seen.clear()
+with contextlib.redirect_stdout(io.StringIO()):
+    assert rb.cmd_review(argparse.Namespace(
+        repo=str(pin_repo), commitish=pin_sha, tier="T1", verify=None, focus=None,
+    )) == 0
+plain_lens_meta = json.loads(
+    (next((plain_lens_store / "worker-stats" / "benches").iterdir()) / "meta.json").read_text()
+)
+assert "lens" not in plain_lens_meta and "lens_hash" not in plain_lens_meta, plain_lens_meta
+assert any(spec.startswith("oc-") for spec in plain_lens_meta["raters"]), plain_lens_meta
+assert set(lens_seen.values()) == {""}, lens_seen
+
 print("review-bench-unit-ok")
 PY
 assert test "$?" -eq 0
@@ -5994,6 +6235,55 @@ assert contains "$review_help" "--tier"
 assert contains "$review_help" "{T0,T1,T2,T3}"
 leg_conflict="$("$SCRIPT" run 143fc2f --leg --raters oc-kimik3 2>&1 || true)"
 assert contains "$leg_conflict" "not allowed with argument --leg"
+assert contains "$run_help" "--lens"
+assert contains "$review_help" "--lens"
+
+# --- lens CLI: the registry as the reader sees it ---------------------------------------------
+LENS_CLI_DIR="$WORK/lens-cli"
+LENS_CLI_STATE="$WORK/lens-cli-state"
+mkdir -p "$LENS_CLI_DIR" "$LENS_CLI_STATE"
+LENS_CLI_SOURCE="$WORK/lens-cli-source.md"
+printf 'ORIGIN SKILL\n' >"$LENS_CLI_SOURCE"
+LENS_CLI_HASH="$(shasum -a 256 "$LENS_CLI_SOURCE" | cut -d' ' -f1)"
+cat >"$LENS_CLI_DIR/edge-cases.md" <<EOF
+---
+name: edge-cases
+source: $LENS_CLI_SOURCE
+source_hash: $LENS_CLI_HASH
+repeats: 2
+aliases: [edge]
+---
+Hunt edge cases: a crash is P1, a wrong result P2, a rough edge P3.
+EOF
+lens_cli() {
+  REVIEW_BENCH_LENS_DIR="$LENS_CLI_DIR" WORKER_STATS_DIR="$LENS_CLI_STATE" \
+    CLAUDEB_DIR="$LENS_CLI_STATE" "$SCRIPT" lens "$@"
+}
+lens_listing="$(lens_cli list)" || fail "lens list failed"
+assert contains "$lens_listing" "edge-cases"
+assert contains "$lens_listing" "repeats=2"
+assert contains "$lens_listing" "current"
+lens_checked="$(lens_cli check edge)" || fail "lens check failed on an alias"
+assert contains "$lens_checked" "$LENS_CLI_HASH"
+assert contains "$lens_checked" "status:   current"
+printf 'ORIGIN SKILL, EDITED\n' >"$LENS_CLI_SOURCE"
+lens_drifted="$(lens_cli check edge-cases)"
+# Drift says the lens is older than the skill it was distilled from, which is a thing to read
+# and not a reason to refuse the lens: a run under it still measures a known text.
+assert test "$?" -eq 0
+assert contains "$lens_drifted" "drifted from"
+assert contains "$lens_drifted" "$LENS_CLI_HASH"
+rm -f "$LENS_CLI_SOURCE"
+lens_gone="$(lens_cli check edge-cases)"
+assert test "$?" -eq 0
+assert contains "$lens_gone" "source missing at"
+lens_cli check nosuch >/dev/null 2>&1
+assert test "$?" -eq 2
+lens_cli check >/dev/null 2>&1
+assert test "$?" -eq 2
+lens_empty="$(REVIEW_BENCH_LENS_DIR="$WORK/lens-cli-none" WORKER_STATS_DIR="$LENS_CLI_STATE" \
+  "$SCRIPT" lens list)" || fail "lens list failed on an empty registry"
+assert contains "$lens_empty" "no lenses registered"
 OCSD="$WORK/oc-repeat-health"
 mkdir -p "$OCSD/benches/repeat-fixture"
 python3 - "$OCSD/benches/repeat-fixture/meta.json" <<'PY'
@@ -6220,4 +6510,4 @@ else
   printf 'SKIP: review report hook behavior (%s is unavailable)\n' "$REPORT_HOOK"
 fi
 
-printf 'PASS: %s assertions; canonical review tiers sharing one OpenCode/Gemini floor with no retired cell in them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative suggestions with missing-object fallback, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account usable only behind its opt-in and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask, the lookup scoped to the repository so another chat cannot answer for it, and both review hooks keyed so exactly one fires\n' "$asserts"
+printf 'PASS: %s assertions; canonical review tiers sharing one OpenCode/Gemini floor with no retired cell in them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative suggestions with missing-object fallback, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account usable only behind its opt-in and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask, the lookup scoped to the repository so another chat cannot answer for it, and both review hooks keyed so exactly one fires\n' "$asserts"
