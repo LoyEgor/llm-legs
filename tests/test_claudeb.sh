@@ -106,8 +106,9 @@ fi
 assert test "$(format_reset_time "$short_epoch")" = "$short_expected"
 assert test "$(format_reset_time "$week_epoch")" = "${weekdays[$weekday_number]} $(date -r "$week_epoch" '+%H:%M' 2>/dev/null || date -d "@$week_epoch" '+%H:%M')"
 assert test "$(format_reset_time "$date_epoch")" = "$(date -r "$date_epoch" '+%m-%d %H:%M' 2>/dev/null || date -d "@$date_epoch" '+%m-%d %H:%M')"
-assert test "$(format_reset_time null)" = unknown
-assert test "$(format_reset_time '')" = unknown
+# Canonical missing-reset cell (shared-invariants row y): "-" on every surface.
+assert test "$(format_reset_time null)" = -
+assert test "$(format_reset_time '')" = -
 
 usage="$WORK/usage.json"
 cat >"$usage" <<'EOF'
@@ -2333,4 +2334,24 @@ EOF
   assert_fails grep -qE "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[^Z]" "$LEDGER"
 ) || exit 1
 
-echo "PASS: $asserts asserts; profile-required launch guard, reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth weather/backoff and lock behavior, creation-only reserved names and leading-hyphen rejection, disabled-account timeline, disabled profile launch proceeds direct with inherited routing stripped, generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent token adoption, capacity weather clears stale expired auth for valid tokens, warm-first heal ordering and fallback, warm auth verdicts require current-run refresh evidence, start-windows opens a fresh window and reconcile locks the new resets_at without regressing it, start-windows skips a disabled account with an explicit cause, warm --start-window opens only an expired window for the explicit account (live window and flagless runs never ping; ping weather warns without an auth verdict), the paid haiku warm fallback stays off unless opted in, regular probes never warm, heal_expired covers disabled accounts with actionable causes, and heal_one writes expired only on current-run evidence (stale-token 401 defers to the token endpoint's verdict, fresh-token 401 is affirmative, weather never re-stamps a prior expired), and no-refresh probes plus messages-probe 401s defer to the refresh outcome (stale token → weather no-write / invalid_grant expired, fresh token → affirmative), and interactive status account-row selection (bounded up/down navigation, name-stable across re-sort), Enter resolving to a \`claudeb profile <name>\` exec, row-scoped reverse-video highlight, and the non-tty path staying plain with no key loop or launch, status defaulting to cached (zero network; --live still probes), and the async refresh outcome summary (✓ when all enabled accounts are live/live*, else names stale accounts with a cause and excludes disabled ones, raw probe stderr confined to the log), refresh cancellation killing the probe process group, first-pass results publishing in completion order, unknown profiles rejected, and reserved legacy profiles removable, headless runs routed through worker-pick without restamping current (arguments alone still demand a profile; an unselectable pool or a missing worker-pick refuses instead of launching), and \`use\` writing the worker pin in place with an out-of-pool direct-pin note, a clear, and a refusal on an unroutable name, and the session-account ledger recording each profile's session markers once, keeping a line after its marker is pruned, recording both accounts when one session ran under two profiles, and staying silent for a profile that never ran"
+# --- probe/warm announce (shared-invariants row y): any snapshot-rewriting verb fires
+# one passive collect so the merged cache follows; the collector's own child
+# invocations carry the suppress env and stay silent. The freeze keeps the warm
+# offline — the announce lives at the dispatch level and must fire regardless.
+printf 'tok-ann' >"$CLAUDEB_DIR/tokens/annacct"
+printf '{"started_at":%s,"reason":"token-freeze experiment"}\n' "$(date +%s)" >"$CLAUDEB_DIR/token-freeze"
+ann_before=$(grep -c '' "$ANNOUNCE_LOG" 2>/dev/null || printf 0)
+bash "$SCRIPT" warm annacct >/dev/null 2>&1 || true
+ann_tries=0
+while [ "$ann_tries" -lt 50 ]; do
+  [ "$(grep -c '' "$ANNOUNCE_LOG" 2>/dev/null || printf 0)" -gt "$ann_before" ] && break
+  ann_tries=$((ann_tries + 1))
+  sleep 0.1
+done
+assert test "$(grep -c '' "$ANNOUNCE_LOG" 2>/dev/null || printf 0)" -eq "$((ann_before + 1))"
+LLM_LIMITS_ANNOUNCE_SUPPRESS=1 bash "$SCRIPT" warm annacct >/dev/null 2>&1 || true
+sleep 0.5
+assert test "$(grep -c '' "$ANNOUNCE_LOG" 2>/dev/null || printf 0)" -eq "$((ann_before + 1))"
+rm -f "$CLAUDEB_DIR/token-freeze" "$CLAUDEB_DIR/tokens/annacct"
+
+echo "PASS: $asserts asserts; profile-required launch guard, reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth weather/backoff and lock behavior, creation-only reserved names and leading-hyphen rejection, disabled-account timeline, disabled profile launch proceeds direct with inherited routing stripped, generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent token adoption, capacity weather clears stale expired auth for valid tokens, warm-first heal ordering and fallback, warm auth verdicts require current-run refresh evidence, start-windows opens a fresh window and reconcile locks the new resets_at without regressing it, start-windows skips a disabled account with an explicit cause, warm --start-window opens only an expired window for the explicit account (live window and flagless runs never ping; ping weather warns without an auth verdict), the paid haiku warm fallback stays off unless opted in, regular probes never warm, heal_expired covers disabled accounts with actionable causes, and heal_one writes expired only on current-run evidence (stale-token 401 defers to the token endpoint's verdict, fresh-token 401 is affirmative, weather never re-stamps a prior expired), and no-refresh probes plus messages-probe 401s defer to the refresh outcome (stale token → weather no-write / invalid_grant expired, fresh token → affirmative), and interactive status account-row selection (bounded up/down navigation, name-stable across re-sort), Enter resolving to a \`claudeb profile <name>\` exec, row-scoped reverse-video highlight, and the non-tty path staying plain with no key loop or launch, status defaulting to cached (zero network; --live still probes), and the async refresh outcome summary (✓ when all enabled accounts are live/live*, else names stale accounts with a cause and excludes disabled ones, raw probe stderr confined to the log), refresh cancellation killing the probe process group, first-pass results publishing in completion order, unknown profiles rejected, and reserved legacy profiles removable, headless runs routed through worker-pick without restamping current (arguments alone still demand a profile; an unselectable pool or a missing worker-pick refuses instead of launching), and \`use\` writing the worker pin in place with an out-of-pool direct-pin note, a clear, and a refusal on an unroutable name, and the session-account ledger recording each profile's session markers once, keeping a line after its marker is pruned, recording both accounts when one session ran under two profiles, and staying silent for a profile that never ran, and snapshot-rewriting verbs announcing one passive collect with collector children suppressed"

@@ -187,16 +187,6 @@ assert_account_ages() {
   fi
 }
 
-within_pp() {
-  local left="$1" right="$2" tolerance=3 delta
-  if [[ "$left" =~ ^[0-9]+$ ]] && [[ "$right" =~ ^[0-9]+$ ]]; then
-    delta=$((left - right)); [ "$delta" -ge 0 ] || delta=$((-delta))
-    [ "$delta" -le "$tolerance" ]
-  else
-    [ "$left" = "$right" ]
-  fi
-}
-
 assert_isolated_menu_contracts() {
   local output
   output=$(hs -c '
@@ -453,35 +443,44 @@ jq -e '.schema == 1 and (.vendors.claude.accounts | type == "array")
   <<<"$JSON" >/dev/null || fail "bare llm-limits JSON is missing schema/vendor fields"
 pass "CLI surface: --table rows for claude/codex/gemini, bare JSON schema fields present"
 
-# 5. Consistency: claudeb status used% agrees with the store for every claude account.
-# --refresh re-syncs the store into ~/.llm-limits.json; claudeb status --cached reads the
-# same store without re-probing. A concurrent refresh can bump a value between the two
-# reads, so a mismatch retries on a fresh sync; a persistent disagreement fails loudly.
+# 5. Consistency: claudeb status cells must equal the canonical rendering of the store —
+# the shared limits-view defs applied to the merged cache (shared-invariants row y). Any
+# surface re-deriving its own pct/marker semantics diverges from this text and fails here.
+# --refresh re-syncs the store; claudeb status --cached reads the same underlying
+# snapshots without re-probing. A concurrent refresh (or a bucket crossing a staleness /
+# expiry boundary between the two reads) can shift a cell, so a mismatch retries on a
+# fresh sync; a persistent disagreement fails loudly.
+E2E_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+. "$E2E_ROOT/share/limits-view.sh"
 consistency_attempt() {
-  local json status hasfab a lh lw lf sh sw sf
+  local json status hasfab a row expected cells
   timeout 120 llm-limits --refresh >/dev/null 2>&1 || { MISMATCH="refresh exited non-zero"; return 1; }
   json=$(cat "$STORE") || { MISMATCH="cannot read $STORE"; return 1; }
   status=$(claudeb status --cached --plain 2>/dev/null) || { MISMATCH="claudeb status --cached failed"; return 1; }
   hasfab=$(grep -q 'FABLE' <<<"$status" && echo 1 || echo 0)
   for a in $(jq -r '.vendors.claude.accounts[].account' <<<"$json"); do
-    local row
     row=$(awk -v n="$a" '$1 == n {print; exit}' <<<"$status")
     [ -n "$row" ] || { MISMATCH="account $a in store but absent from claudeb status"; return 1; }
-    lh=$(jq -r --arg a "$a" '.vendors.claude.accounts[] | select(.account==$a)
-      | (.five_hour.used_pct | if . == null then "-" else (round|tostring) end)' <<<"$json")
-    lw=$(jq -r --arg a "$a" '.vendors.claude.accounts[] | select(.account==$a)
-      | (.weekly.used_pct // null | if . == null then "-" else (round|tostring) end)' <<<"$json")
-    lf=$(jq -r --arg a "$a" '.vendors.claude.accounts[] | select(.account==$a)
-      | (.fable.used_pct // null | if . == null then "-" else (round|tostring) end)' <<<"$json")
-    sh=$(awk -v n="$a" '$1 == n {print $2; exit}' <<<"$status" | tr -d '%')
-    sw=$(awk -v n="$a" '$1 == n {print $3; exit}' <<<"$status" | tr -d '%')
-    within_pp "$lh" "$sh" || { MISMATCH="$a 5h: store=$lh claudeb=$sh"; return 1; }
-    within_pp "$lw" "$sw" || { MISMATCH="$a weekly: store=$lw claudeb=$sw"; return 1; }
+    # Staleness is recomputed at now from the numeric as_of so both sides share the
+    # same clock; the expired flag and effective value come from the collector's mark.
+    expected=$(jq -r --arg a "$a" --argjson now "$(date +%s)" \
+      --argjson thr5 "$LIMITS_STALE_FIVE_HOUR" --argjson thrw "$LIMITS_STALE_WEEKLY" \
+      --argjson thrf "$LIMITS_STALE_FABLE" "$LIMITS_VIEW_JQ"'
+      .vendors.claude.accounts[] | select(.account == $a) |
+      ((.auth.status? // "") == "expired") as $ax |
+      def cell($b; $thr):
+        (if ($b | type) == "object" then $b else {} end) as $b |
+        limits_pct_text($b.effective_pct;
+          limits_bucket_stale($now; $thr; $ax; ($b.origin // ""); ($b.as_of // 0));
+          ($b.expired == true));
+      [cell(.five_hour; $thr5), cell(.weekly; $thrw), cell(.fable; $thrf)] | join(" ")' <<<"$json")
     if [ "$hasfab" = 1 ]; then
-      sf=$(awk -v n="$a" '$1 == n {print $4; exit}' <<<"$status" | tr -d '%')
-      within_pp "$lf" "$sf" || { [ "$lf" = - ] && [ "$sf" = 0 ]; } \
-        || { MISMATCH="$a fable: store=$lf claudeb=$sf"; return 1; }
+      cells=$(awk -v n="$a" '$1 == n {print $2, $3, $4; exit}' <<<"$status")
+    else
+      cells=$(awk -v n="$a" '$1 == n {print $2, $3; exit}' <<<"$status")
+      expected=${expected% *}
     fi
+    [ "$cells" = "$expected" ] || { MISMATCH="$a cells: canonical='$expected' claudeb='$cells'"; return 1; }
   done
   return 0
 }
@@ -490,8 +489,8 @@ consistency_ok=0
 for attempt in 1 2 3; do
   if consistency_attempt; then consistency_ok=1; break; fi
 done
-[ "$consistency_ok" = 1 ] || fail "claudeb status disagrees with store after 3 syncs ($MISMATCH)"
-pass "store consistency: claudeb status stays within 3pp of ~/.llm-limits.json for all claude accounts"
+[ "$consistency_ok" = 1 ] || fail "claudeb status disagrees with the canonical store rendering after 3 syncs ($MISMATCH)"
+pass "store consistency: claudeb status cells equal the shared limits-view rendering of ~/.llm-limits.json for all claude accounts"
 
 # 6. Free refresh round-trip: fetched_at must advance, no vendor may fail invisibly, and
 # the live module must re-read the new store. A vendor that neither advanced its as_of nor

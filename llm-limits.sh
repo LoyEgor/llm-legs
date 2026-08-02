@@ -284,29 +284,13 @@ age_def='def compact_age($now):
   (if $asof != null then ([$now - $asof, 0] | max)
    elif (.stale_seconds | type) == "number" then .stale_seconds
    else null end) as $seconds |
-  if $seconds == null then "-"
-  elif $seconds < 60 then "0m"
-  elif $seconds < 3600 then (($seconds / 60 | floor | tostring) + "m")
-  elif $seconds < 86400 then
-    (($seconds / 3600 | floor | tostring) + "h" +
-     (if (($seconds % 3600) / 60 | floor) == 0 then ""
-      else ((($seconds % 3600) / 60 | floor | tostring) + "m") end))
-  else
-    (($seconds / 86400 | floor | tostring) + "d" +
-     (if (($seconds % 86400) / 3600 | floor) == 0 then ""
-      else ((($seconds % 86400) / 3600 | floor | tostring) + "h") end))
-  end;'
+  limits_age_text($seconds);'
 
 reset_format_def='def format_reset($now):
   . as $iso | ($iso | iso2epoch) as $epoch |
   if $iso == null or $iso == "" then "-"
   elif $epoch == null then $iso
-  elif ($epoch - $now) < 604800 then
-    (if ($epoch | strflocaltime("%Y-%m-%d")) != ($now | strflocaltime("%Y-%m-%d"))
-     then (["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][$epoch | strflocaltime("%w") | tonumber]
-           + " " + ($epoch | strflocaltime("%H:%M")))
-     else ($epoch | strflocaltime("%H:%M")) end)
-  else ($epoch | strflocaltime("%m-%d %H:%M")) end;'
+  else limits_reset_text($epoch; $now) end;'
 
 pct_cell() {
   # $4 is the raw numeric sort key emitted by jq (-1 = missing value); $5 dims the cell:
@@ -336,12 +320,9 @@ render_table() {
   fi
   # Sentinels (-1 / 9999999999) push rows with missing values last for every sort direction.
   local rows
-  rows=$(jq -r --argjson render_now "$now_epoch" "$iso_def$age_def$reset_format_def"'
-    def pct(v): if v == null then "-" else ((v | round | tostring) + "%") end;
+  rows=$(jq -r --argjson render_now "$now_epoch" "$iso_def$LIMITS_VIEW_JQ$age_def$reset_format_def"'
     def marked_pct($window):
-      pct($window.used_pct) +
-      (if $window.stale == true then "~" else "" end) +
-      (if $window.expired == true then "!" else "" end);
+      limits_pct_text($window.effective_pct; ($window.stale == true); ($window.expired == true));
     def rotation:
       if .enabled == false then "off"
       elif (.five_hour.effective_pct // 0) >= 100 then "limit-5h"
@@ -470,6 +451,7 @@ agy_bin=${AGY_BIN:-$HOME/.local/bin/agy}
 . "$script_dir/share/gemini-accounts.sh"
 . "$script_dir/share/worker-pool.sh"
 . "$script_dir/share/experiments.sh"
+. "$script_dir/share/limits-view.sh"
 
 codex_pool_dir="${CODEXB_PROFILES_DIR:-$HOME/.codex-profiles}/.codexb"
 gemini_pool_dir="$gemini_profiles_dir/.geminib"
@@ -698,9 +680,9 @@ if [ "$refresh" -eq 1 ] && { [ -z "$refresh_account" ] || [ -n "$claude_refresh_
     claude_refresh_run_start=$(date +%s)
     claudeb_cmd=$(command -v "${LLM_LIMITS_CLAUDEB_CMD:-claudeb}" 2>/dev/null || true)
     if [ -n "$claudeb_cmd" ]; then
-      claudeb_child=("$claudeb_cmd")
+      claudeb_child=(env LLM_LIMITS_ANNOUNCE_SUPPRESS=1 "$claudeb_cmd")
       if [ "${CLAUDEB_WARM_USER_EXPLICIT:-false}" = true ]; then
-        claudeb_child=(env CLAUDEB_WARM_USER_EXPLICIT=true "$claudeb_cmd")
+        claudeb_child=(env LLM_LIMITS_ANNOUNCE_SUPPRESS=1 CLAUDEB_WARM_USER_EXPLICIT=true "$claudeb_cmd")
       fi
       if [ -n "$claude_refresh_target" ]; then
         warm_args=(warm)
@@ -794,7 +776,9 @@ if [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
       --argjson has_five "$has_five" --argjson has_week "$has_week" --argjson has_fable "$has_fable" \
       --arg five_reset "$five_reset" --argjson mtime "$mtime" --argjson now "$now_epoch" \
       --arg week_reset "$week_reset" --arg fable_reset "$fable_reset" \
-      --argjson stale "$stale" --arg plan_type "$plan_type" '
+      --argjson stale "$stale" --arg plan_type "$plan_type" \
+      --argjson thr5 "$LIMITS_STALE_FIVE_HOUR" --argjson thrw "$LIMITS_STALE_WEEKLY" \
+      --argjson thrf "$LIMITS_STALE_FABLE" "$LIMITS_VIEW_JQ"'
       (($d.auth | type) == "object" and $d.auth.status == "expired") as $expired |
       ($enabled and (($d.auth | type) == "object" and $d.auth.status == "ok")) as $general_usable |
       (($d.auth | type) == "object" and
@@ -804,13 +788,13 @@ if [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
         if ($b | type) != "object" then null else
           (if ($b.as_of | type) == "number" then $b.as_of else $mtime end) as $asof |
           ({as_of: $asof,
-            stale: ($expired or (($b.origin // "") == "cached") or (($now - $asof) > $thr))} +
+            stale: limits_bucket_stale($now; $thr; $expired; ($b.origin // ""); $asof)} +
            (if ($b.origin | type) == "string" then {origin: $b.origin} else {} end))
         end;
       {auth: (if ($d.auth | type) == "object" then $d.auth else null end),
-       five: ($d | meta(.five_hour; 1800)),
-       week: ($d | meta(.seven_day; 21600)),
-       fable: ($d | meta(.fable; 21600))} as $x |
+       five: ($d | meta(.five_hour; $thr5)),
+       week: ($d | meta(.seven_day; $thrw)),
+       fable: ($d | meta(.fable; $thrf))} as $x |
       {account:$account,is_current:false,enabled:$enabled,
        five_hour:(if $has_five == 0
                   then {used_pct:null,resets_at:null,as_of:$mtime,stale:true}
@@ -904,10 +888,11 @@ else
       claude=$(jq -cn --argjson d "$claude_data" --argjson wall "$claude_wall" --arg source "$claude_source" \
         --arg five_reset "$(reset_iso_or_empty "$(jq -r '.five_hour.resets_at // empty' <<<"$claude_data")")" \
         --arg week_reset "$(reset_iso_or_empty "$(jq -r '.seven_day.resets_at // empty' <<<"$claude_data")")" \
-        --arg as_of "$(epoch_iso "$mtime")" --argjson as_of_epoch "$mtime" --argjson stale "$stale" '
+        --arg as_of "$(epoch_iso "$mtime")" --argjson as_of_epoch "$mtime" --argjson stale "$stale" \
+        --argjson thr5 "$LIMITS_STALE_FIVE_HOUR" --argjson thrw "$LIMITS_STALE_WEEKLY" '
         {account:"main",is_current:true,enabled:true,
-         five_hour:{used_pct:$d.five_hour.used_percentage,resets_at:(if $five_reset == "" then null else $five_reset end),as_of:$as_of_epoch,stale:($stale > 1800)},
-         weekly:{used_pct:$d.seven_day.used_percentage,resets_at:(if $week_reset == "" then null else $week_reset end),as_of:$as_of_epoch,stale:($stale > 21600)},
+         five_hour:{used_pct:$d.five_hour.used_percentage,resets_at:(if $five_reset == "" then null else $five_reset end),as_of:$as_of_epoch,stale:($stale > $thr5)},
+         weekly:{used_pct:$d.seven_day.used_percentage,resets_at:(if $week_reset == "" then null else $week_reset end),as_of:$as_of_epoch,stale:($stale > $thrw)},
          as_of:$as_of,stale_seconds:$stale} as $account |
         {available:true,source:$source,current_account:"main",accounts:[$account],five_hour:$account.five_hour,weekly:$account.weekly,as_of:$as_of,stale_seconds:$stale,last_wall:$wall}')
     fi
@@ -1152,6 +1137,7 @@ if [ -n "$codex_event" ]; then
       --arg five_reset "$five_reset" --arg week_reset "$week_reset" \
       --arg as_of "$(epoch_iso "$codex_epoch")" --argjson as_of_epoch "$codex_epoch" \
       --arg origin "$codex_origin" --arg source "$codex_source" --argjson stale "$stale" \
+      --argjson thr5 "$LIMITS_STALE_FIVE_HOUR" --argjson thrw "$LIMITS_STALE_WEEKLY" \
       --argjson pool_out "$(worker_pool_disabled_json "$codex_pool_dir")" "$iso_def"'
       def reset_iso:
         if type == "number" then todateiso8601
@@ -1175,13 +1161,13 @@ if [ -n "$codex_event" ]; then
             (if ($a.cause | type) == "string" then {cause:$a.cause} else {} end)
           else
             {plan_type:($a.plan_type // $e.payload.rate_limits.plan_type // null),
-             five_hour:bucket(($a.five_hour // {}); null; $account_asof; 1800),
-             weekly:bucket(($a.weekly // {}); null; $account_asof; 21600),
+             five_hour:bucket(($a.five_hour // {}); null; $account_asof; $thr5),
+             weekly:bucket(($a.weekly // {}); null; $account_asof; $thrw),
              as_of:($account_asof | todateiso8601),stale_seconds:$account_age}
           end) +
          (if ($a.reset_credits | type) == "number" then
             {reset_credits:$a.reset_credits,reset_credits_as_of:$account_asof,
-             reset_credits_stale:($account_age > 21600)}
+             reset_credits_stale:($account_age > $thrw)}
           else {} end));
       (if (($e.payload.rate_limits.accounts | type) == "array") and
           ($e.payload.rate_limits.accounts | length) > 0 then
@@ -1195,10 +1181,10 @@ if [ -n "$codex_event" ]; then
            plan_type:($e.payload.rate_limits.plan_type // null),
            five_hour:{used_pct:$e.payload.rate_limits.primary.used_percent,
                       resets_at:(if $five_reset == "" then null else $five_reset end),
-                      as_of:$as_of_epoch,origin:$origin,stale:($stale > 1800)},
+                      as_of:$as_of_epoch,origin:$origin,stale:($stale > $thr5)},
            weekly:{used_pct:$e.payload.rate_limits.secondary.used_percent,
                    resets_at:(if $week_reset == "" then null else $week_reset end),
-                   as_of:$as_of_epoch,origin:$origin,stale:($stale > 21600)},
+                   as_of:$as_of_epoch,origin:$origin,stale:($stale > $thrw)},
            as_of:$as_of,stale_seconds:$stale}]
        end) as $accounts |
       (first($accounts[] | select(.is_current)) // $accounts[0]) as $current |
@@ -1241,15 +1227,16 @@ while IFS= read -r gemini_account; do
     stale=$((now_epoch - gemini_mtime)); [ "$stale" -ge 0 ] || stale=0
     gemini_account_json=$(jq -cn --arg account "$gemini_account" --argjson enabled "$gemini_enabled" --argjson d "$gemini_data" \
       --arg as_of "$(epoch_iso "$gemini_mtime")" --argjson as_of_epoch "$gemini_mtime" \
-      --argjson stale "$stale" --arg auth "$gemini_auth" '
+      --argjson stale "$stale" --arg auth "$gemini_auth" \
+      --argjson thr5 "$LIMITS_STALE_FIVE_HOUR" --argjson thrw "$LIMITS_STALE_WEEKLY" '
       def used($remaining):
         ((1 - $remaining) * 100) |
         (if . < 0 then 0 elif . > 100 then 100 else . end) | round;
       {account:$account,is_current:($account == "main"),enabled:$enabled,source:"agy-local-rpc",group:$d.group,
        five_hour:{used_pct:used($d.five.remainingFraction),resets_at:$d.five.resetTime,
-                  as_of:$as_of_epoch,origin:"usage",stale:($stale > 1800)},
+                  as_of:$as_of_epoch,origin:"usage",stale:($stale > $thr5)},
        weekly:{used_pct:used($d.week.remainingFraction),resets_at:$d.week.resetTime,
-               as_of:$as_of_epoch,origin:"usage",stale:($stale > 21600)},
+               as_of:$as_of_epoch,origin:"usage",stale:($stale > $thrw)},
        as_of:$as_of,stale_seconds:$stale}
       | if $auth == "1" then . + {auth_needed:true,status:"login needed"} else . end')
   elif [ "$gemini_auth" = 1 ]; then
@@ -1370,22 +1357,22 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
   --argjson claude_attempted "$claude_refresh_attempted" --argjson codex_attempted "$codex_refresh_attempted" \
   --argjson gemini_attempted "$gemini_refresh_attempted" --arg global_error "$global_refresh_error" \
   --arg claude_error "$claude_refresh_error" --arg codex_error "$codex_refresh_error" --arg gemini_error "$gemini_refresh_error" \
-  "$iso_def"'
+  "$iso_def$LIMITS_VIEW_JQ"'
   def normalize_reset:
     . as $value |
     if $value == null or $value == "" then null
     elif ($value | type) == "number" then
-      if $value < 31536000 then null else ($value | todateiso8601) end
+      if $value < limits_reset_epoch_floor then null else ($value | todateiso8601) end
     elif ($value | type) == "string" then
       ($value | iso2epoch) as $epoch |
-      if $epoch != null and $epoch < 31536000 then null else $value end
+      if $epoch != null and $epoch < limits_reset_epoch_floor then null else $value end
     else null
     end;
   def mark:
     if type == "object" and has("used_pct")
     then .resets_at = ((.resets_at // null) | normalize_reset) |
-      (.resets_at | iso2epoch) as $e |
-      if $e != null and $e <= $now
+      limits_bucket_expired($now; (.resets_at | iso2epoch)) as $x |
+      if $x
       then . + {expired:true,effective_pct:0}
       else . + {effective_pct:.used_pct}
       end
@@ -1586,14 +1573,15 @@ else
     plain_dim=$'\033[2m'
     plain_rst=$'\033[0m'
   fi
-  jq -r --arg dim "$plain_dim" --arg rst "$plain_rst" --argjson render_now "$now_epoch" "$iso_def$age_def$reset_format_def"'
+  jq -r --arg dim "$plain_dim" --arg rst "$plain_rst" --argjson render_now "$now_epoch" "$iso_def$LIMITS_VIEW_JQ$age_def$reset_format_def"'
     def dimmed($window):
       if ($window.expired == true or $window.stale == true) then $dim + . + $rst else . end;
     def pct($window):
-      ((if $window == null or $window.used_pct == null then "-"
-      else ((($window.used_pct | round | tostring) + "%") | dimmed($window)) end) +
-        (if $window.stale == true then "~" else "" end) +
-        (if $window.expired == true then "!" else "" end));
+      (if $window == null or $window.effective_pct == null
+       then limits_pct_text(null; ($window.stale == true); ($window.expired == true))
+       else (limits_pct_text($window.effective_pct; ($window.stale == true); ($window.expired == true))
+             | dimmed($window))
+       end);
     def reset($window):
       if $window == null then "-"
       else (($window.resets_at | format_reset($render_now)) | dimmed($window)) end;

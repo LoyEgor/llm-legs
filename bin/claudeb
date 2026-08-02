@@ -17,6 +17,7 @@ claudeb_root=$(resolve_root)
 . "$claudeb_root/share/worker-pool.sh"
 . "$claudeb_root/share/worker-model.sh"
 . "$claudeb_root/share/account-announce.sh"
+. "$claudeb_root/share/limits-view.sh"
 
 base_dir="${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}"
 tokens_dir="$base_dir/tokens"
@@ -174,39 +175,49 @@ account_data() {
   if [ -r "$file" ] && jq -e 'type == "object"' "$file" >/dev/null 2>&1; then
     modified=$(stat -f %m "$file" 2>/dev/null || stat -c %Y "$file" 2>/dev/null || printf '0')
     age=$((now - modified))
-    jq -c --arg name "$name" --argjson now "$now" --argjson age "$age" --argjson mtime "$modified" '
-      def number_or_zero: if type == "number" then . else 0 end;
+    jq -c --arg name "$name" --argjson now "$now" --argjson age "$age" --argjson mtime "$modified" \
+      --argjson thr5 "$LIMITS_STALE_FIVE_HOUR" --argjson thrw "$LIMITS_STALE_WEEKLY" \
+      --argjson thrf "$LIMITS_STALE_FABLE" "$LIMITS_VIEW_JQ"'
       def reset: if type == "number" then . else 0 end;
       # Header-origin week = never measured (shared-invariants n) — week unknown.
       (if (.seven_day.origin? == "headers") then del(.seven_day) else . end) |
-      # Age is observation age (as_of), same metric as the menu/table — file mtime
-      # moves on verdict merges without fresh data and would show younger than truth.
-      (if (.five_hour.as_of | type) == "number" then ($now - .five_hour.as_of) else $age end) as $age |
+      # Age is the oldest measured bucket, the collector'\''s set_data_age metric — the
+      # menu and table show that, and file mtime moves on verdict merges without
+      # fresh data, which would show younger than truth.
+      ([.five_hour, .seven_day, .fable
+        | select(type == "object" and (.used_percentage | type) == "number")
+        | .as_of | select(type == "number")]
+       | if length == 0 then $age else ($now - min) end) as $age |
       (.auth.status // "") as $auth |
-      def is_stale($b; $thr):
-        ($auth == "expired") or (($b.origin? // "") == "cached")
-        or (($now - ($b.as_of? // $mtime)) > $thr);
+      ($auth == "expired") as $auth_expired |
+      def bstate($b; $reset; $thr):
+        {pct: (if ($b.used_percentage? | type) == "number" then $b.used_percentage else null end),
+         stale: limits_bucket_stale($now; $thr; $auth_expired; ($b.origin? // ""); ($b.as_of? // $mtime)),
+         expired: limits_bucket_expired($now; $reset)}
+        | .effective = limits_effective_pct(.pct; .expired);
       (.five_hour.resets_at | reset) as $hreset |
       (.seven_day.resets_at | reset) as $wreset |
       (.fable.resets_at | reset) as $freset |
-      (if $hreset > $now then (.five_hour.used_percentage | number_or_zero) else 0 end) as $h5 |
-      (if $wreset > $now then (.seven_day.used_percentage | number_or_zero) else 0 end) as $wk |
-      (if (.fable.used_percentage | type) == "number" and
-          ($freset > $now or ($freset == 0 and .fable.used_percentage == 0))
-       then .fable.used_percentage else null end) as $fable |
-      {name: $name, h5: $h5, wk: $wk, hreset: $hreset, wreset: $wreset,
-       fable: $fable, freset: $freset, age: $age,
-       h5_raw: (if (.five_hour.used_percentage | type) == "number" then .five_hour.used_percentage else null end),
-       wk_raw: (if (.seven_day.used_percentage | type) == "number" then .seven_day.used_percentage else null end),
-       fable_raw: (if (.fable.used_percentage | type) == "number" then .fable.used_percentage else null end),
-       h5_dim: (($hreset <= $now) or is_stale(.five_hour; 1800)),
-       wk_dim: (($wreset <= $now) or is_stale(.seven_day; 21600)),
-       fable_dim: (($freset <= $now) or is_stale(.fable; 21600)),
+      bstate(.five_hour; $hreset; $thr5) as $s5 |
+      bstate(.seven_day; $wreset; $thrw) as $sw |
+      bstate(.fable; $freset; $thrf) as $sf |
+      {name: $name, h5: ($s5.effective // 0), wk: ($sw.effective // 0),
+       hreset: $hreset, wreset: $wreset,
+       fable: $sf.effective, freset: $freset, age: $age,
+       h5_raw: $s5.pct, wk_raw: $sw.pct, fable_raw: $sf.pct,
+       h5_eff: $s5.effective, wk_eff: $sw.effective, fable_eff: $sf.effective,
+       h5_stale: $s5.stale, wk_stale: $sw.stale, fable_stale: $sf.stale,
+       h5_expired: $s5.expired, wk_expired: $sw.expired, fable_expired: $sf.expired,
+       h5_dim: ($s5.stale or $s5.expired), wk_dim: ($sw.stale or $sw.expired),
+       fable_dim: ($sf.stale or $sf.expired),
        auth: (if $auth == "" then "ok" else $auth end),
-       walled: ($h5 >= 97 or $wk >= 99)}' "$file"
+       walled: (($s5.effective // 0) >= 97 or ($sw.effective // 0) >= 99)}' "$file"
   else
     jq -cn --arg name "$name" '{name: $name, h5: 0, wk: 0, hreset: 0, wreset: 0, fable: null, freset: 0, age: -1,
-      h5_raw: null, wk_raw: null, fable_raw: null, h5_dim: true, wk_dim: true, fable_dim: true, auth: "ok", walled: false}'
+      h5_raw: null, wk_raw: null, fable_raw: null, h5_eff: null, wk_eff: null, fable_eff: null,
+      h5_stale: true, wk_stale: true, fable_stale: true,
+      h5_expired: false, wk_expired: false, fable_expired: false,
+      h5_dim: true, wk_dim: true, fable_dim: true, auth: "ok", walled: false}'
   fi
 }
 
@@ -274,33 +285,16 @@ format_time() {
 }
 
 format_reset_time() {
-  local epoch="$1" now delta weekday
-  local -a weekdays=(Sun Mon Tue Wed Thu Fri Sat)
-  if ! [ "$epoch" -gt 0 ] 2>/dev/null; then printf 'unknown'; return; fi
-  now=${CLAUDEB_NOW:-$(date +%s)}
-  delta=$((epoch - now))
-  if [ "$delta" -lt 604800 ]; then
-    local epoch_day now_day
-    epoch_day=$(date -r "$epoch" '+%Y-%m-%d' 2>/dev/null || date -d "@$epoch" '+%Y-%m-%d' 2>/dev/null)
-    now_day=$(date -r "$now" '+%Y-%m-%d' 2>/dev/null || date -d "@$now" '+%Y-%m-%d' 2>/dev/null)
-    if [ "$epoch_day" != "$now_day" ]; then
-      weekday=$(date -r "$epoch" '+%w' 2>/dev/null || date -d "@$epoch" '+%w' 2>/dev/null) || { printf 'unknown'; return; }
-      printf '%s ' "${weekdays[$weekday]}"
-    fi
-    date -r "$epoch" '+%H:%M' 2>/dev/null || date -d "@$epoch" '+%H:%M' 2>/dev/null || printf 'unknown'
-  else
-    date -r "$epoch" '+%m-%d %H:%M' 2>/dev/null || date -d "@$epoch" '+%m-%d %H:%M' 2>/dev/null || printf 'unknown'
-  fi
+  local epoch="$1"
+  [[ "$epoch" =~ ^[0-9]+$ ]] || epoch=0
+  jq -rn --argjson e "$epoch" --argjson now "${CLAUDEB_NOW:-$(date +%s)}" \
+    "$LIMITS_VIEW_JQ"'limits_reset_text($e; $now)'
 }
 
 format_age() {
   local seconds="$1"
-  if [ "$seconds" -lt 0 ]; then printf 'unknown'
-  elif [ "$seconds" -lt 60 ]; then printf '%ss' "$seconds"
-  elif [ "$seconds" -lt 3600 ]; then printf '%sm' "$((seconds / 60))"
-  elif [ "$seconds" -lt 86400 ]; then printf '%sh' "$((seconds / 3600))"
-  else printf '%sd' "$((seconds / 86400))"
-  fi
+  [[ "$seconds" =~ ^-?[0-9]+$ ]] || seconds=-1
+  jq -rn --argjson s "$seconds" "$LIMITS_VIEW_JQ"'limits_age_text($s)'
 }
 
 header_value() {
@@ -1369,7 +1363,17 @@ token_upkeep() {
   return 0
 }
 
+# Snapshots move here; the announce keeps the merged cache (menu, statusline, table)
+# in step with what this probe just learned instead of waiting for the next collector
+# tick. The collector's own child invocations suppress it (share/account-announce.sh).
 probe_accounts() {
+  local rc=0
+  probe_accounts_run "$@" || rc=$?
+  announce_limits_probed "$claudeb_root"
+  return "$rc"
+}
+
+probe_accounts_run() {
   local dir="$1" allow_spend="$2" start_windows="${3:-false}" heal="${4:-false}" name pid pids="" now hreset allow_refresh=true
   local run_start retry_names="" rem min_rem converge_budget round spent wait actual
   run_start=$(date +%s)
@@ -2247,6 +2251,9 @@ accounts_refresh_start() {
   # down the probe_one children with it — a bare kill orphans them mid-request.
   set -m
   {
+    # A pressed key is a user-explicit refresh by definition — without this the
+    # token-freeze experiment silently skips the OAuth leg and 'r' changes nothing.
+    export CLAUDEB_WARM_USER_EXPLICIT=true
     # The || true keeps set -e from aborting the subshell before the sentinel is
     # written; a hung probe would otherwise leave the spinner spinning forever.
     probe_accounts "$accounts_refresh_dir" "$accounts_allow_spend" "$accounts_start_windows" "$accounts_heal" || true
@@ -2326,6 +2333,7 @@ accounts_spinner_frame() {
 render_plain_accounts() {
   local row name h5 wk fable hreset wreset age marker age_text probe_state
   local dim='' sgr0='' h5_dim wk_dim fable_dim disabled h5_cell wk_cell fable_cell hcell wcell
+  local render_now="${CLAUDEB_NOW:-$(date +%s)}"
   if [ -t 1 ] && [ -n "${TERM:-}" ] && [ "${TERM:-}" != dumb ]; then
     dim=$'\033[2m'; sgr0=$'\033[0m'
   fi
@@ -2335,15 +2343,16 @@ render_plain_accounts() {
     printf '%-18s %7s %7s %-11s %-11s %10s %s\n' NAME 5H WEEKLY '5H RESET' 'WEEKLY RESET' AGE PICK
   fi
   while IFS= read -r row; do
-    IFS=$'\x1f' read -r name h5 wk fable hreset wreset age h5_dim wk_dim fable_dim disabled < <(printf '%s' "$row" | jq -r '
+    IFS=$'\x1f' read -r name h5 wk fable hreset wreset age h5_dim wk_dim fable_dim disabled < <(printf '%s' "$row" | jq -r --argjson now "$render_now" "$LIMITS_VIEW_JQ"'
       [.name,
-       (if .h5_raw == null then "-" else ((.h5_raw | round | tostring) + "%") end),
-       (if .wk_raw == null then "-" else ((.wk_raw | round | tostring) + "%") end),
-       (if .fable_raw == null then "-" else ((.fable_raw | round | tostring) + "%") end),
-       (.hreset | tostring), (.wreset | tostring), (.age | tostring),
+       limits_pct_text(.h5_eff; .h5_stale; .h5_expired),
+       limits_pct_text(.wk_eff; .wk_stale; .wk_expired),
+       limits_pct_text(.fable_eff; .fable_stale; .fable_expired),
+       limits_reset_text(.hreset; $now), limits_reset_text(.wreset; $now),
+       limits_age_text(.age),
        (.h5_dim | tostring), (.wk_dim | tostring), (.fable_dim | tostring),
        ((.disabled // false) | tostring)] | join("\u001f")')
-    age_text=$(format_age "$age")
+    age_text="$age"
     if [ "$accounts_mode" = live ]; then
       probe_state=$(cat "$accounts_probe_dir/$name.display")
       if [ "$probe_state" = live ] || [ "$probe_state" = 'live*' ] || [ "$probe_state" = 'auth!' ] || [ "$probe_state" = login ]; then
@@ -2357,16 +2366,16 @@ render_plain_accounts() {
     [ "$disabled" != true ] || marker="off"
     # Cells are padded before the SGR wrap so escape bytes never skew columns.
     h5_cell=$(printf '%7s' "$h5")
-    hcell=$(printf '%-11s' "$(format_reset_time "$hreset")")
-    if [ "$h5_dim" = true ] && [ "$h5" != "-" ] && [ -n "$dim" ]; then h5_cell="${dim}${h5_cell}${sgr0}"; fi
+    hcell=$(printf '%-11s' "$hreset")
+    if [ "$h5_dim" = true ] && [ "${h5#-}" = "$h5" ] && [ -n "$dim" ]; then h5_cell="${dim}${h5_cell}${sgr0}"; fi
     if [ "$h5_dim" = true ] && [ -n "$dim" ]; then hcell="${dim}${hcell}${sgr0}"; fi
     wk_cell=$(printf '%7s' "$wk")
-    wcell=$(printf '%-11s' "$(format_reset_time "$wreset")")
-    if [ "$wk_dim" = true ] && [ "$wk" != "-" ] && [ -n "$dim" ]; then wk_cell="${dim}${wk_cell}${sgr0}"; fi
+    wcell=$(printf '%-11s' "$wreset")
+    if [ "$wk_dim" = true ] && [ "${wk#-}" = "$wk" ] && [ -n "$dim" ]; then wk_cell="${dim}${wk_cell}${sgr0}"; fi
     if [ "$wk_dim" = true ] && [ -n "$dim" ]; then wcell="${dim}${wcell}${sgr0}"; fi
     if [ "$accounts_show_fable" = true ]; then
       fable_cell=$(printf '%7s' "$fable")
-      if [ "$fable_dim" = true ] && [ "$fable" != "-" ] && [ -n "$dim" ]; then fable_cell="${dim}${fable_cell}${sgr0}"; fi
+      if [ "$fable_dim" = true ] && [ "${fable#-}" = "$fable" ] && [ -n "$dim" ]; then fable_cell="${dim}${fable_cell}${sgr0}"; fi
       printf '%-18s %s %s %s %s %s %10s %s\n' "$name" "$h5_cell" "$wk_cell" "$fable_cell" "$hcell" "$wcell" "$age_text" "$marker"
     else
       printf '%-18s %s %s %s %s %10s %s\n' "$name" "$h5_cell" "$wk_cell" "$hcell" "$wcell" "$age_text" "$marker"
@@ -2382,13 +2391,13 @@ interactive_cleanup() {
 }
 
 colored_percent() {
-  local value="$1" dim="${2:-false}" color pre=''
+  local value="$1" dim="${2:-false}" mark="${3:-}" color pre=''
   if [ "$value" -lt 50 ]; then color=$'\033[32m'
   elif [ "$value" -lt 80 ]; then color=$'\033[33m'
   else color=$'\033[31m'
   fi
   [ "$dim" != true ] || pre=$'\033[2m'
-  printf '%b%b%3s%%%b' "$pre" "$color" "$value" $'\033[0m'
+  printf '%b%b%6s%b' "$pre" "$color" "${value}%${mark}" $'\033[0m'
 }
 
 render_sort_tab() {
@@ -2442,11 +2451,12 @@ maybe_launch_profile() {
 
 render_interactive_accounts() {
   local active="$1" sort_key="$2" sel="${3:-}" filter row name h5 wk fable hreset wreset age age_text marker off_text probe_state index=0
-  local h5_dim wk_dim fable_dim disabled hcell wcell sep_width row_out inv=$'\033[7m' sgr0=$'\033[0m'
+  local h5_mk wk_mk fable_mk h5_dim wk_dim fable_dim disabled hcell wcell sep_width row_out inv=$'\033[7m' sgr0=$'\033[0m'
+  local render_now="${CLAUDEB_NOW:-$(date +%s)}"
   printf '\033[H\033[2J'
   printf '  '
   render_sort_tab "$(printf '%-16s' NAME)" "$index" "$active"; index=$((index + 1)); printf ' '
-  render_sort_tab "$(printf '%4s' 5H)" "$index" "$active"; index=$((index + 1)); printf '  '
+  render_sort_tab "$(printf '%6s' 5H)" "$index" "$active"; index=$((index + 1)); printf '  '
   render_sort_tab "$(printf '%6s' WEEKLY)" "$index" "$active"; index=$((index + 1)); printf '  '
   if [ "$accounts_show_fable" = true ]; then
     render_sort_tab "$(printf '%6s' FABLE)" "$index" "$active"; index=$((index + 1)); printf '  '
@@ -2454,20 +2464,24 @@ render_interactive_accounts() {
   render_sort_tab "$(printf '%-11s' '5H RESET')" "$index" "$active"; index=$((index + 1)); printf ' '
   render_sort_tab "$(printf '%-11s' 'WEEKLY RESET')" "$index" "$active"
   printf ' AGE\n'
-  sep_width=60
-  [ "$accounts_show_fable" != true ] || sep_width=68
+  sep_width=62
+  [ "$accounts_show_fable" != true ] || sep_width=70
   printf '─%.0s' $(seq 1 "$sep_width"); printf '\n'
   filter=$(accounts_sort_filter "$sort_key")
   while IFS= read -r row; do
-    IFS=$'\x1f' read -r name h5 wk fable hreset wreset age h5_dim wk_dim fable_dim disabled < <(printf '%s' "$row" | jq -r '
+    IFS=$'\x1f' read -r name h5 wk fable h5_mk wk_mk fable_mk hreset wreset age h5_dim wk_dim fable_dim disabled < <(printf '%s' "$row" | jq -r --argjson now "$render_now" "$LIMITS_VIEW_JQ"'
       [.name,
-       (if .h5_raw == null then "" else (.h5_raw | round | tostring) end),
-       (if .wk_raw == null then "" else (.wk_raw | round | tostring) end),
-       (if .fable_raw == null then "" else (.fable_raw | round | tostring) end),
-       (.hreset | tostring), (.wreset | tostring), (.age | tostring),
+       (if .h5_eff == null then "" else (.h5_eff | round | tostring) end),
+       (if .wk_eff == null then "" else (.wk_eff | round | tostring) end),
+       (if .fable_eff == null then "" else (.fable_eff | round | tostring) end),
+       limits_markers(.h5_stale; .h5_expired),
+       limits_markers(.wk_stale; .wk_expired),
+       limits_markers(.fable_stale; .fable_expired),
+       limits_reset_text(.hreset; $now), limits_reset_text(.wreset; $now),
+       limits_age_text(.age),
        (.h5_dim | tostring), (.wk_dim | tostring), (.fable_dim | tostring),
        ((.disabled // false) | tostring)] | join("\u001f")')
-    age_text=$(format_age "$age")
+    age_text="$age"
     if [ "$accounts_mode" = live ]; then
       probe_state=$(cat "$accounts_probe_dir/$name.display")
       if [ "$probe_state" = live ] || [ "$probe_state" = 'live*' ] || [ "$probe_state" = 'auth!' ] || [ "$probe_state" = login ]; then age_text="$probe_state"
@@ -2478,18 +2492,19 @@ render_interactive_accounts() {
     [ "$name" = "$accounts_picked" ] && marker='*'
     off_text=""
     [ "$disabled" != true ] || off_text=" off"
-    hcell=$(printf '%-11s' "$(format_reset_time "$hreset")")
+    hcell=$(printf '%-11s' "$hreset")
     [ "$h5_dim" != true ] || hcell=$'\033[2m'"$hcell"$'\033[0m'
-    wcell=$(printf '%-11s' "$(format_reset_time "$wreset")")
+    wcell=$(printf '%-11s' "$wreset")
     [ "$wk_dim" != true ] || wcell=$'\033[2m'"$wcell"$'\033[0m'
     row_out=$(
       printf '%s %-16s ' "$marker" "$name"
-      if [ -n "$h5" ]; then colored_percent "$h5" "$h5_dim"; else printf '%4s' -; fi
+      # Unmeasured buckets render a bare dash (row y): markers qualify numbers only.
+      if [ -n "$h5" ]; then colored_percent "$h5" "$h5_dim" "$h5_mk"; else printf '%6s' -; fi
       printf '  '
-      if [ -n "$wk" ]; then printf '  '; colored_percent "$wk" "$wk_dim"; else printf '%6s' -; fi
+      if [ -n "$wk" ]; then colored_percent "$wk" "$wk_dim" "$wk_mk"; else printf '%6s' -; fi
       printf '  '
       if [ "$accounts_show_fable" = true ]; then
-        if [ -n "$fable" ]; then printf '  '; colored_percent "$fable" "$fable_dim"; else printf '%6s' -; fi
+        if [ -n "$fable" ]; then colored_percent "$fable" "$fable_dim" "$fable_mk"; else printf '%6s' -; fi
         printf '  '
       fi
       printf '%s %s %s%s' "$hcell" "$wcell" "$age_text" "$off_text"
@@ -2624,11 +2639,15 @@ case "${1:-}" in
     done
     # Reaching this subcommand does not prove a user click; menu refreshes carry the
     # explicit signal in their child environment.
+    warm_rc=0
     if [ "$warm_target_count" -eq 1 ]; then
-      CLAUDEB_OAUTH_BYPASS_BACKOFF=true warm_accounts "$@"
+      CLAUDEB_OAUTH_BYPASS_BACKOFF=true warm_accounts "$@" || warm_rc=$?
     else
-      warm_accounts "$@"
+      warm_accounts "$@" || warm_rc=$?
     fi
+    # Warm rewrites snapshots outside probe_accounts; same merged-cache sync applies.
+    announce_limits_probed "$claudeb_root"
+    exit "$warm_rc"
     ;;
   token-upkeep)
     token_upkeep

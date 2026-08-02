@@ -1073,11 +1073,12 @@ done
 printf 'aged\n' >"$CLAUDEB_FRESH/.claudeb-state"
 fresh_table=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_FRESH" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) || fail "rounding table collection failed"
 grep -Eq '^claude/aged\* +7%~ +57% ' <<<"$fresh_table" || fail "table percentages must round to integers"
-grep -Eq '^claude/authonly +-~ +- +- ' <<<"$fresh_table" || fail "auth-only account missing from table"
+# Unmeasured buckets render a bare dash (row y): markers qualify numbers only.
+grep -Eq '^claude/authonly +- +- +- ' <<<"$fresh_table" || fail "auth-only account missing from table"
 grep '^claude/authonly ' <<<"$fresh_table" | grep -q 'login needed$' || fail "Claude non-ok auth table status missing"
 fresh_plain=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_FRESH" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain) || fail "rounding plain collection failed"
 grep -q 'claude/aged\*: 5h 7%~ @ .* | wk 57% @ ' <<<"$fresh_plain" || fail "plain percentages must round to integers"
-grep -q 'claude/authonly: 5h -~ @ - | wk - @ - | fb - @ -' <<<"$fresh_plain" || fail "auth-only account missing from plain output"
+grep -q 'claude/authonly: 5h - @ - | wk - @ - | fb - @ -' <<<"$fresh_plain" || fail "auth-only account missing from plain output"
 grep '^claude/authonly:' <<<"$fresh_plain" | grep -q '| status login needed$' || fail "Claude non-ok auth plain status missing"
 jq -e '(.vendors.claude.refresh_error.cause | contains("authonly") and endswith(" auth")) and
   (.vendors.claude.refresh_error.at | type) == "number"' <<<"$auth_current" >/dev/null \
@@ -1739,8 +1740,10 @@ awk '$1 == "codex" {print $4}' <<<"$table" | grep -qx '-' || fail "non-Fable row
 grep -q 'Gemini Models\|plus' <<<"$table" && fail "junk labels leaked into table"
 printf '{"five_hour":{"used_percentage":7,"resets_at":%s},"fable":{"used_percentage":33,"resets_at":%s}}\n' "$((now + 5000))" "$((now - 1))" >"$CLAUDEB/limits/alona.json"
 expired_fable=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) || fail "expired fable table failed"
-awk '$1 == "claude/alona*" {print $4}' <<<"$expired_fable" | grep -qx '33%!' \
-  || fail "expired fable must keep its raw value with an explicit marker"
+# Canonical expired cell (shared-invariants row y): effective value 0 plus the
+# expired marker — the same number the menu grays out, never yesterday's raw pct.
+awk '$1 == "claude/alona*" {print $4}' <<<"$expired_fable" | grep -qx '0%!' \
+  || fail "expired fable must render effective 0 with the expired marker"
 printf '{"five_hour":{"used_percentage":7,"resets_at":%s},"fable":{"used_percentage":33,"resets_at":%s}}\n' "$((now + 5000))" "$((now + 5500))" >"$CLAUDEB/limits/alona.json"
 awk 'NR > 1 && $1 == "codex"' <<<"$table" | grep -Eq '[0-9]{2}:[0-9]{2}' || fail "codex reset time not rendered"
 sorted=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table --sort 5h) || fail "sorted table collection failed"
@@ -1811,10 +1814,10 @@ jq -e '.vendors.codex.five_hour.expired == true and .vendors.codex.five_hour.use
 expired_table=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) || fail "expired table collection failed"
 codex_row=$(awk 'NR > 1 && $1 == "codex"' <<<"$expired_table")
 # The kept reset time may carry a weekday prefix: an expired window lies in the past, so
-# around midnight it renders as yesterday.
-grep -Eq '^codex +100%! +44% +- +([A-Za-z]{3} )?[0-9]{2}:[0-9]{2}' <<<"$codex_row" || fail "expired window must keep its last known value and reset time: $codex_row"
+# around midnight it renders as yesterday. The cell shows the effective value (0, row y).
+grep -Eq '^codex +0%! +44% +- +([A-Za-z]{3} )?[0-9]{2}:[0-9]{2}' <<<"$codex_row" || fail "expired window must render effective 0 and keep its reset time: $codex_row"
 expired_plain=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain) || fail "expired plain collection failed"
-grep -q 'codex: 5h 100%! @ .* | wk 44% @ ' <<<"$expired_plain" || fail "expired plain output must keep the raw value with a marker"
+grep -q 'codex: 5h 0%! @ .* | wk 44% @ ' <<<"$expired_plain" || fail "expired plain output must render effective 0 with the expired marker"
 expired_sorted=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table --sort 5h) || fail "expired sorted table collection failed"
 order=$(awk 'NR > 1 {print $1}' <<<"$expired_sorted" | paste -sd, -)
 [ "$order" = "claude/alona*,codex,gemini" ] || fail "expired 5h sort must rank the stale 100% as 0: $order"
@@ -1836,9 +1839,9 @@ honest_plain=$(HOME="$HONEST_HOME" CLAUDEB_DIR="$HONEST_STORE" LLM_LIMITS_CACHE=
 head -n 1 <<<"$honest_table" | grep -Eq 'FB RESET +AGE +ROT +CR +STATUS' || fail "table universal state columns missing"
 head -n 1 <<<"$honest_table" | grep -q 'NOTE' && fail "table NOTE column was not abolished"
 honest_row=$(awk '$1 == "claude/honest*"' <<<"$honest_table")
-grep -Eq '^claude/honest\* +100%~ +44%! ' <<<"$honest_row" || fail "honesty table rewrote raw used_pct or lost markers"
+grep -Eq '^claude/honest\* +100%~ +0%! ' <<<"$honest_row" || fail "honesty table lost markers or the effective expired value"
 grep -Eq ' +1h1m +limit-5h +- +-$' <<<"$honest_row" || fail "table age or limit-derived state fields missing: $honest_row"
-grep -q 'claude/honest\*: 5h 100%~ @ .* | wk 44%! @ ' <<<"$honest_plain" || fail "honesty plain rewrote raw used_pct or lost markers"
+grep -q 'claude/honest\*: 5h 100%~ @ .* | wk 0%! @ ' <<<"$honest_plain" || fail "honesty plain lost markers or the effective expired value"
 grep 'claude/honest\*:' <<<"$honest_plain" | grep -q '| age 1h1m | rot limit-5h | cr - | status -' \
   || fail "plain age or explicit state fields missing"
 

@@ -31,18 +31,25 @@ doc_has() { grep -Fq -- "$1" "$ROOT/$DOC"; }
 
 # --- Row a: staleness/dim thresholds -----------------------------------------
 FIVE=1800; WEEK=21600; FABLE=21600
+LIMITSVIEW="$ROOT/share/limits-view.sh"
 
 # doc prose carries all three
 assert doc_has '`1800`s'
 assert doc_has '`21600`s'
 
-# claudeb account_data jq
-cb_five=$(grep -oE 'is_stale\(\.five_hour; [0-9]+\)' "$CLAUDEB" | grep -oE '[0-9]+')
-cb_week=$(grep -oE 'is_stale\(\.seven_day; [0-9]+\)' "$CLAUDEB" | grep -oE '[0-9]+')
-cb_fable=$(grep -oE 'is_stale\(\.fable; [0-9]+\)' "$CLAUDEB" | grep -oE '[0-9]+')
-assert eq "$cb_five" "$FIVE"
-assert eq "$cb_week" "$WEEK"
-assert eq "$cb_fable" "$FABLE"
+# the numbers live once, in the shared view module
+lv_five=$(grep -oE '^LIMITS_STALE_FIVE_HOUR=[0-9]+' "$LIMITSVIEW" | grep -oE '[0-9]+')
+lv_week=$(grep -oE '^LIMITS_STALE_WEEKLY=[0-9]+' "$LIMITSVIEW" | grep -oE '[0-9]+')
+lv_fable=$(grep -oE '^LIMITS_STALE_FABLE=[0-9]+' "$LIMITSVIEW" | grep -oE '[0-9]+')
+assert eq "$lv_five" "$FIVE"
+assert eq "$lv_week" "$WEEK"
+assert eq "$lv_fable" "$FABLE"
+
+# claudeb and the collector consume the shared variables, never a local literal
+assert grep -Fq -- '--argjson thr5 "$LIMITS_STALE_FIVE_HOUR"' "$CLAUDEB"
+assert grep -Fq -- '--argjson thr5 "$LIMITS_STALE_FIVE_HOUR"' "$LLMLIMITS"
+assert eq "$(grep -c 'is_stale(' "$CLAUDEB")" 0
+assert eq "$(grep -cE '\$stale > (1800|21600)' "$LLMLIMITS")" 0
 
 # statusline dim logic — anchor on the age comparison, not the arrow rounding term
 sl_five=$(grep -oE 'now - h5_as_of\)\) -gt [0-9]+' "$STATUSLINE" | grep -oE '[0-9]+$')
@@ -485,4 +492,34 @@ assert grep -Fq 'announce_account_removed' "$ROOT/bin/codexb"
 assert grep -Fq 'announce_account_removed' "$ROOT/bin/geminib"
 assert doc_has 'Claude account existence'
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, and claude account existence) and match %s\n' "$asserts" "$DOC"
+# --- Row y: one limits view for every surface ---------------------------------
+# Bucket semantics (stale/expired/effective) and cell text (pct/markers/reset/age)
+# are defined once in share/limits-view.sh; claudeb and the collector prepend
+# $LIMITS_VIEW_JQ, the menu renders the collector's precomputed fields, and probes
+# announce a passive collect so the merged cache moves with the snapshots.
+for view_def in limits_reset_epoch_floor limits_bucket_expired limits_bucket_stale \
+    limits_effective_pct limits_reset_text limits_age_text limits_markers limits_pct_text; do
+  assert eq "$(grep -c "^def $view_def" "$LIMITSVIEW")" 1
+done
+for view_consumer in "$CLAUDEB" "$LLMLIMITS"; do
+  assert grep -Fq 'share/limits-view.sh' "$view_consumer"
+  assert grep -Fq 'limits_bucket_stale' "$view_consumer"
+  assert grep -Fq 'limits_bucket_expired' "$view_consumer"
+  assert grep -Fq 'limits_pct_text' "$view_consumer"
+  assert grep -Fq 'limits_reset_text' "$view_consumer"
+  assert grep -Fq 'limits_age_text' "$view_consumer"
+done
+# the menu stays flag-driven off the collector's fields (never re-derives pct semantics)
+assert grep -Fq 'tonumber(bucket.effective_pct)' "$HAMMER"
+assert eq "$(grep -c 'used_percentage' "$HAMMER")" 0
+# probes/warms fold fresh snapshots into the merged cache; the collector's own
+# child invocations are suppressed so a refresh never recurses or double-writes
+assert grep -Fq 'announce_limits_probed' "$CLAUDEB"
+assert grep -Fq 'announce_suppressed' "$ROOT/share/account-announce.sh"
+assert grep -Fq 'LLM_LIMITS_ANNOUNCE_SUPPRESS=1' "$LLMLIMITS"
+# a pressed r in the status TUI is a user-explicit refresh — the token-freeze
+# experiment must not silently eat it
+assert grep -Fq 'export CLAUDEB_WARM_USER_EXPLICIT=true' "$CLAUDEB"
+assert doc_has 'One limits view'
+
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, and one limits view) and match %s\n' "$asserts" "$DOC"
