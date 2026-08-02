@@ -1464,7 +1464,7 @@ if [ -n "$active_top" ]; then
     fi
     progress_label="${progress_label} ${progress_done}/${progress_total}"
     if [ -n "$progress_late" ]; then
-      review_part=" ${RED}│ ${progress_label}${RESET}"
+      review_part=" ${sep} ${RED}${progress_label}${RESET}"
     else
       review_part=" ${sep} ${progress_label}"
     fi

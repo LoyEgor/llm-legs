@@ -112,7 +112,9 @@ ARG="[^|;&#]*"
 # single space between them there is no character left: `tee CLAUDE.md` needs the form without
 # a leading boundary of its own, `tee log.txt CLAUDE.md` the form with one.
 FIRST="['\"]?${TARGET}${NAME_END}"
-redirect=">>?[[:space:]]*['\"]?${TARGET}${NAME_END}"
+# `>|` is the same write as `>` with noclobber turned off, and it was the one redirection
+# spelling the operator class did not cover.
+redirect=">[>|]?[[:space:]]*['\"]?${TARGET}${NAME_END}"
 # tee takes any number of destinations, so the guarded one may sit anywhere in its arguments.
 tee="${B}g?tee[[:space:]](${FIRST}|${ARG}${BOUNDED})"
 # An interpreter is a write only when the same command also carries a write mode AND names the
@@ -122,7 +124,11 @@ IW="${B}(python[0-9.]*|perl|ruby|node|bun|deno)[[:space:]][^|]*"
 # The open mode is matched in argument position — after a comma, after `mode=`, or as the sole
 # argument of .open() — because a bare 'a' or 'w' anywhere in the command denied
 # `python3 -c "print('a'); print('CLAUDE.md')"`, an ordinary read.
-MODE="['\"][wa]b?\+?['\"]"
+# Every mode string that can write, letter order free: Python accepts 'bw' and '+rb' as readily
+# as 'wb', so any string over rwaxbt+ counts once it carries a w, a, x or +. `r`, `rb` and their
+# reorderings never reach one of those letters and stay out, which is the whole reason the modes
+# are enumerated rather than matched loosely. Perl's spellings, `+>>` included, stand apart.
+MODE="['\"]([rbt]*[wax+][rwaxbt+]*|>>?|\+[<>]>?)['\"]"
 write_mode="([,=][[:space:]]*${MODE}|mode[[:space:]]*[:=][[:space:]]*${MODE}|\.open\(${MODE}|write_text|write_bytes|writelines|\.write\(|writeFile|appendFile|shutil\.copy|copyfile)"
 # Reading a guarded file and printing it is not writing to it, and `.write(` alone said it was.
 scrubbed=$command
@@ -171,6 +177,40 @@ fi
 hash=$(printf '%s\n%s\n%s\n' "$sid" "$hit" "$command" | shasum -a 256 | cut -c1-16)
 instruction_claim_stamp "$STAMP_DIR" "$hash" && exit 0
 
-jq -cn --arg r "Instruction gate: this command writes to $hit, a file re-read in every context window (~15682 full-read equivalents/month). Egor's standing rule is that these files are read-only without his explicit OK in the current turn, and that rule binds every tool equally — a shell write is not a way around a denied Edit. If the change is genuinely needed: state the byte delta, the monthly token cost, what the change SAVES, ask him, and wait. With his OK the identical command passes on retry." \
+# The number has to be the one THIS file costs. A skill and an agent doc are a factor of thirty
+# apart, and one blanket figure quoted at every class makes the arithmetic the denial asks for
+# wrong before it starts. $hit is the spelling the command used, so it is expanded back to an
+# absolute path first; realpath runs only here, on the denial, never on the hot path.
+abs=$hit
+case "$abs" in
+  '~/'*)       abs="$HOME/${abs#\~/}" ;;
+  '$HOME/'*)   abs="$HOME/${abs#\$HOME/}" ;;
+  '${HOME}/'*) abs="$HOME/${abs#\$\{HOME\}/}" ;;
+  /*) ;;
+  *) abs="${cwd:-$PWD}/${abs#./}" ;;
+esac
+reads=$(instruction_read_rate "$abs" "$HOME")
+# The global file answers to the repository path behind its symlink as well, and that spelling
+# prices as an ordinary project file — a fifth of the real cost.
+abs_real=$(realpath "$abs" 2>/dev/null)
+global_real=$(realpath "$HOME/.claude/CLAUDE.md" 2>/dev/null)
+[ -n "$abs_real" ] && [ -n "$global_real" ] && [ "$abs_real" = "$global_real" ] && reads=15682
+# The docs/agents/instructions/skills trees answer to repository spellings too, and those
+# matched no class at all — a denial demanding cost arithmetic while withholding the number.
+if [ -z "$reads" ] && [ -n "$abs_real" ]; then
+  for class_dir in docs agents instructions skills; do
+    class_real=$(realpath "$HOME/.claude/$class_dir" 2>/dev/null) && [ -n "$class_real" ] ||
+      continue
+    case "$abs_real" in
+      "$class_real"/*)
+        reads=$(instruction_read_rate "$HOME/.claude/$class_dir/${abs_real#"$class_real"/}" "$HOME")
+        break ;;
+    esac
+  done
+fi
+cost=''
+[ -n "$reads" ] && cost=" (~$reads full-read equivalents/month)"
+
+jq -cn --arg r "Instruction gate: this command writes to $hit, a file LLMs re-read across sessions$cost. Egor's standing rule is that these files are read-only without his explicit OK in the current turn, and that rule binds every tool equally — a shell write is not a way around a denied Edit. If the change is genuinely needed: state the byte delta, the monthly token cost, what the change SAVES, ask him, and wait. With his OK the identical command passes on retry." \
   '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}' 2>/dev/null || true
 exit 0

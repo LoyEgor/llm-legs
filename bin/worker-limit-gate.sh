@@ -34,36 +34,39 @@ deny() {
   exit 0
 }
 
-# The claim is consumed by whoever finds it, so the exact retry passes ONCE and a third
-# identical call is denied again — same contract as instruction-bloat-gate.sh. The session id
-# is part of the key: a parallel chat denying the same spawn must not spend this one's retry.
-#
-# Three outcomes, not two. A stamp that is already there is the approved retry and passes in
-# silence, but a cache that cannot be written is an infrastructure failure and not an approval:
-# collapsing the two let an unwritable directory wave every spawn through unseen.
-#   0 = claimed here (deny)   1 = the retry (pass)   2 = cannot tell (say so)
+# 0 = deny or re-arm, 1 = pass the retry, 2 = cache error.
 claim_once() {
-  local hash stamp
+  local hash stamp now born age
   hash=$(printf '%s\n%s\n' "$1" "$sid" | shasum -a 256 | cut -c1-16)
-  # An empty hash would point every path below at STAMP_DIR itself, and the rmdir would take
-  # the whole cache with it.
-  case "$hash" in [0-9a-f][0-9a-f]*) ;; *) return 2 ;; esac
+  [[ "$hash" =~ ^[0-9a-f]{16}$ ]] || return 2
   mkdir -p "$STAMP_DIR" 2>/dev/null || return 2
-  # -name restricts the sweep to entries this hook created: STAMP_DIR is env-overridable for
-  # the tests, and a wrong value must not reach anything else.
-  find "$STAMP_DIR" -mindepth 1 -maxdepth 1 -name '[0-9a-f]*' -mmin +1440 -exec rm -rf {} + 2>/dev/null
-  stamp="$STAMP_DIR/$hash"
-  mkdir "$stamp" 2>/dev/null && return 0
-  # Only a stamp that is genuinely there is the retry. Any other mkdir failure must not remove
-  # a directory this call never owned.
-  [ -d "$stamp" ] || return 2
-  # A stamp the sweep failed to collect is not an approval anybody gave; past its life it buys
-  # a free pass to whoever finds it.
-  [ -n "$(find "$stamp" -maxdepth 0 -mmin -1440 2>/dev/null)" ] || return 0
-  # Exactly one caller consumes it: whoever loses the rmdir race never had the retry, so it is
-  # judged afresh rather than waved through alongside the winner.
-  rmdir "$stamp" 2>/dev/null || return 0
-  return 1
+  # The sweep is housekeeping: a hiccup in it (a racer already collected an entry) must not
+  # become a cache-error verdict that waves the spawn through.
+  find "$STAMP_DIR" -mindepth 1 -maxdepth 1 -type f \
+    -name 'session-account-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f].stamp' \
+    -mmin +1440 -exec rm -f {} + 2>/dev/null
+
+  stamp="$STAMP_DIR/session-account-$hash.stamp"
+  (set -C; : >"$stamp") 2>/dev/null && return 0
+  [ -f "$stamp" ] && [ ! -L "$stamp" ] || return 2
+  now=$(date +%s 2>/dev/null) || return 2
+  born=$(stat -f %m "$stamp" 2>/dev/null || stat -c %Y "$stamp" 2>/dev/null) || return 2
+  case "$now$born" in *[!0-9]*) return 2 ;; esac
+  age=$((now - born))
+  # Duplicate calls in one tool batch must not consume the deny retry.
+  [ "$age" -ge 2 ] || return 0
+  rm "$stamp" 2>/dev/null && return 1
+  if [ -e "$stamp" ]; then
+    # A stamp that reappeared this young was re-armed by a racer that lost the same rm: that
+    # claim is a deny, not a cache fault to warn-and-allow over.
+    born=$(stat -f %m "$stamp" 2>/dev/null || stat -c %Y "$stamp" 2>/dev/null) || return 2
+    case "$born" in ''|*[!0-9]*) return 2 ;; esac
+    [ $((now - born)) -lt 2 ] && return 0
+    return 2
+  fi
+  (set -C; : >"$stamp") 2>/dev/null && return 0
+  [ -f "$stamp" ] && [ ! -L "$stamp" ] && return 0
+  return 2
 }
 
 # Every assistant record carries the model, so the tail only has to reach the last one; 200
@@ -80,7 +83,7 @@ session_model() {
 }
 
 case "$worker" in
-  claudeb-worker|codex-worker|gemini-worker) ;;
+  claudeb-worker|codex-worker|gemini-worker|sonnet-worker) ;;
   # A fork always inherits the parent model; the override field is ignored for it.
   fork) exit 0 ;;
   *)
@@ -89,10 +92,13 @@ case "$worker" in
     # no other gate sees. Everywhere else it is ordinary work, so this stays silent.
     model_override=$(printf '%s' "$input" | jq -r '.tool_input.model // empty' 2>/dev/null) || exit 0
     [ -n "$model_override" ] || exit 0
-    case "$(session_model)" in claude-fable-*) ;; *) exit 0 ;; esac
+    current_session_model=$(session_model)
+    case "$current_session_model" in claude-fable-*) ;; *) exit 0 ;; esac
+    tool_fingerprint=$(printf '%s' "$input" | jq -cS '.tool_input' 2>/dev/null) ||
+      warn "The session-account gate could not fingerprint this Agent call, so it is letting the spawn through unjudged. ${worker:-This agent} with model=${model_override} runs on the SESSION account — check that is what Egor asked for."
     # The session model belongs in the key: a stamp lives a day, and a chat that moved to Opus
     # and back must not find its earlier Fable deny already spent.
-    claim_once "session-account:$worker:$model_override:$(session_model)"
+    claim_once "session-account:$current_session_model:$tool_fingerprint"
     case $? in
       1) exit 0 ;;
       2) warn "The session-account gate could not use its stamp cache at ${STAMP_DIR}, so it is letting this spawn through unjudged. ${worker:-This agent} with model=${model_override} runs on the SESSION account — check that is what Egor asked for." ;;
@@ -110,8 +116,10 @@ case "$worker" in
   claudeb-worker) pin_key=claudeb_profile; vendor=claudeb; limits_vendor=claude; label=Claude ;;
   codex-worker) pin_key=codex_profile; vendor=codex; limits_vendor=codex; label=Codex ;;
   gemini-worker) pin_key=gemini_profile; vendor=gemini; limits_vendor=gemini; label=Gemini ;;
+  sonnet-worker) pin_key=''; vendor=sonnet; limits_vendor=''; label=Sonnet ;;
 esac
-[ -r "$TOGGLE" ] && pin=$(sed -n "s/^${pin_key}=//p" "$TOGGLE" | head -1 | tr -d '[:space:]')
+[ -n "$pin_key" ] && [ -r "$TOGGLE" ] &&
+  pin=$(sed -n "s/^${pin_key}=//p" "$TOGGLE" | head -1 | tr -d '[:space:]')
 
 # The toggle names the implementation worker for every session, and reading it before each
 # delegation is the one step of that rule a hook can take over. A mismatch is reported, never
@@ -120,11 +128,13 @@ toggle_note=''
 toggle_worker=''
 [ -r "$TOGGLE" ] && toggle_worker=$(sed -n 's/^worker=//p' "$TOGGLE" | head -1 | tr -d '[:space:]')
 case "$toggle_worker" in
-  claudeb|codex|gemini)
+  sonnet|claudeb|codex|gemini)
     [ "$toggle_worker" = "$vendor" ] ||
       toggle_note="The worker toggle says worker=${toggle_worker}, this spawns ${worker}. Fine if the task called for it; otherwise the toggle is the default and ${toggle_worker}-worker is the one to use."
     ;;
 esac
+
+[ "$worker" = sonnet-worker ] && warn ""
 
 prompt=$(printf '%s' "$input" | jq -r '.tool_input.prompt // empty' 2>/dev/null) || prompt=''
 brief_account=$(printf '%s\n' "$prompt" |

@@ -1946,7 +1946,7 @@ jq --argjson started_epoch "$((NOW - 121))" \
   > "$PROGRESS_DIR/$progress_prefix$$.json.tmp"
 mv "$PROGRESS_DIR/$progress_prefix$$.json.tmp" "$PROGRESS_DIR/$progress_prefix$$.json"
 progress_late_out=$(progress_render late)
-assert grep -Fq " ${RED}│ review T2 0/1${RESET}" <<< "$progress_late_out"
+assert grep -Fq " ${DIM}│${RESET} ${RED}review T2 0/1${RESET}" <<< "$progress_late_out"
 
 jq --argjson started_epoch "$NOW" '.started_epoch = $started_epoch' \
   "$PROGRESS_DIR/$progress_prefix$$.json" \
@@ -1954,7 +1954,7 @@ jq --argjson started_epoch "$NOW" '.started_epoch = $started_epoch' \
 mv "$PROGRESS_DIR/$progress_prefix$$.json.tmp" "$PROGRESS_DIR/$progress_prefix$$.json"
 progress_fresh_out=$(progress_render fresh)
 assert grep -Fq " ${DIM}│${RESET} review T2 0/1" <<< "$progress_fresh_out"
-assert test "${progress_fresh_out#*"${RED}│ review"}" = "$progress_fresh_out"
+assert test "${progress_fresh_out#*"${RED}review"}" = "$progress_fresh_out"
 
 jq --argjson started_epoch "$((NOW - 121))" \
   '.started_epoch = $started_epoch | .done = ["cell-0"]' \
@@ -1963,7 +1963,7 @@ jq --argjson started_epoch "$((NOW - 121))" \
 mv "$PROGRESS_DIR/$progress_prefix$$.json.tmp" "$PROGRESS_DIR/$progress_prefix$$.json"
 progress_done_late_out=$(progress_render done-late)
 assert grep -Fq " ${DIM}│${RESET} review T2 1/1" <<< "$progress_done_late_out"
-assert test "${progress_done_late_out#*"${RED}│ review"}" = "$progress_done_late_out"
+assert test "${progress_done_late_out#*"${RED}review"}" = "$progress_done_late_out"
 
 write_progress "$$" T2 0 1 2026-07-27T22:00:00+00:00
 jq --argjson started_epoch "$((NOW - 121))" '.started_epoch = $started_epoch' \
@@ -1972,12 +1972,12 @@ jq --argjson started_epoch "$((NOW - 121))" '.started_epoch = $started_epoch' \
 mv "$PROGRESS_DIR/$progress_prefix$$.json.tmp" "$PROGRESS_DIR/$progress_prefix$$.json"
 progress_no_expected_out=$(progress_render no-expected)
 assert grep -Fq " ${DIM}│${RESET} review T2 0/1" <<< "$progress_no_expected_out"
-assert test "${progress_no_expected_out#*"${RED}│ review"}" = "$progress_no_expected_out"
+assert test "${progress_no_expected_out#*"${RED}review"}" = "$progress_no_expected_out"
 
 write_progress "$$" T2 0 1 2026-07-27T22:00:00+00:00
 progress_legacy_out=$(progress_render legacy)
 assert grep -Fq " ${DIM}│${RESET} review T2 0/1" <<< "$progress_legacy_out"
-assert test "${progress_legacy_out#*"${RED}│ review"}" = "$progress_legacy_out"
+assert test "${progress_legacy_out#*"${RED}review"}" = "$progress_legacy_out"
 
 # The max panel is a variant of the same tier at the same time budget, so a T2 max run must not
 # read as the T2 it is not: it buys a wider panel, and the label is where that is visible.

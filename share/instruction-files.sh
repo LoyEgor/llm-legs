@@ -1,12 +1,11 @@
 # The instruction files an LLM re-reads in every session, shared by the write gate and the
 # tripwire so the protected set is defined once.
 #
-# Two sets, because the two consumers answer different questions. The tripwire watches the
-# global always-on files: it reports every change, so a set that also covered the memory an
-# agent legitimately writes each session would be noise. The write gate refuses shell writes,
-# which no legitimate memory write uses, so it guards the wider set the bloat gate prices as
-# always-on — including per-project CLAUDE.md and MEMORY.md, matched by name rather than
-# enumerated, since there is no list of every repository.
+# One path set for both consumers. The write gate guards more than this list, but the extra is
+# never a path: per-project CLAUDE.md and MEMORY.md are matched by name rather than enumerated,
+# since there is no list of every repository, and a not-yet-created file is matched by the
+# directory it lands in. A path the gate refuses a write to and the tripwire does not watch is
+# the one hole neither half can report, so the enumerated set is the same for both.
 
 # MEMORY.md is deliberately absent. A project's memory index is not always-on content — it is
 # read in that project's sessions only — and appending one pointer line to it is the memory
@@ -26,25 +25,43 @@ _instruction_nl='
 '
 _instruction_tab='	'
 
-# One level of nesting is globbed as well: a doc filed under docs/topic/ is read exactly as often
-# as one at the top, and the tripwire watching only the top level would never mention it. Deeper
-# than that is the write gate's directory rule, which is not depth-bound.
+# Depth-unbounded, because the write gate's directory rule and the bloat gate's ancestor walk
+# both are: a doc at docs/topic/sub/note.md is denied a shell write and priced per month, and a
+# glob that stopped one level down left exactly those files guarded but unwatched. -L because
+# docs/ and agents/ are symlinks into the config repository and the tree below them is the point.
+# -print0 so a name carrying a newline arrives whole and is refused by _instruction_emit rather
+# than arriving as two names.
 instruction_visible_paths() {
   local home=${1:-$HOME} p
-  for p in "$home"/.claude/CLAUDE.md "$home"/.claude/settings.json \
-           "$home"/.claude/docs/*.md "$home"/.claude/docs/*/*.md \
-           "$home"/.claude/agents/*.md "$home"/.claude/agents/*/*.md \
-           "$home"/.claude/skills/*/SKILL.md "$home"/.claude/skills/*/*/SKILL.md; do
+  for p in "$home"/.claude/CLAUDE.md "$home"/.claude/CLAUDE.local.md \
+           "$home"/.claude/settings.json; do
     [ -f "$p" ] && _instruction_emit "$p"
   done
+  while IFS= read -r -d '' p; do
+    _instruction_emit "$p"
+  done < <(find -L "$home"/.claude/docs "$home"/.claude/agents \
+                    "$home"/.claude/instructions "$home"/.claude/skills \
+                -type f -name '*.md' -print0 2>/dev/null)
 }
 
 instruction_guarded_paths() {
-  local home=${1:-$HOME} p
-  instruction_visible_paths "$home"
-  for p in "$home"/.claude/instructions/*.md "$home"/.claude/CLAUDE.local.md; do
-    [ -f "$p" ] && _instruction_emit "$p"
-  done
+  instruction_visible_paths "${1:-$HOME}"
+}
+
+# Full-price read equivalents per month, measured over the 31 days to 2026-07-31. One table for
+# every gate: a denial that quotes a different number from the one the bloat gate prices the same
+# file at teaches its reader that neither number is real. An empty answer means "not a class this
+# table prices" — the caller decides whether that is a reason to stay quiet about cost.
+instruction_read_rate() {
+  local path=$1 home=${2:-$HOME}
+  case "$path" in
+    "$home"/.claude/CLAUDE.md) printf 15682 ;;                 # every session, every project
+    */MEMORY.md|*/CLAUDE.md|*/CLAUDE.local.md) printf 3131 ;;  # every session of one project
+    */.claude/instructions/*) printf 160 ;;                    # loaded on topic
+    */SKILL.md|*/.claude/skills/*) printf 90 ;;                # loaded on trigger
+    "$home"/.claude/docs/*) printf 160 ;;                      # protocol docs, read per task type
+    "$home"/.claude/agents/*) printf 2500 ;;                   # per spawn of a busy worker
+  esac
 }
 
 # The directories, not just the files in them. A doc that does not exist yet costs the same per
@@ -116,9 +133,14 @@ instruction_claim_stamp() {
   local dir=$1 hash=$2 stamp now born age=''
   case "$hash" in [0-9a-f][0-9a-f]*) ;; *) return 1 ;; esac
   mkdir -p "$dir" 2>/dev/null || return 1
-  # -name keeps the sweep to entries a gate created: the directory is env-overridable for the
-  # tests, and a wrong value must not reach anything else.
-  find "$dir" -mindepth 1 -maxdepth 1 -name '[0-9a-f]*' -mmin +1440 -exec rm -rf {} + 2>/dev/null
+  # The sweep is aimed at exactly what a gate creates: an EMPTY DIRECTORY whose name is the
+  # sixteen hex characters of a fingerprint. The directory is env-overridable and a misconfigured
+  # one is somebody's real data — `rm -rf` on everything starting with a hex character would take
+  # ~/.claude/agents with it. rmdir cannot recurse, so the worst a wrong path can cost is an
+  # empty directory that happened to be named like a fingerprint.
+  local h='[0-9a-f]'
+  find "$dir" -mindepth 1 -maxdepth 1 -type d \
+    -name "$h$h$h$h$h$h$h$h$h$h$h$h$h$h$h$h" -mmin +1440 -exec rmdir {} + 2>/dev/null
   stamp="$dir/$hash"
   mkdir "$stamp" 2>/dev/null && return 1
   [ -d "$stamp" ] || return 1

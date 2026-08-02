@@ -61,15 +61,8 @@ is_global() {
   case "$1" in "$GLOBAL_CLAUDE"|"$GLOBAL_CLAUDE_REAL") return 0 ;; esac
   return 1
 }
-classify() {
-  case "$1" in
-    */MEMORY.md|*/CLAUDE.md|*/CLAUDE.local.md) printf 3131 ;;  # every session of one project
-    */.claude/instructions/*) printf 160 ;;                    # loaded on topic
-    */SKILL.md|*/.claude/skills/*) printf 90 ;;                # loaded on trigger
-    "$HOME"/.claude/docs/*) printf 160 ;;                      # protocol docs, read per task type
-    "$HOME"/.claude/agents/*) printf 2500 ;;                   # per spawn of a busy worker
-  esac
-}
+# The per-class rates live in share/instruction-files.sh, so the write gate's denial and this
+# one's arithmetic cannot drift apart.
 # The global file answers to more names than two: every profile directory carries its own symlink
 # to it. Asking the generic project pattern first would price all of those at a fifth of the real
 # cost, so the question "is this the global one" is settled before anything else — and settled on
@@ -85,7 +78,7 @@ else
       ;;
   esac
 fi
-[ -n "$reads" ] || reads=$(classify "$file_path")
+[ -n "$reads" ] || reads=$(instruction_read_rate "$file_path" "$HOME")
 # ~/.claude/docs and ~/.claude/agents are symlinks into the config repository, so the same file
 # has a second absolute path that matches none of the patterns above — and that repository path
 # is the one anybody editing the repo actually types. Resolving the directory (not the file:

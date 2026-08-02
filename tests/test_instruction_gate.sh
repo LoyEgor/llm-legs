@@ -120,6 +120,38 @@ assert_eq deny "$(decision "echo x > $HOME/.claude/docs/review-tiers.md")"
 assert_eq deny "$(decision "echo x > $HOME/.claude/agents/codex-worker.md")"
 assert_eq deny "$(decision "echo x > $HOME/.claude/skills/demo/SKILL.md")"
 
+echo "== write gate: the clobber operator is a redirection too"
+# `>|` is `>` with noclobber off. The operator class knew `>` and `>>` and nothing else, so this
+# spelling walked through.
+assert_eq deny "$(decision "echo x >| $CLAUDE_MD")"
+assert_eq deny "$(decision "echo x >|$CLAUDE_MD")"
+
+echo "== write gate: every open mode that writes, and only those"
+assert_eq deny "$(decision "python3 -c \"open('$CLAUDE_MD','wt').write('x')\"")"
+assert_eq deny "$(decision "python3 -c \"open('$CLAUDE_MD','at').write('x')\"")"
+assert_eq deny "$(decision "python3 -c \"open('$CLAUDE_MD','x').write('x')\"")"
+assert_eq deny "$(decision "python3 -c \"open('$CLAUDE_MD','r+').write('x')\"")"
+assert_eq deny "$(decision "python3 -c \"open('$CLAUDE_MD','rb+').write(b'x')\"")"
+# Perl's three-argument open puts the mode where a Python mode string stands.
+assert_eq deny "$(decision "perl -e \"open(my \$f, '>', '$CLAUDE_MD')\"")"
+assert_eq deny "$(decision "perl -e \"open(my \$f, '>>', '$CLAUDE_MD')\"")"
+# A read is not a write, which is the whole reason the modes are enumerated.
+assert_eq pass "$(decision "python3 -c \"open('$CLAUDE_MD','r').read()\"")"
+assert_eq pass "$(decision "python3 -c \"open('$CLAUDE_MD','rb').read()\"")"
+
+echo "== write gate: the denial quotes what THIS class of file costs"
+# One blanket figure was quoted at every guarded file, so the arithmetic the denial asks the
+# reader to do started from a number two orders of magnitude out for a skill.
+# A command already denied once in this suite would be spending its retry here, not being
+# priced, so every one of these carries its own marker.
+price() { gate "echo priced-$1 > $2" | jq -r '.hookSpecificOutput.permissionDecisionReason'; }
+assert_contains "~15682 full-read" "$(price a "$CLAUDE_MD")"
+assert_contains "~15682 full-read" "$(price b "$REAL_MD")"
+assert_contains "~2500 full-read" "$(price c "$HOME/.claude/agents/codex-worker.md")"
+assert_contains "~160 full-read" "$(price d "$HOME/.claude/docs/review-tiers.md")"
+assert_contains "~90 full-read" "$(price e "$HOME/.claude/skills/demo/SKILL.md")"
+assert_contains "~3131 full-read" "$(price f "$WORK/proj/CLAUDE.md")"
+
 echo "== write gate: reads and non-targets stay silent"
 assert_eq pass "$(decision "grep -n rules $CLAUDE_MD")"
 assert_eq pass "$(decision "cat $CLAUDE_MD")"
@@ -398,12 +430,15 @@ eval "$undo"
 assert_eq "global rules" "$(cat "$REAL_MD")"
 
 echo "== tripwire: a second session cannot hand out the smuggled bytes as the good ones"
-# The snapshot is shared while the baselines are not, so the session that reports second finds it
-# already refreshed. Offering a copy of it would call the change its own undo.
+# The snapshot directory is shared while the baselines are not, so the session that reports second
+# finds a copy of the smuggled bytes sitting beside the good ones. Each session asks for the
+# version ITS OWN baseline recorded, so what either one hands back is the good version — an undo
+# that restores the change it is undoing is the failure this guards.
 printf 'global rules\n' > "$REAL_MD"
 two_sid() {
   jq -cn --arg s "$1" '{session_id:$s,hook_event_name:"PostToolUse"}' | bash "$WATCH" "$2"
 }
+undo_from() { printf '%s' "$1" | sed -n 's/.*puts them back: \(.*\) These files are re-read.*/\1/p'; }
 two_sid pair-a baseline >/dev/null
 two_sid pair-b baseline >/dev/null
 printf 'smuggled by someone\n' > "$REAL_MD"
@@ -411,10 +446,16 @@ ctx_a=$(two_sid pair-a check | jq -r '.hookSpecificOutput.additionalContext // "
 ctx_b=$(two_sid pair-b check | jq -r '.hookSpecificOutput.additionalContext // ""')
 assert_contains "CHANGED" "$ctx_a"
 assert_contains "puts them back" "$ctx_a"
-# The second session still reports the change; it just does not claim to be able to undo it.
+# The session that reported second saw the same original bytes, so it can undo the change too.
 assert_contains "CHANGED" "$ctx_b"
-case "$ctx_b" in *"puts them back"*) fail "the second session offered the smuggled bytes as an undo" ;; esac
-undo_a=$(printf '%s' "$ctx_a" | sed -n "s/.*puts them back: \(cp '[^']*' '[^']*'\).*/\1/p")
+assert_contains "puts them back" "$ctx_b"
+# The one that reported after the snapshot already held the smuggled version is the strict case.
+undo_b=$(undo_from "$ctx_b")
+assert [ -n "$undo_b" ]
+eval "$undo_b"
+assert_eq "global rules" "$(cat "$REAL_MD")"
+printf 'smuggled by someone\n' > "$REAL_MD"
+undo_a=$(undo_from "$ctx_a")
 eval "$undo_a"
 assert_eq "global rules" "$(cat "$REAL_MD")"
 
@@ -523,6 +564,137 @@ assert_contains "CHANGED" "$out"
 
 echo "== tripwire: a malformed payload is survivable"
 assert_eq "" "$(printf 'not json' | bash "$WATCH" check)"
+
+echo "== tripwire: the visible name is watched, not only what it resolves to"
+# Retargeting or deleting the symlink every session actually reads leaves the old target intact,
+# so a watch that stats only the resolved path sees nothing at all.
+printf 'global rules\n' > "$REAL_MD"
+printf 'somewhere else\n' > "$REPO/global/DECOY.md"
+watch baseline sid-link >/dev/null
+assert_eq "" "$(watch check sid-link)"
+ln -sf "$REPO/global/DECOY.md" "$CLAUDE_MD"
+out=$(watch check sid-link | jq -r '.hookSpecificOutput.additionalContext // ""')
+assert_contains "RETARGETED" "$out"
+assert_contains "DECOY.md" "$out"
+# The file the link used to name is untouched, so there is nothing to put back.
+case "$out" in *"puts them back"*) fail "a retargeted link offered a byte restore" ;; esac
+ln -sf "$REAL_MD" "$CLAUDE_MD"
+watch baseline sid-link >/dev/null
+rm "$CLAUDE_MD"
+assert_contains "DELETED" \
+  "$(watch check sid-link | jq -r '.hookSpecificOutput.additionalContext // ""')"
+ln -s "$REAL_MD" "$CLAUDE_MD"
+
+echo "== tripwire: a same-size rewrite inside the same second is still a change"
+# Whole-second mtime plus size was the whole fingerprint, so a rewrite landing in the same second
+# at the same length was indistinguishable from no write at all.
+printf 'aaaaaaaaaaaa\n' > "$REAL_MD"
+watch baseline sid-sec >/dev/null
+printf 'bbbbbbbbbbbb\n' > "$REAL_MD"
+assert_eq "$(stat -f %m "$REAL_MD")" "$(stat -f %m "$REAL_MD")"
+assert_contains "CHANGED" \
+  "$(watch check sid-sec | jq -r '.hookSpecificOutput.additionalContext // ""')"
+
+echo "== tripwire: the wider guarded set is watched, not just the always-on files"
+# These were guarded by the write gate and invisible to the tripwire, which is the one hole
+# neither half of the pair could report.
+mkdir -p "$HOME/.claude/instructions"
+printf 'topic rules\n' > "$HOME/.claude/instructions/topic.md"
+printf 'local rules\n' > "$HOME/.claude/CLAUDE.local.md"
+mkdir -p "$REPO/global/docs/deep/deeper"
+printf 'buried\n' > "$REPO/global/docs/deep/deeper/note.md"
+watch baseline sid-wide >/dev/null
+assert_eq "" "$(watch check sid-wide)"
+printf 'topic rules changed\n' > "$HOME/.claude/instructions/topic.md"
+printf 'local rules changed\n' > "$HOME/.claude/CLAUDE.local.md"
+printf 'buried deeper\n' > "$REPO/global/docs/deep/deeper/note.md"
+out=$(watch check sid-wide | jq -r '.hookSpecificOutput.additionalContext // ""')
+assert_contains "topic.md" "$out"
+assert_contains "CLAUDE.local.md" "$out"
+assert_contains "note.md" "$out"
+
+echo "== tripwire: the price quoted is the dearest class in the report, not one blanket number"
+# A skill costs a fiftieth of the global file; quoting the global rate over it made every
+# number in the message untrustworthy.
+printf 'skill body\n' > "$HOME/.claude/skills/demo/SKILL.md"
+watch baseline sid-rate >/dev/null
+printf 'skill body changed\n' > "$HOME/.claude/skills/demo/SKILL.md"
+out=$(watch check sid-rate | jq -r '.hookSpecificOutput.additionalContext // ""')
+assert_contains "up to ~90 full-read" "$out"
+watch baseline sid-rate >/dev/null
+printf 'agent changed\n' > "$HOME/.claude/agents/codex-worker.md"
+printf 'skill body again\n' > "$HOME/.claude/skills/demo/SKILL.md"
+out=$(watch check sid-rate | jq -r '.hookSpecificOutput.additionalContext // ""')
+assert_contains "up to ~2500 full-read" "$out"
+
+echo "== tripwire: a path with a quote in it produces a command that still runs"
+QUOTED="$REPO/global/docs/it's-tricky.md"
+printf 'quoted doc\n' > "$QUOTED"
+watch baseline sid-quote >/dev/null
+printf 'quoted doc smuggled\n' > "$QUOTED"
+ctx=$(watch check sid-quote | jq -r '.hookSpecificOutput.additionalContext // ""')
+assert_contains "puts them back" "$ctx"
+undo=$(printf '%s' "$ctx" | sed -n 's/.*puts them back: \(.*\) These files are re-read.*/\1/p')
+eval "$undo"
+assert_eq "quoted doc" "$(cat "$QUOTED")"
+rm "$QUOTED"
+
+echo "== tripwire: settings.json is the one file git cannot give back, so its undo has to work"
+# Its hash is taken through a jq filter while the snapshot's was taken raw, so the two could
+# never compare equal and the guard built on that comparison never fired.
+printf '{"model":"opus","hooks":{"Stop":[]}}\n' > "$HOME/.claude/settings.json"
+watch baseline sid-set-a >/dev/null
+watch baseline sid-set-b >/dev/null
+printf '{"model":"opus","hooks":{}}\n' > "$HOME/.claude/settings.json"
+ctx=$(watch check sid-set-a | jq -r '.hookSpecificOutput.additionalContext // ""')
+assert_contains "settings.json" "$ctx"
+assert_contains "puts them back" "$ctx"
+ctx_b=$(watch check sid-set-b | jq -r '.hookSpecificOutput.additionalContext // ""')
+undo=$(printf '%s' "$ctx_b" | sed -n 's/.*puts them back: \(.*\) These files are re-read.*/\1/p')
+assert [ -n "$undo" ]
+eval "$undo"
+assert_contains '"Stop"' "$(cat "$HOME/.claude/settings.json")"
+
+echo "== tripwire: a file nobody vetted is not restored over its own removal"
+# An ADDED file went straight into the trusted snapshot, so deleting the smuggled thing was
+# reported as the violation and the undo offered put it back.
+watch baseline sid-add >/dev/null
+printf 'unvetted agent\n' > "$HOME/.claude/agents/unvetted.md"
+out=$(watch check sid-add | jq -r '.hookSpecificOutput.additionalContext // ""')
+assert_contains "ADDED" "$out"
+rm "$HOME/.claude/agents/unvetted.md"
+out=$(watch check sid-add | jq -r '.hookSpecificOutput.additionalContext // ""')
+assert_contains "DELETED" "$out"
+case "$out" in *"puts them back"*) fail "the tripwire offered to restore a file nobody vetted" ;; esac
+
+echo "== tripwire: a session starting mid-change does not destroy the recovery copy"
+# Baselines are per-session and the snapshot directory is shared, so a session that first runs
+# after the change would overwrite the one copy the session that saw the good bytes still needs.
+printf 'good bytes\n' > "$REAL_MD"
+watch baseline sid-keeper >/dev/null
+printf 'bad bytes\n' > "$REAL_MD"
+watch check sid-newcomer >/dev/null
+ctx=$(watch check sid-keeper | jq -r '.hookSpecificOutput.additionalContext // ""')
+assert_contains "CHANGED" "$ctx"
+undo=$(printf '%s' "$ctx" | sed -n 's/.*puts them back: \(.*\) These files are re-read.*/\1/p')
+assert [ -n "$undo" ]
+eval "$undo"
+assert_eq "good bytes" "$(cat "$REAL_MD")"
+
+echo "== stamp sweep: a misconfigured stamp directory is not a licence to delete"
+# The sweep matched anything starting with a hex character and removed it recursively, so a
+# stamp directory pointed at real data would take ~/.claude/agents with it.
+SWEEP="$WORK/sweep"
+mkdir -p "$SWEEP/agents" "$SWEEP/0123456789abcdef" "$SWEEP/deadbeefdeadbeef"
+printf 'somebody real data\n' > "$SWEEP/agents/keep.md"
+printf 'loose file\n' > "$SWEEP/abcdef0123456789"
+touch -A -250000 "$SWEEP/agents" "$SWEEP/0123456789abcdef" "$SWEEP/deadbeefdeadbeef" \
+      "$SWEEP/abcdef0123456789"
+assert_eq deny "$(INSTRUCTION_WRITE_GATE_STAMPS="$SWEEP" decision "echo sweep > $CLAUDE_MD")"
+assert [ -f "$SWEEP/agents/keep.md" ]
+assert [ -f "$SWEEP/abcdef0123456789" ]
+# An aged stamp is still what the sweep is for.
+assert [ ! -d "$SWEEP/0123456789abcdef" ]
 
 # A headless worker can start with a PATH that misses Homebrew, and stock /bin/bash is 3.2:
 # there `local -A` is not an error but a silent downgrade to an indexed array, where every
