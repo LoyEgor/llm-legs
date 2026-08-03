@@ -67,6 +67,17 @@ assert(module.decide("com.apple.Terminal", native, { "public.file-url" }, "v") =
   "file-url Cmd+V without a resolved path was intercepted")
 assert(module.decide("com.apple.Terminal", native, { "public.png" }, "v", "/tmp/a.png") == "image-paste",
   "image UTI lost priority over a convert path")
+assert(module.decide("com.apple.Terminal", native, { "public.utf8-plain-text" }, "v", nil, true)
+    == "replace",
+  "text Cmd+V over an armed selection did not choose replace")
+assert(module.decide("com.apple.Terminal", native, { "public.png" }, "v", nil, true) == "image-paste",
+  "an armed selection outranked an image clipboard")
+assert(module.decide("com.apple.Terminal", native, { "public.file-url" }, "v", "/tmp/a.png", true)
+    == "convert",
+  "an armed selection outranked a convert path")
+assert(module.decide("com.apple.Terminal", "S+ zsh\n", { "public.utf8-plain-text" }, "v", nil, true)
+    == "pass",
+  "non-Claude text Cmd+V over an armed selection was intercepted")
 assert(module.decide("com.apple.Terminal", "S+ zsh\n", { "public.png" }, "v") == "pass",
   "non-Claude Terminal process was intercepted")
 assert(module.decide("com.apple.Safari", native, { "public.png" }, "v") == "pass",
@@ -163,6 +174,11 @@ assert(module.decideCached(observed, cached, { "public.file-url" }, "v", 10.1, "
   "cached file-url Cmd+V did not choose convert")
 assert(module.decideCached(observed, cached, { "public.file-url" }, "v", 11, "/tmp/a.png") == "pass",
   "stale file-url Cmd+V cache was intercepted")
+assert(module.decideCached(observed, cached, { "public.utf8-plain-text" }, "v", 10.1, nil, true)
+    == "replace",
+  "cached text Cmd+V over an armed selection did not choose replace")
+assert(module.decideCached(observed, cached, { "public.utf8-plain-text" }, "v", 11, nil, true) == "pass",
+  "stale paste-replace cache was intercepted")
 
 local pending, effect = module.pendingTransition(nil, {
   type = "press", id = 1, key = "c", now = 1, timeout = 0.28,
@@ -320,6 +336,37 @@ assert(cvtEffect.actions[1].action == "policy-drop", "target-mismatched convert 
 cvt = convertPending(24)
 cvt, cvtEffect = module.pendingTransition(cvt, { type = "tick", now = 1.29 })
 assert(cvtEffect.actions[1].action == "replay", "timed-out convert did not replay")
+
+-- A text clipboard carries no image type, so paste-replace is the only thing that
+-- lets Cmd+V through the queue guard at all.
+local function pastePending(id)
+  return module.pendingTransition(nil, {
+    type = "press", id = id, key = "v", replace = true, now = 6, timeout = 0.28,
+  })
+end
+local pst, pstEffect
+pst, pstEffect = pastePending(40)
+assert(pst.status == "pending" and pstEffect.consume and pstEffect.startResolve,
+  "a paste-replace press did not start a pending resolve")
+pst, pstEffect = module.pendingTransition(pst, { type = "resolve", verdict = "claude" })
+assert(pstEffect.actions[1].action == "replace",
+  "a resolved paste-replace lost its action")
+pst = pastePending(41)
+pst, pstEffect = module.pendingTransition(pst, {
+  type = "resolve", verdict = "claude", targetMatches = { [41] = false },
+})
+assert(pstEffect.actions[1].action == "policy-drop",
+  "a target-mismatched paste-replace was replayed into the tab that took its place")
+pst = pastePending(42)
+pst, pstEffect = module.pendingTransition(pst, { type = "stop" })
+assert(pstEffect.actions[1].action == "policy-drop",
+  "a stopped paste-replace was replayed instead of dropped")
+pst = pastePending(43)
+pst, pstEffect = module.pendingTransition(pst, { type = "resolve", verdict = "not-claude" })
+assert(pstEffect.actions[1].action == "replay", "a non-Claude paste-replace was not replayed")
+pst = pastePending(44)
+pst, pstEffect = module.pendingTransition(pst, { type = "tick", now = 6.29 })
+assert(pstEffect.actions[1].action == "replay", "a timed-out paste-replace was not replayed")
 
 -- Captured from a real Claude Code 2.1.220 session (tmux 120x32, tui=fullscreen)
 -- rather than hand-written: the prompt separator is U+00A0, not a space, and the
@@ -566,7 +613,7 @@ local function eventFlags(names)
   return flags
 end
 
-local function keyEvent(keyCode, modifiers, isRepeat, label)
+local function keyEvent(keyCode, modifiers, isRepeat, label, characters, modified)
   local event = {
     keyCode = keyCode,
     flags = eventFlags(modifiers),
@@ -577,8 +624,16 @@ local function keyEvent(keyCode, modifiers, isRepeat, label)
   function event:getKeyCode() return self.keyCode end
   function event:getFlags() return self.flags end
   function event:getProperty(property) return self.properties[property] or 0 end
+  -- Only keys that insert text carry characters, exactly as NSEvent reports them:
+  -- clean ignores the modifiers, the other reports what the press actually types.
+  function event:getCharacters(clean)
+    if clean == false then
+      return modified ~= nil and modified or characters
+    end
+    return characters
+  end
   function event:copy()
-    return keyEvent(self.keyCode, modifiers, isRepeat, self.label)
+    return keyEvent(self.keyCode, modifiers, isRepeat, self.label, characters, modified)
   end
   return event
 end
@@ -629,11 +684,12 @@ local function integrationContext(types, opts)
   local actions = {}
   local changeCount = 1
   local alertCount = 0
-  local alertMessage
   local scrapeCallback
   local writtenText
   local mouseEvents = {}
   local observeCount = 0
+  local afterObserve
+  local replays = {}
   module.setTestHooks({
     mouse = function(kind, point)
       mouseEvents[#mouseEvents + 1] = { kind = kind, x = point.x, y = point.y }
@@ -644,7 +700,11 @@ local function integrationContext(types, opts)
     absoluteTime = function() return clock * 1000000000 end,
     observe = function()
       observeCount = observeCount + 1
-      return observedNow
+      local observed = observedNow
+      local callback = afterObserve
+      afterObserve = nil
+      if callback then callback() end
+      return observed
     end,
     contentTypes = function() return types or {} end,
     readURL = function() return opts.url end,
@@ -655,9 +715,8 @@ local function integrationContext(types, opts)
       return opts.windowFrame
     end or nil,
     changeCount = function() return changeCount end,
-    alert = function(message)
+    alert = function()
       alertCount = alertCount + 1
-      alertMessage = message
     end,
     scrape = function(callback)
       actions[#actions + 1] = "scrape"
@@ -697,7 +756,10 @@ local function integrationContext(types, opts)
         actions[#actions + 1] = "image-paste"
       end
     end,
-    post = function() actions[#actions + 1] = "replay" end,
+    post = function(event)
+      actions[#actions + 1] = "replay"
+      replays[#replays + 1] = event and event.label or "?"
+    end,
     drop = function() actions[#actions + 1] = "policy-drop" end,
   })
   return {
@@ -719,8 +781,18 @@ local function integrationContext(types, opts)
     alerts = function() return alertCount end,
     mouseEvents = function() return mouseEvents end,
     observations = function() return observeCount end,
-    alertMessage = function() return alertMessage end,
+    changeTargetAfterNextObservation = function()
+      afterObserve = function()
+        observedNow = {
+          bundleID = "com.apple.Terminal",
+          windowID = 7,
+          tabIndex = 3,
+          tabElement = "tab-c",
+        }
+      end
+    end,
     wrote = function() return writtenText end,
+    replayed = function() return table.concat(replays, ",") end,
     lastDelay = function() return timeout and timeout.delay end,
     cutTimerStopped = function() return cutTimeout ~= nil and cutTimeout.stopped end,
     timeouts = function() return timeoutCount end,
@@ -789,9 +861,17 @@ assert(#integration.actions == 1 and integration.actions[1] == "copy",
 integration = integrationContext()
 module.handleEvent(cPress(false))
 integration.changeTarget()
+integration.changeTargetAfterNextObservation()
 integration.resolve("claude")
 assert(#integration.actions == 1 and integration.actions[1] == "replay",
-  "target-mismatched Cmd+C was not replayed")
+  "target-mismatched Cmd+C was not replayed after a second tab change")
+
+integration = integrationContext()
+module.handleEvent(zPress(false))
+integration.changeTargetAfterNextObservation()
+integration.resolve("not-claude")
+assert(#integration.actions == 1 and integration.actions[1] == "policy-drop",
+  "a target-mismatched non-copy replay was not policy-dropped")
 
 integration = integrationContext({ "public.png" })
 module.handleEvent(vPress(false))
@@ -825,8 +905,7 @@ integration.deliverScrape(screenShorter)
 assert(#integration.actions == 4 and integration.actions[4] == "write-text",
   "Cmd+X did not write the deleted text to the pasteboard")
 assert(integration.wrote() == "brave ", "Cmd+X wrote the wrong text to the pasteboard")
-assert(integration.alerts() == 1 and integration.alertMessage():find("6", 1, true),
-  "Cmd+X did not report the deleted character count")
+assert(integration.alerts() == 0, "a successful cut raised an alert")
 
 integration = integrationContext()
 dragThenCut(integration)
@@ -905,7 +984,7 @@ integration.deliverScrape(screenDraft)
 integration.timeout()
 integration.deliverScrape(screenShorter)
 assert(integration.wrote() == "brave ", "a late repaint was not picked up by the retry")
-assert(integration.alerts() == 1, "the retried cut alerted twice")
+assert(integration.alerts() == 0, "the retried cut raised an alert")
 
 integration = integrationContext()
 dragThenCut(integration)
@@ -926,19 +1005,6 @@ integration.deliverScrape(roundedScreen("привет мир"))
 integration.timeout()
 integration.deliverScrape(roundedScreen("привет"))
 assert(integration.wrote() == " мир", "a Cyrillic cut did not reach the pasteboard intact")
-assert(integration.alertMessage():find("4", 1, true)
-    and not integration.alertMessage():find("7", 1, true),
-  "cut alert counted UTF-8 bytes instead of characters")
-
--- Convert alerts are throttled; cut feedback has to fire on every cut.
-integration = integrationContext()
-for _ = 1, 2 do
-  dragThenCut(integration)
-  integration.deliverScrape(screenDraft)
-  integration.timeout()
-  integration.deliverScrape(screenShorter)
-end
-assert(integration.alerts() == 2, "a second cut alert was throttled away")
 
 -- Without a drag there is nothing selected, and DEL would be a plain backspace.
 integration = integrationContext()
@@ -1123,8 +1189,8 @@ local expectedEndX = (promptCells + cellLen("hello brave new world") - 0.1) * ce
 integration = integrationContext(nil, { windowFrame = terminalFrame })
 selectAll(integration, screenDraft)
 local drag = integration.mouseEvents()
-assert(#drag == 4 and drag[1].kind == "down" and drag[2].kind == "dragged"
-    and drag[3].kind == "dragged" and drag[4].kind == "up",
+assert(#drag == 3 and drag[1].kind == "down" and drag[2].kind == "dragged"
+    and drag[3].kind == "up",
   "Cmd+A did not post a down/drag/up sequence")
 for _, event in ipairs(drag) do
   assert(event.y > draftRowBottom - cellHeight and event.y < draftRowBottom,
@@ -1133,7 +1199,7 @@ for _, event in ipairs(drag) do
 end
 assert(math.abs(drag[1].x - expectedStartX) < 0.001,
   "the drag did not start at the first draft character cell")
-assert(math.abs(drag[4].x - expectedEndX) < 0.001,
+assert(math.abs(drag[3].x - expectedEndX) < 0.001,
   "the drag did not end at the last draft character cell")
 assert(#integration.actions == 1 and integration.actions[1] == "scrape",
   "Cmd+A emitted a key plan")
@@ -1157,9 +1223,9 @@ integration.resolve("claude")
 integration.runDeferred()
 assert(#integration.actions == 1, "a second Cmd+A scraped while the first was in flight")
 integration.deliverScrape(screenDraft)
-assert(#integration.mouseEvents() == 4, "the in-flight Cmd+A did not drag once")
+assert(#integration.mouseEvents() == 3, "the in-flight Cmd+A did not drag once")
 selectAll(integration, screenDraft)
-assert(#integration.mouseEvents() == 8, "the guard outlived the completed Cmd+A pass")
+assert(#integration.mouseEvents() == 6, "the guard outlived the completed Cmd+A pass")
 
 -- Without a window frame there is no way to turn rows and columns into pixels.
 integration = integrationContext()
@@ -1278,6 +1344,416 @@ integration = integrationContext({ "public.utf8-plain-text" })
 assert(not module.handleEvent(vPress(false)), "text Cmd+V entered the intercept path")
 assert(#integration.actions == 0, "text Cmd+V produced an action")
 
+local textTypes = { "public.utf8-plain-text" }
+
+local function pressPaste(context)
+  assert(module.handleEvent(vPress(false)),
+    "text Cmd+V over a selection was not consumed")
+  context.resolve("claude")
+  context.runDeferred()
+end
+
+local function dragThenPaste(context, dragY)
+  simulateDrag(dragY)
+  pressPaste(context)
+end
+
+integration = integrationContext(textTypes)
+dragThenPaste(integration)
+assert(#integration.actions == 1 and integration.actions[1] == "scrape",
+  "text Cmd+V over a selection did not snapshot the input box first")
+integration.deliverScrape(screenDraft)
+assert(#integration.actions == 2 and integration.actions[2] == "cut",
+  "text Cmd+V over a selection did not delete it before pasting")
+assert(integration.lastDelay() == 0.15, "paste-replace re-scrape delay changed")
+integration.timeout()
+assert(#integration.actions == 3 and integration.actions[3] == "scrape",
+  "paste-replace did not re-scrape after the delay")
+integration.deliverScrape(screenShorter)
+assert(#integration.actions == 4 and integration.actions[4] == "replay",
+  "paste-replace did not replay the paste once the deletion was confirmed")
+assert(integration.wrote() == nil, "paste-replace put the deleted text on the pasteboard")
+assert(integration.alerts() == 0, "paste-replace raised an alert")
+pressCut(integration)
+assert(#integration.actions == 4, "paste-replace left the selection armed for Cmd+X")
+
+integration = integrationContext(textTypes)
+simulateClick()
+assert(not module.handleEvent(vPress(false)),
+  "text Cmd+V without a selection entered the intercept path")
+assert(#integration.actions == 0, "text Cmd+V without a selection produced an action")
+
+integration = integrationContext(textTypes)
+dragThenPaste(integration)
+integration.deliverScrape(screenDraft)
+integration.timeout()
+integration.deliverScrape(screenOneChar)
+-- Selecting one character and replacing it is ordinary, so the cut path's undo
+-- guard has no place here: the diff is trusted and only the paste goes out.
+assert(#integration.actions == 4 and integration.actions[4] == "replay",
+  "a 1-char selection was not replaced by the paste alone")
+assert(integration.wrote() == nil, "a 1-char paste-replace reached the pasteboard")
+assert(integration.alerts() == 0, "a 1-char paste-replace raised an alert")
+
+integration = integrationContext(textTypes, { windowFrame = terminalFrame })
+dragThenPaste(integration, 100)
+integration.deliverScrape(screenDraft)
+assert(#integration.actions == 2 and integration.actions[2] == "replay",
+  "a transcript selection was deleted instead of just pasted")
+assert(integration.timeouts() == 0, "a transcript paste scheduled the re-scrape")
+pressCut(integration)
+assert(#integration.actions == 2, "a transcript paste left the selection state set")
+
+-- Unlike a cut, a paste that skips the DEL still gives the user what they pressed,
+-- so these two screens stay silent where the cut path alerts.
+integration = integrationContext(textTypes)
+dragThenPaste(integration)
+integration.deliverScrape("a screen with no input box")
+assert(#integration.actions == 2 and integration.actions[2] == "replay",
+  "an unparseable before-screen deleted the draft or swallowed the paste")
+assert(integration.alerts() == 0, "an unparseable before-screen alerted on the paste path")
+
+integration = integrationContext(textTypes)
+dragThenPaste(integration)
+integration.deliverScrape(nil)
+assert(#integration.actions == 2 and integration.actions[2] == "replay",
+  "an unreadable before-screen did not fall back to a plain paste")
+assert(integration.alerts() == 0, "an unreadable before-screen alerted on the paste path")
+
+integration = integrationContext(textTypes)
+dragThenPaste(integration)
+integration.changeTarget()
+integration.deliverScrape(screenDraft)
+assert(#integration.actions == 1,
+  "text Cmd+V deleted or pasted into a context that moved while scraping")
+
+integration = integrationContext(textTypes)
+dragThenPaste(integration)
+integration.deliverScrape(screenDraft)
+integration.timeout()
+integration.changeTarget()
+integration.deliverScrape(screenShorter)
+assert(#integration.actions == 3, "a paste landed in a tab that moved after the deletion")
+assert(integration.alerts() == 0, "a dropped paste raised an alert")
+
+-- The DEL is already out, so a box that never repaints must not cost the paste too.
+integration = integrationContext(textTypes)
+dragThenPaste(integration)
+integration.deliverScrape(screenDraft)
+integration.timeout()
+integration.deliverScrape(screenDraft)
+assert(integration.timeouts() == 2, "an unrepainted box was not retried on the paste path")
+integration.timeout()
+integration.deliverScrape(screenDraft)
+assert(integration.timeouts() == 2, "an unrepainted box kept rescraping past one retry")
+assert(integration.actions[#integration.actions] == "replay",
+  "an unrepainted box swallowed the paste")
+
+-- A second Cmd+V mid-flight queues behind the first instead of opening its own
+-- DEL window; both pastes still land, in the order they were pressed.
+integration = integrationContext(textTypes)
+dragThenPaste(integration)
+integration.deliverScrape(screenDraft)
+simulateDrag()
+assert(module.handleEvent(vPress(false)), "a Cmd+V mid-flight was not queued")
+assert(#integration.actions == 2, "a Cmd+V mid-flight started a second replace")
+integration.fireCutTimer()
+integration.deliverScrape(screenShorter)
+assert(integration.replayed() == "v,v", "the in-flight replace did not finish in order")
+
+integration = integrationContext(textTypes)
+dragThenCut(integration)
+integration.deliverScrape(screenDraft)
+simulateDrag()
+assert(module.handleEvent(vPress(false)), "a Cmd+V mid-cut was not consumed")
+assert(#integration.actions == 2, "a Cmd+V mid-cut started a replace")
+integration.fireCutTimer()
+integration.deliverScrape(screenShorter)
+assert(integration.wrote() == "brave ", "the queued paste poisoned the cut's diff")
+assert(integration.replayed() == "v", "the queued paste was not replayed after the cut")
+
+-- Cmd+X mid-replace closes the flow, but a replay of our own chord is invisible to
+-- the tap: it goes back through the decide path and still runs a real cut.
+integration = integrationContext(textTypes)
+dragThenPaste(integration)
+integration.deliverScrape(screenDraft)
+simulateDrag()
+assert(module.handleEvent(xPress(false)), "Cmd+X mid-replace was not consumed")
+assert(integration.replayed() == "v", "Cmd+X was replayed as a literal chord")
+integration.resolve("claude")
+integration.runDeferred()
+assert(integration.actions[#integration.actions] == "scrape",
+  "Cmd+X mid-replace lost its cut")
+
+integration = integrationContext(textTypes)
+dragThenPaste(integration)
+integration.deliverScrape(screenDraft)
+stranded = integration
+integration = integrationContext()
+assert(stranded.cutTimerStopped(),
+  "setTestHooks left the previous paste-replace re-scrape timer armed")
+
+integration = integrationContext(textTypes, { scrapeThrows = true })
+dragThenPaste(integration)
+dragThenPaste(integration)
+assert(integration.replayed() == "v,v",
+  "a failed replace stranded the flow or swallowed the paste")
+
+integration = integrationContext({ "public.png" })
+simulateDrag()
+assert(module.handleEvent(vPress(false)), "image Cmd+V over a selection was not consumed")
+integration.resolve("claude")
+assert(#integration.actions == 1 and integration.actions[1] == "image-paste",
+  "an armed selection changed the image paste path")
+pressCut(integration)
+assert(#integration.actions == 1, "image paste left the selection armed for Cmd+X")
+
+integration = integrationContext({ "public.file-url" }, { url = "file:///tmp/pic.png" })
+simulateDrag()
+assert(module.handleEvent(vPress(false)), "file-url Cmd+V over a selection was not consumed")
+integration.resolve("claude")
+integration.runDeferred()
+assert(#integration.actions == 2 and integration.actions[1] == "write-image"
+    and integration.actions[2] == "image-paste",
+  "an armed selection changed the convert paste path")
+
+local function charPress(character, keyCode, repeatDown)
+  return keyEvent(keyCode or 4, {}, repeatDown, character, character)
+end
+local function returnPress() return keyEvent(36, {}, false, "return", "\r") end
+local function backspacePress() return keyEvent(51, {}, false, "backspace", "\127") end
+local function escapePress() return keyEvent(53, {}, false, "escape", "\27") end
+local function tabPress() return keyEvent(48, {}, false, "tab", "\t") end
+local function arrowPress() return keyEvent(124, {}, false, "right", "\u{F703}") end
+local function shiftArrowPress()
+  return keyEvent(124, { "shift" }, false, "shift-right", "\u{F703}")
+end
+local function functionKeyPress() return keyEvent(122, {}, false, "f1", "\u{F704}") end
+local function cmdShiftPress() return keyEvent(0, { "cmd", "shift" }, false, "cmd-shift-a", "a") end
+
+local function dragThenType(context, character, keyCode)
+  simulateDrag()
+  assert(module.handleEvent(charPress(character, keyCode)),
+    "a character typed over a selection was not consumed")
+  context.resolve("claude")
+  context.runDeferred()
+end
+
+integration = integrationContext(textTypes)
+dragThenCut(integration)
+integration.deliverScrape(screenDraft)
+assert(module.handleEvent(charPress("h")), "a character mid-cut was not consumed")
+assert(integration.replayed() == "", "a character reached the terminal during the cut")
+integration.fireCutTimer()
+integration.deliverScrape(screenShorter)
+assert(integration.wrote() == "brave ", "a queued character polluted the cut's diff")
+assert(integration.replayed() == "h", "a queued character was not replayed after the cut")
+
+integration = integrationContext(textTypes)
+dragThenCut(integration)
+integration.deliverScrape(screenDraft)
+assert(module.handleEvent(charPress("q", 12)), "a character mid-cut was not queued")
+assert(module.handleEvent(charPress("q", 12, true)), "an autorepeat mid-cut was not consumed")
+integration.fireCutTimer()
+integration.deliverScrape(screenShorter)
+assert(integration.replayed() == "q", "an autorepeat mid-cut joined the replay queue")
+assert(not module.handleEvent(charPress("q", 12, true)),
+  "autorepeat stayed consumed after the cut replayed its held key")
+
+integration = integrationContext(textTypes)
+dragThenCut(integration)
+integration.deliverScrape(screenDraft)
+for _ = 1, 32 do
+  assert(module.handleEvent(charPress("q", 12)), "a key within the cut queue cap was not consumed")
+end
+assert(not module.handleEvent(charPress("q", 12)), "a key beyond the cut queue cap was consumed")
+integration.fireCutTimer()
+integration.deliverScrape(screenShorter)
+assert(select(2, integration.replayed():gsub("q", "")) == 32,
+  "the cut queue did not replay exactly its 32 capped keys")
+
+-- The live repro: Backspace already deleted the selection natively, so the flag it
+-- left behind must not send a DEL through an unselected draft.
+integration = integrationContext(textTypes)
+simulateDrag()
+assert(not module.handleEvent(backspacePress()), "a pass-through Backspace was consumed")
+assert(not module.handleEvent(vPress(false)),
+  "Cmd+V replaced over a selection a keystroke had already deleted")
+assert(#integration.actions == 0, "the stale-selection Cmd+V produced an action")
+
+integration = integrationContext(textTypes)
+dragThenType(integration, "h")
+assert(#integration.actions == 1 and integration.actions[1] == "scrape",
+  "typing over a selection did not snapshot the input box first")
+integration.deliverScrape(screenDraft)
+assert(#integration.actions == 2 and integration.actions[2] == "cut",
+  "typing over a selection did not delete it first")
+assert(integration.lastDelay() == 0.15, "the typed re-scrape delay changed")
+integration.timeout()
+integration.deliverScrape(screenShorter)
+assert(#integration.actions == 4 and integration.actions[4] == "replay",
+  "typing over a selection did not replay the character")
+assert(integration.replayed() == "h", "the replayed keystroke was not the typed character")
+assert(integration.wrote() == nil, "typing over a selection touched the pasteboard")
+assert(integration.alerts() == 0, "typing over a selection raised an alert")
+pressCut(integration)
+assert(#integration.actions == 4, "a typed replace left the selection armed for Cmd+X")
+
+integration = integrationContext(textTypes)
+dragThenType(integration, "h")
+integration.deliverScrape(screenDraft)
+assert(module.handleEvent(backspacePress()), "Backspace did not finish the replace")
+assert(integration.replayed() == "h,backspace", "Backspace was not the replace trigger")
+assert(not module.handleEvent(keyEvent(51, {}, true, "backspace", "\127")),
+  "held Backspace autorepeat stayed consumed after finishing the replace")
+
+-- Layout-independent: the character comes from the event, never from a keycode table.
+for _, character in ipairs({ "и", "7", " ", ",", "Ж" }) do
+  integration = integrationContext(textTypes)
+  dragThenType(integration, character)
+  integration.deliverScrape(screenDraft)
+  integration.timeout()
+  integration.deliverScrape(screenShorter)
+  assert(integration.replayed() == character,
+    "a printable character was not replaced over the selection")
+end
+
+integration = integrationContext(textTypes)
+dragThenType(integration, "h")
+integration.deliverScrape(screenDraft)
+integration.timeout()
+integration.deliverScrape(screenOneChar)
+assert(#integration.actions == 4 and integration.actions[4] == "replay",
+  "a 1-char selection was not replaced by the typed character alone")
+assert(integration.replayed() == "h", "a 1-char selection lost the typed character")
+assert(integration.wrote() == nil, "a 1-char typed replace reached the pasteboard")
+
+integration = integrationContext(textTypes, { windowFrame = terminalFrame })
+simulateDrag(100)
+assert(module.handleEvent(charPress("h")), "a character over a transcript drag was not consumed")
+integration.resolve("claude")
+integration.runDeferred()
+integration.deliverScrape(screenDraft)
+assert(#integration.actions == 2 and integration.actions[2] == "replay",
+  "a transcript selection was deleted instead of typed over")
+
+integration = integrationContext(textTypes)
+dragThenType(integration, "h")
+integration.deliverScrape("a screen with no input box")
+assert(#integration.actions == 2 and integration.actions[2] == "replay",
+  "an unparseable before-screen deleted the draft or swallowed the character")
+assert(integration.alerts() == 0, "an unparseable before-screen alerted on the typed path")
+
+-- Everything that does not insert text passes straight through, and each of them
+-- invalidates the TUI selection, so none may leave the flag armed behind it.
+for _, press in ipairs({
+  returnPress, backspacePress, escapePress, tabPress, arrowPress,
+  shiftArrowPress, functionKeyPress, cmdShiftPress,
+}) do
+  integration = integrationContext(textTypes)
+  simulateDrag()
+  assert(not module.handleEvent(press()), "a key that inserts no text was consumed")
+  assert(#integration.actions == 0, "a key that inserts no text produced an action")
+  pressCut(integration)
+  assert(#integration.actions == 0, "a key that inserts no text left the selection armed")
+end
+
+integration = integrationContext(textTypes)
+simulateDrag()
+assert(not module.handleEvent(charPress("h", 4, true)), "an autorepeated character was consumed")
+assert(#integration.actions == 0, "an autorepeated character started a replace")
+
+integration = integrationContext(textTypes)
+simulateClick()
+assert(not module.handleEvent(charPress("h")),
+  "a character typed without a selection entered the replace path")
+assert(#integration.actions == 0, "a character typed without a selection produced an action")
+
+integration = integrationContext(textTypes, { verdict = "not-claude" })
+simulateDrag()
+assert(not module.handleEvent(charPress("h")),
+  "a character typed at a plain shell was consumed")
+
+-- A fast typist's later keys would otherwise land ahead of the key still being held.
+integration = integrationContext(textTypes)
+dragThenType(integration, "h")
+integration.deliverScrape(screenDraft)
+assert(module.handleEvent(charPress("i", 34)), "a character typed mid-replace was not queued")
+assert(module.handleEvent(charPress("!", 18)), "a second character typed mid-replace was not queued")
+assert(#integration.actions == 2, "a queued character started a replace of its own")
+integration.timeout()
+integration.deliverScrape(screenShorter)
+assert(integration.replayed() == "h,i,!",
+  "the queued characters did not follow the held key in the order they were typed")
+
+integration = integrationContext(textTypes)
+dragThenType(integration, "h")
+integration.deliverScrape(screenDraft)
+assert(module.handleEvent(vPress(false)), "a text Cmd+V typed mid-replace was not queued")
+integration.timeout()
+integration.deliverScrape(screenShorter)
+assert(integration.replayed() == "h,v", "the queued paste did not follow the held character")
+
+-- Return submits the draft, so letting it through natively would land it ahead of
+-- the keys still being held: it is consumed and replayed as the sequence's last event.
+integration = integrationContext(textTypes)
+dragThenType(integration, "h")
+integration.deliverScrape(screenDraft)
+module.handleEvent(charPress("i", 34))
+assert(module.handleEvent(returnPress()), "Return mid-replace was not consumed")
+assert(integration.replayed() == "h,i,return",
+  "Return did not arrive after the keys the flow was holding")
+local releasedActions = #integration.actions
+integration.timeout()
+assert(#integration.actions == releasedActions and integration.replayed() == "h,i,return",
+  "the released flow kept running and replayed its keys twice")
+
+for _, press in ipairs({ escapePress, arrowPress, cmdShiftPress }) do
+  integration = integrationContext(textTypes)
+  dragThenType(integration, "h")
+  integration.deliverScrape(screenDraft)
+  assert(module.handleEvent(press()), "a non-queueable key mid-replace was not consumed")
+  assert(integration.replayed() == "h," .. press().label,
+    "a non-queueable key did not arrive after the held key")
+end
+
+integration = integrationContext(textTypes)
+dragThenType(integration, "h")
+integration.deliverScrape(screenDraft)
+for _ = 1, 32 do
+  assert(module.handleEvent(charPress("q", 12)), "a character within the queue cap was not queued")
+end
+assert(module.handleEvent(charPress("q", 12)), "the character that overran the cap was dropped")
+assert(select(2, integration.replayed():gsub(",", "")) == 33,
+  "the capped queue did not release the held key, all 32 queued ones and the overflow")
+
+integration = integrationContext(textTypes)
+dragThenType(integration, "h")
+integration.deliverScrape(screenDraft)
+module.handleEvent(charPress("i", 34))
+module.stop()
+assert(integration.replayed() == "h,i", "stop swallowed the keys the replace flow was holding")
+
+integration = integrationContext(textTypes)
+dragThenType(integration, "h")
+integration.deliverScrape(screenDraft)
+module.handleEvent(charPress("i", 34))
+integration.timeout()
+integration.changeTarget()
+integration.deliverScrape(screenShorter)
+assert(integration.replayed() == "", "a moved tab still received the held keystrokes")
+
+integration = integrationContext(textTypes)
+dragThenType(integration, "h")
+integration.deliverScrape(screenDraft)
+assert(module.handleEvent(xPress(false)), "Cmd+X mid-replace was not consumed")
+assert(integration.replayed() == "h",
+  "the key the flow was holding did not go out before the trigger was decided")
+local flushedActions = #integration.actions
+integration.resolve("claude")
+assert(#integration.actions == flushedActions,
+  "Cmd+X cut a selection the replace had already deleted")
+
 integration = integrationContext({ "public.file-url" }, { url = "file:///tmp/pic.png" })
 module.handleEvent(vPress(false))
 integration.changeTarget()
@@ -1344,6 +1820,293 @@ module.setTestHooks({
 })
 assert(module.foregroundVerdict() == "uncertain",
   "foreground verdict for a non-Terminal app was not uncertain")
+
+assert(module.containsTextType({ "public.utf8-plain-text" }), "utf8 text type was not detected")
+assert(module.containsTextType({ "public.file-url", "public.utf8-plain-text" }),
+  "a text type was missed alongside a file url")
+assert(module.containsTextType({ "NSStringPboardType" }), "the legacy string type was not detected")
+assert(not module.containsTextType({ "public.png" }), "an image type was read as text")
+assert(not module.containsTextType({}), "an empty pasteboard was read as text")
+assert(not module.containsTextType(nil), "missing types were read as text")
+
+-- One resolve can turn several consumed keys into replaces; all but the first find
+-- the flow already running and have to join its queue rather than vanish.
+integration = integrationContext(textTypes)
+simulateDrag()
+assert(module.handleEvent(charPress("h")), "the first pending character was not consumed")
+assert(module.handleEvent(charPress("i", 34)), "the second pending character was not consumed")
+assert(module.status().pendingCount == 2, "the second pending character was folded away")
+integration.resolve("claude")
+integration.runDeferred()
+integration.deliverScrape(screenDraft)
+integration.timeout()
+integration.deliverScrape(screenShorter)
+assert(integration.replayed() == "h,i",
+  "a character resolved into an already running replace was swallowed")
+
+integration = integrationContext(textTypes)
+dragThenType(integration, "h")
+integration.deliverScrape(screenDraft)
+integration.switchApp("com.apple.Safari")
+assert(not module.handleEvent(charPress("i", 34)),
+  "a key typed after the context moved was consumed by the dead flow")
+assert(integration.replayed() == "", "the held key was posted into another app")
+
+-- Abandoning before the DEL is the one exit that still holds an armed selection.
+integration = integrationContext(textTypes)
+simulateDrag()
+assert(module.handleEvent(vPress(false)), "text Cmd+V over a selection was not consumed")
+integration.resolve("claude")
+integration.runDeferred()
+integration.changeTarget()
+integration.deliverScrape(screenDraft)
+assert(#integration.actions == 1, "a paste-replace deleted in a tab that had moved")
+integration.switchApp(nil)
+assert(not module.handleEvent(vPress(false)),
+  "an abandoned before-scrape left the selection armed")
+assert(#integration.actions == 1, "the stale selection of an abandoned flow was replaced over")
+
+integration = integrationContext(textTypes)
+dragThenType(integration, "h")
+integration.deliverScrape(screenDraft)
+integration.timeout()
+integration.switchApp("com.apple.Safari")
+integration.deliverScrape(screenShorter)
+assert(integration.replayed() == "", "the flow replayed into another app after the switch")
+local abandonedActions = #integration.actions
+integration.switchApp(nil)
+assert(not module.handleEvent(vPress(false)),
+  "an abandoned flow left the selection armed")
+assert(#integration.actions == abandonedActions,
+  "an abandoned flow replaced over its stale selection")
+assert(not module.handleEvent(charPress("h", 4, true)),
+  "autorepeat stayed consumed after the flow holding the key was abandoned")
+
+-- The scrape blows up before any target check runs, so the only thing standing
+-- between the held key and the app that is now in front is the replay's own check.
+integration = integrationContext(textTypes, { scrapeThrows = true })
+simulateDrag()
+assert(module.handleEvent(vPress(false)), "text Cmd+V over a selection was not consumed")
+integration.resolve("claude")
+integration.switchApp("com.apple.Safari")
+integration.runDeferred()
+assert(integration.replayed() == "", "a stranded flow posted the paste into another app")
+
+-- The consumed first press caches a consume decision for its keycode; left set, it
+-- swallows every autorepeat of a key the user is still holding.
+integration = integrationContext(textTypes)
+dragThenType(integration, "h")
+integration.deliverScrape(screenDraft)
+integration.timeout()
+integration.deliverScrape(screenShorter)
+assert(not module.handleEvent(charPress("h", 4, true)),
+  "autorepeat stayed consumed after the replace finished")
+
+integration = integrationContext(textTypes)
+dragThenType(integration, "h")
+integration.deliverScrape(screenDraft)
+for _ = 1, 5 do
+  assert(module.handleEvent(charPress("h", 4, true)),
+    "an autorepeat mid-replace was not consumed")
+end
+integration.timeout()
+integration.deliverScrape(screenShorter)
+assert(integration.replayed() == "h", "autorepeats mid-replace joined the queue")
+
+integration = integrationContext(textTypes)
+simulateDrag()
+assert(not module.handleEvent(keyEvent(14, { "alt" }, false, "alt-e", "e", "")),
+  "an Option dead-key press armed a replace")
+assert(#integration.actions == 0, "an Option dead-key press produced an action")
+pressCut(integration)
+assert(#integration.actions == 0, "an Option dead-key press left the selection armed")
+
+-- Option types { } @ \ on German and Nordic layouts, where nothing else does.
+integration = integrationContext(textTypes)
+simulateDrag()
+assert(module.handleEvent(keyEvent(28, { "alt" }, false, "alt-8", "8", "{")),
+  "an Option-printable character did not replace the selection")
+integration.resolve("claude")
+integration.runDeferred()
+assert(integration.actions[1] == "scrape",
+  "an Option-printable character produced no replace")
+
+-- Fn+letter drives system features and inserts nothing, so a DEL would delete the
+-- selection with nothing to put back.
+integration = integrationContext(textTypes)
+simulateDrag()
+assert(not module.handleEvent(keyEvent(4, { "fn" }, false, "fn-h", "h")),
+  "an Fn-modified press armed a replace")
+assert(#integration.actions == 0, "an Fn-modified press produced an action")
+
+for _, types in ipairs({ {}, { "com.acme.private" }, { "public.file-url" } }) do
+  integration = integrationContext(types)
+  simulateDrag()
+  assert(not module.handleEvent(vPress(false)),
+    "Cmd+V over a pasteboard with no text entered the replace path")
+  assert(#integration.actions == 0, "a pasteboard with no text produced an action")
+end
+
+-- A paste the cut's DEL window rejected has to wait it out: posted mid-cut it would
+-- sit between the two scrapes cutDiff measures the deletion against.
+integration = integrationContext(textTypes)
+simulateDrag()
+assert(module.handleEvent(xPress(false)), "Cmd+X was not consumed")
+assert(module.handleEvent(vPress(false)), "Cmd+V behind Cmd+X was not consumed")
+integration.resolve("claude")
+integration.runDeferred()
+integration.deliverScrape(screenDraft)
+assert(integration.replayed() == "", "the paste was posted into the cut's DEL window")
+integration.fireCutTimer()
+integration.deliverScrape(screenShorter)
+assert(integration.wrote() == "brave ", "the held paste poisoned the cut's diff")
+assert(integration.replayed() == "v", "the held paste was never posted after the cut")
+
+-- Return in the pending window submits the draft the held character was typed into,
+-- so it waits behind it instead of passing through.
+integration = integrationContext(textTypes)
+simulateDrag()
+assert(module.handleEvent(charPress("h")), "the pending character was not consumed")
+assert(module.handleEvent(returnPress()), "Return was not held behind the pending replace")
+integration.resolve("claude")
+integration.runDeferred()
+integration.deliverScrape(screenDraft)
+integration.timeout()
+integration.deliverScrape(screenShorter)
+assert(integration.replayed() == "h,return",
+  "Return overtook the character the pending replace was holding")
+
+integration = integrationContext(textTypes)
+simulateDrag()
+assert(module.handleEvent(charPress("h")), "the pending character was not consumed")
+assert(module.handleEvent(returnPress()), "Return was not held behind the pending replace")
+integration.resolve("claude")
+integration.runDeferred()
+integration.deliverScrape(screenDraft)
+integration.timeout()
+integration.changeTarget()
+integration.deliverScrape(screenShorter)
+assert(integration.replayed() == "", "a deferred Return replay leaked into the new tab")
+assert(integration.actions[#integration.actions] == "policy-drop",
+  "a deferred Return replay was not dropped after the tab changed")
+
+integration = integrationContext(textTypes)
+simulateDrag()
+assert(module.handleEvent(xPress(false)), "Cmd+X was not consumed")
+assert(module.handleEvent(charPress("h")), "the pending character was not consumed")
+assert(module.handleEvent(returnPress()), "Return was not held behind the pending character")
+integration.resolve("claude")
+integration.runDeferred()
+integration.deliverScrape(screenDraft)
+assert(integration.replayed() == "", "pending actions reached the terminal during the cut")
+integration.fireCutTimer()
+integration.deliverScrape(screenShorter)
+assert(integration.wrote() == "brave ", "pending dispatch polluted the active cut")
+assert(integration.replayed() == "h,return",
+  "pending actions resumed after the cut in the wrong order")
+
+integration = integrationContext(textTypes)
+simulateDrag()
+assert(module.handleEvent(xPress(false)), "Cmd+X was not consumed")
+integration.changeTarget()
+assert(module.handleEvent(charPress("h")), "the mismatched replace was not consumed")
+integration.switchApp(nil)
+assert(module.handleEvent(keyEvent(36, {}, false, "a", "\r")),
+  "the replay was not held behind the pending replace")
+integration.resolve("claude")
+integration.runDeferred()
+integration.deliverScrape(screenDraft)
+assert(module.handleEvent(charPress("j", 38)), "the live key was not queued mid-cut")
+integration.fireCutTimer()
+integration.deliverScrape(screenShorter)
+assert(integration.replayed() == "a,j",
+  "a live mid-cut key overtook the older pending replay")
+
+integration = integrationContext(textTypes)
+simulateDrag()
+assert(module.handleEvent(charPress("h")), "the pending replace was not consumed")
+assert(module.handleEvent(keyEvent(36, {}, false, "a", "\r")),
+  "the replay was not held behind the pending replace")
+integration.resolve("claude")
+integration.runDeferred()
+integration.deliverScrape(screenDraft)
+assert(module.handleEvent(charPress("b", 11)), "the live key was not queued mid-replace")
+assert(module.handleEvent(returnPress()), "Return did not finish the replace")
+assert(integration.replayed() == "h,a,b,return",
+  "a live mid-replace key overtook the older pending replay")
+
+integration = integrationContext(textTypes)
+simulateDrag()
+module.handleEvent(charPress("h"))
+integration.resolve("not-claude")
+assert(integration.replayed() == "h", "a non-Claude character was not replayed")
+pressCut(integration)
+assert(#integration.actions == 1, "a replace that resolved away left the selection armed")
+
+-- Claude renders the Option+Shift+arrow escape sequence as a bare Esc, so the
+-- chord is swallowed while Terminal is frontmost and passes anywhere else.
+integration = integrationContext()
+assert(module.handleEvent(keyEvent(123, { "alt", "shift" }, false, "alt-shift-left")),
+  "Option+Shift+Left was not swallowed in Terminal")
+assert(#integration.actions == 0, "swallowed Option+Shift+Left still ran an action")
+assert(not module.handleEvent(keyEvent(123, { "alt" }, false, "alt-left")),
+  "plain Option+Left was intercepted")
+integration.switchApp("com.apple.Safari")
+assert(not module.handleEvent(keyEvent(123, { "alt", "shift" }, false, "alt-shift-left")),
+  "Option+Shift+Left was swallowed outside Terminal")
+
+-- A shell tab has no draft to protect, so there the chord is the user's own.
+integration = integrationContext(nil, { verdict = "not-claude" })
+assert(not module.handleEvent(keyEvent(123, { "alt", "shift" }, false, "alt-shift-left")),
+  "Option+Shift+Left was swallowed in a non-Claude tab")
+integration = integrationContext(nil, { verdict = "claude" })
+assert(module.handleEvent(keyEvent(126, { "alt", "shift" }, false, "alt-shift-up")),
+  "Option+Shift+Up was not swallowed in a Claude tab")
+
+-- A paste consumed for a tab that moved before the verdict landed has nowhere safe to
+-- go: the clipboard would land in whatever took its place.
+integration = integrationContext(textTypes)
+simulateDrag()
+assert(module.handleEvent(vPress(false)), "text Cmd+V over a selection was not consumed")
+integration.changeTarget()
+integration.resolve("claude")
+assert(integration.replayed() == "", "a target-mismatched paste was replayed")
+assert(#integration.actions == 1 and integration.actions[1] == "policy-drop",
+  "a target-mismatched paste was not policy-dropped")
+
+-- The character was replayed, not replaced, so the key is still just a key: its
+-- repeats have to reach the terminal on their own.
+integration = integrationContext(textTypes)
+simulateDrag()
+assert(module.handleEvent(charPress("h")), "the pending character was not consumed")
+integration.resolve("not-claude")
+assert(integration.replayed() == "h", "a non-Claude character was not replayed")
+assert(not module.handleEvent(charPress("h", 4, true)),
+  "autorepeat stayed consumed after the character was replayed")
+
+integration = integrationContext(textTypes)
+simulateDrag()
+assert(module.handleEvent(charPress("h")), "the pending character was not consumed")
+integration.changeTarget()
+integration.resolve("claude")
+assert(not module.handleEvent(charPress("h", 4, true)),
+  "autorepeat stayed consumed after the character was dropped")
+
+-- A shortcut resolved alongside a replace has to wait for it: the replace runs across
+-- two scrapes and a timer, so anything dispatched beside it acts on the older draft.
+integration = integrationContext(textTypes)
+simulateDrag()
+assert(module.handleEvent(charPress("h")), "the pending character was not consumed")
+assert(module.handleEvent(cPress(false)), "Cmd+C was not queued behind the pending replace")
+integration.resolve("claude")
+assert(#integration.actions == 0, "Cmd+C ran before the replace it was pressed after")
+integration.runDeferred()
+integration.deliverScrape(screenDraft)
+integration.timeout()
+integration.deliverScrape(screenShorter)
+assert(integration.replayed() == "h", "the replace lost the key it was holding")
+assert(integration.actions[#integration.actions] == "copy",
+  "Cmd+C behind the replace never ran")
 
 local copy = module.copyChordPlan()
 assert(#copy == 2, "copy chord length changed")

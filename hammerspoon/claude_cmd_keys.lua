@@ -29,6 +29,19 @@ local imageTypes = {
   ["public.webp"] = true,
 }
 
+-- The string family a native Cmd+V would actually paste. An empty or unknown
+-- pasteboard must not read as text: the replace flow would DEL the selection and
+-- then put nothing back.
+local textPasteTypes = {
+  ["NSStringPboardType"] = true,
+  ["public.plain-text"] = true,
+  ["public.rtf"] = true,
+  ["public.text"] = true,
+  ["public.utf16-external-plain-text"] = true,
+  ["public.utf16-plain-text"] = true,
+  ["public.utf8-plain-text"] = true,
+}
+
 local function basename(path)
   return tostring(path or ""):match("([^/]+)$") or ""
 end
@@ -91,6 +104,18 @@ local imageExtensions = {
   tiff = true,
   webp = true,
 }
+
+function M.containsTextType(types)
+  if type(types) ~= "table" then
+    return false
+  end
+  for _, contentType in ipairs(types) do
+    if textPasteTypes[contentType] then
+      return true
+    end
+  end
+  return false
+end
 
 function M.containsFileURLType(types)
   if type(types) ~= "table" then
@@ -191,11 +216,6 @@ local function inRanges(ranges, code)
     end
   end
   return false
-end
-
-local function characterLength(text)
-  local count = utf8 and utf8.len and utf8.len(text)
-  return type(count) == "number" and count or #text
 end
 
 -- One keypress deletes one grapheme, and a grapheme can be several codepoints (an emoji
@@ -404,7 +424,9 @@ function M.planBytes(plan)
   return table.concat(bytes)
 end
 
-local function decideAction(bundleID, claude, pasteboardTypes, key, convertPath)
+-- A replace carries no shortcut key when the user typed a character, so it is
+-- decided last: an image or convertible clipboard still owns Cmd+V.
+local function decideAction(bundleID, claude, pasteboardTypes, key, convertPath, replace)
   if bundleID ~= terminalBundleID or not claude then
     return "pass"
   end
@@ -420,11 +442,15 @@ local function decideAction(bundleID, claude, pasteboardTypes, key, convertPath)
       return "convert"
     end
   end
+  if replace then
+    return "replace"
+  end
   return "pass"
 end
 
-function M.decide(bundleID, psOutput, pasteboardTypes, key, convertPath)
-  return decideAction(bundleID, M.isClaudeForeground(psOutput), pasteboardTypes, key, convertPath)
+function M.decide(bundleID, psOutput, pasteboardTypes, key, convertPath, replace)
+  return decideAction(bundleID, M.isClaudeForeground(psOutput), pasteboardTypes, key,
+    convertPath, replace)
 end
 
 local function contextIdentityMatches(observed, cached)
@@ -436,12 +462,13 @@ local function contextIdentityMatches(observed, cached)
     and cached.tabElement == observed.tabElement
 end
 
-function M.decideCached(observed, cached, pasteboardTypes, key, timestamp, convertPath)
+function M.decideCached(observed, cached, pasteboardTypes, key, timestamp, convertPath, replace)
   local verdict = M.cachedVerdict(observed, cached, timestamp)
   if verdict == "uncertain" then
     return "pass"
   end
-  return decideAction(observed.bundleID, verdict == "claude", pasteboardTypes, key, convertPath)
+  return decideAction(observed.bundleID, verdict == "claude", pasteboardTypes, key,
+    convertPath, replace)
 end
 
 function M.cachedVerdict(observed, cached, timestamp)
@@ -466,17 +493,25 @@ local function finishPending(state, verdict, targetMatches)
     local targetMatchesItem = targetMatches == nil or targetMatches[item.id] == true
     local action
     if verdict == "stop" or not targetMatchesItem then
+      -- Copy is safe wherever it ends up; everything else would mutate a draft that
+      -- is no longer the one the user aimed at — a replay of a held paste or of the
+      -- key behind it types into whatever is in front now.
       action = item.key == "c" and "replay" or "policy-drop"
     elseif verdict == "claude" then
       action = actionForKey[item.key]
-        or (item.convertPath and "convert" or "image-paste")
+        or (item.convertPath and "convert")
+        or (item.replace and "replace")
+        or (item.hold and "replay")
+        or "image-paste"
     else
       action = "replay"
     end
     actions[#actions + 1] = {
       id = item.id,
+      key = item.key,
       action = action,
       path = item.convertPath,
+      replace = item.replace,
     }
   end
   return idlePendingState(), { actions = actions, verdict = verdict }
@@ -489,11 +524,15 @@ function M.pendingTransition(state, event)
     if event.selfPosted then
       return state, { consume = false, ignored = true }
     end
-    if event.key ~= "v" and not actionForKey[event.key] then
-      return state, { consume = false }
-    end
-    if event.key == "v" and event.image ~= true then
-      return state, { consume = false }
+    -- A typed replace has no shortcut key at all, and a hold is any key at all: both
+    -- earn their place in the queue from the flow they are waiting behind.
+    if not event.replace and not event.hold then
+      if event.key ~= "v" and not actionForKey[event.key] then
+        return state, { consume = false }
+      end
+      if event.key == "v" and event.image ~= true then
+        return state, { consume = false }
+      end
     end
     if event.isRepeat then
       if state.status == "pending" then
@@ -511,7 +550,13 @@ function M.pendingTransition(state, event)
         queue[index] = item
       end
     end
-    queue[#queue + 1] = { id = event.id, key = event.key, convertPath = event.convertPath }
+    queue[#queue + 1] = {
+      id = event.id,
+      key = event.key,
+      convertPath = event.convertPath,
+      replace = event.replace,
+      hold = event.hold,
+    }
     return {
       status = "pending",
       queue = queue,
@@ -550,6 +595,14 @@ local ttyTask
 local psTask
 local cutTimer
 local cutInFlight = false
+local afterCutQueue = {}
+local replaceTimer
+local replaceInFlight = false
+local replaceOriginal
+local replaceContext
+local replaceQueue = {}
+local replaceContinuation
+local cutContinuation
 local selectAllInFlight = false
 -- Claude's TUI creates a selection only on a left drag and drops it on a plain
 -- click, so a cut fired with selectionLikely false deletes unselected draft text.
@@ -563,6 +616,7 @@ local lastTtyCheck = 0
 local generation = 0
 local started = false
 local repeatDecisions = {}
+local skipRepeatCache = false
 local lastCallbackMs = 0
 local axuielement
 local replayProperty
@@ -797,13 +851,59 @@ local function currentTargetMatches(original, observed)
   return original and sameObserved(original.observed, observed)
 end
 
+-- A replay runs up to ~350ms after the press, by which time the real keyUp has
+-- long since gone through on its own: the copy would arrive as a key that is
+-- pressed and never released, carrying a timestamp older than the DEL and undo
+-- posted ahead of it. Restamping it and pairing it with its own keyUp is the only
+-- difference left between this and a physical press.
 local function postOriginal(original)
   if runtimeHooks and runtimeHooks.post then
     runtimeHooks.post(original.event)
     return
   end
-  original.event:setProperty(replayProperty, replayMarker)
-  original.event:post()
+  local event = original.event
+  event:setProperty(replayProperty, replayMarker)
+  event:timestamp(hs.timer.absoluteTime())
+  event:post()
+  local release = event:copy()
+  release:setType(hs.eventtap.event.types.keyUp)
+  release:post()
+end
+
+-- Consuming a press caches "consume" for its keycode, so every path that lets the
+-- press go without running its action has to drop that cache too or the autorepeats
+-- of a key the user is still holding are eaten with it.
+local function forgetRepeat(original)
+  if original and original.keyCode then
+    repeatDecisions[original.keyCode] = nil
+  end
+end
+
+-- Keys the cut flow made wait: posting them mid-cut would put text between the two
+-- scrapes the DEL is measured against, and cutDiff would read it as deleted draft.
+local function flushAfterCut()
+  local held = afterCutQueue
+  afterCutQueue = {}
+  local observed
+  for _, item in ipairs(held) do
+    forgetRepeat(item)
+    observed = observed or observeFrontmost()
+    if currentTargetMatches(item, observed) then
+      postOriginal(item)
+    elseif runtimeHooks and runtimeHooks.drop then
+      runtimeHooks.drop(item.event)
+    end
+  end
+end
+
+local function endCut()
+  cutInFlight = false
+  flushAfterCut()
+  local continuation = cutContinuation
+  cutContinuation = nil
+  if continuation then
+    continuation()
+  end
 end
 
 local function deferAsync(fn)
@@ -945,21 +1045,23 @@ end
 -- putting a guess on the pasteboard; only a target that moved before the DEL
 -- suppresses the deletion itself.
 local function performCut(original)
-  if not selectionLikely or cutInFlight then
+  -- Both flows own the same DEL-then-diff window; interleaved, each would read
+  -- the other's deletion as its own.
+  if not selectionLikely or cutInFlight or replaceInFlight then
     return
   end
   cutInFlight = true
   local function cutOnce()
     scrapeScreen(function(beforeScreen)
       if not currentTargetMatches(original, observeFrontmost()) then
-        cutInFlight = false
+        endCut()
         return
       end
       local before, topBorderIndex, totalLines = M.parseInputBox(beforeScreen)
       if before and draggedInTranscript(original, topBorderIndex, totalLines) then
         emit(M.copyChordPlan())
         clearSelectionState()
-        cutInFlight = false
+        endCut()
         return
       end
       if not before then
@@ -971,7 +1073,7 @@ local function performCut(original)
           -- and unannounced it reads as the key having silently stopped working.
           showAlert("✂ cut: screen unreadable")
         end
-        cutInFlight = false
+        endCut()
         return
       end
       emit(M.cutPlan())
@@ -984,7 +1086,7 @@ local function performCut(original)
           -- The pre-DEL check cannot cover this one: the tab may have changed
           -- during the delay, and the front window is whatever the scraper read.
           if not currentTargetMatches(original, observeFrontmost()) then
-            cutInFlight = false
+            endCut()
             return
           end
           local afterDraft = M.parseInputBox(afterScreen)
@@ -996,7 +1098,7 @@ local function performCut(original)
             if attempts < 2 and afterDraft == before then
               scrapeAfterScreen()
             else
-              cutInFlight = false
+              endCut()
             end
             return
           end
@@ -1005,12 +1107,11 @@ local function performCut(original)
             -- often than a deliberate 1-char cut: put it back and stay silent.
             -- chat:undo is a multi-level stack, safe only right after our DEL.
             emit(M.undoPlan())
-            cutInFlight = false
+            endCut()
             return
           end
           setPasteboardText(removed)
-          cutInFlight = false
-          showAlert("✂ cut " .. characterLength(removed) .. " chars")
+          endCut()
         end)
       end
       scrapeAfterScreen = function()
@@ -1018,7 +1119,7 @@ local function performCut(original)
         cutTimer = after(cutScrapeDelay, function()
           cutTimer = nil
           if not pcall(readAfterScreen) then
-            cutInFlight = false
+            endCut()
           end
         end)
       end
@@ -1031,7 +1132,181 @@ local function performCut(original)
     -- cutInFlight has to fall on every path: an error that leaves it set kills
     -- every later Cmd+X until Hammerspoon reloads.
     if not pcall(cutOnce) then
-      cutInFlight = false
+      endCut()
+    end
+  end)
+end
+
+local replaceQueueLimit = 32
+
+local function stopReplaceTimer()
+  if replaceTimer and replaceTimer.stop then replaceTimer:stop() end
+  replaceTimer = nil
+end
+
+-- Actions from the same resolution that had to wait out the flow: a cut dispatched
+-- alongside a replace would otherwise read the replace's own DEL as its selection.
+local function runReplaceContinuation()
+  local continuation = replaceContinuation
+  replaceContinuation = nil
+  if continuation then
+    continuation()
+  end
+end
+
+-- The tab moved out from under the DEL, and every key this flow is holding was
+-- typed at the draft that is no longer in front.
+local function abandonReplace()
+  stopReplaceTimer()
+  forgetRepeat(replaceOriginal)
+  for _, item in ipairs(replaceQueue) do
+    forgetRepeat(item)
+    if item.mergedPending and runtimeHooks and runtimeHooks.drop then
+      runtimeHooks.drop(item.event)
+    end
+  end
+  replaceOriginal = nil
+  replaceContext = nil
+  replaceQueue = {}
+  replaceInFlight = false
+  clearSelectionState()
+  runReplaceContinuation()
+end
+
+-- The held key goes out first and everything typed behind it follows in order,
+-- optional trigger last, so the draft reads the way it was typed even though the
+-- first key waited ~350ms.
+local function finishReplace(trigger)
+  stopReplaceTimer()
+  local sequence = {}
+  if replaceOriginal then
+    sequence[#sequence + 1] = replaceOriginal
+  end
+  for _, item in ipairs(replaceQueue) do
+    sequence[#sequence + 1] = item
+  end
+  if trigger then
+    sequence[#sequence + 1] = trigger
+  end
+  local context = replaceContext
+  replaceOriginal = nil
+  replaceContext = nil
+  replaceQueue = {}
+  replaceInFlight = false
+  for _, item in ipairs(sequence) do
+    forgetRepeat(item)
+  end
+  -- The flow's own target checks cannot cover the moment of the replay itself, and
+  -- posting into whatever is in front now would type the user's keys at another app.
+  local observed = context and observeFrontmost() or nil
+  if context and not sameObserved(context, observed) then
+    clearSelectionState()
+  end
+  for _, item in ipairs(sequence) do
+    if currentTargetMatches(item, observed) then
+      postOriginal(item)
+    elseif runtimeHooks and runtimeHooks.drop then
+      runtimeHooks.drop(item.event)
+    end
+  end
+  runReplaceContinuation()
+end
+
+-- The TUI has no replace-selection edit, so the selection is deleted and the key
+-- the user actually pressed — a character or their own Cmd+V — is replayed into
+-- the hole. DEL on a live selection leaves the cursor at the deletion point
+-- (measured with the cursor before, inside and after it), which is what makes the
+-- replay a true replace. Nothing here writes the pasteboard, and only a tab that
+-- moved loses the keystroke.
+local function performReplace(original)
+  if replaceInFlight then
+    -- One pending resolve can turn several consumed keys into replaces at once;
+    -- the later ones join the running flow's queue instead of vanishing with it.
+    if sameObserved(replaceContext, original.observed)
+        and #replaceQueue < replaceQueueLimit then
+      replaceQueue[#replaceQueue + 1] = original
+    end
+    return
+  end
+  if not selectionLikely or cutInFlight then
+    -- The keystroke is already consumed, so it has to leave as itself: a plain
+    -- native keypress beats silently eating what the user typed.
+    forgetRepeat(original)
+    if cutInFlight then
+      afterCutQueue[#afterCutQueue + 1] = original
+    else
+      postOriginal(original)
+    end
+    clearSelectionState()
+    return
+  end
+  replaceInFlight = true
+  replaceOriginal = original
+  replaceContext = original.observed
+  local function replaceOnce()
+    scrapeScreen(function(beforeScreen)
+      if not replaceInFlight then
+        return
+      end
+      if not currentTargetMatches(original, observeFrontmost()) then
+        abandonReplace()
+        return
+      end
+      local before, topBorderIndex, totalLines = M.parseInputBox(beforeScreen)
+      -- A transcript selection is not draft text, and an unreadable screen gives
+      -- nothing to verify a DEL against; both fall back to the bare keystroke the
+      -- key would have delivered on its own, so nothing is silently broken.
+      if not before or draggedInTranscript(original, topBorderIndex, totalLines) then
+        clearSelectionState()
+        finishReplace()
+        return
+      end
+      emit(M.cutPlan())
+      clearSelectionState()
+      local after = runtimeHooks and runtimeHooks.after or hs.timer.doAfter
+      local attempts = 0
+      local scrapeAfterScreen
+      local function readAfterScreen()
+        scrapeScreen(function(afterScreen)
+          if not replaceInFlight then
+            return
+          end
+          if not currentTargetMatches(original, observeFrontmost()) then
+            abandonReplace()
+            return
+          end
+          local afterDraft = M.parseInputBox(afterScreen)
+          local removed = M.cutDiff(before, afterDraft)
+          if not removed and attempts < 1 and afterDraft == before then
+            attempts = attempts + 1
+            scrapeAfterScreen()
+            return
+          end
+          -- No 1-char undo guard here, unlike the cut: selecting a single character
+          -- and typing over it is ordinary, and resurrecting it would corrupt every
+          -- such replace. Selection state now dies with each keystroke, so the stale
+          -- flag this would have caught costs one character in a rare corner instead.
+          finishReplace()
+        end)
+      end
+      scrapeAfterScreen = function()
+        replaceTimer = after(cutScrapeDelay, function()
+          replaceTimer = nil
+          -- A key that released the flow early already posted everything it held.
+          if not replaceInFlight then
+            return
+          end
+          if not pcall(readAfterScreen) then
+            finishReplace()
+          end
+        end)
+      end
+      scrapeAfterScreen()
+    end)
+  end
+  deferAsync(function()
+    if not pcall(replaceOnce) then
+      finishReplace()
     end
   end)
 end
@@ -1109,12 +1384,10 @@ local function performSelectAll(original)
       -- Posted drag events move the physical pointer; put it back afterwards.
       local restoreMouse = not (runtimeHooks and runtimeHooks.mouse)
         and hs.mouse.absolutePosition() or nil
+      -- One motion event is enough: Claude anchors at the down point and takes
+      -- the last SGR motion as the endpoint, so the selection paints in a
+      -- single repaint instead of growing across intermediate steps.
       postMouseEvent("down", startPoint)
-      pauseBetweenDragSteps()
-      postMouseEvent("dragged", {
-        x = (startPoint.x + endPoint.x) / 2,
-        y = (startPoint.y + endPoint.y) / 2,
-      })
       pauseBetweenDragSteps()
       postMouseEvent("dragged", endPoint)
       pauseBetweenDragSteps()
@@ -1173,8 +1446,8 @@ function M.menuPaste(app)
   return false
 end
 
--- Shared by the immediate path and the deferred queue, so both run the same six
--- actions the same way. Returns false for anything else (replay, policy-drop).
+-- Shared by the immediate path and the deferred queue, so both run every action
+-- the same way. Returns false for anything else (replay, policy-drop).
 local function runAction(action, original, path)
   if action == "copy" then
     emit(M.copyChordPlan())
@@ -1188,6 +1461,8 @@ local function runAction(action, original, path)
     performCut(original)
   elseif action == "selectAll" then
     performSelectAll(original)
+  elseif action == "replace" then
+    performReplace(original)
   elseif action == "image-paste" then
     emit(M.imagePastePlan())
     clearSelectionState()
@@ -1198,6 +1473,66 @@ local function runAction(action, original, path)
     return false
   end
   return true
+end
+
+-- One resolution can hold a replace and the keys pressed behind it. The replace runs
+-- across two scrapes and a timer, so everything after it waits for that flow to end:
+-- dispatched now, a cut would diff against the replace's own DEL and a replay would
+-- reach the draft ahead of the key it followed.
+local function dispatchPendingActions(items, from)
+  local observed = from <= #items and observeFrontmost() or nil
+  for index = from, #items do
+    local item = items[index]
+    local original = pendingOriginals[item.id]
+    if replaceInFlight or cutInFlight then
+      local holdQueue = replaceInFlight and replaceQueue or afterCutQueue
+      if item.action == "policy-drop" then
+        pendingOriginals[item.id] = nil
+        if item.replace then clearSelectionState() end
+        forgetRepeat(original)
+        if runtimeHooks and runtimeHooks.drop then
+          runtimeHooks.drop(original.event)
+        end
+      elseif item.action == "replay" and #holdQueue < replaceQueueLimit then
+        pendingOriginals[item.id] = nil
+        if item.replace then clearSelectionState() end
+        original.mergedPending = true
+        holdQueue[#holdQueue + 1] = original
+      else
+        if replaceInFlight then
+          replaceContinuation = function() dispatchPendingActions(items, index) end
+        else
+          cutContinuation = function() dispatchPendingActions(items, index) end
+        end
+        return
+      end
+    else
+      pendingOriginals[item.id] = nil
+      -- A replace that resolved into anything else never ran its DEL, so the flag it
+      -- was armed on must not survive the resolution either.
+      if item.replace and item.action ~= "replace" then
+        clearSelectionState()
+      end
+      if original and not currentTargetMatches(original, observed) then
+        forgetRepeat(original)
+        if item.action == "replay" and item.key == "c" then
+          postOriginal(original)
+        elseif runtimeHooks and runtimeHooks.drop then
+          runtimeHooks.drop(original.event)
+        end
+      elseif item.action == "replay" then
+        forgetRepeat(original)
+        postOriginal(original)
+      elseif item.action == "policy-drop" then
+        forgetRepeat(original)
+        if runtimeHooks and runtimeHooks.drop then
+          runtimeHooks.drop(original.event)
+        end
+      elseif not runAction(item.action, original, item.path) then
+        error("unknown pending action")
+      end
+    end
+  end
 end
 
 completePending = function(eventType, verdict)
@@ -1224,19 +1559,7 @@ completePending = function(eventType, verdict)
     and (absoluteTime() - pendingStartedAt) / 1000000 or nil
   lastDeferredVerdict = effect.verdict
   pendingStartedAt = nil
-  for _, item in ipairs(effect.actions) do
-    local original = pendingOriginals[item.id]
-    pendingOriginals[item.id] = nil
-    if item.action == "replay" then
-      postOriginal(original)
-    elseif item.action == "policy-drop" then
-      if runtimeHooks and runtimeHooks.drop then
-        runtimeHooks.drop(original.event)
-      end
-    elseif not runAction(item.action, original, item.path) then
-      error("unknown pending action")
-    end
-  end
+  dispatchPendingActions(effect.actions, 1)
   return true
 end
 
@@ -1251,7 +1574,19 @@ local function armPendingTimeout(delay)
   end)
 end
 
-local function deferEvent(event, observed, key, isRepeat, convertPath)
+local function pendingHoldsReplace()
+  if not pendingState or pendingState.status ~= "pending" then
+    return false
+  end
+  for _, item in ipairs(pendingState.queue) do
+    if item.replace then
+      return true
+    end
+  end
+  return false
+end
+
+local function deferEvent(event, observed, key, isRepeat, convertPath, replace, hold)
   pendingNextID = pendingNextID + 1
   local nextState, effect = M.pendingTransition(pendingState, {
     type = "press",
@@ -1259,6 +1594,8 @@ local function deferEvent(event, observed, key, isRepeat, convertPath)
     key = key,
     image = key == "v",
     convertPath = convertPath,
+    replace = replace,
+    hold = hold,
     isRepeat = isRepeat,
     now = now(),
     timeout = pendingDeadline,
@@ -1274,6 +1611,7 @@ local function deferEvent(event, observed, key, isRepeat, convertPath)
     event = event:copy(),
     observed = observed,
     changeCount = pasteboardChangeCount(),
+    keyCode = event:getKeyCode(),
   }
   if effect.startResolve then
     pendingStartedAt = absoluteTime()
@@ -1288,6 +1626,75 @@ local function deferEvent(event, observed, key, isRepeat, convertPath)
       pollFrontTab()
     end
   end
+  return true
+end
+
+-- Cocoa maps arrows, function and editing keys into the private-use area, so "one
+-- printable codepoint" is exactly the set of keys that inserts text — in every
+-- layout, without a keycode table that only ever knew ANSI.
+local function printableText(text)
+  if type(text) ~= "string" or text == "" then
+    return false
+  end
+  if not (utf8 and utf8.len and utf8.codepoint) then
+    return #text == 1 and text:byte(1) >= 0x20 and text:byte(1) ~= 0x7F
+  end
+  if utf8.len(text) ~= 1 then
+    return false
+  end
+  local code = utf8.codepoint(text)
+  return code >= 0x20 and code ~= 0x7F
+    and not (code >= 0xF700 and code <= 0xF8FF)
+end
+
+local function eventCharacters(event, clean)
+  local ok, text = pcall(event.getCharacters, event, clean)
+  return ok and text or nil
+end
+
+local function insertsCharacter(event, flags)
+  if flags.cmd or flags.ctrl or flags.fn or not event.getCharacters then
+    return false
+  end
+  -- Option composes a dead key on some layouts and types { } @ \ on others. Only the
+  -- characters as modified tell them apart: a press still composing an accent reports
+  -- nothing, while an Option-printable already knows the character it will insert.
+  if flags.alt and not printableText(eventCharacters(event, false)) then
+    return false
+  end
+  return printableText(eventCharacters(event, true))
+end
+
+-- Types, the convert path, and which of "image" | "convert" | "text" Cmd+V would
+-- act on. A nil kind is a pasteboard nobody here handles — unreadable, empty, or
+-- some type a native paste would ignore too.
+local function readPasteClipboard()
+  local contentTypes = runtimeHooks and runtimeHooks.contentTypes
+    or hs.pasteboard.contentTypes
+  local ok, types = pcall(contentTypes)
+  if not ok or types == nil then
+    return nil
+  end
+  if M.containsImageType(types) then
+    return types, nil, "image"
+  end
+  local path = resolveFileImagePath(types)
+  if path then
+    return types, path, "convert"
+  end
+  return types, nil, M.containsTextType(types) and "text" or nil
+end
+
+local function queueBehindReplace(event, observed, keyCode)
+  if not replaceInFlight or not sameObserved(replaceContext, observed)
+      or #replaceQueue >= replaceQueueLimit then
+    return false
+  end
+  replaceQueue[#replaceQueue + 1] = {
+    event = event:copy(),
+    observed = observed,
+    keyCode = keyCode,
+  }
   return true
 end
 
@@ -1335,14 +1742,89 @@ local function handleEvent(event, keyCode, isRepeat)
 
   local flags = event:getFlags()
   local key = flags:containExactly({ "cmd" }) and keyForCode[keyCode] or nil
-  if not key then
+  local typed = not key and insertsCharacter(event, flags)
+
+  if replaceInFlight then
+    local observed = observeFrontmost()
+    if not sameObserved(replaceContext, observed) then
+      -- The flow's keys belong to a context that is gone, while this one belongs to
+      -- the new one with nothing queued ahead of it: it passes through untouched.
+      abandonReplace()
+    elseif isRepeat then
+      -- Autorepeats would eat the queue's cap; the key is still held, so native
+      -- repeat picks up again the moment the flow releases it.
+      return true
+    else
+      -- Nothing may pass natively while the flow holds keys: the physical event is
+      -- already ahead of anything we post, so a key let through here would reach the
+      -- terminal before them. Text joins the queue, everything else ends the flow as
+      -- its last event.
+      local textPaste = key == "v" and select(3, readPasteClipboard()) == "text"
+      if (typed or textPaste) and queueBehindReplace(event, observed, keyCode) then
+        return true
+      end
+      if not key then
+        finishReplace({ event = event:copy(), observed = observed, keyCode = keyCode })
+        skipRepeatCache = true
+        return true
+      end
+      -- A replay carries the marker this tap skips, so one of our own chords posted
+      -- back would reach Terminal as the literal Cmd+X the TUI has no handler for.
+      -- Flushed first, then decided from scratch below: it keeps its own action.
+      finishReplace()
+    end
+  end
+
+  -- A stale flag costs a spurious DEL, so the AX round trip and the scrape are
+  -- only worth paying for while a selection is actually armed.
+  local typedReplace = typed and selectionLikely and not isRepeat and not cutInFlight
+  if not key and not typedReplace then
+    -- The queue-behind protection above only starts once the flow is running; a key
+    -- arriving while the first one still waits for the foreground verdict would pass
+    -- natively and land ahead of it — a Return submitting the draft the held key was
+    -- meant to go into. Held here, it is replayed in the order it was typed.
+    if pendingHoldsReplace() and not isRepeat then
+      local held = deferEvent(event, observeFrontmost(), nil, false, nil, nil, true)
+      if held then
+        return true
+      end
+    end
     if flags.cmd or flags.ctrl or keyCode == 36 then
       invalidateAndRefresh()
+    end
+    -- Every keystroke the terminal receives either deletes the TUI selection or
+    -- moves the cursor out of it, so our flag must not outlive it. Shift+arrow
+    -- keeps a real selection alive and still lands here: disarming only costs a
+    -- Cmd+X that no-ops or a Cmd+V that pastes natively.
+    clearSelectionState()
+    if flags.alt and flags.shift and keyCode >= 123 and keyCode <= 126 then
+      -- Claude renders the Option+Shift+arrow escape sequence as a bare Esc and
+      -- offers to clear the whole input; swallowing the chord in Terminal is
+      -- strictly better until word-selection exists. A plain shell tab has no such
+      -- prompt to protect, so only a draft that may be Claude's is worth eating it.
+      local frontmost = observeFrontmost()
+      if frontmost.bundleID == terminalBundleID
+          and foregroundVerdict(frontmost) ~= "not-claude" then
+        return true
+      end
+    end
+    if cutInFlight then
+      if isRepeat then
+        return true
+      end
+      if #afterCutQueue < replaceQueueLimit then
+        afterCutQueue[#afterCutQueue + 1] = {
+          event = event:copy(),
+          observed = observeFrontmost(),
+          keyCode = keyCode,
+        }
+        return true
+      end
     end
     return false
   end
 
-  if isRepeat and pendingState and pendingState.status == "pending" then
+  if isRepeat and key and pendingState and pendingState.status == "pending" then
     local nextState, effect = M.pendingTransition(pendingState, {
       type = "press",
       key = key,
@@ -1359,41 +1841,71 @@ local function handleEvent(event, keyCode, isRepeat)
   else
     local app = hs.application.frontmostApplication()
     if not app or app:bundleID() ~= terminalBundleID then
+      clearSelectionState()
       return false
     end
     observed = observeFrontmost(app)
   end
-  if observed.bundleID ~= terminalBundleID then return false end
+  if observed.bundleID ~= terminalBundleID then
+    clearSelectionState()
+    return false
+  end
 
   local pasteboardTypes
   local convertPath
+  local replace = typedReplace or nil
   if key == "v" then
-    local contentTypes = runtimeHooks and runtimeHooks.contentTypes
-      or hs.pasteboard.contentTypes
-    local ok, result = pcall(contentTypes)
-    if not ok then
+    local types, path, kind = readPasteClipboard()
+    -- Nothing we act on must reach the deferred queue: an unhandled Cmd+V resolves
+    -- there into an image paste.
+    if not kind then
+      clearSelectionState()
       return false
     end
-    pasteboardTypes = result
-    if not M.containsImageType(pasteboardTypes) then
-      convertPath = resolveFileImagePath(pasteboardTypes)
-      if not convertPath then
+    pasteboardTypes, convertPath = types, path
+    if kind == "text" then
+      -- A text paste is already native, so only an armed selection is worth
+      -- intercepting for; read at press time because the DEL that follows clears
+      -- the flag. A cut owns the same DEL window, so during one the paste waits
+      -- until its scrape diff finishes.
+      if cutInFlight then
+        if isRepeat then
+          return true
+        end
+        if #afterCutQueue < replaceQueueLimit then
+          afterCutQueue[#afterCutQueue + 1] = {
+            event = event:copy(),
+            observed = observed,
+            keyCode = keyCode,
+          }
+          return true
+        end
         return false
       end
+      if not selectionLikely then
+        return false
+      end
+      replace = true
     end
   end
 
   local verdict = M.cachedVerdict(observed, cachedContext, now())
   if verdict == "uncertain" then
-    return deferEvent(event, observed, key, isRepeat, convertPath)
+    local consumed = deferEvent(event, observed, key, isRepeat, convertPath, replace)
+    if not consumed then clearSelectionState() end
+    return consumed
   end
-  local action = decideAction(observed.bundleID, verdict == "claude", pasteboardTypes, key, convertPath)
-  if action == "pass" then return false end
+  local action = decideAction(observed.bundleID, verdict == "claude", pasteboardTypes, key,
+    convertPath, replace)
+  if action == "pass" then
+    clearSelectionState()
+    return false
+  end
 
-  -- Convert is the only immediate action that can still replay its own event a
-  -- tick later, so it alone pays for the copy and the pasteboard read here.
-  local original = { observed = observed }
-  if action == "convert" then
+  -- Convert and replace are the immediate actions that can still replay their own
+  -- event a tick later, so they alone pay for the copy and the pasteboard read here.
+  local original = { observed = observed, keyCode = keyCode }
+  if action == "convert" or action == "replace" then
     original.event = event:copy()
     original.changeCount = pasteboardChangeCount()
   end
@@ -1413,6 +1925,14 @@ function M.setTestHooks(hooks)
   pendingTimer = nil
   if cutTimer and cutTimer.stop then cutTimer:stop() end
   cutTimer = nil
+  if replaceTimer and replaceTimer.stop then replaceTimer:stop() end
+  replaceTimer = nil
+  replaceOriginal = nil
+  replaceContext = nil
+  replaceQueue = {}
+  replaceContinuation = nil
+  cutContinuation = nil
+  afterCutQueue = {}
   pendingState = idlePendingState()
   pendingOriginals = {}
   pendingNextID = 0
@@ -1421,8 +1941,10 @@ function M.setTestHooks(hooks)
   resolvedTty = nil
   resolvedObserved = nil
   repeatDecisions = {}
+  skipRepeatCache = false
   lastAlertAt = nil
   cutInFlight = false
+  replaceInFlight = false
   selectAllInFlight = false
   dragSeen = false
   clearSelectionState()
@@ -1505,13 +2027,19 @@ function M.handleEvent(event)
   if isRepeat then
     local key = keyForCode[keyCode]
     local keyIsPending = false
-    for _, item in ipairs(pendingState and pendingState.queue or {}) do
-      if item.key == key then
-        keyIsPending = true
-        break
+    if key then
+      for _, item in ipairs(pendingState and pendingState.queue or {}) do
+        if item.key == key then
+          keyIsPending = true
+          break
+        end
       end
     end
-    if not keyIsPending then return repeatDecisions[keyCode] == true end
+    -- A held key whose first press the replace flow consumed has to keep going
+    -- through the queue, or its repeats leak out ahead of the key being held.
+    if not keyIsPending and not replaceInFlight then
+      return repeatDecisions[keyCode] == true
+    end
 
     local callbackStarted = absoluteTime()
     local consume = handleEvent(event, keyCode, true)
@@ -1523,12 +2051,22 @@ function M.handleEvent(event)
   local callbackStarted = absoluteTime()
   local consume = handleEvent(event, keyCode, isRepeat)
   lastCallbackMs = (absoluteTime() - callbackStarted) / 1000000
-  if isKeyDown then repeatDecisions[keyCode] = consume == true end
+  if isKeyDown then
+    repeatDecisions[keyCode] = consume == true and not skipRepeatCache
+  end
+  skipRepeatCache = false
   return consume
 end
 
 function M.stop()
   completePending("stop")
+  -- Actions saved for a flow that will never finish belong to the session being torn
+  -- down; the keys both flows are holding still have to leave as themselves.
+  replaceContinuation = nil
+  cutContinuation = nil
+  -- A flow torn down mid-flight must not eat the keys it is holding.
+  finishReplace()
+  flushAfterCut()
   started = false
   invalidateContext()
   if eventTap then eventTap:stop(); eventTap = nil end
