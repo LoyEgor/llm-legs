@@ -1,38 +1,5 @@
--- `open -a Hammerspoon` inherits the caller's env: a relaunch from a profile
--- shell (HOME=~/.gemini-profiles/*) silently poisons every $HOME-derived path
--- (limits cache, worker-pick) while the menu still looks alive. Relaunch clean
--- once; a fresh marker file means the relaunch didn't fix it — stop looping.
 local envGuardOk, envGuardError = pcall(function()
-    local realHome = hs.execute([[dscl . -read "/Users/$(id -un)" NFSHomeDirectory 2>/dev/null | sed -n 's/^NFSHomeDirectory: //p']]):gsub("%s+$", "")
-    if realHome == "" then return end
-    local marker = realHome .. "/.hammerspoon-env-relaunch"
-    if os.getenv("HOME") == realHome then
-        os.remove(marker)
-        return
-    end
-    local markerAttr = hs.fs.attributes(marker)
-    if markerAttr and (os.time() - markerAttr.modification) < 120 then
-        print("ERROR: HOME poisoned (" .. tostring(os.getenv("HOME")) .. ") and clean relaunch already failed; running degraded")
-        hs.alert.show("Hammerspoon HOME poisoned — relaunch failed", 10)
-        return
-    end
-    local markerFile = io.open(marker, "w")
-    if not markerFile then
-        print("ERROR: HOME poisoned (" .. tostring(os.getenv("HOME")) .. ") but marker " .. marker .. " is unwritable; running degraded to avoid a relaunch loop")
-        hs.alert.show("Hammerspoon HOME poisoned — marker unwritable", 10)
-        return
-    end
-    markerFile:close()
-    print("WARNING: HOME poisoned (" .. tostring(os.getenv("HOME")) .. "); relaunching with clean env")
-    local _, launchdOwns = hs.execute([[launchctl print "gui/$(id -u)/com.egor.hammerspoon" >/dev/null 2>&1]])
-    if not launchdOwns then
-        -- Standalone install only: under the launchd agent (KeepAlive) exiting
-        -- is the whole relaunch, and a parallel `open -a` would race it.
-        local shellHome = realHome:gsub('[\\"$`]', "\\%0")
-        hs.execute('nohup sh -c \'sleep 3; /usr/bin/env -i HOME="' .. shellHome ..
-            '" USER="$(id -un)" LOGNAME="$(id -un)" PATH=/usr/bin:/bin:/usr/sbin:/sbin /usr/bin/open -a Hammerspoon\' >/dev/null 2>&1 &')
-    end
-    os.exit()
+    dofile(hs.configdir .. "/env_guard.lua")
 end)
 if not envGuardOk then
     print("ERROR: HOME env guard failed:", envGuardError)

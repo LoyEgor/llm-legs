@@ -543,4 +543,18 @@ assert grep -Fq 'os.environ.get("REVIEW_BENCH_LENS_DIR")' "$REVIEWBENCH"
 assert doc_has 'Lens registry location'
 assert doc_has '`REVIEW_BENCH_LENS_DIR` overrides'
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, and lens registry location) and match %s\n' "$asserts" "$DOC"
+# --- Row aa: Hammerspoon launchd agent identity -------------------------------
+HS_LABEL="com.egor.hammerspoon"
+HS_PLIST="$ROOT/launchd/com.egor.hammerspoon.plist"
+HS_GUARD="$ROOT/hammerspoon/config/env_guard.lua"
+HS_LOG="/Users/egorloy/Library/Logs/$HS_LABEL.log"
+assert eq "$(/usr/libexec/PlistBuddy -c 'Print :Label' "$HS_PLIST")" "$HS_LABEL"
+assert eq "$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$HS_PLIST")" "/Users/egorloy/.local/libexec/hammerspoon"
+assert eq "$(/usr/libexec/PlistBuddy -c 'Print :StandardOutPath' "$HS_PLIST")" "$HS_LOG"
+assert eq "$(/usr/libexec/PlistBuddy -c 'Print :StandardErrorPath' "$HS_PLIST")" "$HS_LOG"
+assert grep -Fq -- "gui/\$(/usr/bin/id -u)/$HS_LABEL" "$HS_GUARD"
+assert grep -Fq -- "/Library/Logs/$HS_LABEL.log" "$HS_GUARD"
+assert grep -Fq -- "$HS_LABEL" "$ROOT/docs/DIAGNOSTICS.md"
+assert doc_has 'Hammerspoon launchd agent identity'
+
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, and the Hammerspoon launchd agent identity) and match %s\n' "$asserts" "$DOC"
