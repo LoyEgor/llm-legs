@@ -1034,16 +1034,22 @@ for duplicate in ("sol-high,sol-high", "sol-high x2,sol-high", "sol-high x2,sol-
         assert "duplicates" in str(exc), (duplicate, exc)
     else:
         raise AssertionError(f"accepted duplicate rater: {duplicate}")
-expected_floor = [
-    "oc-kimik3 x4", "oc-grok45-low x3", "agy-pro-high-skill",
+expected_oc_floor = ["oc-kimik3 x2", "oc-grok45-low x2", "oc-dsv4flash x2"]
+expected_oc_floor_max = ["oc-kimik3 x3", "oc-grok45-low x3", "oc-dsv4flash x3"]
+expected_floor = expected_oc_floor + [
+    "agy-pro-high-skill",
     "agy-flash35-medium-skill x2", "agy-flash35-high-skill",
     "agy-flash36-medium-skill",
 ]
-expected_floor_slow = [
-    "oc-kimik3 x4", "oc-grok45-low x3", "agy-pro-high-skill",
+expected_floor_max = expected_oc_floor_max + expected_floor[len(expected_oc_floor):]
+expected_floor_slow = expected_oc_floor + [
+    "agy-pro-high-skill",
     "agy-flash35-medium-skill x3", "agy-flash35-high-skill",
     "agy-flash36-medium-skill", "agy-pro-low-skill",
 ]
+expected_floor_slow_max = (
+    expected_oc_floor_max + expected_floor_slow[len(expected_oc_floor):]
+)
 expected_tier_cells = {
     "T0": expected_floor + [
         "opus-low", "sol-low", "sol-low-bare",
@@ -1059,17 +1065,17 @@ expected_tier_cells = {
     ],
 }
 expected_tier_max_cells = {
-    "T0": expected_floor + [
+    "T0": expected_floor_max + [
         "opus-low", "sol-low", "sol-low-bare",
     ],
-    "T1": expected_floor_slow + [
+    "T1": expected_floor_slow_max + [
         "opus-low", "opus-medium", "sol-low", "sol-low-bare", "sol-medium-bare",
     ],
-    "T2": expected_floor_slow + [
+    "T2": expected_floor_slow_max + [
         "opus-high", "opus-medium", "opus-low", "sol-high", "sol-high-bare x2",
         "sol-xhigh", "sol-xhigh-bare",
     ],
-    "T3": expected_floor_slow + [
+    "T3": expected_floor_slow_max + [
         "opus-high", "opus-medium", "sol-high", "sol-max x2", "sol-max-bare",
         "sol-xhigh-bare",
     ],
@@ -1080,16 +1086,20 @@ expected_coverage_pct = {
     "T2": {"eco": 58.1, "max": 62.0},
     "T3": {"eco": 69.3, "max": 72.3},
 }
-floor_counts = Counter({
-    "oc-kimik3": 4, "oc-grok45-low": 3, "agy-flash35-high-skill": 1,
-    "agy-flash35-medium-skill": 2, "agy-flash36-medium-skill": 1,
-    "agy-pro-high-skill": 1,
+oc_counts = Counter({"oc-kimik3": 2, "oc-grok45-low": 2, "oc-dsv4flash": 2})
+oc_counts_max = Counter({"oc-kimik3": 3, "oc-grok45-low": 3, "oc-dsv4flash": 3})
+agy_counts = Counter({
+    "agy-flash35-high-skill": 1, "agy-flash35-medium-skill": 2,
+    "agy-flash36-medium-skill": 1, "agy-pro-high-skill": 1,
 })
-slow_counts = Counter({
-    "oc-kimik3": 4, "oc-grok45-low": 3, "agy-flash35-high-skill": 1,
-    "agy-flash35-medium-skill": 3, "agy-flash36-medium-skill": 1,
-    "agy-pro-high-skill": 1, "agy-pro-low-skill": 1,
+agy_slow_counts = Counter({
+    "agy-flash35-high-skill": 1, "agy-flash35-medium-skill": 3,
+    "agy-flash36-medium-skill": 1, "agy-pro-high-skill": 1, "agy-pro-low-skill": 1,
 })
+floor_counts = oc_counts + agy_counts
+floor_counts_max = oc_counts_max + agy_counts
+slow_counts = oc_counts + agy_slow_counts
+slow_counts_max = oc_counts_max + agy_slow_counts
 expected_tier_multisets = {
     "T0": floor_counts + Counter({
         "opus-low": 1, "sol-low": 1, "sol-low-bare": 1,
@@ -1108,24 +1118,29 @@ expected_tier_multisets = {
     }),
 }
 expected_tier_max_multisets = {
-    "T0": floor_counts + Counter({
+    "T0": floor_counts_max + Counter({
         "opus-low": 1, "sol-low": 1, "sol-low-bare": 1,
     }),
-    "T1": slow_counts + Counter({
+    "T1": slow_counts_max + Counter({
         "opus-low": 1, "opus-medium": 1, "sol-low": 1, "sol-low-bare": 1,
         "sol-medium-bare": 1,
     }),
-    "T2": slow_counts + Counter({
+    "T2": slow_counts_max + Counter({
         "opus-high": 1, "opus-medium": 1, "opus-low": 1, "sol-high": 1,
         "sol-high-bare": 2, "sol-xhigh": 1, "sol-xhigh-bare": 1,
     }),
-    "T3": slow_counts + Counter({
+    "T3": slow_counts_max + Counter({
         "opus-high": 1, "opus-medium": 1, "sol-high": 1, "sol-max": 2,
         "sol-max-bare": 1, "sol-xhigh-bare": 1,
     }),
 }
 assert rb.REVIEW_TIER_FLOOR == expected_floor
+assert rb.REVIEW_TIER_FLOOR_MAX == expected_floor_max
 assert rb.REVIEW_TIER_FLOOR_SLOW == expected_floor_slow
+assert rb.REVIEW_TIER_FLOOR_SLOW_MAX == expected_floor_slow_max
+# The eco floor's OpenCode block IS the recommended leg, so --leg and a tier cannot drift apart.
+assert list(rb.OPENCODE_REVIEW_LEG) == expected_oc_floor
+assert list(rb.OPENCODE_REVIEW_LEG_MAX) == expected_oc_floor_max
 assert list(rb.REVIEW_TIERS) == ["T0", "T1", "T2", "T3"]
 assert [tier["budget_min"] for tier in rb.REVIEW_TIERS.values()] == [2, 6, 10, 20]
 assert {
@@ -1141,20 +1156,20 @@ assert all(
     set(tier["coverage_pct"]) == {"eco", "max"}
     for tier in rb.REVIEW_TIERS.values()
 )
-expanded_floor = Counter(
-    rb.normalize_legacy_rater(rater["spec"])
-    for rater in rb.parse_raters(",".join(expected_floor))
-)
-for composition, expected_cells, expected_multisets in (
-    ("cells", expected_tier_cells, expected_tier_multisets),
-    ("cells_max", expected_tier_max_cells, expected_tier_max_multisets),
+for composition, expected_cells, expected_multisets, composition_floor in (
+    ("cells", expected_tier_cells, expected_tier_multisets, expected_floor),
+    ("cells_max", expected_tier_max_cells, expected_tier_max_multisets, expected_floor_max),
 ):
+    expanded_floor = Counter(
+        rb.normalize_legacy_rater(rater["spec"])
+        for rater in rb.parse_raters(",".join(composition_floor))
+    )
     for tier_name, tier in rb.REVIEW_TIERS.items():
-        prefix = tier[composition][:len(expected_floor)]
+        prefix = tier[composition][:len(composition_floor)]
         assert [
             rb.parse_raters(cell)[0]["spec"] for cell in prefix
         ] == [
-            rb.parse_raters(cell)[0]["spec"] for cell in expected_floor
+            rb.parse_raters(cell)[0]["spec"] for cell in composition_floor
         ], (tier_name, composition, prefix)
         expanded = Counter(
             rb.normalize_legacy_rater(rater["spec"])
@@ -1324,14 +1339,19 @@ assert rb.OPENCODE_UNUSABLE_MODELS <= {
 assert set(rb.OPENCODE_EFFORT_CEILING) <= set(rb.OPENCODE_MODEL_FACTS)
 # --leg has to expand to the recorded composition, or the measurement lives only in a
 # help string and every caller retypes it from memory.
-assert rb.parse_raters(",".join(rb.OPENCODE_REVIEW_LEG)) == [
-    rb.parse_rater(spec) for spec in rb.OPENCODE_REVIEW_LEG
-]
+assert rb.collapse_rater_attempts(
+    rater["spec"] for rater in rb.parse_raters(",".join(rb.OPENCODE_REVIEW_LEG))
+) == list(rb.OPENCODE_REVIEW_LEG)
+assert rb.collapse_rater_attempts(
+    rater["spec"] for rater in rb.parse_raters(",".join(rb.OPENCODE_REVIEW_LEG_MAX))
+) == list(rb.OPENCODE_REVIEW_LEG_MAX)
 assert not set(rb.OPENCODE_SCREENED_MODELS) & set(rb.OPENCODE_MODEL_IDS.values()), (
     "a screened model with a cell belongs in the facts table, not the screening list"
 )
 assert all(
-    rb.parse_rater(spec)["side"] == "opencode" for spec in rb.OPENCODE_REVIEW_LEG
+    rater["side"] == "opencode"
+    for spec in (*rb.OPENCODE_REVIEW_LEG, *rb.OPENCODE_REVIEW_LEG_MAX)
+    for rater in rb.parse_raters(spec)
 ), rb.OPENCODE_REVIEW_LEG
 assert rb.OPENCODE_VERIFIER in rb.OPENCODE_MODEL_IDS
 # An effort a model never completed a review at must be refused, not merely priced:
@@ -3187,6 +3207,150 @@ finally:
 assert once_models == [rb.OPENCODE_MODEL_IDS["oc-kimik3"]], once_models
 clear_walls()
 
+# ...and neither is one that answered badly after surviving its own 5xx retries: the status
+# lines its client left on stderr are not an outage.
+noisy_models = []
+
+
+def noisy_answer_fixture(command, **kwargs):
+    noisy_models.append(command[command.index("run") + 1])
+    return subprocess.CompletedProcess(command, 0, json.dumps({"choices": [{"message": {
+        "content": "I could not tell."
+    }}]}), "HTTP 503 from provider (attempt 1/2), retrying in 15s")
+
+
+subprocess.run = noisy_answer_fixture
+try:
+    rb.verify_one(
+        0, {"severity": "P2", "file": "bin/review-bench", "line": 3, "summary": "claim"},
+        repo, sha, "oc-kimik3", ["line one"],
+    )
+finally:
+    subprocess.run = real_run
+assert noisy_models == [rb.OPENCODE_MODEL_IDS["oc-kimik3"]], noisy_models
+clear_walls()
+
+# A dead provider belongs to the model, not to the account: on 2026-08-04 grok-4.5's provider
+# was down for a whole run and every one of its 85 claims filed unverified because only a
+# throttle advanced the chain.
+assert rb.opencode_provider_unavailable('HTTP 500\n{"error":{"type":"Router.Unavailable"}}')
+assert rb.opencode_provider_unavailable("HTTP 503 failover_exhausted")
+assert rb.opencode_provider_unavailable("provider error inside stream: {\"code\":1}")
+assert rb.opencode_provider_unavailable("stream response carried no SSE data chunks")
+assert rb.opencode_provider_unavailable("curl exit 28 after 300s (HTTP 000)")
+assert not rb.opencode_provider_unavailable("HTTP 429 too many requests")
+assert not rb.opencode_provider_unavailable(
+    'HTTP 429 {"error":{"type":"GoUsageLimitError","message":"Weekly usage limit reached"}}'
+)
+assert not rb.opencode_provider_unavailable("opencode returned malformed JSON envelope")
+
+# Each chain candidate is asked in the wording it was measured on, so the prompt file is
+# rebuilt per model rather than written once per finding.
+assert rb.verify_prompt_style(rb.OPENCODE_VERIFIER) == "shapes"
+assert rb.verify_prompt_style("oc-kimik3") == "dual"
+assert rb.verify_prompt_style("oc-qwen37plus") == "stock"
+evidence_half = verify_text.split("Decide from the shown code alone:")[0]
+shapes_text = rb.verify_prompt(verify_finding, "deadbee", "bin/review-bench",
+                               ["alpha", "beta", "gamma"], style="shapes")
+dual_text = rb.verify_prompt(verify_finding, "deadbee", "bin/review-bench",
+                             ["alpha", "beta", "gamma"], style="dual")
+assert shapes_text.startswith(evidence_half) and dual_text.startswith(evidence_half)
+assert "narration: it restates what the diff does" in shapes_text
+assert "Undecidable on the shown lines means false." in shapes_text
+assert shapes_text.endswith(answer_instruction), shapes_text
+assert "Before deciding, write both cases from the shown code:" in dual_text
+assert dual_text.endswith(
+    'Answer with exactly one JSON object and nothing else:\n'
+    '{"against": "<max 20 words>", "for": "<max 20 words>", '
+    '"code_matches": true|false, "is_defect": true|false, "why": "<max 12 words>"}'
+), dual_text
+assert known_failures not in shapes_text and known_failures not in dual_text
+# The dual answer puts two keys before the verdict; the transport's shape check and the parser
+# both have to accept it, or the wording kimi-k3 scores best on files every claim unverified.
+dual_answer = json.dumps({"against": "line 3 guards it", "for": "none",
+                          "code_matches": False, "is_defect": False, "why": "guarded"})
+assert re.search(rb.OPENCODE_VERDICT_SHAPE, dual_answer), dual_answer
+assert rb.parse_verify_answer(dual_answer)["code_matches"] is False
+
+style_prompts = []
+
+
+def style_fixture(command, **kwargs):
+    model = command[command.index("run") + 1]
+    style_prompts.append(
+        pathlib.Path(command[command.index("--prompt-file") + 1]).read_text()
+    )
+    if model == rb.OPENCODE_MODEL_IDS["oc-dsv4flash"]:
+        return subprocess.CompletedProcess(command, 1, "", (
+            'HTTP 500\n{"error":{"type":"Router.Unavailable"}}'
+        ))
+    return subprocess.CompletedProcess(command, 0, json.dumps({"choices": [{"message": {
+        "content": dual_answer.replace('"code_matches": false', '"code_matches": true')
+                              .replace('"is_defect": false', '"is_defect": true')
+    }}]}), "")
+
+
+subprocess.run = style_fixture
+try:
+    style_row = rb.verify_one(
+        0, {"severity": "P2", "file": "bin/review-bench", "line": 3, "summary": "claim"},
+        repo, sha, "oc-dsv4flash", ["line one"],
+    )
+finally:
+    subprocess.run = real_run
+assert len(style_prompts) == 2, style_prompts
+assert "narration: it restates what the diff does" in style_prompts[0]
+assert "Before deciding, write both cases from the shown code:" in style_prompts[1]
+assert style_row["kept"] is True and style_row["verifier"] == "oc-kimik3", style_row
+assert "verified by oc-kimik3" in style_row["why"], style_row
+clear_walls()
+
+# One claim restated at the same place is one question, asked once — and every original claim
+# still gets its own audit row carrying the shared verdict.
+dedup_calls = []
+real_verify_one = rb.verify_one
+
+
+def counting_verify_one(index, finding, *args, **kwargs):
+    dedup_calls.append(index)
+    row = rb.verify_row(index, finding)
+    row.update(kept=False, code_matches=True, is_defect=False, why="not a defect",
+               verifier="oc-dsv4flash")
+    return row
+
+
+dedup_input = [
+    {"severity": "P2", "file": "a.py", "line": 3, "summary": "first claim"},
+    {"severity": "P1", "file": "a.py", "line": 3, "summary": "First claim."},
+    {"severity": "P1", "file": "a.py", "line": 3, "summary": "a different defect, same line"},
+    {"severity": "P3", "file": "a.py", "line": 9, "summary": "elsewhere"},
+    {"severity": "P3", "file": "", "line": None, "summary": "uncited"},
+    {"severity": "P3", "file": "", "line": None, "summary": "also uncited"},
+]
+rb.verify_one = counting_verify_one
+try:
+    dedup_kept, dedup_audit = rb.verify_findings(dedup_input, repo, sha, "oc-dsv4flash", tree)
+finally:
+    rb.verify_one = real_verify_one
+# Two different claims about one line are two questions: the verdict is rendered on one claim's
+# text, so sharing it would settle the claim the verifier never saw. An uncited claim is nobody's
+# neighbour either.
+assert sorted(dedup_calls) == [0, 2, 3, 4, 5], dedup_calls
+assert [row["idx"] for row in dedup_audit] == [0, 1, 2, 3, 4, 5], dedup_audit
+assert [row["summary"] for row in dedup_audit] == [
+    finding["summary"] for finding in dedup_input
+], dedup_audit
+assert [row["severity"] for row in dedup_audit] == [
+    finding["severity"] for finding in dedup_input
+], dedup_audit
+assert all(
+    row["kept"] is False and row["code_matches"] is True and row["is_defect"] is False
+    and row["why"] == "not a defect" and row["verifier"] == "oc-dsv4flash"
+    for row in dedup_audit
+), dedup_audit
+assert dedup_kept == []
+clear_walls()
+
 # A refused cell waits on its own: making the other cells of the model wait too only pays if the
 # run is the cause, and probing kimi-k3 at 5, 20 and 60 second gaps on 2026-07-30 refused all
 # eighteen while grok-4.5 answered throughout, so the pressure was upstream and unshareable.
@@ -3892,7 +4056,7 @@ assert all(
     and meta["rater_runs"] == []
     for meta in launch_meta_seen
 ), launch_meta_seen
-assert review_meta["verifier"] == "oc-kimik3", \
+assert review_meta["verifier"] == rb.OPENCODE_VERIFIER == "oc-dsv4flash", \
     f"tier review verifier: {review_meta['verifier']!r}"
 review_log_rows = [
     json.loads(line)
@@ -3902,7 +4066,7 @@ assert len(review_log_rows) == 1, review_log_rows
 review_log_event = review_log_rows[0]
 assert review_log_event["event"] == "run" and review_log_event["tier"] == "T1"
 assert review_log_event["run_id"] == review_meta["run_id"]
-assert review_log_event["findings"] == 7
+assert review_log_event["findings"] == 6
 assert review_log_event["confirmed"] == review_log_event["duplicate"] == 0
 assert review_log_event["false_positive"] == review_log_event["token_estimate"] == 0
 assert all(cell["status"] == "completed" for cell in review_log_event["cells"])
@@ -3946,7 +4110,7 @@ opencode_specs = [
 assert filtered_meta["verifier"] == rb.OPENCODE_VERIFIER
 assert sum(
     row.get("verifier_dropped", 0) for row in filtered_meta["rater_runs"]
-) == len(opencode_specs) == 7
+) == len(opencode_specs) == 6
 assert all(rb.read_jsonl(filtered_run / f"findings-{rater}.jsonl") == []
            for rater in opencode_specs)
 assert all(
@@ -3964,7 +4128,8 @@ assert all(
 # Who judged, not just how many were dropped: the chain advances per finding, so a report
 # naming no model leaves the reader unable to tell which verifier produced the rejections.
 filtered_report = "\n".join(rb.report_lines(filtered_run, filtered_meta, []))
-assert "verifier:     Kimi K3 — 7 checked, 7 rejected" in filtered_report, filtered_report
+assert "verifier:     DeepSeek V4 Flash — 6 checked, 6 rejected" in filtered_report, \
+    filtered_report
 assert "fixture finding" not in filtered_output
 assert rb.bench_summary(filtered_run, filtered_meta)["findings"] == 0
 
@@ -4121,7 +4286,7 @@ def oc_rerun_runner(rater, repo_path, commit, focus, run_dir, diff, account):
 for side in rb.SIDE_RUNNERS:
     rb.SIDE_RUNNERS[side] = oc_rerun_runner
 for oc_rerun_name, oc_rerun_flag, oc_rerun_no_verify in (
-    ("default", "--verify oc-kimik3", False),
+    ("default", f"--verify {rb.OPENCODE_VERIFIER}", False),
     ("raw", "--no-verify", True),
 ):
     oc_rerun_store = work / f"oc-rerun-{oc_rerun_name}-claudeb"
@@ -7018,7 +7183,8 @@ for tier_budget in "T0 (2 min)" "T1 (6 min)" "T2 (10 min)" "T3 (20 min)"; do
 done
 assert contains "$tiers_table" "eco (default):"
 assert contains "$tiers_table" "max:"
-for cell in "oc-kimik3 x4" "oc-grok45-low x3" agy-pro-high-skill \
+for cell in "oc-kimik3 x2" "oc-kimik3 x3" "oc-grok45-low x2" "oc-grok45-low x3" \
+  "oc-dsv4flash x2" "oc-dsv4flash x3" agy-pro-high-skill \
   "agy-flash35-medium-skill x2" "agy-flash35-medium-skill x3" \
   agy-flash35-high-skill agy-flash36-medium-skill \
   opus-low sol-low sol-low-bare agy-pro-low-skill \
@@ -7031,10 +7197,15 @@ assert contains "$tiers_table" \
 assert test "$(grep -Ec '^  (eco \\(default\\)|max):.*agy-flash35-low-skill' <<<"$tiers_table")" -eq 0
 owner_table="$("$SCRIPT" tiers --table 2>&1)"
 assert contains "$owner_table" "T1 max"
-assert contains "$owner_table" "kimi x4"
+assert contains "$owner_table" "kimi x2, grok-low x2, dsv4flash x2"
+assert contains "$owner_table" "kimi x3, grok-low x3, dsv4flash x3"
 assert contains "$owner_table" "cover"
 assert contains "$owner_table" "agy-flash35-low-skill:"
-assert test "$(grep -c '^T0 max' <<<"$owner_table")" -eq 0
+# T0's --max buys three extra OpenCode passes over its eco, so the owner-facing table owes a
+# row for it; a tier whose two compositions are identical still gets one row.
+assert test "$(grep -c '^T0 max' <<<"$owner_table")" -eq 1
+assert contains "$(WORKER_STATS_DIR="$SD" "$SCRIPT" oc-models 2>&1)" \
+  "--raters 'oc-kimik3 x2,oc-grok45-low x2,oc-dsv4flash x2' --verify oc-dsv4flash"
 max_without_tier="$("$SCRIPT" run HEAD --max 2>&1 || true)"
 assert contains "$max_without_tier" "--max requires --tier"
 tier_guard="$("$SCRIPT" run HEAD --tier T2 2>&1 || true)"
