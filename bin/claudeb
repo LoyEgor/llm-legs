@@ -1589,7 +1589,7 @@ harvest_session_accounts() {
   fi
   while IFS=$'\t' read -r session _; do
     [ -n "$session" ] || continue
-    started=$(TZ=UTC stat -f '%Sm' -t '%Y-%m-%dT%H:%M:%SZ' "$dir/session-env/$session" 2>/dev/null) \
+    started=$(TZ=UTC stat -f '%SB' -t '%Y-%m-%dT%H:%M:%SZ' "$dir/session-env/$session" 2>/dev/null) \
       || started=""
     [ -n "$started" ] || started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     printf '%s\t%s\t%s\n' "$started" "$session" "$profile" >>"$ledger"
