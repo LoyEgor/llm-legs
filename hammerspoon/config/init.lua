@@ -468,7 +468,7 @@ local function enableDummy(quiet)
             -- Close the standard windows (matches the X button; Jump keeps
             -- serving), then hide as a fallback for any non-standard one; the
             -- focus restore below compensates if Jump held focus.
-            for _, window in ipairs(jump:allWindows()) do
+            for _, window in ipairs(jump:allWindows() or {}) do
                 if window:isStandard() then
                     pcall(window.close, window)
                 end
