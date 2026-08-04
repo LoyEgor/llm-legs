@@ -1052,12 +1052,10 @@ expected_tier_cells = {
         "opus-medium", "sol-low", "sol-low-bare", "sol-medium-bare",
     ],
     "T2": expected_floor_slow + [
-        "opus-medium", "sol-high", "sol-high-bare x2", "sol-xhigh",
-        "sol-xhigh-bare",
+        "opus-high", "opus-medium", "opus-low", "sol-high", "sol-high-bare x2",
     ],
     "T3": expected_floor_slow + [
-        "opus-medium", "sol-high", "sol-high-bare", "sol-max x2", "sol-max-bare",
-        "sol-xhigh-bare",
+        "opus-high", "opus-medium", "sol-high", "sol-high-bare", "sol-max-bare",
     ],
 }
 expected_tier_max_cells = {
@@ -1068,19 +1066,19 @@ expected_tier_max_cells = {
         "opus-low", "opus-medium", "sol-low", "sol-low-bare", "sol-medium-bare",
     ],
     "T2": expected_floor_slow + [
-        "opus-high", "opus-medium", "sol-high", "sol-high-bare x2", "sol-xhigh",
-        "sol-xhigh-bare",
+        "opus-high", "opus-medium", "opus-low", "sol-high", "sol-high-bare x2",
+        "sol-xhigh", "sol-xhigh-bare",
     ],
     "T3": expected_floor_slow + [
         "opus-high", "opus-medium", "sol-high", "sol-max x2", "sol-max-bare",
-        "sol-xhigh-bare", "sol-xhigh",
+        "sol-xhigh-bare",
     ],
 }
 expected_coverage_pct = {
-    "T0": {"eco": 29.7, "max": 29.7},
-    "T1": {"eco": 40.3, "max": 41.4},
-    "T2": {"eco": 56.3, "max": 59.7},
-    "T3": {"eco": 67.6, "max": 70.5},
+    "T0": {"eco": 29.1, "max": 29.1},
+    "T1": {"eco": 40.3, "max": 42.4},
+    "T2": {"eco": 58.1, "max": 62.0},
+    "T3": {"eco": 69.3, "max": 72.3},
 }
 floor_counts = Counter({
     "oc-kimik3": 4, "oc-grok45-low": 3, "agy-flash35-high-skill": 1,
@@ -1101,12 +1099,12 @@ expected_tier_multisets = {
         "sol-medium-bare": 1,
     }),
     "T2": slow_counts + Counter({
-        "opus-medium": 1, "sol-high": 1, "sol-high-bare": 2, "sol-xhigh": 1,
-        "sol-xhigh-bare": 1,
+        "opus-low": 1, "opus-medium": 1, "opus-high": 1, "sol-high": 1,
+        "sol-high-bare": 2,
     }),
     "T3": slow_counts + Counter({
-        "opus-medium": 1, "sol-high": 1, "sol-high-bare": 1, "sol-max": 2,
-        "sol-max-bare": 1, "sol-xhigh-bare": 1,
+        "opus-high": 1, "opus-medium": 1, "sol-high": 1, "sol-high-bare": 1,
+        "sol-max-bare": 1,
     }),
 }
 expected_tier_max_multisets = {
@@ -1118,12 +1116,12 @@ expected_tier_max_multisets = {
         "sol-medium-bare": 1,
     }),
     "T2": slow_counts + Counter({
-        "opus-high": 1, "opus-medium": 1, "sol-high": 1, "sol-high-bare": 2,
-        "sol-xhigh": 1, "sol-xhigh-bare": 1,
+        "opus-high": 1, "opus-medium": 1, "opus-low": 1, "sol-high": 1,
+        "sol-high-bare": 2, "sol-xhigh": 1, "sol-xhigh-bare": 1,
     }),
     "T3": slow_counts + Counter({
         "opus-high": 1, "opus-medium": 1, "sol-high": 1, "sol-max": 2,
-        "sol-max-bare": 1, "sol-xhigh-bare": 1, "sol-xhigh": 1,
+        "sol-max-bare": 1, "sol-xhigh-bare": 1,
     }),
 }
 assert rb.REVIEW_TIER_FLOOR == expected_floor
