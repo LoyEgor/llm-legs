@@ -524,6 +524,249 @@ assert(module.inputBorderY(terminalFrame, 8, 4) == 350,
 assert(module.inputBorderY(nil, 8, 2) == nil, "a missing window frame produced a border")
 assert(module.inputBorderY(terminalFrame, 0, 2) == nil, "a zero-row screen produced a border")
 
+local gridOnly = { x = 0, y = 68, w = 800, h = 632 }
+assert(module.gridFrame(gridOnly, terminalFrame) == gridOnly,
+  "a usable scroll-area frame was not preferred over the window frame")
+assert(module.gridFrame(nil, terminalFrame) == terminalFrame,
+  "a missing scroll-area frame did not fall back to the window frame")
+assert(module.gridFrame({ x = 0, y = 68, w = 0, h = 0 }, terminalFrame) == terminalFrame,
+  "a zero-size scroll-area frame did not fall back to the window frame")
+assert(module.gridFrame({ x = 0, y = 68, w = 800 }, terminalFrame) == terminalFrame,
+  "a scroll-area frame without a height did not fall back to the window frame")
+assert(module.gridFrame(nil, nil) == nil, "a missing frame pair produced a frame")
+
+-- Live-measured 34-row window: a 7x14 cell, the grid drawn from y=539 to y=1015,
+-- and the scroll area's pads around it. Dividing that scroll area by 34 rows put
+-- the input box border 8px low, and a whole row low on a tall window.
+local anchorScroll = { x = 0, y = 532, w = 690, h = 490 }
+local anchorCell = { x = 10, y = 1001, w = 7, h = 14 }
+local anchored = module.anchoredGridFrame(anchorCell, 0, 34, 96, anchorScroll)
+assert(anchored and anchored.y == 539 and anchored.h == 476,
+  "the anchored grid frame missed the measured grid top")
+assert(anchored.x == 10 and anchored.w == 672,
+  "the anchored grid frame did not take x and width from the measured cell")
+assert(module.inputBorderY(anchored, 34, 30) == 959,
+  "the anchored frame missed the measured bottom of row 30")
+assert(module.inputBorderY(anchorScroll, 34, 30) ~= 959,
+  "the scroll-area frame already matched the measured row, so the fixture proves nothing")
+-- An empty last buffer line is measured one line up; the row arithmetic moves with it.
+local walked = module.anchoredGridFrame({ x = 10, y = 987, w = 7, h = 14 }, 1, 34, 96, anchorScroll)
+assert(walked and walked.y == 539 and walked.h == 476,
+  "measuring the anchor one line up moved the grid top")
+local columnBlind = module.anchoredGridFrame(anchorCell, 0, 34, nil, anchorScroll)
+assert(columnBlind and columnBlind.y == 539
+    and columnBlind.x == anchorScroll.x and columnBlind.w == anchorScroll.w,
+  "a caller without a column count lost the fallback frame's x and width")
+assert(module.anchoredGridFrame(anchorCell, 0, 34, nil, nil) == nil,
+  "an anchor with neither columns nor a fallback frame produced a width")
+assert(module.anchoredGridFrame(nil, 0, 34, 96, anchorScroll) == nil,
+  "a missing cell measurement produced an anchored frame")
+assert(module.anchoredGridFrame(anchorCell, 0, 0, 96, anchorScroll) == nil,
+  "a zero-row screen produced an anchored frame")
+assert(module.anchoredGridFrame(anchorCell, 40, 34, 96, anchorScroll) == nil,
+  "an anchor line above the first grid row produced a frame")
+assert(module.anchoredGridFrame({ x = 10, y = 1001, w = 7, h = 30 }, 0, 34, 96),
+  "a 30px cell was rejected inside the accepted height range")
+assert(module.anchoredGridFrame({ x = 10, y = 1001, w = 7, h = 31 }, 0, 34, 96) == nil,
+  "an oversized cell height was trusted")
+assert(module.anchoredGridFrame({ x = 10, y = 1001, w = 7, h = 7.9 }, 0, 34, 96) == nil,
+  "an undersized cell height was trusted")
+assert(module.anchoredGridFrame({ x = 10, y = 1001, w = 20.1, h = 14 }, 0, 34, 96) == nil,
+  "an oversized cell width was trusted")
+assert(module.anchoredGridFrame({ x = 10, y = 1001, w = 2.9, h = 14 }, 0, 34, 96) == nil,
+  "an undersized cell width was trusted")
+-- Horizontally out of the scroll area on purpose: a vertical miss moves the frame's
+-- bottom too, and the bottom check below would take the blame for it.
+assert(module.anchoredGridFrame({ x = 700, y = 1001, w = 7, h = 14 }, 0, 34, 96, anchorScroll) == nil,
+  "a cell measured past the scroll area's right edge was trusted")
+assert(module.anchoredGridFrame({ x = -10, y = 1001, w = 7, h = 14 }, 0, 34, 96, anchorScroll) == nil,
+  "a cell measured left of the scroll area was trusted")
+assert(module.anchoredGridFrame(anchorCell, 5, 34, 96, anchorScroll) == nil,
+  "an anchor five rows clear of the grid bottom was trusted")
+
+-- The AX walk behind that anchor is synchronous, and Terminal under load answers it in
+-- hundreds of milliseconds: a burst of gestures may pay for it once, and a walk that
+-- did stall may not be repeated for a minute. The walk is faked, its clock injected.
+-- Scoped: this chunk sits at the same 200-local ceiling the module does.
+do
+local anchorClock = 100
+local anchorWalks = 0
+local function anchorTick() return anchorClock end
+local function anchorWalk()
+  anchorWalks = anchorWalks + 1
+  return anchorCell, 1
+end
+local function slowAnchorWalk()
+  anchorWalks = anchorWalks + 1
+  anchorClock = anchorClock + 0.3
+  return anchorCell, 1
+end
+
+local anchorHome = { x = 0, y = 0, w = 1200, h = 800 }
+
+module.axAnchorReset()
+local anchorBounds, anchorBelow = module.axAnchor(7, 34, 96, anchorHome, anchorWalk, anchorTick)
+assert(anchorBounds == anchorCell and anchorBelow == 1 and anchorWalks == 1,
+  "the first anchor resolution did not walk AX")
+assert(select(2, module.axAnchor(7, 34, 96, anchorHome, anchorWalk, anchorTick)) == 1
+    and anchorWalks == 1,
+  "a second gesture in the same burst walked AX again")
+anchorClock = 101.99
+module.axAnchor(7, 34, 96, anchorHome, anchorWalk, anchorTick)
+assert(anchorWalks == 1, "the anchor cache expired inside its TTL")
+anchorClock = 102.01
+assert(module.axAnchor(7, 34, 96, anchorHome, anchorWalk, anchorTick) == anchorCell
+    and anchorWalks == 2,
+  "the anchor cache outlived its TTL")
+-- Cached against the inputs the anchor was measured for: another window, a screen that
+-- gained a row or a resized grid all put the same bounds somewhere they cannot be.
+module.axAnchor(8, 34, 96, anchorHome, anchorWalk, anchorTick)
+assert(anchorWalks == 3, "a second window read the first one's cached anchor")
+module.axAnchor(8, 35, 96, anchorHome, anchorWalk, anchorTick)
+assert(anchorWalks == 4, "a changed line count read the cached anchor")
+module.axAnchor(8, 35, 120, anchorHome, anchorWalk, anchorTick)
+assert(anchorWalks == 5, "a changed column count read the cached anchor")
+
+-- The bounds are absolute screen pixels, so a window dragged inside the TTL keeps its
+-- id, its rows and its columns while every one of them moves: reused, the anchor puts
+-- each click a whole window offset away from the cell it names.
+module.axAnchorReset()
+anchorWalks = 0
+anchorClock = 150
+module.axAnchor(7, 34, 96, anchorHome, anchorWalk, anchorTick)
+assert(anchorWalks == 1, "the position-keyed anchor did not walk AX at all")
+module.axAnchor(7, 34, 96, { x = 0, y = 0, w = 1200, h = 800 }, anchorWalk, anchorTick)
+assert(anchorWalks == 1, "an unmoved window with an equal frame table walked AX again")
+module.axAnchor(7, 34, 96, { x = 40, y = 0, w = 1200, h = 800 }, anchorWalk, anchorTick)
+assert(anchorWalks == 2, "a window dragged sideways reused the anchor from its old position")
+module.axAnchor(7, 34, 96, { x = 40, y = 25, w = 1200, h = 800 }, anchorWalk, anchorTick)
+assert(anchorWalks == 3, "a window dragged down reused the anchor from its old position")
+module.axAnchor(7, 34, 96, { x = 40, y = 25, w = 1200, h = 800 }, anchorWalk, anchorTick)
+assert(anchorWalks == 3, "the moved window did not cache the anchor at its new position")
+-- No frame to fingerprint is the caller's fallback ladder failing, not a move: the
+-- cache still has to work, or every gesture there pays the synchronous AX walk.
+module.axAnchor(7, 34, 96, nil, anchorWalk, anchorTick)
+assert(anchorWalks == 4, "an absent frame silently reused the positioned anchor")
+module.axAnchor(7, 34, 96, nil, anchorWalk, anchorTick)
+assert(anchorWalks == 4, "two gestures without a frame each walked AX")
+
+module.axAnchorReset()
+anchorWalks = 0
+anchorClock = 200
+assert(module.axAnchor(7, 34, 96, anchorHome, slowAnchorWalk, anchorTick) == anchorCell
+    and anchorWalks == 1,
+  "a slow walk threw away the measurement it had already paid for")
+anchorClock = anchorClock + 5
+assert(module.axAnchor(7, 34, 96, anchorHome, anchorWalk, anchorTick) == nil and anchorWalks == 1,
+  "the AX path kept walking after a stall")
+anchorClock = anchorClock + 50
+assert(module.axAnchor(7, 34, 96, anchorHome, anchorWalk, anchorTick) == nil and anchorWalks == 1,
+  "the circuit breaker reopened early")
+anchorClock = anchorClock + 6
+assert(module.axAnchor(7, 34, 96, anchorHome, anchorWalk, anchorTick) == anchorCell
+    and anchorWalks == 2,
+  "the circuit breaker never reopened")
+-- A walk that found nothing is not cached: the next gesture has to look again.
+module.axAnchorReset()
+anchorWalks = 0
+local function emptyWalk()
+  anchorWalks = anchorWalks + 1
+  return nil
+end
+assert(module.axAnchor(7, 34, 96, anchorHome, emptyWalk, anchorTick) == nil,
+  "an empty walk produced bounds")
+module.axAnchor(7, 34, 96, anchorHome, emptyWalk, anchorTick)
+assert(anchorWalks == 2, "a failed resolution was cached")
+module.axAnchorReset()
+end
+
+-- The scroll-area BFS is synchronous AX exactly as the anchor walk is, and it ran per
+-- gesture outside both the cache and the breaker: a burst paid a full 256-node walk
+-- each time, and an open breaker still stalled the runloop carrying the next keystroke.
+do
+local scrollClock = 400
+local scrollWalks = 0
+local scrollArea, scrollFrame = { "area" }, { x = 40, y = 25, w = 1180, h = 700 }
+local scrollHome = { x = 0, y = 0, w = 1200, h = 800 }
+local function scrollTick() return scrollClock end
+local function scrollWalk()
+  scrollWalks = scrollWalks + 1
+  return scrollArea, scrollFrame
+end
+local function slowScrollWalk()
+  scrollWalks = scrollWalks + 1
+  scrollClock = scrollClock + 0.3
+  return scrollArea, scrollFrame
+end
+local function emptyScrollWalk()
+  scrollWalks = scrollWalks + 1
+  return nil, nil
+end
+local function anchorWalk() return anchorCell, 1 end
+
+module.axAnchorReset()
+local resolved, resolvedFrame = module.axScroll(7, scrollHome, scrollWalk, scrollTick)
+assert(resolved == scrollArea and resolvedFrame == scrollFrame and scrollWalks == 1,
+  "the first scroll-area resolution did not walk AX")
+assert(module.axScroll(7, scrollHome, scrollWalk, scrollTick) == scrollArea and scrollWalks == 1,
+  "a second gesture in the same burst walked the scroll area again")
+scrollClock = 401.99
+module.axScroll(7, scrollHome, scrollWalk, scrollTick)
+assert(scrollWalks == 1, "the scroll-area cache expired inside its TTL")
+scrollClock = 402.01
+module.axScroll(7, scrollHome, scrollWalk, scrollTick)
+assert(scrollWalks == 2, "the scroll-area cache outlived its TTL")
+module.axScroll(8, scrollHome, scrollWalk, scrollTick)
+assert(scrollWalks == 3, "a second window read the first one's cached scroll area")
+-- The AXFrame is absolute screen pixels, so a window that moved or resized carries its
+-- grid with it: the cached area would place every row where the window no longer is.
+module.axScroll(8, { x = 40, y = 0, w = 1200, h = 800 }, scrollWalk, scrollTick)
+assert(scrollWalks == 4, "a dragged window reused the scroll area from its old position")
+module.axScroll(8, { x = 40, y = 0, w = 900, h = 800 }, scrollWalk, scrollTick)
+assert(scrollWalks == 5, "a resized window reused the scroll area from its old size")
+module.axScroll(8, { x = 40, y = 0, w = 900, h = 800 }, scrollWalk, scrollTick)
+assert(scrollWalks == 5, "the moved window did not cache its scroll area at the new box")
+
+-- A window with no scroll area at all is the one answer worth caching hardest: without
+-- it every gesture there re-walks 256 nodes to be told the same thing.
+module.axAnchorReset()
+scrollWalks = 0
+module.axScroll(7, scrollHome, emptyScrollWalk, scrollTick)
+module.axScroll(7, scrollHome, emptyScrollWalk, scrollTick)
+assert(scrollWalks == 1, "a window without a scroll area was walked again per gesture")
+
+-- One breaker over both walks: a stall in either stands the whole AX path down, and
+-- the caller falls back to the window box alone rather than waiting on it.
+module.axAnchorReset()
+scrollWalks = 0
+scrollClock = 500
+module.axScroll(7, scrollHome, slowScrollWalk, scrollTick)
+assert(scrollWalks == 1, "the slow scroll walk fixture did not run")
+scrollClock = scrollClock + 5
+assert(module.axScroll(7, { x = 1, y = 1, w = 900, h = 800 }, scrollWalk, scrollTick) == nil
+    and scrollWalks == 1,
+  "the scroll-area walk kept running after its own stall")
+assert(module.axAnchor(7, 34, 96, scrollHome, anchorWalk, scrollTick) == nil,
+  "a stalled scroll walk left the anchor walk running")
+scrollClock = scrollClock + 56
+assert(module.axScroll(7, { x = 1, y = 1, w = 900, h = 800 }, scrollWalk, scrollTick) == scrollArea
+    and scrollWalks == 2,
+  "the circuit breaker never reopened for the scroll-area walk")
+
+-- The other direction: a stall the anchor walk paid for fences the scroll walk too.
+module.axAnchorReset()
+scrollWalks = 0
+scrollClock = 700
+module.axAnchor(7, 34, 96, scrollHome, function()
+  scrollClock = scrollClock + 0.3
+  return anchorCell, 1
+end, scrollTick)
+scrollClock = scrollClock + 5
+assert(module.axScroll(7, scrollHome, scrollWalk, scrollTick) == nil and scrollWalks == 0,
+  "a stalled anchor walk left the scroll-area walk running")
+module.axAnchorReset()
+end
+
 assert(module.parseInputBox("plain text\nwith no box at all\n") == nil,
   "a screen without an input box produced a draft")
 assert(module.parseInputBox("") == nil, "empty screen produced a draft")
@@ -638,6 +881,17 @@ local function keyEvent(keyCode, modifiers, isRepeat, label, characters, modifie
   return event
 end
 
+-- hs.eventtap posts our own keystrokes through the very tap this module installs, so
+-- every emitted plan comes straight back into handleEvent. Only the replay marker
+-- tells it from the user's typing, and a flow that mistakes one for a user key holds
+-- its own DEL: the mock that skipped this loop is why a dead live build stayed green.
+local function selfPostedKeyEvent(character, isDown)
+  local event = keyEvent(0, {}, false, "self", character)
+  event.properties[91] = module.replayMarker
+  function event:getType() return isDown and 10 or 11 end
+  return event
+end
+
 local mouseEvent
 mouseEvent = function(eventType, point, clickState)
   local event = { properties = { [92] = 0, [93] = clickState or 1 } }
@@ -679,6 +933,15 @@ local function integrationContext(types, opts)
   local resolver
   local timeout
   local cutTimeout
+  local gestureTimeout
+  local gestureWatchdogTimeout
+  local pointerSettleTimeout
+  local pointerClearTimeout
+  local pointer = opts.pointer and { x = opts.pointer.x, y = opts.pointer.y } or nil
+  local pointerWarps = {}
+  local pointerReads = 0
+  local settleReads = 0
+  local inPointerSettle = false
   local timeoutCount = 0
   local deferred
   local actions = {}
@@ -690,9 +953,16 @@ local function integrationContext(types, opts)
   local observeCount = 0
   local afterObserve
   local replays = {}
+  local frameGone = false
+  local frameLookupColumns
+  local logCount = 0
   module.setTestHooks({
-    mouse = function(kind, point)
-      mouseEvents[#mouseEvents + 1] = { kind = kind, x = point.x, y = point.y }
+    mouse = function(kind, point, clickState)
+      mouseEvents[#mouseEvents + 1] =
+        { kind = kind, x = point.x, y = point.y, clickState = clickState }
+      -- A posted click drags the physical pointer with it, which is the whole reason
+      -- a home saved per choreography ends up being the last one's click point.
+      if pointer then pointer = { x = point.x, y = point.y } end
     end,
     usleep = function() end,
     replayProperty = 91,
@@ -710,9 +980,29 @@ local function integrationContext(types, opts)
     readURL = function() return opts.url end,
     verdict = opts.verdict and function() return opts.verdict end or nil,
     fileExists = function() return opts.fileExists ~= false end,
-    windowFrame = opts.windowFrame and function(windowID)
+    windowFrame = opts.windowFrame and function(windowID, _, columns)
       assert(windowID == 7, "the window frame was looked up for another window")
-      return opts.windowFrame
+      frameLookupColumns = columns
+      return not frameGone and opts.windowFrame or nil
+    end or nil,
+    log = function() logCount = logCount + 1 end,
+    -- Only contexts that opt in stand for a real pointer; the rest keep the mouse hook
+    -- alone, which is the module's "no physical pointer to move" case.
+    pointer = opts.pointer and function(point)
+      if not point then
+        -- Counted, not just compared: live, a second save reads the pointer while the
+        -- posted clicks still hold it, so reading twice per burst is the bug itself.
+        -- The settle timer reads it too, to see whether the user moved it; that read
+        -- is counted apart so the home reads above stay countable on their own.
+        if inPointerSettle then
+          settleReads = settleReads + 1
+        else
+          pointerReads = pointerReads + 1
+        end
+        return { x = pointer.x, y = pointer.y }
+      end
+      pointer = { x = point.x, y = point.y }
+      pointerWarps[#pointerWarps + 1] = pointer
     end or nil,
     changeCount = function() return changeCount end,
     alert = function()
@@ -735,6 +1025,11 @@ local function integrationContext(types, opts)
     defer = function(fn) deferred = fn end,
     resolve = function(callback) resolver = callback end,
     after = function(delay, callback)
+      -- Arming a timer is the cheapest place to make a step throw where a real one can:
+      -- past the sentinel keystroke and still inside the call the press pcall'd.
+      if opts.afterThrows == delay then
+        error("timer arming blew up")
+      end
       -- Only the re-scrape timers: the 0.28 pending deadline shares this hook.
       if delay == 0.15 then
         timeoutCount = timeoutCount + 1
@@ -742,6 +1037,12 @@ local function integrationContext(types, opts)
       timeout = { delay = delay, callback = callback, stopped = false }
       function timeout:stop() self.stopped = true end
       if delay == 0.15 then cutTimeout = timeout end
+      -- A key pressed inside the gesture window arms the pending deadline over the
+      -- same slot, which would leave the gesture's own timer unreachable from a test.
+      if delay == 0.02 or delay == 0.05 then gestureTimeout = timeout end
+      if delay == 2.5 then gestureWatchdogTimeout = timeout end
+      if delay == 0.15 then pointerSettleTimeout = timeout end
+      if delay == 0.5 then pointerClearTimeout = timeout end
       return timeout
     end,
     emit = function(plan)
@@ -752,8 +1053,14 @@ local function integrationContext(types, opts)
         actions[#actions + 1] = "undo"
       elseif bytes == module.planBytes(module.cutPlan()) then
         actions[#actions + 1] = "cut"
+      elseif bytes == module.planBytes(module.sentinelPlan()) then
+        actions[#actions + 1] = "sentinel"
       else
         actions[#actions + 1] = "image-paste"
+      end
+      for _, character in ipairs(module.planCharacters(plan)) do
+        module.handleEvent(selfPostedKeyEvent(character, true))
+        module.handleEvent(selfPostedKeyEvent(character, false))
       end
     end,
     post = function(event)
@@ -802,9 +1109,77 @@ local function integrationContext(types, opts)
       assert(callback, "no scrape was awaiting a screen")
       callback(screenText)
     end,
+    -- Terminal answers whoever asked, in its own time: a callback taken here can be
+    -- delivered after a later gesture has already asked for one of its own.
+    takeScrape = function()
+      local callback = scrapeCallback
+      scrapeCallback = nil
+      assert(callback, "no scrape was awaiting a screen")
+      return callback
+    end,
+    dropWindowFrame = function() frameGone = true end,
+    frameColumns = function() return frameLookupColumns end,
+    logged = function() return logCount end,
     resolve = function(verdict) resolver(verdict) end,
     timeout = function() timeout.callback() end,
+    fireTimer = function(delay)
+      local function usable(candidate)
+        return candidate and not candidate.stopped
+          and not (delay and candidate.delay ~= delay)
+      end
+      local pending = usable(timeout) and timeout or (usable(gestureTimeout) and gestureTimeout)
+      if not pending then
+        return false
+      end
+      if pending == timeout then timeout = nil end
+      if pending == gestureTimeout then gestureTimeout = nil end
+      pending.callback()
+      return true
+    end,
     fireCutTimer = function() cutTimeout.callback() end,
+    -- A deadline already queued in the runloop when its flight ended: stopping the
+    -- timer no longer unqueues it, so the callback is kept and fired by hand later.
+    takeGestureWatchdog = function()
+      local armed = gestureWatchdogTimeout
+      assert(armed and not armed.stopped, "no watchdog was armed for the gesture")
+      gestureWatchdogTimeout = nil
+      return armed.callback
+    end,
+    fireGestureWatchdog = function()
+      if not gestureWatchdogTimeout or gestureWatchdogTimeout.stopped then
+        return false
+      end
+      local fired = gestureWatchdogTimeout
+      gestureWatchdogTimeout = nil
+      fired.callback()
+      return true
+    end,
+    pointerAt = function() return pointer end,
+    movePointer = function(point) pointer = { x = point.x, y = point.y } end,
+    pointerWarps = function() return pointerWarps end,
+    pointerReads = function() return pointerReads end,
+    settleReads = function() return settleReads end,
+    firePointerSettle = function()
+      if not pointerSettleTimeout or pointerSettleTimeout.stopped then
+        return false
+      end
+      local fired = pointerSettleTimeout
+      pointerSettleTimeout = nil
+      inPointerSettle = true
+      local ok, err = pcall(fired.callback)
+      inPointerSettle = false
+      assert(ok, err)
+      return true
+    end,
+    firePointerClear = function()
+      if not pointerClearTimeout or pointerClearTimeout.stopped then
+        return false
+      end
+      local fired = pointerClearTimeout
+      pointerClearTimeout = nil
+      fired.callback()
+      return true
+    end,
     runDeferred = function()
       local fn = deferred
       deferred = nil
@@ -1151,6 +1526,21 @@ dragThenCut(integration)
 integration.deliverScrape(screenDraft)
 assert(#integration.actions == 2 and integration.actions[2] == "cut",
   "a drag inside the input box did not cut")
+
+-- The transcript check asks for the same frame the word gesture does. Keyed without
+-- the columns its parse already carries, that lookup misses the anchor the gesture
+-- cached and overwrites it, so alternating Cmd+X with a chord pays a fresh AX walk
+-- on every press.
+do
+local draftColumns = select(4, module.parseInputBox(screenDraft)).columns
+assert(type(draftColumns) == "number" and draftColumns > 0,
+  "the draft fixture reports no column count to pass down")
+integration = integrationContext(nil, { windowFrame = terminalFrame })
+dragThenCut(integration, 100)
+integration.deliverScrape(screenDraft)
+assert(integration.frameColumns() == draftColumns,
+  "the transcript check looked the window frame up without its column count")
+end
 
 integration = integrationContext()
 dragThenCut(integration, 10)
@@ -1521,6 +1911,9 @@ local function charPress(character, keyCode, repeatDown)
   return keyEvent(keyCode or 4, {}, repeatDown, character, character)
 end
 local function returnPress() return keyEvent(36, {}, false, "return", "\r") end
+-- The keypad's own Enter submits the draft exactly as 36 does, and it is a keyCode of
+-- its own: a rule written for Return alone lets it through untouched.
+local function keypadReturnPress() return keyEvent(76, {}, false, "keypad-return", "\r") end
 local function backspacePress() return keyEvent(51, {}, false, "backspace", "\127") end
 local function escapePress() return keyEvent(53, {}, false, "escape", "\27") end
 local function tabPress() return keyEvent(48, {}, false, "tab", "\t") end
@@ -2044,24 +2437,1275 @@ pressCut(integration)
 assert(#integration.actions == 1, "a replace that resolved away left the selection armed")
 
 -- Claude renders the Option+Shift+arrow escape sequence as a bare Esc, so the
--- chord is swallowed while Terminal is frontmost and passes anywhere else.
+-- chord never reaches it: Left and Right run the word gesture, Up and Down are
+-- swallowed bare, and everything passes anywhere else.
+local function optionShiftPress(keyCode, repeatDown)
+  local labels = { [123] = "alt-shift-left", [124] = "alt-shift-right",
+    [125] = "alt-shift-down", [126] = "alt-shift-up" }
+  return keyEvent(keyCode, { "alt", "shift" }, repeatDown, labels[keyCode])
+end
+
+local sentinel = "\226\141\188"
+assert(module.planBytes(module.sentinelPlan()) == sentinel,
+  "the cursor sentinel character changed")
+assert(cellLen(sentinel) == 1 and #sentinel > 1,
+  "the cursor sentinel is not a single non-ASCII cell")
+local sentinelCharacters = module.planCharacters(module.sentinelPlan())
+assert(#sentinelCharacters == 1 and sentinelCharacters[1] == sentinel,
+  "the sentinel would be typed as three separate byte keystrokes")
+assert(#module.planCharacters(module.copyChordPlan()) == 2,
+  "a two-byte control plan was not split into its two keystrokes")
+
+-- Captured from a live claude TUI at 120 columns: the draft opens on the row below
+-- the top rule, wrapped rows are indented by two, and both leads measure two cells,
+-- so a draft character N always sits in column N + 2.
+local gestureRule = string.rep("─", 120)
+local function gestureScreen(...)
+  local rows = { ... }
+  local lines = { "                                            ctrl+g to edit in VS Code", gestureRule }
+  for index, row in ipairs(rows) do
+    lines[#lines + 1] = (index == 1 and "❯\194\160" or "  ") .. row
+  end
+  lines[#lines + 1] = gestureRule
+  lines[#lines + 1] = "  Fable 5 high cb:notcom │ cmdx-fixtures │ w:auto cx✓work4·sol·med"
+  lines[#lines + 1] = "  ctx ? ? │ 5h 55% 00:30 │ wk 18% Sun 08:00 │ fb 17% Sun 07:59 │ $0.00"
+  lines[#lines + 1] = "  ⏵⏵ bypass permissions on (shift+tab to cycle)"
+  lines[#lines + 1] = ""
+  return table.concat(lines, "\n")
+end
+local function gestureTotalLines(rowCount) return rowCount + 6 end
+local function gestureRowIndex(row) return row + 2 end
+
+local _, gestureTop, gestureLines, gestureLayout = module.parseInputBox(gestureScreen("hello"))
+assert(gestureTop == draftTopIndex and gestureLines == draftLines
+    and gestureLayout.columns == screenColumns,
+  "the gesture fixture does not share the select-all fixture's geometry")
+assert(#gestureLayout.rows == 1 and gestureLayout.rows[1].text == "hello"
+    and gestureLayout.rows[1].lead == promptCells
+    and gestureLayout.rows[1].index == draftRow,
+  "the input box rows were not reported with their leading cells")
+local _, _, wrappedTotal, wrappedLayout = module.parseInputBox(gestureScreen("hello brave", "new world"))
+assert(wrappedTotal == gestureTotalLines(2) and #wrappedLayout.rows == 2
+    and wrappedLayout.rows[2].lead == promptCells
+    and wrappedLayout.rows[2].index == gestureRowIndex(2),
+  "a wrapped gesture fixture did not report its second draft row")
+
+local function expectedPoint(rowCount, row, character, offset)
+  local total = gestureTotalLines(rowCount)
+  local rowHeight = terminalFrame.h / total
+  local rowBottom = terminalFrame.y + terminalFrame.h
+    - (total - gestureRowIndex(row)) * rowHeight
+  return (promptCells + character + offset) * (terminalFrame.w / screenColumns),
+    rowBottom - rowHeight / 2
+end
+
+local function pressGesture(context, keyCode)
+  assert(module.handleEvent(optionShiftPress(keyCode)),
+    "the Option+Shift word gesture was not consumed")
+  context.runDeferred()
+end
+
+-- Two scrapes per gesture: the first has to find the sentinel the TUI may not have
+-- drawn yet, the second has to see the box repainted without it before the click.
+local function runGesture(context, keyCode, sentinelScreen, cleanScreen)
+  pressGesture(context, keyCode)
+  context.fireTimer(0.02)
+  context.deliverScrape(sentinelScreen)
+  if cleanScreen and context.fireTimer(0.05) then
+    context.deliverScrape(cleanScreen)
+  end
+end
+
+local function extendGesture(context, keyCode, screenText)
+  pressGesture(context, keyCode)
+  context.deliverScrape(screenText)
+end
+
+-- A gesture selection is a double-click the TUI snaps to the word under it. It
+-- counts its own series by time and position, so the harness reads every press back:
+-- two of them within a cell of each other are its word select and a third is the
+-- whole row, which this gesture must never paint.
+local cellWidth = terminalFrame.w / screenColumns
+
+local function samePoint(one, other)
+  return math.abs(one.x - other.x) < 0.001 and math.abs(one.y - other.y) < 0.001
+end
+
+local function gestureClicks(context)
+  local events, index, clicks = context.mouseEvents(), 1, {}
+  local previousPress
+  local function pressAt(event, message)
+    if previousPress and not samePoint(event, previousPress) then
+      assert(math.abs(event.x - previousPress.x) > 2 * cellWidth - 0.001
+          or math.abs(event.y - previousPress.y) > 0.001,
+        message .. ": a press landed close enough to the one before it to count on")
+    end
+    previousPress = event
+  end
+  while index <= #events do
+    local click = {}
+    if events[index + 1] and events[index + 1].kind == "up"
+        and not samePoint(events[index], events[index + 1]) then
+      error("a click was released somewhere other than where it pressed")
+    end
+    if events[index + 2] and events[index + 2].kind == "down"
+        and not samePoint(events[index], events[index + 2]) then
+      click.breaker = events[index]
+      pressAt(events[index], "the breaker click")
+      assert(events[index].clickState == 1 and events[index + 1].clickState == 1,
+        "the breaker click did not present itself as a first click")
+      index = index + 2
+    end
+    local kinds = {}
+    for offset = 0, 2 do
+      kinds[#kinds + 1] = events[index + offset] and events[index + offset].kind or "none"
+    end
+    assert(table.concat(kinds, ",") == "down,up,down", "a word gesture did not double-click")
+    click.press = events[index]
+    assert(samePoint(events[index + 1], click.press) and samePoint(events[index + 2], click.press),
+      "the double-click moved between its own presses")
+    assert(events[index].clickState == 1 and events[index + 1].clickState == 1
+        and events[index + 2].clickState == 2,
+      "the synthesized clicks did not count up the way a real double-click does")
+    pressAt(click.press, "the double-click")
+    index = index + 3
+    if events[index] and events[index].kind == "dragged" then
+      click.drag = events[index]
+      index = index + 1
+    end
+    local release = events[index]
+    assert(release and release.kind == "up" and release.clickState == 2,
+      "the double-click never released")
+    assert(samePoint(release, click.drag or click.press),
+      "the double-click released somewhere other than where it ended")
+    index = index + 1
+    clicks[#clicks + 1] = click
+  end
+  return clicks
+end
+
+local function assertWordClick(context, nth, span, message)
+  local clicks = gestureClicks(context)
+  assert(#clicks == nth, message .. ": wrong number of selections")
+  local click = clicks[nth]
+  local rows, row = span.rows or 1, span.row or 1
+  local function assertOnWord(event, eventRow, from, to, what)
+    local x, y = expectedPoint(rows, eventRow, (from + to) / 2, -0.5)
+    assert(math.abs(event.x - x) < 0.001 and math.abs(event.y - y) < 0.001,
+      message .. ": " .. what .. " missed the middle of its word")
+    assert(event.x > expectedPoint(rows, eventRow, from, -1)
+        and event.x < expectedPoint(rows, eventRow, to, 0),
+      message .. ": " .. what .. " landed outside its word")
+  end
+  assertOnWord(click.press, row, span.from, span.to, "the click")
+  if span.dragFrom then
+    assert(click.drag, message .. ": the extension did not drag onto the anchor word")
+    assertOnWord(click.drag, span.dragRow or row, span.dragFrom, span.dragTo, "the drag")
+  else
+    assert(not click.drag, message .. ": a starting word gesture dragged")
+  end
+  if span.breaker == false then
+    assert(not click.breaker, message .. ": an extension broke a click series it had left")
+  else
+    assert(click.breaker, message .. ": the gesture start did not break the click series")
+    assert(math.abs(click.breaker.x - click.press.x) > 1.5 * cellWidth,
+      message .. ": the breaker press was close enough to count as another click")
+    assert(math.abs(click.breaker.y - click.press.y) < 0.001,
+      message .. ": the breaker press left the row it was breaking")
+  end
+end
+
+local function assertNoSelection(context, message)
+  assert(#context.mouseEvents() == 0, message .. ": clicked")
+  assert(context.alerts() == 0, message .. ": raised an alert")
+  assert(table.concat(context.actions, ",") == "sentinel,scrape,cut",
+    message .. ": did not type and remove exactly one sentinel")
+end
+
+local gestureOpts = { windowFrame = terminalFrame, verdict = "claude" }
+local hello = "hello world"
+
+-- The reported live bug: with the cursor at the end of the draft the first press
+-- painted nothing. Terminal answered the scrape from the screen it still held, so
+-- the sentinel was missing and the gesture gave up after the flicker.
+integration = integrationContext(nil, gestureOpts)
+pressGesture(integration, 123)
+integration.fireTimer(0.02)
+integration.deliverScrape(gestureScreen(hello))
+assert(#integration.mouseEvents() == 0, "a scrape that missed the sentinel still clicked")
+assert(table.concat(integration.actions, ",") == "sentinel,scrape",
+  "the gesture removed the sentinel before it had been found")
+assert(integration.fireTimer(0.02), "the gesture did not re-scrape for the missing sentinel")
+integration.deliverScrape(gestureScreen(hello .. sentinel))
+integration.fireTimer(0.05)
+integration.deliverScrape(gestureScreen(hello))
+assertWordClick(integration, 1, { from = 7, to = 11 },
+  "the retried gesture did not select the last word")
+assert(table.concat(integration.actions, ",") == "sentinel,scrape,scrape,cut,scrape",
+  "the retried gesture typed or removed the sentinel twice")
+
+integration = integrationContext(nil, gestureOpts)
+pressGesture(integration, 123)
+for _ = 1, 3 do
+  integration.fireTimer(0.02)
+  integration.deliverScrape(gestureScreen(hello))
+end
+assert(#integration.mouseEvents() == 0, "a gesture that never saw its sentinel clicked")
+assert(integration.actions[#integration.actions] == "cut",
+  "a gesture that gave up left the sentinel in the draft")
+assert(integration.alerts() == 0, "an abandoned gesture raised an alert")
+assert(not integration.fireTimer(0.02), "the gesture kept re-scraping past its attempt cap")
+
+-- A character typed into the sentinel window reaches the draft first, so the DEL that
+-- would take the sentinel out would take that character instead.
+integration = integrationContext(textTypes, gestureOpts)
+pressGesture(integration, 123)
+assert(not module.handleEvent(charPress("Z")), "a character typed mid-gesture was consumed")
+integration.fireTimer(0.02)
+integration.deliverScrape(gestureScreen(hello .. sentinel))
+assert(table.concat(integration.actions, ",") == "sentinel,scrape",
+  "a gesture whose draft was typed into deleted the character the user had typed")
+
+-- Giving up because the target is gone: the DEL would be typed into whoever took the
+-- foreground, so the sentinel stays in the draft instead.
+integration = integrationContext(nil, gestureOpts)
+pressGesture(integration, 123)
+integration.switchApp("com.apple.Safari")
+integration.fireTimer(0.02)
+integration.deliverScrape(gestureScreen(hello .. sentinel))
+assert(table.concat(integration.actions, ",") == "sentinel,scrape",
+  "a gesture that lost its target typed the DEL into the window that replaced it")
+assert(#integration.mouseEvents() == 0, "a gesture that lost its target clicked")
+
+-- The DEL repaints the box; a click posted against the sentinel screen would land on
+-- cells that have moved.
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen(hello .. sentinel))
+assert(#integration.mouseEvents() == 0, "the gesture clicked before the DEL had repainted")
+integration.fireTimer(0.05)
+integration.deliverScrape(gestureScreen(hello .. sentinel))
+assert(#integration.mouseEvents() == 0, "the gesture clicked on a box still holding the sentinel")
+integration.fireTimer(0.05)
+integration.deliverScrape(gestureScreen(hello))
+assertWordClick(integration, 1, { from = 7, to = 11 }, "the gesture did not wait out the repaint")
+
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen(hello .. sentinel))
+for _ = 1, 3 do
+  integration.fireTimer(0.05)
+  integration.deliverScrape(gestureScreen("hello brave world"))
+end
+assert(#integration.mouseEvents() == 0, "the gesture clicked over a draft that changed under it")
+assert(not integration.fireTimer(0.05), "the repaint check kept re-scraping past its cap")
+
+-- Cursor at the end, and the same press repeated.
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
+assertWordClick(integration, 1, { from = 7, to = 11 },
+  "left at the draft end did not select the last word")
+extendGesture(integration, 123, gestureScreen(hello))
+assertWordClick(integration, 2, { from = 1, to = 5, dragFrom = 7, dragTo = 11, breaker = false },
+  "the repeated left gesture did not extend by one word")
+assert(integration.alerts() == 0, "the word gesture raised an alert")
+
+-- A burst of presses is where the TUI's click series bites: every press of the run
+-- has to land on its own new head word, far enough from the press before it that the
+-- series starts over instead of reaching the third click and taking the whole row.
+local counted = "one two three four five six"
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen(counted .. sentinel), gestureScreen(counted))
+local heads = { { 20, 23 }, { 15, 18 }, { 9, 13 }, { 5, 7 }, { 1, 3 } }
+for index, head in ipairs(heads) do
+  extendGesture(integration, 123, gestureScreen(counted))
+  assertWordClick(integration, index + 1,
+    { from = head[1], to = head[2], dragFrom = 25, dragTo = 27, breaker = false },
+    "a burst extension did not take the next word")
+end
+extendGesture(integration, 123, gestureScreen(counted))
+assert(#gestureClicks(integration) == #heads + 1,
+  "a burst that ran out of words clicked in place")
+
+-- Single-character words leave the least room between one press and the next.
+local narrow = "a b c d e f"
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen(narrow .. sentinel), gestureScreen(narrow))
+for index, head in ipairs({ 9, 7, 5, 3, 1 }) do
+  extendGesture(integration, 123, gestureScreen(narrow))
+  assertWordClick(integration, index + 1,
+    { from = head, to = head, dragFrom = 11, dragTo = 11, breaker = false },
+    "a narrow burst extension did not take the next word")
+end
+
+-- Cursor at the start: nothing to the left, the first word to the right.
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen(sentinel .. hello), gestureScreen(hello))
+assertNoSelection(integration, "left at the draft start")
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 124, gestureScreen(sentinel .. hello), gestureScreen(hello))
+assertWordClick(integration, 1, { from = 1, to = 5 },
+  "right at the draft start did not select the first word")
+extendGesture(integration, 124, gestureScreen(hello))
+assertWordClick(integration, 2, { from = 7, to = 11, dragFrom = 1, dragTo = 5, breaker = false },
+  "the repeated right gesture did not extend by one word")
+
+-- Mid-draft, both directions: the word behind the cursor, and past the space in front
+-- of it. The TUI paints nothing for a double-clicked space, so a press that had only
+-- a space to take reaches over it and drags back, painting a word either way.
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen("hello" .. sentinel .. " world"), gestureScreen(hello))
+assertWordClick(integration, 1, { from = 1, to = 5 }, "left mid-draft did not select the whole word")
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 124, gestureScreen("hello" .. sentinel .. " world"), gestureScreen(hello))
+assertWordClick(integration, 1, { from = 7, to = 11, dragFrom = 6, dragTo = 6 },
+  "right onto a space did not reach the word past it")
+
+local spaced = "one two three"
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen("one two " .. sentinel .. "three"),
+  gestureScreen(spaced))
+assertWordClick(integration, 1, { from = 5, to = 7, dragFrom = 8, dragTo = 8 },
+  "left onto a space did not reach the word before it")
+extendGesture(integration, 123, gestureScreen(spaced))
+assertWordClick(integration, 2, { from = 1, to = 3, dragFrom = 8, dragTo = 8, breaker = false },
+  "extending off a space-anchored selection did not take the next word")
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 124, gestureScreen("hello " .. sentinel .. "world"), gestureScreen(hello))
+assertWordClick(integration, 1, { from = 7, to = 11 },
+  "right after a space did not select the next word")
+
+-- Only spaces past the space: there is no word to reach, so the space is the
+-- selection, invisible in the TUI but real enough for the Cmd+X that follows.
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen(" " .. sentinel .. "hello"), gestureScreen(" hello"))
+assertWordClick(integration, 1, { from = 1, to = 1 },
+  "a leading space with nothing behind it did not select itself")
+
+-- Punctuation is worth exactly its own cell, and the word behind it is the next one.
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen("foo," .. sentinel .. " bar"), gestureScreen("foo, bar"))
+assertWordClick(integration, 1, { from = 4, to = 4 }, "left onto punctuation did not select one cell")
+extendGesture(integration, 123, gestureScreen("foo, bar"))
+assertWordClick(integration, 2, { from = 1, to = 3, dragFrom = 4, dragTo = 4, breaker = false },
+  "extending off punctuation did not take the word behind it")
+
+-- Two of them side by side are the one extension that barely moves: a press one cell
+-- from the last is the same click series to the TUI, and its third click takes the row.
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen("hi))" .. sentinel), gestureScreen("hi))"))
+assertWordClick(integration, 1, { from = 4, to = 4 }, "left onto a bracket did not select one cell")
+extendGesture(integration, 123, gestureScreen("hi))"))
+assertWordClick(integration, 2, { from = 3, to = 3, dragFrom = 4, dragTo = 4 },
+  "an extension onto the neighbouring cell did not break the click series")
+
+-- One word, one character, and an empty draft.
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen("hello" .. sentinel), gestureScreen("hello"))
+assertWordClick(integration, 1, { from = 1, to = 5 }, "a single-word draft did not select its only word")
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 124, gestureScreen("hello" .. sentinel), gestureScreen("hello"))
+assertNoSelection(integration, "right at the end of a single-word draft")
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen("x" .. sentinel), gestureScreen("x"))
+assertWordClick(integration, 1, { from = 1, to = 1 },
+  "a one-character draft did not select its only cell")
+for _, keyCode in ipairs({ 123, 124 }) do
+  integration = integrationContext(nil, gestureOpts)
+  runGesture(integration, keyCode, gestureScreen(sentinel), gestureScreen(""))
+  assertNoSelection(integration, "an empty draft")
+end
+
+-- A wrapped draft: the word at the first column of the second row. Measured live,
+-- the TUI paints a selection inside one row only — it clamps a drag ending on another
+-- row to the row it was pressed on — so the row boundary is where the gesture stops
+-- instead of trading the whole selection for the one word past it.
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen("hello brave", "n" .. sentinel .. "ew world"),
+  gestureScreen("hello brave", "new world"))
+assertWordClick(integration, 1, { rows = 2, row = 2, from = 1, to = 3 },
+  "a wrapped row's first word was not selected")
+extendGesture(integration, 123, gestureScreen("hello brave", "new world"))
+assert(#gestureClicks(integration) == 1, "the extension crossed the wrap onto another row")
+
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen("hello brave", "new world" .. sentinel),
+  gestureScreen("hello brave", "new world"))
+assertWordClick(integration, 1, { rows = 2, row = 2, from = 5, to = 9 },
+  "the end of a wrapped draft did not select the last word")
+
+-- The sentinel itself pushed the draft over the wrap: taking it out unwraps the box,
+-- and the word is one word again.
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen("hello worl", "d" .. sentinel), gestureScreen(hello))
+assertWordClick(integration, 1, { from = 7, to = 11 },
+  "a word the sentinel had split across the wrap was not rejoined")
+
+-- Terminal draws the block cursor past the draft as a no-break space, which the
+-- trailing-whitespace strip does not touch, and it draws it on some scrapes only: two
+-- reads of a draft nobody touched then differ by one trailing cell, in either
+-- direction, and an exact comparison never converges.
+local cursorCell = "\194\160"
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello .. cursorCell))
+assertWordClick(integration, 1, { from = 7, to = 11 },
+  "a repaint that grew a phantom cursor cell was read as another draft")
+
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen(hello .. " " .. sentinel), gestureScreen(hello))
+assertWordClick(integration, 1, { from = 7, to = 11 },
+  "a repaint that trimmed the trailing space was read as another draft")
+
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
+extendGesture(integration, 123, gestureScreen(hello .. cursorCell))
+assertWordClick(integration, 2, { from = 1, to = 5, dragFrom = 7, dragTo = 11, breaker = false },
+  "the signature of an unchanged draft failed over a phantom cursor cell")
+
+-- Nothing may reach the draft between the sentinel and the click that follows it,
+-- the next press of the chord least of all.
+integration = integrationContext(nil, gestureOpts)
+pressGesture(integration, 123)
+integration.fireTimer(0.02)
+integration.deliverScrape(gestureScreen(hello .. sentinel))
+assert(module.handleEvent(optionShiftPress(123)), "a gesture press mid-flight was not consumed")
+integration.runDeferred()
+assert(table.concat(integration.actions, ",") == "sentinel,scrape,cut",
+  "a gesture press mid-flight started a second pass")
+integration.fireTimer(0.05)
+integration.deliverScrape(gestureScreen(hello))
+assertWordClick(integration, 1, { from = 7, to = 11 }, "the settled gesture did not select the word")
+
+-- A draft that already carried the sentinel cannot say where the cursor is.
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen("a" .. sentinel .. "b" .. sentinel))
+assertNoSelection(integration, "a draft holding two sentinels")
+
+-- A box that repainted under the selection: the cached cell indices no longer
+-- describe the draft they were measured on.
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
+extendGesture(integration, 123, gestureScreen("hello brave world"))
+assert(#gestureClicks(integration) == 1, "the gesture extended over a repainted box")
+pressGesture(integration, 123)
+assert(integration.fireTimer(0.02), "the mismatched re-scrape left the gesture cache in place")
+
+-- The cached geometry describes a draft that is gone, so that bail has to stay
+-- disarmed: a Cmd+X armed off it would DEL a selection nobody can locate.
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
+extendGesture(integration, 123, gestureScreen("hello brave world"))
+local settled = #integration.actions
+assert(module.handleEvent(xPress(false)), "Cmd+X after a repainted extension was not consumed")
+integration.resolve("claude")
+integration.runDeferred()
+assert(#integration.actions == settled, "a bail on the repainted box left Cmd+X armed")
+
+-- A burst that runs past the draft start bails with the draft untouched, so the
+-- selection it stopped extending is still painted and still has to cut.
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
+extendGesture(integration, 123, gestureScreen(hello))
+for _ = 1, 2 do
+  pressGesture(integration, 123)
+  assert(integration.actions[#integration.actions] == "scrape",
+    "an extension past the draft start restarted the gesture instead of extending it")
+  integration.deliverScrape(gestureScreen(hello))
+end
+assert(#gestureClicks(integration) == 2, "an extension past the draft start clicked")
+settled = #integration.actions
+assert(module.handleEvent(xPress(false)), "Cmd+X after an exhausted burst was not consumed")
+integration.resolve("claude")
+integration.runDeferred()
+assert(#integration.actions == settled + 1,
+  "an extension past the draft start disarmed the selection it had left painted")
+integration.deliverScrape(gestureScreen(hello))
+integration.fireCutTimer()
+integration.deliverScrape(gestureScreen(""))
+assert(integration.wrote() == "hello world",
+  "Cmd+X did not cut the selection an exhausted burst had left painted")
+
+-- The same bail at the wrap: the row-boundary clamp stops the extension without
+-- changing anything the selection stands on.
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen("hello brave", "n" .. sentinel .. "ew world"),
+  gestureScreen("hello brave", "new world"))
+extendGesture(integration, 123, gestureScreen("hello brave", "new world"))
+settled = #integration.actions
+assert(module.handleEvent(xPress(false)), "Cmd+X after a wrap-clamped extension was not consumed")
+integration.resolve("claude")
+integration.runDeferred()
+assert(#integration.actions == settled + 1,
+  "the wrap-clamped extension disarmed the selection it had left painted")
+
+-- Opposite direction: consumed, and the gesture it interrupted still extends.
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
+assert(module.handleEvent(optionShiftPress(124)), "the opposite direction was not consumed")
+integration.runDeferred()
+assert(#gestureClicks(integration) == 1 and #integration.actions == 4,
+  "the opposite direction touched the live selection")
+extendGesture(integration, 123, gestureScreen(hello))
+assertWordClick(integration, 2, { from = 1, to = 5, dragFrom = 7, dragTo = 11, breaker = false },
+  "the opposite direction dropped the gesture it consumed")
+
+-- The clicks we post come back through the tap, and the opening press of a
+-- double-click is a plain click to everything reading it: taken at face value it
+-- would clear the selection state the very same synthesis is arming.
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
+local ownClick = mouseEvent(2, { x = 120, y = 340 })
+ownClick.properties[91] = module.replayMarker
+assert(not module.handleEvent(ownClick), "a click we posted ourselves was consumed")
+extendGesture(integration, 123, gestureScreen(hello))
+assertWordClick(integration, 2, { from = 1, to = 5, dragFrom = 7, dragTo = 11, breaker = false },
+  "our own click ended the gesture it belonged to")
+
+-- A click of the user's own is the user taking the selection back.
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
+simulateClick()
+pressGesture(integration, 123)
+assert(integration.actions[#integration.actions] == "sentinel",
+  "a real click left the gesture cache in place")
+
+-- A double-click selects without ever clearing the state, so the cache would survive
+-- a selection of the user's own and the next chord would repaint over it from an
+-- anchor they never set.
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
+simulateMultiClick(2)
+pressGesture(integration, 123)
+assert(integration.actions[#integration.actions] == "sentinel",
+  "a mouse selection of the user's own left the gesture cache in place")
+
+-- The cut owns the DEL-and-diff window the gesture would type into.
+integration = integrationContext(nil, gestureOpts)
+dragThenCut(integration)
+assert(module.handleEvent(optionShiftPress(123)), "the mid-cut gesture was not consumed")
+integration.runDeferred()
+assert(table.concat(integration.actions, ",") == "scrape",
+  "the gesture ran while a cut held the input box")
+assert(#integration.mouseEvents() == 0, "the mid-cut gesture clicked")
+
+-- The reverse window: the sentinel is in the draft and its DEL is still owed, so a
+-- draft-rewriting flow starting here would interleave with it — worst case Cmd+A
+-- selects the whole draft and that DEL wipes it. Dropped, not queued.
+for _, press in ipairs({ aPress, xPress }) do
+  integration = integrationContext(nil, gestureOpts)
+  pressGesture(integration, 123)
+  integration.fireTimer(0.02)
+  integration.deliverScrape(gestureScreen(hello .. sentinel))
+  -- The user's own drag inside the window is what arms the cut at all.
+  simulateDrag()
+  assert(module.handleEvent(press(false)), "a draft rewrite mid-gesture was not consumed")
+  integration.resolve("claude")
+  integration.runDeferred()
+  assert(table.concat(integration.actions, ",") == "sentinel,scrape,cut",
+    "a draft rewrite ran while the gesture still owed its sentinel DEL")
+  assert(#integration.mouseEvents() == 0, "a draft rewrite mid-gesture clicked")
+  integration.fireTimer(0.05)
+  integration.deliverScrape(gestureScreen(hello))
+  assertWordClick(integration, 1, { from = 7, to = 11 },
+    "the gesture did not finish past a mid-flight draft rewrite")
+end
+
+-- A replace is the one draft rewrite carrying something a re-press cannot recover:
+-- the character the user typed. It leaves as itself, and the sentinel DEL — which
+-- would now take that character instead — is the one that stands down.
+integration = integrationContext(textTypes, gestureOpts)
+pressGesture(integration, 123)
+simulateDrag()
+assert(module.handleEvent(charPress("Z")), "the typed character was not consumed for the verdict")
+integration.resolve("claude")
+assert(integration.replayed() == "Z",
+  "a character typed over a selection mid-gesture was dropped with the chords")
+assert(table.concat(integration.actions, ",") == "sentinel,replay",
+  "the character mid-gesture reached the draft through a flow of its own")
+integration.fireTimer(0.02)
+integration.deliverScrape(gestureScreen(hello .. sentinel))
+assert(table.concat(integration.actions, ",") == "sentinel,replay,scrape",
+  "the gesture DEL'd the character the user had typed over its sentinel")
+
+-- Terminal can drop a scrape callback on the floor; with nothing to lower the flight
+-- flag, every later chord is eaten for good.
+integration = integrationContext(nil, gestureOpts)
+pressGesture(integration, 123)
+integration.fireTimer(0.02)
+assert(table.concat(integration.actions, ",") == "sentinel,scrape",
+  "the gesture fixture did not reach its unanswered scrape")
+assert(integration.fireGestureWatchdog(), "no watchdog was armed for the gesture")
+assert(table.concat(integration.actions, ",") == "sentinel,scrape,cut",
+  "the watchdog left its own sentinel in the draft")
+assert(module.handleEvent(zPress(false)), "Cmd+Z after the watchdog was not consumed")
+integration.resolve("claude")
+integration.runDeferred()
+assert(integration.actions[#integration.actions] == "undo",
+  "a gesture the watchdog ended kept eating the chords its window swallows")
+-- The abandoned scrape can still arrive: its click would paint over a draft nobody
+-- is holding any more, and its DEL would be the second one.
+integration.deliverScrape(gestureScreen(hello .. sentinel))
+assert(#integration.mouseEvents() == 0, "a scrape arriving after the watchdog clicked")
+assert(table.concat(integration.actions, ",") == "sentinel,scrape,cut,undo",
+  "a scrape arriving after the watchdog ran the gesture anyway")
+
+integration = integrationContext(nil, gestureOpts)
+pressGesture(integration, 123)
+integration.fireTimer(0.02)
+integration.changeTarget()
+assert(integration.fireGestureWatchdog(), "no watchdog was armed for the gesture")
+assert(table.concat(integration.actions, ",") == "sentinel,scrape",
+  "the watchdog typed its DEL into the window that replaced the target")
+
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
+assert(not integration.fireGestureWatchdog(), "a finished gesture left its watchdog armed")
+extendGesture(integration, 123, gestureScreen(hello))
+assert(not integration.fireGestureWatchdog(), "an extension left its watchdog armed")
+
+-- A step that throws after the sentinel keystroke: the flight ends, and the removal is
+-- owed by that error path too, or the character we typed stays in the draft with
+-- nothing left in the world that would ever take it back out.
+integration = integrationContext(nil,
+  { windowFrame = terminalFrame, verdict = "claude", afterThrows = 0.02 })
+pressGesture(integration, 123)
+assert(table.concat(integration.actions, ",") == "sentinel,cut",
+  "a gesture that threw past its own sentinel left it in the user's draft")
+assert(module.handleEvent(zPress(false)), "Cmd+Z after the failed gesture was not consumed")
+integration.resolve("claude")
+integration.runDeferred()
+assert(integration.actions[#integration.actions] == "undo",
+  "a gesture that threw kept eating the chords its window swallows")
+
+-- The same throw with the target already gone: the DEL would be typed into whatever
+-- took the tab's place, so the sentinel stays where it is.
+integration = integrationContext(nil,
+  { windowFrame = terminalFrame, verdict = "claude", afterThrows = 0.02 })
+assert(module.handleEvent(optionShiftPress(123)), "the gesture press was not consumed")
+-- The tab goes between the check that let the sentinel out and the step that throws.
+integration.changeTargetAfterNextObservation()
+integration.runDeferred()
+assert(table.concat(integration.actions, ",") == "sentinel",
+  "a gesture that threw typed its DEL into the window that replaced the target")
+
+-- Terminal answers whoever asked, whenever it likes. Flight A's answer arriving while
+-- flight B holds the draft used to be read against a single in-flight flag: A's give-up
+-- posted its DEL into B's sentinel and ended B's flight, so B's own answer then found
+-- the flag down and B's sentinel stayed in the draft for good.
+do
+integration = integrationContext(nil, gestureOpts)
+pressGesture(integration, 123)
+integration.fireTimer(0.02)
+local strayScrape = integration.takeScrape()
+assert(integration.fireGestureWatchdog(), "no watchdog was armed for the first gesture")
+assert(table.concat(integration.actions, ",") == "sentinel,scrape,cut",
+  "the watchdog left the first gesture's sentinel in the draft")
+pressGesture(integration, 123)
+integration.fireTimer(0.02)
+assert(table.concat(integration.actions, ",") == "sentinel,scrape,cut,sentinel,scrape",
+  "the second gesture did not reach a scrape of its own")
+strayScrape(gestureScreen(hello))
+assert(table.concat(integration.actions, ",") == "sentinel,scrape,cut,sentinel,scrape",
+  "an answer to the ended gesture acted inside the live one")
+assert(not integration.fireTimer(0.02),
+  "the ended gesture armed a re-scrape over the live one's timer")
+integration.deliverScrape(gestureScreen(hello .. sentinel))
+integration.fireTimer(0.05)
+integration.deliverScrape(gestureScreen(hello))
+assertWordClick(integration, 1, { from = 7, to = 11 },
+  "the live gesture did not finish past the ended one's answer")
+assert(table.concat(integration.actions, ",")
+    == "sentinel,scrape,cut,sentinel,scrape,cut,scrape",
+  "the live gesture's own sentinel was left in the draft")
+end
+
+-- The watchdog belongs to the flight that armed it: fired late it must not tear down
+-- the gesture that took over, whose sentinel is the one in the draft now.
+do
+integration = integrationContext(nil, gestureOpts)
+pressGesture(integration, 123)
+integration.fireTimer(0.02)
+local strayWatchdog = integration.takeGestureWatchdog()
+integration.changeTarget()
+integration.deliverScrape(gestureScreen(hello .. sentinel))
+assert(table.concat(integration.actions, ",") == "sentinel,scrape",
+  "the first gesture did not give up on the target that had gone")
+pressGesture(integration, 123)
+assert(table.concat(integration.actions, ",") == "sentinel,scrape,sentinel",
+  "the second gesture did not type a sentinel of its own")
+strayWatchdog()
+assert(table.concat(integration.actions, ",") == "sentinel,scrape,sentinel",
+  "the ended gesture's watchdog DEL'd the sentinel of the one that took over")
+integration.fireTimer(0.02)
+integration.deliverScrape(gestureScreen(hello .. sentinel))
+integration.fireTimer(0.05)
+integration.deliverScrape(gestureScreen(hello))
+assertWordClick(integration, 1, { from = 7, to = 11 },
+  "the live gesture did not finish past the ended one's watchdog")
+end
+
+-- Stopping between the sentinel and the scrape that owes its DEL: the character we
+-- typed is in the user's draft, and nothing else will ever take it back out.
+integration = integrationContext(nil, gestureOpts)
+pressGesture(integration, 123)
+assert(table.concat(integration.actions, ",") == "sentinel",
+  "the gesture fixture did not stop on its own sentinel")
+module.stop()
+assert(table.concat(integration.actions, ",") == "sentinel,cut",
+  "M.stop left its own sentinel in the user's draft")
+
+integration = integrationContext(nil, gestureOpts)
+pressGesture(integration, 123)
+integration.changeTarget()
+module.stop()
+assert(table.concat(integration.actions, ",") == "sentinel",
+  "M.stop typed the sentinel DEL into the window that replaced the target")
+
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
+module.stop()
+assert(table.concat(integration.actions, ",") == "sentinel,scrape,cut,scrape",
+  "M.stop sent a second DEL for a sentinel that was already gone")
+
+-- `claude-keys off` then `on` is what gets pressed when the anchored grid looks wrong,
+-- so a breaker left by one slow walk must not survive it and keep that path down for
+-- another minute of the session it was restarted to fix.
+do
+local restartClock = 900
+local restartWalks = 0
+local function restartTick() return restartClock end
+local function restartSlowWalk()
+  restartWalks = restartWalks + 1
+  restartClock = restartClock + 0.3
+  return anchorCell, 1
+end
+local function restartWalk()
+  restartWalks = restartWalks + 1
+  return anchorCell, 1
+end
+integration = integrationContext(nil, gestureOpts)
+module.axAnchorReset()
+module.axAnchor(7, 34, 96, nil, restartSlowWalk, restartTick)
+assert(module.axAnchor(7, 34, 96, nil, restartWalk, restartTick) == nil and restartWalks == 1,
+  "the fixture did not trip the AX circuit breaker")
+module.stop()
+assert(module.axAnchor(7, 34, 96, nil, restartWalk, restartTick) == anchorCell
+    and restartWalks == 2,
+  "a restart left the AX circuit breaker standing")
+
+-- The scroll area lives under the same restart: an area cached from before the stop
+-- describes a window the restart was pressed because nobody trusts any more.
+local restartArea = { "area" }
+local function restartScrollWalk()
+  restartWalks = restartWalks + 1
+  return restartArea, nil
+end
+module.axScroll(7, nil, restartScrollWalk, restartTick)
+assert(restartWalks == 3, "the scroll-area fixture did not walk")
+module.axScroll(7, nil, restartScrollWalk, restartTick)
+assert(restartWalks == 3, "the scroll-area cache was not primed for the restart check")
+module.stop()
+module.axScroll(7, nil, restartScrollWalk, restartTick)
+assert(restartWalks == 4, "a restart kept the scroll area cached from before it")
+end
+
+-- The user's own hand on the mouse inside the sentinel window moves the caret or
+-- paints a selection, and the DEL still owed for the sentinel would take that.
+integration = integrationContext(nil, gestureOpts)
+pressGesture(integration, 123)
+simulateDrag()
+integration.fireTimer(0.02)
+integration.deliverScrape(gestureScreen(hello .. sentinel))
+assert(table.concat(integration.actions, ",") == "sentinel,scrape",
+  "the sentinel DEL landed on the selection the user had painted over it")
+
+-- Uncertain is not Claude: swallowing the chord is safe wherever the tab may be
+-- Claude's, but the sentinel would be typed into whatever else reads that tty.
+integration = integrationContext(nil, { windowFrame = terminalFrame })
+assert(module.handleEvent(optionShiftPress(123)),
+  "the chord was not swallowed while the verdict was unresolved")
+integration.runDeferred()
+assert(#integration.actions == 0,
+  "an unresolved verdict typed the gesture's sentinel into the tab")
+
+-- Every swallow that runs no gesture leaves the draft exactly as it was, so the TUI
+-- selection is still painted: the state the press cleared on its way in has to come
+-- back with it, or the next chord restarts from the cursor and the next Cmd+X no-ops.
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
+assert(module.handleEvent(optionShiftPress(126)), "Option+Shift+Up was not swallowed")
+integration.runDeferred()
+assert(#gestureClicks(integration) == 1, "a vertical arrow ran a gesture")
+settled = #integration.actions
+assert(module.handleEvent(xPress(false)), "Cmd+X after a swallowed arrow was not consumed")
+integration.resolve("claude")
+integration.runDeferred()
+assert(#integration.actions == settled + 1,
+  "a swallowed vertical arrow disarmed the selection it had left painted")
+integration.deliverScrape(gestureScreen(hello))
+integration.fireCutTimer()
+integration.deliverScrape(gestureScreen(""))
+assert(integration.wrote() == "hello world",
+  "Cmd+X did not cut the selection a swallowed arrow had left painted")
+
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
+assert(module.handleEvent(optionShiftPress(125)), "Option+Shift+Down was not swallowed")
+integration.runDeferred()
+pressGesture(integration, 123)
+assert(integration.actions[#integration.actions] == "scrape",
+  "a swallowed vertical arrow dropped the gesture cache")
+integration.deliverScrape(gestureScreen(hello))
+assertWordClick(integration, 2, { from = 1, to = 5, dragFrom = 7, dragTo = 11, breaker = false },
+  "the chord after a swallowed arrow did not extend the selection it had left painted")
+
+-- The same swallow on an unresolved verdict: the chord is eaten to keep the escape
+-- sequence off a tab that may be Claude's, and eating it must cost no more than that.
+do
+local shiftingOpts = { windowFrame = terminalFrame, verdict = "claude" }
+integration = integrationContext(nil, shiftingOpts)
+runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
+shiftingOpts.verdict = "uncertain"
+assert(module.handleEvent(optionShiftPress(123)),
+  "the chord was not swallowed while the verdict was unresolved")
+integration.runDeferred()
+assert(#gestureClicks(integration) == 1, "an unresolved verdict ran a gesture")
+shiftingOpts.verdict = "claude"
+pressGesture(integration, 123)
+assert(integration.actions[#integration.actions] == "scrape",
+  "a chord swallowed on an unresolved verdict dropped the gesture cache")
+integration.deliverScrape(gestureScreen(hello))
+assertWordClick(integration, 2, { from = 1, to = 5, dragFrom = 7, dragTo = 11, breaker = false },
+  "the chord after an unresolved verdict did not extend the selection it had left")
+end
+
+-- The extension found its word and could not place a click on it: nothing reached the
+-- draft, so that bail owes the same restoration as the two beside it.
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
+integration.dropWindowFrame()
+extendGesture(integration, 123, gestureScreen(hello))
+assert(#gestureClicks(integration) == 1, "an extension with no usable frame clicked")
+settled = #integration.actions
+assert(module.handleEvent(xPress(false)),
+  "Cmd+X after an unplaceable extension was not consumed")
+integration.resolve("claude")
+integration.runDeferred()
+assert(#integration.actions == settled + 1,
+  "an extension that could not place its click disarmed the painted selection")
+
+-- An extension owes no sentinel, but its scrape is still out: a click or a keystroke
+-- of the user's arriving inside that window is what the choreography below would paint
+-- over, and the cached selection it would otherwise restore died with their action.
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
+pressGesture(integration, 123)
+simulateDrag()
+integration.deliverScrape(gestureScreen(hello))
+assert(#gestureClicks(integration) == 1,
+  "an extension clicked over the selection the user had just painted")
+pressGesture(integration, 123)
+assert(integration.actions[#integration.actions] == "sentinel",
+  "the bailed extension put its cached selection back over the user's own")
+
+integration = integrationContext(textTypes, gestureOpts)
+runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
+pressGesture(integration, 123)
+assert(not module.handleEvent(charPress("Z")),
+  "a character typed during an extension scrape was consumed")
+integration.deliverScrape(gestureScreen(hello))
+assert(#gestureClicks(integration) == 1,
+  "an extension clicked over the character the user had just typed")
+
+-- Return is the one key mid-flight that cannot be traded for a sentinel left in the
+-- draft: it SUBMITS that draft, and no keystroke reaches a sent message. The physical
+-- event would outrun any DEL we post, so it is consumed and re-posted behind one.
+integration = integrationContext(nil, gestureOpts)
+pressGesture(integration, 123)
+assert(module.handleEvent(returnPress()), "Return mid-gesture was not consumed")
+assert(table.concat(integration.actions, ",") == "sentinel,cut,replay",
+  "Return submitted the draft with the gesture's sentinel still in it")
+assert(integration.replayed() == "return", "the Return was not the key posted back")
+assert(integration.fireTimer(0.02), "the gesture armed no scrape timer to begin with")
+assert(table.concat(integration.actions, ",") == "sentinel,cut,replay",
+  "the gesture kept scraping a draft that had already been submitted")
+assert(#integration.mouseEvents() == 0, "the gesture clicked into a submitted draft")
+
+-- The draft it was typed into is gone: posted now the Return would submit whatever
+-- took its place, so it is consumed and dropped.
+integration = integrationContext(nil, gestureOpts)
+pressGesture(integration, 123)
+integration.changeTarget()
+assert(module.handleEvent(returnPress()), "Return mid-gesture was not consumed")
+assert(table.concat(integration.actions, ",") == "sentinel,policy-drop",
+  "a Return whose draft had gone was posted into the window that replaced it")
+
+-- The keypad's Enter submits the same draft through a keyCode of its own, so it owes
+-- the same removal first — and the same drop when the draft it was typed into is gone.
+integration = integrationContext(nil, gestureOpts)
+pressGesture(integration, 123)
+assert(module.handleEvent(keypadReturnPress()), "keypad Enter mid-gesture was not consumed")
+assert(table.concat(integration.actions, ",") == "sentinel,cut,replay",
+  "keypad Enter submitted the draft with the gesture's sentinel still in it")
+assert(integration.replayed() == "keypad-return",
+  "the keypad Enter was not the key posted back")
+
+integration = integrationContext(nil, gestureOpts)
+pressGesture(integration, 123)
+integration.changeTarget()
+assert(module.handleEvent(keypadReturnPress()), "keypad Enter mid-gesture was not consumed")
+assert(table.concat(integration.actions, ",") == "sentinel,policy-drop",
+  "a keypad Enter whose draft had gone was posted into the window that replaced it")
+
+-- The removal stands down when the user's own character reached the draft first, and
+-- the sentinel then stays in it: reposting the Return here sends a message carrying a
+-- character no keystroke can ever take back out.
+for _, submit in ipairs({ returnPress, keypadReturnPress }) do
+  integration = integrationContext(textTypes, gestureOpts)
+  pressGesture(integration, 123)
+  assert(not module.handleEvent(charPress("Z")), "a character typed mid-gesture was consumed")
+  assert(module.handleEvent(submit()), "the submit key mid-gesture was not consumed")
+  assert(table.concat(integration.actions, ",") == "sentinel,policy-drop",
+    "a draft still holding the sentinel was submitted anyway")
+end
+
+-- Outside that window Return is the user's own key and reaches the terminal itself:
+-- an extension owes no DEL, and neither does an idle tab.
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
+assert(not module.handleEvent(returnPress()),
+  "Return was consumed with no sentinel owed for it")
+assert(not module.handleEvent(returnPress()), "a second Return was consumed as well")
+assert(not module.handleEvent(keypadReturnPress()),
+  "keypad Enter was consumed with no sentinel owed for it")
+
+-- A pasted no-break space is a space wherever it lands, not a word character that
+-- merely happens to be multibyte: classed by width, the words on either side of it
+-- merge and one press selects both.
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen("foo\194\160bar" .. sentinel),
+  gestureScreen("foo\194\160bar"))
+assertWordClick(integration, 1, { from = 5, to = 7 },
+  "a word gesture reached across a no-break space")
+extendGesture(integration, 123, gestureScreen("foo\194\160bar"))
+assertWordClick(integration, 2, { from = 1, to = 3, dragFrom = 5, dragTo = 7, breaker = false },
+  "the extension did not step over the no-break space to the word before it")
+
+-- Every multibyte cell used to read as a word character, which makes an em dash — the
+-- punctuation every LLM answer is full of — a letter joining the words it separates.
+do
+local emDash = "\226\128\148"
+assert(cellLen(emDash) == 1 and #emDash > 1, "the em dash fixture is not one wide cell")
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen("foo" .. emDash .. "bar" .. sentinel),
+  gestureScreen("foo" .. emDash .. "bar"))
+assertWordClick(integration, 1, { from = 5, to = 7 },
+  "a word gesture reached across an em dash")
+extendGesture(integration, 123, gestureScreen("foo" .. emDash .. "bar"))
+assertWordClick(integration, 2, { from = 1, to = 3, dragFrom = 5, dragTo = 7, breaker = false },
+  "the extension did not step over the em dash to the word before it")
+end
+
+-- A curly quote is the same trap at the other end of the same block: it has to end the
+-- word it hugs, exactly as the straight quote the TUI cuts at already does.
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen("foo\226\128\153" .. sentinel),
+  gestureScreen("foo\226\128\153"))
+assertWordClick(integration, 1, { from = 1, to = 3 },
+  "a word gesture swallowed the curly quote hugging its word")
+
+-- The sentinel itself is multibyte and sits above this block: classing it as a space
+-- would drop it off the end of every scrape before it could ever be found.
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
+assertWordClick(integration, 1, { from = 7, to = 11 },
+  "the sentinel stopped reading as a cell of its own")
+
+-- The rest of the draft rewrites: an undo and a convert go out as their own
+-- keystrokes, and a native text paste never reaches the action layer at all.
+integration = integrationContext(nil, gestureOpts)
+pressGesture(integration, 123)
+integration.fireTimer(0.02)
+integration.deliverScrape(gestureScreen(hello .. sentinel))
+assert(module.handleEvent(zPress(false)), "Cmd+Z mid-gesture was not consumed")
+integration.resolve("claude")
+integration.runDeferred()
+assert(table.concat(integration.actions, ",") == "sentinel,scrape,cut",
+  "Cmd+Z undid into the draft the gesture's sentinel DEL was aimed at")
+integration.fireTimer(0.05)
+integration.deliverScrape(gestureScreen(hello))
+assertWordClick(integration, 1, { from = 7, to = 11 },
+  "the gesture did not finish past a mid-flight Cmd+Z")
+
+integration = integrationContext(nil, gestureOpts)
+assert(module.handleEvent(zPress(false)), "Cmd+Z was not consumed")
+integration.resolve("claude")
+integration.runDeferred()
+assert(integration.actions[#integration.actions] == "undo",
+  "Cmd+Z outside the gesture window stopped undoing")
+
+integration = integrationContext({ "public.file-url" },
+  { windowFrame = terminalFrame, verdict = "claude", url = "file:///tmp/pic.png" })
+pressGesture(integration, 123)
+integration.fireTimer(0.02)
+integration.deliverScrape(gestureScreen(hello .. sentinel))
+assert(module.handleEvent(vPress(false)), "a convert mid-gesture was not consumed")
+integration.resolve("claude")
+integration.runDeferred()
+assert(table.concat(integration.actions, ",") == "sentinel,scrape,cut",
+  "a convert rewrote the draft the gesture's sentinel DEL was aimed at")
+
+integration = integrationContext(textTypes, gestureOpts)
+pressGesture(integration, 123)
+integration.fireTimer(0.02)
+integration.deliverScrape(gestureScreen(hello .. sentinel))
+assert(module.handleEvent(vPress(false)), "a native text paste mid-gesture was let through")
+assert(table.concat(integration.actions, ",") == "sentinel,scrape,cut",
+  "a native text paste mid-gesture reached the draft")
+
+integration = integrationContext(textTypes, gestureOpts)
+assert(not module.handleEvent(vPress(false)),
+  "a native text paste outside the gesture window stopped passing to the terminal")
+
+-- An image paste is a draft rewrite like the rest: its placeholder lands ahead of the
+-- sentinel DEL, which then eats the placeholder's last character. A chord costs one
+-- re-press, so it is dropped rather than queued.
+integration = integrationContext({ "public.png" }, gestureOpts)
+pressGesture(integration, 123)
+integration.fireTimer(0.02)
+integration.deliverScrape(gestureScreen(hello .. sentinel))
+assert(module.handleEvent(vPress(false)), "an image paste mid-gesture was not consumed")
+integration.resolve("claude")
+integration.runDeferred()
+assert(table.concat(integration.actions, ",") == "sentinel,scrape,cut",
+  "an image paste rewrote the draft the gesture's sentinel DEL was aimed at")
+integration.fireTimer(0.05)
+integration.deliverScrape(gestureScreen(hello))
+assertWordClick(integration, 1, { from = 7, to = 11 },
+  "the gesture did not finish past a mid-flight image paste")
+
+integration = integrationContext({ "public.png" }, gestureOpts)
+assert(module.handleEvent(vPress(false)), "an image paste was not consumed")
+integration.resolve("claude")
+integration.runDeferred()
+assert(integration.actions[#integration.actions] == "image-paste",
+  "an image paste outside the gesture window stopped pasting")
+
+-- Our own clicks drag the physical pointer onto the word they press. The warp back is
+-- debounced, never inline: the window server handles those clicks after this runloop
+-- turn, so a warp posted here is overtaken by its own up event. A burst re-arms the
+-- settle timer per choreography and pays one warp once the presses stop, and the home
+-- it warps to is read once — a second read would land on the last click point.
+local pointerOpts = { windowFrame = terminalFrame, verdict = "claude",
+  pointer = { x = 900, y = 50 } }
+integration = integrationContext(nil, pointerOpts)
+runGesture(integration, 123, gestureScreen(counted .. sentinel), gestureScreen(counted))
+extendGesture(integration, 123, gestureScreen(counted))
+assert(#integration.pointerWarps() == 0, "a choreography warped the pointer inline")
+assert(integration.pointerReads() == 1, "the burst took a fresh pointer home per choreography")
+assert(integration.firePointerSettle(), "no settle timer was armed to put the pointer back")
+local warps = integration.pointerWarps()
+assert(#warps == 1, "the burst did not pay exactly one warp")
+assert(warps[1].x == 900 and warps[1].y == 50, "the warp did not go to the original home")
+assert(integration.pointerAt().x == 900 and integration.pointerAt().y == 50,
+  "the burst left the pointer somewhere other than where it started")
+
+-- Home outlives its warp by an idle window, so a press that lands inside it reuses
+-- the home instead of reading a pointer the warp may still be moving.
+extendGesture(integration, 123, gestureScreen(counted))
+assert(integration.pointerReads() == 1, "a press inside the idle window re-read the pointer")
+assert(not integration.firePointerClear(), "the idle timer outlived the next choreography")
+assert(integration.firePointerSettle(), "the next choreography did not re-arm the settle timer")
+assert(#integration.pointerWarps() == 2 and integration.pointerWarps()[2].x == 900,
+  "the press inside the idle window warped somewhere other than home")
+
+-- Burst over for good: the next one is entitled to a home of its own.
+assert(integration.firePointerClear(), "no idle timer was armed to drop the pointer home")
+integration.movePointer({ x = 400, y = 300 })
+extendGesture(integration, 123, gestureScreen(counted))
+assert(integration.pointerReads() == 2, "the burst after the idle window reused the old home")
+assert(integration.firePointerSettle(), "the burst after the idle window armed no settle timer")
+assert(integration.pointerAt().x == 400 and integration.pointerAt().y == 300,
+  "a burst after the idle window warped back to the home of the one before it")
+
+-- The user's own hand on the mouse takes the pointer for good: a warp still pending
+-- would drag it back out from under them. Ours carry the marker and must not count.
+integration = integrationContext(nil, pointerOpts)
+runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
+local ownDown = mouseEvent(1)
+ownDown.properties[91] = module.replayMarker
+module.handleEvent(ownDown)
+assert(integration.firePointerSettle(), "a click of our own cancelled the pending warp")
+assert(integration.pointerWarps()[1].x == 900, "a click of our own moved the pointer home")
+
+integration = integrationContext(nil, pointerOpts)
+runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
+module.handleEvent(mouseEvent(1))
+assert(not integration.firePointerSettle(), "the user's own click left a warp pending")
+assert(#integration.pointerWarps() == 0, "a warp fired after the user took the mouse")
+integration.movePointer({ x = 400, y = 300 })
+extendGesture(integration, 123, gestureScreen(hello))
+assert(integration.firePointerSettle(), "the gesture after the user's click armed no settle timer")
+assert(integration.pointerAt().x == 400 and integration.pointerAt().y == 300,
+  "a gesture after the user took the mouse warped back to the home it had saved")
+
+-- The trackpad needs no click, so a hand that moves the pointer during the settle
+-- window leaves the home armed: the warp would then yank the cursor away mid-move.
+assert(not module.pointerDrifted({ x = 100, y = 100 }, { x = 103, y = 100 }),
+  "a move of exactly the tolerance counted as drift")
+assert(module.pointerDrifted({ x = 100, y = 100 }, { x = 104, y = 100 }),
+  "a move past the tolerance did not count as drift")
+assert(module.pointerDrifted({ x = 100, y = 100 }, { x = 103, y = 103 }),
+  "a diagonal move past the tolerance did not count as drift")
+assert(not module.pointerDrifted({ x = 100, y = 100 }, { x = 102, y = 102 }),
+  "a diagonal nudge inside the tolerance counted as drift")
+assert(not module.pointerDrifted({ x = 100, y = 100 }, nil),
+  "an unknown endpoint counted as drift and would cancel every warp")
+assert(not module.pointerDrifted(nil, { x = 100, y = 100 }),
+  "an unreadable pointer counted as drift")
+
+integration = integrationContext(nil, pointerOpts)
+runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
+integration.movePointer({ x = 640, y = 480 })
+assert(integration.firePointerSettle(), "no settle timer was armed")
+assert(integration.settleReads() == 1, "the settle warp never looked at where the pointer was")
+assert(#integration.pointerWarps() == 0, "the settle warp yanked a pointer the user had moved")
+assert(integration.pointerAt().x == 640 and integration.pointerAt().y == 480,
+  "the pointer did not stay where the user moved it")
+-- The home dies with the skipped warp, so the next choreography saves its own.
+integration.movePointer({ x = 410, y = 310 })
+extendGesture(integration, 123, gestureScreen(hello))
+assert(integration.pointerReads() == 2, "the choreography after a hand-moved pointer reused the old home")
+assert(integration.firePointerSettle(), "the choreography after a hand-moved pointer armed no settle timer")
+assert(integration.pointerAt().x == 410 and integration.pointerAt().y == 310,
+  "the warp went to the home the user had already left")
+
+-- Within the tolerance it is our own pointer, jitter and all: the warp still runs.
+integration = integrationContext(nil, pointerOpts)
+runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
+integration.movePointer({ x = integration.pointerAt().x + 2, y = integration.pointerAt().y })
+assert(integration.firePointerSettle(), "no settle timer was armed")
+assert(#integration.pointerWarps() == 1 and integration.pointerAt().x == 900,
+  "a pointer within the tolerance was read as the user's and left where it was")
+
+-- A queue waiting on the foreground verdict can still turn into a draft rewrite.
+integration = integrationContext(nil, gestureOpts)
+assert(module.handleEvent(cPress(false)), "Cmd+C was not queued for the verdict")
+assert(module.handleEvent(optionShiftPress(123)), "the gesture behind a queue was not consumed")
+integration.runDeferred()
+assert(#integration.actions == 0 and #integration.mouseEvents() == 0,
+  "the gesture ran while a resolution still held keys")
+
+-- That bail leaves the painted selection alone, so the state the press cleared on its
+-- way in has to come back with it or the next chord restarts from the cursor.
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
+assert(module.handleEvent(cPress(false)), "Cmd+C was not queued for the verdict")
+assert(module.handleEvent(optionShiftPress(123)), "the chord behind a queue was not consumed")
+integration.runDeferred()
+assert(#gestureClicks(integration) == 1, "the chord behind a queue ran a gesture")
+integration.resolve("not-claude")
+pressGesture(integration, 123)
+assert(integration.actions[#integration.actions] == "scrape",
+  "a chord bailed on a busy flow dropped the gesture cache")
+integration.deliverScrape(gestureScreen(hello))
+assertWordClick(integration, 2, { from = 1, to = 5, dragFrom = 7, dragTo = 11, breaker = false },
+  "the chord after a busy bail did not extend the selection it had left painted")
+
+-- A gesture selection is the same armed selection a real drag leaves behind, so
+-- everything downstream has to work on it untouched.
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 124, gestureScreen(sentinel .. hello), gestureScreen(hello))
+assert(module.handleEvent(xPress(false)), "Cmd+X after a word gesture was not consumed")
+integration.resolve("claude")
+integration.runDeferred()
+assert(integration.actions[#integration.actions] == "scrape",
+  "the gesture selection did not arm Cmd+X")
+integration.deliverScrape(gestureScreen(hello))
+integration.fireCutTimer()
+integration.deliverScrape(gestureScreen(" world"))
+assert(integration.wrote() == "hello", "Cmd+X did not cut the word the gesture selected")
+
+integration = integrationContext(textTypes, gestureOpts)
+runGesture(integration, 124, gestureScreen(sentinel .. hello), gestureScreen(hello))
+assert(module.handleEvent(charPress("Z")), "a character typed over a word gesture was not consumed")
+integration.resolve("claude")
+integration.runDeferred()
+integration.deliverScrape(gestureScreen(hello))
+integration.timeout()
+integration.deliverScrape(gestureScreen(" world"))
+assert(integration.replayed() == "Z", "the typed character did not replace the gesture selection")
+
+integration = integrationContext(nil, gestureOpts)
+assert(module.handleEvent(optionShiftPress(126)), "Option+Shift+Up was not swallowed")
+assert(module.handleEvent(optionShiftPress(125)), "Option+Shift+Down was not swallowed")
+integration.runDeferred()
+assert(#integration.actions == 0 and #integration.mouseEvents() == 0,
+  "a vertical Option+Shift arrow started a gesture")
+
 integration = integrationContext()
-assert(module.handleEvent(keyEvent(123, { "alt", "shift" }, false, "alt-shift-left")),
-  "Option+Shift+Left was not swallowed in Terminal")
-assert(#integration.actions == 0, "swallowed Option+Shift+Left still ran an action")
+assert(module.handleEvent(optionShiftPress(123)), "Option+Shift+Left was not consumed in Terminal")
+assert(#integration.actions == 0, "the gesture ran inside the event-tap callback")
 assert(not module.handleEvent(keyEvent(123, { "alt" }, false, "alt-left")),
   "plain Option+Left was intercepted")
 integration.switchApp("com.apple.Safari")
-assert(not module.handleEvent(keyEvent(123, { "alt", "shift" }, false, "alt-shift-left")),
+assert(not module.handleEvent(optionShiftPress(123)),
   "Option+Shift+Left was swallowed outside Terminal")
 
 -- A shell tab has no draft to protect, so there the chord is the user's own.
 integration = integrationContext(nil, { verdict = "not-claude" })
-assert(not module.handleEvent(keyEvent(123, { "alt", "shift" }, false, "alt-shift-left")),
-  "Option+Shift+Left was swallowed in a non-Claude tab")
-integration = integrationContext(nil, { verdict = "claude" })
-assert(module.handleEvent(keyEvent(126, { "alt", "shift" }, false, "alt-shift-up")),
-  "Option+Shift+Up was not swallowed in a Claude tab")
+for _, keyCode in ipairs({ 123, 124, 125, 126 }) do
+  assert(not module.handleEvent(optionShiftPress(keyCode)),
+    "an Option+Shift arrow was swallowed in a non-Claude tab")
+end
+integration.runDeferred()
+assert(#integration.actions == 0, "a non-Claude Option+Shift arrow started a gesture")
+
+-- Self-posted keystrokes come back through our own tap. Every flow below holds a
+-- window open around its own DEL, and each one used to close that window on the DEL
+-- itself; the marker is the only thing that tells it from the user's typing.
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
+assert(table.concat(integration.actions, ",") == "sentinel,scrape,cut,scrape",
+  "the gesture read its own sentinel keystroke as a draft the user had typed into")
+assertWordClick(integration, 1, { from = 7, to = 11 },
+  "the gesture did not finish with its own keystrokes looping back through the tap")
+
+integration = integrationContext(textTypes)
+dragThenType(integration, "x")
+integration.deliverScrape(screenDraft)
+assert(integration.actions[#integration.actions] == "cut",
+  "the replace flow intercepted its own DEL instead of letting it reach the draft")
+integration.timeout()
+integration.deliverScrape(screenShorter)
+assert(integration.replayed() == "x",
+  "the replace flow ended on its own DEL and swallowed the key it was holding")
+
+integration = integrationContext()
+dragThenCut(integration)
+integration.deliverScrape(screenDraft)
+integration.fireCutTimer()
+integration.deliverScrape(screenShorter)
+assert(integration.replayed() == "", "the cut queued its own DEL and replayed it afterwards")
+assert(integration.wrote() == "brave ", "the cut did not read back the text its own DEL removed")
+
+-- The opposite face of the same marker: a selection armed for the DEL we are about to
+-- post must survive that post, and still die on a key the user presses.
+integration = integrationContext()
+simulateDrag()
+module.handleEvent(selfPostedKeyEvent("\127", true))
+module.handleEvent(selfPostedKeyEvent("\127", false))
+assert(module.handleEvent(xPress(false)), "Cmd+X after a self-posted key was not consumed")
+integration.resolve("claude")
+integration.runDeferred()
+assert(integration.actions[#integration.actions] == "scrape",
+  "a keystroke of our own disarmed the selection through the tap")
+
+integration = integrationContext()
+simulateDrag()
+assert(not module.handleEvent(arrowPress()), "a plain arrow was consumed")
+assert(module.handleEvent(xPress(false)), "Cmd+X after an arrow was not consumed")
+integration.resolve("claude")
+integration.runDeferred()
+assert(#integration.actions == 0, "a keystroke of the user's left the selection armed")
 
 -- A paste consumed for a tab that moved before the verdict landed has nowhere safe to
 -- go: the clipboard would land in whatever took its place.
@@ -2120,5 +3764,280 @@ assert(module.planBytes(undo) == string.char(31), "undo byte changed")
 local cut = module.cutPlan()
 assert(#cut == 1, "cut plan length changed")
 assert(module.planBytes(cut) == string.char(127), "cut byte changed")
+
+-- Latency instrumentation. The recorder takes plain nanosecond numbers, so the ring,
+-- the cold/warm split and the percentiles are driven with synthetic clocks; the tap
+-- wrapper's own extraction is covered through latencyObserve with fake events.
+local millisecond = 1000000
+local second = 1000000000
+
+local function latencyRowFor(rows, class, cold)
+  for _, row in ipairs(rows) do
+    if row.class == class and row.cold == cold then return row end
+  end
+  return nil
+end
+
+local function latencyEvent(eventType, rawFlags, stamp, marker)
+  local event = {}
+  function event:getType() return eventType end
+  function event:rawFlags() return rawFlags end
+  function event:timestamp() return stamp end
+  function event:getProperty(property)
+    assert(property == 91, "the tap read a property other than the replay marker")
+    return marker or 0
+  end
+  return event
+end
+
+assert(module.latencyClassCode(10, 0, 0) == 40, "plain keyDown class code changed")
+assert(module.latencyClassCode(10, 1 << 20, 0) == 42, "a Cmd chord was not classed as one")
+assert(module.latencyClassCode(10, 1 << 19, 0) == 42, "an Option chord was not classed as one")
+-- Shift and Control ride along with ordinary typing; classing them as chords would
+-- hide every capital letter from the plain-typing bucket.
+assert(module.latencyClassCode(10, 1 << 17, 0) == 40, "Shift was classed as a chord")
+assert(module.latencyClassCode(10, 1 << 18, 0) == 40, "Control was classed as a chord")
+assert(module.latencyClassCode(10, 0, module.replayMarker) == 41,
+  "a replayed event was not classed as a replay")
+assert(module.latencyClassCode(11, 0, 0) == 44, "keyUp shares a class code with keyDown")
+
+module.latencyReset()
+local percentileBase = 100 * second
+module.latencyRecord(percentileBase, percentileBase, percentileBase, 40)
+for index = 1, 100 do
+  local entered = percentileBase + index * 10 * millisecond
+  module.latencyRecord(entered, entered + index * millisecond, entered - index * millisecond, 40)
+end
+local percentileRows = module.latencyRows()
+local warmKeys = latencyRowFor(percentileRows, "keyDown", false)
+assert(warmKeys and warmKeys.count == 100, "the warm bucket lost events")
+assert(warmKeys.queue.count == 100, "a plausible event timestamp was rejected")
+-- Nearest rank over 1..100 ms: floor-based or interpolating percentiles land elsewhere.
+assert(warmKeys.queue.p50 == 50 and warmKeys.queue.p90 == 90
+  and warmKeys.queue.p99 == 99 and warmKeys.queue.max == 100,
+  "queue percentiles are not nearest-rank over a known distribution")
+assert(warmKeys.process.p50 == 50 and warmKeys.process.p90 == 90
+  and warmKeys.process.p99 == 99 and warmKeys.process.max == 100,
+  "processing percentiles are not nearest-rank over a known distribution")
+local coldKeys = latencyRowFor(percentileRows, "keyDown", true)
+assert(coldKeys and coldKeys.count == 1, "the first recorded event was not cold")
+assert(percentileRows[#percentileRows].class == "ALL", "the totals row is not last")
+assert(latencyRowFor(percentileRows, "ALL", false).count == 100, "the warm total lost events")
+
+-- Seven samples put every percentile on a fractional rank, where nearest-rank and a
+-- truncating rank disagree: the round hundred above cannot tell them apart.
+module.latencyReset()
+local oddBase = 150 * second
+module.latencyRecord(oddBase, oddBase, oddBase, 40)
+for index = 1, 7 do
+  local entered = oddBase + index * 10 * millisecond
+  module.latencyRecord(entered, entered + index * millisecond, entered - index * millisecond, 40)
+end
+local oddWarm = latencyRowFor(module.latencyRows(), "keyDown", false)
+assert(oddWarm.count == 7 and oddWarm.process.p50 == 4 and oddWarm.process.p90 == 7
+  and oddWarm.process.p99 == 7 and oddWarm.process.max == 7,
+  "percentiles over seven samples are not nearest-rank")
+assert(oddWarm.queue.p50 == 4 and oddWarm.queue.p90 == 7,
+  "queue percentiles over seven samples are not nearest-rank")
+
+module.latencyReset()
+local boundaryBase = 200 * second
+local firstAt = boundaryBase
+local warmAt = firstAt + 1500 * millisecond
+local boundaryAt = warmAt + 2 * second
+local coldAt = boundaryAt + 2 * second + 1
+for _, entered in ipairs({ firstAt, warmAt, boundaryAt, coldAt }) do
+  module.latencyRecord(entered, entered, entered, 40)
+end
+local boundaryRows = module.latencyRows()
+local boundaryWarm = latencyRowFor(boundaryRows, "keyDown", false)
+local boundaryCold = latencyRowFor(boundaryRows, "keyDown", true)
+-- A gap of exactly 2s is still warm; one nanosecond more is the pause the user feels.
+assert(boundaryWarm and boundaryWarm.count == 2,
+  "the 2s gap boundary did not fall in the warm bucket")
+assert(boundaryCold and boundaryCold.count == 2,
+  "a gap past 2s did not fall in the cold bucket")
+
+module.latencyReset()
+local ringBase = 300 * second
+for index = 1, 5000 do
+  local entered = ringBase + index * 10 * millisecond
+  module.latencyRecord(entered, entered + index * millisecond, entered, 40)
+end
+local ringRows = module.latencyRows()
+local ringWarm = latencyRowFor(ringRows, "keyDown", false)
+assert(ringWarm.count == module.latencyCapacity, "the ring did not cap at its capacity")
+assert(#ringRows == 2, "events older than the ring survived into their own bucket")
+-- The window is events 905..5000, so the median is 2952 ms and the oldest is gone.
+assert(ringWarm.process.max == 5000 and ringWarm.process.p50 == 2952,
+  "the ring kept the wrong window of events")
+assert(module.latencyLength() == module.latencyCapacity,
+  "the ring storage grew instead of overwriting")
+
+module.latencyReset()
+local observeBase = 400 * second
+module.latencyObserve(latencyEvent(10, 0, observeBase - 3 * millisecond),
+  observeBase, observeBase + 500000)
+local chordAt = observeBase + 10 * millisecond
+module.latencyObserve(latencyEvent(10, 1 << 20, 0), chordAt, chordAt + 500000)
+local replayAt = observeBase + 20 * millisecond
+module.latencyObserve(latencyEvent(10, 0, replayAt - millisecond, module.replayMarker),
+  replayAt, replayAt + 200000)
+local mouseAt = observeBase + 30 * millisecond
+module.latencyObserve(latencyEvent(2, 0, mouseAt - 2 * millisecond), mouseAt, mouseAt + 100000)
+local observeRows = module.latencyRows()
+local firstKey = latencyRowFor(observeRows, "keyDown", true)
+assert(firstKey and firstKey.queue.p50 == 3 and firstKey.process.p50 == 0.5,
+  "the tap wrapper did not read the event's own timestamp")
+local chordRow = latencyRowFor(observeRows, "keyDown+chord", false)
+-- A zero timestamp costs only the queue delay: the processing time is still real.
+assert(chordRow and chordRow.count == 1 and chordRow.queue.count == 0
+  and chordRow.queue.p50 == nil and chordRow.process.p50 == 0.5,
+  "a synthetic zero timestamp was recorded as a queue delay")
+assert(latencyRowFor(observeRows, "keyDown+replay", false).queue.p50 == 1,
+  "the replay marker did not reach the class")
+assert(latencyRowFor(observeRows, "leftMouseUp", false).queue.p50 == 2,
+  "the mouse event class was not named")
+assert(latencyRowFor(observeRows, "ALL", false).count == 3, "the warm total lost events")
+
+local report = module.latencyReport()
+assert(report:match("ring " .. module.latencyCapacity), "the report hides the ring size")
+assert(report:match("hot path per event"), "the report hides its own cost")
+assert(report:match("keyDown%+chord%s+warm%s+1%s+0%s+%-"),
+  "the report lost the chord row or its missing queue delay")
+assert(report:match("keyDown%s+cold%s+1%s+1%s+3%.00%s+3%.00%s+3%.00%s+3%.00%s+0%.50"),
+  "the report lost the two-decimal ms columns")
+-- The zero-timestamp chord above is the one reading the ceiling threw away, and a
+-- discard the report does not mention reads as a queue delay nobody ever had.
+assert(report:match("dropped: 1 queue readings"),
+  "the report hid the reading its own ceiling discarded")
+
+-- The ceiling is there for clock mismatches, not for delays: a stall of seconds is
+-- exactly what this instrument exists to catch, so it has to survive the filter that
+-- used to sit at one second.
+do
+local stallBase = 450 * second
+module.latencyReset()
+module.latencyRecord(stallBase, stallBase, stallBase, 40)
+local stalledAt = stallBase + 5 * second
+module.latencyRecord(stalledAt, stalledAt, stalledAt - 5 * second, 40)
+local stallRow = latencyRowFor(module.latencyRows(), "keyDown", true)
+assert(stallRow and stallRow.queue.count == 2 and stallRow.queue.max == 5000,
+  "a five-second queue delay was discarded instead of reported")
+assert(not module.latencyReport():match("dropped:"),
+  "a reading that was kept was counted as dropped")
+local mismatchedAt = stalledAt + 31 * second
+module.latencyRecord(mismatchedAt, mismatchedAt, mismatchedAt - 31 * second, 40)
+assert(latencyRowFor(module.latencyRows(), "keyDown", true).queue.count == 2,
+  "a reading past the ceiling was recorded as a queue delay")
+assert(module.latencyReport():match("dropped: 1 queue readings"),
+  "the reading past the ceiling was not counted")
+end
+
+-- A synthetic event carries no timestamp, so subtracting it measures the uptime. Within
+-- the first half-minute of a boot that lands well inside the ceiling and used to be
+-- recorded as a queue delay of seconds nobody ever waited.
+do
+module.latencyReset()
+local bootBase = 5 * second
+module.latencyRecord(bootBase, bootBase, 0, 40)
+module.latencyRecord(bootBase + 3 * second, bootBase + 3 * second, nil, 40)
+local bootRow = latencyRowFor(module.latencyRows(), "keyDown", true)
+assert(bootRow and bootRow.count == 2 and bootRow.queue.count == 0,
+  "a zero timestamp inside the ceiling was recorded as a queue delay")
+assert(module.latencyReport():match("dropped: 2 queue readings"),
+  "the readings with no timestamp behind them were not counted as dropped")
+end
+
+module.latencyReset()
+assert(module.latencyReport():match("no events recorded"), "an empty ring reported rows")
+assert(not module.latencyReport():match("dropped:"), "the reset kept the dropped count")
+
+-- claude-keys off, hours pass, on again: the first event afterwards follows no
+-- previous event at all, and measured against the one from before the stop it reads
+-- as warm. M.start installs the real tap and its watchers, so it runs here against
+-- stub Hammerspoon objects — the module reads every hs API through its environment.
+do
+local function stubHandle()
+  return { start = function() end, stop = function() end, isEnabled = function() return true end,
+    subscribe = function() end, unsubscribeAll = function() end }
+end
+local tapCallback
+env.hs.axuielement = {}
+env.hs.eventtap.new = function(_, callback)
+  tapCallback = callback
+  return stubHandle()
+end
+env.hs.timer = { doEvery = stubHandle, doAfter = stubHandle }
+env.hs.application = { watcher = { new = stubHandle } }
+env.hs.spaces = { watcher = { new = stubHandle } }
+env.hs.caffeinate = { watcher = { new = stubHandle } }
+env.hs.window = { filter = { new = stubHandle, windowFocused = 1, windowUnfocused = 2,
+  windowCreated = 3, windowDestroyed = 4, windowTitleChanged = 5 } }
+env.hs.task = { new = function()
+  return { start = function() return false end, terminate = function() end }
+end }
+
+integration = integrationContext()
+local restartBase = 600 * second
+module.latencyReset()
+module.latencyRecord(restartBase, restartBase, restartBase, 40)
+local warmAfterFirst = restartBase + 10 * millisecond
+module.latencyRecord(warmAfterFirst, warmAfterFirst, warmAfterFirst, 40)
+assert(latencyRowFor(module.latencyRows(), "keyDown", false).count == 1,
+  "the fixture's second event was not warm before the restart")
+assert(module.start(), "the stubbed start did not report a running tap")
+module.stop()
+local afterRestart = warmAfterFirst + 10 * millisecond
+module.latencyRecord(afterRestart, afterRestart, afterRestart, 40)
+assert(latencyRowFor(module.latencyRows(), "keyDown", false).count == 1,
+  "the first event after a restart was timed against the one from before the stop")
+assert(latencyRowFor(module.latencyRows(), "keyDown", true).count == 2,
+  "the first event after a restart was not cold")
+
+-- The event whose handling throws is exactly the sample worth having, and a tap that
+-- lets the error out is one the system eventually disables: it is caught, still
+-- measured, reported once, and the event reaches the terminal as if we were not here.
+assert(tapCallback, "M.start installed no tap callback")
+local function tapEvent(explode)
+  local event = {}
+  function event:getType() return 10 end
+  function event:rawFlags() return 0 end
+  function event:timestamp() return 20 * second - 2 * millisecond end
+  function event:getProperty() return 0 end
+  function event:getKeyCode()
+    if explode then error("handleEvent blew up") end
+    return 0
+  end
+  function event:getFlags() return eventFlags({}) end
+  function event:getCharacters() return nil end
+  return event
+end
+module.latencyReset()
+assert(tapCallback(tapEvent(true)) == false,
+  "an event whose handling threw was consumed instead of passed to the terminal")
+local tapRow = latencyRowFor(module.latencyRows(), "keyDown", true)
+assert(tapRow and tapRow.count == 1 and tapRow.queue.p50 == 2,
+  "the sample from a throwing callback was lost with the error")
+assert(integration.logged() == 1, "a throwing callback was not reported")
+assert(tapCallback(tapEvent(true)) == false, "the second throwing event was consumed")
+assert(integration.logged() == 1, "the tap error was reported once per event it threw on")
+assert(latencyRowFor(module.latencyRows(), "keyDown", false).count == 1,
+  "the second throwing event was not measured either")
+assert(tapCallback(tapEvent(false)) == false,
+  "an ordinary event stopped passing through the wrapped callback")
+assert(latencyRowFor(module.latencyRows(), "keyDown", false).count == 2,
+  "an ordinary event through the wrapped callback was not measured")
+
+-- Once per session, and `claude-keys off; on` IS the next session — it is what gets
+-- pressed to make the failure happen again. A latch surviving the restart leaves the
+-- rest of that session silent about the very throw it was restarted to see.
+module.start()
+module.stop()
+assert(tapCallback(tapEvent(true)) == false,
+  "the throwing event after a restart was consumed")
+assert(integration.logged() == 2,
+  "a restart kept the tap-error latch from the session before it")
+end
 
 return "PASS: Claude Cmd key decisions"
