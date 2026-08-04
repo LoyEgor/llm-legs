@@ -49,6 +49,8 @@ local serviceLogPartialLines = {}
 local serviceLogWatcher = nil
 local serviceLogPollingTimer = nil
 local screenDebounceTimer = nil
+local focusRestoreTimer = nil
+local rejoinSonoBusTimer = nil
 local audioInputWatcher = nil
 local audioInputMirrorTimer = nil
 local sendInputDeviceCommand
@@ -173,6 +175,14 @@ end
 
 local function cancelPendingWork()
     actionGeneration = actionGeneration + 1
+    if focusRestoreTimer then
+        focusRestoreTimer:stop()
+        focusRestoreTimer = nil
+    end
+    if rejoinSonoBusTimer then
+        rejoinSonoBusTimer:stop()
+        rejoinSonoBusTimer = nil
+    end
     for id, entry in pairs(pending) do
         if entry.timer then
             entry.timer:stop()
@@ -199,13 +209,15 @@ local function cancelTeardown()
     end
 end
 
-local function runAppTasks(specs, expectRunning, title, delay)
+local function runAppTasks(specs, expectRunning, title, delay, quiet)
     cancelAppActionTasks()
     local generation = actionGeneration
     local remaining = #specs
 
     if remaining == 0 then
-        verifyApps(expectRunning, title, delay)
+        if not quiet then
+            verifyApps(expectRunning, title, delay)
+        end
         return
     end
 
@@ -220,7 +232,7 @@ local function runAppTasks(specs, expectRunning, title, delay)
             print("WARNING: iPad app action failed:", title, exitCode)
         end
         remaining = remaining - 1
-        if remaining == 0 then
+        if remaining == 0 and not quiet then
             verifyApps(expectRunning, title, delay)
         end
     end
@@ -417,17 +429,64 @@ local function stopJumpUserReliably(generation, onDone)
     end
 end
 
-local function enableDummy()
+local function enableDummy(quiet)
     cancelTeardown()
     cancelPendingWork()
     actionGeneration = actionGeneration + 1
     print("ACTION: ENABLE_DUMMY")
+    local frontAtStart = hs.window.frontmostWindow()
     runAppTasks({
-        { path = "/usr/bin/open", args = { "-a", "BetterDisplay" } },
+        { path = "/usr/bin/open", args = { "-g", "-a", "BetterDisplay" } },
         -- -j -g: Jump Connect's status window pops on every plain launch; it is never used here.
         { path = "/usr/bin/open", args = { "-j", "-g", "-a", "Jump Desktop Connect" } },
-    }, true, "iPad connected", 10)
+    }, true, "iPad connected", 10, quiet)
     local generation = actionGeneration
+
+    local function tidyConnectWindows()
+        local jump = hs.application.get("Jump Desktop Connect")
+        local sono = hs.application.get("SonoBus")
+        local better = hs.application.get("BetterDisplay")
+        local function ownedBy(window)
+            local app = window and window:application()
+            local pid = app and app:pid()
+            return pid ~= nil
+                and ((jump ~= nil and pid == jump:pid())
+                    or (sono ~= nil and pid == sono:pid())
+                    or (better ~= nil and pid == better:pid()))
+        end
+        local front = hs.window.frontmostWindow()
+        local focusStolen = ownedBy(front)
+        -- The user may have switched windows since enableDummy; track the
+        -- freshest window that is theirs, not ours, as the restore target.
+        if front and not focusStolen then
+            frontAtStart = front
+        end
+        if sono and not sono:isHidden() then
+            sono:hide()
+        end
+        if jump then
+            -- Close the standard windows (matches the X button; Jump keeps
+            -- serving), then hide as a fallback for any non-standard one; the
+            -- focus restore below compensates if Jump held focus.
+            for _, window in ipairs(jump:allWindows()) do
+                if window:isStandard() then
+                    pcall(window.close, window)
+                end
+            end
+            jump:hide()
+        end
+        -- ownedBy(frontAtStart): restoring a SonoBus/Jump window would re-front
+        -- what was just hidden.
+        if focusStolen and frontAtStart and not ownedBy(frontAtStart) then
+            if focusRestoreTimer then
+                focusRestoreTimer:stop()
+            end
+            focusRestoreTimer = hs.timer.doAfter(0.4, function()
+                focusRestoreTimer = nil
+                pcall(frontAtStart.focus, frontAtStart)
+            end)
+        end
+    end
     nextPendingId = nextPendingId + 1
     local pendingId = nextPendingId
     local entry = {}
@@ -441,7 +500,7 @@ local function enableDummy()
         local specs = {}
         if hs.application.get("BetterDisplay") == nil then
             print("WARNING: iPad connect re-launching BetterDisplay")
-            specs[#specs + 1] = { path = "/usr/bin/open", args = { "-a", "BetterDisplay" } }
+            specs[#specs + 1] = { path = "/usr/bin/open", args = { "-g", "-a", "BetterDisplay" } }
         end
         if #jumpUserPids() == 0 then
             print("WARNING: iPad connect re-launching Jump Desktop Connect")
@@ -449,14 +508,24 @@ local function enableDummy()
         end
         if hs.application.get("SonoBus") == nil then
             print("WARNING: iPad connect re-launching SonoBus")
-            specs[#specs + 1] = { path = "/usr/bin/open", args = { sonobusGroupUrl } }
+            specs[#specs + 1] = { path = "/usr/bin/open", args = { "-g", sonobusGroupUrl } }
         end
+        tidyConnectWindows()
         if #specs > 0 then
-            runAppTasks(specs, true, "iPad connected retry", 3)
-        end
-        local jump = hs.application.get("Jump Desktop Connect")
-        if jump then
-            jump:hide()
+            runAppTasks(specs, true, "iPad connected retry", 3, quiet)
+            -- Apps relaunched by the retry are not up yet on this tick; sweep
+            -- their windows again once they are.
+            nextPendingId = nextPendingId + 1
+            local retryPendingId = nextPendingId
+            local retryEntry = {}
+            pending[retryPendingId] = retryEntry
+            retryEntry.timer = hs.timer.doAfter(6, function()
+                retryEntry.timer = nil
+                pending[retryPendingId] = nil
+                if generation == actionGeneration then
+                    tidyConnectWindows()
+                end
+            end)
         end
     end)
     showAutomationMenu()
@@ -884,8 +953,6 @@ local function setEnforce(value)
     return active
 end
 
-local rejoinSonoBusTimer = nil
-
 -- Both SonoBus ends go stale after the iPad app dies mid-session; rejoining
 -- the group on the Mac side is half of the recovery (the iPad app restart is
 -- the other half).
@@ -899,7 +966,7 @@ local function rejoinSonoBus()
     end
     rejoinSonoBusTimer = hs.timer.doAfter(app and 2 or 0, function()
         rejoinSonoBusTimer = nil
-        hs.execute([[/usr/bin/open "]] .. sonobusGroupUrl .. [["]])
+        hs.execute([[/usr/bin/open -g "]] .. sonobusGroupUrl .. [["]])
     end)
 end
 
@@ -908,14 +975,14 @@ local function ipadConnected(baseline)
         storeEnforce(true)
         refreshAutomationMenu()
     end
-    enableDummy()
+    enableDummy(baseline)
     if _G.DisplayMirror then
         _G.DisplayMirror.reconcile("iPad connected")
     end
     if baseline then
         -- A baseline replay must not bounce a live SonoBus connection; joining
         -- the current group again is a no-op.
-        hs.execute([[/usr/bin/open "]] .. sonobusGroupUrl .. [["]])
+        hs.execute([[/usr/bin/open -g "]] .. sonobusGroupUrl .. [["]])
     else
         rejoinSonoBus()
     end
