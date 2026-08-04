@@ -24,16 +24,27 @@ session_id=$(field '.session_id' | tr -cd 'A-Za-z0-9_-')
 
 command=$(field '.tool_input.command')
 description=$(field '.tool_input.description')
+# Derivation reads the command only up to the first heredoc operator: a brief
+# written through `<<EOF` quotes launch-shaped lines that launch nothing, and a
+# line anchor cannot tell them apart from a real command.
+launch=${command%%<<*}
 
 cache_root="$HOME/.cache/claude-worker-tags"
 cache_dir="$cache_root/$session_id"
 tag_file="$cache_dir/$agent_id"
 
 worker_conf() { sed -n "s/^$1=//p" "$HOME/.claude/worker-model" 2>/dev/null | head -n1; }
-grab() { printf '%s' "$command" | grep -oE -e "$1" 2>/dev/null | head -n1; }
+grab() { printf '%s' "$launch" | grep -oE -e "$1" 2>/dev/null | head -n1; }
+
+# A launcher name counts only where a command word can stand: line start or
+# after a shell separator, optionally path-prefixed and behind env assignments
+# and wrapper words (the documented launches run under CODEX_HOME=… and
+# timeout/nohup). Unanchored, prose naming "claudeb profile X" tags X.
+cmd_word='(^|[;&|(])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+|(nohup|env|nice|timeout)([[:space:]]+(-[^[:space:]]+|[0-9]+[smhd]?))*[[:space:]]+)*([^[:space:];&|()]*/)?'
+
 is_geminib_launch() {
-  printf '%s' "$command" | grep -qE \
-    '(^|[[:space:]/])geminib[[:space:]]+((profile|p|run)[[:space:]]+["'\'']*[a-z0-9][a-z0-9-]*|["'\'']*[a-z0-9][a-z0-9-]*["'\'']*[[:space:]]+exec)'
+  printf '%s' "$launch" | grep -qE \
+    "${cmd_word}"'geminib[[:space:]]+((profile|p|run)[[:space:]]+["'\'']*[a-z0-9][a-z0-9-]*|["'\'']*[a-z0-9][a-z0-9-]*["'\'']*[[:space:]]+exec)'
 }
 
 # Derive codex model short label from ~/.codex/config.toml; fallback "sol" defined here.
@@ -48,7 +59,7 @@ codex_model_short_label() {
 # A launch/resume command re-derives the tag every time (idempotent; a rotating
 # claudeb may land on a different account between resumes).
 tag=""
-if printf '%s' "$command" | grep -q 'codex exec'; then
+if printf '%s' "$launch" | grep -qE "${cmd_word}"'codex[[:space:]]+exec([[:space:]]|$)'; then
   acct=$(grab '\.codex-profiles/[A-Za-z0-9_.-]+' | sed 's|.*/||')
   [ -n "$acct" ] || acct=main
   effort=$(grab 'model_reasoning_effort=[a-z]+' | cut -d= -f2)
@@ -56,22 +67,26 @@ if printf '%s' "$command" | grep -q 'codex exec'; then
   [ -n "$effort" ] || effort=medium
   codex_model=$(codex_model_short_label)
   tag="$acct · $codex_model · $effort"
-elif printf '%s' "$command" | grep -q 'claudeb' && printf '%s' "$command" | grep -qE -- '--model|--print|-p '; then
-  acct=$(grab 'claudeb["'\'' ]+profile["'\'' ]+[A-Za-z0-9_.-]+' | grep -oE '[A-Za-z0-9_.-]+$')
+elif printf '%s' "$launch" | grep -qE "${cmd_word}"'claudeb["'\'']?([[:space:]]|$)' &&
+     printf '%s' "$launch" | grep -qE -- '--model|--print|-p '; then
+  # An account never starts with a hyphen; without that the flag of a malformed
+  # `claudeb profile --resume …` becomes the tagged account.
+  acct=$(grab "${cmd_word}"'claudeb["'\'' ]+profile["'\'' ]+[A-Za-z0-9][A-Za-z0-9_.-]*' |
+    grep -oE '[A-Za-z0-9][A-Za-z0-9_.-]*$')
   [ -n "$acct" ] || acct=$(worker_conf claudeb_profile)
-  model=$(grab '\-\-model[= ]+[A-Za-z0-9_.-]+' | grep -oE '[A-Za-z0-9_.-]+$')
+  model=$(grab '\-\-model[= ]+[A-Za-z0-9][A-Za-z0-9_.-]*' | grep -oE '[A-Za-z0-9][A-Za-z0-9_.-]*$')
   [ -n "$model" ] || model=$(worker_conf claudeb_model)
   [ -n "$model" ] || model=opus
   effort=$(grab '\-\-effort[= ]+[a-z]+' | grep -oE '[a-z]+$')
   [ -n "$effort" ] || effort=$(worker_conf claudeb_effort)
   [ -n "$effort" ] || effort=high
   if [ -n "$acct" ]; then tag="$acct · $model · $effort"; else tag="$model · $effort"; fi
-elif { printf '%s' "$command" | grep -qE '(^|[[:space:]/])agy([[:space:]]|$)' ||
+elif { printf '%s' "$launch" | grep -qE "${cmd_word}"'agy([[:space:]]|$)' ||
        is_geminib_launch; } &&
-     printf '%s' "$command" | grep -q -- '--print'; then
-  acct=$(grab 'geminib[[:space:]]+(profile|p|run)[[:space:]]+["'\'' ]*[a-z0-9][a-z0-9-]*' |
+     printf '%s' "$launch" | grep -q -- '--print'; then
+  acct=$(grab "${cmd_word}"'geminib[[:space:]]+(profile|p|run)[[:space:]]+["'\'' ]*[a-z0-9][a-z0-9-]*' |
     grep -oE '[a-z0-9][a-z0-9-]*' | tail -n1)
-  [ -n "$acct" ] || acct=$(grab 'geminib[[:space:]]+["'\'' ]*[a-z0-9][a-z0-9-]*["'\'' ]*[[:space:]]+exec' |
+  [ -n "$acct" ] || acct=$(grab "${cmd_word}"'geminib[[:space:]]+["'\'' ]*[a-z0-9][a-z0-9-]*["'\'' ]*[[:space:]]+exec' |
     grep -oE '[a-z0-9][a-z0-9-]*' | tail -n2 | head -n1)
   [ -n "$acct" ] || acct=main
   agy_model=$(grab '\-\-model(=|[[:space:]])gemini-[0-9.]+-(pro|flash)(-(high|medium|low))?')

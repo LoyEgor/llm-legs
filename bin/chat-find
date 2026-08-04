@@ -35,6 +35,11 @@ MACHINERY = ("<command-name>", "<local-command", "<system-reminder>", "Caveat:")
 # they just never stand in for what he said.
 NOT_A_TITLE = MACHINERY + ("You are ", "This session is being continued")
 PROFILE_OK = re.compile(r"^[A-Za-z0-9._-]+$")
+# Chat names live in the transcript as their own tiny events: one he typed
+# ("custom-title") and one the model guessed ("ai-title"). They are matched as
+# extra patterns of the single search pass, so naming costs no second scan.
+NAME_PATTERNS = ('"custom-title"', '"ai-title"')
+NAME_LINE_MAX = 8 * 1024
 
 
 def die(message):
@@ -166,16 +171,22 @@ def scan_matches(terms, include_all, root):
     if not binary:
         die("neither rg nor grep is available to search with")
     command = argv + ["-a", "-i", "-H", "-F"]
-    for term in terms:
+    for term in list(terms) + list(NAME_PATTERNS):
         command += ["-e", term]
     command.append(root)
 
     lowered = [t.lower() for t in terms]
     found = {}
+    names = {}
     proc = subprocess.Popen(command, executable=binary, stdout=subprocess.PIPE,
                             stderr=subprocess.DEVNULL)
     for raw in proc.stdout:
         raw = raw.rstrip(b"\n")
+        # Only a genuine name event is consumed here; a message that merely quotes
+        # the marker is still speech to be matched.
+        if len(raw) < NAME_LINE_MAX and (b'"custom-title"' in raw or b'"ai-title"' in raw) \
+                and note_name(names, raw):
+            continue
         if not maybe_speech(raw, include_all):
             continue
         path, payload = split_hit(raw)
@@ -217,7 +228,47 @@ def scan_matches(terms, include_all, root):
     proc.stdout.close()
     if proc.wait() not in (0, 1):
         die("search failed (%s exited %d)" % (argv[0], proc.returncode))
-    return found
+    for path, name in names.items():
+        text = name["custom"] or name["ai"]
+        low = text.lower()
+        hit = [t for t in lowered if t in low]
+        if not hit:
+            continue
+        state = found.get(path)
+        if state is None:
+            # A name he typed himself may stand alone as a candidate; a
+            # model-guessed one only ever decorates a chat found by its words.
+            if not name["custom"]:
+                continue
+            # No hit, no snippet: nothing was said here, so nothing may be quoted
+            # as if it had been.
+            state = found.setdefault(path, {"hits": 0, "terms": set(), "snippet": None,
+                                            "spoke": None, "capped": False, "rank": -1})
+        state["terms"].update(hit)
+    return found, names
+
+
+def note_name(names, raw):
+    """Record one chat-name event, reporting whether the line was one.
+
+    The last name of each kind in a transcript wins. False means the line is not
+    a name event, so the caller goes on matching it as conversation.
+    """
+    path, payload = split_hit(raw)
+    if payload is None:
+        return False
+    try:
+        entry = json.loads(payload.decode("utf-8", "replace"))
+    except ValueError:
+        return False
+    key = {"custom-title": "custom", "ai-title": "ai"}.get(entry.get("type"))
+    if not key:
+        return False
+    text = entry.get("customTitle") if key == "custom" else entry.get("aiTitle")
+    if not isinstance(text, str) or not text.strip():
+        return True
+    names.setdefault(path, {"custom": None, "ai": None})[key] = " ".join(text.split())[:110]
+    return True
 
 
 def snippet(text, term):
@@ -307,7 +358,8 @@ def main():
         prog="chat-find",
         description="Find past chats by what was said in them; every hit carries the date of its last real message.",
     )
-    parser.add_argument("terms", nargs="+", help="words he would have typed; a chat matching more of them ranks higher")
+    parser.add_argument("terms", nargs="+", help="words he would have typed, or a name he gave a chat; "
+                                                 "newest last message first, more terms matched breaking ties")
     parser.add_argument("--days", type=float, help="only chats whose last message is within N days")
     parser.add_argument("--limit", type=int, default=8, help="candidates to print (default 8)")
     parser.add_argument("--all", action="store_true", help="also match tool output and file contents")
@@ -319,7 +371,7 @@ def main():
         die("no transcript corpus at " + args.root)
 
     started = time.time()
-    found = scan_matches(args.terms, args.all, args.root)
+    found, names = scan_matches(args.terms, args.all, args.root)
     now = datetime.now(timezone.utc).astimezone()
 
     rows = []
@@ -330,9 +382,9 @@ def main():
         if args.days is not None and (now - when).total_seconds() > args.days * 86400:
             continue
         rows.append((when, path, state))
-    # Relevance first, recency to break ties — but the date is printed for every
-    # candidate either way, because that is what he recognises a chat by.
-    rows.sort(key=lambda r: (len(r[2]["terms"]), r[2]["hits"], r[0]), reverse=True)
+    # Newest last-real-message first (never file mtime), relevance to break ties:
+    # the date is what he recognises a chat by, so the list reads as a timeline.
+    rows.sort(key=lambda r: (r[0], len(r[2]["terms"]), r[2]["hits"]), reverse=True)
 
     if not rows:
         scope = "" if args.all else " (visible conversation only; --all widens to tool output)"
@@ -346,13 +398,19 @@ def main():
         session = os.path.basename(path)[: -len(".jsonl")]
         launcher = ("claudeb profile %s --resume %s" % (profile, session)) if profile \
             else ("claude --resume %s" % session)
-        print("LAST %s (%s) · %d%s hit%s · %s" % (
-            when.strftime("%Y-%m-%d %H:%M"), ago(when, now), state["hits"],
-            "+" if state["capped"] else "", "" if state["hits"] == 1 else "s",
+        tally = "name match" if not state["hits"] else "%d%s hit%s" % (
+            state["hits"], "+" if state["capped"] else "", "" if state["hits"] == 1 else "s")
+        print("LAST %s (%s) · %s · %s" % (
+            when.strftime("%Y-%m-%d %H:%M"), ago(when, now), tally,
             ",".join(sorted(state["terms"]))))
+        name = names.get(path) or {}
+        chat_name = name.get("custom") or name.get("ai")
+        if chat_name:
+            print("  name:        " + chat_name)
         if title:
             print("  opened with: " + title)
-        print("  said:        " + (state["snippet"] or ""))
+        if state["snippet"]:
+            print("  said:        " + state["snippet"])
         print("  resume:      cd %s && %s" % ("'" + (cwd or ".").replace("'", "'\\''") + "'", launcher))
         print()
 

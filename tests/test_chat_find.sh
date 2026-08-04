@@ -79,6 +79,32 @@ MACH="$CORPUS/55555555-5555-5555-5555-555555555555.jsonl"
 said "$MACH" 2026-01-27T10:00:00.000Z user '<command-name>/оверлей</command-name>' spaced
 said "$MACH" 2026-01-27T10:01:00.000Z user 'дальше' spaced
 
+# Said it three times, but weeks earlier: relevance must not lift it above a
+# newer chat now that the list reads as a timeline.
+OLDLOUD="$CORPUS/66666666-6666-6666-6666-666666666666.jsonl"
+said "$OLDLOUD" 2026-01-05T10:00:00.000Z user 'оверлей падает'
+said "$OLDLOUD" 2026-01-05T10:01:00.000Z user 'оверлей всё ещё падает'
+said "$OLDLOUD" 2026-01-05T10:02:00.000Z user 'оверлей починили'
+
+# A chat he named himself, after the model had guessed a name and after an
+# earlier name of his own: the last custom name is the one he sees.
+NAMED="$CORPUS/77777777-7777-7777-7777-777777777777.jsonl"
+said "$NAMED" 2026-01-19T10:00:00.000Z user 'оверлей и тени хедера'
+emit "$NAMED" "{'type':'ai-title','aiTitle':'Guessed overlay name','sessionId':'77777777-7777-7777-7777-777777777777'}"
+emit "$NAMED" "{'type':'custom-title','customTitle':'Оверлей: черновое имя','sessionId':'77777777-7777-7777-7777-777777777777'}"
+emit "$NAMED" "{'type':'custom-title','customTitle':'Оверлей: финальное имя','sessionId':'77777777-7777-7777-7777-777777777777'}"
+
+# Only the model ever named this one.
+AINAMED="$CORPUS/88888888-8888-8888-8888-888888888888.jsonl"
+said "$AINAMED" 2026-01-17T10:00:00.000Z user 'оверлей мигает на старте'
+emit "$AINAMED" "{'type':'ai-title','aiTitle':'Machine guess about гадание','sessionId':'88888888-8888-8888-8888-888888888888'}"
+
+# Speech whose line carries the name-event marker in a sibling field: the byte
+# prefilter cannot tell it from a name event, but the entry is a message. Text
+# quoting the marker would not do — a JSON encoder escapes those quotes away.
+QUOTED="$CORPUS/99999999-9999-9999-9999-999999999999.jsonl"
+emit "$QUOTED" "{'type':'user','cwd':'/tmp/proj','timestamp':'2026-01-16T10:00:00.000Z','toolUseResult':{'type':'custom-title'},'message':{'role':'user','content':'событие должно парситься как речь'}}"
+
 run() { OUT=$("$SCRIPT" --account acct --root "$WORK/projects" "$@" 2>&1); RC=$?; }
 
 # --- the spoken match wins and carries its real date ------------------------
@@ -96,6 +122,44 @@ assert test -z "$(grep -o "LAST $(date +%Y-%m-%d)" <<<"$OUT")"
 # --- a prompt whose text came in blocks is findable -------------------------
 assert grep -q '4444-4444' <<<"$OUT"
 assert grep -q 'вот скриншот, оверлей съезжает' <<<"$OUT"
+
+# --- the list is a strict timeline of last real messages ---------------------
+DATES=$(grep -o 'LAST [0-9-]* [0-9:]*' <<<"$OUT")
+assert test "$DATES" = "$(sort -r <<<"$DATES")"
+assert test "$(grep -c 'LAST ' <<<"$OUT")" -gt 2
+# three hits weeks ago rank below one hit yesterday
+assert test "$(grep -n '6666-6666' <<<"$OUT" | cut -d: -f1)" \
+  -gt "$(grep -n '4444-4444' <<<"$OUT" | cut -d: -f1)"
+
+# --- the name he gave a chat is printed, last custom name winning ------------
+assert grep -q 'name:        Оверлей: финальное имя' <<<"$OUT"
+assert test -z "$(grep -o 'черновое имя' <<<"$OUT")"
+assert test -z "$(grep -o 'name:        Guessed overlay name' <<<"$OUT")"
+# with no name of his own, the model's guess is what there is
+assert grep -q 'name:        Machine guess about' <<<"$OUT"
+# an unnamed chat gets no name line at all
+assert test "$(grep -c 'name:        ' <<<"$OUT")" -eq 2
+
+# --- a name he typed is searchable; a machine guess never stands alone -------
+run финальное
+assert grep -q '7777-7777' <<<"$OUT"
+# nothing was said about it, so nothing is quoted and no hit is invented
+assert grep -q '· name match ·' <<<"$OUT"
+assert test -z "$(grep -o 'said:' <<<"$OUT")"
+assert test -z "$(grep -o '1 hit' <<<"$OUT")"
+# the rest of the block still identifies the chat
+assert grep -q 'name:        Оверлей: финальное имя' <<<"$OUT"
+assert grep -q 'opened with: оверлей и тени хедера' <<<"$OUT"
+assert grep -q 'resume:      cd ' <<<"$OUT"
+run гадание
+assert grep -q 'no chat matched' <<<"$OUT"
+
+# --- a message quoting a name-event marker is still conversation -------------
+run парситься
+assert grep -q '9999-9999' <<<"$OUT"
+assert grep -q 'said:        событие' <<<"$OUT"
+
+run оверлей
 
 # --- tool output, subagents and machinery are not conversation --------------
 assert test -z "$(grep -o '2222-2222' <<<"$OUT")"

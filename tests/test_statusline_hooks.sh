@@ -1953,6 +1953,66 @@ glob_later_output=$(printf '%s' "$glob_later" | "$WORKER_HOOK") || fail "glob-ta
 assert jq -e '.hookSpecificOutput.updatedInput.description == "com · sonnet · high — Run tests"' \
   <<< "$glob_later_output" >/dev/null
 
+# The launcher counts only as a command word, and the wrappers the real launches
+# run under (path prefix, timeout, nohup, nice) sit between it and the separator.
+for claudeb_launch in \
+  'claudeb profile com --model sonnet --effort high -p x' \
+  'cd /somewhere && claudeb profile com --model sonnet -p x' \
+  '~/.local/bin/claudeb profile com --model sonnet -p x' \
+  '"$HOME/.local/bin/claudeb" profile com --model sonnet -p x' \
+  'cd /somewhere && timeout 540 ~/.local/bin/claudeb profile com --model sonnet -p x' \
+  'nohup claudeb profile com --model sonnet -p x &' \
+  'nice -n 5 env CLAUDE_X=1 claudeb profile com --model sonnet -p x' \
+  'claudeb profile com --resume abc123 -p continue'; do
+  claudeb_form=$(worker_payload claudeb-worker worker/forms 'Resume it' "$claudeb_launch")
+  printf '%s' "$claudeb_form" | "$WORKER_HOOK" >/dev/null || fail "claudeb launch form exited nonzero"
+  assert grep -q '^com · ' "$TAGDIR/workerforms"
+  rm -f "$TAGDIR/workerforms"
+done
+
+# The documented codex launch carries its account in a CODEX_HOME assignment,
+# which stands between the separator and the command word.
+codex_env=$(worker_payload codex-worker worker/cenv 'Ship it' \
+  'cd /x && env timeout 600 CODEX_HOME="$HOME/.codex-profiles/alt" codex exec -c model_reasoning_effort=low go')
+printf '%s' "$codex_env" | "$WORKER_HOOK" >/dev/null || fail "codex env-prefixed launch exited nonzero"
+assert_eq 'alt · sol · low' "$(cat "$TAGDIR/workercenv")"
+
+# A profile name never starts with a hyphen: a malformed launch must fall back to
+# the configured account, not tag the flag that followed.
+printf 'claudeb_model=opus\nclaudeb_effort=high\n' > "$HOME/.claude/worker-model"
+malformed=$(worker_payload claudeb-worker worker/malformed 'Run it' 'claudeb profile --resume abc123 -p x')
+printf '%s' "$malformed" | "$WORKER_HOOK" >/dev/null || fail "malformed-profile launch exited nonzero"
+assert_eq 'opus · high' "$(cat "$TAGDIR/workermalformed")"
+
+# Heredoc bodies are quoted text, not commands: neither a launch named mid-prose
+# nor one at the start of a body line may derive a tag. The pre-seeded pending
+# tag stands instead of the quoted word.
+PROSEDIR="$HOME/.cache/claude-worker-tags/wt-prose"
+for prose_body in \
+  'Avoid switching claudeb profile fake mid-switch when you pass -p to it.' \
+  'claudeb profile fake --model opus -p "x"'; do
+  rm -rf "$PROSEDIR"; mkdir -p "$PROSEDIR"
+  printf 'pend · opus · high\n' > "$PROSEDIR/pending-claudeb-worker"
+  prose=$(worker_payload claudeb-worker worker/prose 'Save the brief' \
+    "cat > /tmp/brief.md <<BRIEF
+$prose_body
+BRIEF" wt-prose)
+  prose_output=$(printf '%s' "$prose" | "$WORKER_HOOK") || fail "prose-quoting call exited nonzero"
+  assert_eq 'pend · opus · high' "$(cat "$PROSEDIR/workerprose")"
+  assert jq -e '.hookSpecificOutput.updatedInput.description == "pend · opus · high — Save the brief"' \
+    <<< "$prose_output" >/dev/null
+done
+
+# A real launch that merely feeds itself a heredoc still tags: the cut is at the
+# operator, and the launcher precedes it.
+heredoc_launch=$(worker_payload claudeb-worker worker/hd 'Ship it' \
+  'claudeb profile com --model sonnet -p "$(cat <<BRIEF
+do the thing
+BRIEF
+)"')
+printf '%s' "$heredoc_launch" | "$WORKER_HOOK" >/dev/null || fail "heredoc-fed launch exited nonzero"
+assert_eq 'com · sonnet · high' "$(cat "$TAGDIR/workerhd")"
+
 printf 'claudeb_model=opus\nclaudeb_effort=high\n' > "$HOME/.claude/worker-model"
 unknown_spawn=$(jq -cn '{
   hook_event_name:"PreToolUse",session_id:"spawn-claudeb-unknown",
