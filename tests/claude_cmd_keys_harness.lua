@@ -948,6 +948,7 @@ local function integrationContext(types, opts)
   local changeCount = 1
   local alertCount = 0
   local scrapeCallback
+  local scrapeObserved
   local writtenText
   local mouseEvents = {}
   local observeCount = 0
@@ -1008,9 +1009,10 @@ local function integrationContext(types, opts)
     alert = function()
       alertCount = alertCount + 1
     end,
-    scrape = function(callback)
+    scrape = function(callback, observed)
       actions[#actions + 1] = "scrape"
       if opts.scrapeThrows then error("scrape blew up") end
+      scrapeObserved = observed
       scrapeCallback = callback
     end,
     writeText = function(text)
@@ -1103,11 +1105,12 @@ local function integrationContext(types, opts)
     lastDelay = function() return timeout and timeout.delay end,
     cutTimerStopped = function() return cutTimeout ~= nil and cutTimeout.stopped end,
     timeouts = function() return timeoutCount end,
-    deliverScrape = function(screenText)
+    scrapeContext = function() return scrapeObserved end,
+    deliverScrape = function(screenText, backend)
       local callback = scrapeCallback
       scrapeCallback = nil
       assert(callback, "no scrape was awaiting a screen")
-      callback(screenText)
+      callback(screenText, backend)
     end,
     -- Terminal answers whoever asked, in its own time: a callback taken here can be
     -- delivered after a later gesture has already asked for one of its own.
@@ -1630,6 +1633,263 @@ integration.runDeferred()
 integration.deliverScrape(screenDraft)
 assert(integration.actions[#integration.actions] == "cut",
   "the synthetic drag did not leave a selection for Cmd+X")
+
+-- The AppleScript scrape is 21-80ms of blocked runloop per screen; the window's AXTextArea
+-- answers in a fraction of one, but its value is the whole scrollback with the visible
+-- screen at the end, and only a scrape's own line count says how much of that value the
+-- screen is. Scoped: this chunk sits at the same 200-local ceiling the module does.
+do
+local screen = "first row\nsecond row\nthird row\n"
+local buffered = "old line one\nold line two\nfirst row\nsecond row\nthird row\n"
+
+assert(module.axTextTail(buffered, 3) == screen, "the tail of the buffer was not the screen")
+assert(module.axTextTail(buffered, 5) == buffered, "a tail as long as the buffer was cut short")
+assert(module.axTextTail("only one line\n", 3) == nil,
+  "a buffer with fewer lines than the screen produced a tail")
+assert(module.axTextTail(nil, 3) == nil and module.axTextTail(buffered, 0) == nil,
+  "a missing value or row count produced a tail")
+-- An AX value can arrive without its final newline; the screen handed to parseInputBox
+-- always has one, exactly as the AppleScript scrape does.
+assert(module.axTextTail("old\nfirst row\nsecond row\nthird row", 3) == screen,
+  "an unterminated AX value did not produce a terminated screen")
+
+assert(module.axTextMatches(screen, buffered, 3),
+  "an equal tail was not calibrated as AX-capable")
+assert(module.axTextMatches("first row  \nsecond row\nthird row\t\n", buffered, 3),
+  "trailing padding alone failed the calibration")
+assert(not module.axTextMatches("first row\nSECOND row\nthird row\n", buffered, 3),
+  "a differing line was calibrated as AX-capable")
+assert(not module.axTextMatches(screen, buffered, 4),
+  "a tail shifted by one row was calibrated as AX-capable")
+assert(not module.axTextMatches(screen, "one\ntwo\n", 3),
+  "a buffer shorter than the screen was calibrated as AX-capable")
+assert(not module.axTextMatches(nil, buffered, 3), "a missing scrape calibrated anything")
+
+assert(module.axTextRead(100, 65536).full == true, "a small buffer asked for a ranged read")
+local ranged = module.axTextRead(70000, 65536)
+assert(ranged and not ranged.full and ranged.location == 4464 and ranged.length == 65536,
+  "the ranged read did not ask for the last cap characters")
+assert(module.axTextRead(0, 65536) == nil and module.axTextRead(nil, 65536) == nil,
+  "an empty buffer produced a read")
+assert(module.axText.cap == 65536, "the tail cap moved away from the read plan tested here")
+
+module.axAnchorReset()
+local box = { windowID = 7, tab = "tab-a", tabIndex = 1, x = 0, y = 0, w = 1200, h = 800 }
+local element = { "text-area" }
+local walks = 0
+local function walk()
+  walks = walks + 1
+  return element, buffered
+end
+local entry = module.axTextCalibrate(screen, box, walk)
+assert(entry and entry.capable and entry.rows == 3 and entry.element == element and walks == 1,
+  "the first scrape did not calibrate the window against its own AX tail")
+assert(module.axTextFresh(box) == entry, "the calibration was not cached for its own box")
+-- The row count the tail is cut to is exactly what a resize changes, and another tab of
+-- the same window has its own text area: the cached element would answer with a screen
+-- that is not the one in front.
+assert(module.axTextFresh({ windowID = 7, tab = "tab-a", tabIndex = 1, x = 0, y = 0,
+  w = 1200, h = 700 }) == nil, "a resized window reused the calibration from its old box")
+assert(module.axTextFresh({ windowID = 7, tab = "tab-a", tabIndex = 1, x = 40, y = 0,
+  w = 1200, h = 800 }) == nil, "a dragged window reused the calibration from its old box")
+assert(module.axTextFresh({ windowID = 8, tab = "tab-a", tabIndex = 1, x = 0, y = 0,
+  w = 1200, h = 800 }) == nil, "a second window read the first one's calibration")
+assert(module.axTextFresh({ windowID = 7, tab = "tab-b", tabIndex = 2, x = 0, y = 0,
+  w = 1200, h = 800 }) == nil, "another tab of the same window read its calibration")
+assert(module.axTextFresh(nil) == nil, "an absent window box matched a calibration")
+
+-- A mismatch is cached as a mismatch: that window stays AppleScript-only until something
+-- invalidates the calibration, instead of paying an AX probe per scrape to be told again.
+local mismatched = module.axTextCalibrate("first row\nSECOND row\nthird row\n", box, walk)
+assert(mismatched and mismatched.capable == false, "a mismatched tail stayed AX-capable")
+assert(module.axTextFresh(box) == mismatched, "the AppleScript-only verdict was not cached")
+assert(module.axTextCalibrate(screen, box, function() return nil, nil end).capable == false,
+  "a window with no text area was calibrated as AX-capable")
+assert(module.axTextCalibrate(screen, nil, walk) == nil
+    and module.axTextCalibrate("", box, walk) == nil
+    and module.axTextFresh(box) == nil,
+  "calibration without a window box or without a screen left an entry behind")
+
+module.axTextCalibrate(screen, box, walk)
+module.axTextReset()
+assert(module.axTextFresh(box) == nil, "the scrape-calibration reset left it in place")
+module.axTextCalibrate(screen, box, walk)
+module.axAnchorReset()
+assert(module.axTextFresh(box) == nil, "the AX reset spared the scrape calibration")
+
+-- hs.window.get walks every window of every application (28-85ms live) where Terminal's
+-- own focused window answers in 0.05ms, and both the scrape and the grid math wanted the
+-- same object.
+module.axTextReset()
+local lookups = 0
+local function lookup(windowID)
+  lookups = lookups + 1
+  return { id = function() return windowID end, walked = true }
+end
+local front = { id = function() return 7 end }
+local other = { id = function() return 9 end }
+assert(module.axWindow(7, front, lookup) == front and lookups == 0,
+  "the focused window was not preferred over the window walk")
+assert(module.axWindow(7, other, lookup) == front and lookups == 0,
+  "a window already resolved was resolved again")
+module.axTextReset()
+local walked = module.axWindow(7, other, lookup)
+assert(walked and walked.walked and lookups == 1,
+  "a focused window with another id did not fall back to the walk")
+assert(module.axWindow(7, other, lookup) == walked and lookups == 1,
+  "the walked window was not held for the next call")
+module.axAnchorReset()
+module.axWindow(7, other, lookup)
+assert(lookups == 2, "the AX reset spared the resolved-window cache")
+assert(module.axWindow(nil, front, lookup) == nil and lookups == 2,
+  "a missing window id produced a window")
+-- A window that resolves to nothing is not cached as one: the id outlives the object it
+-- named, and the answer next time may be a live window again.
+module.axTextReset()
+assert(module.axWindow(7, false, function() return nil end) == nil,
+  "an unresolvable window id produced a window")
+assert(module.axWindow(7, front, lookup) == front,
+  "a failed resolution was cached as the window")
+module.axTextReset()
+end
+
+-- The tab-group walk behind an observation is 3-9ms, and the pass used to pay it twice:
+-- once for the target check, once inside the scrape. Scoped: this chunk sits at the same
+-- 200-local ceiling the module does.
+do
+integration = integrationContext(nil, { windowFrame = terminalFrame })
+assert(module.handleEvent(aPress(false)), "the threaded Cmd+A was not consumed")
+integration.resolve("claude")
+local observedBefore = integration.observations()
+integration.runDeferred()
+assert(integration.observations() - observedBefore == 1,
+  "the Cmd+A pass observed the front tab more than once")
+assert(integration.scrapeContext() and integration.scrapeContext().windowID == 7,
+  "the scrape did not receive the observation the target check had already made")
+integration.deliverScrape(screenDraft, "ax")
+assert(integration.observations() - observedBefore == 1,
+  "the delivered screen observed the front tab again")
+assert(#integration.mouseEvents() == 3, "the threaded Cmd+A did not drag")
+
+-- Asked before the scrape now, so a pass whose tab is already gone never reads a screen
+-- nobody will use — and it still has to release the in-flight guard behind it.
+integration = integrationContext(nil, { windowFrame = terminalFrame })
+assert(module.handleEvent(aPress(false)), "the retargeted Cmd+A was not consumed")
+integration.resolve("claude")
+integration.changeTarget()
+integration.runDeferred()
+assert(#integration.actions == 0, "Cmd+A scraped a screen whose target was already gone")
+assert(#integration.mouseEvents() == 0, "Cmd+A dragged in a tab that was not its target")
+selectAll(integration, screenDraft)
+assert(#integration.mouseEvents() == 3, "the bailed pass left the select-all guard armed")
+end
+
+-- The AppleScript backend holds the runloop for 21-80ms after that single check, wide enough
+-- for the user to switch tabs; the drag it feeds posts real mouse events, so that backend
+-- asks again once the screen is in hand. Scoped: this chunk sits at the same 200-local
+-- ceiling the module does.
+do
+module.latencyReset()
+integration = integrationContext(nil, { windowFrame = terminalFrame })
+assert(module.handleEvent(aPress(false)), "the slow-scraped Cmd+A was not consumed")
+integration.resolve("claude")
+-- The tab goes between the pre-scrape check and the screen coming back.
+integration.changeTargetAfterNextObservation()
+integration.runDeferred()
+integration.deliverScrape(screenDraft, "as")
+assert(#integration.mouseEvents() == 0,
+  "Cmd+A dragged in the tab that replaced its target during the AppleScript scrape")
+assert(module.selectAllRow() == nil,
+  "the abandoned pass was timed as a completed select-all action")
+selectAll(integration, screenDraft)
+assert(#integration.mouseEvents() == 3, "the abandoned pass left the select-all guard armed")
+
+-- The AX read closes that window in a fraction of a millisecond, so there the pre-scrape
+-- check is the whole check: a second 3-9ms observation per pass is what the fast path is for.
+integration = integrationContext(nil, { windowFrame = terminalFrame })
+assert(module.handleEvent(aPress(false)), "the AX-scraped Cmd+A was not consumed")
+integration.resolve("claude")
+local observedBefore = integration.observations()
+integration.runDeferred()
+integration.changeTarget()
+integration.deliverScrape(screenDraft, "ax")
+assert(integration.observations() - observedBefore == 1,
+  "the AX-scraped pass observed the front tab again after its screen arrived")
+assert(#integration.mouseEvents() == 3, "the AX-scraped pass did not drag")
+module.latencyReset()
+end
+
+-- Every resolved chord and gesture invalidates the tty context, and the scrape calibration
+-- used to go with it: cut and the word gestures then re-calibrated on every press and never
+-- reached the AX path at all. The fingerprint and the TTL already cover the tab it describes.
+do
+integration = integrationContext()
+local box = { windowID = 7, tab = "tab-a", tabIndex = 1, x = 0, y = 0, w = 1200, h = 800 }
+local screen = "one row\n"
+local calibrated = module.axTextCalibrate(screen, box, function()
+  return { "text-area" }, screen
+end)
+assert(calibrated and calibrated.capable, "the fixture calibration was not AX-capable")
+assert(module.handleEvent(cPress(false)), "the chord before the calibration check was eaten")
+assert(module.axTextFresh(box) == calibrated,
+  "a resolved chord dropped the scrape calibration of the tab it was measured for")
+integration.resolve("claude")
+module.stop()
+assert(module.axTextFresh(box) == nil, "the stopped module kept its scrape calibration")
+end
+
+-- What the AX path is for is a number the user feels, and the input-latency ring cannot
+-- see any of it: the scrape and the drag run in a deferred tick of their own.
+do
+module.latencyReset()
+assert(module.selectAllRow() == nil, "a reset ledger reported rows")
+assert(module.selectAllReport():match("none recorded"), "an empty ledger did not say so")
+
+integration = integrationContext(nil, { windowFrame = terminalFrame })
+assert(module.handleEvent(aPress(false)), "the timed Cmd+A was not consumed")
+integration.resolve("claude")
+integration.runDeferred()
+integration.advance(0.01)
+integration.deliverScrape(screenDraft, "ax")
+local row = module.selectAllRow()
+assert(row and row.count == 1 and row.ax == 1 and row.as == 0,
+  "the AX-served Cmd+A was not counted against its backend")
+assert(row.scrape.p50 == 10 and row.total.p50 == 10 and row.geometry.p50 == 0
+    and row.drag.p50 == 0,
+  "the Cmd+A stages were not measured")
+selectAll(integration, screenDraft)
+row = module.selectAllRow()
+assert(row.count == 2 and row.ax == 1 and row.as == 1,
+  "a scrape that fell back to AppleScript was counted as an AX read")
+
+-- A pass that never dragged has no drag to time, and counting it would report a whole
+-- action nobody performed.
+integration = integrationContext(nil, { windowFrame = terminalFrame })
+selectAll(integration, screenEmptyInput)
+assert(module.selectAllRow().count == 2, "Cmd+A over an empty input recorded an action")
+
+module.latencyReset()
+assert(module.selectAllRow() == nil, "the reset left the selectAll ledger populated")
+module.selectAllRecord(1000000, 2000000, 3000000, 6000000, "ax")
+local rendered = module.latencyReport()
+assert(rendered:match("selectAll actions: n=1, backend ax 1 / as 0"),
+  "the report lost the selectAll counts")
+assert(rendered:match("total p50 6%.00 max 6%.00") and rendered:match("scrape p50 1%.00")
+    and rendered:match("frame p50 2%.00") and rendered:match("drag p50 3%.00")
+    and rendered:match("ring 64"),
+  "the report lost a selectAll stage or its ring size")
+
+module.latencyReset()
+for index = 1, 70 do
+  module.selectAllRecord(index * 1000000, 0, 0, index * 1000000,
+    index % 2 == 0 and "ax" or "as")
+end
+local wrapped = module.selectAllRow()
+assert(wrapped.count == 64 and wrapped.total.max == 70 and wrapped.total.p50 == 38
+    and wrapped.ax == 32,
+  "the selectAll ring kept the wrong window of actions")
+module.latencyReset()
+end
 
 integration = integrationContext()
 module.handleEvent(zPress(false))
@@ -4038,6 +4298,82 @@ assert(tapCallback(tapEvent(true)) == false,
   "the throwing event after a restart was consumed")
 assert(integration.logged() == 2,
   "a restart kept the tap-error latch from the session before it")
+end
+
+-- The whole scrape, both backends, against a stub AXTextArea: M.start has run above, so the
+-- module holds the axuielement its calibration walk reaches AX through, and that walk is
+-- counted — a verdict re-probed per scrape costs exactly what the verdict exists to save.
+-- Scoped: this chunk sits at the same 200-local ceiling the module does.
+do
+-- One table, because the chunk this runs in is already close to that ceiling.
+local fx = {
+  screen = "first row\nsecond row\nthird row\n",
+  scrapes = 0,
+  walks = 0,
+  observed = { bundleID = "com.apple.Terminal", windowID = 7, tabIndex = 1,
+    tabElement = "tab-a" },
+  box = { windowID = 7, tab = "tab-a", tabIndex = 1, x = 0, y = 0, w = 1200, h = 800 },
+  window = { id = function() return 7 end,
+    frame = function() return { x = 0, y = 0, w = 1200, h = 800 } end },
+}
+fx.textArea = { attributeValue = function(_, name)
+  if name == "AXRole" then return "AXTextArea" end
+  if name == "AXNumberOfCharacters" then return #fx.value end
+  if name == "AXValue" then return fx.value end
+  return nil
+end }
+env.hs.osascript = { applescript = function()
+  fx.scrapes = fx.scrapes + 1
+  return true, fx.screen
+end }
+env.hs.axuielement.windowElement = function()
+  fx.walks = fx.walks + 1
+  return { attributeValue = function(_, name)
+    if name == "AXChildren" then return { fx.textArea } end
+    return "AXWindow"
+  end }
+end
+integration = integrationContext()
+assert(module.axWindow(7, fx.window) == fx.window, "the fixture window was not resolved")
+
+fx.value = "a scrollback that is not this screen\n"
+local text, backend = module.axScreenText(fx.observed)
+assert(text == fx.screen and backend == "as" and fx.scrapes == 1 and fx.walks == 1,
+  "the first scrape of a window did not calibrate its AX tail against the screen")
+assert((module.axTextFresh(fx.box) or {}).capable == false,
+  "the tail that did not reproduce the screen was not cached as AppleScript-only")
+text, backend = module.axScreenText(fx.observed)
+assert(text == fx.screen and backend == "as" and fx.scrapes == 2 and fx.walks == 1,
+  "an AppleScript-only window walked AX again instead of reading its own verdict")
+
+-- Cmd+plus changes the row count without moving the window, and a verdict measured while the
+-- breaker was open is a verdict about Terminal a minute ago: one AppleScript pass per TTL
+-- re-measures both, where the fingerprint alone would hold either forever.
+integration.advance(module.axText.ttl + 1)
+assert(module.axTextFresh(fx.box) == nil, "a calibration older than the TTL was still fresh")
+fx.value = "old line\n" .. fx.screen
+text, backend = module.axScreenText(fx.observed)
+assert(text == fx.screen and backend == "as" and fx.scrapes == 3 and fx.walks == 2,
+  "an expired calibration was not re-measured by the next scrape")
+assert((module.axTextFresh(fx.box) or {}).capable == true,
+  "the re-measured window did not become AX-capable")
+text, backend = module.axScreenText(fx.observed)
+assert(text == fx.screen and backend == "ax" and fx.scrapes == 3 and fx.walks == 2,
+  "the calibrated window did not read its screen off AX")
+assert(module.axText.ttl == 20, "the calibration TTL moved away from the one measured here")
+
+-- An element that outlived its tab answers short: that box has no verdict left to reuse, so
+-- the scrape it falls back to measures it again inside the same TTL.
+fx.value = "\n"
+text, backend = module.axScreenText(fx.observed)
+assert(text == fx.screen and backend == "as" and fx.scrapes == 4 and fx.walks == 3,
+  "a fast path that came back short left its box uncalibrated")
+
+assert(module.axTextFresh(fx.box), "the calibration was gone before the restart")
+module.start()
+assert(module.axTextFresh(fx.box) == nil,
+  "a started module kept a calibration measured before it")
+module.stop()
 end
 
 return "PASS: Claude Cmd key decisions"

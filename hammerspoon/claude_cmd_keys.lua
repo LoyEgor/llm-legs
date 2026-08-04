@@ -672,6 +672,11 @@ local shared = {
   -- against the flag alone it would post its DEL into the next gesture's draft and tear
   -- down a flight that is still holding one.
   gestureFlight = 0,
+  -- Cmd+A is the action whose whole cost the user sits and watches, and the input-latency
+  -- ring below cannot see any of it: the scrape and the drag run in a deferred tick, long
+  -- after the tap callback that ring measures has returned.
+  selectAll = { capacity = 64, writes = 0, scrape = {}, geometry = {}, drag = {},
+    total = {}, backend = {} },
 }
 
 -- The word gesture's cache describes a selection this flag stands for, so the two
@@ -830,6 +835,7 @@ function M.latencyReset()
   latencyWrites = 0
   latencyPreviousAt = 0
   shared.latencyDropped = 0
+  shared.selectAll.writes = 0
 end
 
 -- Rows of { class, cold, count, queue, process }, all times already in ms. The
@@ -911,20 +917,70 @@ function M.latencyReport()
   end
   if #rows == 0 then
     lines[#lines + 1] = "no events recorded"
-    return table.concat(lines, "\n")
+  else
+    lines[#lines + 1] = string.format("%-22s %-4s %6s %6s  %8s %8s %8s %8s  %8s %8s %8s %8s",
+      "class", "warm", "n", "qn", "q p50", "q p90", "q p99", "q max",
+      "t p50", "t p90", "t p99", "t max")
+    for _, row in ipairs(rows) do
+      lines[#lines + 1] = string.format("%-22s %-4s %6d %6d  %s %s %s %s  %s %s %s %s",
+        row.class, row.cold and "cold" or "warm", row.count, row.queue.count,
+        latencyCell(row.queue.p50), latencyCell(row.queue.p90),
+        latencyCell(row.queue.p99), latencyCell(row.queue.max),
+        latencyCell(row.process.p50), latencyCell(row.process.p90),
+        latencyCell(row.process.p99), latencyCell(row.process.max))
+    end
   end
-  lines[#lines + 1] = string.format("%-22s %-4s %6s %6s  %8s %8s %8s %8s  %8s %8s %8s %8s",
-    "class", "warm", "n", "qn", "q p50", "q p90", "q p99", "q max",
-    "t p50", "t p90", "t p99", "t max")
-  for _, row in ipairs(rows) do
-    lines[#lines + 1] = string.format("%-22s %-4s %6d %6d  %s %s %s %s  %s %s %s %s",
-      row.class, row.cold and "cold" or "warm", row.count, row.queue.count,
-      latencyCell(row.queue.p50), latencyCell(row.queue.p90),
-      latencyCell(row.queue.p99), latencyCell(row.queue.max),
-      latencyCell(row.process.p50), latencyCell(row.process.p90),
-      latencyCell(row.process.p99), latencyCell(row.process.max))
-  end
+  lines[#lines + 1] = M.selectAllReport()
   return table.concat(lines, "\n")
+end
+
+-- Only completed passes: a Cmd+A that found no draft to drag across never ran the stages
+-- below, and averaged in with the ones that did it would report an action nobody saw.
+function M.selectAllRecord(scrapeNs, geometryNs, dragNs, totalNs, backend)
+  local ring = shared.selectAll
+  local slot = ring.writes % ring.capacity + 1
+  ring.scrape[slot] = scrapeNs
+  ring.geometry[slot] = geometryNs
+  ring.drag[slot] = dragNs
+  ring.total[slot] = totalNs
+  ring.backend[slot] = backend == "ax" and "ax" or "as"
+  ring.writes = ring.writes + 1
+end
+
+function M.selectAllRow()
+  local ring = shared.selectAll
+  local recorded = ring.writes < ring.capacity and ring.writes or ring.capacity
+  if recorded == 0 then
+    return nil
+  end
+  local row = { count = recorded, ax = 0, as = 0 }
+  for _, stage in ipairs({ "scrape", "geometry", "drag", "total" }) do
+    local samples = {}
+    for slot = 1, recorded do
+      samples[#samples + 1] = ring[stage][slot]
+    end
+    row[stage] = latencySummary(samples)
+  end
+  for slot = 1, recorded do
+    if ring.backend[slot] == "ax" then
+      row.ax = row.ax + 1
+    else
+      row.as = row.as + 1
+    end
+  end
+  return row
+end
+
+function M.selectAllReport()
+  local row = M.selectAllRow()
+  if not row then
+    return "selectAll actions: none recorded since reset"
+  end
+  return string.format(
+    "selectAll actions: n=%d, backend ax %d / as %d, total p50 %.2f max %.2f, "
+      .. "scrape p50 %.2f, frame p50 %.2f, drag p50 %.2f (ms, ring %d)",
+    row.count, row.ax, row.as, row.total.p50, row.total.max,
+    row.scrape.p50, row.geometry.p50, row.drag.p50, shared.selectAll.capacity)
 end
 
 M.latencyCapacity = latencyCapacity
@@ -1265,15 +1321,6 @@ local function performConvert(path, original)
   end)
 end
 
-local function scrapeScreen(callback)
-  if runtimeHooks and runtimeHooks.scrape then
-    runtimeHooks.scrape(callback)
-    return
-  end
-  local ok, res = hs.osascript.applescript(scrapeScript)
-  callback(ok and tostring(res or "") or nil)
-end
-
 local function setPasteboardText(text)
   if runtimeHooks and runtimeHooks.writeText then
     runtimeHooks.writeText(text)
@@ -1489,13 +1536,265 @@ function axGrid.scroll(windowID, origin, resolve, clock)
   return element, frame
 end
 
+-- Terminal answers `contents of selected tab` in 21-80ms of blocked runloop, and every
+-- Cmd+A, Cmd+X and word gesture pays it. The window's AXTextArea answers AXValue in a
+-- fraction of a millisecond, but that value is the whole scrollback with the visible
+-- screen at its end, and nothing in AX says where the screen starts: the one attribute
+-- that would, AXVisibleCharacterRange, returns {0,0} here (measured, macOS 27). The row
+-- count does say, and only an AppleScript scrape reveals it — asking Terminal for
+-- `number of rows` costs as much as scraping the screen. So the first scrape of a window
+-- box stays AppleScript and calibrates against it: when the AX tail of that many lines
+-- reproduces the scrape line for line, later scrapes of the same box read AX; when it
+-- does not, that box stays AppleScript-only until the calibration expires or is invalidated.
+axGrid.text = {
+  -- Beyond this the tail is read as a range instead of whole: 64k covers any screen
+  -- (a 300-column 200-row grid is 60k cells) while a scrollback of megabytes never
+  -- crosses the bridge.
+  cap = 65536,
+  -- Two things the fingerprint below cannot see: Cmd+plus changes the row count without
+  -- moving the window, and a verdict measured while the AX breaker was open describes
+  -- Terminal a minute ago. Past this age the next scrape re-measures the box.
+  ttl = 20,
+}
+
+axGrid.windows = {}
+
+function axGrid.textLines(value)
+  local lines, position, length = {}, 1, #value
+  while position <= length do
+    local stop = value:find("\n", position, true)
+    if not stop then
+      lines[#lines + 1] = value:sub(position)
+      break
+    end
+    lines[#lines + 1] = value:sub(position, stop - 1)
+    position = stop + 1
+  end
+  return lines
+end
+
+-- Fewer lines than the calibrated row count means the read never reached the screen, so
+-- there is no tail to cut: the caller re-scrapes instead of parsing a short screen, whose
+-- line count would move every drag point.
+function axGrid.textTail(value, rows)
+  if type(value) ~= "string" or type(rows) ~= "number" or rows < 1 then
+    return nil
+  end
+  local lines = axGrid.textLines(value)
+  if #lines < rows then
+    return nil
+  end
+  local tail = {}
+  for index = #lines - rows + 1, #lines do
+    tail[#tail + 1] = lines[index]
+  end
+  -- Terminated exactly as the AppleScript scrape is: every caller has to read the two
+  -- backends as one, down to the cut flow diffing one scrape against the next.
+  return table.concat(tail, "\n") .. "\n"
+end
+
+-- Trailing whitespace is allowed to differ — the two paths agree on it live, and padding
+-- alone still describes the same screen — while a line that differs anywhere else means
+-- the tail does not start where the screen does.
+function axGrid.textMatches(reference, value, rows)
+  local tail = axGrid.textTail(value, rows)
+  if type(reference) ~= "string" or not tail then
+    return false
+  end
+  local expected, actual = axGrid.textLines(reference), axGrid.textLines(tail)
+  if #expected < 1 or #expected ~= #actual then
+    return false
+  end
+  for index = 1, #expected do
+    if expected[index]:gsub("%s+$", "") ~= actual[index]:gsub("%s+$", "") then
+      return false
+    end
+  end
+  return true
+end
+
+function axGrid.textRead(total, cap)
+  if type(total) ~= "number" or total < 1 or type(cap) ~= "number" or cap < 1 then
+    return nil
+  end
+  if total <= cap then
+    return { full = true }
+  end
+  return { location = total - cap, length = cap }
+end
+
+-- Pinned to the window box, because a resize changes the row count the tail is cut to,
+-- and to the tab, because another tab of the same window has its own text area and the
+-- cached element would answer with a screen that is not the one in front.
+function axGrid.textFresh(box)
+  local cache = axGrid.text.cache
+  if not cache or type(box) ~= "table" then
+    return nil
+  end
+  if now() - cache.at > axGrid.text.ttl then
+    return nil
+  end
+  if cache.windowID == box.windowID and cache.tab == box.tab
+      and cache.tabIndex == box.tabIndex and cache.x == box.x and cache.y == box.y
+      and cache.w == box.w and cache.h == box.h then
+    return cache
+  end
+  return nil
+end
+
+-- hs.window.get(id) walks every window of every running application: 28-85ms measured on
+-- the live machine, and both the scrape and the grid math called it once per action. The
+-- window worth having is Terminal's own focused one, which it answers with in 0.05ms; the
+-- walk stays behind an id mismatch as the correctness net. The resolved object is held per
+-- id, because :frame() on one already in hand is 0.1ms.
+function axGrid.window(windowID, focused, lookup)
+  if not windowID then
+    return nil
+  end
+  local held = axGrid.windows[windowID]
+  if held then
+    return held
+  end
+  if focused == nil then
+    local app = hs.application.get(terminalBundleID)
+    focused = app and app:focusedWindow() or false
+  end
+  local window = focused and focused:id() == windowID and focused
+    or (lookup or hs.window.get)(windowID)
+  if window then
+    axGrid.windows[windowID] = window
+  end
+  return window
+end
+
+-- The observed context is the caller's when it has one: the AXTabGroup walk behind an
+-- observation is 3-9ms, and an action that already knows which tab is in front must not
+-- pay for that answer twice.
+function axGrid.textBox(observed)
+  observed = observed or observeFrontmost()
+  local windowID = observed and observed.windowID or nil
+  local window = windowID and axuielement and axGrid.window(windowID) or nil
+  local frame = window and window:frame() or nil
+  if not frame then
+    return nil
+  end
+  return { windowID = windowID, tab = observed.tabElement, tabIndex = observed.tabIndex,
+    x = frame.x, y = frame.y, w = frame.w, h = frame.h, window = window }
+end
+
+-- Every read behind this is the same synchronous AX the anchor walk is fenced behind, so
+-- it shares that fence: a Terminal too busy to answer costs the fast path, never the
+-- runloop carrying the next keystroke. A read that did answer is still used — it is the
+-- next scrape that must not pay the same wait.
+function axGrid.textFenced(work)
+  local at = now()
+  if axGrid.breakerUntil and at < axGrid.breakerUntil then
+    return nil
+  end
+  axGrid.breakerUntil = nil
+  local ok, first, second = pcall(work)
+  local spent = now() - at
+  if spent > axGrid.slowAnchor then
+    axGrid.text.cache = nil
+    axGrid.breakerUntil = at + spent + axGrid.breakerSeconds
+  end
+  if not ok then
+    return nil
+  end
+  return first, second
+end
+
+function axGrid.textValue(element)
+  local plan = axGrid.textRead(element:attributeValue("AXNumberOfCharacters"), axGrid.text.cap)
+  if not plan then
+    return nil
+  end
+  if plan.full then
+    return element:attributeValue("AXValue")
+  end
+  return element:parameterizedAttributeValue("AXStringForRange", plan)
+end
+
+function axGrid.textCalibrate(reference, box, walk)
+  if type(reference) ~= "string" or type(box) ~= "table" then
+    axGrid.text.cache = nil
+    return nil
+  end
+  local rows = #axGrid.textLines(reference)
+  if rows < 1 then
+    axGrid.text.cache = nil
+    return nil
+  end
+  local element, value = axGrid.textFenced(walk or function()
+    local found = axGrid.descendant(axuielement.windowElement(box.window), "AXTextArea")
+    return found, found and axGrid.textValue(found) or nil
+  end)
+  local entry = { windowID = box.windowID, tab = box.tab, tabIndex = box.tabIndex,
+    x = box.x, y = box.y, w = box.w, h = box.h, rows = rows, element = element,
+    at = now(), capable = element ~= nil and axGrid.textMatches(reference, value, rows) }
+  axGrid.text.cache = entry
+  return entry
+end
+
+function axGrid.screenText(observed)
+  local box = axGrid.textBox(observed)
+  local entry = axGrid.textFresh(box)
+  if entry and entry.capable and entry.element then
+    local text = axGrid.textTail(axGrid.textFenced(function()
+      return axGrid.textValue(entry.element)
+    end), entry.rows)
+    if text then
+      return text, "ax"
+    end
+    -- An element that outlived its tab, a value that came back short, an open breaker:
+    -- the AppleScript scrape below calibrates this box again from scratch.
+    axGrid.text.cache, entry = nil, nil
+  end
+  local ok, res = hs.osascript.applescript(scrapeScript)
+  if not ok then
+    return nil, "as"
+  end
+  local text = tostring(res or "")
+  -- A box already calibrated incapable is here because of that verdict: probing AX again per
+  -- scrape is the cost the verdict exists to stop paying, and the TTL above is what gets it
+  -- re-measured.
+  if not entry then
+    axGrid.textCalibrate(text, box)
+  end
+  return text, "as"
+end
+
+local function scrapeScreen(callback, observed)
+  if runtimeHooks and runtimeHooks.scrape then
+    runtimeHooks.scrape(callback, observed)
+    return
+  end
+  callback(axGrid.screenText(observed))
+end
+
 M.axAnchor = axGrid.anchor
 M.axScroll = axGrid.scroll
+M.axText = axGrid.text
+M.axTextTail = axGrid.textTail
+M.axTextMatches = axGrid.textMatches
+M.axTextRead = axGrid.textRead
+M.axTextFresh = axGrid.textFresh
+M.axTextCalibrate = axGrid.textCalibrate
+M.axScreenText = axGrid.screenText
+M.axWindow = axGrid.window
+
+-- Both caches describe the window that was in front: the resolved object dies with the
+-- window it names, and the calibration with the tab it was measured for.
+function M.axTextReset()
+  axGrid.text.cache = nil
+  axGrid.windows = {}
+end
 
 function M.axAnchorReset()
   axGrid.cache = nil
   axGrid.scrollCache = nil
   axGrid.breakerUntil = nil
+  M.axTextReset()
 end
 
 local function targetWindowFrame(windowID, totalLines, columns)
@@ -1503,7 +1802,7 @@ local function targetWindowFrame(windowID, totalLines, columns)
     return runtimeHooks.windowFrame
       and runtimeHooks.windowFrame(windowID, totalLines, columns) or nil
   end
-  local window = windowID and hs.window.get(windowID) or nil
+  local window = axGrid.window(windowID)
   if not window then
     return nil
   end
@@ -1998,8 +2297,19 @@ local function performSelectAll(original)
   end
   selectAllInFlight = true
   local function selectOnce()
-    scrapeScreen(function(screenText)
-      if not currentTargetMatches(original, observeFrontmost()) then
+    local startedAt = absoluteTime()
+    -- Asked before the scrape because this observation is also the scrape's context and the
+    -- AXTabGroup walk behind it is 3-9ms. For the AX read, a fraction of a millisecond wide,
+    -- it is the whole check; the AppleScript backend blocks the runloop for 21-80ms, long
+    -- enough for the user to switch tabs, so it asks again before posting mouse events.
+    local observed = observeFrontmost()
+    if not currentTargetMatches(original, observed) then
+      selectAllInFlight = false
+      return
+    end
+    scrapeScreen(function(screenText, backend)
+      local scrapedAt = absoluteTime()
+      if backend ~= "ax" and not currentTargetMatches(original, observeFrontmost()) then
         selectAllInFlight = false
         return
       end
@@ -2014,9 +2324,13 @@ local function performSelectAll(original)
         selectAllInFlight = false
         return
       end
+      local framedAt = absoluteTime()
       dragBetween(startPoint, endPoint)
+      local finishedAt = absoluteTime()
+      M.selectAllRecord(scrapedAt - startedAt, framedAt - scrapedAt,
+        finishedAt - framedAt, finishedAt - startedAt, backend)
       selectAllInFlight = false
-    end)
+    end, observed)
   end
   -- Each pass blocks on a ~40ms scrape and then a posted drag, so a second one landing
   -- mid-flight would stall the event loop and interleave its drag with this one's.
@@ -3299,6 +3613,7 @@ function M.start()
   -- `claude-keys off; on` — pressed precisely to see the failure again — then reports
   -- nothing at all.
   shared.tapErrorLogged = nil
+  M.axTextReset()
   axuielement = hs.axuielement
   replayProperty = hs.eventtap.event.properties.eventSourceUserData
   pendingState = pendingState or M.pendingTransition(nil, {})
