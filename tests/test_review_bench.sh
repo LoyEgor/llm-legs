@@ -4270,12 +4270,16 @@ assert rb.receipt_file_name(scope_repo, scope=["alpha.txt", "beta.txt"]) == "{}_
     scope_flat_name[:-len(".json")], hashlib.sha1(b"alpha.txt\0beta.txt").hexdigest()[:8]
 )
 assert rb.receipt_file_name(scope_repo, scope=["alpha.txt", "beta.txt"]) != scope_receipt_name
-try:
-    rb.receipt_file_name(scope_repo, "edge-cases", ["alpha.txt"])
-    scope_both_selectors = ""
-except ValueError as exc:
-    scope_both_selectors = str(exc)
-assert scope_both_selectors, "a receipt named for a lens AND a scope has no reader"
+scope_lens_name = rb.receipt_file_name(scope_repo, "edge-cases", ["beta.txt"])
+assert scope_lens_name == "{}__lens-edge-cases__scope-{}.json".format(
+    scope_flat_name[:-len(".json")], hashlib.sha1(b"beta.txt").hexdigest()[:8]
+), scope_lens_name
+assert rb.receipt_file_name(scope_repo, "edge-cases", ["beta.txt"]) == scope_lens_name
+# One selector each: a scoped lens run answers for neither the lens's whole tree nor the scope
+# read by the tool's own methodology, so it must collide with neither receipt.
+assert scope_lens_name != rb.receipt_file_name(scope_repo, "edge-cases")
+assert scope_lens_name != rb.receipt_file_name(scope_repo, scope=["beta.txt"])
+assert rb.receipt_file_name(scope_repo, "edge-cases", ["alpha.txt"]) != scope_lens_name
 
 scope_stdout = io.StringIO()
 with contextlib.redirect_stdout(scope_stdout):
@@ -4350,10 +4354,6 @@ scope_objects_before = scope_commit_objects()
 scope_reject = {}
 for scope_label, scope_kwargs in (
     ("commitish", {"commitish": scope_head, "worktree": False, "paths": ["alpha.txt"]}),
-    # beta.txt alone has never been snapshotted here, so the object this run would have written
-    # is one the repository does not already hold.
-    ("lens", {"commitish": None, "worktree": True, "lens": "edge-cases",
-              "paths": ["beta.txt"]}),
 ):
     try:
         with contextlib.redirect_stdout(io.StringIO()):
@@ -4365,11 +4365,65 @@ for scope_label, scope_kwargs in (
     except ValueError as exc:
         scope_reject[scope_label] = str(exc)
 assert "cannot narrow a commit" in scope_reject["commitish"], scope_reject
-assert scope_reject["lens"] == "scoped lens runs are not supported", scope_reject
 # The refusal comes before the snapshot: a run that cannot start must leave no commit behind.
 assert scope_commit_objects() == scope_objects_before, "a refused scoped run wrote a commit"
 scope_beta_sha = rb.worktree_snapshot_commit(scope_repo, paths=["beta.txt"])
 assert scope_beta_sha not in scope_objects_before, scope_beta_sha
+
+# --- a lens narrowed by --paths ---------------------------------------------------------------
+# The two selectors are independent questions about the same tree, and a run carrying both has to
+# name a receipt that answers for the pair — never the lens's, the scope's, or the repository's.
+scope_lens_store = work / "scope-lens-claudeb"
+os.environ["CLAUDEB_DIR"] = str(scope_lens_store)
+rb.persist_review_receipt(scope_repo, scope_head_tree, scope_head, "prior-full-run", 0)
+rb.persist_review_receipt(scope_repo, scope_head_tree, scope_head, "prior-lens-run", 0,
+                          lens="edge-cases")
+rb.persist_review_receipt(scope_repo, scope_head_tree, scope_head, "prior-scope-run", 0,
+                          scope=["beta.txt"])
+scope_lens_dir = scope_lens_store / "worker-stats" / rb.RECEIPT_DIR
+scope_lens_untouched = {
+    path.name: path.read_bytes() for path in scope_lens_dir.iterdir()
+}
+scope_lens_stdout = io.StringIO()
+with contextlib.redirect_stdout(scope_lens_stdout):
+    assert rb.cmd_run(argparse.Namespace(
+        repo=str(scope_repo), commitish=None, worktree=True, lens="edge-cases",
+        paths=["beta.txt"], raters="sol-medium", leg=False, verify=None, auto=None, focus=None,
+    )) == 0, scope_lens_stdout.getvalue()
+assert sorted(path.name for path in scope_lens_dir.iterdir()) == sorted(
+    list(scope_lens_untouched) + [scope_lens_name]
+), sorted(path.name for path in scope_lens_dir.iterdir())
+for scope_lens_kept, scope_lens_bytes in scope_lens_untouched.items():
+    assert (scope_lens_dir / scope_lens_kept).read_bytes() == scope_lens_bytes, scope_lens_kept
+scope_lens_doc = json.loads((scope_lens_dir / scope_lens_name).read_text())
+assert scope_lens_doc["lens"] == "edge-cases", scope_lens_doc
+assert scope_lens_doc["scope"] == ["beta.txt"], scope_lens_doc
+assert scope_lens_doc["commit"] == scope_beta_sha, scope_lens_doc
+assert rb.review_receipt(scope_repo, "edge-cases", ["beta.txt"])["run_id"] \
+    == scope_lens_doc["run_id"]
+scope_lens_meta = json.loads(
+    (next((scope_lens_store / "worker-stats" / "benches").iterdir()) / "meta.json").read_text()
+)
+assert scope_lens_meta["lens"] == "edge-cases" and scope_lens_meta["scope"] == ["beta.txt"], \
+    scope_lens_meta
+
+# The rerun line names the snapshot and carries only --lens, so the scope has to come back out of
+# the commit or the rerun would write the lens's whole-tree receipt.
+scope_lens_rerun_store = work / "scope-lens-rerun-claudeb"
+os.environ["CLAUDEB_DIR"] = str(scope_lens_rerun_store)
+with contextlib.redirect_stdout(io.StringIO()):
+    assert rb.cmd_run(argparse.Namespace(
+        repo=str(scope_repo), commitish=scope_beta_sha, lens="edge-cases", raters="sol-medium",
+        leg=False, verify=None, auto=None, focus=None,
+    )) == 0
+scope_lens_rerun_dir = scope_lens_rerun_store / "worker-stats" / rb.RECEIPT_DIR
+assert sorted(path.name for path in scope_lens_rerun_dir.iterdir()) == [scope_lens_name], \
+    sorted(path.name for path in scope_lens_rerun_dir.iterdir())
+scope_lens_rerun_meta = json.loads(
+    (next((scope_lens_rerun_store / "worker-stats" / "benches").iterdir()) / "meta.json").read_text()
+)
+assert scope_lens_rerun_meta["lens"] == "edge-cases", scope_lens_rerun_meta
+assert scope_lens_rerun_meta["scope"] == ["beta.txt"], scope_lens_rerun_meta
 
 # --- root commits: a repository whose only commit has no parent -------------------------------
 # Every diff review-bench takes is against a parent, and a day-one repository has none. Read as an
@@ -5233,6 +5287,17 @@ def assert_suggestion(lines, files, changed_lines, tier, committed=False, receip
     if not committed:
         assert lines[offset] == scoped[0], lines
         assert "--paths <path> ..." in scoped[0], lines
+        offset += 1
+    # The one line that tells a reader lenses exist, printed for commits and worktrees alike:
+    # exactly the registered slugs, so a lens absent from the registry is absent here too.
+    registered = sorted(rb.load_lenses())
+    if registered:
+        assert lines[offset] == (
+            "lenses: " + ", ".join(registered)
+            + " — repeat the command with --lens <slug> to review by that methodology "
+              "instead of the raters' own (all cells except OpenCode/agy"
+            + ("" if committed else "; combinable with --paths") + ")"
+        ), lines
         offset += 1
     # Everything heavier than the followed command is printed as the owner's to reach for, and
     # named as such on its own line.
@@ -7253,4 +7318,4 @@ else
   printf 'SKIP: review report hook behavior (%s is unavailable)\n' "$REPORT_HOOK"
 fi
 
-printf 'PASS: %s assertions; canonical review tiers sharing one OpenCode/Gemini floor with no retired cell in them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative suggestions with missing-object fallback, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account usable only behind its opt-in and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, carried from there into the corpus row, the report header and a receipt of the lens'"'"'s own while every lens row stays out of the canonical defect list, the frontier denominators, the composition corpus and the default leaderboard, worktree runs narrowed to named paths whose snapshot holds only those paths, is deterministic per path set, spelled against the directory the caller stands in and lexically canonicalized so a `..` can neither walk out of the repository nor split one file into two scopes, carries its scope as commit trailers a failed read refuses rather than widens, so a rerun by sha stays inside it, refuses a commitish, a lens, a pathspec matching nothing and a scope holding no change — the lens refusal before any snapshot object is written — and writes only a receipt of its own — leaving the repository'"'"'s receipt untouched byte for byte, the suggest baseline whole and the stamp hook with nothing to read, a day-one repository reviewed end to end — its root commit sealed and cloned, given a deterministic empty base commit inside that clone so the vendor skill diffs its whole content, measured in lines and paths against the empty tree rather than as an unmeasurable diff, so a correction inside it prices as follow-up, and closed by the real stamp hook in both shapes while never-reviewed code riding along still refuses it, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask, the lookup scoped to the repository so another chat cannot answer for it, and both review hooks keyed so exactly one fires\n' "$asserts"
+printf 'PASS: %s assertions; canonical review tiers sharing one OpenCode/Gemini floor with no retired cell in them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative suggestions with missing-object fallback, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account usable only behind its opt-in and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, carried from there into the corpus row, the report header and a receipt of the lens'"'"'s own while every lens row stays out of the canonical defect list, the frontier denominators, the composition corpus and the default leaderboard, worktree runs narrowed to named paths whose snapshot holds only those paths, is deterministic per path set, spelled against the directory the caller stands in and lexically canonicalized so a `..` can neither walk out of the repository nor split one file into two scopes, carries its scope as commit trailers a failed read refuses rather than widens, so a rerun by sha stays inside it, refuses a commitish, a pathspec matching nothing and a scope holding no change — the refusal before any snapshot object is written — and writes only a receipt of its own — leaving the repository'"'"'s receipt untouched byte for byte, the suggest baseline whole and the stamp hook with nothing to read, a lens narrowed by the same paths naming a combined receipt of its own that leaves the plain, pure-lens and pure-scope receipts byte for byte and survives a rerun by sha with both selectors intact, a day-one repository reviewed end to end — its root commit sealed and cloned, given a deterministic empty base commit inside that clone so the vendor skill diffs its whole content, measured in lines and paths against the empty tree rather than as an unmeasurable diff, so a correction inside it prices as follow-up, and closed by the real stamp hook in both shapes while never-reviewed code riding along still refuses it, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask, the lookup scoped to the repository so another chat cannot answer for it, and both review hooks keyed so exactly one fires\n' "$asserts"

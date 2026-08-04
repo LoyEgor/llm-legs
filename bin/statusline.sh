@@ -276,6 +276,29 @@ if [ -n "$ctx_size" ] && [ "$ctx_size" -gt 0 ] 2>/dev/null && [ -n "$ctx_tokens"
   ctx_pct=$(( (ctx_tokens * 100 + ctx_size / 2) / ctx_size ))
 fi
 
+# The context-nudge hook only sees PostToolUse payloads, which carry no window
+# size, and auto-compaction fires at a fraction of that window - so this render,
+# which does get it, publishes it per session. Rewritten only on change: an
+# unchanged file keeps its mtime, which is what makes a stale one identifiable.
+if [ -n "$session_id" ] && [ -n "$ctx_size" ] && [ "$ctx_size" -gt 0 ] 2>/dev/null; then
+  nudge_dir="${CONTEXT_NUDGE_STATE_DIR:-$HOME/.cache/claude-context-nudge}"
+  window_file="$nudge_dir/$session_id.window"
+  window_seen=""
+  [ -r "$window_file" ] && read -r window_seen < "$window_file" 2>/dev/null
+  if [ "$window_seen" != "$ctx_size" ] && mkdir -p "$nudge_dir" 2>/dev/null; then
+    # Per-session files (windows and the hook's stage flags) are never cleaned by
+    # their writers; the rarely-taken write path is the cheapest place to sweep.
+    # CONTEXT_NUDGE_STATE_DIR is overridable, so the sweep names the files it owns
+    # rather than everything a misconfigured override happens to point at.
+    find "$nudge_dir" -maxdepth 1 -type f -mtime +30 \
+      \( -name '*.window' -o -name '*.stage1' -o -name '*.stage2' -o -name '*.bnd' \) \
+      -delete 2>/dev/null || true
+    window_tmp="$window_file.tmp.$$"
+    printf '%s\n' "$ctx_size" > "$window_tmp" 2>/dev/null &&
+      mv "$window_tmp" "$window_file" 2>/dev/null || rm -f "$window_tmp" 2>/dev/null
+  fi
+fi
+
 rl_merge() {
   # An empty/invalid existing file must degrade to {}: feeding it to --argjson
   # makes jq fail every render and the corrupt file would never self-heal.
@@ -660,7 +683,7 @@ fi
 
 # User/tool activity and payload cache counters cannot prove server cache warmth.
 assist_ts=0; assist_model="-"; assist_uuid="-"; fork_sid="-"; ttl_bucket=0
-post_compact=0; ctx_stale=1; boundary_ts=0
+post_compact=0; ctx_stale=1; boundary_ts=0; fresh_ctx=0
 ev_valid=0; ev_ts=0; ev_gap=0; ev_cr=0; ev_cc=0
 fork_anchor_uuid="-"; fork_own_ts=0
 latest_ts=0; latest_model="-"; latest_ttl=0; latest_uuid="-"; latest_fork="-"
@@ -735,6 +758,48 @@ resolve_parent_transcript() {
   printf '%s\n' "$found"
 }
 
+# A compaction boundary scrolls out of the scan window once the re-emitted burst behind
+# it outgrows the window, and the scan then stops at the first re-emitted assistant and
+# reports its pre-compact total as live. The sidecar remembers the newest boundary across
+# renders; the context-nudge hook writes the same file under the same rules.
+boundary_seed=""
+if [ -n "$session_id" ] && [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
+  bnd_dir="${CONTEXT_NUDGE_STATE_DIR:-$HOME/.cache/claude-context-nudge}"
+  bnd_file="$bnd_dir/$session_id.bnd"
+  bnd_size=$(file_size "$transcript_path")
+  [[ "$bnd_size" =~ ^[0-9]+$ ]] || bnd_size=0
+  bnd_scanned=0; bnd_seen=""
+  if [ -r "$bnd_file" ]; then
+    bnd_f1=""; bnd_f2=""
+    read -r bnd_f1 bnd_f2 < "$bnd_file" 2>/dev/null || :
+    if [[ "$bnd_f1" =~ ^[0-9]+$ ]] && { [ "$bnd_f2" = "-" ] || [[ "$bnd_f2" =~ ^[0-9T:.Z+-]+$ ]]; }; then
+      bnd_scanned="$bnd_f1"
+      [ "$bnd_f2" = "-" ] || bnd_seen="$bnd_f2"
+    fi
+  fi
+  if [ "$bnd_size" -gt "$bnd_scanned" ] 2>/dev/null; then
+    # The margin re-covers a boundary line the previous scan cut at its own EOF; grep is
+    # only a prefilter, so chat content naming compact_boundary falls out at the select.
+    if [ "$bnd_scanned" -gt 4096 ]; then bnd_from=$((bnd_scanned - 4096)); else bnd_from=0; fi
+    bnd_seen=$(
+      {
+        [ -z "$bnd_seen" ] || printf '%s\n' "$bnd_seen"
+        tail -c "+$((bnd_from + 1))" "$transcript_path" 2>/dev/null |
+          grep -aF compact_boundary 2>/dev/null |
+          jq -Rrn 'inputs | fromjson?
+            | select(type == "object" and .type == "system" and .subtype == "compact_boundary")
+            | .timestamp // empty' 2>/dev/null
+      } | LC_ALL=C sort | tail -n 1
+    ) || bnd_seen=""
+    if mkdir -p "$bnd_dir" 2>/dev/null; then
+      bnd_tmp="$bnd_file.tmp.$$"
+      printf '%s %s\n' "$bnd_size" "${bnd_seen:--}" > "$bnd_tmp" 2>/dev/null &&
+        mv "$bnd_tmp" "$bnd_file" 2>/dev/null || rm -f "$bnd_tmp" 2>/dev/null
+    fi
+  fi
+  boundary_seed="$bnd_seen"
+fi
+
 if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
   transcript_size=$(file_size "$transcript_path")
   [[ "$transcript_size" =~ ^[0-9]+$ ]] || transcript_size=0
@@ -745,7 +810,7 @@ if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
           [ "$scan_bytes" -ge "$transcript_size" ] || IFS= read -r _ || :
           cat
         } |
-        jq -Rrn --arg model "$model_id" '
+        jq -Rrn --arg model "$model_id" --arg seedb "$boundary_seed" '
           def ep: try (sub("\\.[0-9]+Z$"; "Z") | fromdate) catch null;
           def num: if type == "number" then . else 0 end;
           def buckets:
@@ -755,9 +820,10 @@ if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
               | ((.n | tonumber) * (if .u == "m" then 60 else 3600 end)))] as $v
             | {ttl: ($v | if length == 0 then 0 else min end)};
           reduce (inputs | fromjson? | select(type == "object" and .isSidechain != true)) as $x (
-            {la:0, pm:"", pg:-1, pa:0, lb:0, ats:0, am:"-", au:"-", afk:"", bk:0,
+            {la:0, pm:"", pg:-1, pa:0, lb:($seedb | ep // 0), ats:0, am:"-", au:"-", afk:"", bk:0,
              cgap:0, ccr:0, ccc:0, cets:0, cpm:"", cem:"", cpa:0, chas:0, own:0,
-             sawf:0, fas:"", fau:"", fot:0, lts:0, lm:"-", lbk:0, lu:"-", lfk:""};
+             sawf:0, fas:"", fau:"", fot:0, lts:0, lm:"-", lbk:0, lu:"-", lfk:"",
+             fc:0, fcts:0};
             (($x.forkedFrom?.sessionId? // "") | tostring) as $fs
             | (($x.forkedFrom?.messageUuid? // "") | tostring) as $fu
             | ((($x.timestamp? // "") | if type == "string" then ep else null end)) as $ts
@@ -767,7 +833,14 @@ if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
                else . end)
             | if $ts == null then .
               elif $x.type == "system" and $x.subtype == "compact_boundary" then
-                (if $ts > .lb then .lb = $ts else . end)
+                # Only a new-maximum boundary invalidates the size: re-emitted
+                # older boundaries trail the newest one in file order. A size
+                # already taken from a response newer than this boundary survives
+                # it - re-emission can put that response earlier in the file.
+                (if $ts > .lb then
+                   .lb = $ts
+                   | (if .fcts > $ts then . else .fc = 0 | .fcts = 0 end)
+                 else . end)
               elif $x.type == "user" and ($x.isCompactSummary? != true) then
                 (if .la > 0 and .pg < 0 then .pg = ($ts - .la) | .pa = .la else . end)
                 | (if $ts > .la then .la = $ts else . end)
@@ -778,8 +851,9 @@ if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
                 | ($u | buckets) as $bs
                 | (($x.message?.model? // "") | tostring) as $xm
                 | (($x.uuid? // "") | tostring) as $xu
-                | if ($u | type) != "object" or ($cr + $cc) <= 0 or $xm == "" then .
+                | if ($u | type) != "object" then .
                   else
+                    (if ($cr + $cc) <= 0 or $xm == "" then . else
                     (if .pg >= 0 then
                        .cgap = .pg | .ccr = $cr | .ccc = $cc | .cets = $ts
                        | .cpm = .pm | .cem = $xm | .cpa = .pa | .chas = 1 | .pg = -1
@@ -795,6 +869,17 @@ if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
                     | (if $fs == "" and $ts > .own then .own = $ts else . end)
                     | .pm = $xm
                     | (if $ts > .la then .la = $ts else . end)
+                    end)
+                    # Entries re-emitted after a boundary keep their pre-compact usage
+                    # totals, so only a response stamped after it sizes live context -
+                    # strictly after, because ep drops sub-second precision and an
+                    # auto-compact boundary shares its second with the last pre-compact
+                    # response, whose total >= would resurrect. Not gated on cache
+                    # tokens: an input-only response is a real post-boundary size.
+                    | (if .lb == 0 or $ts > .lb then
+                         ((($u.input_tokens? // 0) | num) + $cc + $cr) as $tc
+                         | (if $tc > 0 then .fc = $tc | .fcts = $ts else . end)
+                       else . end)
                   end
               else . end)
           | [ (if .ats > 0 then 1 else 0 end), .ats, .am, .au,
@@ -805,13 +890,13 @@ if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
               .cets, .cgap, .ccr, .ccc,
               (if .own == 0 or (.lb > 0 and .own <= .lb) then 1 else 0 end),
               .lb, (.fau | if . == "" then "-" else . end), .fot,
-              .lts, .lm, .lbk, .lu, (.lfk | if . == "" then "-" else . end) ]
+              .lts, .lm, .lbk, .lu, (.lfk | if . == "" then "-" else . end), .fc ]
           | map(tostring) | join("")' 2>/dev/null
     )
     if [ -n "$cache_scan" ]; then
       IFS=$'\x1f' read -r scan_found assist_ts assist_model assist_uuid fork_sid ttl_bucket \
         post_compact ev_valid ev_ts ev_gap ev_cr ev_cc ctx_stale boundary_ts fork_anchor_uuid \
-        fork_own_ts latest_ts latest_model latest_ttl latest_uuid latest_fork <<< "$cache_scan" || :
+        fork_own_ts latest_ts latest_model latest_ttl latest_uuid latest_fork fresh_ctx <<< "$cache_scan" || :
     fi
     [ "$scan_found" = 1 ] && break
     if [ "$scan_bytes" -ge "$transcript_size" ]; then scan_complete=1; break; fi
@@ -827,13 +912,39 @@ if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
 fi
 
 for scan_num in assist_ts ttl_bucket post_compact ev_valid ev_ts ev_gap ev_cr ev_cc \
-  ctx_stale boundary_ts fork_own_ts latest_ts latest_ttl; do
+  ctx_stale boundary_ts fork_own_ts latest_ts latest_ttl fresh_ctx; do
   [[ "${!scan_num}" =~ ^[0-9]+$ ]] || printf -v "$scan_num" %s 0
 done
 [[ "$fork_sid" =~ ^[A-Za-z0-9_-]+$ ]] || fork_sid="-"
 [[ "$latest_fork" =~ ^[A-Za-z0-9_-]+$ ]] || latest_fork="-"
 ctx_dim=""
 [ "$ctx_stale" = 1 ] && ctx_dim=1
+
+# The harness keeps reporting the pre-reset usage until the first request of the
+# new context completes, so a fresh /compact or /branch renders a full-looking
+# context that no longer exists. The transcript knows better: after a boundary
+# only a response stamped at/after it describes the live context, and until one
+# exists the context is empty - 0, never the last-known number.
+ctx_over=""
+if [ "$boundary_ts" -gt 0 ] 2>/dev/null; then
+  if [ "$fresh_ctx" -gt 0 ] 2>/dev/null; then
+    if [ -z "$ctx_tokens" ] || [ "$ctx_tokens" -le 0 ] 2>/dev/null; then
+      ctx_tokens="$fresh_ctx"; ctx_over=1
+    else
+      ctx_delta=$(( ctx_tokens > fresh_ctx ? ctx_tokens - fresh_ctx : fresh_ctx - ctx_tokens ))
+      [ "$((ctx_delta * 10))" -gt "$ctx_tokens" ] && { ctx_tokens="$fresh_ctx"; ctx_over=1; }
+    fi
+  else
+    ctx_tokens=0; ctx_over=1
+  fi
+  if [ -n "$ctx_size" ] && [ "$ctx_size" -gt 0 ] 2>/dev/null; then
+    ctx_pct=$(( (ctx_tokens * 100 + ctx_size / 2) / ctx_size ))
+  elif [ -n "$ctx_over" ]; then
+    # No window size to recompute against, and the payload's percentage describes
+    # the usage this block just discarded.
+    if [ "$ctx_tokens" -eq 0 ]; then ctx_pct=0; else ctx_pct=""; fi
+  fi
+fi
 
 if [ "$scan_found" = 1 ] && [ "$fork_sid" = "-" ]; then
   if [ "$model_rec_ts" -eq "$assist_ts" ] && [ "$model_rec_uuid" = "$assist_uuid" ] \
@@ -1116,7 +1227,7 @@ if [ "$cache_state" = warm ]; then
     ctx_tokens_part=" ${DIM}→${death_time}${RESET}"
     [ "$warm_ttl" -lt 3600 ] 2>/dev/null && ctx_tokens_part="${ctx_tokens_part}${YELLOW}↓5m${RESET}"
   fi
-elif [ -n "$ctx_tokens" ] && [ "$ctx_tokens" -gt 0 ] 2>/dev/null; then
+elif [ -n "$ctx_tokens" ] && [ "$ctx_tokens" -ge 0 ] 2>/dev/null; then
   ctx_tokens_k=$(( (ctx_tokens + 500) / 1000 ))
   if [ "$ctx_tokens" -lt 90000 ]; then tok_color="$DIM"
   elif [ "$ctx_tokens" -lt 300000 ]; then tok_color="$YELLOW"

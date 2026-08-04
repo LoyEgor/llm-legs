@@ -1084,7 +1084,9 @@ t_reset; t_assist $((NOW - 60)); t_boundary $((NOW - 30))
 printf '{"type":"user","isCompactSummary":true,"timestamp":"%s","message":{"role":"user"}}\n' "$(iso_utc $((NOW - 29)))" >> "$TRANSCRIPT"
 t_user $((NOW - 28))
 compact_cold=$(run_statusline "$(statusline_payload ctx-compact "$(warm_extra "$TRANSCRIPT" 55 111000)")")
-assert grep -Fq "ctx ${DIM}55%${RESET} ${YELLOW}111k${RESET}" <<< "$compact_cold"
+# The payload still reports the pre-compact usage until the next request lands,
+# so the context reads empty, not 111k.
+assert grep -Fq "ctx ${DIM}0%${RESET} ${DIM}0k${RESET}" <<< "$compact_cold"
 assert test "${compact_cold#*→}" = "$compact_cold"
 # The first response after the boundary re-warms.
 t_assist $((NOW - 5))
@@ -1093,12 +1095,133 @@ assert grep -Fq "${DIM}→" <<< "$compact_warm"
 compact_current=$(run_statusline "$(statusline_payload ctx-compact-current \
   "$(jq -cn --arg tp "$TRANSCRIPT" \
     '{transcript_path:$tp,context_window:{used_percentage:55,current_usage:{input_tokens:111000}}}')")")
-assert grep -Fq "ctx ${YELLOW}55%${RESET} ${YELLOW}? 111k${RESET}" <<< "$compact_current"
+# The post-boundary response sizes the new context; the payload's stale 111k loses.
+assert grep -Fq "ctx ${DIM}?${RESET} ${DIM}? 51k${RESET}" <<< "$compact_current"
 
+# An assistant entry written before the boundary line is pre-compact whatever its
+# timestamp says, so the boundary still clears it.
 t_reset; t_assist $((NOW - 30)); t_boundary $((NOW - 30))
 compact_equal=$(run_statusline "$(statusline_payload ctx-compact-equal "$(warm_extra "$TRANSCRIPT" 55 111000)")")
-assert grep -Fq "ctx ${DIM}55%${RESET} ${YELLOW}111k${RESET}" <<< "$compact_equal"
+assert grep -Fq "ctx ${DIM}0%${RESET} ${DIM}0k${RESET}" <<< "$compact_equal"
 assert test "${compact_equal#*→}" = "$compact_equal"
+
+# /branch re-emits pre-compact entries after the boundary: they keep their old
+# timestamps AND their old usage totals, so they must not resurrect the old size.
+t_reset; t_boundary $((NOW - 30))
+printf '{"type":"assistant","timestamp":"%s","uuid":"reemit-old","message":{"role":"assistant","model":"fixmodel","usage":{"input_tokens":5,"cache_read_input_tokens":250000,"cache_creation_input_tokens":9000,"cache_creation":{"ephemeral_1h_input_tokens":9000,"ephemeral_5m_input_tokens":0}}}}\n' \
+  "$(iso_utc $((NOW - 600)))" >> "$TRANSCRIPT"
+branch_reemit=$(run_statusline "$(statusline_payload ctx-branch-reemit "$(warm_extra "$TRANSCRIPT" 87 260000)")")
+assert grep -Fq "ctx ${DIM}0%${RESET} ${DIM}0k${RESET}" <<< "$branch_reemit"
+# The first real response of the branched context sizes it.
+t_assist $((NOW - 5))
+branch_fresh=$(run_statusline "$(statusline_payload ctx-branch-fresh "$(warm_extra "$TRANSCRIPT" 87 260000)")")
+# No context_window_size in this payload, so the discarded percentage cannot be
+# recomputed and must not survive next to the corrected token count.
+assert grep -Fq "ctx ${DIM}?${RESET} ${DIM}? 51k${RESET}" <<< "$branch_fresh"
+
+# A re-emitted OLDER boundary trails the newest one; taking it as the cutoff would
+# move the reset back into the past and re-admit the entries it invalidated.
+t_reset; t_boundary $((NOW - 600)); t_assist $((NOW - 300)); t_boundary $((NOW - 900))
+old_boundary=$(run_statusline "$(statusline_payload ctx-boundary-order "$(warm_extra "$TRANSCRIPT" 87 260000)")")
+assert grep -Fq "${DIM}? 51k${RESET}" <<< "$old_boundary"
+
+# The context-nudge hook needs the window size the render alone receives; it is
+# published per session and rewritten only when it changes.
+window_file="$HOME/.cache/claude-context-nudge/ctx-window.window"
+window_extra=$(jq -cn --arg tp "$TRANSCRIPT" \
+  '{transcript_path:$tp,context_window:{context_window_size:200000,used_percentage:10,current_usage:{input_tokens:20000}}}')
+run_statusline "$(statusline_payload ctx-window "$window_extra")" > /dev/null
+assert_eq "200000" "$(cat "$window_file" 2>/dev/null)"
+touch -t 202001010000 "$window_file"
+run_statusline "$(statusline_payload ctx-window "$window_extra")" > /dev/null
+assert_eq "2020" "$(date -r "$window_file" +%Y)"
+window_1m=$(jq -c '.context_window.context_window_size = 1000000' <<< "$window_extra")
+run_statusline "$(statusline_payload ctx-window "$window_1m")" > /dev/null
+assert_eq "1000000" "$(cat "$window_file" 2>/dev/null)"
+
+# --- the .bnd sidecar: boundary knowledge that outlives the scan window ---
+NUDGE_DIR="$HOME/.cache/claude-context-nudge"
+bnd_file() { printf '%s/%s.bnd' "$NUDGE_DIR" "$1"; }
+
+t_reset; t_boundary $((NOW - 600)); t_assist $((NOW - 5))
+run_statusline "$(statusline_payload ctx-bnd-new "$(warm_extra "$TRANSCRIPT" 55 111000)")" >/dev/null
+bnd_new=$(cat "$(bnd_file ctx-bnd-new)")
+assert_eq "$(stat -f %z "$TRANSCRIPT") $(iso_utc $((NOW - 600)))" "$bnd_new"
+# A later boundary raises the remembered one; the scanned size follows the file.
+t_boundary $((NOW - 400)); t_assist $((NOW - 3))
+run_statusline "$(statusline_payload ctx-bnd-new "$(warm_extra "$TRANSCRIPT" 55 111000)")" >/dev/null
+assert_eq "$(stat -f %z "$TRANSCRIPT") $(iso_utc $((NOW - 400)))" "$(cat "$(bnd_file ctx-bnd-new)")"
+# A garbled sidecar must not be trusted and must not be permanent: the next render
+# rescans the whole transcript and rewrites it.
+printf 'not-a-size ??\n' > "$(bnd_file ctx-bnd-new)"
+run_statusline "$(statusline_payload ctx-bnd-new "$(warm_extra "$TRANSCRIPT" 55 111000)")" >/dev/null
+assert_eq "$(stat -f %z "$TRANSCRIPT") $(iso_utc $((NOW - 400)))" "$(cat "$(bnd_file ctx-bnd-new)")"
+# A transcript with no boundary at all records the absence, not a stray timestamp.
+t_reset; t_assist $((NOW - 5))
+run_statusline "$(statusline_payload ctx-bnd-none "$(warm_extra "$TRANSCRIPT" 55 111000)")" >/dev/null
+assert_eq "$(stat -f %z "$TRANSCRIPT") -" "$(cat "$(bnd_file ctx-bnd-none)")"
+
+# The bug the sidecar exists for: /branch re-emits so much that the boundary falls
+# out of the initial 262144-byte window, the scan stops at the first re-emitted
+# current-model response, and the stale pre-compact payload survives untouched.
+t_reset; t_boundary $((NOW - 600))
+awk -v ts="$(iso_utc $((NOW - 900)))" 'BEGIN{
+  for (i = 0; i < 900; i++)
+    printf "{\"type\":\"assistant\",\"timestamp\":\"%s\",\"uuid\":\"reemit-%04d\",\"message\":{\"role\":\"assistant\",\"model\":\"fixmodel\",\"usage\":{\"input_tokens\":5,\"cache_read_input_tokens\":250000,\"cache_creation_input_tokens\":9000,\"cache_creation\":{\"ephemeral_1h_input_tokens\":9000,\"ephemeral_5m_input_tokens\":0}},\"filler\":\"%s\"}}\n", ts, i, sprintf("%0300d", i)
+}' >> "$TRANSCRIPT"
+# The fixture only proves anything while the boundary really is out of reach.
+assert test "$(stat -f %z "$TRANSCRIPT")" -gt 262144
+assert test "$(head -c 262144 "$TRANSCRIPT" | grep -c compact_boundary)" -eq 1
+assert test "$(tail -c 262144 "$TRANSCRIPT" | grep -c compact_boundary)" -eq 0
+far_boundary=$(run_statusline "$(statusline_payload ctx-bnd-far "$(warm_extra "$TRANSCRIPT" 87 260000)")")
+assert grep -Fq "ctx ${DIM}0%${RESET} ${DIM}0k${RESET}" <<< "$far_boundary"
+assert_eq "$(iso_utc $((NOW - 600)))" "$(awk '{print $2}' "$(bnd_file ctx-bnd-far)")"
+
+# A response carrying only input tokens (no cache at all) is still a real size for
+# the context that follows a boundary.
+t_reset; t_boundary $((NOW - 30))
+printf '{"type":"assistant","timestamp":"%s","uuid":"input-only","message":{"role":"assistant","model":"fixmodel","usage":{"input_tokens":40000,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}\n' \
+  "$(iso_utc $((NOW - 5)))" >> "$TRANSCRIPT"
+input_only=$(run_statusline "$(statusline_payload ctx-bnd-input-only "$(warm_extra "$TRANSCRIPT" 87 260000)")")
+assert grep -Fq "40k" <<< "$input_only"
+assert test "${input_only#*260k}" = "$input_only"
+
+# Second-resolution timestamps make an auto-compact boundary tie with the last
+# pre-compact response even when the response is written after it, so a tie is
+# rejected: a transient empty context beats resurrecting the old total.
+t_reset; t_boundary $((NOW - 30))
+printf '{"type":"assistant","timestamp":"%s","uuid":"same-second","message":{"role":"assistant","model":"fixmodel","usage":{"input_tokens":5,"cache_read_input_tokens":250000,"cache_creation_input_tokens":9000}}}\n' \
+  "$(iso_utc $((NOW - 30)))" >> "$TRANSCRIPT"
+same_second=$(run_statusline "$(statusline_payload ctx-bnd-tie "$(warm_extra "$TRANSCRIPT" 87 260000)")")
+assert grep -Fq "ctx ${DIM}0%${RESET} ${DIM}0k${RESET}" <<< "$same_second"
+
+# The mirror of the trailing-older-boundary case: a re-emitted boundary that raises
+# the maximum but is still older than a size already taken must not zero that size.
+t_reset; t_boundary $((NOW - 900))
+printf '{"type":"assistant","timestamp":"%s","uuid":"after-both","message":{"role":"assistant","model":"fixmodel","usage":{"input_tokens":5,"cache_read_input_tokens":51000,"cache_creation_input_tokens":500,"cache_creation":{"ephemeral_1h_input_tokens":500,"ephemeral_5m_input_tokens":0}}}}\n' \
+  "$(iso_utc $((NOW - 300)))" >> "$TRANSCRIPT"
+t_boundary $((NOW - 600))
+# Sessionless, because with a sidecar the seed is already the file-wide maximum and
+# no in-window boundary can raise it; the in-scan reset only runs without one.
+mid_boundary=$(run_statusline "$(statusline_payload "" "$(warm_extra "$TRANSCRIPT" 87 260000)")")
+assert grep -Fq "52k" <<< "$mid_boundary"
+assert test "${mid_boundary#*0k}" = "$mid_boundary"
+
+# CONTEXT_NUDGE_STATE_DIR is overridable, so the sweep deletes only the names this
+# system writes; anything else sharing the directory is somebody's data.
+t_reset; t_assist $((NOW - 5))
+printf 'stale\n' > "$NUDGE_DIR/old.window"
+printf 'not ours\n' > "$NUDGE_DIR/unrelated.txt"
+mkdir -p "$NUDGE_DIR/nested"
+printf 'stale\n' > "$NUDGE_DIR/nested/deep.window"
+touch -t 202001010000 "$NUDGE_DIR/old.window" "$NUDGE_DIR/unrelated.txt" "$NUDGE_DIR/nested/deep.window"
+prune_extra=$(jq -cn --arg tp "$TRANSCRIPT" \
+  '{transcript_path:$tp,context_window:{context_window_size:200000,used_percentage:10,current_usage:{input_tokens:20000}}}')
+run_statusline "$(statusline_payload ctx-bnd-prune "$prune_extra")" >/dev/null
+assert test ! -e "$NUDGE_DIR/old.window"
+assert test -f "$NUDGE_DIR/unrelated.txt"
+assert test -f "$NUDGE_DIR/nested/deep.window"
+rm -rf "$NUDGE_DIR/nested" "$NUDGE_DIR/unrelated.txt"
 
 PARENT_TRANSCRIPT="$WORK/parent-sid.jsonl"
 t_assist_fork() {

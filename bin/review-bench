@@ -953,19 +953,19 @@ def scope_receipt_slug(scope):
 
 
 def receipt_file_name(repo, lens=None, scope=None):
-    """The repository's review receipt, or a lens's or a scope's own beside it. Neither of those
-    read what the ordinary receipt answers for: a lens run read the tree by a methodology the tool
-    did not write, and a scoped run read only some of it. The ordinary receipt is what `suggest`
-    sizes the next change against and what the stamp hook reads, so either one sharing it would
-    declare the whole repository reviewed.
+    """The repository's review receipt, or a lens's, a scope's, or a scoped lens's own beside it.
+    None of those read what the ordinary receipt answers for: a lens run read the tree by a
+    methodology the tool did not write, and a scoped run read only some of it. The ordinary
+    receipt is what `suggest` sizes the next change against and what the stamp hook reads, so any
+    of them sharing it would declare the whole repository reviewed.
     """
-    if lens and scope:
-        raise ValueError("a receipt answers for a lens or for a scope, never both")
     repo_path = str(Path(repo).resolve())
     repo_name = repo_identity(repo_path)
     if not repo_name:
         return None
     repo_hash = hashlib.sha1(repo_path.encode()).hexdigest()[:RECEIPT_HASH_HEX]
+    if lens and scope:
+        return f"{repo_name}__{repo_hash}__lens-{lens}__scope-{scope_receipt_slug(scope)}.json"
     if lens:
         return f"{repo_name}__{repo_hash}__lens-{lens}.json"
     if scope:
@@ -5568,6 +5568,20 @@ def cmd_suggest(args):
         print("scoped: if part of this tree is another agent's live work, repeat the command "
               "with --paths <path> ... naming only your own files; a scoped run reviews and "
               "stamps only those and leaves the repository's own receipt alone")
+    # Same rule as the flags above: a lens absent from this output does not exist — the
+    # edge-cases lens sat unreachable behind an unlisted registry until a reader was told.
+    # suggest is the review skill's entrypoint: one malformed lens file must cost the lens line,
+    # not the tier and command the reader came for.
+    try:
+        registered = load_lenses()
+    except RuntimeError as error:
+        registered = {}
+        print(f"lenses: registry refused — {error}")
+    if registered:
+        print("lenses: " + ", ".join(sorted(registered))
+              + " — repeat the command with --lens <slug> to review by that methodology "
+                "instead of the raters' own (all cells except OpenCode/agy"
+              + ("" if args.range else "; combinable with --paths") + ")")
     # The heavier panels are printed for Egor to reach for, never as work to pick up: the gate
     # denies them to anyone he has not told, and a line the reader must not follow says so.
     # Every size prints them, not just the ones that size into T3: when he asks for T3 on a small
@@ -5663,11 +5677,6 @@ def cmd_run(args):
     requested_scope = list(getattr(args, "paths", None) or [])
     if requested_scope and not worktree_mode:
         raise ValueError("--paths narrows the working tree; it cannot narrow a commit")
-    # Refused rather than named a receipt of its own: a scope and a lens each need one, and a
-    # receipt answering for both is a name no reader was built to recognise. Before the snapshot,
-    # so a refused run leaves no commit object behind.
-    if requested_scope and lens:
-        raise ValueError("scoped lens runs are not supported")
     if worktree_mode:
         scope = normalize_scope_paths(repo, requested_scope) if requested_scope else []
         sha = worktree_snapshot_commit(
@@ -5677,12 +5686,11 @@ def cmd_run(args):
         scope = []
         sha = resolve_commit(repo, commitish)
     worktree_mode = worktree_mode or is_worktree_snapshot(repo, sha)
+    # A rerun names the snapshot sha and no paths at all, so its scope exists only in the
+    # snapshot's trailers; without this the rerun of a scoped lens run would write the pure-lens
+    # receipt and declare the whole tree read by that lens.
     if worktree_mode and not scope:
         scope = snapshot_scope_paths(repo, sha)
-    # Refused a second time, because a rerun pinned to a scoped snapshot names no paths at all and
-    # its scope is only known once the trailers have been read.
-    if scope and lens:
-        raise ValueError("scoped lens runs are not supported")
     reviews_path = state_dir() / "reviews.jsonl"
     # The corpus that picks `--auto` cells and prices how long they take, and it is the tool's
     # own reviews even when this run carries a lens: a cell is chosen for how it performs at
