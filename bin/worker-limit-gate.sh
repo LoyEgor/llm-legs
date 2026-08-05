@@ -273,8 +273,15 @@ fi
 now=$(date +%s) ||
   deny "${fallback_reason}; local threshold fallback could not read the clock. Do not spawn ${worker}."
 decision=$(jq -c --arg worker "$worker" --arg pin "$spawn_account" --argjson now "$now" --argjson warn "$WARN_AT" --argjson deny "$DENY_AT" "$eff_defs"'
+  # Protective fallback, so stricter than worker-pick auth_ok: any status other than
+  # "ok" and any non-object .auth shape is dead. Explicit branches — `.auth.status?`
+  # on a string yields jq empty, which would either vanish the account or default it
+  # to authorized depending on the surrounding operator.
   def auth_ok:
-    .auth_needed != true and (((.auth // null) == null) or (.auth.status? == "ok"));
+    .auth_needed != true and
+    (if .auth == null then true
+     elif (.auth | type) == "object" then ((.auth.status // "ok") == "ok")
+     else false end);
   def specs:
     {
       "claudeb-worker": {
