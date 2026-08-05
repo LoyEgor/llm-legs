@@ -5886,6 +5886,10 @@ def cmd_suggest(args):
     repo = resolve_repo_arg(args.repo)
     if repo is None:
         raise ValueError(f"not a git repository: {Path(args.repo).resolve()}")
+    # Stderr, deliberately: every stdout consumer (commit gate, tests, statusline) parses exact
+    # lines, while the reader who launched this from the wrong cwd only ever sees the answer —
+    # a "nothing to review" that names no repository reads as being about the tree they meant.
+    print(f"repo: {repo}", file=sys.stderr)
     # Defined for every path through the branch below, because the report at the end reads it.
     snapshot_baseline = False
     if args.range:
