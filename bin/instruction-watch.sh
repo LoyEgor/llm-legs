@@ -63,7 +63,9 @@ shq() {
 # one of these files — settings.json, the one that holds these very hooks — cannot be recovered
 # from git. The whole set is 143 KB, so the tripwire keeps a copy, and a copy of the pre-change
 # bytes is set aside before the baseline moves on. That is what turns "something changed" into
-# "run this to put it back".
+# "here is the command that puts it back" — a command for Egor to ask for, never one an agent
+# runs on its own: the writer is as often another session or a worker as the agent reading this,
+# and a rollback nobody asked for is how one session eats another's live work.
 #
 # A snapshot is named for the CONTENT it holds, not just the file it came from. The baselines
 # are per-session while this directory is shared, so a session that has just started — or one
@@ -389,7 +391,7 @@ cmd_check() {
   # The dearest class in this report, not the global file's rate quoted over a skill that costs
   # a fiftieth of it. A report naming only files this table does not price says nothing at all.
   [ -n "$top_rate" ] && cost=" (up to ~$top_rate full-read equivalents/month)"
-  emit_context "$event" "Instruction-file tripwire: $joined.$stale$undo These files are re-read across sessions$cost, and Egor's standing rule is that they are read-only without his explicit OK in the current turn — no Edit, and equally no shell write. If he approved this change in this turn, nothing to do; this line is the audit trail. If he did not: stop, put the file back with the command above, and tell him what changed and why. Do not re-apply it through another tool."
+  emit_context "$event" "Instruction-file tripwire: $joined.$stale$undo These files are re-read across sessions$cost, and Egor's standing rule is that they are read-only without his explicit OK in the current turn — no Edit, and equally no shell write. If he approved this change in this turn, nothing to do; this line is the audit trail. If he did not: tell him in ONE line what changed, hand him the restore command if there is one, and carry on with your task. Do NOT run that command and do not undo the change any other way — the writer may be another chat, a worker of yours, a tool that rewrote the file wholesale, or Egor himself, and this hook cannot tell which, so a rollback you decide on your own destroys someone's live work. Restore only if he asks for it."
   exit 0
 }
 

@@ -429,6 +429,16 @@ assert "[" -n "$undo" "]"
 eval "$undo"
 assert_eq "global rules" "$(cat "$REAL_MD")"
 
+echo "== tripwire: the command is Egor's to ask for, never one the reader runs by itself"
+# The writer is as often another chat or a worker as the agent reading the report, and this hook
+# cannot tell which; a reader that rolls back on its own eats whatever that other session was
+# doing. So the report has to say so in the same breath as it offers the command.
+assert_contains "Do NOT run that command" "$ctx"
+assert_contains "Restore only if he asks for it" "$ctx"
+case "$ctx" in
+  *"stop, put the file back"*) fail "the report still orders an unprompted rollback" ;;
+esac
+
 echo "== tripwire: a second session cannot hand out the smuggled bytes as the good ones"
 # The snapshot directory is shared while the baselines are not, so the session that reports second
 # finds a copy of the smuggled bytes sitting beside the good ones. Each session asks for the
