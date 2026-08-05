@@ -87,6 +87,7 @@ fi
 
 base_home=$HOME
 root=$(resolve_root)
+. "$root/share/image-chroma.sh"
 gemini_base_home=$base_home
 gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$base_home/.gemini-profiles}"
 . "$root/share/gemini-accounts.sh"
@@ -122,7 +123,7 @@ stdout_file="$tmp_dir/stdout"
 log_file="$tmp_dir/agy.log"
 content=$prompt
 if [ "$remove_green" = true ]; then
-  content=$(printf '%s' "$content" | sed 's/[Tt][Rr][Aa][Nn][Ss][Pp][Aa][Rr][Ee][Nn][Tt]//g')
+  content=$(printf '%s' "$content" | sed 's/[[:<:]][Tt][Rr][Aa][Nn][Ss][Pp][Aa][Rr][Ee][Nn][Tt][[:>:]]//g')
   content="$content on a flat solid #00FF00 green background"
 fi
 
@@ -152,6 +153,11 @@ Reply with ONLY the absolute path of the generated file on the last line."
 touch -A -01 "$launch_marker" 2>/dev/null || true
 if ! geminib profile "$account" --model gemini-3.6-flash-low --print-timeout 8m \
   --dangerously-skip-permissions --log-file "$log_file" --print "$instruction" >"$stdout_file"; then
+  if grep -Eqi 'RESOURCE_EXHAUSTED|Individual quota reached|usage limit|quota exceeded|rate limit' \
+      "$stdout_file" "$log_file" 2>/dev/null; then
+    printf 'GEMINI_USAGE_LIMIT\n' >&2
+    exit 3
+  fi
   printf 'gemini-image: generation failed\n' >&2
   tail -n 20 "$stdout_file" >&2
   exit 1
@@ -189,15 +195,7 @@ if [ "$remove_green" = true ] || [ "$extension" = png ] \
     exit 1
   }
   if [ "$remove_green" = true ]; then
-    # The model never hits #00FF00 exactly; keying on a corner sample plus a green
-    # despill kills the fringe that a fixed key color leaves on anti-aliased edges.
-    # The despill is masked to a 2px inner edge band: applied globally it would
-    # dull every legitimately green object in the image.
-    key=$(magick "$generated" -format '%[pixel:p{2,2}]' info:)
-    magick "$generated" -fuzz 12% -transparent "$key" "$tmp_dir/keyed.png"
-    magick "$tmp_dir/keyed.png" -alpha extract -morphology EdgeIn Octagon:2 "$tmp_dir/edge.png"
-    magick "$tmp_dir/keyed.png" -channel G -fx 'min(g,max(r,b))' +channel "$tmp_dir/despilled.png"
-    magick "$tmp_dir/keyed.png" "$tmp_dir/despilled.png" "$tmp_dir/edge.png" -composite "PNG:$dest"
+    chroma_key_to_png "$generated" "$tmp_dir" "$dest"
   else
     magick "$generated" "$dest"
   fi

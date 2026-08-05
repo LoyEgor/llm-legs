@@ -468,17 +468,24 @@ for argument in "$@"; do
 done
 printf 'account=%s\nprint_flag=%s\n' "$2" "$before_previous" >>"$IMAGE_CALLS"
 printf '%s' "$previous" >"$IMAGE_PROMPT"
-if [ "${IMAGE_MODE:-reply}" = rescue ]; then
-  # The real tool names the file after the instruction's ImageName; the rescue
-  # search keys on that, so the fake must honor it too.
-  image_name=$(printf '%s' "$previous" | sed -n 's/^ImageName: //p')
-  mkdir -p "$(dirname "$IMAGE_RESCUE_FILE")"
-  printf 'rescued\n' >"$(dirname "$IMAGE_RESCUE_FILE")/${image_name:-rescued}.jpg"
-  printf 'status\n/nonexistent/generated.jpg\n'
-else
-  printf 'generated:%s\n' "$2" >"$IMAGE_REPLY"
-  printf 'status\n%s\n' "$IMAGE_REPLY"
-fi
+case "${IMAGE_MODE:-reply}" in
+  limit)
+    printf 'RESOURCE_EXHAUSTED\n'
+    exit 1
+    ;;
+  rescue)
+    # The real tool names the file after the instruction's ImageName; the rescue
+    # search keys on that, so the fake must honor it too.
+    image_name=$(printf '%s' "$previous" | sed -n 's/^ImageName: //p')
+    mkdir -p "$(dirname "$IMAGE_RESCUE_FILE")"
+    printf 'rescued\n' >"$(dirname "$IMAGE_RESCUE_FILE")/${image_name:-rescued}.jpg"
+    printf 'status\n/nonexistent/generated.jpg\n'
+    ;;
+  *)
+    printf 'generated:%s\n' "$2" >"$IMAGE_REPLY"
+    printf 'status\n%s\n' "$IMAGE_REPLY"
+    ;;
+esac
 EOF
 chmod +x "$IMAGE_BIN/geminib"
 
@@ -592,6 +599,14 @@ assert test "$image_rc" -eq 3
 assert grep -qx GEMINI_USAGE_LIMIT "$IMAGE_ERR"
 
 IMAGE_PICK_MODE=ok
+IMAGE_MODE=limit
+export IMAGE_PICK_MODE IMAGE_MODE
+image_rc=0
+image_run --dest "$WORK/image-output/generation-limit.jpg" --prompt portrait \
+  --account main || image_rc=$?
+assert test "$image_rc" -eq 3
+assert grep -qx GEMINI_USAGE_LIMIT "$IMAGE_ERR"
+
 IMAGE_MODE=rescue
 IMAGE_RESCUE_FILE="$HOME/.gemini-profiles/rescue/.gemini/antigravity-cli/brain/conversation/rescued.jpg"
 export IMAGE_PICK_MODE IMAGE_MODE IMAGE_RESCUE_FILE

@@ -531,4 +531,232 @@ else
 fi
 chmod 600 "$UNREADABLE_PIN"
 
-echo "PASS: $asserts asserts; add and shared-link trap, worker-pool exclusion (pick skips it, direct run still reaches it, last member protected, visible in list/status), list/status, quota-aware authenticated pick with main-last priority, reset credits, auth-needed cache markers, dead-token classification (short cause, no raw RPC blob) with list/status/pick honoring the marker over lying local auth.json, a transient non-auth error preserving the definite auth verdict while fresh weather on a never-marked account stays non-auth, and marker recovery only on a genuinely good probe, exact run environments/arguments, one-step profile auto-create with shared links, browser-OAuth menu login passthrough with device-auth de-advertised everywhere yet still working manually, and missing-name guard, existing-profile relaunch stays quiet, creation-only reserved-name guards, leading-hyphen and charset rejection parity, multi-account cache compatibility, remove forgets profiles including reserved legacy names and prunes the cache entry (main refused), and use pin set/show/clear/refusal parity"
+IMAGE_SCRIPT="$ROOT/bin/codex-image"
+IMAGE_BIN="$WORK/image-bin"
+IMAGE_CALLS="$WORK/image-calls"
+IMAGE_PROMPT="$WORK/image-prompt"
+IMAGE_PICK_CALLS="$WORK/image-pick-calls"
+IMAGE_MAGICK_CALLS="$WORK/image-magick-calls"
+export IMAGE_CALLS IMAGE_PROMPT IMAGE_PICK_CALLS IMAGE_MAGICK_CALLS
+IMAGE_TMPDIR="$WORK/image-tmp"
+mkdir -p "$IMAGE_BIN" "$WORK/image-output" "$WORK/image-profiles" "$IMAGE_TMPDIR" "$HOME/.claude"
+for image_account in explicit picked pinacct rescue; do
+  mkdir -p "$WORK/image-profiles/$image_account"
+done
+: >"$IMAGE_PICK_CALLS"
+: >"$IMAGE_MAGICK_CALLS"
+
+cat >"$IMAGE_BIN/codex" <<'EOF'
+#!/usr/bin/env bash
+account=main
+[ -z "${CODEX_HOME+x}" ] || account=$(basename "$CODEX_HOME")
+printf 'account=%s home=%s\n' "$account" "${CODEX_HOME-<unset>}" >>"$IMAGE_CALLS"
+for argument in "$@"; do printf 'ARG=%q\n' "$argument" >>"$IMAGE_CALLS"; done
+prompt=$(cat)
+printf '%s' "$prompt" >"$IMAGE_PROMPT"
+previous=''
+output=''
+for argument in "$@"; do
+  if [ "$previous" = -o ]; then output=$argument; fi
+  previous=$argument
+done
+case "${IMAGE_MODE:-reply}" in
+  limit)
+    printf 'Error: hit your usage limit\n' >&2
+    exit 1
+    ;;
+  hang)
+    exec sleep 30
+    ;;
+  rescue)
+    if [ "$account" = main ]; then
+      rescue_dir="$HOME/.codex/generated_images"
+    else
+      rescue_dir="$CODEX_HOME/generated_images"
+    fi
+    mkdir -p "$rescue_dir"
+    printf 'rescued\n' >"$rescue_dir/rescued.jpg"
+    printf 'status\n/nonexistent/generated.jpg\n' >"$output"
+    ;;
+  *)
+    requested=$(printf '%s\n' "$prompt" | sed -n 's/^Copy the final image to \([^ ]*\) and reply.*/\1/p')
+    printf 'generated:%s\n' "$account" >"$requested"
+    printf 'status\n%s\n' "$requested" >"$output"
+    ;;
+esac
+EOF
+chmod +x "$IMAGE_BIN/codex"
+
+cat >"$IMAGE_BIN/worker-pick" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$IMAGE_PICK_CALLS"
+case "${IMAGE_PICK_MODE:-ok}" in
+  ok) printf '%s\n' "${IMAGE_PICK_ACCOUNT:-picked}" ;;
+  limit) exit 3 ;;
+  fail) exit 7 ;;
+esac
+EOF
+chmod +x "$IMAGE_BIN/worker-pick"
+
+cat >"$IMAGE_BIN/magick" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$IMAGE_MAGICK_CALLS"
+case "$*" in
+  *-format*info:) printf 'srgb(7,246,5)'; exit 0 ;;
+esac
+for output in "$@"; do :; done
+output=${output#PNG:}
+printf 'converted\n' >"$output"
+EOF
+chmod +x "$IMAGE_BIN/magick"
+
+cat >"$IMAGE_BIN/sips" <<'EOF'
+#!/usr/bin/env bash
+printf '  pixelWidth: 1024\n  pixelHeight: 768\n  format: jpeg\n'
+EOF
+chmod +x "$IMAGE_BIN/sips"
+
+IMAGE_PATH="$IMAGE_BIN:/usr/bin:/bin"
+IMAGE_OUT="$WORK/image.out"
+IMAGE_ERR="$WORK/image.err"
+image_run() {
+  env PATH="$IMAGE_PATH" TMPDIR="$IMAGE_TMPDIR" CODEX_IMAGE_CODEX="$IMAGE_BIN/codex" \
+    CODEX_PROFILES_DIR="$WORK/image-profiles" IMAGE_MODE="${IMAGE_MODE:-reply}" \
+    IMAGE_PICK_MODE="${IMAGE_PICK_MODE:-ok}" IMAGE_PICK_ACCOUNT="${IMAGE_PICK_ACCOUNT:-picked}" \
+    WORKER_PICK_CONFIG_FILE="$HOME/.claude/worker-model" \
+    bash "$IMAGE_SCRIPT" "$@" >"$IMAGE_OUT" 2>"$IMAGE_ERR"
+}
+
+image_rc=0
+image_run --dest relative.jpg --prompt badge || image_rc=$?
+assert test "$image_rc" -eq 2
+assert grep -q '^usage: codex-image ' "$IMAGE_ERR"
+image_rc=0
+image_run --dest "$WORK/image-output/bad.jpg" --prompt badge --size 1024 || image_rc=$?
+assert test "$image_rc" -eq 2
+image_rc=0
+image_run --dest "$WORK/image-output/bad.jpg" --prompt badge --transparent || image_rc=$?
+assert test "$image_rc" -eq 2
+assert grep -q 'requires a .png destination' "$IMAGE_ERR"
+
+printf 'reference\n' >"$WORK/reference.jpg"
+image_rc=0
+image_run --dest "$WORK/image-output/refs.jpg" --prompt badge \
+  --ref "$WORK/reference.jpg" --ref "$WORK/reference.jpg" \
+  --ref "$WORK/reference.jpg" --ref "$WORK/reference.jpg" || image_rc=$?
+assert test "$image_rc" -eq 2
+: >"$IMAGE_CALLS"
+: >"$IMAGE_PICK_CALLS"
+assert image_run --dest "$WORK/image-output/explicit.jpg" --prompt 'simple badge' \
+  --size 1536x1024 --ref "$WORK/reference.jpg" --account explicit
+assert grep -qx "account=explicit home=$WORK/image-profiles/explicit" "$IMAGE_CALLS"
+assert grep -qx 'ARG=exec' "$IMAGE_CALLS"
+assert grep -qx 'ARG=--color' "$IMAGE_CALLS"
+assert grep -qx 'ARG=never' "$IMAGE_CALLS"
+assert grep -qx 'ARG=--skip-git-repo-check' "$IMAGE_CALLS"
+assert grep -qx "ARG=-" "$IMAGE_CALLS"
+assert_fails grep -qx 'ARG=-m' "$IMAGE_CALLS"
+assert test ! -s "$IMAGE_PICK_CALLS"
+assert grep -q 'built-in image_gen tool' "$IMAGE_PROMPT"
+assert grep -q 'exact size 1536x1024' "$IMAGE_PROMPT"
+assert_fails grep -q 'Use low quality' "$IMAGE_PROMPT"
+assert grep -q -- "- $WORK/reference.jpg" "$IMAGE_PROMPT"
+assert grep -qx 'generated:explicit' "$WORK/image-output/explicit.jpg"
+assert grep -qx 'account=explicit' "$IMAGE_OUT"
+
+: >"$IMAGE_MAGICK_CALLS"
+assert image_run --dest "$WORK/image-output/alpha.png" \
+  --prompt 'transparent badge with transparency effects' \
+  --transparent --account explicit
+assert grep -q '#00FF00' "$IMAGE_PROMPT"
+assert grep -q 'transparency effects' "$IMAGE_PROMPT"
+assert_fails grep -Eqi '(^|[^[:alnum:]_])transparent([^[:alnum:]_]|$)' "$IMAGE_PROMPT"
+assert grep -qF -- "-format %[pixel:p{2,2}] info:" "$IMAGE_MAGICK_CALLS"
+assert grep -q -- "-alpha extract -morphology EdgeIn Octagon:2 .*/edge.png" "$IMAGE_MAGICK_CALLS"
+assert grep -qF -- "-channel G -fx min(g,max(r,b)) +channel" "$IMAGE_MAGICK_CALLS"
+assert grep -q -- "despilled.png .*/edge.png -composite PNG:$WORK/image-output/alpha.png" "$IMAGE_MAGICK_CALLS"
+
+: >"$IMAGE_CALLS"
+IMAGE_PICK_MODE=ok
+IMAGE_PICK_ACCOUNT=picked
+export IMAGE_PICK_MODE IMAGE_PICK_ACCOUNT
+assert image_run --dest "$WORK/image-output/picked.jpg" --prompt landscape
+assert grep -qx -- '--account codex' "$IMAGE_PICK_CALLS"
+assert grep -qx "account=picked home=$WORK/image-profiles/picked" "$IMAGE_CALLS"
+assert grep -q 'Use low quality' "$IMAGE_PROMPT"
+
+printf 'codex_profile=pinacct\n' >"$HOME/.claude/worker-model"
+IMAGE_PICK_MODE=fail
+export IMAGE_PICK_MODE
+assert image_run --dest "$WORK/image-output/pin.jpg" --prompt portrait
+assert grep -qx 'account=pinacct' "$IMAGE_OUT"
+assert grep -q 'falling back to account pinacct' "$IMAGE_ERR"
+
+printf 'worker=codex\n' >"$HOME/.claude/worker-model"
+: >"$IMAGE_CALLS"
+assert image_run --dest "$WORK/image-output/main.jpg" --prompt portrait
+assert grep -qx 'account=main home=<unset>' "$IMAGE_CALLS"
+assert grep -qx 'account=main' "$IMAGE_OUT"
+assert grep -q 'falling back to account main' "$IMAGE_ERR"
+
+IMAGE_PICK_MODE=limit
+export IMAGE_PICK_MODE
+image_rc=0
+image_run --dest "$WORK/image-output/limit.jpg" --prompt portrait || image_rc=$?
+assert test "$image_rc" -eq 3
+assert grep -qx CODEX_USAGE_LIMIT "$IMAGE_ERR"
+
+IMAGE_PICK_MODE=ok
+IMAGE_MODE=rescue
+export IMAGE_PICK_MODE IMAGE_MODE
+assert image_run --dest "$WORK/image-output/rescued.jpg" --prompt landscape --account rescue
+assert grep -qx rescued "$WORK/image-output/rescued.jpg"
+
+IMAGE_MODE=reply
+export IMAGE_MODE
+: >"$IMAGE_CALLS"
+assert image_run --dest "$WORK/image-output/stdout.jpg" --prompt landscape --account main
+assert grep -qx 'generated:main' "$WORK/image-output/stdout.jpg"
+assert grep -qx "dest=$WORK/image-output/stdout.jpg" "$IMAGE_OUT"
+assert grep -qx 'size=1024x768' "$IMAGE_OUT"
+assert grep -qx 'format=jpeg' "$IMAGE_OUT"
+
+stale_lock="$IMAGE_TMPDIR/codex-image.main.lock"
+mkdir "$stale_lock"
+touch -A -2100 "$stale_lock"
+assert image_run --dest "$WORK/image-output/stale-lock.jpg" --prompt landscape --account main
+assert test ! -e "$stale_lock"
+
+IMAGE_MODE=limit
+export IMAGE_MODE
+image_rc=0
+image_run --dest "$WORK/image-output/cli-limit.jpg" --prompt landscape --account main || image_rc=$?
+assert test "$image_rc" -eq 3
+assert grep -qx CODEX_USAGE_LIMIT "$IMAGE_ERR"
+
+IMAGE_MODE=reply
+export IMAGE_MODE
+image_rc=0
+image_run --dest "$WORK/image-output/noext" --prompt badge || image_rc=$?
+assert test "$image_rc" -eq 2
+assert grep -q '^usage: codex-image ' "$IMAGE_ERR"
+
+IMAGE_MODE=hang
+export IMAGE_MODE
+image_rc=0
+CODEX_IMAGE_DEADLINE=1 image_run --dest "$WORK/image-output/hang.jpg" --prompt landscape --account main || image_rc=$?
+assert test "$image_rc" -eq 1
+assert grep -q 'exceeded 1s deadline' "$IMAGE_ERR"
+assert test ! -e "$IMAGE_TMPDIR/codex-image.main.lock"
+
+IMAGE_MODE=reply
+export IMAGE_MODE
+assert env CODEX_IMAGE_DEADLINE=garbage PATH="$IMAGE_PATH" TMPDIR="$IMAGE_TMPDIR" \
+  CODEX_IMAGE_CODEX="$IMAGE_BIN/codex" CODEX_PROFILES_DIR="$WORK/image-profiles" \
+  IMAGE_MODE=reply IMAGE_PICK_MODE=ok IMAGE_PICK_ACCOUNT=picked \
+  WORKER_PICK_CONFIG_FILE="$HOME/.claude/worker-model" \
+  bash "$IMAGE_SCRIPT" --dest "$WORK/image-output/garbage-deadline.jpg" \
+  --prompt landscape --account main >"$IMAGE_OUT" 2>"$IMAGE_ERR"
+assert grep -qx 'account=main' "$IMAGE_OUT"
+
+echo "PASS: $asserts asserts; add and shared-link trap, worker-pool exclusion (pick skips it, direct run still reaches it, last member protected, visible in list/status), list/status, quota-aware authenticated pick with main-last priority, reset credits, auth-needed cache markers, dead-token classification (short cause, no raw RPC blob) with list/status/pick honoring the marker over lying local auth.json, a transient non-auth error preserving the definite auth verdict while fresh weather on a never-marked account stays non-auth, and marker recovery only on a genuinely good probe, exact run environments/arguments, one-step profile auto-create with shared links, browser-OAuth menu login passthrough with device-auth de-advertised everywhere yet still working manually, and missing-name guard, existing-profile relaunch stays quiet, creation-only reserved-name guards, leading-hyphen and charset rejection parity, multi-account cache compatibility, remove forgets profiles including reserved legacy names and prunes the cache entry (main refused), use pin set/show/clear/refusal parity, and Codex image generation routing, prompt, account environments, rescue, generation deadline with garbage-value fallback, extensionless-dest refusal, and limits"

@@ -1,0 +1,276 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  printf 'usage: codex-image --dest <absolute path> --prompt <description> [--size <WxH>] [--ref <absolute image path>]... [--transparent] [--account <profile>]\n' >&2
+  exit 2
+}
+
+resolve_root() {
+  local source="${BASH_SOURCE[0]}" directory
+  while [ -L "$source" ]; do
+    directory=$(cd -P "$(dirname "$source")" && pwd)
+    source=$(readlink "$source")
+    [[ "$source" = /* ]] || source="$directory/$source"
+  done
+  cd -P "$(dirname "$source")/.." && pwd
+}
+
+dest=''
+prompt=''
+size=''
+account=''
+remove_green=false
+refs=()
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dest)
+      [ "$#" -ge 2 ] || usage
+      dest=$2
+      shift 2
+      ;;
+    --prompt)
+      [ "$#" -ge 2 ] || usage
+      prompt=$2
+      shift 2
+      ;;
+    --size)
+      [ "$#" -ge 2 ] || usage
+      size=$2
+      shift 2
+      ;;
+    --ref)
+      [ "$#" -ge 2 ] || usage
+      refs+=("$2")
+      shift 2
+      ;;
+    --transparent)
+      remove_green=true
+      shift
+      ;;
+    --account)
+      [ "$#" -ge 2 ] || usage
+      account=$2
+      shift 2
+      ;;
+    *) usage ;;
+  esac
+done
+
+[ -n "$dest" ] && [ -n "$prompt" ] || usage
+[[ "$dest" = /* ]] || usage
+[[ "${dest##*/}" = *.* ]] || usage
+[ -d "$(dirname "$dest")" ] || usage
+if [ "$remove_green" = true ]; then
+  case "$(printf '%s' "${dest##*.}" | tr '[:upper:]' '[:lower:]')" in
+    png) ;;
+    *)
+      printf 'codex-image: --transparent requires a .png destination\n' >&2
+      exit 2
+      ;;
+  esac
+fi
+if [ -n "$size" ] && ! [[ "$size" =~ ^[0-9]+x[0-9]+$ ]]; then
+  usage
+fi
+ref_count=${#refs[@]}
+[ "$ref_count" -le 3 ] || usage
+if [ "$ref_count" -gt 0 ]; then
+  for ref in "${refs[@]}"; do
+    [[ "$ref" = /* ]] && [ -f "$ref" ] || usage
+  done
+fi
+if [ -n "$account" ] && ! [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+  usage
+fi
+
+base_home=$HOME
+root=$(resolve_root)
+. "$root/share/image-chroma.sh"
+
+if [ -z "$account" ]; then
+  pick_rc=0
+  if command -v worker-pick >/dev/null 2>&1; then
+    account=$(worker-pick --account codex 2>/dev/null) || pick_rc=$?
+  else
+    pick_rc=127
+  fi
+  if [ "$pick_rc" -eq 3 ]; then
+    printf 'CODEX_USAGE_LIMIT\n' >&2
+    exit 3
+  fi
+  if [ "$pick_rc" -ne 0 ] || ! [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    worker_file="${WORKER_PICK_CONFIG_FILE:-$base_home/.claude/worker-model}"
+    account=$(sed -n 's/^codex_profile=//p' "$worker_file" 2>/dev/null | head -n1) || account=''
+    account=${account:-main}
+    if ! [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+      account=main
+    fi
+    printf 'codex-image: worker-pick unavailable; falling back to account %s\n' "$account" >&2
+  fi
+fi
+
+profiles_dir="${CODEX_PROFILES_DIR:-$base_home/.codex-profiles}"
+if [ "$account" = main ]; then
+  generated_images_dir="$base_home/.codex/generated_images"
+  codex_home=''
+else
+  codex_home="$profiles_dir/$account"
+  if [ ! -d "$codex_home" ]; then
+    printf 'codex-image: account directory does not exist: %s\n' "$codex_home" >&2
+    exit 1
+  fi
+  generated_images_dir="$codex_home/generated_images"
+fi
+
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/codex-image.XXXXXX")
+lock_dir="${TMPDIR:-/tmp}/codex-image.$account.lock"
+lock_held=false
+cleanup() {
+  if [ "$lock_held" = true ]; then
+    rmdir "$lock_dir" 2>/dev/null || true
+  fi
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
+work_dir="$tmp_dir/work"
+mkdir -p "$work_dir"
+launch_marker="$tmp_dir/launch"
+instruction_file="$tmp_dir/instruction"
+stdout_file="$tmp_dir/stdout"
+cli_stdout="$tmp_dir/codex.stdout"
+cli_stderr="$tmp_dir/codex.stderr"
+requested_file="$tmp_dir/generated.${dest##*.}"
+content=$prompt
+if [ "$remove_green" = true ]; then
+  content=$(printf '%s' "$content" | sed 's/[[:<:]][Tt][Rr][Aa][Nn][Ss][Pp][Aa][Rr][Ee][Nn][Tt][[:>:]]//g')
+  content="$content on a flat solid #00FF00 green background"
+fi
+
+{
+  printf 'Use your built-in image_gen tool (imagegen skill). Generate one image with this content:\n%s\n\n' "$content"
+  if [ -n "$size" ]; then
+    printf 'Generate at the exact size %s.\n' "$size"
+  else
+    printf 'Use low quality.\n'
+  fi
+  if [ "$ref_count" -gt 0 ]; then
+    printf 'Use these reference images:\n'
+    printf -- '- %s\n' "${refs[@]}"
+  fi
+  printf 'Copy the final image to %s and reply with the absolute path of the file you actually saved on the last line.\n' "$requested_file"
+} >"$instruction_file"
+
+# Rescue has no per-invocation filename key, so one account generates at a time.
+lock_waited=0
+while ! mkdir "$lock_dir" 2>/dev/null; do
+  lock_mtime=$(stat -f %m "$lock_dir" 2>/dev/null || printf '0')
+  now=$(date +%s)
+  if [ "$lock_mtime" -gt 0 ] && [ $((now - lock_mtime)) -gt 1200 ]; then
+    rmdir "$lock_dir" 2>/dev/null || true
+  fi
+  if [ "$lock_waited" -ge 600 ]; then
+    printf 'codex-image: timed out waiting for account lock: %s\n' "$account" >&2
+    exit 1
+  fi
+  sleep 2
+  lock_waited=$((lock_waited + 2))
+done
+lock_held=true
+
+# Backdated a second: -newer misses files that land in the marker's own mtime quantum.
+: >"$launch_marker"
+touch -A -01 "$launch_marker" 2>/dev/null || true
+codex_cmd="${CODEX_IMAGE_CODEX:-codex}"
+codex_deadline="${CODEX_IMAGE_DEADLINE:-900}"
+[[ "$codex_deadline" =~ ^[0-9]+$ ]] && [ "$codex_deadline" -gt 0 ] || codex_deadline=900
+# A deadline while the account lock is held: a hung codex would otherwise block
+# this account forever (waiters cap at 600s, stale reclaim needs >1200s).
+run_codex() {
+  "$codex_cmd" exec -C "$work_dir" --color never --skip-git-repo-check \
+    -o "$stdout_file" - <"$instruction_file" >"$cli_stdout" 2>"$cli_stderr" &
+  local child=$!
+  ( end=$(($(date +%s) + codex_deadline))
+    while [ "$(date +%s)" -lt "$end" ]; do sleep 5; done
+    : >"$tmp_dir/deadline"
+    kill -TERM "$child" 2>/dev/null || exit 0
+    sleep 10
+    kill -KILL "$child" 2>/dev/null || true
+  ) &
+  local watchdog=$! rc=0
+  wait "$child" || rc=$?
+  kill "$watchdog" 2>/dev/null || true
+  return "$rc"
+}
+codex_rc=0
+if [ "$account" = main ]; then
+  (unset CODEX_HOME; run_codex) || codex_rc=$?
+else
+  CODEX_HOME="$codex_home" run_codex || codex_rc=$?
+fi
+if [ "$codex_rc" -ne 0 ]; then
+  if [ -e "$tmp_dir/deadline" ]; then
+    printf 'codex-image: generation exceeded %ss deadline\n' "$codex_deadline" >&2
+    exit 1
+  fi
+  if grep -Eqi 'hit your usage limit|usage_limit' "$stdout_file" "$cli_stdout" "$cli_stderr" 2>/dev/null; then
+    printf 'CODEX_USAGE_LIMIT\n' >&2
+    exit 3
+  fi
+  printf 'codex-image: generation failed\n' >&2
+  tail -n 20 "$cli_stderr" "$cli_stdout" "$stdout_file" 2>/dev/null >&2 || true
+  exit 1
+fi
+
+generated=$(tail -n 1 "$stdout_file" 2>/dev/null | tr -d '\r')
+if [[ "$generated" != /* ]] || [ ! -f "$generated" ] || [ "$generated" -ot "$launch_marker" ]; then
+  generated=''
+fi
+if [ -z "$generated" ] && [ -d "$generated_images_dir" ]; then
+  while IFS= read -r candidate; do
+    if [ -z "$generated" ] || [ "$candidate" -nt "$generated" ]; then
+      generated=$candidate
+    fi
+  done < <(find "$generated_images_dir" -type f \
+    \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' \) \
+    -newer "$launch_marker" -print 2>/dev/null)
+fi
+rmdir "$lock_dir" 2>/dev/null || true
+lock_held=false
+if [ -z "$generated" ]; then
+  printf 'codex-image: generated file not found\n' >&2
+  tail -n 20 "$cli_stderr" "$cli_stdout" "$stdout_file" 2>/dev/null >&2 || true
+  exit 1
+fi
+
+normalized_extension() {
+  local value
+  value=$(printf '%s' "${1##*.}" | tr '[:upper:]' '[:lower:]')
+  case "$value" in jpeg) printf 'jpg' ;; *) printf '%s' "$value" ;; esac
+}
+extension=$(normalized_extension "$dest")
+if [ "$remove_green" = true ] || [ "$extension" = png ] \
+    || [ "$extension" != "$(normalized_extension "$generated")" ]; then
+  command -v magick >/dev/null 2>&1 || {
+    printf 'codex-image: magick is required for this output\n' >&2
+    exit 1
+  }
+  if [ "$remove_green" = true ]; then
+    chroma_key_to_png "$generated" "$tmp_dir" "$dest"
+  else
+    magick "$generated" "$dest"
+  fi
+else
+  cp "$generated" "$dest"
+fi
+
+sips_output=$(sips -g pixelWidth -g pixelHeight -g format "$dest")
+width=$(awk '/pixelWidth:/ {print $2; exit}' <<<"$sips_output")
+height=$(awk '/pixelHeight:/ {print $2; exit}' <<<"$sips_output")
+format=$(awk '/format:/ {print $2; exit}' <<<"$sips_output")
+[ -n "$width" ] && [ -n "$height" ] && [ -n "$format" ] || {
+  printf 'codex-image: could not inspect output\n' >&2
+  exit 1
+}
+printf 'dest=%s\nsize=%sx%s\nformat=%s\naccount=%s\n' "$dest" "$width" "$height" "$format" "$account"
