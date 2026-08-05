@@ -957,6 +957,8 @@ local function integrationContext(types, opts)
   local frameGone = false
   local frameLookupColumns
   local logCount = 0
+  local caretPoint = opts.caret
+  local caretReads = 0
   module.setTestHooks({
     mouse = function(kind, point, clickState)
       mouseEvents[#mouseEvents + 1] =
@@ -987,6 +989,14 @@ local function integrationContext(types, opts)
       return not frameGone and opts.windowFrame or nil
     end or nil,
     log = function() logCount = logCount + 1 end,
+    -- Installed for every context, answering nothing unless the case asked for a caret:
+    -- the seam being present is what a gesture without one has to survive.
+    caret = function(observed)
+      caretReads = caretReads + 1
+      assert(not observed or observed.windowID == 7,
+        "the caret was read for another window than the gesture's")
+      return caretPoint
+    end,
     -- Only contexts that opt in stand for a real pointer; the rest keep the mouse hook
     -- alone, which is the module's "no physical pointer to move" case.
     pointer = opts.pointer and function(point)
@@ -1121,6 +1131,8 @@ local function integrationContext(types, opts)
       return callback
     end,
     dropWindowFrame = function() frameGone = true end,
+    setCaret = function(point) caretPoint = point end,
+    caretReads = function() return caretReads end,
     frameColumns = function() return frameLookupColumns end,
     logged = function() return logCount end,
     resolve = function(verdict) resolver(verdict) end,
@@ -1751,6 +1763,112 @@ assert(module.axWindow(7, false, function() return nil end) == nil,
 assert(module.axWindow(7, front, lookup) == front,
   "a failed resolution was cached as the window")
 module.axTextReset()
+end
+
+-- The caret AX answers with is what lets a gesture skip typing a sentinel to find it.
+-- Scoped: this chunk sits at the same 200-local ceiling the module does.
+do
+integration = integrationContext()
+local box = { windowID = 7, tab = "tab-a", tabIndex = 1, x = 0, y = 0, w = 1200, h = 800 }
+local screen = "one row\n"
+local range = { location = 12, length = 0 }
+-- The box of a caret at the end of a line: its width is the rest of the row, and the
+-- cell it stands for is only ever its left edge.
+local bounds = { x = 217, y = 604, w = 483, h = 14 }
+local asked
+local slow = false
+local element = {
+  attributeValue = function(_, name)
+    return name == "AXSelectedTextRange" and range or nil
+  end,
+  parameterizedAttributeValue = function(_, name, parameter)
+    if name ~= "AXBoundsForRange" then
+      return nil
+    end
+    asked = parameter
+    if slow then integration.advance(0.3) end
+    return bounds
+  end,
+}
+local function calibrate()
+  module.axTextReset()
+  return module.axTextCalibrate(screen, box, function() return element, screen end)
+end
+assert(calibrate().capable, "the caret fixture was not calibrated AX-capable")
+local point = module.axCaretPoint(box)
+assert(point and point.x == 217 and point.y == 604 and point.w == nil and point.h == nil,
+  "the caret cell was not read as the left edge of its box alone")
+assert(asked and asked.location == 12 and asked.length == 1,
+  "the caret cell was not asked for as the one character at the caret's own offset")
+
+module.axTextReset()
+assert(module.axCaretPoint(box) == nil, "a window with no calibration produced a caret")
+assert(module.axCaretPoint(nil) == nil, "an absent window box produced a caret")
+module.axTextCalibrate("another screen\n", box, function() return element, screen end)
+assert(module.axCaretPoint(box) == nil, "an AppleScript-only window produced a caret")
+
+calibrate()
+range = nil
+assert(module.axCaretPoint(box) == nil, "a text area with no selection produced a caret")
+range = { length = 0 }
+assert(module.axCaretPoint(box) == nil, "a range without a location produced a caret")
+range = { location = 12, length = 0 }
+bounds = nil
+assert(module.axCaretPoint(box) == nil, "a caret with no bounds produced a point")
+bounds = { y = 604 }
+assert(module.axCaretPoint(box) == nil, "a box without an x produced a caret point")
+
+-- The read that stalled is still used; it is the next gesture that must not wait for
+-- another one, and with the calibration gone that gesture is the sentinel's.
+bounds = { x = 217, y = 604, w = 7, h = 14 }
+calibrate()
+slow = true
+assert(module.axCaretPoint(box), "a slow caret read threw away the answer it did get")
+assert(module.axCaretPoint(box) == nil, "a stalled caret read left its window AX-capable")
+module.axTextReset()
+end
+
+-- Pixels back to a cell: the caret box has to name the same (row, column) the scraped
+-- cells carry, or the press lands on the word beside the one the user meant. Scoped:
+-- this chunk sits at the same 200-local ceiling the module does.
+do
+local frame = { x = 100, y = 50, w = 960, h = 700 }
+local rows, columns = 35, 96
+local rowHeight, cellWidth = frame.h / rows, frame.w / columns
+local function cellTopLeft(row, column)
+  return { x = frame.x + (column - 1) * cellWidth,
+    y = module.inputBorderY(frame, rows, row) - rowHeight }
+end
+local function assertCell(point, row, column, message)
+  local gotRow, gotColumn = module.gridCell(frame, rows, columns, point)
+  assert(gotRow == row and gotColumn == column,
+    message .. ": read as " .. tostring(gotRow) .. "," .. tostring(gotColumn))
+end
+assertCell(cellTopLeft(1, 1), 1, 1, "the first cell of the grid")
+assertCell(cellTopLeft(12, 47), 12, 47, "a cell on a later row, past the single digits")
+assertCell(cellTopLeft(rows, columns), rows, columns, "the last cell of the grid")
+-- The forward direction's own output: a centre and a top-left corner of the same cell
+-- have to invert to that cell, or the two mappings disagree about where a row starts.
+assertCell({ x = frame.x + (47 - 0.5) * cellWidth,
+  y = module.inputBorderY(frame, rows, 12) - rowHeight / 2 }, 12, 47,
+  "the centre of a cell did not invert to the cell it is the centre of")
+
+assert(module.gridCell(frame, rows, columns, { x = frame.x - 1, y = frame.y }) == nil,
+  "a point left of the grid produced a column")
+assert(module.gridCell(frame, rows, columns,
+  { x = frame.x + frame.w + 1, y = frame.y }) == nil,
+  "a point right of the grid produced a column")
+assert(module.gridCell(frame, rows, columns, { x = frame.x, y = frame.y - rowHeight }) == nil,
+  "a point above the grid produced a row")
+assert(module.gridCell(frame, rows, columns,
+  { x = frame.x, y = frame.y + frame.h + rowHeight }) == nil,
+  "a point below the grid produced a row")
+assert(module.gridCell(nil, rows, columns, cellTopLeft(1, 1)) == nil
+    and module.gridCell(frame, rows, 0, cellTopLeft(1, 1)) == nil
+    and module.gridCell(frame, 0, columns, cellTopLeft(1, 1)) == nil
+    and module.gridCell(frame, rows, columns, nil) == nil
+    and module.gridCell(frame, rows, columns, { x = 1 }) == nil,
+  "a cell was read out of a frame or a point that cannot describe one")
 end
 
 -- The tab-group walk behind an observation is 3-9ms, and the pass used to pay it twice:
@@ -3424,6 +3542,179 @@ runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hel
 module.stop()
 assert(table.concat(integration.actions, ",") == "sentinel,scrape,cut,scrape",
   "M.stop sent a second DEL for a sentinel that was already gone")
+
+-- The caret AX answers with names the very cell the sentinel used to occupy, so the
+-- gesture can read it instead of typing one: no keystroke into the user's draft, no DEL
+-- owed for it, one scrape instead of two. Any press AX cannot place lands back on the
+-- sentinel path unchanged. Scoped: this chunk sits at the same 200-local ceiling the
+-- module does.
+do
+-- The box AX hands back is the caret cell's top-left corner, and draft character N of a
+-- row sits in column N + promptCells — the same column expectedPoint measures from.
+local function caretAt(rowCount, row, character)
+  local total = gestureTotalLines(rowCount)
+  local rowHeight = terminalFrame.h / total
+  return {
+    x = terminalFrame.x + (promptCells + character - 1) * (terminalFrame.w / screenColumns),
+    y = terminalFrame.y + terminalFrame.h
+      - (total - gestureRowIndex(row)) * rowHeight - rowHeight,
+  }
+end
+local function caretOpts(point)
+  return { windowFrame = terminalFrame, verdict = "claude", caret = point }
+end
+local function runCaretGesture(point, keyCode, screen)
+  integration = integrationContext(nil, caretOpts(point))
+  pressGesture(integration, keyCode)
+  integration.deliverScrape(screen)
+  return integration
+end
+-- Compared point for point: one cell of drift between the paths is the whole bug this
+-- parity is here to catch, and it selects the word beside the one the user asked for.
+local function clickTrace(context)
+  local parts = {}
+  for _, event in ipairs(context.mouseEvents()) do
+    parts[#parts + 1] = string.format("%s %.3f %.3f %d", event.kind, event.x, event.y,
+      event.clickState or 0)
+  end
+  return table.concat(parts, ",")
+end
+local function assertParity(keyCode, sentinelScreen, cleanScreen, point, message)
+  integration = integrationContext(nil, gestureOpts)
+  runGesture(integration, keyCode, sentinelScreen, cleanScreen)
+  local trace = clickTrace(integration)
+  assert(trace ~= "", message .. ": the sentinel path selected nothing to compare against")
+  local caretRun = runCaretGesture(point, keyCode, cleanScreen)
+  assert(clickTrace(caretRun) == trace, message .. ": the two caret sources clicked apart")
+  assert(table.concat(caretRun.actions, ",") == "scrape",
+    message .. ": the caret path typed a sentinel or read a second screen")
+end
+
+assert(module.caretGestures(), "the AX caret source was not the default")
+assertParity(123, gestureScreen("hello" .. sentinel .. " world"), gestureScreen(hello),
+  caretAt(1, 1, 6), "left with the caret mid-draft")
+assertParity(124, gestureScreen("hello" .. sentinel .. " world"), gestureScreen(hello),
+  caretAt(1, 1, 6), "right over the space the caret sits on")
+assertParity(124, gestureScreen(sentinel .. hello), gestureScreen(hello),
+  caretAt(1, 1, 1), "right with the caret at the draft start")
+assertParity(123, gestureScreen(hello .. sentinel), gestureScreen(hello .. cursorCell),
+  caretAt(1, 1, 12), "left with the caret past the last character")
+assertParity(123, gestureScreen("hello brave", "n" .. sentinel .. "ew world"),
+  gestureScreen("hello brave", "new world"), caretAt(2, 2, 2),
+  "left with the caret on a wrapped row")
+
+-- The cache the AX press arms is the sentinel's: the next press of the chord extends it
+-- the same way, without either path knowing which one started the selection.
+integration = runCaretGesture(caretAt(1, 1, 12), 123, gestureScreen(hello .. cursorCell))
+assertWordClick(integration, 1, { from = 7, to = 11 },
+  "the AX caret at the draft end did not select the last word")
+extendGesture(integration, 123, gestureScreen(hello .. cursorCell))
+assertWordClick(integration, 2, { from = 1, to = 5, dragFrom = 7, dragTo = 11, breaker = false },
+  "an AX-started gesture did not extend by one word")
+
+-- Nothing was typed, so there is nothing to take back out: a Return mid-flight passes as
+-- itself instead of being held for a DEL that does not exist.
+integration = integrationContext(nil, caretOpts(caretAt(1, 1, 6)))
+pressGesture(integration, 123)
+assert(not module.handleEvent(keyEvent(36, {}, false, "return")),
+  "the AX gesture held a Return for a sentinel it never typed")
+integration.deliverScrape(gestureScreen(hello))
+assert(#integration.mouseEvents() == 0, "the AX gesture clicked over a draft typed into")
+assert(table.concat(integration.actions, ",") == "scrape",
+  "the AX gesture emitted a keystroke of its own")
+
+-- The flight bookkeeping is the sentinel path's, watchdog included: a scrape Terminal
+-- never answers must still lower the flag every later chord is read against.
+integration = integrationContext(nil, caretOpts(caretAt(1, 1, 6)))
+pressGesture(integration, 123)
+assert(integration.fireGestureWatchdog(), "the AX gesture flew without a watchdog")
+assert(table.concat(integration.actions, ",") == "scrape",
+  "the watchdog DEL'd a sentinel the AX path never typed")
+integration.deliverScrape(gestureScreen(hello))
+assert(#integration.mouseEvents() == 0, "a scrape arriving after the watchdog clicked")
+assert(module.handleEvent(zPress(false)), "the ended AX gesture kept eating chords")
+integration.resolve("claude")
+integration.runDeferred()
+assert(integration.actions[#integration.actions] == "undo",
+  "the AX gesture left its in-flight guard armed")
+
+integration = integrationContext(nil, caretOpts(caretAt(1, 1, 6)))
+pressGesture(integration, 123)
+integration.changeTarget()
+integration.deliverScrape(gestureScreen(hello))
+assert(#integration.mouseEvents() == 0 and table.concat(integration.actions, ",") == "scrape",
+  "the AX gesture clicked in the tab that replaced its target")
+
+-- Off from the console: the caret is not even asked for, and the sentinel does the work.
+integration = integrationContext(nil, caretOpts(caretAt(1, 1, 6)))
+assert(module.caretGestures(false) == false, "the caret source did not report itself off")
+pressGesture(integration, 123)
+assert(integration.caretReads() == 0, "a gesture read the caret with the AX source off")
+integration.fireTimer(0.02)
+integration.deliverScrape(gestureScreen("hello" .. sentinel .. " world"))
+integration.fireTimer(0.05)
+integration.deliverScrape(gestureScreen(hello))
+assertWordClick(integration, 1, { from = 1, to = 5 },
+  "the sentinel path did not run with the AX source off")
+assert(module.caretGestures(true), "the caret source did not come back on")
+
+-- A window AX says nothing about: the seam was asked and answered nothing, and the
+-- gesture is the sentinel's from the first keystroke.
+integration = integrationContext(nil, gestureOpts)
+pressGesture(integration, 123)
+assert(integration.caretReads() == 1, "the gesture never asked for a caret")
+assert(integration.actions[1] == "sentinel",
+  "a gesture with no caret to read skipped the sentinel anyway")
+integration.fireTimer(0.02)
+integration.deliverScrape(gestureScreen("hello" .. sentinel .. " world"))
+integration.fireTimer(0.05)
+integration.deliverScrape(gestureScreen(hello))
+assertWordClick(integration, 1, { from = 1, to = 5 },
+  "the sentinel fallback did not select the word the caret would have")
+
+-- A caret the screen cannot account for — the transcript above the box, or a column
+-- past everything the draft row holds — is a caret describing a screen that has moved
+-- on. The sentinel starts over, and its own scrape is the one that decides.
+integration = integrationContext(nil, caretOpts(caretAt(1, 1, 6)))
+pressGesture(integration, 123)
+integration.deliverScrape("screen without an input box")
+assert(table.concat(integration.actions, ",") == "scrape,sentinel",
+  "an unparseable caret scrape did not fall back to the sentinel")
+integration.fireTimer(0.02)
+integration.deliverScrape(gestureScreen(hello .. sentinel))
+integration.fireTimer(0.05)
+integration.deliverScrape(gestureScreen(hello))
+assertWordClick(integration, 1, { from = 7, to = 11 },
+  "the sentinel fallback after an unparseable caret scrape did not select the word")
+
+for _, point in ipairs({ caretAt(1, -1, 1), caretAt(1, 1, 30) }) do
+  integration = integrationContext(nil, caretOpts(point))
+  pressGesture(integration, 123)
+  integration.deliverScrape(gestureScreen(hello))
+  assert(table.concat(integration.actions, ",") == "scrape,sentinel",
+    "a caret outside the draft did not fall back to the sentinel")
+  integration.fireTimer(0.02)
+  integration.deliverScrape(gestureScreen("hello" .. sentinel .. " world"))
+  integration.fireTimer(0.05)
+  integration.deliverScrape(gestureScreen(hello))
+  assertWordClick(integration, 1, { from = 1, to = 5 },
+    "the sentinel fallback of an unplaceable caret did not select the word")
+  assert(table.concat(integration.actions, ",") == "scrape,sentinel,scrape,cut,scrape",
+    "the fallback did not type and remove exactly one sentinel")
+end
+
+integration = integrationContext(textTypes, caretOpts(caretAt(1, 1, 30)))
+pressGesture(integration, 123)
+assert(not module.handleEvent(charPress("Z")),
+  "a character typed during the caret scrape was consumed")
+integration.deliverScrape(gestureScreen(hello))
+assert(table.concat(integration.actions, ",") == "scrape",
+  "a touched draft with an unplaceable caret typed a sentinel")
+assert(#integration.mouseEvents() == 0,
+  "a touched draft with an unplaceable caret clicked")
+assert(not integration.fireGestureWatchdog(),
+  "a touched draft with an unplaceable caret left its flight armed")
+end
 
 -- `claude-keys off` then `on` is what gets pressed when the anchored grid looks wrong,
 -- so a breaker left by one slow walk must not survive it and keep that path down for

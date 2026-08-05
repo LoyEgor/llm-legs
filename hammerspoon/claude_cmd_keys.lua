@@ -672,6 +672,10 @@ local shared = {
   -- against the flag alone it would post its DEL into the next gesture's draft and tear
   -- down a flight that is still holding one.
   gestureFlight = 0,
+  -- The word gesture reads the caret off AX instead of typing a sentinel into the draft
+  -- to see it. Off, every gesture is the sentinel's — as is any single gesture AX cannot
+  -- answer for while it is on.
+  caretGestures = true,
   -- Cmd+A is the action whose whole cost the user sits and watches, and the input-latency
   -- ring below cannot see any of it: the scrape and the drag run in a deferred tick, long
   -- after the tap callback that ring measures has returned.
@@ -1736,6 +1740,32 @@ function axGrid.textCalibrate(reference, box, walk)
   return entry
 end
 
+-- The caret the sentinel used to make visible, read instead of typed. The location
+-- AXSelectedTextRange answers with counts UTF-16 units, nowhere near the Lua byte offsets
+-- of the same value (714 against 1092 on a Cyrillic draft, measured), so it is only ever
+-- handed straight back to AX. And the box that comes back is as wide as the rest of the
+-- line when the caret sits at the end of one: only its left edge and its top describe the
+-- caret's own cell.
+function axGrid.caretPoint(box)
+  local entry = axGrid.textFresh(box)
+  if not entry or not entry.capable or not entry.element then
+    return nil
+  end
+  return axGrid.textFenced(function()
+    local range = entry.element:attributeValue("AXSelectedTextRange")
+    if type(range) ~= "table" or type(range.location) ~= "number" then
+      return nil
+    end
+    local bounds = entry.element:parameterizedAttributeValue("AXBoundsForRange",
+      { location = range.location, length = 1 })
+    if type(bounds) ~= "table" or type(bounds.x) ~= "number"
+        or type(bounds.y) ~= "number" then
+      return nil
+    end
+    return { x = bounds.x, y = bounds.y }
+  end)
+end
+
 function axGrid.screenText(observed)
   local box = axGrid.textBox(observed)
   local entry = axGrid.textFresh(box)
@@ -1781,6 +1811,7 @@ M.axTextRead = axGrid.textRead
 M.axTextFresh = axGrid.textFresh
 M.axTextCalibrate = axGrid.textCalibrate
 M.axScreenText = axGrid.screenText
+M.axCaretPoint = axGrid.caretPoint
 M.axWindow = axGrid.window
 
 -- Both caches describe the window that was in front: the resolved object dies with the
@@ -1820,6 +1851,16 @@ local function targetWindowFrame(windowID, totalLines, columns)
     end, now)
   return M.anchoredGridFrame(bounds, linesBelowAnchor, totalLines, columns, fallback)
     or fallback
+end
+
+-- Asked once per gesture, before anything is typed: the element is the one the scrape
+-- calibrated and both reads behind the fence are the sub-millisecond kind. A window no
+-- scrape has measured yet answers nothing, which is the sentinel's cue.
+function shared.caretPoint(observed)
+  if runtimeHooks then
+    return runtimeHooks.caret and runtimeHooks.caret(observed) or nil
+  end
+  return axGrid.caretPoint(axGrid.textBox(observed))
 end
 
 -- Every unclear case (no frame, no drag point, a drag that ended on the border)
@@ -2246,6 +2287,30 @@ local function cellCenters(frame, totalLines, columns)
     end
     return { x = frame.x + (column - 0.5) * cellWidth, y = rowBottom - halfRow }, cellWidth
   end
+end
+
+-- cellCenters read backwards, off the same two divisions of the frame, for the caret box
+-- AX answers with. That box is the cell's TOP-left corner, and a row boundary floors into
+-- the row above it, so the row is taken half a cell lower — which leaves a cell centre,
+-- the point the forward direction produces, on the row it came from.
+function M.gridCell(frame, totalLines, columns, point)
+  if type(columns) ~= "number" or columns <= 0
+      or type(totalLines) ~= "number" or totalLines <= 0
+      or type(frame) ~= "table" or type(frame.x) ~= "number" or type(frame.y) ~= "number"
+      or type(frame.w) ~= "number" or type(frame.h) ~= "number"
+      or type(point) ~= "table" or type(point.x) ~= "number"
+      or type(point.y) ~= "number" then
+    return nil
+  end
+  local rowHeight = frame.h / totalLines
+  local cellWidth = frame.w / columns
+  local row = totalLines
+    - math.floor((frame.y + frame.h - point.y - rowHeight / 2) / rowHeight)
+  local column = math.floor((point.x - frame.x) / cellWidth) + 1
+  if row < 1 or row > totalLines or column < 1 or column > columns then
+    return nil
+  end
+  return row, column
 end
 
 local function draftDragPoints(frame, totalLines, layout)
@@ -2945,6 +3010,56 @@ local function armGesture(direction, anchor, head, signature, points)
   }
 end
 
+function shared.caretIndex(cells, row, column)
+  if type(row) ~= "number" or type(column) ~= "number" then
+    return nil
+  end
+  for index, cell in ipairs(cells) do
+    if cell.row == row and column >= cell.column and column < cell.column + cell.width then
+      return index
+    end
+  end
+  return nil
+end
+
+-- Both paths hand in the same index, because the sentinel occupied exactly the cell the
+-- caret sits on: left reads the cell before it, right the cell itself. The cell that is
+-- there now may be a trailing space this scrape drew and the next one will not — to the
+-- left the word to reach over is then the last real cell, to the right there is nothing
+-- past it at all.
+function shared.gestureNeighbour(cells, caret, direction)
+  local neighbour = direction < 0 and caret - 1 or caret
+  if neighbour > #cells and direction < 0 then
+    neighbour = #cells
+  end
+  return cells[neighbour] and neighbour or nil
+end
+
+-- The word math itself, shared so the sentinel screen and the AX caret cannot drift apart
+-- by a cell: whichever path found the neighbour, the press lands the same way.
+function shared.armGestureAt(direction, flight, cells, neighbour, totalLines, columns, frame)
+  shared.endGestureFlight(flight)
+  local first, last = wordSpan(cells, neighbour)
+  local anchor = direction < 0 and last or first
+  local dragSpan
+  -- A double-clicked space paints nothing at all in the TUI (the selection is real, and
+  -- a Cmd+X does cut it), so a press with only a space to take would look dead: it takes
+  -- the word past the space and drags back over it.
+  if isSpaceCell(cells[neighbour]) then
+    local beyond = extendedHead(cells, neighbour, direction)
+    if beyond and cells[beyond].row == cells[neighbour].row then
+      first, last = wordSpan(cells, beyond)
+      anchor, dragSpan = neighbour, { neighbour, neighbour }
+    end
+  end
+  local points = gestureClickPoints(frame, totalLines, columns, cells,
+    { first, last }, dragSpan, true)
+  if points then
+    armGesture(direction, anchor, direction < 0 and first or last,
+      cellsSignature(cells, totalLines, columns), points)
+  end
+end
+
 local function afterGestureDelay(delay, step, onError)
   local after = runtimeHooks and runtimeHooks.after or hs.timer.doAfter
   gestureTimer = after(delay, function()
@@ -3040,11 +3155,6 @@ local function scrapeDraft(flight, original, delay, read, giveUp)
 end
 
 local function runGestureStart(original, direction, flight)
-  if not currentTargetMatches(original, observeFrontmost()) then
-    shared.endGestureFlight(flight)
-    return
-  end
-  gestureDraftTouched = false
   local sentinelSettled = false
   local sentinelGone = false
   -- Answers whether the sentinel is out of the draft, not merely whether the removal
@@ -3099,30 +3209,11 @@ local function runGestureStart(original, direction, flight)
       if not sameCellText(cells, expected) then
         return false
       end
-      shared.endGestureFlight(flight)
       -- The span is measured here, not on the sentinel screen: a sentinel that
       -- pushed a word over the wrap made it two words that are one again now.
-      local first, last = wordSpan(cells, neighbour)
-      local anchor = direction < 0 and last or first
-      local dragSpan
-      -- A double-clicked space paints nothing at all in the TUI (the selection is
-      -- real, and a Cmd+X does cut it), so a press with only a space to take would
-      -- look dead: it takes the word past the space and drags back over it.
-      if isSpaceCell(cells[neighbour]) then
-        local beyond = extendedHead(cells, neighbour, direction)
-        if beyond and cells[beyond].row == cells[neighbour].row then
-          first, last = wordSpan(cells, beyond)
-          anchor, dragSpan = neighbour, { neighbour, neighbour }
-        end
-      end
-      local frame = targetWindowFrame(original.observed and original.observed.windowID,
-        totalLines, layout.columns)
-      local points = gestureClickPoints(frame, totalLines, layout.columns, cells,
-        { first, last }, dragSpan, true)
-      if points then
-        armGesture(direction, anchor, direction < 0 and first or last,
-          cellsSignature(cells, totalLines, layout.columns), points)
-      end
+      shared.armGestureAt(direction, flight, cells, neighbour, totalLines, layout.columns,
+        targetWindowFrame(original.observed and original.observed.windowID,
+          totalLines, layout.columns))
       return true
     end, stop)
   end
@@ -3137,21 +3228,74 @@ local function runGestureStart(original, direction, flight)
       return stop()
     end
     local remaining = withoutTrailingSpace(withoutSentinel(cells, index))
-    -- Left reads the cell before the sentinel; right reads the one the sentinel
-    -- pushed aside, which took its index once the sentinel was dropped.
-    local neighbour = direction < 0 and index - 1 or index
-    -- The neighbour was a trailing space this scrape drew and the next one may not:
-    -- to the left the word it would have reached over is the last real cell, to the
-    -- right there is nothing past it at all.
-    if neighbour > #remaining and direction < 0 then
-      neighbour = #remaining
-    end
-    if not remaining[neighbour] then
+    -- The cell the sentinel pushed aside took its index once the sentinel was dropped,
+    -- so the caret's own index is the sentinel's.
+    local neighbour = shared.gestureNeighbour(remaining, index, direction)
+    if not neighbour then
       return stop()
     end
     armWhenRepainted(remaining, neighbour)
     return true
   end, abandon)
+end
+
+-- Nothing is typed on this path, so the screen the scrape answers with is already the one
+-- the click lands on: one read, no settle delay, no DEL to wait out and none to owe. Every
+-- case that cannot place the caret on that screen hands the gesture to the sentinel, which
+-- starts from scratch and does not care that it was asked second.
+function shared.gestureByCaret(original, direction, flight, point)
+  scrapeScreen(function(screenText)
+    if not shared.gestureFlies(flight) then
+      return
+    end
+    if not currentTargetMatches(original, observeFrontmost()) then
+      shared.endGestureFlight(flight)
+      return
+    end
+    -- A keystroke of the user's reached the draft while this scrape was out, so the cell
+    -- AX named is a draft behind the screen just read. Nothing was typed and nothing
+    -- painted, so this gesture simply does not happen.
+    if gestureDraftTouched then
+      shared.endGestureFlight(flight)
+      return
+    end
+    local _, _, totalLines, layout = M.parseInputBox(screenText)
+    if not layout or type(totalLines) ~= "number" or totalLines <= 0 then
+      runGestureStart(original, direction, flight)
+      return
+    end
+    local frame = targetWindowFrame(original.observed and original.observed.windowID,
+      totalLines, layout.columns)
+    local cells = draftCells(layout)
+    local caret = shared.caretIndex(cells,
+      M.gridCell(frame, totalLines, layout.columns, point))
+    if not caret then
+      runGestureStart(original, direction, flight)
+      return
+    end
+    local remaining = withoutTrailingSpace(cells)
+    local neighbour = shared.gestureNeighbour(remaining, caret, direction)
+    if not neighbour then
+      shared.endGestureFlight(flight)
+      return
+    end
+    shared.armGestureAt(direction, flight, remaining, neighbour, totalLines,
+      layout.columns, frame)
+  end, original.observed)
+end
+
+function shared.startGesture(original, direction, flight)
+  if not currentTargetMatches(original, observeFrontmost()) then
+    shared.endGestureFlight(flight)
+    return
+  end
+  gestureDraftTouched = false
+  local point = shared.caretGestures and shared.caretPoint(original.observed) or nil
+  if point then
+    shared.gestureByCaret(original, direction, flight, point)
+    return
+  end
+  runGestureStart(original, direction, flight)
 end
 
 local function runGestureExtend(original, cache, flight)
@@ -3246,7 +3390,7 @@ local function startWordGesture(keyCode, observed, cache)
     if cache then
       ok = pcall(runGestureExtend, original, cache, flight)
     else
-      ok = pcall(runGestureStart, original, direction, flight)
+      ok = pcall(shared.startGesture, original, direction, flight)
     end
     if not ok then
       -- The throw may have come from anywhere past the sentinel keystroke, so the
@@ -3563,8 +3707,18 @@ function M.logTapError(err)
   end
 end
 
+-- ClaudeCmdKeys.caretGestures(false) from the hs console puts every gesture back on the
+-- sentinel without a reload; with no argument it reports which source is in use.
+function M.caretGestures(enabled)
+  if enabled ~= nil then
+    shared.caretGestures = enabled and true or false
+  end
+  return shared.caretGestures
+end
+
 function M.setTestHooks(hooks)
   runtimeHooks = hooks
+  shared.caretGestures = true
   if pendingTimer then pendingTimer:stop() end
   pendingTimer = nil
   if cutTimer and cutTimer.stop then cutTimer:stop() end
