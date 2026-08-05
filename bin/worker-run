@@ -14,6 +14,47 @@ fail() {
   exit 4
 }
 
+# Wall-clock ceiling per vendor invocation (matches gemini's --print-timeout 170m).
+# Not a work cap — the longest observed real run is minutes — but a wedged CLI
+# (stalled stream, hung auth) must eventually write an exit_code or every wait
+# reports "running" forever with no supported way to reclaim the run.
+DEADLINE=${WORKER_RUN_DEADLINE:-10200}
+[[ "$DEADLINE" =~ ^[0-9]+$ ]] && [ "$DEADLINE" -gt 0 ] || DEADLINE=10200
+
+run_with_deadline() {
+  local child watchdog rc
+  "$@" &
+  child=$!
+  # The watchdog sleeps in short hops: killing the subshell strands its in-flight
+  # sleep, and a single sleep $DEADLINE would linger for hours after every run.
+  (
+    end=$(($(date +%s) + DEADLINE))
+    while [ "$(date +%s)" -lt "$end" ]; do sleep 5; done
+    kill -TERM "$child" 2>/dev/null
+    sleep 10
+    kill -KILL "$child" 2>/dev/null
+  ) &
+  watchdog=$!
+  wait "$child"
+  rc=$?
+  kill "$watchdog" 2>/dev/null
+  wait "$watchdog" 2>/dev/null
+  return "$rc"
+}
+
+run_overdue() {
+  # kill -0 alone cannot be trusted forever: after a reboot the recorded pid can
+  # belong to an unrelated process, and then a run whose supervisor never wrote
+  # exit_code reports "running" indefinitely. Twice the deadline covers the one
+  # compatibility retry each vendor may make. Unparseable started_at counts as
+  # overdue — better a failed report than an eternal "running".
+  local started now
+  started=$(jq -r '.started_at // 0' "$1/meta.json" 2>/dev/null)
+  [[ "$started" =~ ^[0-9]+$ ]] && [ "$started" -gt 0 ] || return 0
+  now=$(date +%s)
+  [ $((now - started)) -gt $((2 * DEADLINE + 900)) ]
+}
+
 config_value() {
   sed -n "s/^$1=//p" "$CONFIG_FILE" 2>/dev/null | head -n1
 }
@@ -46,6 +87,26 @@ run_path() {
   printf '%s/%s' "${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}" "$1"
 }
 
+busy_accounts() {
+  # worker-pick ranks by recorded usage and knows nothing about in-flight runs,
+  # so parallel starts would all land on the same "best" account. Comma list of
+  # accounts carrying a live same-vendor run, for --exclude; busy is a
+  # preference, not a wall — callers must retry unexcluded if the pick fails.
+  local vendor="$1" root directory pid account
+  local -a names=()
+  root="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}"
+  for directory in "$root/$vendor-"*; do
+    [ -r "$directory/meta.json" ] || continue
+    [ ! -f "$directory/exit_code" ] || continue
+    pid=$(jq -r '.pid' "$directory/meta.json" 2>/dev/null)
+    [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 0 ] && kill -0 "$pid" 2>/dev/null || continue
+    run_overdue "$directory" && continue
+    account=$(jq -r '.account // empty' "$directory/meta.json" 2>/dev/null)
+    [ -z "$account" ] || names+=("$account")
+  done
+  [ "${#names[@]}" -eq 0 ] || printf '%s\n' "${names[@]}" | sort -u | paste -sd, -
+}
+
 meta_update() {
   local directory="$1" filter="$2" temporary
   temporary="$directory/meta.json.tmp.$$"
@@ -73,7 +134,7 @@ supervise_claudeb() {
   cli=$(jq -r '.cli' "$meta")
   command=("$cli" profile "$account" -p --model "$model" --effort "$effort" --output-format json --dangerously-skip-permissions)
   [ -z "$resume" ] || command+=(--resume "$resume")
-  "${command[@]}" <"$directory/brief" >"$directory/out" 2>"$directory/err"
+  run_with_deadline "${command[@]}" <"$directory/brief" >"$directory/out" 2>"$directory/err"
   rc=$?
   if [ "$rc" -ne 0 ] && grep -Eiq -- '((unknown|unrecognized|invalid|unexpected|unsupported|not supported).{0,80}--effort|--effort.{0,80}(unknown|unrecognized|invalid|unexpected|unsupported|not supported))' "$directory/err"; then
     retry=("$cli" profile "$account" -p --model "$model" --output-format json --dangerously-skip-permissions)
@@ -81,7 +142,7 @@ supervise_claudeb() {
     meta_update "$directory" '.effort_flag_dropped = true' || return 4
     : >"$directory/out"
     : >"$directory/err"
-    "${retry[@]}" <"$directory/brief" >"$directory/out" 2>"$directory/err"
+    run_with_deadline "${retry[@]}" <"$directory/brief" >"$directory/out" 2>"$directory/err"
     rc=$?
   fi
   return "$rc"
@@ -115,10 +176,10 @@ supervise_codex() {
   if [ "$(jq -r '.web_search' "$meta")" = true ]; then command+=(-c web_search=live); fi
   command+=(-o "$directory/out" -)
   if [ "$account" = main ]; then
-    (unset CODEX_HOME; "${command[@]}" <"$directory/brief" >/dev/null 2>"$directory/err")
+    (unset CODEX_HOME; run_with_deadline "${command[@]}" <"$directory/brief" >/dev/null 2>"$directory/err")
     rc=$?
   else
-    CODEX_HOME="$HOME/.codex-profiles/$account" "${command[@]}" <"$directory/brief" >/dev/null 2>"$directory/err"
+    CODEX_HOME="$HOME/.codex-profiles/$account" run_with_deadline "${command[@]}" <"$directory/brief" >/dev/null 2>"$directory/err"
     rc=$?
   fi
   if [ "$rc" -ne 0 ] && grep -Fqi 'Not inside a trusted directory' "$directory/err"; then
@@ -129,10 +190,10 @@ supervise_codex() {
     : >"$directory/out"
     : >"$directory/err"
     if [ "$account" = main ]; then
-      (unset CODEX_HOME; "${retry[@]}" <"$directory/brief" >/dev/null 2>"$directory/err")
+      (unset CODEX_HOME; run_with_deadline "${retry[@]}" <"$directory/brief" >/dev/null 2>"$directory/err")
       rc=$?
     else
-      CODEX_HOME="$HOME/.codex-profiles/$account" "${retry[@]}" <"$directory/brief" >/dev/null 2>"$directory/err"
+      CODEX_HOME="$HOME/.codex-profiles/$account" run_with_deadline "${retry[@]}" <"$directory/brief" >/dev/null 2>"$directory/err"
       rc=$?
     fi
   fi
@@ -155,7 +216,7 @@ supervise_gemini() {
   command+=(--print-timeout 170m --dangerously-skip-permissions --log-file "$directory/log")
   [ -z "$resume" ] || command+=(--conversation "$resume")
   command+=(--print "$prompt")
-  "${command[@]}" >"$directory/out" 2>"$directory/err"
+  run_with_deadline "${command[@]}" >"$directory/out" 2>"$directory/err"
   rc=$?
   return "$rc"
 }
@@ -177,7 +238,7 @@ supervise() {
 start_run() {
   [ "$#" -ge 1 ] || usage
   local vendor="$1" brief='' workdir="$PWD" explicit_account='' model='' effort='' resume=''
-  local account picker pick_output pick_rc pin config_model model_label agy_model='' root epoch suffix run_id directory
+  local account picker busy pick_output pick_rc pin config_model model_label agy_model='' root epoch suffix run_id directory
   local explicit_model='' explicit_effort=''
   local started cli cmd_json add_dirs_json images_json pid supervisor_body value list_output list_rc
   local web_search=false
@@ -215,8 +276,12 @@ start_run() {
       ;;
     gemini)
       [ "${#images[@]}" -eq 0 ] && [ "$web_search" = false ] || fail 'gemini does not support --image or --web-search flags'
+      # agy has no stdin mode — the brief travels on argv, and past the kernel's
+      # per-argument ceiling execve fails with a bare E2BIG long after start.
+      [ "$(wc -c <"$brief" | tr -d '[:space:]')" -le 131072 ] || fail 'gemini takes the brief on argv; briefs over 128KB cannot launch — shorten it or use another vendor'
       ;;
   esac
+  [ -z "$resume" ] || [ -n "$explicit_account" ] || fail '--resume requires --account: sessions live inside one vendor profile, and worker-pick may route elsewhere'
   # Paths are re-resolved by the detached supervisor after it cds to workdir, so
   # relative arguments valid here would dangle there — pin them to the caller's cwd.
   for value in "${!images[@]}"; do
@@ -231,8 +296,21 @@ start_run() {
     account="$explicit_account"
   else
     picker="${WORKER_RUN_WORKER_PICK:-worker-pick}"
-    pick_output=$("$picker" --account "$vendor" 2>/dev/null)
-    pick_rc=$?
+    busy=$(busy_accounts "$vendor")
+    if [ -n "$busy" ]; then
+      pick_output=$("$picker" --account "$vendor" --exclude "$busy" 2>/dev/null)
+      pick_rc=$?
+      # rc 3 with exclusions means "everything ELSE is walled", not walled: fall
+      # through and let the plain pick queue on a busy account rather than lie
+      # about limits.
+      if [ "$pick_rc" -ne 0 ] || [ -z "$pick_output" ]; then
+        pick_output=$("$picker" --account "$vendor" 2>/dev/null)
+        pick_rc=$?
+      fi
+    else
+      pick_output=$("$picker" --account "$vendor" 2>/dev/null)
+      pick_rc=$?
+    fi
     if [ "$pick_rc" -eq 0 ] && [ -n "$pick_output" ]; then
       account=${pick_output%%$'\n'*}
     elif [ "$pick_rc" -eq 3 ]; then
@@ -418,8 +496,8 @@ has_limit_signature() {
   # both. The agy log mentions quota even on healthy runs — never scan it.
   case "$vendor" in
     codex) pattern='hit your usage limit|usage_limit|quota|rate.?limit'; scan=("$directory/err") ;;
-    claudeb) pattern='usage limit|429'; scan=("$directory/out" "$directory/err") ;;
-    gemini) pattern='RESOURCE_EXHAUSTED|Individual quota reached|usage limit|quota|rate.?limit|429'; scan=("$directory/err") ;;
+    claudeb) pattern='usage limit|(^|[^0-9])429([^0-9]|$)'; scan=("$directory/out" "$directory/err") ;;
+    gemini) pattern='RESOURCE_EXHAUSTED|Individual quota reached|usage limit|quota|rate.?limit|(^|[^0-9])429([^0-9]|$)'; scan=("$directory/err") ;;
   esac
   grep -Eiq "$pattern" "${scan[@]}" 2>/dev/null
 }
@@ -484,7 +562,7 @@ running_report() {
 
 wait_run() {
   [ "$#" -ge 1 ] || usage
-  local run_id="$1" max=500 directory wait_started now waited remaining sleep_for pid
+  local run_id="$1" max=100 directory wait_started now waited remaining sleep_for pid
   shift
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -501,7 +579,7 @@ wait_run() {
     pid=$(jq -r '.pid' "$directory/meta.json")
     # pid 0 is the pre-launch placeholder; kill -0 0 would probe our own
     # process group and report a never-started run as alive.
-    if ! [[ "$pid" =~ ^[0-9]+$ ]] || [ "$pid" -le 0 ] || ! kill -0 "$pid" 2>/dev/null; then
+    if ! [[ "$pid" =~ ^[0-9]+$ ]] || [ "$pid" -le 0 ] || ! kill -0 "$pid" 2>/dev/null || run_overdue "$directory"; then
       sleep 0.1
       if [ -f "$directory/exit_code" ]; then terminal_report "$directory"; else unknown_report "$directory"; fi
       return 0
@@ -535,7 +613,7 @@ report_run() {
     fi
   else
     pid=$(jq -r '.pid' "$directory/meta.json")
-    if [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 0 ] && kill -0 "$pid" 2>/dev/null; then
+    if [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 0 ] && kill -0 "$pid" 2>/dev/null && ! run_overdue "$directory"; then
       running_report "$directory"
     else
       printf 'STATUS: failed\nEXIT: unknown\nSESSION: %s\nOUTCOME: %s\n' "$(session_id "$directory")" "$(failure_outcome "$vendor")"
@@ -549,7 +627,7 @@ report_run() {
   fi
   printf 'RESULT:\n'
   if [ "$vendor" = claudeb ]; then
-    jq -r '.result // empty' "$directory/out" 2>/dev/null
+    jq -r '.result // empty' "$directory/out" 2>/dev/null | tail -n 400
   else
     tail -n 400 "$directory/out" 2>/dev/null
   fi

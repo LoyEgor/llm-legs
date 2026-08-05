@@ -269,7 +269,15 @@ assert grep -qx 'OUTCOME: GEMINI_UNAVAILABLE' "$WORK/unknown.out"
 clear_stub
 set_config 'claudeb_model=opus' 'claudeb_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=resumeacct
-start_ok claudeb --resume claude-resume
+
+# Resume without an explicit account must refuse: worker-pick may route to a
+# profile that does not hold the session being resumed.
+rc=0
+"$RUNNER" start claudeb --brief "$WORK/brief" --resume claude-resume >"$WORK/resume-noacct.out" 2>&1 || rc=$?
+assert test "$rc" -eq 4
+assert grep -q -- '--resume requires --account' "$WORK/resume-noacct.out"
+
+start_ok claudeb --account resumeacct --resume claude-resume
 assert await_done
 assert grep -q '^ARG=--resume$' "$CALL_LOG"
 assert grep -q '^ARG=claude-resume$' "$CALL_LOG"
@@ -440,5 +448,89 @@ assert test "$(head -n1 <<<"$report")" = 'ACCOUNT: effortacct (claudeb)'
 assert grep -q '^COST: 1.25$' <<<"$report"
 assert grep -q '^RESULT:$' <<<"$report"
 assert grep -q '^claudeb result$' <<<"$report"
+
+# "429" only counts as a limit signature with digit boundaries: an error id that
+# merely contains it stays an ordinary failure.
+clear_stub
+set_config 'claudeb_model=opus' 'claudeb_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=limitacct STUB_CODE=9 STUB_ERROR='request failed, incident 42903'
+start_ok claudeb
+assert await_done
+assert grep -qx 'OUTCOME: CLAUDEB_FAILED' "$WORK/wait.out"
+clear_stub
+export PICK_RC=0 PICK_ACCOUNT=limitacct STUB_CODE=9 STUB_ERROR='HTTP 429 too many requests'
+start_ok claudeb
+assert await_done
+assert grep -qx 'OUTCOME: CLAUDEB_USAGE_LIMIT' "$WORK/wait.out"
+
+# Accounts carrying a live same-vendor run are excluded from the pick, so
+# parallel starts spread instead of stacking on one account.
+clear_stub
+set_config 'codex_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=other STUB_SLEEP=2
+start_ok codex --account busy1
+BUSY_RUN_ID=$RUN_ID
+unset STUB_SLEEP
+start_ok codex
+assert meta_account_is other
+assert grep -qx -- '--account codex --exclude busy1' "$PICK_LOG"
+assert await_done
+
+# Busy is a preference, not a wall: an excluded pick that fails is retried
+# without exclusions before any limit verdict.
+clear_stub
+export PICK_RC=3 PICK_ACCOUNT=ignored
+rc=0
+"$RUNNER" start codex --brief "$WORK/brief" >"$WORK/busy-walled.out" 2>&1 || rc=$?
+assert test "$rc" -eq 3
+assert grep -qx 'OUTCOME: CODEX_USAGE_LIMIT' "$WORK/busy-walled.out"
+assert grep -qx -- '--account codex --exclude busy1' "$PICK_LOG"
+assert grep -qx -- '--account codex' "$PICK_LOG"
+export PICK_RC=0
+RUN_ID=$BUSY_RUN_ID
+assert await_done
+
+# A pid that outlives its run (reboot reuse, supervisor killed before writing
+# exit_code) must not report "running" forever once the deadline is long past.
+clear_stub
+STALE_DIR="$WORKER_RUN_DIR/codex-9-9-aaaa"
+mkdir -p "$STALE_DIR"
+: >"$STALE_DIR/out"
+: >"$STALE_DIR/err"
+jq -cn --argjson pid "$$" '{vendor:"codex",account:"stale",pid:$pid,started_at:1000}' >"$STALE_DIR/meta.json"
+stale_wait=$("$RUNNER" wait codex-9-9-aaaa --max 0)
+assert grep -q '^STATUS: failed$' <<<"$stale_wait"
+assert grep -q '^EXIT: unknown$' <<<"$stale_wait"
+stale_report=$("$RUNNER" report codex-9-9-aaaa)
+assert grep -q '^STATUS: failed$' <<<"$stale_report"
+
+# A wedged vendor CLI is killed at the deadline and the run turns terminal.
+clear_stub
+set_config 'codex_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=wedged STUB_SLEEP=30 WORKER_RUN_DEADLINE=1
+start_ok codex
+unset STUB_SLEEP WORKER_RUN_DEADLINE
+deadline_wait=$("$RUNNER" wait "$RUN_ID" --max 30)
+assert grep -q '^STATUS: failed$' <<<"$deadline_wait"
+assert grep -qx 'OUTCOME: CODEX_UNAVAILABLE' <<<"$deadline_wait"
+
+# A garbage deadline falls back to the default instead of disarming the watchdog.
+clear_stub
+set_config 'codex_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=deadacct WORKER_RUN_DEADLINE='not-a-number'
+start_ok codex
+unset WORKER_RUN_DEADLINE
+assert await_done
+assert grep -q '^STATUS: done$' "$WORK/wait.out"
+
+# The gemini brief travels on argv: oversized briefs are refused up front.
+clear_stub
+set_config 'gemini_model=pro' 'gemini_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=main
+head -c 200000 /dev/zero | tr '\0' 'x' >"$WORK/huge-brief"
+rc=0
+"$RUNNER" start gemini --brief "$WORK/huge-brief" >"$WORK/huge.out" 2>"$WORK/huge.err" || rc=$?
+assert test "$rc" -eq 4
+assert grep -q 'briefs over 128KB cannot launch' "$WORK/huge.err"
 
 echo "PASS: $asserts asserts; worker-run detaches vendor CLIs, preserves live runs across bounded waits, resolves accounts and model knobs, retries only documented compatibility failures, and reports terminal outcomes"

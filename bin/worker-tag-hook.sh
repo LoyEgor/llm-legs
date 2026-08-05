@@ -62,7 +62,10 @@ tag=""
 if printf '%s' "$launch" | grep -qE "${cmd_word}"'worker-run[[:space:]]+(wait|report)[[:space:]]'; then
   # worker-run resolves the account itself; the launch text carries only the run
   # id, so the tag comes from the run dir it wrote. `worker-run start` has no run
-  # id yet and falls through to the pending seed below.
+  # id yet and falls through to the pending seed below. A run id passed as a
+  # shell variable (`worker-run wait "$RUN_ID"`) is unresolvable here — the hook
+  # sees command text, not expansions — so the tag stays empty and the fallback
+  # tail (previous tag file, then pending seed) must hold; a test pins that.
   run_id=$(grab 'worker-run[[:space:]]+(wait|report)[[:space:]]+["'\'']?[a-z0-9][a-z0-9-]*' |
     grep -oE '[a-z0-9][a-z0-9-]*$')
   run_tag_file="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}/$run_id/tag"

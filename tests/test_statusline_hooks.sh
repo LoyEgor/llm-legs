@@ -2284,6 +2284,12 @@ wr_report=$(worker_payload codex-worker worker/wrun 'Collect the report' 'worker
 wr_report_out=$(printf '%s' "$wr_report" | "$WORKER_HOOK") || fail "worker-run report exited nonzero"
 assert jq -e '.hookSpecificOutput.updatedInput.description == "work3 · sol · high — Collect the report"' <<< "$wr_report_out" >/dev/null
 
+# A run id hidden behind a shell variable is unresolvable from command text; the
+# hook must degrade to the previously stored tag, not crash or mis-tag.
+wr_var=$(worker_payload codex-worker worker/wrun 'Keep waiting' 'worker-run wait "$RUN_ID" --max 100')
+wr_var_out=$(printf '%s' "$wr_var" | "$WORKER_HOOK") || fail "worker-run variable-id wait exited nonzero"
+assert jq -e '.hookSpecificOutput.updatedInput.description == "work3 · sol · high — Keep waiting"' <<< "$wr_var_out" >/dev/null
+
 # `worker-run start claudeb ...` names a vendor as an argument, not a launch:
 # with no run dir, no stored tag and no pending seed the hook stays silent.
 wr_start=$(worker_payload claudeb-worker worker/wrstart 'Launch the run' 'worker-run start claudeb --brief /tmp/b --workdir /x')
