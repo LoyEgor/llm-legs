@@ -120,6 +120,18 @@ OPENCODE_VERIFIER = "oc-dsv4flash"
 # absent — mimo25 threw away 5 real defects of 12, and mimo25pro dropped 1 false one of 12 while
 # taking longer than any other cell in the table.
 OPENCODE_VERIFIER_CHAIN = ["oc-kimik3", "oc-qwen37plus", "oc-mmm3"]
+# Every chain link above answers through the one opencode gateway, so its router outage retires
+# all of them in a single move — twice on 2026-08-04. The agy side has a transport of its own,
+# and its findings get it second: measured 2026-08-05 on the agy leg's adjudicated claims with
+# the stock wording, gemini-3.6-flash kept 6 of 6 real defects and dropped 12 of 24 false ones
+# with nothing left unverified.
+GEMINI_VERIFIER = "agy-flash36"
+GEMINI_VERIFIER_EFFORT = "medium"
+GEMINI_VERIFIER_RATER = {"model": GEMINI_VERIFIER, "effort": GEMINI_VERIFIER_EFFORT}
+# The sides whose findings the verifier is measured on, and the only ones it is allowed to
+# filter. agy joined on 2026-08-05: on the agy leg's own adjudicated claims deepseek-v4-flash
+# kept 6 of 6 real defects and dropped 11 of 24 false ones with nothing left unverified.
+VERIFIED_SIDES = ("opencode", "agy")
 REPORT_BEGIN = "REVIEW-REPORT-BEGIN"
 REPORT_END = "REVIEW-REPORT-END"
 # A run without verdicts has no report to print: the triage that decides what to fix is what
@@ -1899,7 +1911,9 @@ def human_cell_name(spec):
     try:
         rater = parse_rater(family)
     except ValueError:
-        return family or str(spec)
+        # The verifier chain names models that have no cell spelling — GEMINI_VERIFIER carries
+        # no effort — and the report prints those beside cell names.
+        return MODEL_DISPLAY_NAMES.get(family) or family or str(spec)
     name = MODEL_DISPLAY_NAMES.get(rater["model"])
     if not name:
         return family
@@ -2101,14 +2115,14 @@ def verifier_report_value(summary):
     """None only when the panel held no cell the verifier is allowed to touch. Anywhere else the
     line stays, including where no verifier ran: a silent line and a verified run read alike.
     """
-    eligible = [cell for cell in summary["cells"] if cell["side"] == "opencode"]
+    eligible = [cell for cell in summary["cells"] if cell["side"] in VERIFIED_SIDES]
     if not eligible:
         return None
     if not summary["verifier"]:
         unchecked = sum(counted_int(cell["findings"]) for cell in eligible)
         if not unchecked:
             return "off — nothing to check"
-        return f"off — {unchecked} OpenCode finding(s) unchecked"
+        return f"off — {unchecked} finding(s) unchecked"
     by_model = summary["verifier_by_model"]
     judged = sum(by_model.values())
     audited = max(summary["verifier_audited"], judged)
@@ -4294,6 +4308,12 @@ VERIFY_MAX_TOKENS = 2000
 VERIFY_WINDOW_LINES = 120
 VERIFY_WHOLE_FILE_LINES = 600
 VERIFY_TIMEOUT_S = 300
+GEMINI_VERIFY_PRINT_TIMEOUT_S = 180
+GEMINI_VERIFY_PRINT_TIMEOUT = f"{GEMINI_VERIFY_PRINT_TIMEOUT_S // 60}m"
+# geminib enforces the print timeout itself, so the outer deadline is only what its teardown
+# costs — the same grace the rater path gives it. A wider one would pin a verify worker long
+# past the VERIFY_TIMEOUT_S budget every configured verifier is held to.
+GEMINI_VERIFY_TIMEOUT_S = GEMINI_VERIFY_PRINT_TIMEOUT_S + AGY_TIMEOUT_GRACE_S
 
 
 def repo_tree(repo, sha):
@@ -4539,11 +4559,80 @@ def unverified_row(index, finding, why):
     return row
 
 
-def verifier_chain(model):
-    return [model] + [name for name in OPENCODE_VERIFIER_CHAIN if name != model]
+def verifier_chain(model, side="opencode"):
+    chain = [model] + [name for name in OPENCODE_VERIFIER_CHAIN if name != model]
+    if side == "agy":
+        chain.insert(1, GEMINI_VERIFIER)
+    return chain
 
 
-def verify_one(index, finding, repo, sha, model, lines, ref=None):
+def gemini_verify(prompt_text, slot):
+    """One verdict off Gemini's own transport, rotating accounts the way an agy rater does.
+
+    Returns (judgment, asked, walled): a link that never reached an account, one that answered
+    unusably, and one whose side spent its quota answering are three different rows in the
+    audit, and only this call can tell them apart.
+
+    A walled account is retired and the pool asked again rather than the link giving up: the
+    quota is per model, which is the bucket the agy cells on this model already share.
+    """
+    excluded = set()
+    asked = False
+    walled = False
+    with tempfile.TemporaryDirectory(prefix="review-bench-gemini-verify-") as workdir:
+        log_file = Path(workdir) / "verify.log"
+        while True:
+            account = pool_account("agy", excluded, slot, GEMINI_VERIFIER)
+            if account is None or account in excluded:
+                return None, asked, walled
+            if is_walled("agy", account, GEMINI_VERIFIER):
+                excluded.add(account)
+                continue
+            log_file.unlink(missing_ok=True)
+            command = [
+                command_path("REVIEW_BENCH_GEMINIB_BIN", "geminib"), "profile", account,
+                "--model", agy_model_id(GEMINI_VERIFIER_RATER),
+                "--mode", "plan", "--new-project", "--dangerously-skip-permissions",
+                "--print-timeout", GEMINI_VERIFY_PRINT_TIMEOUT,
+                "--log-file", str(log_file), "--print", prompt_text,
+            ]
+            try:
+                proc = subprocess.run(
+                    command, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                    timeout=GEMINI_VERIFY_TIMEOUT_S, cwd=workdir,
+                )
+            except subprocess.TimeoutExpired:
+                # The account was reached and spent the deadline, unlike a transport that
+                # never started: one is a verifier that answered badly, the other is none.
+                return None, True, walled
+            except OSError:
+                return None, asked, walled
+            asked = True
+            log_text = log_file.read_text(errors="replace") if log_file.exists() else ""
+            # Fail closed on a substitution exactly as the rater path does: a keep/drop rate
+            # measured on this model says nothing about whichever one agy served instead.
+            if agy_model_mismatch(agy_served_labels(log_text), GEMINI_VERIFIER_RATER):
+                return None, asked, walled
+            # Only a run that finished speaks for the model, exactly as the rater path and the
+            # OpenCode link read their answer: geminib prints what it had when its own
+            # deadline cut it off, and that text is not a verdict this rate was measured on.
+            judgment = parse_verify_answer(proc.stdout) if proc.returncode == 0 else None
+            if judgment is not None:
+                return judgment, asked, walled
+            # The gateway's own words decide this, never the verifier's answer: a claim about
+            # 429 handling is exactly what this link is asked to judge, and a wall read off
+            # that prose retires an account the agy raters share out from under them.
+            # Antigravity states a per-model exhaustion only in its log, which is where the
+            # detail the classifier reads comes from.
+            detail = agy_failure_detail(proc.stderr or "", log_text)
+            if not SIDE_WALL["agy"](proc.returncode, "", detail):
+                return None, asked, walled
+            mark_walled("agy", account, GEMINI_VERIFIER, wall_reset_at(proc.stderr))
+            excluded.add(account)
+            walled = True
+
+
+def verify_one(index, finding, repo, sha, model, lines, ref=None, side="opencode"):
     prompt_file = tempfile.NamedTemporaryFile(
         mode="w", prefix="review-bench-verify-", suffix=".txt", delete=False
     )
@@ -4551,18 +4640,64 @@ def verify_one(index, finding, repo, sha, model, lines, ref=None):
     OPENCODE_GATE.acquire(0)
     account, proc, judgment, walled, timeout_stderr = None, None, None, False, ""
     answered_by = model
+    chain = verifier_chain(model, side)
+    asked = False
+    gemini_walled = False
+
+    def record_opencode_wall():
+        """The wall this thread found, on record before it lets go of the gate.
+
+        A verifier queued on the slot would otherwise acquire it in between, pass the post-gate
+        check and send one more doomed request. A named burst throttle is not this account's
+        window: the verifier gives up on the finding rather than retiring an account that still
+        has quota.
+        """
+        nonlocal walled
+        if walled:
+            return
+        wall_stderr = "\n".join(filter(None, [
+            proc.stderr if proc is not None and proc.returncode != 0 else "",
+            timeout_stderr,
+        ]))
+        walled = bool(
+            opencode_usage_wall(wall_stderr) and not opencode_burst_throttle(wall_stderr)
+        )
+        if walled and account is not None:
+            mark_walled("opencode", account, reset_at=wall_reset_at(wall_stderr))
+
     try:
         account = pool_account("opencode", set(), index)
-        if account is None or is_walled("opencode", account):
+        skip_opencode = account is None or is_walled("opencode", account)
+        if skip_opencode and GEMINI_VERIFIER not in chain:
             return unverified_row(
                 index, finding, "verifier walled off while queued; finding kept unverified"
             )
-        for candidate in verifier_chain(model):
+        for candidate in chain:
             answered_by = candidate
-            Path(prompt_file.name).write_text(verify_prompt(
+            prompt_text = verify_prompt(
                 finding, sha, finding.get("file"), lines, ref,
                 style=verify_prompt_style(candidate),
-            ))
+            )
+            if candidate == GEMINI_VERIFIER:
+                # Gemini answers on its own transport, so holding a slot of the gateway this
+                # link exists to outlive would stall the OpenCode cells queued behind it for
+                # as long as the rotation takes.
+                record_opencode_wall()
+                OPENCODE_GATE.release()
+                try:
+                    judgment, gemini_asked, gemini_walled = gemini_verify(prompt_text, index)
+                finally:
+                    OPENCODE_GATE.acquire(0)
+                asked = asked or gemini_asked
+                if judgment is not None:
+                    break
+                # The slot was another thread's for the length of that rotation, and it may
+                # have retired this account while it held it.
+                skip_opencode = skip_opencode or is_walled("opencode", account)
+                continue
+            if skip_opencode:
+                continue
+            Path(prompt_file.name).write_text(prompt_text)
             command = [
                 command_path("REVIEW_BENCH_OPENCODE_BIN", "opencode-go"),
                 "run", OPENCODE_MODEL_IDS[candidate], "--prompt-file", prompt_file.name,
@@ -4570,10 +4705,19 @@ def verify_one(index, finding, repo, sha, model, lines, ref=None):
                 "--answer-must-match", OPENCODE_VERDICT_SHAPE,
                 "--retries", "2",
             ]
-            proc = subprocess.run(
-                command, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                timeout=VERIFY_TIMEOUT_S, env=opencode_env(account)
-            )
+            asked = True
+            try:
+                proc = subprocess.run(
+                    command, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                    timeout=VERIFY_TIMEOUT_S, env=opencode_env(account)
+                )
+            except subprocess.TimeoutExpired as exc:
+                # A gateway that hangs is the outage the second transport exists for, so the
+                # claim carries on down the chain rather than ending on this link.
+                proc, judgment = None, None
+                timeout_stderr = subprocess_text(exc.stderr)
+                skip_opencode = True
+                continue
             answer = ""
             if proc.returncode == 0:
                 try:
@@ -4598,33 +4742,26 @@ def verify_one(index, finding, repo, sha, model, lines, ref=None):
             if not (opencode_burst_throttle(candidate_stderr)
                     or (proc.returncode != 0
                         and opencode_provider_unavailable(candidate_stderr))):
-                break
-    except subprocess.TimeoutExpired as exc:
-        judgment = None
-        proc = None
-        timeout_stderr = subprocess_text(exc.stderr)
+                # Done with this gateway, not with the claim: a spent account or a refused
+                # model says nothing about a transport sharing neither of them, so the links
+                # behind it are skipped rather than the loop left.
+                skip_opencode = True
     finally:
-        # The wall is recorded before the gate is released, or a verifier queued on this slot
-        # acquires it in between, passes the post-gate check and sends one more doomed request.
-        # A named burst throttle is not this account's window, here either: the verifier
-        # gives up on the finding rather than retiring an account that still has quota.
-        wall_stderr = "\n".join(filter(None, [
-            proc.stderr if proc is not None and proc.returncode != 0 else "",
-            timeout_stderr,
-        ]))
-        walled = bool(
-            opencode_usage_wall(wall_stderr) and not opencode_burst_throttle(wall_stderr)
-        )
-        if walled and account is not None:
-            mark_walled("opencode", account, reset_at=wall_reset_at(wall_stderr))
+        record_opencode_wall()
         OPENCODE_GATE.release()
         Path(prompt_file.name).unlink(missing_ok=True)
     row = verify_row(index, finding)
-    if walled:
-        return unverified_row(
-            index, finding, "verifier hit the plan's usage wall; finding kept unverified"
-        )
     if judgment is None:
+        # The wall is recorded either way, but it only decides the row where nothing answered:
+        # a link on another transport that did answer has already judged this claim.
+        if walled or gemini_walled:
+            return unverified_row(
+                index, finding, "verifier hit the plan's usage wall; finding kept unverified"
+            )
+        if not asked:
+            return unverified_row(
+                index, finding, "verifier walled off while queued; finding kept unverified"
+            )
         row.update(kept=True, code_matches=None, is_defect=None,
                    why="verifier gave no usable answer; finding kept")
         return row
@@ -4672,7 +4809,7 @@ def verify_place(index, finding):
     return (str(path), str(line), claim_fingerprint(finding.get("summary")))
 
 
-def verify_findings(findings, repo, sha, model, tree):
+def verify_findings(findings, repo, sha, model, tree, side="opencode"):
     """Return (kept findings, audit rows) after checking each claim against its file.
 
     One claim filed twice at one place — the same words under a different severity, or the same
@@ -4696,7 +4833,9 @@ def verify_findings(findings, repo, sha, model, tree):
             index = members[0]
             finding = findings[index]
             lines, ref = cache[finding.get("file")]
-            futures[pool.submit(verify_one, index, finding, repo, sha, model, lines, ref)] = index
+            futures[pool.submit(
+                verify_one, index, finding, repo, sha, model, lines, ref, side
+            )] = index
         for future in concurrent.futures.as_completed(futures):
             index = futures[future]
             try:
@@ -4749,6 +4888,19 @@ def agy_model_id(rater):
     return f"{model}-{rater['effort']}"
 
 
+def agy_served_labels(log_text):
+    return re.findall(r'Propagating selected model override.*?label="([^"]+)"', log_text)
+
+
+def agy_model_mismatch(labels, rater):
+    """The models agy served that are not the one asked for.
+
+    A spelling agy cannot resolve is served as another model without any error, and one run can
+    switch models mid-flight, so every propagated label has to match, not just the last.
+    """
+    return [label for label in dict.fromkeys(labels) if label != agy_expected_label(rater)]
+
+
 def agy_expected_label(rater):
     if rater["model"] == "agy-pro":
         return f"Gemini 3.1 Pro ({rater['effort'].capitalize()})"
@@ -4762,12 +4914,10 @@ def write_agy_usage(run_dir, rater, duration, log_text):
         "model": agy_model_id(rater),
         "effort": rater["effort"],
     }
-    labels = re.findall(r'Propagating selected model override.*?label="([^"]+)"', log_text)
+    labels = agy_served_labels(log_text)
     if labels:
         usage["resolved_model_label"] = labels[-1]
-        # A spelling agy cannot resolve is served as another model without any error, and one run
-        # can switch models mid-flight, so every propagated label has to match, not just the last.
-        served = [label for label in dict.fromkeys(labels) if label != agy_expected_label(rater)]
+        served = agy_model_mismatch(labels, rater)
         if served:
             usage["model_mismatch"] = served
     requests = len(re.findall(r"\bstreamGenerateContent\b", log_text))
@@ -5975,18 +6125,18 @@ def cmd_run(args):
         for rater in raters:
             rater["lens"] = lens
     refuse_retired_cells(raters, lens=lens)
-    has_opencode = any(rater["side"] == "opencode" for rater in raters)
-    if verify_model and not has_opencode:
+    has_verifiable = any(rater["side"] in VERIFIED_SIDES for rater in raters)
+    if verify_model and not has_verifiable:
         raise RuntimeError(
-            "--verify checks OpenCode findings only (docs/verifier-tuning.md measured no "
-            "other side); this run has no OpenCode cell"
+            "--verify checks OpenCode and agy findings only (docs/verifier-tuning.md measured "
+            "no other side); this run has no cell the verifier reaches"
         )
     # On unless refused, and only once the composition is known, since asking for it where it
     # cannot apply is an error rather than a default. Every failure path of the verifier keeps
     # the finding, so the worst it costs is a minute and a run identical to the one without it;
-    # what it buys is the OpenCode claims that cite code as it is not, dropped before a reader
+    # what it buys is the claims that cite code as it is not, dropped before a reader
     # spends context on them.
-    if not verify_model and has_opencode and not getattr(args, "no_verify", False):
+    if not verify_model and has_verifiable and not getattr(args, "no_verify", False):
         verify_model = verifier_model(OPENCODE_VERIFIER)
     print("selected raters:")
     for rater in raters:
@@ -6154,11 +6304,13 @@ def cmd_run(args):
             verify_ms = None
             audited = 0
             verified_by = {}
-            # The verifier's error rate is measured on the OpenCode leg only
+            # The verifier's error rate is measured on the OpenCode and agy legs
             # (docs/verifier-tuning.md); other sides' findings pass unverified until measured.
-            if verify_model and findings and not is_error and rater["side"] == "opencode":
+            if verify_model and findings and not is_error and rater["side"] in VERIFIED_SIDES:
                 verify_started = time.monotonic()
-                kept, audit = verify_findings(findings, repo, sha, verify_model, tree)
+                kept, audit = verify_findings(
+                    findings, repo, sha, verify_model, tree, rater["side"]
+                )
                 verify_ms = round((time.monotonic() - verify_started) * 1000)
                 write_jsonl(run_dir / f"verified-{rater['spec']}.jsonl", audit)
                 dropped = len(findings) - len(kept)
@@ -6250,9 +6402,9 @@ def cmd_run(args):
             if lens:
                 rerun_command += ["--lens", lens["name"]]
             # The verifier default is decided by the panel, so a rerun of one cell would filter
-            # findings the run it completes reported raw. Only a rerun holding an OpenCode cell
-            # can carry the flag at all: --verify is refused outright without one.
-            if any(rater["side"] == "opencode" for rater in errored):
+            # findings the run it completes reported raw. Only a rerun holding a cell the
+            # verifier reaches can carry the flag at all: --verify is refused outright without.
+            if any(rater["side"] in VERIFIED_SIDES for rater in errored):
                 rerun_command += (
                     ["--verify", verify_model] if verify_model else ["--no-verify"]
                 )

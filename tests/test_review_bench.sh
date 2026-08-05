@@ -814,9 +814,15 @@ off_report = "\n".join(rb.report_lines(duration_dir, dict(
     raters=["oc-kimik3"],
     rater_runs=[{"rater": "oc-kimik3", "side": "opencode", "exit_code": 0, "findings": 3}],
 )))
-assert "verifier:     off — 3 OpenCode finding(s) unchecked" in off_report, off_report
-# The verifier reaches OpenCode findings only, so a panel without one is not a run whose
-# verifier stayed off — there was nothing it was allowed to touch, and the line would mislead.
+assert "verifier:     off — 3 finding(s) unchecked" in off_report, off_report
+agy_off_report = "\n".join(rb.report_lines(duration_dir, dict(
+    duration_meta,
+    raters=["agy-pro-high-skill"],
+    rater_runs=[{"rater": "agy-pro-high-skill", "side": "agy", "exit_code": 0, "findings": 2}],
+)))
+assert "verifier:     off — 2 finding(s) unchecked" in agy_off_report, agy_off_report
+# The verifier reaches OpenCode and agy findings only, so a panel without either is not a run
+# whose verifier stayed off — nothing was its to touch, and the line would mislead.
 assert "verifier:" not in "\n".join(rb.report_lines(duration_dir, duration_meta))
 
 # --- findings: one entry per place, agreement first --------------------------------------
@@ -3305,6 +3311,377 @@ assert style_row["kept"] is True and style_row["verifier"] == "oc-kimik3", style
 assert "verified by oc-kimik3" in style_row["why"], style_row
 clear_walls()
 
+# The whole chain speaks through one gateway, so an outage on it retires every link at once —
+# twice on 2026-08-04. An agy finding gets that side's own transport second; an opencode finding
+# has no second transport to be handed to and never sees it.
+assert rb.verifier_chain("oc-dsv4flash", "agy") == [
+    "oc-dsv4flash", rb.GEMINI_VERIFIER, "oc-kimik3", "oc-qwen37plus", "oc-mmm3"
+], rb.verifier_chain("oc-dsv4flash", "agy")
+assert rb.GEMINI_VERIFIER not in rb.verifier_chain("oc-dsv4flash")
+# Measured on the stock wording, not the one deepseek-v4-flash scores best on.
+assert rb.verify_prompt_style(rb.GEMINI_VERIFIER) == "stock"
+# The link is named in the report beside cell names, and it carries no effort to parse as one.
+assert rb.human_cell_name(rb.GEMINI_VERIFIER) == "Gemini 3.6 Flash", rb.GEMINI_VERIFIER
+# geminib enforces the print timeout itself; the outer deadline is its teardown grace, the same
+# relationship the rater path keeps, and it stays inside the configured verifier's own budget.
+assert rb.GEMINI_VERIFY_PRINT_TIMEOUT == "3m", rb.GEMINI_VERIFY_PRINT_TIMEOUT
+assert rb.GEMINI_VERIFY_TIMEOUT_S == rb.GEMINI_VERIFY_PRINT_TIMEOUT_S + rb.AGY_TIMEOUT_GRACE_S
+assert rb.GEMINI_VERIFY_TIMEOUT_S <= rb.VERIFY_TIMEOUT_S, rb.GEMINI_VERIFY_TIMEOUT_S
+geminib_bin = str(fixtures / "fake-geminib.sh")
+worker_pick_bin = str(fixtures / "fake-worker-pick.sh")
+gemini_verdict = (
+    "The excerpt shows the loop dropping the account.\n\n```json\n"
+    + json.dumps({"code_matches": True, "is_defect": True, "why": "drops the account"})
+    + "\n```\n"
+)
+router_down = 'HTTP 500\n{"error":{"type":"Router.Unavailable"}}'
+os.environ["REVIEW_BENCH_WORKER_PICK_BIN"] = worker_pick_bin
+os.environ["WORKER_PICK_FAKE_ACCOUNTS"] = "gem1 gem2"
+rb._SIDE_ROSTER.clear()
+agy_claim ={"severity": "P2", "file": "bin/review-bench", "line": 3, "summary": "claim"}
+outage_calls = []
+
+
+def gemini_link_fixture(command, **kwargs):
+    if command and command[0] in (worker_pick_bin, "git"):
+        return real_run(command, **kwargs)
+    outage_calls.append(command)
+    if command[0] == geminib_bin:
+        return subprocess.CompletedProcess(command, 0, gemini_verdict, "")
+    return subprocess.CompletedProcess(command, 1, "", router_down)
+
+
+subprocess.run = gemini_link_fixture
+try:
+    outage_row = rb.verify_one(
+        0, agy_claim, repo, sha, "oc-dsv4flash", ["line one"], None, "agy",
+    )
+    outage_kept, outage_audit = rb.verify_findings(
+        [agy_claim], repo, sha, "oc-dsv4flash", tree, "agy"
+    )
+finally:
+    subprocess.run = real_run
+assert outage_row["kept"] is True and outage_row["verifier"] == rb.GEMINI_VERIFIER, outage_row
+assert f"verified by {rb.GEMINI_VERIFIER}" in outage_row["why"], outage_row
+assert outage_row.get("walled") is None, outage_row
+assert outage_kept == [agy_claim], outage_kept
+assert outage_audit[0]["verifier"] == rb.GEMINI_VERIFIER, outage_audit
+gemini_calls = [command for command in outage_calls if command[0] == geminib_bin]
+# The first link is still asked first: the fallback is a fallback, not a second default.
+assert len(outage_calls) == 4 and len(gemini_calls) == 2, outage_calls
+# Effort rides in the slug and agy takes no --effort flag (docs/shared-invariants.md row h);
+# a slug agy cannot resolve is served as another model without an error, which is why the
+# link asks for a log and reads the served label out of it.
+assert gemini_calls[0][:11] == [
+    geminib_bin, "profile", "gem1",
+    "--model", "gemini-3.6-flash-medium",
+    "--mode", "plan", "--new-project", "--dangerously-skip-permissions",
+    "--print-timeout", "3m",
+], gemini_calls[0]
+assert "--effort" not in gemini_calls[0], gemini_calls[0]
+assert gemini_calls[0][11] == "--log-file" and gemini_calls[0][13] == "--print"
+gemini_prompt = gemini_calls[0][14]
+assert "Known failure modes of the reviewer" in gemini_prompt
+assert "narration: it restates what the diff does" not in gemini_prompt
+clear_walls()
+
+# The verdict of a model agy substituted is not the model the drop rate was measured on, so the
+# link fails closed on it exactly as a rater cell does and the claim carries on down the chain.
+mismatch_calls = []
+
+
+def gemini_mismatch_fixture(command, **kwargs):
+    if command and command[0] in (worker_pick_bin, "git"):
+        return real_run(command, **kwargs)
+    mismatch_calls.append(command)
+    if command[0] == geminib_bin:
+        pathlib.Path(command[command.index("--log-file") + 1]).write_text(
+            'Propagating selected model override to backend: label="Gemini 3.5 Flash (Low)"\n'
+        )
+        return subprocess.CompletedProcess(command, 0, gemini_verdict, "")
+    if command[command.index("run") + 1] == rb.OPENCODE_MODEL_IDS["oc-dsv4flash"]:
+        return subprocess.CompletedProcess(command, 1, "", router_down)
+    return subprocess.CompletedProcess(command, 0, json.dumps({"choices": [{"message": {
+        "content": json.dumps({"code_matches": True, "is_defect": False, "why": "guarded"})
+    }}]}), "")
+
+
+subprocess.run = gemini_mismatch_fixture
+try:
+    mismatch_row = rb.verify_one(
+        0, agy_claim, repo, sha, "oc-dsv4flash", ["line one"], None, "agy",
+    )
+finally:
+    subprocess.run = real_run
+assert mismatch_row["verifier"] == "oc-kimik3", mismatch_row
+assert len([command for command in mismatch_calls if command[0] == geminib_bin]) == 1
+assert not rb.is_walled("agy", "gem1", rb.GEMINI_VERIFIER), "a substitution retired an account"
+clear_walls()
+
+# The gateway's words retire an account, never the verifier's own: this link is asked to judge
+# claims about 429 handling, and reading a wall off that prose would retire the account the agy
+# raters share for the wall TTL.
+prose_calls = []
+gemini_prose = "The claim is about a 429 rate limit and the usage limit wording.\n"
+
+
+def gemini_prose_fixture(command, **kwargs):
+    if command and command[0] in (worker_pick_bin, "git"):
+        return real_run(command, **kwargs)
+    prose_calls.append(command)
+    if command[0] == geminib_bin:
+        return subprocess.CompletedProcess(command, 0, gemini_prose, "")
+    if command[command.index("run") + 1] == rb.OPENCODE_MODEL_IDS["oc-dsv4flash"]:
+        return subprocess.CompletedProcess(command, 1, "", router_down)
+    return subprocess.CompletedProcess(command, 0, json.dumps({"choices": [{"message": {
+        "content": json.dumps({"code_matches": True, "is_defect": False, "why": "guarded"})
+    }}]}), "")
+
+
+subprocess.run = gemini_prose_fixture
+try:
+    prose_row = rb.verify_one(
+        0, agy_claim, repo, sha, "oc-dsv4flash", ["line one"], None, "agy",
+    )
+finally:
+    subprocess.run = real_run
+assert len([command for command in prose_calls if command[0] == geminib_bin]) == 1, prose_calls
+assert not rb.is_walled("agy", "gem1", rb.GEMINI_VERIFIER), "the verifier's prose walled gem1"
+assert prose_row["verifier"] == "oc-kimik3", prose_row
+clear_walls()
+
+# The second transport is there for the case the first one is spent, so an OpenCode wall hands
+# the claim on instead of filing it unverified — and the answer it gets outranks that wall.
+wall_handoff_calls = []
+wall_on_record = []
+
+
+def gemini_handoff_fixture(command, **kwargs):
+    if command and command[0] in (worker_pick_bin, "git"):
+        return real_run(command, **kwargs)
+    wall_handoff_calls.append(command)
+    if command[0] == geminib_bin:
+        wall_on_record.append(rb.is_walled("opencode", "opencode-go"))
+        return subprocess.CompletedProcess(command, 0, gemini_verdict, "")
+    return subprocess.CompletedProcess(command, 1, "", "HTTP 429 usage limit reached")
+
+
+subprocess.run = gemini_handoff_fixture
+try:
+    handoff_row = rb.verify_one(
+        0, agy_claim, repo, sha, "oc-dsv4flash", ["line one"], None, "agy",
+    )
+finally:
+    subprocess.run = real_run
+assert handoff_row["kept"] is True and handoff_row["verifier"] == rb.GEMINI_VERIFIER, handoff_row
+assert handoff_row.get("walled") is None, handoff_row
+# The wall itself is still recorded, and the links behind it are not asked to prove it again.
+assert [command for command in wall_handoff_calls if command[0] != geminib_bin] == [
+    wall_handoff_calls[0]
+], wall_handoff_calls
+# On record before the gate slot is handed over, or a verifier taking that slot passes its
+# post-gate check against an account this thread already knows is spent.
+assert wall_on_record == [True], wall_on_record
+clear_walls()
+
+# A gateway that hangs is the outage the second transport exists for, so the timeout hands the
+# claim on instead of ending the chain on the link that stalled.
+stall_calls = []
+
+
+def gemini_stall_fixture(command, **kwargs):
+    if command and command[0] in (worker_pick_bin, "git"):
+        return real_run(command, **kwargs)
+    stall_calls.append(command)
+    if command[0] == geminib_bin:
+        return subprocess.CompletedProcess(command, 0, gemini_verdict, "")
+    raise subprocess.TimeoutExpired(command, kwargs["timeout"], stderr=b"")
+
+
+subprocess.run = gemini_stall_fixture
+try:
+    stall_row = rb.verify_one(
+        0, agy_claim, repo, sha, "oc-dsv4flash", ["line one"], None, "agy",
+    )
+finally:
+    subprocess.run = real_run
+assert stall_row["kept"] is True and stall_row["verifier"] == rb.GEMINI_VERIFIER, stall_row
+assert [command[0] for command in stall_calls][1:] == [geminib_bin], stall_calls
+clear_walls()
+
+# Only a run that finished speaks for the model: geminib prints what it had when its own
+# deadline cut it off, and that text is not the verdict this drop rate was measured on.
+cutoff_calls = []
+
+
+def gemini_cutoff_fixture(command, **kwargs):
+    if command and command[0] in (worker_pick_bin, "git"):
+        return real_run(command, **kwargs)
+    cutoff_calls.append(command)
+    if command[0] == geminib_bin:
+        return subprocess.CompletedProcess(command, 1, gemini_verdict, "print timeout reached")
+    if command[command.index("run") + 1] == rb.OPENCODE_MODEL_IDS["oc-dsv4flash"]:
+        return subprocess.CompletedProcess(command, 1, "", router_down)
+    return subprocess.CompletedProcess(command, 0, json.dumps({"choices": [{"message": {
+        "content": json.dumps({"code_matches": True, "is_defect": False, "why": "guarded"})
+    }}]}), "")
+
+
+subprocess.run = gemini_cutoff_fixture
+try:
+    cutoff_row = rb.verify_one(
+        0, agy_claim, repo, sha, "oc-dsv4flash", ["line one"], None, "agy",
+    )
+finally:
+    subprocess.run = real_run
+assert cutoff_row["verifier"] == "oc-kimik3", cutoff_row
+assert not rb.is_walled("agy", "gem1", rb.GEMINI_VERIFIER), "a cut-off run retired an account"
+clear_walls()
+
+# Both transports spent is a wall, not a verifier that answered badly: the row a reader counts
+# as unchecked is the only honest one when nothing was left to ask.
+spent_calls = []
+
+
+def gemini_spent_fixture(command, **kwargs):
+    if command and command[0] == worker_pick_bin:
+        return real_run(command, **kwargs)
+    spent_calls.append(command)
+    return subprocess.CompletedProcess(
+        command, 1, "", "Individual quota reached for this account"
+    )
+
+
+for opencode_profile in rb.opencode_profiles():
+    rb.mark_walled("opencode", rb.opencode_account(opencode_profile))
+subprocess.run = gemini_spent_fixture
+try:
+    spent_row = rb.verify_one(
+        0, agy_claim, repo, sha, "oc-dsv4flash", ["line one"], None, "agy",
+    )
+finally:
+    subprocess.run = real_run
+assert [command[2] for command in spent_calls] == ["gem1", "gem2"], spent_calls
+assert spent_row["walled"] is True and spent_row["code_matches"] is None, spent_row
+assert spent_row["why"] == "verifier hit the plan's usage wall; finding kept unverified", spent_row
+clear_walls()
+
+# A transport that never started asked nobody, so the claim reads as unchecked rather than as
+# one a verifier answered badly.
+missing_calls = []
+
+
+def gemini_missing_fixture(command, **kwargs):
+    if command and command[0] == worker_pick_bin:
+        return real_run(command, **kwargs)
+    missing_calls.append(command)
+    raise OSError(2, "No such file or directory", command[0])
+
+
+for opencode_profile in rb.opencode_profiles():
+    rb.mark_walled("opencode", rb.opencode_account(opencode_profile))
+subprocess.run = gemini_missing_fixture
+try:
+    missing_row = rb.verify_one(
+        0, agy_claim, repo, sha, "oc-dsv4flash", ["line one"], None, "agy",
+    )
+finally:
+    subprocess.run = real_run
+assert [command[0] for command in missing_calls] == [geminib_bin], missing_calls
+assert missing_row["walled"] is True and missing_row["code_matches"] is None, missing_row
+assert missing_row["why"] == (
+    "verifier walled off while queued; finding kept unverified"
+), missing_row
+clear_walls()
+
+# A claim nothing was ever asked about reads differently from one a verifier answered badly.
+unusable_calls = []
+
+
+def gemini_unusable_fixture(command, **kwargs):
+    if command and command[0] in (worker_pick_bin, "git"):
+        return real_run(command, **kwargs)
+    unusable_calls.append(command)
+    return subprocess.CompletedProcess(command, 0, "no verdict here", "")
+
+
+for opencode_profile in rb.opencode_profiles():
+    rb.mark_walled("opencode", rb.opencode_account(opencode_profile))
+subprocess.run = gemini_unusable_fixture
+try:
+    unusable_row = rb.verify_one(
+        0, agy_claim, repo, sha, "oc-dsv4flash", ["line one"], None, "agy",
+    )
+finally:
+    subprocess.run = real_run
+assert [command[0] for command in unusable_calls] == [geminib_bin], unusable_calls
+assert unusable_row["code_matches"] is None and unusable_row.get("walled") is None, unusable_row
+assert unusable_row["why"] == "verifier gave no usable answer; finding kept", unusable_row
+clear_walls()
+
+# A walled Gemini account is retired and the pool asked again, exactly as an agy rater rotates;
+# with the side out of accounts the claim carries on down the rest of the chain.
+walled_calls = []
+
+
+def gemini_walled_fixture(command, **kwargs):
+    if command and command[0] == worker_pick_bin:
+        return real_run(command, **kwargs)
+    walled_calls.append(command)
+    if command[0] == geminib_bin:
+        return subprocess.CompletedProcess(
+            command, 1, "", "Individual quota reached for this account"
+        )
+    if command[command.index("run") + 1] == rb.OPENCODE_MODEL_IDS["oc-dsv4flash"]:
+        return subprocess.CompletedProcess(command, 1, "", router_down)
+    return subprocess.CompletedProcess(command, 0, json.dumps({"choices": [{"message": {
+        "content": json.dumps({"code_matches": True, "is_defect": False, "why": "guarded"})
+    }}]}), "")
+
+
+subprocess.run = gemini_walled_fixture
+try:
+    walled_row = rb.verify_one(
+        0, agy_claim, repo, sha, "oc-dsv4flash", ["line one"], None, "agy",
+    )
+finally:
+    subprocess.run = real_run
+assert [command[2] for command in walled_calls if command[0] == geminib_bin] == [
+    "gem1", "gem2"
+], walled_calls
+assert rb.is_walled("agy", "gem1", rb.GEMINI_VERIFIER)
+assert rb.is_walled("agy", "gem2", rb.GEMINI_VERIFIER)
+# A walled judge is never a crash, and the claim is still filtered by whoever answers next.
+assert walled_row["kept"] is False and walled_row["verifier"] == "oc-kimik3", walled_row
+assert walled_row.get("walled") is None, walled_row
+clear_walls()
+
+# An opencode finding keeps today's chain: the gemini link is not asked even when every
+# opencode model in it is refused.
+opencode_side_calls = []
+
+
+def opencode_only_fixture(command, **kwargs):
+    if command and command[0] == worker_pick_bin:
+        return real_run(command, **kwargs)
+    opencode_side_calls.append(command)
+    return subprocess.CompletedProcess(command, 1, "", router_down)
+
+
+subprocess.run = opencode_only_fixture
+try:
+    opencode_side_row = rb.verify_one(
+        0, agy_claim, repo, sha, "oc-dsv4flash", ["line one"],
+    )
+finally:
+    subprocess.run = real_run
+assert not [command for command in opencode_side_calls if command[0] == geminib_bin]
+assert len(opencode_side_calls) == 4, opencode_side_calls
+assert opencode_side_row["kept"] is True and opencode_side_row["code_matches"] is None
+del os.environ["WORKER_PICK_FAKE_ACCOUNTS"], os.environ["REVIEW_BENCH_WORKER_PICK_BIN"]
+rb._SIDE_ROSTER.clear()
+clear_walls()
+
 # One claim restated at the same place is one question, asked once — and every original claim
 # still gets its own audit row carrying the shared verdict.
 dedup_calls = []
@@ -4274,7 +4651,7 @@ assert (
     f"--verdicts /tmp/review-bench-{snapshot_rerun_meta['run_id']}-verdicts.jsonl"
 ) in snapshot_rerun_stdout.getvalue()
 # The panel decides the verifier default, so a rerun of one cell that omits the flag filters
-# findings the run it completes reported raw — while a rerun holding no OpenCode cell is refused
+# findings the run it completes reported raw — while a rerun the verifier cannot reach is refused
 # outright if the flag is passed, so the reproduce line carries it only where it applies.
 assert "--verify" not in snapshot_rerun_stdout.getvalue().split("rerun:")[1].splitlines()[0]
 
@@ -4892,7 +5269,7 @@ assert not list(refused_verify_run.glob("verified-*.jsonl")), \
     "a refused verifier wrote verified artifacts"
 
 # Asking for it where it cannot apply is an error; defaulting into that would refuse every run
-# whose composition happens to have no OpenCode cell.
+# whose composition happens to have no cell the verifier reaches.
 no_oc_store = work / "no-opencode-claudeb"
 os.environ["CLAUDEB_DIR"] = str(no_oc_store)
 no_oc_rc = rb.cmd_run(argparse.Namespace(
@@ -4904,6 +5281,88 @@ no_oc_meta = json.loads(
 )
 assert no_oc_rc == 0, no_oc_meta
 assert no_oc_meta["verifier"] == "", no_oc_meta["verifier"]
+
+# The agy leg's claims are filtered by the same verifier as an OpenCode cell's: measured on the
+# leg's own adjudicated findings — 6 real and 24 false — the verifier dropped 11 of the 24.
+agy_verify_spec = "agy-flash36-medium-skill"
+agy_verify_ambient_stdout = os.environ["OPENCODE_FIXTURE_STDOUT"]
+
+
+def agy_verify_runner(rater, repo_path, commit, focus, run_dir, diff, account):
+    return 0, 1, json.dumps({
+        "severity": "P2", "file": "pinned.txt", "line": 1,
+        "summary": f"{rater['spec']} fixture finding",
+    }), "", []
+
+
+rb.SIDE_RUNNERS["agy"] = agy_verify_runner
+
+
+def run_agy_verify(store_name, fixture, **overrides):
+    os.environ["CLAUDEB_DIR"] = str(work / store_name)
+    os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / fixture)
+    stdout = io.StringIO()
+    with contextlib.redirect_stdout(stdout):
+        rc = rb.cmd_run(argparse.Namespace(**dict(
+            dict(repo=str(pin_repo), commitish=pin_sha, raters=agy_verify_spec,
+                 leg=False, verify=None, no_verify=False, auto=None, focus=None),
+            **overrides,
+        )))
+    run_dir = next((work / store_name / "worker-stats" / "benches").iterdir())
+    return rc, run_dir, json.loads((run_dir / "meta.json").read_text()), stdout.getvalue()
+
+
+agy_kept_rc, agy_kept_run, agy_kept_meta, agy_kept_out = run_agy_verify(
+    "agy-verify-keep-claudeb", "opencode-verify-keep.json"
+)
+assert agy_kept_rc == 0, agy_kept_meta
+assert agy_kept_meta["verifier"] == rb.OPENCODE_VERIFIER, agy_kept_meta["verifier"]
+assert len(rb.read_jsonl(agy_kept_run / f"findings-{agy_verify_spec}.jsonl")) == 1
+agy_kept_audit = rb.read_jsonl(agy_kept_run / f"verified-{agy_verify_spec}.jsonl")
+assert len(agy_kept_audit) == 1 and agy_kept_audit[0]["kept"] is True, agy_kept_audit
+assert f"{agy_verify_spec}: verifier kept 1 of 1 finding(s)" in agy_kept_out, agy_kept_out
+agy_kept_entry = agy_kept_meta["rater_runs"][0]
+assert agy_kept_entry["findings"] == 1 and agy_kept_entry["verifier_dropped"] == 0
+assert agy_kept_entry["verifier_audited"] == 1 and agy_kept_entry["verifier_unverified"] == 0
+assert agy_kept_entry["verifier_by_model"] == {rb.OPENCODE_VERIFIER: 1}, agy_kept_entry
+assert type(agy_kept_entry.get("verify_ms")) is int, agy_kept_entry
+
+agy_dropped_rc, agy_dropped_run, agy_dropped_meta, agy_dropped_out = run_agy_verify(
+    "agy-verify-drop-claudeb", "opencode-verify-drop.json"
+)
+assert agy_dropped_rc == 0, agy_dropped_meta
+assert rb.read_jsonl(agy_dropped_run / f"findings-{agy_verify_spec}.jsonl") == []
+agy_dropped_audit = rb.read_jsonl(agy_dropped_run / f"verified-{agy_verify_spec}.jsonl")
+assert len(agy_dropped_audit) == 1 and agy_dropped_audit[0]["kept"] is False, agy_dropped_audit
+assert agy_dropped_meta["rater_runs"][0]["verifier_dropped"] == 1, agy_dropped_meta
+assert f"{agy_verify_spec}: verifier kept 0 of 1 finding(s)" in agy_dropped_out, agy_dropped_out
+
+# A walled verifier costs the run its filtering, never the agy findings the raters already paid
+# for: the quota this leg spends is the one thing a rerun cannot get back.
+os.environ["OPENCODE_FIXTURE_RC"] = "1"
+os.environ["OPENCODE_FIXTURE_STDERR"] = "HTTP 429 usage limit reached"
+agy_walled_rc, agy_walled_run, agy_walled_meta, agy_walled_out = run_agy_verify(
+    "agy-verify-wall-claudeb", "opencode-happy.json"
+)
+del os.environ["OPENCODE_FIXTURE_RC"]
+del os.environ["OPENCODE_FIXTURE_STDERR"]
+clear_walls()
+assert agy_walled_rc == 0, agy_walled_meta
+assert len(rb.read_jsonl(agy_walled_run / f"findings-{agy_verify_spec}.jsonl")) == 1
+agy_walled_audit = rb.read_jsonl(agy_walled_run / f"verified-{agy_verify_spec}.jsonl")
+assert agy_walled_audit[0]["kept"] is True and agy_walled_audit[0]["walled"], agy_walled_audit
+assert agy_walled_meta["rater_runs"][0]["verifier_unverified"] == 1, agy_walled_meta
+assert "went unverified" in agy_walled_out, agy_walled_out
+
+agy_raw_rc, agy_raw_run, agy_raw_meta, _ = run_agy_verify(
+    "agy-verify-raw-claudeb", "opencode-verify-drop.json", no_verify=True
+)
+assert agy_raw_rc == 0, agy_raw_meta
+assert agy_raw_meta["verifier"] == "", agy_raw_meta["verifier"]
+assert len(rb.read_jsonl(agy_raw_run / f"findings-{agy_verify_spec}.jsonl")) == 1
+assert not list(agy_raw_run.glob("verified-*.jsonl")), "a refused verifier checked agy findings"
+rb.SIDE_RUNNERS["agy"] = tier_runner
+os.environ["OPENCODE_FIXTURE_STDOUT"] = agy_verify_ambient_stdout
 
 explicit_verify_store = work / "explicit-review-verify-claudeb"
 os.environ["CLAUDEB_DIR"] = str(explicit_verify_store)
@@ -5121,9 +5580,9 @@ try:
         leg=False, verify="oc-kimik3", auto=None, focus=None,
     ))
 except RuntimeError as exc:
-    assert "no OpenCode cell" in str(exc), exc
+    assert "no cell the verifier reaches" in str(exc), exc
 else:
-    raise AssertionError("--verify accepted a run with no OpenCode cell")
+    raise AssertionError("--verify accepted a run with no cell the verifier reaches")
 verify_timing_rc = rb.cmd_run(argparse.Namespace(
     repo=str(pin_repo), commitish=pin_sha, raters="oc-kimik3",
     leg=False, verify="oc-kimik3", auto=None, focus=None,
@@ -6083,7 +6542,7 @@ assert all(
     and launched["lens_source_status"] == "current"
     for launched in lens_launch_meta
 ), lens_launch_meta
-# The verifier reaches OpenCode findings only, and a lens run has no OpenCode cell to reach.
+# The verifier reaches OpenCode and agy findings only, and a lens panel drops both sides.
 assert lens_meta["verifier"] == "", lens_meta
 
 repeat_lens_store = work / "lens-repeat-claudeb"
@@ -6378,10 +6837,10 @@ PY
 
 report_output=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" report report-adjudicated) \
   || fail "adjudicated report failed"
-expected_report=$'REVIEW-REPORT-BEGIN\nT2 · 5.5 min wall · slowest completed: Sol high 2 min\nconfirmed 1:  P1 1\nrejected:     1 duplicate  ~400 tok\n              2 false      ~3k tok\nfalse by:     Kimi K3 ×1 · Sol high ×1\nverifier:     off — 2 OpenCode finding(s) unchecked\nerrored:      Opus medium (exit 2)\ntimeout:      Gemini 3.6 Flash medium skill\nmismatch:     Gemini 3.5 Flash low skill\nREVIEW-REPORT-END'
+expected_report=$'REVIEW-REPORT-BEGIN\nT2 · 5.5 min wall · slowest completed: Sol high 2 min\nconfirmed 1:  P1 1\nrejected:     1 duplicate  ~400 tok\n              2 false      ~3k tok\nfalse by:     Kimi K3 ×1 · Sol high ×1\nverifier:     off — 2 finding(s) unchecked\nerrored:      Opus medium (exit 2)\ntimeout:      Gemini 3.6 Flash medium skill\nmismatch:     Gemini 3.5 Flash low skill\nREVIEW-REPORT-END'
 assert test "$report_output" = "$expected_report"
 assert contains "$report_output" $'rejected:     1 duplicate  ~400 tok\n              2 false      ~3k tok'
-assert contains "$report_output" $'false by:     Kimi K3 ×1 · Sol high ×1\nverifier:     off — 2 OpenCode finding(s) unchecked\nerrored:      Opus medium (exit 2)\ntimeout:      Gemini 3.6 Flash medium skill\nmismatch:     Gemini 3.5 Flash low skill'
+assert contains "$report_output" $'false by:     Kimi K3 ×1 · Sol high ×1\nverifier:     off — 2 finding(s) unchecked\nerrored:      Opus medium (exit 2)\ntimeout:      Gemini 3.6 Flash medium skill\nmismatch:     Gemini 3.5 Flash low skill'
 last_report=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" report --last) \
   || fail "last report failed"
 assert test "$last_report" = "$expected_report"

@@ -1,7 +1,9 @@
-# Tuning the OpenCode finding verifier
+# Tuning the finding verifier
 
 The record of the 2026-07-27 offline experiment on the `--verify` stage, and the protocol for
 repeating it. Everything here was measured on history — no review was re-run to get a number.
+The stage began as OpenCode-only and now also filters the agy leg; the sections below are
+per side, and the OpenCode ones predate the agy leg entirely.
 
 ## Why the verifier exists
 
@@ -80,6 +82,24 @@ clusters on identical false positives — the same wrong claim at the same file 
 from different models. Vendor agreement is not evidence of truth in this corpus. Caveat:
 defect exports were missing for 8 of 17 commits, so the defect-loss side is partly
 extrapolated (36/42 mapped); the fp side is measured directly and sinks the idea alone.
+
+## The agy side, measured 2026-08-05
+
+The verifier reaches Gemini findings from this date. Corpus: the agy leg's own adjudicated
+claims (`agy-flash36*` raters), 6 real defects and 24 false ones, one call per claim.
+
+- **`oc-dsv4flash`, shapes wording** — 6/6 real kept, 11/24 false dropped, 0 unverified. Same
+  configured verifier as the OpenCode side, so the leg gained a filter without a second model.
+- **`gemini-3.6-flash`, stock wording** — 6/6 real kept, 12/24 false dropped, 0 unverified.
+  It is not given the shapes tail: those shapes were written from the OpenCode raters' false
+  claims, and stock is what this model was measured best on here.
+
+The second one ships as a chain link rather than as the configured verifier, and only for
+agy-side findings: every OpenCode link answers through one gateway, so a router outage there
+retires the whole chain in a single move — twice on 2026-08-04, and every claim of those runs
+filed unverified. The agy side has a transport of its own, so its chain is
+`oc-dsv4flash → gemini-3.6-flash → the OpenCode rest`. OpenCode findings keep their chain
+unchanged: there is no second transport to hand them to.
 
 ## Open at the time of writing
 
