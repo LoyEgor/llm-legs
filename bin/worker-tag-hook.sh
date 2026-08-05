@@ -59,7 +59,17 @@ codex_model_short_label() {
 # A launch/resume command re-derives the tag every time (idempotent; a rotating
 # claudeb may land on a different account between resumes).
 tag=""
-if printf '%s' "$launch" | grep -qE "${cmd_word}"'codex[[:space:]]+exec([[:space:]]|$)'; then
+if printf '%s' "$launch" | grep -qE "${cmd_word}"'worker-run[[:space:]]+(wait|report)[[:space:]]'; then
+  # worker-run resolves the account itself; the launch text carries only the run
+  # id, so the tag comes from the run dir it wrote. `worker-run start` has no run
+  # id yet and falls through to the pending seed below.
+  run_id=$(grab 'worker-run[[:space:]]+(wait|report)[[:space:]]+["'\'']?[a-z0-9][a-z0-9-]*' |
+    grep -oE '[a-z0-9][a-z0-9-]*$')
+  run_tag_file="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}/$run_id/tag"
+  if [ -n "$run_id" ] && [ -f "$run_tag_file" ]; then
+    IFS= read -r tag < "$run_tag_file" || tag=""
+  fi
+elif printf '%s' "$launch" | grep -qE "${cmd_word}"'codex[[:space:]]+exec([[:space:]]|$)'; then
   acct=$(grab '\.codex-profiles/[A-Za-z0-9_.-]+' | sed 's|.*/||')
   [ -n "$acct" ] || acct=main
   effort=$(grab 'model_reasoning_effort=[a-z]+' | cut -d= -f2)

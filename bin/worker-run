@@ -1,0 +1,576 @@
+#!/usr/bin/env bash
+set -u
+
+usage() {
+  printf '%s\n' \
+    'usage: worker-run start <claudeb|codex|gemini> --brief <file> [--workdir <dir>] [--account <n>] [--model <m>] [--effort <e>] [--resume <id>] [--add-dir <d>]... [--image <p>]... [--web-search]' \
+    '       worker-run wait <run-id> [--max <sec>]' \
+    '       worker-run report <run-id>' >&2
+  exit 2
+}
+
+fail() {
+  printf 'worker-run: %s\n' "$*" >&2
+  exit 4
+}
+
+config_value() {
+  sed -n "s/^$1=//p" "$CONFIG_FILE" 2>/dev/null | head -n1
+}
+
+vendor_name() {
+  case "$1" in
+    claudeb) printf 'CLAUDEB' ;;
+    codex) printf 'CODEX' ;;
+    gemini) printf 'GEMINI' ;;
+  esac
+}
+
+failure_outcome() {
+  case "$1" in
+    claudeb) printf 'CLAUDEB_FAILED' ;;
+    codex) printf 'CODEX_UNAVAILABLE' ;;
+    gemini) printf 'GEMINI_UNAVAILABLE' ;;
+  esac
+}
+
+valid_run_id() {
+  case "$1" in
+    ''|*[!a-z0-9-]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+run_path() {
+  valid_run_id "$1" || fail "invalid run id: $1"
+  printf '%s/%s' "${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}" "$1"
+}
+
+meta_update() {
+  local directory="$1" filter="$2" temporary
+  temporary="$directory/meta.json.tmp.$$"
+  if ! jq "$filter" "$directory/meta.json" >"$temporary"; then
+    rm -f "$temporary"
+    return 1
+  fi
+  mv -f "$temporary" "$directory/meta.json"
+}
+
+read_json_array() {
+  local expression="$1" file="$2" value
+  while IFS= read -r value; do
+    REPLY_ARRAY+=("$value")
+  done < <(jq -r "$expression" "$file")
+}
+
+supervise_claudeb() {
+  local directory="$1" meta="$1/meta.json" account model effort resume cli rc
+  local -a command retry
+  account=$(jq -r '.account' "$meta")
+  model=$(jq -r '.model' "$meta")
+  effort=$(jq -r '.effort' "$meta")
+  resume=$(jq -r '.resume' "$meta")
+  cli=$(jq -r '.cli' "$meta")
+  command=("$cli" profile "$account" -p --model "$model" --effort "$effort" --output-format json --dangerously-skip-permissions)
+  [ -z "$resume" ] || command+=(--resume "$resume")
+  "${command[@]}" <"$directory/brief" >"$directory/out" 2>"$directory/err"
+  rc=$?
+  if [ "$rc" -ne 0 ] && grep -Eiq -- '((unknown|unrecognized|invalid|unexpected|unsupported|not supported).{0,80}--effort|--effort.{0,80}(unknown|unrecognized|invalid|unexpected|unsupported|not supported))' "$directory/err"; then
+    retry=("$cli" profile "$account" -p --model "$model" --output-format json --dangerously-skip-permissions)
+    [ -z "$resume" ] || retry+=(--resume "$resume")
+    meta_update "$directory" '.effort_flag_dropped = true' || return 4
+    : >"$directory/out"
+    : >"$directory/err"
+    "${retry[@]}" <"$directory/brief" >"$directory/out" 2>"$directory/err"
+    rc=$?
+  fi
+  return "$rc"
+}
+
+supervise_codex() {
+  local directory="$1" meta="$1/meta.json" account model effort resume cli rc value
+  local -a command retry add_dirs images
+  account=$(jq -r '.account' "$meta")
+  model=$(jq -r '.model' "$meta")
+  effort=$(jq -r '.effort' "$meta")
+  resume=$(jq -r '.resume' "$meta")
+  cli=$(jq -r '.cli' "$meta")
+  REPLY_ARRAY=()
+  read_json_array '.add_dirs[]' "$meta"
+  add_dirs=("${REPLY_ARRAY[@]}")
+  REPLY_ARRAY=()
+  read_json_array '.images[]' "$meta"
+  images=("${REPLY_ARRAY[@]}")
+  if [ -n "$resume" ]; then
+    command=("$cli" exec resume "$resume")
+    value=$(jq -r '.explicit_model // empty' "$meta")
+    [ -z "$value" ] || command+=(-m "$value")
+    value=$(jq -r '.explicit_effort // empty' "$meta")
+    [ -z "$value" ] || command+=(-c "model_reasoning_effort=$value")
+  else
+    command=("$cli" exec -C "$(jq -r '.workdir' "$meta")" -m "$model" -c "model_reasoning_effort=$effort" --color never)
+  fi
+  for value in "${add_dirs[@]}"; do command+=(--add-dir "$value"); done
+  for value in "${images[@]}"; do command+=(-i "$value"); done
+  if [ "$(jq -r '.web_search' "$meta")" = true ]; then command+=(-c web_search=live); fi
+  command+=(-o "$directory/out" -)
+  if [ "$account" = main ]; then
+    (unset CODEX_HOME; "${command[@]}" <"$directory/brief" >/dev/null 2>"$directory/err")
+    rc=$?
+  else
+    CODEX_HOME="$HOME/.codex-profiles/$account" "${command[@]}" <"$directory/brief" >/dev/null 2>"$directory/err"
+    rc=$?
+  fi
+  if [ "$rc" -ne 0 ] && grep -Fqi 'Not inside a trusted directory' "$directory/err"; then
+    # Appended, not spliced in: a resume command starts `exec resume <id>` and a
+    # positional insert would separate the subcommand from its id.
+    retry=("${command[@]}" --skip-git-repo-check)
+    meta_update "$directory" '.trusted_dir_retry = true' || return 4
+    : >"$directory/out"
+    : >"$directory/err"
+    if [ "$account" = main ]; then
+      (unset CODEX_HOME; "${retry[@]}" <"$directory/brief" >/dev/null 2>"$directory/err")
+      rc=$?
+    else
+      CODEX_HOME="$HOME/.codex-profiles/$account" "${retry[@]}" <"$directory/brief" >/dev/null 2>"$directory/err"
+      rc=$?
+    fi
+  fi
+  return "$rc"
+}
+
+supervise_gemini() {
+  local directory="$1" meta="$1/meta.json" account agy_model resume cli prompt value rc
+  local -a command add_dirs
+  account=$(jq -r '.account' "$meta")
+  agy_model=$(jq -r '.agy_model' "$meta")
+  resume=$(jq -r '.resume' "$meta")
+  cli=$(jq -r '.cli' "$meta")
+  prompt=$(<"$directory/brief")
+  command=("$cli" profile "$account" --model "$agy_model" --add-dir "$HOME/.claude")
+  REPLY_ARRAY=()
+  read_json_array '.add_dirs[]' "$meta"
+  add_dirs=("${REPLY_ARRAY[@]}")
+  for value in "${add_dirs[@]}"; do command+=(--add-dir "$value"); done
+  command+=(--print-timeout 170m --dangerously-skip-permissions --log-file "$directory/log")
+  [ -z "$resume" ] || command+=(--conversation "$resume")
+  command+=(--print "$prompt")
+  "${command[@]}" >"$directory/out" 2>"$directory/err"
+  rc=$?
+  return "$rc"
+}
+
+supervise() {
+  local directory="$1" vendor workdir
+  [ -r "$directory/meta.json" ] || return 4
+  vendor=$(jq -r '.vendor' "$directory/meta.json")
+  workdir=$(jq -r '.workdir' "$directory/meta.json")
+  cd "$workdir" || return 4
+  case "$vendor" in
+    claudeb) supervise_claudeb "$directory" ;;
+    codex) supervise_codex "$directory" ;;
+    gemini) supervise_gemini "$directory" ;;
+    *) return 4 ;;
+  esac
+}
+
+start_run() {
+  [ "$#" -ge 1 ] || usage
+  local vendor="$1" brief='' workdir="$PWD" explicit_account='' model='' effort='' resume=''
+  local account picker pick_output pick_rc pin config_model model_label agy_model='' root epoch suffix run_id directory
+  local explicit_model='' explicit_effort=''
+  local started cli cmd_json add_dirs_json images_json pid supervisor_body value list_output list_rc
+  local web_search=false
+  local -a add_dirs images command_meta command
+  add_dirs=()
+  images=()
+  command_meta=()
+  command=()
+  shift
+  case "$vendor" in claudeb|codex|gemini) ;; *) usage ;; esac
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --brief) [ "$#" -ge 2 ] || usage; brief="$2"; shift 2 ;;
+      --workdir) [ "$#" -ge 2 ] || usage; workdir="$2"; shift 2 ;;
+      --account) [ "$#" -ge 2 ] || usage; explicit_account="$2"; shift 2 ;;
+      --model) [ "$#" -ge 2 ] || usage; model="$2"; shift 2 ;;
+      --effort) [ "$#" -ge 2 ] || usage; effort="$2"; shift 2 ;;
+      --resume) [ "$#" -ge 2 ] || usage; resume="$2"; shift 2 ;;
+      --add-dir) [ "$#" -ge 2 ] || usage; add_dirs+=("$2"); shift 2 ;;
+      --image) [ "$#" -ge 2 ] || usage; images+=("$2"); shift 2 ;;
+      --web-search) web_search=true; shift ;;
+      *) usage ;;
+    esac
+  done
+  [ -n "$brief" ] || usage
+  [ -r "$brief" ] || fail "brief is not readable: $brief"
+  [ -d "$workdir" ] || fail "workdir is not a directory: $workdir"
+  workdir=$(cd "$workdir" && pwd -P) || fail "could not resolve workdir: $workdir"
+  case "$vendor" in
+    claudeb)
+      [ "${#add_dirs[@]}" -eq 0 ] && [ "${#images[@]}" -eq 0 ] && [ "$web_search" = false ] || fail 'claudeb does not support --add-dir, --image, or --web-search'
+      ;;
+    codex)
+      [ -z "$resume" ] || [ "${#add_dirs[@]}" -eq 0 ] || fail 'codex resume does not support --add-dir'
+      ;;
+    gemini)
+      [ "${#images[@]}" -eq 0 ] && [ "$web_search" = false ] || fail 'gemini does not support --image or --web-search flags'
+      ;;
+  esac
+  # Paths are re-resolved by the detached supervisor after it cds to workdir, so
+  # relative arguments valid here would dangle there — pin them to the caller's cwd.
+  for value in "${!images[@]}"; do
+    [ -r "${images[$value]}" ] || fail "image is not readable: ${images[$value]}"
+    [[ "${images[$value]}" = /* ]] || images[$value]="$PWD/${images[$value]}"
+  done
+  for value in "${!add_dirs[@]}"; do
+    [[ "${add_dirs[$value]}" = /* ]] || add_dirs[$value]="$PWD/${add_dirs[$value]}"
+  done
+
+  if [ -n "$explicit_account" ]; then
+    account="$explicit_account"
+  else
+    picker="${WORKER_RUN_WORKER_PICK:-worker-pick}"
+    pick_output=$("$picker" --account "$vendor" 2>/dev/null)
+    pick_rc=$?
+    if [ "$pick_rc" -eq 0 ] && [ -n "$pick_output" ]; then
+      account=${pick_output%%$'\n'*}
+    elif [ "$pick_rc" -eq 3 ]; then
+      printf 'OUTCOME: %s_USAGE_LIMIT\n' "$(vendor_name "$vendor")"
+      exit 3
+    else
+      pin=$(config_value "${vendor}_profile")
+      if [ -n "$pin" ]; then
+        account="$pin"
+      elif [ "$vendor" = claudeb ]; then
+        fail 'claudeb needs an explicit account or claudeb_profile pin when worker-pick is unavailable'
+      else
+        account=main
+      fi
+    fi
+  fi
+  case "$vendor:$account" in
+    gemini:main) ;;
+    gemini:*) [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]] || fail "invalid gemini account: $account" ;;
+    *) [[ "$account" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || fail "invalid account: $account" ;;
+  esac
+
+  case "$vendor" in
+    claudeb)
+      model=${model:-$(config_value claudeb_model)}; model=${model:-opus}
+      effort=${effort:-$(config_value claudeb_effort)}; effort=${effort:-high}
+      cli="${WORKER_RUN_CLAUDEB:-$HOME/.local/bin/claudeb}"
+      command_meta=("$cli" profile "$account" -p --model "$model" --effort "$effort" --output-format json --dangerously-skip-permissions)
+      [ -z "$resume" ] || command_meta+=(--resume "$resume")
+      ;;
+    codex)
+      config_model=$(sed -n 's/^[[:space:]]*model[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$CODEX_CONFIG" 2>/dev/null | head -n1)
+      config_model=${config_model:-gpt-5.6-sol}
+      explicit_model=$model
+      explicit_effort=$effort
+      model=${model:-$config_model}
+      effort=${effort:-$(config_value codex_effort)}; effort=${effort:-medium}
+      model_label=${model##*-}
+      [[ "$model_label" =~ ^[A-Za-z0-9]+$ ]] || model_label=sol
+      cli="${WORKER_RUN_CODEX:-codex}"
+      if [ -n "$resume" ]; then
+        # `exec resume` keeps the session's own model unless told otherwise, so
+        # only an explicit request overrides it — config defaults must not.
+        command=("$cli" exec resume "$resume")
+        [ -z "$explicit_model" ] || command+=(-m "$explicit_model")
+        [ -z "$explicit_effort" ] || command+=(-c "model_reasoning_effort=$explicit_effort")
+      else
+        command=("$cli" exec -C "$workdir" -m "$model" -c "model_reasoning_effort=$effort" --color never)
+      fi
+      for value in "${add_dirs[@]}"; do command+=(--add-dir "$value"); done
+      for value in "${images[@]}"; do command+=(-i "$value"); done
+      [ "$web_search" = false ] || command+=(-c web_search=live)
+      command+=(-o OUT -)
+      if [ "$account" = main ]; then command_meta=("${command[@]}"); else command_meta=(env "CODEX_HOME=$HOME/.codex-profiles/$account" "${command[@]}"); fi
+      ;;
+    gemini)
+      model=${model:-$(config_value gemini_model)}; model=${model:-pro}
+      effort=${effort:-$(config_value gemini_effort)}; effort=${effort:-high}
+      [ "$model" != flash ] || model=flash36
+      case "$effort" in xhigh|max|ultra) effort=high ;; esac
+      case "$model:$effort" in
+        pro:high) agy_model='Gemini 3.1 Pro (High)' ;;
+        pro:low) agy_model='gemini-3.1-pro-low' ;;
+        flash36:high|flash36:medium|flash36:low) agy_model="gemini-3.6-flash-$effort" ;;
+        flash35:high|flash35:medium|flash35:low) agy_model="gemini-3.5-flash-$effort" ;;
+        *) printf 'OUTCOME: GEMINI_UNAVAILABLE\n'; exit 4 ;;
+      esac
+      cli="${WORKER_RUN_GEMINIB:-$HOME/.local/bin/geminib}"
+      if [ "$account" != main ]; then
+        list_output=$("$cli" list 2>/dev/null)
+        list_rc=$?
+        if [ "$list_rc" -ne 0 ] || ! grep -Eq "^${account}:" <<<"$list_output"; then
+          printf 'OUTCOME: GEMINI_UNAVAILABLE\n'
+          exit 4
+        fi
+      fi
+      command_meta=("$cli" profile "$account" --model "$agy_model" --add-dir "$HOME/.claude")
+      for value in "${add_dirs[@]}"; do command_meta+=(--add-dir "$value"); done
+      command_meta+=(--print-timeout 170m --dangerously-skip-permissions --log-file LOG)
+      [ -z "$resume" ] || command_meta+=(--conversation "$resume")
+      command_meta+=(--print "$(<"$brief")")
+      ;;
+  esac
+
+  root="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}"
+  mkdir -p "$root" || fail "could not create run root: $root"
+  root=$(cd "$root" && pwd -P) || fail "could not resolve run root: $root"
+  local prune_marker="$root/.prune"
+  if [ ! -f "$prune_marker" ] || [ -n "$(find "$prune_marker" -mtime +1 2>/dev/null)" ]; then
+    touch "$prune_marker" 2>/dev/null
+    find "$root" -mindepth 1 -maxdepth 1 -type d -mtime +7 -exec rm -rf {} + 2>/dev/null
+  fi
+  epoch=$(date +%s)
+  local attempts=0
+  while :; do
+    printf -v suffix '%04x' "$RANDOM"
+    run_id="$vendor-$epoch-$$-$suffix"
+    directory="$root/$run_id"
+    mkdir "$directory" 2>/dev/null && break
+    attempts=$((attempts + 1))
+    [ "$attempts" -lt 50 ] || fail "could not create run directory under: $root"
+  done
+  cp "$brief" "$directory/brief" || fail 'could not copy brief'
+  : >"$directory/out"
+  : >"$directory/err"
+  [ "$vendor" != gemini ] || : >"$directory/log"
+  for value in "${!command_meta[@]}"; do
+    case "${command_meta[$value]}" in
+      OUT) command_meta[$value]="$directory/out" ;;
+      LOG) command_meta[$value]="$directory/log" ;;
+    esac
+  done
+  printf '%s · %s · %s\n' "$account" "${model_label:-$model}" "$effort" >"$directory/tag"
+  cmd_json=$(jq -cn --args '$ARGS.positional' -- "${command_meta[@]}") || fail 'could not encode command metadata'
+  add_dirs_json=$(jq -cn --args '$ARGS.positional' -- "${add_dirs[@]}") || fail 'could not encode add-dir metadata'
+  images_json=$(jq -cn --args '$ARGS.positional' -- "${images[@]}") || fail 'could not encode image metadata'
+  started=$(date +%s)
+  jq -cn --arg vendor "$vendor" --arg account "$account" --arg model "$model" --arg effort "$effort" \
+    --arg agy_model "$agy_model" --arg workdir "$workdir" --arg resume "$resume" --arg cli "$cli" \
+    --arg explicit_model "$explicit_model" --arg explicit_effort "$explicit_effort" \
+    --argjson pid 0 --argjson started_at "$started" --argjson cmd "$cmd_json" \
+    --argjson add_dirs "$add_dirs_json" --argjson images "$images_json" --argjson web_search "$web_search" \
+    '{vendor:$vendor,account:$account,model:$model,effort:$effort,workdir:$workdir,pid:$pid,cmd:$cmd,started_at:$started_at,resume:$resume,cli:$cli,add_dirs:$add_dirs,images:$images,web_search:$web_search,explicit_model:$explicit_model,explicit_effort:$explicit_effort}
+     + if $vendor == "gemini" then {agy_model:$agy_model} else {} end' >"$directory/meta.json" || fail 'could not write metadata'
+
+  supervisor_body='ticks=0
+while [ ! -e "$2/.ready" ]; do
+  ticks=$((ticks + 1))
+  if [ "$ticks" -ge 6000 ]; then
+    printf "4\n" >"$2/exit_code.tmp.$$"
+    mv -f "$2/exit_code.tmp.$$" "$2/exit_code"
+    exit 4
+  fi
+  sleep 0.01
+done
+rm -f "$2/.ready"
+"$1" _supervise "$2"
+rc=$?
+printf "%s\n" "$rc" >"$2/exit_code.tmp.$$"
+mv -f "$2/exit_code.tmp.$$" "$2/exit_code"
+exit "$rc"'
+  if command -v setsid >/dev/null 2>&1; then
+    nohup setsid bash -c "$supervisor_body" _ "$SCRIPT_PATH" "$directory" </dev/null >/dev/null 2>&1 &
+  elif command -v perl >/dev/null 2>&1; then
+    nohup perl -MPOSIX -e 'defined POSIX::setsid() or die "setsid failed\n"; exec @ARGV; die "exec failed\n"' \
+      bash -c "$supervisor_body" _ "$SCRIPT_PATH" "$directory" </dev/null >/dev/null 2>&1 &
+  else
+    fail 'setsid is unavailable'
+  fi
+  pid=$!
+  jq --argjson pid "$pid" '.pid = $pid' "$directory/meta.json" >"$directory/meta.json.tmp.$$" \
+    && mv -f "$directory/meta.json.tmp.$$" "$directory/meta.json" || fail 'could not record supervisor pid'
+  : >"$directory/.ready"
+  printf 'RUN: %s\nTAG: %s · %s · %s\nDIR: %s\n' "$run_id" "$account" "${model_label:-$model}" "$effort" "$directory"
+}
+
+session_id() {
+  local directory="$1" vendor session
+  vendor=$(jq -r '.vendor' "$directory/meta.json")
+  session=''
+  case "$vendor" in
+    claudeb) session=$(jq -r '.session_id // empty' "$directory/out" 2>/dev/null) ;;
+    codex)
+      # Live codex exec prints 'session id: <uuid>' to stderr, not stdout.
+      session=$(grep -Ehio 'session[_ -]?id[[:space:]:=]+[A-Za-z0-9._-]+' "$directory/err" "$directory/out" 2>/dev/null | head -n1 | sed -E 's/.*[[:space:]:=]+//')
+      ;;
+    gemini)
+      # Live agy v1.1.9 log shapes: 'Created conversation <id>' on a fresh run,
+      # 'conversationID="<id>"' (non-empty) when resuming.
+      session=$(grep -Eo 'Created conversation [A-Za-z0-9._-]+' "$directory/log" 2>/dev/null | head -n1 | awk '{print $3}')
+      [ -n "$session" ] || session=$(grep -Eo 'conversationID="[A-Za-z0-9._-]+"' "$directory/log" 2>/dev/null | head -n1 | sed -E 's/.*"([^"]*)"/\1/')
+      ;;
+  esac
+  printf '%s' "${session:--}"
+}
+
+has_limit_signature() {
+  local directory="$1" vendor="$2" pattern
+  local -a scan
+  # out holds the worker's ANSWER, which in this repo routinely discusses quotas
+  # and 429s; vendor limit errors arrive on stderr (live-verified for agy and
+  # codex). claudeb print mode can emit its limit error on stdout, so it keeps
+  # both. The agy log mentions quota even on healthy runs — never scan it.
+  case "$vendor" in
+    codex) pattern='hit your usage limit|usage_limit|quota|rate.?limit'; scan=("$directory/err") ;;
+    claudeb) pattern='usage limit|429'; scan=("$directory/out" "$directory/err") ;;
+    gemini) pattern='RESOURCE_EXHAUSTED|Individual quota reached|usage limit|quota|rate.?limit|429'; scan=("$directory/err") ;;
+  esac
+  grep -Eiq "$pattern" "${scan[@]}" 2>/dev/null
+}
+
+print_outcome() {
+  local directory="$1" vendor="$2" code="$3" reset
+  # Signature scan only on failure: results in this ecosystem routinely DISCUSS
+  # quotas and 429s, so a clean exit whose text mentions them is not a limit.
+  [ "$code" != 0 ] || return 0
+  if has_limit_signature "$directory" "$vendor"; then
+    printf 'OUTCOME: %s_USAGE_LIMIT\n' "$(vendor_name "$vendor")"
+    reset=$(grep -Eioh '(retry[_ -]?at|reset(s)?([_ -]?at|[ _-]?in)?)[[:space:]:=]+[^,;]+' "$directory/out" "$directory/err" 2>/dev/null | head -n1)
+    [ -z "$reset" ] || printf 'RESET: %s\n' "$reset"
+  else
+    printf 'OUTCOME: %s\n' "$(failure_outcome "$vendor")"
+  fi
+}
+
+result_tail() {
+  local directory="$1" vendor="$2" lines="$3"
+  printf 'RESULT-TAIL:\n'
+  if [ "$vendor" = claudeb ]; then
+    jq -r '.result // empty' "$directory/out" 2>/dev/null | tail -n "$lines"
+  else
+    tail -n "$lines" "$directory/out" 2>/dev/null
+  fi
+}
+
+terminal_report() {
+  local directory="$1" code vendor status
+  code=$(tr -d '[:space:]' <"$directory/exit_code")
+  [[ "$code" =~ ^[0-9]+$ ]] || code=unknown
+  vendor=$(jq -r '.vendor' "$directory/meta.json")
+  if [ "$code" = 0 ]; then status=done; else status=failed; fi
+  printf 'STATUS: %s\nEXIT: %s\nSESSION: %s\n' "$status" "$code" "$(session_id "$directory")"
+  print_outcome "$directory" "$vendor" "$code"
+  result_tail "$directory" "$vendor" 40
+  if [ "$code" != 0 ]; then
+    printf 'ERR-TAIL:\n'
+    tail -n 40 "$directory/err" 2>/dev/null
+  fi
+}
+
+unknown_report() {
+  local directory="$1" vendor
+  vendor=$(jq -r '.vendor' "$directory/meta.json")
+  printf 'STATUS: failed\nEXIT: unknown\nSESSION: %s\nOUTCOME: %s\n' "$(session_id "$directory")" "$(failure_outcome "$vendor")"
+  result_tail "$directory" "$vendor" 40
+  printf 'ERR-TAIL:\n'
+  tail -n 40 "$directory/err" 2>/dev/null
+}
+
+running_report() {
+  local directory="$1" now started elapsed out_bytes err_bytes
+  now=$(date +%s)
+  started=$(jq -r '.started_at' "$directory/meta.json")
+  elapsed=$((now - started)); [ "$elapsed" -ge 0 ] || elapsed=0
+  out_bytes=$(wc -c <"$directory/out" | tr -d '[:space:]')
+  err_bytes=$(wc -c <"$directory/err" | tr -d '[:space:]')
+  printf 'STATUS: running\nELAPSED: %s\nOUT-BYTES: %s\nERR-BYTES: %s\n' "$elapsed" "$out_bytes" "$err_bytes"
+}
+
+wait_run() {
+  [ "$#" -ge 1 ] || usage
+  local run_id="$1" max=500 directory wait_started now waited remaining sleep_for pid
+  shift
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --max) [ "$#" -ge 2 ] || usage; max="$2"; shift 2 ;;
+      *) usage ;;
+    esac
+  done
+  [[ "$max" =~ ^[0-9]+$ ]] || usage
+  directory=$(run_path "$run_id")
+  [ -d "$directory" ] && [ -r "$directory/meta.json" ] || fail "unknown run: $run_id"
+  wait_started=$(date +%s)
+  while :; do
+    if [ -f "$directory/exit_code" ]; then terminal_report "$directory"; return 0; fi
+    pid=$(jq -r '.pid' "$directory/meta.json")
+    # pid 0 is the pre-launch placeholder; kill -0 0 would probe our own
+    # process group and report a never-started run as alive.
+    if ! [[ "$pid" =~ ^[0-9]+$ ]] || [ "$pid" -le 0 ] || ! kill -0 "$pid" 2>/dev/null; then
+      sleep 0.1
+      if [ -f "$directory/exit_code" ]; then terminal_report "$directory"; else unknown_report "$directory"; fi
+      return 0
+    fi
+    now=$(date +%s)
+    waited=$((now - wait_started)); [ "$waited" -ge 0 ] || waited=0
+    if [ "$waited" -ge "$max" ]; then running_report "$directory"; return 0; fi
+    remaining=$((max - waited))
+    sleep_for=5; [ "$remaining" -ge "$sleep_for" ] || sleep_for=$remaining
+    sleep "$sleep_for"
+  done
+}
+
+report_run() {
+  [ "$#" -eq 1 ] || usage
+  local directory vendor account code status cost pid
+  directory=$(run_path "$1")
+  [ -d "$directory" ] && [ -r "$directory/meta.json" ] || fail "unknown run: $1"
+  vendor=$(jq -r '.vendor' "$directory/meta.json")
+  account=$(jq -r '.account' "$directory/meta.json")
+  printf 'ACCOUNT: %s (%s)\n' "$account" "$vendor"
+  if [ -f "$directory/exit_code" ]; then
+    code=$(tr -d '[:space:]' <"$directory/exit_code")
+    [[ "$code" =~ ^[0-9]+$ ]] || code=unknown
+    if [ "$code" = 0 ]; then status=done; else status=failed; fi
+    printf 'STATUS: %s\nEXIT: %s\nSESSION: %s\n' "$status" "$code" "$(session_id "$directory")"
+    print_outcome "$directory" "$vendor" "$code"
+    if [ "$code" != 0 ]; then
+      printf 'ERR-TAIL:\n'
+      tail -n 80 "$directory/err" 2>/dev/null
+    fi
+  else
+    pid=$(jq -r '.pid' "$directory/meta.json")
+    if [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 0 ] && kill -0 "$pid" 2>/dev/null; then
+      running_report "$directory"
+    else
+      printf 'STATUS: failed\nEXIT: unknown\nSESSION: %s\nOUTCOME: %s\n' "$(session_id "$directory")" "$(failure_outcome "$vendor")"
+      printf 'ERR-TAIL:\n'
+      tail -n 80 "$directory/err" 2>/dev/null
+    fi
+  fi
+  if [ "$vendor" = claudeb ]; then
+    cost=$(jq -r '.total_cost_usd // empty' "$directory/out" 2>/dev/null)
+    [ -z "$cost" ] || printf 'COST: %s\n' "$cost"
+  fi
+  printf 'RESULT:\n'
+  if [ "$vendor" = claudeb ]; then
+    jq -r '.result // empty' "$directory/out" 2>/dev/null
+  else
+    tail -n 400 "$directory/out" 2>/dev/null
+  fi
+}
+
+CONFIG_FILE="${WORKER_RUN_CONFIG_FILE:-$HOME/.claude/worker-model}"
+CODEX_CONFIG="${WORKER_RUN_CODEX_CONFIG:-$HOME/.codex/config.toml}"
+SCRIPT_PATH=${BASH_SOURCE[0]}
+while [ -L "$SCRIPT_PATH" ]; do
+  SCRIPT_DIRECTORY=$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd) || exit 4
+  SCRIPT_PATH=$(readlink "$SCRIPT_PATH")
+  [[ "$SCRIPT_PATH" = /* ]] || SCRIPT_PATH="$SCRIPT_DIRECTORY/$SCRIPT_PATH"
+done
+SCRIPT_DIRECTORY=$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd) || exit 4
+SCRIPT_PATH="$SCRIPT_DIRECTORY/$(basename "$SCRIPT_PATH")"
+umask 077
+
+case "${1:-}" in
+  start) shift; start_run "$@" ;;
+  wait) shift; wait_run "$@" ;;
+  report) shift; report_run "$@" ;;
+  _supervise) shift; supervise "$@" ;;
+  *) usage ;;
+esac
