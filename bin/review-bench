@@ -1111,6 +1111,42 @@ def review_receipt(repo, lens=None, scope=None):
     return receipt if proc.returncode == 0 and proc.stdout.strip() == "tree" else None
 
 
+def scoped_review_receipts(repo):
+    """This repository's scope-only receipts, freshest first. A scoped run's own path list lives in
+    its document, so the scope a reader needs comes back out of the file rather than out of the
+    hash in its name; a lens's scoped receipt answers a different question and is not among them.
+    """
+    name = receipt_file_name(repo)
+    if not name:
+        return []
+    pattern = re.compile(rf"^{re.escape(name[:-len('.json')])}__scope-[0-9a-f]+\.json$")
+    directory = state_dir() / RECEIPT_DIR
+    receipts = []
+    try:
+        entries = sorted(directory.iterdir()) if directory.is_dir() else []
+    except OSError:
+        # A store that cannot be listed is no receipt at all. Raising instead would take `suggest`
+        # down with it, and the commit gate reads a failed suggest as nothing to review.
+        return []
+    for path in entries:
+        if not pattern.fullmatch(path.name):
+            continue
+        try:
+            document = json.loads(path.read_text())
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        scope = document.get("scope") if isinstance(document, dict) else None
+        if not isinstance(scope, list) or not scope or not all(
+            isinstance(item, str) and item for item in scope
+        ):
+            continue
+        receipt = review_receipt(repo, scope=scope)
+        if receipt and receipt.get("scope") == scope:
+            receipts.append(receipt)
+    receipts.sort(key=lambda receipt: receipt["ts"], reverse=True)
+    return receipts
+
+
 def persist_review_receipt(repo, tree, sha, run_id, errored, timestamp=None, panel=None,
                            lens=None, scope=None):
     tmp = None
@@ -5508,6 +5544,67 @@ def review_outcome(repo, receipt):
     return worktree, confirmed, findings
 
 
+def staged_paths(repo, baseline, scope=None):
+    proc = subprocess.run(
+        ["git", "diff", "--cached", "--no-renames", "--name-only", "-z", baseline, "--",
+         *(scope or ())],
+        cwd=repo, capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or "git diff --cached failed")
+    return {path for path in proc.stdout.split("\0") if path}
+
+
+def scoped_review_vouching(repo):
+    """The scoped review that answers for what is staged, or None. A commit contains the index and
+    nothing else, so another agent's unstaged work in the same checkout is not what this one is
+    asking to commit — but a staged path the scoped panel was never shown is, and it keeps the
+    blocking verdict. One receipt has to cover the whole staged set on its own: a union of two
+    would let two half-fresh reviews vouch for a tree neither of them read.
+    """
+    try:
+        staged = staged_paths(repo, "HEAD")
+    except RuntimeError:
+        return None
+    if not staged:
+        return None
+    for receipt in scoped_review_receipts(repo):
+        try:
+            if staged_paths(repo, "HEAD", receipt["scope"]) != staged:
+                continue
+            delta, _ = diff_numstat(repo, ["--cached", receipt["tree"]])
+        except RuntimeError:
+            continue
+        # The scope is a pathspec, and matching it is not being read: a directory scope matches a
+        # file created after the panel ran, a scope naming `a[b].txt` matches `ab.txt`. Only the
+        # diff the run was actually shown says which paths it answers for.
+        reviewed_paths = reviewed_diff_paths(repo, receipt["commit"])
+        if not staged <= reviewed_paths:
+            continue
+        worktree = is_worktree_snapshot(repo, receipt["commit"])
+        # Standing where the panel stood, the exact-tree case included: once HEAD has moved inside
+        # the scope, staging the reviewed content back reverts whatever moved it, and that diff is
+        # not the one the panel read.
+        review_point = f"{receipt['commit']}^" if worktree else receipt["commit"]
+        if not same_commit(repo, "HEAD", review_point):
+            continue
+        # The index is the reviewed tree itself: nothing has been written since the panel read it.
+        if not delta:
+            return receipt
+        if receipt["run_id"].startswith("stamped-"):
+            continue
+        # Everything below is the repository receipt's own fix-delta rule, asked of the scoped
+        # review instead: a review that found something, and work no larger than the diff it read.
+        _, confirmed, findings = review_outcome(repo, receipt)
+        if not (findings > 0 if worktree else confirmed > 0):
+            continue
+        reviewed_lines = reviewed_diff_lines(repo, receipt["commit"])
+        if (bool(reviewed_lines) and sum(delta.values()) <= reviewed_lines
+                and (worktree or bool(set(delta) & reviewed_paths))):
+            return receipt
+    return None
+
+
 def cmd_receipt(args):
     """Print this repository's review receipt, with what the stamp hook needs to decide whether a
     commit ends the review cycle: the confirmed-defect count its run was adjudicated to, whether
@@ -5667,6 +5764,7 @@ def cmd_suggest(args):
         # T0 by the ladder's own T0 rule, so raising T1's ceiling can never quietly send a larger
         # delta to T0's two-minute panel; T1 for everything else.
         tier_name = "T0" if size_tier(changes, changed_lines) == "T0" else "T1"
+    scoped_vouch = None if args.range or fix_delta else scoped_review_vouching(repo)
     print(f"changed files: {len(changes)}")
     print(f"changed lines: {changed_lines}")
     # Exactly one tier is named here, and it is the one that runs. The cap on an owner-only tier
@@ -5680,6 +5778,9 @@ def cmd_suggest(args):
               f"so the panel is {run_tier}")
     if fix_delta:
         print(f"work over review {receipt['run_id']}, so {run_tier} regardless of what it touches")
+    if scoped_vouch:
+        print(f"work over review {scoped_vouch['run_id']}, which read every staged path "
+              f"(scoped to {shlex.join(scoped_vouch['scope'])})")
     if receipt:
         print(f"unreviewed delta vs review {receipt['run_id']}; "
               + ("the working tree is compared with the reviewed snapshot as one tree against "

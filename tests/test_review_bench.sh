@@ -5866,6 +5866,121 @@ assert_suggestion(
     fix_capped=True,
 )
 
+# A scoped review answers for a staged commit in a shared checkout. The commit contains the index
+# and nothing else, so another agent's unstaged work is not what this one is asking to commit —
+# without this, a fully reviewed, fully staged change stayed blocked forever by files nobody staged.
+scoped_suggest = make_suggest_repo("suggest-scoped", ("mine.txt", "theirs.txt"))
+(scoped_suggest / "mine.txt").write_text("reviewed\n" * 12)
+scoped_sha = rb.worktree_snapshot_commit(scoped_suggest, paths=["mine.txt"])
+scoped_tree = subprocess.run(
+    ["git", "-C", str(scoped_suggest), "rev-parse", f"{scoped_sha}^{{tree}}"],
+    check=True, capture_output=True, text=True, env=suggest_env,
+).stdout.strip()
+scoped_receipt_path = rb.persist_review_receipt(
+    scoped_suggest, scoped_tree, scoped_sha, "scoped-fixture", 0, scope=["mine.txt"]
+)
+assert scoped_receipt_path.parent == receipt_dir, scoped_receipt_path
+assert rb.review_receipt(scoped_suggest) is None, "a scoped receipt answered as the repository's"
+subprocess.run(["git", "-C", str(scoped_suggest), "add", "mine.txt"], check=True, env=suggest_env)
+scoped_lines = suggest(scoped_suggest)
+assert "work over review scoped-fixture, which read every staged path (scoped to mine.txt)" \
+    in scoped_lines, scoped_lines
+
+# Someone else's unstaged edit and untracked file size the suggestion and still do not block: they
+# are not going into this commit, and no review of them is owed by the agent making it.
+(scoped_suggest / "theirs.txt").write_text("theirs\n" * 2)
+(scoped_suggest / "theirs-new.txt").write_text("new\n" * 10)
+scoped_foreign_lines = suggest(scoped_suggest)
+assert scoped_foreign_lines[0] == "changed files: 3", scoped_foreign_lines
+assert any(line.startswith("work over review scoped-fixture,") for line in scoped_foreign_lines), \
+    scoped_foreign_lines
+
+# A fix on top of the reviewed scope is that review's own follow-up, by the same rule the
+# repository's receipt gets — and only once the panel behind it is known to have found something.
+(scoped_suggest / "mine.txt").write_text("reviewed\n" * 12 + "fix\n")
+subprocess.run(["git", "-C", str(scoped_suggest), "add", "mine.txt"], check=True, env=suggest_env)
+assert not any(line.startswith("work over review ") for line in suggest(scoped_suggest)), \
+    suggest(scoped_suggest)
+review_found("scoped-fixture", findings=2)
+assert any(line.startswith("work over review scoped-fixture,") for line in suggest(scoped_suggest))
+
+# Fail closed on a receipt that cannot be read: an unreadable scoped review is no review at all,
+# and guessing its coverage is the one mistake that would wave a commit through unreviewed.
+scoped_receipt_bytes = scoped_receipt_path.read_bytes()
+scoped_receipt_path.write_bytes(b"{not json")
+assert not any(line.startswith("work over review ") for line in suggest(scoped_suggest)), \
+    suggest(scoped_suggest)
+scoped_receipt_path.write_bytes(scoped_receipt_bytes)
+
+# A staged path the scoped panel was never shown IS part of this commit, so it blocks — and a
+# second scoped receipt covering exactly that path does not rescue it: two half-fresh reviews may
+# not vouch together for a tree neither of them read.
+subprocess.run(["git", "-C", str(scoped_suggest), "add", "theirs.txt"], check=True, env=suggest_env)
+assert not any(line.startswith("work over review ") for line in suggest(scoped_suggest)), \
+    suggest(scoped_suggest)
+rb.persist_review_receipt(
+    scoped_suggest, scoped_tree, scoped_sha, "scoped-theirs-fixture", 0, scope=["theirs.txt"]
+)
+assert not any(line.startswith("work over review ") for line in suggest(scoped_suggest)), \
+    suggest(scoped_suggest)
+
+# The scope is a pathspec, and matching one is not the same as having been read: a directory scope
+# goes on matching files written after the panel ran, and those are precisely the unreviewed ones.
+dir_scope_suggest = make_suggest_repo("suggest-scoped-dir", ("src/a.txt", "other.txt"))
+(dir_scope_suggest / "src" / "a.txt").write_text("reviewed\n" * 12)
+dir_scope_sha = rb.worktree_snapshot_commit(dir_scope_suggest, paths=["src"])
+dir_scope_tree = subprocess.run(
+    ["git", "-C", str(dir_scope_suggest), "rev-parse", f"{dir_scope_sha}^{{tree}}"],
+    check=True, capture_output=True, text=True, env=suggest_env,
+).stdout.strip()
+rb.persist_review_receipt(
+    dir_scope_suggest, dir_scope_tree, dir_scope_sha, "dir-scope-fixture", 0, scope=["src"]
+)
+review_found("dir-scope-fixture", findings=2)
+subprocess.run(["git", "-C", str(dir_scope_suggest), "add", "src/a.txt"],
+               check=True, env=suggest_env)
+assert any(line.startswith("work over review dir-scope-fixture,")
+           for line in suggest(dir_scope_suggest)), suggest(dir_scope_suggest)
+
+# An unreadable receipt store must not take `suggest` down with it: the commit gate reads a failed
+# suggest as no review check at all and lets the commit through.
+receipt_dir.chmod(0o000)
+try:
+    unreadable_store_lines = suggest(dir_scope_suggest)
+finally:
+    receipt_dir.chmod(0o755)
+assert unreadable_store_lines[0] == "changed files: 1", unreadable_store_lines
+
+(dir_scope_suggest / "src" / "new.txt").write_text("new\n" * 3)
+subprocess.run(["git", "-C", str(dir_scope_suggest), "add", "src/new.txt"],
+               check=True, env=suggest_env)
+assert not any(line.startswith("work over review ") for line in suggest(dir_scope_suggest)), \
+    suggest(dir_scope_suggest)
+
+# Staging the reviewed content back after HEAD has moved inside the scope is a revert of whoever
+# moved it, and that diff reached no panel — an exact match with the reviewed tree is not a review.
+moved_head_suggest = make_suggest_repo("suggest-scoped-moved", ("mine.txt", "other.txt"))
+(moved_head_suggest / "mine.txt").write_text("reviewed\n" * 12)
+moved_head_sha = rb.worktree_snapshot_commit(moved_head_suggest, paths=["mine.txt"])
+moved_head_tree = subprocess.run(
+    ["git", "-C", str(moved_head_suggest), "rev-parse", f"{moved_head_sha}^{{tree}}"],
+    check=True, capture_output=True, text=True, env=suggest_env,
+).stdout.strip()
+rb.persist_review_receipt(
+    moved_head_suggest, moved_head_tree, moved_head_sha, "moved-head-fixture", 0,
+    scope=["mine.txt"]
+)
+(moved_head_suggest / "mine.txt").write_text("theirs\n" * 5)
+subprocess.run(["git", "-C", str(moved_head_suggest), "add", "mine.txt"],
+               check=True, env=suggest_env)
+subprocess.run(["git", "-C", str(moved_head_suggest), "commit", "-qm", "their work"],
+               check=True, env=suggest_env)
+(moved_head_suggest / "mine.txt").write_text("reviewed\n" * 12)
+subprocess.run(["git", "-C", str(moved_head_suggest), "add", "mine.txt"],
+               check=True, env=suggest_env)
+assert not any(line.startswith("work over review ") for line in suggest(moved_head_suggest)), \
+    suggest(moved_head_suggest)
+
 missing_tree_suggest = make_suggest_repo("suggest-missing-tree")
 (missing_tree_suggest / "tracked.txt").write_text("changed\n")
 (receipt_dir / rb.receipt_file_name(missing_tree_suggest)).write_text(json.dumps({
