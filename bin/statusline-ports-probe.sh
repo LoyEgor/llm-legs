@@ -179,7 +179,7 @@ if [[ "${now:-}" =~ ^[0-9]+$ ]]; then
   m=$(file_mtime "$marker" 2>/dev/null || printf '0')
   [[ "$m" =~ ^[0-9]+$ ]] || m=0
   if [ "$((now - m))" -gt 3600 ]; then
-    find "$cache_dir" -type f \( -name 'ports-*' -o -name 'title-*' -o -name 'cache-ttl-track-*' -o -name 'topic-*' \) -mtime +7 -delete 2>/dev/null
+    find "$cache_dir" -type f \( -name 'ports-*' -o -name 'title-*' -o -name 'cache-ttl-track-*' -o -name 'topic-*' -o -name 'review-class-*' \) -mtime +7 -delete 2>/dev/null
     find "$cache_dir" -type d -name 'topic-*.genlock' -mtime +1 -exec rmdir {} + 2>/dev/null
     touch "$marker" 2>/dev/null
   fi

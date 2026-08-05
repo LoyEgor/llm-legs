@@ -132,6 +132,7 @@ Facts below are grounded in the code as of 2026-07-16 (line numbers may drift �
 | Codex account shows blank buckets | `codexb status` or `python3 codex-quota.py \| jq '.accounts'` — `auth_needed: true` + an `error` field means the account needs `codex login`, distinct from a real zero-usage account |
 | An `oc-*` review-bench cell is slow, empty, or errors | `review-bench oc-models` — the measured capability row says whether reasoning-off works for that model and what its review normally costs, and the health row says how often that exact cell has failed before. A 429 naming `limitName` is the plan's own dollar window: stop and come back in hours, never retry into it |
 | An OpenCode call returned exit 0 with no findings | Read `finish_reason` in `raw-<cell>.json` before touching a knob: `length` means the budget went into reasoning (suppress it or raise the ceiling), `stop` means the model ended the turn on its own (weak instruction following — drop an injected methodology, drop the `</think>` prefill). Neither is a limit |
+| The statusline `review` label is dim, or absent while the tree is dirty | It is per path and per chat, not per repository: `cat ~/.cache/claude-statusline/touched-<session_id>` for what this chat claims, `git diff --name-only --no-renames HEAD` and `ls-files --others --exclude-standard` for the delta, and `git rev-parse <receipt tree>:<path>` against `git hash-object -- <path>` for whether a receipt already covers one. Dim means nothing uncovered is this chat's (a shell redirect or an unnamed dispatch leaves no claim); absent means another live chat claims all of it, or a live run of its own is under way. The verdict is cached for 15s in `review-class-<session_id>` |
 | Choosing a review tier | Run `review-bench suggest [--repo R] [--range A..B]` for an auditable size-based choice, or `review-bench tiers` to inspect the canonical budgets, use cases and exact cells |
 | Reviewing with a registered methodology (a lens) rather than the raters' own | `review-bench lens list` names every lens under `lenses/`, its repeat count and whether its source skill still reads the way it did; `lens check <slug>` prints the recorded digest against the current one; the run is `review-bench review <sha> --lens <slug>`, and its report names the lens beside the tier |
 | A lens run missing from the leaderboard, or its panel smaller than the tier's | By construction: `worker-stats` keeps its default table lens-free and gives each slug one of its own, corpus rows carry `lens`/`lens_hash` and feed neither `--auto` cells nor cluster nor the frontier, and the cells a lens cannot reach (OpenCode, Antigravity, `-skill` specs that run as their bare twin, duplicates past `repeats`) are named in the run's `lens_panel_dropped` meta and counted in the report |
@@ -201,7 +202,9 @@ Treat `stale`, `expired`, `as_of`, and `effective_pct` as the data-honesty contr
 `statusline-workdir-hook.sh` (PostToolUse matcher
 `Bash|Edit|Write|NotebookEdit|Read|EnterWorktree|ExitWorktree`, plus a PreToolUse matcher
 `Task|Agent`) records the git toplevel a session actually works in; the status line shows it with a
-magenta `»` marker when it differs from the launch repo.
+magenta `»` marker when it differs from the launch repo. It answers a second, independent question
+in the same pass — which changed paths are THIS chat's work — into `touched-<session_id>`, which
+the review segment reads to tell its own unreviewed delta from everyone else's.
 Rules:
 - Events carrying `agent_id`/`agent_type` report the PARENT `session_id`, so a subagent's Bash,
   Read, dispatch (and every non-write tool) is ignored — a worker's stray `cd` must never retarget
@@ -245,10 +248,19 @@ Rules:
   into the owning checkout, whose branch would then be shown as the workspace); `compact` keeps it — the shell and its
   cwd survive `/compact`. This runs before the agent filter on purpose: `agent_type` on
   SessionStart means a top-level `claude --agent` session, not a subagent.
+- Ownership claims (`touched-<session_id>`, one deduplicated `<toplevel>TAB<relpath>` line, always
+  appended) come from Edit/Write/NotebookEdit — a subagent's included, unconditionally, since in
+  orchestrator mode they are the only writes there are — and from every `/`-rooted FILE a dispatch
+  brief names. A directory in a brief claims nothing: it says where the worker runs, and the
+  repository root would claim every path in the tree. A Read claims nothing either, and a shell
+  redirect (`>`, `tee`, `sed -i`) is a known blind spot — the hook reads a command line, not the
+  files it opens. The same exclusions and 7-day prune apply; the file is trimmed to the newest 500
+  entries past 600.
 The statusline itself unlinks a state file that no longer points at a git dir.
 
 State files are stored at:
 - `~/.cache/claude-statusline/workdir-<session_id>`
+- `~/.cache/claude-statusline/touched-<session_id>`
 - `~/.cache/claude-worker-tags/<agent_id>`
 
 `worker-tag-hook.sh` derives the actual relay account/model/effort from Codex, claudeb, or `geminib profile`

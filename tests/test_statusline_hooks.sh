@@ -358,6 +358,64 @@ assert_eq "$TOP_E" "$(cat "$S")"
 run_workdir_hook "$(workdir_payload Edit session-dispatch-sticky "$REPO_E" "$REPO_D/other.txt")"
 assert_eq "$TOP_D" "$(cat "$S")"
 
+# --- touched-path ownership evidence ---
+# A separate question from the home above: which changed paths are THIS chat's work. The review
+# segment reads it to tell its own unreviewed delta from everyone else's, which a receipt hash
+# over the whole repository cannot do.
+touched_of() { cat "$STATE_DIR/touched-$1" 2>/dev/null; }
+
+run_workdir_hook "$(workdir_payload Edit session-touch "$REPO_A" "$REPO_A/tracked.txt")"
+assert_eq "$TOP_A	tracked.txt" "$(touched_of session-touch)"
+
+# The path is recorded relative to the toplevel it belongs to, at whatever depth.
+mkdir -p "$REPO_A/deep/nest"
+run_workdir_hook "$(workdir_payload Write session-touch "$REPO_A" "$REPO_A/deep/nest/new.txt")"
+assert_eq "$TOP_A	deep/nest/new.txt" "$(touched_of session-touch | tail -n 1)"
+
+# A file that does not exist yet is still claimed: Write creates it, and the claim is what makes
+# the label appear for the very change that provoked it.
+assert test ! -e "$REPO_A/deep/nest/new.txt"
+
+run_workdir_hook "$(workdir_payload NotebookEdit session-touch "$REPO_A" "$REPO_A/book.ipynb")"
+assert_eq "$TOP_A	book.ipynb" "$(touched_of session-touch | tail -n 1)"
+
+# Repeating an edit adds nothing: the file holds a set of paths, not a history of writes.
+run_workdir_hook "$(workdir_payload Edit session-touch "$REPO_A" "$REPO_A/tracked.txt")"
+assert_eq 3 "$(touched_of session-touch | wc -l | tr -d ' ')"
+
+# A worker's writes are the chat's work — in orchestrator mode they are the only writes there
+# are — and they are claimed under the toplevel of the file, not of the parent session.
+run_workdir_hook "$(agent_payload Edit session-touch-agent "$REPO_A" "$REPO_D/other.txt")"
+assert_eq "$TOP_D	other.txt" "$(touched_of session-touch-agent)"
+
+# A read claims nothing: an Explore sweep touches every repository in reach.
+run_workdir_hook "$(workdir_payload Read session-touch-read "$REPO_A" "$REPO_A/tracked.txt")"
+assert test ! -e "$STATE_DIR/touched-session-touch-read"
+
+# Nor does a cd, however persistent: the hook reads a command line, not the files it opens.
+run_workdir_hook "$(workdir_payload Bash session-touch-bash "$REPO_A" "cd '$REPO_D' && make")"
+assert test ! -e "$STATE_DIR/touched-session-touch-bash"
+
+# The paths a brief names are the chat's work too. The directory the worker runs in is not one of
+# them: the repository root would claim every path in the tree.
+run_workdir_hook "$(dispatch_payload Task session-touch-dispatch "$REPO_A" \
+  "Work in $REPO_D. Change $REPO_D/other.txt and $REPO_B/tracked.txt.")"
+assert_eq "$TOP_D	other.txt
+$TOP_B	tracked.txt" "$(touched_of session-touch-dispatch)"
+
+# The standing exclusions apply to a claim as they do to a home.
+run_workdir_hook "$(workdir_payload Edit session-touch-excluded "$REPO_A" "$HOME/.claude/settings.json")"
+run_workdir_hook "$(workdir_payload Edit session-touch-excluded "$REPO_A" "$TMPDIR/scratch.txt")"
+assert test ! -e "$STATE_DIR/touched-session-touch-excluded"
+
+# A worktree is its own toplevel, so its files are claimed there and not under the checkout that
+# owns the repository — the review segment matches on the working tree.
+run_workdir_hook "$(workdir_payload Edit session-touch-wt "$REPO_E" "$REPO_E/tracked.txt")"
+assert_eq "$TOP_E	tracked.txt" "$(touched_of session-touch-wt)"
+
+# Claims are per session, and the file the review segment reads is named after it.
+assert test ! -e "$STATE_DIR/touched-session-touch-nobody"
+
 # The session's own reads are the weakest evidence the strip has: three in a row
 # into the same foreign toplevel are a move, anything less is a lookup.
 S="$STATE_DIR/workdir-session-read-move"
@@ -2255,29 +2313,62 @@ printf 'base\n' > "$REVIEW_DIRTY/tracked.txt"
 git -C "$REVIEW_DIRTY" add tracked.txt
 git -C "$REVIEW_DIRTY" -c user.name=Fixture -c user.email=fixture@example.com commit -qm initial
 printf 'line\n%.0s' {1..21} > "$REVIEW_DIRTY/change.txt"
+TOP_REVIEW_DIRTY=$(cd "$REVIEW_DIRTY" && pwd -P)
+review_segment="review"
+review_delimited=" ${DIM}│${RESET} review"
+review_dim_delimited=" ${DIM}│${RESET} ${DIM}review"
+
+# The three visibility classes the segment renders. `claim_paths` is what the workdir hook writes
+# when this chat (or a worker it dispatched) changes a file; `register_session` is the chat
+# registry the render reads to tell a live claim from an abandoned one.
+claim_paths() { # session toplevel relpath...
+  local session=$1 top=$2 path
+  shift 2
+  mkdir -p "$STATE_DIR"
+  : > "$STATE_DIR/touched-$session"
+  for path in "$@"; do printf '%s\t%s\n' "$top" "$path" >> "$STATE_DIR/touched-$session"; done
+}
+register_session() { # pid sessionId
+  mkdir -p "$HOME/.claude/sessions"
+  jq -cn --argjson pid "$1" --arg sid "$2" '{pid:$pid,sessionId:$sid,cwd:"/",status:"idle"}' \
+    > "$HOME/.claude/sessions/$1.json"
+}
+# The verdict is cached for 15s on a key that cannot see a second edit to an already-modified
+# file; a case that changes content behind git status' back drops the cache to ask again.
+review_render() { # session repo
+  rm -f "$STATE_DIR/review-class-$1"
+  run_statusline "$(statusline_payload "$1" "" "$2")" || fail "review render failed: $1"
+}
+
+claim_paths review-dirty "$TOP_REVIEW_DIRTY" change.txt
 review_dirty_payload=$(statusline_payload review-dirty "" "$REVIEW_DIRTY")
 run_statusline "$review_dirty_payload" >/dev/null || fail "review dirty first render failed"
 review_dirty_out=""
 for _ in $(seq 1 20); do
   sleep 0.2
+  rm -f "$STATE_DIR/review-class-review-dirty"
   review_dirty_out=$(run_statusline "$review_dirty_payload") || fail "review dirty render failed"
-  grep -Fq 'review T1' <<< "$review_dirty_out" && break
+  grep -Fq "$review_delimited T1" <<< "$review_dirty_out" && break
 done
-assert grep -Fq 'review T1' <<< "$review_dirty_out"
+assert grep -Fq "$review_delimited T1" <<< "$review_dirty_out"
 
 REVIEW_CLEAN="$FIXTURES/review-clean"
 git clone -q "$REPO_A" "$REVIEW_CLEAN"
-review_clean_out=$(run_statusline "$(statusline_payload review-clean "" "$REVIEW_CLEAN")") \
-  || fail "review clean render failed"
-assert test "${review_clean_out#*review T}" = "$review_clean_out"
-review_segment="review"
-assert grep -Fq "$review_segment" <<< "$review_clean_out"
+# A committed tree has no delta to review, whoever last reviewed it and whatever the tier cache
+# says: the label states what is uncommitted in front of the chat, not a standing property of the
+# repository. It used to sit there permanently on any repository without a matching receipt.
+review_clean_out=$(review_render review-clean "$REVIEW_CLEAN")
+assert test "${review_clean_out#*"$review_delimited"}" = "$review_clean_out"
+assert test "${review_clean_out#*"$review_dim_delimited"}" = "$review_clean_out"
 assert test "${review_clean_out#*⚖}" = "$review_clean_out"
-review_clean_line="${review_clean_out%%$'\n'*}"
-review_delimited=" ${DIM}│${RESET} review"
-review_before="${review_clean_line%%"$review_delimited"*}"
-review_after="${review_clean_line#*"$review_delimited"}"
-assert grep -Fq "$(basename "$REVIEW_CLEAN")" <<< "$review_before"
+
+# The review label sits after the repository cluster and before the workers.
+claim_paths review-order "$TOP_REVIEW_DIRTY" change.txt
+review_order_line=$(review_render review-order "$REVIEW_DIRTY")
+review_order_line="${review_order_line%%$'\n'*}"
+review_before="${review_order_line%%"$review_delimited"*}"
+review_after="${review_order_line#*"$review_delimited"}"
+assert grep -Fq "$(basename "$REVIEW_DIRTY")" <<< "$review_before"
 assert test "${review_before#*"${DIM}w:"}" = "$review_before"
 assert grep -Fq "${DIM}w:" <<< "$review_after"
 
@@ -2341,18 +2432,115 @@ git -C "$REVIEW_CLEAN" add tracked.txt
 git -C "$REVIEW_CLEAN" show HEAD:tracked.txt > "$REVIEW_CLEAN/tracked.txt"
 printf 'untracked object sentinel\n' > "$REVIEW_CLEAN/unique-untracked.txt"
 assert test -n "$(git -C "$REVIEW_CLEAN" status --porcelain)"
+review_clean_top=$(cd "$REVIEW_CLEAN" && pwd -P)
+claim_paths review-dirty-match "$review_clean_top" tracked.txt unique-untracked.txt
 review_dirty_objects_before=$(find "$REVIEW_CLEAN/.git/objects" -type f | wc -l | tr -d ' ')
-review_dirty_match_out=$(run_statusline \
-  "$(statusline_payload review-dirty-match "" "$REVIEW_CLEAN")") \
-  || fail "review dirty matching-content render failed"
-assert grep -Fq "$review_segment" <<< "$review_dirty_match_out"
+review_dirty_match_out=$(review_render review-dirty-match "$REVIEW_CLEAN")
+# The staged path holds the reviewed content again and is covered; the untracked one is in no
+# receipt tree, and it is this chat's own. Nothing here may write an object into the repository:
+# the content questions are asked with `hash-object` and `cat-file`, never by staging anything.
+assert grep -Fq "$review_delimited" <<< "$review_dirty_match_out"
 assert_eq "$review_dirty_objects_before" \
   "$(find "$REVIEW_CLEAN/.git/objects" -type f | wc -l | tr -d ' ')"
 
 rm -f "$review_receipt_file"
-review_missing_out=$(run_statusline "$(statusline_payload review-missing "" "$REVIEW_CLEAN")") \
-  || fail "review missing receipt render failed"
-assert grep -Fq "$review_segment" <<< "$review_missing_out"
+review_missing_out=$(review_render review-missing "$REVIEW_CLEAN")
+# Same tree, no receipt and no claim: unreviewed work nobody living owns is background news.
+assert grep -Fq "$review_dim_delimited" <<< "$review_missing_out"
+
+# A scope entry is a pathspec: `--paths src` staged every path under src into its receipt tree, so
+# the receipt covers src/a.txt though it never names it.
+SCOPED_REPO="$FIXTURES/scoped-dir"
+mkdir -p "$SCOPED_REPO/src"
+git -C "$SCOPED_REPO" init -q -b main
+printf 'base\n' > "$SCOPED_REPO/src/a.txt"
+printf 'keep\n' > "$SCOPED_REPO/other file.txt"
+git -C "$SCOPED_REPO" add .
+git -C "$SCOPED_REPO" -c user.name=Fixture -c user.email=fixture@example.com commit -qm initial
+printf 'edited\n' > "$SCOPED_REPO/src/a.txt"
+scoped_top=$(cd "$SCOPED_REPO" && pwd -P)
+scoped_hash=$(printf '%s' "$scoped_top" | shasum -a 1 | awk '{print substr($1,1,8)}')
+scoped_tree_of() { # pathspec...
+  local index="$FIXTURES/scoped-index"
+  rm -f "$index"
+  GIT_INDEX_FILE="$index" git -C "$SCOPED_REPO" read-tree HEAD &&
+    GIT_INDEX_FILE="$index" git -C "$SCOPED_REPO" add -A -- "$@" &&
+    GIT_INDEX_FILE="$index" git -C "$SCOPED_REPO" write-tree
+}
+scoped_receipt="$RECEIPT_DIR/$(basename "$SCOPED_REPO")__${scoped_hash}__scope-abcdef01.json"
+jq -cn --arg repo "$SCOPED_REPO" --arg tree "$(scoped_tree_of src)" '
+  {repo:$repo,tree:$tree,commit:"0badc0de",run_id:"scope-dir",
+   ts:"2026-08-05T00:00:00+00:00",errored:0,scope:["src"]}' > "$scoped_receipt"
+claim_paths scope-dir "$scoped_top" src/a.txt
+scoped_out=$(review_render scope-dir "$SCOPED_REPO")
+assert test "${scoped_out#*"$review_delimited"}" = "$scoped_out"
+assert test "${scoped_out#*"$review_dim_delimited"}" = "$scoped_out"
+
+# A path outside the scope is not covered by it, whatever the directory above holds.
+printf 'new\n' > "$SCOPED_REPO/outside.txt"
+claim_paths scope-dir-open "$scoped_top" outside.txt
+scoped_open_out=$(review_render scope-dir-open "$SCOPED_REPO")
+assert grep -Fq "$review_delimited" <<< "$scoped_open_out"
+rm -f "$SCOPED_REPO/outside.txt"
+
+# A reviewed deletion is covered whatever the path is called: `cat-file` answers a missing object
+# by echoing the query back, and a space in the path used to shift that answer into a blob.
+rm -f "$SCOPED_REPO/other file.txt"
+jq -cn --arg repo "$SCOPED_REPO" --arg tree "$(scoped_tree_of .)" '
+  {repo:$repo,tree:$tree,commit:"0badc0de",run_id:"scope-deleted",
+   ts:"2026-08-05T00:00:00+00:00",errored:0}' \
+  > "$RECEIPT_DIR/$(basename "$SCOPED_REPO")__${scoped_hash}.json"
+claim_paths scope-deleted "$scoped_top" "other file.txt" src/a.txt
+scoped_deleted_out=$(review_render scope-deleted "$SCOPED_REPO")
+assert test "${scoped_deleted_out#*"$review_delimited"}" = "$scoped_deleted_out"
+assert test "${scoped_deleted_out#*"$review_dim_delimited"}" = "$scoped_deleted_out"
+rm -f "$RECEIPT_DIR/$(basename "$SCOPED_REPO")__${scoped_hash}.json" "$scoped_receipt"
+
+# Coverage is content AND mode: a chmod is a change, and a receipt that read the file before it
+# reviewed a file the tree no longer holds.
+MODE_REPO="$FIXTURES/mode-bits"
+mkdir -p "$MODE_REPO"
+git -C "$MODE_REPO" init -q -b main
+printf 'run\n' > "$MODE_REPO/run.sh"
+git -C "$MODE_REPO" add run.sh
+git -C "$MODE_REPO" -c user.name=Fixture -c user.email=fixture@example.com commit -qm initial
+mode_top=$(cd "$MODE_REPO" && pwd -P)
+mode_hash=$(printf '%s' "$mode_top" | shasum -a 1 | awk '{print substr($1,1,8)}')
+mode_receipt="$RECEIPT_DIR/$(basename "$MODE_REPO")__${mode_hash}.json"
+mode_pre_tree=$(git -C "$MODE_REPO" rev-parse 'HEAD^{tree}')
+write_mode_receipt() { # tree
+  jq -cn --arg repo "$MODE_REPO" --arg tree "$1" '
+    {repo:$repo,tree:$tree,commit:"0badc0de",run_id:"mode-bits",
+     ts:"2026-08-05T00:00:00+00:00",errored:0}' > "$mode_receipt"
+}
+chmod +x "$MODE_REPO/run.sh"
+write_mode_receipt "$mode_pre_tree"
+claim_paths mode-bits "$mode_top" run.sh
+mode_chmod_out=$(review_render mode-bits "$MODE_REPO")
+assert grep -Fq "$review_delimited" <<< "$mode_chmod_out"
+
+# The same receipt taken after the chmod covers the path again: the mode it read is the mode on
+# disk, and a matching bit must not hold the label open.
+mode_index="$FIXTURES/mode-index"
+rm -f "$mode_index"
+mode_post_tree=$(GIT_INDEX_FILE="$mode_index" git -C "$MODE_REPO" read-tree HEAD &&
+  GIT_INDEX_FILE="$mode_index" git -C "$MODE_REPO" add -A &&
+  GIT_INDEX_FILE="$mode_index" git -C "$MODE_REPO" write-tree)
+write_mode_receipt "$mode_post_tree"
+mode_match_out=$(review_render mode-bits-match "$MODE_REPO")
+assert test "${mode_match_out#*"$review_delimited"}" = "$mode_match_out"
+assert test "${mode_match_out#*"$review_dim_delimited"}" = "$mode_match_out"
+
+# A symlink is never covered by the blob it happens to resolve to: the review read the link, while
+# `hash-object` answers with the content of whatever it points at.
+printf 'run\n' > "$FIXTURES/mode-link-target.txt"
+rm -f "$MODE_REPO/run.sh"
+ln -s "$FIXTURES/mode-link-target.txt" "$MODE_REPO/run.sh"
+write_mode_receipt "$mode_pre_tree"
+claim_paths mode-link "$mode_top" run.sh
+mode_link_out=$(review_render mode-link "$MODE_REPO")
+assert grep -Fq "$review_delimited" <<< "$mode_link_out"
+rm -f "$mode_receipt"
 
 review_nongit_out=$(run_statusline "$(statusline_payload review-nongit "" "$NON_GIT")") \
   || fail "review non-git render failed"
@@ -2361,7 +2549,8 @@ assert test "${review_nongit_out#*review T}" = "$review_nongit_out"
 # A port belongs to the project and its diff, not to a review of it, so it takes the slot right
 # after the repository cluster and the review label follows it.
 printf '5173\n' > "$STATE_DIR/ports-r-order"
-rorder_out=$(run_statusline "$(statusline_payload r-order "" "$REVIEW_DIRTY")")
+claim_paths r-order "$TOP_REVIEW_DIRTY" change.txt
+rorder_out=$(review_render r-order "$REVIEW_DIRTY")
 assert grep -Fq ":5173" <<< "$rorder_out"
 assert grep -Fq "$review_delimited" <<< "$rorder_out"
 # Cut on the delimited segment, not on the bare word: this fixture repository is itself named
@@ -2535,22 +2724,20 @@ printf 'stamped untracked\n' > "$REVIEW_STAMP/untracked.txt"
 stamp_output=$(CLAUDEB_DIR="$CLAUDEB_FIX" "$ROOT/bin/review-bench" reviewed \
   --repo "$REVIEW_STAMP") || fail "reviewed stamp failed"
 assert grep -Fq 'stamped tree ' <<< "$stamp_output"
-review_stamp_payload=$(statusline_payload review-stamp "" "$REVIEW_STAMP")
-review_stamp_out=$(run_statusline "$review_stamp_payload") \
-  || fail "reviewed dirty render failed"
+claim_paths review-stamp "$(cd "$REVIEW_STAMP" && pwd -P)" tracked.txt untracked.txt
+review_stamp_out=$(review_render review-stamp "$REVIEW_STAMP")
 assert test "${review_stamp_out#*"$review_delimited"}" = "$review_stamp_out"
+assert test "${review_stamp_out#*"$review_dim_delimited"}" = "$review_stamp_out"
 
 printf 'extra edit\n' >> "$REVIEW_STAMP/tracked.txt"
-review_stamp_changed_out=$(run_statusline "$review_stamp_payload") \
-  || fail "reviewed changed render failed"
+review_stamp_changed_out=$(review_render review-stamp "$REVIEW_STAMP")
 assert grep -Fq "$review_delimited" <<< "$review_stamp_changed_out"
 
 printf 'fixture\nstamped dirty\n' > "$REVIEW_STAMP/tracked.txt"
 git -C "$REVIEW_STAMP" add -A
 git -C "$REVIEW_STAMP" -c user.name=Fixture -c user.email=fixture@example.com \
   commit -qm stamped
-review_stamp_committed_out=$(run_statusline "$review_stamp_payload") \
-  || fail "reviewed identical commit render failed"
+review_stamp_committed_out=$(review_render review-stamp "$REVIEW_STAMP")
 assert test "${review_stamp_committed_out#*"$review_delimited"}" = "$review_stamp_committed_out"
 
 # --- review-stamp-hook.sh ---

@@ -188,6 +188,237 @@ worktree_matches_tree() {
     2>/dev/null
 }
 
+# Every live chat's session id. The registry maps pid → sessionId; a chat whose process is gone
+# has stopped claiming the paths it touched, and they fall back to nobody's.
+review_live_sessions() {
+  local dir="$HOME/.claude/sessions" pid sid
+  [ -d "$dir" ] || return 0
+  jq -r 'select(type == "object" and (.pid | type) == "number" and (.pid | floor) == .pid
+      and .pid > 0 and (.sessionId | type) == "string" and (.sessionId | length) > 0)
+    | "\(.pid | floor)\(.sessionId)"' "$dir"/*.json 2>/dev/null |
+    while IFS=$'\x1f' read -r pid sid; do
+      [ -n "$sid" ] && kill -0 "$pid" 2>/dev/null && printf '%s\n' "$sid"
+    done
+  return 0
+}
+
+# The chat that launched a review run: its own registry entry, or the nearest ancestor's — a run
+# is a grandchild of the chat that asked for it, several execs down. A launcher that cannot be
+# named leaves the run bright, since hiding a review this chat may well have started is the worse
+# error.
+review_run_session() {
+  local pid="$1" hops=0 sid registry
+  while [ "$hops" -lt 15 ]; do
+    [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] || return 1
+    registry="$HOME/.claude/sessions/$pid.json"
+    if [ -f "$registry" ]; then
+      sid=$(jq -r 'select(type == "object" and (.sessionId | type) == "string") | .sessionId' \
+        "$registry" 2>/dev/null)
+      [ -n "$sid" ] && { printf '%s' "$sid"; return 0; }
+    fi
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+    hops=$((hops + 1))
+  done
+  return 1
+}
+
+# Which changed paths of the active tree no receipt has reviewed AT THEIR CURRENT CONTENT, reduced
+# to the one verdict the segment renders. A receipt covers a path when the path is in its scope
+# (or the receipt reviewed the whole repository) and the blob it read is still the blob on disk at
+# the same mode; absent on both sides — a reviewed deletion — counts as covered, or a review that
+# deletes a file could never turn its own label off.
+#
+# `mine` means at least one uncovered path is this chat's own or delegated work, which is the only
+# actionable state and the only bright one. `ownerless` means the uncovered paths are claimed by
+# no live chat: background news, dimmed. `none` covers both a fully reviewed tree and one whose
+# uncovered paths belong to another live chat, which carries its own bright label for them.
+review_delta_compute() {
+  local top="$1" sid="$2" receipt_base="$3"
+  local receipts="$worker_stats_dir/receipts"
+  local head_tree changed changed_n hash_oids oids receipt_rows probe unreviewed
+  local states state entries tree_entries rtree file_mode modes
+  local mine foreign live path
+  local -a hash_paths=() receipt_files=() changed_paths=()
+
+  head_tree=$(git -C "$top" rev-parse 'HEAD^{tree}' 2>/dev/null)
+  changed=$( {
+      if [ -n "$head_tree" ]; then
+        # --no-renames so a renamed file is listed under both names: the review knew the old one.
+        git -C "$top" diff --name-only --no-renames -z HEAD 2>/dev/null
+      else
+        git -C "$top" ls-files --cached -z 2>/dev/null
+      fi
+      git -C "$top" ls-files --others --exclude-standard -z 2>/dev/null
+    } | tr '\0' '\n' | LC_ALL=C sort -u | grep -v '^$')
+  if [ -z "$changed" ]; then
+    printf 'none'
+    return 0
+  fi
+  changed_n=$(printf '%s\n' "$changed" | grep -c .)
+  # A delta this size is a mass operation, not a chat's edits; attributing it path by path would
+  # cost more than the whole render, and staying silent about it is the lie this segment lost.
+  [ "$changed_n" -gt 400 ] && { printf 'mine'; return 0; }
+
+  # What each path is right now: the mode git would record for it, and its content. The mode is
+  # half the question — a chmod is a change no receipt reviewed, and review-bench stages its tree
+  # from disk, so the bit on disk is the one the receipt holds. Anything that is not a regular file
+  # can never match a reviewed blob and is never covered: a symlink's blob is the target's name
+  # while `hash-object` answers with the target's content, and a submodule is a commit.
+  states=""
+  while IFS= read -r path; do
+    changed_paths+=("$path")
+    if [ -L "$top/$path" ]; then state=other
+    elif [ -f "$top/$path" ]; then
+      if [ -x "$top/$path" ]; then state=100755; else state=100644; fi
+      hash_paths+=("$path")
+    elif [ -e "$top/$path" ]; then state=other
+    else state=absent
+    fi
+    states="$states$path"$'\t'"$state"$'\n'
+  done <<< "$changed"
+  # A repository that ignores the executable bit cannot show a chmod as a change at all, and the
+  # bit on disk is the wrong question there: it would answer against the mode the index still holds
+  # and leave the path unreviewable for good.
+  file_mode=$(git -C "$top" config --type=bool --get core.fileMode 2>/dev/null)
+  modes=1
+  [ "$file_mode" = false ] && modes=0
+  oids=""
+  if [ "${#hash_paths[@]}" -gt 0 ]; then
+    hash_oids=$(git -C "$top" hash-object -- "${hash_paths[@]}" 2>/dev/null)
+    # One unreadable path makes git abort mid-list, and a shifted pairing would answer about the
+    # wrong file; the whole answer is refused instead.
+    [ "$(printf '%s\n' "$hash_oids" | grep -c .)" -eq "${#hash_paths[@]}" ] ||
+      { printf 'mine'; return 0; }
+    oids=$(paste -d $'\t' <(printf '%s\n' "${hash_paths[@]}") <(printf '%s\n' "$hash_oids"))
+  fi
+
+  receipt_rows=""
+  if [ -n "$receipt_base" ]; then
+    # A lens receipt is deliberately not among them: review-bench keeps it apart because it read
+    # the tree by a methodology the tool did not write, and it never marks the repository reviewed.
+    for probe in "$receipts/$receipt_base.json" "$receipts/${receipt_base}__scope-"*.json; do
+      [ -f "$probe" ] && receipt_files+=("$probe")
+    done
+    [ "${#receipt_files[@]}" -gt 0 ] &&
+      receipt_rows=$(jq -r 'select(type == "object" and (.tree | type) == "string"
+            and (.tree | length) > 0)
+          | [(.ts // ""), .tree, ((.scope // []) | map(select(type == "string")) | join(""))]
+          | @tsv' "${receipt_files[@]}" 2>/dev/null | LC_ALL=C sort -r | head -n 40)
+  fi
+
+  # One `ls-tree` per distinct receipt tree, never one per path: it answers mode, type and blob for
+  # every changed path at once. A tree the object store no longer holds fails outright, which is
+  # what keeps it from reading as "the review deleted them all" — only a tree that answered is
+  # marked below, by a line carrying nothing but its own sha. `--literal-pathspecs` so a path named
+  # `:x` or `s*.txt` asks about itself, and quoting off so a non-ASCII one comes back under the name
+  # everything else here holds it by.
+  entries=""
+  while IFS= read -r rtree; do
+    [ -n "$rtree" ] || continue
+    tree_entries=$(git -C "$top" --literal-pathspecs -c core.quotePath=false \
+      ls-tree "$rtree" -- "${changed_paths[@]}" 2>/dev/null) || continue
+    entries="$entries$rtree"$'\n'"$tree_entries"$'\n'
+  done < <(printf '%s\n' "$receipt_rows" | cut -f2 | grep -v '^$' | LC_ALL=C sort -u)
+
+  unreviewed=$(awk -F'\t' -v sep=$'\x1f' -v modes="$modes" '
+    function covered(t, p,   f) {
+      if (!((t, p) in entry)) return state[p] == "absent"
+      split(entry[t, p], f, " ")
+      if (f[2] != "blob") return 0
+      if (modes && f[1] != state[p]) return 0
+      return oid[p] != "" && f[3] == oid[p]
+    }
+    FNR == 1 { part++ }
+    part == 1 { if ($0 != "") { paths[++n] = $1; state[$1] = $2 } ; next }
+    part == 2 { if ($0 != "") oid[$1] = $2; next }
+    part == 3 {
+      if ($0 == "") next
+      # An entry names its mode, type and blob in one space-separated field; a tree marker is a
+      # bare sha, and the entries after it are that tree.
+      if (NF == 1) { tree = $1; treeok[tree] = 1; next }
+      entry[tree, $2] = $1
+      next
+    }
+    part == 4 && $2 != "" && ($2 in treeok) {
+      if ($3 == "") { for (i = 1; i <= n; i++) if (covered($2, paths[i])) ok[paths[i]] = 1 }
+      else {
+        c = split($3, s, sep)
+        for (i = 1; i <= c; i++) {
+          if (s[i] in state) { if (covered($2, s[i])) ok[s[i]] = 1; continue }
+          # A scope entry is a pathspec, so it may name a directory: git staged every path under
+          # it into the receipt tree, and matching the entry alone would cover none of them.
+          for (j = 1; j <= n; j++)
+            if (index(paths[j], s[i] "/") == 1 && covered($2, paths[j])) ok[paths[j]] = 1
+        }
+      }
+    }
+    END { for (i = 1; i <= n; i++) if (!(paths[i] in ok)) print paths[i] }
+  ' <(printf '%s\n' "$states") <(printf '%s\n' "$oids") <(printf '%s\n' "$entries") \
+    <(printf '%s\n' "$receipt_rows"))
+  [ -n "$unreviewed" ] || { printf 'none'; return 0; }
+
+  mine=""
+  [ -n "$sid" ] && [ -f "$statusline_cache_dir/touched-$sid" ] &&
+    mine=$(awk -F'\t' -v t="$top" '$1 == t && $2 != "" { print $2 }' \
+      "$statusline_cache_dir/touched-$sid")
+  foreign=""
+  while IFS= read -r live; do
+    live=${live//[^A-Za-z0-9_-]/}
+    [ -n "$live" ] && [ "$live" != "$sid" ] || continue
+    [ -f "$statusline_cache_dir/touched-$live" ] || continue
+    foreign="$foreign"$'\n'$(awk -F'\t' -v t="$top" '$1 == t && $2 != "" { print $2 }' \
+      "$statusline_cache_dir/touched-$live")
+  done < <(review_live_sessions)
+
+  awk '
+    FNR == 1 { part++ }
+    part == 1 { if ($0 != "") mine[$0] = 1; next }
+    part == 2 { if ($0 != "") foreign[$0] = 1; next }
+    { if ($0 != "") open[++n] = $0 }
+    END {
+      class = "none"
+      for (i = 1; i <= n; i++) {
+        if (open[i] in mine) { class = "mine"; break }
+        if (!(open[i] in foreign)) class = "ownerless"
+      }
+      printf "%s", class
+    }
+  ' <(printf '%s\n' "$mine") <(printf '%s\n' "$foreign") <(printf '%s\n' "$unreviewed")
+}
+
+# Renders every ~5s, so the verdict above is cached on what can invalidate it: the repository, its
+# `git status`, and the receipt store's directory mtime (a receipt is written, replaced or removed
+# through a rename, all of which stamp it). Everything the key cannot see — a second edit to an
+# already-modified file, another chat claiming a path, a session dying — is bounded by the TTL.
+review_delta_class() {
+  local top="$1" sid="$2" receipt_base="$3" status_key="$4" now="$5"
+  local cache="$statusline_cache_dir/review-class-${sid:-unknown}"
+  local key cached_key cached_class cache_mtime receipts_mtime class tmp
+  receipts_mtime=$(file_mtime "$worker_stats_dir/receipts" 2>/dev/null)
+  [[ "$receipts_mtime" =~ ^[0-9]+$ ]] || receipts_mtime=0
+  key="$top|$status_key|$receipts_mtime"
+  cache_mtime=$(file_mtime "$cache" 2>/dev/null)
+  if [[ "$cache_mtime" =~ ^[0-9]+$ ]] && [ "$((now - cache_mtime))" -le 15 ]; then
+    cached_key=""; cached_class=""
+    { IFS= read -r cached_key; IFS= read -r cached_class; } < "$cache" 2>/dev/null
+    if [ "$cached_key" = "$key" ]; then
+      printf '%s' "$cached_class"
+      return 0
+    fi
+  fi
+  class=$(review_delta_compute "$top" "$sid" "$receipt_base")
+  case "$class" in
+    mine|ownerless|none) ;;
+    *) class=mine ;;
+  esac
+  if mkdir -p "$statusline_cache_dir" 2>/dev/null; then
+    tmp="$cache.tmp.${BASHPID:-$$}"
+    printf '%s\n%s\n' "$key" "$class" > "$tmp" 2>/dev/null &&
+      mv -f "$tmp" "$cache" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+  fi
+  printf '%s' "$class"
+}
+
 # Propagate just-merged headers to all surfaces via the zero-network collector
 # (never --refresh); full contract: docs/statusline-contract.md "Store merge-kick".
 # Every failure is silent — the statusline must never break because a nudge failed.
@@ -1490,6 +1721,8 @@ if [ -n "$active_top" ]; then
   progress_max=""
   progress_late=""
   progress_newest=""
+  progress_session=""
+  progress_owner_pid=""
   progress_dir="$worker_stats_dir/progress"
   if [ -d "$progress_dir" ]; then
     # Every file is read and matched on the repository recorded inside it, never on its name:
@@ -1536,12 +1769,13 @@ if [ -n "$active_top" ]; then
           ] | length > 0) as $late
         | [.repo, (.pid | tostring), (.tier // ""), (if .max then "max" else "" end),
            (.done | length | tostring), (.cells | length | tostring), .started,
-           (if $late then "late" else "" end)]
+           (if $late then "late" else "" end),
+           (if (.session | type) == "string" then .session else "" end)]
         | join("\u001f")
       ' "$progress_file" 2>/dev/null) || continue
       IFS=$'\x1f' read -r progress_repo progress_pid progress_run_tier progress_run_max \
         progress_run_done progress_run_total progress_started progress_run_late \
-        <<< "$progress_values"
+        progress_run_session <<< "$progress_values"
       kill -0 "$progress_pid" 2>/dev/null || continue
       progress_start=$(process_start_epoch "$progress_pid" "$now") || continue
       # The slack absorbs ps's whole-second resolution, not a real gap: pids are handed out
@@ -1561,6 +1795,8 @@ if [ -n "$active_top" ]; then
         progress_tier=$progress_run_tier
         progress_max=$progress_run_max
         progress_late=$progress_run_late
+        progress_session=$progress_run_session
+        progress_owner_pid=$progress_pid
       fi
     done
   fi
@@ -1574,7 +1810,16 @@ if [ -n "$active_top" ]; then
       [ -n "$progress_max" ] && progress_label="${progress_label} ${progress_max}"
     fi
     progress_label="${progress_label} ${progress_done}/${progress_total}"
-    if [ -n "$progress_late" ]; then
+    # A run another chat started is this chat's background news, not its call to action: dim, and
+    # not red either, since being late is that chat's problem to see. The `session` field is
+    # preferred over the process walk for when review-bench starts recording one.
+    progress_owner="$progress_session"
+    [ -n "$progress_owner" ] ||
+      progress_owner=$(review_run_session "$progress_owner_pid" 2>/dev/null) || progress_owner=""
+    progress_owner=${progress_owner//[^A-Za-z0-9_-]/}
+    if [ -n "$progress_owner" ] && [ -n "$session_id" ] && [ "$progress_owner" != "$session_id" ]; then
+      review_part=" ${sep} ${DIM}${progress_label}${RESET}"
+    elif [ -n "$progress_late" ]; then
       review_part=" ${sep} ${RED}${progress_label}${RESET}"
     else
       review_part=" ${sep} ${progress_label}"
@@ -1583,6 +1828,23 @@ if [ -n "$active_top" ]; then
 fi
 
 if [ -n "$active_top" ] && [ -z "$progress_total" ]; then
+  # Per-path truth first: it decides the label AND whether the whole-tree receipt below is worth
+  # reading at all, since that receipt only answers the partial-panel question once nothing is
+  # left unreviewed.
+  review_status_key=$(printf '%s' "$git_status" | cksum 2>/dev/null)
+  review_status_key="${review_status_key// /-}"
+  [ "$git_status_rc" -eq 0 ] || review_status_key="unreadable"
+  review_class=$(review_delta_class "$active_top" "$session_id" "${receipt_name%.json}" \
+    "$review_status_key" "$now")
+  review_label="review"
+  [ -n "$review_tier" ] && review_label="${review_label} ${review_tier}"
+fi
+
+if [ "${review_class:-}" = mine ]; then
+  review_part=" ${sep} ${review_label}"
+elif [ "${review_class:-}" = ownerless ]; then
+  review_part=" ${sep} ${DIM}${review_label}${RESET}"
+elif [ -n "$active_top" ] && [ -z "$progress_total" ]; then
   receipt_file="$worker_stats_dir/receipts/$receipt_name"
   receipt_values=$(jq -er '
     select(type == "object"
@@ -1622,9 +1884,6 @@ if [ -n "$active_top" ] && [ -z "$progress_total" ]; then
       { [ -z "$receipt_panel" ] || [ "$((receipt_errored * 3))" -gt "$receipt_panel" ]; }; then
       review_part=" ${sep} ${DIM}review${RESET}"
     fi
-  else
-    review_part=" ${sep} review"
-    [ -n "$review_tier" ] && review_part="${review_part} ${review_tier}"
   fi
 fi
 
