@@ -156,28 +156,35 @@ if [ "$router_rc" -eq 3 ]; then
   deny "worker-pick found no selectable ${label} account. Do not spawn ${worker} until an account becomes selectable."
 fi
 
+# One definition for both callers: the wall check (account_pressure) and the
+# inventory note must never disagree on what an account's effective pct is.
+eff_defs='
+  def epoch:
+    if type == "number" then .
+    elif type == "string" then
+      (capture("^(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(\\.[0-9]+)?(?<tz>Z|[+-][0-9]{2}:?[0-9]{2})?$") // null |
+       if . == null then null
+       else (.d + "Z" | fromdateiso8601) -
+         (if .tz == null or .tz == "Z" then 0
+          else (.tz | capture("^(?<s>[+-])(?<h>[0-9]{2}):?(?<m>[0-9]{2})$") |
+                (if .s == "-" then -1 else 1 end) * ((.h | tonumber) * 3600 + (.m | tonumber) * 60)) end)
+       end)
+    else null end;
+  def eff($bucket; $name):
+    ($bucket // {}) as $b | (($b.resets_at // null) | epoch) as $reset |
+    # Invariant n (llm-legs docs/shared-invariants.md): a weekly bucket stamped origin "headers"
+    # carries no real percentage and must read as unknown, never as a number.
+    if $name == "weekly" and $b.origin == "headers" then null
+    elif $b.expired == true then 0
+    elif $reset != null and $reset <= $now then 0
+    elif (($b.effective_pct // null) | type) == "number" then $b.effective_pct
+    elif (($b.used_pct // null) | type) == "number" then $b.used_pct
+    else null end;
+'
+
 account_pressure() {
   [ -r "$LIMITS_FILE" ] || return 0
-  jq -r --arg vendor "$1" --arg account "$2" --argjson now "$(date +%s)" '
-    def epoch:
-      if type == "number" then .
-      elif type == "string" then
-        (capture("^(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(\\.[0-9]+)?(?<tz>Z|[+-][0-9]{2}:?[0-9]{2})?$") // null |
-         if . == null then null
-         else (.d + "Z" | fromdateiso8601) -
-           (if .tz == null or .tz == "Z" then 0
-            else (.tz | capture("^(?<s>[+-])(?<h>[0-9]{2}):?(?<m>[0-9]{2})$") |
-                  (if .s == "-" then -1 else 1 end) * ((.h | tonumber) * 3600 + (.m | tonumber) * 60)) end)
-         end)
-      else null end;
-    def eff($bucket; $name):
-      ($bucket // {}) as $b | (($b.resets_at // null) | epoch) as $reset |
-      if $name == "weekly" and $b.origin == "headers" then null
-      elif $b.expired == true then 0
-      elif $reset != null and $reset <= $now then 0
-      elif (($b.effective_pct // null) | type) == "number" then $b.effective_pct
-      elif (($b.used_pct // null) | type) == "number" then $b.used_pct
-      else null end;
+  jq -r --arg vendor "$1" --arg account "$2" --argjson now "$(date +%s)" "$eff_defs"'
     (.vendors[$vendor] // {}) as $v |
     (if (($v.accounts // []) | length) > 0 then $v.accounts
      else [{account:"main", five_hour:($v.five_hour // {}), weekly:($v.weekly // {})}] end) |
@@ -186,6 +193,30 @@ account_pressure() {
     else ([eff($row.five_hour; "five_hour"), eff($row.weekly; "weekly")] |
       map(select(type == "number")) | if length > 0 then max else empty end)
     end
+  ' "$LIMITS_FILE" 2>/dev/null
+}
+
+account_inventory() {
+  [ -r "$LIMITS_FILE" ] || return 0
+  jq -r --arg vendor "$1" --argjson now "$(date +%s)" "$eff_defs"'
+    (.vendors[$vendor] // {}) as $v |
+    (if (($v.accounts // []) | length) > 0 then $v.accounts
+     else [{account:"main", enabled:$v.enabled, auth_needed:$v.auth_needed, auth:$v.auth,
+            five_hour:($v.five_hour // {}), weekly:($v.weekly // {})}] end) |
+    map(select(.removed != true)) |
+    map({
+      name:(.account // "main"),
+      off:(.enabled == false),
+      # A logged-out account reads 0% and would sort as the freest pick; the marker
+      # keeps the orchestrator from routing at a dead entry. Negated worker-pick
+      # auth_ok, kept in its exact shape: a bare `.auth.status? != "ok"` drops
+      # string-auth accounts (empty propagates) and brands "unknown" as dead.
+      auth:(.auth_needed == true or ((.auth.status? // "ok") | IN("expired", "failed"))),
+      value:([eff(.five_hour; "five_hour"), eff(.weekly; "weekly")] |
+             map(select(type == "number")) | if length > 0 then max else null end)
+    }) |
+    sort_by([(if .off or .auth then 1 else 0 end), (if .value == null then 1 else 0 end), (.value // 0)]) |
+    map("\(.name) \(.value // "?")%\(if .off then " off" else "" end)\(if .auth then " auth!" else "" end)") | join(", ")
   ' "$LIMITS_FILE" 2>/dev/null
 }
 
@@ -218,6 +249,13 @@ if [ "$router_rc" -eq 0 ]; then
     pressure_note="${label} account ${spawn_account} is at ${pressure}% — close to the 100% hard wall."
     if [ -n "$note" ]; then note="$note $pressure_note"; else note="${label} account ${spawn_account} is at ${pressure}%. worker-pick selected it, so ${worker} is allowed, but the available window is close to the 100% hard wall."; fi
   fi
+  # Orchestrators quote whatever account list their context still holds, so every routed spawn
+  # carries the live one back — this is why a plain allow is no longer silent.
+  inventory=$(account_inventory "$limits_vendor")
+  if [ -n "$inventory" ]; then
+    inventory_note="${label} accounts: ${inventory}; worker-pick selects ${router_account}."
+    if [ -n "$note" ]; then note="$note $inventory_note"; else note="$inventory_note"; fi
+  fi
   warn "$note"
 fi
 
@@ -234,28 +272,7 @@ fi
 
 now=$(date +%s) ||
   deny "${fallback_reason}; local threshold fallback could not read the clock. Do not spawn ${worker}."
-decision=$(jq -c --arg worker "$worker" --arg pin "$spawn_account" --argjson now "$now" --argjson warn "$WARN_AT" --argjson deny "$DENY_AT" '
-  def epoch:
-    if type == "number" then .
-    elif type == "string" then
-      (capture("^(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(\\.[0-9]+)?(?<tz>Z|[+-][0-9]{2}:?[0-9]{2})?$") // null |
-       if . == null then null
-       else (.d + "Z" | fromdateiso8601) -
-         (if .tz == null or .tz == "Z" then 0
-          else (.tz | capture("^(?<s>[+-])(?<h>[0-9]{2}):?(?<m>[0-9]{2})$") |
-                (if .s == "-" then -1 else 1 end) * ((.h | tonumber) * 3600 + (.m | tonumber) * 60)) end)
-       end)
-    else null end;
-  def eff($bucket; $name):
-    ($bucket // {}) as $b | (($b.resets_at // null) | epoch) as $reset |
-    # Invariant n (llm-legs docs/shared-invariants.md): a weekly bucket stamped origin "headers"
-    # carries no real percentage and must read as unknown, never as a number.
-    if $name == "weekly" and $b.origin == "headers" then null
-    elif $b.expired == true then 0
-    elif $reset != null and $reset <= $now then 0
-    elif (($b.effective_pct // null) | type) == "number" then $b.effective_pct
-    elif (($b.used_pct // null) | type) == "number" then $b.used_pct
-    else null end;
+decision=$(jq -c --arg worker "$worker" --arg pin "$spawn_account" --argjson now "$now" --argjson warn "$WARN_AT" --argjson deny "$DENY_AT" "$eff_defs"'
   def auth_ok:
     .auth_needed != true and (((.auth // null) == null) or (.auth.status? == "ok"));
   def specs:
