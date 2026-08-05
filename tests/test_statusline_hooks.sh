@@ -1444,6 +1444,111 @@ assert test -f "$NUDGE_DIR/unrelated.txt"
 assert test -f "$NUDGE_DIR/nested/deep.window"
 rm -rf "$NUDGE_DIR/nested" "$NUDGE_DIR/unrelated.txt"
 
+# --- a known boundary must not stop the window before it has been reached ---
+# The sidecar knows the boundary from the whole file, i.e. from a position the
+# current window has not read yet; stopping there hides a live response deeper
+# than the window and reports cold AND an empty context at the same time.
+t_far_boundary_case() {
+  t_reset; t_boundary $((NOW - 7200)); t_assist $((NOW - 60)); t_stamp "$1"
+  "$2"
+  assert test "$(stat -f %z "$TRANSCRIPT")" -gt 262144
+  assert test "$(tail -c 262144 "$TRANSCRIPT" | grep -c '"type":"assistant"')" -eq 0
+  far_live=$(run_statusline "$(statusline_payload "$1" "$(warm_extra "$TRANSCRIPT" 55 111000)")")
+  far_live_death=$(TZ=Europe/Kyiv date -r $((NOW - 60 + 3600)) +%H:%M)
+  assert grep -Fq "${DIM}→${far_live_death}${RESET}" <<< "$far_live"
+  assert test "${far_live#*0k}" = "$far_live"
+}
+
+tail_one_tool_result() {
+  printf '{"type":"tool-result","timestamp":"%s","content":"' "$(iso_utc "$NOW")" >> "$TRANSCRIPT"
+  head -c 400000 /dev/zero | tr '\0' x >> "$TRANSCRIPT"
+  printf '"}\n' >> "$TRANSCRIPT"
+}
+tail_one_user_paste() {
+  printf '{"type":"user","timestamp":"%s","message":{"role":"user","content":"' "$(iso_utc "$NOW")" >> "$TRANSCRIPT"
+  head -c 400000 /dev/zero | tr '\0' x >> "$TRANSCRIPT"
+  printf '"}}\n' >> "$TRANSCRIPT"
+}
+tail_many_small() {
+  awk -v ts="$(iso_utc "$NOW")" 'BEGIN{
+    for (i = 0; i < 900; i++)
+      printf "{\"type\":\"user\",\"timestamp\":\"%s\",\"message\":{\"role\":\"user\"},\"pad\":\"%s\"}\n", ts, sprintf("%0350d", i)
+  }' >> "$TRANSCRIPT"
+}
+t_far_boundary_case ctx-bnd-live-tool tail_one_tool_result
+t_far_boundary_case ctx-bnd-live-paste tail_one_user_paste
+t_far_boundary_case ctx-bnd-live-many tail_many_small
+
+# The short-circuit itself survives: once the window has read back past the
+# boundary, nothing deeper can change the verdict and the scan stops growing.
+t_reset
+BND_TAIL_BIN="$WORK/bnd-tail-bin"; BND_TAIL_LOG="$WORK/bnd-tail.log"
+mkdir -p "$BND_TAIL_BIN"
+printf '#!/usr/bin/env bash\nif [ "$1" = "-c" ]; then printf "%%s|%%s\\n" "$2" "$3" >> "$TAIL_LOG"; fi\nexec /usr/bin/tail "$@"\n' \
+  > "$BND_TAIL_BIN/tail"
+chmod +x "$BND_TAIL_BIN/tail"
+rm -f "$BND_TAIL_LOG"
+awk -v ts="$(iso_utc $((NOW - 7200)))" 'BEGIN{
+  for (i = 0; i < 900; i++)
+    printf "{\"type\":\"user\",\"timestamp\":\"%s\",\"message\":{\"role\":\"user\"},\"pad\":\"%s\"}\n", ts, sprintf("%01000d", i)
+}' >> "$TRANSCRIPT"
+t_boundary $((NOW - 3600))
+awk -v ts="$(iso_utc $((NOW - 1800)))" 'BEGIN{
+  for (i = 0; i < 600; i++)
+    printf "{\"type\":\"user\",\"timestamp\":\"%s\",\"message\":{\"role\":\"user\"},\"pad\":\"%s\"}\n", ts, sprintf("%01000d", i)
+}' >> "$TRANSCRIPT"
+assert test "$(stat -f %z "$TRANSCRIPT")" -gt 1048576
+assert test "$(tail -c 262144 "$TRANSCRIPT" | grep -c compact_boundary)" -eq 0
+assert test "$(tail -c 1048576 "$TRANSCRIPT" | grep -c compact_boundary)" -eq 1
+bnd_reached=$(PATH="$BND_TAIL_BIN:$PATH" TAIL_LOG="$BND_TAIL_LOG" \
+  run_statusline "$(statusline_payload ctx-bnd-reached "$(warm_extra "$TRANSCRIPT" 55 111000)")")
+assert grep -Fq "ctx ${DIM}0%${RESET} ${DIM}0k${RESET}" <<< "$bnd_reached"
+assert grep -Fq "1048576|$TRANSCRIPT" "$BND_TAIL_LOG"
+assert test 0 -eq "$(grep -Fc "4194304|$TRANSCRIPT" "$BND_TAIL_LOG")"
+
+# A transcript smaller than the size the sidecar claims to have scanned is a
+# different file; its remembered boundary is a phantom that zeroes a live context.
+t_reset; t_user $((NOW - 120)); t_user $((NOW - 60))
+printf '900000 %s\n' "$(iso_utc $((NOW - 7200)))" > "$(bnd_file ctx-bnd-shrunk)"
+shrunk=$(run_statusline "$(statusline_payload ctx-bnd-shrunk "$(warm_extra "$TRANSCRIPT" 55 111000)")")
+assert grep -Fq "${YELLOW}111k${RESET}" <<< "$shrunk"
+assert_eq "$(stat -f %z "$TRANSCRIPT") -" "$(cat "$(bnd_file ctx-bnd-shrunk)")"
+
+t_reset; t_assist $((NOW - 60)); t_stamp ctx-bnd-shrunk-warm
+printf '900000 %s\n' "$(iso_utc $((NOW - 7200)))" > "$(bnd_file ctx-bnd-shrunk-warm)"
+shrunk_warm=$(run_statusline "$(statusline_payload ctx-bnd-shrunk-warm "$(warm_extra "$TRANSCRIPT" 55 111000)")")
+shrunk_death=$(TZ=Europe/Kyiv date -r $((NOW - 60 + 3600)) +%H:%M)
+assert grep -Fq "${DIM}→${shrunk_death}${RESET}" <<< "$shrunk_warm"
+assert_eq "$(stat -f %z "$TRANSCRIPT") -" "$(cat "$(bnd_file ctx-bnd-shrunk-warm)")"
+
+# --- a pure cache-read response proves warmth: the read refreshes the TTL ---
+t_reset; t_assist $((NOW - 600)) fixmodel 50000 500 1h
+t_assist $((NOW - 60)) fixmodel 50000 0 none; t_stamp ctx-pure-read
+pure_read=$(run_statusline "$(statusline_payload ctx-pure-read "$(warm_extra "$TRANSCRIPT" 55 111000)")")
+pure_read_death=$(TZ=Europe/Kyiv date -r $((NOW - 60 + 3600)) +%H:%M)
+assert grep -Fq "${DIM}→${pure_read_death}${RESET}" <<< "$pure_read"
+assert test "${pure_read#*111k}" = "$pure_read"
+
+# An all-zero bucket map is the same case as no map at all.
+t_reset; t_assist $((NOW - 600)) fixmodel 50000 500 5m
+t_assist $((NOW - 60)) fixmodel 50000 0 5m; t_stamp ctx-pure-read-zero
+pure_zero=$(run_statusline "$(statusline_payload ctx-pure-read-zero "$(warm_extra "$TRANSCRIPT" 55 111000)")")
+pure_zero_death=$(TZ=Europe/Kyiv date -r $((NOW - 60 + 300)) +%H:%M)
+assert grep -Fq "${DIM}→${pure_zero_death}${RESET}" <<< "$pure_zero"
+
+# With no older bucket-bearing response in the window there is nothing to inherit.
+t_reset; t_assist $((NOW - 60)) fixmodel 50000 0 none; t_stamp ctx-pure-read-alone
+pure_alone=$(run_statusline "$(statusline_payload ctx-pure-read-alone "$(warm_extra "$TRANSCRIPT" 55 111000)")")
+assert grep -Fq "${YELLOW}? 111k${RESET}" <<< "$pure_alone"
+assert test "${pure_alone#*→}" = "$pure_alone"
+
+# A different model's bucket is a different cache entry - not inheritable.
+t_reset; t_assist $((NOW - 600)) othermodel 50000 500 1h
+t_assist $((NOW - 60)) fixmodel 50000 0 none; t_stamp ctx-pure-read-model
+pure_model=$(run_statusline "$(statusline_payload ctx-pure-read-model "$(warm_extra "$TRANSCRIPT" 55 111000)")")
+assert grep -Fq "${YELLOW}? 111k${RESET}" <<< "$pure_model"
+assert test "${pure_model#*→}" = "$pure_model"
+
 PARENT_TRANSCRIPT="$WORK/parent-sid.jsonl"
 t_assist_fork() {
   printf '{"type":"assistant","timestamp":"%s","uuid":"%s","forkedFrom":{"sessionId":"%s","messageUuid":"%s"},"message":{"role":"assistant","model":"fixmodel","usage":{"cache_read_input_tokens":50000,"cache_creation_input_tokens":500,"cache_creation":{"ephemeral_1h_input_tokens":500,"ephemeral_5m_input_tokens":0}}}}\n' \

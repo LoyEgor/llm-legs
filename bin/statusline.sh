@@ -914,7 +914,7 @@ fi
 
 # User/tool activity and payload cache counters cannot prove server cache warmth.
 assist_ts=0; assist_model="-"; assist_uuid="-"; fork_sid="-"; ttl_bucket=0
-post_compact=0; ctx_stale=1; boundary_ts=0; fresh_ctx=0
+post_compact=0; ctx_stale=1; boundary_ts=0; fresh_ctx=0; oldest_ts=0
 ev_valid=0; ev_ts=0; ev_gap=0; ev_cr=0; ev_cc=0
 fork_anchor_uuid="-"; fork_own_ts=0
 latest_ts=0; latest_model="-"; latest_ttl=0; latest_uuid="-"; latest_fork="-"
@@ -1008,6 +1008,9 @@ if [ -n "$session_id" ] && [ -n "$transcript_path" ] && [ -r "$transcript_path" 
       [ "$bnd_f2" = "-" ] || bnd_seen="$bnd_f2"
     fi
   fi
+  # A transcript smaller than what the sidecar claims to have scanned is a different
+  # file (session rewrite, clear stub); its remembered boundary describes nothing here.
+  if [ "$bnd_size" -lt "$bnd_scanned" ] 2>/dev/null; then bnd_scanned=0; bnd_seen=""; fi
   if [ "$bnd_size" -gt "$bnd_scanned" ] 2>/dev/null; then
     # The margin re-covers a boundary line the previous scan cut at its own EOF; grep is
     # only a prefilter, so chat content naming compact_boundary falls out at the select.
@@ -1052,6 +1055,7 @@ if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
             | {ttl: ($v | if length == 0 then 0 else min end)};
           reduce (inputs | fromjson? | select(type == "object" and .isSidechain != true)) as $x (
             {la:0, pm:"", pg:-1, pa:0, lb:($seedb | ep // 0), ats:0, am:"-", au:"-", afk:"", bk:0,
+             pbk:0, ots:0,
              cgap:0, ccr:0, ccc:0, cets:0, cpm:"", cem:"", cpa:0, chas:0, own:0,
              sawf:0, fas:"", fau:"", fot:0, lts:0, lm:"-", lbk:0, lu:"-", lfk:"",
              fc:0, fcts:0};
@@ -1062,6 +1066,7 @@ if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
                  .sawf = 1 | .fas = $fs | (if $fu != "" then .fau = $fu else . end)
                elif .sawf == 1 and .fot == 0 and $ts != null then .fot = $ts
                else . end)
+            | (if $ts == null or (.ots > 0 and .ots <= $ts) then . else .ots = $ts end)
             | if $ts == null then .
               elif $x.type == "system" and $x.subtype == "compact_boundary" then
                 # Only a new-maximum boundary invalidates the size: re-emitted
@@ -1093,9 +1098,17 @@ if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
                          .lts = $ts | .lm = $xm | .lbk = $bs.ttl
                          | .lu = (if $xu == "" then "-" else $xu end) | .lfk = $fs
                        else . end)
-                    | (if $model != "" and $xm == $model and $ts >= .ats then
-                         .ats = $ts | .am = $xm | .au = (if $xu == "" then "-" else $xu end)
-                         | .afk = $fs | .bk = $bs.ttl
+                    | (if $model != "" and $xm == $model then
+                         # A cache read refreshes the entry it hit, so a pure-read response
+                         # proves warmth even though it creates no bucket - it inherits the
+                         # TTL of the nearest older own response that did declare one.
+                         (if $ts >= .ats then
+                            .ats = $ts | .am = $xm | .au = (if $xu == "" then "-" else $xu end)
+                            | .afk = $fs
+                            | .bk = (if $bs.ttl > 0 then $bs.ttl
+                                     elif $cr > 0 then .pbk else 0 end)
+                          else . end)
+                         | (if $bs.ttl > 0 then .pbk = $bs.ttl else . end)
                        else . end)
                     | (if $fs == "" and $ts > .own then .own = $ts else . end)
                     | .pm = $xm
@@ -1121,17 +1134,23 @@ if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
               .cets, .cgap, .ccr, .ccc,
               (if .own == 0 or (.lb > 0 and .own <= .lb) then 1 else 0 end),
               .lb, (.fau | if . == "" then "-" else . end), .fot,
-              .lts, .lm, .lbk, .lu, (.lfk | if . == "" then "-" else . end), .fc ]
+              .lts, .lm, .lbk, .lu, (.lfk | if . == "" then "-" else . end), .fc, .ots ]
           | map(tostring) | join("")' 2>/dev/null
     )
     if [ -n "$cache_scan" ]; then
       IFS=$'\x1f' read -r scan_found assist_ts assist_model assist_uuid fork_sid ttl_bucket \
         post_compact ev_valid ev_ts ev_gap ev_cr ev_cc ctx_stale boundary_ts fork_anchor_uuid \
-        fork_own_ts latest_ts latest_model latest_ttl latest_uuid latest_fork fresh_ctx <<< "$cache_scan" || :
+        fork_own_ts latest_ts latest_model latest_ttl latest_uuid latest_fork fresh_ctx \
+        oldest_ts <<< "$cache_scan" || :
     fi
     [ "$scan_found" = 1 ] && break
     if [ "$scan_bytes" -ge "$transcript_size" ]; then scan_complete=1; break; fi
-    [ "$boundary_ts" -gt 0 ] 2>/dev/null && { scan_complete=1; break; }
+    # A boundary ends the scan only once the window has read back past it: everything
+    # deeper is then pre-compact and cannot change warmth or the live size. The boundary
+    # may be known from the sidecar alone, i.e. from a file position outside this window,
+    # and stopping there would hide a live response sitting deeper than the window.
+    [ "$boundary_ts" -gt 0 ] 2>/dev/null && [ "$oldest_ts" -gt 0 ] 2>/dev/null \
+      && [ "$oldest_ts" -le "$boundary_ts" ] 2>/dev/null && { scan_complete=1; break; }
     [ "$scan_bytes" -ge "$scan_max" ] && break
     if [ "$scan_bytes" -eq 262144 ] && [ "$saved_scan_bytes" -gt "$scan_bytes" ]; then
       scan_bytes="$saved_scan_bytes"
@@ -1143,7 +1162,7 @@ if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
 fi
 
 for scan_num in assist_ts ttl_bucket post_compact ev_valid ev_ts ev_gap ev_cr ev_cc \
-  ctx_stale boundary_ts fork_own_ts latest_ts latest_ttl fresh_ctx; do
+  ctx_stale boundary_ts fork_own_ts latest_ts latest_ttl fresh_ctx oldest_ts; do
   [[ "${!scan_num}" =~ ^[0-9]+$ ]] || printf -v "$scan_num" %s 0
 done
 [[ "$fork_sid" =~ ^[A-Za-z0-9_-]+$ ]] || fork_sid="-"
