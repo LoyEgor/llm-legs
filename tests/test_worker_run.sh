@@ -40,6 +40,13 @@ cat >"$WORK/bin/claudeb" <<'EOF'
   printf 'CLAUDEB_CALL\n'
   printf 'ARG=%q\n' "$@"
 } >>"$CALL_LOG"
+# The real CLI refuses an empty stdin in --print mode; the stub must too, or a
+# lost brief (background stdin defaulting to /dev/null) passes the suite.
+input=$(cat)
+if [ -z "$input" ]; then
+  printf 'Error: Input must be provided either through stdin or as a prompt argument\n' >&2
+  exit 1
+fi
 has_effort=false
 for arg in "$@"; do [ "$arg" != --effort ] || has_effort=true; done
 if [ -e "$STUB_DIR/claudeb_drop_effort" ] && [ "$has_effort" = true ]; then
@@ -118,7 +125,7 @@ clear_stub() {
   : >"$CALL_LOG"
   : >"$PICK_LOG"
   unset STUB_SLEEP STUB_ERROR STUB_CODE STUB_STDOUT
-  rm -f "$STUB_DIR/claudeb_drop_effort" "$STUB_DIR/codex_trusted"
+  rm -f "$STUB_DIR/claudeb_drop_effort" "$STUB_DIR/codex_trusted" "$STUB_DIR/codex.stdin"
 }
 
 start_ok() {
@@ -166,6 +173,8 @@ second_wait=$("$RUNNER" wait "$RUN_ID" --max 6)
 assert grep -q '^STATUS: done$' <<<"$second_wait"
 assert grep -q '^SESSION: codex-session$' <<<"$second_wait"
 assert grep -q '^RESULT-TAIL:$' <<<"$second_wait"
+assert grep -q 'test brief' "$STUB_DIR/codex.stdin"
+assert grep -q 'second line' "$STUB_DIR/codex.stdin"
 unset STUB_SLEEP
 
 # A running run whose vendor has already surfaced its id reports it mid-flight,

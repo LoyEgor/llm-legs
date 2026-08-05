@@ -23,7 +23,10 @@ DEADLINE=${WORKER_RUN_DEADLINE:-10200}
 
 run_with_deadline() {
   local child watchdog rc
-  "$@" &
+  # <&0 is load-bearing: without an explicit stdin redirect, a background
+  # command in a non-interactive shell gets /dev/null instead of the brief
+  # the caller redirected in (live-caught: claudeb saw an empty stdin).
+  "$@" <&0 &
   child=$!
   # The watchdog sleeps in short hops: killing the subshell strands its in-flight
   # sleep, and a single sleep $DEADLINE would linger for hours after every run.
