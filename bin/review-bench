@@ -1022,6 +1022,15 @@ def progress_file_name(repo, pid=None):
     return f"{receipt_name[:-5]}-{pid if pid is not None else os.getpid()}.json"
 
 
+def session_stamp():
+    """The chat that launched this run, for a reader that has only the document. Absent rather than
+    empty when the harness named none, so the key's presence alone says whether a chat can be
+    named and no reader has to treat a blank value as a session it failed to resolve.
+    """
+    session = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    return {"session": session} if session else {}
+
+
 def review_progress_document(repo, run_id, tier, target, cells, started=None, pid=None,
                              max_panel=False, expected=None, started_epoch=None):
     timestamp = started or iso_now()
@@ -1041,6 +1050,7 @@ def review_progress_document(repo, run_id, tier, target, cells, started=None, pi
         # two start fields disagree about when the run began.
         "started_epoch": int(started_epoch if started_epoch is not None else time.time()),
         "ts": timestamp,
+        **session_stamp(),
     }
 
 
@@ -1173,6 +1183,7 @@ def persist_review_receipt(repo, tree, sha, run_id, errored, timestamp=None, pan
         receipt = {
             "repo": str(repo), "tree": tree, "commit": sha,
             "run_id": run_id, "ts": timestamp or iso_now(), "errored": errored,
+            **session_stamp(),
         }
         # The reader weighs errored cells against the panel they came from: one silent cell out
         # of nine is not the same coverage loss as four, and only the run knows how many it sent.
@@ -1245,7 +1256,7 @@ def scope_path_relative(top, candidate):
     return None
 
 
-def normalize_scope_paths(repo, paths):
+def normalize_scope_paths(repo, paths, option="--paths", root_is_everything=False):
     """The scope as the snapshot records it and as its receipt is named: repository-relative,
     lexically canonical, deduplicated and sorted, so two callers naming the same files differently
     — a different order, a `.`/`..` segment, an absolute path — review the same tree and answer to
@@ -1254,6 +1265,10 @@ def normalize_scope_paths(repo, paths):
     A relative pathspec is resolved the way the caller's shell would read it, against the current
     directory, since a caller standing in a subdirectory means the file beside them. Only a caller
     standing outside the repository has no such meaning to offer, and is read repository-relative.
+
+    `root_is_everything` is for a commit pathspec rather than a review scope: `git commit -- .` at
+    the top carries every tracked change, and an empty pathspec is how the callers here spell that
+    same set, while a review scoped to the whole tree is a scope nobody asked for.
     """
     top = Path(repo).resolve()
     try:
@@ -1262,24 +1277,30 @@ def normalize_scope_paths(repo, paths):
         cwd = top
     base = cwd if cwd == top or top in cwd.parents else top
     normalized = set()
+    everything = False
     for raw in paths:
         path = str(raw).strip()
         if not path:
-            raise ValueError(f"--paths names no path: {raw!r}")
+            raise ValueError(f"{option} names no path: {raw!r}")
         # The snapshot records one trailer per path, and a trailer is a line: a path carrying a
         # newline would be read back as a scope nobody asked for.
         if "\n" in path or "\r" in path:
-            raise ValueError("--paths entries may not contain newlines")
+            raise ValueError(f"{option} entries may not contain newlines")
         relative = scope_path_relative(
             top, path if os.path.isabs(path) else os.path.join(str(base), path)
         )
         if relative is None:
-            raise ValueError(f"--paths names a path outside the repository: {raw}")
+            raise ValueError(f"{option} names a path outside the repository: {raw}")
         if relative == os.curdir:
-            raise ValueError(f"--paths names no path: {raw!r}")
+            if not root_is_everything:
+                raise ValueError(f"{option} names no path: {raw!r}")
+            everything = True
+            continue
         normalized.add(relative)
+    if everything:
+        return []
     if not normalized:
-        raise ValueError("--paths needs at least one path")
+        raise ValueError(f"{option} needs at least one path")
     return sorted(normalized)
 
 
@@ -5330,13 +5351,13 @@ def commit_diff(repo, sha):
     return proc.stdout
 
 
-def diff_numstat(repo, revisions):
+def diff_numstat(repo, revisions, paths=None):
     # Renames are detected, not expanded into a delete plus an add: a moved file with no edits is
     # one file and zero lines, and counting it as 2N lines escalates a trivial move to T3. With -z
     # a rename record ends with an empty path and carries the old and new names as the next two
     # NUL-separated fields.
     proc = subprocess.run(
-        ["git", "diff", "--numstat", "-z", "--find-renames", *revisions, "--"],
+        ["git", "diff", "--numstat", "-z", "--find-renames", *revisions, "--", *(paths or ())],
         cwd=repo, capture_output=True,
     )
     if proc.returncode != 0:
@@ -5694,42 +5715,70 @@ def review_outcome(repo, receipt):
     return worktree, confirmed, findings
 
 
-def staged_paths(repo, baseline, scope=None):
+def changed_paths(repo, baseline, scope=None, cached=True):
     proc = subprocess.run(
-        ["git", "diff", "--cached", "--no-renames", "--name-only", "-z", baseline, "--",
-         *(scope or ())],
+        ["git", "diff", *(["--cached"] if cached else []), "--no-renames", "--name-only", "-z",
+         baseline, "--", *(scope or ())],
         cwd=repo, capture_output=True, text=True,
     )
     if proc.returncode != 0:
-        raise RuntimeError(proc.stderr.strip() or "git diff --cached failed")
+        raise RuntimeError(proc.stderr.strip() or "git diff failed")
     return {path for path in proc.stdout.split("\0") if path}
 
 
-def scoped_review_vouching(repo):
-    """The scoped review that answers for what is staged, or None. A commit contains the index and
-    nothing else, so another agent's unstaged work in the same checkout is not what this one is
-    asking to commit — but a staged path the scoped panel was never shown is, and it keeps the
-    blocking verdict. One receipt has to cover the whole staged set on its own: a union of two
-    would let two half-fresh reviews vouch for a tree neither of them read.
+def commit_content_view(repo, commit_paths=None, commit_all=False):
+    """How to ask what the pending commit will hold: for a plain `git commit` the index, for
+    `git commit -- <paths>` and `git commit -a` the WORKING TREE, because those forms commit
+    working-tree content under git's --only/--all semantics and the index never reaches the commit.
+    Returns the set of paths it would carry (optionally narrowed to a receipt's scope) and its
+    delta against a reviewed tree, so the vouching rules below are asked once, of either form.
     """
+    if commit_paths is None and not commit_all:
+        return (lambda scope=None: changed_paths(repo, "HEAD", scope),
+                lambda tree: diff_numstat(repo, ["--cached", tree])[0])
+    pathspec = list(commit_paths or ())
+    return (lambda scope=None: changed_paths(repo, "HEAD", scope or pathspec, cached=False),
+            lambda tree: diff_numstat(repo, [tree], pathspec)[0])
+
+
+def commit_vouching_receipts(repo):
+    """Every receipt that can answer for a commit: the scoped ones freshest first, then the
+    repository's own. A whole-tree review read at least what any scoped one did, so a commit it
+    covers must not be the one commit that cannot lean on a review — and it is asked last so a
+    scope that covers the commit still names itself in the answer.
+    """
+    receipts = scoped_review_receipts(repo)
+    whole_tree = review_receipt(repo)
+    return [*receipts, whole_tree] if whole_tree else receipts
+
+
+def scoped_review_vouching(repo, commit_paths=None, commit_all=False):
+    """The review that answers for what this commit will contain, or None. A plain commit contains
+    the index and nothing else, so another agent's unstaged work in the same checkout is not what
+    this one is asking to commit — and a pathspec or `-a` commit narrows that further to
+    working-tree content the caller named. Either way a path the panel was never shown is part of
+    the commit, and it keeps the blocking verdict. One receipt has to cover the whole set on its
+    own: a union of two would let two half-fresh reviews vouch for a tree neither of them read.
+    """
+    contents, delta_against = commit_content_view(repo, commit_paths, commit_all)
     try:
-        staged = staged_paths(repo, "HEAD")
+        committed = contents()
     except RuntimeError:
         return None
-    if not staged:
+    if not committed:
         return None
-    for receipt in scoped_review_receipts(repo):
+    for receipt in commit_vouching_receipts(repo):
         try:
-            if staged_paths(repo, "HEAD", receipt["scope"]) != staged:
+            if not committed <= contents(receipt.get("scope")):
                 continue
-            delta, _ = diff_numstat(repo, ["--cached", receipt["tree"]])
+            delta = delta_against(receipt["tree"])
         except RuntimeError:
             continue
         # The scope is a pathspec, and matching it is not being read: a directory scope matches a
         # file created after the panel ran, a scope naming `a[b].txt` matches `ab.txt`. Only the
         # diff the run was actually shown says which paths it answers for.
         reviewed_paths = reviewed_diff_paths(repo, receipt["commit"])
-        if not staged <= reviewed_paths:
+        if not committed <= reviewed_paths:
             continue
         worktree = is_worktree_snapshot(repo, receipt["commit"])
         # Standing where the panel stood, the exact-tree case included: once HEAD has moved inside
@@ -5738,7 +5787,8 @@ def scoped_review_vouching(repo):
         review_point = f"{receipt['commit']}^" if worktree else receipt["commit"]
         if not same_commit(repo, "HEAD", review_point):
             continue
-        # The index is the reviewed tree itself: nothing has been written since the panel read it.
+        # What the commit would carry is the reviewed tree itself: nothing has been written since
+        # the panel read it.
         if not delta:
             return receipt
         if receipt["run_id"].startswith("stamped-"):
@@ -5878,6 +5928,26 @@ def cmd_suggest(args):
         else:
             print("nothing to review")
         return 0
+    commit_paths = getattr(args, "commit_paths", None)
+    commit_all = bool(getattr(args, "commit_all", False))
+    if commit_paths is not None:
+        # git reads a commit pathspec beside the caller, while every git call here runs at the
+        # repository root. Taken as typed, a path named from a subdirectory matched a different file
+        # or none at all — and matching nothing is this command's strongest allow signal.
+        commit_paths = normalize_scope_paths(
+            repo, commit_paths, "--commit-paths", root_is_everything=True
+        )
+    if not args.range and (commit_all or commit_paths is not None):
+        contents, _ = commit_content_view(repo, commit_paths, commit_all)
+        try:
+            empty_form = not contents()
+        except RuntimeError:
+            empty_form = False
+        # A commit carrying nothing is one git itself refuses, and the whole-tree delta below is
+        # other work in the checkout rather than anything this commit would take.
+        if empty_form:
+            print("nothing to review")
+            return 0
     changed_lines = sum(changes.values())
     tier_name = suggest_tier(changes, changed_lines, sources)
     # A delta measured against a review that FOUND something is the work that review provoked:
@@ -5914,7 +5984,8 @@ def cmd_suggest(args):
         # T0 by the ladder's own T0 rule, so raising T1's ceiling can never quietly send a larger
         # delta to T0's two-minute panel; T1 for everything else.
         tier_name = "T0" if size_tier(changes, changed_lines) == "T0" else "T1"
-    scoped_vouch = None if args.range or fix_delta else scoped_review_vouching(repo)
+    scoped_vouch = None if args.range or fix_delta else scoped_review_vouching(
+        repo, commit_paths, commit_all)
     print(f"changed files: {len(changes)}")
     print(f"changed lines: {changed_lines}")
     # Exactly one tier is named here, and it is the one that runs. The cap on an owner-only tier
@@ -5929,9 +6000,16 @@ def cmd_suggest(args):
     if fix_delta:
         print(f"work over review {receipt['run_id']}, so {run_tier} regardless of what it touches")
     if scoped_vouch:
-        print(f"work over review {scoped_vouch['run_id']}, which read every staged path "
-              f"(scoped to {shlex.join(scoped_vouch['scope'])})")
-    if receipt:
+        carried = ("every path this commit's pathspec carries"
+                   if commit_paths is not None else
+                   "every tracked change `git commit -a` carries"
+                   if commit_all else "every staged path")
+        vouch_scope = scoped_vouch.get("scope")
+        print(f"work over review {scoped_vouch['run_id']}, which read {carried}"
+              + (f" (scoped to {shlex.join(vouch_scope)})" if vouch_scope else ""))
+    # Silent when the repository's own review is what just vouched: the delta it names is the work
+    # outside this commit, and printing both lines about one receipt reads as a contradiction.
+    if receipt and receipt != scoped_vouch:
         print(f"unreviewed delta vs review {receipt['run_id']}; "
               + ("the working tree is compared with the reviewed snapshot as one tree against "
                  "another, so staged and untracked content is counted once"
@@ -7299,7 +7377,18 @@ def main():
     pending.set_defaults(func=cmd_pending_report)
     suggest = subparsers.add_parser("suggest", help="Suggest a review tier for a change")
     suggest.add_argument("--repo", default=".")
-    suggest.add_argument("--range", metavar="A..B")
+    # A range and a commit form are asked in the same group because a range answers about two
+    # commits that already exist: given both, the form's narrowing was dropped without a word.
+    commit_form = suggest.add_mutually_exclusive_group()
+    commit_form.add_argument("--range", metavar="A..B")
+    commit_form.add_argument(
+        "--commit-paths", nargs="+", metavar="PATH",
+        help="Vouch for what `git commit -- <paths>` would carry rather than the whole index",
+    )
+    commit_form.add_argument(
+        "--commit-all", action="store_true",
+        help="Vouch for what `git commit -a` would carry rather than the whole index",
+    )
     suggest.set_defaults(func=cmd_suggest)
     run = subparsers.add_parser("run", help="Run blind reviewers against one commit")
     run.add_argument("commitish", nargs="?")

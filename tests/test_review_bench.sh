@@ -51,6 +51,9 @@ live_shell_pid = int(sys.argv[5])
 fixture_home = work / "home"
 fixture_home.mkdir()
 os.environ["HOME"] = str(fixture_home)
+# The launching chat's id lands in every receipt and progress document, and those are asserted
+# whole here: whether the suite runs inside a chat must not decide what the fixtures contain.
+os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
 
 
 def clear_walls():
@@ -5112,6 +5115,22 @@ max_progress = rb.review_progress_document(
     started="2026-07-27T12:00:00+00:00", pid=12345, max_panel="yes",
 )
 assert max_progress["max"] is True, max_progress
+# The chat that launched the run, for a statusline holding only the document, and absent rather
+# than empty when the harness named none.
+assert "session" not in progress, progress
+os.environ["CLAUDE_CODE_SESSION_ID"] = "sess-abc-123"
+try:
+    stamped_progress = rb.review_progress_document(
+        pin_repo, "20260727T120000Z-2ecc0bd", "T2", "2ecc0bd", ["oc-kimik3"], pid=12345,
+    )
+    os.environ["CLAUDE_CODE_SESSION_ID"] = ""
+    blank_progress = rb.review_progress_document(
+        pin_repo, "20260727T120000Z-2ecc0bd", "T2", "2ecc0bd", ["oc-kimik3"], pid=12345,
+    )
+finally:
+    os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+assert stamped_progress["session"] == "sess-abc-123", stamped_progress
+assert "session" not in blank_progress, blank_progress
 rb.complete_review_progress(
     progress, "sol-low", True, timestamp="2026-07-27T12:03:11+00:00",
 )
@@ -5836,10 +5855,10 @@ def review_found(run_id, confirmed=0, findings=0):
         ))
 
 
-def suggest(path, *extra):
+def suggest(path, *extra, cwd=None):
     proc = subprocess.run(
         [sys.argv[1], "suggest", "--repo", str(path), *extra],
-        check=True, capture_output=True, text=True, env=suggest_env,
+        check=True, capture_output=True, text=True, env=suggest_env, cwd=cwd,
     )
     return proc.stdout.splitlines()
 
@@ -6439,6 +6458,150 @@ subprocess.run(["git", "-C", str(moved_head_suggest), "add", "mine.txt"],
                check=True, env=suggest_env)
 assert not any(line.startswith("work over review ") for line in suggest(moved_head_suggest)), \
     suggest(moved_head_suggest)
+
+# `git commit -- <paths>` and `git commit -a` commit working-tree content, so the index outside
+# those paths never reaches the commit: in a shared checkout another agent's staged file left the
+# whole index unvouchable, and no receipt could ever cover it.
+form_suggest = make_suggest_repo("suggest-commit-form", ("mine.txt", "theirs.txt"))
+(form_suggest / "mine.txt").write_text("reviewed\n" * 12)
+form_sha = rb.worktree_snapshot_commit(form_suggest, paths=["mine.txt"])
+form_tree = subprocess.run(
+    ["git", "-C", str(form_suggest), "rev-parse", f"{form_sha}^{{tree}}"],
+    check=True, capture_output=True, text=True, env=suggest_env,
+).stdout.strip()
+rb.persist_review_receipt(
+    form_suggest, form_tree, form_sha, "commit-form-fixture", 0, scope=["mine.txt"]
+)
+(form_suggest / "theirs.txt").write_text("theirs\n" * 3)
+subprocess.run(["git", "-C", str(form_suggest), "add", "theirs.txt"], check=True, env=suggest_env)
+assert not any(line.startswith("work over review ") for line in suggest(form_suggest)), \
+    suggest(form_suggest)
+form_paths_lines = suggest(form_suggest, "--commit-paths", "mine.txt")
+assert ("work over review commit-form-fixture, which read every path this commit's pathspec "
+        "carries (scoped to mine.txt)") in form_paths_lines, form_paths_lines
+
+# A pathspec reaching past what the panel read is not covered by it, whatever else is in the index.
+assert not any(line.startswith("work over review ")
+               for line in suggest(form_suggest, "--commit-paths", "mine.txt", "theirs.txt")), \
+    suggest(form_suggest, "--commit-paths", "mine.txt", "theirs.txt")
+
+# `-a` carries the whole tracked delta, so the unreviewed working-tree edit it would sweep in
+# blocks — and with that edit reverted the same receipt answers for the commit.
+assert not any(line.startswith("work over review ")
+               for line in suggest(form_suggest, "--commit-all")), \
+    suggest(form_suggest, "--commit-all")
+(form_suggest / "theirs.txt").write_text("base\n")
+form_all_lines = suggest(form_suggest, "--commit-all")
+assert ("work over review commit-form-fixture, which read every tracked change `git commit -a` "
+        "carries (scoped to mine.txt)") in form_all_lines, form_all_lines
+
+# A pathspec matching no change is a commit git itself refuses, and the tree's other work is not
+# what it would carry: there is nothing to review, whatever the whole-tree sizing above says.
+(form_suggest / "theirs.txt").write_text("theirs\n" * 9)
+assert suggest(form_suggest, "--commit-paths", "unchanged.txt") == ["nothing to review"], \
+    suggest(form_suggest, "--commit-paths", "unchanged.txt")
+form_empty_all = make_suggest_repo("suggest-commit-form-clean")
+assert suggest(form_empty_all, "--commit-all") == ["nothing to review"], \
+    suggest(form_empty_all, "--commit-all")
+
+# Untracked content is in neither commit form, so it can neither be vouched for nor block one.
+(form_suggest / "untracked.txt").write_text("new\n" * 4)
+assert ("work over review commit-form-fixture, which read every path this commit's pathspec "
+        "carries (scoped to mine.txt)") in suggest(form_suggest, "--commit-paths", "mine.txt"), \
+    suggest(form_suggest, "--commit-paths", "mine.txt")
+
+# A commit pathspec is read where git reads it — beside the caller: taken as typed at the repository
+# root, a name from a subdirectory matched the root's file or none at all.
+nested_suggest = make_suggest_repo("suggest-commit-nested", ("sub/mine.txt", "mine.txt"))
+(nested_suggest / "sub" / "mine.txt").write_text("nested\n" * 6)
+nested_sha = rb.worktree_snapshot_commit(nested_suggest, paths=["sub/mine.txt"])
+nested_tree = subprocess.run(
+    ["git", "-C", str(nested_suggest), "rev-parse", f"{nested_sha}^{{tree}}"],
+    check=True, capture_output=True, text=True, env=suggest_env,
+).stdout.strip()
+rb.persist_review_receipt(
+    nested_suggest, nested_tree, nested_sha, "nested-form-fixture", 0, scope=["sub/mine.txt"]
+)
+(nested_suggest / "mine.txt").write_text("unreviewed\n" * 4)
+nested_vouched = ("work over review nested-form-fixture, which read every path this commit's "
+                 "pathspec carries (scoped to sub/mine.txt)")
+for nested_spec in ("mine.txt", "."):
+    nested_lines = suggest(nested_suggest, "--commit-paths", nested_spec,
+                           cwd=nested_suggest / "sub")
+    assert nested_vouched in nested_lines, (nested_spec, nested_lines)
+# The same directory naming the root's unreviewed file means that file, not the one beside it.
+assert not any(line.startswith("work over review ") for line in
+               suggest(nested_suggest, "--commit-paths", "../mine.txt",
+                       cwd=nested_suggest / "sub")), \
+    suggest(nested_suggest, "--commit-paths", "../mine.txt", cwd=nested_suggest / "sub")
+
+# `git commit -- .` at the top carries every tracked change rather than nothing, and an empty commit
+# form is the gate's allow signal.
+form_dot_lines = suggest(form_suggest, "--commit-paths", ".")
+assert form_dot_lines != ["nothing to review"], form_dot_lines
+assert not any(line.startswith("work over review ") for line in form_dot_lines), form_dot_lines
+
+# A review that read the whole tree covers a commit as surely as a scope naming its paths, and was
+# the one receipt a commit could not lean on: only scoped receipts were ever asked, so the stronger
+# review vouched for less than the narrower one.
+whole_suggest = make_suggest_repo("suggest-commit-whole-tree", ("mine.txt", "theirs.txt"))
+(whole_suggest / "mine.txt").write_text("reviewed\n" * 7)
+whole_sha = rb.worktree_snapshot_commit(whole_suggest)
+whole_tree = subprocess.run(
+    ["git", "-C", str(whole_suggest), "rev-parse", f"{whole_sha}^{{tree}}"],
+    check=True, capture_output=True, text=True, env=suggest_env,
+).stdout.strip()
+rb.persist_review_receipt(whole_suggest, whole_tree, whole_sha, "whole-tree-fixture", 0)
+(whole_suggest / "theirs.txt").write_text("theirs\n" * 5)
+whole_lines = suggest(whole_suggest, "--commit-paths", "mine.txt")
+assert ("work over review whole-tree-fixture, which read every path this commit's pathspec "
+        "carries") in whole_lines, whole_lines
+# One receipt, one verdict: the delta it names is the work outside this commit, and both lines about
+# it read as a contradiction.
+assert not any(line.startswith("unreviewed delta vs review ") for line in whole_lines), whole_lines
+# Nothing staged is nothing to vouch for, and the working tree the pathspec form reads is not the
+# question a plain commit asks.
+assert not any(line.startswith("work over review ") for line in suggest(whole_suggest)), \
+    suggest(whole_suggest)
+subprocess.run(["git", "-C", str(whole_suggest), "add", "mine.txt"], check=True, env=suggest_env)
+assert ("work over review whole-tree-fixture, which read every staged path"
+        in suggest(whole_suggest)), suggest(whole_suggest)
+
+# A range answers about two commits that already exist, so a commit form asked beside it was
+# narrowing nothing and was dropped without a word.
+for range_form in (["--commit-paths", "mine.txt"], ["--commit-all"]):
+    range_refused = subprocess.run(
+        [sys.argv[1], "suggest", "--repo", str(form_suggest), "--range", "HEAD~1..HEAD",
+         *range_form],
+        capture_output=True, text=True, env=suggest_env,
+    )
+    assert range_refused.returncode == 2, (range_form, range_refused)
+    assert "not allowed with" in range_refused.stderr, (range_form, range_refused.stderr)
+
+# The launching chat is stamped into the receipt for a reader holding only that file, and stays
+# absent when the harness named none rather than landing there empty.
+session_suggest = make_suggest_repo("suggest-session-receipt")
+session_sha, session_tree = (subprocess.run(
+    ["git", "-C", str(session_suggest), "rev-parse", ref],
+    check=True, capture_output=True, text=True, env=suggest_env,
+).stdout.strip() for ref in ("HEAD", "HEAD^{tree}"))
+os.environ["CLAUDE_CODE_SESSION_ID"] = "sess-receipt-9"
+try:
+    session_receipt = json.loads(rb.persist_review_receipt(
+        session_suggest, session_tree, session_sha, "session-receipt-fixture", 0
+    ).read_text())
+    os.environ["CLAUDE_CODE_SESSION_ID"] = ""
+    blank_session_receipt = json.loads(rb.persist_review_receipt(
+        session_suggest, session_tree, session_sha, "session-receipt-fixture", 0
+    ).read_text())
+finally:
+    os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+unset_session_receipt = json.loads(rb.persist_review_receipt(
+    session_suggest, session_tree, session_sha, "session-receipt-fixture", 0
+).read_text())
+assert session_receipt["session"] == "sess-receipt-9", session_receipt
+assert "session" not in blank_session_receipt, blank_session_receipt
+assert "session" not in unset_session_receipt, unset_session_receipt
 
 missing_tree_suggest = make_suggest_repo("suggest-missing-tree")
 (missing_tree_suggest / "tracked.txt").write_text("changed\n")
