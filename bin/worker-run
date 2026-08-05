@@ -479,7 +479,7 @@ running_report() {
   elapsed=$((now - started)); [ "$elapsed" -ge 0 ] || elapsed=0
   out_bytes=$(wc -c <"$directory/out" | tr -d '[:space:]')
   err_bytes=$(wc -c <"$directory/err" | tr -d '[:space:]')
-  printf 'STATUS: running\nELAPSED: %s\nOUT-BYTES: %s\nERR-BYTES: %s\n' "$elapsed" "$out_bytes" "$err_bytes"
+  printf 'STATUS: running\nELAPSED: %s\nOUT-BYTES: %s\nERR-BYTES: %s\nSESSION: %s\n' "$elapsed" "$out_bytes" "$err_bytes" "$(session_id "$directory")"
 }
 
 wait_run() {

@@ -5,7 +5,7 @@
 - Prefer claudeb for long or multi-step tasks and work that depends heavily on repository conventions.
 - Gemini/Antigravity is a full implementation worker selectable with `worker=gemini`; its base profile is `main`, and named profiles are isolated by `geminib`.
 - In auto mode, treat a healthy Gemini reading as an eligible candidate but route conservatively until task-quality and reliability benchmarks establish a stronger weight.
-- Use Gemini `ACCOUNT`/`MODEL`/`EFFORT` exactly as `NEXT:` prints them; `gemini_profile=` is an explicit account pin, and the canonical knob-to-agy mapping lives in `~/.claude/agents/gemini-worker.md`.
+- Use Gemini `ACCOUNT`/`MODEL`/`EFFORT` exactly as `NEXT:` prints them; `gemini_profile=` is an explicit account pin, and the canonical knob-to-agy mapping lives in `worker-run`.
 - When Codex is FRESH, route roughly five of every ten suitable tasks to Codex. Reduce that share as the data-driven verdict tightens.
 - Use the claudeb model and effort exactly as `NEXT:` prints them — R8 may have stepped them one rung down the ladder `opus·high → opus·medium → sonnet·high` to spare an account's Fable quota; override upward only when the task genuinely needs it.
 - claudeb sonnet runs at effort high or above — sonnet·medium and below are never used; opus may run at medium.

@@ -2269,6 +2269,28 @@ seed_zenith_out=$(printf '%s' "$seed_zenith" | "$WORKER_HOOK") || fail "zenith s
 assert_eq 'main · zenith · high' "$(cat "$TAGDIR/workerzenith")"
 rm -f "$HOME/.codex/config.toml"
 
+# worker-run wait/report adopt the tag the launcher wrote into its run dir, and
+# re-derive it on every call (the launcher may resolve a different account than
+# the spawn-time seed predicted).
+WRDIR="$HOME/.cache/claude-worker-runs/codex-1-2-abcd"
+mkdir -p "$WRDIR"
+printf 'work6 · sol · high\n' > "$WRDIR/tag"
+wr_wait=$(worker_payload codex-worker worker/wrun 'Wait for the run' 'worker-run wait codex-1-2-abcd --max 500')
+wr_out=$(printf '%s' "$wr_wait" | "$WORKER_HOOK") || fail "worker-run wait exited nonzero"
+assert jq -e '.hookSpecificOutput.updatedInput.description == "work6 · sol · high — Wait for the run"' <<< "$wr_out" >/dev/null
+assert_eq 'work6 · sol · high' "$(cat "$TAGDIR/workerwrun")"
+printf 'work3 · sol · high\n' > "$WRDIR/tag"
+wr_report=$(worker_payload codex-worker worker/wrun 'Collect the report' 'worker-run report codex-1-2-abcd')
+wr_report_out=$(printf '%s' "$wr_report" | "$WORKER_HOOK") || fail "worker-run report exited nonzero"
+assert jq -e '.hookSpecificOutput.updatedInput.description == "work3 · sol · high — Collect the report"' <<< "$wr_report_out" >/dev/null
+
+# `worker-run start claudeb ...` names a vendor as an argument, not a launch:
+# with no run dir, no stored tag and no pending seed the hook stays silent.
+wr_start=$(worker_payload claudeb-worker worker/wrstart 'Launch the run' 'worker-run start claudeb --brief /tmp/b --workdir /x')
+wr_start_out=$(printf '%s' "$wr_start" | "$WORKER_HOOK") || fail "worker-run start exited nonzero"
+assert_eq "" "$wr_start_out"
+assert test ! -f "$TAGDIR/workerwrstart"
+
 
 # A claudeb launch command derives the 3-part tag.
 glob_seed=$(worker_payload claudeb-worker worker/two 'Ship it' 'claudeb profile com -p --model sonnet --effort high')

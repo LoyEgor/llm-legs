@@ -159,12 +159,29 @@ pid=$(jq -r '.pid' "$RUN_DIR/meta.json")
 assert kill -0 "$pid"
 first_wait=$("$RUNNER" wait "$RUN_ID" --max 1)
 assert grep -q '^STATUS: running$' <<<"$first_wait"
+assert grep -q '^SESSION: -$' <<<"$first_wait"
 assert kill -0 "$pid"
 assert test ! -e "$RUN_DIR/exit_code"
 second_wait=$("$RUNNER" wait "$RUN_ID" --max 6)
 assert grep -q '^STATUS: done$' <<<"$second_wait"
 assert grep -q '^SESSION: codex-session$' <<<"$second_wait"
 assert grep -q '^RESULT-TAIL:$' <<<"$second_wait"
+unset STUB_SLEEP
+
+# A running run whose vendor has already surfaced its id reports it mid-flight,
+# so a budget-spent relay can still hand back a resumable session.
+clear_stub
+set_config 'gemini_model=pro' 'gemini_effort=high'
+printf 'fast\n' >"$STUB_DIR/gemini_profiles"
+export PICK_ACCOUNT=fast PICK_RC=0 STUB_SLEEP=2
+start_ok gemini
+running_wait=$("$RUNNER" wait "$RUN_ID" --max 1)
+assert grep -q '^STATUS: running$' <<<"$running_wait"
+assert grep -q '^SESSION: gemini-conversation$' <<<"$running_wait"
+running_report=$("$RUNNER" report "$RUN_ID")
+assert grep -q '^STATUS: running$' <<<"$running_report"
+assert grep -q '^SESSION: gemini-conversation$' <<<"$running_report"
+assert await_done
 unset STUB_SLEEP
 
 for vendor in claudeb codex gemini; do

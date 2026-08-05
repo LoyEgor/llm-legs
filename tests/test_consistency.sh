@@ -178,22 +178,20 @@ assert test -r "$GEMINI_AGENT"
 assert test -r "$CODEX_AGENT"
 assert test -r "$CLAUDEB_AGENT"
 assert test -r "$WORKER_COMMAND"
-for row in \
-  '| `pro` | `high` | `Gemini 3.1 Pro (High)` | *(omit)* |' \
-  '| `pro` | `low` | `gemini-3.1-pro-low` | *(omit)* |' \
-  '| `flash36` | `high` | `gemini-3.6-flash-high` | *(omit)* |' \
-  '| `flash36` | `medium` | `gemini-3.6-flash-medium` | *(omit)* |' \
-  '| `flash36` | `low` | `gemini-3.6-flash-low` | *(omit)* |' \
-  '| `flash35` | `high` | `gemini-3.5-flash-high` | *(omit)* |' \
-  '| `flash35` | `medium` | `gemini-3.5-flash-medium` | *(omit)* |' \
-  '| `flash35` | `low` | `gemini-3.5-flash-low` | *(omit)* |'; do
-  assert test "$(grep -Fc -- "$row" "$GEMINI_AGENT")" -eq 1
+WORKER_RUN="${WORKER_RUN_BIN:-$ROOT/bin/worker-run}"
+assert test -x "$WORKER_RUN"
+for arm in \
+  "pro:high) agy_model='Gemini 3.1 Pro (High)' ;;" \
+  "pro:low) agy_model='gemini-3.1-pro-low' ;;" \
+  'flash36:high|flash36:medium|flash36:low) agy_model="gemini-3.6-flash-$effort" ;;' \
+  'flash35:high|flash35:medium|flash35:low) agy_model="gemini-3.5-flash-$effort" ;;'; do
+  assert test "$(grep -Fc -- "$arm" "$WORKER_RUN")" -eq 1
 done
 assert grep -Fq '`gemini_model=pro`, and `gemini_effort=high`' "$WORKER_COMMAND"
 assert grep -Fq 'Valid combinations are pro high/low, flash36 high/medium/low, and flash35 high/medium/low' "$WORKER_COMMAND"
 assert grep -Fq 'gm_model=$(conf gemini_model); gm_model=${gm_model:-pro}' "$WORKERPICK"
 assert grep -Fq 'gm_effort=$(conf gemini_effort); gm_effort=${gm_effort:-high}' "$WORKERPICK"
-assert grep -Fq 'canonical knob-to-agy mapping lives in `~/.claude/agents/gemini-worker.md`' "$POLICY"
+assert grep -Fq 'canonical knob-to-agy mapping lives in `worker-run`' "$POLICY"
 assert doc_has 'Gemini worker knobs'
 
 SPAWN_HOOK="$ROOT/bin/worker-spawn-hook.sh"
@@ -205,19 +203,15 @@ for vendor in claudeb codex gemini; do
 done
 assert grep -Fq '[ -n "$acct" ] || acct=main' "$SPAWN_HOOK"
 assert grep -Fq '`gemini_profile=<name>`' "$WORKER_COMMAND"
-for spec in \
-  "$CLAUDEB_AGENT|claudeb|claudeb_profile" \
-  "$CODEX_AGENT|codex|codex_profile" \
-  "$GEMINI_AGENT|gemini|gemini_profile"; do
-  agent=${spec%%|*}
-  rest=${spec#*|}
-  vendor=${rest%%|*}
-  pin_key=${rest#*|}
-  assert grep -Fq "s/^${pin_key}=//p" "$agent"
-  assert grep -Fq 'An `ACCOUNT: <name>` line in the brief wins.' "$agent"
-  assert grep -Fq "worker-pick --account $vendor" "$agent"
-  assert grep -Fq 'Exit 3 means nothing is selectable' "$agent"
-  assert grep -Fq 'State in the report that account resolution fell back' "$agent"
+assert grep -Fq -- '--account) [ "$#" -ge 2 ] || usage; explicit_account="$2"; shift 2 ;;' "$WORKER_RUN"
+assert grep -Fq '"$picker" --account "$vendor"' "$WORKER_RUN"
+assert grep -Fq 'OUTCOME: %s_USAGE_LIMIT' "$WORKER_RUN"
+assert grep -Fq 'pin=$(config_value "${vendor}_profile")' "$WORKER_RUN"
+assert grep -Fq 'claudeb needs an explicit account or claudeb_profile pin when worker-pick is unavailable' "$WORKER_RUN"
+assert grep -Fq 'account=main' "$WORKER_RUN"
+for agent in "$CLAUDEB_AGENT" "$CODEX_AGENT" "$GEMINI_AGENT"; do
+  assert grep -Fq -- '`--account <n>` (an `ACCOUNT:` line' "$agent"
+  assert grep -Fq 'worker-run start' "$agent"
 done
 assert doc_has 'Worker account resolution'
 
