@@ -27,21 +27,36 @@ parsed=$(printf '%s' "$input" | jq -r '
     | (if type == "string" then . elif type == "object" then ([.. | strings] | join("\n")) else "" end)
     | ([capture("worktree at (?<wt>/[^\\n]+)")] | (.[0].wt // ""))
     | gsub("[[:space:]]+$"; "");
+  def dispatch_paths:
+    # Every absolute-looking token of the brief, in order: the resolver below
+    # takes the first that is a real repository, because a brief names the
+    # checkout the worker runs in before anything else. Capped so a brief
+    # listing dozens of files does not turn one dispatch into dozens of
+    # git calls.
+    [(.tool_input.prompt // ""), (.tool_input.description // "")]
+    | map(if type == "string" then . else "" end)
+    | join("\n")
+    | [match("/[A-Za-z0-9._~@+/-]+"; "g") | .string]
+    | map(sub("[\"\\x27`,.:)]+$"; ""))
+    | map(select(. != "" and . != "/"))
+    | .[0:10]
+    | join("");
   (if .tool_name == "Bash" then bash_hit else {path: "", sep: ""} end) as $bash
   | [(.hook_event_name | value), (.tool_name | value), (.session_id | value | gsub("[^A-Za-z0-9_-]"; "")),
    (.cwd | value),
    (if (.agent_id | value) != "" or (.agent_type | value) != "" then "1" else "" end),
-   (if .tool_name == "Edit" or .tool_name == "Write" then (.tool_input.file_path | value)
+   (if .tool_name == "Edit" or .tool_name == "Write" or .tool_name == "Read" then (.tool_input.file_path | value)
     elif .tool_name == "NotebookEdit" then (.tool_input.notebook_path | value)
     elif .tool_name == "Bash" then $bash.path
     elif .tool_name == "EnterWorktree" then worktree_path
     else "" end),
    (.source | value),
-   (if $bash.sep == "(" then "1" else "" end)]
+   (if $bash.sep == "(" then "1" else "" end),
+   (if .tool_name == "Task" or .tool_name == "Agent" then dispatch_paths else "" end)]
   | join("")
 ' 2>/dev/null) || exit 0
 
-IFS=$'\x1f' read -r hook_event tool_name session_id base_dir agent_flag candidate start_source bash_subshell <<< "$parsed"
+IFS=$'\x1f' read -r hook_event tool_name session_id base_dir agent_flag candidate start_source bash_subshell dispatch <<< "$parsed"
 [ -n "$session_id" ] || exit 0
 
 cache_dir="$HOME/.cache/claude-statusline"
@@ -55,30 +70,28 @@ if [ "$hook_event" = SessionStart ]; then
   # first cd/edit anywhere adopts THAT dir as home (a one-off cd into a sibling
   # worktree retargets the ports segment), and the worktree stickiness below can
   # only protect a home that already exists. compact keeps the shell and its
-  # cwd, so its state stays valid and is left alone. resume keeps a live
-  # worktree home: the event's cwd is the dir the chat was LAUNCHED in (often
-  # the main checkout), not where the work lives — reseeding from it would
-  # retarget the strip and ports to the wrong workspace on every resume.
+  # cwd, so its state stays valid and is left alone. resume keeps any live home:
+  # the event's cwd is the dir the chat was LAUNCHED in (often the main
+  # checkout), not where the work lives — reseeding from it would retarget the
+  # strip and ports to the wrong workspace on every resume of a long chat.
   case "$start_source" in
     startup|resume|clear)
       if [ "$start_source" = resume ] && [ -f "$state_file" ]; then
         IFS= read -r prev_home < "$state_file" || :
-        case "$prev_home" in
-          # Its own toplevel, not merely a surviving directory: a worktree that
-          # lost its `.git` link still sits inside the parent checkout, so git
-          # discovery ascends and the kept home would report that checkout's
-          # branch as the workspace — no `⧉`, no `✗`, nothing dim. A kept home
-          # drops the breadcrumb too: the render writes `.gone` once, so a
-          # survivor would later be named as the dir that went away.
-          */.claude/worktrees/*)
-            prev_top=$(git -C "$prev_home" rev-parse --show-toplevel 2>/dev/null) &&
-              prev_top=$(cd "$prev_top" 2>/dev/null && pwd -P) &&
-              [ "$prev_top" = "$(cd "$prev_home" 2>/dev/null && pwd -P)" ] && {
-                rm -f "$state_file.gone" "$away_file"
-                exit 0
-              }
-            ;;
-        esac
+        # Its own toplevel, not merely a surviving directory: a worktree that
+        # lost its `.git` link still sits inside the parent checkout, so git
+        # discovery ascends and the kept home would report that checkout's
+        # branch as the workspace — no `⧉`, no `✗`, nothing dim. A kept home
+        # drops the breadcrumb too: the render writes `.gone` once, so a
+        # survivor would later be named as the dir that went away.
+        if [ -n "$prev_home" ]; then
+          prev_top=$(git -C "$prev_home" rev-parse --show-toplevel 2>/dev/null) &&
+            prev_top=$(cd "$prev_top" 2>/dev/null && pwd -P) &&
+            [ "$prev_top" = "$(cd "$prev_home" 2>/dev/null && pwd -P)" ] && {
+              rm -f "$state_file.gone" "$away_file"
+              exit 0
+            }
+        fi
       fi
       rm -f "$state_file" "$state_file.gone" "$away_file"
       seed=$(git -C "${base_dir:-.}" rev-parse --show-toplevel 2>/dev/null) &&
@@ -94,12 +107,19 @@ if [ "$hook_event" = SessionStart ]; then
   exit 0
 fi
 
-[ "$hook_event" = PostToolUse ] || exit 0
+case "$tool_name" in
+  # A dispatch is heard when the worker is LAUNCHED, and only then: the same
+  # brief arrives again at PostToolUse, and counting it twice would let one
+  # dispatch fill two thirds of the away run below.
+  Task|Agent) [ "$hook_event" = PreToolUse ] || exit 0 ;;
+  *) [ "$hook_event" = PostToolUse ] || exit 0 ;;
+esac
 # Subagent tool events carry the PARENT session_id, so a worker's stray `cd`
 # would retarget the parent's statusline: only its WRITES are heard, and only as
-# sustained work (the away run below), never its cds. Dropping them wholesale
-# left the statusline behind in orchestrator mode, where every substantive edit
-# is made by a subagent.
+# sustained work (the away run below), never its cds, reads or dispatches.
+# Dropping them wholesale left the statusline behind in orchestrator mode, where
+# every substantive edit is made by a subagent. Its reads are noise of another
+# kind: an Explore agent reads across every repo it can reach.
 if [ -n "$agent_flag" ]; then
   case "$tool_name" in
     Edit|Write|NotebookEdit) ;;
@@ -112,11 +132,17 @@ case "$tool_name" in
     rm -f "$state_file" "$state_file.gone" "$away_file"
     exit 0
     ;;
-  EnterWorktree)
-    [ -n "$candidate" ] || exit 0
+  EnterWorktree|Task|Agent)
+    [ -n "$candidate$dispatch" ] || exit 0
     ;;
   Edit|Write|NotebookEdit)
     [ -n "$candidate" ] || exit 0
+    candidate=$(dirname -- "$candidate") || exit 0
+    ;;
+  Read)
+    # A read is too weak to establish anything, so with no home yet it is not
+    # heard at all: the home comes from SessionStart or from a write.
+    [ -n "$candidate" ] && [ -f "$state_file" ] || exit 0
     candidate=$(dirname -- "$candidate") || exit 0
     ;;
   Bash)
@@ -137,102 +163,140 @@ case "$tool_name" in
   *) exit 0 ;;
 esac
 
-case "$candidate" in
-  '$HOME') candidate=$HOME ;;
-  '$HOME/'*) candidate="$HOME/${candidate:6}" ;;
-  '${HOME}') candidate=$HOME ;;
-  '${HOME}/'*) candidate="$HOME/${candidate:8}" ;;
-  '~') candidate=$HOME ;;
-  '~/'*) candidate="$HOME/${candidate#\~/}" ;;
-esac
-
-# Checked on the logical path too, not only on $resolved below: ~/.claude/hooks
-# is a symlink into the claude-setup checkout, so after pwd -P the exclusion no
-# longer matches and a hook-file write retargets the statusline to that repo.
-case "$candidate" in
-  "$HOME"/.cache|"$HOME"/.cache/*|"$HOME"/.claude*) exit 0 ;;
-esac
-
 [ -n "$base_dir" ] || base_dir=.
-if [[ "$candidate" = /* ]]; then
-  resolved=$(cd "$candidate" 2>/dev/null && pwd -P) || exit 0
-else
-  resolved=$(cd "$base_dir" 2>/dev/null && cd "$candidate" 2>/dev/null && pwd -P) || exit 0
-fi
 
-tmp_root=${TMPDIR:-}
-tmp_root=${tmp_root%/}
-case "$resolved" in
-  /tmp|/tmp/*|/private/tmp|/private/tmp/*|"$HOME"/.cache|"$HOME"/.cache/*|"$HOME"/.claude*) exit 0 ;;
-esac
-if [ -n "$tmp_root" ] && { [ "$resolved" = "$tmp_root" ] || [[ "$resolved" == "$tmp_root/"* ]]; }; then
-  exit 0
-fi
-case "$resolved/" in
-  */node_modules/*) exit 0 ;;
-esac
+resolve_toplevel() {
+  local candidate=$1 resolved top tmp_root
+  case "$candidate" in
+    '$HOME') candidate=$HOME ;;
+    '$HOME/'*) candidate="$HOME/${candidate:6}" ;;
+    '${HOME}') candidate=$HOME ;;
+    '${HOME}/'*) candidate="$HOME/${candidate:8}" ;;
+    '~') candidate=$HOME ;;
+    '~/'*) candidate="$HOME/${candidate#\~/}" ;;
+  esac
 
-toplevel=$(git -C "$resolved" rev-parse --show-toplevel 2>/dev/null) || exit 0
-[ -d "$toplevel" ] || exit 0
-toplevel=$(cd "$toplevel" 2>/dev/null && pwd -P) || exit 0
+  # Checked on the logical path too, not only on $resolved below: ~/.claude/hooks
+  # is a symlink into the claude-setup checkout, so after pwd -P the exclusion no
+  # longer matches and a hook-file write retargets the statusline to that repo.
+  case "$candidate" in
+    "$HOME"/.cache|"$HOME"/.cache/*|"$HOME"/.claude*) return 1 ;;
+  esac
+
+  if [[ "$candidate" = /* ]]; then
+    resolved=$(cd "$candidate" 2>/dev/null && pwd -P) || return 1
+  else
+    resolved=$(cd "$base_dir" 2>/dev/null && cd "$candidate" 2>/dev/null && pwd -P) || return 1
+  fi
+
+  tmp_root=${TMPDIR:-}
+  tmp_root=${tmp_root%/}
+  case "$resolved" in
+    /tmp|/tmp/*|/private/tmp|/private/tmp/*|"$HOME"/.cache|"$HOME"/.cache/*|"$HOME"/.claude*) return 1 ;;
+  esac
+  if [ -n "$tmp_root" ] && { [ "$resolved" = "$tmp_root" ] || [[ "$resolved" == "$tmp_root/"* ]]; }; then
+    return 1
+  fi
+  case "$resolved/" in
+    */node_modules/*) return 1 ;;
+  esac
+
+  top=$(git -C "$resolved" rev-parse --show-toplevel 2>/dev/null) || return 1
+  [ -d "$top" ] || return 1
+  top=$(cd "$top" 2>/dev/null && pwd -P) || return 1
+  printf '%s\n' "$top"
+}
+
+case "$tool_name" in
+  Task|Agent)
+    toplevel=""
+    IFS=$'\x1e' read -r -a dispatch_candidates <<< "$dispatch"
+    for dispatch_candidate in "${dispatch_candidates[@]}"; do
+      toplevel=$(resolve_toplevel "$dispatch_candidate") && break
+      toplevel=""
+    done
+    ;;
+  *)
+    toplevel=$(resolve_toplevel "$candidate") || exit 0
+    ;;
+esac
+[ -n "$toplevel" ] || exit 0
 
 # A worktree home is sticky: it is a deliberate context, and a cd/edit anywhere
 # else — sibling worktree, main checkout, or a different repository entirely
 # (test runs, config surgery) — is one-off work that used to retarget the
 # statusline (and its ports segment) to another workspace. EnterWorktree moves
 # such a home outright; ExitWorktree clears it and SessionStart re-seeds it
-# above. Non-worktree homes still follow every cd.
+# above. Non-worktree homes still follow every cd, every write and every worker
+# dispatch.
 #
 # Sticky is not permanent, though: a worktree made by hand (`git worktree add`,
 # not the harness tool) will never see an ExitWorktree, so a session that
 # finishes there and moves on used to be pinned for its whole life — naming a
-# branch and a clean tree that were not the ones being edited. WRITES, and only
-# writes, break the pin: three edits in a row into the same other toplevel are
-# sustained work, not an excursion. cds never break it, however
-# many — reading and running tests elsewhere is exactly the noise stickiness
-# exists to absorb.
+# branch and a clean tree that were not the ones being edited. Three events in a
+# row into the same other toplevel are sustained work, not an excursion, and
+# break the pin. Bash cds never break it, however many — running tests elsewhere
+# is exactly the noise stickiness exists to absorb.
 #
-# Subagent writes need the same proof in ANY home, worktree or not: a worker is
-# dispatched at a path the parent never visited, so one write there is no
-# evidence the session has moved. So does a subshell cd — `(cd /other && make)`
-# cannot outlive the command, so the session's own cwd never moved at all.
+# The same proof is demanded in ANY home, worktree or not, of the evidence that
+# is weak on its own: a subagent write (a worker is dispatched at a path the
+# parent never visited, so one write there proves nothing), a subshell cd
+# (`(cd /other && make)` cannot outlive the command, so the session never
+# moved), and a main-session read (a grep sweep touches every repo in reach).
 if [ "$tool_name" != EnterWorktree ] && [ -f "$state_file" ]; then
   IFS= read -r prev_home < "$state_file" || :
-  sustained=$agent_flag
-  case "$prev_home" in
-    */.claude/worktrees/*) sustained=1 ;;
-  esac
-  if { [ -n "$sustained" ] || [ -n "$bash_subshell" ]; } && [ "$toplevel" != "$prev_home" ]; then
-    # Only the pin and the agent regimes are writes-only; the subshell case is a
-    # Bash cd by construction and this filter would drop it.
-    if [ -n "$sustained" ]; then
-      case "$tool_name" in
-        Edit|Write|NotebookEdit) ;;
-        *) exit 0 ;;
-      esac
-    fi
-    # The run is APPENDED, one line per write, and read back from the tail —
-    # never incremented in place. A turn that edits several files issues them
-    # as one parallel batch, which is precisely the burst this rule is meant
-    # to catch, and those hooks run concurrently: a read-modify-write counter
-    # had all three of them read the same value and write 1, so a batch of
-    # three never reached the threshold at all and the pin held forever.
-    # Single short appends do not interleave.
-    mkdir -p "$cache_dir" || exit 0
-    umask 077
-    printf '%s\n' "$toplevel" >> "$away_file" 2>/dev/null || exit 0
-    run=$(tail -n 3 "$away_file" 2>/dev/null | grep -cxF "$toplevel")
-    if [ "${run:-0}" -lt 3 ]; then
-      # Writes that keep alternating between two foreign repos never reach the
-      # threshold, so without this the file grows for the life of the session.
-      # Rare by construction, which is what keeps the rewrite off the hot path
-      # where it would reintroduce the race it replaced.
-      if [ "$(wc -l < "$away_file" 2>/dev/null || printf 0)" -gt 64 ]; then
-        tail -n 3 "$away_file" > "$away_file.tmp.$$" 2>/dev/null &&
-          mv -f "$away_file.tmp.$$" "$away_file" 2>/dev/null ||
-          rm -f "$away_file.tmp.$$" 2>/dev/null
-      fi
+  if [ "$toplevel" = "$prev_home" ]; then
+    # Work at home rewrites the home and clears the run. A read is not work, so
+    # it does neither — but it does INTERRUPT the run, which is consecutive
+    # evidence: leaving the tail untouched let three lookups scattered over a
+    # read-heavy session, home reads in between, move the home. Appended, not
+    # cleared, for the same concurrency reason as the run itself, and only onto
+    # an existing run, so the hottest tool in the harness creates no state; the
+    # last-line check keeps a long stay at home from growing the file.
+    if [ "$tool_name" = Read ]; then
+      [ -f "$away_file" ] && [ "$(tail -n 1 "$away_file" 2>/dev/null)" != "$toplevel" ] &&
+        printf '%s\n' "$toplevel" >> "$away_file" 2>/dev/null
       exit 0
+    fi
+  else
+    sustained=
+    case "$tool_name" in
+      Read) sustained=1 ;;
+      Edit|Write|NotebookEdit) [ -n "$agent_flag" ] && sustained=1 ;;
+    esac
+    case "$prev_home" in
+      */.claude/worktrees/*)
+        case "$tool_name" in
+          Bash) exit 0 ;;
+          *) sustained=1 ;;
+        esac
+        ;;
+    esac
+    [ -n "$bash_subshell" ] && sustained=1
+    if [ -n "$sustained" ]; then
+      # The run is APPENDED, one line per event, and read back from the tail —
+      # never incremented in place. A turn that edits or reads several files
+      # issues them as one parallel batch, which is precisely the burst this
+      # rule is meant to catch, and those hooks run concurrently: a
+      # read-modify-write counter had all three of them read the same value and
+      # write 1, so a batch of three never reached the threshold at all and the
+      # pin held forever. Single short appends do not interleave.
+      mkdir -p "$cache_dir" || exit 0
+      umask 077
+      printf '%s\n' "$toplevel" >> "$away_file" 2>/dev/null || exit 0
+      run=$(tail -n 3 "$away_file" 2>/dev/null | grep -cxF "$toplevel")
+      if [ "${run:-0}" -lt 3 ]; then
+        # Events that keep alternating between two foreign repos never reach the
+        # threshold, so without this the file grows for the life of the session.
+        # Rare by construction, which is what keeps the rewrite off the hot path
+        # where it would reintroduce the race it replaced.
+        if [ "$(wc -l < "$away_file" 2>/dev/null || printf 0)" -gt 64 ]; then
+          tail -n 3 "$away_file" > "$away_file.tmp.$$" 2>/dev/null &&
+            mv -f "$away_file.tmp.$$" "$away_file" 2>/dev/null ||
+            rm -f "$away_file.tmp.$$" 2>/dev/null
+        fi
+        exit 0
+      fi
     fi
   fi
 fi

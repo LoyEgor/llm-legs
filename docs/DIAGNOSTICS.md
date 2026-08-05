@@ -198,15 +198,31 @@ Treat `stale`, `expired`, `as_of`, and `effective_pct` as the data-honesty contr
 
 ## Claude Code statusline hooks
 
-`statusline-workdir-hook.sh` (PostToolUse matcher `Bash|Edit|Write|NotebookEdit|EnterWorktree|ExitWorktree`)
-records the git toplevel a session actually works in; the status line shows it with a magenta `»`
-marker when it differs from the launch repo. Rules:
-- Events carrying `agent_id`/`agent_type` report the PARENT `session_id`, so a subagent's Bash
-  (and every non-write tool) is ignored — a worker's stray `cd` must never retarget the parent's
-  display. Its Edit/Write/NotebookEdit events do count, but only through the sustained-work run
+`statusline-workdir-hook.sh` (PostToolUse matcher
+`Bash|Edit|Write|NotebookEdit|Read|EnterWorktree|ExitWorktree`, plus a PreToolUse matcher
+`Task|Agent`) records the git toplevel a session actually works in; the status line shows it with a
+magenta `»` marker when it differs from the launch repo.
+Rules:
+- Events carrying `agent_id`/`agent_type` report the PARENT `session_id`, so a subagent's Bash,
+  Read, dispatch (and every non-write tool) is ignored — a worker's stray `cd` must never retarget
+  the parent's display, and an Explore agent reads across every repo it can reach. Its
+  Edit/Write/NotebookEdit events do count, but only through the sustained-work run
   below: three writes in a row into the same other toplevel, in ANY home (worktree or not),
   since a worker starts where it was dispatched, not where the session lives. With no state file
   at all a subagent write adopts its toplevel at once, like any other event.
+- Task/Agent (the dispatch tool, named either way depending on harness version) is heard on
+  PreToolUse only — in orchestrator mode the worker's edits happen in a process that reports
+  nothing, so the brief is the only signal, and hearing the PostToolUse replay too would count one
+  dispatch twice. The first ten `/`-rooted tokens of `tool_input.prompt` + `.description` are
+  scanned and the FIRST that clears the exclusions and `cd`s into a git repo wins (briefs name the
+  worker's cwd early; a file path does not resolve). It is write-grade evidence from the session:
+  immediate on a non-worktree home, through the run against a worktree pin.
+- Read (main session only, `file_path` dirname'd) is the weakest evidence and never retargets at
+  once: three consecutive reads into the same other toplevel, in ANY home. With no state file it is
+  ignored — a home is seeded by SessionStart or adopted by a write, never established by a lookup —
+  and a read back home neither rewrites the home nor clears a run in progress, but does interrupt
+  it (its toplevel is appended onto an existing run, never onto an empty one), since without that
+  the three need not be consecutive and scattered lookups alone would move the home.
 - Bash: the LAST `cd`/`git -C` in the command wins (`;`, `&`, `|`, `&&`, `||`, `(`-subshell, and
   newline-separated all match; `(cd /path && cmd)` is the form the cd-guard hook prescribes).
   A winning cd that sits after `(` is a subshell one and dies with the command — the session's
@@ -222,11 +238,11 @@ marker when it differs from the launch repo. Rules:
 - Also registered for SessionStart: `source` `startup`/`resume`/`clear` clears the session's
   workdir state file and re-seeds it from the starting cwd's git toplevel (without a seed the
   first cd anywhere would adopt THAT dir as home, and worktree stickiness can only protect a
-  home that already exists); `resume` is the one exception — a home under `.claude/worktrees/`
-  that still resolves as its own worktree toplevel is kept, because the resume cwd is where the
+  home that already exists); `resume` is the one exception — ANY home that still resolves as its
+  own git toplevel is kept, worktree or main checkout alike, because the resume cwd is where the
   chat was relaunched (usually the main checkout), not where its work lives; a surviving
-  directory is not enough (without its `.git` link it resolves up into the parent checkout, whose
-  branch would then be shown as the workspace); `compact` keeps it — the shell and its
+  directory is not enough (a worktree without its `.git` link, or any subdirectory, resolves up
+  into the owning checkout, whose branch would then be shown as the workspace); `compact` keeps it — the shell and its
   cwd survive `/compact`. This runs before the agent filter on purpose: `agent_type` on
   SessionStart means a top-level `claude --agent` session, not a subagent.
 The statusline itself unlinks a state file that no longer points at a git dir.

@@ -288,6 +288,146 @@ assert_eq "$TOP_E" "$(cat "$S")"
 run_workdir_hook "$(agent_payload Write session-agent-wt "$REPO_E" "$REPO_A/new.txt")"
 assert_eq "$TOP_A" "$(cat "$S")"
 
+dispatch_payload() {
+  jq -cn --arg event "${5:-PreToolUse}" --arg tool "$1" --arg session "$2" --arg cwd "$3" --arg prompt "$4" \
+    '{hook_event_name:$event,tool_name:$tool,session_id:$session,cwd:$cwd,tool_input:{prompt:$prompt}}'
+}
+
+# Dispatching a worker is the only signal an orchestrator session emits: the
+# edits themselves happen in another process, at a path the parent never visits.
+# The brief names that path, so the dispatch counts as a write — the harness
+# calls the tool Task or Agent depending on its version, and both are heard.
+for tool in Task Agent; do
+  S="$STATE_DIR/workdir-session-dispatch-$tool"
+  printf '%s\n' "$TOP_A" > "$S"
+  run_workdir_hook "$(dispatch_payload "$tool" "session-dispatch-$tool" "$REPO_A" \
+    "Work in the main checkout: cd '$REPO_D' && run the suite.")"
+  assert_eq "$TOP_D" "$(cat "$S")"
+done
+
+# First RESOLVABLE path, not first path: briefs open with excluded config paths,
+# file names and prose before naming the workspace, and only a directory that is
+# in a repository says where the worker will run.
+S="$STATE_DIR/workdir-session-dispatch-skip"
+printf '%s\n' "$TOP_A" > "$S"
+run_workdir_hook "$(dispatch_payload Task session-dispatch-skip "$REPO_A" \
+  "Read $HOME/.claude/agents/worker.md, then $REPO_B/tracked.txt and /nonexistent/place; work in $REPO_D")"
+assert_eq "$TOP_D" "$(cat "$S")"
+
+# The ten-token cap counts CANDIDATES, not raw matches: prose punctuation leaves
+# tokens that are a bare slash once trailing dots are stripped, and letting those
+# eat cap slots dropped the workspace named eleventh in the raw scan.
+S="$STATE_DIR/workdir-session-dispatch-cap"
+printf '%s\n' "$TOP_A" > "$S"
+run_workdir_hook "$(dispatch_payload Task session-dispatch-cap "$REPO_A" \
+  "Start at /. then /... then /nonexistent/a1 /nonexistent/a2 /nonexistent/a3 /nonexistent/a4 \
+/nonexistent/a5 /nonexistent/a6 /nonexistent/a7 /nonexistent/a8 /nonexistent/a9 and work in $REPO_D")"
+assert_eq "$TOP_D" "$(cat "$S")"
+
+S="$STATE_DIR/workdir-session-dispatch-nopath"
+printf '%s\n' "$TOP_A" > "$S"
+run_workdir_hook "$(dispatch_payload Task session-dispatch-nopath "$REPO_A" "Summarise the review findings.")"
+assert_eq "$TOP_A" "$(cat "$S")"
+assert test ! -e "$S.away"
+
+# A worker dispatching its own subagent says nothing about where the SESSION
+# works, and its brief would drag the parent strip along.
+S="$STATE_DIR/workdir-session-dispatch-agent"
+printf '%s\n' "$TOP_A" > "$S"
+run_workdir_hook "$(dispatch_payload Task session-dispatch-agent "$REPO_A" "cd '$REPO_D' && fix it" \
+  | jq -c '. + {agent_id:"a1",agent_type:"claudeb-worker"}')"
+assert_eq "$TOP_A" "$(cat "$S")"
+assert test ! -e "$S.away"
+
+# Only the launch counts: the same brief arrives again when the worker returns,
+# and hearing it twice would let one dispatch fill two thirds of the run.
+S="$STATE_DIR/workdir-session-dispatch-post"
+printf '%s\n' "$TOP_A" > "$S"
+run_workdir_hook "$(dispatch_payload Task session-dispatch-post "$REPO_A" "cd '$REPO_D' && fix it" PostToolUse)"
+assert_eq "$TOP_A" "$(cat "$S")"
+assert test ! -e "$S.away"
+
+# Against a sticky worktree pin a dispatch is evidence like any other write:
+# sustained, three in a row into the same toplevel.
+S="$STATE_DIR/workdir-session-dispatch-sticky"
+printf '%s\n' "$TOP_E" > "$S"
+run_workdir_hook "$(dispatch_payload Task session-dispatch-sticky "$REPO_E" "cd '$REPO_D' && build")"
+assert_eq "$TOP_E" "$(cat "$S")"
+run_workdir_hook "$(dispatch_payload Agent session-dispatch-sticky "$REPO_E" "work in $REPO_D")"
+assert_eq "$TOP_E" "$(cat "$S")"
+run_workdir_hook "$(workdir_payload Edit session-dispatch-sticky "$REPO_E" "$REPO_D/other.txt")"
+assert_eq "$TOP_D" "$(cat "$S")"
+
+# The session's own reads are the weakest evidence the strip has: three in a row
+# into the same foreign toplevel are a move, anything less is a lookup.
+S="$STATE_DIR/workdir-session-read-move"
+printf '%s\n' "$TOP_A" > "$S"
+run_workdir_hook "$(workdir_payload Read session-read-move "$REPO_A" "$REPO_D/other.txt")"
+assert_eq "$TOP_A" "$(cat "$S")"
+run_workdir_hook "$(workdir_payload Read session-read-move "$REPO_A" "$REPO_D/other.txt")"
+assert_eq "$TOP_A" "$(cat "$S")"
+run_workdir_hook "$(workdir_payload Read session-read-move "$REPO_A" "$REPO_D/other.txt")"
+assert_eq "$TOP_D" "$(cat "$S")"
+
+S="$STATE_DIR/workdir-session-read-split"
+printf '%s\n' "$TOP_A" > "$S"
+for _ in 1 2 3; do
+  run_workdir_hook "$(workdir_payload Read session-read-split "$REPO_A" "$REPO_D/other.txt")"
+  run_workdir_hook "$(workdir_payload Read session-read-split "$REPO_A" "$REPO_B/tracked.txt")"
+done
+assert_eq "$TOP_A" "$(cat "$S")"
+
+# A read back home is not work — it neither rewrites the home nor clears the run
+# — but it does INTERRUPT it: the run is CONSECUTIVE evidence, and leaving the
+# tail untouched let three lookups scattered over a read-heavy session, ordinary
+# home reads in between, walk the strip off to a reference repo.
+S="$STATE_DIR/workdir-session-read-home"
+printf '%s\n' "$TOP_A" > "$S"
+for _ in 1 2 3; do
+  run_workdir_hook "$(workdir_payload Read session-read-home "$REPO_A" "$REPO_D/other.txt")"
+  run_workdir_hook "$(workdir_payload Read session-read-home "$REPO_A" "$REPO_A/tracked.txt")"
+done
+assert_eq "$TOP_A" "$(cat "$S")"
+assert test -e "$S.away"
+# Nothing is created for a read at home when no run is pending, and a long stay
+# at home does not grow the run either.
+S="$STATE_DIR/workdir-session-read-home-idle"
+printf '%s\n' "$TOP_A" > "$S"
+for _ in 1 2 3; do
+  run_workdir_hook "$(workdir_payload Read session-read-home-idle "$REPO_A" "$REPO_A/tracked.txt")"
+done
+assert test ! -e "$S.away"
+run_workdir_hook "$(workdir_payload Read session-read-home-idle "$REPO_A" "$REPO_D/other.txt")"
+for _ in 1 2 3 4; do
+  run_workdir_hook "$(workdir_payload Read session-read-home-idle "$REPO_A" "$REPO_A/tracked.txt")"
+done
+assert_eq "$TOP_D
+$TOP_A" "$(cat "$S.away")"
+# The interrupted run still resumes on three fresh reads in a row.
+run_workdir_hook "$(workdir_payload Read session-read-home-idle "$REPO_A" "$REPO_D/other.txt")"
+run_workdir_hook "$(workdir_payload Read session-read-home-idle "$REPO_A" "$REPO_D/other.txt")"
+assert_eq "$TOP_A" "$(cat "$S")"
+run_workdir_hook "$(workdir_payload Read session-read-home-idle "$REPO_A" "$REPO_D/other.txt")"
+assert_eq "$TOP_D" "$(cat "$S")"
+
+# A subagent's reads stay invisible: an Explore agent reads across every repo it
+# can reach, and its sweep is not the session moving.
+S="$STATE_DIR/workdir-session-read-agent"
+printf '%s\n' "$TOP_A" > "$S"
+for _ in 1 2 3; do
+  run_workdir_hook "$(agent_payload Read session-read-agent "$REPO_A" "$REPO_D/other.txt")"
+done
+assert_eq "$TOP_A" "$(cat "$S")"
+assert test ! -e "$S.away"
+
+# With no home at all a read establishes nothing — unlike a write, which adopts.
+# The seed is SessionStart's job.
+for _ in 1 2 3; do
+  run_workdir_hook "$(workdir_payload Read session-read-fresh "$REPO_A" "$REPO_D/other.txt")"
+done
+assert test ! -e "$STATE_DIR/workdir-session-read-fresh"
+assert test ! -e "$STATE_DIR/workdir-session-read-fresh.away"
+
 payload=$(jq -cn --arg session session-wt --arg cwd "$REPO_A" --arg resp "Created worktree at $REPO_B" \
   '{hook_event_name:"PostToolUse",tool_name:"EnterWorktree",session_id:$session,cwd:$cwd,tool_input:{},tool_response:$resp}')
 run_workdir_hook "$payload"
@@ -466,10 +606,11 @@ session_start_payload() {
     '{hook_event_name:"SessionStart",source:$source,session_id:$session,cwd:$cwd}'
 }
 
-# startup/resume/clear replace any surviving state with a seed from the
-# session's own starting cwd — an empty home would let the first one-off
-# cd/edit anywhere adopt a foreign dir before stickiness can protect anything.
-for src in startup resume clear; do
+# startup/clear replace any surviving state with a seed from the session's own
+# starting cwd — an empty home would let the first one-off cd/edit anywhere
+# adopt a foreign dir before stickiness can protect anything. resume does not:
+# see the live-home cases below.
+for src in startup clear; do
   printf '%s\n' "$TOP_B" > "$STATE_DIR/workdir-session-ss-$src"
   run_workdir_hook "$(session_start_payload "$src" "session-ss-$src")"
   assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-ss-$src")"
@@ -489,10 +630,32 @@ printf '%s\n' "$TOP_B" > "$STATE_DIR/workdir-session-ss-nogit"
 run_workdir_hook "$(session_start_payload startup session-ss-nogit "$WORK")"
 assert test ! -e "$STATE_DIR/workdir-session-ss-nogit"
 
-# resume keeps a live worktree home: the event's cwd is the launch dir (often
-# the main checkout), not where the work lives — reseeding would retarget the
-# ports segment on every resume. clear still reseeds, and so does a resume
-# whose worktree home no longer exists on disk.
+# resume keeps ANY live home, worktree or not: the event's cwd is the launch dir
+# (often the main checkout), not where the work lives — reseeding would retarget
+# the strip and the ports segment on every resume of a long chat. clear still
+# reseeds, and so does a resume whose home no longer exists on disk.
+S="$STATE_DIR/workdir-session-ss-resume-plain"
+printf '%s\n' "$TOP_D" > "$S"
+printf '%s\n' "$TOP_A" > "$S.away"
+printf '%s\n' "$FIXTURES/vanished" > "$S.gone"
+run_workdir_hook "$(session_start_payload resume session-ss-resume-plain)"
+assert_eq "$TOP_D" "$(cat "$S")"
+assert test ! -e "$S.away"
+assert test ! -e "$S.gone"
+
+printf '%s\n' "$FIXTURES/vanished-repo" > "$STATE_DIR/workdir-session-ss-resume-plain-dead"
+run_workdir_hook "$(session_start_payload resume session-ss-resume-plain-dead)"
+assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-ss-resume-plain-dead")"
+
+# A dir that survives but is no longer its own toplevel is not a live home
+# either: git discovery ascends and the kept home would name the owning
+# checkout's branch as the workspace.
+printf '%s\n' "$REPO_A/vendored-gone" > "$STATE_DIR/workdir-session-ss-resume-subdir"
+mkdir -p "$REPO_A/vendored-gone"
+run_workdir_hook "$(session_start_payload resume session-ss-resume-subdir)"
+assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-ss-resume-subdir")"
+rmdir "$REPO_A/vendored-gone"
+
 printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-session-ss-resume-wt"
 run_workdir_hook "$(session_start_payload resume session-ss-resume-wt)"
 assert_eq "$TOP_E" "$(cat "$STATE_DIR/workdir-session-ss-resume-wt")"
