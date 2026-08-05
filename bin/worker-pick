@@ -302,8 +302,19 @@ summary=$(jq -r \
    elif $gm.auth_needed == true or $gm.removed == true or ($gm | gemini_group) then
      [$gm + {account:"main",is_current:true,enabled:($gm.enabled != false)}]
    else [] end) as $gm_source |
-  ([($cx_source[] | account_as_of[]), ($gm_source[] | account_as_of[]),
-    (.vendors.claude.accounts[]? | account_as_of[])] | min // $fetched) as $data_as_of |
+  # Disabled accounts are not polled by the collector, so their frozen as_of would
+  # brand the whole DATA line STALE while every routable account is fresh. Routable
+  # mirrors the per-vendor selection predicate (claude demands enabled == true),
+  # plus the vendor pin — a pin overrides pool exclusion, so the age of a pinned
+  # account counts even when it is off. Nothing routable falls back to the oldest
+  # timestamp of ALL accounts, never straight to the store write time.
+  ([($cx_source[] | select(.enabled != false or (.account // "main") == $cx_pin) | account_as_of[]),
+    ($gm_source[] | select(.enabled != false or (.account // "main") == $gm_pin) | account_as_of[]),
+    (.vendors.claude.accounts[]? | select(.enabled == true or (.account // "main") == $pin) | account_as_of[])]
+   | min) as $routable_as_of |
+  ($routable_as_of //
+   ([($cx_source[] | account_as_of[]), ($gm_source[] | account_as_of[]),
+     (.vendors.claude.accounts[]? | account_as_of[])] | min) // $fetched) as $data_as_of |
   (if $data_as_of == null then "no timestamp"
    elif ($now - $data_as_of) > 7200 then "STALE (\((([($now - $data_as_of), 0] | max) / 60) | floor) min old)"
    else "fresh (\((([($now - $data_as_of), 0] | max) / 60) | floor) min old)" end) as $age |

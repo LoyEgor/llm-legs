@@ -214,6 +214,26 @@ run_case gemini_stale
 assert contains "$(sed -n '3p' <<<"$output")" 'gemini: main 30% runway 70%'
 assert contains "$output" 'DATA: STALE (166 min old)'
 
+# A disabled account is not polled, so its frozen as_of must not drive the DATA age;
+# the same timestamps on an enabled account must (control).
+run_filter gemini_fresh '.vendors.claude.accounts = [{account:"dormant",enabled:false,auth:"ok",
+  five_hour:{used_pct:5,as_of:1999000000},weekly:{used_pct:5,as_of:1999000000}}]'
+assert contains "$output" 'DATA: fresh (0 min old)'
+run_filter gemini_fresh '.vendors.claude.accounts = [{account:"dormant",enabled:true,auth:"ok",
+  five_hour:{used_pct:5,as_of:1999000000},weekly:{used_pct:5,as_of:1999000000}}]'
+assert contains "$output" 'DATA: STALE (16666 min old)'
+# Claude routing demands enabled == true, so a record lacking the key is not
+# routable and must not drive the age either.
+run_filter gemini_fresh '.vendors.claude.accounts = [{account:"dormant",auth:"ok",
+  five_hour:{used_pct:5,as_of:1999000000},weekly:{used_pct:5,as_of:1999000000}}]'
+assert contains "$output" 'DATA: fresh (0 min old)'
+# Nothing routable carries data: the age falls back to the oldest timestamp of
+# ALL accounts, never to the store write time.
+run_filter gemini_fresh '.vendors.gemini.enabled = false
+  | .vendors.claude.accounts = [{account:"dormant",enabled:false,auth:"ok",
+    five_hour:{used_pct:5,as_of:1999000000},weekly:{used_pct:5,as_of:1999000000}}]'
+assert contains "$output" 'DATA: STALE (16666 min old)'
+
 run_case gemini_floor
 assert contains "$(sed -n '3p' <<<"$output")" 'gemini: main 91% runway 9% FLOOR'
 assert contains "$(head -n1 <<<"$output")" 'gemini main · pro · high — WALLED'
@@ -479,6 +499,13 @@ run_pin_filter gemini_fresh '.vendors.gemini = {available:true,accounts:[
 assert contains "$(head -n1 <<<"$output")" 'gemini work · pro · high'
 assert contains "$(head -n1 <<<"$output")" 'pre-reset cap 9%'
 assert contains "$(sed -n '3p' <<<"$output")" 'work 91% runway 9% PINNED FLOOR off'
+
+# A pinned account is routable even when off, so its frozen timestamps still
+# drive the DATA age.
+run_pin_filter gemini_fresh '.vendors.gemini = {available:true,accounts:[
+  {account:"main",group:"Gemini Models",five_hour:{used_pct:20,as_of:1785074400},weekly:{used_pct:20,as_of:1785074400}},
+  {account:"work",enabled:false,group:"Gemini Models",five_hour:{used_pct:91,as_of:1785000000},weekly:{used_pct:20,as_of:1785000000}}]}'
+assert contains "$output" 'DATA: STALE (1240 min old)'
 
 run_pin_filter gemini_fresh '.vendors.gemini = {available:true,accounts:[
   {account:"main",group:"Gemini Models",five_hour:{used_pct:20},weekly:{used_pct:20}},
