@@ -1163,6 +1163,15 @@ if not spotlightLayoutOk then
     hs.alert.show("Spotlight layout error")
 end
 
+local handoffOk, handoffError = pcall(function()
+    dofile(hs.configdir .. "/handoff.lua")
+end)
+
+if not handoffOk then
+    print("ERROR: Handoff guard failed to load:", handoffError)
+    hs.alert.show("Handoff guard error")
+end
+
 -- require, not dofile: compact-auto.sh reaches the module through require, and a
 -- second copy would keep its pending operation in its own private state
 local compactResumeOk, compactResumeError = pcall(function()
