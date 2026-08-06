@@ -680,6 +680,9 @@ local shared = {
   -- Pixels the pointer may sit away from where our own last event left it and still
   -- count as ours rather than as a hand on the trackpad.
   pointerDriftLimit = 3,
+  -- Pixels of carried hand displacement past which the settle warp stands down: the
+  -- hand left for a deliberate target and home plus that delta can land off-screen.
+  pointerCarryLimit = 300,
   gestureWatchdogDelay = 2.5,
   -- Bumped once per gesture and captured by every closure that gesture arms. A scrape
   -- Terminal answers late belongs to the flight that asked for it and to no other: read
@@ -2357,12 +2360,25 @@ local function schedulePointerReturn()
     end
     local readPointer = runtimeHooks and runtimeHooks.pointer
       or (not runtimeHooks and hs.mouse.absolutePosition) or nil
+    local current = readPointer and readPointer() or nil
     -- A pointer no longer where our own last event left it was moved by hand inside
-    -- the settle window. There is no click to drop the home for us there, and warping
-    -- now would take the mouse away from the user mid-move.
-    if readPointer and M.pointerDrifted(readPointer(), shared.pointerPosted) then
-      clearPointerHome()
-      return
+    -- the settle window: the choreography hijacked a mouse already in motion. Warping
+    -- to bare home would yank the cursor mid-move, and skipping the warp strands the
+    -- motion at the click point; re-applying the hand's displacement on top of home
+    -- lets it continue from where it was hijacked. Stored back into pointerHome so a
+    -- burst's next warp carries the displacement instead of undoing it.
+    if M.pointerDrifted(current, shared.pointerPosted) then
+      local dx = current.x - shared.pointerPosted.x
+      local dy = current.y - shared.pointerPosted.y
+      -- Far past the carry limit the hand did not drift, it left: it may be on another
+      -- display or a deliberate target, and home plus that delta can land off every
+      -- screen. The old skip is the right move there.
+      if dx * dx + dy * dy > shared.pointerCarryLimit * shared.pointerCarryLimit then
+        clearPointerHome()
+        return
+      end
+      home = { x = home.x + dx, y = home.y + dy }
+      pointerHome = home
     end
     if runtimeHooks and runtimeHooks.pointer then
       runtimeHooks.pointer(home)

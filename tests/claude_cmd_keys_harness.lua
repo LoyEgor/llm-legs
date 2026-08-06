@@ -4251,8 +4251,9 @@ assert(integration.firePointerSettle(), "the gesture after the user's click arme
 assert(integration.pointerAt().x == 400 and integration.pointerAt().y == 300,
   "a gesture after the user took the mouse warped back to the home it had saved")
 
--- The trackpad needs no click, so a hand that moves the pointer during the settle
--- window leaves the home armed: the warp would then yank the cursor away mid-move.
+-- The trackpad needs no click, so a hand moving the pointer during the settle window
+-- is only told apart from our own posted endpoint by this tolerance; the warp then
+-- carries the hand's displacement on top of home instead of yanking the cursor.
 assert(not module.pointerDrifted({ x = 100, y = 100 }, { x = 103, y = 100 }),
   "a move of exactly the tolerance counted as drift")
 assert(module.pointerDrifted({ x = 100, y = 100 }, { x = 104, y = 100 }),
@@ -4268,19 +4269,44 @@ assert(not module.pointerDrifted(nil, { x = 100, y = 100 }),
 
 integration = integrationContext(nil, pointerOpts)
 runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
-integration.movePointer({ x = 640, y = 480 })
-assert(integration.firePointerSettle(), "no settle timer was armed")
-assert(integration.settleReads() == 1, "the settle warp never looked at where the pointer was")
-assert(#integration.pointerWarps() == 0, "the settle warp yanked a pointer the user had moved")
-assert(integration.pointerAt().x == 640 and integration.pointerAt().y == 480,
-  "the pointer did not stay where the user moved it")
--- The home dies with the skipped warp, so the next choreography saves its own.
-integration.movePointer({ x = 410, y = 310 })
-extendGesture(integration, 123, gestureScreen(hello))
-assert(integration.pointerReads() == 2, "the choreography after a hand-moved pointer reused the old home")
-assert(integration.firePointerSettle(), "the choreography after a hand-moved pointer armed no settle timer")
-assert(integration.pointerAt().x == 410 and integration.pointerAt().y == 310,
-  "the warp went to the home the user had already left")
+do
+  local hijacked = integration.mouseEvents()[#integration.mouseEvents()]
+  integration.movePointer({ x = hijacked.x + 40, y = hijacked.y + 30 })
+  assert(integration.firePointerSettle(), "no settle timer was armed")
+  assert(integration.settleReads() == 1, "the settle warp never looked at where the pointer was")
+  local carried = integration.pointerWarps()
+  assert(#carried == 1, "a hand moving in the settle window skipped the warp and stranded the motion")
+  assert(carried[1].x == 940 and carried[1].y == 80,
+    "the warp did not re-apply the hand's displacement on top of home")
+  assert(integration.pointerAt().x == 940 and integration.pointerAt().y == 80,
+    "the pointer did not continue its motion from home")
+  -- The carried displacement must survive into the burst's next warp: home itself
+  -- moves, or the follow-up choreography would undo the hand's motion.
+  extendGesture(integration, 123, gestureScreen(hello))
+  assert(integration.firePointerSettle(),
+    "the choreography after a carried warp armed no settle timer")
+  assert(integration.pointerAt().x == 940 and integration.pointerAt().y == 80,
+    "the next warp in the burst went to the stale home and undid the hand's motion")
+end
+
+-- Far past the carry limit the hand went somewhere deliberate: no warp, home dies.
+integration = integrationContext(nil, pointerOpts)
+runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
+do
+  local hijacked = integration.mouseEvents()[#integration.mouseEvents()]
+  integration.movePointer({ x = hijacked.x + 500, y = hijacked.y })
+  assert(integration.firePointerSettle(), "no settle timer was armed")
+  assert(#integration.pointerWarps() == 0,
+    "a move far past the carry limit was still warped")
+  integration.movePointer({ x = 410, y = 310 })
+  extendGesture(integration, 123, gestureScreen(hello))
+  assert(integration.pointerReads() == 2,
+    "the choreography after a far move reused the dead home")
+  assert(integration.firePointerSettle(),
+    "the choreography after a far move armed no settle timer")
+  assert(integration.pointerAt().x == 410 and integration.pointerAt().y == 310,
+    "the warp went to the home the hand had already left")
+end
 
 -- Within the tolerance it is our own pointer, jitter and all: the warp still runs.
 integration = integrationContext(nil, pointerOpts)
