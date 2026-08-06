@@ -114,17 +114,37 @@ repo_dirs() {
 # Does the branch name carry every word of the worktree directory name? Decides
 # whether the branch is redundant with the directory label or a surprise worth
 # printing (`WUT-254-portal-mobile` covered by `WUT-254_feat_portal-mobile`,
-# not by `staging`).
+# not by `staging`). A word is covered exactly, or by a digit-free prefix
+# drift of ≤2 chars on a stem of ≥4 not ending in a digit: `iframes` folds
+# under `iframe`, while ticket ids stay exact even fused on either side
+# (`wut25` vs `wut259`, `portal` vs `portal2`) and `main` never swallows
+# `maintenance` — looser evidence would hide the very divergence the yellow
+# branch exists to surface.
 name_covered_by_branch() {
-  local words branch word
+  local words branch word bword covered shorter longer
   words=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' ' ')
-  branch=" $(printf '%s' "$2" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' ' ') "
+  branch=$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' ' ')
   [ -n "${words// /}" ] || return 1
   for word in $words; do
-    case "$branch" in
-      *" $word "*) ;;
-      *) return 1 ;;
-    esac
+    covered=0
+    for bword in $branch; do
+      if [ "$word" = "$bword" ]; then
+        covered=1
+        break
+      fi
+      shorter=$word longer=$bword
+      if [ ${#bword} -lt ${#word} ]; then
+        shorter=$bword longer=$word
+      fi
+      [ ${#shorter} -ge 4 ] || continue
+      [ $(( ${#longer} - ${#shorter} )) -le 2 ] || continue
+      case "$longer" in "$shorter"*) ;; *) continue ;; esac
+      case "$shorter" in *[[:digit:]]) continue ;; esac
+      case "${longer#"$shorter"}" in *[[:digit:]]*) continue ;; esac
+      covered=1
+      break
+    done
+    [ "$covered" = 1 ] || return 1
   done
   return 0
 }

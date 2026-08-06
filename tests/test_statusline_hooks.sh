@@ -42,6 +42,10 @@ REPO_E="$REPO_A/.claude/worktrees/feature-y"
 git -C "$REPO_A" worktree add -q -b feature-y "$REPO_E"
 REPO_F="$REPO_A/.claude/worktrees/auto-slug"
 git -C "$REPO_A" worktree add -q -b claude/agitated-fixture "$REPO_F"
+REPO_I="$REPO_A/.claude/worktrees/payment-iframes"
+git -C "$REPO_A" worktree add -q -b payment_iframe-styles "$REPO_I"
+REPO_J="$REPO_A/.claude/worktrees/wut-25-portal"
+git -C "$REPO_A" worktree add -q -b WUT-259_feat_portal-fixes "$REPO_J"
 # A repository whose git dir lives outside the checkout: `<common>/..` is NOT the
 # main worktree, so the canonical-location check must ask git, not strip `/.git`.
 REPO_G="$FIXTURES/repo-g"
@@ -66,6 +70,8 @@ TOP_C=$(git -C "$REPO_C" rev-parse --show-toplevel)
 TOP_D=$(git -C "$REPO_D" rev-parse --show-toplevel)
 TOP_E=$(git -C "$REPO_E" rev-parse --show-toplevel)
 TOP_F=$(git -C "$REPO_F" rev-parse --show-toplevel)
+TOP_I=$(git -C "$REPO_I" rev-parse --show-toplevel)
+TOP_J=$(git -C "$REPO_J" rev-parse --show-toplevel)
 TOP_H=$(git -C "$REPO_H" rev-parse --show-toplevel)
 SHORT_SHA=$(git -C "$REPO_C" rev-parse --short HEAD)
 
@@ -809,6 +815,36 @@ printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-status-canon"
 canon_output=$(run_statusline "$(statusline_payload status-canon)") || fail "statusline canonical worktree failed"
 assert grep -Fq "${BLUE}⧉ feature-y" <<< "$canon_output"
 assert test "${canon_output#*⎇}" = "$canon_output"
+
+# Words match by prefix in either direction: `iframes` is carried by `iframe`,
+# so a singular/plural drift between directory and branch does not unfold it.
+printf '%s\n' "$TOP_I" > "$STATE_DIR/workdir-status-prefix"
+prefix_output=$(run_statusline "$(statusline_payload status-prefix)") || fail "statusline prefix fold failed"
+assert grep -Fq "${BLUE}⧉ payment-iframes" <<< "$prefix_output"
+assert test "${prefix_output#*⎇}" = "$prefix_output"
+
+# Numbers must match exactly: ticket ids are prefix-shaped (`25` heads `259`),
+# and a neighbouring ticket's branch is exactly the divergence yellow exists for.
+printf '%s\n' "$TOP_J" > "$STATE_DIR/workdir-status-ticket"
+ticket_output=$(run_statusline "$(statusline_payload status-ticket)") || fail "statusline ticket mismatch failed"
+assert grep -Fq "${BLUE}⧉ wut-25-portal" <<< "$ticket_output"
+assert grep -Fq "${YELLOW}⎇ WUT-259_feat_portal-fixes" <<< "$ticket_output"
+
+# The fold rule pinned at the word level: prefix drift needs a ≥4-char stem not
+# ending in a digit and ≤2 chars of growth; everything else matches exactly.
+name_covered() {
+  bash -c "$(sed -n '/^name_covered_by_branch()/,/^}/p' "$STATUSLINE")"'
+name_covered_by_branch "$1" "$2"' _ "$1" "$2"
+}
+not_covered() { ! name_covered "$1" "$2"; }
+assert name_covered payment-iframes payment_iframe-styles
+assert name_covered WUT-254-portal-mobile WUT-254_feat_portal-mobile
+assert not_covered pay WUT-119_payment
+assert not_covered maintenance main
+assert not_covered wut25-portal wut259-portal-fixes
+assert not_covered wut-25-portal WUT-259_feat_portal-fixes
+assert not_covered wut-119-portal2 WUT-119_portal
+assert not_covered feat25-portal feat_portal-fixes
 
 # An auto-slug branch is the one thing the fold must never hide: harness-made
 # worktrees always land on `claude/*`, and this strip is the only place the global
