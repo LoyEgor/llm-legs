@@ -208,6 +208,16 @@ if [ -z "$reads" ] && [ -n "$abs_real" ]; then
     esac
   done
 fi
+# The measured rate outranks the frozen one here for the same reason it does in the bloat gate:
+# two gates quoting different numbers for the same file teach their reader that neither is real.
+# Identity before spelling: a repo-path spelling of the global file must never take the project
+# lookup, or its denial quotes that directory's rate instead of the global one.
+if [ -n "$abs_real" ] && [ -n "$global_real" ] && [ "$abs_real" = "$global_real" ]; then
+  live=$(instruction_live_rate "$HOME/.claude/CLAUDE.md" "$HOME")
+else
+  live=$(instruction_live_rate "$abs" "$HOME")
+fi
+[ -z "$live" ] || reads=$live
 cost=''
 [ -n "$reads" ] && cost=" (~$reads full-read equivalents/month)"
 

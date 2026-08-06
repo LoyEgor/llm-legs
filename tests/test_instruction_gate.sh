@@ -412,6 +412,155 @@ small=$(jq -cn --arg p "$CLAUDE_MD" \
   | bash "$BLOAT")
 assert_eq "" "$small"
 
+echo "== bloat gate: the live rate from the local index is quoted instead of the frozen constant"
+# The constants are one measured month that ages out; tokenmap exports what the last 30 days
+# actually cost. The rate has to reach the arithmetic too, not only the prose, so the monthly
+# figure is checked against the live number rather than against 15682.
+RATES="$WORK/rates/read-rates.json"
+MEM_SLUG="-Volumes-Work-Projects-token-map"
+MEM_DIR="$WORK/profiles/com/projects/$MEM_SLUG/memory"
+mkdir -p "$WORK/rates" "$WORK/liveproj" "$WORK/livereal" "$MEM_DIR"
+export TOKENMAP_RATES="$RATES"
+# The second project is keyed by the RESOLVED directory only: mktemp hands out the /var spelling
+# and the export carries whichever one the sessions ran in.
+LIVE_REAL=$(realpath "$WORK/livereal")
+# BSD date on the machine this runs on, GNU date wherever the suite is run in CI or a container.
+stamp_ago() {
+  date -u -v-"$1"d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null ||
+    date -u -d "-$1 days" +%Y-%m-%dT%H:%M:%SZ
+}
+stamp_ahead() {
+  date -u -v+"$1"H +%Y-%m-%dT%H:%M:%SZ 2>/dev/null ||
+    date -u -d "+$1 hours" +%Y-%m-%dT%H:%M:%SZ
+}
+write_rates() {
+  # $gdir is a decoy: the global file's own repo directory measured as a project. Identity has
+  # to outrank spelling, or the write gate quotes 500 for the file both gates price at 20111.
+  jq -n --arg gen "$1" --arg dir "$WORK/liveproj" --arg real "$LIVE_REAL" \
+        --arg gdir "$REPO/global" --arg mem /Volumes/Work/Projects/token-map '{
+    generated_at: $gen, window_days: 30,
+    global: {reads: 20111.0, requests: 130000, sessions: 1900},
+    projects: {
+      ($dir): {reads: 812.4, requests: 8000, sessions: 60},
+      ($real): {reads: 407.0, requests: 4000, sessions: 30},
+      ($gdir): {reads: 500.0, requests: 4600, sessions: 32},
+      ($mem): {reads: 641.0, requests: 6000, sessions: 44},
+      "/tmp/tiny-project": {reads: 0.4, requests: 4, sessions: 1}
+    }
+  }' > "$RATES"
+}
+# Each pricing here carries a session of its own: the same file priced twice with the same payload
+# would be spending its own retry the second time and pass, quoting nothing.
+price_bloat() {
+  jq -cn --arg p "$2" --arg n "$big" --arg s "live-$1" \
+    '{tool_name:"Edit",cwd:"/tmp",session_id:$s,tool_input:{file_path:$p,old_string:"x",new_string:$n}}' \
+    | bash "$BLOAT" | jq -r '.hookSpecificOutput.permissionDecisionReason'
+}
+FROZEN_WORDING="full-read price (measured; content in the cached prefix"
+LIVE_WORDING="measured by the local read index over its last 30-day window"
+live_tokens=$(( (${#big} - 1) / 4 ))
+write_rates "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+msg=$(price_bloat global-fresh "$CLAUDE_MD")
+assert_contains "~20111x/month" "$msg"
+assert_contains "$LIVE_WORDING" "$msg"
+assert_contains "~$((live_tokens * 20111)) tokens/month" "$msg"
+# Every name the global file answers to resolves to the one the export keys it by.
+assert_contains "~20111x/month" "$(price_bloat global-profile "$HOME/.claude-profiles/com/CLAUDE.md")"
+assert_contains "~20111x/month" "$(price_bloat global-repo "$REAL_MD")"
+
+echo "== bloat gate: a project the index measured is priced at that project's own rate"
+assert_contains "~812x/month" "$(price_bloat proj-literal "$WORK/liveproj/CLAUDE.md")"
+assert_contains "~812x/month" "$(price_bloat proj-local "$WORK/liveproj/CLAUDE.local.md")"
+assert_contains "~407x/month" "$(price_bloat proj-resolved "$WORK/livereal/CLAUDE.md")"
+# A project nobody measured is not free, it is the class rate — and so is a memory index filed
+# under a directory the export does not carry.
+msg=$(price_bloat proj-unmeasured "$WORK/unmeasured/CLAUDE.md")
+assert_contains "~3131x/month" "$msg"
+assert_contains "$FROZEN_WORDING" "$msg"
+assert_contains "~3131x/month" "$(price_bloat proj-memory "$WORK/liveproj/memory/MEMORY.md")"
+
+echo "== bloat gate: a memory index is priced by the project its path encodes"
+# The index never sits in the directory tokenmap recorded — its parent is the memory/ subdirectory
+# of a per-project transcript directory, whose name is the cwd with the non-alphanumerics dashed.
+msg=$(price_bloat mem-slug "$MEM_DIR/MEMORY.md")
+assert_contains "~641x/month" "$msg"
+assert_contains "$LIVE_WORDING" "$msg"
+# A slug the export never measured is the class rate, not a match on a neighbouring project.
+assert_contains "~3131x/month" \
+  "$(price_bloat mem-unknown "$WORK/profiles/com/projects/-nowhere-at-all/memory/MEMORY.md")"
+
+echo "== bloat gate: a rate under one read a month is not a free file"
+# round() would print 0, and "~0x/month" reads as permission rather than as a small cost.
+msg=$(price_bloat tiny /tmp/tiny-project/CLAUDE.md)
+assert_contains "~1x/month" "$msg"
+assert_contains "$LIVE_WORDING" "$msg"
+
+echo "== bloat gate: a stamp from the future is a broken clock, not a fresher measurement"
+write_rates "$(stamp_ahead 6)"
+msg=$(price_bloat future "$CLAUDE_MD")
+assert_contains "~15682x/month" "$msg"
+assert_contains "$FROZEN_WORDING" "$msg"
+# Skew of a couple of minutes is not that, and must not throw the reading away.
+write_rates "$(stamp_ahead 0)"
+assert_contains "~20111x/month" "$(price_bloat no-skew "$CLAUDE_MD")"
+
+echo "== bloat gate: the two benign producer drifts still parse"
+# fromdateiso8601 accepts one spelling; a fractional second or a +00:00 offset must degrade to the
+# same reading rather than to a silent fallback nobody would notice.
+jq -n --arg gen "$(date -u +%Y-%m-%dT%H:%M:%S.123456Z)" \
+  '{generated_at:$gen,window_days:30,global:{reads:20111.0}}' > "$RATES"
+assert_contains "~20111x/month" "$(price_bloat frac-seconds "$CLAUDE_MD")"
+jq -n --arg gen "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" \
+  '{generated_at:$gen,window_days:30,global:{reads:20111.0}}' > "$RATES"
+assert_contains "~20111x/month" "$(price_bloat utc-offset "$CLAUDE_MD")"
+
+echo "== bloat gate: an export past its window is not a number anybody can reproduce"
+write_rates "$(stamp_ago 20)"
+msg=$(price_bloat stale "$CLAUDE_MD")
+assert_contains "~15682x/month" "$msg"
+assert_contains "$FROZEN_WORDING" "$msg"
+assert_contains "~3131x/month" "$(price_bloat stale-proj "$WORK/liveproj/CLAUDE.md")"
+# Just inside the window still counts.
+write_rates "$(stamp_ago 13)"
+assert_contains "~20111x/month" "$(price_bloat nearly-stale "$CLAUDE_MD")"
+
+echo "== bloat gate: an export it cannot read leaves the constants standing"
+rm -f "$RATES"
+assert_contains "~15682x/month" "$(price_bloat no-file "$CLAUDE_MD")"
+printf 'not json at all\n' > "$RATES"
+assert_contains "~15682x/month" "$(price_bloat malformed "$CLAUDE_MD")"
+printf '{"projects":{}}\n' > "$RATES"
+assert_contains "~15682x/month" "$(price_bloat no-timestamp "$CLAUDE_MD")"
+jq -n --arg gen "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{generated_at:$gen,projects:{}}' > "$RATES"
+assert_contains "~15682x/month" "$(price_bloat no-global-key "$CLAUDE_MD")"
+jq -n --arg gen "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{generated_at:$gen,global:{reads:"lots"}}' > "$RATES"
+assert_contains "~15682x/month" "$(price_bloat unusable-rate "$CLAUDE_MD")"
+
+echo "== bloat gate: the classes the export does not cover keep their own constants"
+# docs, agents, skills and instructions are not in the export yet, and a live lookup that answers
+# nothing for them must fall back rather than stop pricing them.
+write_rates "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+msg=$(price_bloat class-docs "$HOME/.claude/docs/review-tiers.md")
+assert_contains "~160x/month" "$msg"
+assert_contains "$FROZEN_WORDING" "$msg"
+assert_contains "~2500x/month" "$(price_bloat class-agents "$HOME/.claude/agents/codex-worker.md")"
+assert_contains "~90x/month" "$(price_bloat class-skills "$HOME/.claude/skills/demo/SKILL.md")"
+assert_eq pass "$(bloat_decision "$WORK/ordinary.md")"
+
+echo "== write gate: the denial quotes the same live figure the bloat gate does"
+# Two gates quoting different numbers for one file is what teaches a reader that neither is real.
+assert_contains "~20111 full-read" "$(price live-a "$CLAUDE_MD")"
+assert_contains "~20111 full-read" "$(price live-b "$REAL_MD")"
+assert_contains "~812 full-read" "$(price live-c "$WORK/liveproj/CLAUDE.md")"
+# A class the export does not carry, and a project it never measured, keep the constant.
+assert_contains "~160 full-read" "$(price live-d "$HOME/.claude/docs/review-tiers.md")"
+assert_contains "~3131 full-read" "$(price live-e "$WORK/unmeasured/CLAUDE.md")"
+write_rates "$(stamp_ago 20)"
+assert_contains "~15682 full-read" "$(price live-f "$CLAUDE_MD")"
+
+# Every later section is about the constants, so the export stops being in effect here.
+unset TOKENMAP_RATES
+
 echo "== tripwire: the bytes from before the change are kept, and they restore the file"
 # The original content, so the sections after this one still measure their own deltas.
 printf 'global rules\n' > "$REAL_MD"

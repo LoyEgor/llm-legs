@@ -109,11 +109,13 @@ Facts below are grounded in the code as of 2026-07-16 (line numbers may drift �
   `bash tests/test_hs_env_guard.sh`.
 - `launchd/com.tokenmap-scand.plist` — INSTALLED (copy in `~/Library/LaunchAgents/`, wrapper
   `~/.local/libexec/tokenmap-scand`). Nightly `tokenmap scan` at 05:00 plus `RunAtLoad` as
-  catch-up for missed nights; the wrapper, not launchd, decides whether a scan happens
-  (`read-rates.json` younger than 20h → silent exit 0). The scan refreshes the tokenmap index
-  and rewrites `~/.local/share/tokenmap/read-rates.json`, which `instruction_live_rate()` in
-  `share/instruction-files.sh` serves to the instruction-bloat gate; a file older than 14 days
-  is ignored there and the gate falls back to its frozen class constants. Log at
+  catch-up for missed nights; the wrapper, not launchd, decides whether a scan happens (a
+  `read-rates.json` inside the wrapper's freshness guard — currently 20h, the wrapper is the
+  source of truth → silent exit 0). The scan refreshes the tokenmap index and rewrites
+  `~/.local/share/tokenmap/read-rates.json`, which `instruction_live_rate()` in
+  `share/instruction-files.sh` serves to the instruction write and bloat gates; an export past
+  that function's staleness bound (currently 14 days; the function is the source of truth) or
+  stamped in the future is ignored and the gates fall back to their frozen class constants. Log at
   `~/Library/Logs/tokenmap-scand.log`, head-truncated in place past 1MB (launchd keeps an fd
   on the path, so no `mv` rotation). The wrapper always exits 0 — a failed scan is a
   `scan exit=N` line in the log, not a broken job.

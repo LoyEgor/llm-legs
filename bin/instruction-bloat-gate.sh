@@ -68,17 +68,33 @@ is_global() {
 # cost, so the question "is this the global one" is settled before anything else — and settled on
 # the resolved name, which is the only spelling they all share.
 reads=''
+live=''
+global=''
 if is_global "$file_path"; then
-  reads=15682
+  global=1
 else
   case "$file_path" in
     */CLAUDE.md)
       file_real=$(realpath "$file_path" 2>/dev/null)
-      [ -n "$file_real" ] && is_global "$file_real" && reads=15682
+      [ -n "$file_real" ] && is_global "$file_real" && global=1
       ;;
   esac
 fi
-[ -n "$reads" ] || reads=$(instruction_read_rate "$file_path" "$HOME")
+# The rate the local index measured over the last 30 days is asked first, and the constants are
+# what is left when it has no answer. The global file is looked up under its canonical name: the
+# profile symlinks are the same file, and that name is the only one they share.
+if [ -n "$global" ]; then
+  reads=$(instruction_live_rate "$GLOBAL_CLAUDE" "$HOME")
+else
+  reads=$(instruction_live_rate "$file_path" "$HOME")
+fi
+if [ -n "$reads" ]; then
+  live=1
+elif [ -n "$global" ]; then
+  reads=15682
+else
+  reads=$(instruction_read_rate "$file_path" "$HOME")
+fi
 # ~/.claude/docs and ~/.claude/agents are symlinks into the config repository, so the same file
 # has a second absolute path that matches none of the patterns above — and that repository path
 # is the one anybody editing the repo actually types. Resolving the directory (not the file:
@@ -151,5 +167,10 @@ instruction_claim_stamp "$STAMP_DIR" "$hash" && exit 0
 
 tokens=$((delta / 4))
 monthly=$((tokens * reads))
+if [ -n "$live" ]; then
+  measured='measured by the local read index over its last 30-day window'
+else
+  measured='measured'
+fi
 
-deny "Instruction-bloat gate: LLMs re-read this file ~${reads}x/month at full-read price (measured; content in the cached prefix is re-read on every request, not once per session). Growth +${delta} bytes ≈ +${tokens} tokens per read ≈ ~${monthly} tokens/month at Egor's daily usage. His standing rule: (1) prefer a hook/mechanical control over prose; (2) if prose is genuinely required, compress it hard; (3) present Egor the NET BALANCE, not just this cost — estimate what the rule SAVES per month (avoided repeated output, avoided corrections, avoided worker calls) and compare; a rule that saves less than it costs does not get written. Content rules apply before cost math — history/changelog, anything derivable from the code, linter rules as prose, and defensive verification scaffolding are cut, not costed; keep/cut criteria: ~/.claude/docs/context-file-hygiene.md. Wait for his explicit OK, then retry the identical edit — the gate passes the exact retry once."
+deny "Instruction-bloat gate: LLMs re-read this file ~${reads}x/month at full-read price (${measured}; content in the cached prefix is re-read on every request, not once per session). Growth +${delta} bytes ≈ +${tokens} tokens per read ≈ ~${monthly} tokens/month at Egor's daily usage. His standing rule: (1) prefer a hook/mechanical control over prose; (2) if prose is genuinely required, compress it hard; (3) present Egor the NET BALANCE, not just this cost — estimate what the rule SAVES per month (avoided repeated output, avoided corrections, avoided worker calls) and compare; a rule that saves less than it costs does not get written. Content rules apply before cost math — history/changelog, anything derivable from the code, linter rules as prose, and defensive verification scaffolding are cut, not costed; keep/cut criteria: ~/.claude/docs/context-file-hygiene.md. Optional idea, never an obligation: if THIS file carries lines that are stale or merely restate what code already enforces, a cut you can honestly defend by those criteria may offset the growth — net <= 0 passes with no approval; name the cut in your reply so Egor can veto it. Never cut a live rule just to make room. Otherwise wait for his explicit OK, then retry the identical edit — the gate passes the exact retry once."

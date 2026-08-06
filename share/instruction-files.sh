@@ -52,6 +52,10 @@ instruction_guarded_paths() {
 # every gate: a denial that quotes a different number from the one the bloat gate prices the same
 # file at teaches its reader that neither number is real. An empty answer means "not a class this
 # table prices" — the caller decides whether that is a reason to stay quiet about cost.
+# These are the frozen fallback: both gates ask instruction_live_rate first and quote it when the
+# local index still has a fresh answer, so a figure below one of these is the measured one, not a
+# drifted copy. The tripwire still quotes the constants — it reports a whole set of files at once
+# and prices the dearest class, not one path a live rate could be looked up for.
 instruction_read_rate() {
   local path=$1 home=${2:-$HOME}
   case "$path" in
@@ -62,6 +66,63 @@ instruction_read_rate() {
     "$home"/.claude/docs/*) printf 160 ;;                      # protocol docs, read per task type
     "$home"/.claude/agents/*) printf 2500 ;;                   # per spawn of a busy worker
   esac
+}
+
+# The same rate over the local index's own 30-day window instead of a frozen month, when tokenmap
+# has an answer for this file. Nothing printed means the caller keeps the constant above:
+# an export that is missing, malformed, or past its window is not a better number than the frozen
+# one, it is an unreproducible one, and a denial quoting a figure nobody can reproduce today
+# teaches its reader to discount every figure in the message. Only the two always-on classes are
+# exported so far; the rest fall through by design rather than by omission.
+# The global file is keyed by its canonical name only, exactly as the table above keys it — the
+# profile symlinks resolve to that name and the gates do that resolution themselves.
+instruction_live_rate() {
+  local path=$1 home=${2:-$HOME} rates='' dir='' real='' slug='' n=''
+  rates=${TOKENMAP_RATES:-$home/.local/share/tokenmap/read-rates.json}
+  [ -f "$rates" ] || return 0
+  case "$path" in
+    "$home"/.claude/CLAUDE.md) ;;
+    # A memory index is never in the directory tokenmap recorded: it sits at
+    # <...>/projects/<encoded-cwd>/memory/MEMORY.md, so the project is named by that component,
+    # which is the cwd with every non-alphanumeric character replaced by a dash.
+    */projects/*/memory/MEMORY.md)
+      slug=${path%/memory/MEMORY.md}
+      slug=${slug##*/}
+      ;;
+    */MEMORY.md|*/CLAUDE.md|*/CLAUDE.local.md)
+      dir=$(dirname "$path")
+      # The export is keyed by whatever cwd the sessions ran in, which is as often the /var
+      # spelling as the /private/var one it resolves to, so both are tried.
+      real=$(realpath "$dir" 2>/dev/null) || real=''
+      [ "$real" = "$dir" ] && real=''
+      ;;
+    *) return 0 ;;
+  esac
+  # One jq read decides everything, so a missing file, unparseable JSON, an absent key, a rate
+  # that is not a number and a window outside its bounds all leave by the same door: no output.
+  n=$(jq -r --arg dir "$dir" --arg real "$real" --arg slug "$slug" '
+    # fromdateiso8601 parses one spelling only. A producer that starts stamping fractional
+    # seconds or +00:00 would otherwise read as unparseable and silently freeze every gate on
+    # the constants, so the two benign drifts are normalized rather than rejected.
+    def stamp: sub("\\.[0-9]+"; "") | sub("\\+00:?00$"; "Z");
+    ((.generated_at | strings | stamp | fromdateiso8601?) // empty) as $gen
+    # A future stamp is a broken clock or a broken export, not a fresher measurement; the small
+    # tolerance is for ordinary skew between the writer and this reader.
+    | select((now - $gen) <= 1209600 and ($gen - now) <= 300)
+    | (if $slug != "" then
+         ([.projects // {} | to_entries[]
+           | select((.key | gsub("[^A-Za-z0-9]"; "-")) == $slug) | .value.reads] | first)
+       elif $dir == "" then .global.reads
+       else (.projects[$dir].reads
+             // (if $real == "" then empty else .projects[$real].reads end))
+       end)
+    | select(type == "number" and . > 0)
+    # A rate under one read a month is still a real read: rounding it to zero would print
+    # "~0x/month", which reads as "this file is free".
+    | if . < 1 then 1 else round end
+  ' "$rates" 2>/dev/null) || return 0
+  case "$n" in ''|*[!0-9]*) return 0 ;; esac
+  printf '%s' "$n"
 }
 
 # The directories, not just the files in them. A doc that does not exist yet costs the same per
