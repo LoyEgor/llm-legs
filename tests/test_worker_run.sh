@@ -30,6 +30,19 @@ printf 'image\n' >"$WORK/image.png"
 cat >"$WORK/bin/worker-pick" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$PICK_LOG"
+# A reroute chain needs a different answer per call, and the env of the detached
+# supervisor is frozen at launch: the queue file feeds one "<rc> [account]
+# [reserve]" line per pick, oldest first.
+if [ -s "$STUB_DIR/pick_queue" ]; then
+  IFS= read -r queued <"$STUB_DIR/pick_queue"
+  sed '1d' "$STUB_DIR/pick_queue" >"$STUB_DIR/pick_queue.next" && mv "$STUB_DIR/pick_queue.next" "$STUB_DIR/pick_queue"
+  # shellcheck disable=SC2086
+  set -- $queued
+  [ "$1" = 0 ] || exit "$1"
+  [ "${3:-}" != reserve ] || printf 'worker-pick: %s is the session account (SESSION RESERVE)\n' "$2" >&2
+  printf '%s\n' "$2"
+  exit 0
+fi
 case "${PICK_RC:-0}" in
   0)
     # The real picker announces a session-reserve answer on stderr only; stdout stays the
@@ -87,6 +100,12 @@ for arg in "$@"; do
   previous="$arg"
 done
 cat >"$STUB_DIR/codex.stdin"
+codex_account=main
+case "${CODEX_HOME-}" in */*) codex_account=${CODEX_HOME##*/} ;; esac
+if [ -r "$STUB_DIR/wall_accounts" ] && grep -qx "$codex_account" "$STUB_DIR/wall_accounts"; then
+  printf 'ERROR: You have hit your usage limit.\n' >&2
+  exit 9
+fi
 # Real codex mutated the running worker-run mid-session and killed a successful
 # run; the stub reproduces that by appending to the script it was launched from.
 [ ! -r "$STUB_DIR/codex_append_target" ] || printf 'garbage )(\n' >>"$(cat "$STUB_DIR/codex_append_target")"
@@ -165,7 +184,8 @@ clear_stub() {
   unset STUB_SLEEP STUB_ERROR STUB_CODE STUB_STDOUT
   rm -f "$STUB_DIR/claudeb_drop_effort" "$STUB_DIR/codex_trusted" "$STUB_DIR/codex.stdin" \
     "$STUB_DIR/codex_bad_model" "$STUB_DIR/codex_bad_model_always" "$STUB_DIR/codex_noise" \
-    "$STUB_DIR/codex_noise_deep" "$STUB_DIR/codex_phrase_deep" "$STUB_DIR/codex_append_target"
+    "$STUB_DIR/codex_noise_deep" "$STUB_DIR/codex_phrase_deep" "$STUB_DIR/codex_append_target" \
+    "$STUB_DIR/wall_accounts" "$STUB_DIR/pick_queue"
 }
 
 start_ok() {
@@ -248,12 +268,14 @@ for vendor in claudeb codex gemini; do
   start_ok "$vendor"
   assert meta_account_is picked
   assert grep -qx -- "--account $vendor" "$PICK_LOG"
+  assert jq -e '.pinned == false' "$RUN_DIR/meta.json" >/dev/null
   assert await_done
 
   clear_stub
   export PICK_ACCOUNT=ignored PICK_RC=2
   start_ok "$vendor"
   assert meta_account_is pinned
+  assert jq -e '.pinned == true' "$RUN_DIR/meta.json" >/dev/null
   assert await_done
 done
 
@@ -456,6 +478,9 @@ assert await_done
 assert grep -qxF "ARG=$WORK/rel-extra" "$CALL_LOG"
 assert grep -qxF "ARG=$WORK/rel-image.png" "$CALL_LOG"
 
+# These picks keep naming the one account that walls — a picker that ignores
+# --exclude — so the run has nowhere to reroute and the limit outcome reaches
+# the caller.
 for spec in 'claudeb:usage limit reached:CLAUDEB_USAGE_LIMIT' 'codex:quota exhausted:CODEX_USAGE_LIMIT' 'gemini:RESOURCE_EXHAUSTED:GEMINI_USAGE_LIMIT'; do
   IFS=: read -r vendor error outcome <<<"$spec"
   clear_stub
@@ -759,4 +784,118 @@ rc=0
 assert test "$rc" -eq 4
 assert grep -q 'briefs over 128KB cannot launch' "$WORK/huge.err"
 
-echo "PASS: $asserts asserts; worker-run detaches vendor CLIs, preserves live runs across bounded waits, resolves accounts and model knobs, retries only documented compatibility failures, and reports terminal outcomes"
+# An account that walls mid-task does not end the run: the same brief continues
+# on the next account the picker offers, and the caller re-dispatches nothing.
+clear_stub
+set_config 'codex_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=unused
+printf 'walled1\n' >"$STUB_DIR/wall_accounts"
+printf '%s\n' '0 walled1' '0 rescue1' >"$STUB_DIR/pick_queue"
+start_ok codex
+assert await_done
+assert grep -q '^STATUS: done$' "$WORK/wait.out"
+assert test "$(grep -c '^OUTCOME:' "$WORK/wait.out")" -eq 0
+assert meta_account_is rescue1
+assert jq -e '.walled_accounts == ["walled1"]' "$RUN_DIR/meta.json" >/dev/null
+assert grep -qx -- '--account codex' "$PICK_LOG"
+assert grep -qx -- '--account codex --exclude walled1' "$PICK_LOG"
+assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 2
+assert grep -q '^CODEX_HOME=.*/\.codex-profiles/rescue1$' "$CALL_LOG"
+assert grep -qx 'REROUTE: walled on walled1 → continued on rescue1' "$WORK/wait.out"
+assert grep -qx 'rescue1 · sol · high' "$RUN_DIR/tag"
+# The relaunch starts the brief fresh on the new account.
+assert cmp -s "$WORK/brief" "$STUB_DIR/codex.stdin"
+report=$("$RUNNER" report "$RUN_ID")
+assert grep -qx 'ACCOUNT: rescue1 (codex)' <<<"$report"
+assert grep -qx 'REROUTE: walled on walled1 → continued on rescue1' <<<"$report"
+
+# The chain survives several walls, and every account already burnt stays
+# excluded from the next query.
+clear_stub
+set_config 'codex_effort=high'
+printf 'walled1\nwalled2\n' >"$STUB_DIR/wall_accounts"
+printf '%s\n' '0 walled1' '0 walled2' '0 rescue2' >"$STUB_DIR/pick_queue"
+start_ok codex
+assert await_done
+assert grep -q '^STATUS: done$' "$WORK/wait.out"
+assert meta_account_is rescue2
+assert jq -e '.walled_accounts == ["walled1","walled2"]' "$RUN_DIR/meta.json" >/dev/null
+assert grep -qx -- '--account codex --exclude walled1' "$PICK_LOG"
+assert grep -qx -- '--account codex --exclude walled1,walled2' "$PICK_LOG"
+assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 3
+assert test "$(grep -c '^REROUTE: ' "$WORK/wait.out")" -eq 2
+assert grep -qx 'REROUTE: walled on walled2 → continued on rescue2' "$WORK/wait.out"
+
+# ALL WALLED is the only way the usage-limit outcome still reaches the caller.
+clear_stub
+set_config 'codex_effort=high'
+printf 'walled1\nwalled2\n' >"$STUB_DIR/wall_accounts"
+printf '%s\n' '0 walled1' '0 walled2' '3' >"$STUB_DIR/pick_queue"
+start_ok codex
+assert await_done
+assert grep -q '^STATUS: failed$' "$WORK/wait.out"
+assert grep -qx 'OUTCOME: CODEX_USAGE_LIMIT' "$WORK/wait.out"
+assert meta_account_is walled2
+assert jq -e '.walled_accounts == ["walled1"]' "$RUN_DIR/meta.json" >/dev/null
+assert grep -qx 'REROUTE: walled on walled1 → continued on walled2' "$WORK/wait.out"
+assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 2
+
+# A gemini rescue account must hold a usable geminib profile, the same check
+# start_run applies: an unlisted answer ends the run instead of relaunching
+# into a CLI error.
+clear_stub
+set_config 'gemini_model=pro' 'gemini_effort=high'
+printf 'walledg\n' >"$STUB_DIR/gemini_profiles"
+export STUB_CODE=9 STUB_ERROR='RESOURCE_EXHAUSTED'
+printf '%s\n' '0 walledg' '0 unlisted' >"$STUB_DIR/pick_queue"
+start_ok gemini
+assert await_done
+assert grep -qx 'OUTCOME: GEMINI_USAGE_LIMIT' "$WORK/wait.out"
+assert meta_account_is walledg
+assert test "$(grep -c '^REROUTE: ' "$WORK/wait.out")" -eq 0
+
+# An explicit --account is the caller's decision: a pinned run reports the wall
+# instead of spending someone else's quota on it.
+clear_stub
+set_config 'codex_effort=high'
+printf 'pinnedacct\n' >"$STUB_DIR/wall_accounts"
+printf '%s\n' '0 rescue3' >"$STUB_DIR/pick_queue"
+start_ok codex --account pinnedacct
+assert await_done
+assert grep -qx 'OUTCOME: CODEX_USAGE_LIMIT' "$WORK/wait.out"
+assert meta_account_is pinnedacct
+assert jq -e 'has("walled_accounts") | not' "$RUN_DIR/meta.json" >/dev/null
+assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 1
+assert test ! -s "$PICK_LOG"
+assert grep -qx '0 rescue3' "$STUB_DIR/pick_queue"
+assert test "$(grep -c '^REROUTE: ' "$WORK/wait.out")" -eq 0
+
+# A re-pick that lands on the session account must say so exactly as the first
+# pick does — the reroute is not a quieter path onto the live chat's quota.
+clear_stub
+set_config 'codex_effort=high'
+printf 'walled1\n' >"$STUB_DIR/wall_accounts"
+printf '%s\n' '0 walled1' '0 reserved1 reserve' >"$STUB_DIR/pick_queue"
+start_ok codex
+assert test ! -s "$WORK/start.err"
+assert await_done
+assert meta_account_is reserved1
+assert jq -e '.session_reserve == true' "$RUN_DIR/meta.json" >/dev/null
+report=$("$RUNNER" report "$RUN_ID")
+assert grep -qx 'ACCOUNT: reserved1 (codex) SESSION RESERVE' <<<"$report"
+assert grep -qx 'REROUTE: walled on walled1 → continued on reserved1' <<<"$report"
+
+# ...and the note belongs to the account actually in use: rerouting off the
+# reserve clears it.
+clear_stub
+set_config 'codex_effort=high'
+printf 'reserved0\n' >"$STUB_DIR/wall_accounts"
+printf '%s\n' '0 reserved0 reserve' '0 plain1' >"$STUB_DIR/pick_queue"
+start_ok codex
+assert grep -q 'reserved0 is the session account (SESSION RESERVE)' "$WORK/start.err"
+assert await_done
+assert meta_account_is plain1
+assert jq -e 'has("session_reserve") | not' "$RUN_DIR/meta.json" >/dev/null
+assert grep -qx 'ACCOUNT: plain1 (codex)' <<<"$("$RUNNER" report "$RUN_ID")"
+
+echo "PASS: $asserts asserts; worker-run detaches vendor CLIs, preserves live runs across bounded waits, resolves accounts and model knobs, reroutes an unpinned run off a walled account until every candidate is walled, retries only documented compatibility failures, and reports terminal outcomes"

@@ -173,12 +173,53 @@ busy_accounts() {
 
 meta_update() {
   local directory="$1" filter="$2" temporary
+  shift 2
   temporary="$directory/meta.json.tmp.$$"
-  if ! jq "$filter" "$directory/meta.json" >"$temporary"; then
+  if ! jq "$@" "$filter" "$directory/meta.json" >"$temporary"; then
     rm -f "$temporary"
     return 1
   fi
   mv -f "$temporary" "$directory/meta.json"
+}
+
+run_picker() {
+  local picker="$1" vendor="$2" exclude="$3" errors="$4"
+  if [ -n "$exclude" ]; then
+    "$picker" --account "$vendor" --exclude "$exclude" 2>"$errors"
+  else
+    "$picker" --account "$vendor" 2>"$errors"
+  fi
+}
+
+pick_account() {
+  # Answers into PICKED_ACCOUNT / PICKED_RC / PICKED_RESERVE. $2 is the hard
+  # exclusion list — accounts that already walled in this run's chain; busy
+  # accounts are layered on top as a preference only.
+  local vendor="$1" walled="$2" picker busy combined errors
+  PICKED_ACCOUNT=''
+  PICKED_RC=0
+  PICKED_RESERVE=false
+  picker="${WORKER_RUN_WORKER_PICK:-worker-pick}"
+  busy=$(busy_accounts "$vendor")
+  combined=$(printf '%s\n%s\n' "$walled" "$busy" | tr ',' '\n' | grep -v '^$' | awk '!seen[$0]++' | paste -sd, -)
+  # The picker says on stderr when its answer is the session account held in reserve, and
+  # dropping that note would launch a worker on the live chat's own quota silently. Each
+  # redirect truncates the file, so only the pick actually used is reported.
+  errors=$(mktemp "${TMPDIR:-/tmp}/worker-run-pick.XXXXXX") ||
+    fail 'could not create a temporary file for the account query'
+  PICKED_ACCOUNT=$(run_picker "$picker" "$vendor" "$combined" "$errors")
+  PICKED_RC=$?
+  # rc 3 once busy accounts are excluded means "everything ELSE is walled", not
+  # walled: fall through to the walled-only query and let the pick queue on a
+  # busy account rather than lie about limits.
+  if [ "$combined" != "$walled" ] && { [ "$PICKED_RC" -ne 0 ] || [ -z "$PICKED_ACCOUNT" ]; }; then
+    PICKED_ACCOUNT=$(run_picker "$picker" "$vendor" "$walled" "$errors")
+    PICKED_RC=$?
+  fi
+  [ ! -s "$errors" ] || cat "$errors" >&2
+  ! grep -Fq 'SESSION RESERVE' "$errors" || PICKED_RESERVE=true
+  rm -f "$errors"
+  PICKED_ACCOUNT=${PICKED_ACCOUNT%%$'\n'*}
 }
 
 read_json_array() {
@@ -303,24 +344,61 @@ supervise_gemini() {
   return "$rc"
 }
 
+reroute_walled() {
+  # The run ends on a wall only once every account is walled; otherwise the brief
+  # continues on the next one and no caller re-dispatches by hand. A caller-given
+  # --account is that caller's decision and stays put — and since --resume always
+  # carries one, no session is ever dragged across accounts.
+  local directory="$1" vendor="$2" walled tag
+  has_limit_signature "$directory" "$vendor" || return 1
+  [ "$(jq -r '.pinned' "$directory/meta.json")" != true ] || return 1
+  walled=$(jq -r '((.walled_accounts // []) + [.account]) | join(",")' "$directory/meta.json")
+  pick_account "$vendor" "$walled"
+  [ "$PICKED_RC" -eq 0 ] && [ -n "$PICKED_ACCOUNT" ] || return 1
+  # Defence against a picker that ignores --exclude: relaunching on an account
+  # this run already burnt would wall again forever.
+  case ",$walled," in *",$PICKED_ACCOUNT,"*) return 1 ;; esac
+  if [ "$vendor" = gemini ] && [ "$PICKED_ACCOUNT" != main ]; then
+    grep -Eq "^${PICKED_ACCOUNT}:" <<<"$("$(jq -r '.cli' "$directory/meta.json")" list 2>/dev/null)" ||
+      return 1
+  fi
+  # started_at is restamped because run_overdue budgets one deadline, and a chain
+  # of full-length attempts would otherwise read as a wedged CLI.
+  meta_update "$directory" \
+    '.walled_accounts = ((.walled_accounts // []) + [.account]) | .account = $next | .started_at = $now
+     | if $reserve then .session_reserve = true else del(.session_reserve) end' \
+    --arg next "$PICKED_ACCOUNT" --argjson now "$(date +%s)" --argjson reserve "$PICKED_RESERVE" || return 1
+  if IFS= read -r tag <"$directory/tag" 2>/dev/null; then
+    printf '%s · %s\n' "$PICKED_ACCOUNT" "${tag#* · }" >"$directory/tag"
+  fi
+  : >"$directory/out"
+  : >"$directory/err"
+  [ "$vendor" != gemini ] || : >"$directory/log"
+}
+
 supervise() {
-  local directory="$1" vendor workdir
+  local directory="$1" vendor workdir rc
   [ -r "$directory/meta.json" ] || return 4
   vendor=$(jq -r '.vendor' "$directory/meta.json")
   workdir=$(jq -r '.workdir' "$directory/meta.json")
   cd "$workdir" || return 4
-  case "$vendor" in
-    claudeb) supervise_claudeb "$directory" ;;
-    codex) supervise_codex "$directory" ;;
-    gemini) supervise_gemini "$directory" ;;
-    *) return 4 ;;
-  esac
+  while :; do
+    case "$vendor" in
+      claudeb) supervise_claudeb "$directory" ;;
+      codex) supervise_codex "$directory" ;;
+      gemini) supervise_gemini "$directory" ;;
+      *) return 4 ;;
+    esac
+    rc=$?
+    [ "$rc" -ne 0 ] || return 0
+    reroute_walled "$directory" "$vendor" || return "$rc"
+  done
 }
 
 start_run() {
   [ "$#" -ge 1 ] || usage
   local vendor="$1" brief='' workdir="$PWD" explicit_account='' model='' effort='' resume=''
-  local account picker busy pick_output pick_rc pick_errors pick_reserve=false pin config_model model_label agy_model='' root epoch suffix run_id directory
+  local account pick_reserve=false pin_fallback=false pin config_model model_label agy_model='' root epoch suffix run_id directory
   local explicit_model='' explicit_effort=''
   local started cli cmd_json add_dirs_json images_json pid supervisor_body value list_output list_rc
   local web_search=false
@@ -377,39 +455,20 @@ start_run() {
   if [ -n "$explicit_account" ]; then
     account="$explicit_account"
   else
-    picker="${WORKER_RUN_WORKER_PICK:-worker-pick}"
-    # The picker says on stderr when its answer is the session account held in reserve, and
-    # dropping that note would launch a worker on the live chat's own quota silently. Each
-    # redirect truncates the file, so only the pick actually used is reported.
-    pick_errors=$(mktemp "${TMPDIR:-/tmp}/worker-run-pick.XXXXXX") ||
-      fail 'could not create a temporary file for the account query'
-    busy=$(busy_accounts "$vendor")
-    if [ -n "$busy" ]; then
-      pick_output=$("$picker" --account "$vendor" --exclude "$busy" 2>"$pick_errors")
-      pick_rc=$?
-      # rc 3 with exclusions means "everything ELSE is walled", not walled: fall
-      # through and let the plain pick queue on a busy account rather than lie
-      # about limits.
-      if [ "$pick_rc" -ne 0 ] || [ -z "$pick_output" ]; then
-        pick_output=$("$picker" --account "$vendor" 2>"$pick_errors")
-        pick_rc=$?
-      fi
-    else
-      pick_output=$("$picker" --account "$vendor" 2>"$pick_errors")
-      pick_rc=$?
-    fi
-    [ ! -s "$pick_errors" ] || cat "$pick_errors" >&2
-    ! grep -Fq 'SESSION RESERVE' "$pick_errors" || pick_reserve=true
-    rm -f "$pick_errors"
-    if [ "$pick_rc" -eq 0 ] && [ -n "$pick_output" ]; then
-      account=${pick_output%%$'\n'*}
-    elif [ "$pick_rc" -eq 3 ]; then
+    pick_account "$vendor" ''
+    pick_reserve=$PICKED_RESERVE
+    if [ "$PICKED_RC" -eq 0 ] && [ -n "$PICKED_ACCOUNT" ]; then
+      account="$PICKED_ACCOUNT"
+    elif [ "$PICKED_RC" -eq 3 ]; then
       printf 'OUTCOME: %s_USAGE_LIMIT\n' "$(vendor_name "$vendor")"
       exit 3
     else
       pin=$(config_value "${vendor}_profile")
       if [ -n "$pin" ]; then
+        # A *_profile pin is a directly named account (shared-invariants row q):
+        # a reroute off it would override the same standing --account carries.
         account="$pin"
+        pin_fallback=true
       elif [ "$vendor" = claudeb ]; then
         fail 'claudeb needs an explicit account or claudeb_profile pin when worker-pick is unavailable'
       else
@@ -524,7 +583,8 @@ start_run() {
     --arg explicit_model "$explicit_model" --arg explicit_effort "$explicit_effort" \
     --argjson pid 0 --argjson started_at "$started" --argjson cmd "$cmd_json" \
     --argjson add_dirs "$add_dirs_json" --argjson images "$images_json" --argjson web_search "$web_search" \
-    '{vendor:$vendor,account:$account,model:$model,effort:$effort,workdir:$workdir,pid:$pid,cmd:$cmd,started_at:$started_at,resume:$resume,cli:$cli,add_dirs:$add_dirs,images:$images,web_search:$web_search,explicit_model:$explicit_model,explicit_effort:$explicit_effort}
+    --argjson pinned "$([ -n "$explicit_account" ] || [ "$pin_fallback" = true ] && printf true || printf false)" \
+    '{vendor:$vendor,account:$account,model:$model,effort:$effort,workdir:$workdir,pid:$pid,cmd:$cmd,started_at:$started_at,resume:$resume,cli:$cli,add_dirs:$add_dirs,images:$images,web_search:$web_search,explicit_model:$explicit_model,explicit_effort:$explicit_effort,pinned:$pinned}
      + if $vendor == "gemini" then {agy_model:$agy_model} else {} end' >"$directory/meta.json" || fail 'could not write metadata'
   [ "$pick_reserve" != true ] || meta_update "$directory" '.session_reserve = true' ||
     fail 'could not record the session-reserve note'
@@ -607,6 +667,12 @@ has_limit_signature() {
   fi
 }
 
+reroute_lines() {
+  jq -r '. as $meta | ($meta.walled_accounts // []) | range(0; length) as $hop
+         | "REROUTE: walled on \(.[$hop]) → continued on \(.[$hop + 1] // $meta.account)"' \
+    "$1/meta.json" 2>/dev/null
+}
+
 print_outcome() {
   local directory="$1" vendor="$2" code="$3" reset
   # Signature scan only on failure: results in this ecosystem routinely DISCUSS
@@ -638,6 +704,7 @@ terminal_report() {
   vendor=$(jq -r '.vendor' "$directory/meta.json")
   if [ "$code" = 0 ]; then status=done; else status=failed; fi
   printf 'STATUS: %s\nEXIT: %s\nSESSION: %s\n' "$status" "$code" "$(session_id "$directory")"
+  reroute_lines "$directory"
   print_outcome "$directory" "$vendor" "$code"
   result_tail "$directory" "$vendor" 40
   if [ "$code" != 0 ]; then
@@ -707,6 +774,7 @@ report_run() {
   account=$(jq -r '.account' "$directory/meta.json")
   printf 'ACCOUNT: %s (%s)%s\n' "$account" "$vendor" \
     "$(jq -r 'if .session_reserve == true then " SESSION RESERVE" else "" end' "$directory/meta.json")"
+  reroute_lines "$directory"
   if [ -f "$directory/exit_code" ]; then
     code=$(tr -d '[:space:]' <"$directory/exit_code")
     [[ "$code" =~ ^[0-9]+$ ]] || code=unknown
