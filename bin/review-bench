@@ -2619,12 +2619,109 @@ def pending_lines(run_dir, meta):
     return [head, f"report with: {triage_command(run_id, findings)}"]
 
 
-def write_report_receipt(run_dir, verdicts):
+def write_report_receipt(run_dir, verdicts, severities=None):
+    # The severity tally is the one number the commit gate prices its next round on, and it is
+    # written here rather than derived there because `--no-corpus` leaves no verdicts.jsonl to
+    # derive it from: this receipt is the only record that triage ever happened. The rows go with
+    # it for the same reason — the tally beside them is the whole run's, the way the report block
+    # printed it, and a merged run's members each need their own share of it.
     (run_dir / REPORT_RECEIPT).write_text(json.dumps({
         "reported_at": iso_now(),
         "verdicts": len(verdicts),
         "confirmed": sum(1 for row in verdicts if row.get("verdict") == "confirmed"),
+        "confirmed_by_severity": {
+            level: counted_int((severities or {}).get(level)) for level in LENS_SEVERITIES
+        },
+        "rows": [
+            {"rater": row.get("rater"), "idx": row.get("idx"), "verdict": row.get("verdict")}
+            for row in verdicts
+        ],
     }) + "\n")
+
+
+def member_finding_prefix(meta, commit):
+    """The prefix a merged run's findings carry for the repository whose snapshot is `commit`, or
+    "" when the run read one repository. A merged review names the merged workspace's commit and
+    holds every repository under its own label, so this is the only thing that says which of its
+    findings are about the repository asking.
+    """
+    member = next(
+        (entry for entry in meta.get("repos") or ()
+         if isinstance(entry, dict) and str(entry.get("commit") or "") == commit
+         and isinstance(entry.get("label"), str) and entry["label"]),
+        None,
+    )
+    return f"{member['label']}/" if member else ""
+
+
+def severity_tally(run_dir, verdicts, prefix=""):
+    """The confirmed findings of `verdicts` counted by severity, narrowed to one merged member's
+    prefix when there is one. The same join `bench_summary` makes, asked of a subset of the panel's
+    findings rather than of all of them.
+    """
+    findings_by_rater = {}
+    counted = Counter()
+    for row in verdicts:
+        if not isinstance(row, dict) or row.get("verdict") != "confirmed":
+            continue
+        rater = row.get("rater")
+        idx = row.get("idx")
+        if not rater or not isinstance(idx, int) or isinstance(idx, bool):
+            continue
+        if rater not in findings_by_rater:
+            findings_by_rater[rater] = finding_rows(run_dir, rater)
+        rows = findings_by_rater[rater]
+        if not 0 <= idx < len(rows):
+            continue
+        finding = rows[idx]
+        if prefix and not str(finding.get("file") or "").startswith(prefix):
+            continue
+        if finding.get("severity") in WEIGHTS:
+            counted[finding["severity"]] += 1
+    return {level: counted[level] for level in LENS_SEVERITIES}
+
+
+def reported_severities(receipt):
+    """The confirmed-severity tally the run behind `receipt` was triaged to, or None when it has
+    none — the commit gate's "no review has answered yet".
+
+    Recomputed from the stored verdicts whenever the run has them, never read off the report
+    receipt in preference to them: a run re-adjudicated the durable way after a `--no-corpus`
+    report leaves that receipt naming counts nobody stands behind any more, and pricing the gate's
+    escalation on superseded numbers would go on forever. The receipt answers only for the
+    `--no-corpus`-only case it exists for, which by design stores no verdicts at all.
+
+    Scoped to the repository this receipt belongs to: one merged panel reads several repositories,
+    and a member's confirmed P1s must never price another member's commit.
+
+    Everything is read off someone else's disk — a half-written findings file, a truncated verdict
+    line, a run directory pulled out from under this call — so nothing here may raise: the readers
+    of a receipt have a commit to let through, and a tally they cannot compute is one they must be
+    told they do not have.
+    """
+    run_dir = state_dir() / "benches" / str(receipt.get("run_id") or "")
+    try:
+        try:
+            meta = json.loads((run_dir / "meta.json").read_text())
+        except (OSError, ValueError):
+            meta = {}
+        prefix = member_finding_prefix(meta, str(receipt.get("commit") or ""))
+        if (run_dir / "verdicts.jsonl").exists():
+            return severity_tally(run_dir, read_jsonl(run_dir / "verdicts.jsonl"), prefix)
+        report = json.loads((run_dir / REPORT_RECEIPT).read_text())
+        if not isinstance(report, dict):
+            return None
+        if isinstance(report.get("rows"), list):
+            return severity_tally(run_dir, report["rows"], prefix)
+        # A receipt written before the rows were kept: its tally is the whole run's, which for a
+        # merged run is more than this repository's — the only reading available, and the runs it
+        # covers are already reported and done.
+        tally = report.get("confirmed_by_severity")
+        if isinstance(tally, dict):
+            return {level: counted_int(tally.get(level)) for level in LENS_SEVERITIES}
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return None
 
 
 def triage_pending_run(repo=None, session=None):
@@ -5912,16 +6009,11 @@ def review_outcome(repo, receipt):
             # A merged review names the merged workspace's commit, never this repository's own
             # snapshot: the run that read this receipt's tree is the one whose members include it,
             # and only the findings under that member's prefix are about this repository.
-            member = next(
-                (entry for entry in meta.get("repos") or ()
-                 if isinstance(entry, dict) and str(entry.get("commit") or "") == commit
-                 and isinstance(entry.get("label"), str) and entry["label"]),
-                None,
-            )
+            prefix = member_finding_prefix(meta, commit)
             meta_commit = str(meta.get("commit") or "")
             # The run_id fallback exists for artifacts with no commit stamped at all; a run
             # that NAMES a different commit is a different review, whatever its directory.
-            if member is None:
+            if not prefix:
                 if meta_commit:
                     if meta_commit != commit:
                         continue
@@ -5931,7 +6023,6 @@ def review_outcome(repo, receipt):
                 entry.get("rater") for entry in meta.get("rater_runs", ())
                 if entry.get("errored") and entry.get("rater")
             }
-            prefix = f"{member['label']}/" if member else ""
             findings += sum(
                 sum(1 for row in read_jsonl(path)
                     if str(row.get("file") or "").startswith(prefix))
@@ -6051,6 +6142,14 @@ def cmd_receipt(args):
         return 1
     worktree, confirmed, findings = review_outcome(repo, receipt)
     extra = {"worktree": worktree}
+    # The commit gate asks this receipt whether the review it armed has been triaged yet and how
+    # badly it landed, so the tally rides along with the run's identity instead of costing the gate
+    # a second lookup it has no state directory to make. Absent until the triage is recorded, which
+    # is the gate's "not reviewed yet" — `confirmed` above is the corpus count, 0 forever for the
+    # worktree snapshots every commit-point review is.
+    tally = reported_severities(receipt)
+    if tally is not None:
+        extra["reported"] = tally
     if worktree:
         extra["findings"] = findings
         # The commit the snapshot was taken on top of. Its own tree is nowhere in the history, so
@@ -6973,7 +7072,10 @@ def cmd_record(args):
         # The one thing it does leave: proof the report was printed, so the stop gate stops
         # asking. Nothing reads this name but the gate, which is why it can exist without
         # putting the run into the half-adjudicated state the comment above refuses.
-        write_report_receipt(run_dir, normalized_verdicts)
+        write_report_receipt(
+            run_dir, normalized_verdicts,
+            bench_summary(run_dir, meta, normalized_verdicts)["severities"],
+        )
         emit_report(run_dir, meta, normalized_verdicts)
         return 0
     if worktree:

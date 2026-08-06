@@ -5265,6 +5265,39 @@ assert json.loads(subprocess.run(
     [sys.argv[1], "receipt", "--repo", str(stamp_repo)],
     check=True, capture_output=True, text=True, env=stamp_env,
 ).stdout)["confirmed"] == 3
+# The commit gate prices its next round off this same command rather than reaching into the state
+# directory it has no way to find: absent while the run is untriaged, which is the gate's "no
+# review has answered yet", and the report block's own tally once the triage is recorded.
+assert "reported" not in receipt_json, receipt_json
+gate_price_dir = stamp_store / "benches" / stamp_receipt["run_id"]
+gate_price_dir.mkdir(parents=True)
+rb.write_jsonl(gate_price_dir / "findings-sol-low.jsonl", [
+    {"file": "a.py", "line": 1, "severity": "P1", "summary": "one"},
+    {"file": "a.py", "line": 2, "severity": "P1", "summary": "two"},
+    {"file": "a.py", "line": 3, "severity": "P2", "summary": "three"},
+    {"file": "a.py", "line": 4, "severity": "P1", "summary": "not confirmed"},
+])
+gate_price_rows = [
+    {"rater": "sol-low", "idx": 0, "verdict": "confirmed"},
+    {"rater": "sol-low", "idx": 1, "verdict": "confirmed"},
+    {"rater": "sol-low", "idx": 2, "verdict": "confirmed"},
+    {"rater": "sol-low", "idx": 3, "verdict": "false_positive"},
+]
+rb.write_report_receipt(gate_price_dir, gate_price_rows, {"P1": 2, "P2": 1})
+assert json.loads(subprocess.run(
+    [sys.argv[1], "receipt", "--repo", str(stamp_repo)],
+    check=True, capture_output=True, text=True, env=stamp_env,
+).stdout)["reported"] == {"P1": 2, "P2": 1, "P3": 0}
+# And a findings file half-written by the run still holding it is a tally that cannot be computed,
+# never an exception out of the command every receipt reader shells out to.
+(gate_price_dir / "findings-sol-low.jsonl").write_bytes(b'{"file": "a.py\x00\xff not json\n')
+corrupt_receipt_proc = subprocess.run(
+    [sys.argv[1], "receipt", "--repo", str(stamp_repo)],
+    capture_output=True, text=True, env=stamp_env,
+)
+assert corrupt_receipt_proc.returncode == 0, corrupt_receipt_proc.stderr
+assert "reported" not in json.loads(corrupt_receipt_proc.stdout), corrupt_receipt_proc.stdout
+shutil.rmtree(gate_price_dir)
 assert subprocess.run(
     [sys.argv[1], "receipt", "--repo", str(pin_repo)],
     capture_output=True, text=True, env=dict(os.environ, WORKER_STATS_DIR=str(work / "empty-store")),
@@ -5552,6 +5585,31 @@ assert "recorded nothing; this run's stored state is unchanged" in \
     no_corpus_stdout.getvalue(), no_corpus_stdout.getvalue()
 assert no_corpus_stdout.getvalue().count(rb.REPORT_BEGIN) == 1
 assert not (no_corpus_dir / "verdicts.jsonl").exists(), "a verdict file was left behind"
+# The receipt carries the severity tally of exactly those verdicts — the same numbers the block
+# above printed — because with no verdict file left behind it is the only record that this run was
+# triaged at all, and the commit gate prices its next round on it.
+no_corpus_receipt = json.loads((no_corpus_dir / rb.REPORT_RECEIPT).read_text())
+assert no_corpus_receipt["confirmed_by_severity"] == {"P1": 1, "P2": 0, "P3": 0}, no_corpus_receipt
+assert no_corpus_receipt["confirmed"] == 1, no_corpus_receipt
+no_corpus_ref = {"run_id": "no-corpus-fixture", "commit": pin_sha}
+assert rb.reported_severities(no_corpus_ref) == {"P1": 1, "P2": 0, "P3": 0}
+# A run nobody triaged has priced nothing, and neither has one that does not exist.
+assert rb.reported_severities({"run_id": "no-such-run", "commit": pin_sha}) is None
+# Everything behind this is somebody else's file mid-write. A findings or verdict file that cannot
+# be parsed is a tally that cannot be computed, and the readers of a receipt have a commit to let
+# through: they must be told there is no tally, not handed an exception through `receipt`.
+(no_corpus_dir / "verdicts.jsonl").write_bytes(b'{"rater": "sol-med\x00\xff not json\n')
+assert rb.reported_severities(no_corpus_ref) is None
+# The stored verdicts are the freshest adjudication there is, and the report receipt beside them
+# is whatever an earlier round happened to print: a run re-adjudicated the durable way after a
+# `--no-corpus` report would otherwise price the gate's escalation on superseded counts forever.
+rb.write_jsonl(no_corpus_dir / "verdicts.jsonl", [
+    {"rater": "sol-medium", "idx": 0, "verdict": "false_positive"},
+    {"rater": "sol-medium", "idx": 1, "verdict": "confirmed"},
+])
+assert rb.reported_severities(no_corpus_ref) == {"P1": 0, "P2": 0, "P3": 1}
+(no_corpus_dir / "verdicts.jsonl").unlink()
+assert rb.reported_severities(no_corpus_ref) == {"P1": 1, "P2": 0, "P3": 0}
 # Handed-in rows go through the same schema filter as a file's: nothing stops a caller passing
 # raw triage notes, and an unfiltered row would be counted under a verdict that does not exist.
 assert rb.bench_summary(no_corpus_dir, json.loads(
@@ -5588,6 +5646,11 @@ rb.write_jsonl(recorded_no_corpus_dir / "findings-sol-medium.jsonl", [
 rb.write_jsonl(recorded_no_corpus_dir / "verdicts.jsonl", [
     {"rater": "sol-medium", "idx": 0, "verdict": "confirmed"},
 ])
+# A run adjudicated the durable way is as triaged as one reported with --no-corpus, and a receipt
+# written by an older build carries no tally at all: both are read back off the stored verdicts.
+assert rb.reported_severities(
+    {"run_id": "recorded-no-corpus-fixture", "commit": pin_sha}
+) == {"P1": 0, "P2": 1, "P3": 0}
 recorded_reviews = rb.read_jsonl(repeat_store / "worker-stats" / "reviews.jsonl")
 rb.write_jsonl(repeat_store / "worker-stats" / "reviews.jsonl", recorded_reviews + [
     {"run_id": "recorded-no-corpus-fixture", "rater": "sol-medium", "confirmed": 1},
@@ -7217,6 +7280,54 @@ for member in merged_members:
     # reads a solo worktree review's: an uncommitted tree, findings, and the base it sat on.
     merged_outcome = rb.review_outcome(pathlib.Path(member["repo"]), merged_receipt)
     assert merged_outcome == (True, 0, 1), (member["label"], merged_outcome)
+
+# One panel reads several repositories, and each of them holds a receipt naming that one run: the
+# confirmed P1s a member earned must price that member's commit and no other's, or repo A's gate
+# escalates on repo B's defects. In a store of its own — a run dropped into the live merged state
+# would answer the triage-owed lookups made further down instead of the run they are about.
+merged_tally_state = work / "merged-tally-state"
+merged_tally_dir = merged_tally_state / "benches" / "merged-tally"
+merged_tally_dir.mkdir(parents=True)
+(merged_tally_dir / "meta.json").write_text(json.dumps({
+    "run_id": "merged-tally", "worktree": True, "tier": "T1",
+    "raters": ["sol-medium-bare"], "completed_raters": ["sol-medium-bare"],
+    "rater_runs": [{"rater": "sol-medium-bare", "exit_code": 0, "findings": 3}],
+    "repos": [dict(member) for member in merged_members],
+}) + "\n")
+rb.write_jsonl(merged_tally_dir / "findings-sol-medium-bare.jsonl", [
+    {"file": "producer/rates.json", "line": 1, "severity": "P2", "summary": "producer only"},
+    {"file": "consumer/read.sh", "line": 1, "severity": "P1", "summary": "consumer one"},
+    {"file": "consumer/read.sh", "line": 2, "severity": "P1", "summary": "consumer two"},
+])
+merged_tally_verdicts = [
+    {"rater": "sol-medium-bare", "idx": index, "verdict": "confirmed"} for index in range(3)
+]
+merged_tally_saved = os.environ.get("WORKER_STATS_DIR")
+os.environ["WORKER_STATS_DIR"] = str(merged_tally_state)
+try:
+    for merged_tally_source in ("verdicts", "report receipt"):
+        if merged_tally_source == "verdicts":
+            rb.write_jsonl(merged_tally_dir / "verdicts.jsonl", merged_tally_verdicts)
+        else:
+            # The --no-corpus path stores no verdicts, so the rows it reported are all a member
+            # has to be counted out of the panel's findings by.
+            (merged_tally_dir / "verdicts.jsonl").unlink()
+            rb.write_report_receipt(merged_tally_dir, merged_tally_verdicts, {"P1": 2, "P2": 1})
+        merged_tally = {
+            member["label"]: rb.reported_severities(
+                {"run_id": "merged-tally", "commit": member["commit"]}
+            )
+            for member in merged_members
+        }
+        assert merged_tally["producer"] == {"P1": 0, "P2": 1, "P3": 0}, \
+            (merged_tally_source, merged_tally)
+        assert merged_tally["consumer"] == {"P1": 2, "P2": 0, "P3": 0}, \
+            (merged_tally_source, merged_tally)
+finally:
+    if merged_tally_saved is None:
+        os.environ.pop("WORKER_STATS_DIR", None)
+    else:
+        os.environ["WORKER_STATS_DIR"] = merged_tally_saved
 # One document per repository while the run is in flight, or the review is invisible in every
 # surface but one repository's.
 assert merged_seen["progress"] == [
@@ -8763,6 +8874,19 @@ if test -x "$GATE_HOOK"; then
   gate_hook_loop="$(printf '%s' "$(jq -nc --arg cwd "$GATE_REPO" '{stop_hook_active:true,cwd:$cwd}')" \
     | PATH="$ROOT/bin:$PATH" WORKER_STATS_DIR="$GATE_HOOK_SD" "$GATE_HOOK")"
   assert test -z "$gate_hook_loop"
+  # The hook hands its own session id to the tool, so a run another chat launched neither blocks
+  # this chat's stop nor spends the run's asks here — while the launching chat is still blocked.
+  GATE_HOOK_SESS_SD="$WORK/gate-hook-session"
+  GATE_SD="$GATE_HOOK_SESS_SD" GATE_SESSION=hook-theirs gate_run 20260731T080000Z-gatehooksess 0 0
+  gate_hook_foreign="$(printf '%s' "$(jq -nc --arg cwd "$GATE_REPO" \
+    '{stop_hook_active:false,cwd:$cwd,session_id:"hook-mine"}')" \
+    | PATH="$ROOT/bin:$PATH" WORKER_STATS_DIR="$GATE_HOOK_SESS_SD" "$GATE_HOOK")"
+  assert test -z "$gate_hook_foreign"
+  assert test ! -e "$GATE_HOOK_SESS_SD/benches/20260731T080000Z-gatehooksess/report-nudged"
+  gate_hook_owner="$(printf '%s' "$(jq -nc --arg cwd "$GATE_REPO" \
+    '{stop_hook_active:false,cwd:$cwd,session_id:"hook-theirs"}')" \
+    | PATH="$ROOT/bin:$PATH" WORKER_STATS_DIR="$GATE_HOOK_SESS_SD" "$GATE_HOOK")"
+  assert test "$(jq -r '.decision' <<<"$gate_hook_owner")" = "block"
 else
   printf 'SKIP: review report gate behavior (%s is unavailable)\n' "$GATE_HOOK"
 fi
@@ -8794,4 +8918,4 @@ else
   printf 'SKIP: review report hook behavior (%s is unavailable)\n' "$REPORT_HOOK"
 fi
 
-printf 'PASS: %s assertions; canonical review tiers sharing one OpenCode/Gemini floor with no retired cell in them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative suggestions with missing-object fallback, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account schedulable only as the pool'"'"'s reserve and never as a roster tail, and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, carried from there into the corpus row, the report header and a receipt of the lens'"'"'s own while every lens row stays out of the canonical defect list, the frontier denominators, the composition corpus and the default leaderboard, worktree runs narrowed to named paths whose snapshot holds only those paths, is deterministic per path set, spelled against the directory the caller stands in and lexically canonicalized so a `..` can neither walk out of the repository nor split one file into two scopes, carries its scope as commit trailers a failed read refuses rather than widens, so a rerun by sha stays inside it, refuses a commitish, a pathspec matching nothing and a scope holding no change — the refusal before any snapshot object is written — and writes only a receipt of its own — leaving the repository'"'"'s receipt untouched byte for byte, the suggest baseline whole and the stamp hook with nothing to read, a lens narrowed by the same paths naming a combined receipt of its own that leaves the plain, pure-lens and pure-scope receipts byte for byte and survives a rerun by sha with both selectors intact, a day-one repository reviewed end to end — its root commit sealed and cloned, given a deterministic empty base commit inside that clone so the vendor skill diffs its whole content, measured in lines and paths against the empty tree rather than as an unmeasurable diff, so a correction inside it prices as follow-up, and closed by the real stamp hook in both shapes while never-reviewed code riding along still refuses it, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask, the lookup scoped to the repository so another chat cannot answer for it, and both review hooks keyed so exactly one fires, and a merged review of several repositories read by one panel out of a single workspace holding each repository under its own prefix — deterministic, self-contained once built and pruned with the run it belongs to — whose findings and adjudication handoff name the repository each belongs to, whose scopes and progress are per repository, and which stamps EVERY repository it read with that repository'"'"'s own receipt so none of their commit gates blocks on a review that covered it, while refusing a commitish, a repository named twice, a clean tree, a missing repository and its own workspace as a tree to seal\n' "$asserts"
+printf 'PASS: %s assertions; canonical review tiers sharing one OpenCode/Gemini floor with no retired cell in them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative suggestions with missing-object fallback, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account schedulable only as the pool'"'"'s reserve and never as a roster tail, and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, carried from there into the corpus row, the report header and a receipt of the lens'"'"'s own while every lens row stays out of the canonical defect list, the frontier denominators, the composition corpus and the default leaderboard, worktree runs narrowed to named paths whose snapshot holds only those paths, is deterministic per path set, spelled against the directory the caller stands in and lexically canonicalized so a `..` can neither walk out of the repository nor split one file into two scopes, carries its scope as commit trailers a failed read refuses rather than widens, so a rerun by sha stays inside it, refuses a commitish, a pathspec matching nothing and a scope holding no change — the refusal before any snapshot object is written — and writes only a receipt of its own — leaving the repository'"'"'s receipt untouched byte for byte, the suggest baseline whole and the stamp hook with nothing to read, a lens narrowed by the same paths naming a combined receipt of its own that leaves the plain, pure-lens and pure-scope receipts byte for byte and survives a rerun by sha with both selectors intact, a day-one repository reviewed end to end — its root commit sealed and cloned, given a deterministic empty base commit inside that clone so the vendor skill diffs its whole content, measured in lines and paths against the empty tree rather than as an unmeasurable diff, so a correction inside it prices as follow-up, and closed by the real stamp hook in both shapes while never-reviewed code riding along still refuses it, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask, the lookup scoped to the repository so another chat cannot answer for it, both review hooks keyed so exactly one fires, and that receipt carrying the confirmed-severity tally of the very verdicts it reported — recomputed from stored verdicts where a run was adjudicated the durable way, absent where nobody triaged it, and printed on the repository receipt the commit gate prices its next round on — taken from the stored verdicts wherever a run has them so a re-adjudication cannot be priced on superseded counts, scoped to the member a merged panel'"'"'s receipt belongs to so one repository never escalates on another'"'"'s defects, and answered as no tally at all rather than as an exception when the files behind it cannot be read, and a merged review of several repositories read by one panel out of a single workspace holding each repository under its own prefix — deterministic, self-contained once built and pruned with the run it belongs to — whose findings and adjudication handoff name the repository each belongs to, whose scopes and progress are per repository, and which stamps EVERY repository it read with that repository'"'"'s own receipt so none of their commit gates blocks on a review that covered it, while refusing a commitish, a repository named twice, a clean tree, a missing repository and its own workspace as a tree to seal\n' "$asserts"
