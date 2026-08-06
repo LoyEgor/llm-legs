@@ -68,6 +68,13 @@ instruction_read_rate() {
   esac
 }
 
+# The global CLAUDE.md's own byte ceiling, in UTF-8 bytes of the prospective file. Not a price but
+# a wall: that one file rides in every session of every project, so past this size growing it is
+# refused outright rather than costed. Only growth is measured against it — an edit that shrinks an
+# already-oversized file is the way back down and passes at any size.
+INSTRUCTION_GLOBAL_HARD_BYTES=33000
+INSTRUCTION_GLOBAL_WARN_BYTES=30000
+
 # The same rate over the local index's own 30-day window instead of a frozen month, when tokenmap
 # has an answer for this file. Nothing printed means the caller keeps the constant above:
 # an export that is missing, malformed, or past its window is not a better number than the frozen

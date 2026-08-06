@@ -731,6 +731,139 @@ assert_contains "~15682 full-read" "$(price live-f "$CLAUDE_MD")"
 # Every later section is about the constants, so the export stops being in effect here.
 unset TOKENMAP_RATES
 
+echo "== bloat gate: every guarded instruction file is English-only"
+# Absorbed from the standalone global-CLAUDE.md guard, which asked this of one file. The whole
+# guarded set answers to it now, and «...» stays the one way Russian is written in these files.
+CYR_STAMPS="$HOME/.cache/bloat-cyr"
+mkdir -p "$WORK/memproj/memory"
+printf 'index\n' > "$WORK/memproj/memory/MEMORY.md"
+cyr() {
+  jq -cn --arg p "$1" --arg n "$2" --arg s "cyr-$3" --arg tool "${4:-Edit}" '
+    {tool_name:$tool, cwd:"/tmp", session_id:$s,
+     tool_input: (if $tool == "Write" then {file_path:$p, content:$n}
+                  else {file_path:$p, old_string:"x", new_string:$n} end)}' \
+    | INSTRUCTION_BLOAT_GATE_STAMPS="$CYR_STAMPS" bash "$BLOAT"
+}
+cyr_decision() {
+  local out
+  out=$(cyr "$@")
+  [ -n "$out" ] || { printf 'pass\n'; return 0; }
+  printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "pass"' 2>/dev/null
+}
+RU='Правило про воркеров'
+assert_contains "English-only" \
+  "$(cyr "$CLAUDE_MD" "$RU" global | jq -r '.hookSpecificOutput.permissionDecisionReason')"
+assert_eq deny "$(cyr_decision "$WORK/memproj/memory/MEMORY.md" "$RU" memory)"
+assert_eq deny "$(cyr_decision "$REPO/CLAUDE.md" "$RU" project)"
+assert_eq deny "$(cyr_decision "$REPO_DOCS/review-tiers.md" "$RU" doc)"
+assert_eq deny "$(cyr_decision "$HOME/.claude/skills/demo/SKILL.md" "$RU" skill)"
+assert_eq deny "$(cyr_decision "$CLAUDE_MD" "$RU" write Write)"
+# The quoted trigger phrase is the documented escape, and it is the only reason one of these files
+# would carry Cyrillic at all.
+assert_eq pass "$(cyr_decision "$CLAUDE_MD" 'Trigger on «проверь комментарии» only' quoted)"
+assert_eq pass "$(cyr_decision "$CLAUDE_MD" 'plain english line' ascii)"
+assert_eq pass "$(cyr_decision "$WORK/ordinary.md" "$RU" unguarded)"
+# Nothing about the language depends on a price, so a rate lookup that answers nothing must not
+# switch the rule off.
+assert_eq deny \
+  "$(TOKENMAP_RATES=/dev/null/nope cyr_decision "$CLAUDE_MD" "$RU" no-rates)"
+# It is asked before any byte arithmetic: an edit that shrinks the file is still English-only.
+assert_contains "English-only" \
+  "$(jq -cn --arg p "$CLAUDE_MD" --arg n "$RU" \
+       '{tool_name:"Edit",cwd:"/tmp",session_id:"cyr-shrink",
+         tool_input:{file_path:$p,old_string:"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",new_string:$n}}' \
+     | INSTRUCTION_BLOAT_GATE_STAMPS="$CYR_STAMPS" bash "$BLOAT" \
+     | jq -r '.hookSpecificOutput.permissionDecisionReason')"
+
+echo "== bloat gate: the global file's byte ceiling stands outside the retry ritual"
+# The one always-on file has a size past which growth is refused rather than priced, and the
+# audit-then-retry stamp must not be a way through it.
+CEIL_STAMPS="$HOME/.cache/bloat-ceiling"
+ceil() {
+  jq -cn --arg p "$1" --arg o "$2" --arg n "$3" --arg s "ceil-$4" --arg t "$TRANSCRIPT" \
+    '{tool_name:"Edit",cwd:"/tmp",session_id:$s,transcript_path:$t,
+      tool_input:{file_path:$p,old_string:$o,new_string:$n}}' \
+    | INSTRUCTION_BLOAT_GATE_STAMPS="$CEIL_STAMPS" bash "$BLOAT"
+}
+ceil_decision() {
+  local out
+  out=$(ceil "$@")
+  [ -n "$out" ] || { printf 'pass\n'; return 0; }
+  printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "pass"' 2>/dev/null
+}
+ceil_reason() { ceil "$@" | jq -r '.hookSpecificOutput.permissionDecisionReason // ""'; }
+grow200=$(python3 -c 'print("z"*201, end="")')
+
+rm -rf "$CEIL_STAMPS"
+python3 -c 'print("g"*32899)' > "$REAL_MD"
+assert_eq 32900 "$(wc -c <"$REAL_MD" | tr -d '[:space:]')"
+assert_contains "past its 33000-byte ceiling" "$(ceil_reason "$CLAUDE_MD" x "$grow200" hard)"
+# The stamp ritual never gets a say: the identical edit is denied again after a full re-read, which
+# is exactly what would have passed it for ordinary growth.
+append_read "$CLAUDE_MD"
+age_stamps "$CEIL_STAMPS"
+assert_contains "past its 33000-byte ceiling" "$(ceil_reason "$CLAUDE_MD" x "$grow200" hard)"
+append_read "$CLAUDE_MD"
+age_stamps "$CEIL_STAMPS"
+assert_eq deny "$(ceil_decision "$CLAUDE_MD" x "$grow200" hard)"
+# Identity, not spelling: the profile symlink and the repo path are the same file.
+assert_eq deny "$(ceil_decision "$HOME/.claude-profiles/com/CLAUDE.md" x "$grow200" hard-profile)"
+assert_eq deny "$(ceil_decision "$REAL_MD" x "$grow200" hard-repo)"
+# A Write is sized by the content it would leave behind.
+assert_contains "past its 33000-byte ceiling" \
+  "$(jq -cn --arg p "$CLAUDE_MD" --arg n "$(python3 -c 'print("g"*34000, end="")')" \
+       '{tool_name:"Write",cwd:"/tmp",session_id:"ceil-write",tool_input:{file_path:$p,content:$n}}' \
+     | INSTRUCTION_BLOAT_GATE_STAMPS="$CEIL_STAMPS" bash "$BLOAT" \
+     | jq -r '.hookSpecificOutput.permissionDecisionReason')"
+
+echo "== bloat gate: shrinking an oversized global file is the way back down, not a violation"
+# The cap is direction-aware. A gate that denied 34000 -> 33500 would leave the only edit that fixes
+# the problem as the one it refuses.
+python3 -c 'print("g"*33999)' > "$REAL_MD"
+assert_eq "" "$(ceil "$CLAUDE_MD" "$grow200" x shrink)"
+assert_eq pass "$(ceil_decision "$CLAUDE_MD" "$grow200" x shrink)"
+
+echo "== bloat gate: the ceiling is not gated by the growth threshold"
+# A byte over the cap is over the cap; the threshold below which growth goes unpriced says nothing
+# about the size the file would reach.
+python3 -c 'print("g"*32998)' > "$REAL_MD"
+assert_eq 32999 "$(wc -c <"$REAL_MD" | tr -d '[:space:]')"
+assert_eq deny "$(ceil_decision "$CLAUDE_MD" x xyz tiny-over)"
+# Landing exactly on the cap is not past it — it is only worth a warning.
+exact_out=$(ceil "$CLAUDE_MD" x xy tiny-exact)
+assert_eq "" "$(printf '%s' "$exact_out" | jq -r '.hookSpecificOutput.permissionDecision // ""')"
+assert_contains "would be 33000 bytes" \
+  "$(printf '%s' "$exact_out" | jq -r '.hookSpecificOutput.additionalContext // ""')"
+
+echo "== bloat gate: between the two bounds the warning rides along with the ordinary pricing"
+rm -rf "$CEIL_STAMPS"
+python3 -c 'print("g"*29899)' > "$REAL_MD"
+msg=$(ceil_reason "$CLAUDE_MD" x "$big" warn-flow)
+assert_contains "tokens/month" "$msg"
+assert_contains "would be 30299 bytes" "$msg"
+append_read "$CLAUDE_MD"
+age_stamps "$CEIL_STAMPS"
+warn_out=$(ceil "$CLAUDE_MD" x "$big" warn-flow)
+assert_eq "" "$(printf '%s' "$warn_out" | jq -r '.hookSpecificOutput.permissionDecision // ""')"
+assert_contains "would be 30299 bytes" \
+  "$(printf '%s' "$warn_out" | jq -r '.hookSpecificOutput.additionalContext // ""')"
+# Under the warning bound the size is nobody's business, so the ordinary denial says nothing about it.
+python3 -c 'print("g"*999)' > "$REAL_MD"
+rm -rf "$CEIL_STAMPS"
+case "$(ceil_reason "$CLAUDE_MD" x "$big" quiet)" in
+  *"would be"*) fail "a small global file was warned about its size" ;;
+esac
+
+echo "== bloat gate: the ceiling belongs to the global file alone"
+# Every other guarded file is priced, however large it is: only the global one rides in every
+# session of every project.
+mkdir -p "$WORK/bigproj"
+python3 -c 'print("g"*39999)' > "$WORK/bigproj/CLAUDE.md"
+msg=$(ceil_reason "$WORK/bigproj/CLAUDE.md" x "$big" other-file)
+assert_contains "tokens/month" "$msg"
+case "$msg" in *ceiling*) fail "a project file was held to the global file's ceiling" ;; esac
+printf 'global rules\n' > "$REAL_MD"
+
 echo "== tripwire: the bytes from before the change are kept, and they restore the file"
 # The original content, so the sections after this one still measure their own deltas.
 printf 'global rules\n' > "$REAL_MD"

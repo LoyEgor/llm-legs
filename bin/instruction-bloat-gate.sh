@@ -20,9 +20,21 @@ for _ in 1 2 3 4 5; do
 done
 . "$(dirname "$self")/../share/instruction-files.sh" 2>/dev/null || exit 0
 
+# A size warning about the global file is not a decision of its own: the edit may still be priced,
+# denied and retried, so the note rides along with whatever this gate ends up saying.
+ceiling_note=''
+
 deny() {
-  jq -cn --arg r "$1" \
+  local reason=$1
+  [ -n "$ceiling_note" ] && reason="$reason $ceiling_note"
+  jq -cn --arg r "$reason" \
     '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}' 2>/dev/null || true
+  exit 0
+}
+
+pass() {
+  [ -n "$ceiling_note" ] && jq -cn --arg c "$ceiling_note" \
+    '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$c}}' 2>/dev/null
   exit 0
 }
 
@@ -81,26 +93,19 @@ else
       ;;
   esac
 fi
-# The rate the local index measured over the last 30 days is asked first, and the constants are
-# what is left when it has no answer. The global file is looked up under its canonical name: the
-# profile symlinks are the same file, and that name is the only one they share.
+# Which class the file belongs to is settled from its name alone, before any rate is asked for: the
+# English-only rule and the global file's ceiling are not prices, and neither may lapse because the
+# local index happens to have no figure for this file today.
 if [ -n "$global" ]; then
-  reads=$(instruction_live_rate "$GLOBAL_CLAUDE" "$HOME")
+  class_reads=15682
 else
-  reads=$(instruction_live_rate "$file_path" "$HOME")
-fi
-if [ -n "$reads" ]; then
-  live=1
-elif [ -n "$global" ]; then
-  reads=15682
-else
-  reads=$(instruction_read_rate "$file_path" "$HOME")
+  class_reads=$(instruction_read_rate "$file_path" "$HOME")
 fi
 # ~/.claude/docs and ~/.claude/agents are symlinks into the config repository, so the same file
 # has a second absolute path that matches none of the patterns above — and that repository path
 # is the one anybody editing the repo actually types. Resolving the directory (not the file:
 # a Write may be creating it) is what closes that.
-if [ -z "$reads" ]; then
+if [ -z "$class_reads" ]; then
   case "$file_path" in
     *.md)
       # A Write creates the file, and may be creating its directory too, so the walk goes up to
@@ -117,13 +122,39 @@ if [ -z "$reads" ]; then
         for pair in docs:160 agents:2500 instructions:160 skills:90; do
           guarded=$(CDPATH= cd -- "$HOME/.claude/${pair%%:*}" 2>/dev/null && pwd -P) || continue
           [ -n "$guarded" ] || continue
-          case "$file_dir" in "$guarded"|"$guarded"/*) reads=${pair##*:}; break ;; esac
+          case "$file_dir" in "$guarded"|"$guarded"/*) class_reads=${pair##*:}; break ;; esac
         done
       fi
       ;;
   esac
 fi
-[ -n "$reads" ] || exit 0
+[ -n "$class_reads" ] || exit 0
+
+# Every guarded instruction file is English-only. Russian survives only inside «...», which is how a
+# verbatim user phrase — a trigger word Egor actually types — is marked, and the only reason one of
+# these files would carry Cyrillic at all.
+cyrillic=$(jq -r '
+  (if .tool_name == "Edit" then .tool_input.new_string else .tool_input.content end)
+  | if type == "string" then gsub("«[^»]*»"; "") else "" end
+  | if test("[А-Яа-яЁё]") then "yes" else "no" end
+' "$input_file" 2>/dev/null) || cyrillic=''
+if [ "$cyrillic" = "yes" ]; then
+  deny "${file_path} is English-only. Russian is allowed only inside «...»-quoted verbatim user phrases."
+fi
+
+# The rate the local index measured over the last 30 days is asked first, and the class constant is
+# what is left when it has no answer. The global file is looked up under its canonical name: the
+# profile symlinks are the same file, and that name is the only one they share.
+if [ -n "$global" ]; then
+  reads=$(instruction_live_rate "$GLOBAL_CLAUDE" "$HOME")
+else
+  reads=$(instruction_live_rate "$file_path" "$HOME")
+fi
+if [ -n "$reads" ]; then
+  live=1
+else
+  reads=$class_reads
+fi
 
 # All sizes in UTF-8 bytes via files + wc -c; jq's `length` counts codepoints
 # and silently understates multibyte (Cyrillic) growth against the threshold.
@@ -156,7 +187,23 @@ else
   fi
 fi
 
-[ "$delta" -gt "$THRESHOLD_BYTES" ] 2>/dev/null || exit 0
+# The global file's ceiling, checked before the retry stamp is ever consulted: the audit-then-retry
+# ritual below is a speed bump for ordinary growth, and it must not be a way past a hard cap.
+if [ -n "$global" ] && [ "$delta" -gt 0 ] 2>/dev/null; then
+  current_bytes=0
+  [ -f "$file_path" ] && current_bytes=$(wc -c <"$file_path" | tr -d '[:space:]')
+  case "$current_bytes" in ''|*[!0-9]*) current_bytes=0 ;; esac
+  prospective=$((current_bytes + delta))
+  bound="Keep it bounded: put new detail in an on-demand instruction document and leave only a pointer in global CLAUDE.md."
+  if [ "$prospective" -gt "$INSTRUCTION_GLOBAL_HARD_BYTES" ] 2>/dev/null; then
+    deny "Global CLAUDE.md would be ${prospective} bytes, past its ${INSTRUCTION_GLOBAL_HARD_BYTES}-byte ceiling. ${bound} An edit that shrinks the file passes at any size; this one grows it."
+  fi
+  if [ "$prospective" -gt "$INSTRUCTION_GLOBAL_WARN_BYTES" ] 2>/dev/null; then
+    ceiling_note="Global CLAUDE.md would be ${prospective} bytes. ${bound}"
+  fi
+fi
+
+[ "$delta" -gt "$THRESHOLD_BYTES" ] 2>/dev/null || pass
 
 # The session is part of the key, exactly as it is in the write gate: approval Egor gave in one
 # chat is not approval a parallel or later one inherits for the same edit.
@@ -215,7 +262,7 @@ SEEN
 if instruction_stamp_ready "$STAMP_DIR" "$hash"; then
   if retry_read_seen; then
     rm -f "$note" 2>/dev/null
-    instruction_stamp_consume "$STAMP_DIR" "$hash" && exit 0
+    instruction_stamp_consume "$STAMP_DIR" "$hash" && pass
   else
     deny "Gate retry requires re-reading the file first: Read ${file_path} in full, then retry the same edit — it will pass."
   fi
