@@ -320,7 +320,7 @@ supervise() {
 start_run() {
   [ "$#" -ge 1 ] || usage
   local vendor="$1" brief='' workdir="$PWD" explicit_account='' model='' effort='' resume=''
-  local account picker busy pick_output pick_rc pin config_model model_label agy_model='' root epoch suffix run_id directory
+  local account picker busy pick_output pick_rc pick_errors pick_reserve=false pin config_model model_label agy_model='' root epoch suffix run_id directory
   local explicit_model='' explicit_effort=''
   local started cli cmd_json add_dirs_json images_json pid supervisor_body value list_output list_rc
   local web_search=false
@@ -378,21 +378,29 @@ start_run() {
     account="$explicit_account"
   else
     picker="${WORKER_RUN_WORKER_PICK:-worker-pick}"
+    # The picker says on stderr when its answer is the session account held in reserve, and
+    # dropping that note would launch a worker on the live chat's own quota silently. Each
+    # redirect truncates the file, so only the pick actually used is reported.
+    pick_errors=$(mktemp "${TMPDIR:-/tmp}/worker-run-pick.XXXXXX") ||
+      fail 'could not create a temporary file for the account query'
     busy=$(busy_accounts "$vendor")
     if [ -n "$busy" ]; then
-      pick_output=$("$picker" --account "$vendor" --exclude "$busy" 2>/dev/null)
+      pick_output=$("$picker" --account "$vendor" --exclude "$busy" 2>"$pick_errors")
       pick_rc=$?
       # rc 3 with exclusions means "everything ELSE is walled", not walled: fall
       # through and let the plain pick queue on a busy account rather than lie
       # about limits.
       if [ "$pick_rc" -ne 0 ] || [ -z "$pick_output" ]; then
-        pick_output=$("$picker" --account "$vendor" 2>/dev/null)
+        pick_output=$("$picker" --account "$vendor" 2>"$pick_errors")
         pick_rc=$?
       fi
     else
-      pick_output=$("$picker" --account "$vendor" 2>/dev/null)
+      pick_output=$("$picker" --account "$vendor" 2>"$pick_errors")
       pick_rc=$?
     fi
+    [ ! -s "$pick_errors" ] || cat "$pick_errors" >&2
+    ! grep -Fq 'SESSION RESERVE' "$pick_errors" || pick_reserve=true
+    rm -f "$pick_errors"
     if [ "$pick_rc" -eq 0 ] && [ -n "$pick_output" ]; then
       account=${pick_output%%$'\n'*}
     elif [ "$pick_rc" -eq 3 ]; then
@@ -518,6 +526,8 @@ start_run() {
     --argjson add_dirs "$add_dirs_json" --argjson images "$images_json" --argjson web_search "$web_search" \
     '{vendor:$vendor,account:$account,model:$model,effort:$effort,workdir:$workdir,pid:$pid,cmd:$cmd,started_at:$started_at,resume:$resume,cli:$cli,add_dirs:$add_dirs,images:$images,web_search:$web_search,explicit_model:$explicit_model,explicit_effort:$explicit_effort}
      + if $vendor == "gemini" then {agy_model:$agy_model} else {} end' >"$directory/meta.json" || fail 'could not write metadata'
+  [ "$pick_reserve" != true ] || meta_update "$directory" '.session_reserve = true' ||
+    fail 'could not record the session-reserve note'
 
   supervisor_body='ticks=0
 while [ ! -e "$2/.ready" ]; do
@@ -695,7 +705,8 @@ report_run() {
   [ -d "$directory" ] && [ -r "$directory/meta.json" ] || fail "unknown run: $1"
   vendor=$(jq -r '.vendor' "$directory/meta.json")
   account=$(jq -r '.account' "$directory/meta.json")
-  printf 'ACCOUNT: %s (%s)\n' "$account" "$vendor"
+  printf 'ACCOUNT: %s (%s)%s\n' "$account" "$vendor" \
+    "$(jq -r 'if .session_reserve == true then " SESSION RESERVE" else "" end' "$directory/meta.json")"
   if [ -f "$directory/exit_code" ]; then
     code=$(tr -d '[:space:]' <"$directory/exit_code")
     [[ "$code" =~ ^[0-9]+$ ]] || code=unknown

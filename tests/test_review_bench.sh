@@ -1695,63 +1695,100 @@ for invalid, message in (
     else:
         raise AssertionError(f"accepted invalid rater: {invalid}")
 
-pick = rb.parse_affordability("""NEXT: claudeb worker · opus · high — ACCOUNT: worker; pre-reset cap 22%  |  codex cx · medium — FRESH
-codex: cx 10% runway 80%
-gemini: main 25% runway 75% (5h→?, wk→?)
-claude: worker($100) 5h 10% wk 20% fb 30% score 90 cap 22% | session($100)* 5h 0% wk 0% fb 0% score 100 cap 90% | low($20) 5h 85% wk 20% fb 20% score 10 cap 5%
-""")
+# Affordability is the pool's answer rather than a reading of its table: one machine query per
+# vendor, and a side is affordable exactly when worker-pick names an account for it.
+previous_pick = os.environ.get("REVIEW_BENCH_WORKER_PICK_BIN")
+os.environ["REVIEW_BENCH_WORKER_PICK_BIN"] = str(fixtures / "fake-worker-pick.sh")
+os.environ["WORKER_PICK_FAKE_ACCOUNTS"] = "worker session"
+os.environ["WORKER_PICK_FAKE_SESSION"] = "session"
+pick = rb.affordability()
 assert pick["codex"] is True
 assert pick["agy"] is True
 assert pick["opencode"] is True
 assert pick["claude"] is True
 assert pick["claude_account"] == "worker"
-assert pick["session_account"] == "session"
-assert "accounts" not in pick
+# docs/routing-contract.md leaves the bench no thresholds and no table of its own, so neither
+# a cap nor the pool's prose may come back out of here for something else to key on.
+assert "claude_cap" not in pick and "worker_pick" not in pick, pick
 
-# The session account has the best score and the most headroom in that fixture and is still
-# refused, because a bench must not quietly spend the quota the user is talking to. The
-# override exists for a measurement the user asked to run there, and only then.
-session_pick_text = """NEXT: claudeb (rotating) — no eligible account
-codex: unavailable
-gemini: login needed
-claude: session($100)* 5h 0% wk 8% fb 0% score 100 cap 82%
-"""
-assert rb.parse_affordability(session_pick_text)["claude"] is False
-os.environ["REVIEW_BENCH_ALLOW_SESSION_ACCOUNT"] = "1"
-allowed = rb.parse_affordability(session_pick_text)
-assert allowed["claude"] is True
-assert allowed["claude_account"] == "session"
-os.environ["REVIEW_BENCH_ALLOW_SESSION_ACCOUNT"] = "0"
-assert rb.parse_affordability(session_pick_text)["claude"] is False
-del os.environ["REVIEW_BENCH_ALLOW_SESSION_ACCOUNT"]
+walled_pick = work / "walled-worker-pick.sh"
+walled_pick.write_text("#!/bin/sh\necho 'worker-pick: no selectable account' >&2\nexit 3\n")
+walled_pick.chmod(0o755)
+os.environ["REVIEW_BENCH_WORKER_PICK_BIN"] = str(walled_pick)
+walled_available = rb.affordability()
+assert walled_available["claude"] is False, walled_available
+assert walled_available["codex"] is False and walled_available["agy"] is False
+assert walled_available["claude_account"] is None
+# The sides the pool does not route are unaffected: a walled vendor is not a walled bench.
+assert walled_available["opencode"] is True and walled_available["grok"] is True
 
-# The permission to use the session account is not a permission to ignore the floor: when the
-# parse says the side is unaffordable, no account may be handed out on its strength.
-floored_pick = work / "floored-worker-pick.sh"
-floored_pick.write_text(
+# Each vendor is asked for itself: a vendor with nothing selectable must not read as available
+# on another vendor's answer, which is how a fully walled Gemini used to pass for affordable.
+split_pick = work / "split-worker-pick.sh"
+split_pick.write_text(
     "#!/bin/sh\n"
-    'if [ "$1" = "--account" ]; then echo stub-pool; exit 0; fi\n'
-    "cat <<'OUT'\n"
-    "NEXT: claudeb (rotating) — ALL FLOORED\n"
-    "codex: unavailable\n"
-    "gemini: login needed\n"
-    "claude: session($100)* 5h 0% wk 8% fb 0% score 85 cap 82%\n"
-    "OUT\n"
+    '[ "$1" = "--account" ] || exit 2\n'
+    'if [ "$2" = codex ]; then echo cx; exit 0; fi\n'
+    "echo 'worker-pick: no selectable account' >&2\n"
+    "exit 3\n"
 )
-floored_pick.chmod(0o755)
-previous_pick = os.environ.get("REVIEW_BENCH_WORKER_PICK_BIN")
-os.environ["REVIEW_BENCH_WORKER_PICK_BIN"] = str(floored_pick)
-os.environ["REVIEW_BENCH_ALLOW_SESSION_ACCOUNT"] = "1"
-rb._PERMITTED_CLAUDE.clear()
-assert rb.permitted_claude_account() is None
-# Read once per process: a rater retrying after a wall must not re-run the pool for an answer
-# the run already has.
-assert rb.permitted_claude_account() is None
-assert rb._PERMITTED_CLAUDE == [None], rb._PERMITTED_CLAUDE
-# With the side unaffordable the decision falls back to the pool, which owns selection.
-assert rb.pool_account("claude", set()) == "stub-pool"
-rb._PERMITTED_CLAUDE.clear()
-del os.environ["REVIEW_BENCH_ALLOW_SESSION_ACCOUNT"]
+split_pick.chmod(0o755)
+os.environ["REVIEW_BENCH_WORKER_PICK_BIN"] = str(split_pick)
+mixed_available = rb.affordability()
+assert mixed_available["codex"] is True, mixed_available
+assert mixed_available["agy"] is False, mixed_available
+assert mixed_available["claude"] is False, mixed_available
+
+# The session account is the pool's reserve, offered only once nothing else is selectable. The
+# pool toggle is the only gate, so it may staff a side that has nothing else — but a roster it
+# joined at the tail would hand it ordinary cells beside accounts that are not the reserve.
+os.environ["REVIEW_BENCH_WORKER_PICK_BIN"] = str(fixtures / "fake-worker-pick.sh")
+os.environ["WORKER_PICK_FAKE_ACCOUNTS"] = "s1 s2 session"
+rb._SIDE_ROSTER.clear()
+assert rb.side_roster("claude", frozenset()) == ["s1", "s2"], rb.side_roster("claude", frozenset())
+rb._SIDE_ROSTER.clear()
+assert rb.side_roster("claude", frozenset({"s1", "s2"})) == ["session"]
+rb._SIDE_ROSTER.clear()
+assert [rb.pool_account("claude", set(), slot) for slot in range(3)] == ["s1", "s2", "s1"]
+os.environ["REVIEW_BENCH_EXCLUDE_CLAUDE"] = "s1,s2"
+rb._SIDE_ROSTER.clear()
+assert rb.pool_account("claude", set()) == "session"
+del os.environ["REVIEW_BENCH_EXCLUDE_CLAUDE"]
+rb._SIDE_ROSTER.clear()
+
+# Only claudeb has a session account, so only claudeb can answer with the reserve: a fixture
+# marking every vendor would test Gemini and Codex against behaviour the pool never produces.
+os.environ["WORKER_PICK_FAKE_ACCOUNTS"] = "session"
+assert rb.worker_pick_answer("claude", ()) == ("session", True)
+assert rb.worker_pick_answer("agy", ()) == ("session", False)
+assert rb.worker_pick_answer("codex", ()) == ("session", False)
+del os.environ["WORKER_PICK_FAKE_SESSION"]
+
+# Fable bills a bucket of its own, so a fable cell has to be routed against that bucket. Asked
+# about the weekly one it would be handed an account whose fable window is already spent.
+os.environ["WORKER_PICK_FAKE_ACCOUNTS"] = "wk1 wk2"
+os.environ["WORKER_PICK_FAKE_FABLE_ACCOUNTS"] = "fb1"
+fable_bucket = rb.wall_bucket(rb.parse_rater("fable-high"))
+assert fable_bucket == "fable"
+rb._SIDE_ROSTER.clear()
+assert rb.pool_account("claude", set(), 0, fable_bucket) == "fb1"
+# Keyed apart: one cache entry for both buckets would serve whichever cell asked first.
+assert rb.pool_account("claude", set(), 0) == "wk1"
+assert rb.side_roster("claude", frozenset(), True) == ["fb1"]
+assert rb.side_roster("claude", frozenset()) == ["wk1", "wk2"]
+
+# An exhausted fable bucket takes fable cells off the panel and leaves ordinary Claude work
+# alone, which the contract keeps independent of it.
+os.environ["WORKER_PICK_FAKE_FABLE_ACCOUNTS"] = ""
+rb._SIDE_ROSTER.clear()
+spent_fable = rb.affordability()
+assert spent_fable["claude"] is True and spent_fable["claude_fable"] is False, spent_fable
+assert rb.cell_available(spent_fable, rb.parse_rater("fable-high")) is False
+assert rb.cell_available(spent_fable, rb.parse_rater("opus-high")) is True
+del os.environ["WORKER_PICK_FAKE_FABLE_ACCOUNTS"]
+
+rb._SIDE_ROSTER.clear()
+del os.environ["WORKER_PICK_FAKE_ACCOUNTS"]
 if previous_pick is None:
     del os.environ["REVIEW_BENCH_WORKER_PICK_BIN"]
 else:
@@ -1765,20 +1802,6 @@ os.environ["REVIEW_BENCH_EXCLUDE_AGY"] = "main"
 assert rb.baseline_exclusions("agy") == {"main", "work"}
 del os.environ["REVIEW_BENCH_EXCLUDE_GEMINI"], os.environ["REVIEW_BENCH_EXCLUDE_AGY"]
 assert rb.baseline_exclusions("agy") == set()
-
-mixed_next = rb.parse_affordability("""NEXT: gemini main · pro · high — ACCOUNT: main; pre-reset cap 9% — WALLED  |  codex cx · medium — FRESH
-codex: cx 10% runway 80%
-gemini: main 91% runway 9% FLOOR (5h→?, wk→?)
-claude: unavailable
-""")
-assert mixed_next["codex"] is True
-assert mixed_next["agy"] is False
-login_needed = rb.parse_affordability("""NEXT: claudeb (rotating) — no eligible account  |  gemini unavailable
-codex: unavailable
-gemini: login needed
-claude: unavailable
-""")
-assert login_needed["agy"] is False
 
 assert rb.is_429_error('{"is_error": true, "api_error_status": 429}') is True
 assert rb.is_429_error('{"is_error": false, "errors": ["hit your session limit"]}') is True
@@ -2196,7 +2219,7 @@ assert rb.side_roster("agy", frozenset({"d1"})) == []
 os.environ["WORKER_PICK_FAKE_ACCOUNTS"] = "d1 d2"
 assert rb.side_roster("agy", frozenset({"d1"})) == ["d2"], "an empty roster was cached"
 
-# The pool's ranking is a live verdict about floors that a long run keeps invalidating, so the
+# The pool's ranking is a live verdict about walls that a long run keeps invalidating, so the
 # cache holds it for a window rather than for the process.
 rb._SIDE_ROSTER.clear()
 os.environ["WORKER_PICK_FAKE_ACCOUNTS"] = "e1"
@@ -2215,22 +2238,22 @@ finally:
 rb._SIDE_ROSTER.clear()
 os.environ["WORKER_PICK_FAKE_ACCOUNTS"] = "f1 f2"
 roster_picks = []
-real_worker_pick_account = rb.worker_pick_account
+real_worker_pick_answer = rb.worker_pick_answer
 
 
-def counting_worker_pick(side, excluded):
+def counting_worker_pick(side, excluded, fable=False):
     roster_picks.append(side)
-    return real_worker_pick_account(side, excluded)
+    return real_worker_pick_answer(side, excluded, fable)
 
 
-rb.worker_pick_account = counting_worker_pick
+rb.worker_pick_answer = counting_worker_pick
 try:
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as roster_pool:
         rosters = list(roster_pool.map(
             lambda _: rb.side_roster("agy", frozenset()), range(4)
         ))
 finally:
-    rb.worker_pick_account = real_worker_pick_account
+    rb.worker_pick_answer = real_worker_pick_answer
 assert all(roster == ["f1", "f2"] for roster in rosters), rosters
 # Two answers and the one that ends the walk, once for the side rather than once per cell.
 assert len(roster_picks) == 3, roster_picks
@@ -2243,14 +2266,14 @@ slow_side_entered = threading.Event()
 slow_side_release = threading.Event()
 
 
-def blocking_worker_pick(side, excluded):
+def blocking_worker_pick(side, excluded, fable=False):
     if side == "codex":
         slow_side_entered.set()
         slow_side_release.wait(10)
-    return real_worker_pick_account(side, excluded)
+    return real_worker_pick_answer(side, excluded, fable)
 
 
-rb.worker_pick_account = blocking_worker_pick
+rb.worker_pick_answer = blocking_worker_pick
 gate_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 try:
     blocked = gate_pool.submit(rb.side_roster, "codex", frozenset())
@@ -2263,7 +2286,7 @@ try:
         free_roster = "blocked"
 finally:
     slow_side_release.set()
-    rb.worker_pick_account = real_worker_pick_account
+    rb.worker_pick_answer = real_worker_pick_answer
     gate_pool.shutdown(wait=True)
 assert free_roster == ["f1", "f2"], "one side blocked another"
 assert blocked.result(10) == ["f1", "f2"]
@@ -8224,4 +8247,4 @@ else
   printf 'SKIP: review report hook behavior (%s is unavailable)\n' "$REPORT_HOOK"
 fi
 
-printf 'PASS: %s assertions; canonical review tiers sharing one OpenCode/Gemini floor with no retired cell in them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative suggestions with missing-object fallback, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account usable only behind its opt-in and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, carried from there into the corpus row, the report header and a receipt of the lens'"'"'s own while every lens row stays out of the canonical defect list, the frontier denominators, the composition corpus and the default leaderboard, worktree runs narrowed to named paths whose snapshot holds only those paths, is deterministic per path set, spelled against the directory the caller stands in and lexically canonicalized so a `..` can neither walk out of the repository nor split one file into two scopes, carries its scope as commit trailers a failed read refuses rather than widens, so a rerun by sha stays inside it, refuses a commitish, a pathspec matching nothing and a scope holding no change — the refusal before any snapshot object is written — and writes only a receipt of its own — leaving the repository'"'"'s receipt untouched byte for byte, the suggest baseline whole and the stamp hook with nothing to read, a lens narrowed by the same paths naming a combined receipt of its own that leaves the plain, pure-lens and pure-scope receipts byte for byte and survives a rerun by sha with both selectors intact, a day-one repository reviewed end to end — its root commit sealed and cloned, given a deterministic empty base commit inside that clone so the vendor skill diffs its whole content, measured in lines and paths against the empty tree rather than as an unmeasurable diff, so a correction inside it prices as follow-up, and closed by the real stamp hook in both shapes while never-reviewed code riding along still refuses it, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask, the lookup scoped to the repository so another chat cannot answer for it, and both review hooks keyed so exactly one fires\n' "$asserts"
+printf 'PASS: %s assertions; canonical review tiers sharing one OpenCode/Gemini floor with no retired cell in them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative suggestions with missing-object fallback, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account schedulable only as the pool'"'"'s reserve and never as a roster tail, and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, carried from there into the corpus row, the report header and a receipt of the lens'"'"'s own while every lens row stays out of the canonical defect list, the frontier denominators, the composition corpus and the default leaderboard, worktree runs narrowed to named paths whose snapshot holds only those paths, is deterministic per path set, spelled against the directory the caller stands in and lexically canonicalized so a `..` can neither walk out of the repository nor split one file into two scopes, carries its scope as commit trailers a failed read refuses rather than widens, so a rerun by sha stays inside it, refuses a commitish, a pathspec matching nothing and a scope holding no change — the refusal before any snapshot object is written — and writes only a receipt of its own — leaving the repository'"'"'s receipt untouched byte for byte, the suggest baseline whole and the stamp hook with nothing to read, a lens narrowed by the same paths naming a combined receipt of its own that leaves the plain, pure-lens and pure-scope receipts byte for byte and survives a rerun by sha with both selectors intact, a day-one repository reviewed end to end — its root commit sealed and cloned, given a deterministic empty base commit inside that clone so the vendor skill diffs its whole content, measured in lines and paths against the empty tree rather than as an unmeasurable diff, so a correction inside it prices as follow-up, and closed by the real stamp hook in both shapes while never-reviewed code riding along still refuses it, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask, the lookup scoped to the repository so another chat cannot answer for it, and both review hooks keyed so exactly one fires\n' "$asserts"

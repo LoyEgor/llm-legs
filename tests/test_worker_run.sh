@@ -31,7 +31,13 @@ cat >"$WORK/bin/worker-pick" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$PICK_LOG"
 case "${PICK_RC:-0}" in
-  0) printf '%s\n' "${PICK_ACCOUNT:-picked}" ;;
+  0)
+    # The real picker announces a session-reserve answer on stderr only; stdout stays the
+    # bare account name.
+    [ "${PICK_ACCOUNT:-picked}" != "${PICK_RESERVE_ACCOUNT:-}" ] ||
+      printf 'worker-pick: %s is the session account (SESSION RESERVE)\n' "${PICK_ACCOUNT}" >&2
+    printf '%s\n' "${PICK_ACCOUNT:-picked}"
+    ;;
   *) exit "${PICK_RC}" ;;
 esac
 EOF
@@ -250,6 +256,28 @@ for vendor in claudeb codex gemini; do
   assert meta_account_is pinned
   assert await_done
 done
+
+# The picker's reserve note is the only warning that a worker is about to spend the live
+# session's own quota, so it must reach the launch context and the run's own record.
+clear_stub
+set_config 'codex_effort=medium'
+export PICK_ACCOUNT=reserved PICK_RC=0 PICK_RESERVE_ACCOUNT=reserved
+start_ok codex
+assert meta_account_is reserved
+assert grep -q 'reserved is the session account (SESSION RESERVE)' "$WORK/start.err"
+assert jq -e '.session_reserve == true' "$RUN_DIR/meta.json" >/dev/null
+assert await_done
+assert grep -q '^ACCOUNT: reserved (codex) SESSION RESERVE$' <<<"$("$RUNNER" report "$RUN_ID")"
+
+clear_stub
+export PICK_ACCOUNT=picked
+start_ok codex
+assert meta_account_is picked
+assert test ! -s "$WORK/start.err"
+assert jq -e 'has("session_reserve") | not' "$RUN_DIR/meta.json" >/dev/null
+assert await_done
+assert grep -q '^ACCOUNT: picked (codex)$' <<<"$("$RUNNER" report "$RUN_ID")"
+unset PICK_RESERVE_ACCOUNT
 
 for vendor in codex gemini; do
   clear_stub

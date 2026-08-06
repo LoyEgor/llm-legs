@@ -1,24 +1,6 @@
-NEXT: claudeb worker · opus · high — ACCOUNT: worker; pre-reset cap 50%  |  codex main · high — FRESH  |  gemini main · pro · high — ACCOUNT: main; pre-reset cap 65% — FRESH
-codex: main 48% runway 152% ↻1 (5h→?, wk→?)
-gemini: main 25% runway 75% (5h→?, wk→?)
-claude: worker($20) 5h 30% wk 40% fb 70% score 20 cap 50% no-Fable | session($100)* 5h 20% wk 20% fb 10% score 70 cap 70%   (* = this session account, excluded from automatic worker routing)
-POLICY: Codex main is last-resort; codex FRESH (main, runway 152%, ↻1 manual); claudeb worker score 20; gemini FRESH (main, runway 75%); Gemini auto-routing remains conservative until benchmarked
+NEXT: claudeb worker · opus · high — ACCOUNT: worker  |  codex main · high — 48%  |  gemini main · pro · high — ACCOUNT: main
+codex: main 48% 5h 48% ↻1 (5h→?, wk→?)
+gemini: main 25% 5h 12% (5h→?, wk→?)
+claude: worker($20) 5h 30% wk 40% fb 70% score 60 cap 60% no-Fable | session($100)* 5h 20% wk 20% fb 10% score 80 cap 80%   (* = this session account, the reserve — routed only when nothing else is selectable)
 DATA: fresh (0 min old)
-SESSION: session — fb 10%, wk 20%
-
-# Worker routing policy
-
-- Prefer Codex for design and well-specified implementation, especially when speed matters. Do not route animation work to Codex; the Fable side is stronger for animation.
-- Use Codex effort `medium` for ordinary tasks and `high` for genuinely complex work.
-- Prefer claudeb for long or multi-step tasks and work that depends heavily on repository conventions.
-- Gemini/Antigravity is a full implementation worker selectable with `worker=gemini`; its base profile is `main`, and named profiles are isolated by `geminib`.
-- In auto mode, treat a healthy Gemini reading as an eligible candidate but route conservatively until task-quality and reliability benchmarks establish a stronger weight.
-- Use Gemini `ACCOUNT`/`MODEL`/`EFFORT` exactly as `NEXT:` prints them; `gemini_profile=` is an explicit account pin, and the canonical knob-to-agy mapping lives in `~/.claude/agents/gemini-worker.md`.
-- When Codex is FRESH, route roughly five of every ten suitable tasks to Codex. Reduce that share as the data-driven verdict tightens.
-- Use the claudeb model and effort exactly as `NEXT:` prints them — R8 may have stepped them one rung down the ladder `opus·high → opus·medium → sonnet·high` to spare an account's Fable quota; override upward only when the task genuinely needs it.
-- claudeb sonnet runs at effort high or above — sonnet·medium and below are never used; opus may run at medium.
-- Always use the concrete account and pre-reset cap from `NEXT:`. Never route a worker to the session account unless an explicit pin names it — a pin overrides the session-account exclusion; hard walls (effective 100%, dead auth) still apply.
-- Treat the Codex and Gemini `main` profiles as last-resort: every usable non-main account of the same vendor ranks ahead of its `main`.
-- Account selection is headroom-dominant for non-Fable work: prefer the account with the most 5h effective headroom to balance spend across accounts. Small-tier accounts (olx, $20/month) are full citizens for any non-Fable task at any effort.
-- Headroom cannot exceed HEADROOM_PCT (90%); if all candidates are above it, pick the least-burnt and note `WARN` in `NEXT`.
-- Code reviews: tier and cell composition come from `review-bench suggest` / `review-bench tiers`, never from prose. The human-side rules (phrase mapping, fable-on-explicit-ask, adjudication duty) live in `~/.claude/docs/review-tiers.md`. Skip review only for trivially unambiguous diffs.
+SESSION: session — fb 10%, wk 20% (SESSION RESERVE)

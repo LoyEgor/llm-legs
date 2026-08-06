@@ -1,5 +1,10 @@
 # Worker/limits symbiosis — spec for worker-pick v2
 
+**Superseded by `docs/routing-contract.md`.** The scoring design below (R1-R9, floors,
+headroom, runway, printed POLICY prose) is history: the contract replaced it with three
+rules and `worker-pick` no longer implements or prints any of it. Read this only for the
+data-layer notes; never re-derive selection behaviour from it.
+
 Goal: move Egor's account-routing judgment out of CLAUDE.md prose into deterministic
 llm-legs code, so that (a) session-start context shrinks, (b) routing decisions are
 data-driven and identical in every session, (c) policy text is loaded on demand (printed

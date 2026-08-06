@@ -223,9 +223,10 @@ has to sign in once more. macOS refuses `security unlock-keychain` on anything n
 
 Adding an account: `geminib profile work` opens an isolated, logged-out Antigravity profile and
 prompts for Google login. Then run `geminib status` and
-`llm-limits --refresh-account gemini/work --table`. Worker routing uses the same
-headroom/runway/staleness rules as before, prints `ACCOUNT: work`, and treats `main` as the
-last-resort profile unless `gemini_profile=` pins it.
+`llm-limits --refresh-account gemini/work --table`. Worker routing follows
+`docs/routing-contract.md` (pool toggle, lowest spending bucket, walls only at 100%/dead
+auth), prints `ACCOUNT: work`, and ranks `main` last on a tie unless `gemini_profile=`
+pins it.
 
 ## OpenCode Go review models
 

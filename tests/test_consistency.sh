@@ -138,12 +138,17 @@ assert doc_has 'Token-freeze file semantics'
 CODEXB="$ROOT/bin/codexb"
 POLICY="$ROOT/share/worker-policy.md"
 assert grep -Fq 'main_last:(if (.account // "main") == "main" then 1 else 0 end)' "$WORKERPICK"
-assert test "$(grep -Fc 'sort_by(.main_last, -.score, .name)' "$WORKERPICK")" -eq 2
-assert grep -Fq 'def display_band($selected; $eligible; $soft_skipped): if .name == $selected then 0 elif $eligible then 1 elif $soft_skipped then 2 else 3 end;' "$WORKERPICK"
-assert test "$(grep -Fc 'sort_by(display_band(' "$WORKERPICK")" -eq 5
+assert test "$(grep -Fc 'def rank_keys: [.spend, (.h5 // 100), .main_last, .name];' "$WORKERPICK")" -eq 1
+assert test "$(grep -Fc 'def rank: sort_by(rank_keys);' "$WORKERPICK")" -eq 1
+assert grep -Fq 'def display_band($selected): if .name == $selected then 0 elif .eligible then 1 elif .in_pool then 2 else 3 end;' "$WORKERPICK"
+# The render sorts on the band plus the selection keys, so within a band the order is the
+# selection order rather than the limits file's.
+assert grep -Fq 'def display_sort($selected): sort_by([display_band($selected)] + rank_keys);' "$WORKERPICK"
+assert test "$(grep -Fc 'sort_by(display_band(' "$WORKERPICK")" -eq 0
+assert test "$(grep -Fc 'display_sort($sel)' "$WORKERPICK")" -eq 3
 assert grep -Fq 'main_last:(if $entry.account == "main" then 1 else 0 end)' "$CODEXB"
 assert grep -Fq 'sort -t $'\''\t'\'' -k2,2n -k3,3n -k4,4n -k1,1' "$CODEXB"
-assert grep -Fq 'Codex and Gemini `main` profiles as last-resort' "$POLICY"
+assert grep -Fq 'Codex and Gemini `main` profiles rank last on a tie' "$POLICY"
 assert doc_has 'Codex/Gemini base-profile priority'
 
 REVIEWBENCH="$ROOT/bin/review-bench"
@@ -376,11 +381,11 @@ assert grep -Fq 'gm_pin=$(conf gemini_profile)' "$WORKERPICK"
 assert grep -Fq '.name == $cx_pin and (.walled | not)' "$WORKERPICK"
 assert grep -Fq '.name == $gm_pin and (.walled | not)' "$WORKERPICK"
 assert grep -Fq '$pin_account != null and $pin_account.auth_ok and $pin_account.general_usable' "$WORKERPICK"
-# Own-account exclusion is automatic-selection-only (Egor, 2026-07-27): a pin reaches the
-# session's own account, so the gate must not regain an `.own` test and the footnote must
-# keep saying "automatic".
+# The session account is the reserve, not an exclusion (docs/routing-contract.md rule 1): a pin
+# reaches it, so the gate must not regain an `.own` test, and the footnote must keep saying that
+# the reserve is routed only when nothing else is selectable.
 assert test "$(grep -cF 'pin_account.own' "$WORKERPICK")" -eq 0
-assert grep -Fq 'excluded from automatic worker routing' "$WORKERPICK"
+assert grep -Fq 'the reserve — routed only when nothing else is selectable' "$WORKERPICK"
 
 assert grep -Fq 'needs_user_entry:true' "$LLMLIMITS"
 assert grep -Fq 'needs_user_entry == true' "$HAMMER"

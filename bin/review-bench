@@ -2656,116 +2656,33 @@ def command_path(env_name, sibling):
     return str(local) if local.exists() else sibling
 
 
-def parse_affordability(output):
-    next_line = next((line for line in output.splitlines() if line.startswith("NEXT:")), "")
-    codex_line = next((line for line in output.splitlines() if line.startswith("codex:")), "")
-    gemini_line = next((line for line in output.splitlines() if line.startswith("gemini:")), "")
-    claude_line = next((line for line in output.splitlines() if line.startswith("claude:")), "")
-    next_segments = next_line.split(" | ")
-    next_codex = next(
-        (segment for segment in next_segments if re.search(r"\bcodex\b", segment, re.IGNORECASE)),
-        "",
-    )
-    next_gemini = next(
-        (segment for segment in next_segments if re.search(r"\bgemini\b", segment, re.IGNORECASE)),
-        "",
-    )
-    account_match = re.search(r"ACCOUNT:\s*([^;|\s]+);\s*pre-reset cap\s+(\d+(?:\.\d+)?)%", next_line)
-    claude_account = account_match.group(1) if account_match else None
-    claude_cap = float(account_match.group(2)) if account_match else None
-    table_accounts = []
-    session_account = None
-    for segment in claude_line.removeprefix("claude:").split(" | "):
-        match = re.match(
-            r"\s*([A-Za-z0-9._-]+)\(\$[^)]*\)(\*)?.*?\bscore\s+(-?[0-9.]+)\s+cap\s+([0-9.]+)%",
-            segment,
-        )
-        if not match:
-            continue
-        account, session_mark, score, cap = match.groups()
-        if session_mark:
-            session_account = account
-        blocked = any(flag in segment for flag in (" FLOOR", " blocked", " off", " HEADROOM"))
-        # The session account is excluded because a bench that quietly spends the quota the
-        # user is talking to is indistinguishable from one that found a spare account. Naming
-        # it stays possible, but only on purpose.
-        usable = allow_session_account() if session_mark else True
-        if usable and not blocked and float(cap) >= 15:
-            table_accounts.append((float(score), account, float(cap)))
-    table_accounts.sort(key=lambda item: (-item[0], item[1]))
-    next_is_eligible = next(
-        (row for row in table_accounts if row[1] == claude_account), None
-    )
-    selected = next_is_eligible or (table_accounts[0] if table_accounts else None)
-    if selected:
-        _, claude_account, claude_cap = selected
-    else:
-        claude_account = None
-        claude_cap = None
-    claude_ok = bool(selected and "ALL FLOORED" not in next_line)
-    codex_ok = bool(
-        codex_line
-        and "unavailable" not in codex_line.lower()
-        and "WALLED" not in next_codex.upper()
-        and not re.match(r"codex:\s*unavailable", codex_line, re.IGNORECASE)
-    )
-    gemini_accounts = gemini_line.removeprefix("gemini:").split(" | ")
-    gemini_ok = bool(
-        any(
-            re.match(r"\s*[A-Za-z0-9._-]+\s+\d+(?:\.\d+)?%", segment)
-            and " FLOOR" not in segment
-            for segment in gemini_accounts
-        )
-        and "WALLED" not in next_gemini.upper()
-    )
+def affordability():
+    """Which sides the pool will staff right now, and the Claude account it named.
+
+    One machine query per vendor rather than a read of the human table: the pool toggle, the
+    wall and the session reserve are all worker-pick's to decide (docs/routing-contract.md),
+    and any threshold kept here would be a second copy of a policy the bench does not own.
+    """
+    picked = {side: worker_pick_answer(side, ())[0] for side in SIDE_POOL_VENDOR}
     return {
-        "codex": codex_ok,
-        "claude": claude_ok,
+        "codex": picked["codex"] is not None,
+        "claude": picked["claude"] is not None,
+        "agy": picked["agy"] is not None,
         "grok": True,
         "opencode": True,
-        "agy": gemini_ok,
-        "claude_account": claude_account,
-        "claude_cap": claude_cap,
-        "session_account": session_account,
-        "worker_pick": output,
+        # Fable bills a bucket of its own, and the contract keeps its exhaustion from touching
+        # ordinary work: one answer cannot stand for both, so the fable bucket is asked for
+        # separately and only cells that spend it are gated on it.
+        "claude_fable": worker_pick_answer("claude", (), fable=True)[0] is not None,
+        "claude_account": picked["claude"],
     }
 
 
-def allow_session_account():
-    """Whether the account this session runs on may serve bench raters.
-
-    Off by default: spending the quota the user is holding a conversation on is exactly the
-    surprise the exclusion exists to prevent. Set REVIEW_BENCH_ALLOW_SESSION_ACCOUNT=1 for a
-    measurement the user asked to run there.
-    """
-    return os.environ.get("REVIEW_BENCH_ALLOW_SESSION_ACCOUNT", "") not in ("", "0", "no")
-
-
-def parse_worker_pick(output):
-    parsed = parse_affordability(output)
-    codex_line = next((line for line in output.splitlines() if line.startswith("codex:")), "")
-    codex_match = re.match(r"codex:\s*([^\s]+)", codex_line)
-    return {
-        **parsed,
-        "codex": codex_match.group(1) if parsed["codex"] and codex_match else None,
-        "claude": parsed["claude_account"] if parsed["claude"] else None,
-        "codex_reason": codex_line or "Codex unavailable",
-        "claude_reason": (
-            f"pre-reset cap {parsed['claude_cap']:g}%"
-            if parsed["claude_cap"] is not None else "no eligible non-session account"
-        ),
-    }
-
-
-def affordability():
-    command = [command_path("REVIEW_BENCH_WORKER_PICK_BIN", "worker-pick")]
-    try:
-        proc = subprocess.run(command, capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise RuntimeError(f"worker-pick failed: {exc}") from exc
-    if proc.returncode != 0:
-        raise RuntimeError(f"worker-pick failed: {proc.stderr.strip() or proc.returncode}")
-    return parse_affordability(proc.stdout)
+def cell_available(available, rater):
+    """Whether the pool can staff this cell, asked about the bucket the cell will spend."""
+    if wall_bucket(rater) == "fable":
+        return bool(available.get("claude_fable"))
+    return bool(available.get(rater["side"]))
 
 
 def measured_skill_only(rater):
@@ -2887,7 +2804,7 @@ def auto_pick(number, rows, available, unreachable=None):
         rater = parse_rater(spec)
         if rater["side"] in unreachable:
             skipped.append((spec, unreachable[rater["side"]]))
-        elif available[rater["side"]]:
+        elif cell_available(available, rater):
             eligible.append((counts[spec], order, rater))
         else:
             skipped.append((spec, f"{rater['side']} side is unaffordable"))
@@ -5090,31 +5007,11 @@ def transient_backoffs():
 SIDE_POOL_VENDOR = {"claude": "claudeb", "codex": "codex", "agy": "gemini"}
 
 
-_PERMITTED_CLAUDE = []
-_PERMITTED_CLAUDE_LOCK = threading.Lock()
-
-
-def permitted_claude_account():
-    """The Claude account the affordability parse allows, session account included.
-
-    Read once per process: every rater would otherwise re-run `worker-pick` for an answer that
-    the run already made, and the wall handling that does change during a run travels in the
-    caller's exclusion set instead.
-    """
-    with _PERMITTED_CLAUDE_LOCK:
-        if not _PERMITTED_CLAUDE:
-            available = affordability()
-            _PERMITTED_CLAUDE.append(
-                available.get("claude_account") if available.get("claude") else None
-            )
-        return _PERMITTED_CLAUDE[0]
-
-
 def baseline_exclusions(side):
     """Accounts the caller has taken off the table for this side before the pool is asked.
 
     Steering a measurement onto one account is narrowing what the pool may choose from, not
-    choosing instead of it: the ranking, the walls and the floors all still apply.
+    choosing instead of it: the pool toggle and the walls all still apply.
     """
     names = [side]
     vendor = SIDE_POOL_VENDOR.get(side)
@@ -5129,24 +5026,32 @@ def baseline_exclusions(side):
     return excluded
 
 
-def worker_pick_account(side, excluded):
+def worker_pick_answer(side, excluded, fable=False):
+    """The pool's account for this side, and whether it came as the session reserve.
+
+    `fable` names the bucket the caller will spend rather than a model: only `--account
+    claudeb` has a second bucket, and worker-pick refuses the flag anywhere else.
+    """
     command = [command_path("REVIEW_BENCH_WORKER_PICK_BIN", "worker-pick"),
                "--account", SIDE_POOL_VENDOR[side]]
     if excluded:
         command += ["--exclude", ",".join(sorted(excluded))]
+    if fable and side == "claude":
+        command.append("--fable")
     try:
         proc = subprocess.run(command, capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise RuntimeError(f"worker-pick --account {SIDE_POOL_VENDOR[side]} failed: {exc}") from exc
     # 3 is the pool's own "nothing selectable", which is an answer rather than a breakage.
     if proc.returncode == 3:
-        return None
+        return (None, False)
     if proc.returncode != 0:
         raise RuntimeError(
             f"worker-pick --account {SIDE_POOL_VENDOR[side]}: "
             f"{proc.stderr.strip() or proc.returncode}"
         )
-    return proc.stdout.strip() or None
+    account = proc.stdout.strip() or None
+    return (account, bool(account) and "SESSION RESERVE" in proc.stderr)
 
 
 _SIDE_ROSTER = {}
@@ -5161,22 +5066,24 @@ ROSTER_MAX = 8
 ROSTER_TTL_S = 60
 
 
-def side_roster(side, baseline):
-    """Every account the pool will offer this side, in the pool's own order.
+def side_roster(side, baseline, fable=False):
+    """Every account the pool will offer this side for this bucket, in the pool's own order.
 
     Enumerated by asking again with the previous answers excluded, rather than reading the
-    limits table here: the ranking, the floors and the session-account rule stay the pool's
+    limits table here: the ranking, the walls and the session-reserve rule stay the pool's
     to decide. Cached briefly because a per-cell enumeration would spawn one worker-pick per
     account per cell for an answer the run already has.
 
-    Briefly, and never when it came out empty: the answer is a live verdict about floors that
+    Briefly, and never when it came out empty: the answer is a live verdict about walls that
     the run itself keeps invalidating, so holding it for the process would both keep feeding
-    cells to an account that has since crossed its floor and freeze one empty moment into a
+    cells to an account that has since walled and freeze one empty moment into a
     side with nothing to offer for good. Enumerated under the lock, because every cell of a
     side misses the cache at once and would otherwise enumerate in parallel — the per-cell
     fan-out of worker-pick processes this cache exists to prevent.
     """
-    key = (side, tuple(sorted(baseline)))
+    # The bucket is part of the key: a fable roster and an ordinary one rank different numbers
+    # and sharing a cache entry would hand fable cells the weekly bucket's answer.
+    key = (side, tuple(sorted(baseline)), fable)
     with _SIDE_ROSTER_LOCK:
         fresh = cached_roster(key)
         if fresh is not None:
@@ -5190,9 +5097,18 @@ def side_roster(side, baseline):
         roster = []
         seen = set(baseline)
         while len(roster) < ROSTER_MAX:
-            account = worker_pick_account(side, seen)
+            account, reserve = worker_pick_answer(side, seen, fable)
             # A repeated answer means the pool ignored the exclusion, which would otherwise spin.
             if account is None or account in seen:
+                break
+            if reserve:
+                # The session account is offered only once nothing else is selectable, so it
+                # is the tail of every enumeration by construction. Appending it would turn a
+                # last resort into an ordinary roster slot the spread hands cells to.
+                if not roster:
+                    roster.append(account)
+                    print(f"{side} pool is empty; staffing on the session account "
+                          f"{account} (SESSION RESERVE)")
                 break
             roster.append(account)
             seen.add(account)
@@ -5223,22 +5139,15 @@ def pool_account(side, excluded, slot=0, bucket="general"):
     """
     excluded = set(excluded) | baseline_exclusions(side)
     spread = spread_accounts()
+    fable = side == "claude" and bucket == "fable"
     if side == "opencode":
         profiles = [opencode_account(profile) for profile in opencode_profiles()]
         return first_free_account(side, profiles, excluded, slot if spread else 0, bucket)
-    if side == "claude" and allow_session_account():
-        # worker-pick never offers the session account, so the opt-in would otherwise grant a
-        # permission the pool cannot act on. The account comes from the same table parse that
-        # granted it rather than from a third selector, and the parse's own verdict comes with
-        # it: naming an account while the side is unaffordable would walk straight past the floor.
-        permitted = permitted_claude_account()
-        if permitted and permitted not in excluded:
-            return permitted
     if side in SIDE_FIXED_ACCOUNTS:
         return SIDE_FIXED_ACCOUNTS[side] if SIDE_FIXED_ACCOUNTS[side] not in excluded else None
     if not spread:
-        return worker_pick_account(side, excluded)
-    roster = side_roster(side, baseline_exclusions(side))
+        return worker_pick_answer(side, excluded, fable)[0]
+    roster = side_roster(side, baseline_exclusions(side), fable)
     if not roster:
         return None
     return first_free_account(side, roster, excluded, slot, bucket)
@@ -6185,10 +6094,10 @@ def cmd_run(args):
         if any(rater["side"] in ("codex", "claude") for rater in requested):
             available.update(affordability())
             available["agy"] = True
-        raters = [rater for rater in requested if available.get(rater["side"])]
+        raters = [rater for rater in requested if cell_available(available, rater)]
         skipped = [
             (rater["spec"], f"{rater['side']} side is unaffordable")
-            for rater in requested if not available.get(rater["side"])
+            for rater in requested if not cell_available(available, rater)
         ]
         if not raters:
             raise RuntimeError("no affordable requested raters")

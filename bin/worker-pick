@@ -1,29 +1,11 @@
 #!/usr/bin/env bash
 set -u
 
-FLOOR_PCT=90
-HEADROOM_PCT="${WORKER_PICK_HEADROOM_PCT:-90}"
-SLEEP_START_H="${WORKER_PICK_SLEEP_START_H:-2}"
-SLEEP_END_H="${WORKER_PICK_SLEEP_END_H:-12}"
-AWAKE_FULL_S="${WORKER_PICK_AWAKE_FULL_S:-14400}"
-R1_FABLE_BURNT_MIN_PCT=50
-R1_FABLE_BURNT_WEIGHT=0.50
-R2_FABLE_FRESH_MAX_PCT=20
-R2_WEEKLY_HIGH_MIN_PCT=70
-R2_FABLE_RESERVED_WEIGHT=1.50
-R3_FABLE_INCAPABLE_WEIGHT=0.50
-R8_GAP_EXCLUDE_PCT=50
-R9_FRESH_5H_PCT=5
-RESET_HORIZON_S=604800
-RESET_REFILL_PCT=100
-RESET_CREDIT_REFILL_PCT=100
-CODEX_FRESH_RUNWAY_PCT=50
-CODEX_OK_RUNWAY_PCT=15
-CODEX_TIGHT_RUNWAY_PCT=5
-SESSION_FABLE_WEIGHT=0.70
-SESSION_WEEKLY_WEIGHT=0.30
+# Selection follows docs/routing-contract.md: candidates are pool members with live auth and a
+# measured spending bucket, the answer is the pin or the lowest spending-bucket percentage, and
+# only a wall (effective 100% or dead auth) skips an account.
 
-# `--account <vendor>` is the machine-readable face of the same math: one bare account name on
+# `--account <vendor>` is the machine-readable face of the same rules: one bare account name on
 # stdout, nothing else, so a caller that must pick an account shares this selection instead of
 # reimplementing it. `--exclude` is how a caller that just watched an account wall says "the next
 # one, not that": the account is dropped from consideration for this query only, and running out
@@ -33,8 +15,9 @@ SESSION_WEEKLY_WEIGHT=0.30
 query_vendor=""
 query_exclude=""
 query_exclude_given=false
+query_fable=false
 usage() {
-  printf 'usage: worker-pick [--account claudeb|codex|gemini [--exclude name[,name...]]]\n' >&2
+  printf 'usage: worker-pick [--account claudeb|codex|gemini [--exclude name[,name...]] [--fable]]\n' >&2
   exit 2
 }
 while [ "$#" -gt 0 ]; do
@@ -54,11 +37,17 @@ while [ "$#" -gt 0 ]; do
       query_exclude_given=true
       shift 2
       ;;
+    # Only a task that asks for Fable spends the fable bucket, so the caller names that bucket.
+    --fable) query_fable=true; shift ;;
     *) printf 'worker-pick: unexpected argument %s\n' "$1" >&2; usage ;;
   esac
 done
 if [ "$query_exclude_given" = true ] && [ -z "$query_vendor" ]; then
   printf 'worker-pick: --exclude only means something with --account\n' >&2
+  usage
+fi
+if [ "$query_fable" = true ] && [ "$query_vendor" != claudeb ]; then
+  printf 'worker-pick: --fable only means something with --account claudeb\n' >&2
   usage
 fi
 query_exclude_json='[]'
@@ -83,16 +72,6 @@ TIERS_FILE="${WORKER_PICK_TIERS_FILE:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.cla
 CACHE_DIR="${WORKER_PICK_CACHE_DIR:-$HOME/.cache}"
 now="${WORKER_PICK_NOW:-$(date +%s)}"
 
-script_path=$0
-while [ -L "$script_path" ]; do
-  link_target=$(readlink "$script_path")
-  case "$link_target" in
-    /*) script_path=$link_target ;;
-    *) script_path=$(dirname "$script_path")/$link_target ;;
-  esac
-done
-script_dir=$(cd "$(dirname "$script_path")" && pwd)
-
 # Derive codex model short label from ~/.codex/config.toml; fallback "sol" defined here.
 codex_model_short_label() {
   local toml="${1:-$HOME/.codex/config.toml}" label=""
@@ -101,8 +80,6 @@ codex_model_short_label() {
   [[ "$label" =~ ^[A-Za-z0-9]+$ ]] || label=sol
   printf '%s' "$label"
 }
-
-POLICY_FILE="${WORKER_PICK_POLICY_FILE:-$script_dir/../share/worker-policy.md}"
 
 conf() { sed -n "s/^$1=//p" "$WORKER_FILE" 2>/dev/null | head -n1; }
 worker_mode=$(conf worker); worker_mode=${worker_mode:-sonnet}
@@ -137,10 +114,6 @@ write_cache() {
   rm -f "$tmp" 2>/dev/null
 }
 
-print_policy() {
-  [ -r "$POLICY_FILE" ] && { printf '\n'; cat "$POLICY_FILE"; }
-}
-
 fail_safe() {
   # A query has no fail-safe: printing a guessed account would send a caller at an account this
   # data cannot vouch for. Fail loudly and let the caller name a profile itself.
@@ -156,11 +129,9 @@ fail_safe() {
   printf 'codex: unavailable\n'
   printf 'gemini: unavailable\n'
   printf 'claude: unavailable\n'
-  printf 'POLICY: Codex main is last-resort; Gemini auto-routing is conservative until benchmarked; fail-safe to Claude side\n'
   printf 'DATA: unavailable\n'
   printf 'SESSION: unavailable\n'
   write_cache "cx✗·? cb~? gx✗?·${gm_model}·${gm_eff_abbr}"
-  print_policy
   exit 0
 }
 
@@ -173,20 +144,6 @@ printf '%s' "$tiers_json" | jq -e . >/dev/null 2>&1 || tiers_json='{}'
 summary=$(jq -r \
   --argjson now "$now" --argjson tiers "$tiers_json" --arg own "$own" --arg pin "$cb_pin" \
   --arg cx_pin "$cx_pin" --arg gm_pin "$gm_pin" \
-  --argjson floor "$FLOOR_PCT" --argjson headroom "$HEADROOM_PCT" \
-  --argjson sleep_start "$SLEEP_START_H" --argjson sleep_end "$SLEEP_END_H" \
-  --argjson awake_full "$AWAKE_FULL_S" \
-  --argjson r1_min "$R1_FABLE_BURNT_MIN_PCT" --argjson r1_weight "$R1_FABLE_BURNT_WEIGHT" \
-  --argjson r2_fresh "$R2_FABLE_FRESH_MAX_PCT" --argjson r2_weekly "$R2_WEEKLY_HIGH_MIN_PCT" \
-  --argjson r2_weight "$R2_FABLE_RESERVED_WEIGHT" --argjson r3_weight "$R3_FABLE_INCAPABLE_WEIGHT" \
-  --argjson r8_gap_exclude "$R8_GAP_EXCLUDE_PCT" \
-  --argjson r9_fresh_5h "$R9_FRESH_5H_PCT" \
-  --argjson reset_horizon "$RESET_HORIZON_S" --argjson reset_refill "$RESET_REFILL_PCT" \
-  --argjson credit_refill "$RESET_CREDIT_REFILL_PCT" \
-  --argjson fresh_runway "$CODEX_FRESH_RUNWAY_PCT" --argjson ok_runway "$CODEX_OK_RUNWAY_PCT" \
-  --argjson tight_runway "$CODEX_TIGHT_RUNWAY_PCT" \
-  --argjson session_fable_weight "$SESSION_FABLE_WEIGHT" \
-  --argjson session_weekly_weight "$SESSION_WEEKLY_WEIGHT" \
   --argjson qx "$query_exclude_json" '
   def epoch:
     if type == "number" then .
@@ -205,92 +162,52 @@ summary=$(jq -r \
     elif $reset != null and $reset <= $now then 0
     elif (($bucket.effective_pct // null) | type) == "number" then $bucket.effective_pct
     else $bucket.used_pct end;
-  def reset_bonus($b):
-    (($b.resets_at // null) | epoch) as $reset |
-    if $reset == null or $reset <= $now then 0
-    else ($reset - $now) as $delta |
-      if $delta >= $reset_horizon then 0
-      else $reset_refill * (1 - ($delta / $reset_horizon)) end
-    end;
-  # derive local offset once; mktime is UTC-only
-  (($now | strflocaltime("%Y-%m-%dT%H:%M:%SZ") | fromdateiso8601) - $now) as $lofs |
-  def awake_until_reset($b):
-    (($b.resets_at // null) | epoch) as $reset |
-    # unknown or past reset returns full awake time so normal floor applies
-    if $reset == null or $reset <= $now then $awake_full
-    elif ($reset - $now) >= 691200 then $awake_full
-    else
-      (($now + $lofs) / 86400 | floor) as $d1 |
-      (($reset + $lofs) / 86400 | floor) as $d2 |
-      ($now + $lofs) as $s_start |
-      ($reset + $lofs) as $s_end |
-      (reduce range($d1; $d2 + 1) as $d (0;
-        . + (($d * 86400) as $depoch |
-          (if $sleep_start < $sleep_end then
-            [[$depoch + $sleep_start * 3600, $depoch + $sleep_end * 3600]]
-           else
-            [[$depoch + $sleep_start * 3600, $depoch + 86400], [$depoch, $depoch + $sleep_end * 3600]]
-           end) as $intervals |
-          reduce $intervals[] as $int (0;
-            ([$s_start, $int[0]] | max) as $o_start |
-            ([$s_end, $int[1]] | min) as $o_end |
-            . + ([$o_end - $o_start, 0] | max)
-          )
-        )
-      )) as $overlap |
-      ($reset - $now) - $overlap
-    end;
-  def relax($base; $b):
-    (awake_until_reset($b) / $awake_full) as $ratio |
-    (if $ratio > 1 then 1 elif $ratio < 0 then 0 else $ratio end) as $r |
-    ($base + (100 - $base) * (1 - $r)) |
-    if . < $base then $base elif . > 100 then 100 else . end;
-  def effective_floor($b): relax($floor; $b);
-  def effective_headroom($b): relax($headroom; $b);
-  def raw_runway($b):
-    eff($b) as $pct | if $pct == null then null else (100 - $pct) + reset_bonus($b) end;
-  def safe_runway($b):
-    eff($b) as $pct | if $pct == null then null else ([(effective_floor($b) - $pct), 0] | max) + reset_bonus($b) end;
   def reset_str($b):
     (($b.resets_at // null) | epoch) as $reset |
     if $reset == null then "?"
     elif ($reset - $now) < 86400 then ($reset | strflocaltime("%H:%M"))
     else ($reset | strflocaltime("%b %d %H:%M")) end;
-  def round1: (. * 10 | round) / 10;
+  def pct_str: if type == "number" then ((round | tostring) + "%") else "?" end;
   def bool_or($value; $fallback): if ($value | type) == "boolean" then $value else $fallback end;
-  # Display bands are applied only while rendering; routing keeps the selection arrays unchanged.
-  def display_band($selected; $eligible; $soft_skipped): if .name == $selected then 0 elif $eligible then 1 elif $soft_skipped then 2 else 3 end;
-  def fresh_five_hour:
-    eff(.five_hour) as $pct |
-    ((.five_hour.resets_at // null) | epoch) as $reset |
-    ($pct | type) == "number" and $pct <= $r9_fresh_5h and
-    .five_hour.stale? != true and .five_hour.expired? != true and
-    .five_hour.origin? != "cached" and ($reset == null or $reset > $now);
   def auth_ok: .auth_needed != true and ((.auth.status? // "ok") | IN("expired", "failed") | not);
   def gemini_group: ((.group // "") | ascii_downcase | contains("gemini"));
-  def bucket_values: [eff(.five_hour), eff(.weekly)] | map(select(. != null));
-  # General workers do not bill the Fable bucket, so Fable exhaustion alone is not a wall.
-  def buckets: [.five_hour, .weekly] | map(select(eff(.) != null));
   def account_as_of:
     [.five_hour?, .weekly?, .fable? |
       select(type == "object" and (.used_pct | type) == "number") |
       (.as_of? | epoch)] |
     map(select(. != null));
-  def is_floored: buckets | any(eff(.) >= effective_floor(.));
-  def is_walled: buckets | any(eff(.) >= 100);
-  def is_above_headroom: buckets | any(eff(.) >= effective_headroom(.));
-  def pre_reset_cap:
-    buckets | if length == 0 then 0 else map([(effective_floor(.) - eff(.)), 0] | max) | min end;
-  def pinned_cap:
-    buckets | if length == 0 then 0 else map([(relax(100; .) - eff(.)), 0] | max) | min end;
-  def account_credits:
-    if .reset_credits_stale == true then 0
-    elif (.reset_credits | type) == "number" then .reset_credits
-    else 0 end;
+  def excluded: .name | IN($qx[]);
+  # Rule 2 of the contract, defined once so all three vendors rank identically: lowest spending
+  # bucket first, then the lower five-hour reading, then `main` last, then name. An absent
+  # five-hour reading is coalesced high — jq sorts null before every number, so a bucket nobody
+  # measured would otherwise beat a measured 0% in the tiebreak.
+  def rank_keys: [.spend, (.h5 // 100), .main_last, .name];
+  def rank: sort_by(rank_keys);
+  # Display bands are applied only while rendering, and within a band the order stays the
+  # selection order (shared-invariants g), so the render sorts on the same keys.
+  def display_band($selected): if .name == $selected then 0 elif .eligible then 1 elif .in_pool then 2 else 3 end;
+  def display_sort($selected): sort_by([display_band($selected)] + rank_keys);
+  # Weekly is the spending bucket; a vendor that reports no weekly percentage at all is measured
+  # by its five-hour reading, the only number it has.
+  def spending: .wk // .h5;
+  def walled_at($spend): (.auth_ok | not) or (($spend // -1) >= 100) or ((.h5 // -1) >= 100);
+  def eligibility:
+    .measured = (.spend != null) |
+    .eligible = (.enabled and .auth_ok and .measured and (.walled | not) and (excluded | not)) |
+    .in_pool = (.enabled and (excluded | not));
+  def pin_lapse($pin; $row; $selected):
+    if $pin == "" or $selected != null then ""
+    elif ($pin | IN($qx[])) then "excluded"
+    elif $row == null then "absent"
+    elif ($row.auth_ok | not) then "auth unavailable"
+    elif ($row.blocked // false) then "blocked"
+    elif ($row.measured | not) then "no quota data"
+    elif $row.walled then "exhausted"
+    else "unavailable" end;
 
   # A weekly bucket stamped origin `headers` was never measured (shared-invariants n). The
   # collector no longer emits one, but a cache written before that rule can still be on
-  # disk, and routing on a synthetic 100 floors an account that is actually free.
+  # disk, and routing on a synthetic 100 walls an account that is actually free.
   walk(if type == "object" and (.weekly.origin? == "headers") then del(.weekly) else . end) |
   (.fetched_at | epoch) as $fetched |
   (.vendors.codex // {}) as $cx |
@@ -318,307 +235,148 @@ summary=$(jq -r \
   (if $data_as_of == null then "no timestamp"
    elif ($now - $data_as_of) > 7200 then "STALE (\((([($now - $data_as_of), 0] | max) / 60) | floor) min old)"
    else "fresh (\((([($now - $data_as_of), 0] | max) / 60) | floor) min old)" end) as $age |
-  ([$cx_source[] | select(auth_ok) |
-    bucket_values as $values |
-    select(($values | length) > 0) |
-    (((.weekly | type) != "object") and fresh_five_hour) as $r9_optimistic |
-    ([raw_runway(.five_hour), raw_runway(.weekly)] | map(select(. != null)) | min) as $time_runway |
-    ([safe_runway(.five_hour), safe_runway(.weekly)] | map(select(. != null)) | min) as $safe |
-    account_credits as $credits |
-    {name:(.account // "main"),main_last:(if (.account // "main") == "main" then 1 else 0 end),
-     pressure:($values | max),floor:is_floored,walled:is_walled,enabled:(.enabled != false),
-     credits:$credits,runway:($time_runway + ($credits * $credit_refill)),
-     score:((if $r9_optimistic then $floor else $safe end) + ($credits * $credit_refill)),
-     cap:pre_reset_cap,pin_cap:pinned_cap,
-     r5:reset_str(.five_hour),rw:reset_str(.weekly)}] |
-   sort_by(.main_last, -.score, .name)) as $cx_accounts |
-  ($cx_accounts | map(select((.floor | not) and .enabled and ((.name | IN($qx[])) | not)))) as $cx_eligible |
-  (first($cx_source[] | select((.account // "main") == $cx_pin)) // null) as $cx_pin_source |
-  (first($cx_accounts[] | select(.name == $cx_pin)) // null) as $cx_pin_account |
-  ($cx_accounts | map(select(.name == $cx_pin and (.walled | not) and
-                            ((.name | IN($qx[])) | not)) | .cap = .pin_cap) |
-   .[0] // null) as $cx_pinned |
-  (if $cx_pin == "" or $cx_pinned != null then ""
-   elif ($cx_pin | IN($qx[])) then "excluded"
-   elif $cx_pin_source == null then "absent"
-   elif ($cx_pin_source | auth_ok | not) then "auth unavailable"
-   elif $cx_pin_account != null and $cx_pin_account.walled then "exhausted"
-   else "unavailable" end) as $cx_pin_lapse |
-  (if $cx_pinned != null then $cx_pinned else ($cx_eligible[0] // null) end) as $cx_best |
-  (if ($cx.available // false) != true then
-     {state:"WALLED",selected:false,acct:"",runway:0,credits:0,cap:0,
-      line:("codex: " +
-        (if $cx_pin_lapse != "" then "pin \($cx_pin) \($cx_pin_lapse) → no selectable account | " else "" end) +
-        "unavailable")}
-   elif $cx_best == null then
-     {state:"WALLED",selected:false,acct:"",runway:0,credits:0,cap:0,
-      line:("codex: " +
-        (if $cx_pin_lapse != "" then "pin \($cx_pin) \($cx_pin_lapse) → no selectable account | " else "" end) +
-        (if ($cx_accounts | length) == 0 then
-              (if any($cx_source[]; .auth_needed == true) then "login needed" else "no authenticated quota data" end)
-            else ($cx_accounts |
-              sort_by(display_band($cx_best.name;
-                ((.floor | not) and .enabled and ((.name | IN($qx[])) | not));
-                ((.walled | not) and .enabled and ((.name | IN($qx[])) | not)))) |
-              map("\(.name) \(.pressure | round)%\(if .floor then " FLOOR" else "" end)\(if .enabled then "" else " off" end)") | join(", ")) end))}
-   else
-     {state:(if $cx_best.runway > $fresh_runway then "FRESH"
-             elif $cx_best.runway > $ok_runway then "OK"
-             elif $cx_best.runway > $tight_runway then "TIGHT" else "WALLED" end),
-      selected:true,
-      acct:$cx_best.name,runway:$cx_best.runway,credits:$cx_best.credits,cap:$cx_best.cap,
-      line:("codex: " +
-        (if $cx_pin_lapse != "" then "pin \($cx_pin) \($cx_pin_lapse) → \($cx_best.name) | " else "" end) +
-        ($cx_accounts |
-          sort_by(display_band($cx_best.name;
-            ((.floor | not) and .enabled and ((.name | IN($qx[])) | not));
-            ((.walled | not) and .enabled and ((.name | IN($qx[])) | not)))) |
-          map(
-          "\(.name) \(.pressure | round)% runway \(.runway | round1)% ↻\(.credits)\(if .name == $cx_pin and $cx_pinned != null then " PINNED" else "" end)\(if .floor then " FLOOR" else "" end)\(if .enabled then "" else " off" end) (5h→\(.r5), wk→\(.rw))") | join(" | ")))}
-   end) as $codex |
 
-  ([$gm_source[] | select(.removed != true and auth_ok and gemini_group) |
-    bucket_values as $values |
-    select(($values | length) > 0) |
-    ([raw_runway(.five_hour), raw_runway(.weekly)] | map(select(. != null)) | min) as $runway |
-    ([safe_runway(.five_hour), safe_runway(.weekly)] | map(select(. != null)) | min) as $score |
-    {name:(.account // "main"),main_last:(if (.account // "main") == "main" then 1 else 0 end),
-     pressure:($values | max),floor:is_floored,walled:is_walled,enabled:(.enabled != false),
-     runway:$runway,score:$score,cap:pre_reset_cap,pin_cap:pinned_cap,
-     as_of:(account_as_of | min // $fetched),r5:reset_str(.five_hour),rw:reset_str(.weekly)}] |
-   sort_by(.main_last, -.score, .name)) as $gm_accounts |
-  ($gm_accounts | map(select((.floor | not) and .enabled and ((.name | IN($qx[])) | not)))) as $gm_eligible |
-  (first($gm_source[] | select((.account // "main") == $gm_pin)) // null) as $gm_pin_source |
-  (first($gm_accounts[] | select(.name == $gm_pin)) // null) as $gm_pin_account |
-  ($gm_accounts | map(select(.name == $gm_pin and (.walled | not) and
-                            ((.name | IN($qx[])) | not)) | .cap = .pin_cap) |
-   .[0] // null) as $gm_pinned |
-  (if $gm_pin == "" or $gm_pinned != null then ""
-   elif ($gm_pin | IN($qx[])) then "excluded"
-   elif $gm_pin_source == null then "absent"
-   elif ($gm_pin_source | auth_ok | not) then "auth unavailable"
-   elif $gm_pin_account != null and $gm_pin_account.walled then "exhausted"
-   else "unavailable" end) as $gm_pin_lapse |
-  (if $gm_pinned != null then $gm_pinned else ($gm_eligible[0] // null) end) as $gm_best |
-  (if $gm_best == null then
-     if ($gm_accounts | length) > 0 then
-       ($gm_accounts[0]) as $best |
-       {state:"WALLED",selected:false,acct:$best.name,runway:$best.runway,pressure:$best.pressure,
-        cap:$best.cap,as_of:$best.as_of,
-        line:("gemini: " +
-          (if $gm_pin_lapse != "" then "pin \($gm_pin) \($gm_pin_lapse) → no selectable account | " else "" end) +
-          ($gm_accounts |
-            sort_by(display_band($gm_best.name;
-              ((.floor | not) and .enabled and ((.name | IN($qx[])) | not));
-              ((.walled | not) and .enabled and ((.name | IN($qx[])) | not)))) |
-            map(
-          "\(.name) \(.pressure | round)% runway \(.runway | round1)%\(if .floor then " FLOOR" else "" end)\(if .enabled then "" else " off" end) (5h→\(.r5), wk→\(.rw))") | join(" | ")))}
-     else
-       {state:"WALLED",selected:false,acct:"",runway:0,pressure:null,cap:0,as_of:null,
-        line:("gemini: " +
-          (if $gm_pin_lapse != "" then "pin \($gm_pin) \($gm_pin_lapse) → no selectable account | " else "" end) +
-          (if ($gm_source | length) == 0 and $gm.available == true then "no Gemini Models quota data"
-           elif ($gm_source | length) == 0 then "unavailable"
-           elif any($gm_source[]; .auth_needed == true) then "login needed"
-           else "no authenticated Gemini Models quota data" end))}
-     end
-   else
-     {state:(if $gm_best.runway > $fresh_runway then "FRESH"
-             elif $gm_best.runway > $ok_runway then "OK"
-             elif $gm_best.runway > $tight_runway then "TIGHT" else "WALLED" end),
-      selected:true,
-      acct:$gm_best.name,runway:$gm_best.runway,pressure:$gm_best.pressure,cap:$gm_best.cap,
-      as_of:$gm_best.as_of,
-      line:("gemini: " +
-        (if $gm_pin_lapse != "" then "pin \($gm_pin) \($gm_pin_lapse) → \($gm_best.name) | " else "" end) +
-        ($gm_accounts |
-          sort_by(display_band($gm_best.name;
-            ((.floor | not) and .enabled and ((.name | IN($qx[])) | not));
-            ((.walled | not) and .enabled and ((.name | IN($qx[])) | not)))) |
-          map(
-          "\(.name) \(.pressure | round)% runway \(.runway | round1)%\(if .name == $gm_pin and $gm_pinned != null then " PINNED" else "" end)\(if .floor then " FLOOR" else "" end)\(if .enabled then "" else " off" end) (5h→\(.r5), wk→\(.rw))") | join(" | ")))}
-   end) as $gemini |
+  ([$cx_source[] |
+    {name:(.account // "main"),
+     main_last:(if (.account // "main") == "main" then 1 else 0 end),
+     enabled:(.enabled != false),auth_ok:auth_ok,
+     h5:eff(.five_hour),wk:eff(.weekly),
+     credits:(if .reset_credits_stale == true then 0
+              elif (.reset_credits | type) == "number" then .reset_credits else 0 end),
+     r5:reset_str(.five_hour),rw:reset_str(.weekly)} |
+    .spend = spending | .walled = walled_at(.spend) | eligibility]) as $cx_accounts |
+  ($cx_accounts | map(select(.eligible)) | rank) as $cx_eligible |
+  (first($cx_accounts[] | select(.name == $cx_pin)) // null) as $cx_pin_row |
+  ($cx_accounts | map(select(.name == $cx_pin and (.walled | not) and .measured and
+                            (excluded | not))) | .[0] // null) as $cx_pinned |
+  pin_lapse($cx_pin; $cx_pin_row; $cx_pinned) as $cx_pin_lapse |
+  ($cx_pinned // $cx_eligible[0] // null) as $cx_best |
+  (($cx_best.name // "") as $sel |
+   (if $cx_best == null then "no selectable account" else $sel end) as $target |
+   {selected:($cx_best != null),acct:$sel,pct:(($cx_best.spend // 0) | round),
+    pinned:($cx_pinned != null),
+    line:("codex: " +
+      (if $cx_pin_lapse != "" then "pin \($cx_pin) \($cx_pin_lapse) → \($target) | " else "" end) +
+      (if ($cx_accounts | length) == 0 then
+         (if ($cx.available // false) != true then "unavailable" else "no quota data" end)
+       elif ($cx_accounts | all(.auth_ok | not)) then "login needed"
+       else ($cx_accounts | display_sort($sel) | map(
+         "\(.name) \(.spend | pct_str) 5h \(.h5 | pct_str) ↻\(.credits)\(if .name == $sel and $cx_pinned != null then " PINNED" else "" end)\(if .walled then " WALLED" else "" end)\(if .auth_ok then "" else " auth!" end)\(if .enabled then "" else " off" end) (5h→\(.r5), wk→\(.rw))") | join(" | ")) end))}) as $codex |
+
+  ([$gm_source[] | select(.removed != true and gemini_group) |
+    {name:(.account // "main"),
+     main_last:(if (.account // "main") == "main" then 1 else 0 end),
+     enabled:(.enabled != false),auth_ok:auth_ok,
+     h5:eff(.five_hour),wk:eff(.weekly),
+     r5:reset_str(.five_hour),rw:reset_str(.weekly)} |
+    .spend = spending | .walled = walled_at(.spend) | eligibility]) as $gm_accounts |
+  ($gm_accounts | map(select(.eligible)) | rank) as $gm_eligible |
+  (first($gm_accounts[] | select(.name == $gm_pin)) // null) as $gm_pin_row |
+  ($gm_accounts | map(select(.name == $gm_pin and (.walled | not) and .measured and
+                            (excluded | not))) | .[0] // null) as $gm_pinned |
+  pin_lapse($gm_pin; $gm_pin_row; $gm_pinned) as $gm_pin_lapse |
+  ($gm_pinned // $gm_eligible[0] // null) as $gm_best |
+  (($gm_best.name // "") as $sel |
+   (if $gm_best == null then "no selectable account" else $sel end) as $target |
+   {selected:($gm_best != null),acct:$sel,pinned:($gm_pinned != null),
+    line:("gemini: " +
+      (if $gm_pin_lapse != "" then "pin \($gm_pin) \($gm_pin_lapse) → \($target) | " else "" end) +
+      (if ($gm_accounts | length) == 0 then
+         (if any($gm_source[]; .auth_needed == true) then "login needed"
+          elif ($gm_source | length) > 0 or $gm.available == true then "no Gemini Models quota data"
+          else "unavailable" end)
+       elif ($gm_accounts | all(.auth_ok | not)) then "login needed"
+       else ($gm_accounts | display_sort($sel) | map(
+         "\(.name) \(.spend | pct_str) 5h \(.h5 | pct_str)\(if .name == $sel and $gm_pinned != null then " PINNED" else "" end)\(if .walled then " WALLED" else "" end)\(if .auth_ok then "" else " auth!" end)\(if .enabled then "" else " off" end) (5h→\(.r5), wk→\(.rw))") | join(" | ")) end))}) as $gemini |
 
   ([.vendors.claude.accounts[]? |
-    (bool_or(.rotation.usable.general?; true)) as $general_usable |
-    (bool_or(.rotation.usable.fable?; true)) as $fable_capable |
-    (eff(.five_hour)) as $h5 | (eff(.weekly)) as $wk | (eff(.fable)) as $fb |
-    (((.weekly | type) != "object") and fresh_five_hour) as $r9_optimistic |
-    {name:.account,tier:($tiers[.account] // 100),own:(.account == $own),enabled:(.enabled == true),
-     auth_ok:auth_ok,general_usable:$general_usable,fable_capable:$fable_capable,
-     h5:$h5,wk:$wk,fb:$fb,r5:reset_str(.five_hour),rw:reset_str(.weekly),rf:reset_str(.fable),
-     floor:is_floored,walled:is_walled,headroom_hit:is_above_headroom,
-     cap:pre_reset_cap,pin_cap:pinned_cap,
-     as_of:(account_as_of | min // $fetched),
-     base_safe:([safe_runway(.five_hour), safe_runway(.weekly)] | map(select(. != null)) |
-                if $r9_optimistic then $floor elif length > 0 then min else 0 end)} |
-    .reserved = (.fable_capable and (.fb | type) == "number" and .fb <= $r2_fresh and
-                 (.wk | type) == "number" and .wk >= $r2_weekly) |
-    .r1 = (if .fable_capable and (.fb | type) == "number" and .fb >= $r1_min then
-             .tier * $r1_weight * ((.fb - $r1_min) / (100 - $r1_min)) else 0 end) |
-    .r2 = (if .reserved then .tier * $r2_weight * ((100 - .fb) / 100) * (.wk / 100) else 0 end) |
-    .r3 = (if .fable_capable then 0 else .tier * $r3_weight end) |
-    .headroom_score = (100 - (if (.h5 | type) == "number" then .h5 else 50 end)) |
-    .score = ((.tier * .base_safe / 100) + .r1 - .r2 + .r3) |
-    .r8_gap = (if .fable_capable and (.fb | type) == "number" and (.wk | type) == "number"
-               then .wk - .fb else null end) |
-    .r8_demote = (.r8_gap != null and .r8_gap > 0) |
-    .r8_excluded = (.r8_demote and .r8_gap > $r8_gap_exclude)] |
-    sort_by(-.headroom_score, -.score, .name)) as $cl_accounts |
-  ($cl_accounts | map(select((.own | not) and .enabled and .auth_ok and .general_usable and
-                             (.h5 | type) == "number" and (.r8_excluded | not) and
-                             ((.name | IN($qx[])) | not)))) as $cl_candidates |
-  ($cl_candidates | map(select((.floor | not) and (.headroom_hit | not)))) as $cl_eligible |
-  (if ($cl_eligible | length) == 0 then null else $cl_eligible[0] end) as $rec |
-  (($cl_candidates | length) > 0 and all($cl_candidates[]; .headroom_hit)) as $all_above_headroom |
-  (if ($rec == null) and $all_above_headroom then
-     "WARN: no account below HEADROOM_PCT, using least-burnt"
-   else null end) as $headroom_warn |
-  (if $headroom_warn != null then ($cl_candidates[0] // null) else $rec end) as $rec_final |
+    {name:.account,tier:($tiers[.account] // 100),own:(.account == $own),
+     main_last:0,enabled:(.enabled == true),auth_ok:auth_ok,
+     general_usable:bool_or(.rotation.usable.general?; true),
+     fable_capable:bool_or(.rotation.usable.fable?; true),
+     h5:eff(.five_hour),wk:eff(.weekly),fb:eff(.fable),
+     r5:reset_str(.five_hour),rw:reset_str(.weekly),rf:reset_str(.fable)} |
+    .blocked = (.general_usable | not) |
+    .spend = spending | .walled = walled_at(.spend) | eligibility |
+    .eligible = (.eligible and (.blocked | not)) |
+    # Fable exhaustion never disqualifies ordinary work, so the fable bucket carries its own
+    # candidacy: the account must be able to run Fable at all and have a measured fable window.
+    .fable_pinnable = (.auth_ok and .fable_capable and (.fb | type) == "number" and
+                       (walled_at(.fb) | not) and (excluded | not)) |
+    .fable_ok = (.enabled and .fable_pinnable)]) as $cl_accounts |
+  ($cl_accounts | map(select(.eligible and (.own | not))) | rank) as $cl_pool |
+  ($cl_accounts | map(select(.eligible and .own)) | rank) as $cl_reserve |
   (first($cl_accounts[] | select(.name == $pin)) // null) as $pin_account |
   (if $pin_account != null and $pin_account.auth_ok and $pin_account.general_usable and
-      ($pin_account.walled | not) and
-      (($pin_account.name | IN($qx[])) | not) and ($pin_account.h5 | type) == "number"
-   then ($pin_account | .cap = .pin_cap) else null end) as $pin_rec |
-  (if $pin == "" or $pin_rec != null then ""
-   elif ($pin | IN($qx[])) then "excluded"
-   elif $pin_account == null then "absent"
-   elif ($pin_account.auth_ok | not) then "auth unavailable"
-   elif ($pin_account.general_usable | not) then "blocked"
-   elif $pin_account.walled then "exhausted"
-   else "unavailable" end) as $pin_lapse |
-  ([$cl_accounts[] | select(.auth_ok and .fable_capable and
-                            (.fb | type) == "number" and (.wk | type) == "number" and
-                            .fb < $floor and .wk < $floor) |
-    .session_score = ((100 - .fb) * $session_fable_weight + (100 - .wk) * $session_weekly_weight)] |
-    sort_by(-.session_score, -.tier, .name) | .[0] // null) as $session |
+      ($pin_account.walled | not) and $pin_account.measured and
+      (($pin_account | excluded) | not)
+   then $pin_account else null end) as $pin_rec |
+  pin_lapse($pin; $pin_account; $pin_rec) as $pin_lapse |
+  ($pin_rec // $cl_pool[0] // $cl_reserve[0] // null) as $cl_best |
+  ($pin_rec == null and ($cl_pool | length) == 0 and $cl_best != null) as $cl_is_reserve |
+  # The same three rules read against the fable bucket, session account still last.
+  ($cl_accounts | map(select(.fable_ok) | .spend = .fb)) as $fb_all |
+  ($fb_all | map(select(.own | not)) | rank) as $fb_pool |
+  ($fb_all | map(select(.own)) | rank) as $fb_reserve |
+  (first($cl_accounts[] | select(.name == $pin and .fable_pinnable) | .spend = .fb) // null)
+    as $fb_pinned |
+  ($fb_pinned // $fb_pool[0] // $fb_reserve[0] // null) as $fb_best |
+  ($fb_pinned == null and ($fb_pool | length) == 0 and $fb_best != null) as $fb_is_reserve |
+  (($cl_best.name // "") as $sel |
+   (if $cl_best == null then "no selectable account" else $sel end) as $target |
+   ("claude: " +
+    (if $pin_lapse != "" then "pin \($pin) \($pin_lapse) → \($target) | " else "" end) +
+    (if ($cl_accounts | length) == 0 then "no accounts"
+     else ($cl_accounts | display_sort($sel) | map(
+       # `score` and `cap` are remaining windows — in the spending bucket, and to the nearest wall
+       # — under the token names review-bench greps until it reads `--account` directly.
+       "\(.name)($\(.tier))\(if .own then "*" else "" end) 5h \(.h5 | pct_str) wk \(.wk | pct_str) fb \(.fb | pct_str) score \(100 - (.spend // 100) | round) cap \([100 - ([(.spend // 100), (.h5 // 100)] | max), 0] | max | round)%\(if .name == $sel and $pin_rec != null then " PINNED" else "" end)\(if .name == $sel and $cl_is_reserve then " RESERVE" else "" end)\(if .walled then " WALLED" else "" end)\(if .auth_ok then "" else " auth!" end)\(if .fable_capable then "" else " no-Fable" end)\(if .blocked then " blocked" else "" end)\(if .enabled then "" else " off" end)") | join(" | ")) end))) as $claude_line |
+
   # Only pool members count: an out-of-pool account that happens to be at 0% would otherwise
-  # hide an ALL FLOORED verdict behind quota nobody is allowed to spend.
-  ((($cx_accounts | map(select(.enabled))) + $cl_candidates) as $all |
-   ($all | length) > 0 and all($all[]; .floor)) as $all_floored |
-  (if ($rec_final != null) and ($rec_final.as_of != null) and (($now - $rec_final.as_of) > 300) and
-      (($rec_final.cap < 20) or ($rec_final.cap > 80)) then "STALE-REFRESH" else null end) as $freshness_warn |
-  {codex:$codex,gemini:$gemini,
-   claude_line:("claude: " +
-     (if $pin_lapse != "" then
-        "pin \($pin) \($pin_lapse) → \(if $rec_final == null then "no selectable account" else $rec_final.name end) | "
-      else "" end) +
-     (if ($cl_accounts | length) == 0 then "no enabled accounts"
-     else ($cl_accounts |
-       sort_by(display_band(
-         (if $pin_rec != null then $pin_rec.name else $rec_final.name end);
-         ((.own | not) and .enabled and .auth_ok and .general_usable and
-          (.h5 | type) == "number" and (.r8_excluded | not) and
-          ((.name | IN($qx[])) | not) and (.floor | not) and (.headroom_hit | not));
-         ((.own | not) and .enabled and .auth_ok and .general_usable and
-          (.h5 | type) == "number" and (.r8_excluded | not) and
-          ((.name | IN($qx[])) | not) and (.walled | not)))) |
-       map(
-       "\(.name)($\(.tier))\(if .own then "*" else "" end) 5h \(if (.h5 | type) == "number" then (.h5 | round | tostring) + "%" else "?" end) wk \(if (.wk | type) == "number" then (.wk | round | tostring) + "%" else "?" end) fb \(if (.fb | type) == "number" then (.fb | round | tostring) + "%" else "?" end) score \(.score | round1) cap \((if .name == $pin and $pin_rec != null then .pin_cap else .cap end) | round1)%\(if .name == $pin and $pin_rec != null then " PINNED" else "" end)\(if .reserved then " Fable-reserved" else "" end)\(if .r8_excluded then " Fable-gap-excluded" else "" end)\(if .fable_capable then "" else " no-Fable" end)\(if .floor then " FLOOR" else "" end)\(if .headroom_hit then " HEADROOM" else "" end)\(if (.general_usable | not) then " blocked" else "" end)\(if .enabled then "" else " off" end)") | join(" | ")) end)),
-   rec:$rec_final,pin:$pin_rec,session:$session,age:$age,all_floored:$all_floored,headroom_warn:$headroom_warn,freshness_warn:$freshness_warn}
-  | [.codex.state,.codex.acct,(.codex.runway | round1 | tostring),(.codex.credits | tostring),
-     (.codex.cap | round1 | tostring),.codex.line,
-     .gemini.state,.gemini.acct,(.gemini.runway | round1 | tostring),((.gemini.pressure // 0) | round | tostring),
-     ((.gemini.cap // 0) | round1 | tostring),((.gemini.as_of // 0) | tostring),.gemini.line,
-     .claude_line,(.rec.name // ""),((.rec.score // 0) | round1 | tostring),((.rec.cap // 0) | round1 | tostring),
-     (if .rec.reserved == true then "yes" else "no" end),
-     (if .rec.r8_demote == true then "yes" else "no" end),
-     (.pin.name // ""),((.pin.score // 0) | round1 | tostring),((.pin.cap // 0) | round1 | tostring),
-     (if .pin.reserved == true then "yes" else "no" end),
-     (if .pin.r8_demote == true then "yes" else "no" end),
-     $pin_lapse,$cx_pin_lapse,$gm_pin_lapse,
-     (.session.name // ""),((.session.fb // 0) | round | tostring),((.session.wk // 0) | round | tostring),
-     .age,(if .all_floored then "yes" else "no" end),.headroom_warn // "",.freshness_warn // "",
-     (if .codex.selected then "yes" else "no" end),
-     (if .gemini.selected then "yes" else "no" end)] | join("\u001f")
+  # hide an ALL WALLED verdict behind quota nobody is allowed to spend.
+  ((($cx_accounts + $gm_accounts + $cl_accounts) | map(select(.in_pool and .measured))
+    | length) > 0) as $had_pool |
+
+  [(if $codex.selected then "yes" else "no" end),$codex.acct,($codex.pct | tostring),
+   (if $codex.pinned then "yes" else "no" end),$codex.line,$cx_pin_lapse,
+   (if $gemini.selected then "yes" else "no" end),$gemini.acct,
+   (if $gemini.pinned then "yes" else "no" end),$gemini.line,$gm_pin_lapse,
+   $claude_line,($cl_best.name // ""),(if $pin_rec != null then "yes" else "no" end),
+   (if $cl_is_reserve then "yes" else "no" end),$pin_lapse,
+   ($fb_best.name // ""),(($fb_best.fb // 0) | round | tostring),(($fb_best.wk // 0) | round | tostring),
+   (if $fb_is_reserve then "yes" else "no" end),
+   $age,(if $had_pool then "yes" else "no" end)] | join("\u001f")
 ' "$LIMITS_FILE" 2>/dev/null) || fail_safe "limits parse failed"
 [ -n "$summary" ] || fail_safe "limits parse failed"
 
-IFS=$'\x1f' read -r cx_state cx_acct cx_runway cx_credits cx_cap cx_line \
-  gm_state gm_acct gm_runway gm_pressure gm_cap gm_as_of gm_line cl_line rec rec_score rec_cap rec_reserved \
-  rec_demote pin_rec pin_score pin_cap pin_reserved pin_demote cb_pin_lapse cx_pin_lapse gm_pin_lapse \
-  session_acct session_fb session_wk age all_floored headroom_warn freshness_warn \
-  cx_selected gm_selected <<<"$summary"
+IFS=$'\x1f' read -r cx_selected cx_acct cx_pct cx_pinned cx_line cx_pin_lapse \
+  gm_selected gm_acct gm_pinned gm_line gm_pin_lapse \
+  cl_line cl_acct cl_pinned cl_reserve cl_pin_lapse \
+  fb_acct fb_fb fb_wk fb_reserve age had_pool <<<"$summary"
 
-# R8 recommendation ladder, strongest → weakest: opus·high → opus·medium → sonnet·high.
-# sonnet·medium and anything weaker are TOO WEAK and are never emitted. The configured
-# claudeb model/effort is first snapped onto this ladder (general floor: sonnet only at
-# high+, opus down to medium), then stepped ONE rung weaker when R8 fires (a fable-capable
-# account where weekly% > fable% — workers must not eat quota Fable could still use). Past
-# the bottom rung an account is dropped via the R8_GAP_EXCLUDE_PCT path, so a demote at
-# sonnet·high clamps in place rather than emitting anything weaker. Mutating cb_model/
-# cb_effort keeps the NEXT line and the cache in sync; demote_note carries the printed
-# reason. rec_demote is already false for no-Fable accounts and missing/inverted fable data.
-demote_note=""
-ladder_index() {
-  case "$1" in
-    opus) case "$2" in medium) echo 1 ;; *) echo 0 ;; esac ;;
-    sonnet) echo 2 ;;
-    *) echo - ;;
-  esac
-}
-ladder_label() { case $1 in 0) echo 'opus·high' ;; 1) echo 'opus·medium' ;; 2) echo 'sonnet·high' ;; esac; }
-resolve_recommendation() {
-  local base; base=$(ladder_index "$cb_model" "$cb_effort")
-  [ "$base" != - ] || return 0
-  local idx=$base
-  if [ "$rec_demote" = yes ]; then idx=$((base + 1)); [ $idx -le 2 ] || idx=2; fi
-  case $idx in
-    0) cb_model=opus;   cb_effort=high ;;
-    1) cb_model=opus;   cb_effort=medium ;;
-    2) cb_model=sonnet; cb_effort=high ;;
-  esac
-  [ $idx -eq $base ] || demote_note=" [R8 demote: $(ladder_label $base)→$(ladder_label $idx); wk>fb]"
-}
-
-pin_override=false
-if { [ "$cx_selected" = yes ] && [ -n "$cx_pin" ] && [ "$cx_acct" = "$cx_pin" ]; } ||
-   { [ "$gm_selected" = yes ] && [ -n "$gm_pin" ] && [ "$gm_acct" = "$gm_pin" ]; } ||
-   { [ -n "$cb_pin" ] && [ -n "$pin_rec" ]; }; then
-  pin_override=true
+if [ "$query_fable" = true ]; then
+  cl_acct=$fb_acct
+  cl_reserve=$fb_reserve
 fi
 
-cx_next_state=$cx_state
-if [ "$cx_selected" = yes ] && [ -n "$cx_pin" ] && [ "$cx_acct" = "$cx_pin" ]; then
-  cx_next_state="$cx_state PINNED; pre-reset cap ${cx_cap}%"
-fi
-
-if [ -n "$cb_pin" ] && [ -n "$pin_rec" ]; then
-  rec=$pin_rec
-  rec_score=$pin_score
-  rec_cap=$pin_cap
-  rec_reserved=$pin_reserved
-  rec_demote=$pin_demote
-  resolve_recommendation
-  cb_next="claudeb $pin_rec · $cb_model · $cb_effort (PINNED; pre-reset cap ${pin_cap}%)$demote_note"
-  cb_cache="cb@$pin_rec"
-elif [ -n "$cb_pin" ]; then
-  if [ -n "$rec" ]; then
-    resolve_recommendation
-    cb_next="claudeb pin $cb_pin $cb_pin_lapse → $rec · $cb_model · $cb_effort — ACCOUNT: $rec; pre-reset cap ${rec_cap}%$demote_note"
-    cb_cache="cb~$rec"
-  else
-    cb_next="claudeb pin $cb_pin $cb_pin_lapse → no selectable account"
-    cb_cache="cb~?"
-  fi
-elif [ "$pin_override" = false ] && [ "$all_floored" = yes ] && [ -z "$rec" ] && [ "$gm_selected" != yes ]; then
-  cb_next="ALL FLOORED, ask Egor"
-  cb_cache="cb~?"
-elif [ -n "$rec" ]; then
-  resolve_recommendation
-  cb_next="claudeb $rec · $cb_model · $cb_effort — ACCOUNT: $rec; pre-reset cap ${rec_cap}%$demote_note"
-  [ -z "$freshness_warn" ] || cb_next="$cb_next ($freshness_warn)"
-  [ -z "$headroom_warn" ] || cb_next="$cb_next ($headroom_warn)"
-  cb_cache="cb~$rec"
-else
-  cb_next="claudeb unavailable — no selectable non-session account"
-  cb_cache="cb~?"
+all_walled=no
+if [ "$had_pool" = yes ] && [ -z "$cl_acct" ] && [ "$cx_selected" != yes ] &&
+   [ "$gm_selected" != yes ]; then
+  all_walled=yes
 fi
 
 if [ -n "$query_vendor" ]; then
   case "$query_vendor" in
-    claudeb) query_answer="$rec"; query_reason="$cb_next" ;;
-    # State describes health; selected alone says whether a query has a routable account.
+    claudeb)
+      query_answer="$cl_acct"
+      # The ordinary-work line can name a perfectly selectable account, which reads as a
+      # contradiction when what ran out was the fable bucket.
+      if [ "$query_fable" = true ]; then
+        query_reason="no fable-capable account with a fable bucket below 100%"
+      else
+        query_reason="$cl_line"
+      fi
+      ;;
     codex)
       query_answer=""
       [ "$cx_selected" = yes ] && query_answer="$cx_acct"
@@ -631,6 +389,9 @@ if [ -n "$query_vendor" ]; then
       ;;
   esac
   if [ -n "$query_answer" ]; then
+    # Callers parse stdout, so the reserve note travels on stderr: the answer stays a bare name.
+    [ "$query_vendor" != claudeb ] || [ "$cl_reserve" != yes ] ||
+      printf 'worker-pick: %s is the session account (SESSION RESERVE)\n' "$query_answer" >&2
     printf '%s\n' "$query_answer"
     exit 0
   fi
@@ -638,52 +399,49 @@ if [ -n "$query_vendor" ]; then
   exit 3
 fi
 
-case "$cx_state" in
-  FRESH|OK) cx_mark="✓" ;;
-  TIGHT) cx_mark="!" ;;
-  *) cx_mark="✗" ;;
-esac
-case "$gm_state" in
-  FRESH|OK) gm_mark="✓" ;;
-  TIGHT) gm_mark="!" ;;
-  *) gm_mark="✗" ;;
-esac
-
-gm_freshness_warn=""
-if [[ "$gm_as_of" =~ ^[0-9]+$ ]] && [ "$gm_as_of" -gt 0 ] &&
-   [ "$((now - gm_as_of))" -gt 300 ] &&
-   awk "BEGIN {exit !($gm_cap < 20 || $gm_cap > 80)}"; then
-  gm_freshness_warn=" (STALE-REFRESH)"
-fi
-if [ "$gm_selected" = yes ] && [ -n "$gm_pin" ] && [ "$gm_acct" = "$gm_pin" ]; then
-  gm_next="gemini $gm_acct · $gm_model · $gm_effort — ACCOUNT: $gm_acct; pre-reset cap ${gm_cap}% — ${gm_state} PINNED${gm_freshness_warn}"
-elif [ "$gm_selected" = yes ] && [ -n "$gm_pin" ] && [ -n "$gm_acct" ]; then
-  gm_next="gemini pin $gm_pin $gm_pin_lapse → $gm_acct · $gm_model · $gm_effort — ACCOUNT: $gm_acct; pre-reset cap ${gm_cap}% — ${gm_state}${gm_freshness_warn}"
-elif [ "$gm_selected" != yes ]; then
-  if [ "$gm_pressure" -ge "$FLOOR_PCT" ] 2>/dev/null; then
-    gm_next="gemini ${gm_acct:-unavailable} · $gm_model · $gm_effort — WALLED; pre-reset cap ${gm_cap}%"
-  else
-    gm_next="gemini${gm_pin:+ pin $gm_pin $gm_pin_lapse →} unavailable"
-  fi
+if [ "$cl_pinned" = yes ]; then
+  cb_next="claudeb $cl_acct · $cb_model · $cb_effort — ACCOUNT: $cl_acct (PINNED)"
+  cb_cache="cb@$cl_acct"
+elif [ -n "$cb_pin" ] && [ -z "$cl_acct" ]; then
+  cb_next="claudeb pin $cb_pin $cl_pin_lapse → no selectable account"
+  cb_cache="cb~?"
+elif [ -n "$cb_pin" ]; then
+  cb_next="claudeb pin $cb_pin $cl_pin_lapse → $cl_acct · $cb_model · $cb_effort — ACCOUNT: $cl_acct"
+  [ "$cl_reserve" != yes ] || cb_next="$cb_next (SESSION RESERVE)"
+  cb_cache="cb~$cl_acct"
+elif [ -n "$cl_acct" ]; then
+  cb_next="claudeb $cl_acct · $cb_model · $cb_effort — ACCOUNT: $cl_acct"
+  [ "$cl_reserve" != yes ] || cb_next="$cb_next (SESSION RESERVE)"
+  cb_cache="cb~$cl_acct"
+elif [ "$all_walled" = yes ]; then
+  cb_next="ALL WALLED, ask Egor"
+  cb_cache="cb~?"
 else
-  gm_next="gemini $gm_acct · $gm_model · $gm_effort — ACCOUNT: $gm_acct; pre-reset cap ${gm_cap}% — ${gm_state}${gm_freshness_warn}"
+  cb_next="claudeb unavailable — no selectable account"
+  cb_cache="cb~?"
 fi
 
-if [ "$pin_override" = false ] && [ "$all_floored" = yes ] && [ -z "$rec" ] && [ "$gm_selected" != yes ]; then
-  verdict="Codex main is last-resort; ALL FLOORED, ask Egor"
+if [ "$cx_selected" = yes ]; then
+  cx_next="codex $cx_acct · $cx_effort — ${cx_pct}%"
+  [ "$cx_pinned" != yes ] || cx_next="$cx_next PINNED"
+  cx_mark="✓"
 else
-  verdict="Codex main is last-resort; codex $cx_state"
-  [ "$cx_selected" != yes ] || verdict="$verdict ($cx_acct, runway ${cx_runway}%, ↻${cx_credits} manual)"
-  if [ -n "$rec" ]; then
-    verdict="$verdict; claudeb $rec score $rec_score"
-    [ "$rec_reserved" != yes ] || verdict="$verdict, Fable-reserved"
-  else
-    verdict="$verdict; no selectable claudeb account"
-  fi
+  cx_next="codex unavailable · $cx_effort — WALLED"
+  cx_mark="✗"
 fi
-verdict="$verdict; gemini $gm_state"
-[ "$gm_selected" != yes ] || verdict="$verdict ($gm_acct, runway ${gm_runway}%)"
-verdict="$verdict; Gemini auto-routing remains conservative until benchmarked"
+# A pin that could not serve is announced where the routing decision is read, not only in the
+# vendor line: silently routing elsewhere reads as the pin having been honoured.
+[ -z "$cx_pin_lapse" ] || cx_next="codex pin $cx_pin $cx_pin_lapse → ${cx_next#codex }"
+
+if [ "$gm_selected" = yes ]; then
+  gm_next="gemini $gm_acct · $gm_model · $gm_effort — ACCOUNT: $gm_acct"
+  [ "$gm_pinned" != yes ] || gm_next="$gm_next PINNED"
+  gm_mark="✓"
+else
+  gm_next="gemini unavailable"
+  gm_mark="✗"
+fi
+[ -z "$gm_pin_lapse" ] || gm_next="gemini pin $gm_pin $gm_pin_lapse → ${gm_next#gemini }"
 
 case "$cx_effort" in medium) cx_eff_abbr=med ;; high) cx_eff_abbr=hi ;; xhigh) cx_eff_abbr=xh ;; *) cx_eff_abbr=$cx_effort ;; esac
 case "$cb_effort" in medium) cb_eff_abbr=med ;; high) cb_eff_abbr=hi ;; xhigh) cb_eff_abbr=xh ;; *) cb_eff_abbr=$cb_effort ;; esac
@@ -693,34 +451,27 @@ write_cache "$(printf 'cx%s%s·'"$codex_model"'·%s %s·%s·%s gx%s%s·%s·%s' \
   "$cx_mark" "$cx_acct" "$cx_eff_abbr" "$cb_cache" "$cb_model_abbr" "$cb_eff_abbr" \
   "$gm_mark" "${gm_acct:-?}" "$gm_model" "$gm_eff_abbr")"
 
-if { [ "$worker_mode" = auto ] || [ "$worker_mode" = gemini ]; } &&
-   [ "$pin_override" = false ] && [ "$all_floored" = yes ] && [ -z "$rec" ] && [ "$gm_selected" != yes ]; then
-  printf 'NEXT: ALL FLOORED, ask Egor  |  codex — WALLED\n'
+if [ "$all_walled" = yes ]; then
+  printf 'NEXT: ALL WALLED, ask Egor  |  codex — WALLED\n'
 elif [ "$worker_mode" = gemini ]; then
-  printf 'NEXT: %s  |  %s  |  codex %s · %s — %s\n' \
-    "$gm_next" "$cb_next" "${cx_acct:-unavailable}" "$cx_effort" "$cx_next_state"
+  printf 'NEXT: %s  |  %s  |  %s\n' "$gm_next" "$cb_next" "$cx_next"
 elif [ "$worker_mode" = auto ]; then
-  if [ -z "$rec" ] && [ "$cx_selected" != yes ] && [ "$gm_selected" = yes ]; then
-    printf 'NEXT: %s  |  %s  |  codex — WALLED\n' "$gm_next" "$cb_next"
-  elif [ "$all_floored" = yes ] && [ -z "$rec" ] && [ "$cx_selected" != yes ]; then
+  if [ -z "$cl_acct" ] && [ "$cx_selected" != yes ] && [ "$gm_selected" = yes ]; then
     printf 'NEXT: %s  |  %s  |  codex — WALLED\n' "$gm_next" "$cb_next"
   else
-    printf 'NEXT: %s  |  codex %s · %s — %s  |  %s\n' \
-      "$cb_next" "${cx_acct:-unavailable}" "$cx_effort" "$cx_next_state" "$gm_next"
+    printf 'NEXT: %s  |  %s  |  %s\n' "$cb_next" "$cx_next" "$gm_next"
   fi
-elif [ "$pin_override" = false ] && [ "$all_floored" = yes ] && [ -z "$rec" ]; then
-  printf 'NEXT: ALL FLOORED, ask Egor  |  codex — WALLED\n'
 else
-  printf 'NEXT: %s  |  codex %s · %s — %s\n' "$cb_next" "${cx_acct:-unavailable}" "$cx_effort" "$cx_next_state"
+  printf 'NEXT: %s  |  %s\n' "$cb_next" "$cx_next"
 fi
 printf '%s\n' "$cx_line"
 printf '%s\n' "$gm_line"
-printf '%s   (* = this session account, excluded from automatic worker routing)\n' "$cl_line"
-printf 'POLICY: %s\n' "$verdict"
+printf '%s   (* = this session account, the reserve — routed only when nothing else is selectable)\n' "$cl_line"
 printf 'DATA: %s\n' "$age"
-if [ -n "$session_acct" ]; then
-  printf 'SESSION: %s — fb %s%%, wk %s%%\n' "$session_acct" "$session_fb" "$session_wk"
+if [ -n "$fb_acct" ]; then
+  session_line="SESSION: $fb_acct — fb ${fb_fb}%, wk ${fb_wk}%"
+  [ "$fb_reserve" != yes ] || session_line="$session_line (SESSION RESERVE)"
+  printf '%s\n' "$session_line"
 else
   printf 'SESSION: no healthy Fable-capable account\n'
 fi
-print_policy
