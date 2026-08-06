@@ -1268,6 +1268,20 @@ def scope_path_relative(top, candidate):
     return None
 
 
+def scope_pathspec_base(repo):
+    """The repository root and the directory a `--paths` pathspec is spelled against. Asked by the
+    reader of a scope and by the writer of a command that carries one, because a command printed in
+    one spelling and read in the other reviewed a path that was never there: `sub/mine.txt` printed
+    for a caller standing in `sub` came back as `sub/sub/mine.txt` and matched nothing.
+    """
+    top = Path(repo).resolve()
+    try:
+        cwd = Path.cwd()
+    except OSError:
+        cwd = top
+    return top, cwd if cwd == top or top in cwd.parents else top
+
+
 def normalize_scope_paths(repo, paths, option="--paths", root_is_everything=False):
     """The scope as the snapshot records it and as its receipt is named: repository-relative,
     lexically canonical, deduplicated and sorted, so two callers naming the same files differently
@@ -1282,12 +1296,7 @@ def normalize_scope_paths(repo, paths, option="--paths", root_is_everything=Fals
     the top carries every tracked change, and an empty pathspec is how the callers here spell that
     same set, while a review scoped to the whole tree is a scope nobody asked for.
     """
-    top = Path(repo).resolve()
-    try:
-        cwd = Path.cwd()
-    except OSError:
-        cwd = top
-    base = cwd if cwd == top or top in cwd.parents else top
+    top, base = scope_pathspec_base(repo)
     normalized = set()
     everything = False
     for raw in paths:
@@ -2618,7 +2627,7 @@ def write_report_receipt(run_dir, verdicts):
     }) + "\n")
 
 
-def triage_pending_run(repo=None):
+def triage_pending_run(repo=None, session=None):
     """The newest worktree run of `repo` if it still owes its triaged report, else None.
 
     Only the newest one is ever asked for: an older run judged a diff that has since moved, and a
@@ -2627,6 +2636,13 @@ def triage_pending_run(repo=None):
     Scoped to one repository because the state directory is shared by every chat: unscoped, a
     session in another project answers for this run, spends its asks, and the session that owes
     the report is never asked at all.
+
+    `session` is asked of that newest run and refuses it, never skipped past, because one repository
+    is shared by every co-tenant chat too: a run another chat launched is that chat's to report, and
+    asking this one spends the run's asks where they can do nothing — but walking on to an older run
+    of the same repository hands over exactly the moved diff the newest-only rule exists to refuse.
+    A run recording no session at all still matches, since a daemon launch or an older build owes
+    its report to whoever is here rather than to nobody.
     """
     benches = state_dir() / "benches"
     common = git_common_dir(repo) if repo else None
@@ -2653,6 +2669,9 @@ def triage_pending_run(repo=None):
                 git_common_dir(candidate) == common for candidate in reviewed if candidate
             ):
                 continue
+        launcher = str(meta.get("session") or "")
+        if session and launcher and launcher != session:
+            return None
         if (run_dir / "verdicts.jsonl").exists() or (run_dir / REPORT_RECEIPT).exists():
             return None
         finished = parse_iso_timestamp(meta.get("finished") or meta.get("finished_at"))
@@ -5576,11 +5595,12 @@ def diff_numstat(repo, revisions, paths=None):
     return changes, sources
 
 
-def untracked_numstat(repo):
+def untracked_numstat(repo, paths=None):
     # --full-name so a --repo pointing at a subdirectory still yields repository-root paths, which
     # is what the escalation rules match on.
     proc = subprocess.run(
-        ["git", "ls-files", "--others", "--exclude-standard", "--full-name", "-z"],
+        ["git", "ls-files", "--others", "--exclude-standard", "--full-name", "-z",
+         "--", *(paths or ())],
         cwd=repo, capture_output=True,
     )
     if proc.returncode != 0:
@@ -6062,7 +6082,7 @@ def cmd_reviewed(args):
 
 
 def cmd_pending_report(args):
-    pending = triage_pending_run(args.repo)
+    pending = triage_pending_run(args.repo, getattr(args, "session", "") or None)
     if pending is None:
         return 1
     run_dir, meta = pending
@@ -6098,6 +6118,20 @@ def cmd_suggest(args):
     print(f"repo: {repo}", file=sys.stderr)
     # Defined for every path through the branch below, because the report at the end reads it.
     snapshot_baseline = False
+    commit_paths = getattr(args, "commit_paths", None)
+    commit_all = bool(getattr(args, "commit_all", False))
+    if commit_paths is not None:
+        # git reads a commit pathspec beside the caller, while every git call here runs at the
+        # repository root. Taken as typed, a path named from a subdirectory matched a different file
+        # or none at all — and matching nothing is this command's strongest allow signal.
+        commit_paths = normalize_scope_paths(
+            repo, commit_paths, "--commit-paths", root_is_everything=True
+        )
+    # Everything below is measured through the commit's own pathspec, because the command printed at
+    # the end is a review narrowed to it: priced against the whole tree, a two-line fix beside
+    # another agent's large work came out T2 and the reader was sent to a panel reading none of it.
+    # An empty list is `git commit -- .`, which carries the whole tree and narrows nothing.
+    commit_scope = commit_paths or None
     if args.range:
         left, separator, right = args.range.partition("..")
         if not separator or not left or not right or right.startswith("."):
@@ -6118,19 +6152,21 @@ def cmd_suggest(args):
             # size of the review that had just finished, which is the loop that made one review
             # become three.
             changes, sources = diff_numstat(
-                repo, [receipt["tree"], working_tree_tree(repo)]
+                repo, [receipt["tree"], working_tree_tree(repo)], commit_scope
             )
         else:
             baseline = receipt["tree"] if receipt else "HEAD"
-            changes, sources = diff_numstat(repo, [baseline])
+            changes, sources = diff_numstat(repo, [baseline], commit_scope)
             # A staged change that the working tree then reverts is absent from the
             # baseline-to-files diff but is still what the next commit will contain, so the index
             # is asked separately.
-            staged, staged_sources = diff_numstat(repo, ["--cached", baseline])
+            staged, staged_sources = diff_numstat(repo, ["--cached", baseline], commit_scope)
             for path, lines in staged.items():
                 changes[path] = max(changes.get(path, 0), lines)
             sources |= staged_sources
-            changes.update(untracked_numstat(repo))
+            # Untracked content is in no commit form, but a scoped review stages the whole subtree
+            # under its paths, so it is part of the diff the printed command would be shown.
+            changes.update(untracked_numstat(repo, commit_scope))
         command_target = "HEAD"
     if not changes:
         if receipt:
@@ -6138,23 +6174,15 @@ def cmd_suggest(args):
         else:
             print("nothing to review")
         return 0
-    commit_paths = getattr(args, "commit_paths", None)
-    commit_all = bool(getattr(args, "commit_all", False))
-    if commit_paths is not None:
-        # git reads a commit pathspec beside the caller, while every git call here runs at the
-        # repository root. Taken as typed, a path named from a subdirectory matched a different file
-        # or none at all — and matching nothing is this command's strongest allow signal.
-        commit_paths = normalize_scope_paths(
-            repo, commit_paths, "--commit-paths", root_is_everything=True
-        )
     if not args.range and (commit_all or commit_paths is not None):
         contents, _ = commit_content_view(repo, commit_paths, commit_all)
         try:
             empty_form = not contents()
         except RuntimeError:
             empty_form = False
-        # A commit carrying nothing is one git itself refuses, and the whole-tree delta below is
-        # other work in the checkout rather than anything this commit would take.
+        # A commit carrying nothing is one git itself refuses, and the delta measured above is
+        # other work in the checkout — untracked content, another agent's edits — rather than
+        # anything this commit would take.
         if empty_form:
             print("nothing to review")
             return 0
@@ -6196,6 +6224,22 @@ def cmd_suggest(args):
         tier_name = "T0" if size_tier(changes, changed_lines) == "T0" else "T1"
     scoped_vouch = None if args.range or fix_delta else scoped_review_vouching(
         repo, commit_paths, commit_all)
+
+    def spell_scope(paths):
+        """The scope as the reader must type it, for both lines below: handed two spellings of one
+        path set, a reader corrects the command into the one that matches nothing.
+        """
+        top, base = scope_pathspec_base(repo)
+        if base == top:
+            return list(paths)
+        spelled = []
+        for path in paths:
+            relative = os.path.relpath(top / path, base)
+            # A scope that IS the caller's own directory spells as `.`, and --paths refuses that.
+            spelled.append(str(top / path) if relative == os.curdir else relative)
+        return spelled
+
+    printed_scope = spell_scope(commit_scope) if commit_scope else []
     print(f"changed files: {len(changes)}")
     print(f"changed lines: {changed_lines}")
     # Exactly one tier is named here, and it is the one that runs. The cap on an owner-only tier
@@ -6209,6 +6253,9 @@ def cmd_suggest(args):
               f"so the panel is {run_tier}")
     if fix_delta:
         print(f"work over review {receipt['run_id']}, so {run_tier} regardless of what it touches")
+    if printed_scope:
+        print(f"sized to this commit's paths: {shlex.join(printed_scope)}; "
+              "the rest of the tree is somebody else's to review")
     if scoped_vouch:
         carried = ("every path this commit's pathspec carries"
                    if commit_paths is not None else
@@ -6235,6 +6282,8 @@ def cmd_suggest(args):
         return shlex.join([
             "review-bench", "review", target, "--tier", tier,
             *(["--max"] if use_max else []), *extra, *long_tier,
+            # Last, because --paths swallows every argument after it.
+            *(["--paths", *printed_scope] if printed_scope else []),
         ])
 
     background = REVIEW_TIERS[run_tier]["budget_min"] >= 10
@@ -6246,8 +6295,9 @@ def cmd_suggest(args):
     # Named here because this output is the only place a reader looks: the skill says to run
     # suggest and obey it, so a flag absent from the printed command does not exist. Left as the
     # exception rather than the default — narrowing a review that could have read everything
-    # loses the defects that live between files.
-    if not args.range:
+    # loses the defects that live between files. Silent once the command above already carries the
+    # scope: asking a reader to pick paths it was just handed is how a scope came out wrong.
+    if not args.range and not commit_scope:
         print("scoped: if part of this tree is another agent's live work, repeat the command "
               "with --paths <path> ... naming only your own files; a scoped run reviews and "
               "stamps only those and leaves the repository's own receipt alone")
@@ -6504,6 +6554,7 @@ def cmd_run(args):
         "rater_runs": [], "durations": {},
         "started": started.isoformat(), "focus": args.focus or "",
         "verifier": verify_model or "",
+        **session_stamp(),
     }
     if worktree_mode:
         launch_meta["worktree"] = True
@@ -6718,6 +6769,9 @@ def cmd_run(args):
             "durations": {row["rater"]: row["duration_ms"] for row in rater_meta},
             "started": started.isoformat(), "finished": iso_now(), "focus": args.focus or "",
             "verifier": verify_model or "",
+            # Rewritten from scratch when the run ends, and the triage nag reads the finished
+            # document: dropped here, the launching chat would be forgotten exactly when it is asked.
+            **session_stamp(),
         }
         if worktree_mode:
             meta["worktree"] = True
@@ -7644,6 +7698,10 @@ def main():
     pending.add_argument(
         "--mark", action="store_true",
         help=f"Count this ask, so a run is asked for at most {TRIAGE_GATE_ASKS} times",
+    )
+    pending.add_argument(
+        "--session", default="", metavar="ID",
+        help="Only runs this chat launched, plus any run recording no launching chat",
     )
     pending.set_defaults(func=cmd_pending_report)
     suggest = subparsers.add_parser("suggest", help="Suggest a review tier for a change")

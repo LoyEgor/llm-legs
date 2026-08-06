@@ -6576,12 +6576,13 @@ whole_tree = subprocess.run(
 ).stdout.strip()
 rb.persist_review_receipt(whole_suggest, whole_tree, whole_sha, "whole-tree-fixture", 0)
 (whole_suggest / "theirs.txt").write_text("theirs\n" * 5)
+assert rb.scoped_review_vouching(whole_suggest, ["mine.txt"], False)["run_id"] == \
+    "whole-tree-fixture", rb.scoped_review_vouching(whole_suggest, ["mine.txt"], False)
+# Asked through the pathspec it was handed, suggest answers that before the vouching rules get a
+# word: what this commit would carry IS the reviewed tree, so the paths hold nothing for a panel to
+# read, and the work outside them is somebody else's. Either line is the gate's allow signal.
 whole_lines = suggest(whole_suggest, "--commit-paths", "mine.txt")
-assert ("work over review whole-tree-fixture, which read every path this commit's pathspec "
-        "carries") in whole_lines, whole_lines
-# One receipt, one verdict: the delta it names is the work outside this commit, and both lines about
-# it read as a contradiction.
-assert not any(line.startswith("unreviewed delta vs review ") for line in whole_lines), whole_lines
+assert whole_lines == ["nothing to review; tree matches review whole-tree-fixture"], whole_lines
 # Nothing staged is nothing to vouch for, and the working tree the pathspec form reads is not the
 # question a plain commit asks.
 assert not any(line.startswith("work over review ") for line in suggest(whole_suggest)), \
@@ -6600,6 +6601,140 @@ for range_form in (["--commit-paths", "mine.txt"], ["--commit-all"]):
     )
     assert range_refused.returncode == 2, (range_form, range_refused)
     assert "not allowed with" in range_refused.stderr, (range_form, range_refused.stderr)
+
+# The commit gate hands suggest the pathspec the commit will carry, and the reader acts on the one
+# command printed: sized against the whole tree, a one-line fix beside another agent's large work
+# priced a panel that reads none of it, and leaving the reader to name --paths itself cost three
+# extra rounds. So the command carries the scope already, and the tier is that scope's own delta.
+scoped_size_suggest = make_suggest_repo(
+    "suggest-commit-scoped-size", ("mine.txt", "theirs a.txt")
+)
+(scoped_size_suggest / "mine.txt").write_text("base\nfix\n")
+(scoped_size_suggest / "theirs a.txt").write_text("line\n" * 400)
+(scoped_size_suggest / "untracked-theirs.txt").write_text("line\n" * 60)
+assert_suggestion(suggest(scoped_size_suggest), 3, 462, "T2")
+
+
+def suggest_command(lines):
+    named = [line[len("command: "):] for line in lines if line.startswith("command: ")]
+    assert len(named) == 1, lines
+    return named[0]
+
+
+scoped_size_lines = suggest(scoped_size_suggest, "--commit-paths", "mine.txt")
+assert scoped_size_lines[:3] == [
+    "changed files: 1", "changed lines: 1", "tier: T0",
+], scoped_size_lines
+scoped_size_command = suggest_command(scoped_size_lines)
+assert "--worktree --tier T0 " in scoped_size_command, scoped_size_command
+# Last on the line: --paths takes every argument after it.
+assert scoped_size_command.endswith(" --paths mine.txt"), scoped_size_command
+assert "sized to this commit's paths: mine.txt; the rest of the tree is somebody else's to review" \
+    in scoped_size_lines, scoped_size_lines
+# The sentence telling a reader to name --paths itself is what the filled-in command replaces.
+assert not any(line.startswith("scoped: ") for line in scoped_size_lines), scoped_size_lines
+# The pathspec reaches the command as a pathspec, not as a shell word: a path with a space in it
+# would otherwise arrive as two.
+spaced_lines = suggest(scoped_size_suggest, "--commit-paths", "mine.txt", "theirs a.txt")
+assert suggest_command(spaced_lines).endswith(" --paths mine.txt 'theirs a.txt'"), spaced_lines
+assert spaced_lines[:3] == ["changed files: 2", "changed lines: 402", "tier: T2"], spaced_lines
+# Every heavier panel offered beside it reviews the same commit, so it carries the same scope.
+for scoped_owner_line in scoped_size_lines:
+    if scoped_owner_line.startswith("owner-only, "):
+        assert scoped_owner_line.endswith(" --paths mine.txt"), scoped_owner_line
+# `-a` and `git commit -- .` carry the whole tracked tree, so they are sized and printed as before.
+for whole_form in (["--commit-all"], ["--commit-paths", "."]):
+    whole_form_lines = suggest(scoped_size_suggest, *whole_form)
+    assert whole_form_lines[:3] == [
+        "changed files: 3", "changed lines: 462", "tier: T2",
+    ], (whole_form, whole_form_lines)
+    assert "--paths" not in suggest_command(whole_form_lines), (whole_form, whole_form_lines)
+    assert any(line.startswith("scoped: ") for line in whole_form_lines), \
+        (whole_form, whole_form_lines)
+    assert not any(line.startswith("sized to this commit's paths: ") for line in whole_form_lines), \
+        (whole_form, whole_form_lines)
+
+scope_spelling_probe = r"""
+import importlib.machinery
+import importlib.util
+import sys
+
+loader = importlib.machinery.SourceFileLoader("review_bench_probe", sys.argv[1])
+spec = importlib.util.spec_from_loader("review_bench_probe", loader)
+module = importlib.util.module_from_spec(spec)
+loader.exec_module(module)
+print("\0".join(module.normalize_scope_paths(sys.argv[2], sys.argv[3:])))
+"""
+
+
+def scope_read_from(cwd, repo, paths):
+    """What `review --paths` makes of a pathspec, read where the reader of the command stands: the
+    other half of the invariant that a printed command survives being copied verbatim.
+    """
+    proc = subprocess.run(
+        [sys.executable, "-c", scope_spelling_probe, sys.argv[1], str(repo), *paths],
+        check=True, capture_output=True, text=True, cwd=str(cwd), env=suggest_env,
+    )
+    return proc.stdout.strip().split("\0")
+
+
+def printed_scope_of(lines):
+    named = re.search(r" --paths (.+)$", suggest_command(lines))
+    assert named, lines
+    return shlex.split(named.group(1))
+
+
+# `review --paths` reads its pathspec beside the caller, so a command carrying repository-relative
+# paths asked for sub/sub/mine.txt once copied out of sub/ and reviewed nothing.
+nested_command_suggest = make_suggest_repo(
+    "suggest-commit-nested-command", ("sub/mine.txt", "outside.txt")
+)
+(nested_command_suggest / "sub" / "mine.txt").write_text("base\nfix\n")
+(nested_command_suggest / "outside.txt").write_text("line\n" * 300)
+nested_sub = nested_command_suggest / "sub"
+nested_command_lines = suggest(
+    nested_command_suggest, "--commit-paths", "mine.txt", cwd=nested_sub
+)
+assert nested_command_lines[:3] == [
+    "changed files: 1", "changed lines: 1", "tier: T0",
+], nested_command_lines
+assert printed_scope_of(nested_command_lines) == ["mine.txt"], nested_command_lines
+assert scope_read_from(nested_sub, nested_command_suggest,
+                       printed_scope_of(nested_command_lines)) == ["sub/mine.txt"], \
+    nested_command_lines
+# One spelling per output: a reader handed two would correct the command into the broken one.
+assert any(line.startswith("sized to this commit's paths: mine.txt; ")
+           for line in nested_command_lines), nested_command_lines
+# A scope that is the caller's own directory has no relative spelling `--paths` accepts — `.` is
+# refused — so it goes absolute, which normalize_scope_paths reads back to the same scope.
+dir_scope_lines = suggest(nested_command_suggest, "--commit-paths", "../sub", cwd=nested_sub)
+dir_scope_printed = printed_scope_of(dir_scope_lines)
+assert dir_scope_printed and all(path.startswith("/") for path in dir_scope_printed), dir_scope_lines
+assert scope_read_from(nested_sub, nested_command_suggest, dir_scope_printed) == ["sub"], \
+    dir_scope_lines
+assert any(line.startswith(f"sized to this commit's paths: {shlex.join(dir_scope_printed)}; ")
+           for line in dir_scope_lines), dir_scope_lines
+# Standing at the top, the two spellings are the same one, and a caller outside the repository has
+# no directory to spell against.
+top_scope_lines = suggest(nested_command_suggest, "--commit-paths", "sub",
+                          cwd=nested_command_suggest)
+assert printed_scope_of(top_scope_lines) == ["sub"], top_scope_lines
+assert scope_read_from(nested_command_suggest, nested_command_suggest,
+                       printed_scope_of(top_scope_lines)) == ["sub"], top_scope_lines
+outside_scope_lines = suggest(nested_command_suggest, "--commit-paths", "sub", cwd=work)
+assert printed_scope_of(outside_scope_lines) == ["sub"], outside_scope_lines
+
+# Untracked content under the scope is in the diff the printed command would be shown, however
+# little of it any commit form would carry.
+scoped_untracked_suggest = make_suggest_repo("suggest-commit-scoped-untracked", ("src/mine.txt",))
+(scoped_untracked_suggest / "src" / "mine.txt").write_text("base\nfix\n")
+(scoped_untracked_suggest / "src" / "fresh.txt").write_text("line\n" * 40)
+(scoped_untracked_suggest / "outside.txt").write_text("line\n" * 900)
+scoped_untracked_lines = suggest(scoped_untracked_suggest, "--commit-paths", "src")
+assert scoped_untracked_lines[:3] == [
+    "changed files: 2", "changed lines: 41", "tier: T1",
+], scoped_untracked_lines
+assert suggest_command(scoped_untracked_lines).endswith(" --paths src"), scoped_untracked_lines
 
 # The launching chat is stamped into the receipt for a reader holding only that file, and stays
 # absent when the harness named none rather than landing there empty.
@@ -8362,7 +8497,7 @@ from datetime import datetime, timedelta, timezone
 run = pathlib.Path(sys.argv[1])
 finished = datetime.now(timezone.utc) - timedelta(hours=float(sys.argv[3]))
 findings = int(sys.argv[4])
-(run / "meta.json").write_text(json.dumps({
+meta = {
     "run_id": sys.argv[2], "worktree": True, "tier": "T1", "raters": ["oc-kimik3"],
     "repo": os.environ.get("GATE_REPO", ""),
     "rater_runs": [{
@@ -8370,7 +8505,10 @@ findings = int(sys.argv[4])
         "findings": findings, "duration_ms": 1000,
     }],
     "started": finished.isoformat(), "finished": finished.isoformat(),
-}) + "\n")
+}
+if os.environ.get("GATE_SESSION"):
+    meta["session"] = os.environ["GATE_SESSION"]
+(run / "meta.json").write_text(json.dumps(meta) + "\n")
 if findings:
     (run / "findings-oc-kimik3.jsonl").write_text("\n".join(
         json.dumps({"severity": "P2", "file": "a.py", "line": index + 1,
@@ -8431,6 +8569,45 @@ assert test -z "$gate_other"
 gate_own=$(WORKER_STATS_DIR="$OTHER_SD" "$SCRIPT" pending-report --repo "$GATE_OTHER_REPO") \
   || fail "pending-report missed the run of its own repository"
 assert contains "$gate_own" "20260731T050000Z-gateother 0"
+# One repository is shared by co-tenant chats too: a run another chat launched is that chat's to
+# report, and asking this one spent the run's three asks where they could do nothing.
+SESS_SD="$WORK/gate-session"
+SESS_REPO="$WORK/gate-session-repo"
+git init -q "$SESS_REPO"
+GATE_SD="$SESS_SD" GATE_REPO="$SESS_REPO" GATE_SESSION=sess-theirs \
+  gate_run 20260731T060000Z-gatetheirs 0 0
+# Refused at the newest run, never skipped past it: walking on handed this chat an OLDER run of the
+# same repository — a diff that has since moved, which is the one thing the newest-only rule refuses.
+GATE_SD="$SESS_SD" GATE_REPO="$SESS_REPO" GATE_SESSION=sess-mine \
+  gate_run 20260731T055900Z-gatemineolder 0 0
+sess_foreign=$(WORKER_STATS_DIR="$SESS_SD" "$SCRIPT" pending-report --repo "$SESS_REPO" \
+  --session sess-mine --mark || true)
+assert test -z "$sess_foreign"
+sess_owner=$(WORKER_STATS_DIR="$SESS_SD" "$SCRIPT" pending-report --repo "$SESS_REPO" \
+  --session sess-theirs) || fail "pending-report hid a run from the chat that launched it"
+assert contains "$sess_owner" "20260731T060000Z-gatetheirs 0"
+# No flag, no filter: the hook adopts --session separately, and until it does nothing may change.
+sess_unfiltered=$(WORKER_STATS_DIR="$SESS_SD" "$SCRIPT" pending-report --repo "$SESS_REPO") \
+  || fail "pending-report answered differently without --session"
+assert contains "$sess_unfiltered" "20260731T060000Z-gatetheirs 0"
+# The foreign ask must not have been spent either, and neither may the older run's: it was never
+# this chat's to spend, and the run it belongs to was not the one being asked about.
+assert test ! -e "$SESS_SD/benches/20260731T060000Z-gatetheirs/report-nudged"
+assert test ! -e "$SESS_SD/benches/20260731T055900Z-gatemineolder/report-nudged"
+# The older run is a valid untriaged one of this chat's own: it is the newest-first rule that hides
+# it, not the fixture.
+rm -rf "$SESS_SD/benches/20260731T060000Z-gatetheirs"
+sess_older=$(WORKER_STATS_DIR="$SESS_SD" "$SCRIPT" pending-report --repo "$SESS_REPO" \
+  --session sess-mine) || fail "pending-report missed this chat's own untriaged run"
+assert contains "$sess_older" "20260731T055900Z-gatemineolder 0"
+# A run naming no launching chat is owed to whoever is here — a daemon launch, an older build.
+# Invisible, it would be triaged by nobody, which is worse than one ask in the wrong chat.
+UNOWNED_SD="$WORK/gate-unowned"
+GATE_SD="$UNOWNED_SD" GATE_REPO="$SESS_REPO" gate_run 20260731T070000Z-gateunowned 0 0
+sess_unowned=$(WORKER_STATS_DIR="$UNOWNED_SD" "$SCRIPT" pending-report --repo "$SESS_REPO" \
+  --session sess-mine) || fail "pending-report hid a run that records no launching chat"
+assert contains "$sess_unowned" "20260731T070000Z-gateunowned 0"
+
 # An old run reviewed a diff that has since moved; asking for its triage now is noise.
 STALE_SD="$WORK/gate-stale"
 GATE_SD="$STALE_SD" gate_run 20260730T000000Z-gatestale 48 1
