@@ -78,6 +78,67 @@ failure_outcome() {
   esac
 }
 
+codex_home() {
+  if [ "$1" = main ]; then
+    printf '%s/.codex' "$HOME"
+  else
+    printf '%s/%s' "${CODEX_PROFILES_DIR:-$HOME/.codex-profiles}" "$1"
+  fi
+}
+
+codex_unsupported_model() {
+  # tail-scoped for the same reason has_limit_signature is: codex streams the
+  # echoed brief to stderr, and the phrase can appear there as prose.
+  tail -n 40 "$1/err" 2>/dev/null | grep -Fqi 'model is not supported'
+}
+
+warn_cold_resume() {
+  local vendor="$1" account="$2" resume="$3" transcript='' threshold ttl now mtime idle usage size tokens token_k idle_text
+  [ -n "$resume" ] || return 0
+  case "$vendor" in
+    claudeb)
+      threshold=3600
+      ttl=1h
+      for transcript in "${CLAUDEB_PROFILES_ROOT:-$HOME/.claude-profiles}/$account/projects/"*/"$resume.jsonl"; do
+        [ -f "$transcript" ] && break
+        transcript=''
+      done
+      ;;
+    codex)
+      threshold=1800
+      ttl=30m
+      transcript=$(find "$(codex_home "$account")/sessions" -type f -name "*$resume*.jsonl" 2>/dev/null | head -n1)
+      ;;
+    *) return 0 ;;
+  esac
+  [ -n "$transcript" ] && [ -f "$transcript" ] || return 0
+  mtime=$(stat -f %m "$transcript" 2>/dev/null) || return 0
+  [[ "$mtime" =~ ^[0-9]+$ ]] || return 0
+  now=$(date +%s)
+  idle=$((now - mtime))
+  [ "$idle" -gt "$threshold" ] || return 0
+  usage=''
+  if [ "$vendor" = claudeb ]; then
+    usage=$(jq -r 'select(.message.usage) | (.message.usage | ((.input_tokens // 0) + (.cache_read_input_tokens // 0) + (.cache_creation_input_tokens // 0)))' "$transcript" 2>/dev/null | tail -n1)
+    [[ "$usage" =~ ^[0-9]+$ ]] || usage=''
+  fi
+  if [ -n "$usage" ]; then
+    tokens=$usage
+  else
+    size=$(stat -f %z "$transcript" 2>/dev/null) || return 0
+    [[ "$size" =~ ^[0-9]+$ ]] || return 0
+    tokens=$((size / 4))
+  fi
+  token_k=$(((tokens + 500) / 1000))
+  if [ "$idle" -ge 3600 ]; then
+    idle_text="$((idle / 3600))h$(((idle % 3600) / 60))m"
+  else
+    idle_text="$((idle / 60))m"
+  fi
+  printf 'RESUME-COLD: %s session idle %s, cache TTL ~%s expired; context ~%sk tokens re-ingested at full price — consider a fresh worker with a distilled brief\n' "$vendor" "$idle_text" "$ttl" "$token_k" >&2
+  return 0
+}
+
 valid_run_id() {
   case "$1" in
     ''|*[!a-z0-9-]*) return 1 ;;
@@ -151,8 +212,21 @@ supervise_claudeb() {
   return "$rc"
 }
 
+codex_attempt() {
+  local directory="$1" account="$2" rc
+  shift 2
+  if [ "$account" = main ]; then
+    (unset CODEX_HOME; run_with_deadline "$@" <"$directory/brief" >/dev/null 2>"$directory/err")
+    rc=$?
+  else
+    CODEX_HOME="$(codex_home "$account")" run_with_deadline "$@" <"$directory/brief" >/dev/null 2>"$directory/err"
+    rc=$?
+  fi
+  return "$rc"
+}
+
 supervise_codex() {
-  local directory="$1" meta="$1/meta.json" account model effort resume cli rc value
+  local directory="$1" meta="$1/meta.json" account model effort resume cli rc value drop=false dropped=false
   local -a command retry add_dirs images
   account=$(jq -r '.account' "$meta")
   model=$(jq -r '.model' "$meta")
@@ -178,25 +252,30 @@ supervise_codex() {
   for value in "${images[@]}"; do command+=(-i "$value"); done
   if [ "$(jq -r '.web_search' "$meta")" = true ]; then command+=(-c web_search=live); fi
   command+=(-o "$directory/out" -)
-  if [ "$account" = main ]; then
-    (unset CODEX_HOME; run_with_deadline "${command[@]}" <"$directory/brief" >/dev/null 2>"$directory/err")
-    rc=$?
-  else
-    CODEX_HOME="$HOME/.codex-profiles/$account" run_with_deadline "${command[@]}" <"$directory/brief" >/dev/null 2>"$directory/err"
-    rc=$?
-  fi
+  codex_attempt "$directory" "$account" "${command[@]}"
+  rc=$?
   if [ "$rc" -ne 0 ] && grep -Fqi 'Not inside a trusted directory' "$directory/err"; then
     # Appended, not spliced in: a resume command starts `exec resume <id>` and a
     # positional insert would separate the subcommand from its id.
-    retry=("${command[@]}" --skip-git-repo-check)
+    command+=(--skip-git-repo-check)
     meta_update "$directory" '.trusted_dir_retry = true' || return 4
     : >"$directory/out"
-    : >"$directory/err"
-    if [ "$account" = main ]; then
-      (unset CODEX_HOME; run_with_deadline "${retry[@]}" <"$directory/brief" >/dev/null 2>"$directory/err")
-      rc=$?
-    else
-      CODEX_HOME="$HOME/.codex-profiles/$account" run_with_deadline "${retry[@]}" <"$directory/brief" >/dev/null 2>"$directory/err"
+    codex_attempt "$directory" "$account" "${command[@]}"
+    rc=$?
+  fi
+  if [ "$rc" -ne 0 ] && codex_unsupported_model "$directory"; then
+    # A brief's model override can name a model the account cannot use; the run
+    # is otherwise sound, and worker-pick's own default always resolves.
+    retry=()
+    for value in "${command[@]}"; do
+      if [ "$drop" = true ]; then drop=false; continue; fi
+      if [ "$value" = -m ]; then drop=true; dropped=true; continue; fi
+      retry+=("$value")
+    done
+    if [ "$dropped" = true ]; then
+      meta_update "$directory" '.model_flag_dropped = true' || return 4
+      : >"$directory/out"
+      codex_attempt "$directory" "$account" "${retry[@]}"
       rc=$?
     fi
   fi
@@ -335,6 +414,7 @@ start_run() {
     gemini:*) [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]] || fail "invalid gemini account: $account" ;;
     *) [[ "$account" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || fail "invalid account: $account" ;;
   esac
+  warn_cold_resume "$vendor" "$account" "$resume" || :
 
   case "$vendor" in
     claudeb)
@@ -367,7 +447,7 @@ start_run() {
       for value in "${images[@]}"; do command+=(-i "$value"); done
       [ "$web_search" = false ] || command+=(-c web_search=live)
       command+=(-o OUT -)
-      if [ "$account" = main ]; then command_meta=("${command[@]}"); else command_meta=(env "CODEX_HOME=$HOME/.codex-profiles/$account" "${command[@]}"); fi
+      if [ "$account" = main ]; then command_meta=("${command[@]}"); else command_meta=(env "CODEX_HOME=$(codex_home "$account")" "${command[@]}"); fi
       ;;
     gemini)
       model=${model:-$(config_value gemini_model)}; model=${model:-pro}
@@ -491,18 +571,30 @@ session_id() {
 }
 
 has_limit_signature() {
-  local directory="$1" vendor="$2" pattern
+  local directory="$1" vendor="$2" pattern tail_lines=0
   local -a scan
   # out holds the worker's ANSWER, which in this repo routinely discusses quotas
   # and 429s; vendor limit errors arrive on stderr (live-verified for agy and
   # codex). claudeb print mode can emit its limit error on stdout, so it keeps
   # both. The agy log mentions quota even on healthy runs — never scan it.
   case "$vendor" in
-    codex) pattern='hit your usage limit|usage_limit|quota|rate.?limit'; scan=("$directory/err") ;;
+    # codex streams the whole session to stderr: the echoed brief plus every file
+    # the worker reads. In this repo that text routinely carries "quota",
+    # "usage_limit" and "CODEX_USAGE_LIMIT" (live-caught misverdicts), so bare
+    # tokens cannot count and the scan sees only the tail, where the CLI's own
+    # fatal error is.
+    codex) pattern='hit your usage limit|usage limit (reached|exceeded)|usage_limit_reached|quota (exhausted|exceeded|reached)|rate limit (exceeded|reached)|too many requests'; scan=("$directory/err"); tail_lines=40 ;;
     claudeb) pattern='usage limit|(^|[^0-9])429([^0-9]|$)'; scan=("$directory/out" "$directory/err") ;;
     gemini) pattern='RESOURCE_EXHAUSTED|Individual quota reached|usage limit|quota|rate.?limit|(^|[^0-9])429([^0-9]|$)'; scan=("$directory/err") ;;
   esac
-  grep -Eiq "$pattern" "${scan[@]}" 2>/dev/null
+  # A rejected model override is a 400, never a wall, however the surrounding
+  # transcript reads.
+  if [ "$vendor" = codex ] && codex_unsupported_model "$directory"; then return 1; fi
+  if [ "$tail_lines" -gt 0 ]; then
+    tail -n "$tail_lines" "${scan[0]}" 2>/dev/null | grep -Eiq "$pattern"
+  else
+    grep -Eiq "$pattern" "${scan[@]}" 2>/dev/null
+  fi
 }
 
 print_outcome() {
@@ -648,10 +740,15 @@ SCRIPT_DIRECTORY=$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd) || exit 4
 SCRIPT_PATH="$SCRIPT_DIRECTORY/$(basename "$SCRIPT_PATH")"
 umask 077
 
+# Every arm exits from inside the case: workers edit this very file while their
+# own supervisor and the caller's `wait` are still running it, and bash re-reads
+# the script from a byte offset once the last top-level command returns — a file
+# that changed size since then parses as garbage, so a finished run dies with a
+# syntax error and exit 2 (live-caught: a successful codex run reported EXIT: 2).
 case "${1:-}" in
-  start) shift; start_run "$@" ;;
-  wait) shift; wait_run "$@" ;;
-  report) shift; report_run "$@" ;;
-  _supervise) shift; supervise "$@" ;;
+  start) shift; start_run "$@"; exit $? ;;
+  wait) shift; wait_run "$@"; exit $? ;;
+  report) shift; report_run "$@"; exit $? ;;
+  _supervise) shift; supervise "$@"; exit $? ;;
   *) usage ;;
 esac

@@ -17,6 +17,8 @@ export WORKER_RUN_WORKER_PICK="$WORK/bin/worker-pick"
 export WORKER_RUN_CLAUDEB="$WORK/bin/claudeb"
 export WORKER_RUN_CODEX="$WORK/bin/codex"
 export WORKER_RUN_GEMINIB="$WORK/bin/geminib"
+export CLAUDEB_PROFILES_ROOT="$HOME/.claude-profiles"
+export CODEX_PROFILES_DIR="$HOME/.codex-profiles"
 export STUB_DIR="$WORK/stub-state"
 export CALL_LOG="$WORK/calls"
 export PICK_LOG="$WORK/picks"
@@ -70,16 +72,46 @@ cat >"$WORK/bin/codex" <<'EOF'
 } >>"$CALL_LOG"
 out=''
 skip=false
+has_model=false
 previous=''
 for arg in "$@"; do
   [ "$previous" != -o ] || out="$arg"
   [ "$arg" != --skip-git-repo-check ] || skip=true
+  [ "$arg" != -m ] || has_model=true
   previous="$arg"
 done
 cat >"$STUB_DIR/codex.stdin"
+# Real codex mutated the running worker-run mid-session and killed a successful
+# run; the stub reproduces that by appending to the script it was launched from.
+[ ! -r "$STUB_DIR/codex_append_target" ] || printf 'garbage )(\n' >>"$(cat "$STUB_DIR/codex_append_target")"
 if [ -e "$STUB_DIR/codex_trusted" ] && [ "$skip" = false ]; then
   printf 'Not inside a trusted directory\n' >&2
   exit 1
+fi
+bad_model=false
+[ ! -e "$STUB_DIR/codex_bad_model" ] || [ "$has_model" = false ] || bad_model=true
+[ ! -e "$STUB_DIR/codex_bad_model_always" ] || bad_model=true
+if [ "$bad_model" = true ]; then
+  # codex echoes the brief and every file the worker reads onto stderr; those
+  # lines named CODEX_USAGE_LIMIT and quotas in the live incident.
+  printf 'RETURN (max 120 words): OUTCOME first (DONE/FAILED/CODEX_USAGE_LIMIT)\n' >&2
+  printf 'docs say: quota exhausted means the account is walled\n' >&2
+  printf 'ERROR: {"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The %s model is not supported when using Codex with a ChatGPT account."}}\n' "'gpt-5.6'" >&2
+  exit 1
+fi
+if [ -e "$STUB_DIR/codex_phrase_deep" ]; then
+  printf 'note: that model is not supported everywhere\n' >&2
+  seq 1 60 | sed 's/^/transcript line /' >&2
+  printf 'ERROR: You have hit your usage limit.\n' >&2
+  exit 1
+fi
+if [ -e "$STUB_DIR/codex_noise" ]; then
+  printf 'RETURN: OUTCOME first (DONE/FAILED/CODEX_USAGE_LIMIT), then per fix\n' >&2
+  printf 'rate-limit and usage_limit and quota appear in this repo prose\n' >&2
+fi
+if [ -e "$STUB_DIR/codex_noise_deep" ]; then
+  printf 'the docs even spell out "quota exhausted" verbatim\n' >&2
+  seq 1 60 | sed 's/^/transcript line /' >&2
 fi
 [ -z "${STUB_SLEEP:-}" ] || sleep "$STUB_SLEEP"
 [ -z "${STUB_ERROR:-}" ] || printf '%s\n' "$STUB_ERROR" >&2
@@ -125,7 +157,9 @@ clear_stub() {
   : >"$CALL_LOG"
   : >"$PICK_LOG"
   unset STUB_SLEEP STUB_ERROR STUB_CODE STUB_STDOUT
-  rm -f "$STUB_DIR/claudeb_drop_effort" "$STUB_DIR/codex_trusted" "$STUB_DIR/codex.stdin"
+  rm -f "$STUB_DIR/claudeb_drop_effort" "$STUB_DIR/codex_trusted" "$STUB_DIR/codex.stdin" \
+    "$STUB_DIR/codex_bad_model" "$STUB_DIR/codex_bad_model_always" "$STUB_DIR/codex_noise" \
+    "$STUB_DIR/codex_noise_deep" "$STUB_DIR/codex_phrase_deep" "$STUB_DIR/codex_append_target"
 }
 
 start_ok() {
@@ -292,6 +326,27 @@ assert grep -q '^ARG=--resume$' "$CALL_LOG"
 assert grep -q '^ARG=claude-resume$' "$CALL_LOG"
 assert test "$(tail -n1 "$CALL_LOG")" = 'ARG=claude-resume'
 
+mkdir -p "$CLAUDEB_PROFILES_ROOT/resumeacct/projects/fixture"
+claude_transcript="$CLAUDEB_PROFILES_ROOT/resumeacct/projects/fixture/claude-cold.jsonl"
+printf '%s\n' '{"message":{"usage":{"input_tokens":1}}}' '{"message":{"usage":{"input_tokens":2,"cache_read_input_tokens":150000,"cache_creation_input_tokens":500}}}' >"$claude_transcript"
+touch -t 202001010000 "$claude_transcript"
+clear_stub
+start_ok claudeb --account resumeacct --resume claude-cold
+assert grep -q 'RESUME-COLD: claudeb' "$WORK/start.err"
+assert grep -q 'context ~151k tokens' "$WORK/start.err"
+assert await_done
+
+touch "$claude_transcript"
+clear_stub
+start_ok claudeb --account resumeacct --resume claude-cold
+assert test "$(grep -c 'RESUME-COLD:' "$WORK/start.err")" -eq 0
+assert await_done
+
+clear_stub
+start_ok claudeb --account resumeacct --resume claude-missing
+assert test "$(grep -c 'RESUME-COLD:' "$WORK/start.err")" -eq 0
+assert await_done
+
 clear_stub
 set_config 'codex_effort=high'
 start_ok codex --account resumeacct --resume codex-resume
@@ -301,6 +356,22 @@ assert grep -q '^ARG=resume$' "$CALL_LOG"
 assert grep -q '^ARG=codex-resume$' "$CALL_LOG"
 assert test "$(grep -c '^ARG=-m$' "$CALL_LOG")" -eq 0
 assert test "$(grep -c '^ARG=--color$' "$CALL_LOG")" -eq 0
+
+mkdir -p "$CODEX_PROFILES_DIR/resumeacct/sessions/fixture"
+codex_transcript="$CODEX_PROFILES_DIR/resumeacct/sessions/fixture/rollout-codex-cold.jsonl"
+printf '%04000d\n' 0 >"$codex_transcript"
+touch -t 202001010000 "$codex_transcript"
+clear_stub
+start_ok codex --account resumeacct --resume codex-cold
+assert grep -q 'RESUME-COLD: codex' "$WORK/start.err"
+assert grep -q 'cache TTL ~30m expired' "$WORK/start.err"
+assert await_done
+
+touch "$codex_transcript"
+clear_stub
+start_ok codex --account resumeacct --resume codex-cold
+assert test "$(grep -c 'RESUME-COLD:' "$WORK/start.err")" -eq 0
+assert await_done
 
 # Explicit --model/--effort override a resumed session; config defaults never do.
 clear_stub
@@ -323,7 +394,11 @@ assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 0
 
 clear_stub
 printf 'resumeacct\n' >"$STUB_DIR/gemini_profiles"
+gemini_transcript="$CLAUDEB_PROFILES_ROOT/resumeacct/projects/fixture/gemini-resume.jsonl"
+printf '{}\n' >"$gemini_transcript"
+touch -t 202001010000 "$gemini_transcript"
 start_ok gemini --account resumeacct --resume gemini-resume
+assert test "$(grep -c 'RESUME-COLD:' "$WORK/start.err")" -eq 0
 assert await_done
 assert grep -qxF "ARG=$HOME/.claude" "$CALL_LOG"
 assert grep -q '^ARG=--conversation$' "$CALL_LOG"
@@ -429,6 +504,120 @@ assert await_done
 assert grep -q '^STATUS: done$' "$WORK/wait.out"
 assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 1
 assert jq -e 'has("trusted_dir_retry") | not' "$RUN_DIR/meta.json" >/dev/null
+
+# A brief's model override the account cannot use is dropped once and rerun:
+# worker-pick's own default always resolves, so the run survives.
+clear_stub
+set_config 'codex_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=badmodel
+: >"$STUB_DIR/codex_bad_model"
+start_ok codex --model gpt-5.6
+assert await_done
+assert grep -q '^STATUS: done$' "$WORK/wait.out"
+assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 2
+assert test "$(grep -c '^ARG=-m$' "$CALL_LOG")" -eq 1
+assert test "$(grep -c '^ARG=gpt-5.6$' "$CALL_LOG")" -eq 1
+assert jq -e '.model_flag_dropped == true' "$RUN_DIR/meta.json" >/dev/null
+assert cmp -s "$WORK/brief" "$STUB_DIR/codex.stdin"
+
+# A clean exit whose stderr mentions the phrase is not rerun.
+clear_stub
+set_config 'codex_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=badmodel STUB_ERROR='note: that model is not supported everywhere'
+start_ok codex --model gpt-5.6
+assert await_done
+assert grep -q '^STATUS: done$' "$WORK/wait.out"
+assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 1
+assert jq -e 'has("model_flag_dropped") | not' "$RUN_DIR/meta.json" >/dev/null
+
+# A rejected model is a 400, never a wall: the failure must not be relabelled a
+# usage limit just because the echoed brief spells CODEX_USAGE_LIMIT out.
+clear_stub
+set_config 'codex_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=badmodel
+: >"$STUB_DIR/codex_bad_model_always"
+start_ok codex --model gpt-5.6
+assert await_done
+assert grep -q '^STATUS: failed$' "$WORK/wait.out"
+assert grep -qx 'OUTCOME: CODEX_UNAVAILABLE' "$WORK/wait.out"
+assert test "$(grep -c '^OUTCOME: CODEX_USAGE_LIMIT$' "$WORK/wait.out")" -eq 0
+assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 2
+
+# An unsupported-model failure with no -m to drop is not retried verbatim.
+clear_stub
+set_config 'codex_effort=high'
+: >"$STUB_DIR/codex_bad_model_always"
+start_ok codex --account resumeacct --resume codex-resume
+assert await_done
+assert grep -q '^STATUS: failed$' "$WORK/wait.out"
+assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 1
+assert jq -e 'has("model_flag_dropped") | not' "$RUN_DIR/meta.json" >/dev/null
+
+# The unsupported-model phrase buried deep in the streamed transcript neither
+# suppresses a genuine limit fatal at the tail nor triggers a retry.
+clear_stub
+set_config 'codex_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=badmodel
+: >"$STUB_DIR/codex_phrase_deep"
+start_ok codex --model gpt-5.6
+assert await_done
+assert grep -qx 'OUTCOME: CODEX_USAGE_LIMIT' "$WORK/wait.out"
+assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 1
+assert jq -e 'has("model_flag_dropped") | not' "$RUN_DIR/meta.json" >/dev/null
+
+# codex streams the brief and every file the worker reads onto stderr: bare
+# "quota"/"usage_limit"/"rate-limit" tokens there are prose, not a wall.
+clear_stub
+set_config 'codex_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=noisyacct STUB_CODE=7 STUB_ERROR='ordinary failure'
+: >"$STUB_DIR/codex_noise"
+start_ok codex
+assert await_done
+assert grep -qx 'OUTCOME: CODEX_UNAVAILABLE' "$WORK/wait.out"
+
+# Even a verbatim limit phrase counts only where the CLI's fatal error is — deep
+# in the transcript it is a file the worker read.
+clear_stub
+set_config 'codex_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=noisyacct STUB_CODE=7 STUB_ERROR='ordinary failure'
+: >"$STUB_DIR/codex_noise_deep"
+start_ok codex
+assert await_done
+assert grep -qx 'OUTCOME: CODEX_UNAVAILABLE' "$WORK/wait.out"
+
+# A worker editing this very script mid-run must not corrupt it: bash re-reads
+# the file after the last top-level command and a grown file parses as garbage.
+clear_stub
+set_config 'codex_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=selfedit
+SELF_RUNNER="$WORK/bin/worker-run-selfedit"
+cp "$RUNNER" "$SELF_RUNNER"
+printf '%s\n' "$SELF_RUNNER" >"$STUB_DIR/codex_append_target"
+"$SELF_RUNNER" start codex --brief "$WORK/brief" --workdir "$WORK/workdir" >"$WORK/start.out" 2>"$WORK/start.err" || fail "self-edit start failed: $(<"$WORK/start.err")"
+RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/start.out")
+RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/start.out")
+assert await_done
+assert grep -q '^STATUS: done$' "$WORK/wait.out"
+assert grep -q '^EXIT: 0$' "$WORK/wait.out"
+assert test "$(grep -c '^OUTCOME:' "$WORK/wait.out")" -eq 0
+
+# Same hazard on the caller's side: a `wait` polling across the edit must report,
+# not die on a syntax error in its own script.
+clear_stub
+set_config 'codex_effort=high'
+cp "$RUNNER" "$SELF_RUNNER"
+export PICK_RC=0 PICK_ACCOUNT=selfedit STUB_SLEEP=3
+start_ok codex
+unset STUB_SLEEP
+(sleep 0.5; printf 'garbage )(\n' >>"$SELF_RUNNER") &
+appender=$!
+rc=0
+"$SELF_RUNNER" wait "$RUN_ID" --max 1 >"$WORK/selfedit-wait.out" 2>"$WORK/selfedit-wait.err" || rc=$?
+wait "$appender"
+assert test "$rc" -eq 0
+assert test "$(grep -ci 'syntax error' "$WORK/selfedit-wait.err")" -eq 0
+assert grep -q '^STATUS: running$' "$WORK/selfedit-wait.out"
+assert await_done
 
 # Run dirs older than 7 days are pruned on start; fresh dirs survive.
 clear_stub
