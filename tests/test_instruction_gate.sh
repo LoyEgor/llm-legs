@@ -345,6 +345,9 @@ bloat_decision() {
 msg=$(bloat "$CLAUDE_MD" | jq -r '.hookSpecificOutput.permissionDecisionReason')
 assert_contains "15682" "$msg"
 assert_contains "tokens/month" "$msg"
+# The audit is the cheapest way out of the denial, so it stands first and is named as a step.
+assert_contains "Protocol, fastest path first" "$msg"
+assert_contains "(1) AUDIT" "$msg"
 
 echo "== bloat gate: every name the global file answers to is the global file"
 # Each profile directory carries its own symlink to it, and those spellings were being priced
@@ -411,6 +414,173 @@ small=$(jq -cn --arg p "$CLAUDE_MD" \
   '{tool_name:"Edit",cwd:"/tmp",tool_input:{file_path:$p,old_string:"x",new_string:"xy"}}' \
   | bash "$BLOAT")
 assert_eq "" "$small"
+
+echo "== bloat gate: the retry has to follow a re-read of the file"
+# The denial asks for an audit of the whole file and the stamp is what makes the retry pass, so
+# the transcript past the denial is what says the audit happened.
+RETRY_STAMPS="$HOME/.cache/bloat-retry"
+TRANSCRIPT="$WORK/transcript.jsonl"
+: > "$TRANSCRIPT"
+append_read() {
+  jq -cn --arg p "$1" '{type:"assistant",timestamp:"2026-08-06T12:00:00Z",
+    message:{role:"assistant",content:[{type:"tool_use",name:"Read",input:{file_path:$p}}]}}' \
+    >> "$TRANSCRIPT"
+}
+append_ranged_read() {
+  jq -cn --arg p "$1" '{type:"assistant",timestamp:"2026-08-06T12:00:00Z",
+    message:{role:"assistant",content:[{type:"tool_use",name:"Read",
+      input:{file_path:$p,offset:1,limit:20}}]}}' >> "$TRANSCRIPT"
+}
+# $4 is the transcript path, empty for a payload that carries no such field at all.
+retry_payload() {
+  jq -cn --arg p "$1" --arg n "$big" --arg s "$2" --arg tool "$3" --arg t "$4" '
+    {tool_name:$tool, cwd:"/tmp", session_id:$s,
+     tool_input: (if $tool == "Write" then {file_path:$p, content:$n}
+                  else {file_path:$p, old_string:"x", new_string:$n} end)}
+    + (if $t == "" then {} else {transcript_path:$t} end)'
+}
+retry_bloat() {
+  retry_payload "$@" | INSTRUCTION_BLOAT_GATE_STAMPS="$RETRY_STAMPS" bash "$BLOAT"
+}
+retry_decision() {
+  local out
+  out=$(retry_bloat "$@")
+  [ -n "$out" ] || { printf 'pass\n'; return 0; }
+  printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "pass"' 2>/dev/null
+}
+retry_reason() {
+  retry_bloat "$@" | jq -r '.hookSpecificOutput.permissionDecisionReason // ""'
+}
+count_in() { find "$RETRY_STAMPS" -mindepth 1 -maxdepth 1 "$@" | wc -l | tr -d '[:space:]'; }
+
+rm -rf "$RETRY_STAMPS"
+# A read from before the denial is not the audit it asked for.
+append_read "$CLAUDE_MD"
+assert_eq deny "$(retry_decision "$CLAUDE_MD" retry-one Edit "$TRANSCRIPT")"
+age_stamps "$RETRY_STAMPS"
+assert_contains "Gate retry requires re-reading" "$(retry_reason "$CLAUDE_MD" retry-one Edit "$TRANSCRIPT")"
+# The refused retry must not spend the stamp the real retry is still waiting for.
+assert_eq 1 "$(count_in -type d)"
+append_read "$CLAUDE_MD"
+age_stamps "$RETRY_STAMPS"
+assert_eq pass "$(retry_decision "$CLAUDE_MD" retry-one Edit "$TRANSCRIPT")"
+# The stamp and the note it was denied with are both gone, so the next identical edit starts over.
+assert_eq 0 "$(count_in)"
+assert_eq deny "$(retry_decision "$CLAUDE_MD" retry-one Edit "$TRANSCRIPT")"
+
+echo "== bloat gate: the read counts under either spelling of the file"
+# ~/.claude/CLAUDE.md is a symlink into a config repository: the edit lands on one name and the
+# read is as likely to carry the other.
+rm -rf "$RETRY_STAMPS"
+assert_eq deny "$(retry_decision "$REAL_MD" retry-link Edit "$TRANSCRIPT")"
+append_read "$CLAUDE_MD"
+age_stamps "$RETRY_STAMPS"
+assert_eq pass "$(retry_decision "$REAL_MD" retry-link Edit "$TRANSCRIPT")"
+rm -rf "$RETRY_STAMPS"
+assert_eq deny "$(retry_decision "$CLAUDE_MD" retry-link-back Edit "$TRANSCRIPT")"
+append_read "$REAL_MD"
+age_stamps "$RETRY_STAMPS"
+assert_eq pass "$(retry_decision "$CLAUDE_MD" retry-link-back Edit "$TRANSCRIPT")"
+# Reading a different file is not reading this one.
+rm -rf "$RETRY_STAMPS"
+assert_eq deny "$(retry_decision "$CLAUDE_MD" retry-other Edit "$TRANSCRIPT")"
+append_read "$REPO_DOCS/review-tiers.md"
+age_stamps "$RETRY_STAMPS"
+assert_eq deny "$(retry_decision "$CLAUDE_MD" retry-other Edit "$TRANSCRIPT")"
+
+echo "== bloat gate: the tool's own spelling of the path is the one recorded"
+# Read takes a tilde path and the transcript keeps it unexpanded, while realpath resolves it
+# against the working directory: a real re-read was being thrown away.
+rm -rf "$RETRY_STAMPS"
+assert_eq deny "$(retry_decision "$CLAUDE_MD" retry-tilde Edit "$TRANSCRIPT")"
+append_read '~/.claude/CLAUDE.md'
+age_stamps "$RETRY_STAMPS"
+assert_eq pass "$(retry_decision "$CLAUDE_MD" retry-tilde Edit "$TRANSCRIPT")"
+
+echo "== bloat gate: a ranged read is not the audit the denial asked for"
+# The denial promises the check is mechanical, and the protocol asks for the WHOLE file; a read
+# carrying an offset or a limit is recorded exactly like a full one.
+rm -rf "$RETRY_STAMPS"
+assert_eq deny "$(retry_decision "$CLAUDE_MD" retry-ranged Edit "$TRANSCRIPT")"
+append_ranged_read "$CLAUDE_MD"
+age_stamps "$RETRY_STAMPS"
+assert_eq deny "$(retry_decision "$CLAUDE_MD" retry-ranged Edit "$TRANSCRIPT")"
+append_read "$CLAUDE_MD"
+age_stamps "$RETRY_STAMPS"
+assert_eq pass "$(retry_decision "$CLAUDE_MD" retry-ranged Edit "$TRANSCRIPT")"
+
+echo "== bloat gate: a file that does not exist yet has nothing to re-read"
+rm -rf "$RETRY_STAMPS"
+NEWDOC="$REPO_DOCS/retry-new.md"
+assert_eq deny "$(retry_decision "$NEWDOC" retry-new Write "$TRANSCRIPT")"
+age_stamps "$RETRY_STAMPS"
+assert_eq pass "$(retry_decision "$NEWDOC" retry-new Write "$TRANSCRIPT")"
+
+echo "== bloat gate: a transcript it cannot read leaves the retry working"
+# The gate does not own the transcript; a payload without one, or one naming a file that is not
+# there, must behave exactly as it did before the read was ever required.
+rm -rf "$RETRY_STAMPS"
+assert_eq deny "$(retry_decision "$CLAUDE_MD" retry-blind Edit "")"
+age_stamps "$RETRY_STAMPS"
+assert_eq pass "$(retry_decision "$CLAUDE_MD" retry-blind Edit "")"
+rm -rf "$RETRY_STAMPS"
+assert_eq deny "$(retry_decision "$CLAUDE_MD" retry-gone Edit "$WORK/no-such-transcript.jsonl")"
+age_stamps "$RETRY_STAMPS"
+assert_eq pass "$(retry_decision "$CLAUDE_MD" retry-gone Edit "$WORK/no-such-transcript.jsonl")"
+# A transcript carrying lines that are not JSON at all is still readable for the ones that are.
+rm -rf "$RETRY_STAMPS"
+assert_eq deny "$(retry_decision "$CLAUDE_MD" retry-junk Edit "$TRANSCRIPT")"
+printf 'not json at all\n' >> "$TRANSCRIPT"
+append_read "$CLAUDE_MD"
+printf '{"type":"user"}\n' >> "$TRANSCRIPT"
+age_stamps "$RETRY_STAMPS"
+assert_eq pass "$(retry_decision "$CLAUDE_MD" retry-junk Edit "$TRANSCRIPT")"
+
+echo "== bloat gate: a transcript that shrank took the evidence with it"
+# Truncated or rotated under the same name: the tail past the remembered byte is empty from then
+# on, which would deny the retry forever instead of once.
+rm -rf "$RETRY_STAMPS"
+assert_eq deny "$(retry_decision "$CLAUDE_MD" retry-cut Edit "$TRANSCRIPT")"
+: > "$TRANSCRIPT"
+age_stamps "$RETRY_STAMPS"
+assert_eq pass "$(retry_decision "$CLAUDE_MD" retry-cut Edit "$TRANSCRIPT")"
+
+echo "== bloat gate: each denial moves the byte the audit has to beat"
+# The stamp is swept after a day and the note beside it is not: a note left from an old cycle
+# would let a read from that cycle answer a denial issued today.
+rm -rf "$RETRY_STAMPS"
+append_read "$CLAUDE_MD"
+assert_eq deny "$(retry_decision "$CLAUDE_MD" retry-fresh Edit "$TRANSCRIPT")"
+find "$RETRY_STAMPS" -mindepth 1 -maxdepth 1 -type d -exec rmdir {} + 2>/dev/null
+assert_eq 1 "$(count_in -name '*.read')"
+append_read "$CLAUDE_MD"
+assert_eq deny "$(retry_decision "$CLAUDE_MD" retry-fresh Edit "$TRANSCRIPT")"
+age_stamps "$RETRY_STAMPS"
+assert_eq deny "$(retry_decision "$CLAUDE_MD" retry-fresh Edit "$TRANSCRIPT")"
+append_read "$CLAUDE_MD"
+age_stamps "$RETRY_STAMPS"
+assert_eq pass "$(retry_decision "$CLAUDE_MD" retry-fresh Edit "$TRANSCRIPT")"
+
+echo "== note sweep: an aged note goes, a file that only borrowed its name stays"
+# The stamp directory is env-overridable and a misconfigured one is somebody's real data, so the
+# name alone is never enough of a reason to delete a file.
+NOTE_SWEEP="$WORK/note-sweep"
+mkdir -p "$NOTE_SWEEP"
+printf '42\n%s\n' "$TRANSCRIPT" > "$NOTE_SWEEP/0123456789abcdef.read"
+printf 'somebody real data\n' > "$NOTE_SWEEP/abcdef0123456789.read"
+printf '42\nnot-an-absolute-path\n' > "$NOTE_SWEEP/deadbeefdeadbeef.read"
+printf '42\n%s\nand a third line\n' "$TRANSCRIPT" > "$NOTE_SWEEP/feedfacefeedface.read"
+touch -A -250000 "$NOTE_SWEEP"/*.read
+# A note of the right shape that has not aged out belongs to a denial still waiting for its retry.
+printf '42\n%s\n' "$TRANSCRIPT" > "$NOTE_SWEEP/8899aabbccddeeff.read"
+assert_contains 'permissionDecision":"deny' \
+  "$(retry_payload "$CLAUDE_MD" note-sweep Edit "$TRANSCRIPT" \
+     | INSTRUCTION_BLOAT_GATE_STAMPS="$NOTE_SWEEP" bash "$BLOAT")"
+assert [ ! -f "$NOTE_SWEEP/0123456789abcdef.read" ]
+assert [ -f "$NOTE_SWEEP/abcdef0123456789.read" ]
+assert [ -f "$NOTE_SWEEP/deadbeefdeadbeef.read" ]
+assert [ -f "$NOTE_SWEEP/feedfacefeedface.read" ]
+assert [ -f "$NOTE_SWEEP/8899aabbccddeeff.read" ]
 
 echo "== bloat gate: the live rate from the local index is quoted instead of the frozen constant"
 # The constants are one measured month that ages out; tokenmap exports what the last 30 days

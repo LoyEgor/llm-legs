@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Growth gate for files LLMs re-read across sessions. Any growth beyond the
-# threshold is denied ONCE with the recurring token cost quoted; retrying the
-# exact same edit passes (the deny is the "stop and tell Egor" step, not a wall).
+# threshold is denied ONCE with the recurring token cost quoted; the same edit
+# passes on retry once the transcript shows the file re-read after that denial
+# (the deny is the "audit it, then tell Egor" step, not a wall).
 set -u
 
 [ -n "${HOME:-}" ] || exit 0
@@ -163,7 +164,79 @@ fi
 # keys in the same order, and an unsorted fingerprint would deny the very retry it exists to pass.
 sid=$(jq -r '.session_id // ""' "$input_file" 2>/dev/null) || sid=''
 hash=$(printf '%s\n%s\n%s\n' "$sid" "$file_path" "$(jq -Sc '.tool_input' "$input_file" 2>/dev/null)" | shasum -a 256 | cut -c1-16)
-instruction_claim_stamp "$STAMP_DIR" "$hash" && exit 0
+note="$STAMP_DIR/$hash.read"
+
+# The denial asks for an audit of the whole file, so the retry is only a retry once the file has
+# actually been re-read: the transcript is searched past the byte it stood at when the denial went
+# out, and a read from before it is not that audit. Everything this cannot establish for itself —
+# no transcript in the payload, no note, one written against another transcript, jq refusing the
+# tail — counts as read. A gate that bricks editing whenever a path it does not own is missing is
+# worse than one that lets an unaudited retry through.
+retry_read_seen() {
+  local size='' recorded='' transcript='' now='' target_real='' seen='' cand='' cand_real=''
+  [ -f "$note" ] || return 0
+  { IFS= read -r size && IFS= read -r recorded; } <"$note" 2>/dev/null || return 0
+  case "$size" in ''|*[!0-9]*) return 0 ;; esac
+  transcript=$(jq -r '.transcript_path // ""' "$input_file" 2>/dev/null) || return 0
+  [ -n "$transcript" ] && [ -f "$transcript" ] && [ "$transcript" = "$recorded" ] || return 0
+  # A transcript shorter than the byte the note remembers was truncated or rotated under the same
+  # name, and every read this gate could have verified went with it: the tail is empty from here
+  # on, which would deny the retry forever rather than once.
+  now=$(wc -c <"$transcript" 2>/dev/null | tr -d '[:space:]')
+  case "$now" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$size" -le "$now" ] || return 0
+  seen=$(tail -c "+$((size + 1))" "$transcript" 2>/dev/null | jq -R -r '
+    (fromjson? // empty)
+    | (.message.content? // empty)
+    | select(type == "array") | .[]
+    | select(type == "object" and .type == "tool_use" and .name == "Read")
+    # A ranged read is not the audit the denial asked for, and the message promises the check is
+    # mechanical: only a read of the whole file, which carries neither bound, answers it.
+    | select((.input.offset? // null) == null and (.input.limit? // null) == null)
+    | .input.file_path? | strings
+  ' 2>/dev/null) || return 0
+  # An instruction file is reached through a symlink as often as by its own name, and the read and
+  # the edit rarely pick the same spelling, so both sides are compared resolved as well as typed.
+  target_real=$(realpath "$file_path" 2>/dev/null) || target_real=$file_path
+  while IFS= read -r cand; do
+    [ -n "$cand" ] || continue
+    # The tool takes a tilde path and records it unexpanded, and realpath resolves it against the
+    # working directory instead of $HOME, so the spelling has to be undone here.
+    case "$cand" in "~/"*) cand="$HOME/${cand#\~/}" ;; esac
+    case "$cand" in "$file_path"|"$target_real") return 0 ;; esac
+    cand_real=$(realpath "$cand" 2>/dev/null) || continue
+    case "$cand_real" in "$file_path"|"$target_real") return 0 ;; esac
+  done <<SEEN
+$seen
+SEEN
+  return 1
+}
+
+if instruction_stamp_ready "$STAMP_DIR" "$hash"; then
+  if retry_read_seen; then
+    rm -f "$note" 2>/dev/null
+    instruction_stamp_consume "$STAMP_DIR" "$hash" && exit 0
+  else
+    deny "Gate retry requires re-reading the file first: Read ${file_path} in full, then retry the same edit — it will pass."
+  fi
+fi
+
+# Where the transcript stands at the moment of the denial, so the read that answers it can be told
+# from one that came before. Rewritten every time, never only when absent: a note the sweep
+# outlived its stamp would otherwise let a day-old read answer today's denial. The retry that is
+# refused for want of a read leaves before this point, so what a pending audit has to beat is
+# always the newest denial. A file that does not exist yet has nothing to re-read, and leaving the
+# note unwritten is what lets that retry pass on its own.
+if [ -f "$file_path" ]; then
+  transcript_now=$(jq -r '.transcript_path // ""' "$input_file" 2>/dev/null) || transcript_now=''
+  if [ -n "$transcript_now" ] && [ -f "$transcript_now" ]; then
+    size_now=$(wc -c <"$transcript_now" 2>/dev/null | tr -d '[:space:]')
+    case "$size_now" in
+      ''|*[!0-9]*) ;;
+      *) printf '%s\n%s\n' "$size_now" "$transcript_now" >"$note" 2>/dev/null || true ;;
+    esac
+  fi
+fi
 
 tokens=$((delta / 4))
 monthly=$((tokens * reads))
@@ -173,4 +246,4 @@ else
   measured='measured'
 fi
 
-deny "Instruction-bloat gate: LLMs re-read this file ~${reads}x/month at full-read price (${measured}; content in the cached prefix is re-read on every request, not once per session). Growth +${delta} bytes ≈ +${tokens} tokens per read ≈ ~${monthly} tokens/month at Egor's daily usage. His standing rule: (1) prefer a hook/mechanical control over prose; (2) if prose is genuinely required, compress it hard; (3) present Egor the NET BALANCE, not just this cost — estimate what the rule SAVES per month (avoided repeated output, avoided corrections, avoided worker calls) and compare; a rule that saves less than it costs does not get written. Content rules apply before cost math — history/changelog, anything derivable from the code, linter rules as prose, and defensive verification scaffolding are cut, not costed; keep/cut criteria: ~/.claude/docs/context-file-hygiene.md. Optional idea, never an obligation: if THIS file carries lines that are stale or merely restate what code already enforces, a cut you can honestly defend by those criteria may offset the growth — net <= 0 passes with no approval; name the cut in your reply so Egor can veto it. Never cut a live rule just to make room. Otherwise wait for his explicit OK, then retry the identical edit — the gate passes the exact retry once."
+deny "Instruction-bloat gate: LLMs re-read this file ~${reads}x/month at full-read price (${measured}; content in the cached prefix is re-read on every request, not once per session). Growth +${delta} bytes ≈ +${tokens} tokens per read ≈ ~${monthly} tokens/month at Egor's daily usage. Protocol, fastest path first: (1) AUDIT — re-read the WHOLE file now and look for up to 3 lines that are stale, duplicated in another live surface, or restate what code/hooks already enforce (criteria: ~/.claude/docs/context-file-hygiene.md). A combined edit that adds your text AND cuts enough for net <= 0 passes immediately, no approval needed — name the cuts in your reply so Egor can veto them. (2) 'Nothing defensibly cuttable' is a fully valid audit outcome — NEVER cut a live rule to make room. In that case present Egor the NET BALANCE — this cost vs what the addition saves monthly (avoided corrections, repeated output, worker calls; a rule that saves less than it costs does not get written) — and wait for his explicit OK in this turn. (3) Content rules trump cost math: history/changelog, anything derivable from code, linter rules as prose, and defensive verification scaffolding are cut, not costed; prefer a hook/mechanical control over prose, and compress what remains. The gate verifies the audit mechanically: after this denial, Read the target file, then retry — the same edit passes once. A retry without that Read is denied again."

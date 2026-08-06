@@ -191,17 +191,34 @@ instruction_all_dirs() {
 # and the alternative is a silent unguarded write.
 # 0 = this caller may pass, 1 = deny.
 instruction_claim_stamp() {
+  instruction_stamp_ready "$1" "$2" || return 1
+  instruction_stamp_consume "$1" "$2"
+}
+
+# Finding the stamp and spending it are separate steps because a caller may have a condition of
+# its own to put between them — one that, when it fails, has to leave the stamp for the next try.
+# 0 = a stamp of this caller's is there and old enough to spend.
+instruction_stamp_ready() {
   local dir=$1 hash=$2 stamp now born age=''
   case "$hash" in [0-9a-f][0-9a-f]*) ;; *) return 1 ;; esac
   mkdir -p "$dir" 2>/dev/null || return 1
   # The sweep is aimed at exactly what a gate creates: an EMPTY DIRECTORY whose name is the
-  # sixteen hex characters of a fingerprint. The directory is env-overridable and a misconfigured
-  # one is somebody's real data — `rm -rf` on everything starting with a hex character would take
-  # ~/.claude/agents with it. rmdir cannot recurse, so the worst a wrong path can cost is an
-  # empty directory that happened to be named like a fingerprint.
-  local h='[0-9a-f]'
+  # sixteen hex characters of a fingerprint, and the note file a gate may park beside it under
+  # that same name. The directory is env-overridable and a misconfigured one is somebody's real
+  # data — `rm -rf` on everything starting with a hex character would take ~/.claude/agents with
+  # it. rmdir cannot recurse and the note is deleted only once its bytes are the two lines this
+  # code writes, so the worst a wrong path can cost is an empty directory and a file that both
+  # were named like a fingerprint and held a fingerprint's contents.
+  local h='[0-9a-f]' stale=''
   find "$dir" -mindepth 1 -maxdepth 1 -type d \
     -name "$h$h$h$h$h$h$h$h$h$h$h$h$h$h$h$h" -mmin +1440 -exec rmdir {} + 2>/dev/null
+  while IFS= read -r stale; do
+    [ -n "$stale" ] || continue
+    _instruction_is_note "$stale" && rm -f "$stale" 2>/dev/null
+  done <<SWEEP
+$(find "$dir" -mindepth 1 -maxdepth 1 -type f \
+    -name "$h$h$h$h$h$h$h$h$h$h$h$h$h$h$h$h.read" -mmin +1440 2>/dev/null)
+SWEEP
   stamp="$dir/$hash"
   mkdir "$stamp" 2>/dev/null && return 1
   [ -d "$stamp" ] || return 1
@@ -211,6 +228,25 @@ instruction_claim_stamp() {
     case "$now$born" in *[!0-9]*) ;; *) age=$((now - born)) ;; esac
   fi
   [ -n "$age" ] && [ "$age" -ge 2 ] || return 1
-  rmdir "$stamp" 2>/dev/null || return 1
   return 0
+}
+
+instruction_stamp_consume() {
+  rmdir "$1/$2" 2>/dev/null || return 1
+  return 0
+}
+
+# The whole shape a gate's note has: a byte offset, the transcript it was measured against, and
+# nothing else. Anything a hand or another program left under the same name fails one of the
+# three and is not the sweep's to delete.
+_instruction_is_note() {
+  local first='' second='' extra=''
+  {
+    IFS= read -r first || return 1
+    IFS= read -r second || return 1
+    ! IFS= read -r extra || return 1
+  } <"$1" 2>/dev/null || return 1
+  case "$first" in ''|*[!0-9]*) return 1 ;; esac
+  case "$second" in /*) return 0 ;; esac
+  return 1
 }
