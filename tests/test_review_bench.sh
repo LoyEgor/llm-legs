@@ -6916,6 +6916,376 @@ assert rb.hit_rates(lens_by_commit, lens_run_counts, lens_counted) == {
     "fixture@ccccccc#1": {"sol-low": 1.0}
 }, rb.hit_rates(lens_by_commit, lens_run_counts, lens_counted)
 
+# --- merged reviews: one panel over several repositories -----------------------------------------
+# A change that spans a producer and its consumer in two checkouts used to be two runs, each blind
+# to the half of the contract the other read. One run reads both, and the price of that is that
+# every repository it read must end up with exactly the receipt a solo run would have left: a
+# merged review that stamps one of them and forgets the other leaves the forgotten one's commit
+# gate blocking on a review that already covered it.
+merged_repos = {}
+for merged_name, merged_files in (
+    ("producer", {"rates.json": '{"read": 1}\n', "emit.sh": "emit\n"}),
+    ("consumer", {"read.sh": "read\n"}),
+):
+    merged_repo = work / merged_name
+    merged_repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(merged_repo)], check=True)
+    subprocess.run(["git", "-C", str(merged_repo), "config", "user.email", "bench@example.test"],
+                   check=True)
+    subprocess.run(["git", "-C", str(merged_repo), "config", "user.name", "Review Bench"],
+                   check=True)
+    for merged_file, merged_body in merged_files.items():
+        (merged_repo / merged_file).write_text(merged_body)
+    subprocess.run(["git", "-C", str(merged_repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(merged_repo), "commit", "-qm", "initial"], check=True)
+    merged_repos[merged_name] = merged_repo
+(merged_repos["producer"] / "rates.json").write_text('{"read": 1, "write": 2}\n')
+(merged_repos["producer"] / "emit.sh").write_text("emit\nemit write\n")
+(merged_repos["consumer"] / "read.sh").write_text("read\nread write\n")
+merged_pair = [merged_repos["producer"], merged_repos["consumer"]]
+# What the run records is the working tree git itself resolves the argument to, which on macOS is
+# not the path the fixture typed.
+merged_tops = [rb.resolve_repo_arg(str(path)) for path in merged_pair]
+merged_heads = {
+    name: subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"],
+                         check=True, capture_output=True, text=True).stdout.strip()
+    for name, path in merged_repos.items()
+}
+
+# The prefix is the basename, because a rater reads it instead of a path; two checkouts sharing one
+# are numbered rather than merged into a single prefix that would hide which repository a finding
+# is about.
+assert rb.merged_repo_labels(merged_pair) == ["producer", "consumer"]
+for merged_dup in ("dup-left", "dup-right"):
+    (work / merged_dup / "same").mkdir(parents=True)
+assert rb.merged_repo_labels(
+    [work / "dup-left" / "same", work / "dup-right" / "same"]
+) == ["same", "same-2"]
+assert rb.repo_arg_paths(argparse.Namespace(repo=None)) == ["."]
+assert rb.repo_arg_paths(argparse.Namespace(repo=".")) == ["."]
+assert rb.repo_arg_paths(argparse.Namespace(repo=["/a", "/b"])) == ["/a", "/b"]
+
+# A scope is spelled the way the findings answering it will be — with the repository's own prefix —
+# and an absolute path is taken too. A repository nobody names keeps its whole working tree,
+# because narrowing one half of a contract is the ordinary case.
+merged_pairs = list(zip(["producer", "consumer"], merged_pair))
+assert rb.split_merged_scope(merged_pairs, ["producer/rates.json"]) == {
+    "producer": ["rates.json"], "consumer": [],
+}
+assert rb.split_merged_scope(
+    merged_pairs, [str(merged_repos["consumer"] / "read.sh"), "producer/emit.sh"]
+) == {"producer": ["emit.sh"], "consumer": ["read.sh"]}
+merged_scope_errors = {}
+for merged_label, merged_bad in (
+    ("unknown", ["nowhere/x.txt"]),
+    ("bare", ["producer"]),
+    ("empty", ["producer/"]),
+    ("outside", [str(work / "outside.txt")]),
+):
+    try:
+        rb.split_merged_scope(merged_pairs, merged_bad)
+        merged_scope_errors[merged_label] = ""
+    except ValueError as exc:
+        merged_scope_errors[merged_label] = str(exc)
+assert "producer/, consumer/" in merged_scope_errors["unknown"], merged_scope_errors
+assert "producer/, consumer/" in merged_scope_errors["bare"], merged_scope_errors
+assert "producer/, consumer/" in merged_scope_errors["empty"], merged_scope_errors
+assert "outside every repository" in merged_scope_errors["outside"], merged_scope_errors
+
+merged_store = work / "merged-claudeb"
+os.environ["CLAUDEB_DIR"] = str(merged_store)
+merged_state = merged_store / "worker-stats"
+merged_seen = {"diffs": [], "repos": [], "progress": []}
+
+
+def merged_runner(rater, repo_path, commit, focus, run_dir, diff, account):
+    merged_seen["diffs"].append(diff)
+    merged_seen["repos"].append(str(repo_path))
+    progress_dir = merged_state / rb.PROGRESS_DIR
+    merged_seen["progress"].append(sorted(
+        json.loads(path.read_text())["repo"] for path in progress_dir.iterdir()
+    ) if progress_dir.is_dir() else [])
+    # One cell per half of the contract, so a member's own outcome cannot be read off the other's.
+    cited = "producer/rates.json" if rater["side"] == "codex" else "consumer/read.sh"
+    return 0, 1, json.dumps({
+        "severity": "P2", "file": cited, "line": 1,
+        "summary": f"{rater['spec']} cross-repository finding",
+    }), "", []
+
+
+for merged_side in rb.SIDE_RUNNERS:
+    rb.SIDE_RUNNERS[merged_side] = merged_runner
+merged_stdout = io.StringIO()
+with contextlib.redirect_stdout(merged_stdout):
+    merged_rc = rb.cmd_run(argparse.Namespace(
+        repo=[str(path) for path in merged_pair], commitish=None, worktree=True, paths=None,
+        raters="sol-medium-bare,opus-medium", leg=False, verify=None, auto=None, focus=None,
+    ))
+assert merged_rc == 0, merged_stdout.getvalue()
+merged_run_dir = next((merged_state / "benches").iterdir())
+merged_meta = json.loads((merged_run_dir / "meta.json").read_text())
+merged_sha = merged_meta["commit"]
+merged_workspace = pathlib.Path(merged_meta["repo"])
+
+# One pool, one diff, and it holds both halves of the contract with the repositories told apart by
+# a directory prefix — that is the whole point of the merged run.
+assert len(merged_seen["diffs"]) == 2, merged_seen["diffs"]
+for merged_diff in merged_seen["diffs"]:
+    assert "producer/rates.json" in merged_diff, merged_diff
+    assert "consumer/read.sh" in merged_diff, merged_diff
+    assert "separate checkouts" in merged_diff, merged_diff
+assert set(merged_seen["repos"]) == {str(merged_workspace)}, merged_seen["repos"]
+assert merged_workspace.parent == merged_state / rb.MERGED_DIR, merged_workspace
+assert rb.is_worktree_snapshot(merged_workspace, merged_sha)
+assert merged_meta["worktree"] is True and "scope" not in merged_meta, merged_meta
+merged_members = merged_meta["repos"]
+assert [member["label"] for member in merged_members] == ["producer", "consumer"], merged_members
+assert [member["repo"] for member in merged_members] == [
+    str(path) for path in merged_tops
+], merged_members
+assert all(member["scope"] == [] for member in merged_members), merged_members
+assert [member["base"] for member in merged_members] == [
+    merged_heads["producer"], merged_heads["consumer"]
+], merged_members
+
+# Every finding names the repository it belongs to, and the handoff says how to read it: the
+# adjudicator merges rows from cells that each saw the whole contract.
+merged_findings = {
+    path.name[len("findings-"):-len(".jsonl")]: rb.read_jsonl(path)
+    for path in sorted(merged_run_dir.glob("findings-*.jsonl"))
+}
+assert sorted(merged_findings) == ["opus-medium", "sol-medium-bare"], merged_findings
+assert merged_findings["sol-medium-bare"][0]["repo"] == "producer", merged_findings
+assert merged_findings["sol-medium-bare"][0]["file"] == "producer/rates.json", merged_findings
+assert merged_findings["opus-medium"][0]["repo"] == "consumer", merged_findings
+for merged_label, merged_path in zip(("producer", "consumer"), merged_tops):
+    assert f"  {merged_label}/ = {merged_path}" in merged_stdout.getvalue(), \
+        merged_stdout.getvalue()
+# The verdict contract is untouched: the same per-rater files, the same {rater, idx, verdict}.
+assert "one verdict per zero-based finding index as {rater, idx, verdict}" \
+    in merged_stdout.getvalue()
+
+# The receipt of each repository, against its own snapshot: this is what its own commit gate reads,
+# and a merged review that left one of them unwritten would block that repository's commit.
+merged_receipt_dir = merged_state / rb.RECEIPT_DIR
+assert sorted(path.name for path in merged_receipt_dir.iterdir()) == sorted(
+    rb.receipt_file_name(path) for path in merged_pair
+), sorted(path.name for path in merged_receipt_dir.iterdir())
+for member in merged_members:
+    merged_receipt = rb.review_receipt(pathlib.Path(member["repo"]))
+    assert merged_receipt is not None, member
+    assert merged_receipt["commit"] == member["commit"], (merged_receipt, member)
+    assert merged_receipt["run_id"] == merged_meta["run_id"], merged_receipt
+    assert merged_receipt["repo"] == member["repo"], merged_receipt
+    assert "scope" not in merged_receipt, merged_receipt
+    # A member's snapshot is a snapshot of that repository, so the stamp hook reads it the way it
+    # reads a solo worktree review's: an uncommitted tree, findings, and the base it sat on.
+    merged_outcome = rb.review_outcome(pathlib.Path(member["repo"]), merged_receipt)
+    assert merged_outcome == (True, 0, 1), (member["label"], merged_outcome)
+# One document per repository while the run is in flight, or the review is invisible in every
+# surface but one repository's.
+assert merged_seen["progress"] == [
+    sorted(str(path) for path in merged_tops)
+] * 2, merged_seen["progress"]
+assert not list((merged_state / rb.PROGRESS_DIR).iterdir())
+
+# The gate each repository holds is `suggest`, and after the merged run neither has anything left
+# to review: that is requirement three seen from the side that enforces it.
+for merged_path in merged_pair:
+    merged_suggest = io.StringIO()
+    with contextlib.redirect_stdout(merged_suggest):
+        assert rb.cmd_suggest(argparse.Namespace(repo=str(merged_path), range=None)) == 0
+    assert f"nothing to review; tree matches review {merged_meta['run_id']}" \
+        in merged_suggest.getvalue(), merged_suggest.getvalue()
+
+# The verifier reads a finding's path in the merged repository, so a prefixed citation resolves to
+# the file it names without any repository bookkeeping of its own.
+merged_lines, merged_ref = rb.file_at_commit(
+    merged_workspace, merged_sha, "consumer/read.sh"
+)
+assert merged_lines == ["read", "read write"], merged_lines
+assert merged_ref == merged_sha, merged_ref
+
+# Adjudication is one pass over the merged run, and it leaves both receipts exactly where the run
+# put them.
+merged_receipts_before = {
+    path.name: path.read_bytes() for path in merged_receipt_dir.iterdir()
+}
+merged_verdicts = work / "merged-verdicts.jsonl"
+rb.write_jsonl(merged_verdicts, [
+    {"rater": "sol-medium-bare", "idx": 0, "verdict": "confirmed"},
+    {"rater": "opus-medium", "idx": 0, "verdict": "confirmed"},
+])
+with contextlib.redirect_stdout(io.StringIO()):
+    assert rb.cmd_record(argparse.Namespace(
+        run_id=merged_run_dir.name, verdicts=str(merged_verdicts), no_corpus=False,
+    )) == 0
+assert {path.name: path.read_bytes() for path in merged_receipt_dir.iterdir()} \
+    == merged_receipts_before
+# A merged snapshot is no more a durable corpus commit than a single-repository one.
+assert not (merged_state / "reviews.jsonl").exists()
+
+# A rerun of an errored cell is pinned to the merged commit, which lives in the workspace and
+# nowhere else — and the workspace is what says which repositories it still owes receipts to.
+merged_rerun_store = work / "merged-rerun-claudeb"
+os.environ["CLAUDEB_DIR"] = str(merged_rerun_store)
+with contextlib.redirect_stdout(io.StringIO()):
+    assert rb.cmd_run(argparse.Namespace(
+        repo=str(merged_workspace), commitish=merged_sha, raters="sol-medium-bare",
+        leg=False, verify=None, auto=None, focus=None,
+    )) == 0
+merged_rerun_state = merged_rerun_store / "worker-stats"
+assert sorted(path.name for path in (merged_rerun_state / rb.RECEIPT_DIR).iterdir()) == sorted(
+    rb.receipt_file_name(path) for path in merged_pair
+), sorted(path.name for path in (merged_rerun_state / rb.RECEIPT_DIR).iterdir())
+merged_rerun_meta = json.loads(
+    (next((merged_rerun_state / "benches").iterdir()) / "meta.json").read_text()
+)
+assert merged_rerun_meta["worktree"] is True, merged_rerun_meta
+assert [member["label"] for member in merged_rerun_meta["repos"]] == ["producer", "consumer"], \
+    merged_rerun_meta
+os.environ["CLAUDEB_DIR"] = str(merged_store)
+
+# The report a merged run owes is owed in every repository it read, whichever one the turn happens
+# to be in; scoped to one repository still means: not somebody else's review.
+merged_pending_dir = merged_state / "benches" / "merged-pending"
+merged_pending_dir.mkdir(parents=True)
+(merged_pending_dir / "meta.json").write_text(json.dumps({
+    "run_id": "merged-pending", "commit": merged_sha, "repo": str(merged_workspace),
+    "worktree": True, "repos": [dict(member) for member in merged_members],
+    "raters": ["sol-medium-bare"], "rater_runs": [], "durations": {},
+    "started": rb.iso_now(), "finished": rb.iso_now(),
+}))
+for merged_path in merged_pair:
+    assert rb.triage_pending_run(str(merged_path))[0] == merged_pending_dir, merged_path
+assert rb.triage_pending_run(str(work / "scoped-worktree")) is None
+shutil.rmtree(merged_pending_dir)
+
+# A scope narrows the repository whose prefix it carries and leaves the other whole, and each
+# repository's receipt says which of the two it is: a scoped member must not answer for its
+# whole tree.
+merged_scope_store = work / "merged-scope-claudeb"
+os.environ["CLAUDEB_DIR"] = str(merged_scope_store)
+merged_scope_stdout = io.StringIO()
+with contextlib.redirect_stdout(merged_scope_stdout):
+    assert rb.cmd_run(argparse.Namespace(
+        repo=[str(path) for path in merged_pair], commitish=None, worktree=True,
+        paths=["producer/rates.json"], raters="sol-medium-bare", leg=False, verify=None,
+        auto=None, focus=None,
+    )) == 0, merged_scope_stdout.getvalue()
+merged_scope_state = merged_scope_store / "worker-stats"
+assert sorted(path.name for path in (merged_scope_state / rb.RECEIPT_DIR).iterdir()) == sorted([
+    rb.receipt_file_name(merged_repos["producer"], scope=["rates.json"]),
+    rb.receipt_file_name(merged_repos["consumer"]),
+]), sorted(path.name for path in (merged_scope_state / rb.RECEIPT_DIR).iterdir())
+assert rb.review_receipt(merged_repos["producer"]) is None, \
+    "a scoped member wrote the repository's own receipt"
+assert rb.review_receipt(merged_repos["producer"], scope=["rates.json"])["scope"] \
+    == ["rates.json"]
+merged_scope_meta = json.loads(
+    (next((merged_scope_state / "benches").iterdir()) / "meta.json").read_text()
+)
+assert [member["scope"] for member in merged_scope_meta["repos"]] == [["rates.json"], []], \
+    merged_scope_meta
+merged_scope_names = subprocess.run(
+    ["git", "-C", str(merged_scope_meta["repo"]), "show", "--name-only", "--format=",
+     merged_scope_meta["commit"]],
+    check=True, capture_output=True, text=True,
+).stdout.split()
+assert sorted(merged_scope_names) == ["consumer/read.sh", "producer/rates.json"], \
+    merged_scope_names
+os.environ["CLAUDEB_DIR"] = str(merged_store)
+
+# What a merged review refuses, all of it before anything is sealed.
+merged_clean = work / "merged-clean"
+merged_clean.mkdir()
+subprocess.run(["git", "init", "-q", str(merged_clean)], check=True)
+subprocess.run(["git", "-C", str(merged_clean), "config", "user.email", "bench@example.test"],
+               check=True)
+subprocess.run(["git", "-C", str(merged_clean), "config", "user.name", "Review Bench"],
+               check=True)
+(merged_clean / "still.txt").write_text("still\n")
+subprocess.run(["git", "-C", str(merged_clean), "add", "-A"], check=True)
+subprocess.run(["git", "-C", str(merged_clean), "commit", "-qm", "initial"], check=True)
+merged_refusals = {}
+for merged_label, merged_kwargs in (
+    ("commitish", {"repo": [str(path) for path in merged_pair],
+                   "commitish": merged_heads["producer"], "worktree": False, "paths": None}),
+    ("twice", {"repo": [str(merged_repos["producer"])] * 2, "commitish": None,
+               "worktree": True, "paths": None}),
+    ("workspace", {"repo": str(merged_workspace), "commitish": None, "worktree": True,
+                   "paths": None}),
+    ("clean", {"repo": [str(merged_repos["producer"]), str(merged_clean)], "commitish": None,
+               "worktree": True, "paths": None}),
+    ("missing", {"repo": [str(merged_repos["producer"]), str(work / "not-a-repo")],
+                 "commitish": None, "worktree": True, "paths": None}),
+):
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            rb.cmd_run(argparse.Namespace(
+                raters="sol-medium-bare", leg=False, verify=None, auto=None, focus=None,
+                **merged_kwargs,
+            ))
+        merged_refusals[merged_label] = ""
+    except ValueError as exc:
+        merged_refusals[merged_label] = str(exc)
+assert "more than one repository" in merged_refusals["commitish"], merged_refusals
+assert "names one repository twice" in merged_refusals["twice"], merged_refusals
+assert "no working tree to seal" in merged_refusals["workspace"], merged_refusals
+assert "nothing for a merged review to read" in merged_refusals["clean"], merged_refusals
+assert "not a git repository" in merged_refusals["missing"], merged_refusals
+
+# The workspace holds the reviewed code itself. A member repository that is gone — pruned, moved,
+# deleted — must not take the diff the panel read with it, or a rerun reviews nothing.
+merged_sealed = {}
+for merged_name in ("sealed-left", "sealed-right"):
+    merged_path = work / merged_name
+    merged_path.mkdir()
+    subprocess.run(["git", "init", "-q", str(merged_path)], check=True)
+    subprocess.run(["git", "-C", str(merged_path), "config", "user.email", "bench@example.test"],
+                   check=True)
+    subprocess.run(["git", "-C", str(merged_path), "config", "user.name", "Review Bench"],
+                   check=True)
+    (merged_path / "f.txt").write_text("base\n")
+    subprocess.run(["git", "-C", str(merged_path), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(merged_path), "commit", "-qm", "initial"], check=True)
+    (merged_path / "f.txt").write_text(f"changed in {merged_name}\n")
+    merged_sealed[merged_name] = merged_path
+merged_sealed_members = rb.merged_members(list(merged_sealed.values()))
+merged_sealed_workspace, merged_sealed_sha = rb.merged_snapshot_workspace(merged_sealed_members)
+assert not (merged_sealed_workspace / ".git" / "objects" / "info" / "alternates").exists()
+# Deterministic: the same trees, prefixes, bases and scopes are the same commit, so a rerun finds
+# the workspace it is pinned to already on disk.
+assert rb.merged_snapshot_workspace(merged_sealed_members) == (
+    merged_sealed_workspace, merged_sealed_sha
+)
+assert rb.merged_manifest(merged_sealed_workspace)["merged"] == merged_sealed_sha
+shutil.rmtree(merged_sealed["sealed-right"])
+merged_sealed_show = subprocess.run(
+    ["git", "-C", str(merged_sealed_workspace), "show", "--format=", merged_sealed_sha],
+    check=True, capture_output=True, text=True,
+).stdout
+assert "sealed-right/f.txt" in merged_sealed_show, merged_sealed_show
+assert "changed in sealed-right" in merged_sealed_show, merged_sealed_show
+
+# The workspaces are scaffolding: they live as long as the run can still be rerun, and no longer.
+merged_stale = merged_state / rb.MERGED_DIR / ("0" * rb.MERGED_HOME_HEX)
+merged_stale.mkdir(parents=True)
+os.utime(merged_stale, (time.time() - (rb.TRIAGE_GATE_HOURS + 1) * 3600,) * 2)
+rb.prune_merged_workspaces()
+assert not merged_stale.exists()
+assert merged_workspace.is_dir(), "a live merged workspace was pruned"
+
+# The clean-tree hint of a merged run names every repository it was given, or the command it
+# prints reviews one of them.
+assert rb.commit_mode_command(argparse.Namespace(
+    repo=[str(path) for path in merged_pair], tier="T1", max=False, foreground=False,
+    raters=None, auto=None, leg=False, focus="", lens="", verify=None, no_verify=False,
+)) == shlex.join([
+    "review-bench", "review", "HEAD", "--tier", "T1",
+    *("--repo", str(merged_tops[0])), *("--repo", str(merged_tops[1])),
+])
+
 print("review-bench-unit-ok")
 PY
 assert test "$?" -eq 0
@@ -8247,4 +8617,4 @@ else
   printf 'SKIP: review report hook behavior (%s is unavailable)\n' "$REPORT_HOOK"
 fi
 
-printf 'PASS: %s assertions; canonical review tiers sharing one OpenCode/Gemini floor with no retired cell in them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative suggestions with missing-object fallback, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account schedulable only as the pool'"'"'s reserve and never as a roster tail, and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, carried from there into the corpus row, the report header and a receipt of the lens'"'"'s own while every lens row stays out of the canonical defect list, the frontier denominators, the composition corpus and the default leaderboard, worktree runs narrowed to named paths whose snapshot holds only those paths, is deterministic per path set, spelled against the directory the caller stands in and lexically canonicalized so a `..` can neither walk out of the repository nor split one file into two scopes, carries its scope as commit trailers a failed read refuses rather than widens, so a rerun by sha stays inside it, refuses a commitish, a pathspec matching nothing and a scope holding no change — the refusal before any snapshot object is written — and writes only a receipt of its own — leaving the repository'"'"'s receipt untouched byte for byte, the suggest baseline whole and the stamp hook with nothing to read, a lens narrowed by the same paths naming a combined receipt of its own that leaves the plain, pure-lens and pure-scope receipts byte for byte and survives a rerun by sha with both selectors intact, a day-one repository reviewed end to end — its root commit sealed and cloned, given a deterministic empty base commit inside that clone so the vendor skill diffs its whole content, measured in lines and paths against the empty tree rather than as an unmeasurable diff, so a correction inside it prices as follow-up, and closed by the real stamp hook in both shapes while never-reviewed code riding along still refuses it, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask, the lookup scoped to the repository so another chat cannot answer for it, and both review hooks keyed so exactly one fires\n' "$asserts"
+printf 'PASS: %s assertions; canonical review tiers sharing one OpenCode/Gemini floor with no retired cell in them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative suggestions with missing-object fallback, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account schedulable only as the pool'"'"'s reserve and never as a roster tail, and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, carried from there into the corpus row, the report header and a receipt of the lens'"'"'s own while every lens row stays out of the canonical defect list, the frontier denominators, the composition corpus and the default leaderboard, worktree runs narrowed to named paths whose snapshot holds only those paths, is deterministic per path set, spelled against the directory the caller stands in and lexically canonicalized so a `..` can neither walk out of the repository nor split one file into two scopes, carries its scope as commit trailers a failed read refuses rather than widens, so a rerun by sha stays inside it, refuses a commitish, a pathspec matching nothing and a scope holding no change — the refusal before any snapshot object is written — and writes only a receipt of its own — leaving the repository'"'"'s receipt untouched byte for byte, the suggest baseline whole and the stamp hook with nothing to read, a lens narrowed by the same paths naming a combined receipt of its own that leaves the plain, pure-lens and pure-scope receipts byte for byte and survives a rerun by sha with both selectors intact, a day-one repository reviewed end to end — its root commit sealed and cloned, given a deterministic empty base commit inside that clone so the vendor skill diffs its whole content, measured in lines and paths against the empty tree rather than as an unmeasurable diff, so a correction inside it prices as follow-up, and closed by the real stamp hook in both shapes while never-reviewed code riding along still refuses it, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask, the lookup scoped to the repository so another chat cannot answer for it, and both review hooks keyed so exactly one fires, and a merged review of several repositories read by one panel out of a single workspace holding each repository under its own prefix — deterministic, self-contained once built and pruned with the run it belongs to — whose findings and adjudication handoff name the repository each belongs to, whose scopes and progress are per repository, and which stamps EVERY repository it read with that repository'"'"'s own receipt so none of their commit gates blocks on a review that covered it, while refusing a commitish, a repository named twice, a clean tree, a missing repository and its own workspace as a tree to seal\n' "$asserts"

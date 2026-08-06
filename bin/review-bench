@@ -746,7 +746,14 @@ LENS_FLAG_HELP = (
 )
 SCOPE_FLAG_HELP = (
     "Review only the working-tree changes under these pathspecs (--worktree only); the run "
-    "answers to a receipt of its own and never marks the repository reviewed"
+    "answers to a receipt of its own and never marks the repository reviewed. With several "
+    "--repo, each pathspec starts with the repository's own prefix as it appears in the diff "
+    "(repo/path), and a repository none of them names keeps its whole working tree"
+)
+REPO_FLAG_HELP = (
+    "The repository to review. Repeatable with --worktree: one run then reads every named "
+    "repository's working tree as a single change, with each repository's paths under its own "
+    "top-level prefix, and stamps every one of them"
 )
 VERDICTS = {"confirmed", "false_positive", "duplicate"}
 WEIGHTS = {"P1": 5, "P2": 2, "P3": 1}
@@ -903,6 +910,11 @@ OWNER_GRANT_TTL_S = 1800
 
 RECEIPT_DIR = "receipts"
 PROGRESS_DIR = "progress"
+# Where a merged review's own repository is built and kept, and the file inside one that names the
+# repositories it was built from.
+MERGED_DIR = "merged"
+MERGED_MANIFEST = ".review-bench-merged.json"
+MERGED_HOME_HEX = 16
 RECEIPT_FIELDS = ("repo", "tree", "commit", "run_id", "ts")
 # T1's size ceiling, named rather than left a literal inside the tier ladder.
 T1_MAX_LINES = 150
@@ -1413,6 +1425,271 @@ def is_worktree_snapshot(repo, sha):
     proc = subprocess.run(["git", "show", "-s", "--format=%ce", sha],
                           cwd=repo, capture_output=True, text=True)
     return proc.returncode == 0 and proc.stdout.strip() == "review-bench@local"
+
+
+def repo_arg_paths(args):
+    """The repositories a run was pointed at, in the order they were named. `--repo` is repeatable,
+    so every reader answers for both shapes — one string from a caller that names one repository,
+    a list from one that names several.
+    """
+    value = getattr(args, "repo", None)
+    if not value:
+        return ["."]
+    return [value] if isinstance(value, str) else list(value)
+
+
+def merged_repo_labels(repos):
+    """The directory prefix each repository is mounted under in a merged review. A rater reads these
+    instead of repository paths and a scope is spelled with them, so it is the basename; two
+    checkouts sharing one get numbered rather than silently merging into a single prefix.
+    """
+    labels = []
+    for repo in repos:
+        base = Path(repo).name or "repo"
+        label = base
+        attempt = 2
+        while label in labels:
+            label = f"{base}-{attempt}"
+            attempt += 1
+        labels.append(label)
+    return labels
+
+
+def split_merged_scope(pairs, paths, option="--paths"):
+    """Which repository each pathspec of a merged review narrows, keyed by label.
+
+    A pathspec carries the prefix the raters read in the diff, so a scope is spelled the way the
+    findings answering it will be; an absolute path is taken as well, because that is the other
+    spelling a caller has in hand, and the deepest repository containing it owns it. A repository
+    nobody names keeps its whole working tree — narrowing one half of a cross-repository contract
+    is the normal case — and an unrecognised prefix is refused rather than read as a directory of
+    whichever repository was named first.
+    """
+    labels = dict(pairs)
+    grouped = {label: [] for label in labels}
+    for raw in paths:
+        text = str(raw).strip()
+        if not text:
+            raise ValueError(f"{option} names no path: {raw!r}")
+        if os.path.isabs(text):
+            owner = None
+            for label, repo in labels.items():
+                if scope_path_relative(repo, text) is None:
+                    continue
+                if owner is None or len(str(labels[owner])) < len(str(repo)):
+                    owner = label
+            if owner is None:
+                raise ValueError(
+                    f"{option} names a path outside every repository under review: {raw}"
+                )
+            grouped[owner].append(text)
+            continue
+        label, separator, rest = text.partition("/")
+        if not separator or not rest.strip("/") or label not in labels:
+            raise ValueError(
+                f"{option} entries of a merged review start with the repository's own prefix ("
+                + ", ".join(f"{name}/" for name in labels) + f"): {raw}"
+            )
+        grouped[label].append(os.path.join(str(labels[label]), rest))
+    return {
+        label: normalize_scope_paths(labels[label], entries, option) if entries else []
+        for label, entries in grouped.items()
+    }
+
+
+def merged_members(repos, paths=()):
+    """Each repository of a merged review: its prefix, its sealed snapshot, what that snapshot was
+    taken against and the scope it was narrowed to. Sealed exactly as a single-repository
+    `--worktree` run seals one, because these snapshots are what each repository's own receipt is
+    written against afterwards.
+    """
+    labels = merged_repo_labels(repos)
+    scopes = split_merged_scope(list(zip(labels, repos)), paths)
+    members = []
+    for label, repo in zip(labels, repos):
+        scope = scopes[label]
+        try:
+            commit = worktree_snapshot_commit(repo, paths=scope)
+        except ValueError as exc:
+            raise ValueError(
+                f"--repo {repo} has nothing for a merged review to read ({exc}); every named "
+                "repository is sealed and stamped by the run, so drop that --repo or review it "
+                "on its own"
+            ) from exc
+        members.append({
+            "label": label, "repo": str(repo), "commit": commit,
+            "base": diff_base(repo, commit), "scope": scope,
+        })
+    return members
+
+
+def merged_snapshot_message(members):
+    """What the merged snapshot commit says about itself. It is the first thing every rater reads —
+    `git show` prints it above the diff — so it has to say that the leading directory of each path
+    is a separate checkout rather than one project's subtree, or the panel reasons about the halves
+    of a cross-repository contract as if they had to agree as one tree.
+    """
+    lines = [
+        "review-bench merged worktree snapshot",
+        "",
+        "One change across several repositories, each sealed as --worktree seals one and mounted",
+        "under its own top-level directory. Every path below is that directory followed by the",
+        "path inside that repository; the directories are separate checkouts, not subtrees of one",
+        "project, and the change is meant to be read as a single contract spanning them.",
+        "",
+    ]
+    for member in members:
+        detail = f"on {member['base'][:7]}"
+        if member["scope"]:
+            detail += ", scope: " + " ".join(member["scope"])
+        lines.append(f"  {member['label']}/ = {member['repo']} ({detail})")
+    return "\n".join(lines) + "\n"
+
+
+def merged_manifest(repo):
+    """The repositories a merged workspace was built from, or None for an ordinary repository.
+
+    A rerun of an errored cell is pinned to the merged commit and names the workspace, and the
+    workspace is the only place the repositories it owes receipts to are still written down.
+    """
+    try:
+        document = json.loads((Path(repo) / MERGED_MANIFEST).read_text())
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(document, dict) or not isinstance(document.get("merged"), str):
+        return None
+    members = document.get("repos")
+    if not isinstance(members, list) or not members:
+        return None
+    for member in members:
+        if not isinstance(member, dict) or any(
+            not isinstance(member.get(field), str) or not member[field]
+            for field in ("label", "repo", "commit")
+        ):
+            return None
+        if not isinstance(member.get("scope", []), list):
+            return None
+    return document
+
+
+def merged_finding_label(path, members):
+    """Which repository a finding is about: the prefix its path carries. Empty when it carries none
+    of them, which is a rater citing a place outside the review — a fact the adjudicator has to
+    see rather than a repository picked on its behalf.
+    """
+    text = str(path or "")
+    for member in members:
+        if text == member["label"] or text.startswith(f"{member['label']}/"):
+            return member["label"]
+    return ""
+
+
+def prune_merged_workspaces(directory=None):
+    """Workspaces of runs that can no longer be rerun. TRIAGE_GATE_HOURS is how long a worktree run
+    is still live business, and past that its scaffolding goes rather than leaving a checkout per
+    merged review on disk forever.
+    """
+    directory = directory or state_dir() / MERGED_DIR
+    if not directory.is_dir():
+        return
+    horizon = time.time() - TRIAGE_GATE_HOURS * 3600
+    for path in sorted(directory.iterdir()):
+        try:
+            if not path.is_dir() or path.stat().st_mtime > horizon:
+                continue
+        except OSError:
+            continue
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def merged_snapshot_workspace(members):
+    """The one repository a merged review is read out of, and its merged snapshot commit: every
+    member's snapshot under its own prefix, over a base commit holding what each was sealed
+    against. `git show` of that commit is the whole cross-repository change as one diff, and every
+    reader downstream — the sealed clones, the verifier's file lookups, the finding-path
+    resolution — goes on working against a single repository.
+
+    Objects are borrowed from the members to build it and then repacked into it: a workspace still
+    borrowing anything is refused rather than reviewed, because a gc in a member repository would
+    take the reviewed code with it.
+
+    Named after the commit it holds, which is a function of the trees, the prefixes, the bases and
+    the scopes it was built from — so the rerun of an errored cell, pinned to that commit, finds
+    the workspace it needs already on disk.
+    """
+    def git(*arguments, env=None):
+        proc = subprocess.run(["git", *arguments], env=env, capture_output=True, text=True,
+                              timeout=900)
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"merged workspace: git {arguments[0]} failed: "
+                f"{proc.stderr.strip() or proc.returncode}"
+            )
+        return proc.stdout.strip()
+
+    alternates = []
+    for member in members:
+        common = git_common_dir(member["repo"])
+        if common is None:
+            raise RuntimeError(f"cannot reach the object store of {member['repo']}")
+        alternates.append(str(common / "objects"))
+    root = state_dir() / MERGED_DIR
+    root.mkdir(parents=True, exist_ok=True)
+    prune_merged_workspaces(root)
+    # Staged inside the store it will live in, so the move into place is a rename rather than a
+    # copy a reader could catch half-finished.
+    staging = Path(tempfile.mkdtemp(prefix=".staging-", dir=root))
+    borrowed = staging / ".git" / "objects" / "info" / "alternates"
+    try:
+        git("init", "-q", str(staging))
+        borrowed.write_text("".join(f"{path}\n" for path in alternates))
+        trees = []
+        for field in ("base", "commit"):
+            index = staging / ".git" / f"review-bench-{field}-index"
+            env = dict(os.environ, GIT_INDEX_FILE=str(index))
+            for member in members:
+                git("-C", str(staging), "read-tree", f"--prefix={member['label']}/",
+                    member[field], env=env)
+            trees.append(git("-C", str(staging), "write-tree", env=env))
+            index.unlink(missing_ok=True)
+        identity = dict(os.environ, **FIXED_COMMIT_IDENTITY)
+        base = git("-C", str(staging), "commit-tree", trees[0],
+                   "-m", "review-bench merged base", env=identity)
+        merged = git("-C", str(staging), "commit-tree", trees[1], "-p", base,
+                     "-m", merged_snapshot_message(members), env=identity)
+        git("-C", str(staging), "update-ref", "HEAD", merged)
+        git("-C", str(staging), "repack", "-adq")
+        borrowed.unlink()
+        # Connectivity only: what has to be proven is that nothing is still borrowed, and rehashing
+        # every blob of every member on top of that would cost the review minutes.
+        git("-C", str(staging), "fsck", "--no-progress", "--connectivity-only")
+        document = json.dumps(
+            {"merged": merged, "repos": [dict(member) for member in members]}, indent=2
+        ) + "\n"
+        (staging / MERGED_MANIFEST).write_text(document)
+        home = root / merged[:MERGED_HOME_HEX]
+        # A name taken by something that is not a repository is a prune interrupted halfway, and
+        # reusing it would hand the run a workspace with no objects in it.
+        if home.exists() and not (home / ".git").is_dir():
+            shutil.rmtree(home, ignore_errors=True)
+        moved = False
+        if not home.exists():
+            try:
+                os.replace(staging, home)
+                moved = True
+            except OSError:
+                moved = False
+        if not moved:
+            # The commit is a function of everything that went into it, so a workspace already
+            # under this name holds these very objects; only its manifest is rewritten, because
+            # the run about to start is the one that has to be answered for.
+            (home / MERGED_MANIFEST).write_text(document)
+            os.utime(home)
+            shutil.rmtree(staging, ignore_errors=True)
+        return home, merged
+    except Exception:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
 
 
 def read_jsonl(path):
@@ -2366,8 +2643,15 @@ def triage_pending_run(repo=None):
         if repo is not None:
             # Same rule as the review receipt: a git worktree of the repository is the repository,
             # and an unresolvable path on either side is not a match, so the gate stays quiet
-            # rather than blocking a session over somebody else's review.
-            if common is None or git_common_dir(meta.get("repo")) != common:
+            # rather than blocking a session over somebody else's review. A merged review is owed
+            # its report in every repository it read, whichever one the turn is happening in.
+            reviewed = [meta.get("repo")] + [
+                entry.get("repo") for entry in meta.get("repos") or ()
+                if isinstance(entry, dict)
+            ]
+            if common is None or not any(
+                git_common_dir(candidate) == common for candidate in reviewed if candidate
+            ):
                 continue
         if (run_dir / "verdicts.jsonl").exists() or (run_dir / REPORT_RECEIPT).exists():
             return None
@@ -5605,20 +5889,33 @@ def review_outcome(repo, receipt):
                     continue
             if meta.get("lens") != lens:
                 continue
+            # A merged review names the merged workspace's commit, never this repository's own
+            # snapshot: the run that read this receipt's tree is the one whose members include it,
+            # and only the findings under that member's prefix are about this repository.
+            member = next(
+                (entry for entry in meta.get("repos") or ()
+                 if isinstance(entry, dict) and str(entry.get("commit") or "") == commit
+                 and isinstance(entry.get("label"), str) and entry["label"]),
+                None,
+            )
             meta_commit = str(meta.get("commit") or "")
             # The run_id fallback exists for artifacts with no commit stamped at all; a run
             # that NAMES a different commit is a different review, whatever its directory.
-            if meta_commit:
-                if meta_commit != commit:
+            if member is None:
+                if meta_commit:
+                    if meta_commit != commit:
+                        continue
+                elif (meta.get("run_id") or run_dir.name) != receipt.get("run_id"):
                     continue
-            elif (meta.get("run_id") or run_dir.name) != receipt.get("run_id"):
-                continue
             errored = {
                 entry.get("rater") for entry in meta.get("rater_runs", ())
                 if entry.get("errored") and entry.get("rater")
             }
+            prefix = f"{member['label']}/" if member else ""
             findings += sum(
-                len(read_jsonl(path)) for path in sorted(run_dir.glob("findings-*.jsonl"))
+                sum(1 for row in read_jsonl(path)
+                    if str(row.get("file") or "").startswith(prefix))
+                for path in sorted(run_dir.glob("findings-*.jsonl"))
                 if path.name[len("findings-"):-len(".jsonl")] not in errored
             )
     return worktree, confirmed, findings
@@ -5980,13 +6277,18 @@ def cmd_suggest(args):
     return 0
 
 
-def handoff(run_id, paths):
+def handoff(run_id, paths, members=None):
     verdict_path = verdict_scratch_path(run_id)
     command = f"review-bench record {shlex.quote(run_id)} --verdicts {shlex.quote(verdict_path)}"
     print("\nADJUDICATION HANDOFF")
     print("Read these files without revealing one rater's output to another:")
     for path in paths:
         print(f"  {path}")
+    if members:
+        print("This review spans several repositories: each finding names its own in a repo field, "
+              "and its path starts with the same prefix.")
+        for member in members:
+            print(f"  {member['label']}/ = {member['repo']}")
     print("Merge and deduplicate the findings blind. Write one verdict per zero-based finding "
           "index as {rater, idx, verdict}, where verdict is confirmed, false_positive, or duplicate.")
     print(f"Record exactly with: {command}")
@@ -6026,8 +6328,9 @@ def commit_mode_command(args):
             command.append("--leg")
         if getattr(args, "foreground", False):
             command.append("--foreground")
-    if args.repo != ".":
-        command += ["--repo", str(Path(args.repo).resolve())]
+    for path in repo_arg_paths(args):
+        if path != ".":
+            command += ["--repo", str(Path(path).resolve())]
     if args.focus:
         command += ["--focus", args.focus]
     if getattr(args, "lens", ""):
@@ -6053,9 +6356,15 @@ def cmd_run(args):
         args.raters = ",".join(
             REVIEW_TIERS[tier_name]["cells_max" if use_max else "cells"]
         )
-    repo = resolve_repo_arg(args.repo)
-    if repo is None:
-        raise ValueError(f"not a git repository: {Path(args.repo).resolve()}")
+    repos = []
+    for path in repo_arg_paths(args):
+        resolved = resolve_repo_arg(path)
+        if resolved is None:
+            raise ValueError(f"not a git repository: {Path(path).resolve()}")
+        if resolved in repos:
+            raise ValueError(f"--repo names one repository twice: {resolved}")
+        repos.append(resolved)
+    repo = repos[0]
     worktree_mode = bool(getattr(args, "worktree", False))
     commitish = getattr(args, "commitish", None)
     if bool(commitish) == worktree_mode:
@@ -6063,7 +6372,24 @@ def cmd_run(args):
     requested_scope = list(getattr(args, "paths", None) or [])
     if requested_scope and not worktree_mode:
         raise ValueError("--paths narrows the working tree; it cannot narrow a commit")
-    if worktree_mode:
+    if len(repos) > 1 and not worktree_mode:
+        raise ValueError(
+            "a merged review reads the working trees of every --repo it is given; one commitish "
+            "cannot name a change in more than one repository"
+        )
+    # Set for a merged review, and it is what makes the run answer to every repository it read
+    # rather than to the workspace it read them out of.
+    members = None
+    if len(repos) > 1:
+        members = merged_members(repos, requested_scope)
+        repo, sha = merged_snapshot_workspace(members)
+        scope = []
+    elif worktree_mode:
+        if merged_manifest(repo) is not None:
+            raise ValueError(
+                f"{repo} is a merged review's workspace and has no working tree to seal; name the "
+                "repositories it was built from instead"
+            )
         scope = normalize_scope_paths(repo, requested_scope) if requested_scope else []
         sha = worktree_snapshot_commit(
             repo, clean_command=commit_mode_command(args), paths=scope,
@@ -6071,12 +6397,21 @@ def cmd_run(args):
     else:
         scope = []
         sha = resolve_commit(repo, commitish)
+        document = merged_manifest(repo)
+        members = document["repos"] if document and document["merged"] == sha else None
     worktree_mode = worktree_mode or is_worktree_snapshot(repo, sha)
     # A rerun names the snapshot sha and no paths at all, so its scope exists only in the
     # snapshot's trailers; without this the rerun of a scoped lens run would write the pure-lens
-    # receipt and declare the whole tree read by that lens.
-    if worktree_mode and not scope:
+    # receipt and declare the whole tree read by that lens. A merged snapshot carries no scope of
+    # its own — each member's is its own business, and the manifest is where it is written down.
+    if worktree_mode and not members and not scope:
         scope = snapshot_scope_paths(repo, sha)
+    # What the run answers for when it finishes: every member of a merged review, each against its
+    # own snapshot, so no participating repository is left without the receipt a solo run leaves.
+    receipt_targets = [
+        (Path(member["repo"]), member["commit"], list(member.get("scope") or []))
+        for member in members
+    ] if members else [(repo, sha, scope)]
     reviews_path = state_dir() / "reviews.jsonl"
     # The corpus that picks `--auto` cells and prices how long they take, and it is the tool's
     # own reviews even when this run carries a lens: a cell is chosen for how it performs at
@@ -6174,6 +6509,8 @@ def cmd_run(args):
         launch_meta["worktree"] = True
         if scope:
             launch_meta["scope"] = scope
+    if members:
+        launch_meta["repos"] = [dict(member) for member in members]
     if tier_name:
         launch_meta["tier"] = tier_name
         launch_meta["max"] = use_max
@@ -6197,8 +6534,10 @@ def cmd_run(args):
         [rater["spec"] for rater in submitted_raters],
         review_duration_medians(review_rows),
     )
-    progress_path = None
-    progress = None
+    # One document per repository the panel is reading, because every surface that shows a run in
+    # flight looks for the one belonging to the tree in front of it: a merged review that wrote a
+    # single document would be invisible in every repository but one.
+    progress_documents = []
     progress_warned = False
 
     def warn_progress(exc):
@@ -6209,21 +6548,25 @@ def cmd_run(args):
 
     try:
         try:
-            progress_name = progress_file_name(repo)
-            if progress_name is None:
+            directory = state_dir() / PROGRESS_DIR
+            for progress_repo in [Path(member["repo"]) for member in members] if members else [repo]:
+                progress_name = progress_file_name(progress_repo)
+                if progress_name is None:
+                    continue
+                progress = review_progress_document(
+                    progress_repo, run_id, getattr(args, "tier", None),
+                    "worktree" if worktree_mode else sha[:7],
+                    [rater["spec"] for rater in submitted_raters],
+                    started=started.isoformat(),
+                    started_epoch=started.timestamp(),
+                    max_panel=bool(getattr(args, "max", False)),
+                    expected=expected_durations,
+                )
+                prune_review_progress(progress_repo, directory)
+                progress_documents.append((directory / progress_name, progress))
+                persist_review_progress(directory / progress_name, progress)
+            if not progress_documents:
                 raise RuntimeError("repository identity is unavailable")
-            progress_path = state_dir() / PROGRESS_DIR / progress_name
-            progress = review_progress_document(
-                repo, run_id, getattr(args, "tier", None),
-                "worktree" if worktree_mode else sha[:7],
-                [rater["spec"] for rater in submitted_raters],
-                started=started.isoformat(),
-                started_epoch=started.timestamp(),
-                max_panel=bool(getattr(args, "max", False)),
-                expected=expected_durations,
-            )
-            prune_review_progress(repo, progress_path.parent)
-            persist_review_progress(progress_path, progress)
         except Exception as exc:
             warn_progress(exc)
 
@@ -6252,7 +6595,7 @@ def cmd_run(args):
                 except Exception as exc:
                     results.append((rater, None, (1, 0, "", f"task exception: {exc}", [])))
                     cell_failed = True
-                if progress is not None and progress_path is not None:
+                for progress_path, progress in progress_documents:
                     try:
                         complete_review_progress(progress, rater["spec"], cell_failed)
                         persist_review_progress(progress_path, progress)
@@ -6285,6 +6628,14 @@ def cmd_run(args):
             findings = [
                 dict(row, file=canonical_finding_path(row.get("file"), tree)) for row in findings
             ]
+            # Named on the finding as well as carried in its path: the adjudicator merges rows from
+            # several raters and has to weigh two claims about one repository against two halves of
+            # one contract, and a prefix it has to parse out of a path is a fact it can miss.
+            if members:
+                findings = [
+                    dict(row, repo=merged_finding_label(row.get("file"), members))
+                    for row in findings
+                ]
             is_error = rc != 0 or (rc == 0 and text and is_429_error(text))
             unusable = "" if is_error else unusable_review(text, findings)
             if unusable:
@@ -6372,6 +6723,8 @@ def cmd_run(args):
             meta["worktree"] = True
             if scope:
                 meta["scope"] = scope
+        if members:
+            meta["repos"] = [dict(member) for member in members]
         if tier_name:
             meta["tier"] = tier_name
             meta["max"] = use_max
@@ -6379,16 +6732,21 @@ def cmd_run(args):
         (run_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
         log_review_event("run", run_dir, meta)
         if meta["completed_raters"]:
-            write_review_receipt(repo, sha, run_id, len(errored_raters),
-                                 panel=len(raters), worktree=worktree_mode,
-                                 lens=lens["name"] if lens else None,
-                                 scope=scope)
+            for target, target_sha, target_scope in receipt_targets:
+                write_review_receipt(target, target_sha, run_id, len(errored_raters),
+                                     panel=len(raters), worktree=worktree_mode,
+                                     lens=lens["name"] if lens else None,
+                                     scope=target_scope)
         if errored_raters:
             errored = [rater for rater in raters if rater["spec"] in errored_raters]
             rerun = ",".join(collapse_rater_attempts(rater["spec"] for rater in errored))
             # Always the sha, even for --worktree: the tree can drift before the rerun, and
             # only the snapshot commit pins the errored cells to what the others reviewed.
             rerun_command = ["review-bench", "run", sha, "--raters", rerun]
+            # The merged commit lives in the workspace and nowhere else, so the rerun has to be
+            # pointed at it; the workspace answers for the same repositories this run did.
+            if members:
+                rerun_command += ["--repo", str(repo)]
             # A rerun without the lens completes a lens run with a stock review of the cell.
             if lens:
                 rerun_command += ["--lens", lens["name"]]
@@ -6401,11 +6759,11 @@ def cmd_run(args):
                 )
             print(f"rerun: {shlex.join(rerun_command)}")
         print(f"run id: {run_id}")
-        handoff(run_id, paths)
+        handoff(run_id, paths, members)
         emit_report(run_dir, meta)
         return 1 if (failed or errored_raters) else 0
     finally:
-        if progress_path is not None:
+        for progress_path, _ in progress_documents:
             try:
                 progress_path.unlink(missing_ok=True)
             except Exception as exc:
@@ -7241,7 +7599,7 @@ def main():
     review = subparsers.add_parser("review", help="Run a canonical review tier")
     review.add_argument("commitish", nargs="?")
     review.add_argument("--worktree", action="store_true")
-    review.add_argument("--repo", default=".")
+    review.add_argument("--repo", action="append", metavar="PATH", help=REPO_FLAG_HELP)
     review.add_argument("--tier", choices=REVIEW_TIERS, required=True)
     review.add_argument("--max", action="store_true", help="Use the full tier composition")
     review.add_argument(
@@ -7306,7 +7664,7 @@ def main():
     run = subparsers.add_parser("run", help="Run blind reviewers against one commit")
     run.add_argument("commitish", nargs="?")
     run.add_argument("--worktree", action="store_true")
-    run.add_argument("--repo", default=".")
+    run.add_argument("--repo", action="append", metavar="PATH", help=REPO_FLAG_HELP)
     selection = run.add_mutually_exclusive_group()
     selection.add_argument("--tier", choices=REVIEW_TIERS)
     selection.add_argument(
