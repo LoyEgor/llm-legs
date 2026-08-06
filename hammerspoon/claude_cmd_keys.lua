@@ -179,10 +179,24 @@ end
 
 local function ruleWidth(line)
   local remainder, count = line:gsub("─", "")
-  if trimEdges(remainder) ~= "" then
-    return 0
+  if trimEdges(remainder) == "" then
+    return count
   end
-  return count
+  local dash, body = "─", trimEdges(line)
+  local leading, position = 0, 1
+  while body:sub(position, position + #dash - 1) == dash do
+    position, leading = position + #dash, leading + 1
+  end
+  local trailing, stop = 0, #body
+  while stop >= #dash and body:sub(stop - #dash + 1, stop) == dash do
+    stop, trailing = stop - #dash, trailing + 1
+  end
+  -- The titled fullscreen border opens wide and closes with `──`; a transcript separator
+  -- (`──── snip ────`) closes as wide as it opens, which is what tells the two apart.
+  if leading >= 4 and trailing >= 1 and trailing <= 3 then
+    return count
+  end
+  return 0
 end
 
 local wideRanges = {
@@ -1555,10 +1569,11 @@ axGrid.text = {
   -- (a 300-column 200-row grid is 60k cells) while a scrollback of megabytes never
   -- crosses the bridge.
   cap = 65536,
-  -- Two things the fingerprint below cannot see: Cmd+plus changes the row count without
-  -- moving the window, and a verdict measured while the AX breaker was open describes
-  -- Terminal a minute ago. Past this age the next scrape re-measures the box.
-  ttl = 20,
+  -- Cmd+plus changes the row count without moving the window. Past this age the next
+  -- scrape re-measures the box instead of slicing the AX tail at the old row count.
+  ttl = 600,
+  limit = 8,
+  cache = {},
 }
 
 axGrid.windows = {}
@@ -1600,21 +1615,24 @@ end
 -- Trailing whitespace is allowed to differ — the two paths agree on it live, and padding
 -- alone still describes the same screen — while a line that differs anywhere else means
 -- the tail does not start where the screen does.
-function axGrid.textMatches(reference, value, rows)
-  local tail = axGrid.textTail(value, rows)
-  if type(reference) ~= "string" or not tail then
+function axGrid.textSameLines(expected, actual)
+  if type(expected) ~= "string" or type(actual) ~= "string" then
     return false
   end
-  local expected, actual = axGrid.textLines(reference), axGrid.textLines(tail)
-  if #expected < 1 or #expected ~= #actual then
+  local left, right = axGrid.textLines(expected), axGrid.textLines(actual)
+  if #left < 1 or #left ~= #right then
     return false
   end
-  for index = 1, #expected do
-    if expected[index]:gsub("%s+$", "") ~= actual[index]:gsub("%s+$", "") then
+  for index = 1, #left do
+    if left[index]:gsub("%s+$", "") ~= right[index]:gsub("%s+$", "") then
       return false
     end
   end
   return true
+end
+
+function axGrid.textMatches(reference, value, rows)
+  return axGrid.textSameLines(reference, axGrid.textTail(value, rows))
 end
 
 function axGrid.textRead(total, cap)
@@ -1627,20 +1645,76 @@ function axGrid.textRead(total, cap)
   return { location = total - cap, length = cap }
 end
 
+-- Scalars only: hs.axuielement hands out a fresh wrapper per observation, so a key built
+-- from the tab element would never match the previous action's and nothing would ever hit.
+-- The tab itself is compared in textFresh, where its __eq reaches the AX element behind it.
+function axGrid.textCacheKey(box)
+  if type(box) ~= "table" then
+    return nil
+  end
+  local function part(value)
+    return type(value) .. ":" .. tostring(value)
+  end
+  return part(box.windowID) .. "\0" .. part(box.tabIndex)
+end
+
+function axGrid.textCacheClear()
+  axGrid.text.cache = {}
+end
+
+-- A box that names no key names no window either: clearing the whole cache over one
+-- unmeasurable window would throw away every other window's calibration.
+function axGrid.textCacheInvalidate(box)
+  local key = axGrid.textCacheKey(box)
+  if not key then
+    return
+  end
+  axGrid.text.cache[key] = nil
+end
+
+function axGrid.textCacheStore(box, entry)
+  local key = axGrid.textCacheKey(box)
+  if not key then
+    return nil
+  end
+  local cache = axGrid.text.cache
+  if not cache[key] then
+    -- By last use, not by calibration age: evicting by `at` would drop the window being
+    -- worked in as soon as it is the longest-calibrated one.
+    local count, coldestKey, coldestUse = 0, nil, nil
+    for cachedKey, cached in pairs(cache) do
+      count = count + 1
+      local used = cached.used or cached.at
+      if coldestUse == nil or used < coldestUse then
+        coldestKey, coldestUse = cachedKey, used
+      end
+    end
+    if count >= axGrid.text.limit and coldestKey then
+      cache[coldestKey] = nil
+    end
+  end
+  entry.used = now()
+  cache[key] = entry
+  return entry
+end
+
 -- Pinned to the window box, because a resize changes the row count the tail is cut to,
 -- and to the tab, because another tab of the same window has its own text area and the
 -- cached element would answer with a screen that is not the one in front.
 function axGrid.textFresh(box)
-  local cache = axGrid.text.cache
-  if not cache or type(box) ~= "table" then
+  local key = axGrid.textCacheKey(box)
+  local cache = key and axGrid.text.cache[key] or nil
+  if not cache then
     return nil
   end
-  if now() - cache.at > axGrid.text.ttl then
+  local age = now() - cache.at
+  if age < 0 or age > axGrid.text.ttl then
     return nil
   end
   if cache.windowID == box.windowID and cache.tab == box.tab
       and cache.tabIndex == box.tabIndex and cache.x == box.x and cache.y == box.y
       and cache.w == box.w and cache.h == box.h then
+    cache.used = now()
     return cache
   end
   return nil
@@ -1699,7 +1773,7 @@ function axGrid.textFenced(work)
   local ok, first, second = pcall(work)
   local spent = now() - at
   if spent > axGrid.slowAnchor then
-    axGrid.text.cache = nil
+    axGrid.textCacheClear()
     axGrid.breakerUntil = at + spent + axGrid.breakerSeconds
   end
   if not ok then
@@ -1721,23 +1795,29 @@ end
 
 function axGrid.textCalibrate(reference, box, walk)
   if type(reference) ~= "string" or type(box) ~= "table" then
-    axGrid.text.cache = nil
+    axGrid.textCacheInvalidate(box)
     return nil
   end
   local rows = #axGrid.textLines(reference)
   if rows < 1 then
-    axGrid.text.cache = nil
+    axGrid.textCacheInvalidate(box)
     return nil
   end
   local element, value = axGrid.textFenced(walk or function()
     local found = axGrid.descendant(axuielement.windowElement(box.window), "AXTextArea")
     return found, found and axGrid.textValue(found) or nil
   end)
+  -- No element is no verdict about this window: an open breaker or a walk that stalled
+  -- describes Terminal for the breaker's minute, where a stored AppleScript-only entry
+  -- would hold this box off AX for the whole TTL.
+  if not element then
+    axGrid.textCacheInvalidate(box)
+    return nil
+  end
   local entry = { windowID = box.windowID, tab = box.tab, tabIndex = box.tabIndex,
     x = box.x, y = box.y, w = box.w, h = box.h, rows = rows, element = element,
-    at = now(), capable = element ~= nil and axGrid.textMatches(reference, value, rows) }
-  axGrid.text.cache = entry
-  return entry
+    at = now(), capable = axGrid.textMatches(reference, value, rows) }
+  return axGrid.textCacheStore(box, entry)
 end
 
 -- The caret the sentinel used to make visible, read instead of typed. The location
@@ -1769,22 +1849,36 @@ end
 function axGrid.screenText(observed)
   local box = axGrid.textBox(observed)
   local entry = axGrid.textFresh(box)
+  local tail
   if entry and entry.capable and entry.element then
-    local text = axGrid.textTail(axGrid.textFenced(function()
+    tail = axGrid.textTail(axGrid.textFenced(function()
       return axGrid.textValue(entry.element)
     end), entry.rows)
-    if text then
-      return text, "ax"
+    if tail and M.parseInputBox(tail) ~= nil then
+      return tail, "ax"
     end
-    -- An element that outlived its tab, a value that came back short, an open breaker:
-    -- the AppleScript scrape below calibrates this box again from scratch.
-    axGrid.text.cache, entry = nil, nil
+    -- A tail too short to hold the screen came from an element that outlived its tab and
+    -- leaves nothing to compare. A tail the parser rejects may still be this screen (an
+    -- overlay, a pager, a redraw caught mid-flight), so the verdict stands until the scrape
+    -- below disagrees with it: invalidating on the parse alone re-walks AX per scrape for
+    -- as long as the screen has no input box.
+    if not tail then
+      axGrid.textCacheInvalidate(box)
+      entry = nil
+    end
   end
   local ok, res = hs.osascript.applescript(scrapeScript)
   if not ok then
     return nil, "as"
   end
   local text = tostring(res or "")
+  if tail then
+    if axGrid.textSameLines(tail, text) then
+      return text, "as"
+    end
+    axGrid.textCacheInvalidate(box)
+    entry = nil
+  end
   -- A box already calibrated incapable is here because of that verdict: probing AX again per
   -- scrape is the cost the verdict exists to stop paying, and the TTL above is what gets it
   -- re-measured.
@@ -1817,7 +1911,7 @@ M.axWindow = axGrid.window
 -- Both caches describe the window that was in front: the resolved object dies with the
 -- window it names, and the calibration with the tab it was measured for.
 function M.axTextReset()
-  axGrid.text.cache = nil
+  axGrid.textCacheClear()
   axGrid.windows = {}
 end
 
@@ -1853,15 +1947,28 @@ local function targetWindowFrame(windowID, totalLines, columns)
     or fallback
 end
 
--- Asked once per gesture, before anything is typed: the element is the one the scrape
--- calibrated and both reads behind the fence are the sub-millisecond kind. A window no
--- scrape has measured yet answers nothing, which is the sentinel's cue.
+-- The second return distinguishes a missing/stale calibration from AX failing after a
+-- current calibration, so only the former pays an on-demand AppleScript scrape.
 function shared.caretPoint(observed)
   if runtimeHooks then
-    return runtimeHooks.caret and runtimeHooks.caret(observed) or nil
+    local point = runtimeHooks.caret and runtimeHooks.caret(observed) or nil
+    local calibrate = runtimeHooks.caretCalibrationNeeded
+      and runtimeHooks.caretCalibrationNeeded(observed) or false
+    return point, calibrate
   end
-  return axGrid.caretPoint(axGrid.textBox(observed))
+  local box = axGrid.textBox(observed)
+  -- No box is nothing a scrape could calibrate, so this gesture is the sentinel's and pays
+  -- one scrape, not the calibration pass plus the sentinel's own.
+  if not box then
+    return nil, false
+  end
+  if not axGrid.textFresh(box) then
+    return nil, true
+  end
+  return axGrid.caretPoint(box), false
 end
+
+M.gestureCaretPoint = shared.caretPoint
 
 -- Every unclear case (no frame, no drag point, a drag that ended on the border)
 -- answers false: a transcript read as input costs one DEL the 1-char undo puts
@@ -3243,8 +3350,8 @@ end
 -- the click lands on: one read, no settle delay, no DEL to wait out and none to owe. Every
 -- case that cannot place the caret on that screen hands the gesture to the sentinel, which
 -- starts from scratch and does not care that it was asked second.
-function shared.gestureByCaret(original, direction, flight, point)
-  scrapeScreen(function(screenText)
+function shared.gestureByCaret(original, direction, flight, point, scrapedScreen)
+  local function useScreen(screenText)
     if not shared.gestureFlies(flight) then
       return
     end
@@ -3281,7 +3388,12 @@ function shared.gestureByCaret(original, direction, flight, point)
     end
     shared.armGestureAt(direction, flight, remaining, neighbour, totalLines,
       layout.columns, frame)
-  end, original.observed)
+  end
+  if scrapedScreen ~= nil then
+    useScreen(scrapedScreen)
+  else
+    scrapeScreen(useScreen, original.observed)
+  end
 end
 
 function shared.startGesture(original, direction, flight)
@@ -3290,9 +3402,31 @@ function shared.startGesture(original, direction, flight)
     return
   end
   gestureDraftTouched = false
-  local point = shared.caretGestures and shared.caretPoint(original.observed) or nil
+  if not shared.caretGestures then
+    runGestureStart(original, direction, flight)
+    return
+  end
+  local point, calibrate = shared.caretPoint(original.observed)
   if point then
     shared.gestureByCaret(original, direction, flight, point)
+    return
+  end
+  if calibrate then
+    scrapeScreen(function(screenText)
+      if not shared.gestureFlies(flight) then
+        return
+      end
+      if not currentTargetMatches(original, observeFrontmost()) or gestureDraftTouched then
+        shared.endGestureFlight(flight)
+        return
+      end
+      local calibratedPoint = shared.caretPoint(original.observed)
+      if calibratedPoint then
+        shared.gestureByCaret(original, direction, flight, calibratedPoint, screenText)
+      else
+        runGestureStart(original, direction, flight)
+      end
+    end, original.observed)
     return
   end
   runGestureStart(original, direction, flight)
