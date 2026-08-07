@@ -1188,7 +1188,23 @@ done
 [[ "$fork_sid" =~ ^[A-Za-z0-9_-]+$ ]] || fork_sid="-"
 [[ "$latest_fork" =~ ^[A-Za-z0-9_-]+$ ]] || latest_fork="-"
 ctx_dim=""
-[ "$ctx_stale" = 1 ] && ctx_dim=1
+# Dim means the number is INHERITED rather than measured, and a fork-copied tail
+# is not: /branch hands the whole history over, so the branch has no response of
+# its own to prove freshness while the copies ARE its live context. What settles
+# it is corroboration - a post-boundary measurement (fresh_ctx) that agrees with
+# the payload within the same 10% the size override uses proves the payload is
+# describing this context, not a discarded one. A compacted session has no such
+# measurement until its first response, an unreadable tail yields none, a payload
+# that disagrees with the transcript is the inherited case itself, and a payload
+# carrying no size at all leaves its percentage with nothing to corroborate it -
+# all four keep dimming.
+if [ "$ctx_stale" = 1 ]; then
+  ctx_dim=1
+  if [ "$fresh_ctx" -gt 0 ] 2>/dev/null && [ -n "$ctx_tokens" ] && [ "$ctx_tokens" -gt 0 ] 2>/dev/null; then
+    ctx_fork_delta=$(( ctx_tokens > fresh_ctx ? ctx_tokens - fresh_ctx : fresh_ctx - ctx_tokens ))
+    [ "$((ctx_fork_delta * 10))" -gt "$ctx_tokens" ] || ctx_dim=""
+  fi
+fi
 
 # The harness keeps reporting the pre-reset usage until the first request of the
 # new context completes, so a fresh /compact or /branch renders a full-looking

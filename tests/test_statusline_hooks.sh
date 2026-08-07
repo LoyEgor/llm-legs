@@ -1603,6 +1603,25 @@ fork_only=$(run_statusline "$(statusline_payload ctx-fork-only \
 assert grep -Fq "ctx ${DIM}55%${RESET} ${YELLOW}? 111k${RESET}" <<< "$fork_only"
 assert test "${fork_only#*→}" = "$fork_only"
 
+# A branch of an UNCOMPACTED chat: the copied tail is all there is, and it agrees
+# with the payload, so the number is measured rather than inherited and renders
+# bright - dimming it read as "context lost" for a context that was fully there.
+t_reset; : > "$PARENT_TRANSCRIPT"; parent_assist $((NOW - 600)) fork-anchor
+t_assist_fork $((NOW - 600)) parent-sid fork-anchor
+fork_agree=$(run_statusline "$(statusline_payload ctx-fork-agree \
+  "$(jq -cn --arg tp "$TRANSCRIPT" \
+    '{transcript_path:$tp,model:{id:"fixmodel"},context_window:{used_percentage:55,current_usage:{input_tokens:50500}}}')")")
+assert grep -Fq "ctx ${YELLOW}55%${RESET}" <<< "$fork_agree"
+
+# ... and a payload with no size at all corroborates nothing, so the branch keeps
+# rendering its percentage dim.
+t_reset; : > "$PARENT_TRANSCRIPT"; parent_assist $((NOW - 600)) fork-anchor
+t_assist_fork $((NOW - 600)) parent-sid fork-anchor
+fork_nosize=$(run_statusline "$(statusline_payload ctx-fork-nosize \
+  "$(jq -cn --arg tp "$TRANSCRIPT" \
+    '{transcript_path:$tp,model:{id:"fixmodel"},context_window:{used_percentage:55}}')")")
+assert grep -Fq "ctx ${DIM}55%${RESET}" <<< "$fork_nosize"
+
 t_reset; : > "$PARENT_TRANSCRIPT"; parent_assist $((NOW - 600)) fork-anchor
 t_assist_fork $((NOW - 600)) parent-sid fork-anchor
 printf '{"type":"system","subtype":"local_command","timestamp":"%s","uuid":"branch-own","parentUuid":"fork-anchor"}\n' \
