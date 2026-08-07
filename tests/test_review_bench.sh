@@ -484,13 +484,22 @@ assert rb.short_cell_name(rb.parse_rater("oc-dsv4flash")) == "deepseek"
 # One effort in the pool, so naming it separates nothing — and one version of the family, so the
 # digits stay off even though the machine spec carries them.
 assert rb.short_cell_name(rb.parse_rater("oc-grok45-low")) == "grok"
-assert rb.short_cell_name(rb.parse_rater("agy-flash36-medium-skill")) == "gem-flash36"
-# Both Flash models run, so the digits are what tells them apart; both efforts of flash35 run, so
+# Both Flash models run, so the digits are what tells them apart; both efforts of each run, so
 # the effort is too. Neither is spelled anywhere but in this derivation.
+assert rb.short_cell_name(rb.parse_rater("agy-flash36-medium-skill")) == "gem-flash36-med"
+assert rb.short_cell_name(rb.parse_rater("agy-flash36-high-skill")) == "gem-flash36-high"
 assert rb.short_cell_name(rb.parse_rater("agy-flash35-medium-skill")) == "gem-flash35-med"
 assert rb.short_cell_name(rb.parse_rater("agy-flash35-high-skill")) == "gem-flash35-high"
-assert rb.short_cell_name(rb.parse_rater("agy-pro-high-skill")) == "gem-pro-high"
-assert rb.short_cell_name(rb.parse_rater("agy-pro-low-skill")) == "gem-pro-low"
+# Only pro-high remains in a tier, so the pool needs nothing to tell it from a sibling. A bench
+# run that also holds pro-low still separates them, and separates them the way a report must:
+# the cell the pool can launch keeps the spelling it has everywhere else, and the one no tier
+# can launch is the one that gains a mark.
+assert rb.short_cell_name(rb.parse_rater("agy-pro-high-skill")) == "gem-pro"
+assert [
+    rb.short_cell_name(rater, rb.report_name_scheme(
+        ["agy-pro-high-skill", "agy-pro-low-skill"]))
+    for rater in (rb.parse_rater("agy-pro-high-skill"), rb.parse_rater("agy-pro-low-skill"))
+] == ["gem-pro", "gem-pro-low"]
 # The word never reaches a rendered name: every agy cell runs the skill, so there is nothing for
 # a mark to separate.
 assert "skill" not in rb.short_cell_name(rb.parse_rater("agy-pro-high-skill"))
@@ -509,8 +518,8 @@ assert rb.short_cell_name(rb.parse_rater("oc-grok45-low-google")) == "grok-googl
 # more than it must.
 pool_names = [rb.short_cell_name(rater) for rater in rb.review_pool_raters()]
 assert sorted(set(pool_names)) == [
-    "deepseek", "gem-flash35-high", "gem-flash35-med", "gem-flash36", "gem-pro-high",
-    "gem-pro-low", "grok", "kimi", "opus-high", "opus-low", "opus-med", "sol-high",
+    "deepseek", "gem-flash35-high", "gem-flash35-med", "gem-flash36-high", "gem-flash36-med",
+    "gem-pro", "grok", "kimi", "opus-high", "opus-low", "opus-med", "sol-high",
     "sol-high-bare", "sol-low", "sol-low-bare", "sol-max", "sol-max-bare", "sol-med-bare",
     "sol-xhigh", "sol-xhigh-bare",
 ], sorted(set(pool_names))
@@ -531,9 +540,9 @@ assert rb.short_cell_name(rb.parse_rater("oc-kimik27code"), kimi_two_versions) =
 # cannot respell a pool cell, or the same model would be `grok` in the tiers table and `grok45`
 # in the report a chat reads beside it.
 assert rb.human_cell_name("agy-flash35-low-skill") == "gem-flash35-low"
-retired_scheme = rb.report_name_scheme(["agy-flash36-medium-skill", "agy-flash36-high-skill"])
-assert rb.human_cell_name("agy-flash36-medium-skill", retired_scheme) == "gem-flash36"
-assert rb.human_cell_name("agy-flash36-high-skill", retired_scheme) == "gem-flash36-high"
+retired_scheme = rb.report_name_scheme(["agy-flash36-medium-skill", "agy-flash36-low-skill"])
+assert rb.human_cell_name("agy-flash36-medium-skill", retired_scheme) == "gem-flash36-med"
+assert rb.human_cell_name("agy-flash36-low-skill", retired_scheme) == "gem-flash36-low"
 # xAI's own grok next to the pool's: the newcomer takes the effort that separates them, and the
 # pool cell keeps the name it has on every other surface.
 xai_scheme = rb.report_name_scheme(["oc-grok45-low", "grok-low"])
@@ -1203,108 +1212,172 @@ for duplicate in ("sol-high,sol-high", "sol-high x2,sol-high", "sol-high x2,sol-
         raise AssertionError(f"accepted duplicate rater: {duplicate}")
 expected_oc_floor = ["oc-kimik3 x2", "oc-grok45-low x2", "oc-dsv4flash x2"]
 expected_oc_floor_max = ["oc-kimik3 x3", "oc-grok45-low x3", "oc-dsv4flash x3"]
-expected_floor = expected_oc_floor + [
-    "agy-pro-high-skill",
-    "agy-flash35-medium-skill x2", "agy-flash35-high-skill",
-    "agy-flash36-medium-skill",
-]
-expected_floor_max = expected_oc_floor_max + expected_floor[len(expected_oc_floor):]
-expected_floor_slow = expected_oc_floor + [
-    "agy-pro-high-skill",
+# The Gemini block is a per-tier ladder because it is billed per run against a subscription
+# window: a panel's Gemini price is the sum of its cells, so a shared composition would spend
+# T3's quota on a T0 review. Pro is the priciest cell per defect it finds, so it enters only where
+# the tier has quota to spare.
+expected_agy = {
+    "T0": [
+        "agy-flash35-medium-skill x3", "agy-flash35-high-skill",
+        "agy-flash36-medium-skill", "agy-flash36-high-skill",
+    ],
+    "T1": [
+        "agy-flash35-medium-skill x2", "agy-flash35-high-skill",
+        "agy-flash36-medium-skill", "agy-flash36-high-skill x2", "agy-pro-high-skill",
+    ],
+}
+expected_agy["T2"] = expected_agy["T1"]
+expected_agy["T3"] = [
     "agy-flash35-medium-skill x3", "agy-flash35-high-skill",
-    "agy-flash36-medium-skill", "agy-pro-low-skill",
+    "agy-flash36-medium-skill", "agy-flash36-high-skill x2", "agy-pro-high-skill",
 ]
-expected_floor_slow_max = (
-    expected_oc_floor_max + expected_floor_slow[len(expected_oc_floor):]
-)
+expected_agy_max = {
+    "T0": expected_agy["T0"],
+    # Equal to T3's default panel today, spelled out anyway: borrowing it would let an edit to
+    # T3's eco panel move the T1 ceiling this line exists to pin.
+    "T1": [
+        "agy-flash35-medium-skill x3", "agy-flash35-high-skill",
+        "agy-flash36-medium-skill", "agy-flash36-high-skill x2", "agy-pro-high-skill",
+    ],
+    "T2": [
+        "agy-flash35-medium-skill x3", "agy-flash35-high-skill x2",
+        "agy-flash36-medium-skill", "agy-flash36-high-skill x2", "agy-pro-high-skill",
+    ],
+}
+expected_agy_max["T3"] = expected_agy_max["T2"]
+expected_floor = {tier: expected_oc_floor + cells for tier, cells in expected_agy.items()}
+expected_floor_max = {
+    tier: expected_oc_floor_max + cells for tier, cells in expected_agy_max.items()
+}
 expected_tier_cells = {
-    "T0": expected_floor + [
+    "T0": expected_floor["T0"] + [
         "opus-low", "sol-low", "sol-low-bare",
     ],
-    "T1": expected_floor_slow + [
+    "T1": expected_floor["T1"] + [
         "opus-medium", "sol-low", "sol-low-bare", "sol-medium-bare",
     ],
-    "T2": expected_floor_slow + [
+    "T2": expected_floor["T2"] + [
         "opus-high", "opus-medium", "opus-low", "sol-high", "sol-high-bare x2",
     ],
-    "T3": expected_floor_slow + [
+    "T3": expected_floor["T3"] + [
         "opus-high", "opus-medium", "sol-high", "sol-high-bare", "sol-max-bare",
     ],
 }
 expected_tier_max_cells = {
-    "T0": expected_floor_max + [
+    "T0": expected_floor_max["T0"] + [
         "opus-low", "sol-low", "sol-low-bare",
     ],
-    "T1": expected_floor_slow_max + [
+    "T1": expected_floor_max["T1"] + [
         "opus-low", "opus-medium", "sol-low", "sol-low-bare", "sol-medium-bare",
     ],
-    "T2": expected_floor_slow_max + [
+    "T2": expected_floor_max["T2"] + [
         "opus-high", "opus-medium", "opus-low", "sol-high", "sol-high-bare x2",
         "sol-xhigh", "sol-xhigh-bare",
     ],
-    "T3": expected_floor_slow_max + [
+    "T3": expected_floor_max["T3"] + [
         "opus-high", "opus-medium", "sol-high", "sol-max x2", "sol-max-bare",
         "sol-xhigh-bare",
     ],
 }
 expected_coverage_pct = {
-    "T0": {"eco": 29.1, "max": 29.1},
-    "T1": {"eco": 40.3, "max": 42.4},
-    "T2": {"eco": 58.1, "max": 62.0},
-    "T3": {"eco": 69.3, "max": 72.3},
+    "T0": {"eco": 41.9, "max": 46.1},
+    "T1": {"eco": 48.9, "max": 55.1},
+    "T2": {"eco": 59.2, "max": 67.4},
+    "T3": {"eco": 70.3, "max": 77.0},
 }
 oc_counts = Counter({"oc-kimik3": 2, "oc-grok45-low": 2, "oc-dsv4flash": 2})
 oc_counts_max = Counter({"oc-kimik3": 3, "oc-grok45-low": 3, "oc-dsv4flash": 3})
-agy_counts = Counter({
-    "agy-flash35-high-skill": 1, "agy-flash35-medium-skill": 2,
-    "agy-flash36-medium-skill": 1, "agy-pro-high-skill": 1,
-})
-agy_slow_counts = Counter({
-    "agy-flash35-high-skill": 1, "agy-flash35-medium-skill": 3,
-    "agy-flash36-medium-skill": 1, "agy-pro-high-skill": 1, "agy-pro-low-skill": 1,
-})
-floor_counts = oc_counts + agy_counts
-floor_counts_max = oc_counts_max + agy_counts
-slow_counts = oc_counts + agy_slow_counts
-slow_counts_max = oc_counts_max + agy_slow_counts
+agy_counts = {
+    "T0": Counter({
+        "agy-flash35-high-skill": 1, "agy-flash35-medium-skill": 3,
+        "agy-flash36-high-skill": 1, "agy-flash36-medium-skill": 1,
+    }),
+    "T1": Counter({
+        "agy-flash35-high-skill": 1, "agy-flash35-medium-skill": 2,
+        "agy-flash36-high-skill": 2, "agy-flash36-medium-skill": 1,
+        "agy-pro-high-skill": 1,
+    }),
+    "T3": Counter({
+        "agy-flash35-high-skill": 1, "agy-flash35-medium-skill": 3,
+        "agy-flash36-high-skill": 2, "agy-flash36-medium-skill": 1,
+        "agy-pro-high-skill": 1,
+    }),
+}
+agy_counts["T2"] = agy_counts["T1"]
+agy_counts_max = {
+    "T0": agy_counts["T0"],
+    # Equal to T3's default panel today, spelled out anyway: mirroring the aliasing the module
+    # used to carry would leave the two free to drift together unnoticed.
+    "T1": Counter({
+        "agy-flash35-high-skill": 1, "agy-flash35-medium-skill": 3,
+        "agy-flash36-high-skill": 2, "agy-flash36-medium-skill": 1,
+        "agy-pro-high-skill": 1,
+    }),
+    "T2": Counter({
+        "agy-flash35-high-skill": 2, "agy-flash35-medium-skill": 3,
+        "agy-flash36-high-skill": 2, "agy-flash36-medium-skill": 1,
+        "agy-pro-high-skill": 1,
+    }),
+}
+agy_counts_max["T3"] = agy_counts_max["T2"]
 expected_tier_multisets = {
-    "T0": floor_counts + Counter({
+    "T0": oc_counts + agy_counts["T0"] + Counter({
         "opus-low": 1, "sol-low": 1, "sol-low-bare": 1,
     }),
-    "T1": slow_counts + Counter({
+    "T1": oc_counts + agy_counts["T1"] + Counter({
         "opus-medium": 1, "sol-low": 1, "sol-low-bare": 1,
         "sol-medium-bare": 1,
     }),
-    "T2": slow_counts + Counter({
+    "T2": oc_counts + agy_counts["T2"] + Counter({
         "opus-low": 1, "opus-medium": 1, "opus-high": 1, "sol-high": 1,
         "sol-high-bare": 2,
     }),
-    "T3": slow_counts + Counter({
+    "T3": oc_counts + agy_counts["T3"] + Counter({
         "opus-high": 1, "opus-medium": 1, "sol-high": 1, "sol-high-bare": 1,
         "sol-max-bare": 1,
     }),
 }
 expected_tier_max_multisets = {
-    "T0": floor_counts_max + Counter({
+    "T0": oc_counts_max + agy_counts_max["T0"] + Counter({
         "opus-low": 1, "sol-low": 1, "sol-low-bare": 1,
     }),
-    "T1": slow_counts_max + Counter({
+    "T1": oc_counts_max + agy_counts_max["T1"] + Counter({
         "opus-low": 1, "opus-medium": 1, "sol-low": 1, "sol-low-bare": 1,
         "sol-medium-bare": 1,
     }),
-    "T2": slow_counts_max + Counter({
+    "T2": oc_counts_max + agy_counts_max["T2"] + Counter({
         "opus-high": 1, "opus-medium": 1, "opus-low": 1, "sol-high": 1,
         "sol-high-bare": 2, "sol-xhigh": 1, "sol-xhigh-bare": 1,
     }),
-    "T3": slow_counts_max + Counter({
+    "T3": oc_counts_max + agy_counts_max["T3"] + Counter({
         "opus-high": 1, "opus-medium": 1, "sol-high": 1, "sol-max": 2,
         "sol-max-bare": 1, "sol-xhigh-bare": 1,
     }),
 }
 assert rb.REVIEW_TIER_FLOOR == expected_floor
 assert rb.REVIEW_TIER_FLOOR_MAX == expected_floor_max
-assert rb.REVIEW_TIER_FLOOR_SLOW == expected_floor_slow
-assert rb.REVIEW_TIER_FLOOR_SLOW_MAX == expected_floor_slow_max
+# T0 never runs Pro, at either variant (owner rule): a tier for twenty changed lines has nothing
+# to spend the panel's dearest cell on.
+assert not any(
+    "agy-pro" in cell for cell in
+    rb.REVIEW_TIER_FLOOR["T0"] + rb.REVIEW_TIER_FLOOR_MAX["T0"]
+)
+# The panel runs its cells at once, so a cell past the roster wraps onto an account another cell
+# already holds and bills it twice. Staying inside the enumerated roster is all a composition can
+# do about that — walled accounts are dropped before the wrap, so no width guarantees distinct
+# accounts — and --max may spend one cell over it.
+for tier_name in rb.REVIEW_TIER_AGY:
+    assert len(rb.parse_raters(",".join(rb.REVIEW_TIER_AGY[tier_name]))) <= rb.ROSTER_MAX, tier_name
+    assert len(rb.parse_raters(",".join(rb.REVIEW_TIER_AGY_MAX[tier_name]))) <= rb.ROSTER_MAX + 1, tier_name
+# Escalating to --max may never run fewer attempts of a cell than the default panel does, or a
+# defect the eco repeats catch is lost by asking for more scrutiny. Only within a tier: across
+# tiers the panels answer different diffs, so containment there would buy nothing and cost real
+# quota.
+def agy_multiset(cells):
+    return Counter(rater["spec"].split("#")[0] for rater in rb.parse_raters(",".join(cells)))
+for tier_name in rb.REVIEW_TIER_AGY:
+    assert not agy_multiset(rb.REVIEW_TIER_AGY[tier_name]) - agy_multiset(
+        rb.REVIEW_TIER_AGY_MAX[tier_name]), tier_name
 # The eco floor's OpenCode block IS the recommended leg, so --leg and a tier cannot drift apart.
 assert list(rb.OPENCODE_REVIEW_LEG) == expected_oc_floor
 assert list(rb.OPENCODE_REVIEW_LEG_MAX) == expected_oc_floor_max
@@ -1327,16 +1400,17 @@ for composition, expected_cells, expected_multisets, composition_floor in (
     ("cells", expected_tier_cells, expected_tier_multisets, expected_floor),
     ("cells_max", expected_tier_max_cells, expected_tier_max_multisets, expected_floor_max),
 ):
-    expanded_floor = Counter(
-        rb.normalize_legacy_rater(rater["spec"])
-        for rater in rb.parse_raters(",".join(composition_floor))
-    )
     for tier_name, tier in rb.REVIEW_TIERS.items():
-        prefix = tier[composition][:len(composition_floor)]
+        tier_floor = composition_floor[tier_name]
+        expanded_floor = Counter(
+            rb.normalize_legacy_rater(rater["spec"])
+            for rater in rb.parse_raters(",".join(tier_floor))
+        )
+        prefix = tier[composition][:len(tier_floor)]
         assert [
             rb.parse_raters(cell)[0]["spec"] for cell in prefix
         ] == [
-            rb.parse_raters(cell)[0]["spec"] for cell in composition_floor
+            rb.parse_raters(cell)[0]["spec"] for cell in tier_floor
         ], (tier_name, composition, prefix)
         expanded = Counter(
             rb.normalize_legacy_rater(rater["spec"])
@@ -3781,7 +3855,17 @@ assert rb.GEMINI_VERIFIER not in rb.verifier_chain("oc-dsv4flash")
 # Measured on the stock wording, not the one deepseek-v4-flash scores best on.
 assert rb.verify_prompt_style(rb.GEMINI_VERIFIER) == "stock"
 # The link is named in the report beside cell names, and it carries no effort to parse as one.
-assert rb.human_cell_name(rb.GEMINI_VERIFIER) == "gem-flash36", rb.GEMINI_VERIFIER
+# The verifier runs flash36 at medium, and a tier cell runs the same model at the same effort,
+# so one report must not print them as two models: the verifier row is named through its own
+# effort rather than off the bare family the constant spells.
+assert rb.human_cell_name(rb.GEMINI_VERIFIER) == "gem-flash36-med", rb.GEMINI_VERIFIER
+assert rb.human_cell_name(rb.GEMINI_VERIFIER) == rb.short_cell_name(
+    rb.parse_rater("agy-flash36-medium-skill"))
+# That effort-qualified spelling is itself a legal skill-less cell, so a run holding THAT cell
+# earns it a name of its own — which the verifier, named against the pool, must not inherit.
+_verifier_scheme = rb.report_name_scheme(["agy-flash36-medium-skill", "agy-flash36-medium"])
+assert rb.human_cell_name("agy-flash36-medium", _verifier_scheme) == "gem-flash36-med-bare"
+assert rb.human_cell_name(rb.GEMINI_VERIFIER, _verifier_scheme) == "gem-flash36-med"
 # geminib enforces the print timeout itself; the outer deadline is its teardown grace, the same
 # relationship the rater path keeps, and it stays inside the configured verifier's own budget.
 assert rb.GEMINI_VERIFY_PRINT_TIMEOUT == "3m", rb.GEMINI_VERIFY_PRINT_TIMEOUT
@@ -8161,7 +8245,7 @@ report_output=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" report report-adjudicate
   || fail "adjudicated report failed"
 report_frame_header='===================== review ====================='
 report_frame_footer='=================================================='
-expected_report="$report_frame_header"$'\nreview-bench panel · T2 · 5.5 min wall · slowest completed: sol-high 2 min\nconfirmed 1:  P1 1\nrejected:     1 duplicate  ~400 tok\n              2 false      ~3k tok\nfalse by:     kimi ×1 · sol-high ×1\nverifier:     off — 2 finding(s) unchecked\ncells:        sol-high 2 · kimi 2\nerrored:      opus-med (exit 2)\ntimeout:      gem-flash36\nmismatch:     gem-flash35-low\n'"$report_frame_footer"
+expected_report="$report_frame_header"$'\nreview-bench panel · T2 · 5.5 min wall · slowest completed: sol-high 2 min\nconfirmed 1:  P1 1\nrejected:     1 duplicate  ~400 tok\n              2 false      ~3k tok\nfalse by:     kimi ×1 · sol-high ×1\nverifier:     off — 2 finding(s) unchecked\ncells:        sol-high 2 · kimi 2\nerrored:      opus-med (exit 2)\ntimeout:      gem-flash36-med\nmismatch:     gem-flash35-low\n'"$report_frame_footer"
 assert test "$report_output" = "$expected_report"
 # The frame is what the reader and every consumer of this block see first: a word centered in '='
 # to exactly 50 characters, and a footer of exactly 50 more.
@@ -8173,7 +8257,7 @@ assert grep -qE '^={10,}$' <<<"$(tail -1 <<<"$report_output")"
 # it on the line that opens it.
 assert test "$(grep -cE '^={10,}$' <<<"$report_output")" = "1"
 assert contains "$report_output" $'rejected:     1 duplicate  ~400 tok\n              2 false      ~3k tok'
-assert contains "$report_output" $'false by:     kimi ×1 · sol-high ×1\nverifier:     off — 2 finding(s) unchecked\ncells:        sol-high 2 · kimi 2\nerrored:      opus-med (exit 2)\ntimeout:      gem-flash36\nmismatch:     gem-flash35-low'
+assert contains "$report_output" $'false by:     kimi ×1 · sol-high ×1\nverifier:     off — 2 finding(s) unchecked\ncells:        sol-high 2 · kimi 2\nerrored:      opus-med (exit 2)\ntimeout:      gem-flash36-med\nmismatch:     gem-flash35-low'
 last_report=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" report --last) \
   || fail "last report failed"
 assert test "$last_report" = "$expected_report"
@@ -9127,9 +9211,10 @@ assert contains "$tiers_table" "eco (default):"
 assert contains "$tiers_table" "max:"
 for cell in "oc-kimik3 x2" "oc-kimik3 x3" "oc-grok45-low x2" "oc-grok45-low x3" \
   "oc-dsv4flash x2" "oc-dsv4flash x3" agy-pro-high-skill \
-  "agy-flash35-medium-skill x2" "agy-flash35-medium-skill x3" \
-  agy-flash35-high-skill agy-flash36-medium-skill \
-  opus-low sol-low sol-low-bare agy-pro-low-skill \
+  "agy-flash35-medium-skill x2" "agy-flash35-medium-skill x3" "agy-flash35-high-skill x2" \
+  "agy-flash36-high-skill x2" \
+  agy-flash35-high-skill agy-flash36-medium-skill agy-flash36-high-skill \
+  opus-low sol-low sol-low-bare \
   opus-medium sol-medium-bare opus-high sol-high "sol-high-bare x2" sol-xhigh \
   sol-xhigh-bare sol-high-bare "sol-max x2" sol-max-bare; do
   assert contains "$tiers_table" "$cell"
@@ -9141,7 +9226,8 @@ owner_table="$("$SCRIPT" tiers --table 2>&1)"
 assert contains "$owner_table" "T1 max"
 assert contains "$owner_table" "kimi x2, grok x2, deepseek x2"
 assert contains "$owner_table" "kimi x3, grok x3, deepseek x3"
-assert contains "$owner_table" "gem-pro-high, gem-flash35-med x2, gem-flash35-high, gem-flash36"
+assert contains "$owner_table" "gem-flash35-med x2, gem-flash35-high, gem-flash36-med, gem-flash36-high x2, gem-pro"
+assert contains "$owner_table" "gem-flash36-high x2, gem-pro"
 assert contains "$owner_table" "sol-low, sol-low-bare"
 assert contains "$owner_table" "opus-med"
 assert contains "$owner_table" "cover"
@@ -9441,4 +9527,4 @@ else
   printf 'SKIP: review report hook behavior (%s is unavailable)\n' "$REPORT_HOOK"
 fi
 
-printf 'PASS: %s assertions; canonical review tiers sharing one OpenCode/Gemini floor with no retired cell in them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative suggestions with missing-object fallback, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account schedulable only as the pool'"'"'s reserve and never as a roster tail, and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, carried from there into the corpus row, the report header and a receipt of the lens'"'"'s own while every lens row stays out of the canonical defect list, the frontier denominators, the composition corpus and the default leaderboard, worktree runs narrowed to named paths whose snapshot holds only those paths, is deterministic per path set, spelled against the directory the caller stands in and lexically canonicalized so a `..` can neither walk out of the repository nor split one file into two scopes, carries its scope as commit trailers a failed read refuses rather than widens, so a rerun by sha stays inside it, refuses a commitish, a pathspec matching nothing and a scope holding no change — the refusal before any snapshot object is written — and writes only a receipt of its own — leaving the repository'"'"'s receipt untouched byte for byte, the suggest baseline whole and the stamp hook with nothing to read, a lens narrowed by the same paths naming a combined receipt of its own that leaves the plain, pure-lens and pure-scope receipts byte for byte and survives a rerun by sha with both selectors intact, a day-one repository reviewed end to end — its root commit sealed and cloned, given a deterministic empty base commit inside that clone so the vendor skill diffs its whole content, measured in lines and paths against the empty tree rather than as an unmeasurable diff, so a correction inside it prices by the size ladder like any other change — no receipt moves a tier, and closed by the real stamp hook in both shapes while never-reviewed code riding along still refuses it, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask, the lookup scoped to the repository so another chat cannot answer for it, both review hooks keyed so exactly one fires, and that receipt carrying the confirmed-severity tally of the very verdicts it reported — recomputed from stored verdicts where a run was adjudicated the durable way, absent where nobody triaged it, and printed on the repository receipt the commit gate prices its next round on — taken from the stored verdicts wherever a run has them so a re-adjudication cannot be priced on superseded counts, scoped to the member a merged panel'"'"'s receipt belongs to so one repository never escalates on another'"'"'s defects, and answered as no tally at all rather than as an exception when the files behind it cannot be read, and that same receipt reachable by the paths a commit will carry — a search over the scoped receipts alone, answering with the newest whose own scope lies inside those paths, tolerating a path the panel never saw as the drift its reader prices while a reviewed path outside them disqualifies, spelled through the one scope canonicalization, refusing to be asked alongside a named scope or a lens, and leaving the repository receipt'"'"'s own answer untouched, and a merged review of several repositories read by one panel out of a single workspace holding each repository under its own prefix — deterministic, self-contained once built and pruned with the run it belongs to — whose findings and adjudication handoff name the repository each belongs to, whose scopes and progress are per repository, and which stamps EVERY repository it read with that repository'"'"'s own receipt so none of their commit gates blocks on a review that covered it, while refusing a commitish, a repository named twice, a clean tree, a missing repository and its own workspace as a tree to seal, and the corpus closed to every commit-point review — the plain record command refused outright with the reporting one named in its place, the refusal and the flag'"'"'s own help promising only what --bench delivers (this run'"'"'s verdicts stored, never a corpus row), that flag refused in turn on a durable run it would buy the plain command'"'"'s own behaviour on, and the handoff printing that one command alone — with the block those reviews are read in framed to a fixed width no over-long word can flatten, opened by a line naming the panel that produced it, and carrying a cell row that counts every completed cell under the same names its neighbouring rows use — the ones that found nothing included, and a count missing from an older summary costing its own cell a number rather than the whole block, every one of those names and the tiers table'"'"'s own rendered by one derivation over the pool of cells the tiers can launch — version digits, effort and the bare mark each appearing only where two pool cells would otherwise collide, Claude and Codex effort always spelled because it is a launch parameter, the word skill never rendered at all, a family gaining a second variant IN THE POOL renaming itself with no list to edit, a cell only a stored run holds named against that pool and never over it — the arrival carrying whatever separates it, its report leaving the tiers table byte for byte — and the machine specs commands are spelled in left untouched\n' "$asserts"
+printf 'PASS: %s assertions; canonical review tiers over one shared OpenCode floor and a per-tier Gemini panel that never runs Pro at T0, stays inside the account roster and contains its own tier'"'"'s default panel when escalated, with no retired cell in any of them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative suggestions with missing-object fallback, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account schedulable only as the pool'"'"'s reserve and never as a roster tail, and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, carried from there into the corpus row, the report header and a receipt of the lens'"'"'s own while every lens row stays out of the canonical defect list, the frontier denominators, the composition corpus and the default leaderboard, worktree runs narrowed to named paths whose snapshot holds only those paths, is deterministic per path set, spelled against the directory the caller stands in and lexically canonicalized so a `..` can neither walk out of the repository nor split one file into two scopes, carries its scope as commit trailers a failed read refuses rather than widens, so a rerun by sha stays inside it, refuses a commitish, a pathspec matching nothing and a scope holding no change — the refusal before any snapshot object is written — and writes only a receipt of its own — leaving the repository'"'"'s receipt untouched byte for byte, the suggest baseline whole and the stamp hook with nothing to read, a lens narrowed by the same paths naming a combined receipt of its own that leaves the plain, pure-lens and pure-scope receipts byte for byte and survives a rerun by sha with both selectors intact, a day-one repository reviewed end to end — its root commit sealed and cloned, given a deterministic empty base commit inside that clone so the vendor skill diffs its whole content, measured in lines and paths against the empty tree rather than as an unmeasurable diff, so a correction inside it prices by the size ladder like any other change — no receipt moves a tier, and closed by the real stamp hook in both shapes while never-reviewed code riding along still refuses it, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask, the lookup scoped to the repository so another chat cannot answer for it, both review hooks keyed so exactly one fires, and that receipt carrying the confirmed-severity tally of the very verdicts it reported — recomputed from stored verdicts where a run was adjudicated the durable way, absent where nobody triaged it, and printed on the repository receipt the commit gate prices its next round on — taken from the stored verdicts wherever a run has them so a re-adjudication cannot be priced on superseded counts, scoped to the member a merged panel'"'"'s receipt belongs to so one repository never escalates on another'"'"'s defects, and answered as no tally at all rather than as an exception when the files behind it cannot be read, and that same receipt reachable by the paths a commit will carry — a search over the scoped receipts alone, answering with the newest whose own scope lies inside those paths, tolerating a path the panel never saw as the drift its reader prices while a reviewed path outside them disqualifies, spelled through the one scope canonicalization, refusing to be asked alongside a named scope or a lens, and leaving the repository receipt'"'"'s own answer untouched, and a merged review of several repositories read by one panel out of a single workspace holding each repository under its own prefix — deterministic, self-contained once built and pruned with the run it belongs to — whose findings and adjudication handoff name the repository each belongs to, whose scopes and progress are per repository, and which stamps EVERY repository it read with that repository'"'"'s own receipt so none of their commit gates blocks on a review that covered it, while refusing a commitish, a repository named twice, a clean tree, a missing repository and its own workspace as a tree to seal, and the corpus closed to every commit-point review — the plain record command refused outright with the reporting one named in its place, the refusal and the flag'"'"'s own help promising only what --bench delivers (this run'"'"'s verdicts stored, never a corpus row), that flag refused in turn on a durable run it would buy the plain command'"'"'s own behaviour on, and the handoff printing that one command alone — with the block those reviews are read in framed to a fixed width no over-long word can flatten, opened by a line naming the panel that produced it, and carrying a cell row that counts every completed cell under the same names its neighbouring rows use — the ones that found nothing included, and a count missing from an older summary costing its own cell a number rather than the whole block, every one of those names and the tiers table'"'"'s own rendered by one derivation over the pool of cells the tiers can launch — version digits, effort and the bare mark each appearing only where two pool cells would otherwise collide, Claude and Codex effort always spelled because it is a launch parameter, the word skill never rendered at all, a family gaining a second variant IN THE POOL renaming itself with no list to edit, a cell only a stored run holds named against that pool and never over it — the arrival carrying whatever separates it, its report leaving the tiers table byte for byte — and the machine specs commands are spelled in left untouched\n' "$asserts"

@@ -819,44 +819,123 @@ LOCATION_RE = re.compile(
     r":(?P<line>\d+)(?:[-–]\d+)?"
 )
 LIMITS_STALE_AGE_S = 600
-# Every tier carries the whole OpenCode and Gemini block (owner's rule, 2026-07-28): those
-# cells are effectively free and add no wall-clock, so no cell is ever dropped for budget.
-# Repeat counts stop at what multi-attempt runs have validated: eco carries the leg at the
-# count that pays for itself, --max at the validated ceiling.
-REVIEW_TIER_FLOOR_AGY = [
-    "agy-pro-high-skill",
-    "agy-flash35-medium-skill x2",
-    "agy-flash35-high-skill",
-    "agy-flash36-medium-skill",
-]
-REVIEW_TIER_FLOOR_AGY_SLOW = [
-    "agy-pro-high-skill",
+# Every tier carries the whole OpenCode block (owner's rule, 2026-07-28): it costs no
+# subscription quota at all, so no OpenCode cell is ever dropped for budget.
+#
+# The Gemini block is a ladder of its own, because it is not free and its price is not the
+# panel's wall clock. Every agy cell bills its own Google account, so the panel's Gemini price is
+# the SUM of its cells' minutes, not the slowest of them — which is why one shared composition
+# for T1, T2 and T3 spent T3's quota on every T1 review.
+#
+# Minutes, and nothing per run: the 5h-window brackets taken 2026-08-07 fit
+# `0.0637*seconds - 1.64`, but every run measured lasted 52-156s, so that intercept is
+# extrapolation below the whole sample and budgeting by it pays a panel for splitting its work
+# into short runs. Priced proportionally and weighted by how often each tier runs, the ladder
+# spends about 12% less Gemini than the flat floor it replaces, and that is worth having only
+# because nothing was given up for it.
+#
+# Nothing given up is the constraint the compositions are chosen under, checked on all four
+# populations these tiers are ever quoted over: whole-panel coverage and whole-panel P1 on the
+# commits `coverage_pct` reads, and Gemini-only coverage and P1 over the 232-defect corpus. Each
+# tier's --max Gemini panel also CONTAINS that tier's own eco panel, so escalating never runs
+# fewer attempts of a cell than the default panel would have. Within a tier and over this block
+# only: across tiers T0 and T1 read different diffs, so a superset there protects nothing and
+# costs about nine points of the saving — repeat counts fall as well as rise from tier to tier on
+# purpose — and panel-wide the guarantee does not hold at all, because frontier composes T3's
+# Codex ceiling without one cell of T3's default panel.
+#
+# Most of that saving is Pro. Per minute of its own run, pro-low returns 0.48 confirmed defects
+# and pro-high 0.57, against 0.96-1.33 for every Flash cell, and the flat floor spent 38% of its
+# minutes on the two of them. pro-low is gone; one pro-high stays wherever a tier can still afford
+# the cell with the panel's best precision.
+#
+# Eco panels stop at ROSTER_MAX cells and the --max panels at most one over: the panel runs its
+# cells at once, and a cell past the roster wraps onto an account another cell already holds and
+# bills it twice instead of spreading. ROSTER_MAX bounds the roster that is enumerated, it does
+# not promise that many accounts — walled ones are dropped before the wrap, so a panel this wide
+# already doubles up whenever fewer Google accounts are usable than it has cells. Staying inside
+# the roster is the most a composition can do about that.
+REVIEW_TIER_AGY = {
+    "T0": [
+        "agy-flash35-medium-skill x3",
+        "agy-flash35-high-skill",
+        "agy-flash36-medium-skill",
+        "agy-flash36-high-skill",
+    ],
+    "T1": [
+        "agy-flash35-medium-skill x2",
+        "agy-flash35-high-skill",
+        "agy-flash36-medium-skill",
+        "agy-flash36-high-skill x2",
+        "agy-pro-high-skill",
+    ],
+}
+# T2 runs T1's Gemini panel: both tiers are answered by the same cheapest block that gives up
+# nothing, and T2 is 43% of reviews, so this is where most of the saving lands.
+REVIEW_TIER_AGY["T2"] = list(REVIEW_TIER_AGY["T1"])
+REVIEW_TIER_AGY["T3"] = [
     "agy-flash35-medium-skill x3",
     "agy-flash35-high-skill",
     "agy-flash36-medium-skill",
-    "agy-pro-low-skill",
+    "agy-flash36-high-skill x2",
+    "agy-pro-high-skill",
 ]
-REVIEW_TIER_FLOOR = [*OPENCODE_REVIEW_LEG, *REVIEW_TIER_FLOOR_AGY]
-REVIEW_TIER_FLOOR_MAX = [*OPENCODE_REVIEW_LEG_MAX, *REVIEW_TIER_FLOOR_AGY]
-REVIEW_TIER_FLOOR_SLOW = [*OPENCODE_REVIEW_LEG, *REVIEW_TIER_FLOOR_AGY_SLOW]
-REVIEW_TIER_FLOOR_SLOW_MAX = [*OPENCODE_REVIEW_LEG_MAX, *REVIEW_TIER_FLOOR_AGY_SLOW]
+REVIEW_TIER_AGY_MAX = {
+    # T0 has no heavier Gemini panel of its own (owner's rule, 2026-08-07): a tier for at most
+    # twenty changed lines has nothing to spend a ceiling on.
+    "T0": list(REVIEW_TIER_AGY["T0"]),
+    # Spelled out rather than borrowed from T3's default panel, which it happens to equal: a
+    # ceiling and a default that coincide today are answers to different questions, and editing
+    # one must not silently move the other.
+    "T1": [
+        "agy-flash35-medium-skill x3",
+        "agy-flash35-high-skill",
+        "agy-flash36-medium-skill",
+        "agy-flash36-high-skill x2",
+        "agy-pro-high-skill",
+    ],
+    "T2": [
+        "agy-flash35-medium-skill x3",
+        "agy-flash35-high-skill x2",
+        "agy-flash36-medium-skill",
+        "agy-flash36-high-skill x2",
+        "agy-pro-high-skill",
+    ],
+}
+REVIEW_TIER_AGY_MAX["T3"] = list(REVIEW_TIER_AGY_MAX["T2"])
+REVIEW_TIER_FLOOR = {
+    tier: [*OPENCODE_REVIEW_LEG, *cells] for tier, cells in REVIEW_TIER_AGY.items()
+}
+REVIEW_TIER_FLOOR_MAX = {
+    tier: [*OPENCODE_REVIEW_LEG_MAX, *cells] for tier, cells in REVIEW_TIER_AGY_MAX.items()
+}
 # Eco is the paid composition with the least Sol spend that at least matches the prior eco
 # coverage; max is the measured ceiling within the tier's budget, trimmed of cells whose
-# marginal is under ~1 defect on the corpus (owner rule 2026-08-04). The free layer is never
-# trimmed (owner rule). Computed 2026-08-04 — recompute with frontier, don't hand-edit.
+# marginal is under ~1 defect on the corpus (owner rule 2026-08-04). The OpenCode layer is never
+# trimmed (owner rule). `coverage_pct` is the whole panel over the four commits every one of its
+# cells ran on (143fc2f, 8448a35, 8553616, fabcae4) — recomputed 2026-08-07 against a corpus that
+# has grown to 232 adjudicated defects, which moved every figure on its own. Recompute the Codex
+# and Claude cells with frontier, don't hand-edit. It cannot answer for the Gemini block: it
+# prices a composition at the max of its cells' minutes under a wall-clock budget, which is the
+# model the block above rejects, so a frontier answer there ignores the sum-of-cells rule. That
+# block is recomputed by enumerating multisets of the pool's agy cells, pricing each at the sum
+# of its cells' median `duration_ms` over the worktree runs in `benches/*/meta.json`, and taking
+# the cheapest that `composition_coverage` scores no lower than the panel it replaces on each of
+# the four populations — whole panel over the `coverage_pct` commits, agy cells alone over the
+# whole corpus, coverage and P1 apiece.
 REVIEW_TIERS = {
     "T0": {
         "budget_min": 2,
         "when": "Up to 20 changed lines in up to 2 files",
-        "coverage_pct": {"eco": 29.1, "max": 29.1},
+        "coverage_pct": {"eco": 41.9, "max": 46.1},
         "cells": [
-            *REVIEW_TIER_FLOOR,
+            *REVIEW_TIER_FLOOR["T0"],
             "opus-low",
             "sol-low",
             "sol-low-bare",
         ],
         "cells_max": [
-            *REVIEW_TIER_FLOOR_MAX,
+            *REVIEW_TIER_FLOOR_MAX["T0"],
             "opus-low",
             "sol-low",
             "sol-low-bare",
@@ -865,16 +944,16 @@ REVIEW_TIERS = {
     "T1": {
         "budget_min": 6,
         "when": "Up to 150 changed lines, or any change under bin/ or tests/",
-        "coverage_pct": {"eco": 40.3, "max": 42.4},
+        "coverage_pct": {"eco": 48.9, "max": 55.1},
         "cells": [
-            *REVIEW_TIER_FLOOR_SLOW,
+            *REVIEW_TIER_FLOOR["T1"],
             "opus-medium",
             "sol-low",
             "sol-low-bare",
             "sol-medium-bare",
         ],
         "cells_max": [
-            *REVIEW_TIER_FLOOR_SLOW_MAX,
+            *REVIEW_TIER_FLOOR_MAX["T1"],
             "opus-low",
             "opus-medium",
             "sol-low",
@@ -885,9 +964,9 @@ REVIEW_TIERS = {
     "T2": {
         "budget_min": 10,
         "when": "Up to 600 changed lines, or a core measurement tool change",
-        "coverage_pct": {"eco": 58.1, "max": 62.0},
+        "coverage_pct": {"eco": 59.2, "max": 67.4},
         "cells": [
-            *REVIEW_TIER_FLOOR_SLOW,
+            *REVIEW_TIER_FLOOR["T2"],
             "opus-high",
             "opus-medium",
             "opus-low",
@@ -895,7 +974,7 @@ REVIEW_TIERS = {
             "sol-high-bare x2",
         ],
         "cells_max": [
-            *REVIEW_TIER_FLOOR_SLOW_MAX,
+            *REVIEW_TIER_FLOOR_MAX["T2"],
             "opus-high",
             "opus-medium",
             "opus-low",
@@ -908,9 +987,9 @@ REVIEW_TIERS = {
     "T3": {
         "budget_min": 20,
         "when": "More than 600 changed lines",
-        "coverage_pct": {"eco": 69.3, "max": 72.3},
+        "coverage_pct": {"eco": 70.3, "max": 77.0},
         "cells": [
-            *REVIEW_TIER_FLOOR_SLOW,
+            *REVIEW_TIER_FLOOR["T3"],
             "opus-high",
             "opus-medium",
             "sol-high",
@@ -918,7 +997,7 @@ REVIEW_TIERS = {
             "sol-max-bare",
         ],
         "cells_max": [
-            *REVIEW_TIER_FLOOR_SLOW_MAX,
+            *REVIEW_TIER_FLOOR_MAX["T3"],
             "opus-high",
             "opus-medium",
             "sol-high",
@@ -2415,14 +2494,23 @@ def short_cell_name(rater, scheme=None):
 
 def human_cell_name(spec, scheme=None):
     family = rater_family(spec)
+    scheme = default_name_scheme() if scheme is None else scheme
+    if family == GEMINI_VERIFIER:
+        # The verifier is spelled without an effort, but it runs one, and a cell at that same
+        # effort is in the tiers: named off the bare family it would print `gem-flash36` in the
+        # verifier row beside `gem-flash36-med` in the cells row of the same report, as two
+        # models rather than one doing two jobs. Against the pool and never against the run,
+        # because the effort-qualified family is itself a legal skill-less cell: a run holding
+        # THAT cell earns it a `-bare` override, which the verifier row would otherwise wear.
+        family = f"{family}-{GEMINI_VERIFIER_EFFORT}"
+        scheme = default_name_scheme()
     try:
         rater = parse_rater(family)
     except ValueError:
-        # The verifier chain names models that have no cell spelling — GEMINI_VERIFIER carries
-        # no effort — and the report prints those beside cell names.
+        # The verifier chain names models that have no cell spelling, and the report prints
+        # those beside cell names.
         if not family:
             return str(spec)
-        scheme = default_name_scheme() if scheme is None else scheme
         base, version = model_name_parts(family)
         return base + (version if len(scheme["versions"].get(base, ())) > 1 else "")
     return short_cell_name(rater, scheme)
@@ -6028,10 +6116,14 @@ def cmd_tiers_table():
                 tier_name if variant == "eco" else f"{tier_name} max",
                 *vendors,
                 f"{tier['coverage_pct'][variant]}%",
+                # Every side but OpenCode: a Gemini cell bills its own account's window like a
+                # Claude or Codex one does, and the tiers modulate that spend, so a column that
+                # counted only the other two would price two differently-sized Gemini panels
+                # the same.
                 str(sum(
                     1 for cell in cells
                     for rater in parse_raters(cell)
-                    if rater["side"] in ("claude", "codex")
+                    if rater["side"] != "opencode"
                 )),
             ])
     headers = ["tier", "OpenCode", "Gemini", "Codex", "Claude", "cover", "paid runs"]
