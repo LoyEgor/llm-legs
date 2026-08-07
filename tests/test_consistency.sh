@@ -556,4 +556,68 @@ assert grep -Fq -- "/Library/Logs/$HS_LABEL.log" "$HS_GUARD"
 assert grep -Fq -- "$HS_LABEL" "$ROOT/docs/DIAGNOSTICS.md"
 assert doc_has 'Hammerspoon launchd agent identity'
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, and the Hammerspoon launchd agent identity) and match %s\n' "$asserts" "$DOC"
+# --- Row ab: review report frame ----------------------------------------------
+# Two repositories build the same two lines independently: llm-legs prints them,
+# the claude-setup hooks find blocks by their shape. A width that drifts on one
+# side still renders, so nothing fails until a report silently stops being found.
+FRAME_WIDTH=50
+FRAME_WORD=review
+FRAME_FOOTER_RE='={10,}'
+assert test "$(grep -Ec '^REPORT_FRAME_WIDTH = ' "$REVIEWBENCH")" -eq 1
+rb_frame_width=$(grep -E '^REPORT_FRAME_WIDTH = [0-9]+$' "$REVIEWBENCH" | awk '{print $3}')
+assert eq "$rb_frame_width" "$FRAME_WIDTH"
+assert grep -Fq "REPORT_FRAME_WORD = \"$FRAME_WORD\"" "$REVIEWBENCH"
+assert grep -Fq 'REPORT_END = "=" * REPORT_FRAME_WIDTH' "$REVIEWBENCH"
+assert grep -Fq "f\"{'=' * left} {word} {'=' * (fill - left)}\"" "$REVIEWBENCH"
+assert doc_has 'Review report frame'
+assert doc_has '`^=+ [a-z]+ =+$`'
+assert doc_has "\`^=+ $FRAME_WORD =+\$\`"
+assert doc_has '`^={10,}$`'
+
+CLAUDE_SETUP="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}"
+COMMIT_REPORT="$CLAUDE_SETUP/hooks/commit-report.sh"
+REPORT_NUDGE="$CLAUDE_SETUP/hooks/review-report-nudge.sh"
+DELIVERY_GATE="$CLAUDE_SETUP/hooks/review-report-delivery-gate.sh"
+if test -r "$COMMIT_REPORT" && test -r "$REPORT_NUDGE" && test -r "$DELIVERY_GATE"; then
+  assert test "$(grep -Ec '^FRAME_WIDTH=' "$COMMIT_REPORT")" -eq 1
+  cs_frame_width=$(grep -E '^FRAME_WIDTH=[0-9]+$' "$COMMIT_REPORT" | cut -d= -f2)
+  assert eq "$cs_frame_width" "$rb_frame_width"
+  assert grep -Fq 'local fill=$((FRAME_WIDTH - ${#1} - 2))' "$COMMIT_REPORT"
+  # The review consumers narrow the header to its own word, so a commit or push report framed
+  # identically is never taken for one; the closing rule stays the shared shape.
+  assert grep -Fq "REVIEW_HEADER = r\"=+ $FRAME_WORD =+\"" "$DELIVERY_GATE"
+  assert grep -Fq "FOOTER = r\"$FRAME_FOOTER_RE\"" "$DELIVERY_GATE"
+  assert grep -Fq "=+ $FRAME_WORD =+" "$REPORT_NUDGE"
+else
+  printf 'SKIP: review report frame across claude-setup (%s is unreadable)\n' "$CLAUDE_SETUP"
+fi
+
+# --- Row ac: review commit-cycle file -----------------------------------------
+# The gate writes this file, review-bench only ever reads it, and neither would
+# notice the other renaming it: a review-bench looking for a name nothing writes
+# refuses every commit-point panel, and a gate writing a name nothing reads
+# leaves the door open to exactly the mid-work reviews it exists to stop.
+CYCLE_NAME=review-cycle
+assert grep -Fq "REVIEW_CYCLE_NAME = \"$CYCLE_NAME\"" "$REVIEWBENCH"
+assert grep -Fq 'REVIEW_CYCLE_ARMED_STAGES = ("armed1", "armed2")' "$REVIEWBENCH"
+assert grep -Fq 'r"[^A-Za-z0-9._-]"' "$REVIEWBENCH"
+assert grep -Fq '"git", "rev-parse", "--absolute-git-dir"' "$REVIEWBENCH"
+assert doc_has 'Review commit-cycle file'
+assert doc_has '`[A-Za-z0-9._-]`'
+
+FLOW_GATE="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/review-flow-gate.sh"
+if test -r "$FLOW_GATE"; then
+  assert grep -Fq "cycle=\"\$gitdir/$CYCLE_NAME\${session:+-\$session}\"" "$FLOW_GATE"
+  assert grep -Fq "name '$CYCLE_NAME-*'" "$FLOW_GATE"
+  assert grep -Fq '*[!A-Za-z0-9._-]*) session="" ;;' "$FLOW_GATE"
+  assert grep -Fq 'rev-parse --absolute-git-dir' "$FLOW_GATE"
+  # The stages review-bench reads as armed, written on the gate's own side.
+  assert grep -Fq 'cycle_write armed1' "$FLOW_GATE"
+  assert grep -Fq 'cycle_write armed2' "$FLOW_GATE"
+  assert grep -Fq 'cycle_write ticket' "$FLOW_GATE"
+  assert grep -Fq 'ticket|armed1|armed2)' "$FLOW_GATE"
+else
+  printf 'SKIP: review commit-cycle file across claude-setup (%s is unreadable)\n' "$FLOW_GATE"
+fi
+
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, and the review commit-cycle file one writes and the other reads) and match %s\n' "$asserts" "$DOC"

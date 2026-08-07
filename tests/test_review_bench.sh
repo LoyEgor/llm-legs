@@ -38,8 +38,29 @@ loader = importlib.machinery.SourceFileLoader("review_bench", sys.argv[1])
 spec = importlib.util.spec_from_loader("review_bench", loader)
 rb = importlib.util.module_from_spec(spec)
 loader.exec_module(rb)
-assert rb.REPORT_BEGIN == "REVIEW-REPORT-BEGIN"
-assert rb.REPORT_END == "REVIEW-REPORT-END"
+# The frame is the contract, not a marker string: a header of the word centered in '=' to exactly
+# 50 characters, a footer of 50 of them, and both parseable by the shapes every consumer keys on.
+assert rb.REPORT_BEGIN == "=" * 21 + " review " + "=" * 21, rb.REPORT_BEGIN
+assert rb.REPORT_END == "=" * 50, rb.REPORT_END
+assert len(rb.REPORT_BEGIN) == 50 and len(rb.REPORT_END) == 50
+assert re.fullmatch(r"=+ [a-z]+ =+", rb.REPORT_BEGIN), rb.REPORT_BEGIN
+assert re.fullmatch(r"={10,}", rb.REPORT_END), rb.REPORT_END
+# The footer shape must not swallow the header: a consumer that reads the block by its end would
+# close it on the line that opens it.
+assert not re.fullmatch(r"={10,}", rb.REPORT_BEGIN)
+# An odd remainder goes to the right, and the total stays exactly 50 whatever the word costs.
+for frame_word, frame_left in (("review", 21), ("notes", 21), ("comments", 20)):
+    frame_header = rb.report_frame_header(frame_word)
+    assert len(frame_header) == 50, frame_header
+    assert frame_header == "=" * frame_left + f" {frame_word} " + "=" * (
+        50 - frame_left - len(frame_word) - 2
+    ), frame_header
+# A word with no room left widens the line rather than spending its padding: a header ending on
+# the word is no longer the shape its consumers find the block by, so it opens nothing.
+for long_word in ("a" * 48, "a" * 60):
+    long_header = rb.report_frame_header(long_word)
+    assert re.fullmatch(r"=+ [a-z]+ =+", long_header), long_header
+    assert len(long_header) > 50, long_header
 rb.REPORT_BEGIN = "FIXTURE-REVIEW-REPORT-BEGIN"
 rb.REPORT_END = "FIXTURE-REVIEW-REPORT-END"
 assert rb.TRIAGE_PENDING == "REVIEW-TRIAGE-PENDING"
@@ -454,8 +475,104 @@ assert rb.parse_rater("sol-low-bare") == {
     "spec": "sol-low-bare", "model": "sol", "effort": "low", "side": "codex",
     "skill": False, "bare": True, "profile": None
 }
-assert rb.compact_tier_cell(rb.parse_rater("sol-low")) == "low"
-assert rb.compact_tier_cell(rb.parse_rater("sol-low-bare")) == "low-bare"
+# One spelling for every surface a human reads: the tiers table and the report frames render the
+# same cell through the same function, so a name learned on one is the name on the other. Each
+# name carries only what the pool needs to tell it apart — nothing here is a hand-kept list, so a
+# second variant entering a tier renames its family without anyone editing a table.
+assert rb.short_cell_name(rb.parse_rater("oc-kimik3")) == "kimi"
+assert rb.short_cell_name(rb.parse_rater("oc-dsv4flash")) == "deepseek"
+# One effort in the pool, so naming it separates nothing — and one version of the family, so the
+# digits stay off even though the machine spec carries them.
+assert rb.short_cell_name(rb.parse_rater("oc-grok45-low")) == "grok"
+assert rb.short_cell_name(rb.parse_rater("agy-flash36-medium-skill")) == "gem-flash36"
+# Both Flash models run, so the digits are what tells them apart; both efforts of flash35 run, so
+# the effort is too. Neither is spelled anywhere but in this derivation.
+assert rb.short_cell_name(rb.parse_rater("agy-flash35-medium-skill")) == "gem-flash35-med"
+assert rb.short_cell_name(rb.parse_rater("agy-flash35-high-skill")) == "gem-flash35-high"
+assert rb.short_cell_name(rb.parse_rater("agy-pro-high-skill")) == "gem-pro-high"
+assert rb.short_cell_name(rb.parse_rater("agy-pro-low-skill")) == "gem-pro-low"
+# The word never reaches a rendered name: every agy cell runs the skill, so there is nothing for
+# a mark to separate.
+assert "skill" not in rb.short_cell_name(rb.parse_rater("agy-pro-high-skill"))
+# Claude and Codex effort is a launch parameter — the same cell runs at another effort next
+# round — so it is spelled even where this pool holds one of them.
+assert rb.short_cell_name(rb.parse_rater("opus-medium")) == "opus-med"
+assert rb.short_cell_name(rb.parse_rater("sonnet-xhigh")) == "sonnet-xhigh"
+# Codex runs the review skill unless `-bare` opts out, and both kinds are in the pool: the
+# skill-less one carries the mark, the skilled one is unmarked — including at an effort whose
+# only cell is bare, where dropping it would read as the skilled run beside it.
+assert rb.short_cell_name(rb.parse_rater("sol-low")) == "sol-low"
+assert rb.short_cell_name(rb.parse_rater("sol-low-bare")) == "sol-low-bare"
+assert rb.short_cell_name(rb.parse_rater("sol-medium-bare")) == "sol-med-bare"
+assert rb.short_cell_name(rb.parse_rater("oc-grok45-low-google")) == "grok-google"
+# The whole pool at once, because the property is that no two cells collide and no name says
+# more than it must.
+pool_names = [rb.short_cell_name(rater) for rater in rb.review_pool_raters()]
+assert sorted(set(pool_names)) == [
+    "deepseek", "gem-flash35-high", "gem-flash35-med", "gem-flash36", "gem-pro-high",
+    "gem-pro-low", "grok", "kimi", "opus-high", "opus-low", "opus-med", "sol-high",
+    "sol-high-bare", "sol-low", "sol-low-bare", "sol-max", "sol-max-bare", "sol-med-bare",
+    "sol-xhigh", "sol-xhigh-bare",
+], sorted(set(pool_names))
+assert len(set(pool_names)) == len(
+    {rb.rater_family(rater["spec"]) for rater in rb.review_pool_raters()}
+), sorted(set(pool_names))
+# A second version of a single-version family renames it the moment it joins THE POOL — the
+# digits are derived from the tiers, never declared.
+stored_pool_raters = rb._REVIEW_POOL_RATERS
+try:
+    rb._REVIEW_POOL_RATERS = list(rb.review_pool_raters()) + [rb.parse_rater("oc-kimik27code")]
+    kimi_two_versions = rb.name_scheme()
+finally:
+    rb._REVIEW_POOL_RATERS = stored_pool_raters
+assert rb.short_cell_name(rb.parse_rater("oc-kimik3"), kimi_two_versions) == "kimik3"
+assert rb.short_cell_name(rb.parse_rater("oc-kimik27code"), kimi_two_versions) == "kimik27code"
+# A cell only a stored run holds is named against the pool, never over it. Reading one report
+# cannot respell a pool cell, or the same model would be `grok` in the tiers table and `grok45`
+# in the report a chat reads beside it.
+assert rb.human_cell_name("agy-flash35-low-skill") == "gem-flash35-low"
+retired_scheme = rb.report_name_scheme(["agy-flash36-medium-skill", "agy-flash36-high-skill"])
+assert rb.human_cell_name("agy-flash36-medium-skill", retired_scheme) == "gem-flash36"
+assert rb.human_cell_name("agy-flash36-high-skill", retired_scheme) == "gem-flash36-high"
+# xAI's own grok next to the pool's: the newcomer takes the effort that separates them, and the
+# pool cell keeps the name it has on every other surface.
+xai_scheme = rb.report_name_scheme(["oc-grok45-low", "grok-low"])
+assert rb.human_cell_name("oc-grok45-low", xai_scheme) == "grok"
+assert rb.human_cell_name("grok-low", xai_scheme) == "grok-low"
+# Same on the skill axis, where the pool cell is the unskilled one: the mark goes on the arrival,
+# not on the cell whose name predates it.
+skilled_opus_scheme = rb.report_name_scheme(["opus-medium", "opus-medium-skill"])
+assert rb.human_cell_name("opus-medium", skilled_opus_scheme) == "opus-med"
+assert rb.human_cell_name("opus-medium-skill", skilled_opus_scheme) == "opus-med-skill"
+# And the table that teaches those names is the same bytes after such a report as before it: the
+# scheme every surface shares is memoized, so a report reading its own cells into it would leave
+# the tiers table renamed for the rest of the process.
+def rendered_tiers_table():
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        rb.cmd_tiers_table()
+    return buffer.getvalue()
+
+tiers_table_before = rendered_tiers_table()
+newcomer_rows = [
+    {"rater": spec, "side": rb.parse_rater(spec)["side"], "duration_ms": 1000,
+     "findings": 0, "exit_code": 0}
+    for spec in ("grok-low", "opus-medium-skill", "oc-grok45-low", "opus-medium")
+]
+newcomer_dir = work / "newcomer-report"
+newcomer_dir.mkdir()
+newcomer_report = rb.report_lines(newcomer_dir, {
+    "run_id": "newcomer", "raters": [row["rater"] for row in newcomer_rows],
+    "rater_runs": newcomer_rows,
+    "started": "2026-07-30T00:00:00+00:00", "finished": "2026-07-30T00:00:01+00:00",
+})
+newcomer_cells = [line for line in newcomer_report if line.startswith("cells:")][0]
+assert "grok 0" in newcomer_cells and "grok-low 0" in newcomer_cells, newcomer_cells
+assert "opus-med 0" in newcomer_cells and "opus-med-skill 0" in newcomer_cells, newcomer_cells
+assert rendered_tiers_table() == tiers_table_before
+# The report frames read the same table through the spec they store.
+assert rb.human_cell_name("oc-kimik3#2") == "kimi"
+assert rb.human_cell_name("sol-high-bare") == "sol-high-bare"
 assert rb.parse_rater("opus-xhigh")["side"] == "claude"
 assert rb.parse_rater("opus-xhigh")["skill"] is False
 assert rb.parse_rater("fable-medium")["model"] == "fable"
@@ -580,9 +697,6 @@ for run_id, finished, row in (
 assert rb.adaptive_agy_timeouts(timeout_history)[
     "agy-flash36-medium-skill"
 ] == 575
-assert rb.human_cell_name("agy-flash35-medium-skill") == \
-    "Gemini 3.5 Flash medium skill"
-assert rb.human_cell_name("sol-high-bare") == "Sol high bare"
 max_tier_rows = [
     {
         "rater": rater["spec"], "side": rater["side"], "duration_ms": 1000,
@@ -601,7 +715,51 @@ max_tier_dir = work / "max-tier-report"
 max_tier_dir.mkdir()
 assert rb.tier_from_meta(max_tier_meta) == "T3 max"
 assert rb.review_log_event("run", max_tier_dir, max_tier_meta)["tier"] == "T3 max"
-assert rb.report_lines(max_tier_dir, max_tier_meta)[0].startswith("T3 max · ")
+assert rb.report_lines(max_tier_dir, max_tier_meta)[0].startswith(
+    "review-bench panel · T3 max · "
+), rb.report_lines(max_tier_dir, max_tier_meta)[0]
+# Every cell that completed, the empty-handed ones included: a row listing only the cells that
+# found something reads exactly like a run where the rest never started.
+max_tier_cells = [
+    line for line in rb.report_lines(max_tier_dir, max_tier_meta)
+    if line.startswith("cells:")
+]
+assert len(max_tier_cells) == 1, rb.report_lines(max_tier_dir, max_tier_meta)
+# Under the same names every other row of the block uses: a reader comparing the cell row against
+# the errored one below it would otherwise be matching slugs against model names by hand.
+assert max_tier_cells[0].split(":", 1)[1].strip() == " · ".join(
+    f"{rb.human_cell_name(row['rater'])} 0" for row in max_tier_rows
+), max_tier_cells[0]
+assert "oc-kimik3" not in max_tier_cells[0], max_tier_cells[0]
+# A summary written before the count was stored costs its own cell a number, and nothing else:
+# reading the key outright takes the whole block down, errored rows and all, on the one run whose
+# failures the reader most needs.
+legacy_cells_meta = {
+    "run_id": "legacy-cells",
+    "raters": ["opus-medium", "sol-high"],
+    "rater_runs": [
+        {"rater": "opus-medium", "side": "claude", "duration_ms": 1000, "exit_code": 0},
+        {"rater": "sol-high", "side": "codex", "duration_ms": 1000, "exit_code": 2,
+         "errored": True, "stderr": "boom"},
+    ],
+    "started": "2026-07-30T00:00:00+00:00",
+    "finished": "2026-07-30T00:00:01+00:00",
+}
+legacy_cells_dir = work / "legacy-cells-report"
+legacy_cells_dir.mkdir()
+legacy_cells_summary = rb.bench_summary(legacy_cells_dir, legacy_cells_meta)
+for cell in legacy_cells_summary["cells"]:
+    cell.pop("findings")
+stored_bench_summary = rb.bench_summary
+rb.bench_summary = lambda *summary_args, **summary_kwargs: legacy_cells_summary
+try:
+    legacy_cells_report = rb.report_lines(legacy_cells_dir, legacy_cells_meta)
+finally:
+    rb.bench_summary = stored_bench_summary
+legacy_cells_row = [line for line in legacy_cells_report if line.startswith("cells:")]
+assert len(legacy_cells_row) == 1, legacy_cells_report
+assert legacy_cells_row[0].split(":", 1)[1].strip() == "opus-med 0", legacy_cells_row[0]
+assert any(line.startswith("errored:") for line in legacy_cells_report), legacy_cells_report
 pending_report = io.StringIO()
 with contextlib.redirect_stdout(pending_report):
     rb.emit_report(max_tier_dir, max_tier_meta)
@@ -654,7 +812,7 @@ duration_meta = {
     "finished": "2026-07-30T00:00:02Z",
 }
 duration_header = rb.report_lines(duration_dir, duration_meta)[0]
-assert "slowest completed: Sol low 1 sec" in duration_header
+assert "slowest completed: sol-low 1 sec" in duration_header
 assert "0 sec" not in duration_header
 unknown_duration_meta = dict(
     duration_meta,
@@ -672,7 +830,7 @@ not_run_meta = dict(
 )
 not_run_report = "\n".join(rb.report_lines(duration_dir, not_run_meta))
 assert any(
-    line.startswith("not run:") and line.endswith("Sol low")
+    line.startswith("not run:") and line.endswith("sol-low")
     for line in not_run_report.splitlines()
 )
 assert "errored:" not in not_run_report
@@ -686,16 +844,16 @@ reason_meta = dict(
     ],
 )
 reason_report = "\n".join(rb.report_lines(duration_dir, reason_meta))
-assert "Sol low (throttled)" in reason_report, reason_report
+assert "sol-low (throttled)" in reason_report, reason_report
 # Nothing recognisable in the text leaves the exit code as the only fact left to print, and a
 # cell that said nothing at all is the same case: naming the silence discards that last fact.
-assert "Kimi K3 (exit 3)" in reason_report, reason_report
+assert "kimi (exit 3)" in reason_report, reason_report
 silent_meta = dict(
     duration_meta,
     raters=["sol-low"],
     rater_runs=[{"rater": "sol-low", "exit_code": 5, "errored": True, "stderr": ""}],
 )
-assert "Sol low (exit 5)" in "\n".join(rb.report_lines(duration_dir, silent_meta))
+assert "sol-low (exit 5)" in "\n".join(rb.report_lines(duration_dir, silent_meta))
 
 # Counts come back out of a JSON file anyone can hand-edit, and `True` is an int in Python:
 # a hand-written `"verifier_dropped": true` would otherwise report one rejected finding.
@@ -718,7 +876,7 @@ chain_report = "\n".join(rb.report_lines(duration_dir, dict(
          "verifier_by_model": {"oc-qwen37plus": 2}},
     ],
 )))
-assert "verifier:     Kimi K3 3 · oc-qwen37plus 2 — 5 checked, 3 rejected" in chain_report, \
+assert "verifier:     kimi 3 · qwen37plus 2 — 5 checked, 3 rejected" in chain_report, \
     chain_report
 walled_report = "\n".join(rb.report_lines(duration_dir, dict(
     duration_meta,
@@ -729,7 +887,7 @@ walled_report = "\n".join(rb.report_lines(duration_dir, dict(
          "verifier_dropped": 0, "verifier_audited": 2, "verifier_by_model": {}},
     ],
 )))
-assert "verifier:     Kimi K3 — 0 checked, 0 rejected, 2 kept unchecked" in walled_report, \
+assert "verifier:     kimi — 0 checked, 0 rejected, 2 kept unchecked" in walled_report, \
     walled_report
 # A run recorded before the verifier logged its own counts keeps only the drop total, and a
 # report that reads its absence as "nothing to check" would deny checks that did happen.
@@ -742,7 +900,7 @@ legacy_verifier_report = "\n".join(rb.report_lines(duration_dir, dict(
          "verifier_dropped": 4},
     ],
 )))
-assert "verifier:     Kimi K3 — 4 rejected" in legacy_verifier_report, legacy_verifier_report
+assert "verifier:     kimi — 4 rejected" in legacy_verifier_report, legacy_verifier_report
 # 3 of the 205 runs on disk are that same legacy record with nothing rejected: reading the zero
 # as "the verifier never ran" reports every finding it cleared as unchecked. verify_ms is what
 # says it ran, and it has been recorded per cell since c011911.
@@ -755,7 +913,7 @@ legacy_kept_all_report = "\n".join(rb.report_lines(duration_dir, dict(
          "verifier_dropped": 0, "verifier_unverified": 0, "verify_ms": 4000},
     ],
 )))
-assert "verifier:     Kimi K3 — 0 rejected" in legacy_kept_all_report.splitlines(), \
+assert "verifier:     kimi — 0 rejected" in legacy_kept_all_report.splitlines(), \
     legacy_kept_all_report
 # 7 of those legacy runs walled the verifier partway. The wall total is the only unchecked count
 # they kept, so a line that prints the drops alone reports a partial pass as a complete one.
@@ -768,7 +926,7 @@ legacy_walled_report = "\n".join(rb.report_lines(duration_dir, dict(
          "verifier_dropped": 1, "verifier_unverified": 3, "verify_ms": 4000},
     ],
 )))
-assert "verifier:     Kimi K3 — 1 rejected, 3 kept unchecked" in legacy_walled_report, \
+assert "verifier:     kimi — 1 rejected, 3 kept unchecked" in legacy_walled_report, \
     legacy_walled_report
 # A wall before the first rejection leaves the wall count as the only evidence the verifier ran,
 # so a guard reading the drop total alone reports those findings as never offered to it.
@@ -781,7 +939,7 @@ legacy_wall_only_report = "\n".join(rb.report_lines(duration_dir, dict(
          "verifier_dropped": 0, "verifier_unverified": 2},
     ],
 )))
-assert "verifier:     Kimi K3 — 0 rejected, 2 kept unchecked" in legacy_wall_only_report, \
+assert "verifier:     kimi — 0 rejected, 2 kept unchecked" in legacy_wall_only_report, \
     legacy_wall_only_report
 # Every count is read back out of a file anyone can hand-edit, so each is sanitised where it is
 # read, not only where it is summed: a bool reaching one cell field and not its neighbour is the
@@ -805,7 +963,7 @@ nothing_report = "\n".join(rb.report_lines(duration_dir, dict(
     raters=["oc-kimik3"],
     rater_runs=[{"rater": "oc-kimik3", "side": "opencode", "exit_code": 0, "findings": 0}],
 )))
-assert "verifier:     Kimi K3 — nothing to check" in nothing_report, nothing_report
+assert "verifier:     kimi — nothing to check" in nothing_report, nothing_report
 empty_off_report = "\n".join(rb.report_lines(duration_dir, dict(
     duration_meta,
     raters=["oc-kimik3"],
@@ -978,9 +1136,9 @@ assert "codex work 1/2" in health_text, health_text
 # Both accounts show even though one of them never failed: a pool that stopped rotating is
 # read off this section, and an account that vanishes when it works cannot show that.
 assert "opencode alt 0/1 · prod 1/1" in health_text, health_text
-assert "Sol high 1/1 100% throttled 1" in health_text, health_text
+assert "sol-high 1/1 100% throttled 1" in health_text, health_text
 # A cell that never failed has no place in a list of the worst ones.
-assert "Sol low" not in health_text, health_text
+assert "sol-low" not in health_text, health_text
 assert rb.health_lines([]) == ["no recorded runs"]
 # A cell retired since the run was recorded must not make the whole run unreadable.
 retired_dir = write_health_run("20260103T000000Z-ccc", [
@@ -2499,6 +2657,27 @@ subprocess.run(
      "-c", "user.email=fixture@example.com", "commit", "-qm", "clean"],
     check=True,
 )
+# The gate that blocks a commit opens the cycle; every `review --worktree` below is a panel that
+# flow asked for, so each fixture repository carries the file the gate would have left.
+def cycle_path(repo, session=None):
+    gitdir = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--absolute-git-dir"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    if session is None:
+        session = rb.review_cycle_session()
+    return pathlib.Path(gitdir) / ("review-cycle" + (f"-{session}" if session else ""))
+
+
+def arm_review_cycle(repo, stage="armed1", session=None):
+    path = cycle_path(repo, session)
+    # The gate's own three fields: stage, the run id in the receipt when the stage was written, and
+    # the tree that run read. Only the first is read here, and only ever read.
+    path.write_bytes(b"\0".join([stage.encode(), b"", b""]) + b"\0")
+    return path
+
+
+arm_review_cycle(snapshot_clean)
 clean_worktree = subprocess.run(
     [sys.argv[1], "run", "--worktree", "--repo", str(snapshot_clean),
      "--raters", "oc-kimik3"],
@@ -2566,6 +2745,138 @@ for command in (
     conflict = subprocess.run(command, capture_output=True, text=True)
     assert conflict.returncode != 0
     assert "exactly one of commitish and --worktree" in conflict.stderr, conflict.stderr
+
+# A panel is something a commit asks for. The gate that blocks the commit opens a cycle, and that
+# file is the whole authorization: without one, `review --worktree` is the mid-work review a chat
+# talked itself into.
+cycle_repo = work / "cycle-repo"
+cycle_repo.mkdir()
+subprocess.run(["git", "-C", str(cycle_repo), "init", "-q"], check=True)
+(cycle_repo / "clean.txt").write_text("clean\n")
+subprocess.run(["git", "-C", str(cycle_repo), "add", "clean.txt"], check=True)
+subprocess.run(
+    ["git", "-C", str(cycle_repo), "-c", "user.name=Fixture",
+     "-c", "user.email=fixture@example.com", "commit", "-qm", "clean"],
+    check=True,
+)
+
+
+# The bypass is an environment variable the suite must not inherit by accident: a REVIEW_ASKED
+# already set in the shell that ran these tests would open every door below.
+CYCLE_ENV = {key: value for key, value in os.environ.items() if key != "REVIEW_ASKED"}
+
+
+def review_worktree(*repos, extra=(), env=None):
+    repo_args = []
+    for repo in repos:
+        repo_args += ["--repo", str(repo)]
+    return subprocess.run(
+        [sys.argv[1], "review", "--worktree", *repo_args, "--tier", "T0", *extra],
+        capture_output=True, text=True, env=CYCLE_ENV if env is None else env,
+    )
+
+
+CYCLE_REFUSAL = "reviews are commit-triggered"
+unarmed = review_worktree(cycle_repo)
+assert unarmed.returncode == 2, unarmed
+assert CYCLE_REFUSAL in unarmed.stderr, unarmed.stderr
+assert "attempt the `git commit`" in unarmed.stderr, unarmed.stderr
+# The refusal has to name the other way in, or a chat holding Egor's own ask has nothing to do
+# with it but argue with the tool.
+assert "REVIEW_ASKED=1" in unarmed.stderr, unarmed.stderr
+# The ticket stage is a cycle whose review already happened and was triaged — the round is over,
+# and the next panel belongs to the next commit that asks for one.
+arm_review_cycle(cycle_repo, "ticket")
+spent = review_worktree(cycle_repo)
+assert spent.returncode == 2, spent
+assert CYCLE_REFUSAL in spent.stderr, spent.stderr
+# Both armed stages open it — armed2 is the second round a P1 tally earned, and refusing there
+# would demand a commit that is already blocked on the very review being refused. An authorized
+# launch then dies on its own next refusal, which here is the clean tree.
+for stage in ("armed1", "armed2"):
+    arm_review_cycle(cycle_repo, stage)
+    armed = review_worktree(cycle_repo)
+    assert armed.returncode != 0, (stage, armed)
+    assert CYCLE_REFUSAL not in armed.stderr, (stage, armed.stderr)
+    assert "working tree matches HEAD" in armed.stderr, (stage, armed.stderr)
+# Read and left alone: the gate spends this file at the commit it opened it for, and a peek that
+# consumed it would leave that commit blocked on a round nothing can authorize.
+assert cycle_path(cycle_repo).read_bytes() == b"armed2\0\0\0"
+# Egor asking for a review by name is the other door, and it is the prefix the flow gate already
+# verifies against the transcript — taken at face value here, since a flag of this tool's own would
+# be one the caller grants itself unchecked.
+cycle_path(cycle_repo).unlink()
+asked = review_worktree(cycle_repo, env={**CYCLE_ENV, "REVIEW_ASKED": "1"})
+assert asked.returncode != 0, asked
+assert CYCLE_REFUSAL not in asked.stderr, asked.stderr
+assert "working tree matches HEAD" in asked.stderr, asked.stderr
+# The token is that one value: a variable merely present is not the prefix the gate checks.
+for value in ("", "0", "yes"):
+    not_asked = review_worktree(cycle_repo, env={**CYCLE_ENV, "REVIEW_ASKED": value})
+    assert not_asked.returncode == 2, (value, not_asked)
+    assert CYCLE_REFUSAL in not_asked.stderr, (value, not_asked.stderr)
+# Outside a chat nothing names a session, and the gate keys its file on the checkout alone there —
+# so that is the file this reads.
+sessionless_env = {
+    key: value for key, value in CYCLE_ENV.items() if key != "CLAUDE_CODE_SESSION_ID"
+}
+arm_review_cycle(cycle_repo, "armed1", session="")
+sessionless = review_worktree(cycle_repo, env=sessionless_env)
+assert sessionless.returncode != 0, sessionless
+assert CYCLE_REFUSAL not in sessionless.stderr, sessionless.stderr
+# A session id a path could be built out of is not a name either side will key a file on, so both
+# fall back to that same checkout-wide file.
+traversal = review_worktree(
+    cycle_repo, env={**CYCLE_ENV, "CLAUDE_CODE_SESSION_ID": "../evil"},
+)
+assert traversal.returncode != 0, traversal
+assert CYCLE_REFUSAL not in traversal.stderr, traversal.stderr
+# And a chat with a session of its own is answered by its own file only: one co-tenant's open
+# cycle must not authorize another's mid-work panel.
+named_session_env = {**CYCLE_ENV, "CLAUDE_CODE_SESSION_ID": "chat-1"}
+foreign_cycle = review_worktree(cycle_repo, env=named_session_env)
+assert foreign_cycle.returncode == 2, foreign_cycle
+assert CYCLE_REFUSAL in foreign_cycle.stderr, foreign_cycle.stderr
+arm_review_cycle(cycle_repo, "armed1", session="chat-1")
+own_cycle = review_worktree(cycle_repo, env=named_session_env)
+assert own_cycle.returncode != 0, own_cycle
+assert CYCLE_REFUSAL not in own_cycle.stderr, own_cycle.stderr
+cycle_path(cycle_repo, "").unlink()
+cycle_path(cycle_repo, "chat-1").unlink()
+# Neither file, and the refusal is the same one: a session the harness never named is not a door
+# left open.
+nothing_armed = review_worktree(cycle_repo, env=sessionless_env)
+assert nothing_armed.returncode == 2, nothing_armed
+assert CYCLE_REFUSAL in nothing_armed.stderr, nothing_armed.stderr
+# A merged panel is authorized by ANY repository it names: a cycle is opened by a blocked commit,
+# one commit is blocked in one repository, and demanding a cycle in every named repository would
+# leave the merged review unlaunchable by the flow that asks for it.
+cycle_second = work / "cycle-repo-2"
+cycle_second.mkdir()
+subprocess.run(["git", "-C", str(cycle_second), "init", "-q"], check=True)
+(cycle_second / "second.txt").write_text("second\n")
+subprocess.run(["git", "-C", str(cycle_second), "add", "second.txt"], check=True)
+subprocess.run(
+    ["git", "-C", str(cycle_second), "-c", "user.name=Fixture",
+     "-c", "user.email=fixture@example.com", "commit", "-qm", "second"],
+    check=True,
+)
+merged_unarmed = review_worktree(cycle_repo, cycle_second)
+assert merged_unarmed.returncode == 2, merged_unarmed
+assert CYCLE_REFUSAL in merged_unarmed.stderr, merged_unarmed.stderr
+arm_review_cycle(cycle_second)
+merged_armed = review_worktree(cycle_repo, cycle_second)
+assert merged_armed.returncode != 0, merged_armed
+assert CYCLE_REFUSAL not in merged_armed.stderr, merged_armed.stderr
+# The corpus side is untouched: `run` is the benchmark's own launcher and no commit ever asks for
+# one, so a cycle it could not have is not a door it has to come through.
+cycle_run = subprocess.run(
+    [sys.argv[1], "run", "--worktree", "--repo", str(cycle_repo), "--raters", "oc-kimik3"],
+    capture_output=True, text=True,
+)
+assert cycle_run.returncode != 0
+assert CYCLE_REFUSAL not in cycle_run.stderr, cycle_run.stderr
+assert "working tree matches HEAD" in cycle_run.stderr, cycle_run.stderr
 
 fake_codex = work / "fake-codex"
 fake_codex.write_text("""#!/usr/bin/env bash
@@ -3347,7 +3658,7 @@ assert rb.GEMINI_VERIFIER not in rb.verifier_chain("oc-dsv4flash")
 # Measured on the stock wording, not the one deepseek-v4-flash scores best on.
 assert rb.verify_prompt_style(rb.GEMINI_VERIFIER) == "stock"
 # The link is named in the report beside cell names, and it carries no effort to parse as one.
-assert rb.human_cell_name(rb.GEMINI_VERIFIER) == "Gemini 3.6 Flash", rb.GEMINI_VERIFIER
+assert rb.human_cell_name(rb.GEMINI_VERIFIER) == "gem-flash36", rb.GEMINI_VERIFIER
 # geminib enforces the print timeout itself; the outer deadline is its teardown grace, the same
 # relationship the rater path keeps, and it stays inside the configured verifier's own budget.
 assert rb.GEMINI_VERIFY_PRINT_TIMEOUT == "3m", rb.GEMINI_VERIFY_PRINT_TIMEOUT
@@ -4531,7 +4842,7 @@ assert all(
 # Who judged, not just how many were dropped: the chain advances per finding, so a report
 # naming no model leaves the reader unable to tell which verifier produced the rejections.
 filtered_report = "\n".join(rb.report_lines(filtered_run, filtered_meta, []))
-assert "verifier:     DeepSeek V4 Flash — 6 checked, 6 rejected" in filtered_report, \
+assert "verifier:     deepseek — 6 checked, 6 rejected" in filtered_report, \
     filtered_report
 assert "fixture finding" not in filtered_output
 assert rb.bench_summary(filtered_run, filtered_meta)["findings"] == 0
@@ -4636,11 +4947,25 @@ assert worktree_meta["worktree"] is True
 assert worktree_meta["commit"] == snapshot_sha
 assert worktree_receipt["commit"] == snapshot_sha
 assert worktree_receipt["tree"] == snapshot_tree
+# A commit-point review is handed the reporting command and nothing else. The corpus form used to
+# print beside it, and that is the one a chat copied: the round then went to the corpus and to the
+# two-judge adjudication contract that belongs to a benchmark.
 assert (
-    f"Record exactly with: review-bench record {worktree_meta['run_id']} "
+    f"Record exactly with: review-bench record {worktree_meta['run_id']} --no-corpus "
     f"--verdicts /tmp/review-bench-{worktree_meta['run_id']}-verdicts.jsonl"
-) in worktree_stdout.getvalue()
+) in worktree_stdout.getvalue(), worktree_stdout.getvalue()
+assert f"record {worktree_meta['run_id']} --verdicts" not in worktree_stdout.getvalue(), \
+    worktree_stdout.getvalue()
 assert "Merge and deduplicate the findings blind." in worktree_stdout.getvalue()
+# The durable side is untouched: a commit the corpus can be judged on keeps the corpus command.
+plain_handoff = io.StringIO()
+with contextlib.redirect_stdout(plain_handoff):
+    rb.handoff("plain-run", ["/fixture/findings-sol-high.jsonl"])
+assert (
+    "Record exactly with: review-bench record plain-run "
+    "--verdicts /tmp/review-bench-plain-run-verdicts.jsonl"
+) in plain_handoff.getvalue(), plain_handoff.getvalue()
+assert "--no-corpus" not in plain_handoff.getvalue(), plain_handoff.getvalue()
 progress_run_dir = worktree_run_store / "worker-stats" / rb.PROGRESS_DIR
 assert not list(progress_run_dir.glob("*.json")), list(progress_run_dir.glob("*.json"))
 
@@ -4672,10 +4997,11 @@ assert snapshot_rerun_rc == 1
 assert snapshot_rerun_meta["worktree"] is True, snapshot_rerun_meta
 assert f"rerun: review-bench run {snapshot_sha} --raters sol-high" \
     in snapshot_rerun_stdout.getvalue(), snapshot_rerun_stdout.getvalue()
+# A rerun by sha of a snapshot is the same commit-point review, so it is handed the same command.
 assert (
-    f"Record exactly with: review-bench record {snapshot_rerun_meta['run_id']} "
+    f"Record exactly with: review-bench record {snapshot_rerun_meta['run_id']} --no-corpus "
     f"--verdicts /tmp/review-bench-{snapshot_rerun_meta['run_id']}-verdicts.jsonl"
-) in snapshot_rerun_stdout.getvalue()
+) in snapshot_rerun_stdout.getvalue(), snapshot_rerun_stdout.getvalue()
 # The panel decides the verifier default, so a rerun of one cell that omits the flag filters
 # findings the run it completes reported raw — while a rerun the verifier cannot reach is refused
 # outright if the flag is passed, so the reproduce line carries it only where it applies.
@@ -5075,11 +5401,8 @@ root_run_meta = json.loads(
 )
 assert root_run_meta["commit"] == root_sha and "worktree" not in root_run_meta, root_run_meta
 
-# The paths a root-commit review read are what tells work it provoked from unrelated work, and
-# reading them as none priced every correction inside just-reviewed code as fresh.
-rb.write_jsonl(rb.state_dir() / "reviews.jsonl", [
-    {"run_id": root_receipt["run_id"], "commit": root_sha, "rater": "sol-low", "confirmed": 3},
-])
+# A correction inside a root commit's own just-reviewed content is sized like any other change:
+# 200 lines in one file is the T2 the ladder prices it at, receipt or no receipt.
 (root_repo / "day-one.txt").write_text(
     "".join(f"line {n} corrected\n" for n in range(1, 201))
     + "".join(f"line {n}\n" for n in range(201, 401))
@@ -5088,9 +5411,8 @@ root_suggest = io.StringIO()
 with contextlib.redirect_stdout(root_suggest):
     rb.cmd_suggest(argparse.Namespace(repo=str(root_repo), range=None))
 assert "changed files: 1" in root_suggest.getvalue(), root_suggest.getvalue()
-assert f"work over review {root_receipt['run_id']}" in root_suggest.getvalue(), \
-    root_suggest.getvalue()
-assert "tier: T1" in root_suggest.getvalue(), root_suggest.getvalue()
+assert "work over review" not in root_suggest.getvalue(), root_suggest.getvalue()
+assert "tier: T2" in root_suggest.getvalue(), root_suggest.getvalue()
 subprocess.run(["git", "-C", str(root_repo), "checkout", "--", "day-one.txt"], check=True)
 
 collision_left = work / "receipt-collision-left" / "same-name"
@@ -5538,16 +5860,54 @@ worktree_record_dir.mkdir()
 }) + "\n")
 empty_verdicts = work / "worktree-empty-verdicts.jsonl"
 empty_verdicts.write_text("")
+# The plain command is closed to every commit-point review: recording one stores a fix round's own
+# triage as the run's adjudication, and that state belongs to the two sealed judges the corpus is
+# built on. The refusal has to describe the flag it offers instead — no worktree run has ever
+# reached the corpus, with --bench or without it, so a refusal promising one sends the reader
+# looking for a row that will never appear.
+try:
+    rb.cmd_record(argparse.Namespace(
+        run_id="worktree-record-fixture", verdicts=str(empty_verdicts),
+    ))
+except ValueError as exc:
+    assert "a commit-point review never enters the corpus" in str(exc), exc
+    assert "--no-corpus" in str(exc) and "--bench" in str(exc), exc
+    assert "no corpus row is written either way" in str(exc), exc
+    assert "verdicts.jsonl" in str(exc), exc
+else:
+    raise AssertionError("a worktree run was recorded into the corpus without --bench")
 worktree_record_stdout = io.StringIO()
 with contextlib.redirect_stdout(worktree_record_stdout):
     assert rb.cmd_record(argparse.Namespace(
-        run_id="worktree-record-fixture", verdicts=str(empty_verdicts),
+        run_id="worktree-record-fixture", verdicts=str(empty_verdicts), bench=True,
     )) == 0
 assert "corpus skipped" in worktree_record_stdout.getvalue()
 assert worktree_record_stdout.getvalue().count(rb.REPORT_BEGIN) == 1
 assert worktree_record_stdout.getvalue().count(rb.REPORT_END) == 1
 assert not (worktree_record_dir / "defects.jsonl").exists()
 assert (worktree_record_dir / "verdicts.jsonl").read_text() == ""
+# The flag exists only because a worktree run has no other way to keep its verdicts. On a durable
+# run it names a behaviour the plain command already has, and the help it was read in promises no
+# corpus row — so accepting it there quietly writes the one thing the reader was told not to
+# expect.
+durable_bench_dir = repeat_store / "worker-stats" / "benches" / "durable-bench-fixture"
+durable_bench_dir.mkdir()
+(durable_bench_dir / "meta.json").write_text(json.dumps({
+    "run_id": "durable-bench-fixture",
+    "commit": snapshot_sha,
+    "repo": str(pin_repo),
+    "raters": [],
+}) + "\n")
+try:
+    rb.cmd_record(argparse.Namespace(
+        run_id="durable-bench-fixture", verdicts=str(empty_verdicts), bench=True,
+    ))
+except ValueError as exc:
+    assert "--bench" in str(exc) and "worktree run" in str(exc), exc
+    assert "durable run" in str(exc), exc
+else:
+    raise AssertionError("--bench was accepted on a durable run")
+assert not (durable_bench_dir / "verdicts.jsonl").exists()
 assert [row["rater"] for row in rb.read_jsonl(
     repeat_store / "worker-stats" / "reviews.jsonl"
 )] == ["sol-medium", "sol-medium#2"]
@@ -5921,9 +6281,9 @@ def make_suggest_repo(name, tracked=("tracked.txt",)):
 
 
 def review_found(run_id, confirmed=0, findings=0):
-    """Make the corpus say what a run found. The tier cap only applies to work over a review that
-    found something, so a fixture asserting the cap has to be explicit about it: an adjudicated
-    confirmed count for a commit review, findings files for a worktree one, which the corpus refuses.
+    """Make the corpus say what a run found. A review vouches for a commit only once it found
+    something, so a fixture asserting the vouch has to be explicit about it: an adjudicated confirmed
+    count for a commit review, findings files for a worktree one, which the corpus refuses.
     """
     corpus = pathlib.Path(suggest_env["CLAUDEB_DIR"]) / "worker-stats" / "reviews.jsonl"
     if confirmed:
@@ -5950,7 +6310,7 @@ def suggest(path, *extra, cwd=None):
 
 
 def assert_suggestion(lines, files, changed_lines, tier, committed=False, receipt=None,
-                      worktree_receipt=None, fix_capped=False, runs=None):
+                      worktree_receipt=None, runs=None):
     runs = runs or tier
     # `tier:` names the panel that runs, never the ladder's own answer: the statusline reads this
     # line, and a number nothing is going to launch is a number the reader acts on wrongly. The
@@ -5968,14 +6328,9 @@ def assert_suggestion(lines, files, changed_lines, tier, committed=False, receip
         offset += 1
     else:
         assert not any("is the owner's to start" in line for line in lines), lines
-    if fix_capped:
-        run = receipt or worktree_receipt
-        assert lines[offset] == (
-            f"work over review {run}, so {tier} regardless of what it touches"
-        ), lines
-        offset += 1
-    else:
-        assert not any(line.startswith("work over review ") for line in lines), lines
+    # A receipt never moves the tier any more: the flow gate's per-commit ticket is what carries
+    # post-review work, so suggest prices every delta by the size ladder alone.
+    assert not any(line.startswith("work over review ") for line in lines), lines
     if receipt:
         assert lines[offset] == (
             f"unreviewed delta vs review {receipt}; staged content is compared with the same "
@@ -6205,8 +6560,8 @@ review_found(receipt_run_id, confirmed=2)
 subprocess.run(["git", "-C", str(receipt_suggest), "reset", "-q", "--soft", "HEAD^"],
                check=True, env=suggest_env)
 (receipt_suggest / "tracked.txt").write_text("changed\n")
-# The reviewed commit was rewound with its content left staged, so HEAD is no longer where the panel
-# stood and this is not a follow-up delta: the cap does not apply and the ordinary rules price it.
+# The reviewed commit was rewound with its content left staged: what the receipt names is no longer
+# HEAD, and the delta is measured against the tree the panel read rather than against HEAD.
 assert_suggestion(
     suggest(receipt_suggest), 1, 2, "T0", receipt=receipt_run_id,
 )
@@ -6277,14 +6632,13 @@ subprocess.run(["git", "-C", str(wt_receipt_suggest), "add", "staged-after.txt"]
 (wt_receipt_suggest / "staged-after.txt").unlink()
 assert_suggestion(
     suggest(wt_receipt_suggest), 1, 2, "T0", worktree_receipt="worktree-fixture",
-    fix_capped=True,
 )
 
-# The escalation that made one review become three: 30 lines inside a core measurement tool is a
-# fresh T2 by the ordinary rules, and as this review's own fixes it is a T0.
+# Work inside just-reviewed code, over a review that found something and while HEAD still stands
+# where the panel stood: the shape that used to be priced by a tolerance of its own, and is now the
+# size ladder's like anything else — one line inside a core measurement script is the T2 that
+# script's own floor prices it at, not the T0 a receipt beside it used to buy.
 fix_core_suggest = make_suggest_repo("suggest-fix-core", ("bin/review-bench",))
-# The cap holds only while the delta is no larger than the diff the panel read, so the reviewed
-# commit has to be one of this repository's own, with a parent and enough lines in it.
 (fix_core_suggest / "bin" / "review-bench").write_text("reviewed\n" * 40)
 subprocess.run(["git", "-C", str(fix_core_suggest), "commit", "-aqm", "reviewed"],
                check=True, env=suggest_env)
@@ -6299,83 +6653,10 @@ fix_core_sha, fix_core_tree = (subprocess.run(
 review_found("fix-core-fixture", confirmed=1)
 (fix_core_suggest / "bin" / "review-bench").write_text("reviewed\n" * 40 + "fix\n")
 assert_suggestion(
-    suggest(fix_core_suggest), 1, 1, "T0", receipt="fix-core-fixture", fix_capped=True,
+    suggest(fix_core_suggest), 1, 1, "T2", receipt="fix-core-fixture",
 )
 
-# A small new path immediately after a large reviewed commit is not evidence that the review
-# provoked it. The receipt may cap only work that overlaps what the panel read.
-unrelated_suggest = make_suggest_repo("suggest-unrelated-fix")
-(unrelated_suggest / "tracked.txt").write_text("reviewed\n" * 250)
-subprocess.run(["git", "-C", str(unrelated_suggest), "commit", "-aqm", "reviewed"],
-               check=True, env=suggest_env)
-unrelated_sha, unrelated_tree = (subprocess.run(
-    ["git", "-C", str(unrelated_suggest), "rev-parse", ref],
-    check=True, capture_output=True, text=True, env=suggest_env,
-).stdout.strip() for ref in ("HEAD", "HEAD^{tree}"))
-(receipt_dir / rb.receipt_file_name(unrelated_suggest)).write_text(json.dumps({
-    "repo": str(unrelated_suggest), "tree": unrelated_tree, "commit": unrelated_sha,
-    "run_id": "unrelated-fixture", "ts": "2026-07-27T00:00:00+00:00", "errored": 0,
-}) + "\n")
-review_found("unrelated-fixture", confirmed=1)
-(unrelated_suggest / "tests").mkdir()
-(unrelated_suggest / "tests" / "new.sh").write_text("new\n")
-assert_suggestion(
-    suggest(unrelated_suggest), 1, 1, "T1", receipt="unrelated-fixture",
-)
-
-# Nor is it follow-up once anything has been committed since: the panel stood on HEAD, and a receipt
-# left behind must not cheapen later work — including work on another branch — just by sitting there.
-subprocess.run(["git", "-C", str(fix_core_suggest), "commit", "-aqm", "moved on"],
-               check=True, env=suggest_env)
-(fix_core_suggest / "bin" / "review-bench").write_text("reviewed\n" * 40 + "fix\n" * 2)
-assert_suggestion(
-    suggest(fix_core_suggest), 1, 2, "T2", receipt="fix-core-fixture",
-)
-subprocess.run(["git", "-C", str(fix_core_suggest), "reset", "-q", "--hard", "HEAD^"],
-               check=True, env=suggest_env)
-
-# Once more has been written than the panel read, this is not that review's follow-up any more and
-# the cap lets go — otherwise a receipt nothing ever restamps prices the whole repository forever.
-(fix_core_suggest / "bin" / "review-bench").write_text("fresh\n" * 300)
-assert_suggestion(
-    suggest(fix_core_suggest), 1, 340, "T2", receipt="fix-core-fixture",
-)
-
-# A review that found nothing provokes no fixes and is never restamped, so capping work over it
-# would put a ceiling on the repository that never lifts: 201 fresh lines in a measurement tool
-# would come out T1 forever instead of the T2 they earn.
-clean_review_suggest = make_suggest_repo("suggest-clean-review", ("bin/review-bench",))
-clean_review_tree = subprocess.run(
-    ["git", "-C", str(clean_review_suggest), "rev-parse", "HEAD^{tree}"],
-    check=True, capture_output=True, text=True, env=suggest_env,
-).stdout.strip()
-(receipt_dir / rb.receipt_file_name(clean_review_suggest)).write_text(json.dumps({
-    "repo": str(clean_review_suggest), "tree": clean_review_tree, "commit": receipt_sha,
-    "run_id": "clean-review-fixture", "ts": "2026-07-27T00:00:00+00:00", "errored": 0,
-}) + "\n")
-(clean_review_suggest / "bin" / "review-bench").write_text("line\n" * 200)
-assert_suggestion(
-    suggest(clean_review_suggest), 1, 201, "T2", receipt="clean-review-fixture",
-)
-
-# A manual stamp is a declaration that the tree was looked at, not a review that found things, so
-# what lands after it is fresh work and earns its tier the ordinary way.
-stamp_suggest = make_suggest_repo("suggest-after-stamp", ("bin/review-bench",))
-stamp_tree = subprocess.run(
-    ["git", "-C", str(stamp_suggest), "rev-parse", "HEAD^{tree}"],
-    check=True, capture_output=True, text=True, env=suggest_env,
-).stdout.strip()
-(receipt_dir / rb.receipt_file_name(stamp_suggest)).write_text(json.dumps({
-    "repo": str(stamp_suggest), "tree": stamp_tree, "commit": receipt_sha,
-    "run_id": "stamped-20260728T000000Z", "ts": "2026-07-27T00:00:00+00:00", "errored": 0,
-}) + "\n")
-(stamp_suggest / "bin" / "review-bench").write_text("line\n" * 30)
-assert_suggestion(
-    suggest(stamp_suggest), 1, 31, "T2", receipt="stamped-20260728T000000Z",
-)
-
-# A delta that outgrew what T1 covers still stays inside the two tiers a review's follow-up can
-# reach: T1, never the T2 the ordinary rules would price 200 lines at.
+# And a large delta over the same shape of receipt is the T2 its 250 lines earn.
 fix_big_suggest = make_suggest_repo("suggest-fix-big")
 (fix_big_suggest / "tracked.txt").write_text("reviewed\n" * 250)
 subprocess.run(["git", "-C", str(fix_big_suggest), "commit", "-aqm", "reviewed"],
@@ -6391,7 +6672,7 @@ fix_big_sha, fix_big_tree = (subprocess.run(
 review_found("fix-big-fixture", confirmed=1)
 (fix_big_suggest / "tracked.txt").write_text("reviewed\n" * 100 + "fix\n" * 100)
 assert_suggestion(
-    suggest(fix_big_suggest), 1, 250, "T1", receipt="fix-big-fixture", fix_capped=True,
+    suggest(fix_big_suggest), 1, 250, "T2", receipt="fix-big-fixture",
 )
 
 # A snapshot holds untracked content too, because that is how review-bench builds one. Asking the
@@ -6427,7 +6708,6 @@ assert suggest(wt_untracked_suggest) == [
 (wt_untracked_suggest / "extra.txt").write_text("line\n" * 40 + "new\n")
 assert_suggestion(
     suggest(wt_untracked_suggest), 1, 1, "T0", worktree_receipt="untracked-fixture",
-    fix_capped=True,
 )
 
 # A scoped review answers for a staged commit in a shared checkout. The commit contains the index
@@ -6459,8 +6739,8 @@ assert scoped_foreign_lines[0] == "changed files: 3", scoped_foreign_lines
 assert any(line.startswith("work over review scoped-fixture,") for line in scoped_foreign_lines), \
     scoped_foreign_lines
 
-# A fix on top of the reviewed scope is that review's own follow-up, by the same rule the
-# repository's receipt gets — and only once the panel behind it is known to have found something.
+# A fix on top of the reviewed scope is still covered by that review — but only once the panel
+# behind it is known to have found something.
 (scoped_suggest / "mine.txt").write_text("reviewed\n" * 12 + "fix\n")
 subprocess.run(["git", "-C", str(scoped_suggest), "add", "mine.txt"], check=True, env=suggest_env)
 assert not any(line.startswith("work over review ") for line in suggest(scoped_suggest)), \
@@ -7044,7 +7324,9 @@ assert lens_corpus and all(
 ), lens_corpus
 # The tier alone names a panel, and these severities were awarded by another methodology.
 lens_report_head = rb.report_lines(lens_run_dir, lens_meta)[0]
-assert lens_report_head.startswith("T1 · lens edge-cases"), lens_report_head
+assert lens_report_head.startswith(
+    "review-bench panel · T1 · lens edge-cases"
+), lens_report_head
 # The panel is narrower than the tier beside it, and the report is the surface that says so.
 assert f"−{len(lens_meta['lens_panel_dropped'])} cell(s)" in lens_report_head, lens_report_head
 assert "lens" not in rb.report_lines(plain_lens_run_dir, plain_lens_meta)[0], \
@@ -7364,10 +7646,18 @@ rb.write_jsonl(merged_verdicts, [
 ])
 with contextlib.redirect_stdout(io.StringIO()):
     assert rb.cmd_record(argparse.Namespace(
-        run_id=merged_run_dir.name, verdicts=str(merged_verdicts), no_corpus=False,
+        run_id=merged_run_dir.name, verdicts=str(merged_verdicts), no_corpus=False, bench=True,
     )) == 0
 assert {path.name: path.read_bytes() for path in merged_receipt_dir.iterdir()} \
     == merged_receipts_before
+# One panel over several repositories is a different reading of the same numbers, and the line
+# that names the run is where the reader is told which one they are holding.
+merged_report_meta = json.loads((merged_run_dir / "meta.json").read_text())
+merged_report_head = rb.report_lines(merged_run_dir, merged_report_meta)[0]
+assert merged_report_head.startswith(
+    f"review-bench merged panel · {len(merged_report_meta['repos'])} repos · "
+), merged_report_head
+assert len(merged_report_meta["repos"]) == 2, merged_report_meta["repos"]
 # A merged snapshot is no more a durable corpus commit than a single-repository one.
 assert not (merged_state / "reviews.jsonl").exists()
 
@@ -7639,10 +7929,21 @@ PY
 
 report_output=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" report report-adjudicated) \
   || fail "adjudicated report failed"
-expected_report=$'REVIEW-REPORT-BEGIN\nT2 · 5.5 min wall · slowest completed: Sol high 2 min\nconfirmed 1:  P1 1\nrejected:     1 duplicate  ~400 tok\n              2 false      ~3k tok\nfalse by:     Kimi K3 ×1 · Sol high ×1\nverifier:     off — 2 finding(s) unchecked\nerrored:      Opus medium (exit 2)\ntimeout:      Gemini 3.6 Flash medium skill\nmismatch:     Gemini 3.5 Flash low skill\nREVIEW-REPORT-END'
+report_frame_header='===================== review ====================='
+report_frame_footer='=================================================='
+expected_report="$report_frame_header"$'\nreview-bench panel · T2 · 5.5 min wall · slowest completed: sol-high 2 min\nconfirmed 1:  P1 1\nrejected:     1 duplicate  ~400 tok\n              2 false      ~3k tok\nfalse by:     kimi ×1 · sol-high ×1\nverifier:     off — 2 finding(s) unchecked\ncells:        sol-high 2 · kimi 2\nerrored:      opus-med (exit 2)\ntimeout:      gem-flash36\nmismatch:     gem-flash35-low\n'"$report_frame_footer"
 assert test "$report_output" = "$expected_report"
+# The frame is what the reader and every consumer of this block see first: a word centered in '='
+# to exactly 50 characters, and a footer of exactly 50 more.
+assert test "${#report_frame_header}" -eq 50
+assert test "${#report_frame_footer}" -eq 50
+assert grep -qE '^=+ [a-z]+ =+$' <<<"$(head -1 <<<"$report_output")"
+assert grep -qE '^={10,}$' <<<"$(tail -1 <<<"$report_output")"
+# The header must not read as the footer, or a consumer closing the block on its end shape closes
+# it on the line that opens it.
+assert test "$(grep -cE '^={10,}$' <<<"$report_output")" = "1"
 assert contains "$report_output" $'rejected:     1 duplicate  ~400 tok\n              2 false      ~3k tok'
-assert contains "$report_output" $'false by:     Kimi K3 ×1 · Sol high ×1\nverifier:     off — 2 finding(s) unchecked\nerrored:      Opus medium (exit 2)\ntimeout:      Gemini 3.6 Flash medium skill\nmismatch:     Gemini 3.5 Flash low skill'
+assert contains "$report_output" $'false by:     kimi ×1 · sol-high ×1\nverifier:     off — 2 finding(s) unchecked\ncells:        sol-high 2 · kimi 2\nerrored:      opus-med (exit 2)\ntimeout:      gem-flash36\nmismatch:     gem-flash35-low'
 last_report=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" report --last) \
   || fail "last report failed"
 assert test "$last_report" = "$expected_report"
@@ -7650,13 +7951,44 @@ worktree_report=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" report report-worktree
   || fail "worktree report failed"
 expected_worktree_report=$'REVIEW-TRIAGE-PENDING report-worktree · 3 finding(s) to triage · 1 cell(s) did not complete\nreport with: review-bench record report-worktree --no-corpus --verdicts /tmp/review-bench-report-worktree-verdicts.jsonl'
 assert test "$worktree_report" = "$expected_worktree_report"
-worktree_recorded=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" record report-worktree \
+# Every commit-point review is a worktree run, and the plain command is shut to all of them: the
+# corpus is a benchmark instrument with a two-judge contract, and a fix round's own triage is not
+# what it measures. The refusal happens before anything is written.
+worktree_refused_rc=0
+worktree_refused=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" record report-worktree \
+  --verdicts "$WORK/report-worktree-verdicts.jsonl" 2>&1) || worktree_refused_rc=$?
+assert test "$worktree_refused_rc" -eq 2
+assert contains "$worktree_refused" "a commit-point review never enters the corpus"
+assert contains "$worktree_refused" "review-bench record report-worktree --no-corpus"
+assert contains "$worktree_refused" "--bench"
+# No worktree run reaches the corpus with --bench either — the flag buys stored verdicts. A
+# refusal offering a corpus row sends the reader hunting for one that is never written.
+assert contains "$worktree_refused" "no corpus row is written either way"
+assert contains "$worktree_refused" "verdicts.jsonl"
+assert test ! -e "$REPORT_SD/benches/report-worktree/verdicts.jsonl"
+# And --bench is that opt-in and nothing else: on a durable run it would buy the plain command's
+# own behaviour while the help it was read in promises no corpus row.
+durable_bench_rc=0
+durable_bench=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" record report-adjudicated --bench \
+  --verdicts "$WORK/report-worktree-verdicts.jsonl" 2>&1) || durable_bench_rc=$?
+assert test "$durable_bench_rc" -eq 2
+assert contains "$durable_bench" "worktree run"
+assert contains "$durable_bench" "durable run"
+assert test ! -e "$REPORT_SD/reviews.jsonl"
+# The same promise on --help, which is where a reader meets the flag before any refusal.
+bench_help=$("$SCRIPT" record --help) || fail "record --help failed"
+assert contains "$bench_help" "verdicts.jsonl"
+assert contains "$bench_help" "no corpus row either way"
+# The benchmark opt-in, named on purpose: behind it a worktree run stores its verdicts and still
+# writes no corpus row.
+worktree_recorded=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" record report-worktree --bench \
   --verdicts "$WORK/report-worktree-verdicts.jsonl") || fail "worktree record failed"
 assert contains "$worktree_recorded" "corpus skipped"
-assert contains "$worktree_recorded" "REVIEW-REPORT-BEGIN"
-assert contains "$worktree_recorded" "REVIEW-REPORT-END"
+assert test -e "$REPORT_SD/benches/report-worktree/verdicts.jsonl"
+assert contains "$worktree_recorded" "$report_frame_header"
+assert contains "$worktree_recorded" "$report_frame_footer"
 assert test ! -e "$REPORT_SD/reviews.jsonl"
-worktree_recorded_again=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" record report-worktree \
+worktree_recorded_again=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" record report-worktree --bench \
   --verdicts "$WORK/report-worktree-verdicts.jsonl") || fail "worktree record replay failed"
 assert contains "$worktree_recorded_again" "corpus skipped"
 worktree_listing=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" list)
@@ -8480,6 +8812,10 @@ leg_conflict="$("$SCRIPT" run 143fc2f --leg --raters oc-kimik3 2>&1 || true)"
 assert contains "$leg_conflict" "not allowed with argument --leg"
 assert contains "$run_help" "--lens"
 assert contains "$review_help" "--lens"
+# The one escape from the commit-flow door is the prefix the flow gate verifies, never a flag of
+# this tool's own: a flag would be one the caller grants itself, checked by nobody.
+assert test "$(grep -c 'egor-asked' <<<"$review_help")" -eq 0
+assert test "$(grep -c 'egor.asked' "$SCRIPT")" -eq 0
 
 # --- lens CLI: the registry as the reader sees it ---------------------------------------------
 LENS_CLI_DIR="$WORK/lens-cli"
@@ -8573,8 +8909,11 @@ assert contains "$tiers_table" \
 assert test "$(grep -Ec '^  (eco \\(default\\)|max):.*agy-flash35-low-skill' <<<"$tiers_table")" -eq 0
 owner_table="$("$SCRIPT" tiers --table 2>&1)"
 assert contains "$owner_table" "T1 max"
-assert contains "$owner_table" "kimi x2, grok-low x2, dsv4flash x2"
-assert contains "$owner_table" "kimi x3, grok-low x3, dsv4flash x3"
+assert contains "$owner_table" "kimi x2, grok x2, deepseek x2"
+assert contains "$owner_table" "kimi x3, grok x3, deepseek x3"
+assert contains "$owner_table" "gem-pro-high, gem-flash35-med x2, gem-flash35-high, gem-flash36"
+assert contains "$owner_table" "sol-low, sol-low-bare"
+assert contains "$owner_table" "opus-med"
 assert contains "$owner_table" "cover"
 assert contains "$owner_table" "agy-flash35-low-skill:"
 # T0's --max buys three extra OpenCode passes over its eco, so the owner-facing table owes a
@@ -8637,7 +8976,7 @@ assert contains "$gate_pending" "record 20260731T000000Z-gatefresh --no-corpus"
 # friction that got the pass skipped outright.
 gate_reported=$(WORKER_STATS_DIR="$GATE_SD" "$SCRIPT" record 20260731T000000Z-gatefresh \
   --no-corpus) || fail "no-corpus record without verdicts failed"
-assert contains "$gate_reported" "REVIEW-REPORT-BEGIN"
+assert contains "$gate_reported" "$report_frame_header"
 assert contains "$gate_reported" "confirmed 0:"
 assert test -e "$GATE_SD/benches/20260731T000000Z-gatefresh/reported.json"
 # --no-corpus still leaves the run pending to `list`: only the receipt the gate reads is written.
@@ -8843,7 +9182,7 @@ if test -x "$TRIAGE_HOOK"; then
     '{tool_name:"Bash",tool_response:{stdout:$output}}' | "$TRIAGE_HOOK")"
   assert test -z "$triage_hook_fixture"
   triage_hook_report="$(jq -nc \
-    --arg output $'REVIEW-REPORT-BEGIN\nconfirmed 0:\nREVIEW-REPORT-END' \
+    --arg output "$report_frame_header"$'\nconfirmed 0:\n'"$report_frame_footer" \
     '{tool_name:"Bash",tool_response:{stdout:$output}}' | "$TRIAGE_HOOK")"
   assert test -z "$triage_hook_report"
 else
@@ -8895,20 +9234,27 @@ REPORT_HOOK="${REVIEW_REPORT_HOOK:-"$ROOT/../claude-setup/hooks/review-report-nu
 if test -x "$REPORT_HOOK"; then
   for hook_tool in Bash Read; do
     hook_output="$(jq -nc --arg tool "$hook_tool" \
-      --arg output $'before\nREVIEW-REPORT-BEGIN\nT1 report\nREVIEW-REPORT-END\nafter' \
+      --arg output $'before\n'"$report_frame_header"$'\nT1 report\n'"$report_frame_footer"$'\nafter' \
       '{tool_name:$tool,tool_response:{stdout:$output}}' | "$REPORT_HOOK")"
     assert contains "$(jq -r '.hookSpecificOutput.additionalContext' <<<"$hook_output")" \
       "verbatim as a fenced code block"
   done
-  # A run read back with `tail -N` can land one line short of the opening marker, and a hook
-  # keyed on the pair goes quiet on exactly the output that most needs the nudge.
+  # A run read back with `head -N` can stop short of the closing rule, and the header alone still
+  # owes the nudge: the report is in that output either way.
   hook_truncated="$(jq -nc \
-    --arg output $'T1 report\nfindings: none\nREVIEW-REPORT-END' \
+    --arg output "$report_frame_header"$'\nT1 report\nfindings: none' \
     '{tool_name:"Bash",tool_response:{stdout:$output}}' | "$REPORT_HOOK")"
   assert contains "$(jq -r '.hookSpecificOutput.additionalContext' <<<"$hook_truncated")" \
     "re-read the block"
-  # The marker has to be the whole line: a report is not what a sentence mentioning one is.
-  hook_inline="$(jq -nc --arg output 'talking about REVIEW-REPORT-END in passing' \
+  # The other side of the same key: a window that cut the header is silent, because the closing
+  # rule alone belongs to every framed report and to any `====` divider a Read scrolls past. That
+  # miss costs one nudge on output the model still holds; the alternative fired on all of them.
+  hook_headerless="$(jq -nc \
+    --arg output $'T1 report\nfindings: none\n'"$report_frame_footer" \
+    '{tool_name:"Bash",tool_response:{stdout:$output}}' | "$REPORT_HOOK")"
+  assert test -z "$hook_headerless"
+  # The header has to be the whole line: a report is not what a sentence mentioning one is.
+  hook_inline="$(jq -nc --arg output "talking about $report_frame_header in passing" \
     '{tool_name:"Bash",tool_response:{stdout:$output}}' | "$REPORT_HOOK")"
   assert test -z "$hook_inline"
   hook_without_output="$(jq -n --rawfile source "$SCRIPT" \
@@ -8918,4 +9264,4 @@ else
   printf 'SKIP: review report hook behavior (%s is unavailable)\n' "$REPORT_HOOK"
 fi
 
-printf 'PASS: %s assertions; canonical review tiers sharing one OpenCode/Gemini floor with no retired cell in them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative suggestions with missing-object fallback, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account schedulable only as the pool'"'"'s reserve and never as a roster tail, and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, carried from there into the corpus row, the report header and a receipt of the lens'"'"'s own while every lens row stays out of the canonical defect list, the frontier denominators, the composition corpus and the default leaderboard, worktree runs narrowed to named paths whose snapshot holds only those paths, is deterministic per path set, spelled against the directory the caller stands in and lexically canonicalized so a `..` can neither walk out of the repository nor split one file into two scopes, carries its scope as commit trailers a failed read refuses rather than widens, so a rerun by sha stays inside it, refuses a commitish, a pathspec matching nothing and a scope holding no change — the refusal before any snapshot object is written — and writes only a receipt of its own — leaving the repository'"'"'s receipt untouched byte for byte, the suggest baseline whole and the stamp hook with nothing to read, a lens narrowed by the same paths naming a combined receipt of its own that leaves the plain, pure-lens and pure-scope receipts byte for byte and survives a rerun by sha with both selectors intact, a day-one repository reviewed end to end — its root commit sealed and cloned, given a deterministic empty base commit inside that clone so the vendor skill diffs its whole content, measured in lines and paths against the empty tree rather than as an unmeasurable diff, so a correction inside it prices as follow-up, and closed by the real stamp hook in both shapes while never-reviewed code riding along still refuses it, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask, the lookup scoped to the repository so another chat cannot answer for it, both review hooks keyed so exactly one fires, and that receipt carrying the confirmed-severity tally of the very verdicts it reported — recomputed from stored verdicts where a run was adjudicated the durable way, absent where nobody triaged it, and printed on the repository receipt the commit gate prices its next round on — taken from the stored verdicts wherever a run has them so a re-adjudication cannot be priced on superseded counts, scoped to the member a merged panel'"'"'s receipt belongs to so one repository never escalates on another'"'"'s defects, and answered as no tally at all rather than as an exception when the files behind it cannot be read, and a merged review of several repositories read by one panel out of a single workspace holding each repository under its own prefix — deterministic, self-contained once built and pruned with the run it belongs to — whose findings and adjudication handoff name the repository each belongs to, whose scopes and progress are per repository, and which stamps EVERY repository it read with that repository'"'"'s own receipt so none of their commit gates blocks on a review that covered it, while refusing a commitish, a repository named twice, a clean tree, a missing repository and its own workspace as a tree to seal\n' "$asserts"
+printf 'PASS: %s assertions; canonical review tiers sharing one OpenCode/Gemini floor with no retired cell in them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative suggestions with missing-object fallback, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account schedulable only as the pool'"'"'s reserve and never as a roster tail, and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, carried from there into the corpus row, the report header and a receipt of the lens'"'"'s own while every lens row stays out of the canonical defect list, the frontier denominators, the composition corpus and the default leaderboard, worktree runs narrowed to named paths whose snapshot holds only those paths, is deterministic per path set, spelled against the directory the caller stands in and lexically canonicalized so a `..` can neither walk out of the repository nor split one file into two scopes, carries its scope as commit trailers a failed read refuses rather than widens, so a rerun by sha stays inside it, refuses a commitish, a pathspec matching nothing and a scope holding no change — the refusal before any snapshot object is written — and writes only a receipt of its own — leaving the repository'"'"'s receipt untouched byte for byte, the suggest baseline whole and the stamp hook with nothing to read, a lens narrowed by the same paths naming a combined receipt of its own that leaves the plain, pure-lens and pure-scope receipts byte for byte and survives a rerun by sha with both selectors intact, a day-one repository reviewed end to end — its root commit sealed and cloned, given a deterministic empty base commit inside that clone so the vendor skill diffs its whole content, measured in lines and paths against the empty tree rather than as an unmeasurable diff, so a correction inside it prices by the size ladder like any other change — no receipt moves a tier, and closed by the real stamp hook in both shapes while never-reviewed code riding along still refuses it, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask, the lookup scoped to the repository so another chat cannot answer for it, both review hooks keyed so exactly one fires, and that receipt carrying the confirmed-severity tally of the very verdicts it reported — recomputed from stored verdicts where a run was adjudicated the durable way, absent where nobody triaged it, and printed on the repository receipt the commit gate prices its next round on — taken from the stored verdicts wherever a run has them so a re-adjudication cannot be priced on superseded counts, scoped to the member a merged panel'"'"'s receipt belongs to so one repository never escalates on another'"'"'s defects, and answered as no tally at all rather than as an exception when the files behind it cannot be read, and a merged review of several repositories read by one panel out of a single workspace holding each repository under its own prefix — deterministic, self-contained once built and pruned with the run it belongs to — whose findings and adjudication handoff name the repository each belongs to, whose scopes and progress are per repository, and which stamps EVERY repository it read with that repository'"'"'s own receipt so none of their commit gates blocks on a review that covered it, while refusing a commitish, a repository named twice, a clean tree, a missing repository and its own workspace as a tree to seal, and the corpus closed to every commit-point review — the plain record command refused outright with the reporting one named in its place, the refusal and the flag'"'"'s own help promising only what --bench delivers (this run'"'"'s verdicts stored, never a corpus row), that flag refused in turn on a durable run it would buy the plain command'"'"'s own behaviour on, and the handoff printing that one command alone — with the block those reviews are read in framed to a fixed width no over-long word can flatten, opened by a line naming the panel that produced it, and carrying a cell row that counts every completed cell under the same names its neighbouring rows use — the ones that found nothing included, and a count missing from an older summary costing its own cell a number rather than the whole block, every one of those names and the tiers table'"'"'s own rendered by one derivation over the pool of cells the tiers can launch — version digits, effort and the bare mark each appearing only where two pool cells would otherwise collide, Claude and Codex effort always spelled because it is a launch parameter, the word skill never rendered at all, a family gaining a second variant IN THE POOL renaming itself with no list to edit, a cell only a stored run holds named against that pool and never over it — the arrival carrying whatever separates it, its report leaving the tiers table byte for byte — and the machine specs commands are spelled in left untouched\n' "$asserts"

@@ -132,8 +132,24 @@ GEMINI_VERIFIER_RATER = {"model": GEMINI_VERIFIER, "effort": GEMINI_VERIFIER_EFF
 # filter. agy joined on 2026-08-05: on the agy leg's own adjudicated claims deepseek-v4-flash
 # kept 6 of 6 real defects and dropped 11 of 24 false ones with nothing left unverified.
 VERIFIED_SIDES = ("opencode", "agy")
-REPORT_BEGIN = "REVIEW-REPORT-BEGIN"
-REPORT_END = "REVIEW-REPORT-END"
+REPORT_FRAME_WIDTH = 50
+REPORT_FRAME_WORD = "review"
+
+
+def report_frame_header(word, width=REPORT_FRAME_WIDTH):
+    """The word centered in '=' to exactly `width`, one space each side. Its consumers key on the
+    shape (`^=+ [a-z]+ =+$`) rather than on the wording, so the same frame carries other kinds of
+    report elsewhere without any of them agreeing on a marker string. A word with no room left
+    for padding widens the line past `width` instead of losing it: an edge without its '=' stops
+    matching that shape, and the block it opens stops being found at all.
+    """
+    fill = max(2, width - len(word) - 2)
+    left = fill // 2
+    return f"{'=' * left} {word} {'=' * (fill - left)}"
+
+
+REPORT_BEGIN = report_frame_header(REPORT_FRAME_WORD)
+REPORT_END = "=" * REPORT_FRAME_WIDTH
 # A run without verdicts has no report to print: the triage that decides what to fix is what
 # makes one. It gets this line instead, and the hooks key on it to demand the missing pass —
 # the marked block used to be printed either way, and a list of cells was what reached Egor.
@@ -758,20 +774,35 @@ REPO_FLAG_HELP = (
 VERDICTS = {"confirmed", "false_positive", "duplicate"}
 WEIGHTS = {"P1": 5, "P2": 2, "P3": 1}
 ADJUDICATION_TOK_ESTIMATE = {"duplicate": 400, "false_positive": 1500}
-MODEL_DISPLAY_NAMES = {
-    "agy-pro": "Gemini 3.1 Pro",
-    "agy-flash35": "Gemini 3.5 Flash",
-    "agy-flash36": "Gemini 3.6 Flash",
-    "oc-kimik3": "Kimi K3",
-    "oc-grok45": "Grok 4.5",
-    "oc-dsv4flash": "DeepSeek V4 Flash",
-    "sol": "Sol",
-    "opus": "Opus",
-    "sonnet": "Sonnet",
-    "haiku": "Haiku",
-    "fable": "Fable",
-    "grok": "Grok",
+# One spelling for every surface a human reads — report frames, the tiers table, the health
+# table — so the same cell is recognisable across them without translating. Each name carries the
+# family and then only what the pool it is read in needs to tell it from its neighbours: version
+# digits when two versions of the family run, effort when the family runs more than one, `-bare`
+# when the family runs both with and without the vendor's review skill. Nothing is hand-listed —
+# a second variant entering a tier renames its family by itself. Machine specs (`--raters`,
+# commands, corpus rows) keep the full ids: that grammar is parsed, and only this is read.
+SHORT_MODEL_NAMES = {
+    "agy-pro": ("gem-pro", ""),
+    "agy-flash35": ("gem-flash", "35"),
+    "agy-flash36": ("gem-flash", "36"),
+    "oc-kimik3": ("kimi", "k3"),
+    "oc-kimik27code": ("kimi", "k27code"),
+    "oc-grok45": ("grok", "45"),
+    "oc-dsv4flash": ("deepseek", "v4flash"),
+    "sol": ("sol", ""),
+    "opus": ("opus", ""),
+    "sonnet": ("sonnet", ""),
+    "haiku": ("haiku", ""),
+    "fable": ("fable", ""),
+    "grok": ("grok", ""),
 }
+SHORT_EFFORT_NAMES = {"medium": "med"}
+# Effort is a launch parameter on these two sides — the same cell is run at another effort next
+# round — so it is spelled out even where this pool happens to hold only one. Everywhere else it
+# names a distinct cell in a fixed composition and appears only when it separates two of them.
+ALWAYS_EFFORT_SIDES = ("claude", "codex")
+_REVIEW_POOL_RATERS = None
+_DEFAULT_NAME_SCHEME = None
 RATER_RE = re.compile(
     r"^(sol|opus|sonnet|haiku|fable|grok|agy-pro|agy-flash35|agy-flash36"
     r"|oc-glm52|oc-glm51|oc-dsv4pro|oc-dsv4flash|oc-grok45|oc-qwen37max"
@@ -2213,26 +2244,181 @@ def counted_int(value):
     return value
 
 
-def human_cell_name(spec):
+def model_name_parts(model):
+    # A model outside the table still has to render: the vendor prefix is what the surrounding
+    # column or row already says, so dropping it leaves the part that identifies the model.
+    parts = SHORT_MODEL_NAMES.get(model)
+    if parts:
+        return parts
+    return str(model).removeprefix("oc-").removeprefix("agy-"), ""
+
+
+def cell_runs_skill(rater):
+    """The single axis `-bare` marks. Codex cells run the vendor's review skill unless `-bare`
+    opts out of it; every other side has to ask for it by name.
+
+    The mark is decided per family, not per family-and-effort: `sol-medium-bare` is the only
+    medium Codex cell in the pool, so an effort-scoped rule would drop its mark and leave it
+    reading as the skilled run standing next to `sol-low`.
+    """
+    if rater.get("side") == "codex":
+        return not rater.get("bare")
+    return bool(rater.get("skill"))
+
+
+def name_scheme(extra_raters=()):
+    """What a pool cell's name has to carry to stay apart from the other pool cells: which
+    families run two versions, which run more than one effort, and which run both with and
+    without the review skill. Read off the pool ALONE — a pool cell's spelling is the same on
+    every surface and in every report, so `grok` is one model wherever it is printed.
+
+    Cells a run holds that no tier can launch — a retired composition, another vendor's model —
+    do not enter that reading. They are named against it instead: `extra_raters` that collide
+    with a pool cell take on the components that separate them, and a collision that survives
+    every component keeps the machine spec, which is unambiguous by construction.
+    """
+    versions = defaultdict(set)
+    efforts = defaultdict(set)
+    skills = defaultdict(set)
+    for rater in review_pool_raters():
+        base, version = model_name_parts(rater["model"])
+        versions[base].add(version)
+        efforts[rater["model"]].add(rater.get("effort"))
+        skills[rater["model"]].add(cell_runs_skill(rater))
+    scheme = {
+        "versions": dict(versions), "efforts": dict(efforts), "skills": dict(skills),
+        "overrides": {},
+    }
+    pool_families = {rater_family(rater["spec"]) for rater in review_pool_raters()}
+    taken = {pool_cell_name(rater, scheme) for rater in review_pool_raters()}
+    overrides = {}
+    newcomers = {
+        rater_family(rater["spec"]): rater
+        for rater in extra_raters
+        if rater_family(rater["spec"]) not in pool_families
+    }
+    for family, rater in sorted(newcomers.items()):
+        for candidate in newcomer_names(rater, scheme):
+            if candidate not in taken:
+                break
+        else:
+            candidate = family
+        overrides[family] = candidate
+        taken.add(candidate)
+    scheme["overrides"] = overrides
+    return scheme
+
+
+def review_pool_raters():
+    """Every cell any tier can launch. It is the baseline a name is disambiguated against, so a
+    cell keeps one spelling across reports instead of changing with what a run happened to hold.
+    """
+    global _REVIEW_POOL_RATERS
+    if _REVIEW_POOL_RATERS is None:
+        _REVIEW_POOL_RATERS = [
+            rater
+            for tier in REVIEW_TIERS.values()
+            for key in ("cells", "cells_max")
+            for cell in tier[key]
+            for rater in parse_raters(cell)
+        ]
+    return _REVIEW_POOL_RATERS
+
+
+def default_name_scheme():
+    global _DEFAULT_NAME_SCHEME
+    if _DEFAULT_NAME_SCHEME is None:
+        _DEFAULT_NAME_SCHEME = name_scheme()
+    return _DEFAULT_NAME_SCHEME
+
+
+def compose_cell_name(rater, version=False, effort=False, mark=False):
+    base, digits = model_name_parts(rater["model"])
+    name = base + (digits if version else "")
+    level = rater.get("effort")
+    if level and effort:
+        name += f"-{SHORT_EFFORT_NAMES.get(level, level)}"
+    if mark:
+        name += "-skill" if cell_runs_skill(rater) else "-bare"
+    if rater.get("profile"):
+        name += f"-{rater['profile']}"
+    return name
+
+
+def pool_cell_name(rater, scheme):
+    """A cell spelled by what the pool needs to tell it from the other pool cells, and no more."""
+    base, _ = model_name_parts(rater["model"])
+    return compose_cell_name(
+        rater,
+        version=len(scheme["versions"].get(base, ())) > 1,
+        effort=(
+            rater.get("side") in ALWAYS_EFFORT_SIDES
+            or len(scheme["efforts"].get(rater["model"], ())) > 1
+        ),
+        # Only the skill-less side of a family that runs both carries a mark: the skilled run is
+        # what the family name has always meant on every surface that prints it.
+        mark=(
+            len(scheme["skills"].get(rater["model"], ())) > 1
+            and not cell_runs_skill(rater)
+        ),
+    )
+
+
+def newcomer_names(rater, scheme):
+    """The spellings an off-pool cell is offered, in order, each one carrying more than the last.
+    It starts at the pool's own spelling and adds only what a collision forces, so a cell no tier
+    can launch never costs a pool cell the name it has everywhere else.
+    """
+    base, _ = model_name_parts(rater["model"])
+    pool_style = pool_cell_name(rater, scheme)
+    yield pool_style
+    effort = (
+        rater.get("side") in ALWAYS_EFFORT_SIDES
+        or len(scheme["efforts"].get(rater["model"], ())) > 1
+    )
+    for flags in ((True, effort, False), (True, True, False), (True, True, True)):
+        candidate = compose_cell_name(rater, *flags)
+        if candidate != pool_style:
+            yield candidate
+
+
+def short_cell_name(rater, scheme=None):
+    """The one spelling of a parsed cell, for every surface a human reads."""
+    scheme = default_name_scheme() if scheme is None else scheme
+    override = scheme["overrides"].get(rater_family(rater.get("spec") or ""))
+    return override or pool_cell_name(rater, scheme)
+
+
+def human_cell_name(spec, scheme=None):
     family = rater_family(spec)
     try:
         rater = parse_rater(family)
     except ValueError:
         # The verifier chain names models that have no cell spelling — GEMINI_VERIFIER carries
         # no effort — and the report prints those beside cell names.
-        return MODEL_DISPLAY_NAMES.get(family) or family or str(spec)
-    name = MODEL_DISPLAY_NAMES.get(rater["model"])
-    if not name:
-        return family
-    if rater["effort"]:
-        name += f" {rater['effort']}"
-    if rater["skill"]:
-        name += " skill"
-    if rater["bare"]:
-        name += " bare"
-    if rater["profile"]:
-        name += f" {rater['profile']}"
-    return name
+        if not family:
+            return str(spec)
+        scheme = default_name_scheme() if scheme is None else scheme
+        base, version = model_name_parts(family)
+        return base + (version if len(scheme["versions"].get(base, ())) > 1 else "")
+    return short_cell_name(rater, scheme)
+
+
+def report_name_scheme(specs):
+    """The scheme a report's names are read in: the pool spelled as it always spells itself, plus
+    a name for whatever this run holds that no tier can launch — a retired or renamed cell has to
+    stand apart from the ones beside it without respelling any of them.
+    """
+    extra = []
+    for spec in specs:
+        family = rater_family(spec)
+        if not family:
+            continue
+        try:
+            extra.append(parse_rater(family))
+        except ValueError:
+            continue
+    return name_scheme(extra)
 
 
 def parse_iso_timestamp(value):
@@ -2418,7 +2604,7 @@ def aligned_report_lines(rows):
     ]
 
 
-def verifier_report_value(summary):
+def verifier_report_value(summary, scheme=None):
     """None only when the panel held no cell the verifier is allowed to touch. Anywhere else the
     line stays, including where no verifier ran: a silent line and a verified run read alike.
     """
@@ -2435,13 +2621,13 @@ def verifier_report_value(summary):
     audited = max(summary["verifier_audited"], judged)
     if len(by_model) > 1:
         names = " · ".join(
-            f"{human_cell_name(model)} {count}"
+            f"{human_cell_name(model, scheme)} {count}"
             for model, count in sorted(by_model.items(), key=lambda item: (-item[1], item[0]))
         )
     else:
         # The configured model whenever none answered: a walled verifier still owes the reader
         # the name of the model to look at, and it is the only name a pre-2026-08 run kept.
-        names = human_cell_name(next(iter(by_model), summary["verifier"]))
+        names = human_cell_name(next(iter(by_model), summary["verifier"]), scheme)
     if not audited:
         # Whether the verifier ran, not whether it rejected anything: a run recorded before the
         # tally existed keeps only its drop and wall totals, and reading a zero drop as "never
@@ -2466,6 +2652,11 @@ def verifier_report_value(summary):
 
 def report_lines(run_dir, meta, verdicts=None):
     summary = bench_summary(run_dir, meta, verdicts)
+    scheme = report_name_scheme([
+        *(row.get("rater") for row in summary["cells"]),
+        *summary["verifier_by_model"],
+        summary["verifier"],
+    ])
     completed = [
         row for row in summary["cells"]
         if row["status"] == "completed"
@@ -2482,7 +2673,7 @@ def report_lines(run_dir, meta, verdicts=None):
     if timed_completed:
         slowest = max(timed_completed, key=lambda row: row["duration_ms"])
         slowest_text = (
-            f"slowest completed: {human_cell_name(slowest.get('rater'))} "
+            f"slowest completed: {human_cell_name(slowest.get('rater'), scheme)} "
             f"{format_seconds(slowest['duration_ms'] / 1000)}"
         )
     elif completed:
@@ -2495,9 +2686,16 @@ def report_lines(run_dir, meta, verdicts=None):
     dropped = meta.get("lens_panel_dropped") or []
     if dropped:
         scope += f" (−{len(dropped)} cell(s) the lens dropped)"
-    lines = [
-        f"{scope} · {format_seconds(summary['wall_seconds'])} wall · {slowest_text}"
-    ]
+    # The frame around this block says only that it is a report, so the first line has to say
+    # whose: the reader who is handed one has no other way to tell a panel of raters from
+    # anything else that prints inside the same frame.
+    members = [entry for entry in meta.get("repos") or () if isinstance(entry, dict)]
+    kind = "review-bench merged panel" if members else "review-bench panel"
+    head = [kind]
+    if members:
+        head.append(f"{len(members)} repos")
+    head += [scope, f"{format_seconds(summary['wall_seconds'])} wall", slowest_text]
+    lines = [" · ".join(head)]
     errored = Counter()
     timed_out = Counter()
     mismatched = Counter()
@@ -2506,7 +2704,7 @@ def report_lines(run_dir, meta, verdicts=None):
         status = row["status"]
         if status == "completed":
             continue
-        name = human_cell_name(row.get("rater"))
+        name = human_cell_name(row.get("rater"), scheme)
         if status == "not_run":
             not_run[name] += 1
         elif status == "timed_out":
@@ -2550,16 +2748,27 @@ def report_lines(run_dir, meta, verdicts=None):
             rows.append(("rejected:" if index == 0 else "", value))
     if summary["false_positive"] and summary["false_by"]:
         false_by = " · ".join(
-            f"{human_cell_name(rater)} ×{count}"
+            f"{human_cell_name(rater, scheme)} ×{count}"
             for rater, count in sorted(
                 summary["false_by"].items(),
-                key=lambda item: (-item[1], human_cell_name(item[0])),
+                key=lambda item: (-item[1], human_cell_name(item[0], scheme)),
             )
         )
         rows.append(("false by:", false_by))
-    verifier_value = verifier_report_value(summary)
+    verifier_value = verifier_report_value(summary, scheme)
     if verifier_value:
         rows.append(("verifier:", verifier_value))
+    # Zero-finding cells included: a cell that read the diff and found nothing is evidence, and
+    # left out it reads exactly like one that never ran — the errored row below is what says
+    # which cells produced nothing because they failed.
+    if completed:
+        rows.append((
+            "cells:",
+            " · ".join(
+                f"{human_cell_name(row.get('rater'), scheme)} {counted_int(row.get('findings'))}"
+                for row in completed
+            ),
+        ))
     if errored:
         rows.append((
             "errored:",
@@ -2924,8 +3133,9 @@ def health_lines(runs):
         lines += ["", "by account (failed/attempts)"]
         lines += aligned_report_lines(account_rows)
 
+    health_scheme = report_name_scheme(by_cell)
     worst = [
-        (human_cell_name(cell), health_tally(counts))
+        (human_cell_name(cell, health_scheme), health_tally(counts))
         for cell, counts in sorted(
             by_cell.items(), key=lambda item: -(sum(item[1].values()) - item[1]["ok"])
         )
@@ -5764,21 +5974,6 @@ def suggest_tier(paths, changed_lines, touched=()):
     return f"T{rank}"
 
 
-def compact_tier_cell(rater):
-    model = rater["model"]
-    effort = {"medium": "med"}.get(rater["effort"], rater["effort"] or "")
-    skill = "-skill" if rater["skill"] else ""
-    if rater["side"] == "opencode":
-        name = {"oc-kimik3": "kimi", "oc-grok45": "grok"}.get(model, model.removeprefix("oc-"))
-        return f"{name}-{effort}" if effort else name
-    if rater["side"] == "agy":
-        return f"{model.removeprefix('agy-')}-{effort}{skill}"
-    if rater["side"] == "codex":
-        bare = "-bare" if rater.get("bare") else ""
-        return f"{effort}{skill}{bare}"
-    return f"{model}-{effort}{skill}"
-
-
 def tier_table_vendor_cells(cells):
     grouped = {side: Counter() for side in ("opencode", "agy", "codex", "claude")}
     for cell in cells:
@@ -5789,8 +5984,7 @@ def tier_table_vendor_cells(cells):
     for side in ("opencode", "agy", "codex", "claude"):
         values = []
         for spec, count in grouped[side].items():
-            rater = parse_rater(spec)
-            label = compact_tier_cell(rater)
+            label = short_cell_name(parse_rater(spec))
             values.append(f"{label} x{count}" if count > 1 else label)
         columns.append(", ".join(values) or "—")
     return columns
@@ -5912,6 +6106,66 @@ def guard_tier_foreground(args, tier_name):
         )
 
 
+REVIEW_CYCLE_NAME = "review-cycle"
+REVIEW_CYCLE_ARMED_STAGES = ("armed1", "armed2")
+
+
+def review_cycle_session():
+    """The session component of a cycle file's name, sanitized the way the gate that writes the file
+    sanitizes it: the value goes straight into a filename, so anything a path could be built out of
+    disqualifies it and both sides fall back to the checkout-wide name.
+    """
+    session = os.environ.get("CLAUDE_CODE_SESSION_ID") or ""
+    if session in (".", "..") or re.search(r"[^A-Za-z0-9._-]", session):
+        return ""
+    return session
+
+
+def review_cycle_armed(repo):
+    """Whether the commit gate has an open cycle in `repo` for this session at a stage that
+    authorizes a panel. The file is the gate's state and is only ever read here — spending it
+    belongs to the commit that opened it, and a peek that consumed it would let one blocked commit
+    authorize nothing at all.
+    """
+    proc = subprocess.run(["git", "rev-parse", "--absolute-git-dir"],
+                          cwd=str(repo), capture_output=True, text=True)
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return False
+    session = review_cycle_session()
+    name = f"{REVIEW_CYCLE_NAME}-{session}" if session else REVIEW_CYCLE_NAME
+    try:
+        head = (Path(proc.stdout.strip()) / name).read_bytes()
+    except OSError:
+        return False
+    return head.split(b"\0", 1)[0].decode("utf-8", "replace") in REVIEW_CYCLE_ARMED_STAGES
+
+
+def guard_review_armed(args):
+    """A commit-point review runs when a commit asked for one, and mid-work panels are what this
+    closes: the gate that blocks the commit opens the cycle, and the cycle is the authorization.
+
+    A merged review is authorized by ANY of the repositories it names, because a cycle is opened by
+    a blocked commit and one commit is blocked in one repository — demanding a cycle in every named
+    repository would leave a merged panel unlaunchable by the very flow that asks for it.
+
+    Egor asking for a review by name is the other way in, and it is the prefix the flow gate already
+    knows: `REVIEW_ASKED=1` is taken at face value here because that gate checks the claim against
+    the session transcript before the command ever runs, and a second flag saying the same thing
+    would be one the caller grants itself unchecked.
+    """
+    if not getattr(args, "worktree", False) or os.environ.get("REVIEW_ASKED") == "1":
+        return
+    repos = [resolve_repo_arg(path) for path in repo_arg_paths(args)]
+    # A path that is no repository is a mistake the run itself names; refusing it here would answer
+    # a broken invocation with the wrong reason, and it launches no panel either way.
+    if any(repo is None for repo in repos) or any(review_cycle_armed(repo) for repo in repos):
+        return
+    raise ValueError(
+        "reviews are commit-triggered — attempt the `git commit` (the gate arms the panel), or "
+        "prefix with REVIEW_ASKED=1 when Egor asked for a review by name"
+    )
+
+
 def cmd_review(args):
     tier_name = getattr(args, "tier", None)
     use_max = bool(getattr(args, "max", False))
@@ -5919,6 +6173,7 @@ def cmd_review(args):
         raise ValueError("--max requires --tier")
     guard_tier_owner(tier_name, use_max)
     guard_tier_foreground(args, tier_name)
+    guard_review_armed(args)
     args.raters = ",".join(
         REVIEW_TIERS[tier_name]["cells_max" if use_max else "cells"]
     )
@@ -6110,8 +6365,8 @@ def scoped_review_vouching(repo, commit_paths=None, commit_all=False):
             return receipt
         if receipt["run_id"].startswith("stamped-"):
             continue
-        # Everything below is the repository receipt's own fix-delta rule, asked of the scoped
-        # review instead: a review that found something, and work no larger than the diff it read.
+        # What a review still answers for after work has landed on it: one that found something,
+        # and a delta no larger than the diff it read.
         _, confirmed, findings = review_outcome(repo, receipt)
         if not (findings > 0 if worktree else confirmed > 0):
             continue
@@ -6287,41 +6542,7 @@ def cmd_suggest(args):
             return 0
     changed_lines = sum(changes.values())
     tier_name = suggest_tier(changes, changed_lines, sources)
-    # A delta measured against a review that FOUND something is the work that review provoked:
-    # nothing else has happened since the panel ran on this very tree. Pricing it by the ordinary
-    # rules is the whole loop where one review becomes three — a correction inside just-reviewed
-    # code came out a fresh T2 because it touched a measurement tool. So it is priced by size alone
-    # and never above T1.
-    # Two bounds, and neither of them relies on the stamp hook firing, because it fires on one shape
-    # of commit only. A review that found nothing provoked no work, so a delta over it is not
-    # follow-up at all — capping those put a ceiling on the repository that never lifted, measured
-    # at 5002 fresh lines priced T1 where they earn T3. And once the delta is larger than the diff
-    # the panel actually read, more has been written than was reviewed, so it stops being follow-up
-    # too. A manual stamp is a declaration rather than a review, and never opens this.
-    fix_delta = False
-    if receipt and not receipt["run_id"].startswith("stamped-"):
-        outcome_worktree, outcome_confirmed, outcome_findings = review_outcome(repo, receipt)
-        if outcome_findings > 0 if outcome_worktree else outcome_confirmed > 0:
-            # Still standing where the panel stood: a worktree review was taken on top of HEAD, a
-            # commit review on HEAD itself. Once anything has been committed the cycle is over, and
-            # without this the receipt cheapened every later delta in the repository — including work
-            # on another branch — for as long as the file happened to sit there.
-            review_point = f"{receipt['commit']}^" if outcome_worktree else receipt["commit"]
-            reviewed_lines = reviewed_diff_lines(repo, receipt["commit"])
-            # A worktree review read this very tree, so anything written on it is follow-up;
-            # a commit review caps only work overlapping the paths the panel actually read —
-            # a new unrelated path right after a large commit is not evidence it was provoked.
-            fix_delta = (
-                bool(reviewed_lines) and changed_lines <= reviewed_lines
-                and same_commit(repo, "HEAD", review_point)
-                and (outcome_worktree
-                     or bool(set(changes) & reviewed_diff_paths(repo, receipt["commit"])))
-            )
-    if fix_delta:
-        # T0 by the ladder's own T0 rule, so raising T1's ceiling can never quietly send a larger
-        # delta to T0's two-minute panel; T1 for everything else.
-        tier_name = "T0" if size_tier(changes, changed_lines) == "T0" else "T1"
-    scoped_vouch = None if args.range or fix_delta else scoped_review_vouching(
+    scoped_vouch = None if args.range else scoped_review_vouching(
         repo, commit_paths, commit_all)
 
     def spell_scope(paths):
@@ -6350,8 +6571,6 @@ def cmd_suggest(args):
     if run_tier != tier_name:
         print(f"the ladder sizes this at {tier_name}, which is the owner's to start, "
               f"so the panel is {run_tier}")
-    if fix_delta:
-        print(f"work over review {receipt['run_id']}, so {run_tier} regardless of what it touches")
     if printed_scope:
         print(f"sized to this commit's paths: {shlex.join(printed_scope)}; "
               "the rest of the tree is somebody else's to review")
@@ -6426,9 +6645,16 @@ def cmd_suggest(args):
     return 0
 
 
-def handoff(run_id, paths, members=None):
+def handoff(run_id, paths, members=None, worktree=False):
     verdict_path = verdict_scratch_path(run_id)
-    command = f"review-bench record {shlex.quote(run_id)} --verdicts {shlex.quote(verdict_path)}"
+    # A commit-point review is handed the reporting command and nothing else. The corpus form
+    # printed beside it is what a chat copied — the run then went to the corpus, and with it to
+    # the two-judge contract that belongs to a benchmark and not to a round of fixes.
+    command = (
+        f"review-bench record {shlex.quote(run_id)}"
+        + (" --no-corpus" if worktree else "")
+        + f" --verdicts {shlex.quote(verdict_path)}"
+    )
     print("\nADJUDICATION HANDOFF")
     print("Read these files without revealing one rater's output to another:")
     for path in paths:
@@ -6912,7 +7138,7 @@ def cmd_run(args):
                 )
             print(f"rerun: {shlex.join(rerun_command)}")
         print(f"run id: {run_id}")
-        handoff(run_id, paths, members)
+        handoff(run_id, paths, members, worktree=worktree_mode)
         emit_report(run_dir, meta)
         return 1 if (failed or errored_raters) else 0
     finally:
@@ -7004,6 +7230,23 @@ def cmd_record(args):
         raise ValueError(f"unknown run id: {args.run_id}")
     meta = json.loads(meta_path.read_text())
     worktree = meta.get("worktree") is True
+    if getattr(args, "bench", False) and not worktree:
+        raise ValueError(
+            "--bench is the opt-in a worktree run needs to keep its verdicts; a durable run "
+            f"already stores them — record {shlex.quote(args.run_id)} without it"
+        )
+    # Every commit-point review is a worktree run, and no worktree run has ever been a corpus row:
+    # the corpus is a benchmark instrument judged by two sealed judges on durable commits. What
+    # the plain command does reach is durable adjudication state, and it is the one a chat copies
+    # at the end of a round — storing the fixer's own triage and sending the round to a judging
+    # contract nobody asked for.
+    if worktree and not getattr(args, "no_corpus", False) and not getattr(args, "bench", False):
+        raise ValueError(
+            "a commit-point review never enters the corpus — report with "
+            f"`review-bench record {shlex.quote(args.run_id)} --no-corpus`; no corpus row is "
+            "written either way, and --bench is the opt-in that additionally stores this run's "
+            "verdicts in verdicts.jsonl, for benchmark workflows Egor asked for by name"
+        )
     record_raters = completed_raters_from_meta(meta)
     # A run nobody found anything in still owes a report, and demanding an empty file for it is
     # the friction that got the whole pass skipped. Coverage below still refuses a missing file
@@ -7868,6 +8111,11 @@ def main():
     record.add_argument(
         "--no-corpus", action="store_true",
         help="report the verdicts without writing a corpus row (a fix round's own triage)"
+    )
+    record.add_argument(
+        "--bench", action="store_true",
+        help="benchmark mode: store a worktree run's verdicts in its verdicts.jsonl, for "
+             "benchmark workflows Egor asked for by name (no corpus row either way)"
     )
     record.set_defaults(func=cmd_record)
     cluster = subparsers.add_parser(
