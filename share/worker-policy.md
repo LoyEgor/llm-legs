@@ -9,7 +9,7 @@ table can decide: which vendor and how much effort a task deserves.
 - Prefer claudeb for long or multi-step tasks and work that depends heavily on repository conventions.
 - Gemini/Antigravity is a full implementation worker selectable with `worker=gemini`; its base profile is `main`, and named profiles are isolated by `geminib`.
 - In auto mode, treat a healthy Gemini reading as an eligible candidate but route conservatively until task-quality and reliability benchmarks establish a stronger weight.
-- Use the account, model, and effort exactly as `NEXT:` prints them; per-task `MODEL:`/`EFFORT:` overrides belong in the brief, and the `gemini_profile=`/`codex_profile=`/`claudeb_profile=` pins are how an account is named on purpose. The canonical knob-to-agy mapping lives in `worker-run`.
+- Use the account, model, and effort exactly as `NEXT:` prints them; per-task `MODEL:`/`EFFORT:` overrides belong in the brief. The canonical knob-to-agy mapping lives in `worker-run`.
 - Codex and Gemini `main` profiles rank last on a tie: an account that spends no more quota than `main` is preferred to it.
 - claudeb sonnet runs at effort high or above — sonnet·medium and below are never used; opus may run at medium.
-- Code reviews: tier and cell composition come from `review-bench suggest` / `review-bench tiers`, never from prose. The human-side rules (phrase mapping, fable-on-explicit-ask, adjudication duty) live in `~/.claude/docs/review-tiers.md`. Skip review only for trivially unambiguous diffs.
+- Code reviews: tier and cell composition come from `review-bench suggest` / `review-bench tiers`, never from prose; the human-side rules live in `~/.claude/docs/review-tiers.md`.
