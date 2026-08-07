@@ -4298,7 +4298,10 @@ def seal_overlay_clone(repo, sha):
         raise RuntimeError(f"cannot resolve bench commit {sha!r} in {repo}")
     pid = os.getpid()
     ref = f"refs/review-bench/seal-{full[:12]}-{pid}-{threading.get_ident()}"
-    tmp = tempfile.mkdtemp(prefix="review-bench-seal-")
+    # "--claude-worktrees-" makes the AI-usage exporter's stock normalize_project
+    # collapse every seal dir into one "review-bench" project; a plain "-seal-"
+    # prefix turns each run into a distinct project in the usage reports.
+    tmp = tempfile.mkdtemp(prefix="review-bench--claude-worktrees-")
     try:
         subprocess.run(["git", "-C", str(repo), "update-ref", ref, full],
                        capture_output=True, text=True, timeout=30)
