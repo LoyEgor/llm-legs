@@ -767,9 +767,16 @@ do
   local pinnedToggle = submenuItem(pinnedRow, "Pin for workers")
   assert(pinnedToggle and pinnedToggle.checked == true,
     "single-account Gemini pin toggle was not checked")
-  for _, sub in ipairs(pinnedRow.menu or {}) do
-    assert(not isPoolItem(sub), "single-account Gemini row offered a worker-pool toggle")
-  end
+  -- Every account row carries the pool checkbox, the sole one included: an empty pool says no
+  -- worker may run, which is a state the user is allowed to reach.
+  local solePool = submenuItem(pinnedRow, "In worker pool")
+  assert(solePool and solePool.checked == true,
+    "single-account Gemini row lost its worker-pool toggle")
+  while #tasks > 0 do table.remove(tasks) end
+  solePool.fn()
+  assert(tasks[1] and tasks[1].path:find("geminib", 1, true)
+      and tasks[1].args[1] == "disable" and tasks[1].args[2] == "main",
+    "single-account Gemini pool toggle launched the wrong action")
   assert(accountHasMarker(pinnedMenu, "Gemini"), "single-account Gemini pin hid ●")
   while #tasks > 0 do table.remove(tasks) end
   pinnedToggle.fn()

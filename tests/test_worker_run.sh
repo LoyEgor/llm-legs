@@ -8,6 +8,15 @@ trap 'rm -rf "$WORK"' EXIT
 asserts=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
+assert_fails() {
+  asserts=$((asserts + 1))
+  if "$@"; then
+    fail "assert $asserts unexpectedly succeeded: $*"
+  else
+    status=$?
+    [ "$status" -ne 127 ] || fail "assert $asserts command not found: $*"
+  fi
+}
 
 export HOME="$WORK/home"
 export WORKER_RUN_DIR="$WORK/runs"
@@ -51,7 +60,10 @@ case "${PICK_RC:-0}" in
       printf 'worker-pick: %s is the session account (SESSION RESERVE)\n' "${PICK_ACCOUNT}" >&2
     printf '%s\n' "${PICK_ACCOUNT:-picked}"
     ;;
-  *) exit "${PICK_RC}" ;;
+  *)
+    [ -z "${PICK_STDERR:-}" ] || printf '%s\n' "$PICK_STDERR" >&2
+    exit "${PICK_RC}"
+    ;;
 esac
 EOF
 
@@ -319,6 +331,64 @@ for vendor in claudeb codex gemini; do
   assert test "$rc" -eq 3
   assert grep -qx "OUTCOME: $(tr '[:lower:]' '[:upper:]' <<<"$vendor")_USAGE_LIMIT" "$WORK/refused.out"
   assert test ! -s "$CALL_LOG"
+done
+
+# An empty worker pool is a decision, not a limit: reporting it as a usage limit would send the
+# orchestrator hunting for quota that was never the problem.
+for vendor in claudeb codex gemini; do
+  clear_stub
+  set_config 'codex_effort=medium'
+  export PICK_RC=3 PICK_ACCOUNT=ignored
+  export PICK_STDERR="worker-pick: every $vendor account is out of the worker pool (claude: one 3% off)"
+  rc=0
+  "$RUNNER" start "$vendor" --brief "$WORK/brief" >"$WORK/pool-empty.out" 2>"$WORK/pool-empty.err" || rc=$?
+  assert test "$rc" -eq 4
+  assert grep -qx "OUTCOME: $(tr '[:lower:]' '[:upper:]' <<<"$vendor")_UNAVAILABLE" "$WORK/pool-empty.out"
+  assert grep -q "every $vendor account is out of the worker pool" "$WORK/pool-empty.err"
+  assert test ! -s "$CALL_LOG"
+  unset PICK_STDERR
+done
+
+# A missing wall is loud: worker-run must refuse to launch rather than read every account as
+# excluded because its include went missing.
+NOSHARE_RUNNER="$WORK/noshare/bin/worker-run"
+mkdir -p "$WORK/noshare/bin"
+cp "$RUNNER" "$NOSHARE_RUNNER"
+noshare_rc=0
+"$NOSHARE_RUNNER" start codex --brief "$WORK/brief" >"$WORK/noshare.out" 2>"$WORK/noshare.err" || noshare_rc=$?
+assert test "$noshare_rc" -eq 4
+assert grep -q 'share/worker-pool.sh is missing' "$WORK/noshare.err"
+assert_fails grep -q 'out of the worker pool' "$WORK/noshare.err"
+
+# The pool is a wall, not advice to the picker: a brief naming an excluded account cannot get in,
+# and only the vendor pin overrides.
+pool_dir_for() {
+  case "$1" in
+    claudeb) printf '%s/.claude-profiles/.claudeb\n' "$HOME" ;;
+    codex) printf '%s/.codex-profiles/.codexb\n' "$HOME" ;;
+    gemini) printf '%s/.gemini-profiles/.geminib\n' "$HOME" ;;
+  esac
+}
+for vendor in claudeb codex gemini; do
+  clear_stub
+  set_config 'codex_effort=medium'
+  export PICK_ACCOUNT=picked PICK_RC=0
+  printf 'explicit\npicked\n' >"$STUB_DIR/gemini_profiles"
+  pool_dir=$(pool_dir_for "$vendor")
+  mkdir -p "$pool_dir"
+  printf 'explicit\n' >"$pool_dir/disabled"
+  rc=0
+  "$RUNNER" start "$vendor" --brief "$WORK/brief" --account explicit \
+    >"$WORK/pool-wall.out" 2>"$WORK/pool-wall.err" || rc=$?
+  assert test "$rc" -eq 4
+  assert grep -qx "OUTCOME: $(tr '[:lower:]' '[:upper:]' <<<"$vendor")_UNAVAILABLE" "$WORK/pool-wall.out"
+  assert grep -q 'explicit is out of the worker pool' "$WORK/pool-wall.err"
+  assert test ! -s "$CALL_LOG"
+  set_config "${vendor}_profile=explicit" 'codex_effort=medium'
+  start_ok "$vendor" --account explicit
+  assert meta_account_is explicit
+  assert await_done
+  rm -f "$pool_dir/disabled"
 done
 
 clear_stub
@@ -645,6 +715,10 @@ set_config 'codex_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=selfedit
 SELF_RUNNER="$WORK/bin/worker-run-selfedit"
 cp "$RUNNER" "$SELF_RUNNER"
+# worker-run sources share/worker-pool.sh relative to its own resolved root, so a copy needs the
+# share tree beside it — the pool wall must never be a file the runner can quietly do without.
+mkdir -p "$WORK/share"
+cp "$ROOT/share/worker-pool.sh" "$WORK/share/"
 printf '%s\n' "$SELF_RUNNER" >"$STUB_DIR/codex_append_target"
 "$SELF_RUNNER" start codex --brief "$WORK/brief" --workdir "$WORK/workdir" >"$WORK/start.out" 2>"$WORK/start.err" || fail "self-edit start failed: $(<"$WORK/start.err")"
 RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/start.out")

@@ -24,7 +24,7 @@ tokens_dir="$base_dir/tokens"
 limits_dir="$base_dir/limits"
 profiles_root="$HOME/.claude-profiles"
 state_file="$base_dir/.claudeb-state"
-pool_dir="$base_dir"
+pool_dir=$(worker_pool_dir claudeb)
 disabled_file="$(worker_pool_file "$pool_dir")"
 
 # An account exists when ANY store knows it: a setup token, a limits snapshot, or a
@@ -1617,7 +1617,7 @@ enable_account() {
 }
 
 disable_account() {
-  local name="${1:-}" other enabled_left=0
+  local name="${1:-}"
   if [ -z "$name" ]; then
     printf 'usage: claudeb disable <name>\n' >&2
     exit 2
@@ -1629,15 +1629,6 @@ disable_account() {
   if is_disabled "$name"; then
     printf 'claudeb: %s is already disabled\n' "$name"
     return
-  fi
-  while IFS= read -r other; do
-    if [ "$other" != "$name" ] && ! is_disabled "$other"; then
-      enabled_left=$((enabled_left + 1))
-    fi
-  done < <(account_names)
-  if [ "$enabled_left" -eq 0 ]; then
-    printf 'claudeb: refusing to disable %s: it is the last enabled account\n' "$name" >&2
-    exit 1
   fi
   set_disabled "$name" on
   printf 'claudeb: disabled %s\n' "$name"
@@ -1776,7 +1767,7 @@ show_help() {
   printf '  %s%sclaudeb status [--live] [--plain] [--spend] [--start-windows] [--heal]%s\n' "$bold" "$cyan" "$reset"
   printf '                                          %sShow cached limits (no network); --live probes now. Aliases: st, accounts.%s\n' "$dim" "$reset"
   printf '  %s%sclaudeb enable <name>%s                   %sReturn an account to worker selection.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
-  printf '  %s%sclaudeb disable <name>%s                  %sExclude an account from worker selection.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
+  printf '  %s%sclaudeb disable <name>%s                  %sExclude an account from the worker pool; headless runs are then refused, your own sessions are not.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb use <name>|--clear%s              %sPin worker selection to one account; no name prints the pin.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb add <name>%s                      %sValidate and save a setup-token.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb remove <name> [--force]%s          %sForget an account everywhere; --force overrides a live-creds guard.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
@@ -1867,6 +1858,11 @@ profile_command() {
     printf "claudeb: '%s' is reserved and cannot be a new profile name\n" "$profile" >&2
     return 2
   fi
+  # Before any profile is materialized: a refused headless run must not mkdir a directory, relink
+  # the shared items or announce a new account on its way out.
+  if args_are_headless "$@"; then
+    worker_pool_refuse_headless claudeb "$profile" "$(pinned_account)" || return 2
+  fi
   # An unknown name is a new profile, not an error: Claude asks for the login and the profile
   # becomes real once credentials exist. So the only help worth giving is naming the
   # near-misses before the login window opens. Announced only on a PROVEN absence — an
@@ -1917,9 +1913,6 @@ profile_command() {
     return
   fi
   [ "$created" != true ] || announce_account_added "$claudeb_root" claude "$profile"
-  if is_disabled "$profile"; then
-    printf 'claudeb: note: %s is disabled for worker selection; using it directly\n' "$profile" >&2
-  fi
   # Headless worker spawns run constantly on other accounts; letting them stamp the state file
   # would make the `*`/`●`/`cb:` markers name the last worker instead of the account the user
   # sits in.

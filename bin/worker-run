@@ -14,6 +14,25 @@ fail() {
   exit 4
 }
 
+# The symlink walk the self-edit guard needs anyway, hoisted here so the include below resolves
+# against the same root instead of a second copy of the same loop.
+SCRIPT_PATH=${BASH_SOURCE[0]}
+while [ -L "$SCRIPT_PATH" ]; do
+  SCRIPT_DIRECTORY=$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd) || exit 4
+  SCRIPT_PATH=$(readlink "$SCRIPT_PATH")
+  [[ "$SCRIPT_PATH" = /* ]] || SCRIPT_PATH="$SCRIPT_DIRECTORY/$SCRIPT_PATH"
+done
+SCRIPT_DIRECTORY=$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd) || exit 4
+SCRIPT_PATH="$SCRIPT_DIRECTORY/$(basename "$SCRIPT_PATH")"
+umask 077
+
+# Sourced, not optional: without it `worker_pool_refuse_headless` is simply undefined, every
+# launch reads as refused, and each one blames the worker pool for a missing include.
+. "$SCRIPT_DIRECTORY/../share/worker-pool.sh" ||
+  fail 'share/worker-pool.sh is missing: worker-run cannot check worker-pool membership'
+command -v worker_pool_refuse_headless >/dev/null ||
+  fail 'share/worker-pool.sh defines no worker_pool_refuse_headless: refusing to launch unchecked'
+
 # Wall-clock ceiling per vendor invocation (matches gemini's --print-timeout 170m).
 # Not a work cap — the longest observed real run is minutes — but a wedged CLI
 # (stalled stream, hung auth) must eventually write an exit_code or every wait
@@ -199,6 +218,7 @@ pick_account() {
   PICKED_ACCOUNT=''
   PICKED_RC=0
   PICKED_RESERVE=false
+  PICKED_POOL_EMPTY=false
   picker="${WORKER_RUN_WORKER_PICK:-worker-pick}"
   busy=$(busy_accounts "$vendor")
   combined=$(printf '%s\n%s\n' "$walled" "$busy" | tr ',' '\n' | grep -v '^$' | awk '!seen[$0]++' | paste -sd, -)
@@ -218,6 +238,9 @@ pick_account() {
   fi
   [ ! -s "$errors" ] || cat "$errors" >&2
   ! grep -Fq 'SESSION RESERVE' "$errors" || PICKED_RESERVE=true
+  # An empty pool is Egor's choice, not a limit: reporting it as a usage limit would send the
+  # orchestrator hunting for quota that is not the problem.
+  ! grep -Eq 'every [a-z]+ account is out of the worker pool' "$errors" || PICKED_POOL_EMPTY=true
   rm -f "$errors"
   PICKED_ACCOUNT=${PICKED_ACCOUNT%%$'\n'*}
 }
@@ -460,6 +483,10 @@ start_run() {
     if [ "$PICKED_RC" -eq 0 ] && [ -n "$PICKED_ACCOUNT" ]; then
       account="$PICKED_ACCOUNT"
     elif [ "$PICKED_RC" -eq 3 ]; then
+      if [ "$PICKED_POOL_EMPTY" = true ]; then
+        printf 'OUTCOME: %s_UNAVAILABLE\n' "$(vendor_name "$vendor")"
+        fail "every $vendor account is out of the worker pool; ask Egor to put one back in or pin one"
+      fi
       printf 'OUTCOME: %s_USAGE_LIMIT\n' "$(vendor_name "$vendor")"
       exit 3
     else
@@ -475,6 +502,13 @@ start_run() {
         account=main
       fi
     fi
+  fi
+  # The pool is a wall, not advice to the picker: an account Egor took out cannot carry a worker
+  # even when the brief names it outright — only the vendor pin overrides. A picked account is
+  # already in the pool, so this only ever fires on --account.
+  if ! worker_pool_refuse_headless "$vendor" "$account" "$(config_value "${vendor}_profile")"; then
+    printf 'OUTCOME: %s_UNAVAILABLE\n' "$(vendor_name "$vendor")"
+    exit 4
   fi
   case "$vendor:$account" in
     gemini:main) ;;
@@ -809,16 +843,6 @@ report_run() {
 
 CONFIG_FILE="${WORKER_RUN_CONFIG_FILE:-$HOME/.claude/worker-model}"
 CODEX_CONFIG="${WORKER_RUN_CODEX_CONFIG:-$HOME/.codex/config.toml}"
-SCRIPT_PATH=${BASH_SOURCE[0]}
-while [ -L "$SCRIPT_PATH" ]; do
-  SCRIPT_DIRECTORY=$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd) || exit 4
-  SCRIPT_PATH=$(readlink "$SCRIPT_PATH")
-  [[ "$SCRIPT_PATH" = /* ]] || SCRIPT_PATH="$SCRIPT_DIRECTORY/$SCRIPT_PATH"
-done
-SCRIPT_DIRECTORY=$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd) || exit 4
-SCRIPT_PATH="$SCRIPT_DIRECTORY/$(basename "$SCRIPT_PATH")"
-umask 077
-
 # Every arm exits from inside the case: workers edit this very file while their
 # own supervisor and the caller's `wait` are still running it, and bash re-reads
 # the script from a byte offset once the last top-level command returns — a file

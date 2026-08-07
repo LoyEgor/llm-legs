@@ -109,7 +109,7 @@ worker_model_pin_account() {
     fi
     printf '%s: pinned workers to %s\n' "$vendor" "$name"
     if "$disabled_fn" "$name"; then
-      printf '%s: note: %s is out of the worker pool; the direct pin still overrides automatic pool exclusion\n' \
+      printf '%s: note: %s is out of the worker pool; the pin is the one override, so workers will still run on it\n' \
         "$vendor" "$name" >&2
     fi
   ) 9>"$file.lock"

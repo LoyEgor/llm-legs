@@ -185,6 +185,15 @@ summary=$(jq -r \
   def rank: sort_by(rank_keys);
   # Display bands are applied only while rendering, and within a band the order stays the
   # selection order (shared-invariants g), so the render sorts on the same keys.
+  # A vendor whose every account sits outside the pool was switched off deliberately, not
+  # walled, and the query path must be able to say which of the two it is.
+  # Keyed on the toggle alone: --exclude names accounts that walled during one run, and reading
+  # those as an empty pool would blame the user for a limit.
+  # Gemini is counted over its raw source rather than the quota-filtered rows: an account with
+  # no measured Gemini Models group is still a pool member, and dropping it first would report an
+  # empty pool while one stands enabled.
+  def pool_empty($rows): if ($rows | length) > 0 and ($rows | all((.enabled // true) | not))
+    then "yes" else "no" end;
   def display_band($selected): if .name == $selected then 0 elif .eligible then 1 elif .in_pool then 2 else 3 end;
   def display_sort($selected): sort_by([display_band($selected)] + rank_keys);
   # Weekly is the spending bucket; a vendor that reports no weekly percentage at all is measured
@@ -345,14 +354,15 @@ summary=$(jq -r \
    (if $cl_is_reserve then "yes" else "no" end),$pin_lapse,
    ($fb_best.name // ""),(($fb_best.fb // 0) | round | tostring),(($fb_best.wk // 0) | round | tostring),
    (if $fb_is_reserve then "yes" else "no" end),
-   $age,(if $had_pool then "yes" else "no" end)] | join("\u001f")
+   $age,(if $had_pool then "yes" else "no" end),
+   pool_empty($cx_accounts),pool_empty($gm_source),pool_empty($cl_accounts)] | join("\u001f")
 ' "$LIMITS_FILE" 2>/dev/null) || fail_safe "limits parse failed"
 [ -n "$summary" ] || fail_safe "limits parse failed"
 
 IFS=$'\x1f' read -r cx_selected cx_acct cx_pct cx_pinned cx_line cx_pin_lapse \
   gm_selected gm_acct gm_pinned gm_line gm_pin_lapse \
   cl_line cl_acct cl_pinned cl_reserve cl_pin_lapse \
-  fb_acct fb_fb fb_wk fb_reserve age had_pool <<<"$summary"
+  fb_acct fb_fb fb_wk fb_reserve age had_pool cx_pool_empty gm_pool_empty cl_pool_empty <<<"$summary"
 
 if [ "$query_fable" = true ]; then
   cl_acct=$fb_acct
@@ -395,6 +405,16 @@ if [ -n "$query_vendor" ]; then
     printf '%s\n' "$query_answer"
     exit 0
   fi
+  query_pool_empty=no
+  case "$query_vendor" in
+    claudeb) query_pool_empty=$cl_pool_empty ;;
+    codex) query_pool_empty=$cx_pool_empty ;;
+    gemini) query_pool_empty=$gm_pool_empty ;;
+  esac
+  if [ "$query_pool_empty" = yes ]; then
+    printf 'worker-pick: every %s account is out of the worker pool (%s)\n' "$query_vendor" "$query_reason" >&2
+    exit 3
+  fi
   printf 'worker-pick: no selectable %s account (%s)\n' "$query_vendor" "$query_reason" >&2
   exit 3
 fi
@@ -416,6 +436,9 @@ elif [ -n "$cl_acct" ]; then
 elif [ "$all_walled" = yes ]; then
   cb_next="ALL WALLED, ask Egor"
   cb_cache="cb~?"
+elif [ "$cl_pool_empty" = yes ]; then
+  cb_next="claudeb unavailable — every account is out of the worker pool"
+  cb_cache="cb~?"
 else
   cb_next="claudeb unavailable — no selectable account"
   cb_cache="cb~?"
@@ -425,6 +448,9 @@ if [ "$cx_selected" = yes ]; then
   cx_next="codex $cx_acct · $cx_effort — ${cx_pct}%"
   [ "$cx_pinned" != yes ] || cx_next="$cx_next PINNED"
   cx_mark="✓"
+elif [ "$cx_pool_empty" = yes ]; then
+  cx_next="codex unavailable · $cx_effort — every account is out of the worker pool"
+  cx_mark="✗"
 else
   cx_next="codex unavailable · $cx_effort — WALLED"
   cx_mark="✗"
@@ -437,6 +463,9 @@ if [ "$gm_selected" = yes ]; then
   gm_next="gemini $gm_acct · $gm_model · $gm_effort — ACCOUNT: $gm_acct"
   [ "$gm_pinned" != yes ] || gm_next="$gm_next PINNED"
   gm_mark="✓"
+elif [ "$gm_pool_empty" = yes ]; then
+  gm_next="gemini unavailable — every account is out of the worker pool"
+  gm_mark="✗"
 else
   gm_next="gemini unavailable"
   gm_mark="✗"

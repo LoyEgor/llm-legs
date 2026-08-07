@@ -358,13 +358,27 @@ for pool_tool in claudeb codexb geminib; do
   assert grep -Fq 'share/worker-pool.sh"' "$ROOT/bin/$pool_tool"
   assert grep -Fq 'worker_pool_is_disabled "$pool' "$ROOT/bin/$pool_tool"
   assert grep -Fq 'worker_pool_set_disabled "$pool' "$ROOT/bin/$pool_tool"
-  assert grep -Fq 'last enabled account' "$ROOT/bin/$pool_tool"
+  # The wall and the directory formula come from the helper too: a vendor that walled headless
+  # runs on its own, or spelled its own pool path, is how the three drift apart.
+  assert grep -Fq 'worker_pool_refuse_headless ' "$ROOT/bin/$pool_tool"
+  assert grep -Eq 'pool_dir=\$\(worker_pool_dir (claudeb|codex|gemini)\)' "$ROOT/bin/$pool_tool"
+  assert test "$(grep -c 'last enabled account' "$ROOT/bin/$pool_tool")" -eq 0
   # No vendor may re-derive the file format locally.
   assert test "$(grep -c 'grep -qxF -- ' "$ROOT/bin/$pool_tool")" -eq 0
 done
+# worker-run is the fourth consumer: codex workers never pass through codexb, so the wall has to
+# be reachable from the launcher itself.
+assert grep -Fq 'share/worker-pool.sh"' "$ROOT/bin/worker-run"
+assert grep -Fq 'worker_pool_refuse_headless "$vendor"' "$ROOT/bin/worker-run"
+assert grep -Fq 'out of the worker pool' "$ROOT/bin/worker-pick"
+# codex-image launches codex directly, past codexb and past worker-run, so it is a launcher of
+# its own and needs the same wall.
+assert grep -Fq 'share/worker-pool.sh"' "$ROOT/bin/codex-image"
+assert grep -Fq 'worker_pool_refuse_headless codex ' "$ROOT/bin/codex-image"
 assert grep -Fq 'share/worker-pool.sh"' "$LLMLIMITS"
 assert grep -Fq 'worker_pool_is_disabled' "$LLMLIMITS"
 assert grep -Fq 'worker_pool_disabled_json' "$LLMLIMITS"
+assert test "$(grep -c 'worker_pool_dir ' "$LLMLIMITS")" -ge 2
 # Every vendor reaches the toggle through its own action, and each action is both defined and
 # wired into a row — a count of menu entries would only measure how many rows happen to exist.
 assert grep -Fq 'In worker pool' "$HAMMER"
@@ -374,7 +388,8 @@ for pool_toggle in toggleAccount toggleCodexAccount toggleGeminiAccount; do
 done
 assert doc_has 'Worker-pool membership'
 assert doc_has '.claudeb`, `.codexb`, `.geminib'
-assert doc_has 'including a `claudeb_profile`, `codex_profile`, or `gemini_profile` pin'
+assert doc_has 'the vendor pin (`claudeb_profile`, `codex_profile`, `gemini_profile`) is the one override'
+assert doc_has 'Exclusion IS unreachability for every headless run'
 assert grep -Fq 'cb_pin=$(conf claudeb_profile)' "$WORKERPICK"
 assert grep -Fq 'cx_pin=$(conf codex_profile)' "$WORKERPICK"
 assert grep -Fq 'gm_pin=$(conf gemini_profile)' "$WORKERPICK"

@@ -6,7 +6,7 @@ menu: the chosen account is the pin, or else the lowest spending-bucket percenta
 pool. This page is the policy; code bends to it, and anything the old implementation did
 beyond it is deleted, not preserved.
 
-## The three rules
+## The four rules
 
 1. **Candidates.** An account is a candidate iff its "In worker pool" toggle is enabled,
    its auth is alive, and its spending bucket has a measured percentage. The session
@@ -28,6 +28,18 @@ beyond it is deleted, not preserved.
    floors, no headroom, no soft reserves beyond rule 1. A caller that watches an account
    wall mid-task re-queries with `--exclude`; when every candidate is walled the answer
    is exit 3 / `ALL WALLED` and the orchestrator asks the owner.
+
+4. **Reachability.** The pool toggle is not advice to the selector, it is the wall: an account
+   outside the pool cannot carry a headless run however it is named: the three vendor CLIs
+   refuse it (`claudeb … -p`, `codexb <name> exec`, `geminib … --print`), and so do `worker-run`
+   and `codex-image`, which launch a vendor binary directly. review-bench raters take their
+   accounts from `worker-pick` and are bound by rule 1; `claudeb warm` is exempt because token
+   warming keeps an account loggable-in, it does not spend work quota. The pin is the only
+   override, because
+   naming an account there is the deliberate "use this one anyway". Interactive launches are
+   the user, not a worker, and are never gated; an empty pool is therefore a legitimate state
+   meaning "no worker may run", answered as `every <vendor> account is out of the worker pool`
+   and reported by `worker-run` as `OUTCOME: <VENDOR>_UNAVAILABLE`, never as a usage limit.
 
 ## Deleted with this contract (not configurable, not dormant)
 

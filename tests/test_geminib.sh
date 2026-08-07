@@ -352,6 +352,19 @@ POOL_OUT="$WORK/pool.out"
 gb() { bash "$SCRIPT" "$@" >"$POOL_OUT" 2>&1; }
 assert gb disable alpha
 assert grep -qx alpha "$HOME/.gemini-profiles/.geminib/disabled"
+# Exclusion IS unreachability for a headless run — `--print` is agy asked by a program — while an
+# interactive session is the user and passes, and the vendor pin is the one override.
+: >"$AGY_CALLS"
+assert_fails gb profile alpha --print hello
+assert grep -q 'alpha is out of the worker pool' "$POOL_OUT"
+assert_fails grep -q "home=$HOME/.gemini-profiles/alpha" "$AGY_CALLS"
+assert gb profile alpha --mode plan
+assert grep -q "home=$HOME/.gemini-profiles/alpha" "$AGY_CALLS"
+GEMINI_PIN_CONFIG="$WORK/worker-model-pin"
+printf 'gemini_profile=alpha\n' >"$GEMINI_PIN_CONFIG"
+: >"$AGY_CALLS"
+assert env WORKER_PICK_CONFIG_FILE="$GEMINI_PIN_CONFIG" bash "$SCRIPT" profile alpha --print hello
+assert grep -q "home=$HOME/.gemini-profiles/alpha" "$AGY_CALLS"
 # The pool file lives beside the profiles and must never be read back as one.
 mkdir -p "$HOME/.gemini-profiles/.junk"
 assert gb list
@@ -375,14 +388,16 @@ assert grep -q 'already enabled' "$POOL_OUT"
 assert_fails gb disable ghost-account
 assert_fails gb enable ghost-account
 assert_fails gb disable
-# An empty pool leaves selection with nothing to answer and no way back but editing the file.
+# An empty pool is a legitimate state: it says no worker may run, not that nobody may work.
 for pool_profile in "$HOME/.gemini-profiles"/*/; do
   pool_profile=$(basename "$pool_profile")
   case "$pool_profile" in .*) continue ;; esac
   gb disable "$pool_profile" || true
 done
-assert_fails gb disable main
-assert grep -q 'last enabled account' "$POOL_OUT"
+assert gb disable main
+assert grep -qx main "$HOME/.gemini-profiles/.geminib/disabled"
+# The re-enable loop below walks profile directories only, and `main` is not one of them.
+assert gb enable main
 for pool_profile in "$HOME/.gemini-profiles"/*/; do
   pool_profile=$(basename "$pool_profile")
   case "$pool_profile" in .*) continue ;; esac
@@ -620,4 +635,4 @@ assert image_run --dest "$WORK/image-output/converted.png" --prompt landscape --
 assert grep -q "$IMAGE_REPLY $WORK/image-output/converted.png" "$IMAGE_MAGICK_CALLS"
 assert grep -qx converted "$WORK/image-output/converted.png"
 
-echo "PASS: $asserts asserts; base and isolated HOME routing, worker-pool exclusion (own file beside the profiles, last member protected, visible in list/status), shared configuration and Playwright caches, per-profile keychain kept unlockable behind a login.keychain-db symlink, parallel ordered list/status probes, one-step creation, strict launch names, exec delimiter stripping, override-aware login hints, persistent remove markers, use pin set/show/clear/refusal parity, and one-image generation routing, prompt, rescue, and conversion"
+echo "PASS: $asserts asserts; base and isolated HOME routing, worker-pool exclusion (own file beside the profiles, headless runs refused, interactive and pinned runs pass, the last member goes out too, visible in list/status), shared configuration and Playwright caches, per-profile keychain kept unlockable behind a login.keychain-db symlink, parallel ordered list/status probes, one-step creation, strict launch names, exec delimiter stripping, override-aware login hints, persistent remove markers, use pin set/show/clear/refusal parity, and one-image generation routing, prompt, rescue, and conversion"

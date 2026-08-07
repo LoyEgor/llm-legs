@@ -1030,8 +1030,14 @@ function M.menuItems()
           if entry.key == "gemini" then
             local pinExists = geminiPinned
             if pinExists then renderedPin = true end
+            -- The sole account carries the pool checkbox like every other row: an empty pool is a
+            -- legitimate state (it says no worker may run), so nothing here is immutable.
+            local soleEnabled = poolStateFor("gemini", "main", vendor.enabled ~= false)
             fallbackRow.disabled = nil
+            fallbackRow.checked = soleEnabled
             fallbackRow.menu = {
+              { title = "In worker pool", checked = soleEnabled,
+                fn = function() M.toggleGeminiAccount("main", soleEnabled) end },
               {
                 title = "Pin for workers",
                 checked = pinExists,

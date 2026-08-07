@@ -88,6 +88,12 @@ fi
 base_home=$HOME
 root=$(resolve_root)
 . "$root/share/image-chroma.sh"
+# Image generation is a worker launch like any other — it runs `codex` headless with CODEX_HOME
+# set, never through codexb — so the pool answers here too.
+. "$root/share/worker-pool.sh" ||
+  { printf 'codex-image: share/worker-pool.sh is missing; refusing to run unchecked\n' >&2; exit 4; }
+. "$root/share/worker-model.sh" ||
+  { printf 'codex-image: share/worker-model.sh is missing; refusing to run unchecked\n' >&2; exit 4; }
 
 if [ -z "$account" ]; then
   pick_rc=0
@@ -110,6 +116,8 @@ if [ -z "$account" ]; then
     printf 'codex-image: worker-pick unavailable; falling back to account %s\n' "$account" >&2
   fi
 fi
+
+worker_pool_refuse_headless codex "$account" "$(worker_model_pinned_account codex_profile)" || exit 4
 
 profiles_dir="${CODEX_PROFILES_DIR:-$base_home/.codex-profiles}"
 if [ "$account" = main ]; then

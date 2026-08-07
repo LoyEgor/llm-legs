@@ -453,8 +453,8 @@ agy_bin=${AGY_BIN:-$HOME/.local/bin/agy}
 . "$script_dir/share/experiments.sh"
 . "$script_dir/share/limits-view.sh"
 
-codex_pool_dir="${CODEXB_PROFILES_DIR:-$HOME/.codex-profiles}/.codexb"
-gemini_pool_dir="$gemini_profiles_dir/.geminib"
+codex_pool_dir=$(worker_pool_dir codex)
+gemini_pool_dir=$(worker_pool_dir gemini)
 
 gemini_account_cache() {
   if [ "$1" = main ]; then printf '%s\n' "$gemini_main_cache"

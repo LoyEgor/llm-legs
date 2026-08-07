@@ -359,8 +359,8 @@ assert test "$(selection | jq -r .picked)" = beta
 touch -t 202607120103 "$state_file"
 assert test "$(selection | jq -r .picked)" = alpha
 
-# A disabled account launched via `profile` proceeds direct and strips inherited
-# routing credentials.
+# An out-of-pool account launched interactively is the user, not a worker: it proceeds and
+# strips inherited routing credentials.
 touch "$CLAUDEB_DIR/tokens/gamma"
 printf 'gamma\n' >"$disabled_file"
 ENV_DUMP="$WORK/gamma-env.txt"
@@ -373,7 +373,7 @@ chmod +x "$FAKE_BIN/claude"
 # Subshell so profile_command's exec replaces the subshell, not the test runner.
 note=$( ANTHROPIC_BASE_URL="http://proxy.invalid" CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-leak" \
   profile_command gamma 2>&1 >/dev/null )
-assert grep -q 'disabled for worker selection' <<<"$note"
+assert_fails grep -q 'out of the worker pool' <<<"$note"
 assert test -f "$ENV_DUMP"
 assert_fails grep -q '^ANTHROPIC_BASE_URL=' "$ENV_DUMP"
 assert_fails grep -q '^CLAUDE_CODE_OAUTH_TOKEN=' "$ENV_DUMP"
@@ -384,12 +384,27 @@ assert grep -qx gamma "$CLAUDEB_DIR/.claudeb-state"
 # A headless worker spawn must NOT restamp "current": those run on other accounts all day
 # and would make the `*`/`●`/`cb:` markers name the last worker, not the user's session.
 printf 'delta\n' >"$CLAUDEB_DIR/.claudeb-state"
+# Still out of the pool here: a headless run is a worker, and the pool is its wall.
+rm -f "$ENV_DUMP"
+# `|| pool_rc=$?`: sourcing claudeb brought its `set -e` in, so a bare failing subshell would
+# end the suite instead of being measured.
+pool_rc=0
+( profile_command gamma -p 'noop' >/dev/null 2>"$WORK/pool-headless.out" ) || pool_rc=$?
+assert test "$pool_rc" -eq 2
+assert grep -q 'gamma is out of the worker pool' "$WORK/pool-headless.out"
+assert_fails test -f "$ENV_DUMP"
+# The vendor pin is the one override, and it reaches the same headless launch.
+printf 'claudeb_profile=gamma\n' >"$WORK/worker-model-pin"
+( WORKER_PICK_CONFIG_FILE="$WORK/worker-model-pin" profile_command gamma -p 'noop' >/dev/null 2>&1 )
+assert test -f "$ENV_DUMP"
+: >"$disabled_file"
 ( profile_command gamma -p 'noop' >/dev/null 2>&1 )
 assert grep -qx delta "$CLAUDEB_DIR/.claudeb-state"
 ( profile_command gamma --print 'noop' >/dev/null 2>&1 )
 assert grep -qx delta "$CLAUDEB_DIR/.claudeb-state"
 ( profile_command gamma >/dev/null 2>&1 )
 assert grep -qx gamma "$CLAUDEB_DIR/.claudeb-state"
+printf 'gamma\n' >"$disabled_file"
 
 # An unknown name is a NEW profile now, not an error: it must launch so the login can happen,
 # and say so first. The subshell is mandatory — profile_command execs, and without it the exec
@@ -537,7 +552,7 @@ assert grep -qx 'claudeb_profile=gamma' "$PIN_FILE"
 assert env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" WORKER_PICK_CONFIG_FILE="$PIN_FILE" \
   bash "$SCRIPT" use gamma >"$WORK/pin-disabled.out" 2>&1
 assert grep -q 'out of the worker pool' "$WORK/pin-disabled.out"
-assert grep -q 'direct pin still overrides automatic pool exclusion' "$WORK/pin-disabled.out"
+assert grep -q 'the pin is the one override, so workers will still run on it' "$WORK/pin-disabled.out"
 assert env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" WORKER_PICK_CONFIG_FILE="$PIN_FILE" \
   bash "$SCRIPT" use >"$WORK/pin-show.out" 2>&1
 assert grep -q 'pinned to gamma' "$WORK/pin-show.out"

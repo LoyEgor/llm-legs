@@ -169,12 +169,27 @@ printf 'ok\n' >"$HOME/auth-alpha"
 # its own FAIL line and the suite then dies silently with no output at all.
 POOL_OUT="$WORK/pool.out"
 cx() { bash "$SCRIPT" "$@" >"$POOL_OUT" 2>&1; }
-# Exclusion speaks for automatic selection only, so `pick` must skip the account while a direct
-# run still reaches it.
+# Exclusion walls the account off from `pick` AND from every headless run; an interactive
+# session is the user and still reaches it.
 assert test "$(bash "$SCRIPT" pick)" = alpha
 assert cx disable alpha
 assert grep -qx alpha "$HOME/.codex-profiles/.codexb/disabled"
 assert test "$(bash "$SCRIPT" pick)" = main
+# The wall: `exec` is a program calling codexb, and no naming of the account gets a worker in.
+: >"$CODEX_CALLS"
+assert_fails cx alpha exec -m fixture -
+assert grep -q 'alpha is out of the worker pool' "$POOL_OUT"
+assert_fails grep -q 'account=alpha' "$CODEX_CALLS"
+# An interactive session is the user, never a worker, and is not gated at all.
+assert cx profile alpha
+assert grep -q 'account=alpha' "$CODEX_CALLS"
+# The vendor pin is the one deliberate override.
+PIN_CONFIG="$WORK/worker-model-pin"
+printf 'codex_profile=alpha
+' >"$PIN_CONFIG"
+: >"$CODEX_CALLS"
+assert env WORKER_PICK_CONFIG_FILE="$PIN_CONFIG" bash "$SCRIPT" alpha exec -m fixture -
+assert grep -q 'account=alpha' "$CODEX_CALLS"
 assert cx enable alpha
 assert test "$(bash "$SCRIPT" pick)" = alpha
 # The pool file lives beside the profiles and must never be read back as one.
@@ -195,15 +210,17 @@ assert grep -q 'already enabled' "$POOL_OUT"
 assert_fails cx disable ghost-account
 assert_fails cx enable ghost-account
 assert_fails cx disable
-# An empty pool would leave `pick` nothing to answer and no way back except editing the file.
+# An empty pool is a legitimate state — it says no worker may run, not that nobody may work —
+# so the last member goes out like any other.
 for pool_profile in "$HOME/.codex-profiles"/*/; do
   pool_profile=$(basename "$pool_profile")
   case "$pool_profile" in .*) continue ;; esac
   cx disable "$pool_profile" || true
 done
-assert_fails cx disable main
-assert grep -q 'last enabled account' "$POOL_OUT"
-assert test "$(bash "$SCRIPT" pick)" = main
+assert cx disable main
+assert grep -qx main "$HOME/.codex-profiles/.codexb/disabled"
+assert_fails cx pick
+assert cx enable main
 # The last-resort fallback to `main` must not resurrect an account the user excluded by hand.
 POOL_FILE="$HOME/.codex-profiles/.codexb/disabled"
 cp "$POOL_FILE" "$WORK/pool-backup"
@@ -236,13 +253,13 @@ else
   assert test "$(cat "$POOL_FILE")" = "$(cat "$WORK/pool-backup")"
 fi
 chmod 600 "$POOL_FILE"
-# Exclusion is not unreachability: a direct run must still reach an excluded account.
+# Exclusion IS unreachability for a headless run, however the account is named.
 assert grep -qx alpha "$POOL_FILE"
 : >"$CODEX_CALLS"
-assert bash "$SCRIPT" alpha exec --pooled
-assert grep -q 'CALL account=alpha' "$CODEX_CALLS"
-# A pool entry must not outlive its account, or the last-member guard keeps counting a ghost
-# and a future account created under that name is silently excluded.
+assert_fails bash "$SCRIPT" alpha exec --pooled
+assert_fails grep -q 'CALL account=alpha' "$CODEX_CALLS"
+# A pool entry must not outlive its account, or a future account created under that name is
+# silently excluded.
 bash "$SCRIPT" add poolghost >/dev/null || fail "add poolghost failed"
 assert cx disable poolghost
 assert grep -qx poolghost "$POOL_FILE"
@@ -685,6 +702,21 @@ assert grep -qx -- '--account codex' "$IMAGE_PICK_CALLS"
 assert grep -qx "account=picked home=$WORK/image-profiles/picked" "$IMAGE_CALLS"
 assert grep -q 'Use low quality' "$IMAGE_PROMPT"
 
+# codex-image runs codex headless past codexb, so the pool has to stop it there too — and the pin
+# is the one thing that gets it through.
+IMAGE_POOL_DIR="$HOME/.codex-profiles/.codexb"
+mkdir -p "$IMAGE_POOL_DIR"
+printf 'explicit\n' >"$IMAGE_POOL_DIR/disabled"
+image_rc=0
+image_run --dest "$WORK/image-output/walled.jpg" --prompt landscape --account explicit || image_rc=$?
+assert test "$image_rc" -eq 4
+assert grep -q 'codex: explicit is out of the worker pool' "$IMAGE_ERR"
+assert test ! -e "$WORK/image-output/walled.jpg"
+printf 'codex_profile=explicit\n' >"$HOME/.claude/worker-model"
+assert image_run --dest "$WORK/image-output/pinned-through.jpg" --prompt landscape --account explicit
+assert grep -qx 'generated:explicit' "$WORK/image-output/pinned-through.jpg"
+rm -f "$IMAGE_POOL_DIR/disabled"
+
 printf 'codex_profile=pinacct\n' >"$HOME/.claude/worker-model"
 IMAGE_PICK_MODE=fail
 export IMAGE_PICK_MODE
@@ -759,4 +791,4 @@ assert env CODEX_IMAGE_DEADLINE=garbage PATH="$IMAGE_PATH" TMPDIR="$IMAGE_TMPDIR
   --prompt landscape --account main >"$IMAGE_OUT" 2>"$IMAGE_ERR"
 assert grep -qx 'account=main' "$IMAGE_OUT"
 
-echo "PASS: $asserts asserts; add and shared-link trap, worker-pool exclusion (pick skips it, direct run still reaches it, last member protected, visible in list/status), list/status, quota-aware authenticated pick with main-last priority, reset credits, auth-needed cache markers, dead-token classification (short cause, no raw RPC blob) with list/status/pick honoring the marker over lying local auth.json, a transient non-auth error preserving the definite auth verdict while fresh weather on a never-marked account stays non-auth, and marker recovery only on a genuinely good probe, exact run environments/arguments, one-step profile auto-create with shared links, browser-OAuth menu login passthrough with device-auth de-advertised everywhere yet still working manually, and missing-name guard, existing-profile relaunch stays quiet, creation-only reserved-name guards, leading-hyphen and charset rejection parity, multi-account cache compatibility, remove forgets profiles including reserved legacy names and prunes the cache entry (main refused), use pin set/show/clear/refusal parity, and Codex image generation routing, prompt, account environments, rescue, generation deadline with garbage-value fallback, extensionless-dest refusal, and limits"
+echo "PASS: $asserts asserts; add and shared-link trap, worker-pool exclusion (pick skips it, headless runs are refused however named, interactive and pinned runs pass, the last member goes out too, visible in list/status), list/status, quota-aware authenticated pick with main-last priority, reset credits, auth-needed cache markers, dead-token classification (short cause, no raw RPC blob) with list/status/pick honoring the marker over lying local auth.json, a transient non-auth error preserving the definite auth verdict while fresh weather on a never-marked account stays non-auth, and marker recovery only on a genuinely good probe, exact run environments/arguments, one-step profile auto-create with shared links, browser-OAuth menu login passthrough with device-auth de-advertised everywhere yet still working manually, and missing-name guard, existing-profile relaunch stays quiet, creation-only reserved-name guards, leading-hyphen and charset rejection parity, multi-account cache compatibility, remove forgets profiles including reserved legacy names and prunes the cache entry (main refused), use pin set/show/clear/refusal parity, and Codex image generation routing, prompt, account environments, rescue, generation deadline with garbage-value fallback, extensionless-dest refusal, and limits"

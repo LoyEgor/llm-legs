@@ -4,10 +4,46 @@
 # The file lives in a dot-directory beside that vendor's profiles, where the profile
 # enumerators' `*` glob cannot see it, so a pool file can never be mistaken for an account.
 #
-# Membership is deliberately NOT the same thing as reachability: an excluded account still
-# launches when named directly, because the exclusion speaks for automatic selection only.
+# Membership IS reachability for every headless launch: a worker cannot touch an excluded
+# account even when a caller names it outright. An exclusion that only steered the automatic
+# selection was no answer at all — a model told "you have limits, use another account" simply
+# named an excluded one and the toggle meant nothing. The only override is the vendor pin in
+# worker-model: naming an account there is the deliberate "use this one anyway". Interactive
+# launches are the human, never a worker, and are never gated — which is also why an empty pool
+# is a legitimate state: it says "no worker may run", not "nobody may work".
 
 worker_pool_file() { printf '%s/disabled\n' "$1"; }
+
+# The pool directory per vendor, so the three CLIs and worker-run cannot drift apart on where a
+# vendor's membership lives. Codex reads CODEXB_PROFILES_DIR alone — the variable codexb and
+# llm-limits.sh already enumerate accounts by; honouring worker-run's CODEX_PROFILES_DIR as well
+# would let one store hold the accounts and another the exclusions.
+worker_pool_dir() {
+  case "$1" in
+    claudeb) printf '%s\n' "${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}" ;;
+    codex) printf '%s/.codexb\n' "${CODEXB_PROFILES_DIR:-$HOME/.codex-profiles}" ;;
+    gemini) printf '%s/.geminib\n' "${GEMINIB_PROFILES_DIR:-$HOME/.gemini-profiles}" ;;
+    *) return 1 ;;
+  esac
+}
+
+# The wall itself: 0 when this account may carry a headless run, 1 with a refusal on stderr when
+# the pool says no. The pin is passed in rather than read here, because the pin lives in
+# worker-model and this file must stay loadable on its own.
+worker_pool_refuse_headless() {
+  local vendor="$1" account="$2" pin="$3" dir
+  # Fail CLOSED on a vendor this file does not know, like every other rule here: a typo or a
+  # fourth vendor wired in without a pool directory would otherwise switch the wall off silently.
+  if ! dir=$(worker_pool_dir "$vendor"); then
+    printf 'worker-pool: no pool directory for vendor %s; refusing the run rather than skipping the check\n' "$vendor" >&2
+    return 1
+  fi
+  worker_pool_is_disabled "$dir" "$account" || return 0
+  [ -n "$pin" ] && [ "$pin" = "$account" ] && return 0
+  printf '%s: %s is out of the worker pool, so no headless run may use it. Turn "In worker pool" back on for it, or pin it in ~/.claude/worker-model.\n' \
+    "$vendor" "$account" >&2
+  return 1
+}
 
 # A file that exists but cannot be read fails CLOSED — every account of that vendor is treated as
 # excluded, loudly. Reading it as "no exclusions" would do the one thing the file exists to

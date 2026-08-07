@@ -2,7 +2,6 @@
 set -euo pipefail
 
 profiles_dir="${CODEXB_PROFILES_DIR:-$HOME/.codex-profiles}"
-pool_dir="$profiles_dir/.codexb"
 shared_items=(config.toml AGENTS.md skills plugins rules)
 
 resolve_root() {
@@ -19,6 +18,7 @@ codexb_root=$(resolve_root)
 . "$codexb_root/share/worker-pool.sh"
 . "$codexb_root/share/worker-model.sh"
 . "$codexb_root/share/account-announce.sh"
+pool_dir=$(worker_pool_dir codex)
 
 is_disabled() { worker_pool_is_disabled "$pool_dir" "$1"; }
 set_disabled() { worker_pool_set_disabled "$pool_dir" "$1" "$2"; }
@@ -265,7 +265,7 @@ enable_account() {
 }
 
 disable_account() {
-  local name="${1:-}" other enabled_left=0
+  local name="${1:-}"
   if [ -z "$name" ]; then
     printf 'usage: codexb disable <name>\n' >&2
     exit 2
@@ -277,17 +277,6 @@ disable_account() {
   if is_disabled "$name"; then
     printf 'codexb: %s is already disabled\n' "$name"
     return
-  fi
-  # An empty pool would leave `pick` with nothing to answer and no way back except editing the
-  # file by hand, so the last member stays in — same guard claudeb has.
-  while IFS= read -r other; do
-    if [ "$other" != "$name" ] && ! is_disabled "$other"; then
-      enabled_left=$((enabled_left + 1))
-    fi
-  done < <(account_names)
-  if [ "$enabled_left" -eq 0 ]; then
-    printf 'codexb: refusing to disable %s: it is the last enabled account\n' "$name" >&2
-    exit 1
   fi
   set_disabled "$name" on
   printf 'codexb: disabled %s\n' "$name"
@@ -337,6 +326,11 @@ run_account() {
     exit 2
   fi
   shift 2
+  # `codex exec` is a program calling codexb; an interactive session is Egor, and only the
+  # program half answers to the pool.
+  if [ "${1:-}" = exec ]; then
+    worker_pool_refuse_headless codex "$name" "$(worker_model_pinned_account codex_profile)" || exit 2
+  fi
   if [ "$name" = main ]; then
     exec env -u CODEX_HOME codex "$@"
   fi
@@ -373,7 +367,7 @@ show_help() {
     'codexb add <name>                      Create a profile without launching; prints the login command.' \
     'codexb remove <name> [--force]         Forget a profile and prune its cached quota; --force overrides the logged-in guard.' \
     'codexb enable <name>                   Return an account to worker selection.' \
-    'codexb disable <name>                  Exclude an account from worker selection; it still runs when named.' \
+    'codexb disable <name>                  Exclude an account from the worker pool; headless runs are then refused, your own sessions are not.' \
     'codexb use <name>|--clear              Pin worker selection to one account; no name prints the pin.' \
     'codexb list                            List profiles with login state.' \
     'codexb status                          Per-account login state and quota.' \

@@ -19,11 +19,11 @@ geminib_root=$(resolve_root)
 quota_helper="${GEMINIB_QUOTA_CMD:-$geminib_root/agy-quota.py}"
 gemini_base_home=$base_home
 gemini_profiles_dir=$profiles_dir
-pool_dir="$profiles_dir/.geminib"
 . "$geminib_root/share/gemini-accounts.sh"
 . "$geminib_root/share/worker-pool.sh"
 . "$geminib_root/share/worker-model.sh"
 . "$geminib_root/share/account-announce.sh"
+pool_dir=$(worker_pool_dir gemini)
 
 is_disabled() { worker_pool_is_disabled "$pool_dir" "$1"; }
 set_disabled() { worker_pool_set_disabled "$pool_dir" "$1" "$2"; }
@@ -54,7 +54,7 @@ enable_account() {
 }
 
 disable_account() {
-  local name="${1:-}" other enabled_left=0
+  local name="${1:-}"
   if [ -z "$name" ]; then
     printf 'usage: geminib disable <name>\n' >&2
     exit 2
@@ -66,15 +66,6 @@ disable_account() {
   if is_disabled "$name"; then
     printf 'geminib: %s is already disabled\n' "$name"
     return
-  fi
-  while IFS= read -r other; do
-    if [ "$other" != "$name" ] && ! is_disabled "$other"; then
-      enabled_left=$((enabled_left + 1))
-    fi
-  done < <(gemini_account_names)
-  if [ "$enabled_left" -eq 0 ]; then
-    printf 'geminib: refusing to disable %s: it is the last enabled account\n' "$name" >&2
-    exit 1
   fi
   set_disabled "$name" on
   printf 'geminib: disabled %s\n' "$name"
@@ -273,7 +264,7 @@ show_status() {
 }
 
 run_account() {
-  local allow_create="$1" name="${2:-}" directory created=false
+  local allow_create="$1" name="${2:-}" directory created=false arg
   if [ "$allow_create" = true ] && { [ "$name" = -h ] || [ "$name" = --help ]; }; then
     show_help
     return
@@ -287,6 +278,15 @@ run_account() {
     exit 2
   fi
   shift 2
+  # `--print` is agy's headless form, so it is a worker asking; an interactive session is Egor.
+  for arg in "$@"; do
+    case "$arg" in
+      --print|--print=*)
+        worker_pool_refuse_headless gemini "$name" "$(worker_model_pinned_account gemini_profile)" || exit 2
+        break
+        ;;
+    esac
+  done
   if [ "$name" = main ]; then
     exec env HOME="$base_home" "$agy_bin" "$@"
   fi
@@ -320,7 +320,7 @@ show_help() {
     'geminib add <name>                    Create a profile without launching; prints the login command.' \
     'geminib remove <name>                 Forget a profile and prune its cached quota.' \
     'geminib enable <name>                 Return an account to worker selection.' \
-    'geminib disable <name>                Exclude an account from worker selection; it still runs when named.' \
+    'geminib disable <name>                Exclude an account from the worker pool; headless runs are then refused, your own sessions are not.' \
     'geminib use <name>|--clear            Pin worker selection to one account; no name prints the pin.' \
     'geminib list                          List profiles with login state.' \
     'geminib status                        Per-account login state and quota.'
