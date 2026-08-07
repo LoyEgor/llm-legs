@@ -2659,21 +2659,22 @@ subprocess.run(
 )
 # The gate that blocks a commit opens the cycle; every `review --worktree` below is a panel that
 # flow asked for, so each fixture repository carries the file the gate would have left.
-def cycle_path(repo, session=None):
+def cycle_path(repo, session=""):
     gitdir = subprocess.run(
         ["git", "-C", str(repo), "rev-parse", "--absolute-git-dir"],
         check=True, capture_output=True, text=True,
     ).stdout.strip()
-    if session is None:
-        session = rb.review_cycle_session()
     return pathlib.Path(gitdir) / ("review-cycle" + (f"-{session}" if session else ""))
 
 
-def arm_review_cycle(repo, stage="armed1", session=None):
+def arm_review_cycle(repo, stage="armed1", session="", entries=()):
     path = cycle_path(repo, session)
-    # The gate's own three fields: stage, the run id in the receipt when the stage was written, and
-    # the tree that run read. Only the first is read here, and only ever read.
-    path.write_bytes(b"\0".join([stage.encode(), b"", b""]) + b"\0")
+    # The gate's own four fields: stage, the run id in the receipt when the stage was written, the
+    # tree that run read and the UTC second the cycle opened, then one `<blob> <path>` entry per
+    # path the pending commit carries. Written here, never rewritten: the file is the gate's.
+    fields = [stage.encode(), b"", b"", b"2026-08-07T00:00:00"]
+    fields += [entry.encode() if isinstance(entry, str) else entry for entry in entries]
+    path.write_bytes(b"\0".join(fields) + b"\0")
     return path
 
 
@@ -2801,7 +2802,7 @@ for stage in ("armed1", "armed2"):
     assert "working tree matches HEAD" in armed.stderr, (stage, armed.stderr)
 # Read and left alone: the gate spends this file at the commit it opened it for, and a peek that
 # consumed it would leave that commit blocked on a round nothing can authorize.
-assert cycle_path(cycle_repo).read_bytes() == b"armed2\0\0\0"
+assert cycle_path(cycle_repo).read_bytes() == b"armed2\0\0\0" + b"2026-08-07T00:00:00\0"
 # Egor asking for a review by name is the other door, and it is the prefix the flow gate already
 # verifies against the transcript — taken at face value here, since a flag of this tool's own would
 # be one the caller grants itself unchecked.
@@ -2815,8 +2816,7 @@ for value in ("", "0", "yes"):
     not_asked = review_worktree(cycle_repo, env={**CYCLE_ENV, "REVIEW_ASKED": value})
     assert not_asked.returncode == 2, (value, not_asked)
     assert CYCLE_REFUSAL in not_asked.stderr, (value, not_asked.stderr)
-# Outside a chat nothing names a session, and the gate keys its file on the checkout alone there —
-# so that is the file this reads.
+# Outside a chat nothing names a session, and the gate keys its file on the checkout alone there.
 sessionless_env = {
     key: value for key, value in CYCLE_ENV.items() if key != "CLAUDE_CODE_SESSION_ID"
 }
@@ -2824,27 +2824,26 @@ arm_review_cycle(cycle_repo, "armed1", session="")
 sessionless = review_worktree(cycle_repo, env=sessionless_env)
 assert sessionless.returncode != 0, sessionless
 assert CYCLE_REFUSAL not in sessionless.stderr, sessionless.stderr
-# A session id a path could be built out of is not a name either side will key a file on, so both
-# fall back to that same checkout-wide file.
-traversal = review_worktree(
-    cycle_repo, env={**CYCLE_ENV, "CLAUDE_CODE_SESSION_ID": "../evil"},
-)
-assert traversal.returncode != 0, traversal
-assert CYCLE_REFUSAL not in traversal.stderr, traversal.stderr
-# And a chat with a session of its own is answered by its own file only: one co-tenant's open
-# cycle must not authorize another's mid-work panel.
-named_session_env = {**CYCLE_ENV, "CLAUDE_CODE_SESSION_ID": "chat-1"}
-foreign_cycle = review_worktree(cycle_repo, env=named_session_env)
-assert foreign_cycle.returncode == 2, foreign_cycle
-assert CYCLE_REFUSAL in foreign_cycle.stderr, foreign_cycle.stderr
-arm_review_cycle(cycle_repo, "armed1", session="chat-1")
-own_cycle = review_worktree(cycle_repo, env=named_session_env)
-assert own_cycle.returncode != 0, own_cycle
-assert CYCLE_REFUSAL not in own_cycle.stderr, own_cycle.stderr
 cycle_path(cycle_repo, "").unlink()
-cycle_path(cycle_repo, "chat-1").unlink()
-# Neither file, and the refusal is the same one: a session the harness never named is not a door
-# left open.
+# The authorization belongs to the checkout, not to a chat: the session that runs the review the
+# checkout owes is routinely not the one whose commit the gate blocked — an orchestrator's block,
+# a worker's panel — so ANY session's armed file opens this door.
+foreign_cycle_path = arm_review_cycle(cycle_repo, "armed1", session="chat-2")
+foreign_cycle = review_worktree(
+    cycle_repo, env={**CYCLE_ENV, "CLAUDE_CODE_SESSION_ID": "chat-1"},
+)
+assert foreign_cycle.returncode != 0, foreign_cycle
+assert CYCLE_REFUSAL not in foreign_cycle.stderr, foreign_cycle.stderr
+foreign_cycle_path.unlink()
+# A file this build cannot parse is no authorization: the format is the gate's, and guessing at an
+# unknown shape is how a wall turns into an open door.
+unreadable_cycle = cycle_path(cycle_repo, "chat-3")
+unreadable_cycle.write_bytes(b"")
+unparsed = review_worktree(cycle_repo)
+assert unparsed.returncode == 2, unparsed
+assert CYCLE_REFUSAL in unparsed.stderr, unparsed.stderr
+unreadable_cycle.unlink()
+# No file at all, and the refusal is the same one.
 nothing_armed = review_worktree(cycle_repo, env=sessionless_env)
 assert nothing_armed.returncode == 2, nothing_armed
 assert CYCLE_REFUSAL in nothing_armed.stderr, nothing_armed.stderr
@@ -2877,6 +2876,130 @@ cycle_run = subprocess.run(
 assert cycle_run.returncode != 0
 assert CYCLE_REFUSAL not in cycle_run.stderr, cycle_run.stderr
 assert "working tree matches HEAD" in cycle_run.stderr, cycle_run.stderr
+
+# `reviewed --ticket` is the stamp hook's whole judgement: the gate's ticket names the content it
+# let a commit carry, and that content reachable in HEAD over a clean tree is the cycle's end.
+ticket_repo = work / "ticket-stamp"
+ticket_repo.mkdir()
+subprocess.run(["git", "-C", str(ticket_repo), "init", "-q"], check=True)
+(ticket_repo / "a.txt").write_text("reviewed\n")
+subprocess.run(["git", "-C", str(ticket_repo), "add", "a.txt"], check=True)
+subprocess.run(
+    ["git", "-C", str(ticket_repo), "-c", "user.name=Fixture",
+     "-c", "user.email=fixture@example.com", "commit", "-qm", "landed"],
+    check=True,
+)
+ticket_state = work / "ticket-stamp-state"
+ticket_env = {**CYCLE_ENV, "WORKER_STATS_DIR": str(ticket_state)}
+
+
+def stamp_ticket():
+    return subprocess.run(
+        [sys.argv[1], "reviewed", "--repo", str(ticket_repo), "--ticket"],
+        capture_output=True, text=True, env=ticket_env,
+    )
+
+
+def ticket_receipt_run():
+    proc = subprocess.run(
+        [sys.argv[1], "receipt", "--repo", str(ticket_repo)],
+        capture_output=True, text=True, env=ticket_env,
+    )
+    return json.loads(proc.stdout)["run_id"] if proc.returncode == 0 else None
+
+
+ticket_blob = subprocess.run(
+    ["git", "-C", str(ticket_repo), "rev-parse", "HEAD:a.txt"],
+    check=True, capture_output=True, text=True,
+).stdout.strip()
+no_ticket = stamp_ticket()
+assert no_ticket.returncode == 3, no_ticket
+assert ticket_receipt_run() is None
+# A ticket whose content is nowhere in HEAD is a commit that never landed — rejected message,
+# abandoned attempt — and the round it was granted for is still owed.
+unlanded_ticket = arm_review_cycle(
+    ticket_repo, "ticket", session="chat-unlanded", entries=[f"{'0' * 40} a.txt"],
+)
+assert stamp_ticket().returncode == 3
+assert unlanded_ticket.exists()
+landed_ticket = arm_review_cycle(
+    ticket_repo, "ticket", session="chat-landed", entries=[f"{ticket_blob} a.txt"],
+)
+# The stamp covers the whole tree, so anything left uncommitted would be marked reviewed with it —
+# and the ticket is spent all the same, its job having ended with the commit that landed its
+# content. Left standing, it would stamp some later clean-tree commit no gate ever priced.
+(ticket_repo / "leftover.txt").write_text("dirty\n")
+dirty_stamp = stamp_ticket()
+assert dirty_stamp.returncode == 3, dirty_stamp
+assert not landed_ticket.exists()
+assert unlanded_ticket.exists()
+assert ticket_receipt_run() is None
+(ticket_repo / "leftover.txt").unlink()
+landed_ticket = arm_review_cycle(
+    ticket_repo, "ticket", session="chat-landed", entries=[f"{ticket_blob} a.txt"],
+)
+# An armed cycle is a review still owed; the stamp has no business spending one.
+armed_kept = arm_review_cycle(ticket_repo, "armed1", session="chat-armed")
+unreadable_ticket = cycle_path(ticket_repo, "chat-unreadable")
+unreadable_ticket.write_bytes(b"")
+stamped_ticket = stamp_ticket()
+assert stamped_ticket.returncode == 0, stamped_ticket
+assert ticket_receipt_run().startswith("stamped-")
+assert not landed_ticket.exists()
+assert unlanded_ticket.exists()
+assert armed_kept.exists()
+assert unreadable_ticket.exists()
+# And the ticket is gone with it: a spent one left behind would stamp the NEXT commit, one no gate
+# ever priced, as reviewed.
+(ticket_repo / "b.txt").write_text("new work\n")
+subprocess.run(["git", "-C", str(ticket_repo), "add", "b.txt"], check=True)
+subprocess.run(
+    ["git", "-C", str(ticket_repo), "-c", "user.name=Fixture",
+     "-c", "user.email=fixture@example.com", "commit", "-qm", "unpriced"],
+    check=True,
+)
+stamped_run = ticket_receipt_run()
+assert stamp_ticket().returncode == 3
+assert ticket_receipt_run() == stamped_run
+# A deletion hashes to nothing, so the gate records `gone` and the path's ABSENCE from HEAD is
+# what pays: while it is still there, the commit that removes it has not happened yet.
+(ticket_repo / "doomed.txt").write_text("doomed\n")
+subprocess.run(["git", "-C", str(ticket_repo), "add", "doomed.txt"], check=True)
+subprocess.run(
+    ["git", "-C", str(ticket_repo), "-c", "user.name=Fixture",
+     "-c", "user.email=fixture@example.com", "commit", "-qm", "doomed"],
+    check=True,
+)
+gone_ticket = arm_review_cycle(
+    ticket_repo, "ticket", session="chat-gone", entries=["gone doomed.txt"],
+)
+assert stamp_ticket().returncode == 3
+assert gone_ticket.exists()
+subprocess.run(["git", "-C", str(ticket_repo), "rm", "-q", "doomed.txt"], check=True)
+subprocess.run(
+    ["git", "-C", str(ticket_repo), "-c", "user.name=Fixture",
+     "-c", "user.email=fixture@example.com", "commit", "-qm", "the deletion"],
+    check=True,
+)
+gone_stamp = stamp_ticket()
+assert gone_stamp.returncode == 0, gone_stamp
+# Never compared against the previous run id: stamp ids carry seconds, and two stamps inside one
+# second read equal. The receipt tree moving to the deletion's HEAD is what proves a fresh stamp.
+gone_receipt = subprocess.run(
+    [sys.argv[1], "receipt", "--repo", str(ticket_repo)],
+    capture_output=True, text=True, env=ticket_env,
+)
+assert gone_receipt.returncode == 0, gone_receipt
+gone_head_tree = subprocess.run(
+    ["git", "-C", str(ticket_repo), "rev-parse", "HEAD^{tree}"],
+    capture_output=True, text=True, check=True,
+).stdout.strip()
+assert json.loads(gone_receipt.stdout)["tree"] == gone_head_tree
+assert not gone_ticket.exists()
+assert unlanded_ticket.exists()
+unlanded_ticket.unlink()
+armed_kept.unlink()
+unreadable_ticket.unlink()
 
 fake_codex = work / "fake-codex"
 fake_codex.write_text("""#!/usr/bin/env bash
@@ -9171,9 +9294,9 @@ GATE_SD="$STALE_SD" gate_run 20260730T000000Z-gatestale 48 1
 gate_stale=$(WORKER_STATS_DIR="$STALE_SD" "$SCRIPT" pending-report --repo "$GATE_REPO" || true)
 assert test -z "$gate_stale"
 
-# A scoped run is exactly as invisible to the stamp hook as a lens run: `receipt` with no
-# selector answers for the repository, a review of part of the tree cannot, so the hook finds
-# nothing and the label stays lit. The scope's own receipt is readable only when asked for by name.
+# A review of part of the tree never answers for the repository: `receipt` with no selector finds
+# nothing, and a commit no gate priced carries no ticket either, so the stamp hook writes no
+# whole-repo receipt over it. The scope's own receipt is readable only when asked for by name.
 SCOPE_REPO="$WORK/scoped-worktree"
 SCOPE_SD="$WORK/scope-run-claudeb/worker-stats"
 scope_receipt_rc=0
@@ -9193,10 +9316,9 @@ scope_receipt_files=$(ls "$SCOPE_SD/receipts")
 assert test "$(wc -l <<<"$scope_receipt_files" | tr -d ' ')" -eq 1
 assert contains "$scope_receipt_files" '__scope-'
 
-# A day-one repository must be able to FINISH a review, not only start one. Both shapes end here,
-# through the real hook: a commit review whose fixes land on top of the root commit, and a snapshot
-# taken on no parent at all — its base is the empty tree, and the work it reviewed lands as the
-# repository's own first commit.
+# A day-one repository must be able to FINISH a review, not only start one: its first commit has
+# no parent, and every stamp shape that reasoned backwards from HEAD stalled there. A ticket names
+# content rather than a position in the history, so the root commit answers it like any other.
 root_hook_receipt_path() { # top statedir
   printf '%s/receipts/%s__%s.json' "$2" "$(basename "$1")" \
     "$(printf '%s' "$1" | shasum -a 1 | awk '{print substr($1, 1, 8)}')"
@@ -9211,69 +9333,17 @@ ROOT_COMMIT_SD="$WORK/root-hook-commit-state"
 mkdir -p "$ROOT_COMMIT_REPO" "$ROOT_COMMIT_SD/receipts"
 git -C "$ROOT_COMMIT_REPO" init -q -b main
 printf 'day one\n' >"$ROOT_COMMIT_REPO/a.txt"
+root_commit_gitdir=$(git -C "$ROOT_COMMIT_REPO" rev-parse --absolute-git-dir)
+printf '%s\0' ticket '' '' '2026-08-07T00:00:00' \
+  "$(git -C "$ROOT_COMMIT_REPO" hash-object a.txt) a.txt" \
+  >"$root_commit_gitdir/review-cycle-day-one"
 git -C "$ROOT_COMMIT_REPO" add -A
 git -C "$ROOT_COMMIT_REPO" -c user.name=Fixture -c user.email=fixture@example.com commit -qm root
-root_commit_top=$(cd "$ROOT_COMMIT_REPO" && pwd -P)
-root_commit_receipt=$(root_hook_receipt_path "$root_commit_top" "$ROOT_COMMIT_SD")
-jq -cn --arg repo "$root_commit_top" \
-  --arg tree "$(git -C "$ROOT_COMMIT_REPO" rev-parse 'HEAD^{tree}')" \
-  --arg commit "$(git -C "$ROOT_COMMIT_REPO" rev-parse HEAD)" \
-  '{repo:$repo,tree:$tree,commit:$commit,run_id:"root-commit-run",
-    ts:"2026-08-02T00:00:00+00:00",errored:0,panel:9}' >"$root_commit_receipt"
-jq -cn '{run_id:"root-commit-run",rater:"sol-low",confirmed:2}' \
-  >"$ROOT_COMMIT_SD/reviews.jsonl"
-printf 'day one fixed\n' >"$ROOT_COMMIT_REPO/a.txt"
-git -C "$ROOT_COMMIT_REPO" add -A
-git -C "$ROOT_COMMIT_REPO" -c user.name=Fixture -c user.email=fixture@example.com commit -qm fixes
 root_hook_fire "$ROOT_COMMIT_REPO" "$ROOT_COMMIT_SD"
+root_commit_receipt=$(root_hook_receipt_path \
+  "$(cd "$ROOT_COMMIT_REPO" && pwd -P)" "$ROOT_COMMIT_SD")
 assert grep -q '^stamped-' <<<"$(jq -r '.run_id' "$root_commit_receipt")"
-
-# The snapshot shape. Its base is the empty tree, which the receipt has to name for the hook to
-# have any fixed point at all — an empty base is what left this cycle open forever.
-for root_wt_case in lands rides; do
-  ROOT_WT_REPO="$WORK/root-hook-wt-$root_wt_case"
-  ROOT_WT_SD="$WORK/root-hook-wt-$root_wt_case-state"
-  mkdir -p "$ROOT_WT_REPO" "$ROOT_WT_SD/receipts" "$ROOT_WT_SD/benches/root-wt-run"
-  git -C "$ROOT_WT_REPO" init -q -b main
-  printf 'reviewed\n' >"$ROOT_WT_REPO/a.txt"
-  git -C "$ROOT_WT_REPO" add -A
-  root_wt_tree=$(git -C "$ROOT_WT_REPO" write-tree)
-  # commit-tree with no -p: the shape review-bench itself cannot produce, and the one whose
-  # receipt reported an empty base and could never be answered.
-  root_wt_snapshot=$(git -C "$ROOT_WT_REPO" -c user.name=review-bench \
-    -c user.email=review-bench@local commit-tree "$root_wt_tree" \
-    -m 'review-bench worktree snapshot')
-  root_wt_top=$(cd "$ROOT_WT_REPO" && pwd -P)
-  root_wt_receipt=$(root_hook_receipt_path "$root_wt_top" "$ROOT_WT_SD")
-  jq -cn --arg repo "$root_wt_top" --arg tree "$root_wt_tree" --arg commit "$root_wt_snapshot" \
-    '{repo:$repo,tree:$tree,commit:$commit,run_id:"root-wt-run",
-      ts:"2026-08-02T00:00:00+00:00",errored:0,panel:9}' >"$root_wt_receipt"
-  jq -cn --arg commit "$root_wt_snapshot" \
-    '{run_id:"root-wt-run",commit:$commit,repo:"fixture",raters:["sol-high"],
-      rater_runs:[],worktree:true}' >"$ROOT_WT_SD/benches/root-wt-run/meta.json"
-  jq -cn '{severity:"P2",file:"a.txt",line:1,summary:"finding"}' \
-    >"$ROOT_WT_SD/benches/root-wt-run/findings-sol-high.jsonl"
-  root_wt_base=$(WORKER_STATS_DIR="$ROOT_WT_SD" "$SCRIPT" receipt --repo "$ROOT_WT_REPO" \
-    | jq -r '.base')
-  assert test "$root_wt_base" = "$(git -C "$ROOT_WT_REPO" hash-object -t tree /dev/null)"
-  if test "$root_wt_case" = rides; then
-    # Never-reviewed code landing first: the snapshot was taken on nothing, so anything under HEAD
-    # that is not the reviewed work would be stamped along with it.
-    printf 'unrelated\n' >"$ROOT_WT_REPO/b.txt"
-    git -C "$ROOT_WT_REPO" add -A
-    git -C "$ROOT_WT_REPO" -c user.name=Fixture -c user.email=fixture@example.com commit -qm seed
-  fi
-  printf 'reviewed and fixed\n' >"$ROOT_WT_REPO/a.txt"
-  git -C "$ROOT_WT_REPO" add -A
-  git -C "$ROOT_WT_REPO" -c user.name=Fixture -c user.email=fixture@example.com commit -qm fixes
-  root_hook_fire "$ROOT_WT_REPO" "$ROOT_WT_SD"
-  root_wt_after=$(jq -r '.run_id' "$root_wt_receipt")
-  if test "$root_wt_case" = lands; then
-    assert grep -q '^stamped-' <<<"$root_wt_after"
-  else
-    assert test "$root_wt_after" = root-wt-run
-  fi
-done
+assert test ! -f "$root_commit_gitdir/review-cycle-day-one"
 
 TRIAGE_HOOK="${REVIEW_TRIAGE_HOOK:-"$ROOT/../claude-setup/hooks/review-triage-nudge.sh"}"
 if test -x "$TRIAGE_HOOK"; then

@@ -2910,10 +2910,10 @@ review_stamp_committed_out=$(review_render review-stamp "$REVIEW_STAMP")
 assert test "${review_stamp_committed_out#*"$review_delimited"}" = "$review_stamp_committed_out"
 
 # --- review-stamp-hook.sh ---
-# The label can only go out if something ends the review cycle: fixes change the tree, so the
-# panel's own findings relight it forever. The hook stamps exactly one moment - a commit sitting
-# directly on the reviewed content while a review that confirmed defects is this repository's
-# receipt - and nothing else.
+# The label can only go out if something ends the review cycle: the fixes a panel provokes change
+# the tree, so its own findings relight it forever. The commit gate already names that end - a
+# triaged review buys a ticket recording the exact content the passing commit carries - so the hook
+# stamps when such a ticket has landed over a clean tree, and never otherwise.
 STAMP_HOOK="$ROOT/bin/review-stamp-hook.sh"
 HOOK_REPO="$FIXTURES/stamp-hook-repo"
 mkdir -p "$HOOK_REPO"
@@ -2922,202 +2922,112 @@ printf 'one\n' > "$HOOK_REPO/a.txt"
 git -C "$HOOK_REPO" add -A
 git -C "$HOOK_REPO" -c user.name=Fixture -c user.email=fixture@example.com commit -qm base
 hook_root=$(cd "$HOOK_REPO" && pwd -P)
+hook_gitdir=$(git -C "$HOOK_REPO" rev-parse --absolute-git-dir)
 hook_receipt="$CLAUDEB_FIX/worker-stats/receipts/$(basename "$hook_root")__$(printf '%s' "$hook_root" | shasum -a 1 | awk '{print substr($1,1,8)}').json"
-hook_corpus="$CLAUDEB_FIX/worker-stats/reviews.jsonl"
 hook_commit() { # message
   git -C "$HOOK_REPO" add -A
   git -C "$HOOK_REPO" -c user.name=Fixture -c user.email=fixture@example.com commit -qm "$1"
 }
-arm_review() { # run_id confirmed tree
-  jq -cn --arg repo "$hook_root" --arg tree "$3" --arg run "$1" \
+head_tree() { git -C "$HOOK_REPO" rev-parse 'HEAD^{tree}'; }
+receipt_run() { jq -r '.run_id' "$hook_receipt"; }
+# What a review leaves behind. The hook never reads it any more; it is here so a receipt the stamp
+# rewrote can be told apart from one left untouched.
+seed_receipt() { # run_id
+  jq -cn --arg repo "$hook_root" --arg tree "$(head_tree)" --arg run "$1" \
     '{repo:$repo,tree:$tree,commit:"0000000",run_id:$run,
       ts:"2026-07-28T00:00:00+00:00",errored:0,panel:9}' > "$hook_receipt"
-  jq -cn --arg run "$1" --argjson confirmed "$2" \
-    '{run_id:$run,rater:"sol-low",confirmed:$confirmed}' > "$hook_corpus"
+}
+# The gate's own format: NUL-terminated stage, the run id it saw, the tree that run read, the UTC
+# second the cycle opened, then one "<blob> <path>" entry per path the pending commit carries.
+cycle_file() { printf '%s/review-cycle%s' "$hook_gitdir" "${1:+-$1}"; }
+write_cycle() { # session stage [entry...]
+  local session=$1 stage=$2
+  shift 2
+  printf '%s\0' "$stage" '' '' '2026-08-07T00:00:00' "$@" > "$(cycle_file "$session")"
+}
+ticket_entry() { # path
+  printf '%s %s' "$(git -C "$HOOK_REPO" hash-object "$1")" "$1"
 }
 fire_hook() { # command
   jq -cn --arg cwd "$HOOK_REPO" --arg cmd "${1:-git commit -m x}" \
     '{hook_event_name:"PostToolUse",tool_name:"Bash",cwd:$cwd,tool_input:{command:$cmd}}' |
     CLAUDEB_DIR="$CLAUDEB_FIX" REVIEW_STAMP_HOOK_BENCH="$ROOT/bin/review-bench" "$STAMP_HOOK"
 }
-# A worktree review, the way review-bench really stamps one: the receipt names a snapshot commit
-# whose committer identity is what marks it, and the findings live in the run directory because the
-# corpus refuses the run.
-arm_worktree_review() { # run_id findings base
-  local tree snapshot run_dir
-  git -C "$HOOK_REPO" add -A
-  tree=$(git -C "$HOOK_REPO" write-tree)
-  snapshot=$(git -C "$HOOK_REPO" -c user.name=review-bench -c user.email=review-bench@local \
-    commit-tree "$tree" -p "$3" -m 'review-bench worktree snapshot')
-  jq -cn --arg repo "$hook_root" --arg tree "$tree" --arg commit "$snapshot" --arg run "$1" \
-    '{repo:$repo,tree:$tree,commit:$commit,run_id:$run,
-      ts:"2026-07-28T00:00:00+00:00",errored:0,panel:16}' > "$hook_receipt"
-  run_dir="$CLAUDEB_FIX/worker-stats/benches/$1"
-  rm -rf "$run_dir"
-  if [ "$2" -gt 0 ]; then
-    mkdir -p "$run_dir"
-    : > "$run_dir/findings-sol-high.jsonl"
-    for line in $(seq 1 "$2"); do
-      jq -cn --argjson n "$line" '{severity:"P2",file:"a.txt",line:$n,summary:"finding"}' \
-        >> "$run_dir/findings-sol-high.jsonl"
-    done
-  fi
-}
-receipt_tree() { jq -r '.tree' "$hook_receipt"; }
-head_tree() { git -C "$HOOK_REPO" rev-parse 'HEAD^{tree}'; }
 
-arm_review run-fixes 1 "$(head_tree)"
+# The fix commit: the gate granted a ticket for the content this commit was about to carry, and
+# here that content is in HEAD over a clean tree.
+seed_receipt run-fixes
 printf 'one\nfix\n' > "$HOOK_REPO/a.txt"
+write_cycle mine ticket "$(ticket_entry a.txt)"
 hook_commit fixes
 fire_hook
-assert_eq "$(head_tree)" "$(receipt_tree)"
-assert grep -q '^stamped-' <<< "$(jq -r '.run_id' "$hook_receipt")"
+assert grep -q '^stamped-' <<< "$(receipt_run)"
+assert_eq "$(head_tree)" "$(jq -r '.tree' "$hook_receipt")"
+assert test ! -f "$(cycle_file mine)"
 
-# Work written after that stamp is nobody's fix: the receipt no longer names an adjudicated run,
-# so the next commit leaves it alone and the label lights for the new code.
-stamped_tree=$(receipt_tree)
+# Work written after that stamp carries no ticket of its own, so the next commit leaves the receipt
+# alone and the label lights for it.
+stamped_run=$(receipt_run)
 printf 'one\nfix\nfeature\n' > "$HOOK_REPO/a.txt"
 hook_commit feature
 fire_hook
-assert_eq "$stamped_tree" "$(receipt_tree)"
+assert_eq "$stamped_run" "$(receipt_run)"
 
-# A review that confirmed nothing provokes no fixes, so it must not arm the stamp either.
-arm_review run-clean 0 "$(head_tree)"
-printf 'brand new\n' > "$HOOK_REPO/b.txt"
-hook_commit newwork
+# A ticket whose content is nowhere in HEAD is a commit that never landed - a rejected message, an
+# abandoned attempt - so the round it was granted for is still owed and the ticket keeps standing.
+seed_receipt run-unlanded
+write_cycle unlanded ticket "$(printf '%040d' 0) a.txt"
 fire_hook
-assert_eq run-clean "$(jq -r '.run_id' "$hook_receipt")"
+assert_eq run-unlanded "$(receipt_run)"
+assert test -f "$(cycle_file unlanded)"
+rm -f "$(cycle_file unlanded)"
 
-# The stamp covers the whole working tree, so anything left uncommitted would ride along with the
-# fixes; and a Bash call that was not a commit is not the moment this hook exists for.
-arm_review run-dirty 2 "$(git -C "$HOOK_REPO" rev-parse 'HEAD~1^{tree}')"
+# Nothing may be left uncommitted: the stamp covers the whole tree, so a leftover would be marked
+# reviewed along with the fixes. The ticket is spent all the same — its job ended with the commit
+# that landed its content, and left standing it would stamp a later commit nobody priced.
+seed_receipt run-dirty
+printf 'one\nfix\nfeature\ndirty\n' > "$HOOK_REPO/a.txt"
+write_cycle mine ticket "$(ticket_entry a.txt)"
+hook_commit dirty-fix
 printf 'leftover\n' > "$HOOK_REPO/untracked.txt"
 fire_hook
-assert_eq run-dirty "$(jq -r '.run_id' "$hook_receipt")"
+assert_eq run-dirty "$(receipt_run)"
+assert test ! -f "$(cycle_file mine)"
 rm -f "$HOOK_REPO/untracked.txt"
+# A Bash call that was not a commit is not this hook's moment, and spends nothing.
+write_cycle mine ticket "$(ticket_entry a.txt)"
 fire_hook "git status --porcelain"
-assert_eq run-dirty "$(jq -r '.run_id' "$hook_receipt")"
+assert_eq run-dirty "$(receipt_run)"
+assert test -f "$(cycle_file mine)"
 fire_hook
-assert grep -q '^stamped-' <<< "$(jq -r '.run_id' "$hook_receipt")"
+assert grep -q '^stamped-' <<< "$(receipt_run)"
+assert test ! -f "$(cycle_file mine)"
 
-# A review of an uncommitted tree opens a cycle nothing else can close: its reviewed tree is the
-# tree of no commit, so no commit will ever have it as a parent, and the corpus refuses the run, so
-# its confirmed count stays 0 forever. The clean tree descending from the base it was taken on is
-# the work it reviewed having landed, fixes and all.
-wt_base=$(git -C "$HOOK_REPO" rev-parse HEAD)
-printf 'reviewed-dirty\n' >> "$HOOK_REPO/a.txt"
-arm_worktree_review wt-found 2 "$wt_base"
-printf 'the-fix\n' >> "$HOOK_REPO/a.txt"
-hook_commit wt-fixes
+# An armed cycle is a review still owed rather than one already paid for: it stamps nothing, and
+# the stamp is not what spends it either.
+seed_receipt run-armed
+write_cycle armedchat armed1
+printf 'more\n' >> "$HOOK_REPO/a.txt"
+hook_commit armed-work
 fire_hook
-assert_eq "$(head_tree)" "$(receipt_tree)"
-assert grep -q '^stamped-' <<< "$(jq -r '.run_id' "$hook_receipt")"
+assert_eq run-armed "$(receipt_run)"
+assert test -f "$(cycle_file armedchat)"
 
-# And it closes the cycle without switching the label off for good: the stamp rewrote the receipt
-# against HEAD, an ordinary commit with nothing adjudicated, so the next change lights it again.
-wt_stamped=$(receipt_tree)
-printf 'after-the-stamp\n' >> "$HOOK_REPO/a.txt"
-hook_commit wt-after
+# A file this build cannot parse is not state to act on - skipped rather than guessed at, and left
+# where it stands, because the format belongs to the gate.
+: > "$(cycle_file broken)"
 fire_hook
-assert_eq "$wt_stamped" "$(receipt_tree)"
-
-# A worktree review that found nothing provoked no fixes, so the commit that lands the work it saw
-# is not the end of a cycle that never opened.
-wt_base=$(git -C "$HOOK_REPO" rev-parse HEAD)
-printf 'clean-run\n' >> "$HOOK_REPO/a.txt"
-arm_worktree_review wt-clean 0 "$wt_base"
-hook_commit wt-clean-work
+assert_eq run-armed "$(receipt_run)"
+assert test -f "$(cycle_file broken)"
+write_cycle spendable ticket "$(ticket_entry a.txt)"
 fire_hook
-assert_eq wt-clean "$(jq -r '.run_id' "$hook_receipt")"
+assert grep -q '^stamped-' <<< "$(receipt_run)"
+assert test ! -f "$(cycle_file spendable)"
+assert test -f "$(cycle_file broken)"
+assert test -f "$(cycle_file armedchat)"
+rm -f "$(cycle_file broken)" "$(cycle_file armedchat)" "$hook_receipt"
 
-# Reflexivity is not landing: --is-ancestor holds when the base IS HEAD, so a tree that went clean
-# by discarding the reviewed work must not close the cycle. The panel reviewed the snapshot, never
-# the base it was taken on.
-wt_base=$(git -C "$HOOK_REPO" rev-parse HEAD)
-printf 'discarded\n' >> "$HOOK_REPO/a.txt"
-arm_worktree_review wt-discard 1 "$wt_base"
-git -C "$HOOK_REPO" reset -q --hard >/dev/null
-fire_hook
-assert_eq wt-discard "$(jq -r '.run_id' "$hook_receipt")"
-
-# A fix that renames a reviewed file must still close the cycle: with rename detection on, the diff
-# would list only the destination and the path the review knew would look like it never landed.
-wt_base=$(git -C "$HOOK_REPO" rev-parse HEAD)
-printf 'renamed-away\n' >> "$HOOK_REPO/a.txt"
-arm_worktree_review wt-rename 1 "$wt_base"
-git -C "$HOOK_REPO" mv a.txt renamed.txt
-printf 'and-fixed\n' >> "$HOOK_REPO/renamed.txt"
-hook_commit wt-renamed
-fire_hook
-assert grep -q '^stamped-' <<< "$(jq -r '.run_id' "$hook_receipt")"
-
-# Never-reviewed code must not ride along: the cycle closes on the commit that lands the reviewed
-# work, not on anything further down the branch.
-wt_base=$(git -C "$HOOK_REPO" rev-parse HEAD)
-printf 'reviewed-then-more\n' >> "$HOOK_REPO/renamed.txt"
-arm_worktree_review wt-tooLate 1 "$wt_base"
-hook_commit wt-lands
-printf 'never-reviewed\n' > "$HOOK_REPO/extra.txt"
-hook_commit wt-extra
-fire_hook
-assert_eq wt-tooLate "$(jq -r '.run_id' "$hook_receipt")"
-
-# Descending from the base is not carrying what was reviewed: stash the reviewed work, commit
-# something else, and the tree is clean one commit past the base with every other gate satisfied.
-# The paths the snapshot changed are not in what landed, so the cycle stays open.
-wt_base=$(git -C "$HOOK_REPO" rev-parse HEAD)
-printf 'stashed-away\n' >> "$HOOK_REPO/a.txt"
-arm_worktree_review wt-elsewhere 1 "$wt_base"
-git -C "$HOOK_REPO" reset -q --hard >/dev/null
-printf 'unrelated\n' > "$HOOK_REPO/c.txt"
-hook_commit wt-unrelated
-fire_hook
-assert_eq wt-elsewhere "$(jq -r '.run_id' "$hook_receipt")"
-
-# A snapshot taken on a base this history does not contain says nothing about what just landed.
-wt_orphan=$(git -C "$HOOK_REPO" -c user.name=Fixture -c user.email=fixture@example.com \
-  commit-tree "$(head_tree)" -m orphan)
-printf 'foreign\n' >> "$HOOK_REPO/a.txt"
-arm_worktree_review wt-foreign 1 "$wt_orphan"
-hook_commit wt-foreign-work
-fire_hook
-assert_eq wt-foreign "$(jq -r '.run_id' "$hook_receipt")"
-
-# A mode-only commit keeps every reviewed path in base..HEAD even after its content is restored to
-# the base blob. It landed none of the reviewed work and must leave the cycle open.
-wt_base=$(git -C "$HOOK_REPO" rev-parse HEAD)
-printf 'reviewed-but-reverted\n' >> "$HOOK_REPO/a.txt"
-arm_worktree_review wt-reverted 1 "$wt_base"
-git -C "$HOOK_REPO" checkout -q "$wt_base" -- .
-chmod +x "$HOOK_REPO/a.txt"
-hook_commit wt-reverted-mode
-fire_hook
-assert_eq wt-reverted "$(jq -r '.run_id' "$hook_receipt")"
-
-# Landing the snapshot untouched applies no fixes: the findings stand, the label stays lit.
-wt_base=$(git -C "$HOOK_REPO" rev-parse HEAD)
-printf 'committed-as-is\n' >> "$HOOK_REPO/a.txt"
-arm_worktree_review wt-asis 1 "$wt_base"
-hook_commit wt-asis-commit
-fire_hook
-assert_eq wt-asis "$(jq -r '.run_id' "$hook_receipt")"
-
-# A fix that reverts ONE reviewed path while landing work on another still closes the cycle.
-wt_base=$(git -C "$HOOK_REPO" rev-parse HEAD)
-printf 'reviewed-one\n' >> "$HOOK_REPO/a.txt"
-printf 'reviewed-two\n' >> "$HOOK_REPO/c.txt"
-arm_worktree_review wt-partial 1 "$wt_base"
-git -C "$HOOK_REPO" checkout -q "$wt_base" -- a.txt
-printf 'fixed\n' >> "$HOOK_REPO/c.txt"
-hook_commit wt-partial-fix
-fire_hook
-wt_partial_run=$(jq -r '.run_id' "$hook_receipt")
-assert test "$wt_partial_run" != wt-partial
-assert test "${wt_partial_run#stamped-}" != "$wt_partial_run"
-
-rm -f "$hook_receipt" "$hook_corpus"
-
-# A repository nobody reviewed has no receipt to read, and the hook must stay silent over it.
+# A repository nobody reviewed owes no ticket, and the hook must write nothing over it.
 fire_hook
 assert test ! -f "$hook_receipt"
 
@@ -3169,4 +3079,4 @@ for _ in $(seq 1 20); do
 done
 assert test "${review_failing_out#*review T}" = "$review_failing_out"
 
-echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, the merged review lifecycle with precedence, staleness and live-progress cases, the stamp hook that ends a review cycle at the fix commit, main-last and Gemini account predictions, and Codex/claudeb/Gemini worker tag propagation"
+echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, the merged review lifecycle with precedence, staleness and live-progress cases, the stamp hook that ends a review cycle on the gate's spent ticket, main-last and Gemini account predictions, and Codex/claudeb/Gemini worker tag propagation"

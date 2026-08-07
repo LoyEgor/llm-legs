@@ -600,7 +600,10 @@ fi
 CYCLE_NAME=review-cycle
 assert grep -Fq "REVIEW_CYCLE_NAME = \"$CYCLE_NAME\"" "$REVIEWBENCH"
 assert grep -Fq 'REVIEW_CYCLE_ARMED_STAGES = ("armed1", "armed2")' "$REVIEWBENCH"
-assert grep -Fq 'r"[^A-Za-z0-9._-]"' "$REVIEWBENCH"
+assert grep -Fq 'REVIEW_CYCLE_TICKET_STAGE = "ticket"' "$REVIEWBENCH"
+assert grep -Fq 'REVIEW_CYCLE_GONE = "gone"' "$REVIEWBENCH"
+# The reader takes every session's file, so the prefix is the whole name it knows.
+assert grep -Fq 'glob(f"{REVIEW_CYCLE_NAME}*")' "$REVIEWBENCH"
 assert grep -Fq '"git", "rev-parse", "--absolute-git-dir"' "$REVIEWBENCH"
 assert doc_has 'Review commit-cycle file'
 assert doc_has '`[A-Za-z0-9._-]`'
@@ -608,7 +611,7 @@ assert doc_has '`[A-Za-z0-9._-]`'
 FLOW_GATE="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/review-flow-gate.sh"
 if test -r "$FLOW_GATE"; then
   assert grep -Fq "cycle=\"\$gitdir/$CYCLE_NAME\${session:+-\$session}\"" "$FLOW_GATE"
-  assert grep -Fq "name '$CYCLE_NAME-*'" "$FLOW_GATE"
+  assert grep -Fq "name '$CYCLE_NAME*'" "$FLOW_GATE"
   assert grep -Fq '*[!A-Za-z0-9._-]*) session="" ;;' "$FLOW_GATE"
   assert grep -Fq 'rev-parse --absolute-git-dir' "$FLOW_GATE"
   # The stages review-bench reads as armed, written on the gate's own side.
@@ -616,6 +619,14 @@ if test -r "$FLOW_GATE"; then
   assert grep -Fq 'cycle_write armed2' "$FLOW_GATE"
   assert grep -Fq 'cycle_write ticket' "$FLOW_GATE"
   assert grep -Fq 'ticket|armed1|armed2)' "$FLOW_GATE"
+  # Both sides read every session's file for the launch door, and a gate reading only its own
+  # would refuse the panel the checkout owes whenever another chat's commit opened the cycle.
+  assert grep -Fq "for open_cycle in \"\$gitdir\"/$CYCLE_NAME*" "$FLOW_GATE"
+  # A deletion has no blob, and the two sides reading its entry differently is the ticket that is
+  # spent on one side and unspendable on the other.
+  assert grep -Fq 'entries+=("gone $path")' "$FLOW_GATE"
+  assert grep -Fq '[ "$blob" = gone ]' "$FLOW_GATE"
+  assert doc_has '`<blob-sha|gone> <path>`'
 else
   printf 'SKIP: review commit-cycle file across claude-setup (%s is unreadable)\n' "$FLOW_GATE"
 fi

@@ -6132,36 +6132,84 @@ def guard_tier_foreground(args, tier_name):
 
 REVIEW_CYCLE_NAME = "review-cycle"
 REVIEW_CYCLE_ARMED_STAGES = ("armed1", "armed2")
+REVIEW_CYCLE_TICKET_STAGE = "ticket"
+REVIEW_CYCLE_GONE = "gone"
 
 
-def review_cycle_session():
-    """The session component of a cycle file's name, sanitized the way the gate that writes the file
-    sanitizes it: the value goes straight into a filename, so anything a path could be built out of
-    disqualifies it and both sides fall back to the checkout-wide name.
-    """
-    session = os.environ.get("CLAUDE_CODE_SESSION_ID") or ""
-    if session in (".", "..") or re.search(r"[^A-Za-z0-9._-]", session):
-        return ""
-    return session
-
-
-def review_cycle_armed(repo):
-    """Whether the commit gate has an open cycle in `repo` for this session at a stage that
-    authorizes a panel. The file is the gate's state and is only ever read here — spending it
-    belongs to the commit that opened it, and a peek that consumed it would let one blocked commit
-    authorize nothing at all.
+def review_cycle_files(repo):
+    """Every commit cycle the gate has open in `repo`, whichever session opened it. The gate keys a
+    file per session on top of the checkout, and both questions asked here — is a panel authorized,
+    has a ticket's commit landed — belong to the checkout: the session that runs the review the
+    checkout owes is routinely not the one whose commit was blocked.
     """
     proc = subprocess.run(["git", "rev-parse", "--absolute-git-dir"],
                           cwd=str(repo), capture_output=True, text=True)
     if proc.returncode != 0 or not proc.stdout.strip():
-        return False
-    session = review_cycle_session()
-    name = f"{REVIEW_CYCLE_NAME}-{session}" if session else REVIEW_CYCLE_NAME
+        return []
     try:
-        head = (Path(proc.stdout.strip()) / name).read_bytes()
+        return sorted(Path(proc.stdout.strip()).glob(f"{REVIEW_CYCLE_NAME}*"))
     except OSError:
-        return False
-    return head.split(b"\0", 1)[0].decode("utf-8", "replace") in REVIEW_CYCLE_ARMED_STAGES
+        return []
+
+
+def review_cycle_stage(path):
+    """One cycle file as (stage, entries), an entry being the `<blob> <path>` of a path the pending
+    commit carries. None when it cannot be read or names no stage: the format is the gate's to
+    change, so a shape this build cannot parse is not state to act on.
+    """
+    try:
+        fields = path.read_bytes().split(b"\0")
+    except OSError:
+        return None
+    if fields and not fields[-1]:
+        fields.pop()
+    if not fields or not fields[0]:
+        return None
+    return os.fsdecode(fields[0]), [os.fsdecode(field) for field in fields[4:]]
+
+
+def review_cycle_armed(repo):
+    """Whether the commit gate has a cycle open at a stage that authorizes a panel. Read and left
+    standing: an armed stage is spent by the review that buys the ticket, and a peek that consumed
+    it would let one blocked commit authorize nothing at all. Only `cmd_reviewed` ever removes one
+    of these files, and only a ticket whose commit has landed.
+    """
+    for path in review_cycle_files(repo):
+        parsed = review_cycle_stage(path)
+        if parsed and parsed[0] in REVIEW_CYCLE_ARMED_STAGES:
+            return True
+    return False
+
+
+def spent_ticket_cycles(repo):
+    """The cycle files whose ticket has been paid. The gate records the exact content it let a
+    commit carry, and one recorded blob now reachable at its own path in HEAD is that commit having
+    happened: a co-tenant's commit moves HEAD without ever holding this content, and a later edit
+    at the same path does not take it back out of HEAD. A path the commit deleted is recorded as
+    `gone` and pays the other way round — its absence from HEAD is the deletion having landed.
+    """
+    spent = []
+    for path in review_cycle_files(repo):
+        parsed = review_cycle_stage(path)
+        if not parsed or parsed[0] != REVIEW_CYCLE_TICKET_STAGE:
+            continue
+        for entry in parsed[1]:
+            blob, _, entry_path = entry.partition(" ")
+            if not entry_path:
+                continue
+            proc = subprocess.run(
+                ["git", "rev-parse", "--verify", "--quiet", f"HEAD:{entry_path}"],
+                cwd=str(repo), capture_output=True, text=True,
+            )
+            head_blob = proc.stdout.strip() if proc.returncode == 0 else ""
+            if blob == REVIEW_CYCLE_GONE:
+                landed = not head_blob
+            else:
+                landed = bool(head_blob) and head_blob == blob
+            if landed:
+                spent.append(path)
+                break
+    return spent
 
 
 def guard_review_armed(args):
@@ -6455,10 +6503,34 @@ def cmd_receipt(args):
 
 
 def cmd_reviewed(args):
+    """Stamp the working tree as reviewed.
+
+    `--ticket` is the stamp hook's question rather than a caller's assertion: the commit gate
+    granted this commit a ticket naming the exact content it may carry, so that content reachable
+    in HEAD over a clean tree is the review cycle having ended, and the stamp then rewrites the
+    receipt against HEAD so the next change lights the label again.
+    """
     # A stamp declares the working tree reviewed, so this is the one caller that needs one.
     repo = resolve_repo_arg(args.repo, require_worktree=True)
     if repo is None:
         raise ValueError(f"not a git repository with a working tree: {Path(args.repo).resolve()}")
+    if getattr(args, "ticket", False):
+        status = subprocess.run(["git", "status", "--porcelain"],
+                                cwd=str(repo), capture_output=True, text=True)
+        spent = spent_ticket_cycles(repo)
+        # A ticket's job ends with the commit that landed its content, whether or not that commit
+        # ends up stamping anything: left standing past a refusal here, it would be spent again by
+        # some later clean-tree commit no gate ever priced — a co-tenant's, Egor's own from a
+        # terminal — and stamp that tree, never-reviewed work and all, as reviewed.
+        for cycle in spent:
+            try:
+                cycle.unlink()
+            except OSError:
+                pass
+        # The stamp covers the whole tree, so a leftover left uncommitted would be marked reviewed
+        # along with the work the ticket bought.
+        if status.returncode != 0 or status.stdout.strip() or not spent:
+            return 3
     sha = resolve_commit(repo, "HEAD")
     tree = working_tree_tree(repo)
     now = utc_now()
@@ -8052,6 +8124,10 @@ def main():
         "reviewed", help="Stamp the current working tree as reviewed"
     )
     reviewed.add_argument("--repo", default=".")
+    reviewed.add_argument(
+        "--ticket", action="store_true",
+        help="Stamp only when a commit landed the content of a granted commit-gate ticket",
+    )
     reviewed.set_defaults(func=cmd_reviewed)
     receipt = subparsers.add_parser(
         "receipt", help="Print this repository's review receipt as JSON"
