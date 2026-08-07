@@ -683,6 +683,12 @@ local shared = {
   -- Pixels of carried hand displacement past which the settle warp stands down: the
   -- hand left for a deliberate target and home plus that delta can land off-screen.
   pointerCarryLimit = 300,
+  -- Pixels a press must travel before it counts as a drag: under the shortest deliberate
+  -- one and over the jiggle a hand adds on its way off the button. Not the character cell
+  -- the TUI actually selects by — the mouse-up has no cheap way to measure one, so a wide
+  -- cell still swallows some presses that clear this. Every jiggle that reaches the arming
+  -- path costs the next typed character a DEL of its own.
+  selectionDragLimit = 4,
   gestureWatchdogDelay = 2.5,
   -- Bumped once per gesture and captured by every closure that gesture arms. A scrape
   -- Terminal answers late belongs to the flight that asked for it and to no other: read
@@ -745,6 +751,22 @@ local function observeFrontmost(app)
     end
   end
   return observed
+end
+
+-- Which window a press lands in is only knowable before the press: by its mouse-up the
+-- click has already brought that window forward. This is one AX attribute read, 0.046 ms
+-- measured, and every press in every app pays it; what the mouse-up still defers until
+-- there is a selection to arm is observeFrontmost's walk over the tab list on top of it.
+function M.focusedTerminalWindow()
+  if runtimeHooks and runtimeHooks.focused then
+    return runtimeHooks.focused()
+  end
+  local app = hs.application.frontmostApplication()
+  if not app or app:bundleID() ~= terminalBundleID then
+    return nil
+  end
+  local window = app:focusedWindow()
+  return window and window:id() or nil
 end
 
 local function now()
@@ -2332,14 +2354,15 @@ end
 -- Where the pointer is against where our own choreography left it. Euclidean, so a
 -- diagonal nudge counts like a straight one; an unknown endpoint is not drift, which
 -- keeps the warp on its old unconditional behaviour.
-function M.pointerDrifted(current, expected)
+function M.pointerDrifted(current, expected, limit)
   if type(current) ~= "table" or type(expected) ~= "table"
       or type(current.x) ~= "number" or type(current.y) ~= "number"
       or type(expected.x) ~= "number" or type(expected.y) ~= "number" then
     return false
   end
   local dx, dy = current.x - expected.x, current.y - expected.y
-  return dx * dx + dy * dy > shared.pointerDriftLimit * shared.pointerDriftLimit
+  limit = limit or shared.pointerDriftLimit
+  return dx * dx + dy * dy > limit * limit
 end
 
 -- The clicks we post are handled by the window server after this runloop turn, so a
@@ -3568,22 +3591,41 @@ local function handleEvent(event, keyCode, isRepeat)
       -- ps/osascript round trip behind every pixel of a selection.
       dragSeen = true
       selectionPoint = event:location()
+      -- Kept on the press rather than read back off selectionPoint at the mouse-up: a key
+      -- pressed with the button still down clears that point, and the drag it belongs to
+      -- would then release as a click and leave a live selection unarmed.
+      if shared.clickOrigin then
+        shared.clickOrigin.travelled = selectionPoint
+      end
       return false
     end
     if eventType == types.leftMouseUp then
+      local origin = shared.clickOrigin
+      shared.clickOrigin = nil
       -- Double- and triple-clicks select a word or a line without ever dragging.
       local clickState = event:getProperty(hs.eventtap.event.properties.mouseEventClickState)
-      local selected = dragSeen or (type(clickState) == "number" and clickState >= 2)
+      -- A press and release within the same character paints nothing, so the pixel or
+      -- two a hand adds to a click is not a drag: armed for it, the next typed
+      -- character sends a DEL into a draft that has no selection to take it.
+      -- An unknown window at the press is not proof of anything, and the release finding
+      -- one it cannot name either would otherwise read as the same window.
+      local selected = origin and origin.windowID and (
+        (type(clickState) == "number" and clickState >= 2)
+        or M.pointerDrifted(origin.travelled, origin.point, shared.selectionDragLimit))
       if not selected then
         clearSelectionState()
         return false
       end
       -- A selection made outside Claude must not survive into the next Cmd+X, or the
       -- DEL lands on an unselected draft; an unresolved verdict still arms, since the
-      -- cut path re-checks the target before deleting. The AX round trip waits until
-      -- there is a selection to arm: plain clicks are every click in every app.
+      -- cut path re-checks the target before deleting. The walk over the tab list waits
+      -- until there is a selection to arm: plain clicks are every click in every app.
+      -- The press that brought this window forward was spent on the activation —
+      -- Terminal keeps it rather than passing it down, so the TUI painted no selection
+      -- however far that press was dragged.
       local observed = observeFrontmost()
       if observed.bundleID == terminalBundleID
+          and observed.windowID == origin.windowID
           and foregroundVerdict(observed) ~= "not-claude" then
         selectionLikely = true
         -- The user selected by hand, so the cached gesture anchor belongs to a
@@ -3601,6 +3643,10 @@ local function handleEvent(event, keyCode, isRepeat)
     end
     if eventType == types.leftMouseDown then
       dragSeen = false
+      shared.clickOrigin = {
+        point = event:location(),
+        windowID = M.focusedTerminalWindow(),
+      }
       -- Ours carry the replay marker and never reach here, so this is the user's hand
       -- on the mouse: the saved home is wherever they left it, and warping back to it
       -- would undo the move they just made.
@@ -3903,6 +3949,7 @@ function M.setTestHooks(hooks)
   lastPressCell = nil
   gestureDraftTouched = false
   dragSeen = false
+  shared.clickOrigin = nil
   clearPointerHome()
   clearSelectionState()
   replayProperty = hooks and hooks.replayProperty or replayProperty
@@ -4081,6 +4128,7 @@ function M.stop()
   lastPressCell = nil
   gestureDraftTouched = false
   dragSeen = false
+  shared.clickOrigin = nil
   clearPointerHome()
   clearSelectionState()
   pendingState = nil

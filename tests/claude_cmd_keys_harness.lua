@@ -982,6 +982,7 @@ local function integrationContext(types, opts)
   local writtenText
   local mouseEvents = {}
   local observeCount = 0
+  local focusedCount = 0
   local afterObserve
   local replays = {}
   local frameGone = false
@@ -1009,6 +1010,10 @@ local function integrationContext(types, opts)
       afterObserve = nil
       if callback then callback() end
       return observed
+    end,
+    focused = function()
+      focusedCount = focusedCount + 1
+      return observedNow.bundleID == "com.apple.Terminal" and observedNow.windowID or nil
     end,
     contentTypes = function() return types or {} end,
     readURL = function() return opts.url end,
@@ -1128,6 +1133,10 @@ local function integrationContext(types, opts)
         tabElement = "tab-b",
       }
     end,
+    switchWindow = function(windowID)
+      observedNow = { bundleID = "com.apple.Terminal", windowID = windowID,
+        tabIndex = 1, tabElement = "tab-a" }
+    end,
     switchApp = function(bundleID)
       observedNow = bundleID and { bundleID = bundleID }
         or { bundleID = "com.apple.Terminal", windowID = 7, tabIndex = 1, tabElement = "tab-a" }
@@ -1136,6 +1145,7 @@ local function integrationContext(types, opts)
     alerts = function() return alertCount end,
     mouseEvents = function() return mouseEvents end,
     observations = function() return observeCount end,
+    windowLookups = function() return focusedCount end,
     changeTargetAfterNextObservation = function()
       afterObserve = function()
         observedNow = {
@@ -1482,13 +1492,66 @@ simulateMultiClick(2)
 pressCut(integration)
 assert(#integration.actions == 0, "a not-claude double-click armed the cut")
 
--- A plain click selects nothing, so it must not pay for an AX round trip.
+-- A press on a window that is not the focused one is spent bringing it forward, and
+-- Terminal keeps that click rather than passing it down: the TUI painted no selection
+-- however far the press was dragged, so the next character must not send a DEL after it.
+integration = integrationContext()
+integration.switchWindow(8)
+module.handleEvent(mouseEvent(1))
+integration.switchWindow(7)
+module.handleEvent(mouseEvent(6, { x = 120, y = 340 }))
+module.handleEvent(mouseEvent(2, { x = 120, y = 340 }))
+pressCut(integration)
+assert(#integration.actions == 0, "a press that brought its own window forward armed the cut")
+
+-- A hand drags a click by a pixel or two on its way off the button; the TUI selects
+-- nothing inside one character, and arming for it costs the next keystroke a character.
+integration = integrationContext()
+module.handleEvent(mouseEvent(1, { x = 118, y = 339 }))
+module.handleEvent(mouseEvent(6, { x = 120, y = 340 }))
+module.handleEvent(mouseEvent(2, { x = 120, y = 340 }))
+pressCut(integration)
+assert(#integration.actions == 0, "a click jiggled by two pixels armed the cut")
+
+integration = integrationContext()
+module.handleEvent(mouseEvent(1, { x = 100, y = 340 }))
+module.handleEvent(mouseEvent(6, { x = 120, y = 340 }))
+module.handleEvent(mouseEvent(2, { x = 120, y = 340 }))
+pressCut(integration)
+assert(#integration.actions == 1 and integration.actions[1] == "scrape",
+  "a drag across characters no longer armed the cut")
+
+-- A plain click selects nothing, so it must not pay for the walk over the tab list. The
+-- press pays one window lookup and the release none: that lookup is the whole reason the
+-- release can tell a selection from a click that only brought its window forward.
 integration = integrationContext()
 module.handleEvent(mouseEvent(1))
 local beforeUp = integration.observations()
+assert(integration.windowLookups() == 1, "a press did not read the window it landed in")
 module.handleEvent(mouseEvent(2))
 assert(integration.observations() == beforeUp,
   "a plain mouse-up looked up the frontmost app with nothing to arm")
+assert(integration.windowLookups() == 1, "a mouse-up paid for a window lookup of its own")
+
+-- A key pressed with the button still down drops selectionPoint; the drag it belongs to
+-- still has to release as a drag, or a live selection goes unarmed.
+integration = integrationContext()
+module.handleEvent(mouseEvent(1, { x = 100, y = 340 }))
+module.handleEvent(mouseEvent(6, { x = 130, y = 340 }))
+module.handleEvent(keyEvent(4, {}, false, "q", "q"))
+module.handleEvent(mouseEvent(2, { x = 130, y = 340 }))
+pressCut(integration)
+assert(#integration.actions > 0, "a key typed mid-drag disarmed the selection the drag made")
+
+-- Unknown at the press and unknown at the release is not the same window.
+integration = integrationContext()
+integration.switchApp("com.apple.Safari")
+module.handleEvent(mouseEvent(1))
+integration.switchWindow(nil)
+module.handleEvent(mouseEvent(6, { x = 120, y = 340 }))
+module.handleEvent(mouseEvent(2, { x = 120, y = 340 }))
+pressCut(integration)
+assert(#integration.actions == 0, "two unknown window ids armed the cut as a match")
 
 -- A drag that ended while another app was frontmost never selected Claude's draft.
 integration = integrationContext()
