@@ -2816,10 +2816,18 @@ for command in (
     [sys.argv[1], "review", "HEAD", "--worktree", "--repo", str(snapshot_clean),
      "--tier", "T0"],
     [sys.argv[1], "review", "--repo", str(snapshot_clean), "--tier", "T0"],
+    # A range is a third way to name the target, so it conflicts with the other two the same way,
+    # and the refusal says which two were given rather than restating the rule alone.
+    [sys.argv[1], "review", "--range", "HEAD~1..HEAD", "--worktree",
+     "--repo", str(snapshot_clean), "--tier", "T0"],
+    [sys.argv[1], "review", "HEAD", "--range", "HEAD~1..HEAD",
+     "--repo", str(snapshot_clean), "--tier", "T0"],
 ):
     conflict = subprocess.run(command, capture_output=True, text=True)
     assert conflict.returncode != 0
-    assert "exactly one of commitish and --worktree" in conflict.stderr, conflict.stderr
+    assert "exactly one of commitish, --range and --worktree" in conflict.stderr, conflict.stderr
+    if "--range" in command:
+        assert "--range" in conflict.stderr.split("got")[-1], conflict.stderr
 
 # A panel is something a commit asks for. The gate that blocks the commit opens a cycle, and that
 # file is the whole authorization: without one, `review --worktree` is the mid-work review a chat
@@ -6812,6 +6820,71 @@ subprocess.run(["git", "-C", str(moved_suggest), "mv", "bin/tool", "tool"],
 assert suggest(moved_suggest)[2] == "tier: T1", suggest(moved_suggest)
 
 # An untracked nested repository is one listed path with nothing to count, not a read error.
+# A range of commits is a review target of its own. Committed work was reviewable one commit at a
+# time only, so «заревьюй то, что ты сделал» over a branch cost one panel per commit, and work
+# already pushed could reach a panel only through a working tree it was no longer in (Egor,
+# 2026-08-07).
+sealed_repo = pathlib.Path(tempfile.mkdtemp(prefix="review-bench-range-"))
+subprocess.run(["git", "init", "-q", "-b", "main", str(sealed_repo)], check=True)
+
+
+def sealed_commit(name, text):
+    (sealed_repo / name).write_text(text)
+    subprocess.run(["git", "-C", str(sealed_repo), "add", name], check=True)
+    subprocess.run(["git", "-C", str(sealed_repo), "-c", "user.email=t@example.test",
+                    "-c", "user.name=t", "commit", "-q", "-m", name], check=True)
+    return subprocess.run(["git", "-C", str(sealed_repo), "rev-parse", "HEAD"],
+                          check=True, capture_output=True, text=True).stdout.strip()
+
+
+sealed_base = sealed_commit("first.txt", "one\n")
+sealed_commit("second.txt", "two\n")
+sealed_head = sealed_commit("third.txt", "three\n")
+sealed_sha = rb.range_snapshot_commit(sealed_repo, f"{sealed_base}..{sealed_head}")
+# The left end is its parent, so every reader that derives what a sha is a change against reads the
+# whole range without being taught anything about ranges.
+assert rb.diff_base(sealed_repo, sealed_sha) == sealed_base
+assert sorted(subprocess.run(
+    ["git", "-C", str(sealed_repo), "show", "--name-only", "--format=", sealed_sha],
+    check=True, capture_output=True, text=True,
+).stdout.split()) == ["second.txt", "third.txt"]
+# Pinned to its content: a rerun of an errored cell names the sha and nothing else.
+assert rb.range_snapshot_commit(sealed_repo, f"{sealed_base}..{sealed_head}") == sealed_sha
+# Sealed like a worktree snapshot, so nothing counts it as a real commit of the repository.
+assert rb.is_worktree_snapshot(sealed_repo, sealed_sha)
+sealed_refusals = {}
+for sealed_label, sealed_spec in (("shape", "HEAD"), ("empty", f"{sealed_head}..{sealed_head}")):
+    try:
+        rb.range_snapshot_commit(sealed_repo, sealed_spec)
+        sealed_refusals[sealed_label] = ""
+    except ValueError as exc:
+        sealed_refusals[sealed_label] = str(exc)
+assert "--range must be A..B" in sealed_refusals["shape"], sealed_refusals
+assert "changes nothing" in sealed_refusals["empty"], sealed_refusals
+
+# What the panel is about to read, said before it reads it: the target was implied by the flags and
+# printed nowhere, so a run pointed at the working tree's leftovers instead of the commits the
+# caller meant came back confirming nothing — which reads exactly like a clean review.
+import contextlib
+import io
+
+announced = io.StringIO()
+with contextlib.redirect_stderr(announced):
+    rb.announce_review_target(sealed_repo, sealed_sha)
+assert f"{sealed_base[:7]}..{sealed_sha[:7]}" in announced.getvalue(), announced.getvalue()
+assert "2 file(s)" in announced.getvalue(), announced.getvalue()
+subprocess.run(["git", "-C", str(sealed_repo), "-c", "user.email=t@example.test",
+                "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "empty"], check=True)
+sealed_empty = subprocess.run(["git", "-C", str(sealed_repo), "rev-parse", "HEAD"],
+                             check=True, capture_output=True, text=True).stdout.strip()
+try:
+    rb.announce_review_target(sealed_repo, sealed_empty)
+    sealed_empty_refusal = ""
+except ValueError as exc:
+    sealed_empty_refusal = str(exc)
+assert "target is empty" in sealed_empty_refusal, sealed_empty_refusal
+shutil.rmtree(sealed_repo, ignore_errors=True)
+
 # A bare repository has no working tree, and a `--range` suggestion never needed one: it reads two
 # committed trees out of the object database. Keying repositories on `--show-toplevel` for the sake
 # of telling linked worktrees apart refused these outright until the fallback was added back.
@@ -7466,7 +7539,10 @@ range_head = subprocess.run(
 ).stdout.strip()
 range_lines = suggest(range_suggest, "--range", f"{range_base}..{range_head}")
 assert_suggestion(range_lines, 1, 151, "T2", committed=True)
-assert range_head in range_lines[4], range_lines
+# The panel must be sent to the range that was measured here, not to the commit at its right end:
+# those are different changes, and the printed command was the only place that ever said which one
+# the reader would get.
+assert f"--range {range_base}..{range_head}" in range_lines[4], range_lines
 
 # --- lenses: a run launched and recorded under the methodology it was given -------------------
 lens_store = work / "lens-claudeb"

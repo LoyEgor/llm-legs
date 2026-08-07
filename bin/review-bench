@@ -771,6 +771,12 @@ REPO_FLAG_HELP = (
     "repository's working tree as a single change, with each repository's paths under its own "
     "top-level prefix, and stamps every one of them"
 )
+RANGE_FLAG_HELP = (
+    "Review everything between two commits as one change, A excluded and B included — a branch, a "
+    "series of fixes, work already pushed. The panel reads the range as a single diff and the "
+    "receipt is written against it, so a change spread over several commits costs one review "
+    "rather than one per commit"
+)
 VERDICTS = {"confirmed", "false_positive", "duplicate"}
 WEIGHTS = {"P1": 5, "P2": 2, "P3": 1}
 ADJUDICATION_TOK_ESTIMATE = {"duplicate": 400, "false_positive": 1500}
@@ -1536,6 +1542,81 @@ def worktree_snapshot_commit(repo, clean_command=None, paths=None):
     )
     if proc.returncode != 0 or not proc.stdout.strip():
         raise RuntimeError(proc.stderr.strip() or "could not create worktree snapshot")
+    return proc.stdout.strip()
+
+
+def announce_review_target(repo, sha, scope=(), members=None):
+    """What this run is about to send to the panel, said out loud before it goes: which base to
+    which head, how many files, how many lines, under which scope.
+
+    The target was only ever implied by the flags — `--worktree` reads the tree, a commitish reads
+    one commit — and nothing ever printed which one won. A review asked for over work that had just
+    been committed read the leftovers still in the working tree instead and came back confirming
+    nothing, which is indistinguishable from a clean review of the right target (Egor, 2026-08-07).
+    An empty target is refused here rather than reported as a panel that found nothing.
+    """
+    entries = (
+        [(member["label"], Path(member["repo"]), member["commit"], list(member.get("scope") or []))
+         for member in members]
+        if members else [(None, Path(repo), sha, list(scope or ()))]
+    )
+    described = []
+    total_files = 0
+    for label, where, commit, narrowed in entries:
+        base = diff_base(where, commit)
+        changes, _ = diff_numstat(where, [base, commit])
+        total_files += len(changes)
+        text = (f"{base[:7]}..{commit[:7]} · {len(changes)} file(s) · "
+                f"{sum(changes.values())} line(s)")
+        if narrowed:
+            text += " · scope: " + " ".join(narrowed)
+        described.append(f"  {label}/ = {where}: {text}" if label else f"reviewing {where}: {text}")
+    if not total_files:
+        raise ValueError(
+            "this review's target is empty — "
+            + "; ".join(line.strip() for line in described)
+            + ". Nothing would reach the panel, so a report of it would say only that nobody "
+            "found anything in nothing; name the commits to review with --range A..B or a "
+            "commitish, or --worktree for uncommitted work."
+        )
+    for line in described:
+        print(line, file=sys.stderr)
+
+
+def range_snapshot_commit(repo, spec):
+    """A range of commits sealed as one commit to review: the tree at its right end, carrying its
+    left end as the parent. Everything downstream is keyed on a single sha and derives what it is a
+    change against from that sha's parent, so a range spelled this way needs nothing else taught —
+    `git show` of it is the whole range as one diff, the receipt's base..tree IS the range, and a
+    rerun pinned to the sha finds it again. Committed work was reviewable only one commit at a time
+    before this, so a change spread over a branch cost one panel per commit, and work already
+    pushed could not be sent to a panel at all except through the working tree it was no longer in.
+    """
+    left, separator, right = spec.partition("..")
+    if not separator or not left or not right or right.startswith("."):
+        raise ValueError("--range must be A..B")
+    ends = []
+    for name in (left, right):
+        commit = resolve_commit(repo, name)
+        proc = subprocess.run(["git", "rev-parse", f"{commit}^{{tree}}"],
+                              cwd=repo, capture_output=True, text=True)
+        if proc.returncode != 0 or not proc.stdout.strip():
+            raise RuntimeError(proc.stderr.strip() or f"{name} has no tree")
+        ends.append((commit, proc.stdout.strip()))
+    (base, base_tree), (head, head_tree) = ends
+    if base_tree == head_tree:
+        raise ValueError(
+            f"{spec} changes nothing: {left} and {right} hold the same tree, so there is no "
+            "review in it"
+        )
+    message = f"review-bench range snapshot\n\n{left}..{right} = {base[:7]}..{head[:7]}\n"
+    proc = subprocess.run(
+        ["git", "commit-tree", head_tree, "-p", base, "-m", message],
+        cwd=repo, env=dict(os.environ, **FIXED_COMMIT_IDENTITY),
+        capture_output=True, text=True,
+    )
+    if proc.returncode != 0 or not proc.stdout.strip():
+        raise RuntimeError(proc.stderr.strip() or "could not seal the range")
     return proc.stdout.strip()
 
 
@@ -6695,7 +6776,6 @@ def cmd_suggest(args):
         base = resolve_commit(repo, left)
         target = resolve_commit(repo, right)
         changes, sources = diff_numstat(repo, [base, target])
-        command_target = target
         receipt = None
     else:
         receipt = review_receipt(repo)
@@ -6723,7 +6803,6 @@ def cmd_suggest(args):
             # Untracked content is in no commit form, but a scoped review stages the whole subtree
             # under its paths, so it is part of the diff the printed command would be shown.
             changes.update(untracked_numstat(repo, commit_scope))
-        command_target = "HEAD"
     if not changes:
         if receipt:
             print(f"nothing to review; tree matches review {receipt['run_id']}")
@@ -6793,14 +6872,17 @@ def cmd_suggest(args):
                  if snapshot_baseline
                  else "staged content is compared with the same reviewed tree"))
     extra = ["--repo", str(repo)] if args.repo != "." else []
-    target = command_target if args.range else "--worktree"
+    # The range itself, never the commit at its right end: measured and tiered here over A..B, the
+    # printed command used to send the panel to B alone, so suggest and review answered about
+    # different changes and only the tier ever hinted at it.
+    target = ["--range", args.range] if args.range else ["--worktree"]
 
     def command_for(tier, use_max):
         # Long tiers are launched as background tasks (no TTY), where the guard demands the
         # flag — a suggested command must survive being copied verbatim.
         long_tier = ["--foreground"] if REVIEW_TIERS[tier]["budget_min"] >= 10 else []
         return shlex.join([
-            "review-bench", "review", target, "--tier", tier,
+            "review-bench", "review", *target, "--tier", tier,
             *(["--max"] if use_max else []), *extra, *long_tier,
             # Last, because --paths swallows every argument after it.
             *(["--paths", *printed_scope] if printed_scope else []),
@@ -6944,15 +7026,22 @@ def cmd_run(args):
     repo = repos[0]
     worktree_mode = bool(getattr(args, "worktree", False))
     commitish = getattr(args, "commitish", None)
-    if bool(commitish) == worktree_mode:
-        raise ValueError("exactly one of commitish and --worktree must be given")
+    range_spec = getattr(args, "range", None)
+    named = [name for name, given in
+             (("commitish", bool(commitish)), ("--range", bool(range_spec)),
+              ("--worktree", worktree_mode)) if given]
+    if len(named) != 1:
+        raise ValueError(
+            "exactly one of commitish, --range and --worktree must be given"
+            + (f"; got {' and '.join(named)}" if named else "")
+        )
     requested_scope = list(getattr(args, "paths", None) or [])
     if requested_scope and not worktree_mode:
         raise ValueError("--paths narrows the working tree; it cannot narrow a commit")
     if len(repos) > 1 and not worktree_mode:
         raise ValueError(
             "a merged review reads the working trees of every --repo it is given; one commitish "
-            "cannot name a change in more than one repository"
+            "or range cannot name a change in more than one repository"
         )
     # Set for a merged review, and it is what makes the run answer to every repository it read
     # rather than to the workspace it read them out of.
@@ -6971,6 +7060,9 @@ def cmd_run(args):
         sha = worktree_snapshot_commit(
             repo, clean_command=commit_mode_command(args), paths=scope,
         )
+    elif range_spec:
+        scope = []
+        sha = range_snapshot_commit(repo, range_spec)
     else:
         scope = []
         sha = resolve_commit(repo, commitish)
@@ -6989,6 +7081,7 @@ def cmd_run(args):
         (Path(member["repo"]), member["commit"], list(member.get("scope") or []))
         for member in members
     ] if members else [(repo, sha, scope)]
+    announce_review_target(repo, sha, scope, members)
     reviews_path = state_dir() / "reviews.jsonl"
     # The corpus that picks `--auto` cells and prices how long they take, and it is the tool's
     # own reviews even when this run carries a lens: a cell is chosen for how it performs at
@@ -8200,6 +8293,7 @@ def main():
     review = subparsers.add_parser("review", help="Run a canonical review tier")
     review.add_argument("commitish", nargs="?")
     review.add_argument("--worktree", action="store_true")
+    review.add_argument("--range", metavar="A..B", help=RANGE_FLAG_HELP)
     review.add_argument("--repo", action="append", metavar="PATH", help=REPO_FLAG_HELP)
     review.add_argument("--tier", choices=REVIEW_TIERS, required=True)
     review.add_argument("--max", action="store_true", help="Use the full tier composition")
@@ -8278,6 +8372,7 @@ def main():
     run = subparsers.add_parser("run", help="Run blind reviewers against one commit")
     run.add_argument("commitish", nargs="?")
     run.add_argument("--worktree", action="store_true")
+    run.add_argument("--range", metavar="A..B", help=RANGE_FLAG_HELP)
     run.add_argument("--repo", action="append", metavar="PATH", help=REPO_FLAG_HELP)
     selection = run.add_mutually_exclusive_group()
     selection.add_argument("--tier", choices=REVIEW_TIERS)
