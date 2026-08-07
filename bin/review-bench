@@ -1212,6 +1212,30 @@ def scoped_review_receipts(repo):
     return receipts
 
 
+def covering_scoped_receipt(repo, paths):
+    """The newest scoped receipt these paths already cover, or None. A scoped run answers to a
+    receipt of its own and leaves the repository's untouched, so a reader that asks only for the
+    plain one — the commit gate, in a shared checkout where every review is narrowed to the
+    pathspec being committed — is handed a neighbour's whole-tree run or nothing at all.
+
+    Covered means the review read no path OUTSIDE the set, not that it read all of it: a commit
+    carrying a file the panel never saw is drift for the reader to price, while a review of
+    something the commit does not touch answers a different question entirely. Both sides are
+    spelled by `normalize_scope_paths`, and a wanted entry covers as a prefix too — a commit
+    pathspec names directories where a review scope names files. An empty set is the
+    root-is-everything spelling of `git commit -- .` and covers every scoped receipt.
+    """
+    wanted = list(paths)
+
+    def covered(path):
+        return any(path == want or path.startswith(want + "/") for want in wanted)
+
+    for receipt in scoped_review_receipts(repo):
+        if not wanted or all(covered(path) for path in receipt["scope"]):
+            return receipt
+    return None
+
+
 def persist_review_receipt(repo, tree, sha, run_id, errored, timestamp=None, panel=None,
                            lens=None, scope=None):
     tmp = None
@@ -6386,13 +6410,24 @@ def cmd_receipt(args):
 
     `--lens` and `--scope` print those runs' own receipts, which the hook never asks for: neither
     read the whole tree the stamp would cover, so a commit must not end the review cycle on one.
+
+    `--paths` is the commit gate's question rather than the hook's, and the only one that searches:
+    given the paths a commit will carry it answers with the newest scoped review that read nothing
+    outside them, because where every review is scoped the repository's own receipt is somebody
+    else's tree and a triaged review would never buy the commit it was run for.
     """
     repo = resolve_repo_arg(args.repo) or Path(args.repo).resolve()
     # Resolved rather than taken as typed: the receipt was written under the canonical slug,
     # and a former slug is exactly what a reader still has in hand.
     lens = resolve_lens(args.lens)["name"] if getattr(args, "lens", "") else None
-    scope = normalize_scope_paths(repo, args.scope) if getattr(args, "scope", None) else None
-    receipt = review_receipt(repo, lens, scope)
+    if getattr(args, "paths", None):
+        if lens:
+            raise ValueError("--paths searches scoped receipts only, which a lens's is not")
+        receipt = covering_scoped_receipt(
+            repo, normalize_scope_paths(repo, args.paths, root_is_everything=True))
+    else:
+        scope = normalize_scope_paths(repo, args.scope) if getattr(args, "scope", None) else None
+        receipt = review_receipt(repo, lens, scope)
     if not receipt:
         return 1
     worktree, confirmed, findings = review_outcome(repo, receipt)
@@ -8026,9 +8061,14 @@ def main():
         "--lens", default="", metavar="SLUG",
         help="Print that lens's own receipt instead of the repository's review receipt",
     )
-    receipt.add_argument(
+    receipt_selector = receipt.add_mutually_exclusive_group()
+    receipt_selector.add_argument(
         "--scope", nargs="+", metavar="PATH",
         help="Print that scope's own receipt instead of the repository's review receipt",
+    )
+    receipt_selector.add_argument(
+        "--paths", nargs="+", metavar="PATH",
+        help="Print the newest scoped receipt whose own scope lies inside these paths",
     )
     receipt.set_defaults(func=cmd_receipt)
     report = subparsers.add_parser("report", help="Print a compact benchmark run report")

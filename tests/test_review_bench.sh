@@ -5625,6 +5625,113 @@ assert subprocess.run(
     capture_output=True, text=True, env=dict(os.environ, WORKER_STATS_DIR=str(work / "empty-store")),
 ).returncode == 1
 
+# --- `receipt --paths`: the scoped review a commit's own pathspec answers for -------------------
+# A scoped run writes only its own receipt, so in a shared checkout — where a review is always
+# narrowed to the paths being committed — the gate asking for the plain repository receipt reads a
+# neighbour's whole-tree run and re-blocks a commit whose own review was triaged.
+covering_repo = work / "receipt-covering"
+(covering_repo / "bin").mkdir(parents=True)
+(covering_repo / "tests").mkdir()
+subprocess.run(["git", "-C", str(covering_repo), "init", "-q", "-b", "main"], check=True)
+for covering_name in ("bin/tool", "tests/test_tool.sh", "docs.md"):
+    (covering_repo / covering_name).write_text("base\n")
+subprocess.run(["git", "-C", str(covering_repo), "add", "-A"], check=True)
+subprocess.run(
+    ["git", "-C", str(covering_repo), "-c", "user.name=Fixture",
+     "-c", "user.email=fixture@example.com", "commit", "-qm", "initial"],
+    check=True,
+)
+covering_head, covering_tree = (subprocess.run(
+    ["git", "-C", str(covering_repo), "rev-parse", covering_rev],
+    check=True, capture_output=True, text=True,
+).stdout.strip() for covering_rev in ("HEAD", "HEAD^{tree}"))
+covering_store = work / "receipt-covering-store"
+covering_env = dict(os.environ, WORKER_STATS_DIR=str(covering_store))
+covering_saved_stats = os.environ.get("WORKER_STATS_DIR")
+os.environ["WORKER_STATS_DIR"] = str(covering_store)
+for covering_run, covering_ts, covering_scope in (
+    ("covering-older", "2026-08-06T22:00:00+00:00", ["bin/tool"]),
+    ("covering-newer", "2026-08-06T23:00:00+00:00", ["bin/tool", "tests/test_tool.sh"]),
+    ("covering-outside", "2026-08-07T00:00:00+00:00", ["bin/tool", "docs.md"]),
+):
+    rb.persist_review_receipt(covering_repo, covering_tree, covering_head, covering_run, 0,
+                              timestamp=covering_ts, scope=covering_scope)
+# A lens read the same paths by a methodology the tool did not write, so its receipt is not one of
+# these however well its scope fits — and it is the newest of them all, which is the only way a
+# search by recency could pick it up by accident.
+rb.persist_review_receipt(covering_repo, covering_tree, covering_head, "covering-lens", 0,
+                          timestamp="2026-08-07T01:00:00+00:00", lens="edge-cases",
+                          scope=["bin/tool"])
+if covering_saved_stats is None:
+    os.environ.pop("WORKER_STATS_DIR")
+else:
+    os.environ["WORKER_STATS_DIR"] = covering_saved_stats
+
+
+def covering_receipt(*covering_args):
+    proc = subprocess.run(
+        [sys.argv[1], "receipt", "--repo", str(covering_repo), *covering_args],
+        capture_output=True, text=True, env=covering_env,
+    )
+    return proc.returncode, (json.loads(proc.stdout) if proc.stdout.strip() else None), proc.stderr
+
+
+# Exactly the reviewed scope, and the newest review that read no more than it: the older run read
+# a subset of the same paths and is still a review of this commit, just not the freshest one.
+covering_rc, covering_json, _ = covering_receipt("--paths", "bin/tool", "tests/test_tool.sh")
+assert covering_rc == 0 and covering_json["run_id"] == "covering-newer", (covering_rc,
+                                                                          covering_json)
+assert covering_json["scope"] == ["bin/tool", "tests/test_tool.sh"], covering_json
+# A path in the commit the panel never saw does not disqualify the review — that is drift the gate
+# prices — but a path the REVIEW read and the commit does not carry answers a different question.
+assert covering_receipt(
+    "--paths", "bin/tool", "tests/test_tool.sh", "never-reviewed.txt"
+)[1]["run_id"] == "covering-newer"
+assert covering_receipt("--paths", "bin/tool")[1]["run_id"] == "covering-older", \
+    covering_receipt("--paths", "bin/tool")
+assert covering_receipt("--paths", "docs.md")[0] == 1, covering_receipt("--paths", "docs.md")
+assert covering_receipt("--paths", "tests/test_tool.sh")[0] == 1
+# One spelling, the one the receipts are named after: the caller hands over a commit pathspec, not
+# a canonical scope, and a receipt found only for `bin/tool` is a receipt the gate cannot use.
+assert covering_receipt(
+    "--paths", "./bin/tool", "tests/../tests/test_tool.sh", str(covering_repo / "bin" / "tool")
+)[1]["run_id"] == "covering-newer"
+assert covering_receipt("--paths", str(work / "outside.txt"))[0] == 2
+# A commit pathspec names directories where a review scope names files: `git commit -- bin tests`
+# covers every reviewed file under them, and the containment is by path segment, so a directory
+# whose name merely starts the same never vouches for a neighbour.
+assert covering_receipt("--paths", "bin", "tests")[1]["run_id"] == "covering-newer", \
+    covering_receipt("--paths", "bin", "tests")
+assert covering_receipt("--paths", "bin")[1]["run_id"] == "covering-older"
+assert covering_receipt("--paths", "bin/to")[0] == 1, covering_receipt("--paths", "bin/to")
+# `git commit -- .` carries everything, so it is covered by the newest scoped review of any set —
+# the same root-is-everything spelling the suggest side reads.
+assert covering_receipt("--paths", ".")[1]["run_id"] == "covering-outside", \
+    covering_receipt("--paths", ".")
+# The plain receipt is untouched by all of it: scoped runs never answered for the repository, and
+# a search that leaked into that answer would stamp the whole tree as reviewed.
+assert covering_receipt()[0] == 1, covering_receipt()
+assert covering_receipt("--scope", "bin/tool")[1]["run_id"] == "covering-older"
+assert covering_receipt("--scope", "bin/tool", "--paths", "bin/tool")[0] == 2
+assert covering_receipt("--paths", "bin/tool", "--lens", "edge-cases")[0] == 2
+# And the answer is the whole receipt the gate reads, tally included: absent until the run behind
+# it is triaged, which is the gate's "no review has answered yet".
+assert "reported" not in covering_receipt("--paths", "bin/tool", "tests/test_tool.sh")[1]
+covering_price_dir = covering_store / "benches" / "covering-newer"
+covering_price_dir.mkdir(parents=True)
+rb.write_jsonl(covering_price_dir / "findings-sol-low.jsonl", [
+    {"file": "bin/tool", "line": 1, "severity": "P1", "summary": "one"},
+    {"file": "bin/tool", "line": 2, "severity": "P3", "summary": "two"},
+    {"file": "bin/tool", "line": 3, "severity": "P1", "summary": "not confirmed"},
+])
+rb.write_report_receipt(covering_price_dir, [
+    {"rater": "sol-low", "idx": 0, "verdict": "confirmed"},
+    {"rater": "sol-low", "idx": 1, "verdict": "confirmed"},
+    {"rater": "sol-low", "idx": 2, "verdict": "false_positive"},
+], {"P1": 1, "P3": 1})
+assert covering_receipt("--paths", "bin/tool", "tests/test_tool.sh")[1]["reported"] == \
+    {"P1": 1, "P2": 0, "P3": 1}, covering_receipt("--paths", "bin/tool", "tests/test_tool.sh")
+
 nonrepo = work / "reviewed-nonrepo"
 nonrepo.mkdir()
 nonrepo_store = work / "reviewed-nonrepo-store"
@@ -9264,4 +9371,4 @@ else
   printf 'SKIP: review report hook behavior (%s is unavailable)\n' "$REPORT_HOOK"
 fi
 
-printf 'PASS: %s assertions; canonical review tiers sharing one OpenCode/Gemini floor with no retired cell in them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative suggestions with missing-object fallback, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account schedulable only as the pool'"'"'s reserve and never as a roster tail, and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, carried from there into the corpus row, the report header and a receipt of the lens'"'"'s own while every lens row stays out of the canonical defect list, the frontier denominators, the composition corpus and the default leaderboard, worktree runs narrowed to named paths whose snapshot holds only those paths, is deterministic per path set, spelled against the directory the caller stands in and lexically canonicalized so a `..` can neither walk out of the repository nor split one file into two scopes, carries its scope as commit trailers a failed read refuses rather than widens, so a rerun by sha stays inside it, refuses a commitish, a pathspec matching nothing and a scope holding no change — the refusal before any snapshot object is written — and writes only a receipt of its own — leaving the repository'"'"'s receipt untouched byte for byte, the suggest baseline whole and the stamp hook with nothing to read, a lens narrowed by the same paths naming a combined receipt of its own that leaves the plain, pure-lens and pure-scope receipts byte for byte and survives a rerun by sha with both selectors intact, a day-one repository reviewed end to end — its root commit sealed and cloned, given a deterministic empty base commit inside that clone so the vendor skill diffs its whole content, measured in lines and paths against the empty tree rather than as an unmeasurable diff, so a correction inside it prices by the size ladder like any other change — no receipt moves a tier, and closed by the real stamp hook in both shapes while never-reviewed code riding along still refuses it, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask, the lookup scoped to the repository so another chat cannot answer for it, both review hooks keyed so exactly one fires, and that receipt carrying the confirmed-severity tally of the very verdicts it reported — recomputed from stored verdicts where a run was adjudicated the durable way, absent where nobody triaged it, and printed on the repository receipt the commit gate prices its next round on — taken from the stored verdicts wherever a run has them so a re-adjudication cannot be priced on superseded counts, scoped to the member a merged panel'"'"'s receipt belongs to so one repository never escalates on another'"'"'s defects, and answered as no tally at all rather than as an exception when the files behind it cannot be read, and a merged review of several repositories read by one panel out of a single workspace holding each repository under its own prefix — deterministic, self-contained once built and pruned with the run it belongs to — whose findings and adjudication handoff name the repository each belongs to, whose scopes and progress are per repository, and which stamps EVERY repository it read with that repository'"'"'s own receipt so none of their commit gates blocks on a review that covered it, while refusing a commitish, a repository named twice, a clean tree, a missing repository and its own workspace as a tree to seal, and the corpus closed to every commit-point review — the plain record command refused outright with the reporting one named in its place, the refusal and the flag'"'"'s own help promising only what --bench delivers (this run'"'"'s verdicts stored, never a corpus row), that flag refused in turn on a durable run it would buy the plain command'"'"'s own behaviour on, and the handoff printing that one command alone — with the block those reviews are read in framed to a fixed width no over-long word can flatten, opened by a line naming the panel that produced it, and carrying a cell row that counts every completed cell under the same names its neighbouring rows use — the ones that found nothing included, and a count missing from an older summary costing its own cell a number rather than the whole block, every one of those names and the tiers table'"'"'s own rendered by one derivation over the pool of cells the tiers can launch — version digits, effort and the bare mark each appearing only where two pool cells would otherwise collide, Claude and Codex effort always spelled because it is a launch parameter, the word skill never rendered at all, a family gaining a second variant IN THE POOL renaming itself with no list to edit, a cell only a stored run holds named against that pool and never over it — the arrival carrying whatever separates it, its report leaving the tiers table byte for byte — and the machine specs commands are spelled in left untouched\n' "$asserts"
+printf 'PASS: %s assertions; canonical review tiers sharing one OpenCode/Gemini floor with no retired cell in them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative suggestions with missing-object fallback, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account schedulable only as the pool'"'"'s reserve and never as a roster tail, and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, carried from there into the corpus row, the report header and a receipt of the lens'"'"'s own while every lens row stays out of the canonical defect list, the frontier denominators, the composition corpus and the default leaderboard, worktree runs narrowed to named paths whose snapshot holds only those paths, is deterministic per path set, spelled against the directory the caller stands in and lexically canonicalized so a `..` can neither walk out of the repository nor split one file into two scopes, carries its scope as commit trailers a failed read refuses rather than widens, so a rerun by sha stays inside it, refuses a commitish, a pathspec matching nothing and a scope holding no change — the refusal before any snapshot object is written — and writes only a receipt of its own — leaving the repository'"'"'s receipt untouched byte for byte, the suggest baseline whole and the stamp hook with nothing to read, a lens narrowed by the same paths naming a combined receipt of its own that leaves the plain, pure-lens and pure-scope receipts byte for byte and survives a rerun by sha with both selectors intact, a day-one repository reviewed end to end — its root commit sealed and cloned, given a deterministic empty base commit inside that clone so the vendor skill diffs its whole content, measured in lines and paths against the empty tree rather than as an unmeasurable diff, so a correction inside it prices by the size ladder like any other change — no receipt moves a tier, and closed by the real stamp hook in both shapes while never-reviewed code riding along still refuses it, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask, the lookup scoped to the repository so another chat cannot answer for it, both review hooks keyed so exactly one fires, and that receipt carrying the confirmed-severity tally of the very verdicts it reported — recomputed from stored verdicts where a run was adjudicated the durable way, absent where nobody triaged it, and printed on the repository receipt the commit gate prices its next round on — taken from the stored verdicts wherever a run has them so a re-adjudication cannot be priced on superseded counts, scoped to the member a merged panel'"'"'s receipt belongs to so one repository never escalates on another'"'"'s defects, and answered as no tally at all rather than as an exception when the files behind it cannot be read, and that same receipt reachable by the paths a commit will carry — a search over the scoped receipts alone, answering with the newest whose own scope lies inside those paths, tolerating a path the panel never saw as the drift its reader prices while a reviewed path outside them disqualifies, spelled through the one scope canonicalization, refusing to be asked alongside a named scope or a lens, and leaving the repository receipt'"'"'s own answer untouched, and a merged review of several repositories read by one panel out of a single workspace holding each repository under its own prefix — deterministic, self-contained once built and pruned with the run it belongs to — whose findings and adjudication handoff name the repository each belongs to, whose scopes and progress are per repository, and which stamps EVERY repository it read with that repository'"'"'s own receipt so none of their commit gates blocks on a review that covered it, while refusing a commitish, a repository named twice, a clean tree, a missing repository and its own workspace as a tree to seal, and the corpus closed to every commit-point review — the plain record command refused outright with the reporting one named in its place, the refusal and the flag'"'"'s own help promising only what --bench delivers (this run'"'"'s verdicts stored, never a corpus row), that flag refused in turn on a durable run it would buy the plain command'"'"'s own behaviour on, and the handoff printing that one command alone — with the block those reviews are read in framed to a fixed width no over-long word can flatten, opened by a line naming the panel that produced it, and carrying a cell row that counts every completed cell under the same names its neighbouring rows use — the ones that found nothing included, and a count missing from an older summary costing its own cell a number rather than the whole block, every one of those names and the tiers table'"'"'s own rendered by one derivation over the pool of cells the tiers can launch — version digits, effort and the bare mark each appearing only where two pool cells would otherwise collide, Claude and Codex effort always spelled because it is a launch parameter, the word skill never rendered at all, a family gaining a second variant IN THE POOL renaming itself with no list to edit, a cell only a stored run holds named against that pool and never over it — the arrival carrying whatever separates it, its report leaving the tiers table byte for byte — and the machine specs commands are spelled in left untouched\n' "$asserts"
