@@ -413,14 +413,18 @@ assert grep -Fq 'printf '\''%s__%s.json'\'' "$repo_name" "$repo_hash"' <<<"$sl_r
 # the plain one, and a lens sharing it would show a repository as reviewed by a methodology
 # the tool did not write.
 assert grep -Fq 'return f"{repo_name}__{repo_hash}__lens-{lens}.json"' <<<"$rb_receipt_name"
-assert test "$(grep -c 'lens' "$STATUSLINE")" -eq 0
+# The statusline may TALK about lens receipts; what it must never do is read one. Its receipt
+# probe list is the enforcement point: exactly the plain name and the scope siblings.
+assert grep -Fq '"$receipts/$receipt_base.json" "$receipts/${receipt_base}__scope-"*.json' "$STATUSLINE"
+assert test "$(grep -c '__lens-' "$STATUSLINE")" -eq 0
 # And so is a scope's, for the same reason plus one: a run that read part of the tree must not
 # advance the receipt the next full-tree review is sized against.
 assert grep -Fq 'return f"{repo_name}__{repo_hash}__scope-{scope_receipt_slug(scope)}.json"' \
   <<<"$rb_receipt_name"
 assert grep -Fq 'hashlib.sha1("\0".join(scope).encode()).hexdigest()[:RECEIPT_HASH_HEX]' \
   "$REVIEWBENCH"
-assert test "$(grep -c '__scope-' "$STATUSLINE")" -eq 0
+# The statusline reads scope receipts per PATH (the probe list above pins exactly which
+# names), and the per-path verdict is what keeps a partial review from covering the repository.
 assert grep -Fq 'path = state_dir() / RECEIPT_DIR / name' "$REVIEWBENCH"
 assert grep -Fq 'receipt_file="$worker_stats_dir/receipts/$receipt_name"' "$STATUSLINE"
 assert grep -Fq '[.repo,.tree,.commit,.run_id,.ts,(.errored | tostring),' "$STATUSLINE"
