@@ -1545,7 +1545,7 @@ def worktree_snapshot_commit(repo, clean_command=None, paths=None):
     return proc.stdout.strip()
 
 
-def announce_review_target(repo, sha, scope=(), members=None):
+def announce_review_target(repo, sha, scope=(), members=None, head_label=None):
     """What this run is about to send to the panel, said out loud before it goes: which base to
     which head, how many files, how many lines, under which scope.
 
@@ -1566,8 +1566,13 @@ def announce_review_target(repo, sha, scope=(), members=None):
         base = diff_base(where, commit)
         changes, _ = diff_numstat(where, [base, commit])
         total_files += len(changes)
-        text = (f"{base[:7]}..{commit[:7]} · {len(changes)} file(s) · "
+        # A sealed range is named by its own right end: the sha it was sealed into is nothing the
+        # caller asked for, and a target line naming it answers a question nobody asked.
+        right = head_label or commit
+        text = (f"{base[:7]}..{right[:7]} · {len(changes)} file(s) · "
                 f"{sum(changes.values())} line(s)")
+        if head_label and head_label != commit:
+            text += f" · sealed as {commit[:7]}"
         if narrowed:
             text += " · scope: " + " ".join(narrowed)
         described.append(f"  {label}/ = {where}: {text}" if label else f"reviewing {where}: {text}")
@@ -1583,6 +1588,44 @@ def announce_review_target(repo, sha, scope=(), members=None):
         print(line, file=sys.stderr)
 
 
+def parse_range_spec(spec):
+    """The two ends of an `A..B`. One parser for both commands: suggest measures a range and prints
+    the review command for it, so a shape one of them accepts and the other refuses is a suggestion
+    that fails only when somebody runs it.
+    """
+    left, separator, right = spec.partition("..")
+    if not separator or not left or not right or right.startswith("."):
+        raise ValueError("--range must be A..B")
+    return left, right
+
+
+def range_snapshot_ends(repo, sha):
+    """The two commits a sealed range was sealed from, or None when this sha is not one. Sealed
+    commits carry the tool's own committer, so a range would otherwise read as a snapshot of the
+    working tree — and a worktree run reviews the current state by construction, which is what lets
+    it stamp the repository's receipt without proving it. A range of old commits proves nothing of
+    the sort. A rerun arrives as the sealed sha and no flags, so the seal itself is the only place
+    the range it stands for can still be read from.
+    """
+    proc = subprocess.run(["git", "show", "-s", "--format=%B", sha],
+                          cwd=repo, capture_output=True, text=True)
+    lines = proc.stdout.splitlines() if proc.returncode == 0 else []
+    if not lines or lines[0].strip() != "review-bench range snapshot":
+        return None
+    for line in lines[1:]:
+        if ".." not in line:
+            continue
+        try:
+            return parse_range_spec(line.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def is_range_snapshot(repo, sha):
+    return range_snapshot_ends(repo, sha) is not None
+
+
 def range_snapshot_commit(repo, spec):
     """A range of commits sealed as one commit to review: the tree at its right end, carrying its
     left end as the parent. Everything downstream is keyed on a single sha and derives what it is a
@@ -1592,9 +1635,7 @@ def range_snapshot_commit(repo, spec):
     before this, so a change spread over a branch cost one panel per commit, and work already
     pushed could not be sent to a panel at all except through the working tree it was no longer in.
     """
-    left, separator, right = spec.partition("..")
-    if not separator or not left or not right or right.startswith("."):
-        raise ValueError("--range must be A..B")
+    left, right = parse_range_spec(spec)
     ends = []
     for name in (left, right):
         commit = resolve_commit(repo, name)
@@ -1609,7 +1650,7 @@ def range_snapshot_commit(repo, spec):
             f"{spec} changes nothing: {left} and {right} hold the same tree, so there is no "
             "review in it"
         )
-    message = f"review-bench range snapshot\n\n{left}..{right} = {base[:7]}..{head[:7]}\n"
+    message = f"review-bench range snapshot\n\n{base}..{head}\n"
     proc = subprocess.run(
         ["git", "commit-tree", head_tree, "-p", base, "-m", message],
         cwd=repo, env=dict(os.environ, **FIXED_COMMIT_IDENTITY),
@@ -6770,9 +6811,7 @@ def cmd_suggest(args):
     # An empty list is `git commit -- .`, which carries the whole tree and narrows nothing.
     commit_scope = commit_paths or None
     if args.range:
-        left, separator, right = args.range.partition("..")
-        if not separator or not left or not right or right.startswith("."):
-            raise ValueError("--range must be A..B")
+        left, right = parse_range_spec(args.range)
         base = resolve_commit(repo, left)
         target = resolve_commit(repo, right)
         changes, sources = diff_numstat(repo, [base, target])
@@ -6875,7 +6914,7 @@ def cmd_suggest(args):
     # The range itself, never the commit at its right end: measured and tiered here over A..B, the
     # printed command used to send the panel to B alone, so suggest and review answered about
     # different changes and only the tier ever hinted at it.
-    target = ["--range", args.range] if args.range else ["--worktree"]
+    target = ["--range", f"{base}..{target}"] if args.range else ["--worktree"]
 
     def command_for(tier, use_max):
         # Long tiers are launched as background tasks (no TTY), where the guard demands the
@@ -7046,6 +7085,10 @@ def cmd_run(args):
     # Set for a merged review, and it is what makes the run answer to every repository it read
     # rather than to the workspace it read them out of.
     members = None
+    # The range's own right end, kept for the target line: what gets sealed is a commit of the
+    # tool's own making, and naming that in place of the commit the caller asked about is how a
+    # target line stops answering the question it exists for.
+    range_head = None
     if len(repos) > 1:
         members = merged_members(repos, requested_scope)
         repo, sha = merged_snapshot_workspace(members)
@@ -7062,6 +7105,7 @@ def cmd_run(args):
         )
     elif range_spec:
         scope = []
+        range_head = resolve_commit(repo, parse_range_spec(range_spec)[1])
         sha = range_snapshot_commit(repo, range_spec)
     else:
         scope = []
@@ -7069,6 +7113,19 @@ def cmd_run(args):
         document = merged_manifest(repo)
         members = document["repos"] if document and document["merged"] == sha else None
     worktree_mode = worktree_mode or is_worktree_snapshot(repo, sha)
+    # A range is sealed the way a worktree snapshot is, and everything that treats those as
+    # synthetic rather than as commits of the repository is right to. What it is NOT is a review of
+    # the current state: a run over old or pushed commits would otherwise stamp the repository's
+    # receipt with a tree nobody is standing on, and every later suggestion measures against that
+    # receipt (found by panel, 2026-08-07). Recognised from the sealed commit itself, so a rerun
+    # pinned to the sha is the same kind of run as the one that made it.
+    range_ends = range_snapshot_ends(repo, sha) if worktree_mode else None
+    range_mode = bool(range_spec) or range_ends is not None
+    # A rerun carries no `--range`, so without reading the seal back the target line would name the
+    # sealed sha there — the tool's own commit, and the very output naming a range's own ends exists
+    # to stop (found by panel, 2026-08-07).
+    if range_head is None and range_ends:
+        range_head = range_ends[1]
     # A rerun names the snapshot sha and no paths at all, so its scope exists only in the
     # snapshot's trailers; without this the rerun of a scoped lens run would write the pure-lens
     # receipt and declare the whole tree read by that lens. A merged snapshot carries no scope of
@@ -7081,7 +7138,7 @@ def cmd_run(args):
         (Path(member["repo"]), member["commit"], list(member.get("scope") or []))
         for member in members
     ] if members else [(repo, sha, scope)]
-    announce_review_target(repo, sha, scope, members)
+    announce_review_target(repo, sha, scope, members, head_label=range_head)
     reviews_path = state_dir() / "reviews.jsonl"
     # The corpus that picks `--auto` cells and prices how long they take, and it is the tool's
     # own reviews even when this run carries a lens: a cell is chosen for how it performs at
@@ -7226,7 +7283,7 @@ def cmd_run(args):
                     continue
                 progress = review_progress_document(
                     progress_repo, run_id, getattr(args, "tier", None),
-                    "worktree" if worktree_mode else sha[:7],
+                    "range" if range_mode else ("worktree" if worktree_mode else sha[:7]),
                     [rater["spec"] for rater in submitted_raters],
                     started=started.isoformat(),
                     started_epoch=started.timestamp(),
@@ -7408,7 +7465,8 @@ def cmd_run(args):
         if meta["completed_raters"]:
             for target, target_sha, target_scope in receipt_targets:
                 write_review_receipt(target, target_sha, run_id, len(errored_raters),
-                                     panel=len(raters), worktree=worktree_mode,
+                                     panel=len(raters),
+                                     worktree=worktree_mode and not range_mode,
                                      lens=lens["name"] if lens else None,
                                      scope=target_scope)
         if errored_raters:

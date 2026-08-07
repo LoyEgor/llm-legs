@@ -6820,70 +6820,6 @@ subprocess.run(["git", "-C", str(moved_suggest), "mv", "bin/tool", "tool"],
 assert suggest(moved_suggest)[2] == "tier: T1", suggest(moved_suggest)
 
 # An untracked nested repository is one listed path with nothing to count, not a read error.
-# A range of commits is a review target of its own. Committed work was reviewable one commit at a
-# time only, so «заревьюй то, что ты сделал» over a branch cost one panel per commit, and work
-# already pushed could reach a panel only through a working tree it was no longer in (Egor,
-# 2026-08-07).
-sealed_repo = pathlib.Path(tempfile.mkdtemp(prefix="review-bench-range-"))
-subprocess.run(["git", "init", "-q", "-b", "main", str(sealed_repo)], check=True)
-
-
-def sealed_commit(name, text):
-    (sealed_repo / name).write_text(text)
-    subprocess.run(["git", "-C", str(sealed_repo), "add", name], check=True)
-    subprocess.run(["git", "-C", str(sealed_repo), "-c", "user.email=t@example.test",
-                    "-c", "user.name=t", "commit", "-q", "-m", name], check=True)
-    return subprocess.run(["git", "-C", str(sealed_repo), "rev-parse", "HEAD"],
-                          check=True, capture_output=True, text=True).stdout.strip()
-
-
-sealed_base = sealed_commit("first.txt", "one\n")
-sealed_commit("second.txt", "two\n")
-sealed_head = sealed_commit("third.txt", "three\n")
-sealed_sha = rb.range_snapshot_commit(sealed_repo, f"{sealed_base}..{sealed_head}")
-# The left end is its parent, so every reader that derives what a sha is a change against reads the
-# whole range without being taught anything about ranges.
-assert rb.diff_base(sealed_repo, sealed_sha) == sealed_base
-assert sorted(subprocess.run(
-    ["git", "-C", str(sealed_repo), "show", "--name-only", "--format=", sealed_sha],
-    check=True, capture_output=True, text=True,
-).stdout.split()) == ["second.txt", "third.txt"]
-# Pinned to its content: a rerun of an errored cell names the sha and nothing else.
-assert rb.range_snapshot_commit(sealed_repo, f"{sealed_base}..{sealed_head}") == sealed_sha
-# Sealed like a worktree snapshot, so nothing counts it as a real commit of the repository.
-assert rb.is_worktree_snapshot(sealed_repo, sealed_sha)
-sealed_refusals = {}
-for sealed_label, sealed_spec in (("shape", "HEAD"), ("empty", f"{sealed_head}..{sealed_head}")):
-    try:
-        rb.range_snapshot_commit(sealed_repo, sealed_spec)
-        sealed_refusals[sealed_label] = ""
-    except ValueError as exc:
-        sealed_refusals[sealed_label] = str(exc)
-assert "--range must be A..B" in sealed_refusals["shape"], sealed_refusals
-assert "changes nothing" in sealed_refusals["empty"], sealed_refusals
-
-# What the panel is about to read, said before it reads it: the target was implied by the flags and
-# printed nowhere, so a run pointed at the working tree's leftovers instead of the commits the
-# caller meant came back confirming nothing — which reads exactly like a clean review.
-import contextlib
-import io
-
-announced = io.StringIO()
-with contextlib.redirect_stderr(announced):
-    rb.announce_review_target(sealed_repo, sealed_sha)
-assert f"{sealed_base[:7]}..{sealed_sha[:7]}" in announced.getvalue(), announced.getvalue()
-assert "2 file(s)" in announced.getvalue(), announced.getvalue()
-subprocess.run(["git", "-C", str(sealed_repo), "-c", "user.email=t@example.test",
-                "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "empty"], check=True)
-sealed_empty = subprocess.run(["git", "-C", str(sealed_repo), "rev-parse", "HEAD"],
-                             check=True, capture_output=True, text=True).stdout.strip()
-try:
-    rb.announce_review_target(sealed_repo, sealed_empty)
-    sealed_empty_refusal = ""
-except ValueError as exc:
-    sealed_empty_refusal = str(exc)
-assert "target is empty" in sealed_empty_refusal, sealed_empty_refusal
-shutil.rmtree(sealed_repo, ignore_errors=True)
 
 # A bare repository has no working tree, and a `--range` suggestion never needed one: it reads two
 # committed trees out of the object database. Keying repositories on `--show-toplevel` for the sake
@@ -7543,6 +7479,153 @@ assert_suggestion(range_lines, 1, 151, "T2", committed=True)
 # those are different changes, and the printed command was the only place that ever said which one
 # the reader would get.
 assert f"--range {range_base}..{range_head}" in range_lines[4], range_lines
+
+# A range of commits is a review target of its own. Committed work was reviewable one commit at a
+# time only, so «заревьюй то, что ты сделал» over a branch cost one panel per commit, and work
+# already pushed could reach a panel only through a working tree it was no longer in (Egor,
+# 2026-08-07).
+sealed_repo = work / "range-seal"
+sealed_repo.mkdir()
+subprocess.run(["git", "init", "-q", "-b", "main", str(sealed_repo)], check=True)
+
+
+def sealed_commit(name, text):
+    (sealed_repo / name).write_text(text)
+    subprocess.run(["git", "-C", str(sealed_repo), "add", name], check=True)
+    subprocess.run(["git", "-C", str(sealed_repo), "-c", "user.email=t@example.test",
+                    "-c", "user.name=t", "commit", "-q", "-m", name], check=True)
+    return subprocess.run(["git", "-C", str(sealed_repo), "rev-parse", "HEAD"],
+                          check=True, capture_output=True, text=True).stdout.strip()
+
+
+sealed_base = sealed_commit("first.txt", "one\n")
+sealed_second = sealed_commit("second.txt", "two\n")
+sealed_head = sealed_commit("third.txt", "three\n")
+sealed_sha = rb.range_snapshot_commit(sealed_repo, f"{sealed_base}..{sealed_head}")
+# The left end is its parent, so every reader that derives what a sha is a change against reads the
+# whole range without being taught anything about ranges.
+assert rb.diff_base(sealed_repo, sealed_sha) == sealed_base
+assert sorted(subprocess.run(
+    ["git", "-C", str(sealed_repo), "show", "--name-only", "--format=", sealed_sha],
+    check=True, capture_output=True, text=True,
+).stdout.split()) == ["second.txt", "third.txt"]
+# Pinned to its content: a rerun of an errored cell names the sha and nothing else.
+assert rb.range_snapshot_commit(sealed_repo, f"{sealed_base}..{sealed_head}") == sealed_sha
+# Sealed like a worktree snapshot, so nothing counts it as a real commit of the repository.
+assert rb.is_worktree_snapshot(sealed_repo, sealed_sha)
+# One range, however it is spelled: the seal names what it sealed, so naming the same two commits
+# symbolically and by sha is one snapshot with one rerun and one receipt, not two.
+assert rb.range_snapshot_commit(sealed_repo, "HEAD~2..HEAD") == sealed_sha
+assert rb.is_range_snapshot(sealed_repo, sealed_sha)
+assert not rb.is_range_snapshot(sealed_repo, sealed_head)
+assert rb.range_snapshot_ends(sealed_repo, sealed_sha) == (sealed_base, sealed_head)
+assert rb.range_snapshot_ends(sealed_repo, sealed_head) is None
+
+# The target line names the range's own right end, never the commit it was sealed into — that sha
+# is the tool's own and answers a question nobody asked.
+labelled = io.StringIO()
+with contextlib.redirect_stderr(labelled):
+    rb.announce_review_target(sealed_repo, sealed_sha, head_label=sealed_head)
+assert f"{sealed_base[:7]}..{sealed_head[:7]}" in labelled.getvalue(), labelled.getvalue()
+assert f"sealed as {sealed_sha[:7]}" in labelled.getvalue(), labelled.getvalue()
+
+# And a range is not a review of the current state, however it is sealed: a run over old or pushed
+# commits stamping the repository's receipt would leave every later suggestion measuring against a
+# tree nobody is standing on (found by panel, 2026-08-07).
+historical = rb.range_snapshot_commit(sealed_repo, f"{sealed_base}..{sealed_second}")
+assert rb.write_review_receipt(sealed_repo, historical, "run-historical", 0, worktree=False) is None
+# The same guard passes a range that ends at the tip, which is the flow this feature exists for.
+assert rb.write_review_receipt(sealed_repo, sealed_sha, "run-tip", 0, worktree=False) is not None
+
+sealed_refusals = {}
+for sealed_label, sealed_spec in (("shape", "HEAD"), ("empty", f"{sealed_head}..{sealed_head}")):
+    try:
+        rb.range_snapshot_commit(sealed_repo, sealed_spec)
+        sealed_refusals[sealed_label] = ""
+    except ValueError as exc:
+        sealed_refusals[sealed_label] = str(exc)
+assert "--range must be A..B" in sealed_refusals["shape"], sealed_refusals
+assert "changes nothing" in sealed_refusals["empty"], sealed_refusals
+
+# What the panel is about to read, said before it reads it: the target was implied by the flags and
+# printed nowhere, so a run pointed at the working tree's leftovers instead of the commits the
+# caller meant came back confirming nothing — which reads exactly like a clean review.
+announced = io.StringIO()
+with contextlib.redirect_stderr(announced):
+    rb.announce_review_target(sealed_repo, sealed_sha)
+assert f"{sealed_base[:7]}..{sealed_sha[:7]}" in announced.getvalue(), announced.getvalue()
+assert "2 file(s)" in announced.getvalue(), announced.getvalue()
+subprocess.run(["git", "-C", str(sealed_repo), "-c", "user.email=t@example.test",
+                "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "empty"], check=True)
+sealed_empty = subprocess.run(["git", "-C", str(sealed_repo), "rev-parse", "HEAD"],
+                             check=True, capture_output=True, text=True).stdout.strip()
+try:
+    rb.announce_review_target(sealed_repo, sealed_empty)
+    sealed_empty_refusal = ""
+except ValueError as exc:
+    sealed_empty_refusal = str(exc)
+assert "target is empty" in sealed_empty_refusal, sealed_empty_refusal
+
+# What a range run leaves behind is decided where it is launched, not in the helpers: the receipt
+# it may not stamp, the target it names, and the label the progress view shows while it runs. Every
+# one of those was reachable only through cmd_run, so a regression there passed the suite while the
+# helpers stayed green (found by panel, 2026-08-07).
+range_run_seen = {}
+
+
+def range_run_runner(rater, repo_path, commit, focus, run_dir, diff, account):
+    progress_path = rb.state_dir() / rb.PROGRESS_DIR / rb.progress_file_name(sealed_repo)
+    range_run_seen["target"] = json.loads(progress_path.read_text())["target"]
+    return 0, 1, "NO FINDINGS", "", []
+
+
+for side in rb.SIDE_RUNNERS:
+    rb.SIDE_RUNNERS[side] = range_run_runner
+rb.pool_account = lambda side, excluded, slot=0, bucket="general": "fixture"
+rb.affordability = lambda: {
+    "claude": True, "codex": True, "agy": True, "grok": True, "opencode": True,
+    "claude_account": "fixture",
+}
+os.environ.pop("WORKER_STATS_DIR", None)
+
+
+def sealed_run(store_name, **fields):
+    os.environ["CLAUDEB_DIR"] = str(work / store_name)
+    stream = io.StringIO()
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stream):
+        rc = rb.cmd_run(argparse.Namespace(
+            repo=str(sealed_repo), raters="opus-medium", leg=False, verify=None,
+            auto=None, focus=None, **fields,
+        ))
+    receipt = (work / store_name / "worker-stats" / rb.RECEIPT_DIR
+               / rb.receipt_file_name(sealed_repo))
+    return rc, stream.getvalue(), receipt
+
+
+# A range of old commits reviews old code: stamping the repository's receipt with it would leave
+# every later suggestion measuring the working tree against a tree nobody is standing on.
+range_rc, range_err, range_receipt = sealed_run(
+    "range-run-claudeb", commitish=None, range=f"{sealed_base}..{sealed_second}")
+assert range_rc == 0, range_err
+assert not range_receipt.exists(), "a historical range stamped the repository's receipt"
+assert range_run_seen["target"] == "range", range_run_seen
+
+# A rerun arrives as the sealed sha and no flags at all, and has to be the same kind of run as the
+# one that made it — down to naming the commits the caller asked about rather than the tool's own.
+rerun_rc, rerun_err, rerun_receipt = sealed_run(
+    "range-rerun-claudeb", commitish=historical)
+assert rerun_rc == 0, rerun_err
+assert not rerun_receipt.exists(), "the rerun of a historical range stamped the receipt"
+assert range_run_seen["target"] == "range", range_run_seen
+assert f"{sealed_base[:7]}..{sealed_second[:7]}" in rerun_err, rerun_err
+assert f"sealed as {historical[:7]}" in rerun_err, rerun_err
+
+# And the range this feature exists for — one ending at the tree in front of the reader — does
+# stamp it, or a review of a whole branch would leave the commit gate none the wiser.
+tip_rc, tip_err, tip_receipt = sealed_run(
+    "range-tip-claudeb", commitish=None, range=f"{sealed_base}..{sealed_head}")
+assert tip_rc == 0, tip_err
+assert tip_receipt.exists(), tip_err
 
 # --- lenses: a run launched and recorded under the methodology it was given -------------------
 lens_store = work / "lens-claudeb"
@@ -9603,4 +9686,4 @@ else
   printf 'SKIP: review report hook behavior (%s is unavailable)\n' "$REPORT_HOOK"
 fi
 
-printf 'PASS: %s assertions; canonical review tiers over one shared OpenCode floor and a per-tier Gemini panel that never runs Pro at T0, stays inside the account roster and contains its own tier'"'"'s default panel when escalated, with no retired cell in any of them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative suggestions with missing-object fallback, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account schedulable only as the pool'"'"'s reserve and never as a roster tail, and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, carried from there into the corpus row, the report header and a receipt of the lens'"'"'s own while every lens row stays out of the canonical defect list, the frontier denominators, the composition corpus and the default leaderboard, worktree runs narrowed to named paths whose snapshot holds only those paths, is deterministic per path set, spelled against the directory the caller stands in and lexically canonicalized so a `..` can neither walk out of the repository nor split one file into two scopes, carries its scope as commit trailers a failed read refuses rather than widens, so a rerun by sha stays inside it, refuses a commitish, a pathspec matching nothing and a scope holding no change — the refusal before any snapshot object is written — and writes only a receipt of its own — leaving the repository'"'"'s receipt untouched byte for byte, the suggest baseline whole and the stamp hook with nothing to read, a lens narrowed by the same paths naming a combined receipt of its own that leaves the plain, pure-lens and pure-scope receipts byte for byte and survives a rerun by sha with both selectors intact, a day-one repository reviewed end to end — its root commit sealed and cloned, given a deterministic empty base commit inside that clone so the vendor skill diffs its whole content, measured in lines and paths against the empty tree rather than as an unmeasurable diff, so a correction inside it prices by the size ladder like any other change — no receipt moves a tier, and closed by the real stamp hook in both shapes while never-reviewed code riding along still refuses it, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask, the lookup scoped to the repository so another chat cannot answer for it, both review hooks keyed so exactly one fires, and that receipt carrying the confirmed-severity tally of the very verdicts it reported — recomputed from stored verdicts where a run was adjudicated the durable way, absent where nobody triaged it, and printed on the repository receipt the commit gate prices its next round on — taken from the stored verdicts wherever a run has them so a re-adjudication cannot be priced on superseded counts, scoped to the member a merged panel'"'"'s receipt belongs to so one repository never escalates on another'"'"'s defects, and answered as no tally at all rather than as an exception when the files behind it cannot be read, and that same receipt reachable by the paths a commit will carry — a search over the scoped receipts alone, answering with the newest whose own scope lies inside those paths, tolerating a path the panel never saw as the drift its reader prices while a reviewed path outside them disqualifies, spelled through the one scope canonicalization, refusing to be asked alongside a named scope or a lens, and leaving the repository receipt'"'"'s own answer untouched, and a merged review of several repositories read by one panel out of a single workspace holding each repository under its own prefix — deterministic, self-contained once built and pruned with the run it belongs to — whose findings and adjudication handoff name the repository each belongs to, whose scopes and progress are per repository, and which stamps EVERY repository it read with that repository'"'"'s own receipt so none of their commit gates blocks on a review that covered it, while refusing a commitish, a repository named twice, a clean tree, a missing repository and its own workspace as a tree to seal, and the corpus closed to every commit-point review — the plain record command refused outright with the reporting one named in its place, the refusal and the flag'"'"'s own help promising only what --bench delivers (this run'"'"'s verdicts stored, never a corpus row), that flag refused in turn on a durable run it would buy the plain command'"'"'s own behaviour on, and the handoff printing that one command alone — with the block those reviews are read in framed to a fixed width no over-long word can flatten, opened by a line naming the panel that produced it, and carrying a cell row that counts every completed cell under the same names its neighbouring rows use — the ones that found nothing included, and a count missing from an older summary costing its own cell a number rather than the whole block, every one of those names and the tiers table'"'"'s own rendered by one derivation over the pool of cells the tiers can launch — version digits, effort and the bare mark each appearing only where two pool cells would otherwise collide, Claude and Codex effort always spelled because it is a launch parameter, the word skill never rendered at all, a family gaining a second variant IN THE POOL renaming itself with no list to edit, a cell only a stored run holds named against that pool and never over it — the arrival carrying whatever separates it, its report leaving the tiers table byte for byte — and the machine specs commands are spelled in left untouched\n' "$asserts"
+printf 'PASS: %s assertions; canonical review tiers over one shared OpenCode floor and a per-tier Gemini panel that never runs Pro at T0, stays inside the account roster and contains its own tier'"'"'s default panel when escalated, with no retired cell in any of them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative suggestions with missing-object fallback, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account schedulable only as the pool'"'"'s reserve and never as a roster tail, and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, carried from there into the corpus row, the report header and a receipt of the lens'"'"'s own while every lens row stays out of the canonical defect list, the frontier denominators, the composition corpus and the default leaderboard, worktree runs narrowed to named paths whose snapshot holds only those paths, is deterministic per path set, spelled against the directory the caller stands in and lexically canonicalized so a `..` can neither walk out of the repository nor split one file into two scopes, carries its scope as commit trailers a failed read refuses rather than widens, so a rerun by sha stays inside it, refuses a commitish, a pathspec matching nothing and a scope holding no change — the refusal before any snapshot object is written — and writes only a receipt of its own — leaving the repository'"'"'s receipt untouched byte for byte, the suggest baseline whole and the stamp hook with nothing to read, a lens narrowed by the same paths naming a combined receipt of its own that leaves the plain, pure-lens and pure-scope receipts byte for byte and survives a rerun by sha with both selectors intact, a day-one repository reviewed end to end — its root commit sealed and cloned, given a deterministic empty base commit inside that clone so the vendor skill diffs its whole content, measured in lines and paths against the empty tree rather than as an unmeasurable diff, so a correction inside it prices by the size ladder like any other change — no receipt moves a tier, and closed by the real stamp hook in both shapes while never-reviewed code riding along still refuses it, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask, the lookup scoped to the repository so another chat cannot answer for it, both review hooks keyed so exactly one fires, and that receipt carrying the confirmed-severity tally of the very verdicts it reported — recomputed from stored verdicts where a run was adjudicated the durable way, absent where nobody triaged it, and printed on the repository receipt the commit gate prices its next round on — taken from the stored verdicts wherever a run has them so a re-adjudication cannot be priced on superseded counts, scoped to the member a merged panel'"'"'s receipt belongs to so one repository never escalates on another'"'"'s defects, and answered as no tally at all rather than as an exception when the files behind it cannot be read, and that same receipt reachable by the paths a commit will carry — a search over the scoped receipts alone, answering with the newest whose own scope lies inside those paths, tolerating a path the panel never saw as the drift its reader prices while a reviewed path outside them disqualifies, spelled through the one scope canonicalization, refusing to be asked alongside a named scope or a lens, and leaving the repository receipt'"'"'s own answer untouched, and a merged review of several repositories read by one panel out of a single workspace holding each repository under its own prefix — deterministic, self-contained once built and pruned with the run it belongs to — whose findings and adjudication handoff name the repository each belongs to, whose scopes and progress are per repository, and which stamps EVERY repository it read with that repository'"'"'s own receipt so none of their commit gates blocks on a review that covered it, while refusing a commitish, a repository named twice, a clean tree, a missing repository and its own workspace as a tree to seal, and a range of commits reviewed as one target — sealed into a single commit carrying its right end'"'"'s tree over its left end as the parent, so every reader keyed on one sha reads the whole range, named by the commits it sealed rather than by how the caller spelled them so one range is one snapshot with one rerun, announced by its own ends with the seal named beside them, read back out of that seal by a rerun carrying no flags at all, refused when it names no shape or no change, shown as a range while it runs, and kept out of the repository'"'"'s receipt wherever its right end is not the tree standing in front of the reader, and the corpus closed to every commit-point review — the plain record command refused outright with the reporting one named in its place, the refusal and the flag'"'"'s own help promising only what --bench delivers (this run'"'"'s verdicts stored, never a corpus row), that flag refused in turn on a durable run it would buy the plain command'"'"'s own behaviour on, and the handoff printing that one command alone — with the block those reviews are read in framed to a fixed width no over-long word can flatten, opened by a line naming the panel that produced it, and carrying a cell row that counts every completed cell under the same names its neighbouring rows use — the ones that found nothing included, and a count missing from an older summary costing its own cell a number rather than the whole block, every one of those names and the tiers table'"'"'s own rendered by one derivation over the pool of cells the tiers can launch — version digits, effort and the bare mark each appearing only where two pool cells would otherwise collide, Claude and Codex effort always spelled because it is a launch parameter, the word skill never rendered at all, a family gaining a second variant IN THE POOL renaming itself with no list to edit, a cell only a stored run holds named against that pool and never over it — the arrival carrying whatever separates it, its report leaving the tiers table byte for byte — and the machine specs commands are spelled in left untouched\n' "$asserts"
