@@ -122,9 +122,13 @@ OPENCODE_VERIFIER = "oc-dsv4flash"
 OPENCODE_VERIFIER_CHAIN = ["oc-kimik3", "oc-qwen37plus", "oc-mmm3"]
 # Every chain link above answers through the one opencode gateway, so its router outage retires
 # all of them in a single move — twice on 2026-08-04. The agy side has a transport of its own,
-# and its findings get it second: measured 2026-08-05 on the agy leg's adjudicated claims with
-# the stock wording, gemini-3.6-flash kept 6 of 6 real defects and dropped 12 of 24 false ones
-# with nothing left unverified.
+# and judges its own findings first. Measured 2026-08-08 on 150 held-out agy claims, one call
+# each: gemini-3.6-flash at medium on the stock wording kept 63 of 75 real and dropped 40 of 75
+# false, deepseek-v4-flash on its own best wording kept 61 and dropped 25, both losing 4 of the
+# 31 canonical defects. Effort does not move it (high scored 93%/52% against medium's 92%/52%
+# on 120 shared claims) and neither does the wording — a persona, the review skill's do-not-
+# comment list and its substance rubric all landed within 4 points of stock. The model is the
+# whole difference, so the leg keeps the stock prompt and swaps who answers first.
 GEMINI_VERIFIER = "agy-flash36"
 GEMINI_VERIFIER_EFFORT = "medium"
 GEMINI_VERIFIER_RATER = {"model": GEMINI_VERIFIER, "effort": GEMINI_VERIFIER_EFFORT}
@@ -189,6 +193,14 @@ WORTHLESS_CELLS = {
     "oc-kimik27code": "21 claims over 2 commits, 3 true",
     "oc-qwen37max": "18 claims over 2 commits, 4 true",
     "agy-flash36-low-skill": "16 claims over 10 commits, 0 true",
+    # Retired on defects rather than on claim counts: 3 claims is an order of magnitude less
+    # evidence than every row above, but an Opus cell is priced per run, and the two runs it did
+    # get are decisive on the axis a rater is bought for.
+    "opus-xhigh": (
+        "1 of the 17 defects on the 2 commits it ran, where opus-high took 7 of one commit's 8; "
+        "it spent 5 tool turns to that cell's 18 there, so the higher effort bought fewer reads "
+        "rather than deeper ones"
+    ),
 }
 EXCLUDED_CELLS = {
     "agy-flash35-low-skill": (
@@ -923,19 +935,49 @@ REVIEW_TIER_FLOOR_MAX = {
 # trimmed (owner rule). `coverage_pct` is the whole panel over the four commits every one of its
 # cells ran on (143fc2f, 8448a35, 8553616, fabcae4) — recomputed 2026-08-07 against a corpus that
 # has grown to 232 adjudicated defects, which moved every figure on its own. Recompute the Codex
-# and Claude cells with frontier, don't hand-edit. It cannot answer for the Gemini block: it
-# prices a composition at the max of its cells' minutes under a wall-clock budget, which is the
-# model the block above rejects, so a frontier answer there ignores the sum-of-cells rule. That
+# cells with frontier, don't hand-edit. It answers for no other side, each for its own reason.
+# Not for the Gemini block: it prices a composition at the max of its cells' minutes under a
+# wall-clock budget, which is the model the block above rejects, so a frontier answer there
+# ignores the sum-of-cells rule. That
 # block is recomputed by enumerating multisets of the pool's agy cells, pricing each at the sum
 # of its cells' median `duration_ms` over the worktree runs in `benches/*/meta.json`, and taking
 # the cheapest that `composition_coverage` scores no lower than the panel it replaces on each of
 # the four populations — whole panel over the `coverage_pct` commits, agy cells alone over the
 # whole corpus, coverage and P1 apiece.
+#
+# And not for the Claude block, which is recomputed by that same enumeration (2026-08-08) with
+# three differences that cost a day to find — the first of them is why frontier cannot be asked
+# here either:
+#   - Price it in dollars, not minutes. `meta.json` has no usage, but `benches/*/raw-<cell>.json`
+#     carries `modelUsage`, whose `costUSD` includes the nested agents a skill cell spawns. A run
+#     is billed mostly for re-reading code, not for thinking: on f0906b7 opus-xhigh took 5 tool
+#     turns to opus-high's 18 and so cost less at a higher effort while finding 1 defect to 7.
+#   - Balance that price per commit. Cells have wildly different run mixes (opus-low: 113 runs,
+#     8 of them on the corpus commits), so a median over all of a cell's runs compares different
+#     diffs. Take each cell's median per commit, then the mean over the seven.
+#   - Score on all four populations, never the panel alone. Dropping opus-high from T2 costs 0.7
+#     points of panel coverage and 29% of what the Claude leg itself finds; the other three legs
+#     overlap it and hide the loss.
+# Buy variety, not repetition: a second run of a cell already in the panel returns ~0.5 defects
+# per dollar against ~4 for adding a different one. opus-high-skill earns no tier slot ($3.32 for
+# 25.5 defects against opus-medium's $1.78 for 34.5); opus-xhigh is retired in WORTHLESS_CELLS,
+# which is what keeps --auto from offering it.
+#
+# Two consequences of this refit that are invisible from one tier. The Claude panels now reach
+# four cells at T3 and five at its ceiling against a four-profile pool, so the ceiling doubles up
+# on an account and bills it twice before a single profile is even walled — accepted here, on the
+# same trade the agy block above takes, because the fifth cell is worth more than the spread is.
+# The test bounds these panels by ROSTER_MAX, which is the width the enumeration can staff at
+# all, not a promise of one account per cell: that promise is what this tier deliberately gives
+# up. And putting skilled cells in the
+# tiers moved the whole opus family onto the skill axis, so the bare cells are spelled
+# `opus-low-bare` / `opus-med-bare` / `opus-high-bare` from here on and reports written before
+# this commit cannot be compared to later ones by cell name.
 REVIEW_TIERS = {
     "T0": {
         "budget_min": 2,
         "when": "Up to 20 changed lines in up to 2 files",
-        "coverage_pct": {"eco": 41.9, "max": 46.1},
+        "coverage_pct": {"eco": 41.9, "max": 47.1},
         "cells": [
             *REVIEW_TIER_FLOOR["T0"],
             "opus-low",
@@ -945,6 +987,7 @@ REVIEW_TIERS = {
         "cells_max": [
             *REVIEW_TIER_FLOOR_MAX["T0"],
             "opus-low",
+            "opus-low-skill",
             "sol-low",
             "sol-low-bare",
         ],
@@ -952,7 +995,7 @@ REVIEW_TIERS = {
     "T1": {
         "budget_min": 6,
         "when": "Up to 150 changed lines, or any change under bin/ or tests/",
-        "coverage_pct": {"eco": 48.9, "max": 55.1},
+        "coverage_pct": {"eco": 48.9, "max": 55.8},
         "cells": [
             *REVIEW_TIER_FLOOR["T1"],
             "opus-medium",
@@ -963,6 +1006,7 @@ REVIEW_TIERS = {
         "cells_max": [
             *REVIEW_TIER_FLOOR_MAX["T1"],
             "opus-low",
+            "opus-low-skill",
             "opus-medium",
             "sol-low",
             "sol-low-bare",
@@ -972,7 +1016,7 @@ REVIEW_TIERS = {
     "T2": {
         "budget_min": 10,
         "when": "Up to 600 changed lines, or a core measurement tool change",
-        "coverage_pct": {"eco": 59.2, "max": 67.4},
+        "coverage_pct": {"eco": 59.2, "max": 68.0},
         "cells": [
             *REVIEW_TIER_FLOOR["T2"],
             "opus-high",
@@ -986,6 +1030,7 @@ REVIEW_TIERS = {
             "opus-high",
             "opus-medium",
             "opus-low",
+            "opus-low-skill",
             "sol-high",
             "sol-high-bare x2",
             "sol-xhigh",
@@ -995,11 +1040,13 @@ REVIEW_TIERS = {
     "T3": {
         "budget_min": 20,
         "when": "More than 600 changed lines",
-        "coverage_pct": {"eco": 70.3, "max": 77.0},
+        "coverage_pct": {"eco": 70.9, "max": 78.8},
         "cells": [
             *REVIEW_TIER_FLOOR["T3"],
             "opus-high",
             "opus-medium",
+            "opus-low",
+            "opus-low-skill",
             "sol-high",
             "sol-high-bare",
             "sol-max-bare",
@@ -1008,6 +1055,9 @@ REVIEW_TIERS = {
             *REVIEW_TIER_FLOOR_MAX["T3"],
             "opus-high",
             "opus-medium",
+            "opus-medium-skill",
+            "opus-low",
+            "opus-low-skill",
             "sol-high",
             "sol-max x2",
             "sol-max-bare",
@@ -5560,7 +5610,7 @@ def unverified_row(index, finding, why):
 def verifier_chain(model, side="opencode"):
     chain = [model] + [name for name in OPENCODE_VERIFIER_CHAIN if name != model]
     if side == "agy":
-        chain.insert(1, GEMINI_VERIFIER)
+        chain.insert(0, GEMINI_VERIFIER)
     return chain
 
 
@@ -5635,12 +5685,44 @@ def verify_one(index, finding, repo, sha, model, lines, ref=None, side="opencode
         mode="w", prefix="review-bench-verify-", suffix=".txt", delete=False
     )
     prompt_file.close()
-    OPENCODE_GATE.acquire(0)
     account, proc, judgment, walled, timeout_stderr = None, None, None, False, ""
     answered_by = model
     chain = verifier_chain(model, side)
     asked = False
     gemini_walled = False
+    holds_gate = False
+
+    def take_gate():
+        """Hold a gateway slot only while this finding is actually on the gateway.
+
+        The gate rations OpenCode concurrency, and its queue is ordered by expected runtime, so
+        a verifier entering it at priority zero waits behind rater cells holding slots for their
+        full timeouts. A side whose chain leads on its own transport must not pay that wait to
+        make a call the gateway is not part of — which is the whole point of the agy side
+        leading with Gemini.
+        """
+        nonlocal holds_gate
+        if not holds_gate:
+            OPENCODE_GATE.acquire(0)
+            holds_gate = True
+
+    def drop_gate():
+        """Whatever wall this thread found goes on record before the slot changes hands.
+
+        The contract belongs to the release, not to the caller: a link that hands the gate to
+        the thread queued behind it must not leave that thread a wall to rediscover. Today the
+        only release before the loop's end is Gemini's, which leads the agy chain and so has no
+        OpenCode call behind it to have walled anything — the point is that reordering the chain
+        cannot quietly take the guarantee away.
+        """
+        nonlocal holds_gate
+        if holds_gate:
+            record_opencode_wall()
+            holds_gate = False
+            OPENCODE_GATE.release()
+
+    if chain[0] != GEMINI_VERIFIER:
+        take_gate()
 
     def record_opencode_wall():
         """The wall this thread found, on record before it lets go of the gate.
@@ -5680,20 +5762,27 @@ def verify_one(index, finding, repo, sha, model, lines, ref=None, side="opencode
                 # Gemini answers on its own transport, so holding a slot of the gateway this
                 # link exists to outlive would stall the OpenCode cells queued behind it for
                 # as long as the rotation takes.
-                record_opencode_wall()
-                OPENCODE_GATE.release()
-                try:
-                    judgment, gemini_asked, gemini_walled = gemini_verify(prompt_text, index)
-                finally:
-                    OPENCODE_GATE.acquire(0)
+                drop_gate()
+                judgment, gemini_asked, gemini_walled = gemini_verify(prompt_text, index)
                 asked = asked or gemini_asked
                 if judgment is not None:
                     break
-                # The slot was another thread's for the length of that rotation, and it may
-                # have retired this account while it held it.
+                # The slot was never this thread's, or was another thread's for the length of
+                # that rotation, and either way the account may have retired meanwhile.
                 skip_opencode = skip_opencode or is_walled("opencode", account)
                 continue
             if skip_opencode:
+                continue
+            take_gate()
+            # Asked again on the far side of the wait, because the wait is where the answer
+            # changes: the gate's queue is ordered by expected runtime, so a verifier entering
+            # it at priority zero sits behind rater cells holding slots for their full timeouts,
+            # and a wall another thread recorded meanwhile is exactly what the pre-gate check
+            # could not have seen. Without this every queued claim spends one more doomed
+            # request on a retired account and deepens the wall by the queue's depth — the same
+            # race run_opencode closes for the rater cells.
+            if is_walled("opencode", account):
+                skip_opencode = True
                 continue
             Path(prompt_file.name).write_text(prompt_text)
             command = [
@@ -5710,8 +5799,10 @@ def verify_one(index, finding, repo, sha, model, lines, ref=None, side="opencode
                     timeout=VERIFY_TIMEOUT_S, env=opencode_env(account)
                 )
             except subprocess.TimeoutExpired as exc:
-                # A gateway that hangs is the outage the second transport exists for, so the
-                # claim carries on down the chain rather than ending on this link.
+                # Every remaining link shares the gateway that just hung, so a claim reaching
+                # here carries on nowhere: on the agy side its own transport already led and
+                # declined, and on the OpenCode side there was never a second one. The loop
+                # continues to reach the fail-open row, not to reach another verifier.
                 proc, judgment = None, None
                 timeout_stderr = subprocess_text(exc.stderr)
                 skip_opencode = True
@@ -5746,7 +5837,7 @@ def verify_one(index, finding, repo, sha, model, lines, ref=None, side="opencode
                 skip_opencode = True
     finally:
         record_opencode_wall()
-        OPENCODE_GATE.release()
+        drop_gate()
         Path(prompt_file.name).unlink(missing_ok=True)
     row = verify_row(index, finding)
     if judgment is None:
@@ -5764,7 +5855,10 @@ def verify_one(index, finding, repo, sha, model, lines, ref=None, side="opencode
                    why="verifier gave no usable answer; finding kept")
         return row
     why = str(judgment.get("why") or "")[:200]
-    if answered_by != model:
+    # Against the head of THIS side's chain, not against the configured OpenCode model: on the
+    # agy side Gemini leads by construction, so `!= model` would mark every one of its verdicts
+    # as a fallback and spend 24 of the 200 characters saying what the side always does.
+    if answered_by != chain[0]:
         why = f"[verified by {answered_by}] {why}"[:200]
     row.update(
         kept=bool(judgment["code_matches"] and judgment["is_defect"]),
@@ -8746,7 +8840,8 @@ def main():
         "--verify", metavar="MODEL", choices=verifier_choices(),
         help=f"Check every finding back against the file it cites with this in-plan "
              f"OpenCode model, and keep only the claims that survive (default "
-             f"{OPENCODE_VERIFIER})",
+             f"{OPENCODE_VERIFIER}); agy findings are judged by {GEMINI_VERIFIER} first and "
+             f"reach this model only where that transport declined",
     )
     run_verify.add_argument(
         "--no-verify", action="store_true",

@@ -94,12 +94,46 @@ claims (`agy-flash36*` raters), 6 real defects and 24 false ones, one call per c
   It is not given the shapes tail: those shapes were written from the OpenCode raters' false
   claims, and stock is what this model was measured best on here.
 
-The second one ships as a chain link rather than as the configured verifier, and only for
+The second one shipped as a chain link rather than as the configured verifier, and only for
 agy-side findings: every OpenCode link answers through one gateway, so a router outage there
 retires the whole chain in a single move — twice on 2026-08-04, and every claim of those runs
-filed unverified. The agy side has a transport of its own, so its chain is
+filed unverified. The agy side has a transport of its own, so its chain became
 `oc-dsv4flash → gemini-3.6-flash → the OpenCode rest`. OpenCode findings keep their chain
 unchanged: there is no second transport to hand them to.
+
+## The agy side again, measured 2026-08-08 — and the order reversed
+
+The tie above is 30 claims wide. Replayed over 433, on a held-out split of 150 (75 real / 75
+false, fixed seed, same items in the same order for every variant, one call each):
+
+| verifier | prompt | real kept | false killed | defects lost |
+| --- | --- | --- | --- | --- |
+| gemini-3.6-flash medium | stock | 63/75 84% | 40/75 53% | 4/31 13% |
+| gemini-3.6-flash medium | persona + do-not-comment list | 60/75 80% | 43/75 57% | 4/31 13% |
+| gemini-3.6-flash medium | substance rubric | 61/75 81% | 42/75 56% | 5/31 16% |
+| deepseek-v4-flash | shapes (its production wording) | 61/75 81% | 25/75 33% | 4/31 13% |
+| deepseek-v4-flash | stock | 63/75 84% | 19/75 25% | 4/31 13% |
+| deepseek-v4-flash | dual | 59/75 79% | 23/75 31% | 6/31 19% |
+
+The model is the whole difference. Eleven wordings were screened on a disjoint 40-item split —
+the review skill's persona, do-not-comment list and severity rubric, the shapes and dual tails,
+and combinations; the three best landed within 4 points of plain stock here. Effort does not
+move it either (high 93%/52% against medium's 92%/52% on 120 shared claims, 91% of decisions
+identical), and neither does handing the verifier the file's diff beside the window (84%/52%
+against 80%/57%, at a much larger prompt). deepseek is shown on its best wording, so this table
+is generous to it.
+
+Verdict: for agy findings the order reverses to `gemini-3.6-flash → oc-dsv4flash → the OpenCode
+rest`. Against deepseek on the wording it actually runs — shapes, not the stock row it scores
+best on — that is two more real kept, the same defect loss and 20 more points of false claims
+killed, for about one
+extra minute of Gemini per review (median 5 agy claims, ~8s each). The gateway stays behind it,
+so a spent Gemini side still gets its findings judged.
+
+OpenCode findings are unchanged, and this does not argue about them: the 33% is deepseek judging
+*Gemini's* claims, while on the OpenCode leg's own claims the same stage takes kimik3 from 83%
+false positives to 27%. Gemini was probed there on 2026-07-27 and rejected for dragging a second
+vendor's account routing into that leg — that reasoning stands.
 
 ## Open at the time of writing
 
