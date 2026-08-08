@@ -52,7 +52,7 @@ instruction_guarded_paths() {
 # every gate: a denial that quotes a different number from the one the bloat gate prices the same
 # file at teaches its reader that neither number is real. An empty answer means "not a class this
 # table prices" — the caller decides whether that is a reason to stay quiet about cost.
-# These are the frozen fallback: both gates ask instruction_live_rate first and quote it when the
+# These are the frozen fallback: both gates ask instruction_live_rates first and quote it when the
 # local index still has a fresh answer, so a figure below one of these is the measured one, not a
 # drifted copy. The tripwire still quotes the constants — it reports a whole set of files at once
 # and prices the dearest class, not one path a live rate could be looked up for.
@@ -75,39 +75,101 @@ instruction_read_rate() {
 INSTRUCTION_GLOBAL_HARD_BYTES=33000
 INSTRUCTION_GLOBAL_WARN_BYTES=30000
 
-# The same rate over the local index's own 30-day window instead of a frozen month, when tokenmap
-# has an answer for this file. Nothing printed means the caller keeps the constant above:
-# an export that is missing, malformed, or past its window is not a better number than the frozen
-# one, it is an unreproducible one, and a denial quoting a figure nobody can reproduce today
-# teaches its reader to discount every figure in the message. Only the two always-on classes are
-# exported so far; the rest fall through by design rather than by omission.
-# The global file is keyed by its canonical name only, exactly as the table above keys it — the
-# profile symlinks resolve to that name and the gates do that resolution themselves.
-instruction_live_rate() {
-  local path=$1 home=${2:-$HOME} rates='' dir='' real='' slug='' n=''
+# A current export answers in one of three useful forms: a measured path has weekly and monthly
+# rates, an absent Markdown path is provably below the cheapest capped entry, and an old-contract
+# export may still have the monthly always-on rate callers used before paths existed. No output
+# means the export is missing, malformed, stale, or does not cover the file.
+# Egor reads these numbers to decide whether a file may grow, so they have to hold still between
+# one day and the next; an exact figure that drifts is worse than a coarse one that does not.
+# Snapping to a 1-1.5-2-3-5-7 decade puts the shown value within ~29% of the measurement and
+# absorbs the slow drift of the sliding window without ever pretending the rate is exact. Both
+# gates share it: two gates quoting different numbers for one file teach a reader neither is real.
+instruction_display_rate() {
+  jq -nr --argjson n "$1" '
+    [1, 1.5, 2, 3, 5, 7, 10] as $steps
+    | if $n <= 0 then 0
+      else
+        ($n | log10 | floor) as $e
+        | pow(10; $e) as $decade
+        | ($n / $decade) as $mantissa
+        | ($steps | map(select(. <= $mantissa)) | last) as $down
+        | ($steps | map(select(. >= $mantissa)) | first) as $up
+        | (if ($mantissa / $down) <= ($up / $mantissa) then $down else $up end) * $decade
+      end
+    # A rate that survives to here is positive, and printing it as 0 says the file is free to grow.
+    # One decimal is all the ladder ever needs above 0.1; below it the number is rounded to two.
+    | if . >= 10 then round
+      elif . >= 0.1 then (. * 10 | round) / 10
+      elif . > 0 then ((. * 100 | round) / 100 | if . == 0 then 0.01 else . end)
+      else 0 end' 2>/dev/null
+}
+
+# Token totals reach seven figures, and a bare 1500000 is read wrong more often than right.
+instruction_format_tokens() {
+  jq -nr --argjson n "$1" '
+    def trim: if . == floor then (floor | tostring) else tostring end;
+    if $n >= 1000000 then (($n / 1000000 * 10 | round) / 10 | trim) + "M"
+    elif $n >= 1000 then (($n / 1000 * 10 | round) / 10 | trim) + "k"
+    else ($n | round | tostring) end' 2>/dev/null
+}
+
+# Re-read counts stay literal — "paid 2,000 times over" is the sentence that explains the cost,
+# and "2k times" makes a reader do the expansion again. The last rung tracks the display ladder,
+# which reaches 0.01: one decimal printed "~0 times a week" beside a cost that was not zero.
+instruction_format_count() {
+  jq -nr --argjson n "$1" '
+    def commas:
+      (tostring | split(".")) as $parts
+      | ($parts[0] | explode | reverse) as $digits
+      | ([range(0; $digits | length)
+          | if . > 0 and . % 3 == 0 then [44, $digits[.]] else [$digits[.]] end]
+         | flatten | reverse | implode)
+        + (if ($parts | length) > 1 then "." + $parts[1] else "" end);
+    ($n | if . >= 10 then round
+          elif . >= 0.1 then (. * 10 | round) / 10
+          else (. * 100 | round) / 100 end) | commas' 2>/dev/null
+}
+
+# A rate under one read a month still rounds up to 1, and "~1 times a month" in a message Egor
+# reads is the kind of sloppiness that makes him doubt the number beside it.
+instruction_times() {
+  case "$1" in
+    1) printf '1 time' ;;
+    *) printf '%s times' "$1" ;;
+  esac
+}
+
+instruction_live_rates() {
+  local target_path=$1 home=${2:-$HOME} rates='' dir='' real='' path_real='' slug='' result=''
+  local klass=other
   rates=${TOKENMAP_RATES:-$home/.local/share/tokenmap/read-rates.json}
   [ -f "$rates" ] || return 0
-  case "$path" in
-    "$home"/.claude/CLAUDE.md) ;;
+  case "$target_path" in
+    "$home"/.claude/CLAUDE.md) klass=global ;;
     # A memory index is never in the directory tokenmap recorded: it sits at
     # <...>/projects/<encoded-cwd>/memory/MEMORY.md, so the project is named by that component,
     # which is the cwd with every non-alphanumeric character replaced by a dash.
     */projects/*/memory/MEMORY.md)
-      slug=${path%/memory/MEMORY.md}
+      klass=memory
+      slug=${target_path%/memory/MEMORY.md}
       slug=${slug##*/}
       ;;
     */MEMORY.md|*/CLAUDE.md|*/CLAUDE.local.md)
-      dir=$(dirname "$path")
+      klass=project
+      dir=$(dirname "$target_path")
       # The export is keyed by whatever cwd the sessions ran in, which is as often the /var
       # spelling as the /private/var one it resolves to, so both are tried.
       real=$(realpath "$dir" 2>/dev/null) || real=''
       [ "$real" = "$dir" ] && real=''
       ;;
-    *) return 0 ;;
+    *)
+      dir=$(dirname "$target_path")
+      ;;
   esac
-  # One jq read decides everything, so a missing file, unparseable JSON, an absent key, a rate
-  # that is not a number and a window outside its bounds all leave by the same door: no output.
-  n=$(jq -r --arg dir "$dir" --arg real "$real" --arg slug "$slug" '
+  path_real=$(realpath "$target_path" 2>/dev/null) || path_real=''
+  [ "$path_real" = "$target_path" ] && path_real=''
+  result=$(jq -r --arg path "$target_path" --arg path_real "$path_real" \
+    --arg dir "$dir" --arg real "$real" --arg slug "$slug" --arg klass "$klass" '
     # fromdateiso8601 parses one spelling only. A producer that starts stamping fractional
     # seconds or +00:00 would otherwise read as unparseable and silently freeze every gate on
     # the constants, so the two benign drifts are normalized rather than rejected.
@@ -116,20 +178,78 @@ instruction_live_rate() {
     # A future stamp is a broken clock or a broken export, not a fresher measurement; the small
     # tolerance is for ordinary skew between the writer and this reader.
     | select((now - $gen) <= 1209600 and ($gen - now) <= 300)
-    | (if $slug != "" then
+    | ((.paths.entries[$path]
+        // (if $path_real == "" then null else .paths.entries[$path_real] end))) as $entry
+    # limit_units is what the weekly usage limit actually charges, and that limit is the one
+    # these gates exist to protect; `reads` prices the same growth in dollars, which is a
+    # different and roughly twice larger number. An export written before limit_units existed
+    # falls back to it rather than freezing every gate on the constants.
+    | ($entry.weekly.limit_units // $entry.weekly.reads) as $weekly
+    | ($entry.monthly.limit_units // $entry.monthly.reads) as $monthly
+    # A project rate belongs to the instruction files that ride in every session of that
+    # project, not to whatever else happens to sit in the same directory: a settings.json
+    # beside them is not re-read into any prefix, and quoting it a rate measured from its
+    # neighbours states a cost that was never paid.
+    # A CLAUDE.md is loaded by every session at or below its own directory, so the sessions that
+    # pay for it are the project keys the directory CONTAINS, not the one that spells it exactly:
+    # a repository root file is read by every session in every subdirectory of that repository,
+    # and asking only for the exact key priced the busiest instruction files at nothing.
+    | def project_rate($d):
+        if $d == "" then empty
+        else ([.projects // {} | to_entries[]
+               | select(.key == $d or (.key | startswith($d + "/")))
+               | (.value.limit_units // .value.reads)
+               | select(type == "number")] | add)
+        end;
+      (if $klass == "memory" then
+         # The slug is an encoded directory, and encoding preserves the separator, so a key
+         # BELOW that directory encodes to the slug followed by one — the same containment the
+         # project rate sums, spelled in the one form a slug can be compared in.
          ([.projects // {} | to_entries[]
-           | select((.key | gsub("[^A-Za-z0-9]"; "-")) == $slug) | .value.reads] | first)
-       elif $dir == "" then .global.reads
-       else (.projects[$dir].reads
-             // (if $real == "" then empty else .projects[$real].reads end))
-       end)
-    | select(type == "number" and . > 0)
-    # A rate under one read a month is still a real read: rounding it to zero would print
-    # "~0x/month", which reads as "this file is free".
-    | if . < 1 then 1 else round end
+           | (.key | gsub("[^A-Za-z0-9]"; "-")) as $encoded
+           | select($encoded == $slug or ($encoded | startswith($slug + "-")))
+           | (.value.limit_units // .value.reads)
+           | select(type == "number")] | add)
+       elif $klass == "global" then (.global.limit_units // .global.reads)
+       elif $klass == "project" then
+         ((project_rate($dir) | select(. > 0)) // project_rate($real) // null)
+       # `empty as $x` yields nothing at all, taking the measured and cheap branches below down
+       # with it, so a class that has no rate has to answer null rather than decline to answer.
+       else null end) as $class_monthly
+    | if (($monthly | type) == "number" and $monthly > 0
+          and ($weekly | type) == "number" and $weekly >= 0) then
+        ["measured", ($weekly | tostring), ($monthly | tostring), ""] | join("|")
+      elif ($class_monthly | type) == "number" and $class_monthly > 0 then
+        ["legacy", "", ($class_monthly | tostring), ""] | join("|")
+      # "Cheap" is a claim about a file nothing else in this export accounts for. An instruction
+      # file that names a class — a CLAUDE.md, a memory index — is never that, even when the class
+      # lookup above came back empty: it is a file whose price is not known yet, and it belongs to
+      # the class constants of whichever gate asked. Answering "cheap" for one is how always-on files stopped
+      # being gated at all.
+      elif ($klass == "other"
+            and (.paths.criteria.extensions | type) == "array"
+            and (.paths.criteria.extensions | index(".md")) != null
+            and (.paths.criteria.extensions | index(".markdown")) != null
+            and (.paths.criteria.min_monthly_reads | type) == "number"
+            and (.paths.criteria.limit | type) == "number"
+            and (.paths.entries | type) == "object"
+            and ($path | ascii_downcase | test("\\.(md|markdown)$"))) then
+        # What a missing entry proves depends on why it is missing. Below the cap, every file
+        # above min_monthly_reads is in the export, so an absent one is under that threshold.
+        # At the cap the export is truncated by rank instead, and the only honest bound left is
+        # the cheapest entry that survived the cut.
+        # Both bounds are in `reads`, because that is the currency the export ranks and admits
+        # entries by. The limit units of a file never exceed its reads, so the same number bounds
+        # the currency the gates quote — loosely, the safe direction for a "not gated" claim.
+        (if (.paths.entries | length) >= .paths.criteria.limit
+         then ([.paths.entries[] | .monthly.reads | select(type == "number" and . > 0)] | min)
+         else .paths.criteria.min_monthly_reads end) as $floor
+        | if ($floor | type) == "number" then
+            ["cheap", "", "", ($floor | tostring)] | join("|")
+          else empty end
+      else empty end
   ' "$rates" 2>/dev/null) || return 0
-  case "$n" in ''|*[!0-9]*) return 0 ;; esac
-  printf '%s' "$n"
+  [ -n "$result" ] && printf '%s' "$result"
 }
 
 # The directories, not just the files in them. A doc that does not exist yet costs the same per
@@ -200,6 +320,20 @@ instruction_all_dirs() {
 instruction_claim_stamp() {
   instruction_stamp_ready "$1" "$2" || return 1
   instruction_stamp_consume "$1" "$2"
+}
+
+# Unlike a retry stamp, a notice marker is retained for the session's lifetime: only the atomic
+# creator speaks, and an unavailable cache returns silence.
+# The retry sweep runs one level down from the stamp root and so never reaches these, which sit a
+# level below that. The same age and the same name shape decide here, so a marker that outlived
+# every session it could belong to goes too — a day, which is longer than a session lives.
+instruction_mark_once() {
+  local dir=$1 hash=$2 h='[0-9a-f]'
+  case "$hash" in [0-9a-f][0-9a-f]*) ;; *) return 1 ;; esac
+  mkdir -p "$dir" 2>/dev/null || return 1
+  find "$dir" -mindepth 1 -maxdepth 1 -type d \
+    -name "$h$h$h$h$h$h$h$h$h$h$h$h$h$h$h$h" -mmin +1440 -exec rmdir {} + 2>/dev/null
+  mkdir "$dir/$hash" 2>/dev/null
 }
 
 # Finding the stamp and spending it are separate steps because a caller may have a condition of

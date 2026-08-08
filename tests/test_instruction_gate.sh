@@ -145,12 +145,12 @@ echo "== write gate: the denial quotes what THIS class of file costs"
 # A command already denied once in this suite would be spending its retry here, not being
 # priced, so every one of these carries its own marker.
 price() { gate "echo priced-$1 > $2" | jq -r '.hookSpecificOutput.permissionDecisionReason'; }
-assert_contains "~15682 full-read" "$(price a "$CLAUDE_MD")"
-assert_contains "~15682 full-read" "$(price b "$REAL_MD")"
-assert_contains "~2500 full-read" "$(price c "$HOME/.claude/agents/codex-worker.md")"
-assert_contains "~160 full-read" "$(price d "$HOME/.claude/docs/review-tiers.md")"
-assert_contains "~90 full-read" "$(price e "$HOME/.claude/skills/demo/SKILL.md")"
-assert_contains "~3131 full-read" "$(price f "$WORK/proj/CLAUDE.md")"
+assert_contains "~3,000 times a week, ~15,000 times a month" "$(price a "$CLAUDE_MD")"
+assert_contains "~3,000 times a week, ~15,000 times a month" "$(price b "$REAL_MD")"
+assert_contains "~500 times a week, ~3,000 times a month" "$(price c "$HOME/.claude/agents/codex-worker.md")"
+assert_contains "~30 times a week, ~150 times a month" "$(price d "$HOME/.claude/docs/review-tiers.md")"
+assert_contains "~20 times a week, ~100 times a month" "$(price e "$HOME/.claude/skills/demo/SKILL.md")"
+assert_contains "~700 times a week, ~3,000 times a month" "$(price f "$WORK/proj/CLAUDE.md")"
 
 echo "== write gate: reads and non-targets stay silent"
 assert_eq pass "$(decision "grep -n rules $CLAUDE_MD")"
@@ -343,8 +343,8 @@ bloat_decision() {
   printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "pass"' 2>/dev/null
 }
 msg=$(bloat "$CLAUDE_MD" | jq -r '.hookSpecificOutput.permissionDecisionReason')
-assert_contains "15682" "$msg"
-assert_contains "tokens/month" "$msg"
+assert_contains "~15,000 times a month" "$msg"
+assert_contains "tokens/week and " "$msg"
 # The audit is the cheapest way out of the denial, so it stands first and is named as a step.
 assert_contains "Protocol, fastest path first" "$msg"
 assert_contains "(1) AUDIT" "$msg"
@@ -355,16 +355,16 @@ echo "== bloat gate: every name the global file answers to is the global file"
 mkdir -p "$HOME/.claude-profiles/com"
 ln -sf "$CLAUDE_MD" "$HOME/.claude-profiles/com/CLAUDE.md"
 msg=$(bloat "$HOME/.claude-profiles/com/CLAUDE.md" | jq -r '.hookSpecificOutput.permissionDecisionReason')
-assert_contains "15682" "$msg"
+assert_contains "~15,000 times a month" "$msg"
 msg=$(bloat "$REAL_MD" | jq -r '.hookSpecificOutput.permissionDecisionReason')
-assert_contains "15682" "$msg"
+assert_contains "~15,000 times a month" "$msg"
 
 echo "== bloat gate: a project file rides in one project's sessions, not in all of them"
 # The global rate quoted for a project CLAUDE.md or memory index overstated it by five times.
 msg=$(bloat "$REPO/CLAUDE.md" | jq -r '.hookSpecificOutput.permissionDecisionReason')
-assert_contains "3131" "$msg"
+assert_contains "~3,000 times a month" "$msg"
 msg=$(bloat "$WORK/memory/MEMORY.md" | jq -r '.hookSpecificOutput.permissionDecisionReason')
-assert_contains "3131" "$msg"
+assert_contains "~3,000 times a month" "$msg"
 
 echo "== bloat gate: the repo path behind the symlinked directory is the same file"
 # ~/.claude/docs and ~/.claude/agents are symlinks into the config repository, and the repo
@@ -626,107 +626,304 @@ price_bloat() {
     '{tool_name:"Edit",cwd:"/tmp",session_id:$s,tool_input:{file_path:$p,old_string:"x",new_string:$n}}' \
     | bash "$BLOAT" | jq -r '.hookSpecificOutput.permissionDecisionReason'
 }
-FROZEN_WORDING="full-read price (measured; content in the cached prefix"
+FROZEN_WORDING="times a month — every token added is paid for that many times over (measured)."
 LIVE_WORDING="measured by the local read index over its last 30-day window"
-live_tokens=$(( (${#big} - 1) / 4 ))
+# 3.2 bytes per token, rounded the way jq rounds it rather than truncated.
+live_tokens=$(( ((${#big} - 1) * 10 + 16) / 32 ))
 write_rates "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 msg=$(price_bloat global-fresh "$CLAUDE_MD")
-assert_contains "~20111x/month" "$msg"
+assert_contains "~20,000 times a month" "$msg"
 assert_contains "$LIVE_WORDING" "$msg"
-assert_contains "~$((live_tokens * 20111)) tokens/month" "$msg"
+# The cost is the product of the two figures printed beside it, not of the measurement behind them:
+# the message orders its reader to quote all three to Egor, so 125 tokens at the ~20,000 re-reads
+# it shows has to come to the 2.5M it shows, and never to the 2,513,875 the raw 20,111 would give.
+assert_eq 125 "$live_tokens"
+assert_contains "~2.5M/month" "$msg"
 # Every name the global file answers to resolves to the one the export keys it by.
-assert_contains "~20111x/month" "$(price_bloat global-profile "$HOME/.claude-profiles/com/CLAUDE.md")"
-assert_contains "~20111x/month" "$(price_bloat global-repo "$REAL_MD")"
+assert_contains "~20,000 times a month" "$(price_bloat global-profile "$HOME/.claude-profiles/com/CLAUDE.md")"
+assert_contains "~20,000 times a month" "$(price_bloat global-repo "$REAL_MD")"
 
 echo "== bloat gate: a project the index measured is priced at that project's own rate"
-assert_contains "~812x/month" "$(price_bloat proj-literal "$WORK/liveproj/CLAUDE.md")"
-assert_contains "~812x/month" "$(price_bloat proj-local "$WORK/liveproj/CLAUDE.local.md")"
-assert_contains "~407x/month" "$(price_bloat proj-resolved "$WORK/livereal/CLAUDE.md")"
+assert_contains "~700 times a month" "$(price_bloat proj-literal "$WORK/liveproj/CLAUDE.md")"
+assert_contains "~700 times a month" "$(price_bloat proj-local "$WORK/liveproj/CLAUDE.local.md")"
+assert_contains "~500 times a month" "$(price_bloat proj-resolved "$WORK/livereal/CLAUDE.md")"
 # A project nobody measured is not free, it is the class rate — and so is a memory index filed
 # under a directory the export does not carry.
 msg=$(price_bloat proj-unmeasured "$WORK/unmeasured/CLAUDE.md")
-assert_contains "~3131x/month" "$msg"
+assert_contains "~3,000 times a month" "$msg"
 assert_contains "$FROZEN_WORDING" "$msg"
-assert_contains "~3131x/month" "$(price_bloat proj-memory "$WORK/liveproj/memory/MEMORY.md")"
+assert_contains "~3,000 times a month" "$(price_bloat proj-memory "$WORK/liveproj/memory/MEMORY.md")"
+# A project rate is the price of the instruction files that ride in that project's sessions, not
+# of every file that shares their directory. Left unrestricted it priced ~/.claude/settings.json
+# at the rate measured from its neighbours and denied it, quoting a re-read that never happens.
+printf '{}\n' > "$WORK/liveproj/settings.json"
+assert_eq pass "$(bloat_decision "$WORK/liveproj/settings.json")"
+printf 'x\n' > "$WORK/liveproj/notes.txt"
+assert_eq pass "$(bloat_decision "$WORK/liveproj/notes.txt")"
 
 echo "== bloat gate: a memory index is priced by the project its path encodes"
 # The index never sits in the directory tokenmap recorded — its parent is the memory/ subdirectory
 # of a per-project transcript directory, whose name is the cwd with the non-alphanumerics dashed.
 msg=$(price_bloat mem-slug "$MEM_DIR/MEMORY.md")
-assert_contains "~641x/month" "$msg"
+assert_contains "~700 times a month" "$msg"
 assert_contains "$LIVE_WORDING" "$msg"
 # A slug the export never measured is the class rate, not a match on a neighbouring project.
-assert_contains "~3131x/month" \
+assert_contains "~3,000 times a month" \
   "$(price_bloat mem-unknown "$WORK/profiles/com/projects/-nowhere-at-all/memory/MEMORY.md")"
 
 echo "== bloat gate: a rate under one read a month is not a free file"
-# round() would print 0, and "~0x/month" reads as permission rather than as a small cost.
+# round() would print 0, and "~0 times a month" reads as permission rather than as a small cost.
 msg=$(price_bloat tiny /tmp/tiny-project/CLAUDE.md)
-assert_contains "~1x/month" "$msg"
+assert_contains "~1 time a month" "$msg"
 assert_contains "$LIVE_WORDING" "$msg"
 
 echo "== bloat gate: a stamp from the future is a broken clock, not a fresher measurement"
 write_rates "$(stamp_ahead 6)"
 msg=$(price_bloat future "$CLAUDE_MD")
-assert_contains "~15682x/month" "$msg"
+assert_contains "~15,000 times a month" "$msg"
 assert_contains "$FROZEN_WORDING" "$msg"
 # Skew of a couple of minutes is not that, and must not throw the reading away.
 write_rates "$(stamp_ahead 0)"
-assert_contains "~20111x/month" "$(price_bloat no-skew "$CLAUDE_MD")"
+assert_contains "~20,000 times a month" "$(price_bloat no-skew "$CLAUDE_MD")"
 
 echo "== bloat gate: the two benign producer drifts still parse"
 # fromdateiso8601 accepts one spelling; a fractional second or a +00:00 offset must degrade to the
 # same reading rather than to a silent fallback nobody would notice.
 jq -n --arg gen "$(date -u +%Y-%m-%dT%H:%M:%S.123456Z)" \
   '{generated_at:$gen,window_days:30,global:{reads:20111.0}}' > "$RATES"
-assert_contains "~20111x/month" "$(price_bloat frac-seconds "$CLAUDE_MD")"
+assert_contains "~20,000 times a month" "$(price_bloat frac-seconds "$CLAUDE_MD")"
 jq -n --arg gen "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" \
   '{generated_at:$gen,window_days:30,global:{reads:20111.0}}' > "$RATES"
-assert_contains "~20111x/month" "$(price_bloat utc-offset "$CLAUDE_MD")"
+assert_contains "~20,000 times a month" "$(price_bloat utc-offset "$CLAUDE_MD")"
 
 echo "== bloat gate: an export past its window is not a number anybody can reproduce"
 write_rates "$(stamp_ago 20)"
 msg=$(price_bloat stale "$CLAUDE_MD")
-assert_contains "~15682x/month" "$msg"
+assert_contains "~15,000 times a month" "$msg"
 assert_contains "$FROZEN_WORDING" "$msg"
-assert_contains "~3131x/month" "$(price_bloat stale-proj "$WORK/liveproj/CLAUDE.md")"
+assert_contains "~3,000 times a month" "$(price_bloat stale-proj "$WORK/liveproj/CLAUDE.md")"
 # Just inside the window still counts.
 write_rates "$(stamp_ago 13)"
-assert_contains "~20111x/month" "$(price_bloat nearly-stale "$CLAUDE_MD")"
+assert_contains "~20,000 times a month" "$(price_bloat nearly-stale "$CLAUDE_MD")"
 
 echo "== bloat gate: an export it cannot read leaves the constants standing"
 rm -f "$RATES"
-assert_contains "~15682x/month" "$(price_bloat no-file "$CLAUDE_MD")"
+assert_contains "~15,000 times a month" "$(price_bloat no-file "$CLAUDE_MD")"
 printf 'not json at all\n' > "$RATES"
-assert_contains "~15682x/month" "$(price_bloat malformed "$CLAUDE_MD")"
+assert_contains "~15,000 times a month" "$(price_bloat malformed "$CLAUDE_MD")"
 printf '{"projects":{}}\n' > "$RATES"
-assert_contains "~15682x/month" "$(price_bloat no-timestamp "$CLAUDE_MD")"
+assert_contains "~15,000 times a month" "$(price_bloat no-timestamp "$CLAUDE_MD")"
 jq -n --arg gen "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{generated_at:$gen,projects:{}}' > "$RATES"
-assert_contains "~15682x/month" "$(price_bloat no-global-key "$CLAUDE_MD")"
+assert_contains "~15,000 times a month" "$(price_bloat no-global-key "$CLAUDE_MD")"
 jq -n --arg gen "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{generated_at:$gen,global:{reads:"lots"}}' > "$RATES"
-assert_contains "~15682x/month" "$(price_bloat unusable-rate "$CLAUDE_MD")"
+assert_contains "~15,000 times a month" "$(price_bloat unusable-rate "$CLAUDE_MD")"
 
 echo "== bloat gate: the classes the export does not cover keep their own constants"
 # docs, agents, skills and instructions are not in the export yet, and a live lookup that answers
 # nothing for them must fall back rather than stop pricing them.
 write_rates "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 msg=$(price_bloat class-docs "$HOME/.claude/docs/review-tiers.md")
-assert_contains "~160x/month" "$msg"
+assert_contains "~150 times a month" "$msg"
 assert_contains "$FROZEN_WORDING" "$msg"
-assert_contains "~2500x/month" "$(price_bloat class-agents "$HOME/.claude/agents/codex-worker.md")"
-assert_contains "~90x/month" "$(price_bloat class-skills "$HOME/.claude/skills/demo/SKILL.md")"
+assert_contains "~3,000 times a month" "$(price_bloat class-agents "$HOME/.claude/agents/codex-worker.md")"
+assert_contains "~100 times a month" "$(price_bloat class-skills "$HOME/.claude/skills/demo/SKILL.md")"
 assert_eq pass "$(bloat_decision "$WORK/ordinary.md")"
 
 echo "== write gate: the denial quotes the same live figure the bloat gate does"
 # Two gates quoting different numbers for one file is what teaches a reader that neither is real.
-assert_contains "~20111 full-read" "$(price live-a "$CLAUDE_MD")"
-assert_contains "~20111 full-read" "$(price live-b "$REAL_MD")"
-assert_contains "~812 full-read" "$(price live-c "$WORK/liveproj/CLAUDE.md")"
+assert_contains "~5,000 times a week, ~20,000 times a month" "$(price live-a "$CLAUDE_MD")"
+assert_contains "~5,000 times a week, ~20,000 times a month" "$(price live-b "$REAL_MD")"
+assert_contains "~200 times a week, ~700 times a month" "$(price live-c "$WORK/liveproj/CLAUDE.md")"
 # A class the export does not carry, and a project it never measured, keep the constant.
-assert_contains "~160 full-read" "$(price live-d "$HOME/.claude/docs/review-tiers.md")"
-assert_contains "~3131 full-read" "$(price live-e "$WORK/unmeasured/CLAUDE.md")"
+assert_contains "~30 times a week, ~150 times a month" "$(price live-d "$HOME/.claude/docs/review-tiers.md")"
+assert_contains "~700 times a week, ~3,000 times a month" "$(price live-e "$WORK/unmeasured/CLAUDE.md")"
+
+echo "== bloat gate: current path rates price every Markdown file in weekly terms"
+README="$WORK/liveproj/README.md"
+CHEAP_MD="$WORK/liveproj/cheap.md"
+ABSENT_MD="$WORK/liveproj/absent.md"
+PROJECT_MEMORY="$WORK/liveproj/MEMORY.md"
+printf 'readme\n' > "$README"
+printf 'cheap\n' > "$CHEAP_MD"
+printf 'memory\n' > "$PROJECT_MEMORY"
+write_current_rates() {
+  jq -n --arg gen "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg global "$CLAUDE_MD" \
+    --arg project "$WORK/liveproj" --arg readme "$README" --arg cheap "$CHEAP_MD" \
+    --arg memory "$PROJECT_MEMORY" --arg project_claude "$WORK/liveproj/CLAUDE.md" '{
+    generated_at: $gen, window_days: 30,
+    global: {reads: 20111.0, limit_units: 9800.0, requests: 130000, contexts: 1900},
+    projects: {($project): {reads: 812.4, limit_units: 400.0, requests: 8000, contexts: 60}},
+    weekly: {window_days: 7, basis_days: 30,
+      global: {reads: 6176.0, limit_units: 3000.0, requests: 40000, contexts: 600},
+      projects: {($project): {reads: 302.0, limit_units: 150.0, requests: 2000, contexts: 20}}},
+    paths: {
+      criteria: {extensions: [".md", ".markdown"], min_monthly_reads: 1.0, limit: 500},
+      entries: {
+        ($global): {mode: "always",
+          monthly: {reads: 20111.0, limit_units: 9800.0},
+          weekly: {reads: 6176.0, limit_units: 3000.0}},
+        ($readme): {mode: "on-demand",
+          monthly: {reads: 4000.0, limit_units: 2000.0},
+          weekly: {reads: 1000.0, limit_units: 500.0}},
+        ($cheap): {mode: "on-demand",
+          monthly: {reads: 3.0, limit_units: 2.0},
+          weekly: {reads: 2.0, limit_units: 1.0}},
+        ($memory): {mode: "always",
+          monthly: {reads: 812.4, limit_units: 400.0},
+          weekly: {reads: 302.0, limit_units: 150.0}},
+        ($project_claude): {mode: "always",
+          monthly: {reads: 812.4, limit_units: 400.0},
+          weekly: {reads: 302.0, limit_units: 150.0}}
+      }
+    }
+  }' > "$RATES"
+}
+growth_output() {
+  jq -cn --arg p "$1" --arg n "$2" --arg s "$3" \
+    '{tool_name:"Edit",cwd:"/tmp",session_id:$s,
+      tool_input:{file_path:$p,old_string:"x",new_string:$n}}' | bash "$BLOAT"
+}
+growth_decision() {
+  local out
+  out=$(growth_output "$@")
+  [ -n "$out" ] || { printf 'pass\n'; return 0; }
+  printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "pass"'
+}
+write_current_rates
+readme_growth=$(python3 -c 'print("r" * 800)')
+msg=$(growth_output "$README" "$readme_growth" path-readme \
+  | jq -r '.hookSpecificOutput.permissionDecisionReason')
+# The limit-unit figure, not the dollar-priced `reads` beside it in the same entry: the gate
+# guards the weekly usage limit, and that counter charges cache reads at about nothing.
+assert_contains "~500 times a week" "$msg"
+assert_contains "~2,000 times a month" "$msg"
+assert_contains "tokens/week" "$msg"
+assert_contains "tokenmap reads $README" "$msg"
+memory_growth=$(python3 -c 'print("m" * 3000)')
+msg=$(growth_output "$PROJECT_MEMORY" "$memory_growth" path-memory \
+  | jq -r '.hookSpecificOutput.permissionDecisionReason')
+assert_contains "~150 times a week" "$msg"
+assert_contains "~500 times a month" "$msg"
+
+echo "== number formatting: the figures are readable before they are anything else"
+# Seven bare digits are read wrong more often than right, and these numbers exist to be acted on.
+fmt() { ( . "$ROOT/share/instruction-files.sh"; "$@" ); }
+assert_eq "63"     "$(fmt instruction_format_tokens 63)"
+assert_eq "1.5k"   "$(fmt instruction_format_tokens 1500)"
+assert_eq "150k"   "$(fmt instruction_format_tokens 150000)"
+assert_eq "2.5M"   "$(fmt instruction_format_tokens 2513875)"
+assert_eq "12M"    "$(fmt instruction_format_tokens 12000000)"
+assert_eq "515"    "$(fmt instruction_format_count 515)"
+assert_eq "2,000"  "$(fmt instruction_format_count 2000)"
+assert_eq "1,000,000" "$(fmt instruction_format_count 1000000)"
+assert_eq "1.5"    "$(fmt instruction_format_count 1.5)"
+assert_eq "1 time" "$(fmt instruction_times 1)"
+assert_eq "20 times" "$(fmt instruction_times 20)"
+
+echo "== bloat gate: a rate that drifts does not move the number Egor reads"
+# The point of the ladder. Egor decides whether a file may grow from this figure, and a decision
+# he cannot repeat tomorrow is no decision; the export's window slides every night, so the quoted
+# price has to survive that drift without moving. It still moves when the rate really changes.
+drifted_rates() {
+  jq -n --arg gen "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg readme "$README" --argjson w "$1" '{
+    generated_at: $gen, window_days: 30,
+    global: {reads: 20111.0, limit_units: 9800.0, requests: 130000, contexts: 1900},
+    projects: {},
+    paths: {
+      criteria: {extensions: [".md", ".markdown"], min_monthly_reads: 1.0, limit: 500},
+      entries: {($readme): {mode: "on-demand",
+        monthly: {reads: ($w * 8), limit_units: ($w * 4)},
+        weekly: {reads: ($w * 2), limit_units: $w}}}
+    }
+  }' > "$RATES"
+}
+drift_quote() {
+  drifted_rates "$1"
+  growth_output "$README" "$readme_growth" "drift-$1" \
+    | jq -r '.hookSpecificOutput.permissionDecisionReason' \
+    | grep -o '~[0-9,.]* times\? a week'
+}
+assert_eq "~500 times a week" "$(drift_quote 460)"
+assert_eq "~500 times a week" "$(drift_quote 540)"
+assert_eq "~700 times a week" "$(drift_quote 720)"
+write_current_rates
+
+echo "== bloat gate: the weekly budget makes cheap files more permissive"
+cheap_growth=$(python3 -c 'print("c" * 10000)')
+assert_eq pass "$(growth_decision "$CHEAP_MD" "$cheap_growth" threshold-cheap)"
+
+echo "== bloat gate: the weekly threshold is never stricter than 120 bytes"
+exactly_120=$(python3 -c 'print("g" * 121)')
+over_120=$(python3 -c 'print("g" * 122)')
+assert_eq pass "$(growth_decision "$CLAUDE_MD" "$exactly_120" clamp-pass)"
+assert_eq deny "$(growth_decision "$CLAUDE_MD" "$over_120" clamp-deny)"
+
+echo "== bloat gate: a fresh export proves an absent Markdown file cheap"
+# Below the cap the export holds EVERY file above min_monthly_reads, so an absent one is under
+# that threshold and nothing else. Quoting the cheapest surviving entry instead is a bound the
+# export does not support: with one entry left it announced a missing file at ~20,111 a month.
+absent=$(growth_output "$ABSENT_MD" "$cheap_growth" absent-fresh)
+assert_eq pass "$(printf '%s' "$absent" | jq -r '.hookSpecificOutput.permissionDecision // "pass"')"
+notice=$(printf '%s' "$absent" | jq -r '.hookSpecificOutput.additionalContext')
+assert_eq "$ABSENT_MD is below ~1 limit unit/month; not gated." "$notice"
+assert_eq "" "$(growth_output "$ABSENT_MD" "$readme_growth" absent-fresh)"
+ABSENT_MD_TWO="$WORK/liveproj/absent-two.md"
+assert_contains "$ABSENT_MD_TWO is below ~1 limit unit/month; not gated." \
+  "$(growth_output "$ABSENT_MD_TWO" "$cheap_growth" absent-fresh \
+    | jq -r '.hookSpecificOutput.additionalContext')"
+assert_contains "$ABSENT_MD is below ~1 limit unit/month; not gated." \
+  "$(growth_output "$ABSENT_MD" "$cheap_growth" absent-other-session \
+    | jq -r '.hookSpecificOutput.additionalContext')"
+unavailable=$(jq -cn --arg p "$WORK/liveproj/unavailable.md" --arg n "$cheap_growth" \
+  '{tool_name:"Edit",cwd:"/tmp",session_id:"absent-unavailable",
+    tool_input:{file_path:$p,old_string:"x",new_string:$n}}' \
+  | INSTRUCTION_BLOAT_GATE_STAMPS=/dev/null/nope bash "$BLOAT")
+assert_eq "" "$unavailable"
+assert [ "${#notice}" -lt "$(( ${#msg} / 2 ))" ]
+
+echo "== bloat gate: at the cap the floor is the cheapest entry that survived the cut"
+# Truncated by rank, the export no longer holds every file above min_monthly_reads, and that
+# threshold stops bounding what is missing. Only the cheapest survivor still does.
+jq --argjson n "$(jq '.paths.entries | length' "$RATES")" '.paths.criteria.limit = $n' "$RATES" \
+  > "$RATES.capped" && mv "$RATES.capped" "$RATES"
+assert_contains "$ABSENT_MD is below ~3 limit units/month; not gated." \
+  "$(growth_output "$ABSENT_MD" "$cheap_growth" absent-capped \
+    | jq -r '.hookSpecificOutput.additionalContext')"
+write_current_rates
+
+echo "== bloat gate: an always-on file the export never measured keeps its class price"
+# Every instruction file is Markdown, so testing "absent Markdown is cheap" before the class
+# lookup made that lookup unreachable for all of them: a project CLAUDE.md that no session ever
+# Read explicitly — which is most of them, since they are auto-loaded rather than opened — was
+# announced ungated at ~1 a month while its project was measured at 300 limit units.
+UNMEASURED="$WORK/otherproj"
+mkdir -p "$UNMEASURED/nested"
+printf 'x\n' > "$UNMEASURED/CLAUDE.md"
+printf 'x\n' > "$UNMEASURED/nested/CLAUDE.md"
+jq --arg p "$UNMEASURED/nested" '.projects[$p] = {reads: 600.0, limit_units: 300.0}' "$RATES" \
+  > "$RATES.sub" && mv "$RATES.sub" "$RATES"
+msg=$(price_bloat unmeasured-project "$UNMEASURED/CLAUDE.md")
+assert_contains "~300 times a month" "$msg"
+# The project rate belongs to the instruction files, not to everything sharing their directory.
+assert_eq "" "$(growth_output "$UNMEASURED/settings.json" "$cheap_growth" unmeasured-neighbour)"
+# The sessions that pay for a CLAUDE.md are the ones at or below its directory, so a repository
+# root file collects every subdirectory that ran sessions, not only the exact-key match.
+jq --arg p "$UNMEASURED" '.projects[$p] = {reads: 400.0, limit_units: 200.0}' "$RATES" \
+  > "$RATES.root" && mv "$RATES.root" "$RATES"
+assert_contains "~500 times a month" "$(price_bloat unmeasured-sum "$UNMEASURED/CLAUDE.md")"
+write_current_rates
+
+echo "== write gate: current path rates use the same weekly-first figures"
+msg=$(price current-global "$CLAUDE_MD")
+assert_contains "re-read ~3,000 times a week" "$msg"
+assert_contains "~10,000 times a month" "$msg"
+assert_contains "tokenmap reads $CLAUDE_MD" "$msg"
+msg=$(price current-project "$WORK/liveproj/CLAUDE.md")
+assert_contains "re-read ~150 times a week" "$msg"
+assert_contains "~500 times a month" "$msg"
+
 write_rates "$(stamp_ago 20)"
-assert_contains "~15682 full-read" "$(price live-f "$CLAUDE_MD")"
+assert_contains "~3,000 times a week, ~15,000 times a month" "$(price live-f "$CLAUDE_MD")"
 
 # Every later section is about the constants, so the export stops being in effect here.
 unset TOKENMAP_RATES
@@ -839,7 +1036,7 @@ echo "== bloat gate: between the two bounds the warning rides along with the ord
 rm -rf "$CEIL_STAMPS"
 python3 -c 'print("g"*29899)' > "$REAL_MD"
 msg=$(ceil_reason "$CLAUDE_MD" x "$big" warn-flow)
-assert_contains "tokens/month" "$msg"
+assert_contains "tokens/week and " "$msg"
 assert_contains "would be 30299 bytes" "$msg"
 append_read "$CLAUDE_MD"
 age_stamps "$CEIL_STAMPS"
@@ -860,7 +1057,7 @@ echo "== bloat gate: the ceiling belongs to the global file alone"
 mkdir -p "$WORK/bigproj"
 python3 -c 'print("g"*39999)' > "$WORK/bigproj/CLAUDE.md"
 msg=$(ceil_reason "$WORK/bigproj/CLAUDE.md" x "$big" other-file)
-assert_contains "tokens/month" "$msg"
+assert_contains "tokens/week and " "$msg"
 case "$msg" in *ceiling*) fail "a project file was held to the global file's ceiling" ;; esac
 printf 'global rules\n' > "$REAL_MD"
 

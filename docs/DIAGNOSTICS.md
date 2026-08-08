@@ -112,8 +112,12 @@ Facts below are grounded in the code as of 2026-07-16 (line numbers may drift �
   catch-up for missed nights; the wrapper, not launchd, decides whether a scan happens (a
   `read-rates.json` inside the wrapper's freshness guard — currently 20h, the wrapper is the
   source of truth → silent exit 0). The scan refreshes the tokenmap index and rewrites
-  `~/.local/share/tokenmap/read-rates.json`, which `instruction_live_rate()` in
-  `share/instruction-files.sh` serves to the instruction write and bloat gates; an export past
+  `~/.local/share/tokenmap/read-rates.json`, which `instruction_live_rates()` in
+  `share/instruction-files.sh` serves to the instruction write and bloat gates. Every entry
+  carries two currencies: `limit_units` is what the weekly usage limit charges and is what both
+  gates quote, `reads` is the dollar price and is two to fourteen times larger because it also
+  counts cache reads. Weekly figures are the 30-day measurement rescaled, never a 7-day query, so
+  an idle week does not reprice an unchanged file. An export past
   that function's staleness bound (currently 14 days; the function is the source of truth) or
   stamped in the future is ignored and the gates fall back to their frozen class constants. Log at
   `~/Library/Logs/tokenmap-scand.log`, head-truncated in place past 1MB (launchd keeps an fd

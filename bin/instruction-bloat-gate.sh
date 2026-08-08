@@ -8,6 +8,13 @@ set -u
 [ -n "${HOME:-}" ] || exit 0
 
 THRESHOLD_BYTES=120
+# Measured over this corpus: 3.2 UTF-8 bytes per token for instruction-file prose. The 4 this
+# replaced was a guess that understated every quoted cost by a quarter.
+CHARS_PER_TOKEN=3.2
+# 85k tokens/week keeps the global CLAUDE.md, at ~2237 weekly limit units, on today's 120-byte
+# gate. Recalibrate this alongside any change to what the rate export counts, or every threshold
+# in the ladder silently moves with it.
+WEEKLY_TOKEN_BUDGET=85000
 STAMP_DIR="${INSTRUCTION_BLOAT_GATE_STAMPS:-$HOME/.cache/claude-instruction-gate}"
 
 # ~/.claude/hooks is a symlink into the config repository and the entry there is a symlink into
@@ -82,6 +89,10 @@ is_global() {
 # the resolved name, which is the only spelling they all share.
 reads=''
 live=''
+rate_state=''
+weekly_reads=''
+monthly_reads=''
+cheap_floor=''
 global=''
 if is_global "$file_path"; then
   global=1
@@ -128,7 +139,14 @@ if [ -z "$class_reads" ]; then
       ;;
   esac
 fi
-[ -n "$class_reads" ] || exit 0
+# This hook runs before every Edit and every Write in every session, so what it does for a file it
+# will never price has to be nothing. Only markdown is ever measured (the export indexes no other
+# extension) and only markdown carries a class rate, so a source file with neither leaves here
+# rather than paying for a Cyrillic scan and a lookup over the whole rate index.
+case "$file_path" in
+  *.md|*.markdown) ;;
+  *) [ -n "$class_reads" ] || [ -n "$global" ] || exit 0 ;;
+esac
 
 # Every guarded instruction file is English-only. Russian survives only inside «...», which is how a
 # verbatim user phrase — a trigger word Egor actually types — is marked, and the only reason one of
@@ -138,22 +156,8 @@ cyrillic=$(jq -r '
   | if type == "string" then gsub("«[^»]*»"; "") else "" end
   | if test("[А-Яа-яЁё]") then "yes" else "no" end
 ' "$input_file" 2>/dev/null) || cyrillic=''
-if [ "$cyrillic" = "yes" ]; then
+if [ -n "$class_reads" ] && [ "$cyrillic" = "yes" ]; then
   deny "${file_path} is English-only. Russian is allowed only inside «...»-quoted verbatim user phrases."
-fi
-
-# The rate the local index measured over the last 30 days is asked first, and the class constant is
-# what is left when it has no answer. The global file is looked up under its canonical name: the
-# profile symlinks are the same file, and that name is the only one they share.
-if [ -n "$global" ]; then
-  reads=$(instruction_live_rate "$GLOBAL_CLAUDE" "$HOME")
-else
-  reads=$(instruction_live_rate "$file_path" "$HOME")
-fi
-if [ -n "$reads" ]; then
-  live=1
-else
-  reads=$class_reads
 fi
 
 # All sizes in UTF-8 bytes via files + wc -c; jq's `length` counts codepoints
@@ -203,7 +207,89 @@ if [ -n "$global" ] && [ "$delta" -gt 0 ] 2>/dev/null; then
   fi
 fi
 
+# Nothing below the base threshold is ever denied: a measured rate only raises the bound above it,
+# and the cheap notice speaks past it too. Deciding that here is what keeps an ordinary edit to an
+# ordinary markdown file — which every session makes, on the pre-tool path — from paying for a
+# lookup over the whole rate index to be told what its size already settled.
 [ "$delta" -gt "$THRESHOLD_BYTES" ] 2>/dev/null || pass
+
+# The global identity is settled before its spelling, so a repository path behind the symlink
+# cannot take a project rate. Current path entries carry both windows; old exports retain their
+# original monthly always-on lookup until the producer's next run.
+if [ -n "$global" ]; then
+  rate_info=$(instruction_live_rates "$GLOBAL_CLAUDE" "$HOME")
+else
+  rate_info=$(instruction_live_rates "$file_path" "$HOME")
+fi
+if [ -n "$rate_info" ]; then
+  IFS='|' read -r rate_state weekly_reads monthly_reads cheap_floor <<< "$rate_info"
+fi
+# "Cheap" is a claim about a file nothing else in the export accounts for, and it is decided from
+# the export alone — which knows nothing about the classes resolved above, because those live in
+# this gate's own symlink walk. A skill or an agent brief the index has never recorded is not a
+# file of unknown value; it is a file whose class already names its price, and answering "cheap"
+# for it waves through exactly the growth the class constant exists to price.
+if [ "$rate_state" = cheap ] && [ -n "$class_reads" ]; then
+  rate_state=''
+fi
+display_rate() {
+  instruction_display_rate "$1"
+}
+display_floor() {
+  jq -nr --argjson n "$1" '$n | if . < 10 then ((. * 100 | round) / 100) else round end' 2>/dev/null
+}
+fallback_rate() {
+  jq -nr --argjson n "$1" '$n | if . < 1 then 1 else round end' 2>/dev/null
+}
+case "$rate_state" in
+  measured)
+    weekly_display=$(display_rate "$weekly_reads") || pass
+    monthly_display=$(display_rate "$monthly_reads") || pass
+    reads=$monthly_display
+    live=1
+    ;;
+  legacy)
+    reads=$(fallback_rate "$monthly_reads") || pass
+    live=legacy
+    ;;
+  cheap) ;;
+  *) reads=$class_reads ;;
+esac
+[ -n "$reads" ] || [ "$rate_state" = cheap ] || pass
+
+if [ "$rate_state" = cheap ]; then
+  if [ "$delta" -gt "$THRESHOLD_BYTES" ] 2>/dev/null; then
+    cheap_display=$(display_floor "$cheap_floor") || pass
+    sid=$(jq -r '.session_id // ""' "$input_file" 2>/dev/null) || sid=''
+    notice_hash=$(printf '%s\n%s\n' "$sid" "$file_path" | shasum -a 256 | cut -c1-16)
+    if instruction_mark_once "$STAMP_DIR/notices" "$notice_hash"; then
+      case "$cheap_display" in
+        1) unit="limit unit" ;;
+        *) unit="limit units" ;;
+      esac
+      ceiling_note="${file_path} is below ~${cheap_display} ${unit}/month; not gated."
+    fi
+  fi
+  pass
+fi
+
+threshold=$THRESHOLD_BYTES
+# A weekly rate of zero under a positive monthly one cannot happen while the export rescales one
+# from the other, and if it ever does it is a broken measurement, not a free file: the derived
+# threshold is skipped and the base one still applies. Passing on it waived the gate outright.
+weekly_zero=$(jq -nr --argjson reads "${weekly_reads:-0}" '$reads == 0' 2>/dev/null) || weekly_zero=false
+if [ "$rate_state" = measured ] && [ "$weekly_zero" != true ]; then
+  # Snapped down to a coarse ladder for the same reason the displayed rate is: a threshold
+  # recomputed from a sliding window would otherwise move a few bytes every night, and the
+  # boundary between a passing and a denied edit is exactly where that must not happen.
+  derived=$(jq -nr --argjson budget "$WEEKLY_TOKEN_BUDGET" --argjson reads "$weekly_reads" \
+    --argjson per_token "$CHARS_PER_TOKEN" \
+    '[120, 250, 500, 1000, 2000, 5000, 10000, 25000, 50000, 100000]
+     | map(select(. <= ($budget * $per_token / $reads))) | last // 120' 2>/dev/null) || derived=''
+  case "$derived" in ''|*[!0-9]*) derived=$THRESHOLD_BYTES ;; esac
+  [ "$derived" -gt "$threshold" ] 2>/dev/null && threshold=$derived
+fi
+[ "$delta" -gt "$threshold" ] 2>/dev/null || pass
 
 # The session is part of the key, exactly as it is in the write gate: approval Egor gave in one
 # chat is not approval a parallel or later one inherits for the same edit.
@@ -285,12 +371,35 @@ if [ -f "$file_path" ]; then
   fi
 fi
 
-tokens=$((delta / 4))
-monthly=$((tokens * reads))
-if [ -n "$live" ]; then
+tokens=$(jq -nr --argjson d "$delta" --argjson c "$CHARS_PER_TOKEN" '($d / $c) | round' 2>/dev/null) || exit 0
+case "$tokens" in ''|*[!0-9]*) exit 0 ;; esac
+# Multiplied from the SHOWN rate, not the measured one. The denial orders its reader to quote all
+# three figures to Egor verbatim, so the token count, the re-read count and the cost have to be a
+# sentence he can multiply out; snapping the product to the ladder a second time broke that —
+# 1.3k tokens at 3,000 reads printed as 3M, not the 3.9M the two numbers beside it promise.
+cost() {
+  instruction_format_tokens "$(jq -nr --argjson t "$tokens" --argjson r "$1" '($t * $r) | round' 2>/dev/null)"
+}
+tokens_shown=$(instruction_format_tokens "$tokens")
+if [ "$rate_state" != measured ]; then
+  # Both headlines carry a weekly figure because the report the denial demands names one, and a
+  # reader told to quote it verbatim and forbidden to derive its own has nowhere else to get it.
+  # The rescale is the export's own: a month of measurement is the only window wide enough to
+  # price a file, and a seventh-of-thirty slice of it is what a week of that behaviour costs.
+  monthly_display=$(display_rate "$reads") || exit 0
+  weekly_display=$(display_rate "$(jq -nr --argjson n "$reads" '$n * 7 / 30' 2>/dev/null)") || exit 0
+fi
+weekly=$(cost "$weekly_display") || exit 0
+monthly=$(cost "$monthly_display") || exit 0
+weekly_shown=$(instruction_times "$(instruction_format_count "$weekly_display")")
+monthly_shown=$(instruction_times "$(instruction_format_count "$monthly_display")")
+if [ "$rate_state" = measured ]; then
+  measured='measured by the local read index; check tokenmap reads '"$file_path"
+elif [ "$live" = legacy ]; then
   measured='measured by the local read index over its last 30-day window'
 else
   measured='measured'
 fi
+headline="+${delta} bytes (~${tokens_shown} tokens) costs ~${weekly} tokens/week and ~${monthly}/month against the weekly usage limit, because this file re-enters the cached prefix ~${weekly_shown} a week and ~${monthly_shown} a month — every token added is paid for that many times over (${measured})."
 
-deny "Instruction-bloat gate: LLMs re-read this file ~${reads}x/month at full-read price (${measured}; content in the cached prefix is re-read on every request, not once per session). Growth +${delta} bytes ≈ +${tokens} tokens per read ≈ ~${monthly} tokens/month at Egor's daily usage. Protocol, fastest path first: (1) AUDIT — re-read the WHOLE file now and look for up to 3 lines that are stale, duplicated in another live surface, or restate what code/hooks already enforce (criteria: ~/.claude/docs/context-file-hygiene.md). A combined edit that adds your text AND cuts enough for net <= 0 passes immediately, no approval needed — name the cuts in your reply so Egor can veto them. (2) 'Nothing defensibly cuttable' is a fully valid audit outcome — NEVER cut a live rule to make room. In that case present Egor the NET BALANCE — this cost vs what the addition saves monthly (avoided corrections, repeated output, worker calls; a rule that saves less than it costs does not get written) — and wait for his explicit OK in this turn. (3) Content rules trump cost math: history/changelog, anything derivable from code, linter rules as prose, and defensive verification scaffolding are cut, not costed; prefer a hook/mechanical control over prose, and compress what remains. The gate verifies the audit mechanically: after this denial, Read the target file, then retry — the same edit passes once. A retry without that Read is denied again."
+deny "Instruction-bloat gate: ${headline} Protocol, fastest path first: (1) AUDIT — re-read the WHOLE file now and look for up to 3 lines that are stale, duplicated in another live surface, or restate what code/hooks already enforce (criteria: ~/.claude/docs/context-file-hygiene.md). A combined edit that adds your text AND cuts enough for net <= 0 passes immediately, no approval needed — name the cuts in your reply so Egor can veto them. (2) 'Nothing defensibly cuttable' is a fully valid audit outcome — NEVER cut a live rule to make room. In that case present Egor the NET BALANCE and wait for his explicit OK in this turn. Report it as exactly three lines in his language, quoting the figures from this message verbatim rather than deriving your own, and adding nothing else: line 1 COST — the file, the byte delta, the token delta, the weekly cost, the monthly cost; line 2 CUT — what you cut, or that nothing was safely cuttable; line 3 PAYS BACK — what the addition saves per month (avoided corrections, repeated output, worker calls), or that it does not pay for itself. A rule that saves less than it costs does not get written. (3) Content rules trump cost math: history/changelog, anything derivable from code, linter rules as prose, and defensive verification scaffolding are cut, not costed; prefer a hook/mechanical control over prose, and compress what remains. The gate verifies the audit mechanically: after this denial, Read the target file, then retry — the same edit passes once. A retry without that Read is denied again."

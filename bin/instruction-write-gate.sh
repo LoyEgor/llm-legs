@@ -213,14 +213,45 @@ fi
 # Identity before spelling: a repo-path spelling of the global file must never take the project
 # lookup, or its denial quotes that directory's rate instead of the global one.
 if [ -n "$abs_real" ] && [ -n "$global_real" ] && [ "$abs_real" = "$global_real" ]; then
-  live=$(instruction_live_rate "$HOME/.claude/CLAUDE.md" "$HOME")
+  live_info=$(instruction_live_rates "$HOME/.claude/CLAUDE.md" "$HOME")
 else
-  live=$(instruction_live_rate "$abs" "$HOME")
+  live_info=$(instruction_live_rates "$abs" "$HOME")
 fi
-[ -z "$live" ] || reads=$live
 cost=''
-[ -n "$reads" ] && cost=" (~$reads full-read equivalents/month)"
+if [ -n "$live_info" ]; then
+  IFS='|' read -r rate_state weekly_reads monthly_reads cheap_floor <<< "$live_info"
+else
+  rate_state=''
+fi
+round_rate() {
+  instruction_display_rate "$1"
+}
+weekly_display=''
+monthly_display=''
+if [ "$rate_state" = measured ]; then
+  weekly_display=$(round_rate "$weekly_reads") || weekly_display=''
+  monthly_display=$(round_rate "$monthly_reads") || monthly_display=''
+  [ -n "$weekly_display" ] && [ -n "$monthly_display" ] && reads=$monthly_display
+elif [ "$rate_state" = legacy ]; then
+  live=$(jq -nr --argjson n "$monthly_reads" '$n | if . < 1 then 1 else round end' 2>/dev/null) || live=''
+  [ -z "$live" ] || reads=$live
+fi
+# A measured file has both windows already; a class constant has only the month, and the week is
+# the same seventh-of-thirty rescale the export applies. Every figure goes through the display
+# ladder, constants included: this gate and the bloat gate quote the same file in the same turn,
+# and the moment their numbers differ a reader learns that neither is worth acting on.
+if [ -z "$monthly_display" ] && [ -n "$reads" ]; then
+  monthly_display=$(round_rate "$reads") || monthly_display=''
+  weekly_display=$(round_rate "$(jq -nr --argjson n "$reads" '$n * 7 / 30' 2>/dev/null)") || weekly_display=''
+fi
+if [ -n "$weekly_display" ] && [ -n "$monthly_display" ]; then
+  # Only a measured file has a row to look up. Sending a reader to `tokenmap reads` for a price
+  # that came from a class constant costs them a command that answers nothing.
+  lookup=''
+  [ "$rate_state" = measured ] && lookup="; check tokenmap reads $abs"
+  cost=" (re-read ~$(instruction_times "$(instruction_format_count "$weekly_display")") a week, ~$(instruction_times "$(instruction_format_count "$monthly_display")") a month, so every token added here is paid for that many times over${lookup})"
+fi
 
-jq -cn --arg r "Instruction gate: this command writes to $hit, a file LLMs re-read across sessions$cost. Egor's standing rule is that these files are read-only without his explicit OK in the current turn, and that rule binds every tool equally — a shell write is not a way around a denied Edit. If the change is genuinely needed: state the byte delta, the monthly token cost, what the change SAVES, ask him, and wait. With his OK the identical command passes on retry." \
+jq -cn --arg r "Instruction gate: this command writes to $hit, a file LLMs re-read across sessions$cost. Egor's standing rule is that these files are read-only without his explicit OK in the current turn, and that rule binds every tool equally — a shell write is not a way around a denied Edit. If the change is genuinely needed: state the byte delta, the weekly token cost with monthly context, what the change SAVES, ask him, and wait. With his OK the identical command passes on retry." \
   '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}' 2>/dev/null || true
 exit 0
