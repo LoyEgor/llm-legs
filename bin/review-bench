@@ -3097,13 +3097,14 @@ def member_finding_prefix(meta, commit):
     return f"{member['label']}/" if member else ""
 
 
-def severity_tally(run_dir, verdicts, prefix=""):
-    """The confirmed findings of `verdicts` counted by severity, narrowed to one merged member's
-    prefix when there is one. The same join `bench_summary` makes, asked of a subset of the panel's
-    findings rather than of all of them.
+def severity_tallies(run_dir, verdicts, prefixes=("",)):
+    """The confirmed findings of `verdicts` counted by severity, once per prefix asked for — the
+    empty one being the whole panel and a merged member's being its own share. The same join
+    `bench_summary` makes, and made once: every prefix is counted out of one read of the findings,
+    because the reader on the commit gate's path asks for two of them.
     """
     findings_by_rater = {}
-    counted = Counter()
+    counted = {prefix: Counter() for prefix in prefixes}
     for row in verdicts:
         if not isinstance(row, dict) or row.get("verdict") != "confirmed":
             continue
@@ -3117,16 +3118,34 @@ def severity_tally(run_dir, verdicts, prefix=""):
         if not 0 <= idx < len(rows):
             continue
         finding = rows[idx]
-        if prefix and not str(finding.get("file") or "").startswith(prefix):
+        if finding.get("severity") not in WEIGHTS:
             continue
-        if finding.get("severity") in WEIGHTS:
-            counted[finding["severity"]] += 1
-    return {level: counted[level] for level in LENS_SEVERITIES}
+        path = str(finding.get("file") or "")
+        for prefix in prefixes:
+            if not prefix or path.startswith(prefix):
+                counted[prefix][finding["severity"]] += 1
+    return {
+        prefix: {level: counted[prefix][level] for level in LENS_SEVERITIES}
+        for prefix in prefixes
+    }
 
 
-def reported_severities(receipt):
-    """The confirmed-severity tally the run behind `receipt` was triaged to, or None when it has
-    none — the commit gate's "no review has answered yet".
+def severity_tally(run_dir, verdicts, prefix=""):
+    return severity_tallies(run_dir, verdicts, (prefix,))[prefix]
+
+
+def reported_severities(receipt, scoped=True):
+    """Either half of `reported_severities_pair`: this repository's share of the run's confirmed
+    severities, or `scoped=False` for the whole round.
+    """
+    own, whole = reported_severities_pair(receipt)
+    return own if scoped else whole
+
+
+def reported_severities_pair(receipt):
+    """The confirmed-severity tally the run behind `receipt` was triaged to — this repository's
+    share of it and the whole round's, in one read — or `(None, None)` when it has none, which is
+    the commit gate's "no review has answered yet".
 
     Recomputed from the stored verdicts whenever the run has them, never read off the report
     receipt in preference to them: a run re-adjudicated the durable way after a `--no-corpus`
@@ -3134,8 +3153,11 @@ def reported_severities(receipt):
     escalation on superseded numbers would go on forever. The receipt answers only for the
     `--no-corpus`-only case it exists for, which by design stores no verdicts at all.
 
-    Scoped to the repository this receipt belongs to: one merged panel reads several repositories,
-    and a member's confirmed P1s must never price another member's commit.
+    The first half is scoped to the repository this receipt belongs to: one merged panel reads
+    several repositories, and a member's confirmed P1s must never price another member's commit.
+    The second is that same round counted whole — one merged panel is ONE round over one body of
+    work, so the tally that decides whether that round earned another one is the round's own; split
+    per repository, a heavy round bought itself out by being spread over two checkouts.
 
     Everything is read off someone else's disk — a half-written findings file, a truncated verdict
     line, a run directory pulled out from under this call — so nothing here may raise: the readers
@@ -3149,22 +3171,29 @@ def reported_severities(receipt):
         except (OSError, ValueError):
             meta = {}
         prefix = member_finding_prefix(meta, str(receipt.get("commit") or ""))
+        prefixes = ("", prefix) if prefix else ("",)
+
+        def both(rows):
+            tallies = severity_tallies(run_dir, rows, prefixes)
+            return tallies[prefix or ""], tallies[""]
+
         if (run_dir / "verdicts.jsonl").exists():
-            return severity_tally(run_dir, read_jsonl(run_dir / "verdicts.jsonl"), prefix)
+            return both(read_jsonl(run_dir / "verdicts.jsonl"))
         report = json.loads((run_dir / REPORT_RECEIPT).read_text())
         if not isinstance(report, dict):
-            return None
+            return None, None
         if isinstance(report.get("rows"), list):
-            return severity_tally(run_dir, report["rows"], prefix)
+            return both(report["rows"])
         # A receipt written before the rows were kept: its tally is the whole run's, which for a
         # merged run is more than this repository's — the only reading available, and the runs it
         # covers are already reported and done.
         tally = report.get("confirmed_by_severity")
         if isinstance(tally, dict):
-            return {level: counted_int(tally.get(level)) for level in LENS_SEVERITIES}
+            counted = {level: counted_int(tally.get(level)) for level in LENS_SEVERITIES}
+            return counted, dict(counted)
     except (OSError, ValueError, KeyError, TypeError):
-        return None
-    return None
+        return None, None
+    return None, None
 
 
 def triage_pending_run(repo=None, session=None):
@@ -6668,9 +6697,9 @@ def scoped_review_vouching(repo, commit_paths=None, commit_all=False):
 
 def cmd_receipt(args):
     """Print this repository's review receipt, with what the stamp hook needs to decide whether a
-    commit ends the review cycle: the confirmed-defect count its run was adjudicated to, whether
-    the run reviewed an uncommitted tree, and for such a run what it found and what it was based
-    on. The hook reads it instead of deriving any of this itself, which is the third place every
+    commit ends the review cycle: the confirmed-defect count its run was adjudicated to, the change
+    that run read as `base`..`tree`, and — for a run that reviewed an uncommitted tree — what it
+    found. The hook reads it instead of deriving any of this itself, which is the third place every
     one of these derivations would otherwise have to stay in step with.
 
     `--lens` and `--scope` print those runs' own receipts, which the hook never asks for: neither
@@ -6702,19 +6731,29 @@ def cmd_receipt(args):
     # a second lookup it has no state directory to make. Absent until the triage is recorded, which
     # is the gate's "not reviewed yet" — `confirmed` above is the corpus count, 0 forever for the
     # worktree snapshots every commit-point review is.
-    tally = reported_severities(receipt)
+    # This repository's share of the run, and the same round counted whole. The report block prints
+    # one confirmed count for the panel, so a merged run priced per member escalated on neither
+    # while the round it belongs to was heavy enough for both: 10 confirmed came back as 7 and 3,
+    # and nothing was owed (Egor, 2026-08-08). The two are equal for every run that read one
+    # repository, and both come out of one read because this runs on the commit gate's own path.
+    tally, round_tally = reported_severities_pair(receipt)
     if tally is not None:
         extra["reported"] = tally
+        extra["reported_round"] = round_tally
     if worktree:
         extra["findings"] = findings
-        # The commit the snapshot was taken on top of. Its own tree is nowhere in the history, so
-        # this is the only fixed point a later commit can be compared with; a snapshot with no
-        # parent was taken on nothing, and the empty tree is that fixed point. Left empty only
-        # when even that cannot be answered, which the hook reads as "do not stamp".
-        try:
-            extra["base"] = diff_base(repo, receipt["commit"])
-        except RuntimeError:
-            extra["base"] = ""
+    # The commit the reviewed one was read against. For a snapshot its own tree is nowhere in the
+    # history, so this is the only fixed point a later commit can be compared with; a snapshot with
+    # no parent was taken on nothing, and the empty tree is that fixed point. Carried by EVERY
+    # receipt, not only a worktree one: `base`..`tree` is what the commit gate reads to see which
+    # change a review answered for, and a review of committed work or of a range — «заревьюй то,
+    # что ты сделал» — left it absent, so a panel that had just read this very code could not pay
+    # the commit and a second one was demanded over it (seen live 2026-08-08). Left empty only
+    # when even that cannot be answered, which the hook reads as "do not stamp".
+    try:
+        extra["base"] = diff_base(repo, receipt["commit"])
+    except RuntimeError:
+        extra["base"] = ""
     print(json.dumps(dict(receipt, confirmed=confirmed, **extra)))
     return 0
 

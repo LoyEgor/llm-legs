@@ -624,6 +624,11 @@ assert grep -Fq 'REVIEW_CYCLE_GONE = "gone"' "$REVIEWBENCH"
 # The reader takes every session's file, so the prefix is the whole name it knows.
 assert grep -Fq 'glob(f"{REVIEW_CYCLE_NAME}*")' "$REVIEWBENCH"
 assert grep -Fq '"git", "rev-parse", "--absolute-git-dir"' "$REVIEWBENCH"
+assert grep -Fq 'extra["reported"] = tally' "$REVIEWBENCH"
+assert grep -Fq 'extra["reported_round"] = round_tally' "$REVIEWBENCH"
+# Outside the `if worktree:` branch, or a review of committed work names no range it read.
+assert grep -Fq '''    try:
+        extra["base"] = diff_base(repo, receipt["commit"])''' "$REVIEWBENCH"
 assert doc_has 'Review commit-cycle file'
 assert doc_has '`[A-Za-z0-9._-]`'
 
@@ -646,8 +651,15 @@ if test -r "$FLOW_GATE"; then
   assert grep -Fq 'entries+=("gone $path")' "$FLOW_GATE"
   assert grep -Fq '[ "$blob" = gone ]' "$FLOW_GATE"
   assert doc_has '`<blob-sha|gone> <path>`'
+  # What a round earned is priced on the round's own tally, and the weak-component verdict on this
+  # repository's share of it: renamed on either side, a merged panel's escalation silently halves.
+  assert grep -Fq '(.reported_round // .reported) as $round |' "$FLOW_GATE"
+  assert grep -Fq '(.reported.P1 // 0 | tostring)' "$FLOW_GATE"
+  assert doc_has '`reported_round`'
+  assert grep -Fq '(.ts // ""), (.base // ""),' "$FLOW_GATE"
+  assert doc_has '`base`..`tree`'
 else
   printf 'SKIP: review commit-cycle file across claude-setup (%s is unreadable)\n' "$FLOW_GATE"
 fi
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, and the review commit-cycle file one writes and the other reads) and match %s\n' "$asserts" "$DOC"
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the review commit-cycle file one writes and the other reads, and the escalation tally one prints and the other prices on) and match %s\n' "$asserts" "$DOC"
