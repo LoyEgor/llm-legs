@@ -8333,6 +8333,196 @@ assert "no working tree to seal" in merged_refusals["workspace"], merged_refusal
 assert "nothing for a merged review to read" in merged_refusals["clean"], merged_refusals
 assert "not a git repository" in merged_refusals["missing"], merged_refusals
 
+# --- the gateway cooldown: a wait that expires, and a canary that ends it ------------------------
+# A quota wall says when it lifts; a gateway server error says nothing at all, so the wait is the
+# tool's own — and it has to expire by itself, because a cell held out until proof it recovered is
+# never asked for that proof. Every panel today paid for grok three times over before recording it
+# (Egor, 2026-08-08).
+cooldown_store = work / "cooldown-claudeb"
+os.environ["CLAUDEB_DIR"] = str(cooldown_store)
+cooldown_state = cooldown_store / "worker-stats"
+cooldown_state.mkdir(parents=True)
+cooldown_raters = rb.parse_raters("oc-grok45-low x3,oc-kimik3 x2")
+assert rb.apply_gateway_cooldown(cooldown_raters) == (cooldown_raters, [])
+
+# Only the gateway being DOWN is this mechanism's business. A spent plan and a pool run dry behind
+# one carry a reset of their own, and a canary fired into a dollar window every 45 minutes is the
+# retry DIAGNOSTICS forbids — with an expiry that would then call the side recovered.
+assert rb.gateway_outage("opencode", 1, "HTTP 503 Router.Unavailable")
+assert not rb.gateway_outage("opencode", 1, "GoUsageLimitError: limitName=monthly")
+assert not rb.gateway_outage("grok", 1, "429 usage limit reached")
+assert not rb.gateway_outage("opencode", 1, rb.no_account_left("opencode"))
+
+# A run where every attempt of one family failed and the other answered: one starts cooling, the
+# other is left alone — the wait is per cell, and grok being down never rests kimi.
+cooldown_now = rb.parse_iso_timestamp("2026-08-08T12:00:00+00:00")
+cooldown_errored = {"oc-grok45-low", "oc-grok45-low#2", "oc-grok45-low#3", "oc-kimik3#2"}
+rb.note_gateway_outcome(cooldown_raters, cooldown_errored, cooldown_errored, now=cooldown_now)
+cooldown_written = json.loads((cooldown_state / "gateway-cooldown.json").read_text())
+assert list(cooldown_written) == ["oc-grok45-low"], cooldown_written
+# Panels overlap by design (per-pid progress files), and read-modify-write is not made safe by an
+# atomic replace: the later writer would resurrect a wait the other just cleared.
+assert (cooldown_state / rb.GATEWAY_COOLDOWN_LOCK).exists(), "the cooldown was written unlocked"
+assert cooldown_written["oc-grok45-low"]["until"] == "2026-08-08T12:45:00+00:00", cooldown_written
+
+# Inside the wait, exactly one attempt of the cooling family goes — the canary — and the panel
+# keeps every cell that is not cooling.
+cooldown_kept, cooldown_skipped = rb.apply_gateway_cooldown(
+    cooldown_raters, now=rb.parse_iso_timestamp("2026-08-08T12:30:00+00:00")
+)
+assert [rater["spec"] for rater in cooldown_kept] == [
+    "oc-grok45-low", "oc-kimik3", "oc-kimik3#2"
+], cooldown_kept
+assert [spec for spec, _ in cooldown_skipped] == ["oc-grok45-low#2", "oc-grok45-low#3"], \
+    cooldown_skipped
+assert "cooling until 12:45Z" in cooldown_skipped[0][1], cooldown_skipped
+assert "canary" in cooldown_skipped[0][1], cooldown_skipped
+
+# Past the moment it names, the entry is not a wait at all: nothing sweeps the file, the clock does.
+assert rb.apply_gateway_cooldown(
+    cooldown_raters, now=rb.parse_iso_timestamp("2026-08-08T12:46:00+00:00")
+) == (cooldown_raters, [])
+
+# A family whose every attempt failed on something that is NOT the gateway — a wall, a review that
+# came back as prose — is left exactly as it was: neither says the gateway is down, and a wait
+# invented over a wall hides the reset the wall already carries.
+rb.note_gateway_outcome(
+    rb.parse_raters("oc-kimik3 x2"), {"oc-kimik3", "oc-kimik3#2"}, set(),
+    now=rb.parse_iso_timestamp("2026-08-08T12:10:00+00:00"),
+)
+assert list(json.loads((cooldown_state / "gateway-cooldown.json").read_text())) == \
+    ["oc-grok45-low"], "a wall was recorded as a gateway outage"
+
+# The canary answering is what ends the wait, and its failing is what extends it — from the moment
+# the outage started, which the extension keeps: a wait that restamps its own beginning reads as a
+# fresh outage however long the gateway has been down.
+rb.note_gateway_outcome(
+    rb.parse_raters("oc-grok45-low"), set(), set(),
+    now=rb.parse_iso_timestamp("2026-08-08T12:30:00+00:00"),
+)
+assert json.loads((cooldown_state / "gateway-cooldown.json").read_text()) == {}, "the canary's " \
+    "answer left the cell cooling"
+rb.note_gateway_outcome(
+    cooldown_raters, cooldown_errored, cooldown_errored, now=cooldown_now
+)
+rb.note_gateway_outcome(
+    rb.parse_raters("oc-grok45-low"), {"oc-grok45-low"}, {"oc-grok45-low"},
+    now=rb.parse_iso_timestamp("2026-08-08T12:30:00+00:00"),
+)
+cooldown_extended = json.loads(
+    (cooldown_state / "gateway-cooldown.json").read_text()
+)["oc-grok45-low"]
+assert cooldown_extended["until"] == "2026-08-08T13:15:00+00:00", cooldown_extended
+assert cooldown_extended["since"] == "2026-08-08T12:00:00+00:00", cooldown_extended
+
+# Nothing to record is nothing written: a run that changes no verdict must not rewrite the file
+# other panels are reading and writing at the same moment.
+cooldown_stamp = (cooldown_state / "gateway-cooldown.json").stat().st_mtime_ns
+rb.note_gateway_outcome(
+    rb.parse_raters("oc-grok45-low"), {"oc-grok45-low"}, {"oc-grok45-low"},
+    now=rb.parse_iso_timestamp("2026-08-08T12:30:00+00:00"),
+)
+assert (cooldown_state / "gateway-cooldown.json").stat().st_mtime_ns == cooldown_stamp
+
+# A cell of a side the pool DOES answer for is none of this mechanism's business: its wall carries
+# its own reset, and worker-pick reads it.
+assert rb.apply_gateway_cooldown(rb.parse_raters("agy-pro-high-skill,opus-medium")) == (
+    rb.parse_raters("agy-pro-high-skill,opus-medium"), []
+)
+(cooldown_state / "gateway-cooldown.json").unlink()
+
+# A named agy cell is asked of the pool like every other pool-staffed side. Its answer used to be
+# overridden with a bare True here, so a panel launched every gemini cell the pool had already said
+# it could not staff and reported the lot as errored, rerun line included (Egor, 2026-08-08).
+agy_gate_repo = work / "agy-gate"
+agy_gate_repo.mkdir()
+subprocess.run(["git", "init", "-q", str(agy_gate_repo)], check=True)
+subprocess.run(["git", "-C", str(agy_gate_repo), "config", "user.email", "bench@example.test"],
+               check=True)
+subprocess.run(["git", "-C", str(agy_gate_repo), "config", "user.name", "Review Bench"],
+               check=True)
+(agy_gate_repo / "a.txt").write_text("base\n")
+subprocess.run(["git", "-C", str(agy_gate_repo), "add", "-A"], check=True)
+subprocess.run(["git", "-C", str(agy_gate_repo), "commit", "-qm", "initial"], check=True)
+(agy_gate_repo / "a.txt").write_text("base\nchanged\n")
+agy_gate_store = work / "agy-gate-claudeb"
+os.environ["CLAUDEB_DIR"] = str(agy_gate_store)
+
+
+def agy_gate_runner(rater, repo_path, commit, focus, run_dir, diff, account):
+    return 0, 1, json.dumps({
+        "severity": "P3", "file": "a.txt", "line": 1, "summary": "a finding",
+    }), "", []
+
+
+for agy_gate_side in rb.SIDE_RUNNERS:
+    rb.SIDE_RUNNERS[agy_gate_side] = agy_gate_runner
+agy_gate_real_afford = rb.affordability
+rb.affordability = lambda: {
+    "claude": True, "codex": True, "agy": False, "grok": True, "opencode": True,
+    "claude_fable": True, "claude_account": "fixture",
+}
+agy_gate_stdout = io.StringIO()
+try:
+    with contextlib.redirect_stdout(agy_gate_stdout), contextlib.redirect_stderr(io.StringIO()):
+        rb.cmd_run(argparse.Namespace(
+            repo=str(agy_gate_repo), commitish=None, worktree=True, paths=None,
+            raters="agy-pro-high-skill,sol-medium-bare", leg=False, verify=None, auto=None,
+            focus=None,
+        ))
+finally:
+    rb.affordability = agy_gate_real_afford
+assert "skipped agy-pro-high-skill: agy side is unaffordable" in agy_gate_stdout.getvalue(), \
+    agy_gate_stdout.getvalue()
+agy_gate_meta = json.loads(
+    (next((agy_gate_store / "worker-stats" / "benches").iterdir()) / "meta.json").read_text()
+)
+assert agy_gate_meta["raters"] == ["sol-medium-bare"], agy_gate_meta
+assert not agy_gate_meta["rater_runs"] or all(
+    row["rater"] != "agy-pro-high-skill" for row in agy_gate_meta["rater_runs"]
+), agy_gate_meta
+
+# The cooldown only pays off if a run consults it and records into it; a panel that computes the
+# wait beside the launch and launches anyway is the behaviour this replaced.
+cooldown_wiring_store = work / "cooldown-wiring-claudeb"
+os.environ["CLAUDEB_DIR"] = str(cooldown_wiring_store)
+cooldown_wiring_state = cooldown_wiring_store / "worker-stats"
+cooldown_wiring_state.mkdir(parents=True)
+(cooldown_wiring_state / "gateway-cooldown.json").write_text(json.dumps({
+    "oc-grok45-low": {"until": "2099-01-01T00:00:00+00:00", "since": "2099-01-01T00:00:00+00:00",
+                      "reason": "3 attempt(s) failed"},
+}))
+cooldown_wiring_stdout = io.StringIO()
+with contextlib.redirect_stdout(cooldown_wiring_stdout), contextlib.redirect_stderr(io.StringIO()):
+    rb.cmd_run(argparse.Namespace(
+        repo=str(agy_gate_repo), commitish=None, worktree=True, paths=None,
+        raters="oc-grok45-low x3", leg=False, verify=None, auto=None, focus=None,
+    ))
+assert "cooling until" in cooldown_wiring_stdout.getvalue(), cooldown_wiring_stdout.getvalue()
+cooldown_wiring_meta = json.loads(
+    (next((cooldown_wiring_store / "worker-stats" / "benches").iterdir()) / "meta.json").read_text()
+)
+assert cooldown_wiring_meta["raters"] == ["oc-grok45-low"], cooldown_wiring_meta
+assert json.loads((cooldown_wiring_state / "gateway-cooldown.json").read_text()) == {}, \
+    "the canary answered and the run left the cell cooling anyway"
+
+
+def cooldown_wiring_failing_runner(rater, repo_path, commit, focus, run_dir, diff, account):
+    return 1, 1, "", "gateway 502", []
+
+
+for cooldown_wiring_side in rb.SIDE_RUNNERS:
+    rb.SIDE_RUNNERS[cooldown_wiring_side] = cooldown_wiring_failing_runner
+with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+    rb.cmd_run(argparse.Namespace(
+        repo=str(agy_gate_repo), commitish=None, worktree=True, paths=None,
+        raters="oc-grok45-low x2", leg=False, verify=None, auto=None, focus=None,
+    ))
+assert list(json.loads((cooldown_wiring_state / "gateway-cooldown.json").read_text())) == \
+    ["oc-grok45-low"], "a run whose every gateway attempt failed recorded no wait"
+for cooldown_wiring_side in rb.SIDE_RUNNERS:
+    rb.SIDE_RUNNERS[cooldown_wiring_side] = agy_gate_runner
+
 # --- multi-source reviews: each repository named the way its half actually exists ----------------
 # Half of a cross-repository change is routinely already committed on a branch while the other half
 # is still uncommitted, and a merged review that could only read working trees sent the committed
@@ -9959,4 +10149,4 @@ else
   printf 'SKIP: review report hook behavior (%s is unavailable)\n' "$REPORT_HOOK"
 fi
 
-printf 'PASS: %s assertions; canonical review tiers over one shared OpenCode floor and a per-tier Gemini panel that never runs Pro at T0, stays inside the account roster and contains its own tier'"'"'s default panel when escalated, with no retired cell in any of them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative suggestions with missing-object fallback, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account schedulable only as the pool'"'"'s reserve and never as a roster tail, and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, carried from there into the corpus row, the report header and a receipt of the lens'"'"'s own while every lens row stays out of the canonical defect list, the frontier denominators, the composition corpus and the default leaderboard, worktree runs narrowed to named paths whose snapshot holds only those paths, is deterministic per path set, spelled against the directory the caller stands in and lexically canonicalized so a `..` can neither walk out of the repository nor split one file into two scopes, carries its scope as commit trailers a failed read refuses rather than widens, so a rerun by sha stays inside it, refuses a commitish, a pathspec matching nothing and a scope holding no change — the refusal before any snapshot object is written — and writes only a receipt of its own — leaving the repository'"'"'s receipt untouched byte for byte, the suggest baseline whole and the stamp hook with nothing to read, a lens narrowed by the same paths naming a combined receipt of its own that leaves the plain, pure-lens and pure-scope receipts byte for byte and survives a rerun by sha with both selectors intact, a day-one repository reviewed end to end — its root commit sealed and cloned, given a deterministic empty base commit inside that clone so the vendor skill diffs its whole content, measured in lines and paths against the empty tree rather than as an unmeasurable diff, so a correction inside it prices by the size ladder like any other change — no receipt moves a tier, and closed by the real stamp hook in both shapes while never-reviewed code riding along still refuses it, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask, the lookup scoped to the repository so another chat cannot answer for it, both review hooks keyed so exactly one fires, and that receipt carrying the confirmed-severity tally of the very verdicts it reported — recomputed from stored verdicts where a run was adjudicated the durable way, absent where nobody triaged it, and printed on the repository receipt the commit gate prices its next round on — taken from the stored verdicts wherever a run has them so a re-adjudication cannot be priced on superseded counts, scoped to the member a merged panel'"'"'s receipt belongs to so one repository never escalates on another'"'"'s defects, carried beside a second tally of that whole round so what the round earned is not split — and made cheaper — by the panel having read two repositories at once, and every receipt naming the change its own run read so a review of committed work can pay the commit that carries it, and answered as no tally at all rather than as an exception when the files behind it cannot be read, and that same receipt reachable by the paths a commit will carry — a search over the scoped receipts alone, answering with the newest whose own scope lies inside those paths, tolerating a path the panel never saw as the drift its reader prices while a reviewed path outside them disqualifies, spelled through the one scope canonicalization, refusing to be asked alongside a named scope or a lens, and leaving the repository receipt'"'"'s own answer untouched, and a merged review of several repositories read by one panel out of a single workspace holding each repository under its own prefix — deterministic, self-contained once built and pruned with the run it belongs to — whose findings and adjudication handoff name the repository each belongs to, whose scopes and progress are per repository, and which stamps EVERY repository it read with that repository'"'"'s own receipt so none of their commit gates blocks on a review that covered it, while refusing a commitish, a repository named twice, a clean tree, a missing repository and its own workspace as a tree to seal, with suggest naming both of those on its own lines wherever they apply — and capped at three advice lines between the command and the owner-only tail, so the output a reader obeys whole stays short enough to be read whole — a clean tree told where committed work is reviewed, and every reader told that a change spanning two checkouts is one panel — and each repository of one panel named the way its half actually exists — a working tree or a range of its own commits as `PATH@BASE..HEAD`, sealed and stamped per member so the committed half answers only where its right end is the tree in front of the reader, refusing a target flag it duplicates, a bare repository beside it with no --worktree and a scope aimed at a range, and a range of commits reviewed as one target — sealed into a single commit carrying its right end'"'"'s tree over its left end as the parent, so every reader keyed on one sha reads the whole range, named by the commits it sealed rather than by how the caller spelled them so one range is one snapshot with one rerun, announced by its own ends with the seal named beside them, read back out of that seal by a rerun carrying no flags at all, refused when it names no shape or no change, shown as a range while it runs, and kept out of the repository'"'"'s receipt wherever its right end is not the tree standing in front of the reader, and the corpus closed to every commit-point review — the plain record command refused outright with the reporting one named in its place, the refusal and the flag'"'"'s own help promising only what --bench delivers (this run'"'"'s verdicts stored, never a corpus row), that flag refused in turn on a durable run it would buy the plain command'"'"'s own behaviour on, and the handoff printing that one command alone — with the block those reviews are read in framed to a fixed width no over-long word can flatten, opened by a line naming the panel that produced it, and carrying a cell row that counts every completed cell under the same names its neighbouring rows use — the ones that found nothing included, and a count missing from an older summary costing its own cell a number rather than the whole block, every one of those names and the tiers table'"'"'s own rendered by one derivation over the pool of cells the tiers can launch — version digits, effort and the bare mark each appearing only where two pool cells would otherwise collide, Claude and Codex effort always spelled because it is a launch parameter, the word skill never rendered at all, a family gaining a second variant IN THE POOL renaming itself with no list to edit, a cell only a stored run holds named against that pool and never over it — the arrival carrying whatever separates it, its report leaving the tiers table byte for byte — and the machine specs commands are spelled in left untouched\n' "$asserts"
+printf 'PASS: %s assertions; canonical review tiers over one shared OpenCode floor and a per-tier Gemini panel that never runs Pro at T0, stays inside the account roster and contains its own tier'"'"'s default panel when escalated, with no retired cell in any of them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative suggestions with missing-object fallback, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, a verifier wall recorded before the gate is released, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account schedulable only as the pool'"'"'s reserve and never as a roster tail, and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, carried from there into the corpus row, the report header and a receipt of the lens'"'"'s own while every lens row stays out of the canonical defect list, the frontier denominators, the composition corpus and the default leaderboard, worktree runs narrowed to named paths whose snapshot holds only those paths, is deterministic per path set, spelled against the directory the caller stands in and lexically canonicalized so a `..` can neither walk out of the repository nor split one file into two scopes, carries its scope as commit trailers a failed read refuses rather than widens, so a rerun by sha stays inside it, refuses a commitish, a pathspec matching nothing and a scope holding no change — the refusal before any snapshot object is written — and writes only a receipt of its own — leaving the repository'"'"'s receipt untouched byte for byte, the suggest baseline whole and the stamp hook with nothing to read, a lens narrowed by the same paths naming a combined receipt of its own that leaves the plain, pure-lens and pure-scope receipts byte for byte and survives a rerun by sha with both selectors intact, a day-one repository reviewed end to end — its root commit sealed and cloned, given a deterministic empty base commit inside that clone so the vendor skill diffs its whole content, measured in lines and paths against the empty tree rather than as an unmeasurable diff, so a correction inside it prices by the size ladder like any other change — no receipt moves a tier, and closed by the real stamp hook in both shapes while never-reviewed code riding along still refuses it, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask, the lookup scoped to the repository so another chat cannot answer for it, both review hooks keyed so exactly one fires, and that receipt carrying the confirmed-severity tally of the very verdicts it reported — recomputed from stored verdicts where a run was adjudicated the durable way, absent where nobody triaged it, and printed on the repository receipt the commit gate prices its next round on — taken from the stored verdicts wherever a run has them so a re-adjudication cannot be priced on superseded counts, scoped to the member a merged panel'"'"'s receipt belongs to so one repository never escalates on another'"'"'s defects, carried beside a second tally of that whole round so what the round earned is not split — and made cheaper — by the panel having read two repositories at once, and every receipt naming the change its own run read so a review of committed work can pay the commit that carries it, and answered as no tally at all rather than as an exception when the files behind it cannot be read, and that same receipt reachable by the paths a commit will carry — a search over the scoped receipts alone, answering with the newest whose own scope lies inside those paths, tolerating a path the panel never saw as the drift its reader prices while a reviewed path outside them disqualifies, spelled through the one scope canonicalization, refusing to be asked alongside a named scope or a lens, and leaving the repository receipt'"'"'s own answer untouched, and a merged review of several repositories read by one panel out of a single workspace holding each repository under its own prefix — deterministic, self-contained once built and pruned with the run it belongs to — whose findings and adjudication handoff name the repository each belongs to, whose scopes and progress are per repository, and which stamps EVERY repository it read with that repository'"'"'s own receipt so none of their commit gates blocks on a review that covered it, while refusing a commitish, a repository named twice, a clean tree, a missing repository and its own workspace as a tree to seal, with the gateway being down priced as a wait that expires rather than a verdict — the family whose every attempt failed on the gateway ITSELF cooling for a fixed span while a spent plan, a pool run dry behind one and an unusable answer are left to the records that already carry them, one canary attempt of the cooling family running inside that span so the recovery can be noticed at all, its answer clearing the wait and its failure extending it from the moment the outage began, written under a lock and not written at all where nothing changed, and a side the pool answers for left to the pool — with suggest naming both of those on its own lines wherever they apply — and capped at three advice lines between the command and the owner-only tail, so the output a reader obeys whole stays short enough to be read whole — a clean tree told where committed work is reviewed, and every reader told that a change spanning two checkouts is one panel — and each repository of one panel named the way its half actually exists — a working tree or a range of its own commits as `PATH@BASE..HEAD`, sealed and stamped per member so the committed half answers only where its right end is the tree in front of the reader, refusing a target flag it duplicates, a bare repository beside it with no --worktree and a scope aimed at a range, and a range of commits reviewed as one target — sealed into a single commit carrying its right end'"'"'s tree over its left end as the parent, so every reader keyed on one sha reads the whole range, named by the commits it sealed rather than by how the caller spelled them so one range is one snapshot with one rerun, announced by its own ends with the seal named beside them, read back out of that seal by a rerun carrying no flags at all, refused when it names no shape or no change, shown as a range while it runs, and kept out of the repository'"'"'s receipt wherever its right end is not the tree standing in front of the reader, and the corpus closed to every commit-point review — the plain record command refused outright with the reporting one named in its place, the refusal and the flag'"'"'s own help promising only what --bench delivers (this run'"'"'s verdicts stored, never a corpus row), that flag refused in turn on a durable run it would buy the plain command'"'"'s own behaviour on, and the handoff printing that one command alone — with the block those reviews are read in framed to a fixed width no over-long word can flatten, opened by a line naming the panel that produced it, and carrying a cell row that counts every completed cell under the same names its neighbouring rows use — the ones that found nothing included, and a count missing from an older summary costing its own cell a number rather than the whole block, every one of those names and the tiers table'"'"'s own rendered by one derivation over the pool of cells the tiers can launch — version digits, effort and the bare mark each appearing only where two pool cells would otherwise collide, Claude and Codex effort always spelled because it is a launch parameter, the word skill never rendered at all, a family gaining a second variant IN THE POOL renaming itself with no list to edit, a cell only a stored run holds named against that pool and never over it — the arrival carrying whatever separates it, its report leaving the tiers table byte for byte — and the machine specs commands are spelled in left untouched\n' "$asserts"

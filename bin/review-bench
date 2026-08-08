@@ -18,7 +18,7 @@ import tempfile
 import threading
 import time
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -281,15 +281,15 @@ WALL_MAX_TTL_S = 7 * 24 * 3600
 
 
 @contextlib.contextmanager
-def wall_file_lock(path):
-    """Serialise wall appends against compaction, across processes as well as threads.
+def wall_file_lock(path, lock_name=WALL_LOCK_FILE):
+    """Serialise a state file's readers and writers, across processes as well as threads.
 
-    Yields whether the lock was actually taken, because the two callers want opposite
-    things from a failure: an append must still happen (losing a wall is worse than racing
-    one), while a compaction that rewrites the file unlocked is the very race it exists to
-    prevent, and skips instead.
+    Yields whether the lock was actually taken, because the callers want opposite things from a
+    failure: a wall append must still happen (losing a wall is worse than racing one), while a
+    compaction that rewrites the file unlocked is the very race it exists to prevent, and skips
+    instead.
     """
-    lock_path = path.with_name(WALL_LOCK_FILE)
+    lock_path = path.with_name(lock_name)
     handle = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -3610,6 +3610,131 @@ def affordability():
     }
 
 
+# A spent plan says when it is back: SIDE_WALL recognises the wording and mark_walled records the
+# reset, hours or days away. A gateway that is merely DOWN says nothing of the sort — it answers
+# with a server error, and every panel since has paid for the same cell twice more before recording
+# it as errored. Only that case is a wait this tool has to invent, and it EXPIRES on its own: a cell
+# held out until proof it recovered would never be asked for that proof, and a measured failure rate
+# is a number with no clock in it (Egor, 2026-08-08).
+GATEWAY_SIDES = ("opencode", "grok")
+GATEWAY_COOLDOWN_MIN = 45
+GATEWAY_COOLDOWN_LOCK = ".gateway-cooldown.lock"
+
+
+def gateway_cooldown_path():
+    return state_dir() / "gateway-cooldown.json"
+
+
+def read_gateway_cooldowns(now=None):
+    """Which cell families are cooling at `now`: family -> (until, reason). An entry whose moment
+    has passed is simply not cooling — the expiry IS the retry schedule, so nothing sweeps this.
+    """
+    now = now or utc_now()
+    try:
+        document = json.loads(gateway_cooldown_path().read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(document, dict):
+        return {}
+    cooling = {}
+    for family, entry in document.items():
+        until = parse_iso_timestamp(entry.get("until")) if isinstance(entry, dict) else None
+        if until and until > now:
+            cooling[family] = (until, str(entry.get("reason") or "a failed run"))
+    return cooling
+
+
+def no_account_left(side):
+    # Read back by gateway_outage: the pool running dry follows a wall, and reads as one.
+    return f"the pool has no {side} account left to run on"
+
+
+def gateway_outage(side, rc, stderr):
+    """Whether a failed gateway attempt is the gateway being down, as opposed to the plan being
+    spent. A spent plan is already recorded with its own reset horizon, days away for OpenCode, and
+    a canary fired into it every 45 minutes is exactly the retry DIAGNOSTICS forbids — while a
+    45-minute expiry would then report the side as recovered with the window still spent.
+    """
+    text = stderr or ""
+    if SIDE_WALL[side](rc, "", text):
+        return False
+    return no_account_left(side) not in text
+
+
+def note_gateway_outcome(raters, errored, outages, now=None):
+    """What this run learned about the gateway: a family whose every attempt failed on the gateway
+    itself starts cooling, and one that answered is not cooling at all — the canary answering is
+    what ends the wait. A family whose failures were something else (a wall, a review that came
+    back as prose) is left alone: neither says anything about whether the gateway is up.
+    """
+    now = now or utc_now()
+    families = {}
+    for rater in raters:
+        if rater["side"] in GATEWAY_SIDES:
+            families.setdefault(rater_family(rater["spec"]), []).append(
+                (rater["spec"] in errored, rater["spec"] in outages)
+            )
+    if not families:
+        return
+    path = gateway_cooldown_path()
+    with wall_file_lock(path, GATEWAY_COOLDOWN_LOCK):
+        try:
+            stored = json.loads(path.read_text())
+        except (OSError, ValueError):
+            stored = {}
+        if not isinstance(stored, dict):
+            stored = {}
+        updated = dict(stored)
+        for family, attempts in families.items():
+            if not all(failed for failed, _ in attempts):
+                updated.pop(family, None)
+                continue
+            if not all(down for _, down in attempts):
+                continue
+            previous = updated.get(family)
+            since = previous.get("since") if isinstance(previous, dict) else None
+            updated[family] = {
+                "until": (now + timedelta(minutes=GATEWAY_COOLDOWN_MIN)).isoformat(),
+                # The moment the outage STARTED, kept across every extension: a wait that restamps
+                # its own beginning reads as a fresh outage however long the gateway has been down.
+                "since": since or now.isoformat(),
+                "reason": f"{len(attempts)} attempt(s) failed",
+            }
+        if updated == stored:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        scratch = path.with_name(f".{path.name}.{os.getpid()}")
+        scratch.write_text(json.dumps(updated, indent=2, sort_keys=True) + "\n")
+        os.replace(scratch, path)
+
+
+def apply_gateway_cooldown(raters, now=None):
+    """One attempt of each cooling family runs and the rest are skipped — the canary. Holding the
+    family out whole is how a tool stops learning that the gateway came back; running every repeat
+    of a family that just failed is how a report fills with dead cells and a rerun line offers
+    them again.
+    """
+    cooling = read_gateway_cooldowns(now)
+    if not cooling:
+        return list(raters), []
+    kept, skipped, sent = [], [], set()
+    for rater in raters:
+        family = rater_family(rater["spec"]) if rater["side"] in GATEWAY_SIDES else None
+        entry = cooling.get(family) if family else None
+        if entry is None or family not in sent:
+            if entry is not None:
+                sent.add(family)
+            kept.append(rater)
+            continue
+        until, reason = entry
+        skipped.append((
+            rater["spec"],
+            f"cooling until {until.strftime('%H:%MZ')} after {reason}; one canary attempt of "
+            "this cell is running",
+        ))
+    return kept, skipped
+
+
 def cell_available(available, rater):
     """Whether the pool can staff this cell, asked about the bucket the cell will spend."""
     if wall_bucket(rater) == "fable":
@@ -6175,7 +6300,7 @@ def run_rater_task(rater, repo, sha, focus, run_dir, diff):
     if result is None:
         baseline = baseline_exclusions(side)
         why = f"; excluded by REVIEW_BENCH_EXCLUDE_{side.upper()}: {', '.join(sorted(baseline))}" if baseline else ""
-        return (rater, None, (1, 0, "", f"the pool has no {side} account left to run on{why}", []))
+        return (rater, None, (1, 0, "", no_account_left(side) + why, []))
     return (rater, account, result)
 
 
@@ -7305,9 +7430,11 @@ def cmd_run(args):
             "grok": True, "opencode": True, "agy": True,
             "codex": False, "claude": False,
         }
-        if any(rater["side"] in ("codex", "claude") for rater in requested):
+        # Asked for every side the pool staffs, gemini included: its availability was overridden
+        # here with a bare True, so a panel launched eight cells the pool had already said it could
+        # not staff and reported them as errored (Egor, 2026-08-08).
+        if any(rater["side"] in SIDE_POOL_VENDOR for rater in requested):
             available.update(affordability())
-            available["agy"] = True
         raters = [rater for rater in requested if cell_available(available, rater)]
         skipped = [
             (rater["spec"], f"{rater['side']} side is unaffordable")
@@ -7330,6 +7457,8 @@ def cmd_run(args):
         for rater in raters:
             rater["lens"] = lens
     refuse_retired_cells(raters, lens=lens)
+    raters, cooling_skipped = apply_gateway_cooldown(raters)
+    skipped = list(skipped) + cooling_skipped
     has_verifiable = any(rater["side"] in VERIFIED_SIDES for rater in raters)
     if verify_model and not has_verifiable:
         raise RuntimeError(
@@ -7496,6 +7625,7 @@ def cmd_run(args):
         paths = []
         rater_meta = []
         errored_raters = set()
+        gateway_down = set()
         failed = False
         tree = repo_tree(repo, sha)
         for requested in raters:
@@ -7521,6 +7651,10 @@ def cmd_run(args):
             if unusable:
                 is_error = True
                 stderr = "\n".join(part for part in ((stderr or "").rstrip(), unusable) if part)
+            elif is_error and rater["side"] in GATEWAY_SIDES and gateway_outage(
+                rater["side"], rc, stderr
+            ):
+                gateway_down.add(rater["spec"])
             dropped = 0
             unverified = 0
             verify_ms = None
@@ -7587,6 +7721,7 @@ def cmd_run(args):
                 rater["spec"], duration, expected_durations.get(rater["spec"])
             )
 
+        note_gateway_outcome(raters, errored_raters, gateway_down)
         meta = {
             "run_id": run_id, "commit": sha, "repo": str(repo),
             "raters": requested_raters,
