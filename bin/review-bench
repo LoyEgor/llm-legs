@@ -1705,6 +1705,16 @@ def repo_arg_paths(args):
     return [value] if isinstance(value, str) else list(value)
 
 
+def sealed_target(repo, spec=None, scope=(), clean_command=None):
+    """The commit a review of `repo` reads, and the right end it was asked about: a range sealed
+    over its left end, or the working tree sealed as one commit. Every caller — solo run, merged
+    member — names its half this way, so the two kinds are two arguments rather than two code paths.
+    """
+    if spec:
+        return range_snapshot_commit(repo, spec), resolve_commit(repo, parse_range_spec(spec)[1])
+    return worktree_snapshot_commit(repo, clean_command=clean_command, paths=scope), None
+
+
 def parse_repo_source(value):
     """A `--repo` value: the checkout, and the range of commits inside it this run reviews when the
     value names one as `PATH@BASE..HEAD`. Both halves of a cross-repository change are reviewable
@@ -1814,17 +1824,17 @@ def merged_members(sources, paths=()):
                     f"paths; --paths narrows a working tree, so drop the {label}/ entries or "
                     "review that repository's tree instead"
                 )
-            commit = range_snapshot_commit(repo, spec)
+            commit, head = sealed_target(repo, spec)
             members.append({
                 "label": label, "repo": str(repo), "commit": commit,
                 "base": diff_base(repo, commit), "scope": [],
                 # What the caller asked about, kept for every line that names this member: the
                 # sealed commit is the tool's own and answers no question anybody asked.
-                "head": resolve_commit(repo, parse_range_spec(spec)[1]),
+                "head": head,
             })
             continue
         try:
-            commit = worktree_snapshot_commit(repo, paths=scope)
+            commit, _ = sealed_target(repo, scope=scope)
         except ValueError as exc:
             raise ValueError(
                 f"--repo {repo} has nothing for a merged review to read ({exc}); every named "
@@ -3181,10 +3191,6 @@ def severity_tallies(run_dir, verdicts, prefixes=("",)):
         prefix: {level: counted[prefix][level] for level in LENS_SEVERITIES}
         for prefix in prefixes
     }
-
-
-def severity_tally(run_dir, verdicts, prefix=""):
-    return severity_tallies(run_dir, verdicts, (prefix,))[prefix]
 
 
 def reported_severities(receipt, scoped=True):
@@ -7239,20 +7245,16 @@ def cmd_run(args):
         members = merged_members(sources, requested_scope)
         repo, sha = merged_snapshot_workspace(members)
         scope = []
-    elif worktree_mode:
-        if merged_manifest(repo) is not None:
+    elif worktree_mode or range_spec:
+        if worktree_mode and merged_manifest(repo) is not None:
             raise ValueError(
                 f"{repo} is a merged review's workspace and has no working tree to seal; name the "
                 "repositories it was built from instead"
             )
         scope = normalize_scope_paths(repo, requested_scope) if requested_scope else []
-        sha = worktree_snapshot_commit(
-            repo, clean_command=commit_mode_command(args), paths=scope,
+        sha, range_head = sealed_target(
+            repo, range_spec, scope=scope, clean_command=commit_mode_command(args),
         )
-    elif range_spec:
-        scope = []
-        range_head = resolve_commit(repo, parse_range_spec(range_spec)[1])
-        sha = range_snapshot_commit(repo, range_spec)
     else:
         scope = []
         sha = resolve_commit(repo, commitish)
