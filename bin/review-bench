@@ -19,6 +19,7 @@ import threading
 import time
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -168,6 +169,10 @@ TRIAGE_NUDGED = "report-nudged"
 # end of the turn it was meant to gate (seen live 2026-07-31). Still bounded, because a triage
 # that genuinely cannot be done must not block every stop that follows.
 TRIAGE_GATE_ASKS = 3
+# The same bounded ask for the round a triaged run still owes. Its own marker, because the two
+# questions are asked of the same run at different points in its life: one before the report and
+# one after it, and sharing the file would let the triage nudges spend the escalation's asks.
+ROUND_NUDGED = "round-nudged"
 # Highest effort a model has ever returned a review of a large diff at; None would mean
 # no effort at all. An entry needs a replication, because one silent attempt is not a
 # ceiling: kimi-k3 at medium looked dead after two attempts with no output, then finished a
@@ -1120,6 +1125,9 @@ def state_dir():
     return Path(base) / "worker-stats"
 
 
+# Memoized because the callers ask it once per recorded run and hundreds of runs name a handful of
+# checkouts: on the statusline's own path that was hundreds of git processes inside a 3s timeout.
+@lru_cache(maxsize=None)
 def git_common_dir(repo):
     # A receipt may record a repository path that no longer exists; subprocess with a
     # missing cwd raises instead of failing, so the guard is here, for every caller.
@@ -2997,6 +3005,35 @@ def verifier_report_value(summary, scheme=None):
     return f"{names} — {', '.join(counts)}"
 
 
+ESCALATION_GATE = Path.home() / ".claude/hooks/review-flow-gate.sh"
+
+
+def escalation_verdict(p1, total):
+    """What this round earned, in the commit gate's own words, or None when it is closed.
+
+    Asked of the gate rather than answered here: the thresholds and the three-way wording — the
+    weak-component verdict included, which sends the fixer to redesign the piece instead of
+    reviewing it a second time — are one rule, and a copy of it in this file is a copy that drifts.
+    The gate speaks only at a commit attempt, which needs Egor's permission to reach, so a round
+    that earned another one was settled in silence while the report said nothing (2026-08-08).
+
+    A gate that cannot be reached says so out loud: silence here is the very failure this exists to
+    end, so the caller prints the unknown rather than a clean bill.
+    """
+    try:
+        done = subprocess.run(
+            [str(ESCALATION_GATE), "escalation-verdict", str(p1), str(total)],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown — the commit gate could not be asked; attempt the commit for the verdict"
+    if done.returncode == 0:
+        return done.stdout.strip() or None
+    if done.returncode == 1:
+        return None
+    return "unknown — the commit gate could not be asked; attempt the commit for the verdict"
+
+
 def report_lines(run_dir, meta, verdicts=None):
     summary = bench_summary(run_dir, meta, verdicts)
     scheme = report_name_scheme([
@@ -3074,6 +3111,16 @@ def report_lines(run_dir, meta, verdicts=None):
         if summary["severities"][level]
     )
     rows.append((f"confirmed {summary['confirmed']}:", severity))
+    # The verdict on those very numbers, beside them. The commit gate has always priced it, but it
+    # speaks only when a commit is attempted, and the report is where the fixer decides the work is
+    # finished — so the round that earned another one has to say so here, in the block Egor reads.
+    # Priced on the gate's own two numbers, never on this block's headline count: the row above is
+    # the whole panel, and for a merged run the gate reads one member's P1s.
+    verdict_rows = verdicts if verdicts is not None else (
+        read_jsonl(run_dir / "verdicts.jsonl") if (run_dir / "verdicts.jsonl").exists() else []
+    )
+    earned = escalation_verdict(*escalation_numbers(run_dir, meta, verdict_rows))
+    rows.append(("round:", earned or "closed — nothing more is owed before the commit"))
     rejected_counts = [
         ("duplicate", summary["duplicate"]),
         ("false", summary["false_positive"]),
@@ -3241,6 +3288,38 @@ def severity_tallies(run_dir, verdicts, prefixes=("",)):
         prefix: {level: counted[prefix][level] for level in LENS_SEVERITIES}
         for prefix in prefixes
     }
+
+
+def escalation_numbers(run_dir, meta, verdicts, repo=None):
+    """The two numbers the commit gate prices a round on, counted the way IT counts them: the P1s of
+    one repository and the whole round's confirmed total.
+
+    Both halves matter separately (`reported_severities_pair` says why). Handed the whole panel's
+    P1s instead, a merged review claims a round no member's gate would ask for; handed a raw count
+    of confirmed verdict rows instead of the severity sum, a row whose finding cannot be joined
+    counts towards a threshold the gate never sees it in.
+
+    `repo` names the member to answer for. Without one — the report block, which is written once
+    for the whole round — the strictest member answers, because that is the commit that will be
+    blocked.
+    """
+    labels = {}
+    for entry in meta.get("repos") or ():
+        if isinstance(entry, dict) and isinstance(entry.get("label"), str) and entry["label"]:
+            labels[f"{entry['label']}/"] = entry.get("repo")
+    tallies = severity_tallies(run_dir, verdicts, ("", *labels))
+    whole = tallies[""]
+    own = whole["P1"]
+    if labels and repo is None:
+        own = max(tallies[prefix]["P1"] for prefix in labels)
+    elif labels:
+        common = git_common_dir(repo)
+        own = next(
+            (tallies[prefix]["P1"] for prefix, path in labels.items()
+             if path and common and git_common_dir(path) == common),
+            whole["P1"],
+        )
+    return own, sum(whole.values())
 
 
 def reported_severities(receipt, scoped=True):
@@ -6705,6 +6784,36 @@ def review_cycle_armed(repo):
     return False
 
 
+def spent_cycle_runs(repo):
+    """The runs the commit gate has already let a commit through on, out of the checkout's own
+    ledger. The gate appends a run id there the moment that review pays a cycle, and one run pays
+    one cycle — so a run named here has finished answering for what it found.
+    """
+    proc = subprocess.run(["git", "rev-parse", "--absolute-git-dir"],
+                          cwd=str(repo), capture_output=True, text=True)
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return frozenset()
+    try:
+        ledger = (Path(proc.stdout.strip()) / f"{REVIEW_CYCLE_NAME}-spent").read_text()
+    except (OSError, UnicodeDecodeError):
+        return frozenset()
+    return frozenset(line.strip() for line in ledger.splitlines() if line.strip())
+
+
+def review_cycle_second_round(repo):
+    """Whether a cycle in this checkout is at the stage only an escalation reaches. `armed2` is the
+    gate arming a panel for the SECOND time in one commit cycle — the first review ran, its tally
+    earned another, and the retried commit was blocked again — so a panel launched against it is
+    re-reading a tree it has read once. Any session's file counts, exactly as the launch door
+    counts them: the chat that owes the round is routinely not the one whose commit was blocked.
+    """
+    for path in review_cycle_files(repo):
+        parsed = review_cycle_stage(path)
+        if parsed and parsed[0] == "armed2":
+            return True
+    return False
+
+
 def spent_ticket_cycles(repo):
     """The cycle files whose ticket has been paid. The gate records the exact content it let a
     commit carry, and one recorded blob now reachable at its own path in HEAD is that commit having
@@ -7103,6 +7212,97 @@ def cmd_pending_report(args):
     return 0
 
 
+def owed_round_run(repo=None, session=None):
+    """The newest worktree run of `repo` when its triage earned a further review that has not been
+    run, as `(run_dir, meta, verdict)`, else None.
+
+    Newest-first for the same reason `triage_pending_run` is, and that ordering is also what says
+    the round was served: the second review is a NEW run, so once one exists the older run is no
+    longer the newest and this goes quiet by construction.
+
+    Two runs are stepped PAST rather than answered for, and both matter to a shared checkout. A run
+    another chat launched is that chat's debt, and letting it stand as the newest would hide this
+    session's — a co-tenant reviewing anything at all would discharge a round Egor is still owed.
+    And a run that never finished discharges nothing: an interrupted or killed launch leaves its
+    directory behind, which is exactly the shape of the second review that was started and did not
+    happen.
+    """
+    benches = state_dir() / "benches"
+    common = git_common_dir(repo) if repo else None
+    for run_dir in sorted(benches.iterdir(), reverse=True) if benches.exists() else ():
+        meta_path = run_dir / "meta.json"
+        if not meta_path.exists():
+            continue
+        try:
+            meta = json.loads(meta_path.read_text())
+        except (OSError, ValueError):
+            # The bench directory is shared and pruned while this walks it, so a file that existed
+            # a line ago may be gone: one unreadable run is not this lookup's answer.
+            continue
+        if meta.get("worktree") is not True:
+            continue
+        if repo is not None:
+            reviewed = [meta.get("repo")] + [
+                entry.get("repo") for entry in meta.get("repos") or ()
+                if isinstance(entry, dict)
+            ]
+            if common is None or not any(
+                git_common_dir(candidate) == common for candidate in reviewed if candidate
+            ):
+                continue
+        launcher = str(meta.get("session") or "")
+        if session and launcher and launcher != session:
+            continue
+        finished = parse_iso_timestamp(meta.get("finished") or meta.get("finished_at"))
+        if finished is None:
+            continue
+        if (datetime.now(timezone.utc) - finished).total_seconds() > TRIAGE_GATE_HOURS * 3600:
+            return None
+        if (run_dir / "verdicts.jsonl").exists():
+            rows = read_jsonl(run_dir / "verdicts.jsonl")
+        else:
+            try:
+                report = json.loads((run_dir / REPORT_RECEIPT).read_text())
+            except (OSError, ValueError):
+                return None
+            rows = report.get("rows") if isinstance(report, dict) else None
+            if not isinstance(rows, list):
+                return None
+        verdict = escalation_verdict(*escalation_numbers(run_dir, meta, rows, repo))
+        if not verdict:
+            return None
+        # A run that has already bought a commit owes nothing more: the gate marks it in the
+        # checkout's ledger the moment it lets one through, and one run pays one cycle. Without
+        # this, a landed commit left every stop for the next six hours blocked on a cycle that is
+        # closed, and the round granted at `armed2` — the last the gate will ever block for — asked
+        # for a third nobody enforces.
+        if repo is not None and run_dir.name in spent_cycle_runs(repo):
+            return None
+        return run_dir, meta, verdict
+    return None
+
+
+def cmd_owed_round(args):
+    owed = owed_round_run(args.repo, getattr(args, "session", "") or None)
+    if owed is None:
+        return 1
+    run_dir, _meta, verdict = owed
+    marker = run_dir / ROUND_NUDGED
+    try:
+        asked = sum(1 for line in marker.read_text().splitlines() if line.strip())
+    except FileNotFoundError:
+        asked = 0
+    except (OSError, UnicodeDecodeError):
+        asked = TRIAGE_GATE_ASKS
+    if asked >= TRIAGE_GATE_ASKS:
+        return 1
+    if args.mark:
+        with marker.open("a") as handle:
+            handle.write(iso_now() + "\n")
+    print(f"{run_dir.name} {verdict}")
+    return 0
+
+
 def cmd_suggest(args):
     repo = resolve_repo_arg(args.repo)
     if repo is None:
@@ -7215,11 +7415,26 @@ def cmd_suggest(args):
     # holds whatever Egor has said, so a passing mention never becomes the command — and printing
     # the ladder's own answer beside it put two tiers in front of a reader who acts on one: the
     # statusline reads this line, and showed a panel nothing was going to launch.
-    run_tier = AUTO_TIER_CEILING if tier_name in OWNER_TIERS else tier_name
+    capped_tier = AUTO_TIER_CEILING if tier_name in OWNER_TIERS else tier_name
+    # A round the last one earned re-reads a tree this panel has already read once, and paying the
+    # ladder's full price twice for one commit is what makes escalation expensive: the second round
+    # runs one rung down, T0 at the floor (Egor, 2026-08-09). The debt is the checkout's, so it is
+    # asked repo-scoped rather than per chat, and the answer can only ever be cheaper than the
+    # ladder's.
+    run_tier = capped_tier
+    # Unnamed, the debt is read over the checkout, where a co-tenant's later review hides it: the
+    # newest run is theirs and it owes nothing. A caller that knows which chat is asking says so.
+    asking_session = getattr(args, "session", "") or None
+    if (review_cycle_second_round(repo)
+            or owed_round_run(repo, asking_session) is not None):
+        run_tier = f"T{max(0, int(capped_tier[1:]) - 1)}"
     print(f"tier: {run_tier}")
-    if run_tier != tier_name:
+    if capped_tier != tier_name:
         print(f"the ladder sizes this at {tier_name}, which is the owner's to start, "
-              f"so the panel is {run_tier}")
+              f"so the panel is {capped_tier}")
+    if run_tier != capped_tier:
+        print(f"the last round earned this commit one more review, and a second round runs one "
+              f"rung down, so the panel is {run_tier} rather than {capped_tier}")
     if printed_scope:
         print(f"sized to this commit's paths: {shlex.join(printed_scope)}; "
               "the rest of the tree is somebody else's to review")
@@ -8793,8 +9008,28 @@ def main():
         help="Only runs this chat launched, plus any run recording no launching chat",
     )
     pending.set_defaults(func=cmd_pending_report)
+
+    owed = subparsers.add_parser(
+        "owed-round",
+        help="Name the triaged run whose tally earned a further review (exit 1 if none)",
+    )
+    owed.add_argument("--repo", default=".", help="Only runs of this repository")
+    owed.add_argument(
+        "--mark", action="store_true",
+        help=f"Count this ask, so a run is asked for at most {TRIAGE_GATE_ASKS} times",
+    )
+    owed.add_argument(
+        "--session", default="", metavar="ID",
+        help="Only runs this chat launched, plus any run recording no launching chat",
+    )
+    owed.set_defaults(func=cmd_owed_round)
     suggest = subparsers.add_parser("suggest", help="Suggest a review tier for a change")
     suggest.add_argument("--repo", default=".")
+    suggest.add_argument(
+        "--session", default="",
+        help="The asking chat, so a round IT is owed lowers the tier even when a co-tenant has "
+             "reviewed something since",
+    )
     # A range and a commit form are asked in the same group because a range answers about two
     # commits that already exist: given both, the form's narrowing was dropped without a word.
     commit_form = suggest.add_mutually_exclusive_group()

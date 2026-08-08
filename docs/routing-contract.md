@@ -28,6 +28,10 @@ beyond it is deleted, not preserved.
    floors, no headroom, no soft reserves beyond rule 1. A caller that watches an account
    wall mid-task re-queries with `--exclude`; when every candidate is walled the answer
    is exit 3 / `ALL WALLED` and the orchestrator asks the owner.
+   A **pinned** account that walls is the one case where a query writes: the pin is removed
+   from `~/.claude/worker-model` outright, because it is pinned to be spent and the owner does
+   not want it back when the window rolls over. Only the usage wall clears it — dead auth is a
+   login to fix — and only on data this run calls fresh; every other lapse leaves the pin standing.
 
 4. **Reachability.** The pool toggle is not advice to the selector, it is the wall: an account
    outside the pool cannot carry a headless run however it is named: the three vendor CLIs

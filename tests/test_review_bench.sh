@@ -6786,8 +6786,11 @@ def suggest(path, *extra, cwd=None):
 
 
 def assert_suggestion(lines, files, changed_lines, tier, committed=False, receipt=None,
-                      worktree_receipt=None, runs=None):
+                      worktree_receipt=None, runs=None, capped=None):
+    # Three tiers, and only one of them launches: `tier` is the ladder's own answer, `capped` what
+    # the owner-only ceiling leaves of it, `runs` what a second round then drops that to.
     runs = runs or tier
+    capped = capped or runs
     # `tier:` names the panel that runs, never the ladder's own answer: the statusline reads this
     # line, and a number nothing is going to launch is a number the reader acts on wrongly. The
     # ladder's answer survives as prose below, for a reader deciding whether to ask for more.
@@ -6797,13 +6800,22 @@ def assert_suggestion(lines, files, changed_lines, tier, committed=False, receip
         f"tier: {runs}",
     ], lines
     offset = 3
-    if runs != tier:
+    if capped != tier:
         assert lines[offset] == (
-            f"the ladder sizes this at {tier}, which is the owner's to start, so the panel is {runs}"
+            f"the ladder sizes this at {tier}, which is the owner's to start, so the panel is "
+            f"{capped}"
         ), lines
         offset += 1
     else:
         assert not any("is the owner's to start" in line for line in lines), lines
+    if runs != capped:
+        assert lines[offset] == (
+            f"the last round earned this commit one more review, and a second round runs one rung "
+            f"down, so the panel is {runs} rather than {capped}"
+        ), lines
+        offset += 1
+    else:
+        assert not any("a second round runs one rung down" in line for line in lines), lines
     # A receipt never moves the tier any more: the flow gate's per-commit ticket is what carries
     # post-review work, so suggest prices every delta by the size ladder alone.
     assert not any(line.startswith("work over review ") for line in lines), lines
@@ -7505,6 +7517,45 @@ for whole_form in (["--commit-all"], ["--commit-paths", "."]):
         (whole_form, whole_form_lines)
     assert not any(line.startswith("sized to this commit's paths: ") for line in whole_form_lines), \
         (whole_form, whole_form_lines)
+
+# A second round re-reads a tree the panel has already read, so it runs one rung below the ladder:
+# paying full price twice for one commit is what made escalation expensive (Egor, 2026-08-09).
+# `armed2` is the stage only an escalation reaches — the gate arming a panel a second time in one
+# cycle — and it is read whichever session's file carries it, like the launch door reads them.
+def arm_cycle(repo, stage, session="fixture"):
+    cycle = repo / ".git" / f"review-cycle-{session}"
+    cycle.write_bytes(stage.encode() + b"\0run\0tree\0stamp\0")
+    return cycle
+
+
+second_round_suggest = make_suggest_repo("suggest-second-round")
+(second_round_suggest / "big.txt").write_text("line\n" * 400)
+assert_suggestion(suggest(second_round_suggest), 1, 400, "T2")
+second_round_cycle = arm_cycle(second_round_suggest, "armed1")
+# The first round's own arming changes nothing: a cycle blocks a commit once before any review.
+assert_suggestion(suggest(second_round_suggest), 1, 400, "T2")
+second_round_cycle.write_bytes(b"armed2\0run\0tree\0stamp\0")
+second_round_lines = suggest(second_round_suggest)
+assert_suggestion(second_round_lines, 1, 400, "T2", runs="T1", capped="T2")
+# The command a reader obeys is the dropped tier's, not the ladder's.
+assert "--tier T1 " in suggest_command(second_round_lines), second_round_lines
+# The owner's heavier panels stay offered by name: cheaper by default is not cheaper by decree.
+assert any("--tier T3" in line for line in second_round_lines), second_round_lines
+
+# T0 is the floor, and a floor that says nothing is a floor that reads as no rule at all being
+# applied — so the drop line is absent exactly when nothing dropped.
+floor_round_suggest = make_suggest_repo("suggest-second-round-floor")
+(floor_round_suggest / "small.txt").write_text("line\n" * 5)
+arm_cycle(floor_round_suggest, "armed2")
+assert_suggestion(suggest(floor_round_suggest), 1, 5, "T0")
+
+# The ceiling and the drop compose in that order: the ladder's T3 is the owner's, so the panel is
+# the auto ceiling, and the second round takes that one further rung down.
+t3_round_suggest = make_suggest_repo("suggest-second-round-t3")
+(t3_round_suggest / "huge.txt").write_text("line\n" * 601)
+arm_cycle(t3_round_suggest, "armed2")
+assert_suggestion(suggest(t3_round_suggest), 1, 601, "T3",
+                  runs=f"T{int(rb.AUTO_TIER_CEILING[1:]) - 1}", capped=rb.AUTO_TIER_CEILING)
 
 scope_spelling_probe = r"""
 import importlib.machinery
@@ -8977,7 +9028,10 @@ report_output=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" report report-adjudicate
   || fail "adjudicated report failed"
 report_frame_header='===================== review ====================='
 report_frame_footer='=================================================='
-expected_report="$report_frame_header"$'\nreview-bench panel · T2 · 5.5 min wall · slowest completed: sol-high 2 min\nconfirmed 1:  P1 1\nrejected:     1 duplicate  ~400 tok\n              2 false      ~3k tok\nfalse by:     kimi ×1 · sol-high ×1\nverifier:     off — 2 finding(s) unchecked\ncells:        sol-high 2 · kimi 2\nerrored:      opus-med-bare (exit 2)\ntimeout:      gem-flash36-med\nmismatch:     gem-flash35-low\n'"$report_frame_footer"
+# Every report carries the verdict on its own tally, in the commit gate's words: a round is closed
+# here or it owes another, and the block that says neither is the one a chat read as "done" while a
+# second review was owed (2026-08-08).
+expected_report="$report_frame_header"$'\nreview-bench panel · T2 · 5.5 min wall · slowest completed: sol-high 2 min\nconfirmed 1:  P1 1\nround:        closed — nothing more is owed before the commit\nrejected:     1 duplicate  ~400 tok\n              2 false      ~3k tok\nfalse by:     kimi ×1 · sol-high ×1\nverifier:     off — 2 finding(s) unchecked\ncells:        sol-high 2 · kimi 2\nerrored:      opus-med-bare (exit 2)\ntimeout:      gem-flash36-med\nmismatch:     gem-flash35-low\n'"$report_frame_footer"
 assert test "$report_output" = "$expected_report"
 # The frame is what the reader and every consumer of this block see first: a word centered in '='
 # to exactly 50 characters, and a footer of exactly 50 more.
@@ -10105,6 +10159,162 @@ GATE_SD="$UNOWNED_SD" GATE_REPO="$SESS_REPO" gate_run 20260731T070000Z-gateunown
 sess_unowned=$(WORKER_STATS_DIR="$UNOWNED_SD" "$SCRIPT" pending-report --repo "$SESS_REPO" \
   --session sess-mine) || fail "pending-report hid a run that records no launching chat"
 assert contains "$sess_unowned" "20260731T070000Z-gateunowned 0"
+
+# --- owed-round: what the triage EARNED, after the report -------------------------------------
+# The commit gate has always priced a second round, but it speaks only at a commit attempt, and
+# reaching one needs Egor's permission — so a round that earned another was settled in silence and
+# the chat reported the work finished. The verdict itself is the gate's, never spelled here.
+OWED_SD="$WORK/gate-owed"
+owed_run() { # <run-id> <hours-ago> <severity>... — a triaged run whose findings are confirmed
+  local run="$1" hours="$2"
+  shift 2
+  GATE_SD="$OWED_SD" gate_run "$run" "$hours" 0
+  local dir="$OWED_SD/benches/$run" index=0 severity
+  : >"$dir/findings-oc-kimik3.jsonl"
+  : >"$dir/verdicts.jsonl"
+  for severity in "$@"; do
+    jq -cn --arg s "$severity" --argjson i "$index" \
+      '{severity: $s, file: "a.py", line: ($i + 1), summary: "claim"}' >>"$dir/findings-oc-kimik3.jsonl"
+    jq -cn --argjson i "$index" \
+      '{rater: "oc-kimik3", idx: $i, verdict: "confirmed"}' >>"$dir/verdicts.jsonl"
+    index=$((index + 1))
+  done
+  jq --argjson n "$index" '.rater_runs[0].findings = $n' "$dir/meta.json" >"$dir/meta.tmp"
+  mv "$dir/meta.tmp" "$dir/meta.json"
+}
+owed_run 20260731T080000Z-owedp1 1 P1 P1
+owed_p1=$(WORKER_STATS_DIR="$OWED_SD" "$SCRIPT" owed-round --repo "$GATE_REPO") \
+  || fail "owed-round missed a round two confirmed P1s earned"
+assert contains "$owed_p1" "20260731T080000Z-owedp1"
+assert contains "$owed_p1" "confirmed P1s earned this commit one more round"
+# One P1 and nothing else is a closed round: the gate says so, and this must not invent a debt.
+OWED_SD="$WORK/gate-owed-closed"
+owed_run 20260731T080000Z-owedclosed 1 P1 P3
+owed_closed=$(WORKER_STATS_DIR="$OWED_SD" "$SCRIPT" owed-round --repo "$GATE_REPO" || true)
+assert test -z "$owed_closed"
+# A newer FINISHED run of this repository is the second round having happened; the debt is served.
+OWED_SD="$WORK/gate-owed-served"
+owed_run 20260731T080000Z-owedserved 2 P1 P1
+GATE_SD="$OWED_SD" gate_run 20260731T090000Z-owedsecond 1 0
+owed_served=$(WORKER_STATS_DIR="$OWED_SD" "$SCRIPT" owed-round --repo "$GATE_REPO" || true)
+assert test -z "$owed_served"
+# But a launch that never finished serves nothing: an interrupted or killed second review leaves
+# exactly this directory behind, and reading it as the round would discharge the debt by dying.
+OWED_SD="$WORK/gate-owed-killed"
+owed_run 20260731T080000Z-owedkilled 2 P1 P1
+GATE_SD="$OWED_SD" gate_run 20260731T090000Z-owedaborted 1 0
+python3 - "$OWED_SD/benches/20260731T090000Z-owedaborted/meta.json" <<'ABORTED'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+meta = json.loads(path.read_text())
+meta["finished"] = None
+path.write_text(json.dumps(meta) + "\n")
+ABORTED
+owed_killed=$(WORKER_STATS_DIR="$OWED_SD" "$SCRIPT" owed-round --repo "$GATE_REPO") \
+  || fail "a killed second review discharged the round it never ran"
+assert contains "$owed_killed" "20260731T080000Z-owedkilled"
+# Nor does a co-tenant's review of the same checkout: their run is their debt, and standing as the
+# newest it would hide this chat's — one neighbouring panel and Egor is quietly owed nothing.
+OWED_SD="$WORK/gate-owed-cotenant"
+GATE_SESSION=sess-mine owed_run 20260731T080000Z-owedmine 2 P1 P1
+GATE_SD="$OWED_SD" GATE_SESSION=sess-theirs gate_run 20260731T090000Z-owedtheirs 1 0
+owed_mine=$(WORKER_STATS_DIR="$OWED_SD" "$SCRIPT" owed-round --repo "$GATE_REPO" \
+  --session sess-mine) || fail "a co-tenant's run hid this chat's owed round"
+assert contains "$owed_mine" "20260731T080000Z-owedmine"
+# Bounded asks, like the triage gate's: a round nobody can run must not block every stop after it.
+OWED_SD="$WORK/gate-owed-asks"
+owed_run 20260731T080000Z-owedasks 1 P1 P1
+for owed_ask in 1 2 3; do
+  WORKER_STATS_DIR="$OWED_SD" "$SCRIPT" owed-round --repo "$GATE_REPO" --mark >/dev/null \
+    || fail "owed-round --mark gave up after $owed_ask ask(s)"
+done
+owed_spent=$(WORKER_STATS_DIR="$OWED_SD" "$SCRIPT" owed-round --repo "$GATE_REPO" --mark || true)
+assert test -z "$owed_spent"
+# A run that has already bought a commit owes nothing more: the gate writes it into the checkout's
+# ledger the moment it lets one through, and one run pays one cycle. Without this the landed commit
+# left every stop blocked for six hours, and the round the gate grants at armed2 — the last it will
+# ever block for — asked for a third nobody would enforce.
+OWED_SD="$WORK/gate-owed-spent"
+owed_run 20260731T080000Z-owedspent 1 P1 P1
+owed_before_spend=$(WORKER_STATS_DIR="$OWED_SD" "$SCRIPT" owed-round --repo "$GATE_REPO") \
+  || fail "owed-round missed a round before its run had paid anything"
+assert contains "$owed_before_spend" "20260731T080000Z-owedspent"
+printf '%s\n' 20260731T080000Z-owedspent \
+  >"$(git -C "$GATE_REPO" rev-parse --absolute-git-dir)/review-cycle-spent"
+owed_after_spend=$(WORKER_STATS_DIR="$OWED_SD" "$SCRIPT" owed-round --repo "$GATE_REPO" || true)
+assert test -z "$owed_after_spend"
+rm -f "$(git -C "$GATE_REPO" rev-parse --absolute-git-dir)/review-cycle-spent"
+
+# The numbers are the commit gate's own: P1s are ONE repository's share. A merged panel with one P1
+# in each of two checkouts is two P1s in the panel and one in every gate that will read it, and
+# counting it whole claimed a round no commit would ever be blocked for.
+OWED_SD="$WORK/gate-owed-merged"
+GATE_REPO_B="$WORK/owed-merged-other"
+mkdir -p "$GATE_REPO_B"
+git -C "$GATE_REPO_B" init -q -b main
+owed_run 20260731T080000Z-owedmerged 1 P1 P1
+merged_dir="$OWED_SD/benches/20260731T080000Z-owedmerged"
+python3 - "$merged_dir" "$GATE_REPO" "$GATE_REPO_B" <<'MERGED'
+import json, pathlib, sys
+run, first, second = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+meta = json.loads((run / "meta.json").read_text())
+meta["repos"] = [{"repo": first, "label": "one"}, {"repo": second, "label": "two"}]
+(run / "meta.json").write_text(json.dumps(meta) + "\n")
+findings = [json.loads(line) for line in
+            (run / "findings-oc-kimik3.jsonl").read_text().splitlines() if line.strip()]
+for index, finding in enumerate(findings):
+    finding["file"] = f"{'one' if index == 0 else 'two'}/a.py"
+(run / "findings-oc-kimik3.jsonl").write_text(
+    "".join(json.dumps(finding) + "\n" for finding in findings))
+MERGED
+owed_merged=$(WORKER_STATS_DIR="$OWED_SD" "$SCRIPT" owed-round --repo "$GATE_REPO" || true)
+assert test -z "$owed_merged"
+
+# And the total is the severity tally, not a raw count of confirmed rows: a verdict naming a
+# finding this run does not have is invisible to the gate, so counting it here claimed a round on
+# defects nobody can read.
+OWED_SD="$WORK/gate-owed-total"
+owed_run 20260731T080000Z-owedtotal 1 P3 P3 P3 P3 P3 P3 P3
+for phantom in 20 21; do
+  jq -cn --argjson i "$phantom" '{rater: "oc-kimik3", idx: $i, verdict: "confirmed"}' \
+    >>"$OWED_SD/benches/20260731T080000Z-owedtotal/verdicts.jsonl"
+done
+owed_total=$(WORKER_STATS_DIR="$OWED_SD" "$SCRIPT" owed-round --repo "$GATE_REPO" || true)
+assert test -z "$owed_total"
+# One more READABLE finding is the same round earned: the threshold itself has not moved.
+jq -cn '{severity: "P3", file: "a.py", line: 8, summary: "claim"}' \
+  >>"$OWED_SD/benches/20260731T080000Z-owedtotal/findings-oc-kimik3.jsonl"
+jq -cn '{rater: "oc-kimik3", idx: 7, verdict: "confirmed"}' \
+  >>"$OWED_SD/benches/20260731T080000Z-owedtotal/verdicts.jsonl"
+owed_eighth=$(WORKER_STATS_DIR="$OWED_SD" "$SCRIPT" owed-round --repo "$GATE_REPO") \
+  || fail "eight confirmed findings earned no round"
+assert contains "$owed_eighth" "confirmed findings in one round earned"
+
+# The second round's cheaper tier asks this same question, and over the checkout alone a co-tenant
+# answers it: their newer run owes nothing, so the panel pays the ladder's full price twice. A chat
+# that names itself is priced on its own debt.
+OWED_SD="$WORK/gate-owed-tier"
+TIER_REPO="$WORK/owed-tier-repo"
+mkdir -p "$TIER_REPO"
+git -C "$TIER_REPO" init -q -b main
+printf 'base\n' >"$TIER_REPO/tracked.txt"
+git -C "$TIER_REPO" add tracked.txt
+git -C "$TIER_REPO" -c user.email=t@example.test -c user.name=t commit -qm base
+python3 -c 'import sys; sys.stdout.write("line\n" * 400)' >"$TIER_REPO/big.txt"
+GATE_REPO="$TIER_REPO" GATE_SESSION=sess-mine owed_run 20260731T080000Z-tiermine 2 P1 P1
+GATE_SD="$OWED_SD" GATE_REPO="$TIER_REPO" GATE_SESSION=sess-theirs \
+  gate_run 20260731T090000Z-tiertheirs 1 0
+tier_unnamed=$(WORKER_STATS_DIR="$OWED_SD" "$SCRIPT" suggest --repo "$TIER_REPO" 2>/dev/null)
+assert contains "$tier_unnamed" 'tier: T2'
+assert test -z "$(grep -F 'a second round runs one rung down' <<<"$tier_unnamed")"
+tier_named=$(WORKER_STATS_DIR="$OWED_SD" "$SCRIPT" suggest --repo "$TIER_REPO" \
+  --session sess-mine 2>/dev/null)
+assert contains "$tier_named" 'tier: T1'
+assert contains "$tier_named" 'a second round runs one rung down'
+# And a chat with no debt of its own pays the ladder's price, named or not.
+tier_theirs=$(WORKER_STATS_DIR="$OWED_SD" "$SCRIPT" suggest --repo "$TIER_REPO" \
+  --session sess-theirs 2>/dev/null)
+assert contains "$tier_theirs" 'tier: T2'
 
 # An old run reviewed a diff that has since moved; asking for its triage now is noise.
 STALE_SD="$WORK/gate-stale"

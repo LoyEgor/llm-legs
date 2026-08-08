@@ -47,7 +47,9 @@ run_env=(TZ=UTC "HOME=$HOME_FIXTURE" "WORKER_PICK_CONFIG_FILE=$CONFIG"
   "WORKER_PICK_TIERS_FILE=$TIERS" "WORKER_PICK_CACHE_DIR=$CACHE" WORKER_PICK_NOW=2000000000
   CLAUDE_LIMITS_ACCOUNT=session)
 run_store() {
-  output=$(env "${run_env[@]}" "LLM_LIMITS_FILE=$STORE" "$SCRIPT") ||
+  # Stderr to a file rather than the terminal: a human-facing run carries its notes there, and a
+  # suite that let them scroll past could not tell a note that fired from one that did not.
+  output=$(env "${run_env[@]}" "LLM_LIMITS_FILE=$STORE" "$SCRIPT" 2>"$WORK/note.err") ||
     fail "worker-pick failed for $1"
 }
 run_case() {
@@ -216,6 +218,43 @@ assert test "$query_out" = tie-b
 query --account claudeb --exclude dry,tie-b,tie-a,session
 assert test "$query_rc" -eq 3
 assert grep -q 'pin dry excluded → no selectable account' "$WORK/query.err"
+write_config
+
+# A wall ENDS the pin rather than pausing it: Egor pins an account to spend it, and one that is
+# spent is not one he wants back when the window rolls over (Egor, 2026-08-09). Every other lapse
+# is a condition that passes on its own, so those leave the pin exactly where he put it.
+pinned_now() { sed -n 's/^claudeb_profile=//p' "$CONFIG"; }
+cleared_case() {
+  write_config "$1=$2"
+  run_filter "${4:-claude_pool}" "${5:-.}"
+  assert test -z "$(sed -n "s/^$1=//p" "$CONFIG")"
+  assert grep -q "pin $2 hit its wall — cleared" "$WORK/note.err"
+  # The run that clears still says what it did with THIS query: the pin was live when it was read.
+  assert contains "$output" "pin $2 exhausted → $3"
+}
+kept_case() {
+  write_config "claudeb_profile=$1"
+  run_filter claude_pool "$2"
+  assert test "$(pinned_now)" = "$1"
+  assert test ! -s "$WORK/note.err"
+}
+cleared_case claudeb_profile walled-wk dry
+cleared_case claudeb_profile walled-5h dry
+kept_case dead '.'
+kept_case ghost '.'
+kept_case tie-a '.vendors.claude.accounts |= map(
+  if .account == "tie-a" then del(.weekly, .five_hour) else . end)'
+# Stale data clears nothing: the wall it reports may have reset hours ago, and a pin is not
+# something to drop on a reading this run itself calls STALE.
+write_config 'claudeb_profile=walled-wk'
+run_filter claude_pool '.fetched_at = 1999990000'
+assert contains "$output" 'DATA: STALE'
+assert test "$(pinned_now)" = walled-wk
+assert test ! -s "$WORK/note.err"
+# Every vendor, one rule: the pin key is the only difference.
+cleared_case codex_profile main plain codex_plain '.vendors.codex.accounts = [
+  {account:"plain",five_hour:{used_pct:20},weekly:{used_pct:20}},
+  {account:"main",five_hour:{used_pct:100},weekly:{used_pct:20}}]'
 write_config
 
 # Rule 3 on the vendor that reports one bucket: 91% is not a wall, so it still routes.

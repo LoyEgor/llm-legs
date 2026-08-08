@@ -662,4 +662,69 @@ else
   printf 'SKIP: review commit-cycle file across claude-setup (%s is unreadable)\n' "$FLOW_GATE"
 fi
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the review commit-cycle file one writes and the other reads, and the escalation tally one prints and the other prices on) and match %s\n' "$asserts" "$DOC"
+# --- Row ae: account pin ownership -------------------------------------------
+# Three doors, one marker, one TTL. A door silently removed, or two of them disagreeing on where
+# the marker lives, is a pin a session can move again — the failure this row exists to prevent.
+PIN_GATE="$ROOT/bin/worker-pin-gate.sh"
+WORKER_MODEL_SH="$ROOT/share/worker-model.sh"
+pin_model_ttl=$(grep -E '^WORKER_MODEL_PIN_TTL_MIN="\$\{WORKER_MODEL_PIN_TTL_MIN:-[0-9]+\}"$' \
+  "$WORKER_MODEL_SH" | grep -oE '[0-9]+' | head -1)
+pin_gate_ttl=$(grep -E '^GRANT_TTL_MIN="\$\{WORKER_MODEL_PIN_TTL_MIN:-[0-9]+\}"$' \
+  "$PIN_GATE" | grep -oE '[0-9]+' | head -1)
+assert eq "$pin_model_ttl" 30
+assert eq "$pin_gate_ttl" "$pin_model_ttl"
+assert eq "$((pin_model_ttl * 60))" 1800
+assert grep -Fq "printf '%s/pin-grants/pin' \"\$state\"" "$WORKER_MODEL_SH"
+assert grep -Fq "printf '%s/pin-grants/pin' \"\$state\"" "$PIN_GATE"
+# The command door: a session, the real file resolved rather than spelled, and both directions
+# past one guard.
+assert grep -Fq '[ -n "${CLAUDECODE:-}" ] || return 0' "$WORKER_MODEL_SH"
+assert grep -Fq 'worker_model_canonical_path "$(worker_model_file)"' "$WORKER_MODEL_SH"
+assert grep -Fq 'worker_model_canonical_path "$HOME/.claude/worker-model"' "$WORKER_MODEL_SH"
+assert grep -Fq 'if ! worker_model_pin_allowed; then' "$WORKER_MODEL_SH"
+# The file doors, all three registrations, and the pin-key rule that keeps `/worker` working —
+# half a gate is a gate that is off, and a gate over the whole file is one that gets worked around.
+assert grep -Fq 'canonical_path "$HOME/.claude/worker-model"' "$PIN_GATE"
+assert grep -Fq "PIN_KEY_RE='^(claudeb|codex|gemini)_profile='" "$PIN_GATE"
+assert grep -Fq 'worker-pin-gate.sh prompt' "$WORKER_GATE_SETTINGS"
+assert grep -Fq 'worker-pin-gate.sh write' "$WORKER_GATE_SETTINGS"
+assert grep -Fq 'worker-pin-gate.sh bash' "$WORKER_GATE_SETTINGS"
+assert doc_has 'Account pin ownership'
+assert doc_has '`<state_dir>/pin-grants/pin`'
+# The account's own wall is the single ungated write, and it stays single: it asks for no grant,
+# so a second caller reaching for it would be the way around all three doors.
+assert grep -Fq 'worker_model_clear_walled_pin() {' "$WORKER_MODEL_SH"
+assert eq "$(grep -rlF 'worker_model_clear_walled_pin' "$ROOT/bin" "$ROOT/share" | wc -l | tr -d ' ')" 2
+assert grep -Fq '[ "$3" = exhausted ] || return 0' "$ROOT/bin/worker-pick"
+assert doc_has 'the account ending its own pin'
+
+# --- Row af: one voice for what a round earned -------------------------------
+# The thresholds and the wording live in the gate; a second copy in a caller is the drift this
+# guards. And the mode must sit ABOVE the payload read, or every caller hangs on an open pipe.
+REVIEW_BENCH="$ROOT/bin/review-bench"
+REPORT_GATE="${REVIEW_REPORT_GATE:-$HOME/.claude/hooks/review-report-gate.sh}"
+if [ -r "$FLOW_GATE" ] && [ -r "$REPORT_GATE" ]; then
+  assert grep -Fq 'if [ "${1:-}" = escalation-verdict ]; then' "$FLOW_GATE"
+  gate_verdict_line=$(grep -n 'escalation-verdict \]; then' "$FLOW_GATE" | head -1 | cut -d: -f1)
+  gate_read_line=$(grep -n '^input=\$(cat)$' "$FLOW_GATE" | head -1 | cut -d: -f1)
+  assert test -n "$gate_verdict_line" -a -n "$gate_read_line"
+  assert test "$gate_verdict_line" -lt "$gate_read_line"
+  # The callers name the mode and keep no threshold of their own.
+  assert grep -Fq '"escalation-verdict"' "$REVIEW_BENCH"
+  assert grep -Fq 'review-bench owed-round' "$REPORT_GATE"
+  for copy in SECOND_REVIEW_P1S SECOND_REVIEW_FINDINGS WEAK_LINK_P1S 'weak component'; do
+    assert test "$(grep -Fc -- "$copy" "$REVIEW_BENCH")" -eq 0
+    assert test "$(grep -Fc -- "$copy" "$REPORT_GATE")" -eq 0
+  done
+  # The Stop block sends the chat on through its own cycle; handing the decision back to Egor is
+  # what stopped the chain he had already paid for (2026-08-09).
+  assert grep -Fq 'retry the commit' "$REPORT_GATE"
+  assert test "$(grep -Fc -- 'ask him in one line' "$REPORT_GATE")" -eq 0
+  assert doc_has 'Second-round verdict has one voice'
+  assert doc_has 'the only thing a cycle asks him for'
+else
+  printf 'SKIP: review escalation voice across claude-setup (%s or %s is unreadable)\n' \
+    "$FLOW_GATE" "$REPORT_GATE"
+fi
+
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the review commit-cycle file one writes and the other reads, the escalation tally one prints and the other prices on, the account pin no session may move without Egor naming it, and the one voice that says what a review round earned) and match %s\n' "$asserts" "$DOC"

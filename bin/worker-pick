@@ -66,6 +66,17 @@ if [ "$query_exclude_given" = true ]; then
   fi
 fi
 
+worker_pick_root() {
+  local source="${BASH_SOURCE[0]}" directory
+  while [ -L "$source" ]; do
+    directory=$(cd -P "$(dirname "$source")" && pwd)
+    source=$(readlink "$source")
+    [[ "$source" = /* ]] || source="$directory/$source"
+  done
+  cd -P "$(dirname "$source")/.." && pwd
+}
+. "$(worker_pick_root)/share/worker-model.sh"
+
 LIMITS_FILE="${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}"
 WORKER_FILE="${WORKER_PICK_CONFIG_FILE:-$HOME/.claude/worker-model}"
 TIERS_FILE="${WORKER_PICK_TIERS_FILE:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/account-tiers}"
@@ -363,6 +374,24 @@ IFS=$'\x1f' read -r cx_selected cx_acct cx_pct cx_pinned cx_line cx_pin_lapse \
   gm_selected gm_acct gm_pinned gm_line gm_pin_lapse \
   cl_line cl_acct cl_pinned cl_reserve cl_pin_lapse \
   fb_acct fb_fb fb_wk fb_reserve age had_pool cx_pool_empty gm_pool_empty cl_pool_empty <<<"$summary"
+
+# A pin the account has spent is over: `exhausted` is the usage wall alone, and the other lapses
+# are conditions that pass (a login to fix, a toggle to flip, a reading yet to arrive), so they
+# leave the pin where Egor put it. Stale data clears nothing — the wall it reports may already
+# have reset.
+clear_walled_pin() {
+  [ "$3" = exhausted ] || return 0
+  worker_model_clear_walled_pin "$1" "$2" || return 0
+  printf 'worker-pick: %s pin %s hit its wall — cleared, workers follow the pool again\n' \
+    "$4" "$2" >&2
+}
+case "$age" in
+  fresh*)
+    clear_walled_pin claudeb_profile "$cb_pin" "$cl_pin_lapse" claudeb
+    clear_walled_pin codex_profile "$cx_pin" "$cx_pin_lapse" codex
+    clear_walled_pin gemini_profile "$gm_pin" "$gm_pin_lapse" gemini
+    ;;
+esac
 
 if [ "$query_fable" = true ]; then
   cl_acct=$fb_acct
