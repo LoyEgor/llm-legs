@@ -177,6 +177,16 @@ Canonical sources for the multi-account Claude Code tooling; installed via symli
 
 Snapshot store and schema live in `~/.claude-profiles/` (documented in its README).
 
+- `bin/chat-find` → `~/.local/bin/chat-find` — find a past chat by what was SAID in it; `--recent`
+  lists every chat instead of searching. Both rank by the last real message, never by file mtime:
+  opening a chat rewrites its transcript, so mtime says "just now" about a chat nobody spoke in.
+  Headless runs (workers, benches) are left out unless `--agents`; the listing caches per
+  `(size, mtime)` in `~/.claude-profiles/.claudeb/chat-recent-cache.json`.
+- `bin/chats` → `~/.local/bin/chats` — full-screen picker over that listing: ↑↓ chat, ←→ claudeb
+  account (default: the account in use, as `llm-limits` reports it, else `.claudeb-state`), typing
+  filters, Enter `exec`s `claudeb profile <p> --resume <id>` in the target chat's directory. It opens
+  on the last week and loads more history when he scrolls past the end; `--days N` / `--all` pin one
+  window instead, `--print` shows the launch line rather than running it. Needs a terminal of its own.
 - `bin/claude-resume-timer` → `~/.local/bin/claude-resume-timer` — `[app|terminal|auto] [extra-minutes]`
   reads the given (or auto-detected) account's 5h window from `~/.llm-limits.json` and arms the
   Hammerspoon `ClaudeContinue.startTimerFor` per-destination resume timer for that reset + extra

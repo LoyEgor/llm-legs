@@ -189,4 +189,66 @@ OUT=$(env -u CLAUDE_LIMITS_ACCOUNT HOME="$(mktemp -d)" "$SCRIPT" --root "$WORK/p
 assert grep -q 'claude --resume 11111111' <<<"$OUT"
 assert test -z "$(grep -o 'profile main' <<<"$OUT")"
 
+# --- listing mode: the same timeline, with no term to search for -------------
+# A headless run — a worker or a review bench. Hundreds of these are written for
+# every chat he actually sat in, and the listing is useless if they show up.
+HEADLESS="$CORPUS/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.jsonl"
+emit "$HEADLESS" "{'type':'user','cwd':'/tmp/proj','entrypoint':'sdk-cli','timestamp':'2026-01-28T10:00:00.000Z','message':{'role':'user','content':'review this diff'}}"
+
+# A chat that ends the way a live one does: an assistant turn carrying the model
+# and its usage, then a client-side notice that nobody said.
+RICH="$CORPUS/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb.jsonl"
+emit "$RICH" "{'type':'user','cwd':'/tmp/proj','gitBranch':'main','entrypoint':'cli','timestamp':'2026-01-29T10:00:00.000Z','message':{'role':'user','content':'починим хедер?'}}"
+emit "$RICH" "{'type':'assistant','cwd':'/tmp/proj','gitBranch':'main','entrypoint':'cli','timestamp':'2026-01-29T10:01:00.000Z','message':{'role':'assistant','model':'claude-opus-5','usage':{'input_tokens':1000,'cache_read_input_tokens':40000,'cache_creation_input_tokens':1000},'content':[{'type':'text','text':'готово, хедер держится'}]}}"
+emit "$RICH" "{'type':'assistant','cwd':'/tmp/proj','entrypoint':'cli','timestamp':'2026-02-10T09:00:00.000Z','message':{'role':'assistant','model':'<synthetic>','usage':{'input_tokens':1},'content':[{'type':'text','text':'Login expired · Please run /login'}]}}"
+
+# What /clear leaves behind: a transcript holding nothing but the command that
+# opened it. A third of the corpus looks like this.
+STUB="$CORPUS/cccccccc-cccc-cccc-cccc-cccccccccccc.jsonl"
+said "$STUB" 2026-01-30T10:00:00.000Z user '<command-name>/clear</command-name>'
+
+recent() { OUT=$("$SCRIPT" --root "$WORK/projects" --cache "$WORK/cache.json" --recent "$@" 2>&1); RC=$?; }
+
+recent
+assert test "$RC" -eq 0
+# every chat that spoke is listed, ordered by its last real message
+assert grep -q 'bbbb-bbbb' <<<"$OUT"
+assert grep -q '1111-1111' <<<"$OUT"
+DATES=$(grep -o '^2026-[0-9-]* [0-9:]*' <<<"$OUT")
+assert test "$DATES" = "$(sort -r <<<"$DATES")"
+# the false visit still cannot pass for a fresh conversation
+assert test -z "$(grep -o "^$(date +%Y-%m-%d)" <<<"$OUT")"
+# a /clear stub never held a message, so it is not a chat
+assert test -z "$(grep -o 'cccc-cccc' <<<"$OUT")"
+# headless runs stay out until asked for
+assert test -z "$(grep -o 'aaaa-aaaa' <<<"$OUT")"
+recent --agents
+assert grep -q 'aaaa-aaaa' <<<"$OUT"
+
+# --- a client-side notice dates nothing and names no model -------------------
+recent --json
+assert test "$(python3 -c "
+import json, sys
+row = [r for r in json.load(sys.stdin) if r['session'].startswith('bbbb')][0]
+print(row['model'], row['ctx'], row['branch'], row['cwd'], row['at'] < 1770000000)
+" <<<"$OUT")" = "claude-opus-5 42000 main /tmp/proj True"
+assert test -z "$(grep -o 'Login expired' <<<"$OUT")"
+
+# --- the cache answers with the same list, and yields to a new message -------
+assert test -f "$WORK/cache.json"
+FIRST="$OUT"
+recent --json
+assert test "$OUT" = "$FIRST"
+said "$RICH" 2026-02-11T10:00:00.000Z user 'ещё одна правка'
+recent
+assert grep -q '2026-02-11 10:00' <<<"$OUT"
+
+# --- listing and searching are separate askings ------------------------------
+recent оверлей
+assert test "$RC" -ne 0
+assert grep -q 'takes no search terms' <<<"$OUT"
+OUT=$("$SCRIPT" --root "$WORK/projects" 2>&1); RC=$?
+assert test "$RC" -ne 0
+assert grep -q -- '--recent' <<<"$OUT"
+
 echo "PASS: chat-find ($asserts assertions)"

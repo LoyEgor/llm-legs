@@ -17,7 +17,8 @@ import sys
 import time
 from datetime import datetime, timezone
 
-ROOT = os.environ.get("CHAT_FIND_ROOT") or os.path.expanduser("~/.claude/projects")
+HIS_CORPUS = os.path.expanduser("~/.claude/projects")
+ROOT = os.environ.get("CHAT_FIND_ROOT") or HIS_CORPUS
 STATE = os.path.expanduser("~/.claude-profiles/.claudeb/.claudeb-state")
 HEAD_LINES = 400
 SNIPPET_PAD = 70
@@ -25,16 +26,24 @@ SNIPPET_PAD = 70
 # is tool output, and that is ruled out on the raw bytes instead of by size.
 MAX_LINE = 4 * 1024 * 1024
 MAX_HITS_PER_FILE = 200
+CACHE = os.environ.get("CHAT_FIND_CACHE") or os.path.expanduser(
+    "~/.claude-profiles/.claudeb/chat-recent-cache.json")
+CACHE_VERSION = 4
+ARGV_ROOM = 128 * 1024
 # A transcript can end with megabytes of tool output after the last word spoken,
 # so the backward scan grows until it finds speech instead of trusting one window.
 TAIL_WINDOWS = (512 * 1024, 4 * 1024 * 1024, 32 * 1024 * 1024)
 # String-content user entries that are machinery, not something he typed.
-MACHINERY = ("<command-name>", "<local-command", "<system-reminder>", "Caveat:")
+MACHINERY = ("<command-name>", "<local-command", "<system-reminder>", "Caveat:",
+             "<bash-stdout>", "<bash-stderr>")
 # Openers that describe the session rather than open a conversation. Compact
 # summaries stay searchable (they are a faithful digest of a chat that has one),
 # they just never stand in for what he said.
 NOT_A_TITLE = MACHINERY + ("You are ", "This session is being continued")
 PROFILE_OK = re.compile(r"^[A-Za-z0-9._-]+$")
+# A `! command` he typed is stored wrapped in its own tags; quoted back with them
+# it reads as markup rather than as the line he typed.
+BANG = re.compile(r"<bash-input>(.*?)</bash-input>", re.S)
 # Chat names live in the transcript as their own tiny events: one he typed
 # ("custom-title") and one the model guessed ("ai-title"). They are matched as
 # extra patterns of the single search pass, so naming costs no second scan.
@@ -75,6 +84,11 @@ def visible_text(entry, include_all):
     # A sidechain is a subagent talking to itself inside a session — never a
     # conversation he could remember having.
     if entry.get("isSidechain"):
+        return None
+    # A "<synthetic>" assistant message is the client talking to itself — "Login
+    # expired", an API error — and ranking a chat by one dates it to the moment
+    # it failed to open rather than to anything said in it.
+    if (entry.get("message") or {}).get("model") == "<synthetic>":
         return None
     kind = entry.get("type")
     content = (entry.get("message") or {}).get("content")
@@ -308,6 +322,12 @@ def head_facts(path):
 
 
 def tail_speech(path, size, window):
+    """The last real message of a chat and the facts riding on the same records.
+
+    cwd, branch, model and context size all live on ordinary message lines, so
+    one backward pass identifies a chat completely — listing thousands of them
+    never has to read a single transcript's head.
+    """
     try:
         with open(path, "rb") as handle:
             handle.seek(max(0, size - window))
@@ -317,6 +337,7 @@ def tail_speech(path, size, window):
     lines = chunk.split(b"\n")
     if window < size:
         lines = lines[1:]
+    said, spec = None, None
     for raw in reversed(lines):
         if not raw.startswith(b"{") or not maybe_speech(raw, False):
             continue
@@ -324,24 +345,217 @@ def tail_speech(path, size, window):
             entry = json.loads(raw.decode("utf-8", "replace"))
         except ValueError:
             continue
-        if visible_text(entry, False):
-            when = stamp(entry)
+        # A subagent's reply carries its own model and its own small context; taking
+        # either would label a chat by the last worker it spawned rather than by the
+        # conversation he was having.
+        if spec is None and entry.get("type") == "assistant" and not entry.get("isSidechain"):
+            message = entry.get("message") or {}
+            usage = message.get("usage")
+            if isinstance(usage, dict) and message.get("model") != "<synthetic>":
+                spec = {"model": message.get("model"), "ctx": context_tokens(usage)}
+        if said is None:
+            text = visible_text(entry, False)
+            when = stamp(entry) if text else None
             if when:
-                return when
-    return None
+                said = {"when": when, "role": entry.get("type"),
+                        "text": " ".join(BANG.sub(r"! \1", text).split())[:400],
+                        "cwd": entry.get("cwd"), "branch": entry.get("gitBranch"),
+                        "via": entry.get("entrypoint")}
+        if said and spec:
+            break
+    if said is None:
+        return None
+    said.update(spec or {"model": None, "ctx": None})
+    return said
 
 
-def last_spoken(path):
-    """Timestamp of the last real message, read backward from the end."""
+def context_tokens(usage):
+    """What the last request actually carried — the number that says how heavy
+    a chat has become. Cache reads are the bulk of it and are still context."""
+    total = 0
+    for key in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"):
+        value = usage.get(key)
+        if isinstance(value, int):
+            total += value
+    return total or None
+
+
+def last_facts(path):
+    """Everything known about a chat's end, read backward from it."""
     try:
         size = os.path.getsize(path)
     except OSError:
         return None
     for window in TAIL_WINDOWS:
-        when = tail_speech(path, size, window)
-        if when or window >= size:
-            return when
+        facts = tail_speech(path, size, window)
+        # Widening once more when the model is missing was measured and dropped:
+        # it resolved none of the blank labels (those chats hold no model reply
+        # at all) and cost 60% of the cold scan.
+        if facts or window >= size:
+            return facts
     return None
+
+
+def last_spoken(path):
+    """Timestamp of the last real message, read backward from the end."""
+    facts = last_facts(path)
+    return facts["when"] if facts else None
+
+
+def load_cache(path):
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict) or data.get("version") != CACHE_VERSION:
+        return {}
+    rows = data.get("rows")
+    return rows if isinstance(rows, dict) else {}
+
+
+def save_cache(path, rows):
+    """Best effort: a listing that cannot write its cache is slow, never wrong."""
+    tmp = "%s.tmp.%d" % (path, os.getpid())
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump({"version": CACHE_VERSION, "rows": rows}, handle)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def measured(path, key):
+    facts = last_facts(path)
+    if not facts:
+        # Transcripts that never held a message (a /clear stub) are cached as
+        # such: they are a third of the corpus, and re-reading them every
+        # listing costs more than every real chat put together.
+        return {"key": key, "at": None}
+    return {"key": key, "at": facts["when"].timestamp(), "role": facts["role"],
+            "text": facts["text"], "cwd": facts["cwd"], "branch": facts["branch"],
+            "model": facts["model"], "ctx": facts["ctx"], "via": facts["via"]}
+
+
+def scan_recent(root, days, cache_path, agents=False):
+    """Every chat whose last real message falls in the window, newest first.
+
+    File mtime is an upper bound on that message — a transcript is only written
+    after something is said in it — so the window drops most files without
+    opening them, and an unchanged (size, mtime) pair means the cached answer
+    still holds. Those two facts are what keep a 6000-transcript corpus fast.
+    """
+    cache = load_cache(cache_path) if cache_path else {}
+    horizon = time.time() - days * 86400 if days is not None else None
+    # Measurements outside this window are kept: the picker opens on a week and
+    # widens as he scrolls, and a cache holding only the last window would make
+    # every widening re-read the corpus it just discarded.
+    seen, rows, fresh = dict(cache), [], set()
+    for base, _, names in os.walk(root):
+        for name in names:
+            if not name.endswith(".jsonl"):
+                continue
+            path = os.path.join(base, name)
+            try:
+                info = os.stat(path)
+            except OSError:
+                continue
+            if horizon and info.st_mtime < horizon:
+                continue
+            key = "%d:%r" % (info.st_size, info.st_mtime)
+            row = cache.get(path)
+            if not isinstance(row, dict) or row.get("key") != key:
+                row = measured(path, key)
+            seen[path] = row
+            fresh.add(path)
+            when = row.get("at")
+            if not when or (horizon and when < horizon):
+                continue
+            # Headless runs — workers, review benches, subagent fleets — outnumber
+            # real chats by an order of magnitude and are nothing he ever sat in.
+            # Transcripts predating the field carry no entrypoint at all, so only
+            # a positive "sdk-cli" hides a chat.
+            if not agents and row.get("via") == "sdk-cli":
+                continue
+            listed = {field: value for field, value in row.items() if field != "key"}
+            rows.append(dict(listed, path=path, session=name[: -len(".jsonl")]))
+    if cache_path:
+        # Chats get purged (the trash sweep) and whole projects get deleted; a
+        # stat each is cheap next to the transcript reads this cache exists to
+        # avoid, and without it the file only ever grows.
+        save_cache(cache_path, {path: row for path, row in seen.items()
+                                if path in fresh or os.path.exists(path)})
+    rows.sort(key=lambda row: row["at"], reverse=True)
+    return rows
+
+
+def scan_names(root, paths=None):
+    """path -> the name a chat carries, from one grep pass.
+
+    Narrowed to the chats actually being listed: naming a week of them is a pass
+    over a few hundred files instead of over every transcript ever written.
+    """
+    argv, binary = searcher()
+    if not binary or paths == []:
+        return {}
+    command = argv + ["-a", "-H", "-F"]
+    for pattern in NAME_PATTERNS:
+        command += ["-e", pattern]
+    # An all-time listing is thousands of paths, which is most of ARG_MAX on this
+    # machine; past the threshold, scanning the whole corpus is the cheap option
+    # next to an E2BIG that would abort the listing entirely.
+    if paths and sum(len(path) for path in paths) > ARGV_ROOM:
+        paths = None
+    command += ["--"] + (paths if paths else [root])
+    names = {}
+    proc = subprocess.Popen(command, executable=binary, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL)
+    for raw in proc.stdout:
+        raw = raw.rstrip(b"\n")
+        if len(raw) < NAME_LINE_MAX:
+            note_name(names, raw)
+    proc.stdout.close()
+    proc.wait()
+    return {path: name["custom"] or name["ai"]
+            for path, name in names.items() if name["custom"] or name["ai"]}
+
+
+def short_model(name):
+    # The release date in a model id ("claude-haiku-4-5-20251001") is width the
+    # column pays for one model and nobody reads.
+    return re.sub(r"-20\d{6}$", "", (name or "").replace("claude-", "")) or "-"
+
+
+def report_recent(args):
+    # A corpus that is not his own (a test fixture, or anything CHAT_FIND_ROOT
+    # points at) gets no cache unless one is named: the shared cache is keyed by
+    # path alone and must not mix corpora.
+    cache_path = args.cache or (CACHE if args.root == HIS_CORPUS else None)
+    rows = scan_recent(args.root, args.days, cache_path, args.agents)
+    if args.limit:
+        rows = rows[: args.limit]
+    names = scan_names(args.root, [row["path"] for row in rows])
+    for row in rows:
+        row["name"] = names.get(row["path"])
+    if args.json:
+        json.dump(rows, sys.stdout, ensure_ascii=False)
+        sys.stdout.write("\n")
+        return
+    now = datetime.now(timezone.utc).astimezone()
+    for row in rows:
+        when = datetime.fromtimestamp(row["at"]).astimezone()
+        print("%s (%s)  %s%s  %s %s  %s" % (
+            when.strftime("%Y-%m-%d %H:%M"), ago(when, now),
+            os.path.basename(row.get("cwd") or "?"),
+            (" ⎇ " + row["branch"]) if row.get("branch") else "",
+            short_model(row.get("model")),
+            ("%dk" % (row["ctx"] // 1000)) if row.get("ctx") else "-",
+            row.get("name") or row.get("text") or ""))
+        print("  " + row["session"])
 
 
 def ago(when, now):
@@ -358,17 +572,38 @@ def main():
         prog="chat-find",
         description="Find past chats by what was said in them; every hit carries the date of its last real message.",
     )
-    parser.add_argument("terms", nargs="+", help="words he would have typed, or a name he gave a chat; "
+    parser.add_argument("terms", nargs="*", help="words he would have typed, or a name he gave a chat; "
                                                  "newest last message first, more terms matched breaking ties")
+    parser.add_argument("--recent", action="store_true",
+                        help="list every chat instead of searching, newest real message first")
+    parser.add_argument("--json", action="store_true", help="machine-readable output (--recent only)")
+    parser.add_argument("--agents", action="store_true",
+                        help="also list headless runs — workers, benches, subagents (--recent only)")
     parser.add_argument("--days", type=float, help="only chats whose last message is within N days")
-    parser.add_argument("--limit", type=int, default=8, help="candidates to print (default 8)")
+    parser.add_argument("--limit", type=int, default=None,
+                        help="candidates to print (default 8 when searching, all with --recent)")
     parser.add_argument("--all", action="store_true", help="also match tool output and file contents")
     parser.add_argument("--account", default=None, help="claudeb profile for the resume line")
     parser.add_argument("--root", default=ROOT, help=argparse.SUPPRESS)
+    parser.add_argument("--cache", default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     if not os.path.isdir(args.root):
         die("no transcript corpus at " + args.root)
+    # "All of them" is what leaving --limit out means, so a 0 asking for the empty
+    # listing would read as the opposite of what it does.
+    if args.limit is not None and args.limit < 1:
+        die("--limit takes a positive count; omit it for all of them")
+
+    if args.recent:
+        if args.terms:
+            die("--recent lists every chat; it takes no search terms")
+        report_recent(args)
+        return
+    if not args.terms:
+        die("nothing to search for (pass words, or --recent to list every chat)")
+    if args.limit is None:
+        args.limit = 8
 
     started = time.time()
     found, names = scan_matches(args.terms, args.all, args.root)
@@ -419,4 +654,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except BrokenPipeError:
+        # `chat-find --recent | head` is the normal way to read a long listing.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        raise SystemExit(0)
