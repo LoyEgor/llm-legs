@@ -32,7 +32,6 @@ end
 
 local jumpUserProcessCommand = [[/usr/bin/pgrep -fl JumpConnect | /usr/bin/awk '$2 == "/Applications/Jump" && $3 == "Desktop" && $4 == "Connect.app/Contents/MacOS/JumpConnect" && $0 !~ /--service/ { found=1 } END { exit(found ? 0 : 1) }']]
 local jumpUserPidCommand = [[/usr/bin/pgrep -fl JumpConnect | /usr/bin/awk '$2 == "/Applications/Jump" && $3 == "Desktop" && $4 == "Connect.app/Contents/MacOS/JumpConnect" && $0 !~ /--service/ { print $1 }']]
-local sonobusGroupUrl = "sonobus://aoo.sonobus.net:10998/?g=egor-mic"
 local serviceLogDir = "/Library/Logs/Jump Desktop/"
 local enforceSettingKey = "IpadAutomation.enforce"
 local pending = {}
@@ -42,7 +41,6 @@ local appActionTasks = {}
 local teardownGeneration = 0
 local teardownTasks = {}
 local teardownTimers = {}
-local savedDefaultInputDevice = nil
 local serviceLogOffsets = {}
 local serviceLogInodes = {}
 local serviceLogPartialLines = {}
@@ -50,11 +48,9 @@ local serviceLogWatcher = nil
 local serviceLogPollingTimer = nil
 local screenDebounceTimer = nil
 local focusRestoreTimer = nil
-local rejoinSonoBusTimer = nil
 local audioInputWatcher = nil
 local audioInputMirrorTimer = nil
 local sendInputDeviceCommand
-local restoreSystemInputDevice
 
 local function showAutomationMenu()
     if _G.AutomationMenu and _G.AutomationMenu.show then
@@ -68,8 +64,8 @@ local function refreshAutomationMenu()
     end
 end
 
--- Master "Enforce iPad mode" gate: every watcher/timer that re-asserts system
--- state while the iPad is connected must check this. Off = freeze, never revert.
+-- Master "Enforce iPad mode" gate: display mirroring is the only thing left
+-- that re-asserts state while the iPad is connected. Off = freeze, never revert.
 local function enforceEnabled()
     local ok, stored = pcall(hs.settings.get, enforceSettingKey)
     if not ok or stored == nil then
@@ -103,6 +99,24 @@ local function displayStateLine()
     return "Screens: " .. table.concat(screenNames, ", ")
 end
 
+-- Only what came out differently than the action intended: a connect or
+-- disconnect that fully worked notifies nothing.
+local function mismatchLines(expectRunning, betterDisplayRunning, jumpRunning, virtualRunning)
+    local wrong = expectRunning and "✗ not running" or "✗ still running"
+    local lines = {}
+    if betterDisplayRunning ~= expectRunning then
+        lines[#lines + 1] = "BetterDisplay: " .. wrong
+    end
+    if jumpRunning ~= nil and jumpRunning ~= expectRunning then
+        lines[#lines + 1] = "Jump Desktop Connect: " .. wrong
+    end
+    if virtualRunning ~= expectRunning then
+        lines[#lines + 1] = "Virtual display: "
+            .. (expectRunning and "✗ not present" or "✗ still present")
+    end
+    return lines
+end
+
 local function verifyApps(expectRunning, title, delay)
     nextPendingId = nextPendingId + 1
     local pendingId = nextPendingId
@@ -125,18 +139,12 @@ local function verifyApps(expectRunning, title, delay)
                 return
             end
 
-            local jumpRunning = exitCode == 0
-            local virtualRunning = virtualDisplayPresent()
-            local expected = expectRunning and "✓ running" or "✓ stopped"
-            local unexpected = expectRunning and "✗ not running" or "✗ still running"
-            local virtualExpected = expectRunning and "✓ present" or "✗ still present"
-            local virtualUnexpected = expectRunning and "✗ not present" or "✓ absent"
-            local lines = {
-                "BetterDisplay: " .. (betterDisplayRunning == expectRunning and expected or unexpected),
-                "Jump Desktop Connect: " .. (jumpRunning == expectRunning and expected or unexpected),
-                "Virtual display: " .. (virtualRunning and virtualExpected or virtualUnexpected),
-            }
-            notify(title, table.concat(lines, "\n") .. "\n" .. displayStateLine(), { priority = "high" })
+            local lines = mismatchLines(expectRunning, betterDisplayRunning,
+                exitCode == 0, virtualDisplayPresent())
+            if #lines > 0 then
+                notify(title, table.concat(lines, "\n") .. "\n" .. displayStateLine(),
+                    { priority = "high" })
+            end
         end, { "-c", jumpUserProcessCommand })
         if not entry.task or not entry.task:start() then
             pending[pendingId] = nil
@@ -144,17 +152,10 @@ local function verifyApps(expectRunning, title, delay)
                 return
             end
 
-            local virtualRunning = virtualDisplayPresent()
-            local virtualStatus
-            if expectRunning then
-                virtualStatus = virtualRunning and "✓ present" or "✗ not present"
-            else
-                virtualStatus = virtualRunning and "✗ still present" or "✓ absent"
-            end
-            notify(title, "BetterDisplay: " .. (betterDisplayRunning and "✓ running" or "✗ not running")
-                .. "\nJump Desktop Connect: ✗ check failed"
-                .. "\nVirtual display: " .. virtualStatus
-                .. "\n" .. displayStateLine(),
+            local lines = mismatchLines(expectRunning, betterDisplayRunning, nil,
+                virtualDisplayPresent())
+            lines[#lines + 1] = "Jump Desktop Connect: ✗ check failed"
+            notify(title, table.concat(lines, "\n") .. "\n" .. displayStateLine(),
                 { priority = "high" })
         end
     end)
@@ -178,10 +179,6 @@ local function cancelPendingWork()
     if focusRestoreTimer then
         focusRestoreTimer:stop()
         focusRestoreTimer = nil
-    end
-    if rejoinSonoBusTimer then
-        rejoinSonoBusTimer:stop()
-        rejoinSonoBusTimer = nil
     end
     for id, entry in pairs(pending) do
         if entry.timer then
@@ -293,7 +290,7 @@ local function stopAppReliably(appName, generation, onDone)
             return
         end
         -- Real signals by pid: NSRunningApplication-style app:kill() is a
-        -- polite terminate that a modal dialog (SonoBus quit confirm) ignores.
+        -- polite terminate that a modal quit-confirmation dialog ignores.
         local pid = app and app:pid()
         if not termSent then
             termSent = true
@@ -334,25 +331,6 @@ local function stopAppReliably(appName, generation, onDone)
     end
 end
 
-local function stopSonoBusReliably(generation, onDone)
-    if generation ~= teardownGeneration then
-        return
-    end
-    local ok, app = pcall(hs.application.get, "SonoBus")
-    local disconnected = false
-    if ok and app then
-        local selectOk, selected = pcall(app.selectMenuItem, app, { "Connect", "Disconnect" })
-        disconnected = selectOk and selected and true or false
-    end
-    if disconnected then
-        scheduleTeardown(generation, 0.7, function()
-            stopAppReliably("SonoBus", generation, onDone)
-        end)
-    else
-        stopAppReliably("SonoBus", generation, onDone)
-    end
-end
-
 local function jumpUserPids()
     local output, ok = hs.execute(jumpUserPidCommand)
     if not ok then
@@ -366,8 +344,7 @@ local function jumpUserPids()
 end
 
 local function ipadJunkPresent()
-    return hs.application.get("SonoBus") ~= nil
-        or #jumpUserPids() > 0
+    return #jumpUserPids() > 0
         or virtualDisplayPresent()
 end
 
@@ -439,19 +416,17 @@ local function enableDummy(quiet)
         { path = "/usr/bin/open", args = { "-g", "-a", "BetterDisplay" } },
         -- -j -g: Jump Connect's status window pops on every plain launch; it is never used here.
         { path = "/usr/bin/open", args = { "-j", "-g", "-a", "Jump Desktop Connect" } },
-    }, true, "iPad connected", 10, quiet)
+    }, true, "iPad connect incomplete", 10, quiet)
     local generation = actionGeneration
 
     local function tidyConnectWindows()
         local jump = hs.application.get("Jump Desktop Connect")
-        local sono = hs.application.get("SonoBus")
         local better = hs.application.get("BetterDisplay")
         local function ownedBy(window)
             local app = window and window:application()
             local pid = app and app:pid()
             return pid ~= nil
                 and ((jump ~= nil and pid == jump:pid())
-                    or (sono ~= nil and pid == sono:pid())
                     or (better ~= nil and pid == better:pid()))
         end
         local front = hs.window.frontmostWindow()
@@ -460,9 +435,6 @@ local function enableDummy(quiet)
         -- freshest window that is theirs, not ours, as the restore target.
         if front and not focusStolen then
             frontAtStart = front
-        end
-        if sono and not sono:isHidden() then
-            sono:hide()
         end
         if jump then
             -- Close the standard windows (matches the X button; Jump keeps
@@ -475,7 +447,7 @@ local function enableDummy(quiet)
             end
             jump:hide()
         end
-        -- ownedBy(frontAtStart): restoring a SonoBus/Jump window would re-front
+        -- ownedBy(frontAtStart): restoring a Jump window would re-front
         -- what was just hidden.
         if focusStolen and frontAtStart and not ownedBy(frontAtStart) then
             if focusRestoreTimer then
@@ -506,13 +478,9 @@ local function enableDummy(quiet)
             print("WARNING: iPad connect re-launching Jump Desktop Connect")
             specs[#specs + 1] = { path = "/usr/bin/open", args = { "-j", "-g", "-a", "Jump Desktop Connect" } }
         end
-        if hs.application.get("SonoBus") == nil then
-            print("WARNING: iPad connect re-launching SonoBus")
-            specs[#specs + 1] = { path = "/usr/bin/open", args = { "-g", sonobusGroupUrl } }
-        end
         tidyConnectWindows()
         if #specs > 0 then
-            runAppTasks(specs, true, "iPad connected retry", 3, quiet)
+            runAppTasks(specs, true, "iPad connect retry incomplete", 3, quiet)
             -- Apps relaunched by the retry are not up yet on this tick; sweep
             -- their windows again once they are.
             nextPendingId = nextPendingId + 1
@@ -547,30 +515,26 @@ local function disableDummy(baseline)
         screenDebounceTimer:stop()
         screenDebounceTimer = nil
     end
-    runTeardownStep("restore input device", restoreSystemInputDevice)
     runTeardownStep("hide overlay", function()
         if _G.IpadOverlay and not (baseline and _G.IpadOverlay.hasStoredVisibility()) then
             _G.IpadOverlay.hide()
         end
     end)
 
-    local remaining = 3
+    local remaining = 2
     local function stopped()
         remaining = remaining - 1
         if remaining == 0 then
-            notify("iPad disconnected",
-                "SonoBus: " .. (hs.application.get("SonoBus") and "✗ still running" or "✓ stopped")
-                .. "\nBetterDisplay: " .. (hs.application.get("BetterDisplay") and "✗ still running" or "✓ stopped")
-                .. "\nVirtual display: " .. (virtualDisplayPresent() and "✗ still present" or "✓ absent")
-                .. "\nJump Desktop Connect: " .. (#jumpUserPids() == 0 and "✓ stopped" or "✗ still running")
-                .. "\n" .. displayStateLine(),
-                { priority = "high" })
+            local lines = mismatchLines(false, hs.application.get("BetterDisplay") ~= nil,
+                #jumpUserPids() > 0, virtualDisplayPresent())
+            if #lines > 0 then
+                notify("iPad teardown incomplete",
+                    table.concat(lines, "\n") .. "\n" .. displayStateLine(),
+                    { priority = "high" })
+            end
         end
     end
     local generation = teardownGeneration
-    runTeardownStep("stop SonoBus", function()
-        stopSonoBusReliably(generation, stopped)
-    end)
     runTeardownStep("stop BetterDisplay", function()
         stopAppReliably("BetterDisplay", generation, stopped)
     end)
@@ -579,7 +543,7 @@ local function disableDummy(baseline)
     end)
     scheduleTeardown(generation, 7, function()
         local stragglerPids = {}
-        for _, appName in ipairs({ "SonoBus", "BetterDisplay" }) do
+        for _, appName in ipairs({ "BetterDisplay" }) do
             local app = hs.application.get(appName)
             local pid = app and app:pid()
             if pid then
@@ -707,97 +671,11 @@ local function startJumpAttemptWatcher()
     end
 end
 
-local function switchSystemInputDevice(deviceName)
-    if not savedDefaultInputDevice then
-        local ok, current = pcall(function()
-            return hs.audiodevice.defaultInputDevice()
-        end)
-        if ok then
-            local nameOk, currentName = pcall(function()
-                return current and current:name()
-            end)
-            if nameOk and currentName and not currentName:find("BlackHole", 1, true) then
-                savedDefaultInputDevice = current
-            end
-        else
-            print("WARNING: could not save the default input device:", current)
-        end
-    end
-
-    local ok, target = pcall(function()
-        return hs.audiodevice.findInputByName(deviceName)
-    end)
-    if not ok or not target then
-        print("WARNING: audio input device not found:", deviceName)
-        return
-    end
-
-    local setOk, result = pcall(function()
-        return target:setDefaultInputDevice()
-    end)
-    if not setOk or result == false then
-        print("WARNING: could not set the default input device:", deviceName)
-    end
-end
-
-restoreSystemInputDevice = function()
-    local ok, current = pcall(function()
-        return hs.audiodevice.defaultInputDevice()
-    end)
-    if not ok then
-        savedDefaultInputDevice = nil
-        print("WARNING: could not inspect the current default input device")
-        return
-    end
-
-    local currentName = current and current:name() or nil
-    if not currentName or not currentName:find("BlackHole", 1, true) then
-        savedDefaultInputDevice = nil
-        return
-    end
-
-    local candidates = {}
-    if savedDefaultInputDevice then
-        candidates[#candidates + 1] = savedDefaultInputDevice
-    end
-    local allInputsOk, allInputs = pcall(function()
-        return hs.audiodevice.allInputDevices()
-    end)
-    if allInputsOk then
-        for _, device in ipairs(allInputs) do
-            local nameOk, name = pcall(function()
-                return device:name()
-            end)
-            if nameOk and name and not name:find("BlackHole", 1, true) then
-                candidates[#candidates + 1] = device
-            end
-        end
-    end
-
-    local restored = false
-    for _, device in ipairs(candidates) do
-        local setOk, result = pcall(function()
-            return device:setDefaultInputDevice()
-        end)
-        if setOk and result ~= false then
-            restored = true
-            break
-        end
-    end
-    if not restored then
-        print("WARNING: previous default input device is unavailable; leaving the system default untouched")
-    end
-    savedDefaultInputDevice = nil
-    if sendInputDeviceCommand then
-        sendInputDeviceCommand("default")
-    end
-end
-
 local inputDeviceRetryDelays = { 2, 5, 10 }
 local inputDeviceRetryTimer = nil
 local inputDeviceGeneration = 0
 
-sendInputDeviceCommand = function(device)
+sendInputDeviceCommand = function(command)
     inputDeviceGeneration = inputDeviceGeneration + 1
     local generation = inputDeviceGeneration
     if inputDeviceRetryTimer then
@@ -817,7 +695,7 @@ sendInputDeviceCommand = function(device)
             end
             local delay = inputDeviceRetryDelays[attemptNumber]
             if not delay then
-                print("WARNING: transcription input-device retries exhausted:", device)
+                print("WARNING: transcription input-device retries exhausted:", command)
                 return
             end
             inputDeviceRetryTimer = hs.timer.doAfter(delay, function()
@@ -832,7 +710,7 @@ sendInputDeviceCommand = function(device)
             return
         end
 
-        local started = _G.GptVoice.sendCommand("input-device " .. device, function(reply)
+        local started = _G.GptVoice.sendCommand(command, function(reply)
             if generation ~= inputDeviceGeneration then
                 return
             end
@@ -854,53 +732,22 @@ sendInputDeviceCommand = function(device)
     attempt(1)
 end
 
+-- input-device-mirror, not input-device: the daemon follows the system input
+-- without recording an explicit choice, which would outrank its iPad takeover.
+-- Plain "default" is no substitute - PortAudio freezes its default at init, so
+-- only the name reaches a device that appeared later.
 local function scheduleAudioInputMirror()
     if audioInputMirrorTimer then
         audioInputMirrorTimer:stop()
     end
     audioInputMirrorTimer = hs.timer.doAfter(0.75, function()
         audioInputMirrorTimer = nil
-        local ok, device = pcall(function()
-            return hs.audiodevice.defaultInputDevice()
-        end)
-        if not ok or not device then
-            return
-        end
         local nameOk, name = pcall(function()
-            return device:name()
+            local device = hs.audiodevice.defaultInputDevice()
+            return device and device:name()
         end)
-        if not nameOk or not name then
-            return
-        end
-        if enforceEnabled()
-            and _G.IpadMode and _G.IpadMode.isOn()
-            and not name:find("BlackHole", 1, true) then
-            local targetOk, target = pcall(function()
-                return hs.audiodevice.findInputByName("BlackHole 2ch")
-            end)
-            if targetOk and target then
-                print("audio mirror: re-asserting BlackHole (stolen by " .. name .. ")")
-                local setOk, result = pcall(function()
-                    return target:setDefaultInputDevice()
-                end)
-                if not setOk or result == false then
-                    print("WARNING: audio mirror could not re-assert BlackHole")
-                end
-                return
-            end
-        end
-        -- A reboot mid-iPad-session skips the disconnect handler, leaving
-        -- BlackHole as the system default with no iPad behind it. Connect
-        -- always stores enforce=true, so the gate stays open for that path.
-        if enforceEnabled()
-            and name:find("BlackHole", 1, true)
-            and not (_G.IpadMode and _G.IpadMode.isOn()) then
-            print("audio mirror: no iPad, restoring the default input away from BlackHole")
-            restoreSystemInputDevice()
-            return
-        end
-        if sendInputDeviceCommand then
-            sendInputDeviceCommand(name)
+        if nameOk and name and name ~= "" and sendInputDeviceCommand then
+            sendInputDeviceCommand("input-device-mirror " .. name)
         end
     end)
 end
@@ -923,51 +770,13 @@ local function startAudioInputMirror()
     scheduleAudioInputMirror()
 end
 
--- BlackHole stores its volume persistently; a stray 39% once attenuated the
--- whole mic chain by ~40dB (write x read) and silenced dictation.
-local function assertBlackHoleVolume()
-    local outOk, out = pcall(hs.audiodevice.findOutputByName, "BlackHole 2ch")
-    if outOk and out then
-        pcall(function() out:setVolume(100) end)
-    end
-    local inOk, input = pcall(hs.audiodevice.findInputByName, "BlackHole 2ch")
-    if inOk and input then
-        pcall(function() input:setInputVolume(100) end)
-    end
-end
-
-local function enforceAudio()
-    assertBlackHoleVolume()
-    switchSystemInputDevice("BlackHole 2ch")
-end
-
 local function setEnforce(value)
     local active = storeEnforce(value)
     if _G.DisplayMirror then
         _G.DisplayMirror.reconcile("enforcement changed")
     end
-    if active and _G.IpadMode and _G.IpadMode.isOn() then
-        enforceAudio()
-    end
     refreshAutomationMenu()
     return active
-end
-
--- Both SonoBus ends go stale after the iPad app dies mid-session; rejoining
--- the group on the Mac side is half of the recovery (the iPad app restart is
--- the other half).
-local function rejoinSonoBus()
-    local app = hs.application.get("SonoBus")
-    if app then
-        pcall(app.selectMenuItem, app, { "Connect", "Disconnect" })
-    end
-    if rejoinSonoBusTimer then
-        rejoinSonoBusTimer:stop()
-    end
-    rejoinSonoBusTimer = hs.timer.doAfter(app and 2 or 0, function()
-        rejoinSonoBusTimer = nil
-        hs.execute([[/usr/bin/open -g "]] .. sonobusGroupUrl .. [["]])
-    end)
 end
 
 local function ipadConnected(baseline)
@@ -979,21 +788,23 @@ local function ipadConnected(baseline)
     if _G.DisplayMirror then
         _G.DisplayMirror.reconcile("iPad connected")
     end
-    if baseline then
-        -- A baseline replay must not bounce a live SonoBus connection; joining
-        -- the current group again is a no-op.
-        hs.execute([[/usr/bin/open -g "]] .. sonobusGroupUrl .. [["]])
-    else
-        rejoinSonoBus()
-    end
     -- On a baseline replay the overlay has already restored the visibility the
     -- user last chose (ipad_overlay.lua); showing here would switch an overlay
     -- they hid back on every hs.reload.
     if _G.IpadOverlay and not (baseline and _G.IpadOverlay.hasStoredVisibility()) then
         _G.IpadOverlay.show()
     end
-    if enforceEnabled() then
-        enforceAudio()
+    -- The iPad mic reaches the daemon over the network, not through CoreAudio:
+    -- clearing any stale explicit input lets the daemon's own takeover pick the
+    -- iPad up as soon as its app streams. Not on a baseline replay, which runs
+    -- on every hs.reload and would throw away a pin just set by hand.
+    -- The mirror right after is what names the input the daemon falls back to
+    -- while the iPad app is closed: "default" alone leaves it on the one
+    -- PortAudio froze at init, and a connect that changes no audio device
+    -- produces no CoreAudio event to trigger the mirror on its own.
+    if sendInputDeviceCommand and not baseline then
+        sendInputDeviceCommand("input-device default")
+        scheduleAudioInputMirror()
     end
 end
 
@@ -1096,15 +907,6 @@ end)
 if not displayMirrorOk then
     print("ERROR: Display mirror failed to load:", displayMirrorError)
     hs.alert.show("Display mirror error")
-end
-
-local sidecarPresenceOk, sidecarPresenceError = pcall(function()
-    dofile(hs.configdir .. "/sidecar_presence.lua")
-end)
-
-if not sidecarPresenceOk then
-    print("ERROR: Sidecar presence logger failed to load:", sidecarPresenceError)
-    hs.alert.show("Sidecar presence error")
 end
 
 local sendActionsOk, sendActionsError = pcall(function()

@@ -8,8 +8,10 @@ INTO `~/.hammerspoon` to deploy; copy FROM it to refresh the mirror before a com
 System map (what loads what, all via `init.lua` pcall/dofile):
 
 - `init.lua` — Sidecar screen watcher and unified iPad connect/disconnect actions:
-  unconditional BetterDisplay dummy, Jump Desktop Connect, SonoBus group, transcription
-  input device, iPad overlay, and Jump service wake-on-attempt watcher.
+  unconditional BetterDisplay dummy, Jump Desktop Connect, iPad overlay, and Jump
+  service wake-on-attempt watcher. Audio is not among them: the iPad microphone is
+  a network stream the transcription daemon takes over by itself, so the only audio
+  code left tells that daemon to re-resolve its default input.
 - `notify.lua` — `Notify.send/log`, log at `~/.hammerspoon/notify.log`.
 - `claude_continue.lua` — `ClaudeContinue`: two resume-timer slots (app, terminal),
   persisted in `claude_continue_state.json`; consumed by repo `bin/claude-resume-timer`.
