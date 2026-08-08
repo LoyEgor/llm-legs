@@ -767,9 +767,11 @@ SCOPE_FLAG_HELP = (
     "(repo/path), and a repository none of them names keeps its whole working tree"
 )
 REPO_FLAG_HELP = (
-    "The repository to review. Repeatable with --worktree: one run then reads every named "
-    "repository's working tree as a single change, with each repository's paths under its own "
-    "top-level prefix, and stamps every one of them"
+    "The repository to review, as PATH or PATH@BASE..HEAD to review a range of its commits "
+    "instead of its working tree. Repeatable: one run then reads every named repository as a "
+    "single change, with each repository's paths under its own top-level prefix, and stamps "
+    "every one of them. Where one of several repositories is named without a range, --worktree "
+    "is what says its half is read from its working tree"
 )
 RANGE_FLAG_HELP = (
     "Review everything between two commits as one change, A excluded and B included — a branch, a "
@@ -1556,13 +1558,13 @@ def announce_review_target(repo, sha, scope=(), members=None, head_label=None):
     An empty target is refused here rather than reported as a panel that found nothing.
     """
     entries = (
-        [(member["label"], Path(member["repo"]), member["commit"], list(member.get("scope") or []))
-         for member in members]
-        if members else [(None, Path(repo), sha, list(scope or ()))]
+        [(member["label"], Path(member["repo"]), member["commit"], list(member.get("scope") or []),
+          member.get("head")) for member in members]
+        if members else [(None, Path(repo), sha, list(scope or ()), head_label)]
     )
     described = []
     total_files = 0
-    for label, where, commit, narrowed in entries:
+    for label, where, commit, narrowed, head_label in entries:
         base = diff_base(where, commit)
         changes, _ = diff_numstat(where, [base, commit])
         total_files += len(changes)
@@ -1703,6 +1705,35 @@ def repo_arg_paths(args):
     return [value] if isinstance(value, str) else list(value)
 
 
+def parse_repo_source(value):
+    """A `--repo` value: the checkout, and the range of commits inside it this run reviews when the
+    value names one as `PATH@BASE..HEAD`. Both halves of a cross-repository change are reviewable
+    in one panel only if each half can be named the way it actually exists — one branch already
+    pushed, the other still in the working tree — and a flag pair that reads every repository the
+    same way sent the second half to a panel of its own (Egor, 2026-08-08).
+
+    The range is split off the END, so a checkout whose own path holds an `@` still resolves; what
+    marks the suffix as a range rather than as part of the path is the `..` inside it.
+    """
+    text = str(value)
+    path, separator, spec = text.rpartition("@")
+    if not separator or ".." not in spec:
+        return text, None
+    # `/srv/a@b/x..y/repo` is a directory, not repository `/srv/a` reviewed over range `b/x..y/repo`
+    # — and both halves of that misreading name things nobody asked for.
+    if os.path.isdir(text) and not os.path.isdir(path):
+        return text, None
+    if not path:
+        raise ValueError(f"--repo names no repository before its range: {value}")
+    parse_range_spec(spec)
+    return path, spec
+
+
+def repo_sources(args):
+    """Every `--repo` of a run, parsed: what to read and, where one is named, which range of it."""
+    return [parse_repo_source(path) for path in repo_arg_paths(args)]
+
+
 def merged_repo_labels(repos):
     """The directory prefix each repository is mounted under in a merged review. A rater reads these
     instead of repository paths and a scope is spelled with them, so it is the basename; two
@@ -1762,17 +1793,36 @@ def split_merged_scope(pairs, paths, option="--paths"):
     }
 
 
-def merged_members(repos, paths=()):
+def merged_members(sources, paths=()):
     """Each repository of a merged review: its prefix, its sealed snapshot, what that snapshot was
-    taken against and the scope it was narrowed to. Sealed exactly as a single-repository
-    `--worktree` run seals one, because these snapshots are what each repository's own receipt is
-    written against afterwards.
+    taken against and the scope it was narrowed to. Sealed exactly as a single-repository run seals
+    one — `--worktree` for a repository named alone, `--range` for one named as `PATH@BASE..HEAD` —
+    because these snapshots are what each repository's own receipt is written against afterwards,
+    and a member is therefore worth exactly what the same review of it alone would have been.
     """
+    sources = [source if isinstance(source, tuple) else (source, None) for source in sources]
+    repos = [path for path, _ in sources]
     labels = merged_repo_labels(repos)
     scopes = split_merged_scope(list(zip(labels, repos)), paths)
     members = []
-    for label, repo in zip(labels, repos):
+    for label, (repo, spec) in zip(labels, sources):
         scope = scopes[label]
+        if spec:
+            if scope:
+                raise ValueError(
+                    f"--repo {repo} names a range of commits, which is already a fixed set of "
+                    f"paths; --paths narrows a working tree, so drop the {label}/ entries or "
+                    "review that repository's tree instead"
+                )
+            commit = range_snapshot_commit(repo, spec)
+            members.append({
+                "label": label, "repo": str(repo), "commit": commit,
+                "base": diff_base(repo, commit), "scope": [],
+                # What the caller asked about, kept for every line that names this member: the
+                # sealed commit is the tool's own and answers no question anybody asked.
+                "head": resolve_commit(repo, parse_range_spec(spec)[1]),
+            })
+            continue
         try:
             commit = worktree_snapshot_commit(repo, paths=scope)
         except ValueError as exc:
@@ -1794,17 +1844,20 @@ def merged_snapshot_message(members):
     is a separate checkout rather than one project's subtree, or the panel reasons about the halves
     of a cross-repository contract as if they had to agree as one tree.
     """
+    ranged = all(member.get("head") for member in members)
     lines = [
-        "review-bench merged worktree snapshot",
+        "review-bench merged range snapshot" if ranged
+        else "review-bench merged worktree snapshot",
         "",
-        "One change across several repositories, each sealed as --worktree seals one and mounted",
-        "under its own top-level directory. Every path below is that directory followed by the",
-        "path inside that repository; the directories are separate checkouts, not subtrees of one",
-        "project, and the change is meant to be read as a single contract spanning them.",
+        "One change across several repositories, each sealed as a review of it alone would be and",
+        "mounted under its own top-level directory. Every path below is that directory followed by",
+        "the path inside that repository; the directories are separate checkouts, not subtrees of",
+        "one project, and the change is meant to be read as a single contract spanning them.",
         "",
     ]
     for member in members:
-        detail = f"on {member['base'][:7]}"
+        detail = (f"range {member['base'][:7]}..{member['head'][:7]}"
+                  if member.get("head") else f"on {member['base'][:7]}")
         if member["scope"]:
             detail += ", scope: " + " ".join(member["scope"])
         lines.append(f"  {member['label']}/ = {member['repo']} ({detail})")
@@ -6473,7 +6526,7 @@ def guard_review_armed(args):
     """
     if not getattr(args, "worktree", False) or os.environ.get("REVIEW_ASKED") == "1":
         return
-    repos = [resolve_repo_arg(path) for path in repo_arg_paths(args)]
+    repos = [resolve_repo_arg(path) for path, _ in repo_sources(args)]
     # A path that is no repository is a mistake the run itself names; refusing it here would answer
     # a broken invocation with the wrong reason, and it launches no panel either way.
     if any(repo is None for repo in repos) or any(review_cycle_armed(repo) for repo in repos):
@@ -6884,8 +6937,20 @@ def cmd_suggest(args):
     if not changes:
         if receipt:
             print(f"nothing to review; tree matches review {receipt['run_id']}")
-        else:
-            print("nothing to review")
+            return 0
+        print("nothing to review")
+        # Nothing UNCOMMITTED, which is not the same answer, and the reader who meant work already
+        # committed has been reading it as one: they commit, the gate blocks, and the review that
+        # should have covered the whole branch runs twice (Egor, 2026-08-08). Silent where a
+        # receipt just answered — that reader has reviewed, and this would read as more work owed
+        # — and where a commit form was asked about, because that question is about that form.
+        has_history = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", "HEAD"],
+            cwd=repo, capture_output=True, text=True,
+        ).returncode == 0
+        if not args.range and has_history and commit_paths is None and not commit_all:
+            print("committed work is reviewed as a range, not from the tree: "
+                  "review-bench suggest --range <base>..HEAD sizes it and prints the command")
         return 0
     if not args.range and (commit_all or commit_paths is not None):
         contents, _ = commit_content_view(repo, commit_paths, commit_all)
@@ -6981,6 +7046,21 @@ def cmd_suggest(args):
         print("scoped: if part of this tree is another agent's live work, repeat the command "
               "with --paths <path> ... naming only your own files; a scoped run reviews and "
               "stamps only those and leaves the repository's own receipt alone")
+    # Same rule as every other flag here: a reader obeys this output and nothing else, so a change
+    # spanning two checkouts was reviewed by two panels — twice the cost, each blind to the half
+    # that explains it, and each escalating on its own share (Egor, 2026-08-08).
+    if args.range:
+        # `target` is the printed command's own flag pair by now, and its spelling of the range is
+        # the one this whole output has been measured against.
+        print("several repositories: if this change also lives in another checkout, replace "
+              f"--range with --repo {shlex.quote(str(repo))}@{target[1]} and add "
+              "--repo <path>[@<base>..<head>] for each other one, so ONE panel reads them all "
+              "and stamps each")
+    else:
+        print("several repositories: if this change also lives in another checkout, repeat the "
+              "command with --repo <path> --repo <path> ... so ONE panel reads them all and "
+              "stamps each; a repository whose half is already committed is named as "
+              "<path>@<base>..<head>")
     # Same rule as the flags above: a lens absent from this output does not exist — the
     # edge-cases lens sat unreachable behind an unlisted registry until a reader was told.
     # suggest is the review skill's entrypoint: one malformed lens file must cost the lens line,
@@ -7065,9 +7145,10 @@ def commit_mode_command(args):
             command.append("--leg")
         if getattr(args, "foreground", False):
             command.append("--foreground")
-    for path in repo_arg_paths(args):
-        if path != ".":
-            command += ["--repo", str(Path(path).resolve())]
+    for path, spec in repo_sources(args):
+        if path == "." and not spec:
+            continue
+        command += ["--repo", str(Path(path).resolve()) + (f"@{spec}" if spec else "")]
     if args.focus:
         command += ["--focus", args.focus]
     if getattr(args, "lens", ""):
@@ -7093,30 +7174,56 @@ def cmd_run(args):
         args.raters = ",".join(
             REVIEW_TIERS[tier_name]["cells_max" if use_max else "cells"]
         )
-    repos = []
-    for path in repo_arg_paths(args):
+    sources = []
+    for path, spec in repo_sources(args):
         resolved = resolve_repo_arg(path)
         if resolved is None:
             raise ValueError(f"not a git repository: {Path(path).resolve()}")
-        if resolved in repos:
+        if resolved in [source for source, _ in sources]:
             raise ValueError(f"--repo names one repository twice: {resolved}")
-        repos.append(resolved)
+        sources.append((resolved, spec))
+    repos = [source for source, _ in sources]
     repo = repos[0]
     worktree_mode = bool(getattr(args, "worktree", False))
     commitish = getattr(args, "commitish", None)
     range_spec = getattr(args, "range", None)
-    named = [name for name, given in
-             (("commitish", bool(commitish)), ("--range", bool(range_spec)),
-              ("--worktree", worktree_mode)) if given]
-    if len(named) != 1:
+    # A repository named with a range of its own names this run's target as surely as --range does,
+    # so the target flags are checked against what the --repo lines already said.
+    inline_ranges = [spec for _, spec in sources if spec]
+    all_ranged = bool(inline_ranges) and len(inline_ranges) == len(sources)
+    if inline_ranges and (commitish or range_spec):
         raise ValueError(
-            "exactly one of commitish, --range and --worktree must be given"
-            + (f"; got {' and '.join(named)}" if named else "")
+            "--repo PATH@BASE..HEAD names its own range, so the run's target is already given; "
+            "drop the " + ("commitish" if commitish else "--range")
         )
+    if all_ranged and worktree_mode:
+        raise ValueError(
+            "every --repo names a range of commits, so no working tree is read by this review; "
+            "drop --worktree"
+        )
+    if inline_ranges and not all_ranged and not worktree_mode:
+        raise ValueError(
+            "a --repo named without a range of its own is read from its working tree, so this "
+            "review reads both: add --worktree, or give every repository a range"
+        )
+    if not inline_ranges:
+        named = [name for name, given in
+                 (("commitish", bool(commitish)), ("--range", bool(range_spec)),
+                  ("--worktree", worktree_mode)) if given]
+        if len(named) != 1:
+            raise ValueError(
+                "exactly one of commitish, --range and --worktree must be given"
+                + (f"; got {' and '.join(named)}" if named else "")
+            )
+    # One repository named with a range is that repository's own --range run: the merged workspace
+    # exists to hold several checkouts under one commit, and building it around one would cost the
+    # rerun and the receipt their plain shape for nothing.
+    if len(sources) == 1 and sources[0][1]:
+        range_spec = sources[0][1]
     requested_scope = list(getattr(args, "paths", None) or [])
     if requested_scope and not worktree_mode:
         raise ValueError("--paths narrows the working tree; it cannot narrow a commit")
-    if len(repos) > 1 and not worktree_mode:
+    if len(repos) > 1 and not (worktree_mode or all_ranged):
         raise ValueError(
             "a merged review reads the working trees of every --repo it is given; one commitish "
             "or range cannot name a change in more than one repository"
@@ -7129,7 +7236,7 @@ def cmd_run(args):
     # target line stops answering the question it exists for.
     range_head = None
     if len(repos) > 1:
-        members = merged_members(repos, requested_scope)
+        members = merged_members(sources, requested_scope)
         repo, sha = merged_snapshot_workspace(members)
         scope = []
     elif worktree_mode:
@@ -7159,7 +7266,7 @@ def cmd_run(args):
     # receipt (found by panel, 2026-08-07). Recognised from the sealed commit itself, so a rerun
     # pinned to the sha is the same kind of run as the one that made it.
     range_ends = range_snapshot_ends(repo, sha) if worktree_mode else None
-    range_mode = bool(range_spec) or range_ends is not None
+    range_mode = bool(range_spec) or range_ends is not None or bool(all_ranged)
     # A rerun carries no `--range`, so without reading the seal back the target line would name the
     # sealed sha there — the tool's own commit, and the very output naming a range's own ends exists
     # to stop (found by panel, 2026-08-07).
@@ -7173,10 +7280,14 @@ def cmd_run(args):
         scope = snapshot_scope_paths(repo, sha)
     # What the run answers for when it finishes: every member of a merged review, each against its
     # own snapshot, so no participating repository is left without the receipt a solo run leaves.
+    # A member sealed from a range is not a review of the tree anybody is standing on, so it
+    # answers for its own repository only where its right end IS that tree — the same rule a
+    # single-repository range run follows, asked per member because one panel now holds both kinds.
     receipt_targets = [
-        (Path(member["repo"]), member["commit"], list(member.get("scope") or []))
+        (Path(member["repo"]), member["commit"], list(member.get("scope") or []),
+         worktree_mode and not member.get("head"))
         for member in members
-    ] if members else [(repo, sha, scope)]
+    ] if members else [(repo, sha, scope, worktree_mode and not range_mode)]
     announce_review_target(repo, sha, scope, members, head_label=range_head)
     reviews_path = state_dir() / "reviews.jsonl"
     # The corpus that picks `--auto` cells and prices how long they take, and it is the tool's
@@ -7502,10 +7613,10 @@ def cmd_run(args):
         (run_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
         log_review_event("run", run_dir, meta)
         if meta["completed_raters"]:
-            for target, target_sha, target_scope in receipt_targets:
+            for target, target_sha, target_scope, target_worktree in receipt_targets:
                 write_review_receipt(target, target_sha, run_id, len(errored_raters),
                                      panel=len(raters),
-                                     worktree=worktree_mode and not range_mode,
+                                     worktree=target_worktree,
                                      lens=lens["name"] if lens else None,
                                      scope=target_scope)
         if errored_raters:
