@@ -770,9 +770,23 @@ assert jq -e '.effort_flag_dropped == true' "$RUN_DIR/meta.json" >/dev/null
 
 report=$("$RUNNER" report "$RUN_ID")
 assert test "$(head -n1 <<<"$report")" = 'ACCOUNT: effortacct (claudeb)'
-assert grep -q '^COST: 1.25$' <<<"$report"
+assert grep -q '^COST: 625k tok-eq$' <<<"$report"
 assert grep -q '^RESULT:$' <<<"$report"
 assert grep -q '^claudeb result$' <<<"$report"
+
+jq '.total_cost_usd = 0.0005' "$RUN_DIR/out" >"$WORK/out.small" && mv "$WORK/out.small" "$RUN_DIR/out"
+assert grep -q '^COST: 250 tok-eq$' <<<"$("$RUNNER" report "$RUN_ID")"
+export WORKER_RUN_S5_USD_PER_M=0
+assert grep -q '^COST: 250 tok-eq$' <<<"$("$RUNNER" report "$RUN_ID")"
+export WORKER_RUN_S5_USD_PER_M=not-a-number
+assert grep -q '^COST: 250 tok-eq$' <<<"$("$RUNNER" report "$RUN_ID")"
+unset WORKER_RUN_S5_USD_PER_M
+
+jq '.total_cost_usd = 0.001999' "$RUN_DIR/out" >"$WORK/out.rollover" && mv "$WORK/out.rollover" "$RUN_DIR/out"
+assert grep -q '^COST: 1k tok-eq$' <<<"$("$RUNNER" report "$RUN_ID")"
+
+jq '.total_cost_usd = 0.0000005' "$RUN_DIR/out" >"$WORK/out.tiny" && mv "$WORK/out.tiny" "$RUN_DIR/out"
+assert grep -q '^COST: <1 tok-eq$' <<<"$("$RUNNER" report "$RUN_ID")"
 
 # "429" only counts as a limit signature with digit boundaries: an error id that
 # merely contains it stays an ordinary failure.

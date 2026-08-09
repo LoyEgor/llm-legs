@@ -801,7 +801,7 @@ wait_run() {
 
 report_run() {
   [ "$#" -eq 1 ] || usage
-  local directory vendor account code status cost pid
+  local directory vendor account code status cost s5_rate pid
   directory=$(run_path "$1")
   [ -d "$directory" ] && [ -r "$directory/meta.json" ] || fail "unknown run: $1"
   vendor=$(jq -r '.vendor' "$directory/meta.json")
@@ -831,7 +831,20 @@ report_run() {
   fi
   if [ "$vendor" = claudeb ]; then
     cost=$(jq -r '.total_cost_usd // empty' "$directory/out" 2>/dev/null)
-    [ -z "$cost" ] || printf 'COST: %s\n' "$cost"
+    # The $2/M base permanently defines one Sonnet-5-equivalent token; after the public rate
+    # returns to $3/M, one Sonnet 5 token weighs 1.5 of these stable units.
+    s5_rate=${WORKER_RUN_S5_USD_PER_M:-}
+    LC_ALL=C awk -v n="$s5_rate" \
+      'BEGIN { exit !(n ~ /^[+]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$/ && n > 0) }' \
+      || s5_rate=2.0
+    # LC_ALL=C: a comma-decimal locale reads 1.25 as 1 and understates the cost fivefold.
+    # The k rung stops short of 999500 so that %.0f never rounds its way to "1000k".
+    [ -z "$cost" ] || printf 'COST: %s\n' "$(LC_ALL=C awk -v c="$cost" -v r="$s5_rate" \
+      'BEGIN { t = c * 1e6 / r
+               if (t > 0 && t < 0.5) printf "<1 tok-eq"
+               else if (t < 999.5) printf "%.0f tok-eq", t
+               else if (t < 999500) printf "%.0fk tok-eq", t / 1e3
+               else printf "%.1fM tok-eq", t / 1e6 }')"
   fi
   printf 'RESULT:\n'
   if [ "$vendor" = claudeb ]; then

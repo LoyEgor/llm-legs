@@ -1,0 +1,110 @@
+#!/bin/bash
+# Deployed at ~/.local/libexec/tokenmap-scand; source copy in llm-legs/launchd/tokenmap-scand.
+# Nightly tokenmap index refresh (com.tokenmap-scand).
+# RunAtLoad fires this on every load/login too, so the freshness guard below — not launchd —
+# decides whether a scan actually happens; that turns RunAtLoad into a catch-up for nights
+# the Mac was asleep instead of a duplicate run. The canaries are outside that guard: a
+# daytime scan by hand would otherwise buy the night off from the only checks that speak up.
+set -u
+
+REPO="/Volumes/Work/Projects/token-map"
+INSTRUCTION_CANARY="/Volumes/Work/Projects/llm-legs/bin/instruction-canary"
+PYTHON="/opt/homebrew/bin/python3"
+RATES="$HOME/.local/share/tokenmap/read-rates.json"
+LOG="$HOME/Library/Logs/tokenmap-scand.log"
+FRESH_SECONDS=$((20 * 3600))
+MAX_BYTES=1048576
+KEEP_BYTES=262144
+
+now=$(date +%s)
+scan_needed=1
+if [ -f "$RATES" ]; then
+    mtime=$(stat -f %m "$RATES" 2>/dev/null || echo 0)
+    age=$((now - mtime))
+    # A stamp in the future is a broken clock, not a fresher export; reading it as fresh would
+    # pin this job dormant for as long as the stamp stays ahead.
+    if [ "$age" -ge 0 ] && [ "$age" -lt "$FRESH_SECONDS" ]; then
+        scan_needed=0
+    fi
+fi
+
+mkdir -p "$(dirname "$LOG")"
+size=$(stat -f %z "$LOG" 2>/dev/null || echo 0)
+if [ "$size" -gt "$MAX_BYTES" ]; then
+    tmp=$(mktemp)
+    # rewrite in place rather than mv: launchd holds an fd on this path for the current run
+    if tail -c "$KEEP_BYTES" "$LOG" >"$tmp"; then
+        cat "$tmp" >"$LOG"
+    fi
+    rm -f "$tmp"
+fi
+
+stamp() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+# launchd hands this job a minimal PATH, so the notifier is named absolutely; the alert is
+# best-effort because a canary that could not shout is still a canary that logged.
+notify() {
+    local message
+    message=$(printf '%s' "$1" | tr -d '"\\' | head -c 300)
+    /usr/bin/osascript -e "display notification \"$message\" with title \"tokenmap canary\"" \
+        >/dev/null 2>&1 || true
+}
+
+failures=""
+failed=0
+
+note_failure() {
+    failed=$((failed + 1))
+    failures="${failures}${failures:+
+}$1"
+}
+
+canary() {
+    local label=$1 out crc
+    shift
+    out=$("$@" 2>&1)
+    crc=$?
+    printf '%s %s exit=%d\n%s\n' "$(stamp)" "$label" "$crc" "$out" >>"$LOG"
+    [ "$crc" -eq 0 ] && return 0
+    note_failure "${out:-$label exit=$crc}"
+}
+
+repo_ok=1
+if [ ! -d "$REPO" ]; then
+    printf '%s scan skipped: repo missing at %s\n' "$(stamp)" "$REPO" >>"$LOG"
+    note_failure "token-map repo missing at $REPO"
+    repo_ok=0
+    scan_needed=0
+fi
+
+if [ "$repo_ok" -eq 1 ] && [ "$scan_needed" -eq 1 ]; then
+    printf '%s scan start\n' "$(stamp)" >>"$LOG"
+    (cd "$REPO" && PYTHONPATH="$REPO" nice -n 19 "$PYTHON" -m tokenmap scan) >>"$LOG" 2>&1
+    rc=$?
+    printf '%s scan exit=%d\n' "$(stamp)" "$rc" >>"$LOG"
+    # A scan that keeps failing is exactly the silence this job exists to break, so it is one of
+    # the reported failures rather than a reason to skip reporting.
+    [ "$rc" -eq 0 ] || note_failure "scan exit=$rc"
+elif [ "$repo_ok" -eq 1 ]; then
+    printf '%s scan skipped: export is fresh\n' "$(stamp)" >>"$LOG"
+fi
+
+if [ "$repo_ok" -eq 1 ]; then
+    canary "canary tokenmap" env PYTHONPATH="$REPO" nice -n 19 "$PYTHON" -m tokenmap canary
+fi
+# The instruction canary answers for the gates, not for the token-map checkout, so a missing
+# repo silences the half above it and nothing here.
+if [ -x "$INSTRUCTION_CANARY" ]; then
+    canary "canary instruction" "$INSTRUCTION_CANARY"
+else
+    printf '%s canary instruction unavailable: %s\n' "$(stamp)" "$INSTRUCTION_CANARY" >>"$LOG"
+    note_failure "instruction canary missing or not executable: $INSTRUCTION_CANARY"
+fi
+
+if [ "$failed" -gt 0 ]; then
+    notify "$(printf '%s' "$failures" | head -1) [$failed failed]"
+fi
+
+# always 0: a failed scan or canary is a logged event, not a reason for launchd to treat the
+# job as broken
+exit 0

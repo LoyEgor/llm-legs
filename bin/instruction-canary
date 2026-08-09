@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# Nightly drift check for the instruction gates. Both failures it looks for are SILENT: a rate
+# lookup that answers nothing leaves every gate quoting July constants, and a budget constant that
+# drifted moves every threshold in the ladder without changing a single message.
+set -u
+
+# launchd starts jobs with a minimal PATH that omits Homebrew tools such as jq.
+export PATH="/opt/homebrew/bin:${PATH:-/usr/bin:/bin}"
+
+ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
+. "$ROOT/share/instruction-files.sh" || exit 1
+BLOAT="$ROOT/bin/instruction-bloat-gate.sh"
+GLOBAL="$HOME/.claude/CLAUDE.md"
+SETTINGS="$HOME/.claude/settings.json"
+BASE_BYTES=120
+
+failures=''
+observed=''
+fail() { failures="${failures}$1"$'\n'; }
+note() { observed="${observed}${observed:+, }$1"; }
+positive() {
+  jq -nr --argjson n "${1:-null}" 'if ($n | type) == "number" and $n > 0 then "yes" else "no" end' \
+    2>/dev/null
+}
+
+rate_state=''
+weekly=''
+monthly=''
+rate_info=$(instruction_live_rates "$GLOBAL" "$HOME")
+[ -n "$rate_info" ] && IFS='|' read -r rate_state weekly monthly _cheap <<<"$rate_info"
+if [ "$rate_state" = measured ] && [ "$(positive "$weekly")" = yes ] \
+   && [ "$(positive "$monthly")" = yes ]; then
+  note "global rate measured at $(instruction_display_rate "$weekly") limit units/week"
+else
+  fail "global CLAUDE.md live rate: observed ${rate_state:-no answer} weekly=${weekly:-none} monthly=${monthly:-none}, floor a measured rate above 0"
+fi
+
+STAMPS=$(mktemp -d "${TMPDIR:-/tmp}/instruction-canary.XXXXXX") || exit 1
+trap 'rm -rf "$STAMPS" 2>/dev/null' EXIT
+export INSTRUCTION_BLOAT_GATE_STAMPS="$STAMPS"
+
+# Asking the gate rather than recomputing its arithmetic. A session id per probe keeps a canary
+# from ever spending the retry stamp a real edit is owed, and the denial TEXT comes back because
+# the gate has two unrelated reasons to refuse and only one of them names a threshold.
+probe() {
+  local body
+  body=$(python3 -c "print('y' * $(($1 + 2)), end='')") || return 1
+  jq -cn --arg p "$GLOBAL" --arg n "$body" --arg s "instruction-canary-$1" \
+    '{tool_name:"Edit",cwd:"/tmp",session_id:$s,
+      tool_input:{file_path:$p,old_string:"x",new_string:$n}}' \
+    | bash "$BLOAT" 2>/dev/null \
+    | jq -r 'if .hookSpecificOutput.permissionDecision == "deny"
+             then .hookSpecificOutput.permissionDecisionReason else "" end' 2>/dev/null
+}
+
+if [ -f "$GLOBAL" ]; then
+  current=$(wc -c <"$GLOBAL" | tr -d '[:space:]')
+else
+  current=0
+fi
+case "$current" in ''|*[!0-9]*) current=0 ;; esac
+
+# Matched on the script name alone: settings.json may name it through ~, $HOME or an absolute
+# path, and all three register the same hook.
+if ! grep -Fq 'instruction-bloat-gate' "$SETTINGS" 2>/dev/null; then
+  fail "bloat gate not registered in settings.json"
+fi
+
+# Every threshold the gate can assign is a rung of its own ladder, so the rung a one-byte-larger
+# edit first trips names it. The hard byte ceiling is checked BEFORE the ladder and denies just as
+# loudly, so a rung whose prospective file would cross it is not asked at all, and a ceiling
+# denial that arrives anyway is not read as a rung.
+threshold=''
+last=''
+ceiling=''
+for rung in 120 250 500 1000 2000 5000 10000; do
+  [ $((current + rung + 1)) -le "$INSTRUCTION_GLOBAL_HARD_BYTES" ] || break
+  last=$rung
+  reason=$(probe "$rung")
+  case "$reason" in
+    '') continue ;;
+    *"-byte ceiling"*) ceiling=1; break ;;
+    *) threshold=$rung; break ;;
+  esac
+done
+if [ -z "$last" ] || [ -n "$ceiling" ]; then
+  fail "global CLAUDE.md threshold: observed unprobeable at ${current} bytes, floor room under the ${INSTRUCTION_GLOBAL_HARD_BYTES}-byte ceiling"
+elif [ "$threshold" = "$BASE_BYTES" ]; then
+  # The ladder alone cannot see a threshold that DROPPED: every rung at or above the real
+  # threshold still denies, so the first denying rung reads 120 whether the gate sits at 120
+  # or at 40. One probe just under the base separates the two.
+  if [ -n "$(probe $((BASE_BYTES - 1)))" ]; then
+    fail "global CLAUDE.md now gates below ${BASE_BYTES} bytes, expected ${BASE_BYTES}: recalibrate WEEKLY_TOKEN_BUDGET, or update BASE_BYTES here if the gate base itself moved"
+  else
+    note "global gates at ${BASE_BYTES} bytes"
+  fi
+else
+  fail "global CLAUDE.md now gates at ${threshold:-more than $last} bytes, expected ${BASE_BYTES}: recalibrate WEEKLY_TOKEN_BUDGET, or update BASE_BYTES here if the gate base itself moved"
+fi
+
+if [ -n "$failures" ]; then
+  printf '%s' "$failures"
+  exit 1
+fi
+printf 'instruction canary ok — %s\n' "$observed"
