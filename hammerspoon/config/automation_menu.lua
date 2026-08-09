@@ -27,6 +27,16 @@ local startOptions = {
     { title = "In 4 h", minutes = 240 },
     { title = "In 4 h 30 min", minutes = 270 },
     { title = "In 5 h", minutes = 300 },
+    { title = "In 5 h 30 min", minutes = 330 },
+    { title = "In 6 h", minutes = 360 },
+    { title = "In 6 h 30 min", minutes = 390 },
+    { title = "In 7 h", minutes = 420 },
+    { title = "In 7 h 30 min", minutes = 450 },
+    { title = "In 8 h", minutes = 480 },
+    { title = "In 8 h 30 min", minutes = 510 },
+    { title = "In 9 h", minutes = 540 },
+    { title = "In 9 h 30 min", minutes = 570 },
+    { title = "In 10 h", minutes = 600 },
 }
 
 local intervalOptions = {
