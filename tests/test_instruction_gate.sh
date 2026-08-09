@@ -615,6 +615,8 @@ write_rates() {
       ($real): {reads: 407.0, requests: 4000, sessions: 30},
       ($gdir): {reads: 500.0, requests: 4600, sessions: 32},
       ($mem): {reads: 641.0, requests: 6000, sessions: 44},
+      ($mem + "/sub"): {reads: 400.0, requests: 3800, sessions: 28},
+      ($mem + "-other"): {reads: 9000.0, requests: 80000, sessions: 600},
       "/tmp/tiny-project": {reads: 0.4, requests: 4, sessions: 1}
     }
   }' > "$RATES"
@@ -664,8 +666,13 @@ assert_eq pass "$(bloat_decision "$WORK/liveproj/notes.txt")"
 echo "== bloat gate: a memory index is priced by the project its path encodes"
 # The index never sits in the directory tokenmap recorded — its parent is the memory/ subdirectory
 # of a per-project transcript directory, whose name is the cwd with the non-alphanumerics dashed.
+# The slug encodes a directory, and the sessions that read the index are the ones at or below it.
+# Compared as encoded STRINGS the two are indistinguishable — /x/repo-other encodes exactly as
+# /x/repo/other does — so a prefix test handed a busy neighbour the rate of this index.
+# 641 for the root and 400 for the subdirectory come to the ~1,000 shown; the 9,000-read
+# neighbour would carry it to ~10,000 the moment it were counted.
 msg=$(price_bloat mem-slug "$MEM_DIR/MEMORY.md")
-assert_contains "~700 times a month" "$msg"
+assert_contains "~1,000 times a month" "$msg"
 assert_contains "$LIVE_WORDING" "$msg"
 # A slug the export never measured is the class rate, not a match on a neighbouring project.
 assert_contains "~3,000 times a month" \
@@ -688,7 +695,7 @@ assert_contains "~150 times a month" "$(price_bloat mem-file-measured "$mem_file
 write_rates "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 # The index of the set is not one of its entries: MEMORY.md is measured with the project it belongs
 # to, and blinding it would throw away the one memory-shaped file the export does see.
-assert_contains "~700 times a month" "$(price_bloat mem-index-still-live "$MEM_DIR/MEMORY.md")"
+assert_contains "~1,000 times a month" "$(price_bloat mem-index-still-live "$MEM_DIR/MEMORY.md")"
 
 echo "== bloat gate: a slash command is a guarded class like the skill it sits beside"
 CMD_DIR="$HOME/.claude/commands"

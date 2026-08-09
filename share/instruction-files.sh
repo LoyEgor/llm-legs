@@ -221,12 +221,14 @@ instruction_live_rates() {
                | select(type == "number")] | add)
         end;
       (if $klass == "memory" then
-         # The slug is an encoded directory, and encoding preserves the separator, so a key
-         # BELOW that directory encodes to the slug followed by one — the same containment the
-         # project rate sums, spelled in the one form a slug can be compared in.
+         # A slug is a directory with every separator and every hyphen mapped to one character,
+         # so the containment the project rate sums has to be asked of the PATH and only then
+         # encoded: /work/repo-other and /work/repo/other encode alike, and comparing the encoded
+         # strings by prefix hands the sessions of one repository to the index of its neighbour.
          ([.projects // {} | to_entries[]
-           | (.key | gsub("[^A-Za-z0-9]"; "-")) as $encoded
-           | select($encoded == $slug or ($encoded | startswith($slug + "-")))
+           | (.key | split("/")) as $parts
+           | select(any(range(1; ($parts | length) + 1);
+                        ($parts[0:.] | join("/") | gsub("[^A-Za-z0-9]"; "-")) == $slug))
            | (.value.limit_units // .value.reads)
            | select(type == "number")] | add)
        elif $klass == "global" then (.global.limit_units // .global.reads)
