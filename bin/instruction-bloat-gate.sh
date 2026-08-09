@@ -130,7 +130,7 @@ if [ -z "$class_reads" ]; then
         probe=$(dirname "$probe")
       done
       if [ -n "$file_dir" ]; then
-        for pair in docs:160 agents:2500 instructions:160 skills:90; do
+        for pair in docs:160 agents:2500 instructions:160 skills:90 commands:90; do
           guarded=$(CDPATH= cd -- "$HOME/.claude/${pair%%:*}" 2>/dev/null && pwd -P) || continue
           [ -n "$guarded" ] || continue
           case "$file_dir" in "$guarded"|"$guarded"/*) class_reads=${pair##*:}; break ;; esac
@@ -223,6 +223,14 @@ else
 fi
 if [ -n "$rate_info" ]; then
   IFS='|' read -r rate_state weekly_reads monthly_reads cheap_floor <<< "$rate_info"
+fi
+# What loads a memory file leaves no path behind, so whatever the index holds for one is the odd
+# hand-opened copy and nothing else. Preferring it — as every other class rightly does, a
+# measurement being the whole point of this gate — would price the file at a number that measures
+# how often it was inspected rather than how often it is read to Egor's model.
+if instruction_index_blind "$file_path"; then
+  rate_state=''
+  weekly_reads=''
 fi
 # "Cheap" is a claim about a file nothing else in the export accounts for, and it is decided from
 # the export alone — which knows nothing about the classes resolved above, because those live in

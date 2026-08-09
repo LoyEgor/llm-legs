@@ -671,6 +671,31 @@ assert_contains "$LIVE_WORDING" "$msg"
 assert_contains "~3,000 times a month" \
   "$(price_bloat mem-unknown "$WORK/profiles/com/projects/-nowhere-at-all/memory/MEMORY.md")"
 
+echo "== bloat gate: a memory file is priced by its class, whatever the index says"
+# The recall that loads one names no path, so the index sees only the times it was opened by hand.
+# Preferring that measurement — as every other class rightly does — prices a memory nobody opened
+# all month as free, which is exactly the file the class constant exists to hold down.
+mem_file="$MEM_DIR/one-fact.md"
+printf 'a fact\n' > "$mem_file"
+assert_contains "~150 times a month" "$(price_bloat mem-file "$mem_file")"
+measured_memory() {
+  jq --arg p "$1" '.paths.entries[$p] = {mode: "on_demand",
+    monthly: {reads: 3.6, limit_units: 3.6}, weekly: {reads: 0.8, limit_units: 0.8}}' \
+    "$RATES" > "$RATES.tmp" && mv "$RATES.tmp" "$RATES"
+}
+measured_memory "$mem_file"
+assert_contains "~150 times a month" "$(price_bloat mem-file-measured "$mem_file")"
+write_rates "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+# The index of the set is not one of its entries: MEMORY.md is measured with the project it belongs
+# to, and blinding it would throw away the one memory-shaped file the export does see.
+assert_contains "~700 times a month" "$(price_bloat mem-index-still-live "$MEM_DIR/MEMORY.md")"
+
+echo "== bloat gate: a slash command is a guarded class like the skill it sits beside"
+CMD_DIR="$HOME/.claude/commands"
+mkdir -p "$CMD_DIR"
+printf 'do the thing\n' > "$CMD_DIR/spawn.md"
+assert_contains "~100 times a month" "$(price_bloat command-file "$CMD_DIR/spawn.md")"
+
 echo "== bloat gate: a rate under one read a month is not a free file"
 # round() would print 0, and "~0 times a month" reads as permission rather than as a small cost.
 msg=$(price_bloat tiny /tmp/tiny-project/CLAUDE.md)

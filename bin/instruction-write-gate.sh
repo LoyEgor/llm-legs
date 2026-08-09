@@ -198,7 +198,7 @@ global_real=$(realpath "$HOME/.claude/CLAUDE.md" 2>/dev/null)
 # The docs/agents/instructions/skills trees answer to repository spellings too, and those
 # matched no class at all — a denial demanding cost arithmetic while withholding the number.
 if [ -z "$reads" ] && [ -n "$abs_real" ]; then
-  for class_dir in docs agents instructions skills; do
+  for class_dir in docs agents instructions skills commands; do
     class_real=$(realpath "$HOME/.claude/$class_dir" 2>/dev/null) && [ -n "$class_real" ] ||
       continue
     case "$abs_real" in
@@ -221,6 +221,12 @@ cost=''
 if [ -n "$live_info" ]; then
   IFS='|' read -r rate_state weekly_reads monthly_reads cheap_floor <<< "$live_info"
 else
+  rate_state=''
+fi
+# A memory file's recalls leave no path behind, so what the index holds for one is the odd
+# hand-opened copy. Both gates drop it for the same reason, or the two quote different numbers for
+# the file and teach their reader that neither is real.
+if instruction_index_blind "$abs"; then
   rate_state=''
 fi
 round_rate() {

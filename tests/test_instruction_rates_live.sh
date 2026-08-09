@@ -145,6 +145,27 @@ while IFS= read -r memory; do
 done < <(find "$HOME/.claude/projects" "$HOME"/.claude-profiles/*/projects \
            -maxdepth 3 -name MEMORY.md 2>/dev/null)
 
+echo "== every memory file beside an index"
+# The one class no measurement can reach: a recall hands over the memory's text and never its path,
+# so the index holds an entry only for the files somebody happened to open by hand. Those entries
+# are real but tiny, and letting one price the file gates a memory nobody opened all month as free
+# — which is why the class constant wins here and the check refuses the live index.
+while IFS= read -r memory; do
+  [ -f "$memory" ] || continue
+  case "$memory" in */MEMORY.md) continue ;; esac
+  asserts=$((asserts + 1))
+  n=$((n + 1))
+  reason=$(verdict "$memory" "$BIG" "$n" \
+    | jq -r '.hookSpecificOutput.permissionDecisionReason // ""' 2>/dev/null)
+  case "$reason" in
+    '') report "$memory" "recalled into its project's sessions, so growth is priced" \
+          "$BIG_BYTES bytes of growth met no decision at all" ;;
+    *"$LIVE"*) report "$memory" "a hand-opened copy is not how a memory file is loaded" \
+          "priced from the index, which cannot see a recall: $reason" ;;
+  esac
+done < <(find "$HOME/.claude/projects" "$HOME"/.claude-profiles/*/projects \
+           -maxdepth 3 -path '*/memory/*.md' 2>/dev/null)
+
 echo "== every guarded document, agent brief and skill"
 # No `live` here: an on-demand document the index has genuinely never recorded is priced by its
 # class constant, and that is the correct answer, not a hole.

@@ -41,6 +41,7 @@ instruction_visible_paths() {
     _instruction_emit "$p"
   done < <(find -L "$home"/.claude/docs "$home"/.claude/agents \
                     "$home"/.claude/instructions "$home"/.claude/skills \
+                    "$home"/.claude/commands \
                 -type f -name '*.md' -print0 2>/dev/null)
 }
 
@@ -63,9 +64,27 @@ instruction_read_rate() {
     */MEMORY.md|*/CLAUDE.md|*/CLAUDE.local.md) printf 3131 ;;  # every session of one project
     */.claude/instructions/*) printf 160 ;;                    # loaded on topic
     */SKILL.md|*/.claude/skills/*) printf 90 ;;                # loaded on trigger
+    */projects/*/memory/*.md) printf 160 ;;                    # recalled when its topic comes up
     "$home"/.claude/docs/*) printf 160 ;;                      # protocol docs, read per task type
+    "$home"/.claude/commands/*) printf 90 ;;                   # loaded when the command is typed
     "$home"/.claude/agents/*) printf 2500 ;;                   # per spawn of a busy worker
   esac
+}
+
+# A recall names no path anywhere in the transcript: it hands over the memory's text and nothing
+# else, so the read index can only ever see the odd hand-opened copy of a memory file. For this one
+# class a measurement is a floor of unknown depth rather than a price, and taking it would gate the
+# file at whatever it happened to be opened by hand — a memory nobody opened all month reads as
+# free. Every other class is visible to the index: a skill by its invocation, an agent brief by its
+# spawns, an always-on file by every session it rides in.
+instruction_index_blind() {
+  case "$1" in
+    # The index of the set is not one of its entries: MEMORY.md rides in the prefix of every
+    # session of its project and is measured there, like any other always-on file.
+    */MEMORY.md) return 1 ;;
+    */projects/*/memory/*.md) return 0 ;;
+  esac
+  return 1
 }
 
 # The global CLAUDE.md's own byte ceiling, in UTF-8 bytes of the prospective file. Not a price but
