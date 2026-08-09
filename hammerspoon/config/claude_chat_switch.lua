@@ -27,6 +27,11 @@ local exitGraceSeconds = 15   -- auto mode: /exit was typed; assume it did not t
 local maxWaitIdle = 300       -- give up if the chat never goes idle
 local pasteDelay = 0.25       -- let cmd+V land before Return
 local restoreClipboardDelay = 0.35
+local dialogMarker = "Background work is running"
+local dialogSettleSeconds = 2 -- let /exit render its answer before reading the screen
+local confirmRetrySeconds = 5 -- a pressed Return needs this long to visibly take
+local confirmMaxPresses = 2
+local confirmPressDeadline = 5 -- a press still pending after this is deferred, not slow
 
 -- Single in-flight switch. A new switchChat replaces whatever was pending.
 local active = nil
@@ -40,17 +45,91 @@ local function shellQuote(value)
     return "'" .. value:gsub("'", "'\\''") .. "'"
 end
 
-local function resumeCommand()
-    local cmd = "claudeb profile " .. active.profile
-    if active.sessionId ~= "" then
-        cmd = cmd .. " --resume " .. active.sessionId
+local function resumeCommand(entry)
+    local cmd = "claudeb profile " .. entry.profile
+    if entry.sessionId ~= "" then
+        cmd = cmd .. " --resume " .. entry.sessionId
     end
     -- A session is resumable only from the directory it was started in: claude
     -- looks for the transcript under the project slug of the CURRENT cwd.
-    if active.cwd then
-        cmd = "cd " .. shellQuote(active.cwd) .. " && " .. cmd
+    if entry.cwd then
+        cmd = "cd " .. shellQuote(entry.cwd) .. " && " .. cmd
     end
     return cmd
+end
+
+local function tabContents(tty)
+    local quoted = '"' .. tty:gsub("\\", "\\\\"):gsub('"', '\\"') .. '"'
+    local callOk, ok, result = pcall(hs.osascript.applescript, [[
+tell application "Terminal"
+    repeat with w from 1 to count of windows
+        repeat with t from 1 to count of tabs of window w
+            if (tty of tab t of window w as text) is ]] .. quoted .. [[ then
+                return contents of tab t of window w
+            end if
+        end repeat
+    end repeat
+    return ""
+end tell
+]])
+    if not callOk or not ok or type(result) ~= "string" then
+        -- Once per switch, not per tick: a Terminal without Automation consent
+        -- fails identically every second for the whole grace.
+        if active and not active.contentsErrorLogged then
+            active.contentsErrorLogged = true
+            local detail = not callOk and ok or result
+            logLine("applescript-error", "tabContents: "
+                .. (type(detail) == "table" and hs.inspect(detail) or tostring(detail)))
+        end
+        return nil
+    end
+    return result
+end
+
+-- /exit does not always exit: with background work running (shells, tasks,
+-- agents) Claude keeps the chat alive and shows a "Background work is running"
+-- picker instead. Asking for the switch already answered it - nothing in the
+-- old chat is worth keeping - and "Exit anyway" is the picker's first, default
+-- option, so one Return chooses it. Terminal's `contents of tab` is the visible
+-- screen, not the scrollback (`history` is that), so a marker match means the
+-- picker is up NOW - and a stray Return costs an empty line, while a missed
+-- dialog costs the whole switch. Answers whether a confirm is in flight this tick.
+local function maybeConfirmExitDialog(handle)
+    local mine = active
+    if mine.confirmInFlight then
+        -- A press normally lands within the tick it was asked in; one still
+        -- pending after this long sits deferred behind a locked screen. Handing
+        -- the tick back lets the grace give the switch up on schedule - the
+        -- deferred Return then dies with the handle instead of firing into
+        -- whatever is on screen after the unlock.
+        return hs.timer.secondsSinceEpoch() - mine.confirmStartedAt < confirmPressDeadline
+    end
+    if (mine.confirmPresses or 0) >= confirmMaxPresses then return false end
+    local sinceExit = hs.timer.secondsSinceEpoch() - mine.exitTypedAt
+    if sinceExit < dialogSettleSeconds then return false end
+    if mine.confirmedAt
+        and hs.timer.secondsSinceEpoch() - mine.confirmedAt < confirmRetrySeconds then
+        return false
+    end
+    local contents = tabContents(mine.tty)
+    if not contents then return false end
+    if not contents:find(dialogMarker, 1, true) then return false end
+    mine.confirmInFlight = true
+    mine.confirmStartedAt = hs.timer.secondsSinceEpoch()
+    -- Behind the same dictation gate as every other keystroke here: a take that
+    -- is live when the picker comes up would otherwise eat the Return.
+    handle:waitForVoiceIdle({ label = "exit-confirm" }, function()
+        handle:pressOnce("exit-confirm", {}, "return",
+            "Chat switch failed: focus moved while confirming exit", function()
+                mine.confirmInFlight = false
+                mine.confirmPresses = (mine.confirmPresses or 0) + 1
+                mine.confirmedAt = hs.timer.secondsSinceEpoch()
+                -- The chat only STARTS exiting now; it deserves the full grace again.
+                mine.exitTypedAt = mine.confirmedAt
+                logLine("exit-confirmed", "chose 'Exit anyway' on the background-work dialog")
+            end)
+    end)
+    return true
 end
 
 -- Auto mode: exit the chat for the user — clear any draft with Ctrl+U, type
@@ -85,7 +164,7 @@ end
 -- there is no session status left to wait on - but a live dictation would still
 -- eat the Return, which is what skipRegistry keeps.
 local function deliverResume(handle)
-    local cmd = resumeCommand()
+    local cmd = resumeCommand(active)
     handle:waitForIdle({
         label = "resume",
         skipRegistry = true,
@@ -144,12 +223,14 @@ local function watchForExit(handle)
         end
         active.waited = active.waited + pollInterval
         if active.tty then
-            local exitWaited = active.exitTypedAt
-                and hs.timer.secondsSinceEpoch() - active.exitTypedAt or 0
-            if active.exitTypedAt and exitWaited >= exitGraceSeconds then
-                handle:fail("give-up", "/exit didn't take; chat pid " .. active.pid
-                    .. " still alive after " .. exitGraceSeconds .. "s",
-                    "Chat switch: /exit didn't take — chat still running")
+            if active.exitTypedAt then
+                if maybeConfirmExitDialog(handle) then return end
+                local exitWaited = hs.timer.secondsSinceEpoch() - active.exitTypedAt
+                if exitWaited >= exitGraceSeconds then
+                    handle:fail("give-up", "/exit didn't take; chat pid " .. active.pid
+                        .. " still alive after " .. exitGraceSeconds .. "s",
+                        "Chat switch: /exit didn't take — chat still running")
+                end
             end
         elseif active.waited >= maxWaitSeconds then
             handle:fail("give-up", "chat pid " .. active.pid .. " still alive after "
@@ -226,6 +307,33 @@ function ClaudeChatSwitch.switchChat(profileName, sessionId, terminalPid, ttyDev
         },
         onDropped = function(reason)
             logLine("dropped", "the queued switch was dropped: " .. tostring(reason))
+            if active == mine then active = nil end
+        end,
+        -- A switch that dies after /exit went out (or after the chat did) leaves
+        -- the tab stranded: no chat, no resume typed, and the session id gone
+        -- from the screen. The resume command on the clipboard makes getting
+        -- back one Cmd+V. A passive-mode chat that simply kept running keeps
+        -- its clipboard - overwriting it would cost real contents for nothing.
+        onFail = function(event, detail, alertText)
+            logLine(event, detail)
+            if mine.exitTypedAt or not pidAlive(mine.pid) then
+                alertText = alertText or "Chat switch failed"
+                -- Copy first, drop the restore only on a verified write: the
+                -- other order trades the user's real clipboard for nothing when
+                -- the write fails - and the alert must not claim a copy it
+                -- cannot vouch for, so the fallback names the session instead.
+                local setOk, setResult = pcall(hs.pasteboard.setContents, resumeCommand(mine))
+                if setOk and setResult ~= false then
+                    if mine.handle then mine.handle:dropPasteboardRestore() end
+                    alertText = alertText .. "\nResume command copied — paste it into the tab"
+                else
+                    logLine("pasteboard-fail", "could not copy the resume command")
+                    alertText = alertText .. "\nCould not copy the resume command — session "
+                        .. (mine.sessionId == "" and "(fresh)" or mine.sessionId)
+                end
+            end
+            if alertText then hs.alert.show(alertText) end
+            if mine.handle then mine.handle:release(event) end
             if active == mine then active = nil end
         end,
         onGranted = function(handle)
