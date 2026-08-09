@@ -388,6 +388,23 @@ assert grep -q 'already enabled' "$POOL_OUT"
 assert_fails gb disable ghost-account
 assert_fails gb enable ghost-account
 assert_fails gb disable
+# --all is the menu's whole-vendor switch: every account this tool knows, main included, and
+# idempotent — running it twice is not an error and changes nothing the second time.
+gemini_all_names=$(gemini_profiles_dir="$HOME/.gemini-profiles" gemini_base_home="$HOME" \
+  bash -c '. "'"$ROOT"'/share/gemini-accounts.sh" && gemini_account_names' | LC_ALL=C sort)
+assert gb disable --all
+assert test "$(LC_ALL=C sort "$HOME/.gemini-profiles/.geminib/disabled")" = "$gemini_all_names"
+assert gb disable --all
+assert test "$(LC_ALL=C sort "$HOME/.gemini-profiles/.geminib/disabled")" = "$gemini_all_names"
+assert gb enable --all
+assert test ! -s "$HOME/.gemini-profiles/.geminib/disabled"
+assert gb enable --all
+assert test ! -s "$HOME/.gemini-profiles/.geminib/disabled"
+# One account already in the requested state must not block the rest.
+assert gb disable alpha
+assert gb disable --all
+assert test "$(LC_ALL=C sort "$HOME/.gemini-profiles/.geminib/disabled")" = "$gemini_all_names"
+assert gb enable --all
 # An empty pool is a legitimate state: it says no worker may run, not that nobody may work.
 for pool_profile in "$HOME/.gemini-profiles"/*/; do
   pool_profile=$(basename "$pool_profile")

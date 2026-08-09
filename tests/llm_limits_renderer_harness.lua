@@ -1429,6 +1429,93 @@ watchCallbacks[watchModule.workerModelPath]()
 assert(watchNotifies == 5, "worker-model watcher did not re-render the menu")
 assert(#watchTasks == 3 and watchStarts == 3, "worker-model watcher did not refresh routing")
 
+-- The vendor section header is a control, not a caption: it carries the whole-vendor pool
+-- switches and a free vendor-scoped refresh, and it names the vendor like every other surface.
+local function headerRow(menu, label)
+  for _, item in ipairs(menu) do
+    if titleText(item) == label then return item end
+  end
+  error("vendor section header missing: " .. label)
+end
+do
+  local headerFixture = { schema = 1, vendors = {
+    claude = { available = true, source = "claudeb-store", accounts = {
+      { account = "cl-one", is_current = true, enabled = true, five_hour = bucket(10) },
+      { account = "cl-two", is_current = false, enabled = false, five_hour = bucket(20) },
+    } },
+    codex = { available = true, accounts = {
+      { account = "cx-one", is_current = true, enabled = true, five_hour = bucket(10) },
+      { account = "cx-two", is_current = false, enabled = false, five_hour = bucket(20) },
+    } },
+    gemini = { available = true, accounts = {
+      { account = "gm-one", is_current = true, enabled = true, five_hour = bucket(10) },
+      { account = "gm-two", is_current = false, enabled = false, five_hour = bucket(20) },
+    } },
+  }}
+  local tasks = {}
+  local mod = loadModule(headerFixture, driveTasks(tasks))
+  for _, item in ipairs(mod.menuItems()) do
+    assert(titleText(item) ~= "Claude B", "the Claude section header still says Claude B")
+  end
+  local cases = {
+    { label = "Claude", key = "claude", command = "claudeb", accounts = { "cl-one", "cl-two" } },
+    { label = "Codex", key = "codex", command = "codexb", accounts = { "cx-one", "cx-two" } },
+    { label = "Gemini", key = "gemini", command = "geminib", accounts = { "gm-one", "gm-two" } },
+  }
+  for _, case in ipairs(cases) do
+    local header = headerRow(mod.menuItems(), case.label)
+    assert(header.disabled ~= true, case.label .. " header stayed disabled with a submenu")
+    for _, action in ipairs({ { title = "Disable all", arg = "disable", enabled = false },
+                              { title = "Enable all", arg = "enable", enabled = true } }) do
+      local item = submenuItem(header, action.title)
+      assert(item, case.label .. " header is missing " .. action.title)
+      while #tasks > 0 do table.remove(tasks) end
+      item.fn()
+      local launched = tasks[1]
+      assert(launched and launched.path:find(case.command, 1, true)
+          and launched.args[1] == action.arg and launched.args[2] == "--all"
+          and #launched.args == 2,
+        case.label .. " " .. action.title .. " launched the wrong command")
+      launched.callback(0, "", "")
+      -- Optimistic until the collect lands: a menu still showing the pre-command state is what
+      -- makes the user click a second time, and that click is then swallowed in silence.
+      local reopened = mod.menuItems()
+      for _, account in ipairs(case.accounts) do
+        assert(accountItem(reopened, account).checked == action.enabled,
+          case.label .. " " .. action.title .. " left " .. account .. " showing the old pool state")
+      end
+      tasks[2].callback(0, "", "")
+    end
+    while #tasks > 0 do table.remove(tasks) end
+    submenuItem(header, "Refresh").fn()
+    local refresh = tasks[1]
+    assert(refresh and refresh.path:find("llm%-limits", 1, false)
+        and refresh.args[1] == "--refresh-account" and refresh.args[2] == case.key
+        and #refresh.args == 2,
+      case.label .. " header Refresh did not run a free vendor-scoped collect")
+    assert(refresh.env.CLAUDEB_WARM_USER_EXPLICIT == "true",
+      case.label .. " header Refresh lost the user-explicit warm signal")
+    refresh.callback(0, "", "")
+  end
+end
+
+-- A Claude vendor object that is not the claudeb store has no per-account pool controls, so the
+-- header must not offer whole-vendor ones either; the free refresh is offered regardless.
+do
+  local mod = loadModule({ schema = 1, vendors = {
+    claude = { available = true, source = "statusline-cache", accounts = {
+      { account = "cl-one", is_current = true, five_hour = bucket(10) },
+      { account = "cl-two", is_current = false, five_hour = bucket(20) },
+    } },
+    codex = { available = false },
+    gemini = { available = false },
+  }})
+  local header = headerRow(mod.menuItems(), "Claude")
+  assert(not submenuItem(header, "Enable all") and not submenuItem(header, "Disable all"),
+    "a Claude section without account controls still offered whole-vendor pool switches")
+  assert(submenuItem(header, "Refresh"), "a Claude section without account controls lost Refresh")
+end
+
 local experimentFixture = {
   schema = 1,
   experiments = { "EXPERIMENT token-freeze until 2026-08-03 — temporary, see EXPERIMENTS.json" },

@@ -69,7 +69,10 @@ external network request, or spending tokens. It prints schema-1 JSON and atomic
 renders the `--table` view instead; piped or redirected output keeps the JSON default, and an
 explicit `--json`, `--plain`, or `--table` always wins. The stable top level is
 `{schema, fetched_at, vendors}`. Claude includes
-`current_account`, an ordered `accounts` array, and the current account's `five_hour`, optional
+`current_account`, an `accounts` array in render order (each vendor's pinned primaries first, then
+oldest profile directory first, accounts without one last by name — every surface renders that
+order as-is, and `is_current` alone marks the current account), and the current account's
+`five_hour`, optional
 `weekly`, `as_of`, and `stale_seconds` hoisted at vendor level for compatibility. Each account has
 its own windows and freshness; account and vendor age use the oldest `as_of` among windows with a
 numeric `used_pct`, ignoring absent and null-valued windows. Each account also has an `enabled`
@@ -110,7 +113,9 @@ stderr, never skipped silently.
 The Gemini request is the machine-readable equivalent of `/usage`; it consumes no model tokens.
 The `main` profile keeps the legacy cache `~/.llm-limits-gemini.json`; named profiles use
 `~/.llm-limits-gemini/<name>.json`. `--refresh-account gemini/<name>` refreshes only that
-profile. Without `--refresh`, collection remains token-free and external-network-free.
+profile; a bare vendor name (`--refresh-account claude|codex|gemini`) refreshes every account of
+that vendor and touches no other, always free — `--start-windows` stays a single-account request.
+Without `--refresh`, collection remains token-free and external-network-free.
 
 ### Machine contract
 

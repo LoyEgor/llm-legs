@@ -35,11 +35,17 @@ pin_account() {
   worker_model_pin_account gemini_profile geminib gemini_account_names is_disabled "${1:-}"
 }
 
+set_all_pool() { worker_pool_set_all "$pool_dir" geminib gemini_account_names "$1"; }
+
 enable_account() {
   local name="${1:-}"
   if [ -z "$name" ]; then
-    printf 'usage: geminib enable <name>\n' >&2
+    printf 'usage: geminib enable <name>|--all\n' >&2
     exit 2
+  fi
+  if [ "$name" = --all ]; then
+    set_all_pool off
+    return
   fi
   if ! account_exists "$name"; then
     printf 'geminib: unknown account: %s\n' "$name" >&2
@@ -56,8 +62,12 @@ enable_account() {
 disable_account() {
   local name="${1:-}"
   if [ -z "$name" ]; then
-    printf 'usage: geminib disable <name>\n' >&2
+    printf 'usage: geminib disable <name>|--all\n' >&2
     exit 2
+  fi
+  if [ "$name" = --all ]; then
+    set_all_pool on
+    return
   fi
   if ! account_exists "$name"; then
     printf 'geminib: unknown account: %s\n' "$name" >&2
@@ -319,8 +329,8 @@ show_help() {
     'geminib <name> exec [args...]' \
     'geminib add <name>                    Create a profile without launching; prints the login command.' \
     'geminib remove <name>                 Forget a profile and prune its cached quota.' \
-    'geminib enable <name>                 Return an account to worker selection.' \
-    'geminib disable <name>                Exclude an account from the worker pool; headless runs are then refused, your own sessions are not.' \
+    'geminib enable <name>|--all           Return an account (or every account) to worker selection.' \
+    'geminib disable <name>|--all          Exclude an account (or every account) from the worker pool; headless runs are then refused, your own sessions are not.' \
     'geminib use <name>|--clear            Pin worker selection to one account; no name prints the pin.' \
     'geminib list                          List profiles with login state.' \
     'geminib status                        Per-account login state and quota.'

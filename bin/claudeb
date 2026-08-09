@@ -1598,11 +1598,17 @@ harvest_session_accounts() {
   lock_release "$lock"
 }
 
+set_all_pool() { worker_pool_set_all "$pool_dir" claudeb account_names "$1"; }
+
 enable_account() {
   local name="${1:-}"
   if [ -z "$name" ]; then
-    printf 'usage: claudeb enable <name>\n' >&2
+    printf 'usage: claudeb enable <name>|--all\n' >&2
     exit 2
+  fi
+  if [ "$name" = --all ]; then
+    set_all_pool off
+    return
   fi
   if ! account_exists "$name"; then
     printf 'claudeb: unknown account: %s\n' "$name" >&2
@@ -1619,8 +1625,12 @@ enable_account() {
 disable_account() {
   local name="${1:-}"
   if [ -z "$name" ]; then
-    printf 'usage: claudeb disable <name>\n' >&2
+    printf 'usage: claudeb disable <name>|--all\n' >&2
     exit 2
+  fi
+  if [ "$name" = --all ]; then
+    set_all_pool on
+    return
   fi
   if ! account_exists "$name"; then
     printf 'claudeb: unknown account: %s\n' "$name" >&2
@@ -1766,8 +1776,8 @@ show_help() {
   printf '  %s%sclaudeb token-upkeep%s                    %sRefresh tokens near expiry (no probes/spend); for wake/cron pre-warm.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb status [--live] [--plain] [--spend] [--start-windows] [--heal]%s\n' "$bold" "$cyan" "$reset"
   printf '                                          %sShow cached limits (no network); --live probes now. Aliases: st, accounts.%s\n' "$dim" "$reset"
-  printf '  %s%sclaudeb enable <name>%s                   %sReturn an account to worker selection.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
-  printf '  %s%sclaudeb disable <name>%s                  %sExclude an account from the worker pool; headless runs are then refused, your own sessions are not.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
+  printf '  %s%sclaudeb enable <name>|--all%s             %sReturn an account (or every account) to worker selection.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
+  printf '  %s%sclaudeb disable <name>|--all%s            %sExclude an account (or every account) from the worker pool; headless runs are then refused, your own sessions are not.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb use <name>|--clear%s              %sPin worker selection to one account; no name prints the pin.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb add <name>%s                      %sValidate and save a setup-token.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb remove <name> [--force]%s          %sForget an account everywhere; --force overrides a live-creds guard.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"

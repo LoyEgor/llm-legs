@@ -1024,7 +1024,8 @@ auth_current=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_FRESH" \
   LLM_LIMITS_CLAUDEB_CMD="$WORK/success-claudeb" LLM_LIMITS_CACHE="$CACHE" \
   bash "$SCRIPT" --refresh-account claude/authonly) || fail "auth-only current collection failed"
 jq -e '.vendors.claude.current_account == "authonly" and
-  .vendors.claude.accounts[0].five_hour.used_pct == null and
+  ([.vendors.claude.accounts[] | select(.is_current)][0] |
+   .account == "authonly" and .five_hour.used_pct == null) and
   (.vendors.claude.five_hour.used_pct | type) == "number"' <<<"$auth_current" >/dev/null \
   || fail "auth-only current account must hoist the first populated five-hour bucket"
 
@@ -2026,6 +2027,150 @@ printf '[{"id":"resumed","what":"fixture experiment whose marker has expired","s
 exp_spent_marker=$(EXPERIMENTS_REGISTRY="$EXP_REG" CLAUDEB_DIR="$PROV_STORE" LLM_LIMITS_CACHE="$WORK/prov-cache.json" bash "$SCRIPT" --no-write 2>/dev/null)
 jq -e '.experiments == []' <<<"$exp_spent_marker" >/dev/null || fail "an expired marker is still being announced"
 
+# Account order in the cache is the order every surface renders: the hardcoded primaries first,
+# then oldest profile directory first, and an account with no directory (hence no birth time) last
+# by name. `current` no longer buys a place in that order — it is carried by is_current instead.
+ORDER_HOME="$WORK/order-home"
+ORDER_STORE="$WORK/order-claudeb-store"
+mkdir -p "$ORDER_HOME/.claude" "$ORDER_HOME/.claude-profiles" "$ORDER_STORE/limits"
+# Created youngest-name-first so a passing order cannot also be the alphabet.
+for order_profile in zed mid abe com notcom; do
+  mkdir -p "$ORDER_HOME/.claude-profiles/$order_profile"
+  sleep 1
+done
+for order_account in zed mid abe com notcom ghosta ghostb; do
+  order_pct=5
+  # The current account is neither first in render order nor the only one with data, so a
+  # vendor-level five_hour of 42 can only have come from the current account itself.
+  [ "$order_account" != mid ] || order_pct=42
+  printf '{"five_hour":{"used_percentage":%s,"resets_at":%s},"auth":{"status":"ok","checked_at":%s}}\n' \
+    "$order_pct" "$((now + 5000))" "$now" >"$ORDER_STORE/limits/$order_account.json"
+done
+printf 'mid\n' >"$ORDER_STORE/.claudeb-state"
+order_claude=$(HOME="$ORDER_HOME" CLAUDEB_DIR="$ORDER_STORE" LLM_LIMITS_CACHE="$CACHE" \
+  bash "$SCRIPT" --json) || fail "claude account-order collection failed"
+jq -e '[.vendors.claude.accounts[].account] ==
+  ["notcom","com","zed","mid","abe","ghosta","ghostb"]' <<<"$order_claude" >/dev/null \
+  || fail "claude accounts are not ordered priority-first, then by profile birth time, unknowns last"
+jq -e '.vendors.claude.current_account == "mid" and
+  ([.vendors.claude.accounts[] | select(.is_current)] | length) == 1 and
+  [.vendors.claude.accounts[] | select(.is_current)][0].account == "mid"' <<<"$order_claude" >/dev/null \
+  || fail "claude current account was not decoupled from the array order"
+jq -e '.vendors.claude.five_hour ==
+  ([.vendors.claude.accounts[] | select(.is_current)][0].five_hour) and
+  .vendors.claude.five_hour.used_pct == 42' <<<"$order_claude" >/dev/null \
+  || fail "the vendor five_hour hoist took the first ordered account instead of the current one"
+order_claude_table=$(HOME="$ORDER_HOME" CLAUDEB_DIR="$ORDER_STORE" LLM_LIMITS_CACHE="$CACHE" \
+  bash "$SCRIPT" --table) || fail "claude account-order table failed"
+[ "$(awk 'NR > 1 && $1 ~ /^claude\// {sub(/\*$/, "", $1); print $1}' <<<"$order_claude_table" | paste -sd, -)" \
+  = "claude/notcom,claude/com,claude/zed,claude/mid,claude/abe,claude/ghosta,claude/ghostb" ] \
+  || fail "the table did not render claude accounts in cache order"
+
+ORDER_CODEX_HOME="$WORK/order-codex-home"
+ORDER_CODEX_CACHE="$WORK/order-codex-cache.json"
+mkdir -p "$ORDER_CODEX_HOME/.codex"
+for order_profile in zed abe; do
+  mkdir -p "$ORDER_CODEX_HOME/.codex-profiles/$order_profile"
+  sleep 1
+done
+cat >"$ORDER_CODEX_CACHE" <<EOF
+{"accounts":[{"account":"abe","five_hour":{"used_pct":3,"resets_at":$((now + 5000))},"weekly":{"used_pct":4,"resets_at":$((now + 90000))},"as_of":$now},{"account":"ghost","five_hour":{"used_pct":5,"resets_at":$((now + 5000))},"weekly":{"used_pct":6,"resets_at":$((now + 90000))},"as_of":$now},{"account":"zed","five_hour":{"used_pct":7,"resets_at":$((now + 5000))},"weekly":{"used_pct":8,"resets_at":$((now + 90000))},"as_of":$now},{"account":"main","five_hour":{"used_pct":9,"resets_at":$((now + 5000))},"weekly":{"used_pct":10,"resets_at":$((now + 90000))},"as_of":$now}],"current":"abe"}
+EOF
+order_codex=$(HOME="$ORDER_CODEX_HOME" LLM_LIMITS_CODEX_CACHE="$ORDER_CODEX_CACHE" \
+  LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "codex account-order collection failed"
+jq -e '[.vendors.codex.accounts[].account] == ["main","zed","abe","ghost"] and
+  .vendors.codex.current_account == "abe"' <<<"$order_codex" >/dev/null \
+  || fail "codex accounts are not ordered main-first, then by profile birth time, unknowns last"
+
+ORDER_GEMINI_PROFILES="$WORK/order-gemini-profiles"
+ORDER_GEMINI_CACHE_DIR="$WORK/order-gemini-cache"
+mkdir -p "$ORDER_GEMINI_CACHE_DIR"
+for order_profile in zed abe com; do
+  mkdir -p "$ORDER_GEMINI_PROFILES/$order_profile"
+  sleep 1
+done
+order_gemini_snapshot='{"groups":[{"displayName":"Gemini Models","buckets":[{"window":"weekly","remainingFraction":0.5,"resetTime":"2099-01-01T00:00:00Z"},{"window":"5h","remainingFraction":0.6,"resetTime":"2099-01-01T00:00:00Z"}]}]}'
+for order_account in zed abe com; do
+  printf '%s\n' "$order_gemini_snapshot" >"$ORDER_GEMINI_CACHE_DIR/$order_account.json"
+done
+printf '%s\n' "$order_gemini_snapshot" >"$WORK/order-gemini-main.json"
+order_gemini=$(GEMINIB_PROFILES_DIR="$ORDER_GEMINI_PROFILES" \
+  LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$ORDER_GEMINI_CACHE_DIR" \
+  LLM_LIMITS_GEMINI_CACHE="$WORK/order-gemini-main.json" \
+  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) \
+  || fail "gemini account-order collection failed"
+jq -e '[.vendors.gemini.accounts[].account] == ["main","com","zed","abe"]' <<<"$order_gemini" >/dev/null \
+  || fail "gemini accounts are not ordered priority-first, then by profile birth time"
+
+# A bare vendor name means "every account of this vendor, free" and must leave the other vendors
+# untouched: their probes never run and their cached data survives the run.
+VENDOR_SCOPE_LOG="$WORK/vendor-scope-gemini.log"
+cat >"$WORK/vendor-scope-agy" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$HOME" >>"$VENDOR_SCOPE_LOG"
+printf '%s\n' '$order_gemini_snapshot'
+EOF
+CODEX_SCOPE_SENTINEL="$WORK/codex-scope-called"
+cat >"$WORK/vendor-scope-codex" <<EOF
+#!/usr/bin/env bash
+printf 'called %s\n' "\$*" >>"$CODEX_SCOPE_SENTINEL"
+printf '%s\n' '{"accounts":[{"account":"main","five_hour":{"used_pct":9,"resets_at":$((now + 5000))},"weekly":{"used_pct":10,"resets_at":$((now + 90000))},"as_of":$now}],"current":"main"}'
+EOF
+CLAUDEB_SCOPE_SENTINEL="$WORK/claudeb-scope-called"
+cat >"$WORK/vendor-scope-claudeb" <<EOF
+#!/usr/bin/env bash
+printf 'called %s\n' "\$*" >>"$CLAUDEB_SCOPE_SENTINEL"
+exit 0
+EOF
+chmod +x "$WORK/vendor-scope-agy" "$WORK/vendor-scope-codex" "$WORK/vendor-scope-claudeb"
+vendor_scope_env=(GEMINIB_PROFILES_DIR="$ORDER_GEMINI_PROFILES"
+  LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$ORDER_GEMINI_CACHE_DIR"
+  LLM_LIMITS_GEMINI_CACHE="$WORK/order-gemini-main.json"
+  LLM_LIMITS_GEMINI_CMD="$WORK/vendor-scope-agy"
+  LLM_LIMITS_CODEX_QUOTA_CMD="$WORK/vendor-scope-codex"
+  LLM_LIMITS_CODEX_CACHE="$WORK/vendor-scope-codex-cache.json"
+  LLM_LIMITS_CLAUDEB_CMD="$WORK/vendor-scope-claudeb"
+  GEMINIB_SECURITY_CMD="$GEMINI_SECURITY_STUB"
+  CLAUDEB_DIR="$ORDER_STORE" HOME="$ORDER_HOME" LLM_LIMITS_CACHE="$CACHE")
+env "${vendor_scope_env[@]}" LLM_LIMITS_GEMINI_REFRESH=1 LLM_LIMITS_CODEX_REFRESH=1 \
+  bash "$SCRIPT" --refresh-account gemini --json >/dev/null 2>&1 \
+  || fail "vendor-scoped gemini refresh failed"
+[ "$(sort "$VENDOR_SCOPE_LOG" | paste -sd, -)" \
+  = "$ORDER_GEMINI_PROFILES/abe,$ORDER_GEMINI_PROFILES/com,$ORDER_GEMINI_PROFILES/zed,$ORDER_HOME" ] \
+  || fail "--refresh-account gemini did not refresh every gemini account: $(cat "$VENDOR_SCOPE_LOG")"
+[ ! -e "$CODEX_SCOPE_SENTINEL" ] || fail "--refresh-account gemini also probed codex"
+[ ! -e "$CLAUDEB_SCOPE_SENTINEL" ] || fail "--refresh-account gemini also probed claude"
+: >"$VENDOR_SCOPE_LOG"
+env "${vendor_scope_env[@]}" LLM_LIMITS_GEMINI_REFRESH=1 LLM_LIMITS_CODEX_REFRESH=1 \
+  bash "$SCRIPT" --refresh-account codex --json >/dev/null 2>&1 \
+  || fail "vendor-scoped codex refresh failed"
+grep -q -- '--all-accounts' "$CODEX_SCOPE_SENTINEL" \
+  || fail "--refresh-account codex did not run the all-accounts helper path"
+[ ! -s "$VENDOR_SCOPE_LOG" ] || fail "--refresh-account codex also probed gemini"
+[ ! -e "$CLAUDEB_SCOPE_SENTINEL" ] || fail "--refresh-account codex also probed claude"
+rm -f "$CODEX_SCOPE_SENTINEL"
+env "${vendor_scope_env[@]}" LLM_LIMITS_GEMINI_REFRESH=1 LLM_LIMITS_CODEX_REFRESH=1 \
+  bash "$SCRIPT" --refresh-account claude --json >/dev/null 2>&1 \
+  || fail "vendor-scoped claude refresh failed"
+grep -q 'called accounts --no-spend' "$CLAUDEB_SCOPE_SENTINEL" \
+  || fail "--refresh-account claude did not run the free all-account claudeb path"
+[ ! -e "$CODEX_SCOPE_SENTINEL" ] || fail "--refresh-account claude also probed codex"
+[ ! -s "$VENDOR_SCOPE_LOG" ] || fail "--refresh-account claude also probed gemini"
+# A vendor-scoped refresh with no store to refresh from is a reason, never a silent no-op.
+NO_STORE="$WORK/vendor-scope-no-store"
+mkdir -p "$NO_STORE"
+no_store_err=$(env "${vendor_scope_env[@]}" CLAUDEB_DIR="$NO_STORE" LLM_LIMITS_CACHE="$WORK/no-store-cache.json" \
+  bash "$SCRIPT" --refresh-account claude --json 2>&1 >/dev/null)
+grep -q 'no claudeb store' <<<"$no_store_err" \
+  || fail "--refresh-account claude without a claudeb store said nothing"
+jq -e '.vendors.claude.refresh_error.cause == "no claudeb store"' "$WORK/no-store-cache.json" >/dev/null \
+  || fail "--refresh-account claude without a claudeb store recorded no refresh_error"
+# The paid window-opening path stays a single-account request.
+if env "${vendor_scope_env[@]}" bash "$SCRIPT" --refresh-account claude --start-windows \
+  >/dev/null 2>&1; then
+  fail "a bare vendor accepted --start-windows"
+fi
+
 EMPTY="$WORK/empty-home"
 mkdir -p "$EMPTY"
 HOME="$EMPTY" bash "$SCRIPT" --no-write >/dev/null 2>&1
@@ -2060,5 +2205,5 @@ else
   echo "SKIP (hs unavailable): Hammerspoon projection contract"
 fi
 
-echo "PASS: schema, Claude unique accounts and fallback, Codex multi-account reset credits, auth-needed accounts and legacy cache, local Claude rotation usability, enabled flags, freshness contract, reset placeholder normalization, machine effective percentages and usability, refresh failure reasons, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, weekly bucket provenance, experiment announcements, Hammerspoon projection contract, plain output, table output and sorts, reset tiers, expired windows, bare JSON default, atomic cache, missing exit 3"
+echo "PASS: account order (priority names, profile birth time, unknowns last) and vendor-scoped --refresh-account, schema, Claude unique accounts and fallback, Codex multi-account reset credits, auth-needed accounts and legacy cache, local Claude rotation usability, enabled flags, freshness contract, reset placeholder normalization, machine effective percentages and usability, refresh failure reasons, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, weekly bucket provenance, experiment announcements, Hammerspoon projection contract, plain output, table output and sorts, reset tiers, expired windows, bare JSON default, atomic cache, missing exit 3"
 exit 0

@@ -2,7 +2,7 @@
 set -u
 
 usage() {
-  echo "Usage: $0 [--json|--plain|--table] [--sort 5h|weekly|reset] [--no-write] [--refresh [--start-windows] | --refresh-account claude/NAME [--start-windows]|codex/NAME|gemini/NAME] [--gemini-remove]" >&2
+  echo "Usage: $0 [--json|--plain|--table] [--sort 5h|weekly|reset] [--no-write] [--refresh [--start-windows] | --refresh-account claude/NAME [--start-windows]|codex/NAME|gemini/NAME|claude|codex|gemini] [--gemini-remove]" >&2
 }
 
 format=''
@@ -36,8 +36,14 @@ if [ "$start_windows" -eq 1 ] && [ "$refresh" -eq 0 ]; then
   exit 2
 fi
 case "$refresh_account" in
-  ''|gemini|gemini/?*|claude/?*|codex/?*) ;;
+  ''|claude|codex|gemini|gemini/?*|claude/?*|codex/?*) ;;
   *) usage; exit 2 ;;
+esac
+# A bare vendor name refreshes every account of that vendor and touches no other vendor. It is
+# free by construction: --start-windows (the only paid path) stays a single-account request.
+refresh_vendor=''
+case "$refresh_account" in
+  claude|codex|gemini) refresh_vendor=$refresh_account ;;
 esac
 if [ -n "$refresh_account" ] && [ "$start_windows" -eq 1 ]; then
   case "$refresh_account" in
@@ -455,6 +461,57 @@ agy_bin=${AGY_BIN:-$HOME/.local/bin/agy}
 
 codex_pool_dir=$(worker_pool_dir codex)
 gemini_pool_dir=$(worker_pool_dir gemini)
+claude_profiles_root="${CLAUDE_PROFILES_DIR:-$HOME/.claude-profiles}"
+codex_profiles_dir="${CODEXB_PROFILES_DIR:-$HOME/.codex-profiles}"
+
+# Account order in the cache, which the menu, --table and --plain all render as-is. The two
+# accounts Egor works from lead every vendor by name; this hardcode is the whole point of the
+# rule, not a default to be derived from data.
+account_priority_names() {
+  case "$1" in
+    claude) printf 'notcom\ncom\n' ;;
+    codex) printf 'main\n' ;;
+    gemini) printf 'main\ncom\n' ;;
+  esac
+}
+
+account_profile_dir() {
+  case "$1" in
+    claude) printf '%s/%s\n' "$claude_profiles_root" "$2" ;;
+    codex) if [ "$2" = main ]; then printf '%s/.codex\n' "$HOME"; else printf '%s/%s\n' "$codex_profiles_dir" "$2"; fi ;;
+    gemini) gemini_account_home "$2" ;;
+  esac
+}
+
+# Everything outside the priority list follows in profile-creation order (macOS birth time), so a
+# newly added account lands at the end instead of wherever the alphabet drops it. An account whose
+# directory has no readable birth time sorts last, by name.
+account_order() {
+  local vendor=$1 name candidate index rank birth
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    rank=''
+    index=0
+    while IFS= read -r candidate; do
+      if [ "$candidate" = "$name" ]; then rank=$index; break; fi
+      index=$((index + 1))
+    done <<<"$(account_priority_names "$vendor")"
+    if [ -n "$rank" ]; then
+      printf '0\t%s\t%s\n' "$rank" "$name"
+      continue
+    fi
+    birth=$(stat -f %B "$(account_profile_dir "$vendor" "$name")" 2>/dev/null || true)
+    case "$birth" in
+      ''|*[!0-9]*) printf '2\t0\t%s\n' "$name" ;;
+      *) printf '1\t%s\t%s\n' "$birth" "$name" ;;
+    esac
+  done | LC_ALL=C sort -t$'\t' -k1,1n -k2,2n -k3,3 | cut -f3
+}
+
+# The same order as a JSON array, for the jq filters that assemble each vendor's accounts.
+account_order_json() {
+  account_order "$1" | jq -Rsc 'split("\n") | map(select(length > 0))'
+}
 
 gemini_account_cache() {
   if [ "$1" = main ]; then printf '%s\n' "$gemini_main_cache"
@@ -596,14 +653,14 @@ refresh_gemini_quota() {
 
 gemini_refresh_target=''
 case "$refresh_account" in
-  gemini) gemini_refresh_target=main ;;
   gemini/*) gemini_refresh_target=${refresh_account#gemini/} ;;
 esac
 if [ -n "$gemini_refresh_target" ] && ! grep -qxF "$gemini_refresh_target" <<<"$gemini_refresh_accounts_list"; then
   printf 'llm-limits.sh: unknown Gemini account: %s\n' "$gemini_refresh_target" >&2
   exit 2
 fi
-if [ "$refresh" -eq 1 ] && { [ -z "$refresh_account" ] || [ -n "$gemini_refresh_target" ]; }; then
+if [ "$refresh" -eq 1 ] &&
+   { [ -z "$refresh_account" ] || [ -n "$gemini_refresh_target" ] || [ "$refresh_vendor" = gemini ]; }; then
   if [ "${LLM_LIMITS_GEMINI_REFRESH:-1}" != 0 ]; then
     gemini_refresh_pids=()
     while IFS= read -r gemini_account; do
@@ -615,9 +672,12 @@ if [ "$refresh" -eq 1 ] && { [ -z "$refresh_account" ] || [ -n "$gemini_refresh_
     for gemini_refresh_pid in "${gemini_refresh_pids[@]}"; do
       wait "$gemini_refresh_pid" || true
     done
-  elif [ -n "$gemini_refresh_target" ]; then
-    new_gemini_refresh_result
-    record_gemini_refresh "$gemini_refresh_result_file" "$gemini_refresh_target" true false 'refresh disabled'
+  elif [ -n "$gemini_refresh_target" ] || [ "$refresh_vendor" = gemini ]; then
+    while IFS= read -r gemini_account; do
+      [ -z "$gemini_refresh_target" ] || [ "$gemini_account" = "$gemini_refresh_target" ] || continue
+      new_gemini_refresh_result
+      record_gemini_refresh "$gemini_refresh_result_file" "$gemini_account" true false 'refresh disabled'
+    done <<<"$gemini_refresh_accounts_list"
     printf 'llm-limits.sh: Gemini refresh is disabled\n' >&2
   fi
 fi
@@ -674,7 +734,8 @@ case "$refresh_account" in claude/*) claude_refresh_target=${refresh_account#cla
 # never constrain it. Generous defaults favor a complete, honest refresh.
 claude_sw_timeout=${LLM_LIMITS_CLAUDE_SW_TIMEOUT:-1200}
 claude_refresh_timeout=${LLM_LIMITS_CLAUDE_REFRESH_TIMEOUT:-300}
-if [ "$refresh" -eq 1 ] && { [ -z "$refresh_account" ] || [ -n "$claude_refresh_target" ]; }; then
+if [ "$refresh" -eq 1 ] &&
+   { [ -z "$refresh_account" ] || [ -n "$claude_refresh_target" ] || [ "$refresh_vendor" = claude ]; }; then
   if [ -d "$claudeb_root/limits" ]; then
     claude_refresh_attempted=1
     claude_refresh_run_start=$(date +%s)
@@ -728,7 +789,7 @@ if [ "$refresh" -eq 1 ] && { [ -z "$refresh_account" ] || [ -n "$claude_refresh_
       claude_refresh_error='claudeb not found'
       echo "llm-limits.sh: claudeb not found; cannot refresh claude accounts" >&2
     fi
-  elif [ -n "$claude_refresh_target" ]; then
+  elif [ -n "$claude_refresh_target" ] || [ "$refresh_vendor" = claude ]; then
     claude_refresh_attempted=1
     claude_refresh_error='no claudeb store'
     echo "llm-limits.sh: no claudeb store; cannot refresh claude account" >&2
@@ -819,13 +880,16 @@ if [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
     if ! jq -e --arg current "$current" 'any(.account == $current)' <<<"$accounts" >/dev/null; then
       current=$(jq -r 'sort_by(.account)[0].account' <<<"$accounts")
     fi
-    accounts=$(jq -c --arg current "$current" '
+    claude_order=$(jq -r '.[].account' <<<"$accounts" | account_order_json claude)
+    accounts=$(jq -c --arg current "$current" --argjson order "$claude_order" '
       map(.is_current = (.account == $current)) |
-      sort_by(if .is_current then 0 else 1 end, .account)
+      sort_by(.account as $n | (($order | index($n)) // ($order | length)))
     ' <<<"$accounts")
     claude_bundle=$(jq -cn --argjson accounts "$accounts" --argjson wall "$claude_wall" '
-      ($accounts[0]) as $current |
-      (first($accounts[] | select(.five_hour.used_pct | type == "number")) // $current) as $five_source |
+      (first($accounts[] | select(.is_current)) // $accounts[0]) as $current |
+      (if ($current.five_hour.used_pct | type) == "number" then $current
+       else (first($accounts[] | select(.five_hour.used_pct | type == "number")) // $current)
+       end) as $five_source |
       ({available:true,source:"claudeb-store",current_account:$current.account,accounts:$accounts,
        five_hour:$five_source.five_hour,as_of:$current.as_of,stale_seconds:$current.stale_seconds,last_wall:$wall} +
       (if $current.auth then {auth:$current.auth} else {} end) +
@@ -1063,14 +1127,16 @@ select_codex_event() {
 
 codex_refresh_target=''
 case "$refresh_account" in codex/*) codex_refresh_target=${refresh_account#codex/} ;; esac
-if [ "$refresh" -eq 1 ] && { [ -z "$refresh_account" ] || [ -n "$codex_refresh_target" ]; }; then
+if [ "$refresh" -eq 1 ] &&
+   { [ -z "$refresh_account" ] || [ -n "$codex_refresh_target" ] || [ "$refresh_vendor" = codex ]; }; then
   if [ "${LLM_LIMITS_CODEX_REFRESH:-1}" != 0 ]; then
     codex_refresh_attempted=1
     refresh_codex_quota "$codex_refresh_target" || true
-  elif [ -n "$codex_refresh_target" ]; then
+  elif [ -n "$codex_refresh_target" ] || [ "$refresh_vendor" = codex ]; then
     codex_refresh_attempted=1
     codex_refresh_error='refresh disabled'
-    printf 'llm-limits.sh: Codex account %s refresh is disabled\n' "$codex_refresh_target" >&2
+    printf 'llm-limits.sh: Codex%s refresh is disabled\n' \
+      "$([ -n "$codex_refresh_target" ] && printf ' account %s' "$codex_refresh_target")" >&2
   fi
 fi
 select_codex_event
@@ -1133,7 +1199,10 @@ if [ -n "$codex_event" ]; then
     week_reset=''; [ -z "$secondary_reset" ] || week_reset=$(epoch_iso "$secondary_reset")
     codex_source=session-rollout
     [ "$codex_origin" != usage ] || codex_source=codex-app-server
+    codex_order=$(jq -r '[.payload.rate_limits.accounts[]?.account // "main"] | .[]' <<<"$codex_event" \
+      | account_order_json codex)
     codex=$(jq -cn --argjson e "$codex_event" --argjson wall "$codex_wall" --argjson now "$now_epoch" \
+      --argjson order "$codex_order" \
       --arg five_reset "$five_reset" --arg week_reset "$week_reset" \
       --arg as_of "$(epoch_iso "$codex_epoch")" --argjson as_of_epoch "$codex_epoch" \
       --arg origin "$codex_origin" --arg source "$codex_source" --argjson stale "$stale" \
@@ -1175,7 +1244,7 @@ if [ -n "$codex_event" ]; then
          (if any($e.payload.rate_limits.accounts[]; (.account // "main") == $requested)
           then $requested else ($e.payload.rate_limits.accounts[0].account // "main") end) as $current |
          [$e.payload.rate_limits.accounts[] | account(.; $current)] |
-         sort_by(if .is_current then 0 else 1 end, .account)
+         sort_by(.account as $n | (($order | index($n)) // ($order | length)))
        else
          [{account:"main",is_current:true,enabled:($pool_out != null and ($pool_out | index("main")) == null),
            plan_type:($e.payload.rate_limits.plan_type // null),
@@ -1268,7 +1337,8 @@ while IFS= read -r gemini_account; do
   gemini_account_lines="${gemini_account_lines}${gemini_account_json}"$'\n'
 done <<<"$gemini_accounts_list"
 
-gemini_accounts=$(printf '%s' "$gemini_account_lines" | jq -sc \
+gemini_order=$(printf '%s\n' "$gemini_accounts_list" | account_order_json gemini)
+gemini_accounts=$(printf '%s' "$gemini_account_lines" | jq -sc --argjson order "$gemini_order" \
   --argjson previous "$previous_cache" --argjson records "$gemini_refresh_records" --argjson now "$now_epoch" '
   def old_error($name):
     if ($previous.vendors.gemini.accounts | type) == "array" then
@@ -1285,7 +1355,7 @@ gemini_accounts=$(printf '%s' "$gemini_account_lines" | jq -sc \
     else (old_error(.account)) as $old |
       if ($old | type) == "object" then .refresh_error = $old else del(.refresh_error) end
     end)
-  | sort_by(if .account == "main" then 0 else 1 end, .account)
+  | sort_by(.account as $n | (($order | index($n)) // ($order | length)))
 ')
 
 gemini_refresh_error=$(jq -rn --argjson rows "$gemini_accounts" --argjson records "$gemini_refresh_records" '

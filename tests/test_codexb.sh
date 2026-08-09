@@ -210,6 +210,27 @@ assert grep -q 'already enabled' "$POOL_OUT"
 assert_fails cx disable ghost-account
 assert_fails cx enable ghost-account
 assert_fails cx disable
+# --all is the menu's whole-vendor switch: every account this tool knows, main included, and
+# idempotent — running it twice is not an error and changes nothing the second time.
+codex_all_names=$({ printf 'main\n'
+  for pool_profile in "$HOME/.codex-profiles"/*/; do
+    pool_profile=$(basename "$pool_profile")
+    case "$pool_profile" in .*) continue ;; esac
+    printf '%s\n' "$pool_profile"
+  done; } | LC_ALL=C sort)
+assert cx disable --all
+assert test "$(LC_ALL=C sort "$HOME/.codex-profiles/.codexb/disabled")" = "$codex_all_names"
+assert cx disable --all
+assert test "$(LC_ALL=C sort "$HOME/.codex-profiles/.codexb/disabled")" = "$codex_all_names"
+assert cx enable --all
+assert test ! -s "$HOME/.codex-profiles/.codexb/disabled"
+assert cx enable --all
+assert test ! -s "$HOME/.codex-profiles/.codexb/disabled"
+# One account already in the requested state must not block the rest.
+assert cx disable alpha
+assert cx disable --all
+assert test "$(LC_ALL=C sort "$HOME/.codex-profiles/.codexb/disabled")" = "$codex_all_names"
+assert cx enable --all
 # An empty pool is a legitimate state — it says no worker may run, not that nobody may work —
 # so the last member goes out like any other.
 for pool_profile in "$HOME/.codex-profiles"/*/; do

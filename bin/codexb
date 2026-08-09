@@ -246,11 +246,17 @@ pin_account() {
   worker_model_pin_account codex_profile codexb account_names is_disabled "${1:-}"
 }
 
+set_all_pool() { worker_pool_set_all "$pool_dir" codexb account_names "$1"; }
+
 enable_account() {
   local name="${1:-}"
   if [ -z "$name" ]; then
-    printf 'usage: codexb enable <name>\n' >&2
+    printf 'usage: codexb enable <name>|--all\n' >&2
     exit 2
+  fi
+  if [ "$name" = --all ]; then
+    set_all_pool off
+    return
   fi
   if ! account_exists "$name"; then
     printf 'codexb: unknown account: %s\n' "$name" >&2
@@ -267,8 +273,12 @@ enable_account() {
 disable_account() {
   local name="${1:-}"
   if [ -z "$name" ]; then
-    printf 'usage: codexb disable <name>\n' >&2
+    printf 'usage: codexb disable <name>|--all\n' >&2
     exit 2
+  fi
+  if [ "$name" = --all ]; then
+    set_all_pool on
+    return
   fi
   if ! account_exists "$name"; then
     printf 'codexb: unknown account: %s\n' "$name" >&2
@@ -366,8 +376,8 @@ show_help() {
     'codexb <name> exec [args...]' \
     'codexb add <name>                      Create a profile without launching; prints the login command.' \
     'codexb remove <name> [--force]         Forget a profile and prune its cached quota; --force overrides the logged-in guard.' \
-    'codexb enable <name>                   Return an account to worker selection.' \
-    'codexb disable <name>                  Exclude an account from the worker pool; headless runs are then refused, your own sessions are not.' \
+    'codexb enable <name>|--all             Return an account (or every account) to worker selection.' \
+    'codexb disable <name>|--all            Exclude an account (or every account) from the worker pool; headless runs are then refused, your own sessions are not.' \
     'codexb use <name>|--clear              Pin worker selection to one account; no name prints the pin.' \
     'codexb list                            List profiles with login state.' \
     'codexb status                          Per-account login state and quota.' \

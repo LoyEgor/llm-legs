@@ -345,6 +345,23 @@ rm -f "$CLAUDEB_DIR/tokens/hooked" "$CLAUDEB_DIR/limits/hooked.json"
   assert env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" bash "$SCRIPT" enable snaponly >/dev/null 2>&1
   assert_fails grep -qx snaponly "$CLAUDEB_DIR/disabled"
   assert_fails env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" bash "$SCRIPT" disable ghost >/dev/null 2>&1
+  # --all is the menu's whole-vendor switch: exactly the set the listing shows (the reserved
+  # non-accounts stay out), and idempotent — a second run is not an error and changes nothing.
+  cb() { env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" bash "$SCRIPT" "$@" >/dev/null 2>&1; }
+  pool_names() { LC_ALL=C sort "$CLAUDEB_DIR/disabled" | paste -sd, -; }
+  assert cb disable --all
+  assert test "$(pool_names)" = 'dironly,snaponly,tokonly'
+  assert cb disable --all
+  assert test "$(pool_names)" = 'dironly,snaponly,tokonly'
+  assert cb enable --all
+  assert test ! -s "$CLAUDEB_DIR/disabled"
+  assert cb enable --all
+  assert test ! -s "$CLAUDEB_DIR/disabled"
+  # One account already in the requested state must not block the rest.
+  assert cb disable snaponly
+  assert cb disable --all
+  assert test "$(pool_names)" = 'dironly,snaponly,tokonly'
+  assert cb enable --all
 ) || exit 1
 
 touch "$CLAUDEB_DIR/tokens/alpha" "$CLAUDEB_DIR/tokens/beta"

@@ -716,6 +716,25 @@ function M.hardRefreshClaude(name) hardRefresh("claude/" .. name, true) end
 function M.hardRefreshCodex(name) hardRefresh("codex/" .. name) end
 function M.hardRefreshGemini(name) hardRefresh("gemini/" .. (name or "main")) end
 
+-- A bare vendor name refreshes every account of that vendor and no other vendor, free.
+function M.refreshVendor(vendor)
+  userRefreshData({ "--refresh-account", vendor }, "vendor-refresh", 360, "vendor-refresh:" .. vendor)
+end
+
+local vendorRunners = { claude = runClaudeb, codex = runCodexb, gemini = runGeminib }
+
+-- One command flips the whole vendor, and an override per visible account keeps the reopened menu
+-- from showing the pre-command cache until the collect that follows lands.
+function M.setVendorPool(vendor, accounts, enable)
+  local runner = vendorRunners[vendor]
+  if not runner then return end
+  runner({ enable and "enable" or "disable", "--all" }, "toggle failed", function()
+    for _, account in ipairs(accounts) do
+      setPoolOverride(vendor, account, enable)
+    end
+  end)
+end
+
 -- --force is mandatory here, not a convenience: both CLIs' alive-guards only test that a
 -- token STRING is present, so a revoked login (exactly the state this row renders) can never
 -- satisfy them and the unforced remove refuses forever. Remove is offered only on
@@ -1001,10 +1020,20 @@ function M.menuItems()
             is_current = false }}
         end
         if isAccountRows then
-          table.insert(menu, {
-            title = infoTitle(isClaudeAccounts and "Claude B" or entry.label),
-            disabled = true,
-          })
+          local sectionMenu = {}
+          if hasAccountControls or isCodexAccounts or isGeminiAccounts then
+            local accounts = {}
+            for _, block in ipairs(blocks) do
+              if type(block.account) == "string" then table.insert(accounts, block.account) end
+            end
+            table.insert(sectionMenu, { title = "Enable all",
+              fn = function() M.setVendorPool(entry.key, accounts, true) end })
+            table.insert(sectionMenu, { title = "Disable all",
+              fn = function() M.setVendorPool(entry.key, accounts, false) end })
+          end
+          table.insert(sectionMenu, { title = "Refresh",
+            fn = function() M.refreshVendor(entry.key) end })
+          table.insert(menu, { title = infoTitle(entry.label), menu = sectionMenu })
         else
           -- Gemini's pin has to be known before the row is built now that the mark lives inside
           -- the title instead of being appended behind the age.
