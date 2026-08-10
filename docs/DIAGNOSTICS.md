@@ -59,44 +59,7 @@ Facts below are grounded in the code as of 2026-07-16 (line numbers may drift �
   `</think>` prefill strategy can trigger it in any model. Neither case is a usage limit; a real
   wall is an HTTP 429 naming `limitName`. Because both symptoms look identical from the outside,
   read `finish_reason` before changing any knob.
-- `bin/llm-limitsd` — **SHADOW MODE** (step 2 of the sqlite control-plane migration; runs alongside
-  the legacy path and touches none of it). Small Python 3 stdlib daemon (`sqlite3` + `http.server`),
-  the sole writer of a durable ledger that replaces the flock'd JSON read-modify-write the bash
-  writers use today. HTTP API on `LLM_LIMITSD_PORT` (default 45791, 127.0.0.1 only):
-  `POST /runs` (enqueue with a target set fixed at enqueue),
-  `POST /runs/<id>/steps` (step transitions with evidence), `POST /observations` (typed observation
-  ingest), `GET /runs/<id>`, `GET /state` (reducer-derived per-account auth+window state),
-  `GET /healthz`. SQLite db at `LLM_LIMITSD_DB` (default `~/.claude-profiles/.claudeb/limitsd.sqlite`,
-  WAL, single-process writer); tables `runs`/`steps`/`observations`. After each mutation it atomically
-  rewrites a read-only projection at `LLM_LIMITSD_PROJECTION` (default `~/.llm-limits-shadow.json` —
-  **NOT** the real `~/.llm-limits.json`) in the real cache's schema. Invariants: a run reaches
-  `succeeded` only when every required target has a proven success terminal, else
-  `partial/failed/interrupted` (never silently clean); `start-window` success needs a post-action
-  reconcile observation (`observed_at >= step.started_at`, fresh `resets_at`) — HTTP 200 alone is not
-  success; a timeout is a recorded step outcome; on restart an orphaned `running` step becomes
-  `interrupted` (reason_code 87), never a silent kill; account auth is reducer-derived and only
-  affirmative evidence (reason_code 2) can expire it — capacity weather (reason_code 75) never does;
-  the projection is a pure, byte-stable function of ledger state. A corrupt/foreign db is never
-  silently recreated: the daemon exits `78` (EXIT_DB_UNRECOVERABLE) with the reason on stderr, and
-  the plist's `ThrottleInterval` (30s) keeps `KeepAlive` from hot-looping on it. Launchd plist FILE
-  at `launchd/com.llm-limitsd.plist` exists but is NOT installed — rollout is a later migration step.
-  Suite: `bash tests/test_llm_limitsd.sh` (hermetic: temp db, child daemon on an ephemeral port).
-- `bin/llm-limitsd-shadow-feed` — read-only bridge that feeds the shadow daemon from the legacy
-  collector cache. It only READS `~/.llm-limits.json` (override `LLM_LIMITS_CACHE`) and POSTs typed
-  observations to `LLM_LIMITSD_URL` (default `http://127.0.0.1:45791`): a `window` observation per
-  present `five_hour`/`weekly`/`fable` bucket, a `rotation` observation (`enabled`+`is_current`), and
-  — claude-only, default-deny — an `auth` `expired`/`affirmative` observation ONLY when
-  `auth.status=="expired"` (never manufactures an "ok"). Rotation uses cache `fetched_at`; auth
-  uses its own `checked_at` or the newest data-bearing window, never account data age. Idempotent:
-  it stores the cache's
-  `fetched_at` in `~/.claude-profiles/.claudeb/shadow-feed.state` (override `LLM_SHADOW_FEED_STATE`)
-  and no-ops with zero HTTP when unchanged; state advances only on a fully-successful run, so any
-  failure (unreachable daemon, non-2xx, malformed cache) exits nonzero and retries the whole batch.
-  Collector `refresh_error` objects are run metadata, not usage observations, and are ignored by
-  the bridge and shadow projection.
-  Log at `~/.claude-profiles/.claudeb/shadow-feed.log`. Launchd plist FILE at
-  `launchd/com.llm-limitsd-shadow-feed.plist` (WatchPaths on the cache + 900s poll) exists but is
-  NOT installed. Suite: `bash tests/test_llm_limitsd_shadow_feed.sh`.
+
 - `launchd/com.egor.hammerspoon.plist` — INSTALLED (copy in `~/Library/LaunchAgents/`, wrapper
   `~/.local/libexec/hammerspoon`). launchd owns the only Hammerspoon launch path: `KeepAlive=true`
   restarts any kill/quit with launchd's clean env, so a relaunch from a profile shell (poisoned

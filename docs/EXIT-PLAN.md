@@ -1,97 +1,33 @@
 # EXIT-PLAN — temporary scaffolding and its dismantling
 
-decision-date: 2026-08-03
-
-The date is bound to the token-freeze experiment's phase-2 `review_by` (EXPERIMENTS.json,
-same day, owner's instruction 2026-07-28): the freeze verdict decides how much refresh
-traffic the permanent design must carry, so neither decision is to be made without the
-other — review them together.
-
-This file is the authoritative inventory of everything in llm-legs that exists ONLY for
-the shadow trial / stabilization period. None of it is meant to survive. Any session
-(human or LLM, with or without prior context) that reads this after the decision date
-must proactively propose executing the exit below — the owner has explicitly asked not
-to have to remember or re-ask. `llm-selfcheck` emits a daily "exit-plan review due"
-reminder after the decision date; that reminder is itself part of the scaffolding.
-
-## Why the trial exists
-
-Five uncoordinated bash writers do read-modify-write on locked JSON snapshots
-(`~/.llm-limits.json`, `~/.claude-profiles/.claudeb/limits/<account>.json`,
-`oauth-attempts.json`), historically causing lost updates and stuck verdicts
-("writers rot"). The shadow ledger observes whether this class still fires in real
-life, without touching the real data path.
-
-## Temporary inventory (ALL of it goes away at exit)
-
-1. `bin/llm-limitsd` + `launchd/com.llm-limitsd.plist` + `~/.llm-limits-shadow.json`
-   + `~/.claude-profiles/.claudeb/limitsd.sqlite` (daemon on 127.0.0.1:45791)
-2. `bin/llm-limitsd-shadow-feed` + `launchd/com.llm-limitsd-shadow-feed.plist`
-   + `~/.claude-profiles/.claudeb/shadow-feed.state`
-3. `bin/llm-shadow-divergence` + the `shadow-divergence` step in `bin/llm-selfcheck`
-4. Full `e2e_surfaces.sh` inside the DAILY selfcheck (at exit it slims to the hermetic
-   suites plus a ~10s live smoke: hs alive + menu builds; the full e2e stays as a
-   manual/change-time tool)
-5. The `exit-plan-review` reminder step in `bin/llm-selfcheck` and this file's
-   `decision-date` mechanism
-6. `tests/test_llm_limitsd.sh`, `tests/test_llm_limitsd_shadow_feed.sh` and the
-   shadow-related asserts in `tests/test_llm_selfcheck.sh`
-
-## Exit decision (one of two outcomes)
-
-**Default — dismantle and simplify (expected).** If the divergence watch stayed clean
-through the trial (no real writers-rot divergences, only feeder/propagation noise):
-
-- Give the ~5 bash writers one shared serialized write-helper (single global lock +
-  atomic merge; the proven pattern is `glock` in `bin/claudeb`'s `oauth_refresh`).
-- Dismantle EVERYTHING in the inventory: `launchctl bootout gui/$UID` both shadow
-  jobs, delete the two plists (repo + `~/Library/LaunchAgents`), delete the binaries,
-  suites, shadow projection, sqlite db, state files, the selfcheck shadow/reminder
-  steps, and slim the selfcheck e2e per item 4. Remove this file last, plus its
-  pointer in CLAUDE.md.
-- End state: zero extra daemons, one write discipline, nothing labeled temporary.
-
-**Escalation — only on hard evidence.** If the trial logged REAL writer-rot
-divergences that a shared lock cannot fix (semantic merge conflicts, not timing):
-proceed to the original step 3-4 cutover (writers post observations; the ledger owns
-`~/.llm-limits.json`), and then still dismantle the feeder, the divergence comparator,
-and the replaced writer code paths. The daemon survives only in this branch.
-
-The judgment call between the two belongs to the session executing the exit, based on
-`~/.claude-profiles/.claudeb/selfcheck.log` history and the ledger's divergence record.
+The shadow-trial stack this file also inventoried (`llm-limitsd`, the shadow feed, the
+divergence watch, their launchd jobs and suites, and the full `e2e_surfaces.sh` inside the
+daily selfcheck) was dismantled on 2026-08-09. One temporary thing is left, below.
 
 ## Token-freeze experiment
 
-decision-date: 2026-08-03
+decision-date: 2026-08-09 (verdict executed)
 
 Anthropic's OAuth token endpoint intermittently 429s our accounts. Hypothesis under
 test: our own automated refresh traffic earned the rate-limiting. Phase 1 froze every
 ROBOT path and produced zero token-endpoint 429s from 2026-07-23 through 2026-07-27.
-Phase 2 runs through 2026-08-03: scheduled automation remains frozen, while every
-user-initiated menu refresh is allowed to drive the full refresh chain. On
+Phase 2 ran through 2026-08-03: scheduled automation remained frozen, while every
+user-initiated menu refresh was allowed to drive the full refresh chain. On
 2026-07-27 the global `Refresh` and `Refresh + Start Windows` actions began carrying the
 same explicit user signal as per-account Hard refresh. That signal exempts the invocation's
 warm, heal, and direct `oauth_refresh()` POSTs from the freeze; its journal entries carry
 `"user":true`. The experiment isolates user-bidden traffic from scheduled traffic.
 
+**Verdict (2026-08-09):** The verdict went to the parasite-mode branch. The curl token
+path is vendor-blocked: 150/150 unbidden and 18/18 user-bidden curl refreshes got 429
+after the freeze, while interactive CLI sessions rotate tokens instantly.
+As a result, `~/.claude-profiles/.claudeb/token-freeze` was made indefinite (no `until`
+condition) pending the replacement escalating refresh.
+
 **Temporary inventory (what exits): the freeze FILE only** —
 `~/.claude-profiles/.claudeb/token-freeze`. The switch (`token_freeze_active`), the
 attempt journal (`token-attempts.jsonl` + `token_journal`), and the honest frozen
 stale-cause in `llm-limits.sh` are permanent and cheap; they stay.
-
-**Exit decision (one of two outcomes).** Review `token-attempts.jsonl` plus the owner's
-menu-refresh experience. The journal legitimately carries more than `frozen-skip`:
-user-initiated menu warms (`kind=warm`) and keychain adoptions from manual CLI sessions
-(`kind=adopt`) are expected. User-bidden curl refreshes are also expected and carry
-`"user":true`. What must NOT appear is an unbidden `curl-refresh` — one without the user
-marker — with a real HTTP outcome; that would mean a robot POSTed the token endpoint despite
-the freeze:
-
-- **Hypothesis holds** (manual refreshes stay 429-free through the window): keep
-  automation off and make its measured reintroduction a separate parasite-mode task,
-  piggy-backing on the CLI's own refreshes instead of posting independently.
-- **Hypothesis rejected or incomplete** (429s return under manual-only traffic): our
-  automation was not the sole cause; delete the freeze file and restore automation as-is.
 
 **Decisive finding 2026-07-31 (~03:35, owner at the keyboard) — read before choosing a
 branch.** The 429 is NOT a per-account vendor window; it targets OUR OWN direct curl POST
@@ -117,3 +53,4 @@ The age itself was fixed in ecfbf85 (account/vendor age = oldest window carrying
 refresh, 3h-old fable data renders unmarked and worker-pick trusts it. Whichever outcome is
 chosen sets the real refresh cadence — recalibrate (or re-affirm) those thresholds against
 it as part of executing this exit, not before.
+*(Status 2026-08-09: Staleness-threshold recalibration remains deferred to the escalating refresh work.)*

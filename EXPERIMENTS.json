@@ -1,12 +1,16 @@
 [
-  {
-    "id": "token-freeze",
-    "what": "Phase 2 keeps robots off the OAuth token endpoint while allowing all user-initiated menu refreshes; tests whether manual-only refresh traffic stays free of Anthropic token-endpoint 429s",
-    "started": "2026-07-23",
-    "review_by": "2026-08-03",
-    "state_marker": "~/.claude-profiles/.claudeb/token-freeze",
-    "evidence": "~/.claude-profiles/.claudeb/token-attempts.jsonl",
-    "surfaces": ["llm-limits --table banner", "llm-limits --plain banner", "menubar LLM Limits header row"],
-    "how_to_remove": "follow docs/EXIT-PLAN.md § Token-freeze experiment: delete the token-freeze marker file, then apply the verdict branch (restore automation as-is, or rebuild refresh in parasite mode). The switch, the journal, and the frozen stale-cause are permanent by that plan's temporary inventory; delete this registry entry last."
-  }
+ {
+  "id": "token-freeze",
+  "what": "Verdict decided 2026-08-09: curl token path is vendor-blocked (150/150 robot and 18/18 user curl refreshes got 429; interactive CLI rotates tokens instantly), so ROBOT curl refresh stays off via an indefinite freeze marker; this entry tracks that interim state until the escalating (parasite-mode) refresh replaces it",
+  "started": "2026-07-23",
+  "review_by": "2026-09-01",
+  "state_marker": "~/.claude-profiles/.claudeb/token-freeze",
+  "evidence": "~/.claude-profiles/.claudeb/token-attempts.jsonl",
+  "surfaces": [
+   "llm-limits --table banner",
+   "llm-limits --plain banner",
+   "menubar LLM Limits header row"
+  ],
+  "how_to_remove": "follow docs/EXIT-PLAN.md § Token-freeze experiment: delete the token-freeze marker file once the parasite-mode refresh replaces the curl path (verdict decided 2026-08-09; never restore automated curl refreshes). The switch, the journal, and the frozen stale-cause are permanent by that plan's temporary inventory; delete this registry entry last."
+ }
 ]

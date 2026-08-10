@@ -24,17 +24,18 @@ FAKE_BIN="$WORK/bin"
 CALLS="$WORK/calls"
 ALERTS="$WORK/alerts"
 LAUNCH_CALLS="$WORK/launch-calls"
-export HOME CALLS ALERTS LAUNCH_CALLS
+E2E_MODE="$WORK/e2e-mode"
+export HOME CALLS ALERTS LAUNCH_CALLS E2E_MODE
 mkdir -p "$FIXTURE/bin" "$FIXTURE/tests" "$FAKE_BIN"
 cp "$ROOT/bin/llm-selfcheck" "$FIXTURE/bin/llm-selfcheck"
-cp "$ROOT/bin/llm-shadow-divergence" "$FIXTURE/bin/llm-shadow-divergence"
-chmod +x "$FIXTURE/bin/llm-selfcheck" "$FIXTURE/bin/llm-shadow-divergence"
+chmod +x "$FIXTURE/bin/llm-selfcheck"
 
 for suite in e2e_surfaces.sh test_llm_limits.sh test_claudeb.sh test_codexb.sh test_geminib.sh; do
   cat >"$FIXTURE/tests/$suite" <<'EOF'
 #!/usr/bin/env bash
 name=$(basename "$0")
 printf '%s\n' "$name" >>"$CALLS"
+[ "$name" = e2e_surfaces.sh ] && printf '%s\n' "${LLM_LIMITS_E2E_FIXTURE_ONLY:-full}" >>"$E2E_MODE"
 [ "${FAIL_STEP:-}" != "$name" ]
 EOF
 done
@@ -51,9 +52,6 @@ cat >"$FAKE_BIN/launchctl" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$LAUNCH_CALLS"
 [ "${1:-}" != print ] && exit 0
-case "$*" in
-  *com.llm-limitsd-shadow-feed*) exit "${SHADOW_FEED_JOB_LOADED_RC:-0}" ;;
-esac
 exit 1
 EOF
 chmod +x "$FAKE_BIN/hs" "$FAKE_BIN/osascript" "$FAKE_BIN/launchctl"
@@ -63,7 +61,6 @@ export PATH
 SCRIPT="$FIXTURE/bin/llm-selfcheck"
 LOG="$HOME/.claude-profiles/.claudeb/selfcheck.log"
 REAL="$HOME/.llm-limits.json"
-SHADOW="$HOME/.llm-limits-shadow.json"
 TRIPWIRE_DIR="$WORK/tripwire"
 LLM_SELFCHECK_TRIPWIRE_GLOBS="$TRIPWIRE_DIR/*.md"
 LLM_SELFCHECK_TRIPWIRE_STATE="$WORK/config-tripwire.state"
@@ -72,9 +69,7 @@ NOW=$(date '+%s')
 FETCHED=$(date -u -r "$NOW" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -d "@$NOW" '+%Y-%m-%dT%H:%M:%SZ')
 
 write_caches() {
-  local real_pct="${1:-12}" shadow_pct="${2:-12}" shadow_epoch="${3:-$NOW}"
-  local shadow_fetched
-  shadow_fetched=$(date -u -r "$shadow_epoch" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -d "@$shadow_epoch" '+%Y-%m-%dT%H:%M:%SZ')
+  local real_pct="${1:-12}"
   mkdir -p "$HOME"
   jq -n --arg fetched "$FETCHED" --argjson pct "$real_pct" '{
     schema: 1, fetched_at: $fetched,
@@ -89,19 +84,6 @@ write_caches() {
       }
     }
   }' >"$REAL"
-  jq -n --arg fetched "$shadow_fetched" --argjson pct "$shadow_pct" '{
-    schema: 1, fetched_at: $fetched,
-    vendors: {
-      claude: {
-        five_hour: {used_pct: $pct, resets_at: "2026-07-19T12:00:00Z"},
-        accounts: [{
-          account: "alona", is_current: true,
-          five_hour: {used_pct: $pct, resets_at: "2026-07-19T12:00:00Z"},
-          weekly: {used_pct: 40, resets_at: "2026-07-25T12:00:00Z"}
-        }]
-      }
-    }
-  }' >"$SHADOW"
 }
 
 assert grep -q 'HOME/.claude-profiles/\*/CLAUDE.md' "$SCRIPT"
@@ -113,7 +95,6 @@ write_caches
 bash "$SCRIPT" || fail "successful run failed"
 assert test "$(paste -sd, "$CALLS")" = "e2e_surfaces.sh,test_llm_limits.sh,test_claudeb.sh,test_codexb.sh,test_geminib.sh"
 assert grep -Eq '^timestamp=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{4} status=PASS failed_step=-$' "$LOG"
-assert grep -q 'status=PASS step=shadow-divergence detail=shadow-divergence: match' "$LOG"
 assert grep -q 'status=PASS step=config-tripwire detail=baseline' "$LOG"
 assert test -s "$LLM_SELFCHECK_TRIPWIRE_STATE"
 assert test ! -s "$ALERTS"
@@ -134,74 +115,19 @@ bash "$SCRIPT" run --force || fail "rebaselined tripwire run failed"
 assert tail -n 3 "$LOG" | grep -q 'status=PASS step=config-tripwire detail=unchanged'
 assert test ! -s "$ALERTS"
 
-write_caches 12 13
-: >"$ALERTS"
+# The daily run carries only the fixture-only e2e smoke; the full surfaces run is the manual
+# --e2e invocation, which also bypasses the debounce so a deliberate ask is never a no-op.
+: >"$E2E_MODE"
+bash "$SCRIPT" run --force || fail "daily run failed"
+assert test "$(cat "$E2E_MODE")" = 1
+: >"$E2E_MODE"
+: >"$CALLS"
+printf 'timestamp=%s status=PASS failed_step=-\n' "$(iso_from_epoch "$NOW")" >"$LOG"
+bash "$SCRIPT" run --e2e || fail "--e2e run failed"
+assert test "$(cat "$E2E_MODE")" = full
+assert grep -q 'e2e_surfaces.sh' "$CALLS"
 asserts=$((asserts + 1))
-bash "$SCRIPT" run --force >/dev/null 2>&1 && fail "value drift unexpectedly passed"
-assert tail -n 2 "$LOG" | grep -q 'status=FAIL step=shadow-divergence'
-assert grep -q 'vendors.claude.accounts.alona.five_hour.used_pct' "$LOG"
-assert grep -q 'vendors.claude.accounts.alona.five_hour.used_pct' "$ALERTS"
-
-rm -f "$SHADOW"
-: >"$ALERTS"
-bash "$SCRIPT" run --force || fail "absent shadow should skip"
-assert tail -n 2 "$LOG" | grep -q 'status=SKIP step=shadow-divergence.*shadow projection absent'
-assert test ! -s "$ALERTS"
-
-write_caches 12 12 "$((NOW - 901))"
-: >"$ALERTS"
-asserts=$((asserts + 1))
-bash "$SCRIPT" run --force >/dev/null 2>&1 && fail "stalled feeder unexpectedly passed"
-assert tail -n 2 "$LOG" | grep -q 'status=FAIL step=shadow-divergence.*feeder stalled'
-assert grep -q 'feeder stalled' "$ALERTS"
-
-# A stale shadow with the feeder job unloaded (trial disabled) is a silent skip, not a stall.
-write_caches 12 12 "$((NOW - 901))"
-: >"$ALERTS"
-SHADOW_FEED_JOB_LOADED_RC=1 bash "$SCRIPT" run --force || fail "trial-disabled stall should skip, not fail"
-assert tail -n 2 "$LOG" | grep -q 'status=SKIP step=shadow-divergence.*feeder job not loaded'
-assert test ! -s "$ALERTS"
-
-# A genuine llm-limitsd projection (real daemon + shadow feeder), not a hand-written twin: the
-# comparator must accept it when faithful and reject it once the real cache is value-mutated.
-echo "== comparator vs a genuine llm-limitsd projection =="
-GEN_DB="$WORK/gen.sqlite"; GEN_PROJ="$WORK/gen.proj.json"
-GEN_REAL="$WORK/gen.real.json"; GEN_STATE="$WORK/gen.feed.state"; GEN_ERR="$WORK/gen.daemon.err"
-GNOW=$(date '+%s')
-GFETCHED=$(date -u -r "$GNOW" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -d "@$GNOW" '+%Y-%m-%dT%H:%M:%SZ')
-GRESET=$(date -u -r "$((GNOW + 3600))" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -d "@$((GNOW + 3600))" '+%Y-%m-%dT%H:%M:%SZ')
-GWRESET=$(date -u -r "$((GNOW + 7200))" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -d "@$((GNOW + 7200))" '+%Y-%m-%dT%H:%M:%SZ')
-jq -n --arg fetched "$GFETCHED" --arg r5 "$GRESET" --arg rw "$GWRESET" --argjson now "$GNOW" '{
-  schema: 1, fetched_at: $fetched,
-  vendors: {
-    gemini: {
-      available: true, source: "agy-local-rpc", as_of: $fetched,
-      five_hour: {used_pct: 3, resets_at: $r5, as_of: $now, origin: "usage"},
-      weekly: {used_pct: 61, resets_at: $rw, as_of: $now, origin: "usage"}
-    }
-  }
-}' >"$GEN_REAL"
-
-env LLM_LIMITSD_PORT=0 LLM_LIMITSD_DB="$GEN_DB" LLM_LIMITSD_PROJECTION="$GEN_PROJ" \
-  "$ROOT/bin/llm-limitsd" 2>"$GEN_ERR" &
-GEN_DPID=$!
-GEN_PORT=""
-for _ in $(seq 1 200); do
-  GEN_PORT="$(sed -n 's/.*127.0.0.1:\([0-9]*\).*/\1/p' "$GEN_ERR" 2>/dev/null | head -1)"
-  [ -n "$GEN_PORT" ] && break
-  kill -0 "$GEN_DPID" 2>/dev/null || break
-  perl -e 'select(undef,undef,undef,0.02)'
-done
-[ -n "$GEN_PORT" ] || { cat "$GEN_ERR" >&2; fail "genuine daemon never announced a port"; }
-
-env LLM_LIMITS_CACHE="$GEN_REAL" LLM_LIMITSD_URL="http://127.0.0.1:$GEN_PORT" LLM_SHADOW_FEED_STATE="$GEN_STATE" \
-  "$ROOT/bin/llm-limitsd-shadow-feed" || fail "shadow feed into genuine daemon failed"
-assert test -f "$GEN_PROJ"
-assert env LLM_LIMITS_CACHE="$GEN_REAL" LLM_LIMITSD_PROJECTION="$GEN_PROJ" "$FIXTURE/bin/llm-shadow-divergence"
-
-jq '.vendors.gemini.five_hour.used_pct = 99' "$GEN_REAL" >"$GEN_REAL.mut" && mv "$GEN_REAL.mut" "$GEN_REAL"
-assert_fails env LLM_LIMITS_CACHE="$GEN_REAL" LLM_LIMITSD_PROJECTION="$GEN_PROJ" "$FIXTURE/bin/llm-shadow-divergence"
-kill "$GEN_DPID" 2>/dev/null; GEN_DPID=""
+bash "$SCRIPT" run --nonsense >/dev/null 2>&1 && fail "unknown run flag accepted"
 
 write_caches
 : >"$CALLS"
@@ -271,26 +197,4 @@ bash "$SCRIPT" uninstall >/dev/null || fail "uninstall failed"
 assert test ! -e "$PLIST"
 assert test ! -L "$HOME/.local/bin/llm-selfcheck"
 
-# Exit-plan reminder: silent without docs/EXIT-PLAN.md or before the decision date,
-# nags (without failing the run) once the date is reached.
-rm -f "$HOME/.claude-profiles/.claudeb/selfcheck.state"
-: >"$ALERTS"
-bash "$SCRIPT" run --force >/dev/null 2>&1 || fail "run without EXIT-PLAN.md failed"
-assert_fails grep -q 'exit-plan review due' "$ALERTS"
-mkdir -p "$FIXTURE/docs"
-printf 'decision-date: %s\n' "$(date -v+1d '+%Y-%m-%d' 2>/dev/null || date -d tomorrow '+%Y-%m-%d')" >"$FIXTURE/docs/EXIT-PLAN.md"
-rm -f "$HOME/.claude-profiles/.claudeb/selfcheck.state"
-: >"$ALERTS"
-bash "$SCRIPT" run --force >/dev/null 2>&1 || fail "run with future decision-date failed"
-assert_fails grep -q 'exit-plan review due' "$ALERTS"
-printf 'decision-date: %s\n' "$(date -v-1d '+%Y-%m-%d' 2>/dev/null || date -d yesterday '+%Y-%m-%d')" >"$FIXTURE/docs/EXIT-PLAN.md"
-rm -f "$HOME/.claude-profiles/.claudeb/selfcheck.state"
-: >"$ALERTS"
-: >"$CALLS"
-bash "$SCRIPT" run --force >/dev/null 2>&1 || fail "run with due decision-date failed"
-assert grep -q 'exit-plan review due' "$ALERTS"
-assert grep -q 'step=exit-plan-review' "$LOG"
-assert grep -q 'e2e_surfaces.sh' "$CALLS"
-rm -rf "$FIXTURE/docs"
-
-echo "PASS: $asserts asserts; config tripwire, shadow divergence, ordered suites and skip list, log format and trimming, failure alerts, debounce/catch-up/stale-alert dedup, install and uninstall plist, exit-plan reminder"
+echo "PASS: $asserts asserts; config tripwire, ordered suites and skip list, daily fixture-only e2e vs manual --e2e, log format and trimming, failure alerts, debounce/catch-up/stale-alert dedup, install and uninstall plist"

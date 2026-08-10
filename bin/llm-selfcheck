@@ -96,16 +96,8 @@ maybe_run() {
 }
 
 run_checks() {
-  local name path seconds output rc detail step_status exit_plan exit_date
+  local name path seconds output rc detail
   local tripwire_globs tripwire_state tripwire_snapshot changed_paths changed_count
-  # Scaffolding self-reminder (docs/EXIT-PLAN.md): after the decision date, nag daily
-  # until the exit plan is executed — this block is removed together with it.
-  exit_plan="$repo_root/docs/EXIT-PLAN.md"
-  exit_date=$(sed -n 's/^decision-date: *//p' "$exit_plan" 2>/dev/null | head -1)
-  if [ -n "$exit_date" ] && ! [ "$(date +%Y-%m-%d)" \< "$exit_date" ]; then
-    write_step_log WARN exit-plan-review "due since $exit_date — see docs/EXIT-PLAN.md"
-    send_alert "LLM limits: exit-plan review due — docs/EXIT-PLAN.md"
-  fi
   # Profile roots are watched alongside ~/.claude: agents live in ~/.claude-profiles/<name>/
   # and a mutation there is exactly the event this tripwire exists to catch.
   tripwire_globs="${LLM_SELFCHECK_TRIPWIRE_GLOBS:-$HOME/.claude/CLAUDE.md $HOME/.claude/worker-model $HOME/.claude/settings.json $HOME/.claude/agents/*.md $HOME/.claude/commands/*.md $HOME/.claude-profiles/*/CLAUDE.md $HOME/.claude-profiles/*/settings.json $HOME/.claude-profiles/*/agents/*.md $HOME/.claude-profiles/*/commands/*.md}"
@@ -134,7 +126,6 @@ run_checks() {
     write_step_log WARN config-tripwire 'state dir unwritable — tripwire skipped'
   fi
   local -a steps=(
-    "shadow-divergence:${LLM_SELFCHECK_SHADOW_TIMEOUT:-30}"
     "e2e_surfaces.sh:${LLM_SELFCHECK_E2E_TIMEOUT:-900}"
     "test_llm_limits.sh:${LLM_SELFCHECK_SUITE_TIMEOUT:-300}"
     "test_claudeb.sh:${LLM_SELFCHECK_SUITE_TIMEOUT:-300}"
@@ -147,13 +138,8 @@ run_checks() {
     name=${path%%:*}
     seconds=${path#*:}
     rc=0
-    if [ "$name" = shadow-divergence ]; then
-      timeout_command "$seconds" "$repo_root/bin/llm-shadow-divergence" >"$output" 2>&1 || rc=$?
-      detail=$(tr '\n' ' ' <"$output" | sed 's/[[:space:]]*$//')
-      step_status=PASS
-      [[ "$detail" == *": skipped "* ]] && step_status=SKIP
-      [ "$rc" -ne 0 ] && step_status=FAIL
-      write_step_log "$step_status" "$name" "$detail"
+    if [ "$name" = "e2e_surfaces.sh" ] && [ "${LLM_SELFCHECK_FULL_E2E:-0}" != 1 ]; then
+      timeout_command "$seconds" env LLM_LIMITS_E2E_FIXTURE_ONLY=1 bash "tests/$name" >"$output" 2>&1 || rc=$?
     else
       timeout_command "$seconds" bash "tests/$name" >"$output" 2>&1 || rc=$?
     fi
@@ -161,11 +147,7 @@ run_checks() {
       write_log FAIL "$name"
       printf 'llm-selfcheck: %s failed (exit %s)\n' "$name" "$rc" >&2
       cat "$output" >&2
-      if [ "$name" = shadow-divergence ] && [ -n "$detail" ]; then
-        alert_failure "$name: $detail"
-      else
-        alert_failure "$name"
-      fi
+      alert_failure "$name"
       rm -f "$output"
       return "$rc"
     fi
@@ -243,16 +225,27 @@ show_status() {
   fi
 }
 
-usage() { printf 'usage: llm-selfcheck [run [--force]|install|uninstall|status]\n' >&2; exit 2; }
+usage() { printf 'usage: llm-selfcheck [run [--force] [--e2e]|install|uninstall|status]\n' >&2; exit 2; }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
 case "${1:-run}" in
   run)
-    case "${2:-}" in
-      '') maybe_run ;;
-      --force) [ "$#" -eq 2 ] || usage; run_checks ;;
-      *) usage ;;
-    esac
+    force=0
+    for arg in "${@:2}"; do
+      case "$arg" in
+        --force) force=1 ;;
+        # Only a human ever types --e2e; letting the daily debounce swallow it would answer a
+        # deliberate "run the full surfaces e2e now" with silence.
+        --e2e) LLM_SELFCHECK_FULL_E2E=1; force=1 ;;
+        *) usage ;;
+      esac
+    done
+    export LLM_SELFCHECK_FULL_E2E
+    if [ "$force" = 1 ]; then
+      run_checks
+    else
+      maybe_run
+    fi
     ;;
   install) [ "$#" -eq 1 ] || exit 2; install_agent ;;
   uninstall) [ "$#" -eq 1 ] || exit 2; uninstall_agent ;;

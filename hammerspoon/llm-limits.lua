@@ -1262,7 +1262,7 @@ function M.menuItems()
   return menu
 end
 
--- The store is written by the collector, llm-limitsd, and now every session's
+-- The store is written by the collector and now every session's
 -- statusline merge-kick; watch it so the menubar reflects fresh data without a
 -- menu open. Bursty atomic rewrites are collapsed by the throttle below.
 local STORE_RERENDER_THROTTLE = 2

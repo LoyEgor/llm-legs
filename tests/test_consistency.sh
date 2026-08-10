@@ -11,8 +11,7 @@ CLAUDEB="$ROOT/bin/claudeb"
 STATUSLINE="$ROOT/bin/statusline.sh"
 WORKERPICK="$ROOT/bin/worker-pick"
 LLMLIMITS="$ROOT/llm-limits.sh"
-LIMITSD="$ROOT/bin/llm-limitsd"
-SHADOW_FEED="$ROOT/bin/llm-limitsd-shadow-feed"
+
 HAMMER="$ROOT/hammerspoon/llm-limits.lua"
 WORKER_GATE="${WORKER_LIMIT_GATE:-$HOME/.claude/hooks/worker-limit-gate.sh}"
 WORKER_GATE_SETTINGS="${WORKER_GATE_SETTINGS:-$HOME/.claude/settings.json}"
@@ -477,10 +476,7 @@ assert grep -Fq 'def data_as_of:' "$LLMLIMITS"
 assert grep -Fq 'select(type == "object" and (.used_pct | type) == "number")' "$LLMLIMITS"
 assert grep -Fq 'map(set_data_age)' "$LLMLIMITS"
 assert grep -Fq 'select(type == "object" and (.used_pct | type) == "number")' "$WORKERPICK"
-assert grep -Fq 'data_times = [b["as_of"] for b in acc["buckets"].values()' "$LIMITSD"
-assert grep -Fq 'and not isinstance(b["used_pct"], bool)' "$LIMITSD"
-assert grep -Fq 'def _newest_data_at(holder, fallback):' "$SHADOW_FEED"
-assert grep -Fq 'obs.append((vendor, name, "rotation", fallback, {' "$SHADOW_FEED"
+
 assert doc_has 'Account data age'
 assert doc_has 'Absent and null-valued windows do not participate'
 

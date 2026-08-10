@@ -368,11 +368,6 @@ return "OK open-guard running=1->1 exited=1->2"
 pass "hs CLI reachable, Hammerspoon responding"
 assert_isolated_menu_contracts
 pass "isolated menu contracts: open-collect guard running 1->1, exited 1->2; completion re-rendered"
-if [ "${LLM_LIMITS_E2E_FIXTURE_ONLY:-0}" = 1 ]; then
-  pass "e2e fixture-only mode: live Hammerspoon singleton, cache, and refresh paths skipped"
-  exit 0
-fi
-
 # 2. Live module loaded and its data-read path (menuItems -> readLlmLimits) works.
 MENU_TXT=$(hs_menu)
 if grep -q '5h' <<<"$MENU_TXT"; then
@@ -382,6 +377,11 @@ elif grep -q 'no data — press Refresh' <<<"$MENU_TXT"; then
   pass "live module loaded; read path reported a specific no-data reason: ${reason:-<none shown>}"
 else
   fail "live read path returned neither parsed data nor a specific reason: $(head -3 <<<"$MENU_TXT" | tr '\n' '|')"
+fi
+
+if [ "${LLM_LIMITS_E2E_FIXTURE_ONLY:-0}" = 1 ]; then
+  pass "e2e fixture-only mode: collector, cache, and refresh paths skipped"
+  exit 0
 fi
 
 # 3. Menu construction: per-account ages, per-account hard refresh, no aggregate age line.
