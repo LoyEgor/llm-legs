@@ -200,6 +200,137 @@ payload=$(workdir_payload Bash session-git-mut "$REPO_A" "git -C \"$REPO_B\" che
 run_workdir_hook "$payload"
 assert_eq "$TOP_B" "$(cat "$STATE_DIR/workdir-session-git-mut")"
 
+WT_ADD_BASIC="$FIXTURES/wt-add-basic"
+git -C "$REPO_A" branch hook-wt-basic
+git -C "$REPO_A" worktree add -q "$WT_ADD_BASIC" hook-wt-basic
+payload=$(workdir_payload Bash session-wt-add-basic "$REPO_A" \
+  "git worktree add $WT_ADD_BASIC hook-wt-basic")
+run_workdir_hook "$payload"
+assert_eq "$(git -C "$WT_ADD_BASIC" rev-parse --show-toplevel)" \
+  "$(cat "$STATE_DIR/workdir-session-wt-add-basic")"
+
+WT_ADD_BEFORE="$FIXTURES/wt-add-before"
+git -C "$REPO_A" worktree add -q -b hook-wt-before "$WT_ADD_BEFORE" HEAD
+payload=$(workdir_payload Bash session-wt-add-before "$REPO_A" \
+  "git worktree add -b hook-wt-before $WT_ADD_BEFORE HEAD")
+run_workdir_hook "$payload"
+assert_eq "$(git -C "$WT_ADD_BEFORE" rev-parse --show-toplevel)" \
+  "$(cat "$STATE_DIR/workdir-session-wt-add-before")"
+
+WT_ADD_AFTER="$FIXTURES/wt-add-after"
+git -C "$REPO_A" worktree add -q "$WT_ADD_AFTER" -b hook-wt-after HEAD
+payload=$(workdir_payload Bash session-wt-add-after "$REPO_A" \
+  "git worktree add $WT_ADD_AFTER -b hook-wt-after HEAD")
+run_workdir_hook "$payload"
+assert_eq "$(git -C "$WT_ADD_AFTER" rev-parse --show-toplevel)" \
+  "$(cat "$STATE_DIR/workdir-session-wt-add-after")"
+
+WT_ADD_REASON="$FIXTURES/wt-add-reason"
+git -C "$REPO_A" branch hook-wt-reason
+git -C "$REPO_A" worktree add -q --lock --reason my-note "$WT_ADD_REASON" hook-wt-reason
+payload=$(workdir_payload Bash session-wt-add-reason "$REPO_A" \
+  "git worktree add --lock --reason my-note $WT_ADD_REASON hook-wt-reason")
+run_workdir_hook "$payload"
+assert_eq "$(git -C "$WT_ADD_REASON" rev-parse --show-toplevel)" \
+  "$(cat "$STATE_DIR/workdir-session-wt-add-reason")"
+
+WT_ADD_ORPHAN="$FIXTURES/wt-add-orphan"
+git -C "$REPO_A" worktree add -q --orphan "$WT_ADD_ORPHAN"
+payload=$(workdir_payload Bash session-wt-add-orphan "$REPO_A" \
+  "git worktree add --orphan $WT_ADD_ORPHAN")
+run_workdir_hook "$payload"
+assert_eq "$(git -C "$WT_ADD_ORPHAN" rev-parse --show-toplevel)" \
+  "$(cat "$STATE_DIR/workdir-session-wt-add-orphan")"
+
+WT_ADD_SPACE="$FIXTURES/wt add space"
+git -C "$REPO_A" worktree add -q -b hook-wt-space "$WT_ADD_SPACE" HEAD
+payload=$(workdir_payload Bash session-wt-add-space "$REPO_A" \
+  "git worktree add -b hook-wt-space '$WT_ADD_SPACE' HEAD")
+run_workdir_hook "$payload"
+assert_eq "$(git -C "$WT_ADD_SPACE" rev-parse --show-toplevel)" \
+  "$(cat "$STATE_DIR/workdir-session-wt-add-space")"
+
+WT_ADD_REL="$REPO_A/.claude/worktrees/hook-wt-relative"
+git -C "$REPO_A" branch hook-wt-relative
+git -C "$REPO_A" worktree add -q ".claude/worktrees/hook-wt-relative" hook-wt-relative
+payload=$(workdir_payload Bash session-wt-add-relative "$REPO_D" \
+  "git -C '$REPO_A' worktree add .claude/worktrees/hook-wt-relative hook-wt-relative")
+run_workdir_hook "$payload"
+assert_eq "$(git -C "$WT_ADD_REL" rev-parse --show-toplevel)" \
+  "$(cat "$STATE_DIR/workdir-session-wt-add-relative")"
+
+WT_ADD_AFTER_CD="$REPO_A/.claude/worktrees/hook-wt-after-cd"
+git -C "$REPO_A" branch hook-wt-after-cd
+git -C "$REPO_A" worktree add -q ".claude/worktrees/hook-wt-after-cd" hook-wt-after-cd
+printf '%s\n' "$TOP_D" > "$STATE_DIR/workdir-session-wt-add-after-cd"
+payload=$(workdir_payload Bash session-wt-add-after-cd "$REPO_D" \
+  "cd '$REPO_A' && git worktree add .claude/worktrees/hook-wt-after-cd hook-wt-after-cd")
+run_workdir_hook "$payload"
+assert_eq "$(git -C "$WT_ADD_AFTER_CD" rev-parse --show-toplevel)" \
+  "$(cat "$STATE_DIR/workdir-session-wt-add-after-cd")"
+
+WT_ADD_FAILED="$FIXTURES/wt-add-failed"
+if git -C "$REPO_A" worktree add "$WT_ADD_FAILED" no-such-worktree-ref >/dev/null 2>&1; then
+  fail "failed worktree-add fixture unexpectedly succeeded"
+fi
+assert test ! -e "$WT_ADD_FAILED"
+printf '%s\n' "$TOP_A" > "$STATE_DIR/workdir-session-wt-add-failed"
+payload=$(workdir_payload Bash session-wt-add-failed "$REPO_A" \
+  "git worktree add $WT_ADD_FAILED no-such-worktree-ref")
+run_workdir_hook "$payload"
+assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-wt-add-failed")"
+
+WT_ADD_EXISTING="$REPO_D/existing-worktree-target"
+mkdir -p "$WT_ADD_EXISTING"
+printf 'occupied\n' > "$WT_ADD_EXISTING/blocker"
+git -C "$REPO_A" branch hook-wt-existing
+if git -C "$REPO_A" worktree add "$WT_ADD_EXISTING" hook-wt-existing >/dev/null 2>&1; then
+  fail "existing-directory worktree-add fixture unexpectedly succeeded"
+fi
+printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-session-wt-add-existing"
+payload=$(workdir_payload Bash session-wt-add-existing "$REPO_A" \
+  "git worktree add '$WT_ADD_EXISTING' hook-wt-existing")
+run_workdir_hook "$payload"
+assert_eq "$TOP_E" "$(cat "$STATE_DIR/workdir-session-wt-add-existing")"
+rm -f "$WT_ADD_EXISTING/blocker"
+rmdir "$WT_ADD_EXISTING"
+
+WT_ADD_MULTILINE="$FIXTURES/wt-add-multiline"
+git -C "$REPO_A" branch hook-wt-multiline
+git -C "$REPO_A" worktree add -q "$WT_ADD_MULTILINE" hook-wt-multiline
+multiline_cmd=$(printf "git worktree add %s hook-wt-multiline\ncd '%s'" "$WT_ADD_MULTILINE" "$REPO_D")
+printf '%s\n' "$TOP_A" > "$STATE_DIR/workdir-session-wt-add-multiline"
+payload=$(workdir_payload Bash session-wt-add-multiline "$REPO_A" "$multiline_cmd")
+run_workdir_hook "$payload"
+assert_eq "$TOP_D" "$(cat "$STATE_DIR/workdir-session-wt-add-multiline")"
+
+EXCLUDED_WT_BASE="$HOME/.claude/worktree-add-base"
+ln -s "$REPO_A" "$EXCLUDED_WT_BASE"
+WT_ADD_ABSOLUTE="$FIXTURES/wt-add-absolute"
+git -C "$REPO_A" branch hook-wt-absolute
+git -C "$EXCLUDED_WT_BASE" worktree add -q "$WT_ADD_ABSOLUTE" hook-wt-absolute
+printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-session-wt-add-absolute"
+payload=$(workdir_payload Bash session-wt-add-absolute "$REPO_E" \
+  "git -C '$EXCLUDED_WT_BASE' worktree add '$WT_ADD_ABSOLUTE' hook-wt-absolute")
+run_workdir_hook "$payload"
+assert_eq "$(git -C "$WT_ADD_ABSOLUTE" rev-parse --show-toplevel)" \
+  "$(cat "$STATE_DIR/workdir-session-wt-add-absolute")"
+rm -f "$EXCLUDED_WT_BASE"
+
+WT_ADD_STICKY="$REPO_A/.claude/worktrees/hook-wt-sticky"
+git -C "$REPO_A" worktree add -q -b hook-wt-sticky "$WT_ADD_STICKY" HEAD
+printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-session-wt-add-sticky"
+payload=$(workdir_payload Bash session-wt-add-sticky "$REPO_E" \
+  "git worktree add -b hook-wt-sticky '$WT_ADD_STICKY' HEAD")
+run_workdir_hook "$payload"
+assert_eq "$(git -C "$WT_ADD_STICKY" rev-parse --show-toplevel)" \
+  "$(cat "$STATE_DIR/workdir-session-wt-add-sticky")"
+
+printf '%s\n' "$TOP_A" > "$STATE_DIR/workdir-session-wt-list"
+payload=$(workdir_payload Bash session-wt-list "$REPO_A" "git -C '$REPO_B' worktree list")
+run_workdir_hook "$payload"
+assert_eq "$TOP_B" "$(cat "$STATE_DIR/workdir-session-wt-list")"
+
 payload=$(workdir_payload Bash session-cd-then-ro "$REPO_A" "cd '$REPO_B' && git -C '$REPO_A' log")
 run_workdir_hook "$payload"
 assert_eq "$TOP_B" "$(cat "$STATE_DIR/workdir-session-cd-then-ro")"

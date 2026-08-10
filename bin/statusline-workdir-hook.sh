@@ -12,16 +12,31 @@ parsed=$(printf '%s' "$input" | jq -r '
     # because such a cd dies with the command — see the away run below.
     "\\\"(?:\\\\.|[^\\\"])*\\\"|\\x27[^\\x27]*\\x27|[^[:space:];&|()]+" as $tok
     | (.tool_input.command // "")
-    | [match("(^|[;&|(\\n])[[:space:]]*((cd|pushd)[[:space:]]+(?<cd>" + $tok + ")|git[[:space:]]+-C[[:space:]]+(?<dir>" + $tok + ")([[:space:]]+(?<sub>[A-Za-z][A-Za-z-]*))?)"; "g")]
+    | [match("(^|[;&|(\\n])[[:space:]]*((cd|pushd)[[:space:]]+(?<cd>" + $tok + ")|git([[:space:]]+-C[[:space:]]+(?<wt_dir>" + $tok + "))?[[:space:]]+worktree[[:space:]]+add(?<wt_args>([ \\t]+(" + $tok + "))+)|git[[:space:]]+-C[[:space:]]+(?<dir>" + $tok + ")([[:space:]]+(?<sub>[A-Za-z][A-Za-z-]*))?)"; "g")]
     | map(
         ([.captures[] | select(.name == "cd" and .string != null) | .string][0] // "") as $cd
+        | ([.captures[] | select(.name == "wt_dir" and .string != null) | .string][0] // "") as $wt_dir
+        | ([.captures[] | select(.name == "wt_args" and .string != null) | .string][0] // "") as $wt_args
         | ([.captures[] | select(.name == "dir" and .string != null) | .string][0] // "") as $dir
         | ([.captures[] | select(.name == "sub" and .string != null) | .string][0] // "") as $sub
         | (.captures[0].string // "") as $sep
-        | if $cd != "" then {path: $cd, sep: $sep}
-          elif $dir != "" and (["worktree","checkout","switch","commit","merge","rebase","cherry-pick","revert","restore","stash","am","reset","pull"] | index($sub) != null) then {path: $dir, sep: ""}
+        | if $wt_args != "" then
+            ([$wt_args | match($tok; "g").string]
+             | reduce .[] as $arg ({path: "", option_arg: false};
+                 if .path != "" then .
+                 elif .option_arg then .option_arg = false
+                 elif (["-b", "-B", "--reason"] | index($arg) != null) then .option_arg = true
+                 elif ($arg | startswith("-")) then .
+                 else .path = $arg end)
+             | {path: .path, sep: "", worktree_add: "1", worktree_base: $wt_dir})
+          elif $cd != "" then {path: $cd, sep: $sep, cd_hit: "1", worktree_add: "", worktree_base: ""}
+          elif $dir != "" and (["worktree","checkout","switch","commit","merge","rebase","cherry-pick","revert","restore","stash","am","reset","pull"] | index($sub) != null) then {path: $dir, sep: "", worktree_add: "", worktree_base: ""}
           else empty end)
-    | (last // {path: "", sep: ""});
+    | . as $hits
+    | (last // {path: "", sep: "", worktree_add: "", worktree_base: ""}) as $last
+    | if $last.worktree_add == "1" and $last.worktree_base == "" then
+        $last + {worktree_base: ([$hits[] | select(.cd_hit == "1") | .path] | last // "")}
+      else $last end;
   def worktree_path:
     (.tool_response // "")
     | (if type == "string" then . elif type == "object" then ([.. | strings] | join("\n")) else "" end)
@@ -41,7 +56,7 @@ parsed=$(printf '%s' "$input" | jq -r '
     | map(select(. != "" and . != "/"))
     | .[0:10]
     | join("");
-  (if .tool_name == "Bash" then bash_hit else {path: "", sep: ""} end) as $bash
+  (if .tool_name == "Bash" then bash_hit else {path: "", sep: "", worktree_add: "", worktree_base: ""} end) as $bash
   | [(.hook_event_name | value), (.tool_name | value), (.session_id | value | gsub("[^A-Za-z0-9_-]"; "")),
    (.cwd | value),
    (if (.agent_id | value) != "" or (.agent_type | value) != "" then "1" else "" end),
@@ -52,11 +67,13 @@ parsed=$(printf '%s' "$input" | jq -r '
     else "" end),
    (.source | value),
    (if $bash.sep == "(" then "1" else "" end),
+   ($bash.worktree_add // ""),
+   ($bash.worktree_base // ""),
    (if .tool_name == "Task" or .tool_name == "Agent" then dispatch_paths else "" end)]
   | join("")
 ' 2>/dev/null) || exit 0
 
-IFS=$'\x1f' read -r hook_event tool_name session_id base_dir agent_flag candidate start_source bash_subshell dispatch <<< "$parsed"
+IFS=$'\x1f' read -r hook_event tool_name session_id base_dir agent_flag candidate start_source bash_subshell bash_worktree_add bash_worktree_base dispatch <<< "$parsed"
 [ -n "$session_id" ] || exit 0
 
 cache_dir="$HOME/.cache/claude-statusline"
@@ -161,6 +178,14 @@ case "$tool_name" in
     case "$candidate" in
       -*) exit 0 ;;
     esac
+    case "$bash_worktree_base" in
+      \"*\")
+        bash_worktree_base=${bash_worktree_base:1:${#bash_worktree_base}-2}
+        bash_worktree_base=${bash_worktree_base//\\\"/\"}
+        bash_worktree_base=${bash_worktree_base//\\\\/\\}
+        ;;
+      \'*\') bash_worktree_base=${bash_worktree_base:1:${#bash_worktree_base}-2} ;;
+    esac
     ;;
   *) exit 0 ;;
 esac
@@ -213,6 +238,10 @@ resolve_toplevel() {
   (cd "$top" 2>/dev/null && pwd -P)
 }
 
+if [ -n "$bash_worktree_base" ] && [[ "$candidate" != /* ]]; then
+  base_dir=$(resolve_dir "$bash_worktree_base") || exit 0
+fi
+
 # Ownership evidence, kept apart from the home above and written for the review segment: it needs
 # to know which changed paths are THIS chat's work, and a receipt hash over the whole repository
 # cannot tell — one foreign edit anywhere used to light the label forever. A worker's writes and
@@ -261,7 +290,15 @@ case "$tool_name" in
     ;;
   *)
     [ -n "$touched_file" ] && record_touched "$touched_file"
-    toplevel=$(resolve_toplevel "$candidate") || exit 0
+    if [ -n "$bash_worktree_add" ]; then
+      # PostToolUse has no reliable success field: requiring the candidate to
+      # be its own toplevel rejects both a missing path and an existing subdir.
+      resolved_candidate=$(resolve_dir "$candidate") || exit 0
+      toplevel=$(resolve_toplevel "$resolved_candidate") || exit 0
+      [ "$resolved_candidate" = "$toplevel" ] || exit 0
+    else
+      toplevel=$(resolve_toplevel "$candidate") || exit 0
+    fi
     ;;
 esac
 [ -n "$toplevel" ] || exit 0
@@ -287,7 +324,7 @@ esac
 # parent never visited, so one write there proves nothing), a subshell cd
 # (`(cd /other && make)` cannot outlive the command, so the session never
 # moved), and a main-session read (a grep sweep touches every repo in reach).
-if [ "$tool_name" != EnterWorktree ] && [ -f "$state_file" ]; then
+if [ "$tool_name" != EnterWorktree ] && [ -z "$bash_worktree_add" ] && [ -f "$state_file" ]; then
   IFS= read -r prev_home < "$state_file" || :
   if [ "$toplevel" = "$prev_home" ]; then
     # Work at home rewrites the home and clears the run. A read is not work, so
