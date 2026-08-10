@@ -39,7 +39,7 @@ assert denied "$(bash_event 'review-bench run HEAD --tier T3 --foreground')"
 assert denied "$(bash_event 'review-bench review --worktree --tier=T3')"
 for ordinary in \
   'review-bench review --worktree --tier T2 --foreground' \
-  'review-bench suggest --repo .' \
+  'review-bench coverage --repo .' \
   'review-bench tiers --table' \
   'review-bench run HEAD --raters oc-kimik3 --max-tokens 32000' \
   "grep -n -- '--max' bin/review-bench" \

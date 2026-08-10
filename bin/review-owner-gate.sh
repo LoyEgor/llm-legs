@@ -2,8 +2,8 @@
 # Tier T3 and any tier's --max are Egor's to start. Two modes, and deliberately no cleverness
 # between them: `prompt` (UserPromptSubmit) touches a marker when his message names a panel, and
 # `bash` (PreToolUse) denies a launch of one while no fresh marker sits there. A marker only
-# UNBLOCKS — `review-bench suggest` never proposes these panels either way — so a stray mention
-# costs nothing and none of the machinery a one-shot permission would need has to exist.
+# UNBLOCKS — nothing ever proposes these panels either way — so a stray mention costs nothing
+# and none of the machinery a one-shot permission would need has to exist.
 # Fail-open on any error: a broken gate must never block ordinary reviews.
 set -u
 
@@ -38,7 +38,7 @@ case "$MODE" in
     # Announcing a panel this hook failed to unblock would send the reader into a denial.
     [ "${#touched[@]}" -gt 0 ] || exit 0
     named=("${touched[@]}")
-    jq -cn --arg c "Egor named an owner-only review panel (${named[*]}): it is unblocked for the next $GRANT_TTL_MIN minutes. Run it only if he actually asked for it — \`review-bench suggest\` prints it as an \`owner-only\` line and never as its \`command:\`." \
+    jq -cn --arg c "Egor named an owner-only review panel (${named[*]}): it is unblocked for the next $GRANT_TTL_MIN minutes. Run it only if he actually asked for it — nothing else ever picks these panels." \
       '{hookSpecificOutput: {hookEventName: "UserPromptSubmit", additionalContext: $c}}' 2>/dev/null
     exit 0
     ;;
@@ -60,7 +60,7 @@ case "$MODE" in
       blocked="${blocked:+$blocked and }--max"
     fi
     [ -n "$blocked" ] || exit 0
-    jq -cn --arg r "Blocked: $blocked is Egor's to start, and he has not named it. This gate is the rule, not a suggestion — do not rebuild the command another way. Run the tier \`review-bench suggest\` prints as its \`command:\` line; if this change looks like it deserves more, ask Egor in one line and wait." \
+    jq -cn --arg r "Blocked: $blocked is Egor's to start, and he has not named it. This gate is the rule, not a suggestion — do not rebuild the command another way. Run a lighter tier; if this change looks like it deserves more, ask Egor in one line and wait." \
       '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $r}}' 2>/dev/null
     exit 0
     ;;

@@ -2789,10 +2789,12 @@ def cycle_path(repo, session=""):
 
 def arm_review_cycle(repo, stage="armed1", session="", entries=()):
     path = cycle_path(repo, session)
-    # The gate's own four fields: stage, the run id in the receipt when the stage was written, the
-    # tree that run read and the UTC second the cycle opened, then one `<blob> <path>` entry per
-    # path the pending commit carries. Written here, never rewritten: the file is the gate's.
-    fields = [stage.encode(), b"", b"", b"2026-08-07T00:00:00"]
+    # The gate's own six fields: stage, the run id in the receipt when the stage was written, the
+    # tree that run read, the UTC second the cycle opened, the ticket's drift budget and the tier it
+    # was granted at, then one `<blob> <path>` entry per path the pending commit carries. Written
+    # here, never rewritten: the file is the gate's, and a reader off by one takes an entry for a
+    # budget and the first real entry for a path nobody is committing.
+    fields = [stage.encode(), b"", b"", b"2026-08-07T00:00:00", b"", b""]
     fields += [entry.encode() if isinstance(entry, str) else entry for entry in entries]
     path.write_bytes(b"\0".join(fields) + b"\0")
     return path
@@ -2930,7 +2932,8 @@ for stage in ("armed1", "armed2"):
     assert "working tree matches HEAD" in armed.stderr, (stage, armed.stderr)
 # Read and left alone: the gate spends this file at the commit it opened it for, and a peek that
 # consumed it would leave that commit blocked on a round nothing can authorize.
-assert cycle_path(cycle_repo).read_bytes() == b"armed2\0\0\0" + b"2026-08-07T00:00:00\0"
+assert cycle_path(cycle_repo).read_bytes() == (
+    b"armed2\0\0\0" + b"2026-08-07T00:00:00\0\0\0")
 # Egor asking for a review by name is the other door, and it is the prefix the flow gate already
 # verifies against the transcript — taken at face value here, since a flag of this tool's own would
 # be one the caller grants itself unchecked.
@@ -5387,7 +5390,7 @@ for side in rb.SIDE_RUNNERS:
 
 # --- scoped worktree runs ---------------------------------------------------------------------
 # A review of part of the working tree is not a review of the repository. Its snapshot must hold
-# only the paths it was given, and its receipt must never be the one `suggest` and the statusline
+# only the paths it was given, and its receipt must never be the one `coverage` and the statusline
 # read — or the rest of the tree comes out already reviewed without a panel ever having read it.
 scope_repo = work / "scoped-worktree"
 scope_repo.mkdir()
@@ -5581,11 +5584,12 @@ assert scope_flat_path.read_bytes() == scope_flat_before, "a scoped run rewrote 
 assert sorted(path.name for path in scope_flat_path.parent.iterdir()) == sorted(
     [scope_flat_name, scope_receipt_name]
 )
-scope_suggest_stdout = io.StringIO()
-with contextlib.redirect_stdout(scope_suggest_stdout):
-    rb.cmd_suggest(argparse.Namespace(repo=str(scope_repo), range=None))
+scope_coverage_stdout = io.StringIO()
+with contextlib.redirect_stdout(scope_coverage_stdout):
+    rb.cmd_coverage(argparse.Namespace(
+        repo=str(scope_repo), commit_paths=None, commit_all=False))
 # Both files, not one: the baseline is the full review, and the scoped run left it where it was.
-assert "changed files: 2" in scope_suggest_stdout.getvalue(), scope_suggest_stdout.getvalue()
+assert "files: 2" in scope_coverage_stdout.getvalue(), scope_coverage_stdout.getvalue()
 
 def scope_commit_objects():
     listed = subprocess.run(
@@ -5761,12 +5765,13 @@ assert root_run_meta["commit"] == root_sha and "worktree" not in root_run_meta, 
     "".join(f"line {n} corrected\n" for n in range(1, 201))
     + "".join(f"line {n}\n" for n in range(201, 401))
 )
-root_suggest = io.StringIO()
-with contextlib.redirect_stdout(root_suggest):
-    rb.cmd_suggest(argparse.Namespace(repo=str(root_repo), range=None))
-assert "changed files: 1" in root_suggest.getvalue(), root_suggest.getvalue()
-assert "work over review" not in root_suggest.getvalue(), root_suggest.getvalue()
-assert "tier: T2" in root_suggest.getvalue(), root_suggest.getvalue()
+root_coverage = io.StringIO()
+with contextlib.redirect_stdout(root_coverage):
+    rb.cmd_coverage(argparse.Namespace(
+        repo=str(root_repo), commit_paths=None, commit_all=False))
+assert "files: 1" in root_coverage.getvalue(), root_coverage.getvalue()
+assert "covered: no" in root_coverage.getvalue(), root_coverage.getvalue()
+assert "vouch: " not in root_coverage.getvalue(), root_coverage.getvalue()
 subprocess.run(["git", "-C", str(root_repo), "checkout", "--", "day-one.txt"], check=True)
 
 collision_left = work / "receipt-collision-left" / "same-name"
@@ -6012,6 +6017,8 @@ for covering_run, covering_ts, covering_scope in (
     ("covering-older", "2026-08-06T22:00:00+00:00", ["bin/tool"]),
     ("covering-newer", "2026-08-06T23:00:00+00:00", ["bin/tool", "tests/test_tool.sh"]),
     ("covering-outside", "2026-08-07T00:00:00+00:00", ["bin/tool", "docs.md"]),
+    # A review can be scoped to a directory too, and then it read every file under it.
+    ("covering-dir", "2026-08-06T21:00:00+00:00", ["tests"]),
 ):
     rb.persist_review_receipt(covering_repo, covering_tree, covering_head, covering_run, 0,
                               timestamp=covering_ts, scope=covering_scope)
@@ -6035,21 +6042,30 @@ def covering_receipt(*covering_args):
     return proc.returncode, (json.loads(proc.stdout) if proc.stdout.strip() else None), proc.stderr
 
 
-# Exactly the reviewed scope, and the newest review that read no more than it: the older run read
-# a subset of the same paths and is still a review of this commit, just not the freshest one.
+# The review that reached the most of the commit, not the newest one that reached any of it: the
+# `covering-outside` run is fresher and read `bin/tool`, but only `covering-newer` read both.
 covering_rc, covering_json, _ = covering_receipt("--paths", "bin/tool", "tests/test_tool.sh")
 assert covering_rc == 0 and covering_json["run_id"] == "covering-newer", (covering_rc,
                                                                           covering_json)
 assert covering_json["scope"] == ["bin/tool", "tests/test_tool.sh"], covering_json
 # A path in the commit the panel never saw does not disqualify the review — that is drift the gate
-# prices — but a path the REVIEW read and the commit does not carry answers a different question.
+# prices.
 assert covering_receipt(
     "--paths", "bin/tool", "tests/test_tool.sh", "never-reviewed.txt"
 )[1]["run_id"] == "covering-newer"
-assert covering_receipt("--paths", "bin/tool")[1]["run_id"] == "covering-older", \
+# Nor does a path the REVIEW read and the commit does not carry: reading more than the commit
+# carries is not reading less of it, and disqualifying `covering-outside` for having also read
+# docs.md handed the gate an older, smaller run for the very files that panel had just read.
+assert covering_receipt("--paths", "bin/tool")[1]["run_id"] == "covering-outside", \
     covering_receipt("--paths", "bin/tool")
-assert covering_receipt("--paths", "docs.md")[0] == 1, covering_receipt("--paths", "docs.md")
-assert covering_receipt("--paths", "tests/test_tool.sh")[0] == 1
+assert covering_receipt("--paths", "docs.md")[1]["run_id"] == "covering-outside", \
+    covering_receipt("--paths", "docs.md")
+assert covering_receipt("--paths", "tests/test_tool.sh")[1]["run_id"] == "covering-newer"
+# Containment counts both ways round: a review scoped to `tests` reached every file the commit
+# names inside it, and scoring it zero sent the gate looking for a second review of code a panel
+# had already read whole.
+assert covering_receipt("--paths", "tests/unread.sh")[1]["run_id"] == "covering-dir", \
+    covering_receipt("--paths", "tests/unread.sh")
 # One spelling, the one the receipts are named after: the caller hands over a commit pathspec, not
 # a canonical scope, and a receipt found only for `bin/tool` is a receipt the gate cannot use.
 assert covering_receipt(
@@ -6061,10 +6077,26 @@ assert covering_receipt("--paths", str(work / "outside.txt"))[0] == 2
 # whose name merely starts the same never vouches for a neighbour.
 assert covering_receipt("--paths", "bin", "tests")[1]["run_id"] == "covering-newer", \
     covering_receipt("--paths", "bin", "tests")
-assert covering_receipt("--paths", "bin")[1]["run_id"] == "covering-older"
+assert covering_receipt("--paths", "bin")[1]["run_id"] == "covering-outside"
 assert covering_receipt("--paths", "bin/to")[0] == 1, covering_receipt("--paths", "bin/to")
+# A review that reaches none of the commit is no answer at all, however fresh: the search is a
+# search for coverage, and the empty overlap is the "nothing has reviewed this" the gate acts on.
+assert covering_receipt("--paths", "never-reviewed.txt")[0] == 1, \
+    covering_receipt("--paths", "never-reviewed.txt")
+# One question returns one receipt, so a reader this one cannot satisfy has to be able to ask past
+# it — otherwise a broad or spent run at the front of the order hides every receipt behind it.
+assert covering_receipt(
+    "--paths", "bin/tool", "--exclude-run", "covering-outside"
+)[1]["run_id"] == "covering-newer"
+assert covering_receipt(
+    "--paths", "bin/tool", "--exclude-run", "covering-outside", "--exclude-run", "covering-newer"
+)[1]["run_id"] == "covering-older"
+assert covering_receipt(
+    "--paths", "bin/tool", "--exclude-run", "covering-outside", "--exclude-run", "covering-newer",
+    "--exclude-run", "covering-older"
+)[0] == 1, "a shelf whose every receipt was skipped still answered"
 # `git commit -- .` carries everything, so it is covered by the newest scoped review of any set —
-# the same root-is-everything spelling the suggest side reads.
+# the same root-is-everything spelling the coverage side reads.
 assert covering_receipt("--paths", ".")[1]["run_id"] == "covering-outside", \
     covering_receipt("--paths", ".")
 # The plain receipt is untouched by all of it: scoped runs never answered for the repository, and
@@ -6732,7 +6764,7 @@ assert (
     rb.resolved_model_from_envelope(pair_envelope) == "claude-opus-5+claude-sonnet-5"
 ), rb.resolved_model_from_envelope(pair_envelope)
 
-suggest_env = dict(
+coverage_env = dict(
     os.environ,
     GIT_AUTHOR_NAME="t",
     GIT_AUTHOR_EMAIL="t@example.test",
@@ -6741,18 +6773,18 @@ suggest_env = dict(
 )
 
 
-def make_suggest_repo(name, tracked=("tracked.txt",)):
+def make_coverage_repo(name, tracked=("tracked.txt",)):
     path = work / name
     path.mkdir()
     subprocess.run(["git", "-C", str(path), "init", "-q", "-b", "main"],
-                   check=True, env=suggest_env)
+                   check=True, env=coverage_env)
     for file_name in tracked:
         full_path = path / file_name
         full_path.parent.mkdir(parents=True, exist_ok=True)
         full_path.write_text("base\n")
-    subprocess.run(["git", "-C", str(path), "add", "."], check=True, env=suggest_env)
+    subprocess.run(["git", "-C", str(path), "add", "."], check=True, env=coverage_env)
     subprocess.run(["git", "-C", str(path), "commit", "-qm", "base"],
-                   check=True, env=suggest_env)
+                   check=True, env=coverage_env)
     return path
 
 
@@ -6761,7 +6793,7 @@ def review_found(run_id, confirmed=0, findings=0):
     something, so a fixture asserting the vouch has to be explicit about it: an adjudicated confirmed
     count for a commit review, findings files for a worktree one, which the corpus refuses.
     """
-    corpus = pathlib.Path(suggest_env["CLAUDEB_DIR"]) / "worker-stats" / "reviews.jsonl"
+    corpus = pathlib.Path(coverage_env["CLAUDEB_DIR"]) / "worker-stats" / "reviews.jsonl"
     if confirmed:
         corpus.parent.mkdir(parents=True, exist_ok=True)
         with corpus.open("a") as stream:
@@ -6769,7 +6801,7 @@ def review_found(run_id, confirmed=0, findings=0):
                 {"run_id": run_id, "rater": "sol-low", "confirmed": confirmed}
             ) + "\n")
     if findings:
-        run_dir = pathlib.Path(suggest_env["CLAUDEB_DIR"]) / "worker-stats" / "benches" / run_id
+        run_dir = pathlib.Path(coverage_env["CLAUDEB_DIR"]) / "worker-stats" / "benches" / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / "findings-sol-high.jsonl").write_text("".join(
             json.dumps({"severity": "P2", "file": "x", "line": n, "summary": "f"}) + "\n"
@@ -6777,184 +6809,70 @@ def review_found(run_id, confirmed=0, findings=0):
         ))
 
 
-def suggest(path, *extra, cwd=None):
+def coverage(path, *extra, cwd=None):
     proc = subprocess.run(
-        [sys.argv[1], "suggest", "--repo", str(path), *extra],
-        check=True, capture_output=True, text=True, env=suggest_env, cwd=cwd,
+        [sys.argv[1], "coverage", "--repo", str(path), *extra],
+        check=True, capture_output=True, text=True, env=coverage_env, cwd=cwd,
     )
     return proc.stdout.splitlines()
 
 
-def assert_suggestion(lines, files, changed_lines, tier, committed=False, receipt=None,
-                      worktree_receipt=None, runs=None, capped=None):
-    # Three tiers, and only one of them launches: `tier` is the ladder's own answer, `capped` what
-    # the owner-only ceiling leaves of it, `runs` what a second round then drops that to.
-    runs = runs or tier
-    capped = capped or runs
-    # `tier:` names the panel that runs, never the ladder's own answer: the statusline reads this
-    # line, and a number nothing is going to launch is a number the reader acts on wrongly. The
-    # ladder's answer survives as prose below, for a reader deciding whether to ask for more.
-    assert lines[:3] == [
-        f"changed files: {files}",
-        f"changed lines: {changed_lines}",
-        f"tier: {runs}",
-    ], lines
-    offset = 3
-    if capped != tier:
-        assert lines[offset] == (
-            f"the ladder sizes this at {tier}, which is the owner's to start, so the panel is "
-            f"{capped}"
-        ), lines
-        offset += 1
-    else:
-        assert not any("is the owner's to start" in line for line in lines), lines
-    if runs != capped:
-        assert lines[offset] == (
-            f"the last round earned this commit one more review, and a second round runs one rung "
-            f"down, so the panel is {runs} rather than {capped}"
-        ), lines
-        offset += 1
-    else:
-        assert not any("a second round runs one rung down" in line for line in lines), lines
-    # A receipt never moves the tier any more: the flow gate's per-commit ticket is what carries
-    # post-review work, so suggest prices every delta by the size ladder alone.
-    assert not any(line.startswith("work over review ") for line in lines), lines
-    if receipt:
-        assert lines[offset] == (
-            f"unreviewed delta vs review {receipt}; staged content is compared with the same "
-            "reviewed tree"
-        ), lines
-        offset += 1
-    elif worktree_receipt:
-        assert lines[offset] == (
-            f"unreviewed delta vs review {worktree_receipt}; the working tree is compared with the "
-            "reviewed snapshot as one tree against another, so staged and untracked content is "
-            "counted once"
-        ), lines
-        offset += 1
-    background = rb.REVIEW_TIERS[runs]["budget_min"] >= 10
-    assert lines[offset] == (
-        f"spawn: Bash run_in_background={'true' if background else 'false'}; "
-        "preserve the complete final stdout"
-    ), lines
-    offset += 1
-    prefix = "command: review-bench review " if committed else (
-        "command: review-bench review --worktree "
-    )
-    assert lines[offset].startswith(prefix), lines
-    assert f"--tier {runs}" in lines[offset], lines
-    assert "--max" not in lines[offset], lines
-    # The invariant the statusline depends on, asserted against the two lines themselves rather
-    # than against what this helper was told: one tier is named, and it is the one that launches.
-    named = [line.split(": ", 1)[1] for line in lines if line.startswith("tier: ")]
-    assert named == re.findall(r"--tier (\S+)", lines[offset]), lines
-    offset += 1
-    # The one line that tells a reader --paths exists. This output is the whole of what the skill
-    # says to obey, so a run in a tree holding someone else's work has no other way to learn it can
-    # be narrowed; a commit is not the working tree and cannot be.
-    scoped = [line for line in lines if line.startswith("scoped: ")]
-    assert len(scoped) == (0 if committed else 1), lines
-    if not committed:
-        assert lines[offset] == scoped[0], lines
-        assert "--paths <path> ..." in scoped[0], lines
-        offset += 1
-    # The one line that tells a reader a change spanning two checkouts is ONE panel, and how a
-    # half that is already committed is named. Printed for commits and worktrees alike: a --range
-    # run is exactly the case where the other half tends to be somewhere else.
-    spanning = [line for line in lines if line.startswith("several repositories: ")]
-    assert len(spanning) == 1, lines
-    assert lines[offset] == spanning[0], lines
-    # A reader obeys this line literally, so after a range suggestion it has to spell the range as
-    # the inline form: --range beside another --repo is a command the run refuses outright.
-    if committed:
-        assert "replace --range with --repo " in spanning[0], lines
-        # The range as the command above spells it, so the two answer about one change.
-        spelled = re.search(r"--range (\S+)", lines[offset - 1]).group(1)
-        assert f"@{spelled}" in spanning[0], lines
-        assert "--repo <path>[@<base>..<head>]" in spanning[0], lines
-    else:
-        assert "--repo <path> --repo <path>" in spanning[0], lines
-        assert "<path>@<base>..<head>" in spanning[0], lines
-    offset += 1
-    # The one line that tells a reader lenses exist, printed for commits and worktrees alike:
-    # exactly the registered slugs, so a lens absent from the registry is absent here too.
-    registered = sorted(rb.load_lenses())
-    if registered:
-        assert lines[offset] == (
-            "lenses: " + ", ".join(registered)
-            + " — repeat the command with --lens <slug> to review by that methodology "
-              "instead of the raters' own (all cells except OpenCode/agy"
-            + ("" if committed else "; combinable with --paths") + ")"
-        ), lines
-        offset += 1
-    # The cap. This output is the whole of what a reader obeys, and it is obeyed in full only while
-    # it can be read in full: three advice lines between the command and the owner-only tail. A
-    # fourth is the signal to restructure them, never to append one more (Egor, 2026-08-08).
-    command_at = next(i for i, line in enumerate(lines) if line.startswith("command: "))
-    owner_at = next((i for i, line in enumerate(lines) if line.startswith("owner-only, ")),
-                    len(lines))
-    assert owner_at - command_at - 1 <= 3, lines[command_at + 1:owner_at]
-    # Everything heavier than the followed command is printed as the owner's to reach for, and
-    # named as such on its own line.
-    owner_only = [
-        line.split(": ", 1)[1] for line in lines[offset:]
-        if line.startswith("owner-only, run only if Egor asked for it by name: ")
-    ]
-    assert len(owner_only) == len(lines[offset:]), lines
-    # The owner's tier is offered at every size, so his "run T3" needs no command assembled by hand.
-    for owner_only_tier in rb.OWNER_TIERS:
-        assert any(
-            f"--tier {owner_only_tier}" in line and "--max" not in line for line in owner_only
-        ) == (owner_only_tier != runs), lines
-    wider = rb.REVIEW_TIERS[runs]["cells"] != rb.REVIEW_TIERS[runs]["cells_max"]
-    assert any(f"--tier {runs} --max" in line for line in owner_only) == wider, lines
-    if committed:
-        return
-    assert not any("cannot be reviewed" in line for line in lines), lines
+def gate_reads(lines):
+    """Exactly what the commit gate takes out of this output, asserted the way the gate reads it:
+    one `covered:` verdict, at most one `vouch:`, and never a vouch on a refusal — a run named
+    beside `covered: no` would be spent on a commit the same answer says is not covered.
+    """
+    verdicts = [line[len("covered: "):] for line in lines if line.startswith("covered: ")]
+    assert verdicts in (["yes"], ["no"]), lines
+    named = [line[len("vouch: "):] for line in lines if line.startswith("vouch: ")]
+    assert len(named) <= 1, lines
+    assert not named or verdicts == ["yes"], lines
+    return verdicts[0] == "yes", (named[0] if named else "")
 
 
-clean_suggest = make_suggest_repo("suggest-clean")
-# "Nothing to review" answers about the working tree, and a reader who meant work already
-# committed read it as answering about that too — committed, was blocked by the gate, and paid
-# for a second panel. The one line that says where committed work is reviewed.
-assert suggest(clean_suggest) == [
-    "nothing to review",
-    "committed work is reviewed as a range, not from the tree: "
-    "review-bench suggest --range <base>..HEAD sizes it and prints the command",
-]
+def assert_coverage(lines, files, changed_lines, vouch="", paths=None, reverts=()):
+    """The whole answer, key by key and in order. The gate parses these exact spellings, so a
+    fixture that matched loosely would let a renamed key ship as a gate that reads nothing.
+    """
+    covered, named = gate_reads(lines)
+    assert named == vouch, lines
+    expected = [f"covered: {'yes' if not files or vouch else 'no'}"]
+    if vouch:
+        expected.append(f"vouch: {vouch}")
+    expected += [f"lines: {changed_lines}", f"files: {files}"]
+    if paths is not None:
+        expected += [f"path: {path}" for path in sorted(paths)]
+    assert lines[:len(expected)] == expected, lines
+    assert covered == (not files or bool(vouch)), lines
+    # No trailing line beyond the paths and the reverted set: one path line per file, one `revert:`
+    # per path this commit would put the reviewed content back over, and nothing else.
+    tail = lines[len(expected) + (0 if paths is not None else files):]
+    assert tail == [f"revert: {path}" for path in sorted(reverts)], lines
+    return lines
 
-t0_suggest = make_suggest_repo("suggest-t0")
-(t0_suggest / "new.txt").write_text("line\n" * 20)
-assert_suggestion(suggest(t0_suggest), 1, 20, "T0")
 
-t1_size_suggest = make_suggest_repo("suggest-t1-size")
-(t1_size_suggest / "medium.txt").write_text("line\n" * 21)
-assert_suggestion(suggest(t1_size_suggest), 1, 21, "T1")
+def vouch_of(lines):
+    return gate_reads(lines)[1]
 
-t1_suggest = make_suggest_repo(
-    "suggest-t1", ("staged.txt", "unstaged.txt"),
-)
-(t1_suggest / "staged.txt").write_text("base\nstaged\n")
-subprocess.run(["git", "-C", str(t1_suggest), "add", "staged.txt"],
-               check=True, env=suggest_env)
-(t1_suggest / "unstaged.txt").write_text("base\nunstaged\n")
-(t1_suggest / "untracked.txt").write_text("untracked\n")
-assert_suggestion(suggest(t1_suggest), 3, 3, "T1")
 
-t2_suggest = make_suggest_repo("suggest-t2")
-(t2_suggest / "wide.txt").write_text("line\n" * 151)
-assert_suggestion(suggest(t2_suggest), 1, 151, "T2")
+clean_coverage = make_coverage_repo("coverage-clean")
+# A tree holding nothing to review is covered, and names no run: there is no work here for a
+# review to answer for, and the gate must not spend a neighbouring receipt's round on it.
+assert_coverage(coverage(clean_coverage), 0, 0, paths=[])
 
-# T3 is the owner's to start, so what the ladder answers and what an agent may run part ways
-# here: the tier line stays truthful (the statusline reads it), the command drops to the ceiling.
-t3_suggest = make_suggest_repo("suggest-t3")
-(t3_suggest / "huge.txt").write_text("line\n" * 601)
-assert_suggestion(suggest(t3_suggest), 1, 601, "T3", runs=rb.AUTO_TIER_CEILING)
+# Staged, unstaged and untracked content are all in the delta, each counted once.
+mixed_coverage = make_coverage_repo("coverage-mixed", ("staged.txt", "unstaged.txt"))
+(mixed_coverage / "staged.txt").write_text("base\nstaged\n")
+subprocess.run(["git", "-C", str(mixed_coverage), "add", "staged.txt"],
+               check=True, env=coverage_env)
+(mixed_coverage / "unstaged.txt").write_text("base\nunstaged\n")
+(mixed_coverage / "untracked.txt").write_text("untracked\n")
+assert_coverage(coverage(mixed_coverage), 3, 3,
+                paths=["staged.txt", "unstaged.txt", "untracked.txt"])
 
-# A named panel unblocks the gate and changes nothing here: what this prints is the same with a
-# marker as without one, which is what keeps a passing mention of T3 from becoming what runs.
+# A named panel unblocks the owner gate and nothing else: the marker is the whole permission, and
+# a stale or absent one is no permission at all.
 grant_owner_panels("t3", "max")
-assert_suggestion(suggest(t3_suggest), 1, 601, "T3", runs=rb.AUTO_TIER_CEILING)
 assert rb.owner_named("t3") and not rb.owner_named("nothing")
 grant_owner_panels("t3", age=rb.OWNER_GRANT_TTL_S + 60)
 assert not rb.owner_named("t3")
@@ -6982,61 +6900,39 @@ finally:
     else:
         os.environ["CLAUDECODE"] = _saved_env
 
-tests_suggest = make_suggest_repo("suggest-tests")
-(tests_suggest / "tests" / "new-test.sh").parent.mkdir()
-(tests_suggest / "tests" / "new-test.sh").write_text("true\n")
-assert_suggestion(suggest(tests_suggest), 1, 1, "T1")
-
 # A moved file is one file and no lines: expanded into a delete plus an add it would read as a
-# rewrite and pick a tier for work nobody did.
-rename_suggest = make_suggest_repo("suggest-rename", tracked=("moved.txt",))
-(rename_suggest / "moved.txt").write_text("line\n" * 400)
-subprocess.run(["git", "-C", str(rename_suggest), "commit", "-qam", "fill"],
-               check=True, env=suggest_env)
-subprocess.run(["git", "-C", str(rename_suggest), "mv", "moved.txt", "elsewhere.txt"],
-               check=True, env=suggest_env)
-assert_suggestion(suggest(rename_suggest), 1, 0, "T0")
+# rewrite and report work nobody did.
+rename_coverage = make_coverage_repo("coverage-rename", tracked=("moved.txt",))
+(rename_coverage / "moved.txt").write_text("line\n" * 400)
+subprocess.run(["git", "-C", str(rename_coverage), "commit", "-qam", "fill"],
+               check=True, env=coverage_env)
+subprocess.run(["git", "-C", str(rename_coverage), "mv", "moved.txt", "elsewhere.txt"],
+               check=True, env=coverage_env)
+assert_coverage(coverage(rename_coverage), 1, 0, paths=["elsewhere.txt"])
 
-# An untracked binary has no lines to count, and counting its bytes would pick a tier from pixels.
-binary_suggest = make_suggest_repo("suggest-binary")
-(binary_suggest / "asset.png").write_bytes(b"\x89PNG\r\n\x1a\n" + bytes(4000))
-assert_suggestion(suggest(binary_suggest), 1, 0, "T0")
+# An untracked binary has no lines to count, and counting its bytes would report a delta in pixels.
+binary_coverage = make_coverage_repo("coverage-binary")
+(binary_coverage / "asset.png").write_bytes(b"\x89PNG\r\n\x1a\n" + bytes(4000))
+assert_coverage(coverage(binary_coverage), 1, 0, paths=["asset.png"])
 
 # A staged change the working tree then reverted is what the next commit contains, however
 # invisible it is to `git diff HEAD`.
-staged_suggest = make_suggest_repo("suggest-staged")
-(staged_suggest / "tracked.txt").write_text("edited\n")
-subprocess.run(["git", "-C", str(staged_suggest), "add", "tracked.txt"],
-               check=True, env=suggest_env)
-(staged_suggest / "tracked.txt").write_text("base\n")
-assert_suggestion(suggest(staged_suggest), 1, 2, "T0")
+staged_coverage = make_coverage_repo("coverage-staged")
+(staged_coverage / "tracked.txt").write_text("edited\n")
+subprocess.run(["git", "-C", str(staged_coverage), "add", "tracked.txt"],
+               check=True, env=coverage_env)
+(staged_coverage / "tracked.txt").write_text("base\n")
+assert_coverage(coverage(staged_coverage), 1, 2, paths=["tracked.txt"])
 
-# Moving a file out of bin/ still touches bin/, so the escalation has to see the old name.
-moved_suggest = make_suggest_repo("suggest-moved", tracked=("bin/tool",))
-subprocess.run(["git", "-C", str(moved_suggest), "mv", "bin/tool", "tool"],
-               check=True, env=suggest_env)
-assert suggest(moved_suggest)[2] == "tier: T1", suggest(moved_suggest)
-
-# An untracked nested repository is one listed path with nothing to count, not a read error.
-
-# A bare repository has no working tree, and a `--range` suggestion never needed one: it reads two
-# committed trees out of the object database. Keying repositories on `--show-toplevel` for the sake
-# of telling linked worktrees apart refused these outright until the fallback was added back.
-bare_source = make_suggest_repo("suggest-bare-source")
-(bare_source / "wide.txt").write_text("line\n" * 151)
-subprocess.run(["git", "-C", str(bare_source), "add", "wide.txt"], check=True, env=suggest_env)
-subprocess.run(["git", "-C", str(bare_source), "commit", "-qm", "wide"],
-               check=True, env=suggest_env)
-bare_clone = bare_source.parent / "suggest-bare.git"
+# A stamp declares a working tree reviewed, so it is the one caller that must refuse a bare
+# repository outright.
+bare_source = make_coverage_repo("coverage-bare-source")
+bare_clone = bare_source.parent / "coverage-bare.git"
 subprocess.run(["git", "clone", "-q", "--bare", str(bare_source), str(bare_clone)],
-               check=True, env=suggest_env)
-assert_suggestion(
-    suggest(bare_clone, "--range", "HEAD~1..HEAD"), 1, 151, "T2", committed=True,
-)
-# A stamp declares a working tree reviewed, so it is the one caller that must still refuse one.
+               check=True, env=coverage_env)
 bare_stamp = subprocess.run(
     [sys.argv[1], "reviewed", "--repo", str(bare_clone)],
-    capture_output=True, text=True, env=suggest_env,
+    capture_output=True, text=True, env=coverage_env,
 )
 assert bare_stamp.returncode != 0, bare_stamp.stdout
 assert "working tree" in bare_stamp.stderr, bare_stamp.stderr
@@ -7044,81 +6940,124 @@ assert "working tree" in bare_stamp.stderr, bare_stamp.stderr
 # `Path("").is_dir()` is True and `subprocess(cwd="")` raises, so an empty --repo used to reach git
 # as a cwd and die there instead of being read as the directory the caller is standing in.
 empty_repo_arg = subprocess.run(
-    [sys.argv[1], "suggest", "--repo", ""],
-    capture_output=True, text=True, cwd=str(bare_source), env=suggest_env,
+    [sys.argv[1], "coverage", "--repo", ""],
+    capture_output=True, text=True, cwd=str(bare_source), env=coverage_env,
 )
 assert empty_repo_arg.returncode == 0, empty_repo_arg.stderr
 assert "FileNotFoundError" not in empty_repo_arg.stderr, empty_repo_arg.stderr
 
-nested_suggest = make_suggest_repo("suggest-nested")
-(nested_suggest / "nested").mkdir()
-subprocess.run(["git", "-C", str(nested_suggest / "nested"), "init", "-q"],
-               check=True, env=suggest_env)
-assert_suggestion(suggest(nested_suggest), 1, 0, "T0")
+# An untracked nested repository is one listed path with nothing to count, not a read error.
+nested_repo_coverage = make_coverage_repo("coverage-nested-repo")
+(nested_repo_coverage / "nested").mkdir()
+subprocess.run(["git", "-C", str(nested_repo_coverage / "nested"), "init", "-q"],
+               check=True, env=coverage_env)
+assert_coverage(coverage(nested_repo_coverage), 1, 0, paths=["nested/"])
 
-receipt_suggest = make_suggest_repo("suggest-receipt")
-(receipt_suggest / "reviewed.txt").write_text("reviewed\n" * 80)
-subprocess.run(["git", "-C", str(receipt_suggest), "add", "reviewed.txt"],
-               check=True, env=suggest_env)
-subprocess.run(["git", "-C", str(receipt_suggest), "commit", "-qm", "reviewed"],
-               check=True, env=suggest_env)
+receipt_coverage = make_coverage_repo("coverage-receipt")
+(receipt_coverage / "reviewed.txt").write_text("reviewed\n" * 80)
+subprocess.run(["git", "-C", str(receipt_coverage), "add", "reviewed.txt"],
+               check=True, env=coverage_env)
+subprocess.run(["git", "-C", str(receipt_coverage), "commit", "-qm", "reviewed"],
+               check=True, env=coverage_env)
 receipt_sha = subprocess.run(
-    ["git", "-C", str(receipt_suggest), "rev-parse", "HEAD"],
-    check=True, capture_output=True, text=True, env=suggest_env,
+    ["git", "-C", str(receipt_coverage), "rev-parse", "HEAD"],
+    check=True, capture_output=True, text=True, env=coverage_env,
 ).stdout.strip()
 receipt_tree = subprocess.run(
-    ["git", "-C", str(receipt_suggest), "rev-parse", "HEAD^{tree}"],
-    check=True, capture_output=True, text=True, env=suggest_env,
+    ["git", "-C", str(receipt_coverage), "rev-parse", "HEAD^{tree}"],
+    check=True, capture_output=True, text=True, env=coverage_env,
 ).stdout.strip()
-receipt_dir = pathlib.Path(suggest_env["CLAUDEB_DIR"]) / "worker-stats" / rb.RECEIPT_DIR
+receipt_dir = pathlib.Path(coverage_env["CLAUDEB_DIR"]) / "worker-stats" / rb.RECEIPT_DIR
 receipt_dir.mkdir(parents=True, exist_ok=True)
 receipt_run_id = "receipt-fixture"
-(receipt_dir / rb.receipt_file_name(receipt_suggest)).write_text(json.dumps({
-    "repo": str(receipt_suggest), "tree": receipt_tree, "commit": receipt_sha,
+(receipt_dir / rb.receipt_file_name(receipt_coverage)).write_text(json.dumps({
+    "repo": str(receipt_coverage), "tree": receipt_tree, "commit": receipt_sha,
     "run_id": receipt_run_id, "ts": "2026-07-27T00:00:00+00:00", "errored": 0,
 }) + "\n")
 review_found(receipt_run_id, confirmed=2)
-subprocess.run(["git", "-C", str(receipt_suggest), "reset", "-q", "--soft", "HEAD^"],
-               check=True, env=suggest_env)
-(receipt_suggest / "tracked.txt").write_text("changed\n")
+subprocess.run(["git", "-C", str(receipt_coverage), "reset", "-q", "--soft", "HEAD^"],
+               check=True, env=coverage_env)
+(receipt_coverage / "tracked.txt").write_text("changed\n")
 # The reviewed commit was rewound with its content left staged: what the receipt names is no longer
-# HEAD, and the delta is measured against the tree the panel read rather than against HEAD.
-assert_suggestion(
-    suggest(receipt_suggest), 1, 2, "T0", receipt=receipt_run_id,
-)
+# HEAD, and the delta is measured against the tree the panel read rather than against HEAD — so the
+# 80 reviewed lines still standing in the tree are not reported as unreviewed work. Where HEAD
+# stands is not asked at all: the review answers for the CONTENT the commit would carry, and the
+# two lines of drift on top of it are inside what that review read.
+assert_coverage(coverage(receipt_coverage), 1, 2, vouch=receipt_run_id, paths=["tracked.txt"])
+
+# The case the whole content rule exists for. A co-tenant commits into this shared checkout between
+# the review and the commit — a file no panel ever read — and the verdict does not move: history
+# used to answer this question, and every one of their commits retired a live review of work it had
+# never touched (Egor, 2026-08-09).
+# The case the content rule exists for, in one line: HEAD moves under this chat and the answer does
+# not. Their landed file is counted as content no panel has read — it is — but what this commit
+# carries is still the reviewed bytes, so the same review still pays for it. Under history this was
+# a refusal, and in a checkout taking commits from other chats continuously it retired live reviews
+# all day over work they had never touched (Egor, 2026-08-09).
+(receipt_coverage / "theirs.txt").write_text("a co-tenant's own work\n")
+subprocess.run(["git", "-C", str(receipt_coverage), "add", "theirs.txt"],
+               check=True, env=coverage_env)
+# Their own commit form: a pathspec commit, which leaves this chat's staged work in the index where
+# it was — the co-tenant is committing beside it, not on top of it.
+subprocess.run(["git", "-C", str(receipt_coverage), "commit", "-qm", "co-tenant", "--",
+                "theirs.txt"], check=True, env=coverage_env)
+assert_coverage(coverage(receipt_coverage), 2, 3, vouch=receipt_run_id,
+                paths=["theirs.txt", "tracked.txt"])
+
+# What history used to refuse outright is now one advisory line: the commit carries the reviewed
+# bytes of a path a co-tenant has since moved in HEAD, and whether their work should ride along is a
+# question no panel read. Named, never blocking — `covered:` stays `yes`.
+landed = receipt_coverage / "reviewed.txt"
+reviewed_bytes = landed.read_text()
+landed.write_text(reviewed_bytes + "their fix\n")
+subprocess.run(["git", "-C", str(receipt_coverage), "commit", "-qm", "their fix", "--",
+                "reviewed.txt"], check=True, env=coverage_env)
+landed.write_text(reviewed_bytes)
+subprocess.run(["git", "-C", str(receipt_coverage), "add", "reviewed.txt"],
+               check=True, env=coverage_env)
+assert_coverage(coverage(receipt_coverage), 2, 3, vouch=receipt_run_id,
+                paths=["theirs.txt", "tracked.txt"], reverts=["reviewed.txt"])
+
+# One more line written on top of those bytes and it is no longer their work being put back: it is
+# this chat's own drift, which the review is priced on and the reader already sees in the delta.
+landed.write_text(reviewed_bytes + "my own fix\n")
+subprocess.run(["git", "-C", str(receipt_coverage), "add", "reviewed.txt"],
+               check=True, env=coverage_env)
+assert_coverage(coverage(receipt_coverage), 3, 4, vouch=receipt_run_id,
+                paths=["reviewed.txt", "theirs.txt", "tracked.txt"])
 
 # A worktree review is stamped with a snapshot of uncommitted content, reachable from nothing. The
 # index still holds the committed base, so asking it what it adds over that snapshot answers with
 # the whole reviewed delta reversed — 21 already-reviewed lines across two files, which used to be
-# added to the one line that is genuinely new and escalated the tier by the size of the review that
+# added to the one line that is genuinely new and inflated the delta by the size of the review that
 # had just finished.
-wt_receipt_suggest = make_suggest_repo(
-    "suggest-worktree-receipt", ("tracked.txt", "second.txt"),
+wt_receipt_coverage = make_coverage_repo(
+    "coverage-worktree-receipt", ("tracked.txt", "second.txt"),
 )
-(wt_receipt_suggest / "tracked.txt").write_text("line\n" * 20)
-(wt_receipt_suggest / "second.txt").write_text("changed\n")
-subprocess.run(["git", "-C", str(wt_receipt_suggest), "add", "."],
-               check=True, env=suggest_env)
+(wt_receipt_coverage / "tracked.txt").write_text("line\n" * 20)
+(wt_receipt_coverage / "second.txt").write_text("changed\n")
+subprocess.run(["git", "-C", str(wt_receipt_coverage), "add", "."],
+               check=True, env=coverage_env)
 wt_snapshot_tree = subprocess.run(
-    ["git", "-C", str(wt_receipt_suggest), "write-tree"],
-    check=True, capture_output=True, text=True, env=suggest_env,
+    ["git", "-C", str(wt_receipt_coverage), "write-tree"],
+    check=True, capture_output=True, text=True, env=coverage_env,
 ).stdout.strip()
 wt_snapshot_sha = subprocess.run(
-    ["git", "-C", str(wt_receipt_suggest), "commit-tree", wt_snapshot_tree,
+    ["git", "-C", str(wt_receipt_coverage), "commit-tree", wt_snapshot_tree,
      "-p", "HEAD", "-m", "review-bench worktree snapshot"],
     check=True, capture_output=True, text=True,
-    env=dict(suggest_env, GIT_COMMITTER_NAME="review-bench",
+    env=dict(coverage_env, GIT_COMMITTER_NAME="review-bench",
              GIT_COMMITTER_EMAIL="review-bench@local"),
 ).stdout.strip()
-subprocess.run(["git", "-C", str(wt_receipt_suggest), "reset", "-q", "HEAD"],
-               check=True, env=suggest_env)
-(receipt_dir / rb.receipt_file_name(wt_receipt_suggest)).write_text(json.dumps({
-    "repo": str(wt_receipt_suggest), "tree": wt_snapshot_tree, "commit": wt_snapshot_sha,
+subprocess.run(["git", "-C", str(wt_receipt_coverage), "reset", "-q", "HEAD"],
+               check=True, env=coverage_env)
+(receipt_dir / rb.receipt_file_name(wt_receipt_coverage)).write_text(json.dumps({
+    "repo": str(wt_receipt_coverage), "tree": wt_snapshot_tree, "commit": wt_snapshot_sha,
     "run_id": "worktree-fixture", "ts": "2026-07-27T00:00:00+00:00", "errored": 0,
 }) + "\n")
 review_found("worktree-fixture", findings=3)
 worktree_run_dir = (
-    pathlib.Path(suggest_env["CLAUDEB_DIR"]) / "worker-stats" / "benches" / "worktree-fixture"
+    pathlib.Path(coverage_env["CLAUDEB_DIR"]) / "worker-stats" / "benches" / "worktree-fixture"
 )
 (worktree_run_dir / "findings-sol-max.jsonl").write_text(
     json.dumps({"severity": "P1", "file": "x", "line": 1, "summary": "discarded"}) + "\n"
@@ -7129,593 +7068,480 @@ worktree_run_dir = (
         {"rater": "sol-max", "errored": True},
     ],
 }) + "\n")
-assert rb.review_outcome(wt_receipt_suggest, {
+assert rb.review_outcome(wt_receipt_coverage, {
     "commit": wt_snapshot_sha, "run_id": "worktree-fixture",
 }) == (True, 0, 3)
 # A row from another repository sharing seven hex characters is a different commit: full-sha
 # equality only, or confirmed counts bleed between repos through the shared corpus.
-with (pathlib.Path(suggest_env["CLAUDEB_DIR"]) / "worker-stats" / "reviews.jsonl").open("a") as stream:
+with (pathlib.Path(coverage_env["CLAUDEB_DIR"]) / "worker-stats" / "reviews.jsonl").open("a") as stream:
     stream.write(json.dumps({
         "run_id": "prefix-collider", "rater": "sol-low", "confirmed": 9,
         "commit": wt_snapshot_sha[:7] + "f" * (len(wt_snapshot_sha) - 7),
     }) + "\n")
-assert rb.review_outcome(wt_receipt_suggest, {
+assert rb.review_outcome(wt_receipt_coverage, {
     "commit": wt_snapshot_sha, "run_id": "worktree-fixture",
 }) == (True, 0, 3)
-(wt_receipt_suggest / "tracked.txt").write_text("line\n" * 19 + "new\n")
+(wt_receipt_coverage / "tracked.txt").write_text("line\n" * 19 + "new\n")
 # Staged after the review and then dropped from the working tree: not counted, and deliberately so.
 # Both trees compared here are built from the working tree, exactly as review-bench builds the
 # snapshot a panel reviews, so a path only the index still holds was never reviewed and no review of
-# this repository can cover it — counting it would light a label nothing could clear.
-(wt_receipt_suggest / "staged-after.txt").write_text("late\n")
-subprocess.run(["git", "-C", str(wt_receipt_suggest), "add", "staged-after.txt"],
-               check=True, env=suggest_env)
-(wt_receipt_suggest / "staged-after.txt").unlink()
-assert_suggestion(
-    suggest(wt_receipt_suggest), 1, 2, "T0", worktree_receipt="worktree-fixture",
-)
-
-# Work inside just-reviewed code, over a review that found something and while HEAD still stands
-# where the panel stood: the shape that used to be priced by a tolerance of its own, and is now the
-# size ladder's like anything else — one line inside a core measurement script is the T2 that
-# script's own floor prices it at, not the T0 a receipt beside it used to buy.
-fix_core_suggest = make_suggest_repo("suggest-fix-core", ("bin/review-bench",))
-(fix_core_suggest / "bin" / "review-bench").write_text("reviewed\n" * 40)
-subprocess.run(["git", "-C", str(fix_core_suggest), "commit", "-aqm", "reviewed"],
-               check=True, env=suggest_env)
-fix_core_sha, fix_core_tree = (subprocess.run(
-    ["git", "-C", str(fix_core_suggest), "rev-parse", ref],
-    check=True, capture_output=True, text=True, env=suggest_env,
-).stdout.strip() for ref in ("HEAD", "HEAD^{tree}"))
-(receipt_dir / rb.receipt_file_name(fix_core_suggest)).write_text(json.dumps({
-    "repo": str(fix_core_suggest), "tree": fix_core_tree, "commit": fix_core_sha,
-    "run_id": "fix-core-fixture", "ts": "2026-07-27T00:00:00+00:00", "errored": 0,
-}) + "\n")
-review_found("fix-core-fixture", confirmed=1)
-(fix_core_suggest / "bin" / "review-bench").write_text("reviewed\n" * 40 + "fix\n")
-assert_suggestion(
-    suggest(fix_core_suggest), 1, 1, "T2", receipt="fix-core-fixture",
-)
-
-# And a large delta over the same shape of receipt is the T2 its 250 lines earn.
-fix_big_suggest = make_suggest_repo("suggest-fix-big")
-(fix_big_suggest / "tracked.txt").write_text("reviewed\n" * 250)
-subprocess.run(["git", "-C", str(fix_big_suggest), "commit", "-aqm", "reviewed"],
-               check=True, env=suggest_env)
-fix_big_sha, fix_big_tree = (subprocess.run(
-    ["git", "-C", str(fix_big_suggest), "rev-parse", ref],
-    check=True, capture_output=True, text=True, env=suggest_env,
-).stdout.strip() for ref in ("HEAD", "HEAD^{tree}"))
-(receipt_dir / rb.receipt_file_name(fix_big_suggest)).write_text(json.dumps({
-    "repo": str(fix_big_suggest), "tree": fix_big_tree, "commit": fix_big_sha,
-    "run_id": "fix-big-fixture", "ts": "2026-07-27T00:00:00+00:00", "errored": 0,
-}) + "\n")
-review_found("fix-big-fixture", confirmed=1)
-(fix_big_suggest / "tracked.txt").write_text("reviewed\n" * 100 + "fix\n" * 100)
-assert_suggestion(
-    suggest(fix_big_suggest), 1, 250, "T2", receipt="fix-big-fixture",
-)
+# this repository can cover it — counting it would report a delta nothing could clear.
+(wt_receipt_coverage / "staged-after.txt").write_text("late\n")
+subprocess.run(["git", "-C", str(wt_receipt_coverage), "add", "staged-after.txt"],
+               check=True, env=coverage_env)
+(wt_receipt_coverage / "staged-after.txt").unlink()
+assert_coverage(coverage(wt_receipt_coverage), 1, 2, paths=["tracked.txt"])
 
 # A snapshot holds untracked content too, because that is how review-bench builds one. Asking the
 # index and the working tree about it separately answered with a phantom deletion of every untracked
-# file and then added its line count back on top: with nothing changed since the panel ran, suggest
-# claimed a whole tier of work.
-wt_untracked_suggest = make_suggest_repo("suggest-worktree-untracked")
-(wt_untracked_suggest / "extra.txt").write_text("line\n" * 40)
-subprocess.run(["git", "-C", str(wt_untracked_suggest), "add", "."],
-               check=True, env=suggest_env)
+# file and then added its line count back on top: with nothing changed since the panel ran, this
+# claimed a whole review's worth of work.
+wt_untracked_coverage = make_coverage_repo("coverage-worktree-untracked")
+(wt_untracked_coverage / "extra.txt").write_text("line\n" * 40)
+subprocess.run(["git", "-C", str(wt_untracked_coverage), "add", "."],
+               check=True, env=coverage_env)
 wt_untracked_tree = subprocess.run(
-    ["git", "-C", str(wt_untracked_suggest), "write-tree"],
-    check=True, capture_output=True, text=True, env=suggest_env,
+    ["git", "-C", str(wt_untracked_coverage), "write-tree"],
+    check=True, capture_output=True, text=True, env=coverage_env,
 ).stdout.strip()
 wt_untracked_sha = subprocess.run(
-    ["git", "-C", str(wt_untracked_suggest), "commit-tree", wt_untracked_tree,
+    ["git", "-C", str(wt_untracked_coverage), "commit-tree", wt_untracked_tree,
      "-p", "HEAD", "-m", "review-bench worktree snapshot"],
     check=True, capture_output=True, text=True,
-    env=dict(suggest_env, GIT_COMMITTER_NAME="review-bench",
+    env=dict(coverage_env, GIT_COMMITTER_NAME="review-bench",
              GIT_COMMITTER_EMAIL="review-bench@local"),
 ).stdout.strip()
-subprocess.run(["git", "-C", str(wt_untracked_suggest), "reset", "-q", "HEAD"],
-               check=True, env=suggest_env)
-(receipt_dir / rb.receipt_file_name(wt_untracked_suggest)).write_text(json.dumps({
-    "repo": str(wt_untracked_suggest), "tree": wt_untracked_tree, "commit": wt_untracked_sha,
+subprocess.run(["git", "-C", str(wt_untracked_coverage), "reset", "-q", "HEAD"],
+               check=True, env=coverage_env)
+(receipt_dir / rb.receipt_file_name(wt_untracked_coverage)).write_text(json.dumps({
+    "repo": str(wt_untracked_coverage), "tree": wt_untracked_tree, "commit": wt_untracked_sha,
     "run_id": "untracked-fixture", "ts": "2026-07-27T00:00:00+00:00", "errored": 0,
 }) + "\n")
 review_found("untracked-fixture", findings=2)
-assert suggest(wt_untracked_suggest) == [
-    "nothing to review; tree matches review untracked-fixture"
-], suggest(wt_untracked_suggest)
+assert_coverage(coverage(wt_untracked_coverage), 0, 0, paths=[])
 # And one line written after that review is one line of work, not forty-one.
-(wt_untracked_suggest / "extra.txt").write_text("line\n" * 40 + "new\n")
-assert_suggestion(
-    suggest(wt_untracked_suggest), 1, 1, "T0", worktree_receipt="untracked-fixture",
-)
+(wt_untracked_coverage / "extra.txt").write_text("line\n" * 40 + "new\n")
+assert_coverage(coverage(wt_untracked_coverage), 1, 1, paths=["extra.txt"])
+
+# Answering leaves nothing behind in the repository it read. Building the working tree stages every
+# file, and a temporary index redirects the INDEX and not the objects: asked once per edit, which
+# is what a statusline does, it wrote a blob and a tree into the reader's store each time.
+wt_objects = wt_untracked_coverage / ".git" / "objects"
+def object_count():
+    return sum(1 for path in wt_objects.rglob("*") if path.is_file())
+(wt_untracked_coverage / "extra.txt").write_text("line\n" * 40 + "newer\n")
+wt_objects_before = object_count()
+coverage(wt_untracked_coverage)
+assert object_count() == wt_objects_before, (wt_objects_before, object_count())
 
 # A scoped review answers for a staged commit in a shared checkout. The commit contains the index
 # and nothing else, so another agent's unstaged work is not what this one is asking to commit —
 # without this, a fully reviewed, fully staged change stayed blocked forever by files nobody staged.
-scoped_suggest = make_suggest_repo("suggest-scoped", ("mine.txt", "theirs.txt"))
-(scoped_suggest / "mine.txt").write_text("reviewed\n" * 12)
-scoped_sha = rb.worktree_snapshot_commit(scoped_suggest, paths=["mine.txt"])
+scoped_coverage = make_coverage_repo("coverage-scoped", ("mine.txt", "theirs.txt"))
+(scoped_coverage / "mine.txt").write_text("reviewed\n" * 12)
+scoped_sha = rb.worktree_snapshot_commit(scoped_coverage, paths=["mine.txt"])
 scoped_tree = subprocess.run(
-    ["git", "-C", str(scoped_suggest), "rev-parse", f"{scoped_sha}^{{tree}}"],
-    check=True, capture_output=True, text=True, env=suggest_env,
+    ["git", "-C", str(scoped_coverage), "rev-parse", f"{scoped_sha}^{{tree}}"],
+    check=True, capture_output=True, text=True, env=coverage_env,
 ).stdout.strip()
 scoped_receipt_path = rb.persist_review_receipt(
-    scoped_suggest, scoped_tree, scoped_sha, "scoped-fixture", 0, scope=["mine.txt"]
+    scoped_coverage, scoped_tree, scoped_sha, "scoped-fixture", 0, scope=["mine.txt"]
 )
 assert scoped_receipt_path.parent == receipt_dir, scoped_receipt_path
-assert rb.review_receipt(scoped_suggest) is None, "a scoped receipt answered as the repository's"
-subprocess.run(["git", "-C", str(scoped_suggest), "add", "mine.txt"], check=True, env=suggest_env)
-scoped_lines = suggest(scoped_suggest)
-assert "work over review scoped-fixture, which read every staged path (scoped to mine.txt)" \
-    in scoped_lines, scoped_lines
+assert rb.review_receipt(scoped_coverage) is None, "a scoped receipt answered as the repository's"
+subprocess.run(["git", "-C", str(scoped_coverage), "add", "mine.txt"], check=True, env=coverage_env)
+assert vouch_of(coverage(scoped_coverage)) == "scoped-fixture", coverage(scoped_coverage)
 
-# Someone else's unstaged edit and untracked file size the suggestion and still do not block: they
+# Someone else's unstaged edit and untracked file are in the delta and still do not block: they
 # are not going into this commit, and no review of them is owed by the agent making it.
-(scoped_suggest / "theirs.txt").write_text("theirs\n" * 2)
-(scoped_suggest / "theirs-new.txt").write_text("new\n" * 10)
-scoped_foreign_lines = suggest(scoped_suggest)
-assert scoped_foreign_lines[0] == "changed files: 3", scoped_foreign_lines
-assert any(line.startswith("work over review scoped-fixture,") for line in scoped_foreign_lines), \
-    scoped_foreign_lines
+(scoped_coverage / "theirs.txt").write_text("theirs\n" * 2)
+(scoped_coverage / "theirs-new.txt").write_text("new\n" * 10)
+assert_coverage(coverage(scoped_coverage), 3, 26, vouch="scoped-fixture",
+                paths=["mine.txt", "theirs.txt", "theirs-new.txt"])
 
 # A fix on top of the reviewed scope is still covered by that review — but only once the panel
 # behind it is known to have found something.
-(scoped_suggest / "mine.txt").write_text("reviewed\n" * 12 + "fix\n")
-subprocess.run(["git", "-C", str(scoped_suggest), "add", "mine.txt"], check=True, env=suggest_env)
-assert not any(line.startswith("work over review ") for line in suggest(scoped_suggest)), \
-    suggest(scoped_suggest)
+(scoped_coverage / "mine.txt").write_text("reviewed\n" * 12 + "fix\n")
+subprocess.run(["git", "-C", str(scoped_coverage), "add", "mine.txt"], check=True, env=coverage_env)
+assert vouch_of(coverage(scoped_coverage)) == "", coverage(scoped_coverage)
 review_found("scoped-fixture", findings=2)
-assert any(line.startswith("work over review scoped-fixture,") for line in suggest(scoped_suggest))
+assert vouch_of(coverage(scoped_coverage)) == "scoped-fixture", coverage(scoped_coverage)
 
 # Fail closed on a receipt that cannot be read: an unreadable scoped review is no review at all,
 # and guessing its coverage is the one mistake that would wave a commit through unreviewed.
 scoped_receipt_bytes = scoped_receipt_path.read_bytes()
 scoped_receipt_path.write_bytes(b"{not json")
-assert not any(line.startswith("work over review ") for line in suggest(scoped_suggest)), \
-    suggest(scoped_suggest)
+assert vouch_of(coverage(scoped_coverage)) == "", coverage(scoped_coverage)
 scoped_receipt_path.write_bytes(scoped_receipt_bytes)
 
 # A staged path the scoped panel was never shown IS part of this commit, so it blocks — and a
 # second scoped receipt covering exactly that path does not rescue it: two half-fresh reviews may
 # not vouch together for a tree neither of them read.
-subprocess.run(["git", "-C", str(scoped_suggest), "add", "theirs.txt"], check=True, env=suggest_env)
-assert not any(line.startswith("work over review ") for line in suggest(scoped_suggest)), \
-    suggest(scoped_suggest)
+subprocess.run(["git", "-C", str(scoped_coverage), "add", "theirs.txt"], check=True, env=coverage_env)
+assert vouch_of(coverage(scoped_coverage)) == "", coverage(scoped_coverage)
 rb.persist_review_receipt(
-    scoped_suggest, scoped_tree, scoped_sha, "scoped-theirs-fixture", 0, scope=["theirs.txt"]
+    scoped_coverage, scoped_tree, scoped_sha, "scoped-theirs-fixture", 0, scope=["theirs.txt"]
 )
-assert not any(line.startswith("work over review ") for line in suggest(scoped_suggest)), \
-    suggest(scoped_suggest)
+assert vouch_of(coverage(scoped_coverage)) == "", coverage(scoped_coverage)
 
 # The scope is a pathspec, and matching one is not the same as having been read: a directory scope
 # goes on matching files written after the panel ran, and those are precisely the unreviewed ones.
-dir_scope_suggest = make_suggest_repo("suggest-scoped-dir", ("src/a.txt", "other.txt"))
-(dir_scope_suggest / "src" / "a.txt").write_text("reviewed\n" * 12)
-dir_scope_sha = rb.worktree_snapshot_commit(dir_scope_suggest, paths=["src"])
+dir_scope_coverage = make_coverage_repo("coverage-scoped-dir", ("src/a.txt", "other.txt"))
+(dir_scope_coverage / "src" / "a.txt").write_text("reviewed\n" * 12)
+dir_scope_sha = rb.worktree_snapshot_commit(dir_scope_coverage, paths=["src"])
 dir_scope_tree = subprocess.run(
-    ["git", "-C", str(dir_scope_suggest), "rev-parse", f"{dir_scope_sha}^{{tree}}"],
-    check=True, capture_output=True, text=True, env=suggest_env,
+    ["git", "-C", str(dir_scope_coverage), "rev-parse", f"{dir_scope_sha}^{{tree}}"],
+    check=True, capture_output=True, text=True, env=coverage_env,
 ).stdout.strip()
 rb.persist_review_receipt(
-    dir_scope_suggest, dir_scope_tree, dir_scope_sha, "dir-scope-fixture", 0, scope=["src"]
+    dir_scope_coverage, dir_scope_tree, dir_scope_sha, "dir-scope-fixture", 0, scope=["src"]
 )
 review_found("dir-scope-fixture", findings=2)
-subprocess.run(["git", "-C", str(dir_scope_suggest), "add", "src/a.txt"],
-               check=True, env=suggest_env)
-assert any(line.startswith("work over review dir-scope-fixture,")
-           for line in suggest(dir_scope_suggest)), suggest(dir_scope_suggest)
+subprocess.run(["git", "-C", str(dir_scope_coverage), "add", "src/a.txt"],
+               check=True, env=coverage_env)
+assert vouch_of(coverage(dir_scope_coverage)) == "dir-scope-fixture", coverage(dir_scope_coverage)
 
-# An unreadable receipt store must not take `suggest` down with it: the commit gate reads a failed
-# suggest as no review check at all and lets the commit through.
+# An unreadable receipt store must not take `coverage` down with it: the commit gate reads a failed
+# coverage as no review check at all and lets the commit through, so a crash here is the gate
+# switched off rather than a refusal.
 receipt_dir.chmod(0o000)
 try:
-    unreadable_store_lines = suggest(dir_scope_suggest)
+    unreadable_store_lines = coverage(dir_scope_coverage)
 finally:
     receipt_dir.chmod(0o755)
-assert unreadable_store_lines[0] == "changed files: 1", unreadable_store_lines
+assert_coverage(unreadable_store_lines, 1, 13, paths=["src/a.txt"])
 
-(dir_scope_suggest / "src" / "new.txt").write_text("new\n" * 3)
-subprocess.run(["git", "-C", str(dir_scope_suggest), "add", "src/new.txt"],
-               check=True, env=suggest_env)
-assert not any(line.startswith("work over review ") for line in suggest(dir_scope_suggest)), \
-    suggest(dir_scope_suggest)
+(dir_scope_coverage / "src" / "new.txt").write_text("new\n" * 3)
+subprocess.run(["git", "-C", str(dir_scope_coverage), "add", "src/new.txt"],
+               check=True, env=coverage_env)
+assert vouch_of(coverage(dir_scope_coverage)) == "", coverage(dir_scope_coverage)
 
-# Staging the reviewed content back after HEAD has moved inside the scope is a revert of whoever
-# moved it, and that diff reached no panel — an exact match with the reviewed tree is not a review.
-moved_head_suggest = make_suggest_repo("suggest-scoped-moved", ("mine.txt", "other.txt"))
-(moved_head_suggest / "mine.txt").write_text("reviewed\n" * 12)
-moved_head_sha = rb.worktree_snapshot_commit(moved_head_suggest, paths=["mine.txt"])
+# Staging the reviewed content back after HEAD has moved inside the scope puts a co-tenant's landed
+# work back over: the review answers for the bytes, so it pays, and whether their work should ride
+# along is named as advice instead. A refusal here blocked the very commit the review was run for.
+moved_head_coverage = make_coverage_repo("coverage-scoped-moved", ("mine.txt", "other.txt"))
+(moved_head_coverage / "mine.txt").write_text("reviewed\n" * 12)
+moved_head_sha = rb.worktree_snapshot_commit(moved_head_coverage, paths=["mine.txt"])
 moved_head_tree = subprocess.run(
-    ["git", "-C", str(moved_head_suggest), "rev-parse", f"{moved_head_sha}^{{tree}}"],
-    check=True, capture_output=True, text=True, env=suggest_env,
+    ["git", "-C", str(moved_head_coverage), "rev-parse", f"{moved_head_sha}^{{tree}}"],
+    check=True, capture_output=True, text=True, env=coverage_env,
 ).stdout.strip()
 rb.persist_review_receipt(
-    moved_head_suggest, moved_head_tree, moved_head_sha, "moved-head-fixture", 0,
+    moved_head_coverage, moved_head_tree, moved_head_sha, "moved-head-fixture", 0,
     scope=["mine.txt"]
 )
-(moved_head_suggest / "mine.txt").write_text("theirs\n" * 5)
-subprocess.run(["git", "-C", str(moved_head_suggest), "add", "mine.txt"],
-               check=True, env=suggest_env)
-subprocess.run(["git", "-C", str(moved_head_suggest), "commit", "-qm", "their work"],
-               check=True, env=suggest_env)
-(moved_head_suggest / "mine.txt").write_text("reviewed\n" * 12)
-subprocess.run(["git", "-C", str(moved_head_suggest), "add", "mine.txt"],
-               check=True, env=suggest_env)
-assert not any(line.startswith("work over review ") for line in suggest(moved_head_suggest)), \
-    suggest(moved_head_suggest)
+(moved_head_coverage / "mine.txt").write_text("theirs\n" * 5)
+subprocess.run(["git", "-C", str(moved_head_coverage), "add", "mine.txt"],
+               check=True, env=coverage_env)
+subprocess.run(["git", "-C", str(moved_head_coverage), "commit", "-qm", "their work"],
+               check=True, env=coverage_env)
+(moved_head_coverage / "mine.txt").write_text("reviewed\n" * 12)
+subprocess.run(["git", "-C", str(moved_head_coverage), "add", "mine.txt"],
+               check=True, env=coverage_env)
+assert_coverage(coverage(moved_head_coverage), 1, 17, vouch="moved-head-fixture",
+                paths=["mine.txt"], reverts=["mine.txt"])
+
+# Their landed work being a deletion is the same undoing: committing the reviewed content puts a
+# file back that HEAD no longer has. Read off the reviewed tree alone this looks like an ordinary
+# add, which is why what landed since the review is asked for separately.
+(moved_head_coverage / "mine.txt").unlink()
+subprocess.run(["git", "-C", str(moved_head_coverage), "commit", "-qm", "their deletion", "--",
+                "mine.txt"], check=True, env=coverage_env)
+(moved_head_coverage / "mine.txt").write_text("reviewed\n" * 12)
+subprocess.run(["git", "-C", str(moved_head_coverage), "add", "mine.txt"],
+               check=True, env=coverage_env)
+assert_coverage(coverage(moved_head_coverage), 1, 12, vouch="moved-head-fixture",
+                paths=["mine.txt"], reverts=["mine.txt"])
+
+# Where HEAD moved decides it, though, and asking whether HEAD is the same COMMIT could not tell:
+# a shared checkout takes commits from other chats continuously, and every one of them retired a
+# scoped review that had read none of the files being committed here.
+elsewhere_coverage = make_coverage_repo("coverage-scoped-moved-elsewhere", ("mine.txt", "other.txt"))
+(elsewhere_coverage / "mine.txt").write_text("reviewed\n" * 12)
+elsewhere_sha = rb.worktree_snapshot_commit(elsewhere_coverage, paths=["mine.txt"])
+elsewhere_tree = subprocess.run(
+    ["git", "-C", str(elsewhere_coverage), "rev-parse", f"{elsewhere_sha}^{{tree}}"],
+    check=True, capture_output=True, text=True, env=coverage_env,
+).stdout.strip()
+rb.persist_review_receipt(
+    elsewhere_coverage, elsewhere_tree, elsewhere_sha, "moved-elsewhere-fixture", 0,
+    scope=["mine.txt"]
+)
+review_found("moved-elsewhere-fixture", findings=3)
+(elsewhere_coverage / "other.txt").write_text("their unrelated work\n")
+subprocess.run(["git", "-C", str(elsewhere_coverage), "add", "other.txt"],
+               check=True, env=coverage_env)
+subprocess.run(["git", "-C", str(elsewhere_coverage), "commit", "-qm", "their work"],
+               check=True, env=coverage_env)
+(elsewhere_coverage / "mine.txt").write_text("reviewed\n" * 12 + "one line after\n")
+assert vouch_of(coverage(elsewhere_coverage, "--commit-paths", "mine.txt")) == \
+    "moved-elsewhere-fixture", coverage(elsewhere_coverage, "--commit-paths", "mine.txt")
+
+# And a co-tenant landing PART of the very content the panel was shown moved HEAD under the path
+# being committed without taking anything away from what that review answers for: what is left to
+# commit there is the rest of the same reviewed change, which is less than the panel read, not more.
+partial_coverage = make_coverage_repo("coverage-scoped-moved-partial", ("mine.txt",))
+(partial_coverage / "mine.txt").write_text("theirs\nbase\nmine\n")
+partial_sha = rb.worktree_snapshot_commit(partial_coverage, paths=["mine.txt"])
+partial_tree = subprocess.run(
+    ["git", "-C", str(partial_coverage), "rev-parse", f"{partial_sha}^{{tree}}"],
+    check=True, capture_output=True, text=True, env=coverage_env,
+).stdout.strip()
+rb.persist_review_receipt(
+    partial_coverage, partial_tree, partial_sha, "moved-partial-fixture", 0, scope=["mine.txt"]
+)
+review_found("moved-partial-fixture", findings=3)
+(partial_coverage / "mine.txt").write_text("theirs\nbase\n")
+subprocess.run(["git", "-C", str(partial_coverage), "add", "mine.txt"],
+               check=True, env=coverage_env)
+subprocess.run(["git", "-C", str(partial_coverage), "commit", "-qm", "their half"],
+               check=True, env=coverage_env)
+(partial_coverage / "mine.txt").write_text("theirs\nbase\nmine\n")
+assert vouch_of(coverage(partial_coverage, "--commit-paths", "mine.txt")) == \
+    "moved-partial-fixture", coverage(partial_coverage, "--commit-paths", "mine.txt")
 
 # `git commit -- <paths>` and `git commit -a` commit working-tree content, so the index outside
 # those paths never reaches the commit: in a shared checkout another agent's staged file left the
 # whole index unvouchable, and no receipt could ever cover it.
-form_suggest = make_suggest_repo("suggest-commit-form", ("mine.txt", "theirs.txt"))
-(form_suggest / "mine.txt").write_text("reviewed\n" * 12)
-form_sha = rb.worktree_snapshot_commit(form_suggest, paths=["mine.txt"])
+form_coverage = make_coverage_repo("coverage-commit-form", ("mine.txt", "theirs.txt"))
+(form_coverage / "mine.txt").write_text("reviewed\n" * 12)
+form_sha = rb.worktree_snapshot_commit(form_coverage, paths=["mine.txt"])
 form_tree = subprocess.run(
-    ["git", "-C", str(form_suggest), "rev-parse", f"{form_sha}^{{tree}}"],
-    check=True, capture_output=True, text=True, env=suggest_env,
+    ["git", "-C", str(form_coverage), "rev-parse", f"{form_sha}^{{tree}}"],
+    check=True, capture_output=True, text=True, env=coverage_env,
 ).stdout.strip()
 rb.persist_review_receipt(
-    form_suggest, form_tree, form_sha, "commit-form-fixture", 0, scope=["mine.txt"]
+    form_coverage, form_tree, form_sha, "commit-form-fixture", 0, scope=["mine.txt"]
 )
-(form_suggest / "theirs.txt").write_text("theirs\n" * 3)
-subprocess.run(["git", "-C", str(form_suggest), "add", "theirs.txt"], check=True, env=suggest_env)
-assert not any(line.startswith("work over review ") for line in suggest(form_suggest)), \
-    suggest(form_suggest)
-form_paths_lines = suggest(form_suggest, "--commit-paths", "mine.txt")
-assert ("work over review commit-form-fixture, which read every path this commit's pathspec "
-        "carries (scoped to mine.txt)") in form_paths_lines, form_paths_lines
+(form_coverage / "theirs.txt").write_text("theirs\n" * 3)
+subprocess.run(["git", "-C", str(form_coverage), "add", "theirs.txt"], check=True, env=coverage_env)
+assert vouch_of(coverage(form_coverage)) == "", coverage(form_coverage)
+assert vouch_of(coverage(form_coverage, "--commit-paths", "mine.txt")) == \
+    "commit-form-fixture", coverage(form_coverage, "--commit-paths", "mine.txt")
 
 # A pathspec reaching past what the panel read is not covered by it, whatever else is in the index.
-assert not any(line.startswith("work over review ")
-               for line in suggest(form_suggest, "--commit-paths", "mine.txt", "theirs.txt")), \
-    suggest(form_suggest, "--commit-paths", "mine.txt", "theirs.txt")
+assert vouch_of(coverage(form_coverage, "--commit-paths", "mine.txt", "theirs.txt")) == "", \
+    coverage(form_coverage, "--commit-paths", "mine.txt", "theirs.txt")
 
 # `-a` carries the whole tracked delta, so the unreviewed working-tree edit it would sweep in
 # blocks — and with that edit reverted the same receipt answers for the commit.
-assert not any(line.startswith("work over review ")
-               for line in suggest(form_suggest, "--commit-all")), \
-    suggest(form_suggest, "--commit-all")
-(form_suggest / "theirs.txt").write_text("base\n")
-form_all_lines = suggest(form_suggest, "--commit-all")
-assert ("work over review commit-form-fixture, which read every tracked change `git commit -a` "
-        "carries (scoped to mine.txt)") in form_all_lines, form_all_lines
+assert vouch_of(coverage(form_coverage, "--commit-all")) == "", \
+    coverage(form_coverage, "--commit-all")
+(form_coverage / "theirs.txt").write_text("base\n")
+assert vouch_of(coverage(form_coverage, "--commit-all")) == "commit-form-fixture", \
+    coverage(form_coverage, "--commit-all")
 
 # A pathspec matching no change is a commit git itself refuses, and the tree's other work is not
-# what it would carry: there is nothing to review, whatever the whole-tree sizing above says.
-(form_suggest / "theirs.txt").write_text("theirs\n" * 9)
-assert suggest(form_suggest, "--commit-paths", "unchanged.txt") == ["nothing to review"], \
-    suggest(form_suggest, "--commit-paths", "unchanged.txt")
-form_empty_all = make_suggest_repo("suggest-commit-form-clean")
-assert suggest(form_empty_all, "--commit-all") == ["nothing to review"], \
-    suggest(form_empty_all, "--commit-all")
+# what it would carry: there is nothing to review, whatever the whole tree holds.
+(form_coverage / "theirs.txt").write_text("theirs\n" * 9)
+assert_coverage(coverage(form_coverage, "--commit-paths", "unchanged.txt"), 0, 0, paths=[])
+form_empty_all = make_coverage_repo("coverage-commit-form-clean")
+assert_coverage(coverage(form_empty_all, "--commit-all"), 0, 0, paths=[])
+
+# A pathspec naming only untracked content is still work to review: the reader adds it and commits,
+# and a review of it stages the whole subtree — the gate asking about a chat whose own new file is
+# its only change got told there was nothing.
+form_untracked = make_coverage_repo("coverage-commit-form-untracked")
+(form_untracked / "brand-new.txt").write_text("new\n" * 12)
+assert_coverage(coverage(form_untracked, "--commit-paths", "brand-new.txt"), 1, 12,
+                paths=["brand-new.txt"])
+# And a pathspec naming neither a tracked change nor untracked content is still nothing.
+assert_coverage(coverage(form_untracked, "--commit-paths", "unchanged.txt"), 0, 0, paths=[])
+# The exception belongs to NAMED paths and to nothing else: `git commit -a` and `git commit -- .`
+# carry no untracked file, so the same new file must not buy either of them a delta.
+assert_coverage(coverage(form_untracked, "--commit-all"), 0, 0, paths=[])
+assert_coverage(coverage(form_untracked, "--commit-paths", "."), 0, 0, paths=[])
+# Unless the line stages first. `git add brand-new.txt && git commit -a` reaches this command
+# before anything is staged, and dropping the file there answers `covered: yes` for a commit that
+# carries content no panel read — which is the gate waving it through, not merely mispricing it.
+assert_coverage(coverage(form_untracked, "--commit-all", "--carries-untracked"), 1, 12,
+                paths=["brand-new.txt"])
+assert_coverage(coverage(form_untracked, "--commit-paths", ".", "--carries-untracked"), 1, 12,
+                paths=["brand-new.txt"])
+# The same for a directory pathspec, where the add is what puts the new file inside the scope.
+staged_dir_coverage = make_coverage_repo("coverage-commit-staged-dir", ("src/mine.txt",))
+(staged_dir_coverage / "src" / "fresh.txt").write_text("line\n" * 7)
+assert_coverage(coverage(staged_dir_coverage, "--commit-paths", "src"), 0, 0, paths=[])
+assert_coverage(coverage(staged_dir_coverage, "--commit-paths", "src", "--carries-untracked"),
+                1, 7, paths=["src/fresh.txt"])
+
+# A checkout holding no work at all is covered whatever the receipt stands on: a co-tenant landing
+# moves HEAD past the reviewed tree, and read against that tree alone a clean tree reported their
+# commit as this one's delta — a review demanded for a commit git refuses as empty.
+landed_coverage = make_coverage_repo("coverage-cotenant-landed", ("mine.txt",))
+(landed_coverage / "mine.txt").write_text("reviewed\n" * 9)
+landed_sha = rb.worktree_snapshot_commit(landed_coverage, paths=["mine.txt"])
+landed_tree = subprocess.run(
+    ["git", "-C", str(landed_coverage), "rev-parse", f"{landed_sha}^{{tree}}"],
+    check=True, capture_output=True, text=True, env=coverage_env,
+).stdout.strip()
+rb.persist_review_receipt(
+    landed_coverage, landed_tree, landed_sha, "cotenant-landed-fixture", 0
+)
+(landed_coverage / "mine.txt").write_text("theirs\n" * 30)
+subprocess.run(["git", "-C", str(landed_coverage), "add", "mine.txt"], check=True,
+               env=coverage_env)
+subprocess.run(["git", "-C", str(landed_coverage), "commit", "-qm", "their landing"], check=True,
+               env=coverage_env)
+assert_coverage(coverage(landed_coverage), 0, 0, paths=[])
+# One unstaged edit and it is work again: the tree is only clean while nothing in it differs from
+# HEAD in the index, in the working tree, or as a file git has never seen.
+(landed_coverage / "mine.txt").write_text("theirs\n" * 30 + "mine\n")
+assert_coverage(coverage(landed_coverage), 1, 40, paths=["mine.txt"])
 
 # Untracked content is in neither commit form, so it can neither be vouched for nor block one.
-(form_suggest / "untracked.txt").write_text("new\n" * 4)
-assert ("work over review commit-form-fixture, which read every path this commit's pathspec "
-        "carries (scoped to mine.txt)") in suggest(form_suggest, "--commit-paths", "mine.txt"), \
-    suggest(form_suggest, "--commit-paths", "mine.txt")
+(form_coverage / "untracked.txt").write_text("new\n" * 4)
+assert vouch_of(coverage(form_coverage, "--commit-paths", "mine.txt")) == \
+    "commit-form-fixture", coverage(form_coverage, "--commit-paths", "mine.txt")
 
 # A commit pathspec is read where git reads it — beside the caller: taken as typed at the repository
 # root, a name from a subdirectory matched the root's file or none at all.
-nested_suggest = make_suggest_repo("suggest-commit-nested", ("sub/mine.txt", "mine.txt"))
-(nested_suggest / "sub" / "mine.txt").write_text("nested\n" * 6)
-nested_sha = rb.worktree_snapshot_commit(nested_suggest, paths=["sub/mine.txt"])
+nested_form_coverage = make_coverage_repo("coverage-commit-nested", ("sub/mine.txt", "mine.txt"))
+(nested_form_coverage / "sub" / "mine.txt").write_text("nested\n" * 6)
+nested_sha = rb.worktree_snapshot_commit(nested_form_coverage, paths=["sub/mine.txt"])
 nested_tree = subprocess.run(
-    ["git", "-C", str(nested_suggest), "rev-parse", f"{nested_sha}^{{tree}}"],
-    check=True, capture_output=True, text=True, env=suggest_env,
+    ["git", "-C", str(nested_form_coverage), "rev-parse", f"{nested_sha}^{{tree}}"],
+    check=True, capture_output=True, text=True, env=coverage_env,
 ).stdout.strip()
 rb.persist_review_receipt(
-    nested_suggest, nested_tree, nested_sha, "nested-form-fixture", 0, scope=["sub/mine.txt"]
+    nested_form_coverage, nested_tree, nested_sha, "nested-form-fixture", 0,
+    scope=["sub/mine.txt"]
 )
-(nested_suggest / "mine.txt").write_text("unreviewed\n" * 4)
-nested_vouched = ("work over review nested-form-fixture, which read every path this commit's "
-                 "pathspec carries (scoped to sub/mine.txt)")
+(nested_form_coverage / "mine.txt").write_text("unreviewed\n" * 4)
 for nested_spec in ("mine.txt", "."):
-    nested_lines = suggest(nested_suggest, "--commit-paths", nested_spec,
-                           cwd=nested_suggest / "sub")
-    assert nested_vouched in nested_lines, (nested_spec, nested_lines)
+    nested_lines = coverage(nested_form_coverage, "--commit-paths", nested_spec,
+                            cwd=nested_form_coverage / "sub")
+    # The paths are repository-relative whatever the caller's cwd was, or the gate reading them
+    # would be handed a name that resolves against a directory it never stood in.
+    assert_coverage(nested_lines, 1, 7, vouch="nested-form-fixture", paths=["sub/mine.txt"])
 # The same directory naming the root's unreviewed file means that file, not the one beside it.
-assert not any(line.startswith("work over review ") for line in
-               suggest(nested_suggest, "--commit-paths", "../mine.txt",
-                       cwd=nested_suggest / "sub")), \
-    suggest(nested_suggest, "--commit-paths", "../mine.txt", cwd=nested_suggest / "sub")
+root_from_sub = coverage(nested_form_coverage, "--commit-paths", "../mine.txt",
+                         cwd=nested_form_coverage / "sub")
+assert_coverage(root_from_sub, 1, 5, paths=["mine.txt"])
 
 # `git commit -- .` at the top carries every tracked change rather than nothing, and an empty commit
 # form is the gate's allow signal.
-form_dot_lines = suggest(form_suggest, "--commit-paths", ".")
-assert form_dot_lines != ["nothing to review"], form_dot_lines
-assert not any(line.startswith("work over review ") for line in form_dot_lines), form_dot_lines
+form_dot_lines = coverage(form_coverage, "--commit-paths", ".")
+assert gate_reads(form_dot_lines) == (False, ""), form_dot_lines
 
 # A review that read the whole tree covers a commit as surely as a scope naming its paths, and was
 # the one receipt a commit could not lean on: only scoped receipts were ever asked, so the stronger
 # review vouched for less than the narrower one.
-whole_suggest = make_suggest_repo("suggest-commit-whole-tree", ("mine.txt", "theirs.txt"))
-(whole_suggest / "mine.txt").write_text("reviewed\n" * 7)
-whole_sha = rb.worktree_snapshot_commit(whole_suggest)
+whole_coverage = make_coverage_repo("coverage-commit-whole-tree", ("mine.txt", "theirs.txt"))
+(whole_coverage / "mine.txt").write_text("reviewed\n" * 7)
+whole_sha = rb.worktree_snapshot_commit(whole_coverage)
 whole_tree = subprocess.run(
-    ["git", "-C", str(whole_suggest), "rev-parse", f"{whole_sha}^{{tree}}"],
-    check=True, capture_output=True, text=True, env=suggest_env,
+    ["git", "-C", str(whole_coverage), "rev-parse", f"{whole_sha}^{{tree}}"],
+    check=True, capture_output=True, text=True, env=coverage_env,
 ).stdout.strip()
-rb.persist_review_receipt(whole_suggest, whole_tree, whole_sha, "whole-tree-fixture", 0)
-(whole_suggest / "theirs.txt").write_text("theirs\n" * 5)
-assert rb.scoped_review_vouching(whole_suggest, ["mine.txt"], False)["run_id"] == \
-    "whole-tree-fixture", rb.scoped_review_vouching(whole_suggest, ["mine.txt"], False)
-# Asked through the pathspec it was handed, suggest answers that before the vouching rules get a
+rb.persist_review_receipt(whole_coverage, whole_tree, whole_sha, "whole-tree-fixture", 0)
+(whole_coverage / "theirs.txt").write_text("theirs\n" * 5)
+assert rb.scoped_review_vouching(whole_coverage, ["mine.txt"], False)["run_id"] == \
+    "whole-tree-fixture", rb.scoped_review_vouching(whole_coverage, ["mine.txt"], False)
+# Asked through the pathspec it was handed, coverage answers that before the vouching rules get a
 # word: what this commit would carry IS the reviewed tree, so the paths hold nothing for a panel to
-# read, and the work outside them is somebody else's. Either line is the gate's allow signal.
-whole_lines = suggest(whole_suggest, "--commit-paths", "mine.txt")
-assert whole_lines == ["nothing to review; tree matches review whole-tree-fixture"], whole_lines
+# read, and the work outside them is somebody else's. Either answer is the gate's allow signal.
+assert_coverage(coverage(whole_coverage, "--commit-paths", "mine.txt"), 0, 0, paths=[])
 # Nothing staged is nothing to vouch for, and the working tree the pathspec form reads is not the
 # question a plain commit asks.
-assert not any(line.startswith("work over review ") for line in suggest(whole_suggest)), \
-    suggest(whole_suggest)
-subprocess.run(["git", "-C", str(whole_suggest), "add", "mine.txt"], check=True, env=suggest_env)
-assert ("work over review whole-tree-fixture, which read every staged path"
-        in suggest(whole_suggest)), suggest(whole_suggest)
+assert vouch_of(coverage(whole_coverage)) == "", coverage(whole_coverage)
+subprocess.run(["git", "-C", str(whole_coverage), "add", "mine.txt"], check=True, env=coverage_env)
+assert vouch_of(coverage(whole_coverage)) == "whole-tree-fixture", coverage(whole_coverage)
 
-# A range answers about two commits that already exist, so a commit form asked beside it was
-# narrowing nothing and was dropped without a word.
-for range_form in (["--commit-paths", "mine.txt"], ["--commit-all"]):
-    range_refused = subprocess.run(
-        [sys.argv[1], "suggest", "--repo", str(form_suggest), "--range", "HEAD~1..HEAD",
-         *range_form],
-        capture_output=True, text=True, env=suggest_env,
-    )
-    assert range_refused.returncode == 2, (range_form, range_refused)
-    assert "not allowed with" in range_refused.stderr, (range_form, range_refused.stderr)
-
-# The commit gate hands suggest the pathspec the commit will carry, and the reader acts on the one
-# command printed: sized against the whole tree, a one-line fix beside another agent's large work
-# priced a panel that reads none of it, and leaving the reader to name --paths itself cost three
-# extra rounds. So the command carries the scope already, and the tier is that scope's own delta.
-scoped_size_suggest = make_suggest_repo(
-    "suggest-commit-scoped-size", ("mine.txt", "theirs a.txt")
+# The two commit forms are one question asked two ways, so naming both narrows nothing and is
+# refused rather than silently answered about one of them.
+both_forms = subprocess.run(
+    [sys.argv[1], "coverage", "--repo", str(form_coverage),
+     "--commit-all", "--commit-paths", "mine.txt"],
+    capture_output=True, text=True, env=coverage_env,
 )
-(scoped_size_suggest / "mine.txt").write_text("base\nfix\n")
-(scoped_size_suggest / "theirs a.txt").write_text("line\n" * 400)
-(scoped_size_suggest / "untracked-theirs.txt").write_text("line\n" * 60)
-assert_suggestion(suggest(scoped_size_suggest), 3, 462, "T2")
+assert both_forms.returncode == 2, both_forms
+assert "not allowed with" in both_forms.stderr, both_forms.stderr
 
-
-def suggest_command(lines):
-    named = [line[len("command: "):] for line in lines if line.startswith("command: ")]
-    assert len(named) == 1, lines
-    return named[0]
-
-
-scoped_size_lines = suggest(scoped_size_suggest, "--commit-paths", "mine.txt")
-assert scoped_size_lines[:3] == [
-    "changed files: 1", "changed lines: 1", "tier: T0",
-], scoped_size_lines
-scoped_size_command = suggest_command(scoped_size_lines)
-assert "--worktree --tier T0 " in scoped_size_command, scoped_size_command
-# Last on the line: --paths takes every argument after it.
-assert scoped_size_command.endswith(" --paths mine.txt"), scoped_size_command
-assert "sized to this commit's paths: mine.txt; the rest of the tree is somebody else's to review" \
-    in scoped_size_lines, scoped_size_lines
-# The sentence telling a reader to name --paths itself is what the filled-in command replaces.
-assert not any(line.startswith("scoped: ") for line in scoped_size_lines), scoped_size_lines
-# The pathspec reaches the command as a pathspec, not as a shell word: a path with a space in it
-# would otherwise arrive as two.
-spaced_lines = suggest(scoped_size_suggest, "--commit-paths", "mine.txt", "theirs a.txt")
-assert suggest_command(spaced_lines).endswith(" --paths mine.txt 'theirs a.txt'"), spaced_lines
-assert spaced_lines[:3] == ["changed files: 2", "changed lines: 402", "tier: T2"], spaced_lines
-# Every heavier panel offered beside it reviews the same commit, so it carries the same scope.
-for scoped_owner_line in scoped_size_lines:
-    if scoped_owner_line.startswith("owner-only, "):
-        assert scoped_owner_line.endswith(" --paths mine.txt"), scoped_owner_line
-# `-a` and `git commit -- .` carry the whole tracked tree, so they are sized and printed as before.
+# The gate hands coverage the pathspec the commit will carry, and the delta is that pathspec's own:
+# read over the whole tree, a one-line fix beside another agent's large work reported that work as
+# the commit's, and the gate priced a commit on files nobody was committing.
+scoped_size_coverage = make_coverage_repo(
+    "coverage-commit-scoped-size", ("mine.txt", "theirs a.txt")
+)
+(scoped_size_coverage / "mine.txt").write_text("base\nfix\n")
+(scoped_size_coverage / "theirs a.txt").write_text("line\n" * 400)
+(scoped_size_coverage / "untracked-theirs.txt").write_text("line\n" * 60)
+assert_coverage(coverage(scoped_size_coverage), 3, 462,
+                paths=["mine.txt", "theirs a.txt", "untracked-theirs.txt"])
+assert_coverage(coverage(scoped_size_coverage, "--commit-paths", "mine.txt"), 1, 1,
+                paths=["mine.txt"])
+# A path with a space in it is one path on its own line, not two: the gate reads these lines as
+# whole paths, and a shell-quoted spelling would split there.
+assert_coverage(
+    coverage(scoped_size_coverage, "--commit-paths", "mine.txt", "theirs a.txt"), 2, 402,
+    paths=["mine.txt", "theirs a.txt"],
+)
+# `-a` and `git commit -- .` carry the whole tracked tree but no untracked file: a co-tenant's
+# new file must not price either form's delta.
 for whole_form in (["--commit-all"], ["--commit-paths", "."]):
-    whole_form_lines = suggest(scoped_size_suggest, *whole_form)
-    assert whole_form_lines[:3] == [
-        "changed files: 3", "changed lines: 462", "tier: T2",
-    ], (whole_form, whole_form_lines)
-    assert "--paths" not in suggest_command(whole_form_lines), (whole_form, whole_form_lines)
-    assert any(line.startswith("scoped: ") for line in whole_form_lines), \
-        (whole_form, whole_form_lines)
-    assert not any(line.startswith("sized to this commit's paths: ") for line in whole_form_lines), \
-        (whole_form, whole_form_lines)
+    assert_coverage(coverage(scoped_size_coverage, *whole_form), 2, 402,
+                    paths=["mine.txt", "theirs a.txt"])
 
-# A second round re-reads a tree the panel has already read, so it runs one rung below the ladder:
-# paying full price twice for one commit is what made escalation expensive (Egor, 2026-08-09).
-# `armed2` is the stage only an escalation reaches — the gate arming a panel a second time in one
-# cycle — and it is read whichever session's file carries it, like the launch door reads them.
-def arm_cycle(repo, stage, session="fixture"):
-    cycle = repo / ".git" / f"review-cycle-{session}"
-    cycle.write_bytes(stage.encode() + b"\0run\0tree\0stamp\0")
-    return cycle
-
-
-second_round_suggest = make_suggest_repo("suggest-second-round")
-(second_round_suggest / "big.txt").write_text("line\n" * 400)
-assert_suggestion(suggest(second_round_suggest), 1, 400, "T2")
-second_round_cycle = arm_cycle(second_round_suggest, "armed1")
-# The first round's own arming changes nothing: a cycle blocks a commit once before any review.
-assert_suggestion(suggest(second_round_suggest), 1, 400, "T2")
-second_round_cycle.write_bytes(b"armed2\0run\0tree\0stamp\0")
-second_round_lines = suggest(second_round_suggest)
-assert_suggestion(second_round_lines, 1, 400, "T2", runs="T1", capped="T2")
-# The command a reader obeys is the dropped tier's, not the ladder's.
-assert "--tier T1 " in suggest_command(second_round_lines), second_round_lines
-# The owner's heavier panels stay offered by name: cheaper by default is not cheaper by decree.
-assert any("--tier T3" in line for line in second_round_lines), second_round_lines
-
-# T0 is the floor, and a floor that says nothing is a floor that reads as no rule at all being
-# applied — so the drop line is absent exactly when nothing dropped.
-floor_round_suggest = make_suggest_repo("suggest-second-round-floor")
-(floor_round_suggest / "small.txt").write_text("line\n" * 5)
-arm_cycle(floor_round_suggest, "armed2")
-assert_suggestion(suggest(floor_round_suggest), 1, 5, "T0")
-
-# The ceiling and the drop compose in that order: the ladder's T3 is the owner's, so the panel is
-# the auto ceiling, and the second round takes that one further rung down.
-t3_round_suggest = make_suggest_repo("suggest-second-round-t3")
-(t3_round_suggest / "huge.txt").write_text("line\n" * 601)
-arm_cycle(t3_round_suggest, "armed2")
-assert_suggestion(suggest(t3_round_suggest), 1, 601, "T3",
-                  runs=f"T{int(rb.AUTO_TIER_CEILING[1:]) - 1}", capped=rb.AUTO_TIER_CEILING)
-
-scope_spelling_probe = r"""
-import importlib.machinery
-import importlib.util
-import sys
-
-loader = importlib.machinery.SourceFileLoader("review_bench_probe", sys.argv[1])
-spec = importlib.util.spec_from_loader("review_bench_probe", loader)
-module = importlib.util.module_from_spec(spec)
-loader.exec_module(module)
-print("\0".join(module.normalize_scope_paths(sys.argv[2], sys.argv[3:])))
-"""
-
-
-def scope_read_from(cwd, repo, paths):
-    """What `review --paths` makes of a pathspec, read where the reader of the command stands: the
-    other half of the invariant that a printed command survives being copied verbatim.
-    """
-    proc = subprocess.run(
-        [sys.executable, "-c", scope_spelling_probe, sys.argv[1], str(repo), *paths],
-        check=True, capture_output=True, text=True, cwd=str(cwd), env=suggest_env,
-    )
-    return proc.stdout.strip().split("\0")
-
-
-def printed_scope_of(lines):
-    named = re.search(r" --paths (.+)$", suggest_command(lines))
-    assert named, lines
-    return shlex.split(named.group(1))
-
-
-# `review --paths` reads its pathspec beside the caller, so a command carrying repository-relative
-# paths asked for sub/sub/mine.txt once copied out of sub/ and reviewed nothing.
-nested_command_suggest = make_suggest_repo(
-    "suggest-commit-nested-command", ("sub/mine.txt", "outside.txt")
+# A directory pathspec carries no untracked file either — only a literally named one belongs
+# to the form.
+scoped_untracked_coverage = make_coverage_repo(
+    "coverage-commit-scoped-untracked", ("src/mine.txt",)
 )
-(nested_command_suggest / "sub" / "mine.txt").write_text("base\nfix\n")
-(nested_command_suggest / "outside.txt").write_text("line\n" * 300)
-nested_sub = nested_command_suggest / "sub"
-nested_command_lines = suggest(
-    nested_command_suggest, "--commit-paths", "mine.txt", cwd=nested_sub
+(scoped_untracked_coverage / "src" / "mine.txt").write_text("base\nfix\n")
+(scoped_untracked_coverage / "src" / "fresh.txt").write_text("line\n" * 40)
+(scoped_untracked_coverage / "outside.txt").write_text("line\n" * 900)
+assert_coverage(coverage(scoped_untracked_coverage, "--commit-paths", "src"), 1, 1,
+                paths=["src/mine.txt"])
+assert_coverage(
+    coverage(scoped_untracked_coverage, "--commit-paths", "src", "src/fresh.txt"), 2, 41,
+    paths=["src/fresh.txt", "src/mine.txt"],
 )
-assert nested_command_lines[:3] == [
-    "changed files: 1", "changed lines: 1", "tier: T0",
-], nested_command_lines
-assert printed_scope_of(nested_command_lines) == ["mine.txt"], nested_command_lines
-assert scope_read_from(nested_sub, nested_command_suggest,
-                       printed_scope_of(nested_command_lines)) == ["sub/mine.txt"], \
-    nested_command_lines
-# One spelling per output: a reader handed two would correct the command into the broken one.
-assert any(line.startswith("sized to this commit's paths: mine.txt; ")
-           for line in nested_command_lines), nested_command_lines
-# A scope that is the caller's own directory has no relative spelling `--paths` accepts — `.` is
-# refused — so it goes absolute, which normalize_scope_paths reads back to the same scope.
-dir_scope_lines = suggest(nested_command_suggest, "--commit-paths", "../sub", cwd=nested_sub)
-dir_scope_printed = printed_scope_of(dir_scope_lines)
-assert dir_scope_printed and all(path.startswith("/") for path in dir_scope_printed), dir_scope_lines
-assert scope_read_from(nested_sub, nested_command_suggest, dir_scope_printed) == ["sub"], \
-    dir_scope_lines
-assert any(line.startswith(f"sized to this commit's paths: {shlex.join(dir_scope_printed)}; ")
-           for line in dir_scope_lines), dir_scope_lines
-# Standing at the top, the two spellings are the same one, and a caller outside the repository has
-# no directory to spell against.
-top_scope_lines = suggest(nested_command_suggest, "--commit-paths", "sub",
-                          cwd=nested_command_suggest)
-assert printed_scope_of(top_scope_lines) == ["sub"], top_scope_lines
-assert scope_read_from(nested_command_suggest, nested_command_suggest,
-                       printed_scope_of(top_scope_lines)) == ["sub"], top_scope_lines
-outside_scope_lines = suggest(nested_command_suggest, "--commit-paths", "sub", cwd=work)
-assert printed_scope_of(outside_scope_lines) == ["sub"], outside_scope_lines
-
-# Untracked content under the scope is in the diff the printed command would be shown, however
-# little of it any commit form would carry.
-scoped_untracked_suggest = make_suggest_repo("suggest-commit-scoped-untracked", ("src/mine.txt",))
-(scoped_untracked_suggest / "src" / "mine.txt").write_text("base\nfix\n")
-(scoped_untracked_suggest / "src" / "fresh.txt").write_text("line\n" * 40)
-(scoped_untracked_suggest / "outside.txt").write_text("line\n" * 900)
-scoped_untracked_lines = suggest(scoped_untracked_suggest, "--commit-paths", "src")
-assert scoped_untracked_lines[:3] == [
-    "changed files: 2", "changed lines: 41", "tier: T1",
-], scoped_untracked_lines
-assert suggest_command(scoped_untracked_lines).endswith(" --paths src"), scoped_untracked_lines
 
 # The launching chat is stamped into the receipt for a reader holding only that file, and stays
 # absent when the harness named none rather than landing there empty.
-session_suggest = make_suggest_repo("suggest-session-receipt")
+session_coverage = make_coverage_repo("coverage-session-receipt")
 session_sha, session_tree = (subprocess.run(
-    ["git", "-C", str(session_suggest), "rev-parse", ref],
-    check=True, capture_output=True, text=True, env=suggest_env,
+    ["git", "-C", str(session_coverage), "rev-parse", ref],
+    check=True, capture_output=True, text=True, env=coverage_env,
 ).stdout.strip() for ref in ("HEAD", "HEAD^{tree}"))
 os.environ["CLAUDE_CODE_SESSION_ID"] = "sess-receipt-9"
 try:
     session_receipt = json.loads(rb.persist_review_receipt(
-        session_suggest, session_tree, session_sha, "session-receipt-fixture", 0
+        session_coverage, session_tree, session_sha, "session-receipt-fixture", 0
     ).read_text())
     os.environ["CLAUDE_CODE_SESSION_ID"] = ""
     blank_session_receipt = json.loads(rb.persist_review_receipt(
-        session_suggest, session_tree, session_sha, "session-receipt-fixture", 0
+        session_coverage, session_tree, session_sha, "session-receipt-fixture", 0
     ).read_text())
 finally:
     os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
 unset_session_receipt = json.loads(rb.persist_review_receipt(
-    session_suggest, session_tree, session_sha, "session-receipt-fixture", 0
+    session_coverage, session_tree, session_sha, "session-receipt-fixture", 0
 ).read_text())
 assert session_receipt["session"] == "sess-receipt-9", session_receipt
 assert "session" not in blank_session_receipt, blank_session_receipt
 assert "session" not in unset_session_receipt, unset_session_receipt
 
-missing_tree_suggest = make_suggest_repo("suggest-missing-tree")
-(missing_tree_suggest / "tracked.txt").write_text("changed\n")
-(receipt_dir / rb.receipt_file_name(missing_tree_suggest)).write_text(json.dumps({
-    "repo": str(missing_tree_suggest), "tree": "0" * len(receipt_tree),
+# A receipt naming a tree this repository no longer holds, and one naming a repository that is gone:
+# both are unusable baselines, and the delta falls back to HEAD rather than ending in an error.
+missing_tree_coverage = make_coverage_repo("coverage-missing-tree")
+(missing_tree_coverage / "tracked.txt").write_text("changed\n")
+(receipt_dir / rb.receipt_file_name(missing_tree_coverage)).write_text(json.dumps({
+    "repo": str(missing_tree_coverage), "tree": "0" * len(receipt_tree),
     "commit": receipt_sha, "run_id": "missing-tree",
     "ts": "2026-07-27T00:00:00+00:00", "errored": 0,
 }) + "\n")
-missing_tree_lines = suggest(missing_tree_suggest)
-assert_suggestion(missing_tree_lines, 1, 2, "T0")
-assert not any("unreviewed delta vs review" in line for line in missing_tree_lines)
+assert_coverage(coverage(missing_tree_coverage), 1, 2, paths=["tracked.txt"])
 
-vanished_repo_suggest = make_suggest_repo("suggest-vanished-repo")
-(vanished_repo_suggest / "tracked.txt").write_text("changed\n")
-(receipt_dir / rb.receipt_file_name(vanished_repo_suggest)).write_text(json.dumps({
-    "repo": str(vanished_repo_suggest / "no-such-dir"), "tree": receipt_tree,
+vanished_repo_coverage = make_coverage_repo("coverage-vanished-repo")
+(vanished_repo_coverage / "tracked.txt").write_text("changed\n")
+(receipt_dir / rb.receipt_file_name(vanished_repo_coverage)).write_text(json.dumps({
+    "repo": str(vanished_repo_coverage / "no-such-dir"), "tree": receipt_tree,
     "commit": receipt_sha, "run_id": "vanished-repo",
     "ts": "2026-07-27T00:00:00+00:00", "errored": 0,
 }) + "\n")
-vanished_repo_lines = suggest(vanished_repo_suggest)
-assert_suggestion(vanished_repo_lines, 1, 2, "T0")
-assert not any("unreviewed delta vs review" in line for line in vanished_repo_lines)
-
-for index, core_path in enumerate((
-    "bin/review-bench", "bin/opencode-go", "bin/claudeb", "bin/codexb",
-    "bin/geminib", "llm-limits.sh",
-)):
-    core_suggest = make_suggest_repo(f"suggest-core-{index}")
-    full_path = core_suggest / core_path
-    full_path.parent.mkdir(parents=True, exist_ok=True)
-    full_path.write_text("true\n")
-    assert_suggestion(suggest(core_suggest), 1, 1, "T2")
-
-range_suggest = make_suggest_repo("suggest-range")
-range_base = subprocess.run(
-    ["git", "-C", str(range_suggest), "rev-parse", "HEAD"],
-    check=True, capture_output=True, text=True, env=suggest_env,
-).stdout.strip()
-(range_suggest / "range.txt").write_text("line\n" * 151)
-subprocess.run(["git", "-C", str(range_suggest), "add", "range.txt"],
-               check=True, env=suggest_env)
-subprocess.run(["git", "-C", str(range_suggest), "commit", "-qm", "range"],
-               check=True, env=suggest_env)
-range_head = subprocess.run(
-    ["git", "-C", str(range_suggest), "rev-parse", "HEAD"],
-    check=True, capture_output=True, text=True, env=suggest_env,
-).stdout.strip()
-range_lines = suggest(range_suggest, "--range", f"{range_base}..{range_head}")
-assert_suggestion(range_lines, 1, 151, "T2", committed=True)
-# The panel must be sent to the range that was measured here, not to the commit at its right end:
-# those are different changes, and the printed command was the only place that ever said which one
-# the reader would get.
-assert f"--range {range_base}..{range_head}" in range_lines[4], range_lines
+assert_coverage(coverage(vanished_repo_coverage), 1, 2, paths=["tracked.txt"])
 
 # A range of commits is a review target of its own. Committed work was reviewable one commit at a
 # time only, so «заревьюй то, что ты сделал» over a branch cost one panel per commit, and work
@@ -7767,7 +7593,7 @@ assert f"{sealed_base[:7]}..{sealed_head[:7]}" in labelled.getvalue(), labelled.
 assert f"sealed as {sealed_sha[:7]}" in labelled.getvalue(), labelled.getvalue()
 
 # And a range is not a review of the current state, however it is sealed: a run over old or pushed
-# commits stamping the repository's receipt would leave every later suggestion measuring against a
+# commits stamping the repository's receipt would leave every later coverage answer measuring against a
 # tree nobody is standing on (found by panel, 2026-08-07).
 historical = rb.range_snapshot_commit(sealed_repo, f"{sealed_base}..{sealed_second}")
 assert rb.write_review_receipt(sealed_repo, historical, "run-historical", 0, worktree=False) is None
@@ -7840,7 +7666,7 @@ def sealed_run(store_name, **fields):
 
 
 # A range of old commits reviews old code: stamping the repository's receipt with it would leave
-# every later suggestion measuring the working tree against a tree nobody is standing on.
+# every later coverage answer measuring the working tree against a tree nobody is standing on.
 range_rc, range_err, range_receipt = sealed_run(
     "range-run-claudeb", commitish=None, range=f"{sealed_base}..{sealed_second}")
 assert range_rc == 0, range_err
@@ -8340,14 +8166,16 @@ assert merged_seen["progress"] == [
 ] * 2, merged_seen["progress"]
 assert not list((merged_state / rb.PROGRESS_DIR).iterdir())
 
-# The gate each repository holds is `suggest`, and after the merged run neither has anything left
+# The gate each repository holds is `coverage`, and after the merged run neither has anything left
 # to review: that is requirement three seen from the side that enforces it.
 for merged_path in merged_pair:
-    merged_suggest = io.StringIO()
-    with contextlib.redirect_stdout(merged_suggest):
-        assert rb.cmd_suggest(argparse.Namespace(repo=str(merged_path), range=None)) == 0
-    assert f"nothing to review; tree matches review {merged_meta['run_id']}" \
-        in merged_suggest.getvalue(), merged_suggest.getvalue()
+    merged_coverage = io.StringIO()
+    with contextlib.redirect_stdout(merged_coverage):
+        assert rb.cmd_coverage(argparse.Namespace(
+            repo=str(merged_path), commit_paths=None, commit_all=False)) == 0
+    assert merged_coverage.getvalue().splitlines() == [
+        "covered: yes", "lines: 0", "files: 0",
+    ], merged_coverage.getvalue()
 
 # The verifier reads a finding's path in the merged repository, so a prefixed citation resolves to
 # the file it names without any repository bookkeeping of its own.
@@ -10290,32 +10118,6 @@ owed_eighth=$(WORKER_STATS_DIR="$OWED_SD" "$SCRIPT" owed-round --repo "$GATE_REP
   || fail "eight confirmed findings earned no round"
 assert contains "$owed_eighth" "confirmed findings in one round earned"
 
-# The second round's cheaper tier asks this same question, and over the checkout alone a co-tenant
-# answers it: their newer run owes nothing, so the panel pays the ladder's full price twice. A chat
-# that names itself is priced on its own debt.
-OWED_SD="$WORK/gate-owed-tier"
-TIER_REPO="$WORK/owed-tier-repo"
-mkdir -p "$TIER_REPO"
-git -C "$TIER_REPO" init -q -b main
-printf 'base\n' >"$TIER_REPO/tracked.txt"
-git -C "$TIER_REPO" add tracked.txt
-git -C "$TIER_REPO" -c user.email=t@example.test -c user.name=t commit -qm base
-python3 -c 'import sys; sys.stdout.write("line\n" * 400)' >"$TIER_REPO/big.txt"
-GATE_REPO="$TIER_REPO" GATE_SESSION=sess-mine owed_run 20260731T080000Z-tiermine 2 P1 P1
-GATE_SD="$OWED_SD" GATE_REPO="$TIER_REPO" GATE_SESSION=sess-theirs \
-  gate_run 20260731T090000Z-tiertheirs 1 0
-tier_unnamed=$(WORKER_STATS_DIR="$OWED_SD" "$SCRIPT" suggest --repo "$TIER_REPO" 2>/dev/null)
-assert contains "$tier_unnamed" 'tier: T2'
-assert test -z "$(grep -F 'a second round runs one rung down' <<<"$tier_unnamed")"
-tier_named=$(WORKER_STATS_DIR="$OWED_SD" "$SCRIPT" suggest --repo "$TIER_REPO" \
-  --session sess-mine 2>/dev/null)
-assert contains "$tier_named" 'tier: T1'
-assert contains "$tier_named" 'a second round runs one rung down'
-# And a chat with no debt of its own pays the ladder's price, named or not.
-tier_theirs=$(WORKER_STATS_DIR="$OWED_SD" "$SCRIPT" suggest --repo "$TIER_REPO" \
-  --session sess-theirs 2>/dev/null)
-assert contains "$tier_theirs" 'tier: T2'
-
 # An old run reviewed a diff that has since moved; asking for its triage now is noise.
 STALE_SD="$WORK/gate-stale"
 GATE_SD="$STALE_SD" gate_run 20260730T000000Z-gatestale 48 1
@@ -10362,7 +10164,7 @@ mkdir -p "$ROOT_COMMIT_REPO" "$ROOT_COMMIT_SD/receipts"
 git -C "$ROOT_COMMIT_REPO" init -q -b main
 printf 'day one\n' >"$ROOT_COMMIT_REPO/a.txt"
 root_commit_gitdir=$(git -C "$ROOT_COMMIT_REPO" rev-parse --absolute-git-dir)
-printf '%s\0' ticket '' '' '2026-08-07T00:00:00' \
+printf '%s\0' ticket '' '' '2026-08-07T00:00:00' '' '' \
   "$(git -C "$ROOT_COMMIT_REPO" hash-object a.txt) a.txt" \
   >"$root_commit_gitdir/review-cycle-day-one"
 git -C "$ROOT_COMMIT_REPO" add -A
@@ -10469,4 +10271,4 @@ else
   printf 'SKIP: review report hook behavior (%s is unavailable)\n' "$REPORT_HOOK"
 fi
 
-printf 'PASS: %s assertions; canonical review tiers over one shared OpenCode floor and a per-tier Gemini panel that never runs Pro at T0, stays inside the account roster and contains its own tier'"'"'s default panel when escalated, with no retired cell in any of them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative suggestions with missing-object fallback, fixture diff suggestions across all sizes and escalations, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, an agy finding judged on its own transport first and handed to the gateway only where that transport declined, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account schedulable only as the pool'"'"'s reserve and never as a roster tail, and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, carried from there into the corpus row, the report header and a receipt of the lens'"'"'s own while every lens row stays out of the canonical defect list, the frontier denominators, the composition corpus and the default leaderboard, worktree runs narrowed to named paths whose snapshot holds only those paths, is deterministic per path set, spelled against the directory the caller stands in and lexically canonicalized so a `..` can neither walk out of the repository nor split one file into two scopes, carries its scope as commit trailers a failed read refuses rather than widens, so a rerun by sha stays inside it, refuses a commitish, a pathspec matching nothing and a scope holding no change — the refusal before any snapshot object is written — and writes only a receipt of its own — leaving the repository'"'"'s receipt untouched byte for byte, the suggest baseline whole and the stamp hook with nothing to read, a lens narrowed by the same paths naming a combined receipt of its own that leaves the plain, pure-lens and pure-scope receipts byte for byte and survives a rerun by sha with both selectors intact, a day-one repository reviewed end to end — its root commit sealed and cloned, given a deterministic empty base commit inside that clone so the vendor skill diffs its whole content, measured in lines and paths against the empty tree rather than as an unmeasurable diff, so a correction inside it prices by the size ladder like any other change — no receipt moves a tier, and closed by the real stamp hook in both shapes while never-reviewed code riding along still refuses it, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask, the lookup scoped to the repository so another chat cannot answer for it, both review hooks keyed so exactly one fires, and that receipt carrying the confirmed-severity tally of the very verdicts it reported — recomputed from stored verdicts where a run was adjudicated the durable way, absent where nobody triaged it, and printed on the repository receipt the commit gate prices its next round on — taken from the stored verdicts wherever a run has them so a re-adjudication cannot be priced on superseded counts, scoped to the member a merged panel'"'"'s receipt belongs to so one repository never escalates on another'"'"'s defects, carried beside a second tally of that whole round so what the round earned is not split — and made cheaper — by the panel having read two repositories at once, and every receipt naming the change its own run read so a review of committed work can pay the commit that carries it, and answered as no tally at all rather than as an exception when the files behind it cannot be read, and that same receipt reachable by the paths a commit will carry — a search over the scoped receipts alone, answering with the newest whose own scope lies inside those paths, tolerating a path the panel never saw as the drift its reader prices while a reviewed path outside them disqualifies, spelled through the one scope canonicalization, refusing to be asked alongside a named scope or a lens, and leaving the repository receipt'"'"'s own answer untouched, and a merged review of several repositories read by one panel out of a single workspace holding each repository under its own prefix — deterministic, self-contained once built and pruned with the run it belongs to — whose findings and adjudication handoff name the repository each belongs to, whose scopes and progress are per repository, and which stamps EVERY repository it read with that repository'"'"'s own receipt so none of their commit gates blocks on a review that covered it, while refusing a commitish, a repository named twice, a clean tree, a missing repository and its own workspace as a tree to seal, with the gateway being down priced as a wait that expires rather than a verdict — the family whose every attempt failed on the gateway ITSELF cooling for a fixed span while a spent plan, a pool run dry behind one and an unusable answer are left to the records that already carry them, one canary attempt of the cooling family running inside that span so the recovery can be noticed at all, its answer clearing the wait and its failure extending it from the moment the outage began, written under a lock and not written at all where nothing changed, and a side the pool answers for left to the pool — with suggest naming both of those on its own lines wherever they apply — and capped at three advice lines between the command and the owner-only tail, so the output a reader obeys whole stays short enough to be read whole — a clean tree told where committed work is reviewed, and every reader told that a change spanning two checkouts is one panel — and each repository of one panel named the way its half actually exists — a working tree or a range of its own commits as `PATH@BASE..HEAD`, sealed and stamped per member so the committed half answers only where its right end is the tree in front of the reader, refusing a target flag it duplicates, a bare repository beside it with no --worktree and a scope aimed at a range, and a range of commits reviewed as one target — sealed into a single commit carrying its right end'"'"'s tree over its left end as the parent, so every reader keyed on one sha reads the whole range, named by the commits it sealed rather than by how the caller spelled them so one range is one snapshot with one rerun, announced by its own ends with the seal named beside them, read back out of that seal by a rerun carrying no flags at all, refused when it names no shape or no change, shown as a range while it runs, and kept out of the repository'"'"'s receipt wherever its right end is not the tree standing in front of the reader, and the corpus closed to every commit-point review — the plain record command refused outright with the reporting one named in its place, the refusal and the flag'"'"'s own help promising only what --bench delivers (this run'"'"'s verdicts stored, never a corpus row), that flag refused in turn on a durable run it would buy the plain command'"'"'s own behaviour on, and the handoff printing that one command alone — with the block those reviews are read in framed to a fixed width no over-long word can flatten, opened by a line naming the panel that produced it, and carrying a cell row that counts every completed cell under the same names its neighbouring rows use — the ones that found nothing included, and a count missing from an older summary costing its own cell a number rather than the whole block, every one of those names and the tiers table'"'"'s own rendered by one derivation over the pool of cells the tiers can launch — version digits, effort and the bare mark each appearing only where two pool cells would otherwise collide, Claude and Codex effort always spelled because it is a launch parameter, the word skill never rendered at all, a family gaining a second variant IN THE POOL renaming itself with no list to edit, a cell only a stored run holds named against that pool and never over it — the arrival carrying whatever separates it, its report leaving the tiers table byte for byte — and the machine specs commands are spelled in left untouched\n' "$asserts"
+printf 'PASS: %s assertions; canonical review tiers over one shared OpenCode floor and a per-tier Gemini panel that never runs Pro at T0, stays inside the account roster and contains its own tier'"'"'s default panel when escalated, with no retired cell in any of them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative coverage answers with missing-object fallback, the machine coverage lines a commit gate reads — one covered verdict, a vouching run named only beside it, and the carried delta as lines, files and one path apiece — measured through the pending commit'"'"'s own pathspec, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, an agy finding judged on its own transport first and handed to the gateway only where that transport declined, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account schedulable only as the pool'"'"'s reserve and never as a roster tail, and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, carried from there into the corpus row, the report header and a receipt of the lens'"'"'s own while every lens row stays out of the canonical defect list, the frontier denominators, the composition corpus and the default leaderboard, worktree runs narrowed to named paths whose snapshot holds only those paths, is deterministic per path set, spelled against the directory the caller stands in and lexically canonicalized so a `..` can neither walk out of the repository nor split one file into two scopes, carries its scope as commit trailers a failed read refuses rather than widens, so a rerun by sha stays inside it, refuses a commitish, a pathspec matching nothing and a scope holding no change — the refusal before any snapshot object is written — and writes only a receipt of its own — leaving the repository'"'"'s receipt untouched byte for byte, the coverage baseline whole and the stamp hook with nothing to read, a lens narrowed by the same paths naming a combined receipt of its own that leaves the plain, pure-lens and pure-scope receipts byte for byte and survives a rerun by sha with both selectors intact, a day-one repository reviewed end to end — its root commit sealed and cloned, given a deterministic empty base commit inside that clone so the vendor skill diffs its whole content, measured in lines and paths against the empty tree rather than as an unmeasurable diff, so a correction inside it is carried delta like any other change, and closed by the real stamp hook in both shapes while never-reviewed code riding along still refuses it, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask, the lookup scoped to the repository so another chat cannot answer for it, both review hooks keyed so exactly one fires, and that receipt carrying the confirmed-severity tally of the very verdicts it reported — recomputed from stored verdicts where a run was adjudicated the durable way, absent where nobody triaged it, and printed on the repository receipt the commit gate prices its next round on — taken from the stored verdicts wherever a run has them so a re-adjudication cannot be priced on superseded counts, scoped to the member a merged panel'"'"'s receipt belongs to so one repository never escalates on another'"'"'s defects, carried beside a second tally of that whole round so what the round earned is not split — and made cheaper — by the panel having read two repositories at once, and every receipt naming the change its own run read so a review of committed work can pay the commit that carries it, and answered as no tally at all rather than as an exception when the files behind it cannot be read, and that same receipt reachable by the paths a commit will carry — a search over the scoped receipts alone, answering with the run that reached the most of those paths and the newest of equals, walking past every run the caller was already refused by, tolerating a path the panel never saw as the drift its reader prices and a reviewed path outside them as nothing at all, while a review reaching none of them is no answer, and the review that vouches for a commit outright asked where its panel stood of the paths being COMMITTED rather than of the whole checkout — answered by the CONTENT that commit would carry against the tree the panel read and never by where HEAD stands, so a co-tenant landing their own commits between the review and the commit changes nothing, while the reviewed bytes going back over work that landed after the review are named as advice the reader decides on rather than a refusal — while a run that reviewed a commit is asked the plain question, spelled through the one scope canonicalization, refusing to be asked alongside a named scope or a lens, and leaving the repository receipt'"'"'s own answer untouched, and a merged review of several repositories read by one panel out of a single workspace holding each repository under its own prefix — deterministic, self-contained once built and pruned with the run it belongs to — whose findings and adjudication handoff name the repository each belongs to, whose scopes and progress are per repository, and which stamps EVERY repository it read with that repository'"'"'s own receipt so none of their commit gates blocks on a review that covered it, while refusing a commitish, a repository named twice, a clean tree, a missing repository and its own workspace as a tree to seal, with the gateway being down priced as a wait that expires rather than a verdict — the family whose every attempt failed on the gateway ITSELF cooling for a fixed span while a spent plan, a pool run dry behind one and an unusable answer are left to the records that already carry them, one canary attempt of the cooling family running inside that span so the recovery can be noticed at all, its answer clearing the wait and its failure extending it from the moment the outage began, written under a lock and not written at all where nothing changed, and a side the pool answers for left to the pool, and each repository of one panel named the way its half actually exists — a working tree or a range of its own commits as `PATH@BASE..HEAD`, sealed and stamped per member so the committed half answers only where its right end is the tree in front of the reader, refusing a target flag it duplicates, a bare repository beside it with no --worktree and a scope aimed at a range, and a range of commits reviewed as one target — sealed into a single commit carrying its right end'"'"'s tree over its left end as the parent, so every reader keyed on one sha reads the whole range, named by the commits it sealed rather than by how the caller spelled them so one range is one snapshot with one rerun, announced by its own ends with the seal named beside them, read back out of that seal by a rerun carrying no flags at all, refused when it names no shape or no change, shown as a range while it runs, and kept out of the repository'"'"'s receipt wherever its right end is not the tree standing in front of the reader, and the corpus closed to every commit-point review — the plain record command refused outright with the reporting one named in its place, the refusal and the flag'"'"'s own help promising only what --bench delivers (this run'"'"'s verdicts stored, never a corpus row), that flag refused in turn on a durable run it would buy the plain command'"'"'s own behaviour on, and the handoff printing that one command alone — with the block those reviews are read in framed to a fixed width no over-long word can flatten, opened by a line naming the panel that produced it, and carrying a cell row that counts every completed cell under the same names its neighbouring rows use — the ones that found nothing included, and a count missing from an older summary costing its own cell a number rather than the whole block, every one of those names and the tiers table'"'"'s own rendered by one derivation over the pool of cells the tiers can launch — version digits, effort and the bare mark each appearing only where two pool cells would otherwise collide, Claude and Codex effort always spelled because it is a launch parameter, the word skill never rendered at all, a family gaining a second variant IN THE POOL renaming itself with no list to edit, a cell only a stored run holds named against that pool and never over it — the arrival carrying whatever separates it, its report leaving the tiers table byte for byte — and the machine specs commands are spelled in left untouched\n' "$asserts"

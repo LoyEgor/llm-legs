@@ -12,4 +12,4 @@ table can decide: which vendor and how much effort a task deserves.
 - Use the account, model, and effort exactly as `NEXT:` prints them; per-task `MODEL:`/`EFFORT:` overrides belong in the brief. The canonical knob-to-agy mapping lives in `worker-run`.
 - Codex and Gemini `main` profiles rank last on a tie: an account that spends no more quota than `main` is preferred to it.
 - claudeb sonnet runs at effort high or above — sonnet·medium and below are never used; opus may run at medium.
-- Code reviews: tier and cell composition come from `review-bench suggest` / `review-bench tiers`, never from prose; the human-side rules live in `~/.claude/docs/review-tiers.md`.
+- Code reviews: the chat picks the tier itself (task importance first, then diff complexity; T0 is the floor) and cell composition comes from `review-bench tiers`, never from prose; the human-side rules live in `~/.claude/docs/review-tiers.md`.

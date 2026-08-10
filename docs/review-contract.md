@@ -48,7 +48,9 @@ Judges exist only for corpus rows; on a routine review the fixer triages alone.
 
 ## Escapes and fuses
 
-`REVIEW_GATE_OK=1` passes a commit only on Egor's explicit skip, transcript-verified.
+`REVIEW_GATE_OK=1` passes a commit on Egor's explicit skip. Not transcript-verified —
+the stem list refused permissions he had plainly given, so the token is on the model's
+honour (2026-08-10); `REVIEW_ASKED=1` is still checked against his own words.
 The pending-report Stop hook still nags an untriaged run to its report, with the
 bounded ask allowance as the fuse. Severity tallies ride the receipt
 (`confirmed_by_severity`), and the gate prices the next round on them — scoped to the
@@ -56,6 +58,7 @@ member repository in merged runs.
 
 ## Deleted by this contract
 
-Fix-delta tier tolerance in `suggest` (the ticket owns post-review work), launch
-commands inside advisory lines, judge invocations outside the corpus, and every
+The whole tier advisory (`suggest` and its sizing ladder — the chat picks the tier
+itself, and `review-bench coverage` answers only whether a commit form is covered),
+launch commands inside advisory lines, judge invocations outside the corpus, and every
 review path not named on this page.

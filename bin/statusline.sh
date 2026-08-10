@@ -208,20 +208,6 @@ worktree_matches_tree() {
     2>/dev/null
 }
 
-# Every live chat's session id. The registry maps pid → sessionId; a chat whose process is gone
-# has stopped claiming the paths it touched, and they fall back to nobody's.
-review_live_sessions() {
-  local dir="$HOME/.claude/sessions" pid sid
-  [ -d "$dir" ] || return 0
-  jq -r 'select(type == "object" and (.pid | type) == "number" and (.pid | floor) == .pid
-      and .pid > 0 and (.sessionId | type) == "string" and (.sessionId | length) > 0)
-    | "\(.pid | floor)\(.sessionId)"' "$dir"/*.json 2>/dev/null |
-    while IFS=$'\x1f' read -r pid sid; do
-      [ -n "$sid" ] && kill -0 "$pid" 2>/dev/null && printf '%s\n' "$sid"
-    done
-  return 0
-}
-
 # The chat that launched a review run: its own registry entry, or the nearest ancestor's — a run
 # is a grandchild of the chat that asked for it, several execs down. A launcher that cannot be
 # named leaves the run bright, since hiding a review this chat may well have started is the worse
@@ -242,201 +228,99 @@ review_run_session() {
   return 1
 }
 
-# Which changed paths of the active tree no receipt has reviewed AT THEIR CURRENT CONTENT, reduced
-# to the one verdict the segment renders. A receipt covers a path when the path is in its scope
-# (or the receipt reviewed the whole repository) and the blob it read is still the blob on disk at
-# the same mode; absent on both sides — a reviewed deletion — counts as covered, or a review that
-# deletes a file could never turn its own label off.
+# The commit gate's own answer to "would a commit right now be blocked, and why", in the one line
+# it prints for a reader that has no commit to attempt: `off` (a commit now passes silently), `dim
+# <text>` (it passes, with something worth saying) or `loud <text>` (it would be blocked). Nothing
+# here decides any of it and nothing here second-guesses the text — the gate is the only place that
+# knows what a commit owes, and a label computing its own version of that answer is one of two
+# renderings of one question, of which one is always wrong (Egor, 2026-08-09).
 #
-# `mine` means at least one uncovered path is this chat's own or delegated work, which is the only
-# actionable state and the only bright one. `ownerless` means the uncovered paths are claimed by
-# no live chat: background news, dimmed. `none` covers both a fully reviewed tree and one whose
-# uncovered paths belong to another live chat, which carries its own bright label for them.
-review_delta_compute() {
-  local top="$1" sid="$2" receipt_base="$3"
-  local receipts="$worker_stats_dir/receipts"
-  local head_tree changed changed_n hash_oids oids receipt_rows probe unreviewed
-  local states state entries tree_entries rtree file_mode modes
-  local mine foreign live path
-  local -a hash_paths=() receipt_files=() changed_paths=()
-
-  head_tree=$(git -C "$top" rev-parse 'HEAD^{tree}' 2>/dev/null)
-  changed=$( {
-      if [ -n "$head_tree" ]; then
-        # --no-renames so a renamed file is listed under both names: the review knew the old one.
-        git -C "$top" diff --name-only --no-renames -z HEAD 2>/dev/null
-      else
-        git -C "$top" ls-files --cached -z 2>/dev/null
-      fi
-      git -C "$top" ls-files --others --exclude-standard -z 2>/dev/null
-    } | tr '\0' '\n' | LC_ALL=C sort -u | grep -v '^$')
-  if [ -z "$changed" ]; then
-    printf 'none'
-    return 0
+# Read-only and cheap by contract: the gate's verdict mode launches no panel and writes nothing, so
+# a render can ask it as often as the cache below allows.
+review_gate_verdict() { # toplevel session
+  local gate="${STATUSLINE_REVIEW_GATE:-$HOME/.claude/hooks/review-flow-gate.sh}"
+  local timeout_bin
+  [ -x "$gate" ] || return 1
+  # Cheap for a hook is not cheap for a render: the gate forks python and git several times over
+  # and answers in about a second on a real checkout. It runs off the render path (below), and a
+  # wedged git must not leave the refresh holding the lock until the 120s staleness sweep.
+  timeout_bin=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
+  # The gate exits 2 when it would block, which is an answer and not a failure.
+  if [ -n "$timeout_bin" ]; then
+    "$timeout_bin" 10 "$gate" verdict "$1" "$2" 2>/dev/null | head -1
+  else
+    "$gate" verdict "$1" "$2" 2>/dev/null | head -1
   fi
-  changed_n=$(printf '%s\n' "$changed" | grep -c .)
-  # A delta this size is a mass operation, not a chat's edits; attributing it path by path would
-  # cost more than the whole render, and staying silent about it is the lie this segment lost.
-  [ "$changed_n" -gt 400 ] && { printf 'mine'; return 0; }
-
-  # What each path is right now: the mode git would record for it, and its content. The mode is
-  # half the question — a chmod is a change no receipt reviewed, and review-bench stages its tree
-  # from disk, so the bit on disk is the one the receipt holds. Anything that is not a regular file
-  # can never match a reviewed blob and is never covered: a symlink's blob is the target's name
-  # while `hash-object` answers with the target's content, and a submodule is a commit.
-  states=""
-  while IFS= read -r path; do
-    changed_paths+=("$path")
-    if [ -L "$top/$path" ]; then state=other
-    elif [ -f "$top/$path" ]; then
-      if [ -x "$top/$path" ]; then state=100755; else state=100644; fi
-      hash_paths+=("$path")
-    elif [ -e "$top/$path" ]; then state=other
-    else state=absent
-    fi
-    states="$states$path"$'\t'"$state"$'\n'
-  done <<< "$changed"
-  # A repository that ignores the executable bit cannot show a chmod as a change at all, and the
-  # bit on disk is the wrong question there: it would answer against the mode the index still holds
-  # and leave the path unreviewable for good.
-  file_mode=$(git -C "$top" config --type=bool --get core.fileMode 2>/dev/null)
-  modes=1
-  [ "$file_mode" = false ] && modes=0
-  oids=""
-  if [ "${#hash_paths[@]}" -gt 0 ]; then
-    hash_oids=$(git -C "$top" hash-object -- "${hash_paths[@]}" 2>/dev/null)
-    # One unreadable path makes git abort mid-list, and a shifted pairing would answer about the
-    # wrong file; the whole answer is refused instead.
-    [ "$(printf '%s\n' "$hash_oids" | grep -c .)" -eq "${#hash_paths[@]}" ] ||
-      { printf 'mine'; return 0; }
-    oids=$(paste -d $'\t' <(printf '%s\n' "${hash_paths[@]}") <(printf '%s\n' "$hash_oids"))
-  fi
-
-  receipt_rows=""
-  if [ -n "$receipt_base" ]; then
-    # A lens receipt is deliberately not among them: review-bench keeps it apart because it read
-    # the tree by a methodology the tool did not write, and it never marks the repository reviewed.
-    for probe in "$receipts/$receipt_base.json" "$receipts/${receipt_base}__scope-"*.json; do
-      [ -f "$probe" ] && receipt_files+=("$probe")
-    done
-    [ "${#receipt_files[@]}" -gt 0 ] &&
-      receipt_rows=$(jq -r 'select(type == "object" and (.tree | type) == "string"
-            and (.tree | length) > 0)
-          | [(.ts // ""), .tree, ((.scope // []) | map(select(type == "string")) | join(""))]
-          | @tsv' "${receipt_files[@]}" 2>/dev/null | LC_ALL=C sort -r | head -n 40)
-  fi
-
-  # One `ls-tree` per distinct receipt tree, never one per path: it answers mode, type and blob for
-  # every changed path at once. A tree the object store no longer holds fails outright, which is
-  # what keeps it from reading as "the review deleted them all" — only a tree that answered is
-  # marked below, by a line carrying nothing but its own sha. `--literal-pathspecs` so a path named
-  # `:x` or `s*.txt` asks about itself, and quoting off so a non-ASCII one comes back under the name
-  # everything else here holds it by.
-  entries=""
-  while IFS= read -r rtree; do
-    [ -n "$rtree" ] || continue
-    tree_entries=$(git -C "$top" --literal-pathspecs -c core.quotePath=false \
-      ls-tree "$rtree" -- "${changed_paths[@]}" 2>/dev/null) || continue
-    entries="$entries$rtree"$'\n'"$tree_entries"$'\n'
-  done < <(printf '%s\n' "$receipt_rows" | cut -f2 | grep -v '^$' | LC_ALL=C sort -u)
-
-  unreviewed=$(awk -F'\t' -v sep=$'\x1f' -v modes="$modes" '
-    function covered(t, p,   f) {
-      if (!((t, p) in entry)) return state[p] == "absent"
-      split(entry[t, p], f, " ")
-      if (f[2] != "blob") return 0
-      if (modes && f[1] != state[p]) return 0
-      return oid[p] != "" && f[3] == oid[p]
-    }
-    FNR == 1 { part++ }
-    part == 1 { if ($0 != "") { paths[++n] = $1; state[$1] = $2 } ; next }
-    part == 2 { if ($0 != "") oid[$1] = $2; next }
-    part == 3 {
-      if ($0 == "") next
-      # An entry names its mode, type and blob in one space-separated field; a tree marker is a
-      # bare sha, and the entries after it are that tree.
-      if (NF == 1) { tree = $1; treeok[tree] = 1; next }
-      entry[tree, $2] = $1
-      next
-    }
-    part == 4 && $2 != "" && ($2 in treeok) {
-      if ($3 == "") { for (i = 1; i <= n; i++) if (covered($2, paths[i])) ok[paths[i]] = 1 }
-      else {
-        c = split($3, s, sep)
-        for (i = 1; i <= c; i++) {
-          if (s[i] in state) { if (covered($2, s[i])) ok[s[i]] = 1; continue }
-          # A scope entry is a pathspec, so it may name a directory: git staged every path under
-          # it into the receipt tree, and matching the entry alone would cover none of them.
-          for (j = 1; j <= n; j++)
-            if (index(paths[j], s[i] "/") == 1 && covered($2, paths[j])) ok[paths[j]] = 1
-        }
-      }
-    }
-    END { for (i = 1; i <= n; i++) if (!(paths[i] in ok)) print paths[i] }
-  ' <(printf '%s\n' "$states") <(printf '%s\n' "$oids") <(printf '%s\n' "$entries") \
-    <(printf '%s\n' "$receipt_rows"))
-  [ -n "$unreviewed" ] || { printf 'none'; return 0; }
-
-  mine=""
-  [ -n "$sid" ] && [ -f "$statusline_cache_dir/touched-$sid" ] &&
-    mine=$(awk -F'\t' -v t="$top" '$1 == t && $2 != "" { print $2 }' \
-      "$statusline_cache_dir/touched-$sid")
-  foreign=""
-  while IFS= read -r live; do
-    live=${live//[^A-Za-z0-9_-]/}
-    [ -n "$live" ] && [ "$live" != "$sid" ] || continue
-    [ -f "$statusline_cache_dir/touched-$live" ] || continue
-    foreign="$foreign"$'\n'$(awk -F'\t' -v t="$top" '$1 == t && $2 != "" { print $2 }' \
-      "$statusline_cache_dir/touched-$live")
-  done < <(review_live_sessions)
-
-  awk '
-    FNR == 1 { part++ }
-    part == 1 { if ($0 != "") mine[$0] = 1; next }
-    part == 2 { if ($0 != "") foreign[$0] = 1; next }
-    { if ($0 != "") open[++n] = $0 }
-    END {
-      class = "none"
-      for (i = 1; i <= n; i++) {
-        if (open[i] in mine) { class = "mine"; break }
-        if (!(open[i] in foreign)) class = "ownerless"
-      }
-      printf "%s", class
-    }
-  ' <(printf '%s\n' "$mine") <(printf '%s\n' "$foreign") <(printf '%s\n' "$unreviewed")
+  return 0
 }
 
-# Renders every ~5s, so the verdict above is cached on what can invalidate it: the repository, its
-# `git status`, and the receipt store's directory mtime (a receipt is written, replaced or removed
-# through a rename, all of which stamp it). Everything the key cannot see — a second edit to an
-# already-modified file, another chat claiming a path, a session dying — is bounded by the TTL.
-review_delta_class() {
-  local top="$1" sid="$2" receipt_base="$3" status_key="$4" now="$5"
+# Renders every ~5s, so the gate's answer is cached on what can invalidate it: the repository, its
+# `git status`, the receipt store's directory mtime (a receipt is written, replaced or removed
+# through a rename, all of which stamp it) and this session's cycle file (the gate rewrites it on
+# every commit it passes or blocks). Everything the key cannot see — a second edit to an
+# already-modified file, another chat's commit landing, a run being spent — is bounded by the TTL.
+review_verdict_line() { # toplevel session status_key now
+  local top="$1" sid="$2" status_key="$3" now="$4"
   local cache="$statusline_cache_dir/review-class-${sid:-unknown}"
-  local key cached_key cached_class cache_mtime receipts_mtime class tmp
+  local lock="$cache.lock"
+  local key cached_key cached cache_mtime receipts_mtime cycle_mtime gitdir lock_mtime
   receipts_mtime=$(file_mtime "$worker_stats_dir/receipts" 2>/dev/null)
   [[ "$receipts_mtime" =~ ^[0-9]+$ ]] || receipts_mtime=0
-  key="$top|$status_key|$receipts_mtime"
+  gitdir=$(git -C "$top" rev-parse --absolute-git-dir 2>/dev/null)
+  # The gate drops the `-<session>` suffix for a session id it cannot put in a filename, so the key
+  # would watch a file nothing writes and see none of that cycle's stages.
+  case "$sid" in
+    ''|.|..|*[!A-Za-z0-9._-]*) cycle_mtime=$(file_mtime "$gitdir/review-cycle" 2>/dev/null) ;;
+    *) cycle_mtime=$(file_mtime "$gitdir/review-cycle-$sid" 2>/dev/null) ;;
+  esac
+  [[ "$cycle_mtime" =~ ^[0-9]+$ ]] || cycle_mtime=0
+  key="$top|$status_key|$receipts_mtime|$cycle_mtime"
   cache_mtime=$(file_mtime "$cache" 2>/dev/null)
-  if [[ "$cache_mtime" =~ ^[0-9]+$ ]] && [ "$((now - cache_mtime))" -le 15 ]; then
-    cached_key=""; cached_class=""
-    { IFS= read -r cached_key; IFS= read -r cached_class; } < "$cache" 2>/dev/null
-    if [ "$cached_key" = "$key" ]; then
-      printf '%s' "$cached_class"
-      return 0
+  cached_key=""
+  cached=""
+  if [[ "$cache_mtime" =~ ^[0-9]+$ ]]; then
+    IFS= read -r cached_key < "$cache" 2>/dev/null
+    cached=$(tail -n +2 "$cache" 2>/dev/null)
+  fi
+  if [ "$cached_key" = "$key" ] && [[ "$cache_mtime" =~ ^[0-9]+$ ]] &&
+    [ "$((now - cache_mtime))" -le 15 ]; then
+    printf '%s' "$cached"
+    return 0
+  fi
+  # Never on the render path: the gate answers in about a second, and a prompt that waits for it
+  # stalls every five seconds — the very cost the deleted tier probe was backgrounded to avoid.
+  # One refresh at a time, and a lock older than the sweep is a refresh that died holding it.
+  if mkdir -p "$statusline_cache_dir" 2>/dev/null; then
+    lock_mtime=$(file_mtime "$lock" 2>/dev/null)
+    if [ ! -d "$lock" ] ||
+      { [[ "$lock_mtime" =~ ^[0-9]+$ ]] && [ "$((now - lock_mtime))" -gt 120 ]; }; then
+      (
+        snapshot_lock_acquire "$lock" || exit 0
+        trap 'rmdir "$lock" 2>/dev/null' EXIT
+        answer=$(review_gate_verdict "$top" "$sid") || answer=""
+        # No gate reachable is no answer, and a label invented where the gate is silent is the fork
+        # this segment exists to end. An answer whose style this build does not know is still an
+        # answer, and it is shown loud rather than swallowed.
+        case "$answer" in
+          ''|off) answer=off ;;
+          "dim "*|"loud "*) ;;
+          *) answer="loud $answer" ;;
+        esac
+        tmp="$cache.tmp.${BASHPID:-$$}"
+        printf '%s\n%s' "$key" "$answer" > "$tmp" 2>/dev/null &&
+          mv -f "$tmp" "$cache" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+      ) >/dev/null 2>&1 &
     fi
   fi
-  class=$(review_delta_compute "$top" "$sid" "$receipt_base")
-  case "$class" in
-    mine|ownerless|none) ;;
-    *) class=mine ;;
-  esac
-  if mkdir -p "$statusline_cache_dir" 2>/dev/null; then
-    tmp="$cache.tmp.${BASHPID:-$$}"
-    printf '%s\n%s\n' "$key" "$class" > "$tmp" 2>/dev/null &&
-      mv -f "$tmp" "$cache" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+  # Until that lands the last answer stands, and only for as long as an answer can still be about
+  # this tree: past the sweep it is a label outliving the state it was read from, which is the one
+  # thing worse than no label.
+  if [ -n "$cached" ] && [[ "$cache_mtime" =~ ^[0-9]+$ ]] &&
+    [ "$((now - cache_mtime))" -le 120 ]; then
+    printf '%s' "$cached"
+  else
+    printf '%s' off
   fi
-  printf '%s' "$class"
 }
 
 # Propagate just-merged headers to all surfaces via the zero-network collector
@@ -1699,72 +1583,29 @@ if [ -n "$session_id" ]; then
   fi
 fi
 
-review_tier=""
+# What the commit gate would say to a commit from this chat right now, spoken by the gate itself.
+review_style=""
+review_text=""
+receipt_name=""
 if [ -n "$active_top" ]; then
-  review_probe_self="$0"
-  [ -L "$review_probe_self" ] && review_probe_self=$(readlink "$review_probe_self")
-  case "$review_probe_self" in /*) ;; *) review_probe_self="$(dirname "$0")/$review_probe_self" ;; esac
-  review_bench_bin="${STATUSLINE_REVIEW_BENCH_BIN:-$(dirname "$review_probe_self")/review-bench}"
-  review_cache_dir="$statusline_cache_dir"
-  # Keyed on the repository root, so prompting from two subdirectories of one repo shares the
-  # cache instead of starting a second background refresh; the basename keeps a checksum
-  # collision from showing one repository's tier under another's name.
-  review_repo_key="$(basename "$active_top")-$(printf '%s' "$active_top" | cksum 2>/dev/null | awk '{print $1}')"
-  if [ -x "$review_bench_bin" ] && [[ "$review_repo_key" =~ -[0-9]+$ ]]; then
-    review_cache="$review_cache_dir/review-tier-$review_repo_key"
-    review_lock="$review_cache.lock"
-    review_mtime=$(file_mtime "$review_cache" 2>/dev/null)
-    if { ! [[ "$review_mtime" =~ ^[0-9]+$ ]] || [ "$((now - review_mtime))" -gt 5 ]; }; then
-      mkdir -p "$review_cache_dir" 2>/dev/null
-      review_lock_mtime=$(file_mtime "$review_lock" 2>/dev/null)
-      if [ ! -d "$review_lock" ] ||
-        { [[ "$review_lock_mtime" =~ ^[0-9]+$ ]] && [ "$((now - review_lock_mtime))" -gt 120 ]; }; then
-        (
-          snapshot_lock_acquire "$review_lock" || exit 0
-          trap 'rmdir "$review_lock" 2>/dev/null' EXIT
-          timeout_bin=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
-          suggestion=""
-          if [ -n "$timeout_bin" ]; then
-            suggestion=$("$timeout_bin" 3 "$review_bench_bin" suggest --repo "$active_top" 2>/dev/null) || suggestion=""
-          else
-            # No timeout binary on a stock macOS, and skipping the probe there would hide the
-            # segment forever. Job control makes the probe its own process group, so the watchdog
-            # can take its children with it — review-bench spawns git, and killing only the parent
-            # leaves a hung grandchild for the next render to queue behind.
-            set -m
-            "$review_bench_bin" suggest --repo "$active_top" >"$review_cache.out" 2>/dev/null &
-            review_probe_pid=$!
-            set +m
-            ( sleep 3; kill -TERM -"$review_probe_pid" 2>/dev/null ) >/dev/null 2>&1 &
-            review_watchdog_pid=$!
-            wait "$review_probe_pid" 2>/dev/null && suggestion=$(cat "$review_cache.out" 2>/dev/null)
-            kill "$review_watchdog_pid" 2>/dev/null
-            rm -f "$review_cache.out" 2>/dev/null
-          fi
-          tier=$(printf '%s\n' "$suggestion" | sed -nE 's/^tier: (T[0-3])$/\1/p' | tail -n1)
-          tmp_review_cache="$review_cache.tmp.${BASHPID:-$$}"
-          printf '%s\n' "$tier" > "$tmp_review_cache" 2>/dev/null &&
-            mv -f "$tmp_review_cache" "$review_cache" 2>/dev/null ||
-            rm -f "$tmp_review_cache" 2>/dev/null
-        ) >/dev/null 2>&1 &
-      fi
-    fi
-    if [[ "$review_mtime" =~ ^[0-9]+$ ]] && [ "$((now - review_mtime))" -le 15 ]; then
-      IFS= read -r review_tier < "$review_cache" 2>/dev/null || review_tier=""
-      case "$review_tier" in
-        T[0-3]) ;;
-        *) review_tier="" ;;
-      esac
-    fi
-  fi
+  receipt_name=$(receipt_file_name "$active_top" 2>/dev/null)
+  review_status_key=$(printf '%s' "$git_status" | cksum 2>/dev/null)
+  review_status_key="${review_status_key// /-}"
+  [ "$git_status_rc" -eq 0 ] || review_status_key="unreadable"
+  review_verdict=$(review_verdict_line "$active_top" "$session_id" "$review_status_key" "$now")
+  review_style=${review_verdict%% *}
+  case "$review_verdict" in *' '*) review_text=${review_verdict#* } ;; esac
+  # Truncated and nothing else: the words are the gate's, and a segment that rewrites them is the
+  # second opinion this design removed.
+  [ "${#review_text}" -gt 20 ] && review_text="${review_text:0:19}…"
 fi
+
 
 review_part=""
 if [ -n "$active_top" ]; then
   receipt_reviewed=""
   receipt_errored=0
   receipt_panel=""
-  receipt_name=$(receipt_file_name "$active_top" 2>/dev/null)
   # A run in flight owns the slot: review-bench writes one progress file per run, and while it
   # lives the label reports that panel instead of the receipt verdict. Liveness is derived here,
   # never declared by the writer — the file survives kill -9, a crash and a closed terminal, so
@@ -1882,24 +1723,16 @@ if [ -n "$active_top" ]; then
   fi
 fi
 
-if [ -n "$active_top" ] && [ -z "$progress_total" ]; then
-  # Per-path truth first: it decides the label AND whether the whole-tree receipt below is worth
-  # reading at all, since that receipt only answers the partial-panel question once nothing is
-  # left unreviewed.
-  review_status_key=$(printf '%s' "$git_status" | cksum 2>/dev/null)
-  review_status_key="${review_status_key// /-}"
-  [ "$git_status_rc" -eq 0 ] || review_status_key="unreadable"
-  review_class=$(review_delta_class "$active_top" "$session_id" "${receipt_name%.json}" \
-    "$review_status_key" "$now")
-  review_label="review"
-  [ -n "$review_tier" ] && review_label="${review_label} ${review_tier}"
-fi
+# A run in flight owns the slot and prints its own label, so the gate's verdict must not colour it.
+[ -n "$progress_total" ] && { review_style=""; review_text=""; }
 
-if [ "${review_class:-}" = mine ]; then
-  review_part=" ${sep} ${review_label}"
-elif [ "${review_class:-}" = ownerless ]; then
-  review_part=" ${sep} ${DIM}${review_label}${RESET}"
+if [ "${review_style:-}" = loud ]; then
+  review_part=" ${sep} ${review_text}"
+elif [ "${review_style:-}" = dim ]; then
+  review_part=" ${sep} ${DIM}${review_text}${RESET}"
 elif [ -n "$active_top" ] && [ -z "$progress_total" ]; then
+  # A different question from the gate's, asked only where the gate has nothing to say: not whether
+  # a commit owes a review, but whether the panel that already ran came back whole.
   receipt_file="$worker_stats_dir/receipts/$receipt_name"
   receipt_values=$(jq -er '
     select(type == "object"

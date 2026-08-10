@@ -107,7 +107,7 @@ that numeric device indices regressed described behaviour that predated the feat
 that a repeated manual menu click re-fires its action described the manual fallback's entire
 purpose.
 
-### Round 2 — 2026-07-27, the review-receipt diff (receipt, statusline segment, suggest delta)
+### Round 2 — 2026-07-27, the review-receipt diff (receipt, statusline segment, unreviewed delta)
 First pass on ~310 changed lines: sol high (codex/work4) + gemini pro high (gemini/main),
 6 unique defects (1 found by both). All fixed in one follow-up session; fix areas
 pre-registered before the second pass.
@@ -182,11 +182,10 @@ routine.
 
 ## Continuing this
 
-The tier a diff deserves comes from `review-bench suggest`, which reads the working tree and
-names T0–T3 from measured cell compositions. It has no notion of "already reviewed" yet: it
-sizes the whole diff, not the part no reviewer has seen. Giving it that would need a receipt —
-the tool recording which tree state a review covered — and until it exists, step 3 above is done
-by hand.
+The tier a diff deserves is the chat's own call — task importance first, then diff complexity,
+with T0 as the floor. What the tool answers is narrower: `review-bench coverage` says whether a
+pending commit form is covered by a review and what it carries beyond one, measured against the
+tree the receipt names rather than over the whole diff.
 
 ## Round 4 — pre-registration (2026-07-28, clean-review detector)
 

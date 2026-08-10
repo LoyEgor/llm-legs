@@ -365,9 +365,8 @@ run_workdir_hook "$(workdir_payload Edit session-dispatch-sticky "$REPO_E" "$REP
 assert_eq "$TOP_D" "$(cat "$S")"
 
 # --- touched-path ownership evidence ---
-# A separate question from the home above: which changed paths are THIS chat's work. The review
-# segment reads it to tell its own unreviewed delta from everyone else's, which a receipt hash
-# over the whole repository cannot do.
+# A separate question from the home above: which changed paths are THIS chat's work, recorded for
+# any reader that needs to tell one chat's edits from a co-tenant's in a shared checkout.
 touched_of() { cat "$STATE_DIR/touched-$1" 2>/dev/null; }
 
 run_workdir_hook "$(workdir_payload Edit session-touch "$REPO_A" "$REPO_A/tracked.txt")"
@@ -790,7 +789,8 @@ run_statusline() {
   # point it at a no-op (overridden per-case below where the kick is exercised).
   printf '%s' "$1" | CLAUDE_LIMITS_ACCOUNT="${2:-${RUN_STATUSLINE_DEFAULT_ACCOUNT:-main}}" CLAUDEB_DIR="$CLAUDEB_FIX" \
     LLM_LIMITS_FILE="$WORK/limits.json" STATUSLINE_PS=true STATUSLINE_LSOF=true \
-    STATUSLINE_STORE_MERGE_CMD="${STORE_MERGE_CMD:-/usr/bin/true}" "$STATUSLINE"
+    STATUSLINE_STORE_MERGE_CMD="${STORE_MERGE_CMD:-/usr/bin/true}" \
+    STATUSLINE_REVIEW_GATE="${GATE_CMD:-}" "$STATUSLINE"
 }
 
 status_payload=$(statusline_payload status-override)
@@ -2506,52 +2506,135 @@ review_segment="review"
 review_delimited=" ${DIM}│${RESET} review"
 review_dim_delimited=" ${DIM}│${RESET} ${DIM}review"
 
-# The three visibility classes the segment renders. `claim_paths` is what the workdir hook writes
-# when this chat (or a worker it dispatched) changes a file; `register_session` is the chat
-# registry the render reads to tell a live claim from an abandoned one.
-claim_paths() { # session toplevel relpath...
-  local session=$1 top=$2 path
-  shift 2
-  mkdir -p "$STATE_DIR"
-  : > "$STATE_DIR/touched-$session"
-  for path in "$@"; do printf '%s\t%s\n' "$top" "$path" >> "$STATE_DIR/touched-$session"; done
+# The segment is the commit gate's mouthpiece and nothing else: it runs
+# `review-flow-gate.sh verdict <toplevel> <session>` and prints the line that comes back, coloured
+# by the style word and truncated to fit, never re-decided here. A stub gate answers the rendering
+# cases; the real hook answers the parity case at the end, so the two can be seen not to have
+# drifted apart — which is the whole point of the label speaking with the gate's voice.
+GATE_LOG="$WORK/gate.log"
+GATE_STUB="$FIXTURES/gate-stub.sh"
+cat > "$GATE_STUB" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*" >> "$GATE_LOG"
+printf '%s\n' "$GATE_ANSWER"
+exit "${GATE_RC:-0}"
+STUB
+chmod +x "$GATE_STUB"
+export GATE_LOG GATE_ANSWER GATE_RC
+GATE_ANSWER=off
+GATE_RC=0
+GATE_CMD="$GATE_STUB"
+
+# The verdict is cached for 15s on a key that cannot see a second edit to an already-modified file
+# or a stub told to answer differently; every case here drops it and asks again.
+#
+# Two renders per case, because the gate is never asked on the render path: the first starts the
+# refresh and shows whatever stood before it, the second reads what landed. A render that returned
+# the answer straight away would be one waiting a second for git on every prompt.
+review_await_verdict() { # session
+  local i
+  for i in $(seq 1 100); do
+    [ -s "$STATE_DIR/review-class-$1" ] && [ ! -d "$STATE_DIR/review-class-$1.lock" ] && return 0
+    sleep 0.05
+  done
+  fail "the backgrounded verdict never landed: $1"
 }
-register_session() { # pid sessionId
-  mkdir -p "$HOME/.claude/sessions"
-  jq -cn --argjson pid "$1" --arg sid "$2" '{pid:$pid,sessionId:$sid,cwd:"/",status:"idle"}' \
-    > "$HOME/.claude/sessions/$1.json"
-}
-# The verdict is cached for 15s on a key that cannot see a second edit to an already-modified
-# file; a case that changes content behind git status' back drops the cache to ask again.
 review_render() { # session repo
+  local payload
   rm -f "$STATE_DIR/review-class-$1"
-  run_statusline "$(statusline_payload "$1" "" "$2")" || fail "review render failed: $1"
+  rmdir "$STATE_DIR/review-class-$1.lock" 2>/dev/null
+  payload=$(statusline_payload "$1" "" "$2")
+  run_statusline "$payload" >/dev/null || fail "review render failed: $1"
+  review_await_verdict "$1"
+  run_statusline "$payload" || fail "review render failed: $1"
 }
 
-claim_paths review-dirty "$TOP_REVIEW_DIRTY" change.txt
-review_dirty_payload=$(statusline_payload review-dirty "" "$REVIEW_DIRTY")
-run_statusline "$review_dirty_payload" >/dev/null || fail "review dirty first render failed"
-review_dirty_out=""
-for _ in $(seq 1 20); do
-  sleep 0.2
-  rm -f "$STATE_DIR/review-class-review-dirty"
-  review_dirty_out=$(run_statusline "$review_dirty_payload") || fail "review dirty render failed"
-  grep -Fq "$review_delimited T1" <<< "$review_dirty_out" && break
-done
-assert grep -Fq "$review_delimited T1" <<< "$review_dirty_out"
+# The gate is asked about the working tree and this chat, and its answer is printed word for word.
+: > "$GATE_LOG"
+GATE_ANSWER='loud review'
+GATE_RC=2
+review_loud_out=$(review_render review-dirty "$REVIEW_DIRTY")
+assert grep -Fq "$review_delimited" <<< "$review_loud_out"
+assert_eq "verdict $TOP_REVIEW_DIRTY review-dirty" "$(head -1 "$GATE_LOG")"
+# A block is an exit 2, which is the gate answering rather than the gate failing.
+assert test "${review_loud_out#*"$review_dim_delimited"}" = "$review_loud_out"
 
-REVIEW_CLEAN="$FIXTURES/review-clean"
-git clone -q "$REPO_A" "$REVIEW_CLEAN"
-# A committed tree has no delta to review, whoever last reviewed it and whatever the tier cache
-# says: the label states what is uncommitted in front of the chat, not a standing property of the
-# repository. It used to sit there permanently on any repository without a matching receipt.
-review_clean_out=$(review_render review-clean "$REVIEW_CLEAN")
-assert test "${review_clean_out#*"$review_delimited"}" = "$review_clean_out"
-assert test "${review_clean_out#*"$review_dim_delimited"}" = "$review_clean_out"
-assert test "${review_clean_out#*⚖}" = "$review_clean_out"
+# Verbatim: a tier the gate names reaches the line, and the segment neither invents one nor strips
+# one. Bare `review` above and `review T1` here come from the same renderer.
+GATE_ANSWER='loud review T1'
+review_tier_out=$(review_render review-tier "$REVIEW_DIRTY")
+assert grep -Fq "$review_delimited T1" <<< "$review_tier_out"
 
-# The review label sits after the repository cluster and before the workers.
-claim_paths review-order "$TOP_REVIEW_DIRTY" change.txt
+# An advisory is the gate's other answer: the commit passes, and the word rides along dimmed.
+GATE_ANSWER='dim drift 214'
+GATE_RC=0
+review_dim_out=$(review_render review-drift "$REVIEW_DIRTY")
+assert grep -Fq " ${DIM}│${RESET} ${DIM}drift 214${RESET}" <<< "$review_dim_out"
+
+# `off` is the gate having nothing to say, and the segment says nothing.
+GATE_ANSWER=off
+review_off_out=$(review_render review-off "$REVIEW_DIRTY")
+assert test "${review_off_out#*"$review_delimited"}" = "$review_off_out"
+assert test "${review_off_out#*"$review_dim_delimited"}" = "$review_off_out"
+
+# A style this build does not know is still an answer: shown loud and whole, never swallowed. A
+# gate that grows a fourth word must not go silent in the label that speaks for it.
+GATE_ANSWER='blocked because'
+review_unknown_out=$(review_render review-unknown "$REVIEW_DIRTY")
+assert grep -Fq " ${DIM}│${RESET} blocked because" <<< "$review_unknown_out"
+
+# A gate that answers nothing, and a gate that is not there at all: both silent. The segment may
+# never invent a verdict where the one thing that decides it could not be reached.
+GATE_ANSWER=''
+GATE_RC=1
+review_empty_out=$(review_render review-empty "$REVIEW_DIRTY")
+assert test "${review_empty_out#*"$review_delimited"}" = "$review_empty_out"
+GATE_CMD="$FIXTURES/no-such-gate.sh"
+GATE_ANSWER='loud review'
+GATE_RC=0
+review_nogate_out=$(review_render review-nogate "$REVIEW_DIRTY")
+assert test "${review_nogate_out#*"$review_delimited"}" = "$review_nogate_out"
+GATE_CMD="$GATE_STUB"
+
+# Truncation is the one thing done to the text, and it is display only.
+GATE_ANSWER='loud review of a very long standing ticket'
+review_long_out=$(review_render review-long "$REVIEW_DIRTY")
+assert grep -Fq "review of a very lo…" <<< "$review_long_out"
+assert test "${review_long_out#*standing}" = "$review_long_out"
+
+# Asked once per key, not once per render: this runs on every prompt, and the gate's verdict mode
+# reads git and review-bench. A second render with nothing moved must come off the cache.
+GATE_ANSWER='loud review'
+rm -f "$STATE_DIR/review-class-review-cache"
+: > "$GATE_LOG"
+run_statusline "$(statusline_payload review-cache "" "$REVIEW_DIRTY")" >/dev/null ||
+  fail "review cache first render failed"
+review_await_verdict review-cache
+run_statusline "$(statusline_payload review-cache "" "$REVIEW_DIRTY")" >/dev/null ||
+  fail "review cache second render failed"
+assert_eq 1 "$(grep -c . "$GATE_LOG" | tr -d ' ')"
+# And asked again the moment the gate's own state moves: the cycle file this chat holds is part of
+# the key, because a ticket granted or spent changes the verdict with nothing in `git status`
+# moving at all.
+review_gitdir=$(git -C "$REVIEW_DIRTY" rev-parse --absolute-git-dir)
+printf '%s\0' ticket run tree stamp '' '' > "$review_gitdir/review-cycle-review-cache"
+run_statusline "$(statusline_payload review-cache "" "$REVIEW_DIRTY")" >/dev/null ||
+  fail "review cache third render failed"
+review_await_verdict review-cache
+assert_eq 2 "$(grep -c . "$GATE_LOG" | tr -d ' ')"
+rm -f "$review_gitdir/review-cycle-review-cache"
+
+# Nothing is spawned behind the label beyond that one read-only ask: a background review-bench per
+# render is what the tier number used to cost, and a cache file keyed on a chat and its path set is
+# that probe still running.
+rm -f "$HOME/.cache/claude-statusline"/review-tier-*
+review_render review-dirty "$REVIEW_DIRTY" >/dev/null
+sleep 1
+asserts=$((asserts + 1))
+test -z "$(ls "$HOME/.cache/claude-statusline"/review-tier-* 2>/dev/null)" ||
+  fail "the review segment still spawned a probe: $(ls "$HOME/.cache/claude-statusline")"
+
+# The label sits after the repository cluster and before the workers.
 review_order_line=$(review_render review-order "$REVIEW_DIRTY")
 review_order_line="${review_order_line%%$'\n'*}"
 review_before="${review_order_line%%"$review_delimited"*}"
@@ -2560,6 +2643,57 @@ assert grep -Fq "$(basename "$REVIEW_DIRTY")" <<< "$review_before"
 assert test "${review_before#*"${DIM}w:"}" = "$review_before"
 assert grep -Fq "${DIM}w:" <<< "$review_after"
 
+# A port belongs to the project and its diff, not to a review of it, so it takes the slot right
+# after the repository cluster and the review label follows it.
+printf '5173\n' > "$STATE_DIR/ports-r-order"
+rorder_out=$(review_render r-order "$REVIEW_DIRTY")
+assert grep -Fq ":5173" <<< "$rorder_out"
+assert grep -Fq "$review_delimited" <<< "$rorder_out"
+# Cut on the delimited segment, not on the bare word: this fixture repository is itself named
+# review-dirty, and its own label would answer first.
+assert grep -Fq ":5173" <<< "${rorder_out%%"$review_delimited"*}"
+rm -f "$STATE_DIR/ports-r-order"
+
+# --- the real gate, so the two answers cannot drift apart -----------------------------------
+# The stub above proves the rendering; this proves the wiring against the hook that actually
+# decides commits. It is skipped where claude-setup is not beside this checkout, exactly as the
+# cross-repository asserts in test_consistency.sh are.
+REAL_GATE="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/review-flow-gate.sh"
+if [ -x "$REAL_GATE" ]; then
+  GATE_CMD="$REAL_GATE"
+  GATE_BIN="$FIXTURES/gate-bin"
+  mkdir -p "$GATE_BIN"
+  cat > "$GATE_BIN/review-bench" <<'RB'
+#!/bin/bash
+[ "$1" = receipt ] && exit 1
+printf 'covered: no\nlines: 2\nfiles: 1\npath: change.txt\n'
+RB
+  chmod +x "$GATE_BIN/review-bench"
+  real_objects_before=$(find "$REVIEW_DIRTY/.git/objects" -type f | wc -l | tr -d ' ')
+  PATH="$GATE_BIN:$PATH" review_real_out=$(review_render review-real "$REVIEW_DIRTY")
+  assert grep -Fq "$review_delimited" <<< "$review_real_out"
+  # A ticket the gate holds silences the label, and it does so because the GATE says so — the
+  # segment stopped reading cycle files itself, and this is the case that used to prove it read one.
+  printf '%s\0' ticket run "$(git -C "$REVIEW_DIRTY" rev-parse 'HEAD^{tree}')" \
+    2026-08-09T00:00:00 '' '' "$(git -C "$REVIEW_DIRTY" hash-object -- change.txt) change.txt" \
+    > "$review_gitdir/review-cycle-review-real"
+  PATH="$GATE_BIN:$PATH" review_real_ticket_out=$(review_render review-real "$REVIEW_DIRTY")
+  assert test "${review_real_ticket_out#*"$review_delimited"}" = "$review_real_ticket_out"
+  # Asking is read-only: no object is written into the repository, and no cycle is armed by a
+  # render that merely looked.
+  assert_eq "$real_objects_before" \
+    "$(find "$REVIEW_DIRTY/.git/objects" -type f | wc -l | tr -d ' ')"
+  assert test ! -f "$review_gitdir/review-cycle-review-real-armed"
+  rm -f "$review_gitdir/review-cycle-review-real"
+else
+  printf 'SKIP: review label against the real commit gate (%s is not executable)\n' "$REAL_GATE"
+fi
+GATE_CMD="$GATE_STUB"
+GATE_ANSWER=off
+GATE_RC=0
+
+REVIEW_CLEAN="$FIXTURES/review-clean"
+git clone -q "$REPO_A" "$REVIEW_CLEAN"
 review_clean_root=$(cd "$REVIEW_CLEAN" && pwd -P)
 review_clean_hash=$(printf '%s' "$review_clean_root" | shasum -a 1 | awk '{print substr($1,1,8)}')
 review_receipt_name="$(basename "$REVIEW_CLEAN")__${review_clean_hash}.json"
@@ -2568,30 +2702,21 @@ RECEIPT_DIR="$CLAUDEB_FIX/worker-stats/receipts"
 mkdir -p "$RECEIPT_DIR"
 review_clean_sha=$(git -C "$REVIEW_CLEAN" rev-parse HEAD)
 review_clean_tree=$(git -C "$REVIEW_CLEAN" rev-parse HEAD^{tree})
-review_clean_index_before=$(git -C "$REVIEW_CLEAN" hash-object .git/index)
-review_clean_objects_before=$(find "$REVIEW_CLEAN/.git/objects" -type f | wc -l | tr -d ' ')
 review_receipt_file="$RECEIPT_DIR/$review_receipt_name"
 jq -cn --arg repo "$REVIEW_CLEAN" --arg tree "$review_clean_tree" \
   --arg commit "$review_clean_sha" --arg run_id receipt-match \
   '{repo:$repo,tree:$tree,commit:$commit,run_id:$run_id,ts:"2026-07-27T00:00:00+00:00",errored:0}' \
   > "$review_receipt_file"
-review_clean_repo_key="$(basename "$REVIEW_CLEAN")-$(printf '%s' "$REVIEW_CLEAN" | cksum | awk '{print $1}')"
-review_clean_cache="$HOME/.cache/claude-statusline/review-tier-$review_clean_repo_key"
-mkdir -p "$(dirname "$review_clean_cache")"
-printf 'T2\n' > "$review_clean_cache"
-review_match_out=$(run_statusline "$(statusline_payload review-match "" "$REVIEW_CLEAN")") \
-  || fail "review matching receipt render failed"
+
+# A different question from the gate's, asked only where the gate is silent: whether the panel that
+# already ran came back whole. A clean tree the gate says nothing about, and a panel with no silent
+# cell, carry no label at all.
+review_match_out=$(review_render review-match "$REVIEW_CLEAN")
 assert test "${review_match_out#*"$review_delimited"}" = "$review_match_out"
-assert test "${review_match_out#*review T2}" = "$review_match_out"
-assert_eq "$review_clean_index_before" "$(git -C "$REVIEW_CLEAN" hash-object .git/index)"
-assert_eq "$review_clean_objects_before" \
-  "$(find "$REVIEW_CLEAN/.git/objects" -type f | wc -l | tr -d ' ')"
-rm -f "$review_clean_cache"
 
 jq '.errored = 1' "$review_receipt_file" > "$review_receipt_file.tmp"
 mv "$review_receipt_file.tmp" "$review_receipt_file"
-review_partial_out=$(run_statusline "$(statusline_payload review-partial "" "$REVIEW_CLEAN")") \
-  || fail "review partial receipt render failed"
+review_partial_out=$(review_render review-partial "$REVIEW_CLEAN")
 assert grep -Fq "${DIM}review${RESET}" <<< "$review_partial_out"
 assert test "${review_partial_out#*review T}" = "$review_partial_out"
 
@@ -2600,150 +2725,30 @@ assert test "${review_partial_out#*review T}" = "$review_partial_out"
 # any-error mark, which is what the case above just proved.
 jq '.errored = 1 | .panel = 9' "$review_receipt_file" > "$review_receipt_file.tmp"
 mv "$review_receipt_file.tmp" "$review_receipt_file"
-review_one_silent_out=$(run_statusline "$(statusline_payload review-one-silent "" "$REVIEW_CLEAN")") \
-  || fail "review one-silent-cell render failed"
+review_one_silent_out=$(review_render review-one-silent "$REVIEW_CLEAN")
 assert test "${review_one_silent_out#*"$review_delimited"}" = "$review_one_silent_out"
 
 jq '.errored = 4 | .panel = 9' "$review_receipt_file" > "$review_receipt_file.tmp"
 mv "$review_receipt_file.tmp" "$review_receipt_file"
-review_many_silent_out=$(run_statusline "$(statusline_payload review-many-silent "" "$REVIEW_CLEAN")") \
-  || fail "review many-silent-cells render failed"
+review_many_silent_out=$(review_render review-many-silent "$REVIEW_CLEAN")
 assert grep -Fq "${DIM}review${RESET}" <<< "$review_many_silent_out"
 
-jq 'del(.panel)' "$review_receipt_file" > "$review_receipt_file.tmp"
+# The gate outranks it: a commit that would be blocked is what the reader has to act on, and the
+# partial-panel mark must not answer in its place.
+GATE_ANSWER='loud review'
+GATE_RC=2
+review_partial_gated_out=$(review_render review-partial-gated "$REVIEW_CLEAN")
+assert grep -Fq "$review_delimited" <<< "$review_partial_gated_out"
+assert test "${review_partial_gated_out#*"$review_dim_delimited"}" = "$review_partial_gated_out"
+GATE_ANSWER=off
+GATE_RC=0
+
+jq 'del(.panel) | .errored = 0' "$review_receipt_file" > "$review_receipt_file.tmp"
 mv "$review_receipt_file.tmp" "$review_receipt_file"
-
-jq '.errored = 0' "$review_receipt_file" > "$review_receipt_file.tmp"
-mv "$review_receipt_file.tmp" "$review_receipt_file"
-printf 'staged content\n' > "$REVIEW_CLEAN/tracked.txt"
-git -C "$REVIEW_CLEAN" add tracked.txt
-git -C "$REVIEW_CLEAN" show HEAD:tracked.txt > "$REVIEW_CLEAN/tracked.txt"
-printf 'untracked object sentinel\n' > "$REVIEW_CLEAN/unique-untracked.txt"
-assert test -n "$(git -C "$REVIEW_CLEAN" status --porcelain)"
-review_clean_top=$(cd "$REVIEW_CLEAN" && pwd -P)
-claim_paths review-dirty-match "$review_clean_top" tracked.txt unique-untracked.txt
-review_dirty_objects_before=$(find "$REVIEW_CLEAN/.git/objects" -type f | wc -l | tr -d ' ')
-review_dirty_match_out=$(review_render review-dirty-match "$REVIEW_CLEAN")
-# The staged path holds the reviewed content again and is covered; the untracked one is in no
-# receipt tree, and it is this chat's own. Nothing here may write an object into the repository:
-# the content questions are asked with `hash-object` and `cat-file`, never by staging anything.
-assert grep -Fq "$review_delimited" <<< "$review_dirty_match_out"
-assert_eq "$review_dirty_objects_before" \
-  "$(find "$REVIEW_CLEAN/.git/objects" -type f | wc -l | tr -d ' ')"
-
-rm -f "$review_receipt_file"
-review_missing_out=$(review_render review-missing "$REVIEW_CLEAN")
-# Same tree, no receipt and no claim: unreviewed work nobody living owns is background news.
-assert grep -Fq "$review_dim_delimited" <<< "$review_missing_out"
-
-# A scope entry is a pathspec: `--paths src` staged every path under src into its receipt tree, so
-# the receipt covers src/a.txt though it never names it.
-SCOPED_REPO="$FIXTURES/scoped-dir"
-mkdir -p "$SCOPED_REPO/src"
-git -C "$SCOPED_REPO" init -q -b main
-printf 'base\n' > "$SCOPED_REPO/src/a.txt"
-printf 'keep\n' > "$SCOPED_REPO/other file.txt"
-git -C "$SCOPED_REPO" add .
-git -C "$SCOPED_REPO" -c user.name=Fixture -c user.email=fixture@example.com commit -qm initial
-printf 'edited\n' > "$SCOPED_REPO/src/a.txt"
-scoped_top=$(cd "$SCOPED_REPO" && pwd -P)
-scoped_hash=$(printf '%s' "$scoped_top" | shasum -a 1 | awk '{print substr($1,1,8)}')
-scoped_tree_of() { # pathspec...
-  local index="$FIXTURES/scoped-index"
-  rm -f "$index"
-  GIT_INDEX_FILE="$index" git -C "$SCOPED_REPO" read-tree HEAD &&
-    GIT_INDEX_FILE="$index" git -C "$SCOPED_REPO" add -A -- "$@" &&
-    GIT_INDEX_FILE="$index" git -C "$SCOPED_REPO" write-tree
-}
-scoped_receipt="$RECEIPT_DIR/$(basename "$SCOPED_REPO")__${scoped_hash}__scope-abcdef01.json"
-jq -cn --arg repo "$SCOPED_REPO" --arg tree "$(scoped_tree_of src)" '
-  {repo:$repo,tree:$tree,commit:"0badc0de",run_id:"scope-dir",
-   ts:"2026-08-05T00:00:00+00:00",errored:0,scope:["src"]}' > "$scoped_receipt"
-claim_paths scope-dir "$scoped_top" src/a.txt
-scoped_out=$(review_render scope-dir "$SCOPED_REPO")
-assert test "${scoped_out#*"$review_delimited"}" = "$scoped_out"
-assert test "${scoped_out#*"$review_dim_delimited"}" = "$scoped_out"
-
-# A path outside the scope is not covered by it, whatever the directory above holds.
-printf 'new\n' > "$SCOPED_REPO/outside.txt"
-claim_paths scope-dir-open "$scoped_top" outside.txt
-scoped_open_out=$(review_render scope-dir-open "$SCOPED_REPO")
-assert grep -Fq "$review_delimited" <<< "$scoped_open_out"
-rm -f "$SCOPED_REPO/outside.txt"
-
-# A reviewed deletion is covered whatever the path is called: `cat-file` answers a missing object
-# by echoing the query back, and a space in the path used to shift that answer into a blob.
-rm -f "$SCOPED_REPO/other file.txt"
-jq -cn --arg repo "$SCOPED_REPO" --arg tree "$(scoped_tree_of .)" '
-  {repo:$repo,tree:$tree,commit:"0badc0de",run_id:"scope-deleted",
-   ts:"2026-08-05T00:00:00+00:00",errored:0}' \
-  > "$RECEIPT_DIR/$(basename "$SCOPED_REPO")__${scoped_hash}.json"
-claim_paths scope-deleted "$scoped_top" "other file.txt" src/a.txt
-scoped_deleted_out=$(review_render scope-deleted "$SCOPED_REPO")
-assert test "${scoped_deleted_out#*"$review_delimited"}" = "$scoped_deleted_out"
-assert test "${scoped_deleted_out#*"$review_dim_delimited"}" = "$scoped_deleted_out"
-rm -f "$RECEIPT_DIR/$(basename "$SCOPED_REPO")__${scoped_hash}.json" "$scoped_receipt"
-
-# Coverage is content AND mode: a chmod is a change, and a receipt that read the file before it
-# reviewed a file the tree no longer holds.
-MODE_REPO="$FIXTURES/mode-bits"
-mkdir -p "$MODE_REPO"
-git -C "$MODE_REPO" init -q -b main
-printf 'run\n' > "$MODE_REPO/run.sh"
-git -C "$MODE_REPO" add run.sh
-git -C "$MODE_REPO" -c user.name=Fixture -c user.email=fixture@example.com commit -qm initial
-mode_top=$(cd "$MODE_REPO" && pwd -P)
-mode_hash=$(printf '%s' "$mode_top" | shasum -a 1 | awk '{print substr($1,1,8)}')
-mode_receipt="$RECEIPT_DIR/$(basename "$MODE_REPO")__${mode_hash}.json"
-mode_pre_tree=$(git -C "$MODE_REPO" rev-parse 'HEAD^{tree}')
-write_mode_receipt() { # tree
-  jq -cn --arg repo "$MODE_REPO" --arg tree "$1" '
-    {repo:$repo,tree:$tree,commit:"0badc0de",run_id:"mode-bits",
-     ts:"2026-08-05T00:00:00+00:00",errored:0}' > "$mode_receipt"
-}
-chmod +x "$MODE_REPO/run.sh"
-write_mode_receipt "$mode_pre_tree"
-claim_paths mode-bits "$mode_top" run.sh
-mode_chmod_out=$(review_render mode-bits "$MODE_REPO")
-assert grep -Fq "$review_delimited" <<< "$mode_chmod_out"
-
-# The same receipt taken after the chmod covers the path again: the mode it read is the mode on
-# disk, and a matching bit must not hold the label open.
-mode_index="$FIXTURES/mode-index"
-rm -f "$mode_index"
-mode_post_tree=$(GIT_INDEX_FILE="$mode_index" git -C "$MODE_REPO" read-tree HEAD &&
-  GIT_INDEX_FILE="$mode_index" git -C "$MODE_REPO" add -A &&
-  GIT_INDEX_FILE="$mode_index" git -C "$MODE_REPO" write-tree)
-write_mode_receipt "$mode_post_tree"
-mode_match_out=$(review_render mode-bits-match "$MODE_REPO")
-assert test "${mode_match_out#*"$review_delimited"}" = "$mode_match_out"
-assert test "${mode_match_out#*"$review_dim_delimited"}" = "$mode_match_out"
-
-# A symlink is never covered by the blob it happens to resolve to: the review read the link, while
-# `hash-object` answers with the content of whatever it points at.
-printf 'run\n' > "$FIXTURES/mode-link-target.txt"
-rm -f "$MODE_REPO/run.sh"
-ln -s "$FIXTURES/mode-link-target.txt" "$MODE_REPO/run.sh"
-write_mode_receipt "$mode_pre_tree"
-claim_paths mode-link "$mode_top" run.sh
-mode_link_out=$(review_render mode-link "$MODE_REPO")
-assert grep -Fq "$review_delimited" <<< "$mode_link_out"
-rm -f "$mode_receipt"
 
 review_nongit_out=$(run_statusline "$(statusline_payload review-nongit "" "$NON_GIT")") \
   || fail "review non-git render failed"
 assert test "${review_nongit_out#*review T}" = "$review_nongit_out"
-
-# A port belongs to the project and its diff, not to a review of it, so it takes the slot right
-# after the repository cluster and the review label follows it.
-printf '5173\n' > "$STATE_DIR/ports-r-order"
-claim_paths r-order "$TOP_REVIEW_DIRTY" change.txt
-rorder_out=$(review_render r-order "$REVIEW_DIRTY")
-assert grep -Fq ":5173" <<< "$rorder_out"
-assert grep -Fq "$review_delimited" <<< "$rorder_out"
-# Cut on the delimited segment, not on the bare word: this fixture repository is itself named
-# review-dirty, and its own label would answer first.
-assert grep -Fq ":5173" <<< "${rorder_out%%"$review_delimited"*}"
 
 PROGRESS_DIR="$CLAUDEB_FIX/worker-stats/progress"
 mkdir -p "$PROGRESS_DIR"
@@ -2912,21 +2917,8 @@ printf 'stamped untracked\n' > "$REVIEW_STAMP/untracked.txt"
 stamp_output=$(CLAUDEB_DIR="$CLAUDEB_FIX" "$ROOT/bin/review-bench" reviewed \
   --repo "$REVIEW_STAMP") || fail "reviewed stamp failed"
 assert grep -Fq 'stamped tree ' <<< "$stamp_output"
-claim_paths review-stamp "$(cd "$REVIEW_STAMP" && pwd -P)" tracked.txt untracked.txt
-review_stamp_out=$(review_render review-stamp "$REVIEW_STAMP")
-assert test "${review_stamp_out#*"$review_delimited"}" = "$review_stamp_out"
-assert test "${review_stamp_out#*"$review_dim_delimited"}" = "$review_stamp_out"
-
-printf 'extra edit\n' >> "$REVIEW_STAMP/tracked.txt"
-review_stamp_changed_out=$(review_render review-stamp "$REVIEW_STAMP")
-assert grep -Fq "$review_delimited" <<< "$review_stamp_changed_out"
-
-printf 'fixture\nstamped dirty\n' > "$REVIEW_STAMP/tracked.txt"
-git -C "$REVIEW_STAMP" add -A
-git -C "$REVIEW_STAMP" -c user.name=Fixture -c user.email=fixture@example.com \
-  commit -qm stamped
-review_stamp_committed_out=$(review_render review-stamp "$REVIEW_STAMP")
-assert test "${review_stamp_committed_out#*"$review_delimited"}" = "$review_stamp_committed_out"
+# What the stamp buys the label is no longer this file's to assert: the segment speaks for the
+# commit gate, and whether a stamped tree owes a review is the gate's answer and its suite's case.
 
 # --- review-stamp-hook.sh ---
 # The label can only go out if something ends the review cycle: the fixes a panel provokes change
@@ -2962,7 +2954,9 @@ cycle_file() { printf '%s/review-cycle%s' "$hook_gitdir" "${1:+-$1}"; }
 write_cycle() { # session stage [entry...]
   local session=$1 stage=$2
   shift 2
-  printf '%s\0' "$stage" '' '' '2026-08-07T00:00:00' "$@" > "$(cycle_file "$session")"
+  # Six fixed fields before the entries — the last two are the ticket's drift budget and tier —
+  # and a reader off by one takes `<sha> <path>` for a budget.
+  printf '%s\0' "$stage" '' '' '2026-08-07T00:00:00' '' '' "$@" > "$(cycle_file "$session")"
 }
 ticket_entry() { # path
   printf '%s %s' "$(git -C "$HOOK_REPO" hash-object "$1")" "$1"
@@ -3050,52 +3044,5 @@ rm -f "$(cycle_file broken)" "$(cycle_file armedchat)" "$hook_receipt"
 fire_hook
 assert test ! -f "$hook_receipt"
 
-# A cache the render may no longer trust is not shown: past the staleness window the segment
-# disappears rather than repeating a tier that predates the current diff.
-# The age rule is proved by the pair: the same cache renders while it is young and disappears once
-# it is not, with the probe pointed at nothing so no refresh can rewrite it mid-assertion.
-REVIEW_STUB="$FIXTURES/review-stub.sh"
-# T2 rather than T3 because `suggest` caps its `tier:` line at the panel it will actually launch,
-# and a stub answering what the tool cannot answer is where a divergence hides from its own test.
-printf '#!/usr/bin/env bash\nprintf "tier: T2\\n"\n' > "$REVIEW_STUB"
-chmod +x "$REVIEW_STUB"
-rm -f "$HOME/.cache/claude-statusline"/review-tier-*
-review_fresh_out=""
-for _ in $(seq 1 20); do
-  sleep 0.2
-  review_fresh_out=$(STATUSLINE_REVIEW_BENCH_BIN="$REVIEW_STUB" \
-    run_statusline "$review_dirty_payload") || fail "review stub render failed"
-  grep -Fq 'review T2' <<< "$review_fresh_out" && break
-done
-assert grep -Fq 'review T2' <<< "$review_fresh_out"
-review_cache_file=$(ls "$HOME/.cache/claude-statusline"/review-tier-* 2>/dev/null | head -n1)
-assert test -n "$review_cache_file"
-touch -t 200001010000 "$review_cache_file"
-review_stale_out=$(STATUSLINE_REVIEW_BENCH_BIN="$FIXTURES/absent-review-bench" \
-  run_statusline "$review_dirty_payload") || fail "review stale render failed"
-assert test "${review_stale_out#*review T}" = "$review_stale_out"
 
-# A probe that fails or answers with something else leaves no tier behind.
-REVIEW_BROKEN="$FIXTURES/review-broken.sh"
-printf '#!/usr/bin/env bash\nprintf "totally unexpected\\n"\nexit 0\n' > "$REVIEW_BROKEN"
-chmod +x "$REVIEW_BROKEN"
-rm -f "$HOME/.cache/claude-statusline"/review-tier-*
-for _ in $(seq 1 20); do
-  sleep 0.2
-  review_broken_out=$(STATUSLINE_REVIEW_BENCH_BIN="$REVIEW_BROKEN" \
-    run_statusline "$review_dirty_payload") || fail "review broken render failed"
-done
-assert test "${review_broken_out#*review T}" = "$review_broken_out"
-
-REVIEW_FAILING="$FIXTURES/review-failing.sh"
-printf '#!/usr/bin/env bash\nexit 3\n' > "$REVIEW_FAILING"
-chmod +x "$REVIEW_FAILING"
-rm -f "$HOME/.cache/claude-statusline"/review-tier-*
-for _ in $(seq 1 20); do
-  sleep 0.2
-  review_failing_out=$(STATUSLINE_REVIEW_BENCH_BIN="$REVIEW_FAILING" \
-    run_statusline "$review_dirty_payload") || fail "review failing render failed"
-done
-assert test "${review_failing_out#*review T}" = "$review_failing_out"
-
-echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, the merged review lifecycle with precedence, staleness and live-progress cases, the stamp hook that ends a review cycle on the gate's spent ticket, main-last and Gemini account predictions, and Codex/claudeb/Gemini worker tag propagation"
+echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, the merged review lifecycle with precedence, staleness and live-progress cases, a bare review label with nothing probed or cached behind it, silenced while this session holds the gate's ticket and standing while a stage is armed or the ticket is a co-tenant's, the stamp hook that ends a review cycle on the gate's spent ticket, main-last and Gemini account predictions, and Codex/claudeb/Gemini worker tag propagation"

@@ -356,7 +356,11 @@ marker="$cache_dir/.workdir-prune"
 now=$(date +%s 2>/dev/null)
 marker_mtime=$(stat -f %m "$marker" 2>/dev/null || stat -c %Y "$marker" 2>/dev/null || printf '0')
 if [[ "$now" =~ ^[0-9]+$ ]] && [[ "$marker_mtime" =~ ^[0-9]+$ ]] && [ "$((now - marker_mtime))" -gt 3600 ]; then
-  find "$cache_dir" -type f \( -name 'workdir-*' -o -name 'touched-*' \) -mtime +7 -delete
+  # `review-tier-*` is keyed on the path set a chat would commit, so it gains a file every time
+  # that set changes — a prune that only knew the per-session names would let it grow forever.
+  find "$cache_dir" -type f \
+    \( -name 'workdir-*' -o -name 'touched-*' -o -name 'review-tier-*' -o -name 'review-class-*' \) \
+    -mtime +7 -delete
   touch "$marker"
 fi
 
