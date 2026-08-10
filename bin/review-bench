@@ -7435,18 +7435,18 @@ def cmd_coverage(args):
         # Untracked content is in no commit form, but a scoped review stages the whole subtree
         # under its paths, so it is part of what such a review would be shown.
         changes.update(untracked_numstat(repo, commit_scope))
-    # No commit form carries an untracked file it did not name literally: `git commit -a`,
-    # `-- .` and a directory pathspec all leave it behind, so a co-tenant's new file must not
-    # price this commit's delta. A literally named one stays — the reader adds what they named.
-    # `--carries-untracked` is the one line that reaches all of them anyway: `git add x && git
-    # commit -a` runs before anything is staged, and dropping x there waves in content no panel
-    # read on the very form that cannot be asked about it afterwards.
+    # No commit form carries an untracked file the command line did not stage first: `git
+    # commit -a`, `-- .`, a directory pathspec and even a literally named path all refuse it
+    # ("did not match any file(s) known to git", `--include` included — measured 2026-08-10),
+    # so a co-tenant's new file must not price this commit's delta and a named-but-unstaged one
+    # is a commit git itself will refuse. `--carries-untracked` is the one signal that a stage
+    # runs on the same line (`git add x && git commit -a`), where dropping x would wave in
+    # content no panel read on the very form that cannot be asked about it afterwards.
     named_untracked = {}
     stages_first = bool(getattr(args, "carries_untracked", False))
     if commit_all or commit_paths is not None:
-        named = set(commit_paths or ())
         for path, count in untracked_numstat(repo, commit_scope).items():
-            if stages_first or path in named:
+            if stages_first:
                 named_untracked[path] = count
             else:
                 changes.pop(path, None)
@@ -7469,7 +7469,8 @@ def cmd_coverage(args):
             empty_form = False
         # A commit carrying nothing is one git itself refuses, and the delta measured above is
         # other work in the checkout — another agent's edits — rather than anything this commit
-        # would take. A literally named untracked file is the exception, and belongs to the form.
+        # would take. An untracked file the line stages first is the exception, and belongs to
+        # the form.
         if empty_form and named_untracked:
             empty_form = False
         if empty_form:

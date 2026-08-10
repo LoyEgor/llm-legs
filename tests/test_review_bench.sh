@@ -7338,17 +7338,20 @@ assert_coverage(coverage(form_coverage, "--commit-paths", "unchanged.txt"), 0, 0
 form_empty_all = make_coverage_repo("coverage-commit-form-clean")
 assert_coverage(coverage(form_empty_all, "--commit-all"), 0, 0, paths=[])
 
-# A pathspec naming only untracked content is still work to review: the reader adds it and commits,
-# and a review of it stages the whole subtree — the gate asking about a chat whose own new file is
-# its only change got told there was nothing.
+# A pathspec naming only untracked content carries it only when the same line stages it first:
+# git refuses `git commit -- new.txt` for an unstaged file outright ("did not match any file(s)
+# known to git", `--include` included — measured 2026-08-10), so without the stage there is no
+# commit to review, and with it the work is priced like any other.
 form_untracked = make_coverage_repo("coverage-commit-form-untracked")
 (form_untracked / "brand-new.txt").write_text("new\n" * 12)
-assert_coverage(coverage(form_untracked, "--commit-paths", "brand-new.txt"), 1, 12,
-                paths=["brand-new.txt"])
+assert_coverage(coverage(form_untracked, "--commit-paths", "brand-new.txt"), 0, 0, paths=[])
+assert_coverage(
+    coverage(form_untracked, "--commit-paths", "brand-new.txt", "--carries-untracked"), 1, 12,
+    paths=["brand-new.txt"])
 # And a pathspec naming neither a tracked change nor untracked content is still nothing.
 assert_coverage(coverage(form_untracked, "--commit-paths", "unchanged.txt"), 0, 0, paths=[])
-# The exception belongs to NAMED paths and to nothing else: `git commit -a` and `git commit -- .`
-# carry no untracked file, so the same new file must not buy either of them a delta.
+# No form carries an unstaged untracked file: `git commit -a` and `git commit -- .` leave the
+# same new file behind, so it must not buy either of them a delta.
 assert_coverage(coverage(form_untracked, "--commit-all"), 0, 0, paths=[])
 assert_coverage(coverage(form_untracked, "--commit-paths", "."), 0, 0, paths=[])
 # Unless the line stages first. `git add brand-new.txt && git commit -a` reaches this command
@@ -7494,7 +7497,12 @@ scoped_untracked_coverage = make_coverage_repo(
 assert_coverage(coverage(scoped_untracked_coverage, "--commit-paths", "src"), 1, 1,
                 paths=["src/mine.txt"])
 assert_coverage(
-    coverage(scoped_untracked_coverage, "--commit-paths", "src", "src/fresh.txt"), 2, 41,
+    coverage(scoped_untracked_coverage, "--commit-paths", "src", "src/fresh.txt"), 1, 1,
+    paths=["src/mine.txt"],
+)
+assert_coverage(
+    coverage(scoped_untracked_coverage, "--commit-paths", "src", "src/fresh.txt",
+             "--carries-untracked"), 2, 41,
     paths=["src/fresh.txt", "src/mine.txt"],
 )
 
