@@ -46,6 +46,68 @@ is_pin_file() { [ "$(canonical_path "$1")" = "$(pin_file)" ]; }
 
 current_pins() { grep -E "$PIN_KEY_RE" "$(pin_file)" 2>/dev/null | sort; }
 
+# Quoted text a command carries is DATA, not shell syntax: a `>` or an editor's name inside quotes
+# is prose being passed along — a focus prompt reading "ladder pin > roles > pool … worker-model"
+# was denied outright, and this door never gates reading. Each quoted run collapses to one
+# placeholder character instead of vanishing, so a redirect whose TARGET is quoted
+# (`> "$HOME/.claude/worker-model"`) still reads as a redirect. Escaped characters collapse the same
+# way: `\>` is a literal, and honouring the backslash also keeps an escaped quote from opening a run
+# that swallows the rest of the command.
+#
+# The whole command is scanned as ONE string, read in by hand rather than record by record: quotes
+# span newlines, and a per-record scan reset the quote state at every blank line — prose after one
+# read as syntax, and a `bash` after one glued to the previous record's last word.
+#
+# A DOUBLE-quoted run holding `$(…)` or a backtick is not data at all: the shell runs it. There the
+# strip answers with nothing and the caller falls back to the raw command — the same conservative
+# side the interpreter names take, and the pre-strip gate's behaviour for it.
+strip_quoted() {
+  awk -v sq="'" -v dq='"' '
+    BEGIN {
+      cmd = ""
+      while ((getline line) > 0) cmd = cmd (read_any++ ? "\n" : "") line
+      quote = ""; out = ""
+      for (i = 1; i <= length(cmd); i++) {
+        c = substr(cmd, i, 1)
+        if (quote != "") {
+          if (quote == dq && c == "\\") { i++; continue }
+          if (quote == dq && (c == "`" || (c == "$" && substr(cmd, i + 1, 1) == "("))) exit 2
+          if (c == quote) quote = ""
+          continue
+        }
+        if (c == "\\") { i++; out = out "Q"; continue }
+        if (c == sq || c == dq) { quote = c; out = out "Q"; continue }
+        out = out c
+      }
+      printf "%s", out
+    }' <<<"$1"
+}
+
+# An interpreter is handed its program as an ARGUMENT, and that argument is quoted: every syntactic
+# mark of `bash -c 'printf x > ~/.claude/worker-model'` sits inside quotes, so once one of these
+# names stands outside the quotes the whole command reads as syntax again. Ambiguity denies. The
+# optional path prefix is the point of the class before the names: `/bin/bash -c` and
+# `/usr/bin/env sh -c` are the same interpreter as `bash`, and matching bare names only left that
+# hole open. Only names that hand quoted TEXT to a parser belong here — `env`, `nohup`, `setsid`
+# execute argv directly and un-quote nothing, and the standalone `.` matched `git commit .` and
+# `find .`, forcing the raw scan over ordinary commands whose quoted prose then read as a write.
+INTERPRETER_RE='(^|[[:space:]|;&(])([^[:space:]|;&()<>]*/)?(bash|sh|zsh|ksh|dash|eval|xargs|ssh|osascript|ruby|node|php)([[:space:]]|$)'
+WRITE_RE='>[[:space:]]*[^&[:space:]]|(^|[[:space:]|;&(])(tee|sed|perl|awk|python3?|cp|mv|rm|ln|install|truncate|dd)([[:space:]]|$)'
+
+# The interpreter names are matched on the STRIPPED command, so a name the quotes hide is a name
+# this door cannot read: `"bash" -c '… > pin'` collapses to a placeholder and leaves neither an
+# interpreter nor a redirect to match, and a variable standing there (`$SHELL -c`, `${SH} -c`,
+# `$(which bash) -c`) names an interpreter this gate cannot resolve at all. A word in COMMAND
+# position is an executable rather than text, so an unreadable one there means the raw command
+# decides — the same conservative side ambiguity takes everywhere in this door. Command position is
+# the start of a line (a newline separates commands too) or just after `;`, `|`, `&`, `(`, which is
+# what keeps a placeholder among ARGUMENTS — `arm claude-opus-5 'ladder pin > pool'` — data. A
+# variable followed by `/` is a path PREFIX, not the whole name (`$HOME/.claude/hooks/x.sh` is
+# ordinary work, and `$HOME/bin/bash -c` already matches INTERPRETER_RE through its `/`). Residual,
+# deliberately not chased: an assignment prefix moves the word out of the position matched here
+# (`FOO=1 "bash" -c …`).
+CMD_POSITION_RE='(^|[;|&(])[[:space:]]*(Q|\$\(|\$\{?[A-Za-z_][A-Za-z_0-9]*\}?([[:space:]]|$))'
+
 deny() {
   jq -cn --arg r "$1" \
     '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $r}}' \
@@ -116,8 +178,14 @@ case "$MODE" in
     # side to err on, and the reader can drop the redirect. Two things are not writes and must not
     # read as any: input redirection (`< file`, `<(...)`) feeds a reader, and `2>&1` duplicates a
     # descriptor — matching it refused every ordinary command that keeps its stderr.
-    grep -Eq '>[[:space:]]*[^&[:space:]]|(^|[[:space:]|;&(])(tee|sed|perl|awk|python3?|cp|mv|rm|ln|install|truncate|dd)([[:space:]]|$)' \
-      <<<"$cmd" || exit 0
+    # The match runs over the command with its quoted runs collapsed — a `>` the command merely
+    # carries as text writes nothing — unless an interpreter stands there to execute that text, and
+    # a strip that answers with nothing falls back to the raw command rather than to a pass.
+    scan=$(strip_quoted "$cmd") || scan=''
+    [ -n "$scan" ] || scan="$cmd"
+    ! grep -Eq "$INTERPRETER_RE" <<<"$scan" || scan="$cmd"
+    ! grep -Eq "$CMD_POSITION_RE" <<<"$scan" || scan="$cmd"
+    grep -Eq "$WRITE_RE" <<<"$scan" || exit 0
     fresh && exit 0
     deny "$DENY_REASON"
     ;;

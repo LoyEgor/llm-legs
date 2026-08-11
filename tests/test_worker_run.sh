@@ -841,6 +841,99 @@ assert grep -q '^COST: 1k tok-eq$' <<<"$("$RUNNER" report "$RUN_ID")"
 jq '.total_cost_usd = 0.0000005' "$RUN_DIR/out" >"$WORK/out.tiny" && mv "$WORK/out.tiny" "$RUN_DIR/out"
 assert grep -q '^COST: <1 tok-eq$' <<<"$("$RUNNER" report "$RUN_ID")"
 
+# The changed files a report claims are the ones the RUN's own transcript recorded. A shared
+# checkout carries other agents' live work, so nothing here may fall back to the workdir: a missing
+# transcript answers "unknown" rather than with somebody else's hunks.
+assert grep -qx 'RUN-FILES: unknown (no session transcript for claude-session)' \
+  <<<"$("$RUNNER" report "$RUN_ID")"
+mkdir -p "$CLAUDEB_PROFILES_ROOT/effortacct/projects/fixture"
+run_workdir=$(jq -r '.workdir' "$RUN_DIR/meta.json")
+run_started=$(jq -r '.started_at' "$RUN_DIR/meta.json")
+# Milliseconds on purpose: that is what a real transcript writes, and jq's own fromdateiso8601
+# refuses them — a fixture stamped to the whole second would pass over the parse this depends on.
+iso() { date -u -r "$1" +%Y-%m-%dT%H:%M:%S.000Z; }
+TOOL_TS=$(iso $((run_started + 1)))
+tool_call() {
+  jq -cn --arg name "$1" --arg key "$2" --arg path "$3" --arg id "${4-}" --arg ts "$TOOL_TS" \
+    '{type: "assistant", timestamp: $ts,
+      message: {content: [{type: "tool_use", name: $name, input: {($key): $path}}
+      + (if $id == "" then {} else {id: $id} end)]}}'
+}
+tool_error() {
+  jq -cn --arg id "$1" --arg ts "$TOOL_TS" \
+    '{type: "user", timestamp: $ts, message: {content: [{type: "tool_result", tool_use_id: $id,
+      is_error: true, content: "permission denied"}]}}'
+}
+TRANSCRIPT="$CLAUDEB_PROFILES_ROOT/effortacct/projects/fixture/claude-session.jsonl"
+# An edit the run was DENIED, or one that failed, is a file the run never changed: counting it puts
+# somebody else's untouched file in this run's own list.
+{
+  tool_call Edit file_path "$run_workdir/bin/one"
+  tool_call Write file_path "$run_workdir/bin/one"
+  tool_call NotebookEdit notebook_path "$run_workdir/tests/two.ipynb"
+  tool_call Read file_path "$run_workdir/never-written"
+  tool_call Edit file_path "$WORK/outside/three"
+  tool_call Write file_path "$run_workdir/bin/refused" tu_1
+  tool_error tu_1
+} >"$TRANSCRIPT"
+report=$("$RUNNER" report "$RUN_ID")
+assert grep -qx 'RUN-FILES: 3' <<<"$report"
+assert grep -qx 'RUN-FILE: bin/one' <<<"$report"
+assert grep -qx 'RUN-FILE: tests/two.ipynb' <<<"$report"
+assert grep -qxF "RUN-FILE: $WORK/outside/three" <<<"$report"
+assert test "$(grep -c 'never-written' <<<"$report")" -eq 0
+assert test "$(grep -c 'bin/refused' <<<"$report")" -eq 0
+
+# A trailing slash on the workdir is the same workdir: doubling the prefix stopped the stripping and
+# printed every path absolute, as if the run had worked outside its own directory.
+jq --arg w "$run_workdir/" '.workdir = $w' "$RUN_DIR/meta.json" >"$WORK/meta.slash" \
+  && mv "$WORK/meta.slash" "$RUN_DIR/meta.json"
+report=$("$RUNNER" report "$RUN_ID")
+assert grep -qx 'RUN-FILES: 3' <<<"$report"
+assert grep -qx 'RUN-FILE: bin/one' <<<"$report"
+jq --arg w "$run_workdir" '.workdir = $w' "$RUN_DIR/meta.json" >"$WORK/meta.plain" \
+  && mv "$WORK/meta.plain" "$RUN_DIR/meta.json"
+
+# A --resume run appends to the SAME session transcript, so the file still holds the calls of the
+# runs before it: reported unfiltered, this run claims files an earlier one edited — the shared-work
+# mistake this whole list exists to avoid, one directory in. The run's own started_at is the cut, and
+# a call stamped in that very second is this run's.
+TOOL_TS=$(iso $((run_started - 7200)))
+{
+  tool_call Edit file_path "$run_workdir/bin/pre-resume"
+  tool_call Write file_path "$run_workdir/tests/pre-resume.sh"
+} >"$TRANSCRIPT"
+TOOL_TS=$(iso "$run_started")
+tool_call Edit file_path "$run_workdir/bin/at-start" >>"$TRANSCRIPT"
+TOOL_TS=$(iso $((run_started + 2)))
+tool_call Write file_path "$run_workdir/bin/this-run" >>"$TRANSCRIPT"
+report=$("$RUNNER" report "$RUN_ID")
+assert grep -qx 'RUN-FILES: 2' <<<"$report"
+assert grep -qx 'RUN-FILE: bin/at-start' <<<"$report"
+assert grep -qx 'RUN-FILE: bin/this-run' <<<"$report"
+assert test "$(grep -c 'pre-resume' <<<"$report")" -eq 0
+
+# Nothing recorded is not "nothing changed": an edit made through the shell — `sed -i`, a redirect,
+# `mv` — appears in no transcript as a tool call, so the zero says what it actually counted.
+: >"$TRANSCRIPT"
+assert grep -qx 'RUN-FILES: 0 (editor tool calls only; shell edits are not tracked)' \
+  <<<"$("$RUNNER" report "$RUN_ID")"
+
+# A transcript jq cannot parse is unknown, never 0: the pipeline used to swallow the parse failure
+# and report an authoritative "changed nothing" about a run nobody could read.
+printf 'not json {\n' >"$TRANSCRIPT"
+assert grep -qx 'RUN-FILES: unknown (transcript unreadable)' <<<"$("$RUNNER" report "$RUN_ID")"
+
+# A vendor whose transcript records no per-file tool calls says so; a silent 0 would read as a run
+# that changed nothing.
+clear_stub
+set_config 'codex_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=filesacct
+start_ok codex
+assert await_done
+assert grep -qx 'RUN-FILES: unknown (codex records no per-file tool calls in a transcript)' \
+  <<<"$("$RUNNER" report "$RUN_ID")"
+
 # "429" only counts as a limit signature with digit boundaries: an error id that
 # merely contains it stays an ordinary failure.
 clear_stub

@@ -777,4 +777,134 @@ assert doc_has 'Review wall record'
 assert doc_has 'capped once, by the writer, to the horizon its own window can reach'
 assert doc_has '`${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}/walls.jsonl`'
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the review commit-cycle file one writes and the other reads, the escalation tally one prints and the other prices on, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the gate verdict the statusline speaks verbatim, and the review wall record) and match %s\n' "$asserts" "$DOC"
+# --- Row aj: per-vendor role switches -----------------------------------------
+# `<vendor>_<role>=off`, absent key = on, is spoken by four independent implementations. The vendor
+# and role tokens are spelled once here and every implementation is asked whether it means the same
+# thing; a drifted one leaves the menu showing a switch the routers do not read.
+ROLE_VENDORS="claudeb codex gemini"
+ROLE_ROLES="workers reviewers"
+ROLE_WORK=$(mktemp -d)
+ROLE_MODEL="$ROLE_WORK/worker-model"
+# The writer refuses a session outright, and this suite usually runs inside one.
+set_role() {
+  env -u CLAUDECODE WORKER_PICK_CONFIG_FILE="$ROLE_MODEL" \
+    bash -c '. "$1"; worker_model_set_role "$2" "$3" "$4"' _ "$WORKER_MODEL_SH" "$1" "$2" "$3"
+}
+# The writer, asked for every pair the readers know.
+for vendor in $ROLE_VENDORS; do
+  for role in $ROLE_ROLES; do
+    rm -f "$ROLE_MODEL"
+    set_role "$vendor" "$role" off ||
+      fail "row aj: share/worker-model.sh refuses ${vendor} ${role}, a pair bin/worker-pick and hammerspoon/llm-limits.lua read"
+    assert eq "$(cat "$ROLE_MODEL")" "${vendor}_${role}=off"
+  done
+done
+
+# The reader in bin/worker-pick, asked through the binary: an empty limits file is enough, because
+# a closed role is refused before any account is looked at.
+printf '{}\n' >"$ROLE_WORK/limits.json"
+role_pick() {
+  env LLM_LIMITS_FILE="$ROLE_WORK/limits.json" WORKER_PICK_CONFIG_FILE="$ROLE_MODEL" \
+    WORKER_PICK_TIERS_FILE="$ROLE_WORK/tiers" WORKER_PICK_CACHE_DIR="$ROLE_WORK/cache" \
+    WORKER_PICK_NOW=1000000 CLAUDEB_DIR="$ROLE_WORK/claudeb" \
+    "$WORKERPICK" --account "$1" --role "$2" 2>&1 >/dev/null
+}
+for vendor in $ROLE_VENDORS; do
+  for role in $ROLE_ROLES; do
+    printf '%s_%s=off\n' "$vendor" "$role" >"$ROLE_MODEL"
+    role_out=$(role_pick "$vendor" "$role") &&
+      fail "row aj: bin/worker-pick answered $vendor for $role while share/worker-model.sh had written ${vendor}_${role}=off: reader and writer disagree on the key"
+    grep -Fq "$vendor is switched off for $role" <<<"$role_out" ||
+      fail "row aj: bin/worker-pick's refusal for ${vendor}_${role} names neither the vendor nor the role share/worker-model.sh wrote: $role_out"
+    # Only the literal "off" is a veto, which is what hammerspoon/llm-limits.lua and
+    # bin/review-bench read; anything else is the open state the absent key means.
+    printf '%s_%s=on\n' "$vendor" "$role" >"$ROLE_MODEL"
+    grep -Fq 'is switched off' <<<"$(role_pick "$vendor" "$role")" &&
+      fail "row aj: bin/worker-pick vetoes ${vendor}_${role}=on, while share/worker-model.sh and hammerspoon/llm-limits.lua treat only \"off\" as closed"
+  done
+done
+# The two role tokens are two switches, not one.
+printf 'claudeb_workers=off\n' >"$ROLE_MODEL"
+grep -Fq 'switched off' <<<"$(role_pick claudeb reviewers)" &&
+  fail "row aj: bin/worker-pick refused a reviewers query on a claudeb_workers=off line: its role_off() drops the role token hammerspoon/llm-limits.lua and bin/review-bench key on"
+
+# The stderr contract: bin/worker-run reroutes on a line bin/worker-pick prints, so the consumer's
+# own grep pattern is run against the producer's live output.
+role_run_grep=$(sed -n "s/.*grep -q '\([^']*switched off[^']*\)'.*/\1/p" "$WORKER_RUN" | head -n1)
+[ -n "$role_run_grep" ] ||
+  fail "row aj: bin/worker-run no longer greps a 'switched off' line out of bin/worker-pick's stderr: the workers wall it reroutes on became unreadable"
+printf 'claudeb_workers=off\n' >"$ROLE_MODEL"
+role_out=$(role_pick claudeb workers)
+grep -q -- "$role_run_grep" <<<"$role_out" ||
+  fail "row aj: bin/worker-run greps '$role_run_grep' but bin/worker-pick prints '$role_out': the workers-wall stderr contract between them drifted"
+
+# The reader in hammerspoon/llm-limits.lua, at the two tables the menu builds keys from.
+lua_prefixes=$(grep -E '^local WORKER_MODEL_PREFIX = ' "$HAMMER" | head -n1)
+[ -n "$lua_prefixes" ] ||
+  fail "row aj: hammerspoon/llm-limits.lua has no WORKER_MODEL_PREFIX table, so the keys share/worker-model.sh writes are built somewhere else now"
+for vendor in $ROLE_VENDORS; do
+  grep -Fq "\"$vendor\"" <<<"$lua_prefixes" ||
+    fail "row aj: hammerspoon/llm-limits.lua's WORKER_MODEL_PREFIX lacks the $vendor prefix that share/worker-model.sh writes ${vendor}_ keys with"
+done
+lua_roles=$(grep -E '^local WORKER_ROLES = ' "$HAMMER" | head -n1)
+[ -n "$lua_roles" ] ||
+  fail "row aj: hammerspoon/llm-limits.lua has no WORKER_ROLES table, so the menu no longer enumerates the roles share/worker-model.sh accepts"
+for role in $ROLE_ROLES; do
+  grep -Fq "\"$role\"" <<<"$lua_roles" ||
+    fail "row aj: hammerspoon/llm-limits.lua's WORKER_ROLES lacks the $role token that share/worker-model.sh writes and bin/worker-pick reads"
+done
+assert_role_hammer() {
+  asserts=$((asserts + 1))
+  grep -Fq "$1" "$HAMMER" ||
+    fail "row aj: hammerspoon/llm-limits.lua no longer $2, so its menu and share/worker-model.sh's keys drifted"
+}
+assert_role_hammer 'key == prefix .. "_" .. role' 'builds keys as <vendor>_<role>'
+assert_role_hammer 'value ~= "off"' 'reads "off" as the only veto'
+
+# The reader in bin/review-bench, asked through its own functions: it reads the reviewers half.
+role_bench_out=$(python3 - "$REVIEWBENCH" "$ROLE_MODEL" "$ROLE_VENDORS" 2>&1 <<'PY'
+import importlib.machinery
+import importlib.util
+import os
+import sys
+
+bench, config, vendors = sys.argv[1], sys.argv[2], sys.argv[3].split()
+os.environ["WORKER_PICK_CONFIG_FILE"] = config
+loader = importlib.machinery.SourceFileLoader("review_bench", bench)
+spec = importlib.util.spec_from_loader("review_bench", loader)
+rb = importlib.util.module_from_spec(spec)
+loader.exec_module(rb)
+
+if sorted(set(rb.SIDE_POOL_VENDOR.values())) != sorted(vendors):
+    sys.exit("bin/review-bench SIDE_POOL_VENDOR maps to %s, not the vendors share/worker-model.sh "
+             "writes keys for (%s)" % (sorted(set(rb.SIDE_POOL_VENDOR.values())), vendors))
+for side, vendor in sorted(rb.SIDE_POOL_VENDOR.items()):
+    def write(line):
+        with open(config, "w", encoding="utf-8") as handle:
+            handle.write(line)
+    write("%s_reviewers=off\n" % vendor)
+    if not rb.reviewers_role_off(side):
+        sys.exit("bin/review-bench misses the %s_reviewers=off line share/worker-model.sh writes, "
+                 "so side %s staffs a vendor bin/worker-pick refuses" % (vendor, side))
+    if "is switched off for reviewers" not in rb.role_closed_note(side):
+        sys.exit("bin/review-bench words the closed %s reviewers switch differently from "
+                 "bin/worker-pick's stderr: %r" % (vendor, rb.role_closed_note(side)))
+    write("%s_workers=off\n" % vendor)
+    if rb.reviewers_role_off(side):
+        sys.exit("bin/review-bench reads %s_workers=off as a reviewers veto: it drops the role "
+                 "token bin/worker-pick and hammerspoon/llm-limits.lua key on" % vendor)
+    write("%s_reviewers=on\n" % vendor)
+    if rb.reviewers_role_off(side):
+        sys.exit("bin/review-bench vetoes %s_reviewers=on, while share/worker-model.sh and "
+                 "bin/worker-pick treat only \"off\" as closed" % vendor)
+PY
+) || fail "row aj: $role_bench_out"
+asserts=$((asserts + 1))
+rm -rf "$ROLE_WORK"
+# The reviewers query asks worker-pick for the role, rather than reading the switch as a decision.
+assert grep -Fq '"--account", SIDE_POOL_VENDOR[side], "--role", "reviewers"' "$REVIEWBENCH"
+assert doc_has 'Per-vendor role switches'
+assert doc_has '`worker-pick: <vendor> is switched off for <role>`'
+assert doc_has '`cb⏸off`/`cx⏸off`/`gx⏸off`'
+
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the review commit-cycle file one writes and the other reads, the escalation tally one prints and the other prices on, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the gate verdict the statusline speaks verbatim, the review wall record, and the per-vendor role switches the routers, the menu and the bench all read) and match %s\n' "$asserts" "$DOC"

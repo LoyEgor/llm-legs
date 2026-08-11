@@ -111,26 +111,34 @@ codex_unsupported_model() {
   tail -n 40 "$1/err" 2>/dev/null | grep -Fqi 'model is not supported'
 }
 
-warn_cold_resume() {
-  local vendor="$1" account="$2" resume="$3" transcript='' threshold ttl now mtime idle usage size tokens token_k idle_text
-  [ -n "$resume" ] || return 0
+# Where the spawned instance keeps its own transcript: claudeb files it under the profile's projects
+# tree named by session id, codex under the profile's sessions tree with the id inside the filename.
+# agy is absent on purpose — its log carries no session jsonl to find.
+session_transcript() {
+  local vendor="$1" account="$2" session="$3" transcript=''
+  [ -n "$session" ] && [ "$session" != - ] || return 1
   case "$vendor" in
     claudeb)
-      threshold=3600
-      ttl=1h
-      for transcript in "${CLAUDEB_PROFILES_ROOT:-$HOME/.claude-profiles}/$account/projects/"*/"$resume.jsonl"; do
+      for transcript in "${CLAUDEB_PROFILES_ROOT:-$HOME/.claude-profiles}/$account/projects/"*/"$session.jsonl"; do
         [ -f "$transcript" ] && break
         transcript=''
       done
       ;;
-    codex)
-      threshold=1800
-      ttl=30m
-      transcript=$(find "$(codex_home "$account")/sessions" -type f -name "*$resume*.jsonl" 2>/dev/null | head -n1)
-      ;;
+    codex) transcript=$(find "$(codex_home "$account")/sessions" -type f -name "*$session*.jsonl" 2>/dev/null | head -n1) ;;
+  esac
+  [ -n "$transcript" ] && [ -f "$transcript" ] || return 1
+  printf '%s' "$transcript"
+}
+
+warn_cold_resume() {
+  local vendor="$1" account="$2" resume="$3" transcript threshold ttl now mtime idle usage size tokens token_k idle_text
+  [ -n "$resume" ] || return 0
+  case "$vendor" in
+    claudeb) threshold=3600; ttl=1h ;;
+    codex) threshold=1800; ttl=30m ;;
     *) return 0 ;;
   esac
-  [ -n "$transcript" ] && [ -f "$transcript" ] || return 0
+  transcript=$(session_transcript "$vendor" "$account" "$resume") || return 0
   mtime=$(stat -f %m "$transcript" 2>/dev/null) || return 0
   [[ "$mtime" =~ ^[0-9]+$ ]] || return 0
   now=$(date +%s)
@@ -737,6 +745,78 @@ print_outcome() {
   fi
 }
 
+transcript_files() {
+  # Only the file-writing tool calls, read by recursive descent so a wrapper key around the message
+  # (assistant turn, sidechain entry) does not hide the call. NotebookEdit names its target
+  # notebook_path; every other editor names file_path. A call whose tool_result came back is_error
+  # changed nothing — a denied or failed edit listed as this run's work is a file it never touched.
+  # Nonzero says UNREADABLE, never empty: jq's own status is what the caller needs, so the passes
+  # are separate assignments rather than one pipeline whose status belongs to `sort`.
+  #
+  # `since` is the run's own start: a --resume run APPENDS to the session's existing transcript, so
+  # the file also holds the calls of the runs before it, and listing those as this run's work is the
+  # shared-checkout mistake one directory in. Each LINE carries its own timestamp and governs its own
+  # calls, so the cut is a per-line select ahead of the descent, not a filter on the paths it yields.
+  # `fromdateiso8601` refuses the milliseconds every real transcript writes, hence the sub() — parsed
+  # without it, every line reads as epoch 0 and a resumed run reports nothing at all.
+  local transcript="$1" workdir="$2" since="${3:-0}" failed paths dir=''
+  [[ "$since" =~ ^[0-9]+$ ]] || since=0
+  failed=$(jq -r '.. | objects
+           | select((.type? == "tool_result") and (.is_error? == true))
+           | (.tool_use_id? // empty)' "$transcript" 2>/dev/null) || return 1
+  paths=$(jq -r --arg failed "$failed" --argjson since "$since" '
+           ($failed | split("\n") | map(select(length > 0))) as $bad
+           | select(((((.timestamp? // "") | tostring | sub("\\.[0-9]+"; ""))
+                      | fromdateiso8601? // 0)) >= $since)
+           | .. | objects
+           | select((.type? == "tool_use") and ((.name? // "") | test("^(Write|Edit|MultiEdit|NotebookEdit)$")))
+           | select((.id? // "") as $id | ($bad | index($id)) == null)
+           | (.input.file_path? // .input.notebook_path? // empty)' "$transcript" 2>/dev/null) || return 1
+  # A trailing slash makes the prefix double-slashed and silently stops matching; an absent workdir
+  # would strip the leading `/` off every absolute path, so it strips nothing at all.
+  [ -z "$workdir" ] || [ "$workdir" = null ] || dir="${workdir%/}/"
+  awk -v dir="$dir" '{ if (dir != "" && index($0, dir) == 1) $0 = substr($0, length(dir) + 1) } NF' \
+    <<<"$paths" | sort -u
+}
+
+run_files() {
+  # The run's OWN changed files, from the run's own transcript. `git status` in the workdir answers
+  # for the whole checkout, which parallel agents share — a relay reading it reported another
+  # worker's hunks as this run's work, apology included (live-caught 2026-08-11). Anything this
+  # cannot establish says `unknown` rather than falling back to the workdir: an empty list and an
+  # unanswerable one are different claims.
+  local directory="$1" vendor account workdir session transcript files count value started
+  vendor=$(jq -r '.vendor' "$directory/meta.json" 2>/dev/null)
+  account=$(jq -r '.account' "$directory/meta.json" 2>/dev/null)
+  workdir=$(jq -r '.workdir' "$directory/meta.json" 2>/dev/null)
+  started=$(jq -r '.started_at // 0' "$directory/meta.json" 2>/dev/null)
+  session=$(session_id "$directory")
+  if [ "$vendor" != claudeb ]; then
+    printf 'RUN-FILES: unknown (%s records no per-file tool calls in a transcript)\n' "$vendor"
+    return 0
+  fi
+  if ! transcript=$(session_transcript "$vendor" "$account" "$session"); then
+    printf 'RUN-FILES: unknown (no session transcript for %s)\n' "$session"
+    return 0
+  fi
+  if ! files=$(transcript_files "$transcript" "$workdir" "$started"); then
+    printf 'RUN-FILES: unknown (transcript unreadable)\n'
+    return 0
+  fi
+  if [ -z "$files" ]; then
+    # The count answers for editor tool calls only, and a bare `0` read as "changed nothing": an
+    # edit made through the shell — `sed -i`, a redirect, `mv` — is real and appears in no transcript
+    # as a tool call.
+    printf 'RUN-FILES: 0 (editor tool calls only; shell edits are not tracked)\n'
+    return 0
+  fi
+  count=$(grep -c '' <<<"$files")
+  printf 'RUN-FILES: %s\n' "$count"
+  while IFS= read -r value; do
+    printf 'RUN-FILE: %s\n' "$value"
+  done <<<"$files"
+}
+
 result_tail() {
   local directory="$1" vendor="$2" lines="$3"
   printf 'RESULT-TAIL:\n'
@@ -862,6 +942,7 @@ report_run() {
                else if (t < 999500) printf "%.0fk tok-eq", t / 1e3
                else printf "%.1fM tok-eq", t / 1e6 }')"
   fi
+  run_files "$directory"
   printf 'RESULT:\n'
   if [ "$vendor" = claudeb ]; then
     jq -r '.result // empty' "$directory/out" 2>/dev/null | tail -n 400

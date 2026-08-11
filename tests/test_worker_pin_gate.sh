@@ -13,6 +13,13 @@ export CLAUDEB_DIR="$WORK/store"
 unset WORKER_STATS_DIR
 GRANT="$CLAUDEB_DIR/worker-stats/pin-grants/pin"
 
+# The sandbox HOME comes FIRST, before a single assertion: both doors resolve the pin under $HOME
+# and read the pin lines standing in it, so anything asserted against the real $HOME is a test whose
+# outcome is Egor's live worker-model — passing here, flaking on a clean machine.
+export HOME="$WORK/home"
+mkdir -p "$HOME/.claude"
+printf 'worker=auto\nclaudeb_model=opus\n' >"$HOME/.claude/worker-model"
+
 asserts=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
@@ -118,6 +125,75 @@ do
   assert allowed "$(bash_event "$reading")"
 done
 
+# Quoted text is carried, not executed: a command whose ARGUMENT happens to spell a redirect or an
+# editor's name writes nothing, and denying it gated a read — live-caught on a compact focus prompt
+# reading "ladder pin > roles > pool" beside the word worker-model.
+for prose in \
+  "$HOME/.claude/hooks/compact-auto.sh arm claude-opus-5 'phase: ladder pin > roles > pool; worker-model rows next'" \
+  "$HOME/.claude/hooks/compact-auto.sh arm claude-opus-5 'we sed the worker-model rows later'" \
+  "git commit -m 'worker-model: pin > pool ordering'" \
+  "$HOME/.claude/hooks/compact-auto.sh arm claude-opus-5 'first > second
+worker-model wording > row ae'" \
+  "git commit . -m 'ladder pin > roles: worker-model'" \
+  "env cat ~/.claude/worker-model | grep -m1 'pin > roles'" \
+  "$HOME/.claude/hooks/compact-auto.sh arm claude-opus-5 'first > second
+
+worker-model wording > row ae'"
+do
+  assert allowed "$(bash_event "$prose")"
+done
+
+# An interpreter EXECUTES its quoted argument, so for those the quotes hide syntax rather than
+# carrying text: a strip that trusted them would open the widest hole in this door. An interpreter
+# named by PATH is the same interpreter, a double-quoted command substitution is executed too, and a
+# blank line is no reason for the scan to forget which quote it stands in.
+for hidden in \
+  "bash -c 'printf codex_profile=x > ~/.claude/worker-model'" \
+  "sh -c 'printf codex_profile=x >> ~/.claude/worker-model'" \
+  "eval \"printf 'codex_profile=x' > ~/.claude/worker-model\"" \
+  "echo '~/.claude/worker-model' | xargs -I{} sh -c 'printf codex_profile=x > {}'" \
+  "/bin/bash -c 'printf codex_profile=x > ~/.claude/worker-model'" \
+  "/usr/bin/env sh -c 'printf codex_profile=x > ~/.claude/worker-model'" \
+  'x="$(printf codex_profile=x > ~/.claude/worker-model)"' \
+  'x="`printf codex_profile=x > ~/.claude/worker-model`"' \
+  "printf 'a > b'
+
+bash -c 'printf codex_profile=x > ~/.claude/worker-model'" \
+  "printf 'a > b'
+printf 'codex_profile=x' > ~/.claude/worker-model" \
+  "ruby -e 'system(\"printf codex_profile=x > ~/.claude/worker-model\")'" \
+  "node -e 'require(\"child_process\").execSync(\"printf codex_profile=x > ~/.claude/worker-model\")'"
+do
+  assert denied "$(bash_event "$hidden")"
+done
+
+# The interpreter itself can be QUOTED or held in a variable, and then the strip erases the one word
+# this door reads it by: `"bash" -c '…'` and `$SHELL -c '…'` collapse to placeholders that match
+# neither the interpreter names nor a redirect, and the write went through where the raw command was
+# denied. A word in command position is an executable, so an unreadable one there falls back to raw.
+for veiled in \
+  "\"bash\" -c 'printf codex_profile=x > ~/.claude/worker-model'" \
+  "'/bin/bash' -c 'printf codex_profile=x > ~/.claude/worker-model'" \
+  "\$SHELL -c 'printf codex_profile=x > ~/.claude/worker-model'" \
+  "\${SH} -c 'printf codex_profile=x > ~/.claude/worker-model'" \
+  "\$(which bash) -c 'printf codex_profile=x > ~/.claude/worker-model'" \
+  "x=1; \"bash\" -c 'printf codex_profile=x > ~/.claude/worker-model'" \
+  "echo hi | \$SHELL -c 'printf codex_profile=x > ~/.claude/worker-model'"
+do
+  assert denied "$(bash_event "$veiled")"
+done
+
+# And the same fallback must not fire on a placeholder standing among ARGUMENTS, wherever the command
+# begins: that is the quoted prose this door already learned not to gate, and a separator earlier in
+# the line does not move a later argument into command position.
+for still_prose in \
+  "$HOME/.claude/hooks/compact-auto.sh arm claude-opus-5 'prose with > and worker-model'" \
+  "git log --oneline -3; git commit -m 'ladder pin > pool: worker-model'" \
+  "cat ~/.claude/worker-model | grep -m1 'pin > roles'"
+do
+  assert allowed "$(bash_event "$still_prose")"
+done
+
 # --- His words open it, in both directions ------------------------------------------------------
 # Asking for a pin and asking to remove one are the same hand on the same switch; the grant only
 # unblocks, so reading both costs nothing a stray mention could spend.
@@ -174,11 +250,8 @@ rm -f "$GRANT"
 . "$ROOT/share/worker-model.sh"
 accounts() { printf 'alpha\nbeta\n'; }
 never_disabled() { return 1; }
-REAL_PIN="$WORK/home/.claude/worker-model"
-mkdir -p "$(dirname "$REAL_PIN")"
-export HOME="$WORK/home"
+REAL_PIN="$PIN_FILE"
 export WORKER_PICK_CONFIG_FILE="$REAL_PIN"
-GRANT="$CLAUDEB_DIR/worker-stats/pin-grants/pin"
 
 # A session (CLAUDECODE set) is refused, and refused for clearing too — a pin he set is not a
 # session's to remove either.
