@@ -951,6 +951,7 @@ if [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; then
               | .key | capture("ephemeral_(?<n>[0-9]+)(?<u>[mh])_")?
               | ((.n | tonumber) * (if .u == "m" then 60 else 3600 end)))] as $v
             | {ttl: ($v | if length == 0 then 0 else min end)};
+          # The plain context-size core is claude-setup hooks/lib/context-size.jq; a fix there has to be re-checked against this superset.
           reduce (inputs | fromjson? | select(type == "object" and .isSidechain != true)) as $x (
             {la:0, pm:"", pg:-1, pa:0, lb:($seedb | ep // 0), ats:0, am:"-", au:"-", afk:"", bk:0,
              pbk:0, ots:0,
