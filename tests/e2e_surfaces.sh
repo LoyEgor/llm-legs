@@ -191,6 +191,7 @@ assert_isolated_menu_contracts() {
   local output
   output=$(hs -c '
 local path = "/Volumes/Work/Projects/llm-legs/hammerspoon/llm-limits.lua"
+local realJsonDecode = hs.json.decode
 local function styled(text, attributes)
   local value = { text = text, attributes = attributes }
   return setmetatable(value, {
@@ -207,7 +208,10 @@ local function loadModule(fixture, state)
     alert = { show = function(message) table.insert(state.alerts, message) end },
     execute = function() return true end,
     fs = { attributes = function() return nil end },
-    json = { decode = function() return fixture end },
+    json = { decode = function(contents)
+      if contents == "fixture" then return fixture end
+      return realJsonDecode(contents)
+    end },
     styledtext = { new = styled },
     task = {},
   }
@@ -226,14 +230,30 @@ local function loadModule(fixture, state)
     return task
   end
   local fakeIo = setmetatable({
-    open = function()
-      return { read = function() return "fixture" end, close = function() end }
+    open = function(filePath)
+      local contents = "fixture"
+      if filePath:match("/%.config/opencode%-go/profiles$") then
+        contents = state.profiles
+      elseif filePath:match("/worker%-stats/walls%.jsonl$") then
+        contents = state.walls
+      end
+      if contents == nil then return nil end
+      return {
+        read = function() return contents end,
+        lines = function() return tostring(contents):gmatch("[^\r\n]+") end,
+        close = function() end,
+      }
     end,
   }, { __index = io })
   local fakeOs = setmetatable({
     time = function(value)
       if value then return os.time(value) end
       return state.now
+    end,
+    getenv = function(name)
+      if name == "HOME" then return "/fixture-home" end
+      if name == "WORKER_STATS_DIR" or name == "CLAUDEB_DIR" then return nil end
+      return os.getenv(name)
     end,
   }, { __index = os })
   local env = setmetatable({ hs = mock, io = fakeIo, os = fakeOs }, { __index = _G })
@@ -357,6 +377,89 @@ openState.starts[1].running = false
 openState.now = openState.now + 5
 openGuard.menuItems()
 if #openState.starts ~= 2 then error("exited menu-open collector blocked the next open") end
+local wallState = {
+  starts = {}, alerts = {}, now = now,
+  profiles = "# roster\n-\nalt\nclear\nfar\nevyoxqy\nfresh\n",
+  walls = string.format(
+    "{\"side\":\"opencode\",\"account\":\"opencode-go\",\"bucket\":\"general\",\"detected_at\":%.2f,\"reset_at\":%.2f}\n" ..
+    "{\"side\":\"opencode\",\"account\":\"opencode-go-alt\",\"bucket\":\"general\",\"detected_at\":%.2f,\"reset_at\":%.2f,\"window\":\"weekly\"}\n" ..
+    "{\"side\":\"opencode\",\"account\":\"opencode-go-alt\",\"bucket\":\"general\",\"detected_at\":%.2f,\"reset_at\":%.2f,\"window\":\"5-hour\"}\n" ..
+    "{\"side\":\"opencode\",\"account\":\"opencode-go-alt\",\"bucket\":\"general\",\"detected_at\":%.2f,\"reset_at\":%.2f}\n" ..
+    "{\"side\":\"opencode\",\"account\":\"opencode-go-clear\",\"bucket\":\"general\",\"detected_at\":%.2f,\"reset_at\":%.2f,\"window\":\"monthly\"}\n" ..
+    "{\"side\":\"opencode\",\"account\":\"opencode-go-far\",\"bucket\":\"general\",\"detected_at\":%.2f,\"reset_at\":%.2f,\"window\":\"monthly\"}\n" ..
+    "{\"side\":\"opencode\",\"account\":\"opencode-go-evyoxqy\",\"bucket\":\"general\",\"detected_at\":%.2f,\"reset_at\":%.2f,\"window\":\"weekly\"}\n" ..
+    "{\"side\":\"opencode\",\"account\":\"opencode-go-fresh\",\"bucket\":\"general\",\"detected_at\":%.2f,\"reset_at\":%.2f,\"window\":\"weekly\"}\n" ..
+    "{\"side\":\"opencode\",\"account\":\"opencode-go-fresh\",\"bucket\":\"general\",\"detected_at\":%.2f,\"window\":\"weekly\"}\n",
+    -- review-bench writes fractional epochs; integer fixtures would hide the os.date crash.
+    now - 10 + 0.25, now + 86400 + 0.25, now - 10 + 0.25, now + 2 * 86400 + 0.25,
+    now - 20 + 0.25, now + 4 * 3600 + 0.25, now - 30 + 0.25, now + 86400 + 0.25,
+    now - 7200 + 0.25, now - 60 + 0.25,
+    now - 10 + 0.25, now + 19 * 86400 + 0.25, now - 3600 + 0.25, now + 3 * 86400 + 0.25,
+    now - 7200 + 0.25, now - 3600 + 0.25, now - 600 + 0.25),
+}
+local wallMenu = loadModule({ schema = 1, vendors = {} }, wallState).menuItems()
+local wallTitles = {}
+for _, item in ipairs(wallMenu) do table.insert(wallTitles, title(item)) end
+local wallText = table.concat(wallTitles, "\n")
+if not wallText:find("OpenCode Go", 1, true) then error("OpenCode Go section missing") end
+local openCodeAt
+for index, text in ipairs(wallTitles) do
+  if text == "OpenCode Go" then openCodeAt = index break end
+end
+-- An account is a name line plus the bucket rows indented under it, exactly like the vendors above.
+-- The search starts at the section header because a menu separator renders as a bare "-", which is
+-- also the name of the default OpenCode profile.
+local function wallBlock(name)
+  local block, collecting = {}, false
+  for index = openCodeAt + 1, #wallTitles do
+    local text = (wallTitles[index]:gsub("%s+$", ""))
+    if collecting then
+      if not text:match("^%s") then break end
+      table.insert(block, text)
+    elseif text == name or text:match("^" .. name:gsub("%W", "%%%0") .. "%s") then
+      collecting = true
+      table.insert(block, text)
+    end
+  end
+  return table.concat(block, "\n")
+end
+local weekdays = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" }
+local function resetColumn(stamp)
+  local text
+  if stamp - now >= 604800 then
+    text = os.date("%b %d", stamp)
+  elseif os.date("%Y-%m-%d", stamp) ~= os.date("%Y-%m-%d", now) then
+    text = weekdays[tonumber(os.date("%w", stamp)) + 1] .. os.date(" %H:%M", stamp)
+  else
+    text = os.date("%H:%M", stamp)
+  end
+  return string.format("%9s", text)
+end
+local expectedBlocks = {
+  { "-", "-\n        ?   ▓▓▓▓▓        " .. resetColumn(now + 86400) },
+  -- Two windows walled at once are two rows, in window order rather than in record order;
+  -- alt also carries an active legacy no-window record, which a named wall must silence.
+  { "alt", "alt\n        5h  ▓▓▓▓▓        " .. resetColumn(now + 4 * 3600)
+    .. "\n        wk  ▓▓▓▓▓        " .. resetColumn(now + 2 * 86400) },
+  { "clear", "clear\n            ░░░░░" },
+  -- The reader takes the recorded reset as review-bench capped it, however far out it reaches.
+  { "far", "far\n        mo  ▓▓▓▓▓        " .. resetColumn(now + 19 * 86400) },
+  { "evyoxqy", "evyoxqy  1h\n        wk  ▓▓▓▓▓        " .. resetColumn(now + 3 * 86400) },
+  -- An expired dated record must not mask the undated one recorded after it: the window still
+  -- stands on the 1h rule, and it prints no horizon rather than the reset that already passed.
+  { "fresh", "fresh  10m\n        wk  ▓▓▓▓▓        " .. string.format("%9s", "–") },
+}
+for _, case in ipairs(expectedBlocks) do
+  local rendered = wallBlock(case[1])
+  if rendered ~= case[2] then
+    error("OpenCode block " .. case[1] .. " rendered [" .. rendered .. "] not [" .. case[2] .. "]")
+  end
+end
+for _, case in ipairs(expectedBlocks) do
+  if wallBlock(case[1]):find("%%") then
+    error("OpenCode rows printed a usage percentage nobody measured: " .. wallText)
+  end
+end
 return "OK open-guard running=1->1 exited=1->2"
 ' 2>/dev/null) || fail "isolated Hammerspoon contract checks threw"
   [ "$output" = "OK open-guard running=1->1 exited=1->2" ] \
@@ -368,6 +471,10 @@ return "OK open-guard running=1->1 exited=1->2"
 pass "hs CLI reachable, Hammerspoon responding"
 assert_isolated_menu_contracts
 pass "isolated menu contracts: open-collect guard running 1->1, exited 1->2; completion re-rendered"
+if [ "${LLM_LIMITS_E2E_ISOLATED_ONLY:-0}" = 1 ]; then
+  pass "e2e isolated-only mode: live singleton and stores skipped"
+  exit 0
+fi
 # 2. Live module loaded and its data-read path (menuItems -> readLlmLimits) works.
 MENU_TXT=$(hs_menu)
 if grep -q '5h' <<<"$MENU_TXT"; then

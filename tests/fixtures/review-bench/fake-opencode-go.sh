@@ -63,7 +63,8 @@ if [[ -n $transient_file ]]; then
   fi
 fi
 if [[ -n ${OPENCODE_WALL_DEFAULT:-} && -z ${OPENCODE_GO_PROFILE:-} ]]; then
-  printf 'HTTP 429\n{"error":"usage limit reached"}\n' >&2
+  printf '%s\n' 'HTTP 429' \
+    '{"error":{"type":"GoUsageLimitError","message":"Weekly usage limit reached. Resets in 3 days.","metadata":{"limitName":"weekly"}}}' >&2
   exit 1
 fi
 if [[ -n ${OPENCODE_FIXTURE_STDERR:-} ]]; then

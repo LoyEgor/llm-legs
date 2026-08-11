@@ -90,7 +90,7 @@ ports=$(awk -v root="$root" -v top="$project_top" '
   # arguments — `node serve.js --dir /tmp/codex` is not codex. The cost of the anchor is a tool
   # whose own path carries a space, which is the same blind spot the claude check above has.
   function tool_cmd(pid) {
-    return (cmd[pid] ~ /^([^ \t]*\/)?(agy|opencode|opencode-go|grok|codex)([ \t]|$)/)
+    return (cmd[pid] ~ /^([^ \t]*\/)?(agy|opencode|opencode-go|codex)([ \t]|$)/)
   }
   function base_cmd(pid,   n, a, m, b) {
     n = split(cmd[pid], a, /[ \t]/); m = split(a[1], b, "/"); return b[m]

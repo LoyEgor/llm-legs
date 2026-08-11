@@ -1,11 +1,18 @@
+local home = os.getenv("HOME")
+local workerStatsDir = os.getenv("WORKER_STATS_DIR")
+  or (os.getenv("CLAUDEB_DIR") or home .. "/.claude-profiles/.claudeb") .. "/worker-stats"
+local WALL_STATE_FILE = "walls.jsonl"
+
 local M = {
-  cachePath = os.getenv("HOME") .. "/.llm-limits.json",
+  cachePath = home .. "/.llm-limits.json",
   collectorPath = "/Volumes/Work/Projects/llm-legs/llm-limits.sh",
   claudebCmd = "claudeb",
   codexbCmd = "codexb",
   geminibCmd = "geminib",
-  workerModelPath = os.getenv("HOME") .. "/.claude/worker-model",
-  workerPickPath = os.getenv("HOME") .. "/.local/bin/worker-pick",
+  workerModelPath = home .. "/.claude/worker-model",
+  workerPickPath = home .. "/.local/bin/worker-pick",
+  opencodeProfilesPath = home .. "/.config/opencode-go/profiles",
+  wallsPath = workerStatsDir .. "/" .. WALL_STATE_FILE,
   routingFailed = false,
   wallsLog = nil,
   onRefreshStateChanged = function() end,
@@ -232,12 +239,15 @@ local function usageBar(value)
   return string.rep("▓", filled) .. string.rep("░", 5 - filled)
 end
 
-local function rowTitle(account, label, bucket, gray, atLimit, barWarning)
+-- `columns` overrides the number and the reset a bucket would print, for a vendor that states
+-- neither: an empty column reads as "not measured", while "-" and "–" read as a reading taken.
+local function rowTitle(account, label, bucket, gray, atLimit, barWarning, columns)
   bucket = type(bucket) == "table" and bucket or {}
+  columns = columns or {}
   gray = gray or bucket.expired == true or resetIsPast(bucket.resets_at)
   local pct = tonumber(bucket.effective_pct)
-  local pctText = pct and string.format("%d%%", math.floor(pct + 0.5)) or "-"
-  local reset = formatResetTime(bucket.resets_at)
+  local pctText = columns.pct or (pct and string.format("%d%%", math.floor(pct + 0.5)) or "-")
+  local reset = columns.reset or formatResetTime(bucket.resets_at)
   local prefix = string.format("%-6s  %-2s  ", account or "", label)
   local bar = usageBar(pct)
   local suffix = string.format("  %4s  %9s", pctText, reset)
@@ -247,6 +257,118 @@ local function rowTitle(account, label, bucket, gray, atLimit, barWarning)
       .. infoTitle(suffix, false, gray, false)
   end
   return infoTitle(prefix .. bar .. suffix, false, gray, atLimit)
+end
+
+local function readOpenCodeProfiles()
+  local file = io.open(M.opencodeProfilesPath, "r")
+  if not file then return { "-" } end
+  local profiles = {}
+  for raw in file:lines() do
+    local line = raw:match("^%s*(.-)%s*$")
+    if line ~= "" and not line:match("^#") then table.insert(profiles, line) end
+  end
+  file:close()
+  return profiles
+end
+
+local function openCodeAccount(profile)
+  return profile == "-" and "opencode-go" or "opencode-go-" .. profile
+end
+
+local OPENCODE_WINDOW_MARKS = { ["5-hour"] = "5h", weekly = "wk", monthly = "mo" }
+local OPENCODE_WINDOW_ORDER = { "5h", "wk", "mo", "?" }
+
+-- Whether this window is still walled, and the horizon to print for it.
+-- A record the provider never dated says only that the account was walled a moment ago, so an
+-- older dated record whose reset has already passed must not mask a fresher undated one — and
+-- when the wall stands on that undated record alone it prints no horizon, since the expired one
+-- beside it would render as a reset in the past.
+local function windowStanding(group, now)
+  if not group then return false end
+  if group.reset_at and now <= group.reset_at then return true, group.reset_at end
+  local undated = group.undated_at
+  if not undated or (group.dated_at and group.dated_at > undated) then return false end
+  if now > undated + 3600 then return false end
+  return true, nil
+end
+
+-- One entry per account still walled: { detected_at = <newest record>, rows = { window, reset_at } }.
+-- review-bench caps a stated reset as it writes the record, so the recorded value is final here.
+local function readOpenCodeWalls()
+  local file = io.open(M.wallsPath, "r")
+  if not file then return {} end
+  local groups = {}
+  for raw in file:lines() do
+    local ok, row = pcall(hs.json.decode, raw)
+    -- review-bench writes fractional epochs; Lua 5.4's os.date rejects non-integers.
+    local detected = ok and type(row) == "table" and tonumber(row.detected_at) or nil
+    if detected then detected = math.floor(detected) end
+    if detected and row.side == "opencode" and row.bucket == "general"
+        and type(row.account) == "string" then
+      local mark = OPENCODE_WINDOW_MARKS[row.window] or "?"
+      groups[row.account] = groups[row.account] or {}
+      local group = groups[row.account][mark] or { detected_at = detected }
+      local reset = tonumber(row.reset_at)
+      if reset then
+        reset = math.floor(reset)
+        if not group.reset_at or reset > group.reset_at then group.reset_at = reset end
+        if not group.dated_at or detected > group.dated_at then group.dated_at = detected end
+      elseif not group.undated_at or detected > group.undated_at then
+        group.undated_at = detected
+      end
+      if detected > group.detected_at then group.detected_at = detected end
+      groups[row.account][mark] = group
+    end
+  end
+  file:close()
+
+  local active = {}
+  local now = os.time()
+  for account, marks in pairs(groups) do
+    local rows, newest
+    for _, mark in ipairs(OPENCODE_WINDOW_ORDER) do
+      local group = marks[mark]
+      local standing, reset = windowStanding(group, now)
+      -- "?" is a pre-window legacy record; beside a named wall it re-states the same 429.
+      if standing and mark == "?" and rows then standing = false end
+      if standing then
+        rows = rows or {}
+        table.insert(rows, { window = mark, reset_at = reset })
+        if not newest or group.detected_at > newest then newest = group.detected_at end
+      end
+    end
+    if rows then active[account] = { detected_at = newest, rows = rows } end
+  end
+  return active
+end
+
+local function appendOpenCode(menu)
+  local profiles = readOpenCodeProfiles()
+  if #profiles == 0 then return end
+  local walls = readOpenCodeWalls()
+  table.insert(menu, { title = infoTitle("OpenCode Go"), disabled = true })
+  for _, profile in ipairs(profiles) do
+    local wall = walls[openCodeAccount(profile)]
+    table.insert(menu, {
+      title = accountTitle(profile, wall and formatAccountAge(wall.detected_at), wall ~= nil),
+      disabled = true,
+    })
+    if wall then
+      for _, standing in ipairs(wall.rows) do
+        table.insert(menu, {
+          title = rowTitle("", standing.window,
+            { effective_pct = 100, resets_at = standing.reset_at },
+            false, true, false, { pct = "" }),
+          disabled = true,
+        })
+      end
+    else
+      table.insert(menu, {
+        title = rowTitle("", "", nil, false, false, false, { pct = "", reset = "" }),
+        disabled = true,
+      })
+    end
+  end
 end
 
 local function bucketAtLimit(bucket)
@@ -1241,6 +1363,7 @@ function M.menuItems()
       end
     end
 
+    appendOpenCode(menu)
     table.insert(menu, { title = "-" })
     refreshItems(menu)
     reportItem(menu)
@@ -1255,6 +1378,7 @@ function M.menuItems()
         disabled = true,
       })
     end
+    appendOpenCode(menu)
     refreshItems(menu)
     reportItem(menu)
   end

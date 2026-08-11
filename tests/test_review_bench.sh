@@ -348,6 +348,55 @@ assert not rb.wall_still_standing(time.time() - 7200, None, ttl=1)
 assert not rb.wall_still_standing(time.time() - 7200, time.time() - 60, ttl=86400)
 assert rb.clamped_reset_at(1000.0, 1000.0 + 99 * 86400) == 1000.0 + rb.WALL_MAX_TTL_S
 assert rb.clamped_reset_at(1000.0, "not a time") is None
+# The cap belongs to the window the provider named: a flat week turns a monthly wall into a date
+# that passes while the account is still walled, and stretches a 5-hour one over six days.
+assert rb.clamped_reset_at(1000.0, 1000.0 + 19 * 86400, "monthly") == 1000.0 + 19 * 86400
+assert rb.clamped_reset_at(1000.0, 1000.0 + 99 * 86400, "monthly") == 1000.0 + 32 * 86400
+assert rb.clamped_reset_at(1000.0, 1000.0 + 99 * 86400, "weekly") == 1000.0 + 8 * 86400
+assert rb.clamped_reset_at(1000.0, 1000.0 + 99 * 86400, "5-hour") == 1000.0 + 6 * 3600
+assert rb.clamped_reset_at(1000.0, 1000.0 + 99 * 86400, "plan") == 1000.0 + rb.WALL_MAX_TTL_S
+# The ceiling is applied once, where the record is written. A reader applying it again shortens a
+# wall recorded under a window ceiling the row no longer names, back into a date it outlives.
+unclamped_state = work / "unclamped-wall-state"
+unclamped_state.mkdir()
+unclamped_path = unclamped_state / rb.WALL_STATE_FILE
+far_reset = time.time() + 20 * 86400
+unclamped_path.write_text(json.dumps({
+    "side": "opencode", "account": "opencode-go-far", "bucket": "general",
+    "detected_at": time.time(), "reset_at": far_reset,
+}) + "\n")
+assert rb.read_wall_rows(unclamped_path)[
+    ("opencode", "opencode-go-far", "general")
+][1] == far_reset, "the reader re-clamped a recorded horizon"
+assert rb.recorded_reset_at("not a time") is None
+assert rb.recorded_reset_at(float("inf")) is None
+# The record schema lives once: both writers build their rows from the field list the menubar
+# reader is pinned against, and an absent optional field is absent rather than null.
+assert tuple(rb.wall_record(
+    side="opencode", account="a", bucket="general", detected_at=1.0,
+    reset_at=2.0, window="weekly",
+)) == rb.WALL_RECORD_FIELDS
+assert rb.wall_record(side="opencode", account="a", bucket="general", detected_at=1.0) == {
+    "side": "opencode", "account": "a", "bucket": "general", "detected_at": 1.0,
+}
+
+monthly_wall_state = work / "monthly-wall-state"
+monthly_wall_state.mkdir()
+os.environ["WORKER_STATS_DIR"] = str(monthly_wall_state)
+monthly_reset = time.time() + 19 * 86400
+rb.mark_walled("opencode", "opencode-go-far", reset_at=monthly_reset, window="monthly")
+rb.mark_walled("agy", "work", "agy-pro", reset_at=monthly_reset)
+monthly_row, windowless_row = [
+    json.loads(line)
+    for line in (monthly_wall_state / rb.WALL_STATE_FILE).read_text().splitlines()
+]
+del os.environ["WORKER_STATS_DIR"]
+assert monthly_row["reset_at"] == monthly_reset, monthly_row
+# A wall with no window keeps the flat cap exactly as it was, whichever side recorded it.
+assert windowless_row["reset_at"] == windowless_row["detected_at"] + rb.WALL_MAX_TTL_S, \
+    windowless_row
+reread = rb.read_wall_rows(monthly_wall_state / rb.WALL_STATE_FILE)
+assert reread[("opencode", "opencode-go-far", "general")][1] == monthly_reset, reread
 assert rb.wall_reset_at("Weekly usage limit reached. Resets in 3 days.") > time.time() + 2 * 86400
 assert rb.wall_reset_at("Resets in 45 minutes") < time.time() + 3600
 assert rb.wall_reset_at("HTTP 429 rate limited") is None
@@ -440,7 +489,7 @@ finally:
     rb.read_wall_rows = real_read_rows
 assert late_path.read_text() == late_rows + json.dumps(late_wall) + "\n"
 assert rb.read_wall_rows(late_path) == {
-    ("agy", "late", "agy-pro"): (late_wall["detected_at"], None)
+    ("agy", "late", "agy-pro"): (late_wall["detected_at"], None, None)
 }
 
 # An interrupted waiter must take its queue entry with it; left behind it is the permanent head
@@ -548,8 +597,8 @@ assert rb.human_cell_name("agy-flash35-low-skill") == "gem-flash35-low"
 retired_scheme = rb.report_name_scheme(["agy-flash36-medium-skill", "agy-flash36-low-skill"])
 assert rb.human_cell_name("agy-flash36-medium-skill", retired_scheme) == "gem-flash36-med"
 assert rb.human_cell_name("agy-flash36-low-skill", retired_scheme) == "gem-flash36-low"
-# xAI's own grok next to the pool's: the newcomer takes the effort that separates them, and the
-# pool cell keeps the name it has on every other surface.
+# The standalone xAI cell a stored run still holds, beside the pool's own grok: the retired
+# spelling no longer parses at all, and it must still name itself without respelling the pool cell.
 xai_scheme = rb.report_name_scheme(["oc-grok45-low", "grok-low"])
 assert rb.human_cell_name("oc-grok45-low", xai_scheme) == "grok"
 assert rb.human_cell_name("grok-low", xai_scheme) == "grok-low"
@@ -570,7 +619,7 @@ def rendered_tiers_table():
 
 tiers_table_before = rendered_tiers_table()
 newcomer_rows = [
-    {"rater": spec, "side": rb.parse_rater(spec)["side"], "duration_ms": 1000,
+    {"rater": spec, "side": rb.rater_side(spec) or "grok", "duration_ms": 1000,
      "findings": 0, "exit_code": 0}
     for spec in ("grok-low", "opus-high-skill", "oc-grok45-low", "opus-high")
 ]
@@ -863,6 +912,23 @@ assert "sol-low (throttled)" in reason_report, reason_report
 # Nothing recognisable in the text leaves the exit code as the only fact left to print, and a
 # cell that said nothing at all is the same case: naming the silence discards that last fact.
 assert "kimi (exit 3)" in reason_report, reason_report
+wall_reset = time.time() + 2 * 86400
+wall_label = "opencode alt: weekly wall, resets " + \
+    rb.datetime.fromtimestamp(wall_reset).strftime("%a %H:%M")
+pool_wall_meta = dict(
+    duration_meta,
+    raters=["oc-kimik3"],
+    rater_runs=[{
+        "rater": "oc-kimik3", "side": "opencode", "exit_code": 1, "errored": True,
+        "stderr": "the pool has no opencode account left to run on\n" + wall_label,
+    }],
+)
+pool_wall_report = "\n".join(rb.report_lines(duration_dir, pool_wall_meta))
+assert "kimi (pool empty)" in pool_wall_report, pool_wall_report
+assert any(
+    line.startswith("walls:") and line.endswith(wall_label)
+    for line in pool_wall_report.splitlines()
+), pool_wall_report
 silent_meta = dict(
     duration_meta,
     raters=["sol-low"],
@@ -1536,16 +1602,15 @@ for bare_sonnet in ("sonnet-low", "sonnet-medium", "sonnet-high", "sonnet-xhigh"
     else:
         raise AssertionError(f"accepted a bare sonnet rater: {bare_sonnet}")
 rb.refuse_retired_cells([rb.parse_rater(spec) for spec in ("opus-medium", "opus-high")])
-standalone_grok_reason = (
-    "the standalone grok account is disconnected; grok reviews run as OpenCode cells "
-    "(oc-grok45-*); the plumbing stays for a future account"
-)
-try:
-    rb.refuse_retired_cells([rb.parse_rater("grok-low")])
-except RuntimeError as exc:
-    assert str(exc) == standalone_grok_reason, exc
-else:
-    raise AssertionError("accepted a standalone grok rater")
+# The standalone grok account is gone for good, and with it the side: the spelling is refused by
+# the grammar like any other unknown cell, with no bespoke message promising a return.
+for standalone_grok_spec in ("grok-low", "grok-medium", "grok-high"):
+    try:
+        rb.parse_rater(standalone_grok_spec)
+    except ValueError as exc:
+        assert "invalid rater" in str(exc) and "standalone" not in str(exc), exc
+    else:
+        raise AssertionError(f"accepted a standalone grok rater: {standalone_grok_spec}")
 rb.refuse_retired_cells([rb.parse_rater("oc-grok45-low")])
 standalone_grok = subprocess.run(
     [sys.argv[1], "run", "HEAD", "--repo", str(repo), "--raters", "grok-low"],
@@ -1553,7 +1618,37 @@ standalone_grok = subprocess.run(
     capture_output=True,
 )
 assert standalone_grok.returncode != 0, standalone_grok
-assert standalone_grok_reason in standalone_grok.stderr, standalone_grok.stderr
+assert "invalid rater 'grok-low'" in standalone_grok.stderr, standalone_grok.stderr
+assert "grok" not in rb.SIDE_RUNNERS and "grok" not in rb.SIDE_WALL, rb.SIDE_RUNNERS
+assert "grok" not in rb.GATEWAY_SIDES, rb.GATEWAY_SIDES
+# The runs recorded while that side existed outlive it: their specs no longer parse, so every
+# reader of the corpus has to answer leniently instead of refusing the row — a denominator that
+# dropped them would reprice every cell measured beside them.
+assert rb.rater_side("grok-low") is None
+assert rb.rater_family("grok-low#2") == "grok-low"
+assert rb.review_counts([{"rater": "grok-low"}, {"rater": "grok-low#2"}])["grok-low"] == 2
+assert rb.rater_specs_counter(["grok-low", "opus-medium"])["grok-low"] == 1
+assert rb.legacy_tier_match(rb.rater_specs_counter(["grok-low"])) is None
+assert rb.collapse_rater_attempts(["grok-low", "grok-low#2"]) == ["grok-low x2"]
+assert rb.human_cell_name("grok-low") == "grok-low"
+# Recording is a reader too: the run is already on disk, and nothing about adjudicating it asks
+# whether the cell could be launched again.
+assert rb.recorded_rater("grok-low")["model"] == "grok"
+assert rb.recorded_rater("grok-low")["effort"] == "low"
+assert rb.recorded_rater("grok-low")["side"] is None
+assert rb.recorded_rater("grok-low#2")["model"] == "grok"
+assert rb.recorded_rater("agy-flash-medium-skill")["model"] == "agy-flash36"
+# A spec that still parses keeps every field parse_rater gives it.
+assert rb.recorded_rater("opus-medium") == rb.parse_rater("opus-medium")
+# Leniency is for a retired cell, not for a string that is no cell name at all: that one gets
+# parse_rater's own refusal, which names what a spec should look like.
+for unnamed_rater in ("", "\n"):
+    unnamed_refusal = None
+    try:
+        rb.recorded_rater(unnamed_rater)
+    except ValueError as exc:
+        unnamed_refusal = str(exc)
+    assert unnamed_refusal, f"{unnamed_rater!r} was read as a cell"
 # The cheapest way to run a refused model would be to ask for it as the verifier.
 for dead_verifier in ("oc-glm52", "oc-kimik27code"):
     try:
@@ -1998,7 +2093,7 @@ assert walled_available["claude"] is False, walled_available
 assert walled_available["codex"] is False and walled_available["agy"] is False
 assert walled_available["claude_account"] is None
 # The sides the pool does not route are unaffected: a walled vendor is not a walled bench.
-assert walled_available["opencode"] is True and walled_available["grok"] is True
+assert walled_available["opencode"] is True
 
 # Each vendor is asked for itself: a vendor with nothing selectable must not read as available
 # on another vendor's answer, which is how a fully walled Gemini used to pass for affordable.
@@ -2628,8 +2723,6 @@ assert rb.wall_bucket(rb.parse_rater("fable-medium")) == "fable"
 assert rb.wall_bucket(rb.parse_rater("opus-medium")) == "general"
 clear_walls()
 
-assert rb.SIDE_WALL["grok"](1, "", "json parse error at char 4290") is False
-assert rb.SIDE_WALL["grok"](1, "", "HTTP 429 rate limit") is True
 codex_limit_content = json.dumps({
     "type": "item.completed",
     "item": {"type": "agent_message", "text": json.dumps([{
@@ -2686,6 +2779,10 @@ failover_rater, failover_account, failover_result = rb.run_rater_task(
 assert failover_rater == opencode_rater and failover_account == "opencode-go-second" and \
     failover_result[0] == 0 and rb.is_walled("opencode", "opencode-go") and \
     failover_profile_capture.read_text().splitlines() == ["unset", "second"]
+fixture_wall_row = json.loads((rb.state_dir() / rb.WALL_STATE_FILE).read_text().splitlines()[-1])
+assert fixture_wall_row["bucket"] == "general" and fixture_wall_row["window"] == "weekly"
+assert fixture_wall_row["reset_at"] > time.time() + 2 * 86400, fixture_wall_row
+assert rb.first_free_account("opencode", ["opencode-go"], set(), 0, "general") is None
 del os.environ["OPENCODE_WALL_DEFAULT"]
 
 verifier_profile_capture = work / "opencode-verifier-profile"
@@ -2717,6 +2814,8 @@ _, exhausted_account, exhausted_result = rb.run_rater_task(
     opencode_rater, repo, sha, "", opencode_run, "fixture commit diff"
 )
 assert exhausted_account is None and "no opencode account left" in exhausted_result[3]
+assert "opencode default: weekly wall, resets " in exhausted_result[3], exhausted_result
+assert "opencode second: plan wall" in exhausted_result[3], exhausted_result
 del os.environ["OPENCODE_FIXTURE_RC"]
 del os.environ["OPENCODE_FIXTURE_STDERR"]
 clear_walls()
@@ -3713,6 +3812,10 @@ del os.environ["OPENCODE_FIXTURE_RC"]
 del os.environ["OPENCODE_FIXTURE_STDERR"]
 assert rb.opencode_usage_wall("usage limit reached")
 assert rb.opencode_usage_wall('{"type":"GoUsageLimitError","limitName":"weekly"}')
+assert rb.opencode_wall_window('{"metadata":{"limitName":"fiveHour"}}') == "5-hour"
+assert rb.opencode_wall_window('{"metadata":{"limitName":"weekly"}}') == "weekly"
+assert rb.opencode_wall_window('{"metadata":{"limitName":"monthly"}}') == "monthly"
+assert rb.opencode_wall_window('{"metadata":{"limitName":"plan"}}') is None
 assert not rb.opencode_usage_wall("HTTP 503 failover_exhausted")
 # A bare status code is as much the provider throttling the model as the plan running out, and
 # only one of those readings can cost an account that still has its whole quota.
@@ -4535,7 +4638,8 @@ os.environ["OPENCODE_CAPTURE_PROFILE"] = str(dated_profile_capture)
 os.environ["OPENCODE_FIXTURE_RC"] = "1"
 os.environ["OPENCODE_FIXTURE_STDERR"] = (
     'HTTP 429 {"type":"error","error":{"type":"GoUsageLimitError",'
-    '"message":"Weekly usage limit reached. Resets in 3 days."}}'
+    '"message":"Weekly usage limit reached. Resets in 3 days.",'
+    '"metadata":{"limitName":"weekly"}}}'
 )
 dated_run = work / "opencode-dated-run"
 dated_run.mkdir()
@@ -4546,6 +4650,7 @@ assert rb.is_walled("opencode", "opencode-go")
 dated_key = ("opencode", "opencode-go", "general")
 dated_rows = rb.read_wall_rows(rb.state_dir() / rb.WALL_STATE_FILE)
 assert dated_rows[dated_key][1] > time.time() + 2 * 86400, dated_rows
+assert dated_rows[dated_key][2] == "weekly", dated_rows
 os.environ["REVIEW_BENCH_WALL_TTL_S"] = "1"
 try:
     assert rb.is_walled("opencode", "opencode-go")
@@ -5066,6 +5171,202 @@ for trial in range(80):
         racer.join(5)
     assert not stranded, f"trial {trial}: the second slot stayed idle while one cell ran"
 
+# --- a fully walled OpenCode pool leaves the panel before its cells launch -----------------------
+# A walled Claude or Codex pool takes its cells off the panel, while OpenCode's availability was a
+# bare True: every OpenCode cell of every panel launched into a pool whose plans were all spent,
+# died on `no_account_left` and was reported as errored — 269 of them over three days
+# (Egor, 2026-08-04..10). The clock is frozen because a wall standing only until a real date would
+# make this pass until that date and then stop.
+import datetime as _wall_dt
+
+walled_home = work / "opencode-walled-home"
+(walled_home / ".config/opencode-go").mkdir(parents=True)
+walled_profiles = walled_home / ".config/opencode-go/profiles"
+walled_profiles.write_text("alt\nnew\n")
+walled_store = work / "opencode-walled-claudeb"
+walled_state = walled_store / "worker-stats"
+walled_state.mkdir(parents=True)
+walled_now = _wall_dt.datetime(2026, 8, 11, 12, 0).timestamp()
+walled_resets = {"alt": _wall_dt.datetime(2026, 8, 29, 9, 0).timestamp(),
+                 "new": _wall_dt.datetime(2026, 8, 31, 9, 0).timestamp()}
+walled_labels = "opencode pool walled: alt monthly resets Aug 29, new monthly resets Aug 31"
+walled_panel_cells = []
+
+
+def write_opencode_walls(accounts, detected=None, resets=None):
+    (walled_state / rb.WALL_STATE_FILE).write_text("".join(
+        json.dumps({
+            "side": "opencode", "account": f"opencode-go-{name}", "bucket": "general",
+            "detected_at": walled_now - 3600 if detected is None else detected,
+            "reset_at": (resets or walled_resets)[name], "window": "monthly",
+        }) + "\n"
+        for name in accounts
+    ))
+
+
+def walled_panel_runner(rater, repo_path, commit, focus, run_dir, diff, account):
+    walled_panel_cells.append((rater["spec"], account))
+    return 0, 1, "NO FINDINGS", "", []
+
+
+def walled_panel_run(raters, verify=None):
+    """The meta document of the run this call produced, whatever the store already held.
+
+    A run is named for the second it started in, and these are fast enough to share one.
+    """
+    walled_run_offset[0] += 60
+    seen = {path.name for path in (walled_state / "benches").iterdir()}
+    with contextlib.redirect_stdout(io.StringIO()) as captured, \
+            contextlib.redirect_stderr(io.StringIO()):
+        rc = rb.cmd_run(argparse.Namespace(
+            repo=str(pin_repo), commitish=pin_sha, raters=raters,
+            leg=False, verify=verify, auto=None, focus=None,
+        ))
+    fresh = [path for path in (walled_state / "benches").iterdir() if path.name not in seen]
+    assert rc == 0 and len(fresh) == 1, (rc, fresh)
+    return json.loads((fresh[0] / "meta.json").read_text()), captured.getvalue()
+
+
+walled_run_offset = [0]
+walled_previous_home = os.environ["HOME"]
+walled_previous_runners = dict(rb.SIDE_RUNNERS)
+walled_previous_staleness = rb.check_limits_staleness
+walled_real_utc_now = rb.utc_now
+walled_real_time = time.time
+rb.utc_now = lambda: walled_real_utc_now() + _wall_dt.timedelta(seconds=walled_run_offset[0])
+os.environ["HOME"] = str(walled_home)
+os.environ.pop("WORKER_STATS_DIR", None)
+os.environ["CLAUDEB_DIR"] = str(walled_store)
+os.environ["REVIEW_BENCH_WORKER_PICK_BIN"] = str(fixtures / "fake-worker-pick.sh")
+os.environ["WORKER_PICK_FAKE_ACCOUNTS"] = "wk1 wk2"
+for walled_side in rb.SIDE_RUNNERS:
+    rb.SIDE_RUNNERS[walled_side] = walled_panel_runner
+rb.check_limits_staleness = lambda account: False
+rb._SIDE_ROSTER.clear()
+time.time = lambda: walled_now
+try:
+    (walled_state / "benches").mkdir()
+    write_opencode_walls(("alt", "new"))
+    assert rb.opencode_pool_free() is False
+    assert rb.pool_account("opencode", set()) is None
+    walled_affordable = rb.affordability()
+    assert walled_affordable["opencode"] is False, walled_affordable
+    assert walled_affordable["codex"] is True, walled_affordable
+    assert rb.cell_available(walled_affordable, rb.parse_rater("oc-kimik3")) is False
+    # Whether to wait or to add an account is a question only the reset date answers, so the
+    # skipped line carries it; a side with no wall record keeps the pool's own wording.
+    assert rb.unaffordable_reason("opencode") == walled_labels, rb.unaffordable_reason("opencode")
+    assert rb.unaffordable_reason("claude") == "claude side is unaffordable"
+
+    walled_mixed_meta, walled_mixed_output = walled_panel_run("oc-kimik3 x2,sol-low")
+    assert f"skipped oc-kimik3: {walled_labels}" in walled_mixed_output, walled_mixed_output
+    assert f"skipped oc-kimik3#2: {walled_labels}" in walled_mixed_output, walled_mixed_output
+    # The hole the wall left is carried in the meta, or a panel that lost its whole OpenCode leg
+    # reads as a complete run to every surface that reads one back.
+    assert walled_mixed_meta["raters"] == ["sol-low", "oc-kimik3", "oc-kimik3#2"], \
+        walled_mixed_meta
+    assert walled_mixed_meta["completed_raters"] == ["sol-low"], walled_mixed_meta
+    assert [row["rater"] for row in walled_mixed_meta["rater_runs"]] == ["sol-low"], \
+        walled_mixed_meta["rater_runs"]
+    assert [spec for spec, _ in walled_panel_cells] == ["sol-low"], walled_panel_cells
+    walled_mixed_report = "\n".join(rb.report_lines(
+        walled_state / "benches" / walled_mixed_meta["run_id"], walled_mixed_meta
+    ))
+    assert any(line.startswith("not run:") and "kimi" in line
+               for line in walled_mixed_report.splitlines()), walled_mixed_report
+
+    # A tier is a cell list handed to this same path by cmd_review, so a tier whose OpenCode cells
+    # all drop runs the rest of itself rather than refusing whole.
+    walled_panel_cells.clear()
+    walled_tier_cells = ",".join(rb.REVIEW_TIERS["T1"]["cells"])
+    walled_tier_expected = [
+        rater["spec"] for rater in rb.parse_raters(walled_tier_cells)
+        if rater["side"] != "opencode"
+    ]
+    walled_tier_dropped = [
+        rater["spec"] for rater in rb.parse_raters(walled_tier_cells)
+        if rater["side"] == "opencode"
+    ]
+    walled_tier_meta, _ = walled_panel_run(walled_tier_cells)
+    assert walled_tier_expected and \
+        walled_tier_meta["raters"] == walled_tier_expected + walled_tier_dropped, \
+        walled_tier_meta
+    assert walled_tier_meta["completed_raters"] == walled_tier_expected, walled_tier_meta
+
+    # A panel of nothing but OpenCode cells has nowhere to run, and the refusal names the wall
+    # rather than sending the reader looking for a fault in the request.
+    walled_refusal = ""
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            rb.cmd_run(argparse.Namespace(
+                repo=str(pin_repo), commitish=pin_sha, raters="oc-kimik3 x2,oc-dsv4flash",
+                leg=False, verify=None, auto=None, focus=None,
+            ))
+    except RuntimeError as exc:
+        walled_refusal = str(exc)
+    assert walled_refusal == f"no affordable requested raters: {walled_labels}", walled_refusal
+
+    # The verifier is an OpenCode model: asked for where the pool cannot staff it and no agy cell
+    # leads its chain off the gateway, the run says so instead of keeping every claim unchecked.
+    walled_verify_refusal = ""
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            rb.cmd_run(argparse.Namespace(
+                repo=str(pin_repo), commitish=pin_sha, raters="oc-kimik3,sol-low",
+                leg=False, verify="oc-dsv4flash", auto=None, focus=None,
+            ))
+    except RuntimeError as exc:
+        walled_verify_refusal = str(exc)
+    assert walled_verify_refusal.endswith(f"the verifier reaches — {walled_labels}"), \
+        walled_verify_refusal
+    # An agy cell's chain leads with Gemini's own transport, so the same walled pool leaves its
+    # verifier configured — the side degrades onto that link exactly as it does mid-run.
+    walled_agy_meta, _ = walled_panel_run("agy-flash36-medium-skill")
+    assert walled_agy_meta["verifier"] == rb.OPENCODE_VERIFIER, walled_agy_meta
+    # Asked for by name over that same panel, it is configured rather than refused: a cell the
+    # pool staffed is the account the verifier runs on, so there is no second reach to test.
+    walled_agy_asked, _ = walled_panel_run("agy-flash36-medium-skill", verify="oc-dsv4flash")
+    assert walled_agy_asked["verifier"] == rb.verifier_model("oc-dsv4flash"), walled_agy_asked
+
+    # A pool the caller emptied by hand reads exactly like one nobody ever staffed, and the
+    # reader spends the wait adding accounts that were there all along.
+    os.environ["REVIEW_BENCH_EXCLUDE_OPENCODE"] = "opencode-go-new"
+    assert rb.unaffordable_reason("opencode") == \
+        walled_labels + "; excluded by REVIEW_BENCH_EXCLUDE_OPENCODE: opencode-go-new", \
+        rb.unaffordable_reason("opencode")
+    assert rb.unaffordable_reason("claude") == "claude side is unaffordable"
+    del os.environ["REVIEW_BENCH_EXCLUDE_OPENCODE"]
+
+    # One account walled is not a walled pool: the cells run on what is left.
+    walled_panel_cells.clear()
+    write_opencode_walls(("alt",))
+    assert rb.opencode_pool_free() is True
+    walled_partial_meta, _ = walled_panel_run("oc-kimik3")
+    assert walled_partial_meta["raters"] == ["oc-kimik3"], walled_partial_meta
+    assert walled_panel_cells == [("oc-kimik3", "opencode-go-new")], walled_panel_cells
+
+    # Recovery is passive: nothing sweeps the record, so a wall whose reset has passed must not
+    # suppress the pool, and a fresh account restores it with the standing walls left in place.
+    write_opencode_walls(
+        ("alt", "new"), detected=walled_now - 40 * 86400,
+        resets={"alt": walled_now - 86400, "new": walled_now - 86400},
+    )
+    assert rb.opencode_pool_free() is True
+    assert rb.affordability()["opencode"] is True
+    assert rb.unaffordable_reason("opencode") == "opencode side is unaffordable"
+    write_opencode_walls(("alt", "new"))
+    assert rb.opencode_pool_free() is False
+    walled_profiles.write_text("alt\nnew\nevyoxqy\n")
+    assert rb.opencode_pool_free() is True, "a fresh account left the pool reading as walled"
+finally:
+    time.time = walled_real_time
+    rb.utc_now = walled_real_utc_now
+    os.environ["HOME"] = walled_previous_home
+    rb.SIDE_RUNNERS.update(walled_previous_runners)
+    rb.check_limits_staleness = walled_previous_staleness
+    del os.environ["WORKER_PICK_FAKE_ACCOUNTS"], os.environ["REVIEW_BENCH_WORKER_PICK_BIN"]
+    rb._SIDE_ROSTER.clear()
+
 model_store = work / "model-claudeb"
 model_state = model_store / "worker-stats"
 os.environ.pop("WORKER_STATS_DIR", None)
@@ -5092,7 +5393,7 @@ for side in rb.SIDE_RUNNERS:
     rb.SIDE_RUNNERS[side] = tier_runner
 rb.pool_account = lambda side, excluded, slot=0, bucket="general": "fixture"
 rb.affordability = lambda: {
-    "claude": True, "codex": True, "agy": True, "grok": True, "opencode": True,
+    "claude": True, "codex": True, "agy": True, "opencode": True,
     "claude_account": "fixture",
 }
 rb.check_limits_staleness = lambda account: False
@@ -5225,7 +5526,7 @@ def progress_capture_runner(rater, repo_path, commit, focus, run_dir, diff, acco
 
 rb.SIDE_RUNNERS["codex"] = progress_capture_runner
 rb.affordability = lambda: {
-    "claude": False, "codex": True, "agy": True, "grok": True, "opencode": True,
+    "claude": False, "codex": True, "agy": True, "opencode": True,
     "claude_account": None,
 }
 # time.time() is shifted for this one call so the epoch's origin is provable: cmd_run's start
@@ -5279,7 +5580,7 @@ assert captured_progress[1]["tier"] == "T2" and captured_progress[1]["max"] is T
     captured_progress[1]
 rb.SIDE_RUNNERS["codex"] = tier_runner
 rb.affordability = lambda: {
-    "claude": True, "codex": True, "agy": True, "grok": True, "opencode": True,
+    "claude": True, "codex": True, "agy": True, "opencode": True,
     "claude_account": "fixture",
 }
 
@@ -5507,6 +5808,22 @@ assert "--paths matched nothing" in scope_refusals["missing"], scope_refusals
 # to review the commit instead answers a question nobody asked.
 assert "no changes under the given paths" in scope_refusals["unchanged"], scope_refusals
 assert "working tree matches HEAD" not in scope_refusals["unchanged"], scope_refusals
+
+# A repeated --paths widens the scope. argparse's default store kept only the last flag's list,
+# so a review spelled one flag per file silently read one file of fifteen and reported itself
+# exactly like a full run — the receipt was the only thing that knew.
+repeated_paths = {}
+repeated_real = {"review": rb.cmd_review, "run": rb.cmd_run}
+rb.cmd_review = lambda args: repeated_paths.__setitem__("review", args.paths)
+rb.cmd_run = lambda args: repeated_paths.__setitem__("run", args.paths)
+repeated_argv = sys.argv
+for repeated_cmd in ("review", "run"):
+    sys.argv = ["review-bench", repeated_cmd, "--worktree", "--tier", "T0",
+                "--paths", "alpha.txt", "beta.txt", "--paths", "gamma.txt"]
+    rb.main()
+    assert repeated_paths[repeated_cmd] == ["alpha.txt", "beta.txt", "gamma.txt"], repeated_paths
+sys.argv = repeated_argv
+rb.cmd_review, rb.cmd_run = repeated_real["review"], repeated_real["run"]
 
 scope_store = work / "scope-run-claudeb"
 os.environ["CLAUDEB_DIR"] = str(scope_store)
@@ -6301,7 +6618,7 @@ def dispatcher_repeat_account(side, excluded, slot=0, bucket="general"):
 rb.SIDE_RUNNERS["codex"] = dispatcher_repeat_runner
 rb.pool_account = dispatcher_repeat_account
 rb.affordability = lambda: {
-    "claude": False, "codex": True, "agy": True, "grok": True, "opencode": True,
+    "claude": False, "codex": True, "agy": True, "opencode": True,
     "claude_account": None,
 }
 repeat_rc = rb.cmd_run(argparse.Namespace(
@@ -6449,6 +6766,38 @@ assert not (no_corpus_dir / "verdicts.jsonl").exists(), "a verdict file was left
 no_corpus_receipt = json.loads((no_corpus_dir / rb.REPORT_RECEIPT).read_text())
 assert no_corpus_receipt["confirmed_by_severity"] == {"P1": 1, "P2": 0, "P3": 0}, no_corpus_receipt
 assert no_corpus_receipt["confirmed"] == 1, no_corpus_receipt
+
+# A run recorded while the standalone grok side still existed outlives it, and its spec no longer
+# parses: refusing it here strands the whole run, findings and all, from ever being adjudicated.
+retired_side_store = work / "retired-side-claudeb"
+retired_side_dir = retired_side_store / "worker-stats" / "benches" / "retired-side-fixture"
+retired_side_dir.mkdir(parents=True)
+os.environ["CLAUDEB_DIR"] = str(retired_side_store)
+(retired_side_dir / "meta.json").write_text(json.dumps({
+    "run_id": "retired-side-fixture", "commit": pin_sha, "repo": str(pin_repo),
+    "raters": ["grok-low"], "completed_raters": ["grok-low"],
+    "rater_runs": [{"rater": "grok-low", "exit_code": 0, "findings": 1}],
+}) + "\n")
+rb.write_jsonl(retired_side_dir / "findings-grok-low.jsonl", [
+    {"file": "a.py", "line": 1, "severity": "P2", "summary": "real"},
+])
+retired_side_verdicts = work / "retired-side-verdicts.jsonl"
+rb.write_jsonl(retired_side_verdicts, [
+    {"rater": "grok-low", "idx": 0, "verdict": "confirmed"},
+])
+retired_side_stdout = io.StringIO()
+with contextlib.redirect_stdout(retired_side_stdout):
+    assert rb.cmd_record(argparse.Namespace(
+        run_id="retired-side-fixture", verdicts=str(retired_side_verdicts),
+    )) == 0
+retired_side_row = next(
+    row for row in rb.read_jsonl(retired_side_store / "worker-stats" / "reviews.jsonl")
+    if row["run_id"] == "retired-side-fixture"
+)
+assert (retired_side_row["rater_model"], retired_side_row["rater_effort"]) == ("grok", "low"), \
+    retired_side_row
+assert retired_side_row["confirmed"] == 1, retired_side_row
+os.environ["CLAUDEB_DIR"] = str(repeat_store)
 no_corpus_ref = {"run_id": "no-corpus-fixture", "commit": pin_sha}
 assert rb.reported_severities(no_corpus_ref) == {"P1": 1, "P2": 0, "P3": 0}
 # A run nobody triaged has priced nothing, and neither has one that does not exist.
@@ -7654,7 +8003,7 @@ for side in rb.SIDE_RUNNERS:
     rb.SIDE_RUNNERS[side] = range_run_runner
 rb.pool_account = lambda side, excluded, slot=0, bucket="general": "fixture"
 rb.affordability = lambda: {
-    "claude": True, "codex": True, "agy": True, "grok": True, "opencode": True,
+    "claude": True, "codex": True, "agy": True, "opencode": True,
     "claude_account": "fixture",
 }
 os.environ.pop("WORKER_STATS_DIR", None)
@@ -7716,7 +8065,7 @@ for side in rb.SIDE_RUNNERS:
     rb.SIDE_RUNNERS[side] = lens_run_runner
 rb.pool_account = lambda side, excluded, slot=0, bucket="general": "fixture"
 rb.affordability = lambda: {
-    "claude": True, "codex": True, "agy": True, "grok": True, "opencode": True,
+    "claude": True, "codex": True, "agy": True, "opencode": True,
     "claude_account": "fixture",
 }
 with contextlib.redirect_stdout(io.StringIO()) as lens_tier_out:
@@ -8347,8 +8696,36 @@ assert rb.apply_gateway_cooldown(cooldown_raters) == (cooldown_raters, [])
 # retry DIAGNOSTICS forbids — with an expiry that would then call the side recovered.
 assert rb.gateway_outage("opencode", 1, "HTTP 503 Router.Unavailable")
 assert not rb.gateway_outage("opencode", 1, "GoUsageLimitError: limitName=monthly")
-assert not rb.gateway_outage("grok", 1, "429 usage limit reached")
 assert not rb.gateway_outage("opencode", 1, rb.no_account_left("opencode"))
+# The labels are live and the stderr was captured earlier: cells run side by side, so a wall
+# another cell records in between must not turn a pool that merely ran dry into an outage.
+label_state = work / "gateway-label-state"
+label_state.mkdir()
+os.environ["WORKER_STATS_DIR"] = str(label_state)
+rb.mark_walled("opencode", "opencode-go", reset_at=time.time() + 3600, window="5-hour")
+dry_pool_stderr = rb.no_account_left("opencode")
+rb.mark_walled("opencode", "opencode-go-late", reset_at=time.time() + 7200, window="weekly")
+assert rb.no_account_left("opencode") != dry_pool_stderr, "the fixture recorded no second wall"
+assert not rb.gateway_outage("opencode", 1, dry_pool_stderr)
+# And the exclusion note rides on the head line: appended after the labels it would take the last
+# one out of the report's `walls:` row, which re-reads each label with a full match.
+excluded_stderr = rb.no_account_left(
+    "opencode", "; excluded by REVIEW_BENCH_EXCLUDE_OPENCODE: opencode-go-late"
+)
+assert excluded_stderr.splitlines()[0].endswith("opencode-go-late"), excluded_stderr
+assert rb.active_wall_labels("opencode"), "the fixture recorded no wall to label"
+assert rb.reported_wall_labels([{"stderr": excluded_stderr}]) == rb.active_wall_labels("opencode")
+assert not rb.gateway_outage("opencode", 1, excluded_stderr)
+# A weekday names a day only inside the week it belongs to: a monthly wall three weeks out spelled
+# "Tue 09:00" reads as tomorrow to whoever decides whether to wait, so past that week the label
+# carries a date — and the report's `walls:` row, which re-reads each label whole, takes both.
+rb.mark_walled("opencode", "opencode-go-far", reset_at=time.time() + 25 * 86400, window="monthly")
+far_wall_label = [line for line in rb.active_wall_labels("opencode") if " far:" in line]
+assert far_wall_label and re.search(r", resets [A-Z][a-z]{2} \d{1,2}$", far_wall_label[0]), \
+    far_wall_label
+assert rb.reported_wall_labels([{"stderr": rb.no_account_left("opencode")}]) == \
+    rb.active_wall_labels("opencode")
+del os.environ["WORKER_STATS_DIR"]
 
 # A run where every attempt of one family failed and the other answered: one starts cooling, the
 # other is left alone — the wait is per cell, and grok being down never rests kimi.
@@ -8456,7 +8833,7 @@ for agy_gate_side in rb.SIDE_RUNNERS:
     rb.SIDE_RUNNERS[agy_gate_side] = agy_gate_runner
 agy_gate_real_afford = rb.affordability
 rb.affordability = lambda: {
-    "claude": True, "codex": True, "agy": False, "grok": True, "opencode": True,
+    "claude": True, "codex": True, "agy": False, "opencode": True,
     "claude_fable": True, "claude_account": "fixture",
 }
 agy_gate_stdout = io.StringIO()
@@ -8474,7 +8851,7 @@ assert "skipped agy-pro-high-skill: agy side is unaffordable" in agy_gate_stdout
 agy_gate_meta = json.loads(
     (next((agy_gate_store / "worker-stats" / "benches").iterdir()) / "meta.json").read_text()
 )
-assert agy_gate_meta["raters"] == ["sol-medium-bare"], agy_gate_meta
+assert agy_gate_meta["raters"] == ["sol-medium-bare", "agy-pro-high-skill"], agy_gate_meta
 assert not agy_gate_meta["rater_runs"] or all(
     row["rater"] != "agy-pro-high-skill" for row in agy_gate_meta["rater_runs"]
 ), agy_gate_meta
@@ -8499,7 +8876,9 @@ assert "cooling until" in cooldown_wiring_stdout.getvalue(), cooldown_wiring_std
 cooldown_wiring_meta = json.loads(
     (next((cooldown_wiring_store / "worker-stats" / "benches").iterdir()) / "meta.json").read_text()
 )
-assert cooldown_wiring_meta["raters"] == ["oc-grok45-low"], cooldown_wiring_meta
+assert cooldown_wiring_meta["raters"] == \
+    ["oc-grok45-low", "oc-grok45-low#2", "oc-grok45-low#3"], cooldown_wiring_meta
+assert cooldown_wiring_meta["completed_raters"] == ["oc-grok45-low"], cooldown_wiring_meta
 assert json.loads((cooldown_wiring_state / "gateway-cooldown.json").read_text()) == {}, \
     "the canary answered and the run left the cell cooling anyway"
 

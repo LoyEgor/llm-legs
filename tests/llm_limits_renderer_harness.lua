@@ -49,12 +49,20 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
           close = function() end,
         }
       end
+      if path:match("/%.config/opencode%-go/profiles$")
+          or path:match("/worker%-stats/walls%.jsonl$") then
+        return nil
+      end
       local contents = "fixture"
       if path:match("/%.claude/worker%-model$") then
         if workerModel == nil then return nil end
         contents = workerModel
       end
-      return { read = function() return contents end, close = function() end }
+      return {
+        read = function() return contents end,
+        lines = function() return tostring(contents):gmatch("[^\r\n]+") end,
+        close = function() end,
+      }
     end,
   }, { __index = io })
   local env = setmetatable({ hs = mock, io = fakeIo }, { __index = _G })

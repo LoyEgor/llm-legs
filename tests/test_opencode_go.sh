@@ -5,6 +5,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT="$ROOT/bin/opencode-go"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+HOME="$WORK/home"
+export HOME
+mkdir -p "$HOME"
 asserts=0
 fail() { echo "FAIL: $*" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
@@ -381,6 +384,82 @@ unset OPENCODE_GO_KEY
 rm -f "$SECURITY_CALLS" "$SECURITY_STORE"
 printf 'sk-stored-1\n' | "$SCRIPT" key >/dev/null || fail "key storage failed"
 assert grep -q 'SEC find-generic-password -a .* -s opencode-go -w' "$SECURITY_CALLS"
+
+mkdir -p "$HOME/.config/opencode-go"
+printf '# Primary accounts\n# Keep this comment\n' >"$HOME/.config/opencode-go/profiles"
+rm -f "$SECURITY_CALLS" "$SECURITY_STORE"
+out=$(printf 'sk-team-one\n' | "$SCRIPT" profile team-one 2>"$WORK/err") \
+  || fail "profile creation failed: $(cat "$WORK/err")"
+assert grep -q 'SEC add-generic-password -U -a .* -s opencode-go-team-one -w sk-team-one' "$SECURITY_CALLS"
+assert grep -q 'SEC find-generic-password -a .* -s opencode-go-team-one -w' "$SECURITY_CALLS"
+assert grep -qx 'stored (keychain: opencode-go-team-one)' <<<"$out"
+assert grep -qx 'roster: added team-one' <<<"$out"
+assert grep -qx '# Primary accounts' "$HOME/.config/opencode-go/profiles"
+assert grep -qx '# Keep this comment' "$HOME/.config/opencode-go/profiles"
+assert grep -qx 'team-one' "$HOME/.config/opencode-go/profiles"
+
+grep -vxF 'team-one' "$HOME/.config/opencode-go/profiles" >"$WORK/profiles-without-team-one"
+mv "$WORK/profiles-without-team-one" "$HOME/.config/opencode-go/profiles"
+rm -f "$SECURITY_CALLS"
+out=$("$SCRIPT" p team-one </dev/null 2>"$WORK/err") \
+  || fail "existing profile was not ensured: $(cat "$WORK/err")"
+assert grep -qx 'profile team-one: key present' <<<"$out"
+assert grep -qx 'roster: added team-one' <<<"$out"
+assert_fails grep -q 'SEC add-generic-password' "$SECURITY_CALLS"
+assert test "$(cat "$SECURITY_STORE")" = sk-team-one
+
+out=$("$SCRIPT" p team-one </dev/null 2>"$WORK/err") \
+  || fail "listed profile was not ensured: $(cat "$WORK/err")"
+assert grep -qx 'roster: already listed' <<<"$out"
+assert test "$(grep -Fxc 'team-one' "$HOME/.config/opencode-go/profiles")" = 1
+
+# review-bench and the menubar fall back to the default account only while the roster is absent,
+# so the file this command creates has to carry it: a roster opening with the new name alone
+# retires the account whose key is already in the keychain.
+rm -f "$HOME/.config/opencode-go/profiles"
+out=$("$SCRIPT" p team-one </dev/null 2>"$WORK/err") \
+  || fail "roster creation failed: $(cat "$WORK/err")"
+assert grep -qx 'roster: added the default account as -' <<<"$out"
+assert grep -qx 'roster: added team-one' <<<"$out"
+assert test "$(cat "$HOME/.config/opencode-go/profiles")" = "$(printf -- '-\nteam-one')"
+
+# A key `run` would accept is a key this command must not ask for again, and a default account
+# with no key of its own must not be listed: the pool would hand it cells that can only fail to
+# authenticate.
+rm -f "$SECURITY_STORE" "$SECURITY_CALLS" "$HOME/.config/opencode-go/profiles"
+printf 'sk-file-key\n' >"$HOME/.config/opencode-go/key-filekey"
+out=$("$SCRIPT" p filekey </dev/null 2>"$WORK/err") \
+  || fail "a file-stored key was not accepted: $(cat "$WORK/err")"
+assert grep -qx 'profile filekey: key present' <<<"$out"
+assert_fails grep -q 'SEC add-generic-password' "$SECURITY_CALLS"
+assert test "$(cat "$HOME/.config/opencode-go/profiles")" = filekey
+assert_fails grep -qx -- '-' "$HOME/.config/opencode-go/profiles"
+rm -f "$HOME/.config/opencode-go/key-filekey"
+
+# A last line that never ended must not fuse with the name appended after it: `altteam-two` is
+# an account nobody has, and the listing check cannot see it on the next run either.
+printf -- '-\nalt' >"$HOME/.config/opencode-go/profiles"
+out=$(printf 'sk-team-two\n' | "$SCRIPT" p team-two 2>"$WORK/err") \
+  || fail "profile append failed: $(cat "$WORK/err")"
+assert grep -qx 'roster: added team-two' <<<"$out"
+assert test "$(cat "$HOME/.config/opencode-go/profiles")" = "$(printf -- '-\nalt\nteam-two')"
+assert_fails grep -q 'altteam-two' "$HOME/.config/opencode-go/profiles"
+
+status=0
+"$SCRIPT" profile Bad_Name </dev/null >"$WORK/out" 2>"$WORK/err" || status=$?
+assert test "$status" = 2
+assert grep -qx 'usage: opencode-go profile <name> (lowercase letters, numbers, and hyphens)' "$WORK/err"
+
+status=0
+rm -f "$SECURITY_STORE"
+printf '\n' | "$SCRIPT" profile empty-key >"$WORK/out" 2>"$WORK/err" || status=$?
+assert test "$status" = 1
+assert grep -qx 'API key must not be empty' "$WORK/err"
+
+status=0
+"$SCRIPT" add team-one </dev/null >"$WORK/out" 2>"$WORK/err" || status=$?
+assert test "$status" = 64
+assert_fails grep -q 'opencode-go add' "$WORK/err"
 
 # A key written by hand without an account is still found.
 rm -f "$SECURITY_CALLS"

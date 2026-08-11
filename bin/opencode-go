@@ -19,6 +19,7 @@ auth_config() {
 usage() {
   cat >&2 <<'EOF'
 Usage:
+  opencode-go profile <name>  Open a profile; creates it if missing. Alias: p.
   opencode-go key
   opencode-go models [--json]
   opencode-go run <model> (<prompt...> | --prompt-file <path>) [--system <text>] [--max-tokens N] [--effort low|medium|high | --no-reasoning] [--prefill <text>] [--answer-must-match <ere>] [--retries N] [--stream] [--json]
@@ -75,8 +76,26 @@ require_key() {
   printf '%s' "$key"
 }
 store_key() {
-  local key= stored=
-  if [[ -t 0 ]]; then
+  local service=${1:-$KEY_SERVICE} masked=${2:-false} key= stored= char
+  if [[ -t 0 && $masked == true ]]; then
+    printf 'OpenCode Go API key: ' >&2
+    while IFS= read -rsn 1 char; do
+      case $char in
+        '') break ;;
+        $'\b'|$'\177')
+          if [[ -n $key ]]; then
+            key=${key%?}
+            printf '\b \b' >&2
+          fi
+          ;;
+        *)
+          key+=$char
+          printf '*' >&2
+          ;;
+      esac
+    done
+    printf '\n' >&2
+  elif [[ -t 0 ]]; then
     printf 'OpenCode Go API key: ' >&2
     IFS= read -rs key || true
     printf '\n' >&2
@@ -91,13 +110,53 @@ store_key() {
     printf 'security command not found\n' >&2
     exit 1
   fi
-  security add-generic-password -U -a "$KEY_ACCOUNT" -s "$KEY_SERVICE" -w "$key" >/dev/null
-  stored=$(security find-generic-password -a "$KEY_ACCOUNT" -s "$KEY_SERVICE" -w)
+  security add-generic-password -U -a "$KEY_ACCOUNT" -s "$service" -w "$key" >/dev/null
+  stored=$(security find-generic-password -a "$KEY_ACCOUNT" -s "$service" -w)
   if [[ $stored != "$key" ]]; then
     printf 'Keychain verification failed\n' >&2
     exit 1
   fi
-  printf 'stored (keychain: %s)\n' "$KEY_SERVICE"
+  printf 'stored (keychain: %s)\n' "$service"
+}
+ensure_profile() {
+  local name=${1:-} roster service stored=
+  if [[ $# -ne 1 || ! $name =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    printf 'usage: opencode-go profile <name> (lowercase letters, numbers, and hyphens)\n' >&2
+    exit 2
+  fi
+  service="opencode-go-$name"
+  # Every source `run` would accept counts as this profile already having a key: probing the
+  # account-qualified keychain item alone re-prompts for a key the client resolves anyway, and
+  # a non-interactive run then stores nothing and never reaches the roster.
+  stored=$(OPENCODE_GO_PROFILE=$name KEY_SERVICE=$service go_key 2>/dev/null) || stored=
+  if [[ -n $stored ]]; then
+    printf 'profile %s: key present\n' "$name"
+  else
+    store_key "$service" true
+  fi
+  roster="${HOME}/.config/opencode-go/profiles"
+  mkdir -p "${roster%/*}"
+  # review-bench and the menubar fall back to the default account only while this file is
+  # ABSENT, so a roster opening with the new name alone retires the account the existing key
+  # belongs to — but listing a default that has no key at all hands cells to an account that
+  # can only fail to authenticate.
+  if [[ ! -f $roster ]]; then
+    : >"$roster"
+    if (OPENCODE_GO_PROFILE= KEY_SERVICE=opencode-go go_key >/dev/null 2>&1); then
+      printf -- '-\n' >"$roster"
+      printf 'roster: added the default account as -\n'
+    fi
+  fi
+  if grep -Fxq -- "$name" "$roster"; then
+    printf 'roster: already listed\n'
+  else
+    # An append onto a last line that never ended fuses both names into an account nobody has.
+    if [[ -s $roster && -n $(tail -c 1 "$roster") ]]; then
+      printf '\n' >>"$roster"
+    fi
+    printf '%s\n' "$name" >>"$roster"
+    printf 'roster: added %s\n' "$name"
+  fi
 }
 models() {
   local json=false
@@ -418,6 +477,7 @@ raw_request() {
   [[ $status == 2?? ]]
 }
 case ${1:-} in
+  profile|p) shift; ensure_profile "$@" ;;
   key) shift; [[ $# -eq 0 ]] || usage; store_key ;;
   models) shift; models "$@" ;;
   run) shift; run_model "$@" ;;

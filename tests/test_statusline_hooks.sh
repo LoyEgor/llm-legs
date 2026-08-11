@@ -2371,6 +2371,33 @@ run_probe_4dig() {
 run_probe_4dig pp-4dig 2001
 assert_eq '8127' "$(cat "$STATE_DIR/ports-pp-4dig")"
 
+# The LLM-tool list is the contract's, and the standalone grok account it was written for is gone:
+# a process by that name is an ordinary one now, and its dev server keeps its place like any other.
+FAKE_PS_TOOLS="$FIXTURES/ports-ps-tools"
+cat > "$FAKE_PS_TOOLS" <<'PSEOFT'
+#!/usr/bin/env bash
+cat <<'SNAP'
+1000 1 claude
+2100 1000 codex exec
+2101 2100 node /srv/rpc-worker.js
+2102 1000 grok --prompt-file /tmp/review
+2103 2102 node /srv/grok-rpc.js
+SNAP
+PSEOFT
+chmod +x "$FAKE_PS_TOOLS"
+FAKE_LSOF_TOOLS="$FIXTURES/ports-lsof-tools"
+cat > "$FAKE_LSOF_TOOLS" <<'LSEOFT'
+#!/usr/bin/env bash
+cat <<'OUT'
+COMMAND   PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME
+node     2101 u   11u  IPv4  0t0      TCP 127.0.0.1:61610 (LISTEN)
+node     2103 u   12u  IPv4  0t0      TCP 127.0.0.1:61611 (LISTEN)
+OUT
+LSEOFT
+chmod +x "$FAKE_LSOF_TOOLS"
+STATUSLINE_PS="$FAKE_PS_TOOLS" STATUSLINE_LSOF="$FAKE_LSOF_TOOLS" "$PORTS_PROBE" pp-tools 1000
+assert_eq '61611' "$(cat "$STATE_DIR/ports-pp-tools")"
+
 
 run_probe pp-selfroot 9999
 assert test -f "$STATE_DIR/ports-pp-selfroot"

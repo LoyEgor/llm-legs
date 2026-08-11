@@ -25,7 +25,6 @@ from pathlib import Path
 
 
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
-GROK_EFFORTS = ("low", "medium", "high")
 OPENCODE_EFFORTS = ("low", "medium", "high")
 OPENCODE_MODEL_IDS = {
     "oc-glm52": "glm-5.2",
@@ -80,7 +79,7 @@ OPENCODE_MODEL_FACTS = {
     "oc-qwen37plus": {"off": True, "scales": True, "off_s": 8, "low_s": None,
                       "note": "adjudicated 0 true claims of 10 over 3 passes: wholly speculative or narrative"},
     "oc-kimik3": {"off": True, "scales": True, "off_s": 23, "low_s": 186,
-                  "note": "the leg's net and verifier: 5 true of 31, but 4 defects grok misses"},
+                  "note": "the leg's net and verifier: 5 true of 31, but 4 defects grok-4.5 misses"},
     "oc-kimik27code": {"off": False, "scales": False, "off_s": 10, "low_s": None,
                        "note": "1-30 findings per run and failed 2 of 3 passes; kimi-k3 replaces it"},
     "oc-mimo25": {"off": True, "scales": False, "off_s": 43, "low_s": None,
@@ -294,11 +293,20 @@ GATE_WALL_STDERR = "the OpenCode plan walled off while this cell waited for a ga
 # it for the rest of the run rather than send one doomed request per remaining cell, which is how
 # a wall gets deeper instead of waited out.
 WALL_STATE_FILE = "walls.jsonl"
+WALL_RECORD_FIELDS = ("side", "account", "bucket", "detected_at", "reset_at", "window")
 WALL_LOCK_FILE = ".walls.lock"
 WALL_COMPACT_BYTES = 4096
 # A provider that names its own reset horizon is believed over the flat TTL, but only so far:
-# a garbled far-future date would retire an account until someone notices by hand.
+# a garbled far-future date would retire an account until someone notices by hand. A named
+# window sets its own ceiling, since the flat cap turns a monthly reset into a date that has
+# already passed by the time the wall really lifts.
 WALL_MAX_TTL_S = 7 * 24 * 3600
+WALL_WINDOW_MAX_TTL_S = {
+    "5-hour": 6 * 3600,
+    "weekly": 8 * 24 * 3600,
+    "monthly": 32 * 24 * 3600,
+}
+WALL_LABEL_WEEKDAY_MAX_S = 6 * 24 * 3600
 
 
 @contextlib.contextmanager
@@ -339,15 +347,27 @@ def wall_bucket(rater):
     return "fable" if rater["model"] == "fable" else "general"
 
 
-def mark_walled(side, account, bucket="general", reset_at=None):
+def wall_record(**values):
+    """One walls.jsonl row, built from the field list the menubar reader is pinned against.
+
+    Optional fields are left out rather than written null, so the schema WALL_RECORD_FIELDS
+    names is the only shape either reader has to know.
+    """
+    return {
+        field: values.get(field) for field in WALL_RECORD_FIELDS
+        if values.get(field) is not None
+    }
+
+
+def mark_walled(side, account, bucket="general", reset_at=None, window=None):
     detected_at = time.time()
     path = state_dir() / WALL_STATE_FILE
-    entry = {
-        "side": side, "account": account, "bucket": bucket,
-        "detected_at": detected_at,
-    }
-    if reset_at is not None:
-        entry["reset_at"] = clamped_reset_at(detected_at, reset_at)
+    entry = wall_record(
+        side=side, account=account, bucket=bucket, detected_at=detected_at,
+        reset_at=clamped_reset_at(detected_at, reset_at, window)
+        if reset_at is not None else None,
+        window=window,
+    )
     try:
         payload = (json.dumps(entry, separators=(",", ":")) + "\n").encode()
         with wall_file_lock(path):  # an unlocked append still beats a lost wall
@@ -371,14 +391,28 @@ def wall_ttl_s():
     return max(0, ttl) if math.isfinite(ttl) else 3600
 
 
-def clamped_reset_at(detected_at, reset_at):
+def clamped_reset_at(detected_at, reset_at, window=None):
     try:
         reset_at = float(reset_at)
     except (TypeError, ValueError):
         return None
     if not math.isfinite(reset_at):
         return None
-    return min(reset_at, detected_at + WALL_MAX_TTL_S)
+    return min(reset_at, detected_at + WALL_WINDOW_MAX_TTL_S.get(window, WALL_MAX_TTL_S))
+
+
+def recorded_reset_at(reset_at):
+    """A stored horizon as it was written down.
+
+    The ceiling belongs to the writer alone: a reader applying it again would shorten a wall
+    recorded under a window ceiling this row no longer carries, back into a date the wall
+    outlives.
+    """
+    try:
+        reset_at = float(reset_at)
+    except (TypeError, ValueError):
+        return None
+    return reset_at if math.isfinite(reset_at) else None
 
 
 def wall_expiry(detected_at, reset_at, ttl=None):
@@ -425,13 +459,12 @@ def compact_walls(path):
             if walls is None:
                 return None
             with tmp.open("w", encoding="utf-8") as stream:
-                for (side, account, bucket), (detected_at, reset_at) in sorted(walls.items()):
-                    row = {
-                        "side": side, "account": account, "bucket": bucket,
-                        "detected_at": detected_at,
-                    }
-                    if reset_at is not None:
-                        row["reset_at"] = reset_at
+                for (side, account, bucket), wall in sorted(walls.items()):
+                    detected_at, reset_at = wall[:2]
+                    row = wall_record(
+                        side=side, account=account, bucket=bucket, detected_at=detected_at,
+                        reset_at=reset_at, window=wall[2] if len(wall) > 2 else None,
+                    )
                     stream.write(json.dumps(row, separators=(",", ":")) + "\n")
             os.chmod(tmp, 0o600)
             try:
@@ -454,7 +487,7 @@ def compact_walls(path):
 
 
 def read_wall_rows(path):
-    """Standing walls as {key: (detected_at, reset_at)}, or None when the file is unreadable.
+    """Standing walls as {key: (detected_at, reset_at, window)}, or None when unreadable.
 
     None and {} have to stay distinguishable: an empty file means every account is clear,
     while an unreadable one is no evidence at all and must not clear anything.
@@ -480,9 +513,11 @@ def read_wall_rows(path):
                 raise ValueError("invalid wall timestamp")
         except (ValueError, KeyError, TypeError):
             continue
-        reset_at = clamped_reset_at(detected_at, row.get("reset_at")) \
-            if row.get("reset_at") is not None else None
-        walls.setdefault((side, account, bucket), []).append((detected_at, reset_at))
+        window = row.get("window")
+        if not isinstance(window, str) or not window:
+            window = None
+        reset_at = recorded_reset_at(row.get("reset_at"))
+        walls.setdefault((side, account, bucket), []).append((detected_at, reset_at, window))
     return {
         key: standing for key, rows in walls.items()
         if (standing := standing_wall(rows)) is not None
@@ -503,13 +538,15 @@ def standing_wall(rows):
     # The longest of the stated horizons, not the most recently recorded one: two cells can hit
     # the same account seconds apart and be told different things, and a weekly limit does not
     # stop being spent because a shorter refusal was written down after it.
-    longest_dated = max(dated, key=lambda row: wall_expiry(*row)) if dated else None
+    longest_dated = max(dated, key=lambda row: wall_expiry(row[0], row[1])) if dated else None
     if longest_dated is not None:
-        if wall_still_standing(*longest_dated):
+        if wall_still_standing(longest_dated[0], longest_dated[1]):
             return longest_dated
-        rows = [row for row in rows if row[0] > wall_expiry(*longest_dated)]
-    standing = [row for row in rows if wall_still_standing(*row)]
-    return max(standing, key=lambda row: wall_expiry(*row)) if standing else None
+        rows = [row for row in rows if row[0] > wall_expiry(
+            longest_dated[0], longest_dated[1]
+        )]
+    standing = [row for row in rows if wall_still_standing(row[0], row[1])]
+    return max(standing, key=lambda row: wall_expiry(row[0], row[1])) if standing else None
 
 
 def persisted_walls(path):
@@ -582,6 +619,9 @@ def opencode_usage_wall(stderr):
 OPENCODE_PLAN_WALL_RE = re.compile(
     r"GoUsageLimitError|\blimitName\b|usage limit|out of credits|insufficient balance",
     re.IGNORECASE,
+)
+OPENCODE_LIMIT_NAME_RE = re.compile(
+    r'''["']?limitName["']?\s*[:=]\s*["']?([A-Za-z0-9_.-]+)''', re.IGNORECASE
 )
 OPENCODE_TRANSIENT_RE = re.compile(
     r"provider rate limit|rate limit exceeded|too many requests"
@@ -691,6 +731,20 @@ def wall_reset_at(text):
     if not match:
         return None
     return time.time() + float(match.group(1)) * WALL_RESET_UNITS[match.group(2).lower()]
+
+
+def opencode_wall_window(text):
+    match = OPENCODE_LIMIT_NAME_RE.search(text or "")
+    if not match:
+        return None
+    normalized = re.sub(r"[^a-z0-9]", "", match.group(1).lower())
+    if "weekly" in normalized or normalized == "week":
+        return "weekly"
+    if "monthly" in normalized or normalized == "month":
+        return "monthly"
+    if normalized in ("5h", "5hour", "fivehour"):
+        return "5-hour"
+    return None
 
 
 def opencode_profiles():
@@ -823,7 +877,6 @@ SHORT_MODEL_NAMES = {
     "sonnet": ("sonnet", ""),
     "haiku": ("haiku", ""),
     "fable": ("fable", ""),
-    "grok": ("grok", ""),
 }
 SHORT_EFFORT_NAMES = {"medium": "med"}
 # Effort is a launch parameter on these two sides — the same cell is run at another effort next
@@ -833,7 +886,7 @@ ALWAYS_EFFORT_SIDES = ("claude", "codex")
 _REVIEW_POOL_RATERS = None
 _DEFAULT_NAME_SCHEME = None
 RATER_RE = re.compile(
-    r"^(sol|opus|sonnet|haiku|fable|grok|agy-pro|agy-flash35|agy-flash36"
+    r"^(sol|opus|sonnet|haiku|fable|agy-pro|agy-flash35|agy-flash36"
     r"|oc-glm52|oc-glm51|oc-dsv4pro|oc-dsv4flash|oc-grok45|oc-qwen37max"
     r"|oc-qwen37plus|oc-kimik3|oc-kimik27code|oc-mmm3|oc-mimo25pro|oc-mimo25|oc-hy3)"
     r"(?:-(low|medium|high|xhigh|max))?(-skill|-bare|-anthropic|-google)?$"
@@ -2181,7 +2234,7 @@ def parse_rater(spec):
     if not match:
         raise ValueError(
             f"invalid rater {spec!r}; expected sol-<effort>[-bare], "
-            "opus|sonnet|haiku|fable-<effort>, grok-<low|medium|high>, "
+            "opus|sonnet|haiku|fable-<effort>, "
             "agy-pro-<low|high>-skill, agy-flash36-<low|medium|high>-skill, "
             "agy-flash35-<low|medium|high>-skill, "
             "oc-glm52|oc-kimik27code[-<low|medium|high>], "
@@ -2194,8 +2247,8 @@ def parse_rater(spec):
     bare = suffix == "-bare"
     if model in OPENCODE_MODEL_IDS:
         side = "opencode"
-    elif model == "grok" or model in AGY_EFFORTS:
-        side = "agy" if model.startswith("agy-") else "grok"
+    elif model in AGY_EFFORTS:
+        side = "agy"
     elif model == "sol":
         side = "codex"
     else:
@@ -2209,10 +2262,6 @@ def parse_rater(spec):
     if profile and side != "opencode":
         raise ValueError(
             f"invalid rater {spec!r}; -{profile} review profiles are OpenCode-only"
-        )
-    if model == "grok" and effort not in GROK_EFFORTS:
-        raise ValueError(
-            f"invalid rater {spec!r}; grok supports only low, medium, or high effort"
         )
     if side == "opencode" and effort not in (None, *OPENCODE_EFFORTS):
         raise ValueError(
@@ -2314,6 +2363,33 @@ def normalize_legacy_rater(rater):
     if rater.startswith("agy-flash-"):
         return "agy-flash36-" + rater[len("agy-flash-"):]
     return rater
+
+
+RECORDED_RATER_RE = re.compile(
+    r"^(.+?)(?:-(low|medium|high|xhigh|max))?(-skill|-bare|-anthropic|-google)?$"
+)
+
+
+def recorded_rater(spec):
+    """A saved run's cell, read the way every other corpus reader reads one: leniently.
+
+    A side retired since the run was written no longer parses, and refusing its spec here is
+    what strands the whole run from adjudication — the run is already on disk, and nothing
+    about recording it asks whether the cell could be launched again.
+    """
+    family = normalize_legacy_rater(spec)
+    try:
+        return parse_rater(family)
+    except ValueError:
+        match = RECORDED_RATER_RE.fullmatch(family)
+        # Leniency stops at a spec that is not a cell name at all: re-raised, the caller gets the
+        # refusal parse_rater already wrote instead of an AttributeError from the fallback.
+        if not match:
+            raise
+        model, effort, suffix = match.groups()
+        return {"spec": family, "model": model, "effort": effort, "side": None,
+                "skill": suffix == "-skill", "bare": suffix == "-bare",
+                "profile": suffix[1:] if suffix in ("-anthropic", "-google") else None}
 
 
 def collapse_rater_attempts(raters):
@@ -2660,7 +2736,7 @@ def name_scheme(extra_raters=()):
     """What a pool cell's name has to carry to stay apart from the other pool cells: which
     families run two versions, which run more than one effort, and which run both with and
     without the review skill. Read off the pool ALONE — a pool cell's spelling is the same on
-    every surface and in every report, so `grok` is one model wherever it is printed.
+    every surface and in every report, so `opus` is one model wherever it is printed.
 
     Cells a run holds that no tier can launch — a retired composition, another vendor's model —
     do not enter that reading. They are named against it instead: `extra_raters` that collide
@@ -3215,6 +3291,9 @@ def report_lines(run_dir, meta, verdicts=None):
                 for detail, count in errored.items()
             ),
         ))
+    wall_labels = reported_wall_labels(summary["cells"])
+    if wall_labels:
+        rows.append(("walls:", " · ".join(wall_labels)))
     if timed_out:
         show_limits = len({timeout for _, timeout in timed_out}) > 1
         timeout_parts = []
@@ -3773,6 +3852,11 @@ def command_path(env_name, sibling):
     return str(local) if local.exists() else sibling
 
 
+def opencode_pool_free():
+    """Whether the OpenCode pool still has an account to run on, walls and exclusions applied."""
+    return pool_account("opencode", ()) is not None
+
+
 def affordability():
     """Which sides the pool will staff right now, and the Claude account it named.
 
@@ -3785,8 +3869,10 @@ def affordability():
         "codex": picked["codex"] is not None,
         "claude": picked["claude"] is not None,
         "agy": picked["agy"] is not None,
-        "grok": True,
-        "opencode": True,
+        # No vendor routes OpenCode, so its own roster answers for it: a bare True here launched
+        # every OpenCode cell of every panel into a pool with nothing left to run on, for three
+        # days of cells that died on `no_account_left` (Egor, 2026-08-04..10).
+        "opencode": opencode_pool_free(),
         # Fable bills a bucket of its own, and the contract keeps its exhaustion from touching
         # ordinary work: one answer cannot stand for both, so the fable bucket is asked for
         # separately and only cells that spend it are gated on it.
@@ -3801,7 +3887,7 @@ def affordability():
 # it as errored. Only that case is a wait this tool has to invent, and it EXPIRES on its own: a cell
 # held out until proof it recovered would never be asked for that proof, and a measured failure rate
 # is a number with no clock in it (Egor, 2026-08-08).
-GATEWAY_SIDES = ("opencode", "grok")
+GATEWAY_SIDES = ("opencode",)
 GATEWAY_COOLDOWN_MIN = 45
 GATEWAY_COOLDOWN_LOCK = ".gateway-cooldown.lock"
 
@@ -3829,9 +3915,70 @@ def read_gateway_cooldowns(now=None):
     return cooling
 
 
-def no_account_left(side):
-    # Read back by gateway_outage: the pool running dry follows a wall, and reads as one.
-    return f"the pool has no {side} account left to run on"
+def no_account_left_head(side):
+    """The part of the refusal that says nothing about the walls behind it.
+
+    Read back by gateway_outage against stderr captured earlier in the run: the labels below
+    are live, so a wall recorded or lapsed by another cell in between would make the full text
+    stop matching and classify a dry pool as a gateway outage — the 45-minute canary a spent
+    plan must never reach.
+    """
+    return f"the pool has no {side} account left"
+
+
+def no_account_left(side, note=""):
+    # The note goes on the head line: appended after the labels it would glue itself to the last
+    # one, and reported_wall_labels drops a label line that carries anything else.
+    message = f"{no_account_left_head(side)} to run on{note}"
+    if side == "opencode":
+        labels = active_wall_labels(side)
+        if labels:
+            message += "\n" + "\n".join(labels)
+    return message
+
+
+def wall_account_name(side, account):
+    if side != "opencode":
+        return account
+    if account == "opencode-go":
+        return "default"
+    return account.removeprefix("opencode-go-")
+
+
+def standing_side_walls(side):
+    """This side's standing walls as (account name, window, reset), one record per account."""
+    walls = persisted_walls(state_dir() / WALL_STATE_FILE) or {}
+    return [
+        (wall_account_name(side, account), wall[2] if len(wall) > 2 else None, wall[1])
+        for (row_side, account, _bucket), wall in sorted(walls.items())
+        if row_side == side
+    ]
+
+
+def active_wall_labels(side):
+    labels = []
+    for name, window, reset_at in standing_side_walls(side):
+        kind = f"{window} wall" if window else "plan wall"
+        reset = ""
+        if reset_at is not None:
+            # A weekday name is a date only inside the week it names: a monthly wall three weeks
+            # out reads as "Tue 09:00", i.e. tomorrow, to the reader deciding whether to wait.
+            near = reset_at - time.time() < WALL_LABEL_WEEKDAY_MAX_S
+            moment = datetime.fromtimestamp(reset_at)
+            reset = f", resets {moment.strftime('%a %H:%M' if near else '%b %-d')}"
+        labels.append(f"{side} {name}: {kind}{reset}")
+    return labels
+
+
+def reported_wall_labels(cells):
+    labels = []
+    for cell in cells:
+        for line in str(cell.get("stderr") or "").splitlines():
+            if re.fullmatch(r"opencode [^:]+: (?:5-hour|weekly|monthly|plan) wall"
+                            r"(?:, resets [A-Z][a-z]{2} (?:\d\d:\d\d|\d{1,2}))?", line):
+                if line not in labels:
+                    labels.append(line)
+    return labels
 
 
 def gateway_outage(side, rc, stderr):
@@ -3843,7 +3990,7 @@ def gateway_outage(side, rc, stderr):
     text = stderr or ""
     if SIDE_WALL[side](rc, "", text):
         return False
-    return no_account_left(side) not in text
+    return no_account_left_head(side) not in text
 
 
 def note_gateway_outcome(raters, errored, outages, now=None):
@@ -3927,6 +4074,29 @@ def cell_available(available, rater):
     return bool(available.get(rater["side"]))
 
 
+def unaffordable_reason(side):
+    """Why the pool cannot staff this side, in the words the skipped line carries.
+
+    Whether to wait for an OpenCode window or to add an account is a question only the reset date
+    answers, and it is spelled as a date rather than as the weekday `active_wall_labels` prints:
+    that one describes a run that just failed, while a monthly wall lands weeks out.
+    """
+    # A pool the caller emptied reads exactly like one nobody staffed, and the reader goes looking
+    # for accounts to add instead of at the variable that took the working ones away.
+    note = baseline_exclusion_note(side)
+    if side == "opencode":
+        labels = [
+            f"{name} {window or 'plan'}" + (
+                f" resets {datetime.fromtimestamp(reset_at).strftime('%b %-d')}"
+                if reset_at is not None else ""
+            )
+            for name, window, reset_at in standing_side_walls(side)
+        ]
+        if labels:
+            return "opencode pool walled: " + ", ".join(labels) + note
+    return f"{side} side is unaffordable{note}"
+
+
 def measured_skill_only(rater):
     """Sonnet answers almost nothing without the review skill, and nothing of its own.
 
@@ -3953,11 +4123,6 @@ def measured_worthless(rater):
 
 
 def refuse_retired_cells(raters, lens=None):
-    if any(rater["side"] == "grok" for rater in raters):
-        raise RuntimeError(
-            "the standalone grok account is disconnected; grok reviews run as OpenCode cells "
-            "(oc-grok45-*); the plumbing stays for a future account"
-        )
     # run_agy has no diff-only mode left to reach, so a skill-less agy spec would quietly run the
     # skill and record the findings under a name claiming otherwise.
     retired = [rater["spec"] for rater in raters if rater["side"] == "agy" and not rater["skill"]]
@@ -4049,7 +4214,7 @@ def auto_pick(number, rows, available, unreachable=None):
         elif cell_available(available, rater):
             eligible.append((counts[spec], order, rater))
         else:
-            skipped.append((spec, f"{rater['side']} side is unaffordable"))
+            skipped.append((spec, unaffordable_reason(rater["side"])))
     eligible.sort(key=lambda item: (item[0], item[1]))
     if len(eligible) < number:
         if unreachable:
@@ -4190,7 +4355,7 @@ def normalize_claude_output(text, rater, repo):
     return normalize_findings(text, rater)
 
 
-def normalize_grok_output(text):
+def normalize_json_objects(text):
     objects = [
         value
         for value in extract_json_values(text)
@@ -5236,68 +5401,6 @@ def run_claude(rater, repo, sha, focus, run_dir, diff, account):
             shutil.rmtree(clone, ignore_errors=True)
 
 
-def run_grok(rater, repo, sha, focus, run_dir, diff, account):
-    raw_output = run_dir / f"raw-{rater['spec']}.json"
-    prompt = review_prompt(sha, focus, lens=rater.get("lens")) + "\n\nCommit diff:\n" + diff
-    prompt_file = tempfile.NamedTemporaryFile(
-        mode="w", prefix=f"review-bench-{rater['spec']}-", suffix=".txt", delete=False
-    )
-    prompt_file.write(prompt)
-    prompt_file.close()
-    clone = None
-    command = [
-        command_path("REVIEW_BENCH_GROK_BIN", "grok"),
-        "--prompt-file", prompt_file.name, "--output-format", "json",
-        "--reasoning-effort", rater["effort"],
-        "--always-approve", "--disable-web-search",
-    ]
-    started = time.monotonic()
-    try:
-        clone = seal_overlay_clone(repo, sha)
-        command += ["--cwd", clone]
-        try:
-            proc = subprocess.run(command, cwd=clone, stdin=subprocess.DEVNULL,
-                                  capture_output=True, text=True, timeout=RATER_TIMEOUT_S)
-        except subprocess.TimeoutExpired as exc:
-            return rater_timeout(exc, started, RATER_TIMEOUT_S, command)
-        duration = round((time.monotonic() - started) * 1000)
-        raw_output.write_text(proc.stdout)
-        if proc.returncode != 0:
-            return proc.returncode, duration, proc.stdout, proc.stderr, command
-        try:
-            envelope = json.loads(proc.stdout)
-        except (json.JSONDecodeError, ValueError) as exc:
-            detail = f"grok returned malformed JSON envelope: {exc}"
-            stderr = f"{proc.stderr.rstrip()}\n{detail}".lstrip()
-            return 1, duration, "", stderr, command
-        if not isinstance(envelope, dict):
-            detail = "grok returned malformed JSON envelope: expected an object"
-            stderr = f"{proc.stderr.rstrip()}\n{detail}".lstrip()
-            return 1, duration, "", stderr, command
-        error = envelope.get("error")
-        if envelope.get("type") == "error" or error:
-            detail = envelope.get("message") or error
-            if isinstance(detail, dict):
-                detail = detail.get("message") or json.dumps(detail, ensure_ascii=False)
-            stderr = (
-                f"{proc.stderr.rstrip()}\ngrok returned an error envelope: {detail}"
-            ).lstrip()
-            return 1, duration, "", stderr, command
-        usage = envelope.get("usage")
-        if usage is not None:
-            (run_dir / f"usage-{rater['spec']}.json").write_text(json.dumps(usage) + "\n")
-        answer = envelope.get("text")
-        if not isinstance(answer, str):
-            detail = "grok returned malformed JSON envelope: text is not a string"
-            stderr = f"{proc.stderr.rstrip()}\n{detail}".lstrip()
-            return 1, duration, "", stderr, command
-        return 0, duration, normalize_grok_output(answer), proc.stderr, command
-    finally:
-        Path(prompt_file.name).unlink(missing_ok=True)
-        if clone:
-            shutil.rmtree(clone, ignore_errors=True)
-
-
 # A weak model asked to review a large diff sometimes summarises it instead: one
 # low-severity bullet per hunk, each phrased as a change description. Those parse
 # as findings and make the cell look productive, so they would otherwise consume a
@@ -5444,7 +5547,7 @@ def run_opencode(rater, repo, sha, focus, run_dir, diff, account):
         # The MiniMax family streams its reasoning inside the content itself.
         answer = re.sub(r"<think>.*?</think>", "", answer, flags=re.DOTALL | re.IGNORECASE)
         answer = re.sub(r"^\s*<think>.*", "", answer, flags=re.DOTALL | re.IGNORECASE)
-        normalized = normalize_grok_output(answer)
+        normalized = normalize_json_objects(answer)
         parsed = normalize_findings(normalized, rater["spec"])
         if is_diff_narration(parsed):
             detail = (
@@ -5878,7 +5981,8 @@ def verify_one(index, finding, repo, sha, model, lines, ref=None, side="opencode
             opencode_usage_wall(wall_stderr) and not opencode_burst_throttle(wall_stderr)
         )
         if walled and account is not None:
-            mark_walled("opencode", account, reset_at=wall_reset_at(wall_stderr))
+            mark_walled("opencode", account, reset_at=wall_reset_at(wall_stderr),
+                        window=opencode_wall_window(wall_stderr))
 
     try:
         account = pool_account("opencode", set(), index)
@@ -6241,7 +6345,6 @@ SIDE_RUNNERS = {
     "claude": run_claude,
     "codex": run_codex,
     "agy": run_agy,
-    "grok": run_grok,
     "opencode": run_opencode,
 }
 # Each vendor announces an exhausted account in its own words, and only its own words are
@@ -6254,14 +6357,8 @@ SIDE_WALL = {
     "agy": lambda rc, text, stderr: bool(
         re.search(r"Individual quota reached|RESOURCE_EXHAUSTED"
                   r"|exhausted your capacity on this model", stderr or "", re.IGNORECASE)),
-    "grok": lambda rc, text, stderr: bool(
-        re.search(r"\b429\b|usage limit|rate limit|quota exceeded", stderr or "", re.IGNORECASE)),
     "opencode": lambda rc, text, stderr: opencode_usage_wall(stderr),
 }
-# Grok has one subscription, so its pseudo-account still flows through shared wall handling.
-SIDE_FIXED_ACCOUNTS = {"grok": "supergrok"}
-
-
 def _never_transient(rc, text, stderr):
     return False
 
@@ -6313,6 +6410,15 @@ def baseline_exclusions(side):
         raw = os.environ.get(f"REVIEW_BENCH_EXCLUDE_{name.upper()}", "")
         excluded |= {part.strip() for part in raw.split(",") if part.strip()}
     return excluded
+
+
+def baseline_exclusion_note(side):
+    """The reason clause naming what the caller took off the table, empty when nothing was."""
+    excluded = baseline_exclusions(side)
+    if not excluded:
+        return ""
+    return (f"; excluded by REVIEW_BENCH_EXCLUDE_{side.upper()}: "
+            f"{', '.join(sorted(excluded))}")
 
 
 def worker_pick_answer(side, excluded, fable=False):
@@ -6432,8 +6538,6 @@ def pool_account(side, excluded, slot=0, bucket="general"):
     if side == "opencode":
         profiles = [opencode_account(profile) for profile in opencode_profiles()]
         return first_free_account(side, profiles, excluded, slot if spread else 0, bucket)
-    if side in SIDE_FIXED_ACCOUNTS:
-        return SIDE_FIXED_ACCOUNTS[side] if SIDE_FIXED_ACCOUNTS[side] not in excluded else None
     if not spread:
         return worker_pick_answer(side, excluded, fable)[0]
     roster = side_roster(side, baseline_exclusions(side), fable)
@@ -6518,8 +6622,9 @@ def run_rater_task(rater, repo, sha, focus, run_dir, diff):
             continue
         if not SIDE_WALL[side](rc, wall_text, stderr):
             return (rater, candidate, result)
-        mark_walled(side, candidate, bucket,
-                    wall_reset_at(wall_reset_source(side, stderr, wall_text)))
+        wall_source = wall_reset_source(side, stderr, wall_text)
+        mark_walled(side, candidate, bucket, wall_reset_at(wall_source),
+                    opencode_wall_window(wall_source) if side == "opencode" else None)
         walled.add(candidate)
         print(f"{rater['spec']}: {side} account {candidate} hit its usage wall")
         # A run can succeed while its output already carries the wall wording: the review is
@@ -6527,9 +6632,7 @@ def run_rater_task(rater, repo, sha, focus, run_dir, diff):
         if rc == 0:
             return (rater, candidate, result)
     if result is None:
-        baseline = baseline_exclusions(side)
-        why = f"; excluded by REVIEW_BENCH_EXCLUDE_{side.upper()}: {', '.join(sorted(baseline))}" if baseline else ""
-        return (rater, None, (1, 0, "", no_account_left(side) + why, []))
+        return (rater, None, (1, 0, "", no_account_left(side, baseline_exclusion_note(side)), []))
     return (rater, account, result)
 
 
@@ -7526,7 +7629,7 @@ def redact_command(rater, command):
         return ""
     if rater["side"] == "codex":
         return shlex.join(command)
-    if rater["side"] in ("grok", "opencode"):
+    if rater["side"] == "opencode":
         redacted = list(command)
         prompt_index = redacted.index("--prompt-file") + 1
         redacted[prompt_index] = "<review-prompt-file>"
@@ -7706,7 +7809,7 @@ def cmd_run(args):
     if args.raters or args.leg:
         requested = parse_raters(args.raters or ",".join(OPENCODE_REVIEW_LEG))
         available = {
-            "grok": True, "opencode": True, "agy": True,
+            "opencode": True, "agy": True,
             "codex": False, "claude": False,
         }
         # Asked for every side the pool staffs, gemini included: its availability was overridden
@@ -7714,14 +7817,25 @@ def cmd_run(args):
         # not staff and reported them as errored (Egor, 2026-08-08).
         if any(rater["side"] in SIDE_POOL_VENDOR for rater in requested):
             available.update(affordability())
+        elif any(rater["side"] == "opencode" for rater in requested):
+            # A panel of nothing but OpenCode cells never reaches affordability(), so its wall is
+            # read here instead; asking for a side the panel does not hold spends pool queries on
+            # answers nothing consumes.
+            available["opencode"] = opencode_pool_free()
         raters = [rater for rater in requested if cell_available(available, rater)]
         skipped = [
-            (rater["spec"], f"{rater['side']} side is unaffordable")
+            (rater["spec"], unaffordable_reason(rater["side"]))
             for rater in requested if not cell_available(available, rater)
         ]
         if not raters:
-            raise RuntimeError("no affordable requested raters")
+            # A wait with a date on it, not a malformed request: a bare refusal sends the reader
+            # looking for a fault in what they asked for.
+            reasons = list(dict.fromkeys(reason for _, reason in skipped))
+            raise RuntimeError("no affordable requested raters: " + "; ".join(reasons))
         counts = review_counts(review_rows)
+        # Cells this panel asked for and did not get. `--auto`'s skips are candidates it never
+        # picked, so only an explicit request leaves a hole the run has to carry into its meta.
+        panel_skipped = list(skipped)
     else:
         available = affordability()
         raters, counts, skipped = auto_pick(
@@ -7729,6 +7843,7 @@ def cmd_run(args):
             {side: f"{side} side is out of a lens's reach" for side in LENS_EXCLUDED_SIDES}
             if lens else None,
         )
+        panel_skipped = []
     lens_dropped = []
     if lens:
         raters, lens_dropped = lens_panel(raters, lens)
@@ -7738,11 +7853,16 @@ def cmd_run(args):
     refuse_retired_cells(raters, lens=lens)
     raters, cooling_skipped = apply_gateway_cooldown(raters)
     skipped = list(skipped) + cooling_skipped
+    panel_skipped = list(panel_skipped) + cooling_skipped
+    # A verifiable cell is a cell the pool staffed, so its own side is the account the verifier
+    # runs on: agy leads with Gemini's transport, and an OpenCode cell only launches while the
+    # OpenCode pool is free. Nothing beyond this is left to ask about the verifier's reach.
     has_verifiable = any(rater["side"] in VERIFIED_SIDES for rater in raters)
     if verify_model and not has_verifiable:
+        walled = "" if available.get("opencode") else f" — {unaffordable_reason('opencode')}"
         raise RuntimeError(
             "--verify checks OpenCode and agy findings only (docs/verifier-tuning.md measured "
-            "no other side); this run has no cell the verifier reaches"
+            "no other side); this run has no cell the verifier reaches" + walled
         )
     # On unless refused, and only once the composition is known, since asking for it where it
     # cannot apply is an error rather than a default. Every failure path of the verifier keeps
@@ -7785,6 +7905,12 @@ def cmd_run(args):
     run_dir.mkdir(parents=True)
     os.chmod(run_dir, 0o700)
     requested_raters = [rater["spec"] for rater in raters]
+    # Carried beside the launched cells so a panel that lost a whole leg to a wall cannot read as
+    # complete: nothing writes a rater_run for them, and every surface turns a spec without one
+    # into a not-run cell. The lens's own drops stay out — the scope line already names them.
+    requested_raters += [
+        spec for spec, _ in panel_skipped if spec not in requested_raters
+    ]
     launch_meta = {
         "run_id": run_id, "commit": sha, "repo": str(repo),
         "raters": requested_raters, "completed_raters": [],
@@ -7814,7 +7940,7 @@ def cmd_run(args):
     launch_meta.update(lens_meta)
     (run_dir / "meta.json").write_text(json.dumps(launch_meta, indent=2) + "\n")
     diff = commit_diff(repo, sha) if any(
-        rater["side"] in ("claude", "grok", "opencode") or rater["bare"]
+        rater["side"] in ("claude", "opencode") or rater["bare"]
         for rater in raters) else ""
 
     submitted_raters = sorted(raters, key=gate_admission_key)
@@ -8280,7 +8406,7 @@ def cmd_record(args):
     for rater in record_raters:
         # A run stored under the pre-rename id must stay adjudicable; review_counts already
         # credits those rows, and refusing them here is what strands the run entirely.
-        parsed = parse_rater(normalize_legacy_rater(rater))
+        parsed = recorded_rater(rater)
         rows = findings[rater]
         values = [verdict_map[(rater, idx)] for idx in range(len(rows))]
         counts = Counter(values)
@@ -8798,7 +8924,7 @@ def cmd_oc_models(args):
     print("  proven on 143fc2f, fabcae4, 8448a35 and 8553616; one pass is a dice roll, so"
           " three passes union ~1.7x the true findings of one")
     print("  run the leg BARE: on 143fc2f the bare cells found 8 distinct real defects against"
-          " 6 with the google profile and 1 with anthropic, which also broke grok in 2 of 3 passes")
+          " 6 with the google profile and 1 with anthropic, which also broke grok-4.5 in 2 of 3 passes")
     print("\nmeasured capability (probe 2026-07-25, n=2 per mode; see docs/DIAGNOSTICS.md)")
     print(f"{'cell':16} {'model':18} {'reasoning-off':>13} {'effort scales':>13} "
           f"{'review s':>9}  note")
@@ -8926,7 +9052,10 @@ def main():
         help="Allow long tiers when stdout is not a terminal",
     )
     review.add_argument("--focus", default="")
-    review.add_argument("--paths", nargs="+", metavar="PATH", help=SCOPE_FLAG_HELP)
+    # extend, not the default store: a repeated --paths silently kept only the last flag's
+    # list, and a review scoped to one file of fifteen reported itself exactly like a full one.
+    review.add_argument("--paths", nargs="+", action="extend", metavar="PATH",
+                        help=SCOPE_FLAG_HELP)
     review.add_argument("--lens", default="", metavar="SLUG", help=LENS_FLAG_HELP)
     # cmd_review hands off to cmd_run, so a refusal it cannot express is a refusal it ignores.
     review_verify = review.add_mutually_exclusive_group()
@@ -9041,7 +9170,8 @@ def main():
         help="Allow long tiers when stdout is not a terminal",
     )
     run.add_argument("--focus", default="")
-    run.add_argument("--paths", nargs="+", metavar="PATH", help=SCOPE_FLAG_HELP)
+    run.add_argument("--paths", nargs="+", action="extend", metavar="PATH",
+                     help=SCOPE_FLAG_HELP)
     run.add_argument("--lens", default="", metavar="SLUG", help=LENS_FLAG_HELP)
     # Exclusive, or `--verify X --no-verify` runs the verifier and says nothing about having
     # ignored the refusal.
