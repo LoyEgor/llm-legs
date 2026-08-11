@@ -3128,7 +3128,25 @@ def verifier_report_value(summary, scheme=None):
 ESCALATION_GATE = Path.home() / ".claude/hooks/review-flow-gate.sh"
 
 
-def escalation_verdict(p1, total):
+def run_started_stamp(run_id, meta=None):
+    """The UTC second a run started, spelled the way the commit gate parses a stamp.
+
+    From the meta where it recorded one, and otherwise off the run id, which is built from that very
+    instant: a run predating the field is exactly the historical run the narrowing below must be able
+    to place, and one it cannot place is spoken as a first round.
+    """
+    # Through the parser and back out in UTC, because the gate reads a UTC instant and nothing else:
+    # a stamp carrying any other offset would otherwise be refused whole rather than converted.
+    recorded = parse_iso_timestamp((meta or {}).get("started"))
+    if recorded:
+        return recorded.strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    stamp = re.match(r"(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z-", str(run_id or ""))
+    if not stamp:
+        return None
+    return "{}-{}-{}T{}:{}:{}+00:00".format(*stamp.groups())
+
+
+def escalation_verdict(p1, total, meta=None, run_id=None, repo=None):
     """What this round earned, in the commit gate's own words, or None when it is closed.
 
     Asked of the gate rather than answered here: the thresholds and the three-way wording — the
@@ -3137,12 +3155,27 @@ def escalation_verdict(p1, total):
     The gate speaks only at a commit attempt, which needs Egor's permission to reach, so a round
     that earned another one was settled in silence while the report said nothing (2026-08-08).
 
+    Which cycle this round belongs to, and when it ran, are decided HERE for every speaker, because
+    row `af` is one voice per round and not one voice per site: the report block and each member's
+    Stop gate ask the same question and must be handed the same answer. The gate narrows the wording
+    only for a run that IS a cycle's second round — this checkout's cycle, and a start past the second
+    that cycle armed it — so a first round's own run, and a report re-rendered for a historical one,
+    stay first rounds. A MERGED panel is narrowed by nobody: it is one round over several checkouts
+    and therefore several cycles, so per-member narrowing would let the block and one member's Stop
+    gate speak the same round differently, and its P1s are already priced per member.
+
     A gate that cannot be reached says so out loud: silence here is the very failure this exists to
     end, so the caller prints the unknown rather than a clean bill.
     """
+    cycle = []
+    if not (meta or {}).get("repos"):
+        checkout = repo or (meta or {}).get("repo")
+        started = run_started_stamp(run_id, meta)
+        if checkout and started:
+            cycle = [str(checkout), started]
     try:
         done = subprocess.run(
-            [str(ESCALATION_GATE), "escalation-verdict", str(p1), str(total)],
+            [str(ESCALATION_GATE), "escalation-verdict", str(p1), str(total)] + cycle,
             stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10,
         )
     except (OSError, subprocess.SubprocessError):
@@ -3239,7 +3272,9 @@ def report_lines(run_dir, meta, verdicts=None):
     verdict_rows = verdicts if verdicts is not None else (
         read_jsonl(run_dir / "verdicts.jsonl") if (run_dir / "verdicts.jsonl").exists() else []
     )
-    earned = escalation_verdict(*escalation_numbers(run_dir, meta, verdict_rows))
+    earned = escalation_verdict(
+        *escalation_numbers(run_dir, meta, verdict_rows), meta=meta, run_id=run_dir.name
+    )
     rows.append(("round:", earned or "closed — nothing more is owed before the commit"))
     rejected_counts = [
         ("duplicate", summary["duplicate"]),
@@ -7484,7 +7519,10 @@ def owed_round_run(repo=None, session=None):
             rows = report.get("rows") if isinstance(report, dict) else None
             if not isinstance(rows, list):
                 return None
-        verdict = escalation_verdict(*escalation_numbers(run_dir, meta, rows, repo))
+        verdict = escalation_verdict(
+            *escalation_numbers(run_dir, meta, rows, repo),
+            meta=meta, run_id=run_dir.name, repo=repo,
+        )
         if not verdict:
             return None
         # A run that has already bought a commit owes nothing more: the gate marks it in the

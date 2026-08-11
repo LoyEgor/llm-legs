@@ -427,18 +427,19 @@ assert grep -Fq 'printf '\''%s__%s.json'\'' "$repo_name" "$repo_hash"' <<<"$sl_r
 # the plain one, and a lens sharing it would show a repository as reviewed by a methodology
 # the tool did not write.
 assert grep -Fq 'return f"{repo_name}__{repo_hash}__lens-{lens}.json"' <<<"$rb_receipt_name"
-# The statusline may TALK about lens receipts; what it must never do is read one. Its receipt
-# probe list is the enforcement point: exactly the plain name and the scope siblings.
-assert grep -Fq '"$receipts/$receipt_base.json" "$receipts/${receipt_base}__scope-"*.json' "$STATUSLINE"
+# The statusline may TALK about lens and scope receipts; what it must never do is read one.
+# Since it became the gate's mouthpiece it opens exactly one receipt — the plain name, for the
+# errored-panel mark — and mentioning either sibling anywhere in it is the fork coming back.
 assert test "$(grep -c '__lens-' "$STATUSLINE")" -eq 0
+assert test "$(grep -c '__scope-' "$STATUSLINE")" -eq 0
 # And so is a scope's, for the same reason plus one: a run that read part of the tree must not
 # advance the receipt the next full-tree review is sized against.
 assert grep -Fq 'return f"{repo_name}__{repo_hash}__scope-{scope_receipt_slug(scope)}.json"' \
   <<<"$rb_receipt_name"
 assert grep -Fq 'hashlib.sha1("\0".join(scope).encode()).hexdigest()[:RECEIPT_HASH_HEX]' \
   "$REVIEWBENCH"
-# The statusline reads scope receipts per PATH (the probe list above pins exactly which
-# names), and the per-path verdict is what keeps a partial review from covering the repository.
+# Scope receipts are read per PATH by coverage alone, and the per-path verdict is what keeps a
+# partial review from covering the repository.
 assert grep -Fq 'path = state_dir() / RECEIPT_DIR / name' "$REVIEWBENCH"
 assert grep -Fq 'receipt_file="$worker_stats_dir/receipts/$receipt_name"' "$STATUSLINE"
 assert grep -Fq '[.repo,.tree,.commit,.run_id,.ts,(.errored | tostring),' "$STATUSLINE"
@@ -483,7 +484,6 @@ assert doc_has 'Absent and null-valued windows do not participate'
 # --- Row w: owner-only review panels -----------------------------------------
 OWNER_GATE="$ROOT/bin/review-owner-gate.sh"
 assert grep -Fq 'OWNER_TIERS = ("T3",)' "$REVIEWBENCH"
-assert grep -Fq 'AUTO_TIER_CEILING = "T2"' "$REVIEWBENCH"
 assert grep -Fq 'OWNER_GRANT_DIR = "review-grants"' "$REVIEWBENCH"
 rb_grant_ttl=$(grep -E '^OWNER_GRANT_TTL_S = [0-9]+$' "$REVIEWBENCH" | awk '{print $3}')
 gate_grant_min=$(grep -E '^GRANT_TTL_MIN=[0-9]+$' "$OWNER_GATE" | cut -d= -f2)
@@ -627,6 +627,16 @@ assert grep -Fq '''    try:
         extra["base"] = diff_base(repo, receipt["commit"])''' "$REVIEWBENCH"
 assert doc_has 'Review commit-cycle file'
 assert doc_has '`[A-Za-z0-9._-]`'
+# The statusline stopped being the third reader when it became the gate's mouthpiece (row ah):
+# it touches only its own session's file, and only its mtime — a cache-key ingredient, never a
+# stage. A stage token read in the statusline again is the second implementation coming back.
+assert grep -Fq "file_mtime \"\$gitdir/$CYCLE_NAME-\$sid\"" "$STATUSLINE"
+# The gate drops the suffix for a session id no filename may hold, and a key watching the suffixed
+# name there would never see that cycle's stages at all.
+assert grep -Fq "file_mtime \"\$gitdir/$CYCLE_NAME\"" "$STATUSLINE"
+assert grep -Fq "''|.|..|*[!A-Za-z0-9._-]*)" "$STATUSLINE"
+assert grep -Fq 'rev-parse --absolute-git-dir' "$STATUSLINE"
+assert test "$(grep -c 'review_cycle_stage' "$STATUSLINE")" -eq 0
 
 FLOW_GATE="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/review-flow-gate.sh"
 if test -r "$FLOW_GATE"; then
@@ -656,6 +666,23 @@ if test -r "$FLOW_GATE"; then
   assert doc_has '`base`..`tree`'
 else
   printf 'SKIP: review commit-cycle file across claude-setup (%s is unreadable)\n' "$FLOW_GATE"
+fi
+
+# --- Row ah: the statusline speaks the gate's verdict --------------------------
+# One question, one implementation: the gate answers `verdict` out of band and the statusline
+# prints what comes back verbatim. The style grammar is the coupling — unknown styles render
+# loud, so only `off` and `dim` renamed on either side can silently darken the label.
+assert doc_has 'The statusline speaks the gate'
+assert grep -Fq '"$gate" verdict "$1" "$2"' "$STATUSLINE"
+assert grep -Fq "''|off) answer=off ;;" "$STATUSLINE"
+assert grep -Fq '"dim "*|"loud "*) ;;' "$STATUSLINE"
+if test -r "$FLOW_GATE"; then
+  assert grep -Fq 'if [ "${1:-}" = verdict ]; then' "$FLOW_GATE"
+  assert grep -Fq 'answer dim "$verdict_note"' "$FLOW_GATE"
+  assert grep -Fq 'answer loud' "$FLOW_GATE"
+  assert grep -Fq 'answer off' "$FLOW_GATE"
+else
+  printf 'SKIP: statusline verdict grammar across claude-setup (%s is unreadable)\n' "$FLOW_GATE"
 fi
 
 # --- Row ae: account pin ownership -------------------------------------------
@@ -702,7 +729,7 @@ REPORT_GATE="${REVIEW_REPORT_GATE:-$HOME/.claude/hooks/review-report-gate.sh}"
 if [ -r "$FLOW_GATE" ] && [ -r "$REPORT_GATE" ]; then
   assert grep -Fq 'if [ "${1:-}" = escalation-verdict ]; then' "$FLOW_GATE"
   gate_verdict_line=$(grep -n 'escalation-verdict \]; then' "$FLOW_GATE" | head -1 | cut -d: -f1)
-  gate_read_line=$(grep -n '^input=\$(cat)$' "$FLOW_GATE" | head -1 | cut -d: -f1)
+  gate_read_line=$(grep -n '^[[:space:]]*input=\$(cat)$' "$FLOW_GATE" | head -1 | cut -d: -f1)
   assert test -n "$gate_verdict_line" -a -n "$gate_read_line"
   assert test "$gate_verdict_line" -lt "$gate_read_line"
   # The callers name the mode and keep no threshold of their own.
@@ -723,4 +750,31 @@ else
     "$FLOW_GATE" "$REPORT_GATE"
 fi
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the review commit-cycle file one writes and the other reads, the escalation tally one prints and the other prices on, the account pin no session may move without Egor naming it, and the one voice that says what a review round earned) and match %s\n' "$asserts" "$DOC"
+# --- Row ai: review wall record -----------------------------------------------
+WALL_FILE=walls.jsonl
+rb_wall_file=$(grep -E '^WALL_STATE_FILE = ' "$REVIEWBENCH" | sed -E 's/^[^=]+= "([^"]+)"/\1/')
+lua_wall_file=$(grep -E '^local WALL_STATE_FILE = ' "$HAMMER" | sed -E 's/^[^=]+= "([^"]+)"/\1/')
+assert eq "$rb_wall_file" "$WALL_FILE"
+assert eq "$lua_wall_file" "$WALL_FILE"
+assert grep -Fq 'override = os.environ.get("WORKER_STATS_DIR")' "$REVIEWBENCH"
+assert grep -Fq '"CLAUDEB_DIR", str(Path.home() / ".claude-profiles" / ".claudeb")' "$REVIEWBENCH"
+assert grep -Fq 'local workerStatsDir = os.getenv("WORKER_STATS_DIR")' "$HAMMER"
+assert grep -Fq 'or (os.getenv("CLAUDEB_DIR") or home .. "/.claude-profiles/.claudeb") .. "/worker-stats"' "$HAMMER"
+rb_wall_fields=$(grep -E '^WALL_RECORD_FIELDS = ' "$REVIEWBENCH" | grep -oE '"[^"]+"' | tr -d '"' | paste -sd, -)
+assert eq "$rb_wall_fields" 'side,account,bucket,detected_at,reset_at,window'
+# The reader is pinned by what it actually reads, not by a field list kept for this guard alone.
+for field in ${rb_wall_fields//,/ }; do
+  assert grep -Fq "row.$field" "$HAMMER"
+done
+assert grep -Fq 'walls.setdefault((side, account, bucket)' "$REVIEWBENCH"
+assert grep -Fq 'row.side == "opencode" and row.bucket == "general"' "$HAMMER"
+
+# The ceiling table lives once, in the writer; a reader re-clamping a recorded reset would shorten
+# a monthly wall back into a date it outlives.
+assert grep -Fq 'WALL_WINDOW_MAX_TTL_S.get(window, WALL_MAX_TTL_S)' "$REVIEWBENCH"
+assert eq "$(grep -c 'WALL_MAX_TTL_S' "$HAMMER")" 0
+assert doc_has 'Review wall record'
+assert doc_has 'capped once, by the writer, to the horizon its own window can reach'
+assert doc_has '`${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}/walls.jsonl`'
+
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the review commit-cycle file one writes and the other reads, the escalation tally one prints and the other prices on, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the gate verdict the statusline speaks verbatim, and the review wall record) and match %s\n' "$asserts" "$DOC"
