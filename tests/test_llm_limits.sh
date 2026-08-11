@@ -2102,6 +2102,46 @@ order_gemini=$(GEMINIB_PROFILES_DIR="$ORDER_GEMINI_PROFILES" \
 jq -e '[.vendors.gemini.accounts[].account] == ["main","com","zed","abe"]' <<<"$order_gemini" >/dev/null \
   || fail "gemini accounts are not ordered priority-first, then by profile birth time"
 
+# The final merge sees vendor data read before the store lock, so a racing writer's newer row has
+# to survive it per account — while the local state this run read stays authoritative.
+MERGE_PROFILES="$WORK/merge-gemini-profiles"
+MERGE_CACHE_DIR="$WORK/merge-gemini-cache"
+MERGE_CACHE="$WORK/merge-cache.json"
+mkdir -p "$MERGE_PROFILES/alpha" "$MERGE_PROFILES/beta" "$MERGE_PROFILES/gamma" "$MERGE_CACHE_DIR"
+for merge_account in alpha beta gamma; do
+  printf '%s\n' "$order_gemini_snapshot" >"$MERGE_CACHE_DIR/$merge_account.json"
+done
+printf '%s\n' "$order_gemini_snapshot" >"$WORK/merge-gemini-main.json"
+merge_env=(GEMINIB_PROFILES_DIR="$MERGE_PROFILES"
+  LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$MERGE_CACHE_DIR"
+  LLM_LIMITS_GEMINI_CACHE="$WORK/merge-gemini-main.json"
+  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$MERGE_CACHE")
+env "${merge_env[@]}" bash "$SCRIPT" --json >/dev/null || fail "merge fixture collection failed"
+jq --argjson future "$((now + 5000))" '.vendors.gemini.accounts |= map(
+  if .account == "beta" then
+    .race_marker = "older" | .five_hour.as_of = 1 | .weekly.as_of = 1 |
+    .as_of = "2000-01-01T00:00:00Z" | del(.as_of_epoch)
+  elif .account == "alpha" or .account == "gamma" then
+    .race_marker = "newer" | .five_hour.as_of = $future | .weekly.as_of = $future |
+    (if .account == "alpha" then .blocked = true | .is_current = true else . end)
+  else . end)' "$MERGE_CACHE" >"$WORK/merge-cache.tmp" || fail "merge fixture edit failed"
+mv "$WORK/merge-cache.tmp" "$MERGE_CACHE"
+# gamma logs out between the two collects: its newer stored row is kept, its auth verdict is not.
+printf '{"auth_needed":true}\n' >"$MERGE_CACHE_DIR/gamma.json"
+env "${merge_env[@]}" bash "$SCRIPT" --json >/dev/null || fail "merge collection failed"
+jq -e '([.vendors.gemini.accounts[].account] | sort) == ["alpha","beta","gamma","main"]' \
+  "$MERGE_CACHE" >/dev/null || fail "the merge changed the account set"
+jq -e 'first(.vendors.gemini.accounts[] | select(.account == "alpha")) | .race_marker == "newer"' \
+  "$MERGE_CACHE" >/dev/null || fail "a strictly newer stored row was overwritten with older data"
+jq -e 'first(.vendors.gemini.accounts[] | select(.account == "alpha")) |
+  (has("blocked") | not) and .is_current == false' "$MERGE_CACHE" >/dev/null || \
+  fail "a kept stored row carried stale local pool state past this collect's fresh verdicts"
+jq -e 'first(.vendors.gemini.accounts[] | select(.account == "beta")) | has("race_marker") | not' \
+  "$MERGE_CACHE" >/dev/null || fail "an older stored row survived the merge"
+jq -e 'first(.vendors.gemini.accounts[] | select(.account == "gamma")) |
+  .race_marker == "newer" and .auth_needed == true' "$MERGE_CACHE" >/dev/null || \
+  fail "a kept stored row buried the login-needed verdict of this collect"
+
 # A bare vendor name means "every account of this vendor, free" and must leave the other vendors
 # untouched: their probes never run and their cached data survives the run.
 VENDOR_SCOPE_LOG="$WORK/vendor-scope-gemini.log"
@@ -2218,5 +2258,5 @@ else
   echo "SKIP (hs unavailable): Hammerspoon projection contract"
 fi
 
-echo "PASS: account order (priority names, profile birth time, unknowns last) and vendor-scoped --refresh-account, schema, Claude unique accounts and fallback, Codex multi-account reset credits, auth-needed accounts and legacy cache, local Claude rotation usability, enabled flags, freshness contract, reset placeholder normalization, machine effective percentages and usability, refresh failure reasons, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, weekly bucket provenance, experiment announcements, Hammerspoon projection contract, no opaque gray in the renderer, plain output, table output and sorts, reset tiers, expired windows, bare JSON default, atomic cache, missing exit 3"
+echo "PASS: account order (priority names, profile birth time, unknowns last) and vendor-scoped --refresh-account, schema, Claude unique accounts and fallback, Codex multi-account reset credits, auth-needed accounts and legacy cache, local Claude rotation usability, enabled flags, freshness contract, reset placeholder normalization, machine effective percentages and usability, refresh failure reasons, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, weekly bucket provenance, experiment announcements, Hammerspoon projection contract, no opaque gray in the renderer, plain output, table output and sorts, reset tiers, expired windows, bare JSON default, atomic cache, per-account newest-wins merge, missing exit 3"
 exit 0

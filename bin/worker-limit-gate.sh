@@ -6,7 +6,6 @@ DENY_AT=95
 [ -z "${WORKER_GATE_WARN_PCT:-}" ] || WARN_AT="$WORKER_GATE_WARN_PCT"
 [ -z "${WORKER_GATE_DENY_PCT:-}" ] || DENY_AT="$WORKER_GATE_DENY_PCT"
 LIMITS_FILE="${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}"
-COLLECTOR="${LLM_LIMITS_COLLECTOR:-/Volumes/Work/Projects/llm-legs/llm-limits.sh}"
 TOGGLE="${WORKER_MODEL_FILE:-$HOME/.claude/worker-model}"
 WORKER_PICK="${WORKER_GATE_WORKER_PICK:-/Volumes/Work/Projects/llm-legs/bin/worker-pick}"
 
@@ -106,10 +105,6 @@ case "$worker" in
     deny "This spawns ${worker:-an agent} with model=${model_override} — a plain agent runs on the SESSION account, the one this Fable chat is living on. Route implementation through the worker the toggle selects (claudeb-, codex- or gemini-worker on an account from worker-pick). If Egor asked for this spawn on purpose, retry the identical call — it passes once."
     ;;
 esac
-
-if [ "$worker" = codex-worker ] && [ -x "$COLLECTOR" ]; then
-  "$COLLECTOR" >/dev/null 2>&1 || true
-fi
 
 pin=''
 case "$worker" in

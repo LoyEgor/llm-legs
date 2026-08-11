@@ -1,0 +1,375 @@
+#!/usr/bin/env bash
+set -u
+
+resolve_script() {
+  local source="${BASH_SOURCE[0]}" directory
+  while [ -L "$source" ]; do
+    directory=$(cd -P "$(dirname "$source")" && pwd)
+    source=$(readlink "$source")
+    [[ "$source" = /* ]] || source="$directory/$source"
+  done
+  cd -P "$(dirname "$source")" && printf '%s/%s\n' "$PWD" "$(basename "$source")"
+}
+
+ladder_loosen() {
+  case "$1" in
+    15) printf '22\n' ;;
+    22) printf '30\n' ;;
+    30) printf '45\n' ;;
+    45|60) printf '60\n' ;;
+    *) printf '30\n' ;;
+  esac
+}
+
+ladder_tighten() {
+  case "$1" in
+    60) printf '45\n' ;;
+    45) printf '30\n' ;;
+    30) printf '22\n' ;;
+    22|15) printf '15\n' ;;
+    *) printf '30\n' ;;
+  esac
+}
+
+cadence_due() {
+  [ $(( $3 - $2 )) -ge $(( $1 * 60 )) ]
+}
+
+clean_window_elapsed() {
+  [ "$1" -gt 0 ] && [ $(( $2 - $1 )) -ge 259200 ]
+}
+
+# Claim, break, and release semantics live in share/store-lock.sh (sourced below); only the
+# single-attempt acquire is this daemon's own — a tick that finds the lock held simply skips.
+refresh_lock_acquire() {
+  local lock=$1 current captured
+  local stale=${LLM_LIMITS_REFRESH_LOCK_STALE_SECONDS:-1800}
+  local ceiling=${LLM_LIMITS_REFRESH_LOCK_CEILING_SECONDS:-3600}
+  [[ "$stale" =~ ^[1-9][0-9]*$ ]] || stale=1800
+  [[ "$ceiling" =~ ^[1-9][0-9]*$ ]] || ceiling=3600
+  if mkdir "$lock" 2>/dev/null; then
+    store_lock_claim "$lock" || return 1
+    active_lock=$lock
+    return 0
+  fi
+  current=$(date +%s) || return 1
+  store_lock_breakable "$lock" "$stale" "$ceiling" "$current" || return 1
+  # Claim by rename so a racing tick that already recreated the lock keeps it.
+  captured="${lock}.break.$$"
+  mv "$lock" "$captured" 2>/dev/null || return 1
+  if ! store_lock_breakable "$captured" "$stale" "$ceiling" "$current"; then
+    # We captured a lock a racer had just recreated: hand its live newborn back.
+    # mv into an existing directory would nest, so restore only onto a free path.
+    [ -e "$lock" ] || mv "$captured" "$lock" 2>/dev/null
+    rm -rf "$captured" 2>/dev/null
+    return 1
+  fi
+  rm -rf "$captured"
+  mkdir "$lock" 2>/dev/null || return 1
+  store_lock_claim "$lock" || return 1
+  active_lock=$lock
+  return 0
+}
+
+refresh_lock_release() {
+  [ -n "${active_lock:-}" ] || return 0
+  store_lock_release "$active_lock"
+  active_lock=''
+}
+
+script_path=$(resolve_script)
+repo_root=$(cd "$(dirname "$script_path")/.." && pwd)
+. "$repo_root/share/store-lock.sh"
+collector=${LLM_LIMITS_REFRESH_COLLECTOR:-${LLM_REFRESH_COLLECTOR:-$repo_root/llm-limits.sh}}
+store=${LLM_LIMITS_CACHE:-$HOME/.llm-limits.json}
+state_file=${LLM_LIMITS_REFRESH_STATE:-${LLM_REFRESH_STATE:-$HOME/.llm-limits-refresh.state}}
+journal_file=${LLM_LIMITS_REFRESH_JOURNAL:-${LLM_REFRESH_JOURNAL:-$HOME/.llm-limits-refresh.jsonl}}
+now=${LLM_LIMITS_REFRESH_NOW:-${LLM_REFRESH_NOW:-$(date +%s)}}
+agent_plist="$HOME/Library/LaunchAgents/com.llm-refresh.plist"
+wrapper="$HOME/.local/libexec/llm-refresh-heartbeat"
+label=com.llm-refresh
+active_lock=''
+tick_tmp=''
+
+normalized_state() {
+  local input=${1:-'{}'}
+  jq -cn --argjson now "$now" --argjson state "$input" '
+    def rung: if . == 15 or . == 22 or . == 30 or . == 45 or . == 60 then . else 30 end;
+    def epoch: if type == "number" and . >= 0 then floor else 0 end;
+    ["claude","codex","gemini"] | map(. as $vendor |
+      (($state.vendors[$vendor] // $state[$vendor] // {}) as $old |
+       {key:$vendor, value:{
+         interval_min:($old.interval_min | rung),
+         last_attempt_epoch:($old.last_attempt_epoch | epoch),
+         clean_since_epoch:(if ($old.clean_since_epoch | epoch) == 0
+                            then $now else ($old.clean_since_epoch | epoch) end)
+       }})) | from_entries'
+}
+
+# Third column: an account no refresh can help (removed, disabled, or needing a login).
+account_rows() {
+  local vendor=$1
+  [ -r "$store" ] || return 0
+  jq -r --arg vendor "$vendor" '
+    def blocked:
+      .removed == true or .enabled == false or .auth_needed == true or
+      ((.auth.status? // "") | . == "expired" or . == "failed");
+    def row($name):
+      [$name,
+       ([.five_hour?.as_of, .weekly?.as_of, .fable?.as_of, .as_of_epoch]
+        | map(select(type == "number")) | min // 0),
+       (if blocked then 1 else 0 end)] | @tsv;
+    .vendors[$vendor] // {} |
+    if (.accounts | type) == "array" and (.accounts | length) > 0 then
+      .accounts[] | row(.account)
+    else
+      row(if (.current_account | type) == "string" then .current_account else "main" end)
+    end
+  ' "$store" 2>/dev/null
+}
+
+stale_rows_json() {
+  local vendor=$1 interval=$2 want=$3 account as_of blocked age rows='[]'
+  while IFS=$'\t' read -r account as_of blocked; do
+    [ -n "$account" ] || continue
+    case "$blocked" in 1) blocked=1 ;; *) blocked=0 ;; esac
+    [ "$blocked" = "$want" ] || continue
+    case "$as_of" in ''|*[!0-9]*) as_of=0 ;; esac
+    age=$((now - as_of))
+    [ "$age" -ge 0 ] || age=0
+    if [ "$as_of" -eq 0 ] || [ "$age" -ge $((interval * 60)) ]; then
+      rows=$(jq -c --arg account "$account" '. + [$account]' <<<"$rows")
+    fi
+  done < <(account_rows "$vendor")
+  printf '%s\n' "$rows"
+}
+
+stale_accounts_json() {
+  stale_rows_json "$1" "$2" 0
+}
+
+blocked_accounts_json() {
+  stale_rows_json "$1" "$2" 1
+}
+
+store_readable() {
+  [ -r "$store" ] || return 1
+  jq -e '.vendors' "$store" >/dev/null 2>&1
+}
+
+recorded_errors() {
+  local vendor=$1 account=$2 since=$3
+  [ -r "$store" ] || return 0
+  jq -r --arg vendor "$vendor" --arg account "$account" --argjson since "$since" '
+    .vendors[$vendor] // {} |
+    [(.refresh_error // empty),
+     (.accounts[]? | select(.account == $account) | .refresh_error // empty)][] |
+    select((.cause | type) == "string") |
+    select((.at | type) != "number" or .at >= $since) | .cause
+  ' "$store" 2>/dev/null
+}
+
+is_pushback_detail() {
+  grep -Eiq '(^|[^0-9])429([^0-9]|$)|rate[- ]?limit|too many requests|resource[_ -]?exhausted|quota[^[:cntrl:]]*exceed'
+}
+
+journal_has_pushback_since() {
+  local vendor=$1 since=$2
+  [ -r "$journal_file" ] || return 1
+  jq -eR --arg vendor "$vendor" --argjson since "$since" '
+    fromjson? | select(.vendor == $vendor and .outcome == "pushback" and
+      ((.ts | type) == "number") and .ts > $since)' "$journal_file" >/dev/null 2>&1
+}
+
+journal_attempt() {
+  local vendor=$1 step=$2 accounts=$3 outcome=$4 detail=$5 interval=$6
+  mkdir -p "$(dirname "$journal_file")"
+  jq -cn --argjson ts "$now" --arg vendor "$vendor" --argjson step "$step" \
+    --argjson accounts "$accounts" --arg outcome "$outcome" --arg detail "$detail" \
+    --argjson interval "$interval" \
+    '{ts:$ts,vendor:$vendor,step:$step,accounts_tried:$accounts,outcome:$outcome,
+      detail:$detail,interval_min:$interval}' >>"$journal_file"
+}
+
+run_tick() {
+  local raw_state state due='[]' vendor interval last clean passive_rc=0
+  local stale tried outcome detail step target_rc errors post_stale refreshed_count
+  local pushback next_interval new_clean lock_dir state_tmp refresh_log rc account blocked
+
+  command -v jq >/dev/null 2>&1 || { echo 'llm-refresh: jq is required' >&2; return 3; }
+  [ -x "$collector" ] || { echo "llm-refresh: collector is not executable: $collector" >&2; return 3; }
+  case "$now" in ''|*[!0-9]*) echo 'llm-refresh: LLM_REFRESH_NOW must be an epoch' >&2; return 2 ;; esac
+
+  mkdir -p "$(dirname "$state_file")"
+  lock_dir="${state_file}.lock"
+  refresh_lock_acquire "$lock_dir" || return 0
+
+  raw_state='{}'
+  if [ -r "$state_file" ]; then
+    raw_state=$(jq -c 'select(type == "object")' "$state_file" 2>/dev/null || true)
+    [ -n "$raw_state" ] || raw_state='{}'
+  fi
+  state=$(normalized_state "$raw_state")
+
+  for vendor in claude codex gemini; do
+    interval=$(jq -r --arg vendor "$vendor" '.[$vendor].interval_min' <<<"$state")
+    last=$(jq -r --arg vendor "$vendor" '.[$vendor].last_attempt_epoch' <<<"$state")
+    if cadence_due "$interval" "$last" "$now"; then
+      due=$(jq -c --arg vendor "$vendor" '. + [$vendor]' <<<"$due")
+    fi
+  done
+
+  if [ "$(jq 'length' <<<"$due")" -gt 0 ]; then
+    "$collector" >/dev/null 2>&1 || passive_rc=$?
+  fi
+
+  while IFS= read -r vendor; do
+    interval=$(jq -r --arg vendor "$vendor" '.[$vendor].interval_min' <<<"$state")
+    clean=$(jq -r --arg vendor "$vendor" '.[$vendor].clean_since_epoch' <<<"$state")
+    stale=$(stale_accounts_json "$vendor" "$interval")
+    blocked=$(blocked_accounts_json "$vendor" "$interval")
+    tried='[]'
+    outcome=fresh-passive
+    detail='passive collect made all accounts fresh'
+    step=0
+    pushback=0
+    target_rc=0
+
+    if [ "$(jq 'length' <<<"$stale")" -gt 0 ]; then
+      if [ "$vendor" = claude ]; then
+        outcome=stale-no-path
+        detail='passive data remains stale; automated Claude refresh traffic is frozen'
+      else
+        step=1
+        while IFS= read -r account; do
+          tried=$(jq -c --arg account "$account" '. + [$account]' <<<"$tried")
+          refresh_log=$(mktemp "${TMPDIR:-/tmp}/llm-refresh.XXXXXX") || return 5
+          tick_tmp=$refresh_log
+          rc=0
+          "$collector" --refresh-account "$vendor/$account" >/dev/null 2>"$refresh_log" || rc=$?
+          errors=$(recorded_errors "$vendor" "$account" "$now")
+          if { cat "$refresh_log"; printf '%s\n' "$errors"; } | is_pushback_detail; then
+            pushback=1
+          fi
+          if [ "$rc" -ne 0 ]; then target_rc=$rc; fi
+          rm -f "$refresh_log"
+          tick_tmp=''
+        done < <(jq -r '.[]' <<<"$stale")
+
+        post_stale=$(stale_accounts_json "$vendor" "$interval")
+        refreshed_count=$(jq -n --argjson before "$stale" --argjson after "$post_stale" \
+          '$before - $after | length')
+        if [ "$pushback" -eq 1 ]; then
+          outcome=pushback
+          detail='refresh path reported a 429 or rate-limit signal'
+        elif [ "$(jq 'length' <<<"$post_stale")" -eq 0 ]; then
+          outcome=refreshed
+          detail='all stale accounts refreshed'
+        elif [ "$refreshed_count" -gt 0 ]; then
+          outcome=partial
+          detail="$refreshed_count account(s) refreshed; still stale: $(jq -r 'join(",")' <<<"$post_stale")"
+        else
+          outcome=error
+          if [ "$target_rc" -ne 0 ]; then
+            detail="refresh path exited $target_rc; accounts remain stale"
+          else
+            detail='refresh path completed but accounts remain stale'
+          fi
+        fi
+      fi
+    elif [ "$passive_rc" -ne 0 ]; then
+      if store_readable; then
+        detail="accounts are fresh despite passive collector exit $passive_rc"
+      else
+        # No rows because the store is unreadable is "no data", never "all fresh".
+        outcome=error
+        detail="passive collector exited $passive_rc and the store is missing or unparseable: $store"
+      fi
+    fi
+
+    if [ "$(jq 'length' <<<"$blocked")" -gt 0 ]; then
+      detail="$detail; unrefreshable: $(jq -r 'join(",")' <<<"$blocked")"
+    fi
+
+    next_interval=$interval
+    new_clean=$clean
+    if [ "$outcome" = pushback ]; then
+      next_interval=$(ladder_loosen "$interval")
+      new_clean=$now
+    elif [ "$passive_rc" -eq 0 ] && clean_window_elapsed "$clean" "$now" &&
+         ! journal_has_pushback_since "$vendor" "$clean"; then
+      next_interval=$(ladder_tighten "$interval")
+      new_clean=$now
+    fi
+
+    state=$(jq -c --arg vendor "$vendor" --argjson interval "$next_interval" \
+      --argjson now "$now" --argjson clean "$new_clean" \
+      '.[$vendor].interval_min=$interval |
+       .[$vendor].last_attempt_epoch=$now |
+       .[$vendor].clean_since_epoch=$clean' <<<"$state")
+    journal_attempt "$vendor" "$step" "$tried" "$outcome" "$detail" "$next_interval" || return 5
+  done < <(jq -r '.[]' <<<"$due")
+
+  state_tmp=$(mktemp "${state_file}.tmp.XXXXXX") || return 5
+  tick_tmp=$state_tmp
+  if ! printf '%s\n' "$state" >"$state_tmp" || ! jq -e '
+    .claude and .codex and .gemini and all(.[]; type == "object")' "$state_tmp" >/dev/null; then
+    rm -f "$state_tmp"
+    return 5
+  fi
+  mv -f "$state_tmp" "$state_file"
+  tick_tmp=''
+  if [ -r "$journal_file" ] && [ "$(wc -l <"$journal_file")" -gt 4000 ]; then
+    state_tmp=$(mktemp "${journal_file}.tmp.XXXXXX") || return 5
+    tick_tmp=$state_tmp
+    if ! { tail -n 2000 "$journal_file" >"$state_tmp" && mv -f "$state_tmp" "$journal_file"; }; then
+      rm -f "$state_tmp"
+    fi
+    tick_tmp=''
+  fi
+  refresh_lock_release
+}
+
+install_agent() {
+  local wrapper_tmp
+  mkdir -p "$(dirname "$wrapper")" "$(dirname "$agent_plist")"
+  wrapper_tmp=$(mktemp "${wrapper}.tmp.XXXXXX") || return 1
+  printf '#!/usr/bin/env bash\nexec %q "$@"\n' "$script_path" >"$wrapper_tmp"
+  chmod 755 "$wrapper_tmp"
+  mv -f "$wrapper_tmp" "$wrapper"
+  cp "$repo_root/launchd/com.llm-refresh.plist" "$agent_plist"
+  launchctl bootout "gui/$UID" "$agent_plist" >/dev/null 2>&1 || true
+  if ! launchctl bootstrap "gui/$UID" "$agent_plist"; then
+    launchctl load -w "$agent_plist"
+  fi
+  printf 'Installed %s with a 300-second heartbeat.\n' "$label"
+}
+
+uninstall_agent() {
+  launchctl bootout "gui/$UID" "$agent_plist" >/dev/null 2>&1 || \
+    launchctl unload -w "$agent_plist" >/dev/null 2>&1 || true
+  rm -f "$agent_plist"
+  if [ -f "$wrapper" ] && grep -qF "exec $script_path" "$wrapper"; then
+    rm -f "$wrapper"
+  fi
+  printf 'Uninstalled %s.\n' "$label"
+}
+
+usage() {
+  printf 'usage: llm-refresh [run|install-agent|uninstall-agent]\n' >&2
+  exit 2
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  case "${1:-run}" in
+    run)
+      [ "$#" -le 1 ] || usage
+      trap 'exit 129' HUP INT TERM
+      trap '[ -z "$tick_tmp" ] || rm -f "$tick_tmp"; refresh_lock_release' EXIT
+      run_tick
+      ;;
+    install-agent) [ "$#" -eq 1 ] || usage; install_agent ;;
+    uninstall-agent) [ "$#" -eq 1 ] || usage; uninstall_agent ;;
+    *) usage ;;
+  esac
+fi

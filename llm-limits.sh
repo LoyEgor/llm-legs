@@ -91,6 +91,7 @@ while [ -L "$script_path" ]; do
   esac
 done
 script_dir=$(cd "$(dirname "$script_path")" && pwd)
+. "$script_dir/share/store-lock.sh"
 
 chunk_bytes=${LLM_LIMITS_CHUNK_BYTES:-4194304}
 case "$chunk_bytes" in
@@ -555,6 +556,8 @@ gemini_refresh_records='[]'
 gemini_refresh_results_dir=''
 gemini_refresh_result_index=0
 gemini_refresh_result_file=''
+cache_lock=''
+cache_tmp=''
 
 record_gemini_refresh() {
   jq -cn --arg account "$2" --argjson attempted "$3" --argjson succeeded "$4" --arg error "$5" \
@@ -575,8 +578,12 @@ new_gemini_refresh_result() {
 
 cleanup_gemini_refresh_results() {
   [ -z "$gemini_refresh_results_dir" ] || rm -rf "$gemini_refresh_results_dir"
+  [ -z "$cache_tmp" ] || rm -f "$cache_tmp"
+  [ -z "$cache_lock" ] || store_lock_release "$cache_lock"
 }
 trap cleanup_gemini_refresh_results EXIT
+# A bare signal death skips the EXIT trap and would strand the store lock until the stale-break.
+trap 'exit 129' HUP INT TERM
 
 refresh_gemini_quota() {
   local account=$1 result_file=$2 gemini_cmd=${LLM_LIMITS_GEMINI_CMD:-$script_dir/agy-quota.py}
@@ -1338,6 +1345,25 @@ while IFS= read -r gemini_account; do
 done <<<"$gemini_accounts_list"
 
 gemini_order=$(printf '%s\n' "$gemini_accounts_list" | account_order_json gemini)
+if [ "$write_cache" -eq 1 ]; then
+  if ! mkdir -p "$(dirname "$cache")"; then
+    echo "llm-limits.sh: cache directory creation failed" >&2
+    exit 5
+  fi
+  # Only a held lock goes into cache_lock: the EXIT trap must never release one we lost.
+  cache_lock_path="${cache}.lock"
+  if ! store_lock_acquire "$cache_lock_path"; then
+    echo "llm-limits.sh: cache lock acquisition failed" >&2
+    exit 5
+  fi
+  cache_lock=$cache_lock_path
+  # Re-read under the lock so every merge includes the preceding writer's update.
+  previous_cache='{}'
+  if [ -r "$cache" ]; then
+    previous_cache=$(jq -c 'select(.schema == 1 and (.vendors | type) == "object")' "$cache" 2>/dev/null || true)
+    [ -n "$previous_cache" ] || previous_cache='{}'
+  fi
+fi
 gemini_accounts=$(printf '%s' "$gemini_account_lines" | jq -sc --argjson order "$gemini_order" \
   --argjson previous "$previous_cache" --argjson records "$gemini_refresh_records" --argjson now "$now_epoch" '
   def old_error($name):
@@ -1563,6 +1589,35 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
       ] as $kept |
       if ($kept | length) == 0 then null else {cause:($kept | join("; ")),at:$err.at} end
     end;
+  # Our vendor objects were built from data read before the lock, so a collector that
+  # committed meanwhile would be overwritten wholesale. Keep its row per account when it
+  # is strictly newer; removals and accounts absent from this build always win.
+  def row_as_of:
+    [.five_hour?.as_of, .weekly?.as_of, .fable?.as_of, .as_of, .as_of_epoch] |
+    map(if type == "number" then . elif type == "string" then iso2epoch else null end) |
+    map(select(type == "number")) | max;
+  def newest_accounts($key):
+    ($previous.vendors[$key].accounts) as $old |
+    if (.accounts | type) != "array" or ($old | type) != "array" then .
+    else
+      .accounts |= map(. as $new |
+        (first($old[] | select(.account == $new.account)) // null) as $prev |
+        if $new.removed == true or $prev == null then $new
+        else
+          ($new | row_as_of) as $new_at | ($prev | row_as_of) as $prev_at |
+          if ($prev_at | type) == "number" and
+             (($new_at | type) != "number" or $prev_at > $new_at)
+          then
+            # Local state (auth, pool usability, removal, current-account mark) is read fresh
+            # by this run, so a newer cached row must not carry an older verdict of it back in —
+            # including blocked/rotation, which are derived from auth+enabled and would
+            # otherwise contradict the grafted fields they derive from.
+            ($prev | del(.auth, .auth_needed, .enabled, .removed, .blocked, .rotation, .is_current))
+            + ($new | {auth,auth_needed,enabled,removed,blocked,rotation,is_current}
+                    | with_entries(select(.value != null)))
+          else $new end
+        end)
+    end;
   # A failed refresh keeps the last good buckets, but an auth-needed verdict is a definite
   # state (not a transient failure) and must never be overwritten by stale prior data.
   def vendor_data($key; $current; $attempted; $cause):
@@ -1574,6 +1629,7 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
     claude:vendor_data("claude"; $claude; $claude_attempted; $claude_error),
     codex:vendor_data("codex"; $codex; $codex_attempted; $codex_error),
     gemini:vendor_data("gemini"; $gemini; $gemini_attempted; $gemini_error)}}
+  | .vendors |= with_entries(.key as $key | .value |= newest_accounts($key))
   | heal_claude_error(outcome_error($previous.vendors.claude.refresh_error; $claude_attempted; $claude_error); .vendors.claude.accounts) as $claude_outcome
   | outcome_error($previous.vendors.codex.refresh_error; $codex_attempted; $codex_error) as $codex_outcome
   | outcome_error($previous.vendors.gemini.refresh_error; $gemini_attempted; $gemini_error) as $gemini_outcome
@@ -1609,21 +1665,18 @@ if ! jq -e '.schema == 1 and (.vendors | type) == "object"' <<<"$result" >/dev/n
 fi
 
 if [ "$write_cache" -eq 1 ]; then
-  if ! mkdir -p "$(dirname "$cache")"; then
-    echo "llm-limits.sh: cache directory creation failed" >&2
-    exit 5
-  fi
-  tmp=$(mktemp "${cache}.tmp.XXXXXX") || { echo "llm-limits.sh: cache temp creation failed" >&2; exit 5; }
-  trap 'rm -f "$tmp"' EXIT HUP INT TERM
-  if ! printf '%s\n' "$result" >"$tmp" || ! jq -e '.schema == 1 and (.vendors | type) == "object"' "$tmp" >/dev/null 2>&1; then
+  cache_tmp=$(mktemp "${cache}.tmp.XXXXXX") || { echo "llm-limits.sh: cache temp creation failed" >&2; exit 5; }
+  if ! printf '%s\n' "$result" >"$cache_tmp" || ! jq -e '.schema == 1 and (.vendors | type) == "object"' "$cache_tmp" >/dev/null 2>&1; then
     echo "llm-limits.sh: cache temp validation failed" >&2
     exit 5
   fi
-  if ! mv -f "$tmp" "$cache"; then
+  if ! mv -f "$cache_tmp" "$cache"; then
     echo "llm-limits.sh: cache replace failed" >&2
     exit 5
   fi
-  trap - EXIT HUP INT TERM
+  cache_tmp=''
+  store_lock_release "$cache_lock"
+  cache_lock=''
 fi
 
 experiments_banner() {
