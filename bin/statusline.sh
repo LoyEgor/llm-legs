@@ -421,13 +421,7 @@ if [ -n "$session_id" ] && [ -n "$ctx_size" ] && [ "$ctx_size" -gt 0 ] 2>/dev/nu
   window_seen=""
   [ -r "$window_file" ] && read -r window_seen < "$window_file" 2>/dev/null
   if [ "$window_seen" != "$ctx_size" ] && mkdir -p "$nudge_dir" 2>/dev/null; then
-    # Per-session files (windows and the hook's stage flags) are never cleaned by
-    # their writers; the rarely-taken write path is the cheapest place to sweep.
-    # CONTEXT_NUDGE_STATE_DIR is overridable, so the sweep names the files it owns
-    # rather than everything a misconfigured override happens to point at.
-    find "$nudge_dir" -maxdepth 1 -type f -mtime +30 \
-      \( -name '*.window' -o -name '*.stage1' -o -name '*.stage2' -o -name '*.bnd' \) \
-      -delete 2>/dev/null || true
+    # No sweep here: hooks/context-nudge.sh (claude-setup) sweeps this directory daily.
     window_tmp="$window_file.tmp.$$"
     printf '%s\n' "$ctx_size" > "$window_tmp" 2>/dev/null &&
       mv "$window_tmp" "$window_file" 2>/dev/null || rm -f "$window_tmp" 2>/dev/null

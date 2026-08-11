@@ -1621,21 +1621,17 @@ mid_boundary=$(run_statusline "$(statusline_payload "" "$(warm_extra "$TRANSCRIP
 assert grep -Fq "52k" <<< "$mid_boundary"
 assert test "${mid_boundary#*0k}" = "$mid_boundary"
 
-# CONTEXT_NUDGE_STATE_DIR is overridable, so the sweep deletes only the names this
-# system writes; anything else sharing the directory is somebody's data.
+# Sweeping this directory is context-nudge.sh's job (claude-setup); the window
+# write path must leave even ancient files of other sessions alone.
 t_reset; t_assist $((NOW - 5))
 printf 'stale\n' > "$NUDGE_DIR/old.window"
-printf 'not ours\n' > "$NUDGE_DIR/unrelated.txt"
-mkdir -p "$NUDGE_DIR/nested"
-printf 'stale\n' > "$NUDGE_DIR/nested/deep.window"
-touch -t 202001010000 "$NUDGE_DIR/old.window" "$NUDGE_DIR/unrelated.txt" "$NUDGE_DIR/nested/deep.window"
+touch -t 202001010000 "$NUDGE_DIR/old.window"
 prune_extra=$(jq -cn --arg tp "$TRANSCRIPT" \
   '{transcript_path:$tp,context_window:{context_window_size:200000,used_percentage:10,current_usage:{input_tokens:20000}}}')
 run_statusline "$(statusline_payload ctx-bnd-prune "$prune_extra")" >/dev/null
-assert test ! -e "$NUDGE_DIR/old.window"
-assert test -f "$NUDGE_DIR/unrelated.txt"
-assert test -f "$NUDGE_DIR/nested/deep.window"
-rm -rf "$NUDGE_DIR/nested" "$NUDGE_DIR/unrelated.txt"
+assert test -f "$NUDGE_DIR/ctx-bnd-prune.window"
+assert test -f "$NUDGE_DIR/old.window"
+rm -f "$NUDGE_DIR/old.window" "$NUDGE_DIR/ctx-bnd-prune.window"
 
 # --- a known boundary must not stop the window before it has been reached ---
 # The sidecar knows the boundary from the whole file, i.e. from a position the
