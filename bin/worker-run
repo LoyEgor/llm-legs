@@ -219,6 +219,7 @@ pick_account() {
   PICKED_RC=0
   PICKED_RESERVE=false
   PICKED_POOL_EMPTY=false
+  PICKED_ROLE_OFF=false
   picker="${WORKER_RUN_WORKER_PICK:-worker-pick}"
   busy=$(busy_accounts "$vendor")
   combined=$(printf '%s\n%s\n' "$walled" "$busy" | tr ',' '\n' | grep -v '^$' | awk '!seen[$0]++' | paste -sd, -)
@@ -241,6 +242,9 @@ pick_account() {
   # An empty pool is Egor's choice, not a limit: reporting it as a usage limit would send the
   # orchestrator hunting for quota that is not the problem.
   ! grep -Eq 'every [a-z]+ account is out of the worker pool' "$errors" || PICKED_POOL_EMPTY=true
+  # A vendor closed for this role is the same kind of decision, and its accounts may be at 0%.
+  # Only workers is asked for here, so only workers can come back.
+  ! grep -q 'is switched off for workers' "$errors" || PICKED_ROLE_OFF=true
   rm -f "$errors"
   PICKED_ACCOUNT=${PICKED_ACCOUNT%%$'\n'*}
 }
@@ -487,6 +491,10 @@ start_run() {
         printf 'OUTCOME: %s_UNAVAILABLE\n' "$(vendor_name "$vendor")"
         fail "every $vendor account is out of the worker pool; ask Egor to put one back in or pin one"
       fi
+      if [ "$PICKED_ROLE_OFF" = true ]; then
+        printf 'OUTCOME: %s_UNAVAILABLE\n' "$(vendor_name "$vendor")"
+        fail "$vendor is switched off for workers; ask Egor to turn the role back on or name another vendor"
+      fi
       printf 'OUTCOME: %s_USAGE_LIMIT\n' "$(vendor_name "$vendor")"
       exit 3
     else
@@ -502,6 +510,14 @@ start_run() {
         account=main
       fi
     fi
+  fi
+  # The role switch walls the vendor exactly the way the pool walls an account: an explicit
+  # --account, a resumed session or the pin fallback cannot get in under it, and the vendor pin is
+  # the one override, because naming it there is the deliberate "use this one anyway".
+  if [ "$(config_value "${vendor}_workers")" = off ] &&
+     [ "$account" != "$(config_value "${vendor}_profile")" ]; then
+    printf 'OUTCOME: %s_UNAVAILABLE\n' "$(vendor_name "$vendor")"
+    fail "$vendor is switched off for workers; ask Egor to turn the role back on or name another vendor"
   fi
   # The pool is a wall, not advice to the picker: an account Egor took out cannot carry a worker
   # even when the brief names it outright — only the vendor pin overrides. A picked account is

@@ -2181,6 +2181,19 @@ jq -e '.refresh_error.cause == "no vendor data available" and
   (.refresh_error.at | type) == "number"' <<<"$missing_json" >/dev/null \
   || fail "all-missing case lacked a structured global error"
 
+# An opaque gray is legible in exactly one appearance, and the menu is drawn in both: every dim in
+# the renderer must come from dimColor(), which derives the tone per render. Runs whether or not
+# Hammerspoon is available — the evidence is the source text.
+gray_hits=$(awk '
+  /grayColor/ { printf "line %d: %s\n", NR, $0 }
+  /red *=/ && /green *=/ && /blue *=/ && !/alpha/ {
+    r = $0; sub(/.*red *= */, "", r); sub(/[ ,}].*/, "", r)
+    g = $0; sub(/.*green *= */, "", g); sub(/[ ,}].*/, "", g)
+    b = $0; sub(/.*blue *= */, "", b); sub(/[ ,}].*/, "", b)
+    if (r == g && g == b) printf "line %d: %s\n", NR, $0
+  }' "$ROOT/hammerspoon/llm-limits.lua")
+[ -z "$gray_hits" ] || fail "opaque gray is unreadable in one appearance — style dim text with dimColor() instead: $gray_hits"
+
 hs_bounded() {
   python3 - "$@" <<'PY'
 import subprocess
@@ -2205,5 +2218,5 @@ else
   echo "SKIP (hs unavailable): Hammerspoon projection contract"
 fi
 
-echo "PASS: account order (priority names, profile birth time, unknowns last) and vendor-scoped --refresh-account, schema, Claude unique accounts and fallback, Codex multi-account reset credits, auth-needed accounts and legacy cache, local Claude rotation usability, enabled flags, freshness contract, reset placeholder normalization, machine effective percentages and usability, refresh failure reasons, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, weekly bucket provenance, experiment announcements, Hammerspoon projection contract, plain output, table output and sorts, reset tiers, expired windows, bare JSON default, atomic cache, missing exit 3"
+echo "PASS: account order (priority names, profile birth time, unknowns last) and vendor-scoped --refresh-account, schema, Claude unique accounts and fallback, Codex multi-account reset credits, auth-needed accounts and legacy cache, local Claude rotation usability, enabled flags, freshness contract, reset placeholder normalization, machine effective percentages and usability, refresh failure reasons, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, weekly bucket provenance, experiment announcements, Hammerspoon projection contract, no opaque gray in the renderer, plain output, table output and sorts, reset tiers, expired windows, bare JSON default, atomic cache, missing exit 3"
 exit 0

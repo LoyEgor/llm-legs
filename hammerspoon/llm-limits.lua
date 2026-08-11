@@ -2,6 +2,9 @@ local home = os.getenv("HOME")
 local workerStatsDir = os.getenv("WORKER_STATS_DIR")
   or (os.getenv("CLAUDEB_DIR") or home .. "/.claude-profiles/.claudeb") .. "/worker-stats"
 local WALL_STATE_FILE = "walls.jsonl"
+-- The shell helper is this repo's, so it is found beside this file: an absolute path survives a
+-- moved checkout by pointing at the old one.
+local repoRoot = (debug.getinfo(1, "S").source or ""):match("^@(.*)/[^/]+/[^/]+$")
 
 local M = {
   cachePath = home .. "/.llm-limits.json",
@@ -10,6 +13,7 @@ local M = {
   codexbCmd = "codexb",
   geminibCmd = "geminib",
   workerModelPath = home .. "/.claude/worker-model",
+  workerModelShPath = repoRoot and repoRoot .. "/share/worker-model.sh" or nil,
   workerPickPath = home .. "/.local/bin/worker-pick",
   opencodeProfilesPath = home .. "/.config/opencode-go/profiles",
   wallsPath = workerStatsDir .. "/" .. WALL_STATE_FILE,
@@ -18,7 +22,6 @@ local M = {
   onRefreshStateChanged = function() end,
 }
 
-local grayColor = { red = 0.55, green = 0.55, blue = 0.55 }
 local redColor = { red = 0.9, green = 0.25, blue = 0.2 }
 local dimRedColor = { red = 0.9, green = 0.25, blue = 0.2, alpha = 0.55 }
 local menuFont = { name = "Menlo", size = 13 }
@@ -26,7 +29,8 @@ local menuFont = { name = "Menlo", size = 13 }
 -- A fixed 0.55 gray washed out against the menu, and NSColor's own secondaryLabelColor is worse
 -- here: hs.styledtext resolves it once, and it came back as dark-mode white while the system was
 -- light, which would paint the age white on a light menu. So the dim tone is the menu's own text
--- colour at 55%, derived per render from the appearance the menu is about to be drawn in.
+-- colour at 55%, derived per render from the appearance the menu is about to be drawn in. This is
+-- the ONLY dim in this file — tests/test_llm_limits.sh fails on any opaque gray coming back.
 local function dimColor()
   -- hs.host is absent from the isolated loaders the surface tests build, and a menu that throws
   -- while rendering a row is worse than one rendered for the light appearance.
@@ -50,20 +54,20 @@ local function pinTitle()
   return hs.styledtext.new("  ●", { font = menuFont })
 end
 
-local function infoTitle(text, warning, gray, atLimit)
+local function infoTitle(text, warning, dim, atLimit)
   local attributes = { font = menuFont }
   if atLimit then
-    attributes.color = gray and dimRedColor or redColor
-  elseif gray then
-    attributes.color = grayColor
+    attributes.color = dim and dimRedColor or redColor
+  elseif dim then
+    attributes.color = dimColor()
   elseif warning then
     attributes.color = redColor
   end
   return hs.styledtext.new(text, attributes)
 end
 
-local function loginNeededTitle(account, pinned, age, needsUserEntry)
-  local title = infoTitle(account)
+local function loginNeededTitle(account, pinned, age, needsUserEntry, unused)
+  local title = infoTitle(account, false, unused == true)
   if pinned then title = title .. pinTitle() end
   if age then title = title .. metaTitle("  " .. age) end
   if needsUserEntry then title = title .. metaTitle("  !") end
@@ -72,7 +76,8 @@ end
 
 -- Keep logged-out vendor actions in one constructor so their UX cannot drift; a pin action is
 -- clear-only because logged-out accounts must never become newly pinnable.
-local function loginNeededRow(label, loginFn, hardRefreshFn, removeFn, clearPinFn, age, needsUserEntry)
+local function loginNeededRow(label, loginFn, hardRefreshFn, removeFn, clearPinFn, age,
+    needsUserEntry, unused)
   local menu = {
     { title = "Log in…", fn = loginFn },
     { title = "Hard refresh", fn = hardRefreshFn },
@@ -86,19 +91,19 @@ local function loginNeededRow(label, loginFn, hardRefreshFn, removeFn, clearPinF
     table.insert(menu, { title = "Remove " .. label, fn = removeFn })
   end
   return {
-    title = loginNeededTitle(label, clearPinFn ~= nil, age, needsUserEntry),
+    title = loginNeededTitle(label, clearPinFn ~= nil, age, needsUserEntry, unused),
     menu = menu,
   }
 end
 
-local function geminiLoginNeededRow(label, account, pinned, age, needsUserEntry)
+local function geminiLoginNeededRow(label, account, pinned, age, needsUserEntry, unused)
   local clearPinFn
   if pinned then clearPinFn = function() M.pinGemini(account, true) end end
   return loginNeededRow(label,
     function() M.loginGemini(account) end,
     function() M.hardRefreshGemini(account) end,
     function() M.removeGemini(account) end,
-    clearPinFn, age, needsUserEntry)
+    clearPinFn, age, needsUserEntry, unused)
 end
 
 local function truncateText(text, maxLength)
@@ -181,15 +186,15 @@ end
 
 -- The pin goes straight after the name, ahead of the age and the warnings: it says which account
 -- the workers are held to, and reading that must not mean scanning past everything else on the row.
-local function accountTitle(text, age, atLimit, needsUserEntry, pinned, suffix)
-  local title = infoTitle(text, false, false, atLimit)
+local function accountTitle(text, age, atLimit, needsUserEntry, pinned, suffix, unused)
+  local title = infoTitle(text, false, unused == true, atLimit)
   if pinned then
     title = title .. pinTitle()
   end
   -- The reset-credit suffix belongs to the account, but the pin comes first: folding the suffix
   -- into `text` put it between the name and the pin.
   if suffix and suffix ~= "" then
-    title = title .. infoTitle(suffix, false, false, atLimit)
+    title = title .. infoTitle(suffix, false, unused == true, atLimit)
   end
   if age then
     title = title .. metaTitle("  " .. age)
@@ -241,10 +246,10 @@ end
 
 -- `columns` overrides the number and the reset a bucket would print, for a vendor that states
 -- neither: an empty column reads as "not measured", while "-" and "–" read as a reading taken.
-local function rowTitle(account, label, bucket, gray, atLimit, barWarning, columns)
+local function rowTitle(account, label, bucket, dim, atLimit, barWarning, columns)
   bucket = type(bucket) == "table" and bucket or {}
   columns = columns or {}
-  gray = gray or bucket.expired == true or resetIsPast(bucket.resets_at)
+  dim = dim or bucket.expired == true or resetIsPast(bucket.resets_at)
   local pct = tonumber(bucket.effective_pct)
   local pctText = columns.pct or (pct and string.format("%d%%", math.floor(pct + 0.5)) or "-")
   local reset = columns.reset or formatResetTime(bucket.resets_at)
@@ -252,11 +257,11 @@ local function rowTitle(account, label, bucket, gray, atLimit, barWarning, colum
   local bar = usageBar(pct)
   local suffix = string.format("  %4s  %9s", pctText, reset)
   if barWarning and not atLimit then
-    return infoTitle(prefix, false, gray, false)
+    return infoTitle(prefix, false, dim, false)
       .. infoTitle(bar, true, false, false)
-      .. infoTitle(suffix, false, gray, false)
+      .. infoTitle(suffix, false, dim, false)
   end
-  return infoTitle(prefix .. bar .. suffix, false, gray, atLimit)
+  return infoTitle(prefix .. bar .. suffix, false, dim, atLimit)
 end
 
 local function readOpenCodeProfiles()
@@ -402,26 +407,46 @@ local function readLlmLimits()
   return nil, "error reading cache: " .. tostring(result)
 end
 
-local function readWorkerPins()
-  local ok, pins = pcall(function()
-    local result = {}
+-- The menu speaks the collector's vendor keys; the worker-model file spells Claude "claudeb".
+local WORKER_MODEL_PREFIX = { claude = "claudeb", codex = "codex", gemini = "gemini" }
+local WORKER_ROLES = { "workers", "reviewers" }
+
+local function defaultWorkerRoles()
+  local roles = {}
+  for vendor in pairs(WORKER_MODEL_PREFIX) do
+    roles[vendor] = { workers = true, reviewers = true }
+  end
+  return roles
+end
+
+local function readWorkerModel()
+  local pins, roles = {}, defaultWorkerRoles()
+  pcall(function()
     local file = io.open(M.workerModelPath, "r")
-    if not file then return result end
+    if not file then return end
     local contents = file:read("*a")
     file:close()
+    -- First line wins, because every shell reader of this file stops at the first match; a
+    -- hand-edited duplicate must not point the menu at one value and the routers at another.
+    local seen = {}
     for line in tostring(contents):gmatch("[^\r\n]+") do
       local key, value = line:match("^([%w_]+)=(.*)$")
-      if key == "claudeb_profile" then
-        result.claude = value
-      elseif key == "codex_profile" then
-        result.codex = value
-      elseif key == "gemini_profile" then
-        result.gemini = value
+      if key and not seen[key] then
+        seen[key] = true
+        for vendor, prefix in pairs(WORKER_MODEL_PREFIX) do
+          if key == prefix .. "_profile" then
+            pins[vendor] = value
+          else
+            for _, role in ipairs(WORKER_ROLES) do
+              -- Only the literal "off" is a veto, which is what worker-pick and review-bench read.
+              if key == prefix .. "_" .. role then roles[vendor][role] = value ~= "off" end
+            end
+          end
+        end
       end
     end
-    return result
   end)
-  return ok and pins or {}
+  return pins, roles
 end
 
 local function baseEnvironment()
@@ -843,18 +868,47 @@ function M.refreshVendor(vendor)
   userRefreshData({ "--refresh-account", vendor }, "vendor-refresh", 360, "vendor-refresh:" .. vendor)
 end
 
-local vendorRunners = { claude = runClaudeb, codex = runCodexb, gemini = runGeminib }
+-- The write itself belongs to share/worker-model.sh, which holds the lock every other writer of
+-- this file holds; rewriting it from here would resurrect a pin worker-pick had just cleared.
+-- Arguments travel as environment, so no path or value is ever parsed as shell.
+local WORKER_ROLE_SCRIPT =
+  '. "$WORKER_MODEL_SH" && worker_model_set_role "$WM_VENDOR" "$WM_ROLE" "$WM_STATE"'
 
--- One command flips the whole vendor, and an override per visible account keeps the reopened menu
--- from showing the pre-command cache until the collect that follows lands.
-function M.setVendorPool(vendor, accounts, enable)
-  local runner = vendorRunners[vendor]
-  if not runner then return end
-  runner({ enable and "enable" or "disable", "--all" }, "toggle failed", function()
-    for _, account in ipairs(accounts) do
-      setPoolOverride(vendor, account, enable)
+function M.setWorkerRole(vendor, role, enable)
+  local prefix = WORKER_MODEL_PREFIX[vendor]
+  local known = false
+  for _, name in ipairs(WORKER_ROLES) do known = known or name == role end
+  if not prefix or not known then return end
+  local state = enable and "on" or "off"
+  local label = string.format("worker-model %s_%s=%s", prefix, role, state)
+  local key = "worker-role:" .. prefix .. "\0" .. role
+  if taskForKey(key) then
+    logAction("already-running", label)
+    hs.alert.show("llm-limits: " .. label .. " is still running")
+    return
+  end
+  logAction("launch", label)
+  local id = reserveTask("worker-role", 60, key)
+  local task = hs.task.new("/bin/bash", function(exitCode, stdOut, stdErr)
+    if exitCode ~= 0 then
+      logAction("failed", string.format("%s exit=%s %s", label, tostring(exitCode),
+        tostring((stdErr or stdOut or ""):gsub("%s+", " "):sub(1, 160))))
+      hs.alert.show("llm-limits: " .. label .. " failed")
+    else
+      logAction("done", label .. " exit=0")
     end
-  end)
+    finishTask(id, exitCode, stdOut, stdErr, "role toggle failed")
+  end, { "-c", WORKER_ROLE_SCRIPT })
+  if task then
+    local environment = baseEnvironment()
+    environment.WORKER_MODEL_SH = M.workerModelShPath
+    environment.WORKER_PICK_CONFIG_FILE = M.workerModelPath
+    environment.WM_VENDOR = prefix
+    environment.WM_ROLE = role
+    environment.WM_STATE = state
+    task:setEnvironment(environment)
+  end
+  startTask(id, task, "role toggle failed")
 end
 
 -- --force is mandatory here, not a convenience: both CLIs' alive-guards only test that a
@@ -1015,7 +1069,7 @@ local function routingSubmenu()
     return {{ title = infoTitle("routing unavailable", false, true), disabled = true }}
   end
   local store = hs.fs.attributes(M.cachePath)
-  local gray = M.routingFailed == true
+  local dim = M.routingFailed == true
     or (type(store) == "table" and type(store.modification) == "number"
       and cache.at < store.modification)
   local lines = {}
@@ -1031,11 +1085,11 @@ local function routingSubmenu()
     return {{ title = infoTitle("routing unavailable", false, true), disabled = true }}
   end
   local menu = {{
-    title = infoTitle("as of " .. os.date("%H:%M", cache.at), false, gray),
+    title = infoTitle("as of " .. os.date("%H:%M", cache.at), false, dim),
     disabled = true,
   }}
   for _, line in ipairs(routingDisplayLines(lines)) do
-    table.insert(menu, { title = infoTitle(line, false, gray), disabled = true })
+    table.insert(menu, { title = infoTitle(line, false, dim), disabled = true })
   end
   return menu
 end
@@ -1080,7 +1134,19 @@ function M.menuItems()
   })
   table.insert(menu, { title = "-" })
   if limits and type(limits.vendors) == "table" then
-    local pins = readWorkerPins()
+    local pins, roles = readWorkerModel()
+    local function roleItems(vendorKey)
+      local items = {}
+      for _, role in ipairs(WORKER_ROLES) do
+        local on = roles[vendorKey][role]
+        table.insert(items, {
+          title = role == "workers" and "For workers" or "For reviewers",
+          checked = on,
+          fn = function() M.setWorkerRole(vendorKey, role, not on) end,
+        })
+      end
+      return items
+    end
     local vendors = {
       { key = "claude", label = "Claude" },
       { key = "codex", label = "Codex" },
@@ -1090,8 +1156,16 @@ function M.menuItems()
     for _, entry in ipairs(vendors) do
       local vendor = limits.vendors[entry.key]
       local pinnedAccount = pins[entry.key]
+      -- A vendor no role may use is still fully operable; its rows only stop claiming attention.
+      local unused = not roles[entry.key].workers and not roles[entry.key].reviewers
       local renderedPin = false
       local renderedAccountRows = false
+      -- A sole-account vendor has no section header to carry the role switches, so its own row
+      -- does — logged out included, which is when parking the vendor is the point.
+      local function appendRoleItems(row)
+        if type(row.menu) ~= "table" then return end
+        for _, item in ipairs(roleItems(entry.key)) do table.insert(row.menu, item) end
+      end
       local hasGeminiAccounts = entry.key == "gemini" and type(vendor) == "table"
         and type(vendor.accounts) == "table" and #vendor.accounts > 1
       -- A removed single-account vendor (gemini marker) is skipped entirely until its
@@ -1103,12 +1177,12 @@ function M.menuItems()
         local unavailableRow
         if entry.key == "gemini" and authNeeded then
           unavailableRow = geminiLoginNeededRow(entry.label, "main", pinnedAccount == "main",
-            formatAccountAge(vendor.as_of), vendor.needs_user_entry == true)
+            formatAccountAge(vendor.as_of), vendor.needs_user_entry == true, unused)
           renderedPin = pinnedAccount == "main"
         else
           unavailableRow = {
             title = authNeeded and loginNeededTitle(entry.label, false,
-              formatAccountAge(vendor.as_of), vendor.needs_user_entry == true)
+              formatAccountAge(vendor.as_of), vendor.needs_user_entry == true, unused)
               or infoTitle(string.format("%-6s  no live data", entry.label)),
             disabled = true,
           }
@@ -1119,6 +1193,11 @@ function M.menuItems()
             }}
           end
         end
+        if type(unavailableRow.menu) ~= "table" then
+          unavailableRow.disabled = nil
+          unavailableRow.menu = {}
+        end
+        appendRoleItems(unavailableRow)
         table.insert(menu, unavailableRow)
       else
         local blocks = (entry.key == "claude" or entry.key == "codex" or entry.key == "gemini")
@@ -1143,16 +1222,7 @@ function M.menuItems()
         end
         if isAccountRows then
           local sectionMenu = {}
-          if hasAccountControls or isCodexAccounts or isGeminiAccounts then
-            local accounts = {}
-            for _, block in ipairs(blocks) do
-              if type(block.account) == "string" then table.insert(accounts, block.account) end
-            end
-            table.insert(sectionMenu, { title = "Enable all",
-              fn = function() M.setVendorPool(entry.key, accounts, true) end })
-            table.insert(sectionMenu, { title = "Disable all",
-              fn = function() M.setVendorPool(entry.key, accounts, false) end })
-          end
+          for _, item in ipairs(roleItems(entry.key)) do table.insert(sectionMenu, item) end
           table.insert(sectionMenu, { title = "Refresh",
             fn = function() M.refreshVendor(entry.key) end })
           table.insert(menu, { title = infoTitle(entry.label), menu = sectionMenu })
@@ -1162,7 +1232,7 @@ function M.menuItems()
           local geminiPinned = entry.key == "gemini" and pinnedAccount == "main"
           local fallbackRow = {
             title = accountTitle(entry.label, formatAccountAge(vendor.as_of), false,
-              vendor.needs_user_entry == true, geminiPinned),
+              vendor.needs_user_entry == true, geminiPinned, nil, unused),
             disabled = true,
           }
           local account = vendor.current_account or vendor.account
@@ -1196,6 +1266,7 @@ function M.menuItems()
               },
               { title = "Hard refresh", fn = refresh },
             }
+            appendRoleItems(fallbackRow)
           end
           table.insert(menu, fallbackRow)
         end
@@ -1235,17 +1306,17 @@ function M.menuItems()
                 if acct ~= "main" then removeFn = function() M.removeCodex(acct) end end
               else
                 accountRow = geminiLoginNeededRow(acct, acct, pinExists,
-                  accountAge, block.needs_user_entry == true)
+                  accountAge, block.needs_user_entry == true, unused)
               end
               if not accountRow then
                 local clearPinFn
                 if pinExists then clearPinFn = function() pinFn(true) end end
                 accountRow = loginNeededRow(acct, loginFn, hardRefreshFn, removeFn, clearPinFn,
-                  accountAge, block.needs_user_entry == true)
+                  accountAge, block.needs_user_entry == true, unused)
               end
             else
               local title = accountTitle(acct, accountAge, generalAtLimit,
-                block.needs_user_entry == true, pinExists, resetSuffix)
+                block.needs_user_entry == true, pinExists, resetSuffix, unused)
               accountRow = {
                 title = title,
                 disabled = true,
@@ -1296,16 +1367,15 @@ function M.menuItems()
             table.insert(menu, accountRow)
           end
           if not authNeeded then
-            local fiveGray = isStale(fiveHour)
+            local fiveDim = isStale(fiveHour)
             local fiveRow = {
-              title = rowTitle("", "5h", fiveHour, fiveGray, bucketAtLimit(fiveHour)),
+              title = rowTitle("", "5h", fiveHour, fiveDim, bucketAtLimit(fiveHour)),
               disabled = true,
             }
             table.insert(menu, fiveRow)
             local function tailRow(label, bucket, barWarning)
               if type(bucket) == "table" then
-                local gray = isStale(bucket)
-                return rowTitle("", label, bucket, gray, bucketAtLimit(bucket), barWarning)
+                return rowTitle("", label, bucket, isStale(bucket), bucketAtLimit(bucket), barWarning)
               end
               return rowTitle("", label, nil, false, false, barWarning)
             end

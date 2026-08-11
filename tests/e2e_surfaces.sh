@@ -79,9 +79,12 @@ for _, item in ipairs(menu or {}) do
   if seen and text:find("5h", 1, true) then
     local data = title:asTable()
     local color = data[2] and data[2].attributes and data[2].attributes.color
-    if color and math.abs(color.red - 0.55) < 0.01 and math.abs(color.green - 0.55) < 0.01
-        and math.abs(color.blue - 0.55) < 0.01 then return "GRAY\t" .. text end
-    return "NOT_GRAY\t" .. text
+    -- Dim is the menu label colour at 55% alpha, so the tone follows the appearance; a check
+    -- pinned to one fixed gray passes only in whichever appearance it was written for.
+    if color and math.abs((color.alpha or 1) - 0.55) < 0.01
+        and math.abs(color.red - color.green) < 0.01
+        and math.abs(color.green - color.blue) < 0.01 then return "DIM\t" .. text end
+    return "NOT_DIM\t" .. text
   end
   if text == "alona" or text:match("^alona%s") then seen = true end
 end
@@ -511,7 +514,7 @@ assert_account_ages "$MENU_NOW" "$STORE_NOW"
 if jq -e '.vendors.claude.accounts[]? | select(.account == "alona") |
     .five_hour.expired == true and .five_hour.stale == false' <<<"$JSON" >/dev/null; then
   alona_style=$(hs_alona_five_style)
-  [[ "$alona_style" == $'GRAY\t'* ]] || fail "alona expired stale=false five-hour row is not dimmed: $alona_style"
+  [[ "$alona_style" == $'DIM\t'* ]] || fail "alona expired stale=false five-hour row is not dimmed: $alona_style"
 fi
 ancient_count=0
 while IFS= read -r reset; do

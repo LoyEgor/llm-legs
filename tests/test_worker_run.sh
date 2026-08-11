@@ -349,6 +349,59 @@ for vendor in claudeb codex gemini; do
   unset PICK_STDERR
 done
 
+# A vendor switched off for workers is the same decision one step higher: its accounts may sit
+# at 0%, so reading it as a usage limit would report a wall that does not exist.
+for vendor in claudeb codex gemini; do
+  clear_stub
+  set_config 'codex_effort=medium'
+  export PICK_RC=3 PICK_ACCOUNT=ignored
+  export PICK_STDERR="worker-pick: $vendor is switched off for workers"
+  rc=0
+  "$RUNNER" start "$vendor" --brief "$WORK/brief" >"$WORK/role-off.out" 2>"$WORK/role-off.err" || rc=$?
+  assert test "$rc" -eq 4
+  assert grep -qx "OUTCOME: $(tr '[:lower:]' '[:upper:]' <<<"$vendor")_UNAVAILABLE" "$WORK/role-off.out"
+  assert grep -q "$vendor is switched off for workers" "$WORK/role-off.err"
+  assert test ! -s "$CALL_LOG"
+  unset PICK_STDERR
+done
+
+# The role switch closes the vendor, not one account of it, so naming an account outright — or
+# falling back to the pin — cannot walk around it the way it cannot walk around the pool.
+for vendor in claudeb codex gemini; do
+  clear_stub
+  set_config "${vendor}_workers=off" 'codex_effort=medium'
+  export PICK_ACCOUNT=picked PICK_RC=0
+  printf 'explicit\npicked\n' >"$STUB_DIR/gemini_profiles"
+  rc=0
+  "$RUNNER" start "$vendor" --brief "$WORK/brief" --account explicit \
+    >"$WORK/role-wall.out" 2>"$WORK/role-wall.err" || rc=$?
+  assert test "$rc" -eq 4
+  assert grep -qx "OUTCOME: $(tr '[:lower:]' '[:upper:]' <<<"$vendor")_UNAVAILABLE" "$WORK/role-wall.out"
+  assert grep -q "$vendor is switched off for workers" "$WORK/role-wall.err"
+  assert test ! -s "$CALL_LOG"
+  # The vendor pin is the one override, the same way it is the only way past the pool.
+  clear_stub
+  set_config "${vendor}_workers=off" "${vendor}_profile=explicit" 'codex_effort=medium'
+  export PICK_ACCOUNT=ignored PICK_RC=2
+  start_ok "$vendor"
+  assert meta_account_is explicit
+  assert await_done
+  clear_stub
+  rc=0
+  "$RUNNER" start "$vendor" --brief "$WORK/brief" --account other \
+    >"$WORK/role-pin.out" 2>"$WORK/role-pin.err" || rc=$?
+  assert test "$rc" -eq 4
+  assert grep -qx "OUTCOME: $(tr '[:lower:]' '[:upper:]' <<<"$vendor")_UNAVAILABLE" "$WORK/role-pin.out"
+  assert test ! -s "$CALL_LOG"
+  # Only the literal `off` closes it.
+  clear_stub
+  set_config "${vendor}_workers=on" 'codex_effort=medium'
+  export PICK_ACCOUNT=picked PICK_RC=0
+  start_ok "$vendor" --account explicit
+  assert meta_account_is explicit
+  assert await_done
+done
+
 # A missing wall is loud: worker-run must refuse to launch rather than read every account as
 # excluded because its include went missing.
 NOSHARE_RUNNER="$WORK/noshare/bin/worker-run"

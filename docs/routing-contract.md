@@ -45,6 +45,32 @@ beyond it is deleted, not preserved.
    meaning "no worker may run", answered as `every <vendor> account is out of the worker pool`
    and reported by `worker-run` as `OUTCOME: <VENDOR>_UNAVAILABLE`, never as a usage limit.
 
+## Roles
+
+A vendor serves two roles — `workers` (implementation) and `reviewers` (review-bench raters) —
+and `<vendor>_workers` / `<vendor>_reviewers` in `~/.claude/worker-model` are per-role walls
+layered over the pool: the literal value `off` closes that vendor for that role, an absent key
+or any other value leaves it open. The default role is `workers`, so every existing caller keeps
+its meaning; a rater asks with `worker-pick --account <vendor> --role reviewers`.
+
+The ladder is **pin > roles > pool**. A closed role walls everything the pool would choose:
+without a usable pin the query answers exit 3 / `<vendor> is switched off for <role>`, and the
+pool's own candidate is never handed over instead. The pin overrides it the same way it overrides
+pool exclusion — a usable pin answers the workers query and the workers table even while
+`<vendor>_workers=off`, and rule 3 still ends it at its wall, unchanged.
+
+The pin is **workers-only**. A reviewers query never sees it: it is neither an override nor a
+forced choice there, and the pinned account stands in the reviewers answer as an ordinary
+candidate ranked by pool and spending like any other. `<vendor>_reviewers=off` is therefore final
+— no pin opens it.
+
+In the human table — the workers view — a workers-off vendor with no pin serving reads
+`<vendor> — off for workers` in `NEXT:`, trails the ordering and is never auto-selected, while its
+account listing stays intact: a closed role is not a limit, and the menu still shows what those
+accounts hold. `worker-run` refuses a closed vendor for explicit accounts and pin fallbacks alike,
+the vendor pin excepted, and reports it the way it reports an empty pool —
+`OUTCOME: <VENDOR>_UNAVAILABLE`, never as a usage limit.
+
 ## Deleted with this contract (not configurable, not dormant)
 
 score / runway / pre-reset cap math, `FLOOR_PCT` / `HEADROOM_PCT`, the night-window

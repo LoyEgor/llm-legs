@@ -6,15 +6,27 @@ vendor=${2:-}
 case "$vendor" in claudeb|codex|gemini) ;; *) exit 2 ;; esac
 shift 2
 excluded=""
+role=workers
 fable=false
 while [ "$#" -gt 0 ]; do
   case $1 in
     --exclude) [ "$#" -ge 2 ] || exit 2; excluded=$2; shift 2 ;;
+    --role)
+      [ "$#" -ge 2 ] || exit 2
+      case $2 in workers|reviewers) ;; *) exit 2 ;; esac
+      role=$2
+      shift 2
+      ;;
     --fable) fable=true; shift ;;
     *) exit 2 ;;
   esac
 done
 [ "$fable" = true ] && [ "$vendor" != claudeb ] && exit 2
+if [ -n "${WORKER_PICK_CONFIG_FILE:-}" ] &&
+   grep -qx "${vendor}_${role}=off" "$WORKER_PICK_CONFIG_FILE" 2>/dev/null; then
+  printf 'worker-pick: %s is switched off for %s\n' "$vendor" "$role" >&2
+  exit 3
+fi
 accounts=${WORKER_PICK_FAKE_ACCOUNTS:-work main}
 [ "$fable" = true ] && accounts=${WORKER_PICK_FAKE_FABLE_ACCOUNTS-$accounts}
 # Only claudeb has a session account, so only claudeb can answer with the reserve.

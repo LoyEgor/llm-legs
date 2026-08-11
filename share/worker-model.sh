@@ -103,6 +103,46 @@ worker_model_clear_walled_pin() {
   ) 9>"$file.lock"
 }
 
+# A role is a per-vendor wall over the pool, and an ABSENT key is what every reader takes as open,
+# so turning a role back on deletes the line instead of inventing an "=on" spelling. Under the same
+# lock as the pin: an unlocked rewrite from the menubar would resurrect a `*_profile=` line
+# worker-pick had just cleared.
+worker_model_set_role() {
+  local vendor="${1-}" role="${2-}" state="${3-}" file key
+  case "$vendor" in claudeb | codex | gemini) ;; *)
+    printf 'worker-model: unknown vendor: %s\n' "$vendor" >&2; return 2 ;;
+  esac
+  case "$role" in workers | reviewers) ;; *)
+    printf 'worker-model: unknown role: %s\n' "$role" >&2; return 2 ;;
+  esac
+  case "$state" in on | off) ;; *)
+    printf 'worker-model: unknown state: %s\n' "$state" >&2; return 2 ;;
+  esac
+  # Closing a vendor for a role redirects every worker and rater after it, so it is Egor's hand
+  # only — the menubar shells out from Hammerspoon, which carries no CLAUDECODE.
+  if [ -n "${CLAUDECODE:-}" ]; then
+    printf 'worker-model: role switches are Egor'"'"'s: the menubar (LLM Limits -> vendor -> For workers/For reviewers) is his own hand on them\n' >&2
+    return 3
+  fi
+  file=$(worker_model_file)
+  key="${vendor}_${role}"
+  mkdir -p "$(dirname "$file")" || return 2
+  (
+    local tmp="$file.tmp.$$"
+    if ! "${WORKER_MODEL_LOCKF:-/usr/bin/lockf}" -s 9; then
+      printf 'worker-model: failed to lock %s\n' "$file.lock" >&2
+      return 2
+    fi
+    trap 'rm -f "$tmp"' EXIT
+    {
+      if [ -r "$file" ]; then grep -v "^${key}=" "$file" || true; fi
+      [ "$state" = on ] || printf '%s=off\n' "$key"
+    } >"$tmp" || return 2
+    mv "$tmp" "$file" || return 2
+    trap - EXIT
+  ) 9>"$file.lock"
+}
+
 worker_model_pin_account() {
   local key="$1" vendor="$2" list_fn="$3" disabled_fn="$4" name="${5:-}"
   local file current near

@@ -15,9 +15,11 @@ set -u
 query_vendor=""
 query_exclude=""
 query_exclude_given=false
+query_role=workers
+query_role_given=false
 query_fable=false
 usage() {
-  printf 'usage: worker-pick [--account claudeb|codex|gemini [--exclude name[,name...]] [--fable]]\n' >&2
+  printf 'usage: worker-pick [--account claudeb|codex|gemini [--exclude name[,name...]] [--role workers|reviewers] [--fable]]\n' >&2
   exit 2
 }
 while [ "$#" -gt 0 ]; do
@@ -37,6 +39,16 @@ while [ "$#" -gt 0 ]; do
       query_exclude_given=true
       shift 2
       ;;
+    --role)
+      [ "$#" -ge 2 ] || usage
+      query_role="$2"
+      query_role_given=true
+      case "$query_role" in
+        workers|reviewers) ;;
+        *) printf 'worker-pick: unknown role %s\n' "$query_role" >&2; usage ;;
+      esac
+      shift 2
+      ;;
     # Only a task that asks for Fable spends the fable bucket, so the caller names that bucket.
     --fable) query_fable=true; shift ;;
     *) printf 'worker-pick: unexpected argument %s\n' "$1" >&2; usage ;;
@@ -44,6 +56,10 @@ while [ "$#" -gt 0 ]; do
 done
 if [ "$query_exclude_given" = true ] && [ -z "$query_vendor" ]; then
   printf 'worker-pick: --exclude only means something with --account\n' >&2
+  usage
+fi
+if [ "$query_role_given" = true ] && [ -z "$query_vendor" ]; then
+  printf 'worker-pick: --role only means something with --account\n' >&2
   usage
 fi
 if [ "$query_fable" = true ] && [ "$query_vendor" != claudeb ]; then
@@ -104,6 +120,33 @@ cx_pin=$(conf codex_profile)
 gm_pin=$(conf gemini_profile)
 case "$gm_effort" in medium) gm_eff_abbr=med ;; high) gm_eff_abbr=hi ;; *) gm_eff_abbr=$gm_effort ;; esac
 
+# The ladder is pin > roles > pool: a role toggle walls the vendor for everything the pool would
+# choose, and a usable pin still answers over it the way it answers over pool exclusion. So a
+# workers wall cannot be decided here — whether the pin serves is only known once selection ran.
+role_off() { [ "$(conf "$1_$2")" = off ]; }
+query_role_wall=false
+if [ -n "$query_vendor" ] && role_off "$query_vendor" "$query_role"; then
+  if [ "$query_role" = workers ]; then
+    query_role_wall=true
+  else
+    printf 'worker-pick: %s is switched off for %s\n' "$query_vendor" "$query_role" >&2
+    exit 3
+  fi
+fi
+# The pin is Egor's override for workers only. A rater handed it would spend an account he aimed
+# at implementation, so a reviewers query is answered by the pool alone and the pinned account
+# stands in it as an ordinary candidate.
+if [ "$query_role" = reviewers ]; then cb_pin=""; cx_pin=""; gm_pin=""; fi
+# The table is the workers view, and a vendor closed for that role is not a candidate in it: the
+# flags are read here so selection, ordering and the ALL WALLED verdict are all decided without
+# it, the way a deliberately empty pool is.
+cb_role_off=false; cx_role_off=false; gm_role_off=false
+if [ -z "$query_vendor" ]; then
+  ! role_off claudeb workers || cb_role_off=true
+  ! role_off codex workers || cx_role_off=true
+  ! role_off gemini workers || gm_role_off=true
+fi
+
 own="${CLAUDE_LIMITS_ACCOUNT:-}"
 if [ -z "$own" ] || [ "$own" = "-" ]; then
   if [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ "$CLAUDE_CONFIG_DIR" != "$HOME/.claude" ]; then
@@ -155,6 +198,7 @@ printf '%s' "$tiers_json" | jq -e . >/dev/null 2>&1 || tiers_json='{}'
 summary=$(jq -r \
   --argjson now "$now" --argjson tiers "$tiers_json" --arg own "$own" --arg pin "$cb_pin" \
   --arg cx_pin "$cx_pin" --arg gm_pin "$gm_pin" \
+  --arg cb_off "$cb_role_off" --arg cx_off "$cx_role_off" --arg gm_off "$gm_role_off" \
   --argjson qx "$query_exclude_json" '
   def epoch:
     if type == "number" then .
@@ -353,9 +397,13 @@ summary=$(jq -r \
        "\(.name)($\(.tier))\(if .own then "*" else "" end) 5h \(.h5 | pct_str) wk \(.wk | pct_str) fb \(.fb | pct_str) score \(100 - (.spend // 100) | round) cap \([100 - ([(.spend // 100), (.h5 // 100)] | max), 0] | max | round)%\(if .name == $sel and $pin_rec != null then " PINNED" else "" end)\(if .name == $sel and $cl_is_reserve then " RESERVE" else "" end)\(if .walled then " WALLED" else "" end)\(if .auth_ok then "" else " auth!" end)\(if .fable_capable then "" else " no-Fable" end)\(if .blocked then " blocked" else "" end)\(if .enabled then "" else " off" end)") | join(" | ")) end))) as $claude_line |
 
   # Only pool members count: an out-of-pool account that happens to be at 0% would otherwise
-  # hide an ALL WALLED verdict behind quota nobody is allowed to spend.
-  ((($cx_accounts + $gm_accounts + $cl_accounts) | map(select(.in_pool and .measured))
-    | length) > 0) as $had_pool |
+  # hide an ALL WALLED verdict behind quota nobody is allowed to spend. A vendor closed for
+  # workers is out of the same reckoning unless its pin serves: its quota is untouched and
+  # counting it turns a switch Egor flipped into a verdict about limits.
+  (((if $cx_off == "true" and $cx_pinned == null then [] else $cx_accounts end) +
+    (if $gm_off == "true" and $gm_pinned == null then [] else $gm_accounts end) +
+    (if $cb_off == "true" and $pin_rec == null then [] else $cl_accounts end)
+    | map(select(.in_pool and .measured)) | length) > 0) as $had_pool |
 
   [(if $codex.selected then "yes" else "no" end),$codex.acct,($codex.pct | tostring),
    (if $codex.pinned then "yes" else "no" end),$codex.line,$cx_pin_lapse,
@@ -374,6 +422,14 @@ IFS=$'\x1f' read -r cx_selected cx_acct cx_pct cx_pinned cx_line cx_pin_lapse \
   gm_selected gm_acct gm_pinned gm_line gm_pin_lapse \
   cl_line cl_acct cl_pinned cl_reserve cl_pin_lapse \
   fb_acct fb_fb fb_wk fb_reserve age had_pool cx_pool_empty gm_pool_empty cl_pool_empty <<<"$summary"
+
+# A pin that served outranks the switch, so the vendor is not closed at all this run.
+[ "$cl_pinned" != yes ] || cb_role_off=false
+[ "$cx_pinned" != yes ] || cx_role_off=false
+[ "$gm_pinned" != yes ] || gm_role_off=false
+if [ "$cb_role_off" = true ]; then cl_acct=""; cl_pinned=no; cl_pin_lapse=""; fi
+if [ "$cx_role_off" = true ]; then cx_selected=no; cx_acct=""; cx_pin_lapse=""; fi
+if [ "$gm_role_off" = true ]; then gm_selected=no; gm_acct=""; gm_pin_lapse=""; fi
 
 # A pin the account has spent is over: `exhausted` is the usage wall alone, and the other lapses
 # are conditions that pass (a login to fix, a toggle to flip, a reading yet to arrive), so they
@@ -398,15 +454,20 @@ if [ "$query_fable" = true ]; then
   cl_reserve=$fb_reserve
 fi
 
+# ALL WALLED is a verdict about quota, so it is read over the vendors actually open for workers:
+# a vendor Egor switched off has an answer he already knows, and counting it would send him
+# hunting for limits that are fine.
 all_walled=no
 if [ "$had_pool" = yes ] && [ -z "$cl_acct" ] && [ "$cx_selected" != yes ] &&
-   [ "$gm_selected" != yes ]; then
+   [ "$gm_selected" != yes ] &&
+   { [ "$cb_role_off" = false ] || [ "$cx_role_off" = false ] || [ "$gm_role_off" = false ]; }; then
   all_walled=yes
 fi
 
 if [ -n "$query_vendor" ]; then
   case "$query_vendor" in
     claudeb)
+      query_pin="$cb_pin"; query_pinned="$cl_pinned"
       query_answer="$cl_acct"
       # The ordinary-work line can name a perfectly selectable account, which reads as a
       # contradiction when what ran out was the fable bucket.
@@ -417,16 +478,25 @@ if [ -n "$query_vendor" ]; then
       fi
       ;;
     codex)
+      query_pin="$cx_pin"; query_pinned="$cx_pinned"
       query_answer=""
       [ "$cx_selected" = yes ] && query_answer="$cx_acct"
       query_reason="$cx_line"
       ;;
     gemini)
+      query_pin="$gm_pin"; query_pinned="$gm_pinned"
       query_answer=""
       [ "$gm_selected" = yes ] && query_answer="$gm_acct"
       query_reason="$gm_line"
       ;;
   esac
+  # Under a workers wall the pin is the only thing left that can answer, so the pool's own
+  # candidate is refused here rather than handed over as if the switch were advice.
+  if [ "$query_role_wall" = true ] &&
+     { [ "$query_pinned" != yes ] || [ "$query_answer" != "$query_pin" ]; }; then
+    printf 'worker-pick: %s is switched off for workers\n' "$query_vendor" >&2
+    exit 3
+  fi
   if [ -n "$query_answer" ]; then
     # Callers parse stdout, so the reserve note travels on stderr: the answer stays a bare name.
     [ "$query_vendor" != claudeb ] || [ "$cl_reserve" != yes ] ||
@@ -448,7 +518,13 @@ if [ -n "$query_vendor" ]; then
   exit 3
 fi
 
-if [ "$cl_pinned" = yes ]; then
+# A parked vendor gets its own cache shape: `~?` is the statusline's word for a prediction it
+# could not make, and rendering a switch Egor flipped as a failed lookup is what sends him
+# looking at limits.
+if [ "$cb_role_off" = true ]; then
+  cb_next="claudeb — off for workers"
+  cb_cache="cb⏸off"
+elif [ "$cl_pinned" = yes ]; then
   cb_next="claudeb $cl_acct · $cb_model · $cb_effort — ACCOUNT: $cl_acct (PINNED)"
   cb_cache="cb@$cl_acct"
 elif [ -n "$cb_pin" ] && [ -z "$cl_acct" ]; then
@@ -473,7 +549,10 @@ else
   cb_cache="cb~?"
 fi
 
-if [ "$cx_selected" = yes ]; then
+if [ "$cx_role_off" = true ]; then
+  cx_next="codex — off for workers"
+  cx_mark="⏸"; cx_acct=off
+elif [ "$cx_selected" = yes ]; then
   cx_next="codex $cx_acct · $cx_effort — ${cx_pct}%"
   [ "$cx_pinned" != yes ] || cx_next="$cx_next PINNED"
   cx_mark="✓"
@@ -488,7 +567,10 @@ fi
 # vendor line: silently routing elsewhere reads as the pin having been honoured.
 [ -z "$cx_pin_lapse" ] || cx_next="codex pin $cx_pin $cx_pin_lapse → ${cx_next#codex }"
 
-if [ "$gm_selected" = yes ]; then
+if [ "$gm_role_off" = true ]; then
+  gm_next="gemini — off for workers"
+  gm_mark="⏸"; gm_acct=off
+elif [ "$gm_selected" = yes ]; then
   gm_next="gemini $gm_acct · $gm_model · $gm_effort — ACCOUNT: $gm_acct"
   [ "$gm_pinned" != yes ] || gm_next="$gm_next PINNED"
   gm_mark="✓"
@@ -509,18 +591,47 @@ write_cache "$(printf 'cx%s%s·'"$codex_model"'·%s %s·%s·%s gx%s%s·%s·%s' \
   "$cx_mark" "$cx_acct" "$cx_eff_abbr" "$cb_cache" "$cb_model_abbr" "$cb_eff_abbr" \
   "$gm_mark" "${gm_acct:-?}" "$gm_model" "$gm_eff_abbr")"
 
+# The leading segment is the routing answer, so a vendor closed for workers trails the line
+# whatever the mode's usual order is: it is a statement about the switch, not a candidate.
+# `cxw` is the shortened codex segment the walled shapes print, which a closed codex replaces —
+# reading `codex — WALLED` off a vendor with untouched quota is the misreport this whole gate
+# exists to avoid.
+print_next() {
+  local name text off open="" deferred=""
+  for name in "$@"; do
+    off=false
+    case "$name" in
+      cb) text=$cb_next; off=$cb_role_off ;;
+      cx) text=$cx_next; off=$cx_role_off ;;
+      cxw) if [ "$cx_role_off" = true ]; then text=$cx_next; off=true; else text="codex — WALLED"; fi ;;
+      gm) text=$gm_next; off=$gm_role_off ;;
+      allw) text="ALL WALLED, ask Egor" ;;
+    esac
+    if [ "$off" = true ]; then
+      deferred="${deferred:+$deferred  |  }$text"
+    else
+      open="${open:+$open  |  }$text"
+    fi
+  done
+  [ -z "$deferred" ] || open="${open:+$open  |  }$deferred"
+  printf 'NEXT: %s\n' "$open"
+}
+
 if [ "$all_walled" = yes ]; then
-  printf 'NEXT: ALL WALLED, ask Egor  |  codex — WALLED\n'
+  walled_segments=(allw cxw)
+  [ "$cb_role_off" = false ] || walled_segments+=(cb)
+  [ "$gm_role_off" = false ] || walled_segments+=(gm)
+  print_next "${walled_segments[@]}"
 elif [ "$worker_mode" = gemini ]; then
-  printf 'NEXT: %s  |  %s  |  %s\n' "$gm_next" "$cb_next" "$cx_next"
+  print_next gm cb cx
 elif [ "$worker_mode" = auto ]; then
   if [ -z "$cl_acct" ] && [ "$cx_selected" != yes ] && [ "$gm_selected" = yes ]; then
-    printf 'NEXT: %s  |  %s  |  codex — WALLED\n' "$gm_next" "$cb_next"
+    print_next gm cb cxw
   else
-    printf 'NEXT: %s  |  %s  |  %s\n' "$cb_next" "$cx_next" "$gm_next"
+    print_next cb cx gm
   fi
 else
-  printf 'NEXT: %s  |  %s\n' "$cb_next" "$cx_next"
+  print_next cb cx
 fi
 printf '%s\n' "$cx_line"
 printf '%s\n' "$gm_line"

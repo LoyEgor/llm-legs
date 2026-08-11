@@ -1471,6 +1471,13 @@ load_worker_pick_prediction() {
   [ -r "$pick_cache" ] && IFS= read -r worker_pick_prediction <"$pick_cache"
 }
 
+# `<vendor>⏸off` is worker-pick's shape for a vendor switched off for workers, and it has to be
+# read before the account extractors: they would take the literal `off` for a predicted account.
+worker_pick_role_off() {
+  case " $worker_pick_prediction" in *" $1⏸off·"*) return 0 ;; esac
+  return 1
+}
+
 case "$worker" in
   codex)
     wname=codex
@@ -1479,9 +1486,13 @@ case "$worker" in
       wpin=$codex_profile
     else
       load_worker_pick_prediction
-      wsel=$(printf '%s\n' "$worker_pick_prediction" |
-        sed -nE 's/^cx.([a-z0-9][a-z0-9-]*)·[^· ]+·[^· ]+( .*)?$/\1/p')
-      [ -n "$wsel" ] || wsel="?"
+      if worker_pick_role_off cx; then
+        woff=true
+      else
+        wsel=$(printf '%s\n' "$worker_pick_prediction" |
+          sed -nE 's/^cx.([a-z0-9][a-z0-9-]*)·[^· ]+·[^· ]+( .*)?$/\1/p')
+        [ -n "$wsel" ] || wsel="?"
+      fi
     fi
     ;;
   claudeb)
@@ -1493,9 +1504,13 @@ case "$worker" in
       # The account a spawn will use is worker-pick's choice, not .claudeb-state (which
       # only records the last profile launched and would render a stale prediction).
       load_worker_pick_prediction
-      wsel=$(printf '%s\n' "$worker_pick_prediction" |
-        sed -nE 's/^(.* )?cb[~@]([A-Za-z0-9_][A-Za-z0-9._-]*)·[^·]+·[^·]+( .*)?$/\2/p')
-      [ -n "$wsel" ] || wsel="?"
+      if worker_pick_role_off cb; then
+        woff=true
+      else
+        wsel=$(printf '%s\n' "$worker_pick_prediction" |
+          sed -nE 's/^(.* )?cb[~@]([A-Za-z0-9_][A-Za-z0-9._-]*)·[^·]+·[^·]+( .*)?$/\2/p')
+        [ -n "$wsel" ] || wsel="?"
+      fi
     fi
     ;;
   gemini)
@@ -1504,9 +1519,13 @@ case "$worker" in
       wpin=$gemini_profile
     else
       load_worker_pick_prediction
-      wsel=$(printf '%s\n' "$worker_pick_prediction" |
-        sed -nE 's/^.* gx.(main|[a-z0-9][a-z0-9-]*)·[^·]+·[^·]+$/\1/p')
-      [ -n "$wsel" ] || wsel="?"
+      if worker_pick_role_off gx; then
+        woff=true
+      else
+        wsel=$(printf '%s\n' "$worker_pick_prediction" |
+          sed -nE 's/^.* gx.(main|[a-z0-9][a-z0-9-]*)·[^·]+·[^·]+$/\1/p')
+        [ -n "$wsel" ] || wsel="?"
+      fi
     fi
     wtier="${gemini_model:-pro}·$(abbrev_tier "${gemini_effort:-high}")"
     ;;
@@ -1548,6 +1567,9 @@ elif [ "$wname" = auto ] && [ -n "${auto_line:-}" ]; then
 else
   if [ -n "$wpin" ]; then
     worker_part="${worker_part} ${MAGENTA}@${wpin}${RESET}"
+  elif [ "${woff:-}" = true ]; then
+    # Dim, not magenta: nothing is routed here, and the vendor is parked rather than failing.
+    worker_part="${worker_part} ${DIM}⏸off${RESET}"
   elif [ -n "$wsel" ]; then
     worker_part="${worker_part} ${MAGENTA}~${wsel}${RESET}"
   fi

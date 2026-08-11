@@ -150,17 +150,14 @@ local function hasDimRed(title)
   return false
 end
 
-local function isGray(attributes)
-  local color = attributes and attributes.color
-  return color and color.red == 0.55 and color.green == 0.55 and color.blue == 0.55
-end
-
 -- The dim tone is the menu's own text colour at 55%, so it flips with the appearance; anything
--- pinned to one appearance would be invisible in the other.
-local function isDim(attributes, level)
+-- pinned to one appearance would be invisible in the other. Nothing in this menu is a fixed gray,
+-- and tests/test_llm_limits.sh fails if one comes back.
+local function isDimmed(attributes, level)
   local color = attributes and attributes.color
-  return type(color) == "table" and color.alpha == 0.55
-    and color.red == level and color.green == level and color.blue == level
+  if type(color) ~= "table" or color.alpha ~= 0.55 then return false end
+  if level and color.red ~= level then return false end
+  return color.red == color.green and color.green == color.blue
 end
 
 -- The pin keeps the full label colour in every state, honoured or not: an ignored pin is already
@@ -286,7 +283,7 @@ for offset = 0, 3 do
 end
 
 local noStale = accountIndex(menu, "no-stale")
-assert(not isGray(menu[noStale + 1].title.attributes), "missing stale flag fabricated gray styling")
+assert(not isDimmed(menu[noStale + 1].title.attributes), "missing stale flag fabricated dim styling")
 
 local noReset = accountIndex(menu, "no-reset")
 assert(titleText(menu[noReset + 1]):find("–", 1, true), "null reset did not render a dash")
@@ -297,17 +294,17 @@ assert(titleText(menu[pastReset + 1]):find(expectedPast, 1, true),
   "real past reset did not render its clock time")
 
 local pastUnflagged = accountIndex(menu, "past-reset-unflagged")
-assert(isGray(menu[pastUnflagged + 1].title.attributes),
+assert(isDimmed(menu[pastUnflagged + 1].title.attributes),
   "past resets_at without expired flag did not render dim")
 assert(titleText(menu[pastUnflagged + 1]):find(expectedPast, 1, true),
   "render-time-expired row lost its real clock time")
 
 local skewReset = accountIndex(menu, "skew-reset")
-assert(not isGray(menu[skewReset + 1].title.attributes),
+assert(not isDimmed(menu[skewReset + 1].title.attributes),
   "clock skew within tolerance was fabricated as expired")
 
 local fresh5h = accountIndex(menu, "fresh")
-assert(not isGray(menu[fresh5h + 1].title.attributes),
+assert(not isDimmed(menu[fresh5h + 1].title.attributes),
   "future resets_at was rendered dim")
 
 local pinFixture = { schema = 1, vendors = {
@@ -443,14 +440,14 @@ local staleRouting = loadModule(routingFixture, nil, routingNow, nil, nil, nil,
   end)
 staleRouting.routingCache = { text = routingText, at = routingNow - 1 }
 for _, item in ipairs(routingItem(staleRouting.menuItems()).menu) do
-  assert(isGray(item.title.attributes), "stale routing cache line was not dimmed")
+  assert(isDimmed(item.title.attributes), "stale routing cache line was not dimmed")
 end
 
 local unavailableRouting = loadModule(routingFixture, nil, routingNow)
 local unavailableMenu = routingItem(unavailableRouting.menuItems()).menu
 assert(#unavailableMenu == 1 and titleText(unavailableMenu[1]) == "routing unavailable",
   "missing routing cache did not render the unavailable row")
-assert(isGray(unavailableMenu[1].title.attributes), "routing unavailable row was not dimmed")
+assert(isDimmed(unavailableMenu[1].title.attributes), "routing unavailable row was not dimmed")
 
 -- Pool membership is one control with one meaning for every vendor, so the toggle has to exist
 -- on the Codex and Gemini rows too; without it the state is only reachable from a terminal.
@@ -515,7 +512,7 @@ local deadErrorSeen = false
 for _, item in ipairs(deadMenu) do
   if titleText(item):find("refresh failed fixture failure · 2m", 1, true) then
     deadErrorSeen = true
-    assert(isGray(item.title.attributes), "vendor refresh error was not dim")
+    assert(isDimmed(item.title.attributes), "vendor refresh error was not dim")
   end
 end
 assert(deadErrorSeen, "structured vendor refresh error did not render")
@@ -549,14 +546,14 @@ assert(titleText(entryRow):find("10m", 1, true) and titleText(entryRow):find("!"
 -- they used to carry washed out against the menu instead of reading as the rest of the row.
 for _, run in ipairs(entryRow.title.runs or {}) do
   if run.text:find("10m", 1, true) or run.text:find("!", 1, true) then
-    assert(isDim(run.attributes, 0), "age or ! marker was not dim black in the light appearance")
+    assert(isDimmed(run.attributes, 0), "age or ! marker was not dim black in the light appearance")
   end
 end
 local darkEntryRow = accountItem(
   loadModule(entryFixture, nil, nil, nil, nil, nil, nil, "Dark").menuItems(), "alona")
 for _, run in ipairs(darkEntryRow.title.runs or {}) do
   if run.text:find("10m", 1, true) or run.text:find("!", 1, true) then
-    assert(isDim(run.attributes, 1), "age or ! marker stayed black in the dark appearance")
+    assert(isDimmed(run.attributes, 1), "age or ! marker stayed black in the dark appearance")
   end
 end
 local entryErrorSeen = false
@@ -925,10 +922,10 @@ end
 
 -- Anti-divergence guard: every vendor's unpinned logged-out row is forced through the SAME
 -- shape here. Adding a 4th vendor to this table automatically subjects it to the
--- identical structural assertions (title, exactly {Log in…, Hard refresh, Remove <label>} in
--- order) while still proving its own Log in… fires the right login mechanism and Remove the
--- right remove command. A future change that splits one vendor's row away from the shared
--- shape fails this loop.
+-- identical structural assertions (title, {Log in…, Hard refresh, Remove <label>} in order,
+-- and — where the vendor has no section header — the vendor's role switches after them) while
+-- still proving its own Log in… fires the right login mechanism and Remove the right remove
+-- command. A future change that splits one vendor's row away from the shared shape fails this loop.
 local loginCases = {
   { vendor = "claude", fixture = claudeLoginFixture, needle = "loggedout", label = "loggedout",
     scriptContains = { "claudeb profile", "loggedout" },
@@ -939,7 +936,9 @@ local loginCases = {
   { vendor = "gemini", fixture = geminiAuthFixture, needle = "Gemini", label = "Gemini",
     scriptContains = { "geminib profile", "main" },
     refreshArgs = { "--refresh-account", "gemini/main" },
-    removePath = "llm-limits.sh", removeArgs = { "--gemini-remove" } },
+    removePath = "llm-limits.sh", removeArgs = { "--gemini-remove" },
+    -- The sole-account vendor row IS the vendor's section, so it carries the role switches.
+    roleSwitches = true },
   { vendor = "gemini profile", fixture = geminiMultiFixture, needle = "work", label = "work",
     scriptContains = { "geminib profile", "work" },
     refreshArgs = { "--refresh-account", "gemini/work" },
@@ -957,8 +956,13 @@ for _, case in ipairs(loginCases) do
   local row = rowContaining(menu, case.needle)
   assert(titleText(row):find("login needed", 1, true),
     "logged-out " .. case.vendor .. " row did not render a login-needed row")
-  assert(#row.menu == 3,
-    case.vendor .. " login row is not exactly {Log in…, Hard refresh, Remove <label>}")
+  assert(#row.menu == (case.roleSwitches and 5 or 3),
+    case.vendor .. " login row is not exactly {Log in…, Hard refresh, Remove <label>}"
+      .. (case.roleSwitches and " plus the two role switches" or ""))
+  if case.roleSwitches then
+    assert(titleText(row.menu[4]) == "For workers" and titleText(row.menu[5]) == "For reviewers",
+      case.vendor .. " login row lost the vendor's role switches")
+  end
   assert(titleText(row.menu[1]) == "Log in…", case.vendor .. " first submenu item is not Log in…")
   assert(titleText(row.menu[2]) == "Hard refresh", case.vendor .. " second submenu item is not Hard refresh")
   -- One click, no nested confirm: the item names the account so the destination is unambiguous.
@@ -1437,8 +1441,9 @@ watchCallbacks[watchModule.workerModelPath]()
 assert(watchNotifies == 5, "worker-model watcher did not re-render the menu")
 assert(#watchTasks == 3 and watchStarts == 3, "worker-model watcher did not refresh routing")
 
--- The vendor section header is a control, not a caption: it carries the whole-vendor pool
--- switches and a free vendor-scoped refresh, and it names the vendor like every other surface.
+-- The vendor section header is a control, not a caption: it carries the vendor's role switches and
+-- a free vendor-scoped refresh, and it names the vendor like every other surface. Pool membership
+-- is per account only — a whole-vendor switch was one click from emptying the pool by accident.
 local function headerRow(menu, label)
   for _, item in ipairs(menu) do
     if titleText(item) == label then return item end
@@ -1466,33 +1471,17 @@ do
     assert(titleText(item) ~= "Claude B", "the Claude section header still says Claude B")
   end
   local cases = {
-    { label = "Claude", key = "claude", command = "claudeb", accounts = { "cl-one", "cl-two" } },
-    { label = "Codex", key = "codex", command = "codexb", accounts = { "cx-one", "cx-two" } },
-    { label = "Gemini", key = "gemini", command = "geminib", accounts = { "gm-one", "gm-two" } },
+    { label = "Claude", key = "claude" },
+    { label = "Codex", key = "codex" },
+    { label = "Gemini", key = "gemini" },
   }
   for _, case in ipairs(cases) do
     local header = headerRow(mod.menuItems(), case.label)
     assert(header.disabled ~= true, case.label .. " header stayed disabled with a submenu")
-    for _, action in ipairs({ { title = "Disable all", arg = "disable", enabled = false },
-                              { title = "Enable all", arg = "enable", enabled = true } }) do
-      local item = submenuItem(header, action.title)
-      assert(item, case.label .. " header is missing " .. action.title)
-      while #tasks > 0 do table.remove(tasks) end
-      item.fn()
-      local launched = tasks[1]
-      assert(launched and launched.path:find(case.command, 1, true)
-          and launched.args[1] == action.arg and launched.args[2] == "--all"
-          and #launched.args == 2,
-        case.label .. " " .. action.title .. " launched the wrong command")
-      launched.callback(0, "", "")
-      -- Optimistic until the collect lands: a menu still showing the pre-command state is what
-      -- makes the user click a second time, and that click is then swallowed in silence.
-      local reopened = mod.menuItems()
-      for _, account in ipairs(case.accounts) do
-        assert(accountItem(reopened, account).checked == action.enabled,
-          case.label .. " " .. action.title .. " left " .. account .. " showing the old pool state")
-      end
-      tasks[2].callback(0, "", "")
+    -- A whole-vendor pool switch is gone for good: an accidental Disable all emptied the pool,
+    -- and nothing else in the menu can do that in one click.
+    for _, title in ipairs({ "Enable all", "Disable all" }) do
+      assert(not submenuItem(header, title), case.label .. " header regrew " .. title)
     end
     while #tasks > 0 do table.remove(tasks) end
     submenuItem(header, "Refresh").fn()
@@ -1507,8 +1496,8 @@ do
   end
 end
 
--- A Claude vendor object that is not the claudeb store has no per-account pool controls, so the
--- header must not offer whole-vendor ones either; the free refresh is offered regardless.
+-- A Claude vendor object that is not the claudeb store has no per-account pool controls; the free
+-- refresh and the role switches are offered regardless — a role is not a pool.
 do
   local mod = loadModule({ schema = 1, vendors = {
     claude = { available = true, source = "statusline-cache", accounts = {
@@ -1519,9 +1508,9 @@ do
     gemini = { available = false },
   }})
   local header = headerRow(mod.menuItems(), "Claude")
-  assert(not submenuItem(header, "Enable all") and not submenuItem(header, "Disable all"),
-    "a Claude section without account controls still offered whole-vendor pool switches")
   assert(submenuItem(header, "Refresh"), "a Claude section without account controls lost Refresh")
+  assert(submenuItem(header, "For workers") and submenuItem(header, "For reviewers"),
+    "a Claude section without account controls lost the vendor's role switches")
 end
 
 local experimentFixture = {
@@ -1543,6 +1532,250 @@ local quietFixture = {
 }
 for _, item in ipairs(loadModule(quietFixture).menuItems()) do
   assert(not titleText(item):match("EXPERIMENT"), "no experiment reported, yet the menu announced one")
+end
+
+-- Which roles may use a vendor at all is a per-vendor switch, so it belongs on the vendor header
+-- beside the pool switches; the file spells it as a veto, and only the literal "off" is one.
+local function submenuIndex(row, title)
+  for index, item in ipairs(row.menu or {}) do
+    if titleText(item) == title then return index end
+  end
+  error("submenu item missing: " .. title)
+end
+
+local roleFixture = { schema = 1, vendors = {
+  claude = { available = true, source = "claudeb-store", accounts = {
+    { account = "cl-one", enabled = true, five_hour = bucket(10) },
+    { account = "cl-out", auth_needed = true },
+  } },
+  codex = { available = true, accounts = {
+    { account = "cx-one", enabled = true, five_hour = bucket(10) },
+  } },
+  gemini = { available = true, accounts = {
+    { account = "gm-one", enabled = true, five_hour = bucket(10) },
+    { account = "gm-two", enabled = true, five_hour = bucket(20) },
+  } },
+}}
+
+do
+  local config = table.concat({
+    "worker=auto",
+    "claudeb_workers=off",
+    "codex_workers=yes",
+    "gemini_reviewers=off",
+  }, "\n")
+  local menu = loadModule(roleFixture, nil, nil, nil, nil, config).menuItems()
+  local cases = {
+    { label = "Claude", workers = false, reviewers = true },
+    { label = "Codex", workers = true, reviewers = true },
+    { label = "Gemini", workers = true, reviewers = false },
+  }
+  for _, case in ipairs(cases) do
+    local header = headerRow(menu, case.label)
+    local workers = submenuItem(header, "For workers")
+    local reviewers = submenuItem(header, "For reviewers")
+    assert(workers and workers.checked == case.workers,
+      case.label .. " For workers did not read the role flag")
+    assert(reviewers and reviewers.checked == case.reviewers,
+      case.label .. " For reviewers did not read the role flag")
+    assert(submenuIndex(header, "For workers") < submenuIndex(header, "For reviewers")
+        and submenuIndex(header, "For reviewers") < submenuIndex(header, "Refresh"),
+      case.label .. " role switches did not sit above Refresh")
+  end
+
+  for _, label in ipairs({ "Claude", "Codex", "Gemini" }) do
+    local header = headerRow(loadModule(roleFixture).menuItems(), label)
+    for _, title in ipairs({ "For workers", "For reviewers" }) do
+      local item = submenuItem(header, title)
+      assert(item and item.checked == true,
+        label .. " " .. title .. " defaulted to off with no worker-model file")
+    end
+  end
+end
+
+do
+  local mod = loadModule(roleFixture, nil, nil, nil, nil, "claudeb_workers=off")
+  local calls = {}
+  mod.setWorkerRole = function(vendor, role, enable)
+    table.insert(calls, { vendor = vendor, role = role, enable = enable })
+  end
+  local header = headerRow(mod.menuItems(), "Claude")
+  submenuItem(header, "For workers").fn()
+  submenuItem(header, "For reviewers").fn()
+  assert(calls[1] and calls[1].vendor == "claude" and calls[1].role == "workers"
+      and calls[1].enable == true, "clicking an off role did not ask to enable it")
+  assert(calls[2] and calls[2].vendor == "claude" and calls[2].role == "reviewers"
+      and calls[2].enable == false, "clicking an on role did not ask to disable it")
+end
+
+-- The sole-account Gemini row carries the vendor's controls, so it carries these too.
+do
+  local soleFixture = { schema = 1, vendors = {
+    claude = { available = false },
+    codex = { available = false },
+    gemini = { available = true, five_hour = bucket(10), weekly = bucket(20) },
+  }}
+  local mod = loadModule(soleFixture, nil, nil, nil, nil, "gemini_workers=off")
+  local calls = {}
+  mod.setWorkerRole = function(vendor, role, enable)
+    table.insert(calls, { vendor = vendor, role = role, enable = enable })
+  end
+  local row = accountItem(mod.menuItems(), "Gemini")
+  local workers = submenuItem(row, "For workers")
+  local reviewers = submenuItem(row, "For reviewers")
+  assert(workers and workers.checked == false and reviewers and reviewers.checked == true,
+    "single-account Gemini row did not render its role switches")
+  assert(submenuIndex(row, "Hard refresh") < submenuIndex(row, "For workers")
+      and submenuIndex(row, "For workers") < submenuIndex(row, "For reviewers"),
+    "single-account Gemini role switches did not close the row's own controls")
+  workers.fn()
+  assert(calls[1] and calls[1].vendor == "gemini" and calls[1].role == "workers"
+      and calls[1].enable == true, "single-account Gemini role click wrote the wrong toggle")
+
+  -- Logged out or dark is exactly when parking the vendor is the point, so the switches survive
+  -- both states of the row — the login-needed row too, which has no header behind it either.
+  for _, state in ipairs({ geminiAuthFixture, { schema = 1, vendors = {
+    claude = { available = false }, codex = { available = false },
+    gemini = { available = false },
+  }} }) do
+    local darkRow = accountItem(loadModule(state, nil, nil, nil, nil,
+      "gemini_reviewers=off").menuItems(), "Gemini")
+    local darkWorkers = submenuItem(darkRow, "For workers")
+    local darkReviewers = submenuItem(darkRow, "For reviewers")
+    assert(darkWorkers and darkWorkers.checked == true,
+      "a dark single-account Gemini row lost its For workers switch")
+    assert(darkReviewers and darkReviewers.checked == false,
+      "a dark single-account Gemini row lost the reviewers veto it was given")
+  end
+end
+
+-- A vendor no role may use keeps every control it had; only its account titles stop competing
+-- for attention with the vendors the routers actually pick from.
+do
+  local menu = loadModule(roleFixture, nil, nil, nil, nil,
+    "claudeb_workers=off\nclaudeb_reviewers=off").menuItems()
+  for _, account in ipairs({ "cl-one", "cl-out" }) do
+    local row = accountItem(menu, account)
+    assert(isDimmed(row.title.runs[1].attributes),
+      account .. " title stayed full-strength for a vendor no role may use")
+    assert(type(row.menu) == "table" and row.disabled ~= true,
+      account .. " lost its actions when the vendor went unused")
+  end
+  assert(accountItem(menu, "cl-one").checked == true,
+    "an unused vendor's account lost its pool checkmark")
+  for _, account in ipairs({ "cx-one", "gm-one" }) do
+    assert(not isDimmed(accountItem(menu, account).title.runs[1].attributes),
+      account .. " was dimmed by another vendor's role switches")
+  end
+  local halfMenu = loadModule(roleFixture, nil, nil, nil, nil, "claudeb_workers=off").menuItems()
+  assert(not isDimmed(accountItem(halfMenu, "cl-one").title.runs[1].attributes),
+    "a vendor still open to reviewers was dimmed")
+  -- Dimmed is the menu's own label colour at 55%, so the tone follows the appearance the row is
+  -- drawn in; a fixed gray would be the unreadable one in whichever appearance it was not picked for.
+  local light = accountItem(menu, "cl-one").title.runs[1].attributes
+  local dark = accountItem(loadModule(roleFixture, nil, nil, nil, nil,
+    "claudeb_workers=off\nclaudeb_reviewers=off", nil, "Dark").menuItems(),
+    "cl-one").title.runs[1].attributes
+  assert(isDimmed(light, 0), "an unused vendor's title was not dim black in the light appearance")
+  assert(isDimmed(dark, 1), "an unused vendor's title stayed black in the dark appearance")
+end
+
+-- A duplicated key is read the way every shell reader reads it — first line wins (conf() pipes
+-- through head -n1) — or a hand-edited file points the menu at one value and the routers at another.
+do
+  local config = table.concat({
+    "claudeb_workers=off",
+    "claudeb_workers=on",
+    "gemini_reviewers=keep",
+    "gemini_reviewers=off",
+  }, "\n")
+  local menu = loadModule(roleFixture, nil, nil, nil, nil, config).menuItems()
+  local claude = submenuItem(headerRow(menu, "Claude"), "For workers")
+  local gemini = submenuItem(headerRow(menu, "Gemini"), "For reviewers")
+  assert(claude and claude.checked == false, "a duplicated role key was read last-wins, not first")
+  assert(gemini and gemini.checked == true,
+    "a later off= overrode the first line the shell readers stop at")
+end
+
+-- An unavailable vendor has neither account rows nor a section header, so its own row carries the
+-- role switches — parking a vendor is exactly what a dark row invites.
+do
+  local darkFixture = { schema = 1, vendors = {
+    claude = { available = false },
+    codex = { available = false, auth_needed = true },
+    gemini = { available = false },
+  }}
+  local mod = loadModule(darkFixture, nil, nil, nil, nil, "codex_workers=off")
+  local calls = {}
+  mod.setWorkerRole = function(vendor, role, enable)
+    table.insert(calls, { vendor = vendor, role = role, enable = enable })
+  end
+  local menu = mod.menuItems()
+  for _, case in ipairs({ { label = "Claude", workers = true }, { label = "Codex", workers = false } }) do
+    local row = rowContaining(menu, case.label)
+    assert(row.disabled ~= true, case.label .. " unavailable row stayed disabled with a submenu")
+    local workers = submenuItem(row, "For workers")
+    local reviewers = submenuItem(row, "For reviewers")
+    assert(workers and workers.checked == case.workers,
+      case.label .. " unavailable row lost its For workers switch")
+    assert(reviewers and reviewers.checked == true,
+      case.label .. " unavailable row lost its For reviewers switch")
+  end
+  submenuItem(rowContaining(menu, "Codex"), "For workers").fn()
+  assert(calls[1] and calls[1].vendor == "codex" and calls[1].role == "workers"
+      and calls[1].enable == true, "a dark Codex row's role click asked for the wrong toggle")
+end
+
+-- The write itself is not Lua's: every writer of this file holds the lock inside
+-- share/worker-model.sh, and an unlocked rewrite from here would resurrect a pin worker-pick had
+-- just cleared. The file content the helper produces is guarded by tests/test_worker_model_roles.sh.
+do
+  local tasks = {}
+  local mod = loadModule(roleFixture, captureTasks(tasks), nil, nil, nil, "claudeb_workers=off")
+  local header = headerRow(mod.menuItems(), "Claude")
+  local cases = {
+    { title = "For workers", role = "workers", state = "on" },
+    { title = "For reviewers", role = "reviewers", state = "off" },
+  }
+  for _, case in ipairs(cases) do
+    while #tasks > 0 do table.remove(tasks) end
+    submenuItem(header, case.title).fn()
+    local launched = tasks[1]
+    assert(launched and launched.path == "/bin/bash",
+      case.title .. " did not shell out for the write")
+    assert(launched.args[1] == "-c"
+        and launched.args[2]:find("worker_model_set_role", 1, true),
+      case.title .. " did not call the shared locked writer")
+    assert(launched.env.WM_VENDOR == "claudeb" and launched.env.WM_ROLE == case.role
+        and launched.env.WM_STATE == case.state,
+      case.title .. " asked the writer for the wrong vendor, role or state")
+    assert(tostring(launched.env.WORKER_MODEL_SH):find("share/worker%-model%.sh$"),
+      case.title .. " sourced something other than the repo's worker-model.sh")
+    assert(launched.env.WORKER_PICK_CONFIG_FILE == mod.workerModelPath,
+      case.title .. " wrote a file other than the one the menu reads")
+    -- Values travel as environment: nothing the menu holds is ever parsed as shell.
+    assert(not launched.args[2]:find("claudeb", 1, true)
+        and not launched.args[2]:find(mod.workerModelPath, 1, true),
+      case.title .. " interpolated its arguments into the shell script")
+  end
+end
+
+-- Saying nothing about a click already in flight is what makes a menu look dead and earns the
+-- second click that changes the state back.
+do
+  local tasks, alerts = {}, {}
+  local mod = loadModule(roleFixture, driveTasks(tasks), nil,
+    function(text) table.insert(alerts, text) end, nil, "claudeb_workers=off")
+  local header = headerRow(mod.menuItems(), "Claude")
+  while #tasks > 0 do table.remove(tasks) end
+  submenuItem(header, "For workers").fn()
+  submenuItem(header, "For workers").fn()
+  assert(#tasks == 1, "a second role click while the first was in flight launched a duplicate write")
+  assert(#alerts == 1 and alerts[1]:find("still running", 1, true),
+    "a role click swallowed by the in-flight guard stayed silent")
+  tasks[1].callback(1, "", "worker-model: failed to lock")
+  assert(alerts[2] and alerts[2]:find("failed", 1, true),
+    "a failed role write said nothing")
 end
 
 return "PASS: Hammerspoon projection contract"

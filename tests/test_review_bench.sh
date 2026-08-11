@@ -2160,6 +2160,33 @@ assert rb.cell_available(spent_fable, rb.parse_rater("fable-high")) is False
 assert rb.cell_available(spent_fable, rb.parse_rater("opus-high")) is True
 del os.environ["WORKER_PICK_FAKE_FABLE_ACCOUNTS"]
 
+# The reviewers switch closes a vendor for review work, and the roster cache holds its answer for
+# a minute: read beside the cache instead of inside its key, a flip would go on staffing cells on
+# a vendor the pool now refuses. The refusal says which switch, so the reader flips it back rather
+# than going looking for quota that was never spent.
+role_config = work / "worker-model-reviewers"
+role_config.write_text("worker=auto\n")
+os.environ["WORKER_PICK_CONFIG_FILE"] = str(role_config)
+os.environ["WORKER_PICK_FAKE_ACCOUNTS"] = "r1 r2"
+rb._SIDE_ROSTER.clear()
+assert rb.side_roster("claude", frozenset()) == ["r1", "r2"]
+role_config.write_text("worker=auto\nclaudeb_reviewers=off\n")
+assert rb.reviewers_role_off("claude") is True
+assert rb.side_roster("claude", frozenset()) == [], rb.side_roster("claude", frozenset())
+assert rb.affordability()["claude"] is False
+assert rb.unaffordable_reason("claude") == "claudeb is switched off for reviewers"
+assert "claudeb is switched off for reviewers" in rb.no_account_left("claude",
+                                                                     rb.role_closed_note("claude"))
+# The other vendors and the other role are untouched by it.
+assert rb.reviewers_role_off("agy") is False
+assert rb.affordability()["agy"] is True
+role_config.write_text("worker=auto\nclaudeb_workers=off\n")
+assert rb.reviewers_role_off("claude") is False
+rb._SIDE_ROSTER.clear()
+assert rb.side_roster("claude", frozenset()) == ["r1", "r2"]
+assert rb.unaffordable_reason("claude") == "claude side is unaffordable"
+del os.environ["WORKER_PICK_CONFIG_FILE"]
+
 rb._SIDE_ROSTER.clear()
 del os.environ["WORKER_PICK_FAKE_ACCOUNTS"]
 if previous_pick is None:

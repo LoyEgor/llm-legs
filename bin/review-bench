@@ -4084,6 +4084,10 @@ def unaffordable_reason(side):
     # A pool the caller emptied reads exactly like one nobody staffed, and the reader goes looking
     # for accounts to add instead of at the variable that took the working ones away.
     note = baseline_exclusion_note(side)
+    # A closed switch reads exactly like spent quota, and the reader goes hunting for limits that
+    # are fine instead of flipping the switch back.
+    if reviewers_role_off(side):
+        return f"{SIDE_POOL_VENDOR[side]} is switched off for reviewers{note}"
     if side == "opencode":
         labels = [
             f"{name} {window or 'plan'}" + (
@@ -6393,6 +6397,36 @@ def transient_backoffs():
 SIDE_POOL_VENDOR = {"claude": "claudeb", "codex": "codex", "agy": "gemini"}
 
 
+def reviewers_role_off(side):
+    """Whether the worker-model switch has this side's vendor closed for reviewers.
+
+    Read out of worker-pick's own config file, so the two can never disagree, and read on every
+    ask. It decides nothing — worker-pick still refuses the account — but it keys the roster
+    cache and words the refusal: a roster cached behind a flipped switch would go on staffing
+    cells on a vendor that was just closed.
+    """
+    vendor = SIDE_POOL_VENDOR.get(side)
+    if not vendor:
+        return False
+    path = os.environ.get("WORKER_PICK_CONFIG_FILE") or os.path.expanduser("~/.claude/worker-model")
+    prefix = f"{vendor}_reviewers="
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if line.startswith(prefix):
+                    return line[len(prefix):].strip() == "off"
+    except OSError:
+        return False
+    return False
+
+
+def role_closed_note(side):
+    """The clause naming a closed reviewers switch, empty while the vendor is open."""
+    if not reviewers_role_off(side):
+        return ""
+    return f"; {SIDE_POOL_VENDOR[side]} is switched off for reviewers"
+
+
 def baseline_exclusions(side):
     """Accounts the caller has taken off the table for this side before the pool is asked.
 
@@ -6428,7 +6462,7 @@ def worker_pick_answer(side, excluded, fable=False):
     claudeb` has a second bucket, and worker-pick refuses the flag anywhere else.
     """
     command = [command_path("REVIEW_BENCH_WORKER_PICK_BIN", "worker-pick"),
-               "--account", SIDE_POOL_VENDOR[side]]
+               "--account", SIDE_POOL_VENDOR[side], "--role", "reviewers"]
     if excluded:
         command += ["--exclude", ",".join(sorted(excluded))]
     if fable and side == "claude":
@@ -6478,7 +6512,9 @@ def side_roster(side, baseline, fable=False):
     """
     # The bucket is part of the key: a fable roster and an ordinary one rank different numbers
     # and sharing a cache entry would hand fable cells the weekly bucket's answer.
-    key = (side, tuple(sorted(baseline)), fable)
+    # The reviewers switch is part of the key too: a cached roster cannot outlive the flip that
+    # closed its vendor, so the next cell re-asks the pool and is refused there.
+    key = (side, tuple(sorted(baseline)), fable, reviewers_role_off(side))
     with _SIDE_ROSTER_LOCK:
         fresh = cached_roster(key)
         if fresh is not None:
@@ -6632,7 +6668,9 @@ def run_rater_task(rater, repo, sha, focus, run_dir, diff):
         if rc == 0:
             return (rater, candidate, result)
     if result is None:
-        return (rater, None, (1, 0, "", no_account_left(side, baseline_exclusion_note(side)), []))
+        return (rater, None, (1, 0, "",
+                              no_account_left(side, baseline_exclusion_note(side)
+                                              + role_closed_note(side)), []))
     return (rater, account, result)
 
 

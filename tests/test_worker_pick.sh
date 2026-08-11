@@ -39,7 +39,7 @@ printf '%s\n' 'session=100' 'worker=20' 'tie-a=100' 'tie-b=100' 'dry=100' 'walle
 # writes the same defaults back.
 write_config() {
   printf '%s\n' 'worker=auto' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
-    'gemini_model=pro' 'gemini_effort=high' ${1:+"$1"} >"$CONFIG"
+    'gemini_model=pro' 'gemini_effort=high' "$@" >"$CONFIG"
 }
 write_config
 
@@ -336,6 +336,122 @@ run_filter codex_plain '.vendors.codex.accounts = [
 assert contains "$(sed -n '2p' <<<"$output")" 'codex: pin main exhausted → plain'
 write_config
 
+# Roles are walls layered over the pool: a vendor closed for a role may not serve that work at
+# all, so the query never reaches the question of which account.
+write_config 'claudeb_workers=off'
+query_case claude_pool --account claudeb
+assert test "$query_rc" -eq 3
+assert test -z "$query_out"
+assert test "$(cat "$WORK/query.err")" = 'worker-pick: claudeb is switched off for workers'
+# One role closed says nothing about the other, and nothing about the other vendors.
+query --account claudeb --role reviewers
+assert test "$query_rc" -eq 0
+assert test "$query_out" = dry
+write_config 'claudeb_reviewers=off'
+query_case claude_pool --account claudeb --role reviewers
+assert test "$query_rc" -eq 3
+assert test -z "$query_out"
+assert test "$(cat "$WORK/query.err")" = 'worker-pick: claudeb is switched off for reviewers'
+query --account claudeb
+assert test "$query_rc" -eq 0
+assert test "$query_out" = dry
+# The ladder is pin > roles > pool: a usable pin answers over a closed role exactly as it answers
+# over pool exclusion, because naming an account there is the deliberate "use this one anyway".
+write_config 'claudeb_profile=off' 'claudeb_workers=off'
+query_case claude_pool --account claudeb
+assert test "$query_rc" -eq 0
+assert test "$query_out" = off
+run_case claude_pool
+assert contains "$(head -n1 <<<"$output")" 'NEXT: claudeb off · opus · high — ACCOUNT: off (PINNED)'
+assert not_contains "$output" 'off for workers'
+# A pin that cannot serve leaves the wall standing, and the pool's own candidate is not handed
+# over in its place: the switch is not advice.
+write_config 'claudeb_profile=ghost' 'claudeb_workers=off'
+query_case claude_pool --account claudeb
+assert test "$query_rc" -eq 3
+assert test -z "$query_out"
+assert test "$(cat "$WORK/query.err")" = 'worker-pick: claudeb is switched off for workers'
+run_case claude_pool
+assert contains "$(head -n1 <<<"$output")" 'claudeb — off for workers'
+# The pin is Egor's override for workers, so a rater neither inherits it nor is refused by it:
+# the pinned account is an ordinary candidate, and out of the pool it is no candidate at all.
+write_config 'claudeb_profile=off'
+query_case claude_pool --account claudeb --role reviewers
+assert test "$query_rc" -eq 0
+assert test "$query_out" = dry
+query --account claudeb
+assert test "$query_out" = off
+# ... and no pin opens a vendor closed for reviewers.
+write_config 'claudeb_profile=off' 'claudeb_reviewers=off'
+query_case claude_pool --account claudeb --role reviewers
+assert test "$query_rc" -eq 3
+assert test "$(cat "$WORK/query.err")" = 'worker-pick: claudeb is switched off for reviewers'
+# The table is the workers view: a workers-off vendor is never auto-selected, says so where the
+# routing decision is read, and keeps its account listing — a closed role is not a limit, and the
+# menubar still shows what those accounts hold.
+write_config 'claudeb_workers=off'
+run_case golden
+assert contains "$(head -n1 <<<"$output")" 'claudeb — off for workers'
+assert not_contains "$(head -n1 <<<"$output")" 'ACCOUNT: worker'
+assert contains "$(sed -n '4p' <<<"$output")" 'claude: worker($20) 5h 30% wk 40%'
+# A parked vendor is not an unpredictable one: the statusline reads `~?` as a lookup that failed.
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb⏸off·opus·hi gx✓main·pro·hi'
+write_config 'codex_workers=off'
+run_case golden
+assert contains "$(head -n1 <<<"$output")" 'codex — off for workers'
+assert not_contains "$(head -n1 <<<"$output")" 'codex main · high'
+assert contains "$(sed -n '2p' <<<"$output")" 'codex: main 48% 5h 48% ↻1 (5h→?, wk→?)'
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx⏸off·sol·hi cb~worker·opus·hi gx✓main·pro·hi'
+write_config 'gemini_workers=off'
+run_case golden
+assert contains "$(head -n1 <<<"$output")" 'gemini — off for workers'
+assert not_contains "$(head -n1 <<<"$output")" 'ACCOUNT: main'
+assert contains "$(sed -n '3p' <<<"$output")" 'gemini: main 25% 5h 12% (5h→?, wk→?)'
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~worker·opus·hi gx⏸off·pro·hi'
+# A closed vendor is never the routing answer, and the first segment is what the answer is read
+# from, so it trails the line however the mode usually orders the vendors.
+write_config 'claudeb_workers=off'
+run_case golden
+next_line=$(head -n1 <<<"$output")
+assert contains "$next_line" 'NEXT: codex main · high — 48%'
+assert test "${next_line##*  |  }" = 'claudeb — off for workers'
+# A closed vendor never speaks for a wall either: the shortened `codex — WALLED` segment the
+# gemini-first shape prints is quota talking, and codex here has 48% of its week left.
+write_config 'claudeb_workers=off' 'codex_workers=off'
+run_case golden
+next_line=$(head -n1 <<<"$output")
+assert contains "$next_line" 'NEXT: gemini main · pro · high — ACCOUNT: main'
+assert contains "$next_line" 'codex — off for workers'
+assert not_contains "$next_line" 'codex — WALLED'
+assert contains "$next_line" 'claudeb — off for workers'
+# A vendor held back from a role has quota it simply may not spend here, so the verdict that
+# sends the owner hunting for limits is read over the vendors still open for workers.
+write_config 'claudeb_workers=off' 'codex_workers=off' 'gemini_workers=off'
+run_case all_walled
+assert not_contains "$output" 'ALL WALLED'
+assert not_contains "$(head -n1 <<<"$output")" 'codex — WALLED'
+assert contains "$(head -n1 <<<"$output")" 'claudeb — off for workers'
+# The pool a closed vendor holds is not evidence for a verdict about the open ones either: with
+# claudeb parked, codex and gemini merely have no measured reading — nothing hit a wall.
+write_config 'claudeb_workers=off'
+run_filter claude_pool '.vendors.codex = {available:true,accounts:[{account:"main"}]}
+  | .vendors.gemini = {available:true,group:"Gemini Models"}'
+assert not_contains "$output" 'ALL WALLED'
+assert contains "$(head -n1 <<<"$output")" 'claudeb — off for workers'
+# One vendor closed does not soften the verdict for the ones that are open — and the closure
+# stays visible beside it.
+write_config 'claudeb_workers=off'
+run_case all_walled
+assert contains "$(head -n1 <<<"$output")" 'NEXT: ALL WALLED, ask Egor'
+assert contains "$(head -n1 <<<"$output")" 'codex — WALLED'
+assert test "${output%%$'\n'*}" = 'NEXT: ALL WALLED, ask Egor  |  codex — WALLED  |  claudeb — off for workers'
+# Only the literal `off` closes a role; anything else leaves the vendor open.
+write_config 'claudeb_workers=on'
+query_case claude_pool --account claudeb
+assert test "$query_rc" -eq 0
+assert test "$query_out" = dry
+write_config
+
 # Every candidate walled is the one state the orchestrator must not paper over.
 run_case all_walled
 assert contains "$(head -n1 <<<"$output")" 'NEXT: ALL WALLED, ask Egor'
@@ -455,13 +571,20 @@ assert test "$query_out" = worker
 # An argument that is silently ignored lets a caller believe it constrained the answer.
 # A value naming nothing would widen the query instead of narrowing it, so it is refused too.
 for bad in "--account nosuchvendor" "--exclude com" "--account" "--account claudeb --bogus x" "stray" \
-           "--account claudeb --exclude" "--exclude" "--fable"; do
+           "--account claudeb --exclude" "--exclude" "--fable" \
+           "--role reviewers" "--role" "--account claudeb --role" "--account claudeb --role rater"; do
   bad_out=$(env "${run_env[@]}" "LLM_LIMITS_FILE=$STORE" "$SCRIPT" $bad 2>"$WORK/query-bad.err")
   bad_rc=$?
   assert test "$bad_rc" -eq 2
   assert test -z "$bad_out"
   assert grep -q '^usage: worker-pick' "$WORK/query-bad.err"
 done
+bad_out=$(env "${run_env[@]}" "LLM_LIMITS_FILE=$STORE" "$SCRIPT" --role reviewers \
+  2>"$WORK/query-bad.err")
+bad_rc=$?
+assert test "$bad_rc" -eq 2
+assert test -z "$bad_out"
+assert grep -q -- '--role only means something with --account' "$WORK/query-bad.err"
 for empty_exclude in "" ",,"; do
   bad_out=$(env "${run_env[@]}" "LLM_LIMITS_FILE=$STORE" "$SCRIPT" --account claudeb \
     --exclude "$empty_exclude" 2>"$WORK/query-bad.err")

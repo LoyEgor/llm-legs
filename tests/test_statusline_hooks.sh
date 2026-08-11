@@ -1188,6 +1188,32 @@ assert grep -Fq "w:codex${RESET} ${MAGENTA}~?${RESET}${DIM}·sol·med${RESET}" <
 printf 'cx✗·? cb~? gx✗?·pro·hi\n' > "$HOME/.cache/worker-pick.line.main"
 worker_out=$(run_statusline "$(statusline_payload status-w-codex-nocache)" main)
 assert grep -Fq "w:codex${RESET} ${MAGENTA}~?${RESET}${DIM}·sol·med${RESET}" <<< "$worker_out"
+
+# A vendor switched off for workers is parked, not spent: it arrives in the cache as its own
+# `⏸off` shape and must not render as the walled `~?` Egor would go chasing limits over, nor as
+# an account literally named `off`.
+printf 'cx⏸off·sol·med cb⏸off·opus·hi gx⏸off·pro·hi\n' > "$HOME/.cache/worker-pick.line.main"
+worker_out=$(run_statusline "$(statusline_payload status-w-codex-roleoff)" main)
+assert grep -Fq "w:codex${RESET} ${DIM}⏸off${RESET}${DIM}·sol·med${RESET}" <<< "$worker_out"
+assert test "${worker_out#*~off}" = "$worker_out"
+assert test "${worker_out#*~?}" = "$worker_out"
+printf 'worker=claudeb\ncodex_effort=high\n' > "$worker_file"
+worker_out=$(run_statusline "$(statusline_payload status-w-cb-roleoff)" main)
+assert grep -Fq "w:cb${RESET} ${DIM}⏸off${RESET}${DIM}·opus·hi${RESET}" <<< "$worker_out"
+printf 'worker=gemini\ngemini_model=pro\ngemini_effort=high\n' > "$worker_file"
+worker_out=$(run_statusline "$(statusline_payload status-w-gem-roleoff)" main)
+assert grep -Fq "w:gem${RESET} ${DIM}⏸off${RESET}${DIM}·pro·hi${RESET}" <<< "$worker_out"
+# The pin outranks the switch (routing-contract Roles), so a pinned vendor still names its account.
+printf 'worker=claudeb\nclaudeb_profile=notcom\ncodex_effort=high\n' > "$worker_file"
+worker_out=$(run_statusline "$(statusline_payload status-w-cb-roleoff-pin)" main)
+assert grep -Fq "w:cb${RESET} ${MAGENTA}@notcom${RESET}${DIM}·opus·hi${RESET}" <<< "$worker_out"
+# One vendor parked leaves the others predicted as usual.
+printf 'cx✓alt·sol·med cb⏸off·opus·hi gx✓main·pro·hi\n' > "$HOME/.cache/worker-pick.line.main"
+printf 'worker=codex\ncodex_effort=medium\n' > "$worker_file"
+worker_out=$(run_statusline "$(statusline_payload status-w-codex-beside-roleoff)" main)
+assert grep -Fq "w:codex${RESET} ${MAGENTA}~alt${RESET}${DIM}·sol·med${RESET}" <<< "$worker_out"
+
+printf 'worker=codex\ncodex_effort=medium\n' > "$worker_file"
 printf 'cx✓alt·sol·med cb~acctpick·opus·hi gx✓main·pro·hi\n' > "$HOME/.cache/worker-pick.line.main"
 rm -f "$WORK/limits.json" "$worker_file"
 
