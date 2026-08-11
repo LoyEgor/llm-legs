@@ -552,6 +552,19 @@ assert before "$claude_order" 'worker($20)' 'session($100)*'
 assert before "$claude_order" 'session($100)*' 'blocked($100)'
 assert contains "$claude_order" 'blocked'
 
+# Every write sweeps day-old siblings: an account that was renamed or removed leaves a prediction
+# file nobody rewrites, and the producer is the only run that can tell it from a live one.
+: >"$CACHE/worker-pick.line.gone"
+: >"$CACHE/worker-pick.line.live"
+: >"$CACHE/statusline-cache-rl"
+touch -t 202001010000 "$CACHE/worker-pick.line.gone" "$CACHE/statusline-cache-rl"
+run_case golden
+assert test ! -e "$CACHE/worker-pick.line.gone"
+assert test -e "$CACHE/worker-pick.line.live"
+assert test -e "$CACHE/statusline-cache-rl"
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~worker·opus·hi gx✓main·pro·hi'
+rm -f "$CACHE/worker-pick.line.live" "$CACHE/statusline-cache-rl"
+
 # A query answers a caller; it does not announce a routing decision, so the statusline's
 # prediction stays owned by the real invocation.
 QUERY_CACHE="$WORK/query-cache"

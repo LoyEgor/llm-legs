@@ -166,6 +166,11 @@ write_cache() {
   tmp="$cache_file.tmp.$$"
   printf '%s\n' "$1" >"$tmp" 2>/dev/null && mv -f "$tmp" "$cache_file" 2>/dev/null
   rm -f "$tmp" 2>/dev/null
+  # These files are predictions, not records: only their producer runs, so a sibling nobody has
+  # rewritten for a day belongs to an account that was renamed or removed. The name exclusion is
+  # for a clock that jumped backwards, which would age the line just written.
+  find "$CACHE_DIR" -maxdepth 1 -type f -name 'worker-pick.line.*' \
+    ! -name "${cache_file##*/}" -mmin +1440 -delete 2>/dev/null || true
 }
 
 fail_safe() {
