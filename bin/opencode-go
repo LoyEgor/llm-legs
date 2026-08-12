@@ -3,18 +3,114 @@ set -euo pipefail
 # Go-plan only by design: the base URL is fixed and run() rejects models outside
 # the plan's /models list, so pay-as-you-go Zen models can never be billed.
 BASE_URL=https://opencode.ai/zen/go/v1
+# Also the name every wall record and last-call stamp is filed under: the keychain service and the
+# account llm-limits.sh maps back to a profile are one string by design (shared-invariants row ai),
+# so a profile can never wall one and clear the other.
 KEY_SERVICE="opencode-go${OPENCODE_GO_PROFILE:+-$OPENCODE_GO_PROFILE}"
 # set -u kills the script outright where USER is unset, which is every launchd context.
 KEY_ACCOUNT=${USER:-$(id -un)}
 response=
 authcfg=
-trap 'rm -f ${response:+"$response"} ${authcfg:+"$authcfg"}' EXIT
+probe_errors=
+# A `( … )` subshell starts with the parent's EXIT trap reset, so a probe that ends on the refusal
+# it went looking for would leave behind the config file holding the bearer token. The request half
+# is its own function for exactly that: the probe re-arms it inside the subshell.
+cleanup_request() { rm -f ${response:+"$response"} ${authcfg:+"$authcfg"}; }
+# BSD mktemp ignores TMPDIR unless it is handed a template, and one of these files carries the
+# bearer token: a caller that points TMPDIR somewhere it can watch gets the files there.
+new_temp() { mktemp "${TMPDIR:-/tmp}/opencode-go.XXXXXX"; }
+cleanup_temp() { cleanup_request; rm -f ${probe_errors:+"$probe_errors"}; }
+trap cleanup_temp EXIT
 # The key must never reach curl's argv: ps exposes it to every local process.
 auth_config() {
-  authcfg=$(mktemp)
+  authcfg=$(new_temp)
   chmod 600 "$authcfg"
   printf 'header = "Authorization: Bearer %s"\n' "$1" >"$authcfg"
   printf 'header = "content-type: application/json"\n' >>"$authcfg"
+}
+WALL_STATE_DIR=${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}
+WALLS_FILE=$WALL_STATE_DIR/walls.jsonl
+SEEN_FILE=$WALL_STATE_DIR/opencode-seen/$KEY_SERVICE
+LIMITS_CACHE=${LLM_LIMITS_CACHE:-$HOME/.llm-limits.json}
+# Whether a recorded wall still stands is llm-limits.sh's to decide; this file only writes down
+# what one finished request showed. A stated horizon is capped here, once, by the window it
+# belongs to (shared-invariants row ai): a garbled far-future date would otherwise retire the
+# account until someone noticed by hand, and no reader re-clamps a value it did not observe.
+wall_row() {
+  jq -Rsc --arg account "$KEY_SERVICE" --argjson now "$1" '
+    def ceiling($w): {"5-hour":21600,"weekly":691200,"monthly":2764800}[$w // ""] // 604800;
+    def window:
+      ((capture("limitName\"?\\s*[:=]\\s*\"?(?<n>[A-Za-z0-9_.-]+)"; "i") // null) as $m |
+       if $m == null then null
+       else ($m.n | ascii_downcase | gsub("[^a-z0-9]"; "")) as $n |
+         if ($n | test("weekly")) or $n == "week" then "weekly"
+         elif ($n | test("monthly")) or $n == "month" then "monthly"
+         elif ["5h","5hour","fivehour"] | index($n) then "5-hour"
+         else null end
+       end);
+    def stated_in:
+      ((capture("resets? in\\s+(?<v>[0-9]+(\\.[0-9]+)?)\\s*(?<u>second|minute|hour|day|week)s?"; "i")
+        // null) as $m |
+       if $m == null then null
+       else ($m.v | tonumber) *
+            {"second":1,"minute":60,"hour":3600,"day":86400,"week":604800}[$m.u | ascii_downcase]
+       end);
+    # The status code is shared by two unrelated refusals: the plan is spent (days away), and the
+    # provider behind it is throttling a burst (seconds). Retiring an account for the second is
+    # how an account with its whole quota intact disappears mid-run.
+    select(test("GoUsageLimitError|limitName|usage limit|out of credits|insufficient balance"; "i")) |
+    window as $w |
+    {side:"opencode", account:$account, bucket:"general", detected_at:$now,
+     reset_at:(stated_in as $in |
+       if $in == null then null else ([$now + $in, $now + ceiling($w)] | min) end),
+     window:$w}
+    | with_entries(select(.value != null))' "$2"
+}
+mark_served() {
+  local now=$1
+  if mkdir -p "${SEEN_FILE%/*}" 2>/dev/null &&
+     printf '%s\n' "$now" >"$SEEN_FILE.tmp.$$" 2>/dev/null &&
+     mv -f "$SEEN_FILE.tmp.$$" "$SEEN_FILE" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$SEEN_FILE.tmp.$$" 2>/dev/null
+  printf 'opencode-go: the served-call stamp for %s could not be written\n' "$KEY_SERVICE" >&2
+  return 1
+}
+wall_bytes() {
+  local size
+  size=$(wc -c 2>/dev/null <"$WALLS_FILE" | tr -d ' ')
+  printf '%s' "${size:-0}"
+}
+record_wall() {
+  # An append of one short line is atomic on its own; nothing here reads the file back and rewrites
+  # it, which is what keeps a 429 landing beside this one from being read and then dropped.
+  if mkdir -p "$WALL_STATE_DIR" 2>/dev/null && printf '%s\n' "$1" >>"$WALLS_FILE" 2>/dev/null; then
+    return 0
+  fi
+  printf 'opencode-go: the plan-wall record for %s could not be written\n' "$KEY_SERVICE" >&2
+  return 1
+}
+# The wall goes on record where the 429 happens, so a probe, a worker and review-bench all leave the
+# same evidence. Only a served COMPLETION is the opposite evidence: the plan answers /models while
+# completions stay walled, so a 2xx from anywhere else says nothing about the wall and nothing about
+# when the account was last served. Neither write is ever retired by the clock — llm-limits.sh reads
+# the two stamps against each other (shared-invariants row al) and no reader drops a row.
+record_call() {
+  local status=$1 body=$2 kind=$3 now row
+  now=$(date +%s)
+  case $status in
+    2??)
+      [[ $kind == completion ]] || return 0
+      mark_served "$now"
+      ;;
+    429)
+      row=$(wall_row "$now" "$body" 2>/dev/null) || row=
+      [[ -n $row ]] || return 0
+      record_wall "$row"
+      ;;
+    *) return 0 ;;
+  esac
 }
 usage() {
   cat >&2 <<'EOF'
@@ -22,11 +118,16 @@ Usage:
   opencode-go profile <name>  Open a profile; creates it if missing. Alias: p.
   opencode-go key
   opencode-go models [--json]
+  opencode-go wall-check [--all]
   opencode-go run <model> (<prompt...> | --prompt-file <path>) [--system <text>] [--max-tokens N] [--effort low|medium|high | --no-reasoning] [--prefill <text>] [--answer-must-match <ere>] [--retries N] [--stream] [--json]
   opencode-go raw <path> [json-body]
 OPENCODE_GO_PROFILE=<name> selects the account: key/models/run then use the
 keychain service opencode-go-<name> (unset = the default opencode-go account).
 Only models included in the OpenCode Go subscription are allowed.
+wall-check asks whether a recorded usage wall still stands, --all asking it for
+every walled account of the leg, and sends nothing at all when none does: the plan publishes no usage figures, so the only way to learn
+anything is a real request, and one that succeeds spends the subscription to be
+told what the record already said.
 Requests are buffered by default and retried on 5xx, because an upstream that
 drops a slow buffered reply usually answers on the next attempt. --stream
 survives generations longer than that deadline, but some models then emit
@@ -247,8 +348,8 @@ no_reasoning_body() {
     *) printf 'unknown reasoning-off strategy %s\n' "$strategy" >&2; exit 1 ;;
   esac
 }
-require_go_model() {
-  local model=$1 cache=${TMPDIR:-/tmp}/opencode-go-models.$(id -u).txt tmp
+models_cache() {
+  local cache=${TMPDIR:-/tmp}/opencode-go-models.$(id -u).txt tmp
   # The plan's model list changes on a vendor's schedule, not between calls, and a
   # batch of raters would otherwise re-fetch it once per request.
   if [[ ! -s $cache ]] || (( $(date +%s) - $(stat -f %m "$cache" 2>/dev/null || echo 0) > 600 )); then
@@ -260,6 +361,11 @@ require_go_model() {
       [[ -s $cache ]] || { printf 'Cannot read the OpenCode Go model list\n' >&2; exit 1; }
     fi
   fi
+  printf '%s' "$cache"
+}
+require_go_model() {
+  local model=$1 cache
+  cache=$(models_cache) || exit 1
   if ! grep -qxF "$model" "$cache"; then
     printf 'Model %s is not in the OpenCode Go plan (see: opencode-go models)\n' "$model" >&2
     exit 2
@@ -349,7 +455,7 @@ run_model() {
   if $stream; then
     body=$(jq -c '. + {stream: true}' <<<"$body")
   fi
-  response=$(mktemp)
+  response=$(new_temp)
   auth_config "$key"
   # A stream reports progress, so its stall detector IS its deadline; adding a
   # wall-clock cap on top only kills a legitimately long generation (measured:
@@ -430,6 +536,8 @@ run_model() {
     attempt=$((attempt + 1))
     sleep "$delay"
   done
+  local record_rc=0
+  record_call "$status" "$response" completion || record_rc=$?
   if [[ $status != 2?? ]]; then
     printf 'HTTP %s\n' "$status" >&2
     cat "$response" >&2
@@ -454,12 +562,15 @@ run_model() {
   else
     jq -r '.choices[0].message.content' "$response"
   fi
+  # The answer is real, the record of it is not: exiting 0 here would tell every caller the wall
+  # was retired while the store still says it stands.
+  return "$record_rc"
 }
 raw_request() {
   [[ $# -ge 1 && $# -le 2 ]] || usage
   local path=${1#/} body=${2-} key status curl_rc=0
   key=$(require_key)
-  response=$(mktemp)
+  response=$(new_temp)
   auth_config "$key"
   if [[ $# -eq 2 ]]; then
     status=$(curl -sS -m 600 -o "$response" -w '%{http_code}' \
@@ -472,14 +583,114 @@ raw_request() {
     printf 'curl exit %d, no HTTP status\n' "$curl_rc" >&2
     status=000
   fi
+  local record_rc=0
+  record_call "$status" "$response" raw || record_rc=$?
   printf 'HTTP %s\n' "$status" >&2
   cat "$response"
+  (( record_rc == 0 )) || return "$record_rc"
   [[ $status == 2?? ]]
+}
+# The wall belongs to the plan, not to one model, so any model the plan serves answers the
+# question; the two named are its small fast ones.
+WALL_PROBE_MODELS=(deepseek-v4-flash glm-5.2)
+# Every line this prints opens with the state it observed, and the three are not interchangeable:
+# `served` needs a completion the plan answered, `walled` needs a refusal this very probe recorded,
+# and `dormant` sent nothing at all — reading the third as the first is how an account nobody asked
+# walks back into the pool.
+wall_check() {
+  [[ $# -eq 0 ]] || usage
+  local profile=${OPENCODE_GO_PROFILE:--} walled started fresh cache model candidate rc=0
+  local window reset
+  walled=$(jq -r --arg p "$profile" \
+    'first(.vendors.opencode.accounts[]? | select(.account == $p) | .walled | tostring) // "unknown"' \
+    "$LIMITS_CACHE" 2>/dev/null) || walled=unknown
+  if [[ $walled == unknown ]]; then
+    printf 'inconclusive — %s carries no OpenCode row for profile %s\n' "$LIMITS_CACHE" "$profile" >&2
+    return 1
+  fi
+  if [[ $walled != true ]]; then
+    printf 'dormant — no wall stands on %s, so nothing was sent\n' "$profile"
+    return 0
+  fi
+  cache=$(models_cache) || return 1
+  model=
+  for candidate in "${WALL_PROBE_MODELS[@]}"; do
+    if grep -qxF "$candidate" "$cache"; then
+      model=$candidate
+      break
+    fi
+  done
+  [[ -n $model ]] || model=$(head -n 1 "$cache")
+  if [[ -z $model ]]; then
+    printf 'inconclusive — the plan lists no model to ask with\n' >&2
+    return 1
+  fi
+  probe_errors=$(new_temp)
+  started=$(wall_bytes)
+  # A subshell because run_model exits on a refusal, and a refusal is the answer here. It re-arms
+  # the request cleanup because a subshell inherits no EXIT trap, and it records the 429 itself on
+  # the way out, so this only has to read the record back.
+  ( trap cleanup_request EXIT
+    run_model "$model" --max-tokens 16 --retries 1 ping ) >/dev/null 2>"$probe_errors" || rc=$?
+  if (( rc == 0 )); then
+    printf 'served — the plan answered a completion; the wall is retired\n'
+    return 0
+  fi
+  # A row that stood before the probe proves nothing: only one this probe itself just appended is
+  # a refusal the gateway repeated. Anything else — a provider outage, a burst throttle — answered
+  # nothing and must not be read back as a fresh wall. The file GREW is what says so: two refusals
+  # a second apart are the same row to the second, and a stamp comparison reads the older as new.
+  fresh=
+  if [[ $(wall_bytes) -gt $started ]]; then
+    # The whole grown region, not the last line: a neighbour's append can land after ours, and
+    # reading only the tail row would hide the 429 this probe itself just recorded.
+    fresh=$(tail -c +"$((started + 1))" "$WALLS_FILE" 2>/dev/null |
+      jq -c --arg a "$KEY_SERVICE" 'select(.side == "opencode" and .account == $a)' 2>/dev/null |
+      tail -n 1) || fresh=
+  fi
+  if [[ -n $fresh ]]; then
+    window=$(jq -r '.window // "unknown"' <<<"$fresh")
+    reset=$(jq -r '.reset_at // "-"' <<<"$fresh")
+    if [[ $reset == - ]]; then
+      printf 'walled — %s, no reset stated\n' "$window"
+    else
+      printf 'walled — %s, resets %s\n' "$window" "$(date -r "${reset%%.*}" '+%Y-%m-%d %H:%M')"
+    fi
+    return 0
+  fi
+  printf 'inconclusive — %s\n' "$(grep -v '^$' "$probe_errors" | tail -n 1)" >&2
+  return 1
+}
+# The leg's one refresh action. Which accounts are asked is decided by the collector's rows and
+# nowhere else, so the menu, the heartbeat and a hand-run command all send the same nothing to an
+# account with no wall on it.
+wall_check_all() {
+  [[ $# -eq 0 ]] || usage
+  local self profile rc=0 walled
+  self=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")
+  walled=$(jq -r '.vendors.opencode.accounts[]? | select(.walled == true) | .account' \
+    "$LIMITS_CACHE" 2>/dev/null) || walled=
+  if [[ -z $walled ]]; then
+    printf 'dormant — no wall stands on the leg, so nothing was sent\n'
+    return 0
+  fi
+  local answer
+  while IFS= read -r profile; do
+    [[ -n $profile ]] || continue
+    [[ $profile != - ]] || profile=''
+    answer=$(OPENCODE_GO_PROFILE=$profile "$self" wall-check 2>&1) || rc=1
+    printf '%s: %s\n' "${profile:--}" "$answer"
+  done <<<"$walled"
+  return "$rc"
 }
 case ${1:-} in
   profile|p) shift; ensure_profile "$@" ;;
   key) shift; [[ $# -eq 0 ]] || usage; store_key ;;
   models) shift; models "$@" ;;
+  wall-check)
+    shift
+    if [[ ${1-} == --all ]]; then shift; wall_check_all "$@"; else wall_check "$@"; fi
+    ;;
   run) shift; run_model "$@" ;;
   raw) shift; raw_request "$@" ;;
   *) usage ;;

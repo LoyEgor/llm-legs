@@ -750,32 +750,79 @@ else
     "$FLOW_GATE" "$REPORT_GATE"
 fi
 
-# --- Row ai: review wall record -----------------------------------------------
+# --- Row ai: usage wall record ------------------------------------------------
+# Two processes write this file in two languages — bin/opencode-go at the 429 it sees, bin/review-bench
+# for every side — so the record shape and the one rule they must spell alike, the per-window ceiling
+# on a stated horizon, are pinned here. Nothing reads it to decide whether a wall still stands except
+# the bench's own pool and llm-limits.sh (row al); the menubar no longer touches it at all.
 WALL_FILE=walls.jsonl
+OPENCODE_GO="$ROOT/bin/opencode-go"
 rb_wall_file=$(grep -E '^WALL_STATE_FILE = ' "$REVIEWBENCH" | sed -E 's/^[^=]+= "([^"]+)"/\1/')
-lua_wall_file=$(grep -E '^local WALL_STATE_FILE = ' "$HAMMER" | sed -E 's/^[^=]+= "([^"]+)"/\1/')
 assert eq "$rb_wall_file" "$WALL_FILE"
-assert eq "$lua_wall_file" "$WALL_FILE"
+assert grep -Fq "WALLS_FILE=\$WALL_STATE_DIR/$WALL_FILE" "$OPENCODE_GO"
 assert grep -Fq 'override = os.environ.get("WORKER_STATS_DIR")' "$REVIEWBENCH"
 assert grep -Fq '"CLAUDEB_DIR", str(Path.home() / ".claude-profiles" / ".claudeb")' "$REVIEWBENCH"
-assert grep -Fq 'local workerStatsDir = os.getenv("WORKER_STATS_DIR")' "$HAMMER"
-assert grep -Fq 'or (os.getenv("CLAUDEB_DIR") or home .. "/.claude-profiles/.claudeb") .. "/worker-stats"' "$HAMMER"
+assert grep -Fq 'WALL_STATE_DIR=${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}' \
+  "$OPENCODE_GO"
 rb_wall_fields=$(grep -E '^WALL_RECORD_FIELDS = ' "$REVIEWBENCH" | grep -oE '"[^"]+"' | tr -d '"' | paste -sd, -)
 assert eq "$rb_wall_fields" 'side,account,bucket,detected_at,reset_at,window'
-# The reader is pinned by what it actually reads, not by a field list kept for this guard alone.
-for field in ${rb_wall_fields//,/ }; do
-  assert grep -Fq "row.$field" "$HAMMER"
-done
-assert grep -Fq 'walls.setdefault((side, account, bucket)' "$REVIEWBENCH"
-assert grep -Fq 'row.side == "opencode" and row.bucket == "general"' "$HAMMER"
+# The second writer is pinned by the row it actually emits, in the same order and with the same
+# optional fields dropped rather than written null.
+WALL_WRITER=$(mktemp -d)
+sed -n '/^wall_row()/,/^}/p' "$OPENCODE_GO" >"$WALL_WRITER/wall_row.sh"
+printf 'GoUsageLimitError limitName=weekly. Resets in 2 hours\n' >"$WALL_WRITER/body"
+go_wall_fields=$(KEY_SERVICE=opencode-go bash -c '
+  . "$1/wall_row.sh"
+  wall_row 1000000 "$1/body" | jq -r "keys_unsorted | join(\",\")"' _ "$WALL_WRITER")
+assert eq "$go_wall_fields" "$rb_wall_fields"
+rm -rf "$WALL_WRITER"
 
-# The ceiling table lives once, in the writer; a reader re-clamping a recorded reset would shorten
-# a monthly wall back into a date it outlives.
+# The ceiling table is the one rule both writers must spell alike: a horizon capped differently on
+# the two sides retires the same account for two different lengths of time.
+rb_ceilings=$(python3 - "$REVIEWBENCH" <<'CEILINGS'
+import re, sys
+src = open(sys.argv[1]).read()
+ns = {}
+exec(re.search(r"^WALL_MAX_TTL_S = .*$", src, re.M).group(0), ns)
+exec(re.search(r"^WALL_WINDOW_MAX_TTL_S = \{.*?^\}", src, re.M | re.S).group(0), ns)
+print(",".join(f"{k}:{v}" for k, v in ns["WALL_WINDOW_MAX_TTL_S"].items())
+      + f",default:{ns['WALL_MAX_TTL_S']}")
+CEILINGS
+)
+assert eq "$rb_ceilings" '5-hour:21600,weekly:691200,monthly:2764800,default:604800'
+# The null-safe index matters: a 429 naming a reset but no window must still be recorded, and jq
+# aborts on indexing an object with null — taking the whole wall row with it.
+assert grep -Fq 'def ceiling($w): {"5-hour":21600,"weekly":691200,"monthly":2764800}[$w // ""] // 604800;' \
+  "$OPENCODE_GO"
 assert grep -Fq 'WALL_WINDOW_MAX_TTL_S.get(window, WALL_MAX_TTL_S)' "$REVIEWBENCH"
-assert eq "$(grep -c 'WALL_MAX_TTL_S' "$HAMMER")" 0
-assert doc_has 'Review wall record'
+assert doc_has '`5-hour` 21600s, `weekly` 691200s, `monthly` 2764800s, unnamed 604800s'
+
+# The account a wall is filed under is the plan's keychain service, spelled in three languages —
+# and llm-limits.sh is the one that maps it back to the profile every surface displays.
+assert grep -Fq 'KEY_SERVICE="opencode-go${OPENCODE_GO_PROFILE:+-$OPENCODE_GO_PROFILE}"' "$OPENCODE_GO"
+assert grep -Fq 'return "opencode-go" if profile == "-" else f"opencode-go-{profile}"' "$REVIEWBENCH"
+assert grep -Fq 'opencode_service="opencode-go-$opencode_profile"' "$LLMLIMITS"
+assert grep -Fq 'opencode_service=opencode-go' "$LLMLIMITS"
+# A served call is the opposite evidence, and the menubar reads neither file any more.
+assert grep -Fq 'SEEN_FILE=$WALL_STATE_DIR/opencode-seen/$KEY_SERVICE' "$OPENCODE_GO"
+assert grep -Fq 'opencode_state_dir/opencode-seen/$opencode_service' "$LLMLIMITS"
+# Only a served completion stamps, and no writer ever takes a row back out: a probe that clears a
+# wall by rewriting the record instead of stamping loses every 429 filed beside it.
+assert eq "$(grep -c 'mark_served' "$OPENCODE_GO")" 2
+assert grep -Fq '[[ $kind == completion ]] || return 0' "$OPENCODE_GO"
+assert eq "$(grep -cE "^ *(>|:>|rm -f|mv ).*WALLS_FILE" "$OPENCODE_GO")" 0
+assert eq "$(grep -c "$WALL_FILE" "$HAMMER")" 0
+assert eq "$(grep -c 'opencode-seen' "$HAMMER")" 0
+
+assert doc_has 'Usage wall record'
 assert doc_has 'capped once, by the writer, to the horizon its own window can reach'
 assert doc_has '`${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}/walls.jsonl`'
+assert doc_has 'The file holds RAW observations and nothing else'
+assert doc_has '`opencode-go` for the default profile and `opencode-go-<profile>` otherwise'
+assert doc_has 'NO writer ever retires an OpenCode row by the clock'
+assert doc_has 'The one counter-evidence is a completion the plan SERVED'
+assert doc_has "is not bound by this row's retirement rule"
+
 
 # --- Row aj: per-vendor role switches -----------------------------------------
 # `<vendor>_<role>=off`, absent key = on, is spoken by four independent implementations. The vendor
@@ -907,4 +954,153 @@ assert doc_has 'Per-vendor role switches'
 assert doc_has '`worker-pick: <vendor> is switched off for <role>`'
 assert doc_has '`cb⏸off`/`cx⏸off`/`gx⏸off`'
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the review commit-cycle file one writes and the other reads, the escalation tally one prints and the other prices on, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the gate verdict the statusline speaks verbatim, the review wall record, and the per-vendor role switches the routers, the menu and the bench all read) and match %s\n' "$asserts" "$DOC"
+# --- Row ak: auto-refresh vendor roster --------------------------------------
+# The roster is spelled three times inside one daemon, and a vendor present in the loop but missing
+# from the seed reads as a null rung on every tick while one missing from the validator throws away
+# every state file written before it existed. The fourth vendor is the inverted one: it has no usage
+# endpoint, so anything that would make it poll on the other three's cadence spends the plan.
+LLMREFRESH="$ROOT/bin/llm-refresh"
+REFRESH_VENDORS="claude codex gemini opencode"
+refresh_seed=$(grep -n '| map(. as $vendor |' "$LLMREFRESH" | head -n1 | cut -d: -f1)
+[ -n "$refresh_seed" ] ||
+  fail "row ak: bin/llm-refresh's normalized_state no longer seeds a vendor list"
+refresh_seed=$(sed -n "${refresh_seed}p" "$LLMREFRESH")
+refresh_loop=$(grep -E '^  for vendor in ' "$LLMREFRESH" | head -n1)
+refresh_validator=$(grep -F '.claude and .codex and .gemini' "$LLMREFRESH" | head -n1)
+[ -n "$refresh_loop" ] && [ -n "$refresh_validator" ] ||
+  fail "row ak: bin/llm-refresh's tick loop or state validator no longer spells its vendors"
+for vendor in $REFRESH_VENDORS; do
+  assert grep -Fq "\"$vendor\"" <<<"$refresh_seed"
+  assert grep -Fq " $vendor" <<<"$refresh_loop"
+  assert grep -Fq ".$vendor" <<<"$refresh_validator"
+done
+
+# The inversion, asked of the daemon rather than of its prose: the wall state comes from the
+# collector row (row al), never from the record, and only a standing wall is probed — through the
+# one subcommand that answers for free while the window is shut.
+assert grep -Fq 'opencode-go' <<<"$(grep -F 'opencode_go=' "$LLMREFRESH")"
+assert grep -Fq 'wall-check' "$LLMREFRESH"
+assert grep -Fq '.vendors.opencode.accounts[]? | select(.walled == true)' "$LLMREFRESH"
+assert eq "$(grep -c "$WALL_FILE" "$LLMREFRESH")" 0
+refresh_tighten=$(grep -E '^OPENCODE_TIGHTEN_WITHIN_S=' "$LLMREFRESH" | sed -E 's/^[^=]+=//')
+assert eq "$refresh_tighten" 3600
+assert doc_has '`OPENCODE_TIGHTEN_WITHIN_S` (`3600`s)'
+
+REFRESH_WORK=$(mktemp -d)
+mkdir -p "$REFRESH_WORK/home"
+cat >"$REFRESH_WORK/opencode-go" <<'REFRESH_STUB'
+#!/usr/bin/env bash
+printf 'probed\n' >>"$OC_LOG"
+REFRESH_STUB
+chmod +x "$REFRESH_WORK/opencode-go"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$REFRESH_WORK/collector"
+chmod +x "$REFRESH_WORK/collector"
+refresh_store() { # <walled>
+  jq -cn --argjson walled "$1" --arg reset "$2" \
+    '{schema:1,vendors:{opencode:{source:"opencode-go",accounts:[
+       {account:"-",walled:$walled,
+        windows:(if $walled then [{window:"wk",resets_at:$reset}] else [] end)}]}}}' \
+    >"$REFRESH_WORK/store.json"
+}
+run_refresh_tick() {
+  env HOME="$REFRESH_WORK/home" \
+    LLM_REFRESH_COLLECTOR="$REFRESH_WORK/collector" \
+    LLM_LIMITS_CACHE="$REFRESH_WORK/store.json" \
+    LLM_REFRESH_STATE="$REFRESH_WORK/state.json" \
+    LLM_REFRESH_JOURNAL="$REFRESH_WORK/journal.jsonl" \
+    LLM_LIMITS_REFRESH_OPENCODE_GO="$REFRESH_WORK/opencode-go" \
+    OC_LOG="$REFRESH_WORK/probes.log" LLM_REFRESH_NOW="$1" bash "$LLMREFRESH"
+}
+printf '{"vendors":{}}\n' >"$REFRESH_WORK/state.json"
+refresh_now=$(date +%s)
+refresh_store false ''
+run_refresh_tick "$refresh_now" ||
+  fail "row ak: bin/llm-refresh could not run a tick with no wall on record"
+[ ! -e "$REFRESH_WORK/probes.log" ] ||
+  fail "row ak: bin/llm-refresh sent an OpenCode completion with no wall standing, spending the plan to learn what llm-limits.sh already answered"
+asserts=$((asserts + 1))
+refresh_store true "$(date -u -r "$((refresh_now + 172800))" '+%Y-%m-%dT%H:%M:%SZ')"
+rm -f "$REFRESH_WORK/state.json"
+run_refresh_tick "$refresh_now" ||
+  fail "row ak: bin/llm-refresh could not run a tick against a standing wall"
+assert grep -Fqx probed "$REFRESH_WORK/probes.log"
+rm -rf "$REFRESH_WORK"
+assert doc_has 'Auto-refresh vendor roster'
+assert doc_has 'only a standing wall is probed'
+# Three probe answers, never two: folding "nothing was sent" into "served" reports a leg recovered
+# on a request nobody made, and holding the tick lock across the probe parks the other three vendors.
+refresh_probe_case=$(sed -n '/case "${probe%% \*}" in/,/esac/p' "$LLMREFRESH")
+for probe_state in 'walled)' 'served)' 'dormant=$((dormant + 1))'; do
+  assert grep -Fq "$probe_state" <<<"$refresh_probe_case"
+done
+assert grep -Fq 'refresh_lock_release' \
+  <<<"$(grep -B2 -F 'opencode_result=$(opencode_tick' "$LLMREFRESH")"
+assert doc_has 'read as one of three states and never two'
+assert doc_has 'The tick lock is handed back for the duration of the probe'
+
+# --- Row al: OpenCode rows in the limits store --------------------------------
+# The Go plan states no usage figure, so whether a wall still stands is the only reading there is
+# and llm-limits.sh computes it once. Every other surface renders those rows; a second answer to
+# that question is a menubar that disagrees with the daemon spending the plan.
+OC_WORK=$(mktemp -d)
+mkdir -p "$OC_WORK/state" "$OC_WORK/home"
+printf -- '-\nevyoxqy\nlapsed\n' >"$OC_WORK/profiles"
+oc_now=$(date +%s)
+{
+  jq -cn --argjson d "$((oc_now - 600))" --argjson r "$((oc_now + 172800))" \
+    '{side:"opencode",account:"opencode-go-evyoxqy",bucket:"general",detected_at:$d,
+      reset_at:$r,window:"weekly"}'
+  jq -cn --argjson d "$((oc_now - 172800))" --argjson r "$((oc_now - 3600))" \
+    '{side:"opencode",account:"opencode-go",bucket:"general",detected_at:$d,
+      reset_at:$r,window:"5-hour"}'
+  jq -cn --argjson d "$((oc_now - 259200))" --argjson r "$((oc_now - 7200))" \
+    '{side:"opencode",account:"opencode-go-lapsed",bucket:"general",detected_at:$d,
+      reset_at:$r,window:"weekly"}'
+} >"$OC_WORK/state/walls.jsonl"
+mkdir -p "$OC_WORK/state/opencode-seen"
+printf '%s\n' "$((oc_now - 120))" >"$OC_WORK/state/opencode-seen/opencode-go"
+oc_rows=$(HOME="$OC_WORK/home" WORKER_STATS_DIR="$OC_WORK/state" \
+  OPENCODE_GO_PROFILES="$OC_WORK/profiles" LLM_LIMITS_CACHE="$OC_WORK/cache.json" \
+  bash "$LLMLIMITS" --json 2>/dev/null | jq -c '.vendors.opencode')
+[ -n "$oc_rows" ] || fail 'row al: llm-limits.sh emitted no OpenCode vendor'
+assert eq "$(jq -r '.accounts | map(.account) | join(",")' <<<"$oc_rows")" '-,evyoxqy,lapsed'
+# The rule holds no clock: a completion the plan served since the refusal opens the account, and a
+# horizon two hours past keeps the wall standing because the gateway dates its resets to the day.
+assert eq "$(jq -r '.accounts[0].walled' <<<"$oc_rows")" false
+assert eq "$(jq -r '.accounts[1].walled' <<<"$oc_rows")" true
+assert eq "$(jq -r '.accounts[2].walled' <<<"$oc_rows")" true
+# The age a row carries is the served stamp alone, so an account that has only ever refused has none.
+assert eq "$(jq -r '.accounts[0].as_of | fromdateiso8601' <<<"$oc_rows")" "$((oc_now - 120))"
+assert eq "$(jq -r '.accounts[2] | has("as_of")' <<<"$oc_rows")" false
+# >= and not >: a refusal and a served call in the same second must keep the wall, because only a
+# standing wall is ever probed again — read as served, the account freezes clean forever.
+assert grep -Fq '.detected_at >= $served' "$LLMLIMITS"
+assert eq "$(jq -r '.accounts[1].windows | map(.window) | join(",")' <<<"$oc_rows")" wk
+assert eq "$(jq -r '.accounts[1].windows[0].resets_at | fromdateiso8601' <<<"$oc_rows")" \
+  "$((oc_now + 172800))"
+# No percentage exists on this plan, so no surface may find one to render.
+assert eq "$(jq '[.. | objects | select(has("used_pct") or has("effective_pct"))] | length' <<<"$oc_rows")" 0
+rm -rf "$OC_WORK"
+
+# The window marks and the undated ceiling live in the collector and its shared view, and the
+# renderers speak the same three names back.
+assert grep -Fq 'def marks: {"5-hour":"5h","weekly":"wk","monthly":"mo"};' "$LLMLIMITS"
+assert grep -Fq '["5h","wk","mo","?"]' "$LLMLIMITS"
+assert eq "$(cat "$ROOT/share/limits-view.sh" "$LLMLIMITS" | grep -c 'limits_opencode_undated_ttl')" 0
+# The renderers read the row and derive nothing: the fields they read are pinned to the ones emitted.
+for oc_field in account walled windows as_of; do
+  assert grep -Fq "account.$oc_field" "$HAMMER"
+done
+assert grep -Fq 'limits.vendors.opencode' "$HAMMER"
+assert grep -Fq '.vendors.opencode.accounts[]?' "$LLMREFRESH"
+assert grep -Fq '.vendors.opencode.accounts[]?' "$OPENCODE_GO"
+assert doc_has 'OpenCode rows in the limits store'
+assert doc_has 'whether a recorded wall (row `ai`) still stands is computed HERE'
+assert doc_has 'a horizon already past retires nothing'
+assert doc_has 'only a completion the plan served ever ends it'
+# The leg's one refresh action, spelled the same in the menu and in the probe it calls.
+assert grep -Fq '"wall-check", "--all"' "$HAMMER"
+assert grep -Fq 'wall_check_all()' "$OPENCODE_GO"
+
+
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the review commit-cycle file one writes and the other reads, the escalation tally one prints and the other prices on, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the gate verdict the statusline speaks verbatim, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, and the OpenCode rows whose standing wall only the collector decides) and match %s\n' "$asserts" "$DOC"

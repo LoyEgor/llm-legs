@@ -35,7 +35,7 @@ printf '%s\n' \
 
 CACHE="$WORK/cache.json"
 out=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" LLM_LIMITS_WALLS_LOG="$WALLS" bash "$SCRIPT" --json) || fail "fixture collection failed"
-jq -e '.schema == 1 and (.vendors | keys == ["claude","codex","gemini"])' <<<"$out" >/dev/null || fail "schema mismatch"
+jq -e '.schema == 1 and (.vendors | keys == ["claude","codex","gemini","opencode"])' <<<"$out" >/dev/null || fail "schema mismatch"
 jq -e '.vendors.claude.five_hour.used_pct == 12 and .vendors.claude.weekly.used_pct == 40 and .vendors.claude.source == "statusline-last" and .vendors.claude.current_account == "main" and (.vendors.claude.accounts | length) == 1 and (.vendors.claude | has("session_model") | not)' <<<"$out" >/dev/null || fail "Claude primary snapshot mismatch"
 jq -e '.vendors.codex.five_hour.used_pct == 74 and .vendors.codex.weekly.used_pct == 31 and
   .vendors.codex.plan_type == "plus" and .vendors.codex.current_account == "main" and
@@ -1350,7 +1350,8 @@ rc=$?
 [ "$rc" -eq 4 ] || fail "all-vendor refresh failure: expected exit 4, got $rc"
 jq -e '
   .refresh_error.cause == "all vendor refreshes failed" and
-  all(.vendors[]; (.refresh_error.cause | type) == "string" and (.refresh_error.at | type) == "number") and
+  all(.vendors | del(.opencode) | .[];
+      (.refresh_error.cause | type) == "string" and (.refresh_error.at | type) == "number") and
   .vendors.codex.five_hour.used_pct == 31 and .vendors.gemini.five_hour.used_pct == 1' \
   <<<"$all_failed" >/dev/null || fail "all-vendor failure lost structured errors or old buckets"
 
@@ -1775,7 +1776,7 @@ HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCR
 rc=$?
 [ "$rc" -eq 2 ] || fail "empty --sort=: expected exit 2, got $rc"
 bare=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT") || fail "bare piped collection failed"
-jq -e '.schema == 1 and (.vendors | keys == ["claude","codex","gemini"])' <<<"$bare" >/dev/null || fail "piped bare invocation must emit schema-1 JSON"
+jq -e '.schema == 1 and (.vendors | keys == ["claude","codex","gemini","opencode"])' <<<"$bare" >/dev/null || fail "piped bare invocation must emit schema-1 JSON"
 
 sleep 1
 TRUNCATED="$HOME_FIXTURE/.codex/sessions/2026/07/11/rollout-truncated.jsonl"

@@ -458,12 +458,58 @@ def compact_walls(path):
             walls = read_wall_rows(path)
             if walls is None:
                 return None
+            # OpenCode rows are never retired by the clock: llm-limits.sh reads them against the
+            # account's served stamp, and a lapsed day-granular reset retires nothing — dropping
+            # one here would show a still-refusing plan as open on every surface. Compaction only
+            # collapses superseded duplicates: one row per account and window, carrying the
+            # newest detection and the longest horizon, so neither reader loses its answer.
+            opencode = {}
+            try:
+                with path.open(encoding="utf-8", errors="replace") as stream:
+                    raw_rows = stream.readlines()
+            except OSError:
+                return None
+            for raw in raw_rows:
+                try:
+                    row = json.loads(raw)
+                except ValueError:
+                    continue
+                if not isinstance(row, dict) or row.get("side") != "opencode":
+                    continue
+                account, bucket = row.get("account"), row.get("bucket")
+                detected_at = row.get("detected_at")
+                if not isinstance(account, str) or not isinstance(bucket, str):
+                    continue
+                if not isinstance(detected_at, (int, float)) or not math.isfinite(detected_at):
+                    continue
+                window = row.get("window")
+                if not isinstance(window, str) or not window:
+                    window = None
+                reset_at = recorded_reset_at(row.get("reset_at"))
+                kept = opencode.get((account, bucket, window))
+                if kept is not None:
+                    detected_at = max(kept[0], detected_at)
+                    reset_at = max(
+                        (value for value in (kept[1], reset_at) if value is not None),
+                        default=None,
+                    )
+                opencode[(account, bucket, window)] = (detected_at, reset_at)
             with tmp.open("w", encoding="utf-8") as stream:
                 for (side, account, bucket), wall in sorted(walls.items()):
+                    if side == "opencode":
+                        continue
                     detected_at, reset_at = wall[:2]
                     row = wall_record(
                         side=side, account=account, bucket=bucket, detected_at=detected_at,
                         reset_at=reset_at, window=wall[2] if len(wall) > 2 else None,
+                    )
+                    stream.write(json.dumps(row, separators=(",", ":")) + "\n")
+                for (account, bucket, window), (detected_at, reset_at) in sorted(
+                    opencode.items(), key=lambda item: (item[0][0], item[0][1], item[0][2] or "")
+                ):
+                    row = wall_record(
+                        side="opencode", account=account, bucket=bucket,
+                        detected_at=detected_at, reset_at=reset_at, window=window,
                     )
                     stream.write(json.dumps(row, separators=(",", ":")) + "\n")
             os.chmod(tmp, 0o600)

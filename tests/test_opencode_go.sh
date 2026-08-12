@@ -8,6 +8,10 @@ trap 'rm -rf "$WORK"' EXIT
 HOME="$WORK/home"
 export HOME
 mkdir -p "$HOME"
+# Every wall this suite records lands here, never in the real store.
+WORKER_STATS_DIR="$WORK/worker-stats"
+export WORKER_STATS_DIR
+WALLS="$WORKER_STATS_DIR/walls.jsonl"
 asserts=0
 fail() { echo "FAIL: $*" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
@@ -488,5 +492,212 @@ reset_calls
 printf '200|%s|0\n' "$WORK/answer.json" >"$CURL_PLAN"
 "$SCRIPT" run glm-5.2 hello >/dev/null 2>&1 || fail "legacy keychain item not found"
 assert grep -q 'Authorization: Bearer sk-legacy-item' "$CURL_CONFIG"
+
+# --- The plan wall is recorded where the 429 happens --------------------------
+# Every caller walls the plan the same way: review-bench used to be the only writer, so a probe
+# or a worker could spend the whole weekly window while the menubar showed a clean account. What
+# is written here is a raw observation — whether that wall still stands is llm-limits.sh's answer.
+cat >"$FAKE_BIN/security" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$FAKE_BIN/security"
+export OPENCODE_GO_KEY="$KEY"
+cat >"$WORK/wall.json" <<'EOF'
+{"type":"error","error":{"type":"GoUsageLimitError","message":"Weekly usage limit reached. Resets in 4 days. Upgrade to Pro for more usage."},"metadata":{"workspace":"wrk_1","limitName":"weekly"}}
+EOF
+cat >"$WORK/wall-far.json" <<'EOF'
+{"type":"error","error":{"type":"GoUsageLimitError","message":"Weekly usage limit reached. Resets in 40 days."},"metadata":{"limitName":"weekly"}}
+EOF
+cat >"$WORK/burst.json" <<'EOF'
+{"error":{"type":"rate_limit_error","message":"provider rate limit exceeded, slow down"}}
+EOF
+wall_field() { jq -r "$1" <"$WALLS"; }
+# A refused run prints the gateway's body; the suite reads the record, not the noise.
+quiet() { "$@" >/dev/null 2>>"$WORK/wall-err"; }
+
+rm -rf "$WORKER_STATS_DIR"
+reset_calls
+printf '429|%s|0\n' "$WORK/wall.json" >"$CURL_PLAN"
+assert_fails quiet "$SCRIPT" run glm-5.2 hello
+assert test -s "$WALLS"
+assert test "$(wall_field .side)" = opencode
+assert test "$(wall_field .account)" = opencode-go
+assert test "$(wall_field .bucket)" = general
+assert test "$(wall_field .window)" = weekly
+# The horizon the gateway stated, kept as it stands: 4 days is inside the weekly ceiling.
+assert test "$(wall_field '.reset_at - .detected_at | round')" = 345600
+# A 429 is the plan's own answer, not weather: it must not be retried into a longer outage.
+assert test "$(calls)" = 1
+# A refusal is not an answer about the account being alive: stamping it as one would date the row
+# by the very event that walled it, and show a walled account getting fresher the more it refuses.
+assert_fails test -e "$WORKER_STATS_DIR/opencode-seen/opencode-go"
+
+# A garbled horizon cannot retire an account past what its own window can reach.
+rm -rf "$WORKER_STATS_DIR"
+reset_calls
+printf '429|%s|0\n' "$WORK/wall-far.json" >"$CURL_PLAN"
+assert_fails quiet "$SCRIPT" run glm-5.2 hello
+assert test "$(wall_field '.reset_at - .detected_at | round')" = 691200
+
+# A refusal naming a reset but no window still goes on record under the unnamed ceiling: indexing
+# the ceiling table with null aborts jq, and that abort used to drop the whole wall row.
+cat >"$WORK/wall-unnamed.json" <<'EOF'
+{"type":"error","error":{"type":"GoUsageLimitError","message":"Usage limit reached. Resets in 2 hours."}}
+EOF
+rm -rf "$WORKER_STATS_DIR"
+reset_calls
+printf '429|%s|0\n' "$WORK/wall-unnamed.json" >"$CURL_PLAN"
+assert_fails quiet "$SCRIPT" run glm-5.2 hello
+assert test -s "$WALLS"
+assert test "$(wall_field 'has("window")')" = false
+assert test "$(wall_field '.reset_at - .detected_at | round')" = 7200
+
+# The profile is the account: a wall on one must never retire another.
+rm -rf "$WORKER_STATS_DIR"
+reset_calls
+printf '429|%s|0\n' "$WORK/wall.json" >"$CURL_PLAN"
+assert_fails quiet env OPENCODE_GO_PROFILE=evyoxqy "$SCRIPT" run glm-5.2 hello
+assert test "$(wall_field .account)" = opencode-go-evyoxqy
+
+# A burst throttle wears the same status code and is not this account's window.
+rm -rf "$WORKER_STATS_DIR"
+reset_calls
+printf '429|%s|0\n' "$WORK/burst.json" >"$CURL_PLAN"
+assert_fails quiet "$SCRIPT" run glm-5.2 hello
+assert_fails test -s "$WALLS"
+
+# A served COMPLETION is the opposite evidence, and it is recorded by stamping the account rather
+# than by rewriting the record: nothing here reads the file and writes it back, so a 429 landing
+# beside a served call cannot be read and then dropped. The rows stay; llm-limits.sh reads them
+# against the stamp.
+rm -rf "$WORKER_STATS_DIR"
+reset_calls
+printf '429|%s|0\n' "$WORK/wall.json" >"$CURL_PLAN"
+assert_fails quiet "$SCRIPT" run glm-5.2 hello
+assert test "$(grep -c . "$WALLS")" = 1
+reset_calls
+printf '200|%s|0\n' "$WORK/answer.json" >"$CURL_PLAN"
+"$SCRIPT" run glm-5.2 hello >/dev/null 2>&1 || fail "served call failed"
+assert test "$(grep -c . "$WALLS")" = 1
+assert test "$(cat "$WORKER_STATS_DIR/opencode-seen/opencode-go")" -ge "$(jq -r '.detected_at | floor' <"$WALLS")"
+
+# The plan answers /models while completions stay walled, so a 2xx from anywhere but a completion
+# says nothing: taking one as an answer would open every walled account on the next model refresh.
+rm -rf "$WORKER_STATS_DIR"
+reset_calls
+printf '429|%s|0\n' "$WORK/wall.json" >"$CURL_PLAN"
+assert_fails quiet "$SCRIPT" run glm-5.2 hello
+reset_calls
+printf '200|%s|0\n' "$WORK/answer.json" >"$CURL_PLAN"
+"$SCRIPT" raw models >/dev/null 2>&1 || fail "raw call failed"
+assert_fails test -e "$WORKER_STATS_DIR/opencode-seen/opencode-go"
+assert test "$(grep -c . "$WALLS")" = 1
+
+# A store that refuses the write is not a store that says the account is open: the answer is real,
+# the record of it is not, and a caller reading exit 0 would act on a wall nobody retired.
+rm -rf "$WORKER_STATS_DIR"
+mkdir -p "$WORKER_STATS_DIR/opencode-seen"
+chmod 500 "$WORKER_STATS_DIR/opencode-seen"
+reset_calls
+printf '200|%s|0\n' "$WORK/answer.json" >"$CURL_PLAN"
+: >"$WORK/wall-err"
+assert_fails quiet "$SCRIPT" run glm-5.2 hello
+assert grep -q 'served-call stamp' "$WORK/wall-err"
+chmod 700 "$WORKER_STATS_DIR/opencode-seen"
+
+# --- wall-check ---------------------------------------------------------------
+# Whether a wall stands is llm-limits.sh's verdict, read here like any other surface reads it:
+# a second implementation of that question would send a real completion on its own say-so.
+LLM_LIMITS_CACHE="$WORK/llm-limits.json"
+export LLM_LIMITS_CACHE
+limits_cache() { # <profile> <walled>
+  jq -cn --arg p "$1" --argjson w "$2" \
+    '{schema:1,vendors:{opencode:{source:"opencode-go",
+       accounts:[{account:$p,walled:$w,windows:(if $w then [{window:"wk",resets_at:null}] else [] end)}]}}}' \
+    >"$LLM_LIMITS_CACHE"
+}
+
+# Nothing to check is nothing to send: a successful call would spend the subscription to be told
+# what the row already says.
+rm -rf "$WORKER_STATS_DIR"
+reset_calls
+limits_cache - false
+out=$("$SCRIPT" wall-check 2>"$WORK/err") || fail "wall-check failed: $(cat "$WORK/err")"
+assert test "$(calls)" = 0
+assert grep -q '^dormant' <<<"$out"
+
+# No row at all is not the same as a clear one: an account the collector never described must not
+# be probed on a guess.
+reset_calls
+limits_cache evyoxqy true
+status=0
+out=$("$SCRIPT" wall-check 2>"$WORK/err") || status=$?
+assert test "$status" = 1
+assert test "$(calls)" = 0
+assert grep -q '^inconclusive' "$WORK/err"
+
+reset_calls
+limits_cache - true
+printf '429|%s|0\n' "$WORK/wall.json" >"$CURL_PLAN"
+out=$("$SCRIPT" wall-check 2>"$WORK/err") || fail "wall-check on a standing wall failed: $(cat "$WORK/err")"
+assert test "$(calls)" = 1
+assert grep -q '^walled — weekly' <<<"$out"
+# The wall was re-dated rather than re-guessed: a 429 costs no quota, so the record is refreshed.
+assert test "$(tail -n 1 "$WALLS" | jq -r '.window')" = weekly
+
+# A provider outage answers nothing: a row that stood before the probe is not a refusal the
+# gateway just repeated, and reading it back as one would report a wall nobody re-confirmed.
+reset_calls
+printf '503|-|0\n' >"$CURL_PLAN"
+status=0
+out=$("$SCRIPT" wall-check 2>"$WORK/err") || status=$?
+assert test "$status" = 1
+assert grep -q '^inconclusive' "$WORK/err"
+assert test -z "$out"
+
+# The wall lifted: the plan served the probe. `served` and `dormant` are not the same answer —
+# one is a completion the plan answered, the other is a request nobody sent — and a probe that
+# reported the second as the first would retire a wall on the strength of nothing.
+reset_calls
+printf '200|%s|0\n' "$WORK/answer.json" >"$CURL_PLAN"
+out=$("$SCRIPT" wall-check 2>"$WORK/err") || fail "wall-check after the lift failed: $(cat "$WORK/err")"
+assert grep -q '^served' <<<"$out"
+assert test -s "$WORKER_STATS_DIR/opencode-seen/opencode-go"
+
+# One of the files a probe makes is the curl config carrying the bearer token, and a `( … )`
+# subshell starts with the parent's EXIT trap reset: the refusal the probe goes looking for is
+# exactly the path that used to leave both behind.
+probe_leftovers() { find "$TMPDIR" -maxdepth 1 -name 'opencode-go.*' | wc -l | tr -d ' '; }
+reset_calls
+limits_cache - true
+printf '429|%s|0\n' "$WORK/wall.json" >"$CURL_PLAN"
+"$SCRIPT" wall-check >/dev/null 2>&1
+assert test "$(probe_leftovers)" = 0
+reset_calls
+printf '200|%s|0\n' "$WORK/answer.json" >"$CURL_PLAN"
+"$SCRIPT" wall-check >/dev/null 2>&1
+assert test "$(probe_leftovers)" = 0
+
+# --- wall-check --all ---------------------------------------------------------
+# The leg's one refresh action asks the collector which accounts are walled, so it sends one
+# request per standing wall and none at all for the rest of the roster.
+jq -cn '{schema:1,vendors:{opencode:{source:"opencode-go",accounts:[
+  {account:"-",walled:false,windows:[]},
+  {account:"evyoxqy",walled:true,windows:[{window:"wk",resets_at:null}]}]}}}' >"$LLM_LIMITS_CACHE"
+reset_calls
+printf '429|%s|0\n' "$WORK/wall.json" >"$CURL_PLAN"
+out=$("$SCRIPT" wall-check --all 2>&1) || fail "wall-check --all failed: $out"
+assert test "$(calls)" = 1
+assert grep -q '^evyoxqy: walled' <<<"$out"
+assert_fails grep -q '^-:' <<<"$out"
+assert test "$(tail -n 1 "$WALLS" | jq -r .account)" = opencode-go-evyoxqy
+
+jq -cn '{schema:1,vendors:{opencode:{source:"opencode-go",accounts:[
+  {account:"-",walled:false,windows:[]}]}}}' >"$LLM_LIMITS_CACHE"
+reset_calls
+out=$("$SCRIPT" wall-check --all 2>&1) || fail "wall-check --all on an open leg failed: $out"
+assert test "$(calls)" = 0
+assert grep -q '^dormant' <<<"$out"
 
 echo "ok ($asserts asserts)"

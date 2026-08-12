@@ -68,11 +68,65 @@ write_state() {
     }}' >"$path"
 }
 
+# Stands in for opencode-go AND for the collect that follows it: the daemon reads the rows
+# llm-limits.sh computed, never the wall record itself, so what a probe changed reaches it here.
+OC_STUB="$WORK/opencode-go"
+cat >"$OC_STUB" <<'EOF'
+#!/usr/bin/env bash
+set -u
+printf '%s|%s\n' "${1:-}" "${OPENCODE_GO_PROFILE:-}" >>"$OC_LOG"
+# The probe is a real completion against a gateway that can be wedged; holding the tick lock
+# across it parks every other vendor's refresh behind this one.
+[ ! -d "${LLM_REFRESH_STATE}.lock" ] || printf 'lock-held\n' >>"$OC_LOG"
+profile=${OPENCODE_GO_PROFILE:--}
+restate() { # <walled> <resets_at or null>
+  tmp=$(mktemp "${LLM_LIMITS_CACHE}.tmp.XXXXXX") || exit 5
+  jq -c --arg p "$profile" --argjson walled "$1" --argjson reset "$2" \
+    '.vendors.opencode.accounts |= map(if .account == $p then
+       {account:$p, walled:$walled,
+        windows:(if $walled then [{window:"wk",resets_at:$reset}] else [] end)}
+     else . end)' "$LLM_LIMITS_CACHE" >"$tmp" && mv -f "$tmp" "$LLM_LIMITS_CACHE"
+}
+case "${OC_STUB_RESULT:-clear}" in
+  clear)
+    restate false null
+    printf 'served — the plan answered a completion; the wall is retired\n'
+    ;;
+  dormant)
+    printf 'dormant — no wall stands on %s, so nothing was sent\n' "$profile"
+    ;;
+  walled)
+    restate true "\"$(date -u -r "$(( $(date +%s) + 3 * 86400 ))" '+%Y-%m-%dT%H:%M:%SZ')\""
+    printf 'walled — weekly, resets in 3 days\n'
+    ;;
+  *)
+    printf 'inconclusive — the provider is down\n' >&2
+    exit 1
+    ;;
+esac
+EOF
+chmod +x "$OC_STUB"
+
+seed_opencode_wall() {
+  local path=$1 profile=$2 reset=$3 tmp
+  tmp=$(mktemp "${path}.tmp.XXXXXX") || return 1
+  jq -c --arg p "$profile" --arg reset "$reset" \
+    '.vendors.opencode = {source:"opencode-go",
+      accounts:[{account:$p,walled:true,windows:[{window:"wk",resets_at:$reset}]}]}' \
+    "$path" >"$tmp" && mv -f "$tmp" "$path"
+}
+
+standing_opencode_walls() {
+  jq -c '[.vendors.opencode.accounts[]? | select(.walled == true)]' "$1/store.json"
+}
+
 run_refresh() {
   local dir=$1 now=$2
   env HOME="$dir/home" LLM_REFRESH_COLLECTOR="$STUB" LLM_LIMITS_CACHE="$dir/store.json" \
     LLM_REFRESH_STATE="$dir/state.json" LLM_REFRESH_JOURNAL="$dir/journal.jsonl" \
     LLM_REFRESH_NOW="$now" STUB_LOG="$dir/calls.log" \
+    LLM_LIMITS_REFRESH_OPENCODE_GO="$OC_STUB" OC_LOG="$dir/opencode.log" \
+    OC_STUB_RESULT="${OC_STUB_RESULT:-clear}" \
     LLM_LIMITS_REFRESH_LOCK_STALE_SECONDS="${LLM_LIMITS_REFRESH_LOCK_STALE_SECONDS:-1800}" \
     STUB_PUSHBACK_TARGET="${STUB_PUSHBACK_TARGET:-}" STUB_REFRESH_SUCCEED="${STUB_REFRESH_SUCCEED:-1}" \
     STUB_PASSIVE_RC="${STUB_PASSIVE_RC:-0}" \
@@ -86,9 +140,10 @@ mkdir -p "$case_dir/home"
 write_store "$case_dir/store.json" "$NOW" 60 60 60
 run_refresh "$case_dir" "$NOW" || fail 'first run failed'
 jq -e --argjson now "$NOW" '
-  all(.[]; .interval_min == 30 and .last_attempt_epoch == $now and
-      .clean_since_epoch == $now)' "$case_dir/state.json" >/dev/null || \
-  fail 'first run did not create default state'
+  all(.claude, .codex, .gemini; .interval_min == 30 and .last_attempt_epoch == $now and
+      .clean_since_epoch == $now) and
+  (.opencode | .interval_min == 45 and .last_attempt_epoch == $now)' \
+  "$case_dir/state.json" >/dev/null || fail 'first run did not create default state'
 [ "$(grep -c '^<bare>$' "$case_dir/calls.log")" -eq 1 ] || fail 'first run did not share one passive collect'
 pass
 
@@ -221,7 +276,8 @@ mkdir -p "$case_dir/home"
 write_state "$case_dir/state.json" 30 30 30 0 "$NOW"
 STUB_PASSIVE_RC=7 run_refresh "$case_dir" "$NOW" || fail 'unreadable-store run failed'
 unset STUB_PASSIVE_RC
-jq -eRn '[inputs | fromjson | .outcome == "error" and (.detail | test("exited 7"))] |
+jq -eRn '[inputs | fromjson | select(.vendor != "opencode") |
+  .outcome == "error" and (.detail | test("exited 7"))] |
   length == 3 and all' "$case_dir/journal.jsonl" >/dev/null || \
   fail 'a failed collector plus an unreadable store was journaled as fresh'
 pass
@@ -254,6 +310,104 @@ grep -qx "$live_tick_pid" "$case_dir/state.json.lock/pid" || \
   fail 'the running holder lost ownership of its lock'
 kill "$live_tick_pid" 2>/dev/null
 wait "$live_tick_pid" 2>/dev/null
+pass
+
+# OpenCode has no usage endpoint: its only probe is a real completion, so the vendor stays dormant
+# until a wall stands and every tick that finds none must send nothing at all.
+OC_NOW=$(date +%s)
+
+case_dir="$WORK/opencode-dormant"
+mkdir -p "$case_dir/home"
+write_store "$case_dir/store.json" "$OC_NOW" 60 60 60
+write_state "$case_dir/state.json" 30 30 30 "$OC_NOW" "$OC_NOW"
+run_refresh "$case_dir" "$OC_NOW" || fail 'dormant OpenCode run failed'
+[ ! -e "$case_dir/opencode.log" ] || fail 'a dormant OpenCode account was still sent a completion'
+jq -eR 'fromjson | select(.vendor == "opencode" and .step == 0 and .outcome == "dormant" and
+  (.accounts_tried | length) == 0 and .interval_min == 45)' \
+  "$case_dir/journal.jsonl" >/dev/null || fail 'dormant OpenCode tick was not journaled'
+jq -e '.opencode' "$case_dir/state.json" >/dev/null || \
+  fail 'a state file written before OpenCode existed did not gain the vendor'
+pass
+
+case_dir="$WORK/opencode-walled"
+mkdir -p "$case_dir/home"
+write_store "$case_dir/store.json" "$OC_NOW" 60 60 60
+write_state "$case_dir/state.json" 30 30 30 "$OC_NOW" "$OC_NOW"
+seed_opencode_wall "$case_dir/store.json" evyoxqy \
+  "$(date -u -r "$((OC_NOW + 3 * 86400))" '+%Y-%m-%dT%H:%M:%SZ')"
+OC_STUB_RESULT=walled run_refresh "$case_dir" "$OC_NOW" || fail 'walled OpenCode run failed'
+[ "$(cat "$case_dir/opencode.log")" = 'wall-check|evyoxqy' ] || \
+  fail "the wall was not probed once through wall-check: $(cat "$case_dir/opencode.log")"
+jq -eR 'fromjson | select(.vendor == "opencode" and .step == 1 and .outcome == "walled" and
+  .accounts_tried == ["evyoxqy"] and .interval_min == 45)' \
+  "$case_dir/journal.jsonl" >/dev/null || fail 'the repeated 429 was not journaled as a wall'
+[ "$(standing_opencode_walls "$case_dir" | jq 'length')" -eq 1 ] || \
+  fail 'the repeated 429 did not leave the wall standing'
+pass
+
+case_dir="$WORK/opencode-reopened"
+mkdir -p "$case_dir/home"
+write_store "$case_dir/store.json" "$OC_NOW" 60 60 60
+write_state "$case_dir/state.json" 30 30 30 "$OC_NOW" "$OC_NOW"
+seed_opencode_wall "$case_dir/store.json" - \
+  "$(date -u -r "$((OC_NOW + 3 * 86400))" '+%Y-%m-%dT%H:%M:%SZ')"
+run_refresh "$case_dir" "$OC_NOW" || fail 'reopened OpenCode run failed'
+[ "$(cat "$case_dir/opencode.log")" = 'wall-check|' ] || \
+  fail 'the default profile was probed under a name nobody has a key for'
+jq -eR 'fromjson | select(.vendor == "opencode" and .outcome == "reopened" and
+  .accounts_tried == ["-"])' "$case_dir/journal.jsonl" >/dev/null || \
+  fail 'a served probe was not journaled as a reopened window'
+[ "$(standing_opencode_walls "$case_dir" | jq 'length')" -eq 0 ] || \
+  fail 'a served probe left the wall standing'
+run_refresh "$case_dir" "$((OC_NOW + 7200))" || fail 'post-reopening run failed'
+[ "$(grep -c . "$case_dir/opencode.log")" -eq 1 ] || \
+  fail 'the vendor kept probing after its window reopened'
+grep -q '^lock-held$' "$case_dir/opencode.log" && \
+  fail 'the tick lock was still held while the probe was out'
+pass
+
+case_dir="$WORK/opencode-nothing-sent"
+mkdir -p "$case_dir/home"
+write_store "$case_dir/store.json" "$OC_NOW" 60 60 60
+write_state "$case_dir/state.json" 30 30 30 "$OC_NOW" "$OC_NOW"
+seed_opencode_wall "$case_dir/store.json" - \
+  "$(date -u -r "$((OC_NOW + 3 * 86400))" '+%Y-%m-%dT%H:%M:%SZ')"
+OC_STUB_RESULT=dormant run_refresh "$case_dir" "$OC_NOW" || fail 'nothing-sent OpenCode run failed'
+jq -eR 'fromjson | select(.vendor == "opencode" and .outcome == "dormant")' \
+  "$case_dir/journal.jsonl" >/dev/null || \
+  fail 'a probe that sent nothing was not journaled as dormant'
+jq -eR 'fromjson | select(.vendor == "opencode" and .outcome == "reopened")' \
+  "$case_dir/journal.jsonl" >/dev/null && \
+  fail 'a probe that sent nothing was read as a window that reopened'
+pass
+
+case_dir="$WORK/opencode-inconclusive"
+mkdir -p "$case_dir/home"
+write_store "$case_dir/store.json" "$OC_NOW" 60 60 60
+write_state "$case_dir/state.json" 30 30 30 "$OC_NOW" "$OC_NOW"
+seed_opencode_wall "$case_dir/store.json" - \
+  "$(date -u -r "$((OC_NOW + 3 * 86400))" '+%Y-%m-%dT%H:%M:%SZ')"
+OC_STUB_RESULT=fail run_refresh "$case_dir" "$OC_NOW" || fail 'inconclusive OpenCode run failed'
+jq -eR 'fromjson | select(.vendor == "opencode" and .outcome == "error" and
+  (.detail | test("inconclusive")))' "$case_dir/journal.jsonl" >/dev/null || \
+  fail 'a probe that answered nothing was journaled as a verdict, or without its reason'
+[ "$(standing_opencode_walls "$case_dir" | jq 'length')" -eq 1 ] || \
+  fail 'a probe that answered nothing retired the wall anyway'
+pass
+
+# The stated reset is day-granular, so it is a hint, not a deadline: the cadence tightens as it
+# nears and stays tight past it, because only a served request ends the wall.
+oc_cadence() {
+  HOME="$WORK/functions-home" LLM_REFRESH_NOW=1000000 bash -c \
+    '. "$1"; opencode_next_interval "$2" "$3"' _ "$SCRIPT" "$1" "$2"
+}
+[ "$(oc_cadence 30 '[{"reset_at":1259200}]')" = 45 ] || fail 'a reset days out did not loosen'
+[ "$(oc_cadence 30 '[{"reset_at":1001200}]')" = 22 ] || fail 'an approaching reset did not tighten'
+[ "$(oc_cadence 30 '[{"reset_at":999000}]')" = 22 ] || \
+  fail 'a reset already past stopped tightening instead of probing on'
+[ "$(oc_cadence 30 '[{"window":"weekly"}]')" = 22 ] || fail 'a wall with no stated reset loosened'
+[ "$(oc_cadence 30 '[{"reset_at":1259200},{"reset_at":1001200}]')" = 22 ] || \
+  fail 'the cadence followed a far reset while a nearer one stood'
 pass
 
 floor=$(HOME="$WORK/functions-home" bash -c '. "$1"; ladder_tighten 15' _ "$SCRIPT")

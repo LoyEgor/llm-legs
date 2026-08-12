@@ -202,6 +202,39 @@ assert compacted_path.stat().st_size > rb.WALL_COMPACT_BYTES
 assert probe_wall(compacted_wall_state, "check", account="live") == "1"
 assert [json.loads(line) for line in compacted_path.read_text().splitlines()] == [live_row]
 
+# OpenCode rows outlive their stated reset: only a served completion retires them (the collector's
+# question, not this file's), so compaction may collapse duplicates — newest detection, longest
+# horizon, one row per account and window — but never drop the account by the clock.
+oc_wall_state = work / "opencode-wall-state"
+oc_wall_state.mkdir()
+oc_path = oc_wall_state / rb.WALL_STATE_FILE
+oc_filler = [
+    {
+        "side": "agy", "account": f"expired-{index}", "bucket": "agy-pro",
+        "detected_at": time.time() - 7200,
+    }
+    for index in range(80)
+]
+oc_lapsed = {
+    "side": "opencode", "account": "opencode-go-x", "bucket": "general",
+    "detected_at": time.time() - 7200, "reset_at": time.time() - 3600, "window": "weekly",
+}
+oc_newer = {
+    "side": "opencode", "account": "opencode-go-x", "bucket": "general",
+    "detected_at": time.time() - 60, "reset_at": time.time() - 7200, "window": "weekly",
+}
+oc_path.write_text(
+    "".join(json.dumps(row) + "\n" for row in oc_filler + [oc_lapsed, oc_newer])
+)
+assert oc_path.stat().st_size > rb.WALL_COMPACT_BYTES
+assert rb.compact_walls(oc_path) is not None
+oc_kept = [json.loads(line) for line in oc_path.read_text().splitlines()]
+assert len(oc_kept) == 1, oc_kept
+assert oc_kept[0]["account"] == "opencode-go-x"
+assert oc_kept[0]["window"] == "weekly"
+assert oc_kept[0]["detected_at"] == oc_newer["detected_at"]
+assert oc_kept[0]["reset_at"] == oc_lapsed["reset_at"]
+
 # The row that stands longest wins the merge: a plain wall recorded after a dated one must not
 # throw the provider's horizon away and put a weekly limit back in the pool an hour later.
 horizon_wall_state = work / "horizon-wall-state"

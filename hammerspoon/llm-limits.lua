@@ -1,7 +1,4 @@
 local home = os.getenv("HOME")
-local workerStatsDir = os.getenv("WORKER_STATS_DIR")
-  or (os.getenv("CLAUDEB_DIR") or home .. "/.claude-profiles/.claudeb") .. "/worker-stats"
-local WALL_STATE_FILE = "walls.jsonl"
 -- The shell helper is this repo's, so it is found beside this file: an absolute path survives a
 -- moved checkout by pointing at the old one.
 local repoRoot = (debug.getinfo(1, "S").source or ""):match("^@(.*)/[^/]+/[^/]+$")
@@ -15,8 +12,7 @@ local M = {
   workerModelPath = home .. "/.claude/worker-model",
   workerModelShPath = repoRoot and repoRoot .. "/share/worker-model.sh" or nil,
   workerPickPath = home .. "/.local/bin/worker-pick",
-  opencodeProfilesPath = home .. "/.config/opencode-go/profiles",
-  wallsPath = workerStatsDir .. "/" .. WALL_STATE_FILE,
+  opencodeGoCmd = "opencode-go",
   routingFailed = false,
   wallsLog = nil,
   onRefreshStateChanged = function() end,
@@ -264,105 +260,29 @@ local function rowTitle(account, label, bucket, dim, atLimit, barWarning, column
   return infoTitle(prefix .. bar .. suffix, false, dim, atLimit)
 end
 
-local function readOpenCodeProfiles()
-  local file = io.open(M.opencodeProfilesPath, "r")
-  if not file then return { "-" } end
-  local profiles = {}
-  for raw in file:lines() do
-    local line = raw:match("^%s*(.-)%s*$")
-    if line ~= "" and not line:match("^#") then table.insert(profiles, line) end
-  end
-  file:close()
-  return profiles
-end
-
-local function openCodeAccount(profile)
-  return profile == "-" and "opencode-go" or "opencode-go-" .. profile
-end
-
-local OPENCODE_WINDOW_MARKS = { ["5-hour"] = "5h", weekly = "wk", monthly = "mo" }
-local OPENCODE_WINDOW_ORDER = { "5h", "wk", "mo", "?" }
-
--- Whether this window is still walled, and the horizon to print for it.
--- A record the provider never dated says only that the account was walled a moment ago, so an
--- older dated record whose reset has already passed must not mask a fresher undated one — and
--- when the wall stands on that undated record alone it prints no horizon, since the expired one
--- beside it would render as a reset in the past.
-local function windowStanding(group, now)
-  if not group then return false end
-  if group.reset_at and now <= group.reset_at then return true, group.reset_at end
-  local undated = group.undated_at
-  if not undated or (group.dated_at and group.dated_at > undated) then return false end
-  if now > undated + 3600 then return false end
-  return true, nil
-end
-
--- One entry per account still walled: { detected_at = <newest record>, rows = { window, reset_at } }.
--- review-bench caps a stated reset as it writes the record, so the recorded value is final here.
-local function readOpenCodeWalls()
-  local file = io.open(M.wallsPath, "r")
-  if not file then return {} end
-  local groups = {}
-  for raw in file:lines() do
-    local ok, row = pcall(hs.json.decode, raw)
-    -- review-bench writes fractional epochs; Lua 5.4's os.date rejects non-integers.
-    local detected = ok and type(row) == "table" and tonumber(row.detected_at) or nil
-    if detected then detected = math.floor(detected) end
-    if detected and row.side == "opencode" and row.bucket == "general"
-        and type(row.account) == "string" then
-      local mark = OPENCODE_WINDOW_MARKS[row.window] or "?"
-      groups[row.account] = groups[row.account] or {}
-      local group = groups[row.account][mark] or { detected_at = detected }
-      local reset = tonumber(row.reset_at)
-      if reset then
-        reset = math.floor(reset)
-        if not group.reset_at or reset > group.reset_at then group.reset_at = reset end
-        if not group.dated_at or detected > group.dated_at then group.dated_at = detected end
-      elseif not group.undated_at or detected > group.undated_at then
-        group.undated_at = detected
-      end
-      if detected > group.detected_at then group.detected_at = detected end
-      groups[row.account][mark] = group
-    end
-  end
-  file:close()
-
-  local active = {}
-  local now = os.time()
-  for account, marks in pairs(groups) do
-    local rows, newest
-    for _, mark in ipairs(OPENCODE_WINDOW_ORDER) do
-      local group = marks[mark]
-      local standing, reset = windowStanding(group, now)
-      -- "?" is a pre-window legacy record; beside a named wall it re-states the same 429.
-      if standing and mark == "?" and rows then standing = false end
-      if standing then
-        rows = rows or {}
-        table.insert(rows, { window = mark, reset_at = reset })
-        if not newest or group.detected_at > newest then newest = group.detected_at end
-      end
-    end
-    if rows then active[account] = { detected_at = newest, rows = rows } end
-  end
-  return active
-end
-
-local function appendOpenCode(menu)
-  local profiles = readOpenCodeProfiles()
-  if #profiles == 0 then return end
-  local walls = readOpenCodeWalls()
-  table.insert(menu, { title = infoTitle("OpenCode Go"), disabled = true })
-  for _, profile in ipairs(profiles) do
-    local wall = walls[openCodeAccount(profile)]
+local function appendOpenCode(menu, limits)
+  local vendor = limits and type(limits.vendors) == "table" and limits.vendors.opencode
+  local accounts = type(vendor) == "table" and vendor.accounts
+  if type(accounts) ~= "table" or #accounts == 0 then return end
+  -- One refresh for the leg, in the section header every other vendor carries its own in. Per
+  -- account there is nothing to offer: a check is one real completion, free only where a wall
+  -- already stands, and which accounts those are is the collector's answer rather than a click's.
+  table.insert(menu, {
+    title = infoTitle("OpenCode Go"),
+    menu = {{ title = "Hard refresh", fn = M.hardRefreshOpenCode }},
+  })
+  for _, account in ipairs(accounts) do
+    local walled = account.walled == true
+    local windows = type(account.windows) == "table" and account.windows or {}
     table.insert(menu, {
-      title = accountTitle(profile, wall and formatAccountAge(wall.detected_at), wall ~= nil),
+      title = accountTitle(account.account, formatAccountAge(account.as_of), walled),
       disabled = true,
     })
-    if wall then
-      for _, standing in ipairs(wall.rows) do
+    if walled and #windows > 0 then
+      for _, window in ipairs(windows) do
         table.insert(menu, {
-          title = rowTitle("", standing.window,
-            { effective_pct = 100, resets_at = standing.reset_at },
+          title = rowTitle("", window.window,
+            { effective_pct = 100, resets_at = window.resets_at },
             false, true, false, { pct = "" }),
           disabled = true,
         })
@@ -450,10 +370,18 @@ local function readWorkerModel()
 end
 
 local function baseEnvironment()
-  return {
+  local environment = {
     HOME = os.getenv("HOME"),
     PATH = "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin:" .. os.getenv("HOME") .. "/.local/bin:/usr/sbin",
   }
+  -- Everything launched from here reads or writes the store this menu just rendered. A Hammerspoon
+  -- started with these set would otherwise send a wall probe to one store and read another —
+  -- LLM_LIMITS_CACHE included, since opencode-go picks its probe targets out of that cache.
+  for _, name in ipairs({ "WORKER_STATS_DIR", "CLAUDEB_DIR", "LLM_LIMITS_CACHE" }) do
+    local value = os.getenv(name)
+    if value and value ~= "" then environment[name] = value end
+  end
+  return environment
 end
 
 local function newCollectorTask(callback, args, envExtra)
@@ -738,7 +666,8 @@ end
 
 -- Runs a vendor account command (claudeb/codexb/geminib) then re-collects so the row it
 -- changed disappears/updates immediately. Shared by the toggle/switch/remove wiring.
-local function runAccountCommand(launchPath, args, failMessage, onSuccess)
+local function runAccountCommand(launchPath, args, failMessage, onSuccess, options)
+  options = options or {}
   local label = (launchPath:match("[^/]+$") or launchPath) .. " " .. table.concat(args, " ")
   local key = "account-action:" .. launchPath .. "\0" .. table.concat(args, "\0")
   -- Saying nothing here is what made a repeated click look like a dead menu.
@@ -750,21 +679,32 @@ local function runAccountCommand(launchPath, args, failMessage, onSuccess)
   logAction("launch", label)
   local id = reserveTask("account-action", 360, key)
   local task = hs.task.new(launchPath, function(exitCode, stdOut, stdErr)
-    if exitCode ~= 0 then
+    local failed = exitCode ~= 0
+    if failed then
       logAction("failed", string.format("%s exit=%s %s", label, tostring(exitCode),
         tostring((stdErr or stdOut or ""):gsub("%s+", " "):sub(1, 160))))
-      finishTask(id, exitCode, stdOut, stdErr, failMessage)
-      return
+      -- A leg-wide command can fail on one account after changing another (wall-check --all probes
+      -- every walled profile), so its caller asks for the recollect even on a nonzero exit: the
+      -- rows must follow what was recorded, and the failure still reaches the alert below.
+      if not options.recollectOnFailure then
+        finishTask(id, exitCode, stdOut, stdErr, failMessage)
+        return
+      end
+    else
+      logAction("done", label .. " exit=0")
+      if onSuccess then onSuccess() end
     end
-    logAction("done", label .. " exit=0")
-    if onSuccess then onSuccess() end
     local reread = newCollectorTask(function(collectExit, collectOut, collectErr)
       logAction("collect", label .. " collect_exit=" .. tostring(collectExit))
-      finishTask(id, collectExit, collectOut, collectErr, "collect failed")
+      if failed then
+        finishTask(id, exitCode, stdOut, stdErr, failMessage)
+      else
+        finishTask(id, collectExit, collectOut, collectErr, "collect failed")
+      end
     end, {})
     startTask(id, reread, "collect could not start")
   end, args)
-  if task then task:setEnvironment(baseEnvironment()) end
+  if task then task:setEnvironment(options.environment or baseEnvironment()) end
   startTask(id, task, failMessage)
 end
 
@@ -778,6 +718,13 @@ end
 
 local function runGeminib(args, failMessage, onSuccess)
   runAccountCommand(resolveGeminib(), args, failMessage, onSuccess)
+end
+
+-- Which accounts this asks is read out of the store by opencode-go itself, so the leg's refresh
+-- sends exactly as many requests as there are standing walls, and none at all when there are none.
+function M.hardRefreshOpenCode()
+  runAccountCommand(resolveCommand(M.opencodeGoCmd or "opencode-go"), { "wall-check", "--all" },
+    "OpenCode wall refresh failed", nil, { recollectOnFailure = true })
 end
 
 -- Arms a Hammerspoon one-shot for the chat in the frontmost Terminal tab; the
@@ -1433,7 +1380,7 @@ function M.menuItems()
       end
     end
 
-    appendOpenCode(menu)
+    appendOpenCode(menu, limits)
     table.insert(menu, { title = "-" })
     refreshItems(menu)
     reportItem(menu)
@@ -1448,7 +1395,7 @@ function M.menuItems()
         disabled = true,
       })
     end
-    appendOpenCode(menu)
+    appendOpenCode(menu, limits)
     refreshItems(menu)
     reportItem(menu)
   end

@@ -190,8 +190,90 @@ assert_account_ages() {
   fi
 }
 
+# The whole OpenCode chain in one fixture: bin/opencode-go writes a wall record against a stubbed
+# gateway, llm-limits.sh turns that record and its neighbours into vendor rows, and the menubar
+# renders those rows. Whether a wall still stands is decided once, in the collector, and this is
+# what proves the menu is not deciding it again. Prints "<epoch><TAB><.vendors.opencode>".
+opencode_vendor_fixture() {
+  local sandbox stub body now walls repo
+  repo=$(cd "$(dirname "$0")/.." && pwd)
+  sandbox=$(mktemp -d)
+  stub="$sandbox/bin"
+  walls="$sandbox/worker-stats/walls.jsonl"
+  mkdir -p "$stub" "$sandbox/worker-stats/opencode-seen"
+  body='{"type":"error","error":{"type":"GoUsageLimitError","message":"Weekly usage limit reached. Resets in 3 days."},"metadata":{"limitName":"weekly"}}'
+  cat >"$stub/curl" <<'STUB'
+#!/usr/bin/env bash
+out= url=
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+  case ${args[i]} in
+    -o) out=${args[i + 1]} ;;
+    http*) url=${args[i]} ;;
+  esac
+done
+if [[ $url == */models ]]; then
+  if [ -n "$out" ]; then printf '%s' "$MODELS" >"$out"; printf '200'; else printf '%s' "$MODELS"; fi
+  exit 0
+fi
+cat >/dev/null
+printf '%s' "$WALL_BODY" >"$out"
+printf '429'
+STUB
+  chmod +x "$stub/curl"
+  now=$(date +%s)
+  PATH="$stub:$PATH" TMPDIR="$sandbox" WORKER_STATS_DIR="$sandbox/worker-stats" \
+    OPENCODE_GO_PROFILE=evyoxqy OPENCODE_GO_KEY=fixture-key WALL_BODY="$body" \
+    MODELS='{"data":[{"id":"glm-5.2"}]}' \
+    bash "$repo/bin/opencode-go" run glm-5.2 ping >/dev/null 2>&1
+  grep -q '"account":"opencode-go-evyoxqy"' "$walls" ||
+    fail "bin/opencode-go recorded no wall for a plan 429: [$(cat "$walls" 2>/dev/null)]"
+  # The neighbours are written straight to the record: they are the shapes a live 429 cannot be
+  # made to produce on demand — a lapsed horizon, a legacy row with no window, two windows at once.
+  # review-bench writes fractional epochs; integer fixtures would hide the os.date crash.
+  jq -cn --argjson now "$now" '
+    def row($account; $detected; $reset; $window):
+      {side:"opencode",account:$account,bucket:"general",detected_at:($detected + 0.25)} +
+      (if $reset == null then {} else {reset_at:($reset + 0.25)} end) +
+      (if $window == null then {} else {window:$window} end);
+    row("opencode-go"; $now - 10; $now + 86400; null),
+    row("opencode-go-alt"; $now - 10; $now + 2 * 86400; "weekly"),
+    row("opencode-go-alt"; $now - 20; $now + 4 * 3600; "5-hour"),
+    row("opencode-go-alt"; $now - 30; $now + 86400; null),
+    row("opencode-go-clear"; $now - 7200; $now - 60; "monthly"),
+    row("opencode-go-far"; $now - 10; $now + 19 * 86400; "monthly"),
+    row("opencode-go-fresh"; $now - 7200; $now - 3600; "weekly"),
+    row("opencode-go-fresh"; $now - 600; null; "weekly"),
+    {side:"opencode",account:"opencode-go-tied",bucket:"general",
+     detected_at:($now - 900),reset_at:($now + 86400),window:"weekly"}' >>"$walls"
+  printf '%s\n' "$((now - 3600))" >"$sandbox/worker-stats/opencode-seen/opencode-go-served"
+  # The one thing that ends a wall: a completion the plan served after the refusal was filed.
+  printf '%s\n' "$((now - 1800))" >"$sandbox/worker-stats/opencode-seen/opencode-go-clear"
+  # A refusal in the very second of the served stamp: the tie must keep the wall, because only a
+  # standing wall is ever probed again — read as served, the account would freeze clean forever.
+  printf '%s\n' "$((now - 900))" >"$sandbox/worker-stats/opencode-seen/opencode-go-tied"
+  printf '# roster\n-\nalt\nclear\nfar\nevyoxqy\nfresh\nserved\ntied\n' >"$sandbox/profiles"
+  local rows
+  rows=$(HOME="$sandbox/home" WORKER_STATS_DIR="$sandbox/worker-stats" \
+    OPENCODE_GO_PROFILES="$sandbox/profiles" LLM_LIMITS_CACHE="$sandbox/cache.json" \
+    LLM_LIMITS_NOW="$now" bash "$repo/llm-limits.sh" --json 2>/dev/null |
+    jq -c '.vendors.opencode')
+  # The evyoxqy horizon as it was actually recorded: opencode-go stamps its own clock inside the
+  # run above, so an expectation derived from $now flakes whenever the run crosses a minute mark.
+  printf '%s\t%s\t%s\n' "$now" \
+    "$(jq -r 'first(.accounts[] | select(.account == "evyoxqy") | .windows[0].resets_at | fromdateiso8601)' <<<"$rows")" \
+    "$rows"
+  rm -rf "$sandbox"
+}
+
 assert_isolated_menu_contracts() {
-  local output
+  local output opencode_fixture opencode_now opencode_evyoxqy_reset opencode_rows
+  opencode_fixture=$(opencode_vendor_fixture)
+  opencode_now=${opencode_fixture%%	*}
+  opencode_rows=${opencode_fixture#*	}
+  opencode_evyoxqy_reset=${opencode_rows%%	*}
+  opencode_rows=${opencode_rows#*	}
+  [ -n "$opencode_rows" ] || fail "llm-limits.sh emitted no OpenCode rows for the menu fixture"
   output=$(hs -c '
 local path = "/Volumes/Work/Projects/llm-legs/hammerspoon/llm-limits.lua"
 local realJsonDecode = hs.json.decode
@@ -235,11 +317,6 @@ local function loadModule(fixture, state)
   local fakeIo = setmetatable({
     open = function(filePath)
       local contents = "fixture"
-      if filePath:match("/%.config/opencode%-go/profiles$") then
-        contents = state.profiles
-      elseif filePath:match("/worker%-stats/walls%.jsonl$") then
-        contents = state.walls
-      end
       if contents == nil then return nil end
       return {
         read = function() return contents end,
@@ -380,27 +457,13 @@ openState.starts[1].running = false
 openState.now = openState.now + 5
 openGuard.menuItems()
 if #openState.starts ~= 2 then error("exited menu-open collector blocked the next open") end
-local wallState = {
-  starts = {}, alerts = {}, now = now,
-  profiles = "# roster\n-\nalt\nclear\nfar\nevyoxqy\nfresh\n",
-  walls = string.format(
-    "{\"side\":\"opencode\",\"account\":\"opencode-go\",\"bucket\":\"general\",\"detected_at\":%.2f,\"reset_at\":%.2f}\n" ..
-    "{\"side\":\"opencode\",\"account\":\"opencode-go-alt\",\"bucket\":\"general\",\"detected_at\":%.2f,\"reset_at\":%.2f,\"window\":\"weekly\"}\n" ..
-    "{\"side\":\"opencode\",\"account\":\"opencode-go-alt\",\"bucket\":\"general\",\"detected_at\":%.2f,\"reset_at\":%.2f,\"window\":\"5-hour\"}\n" ..
-    "{\"side\":\"opencode\",\"account\":\"opencode-go-alt\",\"bucket\":\"general\",\"detected_at\":%.2f,\"reset_at\":%.2f}\n" ..
-    "{\"side\":\"opencode\",\"account\":\"opencode-go-clear\",\"bucket\":\"general\",\"detected_at\":%.2f,\"reset_at\":%.2f,\"window\":\"monthly\"}\n" ..
-    "{\"side\":\"opencode\",\"account\":\"opencode-go-far\",\"bucket\":\"general\",\"detected_at\":%.2f,\"reset_at\":%.2f,\"window\":\"monthly\"}\n" ..
-    "{\"side\":\"opencode\",\"account\":\"opencode-go-evyoxqy\",\"bucket\":\"general\",\"detected_at\":%.2f,\"reset_at\":%.2f,\"window\":\"weekly\"}\n" ..
-    "{\"side\":\"opencode\",\"account\":\"opencode-go-fresh\",\"bucket\":\"general\",\"detected_at\":%.2f,\"reset_at\":%.2f,\"window\":\"weekly\"}\n" ..
-    "{\"side\":\"opencode\",\"account\":\"opencode-go-fresh\",\"bucket\":\"general\",\"detected_at\":%.2f,\"window\":\"weekly\"}\n",
-    -- review-bench writes fractional epochs; integer fixtures would hide the os.date crash.
-    now - 10 + 0.25, now + 86400 + 0.25, now - 10 + 0.25, now + 2 * 86400 + 0.25,
-    now - 20 + 0.25, now + 4 * 3600 + 0.25, now - 30 + 0.25, now + 86400 + 0.25,
-    now - 7200 + 0.25, now - 60 + 0.25,
-    now - 10 + 0.25, now + 19 * 86400 + 0.25, now - 3600 + 0.25, now + 3 * 86400 + 0.25,
-    now - 7200 + 0.25, now - 3600 + 0.25, now - 600 + 0.25),
-}
-local wallMenu = loadModule({ schema = 1, vendors = {} }, wallState).menuItems()
+local ocNow = '"$opencode_now"'
+local ocEvyoxqyReset = '"$opencode_evyoxqy_reset"'
+local wallState = { starts = {}, alerts = {}, now = ocNow }
+-- Rows llm-limits.sh computed this very run from a record bin/opencode-go wrote: the menu decides
+-- nothing about them beyond how they look.
+local wallFixture = { schema = 1, vendors = { opencode = realJsonDecode([==['"$opencode_rows"']==]) } }
+local wallMenu = loadModule(wallFixture, wallState).menuItems()
 local wallTitles = {}
 for _, item in ipairs(wallMenu) do table.insert(wallTitles, title(item)) end
 local wallText = table.concat(wallTitles, "\n")
@@ -429,9 +492,9 @@ end
 local weekdays = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" }
 local function resetColumn(stamp)
   local text
-  if stamp - now >= 604800 then
+  if stamp - ocNow >= 604800 then
     text = os.date("%b %d", stamp)
-  elseif os.date("%Y-%m-%d", stamp) ~= os.date("%Y-%m-%d", now) then
+  elseif os.date("%Y-%m-%d", stamp) ~= os.date("%Y-%m-%d", ocNow) then
     text = weekdays[tonumber(os.date("%w", stamp)) + 1] .. os.date(" %H:%M", stamp)
   else
     text = os.date("%H:%M", stamp)
@@ -439,18 +502,25 @@ local function resetColumn(stamp)
   return string.format("%9s", text)
 end
 local expectedBlocks = {
-  { "-", "-\n        ?   ▓▓▓▓▓        " .. resetColumn(now + 86400) },
+  { "-", "-\n        ?   ▓▓▓▓▓        " .. resetColumn(ocNow + 86400) },
   -- Two windows walled at once are two rows, in window order rather than in record order;
   -- alt also carries an active legacy no-window record, which a named wall must silence.
-  { "alt", "alt\n        5h  ▓▓▓▓▓        " .. resetColumn(now + 4 * 3600)
-    .. "\n        wk  ▓▓▓▓▓        " .. resetColumn(now + 2 * 86400) },
-  { "clear", "clear\n            ░░░░░" },
-  -- The reader takes the recorded reset as review-bench capped it, however far out it reaches.
-  { "far", "far\n        mo  ▓▓▓▓▓        " .. resetColumn(now + 19 * 86400) },
-  { "evyoxqy", "evyoxqy  1h\n        wk  ▓▓▓▓▓        " .. resetColumn(now + 3 * 86400) },
-  -- An expired dated record must not mask the undated one recorded after it: the window still
-  -- stands on the 1h rule, and it prints no horizon rather than the reset that already passed.
-  { "fresh", "fresh  10m\n        wk  ▓▓▓▓▓        " .. string.format("%9s", "–") },
+  { "alt", "alt\n        5h  ▓▓▓▓▓        " .. resetColumn(ocNow + 4 * 3600)
+    .. "\n        wk  ▓▓▓▓▓        " .. resetColumn(ocNow + 2 * 86400) },
+  -- The only thing that opens a walled account: a completion the plan served after the refusal.
+  -- The age is that same served call — the wall is older and says nothing about being alive.
+  { "clear", "clear  30m\n            ░░░░░" },
+  -- The only other thing the Go plan tells an unwalled account about itself is when it was served.
+  { "served", "served  1h\n            ░░░░░" },
+  -- The collector takes the recorded reset as its writer capped it, however far out it reaches.
+  { "far", "far\n        mo  ▓▓▓▓▓        " .. resetColumn(ocNow + 19 * 86400) },
+  -- Written by bin/opencode-go itself, from a 429 the stubbed gateway answered this run.
+  { "evyoxqy", "evyoxqy\n        wk  ▓▓▓▓▓        " .. resetColumn(ocEvyoxqyReset) },
+  -- The gateway dates its resets to the day, so a horizon an hour past retires nothing: the wall
+  -- still stands, it prints the horizon as recorded, and an account that only ever refused has no age.
+  { "fresh", "fresh\n        wk  ▓▓▓▓▓        " .. resetColumn(ocNow - 3600) },
+  -- A refusal in the very second of the served stamp: the tie keeps the wall standing.
+  { "tied", "tied  15m\n        wk  ▓▓▓▓▓        " .. resetColumn(ocNow + 86400) },
 }
 for _, case in ipairs(expectedBlocks) do
   local rendered = wallBlock(case[1])
@@ -462,6 +532,46 @@ for _, case in ipairs(expectedBlocks) do
   if wallBlock(case[1]):find("%%") then
     error("OpenCode rows printed a usage percentage nobody measured: " .. wallText)
   end
+end
+-- Refreshing this leg means sending real completions, so it is ONE action for the whole leg in the
+-- section header, and which accounts it spends on is read out of the rows by opencode-go, not by a click.
+local function openCodeRow(name)
+  for index = openCodeAt + 1, #wallMenu do
+    local text = title(wallMenu[index])
+    if text == name or text:match("^" .. name:gsub("%W", "%%%0") .. "%s") then
+      return wallMenu[index]
+    end
+  end
+end
+for _, name in ipairs({ "evyoxqy", "served", "-" }) do
+  local row = openCodeRow(name)
+  if not row or row.menu ~= nil or row.disabled ~= true then
+    error("OpenCode account " .. name .. " carries a per-account action")
+  end
+end
+local legHeader = wallMenu[openCodeAt]
+if type(legHeader.menu) ~= "table" or #legHeader.menu ~= 1
+    or title(legHeader.menu[1]) ~= "Hard refresh" or type(legHeader.menu[1].fn) ~= "function" then
+  error("the OpenCode section header does not carry one Hard refresh for the leg")
+end
+legHeader.menu[1].fn()
+local wallCheck = wallState.starts[#wallState.starts]
+if not wallCheck or wallCheck.command ~= "/fixture-home/.local/bin/opencode-go"
+    or wallCheck.args[1] ~= "wall-check" or wallCheck.args[2] ~= "--all" or #wallCheck.args ~= 2 then
+  error("the leg refresh did not launch opencode-go wall-check --all")
+end
+if wallCheck.environment.OPENCODE_GO_PROFILE ~= nil then
+  error("the leg refresh named a single profile")
+end
+-- One profile failing must not hide what the same run retired on the others: a leg-wide
+-- refresh recollects even on a nonzero exit, so the rows follow what was recorded.
+wallCheck.running = false
+local startsBefore = #wallState.starts
+wallCheck.callback(1, "", "one profile answered nothing")
+local recollect = wallState.starts[#wallState.starts]
+if #wallState.starts ~= startsBefore + 1
+    or recollect.command ~= "/Volumes/Work/Projects/llm-legs/llm-limits.sh" then
+  error("a failed leg refresh did not recollect")
 end
 return "OK open-guard running=1->1 exited=1->2"
 ' 2>/dev/null) || fail "isolated Hammerspoon contract checks threw"

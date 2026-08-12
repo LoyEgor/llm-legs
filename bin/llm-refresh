@@ -39,6 +39,11 @@ clean_window_elapsed() {
   [ "$1" -gt 0 ] && [ $(( $2 - $1 )) -ge 259200 ]
 }
 
+# The gateway states a reset to the day, so the horizon it gives is approximate: the cadence
+# tightens inside this much of it and keeps probing past it, because only a served request — never
+# the clock — ends a wall.
+OPENCODE_TIGHTEN_WITHIN_S=3600
+
 # Claim, break, and release semantics live in share/store-lock.sh (sourced below); only the
 # single-attempt acquire is this daemon's own — a tick that finds the lock held simply skips.
 refresh_lock_acquire() {
@@ -81,6 +86,7 @@ script_path=$(resolve_script)
 repo_root=$(cd "$(dirname "$script_path")/.." && pwd)
 . "$repo_root/share/store-lock.sh"
 collector=${LLM_LIMITS_REFRESH_COLLECTOR:-${LLM_REFRESH_COLLECTOR:-$repo_root/llm-limits.sh}}
+opencode_go=${LLM_LIMITS_REFRESH_OPENCODE_GO:-$repo_root/bin/opencode-go}
 store=${LLM_LIMITS_CACHE:-$HOME/.llm-limits.json}
 state_file=${LLM_LIMITS_REFRESH_STATE:-${LLM_REFRESH_STATE:-$HOME/.llm-limits-refresh.state}}
 journal_file=${LLM_LIMITS_REFRESH_JOURNAL:-${LLM_REFRESH_JOURNAL:-$HOME/.llm-limits-refresh.jsonl}}
@@ -96,7 +102,7 @@ normalized_state() {
   jq -cn --argjson now "$now" --argjson state "$input" '
     def rung: if . == 15 or . == 22 or . == 30 or . == 45 or . == 60 then . else 30 end;
     def epoch: if type == "number" and . >= 0 then floor else 0 end;
-    ["claude","codex","gemini"] | map(. as $vendor |
+    ["claude","codex","gemini","opencode"] | map(. as $vendor |
       (($state.vendors[$vendor] // $state[$vendor] // {}) as $old |
        {key:$vendor, value:{
          interval_min:($old.interval_min | rung),
@@ -152,6 +158,90 @@ blocked_accounts_json() {
   stale_rows_json "$1" "$2" 1
 }
 
+# OpenCode is the inverted vendor. The other three refresh by reading a free usage endpoint; the Go
+# plan publishes none, so its only probe is a real completion — free while the account is walled,
+# since a 429 costs no quota and re-states the limit, and pure spend once it is not. So: dormant
+# with no wall on record (every real call anyone makes records its own outcome, which is what keeps
+# that state true for free), and polled only while a wall stands.
+opencode_walls_json() {
+  store_readable || return 1
+  jq -c '[.vendors.opencode.accounts[]? | select(.walled == true) |
+          {account, reset_at:([.windows[]? | select(.resets_at != null) |
+                               (.resets_at | fromdateiso8601)] | min)}]' "$store" 2>/dev/null
+}
+
+opencode_probe() {
+  local profile=$1
+  [ "$profile" != '-' ] || profile=''
+  OPENCODE_GO_PROFILE="$profile" "$opencode_go" wall-check 2>&1
+}
+
+opencode_next_interval() {
+  local interval=$1 walls=$2 nearest
+  nearest=$(jq -r --argjson now "$now" '
+    [.[] | if (.reset_at | type) == "number" then (.reset_at - $now | floor) else 0 end] |
+    min // empty' <<<"$walls")
+  if [ -z "$nearest" ]; then
+    ladder_loosen "$interval"
+  elif [ "$nearest" -le "$OPENCODE_TIGHTEN_WITHIN_S" ]; then
+    ladder_tighten "$interval"
+  else
+    ladder_loosen "$interval"
+  fi
+}
+
+# Prints this vendor's journal fields plus the cadence it earned, as one JSON object.
+opencode_tick() {
+  local interval=$1 walls after tried='[]' notes='[]' profile probe rc
+  local cleared=0 standing=0 dormant=0 detail
+  if ! walls=$(opencode_walls_json) || [ -z "$walls" ]; then
+    jq -cn --argjson interval "$interval" \
+      '{step:0,tried:[],outcome:"error",interval:$interval,
+        detail:"the collector states no OpenCode rows; the plan state is unknown"}'
+    return 0
+  fi
+  if [ "$(jq 'length' <<<"$walls")" -eq 0 ]; then
+    jq -cn --argjson interval "$(ladder_loosen "$interval")" \
+      '{step:0,tried:[],outcome:"dormant",interval:$interval,
+        detail:"no wall on record; a probe would spend the plan to be told what it already says"}'
+    return 0
+  fi
+  while IFS= read -r profile; do
+    [ -n "$profile" ] || continue
+    tried=$(jq -c --arg account "$profile" '. + [$account]' <<<"$tried")
+    rc=0
+    probe=$(opencode_probe "$profile") || rc=$?
+    # Three answers, and only one of them retires a wall: a probe that SENT nothing (the wall was
+    # gone before the request left) proves nothing about the plan, and counting it as a reopening
+    # would report a leg as recovered on the strength of a request nobody made.
+    if [ "$rc" -ne 0 ]; then
+      probe=${probe:-"inconclusive — the probe exited $rc without answering"}
+    else
+      case "${probe%% *}" in
+        walled) standing=$((standing + 1)) ;;
+        served) cleared=$((cleared + 1)) ;;
+        *) dormant=$((dormant + 1)) ;;
+      esac
+    fi
+    notes=$(jq -c --arg note "$profile: ${probe%%$'\n'*}" '. + [$note]' <<<"$notes")
+  done < <(jq -r '.[].account' <<<"$walls")
+  detail=$(jq -r 'join("; ")' <<<"$notes")
+  # What the probe changed is a raw record; only a collect turns it into the rows every surface
+  # reads, so a wall this tick retired would otherwise keep standing on screen until the next one.
+  if [ "$((cleared + standing))" -gt 0 ]; then
+    "$collector" >/dev/null 2>&1 || true
+  fi
+  after=$(opencode_walls_json) || after=$walls
+  [ -n "$after" ] || after=$walls
+  jq -cn --argjson tried "$tried" --arg detail "$detail" \
+    --argjson interval "$(opencode_next_interval "$interval" "$after")" \
+    --arg outcome "$(if [ "$standing" -gt 0 ]; then printf walled
+                     elif [ "$cleared" -gt 0 ]; then printf reopened
+                     elif [ "$dormant" -gt 0 ]; then printf dormant
+                     else printf error; fi)" \
+    '{step:1,tried:$tried,outcome:$outcome,interval:$interval,detail:$detail}'
+}
+
 store_readable() {
   [ -r "$store" ] || return 1
   jq -e '.vendors' "$store" >/dev/null 2>&1
@@ -195,6 +285,7 @@ run_tick() {
   local raw_state state due='[]' vendor interval last clean passive_rc=0
   local stale tried outcome detail step target_rc errors post_stale refreshed_count
   local pushback next_interval new_clean lock_dir state_tmp refresh_log rc account blocked
+  local opencode_result lock_lost=0
 
   command -v jq >/dev/null 2>&1 || { echo 'llm-refresh: jq is required' >&2; return 3; }
   [ -x "$collector" ] || { echo "llm-refresh: collector is not executable: $collector" >&2; return 3; }
@@ -211,7 +302,7 @@ run_tick() {
   fi
   state=$(normalized_state "$raw_state")
 
-  for vendor in claude codex gemini; do
+  for vendor in claude codex gemini opencode; do
     interval=$(jq -r --arg vendor "$vendor" '.[$vendor].interval_min' <<<"$state")
     last=$(jq -r --arg vendor "$vendor" '.[$vendor].last_attempt_epoch' <<<"$state")
     if cadence_due "$interval" "$last" "$now"; then
@@ -226,6 +317,25 @@ run_tick() {
   while IFS= read -r vendor; do
     interval=$(jq -r --arg vendor "$vendor" '.[$vendor].interval_min' <<<"$state")
     clean=$(jq -r --arg vendor "$vendor" '.[$vendor].clean_since_epoch' <<<"$state")
+    if [ "$vendor" = opencode ]; then
+      # No clean window here: this vendor's cadence is read off the stated reset, not off a quiet
+      # stretch, so the field the other three walk is left where it stands.
+      # The probe is a real completion against a gateway that can be slow or wedged, and every other
+      # vendor's next tick queues behind this lock; nothing the probe touches is shared, so the lock
+      # is handed back for its duration. Losing the re-acquire costs this tick its state write —
+      # the journal line is an append and lands either way — and the next heartbeat repeats it.
+      refresh_lock_release
+      opencode_result=$(opencode_tick "$interval") || return 5
+      refresh_lock_acquire "$lock_dir" || lock_lost=1
+      next_interval=$(jq -r '.interval' <<<"$opencode_result")
+      state=$(jq -c --arg vendor "$vendor" --argjson interval "$next_interval" \
+        --argjson now "$now" \
+        '.[$vendor].interval_min=$interval | .[$vendor].last_attempt_epoch=$now' <<<"$state")
+      journal_attempt "$vendor" "$(jq -r '.step' <<<"$opencode_result")" \
+        "$(jq -c '.tried' <<<"$opencode_result")" "$(jq -r '.outcome' <<<"$opencode_result")" \
+        "$(jq -r '.detail' <<<"$opencode_result")" "$next_interval" || return 5
+      continue
+    fi
     stale=$(stale_accounts_json "$vendor" "$interval")
     blocked=$(blocked_accounts_json "$vendor" "$interval")
     tried='[]'
@@ -288,7 +398,7 @@ run_tick() {
     fi
 
     if [ "$(jq 'length' <<<"$blocked")" -gt 0 ]; then
-      detail="$detail; unrefreshable: $(jq -r 'join(",")' <<<"$blocked")"
+      detail="${detail:+$detail; }unrefreshable: $(jq -r 'join(",")' <<<"$blocked")"
     fi
 
     next_interval=$interval
@@ -310,10 +420,12 @@ run_tick() {
     journal_attempt "$vendor" "$step" "$tried" "$outcome" "$detail" "$next_interval" || return 5
   done < <(jq -r '.[]' <<<"$due")
 
+  [ "$lock_lost" -eq 0 ] || return 0
   state_tmp=$(mktemp "${state_file}.tmp.XXXXXX") || return 5
   tick_tmp=$state_tmp
   if ! printf '%s\n' "$state" >"$state_tmp" || ! jq -e '
-    .claude and .codex and .gemini and all(.[]; type == "object")' "$state_tmp" >/dev/null; then
+    .claude and .codex and .gemini and .opencode and
+    all(.[]; type == "object")' "$state_tmp" >/dev/null; then
     rm -f "$state_tmp"
     return 5
   fi

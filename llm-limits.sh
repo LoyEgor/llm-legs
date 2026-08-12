@@ -1442,13 +1442,76 @@ if [ "$refresh" -eq 1 ] && [ -z "$refresh_account" ]; then
   fi
 fi
 
+# OpenCode Go publishes no usage endpoint, so there is no percentage to collect and never will be:
+# an account has exactly two knowable states, a refusal the gateway stated and the last completion
+# it served, both written by bin/opencode-go at the request itself. Whether a recorded wall still
+# stands is decided HERE and nowhere else, by reading the two against each other (shared-invariants
+# row al) — the menubar and bin/llm-refresh render these rows like every other vendor's.
+opencode_state_dir=${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}
+opencode_profiles_file=${OPENCODE_GO_PROFILES:-$HOME/.config/opencode-go/profiles}
+opencode_profiles() {
+  if [ -r "$opencode_profiles_file" ]; then
+    sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$opencode_profiles_file" |
+      grep -v -e '^#' -e '^$'
+  else
+    printf -- '-\n'
+  fi
+}
+
+opencode_seen_tsv=$(opencode_profiles | while IFS= read -r opencode_profile; do
+  [ -n "$opencode_profile" ] || continue
+  if [ "$opencode_profile" = '-' ]; then
+    opencode_service=opencode-go
+  else
+    opencode_service="opencode-go-$opencode_profile"
+  fi
+  printf '%s\t%s\t%s\n' "$opencode_profile" "$opencode_service" \
+    "$(cat "$opencode_state_dir/opencode-seen/$opencode_service" 2>/dev/null | tr -dc '0-9')"
+done)
+
+opencode=$(jq -Rsc --argjson now "$now_epoch" \
+  --arg walls "$(cat "$opencode_state_dir/walls.jsonl" 2>/dev/null)" "$LIMITS_VIEW_JQ"'
+  def marks: {"5-hour":"5h","weekly":"wk","monthly":"mo"};
+  def mark_of: marks[.window // ""] // "?";
+  ($walls | split("\n") | map(fromjson? // empty) |
+   map(select(.side == "opencode" and .bucket == "general" and
+              (.account | type) == "string" and (.detected_at | type) == "number"))) as $rows |
+  # The clock retires nothing here. The gateway states a reset to the day, so a window is regularly
+  # shut hours past the horizon it named, and the only thing that ever proved the plan open again is
+  # a completion it served: a refusal recorded after the last served call still stands, however old
+  # it is and whatever date it carried. A tie goes to the wall: only a standing wall is ever probed
+  # again, so a same-second pair read as served would freeze a walled account clean forever.
+  def standing($service; $served):
+    [$rows[] | select(.account == $service and ($served == null or .detected_at >= $served))] |
+    group_by(mark_of) |
+    [.[] |
+      {window:(.[0] | mark_of),
+       resets_at:([.[] | select((.reset_at | type) == "number") | .reset_at] | max)}] as $windows |
+    # "?" is a pre-window legacy record; beside a named wall it re-states the same 429.
+    ([$windows[] | select(.window != "?")]) as $named |
+    (if ($named | length) > 0 then $named else $windows end) |
+    sort_by(.window as $mark | ["5h","wk","mo","?"] | index($mark));
+  split("\n") | map(select(length > 0) | split("\t")) |
+  map(.[0] as $profile | .[1] as $service |
+      (.[2] | if . == "" then null else tonumber end) as $served |
+      standing($service; $served) as $windows |
+      {account:$profile, walled:(($windows | length) > 0),
+       windows:[$windows[] | {window, resets_at:(.resets_at | if . == null then null else todateiso8601 end)}]} +
+      # The age is when the plan last SERVED this account. A 429 is not an answer about the account
+      # being alive, and dating the row by one would show a walled account getting fresher the more
+      # often it refuses.
+      (if $served == null then {}
+       else {as_of:($served | todateiso8601), stale_seconds:([$now - $served, 0] | max)} end)) |
+  {source:"opencode-go", accounts:.}' <<<"$opencode_seen_tsv")
+[ -n "$opencode" ] || opencode='{"source":"opencode-go","accounts":[]}'
+
 # Live experiments travel with the data so consumers need no repo knowledge.
 experiments_json=$(experiments_active_lines "$(experiments_registry_path "$script_dir")" \
   | jq -Rsc 'split("\n") | map(select(length > 0))')
 [ -n "$experiments_json" ] || experiments_json='[]'
 
 if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$experiments_json" --argjson claude "$claude" \
-  --argjson codex "$codex" --argjson gemini "$gemini" --argjson now "$now_epoch" \
+  --argjson codex "$codex" --argjson gemini "$gemini" --argjson opencode "$opencode" --argjson now "$now_epoch" \
   --argjson previous "$previous_cache" --argjson refresh "$refresh" --arg refresh_account "$refresh_account" \
   --argjson claude_attempted "$claude_refresh_attempted" --argjson codex_attempted "$codex_refresh_attempted" \
   --argjson gemini_attempted "$gemini_refresh_attempted" --arg global_error "$global_refresh_error" \
@@ -1654,7 +1717,11 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
     then if $global_error == "" then del(.refresh_error) else .refresh_error = {cause:$global_error,at:$now} end
     else old_error($previous.refresh_error) as $old_global |
       if $old_global == null then . else .refresh_error = $old_global end
-    end'); then
+    end
+  # Last, and past every pass above: this vendor states no percentage, so nothing that reads one —
+  # staleness, expiry, usability, the "no vendor data" verdict that decides the exit code — has
+  # anything to say about it, and a pass that touched it would be inventing a reading.
+  | .vendors.opencode = $opencode'); then
   echo "llm-limits.sh: failed to build cache JSON" >&2
   exit 5
 fi
@@ -1728,6 +1795,9 @@ else
       " | rot " + $rot + " | cr " + $credits + " | status " + $status;
     .vendors | to_entries[] |
     select(.value.removed != true) |
+    # Every column here is a percentage or its reset; opencode states none, and a row of dashes
+    # reads as a reading taken.
+    select(.key != "opencode") |
     if .key == "claude" and .value.available and (.value.accounts | type) == "array" then
         .value.accounts[] |
         line("claude/" + .account + (if .is_current then "*" else "" end); .; rotation; "-"; account_status)
