@@ -2619,7 +2619,7 @@ assert(integration.alerts() == 0, "an unparseable before-screen alerted on the t
 -- invalidates the TUI selection, so none may leave the flag armed behind it.
 for _, press in ipairs({
   returnPress, backspacePress, escapePress, tabPress, arrowPress,
-  shiftArrowPress, functionKeyPress, cmdShiftPress,
+  functionKeyPress, cmdShiftPress,
 }) do
   integration = integrationContext(textTypes)
   simulateDrag()
@@ -2628,6 +2628,23 @@ for _, press in ipairs({
   pressCut(integration)
   assert(#integration.actions == 0, "a key that inserts no text left the selection armed")
 end
+
+-- Shift+Left/Right is the exception: the TUI extends the selection it already paints, so
+-- the key passes natively and the flag has to survive it or the next Cmd+X takes the
+-- bare-DEL path over a live selection.
+integration = integrationContext(textTypes)
+simulateDrag()
+assert(not module.handleEvent(shiftArrowPress()),
+  "Shift+arrow over a live selection was consumed")
+assert(#integration.actions == 0, "Shift+arrow over a live selection produced an action")
+pressCut(integration)
+assert(#integration.actions > 0, "Shift+arrow disarmed the selection it was extending")
+
+integration = integrationContext(textTypes, { verdict = "not-claude" })
+simulateDrag()
+assert(not module.handleEvent(shiftArrowPress()), "Shift+arrow at a plain shell was consumed")
+pressCut(integration)
+assert(#integration.actions == 0, "Shift+arrow at a plain shell left the selection armed")
 
 integration = integrationContext(textTypes)
 simulateDrag()
@@ -3080,6 +3097,9 @@ end
 local function pressGesture(context, keyCode)
   assert(module.handleEvent(optionShiftPress(keyCode)),
     "the Option+Shift word gesture was not consumed")
+  -- Which end of its word a start is expected to release on, checked by assertWordClick
+  -- below without every call site having to repeat the direction it just pressed.
+  context.lastGestureKey = keyCode
   context.runDeferred()
 end
 
@@ -3099,10 +3119,10 @@ local function extendGesture(context, keyCode, screenText)
   context.deliverScrape(screenText)
 end
 
--- A gesture selection is a double-click the TUI snaps to the word under it. It
--- counts its own series by time and position, so the harness reads every press back:
--- two of them within a cell of each other are its word select and a third is the
--- whole row, which this gesture must never paint.
+-- A selection is one press dragged onto its head. The TUI counts a click series by time
+-- and position, so the harness reads every press back: a second one within a cell of the
+-- last is a word select and a third takes the whole row, neither of which any gesture
+-- here may paint.
 local cellWidth = terminalFrame.w / screenColumns
 
 local function samePoint(one, other)
@@ -3120,76 +3140,85 @@ local function gestureClicks(context)
     end
     previousPress = event
   end
+  -- Up to two clicks lead a paint: the breaker that leaves the TUI's click series and
+  -- the pre-click that parks its caret on the head, in that order.
   while index <= #events do
-    local click = {}
-    if events[index + 1] and events[index + 1].kind == "up"
-        and not samePoint(events[index], events[index + 1]) then
-      error("a click was released somewhere other than where it pressed")
-    end
-    if events[index + 2] and events[index + 2].kind == "down"
-        and not samePoint(events[index], events[index + 2]) then
-      click.breaker = events[index]
-      pressAt(events[index], "the breaker click")
+    local click = { leading = {} }
+    while events[index + 1] and events[index + 1].kind == "up" do
+      assert(samePoint(events[index], events[index + 1]),
+        "a click leading a paint was released somewhere other than where it pressed")
       assert(events[index].clickState == 1 and events[index + 1].clickState == 1,
-        "the breaker click did not present itself as a first click")
+        "a click leading a paint did not present itself as a first click")
+      click.leading[#click.leading + 1] = events[index]
+      pressAt(events[index], "a click leading a paint")
       index = index + 2
     end
     local kinds = {}
     for offset = 0, 2 do
       kinds[#kinds + 1] = events[index + offset] and events[index + offset].kind or "none"
     end
-    assert(table.concat(kinds, ",") == "down,up,down", "a word gesture did not double-click")
-    click.press = events[index]
-    assert(samePoint(events[index + 1], click.press) and samePoint(events[index + 2], click.press),
-      "the double-click moved between its own presses")
-    assert(events[index].clickState == 1 and events[index + 1].clickState == 1
-        and events[index + 2].clickState == 2,
-      "the synthesized clicks did not count up the way a real double-click does")
-    pressAt(click.press, "the double-click")
-    index = index + 3
-    if events[index] and events[index].kind == "dragged" then
-      click.drag = events[index]
-      index = index + 1
+    assert(table.concat(kinds, ",") == "down,dragged,up",
+      "a selection was not painted by one press dragged onto its head")
+    click.press, click.drag = events[index], events[index + 1]
+    assert(samePoint(events[index + 2], click.drag),
+      "the drag released somewhere other than where it ended")
+    for offset = 0, 2 do
+      assert(events[index + offset].clickState == 1,
+        "a painted selection counted as a click series of its own")
     end
-    local release = events[index]
-    assert(release and release.kind == "up" and release.clickState == 2,
-      "the double-click never released")
-    assert(samePoint(release, click.drag or click.press),
-      "the double-click released somewhere other than where it ended")
-    index = index + 1
+    pressAt(click.press, "the press")
+    index = index + 3
     clicks[#clicks + 1] = click
   end
   return clicks
 end
 
+-- What one gesture paints: cells from..to, pressed on the end the anchor sits at and
+-- released on the head, which is the end the direction ran towards. `over` is where a
+-- one-cell span releases instead, having no second cell of its own to drag onto.
 local function assertWordClick(context, nth, span, message)
   local clicks = gestureClicks(context)
   assert(#clicks == nth, message .. ": wrong number of selections")
   local click = clicks[nth]
   local rows, row = span.rows or 1, span.row or 1
-  local function assertOnWord(event, eventRow, from, to, what)
-    local x, y = expectedPoint(rows, eventRow, (from + to) / 2, -0.5)
+  local left = context.lastGestureKey == 123
+  local function assertOnCell(event, at, what)
+    local x, y = expectedPoint(rows, span.dragRow or row, at, -0.5)
     assert(math.abs(event.x - x) < 0.001 and math.abs(event.y - y) < 0.001,
-      message .. ": " .. what .. " missed the middle of its word")
-    assert(event.x > expectedPoint(rows, eventRow, from, -1)
-        and event.x < expectedPoint(rows, eventRow, to, 0),
-      message .. ": " .. what .. " landed outside its word")
+      message .. ": " .. what .. " missed cell " .. at)
   end
-  assertOnWord(click.press, row, span.from, span.to, "the click")
-  if span.dragFrom then
-    assert(click.drag, message .. ": the extension did not drag onto the anchor word")
-    assertOnWord(click.drag, span.dragRow or row, span.dragFrom, span.dragTo, "the drag")
-  else
-    assert(not click.drag, message .. ": a starting word gesture dragged")
+  local pressed = left and span.to or span.from
+  assertOnCell(click.press, pressed, "the press")
+  assertOnCell(click.drag, span.over or (left and span.from or span.to), "the drag")
+  -- The head boundary the caret is parked on: the head cell itself running left, the cell
+  -- past it running right. Beside the press there is no room for it.
+  local pre = span.pre
+  if pre == nil then
+    local at = left and span.from or span.to + 1
+    pre = math.abs(at - pressed) > 1 and { at = at } or false
   end
-  if span.breaker == false then
-    assert(not click.breaker, message .. ": an extension broke a click series it had left")
-  else
-    assert(click.breaker, message .. ": the gesture start did not break the click series")
-    assert(math.abs(click.breaker.x - click.press.x) > 1.5 * cellWidth,
+  -- `breaker` is the exception: only a press this module or the user made moments ago,
+  -- close enough in cells to still be a click series, is worth breaking out of.
+  assert(#click.leading == (span.breaker and 1 or 0) + (pre and 1 or 0),
+    message .. ": wrong number of clicks led the paint")
+  if span.breaker then
+    local breaker = click.leading[1]
+    assert(math.abs(breaker.x - click.press.x) > 1.5 * cellWidth,
       message .. ": the breaker press was close enough to count as another click")
-    assert(math.abs(click.breaker.y - click.press.y) < 0.001,
+    assert(math.abs(breaker.y - click.press.y) < 0.001,
       message .. ": the breaker press left the row it was breaking")
+  end
+  if pre then
+    local x, y = expectedPoint(rows, pre.row or span.dragRow or row, pre.at, -0.5)
+    local event = click.leading[#click.leading]
+    assert(math.abs(event.x - x) < 0.001 and math.abs(event.y - y) < 0.001,
+      message .. ": the pre-click missed the head the caret was to park on")
+    -- The breaker takes the side of the press the pre-click is not on; beside it, it
+    -- would cost the pre-click, which is dropped rather than risk the click series.
+    if span.breaker then
+      assert((click.leading[1].x - click.press.x) * (x - click.press.x) < 0,
+        message .. ": the breaker took the pre-click's side of the press")
+    end
   end
 end
 
@@ -3282,7 +3311,7 @@ runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hel
 assertWordClick(integration, 1, { from = 7, to = 11 },
   "left at the draft end did not select the last word")
 extendGesture(integration, 123, gestureScreen(hello))
-assertWordClick(integration, 2, { from = 1, to = 5, dragFrom = 7, dragTo = 11, breaker = false },
+assertWordClick(integration, 2, { from = 1, to = 11, breaker = true },
   "the repeated left gesture did not extend by one word")
 assert(integration.alerts() == 0, "the word gesture raised an alert")
 
@@ -3292,11 +3321,10 @@ assert(integration.alerts() == 0, "the word gesture raised an alert")
 local counted = "one two three four five six"
 integration = integrationContext(nil, gestureOpts)
 runGesture(integration, 123, gestureScreen(counted .. sentinel), gestureScreen(counted))
-local heads = { { 20, 23 }, { 15, 18 }, { 9, 13 }, { 5, 7 }, { 1, 3 } }
+local heads = { 20, 15, 9, 5, 1 }
 for index, head in ipairs(heads) do
   extendGesture(integration, 123, gestureScreen(counted))
-  assertWordClick(integration, index + 1,
-    { from = head[1], to = head[2], dragFrom = 25, dragTo = 27, breaker = false },
+  assertWordClick(integration, index + 1, { from = head, to = 27, breaker = true },
     "a burst extension did not take the next word")
 end
 extendGesture(integration, 123, gestureScreen(counted))
@@ -3309,8 +3337,7 @@ integration = integrationContext(nil, gestureOpts)
 runGesture(integration, 123, gestureScreen(narrow .. sentinel), gestureScreen(narrow))
 for index, head in ipairs({ 9, 7, 5, 3, 1 }) do
   extendGesture(integration, 123, gestureScreen(narrow))
-  assertWordClick(integration, index + 1,
-    { from = head, to = head, dragFrom = 11, dragTo = 11, breaker = false },
+  assertWordClick(integration, index + 1, { from = head, to = 11, breaker = true },
     "a narrow burst extension did not take the next word")
 end
 
@@ -3323,28 +3350,28 @@ runGesture(integration, 124, gestureScreen(sentinel .. hello), gestureScreen(hel
 assertWordClick(integration, 1, { from = 1, to = 5 },
   "right at the draft start did not select the first word")
 extendGesture(integration, 124, gestureScreen(hello))
-assertWordClick(integration, 2, { from = 7, to = 11, dragFrom = 1, dragTo = 5, breaker = false },
+assertWordClick(integration, 2, { from = 1, to = 11, breaker = true },
   "the repeated right gesture did not extend by one word")
 
--- Mid-draft, both directions: the word behind the cursor, and past the space in front
--- of it. The TUI paints nothing for a double-clicked space, so a press that had only
--- a space to take reaches over it and drags back, painting a word either way.
+-- Mid-draft, both directions: the word behind the cursor, and past the space in front of
+-- it. A space paints nothing anyone can see, so the span reaches over it to that word.
 integration = integrationContext(nil, gestureOpts)
 runGesture(integration, 123, gestureScreen("hello" .. sentinel .. " world"), gestureScreen(hello))
 assertWordClick(integration, 1, { from = 1, to = 5 }, "left mid-draft did not select the whole word")
 integration = integrationContext(nil, gestureOpts)
 runGesture(integration, 124, gestureScreen("hello" .. sentinel .. " world"), gestureScreen(hello))
-assertWordClick(integration, 1, { from = 7, to = 11, dragFrom = 6, dragTo = 6 },
+assertWordClick(integration, 1, { from = 6, to = 11 },
   "right onto a space did not reach the word past it")
+
 
 local spaced = "one two three"
 integration = integrationContext(nil, gestureOpts)
 runGesture(integration, 123, gestureScreen("one two " .. sentinel .. "three"),
   gestureScreen(spaced))
-assertWordClick(integration, 1, { from = 5, to = 7, dragFrom = 8, dragTo = 8 },
+assertWordClick(integration, 1, { from = 5, to = 8 },
   "left onto a space did not reach the word before it")
 extendGesture(integration, 123, gestureScreen(spaced))
-assertWordClick(integration, 2, { from = 1, to = 3, dragFrom = 8, dragTo = 8, breaker = false },
+assertWordClick(integration, 2, { from = 1, to = 8, breaker = true },
   "extending off a space-anchored selection did not take the next word")
 integration = integrationContext(nil, gestureOpts)
 runGesture(integration, 124, gestureScreen("hello " .. sentinel .. "world"), gestureScreen(hello))
@@ -3355,24 +3382,28 @@ assertWordClick(integration, 1, { from = 7, to = 11 },
 -- selection, invisible in the TUI but real enough for the Cmd+X that follows.
 integration = integrationContext(nil, gestureOpts)
 runGesture(integration, 123, gestureScreen(" " .. sentinel .. "hello"), gestureScreen(" hello"))
-assertWordClick(integration, 1, { from = 1, to = 1 },
+assertWordClick(integration, 1, { from = 1, to = 1, over = 0 },
   "a leading space with nothing behind it did not select itself")
 
 -- Punctuation is worth exactly its own cell, and the word behind it is the next one.
 integration = integrationContext(nil, gestureOpts)
 runGesture(integration, 123, gestureScreen("foo," .. sentinel .. " bar"), gestureScreen("foo, bar"))
-assertWordClick(integration, 1, { from = 4, to = 4 }, "left onto punctuation did not select one cell")
+assertWordClick(integration, 1, { from = 4, to = 4, over = 3 },
+  "left onto punctuation did not select one cell")
+assert(table.concat(integration.actions, ",") == "sentinel,scrape,cut,scrape,chord:shift+right",
+  "the one-cell word gesture did not shrink its overshoot back")
 extendGesture(integration, 123, gestureScreen("foo, bar"))
-assertWordClick(integration, 2, { from = 1, to = 3, dragFrom = 4, dragTo = 4, breaker = false },
+assertWordClick(integration, 2, { from = 1, to = 4, breaker = true },
   "extending off punctuation did not take the word behind it")
 
 -- Two of them side by side are the one extension that barely moves: a press one cell
 -- from the last is the same click series to the TUI, and its third click takes the row.
 integration = integrationContext(nil, gestureOpts)
 runGesture(integration, 123, gestureScreen("hi))" .. sentinel), gestureScreen("hi))"))
-assertWordClick(integration, 1, { from = 4, to = 4 }, "left onto a bracket did not select one cell")
+assertWordClick(integration, 1, { from = 4, to = 4, over = 3 },
+  "left onto a bracket did not select one cell")
 extendGesture(integration, 123, gestureScreen("hi))"))
-assertWordClick(integration, 2, { from = 3, to = 3, dragFrom = 4, dragTo = 4 },
+assertWordClick(integration, 2, { from = 3, to = 4, breaker = true },
   "an extension onto the neighbouring cell did not break the click series")
 
 -- One word, one character, and an empty draft.
@@ -3384,7 +3415,7 @@ runGesture(integration, 124, gestureScreen("hello" .. sentinel), gestureScreen("
 assertNoSelection(integration, "right at the end of a single-word draft")
 integration = integrationContext(nil, gestureOpts)
 runGesture(integration, 123, gestureScreen("x" .. sentinel), gestureScreen("x"))
-assertWordClick(integration, 1, { from = 1, to = 1 },
+assertWordClick(integration, 1, { from = 1, to = 1, over = 0 },
   "a one-character draft did not select its only cell")
 for _, keyCode in ipairs({ 123, 124 }) do
   integration = integrationContext(nil, gestureOpts)
@@ -3433,7 +3464,7 @@ assertWordClick(integration, 1, { from = 7, to = 11 },
 integration = integrationContext(nil, gestureOpts)
 runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
 extendGesture(integration, 123, gestureScreen(hello .. cursorCell))
-assertWordClick(integration, 2, { from = 1, to = 5, dragFrom = 7, dragTo = 11, breaker = false },
+assertWordClick(integration, 2, { from = 1, to = 11, breaker = true },
   "the signature of an unchanged draft failed over a phantom cursor cell")
 
 -- Nothing may reach the draft between the sentinel and the click that follows it,
@@ -3520,19 +3551,19 @@ integration.runDeferred()
 assert(#gestureClicks(integration) == 1 and #integration.actions == 4,
   "the opposite direction touched the live selection")
 extendGesture(integration, 123, gestureScreen(hello))
-assertWordClick(integration, 2, { from = 1, to = 5, dragFrom = 7, dragTo = 11, breaker = false },
+assertWordClick(integration, 2, { from = 1, to = 11, breaker = true },
   "the opposite direction dropped the gesture it consumed")
 
--- The clicks we post come back through the tap, and the opening press of a
--- double-click is a plain click to everything reading it: taken at face value it
--- would clear the selection state the very same synthesis is arming.
+-- The clicks we post come back through the tap, and a press of our own is a plain click
+-- to everything reading it: taken at face value it would clear the selection state the
+-- very same synthesis is arming.
 integration = integrationContext(nil, gestureOpts)
 runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
 local ownClick = mouseEvent(2, { x = 120, y = 340 })
 ownClick.properties[91] = module.replayMarker
 assert(not module.handleEvent(ownClick), "a click we posted ourselves was consumed")
 extendGesture(integration, 123, gestureScreen(hello))
-assertWordClick(integration, 2, { from = 1, to = 5, dragFrom = 7, dragTo = 11, breaker = false },
+assertWordClick(integration, 2, { from = 1, to = 11, breaker = true },
   "our own click ended the gesture it belonged to")
 
 -- A click of the user's own is the user taking the selection back.
@@ -3580,7 +3611,7 @@ for _, press in ipairs({ aPress, xPress }) do
   assert(#integration.mouseEvents() == 0, "a draft rewrite mid-gesture clicked")
   integration.fireTimer(0.05)
   integration.deliverScrape(gestureScreen(hello))
-  assertWordClick(integration, 1, { from = 7, to = 11 },
+  assertWordClick(integration, 1, { from = 7, to = 11, breaker = true },
     "the gesture did not finish past a mid-flight draft rewrite")
 end
 
@@ -3807,7 +3838,7 @@ integration = runCaretGesture(caretAt(1, 1, 12), 123, gestureScreen(hello .. cur
 assertWordClick(integration, 1, { from = 7, to = 11 },
   "the AX caret at the draft end did not select the last word")
 extendGesture(integration, 123, gestureScreen(hello .. cursorCell))
-assertWordClick(integration, 2, { from = 1, to = 5, dragFrom = 7, dragTo = 11, breaker = false },
+assertWordClick(integration, 2, { from = 1, to = 11, breaker = true },
   "an AX-started gesture did not extend by one word")
 
 -- Nothing was typed, so there is nothing to take back out: a Return mid-flight passes as
@@ -3939,9 +3970,12 @@ local function runSpan(point, keyCode, screen)
   integration.deliverScrape(screen)
   return integration
 end
-local function assertSpan(context, rows, press, drag, message)
+-- `pre` is the cell the caret is parked on before the paint: the drag's own cell running
+-- left, the one past it running right, and none at all where that lands beside the press.
+local function assertSpan(context, rows, press, drag, message, actions, pre)
+  local events = context.mouseEvents()
   local down, dragged
-  for _, event in ipairs(context.mouseEvents()) do
+  for _, event in ipairs(events) do
     if event.kind == "down" then down = event end
     if event.kind == "dragged" then dragged = event end
   end
@@ -3952,10 +3986,21 @@ local function assertSpan(context, rows, press, drag, message)
       message .. ": " .. what .. " missed its cell")
     assert(event.clickState == 1, message .. ": " .. what .. " counted as a double click")
   end
+  if pre == nil then
+    pre = (drag[1] < press[1] or (drag[1] == press[1] and drag[2] < press[2]))
+      and drag or { drag[1], drag[2] + 1 }
+    if pre[1] == press[1] and math.abs(pre[2] - press[2]) <= 1 then
+      pre = false
+    end
+  end
+  assert(#events == (pre and 2 or 0) + 3, message .. ": wrong number of clicks led the paint")
+  if pre then
+    assertAt(events[1], pre, "the pre-click")
+  end
   assertAt(down, press, "the press")
   assertAt(dragged, drag, "the drag")
-  assert(table.concat(context.actions, ",") == "scrape",
-    message .. ": the span typed a sentinel or a keystroke of its own")
+  assert(table.concat(context.actions, ",") == (actions or "scrape"),
+    message .. ": the span did not emit exactly " .. (actions or "scrape"))
 end
 
 local oneRow = gestureScreen("hello world")
@@ -3975,10 +4020,18 @@ assertSpan(runSpan(caretAt(1, 1, 7), 123, gestureScreen("hello " .. cursorCell))
 
 -- A wrapped draft: the row motions stay on the caret's own row, the document ones cross.
 local twoRows = gestureScreen("hello brave", "new world")
-assertSpan(runSpan(caretAt(2, 2, 2), 123, twoRows), 2, { 2, 1 }, { 2, 1 },
+-- One cell wide, so the drag has to leave it: released on the column beside the row's
+-- first, which the TUI clamps back onto that row's edge.
+assertSpan(runSpan(caretAt(2, 2, 2), 123, twoRows), 2, { 2, 1 }, { 2, 0 },
   "Cmd+Shift+Left reached past the wrapped row it started on")
 assertSpan(runSpan(caretAt(2, 2, 2), 124, twoRows), 2, { 2, 2 }, { 2, 9 },
   "Cmd+Shift+Right did not stop at the end of the wrapped row")
+-- The boundary past the last cell of a row that wraps is the next row's first cell, where
+-- a click would park the caret a row below its selection: the free column beside the row's
+-- own edge is the same buffer position and stays on the row.
+assertSpan(runSpan(caretAt(2, 1, 6), 124, twoRows), 2, { 1, 6 }, { 1, 11 },
+  "Cmd+Shift+Right did not select to the end of the wrapped row it started on",
+  nil, { 1, 12 })
 assertSpan(runSpan(caretAt(2, 2, 2), 126, twoRows), 2, { 2, 1 }, { 1, 1 },
   "Cmd+Shift+Up did not select back to the first draft cell")
 assertSpan(runSpan(caretAt(2, 1, 6), 125, twoRows), 2, { 1, 6 }, { 2, 9 },
@@ -4036,6 +4089,12 @@ local edgeText = string.rep("a", screenColumns - promptCells - 2)
 assertCaretMove(runCaretMove(caretAt(2, 1, 5), 124, gestureScreen(edgeText, "tail")), 2,
   { 1, screenColumns - promptCells - 2 },
   "Cmd+Right left an edge-filled wrapped row")
+-- The free column beside that row's last cell is the box's own last column, which renders
+-- a row down just the same: the span parks the caret on the last cell instead.
+assertSpan(runSpan(caretAt(2, 1, 5), 124, gestureScreen(edgeText, "tail")), 2, { 1, 5 },
+  { 1, screenColumns - promptCells - 2 },
+  "Cmd+Shift+Right parked the caret off an edge-filled wrapped row", nil,
+  { 1, screenColumns - promptCells - 2 })
 
 -- A wrapped draft: neither direction may leave the caret's own row.
 assertCaretMove(runCaretMove(caretAt(2, 2, 2), 123, twoRows), 2, { 2, 1 },
@@ -4103,11 +4162,44 @@ assert(math.abs(repeated[3].x - targetX) >= 0.001, "the breaker pressed the targ
 assert(math.abs(repeated[5].x - targetX) < 0.001,
   "the press after the breaker missed the row start")
 
+-- The series the breaker breaks is measured in time too: a second later the TUI has
+-- forgotten the press, and a breaker would only park the visible caret off the target.
+local coldContext = integrationContext(nil, caretOpts(caretAt(1, 1, 7)))
+for index = 1, 2 do
+  assert(module.handleEvent(keyEvent(123, { "cmd", "fn" }, false, "cmd-arrow")),
+    "the repeated Cmd+Left was not consumed")
+  coldContext.runDeferred()
+  coldContext.deliverScrape(oneRow)
+  if index == 1 then coldContext.advance(1) end
+end
+assert(#coldContext.mouseEvents() == 4,
+  "a caret move a second on still broke a click series the TUI had dropped")
+
+-- The user's own hand opens a series the same way, and a gesture landing in it inherits
+-- the promotion — but only while it is still warm.
+integration = integrationContext(nil, gestureOpts)
+simulateClick()
+runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
+assertWordClick(integration, 1, { from = 7, to = 11, breaker = true },
+  "a gesture on the heels of the user's own click did not break their series")
+integration = integrationContext(nil, gestureOpts)
+simulateClick()
+integration.advance(1)
+runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
+assertWordClick(integration, 1, { from = 7, to = 11 },
+  "a gesture a second after the user's click broke a series that had gone cold")
+
 -- A row filled to the last column has no free cell past it; the click clamps inside the
 -- box rather than falling off it, and the caret lands on that buffer position.
 local fullRow = string.rep("x", screenColumns - promptCells)
 assertCaretMove(runCaretMove(caretAt(1, 1, 2), 124, gestureScreen(fullRow)), 1,
   { 1, screenColumns - promptCells }, "Cmd+Right on a hard-full row clicked outside the box")
+-- No free column past that row's head, and the last ones render a row down anyway: the
+-- caret parks on the head's own column, exactly where bare Cmd+Right leaves it.
+assertSpan(runSpan(caretAt(1, 1, 4), 124, gestureScreen(fullRow)), 1, { 1, 4 },
+  { 1, screenColumns - promptCells },
+  "Cmd+Shift+Right on a hard-full row clicked outside the box", nil,
+  { 1, screenColumns - promptCells })
 
 -- The caret already sits on the edge it is asked to reach: a span of no cells would
 -- paint the press's own cell instead of nothing.
@@ -4115,6 +4207,172 @@ for _, keyCode in ipairs({ 123, 126 }) do
   local edge = runSpan(caretAt(1, 1, 1), keyCode, oneRow)
   assert(#edge.mouseEvents() == 0, "a zero-length span clicked")
   assert(table.concat(edge.actions, ",") == "scrape", "a zero-length span acted")
+end
+
+-- Plain Shift+Left/Right: the TUI extends a selection it already paints but starts none
+-- from a bare caret, so the first character is painted the way the spans above are.
+-- Scoped so the locals below stay off this chunk's own 200-local ceiling.
+do
+local function charSpanPress(keyCode)
+  return keyEvent(keyCode, { "shift", "fn" }, false, "shift-arrow")
+end
+local function runChar(point, keyCode, screen)
+  integration = integrationContext(nil, caretOpts(point))
+  assert(module.handleEvent(charSpanPress(keyCode)), "the Shift+arrow was not consumed")
+  integration.runDeferred()
+  integration.deliverScrape(screen)
+  return integration
+end
+
+-- Two cells are painted and the TUI's own Shift+arrow takes the overshot one back: the
+-- one cell that is left keeps the head on the side the chord ran towards.
+local charLeft = runChar(caretAt(1, 1, 7), 123, oneRow)
+assertSpan(charLeft, 1, { 1, 6 }, { 1, 5 },
+  "Shift+Left did not select the cell behind the caret", "scrape,chord:shift+right")
+assertSpan(runChar(caretAt(1, 1, 7), 124, oneRow), 1, { 1, 7 }, { 1, 8 },
+  "Shift+Right did not select the cell the caret sits on", "scrape,chord:shift+left", false)
+
+-- Against the row's own edge there is no cell to overshoot onto: the drag goes to the
+-- column beside it, the TUI clamps it back to that edge, and nothing needs shrinking.
+assertSpan(runChar(caretAt(1, 1, 2), 123, oneRow), 1, { 1, 1 }, { 1, 0 },
+  "Shift+Left at the second cell overshot past the row start")
+assertSpan(runChar(caretAt(1, 1, 11), 124, oneRow), 1, { 1, 11 }, { 1, 12 },
+  "Shift+Right on the last cell overshot past the row end", nil, false)
+
+-- Our own shrink keystroke comes back through the tap it was posted from; the replay
+-- marker is what keeps it out of the branch that painted it.
+local marked = charSpanPress(124)
+marked.properties[91] = module.replayMarker
+assert(not module.handleEvent(marked), "the marked shrink keystroke was answered as the user's")
+assert(#charLeft.mouseEvents() == 3, "the marked shrink keystroke painted a span of its own")
+
+-- The cell it painted is the TUI's own selection now: the next press is its to extend.
+local painted = #charLeft.mouseEvents()
+assert(not module.handleEvent(charSpanPress(123)),
+  "the Shift+Left after a painted cell was consumed instead of extending it")
+assert(#charLeft.mouseEvents() == painted,
+  "the passed-through Shift+Left painted a cell of its own")
+
+-- Nowhere to grow: the neighbouring index is off the draft, or across the wrap and on
+-- another row, which a selection painted here may not cross.
+for _, case in ipairs({
+  { caretAt(1, 1, 1), 123, oneRow, "left at the draft start" },
+  { caretAt(1, 1, 12), 124, gestureScreen(hello .. cursorCell), "right at the draft end" },
+  { caretAt(2, 2, 1), 123, twoRows, "left at a wrapped row's start" },
+  { caretAt(2, 1, 12), 124, twoRows, "right at a wrapped row's end" },
+}) do
+  local edge = runChar(case[1], case[2], case[3])
+  assert(#edge.mouseEvents() == 0, "Shift+arrow " .. case[4] .. " clicked")
+  assert(table.concat(edge.actions, ",") == "scrape",
+    "Shift+arrow " .. case[4] .. " emitted a keystroke of its own")
+end
+
+-- A selection any of these chords armed is the TUI's to extend from here, and the flag
+-- has to survive the press or the Cmd+X behind it takes the bare-DEL path.
+local rowSpan = runSpan(caretAt(1, 1, 7), 123, oneRow)
+local rowPainted = #rowSpan.mouseEvents()
+assert(not module.handleEvent(charSpanPress(123)),
+  "Shift+Left over an armed row span was consumed")
+assert(#rowSpan.mouseEvents() == rowPainted, "Shift+Left repainted an armed row span")
+assert(module.handleEvent(xPress(false)), "Cmd+X after the passed-through Shift+Left was dropped")
+rowSpan.resolve("claude")
+rowSpan.runDeferred()
+assert(rowSpan.actions[#rowSpan.actions] == "scrape",
+  "Shift+Left disarmed the selection the row span had painted")
+
+-- A bare arrow collapses one of our selections onto the edge macOS collapses to, which
+-- the TUI's own caret has no idea about: it never moved with the drag that painted it.
+local function bareArrow(keyCode)
+  return keyEvent(keyCode, { "fn" }, false, "arrow")
+end
+local function collapseClick(context, keyCode, screen, rows, at, message)
+  local before = #context.mouseEvents()
+  assert(module.handleEvent(bareArrow(keyCode)), message .. ": the bare arrow was not consumed")
+  context.runDeferred()
+  context.deliverScrape(screen)
+  local events = context.mouseEvents()
+  -- Two events, or four when the collapse lands where the paint's own press did and owes
+  -- the breaker that keeps the TUI from reading the pair as a double click.
+  assert(#events - before == 2 or #events - before == 4,
+    message .. ": the collapse did not click exactly once")
+  local press = events[#events - 1]
+  assert(press.kind == "down" and events[#events].kind == "up" and press.clickState == 1,
+    message .. ": the collapse was not a plain click")
+  local x, y = expectedPoint(rows, at[1], at[2], -0.5)
+  assert(math.abs(press.x - x) < 0.001 and math.abs(press.y - y) < 0.001,
+    message .. ": the collapse click missed its cell")
+end
+local function assertNoCollapse(context, keyCode, message)
+  local before = #context.mouseEvents()
+  assert(not module.handleEvent(bareArrow(keyCode)), message .. ": the bare arrow was consumed")
+  assert(#context.mouseEvents() == before, message .. ": the bare arrow clicked")
+end
+
+-- Shift+Left at |7 paints cell 6, so the ends are |6 and |7.
+runChar(caretAt(1, 1, 7), 123, oneRow)
+collapseClick(integration, 123, oneRow, 1, { 1, 6 }, "left after a one-cell paint")
+runChar(caretAt(1, 1, 7), 123, oneRow)
+collapseClick(integration, 124, oneRow, 1, { 1, 7 }, "right after a one-cell paint")
+runChar(caretAt(1, 1, 7), 124, oneRow)
+collapseClick(integration, 123, oneRow, 1, { 1, 7 }, "left after a paint to the right")
+runChar(caretAt(1, 1, 7), 124, oneRow)
+collapseClick(integration, 124, oneRow, 1, { 1, 8 }, "right after a paint to the right")
+
+-- Every native Shift+arrow we pass through moves the head with it, and the collapse has
+-- to follow it there; the far end stays where the press anchored it.
+runChar(caretAt(1, 1, 7), 123, oneRow)
+for _ = 1, 2 do
+  assert(not module.handleEvent(charSpanPress(123)), "a native Shift+Left was consumed")
+end
+collapseClick(integration, 124, oneRow, 1, { 1, 7 }, "right after two native Shift+Lefts")
+runChar(caretAt(1, 1, 7), 123, oneRow)
+for _ = 1, 2 do
+  assert(not module.handleEvent(charSpanPress(123)), "a native Shift+Left was consumed")
+end
+collapseClick(integration, 123, oneRow, 1, { 1, 4 }, "left after two native Shift+Lefts")
+
+-- The head cannot walk off the draft either way: the first cell one side, the free
+-- column past the last cell the other, which is where a click lands the caret at the end.
+runChar(caretAt(1, 1, 7), 123, oneRow)
+for _ = 1, 10 do
+  assert(not module.handleEvent(charSpanPress(123)), "a native Shift+Left was consumed")
+end
+collapseClick(integration, 123, oneRow, 1, { 1, 1 }, "left with the head held at the draft start")
+runChar(caretAt(1, 1, 7), 124, oneRow)
+for _ = 1, 10 do
+  assert(not module.handleEvent(charSpanPress(124)), "a native Shift+Right was consumed")
+end
+collapseClick(integration, 124, oneRow, 1, { 1, 12 }, "right with the head held past the draft")
+
+-- A word gesture and its extension track the same way: the anchor is the far end of the
+-- word the press took, the head the end the direction ran to.
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
+collapseClick(integration, 123, gestureScreen(hello), 1, { 1, 7 }, "left after a word gesture")
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
+collapseClick(integration, 124, gestureScreen(hello), 1, { 1, 12 }, "right after a word gesture")
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
+extendGesture(integration, 123, gestureScreen(hello))
+collapseClick(integration, 123, gestureScreen(hello), 1, { 1, 1 },
+  "left after a word gesture extended")
+
+-- Only what this module painted is tracked closely enough to aim a click at: a hand on
+-- the mouse and a selection key outside the model both hand the arrow back to the TUI.
+runChar(caretAt(1, 1, 7), 123, oneRow)
+module.handleEvent(mouseEvent(1))
+assertNoCollapse(integration, 123, "with the user's hand still down on the mouse")
+runChar(caretAt(1, 1, 7), 123, oneRow)
+simulateDrag()
+assertNoCollapse(integration, 123, "over a selection the user painted by hand")
+runChar(caretAt(1, 1, 7), 123, oneRow)
+assert(not module.handleEvent(keyEvent(126, { "shift", "fn" }, false, "shift-up")),
+  "Shift+Up was consumed")
+assertNoCollapse(integration, 123, "after Shift+Up moved the selection out of our model")
+integration = integrationContext(nil, caretOpts(caretAt(1, 1, 7)))
+simulateDrag()
+assertNoCollapse(integration, 124, "over a selection nobody tracked")
 end
 
 integration = integrationContext(textTypes, caretOpts(caretAt(1, 1, 30)))
@@ -4219,7 +4477,7 @@ pressGesture(integration, 123)
 assert(integration.actions[#integration.actions] == "scrape",
   "a swallowed vertical arrow dropped the gesture cache")
 integration.deliverScrape(gestureScreen(hello))
-assertWordClick(integration, 2, { from = 1, to = 5, dragFrom = 7, dragTo = 11, breaker = false },
+assertWordClick(integration, 2, { from = 1, to = 11, breaker = true },
   "the chord after a swallowed arrow did not extend the selection it had left painted")
 
 -- The same swallow on an unresolved verdict: the chord is eaten to keep the escape
@@ -4238,7 +4496,7 @@ pressGesture(integration, 123)
 assert(integration.actions[#integration.actions] == "scrape",
   "a chord swallowed on an unresolved verdict dropped the gesture cache")
 integration.deliverScrape(gestureScreen(hello))
-assertWordClick(integration, 2, { from = 1, to = 5, dragFrom = 7, dragTo = 11, breaker = false },
+assertWordClick(integration, 2, { from = 1, to = 11, breaker = true },
   "the chord after an unresolved verdict did not extend the selection it had left")
 end
 
@@ -4351,7 +4609,7 @@ runGesture(integration, 123, gestureScreen("foo\194\160bar" .. sentinel),
 assertWordClick(integration, 1, { from = 5, to = 7 },
   "a word gesture reached across a no-break space")
 extendGesture(integration, 123, gestureScreen("foo\194\160bar"))
-assertWordClick(integration, 2, { from = 1, to = 3, dragFrom = 5, dragTo = 7, breaker = false },
+assertWordClick(integration, 2, { from = 1, to = 7, breaker = true },
   "the extension did not step over the no-break space to the word before it")
 
 -- Every multibyte cell used to read as a word character, which makes an em dash — the
@@ -4365,7 +4623,7 @@ runGesture(integration, 123, gestureScreen("foo" .. emDash .. "bar" .. sentinel)
 assertWordClick(integration, 1, { from = 5, to = 7 },
   "a word gesture reached across an em dash")
 extendGesture(integration, 123, gestureScreen("foo" .. emDash .. "bar"))
-assertWordClick(integration, 2, { from = 1, to = 3, dragFrom = 5, dragTo = 7, breaker = false },
+assertWordClick(integration, 2, { from = 1, to = 7, breaker = true },
   "the extension did not step over the em dash to the word before it")
 end
 
@@ -4598,7 +4856,7 @@ pressGesture(integration, 123)
 assert(integration.actions[#integration.actions] == "scrape",
   "a chord bailed on a busy flow dropped the gesture cache")
 integration.deliverScrape(gestureScreen(hello))
-assertWordClick(integration, 2, { from = 1, to = 5, dragFrom = 7, dragTo = 11, breaker = false },
+assertWordClick(integration, 2, { from = 1, to = 11, breaker = true },
   "the chord after a busy bail did not extend the selection it had left painted")
 
 -- A gesture selection is the same armed selection a real drag leaves behind, so
