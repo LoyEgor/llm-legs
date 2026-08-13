@@ -1108,13 +1108,27 @@ local function integrationContext(types, opts)
         actions[#actions + 1] = "cut"
       elseif bytes == module.planBytes(module.sentinelPlan()) then
         actions[#actions + 1] = "sentinel"
+      elseif bytes == module.planBytes(module.lineStartPlan()) then
+        actions[#actions + 1] = "line-start"
+      elseif bytes == module.planBytes(module.lineEndPlan()) then
+        actions[#actions + 1] = "line-end"
+      elseif bytes == module.planBytes(module.docStartPlan()) then
+        actions[#actions + 1] = "doc-start"
+      elseif bytes == module.planBytes(module.docEndPlan()) then
+        actions[#actions + 1] = "doc-end"
       else
         actions[#actions + 1] = "image-paste"
       end
-      for _, character in ipairs(module.planCharacters(plan)) do
+      -- Mirrors emit's own split: an atomic plan reaches the tty as one keystroke, and
+      -- replaying it per character here would hide a module that forgot to.
+      local characters = plan.atomic and { bytes } or module.planCharacters(plan)
+      for _, character in ipairs(characters) do
         module.handleEvent(selfPostedKeyEvent(character, true))
         module.handleEvent(selfPostedKeyEvent(character, false))
       end
+    end,
+    chord = function(modifiers, key)
+      actions[#actions + 1] = "chord:" .. table.concat(modifiers, "+") .. "+" .. key
     end,
     post = function(event)
       actions[#actions + 1] = "replay"
@@ -4451,6 +4465,150 @@ for _, keyCode in ipairs({ 123, 124, 125, 126 }) do
 end
 integration.runDeferred()
 assert(#integration.actions == 0, "a non-Claude Option+Shift arrow started a gesture")
+
+-- Terminal hardcodes Cmd+arrow to its own tab switch: the switch moves to
+-- Cmd+Shift+arrow and the bare chord becomes the line motion macOS types everywhere
+-- else. Real arrow keys arrive with the fn flag set, so every press below carries it.
+-- Scoped: this chunk sits at the same 200-local ceiling the module does.
+do
+local function commandArrow(keyCode, modifiers, repeatDown)
+  local labels = { [123] = "cmd-left", [124] = "cmd-right",
+    [125] = "cmd-down", [126] = "cmd-up" }
+  return keyEvent(keyCode, modifiers, repeatDown, labels[keyCode])
+end
+
+integration = integrationContext(nil, { verdict = "not-claude" })
+assert(module.handleEvent(commandArrow(124, { "cmd", "shift", "fn" })),
+  "Cmd+Shift+Right was not swallowed in Terminal")
+assert(table.concat(integration.actions, ",") == "chord:ctrl+tab",
+  "Cmd+Shift+Right did not post Terminal's next-tab equivalent")
+
+integration = integrationContext(nil, { verdict = "not-claude" })
+assert(module.handleEvent(commandArrow(123, { "cmd", "shift", "fn" })),
+  "Cmd+Shift+Left was not swallowed in Terminal")
+assert(table.concat(integration.actions, ",") == "chord:ctrl+shift+tab",
+  "Cmd+Shift+Left did not post Terminal's previous-tab equivalent")
+
+integration = integrationContext(nil, { verdict = "claude" })
+assert(module.handleEvent(commandArrow(124, { "cmd", "fn" })),
+  "Cmd+Right was not swallowed in a Claude tab")
+assert(module.handleEvent(commandArrow(124, { "cmd", "fn" }, true)),
+  "a held Cmd+Right leaked a native tab switch")
+assert(table.concat(integration.actions, ",") == "line-end",
+  "Cmd+Right did not move the caret to the line end exactly once")
+
+integration = integrationContext(nil, { verdict = "claude" })
+assert(module.handleEvent(commandArrow(123, { "cmd", "fn" })),
+  "Cmd+Left was not swallowed in a Claude tab")
+assert(table.concat(integration.actions, ",") == "line-start",
+  "Cmd+Left did not move the caret to the line start")
+
+-- An unresolved verdict swallows bare: the line-motion bytes would land in whatever
+-- else is reading the tty, and the context refreshes within 0.1s for the next press.
+integration = integrationContext()
+assert(module.handleEvent(commandArrow(124, { "cmd", "fn" })),
+  "Cmd+Right on an unresolved verdict was not swallowed")
+assert(#integration.actions == 0,
+  "an unresolved Cmd+Right typed into a tab that may not be Claude's")
+assert(module.handleEvent(commandArrow(123, { "cmd", "shift", "fn" })),
+  "Cmd+Shift+Left waited for a verdict it does not need")
+assert(table.concat(integration.actions, ",") == "chord:ctrl+shift+tab",
+  "the tab switch did not post on an unresolved verdict")
+
+-- The native tab switch is what a shell tab keeps.
+integration = integrationContext(nil, { verdict = "not-claude" })
+assert(not module.handleEvent(commandArrow(124, { "cmd", "fn" })),
+  "Cmd+Right was intercepted in a non-Claude tab")
+assert(not module.handleEvent(commandArrow(123, { "cmd", "fn" })),
+  "Cmd+Left was intercepted in a non-Claude tab")
+assert(#integration.actions == 0, "a non-Claude Cmd+arrow posted a key of its own")
+
+integration = integrationContext(nil, { verdict = "claude" })
+assert(not module.handleEvent(commandArrow(123, { "cmd", "alt", "fn" })),
+  "Option+Cmd+Left was intercepted")
+assert(not module.handleEvent(commandArrow(123, { "fn" })), "a plain arrow was intercepted")
+integration.switchApp("com.apple.Safari")
+assert(not module.handleEvent(commandArrow(124, { "cmd", "shift", "fn" })),
+  "Cmd+Shift+Right was swallowed outside Terminal")
+assert(not module.handleEvent(commandArrow(124, { "cmd", "fn" })),
+  "Cmd+Right was swallowed outside Terminal")
+assert(#integration.actions == 0, "an arrow outside the remap posted a key")
+
+-- A caret move ends the selection the TUI painted, exactly as typing does.
+integration = integrationContext(nil, { verdict = "claude" })
+simulateDrag()
+assert(module.handleEvent(commandArrow(123, { "cmd", "fn" })),
+  "Cmd+Left was not swallowed over a selection")
+pressCut(integration)
+assert(table.concat(integration.actions, ",") == "line-start",
+  "a caret move left the selection armed for the next cut")
+
+-- Cmd+Up/Down carry the document motion; the shift chord hands Terminal back the bare
+-- Cmd+arrow it answers with its own mark navigation, in any tab.
+integration = integrationContext(nil, { verdict = "not-claude" })
+assert(module.handleEvent(commandArrow(126, { "cmd", "shift", "fn" })),
+  "Cmd+Shift+Up was not swallowed in Terminal")
+assert(table.concat(integration.actions, ",") == "chord:cmd+up",
+  "Cmd+Shift+Up did not repost Terminal's own Cmd+Up")
+
+integration = integrationContext(nil, { verdict = "not-claude" })
+assert(module.handleEvent(commandArrow(125, { "cmd", "shift", "fn" })),
+  "Cmd+Shift+Down was not swallowed in Terminal")
+assert(table.concat(integration.actions, ",") == "chord:cmd+down",
+  "Cmd+Shift+Down did not repost Terminal's own Cmd+Down")
+
+integration = integrationContext(nil, { verdict = "claude" })
+assert(module.handleEvent(commandArrow(126, { "cmd", "fn" })),
+  "Cmd+Up was not swallowed in a Claude tab")
+assert(module.handleEvent(commandArrow(126, { "cmd", "fn" }, true)),
+  "a held Cmd+Up leaked a native scroll")
+assert(table.concat(integration.actions, ",") == "doc-start",
+  "Cmd+Up did not move the caret to the document start exactly once")
+
+integration = integrationContext(nil, { verdict = "claude" })
+assert(module.handleEvent(commandArrow(125, { "cmd", "fn" })),
+  "Cmd+Down was not swallowed in a Claude tab")
+assert(table.concat(integration.actions, ",") == "doc-end",
+  "Cmd+Down did not move the caret to the document end")
+
+integration = integrationContext()
+assert(module.handleEvent(commandArrow(126, { "cmd", "fn" })),
+  "Cmd+Up on an unresolved verdict was not swallowed")
+assert(module.handleEvent(commandArrow(125, { "cmd", "fn" })),
+  "Cmd+Down on an unresolved verdict was not swallowed")
+assert(#integration.actions == 0,
+  "an unresolved Cmd+Up/Down typed into a tab that may not be Claude's")
+
+integration = integrationContext(nil, { verdict = "not-claude" })
+assert(not module.handleEvent(commandArrow(126, { "cmd", "fn" })),
+  "Cmd+Up was intercepted in a non-Claude tab")
+assert(not module.handleEvent(commandArrow(125, { "cmd", "fn" })),
+  "Cmd+Down was intercepted in a non-Claude tab")
+assert(#integration.actions == 0, "a non-Claude Cmd+Up/Down posted a key of its own")
+
+-- The cut owns the DEL-and-diff window a caret move would land in the middle of, and
+-- the tab switch would carry the front tab out from under it.
+integration = integrationContext(nil, { verdict = "claude" })
+dragThenCut(integration)
+assert(module.handleEvent(commandArrow(126, { "cmd", "fn" })),
+  "the mid-cut Cmd+Up was not swallowed")
+assert(module.handleEvent(commandArrow(123, { "cmd", "shift", "fn" })),
+  "the mid-cut Cmd+Shift+Left was not swallowed")
+integration.runDeferred()
+assert(table.concat(integration.actions, ",") == "scrape",
+  "a Cmd+arrow acted inside the cut's own window")
+
+-- The whole run has to reach the tty as one keystroke: an Up arriving at the top line
+-- on its own recalls history over the draft instead of stopping there.
+assert(module.docStartPlan().atomic and module.docEndPlan().atomic,
+  "a document motion was left to emit one byte at a time")
+assert(module.planBytes(module.docStartPlan()):sub(-1) == string.char(1)
+  and module.planBytes(module.docStartPlan()):find("\27%[A"),
+  "the document-start plan does not walk up and then to the line start")
+assert(module.planBytes(module.docEndPlan()):sub(-1) == string.char(5)
+  and module.planBytes(module.docEndPlan()):find("\27%[B"),
+  "the document-end plan does not walk down and then to the line end")
+end
 
 -- Self-posted keystrokes come back through our own tap. Every flow below holds a
 -- window open around its own DEL, and each one used to close that window on the DEL

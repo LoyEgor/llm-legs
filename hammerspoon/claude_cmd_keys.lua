@@ -167,6 +167,42 @@ function M.cutPlan()
   return { 127 }
 end
 
+-- Ctrl+A and Ctrl+E, the TUI's emacs line motions, as the control bytes it reads.
+function M.lineStartPlan()
+  return { 1 }
+end
+
+function M.lineEndPlan()
+  return { 5 }
+end
+
+-- The TUI has no document motion at all: every encoding of Home/End, M-</M->,
+-- Ctrl+Home and the page keys stops at the logical line. Repeated Up/Down does reach
+-- the edges, but only while the whole run arrives as ONE tty write — an Up that lands
+-- on the top line as a keypress of its own recalls history over the draft instead, at
+-- every gap down to zero. That is what `atomic` carries to emit. Overshooting inside
+-- the run costs nothing, but the count cannot simply grow to cover a taller draft:
+-- past roughly a kilobyte the run stops arriving as one read, and the split hands the
+-- top line a discrete Up. 400 repeats clobbers the draft where 200 does not.
+function M.docMotionPlan(arrow, edge)
+  local plan = { atomic = true }
+  for _ = 1, 200 do
+    plan[#plan + 1] = 27
+    plan[#plan + 1] = 91
+    plan[#plan + 1] = arrow
+  end
+  plan[#plan + 1] = edge
+  return plan
+end
+
+function M.docStartPlan()
+  return M.docMotionPlan(65, 1)
+end
+
+function M.docEndPlan()
+  return M.docMotionPlan(66, 5)
+end
+
 -- The fullscreen renderer draws the input between two full-width `─` rules and
 -- separates its `❯` prompt from the draft with U+00A0, not a space; the classic
 -- renderer draws a `│ > … │` rounded box. Whichever border comes LAST wins: the
@@ -690,6 +726,21 @@ local shared = {
   -- path costs the next typed character a DEL of its own.
   selectionDragLimit = 4,
   gestureWatchdogDelay = 2.5,
+  -- What the Cmd+Shift arrow hands back to Terminal, keyed by its arrow. Left/Right are
+  -- Terminal's own Show Previous/Next Tab key equivalents, held here rather than looked
+  -- up in the menu: the item's title is localized, its key equivalent is not. Up/Down
+  -- displace nothing of ours, so the shift chord reposts the bare Cmd+arrow Terminal
+  -- already answers with its mark navigation.
+  arrowChords = {
+    [123] = { modifiers = { "ctrl", "shift" }, key = "tab" },
+    [124] = { modifiers = { "ctrl" }, key = "tab" },
+    [125] = { modifiers = { "cmd" }, key = "down" },
+    [126] = { modifiers = { "cmd" }, key = "up" },
+  },
+  arrowPlans = {
+    [123] = M.lineStartPlan, [124] = M.lineEndPlan,
+    [125] = M.docEndPlan, [126] = M.docStartPlan,
+  },
   -- Bumped once per gesture and captured by every closure that gesture arms. A scrape
   -- Terminal answers late belongs to the flight that asked for it and to no other: read
   -- against the flag alone it would post its DEL into the next gesture's draft and tear
@@ -1184,7 +1235,9 @@ local function emit(plan, app)
     runtimeHooks.emit(plan)
     return
   end
-  for _, character in ipairs(M.planCharacters(plan)) do
+  local characters = plan and plan.atomic and { M.planBytes(plan) }
+    or M.planCharacters(plan)
+  for _, character in ipairs(characters) do
     for _, isDown in ipairs({ true, false }) do
       local event = hs.eventtap.event.newKeyEvent(0, isDown)
       event:setUnicodeString(character)
@@ -1193,6 +1246,23 @@ local function emit(plan, app)
       end
       event:post(app)
     end
+  end
+end
+
+-- Marked exactly like emit's keystrokes, for the reason written above it. Terminal's
+-- tab switches are menu key equivalents, which match on a keycode and its flags: the
+-- unicode keystrokes emit posts carry neither and reach the tty instead of the menu.
+function M.postChord(modifiers, key)
+  if runtimeHooks and runtimeHooks.chord then
+    runtimeHooks.chord(modifiers, key)
+    return
+  end
+  for _, isDown in ipairs({ true, false }) do
+    local event = hs.eventtap.event.newKeyEvent(modifiers, key, isDown)
+    if replayProperty then
+      event:setProperty(replayProperty, replayMarker)
+    end
+    event:post()
   end
 end
 
@@ -3702,6 +3772,45 @@ local function handleEvent(event, keyCode, isRepeat)
     if pendingHoldsReplace() and not isRepeat then
       local held = deferEvent(event, observeFrontmost(), nil, false, nil, nil, true)
       if held then
+        return true
+      end
+    end
+    -- Terminal spends Cmd+Left/Right on its own tab switch, so the switch moves to
+    -- Cmd+Shift+arrow and the bare chord becomes the line motion macOS types
+    -- everywhere else; Cmd+Up/Down carry the document motion the same way. Arrow keys
+    -- carry the fn flag, so the modifiers are read one by one rather than matched
+    -- exactly. Ahead of the invalidation below on purpose: that drops the very cached
+    -- verdict the Claude branch is gated on.
+    if flags.cmd and not flags.alt and not flags.ctrl and shared.arrowChords[keyCode] then
+      local frontmost = observeFrontmost()
+      local frontVerdict = not flags.shift and foregroundVerdict(frontmost) or nil
+      -- Two-tier exactly as the word-gesture chord below: swallowed wherever the tab may be
+      -- Claude's, acted on only once the verdict says it is.
+      if frontmost.bundleID == terminalBundleID
+          and (flags.shift or frontVerdict ~= "not-claude") then
+        -- A flow already holding the draft times its own DEL against the caret and the
+        -- front tab this chord moves out from under it. Dropped rather than queued: a
+        -- queued copy is replayed with the marker, and the marker is what would let it
+        -- reach Terminal as the native tab switch this remap exists to take away.
+        if cutInFlight or selectAllInFlight or pendingHoldsItems() then
+          return true
+        end
+        if flags.shift or frontVerdict == "claude" then
+          if gestureInFlight then
+            gestureDraftTouched = true
+          end
+          clearSelectionState()
+          if flags.shift then
+            local chord = shared.arrowChords[keyCode]
+            M.postChord(chord.modifiers, chord.key)
+            invalidateAndRefresh()
+          else
+            -- The caret move deliberately keeps the cached verdict: dropped here, a
+            -- second press inside the refresh window reads uncertain and swallows
+            -- instead of moving the caret the user asked for.
+            emit(shared.arrowPlans[keyCode]())
+          end
+        end
         return true
       end
     end
