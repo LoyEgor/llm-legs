@@ -168,9 +168,8 @@ function M.cutPlan()
 end
 
 -- The TUI has no document motion: M-</M->, Ctrl+Home and the page keys do nothing. The
--- tail byte below is the logical edge because at the top and bottom row it IS the
--- document edge.
--- Repeated Up/Down does reach
+-- tail byte below is Ctrl+A/Ctrl+E, a line edge, which on the top and bottom row is the
+-- document edge as well. Repeated Up/Down does reach
 -- the edges, but only while the whole run arrives as ONE tty write — an Up that lands
 -- on the top line as a keypress of its own recalls history over the draft instead, at
 -- every gap down to zero. That is what `atomic` carries to emit. Overshooting inside
@@ -3021,8 +3020,10 @@ local function sentinelIndex(cells)
   return found, count
 end
 
--- Terminal may render the block cursor as a trailing space. Cells before the caret
--- floor are draft content, even when they are spaces.
+-- Terminal may render the block cursor as a trailing space, on some scrapes only, so two
+-- reads of an untouched draft differ by one trailing cell. Cells before the caret floor
+-- are draft content even when they are spaces, and the index the row and span math was
+-- measured with counts them; word gestures pass no floor.
 local function withoutTrailingSpace(cells, floor)
   local last = #cells
   if last == 0 then
@@ -3287,6 +3288,12 @@ function M.spanEnds(cells, caret, direction, spanKind, caretRow)
   local edge, step = math.min(caret, #cells), direction < 0 and -1 or 1
   local onCell = cells[edge]
   local row = caretRow or (onCell and onCell.row)
+  if caretRow and (not onCell or onCell.row ~= caretRow) then
+    onCell = cells[caret - 1]
+    if onCell and onCell.row == caretRow then
+      edge = caret - 1
+    end
+  end
   if not row or not onCell or onCell.row ~= row then
     return nil
   end
@@ -3317,6 +3324,12 @@ function M.rowEdgeTarget(cells, caret, direction, columns, caretRow)
   local index = math.min(caret, #cells)
   local onCell = cells[index]
   local row = caretRow or (onCell and onCell.row)
+  if caretRow and (not onCell or onCell.row ~= caretRow) then
+    onCell = cells[caret - 1]
+    if onCell and onCell.row == caretRow then
+      index = caret - 1
+    end
+  end
   if not row or not onCell or onCell.row ~= row or type(columns) ~= "number" then
     return nil
   end
@@ -3327,7 +3340,15 @@ function M.rowEdgeTarget(cells, caret, direction, columns, caretRow)
   if direction < 0 then
     return row, cells[index].column
   end
-  return row, math.min(cells[index].column + cells[index].width, columns)
+  local free = cells[index].column + cells[index].width
+  -- A wrapped row filled to the box edge has no in-row cell for "after the last
+  -- character": that buffer position is the next row's start and the TUI renders a
+  -- click there one row down. The last cell is the furthest the caret can go and
+  -- still hold the row.
+  if cells[index + 1] and free >= columns - 1 then
+    return row, cells[index].column
+  end
+  return row, math.min(free, columns)
 end
 
 -- Both paths hand in the same index, because the sentinel occupied exactly the cell the
@@ -3375,6 +3396,17 @@ end
 function shared.armCaretAt(direction, flight, cells, caret, totalLines, columns, frame, caretRow)
   shared.endGestureFlight(flight)
   local row, column = M.rowEdgeTarget(cells, caret, direction, columns, caretRow)
+  if row then
+    -- Standing on the edge it reaches for, the chord has nothing to do; the click it
+    -- would post lands on its own cell and costs a breaker dance the user sees as the
+    -- pointer jumping in place.
+    local at, before = cells[caret], cells[caret - 1]
+    local current = at and at.row == row and at.column
+      or before and before.row == row and before.column + before.width or nil
+    if current == column then
+      return
+    end
+  end
   local center = row and cellCenters(frame, totalLines, columns)
   local point = center and center(column, row)
   if not point then
@@ -3621,10 +3653,7 @@ local function runGestureStart(original, direction, flight, kind)
   end, abandon)
 end
 
--- Nothing is typed on this path, so the screen the scrape answers with is already the one
--- the click lands on: one read, no settle delay, no DEL to wait out and none to owe. Every
--- case that cannot place the caret on that screen hands the gesture to the sentinel, which
--- starts from scratch and does not care that it was asked second.
+-- This screen is already click-ready; only unresolved word gestures use the sentinel fallback.
 function shared.gestureByCaret(original, direction, flight, point, scrapedScreen, kind)
   local function useScreen(screenText)
     if not shared.gestureFlies(flight) then
@@ -3643,7 +3672,11 @@ function shared.gestureByCaret(original, direction, flight, point, scrapedScreen
     end
     local _, _, totalLines, layout = M.parseInputBox(screenText)
     if not layout or type(totalLines) ~= "number" or totalLines <= 0 then
-      runGestureStart(original, direction, flight, kind)
+      if kind then
+        shared.endGestureFlight(flight)
+      else
+        runGestureStart(original, direction, flight, kind)
+      end
       return
     end
     local frame = targetWindowFrame(original.observed and original.observed.windowID,
@@ -3651,8 +3684,24 @@ function shared.gestureByCaret(original, direction, flight, point, scrapedScreen
     local cells = draftCells(layout)
     local caretRow, caretColumn = M.gridCell(frame, totalLines, layout.columns, point)
     local index = shared.caretIndex(cells, caretRow, caretColumn)
+    if kind and not index and caretRow and caretColumn then
+      local last
+      for position, cell in ipairs(cells) do
+        if cell.row == caretRow then
+          last = position
+        end
+      end
+      if last and caretColumn >= cells[last].column + cells[last].width
+          and caretColumn <= layout.columns then
+        index = last + 1
+      end
+    end
     if not index then
-      runGestureStart(original, direction, flight, kind)
+      if kind then
+        shared.endGestureFlight(flight)
+      else
+        runGestureStart(original, direction, flight, kind)
+      end
       return
     end
     local caret = { row = caretRow, floor = kind and index or nil }
@@ -3682,7 +3731,11 @@ function shared.startGesture(original, direction, flight, kind)
   end
   gestureDraftTouched = false
   if not shared.caretGestures then
-    runGestureStart(original, direction, flight, kind)
+    if kind then
+      shared.endGestureFlight(flight)
+    else
+      runGestureStart(original, direction, flight, kind)
+    end
     return
   end
   local point, calibrate = shared.caretPoint(original.observed)
@@ -3703,13 +3756,19 @@ function shared.startGesture(original, direction, flight, kind)
       if calibratedPoint then
         shared.gestureByCaret(original, direction, flight, calibratedPoint, screenText,
           kind)
+      elseif kind then
+        shared.endGestureFlight(flight)
       else
         runGestureStart(original, direction, flight, kind)
       end
     end, original.observed)
     return
   end
-  runGestureStart(original, direction, flight, kind)
+  if kind then
+    shared.endGestureFlight(flight)
+  else
+    runGestureStart(original, direction, flight, kind)
+  end
 end
 
 local function runGestureExtend(original, cache, flight)
@@ -4196,8 +4255,9 @@ function M.logTapError(err)
   end
 end
 
--- ClaudeCmdKeys.caretGestures(false) from the hs console puts every gesture back on the
--- sentinel without a reload; with no argument it reports which source is in use.
+-- ClaudeCmdKeys.caretGestures(false) from the hs console puts the word gestures back on
+-- the sentinel without a reload; the cmd chords stand down rather than type one. With no
+-- argument it reports which source is in use.
 function M.caretGestures(enabled)
   if enabled ~= nil then
     shared.caretGestures = enabled and true or false
