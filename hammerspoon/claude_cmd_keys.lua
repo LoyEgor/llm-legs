@@ -167,17 +167,10 @@ function M.cutPlan()
   return { 127 }
 end
 
--- Ctrl+A and Ctrl+E, the TUI's emacs line motions, as the control bytes it reads.
-function M.lineStartPlan()
-  return { 1 }
-end
-
-function M.lineEndPlan()
-  return { 5 }
-end
-
--- The TUI has no document motion at all: every encoding of Home/End, M-</M->,
--- Ctrl+Home and the page keys stops at the logical line. Repeated Up/Down does reach
+-- The TUI has no document motion: M-</M->, Ctrl+Home and the page keys do nothing. The
+-- tail byte below is the logical edge because at the top and bottom row it IS the
+-- document edge.
+-- Repeated Up/Down does reach
 -- the edges, but only while the whole run arrives as ONE tty write — an Up that lands
 -- on the top line as a keypress of its own recalls history over the draft instead, at
 -- every gap down to zero. That is what `atomic` carries to emit. Overshooting inside
@@ -726,21 +719,22 @@ local shared = {
   -- path costs the next typed character a DEL of its own.
   selectionDragLimit = 4,
   gestureWatchdogDelay = 2.5,
-  -- What the Cmd+Shift arrow hands back to Terminal, keyed by its arrow. Left/Right are
-  -- Terminal's own Show Previous/Next Tab key equivalents, held here rather than looked
-  -- up in the menu: the item's title is localized, its key equivalent is not. Up/Down
-  -- displace nothing of ours, so the shift chord reposts the bare Cmd+arrow Terminal
-  -- already answers with its mark navigation.
+  -- What the Option+Cmd+Shift arrow hands back to Terminal, keyed by its arrow.
+  -- Left/Right are Terminal's own Show Previous/Next Tab key equivalents, held here
+  -- rather than looked up in the menu: the item's title is localized, its key
+  -- equivalent is not. Up/Down displace nothing of ours, so the chord reposts the bare
+  -- Cmd+arrow Terminal already answers with its mark navigation.
   arrowChords = {
     [123] = { modifiers = { "ctrl", "shift" }, key = "tab" },
     [124] = { modifiers = { "ctrl" }, key = "tab" },
     [125] = { modifiers = { "cmd" }, key = "down" },
     [126] = { modifiers = { "cmd" }, key = "up" },
   },
-  arrowPlans = {
-    [123] = M.lineStartPlan, [124] = M.lineEndPlan,
-    [125] = M.docEndPlan, [126] = M.docStartPlan,
-  },
+  -- Only the document motions still travel as bytes. The row motions are clicks: the
+  -- caret stays on its own visual row, and no byte sequence the TUI answers to does.
+  arrowPlans = { [125] = M.docEndPlan, [126] = M.docStartPlan },
+  -- What Cmd+Shift+arrow selects, matched to what the bare chord moves over.
+  arrowSpans = { [123] = "row", [124] = "row", [125] = "doc", [126] = "doc" },
   -- Bumped once per gesture and captured by every closure that gesture arms. A scrape
   -- Terminal answers late belongs to the flight that asked for it and to no other: read
   -- against the flag alone it would post its DEL into the next gesture's draft and tear
@@ -3027,19 +3021,15 @@ local function sentinelIndex(cells)
   return found, count
 end
 
--- Terminal draws the block cursor sitting past the draft as a trailing space on some
--- scrapes and trims the genuine one on others, so the last row's trailing spaces
--- flicker between two reads of a draft nobody touched — measured live in both
--- directions. Dropped from every list before it is compared or signed; only the last
--- row is touched, so a space anywhere else still counts as a difference. Cells are
--- only ever dropped off the end, which leaves every surviving index unmoved.
-local function withoutTrailingSpace(cells)
+-- Terminal may render the block cursor as a trailing space. Cells before the caret
+-- floor are draft content, even when they are spaces.
+local function withoutTrailingSpace(cells, floor)
   local last = #cells
   if last == 0 then
     return cells
   end
-  local lastRow = cells[last].row
-  while last > 0 and cells[last].row == lastRow and isSpaceCell(cells[last]) do
+  local lastRow, stop = cells[last].row, math.max(floor or 1, 1)
+  while last >= stop and cells[last].row == lastRow and isSpaceCell(cells[last]) do
     last = last - 1
   end
   if last == #cells then
@@ -3215,6 +3205,52 @@ local function clickWord(points)
   lastPressCell = { column = points.column, row = points.row }
 end
 
+-- The word gesture double-clicks so both ends snap to whole words; a span is measured
+-- in cells and must not snap, so it is a plain press and drag. The breaker still runs:
+-- a single click landing where the last one did is promoted to a double click, and the
+-- selection would word-snap after all.
+function shared.clickSpan(points)
+  local restoreMouse = takePointerHome()
+  if points.breaker then
+    postMouseEvent("down", points.breaker, 1)
+    pauseBetweenDragSteps()
+    postMouseEvent("up", points.breaker, 1)
+    pauseBetweenDragSteps()
+  end
+  postMouseEvent("down", points.press, 1)
+  pauseBetweenDragSteps()
+  postMouseEvent("dragged", points.drag, 1)
+  pauseBetweenDragSteps()
+  postMouseEvent("up", points.drag, 1)
+  shared.pointerPosted = points.drag
+  if restoreMouse then
+    schedulePointerReturn()
+  end
+  selectionLikely = true
+  selectionPoint = points.drag
+  lastPressCell = { column = points.column, row = points.row }
+end
+
+-- One press and release on the cell the caret is to land in: nothing is dragged and
+-- nothing is selected, so no selection state is armed either.
+function shared.clickCaret(points)
+  local restoreMouse = takePointerHome()
+  if points.breaker then
+    postMouseEvent("down", points.breaker, 1)
+    pauseBetweenDragSteps()
+    postMouseEvent("up", points.breaker, 1)
+    pauseBetweenDragSteps()
+  end
+  postMouseEvent("down", points.press, 1)
+  pauseBetweenDragSteps()
+  postMouseEvent("up", points.press, 1)
+  shared.pointerPosted = points.press
+  if restoreMouse then
+    schedulePointerReturn()
+  end
+  lastPressCell = { column = points.column, row = points.row }
+end
+
 local function armGesture(direction, anchor, head, signature, points)
   clickWord(points)
   wordGestureState = {
@@ -3236,6 +3272,62 @@ function shared.caretIndex(cells, row, column)
     end
   end
   return nil
+end
+
+-- The two ends of what Cmd+Shift+arrow paints: the cell the caret sits against, and the
+-- edge it reaches for. Pressed on the caret end and dragged to the edge, so the caret
+-- lands where macOS leaves it. Nil where the caret already sits on that edge — a span of
+-- no cells would paint the click's own cell instead of nothing.
+function M.spanEnds(cells, caret, direction, spanKind, caretRow)
+  -- A draft the user is typing into ends under the caret, and the block cursor it sits
+  -- on is a trailing space the measurement drops: the index is then one past the last
+  -- cell. The row comes from the caller, which read it off the caret itself — inferred
+  -- from that cell instead, an empty last row would answer with the row above it and
+  -- send the click across the wrap this motion may never cross.
+  local edge, step = math.min(caret, #cells), direction < 0 and -1 or 1
+  local onCell = cells[edge]
+  local row = caretRow or (onCell and onCell.row)
+  if not row or not onCell or onCell.row ~= row then
+    return nil
+  end
+  if spanKind == "doc" then
+    edge = direction < 0 and 1 or #cells
+  else
+    while cells[edge + step] and cells[edge + step].row == row do
+      edge = edge + step
+    end
+  end
+  local anchor = direction < 0 and caret - 1 or caret
+  if not cells[anchor] or (direction < 0 and anchor < edge)
+      or (direction > 0 and anchor > edge) then
+    return nil
+  end
+  return anchor, edge
+end
+
+-- The cell Cmd+Left/Right clicks: the first of the caret's visual row, or the free one
+-- just past its last. Clicked rather than typed, because the TUI moves Home/End by buffer
+-- position — on a word-wrapped row End leaves the caret rendering at the start of the next
+-- row, and either key pressed at the edge it already sits on hops to another line, both of
+-- which macOS never does. A row filled to the last column has no free cell past it: the
+-- click clamps inside the box, and the caret lands where that buffer position truly is.
+function M.rowEdgeTarget(cells, caret, direction, columns, caretRow)
+  -- The caret's row comes from the caller for the reason M.spanEnds takes it: on an
+  -- empty last row the cell before the caret belongs to the row above.
+  local index = math.min(caret, #cells)
+  local onCell = cells[index]
+  local row = caretRow or (onCell and onCell.row)
+  if not row or not onCell or onCell.row ~= row or type(columns) ~= "number" then
+    return nil
+  end
+  local step = direction < 0 and -1 or 1
+  while cells[index + step] and cells[index + step].row == row do
+    index = index + step
+  end
+  if direction < 0 then
+    return row, cells[index].column
+  end
+  return row, math.min(cells[index].column + cells[index].width, columns)
 end
 
 -- Both paths hand in the same index, because the sentinel occupied exactly the cell the
@@ -3265,7 +3357,11 @@ function shared.armGestureAt(direction, flight, cells, neighbour, totalLines, co
     local beyond = extendedHead(cells, neighbour, direction)
     if beyond and cells[beyond].row == cells[neighbour].row then
       first, last = wordSpan(cells, beyond)
-      anchor, dragSpan = neighbour, { neighbour, neighbour }
+      anchor = direction < 0 and last or first
+      if cells[neighbour].text == "\194\160"
+          or cells[neighbour].text:match("^%s$") ~= nil then
+        anchor, dragSpan = neighbour, { neighbour, neighbour }
+      end
     end
   end
   local points = gestureClickPoints(frame, totalLines, columns, cells,
@@ -3273,6 +3369,42 @@ function shared.armGestureAt(direction, flight, cells, neighbour, totalLines, co
   if points then
     armGesture(direction, anchor, direction < 0 and first or last,
       cellsSignature(cells, totalLines, columns), points)
+  end
+end
+
+function shared.armCaretAt(direction, flight, cells, caret, totalLines, columns, frame, caretRow)
+  shared.endGestureFlight(flight)
+  local row, column = M.rowEdgeTarget(cells, caret, direction, columns, caretRow)
+  local center = row and cellCenters(frame, totalLines, columns)
+  local point = center and center(column, row)
+  if not point then
+    return
+  end
+  local points = { press = point, column = column, row = row }
+  -- Pressed twice the chord asks for the cell it just clicked, and the TUI reads two
+  -- presses on one cell as the double click that selects the word under it.
+  if lastPressCell and lastPressCell.row == row
+      and math.abs(column - lastPressCell.column) < 2 then
+    local breaker = breakerColumn(column, row, columns)
+    points.breaker = breaker and center(breaker, row)
+    if not points.breaker then
+      return
+    end
+  end
+  shared.clickCaret(points)
+end
+
+function shared.armSpanAt(direction, flight, cells, caret, totalLines, columns, frame, spanKind,
+    caretRow)
+  shared.endGestureFlight(flight)
+  local anchor, edge = M.spanEnds(cells, caret, direction, spanKind, caretRow)
+  if not anchor then
+    return
+  end
+  local points = gestureClickPoints(frame, totalLines, columns, cells,
+    { anchor, anchor }, { edge, edge })
+  if points then
+    shared.clickSpan(points)
   end
 end
 
@@ -3370,7 +3502,31 @@ local function scrapeDraft(flight, original, delay, read, giveUp)
   afterGestureDelay(delay, attempt, giveUp)
 end
 
-local function runGestureStart(original, direction, flight)
+-- What the arrow is reaching for once the caret is placed: a word (the gesture's own,
+-- nil), the row or document a selection spans, or the row edge the caret moves to.
+-- `caret` carries what the cell list alone cannot answer: the row the caret is really
+-- on, and the floor its trailing spaces were stripped to.
+function shared.armForKind(kind, direction, flight, cells, target, totalLines, columns, frame,
+    caret)
+  -- The repaint this list was read from may have trimmed the trailing space the index
+  -- was measured against: a row motion still reads one past the last cell, a word
+  -- gesture needs a cell of its own to land on.
+  target = math.min(target, kind and #cells + 1 or #cells)
+  if not kind and not cells[target] then
+    shared.endGestureFlight(flight)
+    return
+  end
+  if kind == "caret" then
+    shared.armCaretAt(direction, flight, cells, target, totalLines, columns, frame, caret.row)
+  elseif kind then
+    shared.armSpanAt(direction, flight, cells, target, totalLines, columns, frame, kind,
+      caret.row)
+  else
+    shared.armGestureAt(direction, flight, cells, target, totalLines, columns, frame)
+  end
+end
+
+local function runGestureStart(original, direction, flight, kind)
   local sentinelSettled = false
   local sentinelGone = false
   -- Answers whether the sentinel is out of the draft, not merely whether the removal
@@ -3419,17 +3575,21 @@ local function runGestureStart(original, direction, flight)
 
   -- The DEL has to repaint before the click: it can unwrap a row and move every cell
   -- the sentinel screen measured.
-  local function armWhenRepainted(expected, neighbour)
+  local function armWhenRepainted(expected, target, caret)
     scrapeDraft(flight, original, gestureSettleDelay, function(scraped, totalLines, layout)
-      local cells = withoutTrailingSpace(scraped)
-      if not sameCellText(cells, expected) then
+      local cells = withoutTrailingSpace(scraped, caret.floor)
+      -- Compared with every trailing space gone from both reads, clicked with the one
+      -- the user typed still in: the cell the two reads disagree about is the cursor's,
+      -- and holding the draft to it would never converge.
+      if not sameCellText(withoutTrailingSpace(cells), expected) then
         return false
       end
+      local frame = targetWindowFrame(original.observed and original.observed.windowID,
+        totalLines, layout.columns)
       -- The span is measured here, not on the sentinel screen: a sentinel that
       -- pushed a word over the wrap made it two words that are one again now.
-      shared.armGestureAt(direction, flight, cells, neighbour, totalLines, layout.columns,
-        targetWindowFrame(original.observed and original.observed.windowID,
-          totalLines, layout.columns))
+      shared.armForKind(kind, direction, flight, cells, target, totalLines, layout.columns, frame,
+        caret)
       return true
     end, stop)
   end
@@ -3443,14 +3603,20 @@ local function runGestureStart(original, direction, flight)
     if count > 1 then
       return stop()
     end
-    local remaining = withoutTrailingSpace(withoutSentinel(cells, index))
+    -- The sentinel stood exactly where the caret does, so its row is the caret's and
+    -- its index is the floor the trailing spaces past the caret are stripped to.
+    local caret = { row = cells[index].row, floor = kind and index or nil }
+    local remaining = withoutTrailingSpace(withoutSentinel(cells, index), caret.floor)
     -- The cell the sentinel pushed aside took its index once the sentinel was dropped,
     -- so the caret's own index is the sentinel's.
-    local neighbour = shared.gestureNeighbour(remaining, index, direction)
-    if not neighbour then
+    local target = index
+    if not kind then
+      target = shared.gestureNeighbour(remaining, index, direction)
+    end
+    if not target then
       return stop()
     end
-    armWhenRepainted(remaining, neighbour)
+    armWhenRepainted(withoutTrailingSpace(remaining), target, caret)
     return true
   end, abandon)
 end
@@ -3459,7 +3625,7 @@ end
 -- the click lands on: one read, no settle delay, no DEL to wait out and none to owe. Every
 -- case that cannot place the caret on that screen hands the gesture to the sentinel, which
 -- starts from scratch and does not care that it was asked second.
-function shared.gestureByCaret(original, direction, flight, point, scrapedScreen)
+function shared.gestureByCaret(original, direction, flight, point, scrapedScreen, kind)
   local function useScreen(screenText)
     if not shared.gestureFlies(flight) then
       return
@@ -3477,26 +3643,30 @@ function shared.gestureByCaret(original, direction, flight, point, scrapedScreen
     end
     local _, _, totalLines, layout = M.parseInputBox(screenText)
     if not layout or type(totalLines) ~= "number" or totalLines <= 0 then
-      runGestureStart(original, direction, flight)
+      runGestureStart(original, direction, flight, kind)
       return
     end
     local frame = targetWindowFrame(original.observed and original.observed.windowID,
       totalLines, layout.columns)
     local cells = draftCells(layout)
-    local caret = shared.caretIndex(cells,
-      M.gridCell(frame, totalLines, layout.columns, point))
-    if not caret then
-      runGestureStart(original, direction, flight)
+    local caretRow, caretColumn = M.gridCell(frame, totalLines, layout.columns, point)
+    local index = shared.caretIndex(cells, caretRow, caretColumn)
+    if not index then
+      runGestureStart(original, direction, flight, kind)
       return
     end
-    local remaining = withoutTrailingSpace(cells)
-    local neighbour = shared.gestureNeighbour(remaining, caret, direction)
-    if not neighbour then
-      shared.endGestureFlight(flight)
-      return
+    local caret = { row = caretRow, floor = kind and index or nil }
+    local remaining = withoutTrailingSpace(cells, caret.floor)
+    local target = index
+    if not kind then
+      target = shared.gestureNeighbour(remaining, index, direction)
+      if not target then
+        shared.endGestureFlight(flight)
+        return
+      end
     end
-    shared.armGestureAt(direction, flight, remaining, neighbour, totalLines,
-      layout.columns, frame)
+    shared.armForKind(kind, direction, flight, remaining, target, totalLines, layout.columns,
+      frame, caret)
   end
   if scrapedScreen ~= nil then
     useScreen(scrapedScreen)
@@ -3505,19 +3675,19 @@ function shared.gestureByCaret(original, direction, flight, point, scrapedScreen
   end
 end
 
-function shared.startGesture(original, direction, flight)
+function shared.startGesture(original, direction, flight, kind)
   if not currentTargetMatches(original, observeFrontmost()) then
     shared.endGestureFlight(flight)
     return
   end
   gestureDraftTouched = false
   if not shared.caretGestures then
-    runGestureStart(original, direction, flight)
+    runGestureStart(original, direction, flight, kind)
     return
   end
   local point, calibrate = shared.caretPoint(original.observed)
   if point then
-    shared.gestureByCaret(original, direction, flight, point)
+    shared.gestureByCaret(original, direction, flight, point, nil, kind)
     return
   end
   if calibrate then
@@ -3531,14 +3701,15 @@ function shared.startGesture(original, direction, flight)
       end
       local calibratedPoint = shared.caretPoint(original.observed)
       if calibratedPoint then
-        shared.gestureByCaret(original, direction, flight, calibratedPoint, screenText)
+        shared.gestureByCaret(original, direction, flight, calibratedPoint, screenText,
+          kind)
       else
-        runGestureStart(original, direction, flight)
+        runGestureStart(original, direction, flight, kind)
       end
     end, original.observed)
     return
   end
-  runGestureStart(original, direction, flight)
+  runGestureStart(original, direction, flight, kind)
 end
 
 local function runGestureExtend(original, cache, flight)
@@ -3600,7 +3771,7 @@ local function runGestureExtend(original, cache, flight)
   end)
 end
 
-local function startWordGesture(keyCode, observed, cache)
+local function startWordGesture(keyCode, observed, cache, kind)
   -- The draft-rewriting flows own the screen this gesture would scrape, and a
   -- pending queue may still turn into one; the press is consumed either way.
   -- The state this keypress cleared on its way in has to come back with every bail
@@ -3618,8 +3789,11 @@ local function startWordGesture(keyCode, observed, cache)
       or pendingHoldsItems() then
     return keepSelection()
   end
-  local direction = keyCode == 123 and -1 or 1
-  if cache and cache.direction ~= direction then
+  local direction = (keyCode == 123 or keyCode == 126) and -1 or 1
+  -- A span reaches for a fixed edge, so it is recomputed from wherever the caret is now
+  -- rather than extended: pressed twice the caret is already on that edge and the second
+  -- press paints nothing.
+  if cache and not kind and cache.direction ~= direction then
     -- The opposite direction neither shrinks nor flips a live selection.
     return keepSelection()
   end
@@ -3630,10 +3804,10 @@ local function startWordGesture(keyCode, observed, cache)
   shared.armGestureWatchdog(flight)
   deferAsync(function()
     local ok
-    if cache then
+    if cache and not kind then
       ok = pcall(runGestureExtend, original, cache, flight)
     else
-      ok = pcall(shared.startGesture, original, direction, flight)
+      ok = pcall(shared.startGesture, original, direction, flight, kind)
     end
     if not ok then
       -- The throw may have come from anywhere past the sentinel keystroke, so the
@@ -3776,18 +3950,22 @@ local function handleEvent(event, keyCode, isRepeat)
       end
     end
     -- Terminal spends Cmd+Left/Right on its own tab switch, so the switch moves to
-    -- Cmd+Shift+arrow and the bare chord becomes the line motion macOS types
-    -- everywhere else; Cmd+Up/Down carry the document motion the same way. Arrow keys
-    -- carry the fn flag, so the modifiers are read one by one rather than matched
-    -- exactly. Ahead of the invalidation below on purpose: that drops the very cached
-    -- verdict the Claude branch is gated on.
-    if flags.cmd and not flags.alt and not flags.ctrl and shared.arrowChords[keyCode] then
+    -- Option+Cmd+Shift+arrow and the bare chord becomes the caret motion macOS types
+    -- everywhere else: Left/Right place the caret on the row edge with a click,
+    -- Cmd+Up/Down carry the document motion as bytes, and Cmd+Shift paints a selection
+    -- over what the bare chord moves across. Arrow keys carry the fn flag, so the
+    -- modifiers are read one by one rather than matched exactly. Ahead of the
+    -- invalidation below on purpose: that drops the very cached verdict the Claude
+    -- branch is gated on.
+    if flags.cmd and not flags.ctrl and shared.arrowChords[keyCode]
+        and (flags.shift or not flags.alt) then
+      local repost = flags.alt and flags.shift
       local frontmost = observeFrontmost()
-      local frontVerdict = not flags.shift and foregroundVerdict(frontmost) or nil
+      local frontVerdict = not repost and foregroundVerdict(frontmost) or nil
       -- Two-tier exactly as the word-gesture chord below: swallowed wherever the tab may be
       -- Claude's, acted on only once the verdict says it is.
       if frontmost.bundleID == terminalBundleID
-          and (flags.shift or frontVerdict ~= "not-claude") then
+          and (repost or frontVerdict ~= "not-claude") then
         -- A flow already holding the draft times its own DEL against the caret and the
         -- front tab this chord moves out from under it. Dropped rather than queued: a
         -- queued copy is replayed with the marker, and the marker is what would let it
@@ -3795,20 +3973,24 @@ local function handleEvent(event, keyCode, isRepeat)
         if cutInFlight or selectAllInFlight or pendingHoldsItems() then
           return true
         end
-        if flags.shift or frontVerdict == "claude" then
+        if repost or frontVerdict == "claude" then
           if gestureInFlight then
             gestureDraftTouched = true
           end
           clearSelectionState()
-          if flags.shift then
+          if repost then
             local chord = shared.arrowChords[keyCode]
             M.postChord(chord.modifiers, chord.key)
             invalidateAndRefresh()
-          else
+          elseif flags.shift then
+            startWordGesture(keyCode, frontmost, nil, shared.arrowSpans[keyCode])
+          elseif shared.arrowPlans[keyCode] then
             -- The caret move deliberately keeps the cached verdict: dropped here, a
             -- second press inside the refresh window reads uncertain and swallows
             -- instead of moving the caret the user asked for.
             emit(shared.arrowPlans[keyCode]())
+          else
+            startWordGesture(keyCode, frontmost, nil, "caret")
           end
         end
         return true
@@ -3855,7 +4037,9 @@ local function handleEvent(event, keyCode, isRepeat)
       -- the sentinel stays in the draft as the cheaper damage.
       gestureDraftTouched = true
     end
-    if flags.alt and flags.shift and keyCode >= 123 and keyCode <= 126 then
+    -- Without cmd: Option+Cmd+Shift+arrow is the tab switch, and it is answered above.
+    if flags.alt and flags.shift and not flags.cmd
+        and keyCode >= 123 and keyCode <= 126 then
       -- Claude renders the Option+Shift+arrow escape sequence as a bare Esc and
       -- offers to clear the whole input, so the chord never reaches it: left and
       -- right run the word gesture instead, up and down are swallowed bare. A plain

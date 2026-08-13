@@ -1108,10 +1108,6 @@ local function integrationContext(types, opts)
         actions[#actions + 1] = "cut"
       elseif bytes == module.planBytes(module.sentinelPlan()) then
         actions[#actions + 1] = "sentinel"
-      elseif bytes == module.planBytes(module.lineStartPlan()) then
-        actions[#actions + 1] = "line-start"
-      elseif bytes == module.planBytes(module.lineEndPlan()) then
-        actions[#actions + 1] = "line-end"
       elseif bytes == module.planBytes(module.docStartPlan()) then
         actions[#actions + 1] = "doc-start"
       elseif bytes == module.planBytes(module.docEndPlan()) then
@@ -3421,10 +3417,8 @@ runGesture(integration, 123, gestureScreen("hello worl", "d" .. sentinel), gestu
 assertWordClick(integration, 1, { from = 7, to = 11 },
   "a word the sentinel had split across the wrap was not rejoined")
 
--- Terminal draws the block cursor past the draft as a no-break space, which the
--- trailing-whitespace strip does not touch, and it draws it on some scrapes only: two
--- reads of a draft nobody touched then differ by one trailing cell, in either
--- direction, and an exact comparison never converges.
+-- Terminal draws the block cursor past the draft as a no-break space on some scrapes
+-- only, so two reads of an untouched draft can differ by one trailing cell.
 local cursorCell = "\194\160"
 integration = integrationContext(nil, gestureOpts)
 runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello .. cursorCell))
@@ -3931,6 +3925,149 @@ for _, point in ipairs({ caretAt(1, -1, 1), caretAt(1, 1, 30) }) do
     "the sentinel fallback of an unplaceable caret did not select the word")
   assert(table.concat(integration.actions, ",") == "scrape,sentinel,scrape,cut,scrape",
     "the fallback did not type and remove exactly one sentinel")
+end
+
+-- Cmd+Shift+arrow paints what the bare chord moves over: a press on the caret's own
+-- cell dragged to the edge, no double click for the TUI to snap to a word.
+local function spanPress(keyCode)
+  return keyEvent(keyCode, { "cmd", "shift", "fn" }, false, "cmd-shift-arrow")
+end
+local function runSpan(point, keyCode, screen)
+  integration = integrationContext(nil, caretOpts(point))
+  assert(module.handleEvent(spanPress(keyCode)), "the Cmd+Shift span chord was not consumed")
+  integration.runDeferred()
+  integration.deliverScrape(screen)
+  return integration
+end
+local function assertSpan(context, rows, press, drag, message)
+  local down, dragged
+  for _, event in ipairs(context.mouseEvents()) do
+    if event.kind == "down" then down = event end
+    if event.kind == "dragged" then dragged = event end
+  end
+  assert(down and dragged, message .. ": nothing was pressed and dragged")
+  local function assertAt(event, at, what)
+    local x, y = expectedPoint(rows, at[1], at[2], -0.5)
+    assert(math.abs(event.x - x) < 0.001 and math.abs(event.y - y) < 0.001,
+      message .. ": " .. what .. " missed its cell")
+    assert(event.clickState == 1, message .. ": " .. what .. " counted as a double click")
+  end
+  assertAt(down, press, "the press")
+  assertAt(dragged, drag, "the drag")
+  assert(table.concat(context.actions, ",") == "scrape",
+    message .. ": the span typed a sentinel or a keystroke of its own")
+end
+
+local oneRow = gestureScreen("hello world")
+assertSpan(runSpan(caretAt(1, 1, 7), 123, oneRow), 1, { 1, 6 }, { 1, 1 },
+  "Cmd+Shift+Left did not select from the caret back to the row start")
+assertSpan(runSpan(caretAt(1, 1, 7), 124, oneRow), 1, { 1, 7 }, { 1, 11 },
+  "Cmd+Shift+Right did not select from the caret to the row end")
+
+-- Where the caret actually sits in a draft being typed: one past the last cell, on a
+-- block cursor the measurement drops. Every chord below painted nothing until it did.
+assertSpan(runSpan(caretAt(1, 1, 12), 123, gestureScreen(hello .. cursorCell)), 1,
+  { 1, 11 }, { 1, 1 },
+  "Cmd+Shift+Left painted nothing with the caret at the draft end")
+assertSpan(runSpan(caretAt(1, 1, 7), 123, gestureScreen("hello " .. cursorCell)), 1,
+  { 1, 6 }, { 1, 1 },
+  "Cmd+Shift+Left dropped a real trailing space before the caret")
+
+-- A wrapped draft: the row motions stay on the caret's own row, the document ones cross.
+local twoRows = gestureScreen("hello brave", "new world")
+assertSpan(runSpan(caretAt(2, 2, 2), 123, twoRows), 2, { 2, 1 }, { 2, 1 },
+  "Cmd+Shift+Left reached past the wrapped row it started on")
+assertSpan(runSpan(caretAt(2, 2, 2), 124, twoRows), 2, { 2, 2 }, { 2, 9 },
+  "Cmd+Shift+Right did not stop at the end of the wrapped row")
+assertSpan(runSpan(caretAt(2, 2, 2), 126, twoRows), 2, { 2, 1 }, { 1, 1 },
+  "Cmd+Shift+Up did not select back to the first draft cell")
+assertSpan(runSpan(caretAt(2, 1, 6), 125, twoRows), 2, { 1, 6 }, { 2, 9 },
+  "Cmd+Shift+Down did not select on to the last draft cell")
+
+-- Bare Cmd+Left/Right place the caret with one click on the row edge, no drag and no
+-- second press: the TUI's own Home/End move by buffer position, which on a wrapped row
+-- renders a row away from where macOS puts the caret.
+local function runCaretMove(point, keyCode, screen)
+  integration = integrationContext(nil, caretOpts(point))
+  assert(module.handleEvent(keyEvent(keyCode, { "cmd", "fn" }, false, "cmd-arrow")),
+    "the bare Cmd+arrow was not consumed")
+  integration.runDeferred()
+  integration.deliverScrape(screen)
+  return integration
+end
+local function assertCaretMove(context, rows, at, message)
+  local events = context.mouseEvents()
+  assert(#events == 2 and events[1].kind == "down" and events[2].kind == "up",
+    message .. ": the caret move did not click exactly once")
+  local x, y = expectedPoint(rows, at[1], at[2], -0.5)
+  assert(math.abs(events[1].x - x) < 0.001 and math.abs(events[1].y - y) < 0.001,
+    message .. ": the click missed its cell")
+  assert(events[1].clickState == 1, message .. ": the click counted as a double click")
+  assert(table.concat(context.actions, ",") == "scrape",
+    message .. ": the caret move typed a keystroke of its own")
+end
+
+assertCaretMove(runCaretMove(caretAt(1, 1, 7), 123, oneRow), 1, { 1, 1 },
+  "Cmd+Left did not click the first cell of the row")
+assertCaretMove(runCaretMove(caretAt(1, 1, 7), 124, oneRow), 1, { 1, 12 },
+  "Cmd+Right did not click past the last cell of the row")
+assertCaretMove(runCaretMove(caretAt(1, 1, 12), 123, gestureScreen(hello .. cursorCell)), 1,
+  { 1, 1 }, "Cmd+Left missed the row start with the caret at the draft end")
+assertCaretMove(runCaretMove(caretAt(1, 1, 7), 124, gestureScreen("hello " .. cursorCell)), 1,
+  { 1, 7 }, "Cmd+Right did not click past a real trailing space")
+
+-- A wrapped draft: neither direction may leave the caret's own row.
+assertCaretMove(runCaretMove(caretAt(2, 2, 2), 123, twoRows), 2, { 2, 1 },
+  "Cmd+Left crossed the wrap to the row above")
+assertCaretMove(runCaretMove(caretAt(2, 2, 2), 124, twoRows), 2, { 2, 10 },
+  "Cmd+Right did not stop at the end of the wrapped row")
+assertCaretMove(runCaretMove(caretAt(2, 1, 6), 124, twoRows), 2, { 1, 12 },
+  "Cmd+Right on a wrapped row reached past the row it started on")
+
+for _, keyCode in ipairs({ 123, 124 }) do
+  local emptySpan = runSpan(caretAt(2, 2, 1), keyCode,
+    gestureScreen("hello", cursorCell))
+  assert(#emptySpan.mouseEvents() == 0,
+    "a row span from an empty final row clicked another row")
+  assert(table.concat(emptySpan.actions, ",") == "scrape",
+    "a row span from an empty final row was not consumed cleanly")
+
+  local emptyMove = runCaretMove(caretAt(2, 2, 1), keyCode,
+    gestureScreen("hello", cursorCell))
+  assert(#emptyMove.mouseEvents() == 0,
+    "a caret move from an empty final row clicked another row")
+  assert(table.concat(emptyMove.actions, ",") == "scrape",
+    "a caret move from an empty final row was not consumed cleanly")
+end
+
+-- Pressed again on the edge it already reached, the chord clicks the same cell: a
+-- breaker press first, or the TUI reads the pair as the double click that selects a word.
+local repeatContext = integrationContext(nil, caretOpts(caretAt(1, 1, 1)))
+for _ = 1, 2 do
+  assert(module.handleEvent(keyEvent(123, { "cmd", "fn" }, false, "cmd-arrow")),
+    "the repeated Cmd+Left was not consumed")
+  repeatContext.runDeferred()
+  repeatContext.deliverScrape(oneRow)
+end
+local repeated = repeatContext.mouseEvents()
+local targetX = expectedPoint(1, 1, 1, -0.5)
+assert(#repeated == 6, "a repeated caret move let two presses land on one cell")
+assert(math.abs(repeated[3].x - targetX) >= 0.001, "the breaker pressed the target cell")
+assert(math.abs(repeated[5].x - targetX) < 0.001,
+  "the press after the breaker missed the row start")
+
+-- A row filled to the last column has no free cell past it; the click clamps inside the
+-- box rather than falling off it, and the caret lands on that buffer position.
+local fullRow = string.rep("x", screenColumns - promptCells)
+assertCaretMove(runCaretMove(caretAt(1, 1, 2), 124, gestureScreen(fullRow)), 1,
+  { 1, screenColumns - promptCells }, "Cmd+Right on a hard-full row clicked outside the box")
+
+-- The caret already sits on the edge it is asked to reach: a span of no cells would
+-- paint the press's own cell instead of nothing.
+for _, keyCode in ipairs({ 123, 126 }) do
+  local edge = runSpan(caretAt(1, 1, 1), keyCode, oneRow)
+  assert(#edge.mouseEvents() == 0, "a zero-length span clicked")
+  assert(table.concat(edge.actions, ",") == "scrape", "a zero-length span acted")
 end
 
 integration = integrationContext(textTypes, caretOpts(caretAt(1, 1, 30)))
@@ -4466,9 +4603,10 @@ end
 integration.runDeferred()
 assert(#integration.actions == 0, "a non-Claude Option+Shift arrow started a gesture")
 
--- Terminal hardcodes Cmd+arrow to its own tab switch: the switch moves to
--- Cmd+Shift+arrow and the bare chord becomes the line motion macOS types everywhere
--- else. Real arrow keys arrive with the fn flag set, so every press below carries it.
+-- Terminal hardcodes Cmd+arrow to its own tab switch: what it spent them on moves to
+-- Option+Cmd+Shift+arrow, the bare chord becomes the caret motion macOS types
+-- everywhere else, and Cmd+Shift+arrow the selection it paints. Real arrow keys arrive
+-- with the fn flag set, so every press below carries it.
 -- Scoped: this chunk sits at the same 200-local ceiling the module does.
 do
 local function commandArrow(keyCode, modifiers, repeatDown)
@@ -4476,42 +4614,58 @@ local function commandArrow(keyCode, modifiers, repeatDown)
     [125] = "cmd-down", [126] = "cmd-up" }
   return keyEvent(keyCode, modifiers, repeatDown, labels[keyCode])
 end
+local reposts = { [123] = "chord:ctrl+shift+tab", [124] = "chord:ctrl+tab",
+  [125] = "chord:cmd+down", [126] = "chord:cmd+up" }
 
-integration = integrationContext(nil, { verdict = "not-claude" })
-assert(module.handleEvent(commandArrow(124, { "cmd", "shift", "fn" })),
-  "Cmd+Shift+Right was not swallowed in Terminal")
-assert(table.concat(integration.actions, ",") == "chord:ctrl+tab",
-  "Cmd+Shift+Right did not post Terminal's next-tab equivalent")
+for keyCode, chord in pairs(reposts) do
+  integration = integrationContext(nil, { verdict = "not-claude" })
+  assert(module.handleEvent(commandArrow(keyCode, { "cmd", "shift", "alt", "fn" })),
+    "an Option+Cmd+Shift arrow was not swallowed in Terminal")
+  assert(table.concat(integration.actions, ",") == chord,
+    "an Option+Cmd+Shift arrow did not repost what Terminal spends the chord on")
+end
 
-integration = integrationContext(nil, { verdict = "not-claude" })
-assert(module.handleEvent(commandArrow(123, { "cmd", "shift", "fn" })),
-  "Cmd+Shift+Left was not swallowed in Terminal")
+-- The word gesture is the chord without cmd, and it must not answer for the switch.
+integration = integrationContext(nil, { verdict = "claude" })
+assert(module.handleEvent(commandArrow(123, { "cmd", "shift", "alt", "fn" })),
+  "Option+Cmd+Shift+Left was not swallowed")
 assert(table.concat(integration.actions, ",") == "chord:ctrl+shift+tab",
-  "Cmd+Shift+Left did not post Terminal's previous-tab equivalent")
+  "Option+Cmd+Shift+Left ran the word gesture instead of the tab switch")
+integration.runDeferred()
+assert(#integration.mouseEvents() == 0, "the moved tab switch clicked a word selection")
 
+-- The row motions place the caret by click; where that click lands is measured against
+-- the cell grid beside the selection chords. Here: one gesture per press, no bytes.
 integration = integrationContext(nil, { verdict = "claude" })
 assert(module.handleEvent(commandArrow(124, { "cmd", "fn" })),
   "Cmd+Right was not swallowed in a Claude tab")
 assert(module.handleEvent(commandArrow(124, { "cmd", "fn" }, true)),
   "a held Cmd+Right leaked a native tab switch")
-assert(table.concat(integration.actions, ",") == "line-end",
-  "Cmd+Right did not move the caret to the line end exactly once")
+integration.runDeferred()
+assert(table.concat(integration.actions, ",") == "sentinel",
+  "Cmd+Right did not start one caret placement")
 
 integration = integrationContext(nil, { verdict = "claude" })
 assert(module.handleEvent(commandArrow(123, { "cmd", "fn" })),
   "Cmd+Left was not swallowed in a Claude tab")
-assert(table.concat(integration.actions, ",") == "line-start",
-  "Cmd+Left did not move the caret to the line start")
+integration.runDeferred()
+assert(table.concat(integration.actions, ",") == "sentinel",
+  "Cmd+Left did not start a caret placement")
 
--- An unresolved verdict swallows bare: the line-motion bytes would land in whatever
--- else is reading the tty, and the context refreshes within 0.1s for the next press.
+-- An unresolved verdict swallows bare: the click would land in whatever else is in
+-- front, and the context refreshes within 0.1s for the next press.
 integration = integrationContext()
 assert(module.handleEvent(commandArrow(124, { "cmd", "fn" })),
   "Cmd+Right on an unresolved verdict was not swallowed")
+integration.runDeferred()
 assert(#integration.actions == 0,
-  "an unresolved Cmd+Right typed into a tab that may not be Claude's")
-assert(module.handleEvent(commandArrow(123, { "cmd", "shift", "fn" })),
-  "Cmd+Shift+Left waited for a verdict it does not need")
+  "an unresolved Cmd+Right reached into a tab that may not be Claude's")
+assert(module.handleEvent(commandArrow(126, { "cmd", "shift", "fn" })),
+  "the selection chord on an unresolved verdict was not swallowed")
+assert(#integration.actions == 0,
+  "an unresolved selection chord clicked into a tab that may not be Claude's")
+assert(module.handleEvent(commandArrow(123, { "cmd", "shift", "alt", "fn" })),
+  "Option+Cmd+Shift+Left waited for a verdict it does not need")
 assert(table.concat(integration.actions, ",") == "chord:ctrl+shift+tab",
   "the tab switch did not post on an unresolved verdict")
 
@@ -4534,29 +4688,18 @@ assert(not module.handleEvent(commandArrow(124, { "cmd", "fn" })),
   "Cmd+Right was swallowed outside Terminal")
 assert(#integration.actions == 0, "an arrow outside the remap posted a key")
 
--- A caret move ends the selection the TUI painted, exactly as typing does.
+-- A caret move ends the selection the TUI painted, exactly as typing does: the Cmd+X
+-- behind it finds nothing to cut and leaves the draft alone.
 integration = integrationContext(nil, { verdict = "claude" })
 simulateDrag()
 assert(module.handleEvent(commandArrow(123, { "cmd", "fn" })),
   "Cmd+Left was not swallowed over a selection")
 pressCut(integration)
-assert(table.concat(integration.actions, ",") == "line-start",
+assert(table.concat(integration.actions, ",") == "sentinel",
   "a caret move left the selection armed for the next cut")
 
--- Cmd+Up/Down carry the document motion; the shift chord hands Terminal back the bare
--- Cmd+arrow it answers with its own mark navigation, in any tab.
-integration = integrationContext(nil, { verdict = "not-claude" })
-assert(module.handleEvent(commandArrow(126, { "cmd", "shift", "fn" })),
-  "Cmd+Shift+Up was not swallowed in Terminal")
-assert(table.concat(integration.actions, ",") == "chord:cmd+up",
-  "Cmd+Shift+Up did not repost Terminal's own Cmd+Up")
-
-integration = integrationContext(nil, { verdict = "not-claude" })
-assert(module.handleEvent(commandArrow(125, { "cmd", "shift", "fn" })),
-  "Cmd+Shift+Down was not swallowed in Terminal")
-assert(table.concat(integration.actions, ",") == "chord:cmd+down",
-  "Cmd+Shift+Down did not repost Terminal's own Cmd+Down")
-
+-- Cmd+Up/Down carry the document motion; the mark scroll Terminal answers the bare
+-- Cmd+arrow with is reposted from the Option+Cmd+Shift chord, in any tab.
 integration = integrationContext(nil, { verdict = "claude" })
 assert(module.handleEvent(commandArrow(126, { "cmd", "fn" })),
   "Cmd+Up was not swallowed in a Claude tab")
@@ -4608,6 +4751,10 @@ assert(module.planBytes(module.docStartPlan()):sub(-1) == string.char(1)
 assert(module.planBytes(module.docEndPlan()):sub(-1) == string.char(5)
   and module.planBytes(module.docEndPlan()):find("\27%[B"),
   "the document-end plan does not walk down and then to the line end")
+
+-- Only the document motions travel as bytes; the row edges are reached by click.
+assert(not module.lineStartPlan and not module.lineEndPlan,
+  "a byte plan for the row motions outlived the click that replaced it")
 end
 
 -- Self-posted keystrokes come back through our own tap. Every flow below holds a
