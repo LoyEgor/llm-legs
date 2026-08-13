@@ -3125,6 +3125,17 @@ local breakerOffset = 8
 shared.breakerWindow = 0.7
 local lastPressCell
 
+-- Where a click lands the caret after a row's last cell. On a row that wraps, that
+-- buffer position is the next row's start and the TUI renders a click in the box's last
+-- columns there, so the cell's own column is as far as the caret goes and holds the row.
+function shared.clampedFreeColumn(cell, wrapped, columns)
+  local free = cell.column + cell.width
+  if wrapped and free >= columns - 1 then
+    return cell.column
+  end
+  return math.min(free, columns)
+end
+
 local function breakerColumn(pressColumn, row, columns, avoid)
   local candidates = {}
   for _, column in ipairs({ pressColumn - breakerOffset, pressColumn + breakerOffset }) do
@@ -3136,23 +3147,32 @@ local function breakerColumn(pressColumn, row, columns, avoid)
   if #candidates == 0 then
     return nil
   end
-  -- The pre-click follows this press immediately, so its distance outranks the older
-  -- press the fallback keeps away from.
-  if #candidates == 2 and avoid then
-    return math.abs(candidates[1] - avoid) >= math.abs(candidates[2] - avoid)
-      and candidates[1] or candidates[2]
-  end
-  if #candidates == 2 and lastPressCell and lastPressCell.row == row
-      and math.abs(candidates[1] - lastPressCell.column)
-        < math.abs(candidates[2] - lastPressCell.column) then
-    return candidates[2]
+  -- Clamped against a box edge a candidate can land beside the press before it and join
+  -- the very series it is posted to break: clearing every press comes first, and only
+  -- then the distance from the pre-click that follows it.
+  if #candidates == 2 then
+    local function pressGap(column)
+      local gap = math.abs(column - pressColumn)
+      if lastPressCell and lastPressCell.row == row then
+        gap = math.min(gap, math.abs(column - lastPressCell.column))
+      end
+      return gap
+    end
+    local one, other = candidates[1], candidates[2]
+    if (pressGap(one) >= 2) ~= (pressGap(other) >= 2) then
+      return pressGap(one) >= 2 and one or other
+    end
+    if avoid then
+      return math.abs(one - avoid) >= math.abs(other - avoid) and one or other
+    end
+    return pressGap(one) >= pressGap(other) and one or other
   end
   return candidates[1]
 end
 
 -- Where a selection is pressed and released. A number for dragSpan is a bare column of
 -- the press's own row: the cell past the row's edge that the draft has none of.
-local function gestureClickPoints(frame, totalLines, columns, cells, span, dragSpan, breaking,
+local function gestureClickPoints(frame, totalLines, columns, cells, span, dragSpan,
     boundary, headRow)
   local center = cellCenters(frame, totalLines, columns)
   if not center then
@@ -3180,8 +3200,7 @@ local function gestureClickPoints(frame, totalLines, columns, cells, span, dragS
   local crowded = lastPressCell and lastPressCell.row == points.row
     and math.abs(pressColumn - lastPressCell.column) < 2
     and at - (lastPressCell.at or 0) < shared.breakerWindow
-  local handled = breaking and shared.userPressAt
-    and at - shared.userPressAt < shared.breakerWindow
+  local handled = shared.userPressAt and at - shared.userPressAt < shared.breakerWindow
   -- The TUI's caret follows a plain click and nothing else, so the head boundary is
   -- clicked before the paint: the drag that comes after leaves the caret standing there.
   -- Beside the press the pair would be read as the double click that snaps to a word.
@@ -3196,10 +3215,7 @@ local function gestureClickPoints(frame, totalLines, columns, cells, span, dragS
   if boundary and not pre then
     local edge = cells[boundary - 1]
     if edge and edge.row == headRow then
-      -- The clamp bare Cmd+Right carries: a click from the last columns of the box renders
-      -- a row down, so the last cell's own column is as far as the caret holds this row.
-      local free = edge.column + edge.width
-      pre, preColumn = edge, free >= columns - 1 and edge.column or free
+      pre, preColumn = edge, shared.clampedFreeColumn(edge, cells[boundary] ~= nil, columns)
     end
   end
   local function nearPre(column)
@@ -3287,7 +3303,7 @@ end
 -- one cell past the head and shrunk back with the TUI's own Shift+arrow, or, where the row
 -- holds no such cell, released on the bare column beside the row's edge, which the drag
 -- clamps to that edge with nothing left to shrink.
-function shared.paintSpan(direction, press, head, cells, totalLines, columns, frame, breaking)
+function shared.paintSpan(direction, press, head, cells, totalLines, columns, frame)
   local dragSpan, shrink = { head, head }, nil
   if press == head then
     local beyond = head + direction
@@ -3302,7 +3318,7 @@ function shared.paintSpan(direction, press, head, cells, totalLines, columns, fr
     end
   end
   local points = gestureClickPoints(frame, totalLines, columns, cells, { press, press },
-    dragSpan, breaking, direction < 0 and head or head + 1, cells[head].row)
+    dragSpan, direction < 0 and head or head + 1, cells[head].row)
   if not points then
     return nil
   end
@@ -3323,10 +3339,8 @@ function shared.paintSpan(direction, press, head, cells, totalLines, columns, fr
   return points
 end
 
-local function armGesture(direction, anchor, head, signature, cells, totalLines, columns, frame,
-    breaking)
-  local points = shared.paintSpan(direction, anchor, head, cells, totalLines, columns, frame,
-    breaking)
+local function armGesture(direction, anchor, head, signature, cells, totalLines, columns, frame)
+  local points = shared.paintSpan(direction, anchor, head, cells, totalLines, columns, frame)
   if points then
     wordGestureState = {
       direction = direction,
@@ -3334,6 +3348,7 @@ local function armGesture(direction, anchor, head, signature, cells, totalLines,
       head = head,
       signature = signature,
       selectionPoint = points.drag,
+      painted = shared.painted,
     }
   end
   return points
@@ -3426,15 +3441,7 @@ function M.rowEdgeTarget(cells, caret, direction, columns, caretRow)
   if direction < 0 then
     return row, cells[index].column
   end
-  local free = cells[index].column + cells[index].width
-  -- A wrapped row filled to the box edge has no in-row cell for "after the last
-  -- character": that buffer position is the next row's start and the TUI renders a
-  -- click there one row down. The last cell is the furthest the caret can go and
-  -- still hold the row.
-  if cells[index + 1] and free >= columns - 1 then
-    return row, cells[index].column
-  end
-  return row, math.min(free, columns)
+  return row, shared.clampedFreeColumn(cells[index], cells[index + 1] ~= nil, columns)
 end
 
 -- Both paths hand in the same index, because the sentinel occupied exactly the cell the
@@ -3469,7 +3476,7 @@ function shared.armGestureAt(direction, flight, cells, neighbour, totalLines, co
     end
   end
   armGesture(direction, direction < 0 and last or first, direction < 0 and first or last,
-    cellsSignature(cells, totalLines, columns), cells, totalLines, columns, frame, true)
+    cellsSignature(cells, totalLines, columns), cells, totalLines, columns, frame)
 end
 
 function shared.armCaretAt(direction, flight, cells, caret, totalLines, columns, frame, caretRow)
@@ -3498,9 +3505,10 @@ function shared.clickAt(row, column, totalLines, columns, frame)
   local points = { press = point, column = column, row = row }
   -- Pressed twice the chord asks for the cell it just clicked, and the TUI reads two
   -- presses on one cell as the double click that selects the word under it.
-  if lastPressCell and lastPressCell.row == row
-      and math.abs(column - lastPressCell.column) < 2
-      and now() - (lastPressCell.at or 0) < shared.breakerWindow then
+  if (lastPressCell and lastPressCell.row == row
+        and math.abs(column - lastPressCell.column) < 2
+        and now() - (lastPressCell.at or 0) < shared.breakerWindow)
+      or (shared.userPressAt and now() - shared.userPressAt < shared.breakerWindow) then
     local breaker = breakerColumn(column, row, columns)
     points.breaker = breaker and center(breaker, row)
     if not points.breaker then
@@ -3884,6 +3892,7 @@ local function runGestureExtend(original, cache, flight)
       selectionLikely = true
       selectionPoint = cache.selectionPoint
       wordGestureState = cache
+      shared.painted = cache.painted
     end
     local head = extendedHead(cells, cache.head, cache.direction)
     if not head or head == cache.head then
@@ -3924,6 +3933,13 @@ local function startCollapse(keyCode, observed, painted)
   -- A boundary is a cell to click: |N puts the caret before cell N, and |#cells+1 is the
   -- free column past the last one, where a click lands the caret at the row's end.
   -- Nothing is typed on this path, so a screen it cannot read leaves the caret alone.
+  -- Nothing is clicked on the bails below, so the selection they leave behind is still
+  -- painted: the ends have to come back with it or the next arrow aims from a caret that
+  -- never moved.
+  local function keepPainted()
+    shared.painted = painted
+    selectionLikely = true
+  end
   local function place()
     scrapeScreen(function(screenText)
       if not shared.gestureFlies(flight) then
@@ -3935,22 +3951,29 @@ local function startCollapse(keyCode, observed, painted)
       end
       local _, _, totalLines, layout = M.parseInputBox(screenText)
       if not layout or type(totalLines) ~= "number" or totalLines <= 0 then
-        return
+        return keepPainted()
       end
       local cells = withoutTrailingSpace(draftCells(layout), boundary)
-      local cell = cells[boundary] or cells[#cells]
-      if not cell then
-        return
+      local head = cells[boundary - 1]
+      local cell = cells[boundary]
+      if cell and head and cell.row ~= head.row then
+        cell = nil
+      end
+      local edge = cell or head or cells[#cells]
+      if not edge then
+        return keepPainted()
       end
       local frame = targetWindowFrame(original.observed and original.observed.windowID,
         totalLines, layout.columns)
-      shared.clickAt(cell.row, cells[boundary] and cell.column
-        or math.min(cell.column + cell.width, layout.columns), totalLines, layout.columns, frame)
+      shared.clickAt(edge.row, cell and cell.column
+        or shared.clampedFreeColumn(edge, cells[boundary] ~= nil, layout.columns),
+        totalLines, layout.columns, frame)
     end, original.observed)
   end
   deferAsync(function()
     if not pcall(place) then
       shared.endGestureFlight(flight)
+      keepPainted()
     end
   end)
   return true
@@ -4210,7 +4233,15 @@ local function handleEvent(event, keyCode, isRepeat)
           if painted then
             painted.head = math.min(math.max(painted.head + (keyCode == 123 and -1 or 1), 1),
               painted.limit)
+            -- Shrunk onto its own anchor the TUI selection is gone, and a collapse aimed
+            -- at it would click for nothing; the next chord paints from scratch instead.
+            if painted.head == painted.anchor then
+              clearSelectionState()
+            end
           end
+          -- The word cache still names the span this key just moved, and an extension
+          -- off it would reach from an end the selection no longer has.
+          wordGestureState = nil
           return false
         end
         if frontVerdict == "claude" then
