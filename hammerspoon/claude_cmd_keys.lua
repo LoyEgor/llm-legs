@@ -676,7 +676,8 @@ local gestureDraftTouched = false
 -- One TUI selection, one table. Claude's TUI creates a selection only on a left drag and
 -- drops it on a plain click, so a cut fired with `likely` false deletes unselected draft
 -- text; `point` says which box it was painted in, `painted` holds the boundaries a bare
--- arrow collapses onto, and `word` is the cache the next word chord extends from. They
+-- arrow collapses onto and a Shift+arrow walks a cell at a time, and `word` is the cache
+-- the next word chord extends from. They
 -- describe the same selection and are armed, restored and cleared together.
 local selection = { likely = false }
 local dragSeen = false
@@ -707,6 +708,7 @@ local shutdownCallback
 -- same reason axGrid exists.
 local shared = {
   latencyDropped = 0,
+  pointerFlight = 0,
   -- Pixels the pointer may sit away from where our own last event left it and still
   -- count as ours rather than as a hand on the trackpad.
   pointerDriftLimit = 3,
@@ -777,6 +779,8 @@ end
 local function clearSelectionState()
   selection.likely = false
   selection.point, selection.painted, selection.word = nil, nil, nil
+  shared.reanchor = nil
+  shared.selectingObserved = nil
 end
 
 local ttyScript = [[
@@ -1108,6 +1112,7 @@ end
 
 local function invalidateContext()
   generation = generation + 1
+  shared.selectingObserved = nil
   cachedContext = nil
   resolvedTty = nil
   resolvedObserved = nil
@@ -2366,26 +2371,47 @@ local function performReplace(original)
   end)
 end
 
-local function postMouseEvent(kind, point, clickState)
-  if runtimeHooks and runtimeHooks.mouse then
-    runtimeHooks.mouse(kind, point, clickState)
+function shared.veilCall(action)
+  if runtimeHooks then
+    if runtimeHooks.veil then runtimeHooks.veil(action) end
     return
   end
-  local types = hs.eventtap.event.types
-  local eventType = kind == "down" and types.leftMouseDown
-    or kind == "up" and types.leftMouseUp
-    or types.leftMouseDragged
-  local mouseEvent = hs.eventtap.event.newMouseEvent(eventType, point)
-  if clickState then
-    mouseEvent:setProperty(hs.eventtap.event.properties.mouseEventClickState, clickState)
+  if shared.veil == nil then
+    local directory = (debug.getinfo(1, "S").source or ""):match("^@(.*/)") or ""
+    local ok, loaded = pcall(dofile, directory .. "claude_cursor_veil.lua")
+    shared.veil = ok and loaded or false
   end
-  -- Marked like our replayed keystrokes: the opening click of a double-click looks
-  -- like a plain click to the tap, which would clear the selection state the very
-  -- same synthesis is about to arm.
-  if replayProperty then
-    mouseEvent:setProperty(replayProperty, replayMarker)
+  if shared.veil then
+    pcall(shared.veil[action])
   end
-  mouseEvent:post()
+end
+
+local function postMouseEvent(kind, point, clickState)
+  local ok, failure = pcall(function()
+    if runtimeHooks and runtimeHooks.mouse then
+      runtimeHooks.mouse(kind, point, clickState)
+      return
+    end
+    local types = hs.eventtap.event.types
+    local eventType = kind == "down" and types.leftMouseDown
+      or kind == "up" and types.leftMouseUp
+      or types.leftMouseDragged
+    local mouseEvent = hs.eventtap.event.newMouseEvent(eventType, point)
+    if clickState then
+      mouseEvent:setProperty(hs.eventtap.event.properties.mouseEventClickState, clickState)
+    end
+    -- Marked like our replayed keystrokes: the opening click of a double-click looks
+    -- like a plain click to the tap, which would clear the selection state the very
+    -- same synthesis is about to arm.
+    if replayProperty then
+      mouseEvent:setProperty(replayProperty, replayMarker)
+    end
+    mouseEvent:post()
+  end)
+  if not ok then
+    shared.endMouseFlight(true)
+    error(failure)
+  end
 end
 
 -- The whole drag has to stay inside roughly one frame: slower steps drew a
@@ -2410,18 +2436,40 @@ local pointerHome
 local pointerSettleTimer
 local pointerClearTimer
 
+function shared.finishVeil(action)
+  if shared.veilFlight then
+    shared.veilFlight = false
+    shared.veilCall(action)
+  end
+end
+
+function shared.endMouseFlight(forceVisible)
+  shared.mouseFlight = false
+  shared.finishVeil(forceVisible and "show" or "settle")
+end
+
 local function stopPointerTimer(timer)
   if timer and timer.stop then timer:stop() end
   return nil
 end
 
 local function clearPointerHome()
+  shared.pointerFlight = shared.pointerFlight + 1
   pointerSettleTimer = stopPointerTimer(pointerSettleTimer)
   pointerClearTimer = stopPointerTimer(pointerClearTimer)
   pointerHome = nil
+  shared.endMouseFlight(true)
 end
 
 local function takePointerHome()
+  shared.pointerFlight = shared.pointerFlight + 1
+  pointerSettleTimer = stopPointerTimer(pointerSettleTimer)
+  pointerClearTimer = stopPointerTimer(pointerClearTimer)
+  shared.mouseFlight = true
+  if not shared.veilFlight then
+    shared.veilFlight = true
+    shared.veilCall("hide")
+  end
   if runtimeHooks then
     if not runtimeHooks.pointer then
       return nil
@@ -2455,12 +2503,17 @@ end
 -- re-reads a pointer with a warp still in flight.
 local function schedulePointerReturn()
   local after = runtimeHooks and runtimeHooks.after or hs.timer.doAfter
+  local flight = shared.pointerFlight
   pointerClearTimer = stopPointerTimer(pointerClearTimer)
   pointerSettleTimer = stopPointerTimer(pointerSettleTimer)
   pointerSettleTimer = after(pointerSettleDelay, function()
+    if flight ~= shared.pointerFlight then
+      return
+    end
     pointerSettleTimer = nil
     local home = pointerHome
     if not home then
+      shared.endMouseFlight(true)
       return
     end
     local readPointer = runtimeHooks and runtimeHooks.pointer
@@ -2490,11 +2543,23 @@ local function schedulePointerReturn()
     else
       hs.mouse.absolutePosition(home)
     end
+    shared.endMouseFlight(false)
     pointerClearTimer = after(pointerHomeIdle, function()
+      if flight ~= shared.pointerFlight then
+        return
+      end
       pointerClearTimer = nil
       pointerHome = nil
     end)
   end)
+end
+
+function shared.releasePointer(restoreMouse)
+  if restoreMouse then
+    schedulePointerReturn()
+  else
+    shared.endMouseFlight(false)
+  end
 end
 
 local function cellCenters(frame, totalLines, columns)
@@ -2583,9 +2648,7 @@ local function dragBetween(startPoint, endPoint)
   pauseBetweenDragSteps()
   postMouseEvent("up", endPoint)
   shared.pointerPosted = endPoint
-  if restoreMouse then
-    schedulePointerReturn()
-  end
+  shared.releasePointer(restoreMouse)
   -- Our own events carry the replay marker the tap skips, so nothing else will arm
   -- the selection they just painted.
   armSelection({ point = endPoint })
@@ -3235,7 +3298,7 @@ end
 -- releases on a bare column of the press's own row: the cell past the row's edge that the
 -- draft has none of.
 local function gestureClickPoints(frame, totalLines, columns, cells, press, drag, dragColumn,
-    boundary, headRow)
+    boundary, headRow, guardPre)
   local center = cellCenters(frame, totalLines, columns)
   if not center then
     return nil
@@ -3281,7 +3344,7 @@ local function gestureClickPoints(frame, totalLines, columns, cells, press, drag
   local function nearPre(column)
     return pre and pre.row == points.row and math.abs(column - preColumn) <= 1
   end
-  if nearPre(pressColumn) then
+  if not guardPre and nearPre(pressColumn) then
     pre = nil
   end
   -- Their press only counts against the presses this paint posts — the pre-click and the
@@ -3290,7 +3353,27 @@ local function gestureClickPoints(frame, totalLines, columns, cells, press, drag
   -- the breaker's own click is a caret jump the user watches.
   local handled = userColumn and (math.abs(pressColumn - userColumn) < 2
     or (pre and pre.row == points.row and math.abs(preColumn - userColumn) < 2))
-  if crowded or handled then
+  if guardPre and pre and (crowded or handled or nearPre(pressColumn)) then
+    local firstRow, lastRow = points.row, points.row
+    for _, cell in ipairs(cells) do
+      firstRow = math.min(firstRow, cell.row)
+      lastRow = math.max(lastRow, cell.row)
+    end
+    local guardRow = firstRow > 1 and firstRow - 1
+      or lastRow < totalLines and lastRow + 1 or nil
+    local guardBeforeColumn = pressColumn <= columns / 2 and 1 or columns
+    local guardAfterColumn = guardBeforeColumn == 1 and columns or 1
+    if not guardRow or math.abs(guardBeforeColumn - guardAfterColumn) < 2
+        or math.abs(guardAfterColumn - pressColumn) < 2 then
+      return nil
+    end
+    -- Input-box border clicks are inert; split columns stop them forming their own series.
+    points.guardBefore = center(guardBeforeColumn, guardRow)
+    points.guardAfter = center(guardAfterColumn, guardRow)
+    if not points.guardBefore or not points.guardAfter then
+      return nil
+    end
+  elseif crowded or handled then
     local column = breakerColumn(pressColumn, points.row, columns,
       pre and pre.row == points.row and preColumn or nil, userColumn)
     points.breaker = column and center(column, points.row)
@@ -3315,6 +3398,12 @@ end
 -- where the last one did is promoted to a double click, and the selection would snap.
 function shared.clickSpan(points)
   local restoreMouse = takePointerHome()
+  if points.guardBefore then
+    postMouseEvent("down", points.guardBefore, 1)
+    pauseBetweenDragSteps()
+    postMouseEvent("up", points.guardBefore, 1)
+    pauseBetweenDragSteps()
+  end
   if points.breaker then
     postMouseEvent("down", points.breaker, 1)
     pauseBetweenDragSteps()
@@ -3328,15 +3417,19 @@ function shared.clickSpan(points)
     pauseBetweenDragSteps()
     lastPressCell = { column = points.preColumn, row = points.preRow, at = now() }
   end
+  if points.guardAfter then
+    postMouseEvent("down", points.guardAfter, 1)
+    pauseBetweenDragSteps()
+    postMouseEvent("up", points.guardAfter, 1)
+    pauseBetweenDragSteps()
+  end
   postMouseEvent("down", points.press, 1)
   pauseBetweenDragSteps()
   postMouseEvent("dragged", points.drag, 1)
   pauseBetweenDragSteps()
   postMouseEvent("up", points.drag, 1)
   shared.pointerPosted = points.drag
-  if restoreMouse then
-    schedulePointerReturn()
-  end
+  shared.releasePointer(restoreMouse)
   lastPressCell = { column = points.column, row = points.row, at = now() }
 end
 
@@ -3354,9 +3447,7 @@ function shared.clickCaret(points)
   pauseBetweenDragSteps()
   postMouseEvent("up", points.press, 1)
   shared.pointerPosted = points.press
-  if restoreMouse then
-    schedulePointerReturn()
-  end
+  shared.releasePointer(restoreMouse)
   lastPressCell = { column = points.column, row = points.row, at = now() }
 end
 
@@ -3365,9 +3456,10 @@ end
 -- boundary of the released one. Terminal reports the mouse by cell, so one cell cannot be
 -- dragged onto itself — that is a plain click and the caret moves instead. It is dragged
 -- one cell past the head and shrunk back with the TUI's own Shift+arrow, or, where the row
--- holds no such cell, released on the bare column beside the row's edge, which the drag
--- clamps to that edge with nothing left to shrink.
-function shared.paintSpan(direction, press, head, cells, totalLines, columns, frame)
+-- holds no such cell, released on the bare column beside the row's edge. The right edge
+-- clamps there; the left edge includes the prompt cell and removes it with a native shrink.
+function shared.paintSpan(direction, press, head, cells, totalLines, columns, frame, trackHead,
+    observed)
   local drag, dragColumn, shrink = head, nil, nil
   if press == head then
     local beyond = head + direction
@@ -3376,13 +3468,17 @@ function shared.paintSpan(direction, press, head, cells, totalLines, columns, fr
     else
       local cell = cells[head]
       dragColumn = direction < 0 and cell.column - 1 or cell.column + cell.width
+      if direction < 0 then
+        shrink = "right"
+      end
       if dragColumn < 1 or dragColumn > columns then
         return nil
       end
     end
   end
+  local boundary = press ~= head and (direction < 0 and head or head + 1) or nil
   local points = gestureClickPoints(frame, totalLines, columns, cells, press, drag, dragColumn,
-    direction < 0 and head or head + 1, cells[head].row)
+    boundary, cells[head].row, trackHead)
   if not points then
     return nil
   end
@@ -3393,12 +3489,24 @@ function shared.paintSpan(direction, press, head, cells, totalLines, columns, fr
   -- to one of them: the TUI's own caret never moved with the drag that painted this, so a
   -- collapse left to itself drops the caret wherever it last stood. The overshoot cancels
   -- out: shrunk back or clamped at the row's edge, the head lands on the cell's own side.
+  -- The signature is what lets a later press move this head by a cell: the ends are
+  -- indices into the list painted from, and only a draft that still reads the same way
+  -- can be clicked by them.
   armSelection({
     point = points.drag,
     painted = {
       anchor = direction < 0 and press + 1 or press,
       head = direction < 0 and head or head + 1,
       limit = #cells + 1,
+      signature = cellsSignature(cells, totalLines, columns),
+      cache = {
+        cells = cells,
+        totalLines = totalLines,
+        columns = columns,
+        frame = frame,
+        generation = generation,
+        observed = observed,
+      },
     },
   })
   if shrink then
@@ -3408,8 +3516,10 @@ function shared.paintSpan(direction, press, head, cells, totalLines, columns, fr
   return points
 end
 
-local function armGesture(direction, anchor, head, signature, cells, totalLines, columns, frame)
-  local points = shared.paintSpan(direction, anchor, head, cells, totalLines, columns, frame)
+local function armGesture(direction, anchor, head, signature, cells, totalLines, columns, frame,
+    observed)
+  local points = shared.paintSpan(direction, anchor, head, cells, totalLines, columns, frame,
+    nil, observed)
   if points then
     selection.word = {
       direction = direction,
@@ -3526,8 +3636,8 @@ end
 
 -- The word math itself, shared so the sentinel screen and the AX caret cannot drift apart
 -- by a cell: whichever path found the neighbour, the press lands the same way.
-function shared.armGestureAt(direction, flight, cells, neighbour, totalLines, columns, frame)
-  shared.endGestureFlight(flight)
+function shared.armGestureAt(direction, flight, cells, neighbour, totalLines, columns, frame,
+    observed)
   local first, last = wordSpan(cells, neighbour)
   -- A space of its own paints nothing anyone can see, and macOS takes it along with the
   -- word past it, so the span reaches over the space to that word. Punctuation is a cell
@@ -3543,11 +3653,11 @@ function shared.armGestureAt(direction, flight, cells, neighbour, totalLines, co
     end
   end
   armGesture(direction, direction < 0 and last or first, direction < 0 and first or last,
-    cellsSignature(cells, totalLines, columns), cells, totalLines, columns, frame)
+    cellsSignature(cells, totalLines, columns), cells, totalLines, columns, frame, observed)
+  shared.endGestureFlight(flight, true)
 end
 
 function shared.armCaretAt(direction, flight, cells, caret, totalLines, columns, frame, caretRow)
-  shared.endGestureFlight(flight)
   local row, column = M.rowEdgeTarget(cells, caret, direction, columns, caretRow)
   if row then
     -- Standing on the edge it reaches for, the chord has nothing to do; the click it
@@ -3557,10 +3667,12 @@ function shared.armCaretAt(direction, flight, cells, caret, totalLines, columns,
     local current = at and at.row == row and at.column
       or before and before.row == row and before.column + before.width or nil
     if current == column then
+      shared.endGestureFlight(flight, true)
       return
     end
   end
   shared.clickAt(row, column, totalLines, columns, frame)
+  shared.endGestureFlight(flight, true)
 end
 
 -- Answers whether it clicked: a caller tracking a selection has to know that the caret
@@ -3591,12 +3703,13 @@ function shared.clickAt(row, column, totalLines, columns, frame)
 end
 
 function shared.armSpanAt(direction, flight, cells, caret, totalLines, columns, frame, spanKind,
-    caretRow)
-  shared.endGestureFlight(flight)
+    caretRow, observed)
   local anchor, edge = M.spanEnds(cells, caret, direction, spanKind, caretRow)
   if anchor then
-    shared.paintSpan(direction, anchor, edge, cells, totalLines, columns, frame)
+    shared.paintSpan(direction, anchor, edge, cells, totalLines, columns, frame,
+      spanKind == "char", observed)
   end
+  shared.endGestureFlight(flight, true)
 end
 
 local function afterGestureDelay(delay, step, onError)
@@ -3615,11 +3728,12 @@ function shared.gestureFlies(flight)
   return gestureInFlight and (flight == nil or shared.gestureFlight == flight)
 end
 
-function shared.endGestureFlight(flight)
+function shared.endGestureFlight(flight, completed)
   if flight ~= nil and shared.gestureFlight ~= flight then
     return
   end
   gestureInFlight = false
+  shared.selectingObserved = nil
   -- The removal belongs to the flight that typed the sentinel: left behind, the next
   -- teardown would run it against a draft this one no longer owns.
   shared.sentinelCleanup = nil
@@ -3627,6 +3741,34 @@ function shared.endGestureFlight(flight)
     shared.gestureWatchdog:stop()
   end
   shared.gestureWatchdog = nil
+  if completed then
+    if not shared.mouseFlight then
+      shared.finishVeil("settle")
+    end
+  else
+    shared.endMouseFlight(true)
+  end
+end
+
+function shared.beginGestureFlight()
+  gestureInFlight = true
+  gestureDraftTouched = false
+  shared.gestureFlight = shared.gestureFlight + 1
+  if not shared.veilFlight then
+    shared.veilFlight = true
+    shared.veilCall("hide")
+  end
+  local flight = shared.gestureFlight
+  shared.armGestureWatchdog(flight)
+  return flight
+end
+
+function shared.completeGestureWork(flight, work)
+  local ok, completed = pcall(work)
+  shared.endGestureFlight(flight, ok and completed ~= false)
+  if not ok then
+    error(completed)
+  end
 end
 
 -- A scrape Terminal never answers back would leave the gesture in flight for good,
@@ -3698,7 +3840,7 @@ end
 -- `caret` carries what the cell list alone cannot answer: the row the caret is really
 -- on, and the floor its trailing spaces were stripped to.
 function shared.armForKind(kind, direction, flight, cells, target, totalLines, columns, frame,
-    caret)
+    caret, observed)
   -- The repaint this list was read from may have trimmed the trailing space the index
   -- was measured against: a row motion still reads one past the last cell, a word
   -- gesture needs a cell of its own to land on.
@@ -3711,9 +3853,9 @@ function shared.armForKind(kind, direction, flight, cells, target, totalLines, c
     shared.armCaretAt(direction, flight, cells, target, totalLines, columns, frame, caret.row)
   elseif kind then
     shared.armSpanAt(direction, flight, cells, target, totalLines, columns, frame, kind,
-      caret.row)
+      caret.row, observed)
   else
-    shared.armGestureAt(direction, flight, cells, target, totalLines, columns, frame)
+    shared.armGestureAt(direction, flight, cells, target, totalLines, columns, frame, observed)
   end
 end
 
@@ -3780,7 +3922,7 @@ local function runGestureStart(original, direction, flight, kind)
       -- The span is measured here, not on the sentinel screen: a sentinel that
       -- pushed a word over the wrap made it two words that are one again now.
       shared.armForKind(kind, direction, flight, cells, target, totalLines, layout.columns, frame,
-        caret)
+        caret, original.observed)
       return true
     end, stop)
   end
@@ -3814,11 +3956,12 @@ end
 
 -- This screen is already click-ready; only unresolved word gestures use the sentinel fallback.
 function shared.gestureByCaret(original, direction, flight, point, scrapedScreen, kind)
-  local function useScreen(screenText)
+  local function useScreen(screenText, backend, targetChecked)
     if not shared.gestureFlies(flight) then
       return
     end
-    if not currentTargetMatches(original, observeFrontmost()) then
+    if not targetChecked and backend ~= "ax"
+        and not currentTargetMatches(original, observeFrontmost()) then
       shared.endGestureFlight(flight)
       return
     end
@@ -3874,10 +4017,10 @@ function shared.gestureByCaret(original, direction, flight, point, scrapedScreen
       end
     end
     shared.armForKind(kind, direction, flight, remaining, target, totalLines, layout.columns,
-      frame, caret)
+      frame, caret, original.observed)
   end
   if scrapedScreen ~= nil then
-    useScreen(scrapedScreen)
+    useScreen(scrapedScreen, nil, true)
   else
     scrapeScreen(useScreen, original.observed)
   end
@@ -3888,7 +4031,6 @@ function shared.startGesture(original, direction, flight, kind)
     shared.endGestureFlight(flight)
     return
   end
-  gestureDraftTouched = false
   if not shared.caretGestures then
     if kind then
       shared.endGestureFlight(flight)
@@ -3935,6 +4077,11 @@ end
 -- Answers whether it clicked.
 function shared.clickBoundary(boundary, rightward, totalLines, layout, observed)
   local cells = withoutTrailingSpace(draftCells(layout), boundary)
+  local frame = targetWindowFrame(observed and observed.windowID, totalLines, layout.columns)
+  return shared.clickBoundaryAt(boundary, rightward, cells, totalLines, layout.columns, frame)
+end
+
+function shared.clickBoundaryAt(boundary, rightward, cells, totalLines, columns, frame)
   local head = cells[boundary - 1]
   local cell = cells[boundary]
   -- Reaching right the caret is owed the position after the selection's last cell: where
@@ -3948,10 +4095,9 @@ function shared.clickBoundary(boundary, rightward, totalLines, layout, observed)
   if not edge then
     return false
   end
-  local frame = targetWindowFrame(observed and observed.windowID, totalLines, layout.columns)
   return shared.clickAt(edge.row, cell and cell.column
-    or shared.clampedFreeColumn(edge, cells[boundary] ~= nil, layout.columns),
-    totalLines, layout.columns, frame)
+    or shared.clampedFreeColumn(edge, cells[boundary] ~= nil, columns),
+    totalLines, columns, frame)
 end
 
 local function runGestureExtend(original, resume, flight, pressed)
@@ -3959,65 +4105,200 @@ local function runGestureExtend(original, resume, flight, pressed)
     shared.endGestureFlight(flight)
     return
   end
-  scrapeScreen(function(screenText)
+  scrapeScreen(function(screenText, backend)
     if not shared.gestureFlies(flight) then
       return
     end
-    shared.endGestureFlight(flight)
-    if not currentTargetMatches(original, observeFrontmost()) then
-      return
-    end
-    -- The user clicked or typed while this scrape was out: the click choreography
-    -- below would paint over what they just did. Nothing is handed back either — their
-    -- action is what cleared the selection the resume describes.
-    if gestureDraftTouched then
-      return
-    end
-    local _, _, totalLines, layout = M.parseInputBox(screenText)
-    local cells = withoutTrailingSpace(draftCells(layout))
-    local cache = resume.word
-    -- Streaming output repaints the box under the selection, and the cached cell
-    -- indices would then point at another draft's characters.
-    if #cells == 0
-        or cellsSignature(cells, totalLines, layout.columns) ~= cache.signature then
-      return
-    end
-    local head
-    if pressed ~= cache.direction then
-      head = shared.shrunkHead(cells, cache.head, cache.direction)
-      -- No word left between the head and the anchor, or only words past it: macOS would
-      -- carry the selection over the anchor and paint the other side of it, this stops
-      -- there instead. The caret goes back where the gesture anchored it, and the chord
-      -- after starts from there rather than from a span nobody asked for.
-      if not head or (head - cache.anchor) * cache.direction < 0 then
-        if not shared.clickBoundary(cache.direction < 0 and cache.anchor + 1 or cache.anchor,
-            cache.direction < 0, totalLines, layout, original.observed) then
-          armSelection(resume)
+    shared.completeGestureWork(flight, function()
+      if (backend ~= "ax" and not currentTargetMatches(original, observeFrontmost()))
+          or gestureDraftTouched then
+        return false
+      end
+      local _, _, totalLines, layout = M.parseInputBox(screenText)
+      local cells = withoutTrailingSpace(draftCells(layout))
+      local cache = resume.word
+      -- Streaming output can repaint a different draft under these cached indices.
+      if #cells == 0
+          or cellsSignature(cells, totalLines, layout.columns) ~= cache.signature then
+        return false
+      end
+      local head
+      if pressed ~= cache.direction then
+        head = shared.shrunkHead(cells, cache.head, cache.direction)
+        -- Native selection cannot flip through its anchor, so clamp there and let the
+        -- next press start the selection on the other side.
+        if not head or (head - cache.anchor) * cache.direction < 0 then
+          if not shared.clickBoundary(cache.direction < 0 and cache.anchor + 1 or cache.anchor,
+              cache.direction < 0, totalLines, layout, original.observed) then
+            armSelection(resume)
+          end
+          return true
         end
-        return
+      else
+        head = extendedHead(cells, cache.head, cache.direction)
+        if not head or head == cache.head then
+          armSelection(resume)
+          return true
+        end
       end
-    else
-      head = extendedHead(cells, cache.head, cache.direction)
-      if not head or head == cache.head then
-        return armSelection(resume)
+      -- The TUI clamps a drag to its press row; repainting across a wrap would replace
+      -- the existing selection with only the part on the anchor row.
+      if cells[head].row ~= cells[cache.anchor].row then
+        armSelection(resume)
+        return true
       end
-    end
-    -- Measured live: the TUI paints a selection inside one row only, clamping a drag
-    -- that ends on another row to the row it was pressed on. An extension over the
-    -- wrap would trade everything selected so far for the single word it presses, so
-    -- the selection stops at the row it started on.
-    if cells[head].row ~= cells[cache.anchor].row then
-      return armSelection(resume)
-    end
-    local frame = targetWindowFrame(original.observed and original.observed.windowID,
-      totalLines, layout.columns)
-    -- Repainted whole from the anchor it keeps, not extended: the press repeats the
-    -- anchor's own cell, which the breaker keeps out of the TUI's click series.
-    if not armGesture(cache.direction, cache.anchor, head, cache.signature, cells, totalLines,
-        layout.columns, frame) then
-      armSelection(resume)
-    end
+      local frame = targetWindowFrame(original.observed and original.observed.windowID,
+        totalLines, layout.columns)
+      if not armGesture(cache.direction, cache.anchor, head, cache.signature, cells, totalLines,
+          layout.columns, frame, original.observed) then
+        armSelection(resume)
+      end
+      return true
+    end)
   end)
+end
+
+function shared.sameFrame(left, right)
+  return type(left) == "table" and type(right) == "table"
+    and left.x == right.x and left.y == right.y and left.w == right.w and left.h == right.h
+end
+
+function shared.paintedCacheMatches(painted, observed, verifyFrame, expectedRow)
+  local cache = painted and painted.cache
+  if not cache or cache.generation ~= generation or not sameObserved(cache.observed, observed) then
+    return false
+  end
+  if not verifyFrame then
+    return true
+  end
+  local frame = targetWindowFrame(observed and observed.windowID, cache.totalLines, cache.columns)
+  if not shared.sameFrame(cache.frame, frame) then
+    return false
+  end
+  if not expectedRow then
+    local boundary = painted.anchor and painted.head
+      and math.min(painted.anchor, painted.head) or nil
+    local cell = boundary and (cache.cells[boundary] or cache.cells[boundary - 1]) or nil
+    expectedRow = cell and cell.row or nil
+  end
+  local point = expectedRow and shared.caretPoint(observed) or nil
+  local row = point and M.gridCell(frame, cache.totalLines, cache.columns, point) or nil
+  return row == expectedRow
+end
+
+function shared.charStep(painted, step)
+  local cache = painted and painted.cache
+  local head = painted and painted.head
+  local nextHead = head and head + step
+  if not cache or not nextHead or nextHead < 1 or nextHead > painted.limit then
+    return nil
+  end
+  local current = head < painted.anchor and cache.cells[head] or cache.cells[head - 1]
+  local crossed = step < 0 and cache.cells[head - 1] or cache.cells[head]
+  if not current or not crossed then
+    return nil
+  end
+  return nextHead
+end
+
+function shared.continueCharSelection(keyCode, observed)
+  local painted = selection.painted
+  if not shared.paintedCacheMatches(painted, observed) then
+    return nil
+  end
+  local nextHead = shared.charStep(painted, keyCode == 123 and -1 or 1)
+  if not nextHead then
+    return true
+  end
+  M.postChord({ "shift" }, keyCode == 123 and "left" or "right")
+  if nextHead == painted.anchor then
+    local current = painted.head < painted.anchor and painted.cache.cells[painted.head]
+      or painted.cache.cells[painted.head - 1]
+    local reanchor = { cache = painted.cache, caret = painted.anchor, row = current.row,
+      generation = generation }
+    clearSelectionState()
+    shared.reanchor = reanchor
+  else
+    painted.head = nextHead
+    selection.word = nil
+  end
+  return true
+end
+
+function shared.runCharResync(original, resume, flight, keyCode)
+  if not currentTargetMatches(original, observeFrontmost()) then
+    armSelection(resume)
+    shared.endGestureFlight(flight)
+    return
+  end
+  scrapeScreen(function(screenText, backend)
+    if not shared.gestureFlies(flight) then
+      return
+    end
+    shared.completeGestureWork(flight, function()
+      if gestureDraftTouched then
+        return false
+      end
+      if backend ~= "ax" and not currentTargetMatches(original, observeFrontmost()) then
+        armSelection(resume)
+        return false
+      end
+      local _, _, totalLines, layout = M.parseInputBox(screenText)
+      local painted, old = resume.painted, resume.painted.cache
+      if not layout or not old or type(totalLines) ~= "number" or totalLines <= 0 then
+        armSelection(resume)
+        return false
+      end
+      local cells = withoutTrailingSpace(draftCells(layout),
+        math.max(painted.anchor, painted.head))
+      if not sameCellText(cells, old.cells) then
+        armSelection(resume)
+        return false
+      end
+      painted.cache = {
+        cells = cells,
+        totalLines = totalLines,
+        columns = layout.columns,
+        frame = targetWindowFrame(original.observed and original.observed.windowID,
+          totalLines, layout.columns),
+        generation = generation,
+        observed = original.observed,
+      }
+      local step = keyCode == 123 and -1 or 1
+      local nextHead = shared.charStep(painted, step)
+      if not nextHead then
+        armSelection(resume)
+        return true
+      end
+      local signature = cellsSignature(cells, totalLines, layout.columns)
+      if signature == painted.signature then
+        armSelection(resume)
+        return shared.continueCharSelection(keyCode, original.observed)
+      end
+      local direction = nextHead > painted.anchor and 1 or -1
+      if nextHead == painted.anchor then
+        direction = painted.head > painted.anchor and 1 or -1
+      end
+      local paintHead = nextHead == painted.anchor and painted.head or nextHead
+      local anchor = direction < 0 and painted.anchor - 1 or painted.anchor
+      local target = direction < 0 and paintHead or paintHead - 1
+      if not cells[anchor] or not cells[target] or cells[anchor].row ~= cells[target].row
+          or not shared.paintSpan(direction, anchor, target, cells, totalLines, layout.columns,
+            painted.cache.frame, true, original.observed) then
+        armSelection(resume)
+        return false
+      end
+      local refreshed = selection.painted
+      if nextHead == painted.anchor then
+        M.postChord({ "shift" }, keyCode == 123 and "left" or "right")
+        local reanchor = { cache = refreshed.cache, caret = refreshed.anchor,
+          row = cells[target].row, generation = generation }
+        clearSelectionState()
+        shared.reanchor = reanchor
+      end
+      return true
+    end)
+  end, original.observed)
 end
 
 local function startCollapse(keyCode, observed, resume)
@@ -4026,37 +4307,101 @@ local function startCollapse(keyCode, observed, resume)
     return false
   end
   local original = { observed = observed }
-  gestureInFlight = true
-  shared.gestureFlight = shared.gestureFlight + 1
-  local flight = shared.gestureFlight
-  shared.armGestureWatchdog(flight)
+  local flight = shared.beginGestureFlight()
   local painted = resume.painted
   local boundary = keyCode == 123 and math.min(painted.anchor, painted.head)
     or math.max(painted.anchor, painted.head)
+  local cache = shared.paintedCacheMatches(painted, observed, true) and painted.cache or nil
   -- Nothing is typed on this path, so a screen it cannot read leaves the caret alone.
   local function place()
+    if cache then
+      shared.completeGestureWork(flight, function()
+        if not currentTargetMatches(original, observeFrontmost()) or gestureDraftTouched then
+          return false
+        end
+        if not shared.clickBoundaryAt(boundary, keyCode == 124, cache.cells,
+            cache.totalLines, cache.columns, cache.frame) then
+          armSelection(resume)
+          return false
+        end
+        return true
+      end)
+      return
+    end
     scrapeScreen(function(screenText)
       if not shared.gestureFlies(flight) then
         return
       end
-      shared.endGestureFlight(flight)
-      if not currentTargetMatches(original, observeFrontmost()) or gestureDraftTouched then
-        return
-      end
-      local _, _, totalLines, layout = M.parseInputBox(screenText)
-      if not layout or type(totalLines) ~= "number" or totalLines <= 0 then
-        return armSelection(resume)
-      end
-      if not shared.clickBoundary(boundary, keyCode == 124, totalLines, layout,
-          original.observed) then
-        armSelection(resume)
-      end
+      shared.completeGestureWork(flight, function()
+        if not currentTargetMatches(original, observeFrontmost()) or gestureDraftTouched then
+          return false
+        end
+        local _, _, totalLines, layout = M.parseInputBox(screenText)
+        if not layout or type(totalLines) ~= "number" or totalLines <= 0 then
+          armSelection(resume)
+          return false
+        end
+        if not shared.clickBoundary(boundary, keyCode == 124, totalLines, layout,
+            original.observed) then
+          armSelection(resume)
+        end
+        return true
+      end)
     end, original.observed)
   end
   deferAsync(function()
     if not pcall(place) then
       shared.endGestureFlight(flight)
       armSelection(resume)
+    end
+  end)
+  return true
+end
+
+function shared.startCharResync(observed, resume, keyCode)
+  if gestureInFlight or cutInFlight or replaceInFlight or selectAllInFlight
+      or pendingHoldsItems() then
+    return false
+  end
+  local original = { observed = observed }
+  local flight = shared.beginGestureFlight()
+  deferAsync(function()
+    if not pcall(shared.runCharResync, original, resume, flight, keyCode) then
+      shared.endGestureFlight(flight)
+      armSelection(resume)
+    end
+  end)
+  return flight
+end
+
+function shared.startCachedChar(keyCode, observed, reanchor)
+  local cache = reanchor and reanchor.cache
+  if not cache or reanchor.generation ~= generation
+      or not shared.paintedCacheMatches({ cache = cache }, observed, true, reanchor.row)
+      or gestureInFlight or cutInFlight or replaceInFlight or selectAllInFlight
+      or pendingHoldsItems() then
+    return false
+  end
+  local direction = keyCode == 123 and -1 or 1
+  local crossed = direction < 0 and cache.cells[reanchor.caret - 1]
+    or cache.cells[reanchor.caret]
+  if not crossed or crossed.row ~= reanchor.row then
+    return true
+  end
+  local flight = shared.beginGestureFlight()
+  deferAsync(function()
+    if not shared.gestureFlies(flight) then
+      return
+    end
+    if not currentTargetMatches({ observed = observed }, observeFrontmost())
+        or gestureDraftTouched then
+      shared.endGestureFlight(flight)
+      return
+    end
+    local ok = pcall(shared.armSpanAt, direction, flight, cache.cells, reanchor.caret,
+      cache.totalLines, cache.columns, cache.frame, "char", crossed.row, observed)
+    if not ok then
+      shared.endGestureFlight(flight)
     end
   end)
   return true
@@ -4072,10 +4417,7 @@ local function startWordGesture(keyCode, observed, resume, kind)
   end
   local direction = (keyCode == 123 or keyCode == 126) and -1 or 1
   local original = { observed = observed }
-  gestureInFlight = true
-  shared.gestureFlight = shared.gestureFlight + 1
-  local flight = shared.gestureFlight
-  shared.armGestureWatchdog(flight)
+  local flight = shared.beginGestureFlight()
   deferAsync(function()
     local ok
     if cache and not kind then
@@ -4098,6 +4440,7 @@ local function handleEvent(event, keyCode, isRepeat)
   local types = hs.eventtap.event.types
   local eventType = event:getType()
   if eventType ~= types.keyDown then
+    shared.selectingObserved = nil
     -- Ours carry the replay marker and never reach here, so this is the user's hand:
     -- a click moves the caret and a drag paints a selection, and the DEL still owed
     -- for the sentinel would take that instead of the character we typed.
@@ -4270,44 +4613,49 @@ local function handleEvent(event, keyCode, isRepeat)
         return true
       end
     end
-    -- The TUI extends a selection it already paints on plain Shift+Left/Right, but from
-    -- a bare caret it starts nothing at all: that first character is painted here, as the
-    -- one-cell span every other chord in this branch paints. Read one flag at a time for
-    -- the fn arrows carry, and ahead of the invalidation below for the cached verdict.
+    -- Plain Shift+Left/Right. A bare caret still needs the mouse paint, after which the
+    -- TUI can move the painted head natively while this module keeps the physical event
+    -- inside the selecting repeat gate.
     if flags.shift and not flags.cmd and not flags.alt and not flags.ctrl
         and (keyCode == 123 or keyCode == 124) then
-      local frontmost = observeFrontmost()
+      local frontmost = shared.selectingObserved or observeFrontmost()
       local frontVerdict = foregroundVerdict(frontmost)
       if frontmost.bundleID == terminalBundleID and frontVerdict ~= "not-claude" then
         if cutInFlight or selectAllInFlight or pendingHoldsItems() then
           return true
         end
-        if selection.likely then
-          -- The TUI grows its own selection from here, so the key passes natively and
-          -- alone escapes the disarm below: the flag has to outlive it or the Cmd+X
-          -- that follows takes the bare-DEL path over a live selection. The head moves
-          -- with it, or the collapse below would aim at the end this press just left.
+        -- A selection the user painted by hand has no ends of ours to move: the key stays
+        -- the TUI's, and alone escapes the disarm below, or the Cmd+X behind it takes the
+        -- bare-DEL path over a live selection.
+        if selection.likely and not selection.painted then
           if gestureInFlight then
             gestureDraftTouched = true
           end
-          local painted = selection.painted
-          if painted then
-            painted.head = math.min(math.max(painted.head + (keyCode == 123 and -1 or 1), 1),
-              painted.limit)
-            -- Shrunk onto its own anchor the TUI selection is gone, and a collapse aimed
-            -- at it would click for nothing; the next chord paints from scratch instead.
-            if painted.head == painted.anchor then
-              clearSelectionState()
-            end
-          end
-          -- The word cache still names the span this key just moved, and an extension
-          -- off it would reach from an end the selection no longer has.
           selection.word = nil
           return false
         end
-        if frontVerdict == "claude" then
+        if gestureInFlight then
+          return true
+        end
+        if selection.painted then
+          shared.selectingObserved = frontmost
+          local continued = shared.continueCharSelection(keyCode, frontmost)
+          if continued ~= nil then
+            return continued
+          end
+          local resume = selectionResume()
           clearSelectionState()
-          startWordGesture(keyCode, frontmost, nil, "char")
+          if not shared.startCharResync(frontmost, resume, keyCode) then
+            armSelection(resume)
+          end
+          return true
+        end
+        if frontVerdict == "claude" then
+          local reanchor = shared.reanchor
+          clearSelectionState()
+          if not reanchor or not shared.startCachedChar(keyCode, frontmost, reanchor) then
+            startWordGesture(keyCode, frontmost, nil, "char")
+          end
         end
         return true
       end
@@ -4577,6 +4925,8 @@ function M.setTestHooks(hooks)
   clearPointerHome()
   clearSelectionState()
   replayProperty = hooks and hooks.replayProperty or replayProperty
+  if hooks then hooks.invalidateContext = invalidateContext end
+  if hooks then hooks.touchGestureDraft = function() gestureDraftTouched = true end end
 end
 
 function M.start()
@@ -4641,12 +4991,16 @@ function M.start()
   end)
   wakeWatcher:start()
   terminalWindowFilter = hs.window.filter.new("Terminal")
-  terminalWindowFilter:subscribe({
+  local windowInvalidations = {
     hs.window.filter.windowFocused,
     hs.window.filter.windowUnfocused,
     hs.window.filter.windowCreated,
     hs.window.filter.windowDestroyed,
-  }, invalidateAndRefresh)
+  }
+  if hs.window.filter.windowMoved then
+    windowInvalidations[#windowInvalidations + 1] = hs.window.filter.windowMoved
+  end
+  terminalWindowFilter:subscribe(windowInvalidations, invalidateAndRefresh)
   terminalWindowFilter:subscribe(hs.window.filter.windowTitleChanged, pollFrontTab)
   previousShutdownCallback = hs.shutdownCallback
   shutdownCallback = function()
@@ -4670,6 +5024,9 @@ function M.handleEvent(event)
   local isKeyDown = event:getType() == hs.eventtap.event.types.keyDown
   local repeatProperty = hs.eventtap.event.properties.keyboardEventAutorepeat
   local isRepeat = event:getProperty(repeatProperty) ~= 0
+  if isKeyDown and not isRepeat then
+    shared.selectingObserved = nil
+  end
   if isRepeat then
     local key = keyForCode[keyCode]
     local keyIsPending = false
@@ -4681,9 +5038,15 @@ function M.handleEvent(event)
         end
       end
     end
+    -- A held Shift+arrow grows a selection by a cell per repeat, so its repeats have to
+    -- reach the handler that counts them; every other held key is answered from the cache
+    -- its first press left, which is what keeps the round trips off the repeat rate.
+    local held = event:getFlags()
+    local selecting = repeatDecisions[keyCode] == true and (keyCode == 123 or keyCode == 124)
+      and held.shift and not held.cmd and not held.alt and not held.ctrl
     -- A held key whose first press the replace flow consumed has to keep going
     -- through the queue, or its repeats leak out ahead of the key being held.
-    if not keyIsPending and not replaceInFlight then
+    if not keyIsPending and not replaceInFlight and not selecting then
       return repeatDecisions[keyCode] == true
     end
 
