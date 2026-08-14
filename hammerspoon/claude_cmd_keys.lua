@@ -3132,6 +3132,22 @@ local function extendedHead(cells, head, direction)
   return direction < 0 and first or last
 end
 
+-- extendedHead walked backwards. The head names one edge of the word it stands on, so
+-- the way back to the anchor starts at that word's other edge and gives up the whole
+-- word: what it lands on is the edge of the next one facing the same way the head does.
+function shared.shrunkHead(cells, head, direction)
+  local first, last = wordSpan(cells, head)
+  local index = (direction < 0 and last or first) - direction
+  while cells[index] and isSpaceCell(cells[index]) do
+    index = index - direction
+  end
+  if not cells[index] then
+    return nil
+  end
+  first, last = wordSpan(cells, index)
+  return direction < 0 and first or last
+end
+
 -- The middle of the cell, in whole and fractional columns alike: a wide cell has no
 -- whole column of its own, and the middle is the farthest a press can be from either
 -- boundary of the cell it has to land in.
@@ -3914,7 +3930,31 @@ function shared.startGesture(original, direction, flight, kind)
   end
 end
 
-local function runGestureExtend(original, resume, flight)
+-- A boundary is a cell to click: |N puts the caret before cell N, and |#cells+1 is the
+-- free column past the last one, where a click lands the caret at the row's end.
+-- Answers whether it clicked.
+function shared.clickBoundary(boundary, rightward, totalLines, layout, observed)
+  local cells = withoutTrailingSpace(draftCells(layout), boundary)
+  local head = cells[boundary - 1]
+  local cell = cells[boundary]
+  -- Reaching right the caret is owed the position after the selection's last cell: where
+  -- that row wrapped, the boundary cell is the next row's first and a click there parks
+  -- the caret a row below, so the row's own edge takes it instead. Reaching left the
+  -- caret belongs before the boundary cell, on whichever row it sits.
+  if rightward and cell and head and cell.row ~= head.row then
+    cell = nil
+  end
+  local edge = cell or head or cells[#cells]
+  if not edge then
+    return false
+  end
+  local frame = targetWindowFrame(observed and observed.windowID, totalLines, layout.columns)
+  return shared.clickAt(edge.row, cell and cell.column
+    or shared.clampedFreeColumn(edge, cells[boundary] ~= nil, layout.columns),
+    totalLines, layout.columns, frame)
+end
+
+local function runGestureExtend(original, resume, flight, pressed)
   if not currentTargetMatches(original, observeFrontmost()) then
     shared.endGestureFlight(flight)
     return
@@ -3942,9 +3982,25 @@ local function runGestureExtend(original, resume, flight)
         or cellsSignature(cells, totalLines, layout.columns) ~= cache.signature then
       return
     end
-    local head = extendedHead(cells, cache.head, cache.direction)
-    if not head or head == cache.head then
-      return armSelection(resume)
+    local head
+    if pressed ~= cache.direction then
+      head = shared.shrunkHead(cells, cache.head, cache.direction)
+      -- No word left between the head and the anchor, or only words past it: macOS would
+      -- carry the selection over the anchor and paint the other side of it, this stops
+      -- there instead. The caret goes back where the gesture anchored it, and the chord
+      -- after starts from there rather than from a span nobody asked for.
+      if not head or (head - cache.anchor) * cache.direction < 0 then
+        if not shared.clickBoundary(cache.direction < 0 and cache.anchor + 1 or cache.anchor,
+            cache.direction < 0, totalLines, layout, original.observed) then
+          armSelection(resume)
+        end
+        return
+      end
+    else
+      head = extendedHead(cells, cache.head, cache.direction)
+      if not head or head == cache.head then
+        return armSelection(resume)
+      end
     end
     -- Measured live: the TUI paints a selection inside one row only, clamping a drag
     -- that ends on another row to the row it was pressed on. An extension over the
@@ -3977,8 +4033,6 @@ local function startCollapse(keyCode, observed, resume)
   local painted = resume.painted
   local boundary = keyCode == 123 and math.min(painted.anchor, painted.head)
     or math.max(painted.anchor, painted.head)
-  -- A boundary is a cell to click: |N puts the caret before cell N, and |#cells+1 is the
-  -- free column past the last one, where a click lands the caret at the row's end.
   -- Nothing is typed on this path, so a screen it cannot read leaves the caret alone.
   local function place()
     scrapeScreen(function(screenText)
@@ -3993,25 +4047,8 @@ local function startCollapse(keyCode, observed, resume)
       if not layout or type(totalLines) ~= "number" or totalLines <= 0 then
         return armSelection(resume)
       end
-      local cells = withoutTrailingSpace(draftCells(layout), boundary)
-      local head = cells[boundary - 1]
-      local cell = cells[boundary]
-      -- Collapsing right the caret is owed the position after the selection's last cell:
-      -- where that row wrapped, the boundary cell is the next row's first and a click there
-      -- parks the caret a row below, so the row's own edge takes it instead. Collapsing
-      -- left the caret belongs before the boundary cell, on whichever row it sits.
-      if keyCode == 124 and cell and head and cell.row ~= head.row then
-        cell = nil
-      end
-      local edge = cell or head or cells[#cells]
-      if not edge then
-        return armSelection(resume)
-      end
-      local frame = targetWindowFrame(original.observed and original.observed.windowID,
-        totalLines, layout.columns)
-      if not shared.clickAt(edge.row, cell and cell.column
-          or shared.clampedFreeColumn(edge, cells[boundary] ~= nil, layout.columns),
-          totalLines, layout.columns, frame) then
+      if not shared.clickBoundary(boundary, keyCode == 124, totalLines, layout,
+          original.observed) then
         armSelection(resume)
       end
     end, original.observed)
@@ -4034,13 +4071,6 @@ local function startWordGesture(keyCode, observed, resume, kind)
     return armSelection(resume)
   end
   local direction = (keyCode == 123 or keyCode == 126) and -1 or 1
-  -- A span reaches for a fixed edge, so it is recomputed from wherever the caret is now
-  -- rather than extended: pressed twice the caret is already on that edge and the second
-  -- press paints nothing.
-  if cache and not kind and cache.direction ~= direction then
-    -- The opposite direction neither shrinks nor flips a live selection.
-    return armSelection(resume)
-  end
   local original = { observed = observed }
   gestureInFlight = true
   shared.gestureFlight = shared.gestureFlight + 1
@@ -4049,7 +4079,7 @@ local function startWordGesture(keyCode, observed, resume, kind)
   deferAsync(function()
     local ok
     if cache and not kind then
-      ok = pcall(runGestureExtend, original, resume, flight)
+      ok = pcall(runGestureExtend, original, resume, flight, direction)
     else
       ok = pcall(shared.startGesture, original, direction, flight, kind)
     end

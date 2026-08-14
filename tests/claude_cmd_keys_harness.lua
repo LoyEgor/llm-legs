@@ -3558,16 +3558,115 @@ integration.runDeferred()
 assert(#integration.actions == settled + 1,
   "the wrap-clamped extension disarmed the selection it had left painted")
 
--- Opposite direction: consumed, and the gesture it interrupted still extends.
-integration = integrationContext(nil, gestureOpts)
-runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
-assert(module.handleEvent(optionShiftPress(124)), "the opposite direction was not consumed")
-integration.runDeferred()
-assert(#gestureClicks(integration) == 1 and #integration.actions == 4,
-  "the opposite direction touched the live selection")
-extendGesture(integration, 123, gestureScreen(hello))
-assertWordClick(integration, 2, { from = 1, to = 11, breaker = true },
-  "the opposite direction dropped the gesture it consumed")
+-- The opposite direction gives a word back, one press per word, and the span it
+-- repaints is the one the extension before it grew from.
+do
+  local words = "one two three"
+  -- Pressed the other way, the span still runs the way the gesture anchored it.
+  local function shrink(context, keyCode, screenText)
+    extendGesture(context, keyCode, screenText)
+    context.lastGestureKey = keyCode == 123 and 124 or 123
+  end
+  integration = integrationContext(nil, gestureOpts)
+  runGesture(integration, 123, gestureScreen(words .. sentinel), gestureScreen(words))
+  assertWordClick(integration, 1, { from = 9, to = 13 }, "left did not select the last word")
+  extendGesture(integration, 123, gestureScreen(words))
+  assertWordClick(integration, 2, { from = 5, to = 13, breaker = true },
+    "the extension did not take the word before it")
+  extendGesture(integration, 123, gestureScreen(words))
+  assertWordClick(integration, 3, { from = 1, to = 13, breaker = true },
+    "the second extension did not take the first word of the draft")
+  shrink(integration, 124, gestureScreen(words))
+  assertWordClick(integration, 4, { from = 5, to = 13, breaker = true },
+    "the shrink did not give back the word the extension before it took")
+  shrink(integration, 124, gestureScreen(words))
+  assertWordClick(integration, 5, { from = 9, to = 13, breaker = true },
+    "the second shrink did not give back the word before that")
+
+  -- One word left and nothing to give back but the selection itself: the caret lands on
+  -- the anchor, and the chord after it has no cache to reach from.
+  local anchorX, anchorY = expectedPoint(1, 1, 14, -0.5)
+  local painted = #integration.mouseEvents()
+  shrink(integration, 124, gestureScreen(words))
+  local events = integration.mouseEvents()
+  assert(#events > painted and events[#events].kind == "up"
+      and math.abs(events[#events - 1].x - anchorX) < 0.001
+      and math.abs(events[#events - 1].y - anchorY) < 0.001,
+    "the exhausted shrink did not put the caret back where the gesture anchored it")
+  assert(module.handleEvent(optionShiftPress(123)),
+    "the word chord after an exhausted shrink was not consumed")
+  integration.runDeferred()
+  assert(integration.actions[#integration.actions] == "sentinel",
+    "the exhausted shrink left a cache for the next chord to extend")
+
+  -- The words past the anchor are not the selection's to take: reaching them is the same
+  -- exhaustion, and the caret goes back to the anchor rather than over to the other side.
+  integration = integrationContext(nil, gestureOpts)
+  runGesture(integration, 123, gestureScreen("one two" .. sentinel .. " three"),
+    gestureScreen(words))
+  assertWordClick(integration, 1, { from = 5, to = 7 }, "left did not select the word behind it")
+  anchorX, anchorY = expectedPoint(1, 1, 8, -0.5)
+  shrink(integration, 124, gestureScreen(words))
+  events = integration.mouseEvents()
+  assert(math.abs(events[#events - 1].x - anchorX) < 0.001
+      and math.abs(events[#events - 1].y - anchorY) < 0.001,
+    "the shrink reached past the anchor instead of collapsing onto it")
+
+  -- The box repainted under the shrink: its cached indices describe a draft that is gone,
+  -- and the bail leaves Cmd+X disarmed exactly as the extension's does.
+  integration = integrationContext(nil, gestureOpts)
+  runGesture(integration, 123, gestureScreen(words .. sentinel), gestureScreen(words))
+  extendGesture(integration, 123, gestureScreen(words))
+  shrink(integration, 124, gestureScreen("one two three four"))
+  assert(#gestureClicks(integration) == 2, "the shrink repainted over a box that had changed")
+  local settledActions = #integration.actions
+  assert(module.handleEvent(xPress(false)), "Cmd+X after a bailed shrink was not consumed")
+  integration.resolve("claude")
+  integration.runDeferred()
+  assert(#integration.actions == settledActions,
+    "a shrink that bailed on a repainted box left Cmd+X armed")
+end
+
+-- Anchored the other way the shrink gives its words back the other way too, and the caret
+-- it leaves behind belongs before the anchor cell rather than past it.
+do
+  local words = "one two three"
+  local function shrink(context, screenText)
+    extendGesture(context, 123, screenText)
+    context.lastGestureKey = 124
+  end
+  integration = integrationContext(nil, gestureOpts)
+  runGesture(integration, 124, gestureScreen(sentinel .. words), gestureScreen(words))
+  assertWordClick(integration, 1, { from = 1, to = 3 }, "right did not select the first word")
+  extendGesture(integration, 124, gestureScreen(words))
+  assertWordClick(integration, 2, { from = 1, to = 7, breaker = true },
+    "the rightward extension did not take the word ahead of it")
+  shrink(integration, gestureScreen(words))
+  assertWordClick(integration, 3, { from = 1, to = 3, breaker = true },
+    "the rightward shrink did not give back the word the extension took")
+
+  local anchorX, anchorY = expectedPoint(1, 1, 1, -0.5)
+  local painted = #integration.mouseEvents()
+  shrink(integration, gestureScreen(words))
+  local events = integration.mouseEvents()
+  assert(#events > painted and events[#events].kind == "up"
+      and math.abs(events[#events - 1].x - anchorX) < 0.001
+      and math.abs(events[#events - 1].y - anchorY) < 0.001,
+    "the exhausted rightward shrink did not put the caret before the anchor cell")
+
+  -- The words behind the anchor are no more the selection's than the ones past it were.
+  integration = integrationContext(nil, gestureOpts)
+  runGesture(integration, 124, gestureScreen("one " .. sentinel .. "two three"),
+    gestureScreen(words))
+  assertWordClick(integration, 1, { from = 5, to = 7 },
+    "right did not select the word ahead of it")
+  anchorX, anchorY = expectedPoint(1, 1, 5, -0.5)
+  shrink(integration, gestureScreen(words))
+  events = integration.mouseEvents()
+  assert(math.abs(events[#events - 1].x - anchorX) < 0.001
+      and math.abs(events[#events - 1].y - anchorY) < 0.001,
+    "the rightward shrink reached behind the anchor instead of collapsing onto it")
+end
 
 -- The clicks we post come back through the tap, and a press of our own is a plain click
 -- to everything reading it: taken at face value it would clear the selection state the
@@ -4613,18 +4712,29 @@ runChar(caretAt(2, 2, 2), 123, wrappedBand)
 collapseClick(integration, 123, wrappedBand, 2, { 2, 1 },
   "the collapse onto the first cell of a wrapped row")
 
--- The chords that clear the tracking on their way in and then paint nothing have to put
--- all of it back, ends included, or the arrow after them has nothing to aim at.
+-- The opposite direction takes the one word this selection has, so what it leaves is a
+-- caret of the TUI's own and the arrow after it belongs to the terminal.
 integration = integrationContext(nil, gestureOpts)
 runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
 pressGesture(integration, 124)
-collapseClick(integration, 123, gestureScreen(hello), 1, { 1, 7 },
-  "left after a word chord pressed the other way")
+integration.deliverScrape(gestureScreen(hello))
+assertNoCollapse(integration, 123, "after the opposite direction shrank the selection away")
+
+-- The chords that clear the tracking on their way in and then paint nothing have to put
+-- all of it back, ends included, or the arrow after them has nothing to aim at.
 integration = integrationContext(nil, gestureOpts)
 runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
 pressGesture(integration, 126)
 collapseClick(integration, 123, gestureScreen(hello), 1, { 1, 7 },
   "left after a swallowed Option+Shift+Up")
+-- A paint no word gesture armed has no word to give back either: with no cache to shrink,
+-- the opposite direction is a gesture of its own, exactly as the same direction is.
+runChar(caretAt(1, 1, 7), 123, oneRow)
+pressGesture(integration, 124)
+integration.deliverScrape(oneRow)
+assertWordClick(integration, 2, { from = 7, to = 11, breaker = true },
+  "the chord over a selection with no word cache did not start a gesture of its own")
+
 -- A paint no word gesture armed has no cache to come back with, and it is a selection
 -- all the same: what the swallowed chord restores is the painted ends.
 runChar(caretAt(1, 1, 7), 123, oneRow)
