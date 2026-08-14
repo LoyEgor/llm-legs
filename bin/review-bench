@@ -970,7 +970,7 @@ LIMITS_STALE_AGE_S = 600
 #
 # Nothing given up is the constraint the compositions are chosen under, checked on all four
 # populations these tiers are ever quoted over: whole-panel coverage and whole-panel P1 on the
-# commits `coverage_pct` reads, and Gemini-only coverage and P1 over the 232-defect corpus. Each
+# commits `coverage_pct` reads, and Gemini-only coverage and P1 over the 235-defect corpus. Each
 # tier's --max Gemini panel also CONTAINS that tier's own eco panel, so escalating never runs
 # fewer attempts of a cell than the default panel would have. Within a tier and over this block
 # only: across tiers T0 and T1 read different diffs, so a superset there protects nothing and
@@ -989,18 +989,28 @@ LIMITS_STALE_AGE_S = 600
 # not promise that many accounts — walled ones are dropped before the wrap, so a panel this wide
 # already doubles up whenever fewer Google accounts are usable than it has cells. Staying inside
 # the roster is the most a composition can do about that.
+#
+# Gemini 3.7 Flash (2026-08-14, corpus at 235): flash37-medium runs a 1.58 min median against
+# flash35-medium's 1.81 and is the cleanest Flash on raw claims (2 false of 19 adjudicated), so
+# it takes a slot in every panel; flash37-high (2.38 min, the priciest Flash, 9 of 34 attempts
+# lost to transport errors that the rates already price) pays only at T0, where it holds the P1
+# coverage the dropped repeats held. flash37-low earned 22 attempts and still no slot: no
+# composition holding it matches these panels on all four populations at their price. Same
+# enumeration, every population no lower, every tier cheaper.
 REVIEW_TIER_AGY = {
     "T0": [
-        "agy-flash35-medium-skill x3",
+        "agy-flash35-medium-skill",
         "agy-flash35-high-skill",
         "agy-flash36-medium-skill",
-        "agy-flash36-high-skill",
+        "agy-flash37-medium-skill",
+        "agy-flash37-high-skill",
     ],
     "T1": [
-        "agy-flash35-medium-skill x2",
+        "agy-flash35-medium-skill",
         "agy-flash35-high-skill",
         "agy-flash36-medium-skill",
         "agy-flash36-high-skill x2",
+        "agy-flash37-medium-skill",
         "agy-pro-high-skill",
     ],
 }
@@ -1008,35 +1018,42 @@ REVIEW_TIER_AGY = {
 # nothing, and T2 is 43% of reviews, so this is where most of the saving lands.
 REVIEW_TIER_AGY["T2"] = list(REVIEW_TIER_AGY["T1"])
 REVIEW_TIER_AGY["T3"] = [
-    "agy-flash35-medium-skill x3",
+    "agy-flash35-medium-skill x2",
     "agy-flash35-high-skill",
     "agy-flash36-medium-skill",
-    "agy-flash36-high-skill x2",
+    "agy-flash36-high-skill",
+    "agy-flash37-medium-skill",
     "agy-pro-high-skill",
 ]
 REVIEW_TIER_AGY_MAX = {
     # T0 has no heavier Gemini panel of its own (owner's rule, 2026-08-07): a tier for at most
     # twenty changed lines has nothing to spend a ceiling on.
     "T0": list(REVIEW_TIER_AGY["T0"]),
-    # Spelled out rather than borrowed from T3's default panel, which it happens to equal: a
-    # ceiling and a default that coincide today are answers to different questions, and editing
-    # one must not silently move the other.
     "T1": [
-        "agy-flash35-medium-skill x3",
+        "agy-flash35-medium-skill x2",
         "agy-flash35-high-skill",
         "agy-flash36-medium-skill",
         "agy-flash36-high-skill x2",
+        "agy-flash37-medium-skill",
         "agy-pro-high-skill",
     ],
     "T2": [
-        "agy-flash35-medium-skill x3",
+        "agy-flash35-medium-skill x2",
+        "agy-flash35-high-skill",
+        "agy-flash36-medium-skill x2",
+        "agy-flash36-high-skill x2",
+        "agy-flash37-medium-skill",
+        "agy-pro-high-skill",
+    ],
+    "T3": [
+        "agy-flash35-medium-skill x2",
         "agy-flash35-high-skill x2",
         "agy-flash36-medium-skill",
-        "agy-flash36-high-skill x2",
+        "agy-flash36-high-skill",
+        "agy-flash37-medium-skill",
         "agy-pro-high-skill",
     ],
 }
-REVIEW_TIER_AGY_MAX["T3"] = list(REVIEW_TIER_AGY_MAX["T2"])
 REVIEW_TIER_FLOOR = {
     tier: [*OPENCODE_REVIEW_LEG, *cells] for tier, cells in REVIEW_TIER_AGY.items()
 }
@@ -1047,8 +1064,8 @@ REVIEW_TIER_FLOOR_MAX = {
 # coverage; max is the measured ceiling within the tier's budget, trimmed of cells whose
 # marginal is under ~1 defect on the corpus (owner rule 2026-08-04). The OpenCode layer is never
 # trimmed (owner rule). `coverage_pct` is the whole panel over the four commits every one of its
-# cells ran on (143fc2f, 8448a35, 8553616, fabcae4) — recomputed 2026-08-07 against a corpus that
-# has grown to 232 adjudicated defects, which moved every figure on its own. Recompute the Codex
+# cells ran on (143fc2f, 8448a35, 8553616, fabcae4) — recomputed 2026-08-14 against a corpus that
+# has grown to 235 adjudicated defects, which moved every figure on its own. Recompute the Codex
 # cells with frontier, don't hand-edit. It answers for no other side, each for its own reason.
 # Not for the Gemini block: it prices a composition at the max of its cells' minutes under a
 # wall-clock budget, which is the model the block above rejects, so a frontier answer there
@@ -1089,9 +1106,9 @@ REVIEW_TIER_FLOOR_MAX = {
 # this commit cannot be compared to later ones by cell name.
 REVIEW_TIERS = {
     "T0": {
-        "budget_min": 2,
+        "budget_min": 3,
         "when": "Up to 20 changed lines in up to 2 files",
-        "coverage_pct": {"eco": 41.9, "max": 47.1},
+        "coverage_pct": {"eco": 40.5, "max": 46.3},
         "cells": [
             *REVIEW_TIER_FLOOR["T0"],
             "opus-low",
@@ -1109,7 +1126,7 @@ REVIEW_TIERS = {
     "T1": {
         "budget_min": 6,
         "when": "Up to 150 changed lines, or any change under bin/ or tests/",
-        "coverage_pct": {"eco": 48.9, "max": 55.8},
+        "coverage_pct": {"eco": 47.9, "max": 55.6},
         "cells": [
             *REVIEW_TIER_FLOOR["T1"],
             "opus-medium",
@@ -1130,7 +1147,7 @@ REVIEW_TIERS = {
     "T2": {
         "budget_min": 10,
         "when": "Up to 600 changed lines, or a core measurement tool change",
-        "coverage_pct": {"eco": 59.2, "max": 68.0},
+        "coverage_pct": {"eco": 58.2, "max": 67.3},
         "cells": [
             *REVIEW_TIER_FLOOR["T2"],
             "opus-high",
@@ -1154,7 +1171,7 @@ REVIEW_TIERS = {
     "T3": {
         "budget_min": 20,
         "when": "More than 600 changed lines",
-        "coverage_pct": {"eco": 70.9, "max": 78.8},
+        "coverage_pct": {"eco": 70.1, "max": 78.5},
         "cells": [
             *REVIEW_TIER_FLOOR["T3"],
             "opus-high",

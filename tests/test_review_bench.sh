@@ -606,6 +606,7 @@ assert rb.short_cell_name(rb.parse_rater("oc-grok45-low-google")) == "grok-googl
 pool_names = [rb.short_cell_name(rater) for rater in rb.review_pool_raters()]
 assert sorted(set(pool_names)) == [
     "deepseek", "gem-flash35-high", "gem-flash35-med", "gem-flash36-high", "gem-flash36-med",
+    "gem-flash37-high", "gem-flash37-med",
     "gem-pro", "grok", "kimi", "opus-high-bare", "opus-low", "opus-low-bare", "opus-med",
     "opus-med-bare", "sol-high", "sol-high-bare", "sol-low", "sol-low-bare", "sol-max",
     "sol-max-bare", "sol-med-bare", "sol-xhigh", "sol-xhigh-bare",
@@ -1323,33 +1324,39 @@ expected_oc_floor_max = ["oc-kimik3 x3", "oc-grok45-low x3", "oc-dsv4flash x3"]
 # the tier has quota to spare.
 expected_agy = {
     "T0": [
-        "agy-flash35-medium-skill x3", "agy-flash35-high-skill",
-        "agy-flash36-medium-skill", "agy-flash36-high-skill",
+        "agy-flash35-medium-skill", "agy-flash35-high-skill",
+        "agy-flash36-medium-skill", "agy-flash37-medium-skill", "agy-flash37-high-skill",
     ],
     "T1": [
-        "agy-flash35-medium-skill x2", "agy-flash35-high-skill",
-        "agy-flash36-medium-skill", "agy-flash36-high-skill x2", "agy-pro-high-skill",
+        "agy-flash35-medium-skill", "agy-flash35-high-skill",
+        "agy-flash36-medium-skill", "agy-flash36-high-skill x2",
+        "agy-flash37-medium-skill", "agy-pro-high-skill",
     ],
 }
 expected_agy["T2"] = expected_agy["T1"]
 expected_agy["T3"] = [
-    "agy-flash35-medium-skill x3", "agy-flash35-high-skill",
-    "agy-flash36-medium-skill", "agy-flash36-high-skill x2", "agy-pro-high-skill",
+    "agy-flash35-medium-skill x2", "agy-flash35-high-skill",
+    "agy-flash36-medium-skill", "agy-flash36-high-skill",
+    "agy-flash37-medium-skill", "agy-pro-high-skill",
 ]
 expected_agy_max = {
     "T0": expected_agy["T0"],
-    # Equal to T3's default panel today, spelled out anyway: borrowing it would let an edit to
-    # T3's eco panel move the T1 ceiling this line exists to pin.
     "T1": [
-        "agy-flash35-medium-skill x3", "agy-flash35-high-skill",
-        "agy-flash36-medium-skill", "agy-flash36-high-skill x2", "agy-pro-high-skill",
+        "agy-flash35-medium-skill x2", "agy-flash35-high-skill",
+        "agy-flash36-medium-skill", "agy-flash36-high-skill x2",
+        "agy-flash37-medium-skill", "agy-pro-high-skill",
     ],
     "T2": [
-        "agy-flash35-medium-skill x3", "agy-flash35-high-skill x2",
-        "agy-flash36-medium-skill", "agy-flash36-high-skill x2", "agy-pro-high-skill",
+        "agy-flash35-medium-skill x2", "agy-flash35-high-skill",
+        "agy-flash36-medium-skill x2", "agy-flash36-high-skill x2",
+        "agy-flash37-medium-skill", "agy-pro-high-skill",
+    ],
+    "T3": [
+        "agy-flash35-medium-skill x2", "agy-flash35-high-skill x2",
+        "agy-flash36-medium-skill", "agy-flash36-high-skill",
+        "agy-flash37-medium-skill", "agy-pro-high-skill",
     ],
 }
-expected_agy_max["T3"] = expected_agy_max["T2"]
 expected_floor = {tier: expected_oc_floor + cells for tier, cells in expected_agy.items()}
 expected_floor_max = {
     tier: expected_oc_floor_max + cells for tier, cells in expected_agy_max.items()
@@ -1387,46 +1394,49 @@ expected_tier_max_cells = {
     ],
 }
 expected_coverage_pct = {
-    "T0": {"eco": 41.9, "max": 47.1},
-    "T1": {"eco": 48.9, "max": 55.8},
-    "T2": {"eco": 59.2, "max": 68.0},
-    "T3": {"eco": 70.9, "max": 78.8},
+    "T0": {"eco": 40.5, "max": 46.3},
+    "T1": {"eco": 47.9, "max": 55.6},
+    "T2": {"eco": 58.2, "max": 67.3},
+    "T3": {"eco": 70.1, "max": 78.5},
 }
 oc_counts = Counter({"oc-kimik3": 2, "oc-grok45-low": 2, "oc-dsv4flash": 2})
 oc_counts_max = Counter({"oc-kimik3": 3, "oc-grok45-low": 3, "oc-dsv4flash": 3})
 agy_counts = {
     "T0": Counter({
-        "agy-flash35-high-skill": 1, "agy-flash35-medium-skill": 3,
-        "agy-flash36-high-skill": 1, "agy-flash36-medium-skill": 1,
+        "agy-flash35-high-skill": 1, "agy-flash35-medium-skill": 1,
+        "agy-flash36-medium-skill": 1,
+        "agy-flash37-medium-skill": 1, "agy-flash37-high-skill": 1,
     }),
     "T1": Counter({
-        "agy-flash35-high-skill": 1, "agy-flash35-medium-skill": 2,
+        "agy-flash35-high-skill": 1, "agy-flash35-medium-skill": 1,
         "agy-flash36-high-skill": 2, "agy-flash36-medium-skill": 1,
-        "agy-pro-high-skill": 1,
+        "agy-flash37-medium-skill": 1, "agy-pro-high-skill": 1,
     }),
     "T3": Counter({
-        "agy-flash35-high-skill": 1, "agy-flash35-medium-skill": 3,
-        "agy-flash36-high-skill": 2, "agy-flash36-medium-skill": 1,
-        "agy-pro-high-skill": 1,
+        "agy-flash35-high-skill": 1, "agy-flash35-medium-skill": 2,
+        "agy-flash36-high-skill": 1, "agy-flash36-medium-skill": 1,
+        "agy-flash37-medium-skill": 1, "agy-pro-high-skill": 1,
     }),
 }
 agy_counts["T2"] = agy_counts["T1"]
 agy_counts_max = {
     "T0": agy_counts["T0"],
-    # Equal to T3's default panel today, spelled out anyway: mirroring the aliasing the module
-    # used to carry would leave the two free to drift together unnoticed.
     "T1": Counter({
-        "agy-flash35-high-skill": 1, "agy-flash35-medium-skill": 3,
+        "agy-flash35-high-skill": 1, "agy-flash35-medium-skill": 2,
         "agy-flash36-high-skill": 2, "agy-flash36-medium-skill": 1,
-        "agy-pro-high-skill": 1,
+        "agy-flash37-medium-skill": 1, "agy-pro-high-skill": 1,
     }),
     "T2": Counter({
-        "agy-flash35-high-skill": 2, "agy-flash35-medium-skill": 3,
-        "agy-flash36-high-skill": 2, "agy-flash36-medium-skill": 1,
-        "agy-pro-high-skill": 1,
+        "agy-flash35-high-skill": 1, "agy-flash35-medium-skill": 2,
+        "agy-flash36-high-skill": 2, "agy-flash36-medium-skill": 2,
+        "agy-flash37-medium-skill": 1, "agy-pro-high-skill": 1,
+    }),
+    "T3": Counter({
+        "agy-flash35-high-skill": 2, "agy-flash35-medium-skill": 2,
+        "agy-flash36-high-skill": 1, "agy-flash36-medium-skill": 1,
+        "agy-flash37-medium-skill": 1, "agy-pro-high-skill": 1,
     }),
 }
-agy_counts_max["T3"] = agy_counts_max["T2"]
 expected_tier_multisets = {
     "T0": oc_counts + agy_counts["T0"] + Counter({
         "opus-low": 1, "sol-low": 1, "sol-low-bare": 1,
@@ -1490,7 +1500,7 @@ for tier_name in rb.REVIEW_TIER_AGY:
 assert list(rb.OPENCODE_REVIEW_LEG) == expected_oc_floor
 assert list(rb.OPENCODE_REVIEW_LEG_MAX) == expected_oc_floor_max
 assert list(rb.REVIEW_TIERS) == ["T0", "T1", "T2", "T3"]
-assert [tier["budget_min"] for tier in rb.REVIEW_TIERS.values()] == [2, 6, 10, 20]
+assert [tier["budget_min"] for tier in rb.REVIEW_TIERS.values()] == [3, 6, 10, 20]
 assert {
     tier_name: tier["cells"] for tier_name, tier in rb.REVIEW_TIERS.items()
 } == expected_tier_cells
@@ -10369,16 +10379,17 @@ oc_table="$(WORKER_STATS_DIR="$SD" CLAUDEB_DIR="$WORK/claudeb-fixture" "$SCRIPT"
 assert contains "$oc_table" "measured capability"
 assert contains "$oc_table" "oc-grok45"
 tiers_table="$("$SCRIPT" tiers 2>&1)"
-for tier_budget in "T0 (2 min)" "T1 (6 min)" "T2 (10 min)" "T3 (20 min)"; do
+for tier_budget in "T0 (3 min)" "T1 (6 min)" "T2 (10 min)" "T3 (20 min)"; do
   assert contains "$tiers_table" "$tier_budget"
 done
 assert contains "$tiers_table" "eco (default):"
 assert contains "$tiers_table" "max:"
 for cell in "oc-kimik3 x2" "oc-kimik3 x3" "oc-grok45-low x2" "oc-grok45-low x3" \
   "oc-dsv4flash x2" "oc-dsv4flash x3" agy-pro-high-skill \
-  "agy-flash35-medium-skill x2" "agy-flash35-medium-skill x3" "agy-flash35-high-skill x2" \
-  "agy-flash36-high-skill x2" \
-  agy-flash35-high-skill agy-flash36-medium-skill agy-flash36-high-skill \
+  "agy-flash35-medium-skill x2" "agy-flash35-high-skill x2" \
+  "agy-flash36-medium-skill x2" "agy-flash36-high-skill x2" \
+  agy-flash35-medium-skill agy-flash35-high-skill agy-flash36-medium-skill \
+  agy-flash36-high-skill agy-flash37-medium-skill agy-flash37-high-skill \
   opus-low sol-low sol-low-bare \
   opus-medium sol-medium-bare opus-high sol-high "sol-high-bare x2" sol-xhigh \
   sol-xhigh-bare sol-high-bare "sol-max x2" sol-max-bare; do
@@ -10391,8 +10402,8 @@ owner_table="$("$SCRIPT" tiers --table 2>&1)"
 assert contains "$owner_table" "T1 max"
 assert contains "$owner_table" "kimi x2, grok x2, deepseek x2"
 assert contains "$owner_table" "kimi x3, grok x3, deepseek x3"
-assert contains "$owner_table" "gem-flash35-med x2, gem-flash35-high, gem-flash36-med, gem-flash36-high x2, gem-pro"
-assert contains "$owner_table" "gem-flash36-high x2, gem-pro"
+assert contains "$owner_table" "gem-flash35-med, gem-flash35-high, gem-flash36-med, gem-flash36-high x2, gem-flash37-med, gem-pro"
+assert contains "$owner_table" "gem-flash37-med, gem-pro"
 assert contains "$owner_table" "sol-low, sol-low-bare"
 assert contains "$owner_table" "opus-med"
 assert contains "$owner_table" "cover"
