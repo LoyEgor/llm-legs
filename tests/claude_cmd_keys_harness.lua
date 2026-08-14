@@ -940,9 +940,9 @@ local function simulateDrag(y)
   module.handleEvent(mouseEvent(2))
 end
 
-local function simulateClick()
-  module.handleEvent(mouseEvent(1))
-  module.handleEvent(mouseEvent(2))
+local function simulateClick(point)
+  module.handleEvent(mouseEvent(1, point))
+  module.handleEvent(mouseEvent(2, point))
 end
 
 -- A word/line selection: the TUI selects on the click itself, no drag arrives.
@@ -1125,6 +1125,9 @@ local function integrationContext(types, opts)
     end,
     chord = function(modifiers, key)
       actions[#actions + 1] = "chord:" .. table.concat(modifiers, "+") .. "+" .. key
+      if opts.chordThrows then
+        error("the chord could not be posted")
+      end
     end,
     post = function(event)
       actions[#actions + 1] = "replay"
@@ -1190,7 +1193,7 @@ local function integrationContext(types, opts)
       assert(callback, "no scrape was awaiting a screen")
       return callback
     end,
-    dropWindowFrame = function() frameGone = true end,
+    dropWindowFrame = function(gone) frameGone = gone ~= false end,
     setCaret = function(point) caretPoint = point end,
     caretReads = function() return caretReads end,
     frameColumns = function() return frameLookupColumns end,
@@ -2052,6 +2055,18 @@ assertCell(cellTopLeft(rows, columns), rows, columns, "the last cell of the grid
 assertCell({ x = frame.x + (47 - 0.5) * cellWidth,
   y = module.inputBorderY(frame, rows, 12) - rowHeight / 2 }, 12, 47,
   "the centre of a cell did not invert to the cell it is the centre of")
+
+-- A mouse point is not a caret box: it lands anywhere inside the cell it presses, so
+-- the halves of one cell must not read as two rows.
+local function assertPointer(fraction, row, column, message)
+  local gotRow, gotColumn = module.pointerCell(frame, rows, columns,
+    { x = frame.x + (column - 1 + fraction) * cellWidth,
+      y = module.inputBorderY(frame, rows, row) - (1 - fraction) * rowHeight })
+  assert(gotRow == row and gotColumn == column,
+    message .. ": read as " .. tostring(gotRow) .. "," .. tostring(gotColumn))
+end
+assertPointer(0.25, 12, 47, "a press a quarter into its cell")
+assertPointer(0.75, 12, 47, "a press three quarters into its cell")
 
 assert(module.gridCell(frame, rows, columns, { x = frame.x - 1, y = frame.y }) == nil,
   "a point left of the grid produced a column")
@@ -3611,7 +3626,7 @@ for _, press in ipairs({ aPress, xPress }) do
   assert(#integration.mouseEvents() == 0, "a draft rewrite mid-gesture clicked")
   integration.fireTimer(0.05)
   integration.deliverScrape(gestureScreen(hello))
-  assertWordClick(integration, 1, { from = 7, to = 11, breaker = true },
+  assertWordClick(integration, 1, { from = 7, to = 11 },
     "the gesture did not finish past a mid-flight draft rewrite")
 end
 
@@ -4176,57 +4191,98 @@ assert(#coldContext.mouseEvents() == 4,
   "a caret move a second on still broke a click series the TUI had dropped")
 
 -- The user's own hand opens a series the same way, and a gesture landing in it inherits
--- the promotion — but only while it is still warm.
-integration = integrationContext(nil, gestureOpts)
-simulateClick()
-runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
-assertWordClick(integration, 1, { from = 7, to = 11, breaker = true },
-  "a gesture on the heels of the user's own click did not break their series")
-integration = integrationContext(nil, gestureOpts)
-simulateClick()
-integration.advance(1)
-runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
-assertWordClick(integration, 1, { from = 7, to = 11 },
-  "a gesture a second after the user's click broke a series that had gone cold")
+-- the promotion — but only while it is still warm, and only on the cells it presses.
+do
+  local pressX, pressY = expectedPoint(1, 1, 11, -0.5)
+  integration = integrationContext(nil, gestureOpts)
+  simulateClick({ x = pressX, y = pressY })
+  runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
+  assertWordClick(integration, 1, { from = 7, to = 11, breaker = true },
+    "a gesture on the heels of the user's own click did not break their series")
+  integration = integrationContext(nil, gestureOpts)
+  simulateClick({ x = pressX, y = pressY })
+  integration.advance(1)
+  runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
+  assertWordClick(integration, 1, { from = 7, to = 11 },
+    "a gesture a second after the user's click broke a series that had gone cold")
+  integration = integrationContext(nil, gestureOpts)
+  simulateClick({ x = expectedPoint(1, 1, 1, -0.5), y = pressY })
+  runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
+  assertWordClick(integration, 1, { from = 7, to = 11 },
+    "a gesture broke a series over a click nowhere near the cells it presses")
+end
 
 -- A caret move lands in that series too, and its one click would be the second on a cell
 -- the user just pressed.
-integration = integrationContext(nil, caretOpts(caretAt(1, 1, 7)))
-module.handleEvent(mouseEvent(1))
-assert(module.handleEvent(keyEvent(123, { "cmd", "fn" }, false, "cmd-arrow")),
-  "the bare Cmd+Left was not consumed")
-integration.runDeferred()
-integration.deliverScrape(oneRow)
-assert(#integration.mouseEvents() == 4,
-  "a caret move inside the user's own click series did not break it")
-integration = integrationContext(nil, caretOpts(caretAt(1, 1, 7)))
-module.handleEvent(mouseEvent(1))
-integration.advance(1)
-assert(module.handleEvent(keyEvent(123, { "cmd", "fn" }, false, "cmd-arrow")),
-  "the bare Cmd+Left was not consumed")
-integration.runDeferred()
-integration.deliverScrape(oneRow)
-assert(#integration.mouseEvents() == 2,
-  "a caret move broke a click series the user had let go cold")
+do
+  local startX, startY = expectedPoint(1, 1, 1, -0.5)
+  integration = integrationContext(nil, caretOpts(caretAt(1, 1, 7)))
+  module.handleEvent(mouseEvent(1, { x = startX, y = startY }))
+  assert(module.handleEvent(keyEvent(123, { "cmd", "fn" }, false, "cmd-arrow")),
+    "the bare Cmd+Left was not consumed")
+  integration.runDeferred()
+  integration.deliverScrape(oneRow)
+  assert(#integration.mouseEvents() == 4,
+    "a caret move inside the user's own click series did not break it")
+  integration = integrationContext(nil, caretOpts(caretAt(1, 1, 7)))
+  module.handleEvent(mouseEvent(1, { x = startX, y = startY }))
+  integration.advance(1)
+  assert(module.handleEvent(keyEvent(123, { "cmd", "fn" }, false, "cmd-arrow")),
+    "the bare Cmd+Left was not consumed")
+  integration.runDeferred()
+  integration.deliverScrape(oneRow)
+  assert(#integration.mouseEvents() == 2,
+    "a caret move broke a click series the user had let go cold")
+end
 
--- Clamped against the box's left edge the breaker can land on the cell a click of ours
--- took a moment ago and count as its second: every press it could join comes before the
--- pre-click it is also kept away from.
-local steerRow = gestureScreen("abcdefg hijk")
-integration = integrationContext(nil, caretOpts(caretAt(1, 1, 3)))
-assert(module.handleEvent(keyEvent(123, { "cmd", "fn" }, false, "cmd-arrow")),
-  "the bare Cmd+Left was not consumed")
-integration.runDeferred()
-integration.deliverScrape(steerRow)
-integration.setCaret(caretAt(1, 1, 9))
-module.handleEvent(mouseEvent(1))
-pressGesture(integration, 124)
-integration.deliverScrape(steerRow)
-local steered = integration.mouseEvents()
-assert(#steered == 9, "the gesture after the user's press did not lead its paint with two clicks")
-for _, press in ipairs({ steered[1], steered[7] }) do
-  assert(math.abs(steered[3].x - press.x) > 1.5 * cellWidth,
-    "the breaker landed close enough to a press to join the series it was breaking")
+-- The user's press is a cell of the same grid: a breaker landing on it would be the
+-- second click of their series and select the word they pressed, so it gives up even the
+-- side of the press it prefers — the one away from the pre-click.
+do
+  local steerRow = gestureScreen("abcdefg hijk")
+  local nearX, nearY = expectedPoint(1, 1, 9, -0.5)
+  integration = integrationContext(nil, gestureOpts)
+  simulateClick({ x = expectedPoint(1, 1, 0, -0.5), y = nearY })
+  runGesture(integration, 124, gestureScreen(sentinel .. hello), gestureScreen(hello))
+  local led = gestureClicks(integration)[1].leading
+  assert(#led == 2 and math.abs(led[1].x - expectedPoint(1, 1, 9, -0.5)) < 0.001,
+    "the breaker did not clear the cell the user had just pressed")
+
+  -- Clamped against the box's left edge the breaker can land on the cell a click of ours
+  -- took a moment ago and count as its second: every press it could join comes before the
+  -- pre-click it is also kept away from.
+  integration = integrationContext(nil, caretOpts(caretAt(1, 1, 3)))
+  assert(module.handleEvent(keyEvent(123, { "cmd", "fn" }, false, "cmd-arrow")),
+    "the bare Cmd+Left was not consumed")
+  integration.runDeferred()
+  integration.deliverScrape(steerRow)
+  integration.setCaret(caretAt(1, 1, 9))
+  module.handleEvent(mouseEvent(1, { x = nearX, y = nearY }))
+  pressGesture(integration, 124)
+  integration.deliverScrape(steerRow)
+  local events = integration.mouseEvents()
+  assert(#events == 9, "the gesture after the user's press did not lead its paint with two clicks")
+  for _, press in ipairs({ events[1], events[7] }) do
+    assert(math.abs(events[3].x - press.x) > 1.5 * cellWidth,
+      "the breaker landed close enough to a press to join the series it was breaking")
+  end
+
+  -- A press the TUI has long since dropped steers nothing, and the side away from the
+  -- pre-click is free again.
+  integration = integrationContext(nil, caretOpts(caretAt(1, 1, 3)))
+  assert(module.handleEvent(keyEvent(123, { "cmd", "fn" }, false, "cmd-arrow")),
+    "the bare Cmd+Left was not consumed")
+  integration.runDeferred()
+  integration.deliverScrape(steerRow)
+  integration.advance(1)
+  integration.setCaret(caretAt(1, 1, 9))
+  module.handleEvent(mouseEvent(1, { x = nearX, y = nearY }))
+  pressGesture(integration, 124)
+  integration.deliverScrape(steerRow)
+  events = integration.mouseEvents()
+  assert(#events == 9, "the gesture after the user's press did not lead its paint with two clicks")
+  assert(math.abs(events[3].x - events[1].x) < 0.001,
+    "a press the TUI had dropped still steered the breaker away from its cell")
 end
 
 -- A row filled to the last column has no free cell past it; the click clamps inside the
@@ -4240,6 +4296,25 @@ assertSpan(runSpan(caretAt(1, 1, 4), 124, gestureScreen(fullRow)), 1, { 1, 4 },
   { 1, screenColumns - promptCells },
   "Cmd+Shift+Right on a hard-full row clicked outside the box", nil,
   { 1, screenColumns - promptCells })
+
+-- Against that edge only one cell is far enough from the press to break its series, and
+-- the user has just pressed it: a breaker there is the second click of their own series.
+-- The click it was breaking for stands down rather than land in one.
+do
+  local candidateX, candidateY = expectedPoint(1, 1, screenColumns - promptCells - 8, -0.5)
+  local lone = integrationContext(nil, caretOpts(caretAt(1, 1, 2)))
+  for index = 1, 2 do
+    assert(module.handleEvent(keyEvent(124, { "cmd", "fn" }, false, "cmd-arrow")),
+      "the repeated Cmd+Right was not consumed")
+    lone.runDeferred()
+    if index == 1 then
+      lone.deliverScrape(gestureScreen(fullRow))
+      module.handleEvent(mouseEvent(1, { x = candidateX, y = candidateY }))
+    end
+  end
+  lone.deliverScrape(gestureScreen(fullRow))
+  assert(#lone.mouseEvents() == 2, "the caret move clicked with no cell left to break its series")
+end
 
 -- The caret already sits on the edge it is asked to reach: a span of no cells would
 -- paint the press's own cell instead of nothing.
@@ -4358,6 +4433,22 @@ collapseClick(integration, 123, oneRow, 1, { 1, 7 }, "left after a paint to the 
 runChar(caretAt(1, 1, 7), 124, oneRow)
 collapseClick(integration, 124, oneRow, 1, { 1, 8 }, "right after a paint to the right")
 
+-- The shrink chord posts after the drag is released, and posting can throw: the
+-- selection is on screen by then, so the arrow after it is still ours to collapse.
+
+do
+  local throwOpts = caretOpts(caretAt(1, 1, 7))
+  throwOpts.chordThrows = true
+  local throwing = integrationContext(nil, throwOpts)
+  assert(module.handleEvent(charSpanPress(123)), "the Shift+arrow was not consumed")
+  throwing.runDeferred()
+  -- Whoever is left holding the error — the tap's own pcall in the live build — is not
+  -- the one that armed the selection; the drag has already painted it on screen.
+  assert(not pcall(throwing.deliverScrape, oneRow),
+    "the chord the context was told to fail posted cleanly")
+  throwing.fireGestureWatchdog()
+  collapseClick(throwing, 123, oneRow, 1, { 1, 6 }, "left after a shrink chord that threw")
+end
 -- Every native Shift+arrow we pass through moves the head with it, and the collapse has
 -- to follow it there; the far end stays where the press anchored it.
 runChar(caretAt(1, 1, 7), 123, oneRow)
@@ -4429,21 +4520,43 @@ collapseClick(integration, 124, wrappedBand, 2, { 1, #bandText },
 
 -- The user's own press opens a click series any paint can land in, not just a word
 -- gesture's: pressing the cell they just clicked would be read as a double click.
-integration = integrationContext(nil, caretOpts(caretAt(1, 1, 7)))
-module.handleEvent(mouseEvent(1))
-assert(module.handleEvent(charSpanPress(123)), "the Shift+arrow was not consumed")
-integration.runDeferred()
-integration.deliverScrape(oneRow)
-assert(#integration.mouseEvents() == 5,
-  "a char paint inside the user's own click series did not break it")
-integration = integrationContext(nil, caretOpts(caretAt(1, 1, 7)))
-module.handleEvent(mouseEvent(1))
-integration.advance(1)
-assert(module.handleEvent(charSpanPress(123)), "the Shift+arrow was not consumed")
-integration.runDeferred()
-integration.deliverScrape(oneRow)
-assert(#integration.mouseEvents() == 3,
-  "a char paint broke a click series the user had let go cold")
+do
+  local pressX, pressY = expectedPoint(1, 1, 6, -0.5)
+  integration = integrationContext(nil, caretOpts(caretAt(1, 1, 7)))
+  module.handleEvent(mouseEvent(1, { x = pressX, y = pressY }))
+  assert(module.handleEvent(charSpanPress(123)), "the Shift+arrow was not consumed")
+  integration.runDeferred()
+  integration.deliverScrape(oneRow)
+  assert(#integration.mouseEvents() == 5,
+    "a char paint inside the user's own click series did not break it")
+  integration = integrationContext(nil, caretOpts(caretAt(1, 1, 7)))
+  module.handleEvent(mouseEvent(1, { x = pressX, y = pressY }))
+  integration.advance(1)
+  assert(module.handleEvent(charSpanPress(123)), "the Shift+arrow was not consumed")
+  integration.runDeferred()
+  integration.deliverScrape(oneRow)
+  assert(#integration.mouseEvents() == 3,
+    "a char paint broke a click series the user had let go cold")
+  -- Where in the cell they pressed is the pointer's business, not the caret box's: the
+  -- lower half of a cell is that cell, not the row below it.
+  integration = integrationContext(nil, caretOpts(caretAt(1, 1, 7)))
+  module.handleEvent(mouseEvent(1,
+    { x = pressX, y = pressY + terminalFrame.h / gestureTotalLines(1) / 4 }))
+  assert(module.handleEvent(charSpanPress(123)), "the Shift+arrow was not consumed")
+  integration.runDeferred()
+  integration.deliverScrape(oneRow)
+  assert(#integration.mouseEvents() == 5,
+    "a press in the lower half of its cell did not open the series it landed in")
+  -- Their press elsewhere on the row is no series of ours: the breaker would buy nothing
+  -- and its own click is a caret jump they watch.
+  integration = integrationContext(nil, caretOpts(caretAt(1, 1, 7)))
+  module.handleEvent(mouseEvent(1, { x = expectedPoint(1, 1, 20, -0.5), y = pressY }))
+  assert(module.handleEvent(charSpanPress(123)), "the Shift+arrow was not consumed")
+  integration.runDeferred()
+  integration.deliverScrape(oneRow)
+  assert(#integration.mouseEvents() == 3,
+    "a char paint broke a series over a press nowhere near the cell it presses")
+end
 
 -- Shrunk back onto its anchor the selection is gone: the tracking goes with it, or the
 -- next chord is passed to a caret that has nothing to extend.
@@ -4493,6 +4606,46 @@ local afterShift = #integration.actions
 runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
 assert(integration.actions[afterShift + 1] == "sentinel",
   "the word chord after a native Shift+arrow extended the cache that key had moved")
+
+-- Collapsing left the caret belongs before the boundary cell wherever the draft wrapped
+-- it: on the wrapped row's own first cell, not on the edge of the row above.
+runChar(caretAt(2, 2, 2), 123, wrappedBand)
+collapseClick(integration, 123, wrappedBand, 2, { 2, 1 },
+  "the collapse onto the first cell of a wrapped row")
+
+-- The chords that clear the tracking on their way in and then paint nothing have to put
+-- all of it back, ends included, or the arrow after them has nothing to aim at.
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
+pressGesture(integration, 124)
+collapseClick(integration, 123, gestureScreen(hello), 1, { 1, 7 },
+  "left after a word chord pressed the other way")
+integration = integrationContext(nil, gestureOpts)
+runGesture(integration, 123, gestureScreen(hello .. sentinel), gestureScreen(hello))
+pressGesture(integration, 126)
+collapseClick(integration, 123, gestureScreen(hello), 1, { 1, 7 },
+  "left after a swallowed Option+Shift+Up")
+-- A paint no word gesture armed has no cache to come back with, and it is a selection
+-- all the same: what the swallowed chord restores is the painted ends.
+runChar(caretAt(1, 1, 7), 123, oneRow)
+assert(module.handleEvent(optionShiftPress(126)),
+  "the swallowed Option+Shift+Up was not consumed")
+integration.runDeferred()
+collapseClick(integration, 123, oneRow, 1, { 1, 6 },
+  "left after a swallowed Option+Shift+Up over a char paint")
+
+-- A collapse that finds no window to click in leaves the TUI selection painted, so the
+-- ends come back with it and the next arrow is still ours to answer.
+runChar(caretAt(1, 1, 7), 123, oneRow)
+assert(module.handleEvent(bareArrow(123)), "the bare arrow was not consumed")
+integration.runDeferred()
+integration.dropWindowFrame()
+painted = #integration.mouseEvents()
+integration.deliverScrape(oneRow)
+assert(#integration.mouseEvents() == painted, "the frameless collapse clicked anyway")
+integration.dropWindowFrame(false)
+collapseClick(integration, 123, oneRow, 1, { 1, 6 },
+  "the collapse retried after a frameless one")
 end
 
 integration = integrationContext(textTypes, caretOpts(caretAt(1, 1, 30)))

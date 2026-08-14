@@ -673,10 +673,12 @@ local gestureInFlight = false
 -- that owes its removal: that DEL would take the newcomer instead. Declared with the
 -- flag it belongs to, not with the gesture code, since runAction reads it from above.
 local gestureDraftTouched = false
--- Claude's TUI creates a selection only on a left drag and drops it on a plain
--- click, so a cut fired with selectionLikely false deletes unselected draft text.
-local selectionLikely = false
-local selectionPoint
+-- One TUI selection, one table. Claude's TUI creates a selection only on a left drag and
+-- drops it on a plain click, so a cut fired with `likely` false deletes unselected draft
+-- text; `point` says which box it was painted in, `painted` holds the boundaries a bare
+-- arrow collapses onto, and `word` is the cache the next word chord extends from. They
+-- describe the same selection and are armed, restored and cleared together.
+local selection = { likely = false }
 local dragSeen = false
 local cachedContext
 local resolvedTty
@@ -750,15 +752,31 @@ local shared = {
     total = {}, backend = {} },
 }
 
--- The word gesture's cache describes a selection this flag stands for, so the two
--- die together: any key or mouse activity that drops one has ended the gesture.
-local wordGestureState
+-- The one way a selection is armed, and the one way a bail hands back the tracking it
+-- cleared on its way in: nothing was clicked, so the selection is still on screen and
+-- every field describing it has to come back together.
+local function armSelection(state)
+  if not state then
+    return
+  end
+  selection.likely = true
+  selection.point = state.point
+  selection.painted = state.painted
+  selection.word = state.word
+end
+
+-- What a chord that clears the state on its way in keeps, for the bails that paint
+-- nothing. A selection with no word cache is still a selection: its ends collapse and
+-- its flag guards the cut, so it is handed back whole like any other.
+local function selectionResume()
+  return selection.likely
+    and { point = selection.point, painted = selection.painted, word = selection.word }
+    or nil
+end
 
 local function clearSelectionState()
-  selectionLikely = false
-  selectionPoint = nil
-  wordGestureState = nil
-  shared.painted = nil
+  selection.likely = false
+  selection.point, selection.painted, selection.word = nil, nil, nil
 end
 
 local ttyScript = [[
@@ -2066,14 +2084,14 @@ M.gestureCaretPoint = shared.caretPoint
 -- the entry every gesture caches and overwrites it, so alternating Cmd+X with a chord
 -- would pay a fresh AX walk on each.
 local function draggedInTranscript(original, topBorderIndex, totalLines, columns)
-  if not selectionPoint then
+  if not selection.point then
     return false
   end
   local frame = targetWindowFrame(original.observed and original.observed.windowID, totalLines,
     columns)
   local borderY = M.inputBorderY(frame, totalLines, topBorderIndex)
-  return borderY ~= nil and type(selectionPoint.y) == "number"
-    and selectionPoint.y < borderY
+  return borderY ~= nil and type(selection.point.y) == "number"
+    and selection.point.y < borderY
 end
 
 -- Once DEL is out the text is gone, so every later step fails silent rather than
@@ -2082,7 +2100,7 @@ end
 local function performCut(original)
   -- Both flows own the same DEL-then-diff window; interleaved, each would read
   -- the other's deletion as its own.
-  if not selectionLikely or cutInFlight or replaceInFlight then
+  if not selection.likely or cutInFlight or replaceInFlight then
     return
   end
   cutInFlight = true
@@ -2264,7 +2282,7 @@ local function performReplace(original)
     end
     return
   end
-  if not selectionLikely or cutInFlight then
+  if not selection.likely or cutInFlight then
     -- The keystroke is already consumed, so it has to leave as itself: a plain
     -- native keypress beats silently eating what the user typed.
     forgetRepeat(original)
@@ -2499,11 +2517,9 @@ local function cellCenters(frame, totalLines, columns)
   end
 end
 
--- cellCenters read backwards, off the same two divisions of the frame, for the caret box
--- AX answers with. That box is the cell's TOP-left corner, and a row boundary floors into
--- the row above it, so the row is taken half a cell lower — which leaves a cell centre,
--- the point the forward direction produces, on the row it came from.
-function M.gridCell(frame, totalLines, columns, point)
+-- cellCenters read backwards, off the same two divisions of the frame: the cell a point
+-- anywhere inside it belongs to, which is what a pointer lands on.
+function M.pointerCell(frame, totalLines, columns, point)
   if type(columns) ~= "number" or columns <= 0
       or type(totalLines) ~= "number" or totalLines <= 0
       or type(frame) ~= "table" or type(frame.x) ~= "number" or type(frame.y) ~= "number"
@@ -2514,13 +2530,25 @@ function M.gridCell(frame, totalLines, columns, point)
   end
   local rowHeight = frame.h / totalLines
   local cellWidth = frame.w / columns
-  local row = totalLines
-    - math.floor((frame.y + frame.h - point.y - rowHeight / 2) / rowHeight)
+  local row = totalLines - math.floor((frame.y + frame.h - point.y) / rowHeight)
   local column = math.floor((point.x - frame.x) / cellWidth) + 1
   if row < 1 or row > totalLines or column < 1 or column > columns then
     return nil
   end
   return row, column
+end
+
+-- The caret box AX answers with is the cell's TOP-left corner, and a row boundary floors
+-- into the row above it: read half a cell lower, that corner names the cell it belongs to
+-- and a cell centre — the point the forward direction produces — still names its own.
+function M.gridCell(frame, totalLines, columns, point)
+  if type(frame) ~= "table" or type(frame.h) ~= "number"
+      or type(totalLines) ~= "number" or totalLines <= 0
+      or type(point) ~= "table" or type(point.y) ~= "number" then
+    return nil
+  end
+  return M.pointerCell(frame, totalLines, columns,
+    { x = point.x, y = point.y + frame.h / totalLines / 2 })
 end
 
 local function draftDragPoints(frame, totalLines, layout)
@@ -2560,9 +2588,7 @@ local function dragBetween(startPoint, endPoint)
   end
   -- Our own events carry the replay marker the tap skips, so nothing else will arm
   -- the selection they just painted.
-  selectionLikely = true
-  selectionPoint = endPoint
-  shared.painted = nil
+  armSelection({ point = endPoint })
 end
 
 -- Claude's TUI has no select-all key and renders a selection only for a real
@@ -2677,8 +2703,8 @@ local function runAction(action, original, path)
     clearSelectionState()
   elseif action == "undo" then
     emit(M.undoPlan())
-    -- Undo, like any draft mutation, drops the TUI selection; a stale
-    -- selectionLikely would send the next Cmd+X down the bare-DEL path.
+    -- Undo, like any draft mutation, drops the TUI selection; a stale flag
+    -- would send the next Cmd+X down the bare-DEL path.
     clearSelectionState()
   elseif action == "cut" then
     performCut(original)
@@ -3106,12 +3132,13 @@ local function extendedHead(cells, head, direction)
   return direction < 0 and first or last
 end
 
--- The middle of the span, in whole and fractional columns alike: a click anywhere
--- inside a word selects all of it, so the middle is the farthest a press can be from
--- either boundary.
-local function spanCenter(center, cells, first, last)
-  local column = (cells[first].column + cells[last].column + cells[last].width - 1) / 2
-  return center(column, cells[first].row), column
+-- The middle of the cell, in whole and fractional columns alike: a wide cell has no
+-- whole column of its own, and the middle is the farthest a press can be from either
+-- boundary of the cell it has to land in.
+local function cellCenter(center, cells, index)
+  local cell = cells[index]
+  local column = cell.column + (cell.width - 1) / 2
+  return center(column, cell.row), column
 end
 
 -- Measured off a live TUI: it counts a press landing within one cell of the press
@@ -3136,7 +3163,18 @@ function shared.clampedFreeColumn(cell, wrapped, columns)
   return math.min(free, columns)
 end
 
-local function breakerColumn(pressColumn, row, columns, avoid)
+-- The user's own press counts in the TUI's click series exactly as ours do, so a breaker
+-- has to clear its cell too; their pointer is a screen point, read back into this grid.
+function shared.userPressColumn(frame, totalLines, columns, row)
+  local press = shared.userPress
+  if not press or now() - press.at >= shared.breakerWindow then
+    return nil
+  end
+  local pressRow, pressColumn = M.pointerCell(frame, totalLines, columns, press.point)
+  return pressRow == row and pressColumn or nil
+end
+
+local function breakerColumn(pressColumn, row, columns, avoid, userColumn)
   local candidates = {}
   for _, column in ipairs({ pressColumn - breakerOffset, pressColumn + breakerOffset }) do
     column = math.min(math.max(column, 1), columns)
@@ -3147,17 +3185,24 @@ local function breakerColumn(pressColumn, row, columns, avoid)
   if #candidates == 0 then
     return nil
   end
+  local function pressGap(column)
+    local gap = math.abs(column - pressColumn)
+    -- Only a press the TUI still counts constrains the choice: an old one would steer
+    -- the breaker away from a cell nothing is watching any more.
+    if lastPressCell and lastPressCell.row == row
+        and now() - (lastPressCell.at or 0) < shared.breakerWindow then
+      gap = math.min(gap, math.abs(column - lastPressCell.column))
+    end
+    if userColumn then
+      gap = math.min(gap, math.abs(column - userColumn))
+    end
+    return gap
+  end
   -- Clamped against a box edge a candidate can land beside the press before it and join
   -- the very series it is posted to break: clearing every press comes first, and only
-  -- then the distance from the pre-click that follows it.
+  -- then the distance from the pre-click that follows it. A lone candidate has no side
+  -- to switch to, so it is answered with no breaker at all rather than a colliding one.
   if #candidates == 2 then
-    local function pressGap(column)
-      local gap = math.abs(column - pressColumn)
-      if lastPressCell and lastPressCell.row == row then
-        gap = math.min(gap, math.abs(column - lastPressCell.column))
-      end
-      return gap
-    end
     local one, other = candidates[1], candidates[2]
     if (pressGap(one) >= 2) ~= (pressGap(other) >= 2) then
       return pressGap(one) >= 2 and one or other
@@ -3167,28 +3212,27 @@ local function breakerColumn(pressColumn, row, columns, avoid)
     end
     return pressGap(one) >= pressGap(other) and one or other
   end
-  return candidates[1]
+  return pressGap(candidates[1]) >= 2 and candidates[1] or nil
 end
 
--- Where a selection is pressed and released. A number for dragSpan is a bare column of
--- the press's own row: the cell past the row's edge that the draft has none of.
-local function gestureClickPoints(frame, totalLines, columns, cells, span, dragSpan,
+-- Where a selection is pressed and released. Both ends are cells, except the drag that
+-- releases on a bare column of the press's own row: the cell past the row's edge that the
+-- draft has none of.
+local function gestureClickPoints(frame, totalLines, columns, cells, press, drag, dragColumn,
     boundary, headRow)
   local center = cellCenters(frame, totalLines, columns)
   if not center then
     return nil
   end
-  local pressPoint, pressColumn = spanCenter(center, cells, span[1], span[2])
+  local pressPoint, pressColumn = cellCenter(center, cells, press)
   if not pressPoint then
     return nil
   end
-  local points = { press = pressPoint, column = pressColumn, row = cells[span[1]].row }
-  if dragSpan then
-    points.drag = type(dragSpan) == "number" and center(dragSpan, points.row)
-      or spanCenter(center, cells, dragSpan[1], dragSpan[2])
-    if not points.drag then
-      return nil
-    end
+  local points = { press = pressPoint, column = pressColumn, row = cells[press].row }
+  points.drag = dragColumn and center(dragColumn, points.row)
+    or cellCenter(center, cells, drag)
+  if not points.drag then
+    return nil
   end
   -- A start can land on the word a press already took, its own or the user's, and an
   -- extension onto a neighbouring single-cell word (")" beside ")") moves too little
@@ -3200,7 +3244,7 @@ local function gestureClickPoints(frame, totalLines, columns, cells, span, dragS
   local crowded = lastPressCell and lastPressCell.row == points.row
     and math.abs(pressColumn - lastPressCell.column) < 2
     and at - (lastPressCell.at or 0) < shared.breakerWindow
-  local handled = shared.userPressAt and at - shared.userPressAt < shared.breakerWindow
+  local userColumn = shared.userPressColumn(frame, totalLines, columns, points.row)
   -- The TUI's caret follows a plain click and nothing else, so the head boundary is
   -- clicked before the paint: the drag that comes after leaves the caret standing there.
   -- Beside the press the pair would be read as the double click that snaps to a word.
@@ -3224,9 +3268,15 @@ local function gestureClickPoints(frame, totalLines, columns, cells, span, dragS
   if nearPre(pressColumn) then
     pre = nil
   end
+  -- Their press only counts against the presses this paint posts — the pre-click and the
+  -- press itself, never the drag that releases — and only from a cell the TUI would read
+  -- as the same series. Anywhere else on the screen it costs a breaker for nothing, and
+  -- the breaker's own click is a caret jump the user watches.
+  local handled = userColumn and (math.abs(pressColumn - userColumn) < 2
+    or (pre and pre.row == points.row and math.abs(preColumn - userColumn) < 2))
   if crowded or handled then
     local column = breakerColumn(pressColumn, points.row, columns,
-      pre and pre.row == points.row and preColumn or nil)
+      pre and pre.row == points.row and preColumn or nil, userColumn)
     points.breaker = column and center(column, points.row)
     if not points.breaker then
       return nil
@@ -3271,8 +3321,6 @@ function shared.clickSpan(points)
   if restoreMouse then
     schedulePointerReturn()
   end
-  selectionLikely = true
-  selectionPoint = points.drag
   lastPressCell = { column = points.column, row = points.row, at = now() }
 end
 
@@ -3304,51 +3352,54 @@ end
 -- holds no such cell, released on the bare column beside the row's edge, which the drag
 -- clamps to that edge with nothing left to shrink.
 function shared.paintSpan(direction, press, head, cells, totalLines, columns, frame)
-  local dragSpan, shrink = { head, head }, nil
+  local drag, dragColumn, shrink = head, nil, nil
   if press == head then
     local beyond = head + direction
     if cells[beyond] and cells[beyond].row == cells[head].row then
-      dragSpan, shrink = { beyond, beyond }, direction < 0 and "right" or "left"
+      drag, shrink = beyond, direction < 0 and "right" or "left"
     else
       local cell = cells[head]
-      dragSpan = direction < 0 and cell.column - 1 or cell.column + cell.width
-      if dragSpan < 1 or dragSpan > columns then
+      dragColumn = direction < 0 and cell.column - 1 or cell.column + cell.width
+      if dragColumn < 1 or dragColumn > columns then
         return nil
       end
     end
   end
-  local points = gestureClickPoints(frame, totalLines, columns, cells, { press, press },
-    dragSpan, direction < 0 and head or head + 1, cells[head].row)
+  local points = gestureClickPoints(frame, totalLines, columns, cells, press, drag, dragColumn,
+    direction < 0 and head or head + 1, cells[head].row)
   if not points then
     return nil
   end
   shared.clickSpan(points)
-  if shrink then
-    pauseBetweenDragSteps()
-    M.postChord({ "shift" }, shrink)
-  end
+  -- Armed before the shrink below, which can throw: the selection is on screen the moment
+  -- the drag is released, and a Cmd+X reading an unarmed flag takes the bare-DEL path.
   -- Both ends as boundaries — |N is before cell N — because a bare arrow has to collapse
   -- to one of them: the TUI's own caret never moved with the drag that painted this, so a
   -- collapse left to itself drops the caret wherever it last stood. The overshoot cancels
   -- out: shrunk back or clamped at the row's edge, the head lands on the cell's own side.
-  shared.painted = {
-    anchor = direction < 0 and press + 1 or press,
-    head = direction < 0 and head or head + 1,
-    limit = #cells + 1,
-  }
+  armSelection({
+    point = points.drag,
+    painted = {
+      anchor = direction < 0 and press + 1 or press,
+      head = direction < 0 and head or head + 1,
+      limit = #cells + 1,
+    },
+  })
+  if shrink then
+    pauseBetweenDragSteps()
+    M.postChord({ "shift" }, shrink)
+  end
   return points
 end
 
 local function armGesture(direction, anchor, head, signature, cells, totalLines, columns, frame)
   local points = shared.paintSpan(direction, anchor, head, cells, totalLines, columns, frame)
   if points then
-    wordGestureState = {
+    selection.word = {
       direction = direction,
       anchor = anchor,
       head = head,
       signature = signature,
-      selectionPoint = points.drag,
-      painted = shared.painted,
     }
   end
   return points
@@ -3496,26 +3547,31 @@ function shared.armCaretAt(direction, flight, cells, caret, totalLines, columns,
   shared.clickAt(row, column, totalLines, columns, frame)
 end
 
+-- Answers whether it clicked: a caller tracking a selection has to know that the caret
+-- never moved, or it drops ends the TUI still has painted on screen.
 function shared.clickAt(row, column, totalLines, columns, frame)
   local center = row and cellCenters(frame, totalLines, columns)
   local point = center and center(column, row)
   if not point then
-    return
+    return false
   end
   local points = { press = point, column = column, row = row }
+  local userColumn = shared.userPressColumn(frame, totalLines, columns, row)
   -- Pressed twice the chord asks for the cell it just clicked, and the TUI reads two
-  -- presses on one cell as the double click that selects the word under it.
+  -- presses on one cell as the double click that selects the word under it. The user's
+  -- own press opens a series this click can land in the same way, and only then.
   if (lastPressCell and lastPressCell.row == row
         and math.abs(column - lastPressCell.column) < 2
         and now() - (lastPressCell.at or 0) < shared.breakerWindow)
-      or (shared.userPressAt and now() - shared.userPressAt < shared.breakerWindow) then
-    local breaker = breakerColumn(column, row, columns)
+      or (userColumn and math.abs(column - userColumn) < 2) then
+    local breaker = breakerColumn(column, row, columns, nil, userColumn)
     points.breaker = breaker and center(breaker, row)
     if not points.breaker then
-      return
+      return false
     end
   end
   shared.clickCaret(points)
+  return true
 end
 
 function shared.armSpanAt(direction, flight, cells, caret, totalLines, columns, frame, spanKind,
@@ -3858,7 +3914,7 @@ function shared.startGesture(original, direction, flight, kind)
   end
 end
 
-local function runGestureExtend(original, cache, flight)
+local function runGestureExtend(original, resume, flight)
   if not currentTargetMatches(original, observeFrontmost()) then
     shared.endGestureFlight(flight)
     return
@@ -3872,38 +3928,30 @@ local function runGestureExtend(original, cache, flight)
       return
     end
     -- The user clicked or typed while this scrape was out: the click choreography
-    -- below would paint over what they just did. No keepSelection either — their
-    -- action is what cleared the selection the cache describes.
+    -- below would paint over what they just did. Nothing is handed back either — their
+    -- action is what cleared the selection the resume describes.
     if gestureDraftTouched then
       return
     end
     local _, _, totalLines, layout = M.parseInputBox(screenText)
     local cells = withoutTrailingSpace(draftCells(layout))
+    local cache = resume.word
     -- Streaming output repaints the box under the selection, and the cached cell
     -- indices would then point at another draft's characters.
     if #cells == 0
         or cellsSignature(cells, totalLines, layout.columns) ~= cache.signature then
       return
     end
-    -- The draft is the one the cache was built on and nothing was clicked, so the
-    -- selection this keypress cleared our state for is still painted: it has to come
-    -- back, or the next Cmd+X takes the bare-DEL path over a live selection.
-    local function keepSelection()
-      selectionLikely = true
-      selectionPoint = cache.selectionPoint
-      wordGestureState = cache
-      shared.painted = cache.painted
-    end
     local head = extendedHead(cells, cache.head, cache.direction)
     if not head or head == cache.head then
-      return keepSelection()
+      return armSelection(resume)
     end
     -- Measured live: the TUI paints a selection inside one row only, clamping a drag
     -- that ends on another row to the row it was pressed on. An extension over the
     -- wrap would trade everything selected so far for the single word it presses, so
     -- the selection stops at the row it started on.
     if cells[head].row ~= cells[cache.anchor].row then
-      return keepSelection()
+      return armSelection(resume)
     end
     local frame = targetWindowFrame(original.observed and original.observed.windowID,
       totalLines, layout.columns)
@@ -3911,14 +3959,12 @@ local function runGestureExtend(original, cache, flight)
     -- anchor's own cell, which the breaker keeps out of the TUI's click series.
     if not armGesture(cache.direction, cache.anchor, head, cache.signature, cells, totalLines,
         layout.columns, frame) then
-      -- The same bail as the two above it: nothing was clicked, so the selection is
-      -- still painted and the state has to come back with it.
-      keepSelection()
+      armSelection(resume)
     end
   end)
 end
 
-local function startCollapse(keyCode, observed, painted)
+local function startCollapse(keyCode, observed, resume)
   if gestureInFlight or cutInFlight or replaceInFlight or selectAllInFlight
       or pendingHoldsItems() then
     return false
@@ -3928,18 +3974,12 @@ local function startCollapse(keyCode, observed, painted)
   shared.gestureFlight = shared.gestureFlight + 1
   local flight = shared.gestureFlight
   shared.armGestureWatchdog(flight)
+  local painted = resume.painted
   local boundary = keyCode == 123 and math.min(painted.anchor, painted.head)
     or math.max(painted.anchor, painted.head)
   -- A boundary is a cell to click: |N puts the caret before cell N, and |#cells+1 is the
   -- free column past the last one, where a click lands the caret at the row's end.
   -- Nothing is typed on this path, so a screen it cannot read leaves the caret alone.
-  -- Nothing is clicked on the bails below, so the selection they leave behind is still
-  -- painted: the ends have to come back with it or the next arrow aims from a caret that
-  -- never moved.
-  local function keepPainted()
-    shared.painted = painted
-    selectionLikely = true
-  end
   local function place()
     scrapeScreen(function(screenText)
       if not shared.gestureFlies(flight) then
@@ -3951,51 +3991,47 @@ local function startCollapse(keyCode, observed, painted)
       end
       local _, _, totalLines, layout = M.parseInputBox(screenText)
       if not layout or type(totalLines) ~= "number" or totalLines <= 0 then
-        return keepPainted()
+        return armSelection(resume)
       end
       local cells = withoutTrailingSpace(draftCells(layout), boundary)
       local head = cells[boundary - 1]
       local cell = cells[boundary]
-      if cell and head and cell.row ~= head.row then
+      -- Collapsing right the caret is owed the position after the selection's last cell:
+      -- where that row wrapped, the boundary cell is the next row's first and a click there
+      -- parks the caret a row below, so the row's own edge takes it instead. Collapsing
+      -- left the caret belongs before the boundary cell, on whichever row it sits.
+      if keyCode == 124 and cell and head and cell.row ~= head.row then
         cell = nil
       end
       local edge = cell or head or cells[#cells]
       if not edge then
-        return keepPainted()
+        return armSelection(resume)
       end
       local frame = targetWindowFrame(original.observed and original.observed.windowID,
         totalLines, layout.columns)
-      shared.clickAt(edge.row, cell and cell.column
-        or shared.clampedFreeColumn(edge, cells[boundary] ~= nil, layout.columns),
-        totalLines, layout.columns, frame)
+      if not shared.clickAt(edge.row, cell and cell.column
+          or shared.clampedFreeColumn(edge, cells[boundary] ~= nil, layout.columns),
+          totalLines, layout.columns, frame) then
+        armSelection(resume)
+      end
     end, original.observed)
   end
   deferAsync(function()
     if not pcall(place) then
       shared.endGestureFlight(flight)
-      keepPainted()
+      armSelection(resume)
     end
   end)
   return true
 end
 
-local function startWordGesture(keyCode, observed, cache, kind)
+local function startWordGesture(keyCode, observed, resume, kind)
   -- The draft-rewriting flows own the screen this gesture would scrape, and a
   -- pending queue may still turn into one; the press is consumed either way.
-  -- The state this keypress cleared on its way in has to come back with every bail
-  -- that leaves the draft alone: the TUI selection is still painted, and dropping the
-  -- cache would restart the next chord from the cursor instead of extending.
-  local function keepSelection()
-    if not cache then
-      return
-    end
-    selectionLikely = true
-    selectionPoint = cache.selectionPoint
-    wordGestureState = cache
-  end
+  local cache = resume and resume.word
   if gestureInFlight or cutInFlight or replaceInFlight or selectAllInFlight
       or pendingHoldsItems() then
-    return keepSelection()
+    return armSelection(resume)
   end
   local direction = (keyCode == 123 or keyCode == 126) and -1 or 1
   -- A span reaches for a fixed edge, so it is recomputed from wherever the caret is now
@@ -4003,7 +4039,7 @@ local function startWordGesture(keyCode, observed, cache, kind)
   -- press paints nothing.
   if cache and not kind and cache.direction ~= direction then
     -- The opposite direction neither shrinks nor flips a live selection.
-    return keepSelection()
+    return armSelection(resume)
   end
   local original = { observed = observed }
   gestureInFlight = true
@@ -4013,7 +4049,7 @@ local function startWordGesture(keyCode, observed, cache, kind)
   deferAsync(function()
     local ok
     if cache and not kind then
-      ok = pcall(runGestureExtend, original, cache, flight)
+      ok = pcall(runGestureExtend, original, resume, flight)
     else
       ok = pcall(shared.startGesture, original, direction, flight, kind)
     end
@@ -4042,12 +4078,12 @@ local function handleEvent(event, keyCode, isRepeat)
       -- Drags arrive at high frequency; invalidating the context here would put a
       -- ps/osascript round trip behind every pixel of a selection.
       dragSeen = true
-      selectionPoint = event:location()
-      -- Kept on the press rather than read back off selectionPoint at the mouse-up: a key
+      selection.point = event:location()
+      -- Kept on the press rather than read back off selection.point at the mouse-up: a key
       -- pressed with the button still down clears that point, and the drag it belongs to
       -- would then release as a click and leave a live selection unarmed.
       if shared.clickOrigin then
-        shared.clickOrigin.travelled = selectionPoint
+        shared.clickOrigin.travelled = selection.point
       end
       return false
     end
@@ -4079,16 +4115,11 @@ local function handleEvent(event, keyCode, isRepeat)
       if observed.bundleID == terminalBundleID
           and observed.windowID == origin.windowID
           and foregroundVerdict(observed) ~= "not-claude" then
-        selectionLikely = true
         -- The user selected by hand, so the cached gesture anchor and the ends we
         -- tracked belong to a selection that is gone; kept, the next same-direction
         -- chord would extend from it and repaint over what was just selected. Our own
         -- choreography's clicks carry the replay marker and never reach here.
-        wordGestureState = nil
-        shared.painted = nil
-        if not dragSeen then
-          selectionPoint = event:location()
-        end
+        armSelection({ point = dragSeen and selection.point or event:location() })
       else
         clearSelectionState()
       end
@@ -4096,14 +4127,14 @@ local function handleEvent(event, keyCode, isRepeat)
     end
     if eventType == types.leftMouseDown then
       dragSeen = false
-      shared.painted = nil
+      selection.painted = nil
       shared.clickOrigin = {
         point = event:location(),
         windowID = M.focusedTerminalWindow(),
       }
       -- Outlives clickOrigin, which the release clears: a gesture starting right after
       -- the user's own click is the one that lands inside their click series.
-      shared.userPressAt = now()
+      shared.userPress = { point = event:location(), at = now() }
       -- Ours carry the replay marker and never reach here, so this is the user's hand
       -- on the mouse: the saved home is wherever they left it, and warping back to it
       -- would undo the move they just made.
@@ -4150,7 +4181,7 @@ local function handleEvent(event, keyCode, isRepeat)
 
   -- A stale flag costs a spurious DEL, so the AX round trip and the scrape are
   -- only worth paying for while a selection is actually armed.
-  local typedReplace = typed and selectionLikely and not isRepeat and not cutInFlight
+  local typedReplace = typed and selection.likely and not isRepeat and not cutInFlight
   if not key and not typedReplace then
     -- The queue-behind protection above only starts once the flow is running; a key
     -- arriving while the first one still waits for the foreground verdict would pass
@@ -4221,7 +4252,7 @@ local function handleEvent(event, keyCode, isRepeat)
         if cutInFlight or selectAllInFlight or pendingHoldsItems() then
           return true
         end
-        if selectionLikely then
+        if selection.likely then
           -- The TUI grows its own selection from here, so the key passes natively and
           -- alone escapes the disarm below: the flag has to outlive it or the Cmd+X
           -- that follows takes the bare-DEL path over a live selection. The head moves
@@ -4229,7 +4260,7 @@ local function handleEvent(event, keyCode, isRepeat)
           if gestureInFlight then
             gestureDraftTouched = true
           end
-          local painted = shared.painted
+          local painted = selection.painted
           if painted then
             painted.head = math.min(math.max(painted.head + (keyCode == 123 and -1 or 1), 1),
               painted.limit)
@@ -4241,7 +4272,7 @@ local function handleEvent(event, keyCode, isRepeat)
           end
           -- The word cache still names the span this key just moved, and an extension
           -- off it would reach from an end the selection no longer has.
-          wordGestureState = nil
+          selection.word = nil
           return false
         end
         if frontVerdict == "claude" then
@@ -4256,13 +4287,15 @@ local function handleEvent(event, keyCode, isRepeat)
     -- rather than on the edge macOS collapses to; the click that lands it there collapses
     -- the selection with it. Only selections this module painted are tracked well enough
     -- to aim: over anyone else's the key stays the terminal's own.
-    if shared.painted and not flags.cmd and not flags.alt
+    if selection.painted and not flags.cmd and not flags.alt
         and not flags.ctrl and not flags.shift and (keyCode == 123 or keyCode == 124) then
       local frontmost = observeFrontmost()
       if frontmost.bundleID == terminalBundleID and foregroundVerdict(frontmost) == "claude" then
-        local painted = shared.painted
+        -- Only the ends: the collapse aims at those, and the word cache this key
+        -- cleared names a selection the collapse is about to end.
+        local resume = { painted = selection.painted }
         clearSelectionState()
-        if startCollapse(keyCode, frontmost, painted) then
+        if startCollapse(keyCode, frontmost, resume) then
           return true
         end
       end
@@ -4278,7 +4311,7 @@ local function handleEvent(event, keyCode, isRepeat)
     -- Cmd+X that no-ops or a Cmd+V that pastes natively.
     -- Read before the line below drops it: an extension press is only told apart
     -- from a fresh gesture by the cache its own arrival clears.
-    local gestureCache = wordGestureState
+    local resume = selectionResume()
     clearSelectionState()
     -- Every other key mid-flight merely stands the sentinel DEL down and leaves the
     -- character in the draft, where the next Backspace reaches it. Return does not: it
@@ -4324,14 +4357,9 @@ local function handleEvent(event, keyCode, isRepeat)
         -- character lands in whatever else is reading the tty. The context refreshes
         -- every 0.1s, so it is the next press that runs, not none.
         if frontVerdict == "claude" and (keyCode == 123 or keyCode == 124) then
-          startWordGesture(keyCode, frontmost, gestureCache)
-        elseif gestureCache then
-          -- Swallowed without running a gesture, so the draft is untouched and the TUI
-          -- selection is still painted: the state this press cleared on its way in has
-          -- to come back, exactly as every bail inside startWordGesture restores it.
-          selectionLikely = true
-          selectionPoint = gestureCache.selectionPoint
-          wordGestureState = gestureCache
+          startWordGesture(keyCode, frontmost, resume)
+        elseif resume then
+          armSelection(resume)
         end
         return true
       end
@@ -4416,7 +4444,7 @@ local function handleEvent(event, keyCode, isRepeat)
         end
         return false
       end
-      if not selectionLikely then
+      if not selection.likely then
         return false
       end
       replace = true
@@ -4515,7 +4543,7 @@ function M.setTestHooks(hooks)
   gestureDraftTouched = false
   dragSeen = false
   shared.clickOrigin = nil
-  shared.userPressAt = nil
+  shared.userPress = nil
   clearPointerHome()
   clearSelectionState()
   replayProperty = hooks and hooks.replayProperty or replayProperty
@@ -4695,7 +4723,7 @@ function M.stop()
   gestureDraftTouched = false
   dragSeen = false
   shared.clickOrigin = nil
-  shared.userPressAt = nil
+  shared.userPress = nil
   clearPointerHome()
   clearSelectionState()
   pendingState = nil
