@@ -153,20 +153,24 @@ assert doc_has 'Codex/Gemini base-profile priority'
 REVIEWBENCH="$ROOT/bin/review-bench"
 for mapping in \
   '"agy-pro": "gemini-3.1-pro"' \
+  '"agy-flash37": "gemini-3.7-flash"' \
   '"agy-flash36": "gemini-3.6-flash"' \
   '"agy-flash35": "gemini-3.5-flash"'; do
   assert grep -Fq -- "$mapping" "$REVIEWBENCH"
 done
 assert grep -Fq '"agy-pro": ("low", "high")' "$REVIEWBENCH"
+assert grep -Fq '"agy-flash37": ("low", "medium", "high")' "$REVIEWBENCH"
 assert grep -Fq '"agy-flash36": ("low", "medium", "high")' "$REVIEWBENCH"
 assert grep -Fq '"agy-flash35": ("low", "medium", "high")' "$REVIEWBENCH"
 assert grep -Fq 'agy-pro-<low|high>' "$ROOT/docs/DIAGNOSTICS.md"
+assert grep -Fq 'agy-flash37-<low|medium|high>' "$ROOT/docs/DIAGNOSTICS.md"
 assert grep -Fq 'agy-flash36-<low|medium|high>' "$ROOT/docs/DIAGNOSTICS.md"
 assert grep -Fq 'agy-flash35-<low|medium|high>' "$ROOT/docs/DIAGNOSTICS.md"
 assert grep -Fq 'return f"{model}-{rater['\''effort'\'']}"' "$REVIEWBENCH"
 assert grep -Fq 'if rater["model"] == "agy-pro" and rater["effort"] == "high":' "$REVIEWBENCH"
 assert doc_has '`agy-pro-low` → `--model gemini-3.1-pro-low`'
 assert doc_has '`agy-pro-high` → `--model "Gemini 3.1 Pro (High)"`'
+assert doc_has '`agy-flash37-<effort>` → `--model gemini-3.7-flash-<effort>`'
 assert doc_has '`agy-flash36-<effort>` → `--model gemini-3.6-flash-<effort>`'
 assert doc_has '`agy-flash35-<effort>` → `--model gemini-3.5-flash-<effort>`'
 assert doc_has 'Every cell omits `--effort`'

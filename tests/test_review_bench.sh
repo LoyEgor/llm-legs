@@ -2542,6 +2542,7 @@ assert rc == 0 and not stderr
 assert pro_skill_command[3:5] == ["--model", "Gemini 3.1 Pro (High)"]
 assert "--effort" not in pro_skill_command
 assert rb.agy_model_id(rb.parse_rater("agy-pro-low-skill")) == "gemini-3.1-pro-low"
+assert rb.agy_expected_label(rb.parse_rater("agy-flash37-low-skill")) == "Gemini 3.7 Flash (Low)"
 pro_usage = json.loads((pro_skill_run / "usage-agy-pro-high-skill.jsonl").read_text())
 assert pro_usage["resolved_model_label"] == "Gemini 3.1 Pro (High)"
 assert "model_mismatch" not in pro_usage
@@ -5264,12 +5265,27 @@ def write_opencode_walls(accounts, detected=None, resets=None):
     ))
 
 
+@contextlib.contextmanager
+def fixture_tier(cells, name="TV"):
+    """A tier of exactly the cells a case needs. The verifier runs under a tier and nowhere else,
+    so every case about it that is not one of the four real compositions asks for one of these.
+    """
+    rb.REVIEW_TIERS[name] = {
+        "budget_min": 1, "when": "fixture",
+        "cells": list(cells), "cells_max": list(cells),
+    }
+    try:
+        yield name
+    finally:
+        del rb.REVIEW_TIERS[name]
+
+
 def walled_panel_runner(rater, repo_path, commit, focus, run_dir, diff, account):
     walled_panel_cells.append((rater["spec"], account))
     return 0, 1, "NO FINDINGS", "", []
 
 
-def walled_panel_run(raters, verify=None):
+def walled_panel_run(raters, verify=None, tier=None):
     """The meta document of the run this call produced, whatever the store already held.
 
     A run is named for the second it started in, and these are fast enough to share one.
@@ -5279,7 +5295,7 @@ def walled_panel_run(raters, verify=None):
     with contextlib.redirect_stdout(io.StringIO()) as captured, \
             contextlib.redirect_stderr(io.StringIO()):
         rc = rb.cmd_run(argparse.Namespace(
-            repo=str(pin_repo), commitish=pin_sha, raters=raters,
+            repo=str(pin_repo), commitish=pin_sha, raters=raters, tier=tier,
             leg=False, verify=verify, auto=None, focus=None,
         ))
     fresh = [path for path in (walled_state / "benches").iterdir() if path.name not in seen]
@@ -5369,24 +5385,30 @@ try:
     # The verifier is an OpenCode model: asked for where the pool cannot staff it and no agy cell
     # leads its chain off the gateway, the run says so instead of keeping every claim unchecked.
     walled_verify_refusal = ""
-    try:
-        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            rb.cmd_run(argparse.Namespace(
-                repo=str(pin_repo), commitish=pin_sha, raters="oc-kimik3,sol-low",
-                leg=False, verify="oc-dsv4flash", auto=None, focus=None,
-            ))
-    except RuntimeError as exc:
-        walled_verify_refusal = str(exc)
-    assert walled_verify_refusal.endswith(f"the verifier reaches — {walled_labels}"), \
-        walled_verify_refusal
+    with fixture_tier(["oc-kimik3", "sol-low"]) as walled_verify_tier:
+        try:
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                rb.cmd_run(argparse.Namespace(
+                    repo=str(pin_repo), commitish=pin_sha, raters=None,
+                    tier=walled_verify_tier,
+                    leg=False, verify="oc-dsv4flash", auto=None, focus=None,
+                ))
+        except RuntimeError as exc:
+            walled_verify_refusal = str(exc)
+        assert walled_verify_refusal.endswith(f"the verifier reaches — {walled_labels}"), \
+            walled_verify_refusal
     # An agy cell's chain leads with Gemini's own transport, so the same walled pool leaves its
     # verifier configured — the side degrades onto that link exactly as it does mid-run.
-    walled_agy_meta, _ = walled_panel_run("agy-flash36-medium-skill")
-    assert walled_agy_meta["verifier"] == rb.OPENCODE_VERIFIER, walled_agy_meta
-    # Asked for by name over that same panel, it is configured rather than refused: a cell the
-    # pool staffed is the account the verifier runs on, so there is no second reach to test.
-    walled_agy_asked, _ = walled_panel_run("agy-flash36-medium-skill", verify="oc-dsv4flash")
-    assert walled_agy_asked["verifier"] == rb.verifier_model("oc-dsv4flash"), walled_agy_asked
+    with fixture_tier(["agy-flash36-medium-skill"]) as walled_agy_tier:
+        walled_agy_meta, _ = walled_panel_run(None, tier=walled_agy_tier)
+        assert walled_agy_meta["verifier"] == rb.OPENCODE_VERIFIER, walled_agy_meta
+        # Asked for by name over that same panel, it is configured rather than refused: a cell the
+        # pool staffed is the account the verifier runs on, so there is no second reach to test.
+        walled_agy_asked, _ = walled_panel_run(
+            None, verify="oc-dsv4flash", tier=walled_agy_tier
+        )
+        assert walled_agy_asked["verifier"] == rb.verifier_model("oc-dsv4flash"), walled_agy_asked
 
     # A pool the caller emptied by hand reads exactly like one nobody ever staffed, and the
     # reader spends the wait adding accounts that were there all along.
@@ -5720,9 +5742,6 @@ assert (
     f"Record exactly with: review-bench record {snapshot_rerun_meta['run_id']} --no-corpus "
     f"--verdicts /tmp/review-bench-{snapshot_rerun_meta['run_id']}-verdicts.jsonl"
 ) in snapshot_rerun_stdout.getvalue(), snapshot_rerun_stdout.getvalue()
-# The panel decides the verifier default, so a rerun of one cell that omits the flag filters
-# findings the run it completes reported raw — while a rerun the verifier cannot reach is refused
-# outright if the flag is passed, so the reproduce line carries it only where it applies.
 assert "--verify" not in snapshot_rerun_stdout.getvalue().split("rerun:")[1].splitlines()[0]
 
 
@@ -5732,10 +5751,10 @@ def oc_rerun_runner(rater, repo_path, commit, focus, run_dir, diff, account):
 
 for side in rb.SIDE_RUNNERS:
     rb.SIDE_RUNNERS[side] = oc_rerun_runner
-for oc_rerun_name, oc_rerun_flag, oc_rerun_no_verify in (
-    ("default", f"--verify {rb.OPENCODE_VERIFIER}", False),
-    ("raw", "--no-verify", True),
-):
+# A rerun is a bench run and a bench run verifies nothing, so the line carries no verifier flag
+# of either spelling — including out of a panel holding the cells the verifier reaches, and
+# including out of one launched with the no-op `--no-verify` an older line spells.
+for oc_rerun_name, oc_rerun_no_verify in (("default", False), ("raw", True)):
     oc_rerun_store = work / f"oc-rerun-{oc_rerun_name}-claudeb"
     os.environ["CLAUDEB_DIR"] = str(oc_rerun_store)
     oc_rerun_stdout = io.StringIO()
@@ -5744,8 +5763,11 @@ for oc_rerun_name, oc_rerun_flag, oc_rerun_no_verify in (
             repo=str(pin_repo), commitish=pin_sha, raters="oc-kimik3,sol-medium",
             leg=False, verify=None, no_verify=oc_rerun_no_verify, auto=None, focus=None,
         ))
-    assert f"rerun: review-bench run {pin_sha} --raters oc-kimik3,sol-medium " \
-        f"{oc_rerun_flag}" in oc_rerun_stdout.getvalue(), oc_rerun_stdout.getvalue()
+    oc_rerun_line = next(
+        line for line in oc_rerun_stdout.getvalue().splitlines() if line.startswith("rerun: ")
+    )
+    assert oc_rerun_line == \
+        f"rerun: review-bench run {pin_sha} --raters oc-kimik3,sol-medium", oc_rerun_line
 for side in rb.SIDE_RUNNERS:
     rb.SIDE_RUNNERS[side] = tier_runner
 
@@ -6513,10 +6535,12 @@ assert "not a git repository" in nonrepo_proc.stderr
 assert not nonrepo_store.exists(), list(nonrepo_store.rglob("*")) \
     if nonrepo_store.exists() else []
 
-# The verifier is on unless refused: every one of its failure paths keeps the finding, so the
-# cost of having it is a minute and the cost of not having it is unchecked claims read in full.
+# A bench run records what the rater said, verifiable cells and all: a row whose false positives
+# the verifier already cut measures the pair, and the corpus compares it against rows nobody cut
+# (Egor, 2026-08-14). The tier review is where the verifier lives, and it defaults on there.
 raw_opencode_store = work / "raw-opencode-claudeb"
 os.environ["CLAUDEB_DIR"] = str(raw_opencode_store)
+os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-verify-drop.json")
 raw_opencode_rc = rb.cmd_run(argparse.Namespace(
     repo=str(pin_repo), commitish=pin_sha, raters="oc-kimik3,oc-grok45-low",
     leg=False, verify=None, no_verify=False, auto=None, focus=None,
@@ -6524,9 +6548,33 @@ raw_opencode_rc = rb.cmd_run(argparse.Namespace(
 raw_opencode_run = next((raw_opencode_store / "worker-stats" / "benches").iterdir())
 raw_opencode_meta = json.loads((raw_opencode_run / "meta.json").read_text())
 assert raw_opencode_rc == 0, raw_opencode_meta
-assert raw_opencode_meta["verifier"] == rb.OPENCODE_VERIFIER, \
-    f"raw run verifier: {raw_opencode_meta['verifier']!r}"
+assert raw_opencode_meta["verifier"] == "", \
+    f"bench run verifier: {raw_opencode_meta['verifier']!r}"
+assert not list(raw_opencode_run.glob("verified-*.jsonl")), "a bench run verified its findings"
+# The verifier fixture in front of this run rejects everything it is asked about, so the raw
+# findings surviving are the whole proof it was never asked.
+assert all(
+    len(rb.read_jsonl(raw_opencode_run / f"findings-{row['rater']}.jsonl")) == 1
+    and row["verifier_dropped"] == 0 and "verify_ms" not in row
+    for row in raw_opencode_meta["rater_runs"]
+), raw_opencode_meta["rater_runs"]
 
+# Asked for by name it is refused rather than quietly ignored: a bench row that came back raw
+# while its caller believes it was checked is the seam this whole rule exists to close.
+bench_verify_refusal = ""
+try:
+    rb.cmd_run(argparse.Namespace(
+        repo=str(pin_repo), commitish=pin_sha, raters="oc-kimik3",
+        leg=False, verify=rb.OPENCODE_VERIFIER, no_verify=False, auto=None, focus=None,
+    ))
+except ValueError as exc:
+    bench_verify_refusal = str(exc)
+assert "--verify is a tier review's flag" in bench_verify_refusal, bench_verify_refusal
+assert "review-bench review <target> --tier <tier>" in bench_verify_refusal, \
+    bench_verify_refusal
+
+# `--no-verify` is what a reproduce line printed before this rule spells, so a bench run still
+# takes it and does with it what it now does with every bench run: nothing.
 refused_verify_store = work / "refused-verify-claudeb"
 os.environ["CLAUDEB_DIR"] = str(refused_verify_store)
 refused_verify_rc = rb.cmd_run(argparse.Namespace(
@@ -6540,22 +6588,24 @@ assert refused_verify_meta["verifier"] == "", refused_verify_meta["verifier"]
 assert not list(refused_verify_run.glob("verified-*.jsonl")), \
     "a refused verifier wrote verified artifacts"
 
-# Asking for it where it cannot apply is an error; defaulting into that would refuse every run
+# Asking for it where it cannot apply is an error; defaulting into that would refuse every tier
 # whose composition happens to have no cell the verifier reaches.
 no_oc_store = work / "no-opencode-claudeb"
 os.environ["CLAUDEB_DIR"] = str(no_oc_store)
-no_oc_rc = rb.cmd_run(argparse.Namespace(
-    repo=str(pin_repo), commitish=pin_sha, raters="sol-low",
-    leg=False, verify=None, no_verify=False, auto=None, focus=None,
-))
+with fixture_tier(["sol-low"]) as no_oc_tier:
+    no_oc_rc = rb.cmd_run(argparse.Namespace(
+        repo=str(pin_repo), commitish=pin_sha, raters=None, tier=no_oc_tier,
+        leg=False, verify=None, no_verify=False, auto=None, focus=None,
+    ))
 no_oc_meta = json.loads(
     (next((no_oc_store / "worker-stats" / "benches").iterdir()) / "meta.json").read_text()
 )
 assert no_oc_rc == 0, no_oc_meta
 assert no_oc_meta["verifier"] == "", no_oc_meta["verifier"]
 
-# The agy leg's claims are filtered by the same verifier as an OpenCode cell's: measured on the
-# leg's own adjudicated findings — 6 real and 24 false — the verifier dropped 11 of the 24.
+# The agy leg's claims are filtered by the same verifier as an OpenCode cell's, and under a tier
+# for the same reason: measured on the leg's own adjudicated findings — 6 real and 24 false —
+# the verifier dropped 11 of the 24.
 agy_verify_spec = "agy-flash36-medium-skill"
 agy_verify_ambient_stdout = os.environ["OPENCODE_FIXTURE_STDOUT"]
 
@@ -6574,9 +6624,9 @@ def run_agy_verify(store_name, fixture, **overrides):
     os.environ["CLAUDEB_DIR"] = str(work / store_name)
     os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / fixture)
     stdout = io.StringIO()
-    with contextlib.redirect_stdout(stdout):
+    with contextlib.redirect_stdout(stdout), fixture_tier([agy_verify_spec]) as agy_tier:
         rc = rb.cmd_run(argparse.Namespace(**dict(
-            dict(repo=str(pin_repo), commitish=pin_sha, raters=agy_verify_spec,
+            dict(repo=str(pin_repo), commitish=pin_sha, raters=None, tier=agy_tier,
                  leg=False, verify=None, no_verify=False, auto=None, focus=None),
             **overrides,
         )))
@@ -6946,19 +6996,21 @@ os.environ["CLAUDEB_DIR"] = str(verify_timing_store)
 os.environ["OPENCODE_CAPTURE_ARGS"] = str(work / "verify-timing-args")
 os.environ["OPENCODE_CAPTURE_PROMPT"] = str(work / "verify-timing-prompt")
 os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-verify-keep.json")
-try:
-    rb.cmd_run(argparse.Namespace(
-        repo=str(pin_repo), commitish=pin_sha, raters="sol-medium",
+with fixture_tier(["sol-medium"]) as unreachable_tier:
+    try:
+        rb.cmd_run(argparse.Namespace(
+            repo=str(pin_repo), commitish=pin_sha, raters=None, tier=unreachable_tier,
+            leg=False, verify="oc-kimik3", auto=None, focus=None,
+        ))
+    except RuntimeError as exc:
+        assert "no cell the verifier reaches" in str(exc), exc
+    else:
+        raise AssertionError("--verify accepted a run with no cell the verifier reaches")
+with fixture_tier(["oc-kimik3"]) as verify_timing_tier:
+    verify_timing_rc = rb.cmd_run(argparse.Namespace(
+        repo=str(pin_repo), commitish=pin_sha, raters=None, tier=verify_timing_tier,
         leg=False, verify="oc-kimik3", auto=None, focus=None,
     ))
-except RuntimeError as exc:
-    assert "no cell the verifier reaches" in str(exc), exc
-else:
-    raise AssertionError("--verify accepted a run with no cell the verifier reaches")
-verify_timing_rc = rb.cmd_run(argparse.Namespace(
-    repo=str(pin_repo), commitish=pin_sha, raters="oc-kimik3",
-    leg=False, verify="oc-kimik3", auto=None, focus=None,
-))
 verify_timing_run = next((verify_timing_store / "worker-stats" / "benches").iterdir())
 verify_timing_meta = json.loads((verify_timing_run / "meta.json").read_text())
 verify_timing_entry = verify_timing_meta["rater_runs"][0]
@@ -6976,7 +7028,47 @@ verify_timing_corpus = rb.read_jsonl(
 )
 assert verify_timing_corpus[0]["verify_ms"] == verify_timing_entry["verify_ms"], \
     verify_timing_corpus
+assert verify_timing_corpus[0]["verifier"] == verify_timing_meta["verifier"], \
+    verify_timing_corpus
 (work / "verify-ms-ok").touch()
+
+# A tier review's rows keep their verifier, a bench run's stay raw, and the corpus says which is
+# which per row: the date a rule changed is not something a reader of one row can apply.
+verifier_stamp_store = work / "verifier-stamp-claudeb"
+os.environ["CLAUDEB_DIR"] = str(verifier_stamp_store)
+for stamp_id, stamp_commit, stamp_verifier, stamp_specs in (
+    ("verifier-stamped", "abcdef0123456789", "oc-kimik3", ["oc-kimik3", "sol-medium"]),
+    ("verifier-raw", "fedcba9876543210", "", ["oc-kimik3"]),
+):
+    stamp_run = verifier_stamp_store / "worker-stats" / "benches" / stamp_id
+    stamp_run.mkdir(parents=True)
+    (stamp_run / "meta.json").write_text(json.dumps({
+        "run_id": stamp_id, "commit": stamp_commit, "repo": str(pin_repo),
+        "raters": stamp_specs,
+        "rater_runs": [{"rater": spec, "exit_code": 0} for spec in stamp_specs],
+        "started": "2026-08-14T00:00:00+00:00", "finished": "2026-08-14T00:00:05+00:00",
+        "focus": "", "verifier": stamp_verifier,
+    }))
+    for spec in stamp_specs:
+        (stamp_run / f"findings-{spec}.jsonl").write_text(json.dumps({
+            "severity": "P2", "file": "src/a.py", "line": 10, "summary": "Stamp fixture",
+            "rater": spec,
+        }) + "\n")
+    stamp_verdicts = work / f"{stamp_id}-verdicts.jsonl"
+    stamp_verdicts.write_text("".join(
+        json.dumps({"rater": spec, "idx": 0, "verdict": "confirmed"}) + "\n"
+        for spec in stamp_specs
+    ))
+    assert rb.cmd_record(argparse.Namespace(
+        run_id=stamp_id, verdicts=str(stamp_verdicts),
+    )) == 0
+stamp_rows = {
+    (row["run_id"], row["rater"]): row
+    for row in rb.read_jsonl(verifier_stamp_store / "worker-stats" / "reviews.jsonl")
+}
+assert stamp_rows[("verifier-stamped", "oc-kimik3")].get("verifier") == "oc-kimik3", stamp_rows
+assert "verifier" not in stamp_rows[("verifier-stamped", "sol-medium")], stamp_rows
+assert "verifier" not in stamp_rows[("verifier-raw", "oc-kimik3")], stamp_rows
 
 assert rb.collapse_rater_attempts(
     ["sol-high", "sol-high#2"]
@@ -10185,6 +10277,18 @@ assert contains "$review_help" "--tier"
 assert contains "$review_help" "{T0,T1,T2,T3}"
 leg_conflict="$("$SCRIPT" run 143fc2f --leg --raters oc-kimik3 2>&1 || true)"
 assert contains "$leg_conflict" "not allowed with argument --leg"
+# The verifier is the review product's, so the bench command parses the flag only to refuse it by
+# name — and keeps taking the `--no-verify` an older reproduce line spells, now a no-op.
+bench_verify="$(WORKER_STATS_DIR="$SD" "$SCRIPT" run 143fc2f --raters oc-kimik3 \
+  --verify oc-dsv4flash 2>&1 || true)"
+assert contains "$bench_verify" "--verify is a tier review's flag"
+assert contains "$bench_verify" "review-bench review <target> --tier <tier>"
+# A commit no repository holds, so the flag is accepted and the run dies at its target rather
+# than launching a panel to prove the point.
+bench_no_verify="$(WORKER_STATS_DIR="$SD" "$SCRIPT" run 0000000000000000000000000000000000000000 \
+  --raters oc-kimik3 --no-verify 2>&1 || true)"
+assert test "$(grep -c "tier review" <<<"$bench_no_verify")" -eq 0
+assert test "$(grep -c 'unrecognized arguments' <<<"$bench_no_verify")" -eq 0
 assert contains "$run_help" "--lens"
 assert contains "$review_help" "--lens"
 # The one escape from the commit-flow door is the prefix the flow gate verifies, never a flag of
@@ -10297,7 +10401,7 @@ assert contains "$owner_table" "agy-flash35-low-skill:"
 # row for it; a tier whose two compositions are identical still gets one row.
 assert test "$(grep -c '^T0 max' <<<"$owner_table")" -eq 1
 assert contains "$(WORKER_STATS_DIR="$SD" "$SCRIPT" oc-models 2>&1)" \
-  "--raters 'oc-kimik3 x2,oc-grok45-low x2,oc-dsv4flash x2' --verify oc-dsv4flash"
+  "--raters 'oc-kimik3 x2,oc-grok45-low x2,oc-dsv4flash x2'"
 max_without_tier="$("$SCRIPT" run HEAD --max 2>&1 || true)"
 assert contains "$max_without_tier" "--max requires --tier"
 tier_guard="$("$SCRIPT" run HEAD --tier T2 2>&1 || true)"

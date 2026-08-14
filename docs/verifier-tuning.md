@@ -135,10 +135,33 @@ OpenCode findings are unchanged, and this does not argue about them: the 33% is 
 false positives to 27%. Gemini was probed there on 2026-07-27 and rejected for dragging a second
 vendor's account routing into that leg — that reasoning stands.
 
+## Tier-only from 2026-08-14
+
+The verifier belongs to the review product and runs there alone: `review-bench review <target>
+--tier <T>` defaults it on, `--verify MODEL` picks another one and `--no-verify` refuses it. A
+bench run (`run <sha> --raters/--auto/--leg`) never verifies — `--verify` is refused there by
+name, `--no-verify` is accepted and does nothing — because a row whose false positives the
+verifier already cut measures the pair rather than the cell, which is what every number in this
+file is measured against.
+
+The corpus therefore carries one seam nothing can repair after the fact: OpenCode bench rows since
+the verifier shipped, and agy bench rows between 2026-08-05 and 2026-08-14, were recorded
+verifier-filtered with nothing in the row saying so. From 2026-08-14 the two kinds are told apart
+per row instead of by date: a bench row is raw, and a tier review's OpenCode and agy rows — still
+filtered, because the review product keeps its verifier — carry the verifier model in a `verifier`
+field. A row without the field, from that date on, is what the rater said.
+
+## Gemini 3.7 Flash probed 2026-08-14 — not adopted
+
+Measured on 32 llm-legs corpus claims (27 real / 5 false after the dropped ones were judged),
+with the incumbent's baseline taken from its recorded production decisions rather than fresh
+calls — only 3.7 ran live. gemini-3.7-flash at medium kept 20/27 real against 3.6's 24/27,
+killed the same 2/5 false, and ran 8.4s per claim against ~4.8s. All four disagreements were
+one-directional: real findings 3.6 kept and 3.7 killed. It fails the standing both-axes rule
+on the defect axis with no gain anywhere, so the chain is unchanged.
+
 ## Open at the time of writing
 
-- Verifier wall-clock is not recorded anywhere (`duration_ms` is the rater alone); a
-  `verify_ms` field must land together with the prompt change or tier timing stays blind.
 - Repeating this: rebuild the labeled dataset from `benches/*/verdicts.jsonl`, judge any
   new drops, replay variants item-by-item, and read results per defect (via
   `defects/<repo>__<sha7>.jsonl` catches), never per item alone.

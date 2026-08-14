@@ -818,12 +818,17 @@ def opencode_env(account, **values):
 
 AGY_EFFORTS = {
     "agy-pro": ("low", "high"),
+    # Served from CLI 1.1.12. All three efforts were label-probed on 2026-08-13 and each came back
+    # as its own — including low, which is the spelling agy-flash35 is excluded for serving as
+    # Medium, so this family is not born with that defect.
+    "agy-flash37": ("low", "medium", "high"),
     "agy-flash36": ("low", "medium", "high"),
     "agy-flash35": ("low", "medium", "high"),
 }
 # v1.1.9 still misroutes the pro-high slug to Flash; every other id carries its effort.
 AGY_MODEL_IDS = {
     "agy-pro": "gemini-3.1-pro",
+    "agy-flash37": "gemini-3.7-flash",
     "agy-flash36": "gemini-3.6-flash",
     "agy-flash35": "gemini-3.5-flash",
 }
@@ -912,6 +917,7 @@ ADJUDICATION_TOK_ESTIMATE = {"duplicate": 400, "false_positive": 1500}
 # commands, corpus rows) keep the full ids: that grammar is parsed, and only this is read.
 SHORT_MODEL_NAMES = {
     "agy-pro": ("gem-pro", ""),
+    "agy-flash37": ("gem-flash", "37"),
     "agy-flash35": ("gem-flash", "35"),
     "agy-flash36": ("gem-flash", "36"),
     "oc-kimik3": ("kimi", "k3"),
@@ -932,7 +938,7 @@ ALWAYS_EFFORT_SIDES = ("claude", "codex")
 _REVIEW_POOL_RATERS = None
 _DEFAULT_NAME_SCHEME = None
 RATER_RE = re.compile(
-    r"^(sol|opus|sonnet|haiku|fable|agy-pro|agy-flash35|agy-flash36"
+    r"^(sol|opus|sonnet|haiku|fable|agy-pro|agy-flash35|agy-flash36|agy-flash37"
     r"|oc-glm52|oc-glm51|oc-dsv4pro|oc-dsv4flash|oc-grok45|oc-qwen37max"
     r"|oc-qwen37plus|oc-kimik3|oc-kimik27code|oc-mmm3|oc-mimo25pro|oc-mimo25|oc-hy3)"
     r"(?:-(low|medium|high|xhigh|max))?(-skill|-bare|-anthropic|-google)?$"
@@ -2281,7 +2287,7 @@ def parse_rater(spec):
         raise ValueError(
             f"invalid rater {spec!r}; expected sol-<effort>[-bare], "
             "opus|sonnet|haiku|fable-<effort>, "
-            "agy-pro-<low|high>-skill, agy-flash36-<low|medium|high>-skill, "
+            "agy-pro-<low|high>-skill, agy-flash37|agy-flash36-<low|medium|high>-skill, "
             "agy-flash35-<low|medium|high>-skill, "
             "oc-glm52|oc-kimik27code[-<low|medium|high>], "
             "oc-grok45|oc-dsv4pro|oc-dsv4flash-<low|medium|high>, "
@@ -6320,7 +6326,7 @@ def agy_model_mismatch(labels, rater):
 def agy_expected_label(rater):
     if rater["model"] == "agy-pro":
         return f"Gemini 3.1 Pro ({rater['effort'].capitalize()})"
-    version = "3.6" if rater["model"] == "agy-flash36" else "3.5"
+    version = AGY_MODEL_IDS[rater["model"]].split("-")[1]
     return f"Gemini {version} Flash ({rater['effort'].capitalize()})"
 
 
@@ -6975,6 +6981,23 @@ def guard_tier_foreground(args, tier_name):
             "--foreground: the flag asserts your runner has no 10-minute kill window, and a "
             "background task is exactly that."
         )
+
+
+def guard_verifier_scope(args, tier_name):
+    """The verifier belongs to the review product and to nothing else. A bench row is what the
+    rater said; a row the verifier already filtered measures the pair, and a corpus holding both
+    kinds compares cells against each other on numbers that never meant the same thing.
+
+    `--no-verify` stays accepted on a bench run as the no-op it now is: reproduce lines printed
+    by older runs spell it, and a reproduce line that no longer replays is no reproduce line.
+    """
+    if tier_name or not getattr(args, "verify", None):
+        return
+    raise ValueError(
+        "--verify is a tier review's flag: a bench row records what the rater said, and one the "
+        "verifier filtered measures the pair rather than the cell. Review with "
+        "`review-bench review <target> --tier <tier>`, or drop the flag and bench the raters raw."
+    )
 
 
 REVIEW_CYCLE_NAME = "review-cycle"
@@ -7770,6 +7793,12 @@ def commit_mode_command(args):
             command.append("--max")
         if getattr(args, "foreground", False):
             command.append("--foreground")
+        if args.verify:
+            command += ["--verify", args.verify]
+        # A refusal the reproduce line cannot express is a refusal it ignores: replaying without
+        # it verifies findings the run it claims to reproduce reported raw.
+        elif getattr(args, "no_verify", False):
+            command.append("--no-verify")
     else:
         command = ["review-bench", "run", "HEAD"]
         if args.raters:
@@ -7788,12 +7817,6 @@ def commit_mode_command(args):
         command += ["--focus", args.focus]
     if getattr(args, "lens", ""):
         command += ["--lens", args.lens]
-    if args.verify:
-        command += ["--verify", args.verify]
-    # A refusal the reproduce line cannot express is a refusal it ignores: replaying without it
-    # verifies findings the run it claims to reproduce reported raw.
-    elif getattr(args, "no_verify", False):
-        command.append("--no-verify")
     return shlex.join(command)
 
 
@@ -7805,6 +7828,7 @@ def cmd_run(args):
         raise ValueError("--max requires --tier")
     guard_tier_owner(tier_name, use_max)
     guard_tier_foreground(args, tier_name)
+    guard_verifier_scope(args, tier_name)
     if tier_name:
         args.raters = ",".join(
             REVIEW_TIERS[tier_name]["cells_max" if use_max else "cells"]
@@ -7986,12 +8010,16 @@ def cmd_run(args):
             "--verify checks OpenCode and agy findings only (docs/verifier-tuning.md measured "
             "no other side); this run has no cell the verifier reaches" + walled
         )
-    # On unless refused, and only once the composition is known, since asking for it where it
-    # cannot apply is an error rather than a default. Every failure path of the verifier keeps
-    # the finding, so the worst it costs is a minute and a run identical to the one without it;
-    # what it buys is the claims that cite code as it is not, dropped before a reader
-    # spends context on them.
-    if not verify_model and has_verifiable and not getattr(args, "no_verify", False):
+    # On unless refused, in a tier review and nowhere else, and only once the composition is
+    # known, since asking for it where it cannot apply is an error rather than a default. Every
+    # failure path of the verifier keeps the finding, so the worst it costs a review is a minute
+    # and a run identical to the one without it; what it buys is the claims that cite code as it
+    # is not, dropped before a reader spends context on them. A bench run buys nothing by it and
+    # pays with the measurement, so it stays raw (Egor, 2026-08-14).
+    if (
+        not verify_model and tier_name and has_verifiable
+        and not getattr(args, "no_verify", False)
+    ):
         verify_model = verifier_model(OPENCODE_VERIFIER)
     print("selected raters:")
     for rater in raters:
@@ -8296,13 +8324,9 @@ def cmd_run(args):
             # A rerun without the lens completes a lens run with a stock review of the cell.
             if lens:
                 rerun_command += ["--lens", lens["name"]]
-            # The verifier default is decided by the panel, so a rerun of one cell would filter
-            # findings the run it completes reported raw. Only a rerun holding a cell the
-            # verifier reaches can carry the flag at all: --verify is refused outright without.
-            if any(rater["side"] in VERIFIED_SIDES for rater in errored):
-                rerun_command += (
-                    ["--verify", verify_model] if verify_model else ["--no-verify"]
-                )
+            # No verifier flag of any spelling: the rerun is a bench run, and a bench run reports
+            # what the rater said. A tier's errored cell is completed raw, which is the same
+            # answer the reader would get by asking the cell again by hand.
             print(f"rerun: {shlex.join(rerun_command)}")
         print(f"run id: {run_id}")
         handoff(run_id, paths, members, worktree=worktree_mode)
@@ -8565,6 +8589,10 @@ def cmd_record(args):
             record["rater_model_resolved"] = model_resolved
         if repo_name:
             record["repo"] = repo_name
+        # Only the rows the verifier could touch: a Claude or Codex row in a verified review is
+        # still raw (VERIFIED_SIDES is the verifier's own boundary).
+        if meta.get("verifier") and parsed.get("side") in VERIFIED_SIDES:
+            record["verifier"] = meta["verifier"]
         # The hash beside the slug because a lens is edited between runs: the slug is what the
         # rows are grouped by, and the hash is the only way to tell which text was measured.
         if meta.get("lens"):
@@ -9041,8 +9069,7 @@ def median(values):
 
 def cmd_oc_models(args):
     health = opencode_health()
-    print(f"recommended leg: --raters {shlex.quote(','.join(OPENCODE_REVIEW_LEG))} "
-          f"--verify {OPENCODE_VERIFIER}")
+    print(f"recommended leg: --raters {shlex.quote(','.join(OPENCODE_REVIEW_LEG))}")
     print("  proven on 143fc2f, fabcae4, 8448a35 and 8553616; one pass is a dice roll, so"
           " three passes union ~1.7x the true findings of one")
     print("  run the leg BARE: on 143fc2f the bare cells found 8 distinct real defects against"
@@ -9181,8 +9208,17 @@ def main():
     review.add_argument("--lens", default="", metavar="SLUG", help=LENS_FLAG_HELP)
     # cmd_review hands off to cmd_run, so a refusal it cannot express is a refusal it ignores.
     review_verify = review.add_mutually_exclusive_group()
-    review_verify.add_argument("--verify", metavar="MODEL", choices=verifier_choices())
-    review_verify.add_argument("--no-verify", action="store_true")
+    review_verify.add_argument(
+        "--verify", metavar="MODEL", choices=verifier_choices(),
+        help=f"Check every finding back against the file it cites with this in-plan "
+             f"OpenCode model, and keep only the claims that survive (default "
+             f"{OPENCODE_VERIFIER}); agy findings are judged by {GEMINI_VERIFIER} first and "
+             f"reach this model only where that transport declined",
+    )
+    review_verify.add_argument(
+        "--no-verify", action="store_true",
+        help="Report every finding unchecked, including the ones that cite code as it is not",
+    )
     review.set_defaults(func=cmd_review)
     reviewed = subparsers.add_parser(
         "reviewed", help="Stamp the current working tree as reviewed"
@@ -9283,8 +9319,8 @@ def main():
     selection.add_argument("--auto", type=int, metavar="N", help="Pick N least-reviewed cells")
     selection.add_argument(
         "--leg", action="store_true",
-        help="Run the measured OpenCode composition with its verifier — the only cells that "
-             "survived strict adjudication on four commits, and no vendor quota at all",
+        help="Run the measured OpenCode composition — the only cells that survived strict "
+             "adjudication on four commits, and no vendor quota at all",
     )
     run.add_argument("--max", action="store_true", help="Use the full tier composition")
     run.add_argument(
@@ -9300,14 +9336,13 @@ def main():
     run_verify = run.add_mutually_exclusive_group()
     run_verify.add_argument(
         "--verify", metavar="MODEL", choices=verifier_choices(),
-        help=f"Check every finding back against the file it cites with this in-plan "
-             f"OpenCode model, and keep only the claims that survive (default "
-             f"{OPENCODE_VERIFIER}); agy findings are judged by {GEMINI_VERIFIER} first and "
-             f"reach this model only where that transport declined",
+        help="Refused here, and spelled here so the refusal can name its reason: the verifier "
+             "is a tier review's, and a bench row records what the rater said",
     )
     run_verify.add_argument(
         "--no-verify", action="store_true",
-        help="Report every finding unchecked, including the ones that cite code as it is not",
+        help="Accepted and does nothing — a bench run reports every finding unchecked either "
+             "way, and older reproduce lines spell the flag",
     )
     run.set_defaults(func=cmd_run)
     record = subparsers.add_parser("record", help="Record blind adjudication verdicts")

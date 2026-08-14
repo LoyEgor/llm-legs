@@ -264,4 +264,5 @@ with `#` are ignored. If the file is missing, only the default key is used.
 
 These models are review raters only, never workers: the client has no agentic loop. Their measured
 capability, the composition that survived strict adjudication, and the plan models that failed
-screening are printed by `review-bench oc-models`; a review runs as `review-bench run <sha> --leg`.
+screening are printed by `review-bench oc-models`; the bench runs them raw as `review-bench run
+<sha> --leg`, and a review runs them under a tier, where the finding verifier lives.
