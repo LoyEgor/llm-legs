@@ -144,7 +144,6 @@ if [ -n "$agent_flag" ]; then
   esac
 fi
 
-touched_file=""
 case "$tool_name" in
   ExitWorktree)
     rm -f "$state_file" "$state_file.gone" "$away_file"
@@ -155,7 +154,6 @@ case "$tool_name" in
     ;;
   Edit|Write|NotebookEdit)
     [ -n "$candidate" ] || exit 0
-    touched_file=$candidate
     candidate=$(dirname -- "$candidate") || exit 0
     ;;
   Read)
@@ -242,54 +240,16 @@ if [ -n "$bash_worktree_base" ] && [[ "$candidate" != /* ]]; then
   base_dir=$(resolve_dir "$bash_worktree_base") || exit 0
 fi
 
-# Ownership evidence, kept apart from the home above and written for the review segment: it needs
-# to know which changed paths are THIS chat's work, and a receipt hash over the whole repository
-# cannot tell — one foreign edit anywhere used to light the label forever. A worker's writes and
-# the files a brief names are this chat's work too, since in orchestrator mode the session makes
-# no edit of its own. Reads claim nothing (a sweep touches every repo in reach), and a shell
-# redirect is a known blind spot: the hook reads a command line, not the files it opens.
-record_touched() {
-  local file=$1 dir resolved top rel line touched
-  [ -n "$session_id" ] || return 0
-  dir=$(dirname -- "$file") || return 0
-  top=$(resolve_toplevel "$dir") || return 0
-  resolved=$(resolve_dir "$dir") || return 0
-  case "$resolved" in
-    "$top") rel=$(basename -- "$file") ;;
-    "$top"/*) rel="${resolved#"$top"/}/$(basename -- "$file")" ;;
-    *) return 0 ;;
-  esac
-  [ -n "$rel" ] || return 0
-  line="$top"$'\t'"$rel"
-  touched="$cache_dir/touched-$session_id"
-  mkdir -p "$cache_dir" 2>/dev/null || return 0
-  umask 077
-  grep -qxF -- "$line" "$touched" 2>/dev/null && return 0
-  printf '%s\n' "$line" >> "$touched" 2>/dev/null || return 0
-  # Appended, never rewritten in place, for the same reason as the away run: a turn's parallel
-  # Edit batch runs these hooks concurrently. The dedup above makes the trim rare by construction,
-  # which is what keeps it off the path where it would race those appends.
-  if [ "$(wc -l < "$touched" 2>/dev/null || printf 0)" -gt 600 ]; then
-    tail -n 500 "$touched" > "$touched.tmp.$$" 2>/dev/null &&
-      mv -f "$touched.tmp.$$" "$touched" 2>/dev/null ||
-      rm -f "$touched.tmp.$$" 2>/dev/null
-  fi
-}
-
 case "$tool_name" in
   Task|Agent)
     toplevel=""
     IFS=$'\x1e' read -r -a dispatch_candidates <<< "$dispatch"
     for dispatch_candidate in "${dispatch_candidates[@]}"; do
       [ -n "$dispatch_candidate" ] || continue
-      # A directory names where the worker runs, not what it changes, so it claims nothing: the
-      # repository root would otherwise claim every path in the tree.
-      [ -d "$dispatch_candidate" ] || record_touched "$dispatch_candidate"
       [ -n "$toplevel" ] || toplevel=$(resolve_toplevel "$dispatch_candidate") || toplevel=""
     done
     ;;
   *)
-    [ -n "$touched_file" ] && record_touched "$touched_file"
     if [ -n "$bash_worktree_add" ]; then
       # PostToolUse has no reliable success field: requiring the candidate to
       # be its own toplevel rejects both a missing path and an existing subdir.

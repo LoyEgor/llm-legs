@@ -706,95 +706,79 @@ assert expected_durations == {
     "sol-high": 2000, "sol-high#2": 2000, "opus-medium": 6000,
 }, expected_durations
 assert "no-history" not in expected_durations
-assert rb.adaptive_timeout_seconds(None) == 600
-assert rb.adaptive_timeout_seconds(100_000) == 180
-assert rb.adaptive_timeout_seconds(200_000) == 300
-assert rb.adaptive_timeout_seconds(500_000) == 600
-timeout_history = work / "agy-timeout-history"
+# The watchdog's cap is per (model, effort) and applies to every panel: the longest that pair has
+# ever completed in, plus room for a slow run of the same shape, never under the floor.
+assert rb.WATCHDOG_GRACE_S == 180 and rb.WATCHDOG_FLOOR_S == 900
+assert rb.watchdog_timeout_seconds(None) == 900
+assert rb.watchdog_timeout_seconds(100_000) == 900
+assert rb.watchdog_timeout_seconds(1_000_000) == 1180
+# Rounded up, so a pair measured a hair over the floor still buys its whole grace.
+assert rb.watchdog_timeout_seconds(720_001) == 901
+watchdog_history = work / "watchdog-history"
 for run_id, rows in {
     "one": [
-        {"rater": "agy-flash36-medium-skill", "side": "agy", "duration_ms": 200_000,
-         "findings": 0, "exit_code": 0},
-        {"rater": "agy-flash36-low-skill", "side": "agy", "duration_ms": 35_000,
-         "findings": 2, "exit_code": 0},
+        {"rater": "agy-flash36-medium-skill", "model": "agy-flash36", "effort": "medium",
+         "side": "agy", "duration_ms": 200_000, "findings": 0, "exit_code": 0},
+        {"rater": "agy-flash36-low-skill", "model": "agy-flash36", "effort": "low",
+         "side": "agy", "duration_ms": 35_000, "findings": 2, "exit_code": 0},
     ],
     "two": [
-        {"rater": "agy-flash36-medium-skill#2", "side": "agy", "duration_ms": 254_715,
-         "findings": 1, "exit_code": 0},
-        {"rater": "agy-flash36-high-skill", "side": "agy", "duration_ms": 599_000,
-         "findings": 0, "exit_code": 1},
-        {"rater": "agy-pro-low-skill", "side": "agy", "duration_ms": 450_000,
-         "findings": 0, "exit_code": 0, "errored": True},
-        {"rater": "agy-pro-high-skill", "side": "agy", "duration_ms": 500_000,
-         "exit_code": 0},
+        # A second spelling of one (model, effort) pair: the repeat suffix is not a cell of its own,
+        # and keyed on the spec it would start from the floor again.
+        {"rater": "agy-flash36-medium-skill#2", "model": "agy-flash36", "effort": "medium",
+         "side": "agy", "duration_ms": 254_715, "findings": 1, "exit_code": 0},
+        {"rater": "sol-high", "model": "sol", "effort": "high", "side": "codex",
+         "duration_ms": 1_200_000, "findings": 0, "exit_code": 0},
+        # Neither a kill nor an errored cell says how long the work takes.
+        {"rater": "agy-flash36-low-skill#2", "model": "agy-flash36", "effort": "low",
+         "side": "agy", "duration_ms": 3_000_000, "timeout_s": 900, "findings": 0,
+         "exit_code": 124, "errored": True, "stderr": "rater timed out after 900s"},
+        {"rater": "opus-high", "model": "opus", "effort": "high", "side": "claude",
+         "duration_ms": 2_000_000, "findings": 0, "exit_code": 0, "errored": True},
     ],
 }.items():
-    directory = timeout_history / run_id
+    directory = watchdog_history / run_id
     directory.mkdir(parents=True)
     (directory / "meta.json").write_text(json.dumps({"rater_runs": rows}))
-timeout_maxima = rb.completed_agy_duration_maxima(timeout_history)
-assert timeout_maxima == {
-    "agy-flash36-medium-skill": 254_715,
-    "agy-flash36-low-skill": 35_000,
-}, timeout_maxima
-adaptive_timeouts = rb.adaptive_agy_timeouts(timeout_history)
-assert adaptive_timeouts["agy-flash36-medium-skill"] == 383
-assert adaptive_timeouts["agy-flash36-low-skill"] == 180
-assert adaptive_timeouts["agy-flash36-high-skill"] == 600
-assert adaptive_timeouts["agy-pro-high-skill"] == 600
-for run_id, timeout_s, expected in (
-    ("x-three", 383, 575),
-    ("y-four", 575, 600),
-):
-    directory = timeout_history / run_id
-    directory.mkdir()
-    (directory / "meta.json").write_text(json.dumps({"rater_runs": [{
-        "rater": "agy-flash36-medium-skill", "side": "agy",
-        "duration_ms": timeout_s * 1000, "timeout_s": timeout_s,
-        "findings": 0, "exit_code": 124, "errored": True,
-        "stderr": f"rater timed out after {timeout_s}s",
-    }]}))
-    assert rb.adaptive_agy_timeouts(timeout_history)[
-        "agy-flash36-medium-skill"
-    ] == expected
-completion = timeout_history / "z-five"
-completion.mkdir()
-(completion / "meta.json").write_text(json.dumps({"rater_runs": [{
-    "rater": "agy-flash36-medium-skill", "side": "agy",
-    "duration_ms": 240_000, "findings": 1, "exit_code": 0,
-}]}))
-assert rb.adaptive_agy_timeouts(timeout_history)[
-    "agy-flash36-medium-skill"
-] == 383
-for run_id, finished, row in (
-    (
-        "20260730T120000Z-zzzzzzz",
-        "2026-07-30T12:00:01Z",
-        {
-            "rater": "agy-flash36-medium-skill", "side": "agy",
-            "duration_ms": 240_000, "findings": 1, "exit_code": 0,
-        },
-    ),
-    (
-        "20260730T120000Z-aaaaaaa",
-        "2026-07-30T12:00:02+00:00",
-        {
-            "rater": "agy-flash36-medium-skill", "side": "agy",
-            "duration_ms": 383_000, "timeout_s": 383, "findings": 0,
-            "exit_code": 124, "errored": True, "stderr": "timed out after 383s",
-        },
-    ),
-):
-    directory = timeout_history / run_id
-    directory.mkdir()
-    (directory / "meta.json").write_text(json.dumps({
-        "started": "2026-07-30T12:00:00Z",
-        "finished": finished,
-        "rater_runs": [row],
-    }))
-assert rb.adaptive_agy_timeouts(timeout_history)[
-    "agy-flash36-medium-skill"
-] == 575
+watchdog_maxima = rb.panel_duration_maxima(watchdog_history)
+assert watchdog_maxima == {
+    ("agy-flash36", "medium"): 254_715,
+    ("agy-flash36", "low"): 35_000,
+    ("sol", "high"): 1_200_000,
+}, watchdog_maxima
+watchdog_caps = rb.panel_watchdog_timeouts(watchdog_history)
+assert watchdog_caps[("agy-flash36", "medium")] == 900, watchdog_caps
+# A pair the watchdog has already killed gets one grace more than the cap it breached: a cell whose
+# real runtime is past its cap completes nothing, so nothing else could ever raise it and it would
+# be killed at the same limit on every run it is ever given.
+assert watchdog_caps[("agy-flash36", "low")] == 1080, watchdog_caps
+assert watchdog_caps[("sol", "high")] == 1380, watchdog_caps
+assert ("opus", "high") not in watchdog_caps, watchdog_caps
+# An agy cell is killed by the `--print-timeout` the watchdog handed geminib, which expires before
+# any deadline of the tool's own and exits 1 with a timeout of its own wording. Read on exit 124
+# alone that side records no breach at all and is killed at the floor on every run it ever gets.
+agy_kill_history = work / "watchdog-agy-history"
+(agy_kill_history / "one").mkdir(parents=True)
+(agy_kill_history / "one" / "meta.json").write_text(json.dumps({"rater_runs": [
+    {"rater": "agy-pro-high-skill", "model": "agy-pro", "effort": "high", "side": "agy",
+     "duration_ms": 908_000, "timeout_s": 900, "findings": 0, "exit_code": 1,
+     "errored": True, "stderr": "Error: timeout waiting for response"},
+]}))
+assert rb.panel_watchdog_timeouts(agy_kill_history) == {("agy-pro", "high"): 1080}, \
+    rb.panel_watchdog_timeouts(agy_kill_history)
+# A provider answering `gateway timeout` is an ordinary failed cell: it says nothing about the cap,
+# so it neither raises one nor invents a pair that never ran under the watchdog.
+gateway_history = work / "watchdog-gateway-history"
+(gateway_history / "one").mkdir(parents=True)
+(gateway_history / "one" / "meta.json").write_text(json.dumps({"rater_runs": [
+    {"rater": "oc-kimik3", "model": "oc-kimik3", "effort": "", "side": "opencode",
+     "duration_ms": 30_000, "timeout_s": 900, "findings": 0, "exit_code": 1,
+     "errored": True, "stderr": "gateway timeout"},
+]}))
+assert rb.panel_watchdog_timeouts(gateway_history) == {}, rb.panel_watchdog_timeouts(gateway_history)
+assert rb.panel_cell_key({"model": "sol", "effort": "high"}) == ("sol", "high")
+assert rb.panel_cell_key({"model": "oc-glm52", "effort": ""}) == ("oc-glm52", "")
+assert rb.panel_cell_key({"effort": "high"}) is None
 max_tier_rows = [
     {
         "rater": rater["spec"], "side": rater["side"], "duration_ms": 1000,
@@ -1100,6 +1084,11 @@ assert "verifier:     off — 2 finding(s) unchecked" in agy_off_report, agy_off
 # The verifier reaches OpenCode and agy findings only, so a panel without either is not a run
 # whose verifier stayed off — nothing was its to touch, and the line would mislead.
 assert "verifier:" not in "\n".join(rb.report_lines(duration_dir, duration_meta))
+
+# A value of several lines — the escalation fork is three arms — stays under the value column;
+# flush left its later lines read as rows of their own whose label went missing.
+wrapped_rows = rb.aligned_report_lines([("outcome:", "first\nsecond"), ("panel:", "one")])
+assert wrapped_rows == ["outcome:  first", "          second", "panel:    one"], wrapped_rows
 
 # --- findings: one entry per place, agreement first --------------------------------------
 findings_dir = work / "findings-view"
@@ -2947,30 +2936,9 @@ subprocess.run(
      "-c", "user.email=fixture@example.com", "commit", "-qm", "clean"],
     check=True,
 )
-# The gate that blocks a commit opens the cycle; every `review --worktree` below is a panel that
-# flow asked for, so each fixture repository carries the file the gate would have left.
-def cycle_path(repo, session=""):
-    gitdir = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "--absolute-git-dir"],
-        check=True, capture_output=True, text=True,
-    ).stdout.strip()
-    return pathlib.Path(gitdir) / ("review-cycle" + (f"-{session}" if session else ""))
-
-
-def arm_review_cycle(repo, stage="armed1", session="", entries=()):
-    path = cycle_path(repo, session)
-    # The gate's own six fields: stage, the run id in the receipt when the stage was written, the
-    # tree that run read, the UTC second the cycle opened, the ticket's drift budget and the tier it
-    # was granted at, then one `<blob> <path>` entry per path the pending commit carries. Written
-    # here, never rewritten: the file is the gate's, and a reader off by one takes an entry for a
-    # budget and the first real entry for a path nobody is committing.
-    fields = [stage.encode(), b"", b"", b"2026-08-07T00:00:00", b"", b""]
-    fields += [entry.encode() if isinstance(entry, str) else entry for entry in entries]
-    path.write_bytes(b"\0".join(fields) + b"\0")
-    return path
-
-
-arm_review_cycle(snapshot_clean)
+# Every `review --worktree` down to the door's own tests is a panel Egor asked for by name, and
+# those tests build an environment of their own with this stripped back out.
+os.environ["REVIEW_ASKED"] = "1"
 clean_worktree = subprocess.run(
     [sys.argv[1], "run", "--worktree", "--repo", str(snapshot_clean),
      "--raters", "oc-kimik3"],
@@ -3047,9 +3015,8 @@ for command in (
     if "--range" in command:
         assert "--range" in conflict.stderr.split("got")[-1], conflict.stderr
 
-# A panel is something a commit asks for. The gate that blocks the commit opens a cycle, and that
-# file is the whole authorization: without one, `review --worktree` is the mid-work review a chat
-# talked itself into.
+# A worktree panel is something Egor asked for by name: without that ask, `review --worktree` is
+# the mid-work review a chat talked itself into.
 cycle_repo = work / "cycle-repo"
 cycle_repo.mkdir()
 subprocess.run(["git", "-C", str(cycle_repo), "init", "-q"], check=True)
@@ -3062,8 +3029,9 @@ subprocess.run(
 )
 
 
-# The bypass is an environment variable the suite must not inherit by accident: a REVIEW_ASKED
-# already set in the shell that ran these tests would open every door below.
+# The door is an environment variable the suite must not inherit by accident: a REVIEW_ASKED
+# already set — in the shell that ran these tests, or by the section above — would open every
+# refusal below.
 CYCLE_ENV = {key: value for key, value in os.environ.items() if key != "REVIEW_ASKED"}
 
 
@@ -3078,36 +3046,16 @@ def review_worktree(*repos, extra=(), env=None):
 
 
 CYCLE_REFUSAL = "reviews are commit-triggered"
-unarmed = review_worktree(cycle_repo)
-assert unarmed.returncode == 2, unarmed
-assert CYCLE_REFUSAL in unarmed.stderr, unarmed.stderr
-assert "attempt the `git commit`" in unarmed.stderr, unarmed.stderr
-# The refusal has to name the other way in, or a chat holding Egor's own ask has nothing to do
-# with it but argue with the tool.
-assert "REVIEW_ASKED=1" in unarmed.stderr, unarmed.stderr
-# The ticket stage is a cycle whose review already happened and was triaged — the round is over,
-# and the next panel belongs to the next commit that asks for one.
-arm_review_cycle(cycle_repo, "ticket")
-spent = review_worktree(cycle_repo)
-assert spent.returncode == 2, spent
-assert CYCLE_REFUSAL in spent.stderr, spent.stderr
-# Both armed stages open it — armed2 is the second round a P1 tally earned, and refusing there
-# would demand a commit that is already blocked on the very review being refused. An authorized
-# launch then dies on its own next refusal, which here is the clean tree.
-for stage in ("armed1", "armed2"):
-    arm_review_cycle(cycle_repo, stage)
-    armed = review_worktree(cycle_repo)
-    assert armed.returncode != 0, (stage, armed)
-    assert CYCLE_REFUSAL not in armed.stderr, (stage, armed.stderr)
-    assert "working tree matches HEAD" in armed.stderr, (stage, armed.stderr)
-# Read and left alone: the gate spends this file at the commit it opened it for, and a peek that
-# consumed it would leave that commit blocked on a round nothing can authorize.
-assert cycle_path(cycle_repo).read_bytes() == (
-    b"armed2\0\0\0" + b"2026-08-07T00:00:00\0\0\0")
-# Egor asking for a review by name is the other door, and it is the prefix the flow gate already
+unasked = review_worktree(cycle_repo)
+assert unasked.returncode == 2, unasked
+assert CYCLE_REFUSAL in unasked.stderr, unasked.stderr
+# The refusal has to name the way in, or a chat holding Egor's own ask has nothing to do with it
+# but argue with the tool.
+assert "REVIEW_ASKED=1" in unasked.stderr, unasked.stderr
+# Egor asking for a review by name is the whole door, and it is the prefix the flow gate already
 # verifies against the transcript — taken at face value here, since a flag of this tool's own would
-# be one the caller grants itself unchecked.
-cycle_path(cycle_repo).unlink()
+# be one the caller grants itself unchecked. An authorized launch then dies on its own next
+# refusal, which here is the clean tree.
 asked = review_worktree(cycle_repo, env={**CYCLE_ENV, "REVIEW_ASKED": "1"})
 assert asked.returncode != 0, asked
 assert CYCLE_REFUSAL not in asked.stderr, asked.stderr
@@ -3117,40 +3065,9 @@ for value in ("", "0", "yes"):
     not_asked = review_worktree(cycle_repo, env={**CYCLE_ENV, "REVIEW_ASKED": value})
     assert not_asked.returncode == 2, (value, not_asked)
     assert CYCLE_REFUSAL in not_asked.stderr, (value, not_asked.stderr)
-# Outside a chat nothing names a session, and the gate keys its file on the checkout alone there.
-sessionless_env = {
-    key: value for key, value in CYCLE_ENV.items() if key != "CLAUDE_CODE_SESSION_ID"
-}
-arm_review_cycle(cycle_repo, "armed1", session="")
-sessionless = review_worktree(cycle_repo, env=sessionless_env)
-assert sessionless.returncode != 0, sessionless
-assert CYCLE_REFUSAL not in sessionless.stderr, sessionless.stderr
-cycle_path(cycle_repo, "").unlink()
-# The authorization belongs to the checkout, not to a chat: the session that runs the review the
-# checkout owes is routinely not the one whose commit the gate blocked — an orchestrator's block,
-# a worker's panel — so ANY session's armed file opens this door.
-foreign_cycle_path = arm_review_cycle(cycle_repo, "armed1", session="chat-2")
-foreign_cycle = review_worktree(
-    cycle_repo, env={**CYCLE_ENV, "CLAUDE_CODE_SESSION_ID": "chat-1"},
-)
-assert foreign_cycle.returncode != 0, foreign_cycle
-assert CYCLE_REFUSAL not in foreign_cycle.stderr, foreign_cycle.stderr
-foreign_cycle_path.unlink()
-# A file this build cannot parse is no authorization: the format is the gate's, and guessing at an
-# unknown shape is how a wall turns into an open door.
-unreadable_cycle = cycle_path(cycle_repo, "chat-3")
-unreadable_cycle.write_bytes(b"")
-unparsed = review_worktree(cycle_repo)
-assert unparsed.returncode == 2, unparsed
-assert CYCLE_REFUSAL in unparsed.stderr, unparsed.stderr
-unreadable_cycle.unlink()
-# No file at all, and the refusal is the same one.
-nothing_armed = review_worktree(cycle_repo, env=sessionless_env)
-assert nothing_armed.returncode == 2, nothing_armed
-assert CYCLE_REFUSAL in nothing_armed.stderr, nothing_armed.stderr
-# A merged panel is authorized by ANY repository it names: a cycle is opened by a blocked commit,
-# one commit is blocked in one repository, and demanding a cycle in every named repository would
-# leave the merged review unlaunchable by the flow that asks for it.
+# A merged panel comes through the same one door, and it is asked about before any repository
+# argument is resolved: a guard that read the repositories first fell open on every spelling it
+# could not resolve, and `PATH@BASE..HEAD` is no directory at all (found by panel, 2026-08-08).
 cycle_second = work / "cycle-repo-2"
 cycle_second.mkdir()
 subprocess.run(["git", "-C", str(cycle_second), "init", "-q"], check=True)
@@ -3161,44 +3078,20 @@ subprocess.run(
      "-c", "user.email=fixture@example.com", "commit", "-qm", "second"],
     check=True,
 )
-merged_unarmed = review_worktree(cycle_repo, cycle_second)
-assert merged_unarmed.returncode == 2, merged_unarmed
-assert CYCLE_REFUSAL in merged_unarmed.stderr, merged_unarmed.stderr
-arm_review_cycle(cycle_second)
-merged_armed = review_worktree(cycle_repo, cycle_second)
-assert merged_armed.returncode != 0, merged_armed
-assert CYCLE_REFUSAL not in merged_armed.stderr, merged_armed.stderr
-# A repository named with a range of its own is still a repository to this door: read as a path,
-# `PATH@BASE..HEAD` is no directory at all, and the guard's fail-open exit for a broken invocation
-# then let every mixed run launch a panel no commit had asked for (found by panel, 2026-08-08).
-cycle_second_base = subprocess.run(
-    ["git", "-C", str(cycle_second), "rev-parse", "HEAD"],
-    check=True, capture_output=True, text=True,
-).stdout.strip()
-(cycle_second / "second.txt").write_text("second\nand more\n")
-subprocess.run(
-    ["git", "-C", str(cycle_second), "-c", "user.name=Fixture",
-     "-c", "user.email=fixture@example.com", "commit", "-aqm", "more"],
-    check=True,
+merged_unasked = review_worktree(cycle_repo, cycle_second)
+assert merged_unasked.returncode == 2, merged_unasked
+assert CYCLE_REFUSAL in merged_unasked.stderr, merged_unasked.stderr
+inline_unasked = review_worktree(cycle_repo, f"{cycle_second}@HEAD~0..HEAD")
+assert inline_unasked.returncode == 2, inline_unasked
+assert CYCLE_REFUSAL in inline_unasked.stderr, inline_unasked.stderr
+merged_asked = review_worktree(
+    cycle_repo, cycle_second, env={**CYCLE_ENV, "REVIEW_ASKED": "1"},
 )
-cycle_second_head = subprocess.run(
-    ["git", "-C", str(cycle_second), "rev-parse", "HEAD"],
-    check=True, capture_output=True, text=True,
-).stdout.strip()
-(cycle_second / ".git" / "review-cycle").unlink(missing_ok=True)
-inline_unarmed = review_worktree(
-    cycle_repo, f"{cycle_second}@{cycle_second_base}..{cycle_second_head}"
-)
-assert inline_unarmed.returncode == 2, inline_unarmed
-assert CYCLE_REFUSAL in inline_unarmed.stderr, inline_unarmed.stderr
-arm_review_cycle(cycle_second)
-inline_armed = review_worktree(
-    cycle_repo, f"{cycle_second}@{cycle_second_base}..{cycle_second_head}"
-)
-assert CYCLE_REFUSAL not in inline_armed.stderr, inline_armed.stderr
+assert merged_asked.returncode != 0, merged_asked
+assert CYCLE_REFUSAL not in merged_asked.stderr, merged_asked.stderr
 
-# The corpus side is untouched: `run` is the benchmark's own launcher and no commit ever asks for
-# one, so a cycle it could not have is not a door it has to come through.
+# The corpus side is untouched: `run` is the benchmark's own launcher and Egor never asks for one
+# by name, so this is not a door it has to come through.
 cycle_run = subprocess.run(
     [sys.argv[1], "run", "--worktree", "--repo", str(cycle_repo), "--raters", "oc-kimik3"],
     capture_output=True, text=True,
@@ -3206,130 +3099,6 @@ cycle_run = subprocess.run(
 assert cycle_run.returncode != 0
 assert CYCLE_REFUSAL not in cycle_run.stderr, cycle_run.stderr
 assert "working tree matches HEAD" in cycle_run.stderr, cycle_run.stderr
-
-# `reviewed --ticket` is the stamp hook's whole judgement: the gate's ticket names the content it
-# let a commit carry, and that content reachable in HEAD over a clean tree is the cycle's end.
-ticket_repo = work / "ticket-stamp"
-ticket_repo.mkdir()
-subprocess.run(["git", "-C", str(ticket_repo), "init", "-q"], check=True)
-(ticket_repo / "a.txt").write_text("reviewed\n")
-subprocess.run(["git", "-C", str(ticket_repo), "add", "a.txt"], check=True)
-subprocess.run(
-    ["git", "-C", str(ticket_repo), "-c", "user.name=Fixture",
-     "-c", "user.email=fixture@example.com", "commit", "-qm", "landed"],
-    check=True,
-)
-ticket_state = work / "ticket-stamp-state"
-ticket_env = {**CYCLE_ENV, "WORKER_STATS_DIR": str(ticket_state)}
-
-
-def stamp_ticket():
-    return subprocess.run(
-        [sys.argv[1], "reviewed", "--repo", str(ticket_repo), "--ticket"],
-        capture_output=True, text=True, env=ticket_env,
-    )
-
-
-def ticket_receipt_run():
-    proc = subprocess.run(
-        [sys.argv[1], "receipt", "--repo", str(ticket_repo)],
-        capture_output=True, text=True, env=ticket_env,
-    )
-    return json.loads(proc.stdout)["run_id"] if proc.returncode == 0 else None
-
-
-ticket_blob = subprocess.run(
-    ["git", "-C", str(ticket_repo), "rev-parse", "HEAD:a.txt"],
-    check=True, capture_output=True, text=True,
-).stdout.strip()
-no_ticket = stamp_ticket()
-assert no_ticket.returncode == 3, no_ticket
-assert ticket_receipt_run() is None
-# A ticket whose content is nowhere in HEAD is a commit that never landed — rejected message,
-# abandoned attempt — and the round it was granted for is still owed.
-unlanded_ticket = arm_review_cycle(
-    ticket_repo, "ticket", session="chat-unlanded", entries=[f"{'0' * 40} a.txt"],
-)
-assert stamp_ticket().returncode == 3
-assert unlanded_ticket.exists()
-landed_ticket = arm_review_cycle(
-    ticket_repo, "ticket", session="chat-landed", entries=[f"{ticket_blob} a.txt"],
-)
-# The stamp covers the whole tree, so anything left uncommitted would be marked reviewed with it —
-# and the ticket is spent all the same, its job having ended with the commit that landed its
-# content. Left standing, it would stamp some later clean-tree commit no gate ever priced.
-(ticket_repo / "leftover.txt").write_text("dirty\n")
-dirty_stamp = stamp_ticket()
-assert dirty_stamp.returncode == 3, dirty_stamp
-assert not landed_ticket.exists()
-assert unlanded_ticket.exists()
-assert ticket_receipt_run() is None
-(ticket_repo / "leftover.txt").unlink()
-landed_ticket = arm_review_cycle(
-    ticket_repo, "ticket", session="chat-landed", entries=[f"{ticket_blob} a.txt"],
-)
-# An armed cycle is a review still owed; the stamp has no business spending one.
-armed_kept = arm_review_cycle(ticket_repo, "armed1", session="chat-armed")
-unreadable_ticket = cycle_path(ticket_repo, "chat-unreadable")
-unreadable_ticket.write_bytes(b"")
-stamped_ticket = stamp_ticket()
-assert stamped_ticket.returncode == 0, stamped_ticket
-assert ticket_receipt_run().startswith("stamped-")
-assert not landed_ticket.exists()
-assert unlanded_ticket.exists()
-assert armed_kept.exists()
-assert unreadable_ticket.exists()
-# And the ticket is gone with it: a spent one left behind would stamp the NEXT commit, one no gate
-# ever priced, as reviewed.
-(ticket_repo / "b.txt").write_text("new work\n")
-subprocess.run(["git", "-C", str(ticket_repo), "add", "b.txt"], check=True)
-subprocess.run(
-    ["git", "-C", str(ticket_repo), "-c", "user.name=Fixture",
-     "-c", "user.email=fixture@example.com", "commit", "-qm", "unpriced"],
-    check=True,
-)
-stamped_run = ticket_receipt_run()
-assert stamp_ticket().returncode == 3
-assert ticket_receipt_run() == stamped_run
-# A deletion hashes to nothing, so the gate records `gone` and the path's ABSENCE from HEAD is
-# what pays: while it is still there, the commit that removes it has not happened yet.
-(ticket_repo / "doomed.txt").write_text("doomed\n")
-subprocess.run(["git", "-C", str(ticket_repo), "add", "doomed.txt"], check=True)
-subprocess.run(
-    ["git", "-C", str(ticket_repo), "-c", "user.name=Fixture",
-     "-c", "user.email=fixture@example.com", "commit", "-qm", "doomed"],
-    check=True,
-)
-gone_ticket = arm_review_cycle(
-    ticket_repo, "ticket", session="chat-gone", entries=["gone doomed.txt"],
-)
-assert stamp_ticket().returncode == 3
-assert gone_ticket.exists()
-subprocess.run(["git", "-C", str(ticket_repo), "rm", "-q", "doomed.txt"], check=True)
-subprocess.run(
-    ["git", "-C", str(ticket_repo), "-c", "user.name=Fixture",
-     "-c", "user.email=fixture@example.com", "commit", "-qm", "the deletion"],
-    check=True,
-)
-gone_stamp = stamp_ticket()
-assert gone_stamp.returncode == 0, gone_stamp
-# Never compared against the previous run id: stamp ids carry seconds, and two stamps inside one
-# second read equal. The receipt tree moving to the deletion's HEAD is what proves a fresh stamp.
-gone_receipt = subprocess.run(
-    [sys.argv[1], "receipt", "--repo", str(ticket_repo)],
-    capture_output=True, text=True, env=ticket_env,
-)
-assert gone_receipt.returncode == 0, gone_receipt
-gone_head_tree = subprocess.run(
-    ["git", "-C", str(ticket_repo), "rev-parse", "HEAD^{tree}"],
-    capture_output=True, text=True, check=True,
-).stdout.strip()
-assert json.loads(gone_receipt.stdout)["tree"] == gone_head_tree
-assert not gone_ticket.exists()
-assert unlanded_ticket.exists()
-unlanded_ticket.unlink()
-armed_kept.unlink()
-unreadable_ticket.unlink()
 
 fake_codex = work / "fake-codex"
 fake_codex.write_text("""#!/usr/bin/env bash
@@ -3593,11 +3362,13 @@ wait_run = work / "opencode-wait-run"
 wait_run.mkdir()
 wait_env = work / "opencode-wait-env"
 os.environ["OPENCODE_CAPTURE_ENV"] = str(wait_env)
-rb.run_opencode(rb.parse_rater("oc-mmm3"), repo, sha, "", wait_run, "fixture commit diff", "opencode-go")
+# The watchdog's cap and no second deadline of this side's own: a lower one killed the cell before
+# the limit the run recorded, so the report named a cap the cell never reached.
+wait_rater = rb.parse_rater("oc-mmm3")
+wait_rater["timeout_s"] = 777
+rb.run_opencode(wait_rater, repo, sha, "", wait_run, "fixture commit diff", "opencode-go")
 del os.environ["OPENCODE_CAPTURE_ENV"]
-assert wait_env.read_text().strip() == str(
-    rb.opencode_timeout_s(rb.parse_rater("oc-mmm3"))
-), wait_env.read_text()
+assert wait_env.read_text().strip() == "777", wait_env.read_text()
 
 length_run = work / "opencode-length-run"
 length_run.mkdir()
@@ -4790,7 +4561,6 @@ clear_walls()
 del os.environ["REVIEW_BENCH_TRANSIENT_BACKOFF_S"]
 
 real_subprocess_run = rb.subprocess.run
-real_opencode_timeout_s = rb.opencode_timeout_s
 timeout_stderr = b"HTTP 429 usage limit reached"
 
 
@@ -4801,7 +4571,7 @@ def timeout_run(command, **kwargs):
 
 
 rb.subprocess.run = timeout_run
-rb.opencode_timeout_s = lambda rater: 1
+opencode_rater["timeout_s"] = 1
 try:
     timeout_wall_run = work / "opencode-timeout-wall"
     timeout_wall_run.mkdir()
@@ -4823,7 +4593,7 @@ try:
     assert not rb.is_walled("opencode", "opencode-go")
 finally:
     rb.subprocess.run = real_subprocess_run
-    rb.opencode_timeout_s = real_opencode_timeout_s
+    opencode_rater.pop("timeout_s", None)
     clear_walls()
 
 # Gemini bills per model and words a per-model exhaustion its own way, so that wording has to
@@ -5695,6 +5465,253 @@ worktree_receipt = json.loads((
 assert worktree_rc == 0
 assert worktree_meta["worktree"] is True
 assert worktree_meta["commit"] == snapshot_sha
+# The drift anchor, taken at LAUNCH because that is the tree the cells are handed: the runner
+# captured the launch document before it answered, and the finished one carries the same blobs.
+worktree_reviewed = worktree_meta["reviewed"]
+assert set(worktree_reviewed) == {"pinned.txt"}, worktree_reviewed
+assert launch_meta_seen[-1]["reviewed"] == worktree_reviewed, launch_meta_seen[-1]
+assert subprocess.run(
+    ["git", "-C", str(pin_repo), "cat-file", "blob", worktree_reviewed["pinned.txt"]],
+    check=True, capture_output=True, text=True,
+).stdout == "working tree marker\n"
+assert "timed_out" not in worktree_meta, worktree_meta
+
+# --- the watchdog: a breached cell marks the whole run ------------------------------------------
+# One cap per (model, effort) reaches every side, and the run a killed cell belongs to is what the
+# statusline goes loud on: nothing else on disk says a review hung.
+timeout_caps_seen = []
+
+
+def timeout_runner(rater, repo_path, commit, focus, run_dir, diff, account):
+    timeout_caps_seen.append(rater["timeout_s"])
+    return 124, 1, "", "rater timed out after 900s", []
+
+
+for side in rb.SIDE_RUNNERS:
+    rb.SIDE_RUNNERS[side] = timeout_runner
+timeout_run_store = work / "timed-out-run-claudeb"
+os.environ["CLAUDEB_DIR"] = str(timeout_run_store)
+with contextlib.redirect_stdout(io.StringIO()):
+    timeout_rc = rb.cmd_run(argparse.Namespace(
+        repo=str(pin_repo), commitish=None, worktree=True, raters="sol-medium",
+        leg=False, verify=None, auto=None, focus=None,
+    ))
+timeout_run_dir = next((timeout_run_store / "worker-stats" / "benches").iterdir())
+timeout_meta = json.loads((timeout_run_dir / "meta.json").read_text())
+assert timeout_rc == 1
+assert timeout_caps_seen == [rb.WATCHDOG_FLOOR_S], timeout_caps_seen
+assert timeout_meta["timed_out"] is True, timeout_meta
+assert timeout_meta["rater_runs"][0]["timeout_s"] == rb.WATCHDOG_FLOOR_S, timeout_meta
+for side in rb.SIDE_RUNNERS:
+    rb.SIDE_RUNNERS[side] = tier_runner
+
+# --- session-review: the one line the gate reads ------------------------------------------------
+# Coverage is per SESSION and per CONTENT: this chat's own triaged run, the queried paths inside its
+# scope, and drift measured against the blobs that run snapshotted — never against git history.
+sr_repo = work / "session-review-repo"
+sr_repo.mkdir()
+subprocess.run(["git", "init", "-q", str(sr_repo)], check=True)
+subprocess.run(["git", "-C", str(sr_repo), "config", "user.email", "bench@example.test"],
+               check=True)
+subprocess.run(["git", "-C", str(sr_repo), "config", "user.name", "Review Bench"], check=True)
+(sr_repo / "src").mkdir()
+(sr_repo / "docs").mkdir()
+sr_source = sr_repo / "src" / "a.py"
+sr_source.write_text("".join(f"line {n}\n" for n in range(1, 21)))
+(sr_repo / "docs" / "b.md").write_text("doc\n")
+(sr_repo / "docs" / "big.md").write_text("".join(f"para {n}\n" for n in range(1, 31)))
+subprocess.run(["git", "-C", str(sr_repo), "add", "-A"], check=True)
+subprocess.run(["git", "-C", str(sr_repo), "commit", "-qm", "initial"], check=True)
+sr_source.write_text("".join(f"line {n}\n" for n in range(1, 21)) + "added\n")
+sr_binary = sr_repo / "src" / "blob.bin"
+sr_binary.write_bytes(b"\x00\x01\x02\x03")
+# A repo-wide snapshot is the change the sealed commit holds against its base: the clean tracked
+# file was never shown to the panel, and the untracked text and binary beside it were.
+sr_snapshot, _ = rb.sealed_target(sr_repo)
+sr_blobs = rb.reviewed_blobs(sr_repo, [], sr_snapshot)
+assert set(sr_blobs) == {"src/a.py", "src/blob.bin"}, sr_blobs
+# A scope stages the whole subtree under its paths, binaries included.
+sr_scoped_snapshot, _ = rb.sealed_target(sr_repo, scope=["src"])
+sr_scoped_blobs = rb.reviewed_blobs(sr_repo, ["src"], sr_scoped_snapshot)
+assert set(sr_scoped_blobs) == {"src/a.py", "src/blob.bin"}, sr_scoped_blobs
+assert sr_scoped_blobs["src/a.py"] == sr_blobs["src/a.py"], sr_scoped_blobs
+# The anchor is the commit the cells were handed and never the tree standing under them: a rerun
+# pinned to an existing snapshot sha reads a checkout that has moved on since, and hashing that
+# would vouch for bytes no rater ever saw.
+sr_moved = sr_source.read_text()
+sr_source.write_text("drifted\n")
+assert rb.reviewed_blobs(sr_repo, [], sr_snapshot) == sr_blobs, sr_blobs
+# Which paths those are is the commit's too. Listed against the checkout instead, a file a
+# co-tenant restored between the seal and the record drops out of a review that read it, and the
+# record stops answering for it for good.
+sr_source.write_text("".join(f"line {n}\n" for n in range(1, 21)))
+assert rb.reviewed_blobs(sr_repo, [], sr_snapshot) == sr_blobs, sr_blobs
+sr_source.write_text(sr_moved)
+# A deletion is a change the panel read and no blob can stand for it, so the snapshot records the
+# path against nothing rather than dropping it — a review of one would otherwise hold no path at
+# all and cover nothing it read.
+(sr_repo / "docs" / "b.md").unlink()
+sr_deletion_snapshot, _ = rb.sealed_target(sr_repo)
+sr_deletion_blobs = rb.reviewed_blobs(sr_repo, [], sr_deletion_snapshot)
+assert sr_deletion_blobs.get("docs/b.md") == "", sr_deletion_blobs
+subprocess.run(["git", "-C", str(sr_repo), "checkout", "--", "docs/b.md"], check=True)
+# A symlink is left out: a line budget cannot price a link target, and drift reads through the
+# link to the file it points at.
+(sr_repo / "src" / "link.py").symlink_to("a.py")
+sr_link_snapshot, _ = rb.sealed_target(sr_repo, scope=["src"])
+assert "src/link.py" not in rb.reviewed_blobs(sr_repo, ["src"], sr_link_snapshot)
+(sr_repo / "src" / "link.py").unlink()
+
+sr_claudeb_before = os.environ["CLAUDEB_DIR"]
+sr_stores = 0
+
+
+def sr_store():
+    """A bench store of its own per scenario: the answer is about the NEWEST run of a session, so
+    two scenarios sharing one store would answer each other's question.
+    """
+    global sr_stores
+    sr_stores += 1
+    store = work / f"session-review-store-{sr_stores}"
+    os.environ["CLAUDEB_DIR"] = str(store)
+    directory = store / "worker-stats" / "benches"
+    directory.mkdir(parents=True)
+    return directory
+
+
+def sr_run(benches, run_id, reviewed=None, session="chat-1", scope=None,
+           triaged=True, timed_out=False, repo=None):
+    directory = benches / run_id
+    directory.mkdir()
+    meta = {
+        "run_id": run_id, "repo": str(repo or sr_repo), "session": session,
+        "worktree": True, "reviewed": dict(reviewed or {}),
+    }
+    if scope is not None:
+        meta["scope"] = scope
+    if timed_out:
+        meta["timed_out"] = True
+    (directory / "meta.json").write_text(json.dumps(meta))
+    if triaged:
+        (directory / "verdicts.jsonl").write_text("")
+    return directory
+
+
+def sr_answer(*paths, session="chat-1", repo=None):
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc = rb.cmd_session_review(argparse.Namespace(
+            repo=str(repo or sr_repo), session=session, paths=list(paths),
+        ))
+    assert rc == 0, rc
+    return out.getvalue().strip()
+
+
+# No run at all, a run of another chat, and a run nobody triaged all read the same: unreviewed.
+sr_empty = sr_store()
+assert sr_answer("src/a.py") == "none"
+sr_run(sr_empty, "20260101T000100Z-aaaaaaa", sr_blobs, session="chat-2")
+assert sr_answer("src/a.py") == "none"
+sr_untriaged = sr_store()
+sr_run(sr_untriaged, "20260101T000100Z-aaaaaaa", sr_blobs, triaged=False)
+assert sr_answer("src/a.py") == "none"
+
+# A repo-wide run covers every path; drift is 0 while the file still holds the reviewed bytes.
+sr_wide = sr_store()
+sr_run(sr_wide, "20260101T000100Z-aaaaaaa", sr_blobs)
+assert sr_answer("src/a.py") == "covered 20260101T000100Z-aaaaaaa 0"
+assert sr_answer() == "covered 20260101T000100Z-aaaaaaa 0"
+# A path the snapshot never held was never reviewed, so all of it is drift — priced against the
+# reviewed size, which is the 25% budget's denominator.
+assert sr_answer("docs/b.md") == "covered 20260101T000100Z-aaaaaaa 4"
+assert sr_answer("docs/big.md") == "stale 20260101T000100Z-aaaaaaa 142"
+# The path spelling is the journal's: repository-relative, and an absolute path names the same file.
+assert sr_answer(str(sr_repo / "src" / "a.py")) == "covered 20260101T000100Z-aaaaaaa 0"
+# The journal's spelling down to its whitespace: a leading or trailing space is part of a filename,
+# and trimming one asks about the path beside the one the journal named.
+sr_spelled = rb.session_review_paths(sr_repo, ["./src/a.py", "src/spaced .py ", "  "])
+assert sr_spelled == ["src/a.py", "src/spaced .py "], sr_spelled
+
+# Drift is the diff against the reviewed blob, added plus removed, over the whole reviewed size.
+sr_source.write_text("".join(f"line {n}\n" for n in range(1, 21)) + "added\n" + "more\n" * 5)
+assert sr_answer("src/a.py") == "covered 20260101T000100Z-aaaaaaa 23"
+sr_source.write_text("".join(f"line {n}\n" for n in range(1, 21)) + "added\n" + "more\n" * 7)
+assert sr_answer("src/a.py") == "stale 20260101T000100Z-aaaaaaa 33"
+
+# Directory-prefix containment: a scope naming a directory covers the files under it and nothing
+# outside it, and a path outside every scope entry is not covered at all.
+sr_scoped = sr_store()
+sr_run(sr_scoped, "20260101T000100Z-aaaaaaa", sr_scoped_blobs, scope=["src"])
+assert sr_answer("src/a.py").startswith("stale 20260101T000100Z-aaaaaaa "), sr_answer("src/a.py")
+assert sr_answer("docs/b.md") == "none"
+assert sr_answer("src/a.py", "docs/b.md") == "none"
+# A byte-level change nobody reads as lines is not drift a line budget can price.
+sr_binary.write_bytes(b"\x00\x09\x08\x07\x06\x05")
+assert sr_answer("src/blob.bin") == "covered 20260101T000100Z-aaaaaaa 0"
+
+# The watchdog wins over everything older: nothing is later than the newest run, and a review that
+# hung is what the reader is waiting on.
+sr_source.write_text("".join(f"line {n}\n" for n in range(1, 21)) + "added\n")
+sr_timed = sr_store()
+sr_run(sr_timed, "20260101T000100Z-aaaaaaa", sr_blobs)
+sr_run(sr_timed, "20260101T000200Z-bbbbbbb", triaged=False, timed_out=True)
+assert sr_answer("src/a.py") == "timed-out 20260101T000200Z-bbbbbbb"
+# And a later triaged run of the same chat takes the answer back.
+sr_run(sr_timed, "20260101T000300Z-ccccccc", sr_blobs)
+assert sr_answer("src/a.py") == "covered 20260101T000300Z-ccccccc 0"
+# A hung run of another chat is not this one's answer.
+sr_run(sr_timed, "20260101T000400Z-ddddddd", triaged=False, timed_out=True, session="chat-2")
+assert sr_answer("src/a.py") == "covered 20260101T000300Z-ccccccc 0"
+# Only a later TRIAGED run covering the paths ends a kill. A newer run of this chat that nobody has
+# judged says nothing, so it may not speak over the hung one either.
+sr_masked = sr_store()
+sr_run(sr_masked, "20260101T000100Z-aaaaaaa", sr_blobs)
+sr_run(sr_masked, "20260101T000200Z-bbbbbbb", triaged=False, timed_out=True)
+sr_run(sr_masked, "20260101T000300Z-ccccccc", sr_blobs, triaged=False)
+assert sr_answer("src/a.py") == "timed-out 20260101T000200Z-bbbbbbb"
+
+# A run holding no snapshot read committed code, so nothing in the working tree is anchored to it:
+# a deleted path and a binary change both price at zero drift and would come back covered.
+sr_commit_run = sr_store()
+sr_run(sr_commit_run, "20260101T000100Z-aaaaaaa", {})
+assert sr_answer("src/a.py") == "none"
+assert sr_answer("docs/gone.md") == "none"
+
+# A deletion the run never held is not covered by it at any drift: nothing is left on disk to
+# price the change in, and every line count over an absent file is zero.
+sr_deletions = sr_store()
+sr_run(sr_deletions, "20260101T000100Z-aaaaaaa", sr_blobs)
+(sr_repo / "docs" / "b.md").unlink()
+assert sr_answer("docs/b.md") == "stale 20260101T000100Z-aaaaaaa 100"
+# And the review that DID read the deletion covers it, because the snapshot recorded the path.
+sr_read_deletion = sr_store()
+sr_run(sr_read_deletion, "20260101T000200Z-bbbbbbb", dict(sr_blobs, **{"docs/b.md": ""}))
+assert sr_answer("docs/b.md") == "covered 20260101T000200Z-bbbbbbb 0"
+# Until something stands there again: what the panel read is gone, and the content that replaced
+# it is nobody's review.
+(sr_repo / "docs" / "b.md").write_text("".join(f"back {n}\n" for n in range(1, 9)))
+assert sr_answer("docs/b.md") == "stale 20260101T000200Z-bbbbbbb 38"
+subprocess.run(["git", "-C", str(sr_repo), "checkout", "--", "docs/b.md"], check=True)
+
+# Coverage is the WORKING TREE's, never the repository behind it: linked worktrees share one git
+# dir, and a sibling's paths are named alike while holding entirely different content.
+sr_sibling = sr_store()
+sr_worktree = work / "session-review-worktree"
+subprocess.run(["git", "-C", str(sr_repo), "worktree", "add", "-q", "-b", "sibling",
+                str(sr_worktree)], check=True)
+sr_run(sr_sibling, "20260101T000100Z-aaaaaaa", sr_blobs, repo=sr_worktree)
+assert sr_answer("src/a.py") == "none"
+assert sr_answer("src/a.py", repo=sr_worktree).startswith("covered "), \
+    sr_answer("src/a.py", repo=sr_worktree)
+
+# A link target is not content a line budget can price, and reading through the link would price
+# the file it points at instead.
+sr_symlink = sr_store()
+sr_run(sr_symlink, "20260101T000100Z-aaaaaaa", sr_blobs)
+(sr_repo / "src" / "link.py").symlink_to("a.py")
+assert sr_answer("src/link.py") == "covered 20260101T000100Z-aaaaaaa 0"
+(sr_repo / "src" / "link.py").unlink()
+os.environ["CLAUDEB_DIR"] = sr_claudeb_before
 assert worktree_receipt["commit"] == snapshot_sha
 assert worktree_receipt["tree"] == snapshot_tree
 # A commit-point review is handed the reporting command and nothing else. The corpus form used to
@@ -5993,13 +6010,6 @@ assert scope_flat_path.read_bytes() == scope_flat_before, "a scoped run rewrote 
 assert sorted(path.name for path in scope_flat_path.parent.iterdir()) == sorted(
     [scope_flat_name, scope_receipt_name]
 )
-scope_coverage_stdout = io.StringIO()
-with contextlib.redirect_stdout(scope_coverage_stdout):
-    rb.cmd_coverage(argparse.Namespace(
-        repo=str(scope_repo), commit_paths=None, commit_all=False))
-# Both files, not one: the baseline is the full review, and the scoped run left it where it was.
-assert "files: 2" in scope_coverage_stdout.getvalue(), scope_coverage_stdout.getvalue()
-
 def scope_commit_objects():
     listed = subprocess.run(
         ["git", "-C", str(scope_repo), "cat-file", "--batch-all-objects",
@@ -6149,9 +6159,6 @@ try:
 finally:
     shutil.rmtree(root_clone_again, ignore_errors=True)
 
-assert rb.reviewed_diff_lines(root_repo, root_sha) == 401
-assert rb.reviewed_diff_paths(root_repo, root_sha) == {"day-one.txt", "nested/deep.txt"}
-
 root_store = work / "root-commit-claudeb"
 os.environ["CLAUDEB_DIR"] = str(root_store)
 root_stdout = io.StringIO()
@@ -6167,21 +6174,6 @@ root_run_meta = json.loads(
     (next((root_store / "worker-stats" / "benches").iterdir()) / "meta.json").read_text()
 )
 assert root_run_meta["commit"] == root_sha and "worktree" not in root_run_meta, root_run_meta
-
-# A correction inside a root commit's own just-reviewed content is sized like any other change:
-# 200 lines in one file is the T2 the ladder prices it at, receipt or no receipt.
-(root_repo / "day-one.txt").write_text(
-    "".join(f"line {n} corrected\n" for n in range(1, 201))
-    + "".join(f"line {n}\n" for n in range(201, 401))
-)
-root_coverage = io.StringIO()
-with contextlib.redirect_stdout(root_coverage):
-    rb.cmd_coverage(argparse.Namespace(
-        repo=str(root_repo), commit_paths=None, commit_all=False))
-assert "files: 1" in root_coverage.getvalue(), root_coverage.getvalue()
-assert "covered: no" in root_coverage.getvalue(), root_coverage.getvalue()
-assert "vouch: " not in root_coverage.getvalue(), root_coverage.getvalue()
-subprocess.run(["git", "-C", str(root_repo), "checkout", "--", "day-one.txt"], check=True)
 
 collision_left = work / "receipt-collision-left" / "same-name"
 collision_right = work / "receipt-collision-right" / "same-name"
@@ -6308,37 +6300,31 @@ with tempfile.TemporaryDirectory(dir=work) as index_dir:
         ["git", "-C", str(stamp_repo), "write-tree"],
         check=True, capture_output=True, text=True, env=expected_env,
     ).stdout.strip()
-stamp_proc = subprocess.run(
-    [sys.argv[1], "reviewed", "--repo", str(stamp_repo)],
-    capture_output=True, text=True, env=stamp_env,
-)
-stamp_receipt_path = (
-    stamp_store / rb.RECEIPT_DIR / rb.receipt_file_name(stamp_repo)
-)
-stamp_receipt = json.loads(stamp_receipt_path.read_text())
 stamp_head = subprocess.run(
     ["git", "-C", str(stamp_repo), "rev-parse", "HEAD"],
     check=True, capture_output=True, text=True,
 ).stdout.strip()
-assert stamp_proc.returncode == 0, stamp_proc.stderr
-assert stamp_receipt == {
-    "repo": str(stamp_repo.resolve()), "tree": expected_stamp_tree,
-    "commit": stamp_head, "run_id": stamp_receipt["run_id"],
-    "ts": stamp_receipt["ts"], "errored": 0,
-}, stamp_receipt
-assert re.fullmatch(r"stamped-\d{8}T\d{6}Z", stamp_receipt["run_id"])
-assert str(stamp_receipt_path) in stamp_proc.stdout
-assert expected_stamp_tree[:7] in stamp_proc.stdout
 saved_stats_dir = os.environ.get("WORKER_STATS_DIR")
 os.environ["WORKER_STATS_DIR"] = str(stamp_store)
+assert rb.working_tree_tree(stamp_repo) == expected_stamp_tree
+stamp_receipt_path = pathlib.Path(rb.persist_review_receipt(
+    stamp_repo.resolve(), expected_stamp_tree, stamp_head, "run-receipt", 0,
+))
+stamp_receipt = json.loads(stamp_receipt_path.read_text())
+assert stamp_receipt_path == stamp_store / rb.RECEIPT_DIR / rb.receipt_file_name(stamp_repo)
+assert stamp_receipt == {
+    "repo": str(stamp_repo.resolve()), "tree": expected_stamp_tree,
+    "commit": stamp_head, "run_id": "run-receipt",
+    "ts": stamp_receipt["ts"], "errored": 0,
+}, stamp_receipt
 assert rb.review_receipt(stamp_repo)["tree"] == expected_stamp_tree
 if saved_stats_dir is None:
     os.environ.pop("WORKER_STATS_DIR")
 else:
     os.environ["WORKER_STATS_DIR"] = saved_stats_dir
 
-# The stamp hook reads the receipt through this command rather than deriving its path a third
-# time, and it decides on the confirmed count the run was adjudicated to.
+# The receipt is read back through this command rather than by deriving its path a second time,
+# and it decides on the confirmed count the run was adjudicated to.
 receipt_proc = subprocess.run(
     [sys.argv[1], "receipt", "--repo", str(stamp_repo)],
     capture_output=True, text=True, env=stamp_env,
@@ -6355,193 +6341,20 @@ assert json.loads(subprocess.run(
     [sys.argv[1], "receipt", "--repo", str(stamp_repo)],
     check=True, capture_output=True, text=True, env=stamp_env,
 ).stdout)["confirmed"] == 3
-# The commit gate prices its next round off this same command rather than reaching into the state
-# directory it has no way to find: absent while the run is untriaged, which is the gate's "no
-# review has answered yet", and the report block's own tally once the triage is recorded.
-assert "reported" not in receipt_json, receipt_json
-gate_price_dir = stamp_store / "benches" / stamp_receipt["run_id"]
-gate_price_dir.mkdir(parents=True)
-rb.write_jsonl(gate_price_dir / "findings-sol-low.jsonl", [
-    {"file": "a.py", "line": 1, "severity": "P1", "summary": "one"},
-    {"file": "a.py", "line": 2, "severity": "P1", "summary": "two"},
-    {"file": "a.py", "line": 3, "severity": "P2", "summary": "three"},
-    {"file": "a.py", "line": 4, "severity": "P1", "summary": "not confirmed"},
-])
-gate_price_rows = [
-    {"rater": "sol-low", "idx": 0, "verdict": "confirmed"},
-    {"rater": "sol-low", "idx": 1, "verdict": "confirmed"},
-    {"rater": "sol-low", "idx": 2, "verdict": "confirmed"},
-    {"rater": "sol-low", "idx": 3, "verdict": "false_positive"},
-]
-rb.write_report_receipt(gate_price_dir, gate_price_rows, {"P1": 2, "P2": 1})
-gate_price_receipt = json.loads(subprocess.run(
-    [sys.argv[1], "receipt", "--repo", str(stamp_repo)],
-    check=True, capture_output=True, text=True, env=stamp_env,
-).stdout)
-assert gate_price_receipt["reported"] == {"P1": 2, "P2": 1, "P3": 0}
-# The round this receipt belongs to, counted whole, rides beside the repository's own share: what
-# earns a second review is a property of the ROUND, and a run that read one repository is a round
-# whose two answers are the same one.
-assert gate_price_receipt["reported_round"] == gate_price_receipt["reported"], gate_price_receipt
-# And a findings file half-written by the run still holding it is a tally that cannot be computed,
-# never an exception out of the command every receipt reader shells out to.
-(gate_price_dir / "findings-sol-low.jsonl").write_bytes(b'{"file": "a.py\x00\xff not json\n')
-corrupt_receipt_proc = subprocess.run(
-    [sys.argv[1], "receipt", "--repo", str(stamp_repo)],
-    capture_output=True, text=True, env=stamp_env,
-)
-assert corrupt_receipt_proc.returncode == 0, corrupt_receipt_proc.stderr
-assert "reported" not in json.loads(corrupt_receipt_proc.stdout), corrupt_receipt_proc.stdout
-shutil.rmtree(gate_price_dir)
 assert subprocess.run(
     [sys.argv[1], "receipt", "--repo", str(pin_repo)],
     capture_output=True, text=True, env=dict(os.environ, WORKER_STATS_DIR=str(work / "empty-store")),
 ).returncode == 1
 
-# --- `receipt --paths`: the scoped review a commit's own pathspec answers for -------------------
-# A scoped run writes only its own receipt, so in a shared checkout — where a review is always
-# narrowed to the paths being committed — the gate asking for the plain repository receipt reads a
-# neighbour's whole-tree run and re-blocks a commit whose own review was triaged.
-covering_repo = work / "receipt-covering"
-(covering_repo / "bin").mkdir(parents=True)
-(covering_repo / "tests").mkdir()
-subprocess.run(["git", "-C", str(covering_repo), "init", "-q", "-b", "main"], check=True)
-for covering_name in ("bin/tool", "tests/test_tool.sh", "docs.md"):
-    (covering_repo / covering_name).write_text("base\n")
-subprocess.run(["git", "-C", str(covering_repo), "add", "-A"], check=True)
-subprocess.run(
-    ["git", "-C", str(covering_repo), "-c", "user.name=Fixture",
-     "-c", "user.email=fixture@example.com", "commit", "-qm", "initial"],
-    check=True,
-)
-covering_head, covering_tree = (subprocess.run(
-    ["git", "-C", str(covering_repo), "rev-parse", covering_rev],
-    check=True, capture_output=True, text=True,
-).stdout.strip() for covering_rev in ("HEAD", "HEAD^{tree}"))
-covering_store = work / "receipt-covering-store"
-covering_env = dict(os.environ, WORKER_STATS_DIR=str(covering_store))
-covering_saved_stats = os.environ.get("WORKER_STATS_DIR")
-os.environ["WORKER_STATS_DIR"] = str(covering_store)
-for covering_run, covering_ts, covering_scope in (
-    ("covering-older", "2026-08-06T22:00:00+00:00", ["bin/tool"]),
-    ("covering-newer", "2026-08-06T23:00:00+00:00", ["bin/tool", "tests/test_tool.sh"]),
-    ("covering-outside", "2026-08-07T00:00:00+00:00", ["bin/tool", "docs.md"]),
-    # A review can be scoped to a directory too, and then it read every file under it.
-    ("covering-dir", "2026-08-06T21:00:00+00:00", ["tests"]),
-):
-    rb.persist_review_receipt(covering_repo, covering_tree, covering_head, covering_run, 0,
-                              timestamp=covering_ts, scope=covering_scope)
-# A lens read the same paths by a methodology the tool did not write, so its receipt is not one of
-# these however well its scope fits — and it is the newest of them all, which is the only way a
-# search by recency could pick it up by accident.
-rb.persist_review_receipt(covering_repo, covering_tree, covering_head, "covering-lens", 0,
-                          timestamp="2026-08-07T01:00:00+00:00", lens="edge-cases",
-                          scope=["bin/tool"])
-if covering_saved_stats is None:
-    os.environ.pop("WORKER_STATS_DIR")
-else:
-    os.environ["WORKER_STATS_DIR"] = covering_saved_stats
-
-
-def covering_receipt(*covering_args):
-    proc = subprocess.run(
-        [sys.argv[1], "receipt", "--repo", str(covering_repo), *covering_args],
-        capture_output=True, text=True, env=covering_env,
-    )
-    return proc.returncode, (json.loads(proc.stdout) if proc.stdout.strip() else None), proc.stderr
-
-
-# The review that reached the most of the commit, not the newest one that reached any of it: the
-# `covering-outside` run is fresher and read `bin/tool`, but only `covering-newer` read both.
-covering_rc, covering_json, _ = covering_receipt("--paths", "bin/tool", "tests/test_tool.sh")
-assert covering_rc == 0 and covering_json["run_id"] == "covering-newer", (covering_rc,
-                                                                          covering_json)
-assert covering_json["scope"] == ["bin/tool", "tests/test_tool.sh"], covering_json
-# A path in the commit the panel never saw does not disqualify the review — that is drift the gate
-# prices.
-assert covering_receipt(
-    "--paths", "bin/tool", "tests/test_tool.sh", "never-reviewed.txt"
-)[1]["run_id"] == "covering-newer"
-# Nor does a path the REVIEW read and the commit does not carry: reading more than the commit
-# carries is not reading less of it, and disqualifying `covering-outside` for having also read
-# docs.md handed the gate an older, smaller run for the very files that panel had just read.
-assert covering_receipt("--paths", "bin/tool")[1]["run_id"] == "covering-outside", \
-    covering_receipt("--paths", "bin/tool")
-assert covering_receipt("--paths", "docs.md")[1]["run_id"] == "covering-outside", \
-    covering_receipt("--paths", "docs.md")
-assert covering_receipt("--paths", "tests/test_tool.sh")[1]["run_id"] == "covering-newer"
-# Containment counts both ways round: a review scoped to `tests` reached every file the commit
-# names inside it, and scoring it zero sent the gate looking for a second review of code a panel
-# had already read whole.
-assert covering_receipt("--paths", "tests/unread.sh")[1]["run_id"] == "covering-dir", \
-    covering_receipt("--paths", "tests/unread.sh")
-# One spelling, the one the receipts are named after: the caller hands over a commit pathspec, not
-# a canonical scope, and a receipt found only for `bin/tool` is a receipt the gate cannot use.
-assert covering_receipt(
-    "--paths", "./bin/tool", "tests/../tests/test_tool.sh", str(covering_repo / "bin" / "tool")
-)[1]["run_id"] == "covering-newer"
-assert covering_receipt("--paths", str(work / "outside.txt"))[0] == 2
-# A commit pathspec names directories where a review scope names files: `git commit -- bin tests`
-# covers every reviewed file under them, and the containment is by path segment, so a directory
-# whose name merely starts the same never vouches for a neighbour.
-assert covering_receipt("--paths", "bin", "tests")[1]["run_id"] == "covering-newer", \
-    covering_receipt("--paths", "bin", "tests")
-assert covering_receipt("--paths", "bin")[1]["run_id"] == "covering-outside"
-assert covering_receipt("--paths", "bin/to")[0] == 1, covering_receipt("--paths", "bin/to")
-# A review that reaches none of the commit is no answer at all, however fresh: the search is a
-# search for coverage, and the empty overlap is the "nothing has reviewed this" the gate acts on.
-assert covering_receipt("--paths", "never-reviewed.txt")[0] == 1, \
-    covering_receipt("--paths", "never-reviewed.txt")
-# One question returns one receipt, so a reader this one cannot satisfy has to be able to ask past
-# it — otherwise a broad or spent run at the front of the order hides every receipt behind it.
-assert covering_receipt(
-    "--paths", "bin/tool", "--exclude-run", "covering-outside"
-)[1]["run_id"] == "covering-newer"
-assert covering_receipt(
-    "--paths", "bin/tool", "--exclude-run", "covering-outside", "--exclude-run", "covering-newer"
-)[1]["run_id"] == "covering-older"
-assert covering_receipt(
-    "--paths", "bin/tool", "--exclude-run", "covering-outside", "--exclude-run", "covering-newer",
-    "--exclude-run", "covering-older"
-)[0] == 1, "a shelf whose every receipt was skipped still answered"
-# `git commit -- .` carries everything, so it is covered by the newest scoped review of any set —
-# the same root-is-everything spelling the coverage side reads.
-assert covering_receipt("--paths", ".")[1]["run_id"] == "covering-outside", \
-    covering_receipt("--paths", ".")
-# The plain receipt is untouched by all of it: scoped runs never answered for the repository, and
-# a search that leaked into that answer would stamp the whole tree as reviewed.
-assert covering_receipt()[0] == 1, covering_receipt()
-assert covering_receipt("--scope", "bin/tool")[1]["run_id"] == "covering-older"
-assert covering_receipt("--scope", "bin/tool", "--paths", "bin/tool")[0] == 2
-assert covering_receipt("--paths", "bin/tool", "--lens", "edge-cases")[0] == 2
-# And the answer is the whole receipt the gate reads, tally included: absent until the run behind
-# it is triaged, which is the gate's "no review has answered yet".
-assert "reported" not in covering_receipt("--paths", "bin/tool", "tests/test_tool.sh")[1]
-covering_price_dir = covering_store / "benches" / "covering-newer"
-covering_price_dir.mkdir(parents=True)
-rb.write_jsonl(covering_price_dir / "findings-sol-low.jsonl", [
-    {"file": "bin/tool", "line": 1, "severity": "P1", "summary": "one"},
-    {"file": "bin/tool", "line": 2, "severity": "P3", "summary": "two"},
-    {"file": "bin/tool", "line": 3, "severity": "P1", "summary": "not confirmed"},
-])
-rb.write_report_receipt(covering_price_dir, [
-    {"rater": "sol-low", "idx": 0, "verdict": "confirmed"},
-    {"rater": "sol-low", "idx": 1, "verdict": "confirmed"},
-    {"rater": "sol-low", "idx": 2, "verdict": "false_positive"},
-], {"P1": 1, "P3": 1})
-assert covering_receipt("--paths", "bin/tool", "tests/test_tool.sh")[1]["reported"] == \
-    {"P1": 1, "P2": 0, "P3": 1}, covering_receipt("--paths", "bin/tool", "tests/test_tool.sh")
-
-nonrepo = work / "reviewed-nonrepo"
+nonrepo = work / "receipt-nonrepo"
 nonrepo.mkdir()
-nonrepo_store = work / "reviewed-nonrepo-store"
+nonrepo_store = work / "receipt-nonrepo-store"
 nonrepo_proc = subprocess.run(
-    [sys.argv[1], "reviewed", "--repo", str(nonrepo)],
+    [sys.argv[1], "receipt", "--repo", str(nonrepo)],
     capture_output=True, text=True,
     env=dict(os.environ, WORKER_STATS_DIR=str(nonrepo_store)),
 )
 assert nonrepo_proc.returncode != 0
-assert "not a git repository" in nonrepo_proc.stderr
 assert not nonrepo_store.exists(), list(nonrepo_store.rglob("*")) \
     if nonrepo_store.exists() else []
 
@@ -6918,25 +6731,6 @@ assert (retired_side_row["rater_model"], retired_side_row["rater_effort"]) == ("
     retired_side_row
 assert retired_side_row["confirmed"] == 1, retired_side_row
 os.environ["CLAUDEB_DIR"] = str(repeat_store)
-no_corpus_ref = {"run_id": "no-corpus-fixture", "commit": pin_sha}
-assert rb.reported_severities(no_corpus_ref) == {"P1": 1, "P2": 0, "P3": 0}
-# A run nobody triaged has priced nothing, and neither has one that does not exist.
-assert rb.reported_severities({"run_id": "no-such-run", "commit": pin_sha}) is None
-# Everything behind this is somebody else's file mid-write. A findings or verdict file that cannot
-# be parsed is a tally that cannot be computed, and the readers of a receipt have a commit to let
-# through: they must be told there is no tally, not handed an exception through `receipt`.
-(no_corpus_dir / "verdicts.jsonl").write_bytes(b'{"rater": "sol-med\x00\xff not json\n')
-assert rb.reported_severities(no_corpus_ref) is None
-# The stored verdicts are the freshest adjudication there is, and the report receipt beside them
-# is whatever an earlier round happened to print: a run re-adjudicated the durable way after a
-# `--no-corpus` report would otherwise price the gate's escalation on superseded counts forever.
-rb.write_jsonl(no_corpus_dir / "verdicts.jsonl", [
-    {"rater": "sol-medium", "idx": 0, "verdict": "false_positive"},
-    {"rater": "sol-medium", "idx": 1, "verdict": "confirmed"},
-])
-assert rb.reported_severities(no_corpus_ref) == {"P1": 0, "P2": 0, "P3": 1}
-(no_corpus_dir / "verdicts.jsonl").unlink()
-assert rb.reported_severities(no_corpus_ref) == {"P1": 1, "P2": 0, "P3": 0}
 # Handed-in rows go through the same schema filter as a file's: nothing stops a caller passing
 # raw triage notes, and an unfiltered row would be counted under a verdict that does not exist.
 assert rb.bench_summary(no_corpus_dir, json.loads(
@@ -6973,11 +6767,6 @@ rb.write_jsonl(recorded_no_corpus_dir / "findings-sol-medium.jsonl", [
 rb.write_jsonl(recorded_no_corpus_dir / "verdicts.jsonl", [
     {"rater": "sol-medium", "idx": 0, "verdict": "confirmed"},
 ])
-# A run adjudicated the durable way is as triaged as one reported with --no-corpus, and a receipt
-# written by an older build carries no tally at all: both are read back off the stored verdicts.
-assert rb.reported_severities(
-    {"run_id": "recorded-no-corpus-fixture", "commit": pin_sha}
-) == {"P1": 0, "P2": 1, "P3": 0}
 recorded_reviews = rb.read_jsonl(repeat_store / "worker-stats" / "reviews.jsonl")
 rb.write_jsonl(repeat_store / "worker-stats" / "reviews.jsonl", recorded_reviews + [
     {"run_id": "recorded-no-corpus-fixture", "rater": "sol-medium", "confirmed": 1},
@@ -7178,16 +6967,6 @@ successful_receipt_rc = rb.cmd_run(argparse.Namespace(
 successful_receipt = json.loads(model_receipt_path.read_text())
 assert successful_receipt_rc == 0 and successful_receipt["errored"] == 0, \
     f"successful receipt: rc={successful_receipt_rc}, errored={successful_receipt['errored']}"
-# Every receipt says which change the panel read, a review of committed work included. Carried by
-# worktree receipts alone, a review of the commit in front of the reader — «заревьюй то, что ты
-# сделал» — left the commit gate unable to see what that panel had covered, so it demanded a second
-# one over the very code the first had just read (seen live 2026-08-08).
-committed_receipt = json.loads(subprocess.run(
-    [sys.argv[1], "receipt", "--repo", str(pin_repo)],
-    check=True, capture_output=True, text=True,
-    env=dict(os.environ, CLAUDEB_DIR=str(model_store)),
-).stdout)
-assert committed_receipt["base"] == rb.diff_base(pin_repo, pin_descendant_sha), committed_receipt
 model_receipt_path.unlink()
 time.sleep(1.1)
 all_error_before = set((model_store / "worker-stats" / "benches").iterdir())
@@ -7274,793 +7053,6 @@ assert rb.resolved_model_from_envelope(alias_envelope) == "claude-opus-5", "alia
 assert (
     rb.resolved_model_from_envelope(pair_envelope) == "claude-opus-5+claude-sonnet-5"
 ), rb.resolved_model_from_envelope(pair_envelope)
-
-coverage_env = dict(
-    os.environ,
-    GIT_AUTHOR_NAME="t",
-    GIT_AUTHOR_EMAIL="t@example.test",
-    GIT_COMMITTER_NAME="t",
-    GIT_COMMITTER_EMAIL="t@example.test",
-)
-
-
-def make_coverage_repo(name, tracked=("tracked.txt",)):
-    path = work / name
-    path.mkdir()
-    subprocess.run(["git", "-C", str(path), "init", "-q", "-b", "main"],
-                   check=True, env=coverage_env)
-    for file_name in tracked:
-        full_path = path / file_name
-        full_path.parent.mkdir(parents=True, exist_ok=True)
-        full_path.write_text("base\n")
-    subprocess.run(["git", "-C", str(path), "add", "."], check=True, env=coverage_env)
-    subprocess.run(["git", "-C", str(path), "commit", "-qm", "base"],
-                   check=True, env=coverage_env)
-    return path
-
-
-def review_found(run_id, confirmed=0, findings=0):
-    """Make the corpus say what a run found. A review vouches for a commit only once it found
-    something, so a fixture asserting the vouch has to be explicit about it: an adjudicated confirmed
-    count for a commit review, findings files for a worktree one, which the corpus refuses.
-    """
-    corpus = pathlib.Path(coverage_env["CLAUDEB_DIR"]) / "worker-stats" / "reviews.jsonl"
-    if confirmed:
-        corpus.parent.mkdir(parents=True, exist_ok=True)
-        with corpus.open("a") as stream:
-            stream.write(json.dumps(
-                {"run_id": run_id, "rater": "sol-low", "confirmed": confirmed}
-            ) + "\n")
-    if findings:
-        run_dir = pathlib.Path(coverage_env["CLAUDEB_DIR"]) / "worker-stats" / "benches" / run_id
-        run_dir.mkdir(parents=True, exist_ok=True)
-        (run_dir / "findings-sol-high.jsonl").write_text("".join(
-            json.dumps({"severity": "P2", "file": "x", "line": n, "summary": "f"}) + "\n"
-            for n in range(findings)
-        ))
-
-
-def coverage(path, *extra, cwd=None):
-    proc = subprocess.run(
-        [sys.argv[1], "coverage", "--repo", str(path), *extra],
-        check=True, capture_output=True, text=True, env=coverage_env, cwd=cwd,
-    )
-    return proc.stdout.splitlines()
-
-
-def gate_reads(lines):
-    """Exactly what the commit gate takes out of this output, asserted the way the gate reads it:
-    one `covered:` verdict, at most one `vouch:`, and never a vouch on a refusal — a run named
-    beside `covered: no` would be spent on a commit the same answer says is not covered.
-    """
-    verdicts = [line[len("covered: "):] for line in lines if line.startswith("covered: ")]
-    assert verdicts in (["yes"], ["no"]), lines
-    named = [line[len("vouch: "):] for line in lines if line.startswith("vouch: ")]
-    assert len(named) <= 1, lines
-    assert not named or verdicts == ["yes"], lines
-    return verdicts[0] == "yes", (named[0] if named else "")
-
-
-def assert_coverage(lines, files, changed_lines, vouch="", paths=None, reverts=()):
-    """The whole answer, key by key and in order. The gate parses these exact spellings, so a
-    fixture that matched loosely would let a renamed key ship as a gate that reads nothing.
-    """
-    covered, named = gate_reads(lines)
-    assert named == vouch, lines
-    expected = [f"covered: {'yes' if not files or vouch else 'no'}"]
-    if vouch:
-        expected.append(f"vouch: {vouch}")
-    expected += [f"lines: {changed_lines}", f"files: {files}"]
-    if paths is not None:
-        expected += [f"path: {path}" for path in sorted(paths)]
-    assert lines[:len(expected)] == expected, lines
-    assert covered == (not files or bool(vouch)), lines
-    # No trailing line beyond the paths and the reverted set: one path line per file, one `revert:`
-    # per path this commit would put the reviewed content back over, and nothing else.
-    tail = lines[len(expected) + (0 if paths is not None else files):]
-    assert tail == [f"revert: {path}" for path in sorted(reverts)], lines
-    return lines
-
-
-def vouch_of(lines):
-    return gate_reads(lines)[1]
-
-
-clean_coverage = make_coverage_repo("coverage-clean")
-# A tree holding nothing to review is covered, and names no run: there is no work here for a
-# review to answer for, and the gate must not spend a neighbouring receipt's round on it.
-assert_coverage(coverage(clean_coverage), 0, 0, paths=[])
-
-# Staged, unstaged and untracked content are all in the delta, each counted once.
-mixed_coverage = make_coverage_repo("coverage-mixed", ("staged.txt", "unstaged.txt"))
-(mixed_coverage / "staged.txt").write_text("base\nstaged\n")
-subprocess.run(["git", "-C", str(mixed_coverage), "add", "staged.txt"],
-               check=True, env=coverage_env)
-(mixed_coverage / "unstaged.txt").write_text("base\nunstaged\n")
-(mixed_coverage / "untracked.txt").write_text("untracked\n")
-assert_coverage(coverage(mixed_coverage), 3, 3,
-                paths=["staged.txt", "unstaged.txt", "untracked.txt"])
-
-# A named panel unblocks the owner gate and nothing else: the marker is the whole permission, and
-# a stale or absent one is no permission at all.
-grant_owner_panels("t3", "max")
-assert rb.owner_named("t3") and not rb.owner_named("nothing")
-grant_owner_panels("t3", age=rb.OWNER_GRANT_TTL_S + 60)
-assert not rb.owner_named("t3")
-# A marker stamped ahead of this clock is fresh by any reading: refusing it would deny the panel
-# Egor just named because two clocks disagree by a millisecond.
-grant_owner_panels("t3", age=-30)
-assert rb.owner_named("t3")
-for marker in ("t3", "max"):
-    (rb.owner_grant_dir() / marker).unlink()
-# The keyboard exemption is Egor's shell, not any terminal: Claude Code marks every command it
-# runs, so a pseudo-terminal an agent opens for itself is not him.
-_ttys = types.SimpleNamespace(isatty=lambda: True)
-_saved_streams, _saved_env = (sys.stdin, sys.stdout), os.environ.get("CLAUDECODE")
-sys.stdin = sys.stdout = _ttys
-try:
-    os.environ.pop("CLAUDECODE", None)
-    os.environ.pop("CLAUDE_CODE_ENTRYPOINT", None)
-    assert rb.owner_at_keyboard()
-    os.environ["CLAUDECODE"] = "1"
-    assert not rb.owner_at_keyboard()
-finally:
-    sys.stdin, sys.stdout = _saved_streams
-    if _saved_env is None:
-        os.environ.pop("CLAUDECODE", None)
-    else:
-        os.environ["CLAUDECODE"] = _saved_env
-
-# A moved file is one file and no lines: expanded into a delete plus an add it would read as a
-# rewrite and report work nobody did.
-rename_coverage = make_coverage_repo("coverage-rename", tracked=("moved.txt",))
-(rename_coverage / "moved.txt").write_text("line\n" * 400)
-subprocess.run(["git", "-C", str(rename_coverage), "commit", "-qam", "fill"],
-               check=True, env=coverage_env)
-subprocess.run(["git", "-C", str(rename_coverage), "mv", "moved.txt", "elsewhere.txt"],
-               check=True, env=coverage_env)
-assert_coverage(coverage(rename_coverage), 1, 0, paths=["elsewhere.txt"])
-
-# An untracked binary has no lines to count, and counting its bytes would report a delta in pixels.
-binary_coverage = make_coverage_repo("coverage-binary")
-(binary_coverage / "asset.png").write_bytes(b"\x89PNG\r\n\x1a\n" + bytes(4000))
-assert_coverage(coverage(binary_coverage), 1, 0, paths=["asset.png"])
-
-# A staged change the working tree then reverted is what the next commit contains, however
-# invisible it is to `git diff HEAD`.
-staged_coverage = make_coverage_repo("coverage-staged")
-(staged_coverage / "tracked.txt").write_text("edited\n")
-subprocess.run(["git", "-C", str(staged_coverage), "add", "tracked.txt"],
-               check=True, env=coverage_env)
-(staged_coverage / "tracked.txt").write_text("base\n")
-assert_coverage(coverage(staged_coverage), 1, 2, paths=["tracked.txt"])
-
-# A stamp declares a working tree reviewed, so it is the one caller that must refuse a bare
-# repository outright.
-bare_source = make_coverage_repo("coverage-bare-source")
-bare_clone = bare_source.parent / "coverage-bare.git"
-subprocess.run(["git", "clone", "-q", "--bare", str(bare_source), str(bare_clone)],
-               check=True, env=coverage_env)
-bare_stamp = subprocess.run(
-    [sys.argv[1], "reviewed", "--repo", str(bare_clone)],
-    capture_output=True, text=True, env=coverage_env,
-)
-assert bare_stamp.returncode != 0, bare_stamp.stdout
-assert "working tree" in bare_stamp.stderr, bare_stamp.stderr
-
-# `Path("").is_dir()` is True and `subprocess(cwd="")` raises, so an empty --repo used to reach git
-# as a cwd and die there instead of being read as the directory the caller is standing in.
-empty_repo_arg = subprocess.run(
-    [sys.argv[1], "coverage", "--repo", ""],
-    capture_output=True, text=True, cwd=str(bare_source), env=coverage_env,
-)
-assert empty_repo_arg.returncode == 0, empty_repo_arg.stderr
-assert "FileNotFoundError" not in empty_repo_arg.stderr, empty_repo_arg.stderr
-
-# An untracked nested repository is one listed path with nothing to count, not a read error.
-nested_repo_coverage = make_coverage_repo("coverage-nested-repo")
-(nested_repo_coverage / "nested").mkdir()
-subprocess.run(["git", "-C", str(nested_repo_coverage / "nested"), "init", "-q"],
-               check=True, env=coverage_env)
-assert_coverage(coverage(nested_repo_coverage), 1, 0, paths=["nested/"])
-
-receipt_coverage = make_coverage_repo("coverage-receipt")
-(receipt_coverage / "reviewed.txt").write_text("reviewed\n" * 80)
-subprocess.run(["git", "-C", str(receipt_coverage), "add", "reviewed.txt"],
-               check=True, env=coverage_env)
-subprocess.run(["git", "-C", str(receipt_coverage), "commit", "-qm", "reviewed"],
-               check=True, env=coverage_env)
-receipt_sha = subprocess.run(
-    ["git", "-C", str(receipt_coverage), "rev-parse", "HEAD"],
-    check=True, capture_output=True, text=True, env=coverage_env,
-).stdout.strip()
-receipt_tree = subprocess.run(
-    ["git", "-C", str(receipt_coverage), "rev-parse", "HEAD^{tree}"],
-    check=True, capture_output=True, text=True, env=coverage_env,
-).stdout.strip()
-receipt_dir = pathlib.Path(coverage_env["CLAUDEB_DIR"]) / "worker-stats" / rb.RECEIPT_DIR
-receipt_dir.mkdir(parents=True, exist_ok=True)
-receipt_run_id = "receipt-fixture"
-(receipt_dir / rb.receipt_file_name(receipt_coverage)).write_text(json.dumps({
-    "repo": str(receipt_coverage), "tree": receipt_tree, "commit": receipt_sha,
-    "run_id": receipt_run_id, "ts": "2026-07-27T00:00:00+00:00", "errored": 0,
-}) + "\n")
-review_found(receipt_run_id, confirmed=2)
-subprocess.run(["git", "-C", str(receipt_coverage), "reset", "-q", "--soft", "HEAD^"],
-               check=True, env=coverage_env)
-(receipt_coverage / "tracked.txt").write_text("changed\n")
-# The reviewed commit was rewound with its content left staged: what the receipt names is no longer
-# HEAD, and the delta is measured against the tree the panel read rather than against HEAD — so the
-# 80 reviewed lines still standing in the tree are not reported as unreviewed work. Where HEAD
-# stands is not asked at all: the review answers for the CONTENT the commit would carry, and the
-# two lines of drift on top of it are inside what that review read.
-assert_coverage(coverage(receipt_coverage), 1, 2, vouch=receipt_run_id, paths=["tracked.txt"])
-
-# The case the whole content rule exists for. A co-tenant commits into this shared checkout between
-# the review and the commit — a file no panel ever read — and the verdict does not move: history
-# used to answer this question, and every one of their commits retired a live review of work it had
-# never touched (Egor, 2026-08-09).
-# The case the content rule exists for, in one line: HEAD moves under this chat and the answer does
-# not. Their landed file is counted as content no panel has read — it is — but what this commit
-# carries is still the reviewed bytes, so the same review still pays for it. Under history this was
-# a refusal, and in a checkout taking commits from other chats continuously it retired live reviews
-# all day over work they had never touched (Egor, 2026-08-09).
-(receipt_coverage / "theirs.txt").write_text("a co-tenant's own work\n")
-subprocess.run(["git", "-C", str(receipt_coverage), "add", "theirs.txt"],
-               check=True, env=coverage_env)
-# Their own commit form: a pathspec commit, which leaves this chat's staged work in the index where
-# it was — the co-tenant is committing beside it, not on top of it.
-subprocess.run(["git", "-C", str(receipt_coverage), "commit", "-qm", "co-tenant", "--",
-                "theirs.txt"], check=True, env=coverage_env)
-assert_coverage(coverage(receipt_coverage), 2, 3, vouch=receipt_run_id,
-                paths=["theirs.txt", "tracked.txt"])
-
-# What history used to refuse outright is now one advisory line: the commit carries the reviewed
-# bytes of a path a co-tenant has since moved in HEAD, and whether their work should ride along is a
-# question no panel read. Named, never blocking — `covered:` stays `yes`.
-landed = receipt_coverage / "reviewed.txt"
-reviewed_bytes = landed.read_text()
-landed.write_text(reviewed_bytes + "their fix\n")
-subprocess.run(["git", "-C", str(receipt_coverage), "commit", "-qm", "their fix", "--",
-                "reviewed.txt"], check=True, env=coverage_env)
-landed.write_text(reviewed_bytes)
-subprocess.run(["git", "-C", str(receipt_coverage), "add", "reviewed.txt"],
-               check=True, env=coverage_env)
-assert_coverage(coverage(receipt_coverage), 2, 3, vouch=receipt_run_id,
-                paths=["theirs.txt", "tracked.txt"], reverts=["reviewed.txt"])
-
-# One more line written on top of those bytes and it is no longer their work being put back: it is
-# this chat's own drift, which the review is priced on and the reader already sees in the delta.
-landed.write_text(reviewed_bytes + "my own fix\n")
-subprocess.run(["git", "-C", str(receipt_coverage), "add", "reviewed.txt"],
-               check=True, env=coverage_env)
-assert_coverage(coverage(receipt_coverage), 3, 4, vouch=receipt_run_id,
-                paths=["reviewed.txt", "theirs.txt", "tracked.txt"])
-
-# A worktree review is stamped with a snapshot of uncommitted content, reachable from nothing. The
-# index still holds the committed base, so asking it what it adds over that snapshot answers with
-# the whole reviewed delta reversed — 21 already-reviewed lines across two files, which used to be
-# added to the one line that is genuinely new and inflated the delta by the size of the review that
-# had just finished.
-wt_receipt_coverage = make_coverage_repo(
-    "coverage-worktree-receipt", ("tracked.txt", "second.txt"),
-)
-(wt_receipt_coverage / "tracked.txt").write_text("line\n" * 20)
-(wt_receipt_coverage / "second.txt").write_text("changed\n")
-subprocess.run(["git", "-C", str(wt_receipt_coverage), "add", "."],
-               check=True, env=coverage_env)
-wt_snapshot_tree = subprocess.run(
-    ["git", "-C", str(wt_receipt_coverage), "write-tree"],
-    check=True, capture_output=True, text=True, env=coverage_env,
-).stdout.strip()
-wt_snapshot_sha = subprocess.run(
-    ["git", "-C", str(wt_receipt_coverage), "commit-tree", wt_snapshot_tree,
-     "-p", "HEAD", "-m", "review-bench worktree snapshot"],
-    check=True, capture_output=True, text=True,
-    env=dict(coverage_env, GIT_COMMITTER_NAME="review-bench",
-             GIT_COMMITTER_EMAIL="review-bench@local"),
-).stdout.strip()
-subprocess.run(["git", "-C", str(wt_receipt_coverage), "reset", "-q", "HEAD"],
-               check=True, env=coverage_env)
-(receipt_dir / rb.receipt_file_name(wt_receipt_coverage)).write_text(json.dumps({
-    "repo": str(wt_receipt_coverage), "tree": wt_snapshot_tree, "commit": wt_snapshot_sha,
-    "run_id": "worktree-fixture", "ts": "2026-07-27T00:00:00+00:00", "errored": 0,
-}) + "\n")
-review_found("worktree-fixture", findings=3)
-worktree_run_dir = (
-    pathlib.Path(coverage_env["CLAUDEB_DIR"]) / "worker-stats" / "benches" / "worktree-fixture"
-)
-(worktree_run_dir / "findings-sol-max.jsonl").write_text(
-    json.dumps({"severity": "P1", "file": "x", "line": 1, "summary": "discarded"}) + "\n"
-)
-(worktree_run_dir / "meta.json").write_text(json.dumps({
-    "rater_runs": [
-        {"rater": "sol-high", "errored": False},
-        {"rater": "sol-max", "errored": True},
-    ],
-}) + "\n")
-assert rb.review_outcome(wt_receipt_coverage, {
-    "commit": wt_snapshot_sha, "run_id": "worktree-fixture",
-}) == (True, 0, 3)
-# A row from another repository sharing seven hex characters is a different commit: full-sha
-# equality only, or confirmed counts bleed between repos through the shared corpus.
-with (pathlib.Path(coverage_env["CLAUDEB_DIR"]) / "worker-stats" / "reviews.jsonl").open("a") as stream:
-    stream.write(json.dumps({
-        "run_id": "prefix-collider", "rater": "sol-low", "confirmed": 9,
-        "commit": wt_snapshot_sha[:7] + "f" * (len(wt_snapshot_sha) - 7),
-    }) + "\n")
-assert rb.review_outcome(wt_receipt_coverage, {
-    "commit": wt_snapshot_sha, "run_id": "worktree-fixture",
-}) == (True, 0, 3)
-(wt_receipt_coverage / "tracked.txt").write_text("line\n" * 19 + "new\n")
-# Staged after the review and then dropped from the working tree: not counted, and deliberately so.
-# Both trees compared here are built from the working tree, exactly as review-bench builds the
-# snapshot a panel reviews, so a path only the index still holds was never reviewed and no review of
-# this repository can cover it — counting it would report a delta nothing could clear.
-(wt_receipt_coverage / "staged-after.txt").write_text("late\n")
-subprocess.run(["git", "-C", str(wt_receipt_coverage), "add", "staged-after.txt"],
-               check=True, env=coverage_env)
-(wt_receipt_coverage / "staged-after.txt").unlink()
-assert_coverage(coverage(wt_receipt_coverage), 1, 2, paths=["tracked.txt"])
-
-# A snapshot holds untracked content too, because that is how review-bench builds one. Asking the
-# index and the working tree about it separately answered with a phantom deletion of every untracked
-# file and then added its line count back on top: with nothing changed since the panel ran, this
-# claimed a whole review's worth of work.
-wt_untracked_coverage = make_coverage_repo("coverage-worktree-untracked")
-(wt_untracked_coverage / "extra.txt").write_text("line\n" * 40)
-subprocess.run(["git", "-C", str(wt_untracked_coverage), "add", "."],
-               check=True, env=coverage_env)
-wt_untracked_tree = subprocess.run(
-    ["git", "-C", str(wt_untracked_coverage), "write-tree"],
-    check=True, capture_output=True, text=True, env=coverage_env,
-).stdout.strip()
-wt_untracked_sha = subprocess.run(
-    ["git", "-C", str(wt_untracked_coverage), "commit-tree", wt_untracked_tree,
-     "-p", "HEAD", "-m", "review-bench worktree snapshot"],
-    check=True, capture_output=True, text=True,
-    env=dict(coverage_env, GIT_COMMITTER_NAME="review-bench",
-             GIT_COMMITTER_EMAIL="review-bench@local"),
-).stdout.strip()
-subprocess.run(["git", "-C", str(wt_untracked_coverage), "reset", "-q", "HEAD"],
-               check=True, env=coverage_env)
-(receipt_dir / rb.receipt_file_name(wt_untracked_coverage)).write_text(json.dumps({
-    "repo": str(wt_untracked_coverage), "tree": wt_untracked_tree, "commit": wt_untracked_sha,
-    "run_id": "untracked-fixture", "ts": "2026-07-27T00:00:00+00:00", "errored": 0,
-}) + "\n")
-review_found("untracked-fixture", findings=2)
-assert_coverage(coverage(wt_untracked_coverage), 0, 0, paths=[])
-# And one line written after that review is one line of work, not forty-one.
-(wt_untracked_coverage / "extra.txt").write_text("line\n" * 40 + "new\n")
-assert_coverage(coverage(wt_untracked_coverage), 1, 1, paths=["extra.txt"])
-
-# Answering leaves nothing behind in the repository it read. Building the working tree stages every
-# file, and a temporary index redirects the INDEX and not the objects: asked once per edit, which
-# is what a statusline does, it wrote a blob and a tree into the reader's store each time.
-wt_objects = wt_untracked_coverage / ".git" / "objects"
-def object_count():
-    return sum(1 for path in wt_objects.rglob("*") if path.is_file())
-(wt_untracked_coverage / "extra.txt").write_text("line\n" * 40 + "newer\n")
-wt_objects_before = object_count()
-coverage(wt_untracked_coverage)
-assert object_count() == wt_objects_before, (wt_objects_before, object_count())
-
-# A scoped review answers for a staged commit in a shared checkout. The commit contains the index
-# and nothing else, so another agent's unstaged work is not what this one is asking to commit —
-# without this, a fully reviewed, fully staged change stayed blocked forever by files nobody staged.
-scoped_coverage = make_coverage_repo("coverage-scoped", ("mine.txt", "theirs.txt"))
-(scoped_coverage / "mine.txt").write_text("reviewed\n" * 12)
-scoped_sha = rb.worktree_snapshot_commit(scoped_coverage, paths=["mine.txt"])
-scoped_tree = subprocess.run(
-    ["git", "-C", str(scoped_coverage), "rev-parse", f"{scoped_sha}^{{tree}}"],
-    check=True, capture_output=True, text=True, env=coverage_env,
-).stdout.strip()
-scoped_receipt_path = rb.persist_review_receipt(
-    scoped_coverage, scoped_tree, scoped_sha, "scoped-fixture", 0, scope=["mine.txt"]
-)
-assert scoped_receipt_path.parent == receipt_dir, scoped_receipt_path
-assert rb.review_receipt(scoped_coverage) is None, "a scoped receipt answered as the repository's"
-subprocess.run(["git", "-C", str(scoped_coverage), "add", "mine.txt"], check=True, env=coverage_env)
-assert vouch_of(coverage(scoped_coverage)) == "scoped-fixture", coverage(scoped_coverage)
-
-# Someone else's unstaged edit and untracked file are in the delta and still do not block: they
-# are not going into this commit, and no review of them is owed by the agent making it.
-(scoped_coverage / "theirs.txt").write_text("theirs\n" * 2)
-(scoped_coverage / "theirs-new.txt").write_text("new\n" * 10)
-assert_coverage(coverage(scoped_coverage), 3, 26, vouch="scoped-fixture",
-                paths=["mine.txt", "theirs.txt", "theirs-new.txt"])
-
-# A fix on top of the reviewed scope is still covered by that review — but only once the panel
-# behind it is known to have found something.
-(scoped_coverage / "mine.txt").write_text("reviewed\n" * 12 + "fix\n")
-subprocess.run(["git", "-C", str(scoped_coverage), "add", "mine.txt"], check=True, env=coverage_env)
-assert vouch_of(coverage(scoped_coverage)) == "", coverage(scoped_coverage)
-review_found("scoped-fixture", findings=2)
-assert vouch_of(coverage(scoped_coverage)) == "scoped-fixture", coverage(scoped_coverage)
-
-# Fail closed on a receipt that cannot be read: an unreadable scoped review is no review at all,
-# and guessing its coverage is the one mistake that would wave a commit through unreviewed.
-scoped_receipt_bytes = scoped_receipt_path.read_bytes()
-scoped_receipt_path.write_bytes(b"{not json")
-assert vouch_of(coverage(scoped_coverage)) == "", coverage(scoped_coverage)
-scoped_receipt_path.write_bytes(scoped_receipt_bytes)
-
-# A staged path the scoped panel was never shown IS part of this commit, so it blocks — and a
-# second scoped receipt covering exactly that path does not rescue it: two half-fresh reviews may
-# not vouch together for a tree neither of them read.
-subprocess.run(["git", "-C", str(scoped_coverage), "add", "theirs.txt"], check=True, env=coverage_env)
-assert vouch_of(coverage(scoped_coverage)) == "", coverage(scoped_coverage)
-rb.persist_review_receipt(
-    scoped_coverage, scoped_tree, scoped_sha, "scoped-theirs-fixture", 0, scope=["theirs.txt"]
-)
-assert vouch_of(coverage(scoped_coverage)) == "", coverage(scoped_coverage)
-
-# The scope is a pathspec, and matching one is not the same as having been read: a directory scope
-# goes on matching files written after the panel ran, and those are precisely the unreviewed ones.
-dir_scope_coverage = make_coverage_repo("coverage-scoped-dir", ("src/a.txt", "other.txt"))
-(dir_scope_coverage / "src" / "a.txt").write_text("reviewed\n" * 12)
-dir_scope_sha = rb.worktree_snapshot_commit(dir_scope_coverage, paths=["src"])
-dir_scope_tree = subprocess.run(
-    ["git", "-C", str(dir_scope_coverage), "rev-parse", f"{dir_scope_sha}^{{tree}}"],
-    check=True, capture_output=True, text=True, env=coverage_env,
-).stdout.strip()
-rb.persist_review_receipt(
-    dir_scope_coverage, dir_scope_tree, dir_scope_sha, "dir-scope-fixture", 0, scope=["src"]
-)
-review_found("dir-scope-fixture", findings=2)
-subprocess.run(["git", "-C", str(dir_scope_coverage), "add", "src/a.txt"],
-               check=True, env=coverage_env)
-assert vouch_of(coverage(dir_scope_coverage)) == "dir-scope-fixture", coverage(dir_scope_coverage)
-
-# An unreadable receipt store must not take `coverage` down with it: the commit gate reads a failed
-# coverage as no review check at all and lets the commit through, so a crash here is the gate
-# switched off rather than a refusal.
-receipt_dir.chmod(0o000)
-try:
-    unreadable_store_lines = coverage(dir_scope_coverage)
-finally:
-    receipt_dir.chmod(0o755)
-assert_coverage(unreadable_store_lines, 1, 13, paths=["src/a.txt"])
-
-(dir_scope_coverage / "src" / "new.txt").write_text("new\n" * 3)
-subprocess.run(["git", "-C", str(dir_scope_coverage), "add", "src/new.txt"],
-               check=True, env=coverage_env)
-assert vouch_of(coverage(dir_scope_coverage)) == "", coverage(dir_scope_coverage)
-
-# Staging the reviewed content back after HEAD has moved inside the scope puts a co-tenant's landed
-# work back over: the review answers for the bytes, so it pays, and whether their work should ride
-# along is named as advice instead. A refusal here blocked the very commit the review was run for.
-moved_head_coverage = make_coverage_repo("coverage-scoped-moved", ("mine.txt", "other.txt"))
-(moved_head_coverage / "mine.txt").write_text("reviewed\n" * 12)
-moved_head_sha = rb.worktree_snapshot_commit(moved_head_coverage, paths=["mine.txt"])
-moved_head_tree = subprocess.run(
-    ["git", "-C", str(moved_head_coverage), "rev-parse", f"{moved_head_sha}^{{tree}}"],
-    check=True, capture_output=True, text=True, env=coverage_env,
-).stdout.strip()
-rb.persist_review_receipt(
-    moved_head_coverage, moved_head_tree, moved_head_sha, "moved-head-fixture", 0,
-    scope=["mine.txt"]
-)
-(moved_head_coverage / "mine.txt").write_text("theirs\n" * 5)
-subprocess.run(["git", "-C", str(moved_head_coverage), "add", "mine.txt"],
-               check=True, env=coverage_env)
-subprocess.run(["git", "-C", str(moved_head_coverage), "commit", "-qm", "their work"],
-               check=True, env=coverage_env)
-(moved_head_coverage / "mine.txt").write_text("reviewed\n" * 12)
-subprocess.run(["git", "-C", str(moved_head_coverage), "add", "mine.txt"],
-               check=True, env=coverage_env)
-assert_coverage(coverage(moved_head_coverage), 1, 17, vouch="moved-head-fixture",
-                paths=["mine.txt"], reverts=["mine.txt"])
-
-# Their landed work being a deletion is the same undoing: committing the reviewed content puts a
-# file back that HEAD no longer has. Read off the reviewed tree alone this looks like an ordinary
-# add, which is why what landed since the review is asked for separately.
-(moved_head_coverage / "mine.txt").unlink()
-subprocess.run(["git", "-C", str(moved_head_coverage), "commit", "-qm", "their deletion", "--",
-                "mine.txt"], check=True, env=coverage_env)
-(moved_head_coverage / "mine.txt").write_text("reviewed\n" * 12)
-subprocess.run(["git", "-C", str(moved_head_coverage), "add", "mine.txt"],
-               check=True, env=coverage_env)
-assert_coverage(coverage(moved_head_coverage), 1, 12, vouch="moved-head-fixture",
-                paths=["mine.txt"], reverts=["mine.txt"])
-
-# Where HEAD moved decides it, though, and asking whether HEAD is the same COMMIT could not tell:
-# a shared checkout takes commits from other chats continuously, and every one of them retired a
-# scoped review that had read none of the files being committed here.
-elsewhere_coverage = make_coverage_repo("coverage-scoped-moved-elsewhere", ("mine.txt", "other.txt"))
-(elsewhere_coverage / "mine.txt").write_text("reviewed\n" * 12)
-elsewhere_sha = rb.worktree_snapshot_commit(elsewhere_coverage, paths=["mine.txt"])
-elsewhere_tree = subprocess.run(
-    ["git", "-C", str(elsewhere_coverage), "rev-parse", f"{elsewhere_sha}^{{tree}}"],
-    check=True, capture_output=True, text=True, env=coverage_env,
-).stdout.strip()
-rb.persist_review_receipt(
-    elsewhere_coverage, elsewhere_tree, elsewhere_sha, "moved-elsewhere-fixture", 0,
-    scope=["mine.txt"]
-)
-review_found("moved-elsewhere-fixture", findings=3)
-(elsewhere_coverage / "other.txt").write_text("their unrelated work\n")
-subprocess.run(["git", "-C", str(elsewhere_coverage), "add", "other.txt"],
-               check=True, env=coverage_env)
-subprocess.run(["git", "-C", str(elsewhere_coverage), "commit", "-qm", "their work"],
-               check=True, env=coverage_env)
-(elsewhere_coverage / "mine.txt").write_text("reviewed\n" * 12 + "one line after\n")
-assert vouch_of(coverage(elsewhere_coverage, "--commit-paths", "mine.txt")) == \
-    "moved-elsewhere-fixture", coverage(elsewhere_coverage, "--commit-paths", "mine.txt")
-
-# And a co-tenant landing PART of the very content the panel was shown moved HEAD under the path
-# being committed without taking anything away from what that review answers for: what is left to
-# commit there is the rest of the same reviewed change, which is less than the panel read, not more.
-partial_coverage = make_coverage_repo("coverage-scoped-moved-partial", ("mine.txt",))
-(partial_coverage / "mine.txt").write_text("theirs\nbase\nmine\n")
-partial_sha = rb.worktree_snapshot_commit(partial_coverage, paths=["mine.txt"])
-partial_tree = subprocess.run(
-    ["git", "-C", str(partial_coverage), "rev-parse", f"{partial_sha}^{{tree}}"],
-    check=True, capture_output=True, text=True, env=coverage_env,
-).stdout.strip()
-rb.persist_review_receipt(
-    partial_coverage, partial_tree, partial_sha, "moved-partial-fixture", 0, scope=["mine.txt"]
-)
-review_found("moved-partial-fixture", findings=3)
-(partial_coverage / "mine.txt").write_text("theirs\nbase\n")
-subprocess.run(["git", "-C", str(partial_coverage), "add", "mine.txt"],
-               check=True, env=coverage_env)
-subprocess.run(["git", "-C", str(partial_coverage), "commit", "-qm", "their half"],
-               check=True, env=coverage_env)
-(partial_coverage / "mine.txt").write_text("theirs\nbase\nmine\n")
-assert vouch_of(coverage(partial_coverage, "--commit-paths", "mine.txt")) == \
-    "moved-partial-fixture", coverage(partial_coverage, "--commit-paths", "mine.txt")
-
-# `git commit -- <paths>` and `git commit -a` commit working-tree content, so the index outside
-# those paths never reaches the commit: in a shared checkout another agent's staged file left the
-# whole index unvouchable, and no receipt could ever cover it.
-form_coverage = make_coverage_repo("coverage-commit-form", ("mine.txt", "theirs.txt"))
-(form_coverage / "mine.txt").write_text("reviewed\n" * 12)
-form_sha = rb.worktree_snapshot_commit(form_coverage, paths=["mine.txt"])
-form_tree = subprocess.run(
-    ["git", "-C", str(form_coverage), "rev-parse", f"{form_sha}^{{tree}}"],
-    check=True, capture_output=True, text=True, env=coverage_env,
-).stdout.strip()
-rb.persist_review_receipt(
-    form_coverage, form_tree, form_sha, "commit-form-fixture", 0, scope=["mine.txt"]
-)
-(form_coverage / "theirs.txt").write_text("theirs\n" * 3)
-subprocess.run(["git", "-C", str(form_coverage), "add", "theirs.txt"], check=True, env=coverage_env)
-assert vouch_of(coverage(form_coverage)) == "", coverage(form_coverage)
-assert vouch_of(coverage(form_coverage, "--commit-paths", "mine.txt")) == \
-    "commit-form-fixture", coverage(form_coverage, "--commit-paths", "mine.txt")
-
-# A pathspec reaching past what the panel read is not covered by it, whatever else is in the index.
-assert vouch_of(coverage(form_coverage, "--commit-paths", "mine.txt", "theirs.txt")) == "", \
-    coverage(form_coverage, "--commit-paths", "mine.txt", "theirs.txt")
-
-# `-a` carries the whole tracked delta, so the unreviewed working-tree edit it would sweep in
-# blocks — and with that edit reverted the same receipt answers for the commit.
-assert vouch_of(coverage(form_coverage, "--commit-all")) == "", \
-    coverage(form_coverage, "--commit-all")
-(form_coverage / "theirs.txt").write_text("base\n")
-assert vouch_of(coverage(form_coverage, "--commit-all")) == "commit-form-fixture", \
-    coverage(form_coverage, "--commit-all")
-
-# A pathspec matching no change is a commit git itself refuses, and the tree's other work is not
-# what it would carry: there is nothing to review, whatever the whole tree holds.
-(form_coverage / "theirs.txt").write_text("theirs\n" * 9)
-assert_coverage(coverage(form_coverage, "--commit-paths", "unchanged.txt"), 0, 0, paths=[])
-form_empty_all = make_coverage_repo("coverage-commit-form-clean")
-assert_coverage(coverage(form_empty_all, "--commit-all"), 0, 0, paths=[])
-
-# A pathspec naming only untracked content carries it only when the same line stages it first:
-# git refuses `git commit -- new.txt` for an unstaged file outright ("did not match any file(s)
-# known to git", `--include` included — measured 2026-08-10), so without the stage there is no
-# commit to review, and with it the work is priced like any other.
-form_untracked = make_coverage_repo("coverage-commit-form-untracked")
-(form_untracked / "brand-new.txt").write_text("new\n" * 12)
-assert_coverage(coverage(form_untracked, "--commit-paths", "brand-new.txt"), 0, 0, paths=[])
-assert_coverage(
-    coverage(form_untracked, "--commit-paths", "brand-new.txt", "--carries-untracked"), 1, 12,
-    paths=["brand-new.txt"])
-# And a pathspec naming neither a tracked change nor untracked content is still nothing.
-assert_coverage(coverage(form_untracked, "--commit-paths", "unchanged.txt"), 0, 0, paths=[])
-# No form carries an unstaged untracked file: `git commit -a` and `git commit -- .` leave the
-# same new file behind, so it must not buy either of them a delta.
-assert_coverage(coverage(form_untracked, "--commit-all"), 0, 0, paths=[])
-assert_coverage(coverage(form_untracked, "--commit-paths", "."), 0, 0, paths=[])
-# Unless the line stages first. `git add brand-new.txt && git commit -a` reaches this command
-# before anything is staged, and dropping the file there answers `covered: yes` for a commit that
-# carries content no panel read — which is the gate waving it through, not merely mispricing it.
-assert_coverage(coverage(form_untracked, "--commit-all", "--carries-untracked"), 1, 12,
-                paths=["brand-new.txt"])
-assert_coverage(coverage(form_untracked, "--commit-paths", ".", "--carries-untracked"), 1, 12,
-                paths=["brand-new.txt"])
-# The same for a directory pathspec, where the add is what puts the new file inside the scope.
-staged_dir_coverage = make_coverage_repo("coverage-commit-staged-dir", ("src/mine.txt",))
-(staged_dir_coverage / "src" / "fresh.txt").write_text("line\n" * 7)
-assert_coverage(coverage(staged_dir_coverage, "--commit-paths", "src"), 0, 0, paths=[])
-assert_coverage(coverage(staged_dir_coverage, "--commit-paths", "src", "--carries-untracked"),
-                1, 7, paths=["src/fresh.txt"])
-
-# A checkout holding no work at all is covered whatever the receipt stands on: a co-tenant landing
-# moves HEAD past the reviewed tree, and read against that tree alone a clean tree reported their
-# commit as this one's delta — a review demanded for a commit git refuses as empty.
-landed_coverage = make_coverage_repo("coverage-cotenant-landed", ("mine.txt",))
-(landed_coverage / "mine.txt").write_text("reviewed\n" * 9)
-landed_sha = rb.worktree_snapshot_commit(landed_coverage, paths=["mine.txt"])
-landed_tree = subprocess.run(
-    ["git", "-C", str(landed_coverage), "rev-parse", f"{landed_sha}^{{tree}}"],
-    check=True, capture_output=True, text=True, env=coverage_env,
-).stdout.strip()
-rb.persist_review_receipt(
-    landed_coverage, landed_tree, landed_sha, "cotenant-landed-fixture", 0
-)
-(landed_coverage / "mine.txt").write_text("theirs\n" * 30)
-subprocess.run(["git", "-C", str(landed_coverage), "add", "mine.txt"], check=True,
-               env=coverage_env)
-subprocess.run(["git", "-C", str(landed_coverage), "commit", "-qm", "their landing"], check=True,
-               env=coverage_env)
-assert_coverage(coverage(landed_coverage), 0, 0, paths=[])
-# One unstaged edit and it is work again: the tree is only clean while nothing in it differs from
-# HEAD in the index, in the working tree, or as a file git has never seen.
-(landed_coverage / "mine.txt").write_text("theirs\n" * 30 + "mine\n")
-assert_coverage(coverage(landed_coverage), 1, 40, paths=["mine.txt"])
-
-# Untracked content is in neither commit form, so it can neither be vouched for nor block one.
-(form_coverage / "untracked.txt").write_text("new\n" * 4)
-assert vouch_of(coverage(form_coverage, "--commit-paths", "mine.txt")) == \
-    "commit-form-fixture", coverage(form_coverage, "--commit-paths", "mine.txt")
-
-# A commit pathspec is read where git reads it — beside the caller: taken as typed at the repository
-# root, a name from a subdirectory matched the root's file or none at all.
-nested_form_coverage = make_coverage_repo("coverage-commit-nested", ("sub/mine.txt", "mine.txt"))
-(nested_form_coverage / "sub" / "mine.txt").write_text("nested\n" * 6)
-nested_sha = rb.worktree_snapshot_commit(nested_form_coverage, paths=["sub/mine.txt"])
-nested_tree = subprocess.run(
-    ["git", "-C", str(nested_form_coverage), "rev-parse", f"{nested_sha}^{{tree}}"],
-    check=True, capture_output=True, text=True, env=coverage_env,
-).stdout.strip()
-rb.persist_review_receipt(
-    nested_form_coverage, nested_tree, nested_sha, "nested-form-fixture", 0,
-    scope=["sub/mine.txt"]
-)
-(nested_form_coverage / "mine.txt").write_text("unreviewed\n" * 4)
-for nested_spec in ("mine.txt", "."):
-    nested_lines = coverage(nested_form_coverage, "--commit-paths", nested_spec,
-                            cwd=nested_form_coverage / "sub")
-    # The paths are repository-relative whatever the caller's cwd was, or the gate reading them
-    # would be handed a name that resolves against a directory it never stood in.
-    assert_coverage(nested_lines, 1, 7, vouch="nested-form-fixture", paths=["sub/mine.txt"])
-# The same directory naming the root's unreviewed file means that file, not the one beside it.
-root_from_sub = coverage(nested_form_coverage, "--commit-paths", "../mine.txt",
-                         cwd=nested_form_coverage / "sub")
-assert_coverage(root_from_sub, 1, 5, paths=["mine.txt"])
-
-# `git commit -- .` at the top carries every tracked change rather than nothing, and an empty commit
-# form is the gate's allow signal.
-form_dot_lines = coverage(form_coverage, "--commit-paths", ".")
-assert gate_reads(form_dot_lines) == (False, ""), form_dot_lines
-
-# A review that read the whole tree covers a commit as surely as a scope naming its paths, and was
-# the one receipt a commit could not lean on: only scoped receipts were ever asked, so the stronger
-# review vouched for less than the narrower one.
-whole_coverage = make_coverage_repo("coverage-commit-whole-tree", ("mine.txt", "theirs.txt"))
-(whole_coverage / "mine.txt").write_text("reviewed\n" * 7)
-whole_sha = rb.worktree_snapshot_commit(whole_coverage)
-whole_tree = subprocess.run(
-    ["git", "-C", str(whole_coverage), "rev-parse", f"{whole_sha}^{{tree}}"],
-    check=True, capture_output=True, text=True, env=coverage_env,
-).stdout.strip()
-rb.persist_review_receipt(whole_coverage, whole_tree, whole_sha, "whole-tree-fixture", 0)
-(whole_coverage / "theirs.txt").write_text("theirs\n" * 5)
-assert rb.scoped_review_vouching(whole_coverage, ["mine.txt"], False)["run_id"] == \
-    "whole-tree-fixture", rb.scoped_review_vouching(whole_coverage, ["mine.txt"], False)
-# Asked through the pathspec it was handed, coverage answers that before the vouching rules get a
-# word: what this commit would carry IS the reviewed tree, so the paths hold nothing for a panel to
-# read, and the work outside them is somebody else's. Either answer is the gate's allow signal.
-assert_coverage(coverage(whole_coverage, "--commit-paths", "mine.txt"), 0, 0, paths=[])
-# Nothing staged is nothing to vouch for, and the working tree the pathspec form reads is not the
-# question a plain commit asks.
-assert vouch_of(coverage(whole_coverage)) == "", coverage(whole_coverage)
-subprocess.run(["git", "-C", str(whole_coverage), "add", "mine.txt"], check=True, env=coverage_env)
-assert vouch_of(coverage(whole_coverage)) == "whole-tree-fixture", coverage(whole_coverage)
-
-# The two commit forms are one question asked two ways, so naming both narrows nothing and is
-# refused rather than silently answered about one of them.
-both_forms = subprocess.run(
-    [sys.argv[1], "coverage", "--repo", str(form_coverage),
-     "--commit-all", "--commit-paths", "mine.txt"],
-    capture_output=True, text=True, env=coverage_env,
-)
-assert both_forms.returncode == 2, both_forms
-assert "not allowed with" in both_forms.stderr, both_forms.stderr
-
-# The gate hands coverage the pathspec the commit will carry, and the delta is that pathspec's own:
-# read over the whole tree, a one-line fix beside another agent's large work reported that work as
-# the commit's, and the gate priced a commit on files nobody was committing.
-scoped_size_coverage = make_coverage_repo(
-    "coverage-commit-scoped-size", ("mine.txt", "theirs a.txt")
-)
-(scoped_size_coverage / "mine.txt").write_text("base\nfix\n")
-(scoped_size_coverage / "theirs a.txt").write_text("line\n" * 400)
-(scoped_size_coverage / "untracked-theirs.txt").write_text("line\n" * 60)
-assert_coverage(coverage(scoped_size_coverage), 3, 462,
-                paths=["mine.txt", "theirs a.txt", "untracked-theirs.txt"])
-assert_coverage(coverage(scoped_size_coverage, "--commit-paths", "mine.txt"), 1, 1,
-                paths=["mine.txt"])
-# A path with a space in it is one path on its own line, not two: the gate reads these lines as
-# whole paths, and a shell-quoted spelling would split there.
-assert_coverage(
-    coverage(scoped_size_coverage, "--commit-paths", "mine.txt", "theirs a.txt"), 2, 402,
-    paths=["mine.txt", "theirs a.txt"],
-)
-# `-a` and `git commit -- .` carry the whole tracked tree but no untracked file: a co-tenant's
-# new file must not price either form's delta.
-for whole_form in (["--commit-all"], ["--commit-paths", "."]):
-    assert_coverage(coverage(scoped_size_coverage, *whole_form), 2, 402,
-                    paths=["mine.txt", "theirs a.txt"])
-
-# A directory pathspec carries no untracked file either — only a literally named one belongs
-# to the form.
-scoped_untracked_coverage = make_coverage_repo(
-    "coverage-commit-scoped-untracked", ("src/mine.txt",)
-)
-(scoped_untracked_coverage / "src" / "mine.txt").write_text("base\nfix\n")
-(scoped_untracked_coverage / "src" / "fresh.txt").write_text("line\n" * 40)
-(scoped_untracked_coverage / "outside.txt").write_text("line\n" * 900)
-assert_coverage(coverage(scoped_untracked_coverage, "--commit-paths", "src"), 1, 1,
-                paths=["src/mine.txt"])
-assert_coverage(
-    coverage(scoped_untracked_coverage, "--commit-paths", "src", "src/fresh.txt"), 1, 1,
-    paths=["src/mine.txt"],
-)
-assert_coverage(
-    coverage(scoped_untracked_coverage, "--commit-paths", "src", "src/fresh.txt",
-             "--carries-untracked"), 2, 41,
-    paths=["src/fresh.txt", "src/mine.txt"],
-)
-
-# The launching chat is stamped into the receipt for a reader holding only that file, and stays
-# absent when the harness named none rather than landing there empty.
-session_coverage = make_coverage_repo("coverage-session-receipt")
-session_sha, session_tree = (subprocess.run(
-    ["git", "-C", str(session_coverage), "rev-parse", ref],
-    check=True, capture_output=True, text=True, env=coverage_env,
-).stdout.strip() for ref in ("HEAD", "HEAD^{tree}"))
-os.environ["CLAUDE_CODE_SESSION_ID"] = "sess-receipt-9"
-try:
-    session_receipt = json.loads(rb.persist_review_receipt(
-        session_coverage, session_tree, session_sha, "session-receipt-fixture", 0
-    ).read_text())
-    os.environ["CLAUDE_CODE_SESSION_ID"] = ""
-    blank_session_receipt = json.loads(rb.persist_review_receipt(
-        session_coverage, session_tree, session_sha, "session-receipt-fixture", 0
-    ).read_text())
-finally:
-    os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
-unset_session_receipt = json.loads(rb.persist_review_receipt(
-    session_coverage, session_tree, session_sha, "session-receipt-fixture", 0
-).read_text())
-assert session_receipt["session"] == "sess-receipt-9", session_receipt
-assert "session" not in blank_session_receipt, blank_session_receipt
-assert "session" not in unset_session_receipt, unset_session_receipt
-
-# A receipt naming a tree this repository no longer holds, and one naming a repository that is gone:
-# both are unusable baselines, and the delta falls back to HEAD rather than ending in an error.
-missing_tree_coverage = make_coverage_repo("coverage-missing-tree")
-(missing_tree_coverage / "tracked.txt").write_text("changed\n")
-(receipt_dir / rb.receipt_file_name(missing_tree_coverage)).write_text(json.dumps({
-    "repo": str(missing_tree_coverage), "tree": "0" * len(receipt_tree),
-    "commit": receipt_sha, "run_id": "missing-tree",
-    "ts": "2026-07-27T00:00:00+00:00", "errored": 0,
-}) + "\n")
-assert_coverage(coverage(missing_tree_coverage), 1, 2, paths=["tracked.txt"])
-
-vanished_repo_coverage = make_coverage_repo("coverage-vanished-repo")
-(vanished_repo_coverage / "tracked.txt").write_text("changed\n")
-(receipt_dir / rb.receipt_file_name(vanished_repo_coverage)).write_text(json.dumps({
-    "repo": str(vanished_repo_coverage / "no-such-dir"), "tree": receipt_tree,
-    "commit": receipt_sha, "run_id": "vanished-repo",
-    "ts": "2026-07-27T00:00:00+00:00", "errored": 0,
-}) + "\n")
-assert_coverage(coverage(vanished_repo_coverage), 1, 2, paths=["tracked.txt"])
 
 # A range of commits is a review target of its own. Committed work was reviewable one commit at a
 # time only, so «заревьюй то, что ты сделал» over a branch cost one panel per commit, and work
@@ -8618,83 +7610,12 @@ for member in merged_members:
     merged_outcome = rb.review_outcome(pathlib.Path(member["repo"]), merged_receipt)
     assert merged_outcome == (True, 0, 1), (member["label"], merged_outcome)
 
-# One panel reads several repositories, and each of them holds a receipt naming that one run: the
-# confirmed P1s a member earned must price that member's commit and no other's, or repo A's gate
-# escalates on repo B's defects. In a store of its own — a run dropped into the live merged state
-# would answer the triage-owed lookups made further down instead of the run they are about.
-merged_tally_state = work / "merged-tally-state"
-merged_tally_dir = merged_tally_state / "benches" / "merged-tally"
-merged_tally_dir.mkdir(parents=True)
-(merged_tally_dir / "meta.json").write_text(json.dumps({
-    "run_id": "merged-tally", "worktree": True, "tier": "T1",
-    "raters": ["sol-medium-bare"], "completed_raters": ["sol-medium-bare"],
-    "rater_runs": [{"rater": "sol-medium-bare", "exit_code": 0, "findings": 3}],
-    "repos": [dict(member) for member in merged_members],
-}) + "\n")
-rb.write_jsonl(merged_tally_dir / "findings-sol-medium-bare.jsonl", [
-    {"file": "producer/rates.json", "line": 1, "severity": "P2", "summary": "producer only"},
-    {"file": "consumer/read.sh", "line": 1, "severity": "P1", "summary": "consumer one"},
-    {"file": "consumer/read.sh", "line": 2, "severity": "P1", "summary": "consumer two"},
-])
-merged_tally_verdicts = [
-    {"rater": "sol-medium-bare", "idx": index, "verdict": "confirmed"} for index in range(3)
-]
-merged_tally_saved = os.environ.get("WORKER_STATS_DIR")
-os.environ["WORKER_STATS_DIR"] = str(merged_tally_state)
-try:
-    for merged_tally_source in ("verdicts", "report receipt"):
-        if merged_tally_source == "verdicts":
-            rb.write_jsonl(merged_tally_dir / "verdicts.jsonl", merged_tally_verdicts)
-        else:
-            # The --no-corpus path stores no verdicts, so the rows it reported are all a member
-            # has to be counted out of the panel's findings by.
-            (merged_tally_dir / "verdicts.jsonl").unlink()
-            rb.write_report_receipt(merged_tally_dir, merged_tally_verdicts, {"P1": 2, "P2": 1})
-        merged_tally = {
-            member["label"]: rb.reported_severities(
-                {"run_id": "merged-tally", "commit": member["commit"]}
-            )
-            for member in merged_members
-        }
-        assert merged_tally["producer"] == {"P1": 0, "P2": 1, "P3": 0}, \
-            (merged_tally_source, merged_tally)
-        assert merged_tally["consumer"] == {"P1": 2, "P2": 0, "P3": 0}, \
-            (merged_tally_source, merged_tally)
-        # And the round counted whole, which is the same number for every member: one panel over
-        # two checkouts is one review of one body of work, and what that round earned cannot be
-        # cheaper because the work was spread over two repositories (Egor, 2026-08-08).
-        merged_round = {
-            member["label"]: rb.reported_severities(
-                {"run_id": "merged-tally", "commit": member["commit"]}, scoped=False
-            )
-            for member in merged_members
-        }
-        assert merged_round["producer"] == {"P1": 2, "P2": 1, "P3": 0}, \
-            (merged_tally_source, merged_round)
-        assert merged_round["consumer"] == merged_round["producer"], \
-            (merged_tally_source, merged_round)
-finally:
-    if merged_tally_saved is None:
-        os.environ.pop("WORKER_STATS_DIR", None)
-    else:
-        os.environ["WORKER_STATS_DIR"] = merged_tally_saved
 # One document per repository while the run is in flight, or the review is invisible in every
 # surface but one repository's.
 assert merged_seen["progress"] == [
     sorted(str(path) for path in merged_tops)
 ] * 2, merged_seen["progress"]
 assert not list((merged_state / rb.PROGRESS_DIR).iterdir())
-
-# The gate each repository holds is `coverage`, and after the merged run neither has anything left
-# to review: that is requirement three seen from the side that enforces it.
-for merged_path in merged_pair:
-    merged_coverage = io.StringIO()
-    with contextlib.redirect_stdout(merged_coverage):
-        assert rb.cmd_coverage(argparse.Namespace(
-            repo=str(merged_path), commit_paths=None, commit_all=False)) == 0
-    assert merged_coverage.getvalue().splitlines() == [
-        "covered: yes", "lines: 0", "files: 0",
-    ], merged_coverage.getvalue()
 
 # The verifier reads a finding's path in the merged repository, so a prefixed citation resolves to
 # the file it names without any repository bookkeeping of its own.
@@ -10550,208 +9471,6 @@ sess_unowned=$(WORKER_STATS_DIR="$UNOWNED_SD" "$SCRIPT" pending-report --repo "$
   --session sess-mine) || fail "pending-report hid a run that records no launching chat"
 assert contains "$sess_unowned" "20260731T070000Z-gateunowned 0"
 
-# --- owed-round: what the triage EARNED, after the report -------------------------------------
-# The commit gate has always priced a second round, but it speaks only at a commit attempt, and
-# reaching one needs Egor's permission — so a round that earned another was settled in silence and
-# the chat reported the work finished. The verdict itself is the gate's, never spelled here.
-OWED_SD="$WORK/gate-owed"
-owed_run() { # <run-id> <hours-ago> <severity>... — a triaged run whose findings are confirmed
-  local run="$1" hours="$2"
-  shift 2
-  GATE_SD="$OWED_SD" gate_run "$run" "$hours" 0
-  local dir="$OWED_SD/benches/$run" index=0 severity
-  : >"$dir/findings-oc-kimik3.jsonl"
-  : >"$dir/verdicts.jsonl"
-  for severity in "$@"; do
-    jq -cn --arg s "$severity" --argjson i "$index" \
-      '{severity: $s, file: "a.py", line: ($i + 1), summary: "claim"}' >>"$dir/findings-oc-kimik3.jsonl"
-    jq -cn --argjson i "$index" \
-      '{rater: "oc-kimik3", idx: $i, verdict: "confirmed"}' >>"$dir/verdicts.jsonl"
-    index=$((index + 1))
-  done
-  jq --argjson n "$index" '.rater_runs[0].findings = $n' "$dir/meta.json" >"$dir/meta.tmp"
-  mv "$dir/meta.tmp" "$dir/meta.json"
-}
-owed_run 20260731T080000Z-owedp1 1 P1 P1
-owed_p1=$(WORKER_STATS_DIR="$OWED_SD" "$SCRIPT" owed-round --repo "$GATE_REPO") \
-  || fail "owed-round missed a round two confirmed P1s earned"
-assert contains "$owed_p1" "20260731T080000Z-owedp1"
-assert contains "$owed_p1" "confirmed P1s earned this commit one more round"
-# One P1 and nothing else is a closed round: the gate says so, and this must not invent a debt.
-OWED_SD="$WORK/gate-owed-closed"
-owed_run 20260731T080000Z-owedclosed 1 P1 P3
-owed_closed=$(WORKER_STATS_DIR="$OWED_SD" "$SCRIPT" owed-round --repo "$GATE_REPO" || true)
-assert test -z "$owed_closed"
-# A newer FINISHED run of this repository is the second round having happened; the debt is served.
-OWED_SD="$WORK/gate-owed-served"
-owed_run 20260731T080000Z-owedserved 2 P1 P1
-GATE_SD="$OWED_SD" gate_run 20260731T090000Z-owedsecond 1 0
-owed_served=$(WORKER_STATS_DIR="$OWED_SD" "$SCRIPT" owed-round --repo "$GATE_REPO" || true)
-assert test -z "$owed_served"
-# But a launch that never finished serves nothing: an interrupted or killed second review leaves
-# exactly this directory behind, and reading it as the round would discharge the debt by dying.
-OWED_SD="$WORK/gate-owed-killed"
-owed_run 20260731T080000Z-owedkilled 2 P1 P1
-GATE_SD="$OWED_SD" gate_run 20260731T090000Z-owedaborted 1 0
-python3 - "$OWED_SD/benches/20260731T090000Z-owedaborted/meta.json" <<'ABORTED'
-import json, pathlib, sys
-path = pathlib.Path(sys.argv[1])
-meta = json.loads(path.read_text())
-meta["finished"] = None
-path.write_text(json.dumps(meta) + "\n")
-ABORTED
-owed_killed=$(WORKER_STATS_DIR="$OWED_SD" "$SCRIPT" owed-round --repo "$GATE_REPO") \
-  || fail "a killed second review discharged the round it never ran"
-assert contains "$owed_killed" "20260731T080000Z-owedkilled"
-# Nor does a co-tenant's review of the same checkout: their run is their debt, and standing as the
-# newest it would hide this chat's — one neighbouring panel and Egor is quietly owed nothing.
-OWED_SD="$WORK/gate-owed-cotenant"
-GATE_SESSION=sess-mine owed_run 20260731T080000Z-owedmine 2 P1 P1
-GATE_SD="$OWED_SD" GATE_SESSION=sess-theirs gate_run 20260731T090000Z-owedtheirs 1 0
-owed_mine=$(WORKER_STATS_DIR="$OWED_SD" "$SCRIPT" owed-round --repo "$GATE_REPO" \
-  --session sess-mine) || fail "a co-tenant's run hid this chat's owed round"
-assert contains "$owed_mine" "20260731T080000Z-owedmine"
-# Bounded asks, like the triage gate's: a round nobody can run must not block every stop after it.
-OWED_SD="$WORK/gate-owed-asks"
-owed_run 20260731T080000Z-owedasks 1 P1 P1
-for owed_ask in 1 2 3; do
-  WORKER_STATS_DIR="$OWED_SD" "$SCRIPT" owed-round --repo "$GATE_REPO" --mark >/dev/null \
-    || fail "owed-round --mark gave up after $owed_ask ask(s)"
-done
-owed_spent=$(WORKER_STATS_DIR="$OWED_SD" "$SCRIPT" owed-round --repo "$GATE_REPO" --mark || true)
-assert test -z "$owed_spent"
-# A run that has already bought a commit owes nothing more: the gate writes it into the checkout's
-# ledger the moment it lets one through, and one run pays one cycle. Without this the landed commit
-# left every stop blocked for six hours, and the round the gate grants at armed2 — the last it will
-# ever block for — asked for a third nobody would enforce.
-OWED_SD="$WORK/gate-owed-spent"
-owed_run 20260731T080000Z-owedspent 1 P1 P1
-owed_before_spend=$(WORKER_STATS_DIR="$OWED_SD" "$SCRIPT" owed-round --repo "$GATE_REPO") \
-  || fail "owed-round missed a round before its run had paid anything"
-assert contains "$owed_before_spend" "20260731T080000Z-owedspent"
-printf '%s\n' 20260731T080000Z-owedspent \
-  >"$(git -C "$GATE_REPO" rev-parse --absolute-git-dir)/review-cycle-spent"
-owed_after_spend=$(WORKER_STATS_DIR="$OWED_SD" "$SCRIPT" owed-round --repo "$GATE_REPO" || true)
-assert test -z "$owed_after_spend"
-rm -f "$(git -C "$GATE_REPO" rev-parse --absolute-git-dir)/review-cycle-spent"
-
-# The numbers are the commit gate's own: P1s are ONE repository's share. A merged panel with one P1
-# in each of two checkouts is two P1s in the panel and one in every gate that will read it, and
-# counting it whole claimed a round no commit would ever be blocked for.
-OWED_SD="$WORK/gate-owed-merged"
-GATE_REPO_B="$WORK/owed-merged-other"
-mkdir -p "$GATE_REPO_B"
-git -C "$GATE_REPO_B" init -q -b main
-owed_run 20260731T080000Z-owedmerged 1 P1 P1
-merged_dir="$OWED_SD/benches/20260731T080000Z-owedmerged"
-python3 - "$merged_dir" "$GATE_REPO" "$GATE_REPO_B" <<'MERGED'
-import json, pathlib, sys
-run, first, second = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
-meta = json.loads((run / "meta.json").read_text())
-meta["repos"] = [{"repo": first, "label": "one"}, {"repo": second, "label": "two"}]
-(run / "meta.json").write_text(json.dumps(meta) + "\n")
-findings = [json.loads(line) for line in
-            (run / "findings-oc-kimik3.jsonl").read_text().splitlines() if line.strip()]
-for index, finding in enumerate(findings):
-    finding["file"] = f"{'one' if index == 0 else 'two'}/a.py"
-(run / "findings-oc-kimik3.jsonl").write_text(
-    "".join(json.dumps(finding) + "\n" for finding in findings))
-MERGED
-owed_merged=$(WORKER_STATS_DIR="$OWED_SD" "$SCRIPT" owed-round --repo "$GATE_REPO" || true)
-assert test -z "$owed_merged"
-
-# --- One voice per ROUND, not per speaker (row af) ---------------------------------------------
-# The gate narrows its wording — redesign the piece, no further round — for a run that IS a cycle's
-# second round, and both speakers of that verdict must be handed the same answer about the same run:
-# the report block and owed-round disagreeing means one chat reads "redesign it" where the next reads
-# "run the second review" about one round. Which run it is, which checkout's cycle and whether a
-# merged panel narrows at all are decided in `escalation_verdict` alone, for exactly that reason.
-VOICE_REPO="$WORK/gate-voice-repo"
-git init -q "$VOICE_REPO"
-VOICE_MAIN_REPO="$GATE_REPO"
-GATE_REPO="$VOICE_REPO"
-# The checkout standing at its second round, granted a minute ago: armed in the same second a run
-# started, the two cannot be ordered, and the assert would be pinning a tie. `touch -t` reads local
-# time, so the minute is taken there.
-voice_armed2() {
-  printf '%s\0' armed2 run-x '' "$(date -u +%Y-%m-%dT%H:%M:%S)" '' '' \
-    >"$VOICE_REPO/.git/review-cycle-sess"
-  touch -t "$(date -v-1M +%Y%m%d%H%M 2>/dev/null || date -d '1 minute ago' +%Y%m%d%H%M)" \
-    "$VOICE_REPO/.git/review-cycle-sess"
-}
-voice_report_verdict() { # <state-dir> <run-id>
-  WORKER_STATS_DIR="$1" "$SCRIPT" report "$2" | sed -n 's/^round: *//p'
-}
-voice_owed_verdict() { # <state-dir>
-  WORKER_STATS_DIR="$1" "$SCRIPT" owed-round --repo "$VOICE_REPO" 2>/dev/null |
-    cut -d' ' -f2- || true
-}
-voice_armed2
-
-OWED_SD="$WORK/gate-voice-second"
-owed_run 20260731T100000Z-voicesecond 0 P1 P1
-voice_second_report=$(voice_report_verdict "$OWED_SD" 20260731T100000Z-voicesecond)
-voice_second_owed=$(voice_owed_verdict "$OWED_SD")
-assert contains "$voice_second_report" "weak component"
-assert test "$voice_second_report" = "$voice_second_owed"
-
-# A run recorded BEFORE that grant is the FIRST round, and asking about it again — a report
-# re-rendered for a historical run — must not be reclassified by the state it is asked in: keyed on an
-# open armed2 alone, every old run in the checkout was answered with the redesign verdict about a
-# cycle it pre-dates, and the round it genuinely earned went with it (panel, 2026-08-11).
-OWED_SD="$WORK/gate-voice-first"
-owed_run 20260731T090000Z-voicefirst 2 P1 P1
-voice_first_report=$(voice_report_verdict "$OWED_SD" 20260731T090000Z-voicefirst)
-voice_first_owed=$(voice_owed_verdict "$OWED_SD")
-assert contains "$voice_first_report" "confirmed P1s earned this commit one more round"
-assert test "$voice_first_report" = "$voice_first_owed"
-
-# A MERGED panel is narrowed by nobody: one round over several checkouts is one round over several
-# cycles, and narrowing it per member would have the block and each member's Stop gate speak the same
-# round differently — which is the one thing this row forbids.
-OWED_SD="$WORK/gate-voice-merged"
-owed_run 20260731T100000Z-voicemerged 0 P1 P1
-python3 - "$OWED_SD/benches/20260731T100000Z-voicemerged" "$VOICE_REPO" "$GATE_OTHER_REPO" <<'VOICE'
-import json, pathlib, sys
-run, first, second = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
-meta = json.loads((run / "meta.json").read_text())
-meta["repos"] = [{"repo": first, "label": "one"}, {"repo": second, "label": "two"}]
-(run / "meta.json").write_text(json.dumps(meta) + "\n")
-findings = [json.loads(line) for line in
-            (run / "findings-oc-kimik3.jsonl").read_text().splitlines() if line.strip()]
-for finding in findings:
-    finding["file"] = "one/a.py"
-(run / "findings-oc-kimik3.jsonl").write_text(
-    "".join(json.dumps(finding) + "\n" for finding in findings))
-VOICE
-voice_merged_report=$(voice_report_verdict "$OWED_SD" 20260731T100000Z-voicemerged)
-voice_merged_owed=$(voice_owed_verdict "$OWED_SD")
-assert contains "$voice_merged_report" "confirmed P1s earned this commit one more round"
-assert test "$voice_merged_report" = "$voice_merged_owed"
-rm -f "$VOICE_REPO"/.git/review-cycle*
-GATE_REPO="$VOICE_MAIN_REPO"
-OWED_SD="$WORK/gate-owed-merged"
-
-# And the total is the severity tally, not a raw count of confirmed rows: a verdict naming a
-# finding this run does not have is invisible to the gate, so counting it here claimed a round on
-# defects nobody can read.
-OWED_SD="$WORK/gate-owed-total"
-owed_run 20260731T080000Z-owedtotal 1 P3 P3 P3 P3 P3 P3 P3
-for phantom in 20 21; do
-  jq -cn --argjson i "$phantom" '{rater: "oc-kimik3", idx: $i, verdict: "confirmed"}' \
-    >>"$OWED_SD/benches/20260731T080000Z-owedtotal/verdicts.jsonl"
-done
-owed_total=$(WORKER_STATS_DIR="$OWED_SD" "$SCRIPT" owed-round --repo "$GATE_REPO" || true)
-assert test -z "$owed_total"
-# One more READABLE finding is the same round earned: the threshold itself has not moved.
-jq -cn '{severity: "P3", file: "a.py", line: 8, summary: "claim"}' \
-  >>"$OWED_SD/benches/20260731T080000Z-owedtotal/findings-oc-kimik3.jsonl"
-jq -cn '{rater: "oc-kimik3", idx: 7, verdict: "confirmed"}' \
-  >>"$OWED_SD/benches/20260731T080000Z-owedtotal/verdicts.jsonl"
-owed_eighth=$(WORKER_STATS_DIR="$OWED_SD" "$SCRIPT" owed-round --repo "$GATE_REPO") \
-  || fail "eight confirmed findings earned no round"
-assert contains "$owed_eighth" "confirmed findings in one round earned"
-
 # An old run reviewed a diff that has since moved; asking for its triage now is noise.
 STALE_SD="$WORK/gate-stale"
 GATE_SD="$STALE_SD" gate_run 20260730T000000Z-gatestale 48 1
@@ -10759,8 +9478,7 @@ gate_stale=$(WORKER_STATS_DIR="$STALE_SD" "$SCRIPT" pending-report --repo "$GATE
 assert test -z "$gate_stale"
 
 # A review of part of the tree never answers for the repository: `receipt` with no selector finds
-# nothing, and a commit no gate priced carries no ticket either, so the stamp hook writes no
-# whole-repo receipt over it. The scope's own receipt is readable only when asked for by name.
+# nothing, and the scope's own receipt is readable only when asked for by name.
 SCOPE_REPO="$WORK/scoped-worktree"
 SCOPE_SD="$WORK/scope-run-claudeb/worker-stats"
 scope_receipt_rc=0
@@ -10771,43 +9489,9 @@ scope_named_receipt=$(WORKER_STATS_DIR="$SCOPE_SD" "$SCRIPT" receipt --repo "$SC
   --scope alpha.txt) || fail "the scope's own receipt is unreadable"
 assert test "$(jq -r '.scope | join(",")' <<<"$scope_named_receipt")" = "alpha.txt"
 assert test "$(jq -r '.worktree' <<<"$scope_named_receipt")" = "true"
-STAMP_HOOK="$ROOT/bin/review-stamp-hook.sh"
-jq -nc --arg cwd "$SCOPE_REPO" \
-  '{hook_event_name:"PostToolUse",tool_name:"Bash",cwd:$cwd,
-    tool_input:{command:"git commit -m fixes"}}' \
-  | WORKER_STATS_DIR="$SCOPE_SD" REVIEW_STAMP_HOOK_BENCH="$SCRIPT" "$STAMP_HOOK" >/dev/null 2>&1
 scope_receipt_files=$(ls "$SCOPE_SD/receipts")
 assert test "$(wc -l <<<"$scope_receipt_files" | tr -d ' ')" -eq 1
 assert contains "$scope_receipt_files" '__scope-'
-
-# A day-one repository must be able to FINISH a review, not only start one: its first commit has
-# no parent, and every stamp shape that reasoned backwards from HEAD stalled there. A ticket names
-# content rather than a position in the history, so the root commit answers it like any other.
-root_hook_receipt_path() { # top statedir
-  printf '%s/receipts/%s__%s.json' "$2" "$(basename "$1")" \
-    "$(printf '%s' "$1" | shasum -a 1 | awk '{print substr($1, 1, 8)}')"
-}
-root_hook_fire() { # repo statedir
-  jq -nc --arg cwd "$1" '{hook_event_name:"PostToolUse",tool_name:"Bash",cwd:$cwd,
-    tool_input:{command:"git commit -m fixes"}}' \
-    | WORKER_STATS_DIR="$2" REVIEW_STAMP_HOOK_BENCH="$SCRIPT" "$STAMP_HOOK" >/dev/null 2>&1
-}
-ROOT_COMMIT_REPO="$WORK/root-hook-commit"
-ROOT_COMMIT_SD="$WORK/root-hook-commit-state"
-mkdir -p "$ROOT_COMMIT_REPO" "$ROOT_COMMIT_SD/receipts"
-git -C "$ROOT_COMMIT_REPO" init -q -b main
-printf 'day one\n' >"$ROOT_COMMIT_REPO/a.txt"
-root_commit_gitdir=$(git -C "$ROOT_COMMIT_REPO" rev-parse --absolute-git-dir)
-printf '%s\0' ticket '' '' '2026-08-07T00:00:00' '' '' \
-  "$(git -C "$ROOT_COMMIT_REPO" hash-object a.txt) a.txt" \
-  >"$root_commit_gitdir/review-cycle-day-one"
-git -C "$ROOT_COMMIT_REPO" add -A
-git -C "$ROOT_COMMIT_REPO" -c user.name=Fixture -c user.email=fixture@example.com commit -qm root
-root_hook_fire "$ROOT_COMMIT_REPO" "$ROOT_COMMIT_SD"
-root_commit_receipt=$(root_hook_receipt_path \
-  "$(cd "$ROOT_COMMIT_REPO" && pwd -P)" "$ROOT_COMMIT_SD")
-assert grep -q '^stamped-' <<<"$(jq -r '.run_id' "$root_commit_receipt")"
-assert test ! -f "$root_commit_gitdir/review-cycle-day-one"
 
 TRIAGE_HOOK="${REVIEW_TRIAGE_HOOK:-"$ROOT/../claude-setup/hooks/review-triage-nudge.sh"}"
 if test -x "$TRIAGE_HOOK"; then
@@ -10905,4 +9589,4 @@ else
   printf 'SKIP: review report hook behavior (%s is unavailable)\n' "$REPORT_HOOK"
 fi
 
-printf 'PASS: %s assertions; canonical review tiers over one shared OpenCode floor and a per-tier Gemini panel that never runs Pro at T0, stays inside the account roster and contains its own tier'"'"'s default panel when escalated, with no retired cell in any of them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts and receipt-relative coverage answers with missing-object fallback, the machine coverage lines a commit gate reads — one covered verdict, a vouching run named only beside it, and the carried delta as lines, files and one path apiece — measured through the pending commit'"'"'s own pathspec, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, an agy finding judged on its own transport first and handed to the gateway only where that transport declined, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account schedulable only as the pool'"'"'s reserve and never as a roster tail, and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, carried from there into the corpus row, the report header and a receipt of the lens'"'"'s own while every lens row stays out of the canonical defect list, the frontier denominators, the composition corpus and the default leaderboard, worktree runs narrowed to named paths whose snapshot holds only those paths, is deterministic per path set, spelled against the directory the caller stands in and lexically canonicalized so a `..` can neither walk out of the repository nor split one file into two scopes, carries its scope as commit trailers a failed read refuses rather than widens, so a rerun by sha stays inside it, refuses a commitish, a pathspec matching nothing and a scope holding no change — the refusal before any snapshot object is written — and writes only a receipt of its own — leaving the repository'"'"'s receipt untouched byte for byte, the coverage baseline whole and the stamp hook with nothing to read, a lens narrowed by the same paths naming a combined receipt of its own that leaves the plain, pure-lens and pure-scope receipts byte for byte and survives a rerun by sha with both selectors intact, a day-one repository reviewed end to end — its root commit sealed and cloned, given a deterministic empty base commit inside that clone so the vendor skill diffs its whole content, measured in lines and paths against the empty tree rather than as an unmeasurable diff, so a correction inside it is carried delta like any other change, and closed by the real stamp hook in both shapes while never-reviewed code riding along still refuses it, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask, the lookup scoped to the repository so another chat cannot answer for it, both review hooks keyed so exactly one fires, and that receipt carrying the confirmed-severity tally of the very verdicts it reported — recomputed from stored verdicts where a run was adjudicated the durable way, absent where nobody triaged it, and printed on the repository receipt the commit gate prices its next round on — taken from the stored verdicts wherever a run has them so a re-adjudication cannot be priced on superseded counts, scoped to the member a merged panel'"'"'s receipt belongs to so one repository never escalates on another'"'"'s defects, carried beside a second tally of that whole round so what the round earned is not split — and made cheaper — by the panel having read two repositories at once, with the verdict on that round spoken in identical words by the report block and by owed-round, narrowed to a cycle'"'"'s second round only for the run that actually postdates the grant of it and for a merged panel never, and every receipt naming the change its own run read so a review of committed work can pay the commit that carries it, and answered as no tally at all rather than as an exception when the files behind it cannot be read, and that same receipt reachable by the paths a commit will carry — a search over the scoped receipts alone, answering with the run that reached the most of those paths and the newest of equals, walking past every run the caller was already refused by, tolerating a path the panel never saw as the drift its reader prices and a reviewed path outside them as nothing at all, while a review reaching none of them is no answer, and the review that vouches for a commit outright asked where its panel stood of the paths being COMMITTED rather than of the whole checkout — answered by the CONTENT that commit would carry against the tree the panel read and never by where HEAD stands, so a co-tenant landing their own commits between the review and the commit changes nothing, while the reviewed bytes going back over work that landed after the review are named as advice the reader decides on rather than a refusal — while a run that reviewed a commit is asked the plain question, spelled through the one scope canonicalization, refusing to be asked alongside a named scope or a lens, and leaving the repository receipt'"'"'s own answer untouched, and a merged review of several repositories read by one panel out of a single workspace holding each repository under its own prefix — deterministic, self-contained once built and pruned with the run it belongs to — whose findings and adjudication handoff name the repository each belongs to, whose scopes and progress are per repository, and which stamps EVERY repository it read with that repository'"'"'s own receipt so none of their commit gates blocks on a review that covered it, while refusing a commitish, a repository named twice, a clean tree, a missing repository and its own workspace as a tree to seal, with the gateway being down priced as a wait that expires rather than a verdict — the family whose every attempt failed on the gateway ITSELF cooling for a fixed span while a spent plan, a pool run dry behind one and an unusable answer are left to the records that already carry them, one canary attempt of the cooling family running inside that span so the recovery can be noticed at all, its answer clearing the wait and its failure extending it from the moment the outage began, written under a lock and not written at all where nothing changed, and a side the pool answers for left to the pool, and each repository of one panel named the way its half actually exists — a working tree or a range of its own commits as `PATH@BASE..HEAD`, sealed and stamped per member so the committed half answers only where its right end is the tree in front of the reader, refusing a target flag it duplicates, a bare repository beside it with no --worktree and a scope aimed at a range, and a range of commits reviewed as one target — sealed into a single commit carrying its right end'"'"'s tree over its left end as the parent, so every reader keyed on one sha reads the whole range, named by the commits it sealed rather than by how the caller spelled them so one range is one snapshot with one rerun, announced by its own ends with the seal named beside them, read back out of that seal by a rerun carrying no flags at all, refused when it names no shape or no change, shown as a range while it runs, and kept out of the repository'"'"'s receipt wherever its right end is not the tree standing in front of the reader, and the corpus closed to every commit-point review — the plain record command refused outright with the reporting one named in its place, the refusal and the flag'"'"'s own help promising only what --bench delivers (this run'"'"'s verdicts stored, never a corpus row), that flag refused in turn on a durable run it would buy the plain command'"'"'s own behaviour on, and the handoff printing that one command alone — with the block those reviews are read in framed to a fixed width no over-long word can flatten, opened by a line naming the panel that produced it, and carrying a cell row that counts every completed cell under the same names its neighbouring rows use — the ones that found nothing included, and a count missing from an older summary costing its own cell a number rather than the whole block, every one of those names and the tiers table'"'"'s own rendered by one derivation over the pool of cells the tiers can launch — version digits, effort and the bare mark each appearing only where two pool cells would otherwise collide, Claude and Codex effort always spelled because it is a launch parameter, the word skill never rendered at all, a family gaining a second variant IN THE POOL renaming itself with no list to edit, a cell only a stored run holds named against that pool and never over it — the arrival carrying whatever separates it, its report leaving the tiers table byte for byte — and the machine specs commands are spelled in left untouched\n' "$asserts"
+printf 'PASS: %s assertions; canonical review tiers over one shared OpenCode floor and a per-tier Gemini panel that never runs Pro at T0, stays inside the account roster and contains its own tier'"'"'s default panel when escalated, with no retired cell in any of them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, an agy finding judged on its own transport first and handed to the gateway only where that transport declined, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account schedulable only as the pool'"'"'s reserve and never as a roster tail, and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, carried from there into the corpus row, the report header and a receipt of the lens'"'"'s own while every lens row stays out of the canonical defect list, the frontier denominators, the composition corpus and the default leaderboard, worktree runs narrowed to named paths whose snapshot holds only those paths, is deterministic per path set, spelled against the directory the caller stands in and lexically canonicalized so a `..` can neither walk out of the repository nor split one file into two scopes, carries its scope as commit trailers a failed read refuses rather than widens, so a rerun by sha stays inside it, refuses a commitish, a pathspec matching nothing and a scope holding no change — the refusal before any snapshot object is written — and writes only a receipt of its own — leaving the repository'"'"'s receipt untouched byte for byte, a lens narrowed by the same paths naming a combined receipt of its own that leaves the plain, pure-lens and pure-scope receipts byte for byte and survives a rerun by sha with both selectors intact, a day-one repository reviewed end to end — its root commit sealed and cloned, given a deterministic empty base commit inside that clone so the vendor skill diffs its whole content, measured in lines and paths against the empty tree rather than as an unmeasurable diff, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask, the lookup scoped to the repository so another chat cannot answer for it, both review hooks keyed so exactly one fires, and the one line the gate reads: a session'"'"'s own triaged run answering covered, stale, none or timed-out over the paths it was asked about, scope containment by directory prefix with an empty scope covering the whole repository, drift measured as diff lines against the blobs that run snapshotted rather than against git history, a path the snapshot never held priced as drift in full and a binary as none, a run of another chat and one nobody triaged answering for nobody, and the newest hung run outranking every older answer until a later triaged run covers it — with the watchdog capping every cell at the longest duration recorded for its own model and effort plus three minutes over a fifteen-minute floor and marking the run it killed timed out, and a merged review of several repositories read by one panel out of a single workspace holding each repository under its own prefix — deterministic, self-contained once built and pruned with the run it belongs to — whose findings and adjudication handoff name the repository each belongs to, whose scopes and progress are per repository, and which stamps EVERY repository it read with that repository'"'"'s own receipt, while refusing a commitish, a repository named twice, a clean tree, a missing repository and its own workspace as a tree to seal, with the gateway being down priced as a wait that expires rather than a verdict — the family whose every attempt failed on the gateway ITSELF cooling for a fixed span while a spent plan, a pool run dry behind one and an unusable answer are left to the records that already carry them, one canary attempt of the cooling family running inside that span so the recovery can be noticed at all, its answer clearing the wait and its failure extending it from the moment the outage began, written under a lock and not written at all where nothing changed, and a side the pool answers for left to the pool, and each repository of one panel named the way its half actually exists — a working tree or a range of its own commits as `PATH@BASE..HEAD`, sealed and stamped per member so the committed half answers only where its right end is the tree in front of the reader, refusing a target flag it duplicates, a bare repository beside it with no --worktree and a scope aimed at a range, and a range of commits reviewed as one target — sealed into a single commit carrying its right end'"'"'s tree over its left end as the parent, so every reader keyed on one sha reads the whole range, named by the commits it sealed rather than by how the caller spelled them so one range is one snapshot with one rerun, announced by its own ends with the seal named beside them, read back out of that seal by a rerun carrying no flags at all, refused when it names no shape or no change, shown as a range while it runs, and kept out of the repository'"'"'s receipt wherever its right end is not the tree standing in front of the reader, and the corpus closed to every commit-point review — the plain record command refused outright with the reporting one named in its place, the refusal and the flag'"'"'s own help promising only what --bench delivers (this run'"'"'s verdicts stored, never a corpus row), that flag refused in turn on a durable run it would buy the plain command'"'"'s own behaviour on, and the handoff printing that one command alone — with the block those reviews are read in framed to a fixed width no over-long word can flatten, opened by a line naming the panel that produced it, and carrying a cell row that counts every completed cell under the same names its neighbouring rows use — the ones that found nothing included, and a count missing from an older summary costing its own cell a number rather than the whole block, every one of those names and the tiers table'"'"'s own rendered by one derivation over the pool of cells the tiers can launch — version digits, effort and the bare mark each appearing only where two pool cells would otherwise collide, Claude and Codex effort always spelled because it is a launch parameter, the word skill never rendered at all, a family gaining a second variant IN THE POOL renaming itself with no list to edit, a cell only a stored run holds named against that pool and never over it — the arrival carrying whatever separates it, its report leaving the tiers table byte for byte — a worktree panel refused outright unless Egor asked for it by name — the one door, checked before any repository argument is resolved so a spelling the tool cannot resolve cannot fall through it — and the machine specs commands are spelled in left untouched\n' "$asserts"

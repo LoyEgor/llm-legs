@@ -168,14 +168,6 @@ TRIAGE_NUDGED = "report-nudged"
 # end of the turn it was meant to gate (seen live 2026-07-31). Still bounded, because a triage
 # that genuinely cannot be done must not block every stop that follows.
 TRIAGE_GATE_ASKS = 3
-# How many bytes of pathspec a git call may carry. Far under any real ARG_MAX (macOS gives ~1 MiB
-# for the whole argv and environment), because the cost of being under it is reading a wider diff
-# and the cost of being over it is git refusing to answer at all.
-PATHSPEC_ARG_BUDGET = 100_000
-# The same bounded ask for the round a triaged run still owes. Its own marker, because the two
-# questions are asked of the same run at different points in its life: one before the report and
-# one after it, and sharing the file would let the triage nudges spend the escalation's asks.
-ROUND_NUDGED = "round-nudged"
 # Highest effort a model has ever returned a review of a large diff at; None would mean
 # no effort at all. An entry needs a replication, because one silent attempt is not a
 # ceiling: kimi-k3 at medium looked dead after two attempts with no output, then finished a
@@ -833,10 +825,13 @@ AGY_MODEL_IDS = {
     "agy-flash35": "gemini-3.5-flash",
 }
 RATER_TIMEOUT_S = 1800
-AGY_TIMEOUT_MULTIPLIER = 1.5
-AGY_TIMEOUT_MIN_S = 180
 AGY_TIMEOUT_MAX_S = 600
 AGY_TIMEOUT_GRACE_S = 30
+# The watchdog's cap for one (model, effort) pair: everything that pair has ever completed in, plus
+# room for a slow run of the same shape, and never under the floor. A pair with no history at all
+# gets the floor, so a cell nobody has measured is still cut off rather than left hanging.
+WATCHDOG_GRACE_S = 180
+WATCHDOG_FLOOR_S = 900
 AUTO_RATERS = tuple(
     spec for spec in (
         tuple(
@@ -1216,6 +1211,13 @@ MERGED_HOME_HEX = 16
 RECEIPT_FIELDS = ("repo", "tree", "commit", "run_id", "ts")
 RECEIPT_HASH_HEX = 8
 SCOPE_TRAILER = "Scope-Path: "
+# How much of a file decides whether it reads as text. Git's own sniff is the first 8000 bytes.
+BINARY_SNIFF_BYTES = 8000
+SYMLINK_MODE = "120000"
+# How far a covered path may move past the tree the panel read before the review stops answering
+# for it. Staleness IS the mechanical second round (docs/review-contract.md), so this number is the
+# only thing that returns reviewed paths to unreviewed.
+DRIFT_STALE_PCT = 25
 # One identity and one clock behind every commit object review-bench writes, so the same input
 # always answers with the same sha. The email is also how a snapshot is told from a real commit.
 FIXED_COMMIT_IDENTITY = {
@@ -1309,8 +1311,8 @@ def receipt_file_name(repo, lens=None, scope=None):
     """The repository's review receipt, or a lens's, a scope's, or a scoped lens's own beside it.
     None of those read what the ordinary receipt answers for: a lens run read the tree by a
     methodology the tool did not write, and a scoped run read only some of it. The ordinary
-    receipt is what `coverage` measures the next change against and what the stamp hook reads, so any
-    of them sharing it would declare the whole repository reviewed.
+    receipt answers for the whole repository, so any of them sharing it would declare the whole
+    repository reviewed.
     """
     repo_path = str(Path(repo).resolve())
     repo_name = repo_identity(repo_path)
@@ -1442,86 +1444,6 @@ def review_receipt(repo, lens=None, scope=None):
         cwd=repo, capture_output=True, text=True,
     )
     return receipt if proc.returncode == 0 and proc.stdout.strip() == "tree" else None
-
-
-def scoped_review_receipts(repo):
-    """This repository's scope-only receipts, freshest first. A scoped run's own path list lives in
-    its document, so the scope a reader needs comes back out of the file rather than out of the
-    hash in its name; a lens's scoped receipt answers a different question and is not among them.
-    """
-    name = receipt_file_name(repo)
-    if not name:
-        return []
-    pattern = re.compile(rf"^{re.escape(name[:-len('.json')])}__scope-[0-9a-f]+\.json$")
-    directory = state_dir() / RECEIPT_DIR
-    receipts = []
-    try:
-        entries = sorted(directory.iterdir()) if directory.is_dir() else []
-    except OSError:
-        # A store that cannot be listed is no receipt at all. Raising instead would take `coverage`
-        # down with it, and the commit gate reads a failed coverage as no review check at all.
-        return []
-    for path in entries:
-        if not pattern.fullmatch(path.name):
-            continue
-        try:
-            document = json.loads(path.read_text())
-        except (OSError, ValueError, json.JSONDecodeError):
-            continue
-        scope = document.get("scope") if isinstance(document, dict) else None
-        if not isinstance(scope, list) or not scope or not all(
-            isinstance(item, str) and item for item in scope
-        ):
-            continue
-        receipt = review_receipt(repo, scope=scope)
-        if receipt and receipt.get("scope") == scope:
-            receipts.append(receipt)
-    receipts.sort(key=lambda receipt: receipt["ts"], reverse=True)
-    return receipts
-
-
-def covering_scoped_receipt(repo, paths, exclude=()):
-    """The newest scoped receipt these paths already cover, or None. A scoped run answers to a
-    receipt of its own and leaves the repository's untouched, so a reader that asks only for the
-    plain one — the commit gate, in a shared checkout where every review is narrowed to the
-    pathspec being committed — is handed a neighbour's whole-tree run or nothing at all.
-
-    The one that reaches the most of them wins, ties going to the newest. Reading MORE than the
-    commit carries is not reading less of it: the old rule disqualified any review whose scope
-    stepped outside the pathspec, so the panel that had just read every committed file was thrown
-    away for having also read one more, and the gate re-blocked on an older, smaller run
-    (Egor, 2026-08-09). What the reader does with the answer is unchanged — a committed path the
-    panel never saw is drift, and it prices it — so the search only has to hand it the review that
-    left the least of that. Both sides are spelled by `normalize_scope_paths`, and containment
-    counts in both directions: a commit pathspec naming a directory is reached by a review of the
-    files under it, and a review scoped to a directory reached every file the commit names inside
-    it. An empty set is the root-is-everything spelling of `git commit -- .`, which
-    every scoped receipt reaches equally, so there the newest simply wins.
-
-    `exclude` drops runs by id, for the reader that has already asked one of them and been refused:
-    only one receipt comes back per question, so a broad or spent run standing at the front of the
-    order used to hide an older one that could have paid, and the caller had no way to ask past it.
-    """
-    wanted = list(paths)
-    unwanted = set(exclude or ())
-
-    def reach(receipt):
-        return sum(
-            any(
-                path == want
-                or path.startswith(want + "/")
-                or want.startswith(path + "/")
-                for path in receipt["scope"]
-            )
-            for want in wanted
-        )
-
-    receipts = [r for r in scoped_review_receipts(repo) if r["run_id"] not in unwanted]
-    if not wanted:
-        return receipts[0] if receipts else None
-    # max() keeps the first of equals and the list is freshest-first, so recency is the tiebreak.
-    best = max(receipts, key=reach, default=None)
-    return best if best is not None and reach(best) else None
 
 
 def persist_review_receipt(repo, tree, sha, run_id, errored, timestamp=None, panel=None,
@@ -1688,30 +1610,6 @@ def diff_base(repo, commit):
     if proc.returncode == 0 and proc.stdout.strip():
         return proc.stdout.strip()
     return empty_tree_hash(repo)
-
-
-@contextlib.contextmanager
-def scratch_object_store(repo):
-    """Git env under which written objects land in a directory that is deleted afterwards, while
-    every object already in the repository stays readable through the alternate.
-
-    `git add` writes a blob for each file it reads, and a temporary index redirects none of that:
-    asked once per edit — which is what the statusline's verdict does — it grows the reader's
-    object store with trees nothing will ever reference again.
-    """
-    with tempfile.TemporaryDirectory(prefix="review-bench-objects-") as directory:
-        real = subprocess.run(["git", "rev-parse", "--git-path", "objects"], cwd=repo,
-                              capture_output=True, text=True)
-        alternates = real.stdout.strip() if real.returncode == 0 else ""
-        if alternates and not os.path.isabs(alternates):
-            alternates = os.path.join(str(repo), alternates)
-        env = dict(os.environ, GIT_OBJECT_DIRECTORY=directory)
-        if alternates:
-            existing = os.environ.get("GIT_ALTERNATE_OBJECT_DIRECTORIES", "")
-            env["GIT_ALTERNATE_OBJECT_DIRECTORIES"] = (
-                f"{alternates}:{existing}" if existing else alternates
-            )
-        yield env
 
 
 def working_tree_tree(repo, paths=None, env=None):
@@ -1916,6 +1814,67 @@ def is_worktree_snapshot(repo, sha):
     proc = subprocess.run(["git", "show", "-s", "--format=%ce", sha],
                           cwd=repo, capture_output=True, text=True)
     return proc.returncode == 0 and proc.stdout.strip() == "review-bench@local"
+
+
+def scope_snapshot_paths(repo, scope, sha):
+    """Every file a run with this scope is shown, repository-relative.
+
+    Read out of the SEALED COMMIT and never out of the checkout standing under it: the tree moves
+    while the run is in flight, and a path set listed after the seal loses whatever a co-tenant
+    reverted meanwhile — files the panel was shown and the record then stops answering for.
+
+    A scope stages the whole subtree under its paths, so the files are listed rather than assumed:
+    a scope naming a directory reviewed the files inside it, not a path called after it. An empty
+    scope is the whole checkout, where what the panel reads is the change the snapshot holds
+    against its base — deletions included, which no listing of a tree can name.
+    """
+    def named(command):
+        proc = subprocess.run(command, cwd=repo, capture_output=True, text=True)
+        if proc.returncode != 0:
+            return []
+        return [path for path in proc.stdout.split("\0") if path]
+
+    base = diff_base(repo, sha)
+    if scope:
+        return sorted(set(
+            named(["git", "ls-tree", "-r", "-z", "--name-only", sha, "--", *scope])
+            + named(["git", "diff", "--no-renames", "--name-only", "--diff-filter=D", "-z",
+                     base, sha, "--", *scope])
+        ))
+    return sorted(set(named(
+        ["git", "diff", "--no-renames", "--name-only", "-z", base, sha]
+    )))
+
+
+def reviewed_blobs(repo, scope, sha):
+    """The blob the sealed commit holds for every path the panel is shown, keyed by path. A path
+    the snapshot deleted is keyed to the empty string: a deletion is a change the panel read as
+    surely as a rewrite is, and no blob can stand for it.
+
+    Read out of that commit and never hashed from the working tree: the tree moves while the run is
+    in flight, and a rerun pinned to an existing snapshot sha reads a commit the checkout is already
+    far past — either way the anchor would be bytes no rater saw. A symlink is left out, since a
+    line budget cannot price a link target.
+    """
+    wanted = {path for path in scope_snapshot_paths(repo, scope, sha) if "\n" not in path}
+    if not wanted:
+        return {}
+    proc = subprocess.run(["git", "ls-tree", "-r", "-z", sha],
+                          cwd=repo, capture_output=True, text=True)
+    if proc.returncode != 0:
+        return {}
+    blobs, held = {}, set()
+    for entry in proc.stdout.split("\0"):
+        info, tab, path = entry.partition("\t")
+        fields = info.split()
+        if not tab or len(fields) != 3 or path not in wanted:
+            continue
+        held.add(path)
+        if fields[1] == "blob" and fields[0] != SYMLINK_MODE:
+            blobs[path] = fields[2]
+    for path in wanted - held:
+        blobs[path] = ""
+    return blobs
 
 
 def repo_arg_paths(args):
@@ -2516,18 +2475,42 @@ def rater_family(spec):
     return normalize_legacy_rater(spec) if isinstance(spec, str) else ""
 
 
-def agy_cell_families():
-    return tuple(
-        f"{model}-{effort}-skill"
-        for model, efforts in AGY_EFFORTS.items()
-        for effort in efforts
-    )
+def panel_cell_key(row):
+    """The watchdog's key for one cell: its model and effort, which is what decides how long a
+    panel takes. Keyed on the cell spec instead, a family that gained an effort inherited nothing
+    from the effort beside it and every new spelling started from the floor again.
+    """
+    model = str(row.get("model") or "")
+    if not model:
+        return None
+    return model, str(row.get("effort") or "")
 
 
-def agy_timeout_history(benches):
-    maxima = {}
-    latest = {}
-    runs = []
+def watchdog_killed(row):
+    """Whether the watchdog itself cut this cell off, which `rater_timeout` marks with exit 124.
+
+    An agy cell is the one side the watchdog does not kill itself: its cap is handed to geminib as
+    `--print-timeout`, which expires first and exits 1 with a timeout of its own wording. Read on
+    exit 124 alone, that side never records a breach at all and stays pinned at the floor for ever.
+    Nowhere else the wording: `cell_status` also reads a provider's own `gateway timeout` as a
+    timeout, and that says nothing about the cap the cell was given.
+    """
+    if row.get("exit_code") == 124:
+        return True
+    side = row.get("side") or rater_side(row.get("rater"))
+    return side == "agy" and cell_status(row) == "timed_out"
+
+
+def panel_cell_history(benches):
+    """Per (model, effort) pair over every recorded run: the longest it has ever taken to COMPLETE,
+    and the highest cap the watchdog has ever killed it at.
+
+    Two questions because a completion is the only evidence about the work — feeding a hang's
+    duration back in would let one hang raise the cap forever — while the kills are the only
+    evidence a pair whose real runtime is past its cap ever produces: with nothing but completions
+    it would be killed at the same cap on every later run, for ever.
+    """
+    maxima, breached = {}, {}
     for directory in benches.iterdir() if benches.exists() else ():
         meta_path = directory / "meta.json"
         if not meta_path.exists():
@@ -2536,70 +2519,51 @@ def agy_timeout_history(benches):
             meta = json.loads(meta_path.read_text())
         except (OSError, ValueError, json.JSONDecodeError):
             continue
-        timestamp = (
-            parse_iso_timestamp(meta.get("finished") or meta.get("finished_at"))
-            or parse_iso_timestamp(meta.get("started") or meta.get("started_at"))
-            or datetime.min.replace(tzinfo=timezone.utc)
-        )
-        runs.append((timestamp, directory.name, meta))
-    for _, _, meta in sorted(runs):
-        outcomes = {}
         for row in meta.get("rater_runs", ()):
-            if row.get("side") != "agy":
+            key = panel_cell_key(row)
+            if key is None:
                 continue
-            family = rater_family(row.get("rater"))
-            if not family:
+            if watchdog_killed(row):
+                cap = timeout_seconds_from_row(row)
+                if cap:
+                    breached[key] = max(cap, breached.get(key, cap))
                 continue
             duration = row.get("duration_ms")
-            findings = row.get("findings")
-            completed = (
-                row.get("exit_code") == 0
-                and not row.get("errored")
-                and isinstance(findings, int)
-                and not isinstance(findings, bool)
-                and findings >= 0
-                and isinstance(duration, (int, float))
-                and not isinstance(duration, bool)
-                and duration >= 0
-            )
-            if completed:
-                maxima[family] = max(duration, maxima.get(family, duration))
-                outcomes[family] = ("completed", None)
-            elif (
-                cell_status(row) == "timed_out"
-                and outcomes.get(family, (None,))[0] != "completed"
+            if (
+                cell_status(row) != "completed"
+                or not isinstance(duration, (int, float))
+                or isinstance(duration, bool)
+                or duration < 0
             ):
-                limit = timeout_seconds_from_row(row)
-                prior = outcomes.get(family)
-                if limit is not None:
-                    limit = max(limit, prior[1] if prior and prior[1] is not None else limit)
-                outcomes[family] = ("timed_out", limit)
-            elif family not in outcomes:
-                outcomes[family] = ("other", None)
-        latest.update(outcomes)
-    return maxima, latest
+                continue
+            maxima[key] = max(duration, maxima.get(key, duration))
+    return maxima, breached
 
 
-def completed_agy_duration_maxima(benches):
-    return agy_timeout_history(benches)[0]
+def panel_duration_maxima(benches):
+    return panel_cell_history(benches)[0]
 
 
-def adaptive_timeout_seconds(duration_ms):
+def watchdog_timeout_seconds(duration_ms):
     if duration_ms is None:
-        return AGY_TIMEOUT_MAX_S
-    scaled = math.ceil(float(duration_ms) / 1000 * AGY_TIMEOUT_MULTIPLIER)
-    return min(AGY_TIMEOUT_MAX_S, max(AGY_TIMEOUT_MIN_S, scaled))
+        return WATCHDOG_FLOOR_S
+    return max(
+        WATCHDOG_FLOOR_S, math.ceil(float(duration_ms) / 1000) + WATCHDOG_GRACE_S
+    )
 
 
-def adaptive_agy_timeouts(benches):
-    maxima, latest = agy_timeout_history(benches)
+def panel_watchdog_timeouts(benches):
+    maxima, breached = panel_cell_history(benches)
     timeouts = {}
-    for family in agy_cell_families():
-        timeout = adaptive_timeout_seconds(maxima.get(family))
-        outcome, limit = latest.get(family, (None, None))
-        if outcome == "timed_out" and limit is not None:
-            timeout = max(timeout, adaptive_timeout_seconds(limit * 1000))
-        timeouts[family] = timeout
+    for key in set(maxima) | set(breached):
+        timeout = watchdog_timeout_seconds(maxima.get(key))
+        if key in breached:
+            # A cap a pair has already been killed at is a cap it needs more than: the next run
+            # gives it one grace more, up to the ceiling every cell used to share, so a slow model
+            # climbs out instead of being killed at the floor on every run it ever gets.
+            timeout = max(timeout, min(RATER_TIMEOUT_S,
+                                       math.ceil(breached[key]) + WATCHDOG_GRACE_S))
+        timeouts[key] = timeout
     return timeouts
 
 
@@ -3142,10 +3106,18 @@ def estimated_tokens_text(tokens):
 
 def aligned_report_lines(rows):
     width = max((len(label) for label, _ in rows), default=0)
-    return [
-        f"{label:<{width}}  {value}" if value else label
-        for label, value in rows
-    ]
+    lines = []
+    for label, value in rows:
+        if not value:
+            lines.append(label)
+            continue
+        # A row whose value runs to several lines — the escalation fork is three arms and a closing
+        # sentence — keeps them under the value column: written flush left they read as rows of
+        # their own with the label missing.
+        head, *rest = str(value).split("\n")
+        lines.append(f"{label:<{width}}  {head}")
+        lines.extend(f"{'':<{width}}  {line}" for line in rest)
+    return lines
 
 
 def verifier_report_value(summary, scheme=None):
@@ -3197,25 +3169,7 @@ def verifier_report_value(summary, scheme=None):
 ESCALATION_GATE = Path.home() / ".claude/hooks/review-flow-gate.sh"
 
 
-def run_started_stamp(run_id, meta=None):
-    """The UTC second a run started, spelled the way the commit gate parses a stamp.
-
-    From the meta where it recorded one, and otherwise off the run id, which is built from that very
-    instant: a run predating the field is exactly the historical run the narrowing below must be able
-    to place, and one it cannot place is spoken as a first round.
-    """
-    # Through the parser and back out in UTC, because the gate reads a UTC instant and nothing else:
-    # a stamp carrying any other offset would otherwise be refused whole rather than converted.
-    recorded = parse_iso_timestamp((meta or {}).get("started"))
-    if recorded:
-        return recorded.strftime("%Y-%m-%dT%H:%M:%S+00:00")
-    stamp = re.match(r"(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z-", str(run_id or ""))
-    if not stamp:
-        return None
-    return "{}-{}-{}T{}:{}:{}+00:00".format(*stamp.groups())
-
-
-def escalation_verdict(p1, total, meta=None, run_id=None, repo=None):
+def escalation_verdict(p1, total):
     """What this round earned, in the commit gate's own words, or None when it is closed.
 
     Asked of the gate rather than answered here: the thresholds and the three-way wording — the
@@ -3224,27 +3178,12 @@ def escalation_verdict(p1, total, meta=None, run_id=None, repo=None):
     The gate speaks only at a commit attempt, which needs Egor's permission to reach, so a round
     that earned another one was settled in silence while the report said nothing (2026-08-08).
 
-    Which cycle this round belongs to, and when it ran, are decided HERE for every speaker, because
-    row `af` is one voice per round and not one voice per site: the report block and each member's
-    Stop gate ask the same question and must be handed the same answer. The gate narrows the wording
-    only for a run that IS a cycle's second round — this checkout's cycle, and a start past the second
-    that cycle armed it — so a first round's own run, and a report re-rendered for a historical one,
-    stay first rounds. A MERGED panel is narrowed by nobody: it is one round over several checkouts
-    and therefore several cycles, so per-member narrowing would let the block and one member's Stop
-    gate speak the same round differently, and its P1s are already priced per member.
-
     A gate that cannot be reached says so out loud: silence here is the very failure this exists to
     end, so the caller prints the unknown rather than a clean bill.
     """
-    cycle = []
-    if not (meta or {}).get("repos"):
-        checkout = repo or (meta or {}).get("repo")
-        started = run_started_stamp(run_id, meta)
-        if checkout and started:
-            cycle = [str(checkout), started]
     try:
         done = subprocess.run(
-            [str(ESCALATION_GATE), "escalation-verdict", str(p1), str(total)] + cycle,
+            [str(ESCALATION_GATE), "escalation-verdict", str(p1), str(total)],
             stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10,
         )
     except (OSError, subprocess.SubprocessError):
@@ -3341,9 +3280,7 @@ def report_lines(run_dir, meta, verdicts=None):
     verdict_rows = verdicts if verdicts is not None else (
         read_jsonl(run_dir / "verdicts.jsonl") if (run_dir / "verdicts.jsonl").exists() else []
     )
-    earned = escalation_verdict(
-        *escalation_numbers(run_dir, meta, verdict_rows), meta=meta, run_id=run_dir.name
-    )
+    earned = escalation_verdict(*escalation_numbers(run_dir, meta, verdict_rows))
     rows.append(("round:", earned or "closed — nothing more is owed before the commit"))
     rejected_counts = [
         ("duplicate", summary["duplicate"]),
@@ -3521,7 +3458,8 @@ def escalation_numbers(run_dir, meta, verdicts, repo=None):
     """The two numbers the commit gate prices a round on, counted the way IT counts them: the P1s of
     one repository and the whole round's confirmed total.
 
-    Both halves matter separately (`reported_severities_pair` says why). Handed the whole panel's
+    Both halves matter separately because the gate's two thresholds are either-or: a round earns a
+    second pass on its P1s alone or on its whole tally alone. Handed the whole panel's
     P1s instead, a merged review claims a round no member's gate would ask for; handed a raw count
     of confirmed verdict rows instead of the severity sum, a row whose finding cannot be joined
     counts towards a threshold the gate never sees it in.
@@ -3547,80 +3485,6 @@ def escalation_numbers(run_dir, meta, verdicts, repo=None):
             whole["P1"],
         )
     return own, sum(whole.values())
-
-
-def reported_severities(receipt, scoped=True):
-    """Either half of `reported_severities_pair`: this repository's share of the run's confirmed
-    severities, or `scoped=False` for the whole round.
-    """
-    own, whole = reported_severities_pair(receipt)
-    return own if scoped else whole
-
-
-def receipt_tier(receipt):
-    """The panel size the run behind this receipt launched with, or None. The commit gate names it
-    when it asks for a round one tier below the last one, and only that run's own meta records it.
-    """
-    run_dir = state_dir() / "benches" / str(receipt.get("run_id") or "")
-    try:
-        meta = json.loads((run_dir / "meta.json").read_text())
-    except (OSError, ValueError):
-        return None
-    return tier_from_meta(meta) if isinstance(meta, dict) else None
-
-
-def reported_severities_pair(receipt):
-    """The confirmed-severity tally the run behind `receipt` was triaged to — this repository's
-    share of it and the whole round's, in one read — or `(None, None)` when it has none, which is
-    the commit gate's "no review has answered yet".
-
-    Recomputed from the stored verdicts whenever the run has them, never read off the report
-    receipt in preference to them: a run re-adjudicated the durable way after a `--no-corpus`
-    report leaves that receipt naming counts nobody stands behind any more, and pricing the gate's
-    escalation on superseded numbers would go on forever. The receipt answers only for the
-    `--no-corpus`-only case it exists for, which by design stores no verdicts at all.
-
-    The first half is scoped to the repository this receipt belongs to: one merged panel reads
-    several repositories, and a member's confirmed P1s must never price another member's commit.
-    The second is that same round counted whole — one merged panel is ONE round over one body of
-    work, so the tally that decides whether that round earned another one is the round's own; split
-    per repository, a heavy round bought itself out by being spread over two checkouts.
-
-    Everything is read off someone else's disk — a half-written findings file, a truncated verdict
-    line, a run directory pulled out from under this call — so nothing here may raise: the readers
-    of a receipt have a commit to let through, and a tally they cannot compute is one they must be
-    told they do not have.
-    """
-    run_dir = state_dir() / "benches" / str(receipt.get("run_id") or "")
-    try:
-        try:
-            meta = json.loads((run_dir / "meta.json").read_text())
-        except (OSError, ValueError):
-            meta = {}
-        prefix = member_finding_prefix(meta, str(receipt.get("commit") or ""))
-        prefixes = ("", prefix) if prefix else ("",)
-
-        def both(rows):
-            tallies = severity_tallies(run_dir, rows, prefixes)
-            return tallies[prefix or ""], tallies[""]
-
-        if (run_dir / "verdicts.jsonl").exists():
-            return both(read_jsonl(run_dir / "verdicts.jsonl"))
-        report = json.loads((run_dir / REPORT_RECEIPT).read_text())
-        if not isinstance(report, dict):
-            return None, None
-        if isinstance(report.get("rows"), list):
-            return both(report["rows"])
-        # A receipt written before the rows were kept: its tally is the whole run's, which for a
-        # merged run is more than this repository's — the only reading available, and the runs it
-        # covers are already reported and done.
-        tally = report.get("confirmed_by_severity")
-        if isinstance(tally, dict):
-            counted = {level: counted_int(tally.get(level)) for level in LENS_SEVERITIES}
-            return counted, dict(counted)
-    except (OSError, ValueError, KeyError, TypeError):
-        return None, None
-    return None, None
 
 
 def triage_pending_run(repo=None, session=None):
@@ -5286,6 +5150,7 @@ def rater_timeout(exc, started, timeout_s, command, extra_stdout=""):
 
 
 def run_codex(rater, repo, sha, focus, run_dir, diff, account):
+    deadline = rater.get("timeout_s") or RATER_TIMEOUT_S
     raw_final = tempfile.NamedTemporaryFile(
         dir=run_dir, prefix=f"raw-final-{rater['spec']}-", delete=False
     )
@@ -5336,13 +5201,13 @@ def run_codex(rater, repo, sha, focus, run_dir, diff, account):
                     proc = subprocess.run(
                         command, cwd=clone, env=codex_environment(account),
                         stdin=subprocess.DEVNULL, stdout=stdout, stderr=subprocess.PIPE,
-                        text=True, timeout=RATER_TIMEOUT_S
+                        text=True, timeout=deadline
                     )
                 else:
                     proc = subprocess.run(
                         command, cwd=clone, env=codex_environment(account),
                         input=prompt_input, stdout=stdout, stderr=subprocess.PIPE,
-                        text=True, timeout=RATER_TIMEOUT_S
+                        text=True, timeout=deadline
                     )
         except subprocess.TimeoutExpired as exc:
             output_tail = "\n".join(
@@ -5351,7 +5216,7 @@ def run_codex(rater, repo, sha, focus, run_dir, diff, account):
                 ) if part
             )
             return rater_timeout(
-                exc, started, RATER_TIMEOUT_S, command, extra_stdout=output_tail
+                exc, started, deadline, command, extra_stdout=output_tail
             )
         duration = round((time.monotonic() - started) * 1000)
         text = Path(raw_final.name).read_text(errors="replace")
@@ -5480,6 +5345,7 @@ def refresh_limits(account):
 
 
 def run_claude(rater, repo, sha, focus, run_dir, diff, account):
+    deadline = rater.get("timeout_s") or RATER_TIMEOUT_S
     raw_output = run_dir / f"raw-{rater['spec']}.json"
     raw_output.unlink(missing_ok=True)
     clone = seal_overlay_clone(repo, sha)
@@ -5498,9 +5364,9 @@ def run_claude(rater, repo, sha, focus, run_dir, diff, account):
     try:
         try:
             proc = subprocess.run(command, cwd=cwd, stdin=subprocess.DEVNULL,
-                                  capture_output=True, text=True, timeout=RATER_TIMEOUT_S)
+                                  capture_output=True, text=True, timeout=deadline)
         except subprocess.TimeoutExpired as exc:
-            return rater_timeout(exc, started, RATER_TIMEOUT_S, command)
+            return rater_timeout(exc, started, deadline, command)
         duration = round((time.monotonic() - started) * 1000)
         raw_output.write_text(proc.stdout)
         return proc.returncode, duration, proc.stdout, proc.stderr, command
@@ -5560,16 +5426,6 @@ def gate_admission_key(rater):
     return (0, -opencode_expected_s(rater), rater["spec"])
 
 
-def opencode_timeout_s(rater):
-    """Deadline for one OpenCode cell.
-
-    A hung cell holds a gate slot, and OpenCode latency is predictable from the
-    model, so waiting the shared 30-minute ceiling only delays every queued cell.
-    The multiplier still leaves room for a retry after a slow 5xx.
-    """
-    return min(RATER_TIMEOUT_S, max(420, opencode_expected_s(rater) * 8))
-
-
 def run_opencode(rater, repo, sha, focus, run_dir, diff, account):
     raw_output = run_dir / f"raw-{rater['spec']}.json"
     prompt = review_prompt(sha, focus, rater["profile"]) + "\n\nCommit diff:\n" + diff
@@ -5606,7 +5462,10 @@ def run_opencode(rater, repo, sha, focus, run_dir, diff, account):
                 command.append("--no-reasoning")
             if rater["model"] in OPENCODE_PREFILL_MODELS:
                 command += ["--prefill", "</think>"]
-            deadline = opencode_timeout_s(rater)
+            # The watchdog's cap and nothing beside it: a second, lower deadline of this side's own
+            # killed cells before the cap the run records, so the report named a limit the cell
+            # never reached.
+            deadline = rater.get("timeout_s") or RATER_TIMEOUT_S
             # The client's own buffered wall-clock cap must not fire before the cell's
             # deadline, or a legitimately slow generation dies with nothing received
             # while the cell still had time left.
@@ -6387,7 +6246,7 @@ def run_agy(rater, repo, sha, focus, run_dir, diff, account):
     raw_output = run_dir / f"raw-{rater['spec']}.md"
     log_file = run_dir / f"agy-{rater['spec']}.log"
     model = agy_model_id(rater)
-    timeout_s = rater.get("timeout_s", AGY_TIMEOUT_MAX_S)
+    timeout_s = rater.get("timeout_s") or AGY_TIMEOUT_MAX_S
     print_timeout = f"{timeout_s // 60}m" if timeout_s % 60 == 0 else f"{timeout_s}s"
     prompt = "/code-review" + (f"\nAdditional review focus: {focus}" if focus else "")
     # agy resolves its Google account from HOME and takes no account flag, so the profile has to be
@@ -6826,45 +6685,6 @@ def diff_numstat(repo, revisions, paths=None, env=None):
     return changes, sources
 
 
-def untracked_numstat(repo, paths=None):
-    # --full-name so a --repo pointing at a subdirectory still yields repository-root paths, which
-    # is what the escalation rules match on.
-    proc = subprocess.run(
-        ["git", "ls-files", "--others", "--exclude-standard", "--full-name", "-z",
-         "--", *(paths or ())],
-        cwd=repo, capture_output=True,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(
-            proc.stderr.decode(errors="replace").strip() or "git ls-files failed"
-        )
-    root = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=repo,
-                          capture_output=True, text=True)
-    base = Path(root.stdout.strip()) if root.returncode == 0 and root.stdout.strip() else repo
-    changes = {}
-    for raw_path in proc.stdout.split(b"\0"):
-        if not raw_path:
-            continue
-        path = os.fsdecode(raw_path)
-        full_path = base / path
-        if full_path.is_symlink():
-            data = os.fsencode(os.readlink(full_path))
-        elif full_path.is_dir():
-            # An untracked nested repository is listed as one path; there is nothing to count
-            # in it, and reading it as a file would end the whole answer in an error.
-            changes[path] = 0
-            continue
-        else:
-            data = full_path.read_bytes()
-        # git counts no lines for a binary file, and a new PNG counted as thousands of lines
-        # would pick a tier from its pixels.
-        if b"\0" in data[:8000]:
-            changes[path] = 0
-            continue
-        changes[path] = data.count(b"\n") + int(bool(data) and not data.endswith(b"\n"))
-    return changes
-
-
 def tier_table_vendor_cells(cells):
     grouped = {side: Counter() for side in ("opencode", "agy", "codex", "claude")}
     for cell in cells:
@@ -7017,143 +6837,19 @@ def guard_verifier_scope(args, tier_name):
     )
 
 
-REVIEW_CYCLE_NAME = "review-cycle"
-REVIEW_CYCLE_ARMED_STAGES = ("armed1", "armed2")
-REVIEW_CYCLE_TICKET_STAGE = "ticket"
-REVIEW_CYCLE_GONE = "gone"
-
-
-def review_cycle_files(repo):
-    """Every commit cycle the gate has open in `repo`, whichever session opened it. The gate keys a
-    file per session on top of the checkout, and both questions asked here — is a panel authorized,
-    has a ticket's commit landed — belong to the checkout: the session that runs the review the
-    checkout owes is routinely not the one whose commit was blocked.
-    """
-    proc = subprocess.run(["git", "rev-parse", "--absolute-git-dir"],
-                          cwd=str(repo), capture_output=True, text=True)
-    if proc.returncode != 0 or not proc.stdout.strip():
-        return []
-    try:
-        return sorted(Path(proc.stdout.strip()).glob(f"{REVIEW_CYCLE_NAME}*"))
-    except OSError:
-        return []
-
-
-def review_cycle_stage(path):
-    """One cycle file as (stage, entries), an entry being the `<blob> <path>` of a path the pending
-    commit carries. None when it cannot be read or names no stage: the format is the gate's to
-    change, so a shape this build cannot parse is not state to act on. Six fixed fields stand in
-    front of the entries — the last two are the drift budget and the tier the ticket was granted
-    on, and reading them as entries would answer the stamp's question about a path called `40`.
-    """
-    try:
-        fields = path.read_bytes().split(b"\0")
-    except OSError:
-        return None
-    if fields and not fields[-1]:
-        fields.pop()
-    if not fields or not fields[0]:
-        return None
-    return os.fsdecode(fields[0]), [os.fsdecode(field) for field in fields[6:]]
-
-
-def review_cycle_armed(repo):
-    """Whether the commit gate has a cycle open at a stage that authorizes a panel. Read and left
-    standing: an armed stage is spent by the review that buys the ticket, and a peek that consumed
-    it would let one blocked commit authorize nothing at all. Only `cmd_reviewed` ever removes one
-    of these files, and only a ticket whose commit has landed.
-    """
-    for path in review_cycle_files(repo):
-        parsed = review_cycle_stage(path)
-        if parsed and parsed[0] in REVIEW_CYCLE_ARMED_STAGES:
-            return True
-    return False
-
-
-def spent_cycle_runs(repo):
-    """The runs the commit gate has already let a commit through on, out of the checkout's own
-    ledger. The gate appends a run id there the moment that review pays a cycle, and one run pays
-    one cycle — so a run named here has finished answering for what it found.
-    """
-    proc = subprocess.run(["git", "rev-parse", "--absolute-git-dir"],
-                          cwd=str(repo), capture_output=True, text=True)
-    if proc.returncode != 0 or not proc.stdout.strip():
-        return frozenset()
-    try:
-        ledger = (Path(proc.stdout.strip()) / f"{REVIEW_CYCLE_NAME}-spent").read_text()
-    except (OSError, UnicodeDecodeError):
-        return frozenset()
-    return frozenset(line.strip() for line in ledger.splitlines() if line.strip())
-
-
-def review_cycle_second_round(repo):
-    """Whether a cycle in this checkout is at the stage only an escalation reaches. `armed2` is the
-    gate arming a panel for the SECOND time in one commit cycle — the first review ran, its tally
-    earned another, and the retried commit was blocked again — so a panel launched against it is
-    re-reading a tree it has read once. Any session's file counts, exactly as the launch door
-    counts them: the chat that owes the round is routinely not the one whose commit was blocked.
-    """
-    for path in review_cycle_files(repo):
-        parsed = review_cycle_stage(path)
-        if parsed and parsed[0] == "armed2":
-            return True
-    return False
-
-
-def spent_ticket_cycles(repo):
-    """The cycle files whose ticket has been paid. The gate records the exact content it let a
-    commit carry, and one recorded blob now reachable at its own path in HEAD is that commit having
-    happened: a co-tenant's commit moves HEAD without ever holding this content, and a later edit
-    at the same path does not take it back out of HEAD. A path the commit deleted is recorded as
-    `gone` and pays the other way round — its absence from HEAD is the deletion having landed.
-    """
-    spent = []
-    for path in review_cycle_files(repo):
-        parsed = review_cycle_stage(path)
-        if not parsed or parsed[0] != REVIEW_CYCLE_TICKET_STAGE:
-            continue
-        for entry in parsed[1]:
-            blob, _, entry_path = entry.partition(" ")
-            if not entry_path:
-                continue
-            proc = subprocess.run(
-                ["git", "rev-parse", "--verify", "--quiet", f"HEAD:{entry_path}"],
-                cwd=str(repo), capture_output=True, text=True,
-            )
-            head_blob = proc.stdout.strip() if proc.returncode == 0 else ""
-            if blob == REVIEW_CYCLE_GONE:
-                landed = not head_blob
-            else:
-                landed = bool(head_blob) and head_blob == blob
-            if landed:
-                spent.append(path)
-                break
-    return spent
-
-
 def guard_review_armed(args):
-    """A commit-point review runs when a commit asked for one, and mid-work panels are what this
-    closes: the gate that blocks the commit opens the cycle, and the cycle is the authorization.
+    """A worktree review runs when Egor asked for one by name, and mid-work panels are what this
+    closes.
 
-    A merged review is authorized by ANY of the repositories it names, because a cycle is opened by
-    a blocked commit and one commit is blocked in one repository — demanding a cycle in every named
-    repository would leave a merged panel unlaunchable by the very flow that asks for it.
-
-    Egor asking for a review by name is the other way in, and it is the prefix the flow gate already
-    knows: `REVIEW_ASKED=1` is taken at face value here because that gate checks the claim against
+    `REVIEW_ASKED=1` is taken at face value here because the flow gate checks that claim against
     the session transcript before the command ever runs, and a second flag saying the same thing
     would be one the caller grants itself unchecked.
     """
     if not getattr(args, "worktree", False) or os.environ.get("REVIEW_ASKED") == "1":
         return
-    repos = [resolve_repo_arg(path) for path, _ in repo_sources(args)]
-    # A path that is no repository is a mistake the run itself names; refusing it here would answer
-    # a broken invocation with the wrong reason, and it launches no panel either way.
-    if any(repo is None for repo in repos) or any(review_cycle_armed(repo) for repo in repos):
-        return
     raise ValueError(
-        "reviews are commit-triggered — attempt the `git commit` (the gate arms the panel), or "
-        "prefix with REVIEW_ASKED=1 when Egor asked for a review by name"
+        "reviews are commit-triggered — prefix with REVIEW_ASKED=1 (Egor's commit permission "
+        "counts as the ask; reviews ride commits)"
     )
 
 
@@ -7171,80 +6867,6 @@ def cmd_review(args):
     args.auto = None
     args.leg = False
     return cmd_run(args)
-
-
-def diff_paths(repo, revisions, paths=None):
-    proc = subprocess.run(
-        ["git", "diff", "--no-renames", "--name-only", "-z", *revisions, "--", *(paths or ())],
-        cwd=repo, capture_output=True, text=True,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(proc.stderr.strip() or "git diff failed")
-    return {path for path in proc.stdout.split("\0") if path}
-
-
-def reverted_paths(repo, receipt, carried, drifted):
-    """Paths the pending commit would put the reviewed content back over: it carries them, what it
-    carries is the panel's own bytes (they are not in `drifted`), HEAD holds something else there,
-    and that something landed AFTER the review — a co-tenant's work this commit would undo. Advice
-    and never a refusal: the review answers for the content, and whether the checkout's other work
-    should ride along with it is a question no panel read.
-
-    Both diffs are needed. HEAD differing from the reviewed tree says nothing on its own — every
-    review of uncommitted work is read on a tree HEAD does not hold — so what makes it an undoing is
-    the path having moved past the base the panel read on.
-    """
-    if not receipt or not receipt.get("tree") or not carried:
-        return []
-    spec = commit_scope_pathspec(carried)
-    try:
-        against_head = diff_paths(repo, [receipt["tree"], "HEAD"], spec)
-        landed = diff_paths(repo, [diff_base(repo, receipt["commit"]), "HEAD"], spec)
-    except RuntimeError:
-        return []
-    return sorted((against_head & landed & set(carried)) - set(drifted))
-
-
-def commit_scope_pathspec(paths):
-    """The paths as a git pathspec, or nothing at all where naming them would not fit on a command
-    line. `literal`, because these come out of git's own name-only output, where a file called
-    `a[b].txt` is written plainly and would be read back as a character class.
-
-    A repository-wide commit carries thousands of paths, and git dies on the argument list rather
-    than answering — an answer of "no undoing here" the caller cannot distinguish from a real one.
-    Every caller intersects the result with its own path set, so the widened diff costs reading
-    more than was asked for and never changes what comes back.
-    """
-    spec = [f":(top,literal){path}" for path in sorted(paths)]
-    return spec if sum(len(item) + 1 for item in spec) <= PATHSPEC_ARG_BUDGET else None
-
-
-def reviewed_diff_lines(repo, commit):
-    """How many lines the panel actually read: the diff of the commit the receipt names, which for a
-    worktree run is its snapshot against the base it was taken on and for a root commit is its whole
-    content. None when that cannot be measured, and callers then decline to lean on the number.
-    """
-    try:
-        changes, _ = diff_numstat(repo, [diff_base(repo, commit), commit])
-    except RuntimeError:
-        return None
-    return sum(changes.values())
-
-
-def reviewed_diff_paths(repo, commit):
-    try:
-        base = diff_base(repo, commit)
-    except RuntimeError:
-        return set()
-    # -z: without it git quotes paths with special characters, and a quoted name never
-    # intersects the literal paths in `changes`.
-    proc = subprocess.run(
-        ["git", "diff", "--no-renames", "--name-only", "-z", base, commit],
-        cwd=repo, capture_output=True, text=True,
-    )
-    if proc.returncode != 0:
-        return set()
-    return {path for path in proc.stdout.split("\0") if path}
 
 
 def review_outcome(repo, receipt):
@@ -7312,213 +6934,27 @@ def review_outcome(repo, receipt):
     return worktree, confirmed, findings
 
 
-def changed_paths(repo, baseline, scope=None, cached=True):
-    return diff_paths(repo, [*(["--cached"] if cached else []), baseline], scope)
-
-
-def commit_content_view(repo, commit_paths=None, commit_all=False):
-    """How to ask what the pending commit will hold: for a plain `git commit` the index, for
-    `git commit -- <paths>` and `git commit -a` the WORKING TREE, because those forms commit
-    working-tree content under git's --only/--all semantics and the index never reaches the commit.
-    Returns the set of paths it would carry (optionally narrowed to a receipt's scope) and its
-    delta against a reviewed tree, so the vouching rules below are asked once, of either form.
-    """
-    if commit_paths is None and not commit_all:
-        def carried(scope=None):
-            return changed_paths(repo, "HEAD", scope)
-
-        def staged_delta(tree):
-            # Over the paths this commit carries and no others. The index also holds every path a
-            # co-tenant has landed since the panel ran — their commit updates it — and priced whole,
-            # their work was drift on this commit's review and retired it (Egor, 2026-08-09).
-            paths = carried()
-            if not paths:
-                return {}
-            spec = commit_scope_pathspec(paths)
-            delta = diff_numstat(repo, ["--cached", tree], spec)[0]
-            return delta if spec is not None else {
-                path: lines for path, lines in delta.items() if path in paths
-            }
-
-        return carried, staged_delta
-    pathspec = list(commit_paths or ())
-    return (lambda scope=None: changed_paths(repo, "HEAD", scope or pathspec, cached=False),
-            lambda tree: diff_numstat(repo, [tree], pathspec)[0])
-
-
-def commit_vouching_receipts(repo):
-    """Every receipt that can answer for a commit: the scoped ones freshest first, then the
-    repository's own. A whole-tree review read at least what any scoped one did, so a commit it
-    covers must not be the one commit that cannot lean on a review — and it is asked last so a
-    scope that covers the commit still names itself in the answer.
-    """
-    receipts = scoped_review_receipts(repo)
-    whole_tree = review_receipt(repo)
-    return [*receipts, whole_tree] if whole_tree else receipts
-
-
-def scoped_review_vouching(repo, commit_paths=None, commit_all=False):
-    """The review that answers for what this commit will contain, or None. A plain commit contains
-    the index and nothing else, so another agent's unstaged work in the same checkout is not what
-    this one is asking to commit — and a pathspec or `-a` commit narrows that further to
-    working-tree content the caller named. Either way a path the panel was never shown is part of
-    the commit, and it keeps the blocking verdict. One receipt has to cover the whole set on its
-    own: a union of two would let two half-fresh reviews vouch for a tree neither of them read.
-
-    Answered by CONTENT and never by history: the bytes the commit would carry, against the bytes
-    that path holds in the tree the panel read. Where HEAD stands is not asked at all. A shared
-    checkout takes commits from other chats continuously, so every history-shaped answer — the
-    review's commit having to be HEAD, HEAD having to stand on the reviewed base — retired a live
-    review over work it had never read, and no amount of narrowing fixed a question that was about
-    the wrong thing (Egor, 2026-08-09).
-    """
-    contents, delta_against = commit_content_view(repo, commit_paths, commit_all)
-    try:
-        committed = contents()
-    except RuntimeError:
-        return None
-    if not committed:
-        return None
-    for receipt in commit_vouching_receipts(repo):
-        try:
-            if not committed <= contents(receipt.get("scope")):
-                continue
-            delta = delta_against(receipt["tree"])
-        except RuntimeError:
-            continue
-        # The scope is a pathspec, and matching it is not being read: a directory scope matches a
-        # file created after the panel ran, a scope naming `a[b].txt` matches `ab.txt`. Only the
-        # diff the run was actually shown says which paths it answers for.
-        reviewed_paths = reviewed_diff_paths(repo, receipt["commit"])
-        if not committed <= reviewed_paths:
-            continue
-        worktree = is_worktree_snapshot(repo, receipt["commit"])
-        # What the commit would carry is the reviewed tree itself: nothing has been written since
-        # the panel read it.
-        if not delta:
-            return receipt
-        if receipt["run_id"].startswith("stamped-"):
-            continue
-        # What a review still answers for after work has landed on it: one that found something,
-        # and a delta no larger than the diff it read.
-        _, confirmed, findings = review_outcome(repo, receipt)
-        if not (findings > 0 if worktree else confirmed > 0):
-            continue
-        reviewed_lines = reviewed_diff_lines(repo, receipt["commit"])
-        if (bool(reviewed_lines) and sum(delta.values()) <= reviewed_lines
-                and (worktree or bool(set(delta) & reviewed_paths))):
-            return receipt
-    return None
-
-
 def cmd_receipt(args):
-    """Print this repository's review receipt, with what the stamp hook needs to decide whether a
-    commit ends the review cycle: the confirmed-defect count its run was adjudicated to, the change
-    that run read as `base`..`tree`, and — for a run that reviewed an uncommitted tree — what it
-    found. The hook reads it instead of deriving any of this itself, which is the third place every
-    one of these derivations would otherwise have to stay in step with.
+    """Print this repository's review receipt as JSON: the run behind it, the tree it read, and the
+    confirmed-defect count it was adjudicated to.
 
-    `--lens` and `--scope` print those runs' own receipts, which the hook never asks for: neither
-    read the whole tree the stamp would cover, so a commit must not end the review cycle on one.
-
-    `--paths` is the commit gate's question rather than the hook's, and the only one that searches:
-    given the paths a commit will carry it answers with the scoped review that reached the most of
-    them, because where every review is scoped the repository's own receipt is somebody else's tree
-    and a triaged review would never buy the commit it was run for. `--exclude-run` narrows that
-    search for a caller that has already asked and been refused, which is how the gate walks past a
-    receipt it cannot spend instead of taking the first answer as the last word.
+    `--lens` and `--scope` print those runs' own receipts. Neither read what the plain one answers
+    for — a lens ran a methodology this tool did not write, a scoped run read part of the tree — so
+    they are named explicitly or not read at all.
     """
     repo = resolve_repo_arg(args.repo) or Path(args.repo).resolve()
     # Resolved rather than taken as typed: the receipt was written under the canonical slug,
     # and a former slug is exactly what a reader still has in hand.
     lens = resolve_lens(args.lens)["name"] if getattr(args, "lens", "") else None
-    if getattr(args, "paths", None):
-        if lens:
-            raise ValueError("--paths searches scoped receipts only, which a lens's is not")
-        receipt = covering_scoped_receipt(
-            repo, normalize_scope_paths(repo, args.paths, root_is_everything=True),
-            getattr(args, "exclude_run", None) or ())
-    else:
-        scope = normalize_scope_paths(repo, args.scope) if getattr(args, "scope", None) else None
-        receipt = review_receipt(repo, lens, scope)
+    scope = normalize_scope_paths(repo, args.scope) if getattr(args, "scope", None) else None
+    receipt = review_receipt(repo, lens, scope)
     if not receipt:
         return 1
     worktree, confirmed, findings = review_outcome(repo, receipt)
     extra = {"worktree": worktree}
-    # The commit gate asks this receipt whether the review it armed has been triaged yet and how
-    # badly it landed, so the tally rides along with the run's identity instead of costing the gate
-    # a second lookup it has no state directory to make. Absent until the triage is recorded, which
-    # is the gate's "not reviewed yet" — `confirmed` above is the corpus count, 0 forever for the
-    # worktree snapshots every commit-point review is.
-    # This repository's share of the run, and the same round counted whole. The report block prints
-    # one confirmed count for the panel, so a merged run priced per member escalated on neither
-    # while the round it belongs to was heavy enough for both: 10 confirmed came back as 7 and 3,
-    # and nothing was owed (Egor, 2026-08-08). The two are equal for every run that read one
-    # repository, and both come out of one read because this runs on the commit gate's own path.
-    tally, round_tally = reported_severities_pair(receipt)
-    if tally is not None:
-        extra["reported"] = tally
-        extra["reported_round"] = round_tally
     if worktree:
         extra["findings"] = findings
-    # The panel this run launched with, so the gate can ask for a round below it by name rather
-    # than leaving the reader to guess which one "lower" means.
-    tier = receipt_tier(receipt)
-    if tier:
-        extra["tier"] = tier
-    # The commit the reviewed one was read against. For a snapshot its own tree is nowhere in the
-    # history, so this is the only fixed point a later commit can be compared with; a snapshot with
-    # no parent was taken on nothing, and the empty tree is that fixed point. Carried by EVERY
-    # receipt, not only a worktree one: `base`..`tree` is what the commit gate reads to see which
-    # change a review answered for, and a review of committed work or of a range — «заревьюй то,
-    # что ты сделал» — left it absent, so a panel that had just read this very code could not pay
-    # the commit and a second one was demanded over it (seen live 2026-08-08). Left empty only
-    # when even that cannot be answered, which the hook reads as "do not stamp".
-    try:
-        extra["base"] = diff_base(repo, receipt["commit"])
-    except RuntimeError:
-        extra["base"] = ""
     print(json.dumps(dict(receipt, confirmed=confirmed, **extra)))
-    return 0
-
-
-def cmd_reviewed(args):
-    """Stamp the working tree as reviewed.
-
-    `--ticket` is the stamp hook's question rather than a caller's assertion: the commit gate
-    granted this commit a ticket naming the exact content it may carry, so that content reachable
-    in HEAD over a clean tree is the review cycle having ended, and the stamp then rewrites the
-    receipt against HEAD so the next change lights the label again.
-    """
-    # A stamp declares the working tree reviewed, so this is the one caller that needs one.
-    repo = resolve_repo_arg(args.repo, require_worktree=True)
-    if repo is None:
-        raise ValueError(f"not a git repository with a working tree: {Path(args.repo).resolve()}")
-    if getattr(args, "ticket", False):
-        status = subprocess.run(["git", "status", "--porcelain"],
-                                cwd=str(repo), capture_output=True, text=True)
-        spent = spent_ticket_cycles(repo)
-        # A ticket's job ends with the commit that landed its content, whether or not that commit
-        # ends up stamping anything: left standing past a refusal here, it would be spent again by
-        # some later clean-tree commit no gate ever priced — a co-tenant's, Egor's own from a
-        # terminal — and stamp that tree, never-reviewed work and all, as reviewed.
-        for cycle in spent:
-            try:
-                cycle.unlink()
-            except OSError:
-                pass
-        # The stamp covers the whole tree, so a leftover left uncommitted would be marked reviewed
-        # along with the work the ticket bought.
-        if status.returncode != 0 or status.stdout.strip() or not spent:
-            return 3
-    sha = resolve_commit(repo, "HEAD")
-    tree = working_tree_tree(repo)
-    now = utc_now()
-    run_id = f"stamped-{now.strftime('%Y%m%dT%H%M%SZ')}"
-    path = persist_review_receipt(
-        repo, tree, sha, run_id, 0, timestamp=now.isoformat(),
-    )
-    print(f"review receipt: {path}; stamped tree {tree[:7]}")
     return 0
 
 
@@ -7549,218 +6985,208 @@ def cmd_pending_report(args):
     return 0
 
 
-def owed_round_run(repo=None, session=None):
-    """The newest worktree run of `repo` when its triage earned a further review that has not been
-    run, as `(run_dir, meta, verdict)`, else None.
+def session_review_paths(repo, paths):
+    """The queried paths as the run records them: repository-relative, deduplicated, sorted.
 
-    Newest-first for the same reason `triage_pending_run` is, and that ordering is also what says
-    the round was served: the second review is a NEW run, so once one exists the older run is no
-    longer the newest and this goes quiet by construction.
-
-    Two runs are stepped PAST rather than answered for, and both matter to a shared checkout. A run
-    another chat launched is that chat's debt, and letting it stand as the newest would hide this
-    session's — a co-tenant reviewing anything at all would discharge a round Egor is still owed.
-    And a run that never finished discharges nothing: an interrupted or killed launch leaves its
-    directory behind, which is exactly the shape of the second review that was started and did not
-    happen.
+    Spelled against the REPOSITORY ROOT and never against the caller's directory, unlike a review
+    scope: these come out of the commit journal, which stores repository-relative paths, and a
+    reader standing in a subdirectory would otherwise ask about `sub/sub/mine.txt`.
     """
-    benches = state_dir() / "benches"
-    common = git_common_dir(repo) if repo else None
-    for run_dir in sorted(benches.iterdir(), reverse=True) if benches.exists() else ():
-        meta_path = run_dir / "meta.json"
-        if not meta_path.exists():
+    normalized = set()
+    for raw in paths or ():
+        # Never stripped: a leading or trailing space is part of a filename, and trimming one
+        # asks about a path beside the one the journal named.
+        item = str(raw)
+        if not item.strip():
             continue
-        try:
-            meta = json.loads(meta_path.read_text())
-        except (OSError, ValueError):
-            # The bench directory is shared and pruned while this walks it, so a file that existed
-            # a line ago may be gone: one unreadable run is not this lookup's answer.
-            continue
-        if meta.get("worktree") is not True:
-            continue
-        if repo is not None:
-            reviewed = [meta.get("repo")] + [
-                entry.get("repo") for entry in meta.get("repos") or ()
-                if isinstance(entry, dict)
-            ]
-            if common is None or not any(
-                git_common_dir(candidate) == common for candidate in reviewed if candidate
-            ):
-                continue
-        launcher = str(meta.get("session") or "")
-        if session and launcher and launcher != session:
-            continue
-        finished = parse_iso_timestamp(meta.get("finished") or meta.get("finished_at"))
-        if finished is None:
-            continue
-        if (datetime.now(timezone.utc) - finished).total_seconds() > TRIAGE_GATE_HOURS * 3600:
-            return None
-        if (run_dir / "verdicts.jsonl").exists():
-            rows = read_jsonl(run_dir / "verdicts.jsonl")
-        else:
-            try:
-                report = json.loads((run_dir / REPORT_RECEIPT).read_text())
-            except (OSError, ValueError):
-                return None
-            rows = report.get("rows") if isinstance(report, dict) else None
-            if not isinstance(rows, list):
-                return None
-        verdict = escalation_verdict(
-            *escalation_numbers(run_dir, meta, rows, repo),
-            meta=meta, run_id=run_dir.name, repo=repo,
+        relative = scope_path_relative(
+            repo, item if os.path.isabs(item) else os.path.join(str(repo), item)
         )
-        if not verdict:
-            return None
-        # A run that has already bought a commit owes nothing more: the gate marks it in the
-        # checkout's ledger the moment it lets one through, and one run pays one cycle. Without
-        # this, a landed commit left every stop for the next six hours blocked on a cycle that is
-        # closed, and the round granted at `armed2` — the last the gate will ever block for — asked
-        # for a third nobody enforces.
-        if repo is not None and run_dir.name in spent_cycle_runs(repo):
-            return None
-        return run_dir, meta, verdict
+        if relative is None or relative == os.curdir:
+            continue
+        normalized.add(relative)
+    return sorted(normalized)
+
+
+def path_in_scope(path, scope):
+    """Whether a run scoped to `scope` read `path`. An empty scope is the whole repository, and a
+    scope entry is a directory prefix as often as it is a file.
+    """
+    if not scope:
+        return True
+    return any(path == item or path.startswith(item + "/") for item in scope)
+
+
+# Memoized for the same reason git_common_dir is: the reader walks every recorded run, and a
+# handful of checkouts answer for hundreds of them.
+@lru_cache(maxsize=None)
+def resolved_repo_path(path):
+    try:
+        return Path(path).resolve()
+    except OSError:
+        return None
+
+
+def run_repo_record(repo, meta):
+    """The part of a run's record that belongs to the repository asking — the run itself, or the
+    member of a merged panel that read it — or None when the run read another checkout entirely.
+
+    Matched on the WORKING TREE and never on the repository behind it: every linked worktree shares
+    one git dir, so a run of one of them would otherwise cover a sibling's paths, whose content it
+    never read.
+    """
+    if repo is None:
+        return None
+    members = [entry for entry in meta.get("repos") or () if isinstance(entry, dict)]
+    for entry in [meta] + members:
+        recorded = str(entry.get("repo") or "")
+        if recorded and resolved_repo_path(recorded) == repo:
+            return entry
     return None
 
 
-def cmd_owed_round(args):
-    owed = owed_round_run(args.repo, getattr(args, "session", "") or None)
-    if owed is None:
-        return 1
-    run_dir, _meta, verdict = owed
-    marker = run_dir / ROUND_NUDGED
+def session_runs(repo, session):
+    """Every recorded run of `repo` that `session` launched, newest first, as
+    `(run_dir, meta, record)`.
+
+    Newest-first by directory name, which is the launch instant: the answer is about the review
+    standing closest to the work in front of the reader, and an older run of the same paths cannot
+    speak over it.
+    """
+    benches = state_dir() / "benches"
+    resolved = resolved_repo_path(repo)
+    runs = []
+    for run_dir in sorted(benches.iterdir(), reverse=True) if benches.exists() else ():
+        try:
+            meta = json.loads((run_dir / "meta.json").read_text())
+        except (OSError, ValueError):
+            # The bench directory is shared and pruned while this walks it, and the answer must
+            # not turn on which unrelated run was half-written at the time.
+            continue
+        if not isinstance(meta, dict) or str(meta.get("session") or "") != session:
+            continue
+        record = run_repo_record(resolved, meta)
+        if record is not None:
+            runs.append((run_dir, meta, record))
+    return runs
+
+
+def run_triaged(run_dir):
+    """Whether anybody judged this run's findings. An untriaged run is a panel's raw output, which
+    nobody has stood behind yet, so it covers nothing.
+    """
+    return (run_dir / "verdicts.jsonl").exists() or (run_dir / REPORT_RECEIPT).exists()
+
+
+# Memoized because the drift reading asks for the same blob twice — once for the reviewed size and
+# once for the path it belongs to — and the statusline is on this path at every render.
+@lru_cache(maxsize=None)
+def blob_bytes(repo, sha):
+    proc = subprocess.run(["git", "cat-file", "blob", sha], cwd=repo, capture_output=True)
+    return proc.stdout if proc.returncode == 0 else b""
+
+
+def file_bytes(path):
     try:
-        asked = sum(1 for line in marker.read_text().splitlines() if line.strip())
-    except FileNotFoundError:
-        asked = 0
-    except (OSError, UnicodeDecodeError):
-        asked = TRIAGE_GATE_ASKS
-    if asked >= TRIAGE_GATE_ASKS:
-        return 1
-    if args.mark:
-        with marker.open("a") as handle:
-            handle.write(iso_now() + "\n")
-    print(f"{run_dir.name} {verdict}")
-    return 0
+        return Path(path).read_bytes()
+    except OSError:
+        return b""
 
 
-def cmd_coverage(args):
-    """The commit gate's whole question about a pending commit, in lines nothing but a machine
-    reads: is this commit form covered by a review, and what does it carry that no panel has read.
+def content_line_count(data):
+    return 0 if b"\0" in data[:BINARY_SNIFF_BYTES] else len(data.splitlines())
 
-    Every line is `<key>: <value>`. `covered:` is `yes` or `no`; `vouch:` names the run that
-    answers for the commit and is absent when none does; `lines:` and `files:` size the delta
-    against the reviewed tree, and one `path:` line per file spells it. One `revert:` line per
-    path names work that landed in HEAD after the review which this commit would put the reviewed
-    content back over — advice the gate passes on, never a refusal. The gate parses these exact
-    spellings, so a key renamed here is a gate that stops seeing an answer it acts on.
+
+def content_drift_lines(before, after):
+    """Lines separating two revisions of one file, added plus removed, the way a diff counts them.
+    Binary content on either side is 0: a byte-level change nobody reads as lines cannot be priced
+    against a line budget.
+    """
+    if b"\0" in before[:BINARY_SNIFF_BYTES] or b"\0" in after[:BINARY_SNIFF_BYTES]:
+        return 0
+    old, new = before.splitlines(), after.splitlines()
+    return sum(
+        (i2 - i1) + (j2 - j1)
+        for tag, i1, i2, j1, j2 in SequenceMatcher(None, old, new, autojunk=False).get_opcodes()
+        if tag != "equal"
+    )
+
+
+def coverage_drift_pct(repo, record, paths):
+    """How far the queried paths have moved past the tree the panel read, as a percentage of the
+    whole reviewed size.
+
+    Measured against the run's own `reviewed` blobs and never against git history: a shared
+    checkout takes commits from other chats continuously, and every history-shaped answer retired a
+    live review over work it had never read. A queried path the snapshot does not hold was never
+    reviewed at all, so all of it is drift — and the denominator stays the reviewed size, which is
+    what the 25% budget is a share of.
+    """
+    reviewed = record.get("reviewed") if isinstance(record.get("reviewed"), dict) else {}
+    total = sum(content_line_count(blob_bytes(repo, sha)) for sha in reviewed.values() if sha)
+    drift = 0
+    for path in paths:
+        # Left out of the snapshot for the same reason it is priced at nothing here: a link target
+        # is not content a line budget can measure, and reading through the link prices the file it
+        # points at instead.
+        if (Path(repo) / path).is_symlink():
+            continue
+        current = file_bytes(Path(repo) / path)
+        sha = reviewed.get(path)
+        if isinstance(sha, str) and sha:
+            drift += content_drift_lines(blob_bytes(repo, sha), current)
+        elif path not in reviewed and not (Path(repo) / path).exists():
+            # A deletion the run never held: the panel read a tree this file was still in, there is
+            # no content left to price the change in, and every line count over an absent file is
+            # zero — which is how an unreviewed deletion came back covered.
+            return 100
+        else:
+            drift += content_line_count(current)
+    if not drift:
+        return 0
+    return drift * 100 // total if total else 100
+
+
+def cmd_session_review(args):
+    """Whether a review this chat ran covers these paths, in one line and nothing else.
+
+    Always exit 0: the gate reads a failure as no answer and falls silent, so a repository it
+    cannot resolve or a chat with no runs at all has to come back as `none` rather than as an error
+    code the reader turns into a clean bill.
     """
     repo = resolve_repo_arg(args.repo)
-    if repo is None:
-        raise ValueError(f"not a git repository: {Path(args.repo).resolve()}")
-    # Stderr, deliberately: stdout is parsed line by line, while the reader who launched this from
-    # the wrong cwd only ever sees the answer — a `covered: yes` that names no repository reads as
-    # being about the tree they meant.
-    print(f"repo: {repo}", file=sys.stderr)
-    commit_paths = getattr(args, "commit_paths", None)
-    commit_all = bool(getattr(args, "commit_all", False))
-    if commit_paths is not None:
-        # git reads a commit pathspec beside the caller, while every git call here runs at the
-        # repository root. Taken as typed, a path named from a subdirectory matched a different file
-        # or none at all — and matching nothing is this command's strongest allow signal.
-        commit_paths = normalize_scope_paths(
-            repo, commit_paths, "--commit-paths", root_is_everything=True
-        )
-    # Measured through the commit's own pathspec: read over the whole tree, a two-line fix beside
-    # another agent's large work carried that work's delta, and the gate priced a commit on files
-    # nobody was committing. An empty list is `git commit -- .`, which carries the whole tree.
-    commit_scope = commit_paths or None
-    receipt = review_receipt(repo)
-    if receipt and is_worktree_snapshot(repo, receipt["commit"]):
-        # One tree against another, both built the way the snapshot the panel reviewed was built.
-        # A snapshot holds tracked and untracked content alike, so asking the index and the working
-        # tree about it separately answered with a phantom deletion of every untracked file and
-        # then added its line count back on top. The tree is built into a scratch store the diff
-        # reads through and nothing outlives: this command answers a statusline, and a question
-        # asked on every edit may not leave a blob behind each time.
-        with scratch_object_store(repo) as scratch_env:
-            changes, _ = diff_numstat(
-                repo,
-                [receipt["tree"], working_tree_tree(repo, env=scratch_env)],
-                commit_scope,
-                env=scratch_env,
-            )
-    else:
-        baseline = receipt["tree"] if receipt else "HEAD"
-        changes, _ = diff_numstat(repo, [baseline], commit_scope)
-        # A staged change that the working tree then reverts is absent from the baseline-to-files
-        # diff but is still what the next commit will contain, so the index is asked separately.
-        staged, _ = diff_numstat(repo, ["--cached", baseline], commit_scope)
-        for path, lines in staged.items():
-            changes[path] = max(changes.get(path, 0), lines)
-        # Untracked content is in no commit form, but a scoped review stages the whole subtree
-        # under its paths, so it is part of what such a review would be shown.
-        changes.update(untracked_numstat(repo, commit_scope))
-    # No commit form carries an untracked file the command line did not stage first: `git
-    # commit -a`, `-- .`, a directory pathspec and even a literally named path all refuse it
-    # ("did not match any file(s) known to git", `--include` included — measured 2026-08-10),
-    # so a co-tenant's new file must not price this commit's delta and a named-but-unstaged one
-    # is a commit git itself will refuse. `--carries-untracked` is the one signal that a stage
-    # runs on the same line (`git add x && git commit -a`), where dropping x would wave in
-    # content no panel read on the very form that cannot be asked about it afterwards.
-    named_untracked = {}
-    stages_first = bool(getattr(args, "carries_untracked", False))
-    if commit_all or commit_paths is not None:
-        for path, count in untracked_numstat(repo, commit_scope).items():
-            if stages_first:
-                named_untracked[path] = count
-            else:
-                changes.pop(path, None)
-    # A checkout with nothing in it to review at all, measured against HEAD rather than against the
-    # receipt: a co-tenant commit moves HEAD past the reviewed tree, and that landing was then read
-    # as this commit's delta — the plain form, which is the one the statusline asks, demanding a
-    # review of a tree holding no work and a commit git would refuse as empty (2026-08-10).
-    if changes and commit_paths is None and not commit_all:
-        if not (
-            diff_paths(repo, ["HEAD"], None)
-            or diff_paths(repo, ["--cached", "HEAD"], None)
-            or untracked_numstat(repo, None)
+    session = str(getattr(args, "session", "") or "")
+    if repo is None or not session:
+        print("none")
+        return 0
+    paths = session_review_paths(repo, getattr(args, "paths", None))
+    runs = session_runs(repo, session)
+    # Newest first, and whichever kind of run comes first is the answer: a watchdog kill is what the
+    # reader is waiting on until a LATER triaged run covers the paths, and an untriaged run standing
+    # on top of that kill is not one — it says nothing, so it must not speak over it either.
+    covering = None
+    for run_dir, meta, record in runs:
+        if meta.get("timed_out"):
+            print(f"timed-out {run_dir.name}")
+            return 0
+        reviewed = record.get("reviewed")
+        # A run holding no snapshot read committed code: nothing in the working tree is anchored to
+        # it, so a deletion or a binary change under it would come back as covered at zero drift.
+        if not (isinstance(reviewed, dict) and reviewed):
+            continue
+        if run_triaged(run_dir) and all(
+            path_in_scope(path, record.get("scope")) for path in paths
         ):
-            changes = {}
-    if changes and (commit_all or commit_paths is not None):
-        contents, _ = commit_content_view(repo, commit_paths, commit_all)
-        try:
-            empty_form = not contents()
-        except RuntimeError:
-            empty_form = False
-        # A commit carrying nothing is one git itself refuses, and the delta measured above is
-        # other work in the checkout — another agent's edits — rather than anything this commit
-        # would take. An untracked file the line stages first is the exception, and belongs to
-        # the form.
-        if empty_form and named_untracked:
-            empty_form = False
-        if empty_form:
-            changes = {}
-    vouch = scoped_review_vouching(repo, commit_paths, commit_all) if changes else None
-    print("covered: " + ("yes" if not changes or vouch else "no"))
-    if vouch:
-        print(f"vouch: {vouch['run_id']}")
-    print(f"lines: {sum(changes.values())}")
-    print(f"files: {len(changes)}")
-    for path in sorted(changes):
-        print(f"path: {path}")
-    vouching = vouch or receipt or {}
-    contents, delta_against = commit_content_view(repo, commit_paths, commit_all)
-    try:
-        carried = contents()
-        # The commit's own delta against the reviewed tree, not `changes`: that one is measured over
-        # the whole checkout and from HEAD when no whole-tree receipt exists, and either makes a
-        # path look edited when what this commit carries is the panel's own bytes.
-        drifted = delta_against(vouching["tree"]) if vouching.get("tree") else {}
-    except RuntimeError:
-        carried, drifted = set(), {}
-    for path in reverted_paths(repo, vouching, carried, drifted):
-        print(f"revert: {path}")
+            covering = (run_dir, record)
+            break
+    if covering is None:
+        print("none")
+        return 0
+    run_dir, record = covering
+    drift = coverage_drift_pct(repo, record, paths)
+    print(f"{'stale' if drift > DRIFT_STALE_PCT else 'covered'} {run_dir.name} {drift}")
     return 0
+
 
 def handoff(run_id, paths, members=None, worktree=False):
     verdict_path = verdict_scratch_path(run_id)
@@ -8057,13 +7483,11 @@ def cmd_run(args):
                 raise RuntimeError("account no longer affordable after limits refresh")
 
     started = utc_now()
-    if any(rater["side"] == "agy" for rater in raters):
-        agy_timeouts = adaptive_agy_timeouts(state_dir() / "benches")
-        for rater in raters:
-            if rater["side"] == "agy":
-                rater["timeout_s"] = agy_timeouts.get(
-                    rater_family(rater["spec"]), AGY_TIMEOUT_MAX_S
-                )
+    # Every side, not the Antigravity leg alone: a hung cell of any vendor holds the panel open
+    # with nothing to report, and the run it belongs to is what goes loud in the statusline.
+    watchdog = panel_watchdog_timeouts(state_dir() / "benches")
+    for rater in raters:
+        rater["timeout_s"] = watchdog.get(panel_cell_key(rater), WATCHDOG_FLOOR_S)
     run_id = f"{started.strftime('%Y%m%dT%H%M%SZ')}-{sha[:7]}"
     run_dir = state_dir() / "benches" / run_id
     if run_dir.exists():
@@ -8090,7 +7514,15 @@ def cmd_run(args):
         launch_meta["worktree"] = True
         if scope:
             launch_meta["scope"] = scope
+        reviewed = reviewed_blobs(repo, scope, sha)
+        launch_meta["reviewed"] = reviewed
     if members:
+        for member in members:
+            # A ranged member has no working tree to drift: its content is committed already.
+            if not member.get("head"):
+                member["reviewed"] = reviewed_blobs(
+                    member["repo"], member["scope"], member["commit"]
+                )
         launch_meta["repos"] = [dict(member) for member in members]
     if tier_name:
         launch_meta["tier"] = tier_name
@@ -8260,10 +7692,8 @@ def cmd_run(args):
                     "side": rater["side"], "account": account, "duration_ms": duration,
                     "findings": 0, "exit_code": rc, "stderr": stderr[-2000:] if stderr else "",
                     "command": redact_command(rater, command),
-                    "errored": True,
+                    "errored": True, "timeout_s": rater["timeout_s"],
                 }
-                if rater["side"] == "agy":
-                    run_meta["timeout_s"] = rater["timeout_s"]
                 if model_resolved:
                     run_meta["model_resolved"] = model_resolved
                 rater_meta.append(run_meta)
@@ -8278,9 +7708,8 @@ def cmd_run(args):
                     "stderr": stderr[-2000:] if stderr else "",
                     "command": redact_command(rater, command),
                     "verifier_dropped": dropped, "verifier_unverified": unverified,
+                    "timeout_s": rater["timeout_s"],
                 }
-                if rater["side"] == "agy":
-                    run_meta["timeout_s"] = rater["timeout_s"]
                 if verify_ms is not None:
                     run_meta["verify_ms"] = verify_ms
                     run_meta["verifier_audited"] = audited
@@ -8313,11 +7742,21 @@ def cmd_run(args):
             meta["worktree"] = True
             if scope:
                 meta["scope"] = scope
+            # The launch snapshot, carried rather than retaken: the finished document is rewritten
+            # from scratch, and a second `hash-object` here would anchor the run to the tree the
+            # fixes already moved.
+            meta["reviewed"] = reviewed
         if members:
             meta["repos"] = [dict(member) for member in members]
         if tier_name:
             meta["tier"] = tier_name
             meta["max"] = use_max
+        # One breached cell marks the whole run: nothing else says a review hung, and the statusline
+        # goes loud off this key until a later triaged run covers the paths. The watchdog's own
+        # kills alone — a provider answering `gateway timeout` is an ordinary failed cell, and red
+        # in the statusline means a hung review or it means nothing.
+        if any(watchdog_killed(row) for row in rater_meta):
+            meta["timed_out"] = True
         meta.update(lens_meta)
         (run_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
         log_review_event("run", run_dir, meta)
@@ -9237,15 +8676,6 @@ def main():
         help="Report every finding unchecked, including the ones that cite code as it is not",
     )
     review.set_defaults(func=cmd_review)
-    reviewed = subparsers.add_parser(
-        "reviewed", help="Stamp the current working tree as reviewed"
-    )
-    reviewed.add_argument("--repo", default=".")
-    reviewed.add_argument(
-        "--ticket", action="store_true",
-        help="Stamp only when a commit landed the content of a granted commit-gate ticket",
-    )
-    reviewed.set_defaults(func=cmd_reviewed)
     receipt = subparsers.add_parser(
         "receipt", help="Print this repository's review receipt as JSON"
     )
@@ -9254,18 +8684,9 @@ def main():
         "--lens", default="", metavar="SLUG",
         help="Print that lens's own receipt instead of the repository's review receipt",
     )
-    receipt_selector = receipt.add_mutually_exclusive_group()
-    receipt_selector.add_argument(
+    receipt.add_argument(
         "--scope", nargs="+", metavar="PATH",
         help="Print that scope's own receipt instead of the repository's review receipt",
-    )
-    receipt_selector.add_argument(
-        "--paths", nargs="+", metavar="PATH",
-        help="Print the scoped receipt that reached the most of these paths",
-    )
-    receipt.add_argument(
-        "--exclude-run", action="append", default=[], metavar="RUN",
-        help="Skip this run in the --paths search, so a reader refused by one can ask past it",
     )
     receipt.set_defaults(func=cmd_receipt)
     report = subparsers.add_parser("report", help="Print a compact benchmark run report")
@@ -9287,41 +8708,17 @@ def main():
     )
     pending.set_defaults(func=cmd_pending_report)
 
-    owed = subparsers.add_parser(
-        "owed-round",
-        help="Name the triaged run whose tally earned a further review (exit 1 if none)",
+    session_review = subparsers.add_parser(
+        "session-review",
+        help="Whether a review this chat ran covers these paths, in one line the gate reads",
     )
-    owed.add_argument("--repo", default=".", help="Only runs of this repository")
-    owed.add_argument(
-        "--mark", action="store_true",
-        help=f"Count this ask, so a run is asked for at most {TRIAGE_GATE_ASKS} times",
+    session_review.add_argument("--repo", default=".")
+    session_review.add_argument("--session", default="", metavar="ID", help="The asking chat")
+    session_review.add_argument(
+        "--paths", nargs="*", action="extend", default=[], metavar="PATH",
+        help="Repository-relative paths to answer for",
     )
-    owed.add_argument(
-        "--session", default="", metavar="ID",
-        help="Only runs this chat launched, plus any run recording no launching chat",
-    )
-    owed.set_defaults(func=cmd_owed_round)
-    coverage = subparsers.add_parser(
-        "coverage",
-        help="Whether a review answers for a pending commit, and what it carries beyond one",
-    )
-    coverage.add_argument("--repo", default=".")
-    coverage.add_argument("--session", default="", help="The asking chat")
-    commit_form = coverage.add_mutually_exclusive_group()
-    commit_form.add_argument(
-        "--commit-paths", nargs="+", metavar="PATH",
-        help="Ask about what `git commit -- <paths>` would carry rather than the whole index",
-    )
-    commit_form.add_argument(
-        "--commit-all", action="store_true",
-        help="Ask about what `git commit -a` would carry rather than the whole index",
-    )
-    coverage.add_argument(
-        "--carries-untracked", action="store_true",
-        help="The commit line stages files before it commits, so untracked content reaches even "
-             "the forms that pick up none of it on their own",
-    )
-    coverage.set_defaults(func=cmd_coverage)
+    session_review.set_defaults(func=cmd_session_review)
     run = subparsers.add_parser("run", help="Run blind reviewers against one commit")
     run.add_argument("commitish", nargs="?")
     run.add_argument("--worktree", action="store_true")

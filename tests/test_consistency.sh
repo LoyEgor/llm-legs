@@ -423,28 +423,15 @@ assert doc_has 'including multiple Claude auth failures, uses `"; "` between ent
 assert grep -Fq 'RECEIPT_DIR = "receipts"' "$REVIEWBENCH"
 assert grep -Fq 'RECEIPT_FIELDS = ("repo", "tree", "commit", "run_id", "ts")' "$REVIEWBENCH"
 rb_receipt_name=$(sed -n '/^def receipt_file_name(repo, lens=None, scope=None):/,/^$/p' "$REVIEWBENCH")
-sl_receipt_name=$(sed -n '/^receipt_file_name()/,/^}/p' "$STATUSLINE")
 rb_receipt_hash_len=$(grep -E '^RECEIPT_HASH_HEX = [0-9]+$' "$REVIEWBENCH" | awk '{print $3}')
-sl_receipt_hash_len=$(grep -E '^RECEIPT_HASH_HEX=[0-9]+$' "$STATUSLINE" | cut -d= -f2)
 assert eq "$rb_receipt_hash_len" 8
-assert eq "$sl_receipt_hash_len" "$rb_receipt_hash_len"
 assert grep -Fq 'hashlib.sha1(repo_path.encode()).hexdigest()[:RECEIPT_HASH_HEX]' \
   <<<"$rb_receipt_name"
-assert grep -Fq 'shasum -a 1' <<<"$sl_receipt_name"
-assert grep -Fq 'awk -v n="$RECEIPT_HASH_HEX" '\''{print substr($1, 1, n)}' <<<"$sl_receipt_name"
 assert grep -Fq 'return f"{repo_name}__{repo_hash}.json"' <<<"$rb_receipt_name"
-assert grep -Fq 'printf '\''%s__%s.json'\'' "$repo_name" "$repo_hash"' <<<"$sl_receipt_name"
-# A lens receipt is a sibling of that name, never the name itself: the statusline knows only
-# the plain one, and a lens sharing it would show a repository as reviewed by a methodology
-# the tool did not write.
+# A lens receipt is a sibling of that name, never the name itself: a lens run read the tree by a
+# methodology the tool did not write, and a scoped one read only part of it, so neither may
+# advance the name a full review is sized against.
 assert grep -Fq 'return f"{repo_name}__{repo_hash}__lens-{lens}.json"' <<<"$rb_receipt_name"
-# The statusline may TALK about lens and scope receipts; what it must never do is read one.
-# Since it became the gate's mouthpiece it opens exactly one receipt — the plain name, for the
-# errored-panel mark — and mentioning either sibling anywhere in it is the fork coming back.
-assert test "$(grep -c '__lens-' "$STATUSLINE")" -eq 0
-assert test "$(grep -c '__scope-' "$STATUSLINE")" -eq 0
-# And so is a scope's, for the same reason plus one: a run that read part of the tree must not
-# advance the receipt the next full-tree review is sized against.
 assert grep -Fq 'return f"{repo_name}__{repo_hash}__scope-{scope_receipt_slug(scope)}.json"' \
   <<<"$rb_receipt_name"
 assert grep -Fq 'hashlib.sha1("\0".join(scope).encode()).hexdigest()[:RECEIPT_HASH_HEX]' \
@@ -452,9 +439,12 @@ assert grep -Fq 'hashlib.sha1("\0".join(scope).encode()).hexdigest()[:RECEIPT_HA
 # Scope receipts are read per PATH by coverage alone, and the per-path verdict is what keeps a
 # partial review from covering the repository.
 assert grep -Fq 'path = state_dir() / RECEIPT_DIR / name' "$REVIEWBENCH"
-assert grep -Fq 'receipt_file="$worker_stats_dir/receipts/$receipt_name"' "$STATUSLINE"
-assert grep -Fq '[.repo,.tree,.commit,.run_id,.ts,(.errored | tostring),' "$STATUSLINE"
-assert grep -Fq '(if (.panel | type) == "number" and (.panel | floor) == .panel and .panel > 0' "$STATUSLINE"
+# The receipt is review-bench's own record and nothing renders it: the statusline speaks the
+# gate's verdict about THIS chat (row ah) and keeps no tree-keyed reader, or a repository some
+# other chat reviewed would carry a label here.
+assert doc_has 'no surface outside `bin/review-bench` reads it'
+assert test "$(grep -c 'receipts' "$STATUSLINE")" -eq 0
+assert test "$(grep -Ec 'RECEIPT|receipt_file_name|worktree_matches_tree' "$STATUSLINE")" -eq 0
 assert grep -Fq '"panel"' "$REVIEWBENCH"
 assert grep -Fq '"max": bool(max_panel)' "$REVIEWBENCH"
 assert grep -Fq 'and ((.max | type) == "boolean" or .max == null))' "$STATUSLINE"
@@ -618,80 +608,36 @@ else
   printf 'SKIP: review report frame across claude-setup (%s is unreadable)\n' "$CLAUDE_SETUP"
 fi
 
-# --- Row ac: review commit-cycle file -----------------------------------------
-# The gate writes this file, review-bench only ever reads it, and neither would
-# notice the other renaming it: a review-bench looking for a name nothing writes
-# refuses every commit-point panel, and a gate writing a name nothing reads
-# leaves the door open to exactly the mid-work reviews it exists to stop.
-CYCLE_NAME=review-cycle
-assert grep -Fq "REVIEW_CYCLE_NAME = \"$CYCLE_NAME\"" "$REVIEWBENCH"
-assert grep -Fq 'REVIEW_CYCLE_ARMED_STAGES = ("armed1", "armed2")' "$REVIEWBENCH"
-assert grep -Fq 'REVIEW_CYCLE_TICKET_STAGE = "ticket"' "$REVIEWBENCH"
-assert grep -Fq 'REVIEW_CYCLE_GONE = "gone"' "$REVIEWBENCH"
-# The reader takes every session's file, so the prefix is the whole name it knows.
-assert grep -Fq 'glob(f"{REVIEW_CYCLE_NAME}*")' "$REVIEWBENCH"
-assert grep -Fq '"git", "rev-parse", "--absolute-git-dir"' "$REVIEWBENCH"
-assert grep -Fq 'extra["reported"] = tally' "$REVIEWBENCH"
-assert grep -Fq 'extra["reported_round"] = round_tally' "$REVIEWBENCH"
-# Outside the `if worktree:` branch, or a review of committed work names no range it read.
-assert grep -Fq '''    try:
-        extra["base"] = diff_base(repo, receipt["commit"])''' "$REVIEWBENCH"
-assert doc_has 'Review commit-cycle file'
-assert doc_has '`[A-Za-z0-9._-]`'
-# The statusline stopped being the third reader when it became the gate's mouthpiece (row ah):
-# it touches only its own session's file, and only its mtime — a cache-key ingredient, never a
-# stage. A stage token read in the statusline again is the second implementation coming back.
-assert grep -Fq "file_mtime \"\$gitdir/$CYCLE_NAME-\$sid\"" "$STATUSLINE"
-# The gate drops the suffix for a session id no filename may hold, and a key watching the suffixed
-# name there would never see that cycle's stages at all.
-assert grep -Fq "file_mtime \"\$gitdir/$CYCLE_NAME\"" "$STATUSLINE"
-assert grep -Fq "''|.|..|*[!A-Za-z0-9._-]*)" "$STATUSLINE"
-assert grep -Fq 'rev-parse --absolute-git-dir' "$STATUSLINE"
-assert test "$(grep -c 'review_cycle_stage' "$STATUSLINE")" -eq 0
-
 FLOW_GATE="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/review-flow-gate.sh"
-if test -r "$FLOW_GATE"; then
-  assert grep -Fq "cycle=\"\$gitdir/$CYCLE_NAME\${session:+-\$session}\"" "$FLOW_GATE"
-  assert grep -Fq "name '$CYCLE_NAME*'" "$FLOW_GATE"
-  assert grep -Fq '*[!A-Za-z0-9._-]*) session="" ;;' "$FLOW_GATE"
-  assert grep -Fq 'rev-parse --absolute-git-dir' "$FLOW_GATE"
-  # The stages review-bench reads as armed, written on the gate's own side.
-  assert grep -Fq 'cycle_write armed1' "$FLOW_GATE"
-  assert grep -Fq 'cycle_write armed2' "$FLOW_GATE"
-  assert grep -Fq 'cycle_write ticket' "$FLOW_GATE"
-  assert grep -Fq 'ticket|armed1|armed2)' "$FLOW_GATE"
-  # Both sides read every session's file for the launch door, and a gate reading only its own
-  # would refuse the panel the checkout owes whenever another chat's commit opened the cycle.
-  assert grep -Fq "for open_cycle in \"\$gitdir\"/$CYCLE_NAME*" "$FLOW_GATE"
-  # A deletion has no blob, and the two sides reading its entry differently is the ticket that is
-  # spent on one side and unspendable on the other.
-  assert grep -Fq 'entries+=("gone $path")' "$FLOW_GATE"
-  assert grep -Fq '[ "$blob" = gone ]' "$FLOW_GATE"
-  assert doc_has '`<blob-sha|gone> <path>`'
-  # What a round earned is priced on the round's own tally, and the weak-component verdict on this
-  # repository's share of it: renamed on either side, a merged panel's escalation silently halves.
-  assert grep -Fq '(.reported_round // .reported) as $round |' "$FLOW_GATE"
-  assert grep -Fq '(.reported.P1 // 0 | tostring)' "$FLOW_GATE"
-  assert doc_has '`reported_round`'
-  assert grep -Fq '(.ts // ""), (.base // ""),' "$FLOW_GATE"
-  assert doc_has '`base`..`tree`'
-else
-  printf 'SKIP: review commit-cycle file across claude-setup (%s is unreadable)\n' "$FLOW_GATE"
-fi
 
 # --- Row ah: the statusline speaks the gate's verdict --------------------------
-# One question, one implementation: the gate answers `verdict` out of band and the statusline
-# prints what comes back verbatim. The style grammar is the coupling — unknown styles render
-# loud, so only `off` and `dim` renamed on either side can silently darken the label.
+# Three implementations, one sentence: review-bench prints the coverage word, the gate translates
+# it into a style plus a label, and the statusline renders that verbatim. Renaming a word on any
+# one side is silent — the gate falls through to `off` on an answer it cannot read, so a review
+# that hung would render as nothing pending.
 assert doc_has 'The statusline speaks the gate'
 assert grep -Fq '"$gate" verdict "$1" "$2"' "$STATUSLINE"
 assert grep -Fq "''|off) answer=off ;;" "$STATUSLINE"
 assert grep -Fq '"dim "*|"loud "*) ;;' "$STATUSLINE"
+# The four words the gate switches on, printed nowhere else.
+assert grep -Fq 'print("none")' "$REVIEWBENCH"
+assert grep -Fq 'print(f"timed-out {run_dir.name}")' "$REVIEWBENCH"
+assert grep -Fq "print(f\"{'stale' if drift > DRIFT_STALE_PCT else 'covered'} {run_dir.name} {drift}\")" \
+  "$REVIEWBENCH"
+rb_drift_stale=$(grep -E '^DRIFT_STALE_PCT = [0-9]+$' "$REVIEWBENCH" | grep -oE '[0-9]+')
+assert eq "$rb_drift_stale" 25
+assert doc_has '`covered <run-id> <drift-pct>`'
+assert doc_has '25%'
 if test -r "$FLOW_GATE"; then
   assert grep -Fq 'if [ "${1:-}" = verdict ]; then' "$FLOW_GATE"
-  assert grep -Fq 'answer dim "$verdict_note"' "$FLOW_GATE"
-  assert grep -Fq 'answer loud' "$FLOW_GATE"
-  assert grep -Fq 'answer off' "$FLOW_GATE"
+  assert grep -Fq 'covered*) echo "dim rev ok" ;;' "$FLOW_GATE"
+  assert grep -Fq 'none*) echo "dim rev none ${#pending[@]}" ;;' "$FLOW_GATE"
+  assert grep -Fq 'stale*)' "$FLOW_GATE"
+  assert grep -Fq 'echo "dim rev stale ${pct}%"' "$FLOW_GATE"
+  # `loud` is the watchdog's alone, on both sides: red means a hung review and nothing else.
+  assert grep -Fq 'timed-out*) echo "loud rev timeout" ;;' "$FLOW_GATE"
+  assert test "$(grep -Fc -- 'loud ' "$FLOW_GATE")" -eq 1
+  assert grep -Fq 'session-review --repo "$top_dir" --session "$session" --paths' "$FLOW_GATE"
 else
   printf 'SKIP: statusline verdict grammar across claude-setup (%s is unreadable)\n' "$FLOW_GATE"
 fi
@@ -743,19 +689,21 @@ if [ -r "$FLOW_GATE" ] && [ -r "$REPORT_GATE" ]; then
   gate_read_line=$(grep -n '^[[:space:]]*input=\$(cat)$' "$FLOW_GATE" | head -1 | cut -d: -f1)
   assert test -n "$gate_verdict_line" -a -n "$gate_read_line"
   assert test "$gate_verdict_line" -lt "$gate_read_line"
-  # The callers name the mode and keep no threshold of their own.
-  assert grep -Fq '"escalation-verdict"' "$REVIEW_BENCH"
-  assert grep -Fq 'review-bench owed-round' "$REPORT_GATE"
-  for copy in SECOND_REVIEW_P1S SECOND_REVIEW_FINDINGS WEAK_LINK_P1S 'weak component'; do
+  # The whole question is two numbers on argv: a caller passing a repository or a stamp instead
+  # would be asking the gate to price a round out of the shared tree again.
+  assert grep -Fq 'ev_p1="${2:-}" ev_total="${3:-}"' "$FLOW_GATE"
+  assert grep -Fq '[str(ESCALATION_GATE), "escalation-verdict", str(p1), str(total)],' \
+    "$REVIEW_BENCH"
+  # The three dials, in the gate and only there.
+  assert grep -Fq 'SECOND_REVIEW_P1S=2' "$FLOW_GATE"
+  assert grep -Fq 'SECOND_REVIEW_FINDINGS=8' "$FLOW_GATE"
+  assert grep -Fq 'WEAK_LINK_P1S=5' "$FLOW_GATE"
+  for copy in SECOND_REVIEW_P1S SECOND_REVIEW_FINDINGS WEAK_LINK_P1S 'weak block'; do
     assert test "$(grep -Fc -- "$copy" "$REVIEW_BENCH")" -eq 0
     assert test "$(grep -Fc -- "$copy" "$REPORT_GATE")" -eq 0
   done
-  # The Stop block sends the chat on through its own cycle; handing the decision back to Egor is
-  # what stopped the chain he had already paid for (2026-08-09).
-  assert grep -Fq 'retry the commit' "$REPORT_GATE"
-  assert test "$(grep -Fc -- 'ask him in one line' "$REPORT_GATE")" -eq 0
   assert doc_has 'Second-round verdict has one voice'
-  assert doc_has 'the only thing a cycle asks him for'
+  assert doc_has '`escalation-verdict <p1> <total>`'
 else
   printf 'SKIP: review escalation voice across claude-setup (%s or %s is unreadable)\n' \
     "$FLOW_GATE" "$REPORT_GATE"
@@ -1119,4 +1067,4 @@ assert grep -Fq '"wall-check", "--all"' "$HAMMER"
 assert grep -Fq 'wall_check_all()' "$OPENCODE_GO"
 
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the review commit-cycle file one writes and the other reads, the escalation tally one prints and the other prices on, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the gate verdict the statusline speaks verbatim, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, and the OpenCode rows whose standing wall only the collector decides) and match %s\n' "$asserts" "$DOC"
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the coverage word the bench prints, the gate translates and the statusline speaks verbatim, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, and the OpenCode rows whose standing wall only the collector decides) and match %s\n' "$asserts" "$DOC"

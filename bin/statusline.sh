@@ -23,7 +23,6 @@ account_cache_dir="$claudeb_dir/limits"
 account_cache="$account_cache_dir/$acct.json"
 worker_stats_dir="${WORKER_STATS_DIR:-$claudeb_dir/worker-stats}"
 limits_file="${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}"
-RECEIPT_HASH_HEX=8
 
 file_mtime() {
   stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null
@@ -40,16 +39,6 @@ snapshot_lock_acquire() {
   mkdir "$lock" 2>/dev/null
 }
 
-git_common_dir() {
-  local repo="$1" common
-  common=$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null) || return 1
-  case "$common" in
-    /*) ;;
-    *) common="$repo/$common" ;;
-  esac
-  (cd "$common" 2>/dev/null && pwd -P)
-}
-
 # The working tree a path belongs to, resolved the way repo_dirs resolves REPO_TOP so the two
 # compare. This is the identity anything chat-scoped matches on: `--git-common-dir` is shared by
 # every linked worktree, so a review running in one of them would render in all of them.
@@ -57,16 +46,6 @@ git_worktree_top() {
   local top
   top=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null) || return 1
   (cd "$top" 2>/dev/null && pwd -P)
-}
-
-repo_identity_name() {
-  local common
-  common=$(git_common_dir "$1") || return 1
-  if [ "$(basename "$common")" = .git ]; then
-    basename "$(dirname "$common")"
-  else
-    basename "$common"
-  fi
 }
 
 # One git call per directory for everything the render needs about its repository:
@@ -149,16 +128,6 @@ name_covered_by_branch() {
   return 0
 }
 
-receipt_file_name() {
-  local repo="$1" repo_name repo_hash
-  repo=$(cd "$repo" 2>/dev/null && pwd -P) || return 1
-  repo_name=$(repo_identity_name "$repo") || return 1
-  repo_hash=$(printf '%s' "$repo" | shasum -a 1 2>/dev/null |
-    awk -v n="$RECEIPT_HASH_HEX" '{print substr($1, 1, n)}')
-  [[ "$repo_hash" =~ ^[0-9a-f]{8}$ ]] || return 1
-  printf '%s__%s.json' "$repo_name" "$repo_hash"
-}
-
 # ps reports elapsed time as [[dd-]hh:]mm:ss; the render needs the instant the process started.
 process_start_epoch() {
   local pid="$1" now="$2" elapsed days=0 hours=0 mins secs field
@@ -174,38 +143,6 @@ process_start_epoch() {
     [[ "$field" =~ ^[0-9]+$ ]] || return 1
   done
   printf '%s' "$((now - (10#$days * 86400 + 10#$hours * 3600 + 10#$mins * 60 + 10#$secs)))"
-}
-
-worktree_matches_tree() {
-  local repo="$1" tree="$2" path entry mode type object actual_mode actual_object
-  local -a excludes=()
-  while IFS= read -r -d '' path; do
-    entry=$(git -C "$repo" ls-tree "$tree" -- "$path" 2>/dev/null) || return 1
-    [ -n "$entry" ] || return 1
-    entry=${entry%%$'\t'*}
-    read -r mode type object <<< "$entry"
-    case "$mode" in
-      160000)
-        actual_mode=160000
-        actual_object=$(git -C "$repo/$path" rev-parse HEAD 2>/dev/null) || return 1
-        ;;
-      120000)
-        [ -L "$repo/$path" ] || return 1
-        actual_mode=120000
-        actual_object=$(git -C "$repo" hash-object -- "$path" 2>/dev/null) || return 1
-        ;;
-      100*)
-        [ -f "$repo/$path" ] && [ ! -L "$repo/$path" ] || return 1
-        [ -x "$repo/$path" ] && actual_mode=100755 || actual_mode=100644
-        actual_object=$(git -C "$repo" hash-object -- "$path" 2>/dev/null) || return 1
-        ;;
-      *) return 1 ;;
-    esac
-    [ "$actual_mode" = "$mode" ] && [ "$actual_object" = "$object" ] || return 1
-    excludes+=(":(top,literal,exclude)$path")
-  done < <(git -C "$repo" ls-files --others --exclude-standard -z 2>/dev/null)
-  git -C "$repo" diff --quiet --no-ext-diff --no-renames "$tree" -- . "${excludes[@]}" \
-    2>/dev/null
 }
 
 # The chat that launched a review run: its own registry entry, or the nearest ancestor's — a run
@@ -228,12 +165,13 @@ review_run_session() {
   return 1
 }
 
-# The commit gate's own answer to "would a commit right now be blocked, and why", in the one line
-# it prints for a reader that has no commit to attempt: `off` (a commit now passes silently), `dim
-# <text>` (it passes, with something worth saying) or `loud <text>` (it would be blocked). Nothing
-# here decides any of it and nothing here second-guesses the text — the gate is the only place that
-# knows what a commit owes, and a label computing its own version of that answer is one of two
-# renderings of one question, of which one is always wrong (Egor, 2026-08-09).
+# The review gate's own answer to "is this chat's uncommitted work covered by a review of its own",
+# in the one line it prints for a reader that has no commit to attempt: `off` (nothing pending),
+# `dim <text>` (a coverage state worth saying) or `loud <text>`, which the gate reserves for a
+# review that hung past its cap. Nothing here decides any of it and nothing here second-guesses the
+# text — the gate is the only place that knows what a review owes, and a label computing its own
+# version of that answer is one of two renderings of one question, of which one is always wrong
+# (Egor, 2026-08-09).
 #
 # Read-only and cheap by contract: the gate's verdict mode launches no panel and writes nothing, so
 # a render can ask it as often as the cache below allows.
@@ -255,26 +193,20 @@ review_gate_verdict() { # toplevel session
 }
 
 # Renders every ~5s, so the gate's answer is cached on what can invalidate it: the repository, its
-# `git status`, the receipt store's directory mtime (a receipt is written, replaced or removed
-# through a rename, all of which stamp it) and this session's cycle file (the gate rewrites it on
-# every commit it passes or blocks). Everything the key cannot see — a second edit to an
-# already-modified file, another chat's commit landing, a run being spent — is bounded by the TTL.
+# `git status`, and the commit journal the gate reads this chat's pending paths from (the
+# PostToolUse hook appends to it as the chat edits, and a repository with no journal yet keys on a
+# fixed 0). Everything the key cannot see — a second edit to an already-modified file, another
+# chat's commit landing, a run being triaged — is bounded by the TTL.
 review_verdict_line() { # toplevel session status_key now
   local top="$1" sid="$2" status_key="$3" now="$4"
   local cache="$statusline_cache_dir/review-class-${sid:-unknown}"
   local lock="$cache.lock"
-  local key cached_key cached cache_mtime receipts_mtime cycle_mtime gitdir lock_mtime
-  receipts_mtime=$(file_mtime "$worker_stats_dir/receipts" 2>/dev/null)
-  [[ "$receipts_mtime" =~ ^[0-9]+$ ]] || receipts_mtime=0
+  local key cached_key cached cache_mtime journal_mtime gitdir lock_mtime
   gitdir=$(git -C "$top" rev-parse --absolute-git-dir 2>/dev/null)
-  # The gate drops the `-<session>` suffix for a session id it cannot put in a filename, so the key
-  # would watch a file nothing writes and see none of that cycle's stages.
-  case "$sid" in
-    ''|.|..|*[!A-Za-z0-9._-]*) cycle_mtime=$(file_mtime "$gitdir/review-cycle" 2>/dev/null) ;;
-    *) cycle_mtime=$(file_mtime "$gitdir/review-cycle-$sid" 2>/dev/null) ;;
-  esac
-  [[ "$cycle_mtime" =~ ^[0-9]+$ ]] || cycle_mtime=0
-  key="$top|$status_key|$receipts_mtime|$cycle_mtime"
+  journal_mtime=""
+  [ -n "$gitdir" ] && journal_mtime=$(file_mtime "$gitdir/claude-commit-journal" 2>/dev/null)
+  [[ "$journal_mtime" =~ ^[0-9]+$ ]] || journal_mtime=0
+  key="$top|$status_key|$journal_mtime"
   cache_mtime=$(file_mtime "$cache" 2>/dev/null)
   cached_key=""
   cached=""
@@ -1607,12 +1539,10 @@ if [ -n "$session_id" ]; then
   fi
 fi
 
-# What the commit gate would say to a commit from this chat right now, spoken by the gate itself.
+# What the review gate says about this chat's uncommitted work, spoken by the gate itself.
 review_style=""
 review_text=""
-receipt_name=""
 if [ -n "$active_top" ]; then
-  receipt_name=$(receipt_file_name "$active_top" 2>/dev/null)
   review_status_key=$(printf '%s' "$git_status" | cksum 2>/dev/null)
   review_status_key="${review_status_key// /-}"
   [ "$git_status_rc" -eq 0 ] || review_status_key="unreadable"
@@ -1627,11 +1557,8 @@ fi
 
 review_part=""
 if [ -n "$active_top" ]; then
-  receipt_reviewed=""
-  receipt_errored=0
-  receipt_panel=""
   # A run in flight owns the slot: review-bench writes one progress file per run, and while it
-  # lives the label reports that panel instead of the receipt verdict. Liveness is derived here,
+  # lives the label reports that panel instead of the gate's verdict. Liveness is derived here,
   # never declared by the writer — the file survives kill -9, a crash and a closed terminal, so
   # the pid must be alive AND the process holding it must have started no later than the file's
   # last write, which a pid reused after that run died cannot satisfy.
@@ -1751,52 +1678,11 @@ fi
 [ -n "$progress_total" ] && { review_style=""; review_text=""; }
 
 if [ "${review_style:-}" = loud ]; then
-  review_part=" ${sep} ${review_text}"
+  # The gate keeps `loud` for the watchdog alone, so red in this slot always means a hung review
+  # and never a missing or stale one (docs/review-contract.md).
+  review_part=" ${sep} ${RED}${review_text}${RESET}"
 elif [ "${review_style:-}" = dim ]; then
   review_part=" ${sep} ${DIM}${review_text}${RESET}"
-elif [ -n "$active_top" ] && [ -z "$progress_total" ]; then
-  # A different question from the gate's, asked only where the gate has nothing to say: not whether
-  # a commit owes a review, but whether the panel that already ran came back whole.
-  receipt_file="$worker_stats_dir/receipts/$receipt_name"
-  receipt_values=$(jq -er '
-    select(type == "object"
-      and (.repo | type) == "string"
-      and (.tree | type) == "string"
-      and (.commit | type) == "string"
-      and (.run_id | type) == "string"
-      and (.ts | type) == "string"
-      and (.errored | type) == "number"
-      and .errored >= 0
-      and (.errored | floor) == .errored)
-    | [.repo,.tree,.commit,.run_id,.ts,(.errored | tostring),
-       (if (.panel | type) == "number" and (.panel | floor) == .panel and .panel > 0
-        then (.panel | tostring) else "" end)]
-    | join("\u001f")
-  ' "$receipt_file" 2>/dev/null)
-  if [ -n "$receipt_values" ]; then
-    IFS=$'\x1f' read -r receipt_repo receipt_tree receipt_commit receipt_run_id receipt_ts \
-      receipt_errored receipt_panel <<< "$receipt_values"
-    receipt_top=$(git_worktree_top "$receipt_repo" 2>/dev/null)
-    if [ "$receipt_top" = "$active_top" ]; then
-      head_tree=$(git -C "$active_top" rev-parse 'HEAD^{tree}' 2>/dev/null)
-      if [ -n "$head_tree" ] &&
-        { { [ "$receipt_tree" = "$head_tree" ] && [ "$git_status_rc" -eq 0 ] &&
-            [ -z "$git_status" ]; } ||
-          worktree_matches_tree "$active_top" "$receipt_tree"; }; then
-        receipt_reviewed=1
-      fi
-    fi
-  fi
-  if [ -n "$receipt_reviewed" ]; then
-    # A silent cell is a coverage loss worth a mark only when it took a real share of the panel
-    # with it: one rater out of nine that mangled its own output format is noise, and a label
-    # that answers "not everybody reported" to that is a label nobody can ever turn off.
-    # A receipt from before the panel size was recorded keeps the old any-error behaviour.
-    if [ "$receipt_errored" -gt 0 ] &&
-      { [ -z "$receipt_panel" ] || [ "$((receipt_errored * 3))" -gt "$receipt_panel" ]; }; then
-      review_part=" ${sep} ${DIM}review${RESET}"
-    fi
-  fi
 fi
 
 # Two lines: identity/work (model, account, dir/branch/diff, workers) on top,
