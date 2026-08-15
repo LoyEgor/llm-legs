@@ -24,6 +24,12 @@ after the freeze, while interactive CLI sessions rotate tokens instantly.
 As a result, `~/.claude-profiles/.claudeb/token-freeze` was made indefinite (no `until`
 condition) pending the replacement escalating refresh.
 
+**Status 2026-08-15: the replacement is built and live-verified.** `bin/claude-session-driver`
+plus `claudeb revive <name>` rotate a token through a real interactive session (zero model
+tokens) and land the full snapshot including fable; `bin/llm-refresh` escalates to it for the
+stalest stale Claude account, one session per heartbeat tick. The freeze marker is still in
+place — retiring it is the owner's call, and nothing in the new path reads or needs it.
+
 **Temporary inventory (what exits): the freeze FILE only** —
 `~/.claude-profiles/.claudeb/token-freeze`. The switch (`token_freeze_active`), the
 attempt journal (`token-attempts.jsonl` + `token_journal`), and the honest frozen

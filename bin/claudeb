@@ -1083,6 +1083,26 @@ probe_one() {
   printf 'messages %s\n' "$out" > "$dir/$name.result"
 }
 
+# The free usage probe shared by warm and revive: no spend, no refresh, snapshot
+# merged only from a real usage body. Reports through the caller's probe_source /
+# probe_rc / probe_http so a failed merge can still be classified by HTTP status.
+usage_probe_merge() {
+  local name="$1" dir="$2"
+  probe_source=''; probe_rc=''; probe_http=''
+  probe_one "$name" "$dir" false false
+  read -r probe_source probe_rc probe_http < "$dir/$name.result"
+  [ "$probe_source" = usage ] || return 1
+  merge_usage "$name" "$dir/$name.usage"
+}
+
+usage_probe_cause() {
+  case "$1" in
+    401|403) printf 'needs-relogin\n' ;;
+    429) printf 'warm-429\n' ;;
+    *) printf 'usage-probe-failed\n' ;;
+  esac
+}
+
 messages_probe_and_mark() {
   local name="$1" dir="$2" mark_live="${3:-false}" out rc http
   out=$(messages_probe "$name" "$dir")
@@ -1773,6 +1793,7 @@ show_help() {
   printf '  %s%sclaudeb warm [--start-window] [names...]%s %sHeal profiles and limits; free: session init + /usage only;%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '                                          %sfalls back to a minimal paid prompt only if that fails.%s\n' "$dim" "$reset"
   printf '                                          %s--start-window pings an expired 5h window after a good warm.%s\n' "$dim" "$reset"
+  printf '  %s%sclaudeb revive <name>%s                   %sRotate an expired token in a real session (no model tokens), then refresh limits.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb token-upkeep%s                    %sRefresh tokens near expiry (no probes/spend); for wake/cron pre-warm.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb status [--live] [--plain] [--spend] [--start-windows] [--heal]%s\n' "$bold" "$cyan" "$reset"
   printf '                                          %sShow cached limits (no network); --live probes now. Aliases: st, accounts.%s\n' "$dim" "$reset"
@@ -1929,8 +1950,11 @@ profile_command() {
   harvest_session_accounts "$dir" "$profile" || true
   # A headless run is a worker, and its own subagents inherit the marker: hooks that must treat
   # worker sessions differently from Egor's live chat (worker-git-guard) key off it.
-  local worker_env=()
-  if args_are_headless "$@"; then worker_env=(CLAUDEB_WORKER=1); else write_state_file "$profile"; fi
+  local worker_env=() stamp_state=true
+  # An interactive session opened by machinery (the revive driver) is nobody's chat either.
+  case "${CLAUDEB_NO_STATE_STAMP:-}" in 1|true|TRUE|yes|YES|on|ON) stamp_state=false ;; esac
+  if args_are_headless "$@"; then worker_env=(CLAUDEB_WORKER=1)
+  elif [ "$stamp_state" = true ]; then write_state_file "$profile"; fi
   exec env -u ANTHROPIC_BASE_URL -u CLAUDE_CODE_OAUTH_TOKEN \
     CLAUDE_CONFIG_DIR="$dir" CLAUDE_LIMITS_ACCOUNT="$profile" "${worker_env[@]}" claude "$@"
 }
@@ -1990,7 +2014,7 @@ warm_failure() {
 }
 
 warm_accounts() {
-  local name dir output session_rc reason failure_cause service credentials expires_at now started probe_dir source rc http asof failed=0 until probe_ok usage_rate_limited backoff_mode explicit=false refresh_rc start_window=false hreset arg warm_manual_explicit=false
+  local name dir output session_rc reason failure_cause service credentials expires_at now started probe_dir probe_source probe_rc probe_http asof failed=0 until probe_ok usage_rate_limited backoff_mode explicit=false refresh_rc start_window=false hreset arg warm_manual_explicit=false
   local CLAUDEB_OAUTH_BYPASS_BACKOFF="${CLAUDEB_OAUTH_BYPASS_BACKOFF:-false}"
   local -a names
   names=()
@@ -2169,9 +2193,9 @@ warm_accounts() {
     fi
     credentials=''
     probe_dir=$(mktemp -d "${TMPDIR:-/tmp}/claudeb-warm-probe.XXXXXX") || return 1
-    probe_one "$name" "$probe_dir" false false
-    read -r source rc http < "$probe_dir/$name.result"
-    if [ "$source" = logged-out ]; then
+    probe_ok=false
+    if usage_probe_merge "$name" "$probe_dir"; then probe_ok=true; fi
+    if [ "$probe_source" = logged-out ]; then
       # Credentials went missing after the warm session; auth_needed is already
       # recorded — report and skip without writing an oauth-attempt entry.
       rm -rf "$probe_dir"
@@ -2179,8 +2203,6 @@ warm_accounts() {
       failed=1
       continue
     fi
-    probe_ok=false
-    if [ "$source" = usage ] && merge_usage "$name" "$probe_dir/$name.usage"; then probe_ok=true; fi
     if [ "$probe_ok" = true ]; then
       asof=$(jq -r '.five_hour.as_of // 0' "$limits_dir/$name.json" 2>/dev/null || printf '0')
       if [ "$asof" -ge "$started" ] 2>/dev/null && jq -e '.fable.as_of | type == "number"' "$limits_dir/$name.json" >/dev/null 2>&1; then
@@ -2193,9 +2215,7 @@ warm_accounts() {
             if messages_probe_and_mark "$name" "$probe_dir" true; then
               # Re-read usage for seven_day/fable, then let the ping's headers win
               # five_hour back: the usage endpoint can lag the just-opened window.
-              probe_one "$name" "$probe_dir" false false
-              read -r source rc http < "$probe_dir/$name.result"
-              if [ "$source" = usage ] && merge_usage "$name" "$probe_dir/$name.usage"; then
+              if usage_probe_merge "$name" "$probe_dir"; then
                 merge_headers "$name" "$probe_dir/$name.headers" \
                   || printf 'claudeb: %s: window opened but header re-merge failed; snapshot heals on next refresh\n' "$name" >&2
               fi
@@ -2211,18 +2231,114 @@ warm_accounts() {
       fi
     fi
     rm -rf "$probe_dir"
-    if [ "$http" = 401 ] || [ "$http" = 403 ]; then
-      failure_cause=needs-relogin
-    elif [ "$http" = 429 ]; then
-      failure_cause=warm-429
-    else
-      failure_cause=usage-probe-failed
-    fi
+    failure_cause=$(usage_probe_cause "$probe_http")
     oauth_attempt_update "$name" warm-failed 0 0 "$failure_cause"
-    warm_failure "$name" "$failure_cause" "usage probe HTTP ${http:-000}"
+    warm_failure "$name" "$failure_cause" "usage probe HTTP ${probe_http:-000}"
     failed=1
   done
   return "$failed"
+}
+
+# Same resolution order as worker_pick_cmd: the sibling of this checkout first, PATH
+# for an install that ships the two apart.
+session_driver_cmd() {
+  if [ -n "${CLAUDEB_SESSION_DRIVER:-}" ]; then printf '%s' "$CLAUDEB_SESSION_DRIVER"; return 0; fi
+  if [ -x "$claudeb_root/bin/claude-session-driver" ]; then
+    printf '%s' "$claudeb_root/bin/claude-session-driver"
+    return 0
+  fi
+  command -v claude-session-driver 2>/dev/null || return 1
+}
+
+# Rotate an expired token through a real interactive session, then land the full
+# snapshot (five_hour, seven_day AND fable) from the usage endpoint. Deliberately
+# exempt from token_freeze_active — it is the sanctioned replacement for the
+# vendor-blocked curl refresh (docs/EXIT-PLAN.md § Token-freeze experiment) and never
+# POSTs the token endpoint itself: rotation is the session's, and the probe below runs
+# with refresh disabled.
+revive_account() {
+  local name="${1:-}" driver driver_rc=0 probe_dir started asof failure_cause
+  local probe_source probe_rc probe_http needs_token=false
+  if [ -z "$name" ]; then
+    printf 'usage: claudeb revive <name>\n' >&2
+    return 2
+  fi
+  if ! account_exists "$name"; then
+    printf 'claudeb: revive: unknown account %s\n' "$name" >&2
+    return 2
+  fi
+  if is_disabled "$name"; then
+    token_journal "$name" revive skipped-disabled
+    printf 'claudeb: revive: %s is disabled — `claudeb enable %s` first\n' "$name" "$name" >&2
+    return 1
+  fi
+  if token_needs_refresh "$name"; then needs_token=true; fi
+  # Nothing clears auth_needed in the background — only the usage merge below does. Skipping on
+  # the flag alone would strand an account forever after its human login; a live token means the
+  # login already happened, so let it through to the probe that erases the flag.
+  if [ "$needs_token" = true ] && jq -e '.auth_needed == true' "$limits_dir/$name.json" >/dev/null 2>&1; then
+    token_journal "$name" revive skipped-auth-needed
+    printf 'claudeb: revive: %s needs a human login — run `claudeb profile %s`\n' "$name" "$name" >&2
+    return 1
+  fi
+  if [ "$needs_token" = true ]; then
+    driver=$(session_driver_cmd) || driver=''
+    if [ -z "$driver" ] || [ ! -x "$driver" ]; then
+      token_journal "$name" session no-driver
+      printf 'claudeb: revive: claude-session-driver not found\n' >&2
+      return 5
+    fi
+    CLAUDE_SESSION_DRIVER_CLAUDEB="$claudeb_root/bin/claudeb" "$driver" "$name" >&2 || driver_rc=$?
+    case "$driver_rc" in
+      0)
+        if token_needs_refresh "$name"; then
+          token_journal "$name" session no-rotation
+          printf 'claudeb: revive: %s: session ended with the token still expired\n' "$name" >&2
+          return 5
+        fi
+        token_journal "$name" session success
+        ;;
+      4)
+        token_journal "$name" session login-needed
+        mark_auth_needed "$name" 'interactive session asked for login'
+        printf 'claudeb: revive: %s needs a human login — run `claudeb profile %s`\n' "$name" "$name" >&2
+        return 4
+        ;;
+      *)
+        token_journal "$name" session failed
+        printf 'claudeb: revive: %s: session driver failed (exit %s)\n' "$name" "$driver_rc" >&2
+        return 5
+        ;;
+    esac
+  else
+    token_journal "$name" revive token-fresh
+  fi
+  probe_dir=$(mktemp -d "${TMPDIR:-/tmp}/claudeb-revive-probe.XXXXXX") || return 5
+  started=$(date +%s)
+  if usage_probe_merge "$name" "$probe_dir"; then
+    asof=$(jq -r '.five_hour.as_of // 0' "$limits_dir/$name.json" 2>/dev/null || printf '0')
+    if [ "$asof" -ge "$started" ] 2>/dev/null && jq -e '.fable.as_of | type == "number"' "$limits_dir/$name.json" >/dev/null 2>&1; then
+      CLAUDEB_JOURNAL_KIND=revive oauth_attempt_update "$name" success 0
+      rm -rf "$probe_dir"
+      printf '%s: revived (as_of=%s)\n' "$name" "$asof"
+      return 0
+    fi
+  elif [ "$probe_source" = logged-out ]; then
+    rm -rf "$probe_dir"
+    printf 'claudeb: revive: %s: logged out (no credentials)\n' "$name" >&2
+    return 4
+  fi
+  rm -rf "$probe_dir"
+  failure_cause=$(usage_probe_cause "$probe_http")
+  CLAUDEB_JOURNAL_KIND=revive oauth_attempt_update "$name" warm-failed 0 0 "$failure_cause"
+  printf 'claudeb: revive failed account=%s cause=%s http=%s\n' "$name" "$failure_cause" "${probe_http:-000}" >&2
+  # Same rule as heal_one: a rejection of a token this run just proved live is the endpoint's
+  # verdict, not weather. Without it the account never leaves the heartbeat's retry rotation.
+  if [ "$failure_cause" = needs-relogin ] && ! token_needs_refresh "$name"; then
+    mark_auth_needed "$name" "$failure_cause"
+    return 4
+  fi
+  return 5
 }
 
 accounts_reselect() {
@@ -2652,6 +2768,14 @@ case "${1:-}" in
     announce_limits_probed "$claudeb_root"
     exit "$warm_rc"
     ;;
+  revive)
+    shift
+    revive_rc=0
+    revive_account "${1:-}" || revive_rc=$?
+    # Revive rewrites the snapshot outside probe_accounts; same merged-cache sync as warm.
+    announce_limits_probed "$claudeb_root"
+    exit "$revive_rc"
+    ;;
   token-upkeep)
     token_upkeep
     ;;
@@ -2730,7 +2854,7 @@ case "${1:-}" in
     # `stauts` should not cost a second attempt. A near-miss on a mutating one only
     # suggests — autocorrecting into `remove` would eventually delete an account.
     # `|| true`: a failing awk must not take the whole CLI down under `set -e`.
-    typo_target=$(similar_names "${1:-}" status accounts help warm token-upkeep add enable disable remove use || true)
+    typo_target=$(similar_names "${1:-}" status accounts help warm revive token-upkeep add enable disable remove use || true)
     case "$typo_target" in
       '') profile_required ;;
       status|accounts|help)

@@ -43,6 +43,44 @@ fi
 EOF
 chmod +x "$STUB"
 
+# Stands in for `claudeb revive` AND for the collect that follows it: the daemon reads the
+# rows llm-limits.sh computed, so what a session rotated reaches it here.
+CB_STUB="$WORK/claudeb"
+cat >"$CB_STUB" <<'EOF'
+#!/usr/bin/env bash
+set -u
+printf '%s\n' "$*" >>"$CB_LOG"
+[ "${1:-}" = revive ] || exit 2
+account=${2:-}
+restate() {
+  tmp=$(mktemp "${LLM_LIMITS_CACHE}.tmp.XXXXXX") || exit 5
+  jq --arg account "$account" --argjson now "$LLM_REFRESH_NOW" "$1" "$LLM_LIMITS_CACHE" >"$tmp" && \
+    mv -f "$tmp" "$LLM_LIMITS_CACHE"
+}
+case "${CB_RESULT:-ok}" in
+  ok)
+    restate '.vendors.claude.accounts |= map(if .account == $account then
+               .five_hour.as_of=$now | .weekly.as_of=$now else . end)'
+    ;;
+  login)
+    restate '.vendors.claude.accounts |= map(if .account == $account then
+               .auth_needed=true else . end)'
+    printf 'claudeb: revive: %s needs a human login\n' "$account" >&2
+    exit 4
+    ;;
+  pushback)
+    printf 'claudeb: revive failed account=%s cause=warm-429 http=429\n' "$account" >&2
+    exit 5
+    ;;
+  fail)
+    printf 'claudeb: revive: %s: session driver failed (exit 5)\n' "$account" >&2
+    exit 5
+    ;;
+  hang) sleep 30 ;;
+esac
+EOF
+chmod +x "$CB_STUB"
+
 write_store() {
   local path=$1 now=$2 claude_age=$3 codex_age=$4 gemini_age=$5
   jq -cn --argjson now "$now" --argjson ca "$claude_age" --argjson coa "$codex_age" \
@@ -62,9 +100,9 @@ write_state() {
   jq -cn --argjson claude "$claude" --argjson codex "$codex" --argjson gemini "$gemini" \
     --argjson last "$last" --argjson clean "$clean" '
     {vendors:{
-      claude:{interval_min:$claude,last_attempt_epoch:$last,clean_since_epoch:$clean},
-      codex:{interval_min:$codex,last_attempt_epoch:$last,clean_since_epoch:$clean},
-      gemini:{interval_min:$gemini,last_attempt_epoch:$last,clean_since_epoch:$clean}
+      claude:{interval_min:$claude,last_attempt_epoch:$last,clean_since_epoch:$clean,attempts:{}},
+      codex:{interval_min:$codex,last_attempt_epoch:$last,clean_since_epoch:$clean,attempts:{}},
+      gemini:{interval_min:$gemini,last_attempt_epoch:$last,clean_since_epoch:$clean,attempts:{}}
     }}' >"$path"
 }
 
@@ -127,6 +165,9 @@ run_refresh() {
     LLM_REFRESH_NOW="$now" STUB_LOG="$dir/calls.log" \
     LLM_LIMITS_REFRESH_OPENCODE_GO="$OC_STUB" OC_LOG="$dir/opencode.log" \
     OC_STUB_RESULT="${OC_STUB_RESULT:-clear}" \
+    LLM_LIMITS_REFRESH_CLAUDEB="${CB_BIN:-$CB_STUB}" CB_LOG="$dir/claudeb.log" \
+    CB_RESULT="${CB_RESULT:-ok}" \
+    LLM_LIMITS_REFRESH_REVIVE_TIMEOUT="${LLM_LIMITS_REFRESH_REVIVE_TIMEOUT:-240}" \
     LLM_LIMITS_REFRESH_LOCK_STALE_SECONDS="${LLM_LIMITS_REFRESH_LOCK_STALE_SECONDS:-1800}" \
     STUB_PUSHBACK_TARGET="${STUB_PUSHBACK_TARGET:-}" STUB_REFRESH_SUCCEED="${STUB_REFRESH_SUCCEED:-1}" \
     STUB_PASSIVE_RC="${STUB_PASSIVE_RC:-0}" \
@@ -192,10 +233,126 @@ write_state "$case_dir/state.json" 30 30 30 0 "$NOW"
 jq --argjson now "$NOW" '.vendors.codex.last_attempt_epoch=$now | .vendors.gemini.last_attempt_epoch=$now' \
   "$case_dir/state.json" >"$case_dir/state.tmp" && mv "$case_dir/state.tmp" "$case_dir/state.json"
 run_refresh "$case_dir" "$NOW" || fail 'Claude stale run failed'
-[ "$(wc -l <"$case_dir/calls.log" | tr -d ' ')" -eq 1 ] || fail 'Claude caused a targeted refresh call'
-jq -eR 'fromjson | select(.vendor == "claude" and .step == 0 and
-  .outcome == "stale-no-path" and (.accounts_tried | length) == 0)' \
-  "$case_dir/journal.jsonl" >/dev/null || fail 'Claude stale-no-path journal entry missing'
+grep -q -- '--refresh-account' "$case_dir/calls.log" && \
+  fail 'Claude was refreshed through the vendor-blocked token path'
+[ "$(cat "$case_dir/claudeb.log")" = 'revive alpha' ] || \
+  fail "the stale Claude account was not revived: $(cat "$case_dir/claudeb.log" 2>/dev/null)"
+jq -eR 'fromjson | select(.vendor == "claude" and .step == 1 and
+  .outcome == "refreshed" and .accounts_tried == ["alpha"])' \
+  "$case_dir/journal.jsonl" >/dev/null || fail 'Claude revive was not journaled as refreshed'
+pass
+
+# Gentleness: one interactive session per heartbeat tick, stalest first, and the rest wait —
+# the next tick is what picks them up.
+case_dir="$WORK/claude-one-per-tick"
+mkdir -p "$case_dir/home"
+write_store "$case_dir/store.json" "$NOW" 7200 60 60
+jq --argjson now "$NOW" '.vendors.claude.accounts += [{account:"zeta",
+  five_hour:{used_pct:10,as_of:($now - 99999)},weekly:{used_pct:20,as_of:($now - 99999)}}]' \
+  "$case_dir/store.json" >"$case_dir/store.tmp" && mv "$case_dir/store.tmp" "$case_dir/store.json"
+write_state "$case_dir/state.json" 30 30 30 0 "$NOW"
+jq --argjson now "$NOW" '.vendors.codex.last_attempt_epoch=$now | .vendors.gemini.last_attempt_epoch=$now' \
+  "$case_dir/state.json" >"$case_dir/state.tmp" && mv "$case_dir/state.tmp" "$case_dir/state.json"
+run_refresh "$case_dir" "$NOW" || fail 'one-per-tick run failed'
+[ "$(cat "$case_dir/claudeb.log")" = 'revive zeta' ] || \
+  fail "the tick did not drive exactly the stalest account: $(cat "$case_dir/claudeb.log")"
+jq -eR 'fromjson | select(.vendor == "claude" and .outcome == "partial" and
+  .accounts_tried == ["zeta"] and (.detail | test("still stale: alpha") and
+  test("wait for the next tick")))' "$case_dir/journal.jsonl" >/dev/null || \
+  fail 'the accounts left waiting are not named in the journal detail'
+run_refresh "$case_dir" "$((NOW + 3600))" || fail 'second one-per-tick run failed'
+[ "$(sed -n 2p "$case_dir/claudeb.log")" = 'revive alpha' ] || \
+  fail 'the next tick did not move on to the account that waited'
+pass
+
+# A failing revive leaves as_of untouched, so staleness alone would hand it every tick forever:
+# the turn goes to whoever waited longest since their last attempt.
+case_dir="$WORK/claude-failing-rotates"
+mkdir -p "$case_dir/home"
+write_store "$case_dir/store.json" "$NOW" 7200 60 60
+jq --argjson now "$NOW" '.vendors.claude.accounts += [{account:"zeta",
+  five_hour:{used_pct:10,as_of:($now - 99999)},weekly:{used_pct:20,as_of:($now - 99999)}}]' \
+  "$case_dir/store.json" >"$case_dir/store.tmp" && mv "$case_dir/store.tmp" "$case_dir/store.json"
+write_state "$case_dir/state.json" 30 30 30 0 "$NOW"
+jq --argjson now "$NOW" '.vendors.codex.last_attempt_epoch=$now | .vendors.gemini.last_attempt_epoch=$now |
+  .vendors.claude.attempts={ghost:1}' \
+  "$case_dir/state.json" >"$case_dir/state.tmp" && mv "$case_dir/state.tmp" "$case_dir/state.json"
+for offset in 0 3600 7200; do
+  CB_RESULT=fail run_refresh "$case_dir" "$((NOW + offset))" || fail "failing-revive tick $offset failed"
+done
+[ "$(cut -d' ' -f2 <"$case_dir/claudeb.log" | tr '\n' ' ')" = 'zeta alpha zeta ' ] || \
+  fail "a failing account was not rotated out of the way: $(tr '\n' ' ' <"$case_dir/claudeb.log")"
+jq -e --argjson now "$NOW" '.claude.attempts.zeta == ($now + 7200) and .claude.attempts.alpha == ($now + 3600) and
+  (.claude.attempts | has("ghost") | not)' "$case_dir/state.json" >/dev/null || \
+  fail 'attempt stamps were not persisted per account, or a departed account still holds one'
+pass
+
+# A login screen is not pushback: the account becomes unrefreshable and the cadence stands.
+case_dir="$WORK/claude-login-needed"
+mkdir -p "$case_dir/home"
+write_store "$case_dir/store.json" "$NOW" 7200 60 60
+write_state "$case_dir/state.json" 30 30 30 0 "$NOW"
+jq --argjson now "$NOW" '.vendors.codex.last_attempt_epoch=$now | .vendors.gemini.last_attempt_epoch=$now' \
+  "$case_dir/state.json" >"$case_dir/state.tmp" && mv "$case_dir/state.tmp" "$case_dir/state.json"
+CB_RESULT=login run_refresh "$case_dir" "$NOW" || fail 'login-needed run failed'
+[ "$(jq -r '.claude.interval_min' "$case_dir/state.json")" -eq 30 ] || \
+  fail 'a login screen loosened the cadence like a 429'
+jq -eR 'fromjson | select(.vendor == "claude" and .outcome == "error" and
+  .accounts_tried == ["alpha"] and (.detail | test("needs a human login") and
+  test("unrefreshable: alpha")))' "$case_dir/journal.jsonl" >/dev/null || \
+  fail 'a login-needed account was not journaled as unrefreshable'
+jq -eR 'fromjson | select(.vendor == "claude" and .outcome == "refreshed")' \
+  "$case_dir/journal.jsonl" >/dev/null && \
+  fail 'an account that left the stale list by needing a login was counted as refreshed'
+pass
+
+# An explicit override is the whole claudeb: escaping to PATH would drive real accounts from
+# a run that deliberately pointed somewhere else.
+case_dir="$WORK/claude-override-broken"
+mkdir -p "$case_dir/home"
+printf 'not executable\n' >"$WORK/cb-dud"
+write_store "$case_dir/store.json" "$NOW" 7200 60 60
+write_state "$case_dir/state.json" 30 30 30 0 "$NOW"
+jq --argjson now "$NOW" '.vendors.codex.last_attempt_epoch=$now | .vendors.gemini.last_attempt_epoch=$now' \
+  "$case_dir/state.json" >"$case_dir/state.tmp" && mv "$case_dir/state.tmp" "$case_dir/state.json"
+CB_BIN="$WORK/cb-dud" run_refresh "$case_dir" "$NOW" || fail 'unusable-claudeb run failed'
+jq -eR 'fromjson | select(.vendor == "claude" and .outcome == "error" and
+  .accounts_tried == [] and (.detail | test("no claudeb to revive with")))' \
+  "$case_dir/journal.jsonl" >/dev/null || \
+  fail 'an unusable claudeb override did not surface as its own error'
+[ -s "$case_dir/claudeb.log" ] && fail 'the override fell back to another claudeb'
+pass
+
+case_dir="$WORK/claude-429"
+mkdir -p "$case_dir/home"
+write_store "$case_dir/store.json" "$NOW" 7200 60 60
+write_state "$case_dir/state.json" 30 30 30 0 "$((NOW - 1000))"
+jq --argjson now "$NOW" '.vendors.codex.last_attempt_epoch=$now | .vendors.gemini.last_attempt_epoch=$now' \
+  "$case_dir/state.json" >"$case_dir/state.tmp" && mv "$case_dir/state.tmp" "$case_dir/state.json"
+CB_RESULT=pushback run_refresh "$case_dir" "$NOW" || fail 'revive pushback run failed'
+[ "$(jq -r '.claude.interval_min' "$case_dir/state.json")" -eq 45 ] || \
+  fail 'a 429 from revive did not loosen the cadence from 30 to 45'
+jq -eR 'fromjson | select(.vendor == "claude" and .outcome == "pushback" and
+  .interval_min == 45 and .accounts_tried == ["alpha"])' "$case_dir/journal.jsonl" >/dev/null || \
+  fail 'the revive 429 was not journaled as pushback'
+pass
+
+# The driver self-limits, but a hung session must never hold the tick past the heartbeat.
+case_dir="$WORK/claude-hung"
+mkdir -p "$case_dir/home"
+write_store "$case_dir/store.json" "$NOW" 7200 60 60
+write_state "$case_dir/state.json" 30 30 30 0 "$NOW"
+jq --argjson now "$NOW" '.vendors.codex.last_attempt_epoch=$now | .vendors.gemini.last_attempt_epoch=$now' \
+  "$case_dir/state.json" >"$case_dir/state.tmp" && mv "$case_dir/state.tmp" "$case_dir/state.json"
+hung_started=$SECONDS
+CB_RESULT=hang LLM_LIMITS_REFRESH_REVIVE_TIMEOUT=1 run_refresh "$case_dir" "$NOW" || \
+  fail 'hung-revive run failed'
+[ "$((SECONDS - hung_started))" -lt 20 ] || fail 'a hung revive stalled the tick'
+jq -eR 'fromjson | select(.vendor == "claude" and .outcome == "error" and
+  .accounts_tried == ["alpha"] and (.detail | test("accounts remain stale")))' \
+  "$case_dir/journal.jsonl" >/dev/null || fail 'the killed revive was not journaled as an error'
+[ "$(jq -r '.claude.interval_min' "$case_dir/state.json")" -eq 30 ] || \
+  fail 'a killed revive was read as pushback'
 pass
 
 case_dir="$WORK/pushback"

@@ -87,6 +87,16 @@ repo_root=$(cd "$(dirname "$script_path")/.." && pwd)
 . "$repo_root/share/store-lock.sh"
 collector=${LLM_LIMITS_REFRESH_COLLECTOR:-${LLM_REFRESH_COLLECTOR:-$repo_root/llm-limits.sh}}
 opencode_go=${LLM_LIMITS_REFRESH_OPENCODE_GO:-$repo_root/bin/opencode-go}
+if [ -n "${LLM_LIMITS_REFRESH_CLAUDEB:-}" ]; then
+  # An explicit override is taken verbatim: silently escaping to PATH would run the real
+  # claudeb against real accounts in a test that meant to point at its stub.
+  claudeb_bin=$LLM_LIMITS_REFRESH_CLAUDEB
+else
+  claudeb_bin=$repo_root/bin/claudeb
+  [ -x "$claudeb_bin" ] || claudeb_bin=$(command -v claudeb 2>/dev/null || printf '%s' "$claudeb_bin")
+fi
+revive_timeout=${LLM_LIMITS_REFRESH_REVIVE_TIMEOUT:-240}
+case "$revive_timeout" in ''|*[!0-9]*|0) revive_timeout=240 ;; esac
 store=${LLM_LIMITS_CACHE:-$HOME/.llm-limits.json}
 state_file=${LLM_LIMITS_REFRESH_STATE:-${LLM_REFRESH_STATE:-$HOME/.llm-limits-refresh.state}}
 journal_file=${LLM_LIMITS_REFRESH_JOURNAL:-${LLM_REFRESH_JOURNAL:-$HOME/.llm-limits-refresh.jsonl}}
@@ -108,7 +118,9 @@ normalized_state() {
          interval_min:($old.interval_min | rung),
          last_attempt_epoch:($old.last_attempt_epoch | epoch),
          clean_since_epoch:(if ($old.clean_since_epoch | epoch) == 0
-                            then $now else ($old.clean_since_epoch | epoch) end)
+                            then $now else ($old.clean_since_epoch | epoch) end),
+         attempts:(if ($old.attempts | type) == "object"
+                   then ($old.attempts | with_entries(.value |= epoch)) else {} end)
        }})) | from_entries'
 }
 
@@ -152,6 +164,39 @@ stale_rows_json() {
 
 stale_accounts_json() {
   stale_rows_json "$1" "$2" 0
+}
+
+account_names_json() {
+  account_rows "$1" | cut -f1 | jq -R -s -c 'split("\n") | map(select(length > 0))'
+}
+
+# Least recently attempted of the given accounts, never-attempted first, oldest as_of breaking
+# ties. A failing revive leaves as_of untouched, so picking by staleness alone would re-select
+# the same account every tick and starve the rest.
+next_revive_account() {
+  local vendor=$1 wanted=$2 attempts=$3 account as_of blocked attempted
+  local best='' best_attempt=-1 best_as_of=-1
+  while IFS=$'\t' read -r account as_of blocked; do
+    [ -n "$account" ] || continue
+    jq -e --arg account "$account" 'index($account) != null' <<<"$wanted" >/dev/null || continue
+    case "$as_of" in ''|*[!0-9]*) as_of=0 ;; esac
+    attempted=$(jq -r --arg account "$account" '.[$account] // 0' <<<"$attempts")
+    case "$attempted" in ''|*[!0-9]*) attempted=0 ;; esac
+    if [ "$best_attempt" -lt 0 ] || [ "$attempted" -lt "$best_attempt" ] ||
+       { [ "$attempted" -eq "$best_attempt" ] && [ "$as_of" -lt "$best_as_of" ]; }; then
+      best=$account
+      best_attempt=$attempted
+      best_as_of=$as_of
+    fi
+  done < <(account_rows "$vendor")
+  printf '%s\n' "$best"
+}
+
+timeout_command() {
+  if command -v gtimeout >/dev/null 2>&1; then command gtimeout "$@"
+  elif command -v timeout >/dev/null 2>&1; then command timeout "$@"
+  else perl -e 'alarm shift; exec @ARGV' "$@"
+  fi
 }
 
 blocked_accounts_json() {
@@ -283,7 +328,7 @@ journal_attempt() {
 
 run_tick() {
   local raw_state state due='[]' vendor interval last clean passive_rc=0
-  local stale tried outcome detail step target_rc errors post_stale refreshed_count
+  local stale tried outcome detail step target_rc errors post_stale refreshed_count claude_note
   local pushback next_interval new_clean lock_dir state_tmp refresh_log rc account blocked
   local opencode_result lock_lost=0
 
@@ -344,13 +389,47 @@ run_tick() {
     step=0
     pushback=0
     target_rc=0
+    claude_note=''
 
     if [ "$(jq 'length' <<<"$stale")" -gt 0 ]; then
+      step=1
       if [ "$vendor" = claude ]; then
-        outcome=stale-no-path
-        detail='passive data remains stale; automated Claude refresh traffic is frozen'
+        # Claude rotates only through a real interactive session (docs/EXIT-PLAN.md
+        # § Token-freeze experiment), so a heartbeat tick opens exactly one — the
+        # account that waited longest for its turn — and the rest wait for the next tick.
+        account=$(next_revive_account "$vendor" "$stale" \
+          "$(jq -c --arg vendor "$vendor" '.[$vendor].attempts' <<<"$state")")
+        if [ ! -x "$claudeb_bin" ]; then
+          claude_note="no claudeb to revive with: $claudeb_bin"
+        elif [ -z "$account" ]; then
+          claude_note='no stale Claude account could be selected'
+        else
+          tried=$(jq -c --arg account "$account" '. + [$account]' <<<"$tried")
+          # Every attempt stamps, success or not — that is what rotates the selection.
+          state=$(jq -c --arg vendor "$vendor" --arg account "$account" --argjson now "$now" \
+            --argjson known "$(account_names_json "$vendor")" \
+            '.[$vendor].attempts = ((.[$vendor].attempts | with_entries(select(.key | IN($known[]))))
+                                    + {($account): $now})' <<<"$state")
+          refresh_log=$(mktemp "${TMPDIR:-/tmp}/llm-refresh.XXXXXX") || return 5
+          tick_tmp=$refresh_log
+          rc=0
+          timeout_command "$revive_timeout" "$claudeb_bin" revive "$account" \
+            >/dev/null 2>"$refresh_log" || rc=$?
+          # revive writes the claudeb snapshot; only a collect folds it into the merged
+          # store the post-state below is read from.
+          "$collector" >/dev/null 2>&1 || true
+          errors=$(recorded_errors "$vendor" "$account" "$now")
+          blocked=$(blocked_accounts_json "$vendor" "$interval")
+          if [ "$rc" -eq 4 ]; then
+            claude_note="$account needs a human login; no automated path can refresh it"
+          elif [ "$rc" -ne 0 ] && { cat "$refresh_log"; printf '%s\n' "$errors"; } | is_pushback_detail; then
+            pushback=1
+          fi
+          [ "$rc" -eq 0 ] || target_rc=$rc
+          rm -f "$refresh_log"
+          tick_tmp=''
+        fi
       else
-        step=1
         while IFS= read -r account; do
           tried=$(jq -c --arg account "$account" '. + [$account]' <<<"$tried")
           refresh_log=$(mktemp "${TMPDIR:-/tmp}/llm-refresh.XXXXXX") || return 5
@@ -365,27 +444,35 @@ run_tick() {
           rm -f "$refresh_log"
           tick_tmp=''
         done < <(jq -r '.[]' <<<"$stale")
+      fi
 
-        post_stale=$(stale_accounts_json "$vendor" "$interval")
-        refreshed_count=$(jq -n --argjson before "$stale" --argjson after "$post_stale" \
-          '$before - $after | length')
-        if [ "$pushback" -eq 1 ]; then
-          outcome=pushback
-          detail='refresh path reported a 429 or rate-limit signal'
-        elif [ "$(jq 'length' <<<"$post_stale")" -eq 0 ]; then
-          outcome=refreshed
-          detail='all stale accounts refreshed'
-        elif [ "$refreshed_count" -gt 0 ]; then
-          outcome=partial
-          detail="$refreshed_count account(s) refreshed; still stale: $(jq -r 'join(",")' <<<"$post_stale")"
+      post_stale=$(stale_accounts_json "$vendor" "$interval")
+      refreshed_count=$(jq -n --argjson before "$stale" --argjson after "$post_stale" \
+        '$before - $after | length')
+      if [ -n "$claude_note" ]; then
+        # A login-needed account leaves the stale list by becoming unrefreshable, which the
+        # count below would otherwise read as a refresh.
+        outcome=error
+        detail="$claude_note"
+      elif [ "$pushback" -eq 1 ]; then
+        outcome=pushback
+        detail='refresh path reported a 429 or rate-limit signal'
+      elif [ "$(jq 'length' <<<"$post_stale")" -eq 0 ]; then
+        outcome=refreshed
+        detail='all stale accounts refreshed'
+      elif [ "$refreshed_count" -gt 0 ]; then
+        outcome=partial
+        detail="$refreshed_count account(s) refreshed; still stale: $(jq -r 'join(",")' <<<"$post_stale")"
+      else
+        outcome=error
+        if [ "$target_rc" -ne 0 ]; then
+          detail="refresh path exited $target_rc; accounts remain stale"
         else
-          outcome=error
-          if [ "$target_rc" -ne 0 ]; then
-            detail="refresh path exited $target_rc; accounts remain stale"
-          else
-            detail='refresh path completed but accounts remain stale'
-          fi
+          detail='refresh path completed but accounts remain stale'
         fi
+      fi
+      if [ "$vendor" = claude ] && [ -z "$claude_note" ] && [ "$(jq 'length' <<<"$post_stale")" -gt 0 ]; then
+        detail="$detail; one session per tick, the rest wait for the next tick"
       fi
     elif [ "$passive_rc" -ne 0 ]; then
       if store_readable; then

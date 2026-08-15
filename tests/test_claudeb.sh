@@ -421,6 +421,13 @@ assert grep -qx delta "$CLAUDEB_DIR/.claudeb-state"
 assert grep -qx delta "$CLAUDEB_DIR/.claudeb-state"
 ( profile_command gamma >/dev/null 2>&1 )
 assert grep -qx gamma "$CLAUDEB_DIR/.claudeb-state"
+# The revive driver opens a REAL interactive session, so the headless test above cannot cover
+# it: machinery says so with the knob, and the user's marker stays where they left it.
+printf 'delta\n' >"$CLAUDEB_DIR/.claudeb-state"
+rm -f "$ENV_DUMP"
+( CLAUDEB_NO_STATE_STAMP=1 profile_command gamma >/dev/null 2>&1 )
+assert test -f "$ENV_DUMP"
+assert grep -qx delta "$CLAUDEB_DIR/.claudeb-state"
 printf 'gamma\n' >"$disabled_file"
 
 # An unknown name is a NEW profile now, not an error: it must launch so the login can happen,
@@ -2386,4 +2393,171 @@ sleep 0.5
 assert test "$(grep -c '' "$ANNOUNCE_LOG" 2>/dev/null || printf 0)" -eq "$((ann_before + 1))"
 rm -f "$CLAUDEB_DIR/token-freeze" "$CLAUDEB_DIR/tokens/annacct"
 
-echo "PASS: $asserts asserts; profile-required launch guard, reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth weather/backoff and lock behavior, creation-only reserved names and leading-hyphen rejection, disabled-account timeline, disabled profile launch proceeds direct with inherited routing stripped, generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent token adoption, capacity weather clears stale expired auth for valid tokens, warm-first heal ordering and fallback, warm auth verdicts require current-run refresh evidence, start-windows opens a fresh window and reconcile locks the new resets_at without regressing it, start-windows skips a disabled account with an explicit cause, warm --start-window opens only an expired window for the explicit account (live window and flagless runs never ping; ping weather warns without an auth verdict), the paid haiku warm fallback stays off unless opted in, regular probes never warm, heal_expired covers disabled accounts with actionable causes, and heal_one writes expired only on current-run evidence (stale-token 401 defers to the token endpoint's verdict, fresh-token 401 is affirmative, weather never re-stamps a prior expired), and no-refresh probes plus messages-probe 401s defer to the refresh outcome (stale token → weather no-write / invalid_grant expired, fresh token → affirmative), and interactive status account-row selection (bounded up/down navigation, name-stable across re-sort), Enter resolving to a \`claudeb profile <name>\` exec, row-scoped reverse-video highlight, and the non-tty path staying plain with no key loop or launch, status defaulting to cached (zero network; --live still probes), and the async refresh outcome summary (✓ when all enabled accounts are live/live*, else names stale accounts with a cause and excludes disabled ones, raw probe stderr confined to the log), refresh cancellation killing the probe process group, first-pass results publishing in completion order, unknown profiles rejected, and reserved legacy profiles removable, headless runs routed through worker-pick without restamping current (arguments alone still demand a profile; an unselectable pool or a missing worker-pick refuses instead of launching), and \`use\` writing the worker pin in place with an out-of-pool direct-pin note, a clear, and a refusal on an unroutable name, and the session-account ledger recording each profile's session markers once, keeping a line after its marker is pruned, recording both accounts when one session ran under two profiles, and staying silent for a profile that never ran, and snapshot-rewriting verbs announcing one passive collect with collector children suppressed"
+# --- revive: the interactive session is the rotation, and the freeze never gates it
+# (docs/EXIT-PLAN.md § Token-freeze experiment) — the token endpoint stays untouched ---
+(
+  KC="$WORK/rv-keychain"; mkdir -p "$KC"
+  kc_key() { printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'; }
+  svc_of() { printf 'Claude Code-credentials-%s' "$(printf '%s' "$HOME/.claude-profiles/$1" | shasum -a 256 | awk '{print substr($1, 1, 8)}')"; }
+  seed_creds() { printf '{"claudeAiOauth":{"refreshToken":"rt-%s","accessToken":"at-%s","expiresAt":%s}}' "$1" "$1" "$2" >"$KC/$(kc_key "$(svc_of "$1")")"; }
+  security() {
+    local prev='' svc='' a
+    for a in "$@"; do [ "$prev" = -s ] && svc="$a"; prev="$a"; done
+    cat "$KC/$(kc_key "$svc")" 2>/dev/null || return 44
+  }
+  RV_CURL="$WORK/rv-curl.log"
+  curl() {
+    local prev='' out='' a
+    printf '%s\n' "$*" >>"$RV_CURL"
+    case "$*" in
+      *'/api/oauth/usage'*)
+        for a in "$@"; do [ "$prev" = -o ] && out="$a"; prev="$a"; done
+        case "$out" in *rv401.usage) printf '401'; return ;; esac
+        printf '{"five_hour":{"utilization":11,"resets_at":null},"seven_day":{"utilization":22,"resets_at":null},"limits":[{"kind":"weekly_scoped","scope":{"model":{"display_name":"Fable"}},"percent":33,"resets_at":null}]}' >"$out"
+        printf '200'
+        ;;
+      *) return 97 ;;
+    esac
+  }
+  RV_DRIVER="$WORK/rv-driver"
+  RV_DRIVER_LOG="$WORK/rv-driver.log"
+  CLAUDEB_SESSION_DRIVER="$RV_DRIVER"
+  rv_fresh_ms=$(((now + 3600) * 1000))
+  # $1 is what the fake session does to the keychain, $2 the driver exit code.
+  make_driver() {
+    cat >"$RV_DRIVER" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>'$RV_DRIVER_LOG'
+printf 'claudeb=%s\n' "\${CLAUDE_SESSION_DRIVER_CLAUDEB:-}" >>'$RV_DRIVER_LOG'
+$1
+exit $2
+EOF
+    chmod +x "$RV_DRIVER"
+  }
+  rotate() { printf "printf '%%s' '{\"claudeAiOauth\":{\"refreshToken\":\"rt-new\",\"accessToken\":\"at-new\",\"expiresAt\":%s}}' >'%s'" "$rv_fresh_ms" "$KC/$(kc_key "$(svc_of "$1")")"; }
+  account_names() { printf 'rvok\nrvoff\nrvauth\nrvauthok\nrvlogin\nrvfail\nrvfresh\nrvstale\nrv401\n'; }
+  is_disabled() { [ "$1" = rvoff ]; }
+  # The whole block runs under an active freeze: revive must not notice it.
+  printf '{"started_at":%s,"reason":"token-freeze experiment"}\n' "$now" >"$token_freeze_file"
+
+  make_driver ':' 0
+  rm -f "$RV_DRIVER_LOG"
+  : >"$token_attempts_file"
+  rv_unknown_rc=0
+  revive_account ghostacct >/dev/null 2>"$WORK/rv-unknown.err" || rv_unknown_rc=$?
+  assert test "$rv_unknown_rc" -eq 2
+  assert grep -q 'unknown account ghostacct' "$WORK/rv-unknown.err"
+  rv_usage_rc=0
+  revive_account >/dev/null 2>"$WORK/rv-usage.err" || rv_usage_rc=$?
+  assert test "$rv_usage_rc" -eq 2
+  assert grep -q 'usage: claudeb revive <name>' "$WORK/rv-usage.err"
+
+  seed_creds rvoff 1
+  rv_off_rc=0
+  revive_account rvoff >/dev/null 2>"$WORK/rv-off.err" || rv_off_rc=$?
+  assert test "$rv_off_rc" -eq 1
+  assert grep -q 'rvoff is disabled' "$WORK/rv-off.err"
+  assert jq -se 'any(.[]; .account == "rvoff" and .kind == "revive" and .outcome == "skipped-disabled")' "$token_attempts_file" >/dev/null
+
+  seed_creds rvauth 1
+  printf '{"auth_needed":true,"auth_checked_at":%s}' "$now" >"$limits_dir/rvauth.json"
+  rv_auth_rc=0
+  revive_account rvauth >/dev/null 2>"$WORK/rv-auth.err" || rv_auth_rc=$?
+  assert test "$rv_auth_rc" -eq 1
+  assert grep -q 'rvauth needs a human login' "$WORK/rv-auth.err"
+  assert jq -se 'any(.[]; .account == "rvauth" and .kind == "revive" and .outcome == "skipped-auth-needed")' "$token_attempts_file" >/dev/null
+  # None of the three refusals may drive a session.
+  assert_fails test -e "$RV_DRIVER_LOG"
+
+  # auth_needed is not a life sentence: once the human has logged in, the token is live and
+  # nothing else in the background would ever clear the flag — the probe below must.
+  seed_creds rvauthok "$rv_fresh_ms"
+  printf '{"auth_needed":true,"auth_cause":"expired","auth_checked_at":%s}' "$now" >"$limits_dir/rvauthok.json"
+  : >"$token_attempts_file"
+  rv_authok_rc=0
+  revive_account rvauthok >/dev/null 2>&1 || rv_authok_rc=$?
+  assert test "$rv_authok_rc" -eq 0
+  assert_fails test -e "$RV_DRIVER_LOG"
+  assert jq -e '(has("auth_needed") | not) and (has("auth_cause") | not) and .fable.used_percentage == 33' "$limits_dir/rvauthok.json" >/dev/null
+  assert jq -se 'all(.[]; .outcome != "skipped-auth-needed")' "$token_attempts_file" >/dev/null
+
+  # The rotation itself: expired token, session drives, full snapshot lands.
+  seed_creds rvok 1
+  make_driver "$(rotate rvok)" 0
+  : >"$RV_CURL"; : >"$token_attempts_file"; rm -f "$limits_dir/rvok.json" "$RV_DRIVER_LOG"
+  printf '{}' >"$oauth_attempts_file"
+  rv_ok_rc=0
+  revive_account rvok >"$WORK/rv-ok.out" 2>&1 || rv_ok_rc=$?
+  assert test "$rv_ok_rc" -eq 0
+  assert grep -qx rvok "$RV_DRIVER_LOG"
+  # The driver must not have to guess which claudeb rotated the account.
+  assert grep -qx "claudeb=$claudeb_root/bin/claudeb" "$RV_DRIVER_LOG"
+  assert grep -q 'rvok: revived' "$WORK/rv-ok.out"
+  assert jq -e '.five_hour.used_percentage == 11 and .seven_day.used_percentage == 22 and .fable.used_percentage == 33' "$limits_dir/rvok.json" >/dev/null
+  assert jq -e 'all(.five_hour,.seven_day,.fable; .origin == "usage") and .auth.status == "ok"' "$limits_dir/rvok.json" >/dev/null
+  # The point of the whole path: rotation without one token-endpoint POST.
+  assert_fails grep -q 'oauth/token' "$RV_CURL"
+  assert jq -se 'any(.[]; .account == "rvok" and .kind == "session" and .outcome == "success")' "$token_attempts_file" >/dev/null
+  assert jq -se 'any(.[]; .account == "rvok" and .kind == "revive" and .outcome == "success")' "$token_attempts_file" >/dev/null
+  assert jq -se 'all(.[]; .kind != "curl-refresh")' "$token_attempts_file" >/dev/null
+
+  # A still-valid token skips the session and refreshes the snapshot anyway.
+  seed_creds rvfresh "$rv_fresh_ms"
+  : >"$token_attempts_file"; rm -f "$limits_dir/rvfresh.json" "$RV_DRIVER_LOG"
+  rv_fresh_rc=0
+  revive_account rvfresh >/dev/null 2>&1 || rv_fresh_rc=$?
+  assert test "$rv_fresh_rc" -eq 0
+  assert_fails test -e "$RV_DRIVER_LOG"
+  assert jq -e '.fable.used_percentage == 33' "$limits_dir/rvfresh.json" >/dev/null
+  assert jq -se 'any(.[]; .account == "rvfresh" and .kind == "revive" and .outcome == "token-fresh")' "$token_attempts_file" >/dev/null
+
+  # Driver exit 4 is the login verdict; it marks auth_needed and never probes.
+  seed_creds rvlogin 1
+  make_driver ':' 4
+  : >"$RV_CURL"; : >"$token_attempts_file"; rm -f "$limits_dir/rvlogin.json"
+  rv_login_rc=0
+  revive_account rvlogin >/dev/null 2>&1 || rv_login_rc=$?
+  assert test "$rv_login_rc" -eq 4
+  assert jq -e '.auth_needed == true and .auth_cause == "interactive session asked for login"' "$limits_dir/rvlogin.json" >/dev/null
+  assert_fails test -s "$RV_CURL"
+  assert jq -se 'any(.[]; .account == "rvlogin" and .kind == "session" and .outcome == "login-needed")' "$token_attempts_file" >/dev/null
+
+  # Driver exit 5 is weather: no probe, no verdict, snapshot untouched.
+  seed_creds rvfail 1
+  make_driver ':' 5
+  : >"$RV_CURL"; : >"$token_attempts_file"
+  printf '{"five_hour":{"used_percentage":7,"resets_at":0,"as_of":%s,"origin":"usage"}}' "$now" >"$limits_dir/rvfail.json"
+  rv_fail_rc=0
+  revive_account rvfail >/dev/null 2>&1 || rv_fail_rc=$?
+  assert test "$rv_fail_rc" -eq 5
+  assert jq -e '.five_hour.used_percentage == 7 and (has("auth_needed") | not)' "$limits_dir/rvfail.json" >/dev/null
+  assert_fails test -s "$RV_CURL"
+  assert jq -se 'any(.[]; .account == "rvfail" and .kind == "session" and .outcome == "failed")' "$token_attempts_file" >/dev/null
+
+  # A session that exits 0 while the token stays expired is not a rotation.
+  seed_creds rvstale 1
+  make_driver ':' 0
+  : >"$RV_CURL"; : >"$token_attempts_file"
+  rv_stale_rc=0
+  revive_account rvstale >/dev/null 2>&1 || rv_stale_rc=$?
+  assert test "$rv_stale_rc" -eq 5
+  assert_fails test -s "$RV_CURL"
+  assert jq -se 'any(.[]; .account == "rvstale" and .kind == "session" and .outcome == "no-rotation")' "$token_attempts_file" >/dev/null
+
+  # A rotated token whose usage probe fails reports the probe's own cause, and a 401 against a
+  # token this run just proved live is the login verdict — otherwise the heartbeat retries forever.
+  seed_creds rv401 1
+  make_driver "$(rotate rv401)" 0
+  : >"$token_attempts_file"; printf '{}' >"$oauth_attempts_file"; rm -f "$limits_dir/rv401.json"
+  rv_401_rc=0
+  revive_account rv401 >/dev/null 2>"$WORK/rv-401.err" || rv_401_rc=$?
+  assert test "$rv_401_rc" -eq 4
+  assert grep -q 'cause=needs-relogin http=401' "$WORK/rv-401.err"
+  assert jq -e '.auth_needed == true and .auth_cause == "needs-relogin"' "$limits_dir/rv401.json" >/dev/null
+  assert jq -e '.rv401.warm_outcome == "warm-failed" and .rv401.warm_cause == "needs-relogin"' "$oauth_attempts_file" >/dev/null
+  assert jq -se 'any(.[]; .account == "rv401" and .kind == "revive" and .outcome == "warm-failed")' "$token_attempts_file" >/dev/null
+
+  rm -f "$token_freeze_file"
+) || exit 1
+
+echo "PASS: $asserts asserts; profile-required launch guard, reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth weather/backoff and lock behavior, creation-only reserved names and leading-hyphen rejection, disabled-account timeline, disabled profile launch proceeds direct with inherited routing stripped, generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent token adoption, capacity weather clears stale expired auth for valid tokens, warm-first heal ordering and fallback, warm auth verdicts require current-run refresh evidence, start-windows opens a fresh window and reconcile locks the new resets_at without regressing it, start-windows skips a disabled account with an explicit cause, warm --start-window opens only an expired window for the explicit account (live window and flagless runs never ping; ping weather warns without an auth verdict), the paid haiku warm fallback stays off unless opted in, regular probes never warm, heal_expired covers disabled accounts with actionable causes, and heal_one writes expired only on current-run evidence (stale-token 401 defers to the token endpoint's verdict, fresh-token 401 is affirmative, weather never re-stamps a prior expired), and no-refresh probes plus messages-probe 401s defer to the refresh outcome (stale token → weather no-write / invalid_grant expired, fresh token → affirmative), and interactive status account-row selection (bounded up/down navigation, name-stable across re-sort), Enter resolving to a \`claudeb profile <name>\` exec, row-scoped reverse-video highlight, and the non-tty path staying plain with no key loop or launch, status defaulting to cached (zero network; --live still probes), and the async refresh outcome summary (✓ when all enabled accounts are live/live*, else names stale accounts with a cause and excludes disabled ones, raw probe stderr confined to the log), refresh cancellation killing the probe process group, first-pass results publishing in completion order, unknown profiles rejected, and reserved legacy profiles removable, headless runs routed through worker-pick without restamping current (an interactive session opened by machinery holds the marker too; arguments alone still demand a profile; an unselectable pool or a missing worker-pick refuses instead of launching), and \`use\` writing the worker pin in place with an out-of-pool direct-pin note, a clear, and a refusal on an unroutable name, and the session-account ledger recording each profile's session markers once, keeping a line after its marker is pruned, recording both accounts when one session ran under two profiles, and staying silent for a profile that never ran, and snapshot-rewriting verbs announcing one passive collect with collector children suppressed, and revive refusing unknown/disabled/logged-out-auth_needed accounts without driving a session while an auth_needed account with a live token self-heals through the probe, rotating an expired token through the session driver while the token freeze holds and never touching the token endpoint, landing five_hour/seven_day/fable through the shared usage probe, skipping the session for a still-valid token, and mapping driver exits to auth_needed (4), weather (5) and a no-rotation verdict, with a usage 401 against a token the run just proved live earning the same login verdict"

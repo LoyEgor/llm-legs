@@ -11,6 +11,7 @@ CLAUDEB="$ROOT/bin/claudeb"
 STATUSLINE="$ROOT/bin/statusline.sh"
 WORKERPICK="$ROOT/bin/worker-pick"
 LLMLIMITS="$ROOT/llm-limits.sh"
+DRIVER="$ROOT/bin/claude-session-driver"
 
 HAMMER="$ROOT/hammerspoon/llm-limits.lua"
 WORKER_GATE="${WORKER_LIMIT_GATE:-$HOME/.claude/hooks/worker-limit-gate.sh}"
@@ -71,6 +72,12 @@ done
 # claudeb owns the single helper the doc names (subtask 1 consolidation)
 assert grep -q '^keychain_service()' "$CLAUDEB"
 assert doc_has '`keychain_service`'
+# Third site, in Python: same prefix, same digest, same 8 hex, same profile path.
+assert grep -q '^def keychain_service' "$DRIVER"
+assert grep -Fq 'hashlib.sha256(profile.encode("utf-8")).hexdigest()[:8]' "$DRIVER"
+assert grep -Fq '"Claude Code-credentials-"' "$DRIVER"
+assert grep -Fq '".claude-profiles"' "$DRIVER"
+assert doc_has 'bin/claude-session-driver'
 
 # --- Row c: worker-pick cache line format ------------------------------------
 # Producer printf and cb prefixes.
@@ -999,6 +1006,10 @@ REFRESH_STUB
 chmod +x "$REFRESH_WORK/opencode-go"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$REFRESH_WORK/collector"
 chmod +x "$REFRESH_WORK/collector"
+# Every fixture store carries a default Claude row, and a stale one now escalates to
+# `claudeb revive`; the real binary announces a collect that would rewrite this store.
+printf '#!/usr/bin/env bash\nexit 0\n' >"$REFRESH_WORK/claudeb"
+chmod +x "$REFRESH_WORK/claudeb"
 refresh_store() { # <walled>
   jq -cn --argjson walled "$1" --arg reset "$2" \
     '{schema:1,vendors:{opencode:{source:"opencode-go",accounts:[
@@ -1013,6 +1024,7 @@ run_refresh_tick() {
     LLM_REFRESH_STATE="$REFRESH_WORK/state.json" \
     LLM_REFRESH_JOURNAL="$REFRESH_WORK/journal.jsonl" \
     LLM_LIMITS_REFRESH_OPENCODE_GO="$REFRESH_WORK/opencode-go" \
+    LLM_LIMITS_REFRESH_CLAUDEB="$REFRESH_WORK/claudeb" \
     OC_LOG="$REFRESH_WORK/probes.log" LLM_REFRESH_NOW="$1" bash "$LLMREFRESH"
 }
 printf '{"vendors":{}}\n' >"$REFRESH_WORK/state.json"

@@ -1,0 +1,261 @@
+#!/usr/bin/env python3
+# claude-session-driver — rotate one Claude account's OAuth token by driving a real
+# interactive `claudeb profile <account>` session under a PTY. Direct token-endpoint
+# POSTs are vendor-blocked (docs/EXIT-PLAN.md § Token-freeze experiment) while an
+# interactive session rotates instantly; nothing but the exit sequence is ever typed,
+# so the session costs no model tokens.
+
+import argparse
+import hashlib
+import json
+import os
+import pty
+import re
+import select
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+
+EXIT_LOGIN = 4
+EXIT_FAILED = 5
+
+CAPTURE_CAP = 262144
+SCAN_TAIL = 16384
+
+NAME_PATTERN = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]*$")
+ANSI_PATTERN = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-Z\\-_]")
+NOISE_PATTERN = re.compile(r"[^a-z0-9/]+")
+
+LOGIN_MARKERS = (
+    "select login method",
+    "claude account with subscription",
+    "oauth/authorize",
+    "paste code here",
+    "run /login",
+    "not logged in",
+    "login required",
+    "authentication required",
+)
+
+
+def env_number(name, fallback):
+    try:
+        value = float(os.environ.get(name, ""))
+    except ValueError:
+        return fallback
+    return value if value >= 0 else fallback
+
+
+def base_dir():
+    return os.environ.get("CLAUDEB_DIR") or os.path.expanduser("~/.claude-profiles/.claudeb")
+
+
+def repo_root():
+    return os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+
+
+def keychain_service(account):
+    profile = os.path.join(os.path.expanduser("~"), ".claude-profiles", account)
+    return "Claude Code-credentials-" + hashlib.sha256(profile.encode("utf-8")).hexdigest()[:8]
+
+
+def token_valid(account):
+    # Same near-expiry margin as claudeb's token_needs_refresh, so exit 0 means that
+    # check now answers no and the caller can probe straight away.
+    margin = env_number("CLAUDEB_TOKEN_NEAR_EXPIRY_SECONDS", 300.0)
+    try:
+        read = subprocess.run(
+            ["security", "find-generic-password", "-s", keychain_service(account), "-w"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if read.returncode != 0:
+        return False
+    try:
+        expires_at = float(json.loads(read.stdout.decode("utf-8", "replace"))["claudeAiOauth"]["expiresAt"])
+    except (ValueError, TypeError, KeyError):
+        return False
+    return expires_at > (time.time() + margin) * 1000
+
+
+def readable(data):
+    text = ANSI_PATTERN.sub(" ", data.decode("utf-8", "replace")).lower()
+    return NOISE_PATTERN.sub(" ", text)
+
+
+def looks_like_login(data):
+    text = readable(data)
+    return any(marker in text for marker in LOGIN_MARKERS)
+
+
+def child_code(status):
+    if status is None:
+        return "unknown"
+    if os.WIFSIGNALED(status):
+        return "-%d" % os.WTERMSIG(status)
+    if os.WIFEXITED(status):
+        return "%d" % os.WEXITSTATUS(status)
+    return "%d" % status
+
+
+def reap(pid):
+    try:
+        done, status = os.waitpid(pid, os.WNOHANG)
+    except ChildProcessError:
+        return 0
+    except OSError:
+        return None
+    return status if done == pid else None
+
+
+def terminate(pid):
+    for sig, grace in ((signal.SIGTERM, 2.0), (signal.SIGKILL, 1.0)):
+        try:
+            os.killpg(pid, sig)
+        except OSError:
+            try:
+                os.kill(pid, sig)
+            except OSError:
+                return reap(pid)
+        deadline = time.monotonic() + grace
+        while time.monotonic() < deadline:
+            status = reap(pid)
+            if status is not None:
+                return status
+            time.sleep(0.1)
+    return reap(pid)
+
+
+def drive(account, cwd, timeout):
+    steps = (
+        (env_number("CLAUDEB_SESSION_EXIT_DELAY", 25.0), b"/exit"),
+        (env_number("CLAUDEB_SESSION_CR_DELAY", 1.5), b"\r"),
+        (env_number("CLAUDEB_SESSION_INTERRUPT_DELAY", 15.0), b"\x03"),
+        (0.5, b"\x03"),
+    )
+    grace = env_number("CLAUDEB_SESSION_GRACE", 10.0)
+
+    claudeb = os.environ.get("CLAUDE_SESSION_DRIVER_CLAUDEB", "")
+    if not (claudeb and os.access(claudeb, os.X_OK)):
+        claudeb = "claudeb"
+
+    pid, fd = pty.fork()
+    if pid == 0:
+        try:
+            os.chdir(cwd)
+            os.environ["CLAUDE_CODE_CHILD_SESSION"] = "1"
+            # This session belongs to the machinery, not to the user: it must not move the
+            # `current account` marker the menubar and statusline read.
+            os.environ["CLAUDEB_NO_STATE_STAMP"] = "1"
+            os.environ["TERM"] = "xterm-256color"
+            os.execvp(claudeb, [claudeb, "profile", account])
+        except BaseException:
+            pass
+        os._exit(127)
+
+    capture = bytearray()
+    login = False
+    status = None
+    step = 0
+    start = time.monotonic()
+    next_at = start + steps[0][0]
+    deadline = start + timeout
+    while time.monotonic() < deadline:
+        try:
+            ready, _, _ = select.select([fd], [], [], 0.2)
+        except (OSError, ValueError):
+            break
+        if ready:
+            try:
+                chunk = os.read(fd, 4096)
+            except OSError:
+                chunk = b""
+            if not chunk:
+                break
+            capture += chunk
+            if len(capture) > CAPTURE_CAP:
+                del capture[:len(capture) - CAPTURE_CAP]
+            if looks_like_login(capture[-SCAN_TAIL:]):
+                login = True
+                break
+        status = reap(pid)
+        if status is not None:
+            break
+        if step < len(steps) and time.monotonic() >= next_at:
+            try:
+                os.write(fd, steps[step][1])
+            except OSError:
+                break
+            step += 1
+            if step < len(steps):
+                next_at = time.monotonic() + steps[step][0]
+            else:
+                deadline = min(deadline, time.monotonic() + grace)
+    if status is None:
+        status = reap(pid)
+    if status is None:
+        status = terminate(pid)
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+    return status, bytes(capture), login
+
+
+def write_log(account, outcome, exit_code, capture):
+    directory = os.path.join(base_dir(), "session-logs")
+    temporary = None
+    try:
+        os.makedirs(directory, exist_ok=True)
+        handle, temporary = tempfile.mkstemp(prefix="." + account + ".log.", dir=directory)
+        with os.fdopen(handle, "wb") as out:
+            out.write(("timestamp=%s outcome=%s exit_code=%s\n" % (
+                time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), outcome, exit_code)).encode("utf-8"))
+            out.write(capture)
+        os.replace(temporary, os.path.join(directory, account + ".log"))
+    except OSError as error:
+        if temporary:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+        print("claude-session-driver: %s: log not written (%s)" % (account, error), file=sys.stderr)
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(
+        prog="claude-session-driver",
+        description="Rotate one Claude account's OAuth token through an interactive claudeb session. "
+                    "Exit 0 = the keychain token is valid again, 4 = the account needs a human login, "
+                    "5 = timeout or other failure.")
+    parser.add_argument("account")
+    # An untrusted directory opens the trust-folder dialog instead of a session, so the
+    # default is this checkout's root — trusted in every profile.
+    parser.add_argument("--cwd", default=repo_root())
+    parser.add_argument("--timeout", type=float, default=150.0)
+    args = parser.parse_args(argv)
+    if not NAME_PATTERN.match(args.account):
+        parser.error("invalid account name '%s'" % args.account)
+    if args.timeout <= 0:
+        parser.error("--timeout must be a positive number of seconds")
+    if not os.path.isdir(args.cwd):
+        parser.error("--cwd is not a directory: %s" % args.cwd)
+
+    status, capture, login = drive(args.account, args.cwd, args.timeout)
+    # The keychain is ground truth, screen text is a guess: a healthy session that merely
+    # printed the word `/login` must never be reported as needing a human.
+    if token_valid(args.account):
+        outcome, code = "success", 0
+    elif login or looks_like_login(capture):
+        outcome, code = "login-needed", EXIT_LOGIN
+    else:
+        outcome, code = "failed", EXIT_FAILED
+    write_log(args.account, outcome, child_code(status), capture)
+    print("claude-session-driver: %s: %s (session exit %s)" % (args.account, outcome, child_code(status)))
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
