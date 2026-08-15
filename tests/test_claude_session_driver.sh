@@ -37,7 +37,9 @@ CLAUDEB_SESSION_EXIT_DELAY=1
 CLAUDEB_SESSION_CR_DELAY=0.3
 CLAUDEB_SESSION_INTERRUPT_DELAY=1
 CLAUDEB_SESSION_GRACE=2
+CLAUDEB_SESSION_LOGIN_GRACE=0.5
 export CLAUDEB_SESSION_EXIT_DELAY CLAUDEB_SESSION_CR_DELAY CLAUDEB_SESSION_INTERRUPT_DELAY CLAUDEB_SESSION_GRACE
+export CLAUDEB_SESSION_LOGIN_GRACE
 
 KEYCHAIN="$WORK/keychain"
 CALLS="$WORK/claudeb-calls"
@@ -78,6 +80,7 @@ write_claudeb_at() {
   cat >"$1" <<EOF
 #!/usr/bin/env bash
 printf 'args=%s cwd=%s child=%s nostamp=%s term=%s\n' "\$*" "\$PWD" "\${CLAUDE_CODE_CHILD_SESSION:-}" "\${CLAUDEB_NO_STATE_STAMP:-}" "\${TERM:-}" >>'$2'
+printf 'size=%s\n' "\$(stty size 2>/dev/null | tr ' ' 'x')" >>'$2'
 $3
 EOF
   chmod +x "$1"
@@ -127,6 +130,8 @@ assert test "$ok_rc" -eq 0
 # nostamp=1: the driver's session is machinery, so claudeb must not restamp the
 # user's current account behind their back.
 assert grep -qx "args=profile alpha cwd=$(cd -P "$SESSION_CWD" && pwd) child=1 nostamp=1 term=xterm-256color" "$CALLS"
+# pty.fork() hands the slave a 0x0 terminal; the TUI lays out against these columns.
+assert grep -qx 'size=40x120' "$CALLS"
 assert grep -q '/exit' "$TYPED"
 assert test "$(grep -c '' "$TYPED")" -eq 1
 assert grep -q 'alpha: success' "$WORK/ok.out"
@@ -190,6 +195,24 @@ assert_fails test -e "$TYPED"
 assert grep -q 'gamma: login-needed' "$WORK/login.out"
 assert grep -q 'outcome=login-needed' "$LOG_DIR/gamma.log"
 
+# --- a marker printed WHILE the CLI rotates: the grace re-reads the keychain and continues ---
+reset_state
+seed_token kappa 1
+KAPPA_KEY="$KEYCHAIN/$(kc_key "$(svc_of kappa)")"
+write_claudeb "printf 'tip: run /login to switch accounts\n'
+(sleep 1; printf '%s' '{\"claudeAiOauth\":{\"refreshToken\":\"rt\",\"accessToken\":\"at\",\"expiresAt\":$fresh_ms}}' >'$KAPPA_KEY') &
+while IFS= read -r line; do
+  printf '%s\n' \"\$line\" >>'$TYPED'
+  case \"\$line\" in */exit*) exit 0 ;; esac
+done"
+grace_rc=0
+CLAUDEB_SESSION_LOGIN_GRACE=5 "$DRIVER" kappa --cwd "$SESSION_CWD" --timeout 25 \
+  >"$WORK/grace.out" 2>&1 || grace_rc=$?
+assert test "$grace_rc" -eq 0
+assert grep -q 'kappa: success' "$WORK/grace.out"
+# The ladder is only held during the grace, never abandoned.
+assert grep -q '/exit' "$TYPED"
+
 # --- the same screen text with a live token is a success: the keychain outranks the UI ---
 reset_state
 seed_token iota "$fresh_ms"
@@ -237,4 +260,4 @@ missing_rc=0
 assert test "$missing_rc" -eq 0
 assert grep -q 'exit_code=127' "$LOG_DIR/zeta.log"
 
-echo "PASS: $asserts asserts; claude-session-driver argument validation refusing to launch anything, a driven session typing only /exit and reporting the keychain re-read, interrupt escalation when /exit is ignored, a login screen exiting 4 with nothing typed while the same text over a live token still succeeds, the caller's claudeb path preferred over PATH unless it cannot run, a stubborn session killed inside the grace window instead of the caller's timeout, a clean session that left the token expired failing, and warm-logs-style session logs written atomically under CLAUDEB_DIR"
+echo "PASS: $asserts asserts; claude-session-driver argument validation refusing to launch anything, a driven session typing only /exit and reporting the keychain re-read, interrupt escalation when /exit is ignored, a login screen exiting 4 with nothing typed while the same text over a live token still succeeds and a marker printed mid-rotation only holds the ladder for the grace, a 120x40 winsize on the pty slave, the caller's claudeb path preferred over PATH unless it cannot run, a stubborn session killed inside the grace window instead of the caller's timeout, a clean session that left the token expired failing, and warm-logs-style session logs written atomically under CLAUDEB_DIR"

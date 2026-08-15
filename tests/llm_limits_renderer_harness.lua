@@ -518,7 +518,7 @@ end
 assert(deadErrorSeen, "structured vendor refresh error did not render")
 assert(errorModule.refreshState().prefix == "⚠ ", "vendor error did not warn in the title state")
 
-local entryCause = "alona: not refreshed (auto-refresh frozen (experiment) — enter the account to refresh)"
+local entryCause = "alona: not refreshed (needs-relogin)"
 local entryFixture = { schema = 1, vendors = {
   claude = {
     available = true,
@@ -559,7 +559,7 @@ end
 local entryErrorSeen = false
 for _, item in ipairs(entryMenu) do
   if titleText(item):find("refresh failed", 1, true)
-      and titleText(item):find("auto-refresh frozen", 1, true) then
+      and titleText(item):find("needs-relogin", 1, true) then
     entryErrorSeen = true
   end
 end

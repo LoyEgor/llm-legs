@@ -50,6 +50,10 @@ cat >"$CB_STUB" <<'EOF'
 #!/usr/bin/env bash
 set -u
 printf '%s\n' "$*" >>"$CB_LOG"
+# Kept out of CB_LOG so the argv assertions stay whole-file comparisons.
+if [ -d "${LLM_REFRESH_STATE}.lock" ]; then printf 'lock-held\n' >>"${CB_ENV:-/dev/null}"
+else printf 'lock-free\n' >>"${CB_ENV:-/dev/null}"; fi
+printf 'announce-suppress=%s\n' "${LLM_LIMITS_ANNOUNCE_SUPPRESS:-}" >>"${CB_ENV:-/dev/null}"
 [ "${1:-}" = revive ] || exit 2
 account=${2:-}
 restate() {
@@ -77,6 +81,19 @@ case "${CB_RESULT:-ok}" in
     exit 5
     ;;
   hang) sleep 30 ;;
+  peek)
+    # Stands in for a concurrent tick: it reads the state file the running session left behind
+    # and writes its own change into it while the lock is out.
+    printf 'stamp=%s\n' "$(jq -r --arg a "$account" '.claude.attempts[$a] // "none"' "$LLM_REFRESH_STATE")" \
+      >>"${CB_ENV:-/dev/null}"
+    tmp=$(mktemp "${LLM_REFRESH_STATE}.other.XXXXXX") || exit 5
+    jq -c '.codex.interval_min=60' "$LLM_REFRESH_STATE" >"$tmp" && mv -f "$tmp" "$LLM_REFRESH_STATE"
+    ;;
+  steal)
+    # Another tick claimed the lock while this session was out; its owner is alive.
+    mkdir -p "${LLM_REFRESH_STATE}.lock"
+    printf '%s\n' "${CB_STEAL_PID:-$$}" >"${LLM_REFRESH_STATE}.lock/pid"
+    ;;
 esac
 EOF
 chmod +x "$CB_STUB"
@@ -166,7 +183,8 @@ run_refresh() {
     LLM_LIMITS_REFRESH_OPENCODE_GO="$OC_STUB" OC_LOG="$dir/opencode.log" \
     OC_STUB_RESULT="${OC_STUB_RESULT:-clear}" \
     LLM_LIMITS_REFRESH_CLAUDEB="${CB_BIN:-$CB_STUB}" CB_LOG="$dir/claudeb.log" \
-    CB_RESULT="${CB_RESULT:-ok}" \
+    CB_ENV="$dir/claudeb-env.log" \
+    CB_RESULT="${CB_RESULT:-ok}" CB_STEAL_PID="${CB_STEAL_PID:-$$}" \
     LLM_LIMITS_REFRESH_REVIVE_TIMEOUT="${LLM_LIMITS_REFRESH_REVIVE_TIMEOUT:-240}" \
     LLM_LIMITS_REFRESH_LOCK_STALE_SECONDS="${LLM_LIMITS_REFRESH_LOCK_STALE_SECONDS:-1800}" \
     STUB_PUSHBACK_TARGET="${STUB_PUSHBACK_TARGET:-}" STUB_REFRESH_SUCCEED="${STUB_REFRESH_SUCCEED:-1}" \
@@ -240,6 +258,12 @@ grep -q -- '--refresh-account' "$case_dir/calls.log" && \
 jq -eR 'fromjson | select(.vendor == "claude" and .step == 1 and
   .outcome == "refreshed" and .accounts_tried == ["alpha"])' \
   "$case_dir/journal.jsonl" >/dev/null || fail 'Claude revive was not journaled as refreshed'
+# An interactive session runs for minutes: the other vendors' tick must not queue behind it,
+# and the tick's own collect replaces the announce revive would otherwise detach.
+grep -qx 'lock-free' "$case_dir/claudeb-env.log" || \
+  fail 'the tick held its lock across the revive session'
+grep -qx 'announce-suppress=1' "$case_dir/claudeb-env.log" || \
+  fail 'the heartbeat revive was left to fire its own second collect'
 pass
 
 # Gentleness: one interactive session per heartbeat tick, stalest first, and the rest wait —
@@ -287,6 +311,69 @@ jq -e --argjson now "$NOW" '.claude.attempts.zeta == ($now + 7200) and .claude.a
   fail 'attempt stamps were not persisted per account, or a departed account still holds one'
 pass
 
+# Handing the lock back means it can be gone on return: the tick then drops its state write
+# (the journal line is an append and lands either way), exactly like the opencode probe.
+case_dir="$WORK/claude-lock-lost"
+mkdir -p "$case_dir/home"
+write_store "$case_dir/store.json" "$NOW" 7200 60 60
+write_state "$case_dir/state.json" 30 30 30 0 "$NOW"
+# Claude must be the only vendor due: opencode hands the lock back too, and its own reacquire
+# would set the same flag whatever the revive did.
+jq --argjson now "$NOW" '.vendors.codex.last_attempt_epoch=$now | .vendors.gemini.last_attempt_epoch=$now |
+  .vendors.opencode={interval_min:45,last_attempt_epoch:$now,clean_since_epoch:$now}' \
+  "$case_dir/state.json" >"$case_dir/state.tmp" && mv "$case_dir/state.tmp" "$case_dir/state.json"
+sleep 30 &
+steal_pid=$!
+CB_STEAL_PID=$steal_pid CB_RESULT=steal run_refresh "$case_dir" "$NOW" || fail 'lock-lost run failed'
+kill "$steal_pid" 2>/dev/null
+wait "$steal_pid" 2>/dev/null
+# The mid-tick persist (the attempt stamp) is ours and lands before the lock goes; the
+# end-of-tick write is what a tick without the lock must never do.
+jq -e --argjson now "$NOW" '.claude.attempts.alpha == $now and .claude.last_attempt_epoch == 0' \
+  "$case_dir/state.json" >/dev/null || \
+  fail 'the tick wrote its cadence state without holding the lock, or lost the attempt stamp'
+jq -eR 'fromjson | select(.vendor == "claude" and .accounts_tried == ["alpha"])' \
+  "$case_dir/journal.jsonl" >/dev/null || fail 'the attempt went unjournaled after the lock was lost'
+rm -rf "$case_dir/state.json.lock"
+pass
+
+# The lock is out for minutes, so the stamp has to be ON DISK before it goes — otherwise the
+# next tick picks the same account — and whatever the other tick wrote meanwhile must survive.
+case_dir="$WORK/claude-concurrent-tick"
+mkdir -p "$case_dir/home"
+write_store "$case_dir/store.json" "$NOW" 7200 60 60
+write_state "$case_dir/state.json" 30 30 30 0 "$NOW"
+jq --argjson now "$NOW" '.vendors.codex.last_attempt_epoch=$now | .vendors.gemini.last_attempt_epoch=$now |
+  .vendors.opencode={interval_min:45,last_attempt_epoch:$now,clean_since_epoch:$now}' \
+  "$case_dir/state.json" >"$case_dir/state.tmp" && mv "$case_dir/state.tmp" "$case_dir/state.json"
+CB_RESULT=peek run_refresh "$case_dir" "$NOW" || fail 'concurrent-tick run failed'
+grep -qx "stamp=$NOW" "$case_dir/claudeb-env.log" || \
+  fail "the attempt stamp was not on disk while the session ran: $(cat "$case_dir/claudeb-env.log")"
+jq -e --argjson now "$NOW" '.codex.interval_min == 60 and .claude.attempts.alpha == $now' \
+  "$case_dir/state.json" >/dev/null || \
+  fail 'the tick restored its pre-revive snapshot over a concurrent write'
+pass
+
+# Losing the lock mid-tick stops the tick: the vendors behind Claude belong to the new owner.
+case_dir="$WORK/claude-lock-lost-stops"
+mkdir -p "$case_dir/home"
+write_store "$case_dir/store.json" "$NOW" 7200 7200 60
+write_state "$case_dir/state.json" 30 30 30 0 "$NOW"
+jq --argjson now "$NOW" '.vendors.gemini.last_attempt_epoch=$now |
+  .vendors.opencode={interval_min:45,last_attempt_epoch:$now,clean_since_epoch:$now}' \
+  "$case_dir/state.json" >"$case_dir/state.tmp" && mv "$case_dir/state.tmp" "$case_dir/state.json"
+sleep 30 &
+steal_pid=$!
+CB_STEAL_PID=$steal_pid CB_RESULT=steal run_refresh "$case_dir" "$NOW" || fail 'lock-lost stop run failed'
+kill "$steal_pid" 2>/dev/null
+wait "$steal_pid" 2>/dev/null
+grep -q 'codex/beta' "$case_dir/calls.log" && \
+  fail 'the tick kept refreshing other vendors after losing its lock'
+jq -eR 'fromjson | select(.vendor == "codex")' "$case_dir/journal.jsonl" >/dev/null && \
+  fail 'a vendor the tick never attempted was journaled'
+rm -rf "$case_dir/state.json.lock"
+pass
+
 # A login screen is not pushback: the account becomes unrefreshable and the cadence stands.
 case_dir="$WORK/claude-login-needed"
 mkdir -p "$case_dir/home"
@@ -317,10 +404,29 @@ jq --argjson now "$NOW" '.vendors.codex.last_attempt_epoch=$now | .vendors.gemin
   "$case_dir/state.json" >"$case_dir/state.tmp" && mv "$case_dir/state.tmp" "$case_dir/state.json"
 CB_BIN="$WORK/cb-dud" run_refresh "$case_dir" "$NOW" || fail 'unusable-claudeb run failed'
 jq -eR 'fromjson | select(.vendor == "claude" and .outcome == "error" and
-  .accounts_tried == [] and (.detail | test("no claudeb to revive with")))' \
+  .step == 0 and .accounts_tried == [] and (.detail | test("no claudeb to revive with")))' \
   "$case_dir/journal.jsonl" >/dev/null || \
-  fail 'an unusable claudeb override did not surface as its own error'
+  fail 'an unusable claudeb override did not surface as its own error at step 0'
 [ -s "$case_dir/claudeb.log" ] && fail 'the override fell back to another claudeb'
+pass
+
+# claudeb reserves `main` and `-`: selecting one would hand the tick an account revive refuses
+# forever, so a store holding nothing else is "nothing to select", not an attempt.
+case_dir="$WORK/claude-reserved-only"
+mkdir -p "$case_dir/home"
+write_store "$case_dir/store.json" "$NOW" 7200 60 60
+jq --argjson now "$NOW" '.vendors.claude.accounts=[{account:"main",
+  five_hour:{used_pct:10,as_of:($now - 7200)},weekly:{used_pct:20,as_of:($now - 7200)}}]' \
+  "$case_dir/store.json" >"$case_dir/store.tmp" && mv "$case_dir/store.tmp" "$case_dir/store.json"
+write_state "$case_dir/state.json" 30 30 30 0 "$NOW"
+jq --argjson now "$NOW" '.vendors.codex.last_attempt_epoch=$now | .vendors.gemini.last_attempt_epoch=$now' \
+  "$case_dir/state.json" >"$case_dir/state.tmp" && mv "$case_dir/state.tmp" "$case_dir/state.json"
+run_refresh "$case_dir" "$NOW" || fail 'reserved-name run failed'
+[ -s "$case_dir/claudeb.log" ] && fail 'a reserved name was driven through revive'
+jq -eR 'fromjson | select(.vendor == "claude" and .step == 0 and .accounts_tried == [] and
+  .outcome != "error" and .outcome != "partial" and (.detail | test("unrefreshable: main")))' \
+  "$case_dir/journal.jsonl" >/dev/null || \
+  fail 'a reserved-only stale set was reported as failed work instead of unrefreshable'
 pass
 
 case_dir="$WORK/claude-429"

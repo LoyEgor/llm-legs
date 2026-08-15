@@ -1257,6 +1257,32 @@ assert grep -Fq "${GREEN}21%" <<< "$backfill_out"
 assert jq -e '.five_hour.used_percentage == 63 and .seven_day.used_percentage == 21' \
   "$CLAUDEB_FIX/limits/pinacct.json" >/dev/null
 
+# A session running ON the account is affirmative login evidence: the merge that accepts it
+# must clear auth_needed, or every automated refresh keeps skipping the account as dead.
+jq -cn --argjson now "$NOW" \
+  '{five_hour:{used_percentage:10,resets_at:($now+3600),as_of:($now-600),origin:"usage"},
+    auth_needed:true,auth_cause:"needs-relogin",auth_checked_at:($now-600)}' \
+  > "$CLAUDEB_FIX/limits/reviveacct.json"
+relogin_payload=$(statusline_payload status-relogin \
+  '{"rate_limits":{"five_hour":{"used_percentage":44,"resets_at":'"$((NOW + 7200))"'}}}')
+relogin_out=$(run_statusline "$relogin_payload" reviveacct) || fail "statusline relogin merge failed"
+assert grep -Fq "${GREEN}44%" <<< "$relogin_out"
+assert jq -e '.five_hour.used_percentage == 44 and .auth.status == "ok" and
+  (has("auth_needed") or has("auth_cause") or has("auth_checked_at") | not)' \
+  "$CLAUDEB_FIX/limits/reviveacct.json" >/dev/null
+
+# An idle session replays its last readings forever: a window that opened BEFORE the account was
+# marked logged out is that replay, and must not overwrite the verdict with old news.
+jq -cn --argjson now "$NOW" \
+  '{five_hour:{used_percentage:10,resets_at:($now-7200),as_of:($now-90000),origin:"usage"},
+    auth_needed:true,auth_cause:"needs-relogin",auth_checked_at:($now-600)}' \
+  > "$CLAUDEB_FIX/limits/replayacct.json"
+replay_payload=$(statusline_payload status-replay \
+  '{"rate_limits":{"five_hour":{"used_percentage":51,"resets_at":'"$((NOW - 3600))"'}}}')
+run_statusline "$replay_payload" replayacct >/dev/null || fail "statusline replay merge failed"
+assert jq -e '.five_hour.used_percentage == 51 and .auth_needed == true and
+  .auth_cause == "needs-relogin"' "$CLAUDEB_FIX/limits/replayacct.json" >/dev/null
+
 cost_payload=$(statusline_payload status-cost '{"cost":{"total_cost_usd":18.2007}}')
 cost_out=$(printf '%s' "$cost_payload" | env -u LANG LC_ALL=ru_RU.UTF-8 \
   CLAUDE_LIMITS_ACCOUNT=main CLAUDEB_DIR="$CLAUDEB_FIX" LLM_LIMITS_FILE="$WORK/limits.json" \

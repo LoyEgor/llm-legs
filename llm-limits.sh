@@ -134,7 +134,7 @@ token_freeze_active_at() {
 }
 
 claude_stale_cause() {
-  local attempts_file=$1 name=$2 auth=${3:-ok} raw kind value
+  local attempts_file=$1 name=$2 auth=${3:-ok} raw kind value revive=false
   raw=$(jq -r --arg n "$name" --arg auth "$auth" '
     (.[$n] // null) as $e |
     if $e == null then ["cause", (if $auth == "failed" then "stale data kept" else "usage weather" end)] | @tsv
@@ -146,11 +146,12 @@ claude_stale_cause() {
        then $outcome_at
        else 0 end) as $warm_at |
       (($e.warm_outcome // "") == "warm-failed" or ($e.outcome // "") == "warm-failed") as $has_warm |
+      (if ($e.warm_kind // "") == "revive" then "revive-cause" else "cause" end) as $warm_kind |
       (($e.outcome // "") == "429" or ($e.outcome // "") == "weather" or
        (($e.outcome // "") == "failed" and (($e.http_status // 0) > 0))) as $has_outcome |
     if $has_warm and ($e.warm_cause // "") != "" and
        (($has_outcome | not) or $warm_at > $outcome_at)
-      then ["cause", $e.warm_cause] | @tsv
+      then [$warm_kind, $e.warm_cause] | @tsv
     elif ($e.outcome // "") == "429" then
       (((($e.strikes // 0) | if type != "number" or . < 1 then 1 else floor end)) as $s |
        (900 * (2 | pow(.; $s - 1)) | if . > 14400 then 14400 else . end) as $c |
@@ -164,9 +165,12 @@ claude_stale_cause() {
     elif ($e.outcome // "") == "weather" then ["cause", "network weather"] | @tsv
     elif ($e.outcome // "") == "failed" and (($e.http_status // 0) > 0)
       then ["cause", ("token refresh HTTP " + ($e.http_status | tostring))] | @tsv
-    elif $has_warm and ($e.warm_cause // "") != "" then ["cause", $e.warm_cause] | @tsv
+    elif $has_warm and ($e.warm_cause // "") != "" then [$warm_kind, $e.warm_cause] | @tsv
     else ["cause", "stale data kept"] | @tsv end end' "$attempts_file" 2>/dev/null) || raw=$'cause\tstale data kept'
   IFS=$'\t' read -r kind value <<<"$raw"
+  # The revive path is the sanctioned replacement for the frozen curl refresh, so its own
+  # failure cause is live evidence and must not be painted over by the freeze banner.
+  case "$kind" in revive-cause) kind=cause; revive=true ;; esac
   # An auth-shaped cause (logged out / needs re-login) is actionable and must
   # surface even under a freeze — the account is genuinely dead, not just paused.
   case "$value" in
@@ -180,11 +184,11 @@ claude_stale_cause() {
     warm-429) value='warm HTTP 429' ;;
     frozen) value='refresh produced no current outcome' ;;
   esac
-  if [ "${CLAUDEB_WARM_USER_EXPLICIT:-false}" != true ] \
+  if [ "$revive" != true ] && [ "${CLAUDEB_WARM_USER_EXPLICIT:-false}" != true ] \
       && token_freeze_active_at "$(dirname "$attempts_file")"; then
     # Freeze outranks a stale pre-freeze 429 (or generic weather/stale) cause:
     # the endpoint is frozen this run, so nothing is really "rate-limited".
-    printf 'auto-refresh frozen (experiment) — enter the account to refresh'
+    printf 'curl refresh frozen (experiment) — revive path active'
   elif [ "$kind" = 429 ]; then
     if [ "$value" -le "${now_epoch:-$(date +%s)}" ] 2>/dev/null; then
       printf 'token rate-limited, retrying'
@@ -1581,7 +1585,6 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
       if $cause == "" then null else {cause:$cause,at:$now} end
     else old_error($old) end;
   def user_entry_cause:
-    . == "auto-refresh frozen (experiment) — enter the account to refresh" or
     . == "needs-relogin" or . == "needs re-login" or
     startswith("login needed");
   def user_entry_error:

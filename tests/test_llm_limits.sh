@@ -775,12 +775,12 @@ FREEZE_CACHE="$WORK/freeze-cache.json"
 HOME="$HOME_FIXTURE" CLAUDEB_DIR="$FREEZE_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-noop" \
   LLM_LIMITS_CACHE="$FREEZE_CACHE" /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1 || true
 jq -e '.vendors.claude.refresh_error.cause |
-  contains("auto-refresh frozen (experiment) — enter the account to refresh")' "$FREEZE_CACHE" >/dev/null \
+  contains("curl refresh frozen (experiment) — revive path active")' "$FREEZE_CACHE" >/dev/null \
   || fail "frozen dark account not surfaced with the honest freeze cause"
-jq -e '.vendors.claude.refresh_error.needs_user_entry == true and
-  ([.vendors.claude.accounts[] | select(.account == "frz")][0].needs_user_entry == true) and
+jq -e '(.vendors.claude.refresh_error.needs_user_entry // false) == false and
+  (([.vendors.claude.accounts[] | select(.account == "frz")][0].needs_user_entry // false) == false) and
   (.vendors.claude.refresh_error.cause | contains("; ") | not)' "$FREEZE_CACHE" >/dev/null \
-  || fail "frozen stale cause was not classed for account entry or contained the join separator"
+  || fail "frozen stale cause asked for a manual entry or contained the join separator"
 
 USER_CHILD_LOG="$WORK/user-claudeb-child.log"
 cat >"$WORK/user-signal-claudeb" <<'EOF'
@@ -800,7 +800,7 @@ CLAUDEB_WARM_USER_EXPLICIT=true HOME="$HOME_FIXTURE" CLAUDEB_DIR="$FREEZE_STORE"
   LLM_LIMITS_CLAUDEB_CMD="$WORK/user-signal-claudeb" LLM_LIMITS_CACHE="$FREEZE_CACHE" \
   /bin/bash "$SCRIPT" --refresh-account claude/frz --start-windows >/dev/null 2>&1 || true
 jq -e '(.vendors.claude.refresh_error.cause | contains("usage probe failed")) and
-  (.vendors.claude.refresh_error.cause | contains("auto-refresh frozen") | not)' "$FREEZE_CACHE" >/dev/null \
+  (.vendors.claude.refresh_error.cause | contains("curl refresh frozen") | not)' "$FREEZE_CACHE" >/dev/null \
   || fail "user-explicit hard refresh surfaced the robot freeze cause instead of the failing step"
 CLAUDEB_WARM_USER_EXPLICIT=true HOME="$HOME_FIXTURE" CLAUDEB_DIR="$FREEZE_STORE" \
   LLM_LIMITS_CLAUDEB_CMD="$WORK/user-signal-claudeb" LLM_LIMITS_CACHE="$FREEZE_CACHE" \
@@ -820,7 +820,7 @@ grep -Fqx 'true|--refresh --start-windows --heal' "$USER_CHILD_LOG" \
 printf '{"started_at":%s,"until":%s,"reason":"x"}\n' "$((now - 7200))" "$((now - 3600))" >"$FREEZE_STORE/token-freeze"
 HOME="$HOME_FIXTURE" CLAUDEB_DIR="$FREEZE_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-noop" \
   LLM_LIMITS_CACHE="$FREEZE_CACHE" /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1 || true
-jq -e '(.vendors.claude.refresh_error.cause // "" | contains("auto-refresh frozen")) | not' "$FREEZE_CACHE" >/dev/null \
+jq -e '(.vendors.claude.refresh_error.cause // "" | contains("curl refresh frozen")) | not' "$FREEZE_CACHE" >/dev/null \
   || fail "expired token-freeze until must render as unfrozen"
 jq -e '(.vendors.claude.refresh_error.needs_user_entry // false) == false and
        ([.vendors.claude.accounts[] | select(.account == "frz")][0].needs_user_entry // false) == false' \
@@ -833,7 +833,7 @@ printf '{"started_at":%s,"reason":"token-freeze experiment"}\n' "$now" >"$FREEZE
 printf '{"frz":{"attempted_at":%s,"outcome":"429","retry_after_until":%s,"strikes":6}}\n' "$((now - 10800))" "$((now + 3600))" >"$FREEZE_STORE/oauth-attempts.json"
 HOME="$HOME_FIXTURE" CLAUDEB_DIR="$FREEZE_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-noop" \
   LLM_LIMITS_CACHE="$FREEZE_CACHE" /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1 || true
-jq -e '(.vendors.claude.refresh_error.cause | contains("auto-refresh frozen (experiment)"))
+jq -e '(.vendors.claude.refresh_error.cause | contains("curl refresh frozen (experiment)"))
        and (.vendors.claude.refresh_error.cause | contains("token rate-limited") | not)' "$FREEZE_CACHE" >/dev/null \
   || fail "stale pre-freeze 429 masked the active freeze cause"
 
@@ -843,12 +843,29 @@ printf '{"frz":{"outcome":"warm-failed","warm_outcome":"warm-failed","warm_cause
 HOME="$HOME_FIXTURE" CLAUDEB_DIR="$FREEZE_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-noop" \
   LLM_LIMITS_CACHE="$FREEZE_CACHE" /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1 || true
 jq -e '(.vendors.claude.refresh_error.cause | contains("needs re-login"))
-       and (.vendors.claude.refresh_error.cause | contains("auto-refresh frozen") | not)' "$FREEZE_CACHE" >/dev/null \
+       and (.vendors.claude.refresh_error.cause | contains("curl refresh frozen") | not)' "$FREEZE_CACHE" >/dev/null \
   || fail "auth-shaped cause hidden by the frozen message"
 jq -e '.vendors.claude.refresh_error.needs_user_entry == true and
   ([.vendors.claude.accounts[] | select(.account == "frz")][0].needs_user_entry == true)' \
   "$FREEZE_CACHE" >/dev/null \
   || fail "needs-relogin cause was not classed for account entry"
+
+# The freeze covers the curl path only; the revive path is the sanctioned replacement, so its
+# own failure cause is live evidence and the banner must not paint over it.
+printf '{"frz":{"warm_outcome":"warm-failed","warm_cause":"warm-429","warm_kind":"revive","warm_attempted_at":%s}}\n' \
+  "$((now - 120))" >"$FREEZE_STORE/oauth-attempts.json"
+HOME="$HOME_FIXTURE" CLAUDEB_DIR="$FREEZE_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-noop" \
+  LLM_LIMITS_CACHE="$FREEZE_CACHE" /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1 || true
+jq -e '(.vendors.claude.refresh_error.cause | contains("warm HTTP 429"))
+       and (.vendors.claude.refresh_error.cause | contains("curl refresh frozen") | not)' "$FREEZE_CACHE" >/dev/null \
+  || fail "a revive-recorded cause was masked by the frozen banner"
+# A warm-kind cause of the same shape still belongs to the frozen curl era.
+printf '{"frz":{"warm_outcome":"warm-failed","warm_cause":"warm-429","warm_kind":"warm","warm_attempted_at":%s}}\n' \
+  "$((now - 120))" >"$FREEZE_STORE/oauth-attempts.json"
+HOME="$HOME_FIXTURE" CLAUDEB_DIR="$FREEZE_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-noop" \
+  LLM_LIMITS_CACHE="$FREEZE_CACHE" /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1 || true
+jq -e '.vendors.claude.refresh_error.cause | contains("curl refresh frozen (experiment) — revive path active")' \
+  "$FREEZE_CACHE" >/dev/null || fail "a non-revive cause escaped the frozen banner"
 
 # Per-account staleness causes self-clear on passive collects; other shapes never drop.
 PASSIVE_STORE="$WORK/claudeb-passive-store"

@@ -1,6 +1,7 @@
-# Set by llm-limits.sh on the vendor CLIs it invokes: the collector already
-# rebuilds the merged cache at the end of its run, and an announce from its own
-# child would race that write (never recurse — the passive run calls no CLI).
+# Set by a caller that runs the collector itself — llm-limits.sh on the vendor CLIs it
+# invokes, llm-refresh around the revive it drives: that run already rebuilds the merged
+# cache, and an announce from its child would race that write and duplicate the collect
+# (never recurse — the passive run calls no CLI).
 announce_suppressed() {
   [ "${LLM_LIMITS_ANNOUNCE_SUPPRESS:-0}" = 1 ]
 }

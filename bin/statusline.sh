@@ -451,10 +451,17 @@ rl_merge() {
         or ((($f.resets_at? // 0) == ($o.resets_at? // 0))
             and (((($f.used_percentage? // 0)) | round) > ((($o.used_percentage? // 0)) | round)))
       );
-    $old
+    ($old
     + (if newer("five_hour") then {five_hour: ($fresh.five_hour | stamp)} else {} end)
-    + (if newer("seven_day") then {seven_day: ($fresh.seven_day | stamp)} else {} end)
-    + (if newer("five_hour") or newer("seven_day") then {auth: {status: "ok", checked_at: $now}} else {} end)
+    + (if newer("seven_day") then {seven_day: ($fresh.seven_day | stamp)} else {} end)) as $out |
+    # A live session on the account IS the login evidence, and nothing else clears the flag in
+    # the background: while it stands every automated refresh skips the account as unrefreshable.
+    # An idle session replays its last readings forever, so only a five-hour window that opened
+    # after the logged-out verdict can speak — an older replay predates the credentials going.
+    if newer("five_hour") and (($fresh.five_hour.resets_at? // 0) > ($old.auth_checked_at? // 0))
+    then ($out + {auth: {status: "ok", checked_at: $now}}
+          | del(.auth_needed, .auth_cause, .auth_checked_at))
+    else $out end
   ' 2>/dev/null) || merged_rl=""
 }
 

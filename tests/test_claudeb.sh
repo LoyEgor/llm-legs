@@ -2435,7 +2435,7 @@ EOF
     chmod +x "$RV_DRIVER"
   }
   rotate() { printf "printf '%%s' '{\"claudeAiOauth\":{\"refreshToken\":\"rt-new\",\"accessToken\":\"at-new\",\"expiresAt\":%s}}' >'%s'" "$rv_fresh_ms" "$KC/$(kc_key "$(svc_of "$1")")"; }
-  account_names() { printf 'rvok\nrvoff\nrvauth\nrvauthok\nrvlogin\nrvfail\nrvfresh\nrvstale\nrv401\n'; }
+  account_names() { printf 'rvok\nrvoff\nrvauth\nrvauthok\nrvlogin\nrvfail\nrvfresh\nrvstale\nrv401\nrvnodrv\n'; }
   is_disabled() { [ "$1" = rvoff ]; }
   # The whole block runs under an active freeze: revive must not notice it.
   printf '{"started_at":%s,"reason":"token-freeze experiment"}\n' "$now" >"$token_freeze_file"
@@ -2533,6 +2533,16 @@ EOF
   assert jq -e '.five_hour.used_percentage == 7 and (has("auth_needed") | not)' "$limits_dir/rvfail.json" >/dev/null
   assert_fails test -s "$RV_CURL"
   assert jq -se 'any(.[]; .account == "rvfail" and .kind == "session" and .outcome == "failed")' "$token_attempts_file" >/dev/null
+  assert jq -e '.rvfail.warm_cause == "session-failed" and .rvfail.warm_kind == "revive"' "$oauth_attempts_file" >/dev/null
+
+  # No driver at all is the third pre-probe exit.
+  seed_creds rvnodrv 1
+  : >"$RV_CURL"; : >"$token_attempts_file"; printf '{}' >"$oauth_attempts_file"
+  rv_nodrv_rc=0
+  CLAUDEB_SESSION_DRIVER="$WORK/rv-absent-driver" revive_account rvnodrv >/dev/null 2>&1 || rv_nodrv_rc=$?
+  assert test "$rv_nodrv_rc" -eq 5
+  assert jq -e '.rvnodrv.warm_cause == "no-driver" and .rvnodrv.warm_kind == "revive"' "$oauth_attempts_file" >/dev/null
+  assert_fails test -s "$RV_CURL"
 
   # A session that exits 0 while the token stays expired is not a rotation.
   seed_creds rvstale 1
@@ -2543,6 +2553,9 @@ EOF
   assert test "$rv_stale_rc" -eq 5
   assert_fails test -s "$RV_CURL"
   assert jq -se 'any(.[]; .account == "rvstale" and .kind == "session" and .outcome == "no-rotation")' "$token_attempts_file" >/dev/null
+  # Each pre-probe failure has to leave a revive-kind cause behind, or the freeze banner speaks
+  # for a path the freeze does not own.
+  assert jq -e '.rvstale.warm_cause == "no-rotation" and .rvstale.warm_kind == "revive"' "$oauth_attempts_file" >/dev/null
 
   # A rotated token whose usage probe fails reports the probe's own cause, and a 401 against a
   # token this run just proved live is the login verdict — otherwise the heartbeat retries forever.
@@ -2554,7 +2567,9 @@ EOF
   assert test "$rv_401_rc" -eq 4
   assert grep -q 'cause=needs-relogin http=401' "$WORK/rv-401.err"
   assert jq -e '.auth_needed == true and .auth_cause == "needs-relogin"' "$limits_dir/rv401.json" >/dev/null
-  assert jq -e '.rv401.warm_outcome == "warm-failed" and .rv401.warm_cause == "needs-relogin"' "$oauth_attempts_file" >/dev/null
+  # warm_kind is what keeps the freeze banner off a cause the revive path itself observed.
+  assert jq -e '.rv401.warm_outcome == "warm-failed" and .rv401.warm_cause == "needs-relogin" and
+    .rv401.warm_kind == "revive"' "$oauth_attempts_file" >/dev/null
   assert jq -se 'any(.[]; .account == "rv401" and .kind == "revive" and .outcome == "warm-failed")' "$token_attempts_file" >/dev/null
 
   rm -f "$token_freeze_file"

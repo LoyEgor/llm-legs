@@ -365,7 +365,7 @@ if not color or color.red ~= 0.9 or color.green ~= 0.25 or color.blue ~= 0.2
   error("expired at-limit row was not dim red")
 end
 local entryState = { starts = {}, alerts = {} }
-local entryCause = "alona: not refreshed (auto-refresh frozen (experiment) — enter the account to refresh)"
+local entryCause = "alona: not refreshed (needs-relogin)"
 local entry = loadModule({ schema = 1, vendors = {
   claude = {
     available = true,
@@ -391,7 +391,7 @@ end
 if not entryRow or not entryRow:find("10m", 1, true) or not entryRow:find("!", 1, true) then
   error("entry-only account row lacks age-adjacent ! marker: " .. tostring(entryRow))
 end
-if not entryError or not entryError:find("auto-refresh frozen", 1, true) then
+if not entryError or not entryError:find("needs-relogin", 1, true) then
   error("entry-only error text disappeared")
 end
 local fallbackState = { starts = {}, alerts = {} }

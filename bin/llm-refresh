@@ -178,6 +178,8 @@ next_revive_account() {
   local best='' best_attempt=-1 best_as_of=-1
   while IFS=$'\t' read -r account as_of blocked; do
     [ -n "$account" ] || continue
+    # claudeb reserves both names, so revive would refuse them on every tick forever.
+    case "$account" in main|-) continue ;; esac
     jq -e --arg account "$account" 'index($account) != null' <<<"$wanted" >/dev/null || continue
     case "$as_of" in ''|*[!0-9]*) as_of=0 ;; esac
     attempted=$(jq -r --arg account "$account" '.[$account] // 0' <<<"$attempts")
@@ -326,11 +328,48 @@ journal_attempt() {
       detail:$detail,interval_min:$interval}' >>"$journal_file"
 }
 
+# Read and normalize the on-disk tick state. Also used mid-tick: a revive hands the lock back,
+# so whatever another tick wrote while we were out is the state we must continue from.
+state_read() {
+  local raw='{}'
+  if [ -r "$state_file" ]; then
+    raw=$(jq -c 'select(type == "object")' "$state_file" 2>/dev/null || true)
+    [ -n "$raw" ] || raw='{}'
+  fi
+  normalized_state "$raw"
+}
+
+state_persist() {
+  local payload=$1 tmp
+  tmp=$(mktemp "${state_file}.tmp.XXXXXX") || return 1
+  tick_tmp=$tmp
+  if ! printf '%s\n' "$payload" >"$tmp" || ! jq -e '
+    .claude and .codex and .gemini and .opencode and
+    all(.[]; type == "object")' "$tmp" >/dev/null; then
+    rm -f "$tmp"
+    tick_tmp=''
+    return 1
+  fi
+  mv -f "$tmp" "$state_file"
+  tick_tmp=''
+}
+
+# claudeb reserves both names, and account_rows invents a `main` row for a store with no
+# accounts array: revive can never take them, so for Claude they are unrefreshable rather
+# than work the tick keeps failing to do. Other vendors own a real `main` account.
+reserved_accounts() {
+  jq -c '[.[] | select(. == "main" or . == "-")]' <<<"$1"
+}
+
+drop_reserved() {
+  jq -c '[.[] | select(. != "main" and . != "-")]' <<<"$1"
+}
+
 run_tick() {
-  local raw_state state due='[]' vendor interval last clean passive_rc=0
+  local state due='[]' vendor interval last clean passive_rc=0
   local stale tried outcome detail step target_rc errors post_stale refreshed_count claude_note
   local pushback next_interval new_clean lock_dir state_tmp refresh_log rc account blocked
-  local opencode_result lock_lost=0
+  local opencode_result lock_lost=0 reserved='[]'
 
   command -v jq >/dev/null 2>&1 || { echo 'llm-refresh: jq is required' >&2; return 3; }
   [ -x "$collector" ] || { echo "llm-refresh: collector is not executable: $collector" >&2; return 3; }
@@ -340,12 +379,7 @@ run_tick() {
   lock_dir="${state_file}.lock"
   refresh_lock_acquire "$lock_dir" || return 0
 
-  raw_state='{}'
-  if [ -r "$state_file" ]; then
-    raw_state=$(jq -c 'select(type == "object")' "$state_file" 2>/dev/null || true)
-    [ -n "$raw_state" ] || raw_state='{}'
-  fi
-  state=$(normalized_state "$raw_state")
+  state=$(state_read)
 
   for vendor in claude codex gemini opencode; do
     interval=$(jq -r --arg vendor "$vendor" '.[$vendor].interval_min' <<<"$state")
@@ -379,10 +413,16 @@ run_tick() {
       journal_attempt "$vendor" "$(jq -r '.step' <<<"$opencode_result")" \
         "$(jq -c '.tried' <<<"$opencode_result")" "$(jq -r '.outcome' <<<"$opencode_result")" \
         "$(jq -r '.detail' <<<"$opencode_result")" "$next_interval" || return 5
+      [ "$lock_lost" -eq 0 ] || return 0
       continue
     fi
     stale=$(stale_accounts_json "$vendor" "$interval")
     blocked=$(blocked_accounts_json "$vendor" "$interval")
+    reserved='[]'
+    if [ "$vendor" = claude ]; then
+      reserved=$(reserved_accounts "$stale")
+      stale=$(drop_reserved "$stale")
+    fi
     tried='[]'
     outcome=fresh-passive
     detail='passive collect made all accounts fresh'
@@ -392,7 +432,6 @@ run_tick() {
     claude_note=''
 
     if [ "$(jq 'length' <<<"$stale")" -gt 0 ]; then
-      step=1
       if [ "$vendor" = claude ]; then
         # Claude rotates only through a real interactive session (docs/EXIT-PLAN.md
         # § Token-freeze experiment), so a heartbeat tick opens exactly one — the
@@ -404,6 +443,7 @@ run_tick() {
         elif [ -z "$account" ]; then
           claude_note='no stale Claude account could be selected'
         else
+          step=1
           tried=$(jq -c --arg account "$account" '. + [$account]' <<<"$tried")
           # Every attempt stamps, success or not — that is what rotates the selection.
           state=$(jq -c --arg vendor "$vendor" --arg account "$account" --argjson now "$now" \
@@ -413,10 +453,24 @@ run_tick() {
           refresh_log=$(mktemp "${TMPDIR:-/tmp}/llm-refresh.XXXXXX") || return 5
           tick_tmp=$refresh_log
           rc=0
-          timeout_command "$revive_timeout" "$claudeb_bin" revive "$account" \
+          # An interactive session runs for minutes; holding the tick lock across it would park
+          # every other vendor's refresh behind it, so it is handed back like the opencode probe.
+          # The stamp must reach the FILE before the lock goes: a tick that starts while this
+          # session runs picks its account from what is on disk, and would otherwise open a
+          # second interactive session on the same account.
+          state_persist "$state" || return 5
+          refresh_lock_release
+          ( export LLM_LIMITS_ANNOUNCE_SUPPRESS=1
+            timeout_command "$revive_timeout" "$claudeb_bin" revive "$account" ) \
             >/dev/null 2>"$refresh_log" || rc=$?
+          if refresh_lock_acquire "$lock_dir"; then
+            # Whatever ran while we were out owns the file now; our own stamp is already in it.
+            state=$(state_read)
+          else
+            lock_lost=1
+          fi
           # revive writes the claudeb snapshot; only a collect folds it into the merged
-          # store the post-state below is read from.
+          # store the post-state below is read from — and it replaces revive's own announce.
           "$collector" >/dev/null 2>&1 || true
           errors=$(recorded_errors "$vendor" "$account" "$now")
           blocked=$(blocked_accounts_json "$vendor" "$interval")
@@ -431,6 +485,7 @@ run_tick() {
         fi
       else
         while IFS= read -r account; do
+          step=1
           tried=$(jq -c --arg account "$account" '. + [$account]' <<<"$tried")
           refresh_log=$(mktemp "${TMPDIR:-/tmp}/llm-refresh.XXXXXX") || return 5
           tick_tmp=$refresh_log
@@ -447,6 +502,7 @@ run_tick() {
       fi
 
       post_stale=$(stale_accounts_json "$vendor" "$interval")
+      [ "$vendor" != claude ] || post_stale=$(drop_reserved "$post_stale")
       refreshed_count=$(jq -n --argjson before "$stale" --argjson after "$post_stale" \
         '$before - $after | length')
       if [ -n "$claude_note" ]; then
@@ -484,6 +540,7 @@ run_tick() {
       fi
     fi
 
+    blocked=$(jq -c --argjson reserved "$reserved" '. + $reserved | unique' <<<"$blocked")
     if [ "$(jq 'length' <<<"$blocked")" -gt 0 ]; then
       detail="${detail:+$detail; }unrefreshable: $(jq -r 'join(",")' <<<"$blocked")"
     fi
@@ -505,19 +562,12 @@ run_tick() {
        .[$vendor].last_attempt_epoch=$now |
        .[$vendor].clean_since_epoch=$clean' <<<"$state")
     journal_attempt "$vendor" "$step" "$tried" "$outcome" "$detail" "$next_interval" || return 5
+    # Without the lock the next vendor's refresh would race whoever owns it now.
+    [ "$lock_lost" -eq 0 ] || return 0
   done < <(jq -r '.[]' <<<"$due")
 
   [ "$lock_lost" -eq 0 ] || return 0
-  state_tmp=$(mktemp "${state_file}.tmp.XXXXXX") || return 5
-  tick_tmp=$state_tmp
-  if ! printf '%s\n' "$state" >"$state_tmp" || ! jq -e '
-    .claude and .codex and .gemini and .opencode and
-    all(.[]; type == "object")' "$state_tmp" >/dev/null; then
-    rm -f "$state_tmp"
-    return 5
-  fi
-  mv -f "$state_tmp" "$state_file"
-  tick_tmp=''
+  state_persist "$state" || return 5
   if [ -r "$journal_file" ] && [ "$(wc -l <"$journal_file")" -gt 4000 ]; then
     state_tmp=$(mktemp "${journal_file}.tmp.XXXXXX") || return 5
     tick_tmp=$state_tmp

@@ -6,6 +6,7 @@
 # so the session costs no model tokens.
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -13,9 +14,11 @@ import pty
 import re
 import select
 import signal
+import struct
 import subprocess
 import sys
 import tempfile
+import termios
 import time
 
 EXIT_LOGIN = 4
@@ -23,6 +26,9 @@ EXIT_FAILED = 5
 
 CAPTURE_CAP = 262144
 SCAN_TAIL = 16384
+# pty.fork() leaves the slave at 0x0; the TUI lays itself out against the reported columns.
+WINSIZE_ROWS = 40
+WINSIZE_COLS = 120
 
 NAME_PATTERN = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]*$")
 ANSI_PATTERN = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-Z\\-_]")
@@ -136,6 +142,7 @@ def drive(account, cwd, timeout):
         (0.5, b"\x03"),
     )
     grace = env_number("CLAUDEB_SESSION_GRACE", 10.0)
+    login_grace = env_number("CLAUDEB_SESSION_LOGIN_GRACE", 10.0)
 
     claudeb = os.environ.get("CLAUDE_SESSION_DRIVER_CLAUDEB", "")
     if not (claudeb and os.access(claudeb, os.X_OK)):
@@ -155,8 +162,17 @@ def drive(account, cwd, timeout):
             pass
         os._exit(127)
 
+    try:
+        fcntl.ioctl(fd, termios.TIOCSWINSZ,
+                    struct.pack("HHHH", WINSIZE_ROWS, WINSIZE_COLS, 0, 0))
+    except OSError:
+        pass
+
     capture = bytearray()
     login = False
+    login_until = None
+    login_settled = False
+    next_token_check = 0.0
     status = None
     step = 0
     start = time.monotonic()
@@ -177,13 +193,26 @@ def drive(account, cwd, timeout):
             capture += chunk
             if len(capture) > CAPTURE_CAP:
                 del capture[:len(capture) - CAPTURE_CAP]
-            if looks_like_login(capture[-SCAN_TAIL:]):
+            if not login_settled and login_until is None and looks_like_login(capture[-SCAN_TAIL:]):
+                # revive drives an account whose token is ALREADY expired, so a marker can
+                # simply be a hint printed while the CLI rotates. Hold the exit ladder and
+                # let the keychain answer before condemning the account to a human login.
+                login_until = time.monotonic() + login_grace
+                next_token_check = 0.0
+        if login_until is not None:
+            elapsed = time.monotonic()
+            if elapsed >= next_token_check:
+                next_token_check = elapsed + 1.0
+                if token_valid(account):
+                    login_until = None
+                    login_settled = True
+            if login_until is not None and elapsed >= login_until:
                 login = True
                 break
         status = reap(pid)
         if status is not None:
             break
-        if step < len(steps) and time.monotonic() >= next_at:
+        if step < len(steps) and login_until is None and time.monotonic() >= next_at:
             try:
                 os.write(fd, steps[step][1])
             except OSError:
@@ -193,6 +222,10 @@ def drive(account, cwd, timeout):
                 next_at = time.monotonic() + steps[step][0]
             else:
                 deadline = min(deadline, time.monotonic() + grace)
+    # The session ended mid-grace: the keychain still decides in main(), but an unresolved
+    # marker is the only evidence left if it says the token is dead.
+    if login_until is not None:
+        login = True
     if status is None:
         status = reap(pid)
     if status is None:
@@ -248,7 +281,7 @@ def main(argv):
     # printed the word `/login` must never be reported as needing a human.
     if token_valid(args.account):
         outcome, code = "success", 0
-    elif login or looks_like_login(capture):
+    elif login:
         outcome, code = "login-needed", EXIT_LOGIN
     else:
         outcome, code = "failed", EXIT_FAILED

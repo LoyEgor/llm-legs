@@ -586,7 +586,8 @@ oauth_attempt_update() {
     --arg name "$name" --arg outcome "$outcome" --argjson now "$now" --argjson retry "$retry_until" \
     --argjson credentials_expires_at "$credentials_expires_at" --arg warm_cause "$warm_cause" \
     --argjson http_status "$http_status" --argjson transport_rc "$transport_rc" \
-    --argjson bypass_attempted_at "$bypass_attempted_at" '
+    --argjson bypass_attempted_at "$bypass_attempted_at" \
+    --arg journal_kind "${CLAUDEB_JOURNAL_KIND:-}" '
     def strikes: if type == "number" and . >= 0 then floor else 0 end;
     def cooldown($s):
       (if $s < 1 then 1 else $s end) as $n |
@@ -600,8 +601,9 @@ oauth_attempt_update() {
       $old + {($name): ({attempted_at:$now,outcome:$outcome,retry_after_until:0}
         + (if ($entry.bypass_attempted_at // 0) > 0 then {bypass_attempted_at:$entry.bypass_attempted_at} else {} end))}
     elif $outcome == "warming" or $outcome == "warm-failed" then
-      $old + {($name): (($entry | del(.warm_cause)) + {warm_attempted_at:$now,warm_outcome:$outcome}
-        + (if $warm_cause == "" then {} else {warm_cause:$warm_cause} end))}
+      $old + {($name): (($entry | del(.warm_cause, .warm_kind)) + {warm_attempted_at:$now,warm_outcome:$outcome}
+        + (if $warm_cause == "" then {} else {warm_cause:$warm_cause} end)
+        + (if $journal_kind == "" then {} else {warm_kind:$journal_kind} end))}
     else $old + {($name): (($old[$name] // {}) as $entry |
       (($entry.strikes // 0) | strikes) as $old_strikes |
       (if $outcome == "429" then ($old_strikes + 1) else $old_strikes end) as $new_strikes |
@@ -2285,6 +2287,9 @@ revive_account() {
     driver=$(session_driver_cmd) || driver=''
     if [ -z "$driver" ] || [ ! -x "$driver" ]; then
       token_journal "$name" session no-driver
+      # Every revive verdict has to reach oauth-attempts.json: a cause the freeze banner would
+      # otherwise mask is exactly what the stale-cause line must show (docs/DIAGNOSTICS.md).
+      CLAUDEB_JOURNAL_KIND=revive oauth_attempt_update "$name" warm-failed 0 0 no-driver
       printf 'claudeb: revive: claude-session-driver not found\n' >&2
       return 5
     fi
@@ -2293,6 +2298,7 @@ revive_account() {
       0)
         if token_needs_refresh "$name"; then
           token_journal "$name" session no-rotation
+          CLAUDEB_JOURNAL_KIND=revive oauth_attempt_update "$name" warm-failed 0 0 no-rotation
           printf 'claudeb: revive: %s: session ended with the token still expired\n' "$name" >&2
           return 5
         fi
@@ -2306,6 +2312,7 @@ revive_account() {
         ;;
       *)
         token_journal "$name" session failed
+        CLAUDEB_JOURNAL_KIND=revive oauth_attempt_update "$name" warm-failed 0 0 session-failed
         printf 'claudeb: revive: %s: session driver failed (exit %s)\n' "$name" "$driver_rc" >&2
         return 5
         ;;
