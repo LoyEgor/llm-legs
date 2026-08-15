@@ -167,34 +167,6 @@ function M.cutPlan()
   return { 127 }
 end
 
--- The TUI has no document motion: M-</M->, Ctrl+Home and the page keys do nothing. The
--- tail byte below is Ctrl+A/Ctrl+E, a line edge, which on the top and bottom row is the
--- document edge as well. Repeated Up/Down does reach
--- the edges, but only while the whole run arrives as ONE tty write — an Up that lands
--- on the top line as a keypress of its own recalls history over the draft instead, at
--- every gap down to zero. That is what `atomic` carries to emit. Overshooting inside
--- the run costs nothing, but the count cannot simply grow to cover a taller draft:
--- past roughly a kilobyte the run stops arriving as one read, and the split hands the
--- top line a discrete Up. 400 repeats clobbers the draft where 200 does not.
-function M.docMotionPlan(arrow, edge)
-  local plan = { atomic = true }
-  for _ = 1, 200 do
-    plan[#plan + 1] = 27
-    plan[#plan + 1] = 91
-    plan[#plan + 1] = arrow
-  end
-  plan[#plan + 1] = edge
-  return plan
-end
-
-function M.docStartPlan()
-  return M.docMotionPlan(65, 1)
-end
-
-function M.docEndPlan()
-  return M.docMotionPlan(66, 5)
-end
-
 -- The fullscreen renderer draws the input between two full-width `─` rules and
 -- separates its `❯` prompt from the draft with U+00A0, not a space; the classic
 -- renderer draws a `│ > … │` rounded box. Whichever border comes LAST wins: the
@@ -722,20 +694,16 @@ local shared = {
   -- path costs the next typed character a DEL of its own.
   selectionDragLimit = 4,
   gestureWatchdogDelay = 2.5,
-  -- What the Option+Cmd+Shift arrow hands back to Terminal, keyed by its arrow.
+  displayCaretDelay = 0.02,
+  displayCaretInterval = 0.016,
+  -- What the Option+Cmd+Shift horizontal arrow hands back to Terminal, keyed by its arrow.
   -- Left/Right are Terminal's own Show Previous/Next Tab key equivalents, held here
   -- rather than looked up in the menu: the item's title is localized, its key
-  -- equivalent is not. Up/Down displace nothing of ours, so the chord reposts the bare
-  -- Cmd+arrow Terminal already answers with its mark navigation.
+  -- equivalent is not.
   arrowChords = {
     [123] = { modifiers = { "ctrl", "shift" }, key = "tab" },
     [124] = { modifiers = { "ctrl" }, key = "tab" },
-    [125] = { modifiers = { "cmd" }, key = "down" },
-    [126] = { modifiers = { "cmd" }, key = "up" },
   },
-  -- Only the document motions still travel as bytes. The row motions are clicks: the
-  -- caret stays on its own visual row, and no byte sequence the TUI answers to does.
-  arrowPlans = { [125] = M.docEndPlan, [126] = M.docStartPlan },
   -- What Cmd+Shift+arrow selects, matched to what the bare chord moves over.
   arrowSpans = { [123] = "row", [124] = "row", [125] = "doc", [126] = "doc" },
   -- Bumped once per gesture and captured by every closure that gesture arms. A scrape
@@ -753,6 +721,14 @@ local shared = {
   selectAll = { capacity = 64, writes = 0, scrape = {}, geometry = {}, drag = {},
     total = {}, backend = {} },
 }
+
+function shared.stopDisplayCaret()
+  if shared.displayCaretTimer and shared.displayCaretTimer.stop then
+    shared.displayCaretTimer:stop()
+  end
+  shared.displayCaretTimer = nil
+  shared.displayCaretTarget = nil
+end
 
 -- The one way a selection is armed, and the one way a bail hands back the tracking it
 -- cleared on its way in: nothing was clicked, so the selection is still on screen and
@@ -777,6 +753,7 @@ local function selectionResume()
 end
 
 local function clearSelectionState()
+  shared.stopDisplayCaret()
   selection.likely = false
   selection.point, selection.painted, selection.word = nil, nil, nil
   shared.reanchor = nil
@@ -1111,6 +1088,7 @@ local function sameObserved(left, right)
 end
 
 local function invalidateContext()
+  shared.stopDisplayCaret()
   generation = generation + 1
   shared.selectingObserved = nil
   cachedContext = nil
@@ -3513,6 +3491,9 @@ function shared.paintSpan(direction, press, head, cells, totalLines, columns, fr
     pauseBetweenDragSteps()
     M.postChord({ "shift" }, shrink)
   end
+  if trackHead then
+    shared.moveDisplayCaret(selection.painted.head, selection.painted.cache, true)
+  end
   return points
 end
 
@@ -4100,6 +4081,23 @@ function shared.clickBoundaryAt(boundary, rightward, cells, totalLines, columns,
     totalLines, columns, frame)
 end
 
+-- Read off the box rows, not the draft cells: a blank line has no cells at all, so a draft
+-- opening or ending on one would put its document edge on the nearest row that has text.
+function shared.documentEdge(direction, layout)
+  if type(layout) ~= "table" then
+    return nil
+  end
+  if direction < 0 then
+    return layout.firstRow, layout.firstColumn
+  end
+  local cells = withoutTrailingSpace(draftCells(layout))
+  local last = cells[#cells]
+  if last and last.row == layout.lastRow then
+    return last.row, shared.clampedFreeColumn(last, false, layout.columns)
+  end
+  return layout.lastRow, layout.lastColumn
+end
+
 local function runGestureExtend(original, resume, flight, pressed)
   if not currentTargetMatches(original, observeFrontmost()) then
     shared.endGestureFlight(flight)
@@ -4201,26 +4199,101 @@ function shared.charStep(painted, step)
   return nextHead
 end
 
+function shared.boundaryPosition(boundary, cache)
+  local cell = cache and cache.cells and cache.cells[boundary]
+  if cell then
+    return cell.row, cell.column
+  end
+  local previous = cache and cache.cells and cache.cells[boundary - 1]
+  if not previous then
+    return nil
+  end
+  local row, column = previous.row, previous.column + previous.width
+  if cache.columns and column > cache.columns then
+    -- Every box row is drawn with the same lead, so the draft's own left edge is where the
+    -- wrapped boundary lands; column 1 is the box frame, outside the draft entirely.
+    row, column = row + 1, cache.cells[1] and cache.cells[1].column or 1
+  end
+  return row, column
+end
+
+function shared.writeDisplayCaret()
+  local target = shared.displayCaretTarget
+  if not target then
+    return
+  end
+  pcall(function()
+    local output = io.open(target.tty, "w")
+    if output then
+      output:write(string.format("\27[%d;%dH", target.row, target.column))
+      output:close()
+    end
+  end)
+end
+
+function shared.moveDisplayCaret(boundary, cache, persistent)
+  local row, column = shared.boundaryPosition(boundary, cache)
+  if not row then
+    return false
+  end
+  if runtimeHooks and runtimeHooks.cursor then
+    local ok = pcall(runtimeHooks.cursor, row, column)
+    return ok
+  end
+  local tty = resolvedTty
+  if not tty then
+    return false
+  end
+  shared.displayCaretTarget = {
+    tty = tty, row = row, column = column, persistent = persistent == true,
+  }
+  if shared.displayCaretTimer then
+    return true
+  end
+  local after = runtimeHooks and runtimeHooks.after or hs.timer.doAfter
+  local every = runtimeHooks and runtimeHooks.every or hs.timer.doEvery
+  -- TUI status redraws keep restoring readline's stale cursor while Terminal selection
+  -- is live, so the display-only CUP is maintained until that selection is cleared.
+  shared.displayCaretTimer = after(shared.displayCaretDelay, function()
+    shared.displayCaretTimer = nil
+    shared.writeDisplayCaret()
+    local target = shared.displayCaretTarget
+    if target and target.persistent then
+      shared.displayCaretTimer = every(shared.displayCaretInterval,
+        shared.writeDisplayCaret)
+    else
+      shared.displayCaretTarget = nil
+    end
+  end)
+  return true
+end
+
 function shared.continueCharSelection(keyCode, observed)
   local painted = selection.painted
   if not shared.paintedCacheMatches(painted, observed) then
     return nil
   end
-  local nextHead = shared.charStep(painted, keyCode == 123 and -1 or 1)
+  local step = keyCode == 123 and -1 or 1
+  local nextHead = shared.charStep(painted, step)
   if not nextHead then
     return true
   end
-  M.postChord({ "shift" }, keyCode == 123 and "left" or "right")
+  M.postChord({ "shift" }, step < 0 and "left" or "right")
   if nextHead == painted.anchor then
     local current = painted.head < painted.anchor and painted.cache.cells[painted.head]
       or painted.cache.cells[painted.head - 1]
     local reanchor = { cache = painted.cache, caret = painted.anchor, row = current.row,
       generation = generation }
     clearSelectionState()
+    -- No bare arrow behind the shrink: only a plain click moves the TUI's own caret and
+    -- neither the collapsing span nor its one-cell repaint posts one, so it is still on
+    -- the anchor this collapses to and an arrow would walk it a cell past.
+    shared.moveDisplayCaret(painted.anchor, painted.cache)
     shared.reanchor = reanchor
   else
     painted.head = nextHead
     selection.word = nil
+    shared.moveDisplayCaret(nextHead, painted.cache, true)
   end
   return true
 end
@@ -4294,6 +4367,7 @@ function shared.runCharResync(original, resume, flight, keyCode)
         local reanchor = { cache = refreshed.cache, caret = refreshed.anchor,
           row = cells[target].row, generation = generation }
         clearSelectionState()
+        shared.moveDisplayCaret(refreshed.anchor, refreshed.cache)
         shared.reanchor = reanchor
       end
       return true
@@ -4420,7 +4494,43 @@ local function startWordGesture(keyCode, observed, resume, kind)
   local flight = shared.beginGestureFlight()
   deferAsync(function()
     local ok
-    if cache and not kind then
+    if kind == "doc-caret" then
+      ok = pcall(function()
+        if not currentTargetMatches(original, observeFrontmost()) then
+          shared.endGestureFlight(flight)
+          return
+        end
+        scrapeScreen(function(screenText, backend)
+          if not shared.gestureFlies(flight) then
+            return
+          end
+          shared.completeGestureWork(flight, function()
+            if (backend ~= "ax" and not currentTargetMatches(original, observeFrontmost()))
+                or gestureDraftTouched then
+              return false
+            end
+            local _, _, totalLines, layout = M.parseInputBox(screenText)
+            local row, column = shared.documentEdge(direction, layout)
+            if not row or type(totalLines) ~= "number" or totalLines <= 0 then
+              return false
+            end
+            local frame = targetWindowFrame(original.observed and original.observed.windowID,
+              totalLines, layout.columns)
+            -- armCaretAt's standing-on-its-edge guard, in the terms this path has: the
+            -- caret cell AX reports against the edge the chord reaches for.
+            local point = shared.caretPoint(original.observed)
+            local caretRow, caretColumn
+            if point then
+              caretRow, caretColumn = M.gridCell(frame, totalLines, layout.columns, point)
+            end
+            if caretRow == row and caretColumn == column then
+              return true
+            end
+            return shared.clickAt(row, column, totalLines, layout.columns, frame)
+          end)
+        end, original.observed)
+      end)
+    elseif cache and not kind then
       ok = pcall(runGestureExtend, original, resume, flight, direction)
     else
       ok = pcall(shared.startGesture, original, direction, flight, kind)
@@ -4566,12 +4676,35 @@ local function handleEvent(event, keyCode, isRepeat)
         return true
       end
     end
+    local modifiedVertical = (keyCode == 125 or keyCode == 126)
+      and (flags.cmd or flags.alt or flags.shift or flags.ctrl)
+    if modifiedVertical then
+      local frontmost = observeFrontmost()
+      local frontVerdict = foregroundVerdict(frontmost)
+      if frontmost.bundleID == terminalBundleID and frontVerdict ~= "not-claude" then
+        if cutInFlight or selectAllInFlight or pendingHoldsItems() then
+          return true
+        end
+        if frontVerdict == "claude" and flags.cmd and not flags.alt and not flags.ctrl then
+          if gestureInFlight then
+            gestureDraftTouched = true
+          end
+          clearSelectionState()
+          if flags.shift then
+            startWordGesture(keyCode, frontmost, nil, shared.arrowSpans[keyCode])
+          else
+            startWordGesture(keyCode, frontmost, nil, "doc-caret")
+          end
+        end
+        return true
+      end
+    end
     -- Terminal spends Cmd+Left/Right on its own tab switch, so the switch moves to
     -- Option+Cmd+Shift+arrow and the bare chord becomes the caret motion macOS types
     -- everywhere else: Left/Right place the caret on the row edge with a click,
-    -- Cmd+Up/Down carry the document motion as bytes, and Cmd+Shift paints a selection
-    -- over what the bare chord moves across. Arrow keys carry the fn flag, so the
-    -- modifiers are read one by one rather than matched exactly. Ahead of the
+    -- Cmd+Shift paints a selection over what the bare chord moves across. Arrow keys
+    -- carry the fn flag, so the modifiers are read one by one rather than matched
+    -- exactly. Ahead of the
     -- invalidation below on purpose: that drops the very cached verdict the Claude
     -- branch is gated on.
     if flags.cmd and not flags.ctrl and shared.arrowChords[keyCode]
@@ -4601,11 +4734,6 @@ local function handleEvent(event, keyCode, isRepeat)
             invalidateAndRefresh()
           elseif flags.shift then
             startWordGesture(keyCode, frontmost, nil, shared.arrowSpans[keyCode])
-          elseif shared.arrowPlans[keyCode] then
-            -- The caret move deliberately keeps the cached verdict: dropped here, a
-            -- second press inside the refresh window reads uncertain and swallows
-            -- instead of moving the caret the user asked for.
-            emit(shared.arrowPlans[keyCode]())
           else
             startWordGesture(keyCode, frontmost, nil, "caret")
           end
@@ -4908,7 +5036,7 @@ function M.setTestHooks(hooks)
   pendingNextID = 0
   pendingStartedAt = nil
   cachedContext = nil
-  resolvedTty = nil
+  resolvedTty = hooks and hooks.tty or nil
   resolvedObserved = nil
   repeatDecisions = {}
   skipRepeatCache = false

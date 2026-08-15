@@ -981,6 +981,7 @@ local function integrationContext(types, opts)
   local scrapeObserved
   local writtenText
   local mouseEvents = {}
+  local cursorMoves = {}
   local veilTrace = {}
   local observeCount = 0
   local focusedCount = 0
@@ -993,6 +994,7 @@ local function integrationContext(types, opts)
   local caretPoint = opts.caret
   local caretCalibrationNeeded = opts.caretCalibrationNeeded == true
   local caretReads = 0
+  local repeatingTimer
   local hooks = {
     veil = function(action)
       veilTrace[#veilTrace + 1] = action
@@ -1043,6 +1045,12 @@ local function integrationContext(types, opts)
         "the calibration state was read for another window than the gesture's")
       return caretCalibrationNeeded
     end,
+    -- A context that names a tty stands for the live build instead: the CUP write, the
+    -- timer that repeats it and the teardown that stops it all run for real there.
+    cursor = not opts.cursorTty and function(row, column)
+      cursorMoves[#cursorMoves + 1] = { row = row, column = column }
+    end or nil,
+    tty = opts.cursorTty,
     -- Only contexts that opt in stand for a real pointer; the rest keep the mouse hook
     -- alone, which is the module's "no physical pointer to move" case.
     pointer = opts.pointer and function(point)
@@ -1103,6 +1111,11 @@ local function integrationContext(types, opts)
       if delay == 0.5 then pointerClearTimeout = timeout end
       return timeout
     end,
+    every = function(delay, callback)
+      repeatingTimer = { delay = delay, callback = callback, stopped = false }
+      function repeatingTimer:stop() self.stopped = true end
+      return repeatingTimer
+    end,
     emit = function(plan)
       local bytes = module.planBytes(plan)
       if bytes == string.char(24, 25) then
@@ -1113,10 +1126,6 @@ local function integrationContext(types, opts)
         actions[#actions + 1] = "cut"
       elseif bytes == module.planBytes(module.sentinelPlan()) then
         actions[#actions + 1] = "sentinel"
-      elseif bytes == module.planBytes(module.docStartPlan()) then
-        actions[#actions + 1] = "doc-start"
-      elseif bytes == module.planBytes(module.docEndPlan()) then
-        actions[#actions + 1] = "doc-end"
       else
         actions[#actions + 1] = "image-paste"
       end
@@ -1165,6 +1174,8 @@ local function integrationContext(types, opts)
     bumpClipboard = function() changeCount = changeCount + 1 end,
     alerts = function() return alertCount end,
     mouseEvents = function() return mouseEvents end,
+    cursorMoves = function() return cursorMoves end,
+    repeatingTimer = function() return repeatingTimer end,
     veilTrace = function() return table.concat(veilTrace, ",") end,
     clearVeilTrace = function() veilTrace = {} end,
     observations = function() return observeCount end,
@@ -4209,7 +4220,8 @@ end
 local function assertCaretMove(context, rows, at, message)
   local events = context.mouseEvents()
   assert(#events == 2 and events[1].kind == "down" and events[2].kind == "up",
-    message .. ": the caret move did not click exactly once")
+    message .. ": the caret move posted " .. #events .. " mouse events; actions "
+      .. table.concat(context.actions, ","))
   local x, y = expectedPoint(rows, at[1], at[2], -0.5)
   assert(math.abs(events[1].x - x) < 0.001 and math.abs(events[1].y - y) < 0.001,
     message .. ": the click missed its cell")
@@ -4482,16 +4494,31 @@ local function runChar(point, keyCode, screen)
   return integration
 end
 
-local function pressChar(context, keyCode, screen, repeatDown)
+local function pressChar(context, keyCode, screen, repeatDown, expectedCursor)
   local beforeMouse, beforeActions = #context.mouseEvents(), #context.actions
+  local beforeCursors = #context.cursorMoves()
   assert(module.handleEvent(charSpanPress(keyCode, repeatDown)),
     "the Shift+arrow over a painted span was not consumed")
   assert(#context.mouseEvents() == beforeMouse,
     "native Shift continuation posted a mouse event")
-  assert(#context.actions == beforeActions + 1
-      and context.actions[#context.actions] == "chord:shift+"
-        .. (keyCode == 123 and "left" or "right"),
-    "native Shift continuation did not post exactly one matching chord")
+  local direction = keyCode == 123 and "left" or "right"
+  assert(context.actions[beforeActions + 1] == "chord:shift+" .. direction,
+    "native Shift continuation did not post its matching chord first")
+  -- One chord and nothing else, the press that reaches the anchor included: no paint of
+  -- this walk moved the TUI's own caret off the anchor, so a bare arrow behind the shrink
+  -- would walk the insertion point one cell past it.
+  local actionCount = #context.actions - beforeActions
+  if actionCount ~= 1 then
+    error("native Shift continuation posted " .. actionCount .. " chords: "
+      .. table.concat(context.actions, ",", beforeActions + 1), 2)
+  end
+  local cursors = context.cursorMoves()
+  assert(#cursors == beforeCursors + 1, "native Shift continuation did not move the caret")
+  if expectedCursor then
+    local cursor = cursors[#cursors]
+    assert(cursor.row == expectedCursor[1] and cursor.column == expectedCursor[2],
+      "native Shift continuation put the caret on the wrong boundary")
+  end
 end
 
 -- The span a press leaves on screen, pressed on its anchor and dragged to its head.
@@ -4522,9 +4549,57 @@ local charLeft = runChar(caretAt(1, 1, 7), 123, oneRow)
 assertSpan(charLeft, 1, { 1, 6 }, { 1, 5 },
   "Shift+Left did not select the cell behind the caret", "scrape,chord:shift+right",
   false, false)
-assertSpan(runChar(caretAt(1, 1, 7), 124, oneRow), 1, { 1, 7 }, { 1, 8 },
+assert(#charLeft.cursorMoves() == 1
+    and charLeft.cursorMoves()[1].row == gestureRowIndex(1)
+    and charLeft.cursorMoves()[1].column == promptCells + 6,
+  "the first Shift+Left did not place the visible caret on its head")
+local charRight = runChar(caretAt(1, 1, 7), 124, oneRow)
+assertSpan(charRight, 1, { 1, 7 }, { 1, 8 },
   "Shift+Right did not select the cell the caret sits on",
   "scrape,chord:shift+left", false, false)
+assert(#charRight.cursorMoves() == 1
+    and charRight.cursorMoves()[1].row == gestureRowIndex(1)
+    and charRight.cursorMoves()[1].column == promptCells + 8,
+  "the first Shift+Right did not place the visible caret on its head")
+
+-- A context naming a tty keeps the cursor hook out of the way, so the paint runs the
+-- seams the live build runs on: the CUP write itself, the timer that keeps re-asserting
+-- it against the TUI's redraws, and the teardown that stops that timer with the selection.
+do
+  local ttyPath = os.tmpname()
+  local function readTty()
+    local handle = io.open(ttyPath, "r")
+    if not handle then
+      return nil
+    end
+    local text = handle:read("a")
+    handle:close()
+    return text
+  end
+  local ttyOpts = caretOpts(caretAt(1, 1, 7))
+  ttyOpts.cursorTty = ttyPath
+  local written = integrationContext(nil, ttyOpts)
+  assert(module.handleEvent(charSpanPress(123)), "the tty-backed Shift+Left was not consumed")
+  written.runDeferred()
+  written.deliverScrape(oneRow)
+  os.remove(ttyPath)
+  assert(readTty() == nil, "the display caret wrote before its timer fired")
+  assert(written.fireTimer(0.02), "the display caret armed no write timer")
+  local cup = string.format("\27[%d;%dH", gestureRowIndex(1), promptCells + 6)
+  assert(readTty() == cup, "the display caret wrote no CUP for its head to the tty")
+  local repeating = written.repeatingTimer()
+  assert(repeating and not repeating.stopped,
+    "the tracked head left the caret unguarded against the TUI's redraws")
+  os.remove(ttyPath)
+  repeating.callback()
+  assert(readTty() == cup, "the repeating write stopped re-asserting the caret")
+  written.invalidateContext()
+  assert(repeating.stopped, "the ended selection left the caret writer running")
+  os.remove(ttyPath)
+  repeating.callback()
+  assert(readTty() == nil, "a stopped caret writer still wrote to the tty")
+  os.remove(ttyPath)
+end
 assertSpan(runChar(caretAt(2, 2, 5), 123, twoRows), 2, { 2, 4 }, { 2, 3 },
   "Shift+Left on a multiline draft did not select the cell behind the caret",
   "scrape,chord:shift+right", false, false, { 1, 2 })
@@ -4556,9 +4631,9 @@ local walking = runChar(caretAt(1, 1, 7), 123, oneRow)
 assertCharSpan(walking, 1, 123,
   { from = 6, to = 6, over = 5, pre = false },
   "the first Shift+Left did not paint the cell behind the caret")
-pressChar(walking, 123, oneRow)
-pressChar(walking, 123, oneRow)
-pressChar(walking, 124, oneRow)
+pressChar(walking, 123, oneRow, nil, { gestureRowIndex(1), promptCells + 5 })
+pressChar(walking, 123, oneRow, nil, { gestureRowIndex(1), promptCells + 4 })
+pressChar(walking, 124, oneRow, nil, { gestureRowIndex(1), promptCells + 5 })
 assert(#gestureClicks(walking) == 1,
   "native continuation repainted the selection")
 
@@ -4603,10 +4678,19 @@ assert(#reverseLeft.mouseEvents() == beforeLeftFlip + 5,
   "the left press past the anchor did not re-anchor with one cheap paint")
 
 local wrappedEdge = runChar(caretAt(2, 1, 11), 124, twoRows)
-pressChar(wrappedEdge, 124, twoRows, true)
-pressChar(wrappedEdge, 124, twoRows, true)
+pressChar(wrappedEdge, 124, twoRows, true,
+  { gestureRowIndex(2), promptCells + 2 })
+pressChar(wrappedEdge, 124, twoRows, true,
+  { gestureRowIndex(2), promptCells + 3 })
 assert(#gestureClicks(wrappedEdge) == 1,
   "native continuation repainted while crossing a soft wrap")
+
+-- The boundary past a row filled to its last column renders at the start of the row below,
+-- and that row's draft starts at the same lead as every other: column 1 is the box frame,
+-- outside the draft, and the timer would hold the visible caret sitting there.
+integration = runChar(caretAt(1, 1, #fullRow - 1), 124, gestureScreen(fullRow))
+pressChar(integration, 124, gestureScreen(fullRow), nil,
+  { gestureRowIndex(2), promptCells + 1 })
 
 local resync = runChar(caretAt(1, 1, 7), 123, oneRow)
 resync.invalidateContext()
@@ -4627,6 +4711,18 @@ safeResync.runDeferred()
 safeResync.deliverScrape(gestureScreen("", "hello world"), "ax")
 assert(#safeResync.mouseEvents() == beforeSafeResync + 5,
   "a safe resync kept the guard pair around its pre-click")
+
+-- The repaint a resync collapses through is one cell wide and pre-clicks nothing, so it
+-- leaves the TUI's caret on the anchor exactly as the native shrink does: an arrow behind
+-- the shrink chord would carry the insertion point a cell past it.
+integration = runChar(caretAt(1, 1, 7), 123, oneRow)
+integration.invalidateContext()
+assert(module.handleEvent(charSpanPress(124)), "the resync onto the anchor leaked")
+integration.runDeferred()
+integration.deliverScrape(gestureScreen("", "hello world"), "ax")
+assert(#integration.mouseEvents() == 6, "the resync onto the anchor did not repaint once")
+assert(not table.concat(integration.actions, ","):find("chord:+", 1, true),
+  "the resync onto the anchor typed a bare arrow behind its shrink")
 
 integration = runChar(caretAt(1, 1, 7), 123, oneRow)
 integration.invalidateContext()
@@ -4832,7 +4928,7 @@ collapseClick(integration, 123, gestureScreen(hello), 1, { 1, 1 },
   "left after a word gesture extended")
 
 -- Only what this module painted is tracked closely enough to aim a click at: a hand on
--- the mouse and a selection key outside the model both hand the arrow back to the TUI.
+-- the mouse hands the arrow back to the TUI, while a guarded vertical no-op preserves it.
 runChar(caretAt(1, 1, 7), 123, oneRow)
 module.handleEvent(mouseEvent(1))
 assertNoCollapse(integration, 123, "with the user's hand still down on the mouse")
@@ -4840,9 +4936,10 @@ runChar(caretAt(1, 1, 7), 123, oneRow)
 simulateDrag()
 assertNoCollapse(integration, 123, "over a selection the user painted by hand")
 runChar(caretAt(1, 1, 7), 123, oneRow)
-assert(not module.handleEvent(keyEvent(126, { "shift", "fn" }, false, "shift-up")),
-  "Shift+Up was consumed")
-assertNoCollapse(integration, 123, "after Shift+Up moved the selection out of our model")
+assert(module.handleEvent(keyEvent(126, { "shift", "fn" }, false, "shift-up")),
+  "Shift+Up leaked into history recall")
+collapseClick(integration, 123, oneRow, 1, { 1, 6 },
+  "after a guarded Shift+Up")
 integration = integrationContext(nil, caretOpts(caretAt(1, 1, 7)))
 simulateDrag()
 assertNoCollapse(integration, 124, "over a selection nobody tracked")
@@ -5686,8 +5783,44 @@ local function commandArrow(keyCode, modifiers, repeatDown)
     [125] = "cmd-down", [126] = "cmd-up" }
   return keyEvent(keyCode, modifiers, repeatDown, labels[keyCode])
 end
-local reposts = { [123] = "chord:ctrl+shift+tab", [124] = "chord:ctrl+tab",
-  [125] = "chord:cmd+down", [126] = "chord:cmd+up" }
+local function commandDocContext(caret)
+  return integrationContext(nil, {
+    windowFrame = terminalFrame,
+    verdict = "claude",
+    caret = caret,
+  })
+end
+-- The caret box AX answers with, as caretAt builds it for the gesture chunk: the top-left
+-- corner of the cell holding draft character N of a row.
+local function commandCaretAt(rowCount, row, character)
+  local total = gestureTotalLines(rowCount)
+  local rowHeight = terminalFrame.h / total
+  return {
+    x = terminalFrame.x + (promptCells + character - 1) * (terminalFrame.w / screenColumns),
+    y = terminalFrame.y + terminalFrame.h
+      - (total - gestureRowIndex(row)) * rowHeight - rowHeight,
+  }
+end
+local function assertCommandCaret(context, rows, at, message)
+  local events = context.mouseEvents()
+  assert(#events == 2 and events[1].kind == "down" and events[2].kind == "up",
+    message .. ": the caret move posted " .. #events .. " mouse events; actions "
+      .. table.concat(context.actions, ","))
+  local x, y = expectedPoint(rows, at[1], at[2], -0.5)
+  assert(math.abs(events[1].x - x) < 0.001 and math.abs(events[1].y - y) < 0.001,
+    message .. ": the click missed its cell")
+  assert(events[1].clickState == 1, message .. ": the click counted as a double click")
+  assert(table.concat(context.actions, ",") == "scrape",
+    message .. ": the caret move typed a keystroke")
+end
+local function pressCommandDoc(context, keyCode, screen)
+  assert(module.handleEvent(commandArrow(keyCode, { "cmd", "fn" })),
+    "the Cmd+vertical arrow was not swallowed in a Claude tab")
+  context.runDeferred()
+  context.deliverScrape(screen)
+end
+local reposts = { [123] = "chord:ctrl+shift+tab", [124] = "chord:ctrl+tab" }
+local commandRows = gestureScreen("hello brave", "new world")
 
 for keyCode, chord in pairs(reposts) do
   integration = integrationContext(nil, { verdict = "not-claude" })
@@ -5760,6 +5893,24 @@ assert(not module.handleEvent(commandArrow(124, { "cmd", "fn" })),
   "Cmd+Right was swallowed outside Terminal")
 assert(#integration.actions == 0, "an arrow outside the remap posted a key")
 
+for _, modifiers in ipairs({
+  { "shift", "fn" },
+  { "alt", "fn" },
+  { "ctrl", "fn" },
+  { "alt", "shift", "fn" },
+  { "cmd", "alt", "fn" },
+  { "cmd", "alt", "shift", "fn" },
+}) do
+  for _, keyCode in ipairs({ 125, 126 }) do
+    integration = integrationContext(nil, { verdict = "claude" })
+    assert(module.handleEvent(commandArrow(keyCode, modifiers)),
+      "a modified vertical arrow leaked into a Claude draft")
+    integration.runDeferred()
+    assert(#integration.actions == 0 and #integration.mouseEvents() == 0,
+      "an unsupported modified vertical arrow acted on a Claude draft")
+  end
+end
+
 -- A caret move ends the selection the TUI painted, exactly as typing does: the Cmd+X
 -- behind it finds nothing to cut and leaves the draft alone.
 integration = integrationContext(nil, { verdict = "claude" })
@@ -5770,21 +5921,56 @@ pressCut(integration)
 assert(#integration.actions == 0,
   "a caret move left the selection armed for the next cut")
 
--- Cmd+Up/Down carry the document motion; the mark scroll Terminal answers the bare
--- Cmd+arrow with is reposted from the Option+Cmd+Shift chord, in any tab.
-integration = integrationContext(nil, { verdict = "claude" })
+-- Cmd+Up/Down click the document boundary. No vertical byte reaches the pty, including
+-- while a held key repeats at the buffer edge where a bare Up would recall history.
+integration = commandDocContext()
 assert(module.handleEvent(commandArrow(126, { "cmd", "fn" })),
   "Cmd+Up was not swallowed in a Claude tab")
+integration.runDeferred()
+integration.deliverScrape(commandRows)
+assertCommandCaret(integration, 2, { 1, 1 },
+  "Cmd+Up did not click the document start")
 assert(module.handleEvent(commandArrow(126, { "cmd", "fn" }, true)),
   "a held Cmd+Up leaked a native scroll")
-assert(table.concat(integration.actions, ",") == "doc-start",
-  "Cmd+Up did not move the caret to the document start exactly once")
+assert(#integration.mouseEvents() == 2,
+  "a held Cmd+Up repeated the document-edge click")
 
-integration = integrationContext(nil, { verdict = "claude" })
+integration = commandDocContext()
 assert(module.handleEvent(commandArrow(125, { "cmd", "fn" })),
   "Cmd+Down was not swallowed in a Claude tab")
-assert(table.concat(integration.actions, ",") == "doc-end",
-  "Cmd+Down did not move the caret to the document end")
+integration.runDeferred()
+integration.deliverScrape(commandRows)
+assertCommandCaret(integration, 2, { 2, 10 },
+  "Cmd+Down did not click the document end")
+
+-- A blank first or last line is a row of the draft like any other and holds the document
+-- edge; it carries no cells at all, so the nearest row with text is a line short of it.
+-- The scrape strips a blank row's own indent, leaving the box's first column as the
+-- nearest cell the caret can be clicked onto there.
+integration = commandDocContext()
+pressCommandDoc(integration, 126, gestureScreen("", "hello world"))
+assertCommandCaret(integration, 2, { 1, 1 },
+  "Cmd+Up stopped at the first line carrying text")
+integration = commandDocContext()
+pressCommandDoc(integration, 125, gestureScreen("hello world", ""))
+assertCommandCaret(integration, 2, { 2, 1 - promptCells },
+  "Cmd+Down stopped at the last line carrying text")
+
+-- Standing on the edge the chord reaches for, the press has nothing to do: its click
+-- lands on the caret's own cell and costs the breaker dance the user sees as the pointer
+-- jumping in place. Any other caret still gets its click.
+for _, edge in ipairs({ { 126, commandCaretAt(2, 1, 1) }, { 125, commandCaretAt(2, 2, 10) } }) do
+  integration = commandDocContext(edge[2])
+  pressCommandDoc(integration, edge[1], commandRows)
+  assert(#integration.mouseEvents() == 0,
+    "a Cmd+vertical arrow clicked the document edge the caret already stood on")
+  assert(table.concat(integration.actions, ",") == "scrape",
+    "a Cmd+vertical arrow standing on its edge acted")
+end
+integration = commandDocContext(commandCaretAt(2, 2, 5))
+pressCommandDoc(integration, 126, commandRows)
+assertCommandCaret(integration, 2, { 1, 1 },
+  "Cmd+Up from mid-draft stood still instead of reaching the document start")
 
 integration = integrationContext()
 assert(module.handleEvent(commandArrow(126, { "cmd", "fn" })),
@@ -5813,20 +5999,9 @@ integration.runDeferred()
 assert(table.concat(integration.actions, ",") == "scrape",
   "a Cmd+arrow acted inside the cut's own window")
 
--- The whole run has to reach the tty as one keystroke: an Up arriving at the top line
--- on its own recalls history over the draft instead of stopping there.
-assert(module.docStartPlan().atomic and module.docEndPlan().atomic,
-  "a document motion was left to emit one byte at a time")
-assert(module.planBytes(module.docStartPlan()):sub(-1) == string.char(1)
-  and module.planBytes(module.docStartPlan()):find("\27%[A"),
-  "the document-start plan does not walk up and then to the line start")
-assert(module.planBytes(module.docEndPlan()):sub(-1) == string.char(5)
-  and module.planBytes(module.docEndPlan()):find("\27%[B"),
-  "the document-end plan does not walk down and then to the line end")
-
--- Only the document motions travel as bytes; the row edges are reached by click.
-assert(not module.lineStartPlan and not module.lineEndPlan,
-  "a byte plan for the row motions outlived the click that replaced it")
+assert(not module.docStartPlan and not module.docEndPlan
+    and not module.lineStartPlan and not module.lineEndPlan,
+  "a byte plan outlived the click that replaced document and row motions")
 end
 
 -- Self-posted keystrokes come back through our own tap. Every flow below holds a
