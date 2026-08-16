@@ -21,6 +21,10 @@ local pasteDelay = 0.2
 local clipboardSettleDelay = 0.1
 local restoreClipboardDelay = 0.5
 local maxDeliveryAttempts = 3
+-- A delivery that wedges must not sit on the chat for the gate's default two hours:
+-- nothing here waits on a person, and the timer path's own watchdog gives up at two
+-- minutes.
+local deliveryHorizon = 300
 
 local timerIntervalSeconds = nil
 local timerMode = nil
@@ -695,10 +699,10 @@ local function runKimi(pressReturnAfterPaste, onComplete, msgText, opts)
     end)
 end
 
--- The terminal destination hands the keyboard to chat_gate: the lock, the screen
--- check, the tab, the dictation gate and the clipboard are its answers to give, and
--- a resume typed while a compaction is mid-switch is the interleaving that lock
--- exists to stop. What stays here is the one thing the gate has no view of --
+-- The terminal destination hands the keyboard to chat_gate: the burst slot, the
+-- screen check, the tab, the dictation gate and the clipboard are its answers to
+-- give, and a resume typed while a compaction is mid-switch is the interleaving that
+-- slot exists to stop. What stays here is the one thing the gate has no view of --
 -- reading the tab back to prove the paste landed before Return is pressed.
 local function runTerminal(pressReturnAfterPaste, onComplete, msgText, opts)
     opts = opts or {}
@@ -754,30 +758,71 @@ local function runTerminal(pressReturnAfterPaste, onComplete, msgText, opts)
     end
     local contentsTty = targetTty and expectedTty or nil
 
-    -- One answer per delivery: the gate reports its own give-ups through onFail
+    local gateLog = function(event, detail) logLine(event, id, detail or "") end
+
+    -- One answer per delivery: the gate reports its own give-ups through onEnd
     -- while this path reports the reads it does itself, and both funnel here.
     local settled = false
-    local holderHandle = nil
-    local function settle(handle, success, reason)
+    local job = nil
+    local function settle(success, reason)
         if settled then return end
         settled = true
+        -- The job goes first: it hands the keyboard and the clipboard back, and
+        -- whatever onComplete arms next finds this destination free.
+        if job then
+            if success then
+                job:finish(reason or "delivered")
+            else
+                job:fail("deliver-failed", reason or "unknown")
+            end
+        end
         finishDelivery(id, onComplete, success, reason)
-        if handle then handle:release(reason or "delivered") end
     end
 
-    local function deliver(handle)
-        deliveryBusy = true
-        local function pasteAttempt(pasteAttemptNumber)
-            -- Established here and not at arming time: openWindow is the world
-            -- re-check, and a queued resume may have waited out a whole compaction.
-            handle:openWindow({
+    -- Without a tty the target is "whatever Terminal window is frontmost when the
+    -- burst runs". With the keyboard free that is still the window this send came
+    -- from; behind someone else's burst it is wherever the user has moved since.
+    if not expectedTty then
+        local gate = ChatGate.overview()
+        if gate.slot ~= nil or gate.queue > 0 then
+            logLine("no-target", id, "no tty and the keyboard is taken; dropped rather than typing into the frontmost window")
+            ChatGate.refuse({ kind = "continue", key = id, log = gateLog,
+                reason = "no-target", detail = "no tty while the keyboard was busy" })
+            settle(false, "no target tab")
+            return
+        end
+    end
+
+    local started = false
+    local function pasteAttempt(pasteAttemptNumber)
+        -- The wait holds nothing and the burst is the world re-check: a resume can
+        -- stand in line behind a whole compaction, and everything this delivery was
+        -- told before it asked for the keyboard turns over while it waits.
+        job:waitForIdle({ label = "resume", skipRegistry = true }, function()
+            job:burst({
                 label = "resume",
-                skipRegistry = true,
                 tabAlert = "Continue: target tab not found",
                 focusAlert = "Continue: target tab did not come frontmost",
                 legacyAlert = "Continue: nothing typed - Terminal not frontmost",
                 voiceAlert = "Continue: dictation running; nothing typed",
-            }, function()
+                -- No tty means no tab to select, so the window is asked for here -
+                -- inside the slot, because raising Terminal is itself a focus move
+                -- and doing it while another burst types is what the slot forbids.
+                check = function()
+                    if not expectedTty then
+                        app:activate(true)
+                        win:focus()
+                    end
+                    return true
+                end,
+            }, function(burst)
+                deliveryBusy = true
+                -- The delivery starts HERE, not when it was armed: everything before
+                -- this was waiting for a turn.
+                if not started then
+                    started = true
+                    if type(opts.onStarted) == "function" then opts.onStarted() end
+                end
                 -- Clearing the composer comes FIRST and the baseline after it: a
                 -- retry follows a paste that half-landed, and counting the leftover
                 -- Ctrl+U is about to erase makes the re-paste look like it changed
@@ -785,11 +830,11 @@ local function runTerminal(pressReturnAfterPaste, onComplete, msgText, opts)
                 local function withBaseline()
                     local beforeContents = terminalContents(id, contentsTty)
                     if not beforeContents then
-                        settle(handle, false, "could not read terminal contents before paste")
+                        settle(false, "could not read terminal contents before paste")
                         return
                     end
                     local countBefore = countPlainOccurrences(beforeContents, needle)
-                    handle:runBurst("resume", {
+                    job:runBurst("resume", {
                         { kind = "paste", value = text, detail = needle, delayAfter = pasteDelay },
                     }, "Continue: focus moved while pasting", function()
                         local afterContents = terminalContents(id, contentsTty)
@@ -798,9 +843,13 @@ local function runTerminal(pressReturnAfterPaste, onComplete, msgText, opts)
                             logLine("paste-missing", id, "attempt=" .. pasteAttemptNumber
                                 .. " before=" .. countBefore .. " after=" .. countAfter)
                             if pasteAttemptNumber < 2 then
+                                -- The keyboard goes back between the tries: a burst
+                                -- that is done with it can never type again, so the
+                                -- retry asks for a slot of its own.
+                                burst:done("the paste did not land")
                                 pasteAttempt(pasteAttemptNumber + 1)
                             else
-                                settle(handle, false, "paste verification failed")
+                                settle(false, "paste verification failed")
                             end
                             return
                         end
@@ -811,22 +860,22 @@ local function runTerminal(pressReturnAfterPaste, onComplete, msgText, opts)
                         if not pressReturnAfterPaste then
                             log("Terminal text pasted, Return disabled")
                             hs.alert.show("Terminal: text pasted, Return is disabled")
-                            settle(handle, true)
+                            settle(true)
                             return
                         end
 
-                        handle:runBurst("resume return", {
+                        job:runBurst("resume return", {
                             { kind = "key", modifiers = {}, key = "return", detail = "return" },
                         }, "Continue: focus lost before Return", function()
                             logLine("return-sent", id, "tty=" .. tostring(expectedTty))
                             log("Terminal message sent")
-                            settle(handle, true)
+                            settle(true)
                         end)
                     end)
                 end
 
                 if pasteAttemptNumber > 1 or attempt > 1 then
-                    handle:runBurst("resume clear", {
+                    job:runBurst("resume clear", {
                         { kind = "key", modifiers = {"ctrl"}, key = "u", detail = "Ctrl+U",
                             delayAfter = clipboardSettleDelay },
                     }, "Continue: focus moved while clearing the line", withBaseline)
@@ -834,53 +883,35 @@ local function runTerminal(pressReturnAfterPaste, onComplete, msgText, opts)
                     withBaseline()
                 end
             end)
-        end
-        pasteAttempt(1)
+        end)
     end
 
-    local outcome = ChatGate.acquire({
-        owner = "continue",
+    local why
+    job, why = ChatGate.startJob({
+        kind = "continue",
         -- Keyed by destination, not by tab: one destination delivers one message at
-        -- a time, so a re-arm replaces the delivery it supersedes instead of
-        -- queueing a second one - and the watchdog below can name exactly the entry
-        -- whose attempt it just gave up on.
+        -- a time, so a re-arm is refused rather than queued behind the delivery it
+        -- supersedes - and the watchdog below can name exactly the entry whose
+        -- attempt it just gave up on.
         key = id,
-        log = function(event, detail) logLine(event, id, detail or "") end,
-        maxHold = 300,
+        log = gateLog,
+        horizon = deliveryHorizon,
+        detail = "resume armed",
         -- The resume is the point of the window it lands in: handing focus back
         -- would hide the chat that was just told to carry on.
         keepFocus = true,
         target = { ttyPath = expectedTty, termProgram = "Apple_Terminal" },
-        onDropped = function(reason)
-            settle(nil, false, "gate dropped the resume: " .. tostring(reason))
-        end,
-        onFail = function(event, detail, alertText)
-            logLine(event, id, detail or "")
-            settle(holderHandle, false, alertText or event)
-        end,
-        onGranted = function(handle)
-            holderHandle = handle
-            -- The delivery starts HERE, not when it was armed: everything before
-            -- this was waiting for a turn.
-            if type(opts.onStarted) == "function" then opts.onStarted() end
-            -- No tty means no tab to select, so the window is asked for here - after
-            -- the lock, because raising Terminal is itself a focus move and doing it
-            -- while another owner is mid-burst is what the lock forbids.
-            if not expectedTty then
-                app:activate(true)
-                win:focus()
-            end
-            deliver(handle)
+        onEnd = function(state, reason, detail, alertText)
+            if state == "done" then return end
+            logLine(reason or "gate", id, detail or "")
+            settle(false, alertText or detail or reason)
         end,
     })
-    logLine("gate", id, "acquire returned " .. outcome)
-    -- Without a tty the target is "whatever Terminal window is frontmost when the
-    -- burst runs". Granted on the spot that is still the window this send came
-    -- from; behind another owner it is wherever the user has moved since.
-    if outcome == "queued" and not expectedTty then
-        ChatGate.cancel("continue", id)
-        logLine("no-target", id, "queued without a tty; dropped rather than typing into the frontmost window")
+    if job == nil then
+        settle(false, "the gate has this destination: " .. tostring(why))
+        return
     end
+    pasteAttempt(1)
 end
 
 destinationDefinitions = {
@@ -901,7 +932,7 @@ destinationDefinitions = {
     },
 }
 
--- Which destinations get the lock wrapped around them here rather than taking it
+-- Which destinations get the gate wrapped around them here rather than taking it
 -- themselves.
 local gateMutexed = { app = true, kimi = true }
 
@@ -925,11 +956,8 @@ local function runDestination(id, pressReturnAfterPaste, onComplete, msgText, op
     end
 
     local settled = false
-    local inFlight = false
     local function invokeNow(done)
-        inFlight = true
         local ok, err = pcall(destination.run, pressReturnAfterPaste, function(success, reason)
-            inFlight = false
             done(success, reason)
             if settled then return end
             settled = true
@@ -938,7 +966,6 @@ local function runDestination(id, pressReturnAfterPaste, onComplete, msgText, op
             end
         end, msgText, opts)
         if not ok then
-            inFlight = false
             deliveryBusy = false
             done(false, tostring(err))
             if not settled then
@@ -963,62 +990,62 @@ local function runDestination(id, pressReturnAfterPaste, onComplete, msgText, op
         -- The terminal destination takes the gate itself, with its tab and its
         -- guards. The app destinations have no terminal to guard, but they activate
         -- a window and paste into it, and doing that inside another module's burst
-        -- moves the focus that burst's guard is checking - so they hold the same
-        -- lock, as a plain mutex.
+        -- moves the focus that burst's guard is checking - so they hold the keyboard
+        -- through a burst of their own, as a plain mutex.
         if not gateMutexed[id] then
             invokeNow(function() end)
             return
         end
 
-        local handle, released = nil, false
-        local function release(reason)
-            if released or not handle then return end
-            -- These destinations type through their own timer chain and never
-            -- consult the handle, so there is no way to stop them mid-paste.
-            -- Letting the lock go while that chain is still running would hand the
-            -- keyboard to the next owner to type over it; the gate's own hold grace
-            -- takes the lock back by force if the chain never finishes.
-            -- done() calls this again once the chain reports back, so nothing is
-            -- lost by refusing here.
-            if inFlight then return end
-            released = true
-            handle:release(reason)
-        end
-        ChatGate.acquire({
-            owner = "continue",
+        local job, why = ChatGate.startJob({
+            kind = "continue",
             key = id,
             log = function(event, detail) logLine(event, id, detail or "") end,
-            -- A delivery that wedges must not sit on the keyboard for the gate's
-            -- default half hour: nothing here waits on a person, and the timer path's
-            -- own watchdog gives up at two minutes.
-            maxHold = 300,
+            horizon = deliveryHorizon,
+            detail = id .. " delivery",
             target = {},
-            onDropped = function(reason)
-                if settled then return end
-                settled = true
-                invocationFailed("gate-dropped", tostring(reason))
-            end,
-            onFail = function(event, detail, alertText)
-                logLine(event, id, detail or "")
+            onEnd = function(state, reason, detail, alertText)
+                if state == "done" then return end
+                logLine(reason or "gate", id, detail or "")
                 -- The gate gave up on this delivery, and nothing else will report
                 -- it: without this deliveryBusy stays set and every later send is
-                -- refused as "another delivery in flight". Cleared BEFORE the
-                -- release, which hands the lock straight to the next delivery and
-                -- would otherwise have its freshly set flag wiped here.
+                -- refused as "another delivery in flight".
                 deliveryBusy = false
-                release(event)
                 if settled then return end
                 settled = true
-                invocationFailed("gate-gave-up", alertText or event)
-            end,
-            onGranted = function(granted)
-                handle = granted
-                if type(opts.onStarted) == "function" then opts.onStarted() end
-                invokeNow(function(success, reason)
-                    release(success and "delivered" or ("failed: " .. tostring(reason or "unknown")))
-                end)
+                invocationFailed("gate-gave-up", alertText or detail or reason)
             end,
         })
+        if job == nil then
+            if settled then return end
+            settled = true
+            invocationFailed("gate-refused", "the gate has this destination: " .. tostring(why))
+            return
+        end
+        job:burst({
+            label = id,
+            budget = deliveryHorizon,
+            -- These destinations focus their own app window and type through their
+            -- own timer chain, so the burst guards nothing and only keeps the
+            -- keyboard: no tab to select, and a dictation must not cancel a delivery
+            -- that never asked the gate for one.
+            focus = false,
+            voiceMaxWait = 0.5,
+            voiceDeadline = "proceed",
+        }, function(burst)
+            if type(opts.onStarted) == "function" then opts.onStarted() end
+            -- The keyboard is let go only once the chain reports back: it never
+            -- consults the burst, so there is no way to stop it mid-paste, and
+            -- letting go early would hand the next burst a keyboard to type over it.
+            invokeNow(function(success, reason)
+                burst:done(success and "delivered" or "failed")
+                -- Ended as done either way: the delivery's own failure has already
+                -- been reported through onComplete, and failing the job here would
+                -- report it a second time as a give-up by the gate.
+                job:finish(success and "delivered"
+                    or ("failed: " .. tostring(reason or "unknown")))
+            end)
+        end)
     end
 
     invoke(false)
@@ -1213,7 +1240,7 @@ deliverOrDefer = function(id)
             -- Whatever is still waiting for the keyboard is this attempt's, and this
             -- attempt is over: left in the queue it would be granted later and type a
             -- resume the retry loop has already replaced.
-            ChatGate.cancel("continue", id)
+            ChatGate.cancel(id, "the delivery timed out")
             if entry.started then
                 logLine("watchdog", id, "attempt=" .. entry.attempts .. " delivery timed out")
             else
@@ -1519,10 +1546,10 @@ function ClaudeContinue.stopTimerFor(id)
             destinationTimers[id].timer:stop()
         end
         destinationTimers[id] = nil
-        -- A delivery can be sitting in the gate queue for as long as another owner
+        -- A delivery can be sitting in the gate queue for as long as another burst
         -- holds the keyboard; left there it would be granted later and type into
         -- the session he just told it not to.
-        ChatGate.cancel("continue", id)
+        ChatGate.cancel(id, "its timer was stopped")
         logLine("cancelled", id, "timer stopped")
         persistState()
     end

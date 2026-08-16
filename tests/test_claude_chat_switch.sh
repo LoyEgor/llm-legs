@@ -209,7 +209,7 @@ assert grep -qi "Hammerspoon CLI" <<<"$OUT"
 # The wall lives in the Lua module, so it is driven where Lua runs: loadfile with
 # a private env gives the module its own `hs` (clock, `ps`, pasteboard, screen)
 # and its own `require`, so the stubbed gate below is the only chat_gate it can
-# see and the live one is never required, let alone acquired.
+# see and the live one is never required, let alone handed a job.
 [ -n "$REAL_HS" ] || fail "Hammerspoon CLI is unavailable (the exit-wall harness needs it)"
 HARNESS="$WORK/wall_harness.lua"
 { printf 'local MODULE = [[%s]]\n' "$ROOT/hammerspoon/config/claude_chat_switch.lua"
@@ -226,6 +226,11 @@ end
 
 local PICKER = "esc to interrupt\nBackground work is running\n  1. Exit anyway"
 
+-- What a live dictation is modelled as holding: the answers to the exit picker are
+-- the bursts this module must never let pile up, and a burst waiting for the keyboard
+-- is indistinguishable from one waiting for a take to end.
+local HELD_BURSTS = { ["exit-confirm"] = true, ["exit-wall"] = true }
+
 local ChatGateStub = {}
 
 function ChatGateStub.logger(_)
@@ -234,15 +239,15 @@ function ChatGateStub.logger(_)
     end, function() end
 end
 
-function ChatGateStub.acquire(opts)
-    W.onFail = opts.onFail
+function ChatGateStub.startJob(opts)
+    W.onEnd = opts.onEnd
+    W.key = opts.key
     W.granted = true
-    opts.onGranted(W.handle)
-    return "granted"
+    return W.job
 end
 
-function ChatGateStub.cancel()
-    if W and W.granted and not W.released then W.handle:release("cancelled") end
+function ChatGateStub.cancel(_, reason)
+    if W and W.job and W.job:alive() then W.job:fail("cancelled", reason or "cancelled") end
     return true
 end
 
@@ -278,56 +283,69 @@ local function newWorld(opts)
         logs = {}, presses = {}, bursts = {}, voice = {}, timers = {}, afters = {},
         alerts = {}, cancelWaits = 0,
     }
-    local handle = { ttyPath = "/dev/ttys009" }
-    w.handle = handle
+    local job = { ttyPath = "/dev/ttys009" }
+    w.job = job
 
-    function handle:alive() return w.granted == true and w.released == nil end
-    function handle:every(interval, fn)
+    function job:alive() return w.granted == true and w.released == nil end
+    function job:every(interval, fn)
         local timer = { interval = interval, fn = fn }
         w.timers[#w.timers + 1] = timer
         return timer
     end
-    function handle:stopTimer(timer) if timer then timer.stopped = true end end
-    -- The real cancelWaits stops the voice poll, so a press it is still holding
-    -- never fires; dropping the pending callbacks models exactly that.
-    function handle:cancelWaits()
-        w.cancelWaits = w.cancelWaits + 1
-        w.voice = {}
+    function job:stopTimer(timer) if timer then timer.stopped = true end end
+    -- The real cancelWaits stops the phase waits and nothing else: a burst already
+    -- in line survives it, which is why the module drops that one by hand.
+    function job:cancelWaits() w.cancelWaits = w.cancelWaits + 1 end
+    function job:after(_, fn) w.afters[#w.afters + 1] = fn; return {} end
+    function job:waitForIdle(_, onIdle) onIdle() end
+    -- The keyboard, asked for one burst at a time. A held burst is the request that
+    -- was queued and not yet granted; it runs only if the job is still alive and the
+    -- module still wants it, which is what the real gate's check hook decides.
+    function job:burst(opts, fn)
+        local burst = { label = opts.label, live = true }
+        function burst:done(_) self.live = false end
+        local function run()
+            if not job:alive() or not burst.live then return end
+            if opts.check and opts.check(burst) == false then return end
+            fn(burst)
+        end
+        if w.holdVoice and HELD_BURSTS[opts.label] then
+            w.voice[#w.voice + 1] = { label = opts.label, fn = run }
+        else
+            run()
+        end
+        return burst
     end
-    function handle:after(_, fn) w.afters[#w.afters + 1] = fn; return {} end
-    function handle:openWindow(_, onReady) onReady() end
-    function handle:waitForIdle(_, onIdle) onIdle() end
-    function handle:focusTarget(_, onReady) onReady() end
-    -- The real runBurst refuses on a dead handle, which is the only thing between a
+    -- The real runBurst refuses on a dead job, which is the only thing between a
     -- callback that was already queued and a keystroke landing after the give-up.
-    function handle:runBurst(label, actions, _, onDone)
+    function job:runBurst(label, actions, _, onDone)
         if not self:alive() then return end
         w.bursts[#w.bursts + 1] = { label = label, actions = actions }
         onDone()
     end
-    function handle:pressOnce(label, modifiers, key, _, onDone)
+    function job:pressOnce(label, modifiers, key, _, onDone)
         if not self:alive() then return end
         w.presses[#w.presses + 1] = { label = label, key = key, modifiers = modifiers }
         if onDone then onDone() end
     end
-    function handle:waitForVoiceIdle(voiceOpts, onIdle)
-        if w.holdVoice then
-            w.voice[#w.voice + 1] = { label = voiceOpts.label, fn = onIdle }
-        else
-            onIdle()
-        end
+    -- Ending a job stops its timers and lets the slot go, and the consumer hears
+    -- about it through onEnd - after the gate has shown the alert it named itself.
+    local function endJob(released, state, reason, detail, alertText)
+        w.released = released
+        for _, timer in ipairs(w.timers) do timer.stopped = true end
+        if alertText then w.alerts[#w.alerts + 1] = tostring(alertText) end
+        if w.onEnd then w.onEnd(state, reason, detail, alertText) end
     end
-    function handle:fail(event, detail, alertText)
+    function job:fail(event, detail, alertText)
         if not self:alive() then return end
         w.failed = { event = event, detail = detail }
-        w.onFail(event, detail, alertText)
+        endJob(event, "failed:" .. event, event, detail, alertText)
     end
-    function handle:release(reason)
-        if w.released then return end
-        w.released = reason
-        for _, timer in ipairs(w.timers) do timer.stopped = true end
+    function job:finish(detail)
+        if not self:alive() then return end
+        endJob(detail or "done", "done", "done", detail)
     end
-    function handle:dropPasteboardRestore() w.pasteboardKept = true; return true end
+    function job:dropPasteboardRestore() w.pasteboardKept = true; return true end
 
     function w:tick(times)
         for _ = 1, (times or 1) do

@@ -11,8 +11,10 @@
 --
 -- Keyboard, screen, focus and dictation belong to chat_gate (canonical home
 -- claude-setup/hammerspoon, reached through ~/.hammerspoon like every other module
--- here). Holding its lock for the whole switch is deliberate: from /exit until the
--- resume lands, this tab is mid-handover and nothing else may type into it.
+-- here). The handover is one gate JOB: it claims this tab from /exit until the resume
+-- lands, so nothing else may start an operation on a chat that is quitting. The waits
+-- in between hold nothing - every keystroke goes out inside its own burst, and the
+-- keyboard goes back the moment that burst is over.
 
 local ClaudeChatSwitch = {}
 
@@ -32,6 +34,9 @@ local dialogSettleSeconds = 2 -- let /exit render its answer before reading the 
 local confirmRetrySeconds = 5 -- a pressed Return needs this long to visibly take
 local confirmMaxPresses = 2
 local confirmPressDeadline = 5 -- a press still pending after this is deferred, not slow
+-- The whole handover on the wall clock: the idle wait before /exit, the graces the
+-- exit wall spends after it, and the resume behind them.
+local switchHorizon = maxWaitIdle + 600
 
 -- Single in-flight switch. A new switchChat replaces whatever was pending.
 local active = nil
@@ -86,6 +91,43 @@ end tell
     return result
 end
 
+-- One Enter, typed inside its own burst, with the dictation gate the burst brings.
+-- The burst is remembered because asking for the keyboard is not getting it: a request
+-- still in line when the chat exits on its own would otherwise be granted afterwards
+-- and press Return into the resume it was queued ahead of.
+local function pressEnter(job, label, alertText, onSent)
+    local mine = active
+    local token = {}
+    mine.enterToken = token
+    local sent = false
+    local queued = job:burst({
+        label = label,
+        check = function(burst)
+            if active ~= mine or mine.enterToken ~= token then
+                burst:done(label .. " is no longer wanted")
+                return false
+            end
+            return true
+        end,
+    }, function(burst)
+        job:pressOnce(label, {}, "return", alertText, function()
+            sent = true
+            if mine.enterToken == token then
+                mine.enterToken, mine.enterBurst = nil, nil
+            end
+            burst:done(label .. " sent")
+            onSent()
+        end)
+    end)
+    if not sent then mine.enterBurst = queued end
+end
+
+local function dropPendingEnter(mine, reason)
+    local burst = mine.enterBurst
+    mine.enterToken, mine.enterBurst = nil, nil
+    if burst then burst:done(reason) end
+end
+
 -- /exit does not always exit: with background work running (shells, tasks,
 -- agents) Claude keeps the chat alive and shows a "Background work is running"
 -- picker instead. Asking for the switch already answered it - nothing in the
@@ -94,14 +136,14 @@ end
 -- screen, not the scrollback (`history` is that), so a marker match means the
 -- picker is up NOW - and a stray Return costs an empty line, while a missed
 -- dialog costs the whole switch. Answers whether a confirm is in flight this tick.
-local function maybeConfirmExitDialog(handle)
+local function maybeConfirmExitDialog(job)
     local mine = active
     if mine.confirmInFlight then
         -- A press normally lands within the tick it was asked in; one still
-        -- pending after this long sits deferred behind a locked screen. Handing
-        -- the tick back lets the grace give the switch up on schedule - the
-        -- deferred Return then dies with the handle instead of firing into
-        -- whatever is on screen after the unlock.
+        -- pending after this long sits behind a locked screen or another burst.
+        -- Handing the tick back lets the grace give the switch up on schedule -
+        -- the pending Return then dies with the job instead of firing into
+        -- whatever is on screen once it comes free.
         return hs.timer.secondsSinceEpoch() - mine.confirmStartedAt < confirmPressDeadline
     end
     if (mine.confirmPresses or 0) >= confirmMaxPresses then return false end
@@ -116,19 +158,15 @@ local function maybeConfirmExitDialog(handle)
     if not contents:find(dialogMarker, 1, true) then return false end
     mine.confirmInFlight = true
     mine.confirmStartedAt = hs.timer.secondsSinceEpoch()
-    -- Behind the same dictation gate as every other keystroke here: a take that
-    -- is live when the picker comes up would otherwise eat the Return.
-    handle:waitForVoiceIdle({ label = "exit-confirm" }, function()
-        handle:pressOnce("exit-confirm", {}, "return",
-            "Chat switch failed: focus moved while confirming exit", function()
-                mine.confirmInFlight = false
-                mine.confirmPresses = (mine.confirmPresses or 0) + 1
-                mine.confirmedAt = hs.timer.secondsSinceEpoch()
-                -- The chat only STARTS exiting now; it deserves the full grace again.
-                mine.exitTypedAt = mine.confirmedAt
-                logLine("exit-confirmed", "chose 'Exit anyway' on the background-work dialog")
-            end)
-    end)
+    pressEnter(job, "exit-confirm",
+        "Chat switch failed: focus moved while confirming exit", function()
+            mine.confirmInFlight = false
+            mine.confirmPresses = (mine.confirmPresses or 0) + 1
+            mine.confirmedAt = hs.timer.secondsSinceEpoch()
+            -- The chat only STARTS exiting now; it deserves the full grace again.
+            mine.exitTypedAt = mine.confirmedAt
+            logLine("exit-confirmed", "chose 'Exit anyway' on the background-work dialog")
+        end)
     return true
 end
 
@@ -138,24 +176,31 @@ end
 -- The chat being switched away from may be the one that ARMED the switch (a model
 -- handing its own tab to another session), so /exit must not be typed until that
 -- turn ends — mid-turn it lands in the composer as queued text and the chat never
--- quits. openWindow owns that wait, including the "shell" rule and the re-read
--- immediately before the first keystroke.
-local function typeExit(handle)
-    handle:openWindow({
+-- quits. waitForIdle owns that wait, including the "shell" rule and the re-read
+-- immediately before it lets go; the burst re-establishes the rest.
+local function typeExit(job)
+    job:waitForIdle({
         label = "/exit",
         maxWait = maxWaitIdle,
-        tabAlert = "Chat switch failed: Terminal tab for " .. tostring(active.tty) .. " not found",
-        focusAlert = "Chat switch failed: target tab did not come frontmost",
         idleAlert = "Chat switch cancelled — chat stayed busy",
-        voiceAlert = "Chat switch cancelled — dictation running, /exit not typed",
     }, function()
-        handle:runBurst("/exit", {
-            { kind = "key", modifiers = {"ctrl"}, key = "u", detail = "Ctrl+U" },
-            { kind = "type", value = "/exit", detail = "/exit", delayAfter = 0.25 },
-            { kind = "key", modifiers = {}, key = "return", detail = "return" },
-        }, "Chat switch failed: focus moved while typing /exit", function()
-            active.exitTypedAt = hs.timer.secondsSinceEpoch()
-            logLine("exit-typed", "/exit sent to " .. tostring(active.tty))
+        job:burst({
+            label = "/exit",
+            tabAlert = "Chat switch failed: Terminal tab for " .. tostring(active.tty) .. " not found",
+            focusAlert = "Chat switch failed: target tab did not come frontmost",
+            voiceAlert = "Chat switch cancelled — dictation running, /exit not typed",
+        }, function(burst)
+            job:runBurst("/exit", {
+                { kind = "key", modifiers = {"ctrl"}, key = "u", detail = "Ctrl+U" },
+                { kind = "type", value = "/exit", detail = "/exit", delayAfter = 0.25 },
+                { kind = "key", modifiers = {}, key = "return", detail = "return" },
+            }, "Chat switch failed: focus moved while typing /exit", function()
+                active.exitTypedAt = hs.timer.secondsSinceEpoch()
+                logLine("exit-typed", "/exit sent to " .. tostring(active.tty))
+                -- The keyboard goes back with the Enter: what is left is watching the
+                -- chat quit, and every answer to the picker asks for it again itself.
+                burst:done("/exit typed")
+            end)
         end)
     end)
 end
@@ -163,66 +208,72 @@ end
 -- Deliver once the chat process is gone. The target chat no longer exists, so
 -- there is no session status left to wait on - but a live dictation would still
 -- eat the Return, which is what skipRegistry keeps.
-local function deliverResume(handle)
+local function deliverResume(job)
     local cmd = resumeCommand(active)
-    handle:waitForIdle({
+    job:waitForIdle({
         label = "resume",
         skipRegistry = true,
-        -- The chat this tab held is already gone. Giving up on a long dictation
-        -- would strand the tab at a bare shell prompt with nothing to resume it,
-        -- so a dictation that outlasts the wait is typed through, not cancelled.
-        voiceDeadline = "proceed",
     }, function()
-        -- With a known tty focusTarget selects the tab itself; without one the
-        -- main Terminal window is the only target there is.
-        if not handle.ttyPath then
-            local app = hs.application.find(terminalAppName)
-            local win = app and app:mainWindow()
-            if not win then
-                handle:fail("give-up", "no Terminal window", "Chat switch failed: no Terminal window")
-                return
-            end
-            app:activate(true)
-            win:focus()
-        end
-        handle:focusTarget({
+        job:burst({
             label = "resume",
+            -- The chat this tab held is already gone. Giving up on a long dictation
+            -- would strand the tab at a bare shell prompt with nothing to resume it,
+            -- so a dictation that outlasts the wait is typed through, not cancelled.
+            voiceDeadline = "proceed",
             tabAlert = "Chat switch failed: Terminal tab for " .. tostring(active.tty) .. " not found",
             focusAlert = "Chat switch failed: target tab not focused",
             legacyAlert = "Chat switch failed: Terminal did not come frontmost",
+            -- With a known tty the burst selects the tab itself; without one the main
+            -- Terminal window is the only target there is, and raising it is a focus
+            -- move, so it happens here - inside the slot, one step before the guard
+            -- that judges what is frontmost.
+            check = function()
+                if job.ttyPath then return true end
+                local app = hs.application.find(terminalAppName)
+                local win = app and app:mainWindow()
+                if not win then
+                    job:fail("give-up", "no Terminal window", "Chat switch failed: no Terminal window")
+                    return false
+                end
+                app:activate(true)
+                win:focus()
+                return true
+            end,
         }, function()
-            handle:runBurst("resume", {
+            job:runBurst("resume", {
                 { kind = "key", modifiers = {"ctrl"}, key = "u", detail = "Ctrl+U" },
                 { kind = "paste", value = cmd, detail = cmd, delayAfter = pasteDelay },
                 { kind = "key", modifiers = {}, key = "return", detail = "return" },
             }, "Chat switch failed: focus moved while pasting resume", function()
                 logLine("typed", cmd)
                 hs.alert.show("Chat switch → " .. active.profile .. ": resume typed")
-                -- release puts the clipboard back; the delay is what keeps the
-                -- restore from racing the paste that is still landing.
-                handle:after(restoreClipboardDelay, function() handle:release("delivered") end)
+                -- Ending the job puts the clipboard back and hands the tab on; the
+                -- delay is what keeps that restore from racing the paste that is
+                -- still landing.
+                job:after(restoreClipboardDelay, function() job:finish("delivered") end)
             end)
         end)
     end)
 end
 
-local function watchForExit(handle)
+local function watchForExit(job)
     active.waited = 0
-    active.pollTimer = handle:every(pollInterval, function()
+    active.pollTimer = job:every(pollInterval, function()
         if not pidAlive(active.pid) then
             if active.wallEnterPressed then
                 logLine("exit-wall-passed", "chat exited after the exit wall; Enter "
                     .. (active.wallEnterSent and "went out" or "never went out"))
             end
             logLine("exited", "chat pid " .. active.pid .. " gone after " .. active.waited .. "s")
-            handle:stopTimer(active.pollTimer)
+            job:stopTimer(active.pollTimer)
             active.pollTimer = nil
             -- The chat can die on its own (Ctrl+C, a crash) while the /exit phase is
             -- still waiting somewhere. Left running, that phase would either sit out
             -- its deadline and cancel a switch already delivered, or wake up and type
             -- /exit over the resume command.
-            handle:cancelWaits()
-            deliverResume(handle)
+            job:cancelWaits()
+            dropPendingEnter(active, "the chat exited")
+            deliverResume(job)
             return
         end
         active.waited = active.waited + pollInterval
@@ -230,15 +281,15 @@ local function watchForExit(handle)
             if active.exitTypedAt then
                 -- One Enter in flight at a time, whichever queued it: a second one
                 -- answers nothing and lands in whatever the tab shows after the picker.
-                if not active.wallEnterPressed and maybeConfirmExitDialog(handle) then return end
+                if not active.wallEnterPressed and maybeConfirmExitDialog(job) then return end
                 local exitWaited = hs.timer.secondsSinceEpoch() - active.exitTypedAt
                 if exitWaited >= exitGraceSeconds then
                     if active.confirmInFlight then
                         -- A confirm press still pending this far past its deadline is
-                        -- deferred behind a locked screen; giving up on schedule is what
-                        -- lets it die with the handle instead of firing after the
-                        -- unlock, so the wall must not answer over it.
-                        handle:fail("give-up", "chat pid " .. active.pid .. " still alive "
+                        -- waiting on something that is not coming; giving up on schedule
+                        -- is what lets it die with the job instead of firing once that
+                        -- clears, so the wall must not answer over it.
+                        job:fail("give-up", "chat pid " .. active.pid .. " still alive "
                             .. active.waited .. "s total; the exit-confirm Enter never landed",
                             "Chat switch: chat did not exit — the exit dialog was never answered")
                     elseif not active.wallEnterPressed then
@@ -246,32 +297,30 @@ local function watchForExit(handle)
                         -- recognise; a grace running out is the second, blind signal
                         -- that one is up, so answer it once and judge the chat on a
                         -- fresh grace. That grace restarts HERE, not just in the press
-                        -- callback: the poll keeps ticking while the dictation wait
-                        -- holds the Enter and would give up before it ever went out.
+                        -- callback: the poll keeps ticking while the burst waits for the
+                        -- keyboard and would give up before the Enter ever went out.
                         active.wallEnterPressed = true
                         active.exitTypedAt = hs.timer.secondsSinceEpoch()
                         logLine("exit-wall", "pid still alive " .. math.floor(exitWaited)
                             .. "s after /exit; answering the background-work dialog blind")
-                        handle:waitForVoiceIdle({ label = "exit-wall" }, function()
-                            handle:pressOnce("exit-wall", {}, "return",
-                                "Chat switch failed: focus moved while answering the exit dialog",
-                                function()
-                                    active.wallEnterSent = true
-                                    active.exitTypedAt = hs.timer.secondsSinceEpoch()
-                                end)
-                        end)
+                        pressEnter(job, "exit-wall",
+                            "Chat switch failed: focus moved while answering the exit dialog",
+                            function()
+                                active.wallEnterSent = true
+                                active.exitTypedAt = hs.timer.secondsSinceEpoch()
+                            end)
                     else
                         logLine("exit-wall-unpassed", "pid " .. active.pid .. " still alive "
                             .. active.waited .. "s total; Enter "
                             .. (active.wallEnterSent and "went out" or "never went out"))
-                        handle:fail("give-up", "chat pid " .. active.pid
+                        job:fail("give-up", "chat pid " .. active.pid
                             .. " still alive after the exit-wall Enter",
                             "Chat switch: chat did not exit — background work still running")
                     end
                 end
             end
         elseif active.waited >= maxWaitSeconds then
-            handle:fail("give-up", "chat pid " .. active.pid .. " still alive after "
+            job:fail("give-up", "chat pid " .. active.pid .. " still alive after "
                 .. maxWaitSeconds .. "s; user kept working",
                 "Chat switch cancelled — chat kept running")
         end
@@ -314,13 +363,10 @@ function ClaudeChatSwitch.switchChat(profileName, sessionId, terminalPid, ttyDev
     trimLog()
 
     -- Cancelled before arming, not replaced by arriving: two switches for
-    -- different tabs are different gate keys, so the gate would queue both and
+    -- different tabs are different gate keys, so the gate would run both and
     -- type two resume commands. Only one handover can be pending at a time.
     if active then ClaudeChatSwitch.cancel() end
 
-    -- Built here rather than in onGranted: a switch queued behind a compact or a
-    -- trash /resume is armed and WILL run, so pending() must see it and cancel()
-    -- must be able to call it off before the lock ever reaches it.
     local mine = {
         profile = profileName,
         sessionId = sessionId,
@@ -329,12 +375,13 @@ function ClaudeChatSwitch.switchChat(profileName, sessionId, terminalPid, ttyDev
         pid = pid,
         tty = tty,
     }
-    active = mine
 
-    local outcome = ChatGate.acquire({
-        owner = "switch",
+    local job, why = ChatGate.startJob({
+        kind = "switch",
         key = tostring(tty or pid),
         log = logLine,
+        horizon = switchHorizon,
+        detail = "handing the tab to " .. profileName,
         -- The handover owns this tab until the resume lands; anything else typing
         -- into it mid-flight would land in a chat that is quitting.
         keepFocus = true,
@@ -343,50 +390,62 @@ function ClaudeChatSwitch.switchChat(profileName, sessionId, terminalPid, ttyDev
             ttyPath = tty,
             termProgram = "Apple_Terminal",
         },
-        onDropped = function(reason)
-            logLine("dropped", "the queued switch was dropped: " .. tostring(reason))
-            if active == mine then active = nil end
-        end,
         -- A switch that dies after /exit went out (or after the chat did) leaves
         -- the tab stranded: no chat, no resume typed, and the session id gone
         -- from the screen. The resume command on the clipboard makes getting
         -- back one Cmd+V. A passive-mode chat that simply kept running keeps
         -- its clipboard - overwriting it would cost real contents for nothing.
-        onFail = function(event, detail, alertText)
-            logLine(event, detail)
-            if mine.exitTypedAt or not pidAlive(mine.pid) then
-                alertText = alertText or "Chat switch failed"
-                -- Copy first, drop the restore only on a verified write: the
-                -- other order trades the user's real clipboard for nothing when
-                -- the write fails - and the alert must not claim a copy it
-                -- cannot vouch for, so the fallback names the session instead.
-                local setOk, setResult = pcall(hs.pasteboard.setContents, resumeCommand(mine))
-                if setOk and setResult ~= false then
-                    if mine.handle then mine.handle:dropPasteboardRestore() end
-                    alertText = alertText .. "\nResume command copied — paste it into the tab"
-                else
-                    logLine("pasteboard-fail", "could not copy the resume command")
-                    alertText = alertText .. "\nCould not copy the resume command — session "
-                        .. (mine.sessionId == "" and "(fresh)" or mine.sessionId)
-                end
-            end
-            if alertText then hs.alert.show(alertText) end
-            if mine.handle then mine.handle:release(event) end
-            if active == mine then active = nil end
-        end,
-        onGranted = function(handle)
-            mine.handle = handle
-            active = mine
-            if not pidAlive(pid) then
-                logLine("already-exited", "chat pid already gone; delivering now")
-                deliverResume(handle)
+        onEnd = function(state, reason, detail, alertText)
+            local ours = active == mine
+            if ours then active = nil end
+            if state == "done" then return end
+            logLine(reason or "gate", detail or "the chat gate ended this switch")
+            -- Not ours means this switch was already called off or replaced: the tab
+            -- belongs to whatever took it, and a resume command for the chat it is no
+            -- longer switching to has no business on the clipboard.
+            if not ours then return end
+            if not (mine.exitTypedAt or not pidAlive(mine.pid)) then
+                if not alertText then hs.alert.show("Chat switch failed") end
                 return
             end
-            watchForExit(handle)
-            if tty then typeExit(handle) end
+            -- Copy first, drop the restore only on a verified write: the
+            -- other order trades the user's real clipboard for nothing when
+            -- the write fails - and the alert must not claim a copy it
+            -- cannot vouch for, so the fallback names the session instead.
+            local recovery
+            local setOk, setResult = pcall(hs.pasteboard.setContents, resumeCommand(mine))
+            if setOk and setResult ~= false then
+                mine.job:dropPasteboardRestore()
+                recovery = "Resume command copied — paste it into the tab"
+            else
+                logLine("pasteboard-fail", "could not copy the resume command")
+                recovery = "Could not copy the resume command — session "
+                    .. (mine.sessionId == "" and "(fresh)" or mine.sessionId)
+            end
+            -- The gate has already said what went wrong when it named an alert of its
+            -- own; this one only ever adds what to do about it.
+            if alertText then
+                hs.alert.show(recovery)
+            else
+                hs.alert.show("Chat switch failed\n" .. recovery)
+            end
         end,
     })
-    logLine("gate", "acquire returned " .. outcome)
+    if job == nil then
+        logLine("gate-busy", "another automation has this tab: " .. tostring(why))
+        hs.alert.show("Chat switch: another automation has this tab")
+        return false
+    end
+    mine.job = job
+    active = mine
+
+    if not pidAlive(pid) then
+        logLine("already-exited", "chat pid already gone; delivering now")
+        deliverResume(job)
+        return true
+    end
+    watchForExit(job)
+    if tty then typeExit(job) end
     return true
 end
 
@@ -394,18 +453,17 @@ function ClaudeChatSwitch.cancel()
     if not active then return false end
     local mine = active
     logLine("cancelled", "manual cancel")
-    -- Clear first: cancelling the HOLDER releases the lock, which hands it
-    -- straight to whatever is queued next - possibly another switch, whose
-    -- onGranted sets active. Clearing afterwards would wipe that one instead.
+    -- Clear first: cancelling ends the job, and its onEnd runs before this function
+    -- gets the answer back - including the stranded-tab recovery, which belongs to a
+    -- switch that failed on its own and not to one called off on purpose.
     active = nil
-    local cancelled = ChatGate.cancel("switch", tostring(mine.tty or mine.pid))
+    local cancelled = ChatGate.cancel(tostring(mine.tty or mine.pid), "cancelled")
     return cancelled
 end
 
 function ClaudeChatSwitch.pending()
-    -- No handle yet = still queued, which is pending in every sense that matters.
     if not active then return nil end
-    if active.handle and not active.handle:alive() then return nil end
+    if active.job and not active.job:alive() then return nil end
     return {
         profile = active.profile,
         mode = active.tty and "auto" or "passive",
