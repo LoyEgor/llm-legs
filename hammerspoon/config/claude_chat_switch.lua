@@ -122,10 +122,14 @@ local function pressEnter(job, label, alertText, onSent)
     if not sent then mine.enterBurst = queued end
 end
 
-local function dropPendingEnter(mine, reason)
-    local burst = mine.enterBurst
-    mine.enterToken, mine.enterBurst = nil, nil
-    if burst then burst:done(reason) end
+-- Everything this switch has asked the keyboard for and no longer wants. A request still
+-- in line is dropped out of it: granted afterwards it would type into whatever the tab
+-- holds by then - a bare shell, or the resume this switch has just delivered.
+local function dropPendingKeys(mine, reason)
+    local enter, exit = mine.enterBurst, mine.exitBurst
+    mine.enterToken, mine.enterBurst, mine.exitBurst = nil, nil, nil
+    if enter then enter:done(reason) end
+    if exit then exit:done(reason) end
 end
 
 -- /exit does not always exit: with background work running (shells, tasks,
@@ -179,29 +183,44 @@ end
 -- quits. waitForIdle owns that wait, including the "shell" rule and the re-read
 -- immediately before it lets go; the burst re-establishes the rest.
 local function typeExit(job)
+    local mine = active
     job:waitForIdle({
         label = "/exit",
         maxWait = maxWaitIdle,
         idleAlert = "Chat switch cancelled — chat stayed busy",
     }, function()
-        job:burst({
+        local typed = false
+        local queued = job:burst({
             label = "/exit",
-            tabAlert = "Chat switch failed: Terminal tab for " .. tostring(active.tty) .. " not found",
+            tabAlert = "Chat switch failed: Terminal tab for " .. tostring(mine.tty) .. " not found",
             focusAlert = "Chat switch failed: target tab did not come frontmost",
             voiceAlert = "Chat switch cancelled — dictation running, /exit not typed",
+            -- The chat can quit on its own (Ctrl+C, a crash) while this request is still
+            -- standing in line. Granted after that, it would clear the line of a bare
+            -- shell and run /exit as a command - over the resume this switch has by then
+            -- already typed into the tab.
+            check = function(burst)
+                if active == mine and pidAlive(mine.pid) then return true end
+                logLine("exit-dropped", "the chat was already gone when the keyboard came free")
+                burst:done("the chat is already gone")
+                return false
+            end,
         }, function(burst)
             job:runBurst("/exit", {
                 { kind = "key", modifiers = {"ctrl"}, key = "u", detail = "Ctrl+U" },
                 { kind = "type", value = "/exit", detail = "/exit", delayAfter = 0.25 },
                 { kind = "key", modifiers = {}, key = "return", detail = "return" },
             }, "Chat switch failed: focus moved while typing /exit", function()
-                active.exitTypedAt = hs.timer.secondsSinceEpoch()
-                logLine("exit-typed", "/exit sent to " .. tostring(active.tty))
+                typed = true
+                mine.exitBurst = nil
+                mine.exitTypedAt = hs.timer.secondsSinceEpoch()
+                logLine("exit-typed", "/exit sent to " .. tostring(mine.tty))
                 -- The keyboard goes back with the Enter: what is left is watching the
                 -- chat quit, and every answer to the picker asks for it again itself.
                 burst:done("/exit typed")
             end)
         end)
+        if not typed then mine.exitBurst = queued end
     end)
 end
 
@@ -239,7 +258,7 @@ local function deliverResume(job)
                 win:focus()
                 return true
             end,
-        }, function()
+        }, function(burst)
             job:runBurst("resume", {
                 { kind = "key", modifiers = {"ctrl"}, key = "u", detail = "Ctrl+U" },
                 { kind = "paste", value = cmd, detail = cmd, delayAfter = pasteDelay },
@@ -247,9 +266,11 @@ local function deliverResume(job)
             }, "Chat switch failed: focus moved while pasting resume", function()
                 logLine("typed", cmd)
                 hs.alert.show("Chat switch → " .. active.profile .. ": resume typed")
-                -- Ending the job puts the clipboard back and hands the tab on; the
-                -- delay is what keeps that restore from racing the paste that is
-                -- still landing.
+                -- The keyboard goes back with the Return; what is left is the clipboard,
+                -- and the delay before putting it back is what keeps that restore from
+                -- racing the paste still landing - a wait, and nothing waits holding the
+                -- keyboard.
+                burst:done("resume typed")
                 job:after(restoreClipboardDelay, function() job:finish("delivered") end)
             end)
         end)
@@ -272,7 +293,7 @@ local function watchForExit(job)
             -- its deadline and cancel a switch already delivered, or wake up and type
             -- /exit over the resume command.
             job:cancelWaits()
-            dropPendingEnter(active, "the chat exited")
+            dropPendingKeys(active, "the chat exited")
             deliverResume(job)
             return
         end

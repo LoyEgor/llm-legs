@@ -228,7 +228,8 @@ local PICKER = "esc to interrupt\nBackground work is running\n  1. Exit anyway"
 
 -- What a live dictation is modelled as holding: the answers to the exit picker are
 -- the bursts this module must never let pile up, and a burst waiting for the keyboard
--- is indistinguishable from one waiting for a take to end.
+-- is indistinguishable from one waiting for a take to end. holdExit adds the /exit
+-- itself, which waits in the same line and for the same reasons.
 local HELD_BURSTS = { ["exit-confirm"] = true, ["exit-wall"] = true }
 
 local ChatGateStub = {}
@@ -280,8 +281,9 @@ local function newWorld(opts)
         pidAlive = true,
         screen = opts.screen or "no picker here",
         holdVoice = opts.holdVoice == true,
+        holdExit = opts.holdExit == true,
         logs = {}, presses = {}, bursts = {}, voice = {}, timers = {}, afters = {},
-        alerts = {}, cancelWaits = 0,
+        alerts = {}, queued = {}, cancelWaits = 0,
     }
     local job = { ttyPath = "/dev/ttys009" }
     w.job = job
@@ -304,12 +306,13 @@ local function newWorld(opts)
     function job:burst(opts, fn)
         local burst = { label = opts.label, live = true }
         function burst:done(_) self.live = false end
+        w.queued[#w.queued + 1] = burst
         local function run()
             if not job:alive() or not burst.live then return end
             if opts.check and opts.check(burst) == false then return end
             fn(burst)
         end
-        if w.holdVoice and HELD_BURSTS[opts.label] then
+        if (w.holdVoice and HELD_BURSTS[opts.label]) or (w.holdExit and opts.label == "/exit") then
             w.voice[#w.voice + 1] = { label = opts.label, fn = run }
         else
             run()
@@ -352,8 +355,11 @@ local function newWorld(opts)
             self.clock = self.clock + 1
             local live = {}
             for index, timer in ipairs(self.timers) do live[index] = timer end
+            -- Stopped-ness is per timer, the way ending a job stops its own: a callback
+            -- that survives the end it belongs to is exactly what these scenarios are
+            -- allowed to fire, so that the module has to be the one refusing it.
             for _, timer in ipairs(live) do
-                if not timer.stopped and self.released == nil then timer.fn() end
+                if not timer.stopped then timer.fn() end
             end
         end
     end
@@ -425,6 +431,10 @@ local resume = W.bursts[#W.bursts]
 check(resume.label == "resume"
     and resume.actions[2].value == "cd '/tmp' && claudeb profile olx --resume sid-a",
     "the resume did not follow a passed wall")
+-- The keyboard goes back with the Return. What is left is the clipboard restore, and a
+-- wait is not something to sit through holding the one keyboard every chat shares.
+check(W.queued[#W.queued].live == false,
+    "the resume held the keyboard through the clipboard wait")
 W:runAfters()
 check(W.released == "delivered", "the gate was not released after the resume")
 module.cancel()
@@ -543,6 +553,40 @@ check(#W.presses == 0 and W.bursts[#W.bursts].label == "resume",
 module.cancel()
 print("ok  wall: exit-wall-passed names an Enter that never went out")
 
+-- (h) the chat dies on its own while /exit is still standing in line for the keyboard.
+-- Granted after that, it clears the composer of a bare shell and runs /exit as a command -
+-- on top of the resume this switch has by then already typed into that tab.
+W = newWorld({ holdExit = true })
+module.switchChat("olx", "sid-h", W.pid, "/dev/ttys009", { cwd = "/tmp" })
+check(#W.bursts == 0 and #W.voice == 1 and W.voice[1].label == "/exit",
+    "/exit did not end up waiting for the keyboard")
+W.pidAlive = false
+W:tick(1)
+check(W:events("exited") == 1 and W.bursts[#W.bursts].label == "resume",
+    "the resume did not run once the chat died on its own")
+W:releaseVoice()
+check(W:events("exit-typed") == 0, "the queued /exit was typed after the chat had gone")
+check(#W.bursts == 1, "the queued /exit landed on top of the resume")
+module.cancel()
+print("ok  wall: a queued /exit is dropped when the chat exits on its own")
+
+-- (i) the switch is called off with its Enter still in line and its poll still armed.
+-- Everything it leaves in the air belongs to a job that is over, and a switch that comes
+-- after it owns the tab: nothing of the old one may land there or write into its state.
+W = newWorld({ holdVoice = true })
+module.switchChat("olx", "sid-i", W.pid, "/dev/ttys009", { cwd = "/tmp" })
+W:tick(15)
+check(W:events("exit-wall") == 1 and #W.voice == 1, "the wall Enter was not still held")
+module.cancel()
+check(module.pending() == nil, "the cancelled switch stayed pending")
+local quietAt = #W.logs
+W:tick(20)
+check(#W.logs == quietAt, "the cancelled switch's poll kept running")
+W:releaseVoice()
+check(#W.presses == 0, "the cancelled switch's Enter went out after it was called off")
+check(#W.bursts == 1, "the cancelled switch typed something after it was called off")
+print("ok  wall: a cancelled switch lands nothing it left in the air")
+
 print(string.format("PASS: claude-chat-switch exit wall (%d checks)", checks))
 LUA
 } > "$HARNESS"
@@ -557,9 +601,11 @@ assert grep -q 'wall: screen-read confirm runs first, wall answers only after it
 assert grep -q 'wall: stuck confirm -> give up on schedule, no wall, no second Enter' <<<"$WALL_OUT"
 assert grep -q 'wall: a picker readable after the wall never adds a confirm Enter' <<<"$WALL_OUT"
 assert grep -q 'wall: exit-wall-passed names an Enter that never went out' <<<"$WALL_OUT"
+assert grep -q 'wall: a queued /exit is dropped when the chat exits on its own' <<<"$WALL_OUT"
+assert grep -q 'wall: a cancelled switch lands nothing it left in the air' <<<"$WALL_OUT"
 # Pinned, not a floor: the scenario greps above survive a gutted scenario body, so
 # a check that quietly disappears has to show up as this number moving.
 WALL_CHECKS=$(sed -n 's/^PASS: claude-chat-switch exit wall (\([0-9]*\) checks)$/\1/p' <<<"$WALL_OUT")
-assert test "${WALL_CHECKS:-0}" -eq 49
+assert test "${WALL_CHECKS:-0}" -eq 59
 
 echo "PASS: claude-chat-switch ($asserts assertions, $WALL_CHECKS wall checks)"

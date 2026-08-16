@@ -517,12 +517,14 @@ local function countPlainOccurrences(contents, needle)
     end
 end
 
-local function finishDelivery(id, onComplete, success, reason, clipboardSnapshot, clipboardCaptured)
+local function finishDelivery(id, onComplete, success, reason, clipboardSnapshot, clipboardCaptured, quiet)
     local function finish()
         deliveryBusy = false
         if not success then
             logLine("deliver-failed", id, reason)
-            hs.alert.show("Delivery failed: " .. reason)
+            -- quiet = the gate named an alert of its own and has already shown it; a
+            -- second one here only says the same thing twice.
+            if not quiet then hs.alert.show("Delivery failed: " .. reason) end
         end
         trimLog()
         if onComplete then
@@ -547,17 +549,38 @@ local function setClipboardText(text)
     return ok and result ~= false
 end
 
+-- The app destinations type through a chain of delays rather than a gate burst, and the
+-- chain has to die with the job that holds the keyboard for it: a step still firing after
+-- the delivery was given up on (its watchdog, its horizon, a spent budget) pastes into
+-- whatever the next job has since brought forward. A job-owned timer is stopped by the
+-- gate at that moment, and the attempt it was armed in is checked one step before the
+-- keystroke in case the burst itself has changed hands.
+local function chainStep(opts)
+    local job, generation = opts.job, opts.burst and opts.burst.generation
+    return function(delay, fn)
+        if not job then
+            hs.timer.doAfter(delay, fn)
+            return
+        end
+        job:after(delay, function()
+            if generation ~= nil and not job:holdsGeneration(generation) then return end
+            fn()
+        end)
+    end
+end
+
 local function runClaudeApp(pressReturnAfterPaste, onComplete, msgText, opts)
     deliveryBusy = true
     opts = opts or {}
     local id = opts.id or "app"
     local attempt = opts.attempt or 1
     local text = msgText or message
+    local step = chainStep(opts)
     logLine("deliver-start", id, "attempt=" .. attempt .. " claude-app")
     log("Start Claude App")
     hs.application.launchOrFocus(appName)
 
-    hs.timer.doAfter(launchDelay, function()
+    step(launchDelay, function()
         local app = hs.application.find(appName)
         if not app then
             logLine("focus-fail", id, "app=" .. frontmostAppName() .. " reason=not-found")
@@ -574,7 +597,7 @@ local function runClaudeApp(pressReturnAfterPaste, onComplete, msgText, opts)
 
         win:focus()
 
-        hs.timer.doAfter(focusDelay, function()
+        step(focusDelay, function()
             if not frontmostIsClaude() then
                 logLine("focus-fail", id, "app=" .. frontmostAppName())
                 finishDelivery(id, onComplete, false, "Claude is not focused")
@@ -584,7 +607,7 @@ local function runClaudeApp(pressReturnAfterPaste, onComplete, msgText, opts)
 
             ensureClaudePromptFocused(app, win)
 
-            hs.timer.doAfter(clickDelay, function()
+            step(clickDelay, function()
                 if not frontmostIsClaude() then
                     logLine("focus-fail", id, "app=" .. frontmostAppName() .. " before-paste")
                     finishDelivery(id, onComplete, false, "Claude lost focus before paste")
@@ -603,9 +626,9 @@ local function runClaudeApp(pressReturnAfterPaste, onComplete, msgText, opts)
                     return
                 end
 
-                hs.timer.doAfter(clipboardSettleDelay, function()
+                step(clipboardSettleDelay, function()
                     hs.eventtap.keyStroke({"cmd"}, "v")
-                    hs.timer.doAfter(pasteDelay, function()
+                    step(pasteDelay, function()
                         logLine("paste-unverified", id, "attempt=1 claude-app")
                         if pressReturnAfterPaste then
                             gptVoiceKeys.returnKey()
@@ -629,11 +652,12 @@ local function runKimi(pressReturnAfterPaste, onComplete, msgText, opts)
     local id = opts.id or "kimi"
     local attempt = opts.attempt or 1
     local text = msgText or message
+    local step = chainStep(opts)
     logLine("deliver-start", id, "attempt=" .. attempt .. " kimi-app")
     log("Start Kimi")
     hs.application.launchOrFocus(kimiAppName)
 
-    hs.timer.doAfter(launchDelay, function()
+    step(launchDelay, function()
         local app = hs.application.get(kimiBundleId) or hs.application.find(kimiAppName)
         if not app then
             logLine("focus-fail", id, "app=" .. frontmostAppName() .. " reason=not-found")
@@ -650,7 +674,7 @@ local function runKimi(pressReturnAfterPaste, onComplete, msgText, opts)
 
         win:focus()
 
-        hs.timer.doAfter(focusDelay, function()
+        step(focusDelay, function()
             if not frontmostIsKimi() then
                 logLine("focus-fail", id, "app=" .. frontmostAppName())
                 finishDelivery(id, onComplete, false, "Kimi is not focused")
@@ -660,7 +684,7 @@ local function runKimi(pressReturnAfterPaste, onComplete, msgText, opts)
 
             ensureKimiPromptFocused(app, win)
 
-            hs.timer.doAfter(clickDelay, function()
+            step(clickDelay, function()
                 if not frontmostIsKimi() then
                     logLine("focus-fail", id, "app=" .. frontmostAppName() .. " before-paste")
                     finishDelivery(id, onComplete, false, "Kimi lost focus before paste")
@@ -679,9 +703,9 @@ local function runKimi(pressReturnAfterPaste, onComplete, msgText, opts)
                     return
                 end
 
-                hs.timer.doAfter(clipboardSettleDelay, function()
+                step(clipboardSettleDelay, function()
                     hs.eventtap.keyStroke({"cmd"}, "v")
-                    hs.timer.doAfter(pasteDelay, function()
+                    step(pasteDelay, function()
                         logLine("paste-unverified", id, "attempt=1 kimi-app")
                         if pressReturnAfterPaste then
                             gptVoiceKeys.returnKey()
@@ -741,7 +765,13 @@ local function runTerminal(pressReturnAfterPaste, onComplete, msgText, opts)
         logLine("deliver-start", id, "attempt=" .. attempt
             .. " frontmost-tab tty=" .. tostring(expectedTty))
     else
-        logLine("deliver-start", id, "attempt=" .. attempt .. " main-window")
+        -- Terminal is not where this send came from, so the target is its front window -
+        -- but which window that is gets decided when the keyboard comes free, behind
+        -- whatever is typing now, and by then it is wherever the user has moved since.
+        -- The tab is pinned here and the burst refuses any other.
+        expectedTty = selectedTerminalTty(id)
+        logLine("deliver-start", id, "attempt=" .. attempt
+            .. " main-window tty=" .. tostring(expectedTty))
     end
 
     local win = app:mainWindow()
@@ -756,7 +786,7 @@ local function runTerminal(pressReturnAfterPaste, onComplete, msgText, opts)
         finishDelivery(id, onComplete, false, "empty verification needle")
         return
     end
-    local contentsTty = targetTty and expectedTty or nil
+    local contentsTty = expectedTty
 
     local gateLog = function(event, detail) logLine(event, id, detail or "") end
 
@@ -764,7 +794,7 @@ local function runTerminal(pressReturnAfterPaste, onComplete, msgText, opts)
     -- while this path reports the reads it does itself, and both funnel here.
     local settled = false
     local job = nil
-    local function settle(success, reason)
+    local function settle(success, reason, quiet)
         if settled then return end
         settled = true
         -- The job goes first: it hands the keyboard and the clipboard back, and
@@ -776,21 +806,18 @@ local function runTerminal(pressReturnAfterPaste, onComplete, msgText, opts)
                 job:fail("deliver-failed", reason or "unknown")
             end
         end
-        finishDelivery(id, onComplete, success, reason)
+        finishDelivery(id, onComplete, success, reason, nil, nil, quiet)
     end
 
-    -- Without a tty the target is "whatever Terminal window is frontmost when the
-    -- burst runs". With the keyboard free that is still the window this send came
-    -- from; behind someone else's burst it is wherever the user has moved since.
+    -- No tty at all is no tab to prove: Terminal had no window to read one from, and
+    -- "whatever is frontmost when the keyboard comes free" is the one target this may
+    -- never have.
     if not expectedTty then
-        local gate = ChatGate.overview()
-        if gate.slot ~= nil or gate.queue > 0 then
-            logLine("no-target", id, "no tty and the keyboard is taken; dropped rather than typing into the frontmost window")
-            ChatGate.refuse({ kind = "continue", key = id, log = gateLog,
-                reason = "no-target", detail = "no tty while the keyboard was busy" })
-            settle(false, "no target tab")
-            return
-        end
+        logLine("no-target", id, "no Terminal tab to pin; dropped rather than typing into the frontmost window")
+        ChatGate.refuse({ kind = "continue", key = id, log = gateLog,
+            reason = "no-target", detail = "no Terminal tab to target" })
+        settle(false, "no target tab")
+        return
     end
 
     local started = false
@@ -805,16 +832,6 @@ local function runTerminal(pressReturnAfterPaste, onComplete, msgText, opts)
                 focusAlert = "Continue: target tab did not come frontmost",
                 legacyAlert = "Continue: nothing typed - Terminal not frontmost",
                 voiceAlert = "Continue: dictation running; nothing typed",
-                -- No tty means no tab to select, so the window is asked for here -
-                -- inside the slot, because raising Terminal is itself a focus move
-                -- and doing it while another burst types is what the slot forbids.
-                check = function()
-                    if not expectedTty then
-                        app:activate(true)
-                        win:focus()
-                    end
-                    return true
-                end,
             }, function(burst)
                 deliveryBusy = true
                 -- The delivery starts HERE, not when it was armed: everything before
@@ -904,7 +921,7 @@ local function runTerminal(pressReturnAfterPaste, onComplete, msgText, opts)
         onEnd = function(state, reason, detail, alertText)
             if state == "done" then return end
             logLine(reason or "gate", id, detail or "")
-            settle(false, alertText or detail or reason)
+            settle(false, alertText or detail or reason, alertText ~= nil)
         end,
     })
     if job == nil then
@@ -946,9 +963,10 @@ local function runDestination(id, pressReturnAfterPaste, onComplete, msgText, op
     opts = opts or {}
     opts.id = id
 
-    local function invocationFailed(event, reason)
+    local function invocationFailed(event, reason, quiet)
         logLine(event, id, reason)
-        hs.alert.show("Delivery failed: " .. reason)
+        -- quiet = the gate showed the alert it named itself; this one would repeat it.
+        if not quiet then hs.alert.show("Delivery failed: " .. reason) end
         trimLog()
         if onComplete then
             onComplete(false, reason)
@@ -957,8 +975,16 @@ local function runDestination(id, pressReturnAfterPaste, onComplete, msgText, op
 
     local settled = false
     local function invokeNow(done)
-        local ok, err = pcall(destination.run, pressReturnAfterPaste, function(success, reason)
+        -- One answer to the caller that lent the keyboard: a destination that reported and
+        -- then threw would otherwise hand the slot back twice and end a job that is over.
+        local reported = false
+        local function report(success, reason)
+            if reported then return end
+            reported = true
             done(success, reason)
+        end
+        local ok, err = pcall(destination.run, pressReturnAfterPaste, function(success, reason)
+            report(success, reason)
             if settled then return end
             settled = true
             if onComplete then
@@ -967,7 +993,7 @@ local function runDestination(id, pressReturnAfterPaste, onComplete, msgText, op
         end, msgText, opts)
         if not ok then
             deliveryBusy = false
-            done(false, tostring(err))
+            report(false, tostring(err))
             if not settled then
                 settled = true
                 invocationFailed("run-error", tostring(err))
@@ -1013,7 +1039,7 @@ local function runDestination(id, pressReturnAfterPaste, onComplete, msgText, op
                 deliveryBusy = false
                 if settled then return end
                 settled = true
-                invocationFailed("gate-gave-up", alertText or detail or reason)
+                invocationFailed("gate-gave-up", alertText or detail or reason, alertText ~= nil)
             end,
         })
         if job == nil then
@@ -1034,6 +1060,9 @@ local function runDestination(id, pressReturnAfterPaste, onComplete, msgText, op
             voiceDeadline = "proceed",
         }, function(burst)
             if type(opts.onStarted) == "function" then opts.onStarted() end
+            -- What the destination's own delay chain hangs its timers off, so job end
+            -- kills the typing rather than leaving it to fire into the next delivery.
+            opts.job, opts.burst = job, burst
             -- The keyboard is let go only once the chain reports back: it never
             -- consults the burst, so there is no way to stop it mid-paste, and
             -- letting go early would hand the next burst a keyboard to type over it.
