@@ -51,6 +51,10 @@ local focusRestoreTimer = nil
 local audioInputWatcher = nil
 local audioInputMirrorTimer = nil
 local sendInputDeviceCommand
+local ipadMicRefreshScript = "/Volumes/Work/Projects/transcriptions-gpt/ipad-mic/refresh.sh"
+local ipadMicRefreshSettingKey = "IpadAutomation.micRefreshAt"
+local ipadMicRefreshInterval = 30 * 60
+local ipadMicRefreshTask = nil
 
 local function showAutomationMenu()
     if _G.AutomationMenu and _G.AutomationMenu.show then
@@ -821,6 +825,39 @@ local function ipadDisconnected(baseline)
     end
 end
 
+-- The app's free signing dies after 7 days and reinstalling needs the iPad
+-- unlocked on the same Wi-Fi, which a connect from it guarantees; refresh.sh
+-- itself decides whether the build is old enough to be worth rebuilding.
+local function kickIpadMicRefresh()
+    if ipadMicRefreshTask and ipadMicRefreshTask:isRunning() then
+        return
+    end
+    local now = os.time()
+    local ok, lastRun = pcall(hs.settings.get, ipadMicRefreshSettingKey)
+    if ok and tonumber(lastRun) and now - tonumber(lastRun) < ipadMicRefreshInterval then
+        return
+    end
+    -- Checked here, not at registration: the script lives on an external
+    -- volume that may not be mounted when Hammerspoon loads.
+    if not hs.fs.attributes(ipadMicRefreshScript) then
+        return
+    end
+    local logDir = os.getenv("HOME") .. "/.transcriptions-gpt"
+    local logPath = logDir .. "/ipad-mic-refresh.log"
+    -- Hammerspoon inherits launchd's PATH, which has no Homebrew; the build
+    -- shells out to xcodegen there, like the refresh job's own plist does.
+    local command = "mkdir -p '" .. logDir .. "' && "
+        .. "PATH=/opt/homebrew/bin:/usr/local/bin:$PATH exec '"
+        .. ipadMicRefreshScript .. "' >>'" .. logPath .. "' 2>&1"
+    ipadMicRefreshTask = hs.task.new("/bin/sh", nil, { "-c", command })
+    if not ipadMicRefreshTask or not ipadMicRefreshTask:start() then
+        ipadMicRefreshTask = nil
+        print("ERROR: iPad mic refresh failed to start")
+        return
+    end
+    pcall(hs.settings.set, ipadMicRefreshSettingKey, now)
+end
+
 local function evaluateIpadPresence()
     if _G.IpadMode and _G.IpadAutomation and _G.IpadAutomation.getSidecarPresent then
         _G.IpadMode.recompute("Sidecar display signal", _G.IpadAutomation.getSidecarPresent())
@@ -944,6 +981,7 @@ if ipadModeOk then
     else
         startJumpAttemptWatcher()
         startAudioInputMirror()
+        _G.IpadMode.onTurnedOn(kickIpadMicRefresh)
     end
 end
 

@@ -80,6 +80,24 @@ local function clearDisconnectCooldown()
     end
 end
 
+local turnedOnCallbacks = {}
+
+-- Callers invoke this only on real off->on transitions; recompute's initial
+-- state replay assigns `on` directly and bypasses it on purpose - an
+-- hs.reload must not re-run connect-time work.
+local function fireTurnedOn()
+    for _, callback in ipairs(turnedOnCallbacks) do
+        local ok, err = pcall(callback)
+        if not ok then
+            print("ERROR: iPad turned-on callback failed:", err)
+        end
+    end
+end
+
+function IpadMode.onTurnedOn(callback)
+    table.insert(turnedOnCallbacks, callback)
+end
+
 -- baseline = the state replay right after a load, not a live transition; the
 -- handlers use it to leave anything the user already decided alone.
 local function runAction(value, baseline)
@@ -108,6 +126,9 @@ local function apply(value, reason)
     on = value
     logChange(on, reason)
     runAction(on)
+    if on then
+        fireTurnedOn()
+    end
     return true
 end
 
@@ -379,6 +400,9 @@ function IpadMode.setManual(value)
     if on ~= value then
         on = value
         logChange(on, "manual")
+        if on then
+            fireTurnedOn()
+        end
     end
     runAction(value)
     return on
@@ -396,6 +420,7 @@ function IpadMode.wakeOnAttempt()
     on = true
     logChange(on, "Jump connection attempt")
     runAction(true)
+    fireTurnedOn()
     if not derivedOn(signals) then
         wakeDeadlineTimer = hs.timer.doAfter(wakeConfirmationSeconds, function()
             wakeDeadlineTimer = nil
