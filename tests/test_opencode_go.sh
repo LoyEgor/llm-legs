@@ -449,6 +449,14 @@ assert grep -qx 'roster: added team-two' <<<"$out"
 assert test "$(cat "$HOME/.config/opencode-go/profiles")" = "$(printf -- '-\nalt\nteam-two')"
 assert_fails grep -q 'altteam-two' "$HOME/.config/opencode-go/profiles"
 
+# Every reader trims the line, so an indented entry names a live account: appending it again gives
+# the leg two rows for one plan and the roster-walking probe spends on it twice.
+printf -- '-\n  team-two\n' >"$HOME/.config/opencode-go/profiles"
+out=$("$SCRIPT" p team-two </dev/null 2>"$WORK/err") \
+  || fail "an indented roster entry was not recognised: $(cat "$WORK/err")"
+assert grep -qx 'roster: already listed' <<<"$out"
+assert test "$(cat "$HOME/.config/opencode-go/profiles")" = "$(printf -- '-\n  team-two')"
+
 status=0
 "$SCRIPT" profile Bad_Name </dev/null >"$WORK/out" 2>"$WORK/err" || status=$?
 assert test "$status" = 2
@@ -697,6 +705,78 @@ jq -cn '{schema:1,vendors:{opencode:{source:"opencode-go",accounts:[
   {account:"-",walled:false,windows:[]}]}}}' >"$LLM_LIMITS_CACHE"
 reset_calls
 out=$("$SCRIPT" wall-check --all 2>&1) || fail "wall-check --all on an open leg failed: $out"
+assert test "$(calls)" = 0
+assert grep -q '^dormant' <<<"$out"
+
+# --- wall-check --probe-clear -------------------------------------------------
+# An account's age is the stamp of the last completion the plan served it, so a clear account left
+# unasked can only grow older: an explicit refresh spends the completion the frugal path saves.
+rm -rf "$WORKER_STATS_DIR"
+reset_calls
+limits_cache - false
+printf '200|%s|0\n' "$WORK/answer.json" >"$CURL_PLAN"
+out=$("$SCRIPT" wall-check --probe-clear 2>"$WORK/err") || fail "probe-clear failed: $(cat "$WORK/err")"
+assert test "$(calls)" = 1
+assert grep -q '^served' <<<"$out"
+assert test -s "$WORKER_STATS_DIR/opencode-seen/opencode-go"
+
+# The same probe is how an externally-claimed wall on a clear account becomes a record every
+# surface reads: the refusal is written down where it happens, whoever asked for it.
+rm -rf "$WORKER_STATS_DIR"
+reset_calls
+limits_cache - false
+printf '429|%s|0\n' "$WORK/wall.json" >"$CURL_PLAN"
+out=$("$SCRIPT" wall-check --probe-clear 2>"$WORK/err") || fail "probe-clear on a fresh wall failed: $(cat "$WORK/err")"
+assert test "$(calls)" = 1
+assert grep -q '^walled — weekly' <<<"$out"
+assert test "$(tail -n 1 "$WALLS" | jq -r .account)" = opencode-go
+
+# A row the collector never wrote no longer refuses the probe: the row decides whether asking is
+# free, never whether a person may ask.
+rm -rf "$WORKER_STATS_DIR"
+reset_calls
+limits_cache evyoxqy true
+printf '200|%s|0\n' "$WORK/answer.json" >"$CURL_PLAN"
+out=$("$SCRIPT" wall-check --probe-clear 2>"$WORK/err") || fail "probe-clear without a row failed: $(cat "$WORK/err")"
+assert test "$(calls)" = 1
+assert grep -q '^served' <<<"$out"
+
+# --all --probe-clear asks the roster file, not the collector's walled rows: the accounts nobody
+# walled are exactly the ones whose age nothing else can move.
+OPENCODE_GO_PROFILES="$WORK/profiles"
+export OPENCODE_GO_PROFILES
+cat >"$OPENCODE_GO_PROFILES" <<'EOF'
+# the default account
+-
+  evyoxqy
+
+EOF
+jq -cn '{schema:1,vendors:{opencode:{source:"opencode-go",accounts:[
+  {account:"-",walled:false,windows:[]},
+  {account:"evyoxqy",walled:false,windows:[]}]}}}' >"$LLM_LIMITS_CACHE"
+rm -rf "$WORKER_STATS_DIR"
+reset_calls
+printf '200|%s|0\n200|%s|0\n' "$WORK/answer.json" "$WORK/answer.json" >"$CURL_PLAN"
+out=$("$SCRIPT" wall-check --all --probe-clear 2>&1) || fail "wall-check --all --probe-clear failed: $out"
+assert test "$(calls)" = 2
+assert grep -q '^-: served' <<<"$out"
+assert grep -q '^evyoxqy: served' <<<"$out"
+assert test -s "$WORKER_STATS_DIR/opencode-seen/opencode-go"
+assert test -s "$WORKER_STATS_DIR/opencode-seen/opencode-go-evyoxqy"
+
+# The menubar spells one of the two orders and nothing pins which: --all reaching wall_check as an
+# unknown flag spends a completion and then dies on usage.
+rm -rf "$WORKER_STATS_DIR"
+reset_calls
+printf '200|%s|0\n200|%s|0\n' "$WORK/answer.json" "$WORK/answer.json" >"$CURL_PLAN"
+out=$("$SCRIPT" wall-check --probe-clear --all 2>&1) || fail "wall-check --probe-clear --all failed: $out"
+assert test "$(calls)" = 2
+assert grep -q '^-: served' <<<"$out"
+assert grep -q '^evyoxqy: served' <<<"$out"
+
+# The frugal path is unchanged by the flag existing: the same roster, no wall, still sends nothing.
+reset_calls
+out=$("$SCRIPT" wall-check --all 2>&1) || fail "wall-check --all after probe-clear failed: $out"
 assert test "$(calls)" = 0
 assert grep -q '^dormant' <<<"$out"
 

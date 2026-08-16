@@ -287,6 +287,7 @@ GATE_WALL_STDERR = "the OpenCode plan walled off while this cell waited for a ga
 # it for the rest of the run rather than send one doomed request per remaining cell, which is how
 # a wall gets deeper instead of waited out.
 WALL_STATE_FILE = "walls.jsonl"
+OPENCODE_SEEN_DIR = "opencode-seen"
 WALL_RECORD_FIELDS = ("side", "account", "bucket", "detected_at", "reset_at", "window")
 WALL_LOCK_FILE = ".walls.lock"
 WALL_COMPACT_BYTES = 4096
@@ -458,6 +459,7 @@ def compact_walls(path):
             # collapses superseded duplicates: one row per account and window, carrying the
             # newest detection and the longest horizon, so neither reader loses its answer.
             opencode = {}
+            served = {}
             try:
                 with path.open(encoding="utf-8", errors="replace") as stream:
                     raw_rows = stream.readlines()
@@ -480,14 +482,23 @@ def compact_walls(path):
                 if not isinstance(window, str) or not window:
                     window = None
                 reset_at = recorded_reset_at(row.get("reset_at"))
-                kept = opencode.get((account, bucket, window))
+                if account not in served:
+                    served[account] = opencode_served_at(path, account)
+                stamp = served[account]
+                # The served stamp splits the rows into two records that must never merge: a
+                # refusal the plan has already served past would otherwise lend its far horizon
+                # to a detection recorded after that completion, and the wall both readers
+                # retired stands again on every surface. Each side keeps its own row, since
+                # retiring one is the reader's question and compaction drops no account.
+                retired = stamp is not None and detected_at < stamp
+                kept = opencode.get((account, bucket, window, retired))
                 if kept is not None:
                     detected_at = max(kept[0], detected_at)
                     reset_at = max(
                         (value for value in (kept[1], reset_at) if value is not None),
                         default=None,
                     )
-                opencode[(account, bucket, window)] = (detected_at, reset_at)
+                opencode[(account, bucket, window, retired)] = (detected_at, reset_at)
             with tmp.open("w", encoding="utf-8") as stream:
                 for (side, account, bucket), wall in sorted(walls.items()):
                     if side == "opencode":
@@ -498,8 +509,9 @@ def compact_walls(path):
                         reset_at=reset_at, window=wall[2] if len(wall) > 2 else None,
                     )
                     stream.write(json.dumps(row, separators=(",", ":")) + "\n")
-                for (account, bucket, window), (detected_at, reset_at) in sorted(
-                    opencode.items(), key=lambda item: (item[0][0], item[0][1], item[0][2] or "")
+                for (account, bucket, window, _retired), (detected_at, reset_at) in sorted(
+                    opencode.items(),
+                    key=lambda item: (item[0][0], item[0][1], item[0][2] or "", item[0][3]),
                 ):
                     row = wall_record(
                         side="opencode", account=account, bucket=bucket,
@@ -524,6 +536,26 @@ def compact_walls(path):
             except OSError:
                 pass
     return compacted
+
+
+def opencode_served_at(path, account):
+    """When the plan last SERVED this account, from the stamp beside the wall record.
+
+    Digits only, exactly as llm-limits.sh reads the same file (`tr -dc '0-9'`): a stamp that is
+    missing, unreadable or garbled is no evidence of a completion, and only evidence retires a
+    wall. The account name comes out of a file every process appends to, so it must not be able
+    to steer this read out of the stamp directory.
+    """
+    if not account or "/" in account or account.startswith("."):
+        return None
+    try:
+        raw = (path.parent / OPENCODE_SEEN_DIR / account).read_text(
+            encoding="utf-8", errors="replace"
+        )
+    except OSError:
+        return None
+    digits = "".join(char for char in raw if char in "0123456789")
+    return float(digits) if digits else None
 
 
 def read_wall_rows(path):
@@ -558,10 +590,25 @@ def read_wall_rows(path):
             window = None
         reset_at = recorded_reset_at(row.get("reset_at"))
         walls.setdefault((side, account, bucket), []).append((detected_at, reset_at, window))
-    return {
-        key: standing for key, rows in walls.items()
-        if (standing := standing_wall(rows)) is not None
-    }
+    standing = {}
+    served = {}
+    for key, rows in walls.items():
+        side, account, _bucket = key
+        if side == "opencode":
+            # llm-limits.sh answers this from the same two files, and the two readers disagreeing
+            # is a whole leg refused for a day on an account the menubar shows clean. A completion
+            # served AFTER a refusal retires it; a tie keeps the wall, since only a standing wall
+            # is ever probed again. The rows go first, before the windows are aggregated, or a
+            # stale long-horizon row outranks the 429 recorded after that completion.
+            if account not in served:
+                served[account] = opencode_served_at(path, account)
+            stamp = served[account]
+            if stamp is not None:
+                rows = [row for row in rows if row[0] >= stamp]
+        wall = standing_wall(rows)
+        if wall is not None:
+            standing[key] = wall
+    return standing
 
 
 def standing_wall(rows):
@@ -788,7 +835,12 @@ def opencode_wall_window(text):
 
 
 def opencode_profiles():
-    path = Path(os.environ.get("HOME") or Path.home()) / ".config/opencode-go/profiles"
+    # The same override llm-limits.sh and bin/opencode-go read: a roster only two of the three
+    # honour is a pool running cells on accounts the surfaces neither render nor probe.
+    override = os.environ.get("OPENCODE_GO_PROFILES")
+    path = Path(override) if override else (
+        Path(os.environ.get("HOME") or Path.home()) / ".config/opencode-go/profiles"
+    )
     if not path.exists():
         return ["-"]
     return [

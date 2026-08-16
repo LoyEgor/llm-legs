@@ -32,6 +32,17 @@ WALL_STATE_DIR=${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claude
 WALLS_FILE=$WALL_STATE_DIR/walls.jsonl
 SEEN_FILE=$WALL_STATE_DIR/opencode-seen/$KEY_SERVICE
 LIMITS_CACHE=${LLM_LIMITS_CACHE:-$HOME/.llm-limits.json}
+PROFILES_FILE=${OPENCODE_GO_PROFILES:-$HOME/.config/opencode-go/profiles}
+# The roster the collector reads, parsed the way llm-limits.sh parses it (shared-invariants row
+# al): read any other way, this probes accounts no surface renders and skips ones it does.
+roster_profiles() {
+  if [[ -r $PROFILES_FILE ]]; then
+    sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$PROFILES_FILE" |
+      grep -v -e '^#' -e '^$' || true
+  else
+    printf -- '-\n'
+  fi
+}
 # Whether a recorded wall still stands is llm-limits.sh's to decide; this file only writes down
 # what one finished request showed. A stated horizon is capped here, once, by the window it
 # belongs to (shared-invariants row ai): a garbled far-future date would otherwise retire the
@@ -118,7 +129,7 @@ Usage:
   opencode-go profile <name>  Open a profile; creates it if missing. Alias: p.
   opencode-go key
   opencode-go models [--json]
-  opencode-go wall-check [--all]
+  opencode-go wall-check [--all] [--probe-clear]
   opencode-go run <model> (<prompt...> | --prompt-file <path>) [--system <text>] [--max-tokens N] [--effort low|medium|high | --no-reasoning] [--prefill <text>] [--answer-must-match <ere>] [--retries N] [--stream] [--json]
   opencode-go raw <path> [json-body]
 OPENCODE_GO_PROFILE=<name> selects the account: key/models/run then use the
@@ -128,6 +139,11 @@ wall-check asks whether a recorded usage wall still stands, --all asking it for
 every walled account of the leg, and sends nothing at all when none does: the plan publishes no usage figures, so the only way to learn
 anything is a real request, and one that succeeds spends the subscription to be
 told what the record already said.
+--probe-clear sends the probe whether a wall stands or not, --all then asking
+every account on the roster rather than the walled ones, and spends one small
+completion on each clear account: its age is the stamp of the last completion
+the plan served it, so nothing but a real request moves it, and current truth is
+what someone refreshing by hand is asking for. Nothing scheduled passes it.
 Requests are buffered by default and retried on 5xx, because an upstream that
 drops a slow buffered reply usually answers on the next attempt. --stream
 survives generations longer than that deadline, but some models then emit
@@ -235,8 +251,10 @@ ensure_profile() {
   else
     store_key "$service" true
   fi
-  roster="${HOME}/.config/opencode-go/profiles"
-  mkdir -p "${roster%/*}"
+  roster=$PROFILES_FILE
+  # A roster path with no directory part is its own ${roster%/*}, and creating a DIRECTORY by the
+  # file's name is how the write below starts failing on a path the readers accept.
+  [[ $roster == */* ]] && mkdir -p "${roster%/*}"
   # review-bench and the menubar fall back to the default account only while this file is
   # ABSENT, so a roster opening with the new name alone retires the account the existing key
   # belongs to — but listing a default that has no key at all hands cells to an account that
@@ -248,7 +266,9 @@ ensure_profile() {
       printf 'roster: added the default account as -\n'
     fi
   fi
-  if grep -Fxq -- "$name" "$roster"; then
+  # Against the roster as its READERS see it: every one of them trims the line, so an indented
+  # entry already names a live account and appending it again double-spends the leg's probe.
+  if grep -Fxq -- "$name" <<<"$(roster_profiles)"; then
     printf 'roster: already listed\n'
   else
     # An append onto a last line that never ended fuses both names into an account nobody has.
@@ -598,19 +618,29 @@ WALL_PROBE_MODELS=(deepseek-v4-flash glm-5.2)
 # and `dormant` sent nothing at all — reading the third as the first is how an account nobody asked
 # walks back into the pool.
 wall_check() {
-  [[ $# -eq 0 ]] || usage
+  local probe_clear=false
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --probe-clear) probe_clear=true; shift ;;
+      *) usage ;;
+    esac
+  done
   local profile=${OPENCODE_GO_PROFILE:--} walled started fresh cache model candidate rc=0
   local window reset
   walled=$(jq -r --arg p "$profile" \
     'first(.vendors.opencode.accounts[]? | select(.account == $p) | .walled | tostring) // "unknown"' \
     "$LIMITS_CACHE" 2>/dev/null) || walled=unknown
-  if [[ $walled == unknown ]]; then
-    printf 'inconclusive — %s carries no OpenCode row for profile %s\n' "$LIMITS_CACHE" "$profile" >&2
-    return 1
-  fi
-  if [[ $walled != true ]]; then
-    printf 'dormant — no wall stands on %s, so nothing was sent\n' "$profile"
-    return 0
+  # The collector's row decides whether the probe is FREE, never whether it may be sent at all:
+  # --probe-clear is someone asking for a reading taken now, which only a request can give.
+  if ! $probe_clear; then
+    if [[ $walled == unknown ]]; then
+      printf 'inconclusive — %s carries no OpenCode row for profile %s\n' "$LIMITS_CACHE" "$profile" >&2
+      return 1
+    fi
+    if [[ $walled != true ]]; then
+      printf 'dormant — no wall stands on %s, so nothing was sent\n' "$profile"
+      return 0
+    fi
   fi
   cache=$(models_cache) || return 1
   model=
@@ -633,7 +663,11 @@ wall_check() {
   ( trap cleanup_request EXIT
     run_model "$model" --max-tokens 16 --retries 1 ping ) >/dev/null 2>"$probe_errors" || rc=$?
   if (( rc == 0 )); then
-    printf 'served — the plan answered a completion; the wall is retired\n'
+    if [[ $walled == true ]]; then
+      printf 'served — the plan answered a completion; the wall is retired\n'
+    else
+      printf 'served — the plan answered a completion\n'
+    fi
     return 0
   fi
   # A row that stood before the probe proves nothing: only one this probe itself just appended is
@@ -662,25 +696,42 @@ wall_check() {
   return 1
 }
 # The leg's one refresh action. Which accounts are asked is decided by the collector's rows and
-# nowhere else, so the menu, the heartbeat and a hand-run command all send the same nothing to an
-# account with no wall on it.
+# nowhere else, so the heartbeat and a hand-run command send the same nothing to an account with no
+# wall on it — until --probe-clear, which asks the whole roster because a person asked it to.
 wall_check_all() {
-  [[ $# -eq 0 ]] || usage
-  local self profile rc=0 walled
+  local probe_clear=false
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --probe-clear) probe_clear=true; shift ;;
+      *) usage ;;
+    esac
+  done
+  local self profile rc=0 targets answer
+  local -a flags=()
   self=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")
-  walled=$(jq -r '.vendors.opencode.accounts[]? | select(.walled == true) | .account' \
-    "$LIMITS_CACHE" 2>/dev/null) || walled=
-  if [[ -z $walled ]]; then
-    printf 'dormant — no wall stands on the leg, so nothing was sent\n'
-    return 0
+  if $probe_clear; then
+    flags=(--probe-clear)
+    targets=$(roster_profiles)
+    if [[ -z $targets ]]; then
+      printf 'inconclusive — %s names no account to ask\n' "$PROFILES_FILE" >&2
+      return 1
+    fi
+  else
+    targets=$(jq -r '.vendors.opencode.accounts[]? | select(.walled == true) | .account' \
+      "$LIMITS_CACHE" 2>/dev/null) || targets=
+    if [[ -z $targets ]]; then
+      printf 'dormant — no wall stands on the leg, so nothing was sent\n'
+      return 0
+    fi
   fi
-  local answer
   while IFS= read -r profile; do
     [[ -n $profile ]] || continue
     [[ $profile != - ]] || profile=''
-    answer=$(OPENCODE_GO_PROFILE=$profile "$self" wall-check 2>&1) || rc=1
+    # A bare "${flags[@]}" on an empty array is an unbound-variable error under set -u in bash 3.2,
+    # which is the shell every launchd context reaches first.
+    answer=$(OPENCODE_GO_PROFILE=$profile "$self" wall-check ${flags[@]+"${flags[@]}"} 2>&1) || rc=1
     printf '%s: %s\n' "${profile:--}" "$answer"
-  done <<<"$walled"
+  done <<<"$targets"
   return "$rc"
 }
 case ${1:-} in
@@ -689,7 +740,19 @@ case ${1:-} in
   models) shift; models "$@" ;;
   wall-check)
     shift
-    if [[ ${1-} == --all ]]; then shift; wall_check_all "$@"; else wall_check "$@"; fi
+    # --all selects the leg-wide walk whatever order the flags arrive in: reaching wall_check with
+    # a flag it does not know spends a completion and then dies on usage.
+    wall_check_leg=false
+    wall_check_args=()
+    for wall_check_arg in "$@"; do
+      if [[ $wall_check_arg == --all ]]; then wall_check_leg=true
+      else wall_check_args+=("$wall_check_arg"); fi
+    done
+    if $wall_check_leg; then
+      wall_check_all ${wall_check_args[@]+"${wall_check_args[@]}"}
+    else
+      wall_check ${wall_check_args[@]+"${wall_check_args[@]}"}
+    fi
     ;;
   run) shift; run_model "$@" ;;
   raw) shift; raw_request "$@" ;;

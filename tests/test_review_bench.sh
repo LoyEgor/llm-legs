@@ -235,6 +235,39 @@ assert oc_kept[0]["window"] == "weekly"
 assert oc_kept[0]["detected_at"] == oc_newer["detected_at"]
 assert oc_kept[0]["reset_at"] == oc_lapsed["reset_at"]
 
+# The served stamp is a wall between two records, not a filter compaction may apply: merged across
+# it, a refusal the plan already served past lends its week-long horizon to a detection recorded
+# after that completion, and an account both readers had retired is walled again on every surface.
+split_wall_state = work / "served-compaction-state"
+(split_wall_state / "opencode-seen").mkdir(parents=True)
+split_path = split_wall_state / rb.WALL_STATE_FILE
+split_now = float(int(time.time()))
+split_pre = {
+    "side": "opencode", "account": "opencode-go-split", "bucket": "general",
+    "detected_at": split_now - 7200, "reset_at": split_now + 6 * 86400, "window": "weekly",
+}
+split_post = {
+    "side": "opencode", "account": "opencode-go-split", "bucket": "general",
+    "detected_at": split_now - 60, "reset_at": split_now - 30, "window": "weekly",
+}
+split_path.write_text(
+    "".join(json.dumps(row) + "\n" for row in oc_filler + [split_pre, split_post])
+)
+(split_wall_state / "opencode-seen" / "opencode-go-split").write_text(
+    f"{int(split_now) - 3600}\n"
+)
+split_before = rb.read_wall_rows(split_path)
+assert split_path.stat().st_size > rb.WALL_COMPACT_BYTES
+assert rb.compact_walls(split_path) is not None
+split_kept = [json.loads(line) for line in split_path.read_text().splitlines()
+              if json.loads(line)["side"] == "opencode"]
+assert len(split_kept) == 2, split_kept
+assert sorted(row["reset_at"] for row in split_kept) == sorted(
+    [split_pre["reset_at"], split_post["reset_at"]]
+), split_kept
+# Compaction is housekeeping: the answer the pool reads out of the file may not change with it.
+assert rb.read_wall_rows(split_path) == split_before, split_before
+
 # The row that stands longest wins the merge: a plain wall recorded after a dated one must not
 # throw the provider's horizon away and put a weekly limit back in the pool an hour later.
 horizon_wall_state = work / "horizon-wall-state"
@@ -342,6 +375,77 @@ assert rb.standing_wall([(now - 600, now + 3 * 86400), (now, None)])[1] == now +
 assert rb.standing_wall(
     [(now - 600, now + 3 * 86400), (now, now + 60)]
 )[1] == now + 3 * 86400
+
+# One record, two readers. llm-limits.sh retires an OpenCode wall the moment the plan serves a
+# completion after it, and the pool answering that question a second way is a whole leg refused
+# for a day on an account the menubar shows clean (2026-08-15, opencode-go-dioqktn: a grok-4.5
+# model wall recorded while the same plan kept completing on its other models).
+served_state = work / "served-wall-state"
+(served_state / "opencode-seen").mkdir(parents=True)
+# Whole seconds on both sides: the stamp file holds epoch seconds, and a fractional wall row
+# beside it can never tie with one.
+served_now = float(int(time.time()))
+served_account = "opencode-go-dioqktn"
+served_key = ("opencode", served_account, "general")
+
+
+def write_served_walls(detected_at):
+    (served_state / rb.WALL_STATE_FILE).write_text(
+        json.dumps({"side": "opencode", "account": served_account, "bucket": "general",
+                    "detected_at": detected_at, "reset_at": detected_at + 86400,
+                    "window": "weekly"}) + "\n"
+        + json.dumps({"side": "agy", "account": served_account, "bucket": "agy-pro",
+                      "detected_at": detected_at, "reset_at": detected_at + 86400}) + "\n"
+    )
+
+
+def write_served_stamp(text):
+    stamp = served_state / "opencode-seen" / served_account
+    if text is None:
+        stamp.unlink(missing_ok=True)
+    else:
+        stamp.write_text(f"{text}\n")
+
+
+os.environ["WORKER_STATS_DIR"] = str(served_state)
+try:
+    write_served_walls(served_now - 3600)
+    # No stamp at all is no evidence of a completion, and that is what keeps an account nobody has
+    # ever served out of the pool rather than walking it back in on a missing file.
+    write_served_stamp(None)
+    assert rb.is_walled("opencode", served_account)
+    assert rb.walled_accounts("opencode") == {served_account}
+    # Digits only, as llm-limits.sh strips the same file: a garbled stamp must not read as a serve.
+    write_served_stamp("not-a-time")
+    assert rb.is_walled("opencode", served_account)
+    # A completion served after the refusal retires it, whatever horizon the row itself named.
+    write_served_stamp(int(served_now) - 1800)
+    assert not rb.is_walled("opencode", served_account)
+    assert rb.walled_accounts("opencode") == set()
+    assert served_key not in rb.read_wall_rows(served_state / rb.WALL_STATE_FILE)
+    # A tie goes to the wall: read as served, an account that refused in the same second it last
+    # completed would never be probed again and would freeze clean forever.
+    write_served_walls(served_now - 1800)
+    assert rb.is_walled("opencode", served_account)
+    assert rb.walled_accounts("opencode") == {served_account}
+    # The rows are dropped before the windows are aggregated, or a stale long-horizon row would
+    # outrank the 429 recorded after the completion and answer for the account anyway.
+    (served_state / rb.WALL_STATE_FILE).write_text(
+        json.dumps({"side": "opencode", "account": served_account, "bucket": "general",
+                    "detected_at": served_now - 7200, "reset_at": served_now + 7 * 86400,
+                    "window": "weekly"}) + "\n"
+    )
+    write_served_stamp(int(served_now) - 3600)
+    assert not rb.is_walled("opencode", served_account)
+    # This evidence exists for OpenCode alone: a served stamp says nothing about the same name's
+    # Antigravity quota, which is refused and billed somewhere else entirely.
+    write_served_walls(served_now - 3600)
+    write_served_stamp(int(served_now))
+    assert rb.is_walled("agy", served_account, "agy-pro")
+    assert rb.walled_accounts("agy", "agy-pro") == {served_account}
+    assert not rb.is_walled("opencode", served_account)
+finally:
+    del os.environ["WORKER_STATS_DIR"]
 
 # A horizon is read out of the gateway's channel only. The review this repo's own cells write
 # quotes reset wording from the code under review, and taken as the provider's word it retires

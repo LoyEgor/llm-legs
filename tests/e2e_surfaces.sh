@@ -160,6 +160,8 @@ assert_account_ages() {
       gemini) label=Gemini ;;
     esac
     section=$(vendor_section "$menu" "$label")
+    # A removed account carries no age and the menu renders no row for it, so demanding one here
+    # fails on a store the user has pruned rather than on anything the surfaces got wrong.
     while IFS=$'\t' read -r account auth asof; do
       [ -n "$account" ] || continue
       row=$(awk -v account="$account" '$1 == account {print; exit}' <<<"$section")
@@ -174,6 +176,7 @@ assert_account_ages() {
         fail "$vendor/$account is at most 5m old but displays age: $row"
       fi
     done < <(jq -r --arg vendor "$vendor" '.vendors[$vendor].accounts[]? |
+      select(.removed != true) |
       [.account, (.auth_needed == true), (.as_of // "")] | @tsv' <<<"$json")
   done
   if [ "$(jq -r '.vendors.gemini.available == true and
@@ -534,7 +537,8 @@ for _, case in ipairs(expectedBlocks) do
   end
 end
 -- Refreshing this leg means sending real completions, so it is ONE action for the whole leg in the
--- section header, and which accounts it spends on is read out of the rows by opencode-go, not by a click.
+-- section header, and which accounts it spends on is read out of the roster by opencode-go, not by
+-- a click. The click asks all of them: an account no wall stands on ages until one is served.
 local function openCodeRow(name)
   for index = openCodeAt + 1, #wallMenu do
     local text = title(wallMenu[index])
@@ -557,8 +561,9 @@ end
 legHeader.menu[1].fn()
 local wallCheck = wallState.starts[#wallState.starts]
 if not wallCheck or wallCheck.command ~= "/fixture-home/.local/bin/opencode-go"
-    or wallCheck.args[1] ~= "wall-check" or wallCheck.args[2] ~= "--all" or #wallCheck.args ~= 2 then
-  error("the leg refresh did not launch opencode-go wall-check --all")
+    or wallCheck.args[1] ~= "wall-check" or wallCheck.args[2] ~= "--all"
+    or wallCheck.args[3] ~= "--probe-clear" or #wallCheck.args ~= 3 then
+  error("the leg refresh did not launch opencode-go wall-check --all --probe-clear")
 end
 if wallCheck.environment.OPENCODE_GO_PROFILE ~= nil then
   error("the leg refresh named a single profile")
@@ -647,9 +652,13 @@ codex_hard=$(jq 'if .vendors.codex.available == true then (.vendors.codex.accoun
 gemini_hard=$(jq 'if (.vendors.gemini.accounts | type) == "array" and
     (.vendors.gemini.accounts | length) > 1
   then [.vendors.gemini.accounts[] | select(.removed != true)] | length else 1 end' <<<"$JSON")
+# The OpenCode leg carries ONE refresh for the whole leg in its section header rather than one per
+# account, so it contributes a single row however many profiles the roster holds.
+opencode_hard=$(jq 'if ((.vendors.opencode.accounts? // []) | length) > 0 then 1 else 0 end' <<<"$JSON")
 hard_count=$(grep -Fxc '  Hard refresh' <<<"$MENU_TXT")
-[ "$hard_count" -eq "$((claude_hard + codex_hard + gemini_hard))" ] \
-  || fail "Hard refresh submenu count mismatch: expected $((claude_hard + codex_hard + gemini_hard)), got $hard_count"
+hard_expected=$((claude_hard + codex_hard + gemini_hard + opencode_hard))
+[ "$hard_count" -eq "$hard_expected" ] \
+  || fail "Hard refresh submenu count mismatch: expected $hard_expected, got $hard_count"
 pass "menu build: per-account ages and Hard refresh present; aggregate vendor age line absent"
 
 # 4. CLI surface: --table exits 0 with rows; bare output is valid JSON with schema fields.

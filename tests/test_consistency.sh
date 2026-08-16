@@ -1067,8 +1067,22 @@ assert eq "$(jq -r '.accounts[2].walled' <<<"$oc_rows")" true
 assert eq "$(jq -r '.accounts[0].as_of | fromdateiso8601' <<<"$oc_rows")" "$((oc_now - 120))"
 assert eq "$(jq -r '.accounts[2] | has("as_of")' <<<"$oc_rows")" false
 # >= and not >: a refusal and a served call in the same second must keep the wall, because only a
-# standing wall is ever probed again — read as served, the account freezes clean forever.
+# standing wall is probed by the scheduled refresh — read as served, the account freezes clean forever.
 assert grep -Fq '.detected_at >= $served' "$LLMLIMITS"
+# The bench pool asks the same question of the same two files, in the same order — rows dropped
+# below the stamp, then the standing window. Two readers, one answer, or the menu shows an account
+# clean while every review refuses its leg for a day (2026-08-15, opencode-go-dioqktn).
+assert grep -Fq 'rows = [row for row in rows if row[0] >= stamp]' "$REVIEWBENCH"
+assert grep -Fq 'OPENCODE_SEEN_DIR = "opencode-seen"' "$REVIEWBENCH"
+# Digits only on both sides: a garbled stamp is not evidence of a completion, and read as one it
+# would open a plan that is still refusing.
+assert grep -Fq "tr -dc '0-9'" "$LLMLIMITS"
+assert grep -Fq 'char for char in raw if char in "0123456789"' "$REVIEWBENCH"
+oc_filter_line=$(grep -n -F 'rows = [row for row in rows if row[0] >= stamp]' "$REVIEWBENCH" | cut -d: -f1)
+oc_standing_line=$(grep -n -F 'wall = standing_wall(rows)' "$REVIEWBENCH" | cut -d: -f1)
+assert test "$oc_filter_line" -lt "$oc_standing_line"
+assert doc_has 'That comparison has TWO implementations and they must stay spelled alike'
+assert doc_has 'the served stamp binds BOTH readers'
 assert eq "$(jq -r '.accounts[1].windows | map(.window) | join(",")' <<<"$oc_rows")" wk
 assert eq "$(jq -r '.accounts[1].windows[0].resets_at | fromdateiso8601' <<<"$oc_rows")" \
   "$((oc_now + 172800))"
@@ -1092,9 +1106,46 @@ assert doc_has 'OpenCode rows in the limits store'
 assert doc_has 'whether a recorded wall (row `ai`) still stands is computed HERE'
 assert doc_has 'a horizon already past retires nothing'
 assert doc_has 'only a completion the plan served ever ends it'
-# The leg's one refresh action, spelled the same in the menu and in the probe it calls.
-assert grep -Fq '"wall-check", "--all"' "$HAMMER"
+# The leg's one refresh action, spelled the same in the menu and in the probe it calls. The click
+# spends a completion on clear accounts on purpose; anything scheduled must not, so the daemon
+# carries no such flag at all.
+assert grep -Fq '"wall-check", "--all", "--probe-clear" }' "$HAMMER"
 assert grep -Fq 'wall_check_all()' "$OPENCODE_GO"
+assert grep -Fq -- '--probe-clear' "$OPENCODE_GO"
+assert eq "$(grep -c -- '--probe-clear' "$LLMREFRESH")" 0
+assert doc_has 'The daemon never passes `--probe-clear`'
+assert doc_has '`wall-check --all --probe-clear`, which walks the roster file instead of the walled rows'
+# That flag walks the roster instead of the rows, so every reader of that file must parse it alike:
+# a profile one of them drops is an account the menu renders and the refresh never asks — and the
+# bench pool is the third, running cells on whatever roster it read.
+for oc_site in "$LLMLIMITS" "$OPENCODE_GO"; do
+  assert grep -Fq 'OPENCODE_GO_PROFILES:-' "$oc_site"
+  assert grep -Fq "grep -v -e '^#' -e '^\$'" "$oc_site"
+  assert grep -Fq "printf -- '-\\n'" "$oc_site"
+done
+assert grep -Fq 'os.environ.get("OPENCODE_GO_PROFILES")' "$REVIEWBENCH"
+bench_roster() {
+  OPENCODE_GO_PROFILES="$1" python3 - "$REVIEWBENCH" <<'OC_ROSTER_READER'
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("review_bench", sys.argv[1])
+rb = importlib.util.module_from_spec(importlib.util.spec_from_loader("review_bench", loader))
+loader.exec_module(rb)
+print(",".join(rb.opencode_profiles()))
+OC_ROSTER_READER
+}
+OC_ROSTER=$(mktemp -d)
+mkdir -p "$OC_ROSTER/home" "$OC_ROSTER/state"
+# A comment, an indented name and a trailing blank line: the shapes a hand-edited roster actually
+# carries, and each one is a whole account if two readers disagree about it.
+printf '# primary accounts\n-\n  evyoxqy\n\n' >"$OC_ROSTER/profiles"
+oc_menu_roster=$(HOME="$OC_ROSTER/home" WORKER_STATS_DIR="$OC_ROSTER/state" \
+  OPENCODE_GO_PROFILES="$OC_ROSTER/profiles" LLM_LIMITS_CACHE="$OC_ROSTER/cache.json" \
+  bash "$LLMLIMITS" --json 2>/dev/null | jq -r '[.vendors.opencode.accounts[].account] | join(",")')
+assert eq "$oc_menu_roster" '-,evyoxqy'
+assert eq "$(bench_roster "$OC_ROSTER/profiles")" "$oc_menu_roster"
+# An absent roster is the single default account on every reader, never an empty pool.
+assert eq "$(bench_roster "$OC_ROSTER/nothing-here")" '-'
+rm -rf "$OC_ROSTER"
 
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the coverage word the bench prints, the gate translates and the statusline speaks verbatim, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, and the OpenCode rows whose standing wall only the collector decides) and match %s\n' "$asserts" "$DOC"
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the coverage word the bench prints, the gate translates and the statusline speaks verbatim, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, and the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp) and match %s\n' "$asserts" "$DOC"

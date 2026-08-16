@@ -265,8 +265,8 @@ local function appendOpenCode(menu, limits)
   local accounts = type(vendor) == "table" and vendor.accounts
   if type(accounts) ~= "table" or #accounts == 0 then return end
   -- One refresh for the leg, in the section header every other vendor carries its own in. Per
-  -- account there is nothing to offer: a check is one real completion, free only where a wall
-  -- already stands, and which accounts those are is the collector's answer rather than a click's.
+  -- account there is nothing to offer: a check is one real completion, and the leg is refreshed
+  -- whole or not at all, never one row at a time.
   table.insert(menu, {
     title = infoTitle("OpenCode Go"),
     menu = {{ title = "Hard refresh", fn = M.hardRefreshOpenCode }},
@@ -683,9 +683,10 @@ local function runAccountCommand(launchPath, args, failMessage, onSuccess, optio
     if failed then
       logAction("failed", string.format("%s exit=%s %s", label, tostring(exitCode),
         tostring((stdErr or stdOut or ""):gsub("%s+", " "):sub(1, 160))))
-      -- A leg-wide command can fail on one account after changing another (wall-check --all probes
-      -- every walled profile), so its caller asks for the recollect even on a nonzero exit: the
-      -- rows must follow what was recorded, and the failure still reaches the alert below.
+      -- A leg-wide command can fail on one account after changing another (the leg's Hard refresh
+      -- spends a completion on EVERY roster account, clear ones included), so its caller asks for
+      -- the recollect even on a nonzero exit: the rows must follow what was recorded, and the
+      -- failure still reaches the alert below.
       if not options.recollectOnFailure then
         finishTask(id, exitCode, stdOut, stdErr, failMessage)
         return
@@ -720,10 +721,14 @@ local function runGeminib(args, failMessage, onSuccess)
   runAccountCommand(resolveGeminib(), args, failMessage, onSuccess)
 end
 
--- Which accounts this asks is read out of the store by opencode-go itself, so the leg's refresh
--- sends exactly as many requests as there are standing walls, and none at all when there are none.
+-- The scheduled refresh asks only the accounts the store marks walled, where the answer is free.
+-- This click is the other half of that split: --probe-clear spends one small completion on every
+-- clear account too, because an account's age is the stamp of the last completion the plan served
+-- it and nothing else moves it — which is the current truth every other vendor's Hard refresh
+-- hands back.
 function M.hardRefreshOpenCode()
-  runAccountCommand(resolveCommand(M.opencodeGoCmd or "opencode-go"), { "wall-check", "--all" },
+  runAccountCommand(resolveCommand(M.opencodeGoCmd or "opencode-go"),
+    { "wall-check", "--all", "--probe-clear" },
     "OpenCode wall refresh failed", nil, { recollectOnFailure = true })
 end
 
