@@ -668,6 +668,22 @@ newcomer_cells = [line for line in newcomer_report if line.startswith("cells:")]
 assert "grok 0" in newcomer_cells and "grok-low 0" in newcomer_cells, newcomer_cells
 assert "opus-high 0" in newcomer_cells and "opus-high-bare 0" in newcomer_cells, newcomer_cells
 assert rendered_tiers_table() == tiers_table_before
+# The confirmed/found form keys on the triage having HAPPENED, not on anything surviving it: a run
+# whose findings were all rejected must read 0/2, which is the opposite of an untriaged 2.
+rejected_dir = work / "rejected-triage-report"
+rejected_dir.mkdir()
+(rejected_dir / "verdicts.jsonl").write_text("".join(
+    json.dumps({"rater": "sol-high", "idx": idx, "verdict": "false_positive"}) + "\n"
+    for idx in range(2)
+))
+rejected_report = rb.report_lines(rejected_dir, {
+    "run_id": "rejected", "raters": ["sol-high"],
+    "rater_runs": [{"rater": "sol-high", "side": "codex", "duration_ms": 1000,
+                    "findings": 2, "exit_code": 0}],
+    "started": "2026-07-30T00:00:00+00:00", "finished": "2026-07-30T00:00:01+00:00",
+})
+rejected_cells = [line for line in rejected_report if line.startswith("cells:")][0]
+assert "sol-high 0/2" in rejected_cells, rejected_cells
 # The report frames read the same table through the spec they store.
 assert rb.human_cell_name("oc-kimik3#2") == "kimi"
 assert rb.human_cell_name("sol-high-bare") == "sol-high-bare"
@@ -777,6 +793,91 @@ gateway_history = work / "watchdog-gateway-history"
 ]}))
 assert rb.panel_watchdog_timeouts(gateway_history) == {}, rb.panel_watchdog_timeouts(gateway_history)
 
+# Breach escalation is a probe with three strikes: only kills since the pair's last completion
+# count, and the third in a row returns the pair to the cap its completions earn. Left unbounded,
+# a genuinely dead cell bought one grace more on every run — 909→1087→1267→1447→1628s in one
+# night — and every panel's wall walked with it (2026-08-16).
+ratchet_history = work / "watchdog-ratchet-history"
+def ratchet_run(run_id, *, kill_at=None, completed_ms=None):
+    directory = ratchet_history / run_id
+    directory.mkdir(parents=True)
+    if kill_at is not None:
+        row = {"rater": "sol-high", "model": "sol", "effort": "high", "side": "codex",
+               "duration_ms": kill_at * 1000 + 8_000, "timeout_s": kill_at, "findings": 0,
+               "exit_code": 124, "errored": True,
+               "stderr": f"rater timed out after {kill_at}s"}
+    else:
+        row = {"rater": "sol-high", "model": "sol", "effort": "high", "side": "codex",
+               "duration_ms": completed_ms, "findings": 0, "exit_code": 0}
+    (directory / "meta.json").write_text(json.dumps({"rater_runs": [row]}))
+ratchet_pair = ("sol", "high")
+ratchet_run("20260101T000100Z-aaa", completed_ms=572_000)
+ratchet_run("20260101T000200Z-bbb", kill_at=900)
+assert rb.panel_watchdog_timeouts(ratchet_history)[ratchet_pair] == 1080, \
+    rb.panel_watchdog_timeouts(ratchet_history)
+ratchet_run("20260101T000300Z-ccc", kill_at=1080)
+assert rb.panel_watchdog_timeouts(ratchet_history)[ratchet_pair] == 1260, \
+    rb.panel_watchdog_timeouts(ratchet_history)
+ratchet_run("20260101T000400Z-ddd", kill_at=1260)
+assert rb.panel_watchdog_timeouts(ratchet_history)[ratchet_pair] == 900, \
+    rb.panel_watchdog_timeouts(ratchet_history)
+# A completion clears the kill record entirely — the 1260s breach behind it is no longer evidence,
+# and the next kill starts a fresh probe rather than resuming the old climb.
+ratchet_run("20260101T000500Z-eee", completed_ms=572_000)
+assert rb.panel_watchdog_timeouts(ratchet_history)[ratchet_pair] == 900, \
+    rb.panel_watchdog_timeouts(ratchet_history)
+ratchet_run("20260101T000600Z-fff", kill_at=900)
+assert rb.panel_watchdog_timeouts(ratchet_history)[ratchet_pair] == 1080, \
+    rb.panel_watchdog_timeouts(ratchet_history)
+assert rb.panel_cell_history(ratchet_history)[4][ratchet_pair] == 1, \
+    rb.panel_cell_history(ratchet_history)[4]
+# Strikes count RUNS, not rows: a T2 panel holds three cells of one pair, and one bad run must
+# cost one strike, not the whole probe.
+(ratchet_history / "20260101T000700Z-ggg").mkdir(parents=True)
+(ratchet_history / "20260101T000700Z-ggg" / "meta.json").write_text(json.dumps({"rater_runs": [
+    {"rater": "sol-high", "model": "sol", "effort": "high", "side": "codex",
+     "duration_ms": 1_088_000, "timeout_s": 1080, "findings": 0, "exit_code": 124,
+     "errored": True, "stderr": "rater timed out after 1080s"},
+    {"rater": "sol-high-bare", "model": "sol", "effort": "high", "side": "codex",
+     "duration_ms": 1_088_000, "timeout_s": 1080, "findings": 0, "exit_code": 124,
+     "errored": True, "stderr": "rater timed out after 1080s"},
+]}))
+assert rb.panel_cell_history(ratchet_history)[4][ratchet_pair] == 2, \
+    rb.panel_cell_history(ratchet_history)[4]
+assert rb.panel_watchdog_timeouts(ratchet_history)[ratchet_pair] == 1260, \
+    rb.panel_watchdog_timeouts(ratchet_history)
+# A pair that completed in the same run it was killed in proved it works — the record clears —
+# and the completion clears it even when its duration lives only in the legacy top-level map.
+(ratchet_history / "20260101T000800Z-hhh").mkdir(parents=True)
+(ratchet_history / "20260101T000800Z-hhh" / "meta.json").write_text(json.dumps({"rater_runs": [
+    {"rater": "sol-high", "model": "sol", "effort": "high", "side": "codex",
+     "duration_ms": 1_268_000, "timeout_s": 1260, "findings": 0, "exit_code": 124,
+     "errored": True, "stderr": "rater timed out after 1260s"},
+    {"rater": "sol-high-bare", "model": "sol", "effort": "high", "side": "codex",
+     "findings": 0, "exit_code": 0},
+]}))
+assert ratchet_pair not in rb.panel_cell_history(ratchet_history)[4], \
+    rb.panel_cell_history(ratchet_history)[4]
+assert rb.panel_watchdog_timeouts(ratchet_history)[ratchet_pair] == 900, \
+    rb.panel_watchdog_timeouts(ratchet_history)
+# The third strike ends the EPISODE, not the pair's right to probe: pinned instead, a pair with no
+# completion on file could never earn the completion that clears the record, and stayed at the
+# floor for ever. The cycle re-probes every third run at one grace per run on average.
+ratchet_run("20260101T000900Z-iii", kill_at=900)
+assert rb.panel_watchdog_timeouts(ratchet_history)[ratchet_pair] == 1080, \
+    rb.panel_watchdog_timeouts(ratchet_history)
+ratchet_run("20260101T001000Z-jjj", kill_at=1080)
+assert rb.panel_watchdog_timeouts(ratchet_history)[ratchet_pair] == 1260, \
+    rb.panel_watchdog_timeouts(ratchet_history)
+ratchet_run("20260101T001100Z-kkk", kill_at=1260)
+assert rb.panel_watchdog_timeouts(ratchet_history)[ratchet_pair] == 900, \
+    rb.panel_watchdog_timeouts(ratchet_history)
+assert ratchet_pair not in rb.panel_cell_history(ratchet_history)[4], \
+    rb.panel_cell_history(ratchet_history)[4]
+ratchet_run("20260101T001200Z-lll", kill_at=900)
+assert rb.panel_watchdog_timeouts(ratchet_history)[ratchet_pair] == 1080, \
+    rb.panel_watchdog_timeouts(ratchet_history)
+
 # The stall cap under the duration cap is earned per (model, effort) pair: the longest silent gap
 # its completions ever showed, plus grace over a floor — and only where those gaps stay well under
 # the pair's runtimes, which is the evidence it streams at all. A buffered pair that is quiet the
@@ -841,6 +942,51 @@ assert rb.panel_watchdog_timeouts(stall_history)[("agy-flash36", "medium")] == 1
 assert rb.cell_failure_reason({"status": "timed_out", "stalled_s": 240, "stderr": ""}) == "stalled"
 assert rb.failure_reason("rater stalled: no output activity for 241s") == "stalled"
 
+# A cell that has failed every run for days is not the same news as one that failed today, and the
+# report is the only place that difference is visible. Counted over the runs that HELD the cell:
+# a panel it was never part of is no evidence it recovered there.
+streak_history = work / "streak-history"
+streak_runs = {
+    "20260101T000100Z-aaa": [("agy-flash35-medium-skill", 0), ("opus-medium", 0)],
+    "20260101T000200Z-bbb": [("agy-flash35-medium-skill", 1)],
+    "20260101T000300Z-ccc": [("sol-high", 0)],
+    "20260101T000400Z-ddd": [("agy-flash35-medium-skill", 1), ("opus-medium", 1)],
+}
+for streak_id, streak_rows in streak_runs.items():
+    (streak_history / streak_id).mkdir(parents=True)
+    (streak_history / streak_id / "meta.json").write_text(json.dumps({"rater_runs": [
+        {"rater": rater, "duration_ms": 1000, "findings": 0, "exit_code": code,
+         "errored": bool(code), "stderr": "boom" if code else ""}
+        for rater, code in streak_rows
+    ]}))
+streaks = rb.cell_failure_streaks(
+    streak_history, "20260101T000500Z-eee",
+    ["agy-flash35-medium-skill", "opus-medium", "sol-high"],
+)
+assert streaks == {
+    "agy-flash35-medium-skill": 3, "opus-medium": 2, "sol-high": 1,
+}, streaks
+# Only runs BEFORE this one count, and a store with no history at all answers with this run alone.
+assert rb.cell_failure_streaks(
+    streak_history, "20260101T000000Z-zzz", ["agy-flash35-medium-skill"],
+) == {"agy-flash35-medium-skill": 1}
+assert rb.cell_failure_streaks(work / "no-such-benches", "x", ["sol-high"]) == {}
+assert rb.CHRONIC_FAILURE_STREAK == 3
+# A cell with no completion anywhere never breaks the walk, so the walk is windowed: a report must
+# not read a months-long history to price one chronic cell, and a streak past the window reads as
+# the window (plus this run).
+chronic_history = work / "chronic-streak-history"
+for index in range(rb.CHRONIC_STREAK_WALK_RUNS + 5):
+    directory = chronic_history / f"20260101T{index:04d}00Z-run"
+    directory.mkdir(parents=True)
+    (directory / "meta.json").write_text(json.dumps({"rater_runs": [
+        {"rater": "sol-high", "duration_ms": 1000, "findings": 0, "exit_code": 1,
+         "errored": True, "stderr": "boom"}
+    ]}))
+assert rb.cell_failure_streaks(
+    chronic_history, "20260102T000000Z-next", ["sol-high"],
+) == {"sol-high": rb.CHRONIC_STREAK_WALK_RUNS + 1}
+
 # run_streamed: any byte on stdout or stderr, and any growth of a watch path, counts as life. A
 # cell silent past its stall cap is killed — its whole process group, since the hang lives in the
 # launcher's descendant — and raised as stalled; the duration cap keeps subprocess.run's contract.
@@ -898,8 +1044,41 @@ try:
         rb.run_streamed([str(hanger)], timeout_s=1, stall_s=None)
     except subprocess.TimeoutExpired as exc:
         assert "started" in (exc.output or ""), exc.output
+        # The silence a killed cell died in is recorded nowhere else: the row it leaves is an
+        # errored one, and only the exception carries what the watch measured before the kill.
+        assert exc.max_quiet_ms >= 500, exc.max_quiet_ms
+        killed_rater = {"spec": "agy-flash35-medium-skill"}
+        rb.rater_timeout(exc, killed_rater, time.monotonic(), 900, ["fixture"])
+        assert killed_rater["killed"] == "watchdog", killed_rater
+        assert killed_rater["killed_cap_s"] == 900, killed_rater
+        assert killed_rater["max_quiet_ms"] == exc.max_quiet_ms, killed_rater
     else:
         raise AssertionError("the duration cap did not fire without a stall cap")
+
+    # A stall kill records its own cap and the gap it fired on, so the report can say the cell was
+    # silent rather than slow without re-parsing the stderr sentence.
+    stalled_rater = {"spec": "agy-pro-high-skill"}
+    rb.rater_stalled(
+        rb.RaterStalled(360, 240, "", ""), stalled_rater, time.monotonic(), ["fixture"]
+    )
+    assert stalled_rater["killed"] == "stall", stalled_rater
+    assert stalled_rater["killed_cap_s"] == 240 and stalled_rater["stalled_s"] == 240
+    assert stalled_rater["max_quiet_ms"] == 360_000, stalled_rater
+    # A cell that ended itself claims neither key, which is the whole difference the report reads.
+    assert rb.cell_kill_note({"exit_code": 1, "stderr": "Error: timeout waiting for response"}) \
+        is None
+    assert rb.cell_kill_note({"killed": "watchdog", "killed_cap_s": 1020}) \
+        == "watchdog cap 17 min"
+    assert rb.cell_kill_note({"killed": "stall", "killed_cap_s": 240,
+                              "max_quiet_ms": 360_000}) == "stalled, quiet 6 min"
+    # A stall kill recorded before `killed` existed is marked by `stalled_s` alone.
+    assert rb.cell_kill_note({"stalled_s": 240}) == "stalled, cap 4 min"
+    # A watchdog kill recorded before `killed` existed is marked by its shape, and the cap that
+    # operated is the row's own `timeout_s` — while a provider's `gateway timeout` names no cap.
+    assert rb.cell_kill_note({"exit_code": 124, "timeout_s": 1020, "side": "codex",
+                              "stderr": "rater timed out after 1020s"}) == "watchdog cap 17 min"
+    assert rb.cell_kill_note({"exit_code": 1, "timeout_s": 900, "side": "opencode",
+                              "stderr": "gateway timeout"}) is None
 
     # The tail a dying cell flushes must reach the exception whole: taken mid-pump, the
     # transcript is cut exactly where the kill's own evidence would be. The marker comes from a
@@ -1006,9 +1185,11 @@ max_tier_cells = [
 ]
 assert len(max_tier_cells) == 1, rb.report_lines(max_tier_dir, max_tier_meta)
 # Under the same names every other row of the block uses: a reader comparing the cell row against
-# the errored one below it would otherwise be matching slugs against model names by hand.
+# the errored one below it would otherwise be matching slugs against model names by hand. Ordered
+# by usefulness, which for a panel that all found nothing is the name.
 assert max_tier_cells[0].split(":", 1)[1].strip() == " · ".join(
-    f"{rb.human_cell_name(row['rater'])} 0" for row in max_tier_rows
+    f"{name} 0"
+    for name in sorted(rb.human_cell_name(row["rater"]) for row in max_tier_rows)
 ), max_tier_cells[0]
 assert "oc-kimik3" not in max_tier_cells[0], max_tier_cells[0]
 # A summary written before the count was stored costs its own cell a number, and nothing else:
@@ -4839,6 +5020,7 @@ try:
     assert stall_calls == [5, 5], stall_calls
     assert "killed as stalled" in stall_log.getvalue(), stall_log.getvalue()
     assert not opencode_rater.get("stalled_s")
+    assert not opencode_rater.get("killed"), opencode_rater
     assert opencode_rater.get("max_quiet_ms") is not None
     # The kill itself outlives the retry: without this trace a cap that is merely too tight
     # never escalates, and the pair burns one stall kill on every run for ever.
@@ -4862,11 +5044,14 @@ try:
     assert stall_dead_result[0] == 124, stall_dead_result
     assert stall_dead_result[3].startswith("rater stalled"), stall_dead_result
     assert opencode_rater.get("stalled_s") == 5
+    assert opencode_rater.get("killed") == "stall", opencode_rater
+    assert opencode_rater.get("killed_cap_s") == 5, opencode_rater
     assert len(stall_always_calls) == 2, stall_always_calls
     del os.environ["OPENCODE_FIXTURE_STDOUT"]
 finally:
     rb.run_streamed = real_run_streamed
-    for leftover in ("timeout_s", "stall_s", "stalled_s", "stalled_retry_s", "max_quiet_ms"):
+    for leftover in ("timeout_s", "stall_s", "stalled_s", "stalled_retry_s", "max_quiet_ms",
+                     "killed", "killed_cap_s"):
         opencode_rater.pop(leftover, None)
     clear_walls()
 
@@ -5783,7 +5968,9 @@ assert timeout_meta["rater_runs"][0]["timeout_s"] == rb.WATCHDOG_FLOOR_S, timeou
 
 # With gap history on record the launch hands the cell its stall cap — and only under the
 # duration cap, so a cap the cell cannot reach is never reported as its limit.
-seeded = timeout_run_store / "worker-stats" / "benches" / "seeded-stall-history"
+# Named to sort before every real run id: history walks runs in name order, and a seeded
+# completion that sorted as the newest run would clear the kill record it is meant to precede.
+seeded = timeout_run_store / "worker-stats" / "benches" / "00000000T000000Z-seeded"
 seeded.mkdir(parents=True)
 (seeded / "meta.json").write_text(json.dumps({"rater_runs": [
     {"rater": "sol-medium", "model": "sol", "effort": "medium", "side": "codex",
@@ -8725,7 +8912,7 @@ report_frame_footer='=================================================='
 # Every report carries the verdict on its own tally, in the commit gate's words: a round is closed
 # here or it owes another, and the block that says neither is the one a chat read as "done" while a
 # second review was owed (2026-08-08).
-expected_report="$report_frame_header"$'\nreview-bench panel · T2 · 5.5 min wall · slowest completed: sol-high 2 min\nconfirmed 1:  P1 1\nround:        closed — nothing more is owed before the commit\nrejected:     1 duplicate  ~400 tok\n              2 false      ~3k tok\nfalse by:     kimi ×1 · sol-high ×1\nverifier:     off — 2 finding(s) unchecked\ncells:        sol-high 2 · kimi 2\nerrored:      opus-med-bare (exit 2)\ntimeout:      gem-flash36-med\nmismatch:     gem-flash35-low\n'"$report_frame_footer"
+expected_report="$report_frame_header"$'\nreview-bench panel · T2 · 5.5 min wall · slowest completed: sol-high 2 min\nconfirmed 1:    P1 1\nround:          closed — nothing more is owed before the commit\nrejected:       1 duplicate  ~400 tok\n                2 false      ~3k tok\nfalse by:       kimi ×1 · sol-high ×1\nverifier:       off — 2 finding(s) unchecked\ncells:          sol-high 1/2 · kimi 0/2\nerrored:        opus-med-bare 15 sec (exit 2)\ntimeout:        gem-flash36-med 4 min (watchdog cap 4 min)\nmismatch:       gem-flash35-low\nwall gated by:  gem-flash36-med 4 min (timeout)\n'"$report_frame_footer"
 assert test "$report_output" = "$expected_report"
 # The frame is what the reader and every consumer of this block see first: a word centered in '='
 # to exactly 50 characters, and a footer of exactly 50 more.
@@ -8736,8 +8923,8 @@ assert grep -qE '^={10,}$' <<<"$(tail -1 <<<"$report_output")"
 # The header must not read as the footer, or a consumer closing the block on its end shape closes
 # it on the line that opens it.
 assert test "$(grep -cE '^={10,}$' <<<"$report_output")" = "1"
-assert contains "$report_output" $'rejected:     1 duplicate  ~400 tok\n              2 false      ~3k tok'
-assert contains "$report_output" $'false by:     kimi ×1 · sol-high ×1\nverifier:     off — 2 finding(s) unchecked\ncells:        sol-high 2 · kimi 2\nerrored:      opus-med-bare (exit 2)\ntimeout:      gem-flash36-med\nmismatch:     gem-flash35-low'
+assert contains "$report_output" $'rejected:       1 duplicate  ~400 tok\n                2 false      ~3k tok'
+assert contains "$report_output" $'false by:       kimi ×1 · sol-high ×1\nverifier:       off — 2 finding(s) unchecked\ncells:          sol-high 1/2 · kimi 0/2\nerrored:        opus-med-bare 15 sec (exit 2)\ntimeout:        gem-flash36-med 4 min (watchdog cap 4 min)\nmismatch:       gem-flash35-low\nwall gated by:  gem-flash36-med 4 min (timeout)'
 last_report=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" report --last) \
   || fail "last report failed"
 assert test "$last_report" = "$expected_report"
@@ -8811,6 +8998,173 @@ assert [cell["status"] for cell in event["cells"]] == [
 ]
 PY
 assert test "$?" -eq 0
+
+# A dead cell's own numbers. The run this was written for held the panel 27.5 minutes while the
+# block said "slowest completed: 16.8 min" and named the hung cell with nothing beside it — its
+# duration, the budget that killed it and its failure streak were all on disk and none of them
+# reachable by Egor (2026-08-16).
+FAIL_SD="$WORK/failure-observability-state"
+mkdir -p "$FAIL_SD/benches"
+python3 - "$FAIL_SD/benches" <<'PY'
+import json
+import pathlib
+import sys
+
+benches = pathlib.Path(sys.argv[1])
+
+
+def write_run(run_id, rows, verdicts=None, findings=None):
+    run = benches / run_id
+    run.mkdir(parents=True)
+    (run / "meta.json").write_text(json.dumps({
+        "run_id": run_id, "commit": "a" * 40, "repo": "/fixture", "tier": "T2",
+        "raters": [row["rater"] for row in rows], "rater_runs": rows,
+        "durations": {}, "started": "2026-01-01T00:00:00+00:00",
+        "finished": "2026-01-01T00:27:30+00:00", "focus": "",
+    }))
+    for rater, rater_findings in (findings or {}).items():
+        (run / f"findings-{rater}.jsonl").write_text(
+            "".join(json.dumps(row) + "\n" for row in rater_findings)
+        )
+    if verdicts is not None:
+        (run / "verdicts.jsonl").write_text(
+            "".join(json.dumps(row) + "\n" for row in verdicts)
+        )
+
+
+flash35 = {"model": "agy-flash35", "effort": "medium", "side": "agy"}
+# The shape the observability gap was found on: the CLI gave up on its own, so no cap of ours
+# killed it and the row carries a duration and nothing else.
+client_timeout = dict(
+    flash35, rater="agy-flash35-medium-skill", findings=0, exit_code=1, errored=True,
+    stderr="Error: timeout waiting for response", duration_ms=900_000,
+)
+opus_failure = {
+    "rater": "opus-medium", "model": "opus", "effort": "medium", "side": "claude",
+    "duration_ms": 15_000, "findings": 0, "exit_code": 2, "errored": True,
+    "stderr": "fixture failure",
+}
+completed = lambda rater, **row: dict(
+    {"rater": rater, "findings": 0, "exit_code": 0, "duration_ms": 1000}, **row
+)
+
+write_run("20260101T000100Z-aaaaaaa", [
+    completed("agy-flash35-medium-skill", **flash35),
+    completed("opus-medium", model="opus", effort="medium", side="claude"),
+])
+write_run("20260101T000200Z-bbbbbbb", [dict(client_timeout)])
+# A run that never held the cell must not end its streak.
+write_run("20260101T000300Z-ccccccc", [
+    completed("sol-high", model="sol", effort="high", side="codex"),
+])
+write_run("20260101T000400Z-ddddddd", [dict(client_timeout), dict(opus_failure)])
+write_run(
+    "20260101T000500Z-eeeeeee",
+    [
+        completed("oc-kimik3", model="oc-kimik3", effort=None, side="opencode",
+                  duration_ms=60_000, findings=3),
+        completed("sol-high", model="sol", effort="high", side="codex",
+                  duration_ms=90_000, findings=5),
+        completed("oc-glm52", model="oc-glm52", effort=None, side="opencode",
+                  duration_ms=30_000, findings=1),
+        dict(client_timeout, duration_ms=1_627_857),
+        dict(flash35, model="agy-flash36", rater="agy-flash36-medium-skill",
+             duration_ms=1_200_000, timeout_s=1020, findings=0, exit_code=124, errored=True,
+             stderr="rater timed out after 1020s", killed="watchdog", killed_cap_s=1020,
+             max_quiet_ms=60_000),
+        {"rater": "agy-pro-high-skill", "model": "agy-pro", "effort": "high", "side": "agy",
+         "duration_ms": 400_000, "findings": 0, "exit_code": 124, "errored": True,
+         "stderr": "rater stalled: no output activity for 360s (stall cap 240s)",
+         "stalled_s": 240, "killed": "stall", "killed_cap_s": 240, "max_quiet_ms": 360_000},
+        dict(opus_failure),
+    ],
+    verdicts=[
+        {"rater": "oc-kimik3", "idx": 0, "verdict": "confirmed"},
+        {"rater": "oc-kimik3", "idx": 1, "verdict": "confirmed"},
+        {"rater": "oc-glm52", "idx": 0, "verdict": "confirmed"},
+        {"rater": "sol-high", "idx": 0, "verdict": "duplicate"},
+    ],
+    findings={
+        "oc-kimik3": [
+            {"severity": "P1", "file": "a.py", "line": index, "summary": f"kimi {index}",
+             "rater": "oc-kimik3"}
+            for index in range(3)
+        ],
+        "sol-high": [
+            {"severity": "P2", "file": "b.py", "line": index, "summary": f"sol {index}",
+             "rater": "sol-high"}
+            for index in range(5)
+        ],
+        "oc-glm52": [
+            {"severity": "P2", "file": "c.py", "line": 1, "summary": "glm", "rater": "oc-glm52"},
+        ],
+    },
+)
+write_run("20260101T000600Z-fffffff", [
+    completed("sol-high", model="sol", effort="high", side="codex", duration_ms=300_000),
+    dict(opus_failure, duration_ms=5_000),
+], verdicts=[])
+PY
+assert test "$?" -eq 0
+fail_report=$(WORKER_STATS_DIR="$FAIL_SD" "$SCRIPT" report 20260101T000500Z-eeeeeee) \
+  || fail "failure-observability report failed"
+# Sorted by what survived triage, then by raw findings, then by name: the row answers which models
+# earned their place in the next panel, which the launch order never said.
+assert contains "$fail_report" 'cells:          kimi 2/3 · glm52 1/1 · sol-high 0/5'
+# The budget that killed the cell, named apart from a client that gave up on its own — both arrive
+# as the same status and the same "timed out" wording.
+assert contains "$fail_report" 'gem-flash36-med 20 min (watchdog cap 17 min)'
+assert contains "$fail_report" 'gem-pro 6.7 min (stalled, quiet 6 min)'
+# Three runs in a row failing, counted over the runs that held the cell — the run between them
+# that never launched it is passed over, not read as a recovery.
+assert contains "$fail_report" 'gem-flash35-med 27.1 min (3 fails in a row)'
+assert contains "$fail_report" 'errored:        opus-med-bare 15 sec (exit 2)'
+# The hung cell held the panel for the whole wall while "slowest completed" priced 1.5 minutes of
+# it: without this line the gate is invisible in the block Egor reads.
+assert contains "$fail_report" 'wall gated by:  gem-flash35-med 27.1 min (timeout)'
+# Two failures are a bad night, not a chronic cell.
+assert test "$(grep -c 'fails in a row' <<<"$fail_report")" = "1"
+# And the line is silent where the wall was the panel's own work: a completed cell gating it is
+# what "slowest completed" already says.
+fail_clean=$(WORKER_STATS_DIR="$FAIL_SD" "$SCRIPT" report 20260101T000600Z-fffffff) \
+  || fail "failure-observability clean report failed"
+assert test "$(grep -c 'wall gated by:' <<<"$fail_clean")" = "0"
+assert contains "$fail_clean" 'errored:      opus-med-bare 5 sec (exit 2, 3 fails in a row)'
+# A meta written before any of these keys existed still renders: the report shows what it has and
+# claims no cause it was never told.
+python3 - "$FAIL_SD/benches" <<'PY'
+import json
+import pathlib
+import sys
+
+benches = pathlib.Path(sys.argv[1])
+run = benches / "20260101T000700Z-9999999"
+run.mkdir(parents=True)
+(run / "meta.json").write_text(json.dumps({
+    "run_id": "20260101T000700Z-9999999", "commit": "a" * 40, "repo": "/fixture", "tier": "T2",
+    "raters": ["sol-high", "agy-pro-high-skill", "oc-kimik3"],
+    "rater_runs": [
+        {"rater": "sol-high", "model": "sol", "effort": "high", "side": "codex",
+         "exit_code": 0},
+        {"rater": "agy-pro-high-skill", "model": "agy-pro", "effort": "high", "side": "agy",
+         "duration_ms": 245_000, "findings": 0, "exit_code": 124, "errored": True,
+         "stalled_s": 240,
+         "stderr": "rater stalled: no output activity for 241s (stall cap 240s)"},
+        {"rater": "oc-kimik3", "model": "oc-kimik3", "effort": None, "side": "opencode",
+         "findings": 0, "exit_code": 2, "errored": True, "stderr": "fixture failure"},
+    ],
+    "durations": {}, "started": "2026-01-01T00:00:00+00:00",
+    "finished": "2026-01-01T00:05:00+00:00", "focus": "",
+}))
+(run / "verdicts.jsonl").write_text("")
+PY
+assert test "$?" -eq 0
+legacy_kill_report=$(WORKER_STATS_DIR="$FAIL_SD" "$SCRIPT" report 20260101T000700Z-9999999) \
+  || fail "legacy-kill report failed"
+assert contains "$legacy_kill_report" 'gem-pro 4.1 min (stalled, cap 4 min)'
+assert contains "$legacy_kill_report" 'wall gated by:  gem-pro 4.1 min (stalled)'
+# A cell whose duration was never recorded loses its own figure and nothing else.
+assert contains "$legacy_kill_report" 'errored:        kimi (exit 2)'
 
 SD="$WORK/state"
 RUN="$SD/benches/run-fixture"

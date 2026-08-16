@@ -728,6 +728,12 @@ if [ -r "$FLOW_GATE" ] && [ -r "$REPORT_GATE" ]; then
   done
   assert doc_has 'Second-round verdict has one voice'
   assert doc_has '`escalation-verdict <p1> <total>`'
+  # The fork's closing words are also the trigger the report nudge keys its escalation demand on:
+  # let either spelling drift and the model is never told to open with the weak-block analysis.
+  assert grep -Fq 'Pick one and carry it out:' "$FLOW_GATE"
+  if [ -r "$REPORT_NUDGE" ]; then
+    assert grep -Fq 'ESCALATION_MARKER = "Pick one and carry it out"' "$REPORT_NUDGE"
+  fi
 else
   printf 'SKIP: review escalation voice across claude-setup (%s or %s is unreadable)\n' \
     "$FLOW_GATE" "$REPORT_GATE"

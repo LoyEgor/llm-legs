@@ -2521,16 +2521,19 @@ def watchdog_killed(row):
 
 def panel_cell_history(benches):
     """Per (model, effort) pair over every recorded run: the longest it has ever taken to COMPLETE,
-    the highest cap the watchdog has ever killed it at, the longest a completion ever went without
-    producing a byte, and the highest stall cap a cell of the pair was ever killed at.
+    the highest cap the watchdog killed it at since its last completion together with how many
+    kills in a row that is, the longest a completion ever went without producing a byte, and the
+    highest stall cap a cell of the pair was ever killed at.
 
     Completions are the only evidence about the work — feeding a hang's duration or silence back
     in would let one hang raise its own cap forever — while the kills are the only evidence a pair
     whose real behaviour is past its cap ever produces: with nothing but completions it would be
-    killed at the same cap on every later run, for ever.
+    killed at the same cap on every later run, for ever. A kill BEHIND the pair's last completion
+    says nothing about what it needs now, so a completion clears the kill record; runs are walked
+    in run-id order for exactly that reading.
     """
-    maxima, breached, quiet, stall_breached = {}, {}, {}, {}
-    for directory in benches.iterdir() if benches.exists() else ():
+    maxima, breached, quiet, stall_breached, kill_streaks = {}, {}, {}, {}, {}
+    for directory in sorted(benches.iterdir()) if benches.exists() else ():
         meta_path = directory / "meta.json"
         if not meta_path.exists():
             continue
@@ -2538,6 +2541,7 @@ def panel_cell_history(benches):
             meta = json.loads(meta_path.read_text())
         except (OSError, ValueError, json.JSONDecodeError):
             continue
+        run_kills, run_done = {}, set()
         for row in meta.get("rater_runs", ()):
             key = panel_cell_key(row)
             if key is None:
@@ -2554,12 +2558,16 @@ def panel_cell_history(benches):
             if watchdog_killed(row):
                 cap = timeout_seconds_from_row(row)
                 if cap:
-                    breached[key] = max(cap, breached.get(key, cap))
+                    run_kills[key] = max(cap, run_kills.get(key, cap))
                 continue
+            if cell_status(row) != "completed":
+                continue
+            # A completion whose duration lives only in the legacy top-level map still clears
+            # the kill record; only the maxima need the number.
+            run_done.add(key)
             duration = row.get("duration_ms")
             if (
-                cell_status(row) != "completed"
-                or not isinstance(duration, (int, float))
+                not isinstance(duration, (int, float))
                 or isinstance(duration, bool)
                 or duration < 0
             ):
@@ -2568,11 +2576,81 @@ def panel_cell_history(benches):
             gap = row.get("max_quiet_ms")
             if isinstance(gap, (int, float)) and not isinstance(gap, bool) and gap >= 0:
                 quiet[key] = max(gap, quiet.get(key, gap))
-    return maxima, breached, quiet, stall_breached
+        # Strikes are counted in RUNS, not rows: a T2 panel holds three cells of one pair, and a
+        # single bad run must cost one strike, not the whole escalation probe. A pair that also
+        # completed in the run proved it works — those kills clear with the rest.
+        for key in run_done:
+            breached.pop(key, None)
+            kill_streaks.pop(key, None)
+        for key, cap in run_kills.items():
+            if key in run_done:
+                continue
+            if kill_streaks.get(key, 0) + 1 >= CHRONIC_FAILURE_STREAK:
+                # The third strike ends the probe EPISODE, not the pair's right to probe: kept, the
+                # record pinned a pair with no completion at the floor for ever — its streak could
+                # only clear on a completion the floor cap itself prevented. Cleared, the next kill
+                # opens a fresh episode: a dead cell costs one grace per run on average, and a
+                # merely slow one still meets a cap two graces up every third run.
+                breached.pop(key, None)
+                kill_streaks.pop(key, None)
+                continue
+            breached[key] = max(cap, breached.get(key, cap))
+            kill_streaks[key] = kill_streaks.get(key, 0) + 1
+    return maxima, breached, quiet, stall_breached, kill_streaks
 
 
 def panel_duration_maxima(benches):
     return panel_cell_history(benches)[0]
+
+
+# Three, because two in a row happens to every cell on a capacity weather day: below this the
+# report would carry a streak on cells that are merely unlucky, and the watchdog would cut a
+# pair's escalation probe short for the same bad luck.
+CHRONIC_FAILURE_STREAK = 3
+CHRONIC_STREAK_WALK_RUNS = 30
+
+
+def cell_failure_streaks(benches, run_id, raters):
+    """How many runs in a row each named cell has been failing, this run counted as the first.
+
+    Runs that never held the cell are passed over rather than ending the streak: a cell absent from
+    a T0 panel is not evidence it recovered there.
+    """
+    wanted = {rater for rater in raters if rater}
+    if not wanted or not benches.exists():
+        return {}
+    # Newest first, metas read one at a time: the history grows without bound and is walked per
+    # report, so the walk stops the moment every named cell has met a completion — and at a hard
+    # window regardless, because a cell with no completion anywhere in the store (the chronic case
+    # this row exists for) would otherwise send every report through the whole history. A streak
+    # deeper than the window reads as the window: the row needs "3+ fails in a row", not the true
+    # depth of a months-long hole.
+    names = sorted(
+        (entry.name for entry in benches.iterdir()
+         if entry.name < run_id and entry.is_dir()),
+        reverse=True,
+    )[:CHRONIC_STREAK_WALK_RUNS]
+    streaks = dict.fromkeys(wanted, 1)
+    broken = set()
+    for name in names:
+        try:
+            meta = json.loads((benches / name / "meta.json").read_text())
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        outcomes = {}
+        for row in meta.get("rater_runs", ()):
+            rater = row.get("rater")
+            status = cell_status(row) if rater in wanted and rater not in broken else None
+            if status and status != "not_run":
+                outcomes[rater] = status != "completed"
+        for rater, failed in outcomes.items():
+            if failed:
+                streaks[rater] += 1
+            else:
+                broken.add(rater)
+        if len(broken) == len(wanted):
+            break
+    return streaks
 
 
 def watchdog_timeout_seconds(duration_ms):
@@ -2584,14 +2662,18 @@ def watchdog_timeout_seconds(duration_ms):
 
 
 def panel_watchdog_timeouts(benches):
-    maxima, breached = panel_cell_history(benches)[:2]
+    maxima, breached, _, _, _ = panel_cell_history(benches)
     timeouts = {}
     for key in set(maxima) | set(breached):
         timeout = watchdog_timeout_seconds(maxima.get(key))
         if key in breached:
             # A cap a pair has already been killed at is a cap it needs more than: the next run
             # gives it one grace more, up to the ceiling every cell used to share, so a slow model
-            # climbs out instead of being killed at the floor on every run it ever gets.
+            # climbs out instead of being killed at the floor on every run it ever gets. The climb
+            # is a probe with three strikes, not a right — the history drops a pair's kill record
+            # on its third kill in a row, which is why a breach standing here always escalates: a
+            # genuinely dead cell was buying one grace more per run and walked every panel's wall
+            # from 15 toward 30 minutes in one night (2026-08-16).
             timeout = max(timeout, min(RATER_TIMEOUT_S,
                                        math.ceil(breached[key]) + WATCHDOG_GRACE_S))
         timeouts[key] = timeout
@@ -2603,10 +2685,12 @@ def panel_stall_timeouts(benches):
     silent for, plus grace. Only for pairs whose gaps stay well under their runtimes — the evidence
     the pair streams at all: a buffered side shows gaps the size of its whole runs and gets no cap,
     so a cell that is quiet the way its shape always is can never be killed for it, and a pair with
-    no gap history gets none either. A cap a pair was already killed at grows by one grace per run,
-    like the duration watchdog's, so a wrong kill corrects itself instead of repeating.
+    no gap history gets none either. A cap a pair was already killed at grows by one grace per
+    run, so a wrong kill corrects itself instead of repeating — unbounded, unlike the duration
+    cap's three-strike probe: a stall kill costs the run one in-cell retry, not its wall, and the
+    duration cap still bounds the cell either way.
     """
-    maxima, _, quiet, stall_breached = panel_cell_history(benches)
+    maxima, _, quiet, stall_breached, _ = panel_cell_history(benches)
     caps = {}
     for key, gap_ms in quiet.items():
         duration = maxima.get(key)
@@ -2770,6 +2854,51 @@ def cell_failure_reason(cell):
     if status in STATUS_REASONS:
         return STATUS_REASONS[status]
     return failure_reason(cell.get("stderr"))
+
+
+def cell_kill_note(cell):
+    """The budget that ended a cell, when a budget did. None for a cell that died on its own —
+    a side's client timeout and our watchdog produce the same status and the same stderr wording,
+    and only this tells the reader whether the panel or the model owns the lost time.
+    """
+    killed = cell.get("killed")
+    cap = cell.get("killed_cap_s")
+    # `stalled_s` alone is how every run recorded before `killed` existed marks a stall kill.
+    if killed == "stall" or (not killed and cell.get("stalled_s")):
+        cap = cap or cell.get("stalled_s")
+        quiet = cell.get("max_quiet_ms")
+        if isinstance(quiet, (int, float)) and not isinstance(quiet, bool) and quiet >= 0:
+            return f"stalled, quiet {format_seconds(quiet / 1000)}"
+        return f"stalled, cap {format_seconds(cap)}" if cap else "stalled"
+    # Runs recorded before `killed` existed mark our kill unambiguously only by exit 124 with the
+    # cap that operated in `timeout_s`. An agy CLIENT timeout shares its wording with our kill of
+    # that side — for the cap history that ambiguity must count as a breach, but a report row
+    # claiming a cap that may never have operated would lie, so a legacy agy row keeps its bare
+    # duration.
+    if killed == "watchdog" or (
+        not killed and cell.get("exit_code") == 124 and cell.get("timeout_s")
+    ):
+        cap = cap or cell.get("timeout_s")
+        return f"watchdog cap {format_seconds(cap)}" if cap else "watchdog cap"
+    return None
+
+
+def dead_cell_entry(name, cell, reason=None, streak=None):
+    """One entry of the `errored:`/`timeout:` rows: what the cell cost, what ended it, and whether
+    it has been failing for long enough that the next run should not be spent on it again."""
+    parts = [name]
+    duration = cell.get("duration_ms")
+    if isinstance(duration, (int, float)) and not isinstance(duration, bool) and duration >= 0:
+        parts.append(format_seconds(duration / 1000))
+    # Inside the parentheses, never appended after them: the row separates its entries with the
+    # same ' · ' a trailing fragment would carry, and a reader would count one dead cell as two.
+    streak_note = (
+        f"{streak} fails in a row" if streak and streak >= CHRONIC_FAILURE_STREAK else None
+    )
+    note = ", ".join(part for part in (reason, cell_kill_note(cell), streak_note) if part)
+    if note:
+        parts.append(f"({note})")
+    return " ".join(parts)
 
 
 def rater_side(spec):
@@ -3045,6 +3174,9 @@ def bench_summary(run_dir, meta, verdicts=None):
             "exit_code": row.get("exit_code"),
             "timeout_s": timeout_seconds_from_row(row),
             "stalled_s": row.get("stalled_s"),
+            "killed": row.get("killed"),
+            "killed_cap_s": row.get("killed_cap_s"),
+            "max_quiet_ms": row.get("max_quiet_ms"),
             "stderr": row.get("stderr"),
             "side": row.get("side") or rater_side(rater),
             "account": row.get("account"),
@@ -3064,12 +3196,14 @@ def bench_summary(run_dir, meta, verdicts=None):
     verdict_counts = Counter(row["verdict"] for row in verdicts)
     severities = Counter()
     false_by = Counter()
+    confirmed_by = Counter()
     findings_by_rater = {}
     for row in verdicts:
         if row["verdict"] == "false_positive":
             false_by[rater_family(row["rater"])] += 1
         if row["verdict"] != "confirmed":
             continue
+        confirmed_by[row["rater"]] += 1
         rater = row["rater"]
         if rater not in findings_by_rater:
             findings_by_rater[rater] = finding_rows(run_dir, rater)
@@ -3101,6 +3235,7 @@ def bench_summary(run_dir, meta, verdicts=None):
         "false_positive": verdict_counts["false_positive"],
         "severities": severities,
         "false_by": false_by,
+        "confirmed_by": confirmed_by,
         "token_estimate": rejected_tokens,
         "wall_seconds": max(0, (finished - started).total_seconds())
         if started and finished else None,
@@ -3303,15 +3438,21 @@ def report_lines(run_dir, meta, verdicts=None):
     timed_out = Counter()
     mismatched = Counter()
     not_run = Counter()
+    streaks = cell_failure_streaks(
+        run_dir.parent, run_dir.name,
+        [row.get("rater") for row in summary["cells"]
+         if row["status"] in ("timed_out", "errored", "nonzero_exit")],
+    )
     for row in summary["cells"]:
         status = row["status"]
         if status == "completed":
             continue
         name = human_cell_name(row.get("rater"), scheme)
+        streak = streaks.get(row.get("rater"))
         if status == "not_run":
             not_run[name] += 1
         elif status == "timed_out":
-            timed_out[(name, timeout_seconds_from_row(row))] += 1
+            timed_out[dead_cell_entry(name, row, streak=streak)] += 1
         elif status == "model_mismatch":
             mismatched[name] += 1
         else:
@@ -3322,7 +3463,7 @@ def report_lines(run_dir, meta, verdicts=None):
             detail = cell_failure_reason(row)
             if detail in UNNAMED_REASONS and row.get("exit_code") not in (None, 0):
                 detail = f"exit {row['exit_code']}"
-            errored[f"{name} ({detail})"] += 1
+            errored[dead_cell_entry(name, row, reason=detail, streak=streak)] += 1
     rows = []
     severity = " · ".join(
         f"{level} {summary['severities'][level]}"
@@ -3375,11 +3516,28 @@ def report_lines(run_dir, meta, verdicts=None):
     # left out it reads exactly like one that never ran — the errored row below is what says
     # which cells produced nothing because they failed.
     if completed:
+        # Most useful first, priced on what survived triage rather than on what was claimed: the
+        # question this row is read with is which models earned their place in the next panel.
+        ranked = sorted(
+            completed,
+            key=lambda row: (
+                -summary["confirmed_by"].get(row.get("rater"), 0),
+                -counted_int(row.get("findings")),
+                human_cell_name(row.get("rater"), scheme),
+            ),
+        )
+        # With verdicts on record each cell reads confirmed/found — the sort is by confirmed, and
+        # a row sorted by a number it does not show reads as unsorted. Keyed on the triage having
+        # happened, not on anything surviving it: a run whose findings were all rejected must read
+        # 0/5, which is the opposite of an untriaged 5.
+        confirmed_by = summary["confirmed_by"]
         rows.append((
             "cells:",
             " · ".join(
-                f"{human_cell_name(row.get('rater'), scheme)} {counted_int(row.get('findings'))}"
-                for row in completed
+                f"{human_cell_name(row.get('rater'), scheme)} "
+                + (f"{confirmed_by.get(row.get('rater'), 0)}/{counted_int(row.get('findings'))}"
+                   if summary["adjudicated"] else f"{counted_int(row.get('findings'))}")
+                for row in ranked
             ),
         ))
     if errored:
@@ -3394,12 +3552,13 @@ def report_lines(run_dir, meta, verdicts=None):
     if wall_labels:
         rows.append(("walls:", " · ".join(wall_labels)))
     if timed_out:
-        show_limits = len({timeout for _, timeout in timed_out}) > 1
-        timeout_parts = []
-        for (name, timeout), count in timed_out.items():
-            detail = f"{name} ({format_seconds(timeout)})" if show_limits else name
-            timeout_parts.append(f"{detail} ×{count}" if count > 1 else detail)
-        rows.append(("timeout:", " · ".join(timeout_parts)))
+        rows.append((
+            "timeout:",
+            " · ".join(
+                f"{entry} ×{count}" if count > 1 else entry
+                for entry, count in timed_out.items()
+            ),
+        ))
     if mismatched:
         rows.append((
             "mismatch:",
@@ -3416,6 +3575,23 @@ def report_lines(run_dir, meta, verdicts=None):
                 for name, count in not_run.items()
             ),
         ))
+    # The wall above is the panel's, and "slowest completed" prices only the cells that answered:
+    # a cell that hung held every later cell back and left no trace in either figure, which is how
+    # a 27-minute round read as a 17-minute one (2026-08-16).
+    timed_cells = [
+        row for row in summary["cells"]
+        if isinstance(row.get("duration_ms"), (int, float))
+        and not isinstance(row.get("duration_ms"), bool)
+        and row["duration_ms"] >= 0
+    ]
+    if timed_cells:
+        gate = max(timed_cells, key=lambda row: row["duration_ms"])
+        if gate["status"] != "completed":
+            rows.append((
+                "wall gated by:",
+                f"{human_cell_name(gate.get('rater'), scheme)} "
+                f"{format_seconds(gate['duration_ms'] / 1000)} ({cell_failure_reason(gate)})",
+            ))
     lines.extend(aligned_report_lines(rows))
     return lines
 
@@ -5207,7 +5383,15 @@ def text_file_tail(path, limit=65536):
         return ""
 
 
-def rater_timeout(exc, started, timeout_s, command, extra_stdout=""):
+def rater_timeout(exc, rater, started, timeout_s, command, extra_stdout=""):
+    # Which budget ended the cell, and how long it held the panel: the stderr line below says
+    # "timed out" the same way a side's own client timeout does, and the report cannot otherwise
+    # tell a hang we killed from one the CLI gave up on.
+    rater["killed"] = "watchdog"
+    rater["killed_cap_s"] = timeout_s
+    quiet_ms = getattr(exc, "max_quiet_ms", None)
+    if quiet_ms is not None:
+        rater["max_quiet_ms"] = quiet_ms
     duration = round((time.monotonic() - started) * 1000)
     stdout = "\n".join(
         part for part in (subprocess_text(exc.stdout).rstrip(), extra_stdout.rstrip()) if part
@@ -5234,6 +5418,9 @@ def rater_stalled(exc, rater, started, command, extra_stdout=""):
     """A stall kill's result row: the kill's exit code so every status reader calls it a timeout,
     told apart from a duration breach by its wording here and by `stalled_s` on the meta row."""
     rater["stalled_s"] = exc.stall_s
+    rater["killed"] = "stall"
+    rater["killed_cap_s"] = exc.stall_s
+    rater["max_quiet_ms"] = round(exc.quiet_s * 1000)
     duration = round((time.monotonic() - started) * 1000)
     stdout = "\n".join(
         part for part in (exc.stdout.rstrip(), extra_stdout.rstrip()) if part
@@ -5391,9 +5578,11 @@ def run_streamed(command, *, timeout_s, stall_s=None, watch_paths=(), cwd=None, 
                 break
             if now - started > timeout_s:
                 kill_process_group(proc)
-                raise subprocess.TimeoutExpired(
+                expired = subprocess.TimeoutExpired(
                     command, timeout_s, output=drained("stdout"), stderr=drained("stderr")
                 )
+                expired.max_quiet_ms = round(max_quiet * 1000)
+                raise expired
             if stall_s and quiet > stall_s:
                 kill_process_group(proc)
                 raise RaterStalled(quiet, stall_s, drained("stdout"), drained("stderr"))
@@ -5484,7 +5673,7 @@ def run_codex(rater, repo, sha, focus, run_dir, diff, account):
                     exc, rater, started, command, extra_stdout=output_tail
                 )
             return rater_timeout(
-                exc, started, deadline, command, extra_stdout=output_tail
+                exc, rater, started, deadline, command, extra_stdout=output_tail
             )
         rater["max_quiet_ms"] = proc.max_quiet_ms
         duration = round((time.monotonic() - started) * 1000)
@@ -5635,7 +5824,7 @@ def run_claude(rater, repo, sha, focus, run_dir, diff, account):
             proc = run_streamed(command, cwd=cwd, timeout_s=deadline,
                                 stall_s=rater.get("stall_s"))
         except subprocess.TimeoutExpired as exc:
-            return rater_timeout(exc, started, deadline, command)
+            return rater_timeout(exc, rater, started, deadline, command)
         except RaterStalled as exc:
             return rater_stalled(exc, rater, started, command)
         rater["max_quiet_ms"] = proc.max_quiet_ms
@@ -5746,7 +5935,7 @@ def run_opencode(rater, repo, sha, focus, run_dir, diff, account):
                 proc = run_streamed(command, timeout_s=deadline,
                                     stall_s=rater.get("stall_s"), env=env)
             except subprocess.TimeoutExpired as exc:
-                return rater_timeout(exc, started, deadline, command)
+                return rater_timeout(exc, rater, started, deadline, command)
             except RaterStalled as exc:
                 return rater_stalled(exc, rater, started, command)
             rater["max_quiet_ms"] = proc.max_quiet_ms
@@ -6552,7 +6741,7 @@ def run_agy(rater, repo, sha, focus, run_dir, diff, account):
             if isinstance(exc, RaterStalled):
                 result = rater_stalled(exc, rater, started, displayed_command)
             else:
-                result = rater_timeout(exc, started, timeout_s, displayed_command)
+                result = rater_timeout(exc, rater, started, timeout_s, displayed_command)
             duration = result[1]
             log_text = log_file.read_text(errors="replace") if log_file.exists() else ""
             write_agy_usage(run_dir, rater, duration, log_text)
@@ -6572,6 +6761,12 @@ def run_agy(rater, repo, sha, focus, run_dir, diff, account):
                 displayed_command,
             )
         if proc.returncode != 0:
+            # geminib enforces the cap itself (`--print-timeout`), so OUR budget firing on this
+            # side arrives as the client's own nonzero exit, not exit 124: a failure at or past
+            # the cap is the cap. Unlabeled, it read exactly like the model dying on its own.
+            if duration >= timeout_s * 1000:
+                rater["killed"] = "watchdog"
+                rater["killed_cap_s"] = timeout_s
             return proc.returncode, duration, proc.stdout, proc.stderr, displayed_command
         if not proc.stdout.strip():
             detail = agy_failure_detail(proc.stderr, log_text)
@@ -6879,6 +7074,8 @@ def run_rater_task(rater, repo, sha, focus, run_dir, diff):
         # not be reported as the retry's.
         rater.pop("stalled_s", None)
         rater.pop("max_quiet_ms", None)
+        rater.pop("killed", None)
+        rater.pop("killed_cap_s", None)
         try:
             result = SIDE_RUNNERS[side](rater, repo, sha, focus, run_dir, diff, candidate)
         except Exception as exc:
@@ -8010,6 +8207,9 @@ def cmd_run(args):
                     run_meta["stalled_retry_s"] = rater["stalled_retry_s"]
                 if rater.get("max_quiet_ms") is not None:
                     run_meta["max_quiet_ms"] = rater["max_quiet_ms"]
+                if rater.get("killed"):
+                    run_meta["killed"] = rater["killed"]
+                    run_meta["killed_cap_s"] = rater["killed_cap_s"]
                 if model_resolved:
                     run_meta["model_resolved"] = model_resolved
                 rater_meta.append(run_meta)

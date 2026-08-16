@@ -92,7 +92,7 @@ strip_quoted() {
 # execute argv directly and un-quote nothing, and the standalone `.` matched `git commit .` and
 # `find .`, forcing the raw scan over ordinary commands whose quoted prose then read as a write.
 INTERPRETER_RE='(^|[[:space:]|;&(])([^[:space:]|;&()<>]*/)?(bash|sh|zsh|ksh|dash|eval|xargs|ssh|osascript|ruby|node|php)([[:space:]]|$)'
-WRITE_RE='>[[:space:]]*[^&[:space:]]|(^|[[:space:]|;&(])(tee|sed|perl|awk|python3?|cp|mv|rm|ln|install|truncate|dd)([[:space:]]|$)'
+WRITE_RE='>[[:space:]]*[^&[:space:]]|(^|[[:space:]|;&(])([^[:space:]|;&()<>]*/)?(tee|sed|perl|awk|python[0-9.]*|cp|mv|rm|ln|install|truncate|dd|chmod|patch|ed|ex)([[:space:]]|$)'
 
 # The interpreter names are matched on the STRIPPED command, so a name the quotes hide is a name
 # this door cannot read: `"bash" -c '… > pin'` collapses to a placeholder and leaves neither an
@@ -185,6 +185,12 @@ case "$MODE" in
     [ -n "$scan" ] || scan="$cmd"
     ! grep -Eq "$INTERPRETER_RE" <<<"$scan" || scan="$cmd"
     ! grep -Eq "$CMD_POSITION_RE" <<<"$scan" || scan="$cmd"
+    # A redirect aimed at /dev/null writes nothing anywhere, least of all the pin — and it rides
+    # the exact command this gate must wave through: `cat worker-model && worker-pick 2>/dev/null`.
+    # Erased before the write scan; every other redirect target still reads as a write. The target
+    # must END at /dev/null — `> /dev/null.txt` is a real file and keeps its redirect — and the
+    # `&>`/`>&` both-stream forms are the same discard.
+    scan=$(sed -E 's,(&>>?|[0-9]*>>?&?)[[:space:]]*/dev/null([[:space:];&|)]|$),\2,g' <<<"$scan")
     grep -Eq "$WRITE_RE" <<<"$scan" || exit 0
     fresh && exit 0
     deny "$DENY_REASON"

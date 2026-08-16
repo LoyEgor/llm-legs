@@ -83,14 +83,28 @@ mechanically-forced round.
   must rerun the full original scope plus fixes, never the fixes alone (a fresh
   pass over old code finds new defects; a fix-only pass only certifies the
   fixes). At `WEAK_LINK_P1S=5` P1s the fork leads with simplify/cut/redesign
-  first, review after. The model judges; Egor decides when he is present.
+  first, review after. The model judges; Egor decides when he is present. When
+  the fork rides a delivered report, the report hook's context turns advisory
+  into demand: the model's next message must OPEN with its written analysis —
+  the weak block, why the findings cluster there, the option chosen and why —
+  because choosing silently leaves Egor unable to judge whether the block
+  should exist at all.
 
 ## Watchdog
 
 Per (model, effort): cap = the longest recorded duration for that pair + 3
 minutes, floor 15 minutes. On breach the panel is killed, the run is marked
 `timed_out` in its record, and the statusline goes loud until a later triaged
-run covers the session's paths.
+run covers the session's paths. A breached cap grows by one grace on the next
+run so a wrong kill corrects itself — but the growth is a probe with three
+strikes, not a right: only runs killed since the pair's last completion count,
+and the third in a row drops the kill record, returning the pair to the cap
+its completions earn and opening a fresh episode — the next kill probes again,
+so a pair with no completion on file is re-probed every third run instead of
+being pinned at the floor for ever. Left unbounded, one genuinely dead cell
+walked every panel's wall from 15 toward 30 minutes in a night; episodes bound
+it to one grace per run on average. A completion clears the kill record, so a
+recovered pair is judged on its completions alone.
 
 Under the duration cap sits the stall watch, earned per pair the same way:
 activity is any byte on the cell's pipes or growth of its declared log files,
@@ -101,8 +115,36 @@ with no gap history can never be stall-killed. A kill takes the whole process
 group (the hang lives in the launcher's descendant), records `stalled_s` on the
 cell, is retried once inside the same run, and reads as `stalled` in the
 report. A stall kill is not a duration breach: it never raises the pair's
-duration cap, while a cap a pair was killed at grows by one grace on the next
-run, so a wrong kill corrects itself instead of repeating.
+duration cap, while the stall cap it was killed at grows by one grace on the
+next run so a wrong kill corrects itself — unbounded, unlike the duration
+cap's probe, because a stall kill costs the run one in-cell retry rather than
+its wall, and the duration cap still bounds the cell either way.
+
+Every kill writes down which budget fired: `killed` (`watchdog` or `stall`) and
+`killed_cap_s` on the cell's meta row, beside `max_quiet_ms`. A cell that ended
+itself — a side's own client timeout — records neither, and that absence is how
+the report tells the two apart. The agy side delegates its cap to geminib
+(`--print-timeout`), so our budget fires there as the client's own nonzero
+exit: a failure at or past the cap is labelled `watchdog` at the source. Both
+keys are additive: a run recorded before them renders unchanged, a stall kill
+marked only by `stalled_s` included; a legacy watchdog kill (exit 124) shows
+the `timeout_s` cap it ran under, while a legacy agy kill keeps its bare
+duration — its wording is also the client's own timeout, and a row must not
+claim a cap that may never have operated.
+
+## Report rows for cells that died
+
+`errored:` and `timeout:` carry each dead cell's own numbers — its duration, then
+in parentheses the budget that killed it (`watchdog cap 17 min`,
+`stalled, quiet 6 min`), a short reason tag on `errored:` entries (a timeout IS
+its row's reason), and, at three or more consecutive failing runs,
+`3 fails in a row`. The streak is counted over the runs that held
+that cell; a panel it was never part of is passed over rather than read as a
+recovery. `wall gated by:` appears whenever the slowest cell of the run is not a
+completed one — the hang held every later cell back and appears in neither the
+wall nor `slowest completed`. `cells:` is ordered by usefulness: confirmed
+findings first, then raw findings, then name — and once a triage holds
+verdicts each cell reads confirmed/found, so the order is visible.
 
 ## Launches and reports
 
