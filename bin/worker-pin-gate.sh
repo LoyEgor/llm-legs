@@ -13,6 +13,14 @@
 #
 # A grant only UNBLOCKS. It buys no action on its own, so none of the bookkeeping a one-shot
 # permission would need has to exist. Fail-open on any error: a broken gate must never block work.
+#
+# Threat model — and the boundary for every review of this file: the gate stops a well-meaning
+# session from moving the pin by accident, never an adversary. A session trying to evade it can
+# trivially succeed and that is fine — the classifier is regex-grade and stays that way. Findings
+# that need an adversarial spelling to demonstrate (obfuscated paths, quoting tricks, encodings a
+# regex cannot close over) are out of scope by design and are not defects, let alone P1s; the
+# spellings worth closing are the ones an honest session plausibly types. False-deny is the
+# acceptable side throughout.
 set -u
 
 MODE="${1:-}"
