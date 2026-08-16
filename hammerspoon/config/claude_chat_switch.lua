@@ -210,6 +210,10 @@ local function watchForExit(handle)
     active.waited = 0
     active.pollTimer = handle:every(pollInterval, function()
         if not pidAlive(active.pid) then
+            if active.wallEnterPressed then
+                logLine("exit-wall-passed", "chat exited after the exit wall; Enter "
+                    .. (active.wallEnterSent and "went out" or "never went out"))
+            end
             logLine("exited", "chat pid " .. active.pid .. " gone after " .. active.waited .. "s")
             handle:stopTimer(active.pollTimer)
             active.pollTimer = nil
@@ -224,12 +228,46 @@ local function watchForExit(handle)
         active.waited = active.waited + pollInterval
         if active.tty then
             if active.exitTypedAt then
-                if maybeConfirmExitDialog(handle) then return end
+                -- One Enter in flight at a time, whichever queued it: a second one
+                -- answers nothing and lands in whatever the tab shows after the picker.
+                if not active.wallEnterPressed and maybeConfirmExitDialog(handle) then return end
                 local exitWaited = hs.timer.secondsSinceEpoch() - active.exitTypedAt
                 if exitWaited >= exitGraceSeconds then
-                    handle:fail("give-up", "/exit didn't take; chat pid " .. active.pid
-                        .. " still alive after " .. exitGraceSeconds .. "s",
-                        "Chat switch: /exit didn't take — chat still running")
+                    if active.confirmInFlight then
+                        -- A confirm press still pending this far past its deadline is
+                        -- deferred behind a locked screen; giving up on schedule is what
+                        -- lets it die with the handle instead of firing after the
+                        -- unlock, so the wall must not answer over it.
+                        handle:fail("give-up", "chat pid " .. active.pid .. " still alive "
+                            .. active.waited .. "s total; the exit-confirm Enter never landed",
+                            "Chat switch: chat did not exit — the exit dialog was never answered")
+                    elseif not active.wallEnterPressed then
+                        -- maybeConfirmExitDialog only answers a picker it can read and
+                        -- recognise; a grace running out is the second, blind signal
+                        -- that one is up, so answer it once and judge the chat on a
+                        -- fresh grace. That grace restarts HERE, not just in the press
+                        -- callback: the poll keeps ticking while the dictation wait
+                        -- holds the Enter and would give up before it ever went out.
+                        active.wallEnterPressed = true
+                        active.exitTypedAt = hs.timer.secondsSinceEpoch()
+                        logLine("exit-wall", "pid still alive " .. math.floor(exitWaited)
+                            .. "s after /exit; answering the background-work dialog blind")
+                        handle:waitForVoiceIdle({ label = "exit-wall" }, function()
+                            handle:pressOnce("exit-wall", {}, "return",
+                                "Chat switch failed: focus moved while answering the exit dialog",
+                                function()
+                                    active.wallEnterSent = true
+                                    active.exitTypedAt = hs.timer.secondsSinceEpoch()
+                                end)
+                        end)
+                    else
+                        logLine("exit-wall-unpassed", "pid " .. active.pid .. " still alive "
+                            .. active.waited .. "s total; Enter "
+                            .. (active.wallEnterSent and "went out" or "never went out"))
+                        handle:fail("give-up", "chat pid " .. active.pid
+                            .. " still alive after the exit-wall Enter",
+                            "Chat switch: chat did not exit — background work still running")
+                    end
                 end
             end
         elseif active.waited >= maxWaitSeconds then
