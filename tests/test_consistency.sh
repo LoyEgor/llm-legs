@@ -600,10 +600,34 @@ if test -r "$COMMIT_REPORT" && test -r "$REPORT_NUDGE" && test -r "$DELIVERY_GAT
   assert eq "$cs_frame_width" "$rb_frame_width"
   assert grep -Fq 'local fill=$((FRAME_WIDTH - ${#1} - 2))' "$COMMIT_REPORT"
   # The review consumers narrow the header to its own word, so a commit or push report framed
-  # identically is never taken for one; the closing rule stays the shared shape.
-  assert grep -Fq "REVIEW_HEADER = r\"=+ $FRAME_WORD =+\"" "$DELIVERY_GATE"
-  assert grep -Fq "FOOTER = r\"$FRAME_FOOTER_RE\"" "$DELIVERY_GATE"
-  assert grep -Fq "=+ $FRAME_WORD =+" "$REPORT_NUDGE"
+  # identically is never taken for one; the closing rule stays the shared shape. Both of them
+  # PRINT what they locate, so a frame either of them misreads is a report Egor never sees.
+  cs_header_re='(?m)^=+ '"$FRAME_WORD"' =+\r?(?=\n|$)'
+  cs_footer_re='(?m)^'"$FRAME_FOOTER_RE"'\r?(?=\n|$)'
+  for cs_hook in "$REPORT_NUDGE" "$DELIVERY_GATE"; do
+    assert grep -Fq "HEADER_SPAN_RE = re.compile(r\"$cs_header_re\")" "$cs_hook"
+    assert grep -Fq "FOOTER_SPAN_RE = re.compile(r\"$cs_footer_re\")" "$cs_hook"
+  done
+  # Both hooks must read one command grammar: a run id only one of them keeps whole — the
+  # collision `-<pid>` suffix included — or a launch only one recognises, splits one delivery
+  # into two behaviours, and the ledger keys they share stop matching.
+  cs_run_re=$(grep -F 'COMMAND_RUN_RE = re.compile(' "$REPORT_NUDGE")
+  assert test -n "$cs_run_re"
+  assert eq "$(grep -F 'COMMAND_RUN_RE = re.compile(' "$DELIVERY_GATE")" "$cs_run_re"
+  assert grep -Fq '(?:-\d+)?' "$REPORT_NUDGE"
+  # One tail-key derivation on both sides: the nudge writes it at delivery, the net matches a
+  # head-cut copy on it — computed differently, the dedup silently stops working.
+  cs_tail_line=$(grep -F 'return "tail:" + hashlib.sha256(block[-400:].encode()).hexdigest()' \
+    "$REPORT_NUDGE")
+  assert test -n "$cs_tail_line"
+  assert eq \
+    "$(grep -F 'return "tail:" + hashlib.sha256(block[-400:].encode()).hexdigest()' \
+      "$DELIVERY_GATE")" "$cs_tail_line"
+  cs_launch_re=$(sed -n '/^LAUNCH_RE = re.compile($/,/review-bench\\s")$/p' "$REPORT_NUDGE")
+  assert test -n "$cs_launch_re"
+  assert eq \
+    "$(sed -n '/^LAUNCH_RE = re.compile($/,/review-bench\\s")$/p' "$DELIVERY_GATE")" \
+    "$cs_launch_re"
 else
   printf 'SKIP: review report frame across claude-setup (%s is unreadable)\n' "$CLAUDE_SETUP"
 fi

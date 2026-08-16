@@ -776,6 +776,204 @@ gateway_history = work / "watchdog-gateway-history"
      "errored": True, "stderr": "gateway timeout"},
 ]}))
 assert rb.panel_watchdog_timeouts(gateway_history) == {}, rb.panel_watchdog_timeouts(gateway_history)
+
+# The stall cap under the duration cap is earned per (model, effort) pair: the longest silent gap
+# its completions ever showed, plus grace over a floor — and only where those gaps stay well under
+# the pair's runtimes, which is the evidence it streams at all. A buffered pair that is quiet the
+# way it always is gets no cap, and neither does one with no gap history.
+stall_history = work / "stall-history"
+(stall_history / "one").mkdir(parents=True)
+(stall_history / "one" / "meta.json").write_text(json.dumps({"rater_runs": [
+    {"rater": "agy-flash36-medium-skill", "model": "agy-flash36", "effort": "medium",
+     "side": "agy", "duration_ms": 300_000, "max_quiet_ms": 40_000, "findings": 0,
+     "exit_code": 0},
+    {"rater": "agy-pro-high-skill", "model": "agy-pro", "effort": "high", "side": "agy",
+     "duration_ms": 600_000, "max_quiet_ms": 200_000, "findings": 0, "exit_code": 0},
+    {"rater": "opus-high", "model": "opus", "effort": "high", "side": "claude",
+     "duration_ms": 300_000, "max_quiet_ms": 290_000, "findings": 0, "exit_code": 0},
+    {"rater": "sol-high", "model": "sol", "effort": "high", "side": "codex",
+     "duration_ms": 300_000, "findings": 0, "exit_code": 0},
+    # An errored cell's gap is not streaming evidence: it may have died mid-handshake, and a cap
+    # earned from it would kill healthy cells of a pair whose completions never showed one.
+    {"rater": "sol-high", "model": "sol", "effort": "high", "side": "codex",
+     "duration_ms": 90_000, "max_quiet_ms": 30_000, "findings": 0, "exit_code": 1,
+     "errored": True, "stderr": "boom"},
+]}))
+assert rb.STALL_FLOOR_S == 240 and rb.STALL_GRACE_S == 120
+stall_caps = rb.panel_stall_timeouts(stall_history)
+assert stall_caps == {
+    ("agy-flash36", "medium"): 240,
+    ("agy-pro", "high"): 320,
+}, stall_caps
+# A stall kill is the only evidence a pair whose real silences are past its cap ever produces, so
+# the next run gives it one grace more — and it is NOT a duration breach: sharing the watchdog's
+# exit code, it must neither raise the pair's duration cap nor feed the agy kill reading.
+(stall_history / "two").mkdir(parents=True)
+(stall_history / "two" / "meta.json").write_text(json.dumps({"rater_runs": [
+    {"rater": "agy-flash36-medium-skill", "model": "agy-flash36", "effort": "medium",
+     "side": "agy", "duration_ms": 245_000, "timeout_s": 900, "stalled_s": 240,
+     "findings": 0, "exit_code": 124, "errored": True,
+     "stderr": "rater stalled: no output activity for 241s (stall cap 240s)"},
+]}))
+assert rb.panel_stall_timeouts(stall_history)[("agy-flash36", "medium")] == 360, \
+    rb.panel_stall_timeouts(stall_history)
+assert rb.panel_watchdog_timeouts(stall_history)[("agy-flash36", "medium")] == 900, \
+    rb.panel_watchdog_timeouts(stall_history)
+assert not rb.watchdog_killed({
+    "model": "agy-flash36", "effort": "medium", "side": "agy", "stalled_s": 240,
+    "exit_code": 124, "stderr": "rater stalled: no output activity for 241s (stall cap 240s)",
+})
+# A kill whose retry then COMPLETED leaves its trace on the completed row: the kill still
+# escalates the stall cap, while the row itself stays a completion — its duration feeds the
+# duration cap and its gap the stall evidence, and no duration breach is read into it.
+(stall_history / "three").mkdir(parents=True)
+(stall_history / "three" / "meta.json").write_text(json.dumps({"rater_runs": [
+    {"rater": "agy-flash36-medium-skill", "model": "agy-flash36", "effort": "medium",
+     "side": "agy", "duration_ms": 908_000, "max_quiet_ms": 40_000, "stalled_retry_s": 355,
+     "findings": 1, "exit_code": 0},
+]}))
+assert rb.panel_stall_timeouts(stall_history)[("agy-flash36", "medium")] == 475, \
+    rb.panel_stall_timeouts(stall_history)
+assert rb.panel_watchdog_timeouts(stall_history)[("agy-flash36", "medium")] == 1088, \
+    rb.panel_watchdog_timeouts(stall_history)
+# The report tells a silent cell from a slow one: the reader deciding whether to trust the panel
+# needs the difference.
+assert rb.cell_failure_reason({"status": "timed_out", "stalled_s": 240, "stderr": ""}) == "stalled"
+assert rb.failure_reason("rater stalled: no output activity for 241s") == "stalled"
+
+# run_streamed: any byte on stdout or stderr, and any growth of a watch path, counts as life. A
+# cell silent past its stall cap is killed — its whole process group, since the hang lives in the
+# launcher's descendant — and raised as stalled; the duration cap keeps subprocess.run's contract.
+streamer = work / "streamer.sh"
+streamer.write_text("#!/bin/bash\necho first\nsleep 0.7\necho second\n")
+streamer.chmod(0o755)
+streamed = rb.run_streamed([str(streamer)], timeout_s=30, stall_s=20)
+assert streamed.returncode == 0 and streamed.stdout == "first\nsecond\n", streamed
+# The gap between the two writes must be visible in the recorded maximum; the bound is loose
+# because quiet is sampled on poll ticks.
+assert streamed.max_quiet_ms >= 200, streamed.max_quiet_ms
+
+hanger = work / "hanger.sh"
+hanger_child = work / "hanger-child"
+hanger.write_text(
+    "#!/bin/bash\necho started\nsleep 600 &\necho $! >" + str(hanger_child) + "\nwait\n"
+)
+hanger.chmod(0o755)
+stall_poll_was = rb.STALL_POLL_S
+rb.STALL_POLL_S = 0.05
+try:
+    stall_started_at = time.monotonic()
+    try:
+        rb.run_streamed([str(hanger)], timeout_s=30, stall_s=1)
+    except rb.RaterStalled as exc:
+        assert exc.quiet_s >= 1 and exc.stall_s == 1, exc
+        assert exc.stdout == "started\n", exc.stdout
+    else:
+        raise AssertionError("a silent cell was not killed at its stall cap")
+    assert time.monotonic() - stall_started_at < 10
+    hanger_pid = int(hanger_child.read_text().strip())
+    hanger_deadline = time.monotonic() + 5
+    while time.monotonic() < hanger_deadline:
+        try:
+            os.kill(hanger_pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError("the stalled cell's descendant survived the group kill")
+
+    watched_log = work / "watched.log"
+    filewriter = work / "filewriter.sh"
+    filewriter.write_text(
+        "#!/bin/bash\nfor i in 1 2 3 4; do echo tick >>" + str(watched_log)
+        + "; sleep 0.3; done\n"
+    )
+    filewriter.chmod(0o755)
+    quiet_stdout = rb.run_streamed(
+        [str(filewriter)], timeout_s=30, stall_s=1, watch_paths=[watched_log]
+    )
+    assert quiet_stdout.returncode == 0, quiet_stdout
+
+    try:
+        rb.run_streamed([str(hanger)], timeout_s=1, stall_s=None)
+    except subprocess.TimeoutExpired as exc:
+        assert "started" in (exc.output or ""), exc.output
+    else:
+        raise AssertionError("the duration cap did not fire without a stall cap")
+
+    # The tail a dying cell flushes must reach the exception whole: taken mid-pump, the
+    # transcript is cut exactly where the kill's own evidence would be. The marker comes from a
+    # TERM-immune descendant that writes only AFTER the visible child is reaped — exactly when a
+    # drain that does not wait for the pumps has already taken its snapshot.
+    trapper = work / "trapper.sh"
+    trapper.write_text(
+        "#!/bin/bash\n"
+        "( trap '' TERM\n"
+        "  while kill -0 $$ 2>/dev/null; do sleep 0.05; done\n"
+        "  echo dying-words ) &\n"
+        "echo started\n"
+        "while :; do sleep 0.05; done\n"
+    )
+    trapper.chmod(0o755)
+    try:
+        rb.run_streamed([str(trapper)], timeout_s=30, stall_s=1)
+    except rb.RaterStalled as exc:
+        assert "dying-words" in exc.stdout, exc.stdout
+    else:
+        raise AssertionError("the trapping cell was not stall-killed")
+
+    # start_new_session detaches the cell from the terminal's group, so an interrupt no longer
+    # reaches it by itself: run_streamed must kill the group on its way out, or an interrupted
+    # review leaves every rater CLI running detached on Egor's quota.
+    assert not rb.LIVE_CELL_GROUPS, rb.LIVE_CELL_GROUPS
+    interrupt_sleep = time.sleep
+
+    def interrupting_sleep(seconds):
+        # Only once the descendant's pid is on disk, so the assertion below has a pid to watch.
+        if seconds == rb.STALL_POLL_S and hanger_child.exists() \
+                and hanger_child.read_text().strip():
+            raise KeyboardInterrupt
+        interrupt_sleep(seconds)
+
+    hanger_child.unlink()
+    time.sleep = interrupting_sleep
+    try:
+        try:
+            rb.run_streamed([str(hanger)], timeout_s=30, stall_s=None)
+        except KeyboardInterrupt:
+            pass
+        else:
+            raise AssertionError("the interrupt did not surface out of run_streamed")
+    finally:
+        time.sleep = interrupt_sleep
+    assert not rb.LIVE_CELL_GROUPS, rb.LIVE_CELL_GROUPS
+    interrupted_pid = int(hanger_child.read_text().strip())
+    interrupted_deadline = time.monotonic() + 5
+    while time.monotonic() < interrupted_deadline:
+        try:
+            os.kill(interrupted_pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError("an interrupted cell's descendant survived")
+
+    # The reaper is the same promise at process death: whatever group is still registered when
+    # review-bench itself dies is killed, not orphaned.
+    # DEVNULL stdio, or an unreaped probe holds this suite's own output pipe open and turns a
+    # failed assertion into a hang.
+    probe = subprocess.Popen(["sleep", "600"], start_new_session=True,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    rb.LIVE_CELL_GROUPS.add(probe.pid)
+    try:
+        rb.reap_live_groups()
+        assert probe.wait(timeout=5) == -15, probe.returncode
+    finally:
+        if probe.poll() is None:
+            probe.kill()
+        rb.LIVE_CELL_GROUPS.discard(probe.pid)
+finally:
+    rb.STALL_POLL_S = stall_poll_was
 assert rb.panel_cell_key({"model": "sol", "effort": "high"}) == ("sol", "high")
 assert rb.panel_cell_key({"model": "oc-glm52", "effort": ""}) == ("oc-glm52", "")
 assert rb.panel_cell_key({"effort": "high"}) is None
@@ -861,6 +1059,28 @@ with contextlib.redirect_stdout(marked_report):
     rb.emit_report(max_tier_dir, max_tier_meta, [])
 marked_lines = marked_report.getvalue().splitlines()
 assert marked_lines[0] == rb.REPORT_BEGIN and marked_lines[-1] == rb.REPORT_END
+# `record --no-corpus` leaves only the receipt behind, and its rows are the triage's one copy:
+# a re-render of the run — the report hook recovering a capture whose closing rule the
+# tool-output window cut — must produce the frame from them, never answer "pending".
+rb.write_report_receipt(max_tier_dir, [
+    {"rater": "opus-high", "idx": 0, "verdict": "confirmed"},
+    {"rater": "opus-high", "idx": 1, "verdict": "duplicate"},
+])
+receipt_report = io.StringIO()
+with contextlib.redirect_stdout(receipt_report):
+    rb.emit_report(max_tier_dir, max_tier_meta)
+receipt_lines = receipt_report.getvalue().splitlines()
+assert receipt_lines[0] == rb.REPORT_BEGIN and receipt_lines[-1] == rb.REPORT_END, receipt_lines
+assert any(line.startswith("confirmed 1:") for line in receipt_lines), receipt_lines
+# Zero rows is a CLEAN triage, not a missing one: the clean review's re-render must frame too.
+rb.write_report_receipt(max_tier_dir, [])
+clean_receipt_report = io.StringIO()
+with contextlib.redirect_stdout(clean_receipt_report):
+    rb.emit_report(max_tier_dir, max_tier_meta)
+clean_receipt_lines = clean_receipt_report.getvalue().splitlines()
+assert clean_receipt_lines[0] == rb.REPORT_BEGIN, clean_receipt_lines
+assert clean_receipt_lines[-1] == rb.REPORT_END, clean_receipt_lines
+(max_tier_dir / rb.REPORT_RECEIPT).unlink()
 partial_tier_meta = dict(max_tier_meta, rater_runs=max_tier_rows[:1])
 assert rb.tier_from_meta(partial_tier_meta) == "T3 max"
 legacy_t2_raters = [
@@ -2420,23 +2640,23 @@ assert usage["stream_completions"] == 1
 adaptive_run = work / "agy-adaptive-run"
 adaptive_run.mkdir()
 adaptive_rater = dict(transport_rater, timeout_s=383)
-real_subprocess_run = rb.subprocess.run
+real_run_streamed = rb.run_streamed
 agy_subprocess_timeouts = []
 
 
-def capture_agy_timeout(command, *args, **kwargs):
+def capture_agy_timeout(command, **kwargs):
     if command and command[0] == str(fixtures / "fake-geminib.sh"):
-        agy_subprocess_timeouts.append(kwargs.get("timeout"))
-    return real_subprocess_run(command, *args, **kwargs)
+        agy_subprocess_timeouts.append(kwargs.get("timeout_s"))
+    return real_run_streamed(command, **kwargs)
 
 
-rb.subprocess.run = capture_agy_timeout
+rb.run_streamed = capture_agy_timeout
 try:
     rc, _, _, stderr, adaptive_command = rb.run_agy(
         adaptive_rater, repo, sha, "", adaptive_run, "ignored fixture diff", "work"
     )
 finally:
-    rb.subprocess.run = real_subprocess_run
+    rb.run_streamed = real_run_streamed
 assert rc == 0 and not stderr
 assert adaptive_command[adaptive_command.index("--print-timeout") + 1] == "383s"
 assert agy_subprocess_timeouts == [413], agy_subprocess_timeouts
@@ -4560,17 +4780,17 @@ profiles_path.unlink()
 clear_walls()
 del os.environ["REVIEW_BENCH_TRANSIENT_BACKOFF_S"]
 
-real_subprocess_run = rb.subprocess.run
+real_run_streamed = rb.run_streamed
 timeout_stderr = b"HTTP 429 usage limit reached"
 
 
 def timeout_run(command, **kwargs):
     raise subprocess.TimeoutExpired(
-        command, kwargs["timeout"], output=b"partial output", stderr=timeout_stderr
+        command, kwargs["timeout_s"], output=b"partial output", stderr=timeout_stderr
     )
 
 
-rb.subprocess.run = timeout_run
+rb.run_streamed = timeout_run
 opencode_rater["timeout_s"] = 1
 try:
     timeout_wall_run = work / "opencode-timeout-wall"
@@ -4591,9 +4811,63 @@ try:
     )
     assert timeout_account == "opencode-go" and timeout_result[0] == 124, timeout_result
     assert not rb.is_walled("opencode", "opencode-go")
+
+    # A stall kill gets exactly one fresh attempt: a hang is usually the process's, not the
+    # account's, so the retry may land on the same account — and its success is the cell's result,
+    # with no stall marker left on it from the killed attempt.
+    clear_walls()
+    os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-happy.json")
+    opencode_rater["timeout_s"] = 900
+    opencode_rater["stall_s"] = 5
+    stall_calls = []
+
+    def stall_once(command, **kwargs):
+        stall_calls.append(kwargs.get("stall_s"))
+        if len(stall_calls) == 1:
+            raise rb.RaterStalled(6, kwargs.get("stall_s"), "partial", "")
+        return real_run_streamed(command, **kwargs)
+
+    rb.run_streamed = stall_once
+    stall_retry_run = work / "opencode-stall-retry"
+    stall_retry_run.mkdir()
+    stall_log = io.StringIO()
+    with contextlib.redirect_stdout(stall_log):
+        _, stall_account, stall_result = rb.run_rater_task(
+            opencode_rater, repo, sha, "", stall_retry_run, "fixture commit diff"
+        )
+    assert stall_result[0] == 0, stall_result
+    assert stall_calls == [5, 5], stall_calls
+    assert "killed as stalled" in stall_log.getvalue(), stall_log.getvalue()
+    assert not opencode_rater.get("stalled_s")
+    assert opencode_rater.get("max_quiet_ms") is not None
+    # The kill itself outlives the retry: without this trace a cap that is merely too tight
+    # never escalates, and the pair burns one stall kill on every run for ever.
+    assert opencode_rater.get("stalled_retry_s") == 5, opencode_rater
+    opencode_rater.pop("stalled_retry_s", None)
+
+    # A second stall in one cell is the cell's answer, not another lap.
+    stall_always_calls = []
+
+    def stall_always(command, **kwargs):
+        stall_always_calls.append(1)
+        raise rb.RaterStalled(6, kwargs.get("stall_s"), "", "")
+
+    rb.run_streamed = stall_always
+    stall_dead_run = work / "opencode-stall-dead"
+    stall_dead_run.mkdir()
+    with contextlib.redirect_stdout(io.StringIO()):
+        _, _, stall_dead_result = rb.run_rater_task(
+            opencode_rater, repo, sha, "", stall_dead_run, "fixture commit diff"
+        )
+    assert stall_dead_result[0] == 124, stall_dead_result
+    assert stall_dead_result[3].startswith("rater stalled"), stall_dead_result
+    assert opencode_rater.get("stalled_s") == 5
+    assert len(stall_always_calls) == 2, stall_always_calls
+    del os.environ["OPENCODE_FIXTURE_STDOUT"]
 finally:
-    rb.subprocess.run = real_subprocess_run
-    opencode_rater.pop("timeout_s", None)
+    rb.run_streamed = real_run_streamed
+    for leftover in ("timeout_s", "stall_s", "stalled_s", "stalled_retry_s", "max_quiet_ms"):
+        opencode_rater.pop(leftover, None)
     clear_walls()
 
 # Gemini bills per model and words a per-model exhaustion its own way, so that wording has to
@@ -5480,10 +5754,12 @@ assert "timed_out" not in worktree_meta, worktree_meta
 # One cap per (model, effort) reaches every side, and the run a killed cell belongs to is what the
 # statusline goes loud on: nothing else on disk says a review hung.
 timeout_caps_seen = []
+stall_caps_seen = []
 
 
 def timeout_runner(rater, repo_path, commit, focus, run_dir, diff, account):
     timeout_caps_seen.append(rater["timeout_s"])
+    stall_caps_seen.append(rater.get("stall_s"))
     return 124, 1, "", "rater timed out after 900s", []
 
 
@@ -5500,8 +5776,112 @@ timeout_run_dir = next((timeout_run_store / "worker-stats" / "benches").iterdir(
 timeout_meta = json.loads((timeout_run_dir / "meta.json").read_text())
 assert timeout_rc == 1
 assert timeout_caps_seen == [rb.WATCHDOG_FLOOR_S], timeout_caps_seen
+# No gap history in a fresh store: no cell may carry a stall cap, only the duration one.
+assert stall_caps_seen == [None], stall_caps_seen
 assert timeout_meta["timed_out"] is True, timeout_meta
 assert timeout_meta["rater_runs"][0]["timeout_s"] == rb.WATCHDOG_FLOOR_S, timeout_meta
+
+# With gap history on record the launch hands the cell its stall cap — and only under the
+# duration cap, so a cap the cell cannot reach is never reported as its limit.
+seeded = timeout_run_store / "worker-stats" / "benches" / "seeded-stall-history"
+seeded.mkdir(parents=True)
+(seeded / "meta.json").write_text(json.dumps({"rater_runs": [
+    {"rater": "sol-medium", "model": "sol", "effort": "medium", "side": "codex",
+     "duration_ms": 700_000, "max_quiet_ms": 60_000, "findings": 0, "exit_code": 0},
+]}))
+timeout_caps_seen.clear()
+stall_caps_seen.clear()
+# Run ids carry second resolution; back-to-back launches in one store collide on the run dir.
+subprocess.run(["sleep", "1.1"], check=True)
+with contextlib.redirect_stdout(io.StringIO()):
+    stall_rc = rb.cmd_run(argparse.Namespace(
+        repo=str(pin_repo), commitish=None, worktree=True, raters="sol-medium",
+        leg=False, verify=None, auto=None, focus=None,
+    ))
+assert stall_rc == 1
+# 1080 = the breached 900 cap plus one grace; 240 = the stall floor over gap 60s + grace 120s.
+assert timeout_caps_seen == [1080], timeout_caps_seen
+assert stall_caps_seen == [rb.STALL_FLOOR_S], stall_caps_seen
+
+# A stall cap grown past the duration cap (breach escalation) must not reach the cell: the
+# duration watchdog already fires first, and reporting the unreachable one as the cell's limit
+# would name a cap that never operated.
+(seeded / "meta.json").write_text(json.dumps({"rater_runs": [
+    {"rater": "sol-medium", "model": "sol", "effort": "medium", "side": "codex",
+     "duration_ms": 700_000, "max_quiet_ms": 60_000, "findings": 0, "exit_code": 0},
+    {"rater": "sol-medium", "model": "sol", "effort": "medium", "side": "codex",
+     "duration_ms": 2_000_000, "stalled_s": 2000, "exit_code": 124},
+]}))
+timeout_caps_seen.clear()
+stall_caps_seen.clear()
+subprocess.run(["sleep", "1.1"], check=True)
+with contextlib.redirect_stdout(io.StringIO()):
+    assert rb.cmd_run(argparse.Namespace(
+        repo=str(pin_repo), commitish=None, worktree=True, raters="sol-medium",
+        leg=False, verify=None, auto=None, focus=None,
+    )) == 1
+assert timeout_caps_seen == [1260], timeout_caps_seen
+assert stall_caps_seen == [None], stall_caps_seen
+
+# A cell whose retry stalled too is the hung review the watchdog exists to announce, killed
+# earlier: its run must read timed_out, or the statusline stays quiet on the one failure it is
+# loud for. A retry that COMPLETED is not: its run passes, and the meta row keeps the killed
+# attempt's trace so the next run's cap can grow.
+stall_runner_calls = []
+
+
+def stalling_runner(rater, repo_path, commit, focus, run_dir, diff, account):
+    stall_runner_calls.append(rater["spec"])
+    rater["stalled_s"] = 7
+    return 124, 1, "", "rater stalled: no output activity for 7s (stall cap 5s)", []
+
+
+for side in rb.SIDE_RUNNERS:
+    rb.SIDE_RUNNERS[side] = stalling_runner
+subprocess.run(["sleep", "1.1"], check=True)
+with contextlib.redirect_stdout(io.StringIO()):
+    assert rb.cmd_run(argparse.Namespace(
+        repo=str(pin_repo), commitish=None, worktree=True, raters="sol-medium",
+        leg=False, verify=None, auto=None, focus=None,
+    )) == 1
+stalled_run_dir = max(
+    path for path in (timeout_run_store / "worker-stats" / "benches").iterdir()
+    if path.name[:2] == "20"
+)
+stalled_meta = json.loads((stalled_run_dir / "meta.json").read_text())
+assert stall_runner_calls == ["sol-medium", "sol-medium"], stall_runner_calls
+assert stalled_meta["timed_out"] is True, stalled_meta
+assert stalled_meta["rater_runs"][0]["stalled_s"] == 7, stalled_meta
+assert stalled_meta["rater_runs"][0]["stalled_retry_s"] == 7, stalled_meta
+
+
+def stall_then_complete(rater, repo_path, commit, focus, run_dir, diff, account):
+    stall_runner_calls.append(rater["spec"])
+    if len(stall_runner_calls) == 1:
+        rater["stalled_s"] = 9
+        return 124, 1, "", "rater stalled: no output activity for 9s (stall cap 5s)", []
+    return 0, 1, "NO FINDINGS", "", []
+
+
+stall_runner_calls.clear()
+for side in rb.SIDE_RUNNERS:
+    rb.SIDE_RUNNERS[side] = stall_then_complete
+subprocess.run(["sleep", "1.1"], check=True)
+with contextlib.redirect_stdout(io.StringIO()):
+    assert rb.cmd_run(argparse.Namespace(
+        repo=str(pin_repo), commitish=None, worktree=True, raters="sol-medium",
+        leg=False, verify=None, auto=None, focus=None,
+    )) == 0
+retried_run_dir = max(
+    path for path in (timeout_run_store / "worker-stats" / "benches").iterdir()
+    if path.name[:2] == "20"
+)
+retried_meta = json.loads((retried_run_dir / "meta.json").read_text())
+assert stall_runner_calls == ["sol-medium", "sol-medium"], stall_runner_calls
+assert "timed_out" not in retried_meta, retried_meta
+retried_row = retried_meta["rater_runs"][0]
+assert retried_row["exit_code"] == 0 and "stalled_s" not in retried_row, retried_row
+assert retried_row["stalled_retry_s"] == 9, retried_row
 for side in rb.SIDE_RUNNERS:
     rb.SIDE_RUNNERS[side] = tier_runner
 
@@ -5555,11 +5935,12 @@ sr_deletion_snapshot, _ = rb.sealed_target(sr_repo)
 sr_deletion_blobs = rb.reviewed_blobs(sr_repo, [], sr_deletion_snapshot)
 assert sr_deletion_blobs.get("docs/b.md") == "", sr_deletion_blobs
 subprocess.run(["git", "-C", str(sr_repo), "checkout", "--", "docs/b.md"], check=True)
-# A symlink is left out: a line budget cannot price a link target, and drift reads through the
-# link to the file it points at.
+# A symlink is content the snapshot holds as its link text, which is what coverage prices it by:
+# reading through the link would price the file it points at instead.
 (sr_repo / "src" / "link.py").symlink_to("a.py")
 sr_link_snapshot, _ = rb.sealed_target(sr_repo, scope=["src"])
-assert "src/link.py" not in rb.reviewed_blobs(sr_repo, ["src"], sr_link_snapshot)
+sr_link_blobs = rb.reviewed_blobs(sr_repo, ["src"], sr_link_snapshot)
+assert rb.blob_bytes(sr_repo, sr_link_blobs["src/link.py"]) == b"a.py", sr_link_blobs
 (sr_repo / "src" / "link.py").unlink()
 
 sr_claudeb_before = os.environ["CLAUDEB_DIR"]
@@ -5704,12 +6085,27 @@ assert sr_answer("src/a.py") == "none"
 assert sr_answer("src/a.py", repo=sr_worktree).startswith("covered "), \
     sr_answer("src/a.py", repo=sr_worktree)
 
-# A link target is not content a line budget can price, and reading through the link would price
-# the file it points at instead.
+# A link is priced by its own text, never by the file it points at. To a run that never held it,
+# a new link is one line of unreviewed content — drift, not a wall: the flat 100 this used to
+# answer could not be cleared even by a fresh review that read the link.
 sr_symlink = sr_store()
 sr_run(sr_symlink, "20260101T000100Z-aaaaaaa", sr_blobs)
 (sr_repo / "src" / "link.py").symlink_to("a.py")
-assert sr_answer("src/link.py") == "covered 20260101T000100Z-aaaaaaa 0"
+assert sr_answer("src/link.py") == "covered 20260101T000100Z-aaaaaaa 4"
+assert sr_answer("src/a.py", "src/link.py") == "covered 20260101T000100Z-aaaaaaa 4"
+# A dangling link is still a link, not a deletion: pricing it as an unheld deletion answered 100
+# for one line of drift.
+(sr_repo / "src" / "dangling.py").symlink_to("nowhere.py")
+assert sr_answer("src/dangling.py") == "covered 20260101T000100Z-aaaaaaa 4"
+(sr_repo / "src" / "dangling.py").unlink()
+# The review that DID read the link covers it at zero, and a retarget after it is drift like any
+# other edit: old text plus new text, priced against the reviewed size.
+sr_link_run = sr_store()
+sr_run(sr_link_run, "20260101T000200Z-bbbbbbb", sr_link_blobs, scope=["src"])
+assert sr_answer("src/link.py") == "covered 20260101T000200Z-bbbbbbb 0"
+(sr_repo / "src" / "link.py").unlink()
+(sr_repo / "src" / "link.py").symlink_to("blob.bin")
+assert sr_answer("src/link.py") == "covered 20260101T000200Z-bbbbbbb 9"
 (sr_repo / "src" / "link.py").unlink()
 os.environ["CLAUDEB_DIR"] = sr_claudeb_before
 assert worktree_receipt["commit"] == snapshot_sha
@@ -9557,36 +9953,51 @@ fi
 
 REPORT_HOOK="${REVIEW_REPORT_HOOK:-"$ROOT/../claude-setup/hooks/review-report-nudge.sh"}"
 if test -x "$REPORT_HOOK"; then
-  for hook_tool in Bash Read; do
-    hook_output="$(jq -nc --arg tool "$hook_tool" \
-      --arg output $'before\n'"$report_frame_header"$'\nT1 report\n'"$report_frame_footer"$'\nafter' \
-      '{tool_name:$tool,tool_response:{stdout:$output}}' | "$REPORT_HOOK")"
-    assert contains "$(jq -r '.hookSpecificOutput.additionalContext' <<<"$hook_output")" \
-      "verbatim as a fenced code block"
+  # The report is delivered BY the hook, so the block leaves as a systemMessage and the model is
+  # told to add judgment instead of retyping it — a retyped block can be mistyped, and a gate
+  # comparing the retyping against the reference then bought a second identical block.
+  report_capture=$'before\n'"$report_frame_header"$'\nT1 report\n'"$report_frame_footer"$'\nafter'
+  hook_output="$(jq -nc --arg output "$report_capture" \
+    '{tool_name:"Bash",tool_input:{command:"review-bench record run --no-corpus"},
+      tool_response:{stdout:$output}}' | "$REPORT_HOOK")"
+  assert contains "$(jq -r '.systemMessage' <<<"$hook_output")" "$report_frame_header"
+  assert contains "$(jq -r '.hookSpecificOutput.additionalContext' <<<"$hook_output")" \
+    "Do NOT paste"
+  # Only review-bench's own output is a report. Keying on the frame alone fired on any `====`
+  # divider the model read, and a hook that PRINTS to Egor would push that at him as a review.
+  for hook_case in '{"tool_name":"Read","tool_input":{"command":"review-bench report x"}}' \
+                   '{"tool_name":"Bash","tool_input":{"command":"cat notes.txt"}}'; do
+    hook_foreign="$(jq -nc --arg output "$report_capture" --argjson case "$hook_case" \
+      '$case + {tool_response:{stdout:$output}}' | "$REPORT_HOOK")"
+    assert test -z "$hook_foreign"
   done
-  # A run read back with `head -N` can stop short of the closing rule, and the header alone still
-  # owes the nudge: the report is in that output either way.
+  # A run read back with `head -N` can stop short of the closing rule and hold no run id to
+  # re-render from: the model is then the only one still holding the report.
   hook_truncated="$(jq -nc \
     --arg output "$report_frame_header"$'\nT1 report\nfindings: none' \
-    '{tool_name:"Bash",tool_response:{stdout:$output}}' | "$REPORT_HOOK")"
+    '{tool_name:"Bash",tool_input:{command:"review-bench record run --no-corpus"},
+      tool_response:{stdout:$output}}' | "$REPORT_HOOK")"
   assert contains "$(jq -r '.hookSpecificOutput.additionalContext' <<<"$hook_truncated")" \
-    "re-read the block"
+    "sed -n"
+  assert test -z "$(jq -r '.systemMessage // ""' <<<"$hook_truncated")"
   # The other side of the same key: a window that cut the header is silent, because the closing
-  # rule alone belongs to every framed report and to any `====` divider a Read scrolls past. That
-  # miss costs one nudge on output the model still holds; the alternative fired on all of them.
+  # rule alone belongs to every framed report and to any `====` divider that reaches this hook.
   hook_headerless="$(jq -nc \
     --arg output $'T1 report\nfindings: none\n'"$report_frame_footer" \
-    '{tool_name:"Bash",tool_response:{stdout:$output}}' | "$REPORT_HOOK")"
+    '{tool_name:"Bash",tool_input:{command:"review-bench record run"},
+      tool_response:{stdout:$output}}' | "$REPORT_HOOK")"
   assert test -z "$hook_headerless"
   # The header has to be the whole line: a report is not what a sentence mentioning one is.
   hook_inline="$(jq -nc --arg output "talking about $report_frame_header in passing" \
-    '{tool_name:"Bash",tool_response:{stdout:$output}}' | "$REPORT_HOOK")"
+    '{tool_name:"Bash",tool_input:{command:"review-bench review --tier T1"},
+      tool_response:{stdout:$output}}' | "$REPORT_HOOK")"
   assert test -z "$hook_inline"
   hook_without_output="$(jq -n --rawfile source "$SCRIPT" \
-    '{tool_name:"Read",tool_response:{content:$source}}' | "$REPORT_HOOK")"
+    '{tool_name:"Bash",tool_input:{command:"review-bench report x"},
+      tool_response:{stdout:$source}}' | "$REPORT_HOOK")"
   assert test -z "$hook_without_output"
 else
   printf 'SKIP: review report hook behavior (%s is unavailable)\n' "$REPORT_HOOK"
 fi
 
-printf 'PASS: %s assertions; canonical review tiers over one shared OpenCode floor and a per-tier Gemini panel that never runs Pro at T0, stays inside the account roster and contains its own tier'"'"'s default panel when escalated, with no retired cell in any of them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, an agy finding judged on its own transport first and handed to the gateway only where that transport declined, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account schedulable only as the pool'"'"'s reserve and never as a roster tail, and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, carried from there into the corpus row, the report header and a receipt of the lens'"'"'s own while every lens row stays out of the canonical defect list, the frontier denominators, the composition corpus and the default leaderboard, worktree runs narrowed to named paths whose snapshot holds only those paths, is deterministic per path set, spelled against the directory the caller stands in and lexically canonicalized so a `..` can neither walk out of the repository nor split one file into two scopes, carries its scope as commit trailers a failed read refuses rather than widens, so a rerun by sha stays inside it, refuses a commitish, a pathspec matching nothing and a scope holding no change — the refusal before any snapshot object is written — and writes only a receipt of its own — leaving the repository'"'"'s receipt untouched byte for byte, a lens narrowed by the same paths naming a combined receipt of its own that leaves the plain, pure-lens and pure-scope receipts byte for byte and survives a rerun by sha with both selectors intact, a day-one repository reviewed end to end — its root commit sealed and cloned, given a deterministic empty base commit inside that clone so the vendor skill diffs its whole content, measured in lines and paths against the empty tree rather than as an unmeasurable diff, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask, the lookup scoped to the repository so another chat cannot answer for it, both review hooks keyed so exactly one fires, and the one line the gate reads: a session'"'"'s own triaged run answering covered, stale, none or timed-out over the paths it was asked about, scope containment by directory prefix with an empty scope covering the whole repository, drift measured as diff lines against the blobs that run snapshotted rather than against git history, a path the snapshot never held priced as drift in full and a binary as none, a run of another chat and one nobody triaged answering for nobody, and the newest hung run outranking every older answer until a later triaged run covers it — with the watchdog capping every cell at the longest duration recorded for its own model and effort plus three minutes over a fifteen-minute floor and marking the run it killed timed out, and a merged review of several repositories read by one panel out of a single workspace holding each repository under its own prefix — deterministic, self-contained once built and pruned with the run it belongs to — whose findings and adjudication handoff name the repository each belongs to, whose scopes and progress are per repository, and which stamps EVERY repository it read with that repository'"'"'s own receipt, while refusing a commitish, a repository named twice, a clean tree, a missing repository and its own workspace as a tree to seal, with the gateway being down priced as a wait that expires rather than a verdict — the family whose every attempt failed on the gateway ITSELF cooling for a fixed span while a spent plan, a pool run dry behind one and an unusable answer are left to the records that already carry them, one canary attempt of the cooling family running inside that span so the recovery can be noticed at all, its answer clearing the wait and its failure extending it from the moment the outage began, written under a lock and not written at all where nothing changed, and a side the pool answers for left to the pool, and each repository of one panel named the way its half actually exists — a working tree or a range of its own commits as `PATH@BASE..HEAD`, sealed and stamped per member so the committed half answers only where its right end is the tree in front of the reader, refusing a target flag it duplicates, a bare repository beside it with no --worktree and a scope aimed at a range, and a range of commits reviewed as one target — sealed into a single commit carrying its right end'"'"'s tree over its left end as the parent, so every reader keyed on one sha reads the whole range, named by the commits it sealed rather than by how the caller spelled them so one range is one snapshot with one rerun, announced by its own ends with the seal named beside them, read back out of that seal by a rerun carrying no flags at all, refused when it names no shape or no change, shown as a range while it runs, and kept out of the repository'"'"'s receipt wherever its right end is not the tree standing in front of the reader, and the corpus closed to every commit-point review — the plain record command refused outright with the reporting one named in its place, the refusal and the flag'"'"'s own help promising only what --bench delivers (this run'"'"'s verdicts stored, never a corpus row), that flag refused in turn on a durable run it would buy the plain command'"'"'s own behaviour on, and the handoff printing that one command alone — with the block those reviews are read in framed to a fixed width no over-long word can flatten, opened by a line naming the panel that produced it, and carrying a cell row that counts every completed cell under the same names its neighbouring rows use — the ones that found nothing included, and a count missing from an older summary costing its own cell a number rather than the whole block, every one of those names and the tiers table'"'"'s own rendered by one derivation over the pool of cells the tiers can launch — version digits, effort and the bare mark each appearing only where two pool cells would otherwise collide, Claude and Codex effort always spelled because it is a launch parameter, the word skill never rendered at all, a family gaining a second variant IN THE POOL renaming itself with no list to edit, a cell only a stored run holds named against that pool and never over it — the arrival carrying whatever separates it, its report leaving the tiers table byte for byte — a worktree panel refused outright unless Egor asked for it by name — the one door, checked before any repository argument is resolved so a spelling the tool cannot resolve cannot fall through it — and the machine specs commands are spelled in left untouched\n' "$asserts"
+printf 'PASS: %s assertions; canonical review tiers over one shared OpenCode floor and a per-tier Gemini panel that never runs Pro at T0, stays inside the account roster and contains its own tier'"'"'s default panel when escalated, with no retired cell in any of them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, an agy finding judged on its own transport first and handed to the gateway only where that transport declined, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account schedulable only as the pool'"'"'s reserve and never as a roster tail, and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, carried from there into the corpus row, the report header and a receipt of the lens'"'"'s own while every lens row stays out of the canonical defect list, the frontier denominators, the composition corpus and the default leaderboard, worktree runs narrowed to named paths whose snapshot holds only those paths, is deterministic per path set, spelled against the directory the caller stands in and lexically canonicalized so a `..` can neither walk out of the repository nor split one file into two scopes, carries its scope as commit trailers a failed read refuses rather than widens, so a rerun by sha stays inside it, refuses a commitish, a pathspec matching nothing and a scope holding no change — the refusal before any snapshot object is written — and writes only a receipt of its own — leaving the repository'"'"'s receipt untouched byte for byte, a lens narrowed by the same paths naming a combined receipt of its own that leaves the plain, pure-lens and pure-scope receipts byte for byte and survives a rerun by sha with both selectors intact, a day-one repository reviewed end to end — its root commit sealed and cloned, given a deterministic empty base commit inside that clone so the vendor skill diffs its whole content, measured in lines and paths against the empty tree rather than as an unmeasurable diff, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask, the lookup scoped to the repository so another chat cannot answer for it, both review hooks keyed so exactly one fires, and the one line the gate reads: a session'"'"'s own triaged run answering covered, stale, none or timed-out over the paths it was asked about, scope containment by directory prefix with an empty scope covering the whole repository, drift measured as diff lines against the blobs that run snapshotted rather than against git history, a path the snapshot never held priced as drift in full, a link — dangling included — priced by its own text rather than through its target, and a binary as none, a run of another chat and one nobody triaged answering for nobody, and the newest hung run outranking every older answer until a later triaged run covers it — with the watchdog capping every cell at the longest duration recorded for its own model and effort plus three minutes over a fifteen-minute floor and marking the run it killed timed out, and a merged review of several repositories read by one panel out of a single workspace holding each repository under its own prefix — deterministic, self-contained once built and pruned with the run it belongs to — whose findings and adjudication handoff name the repository each belongs to, whose scopes and progress are per repository, and which stamps EVERY repository it read with that repository'"'"'s own receipt, while refusing a commitish, a repository named twice, a clean tree, a missing repository and its own workspace as a tree to seal, with the gateway being down priced as a wait that expires rather than a verdict — the family whose every attempt failed on the gateway ITSELF cooling for a fixed span while a spent plan, a pool run dry behind one and an unusable answer are left to the records that already carry them, one canary attempt of the cooling family running inside that span so the recovery can be noticed at all, its answer clearing the wait and its failure extending it from the moment the outage began, written under a lock and not written at all where nothing changed, and a side the pool answers for left to the pool, and each repository of one panel named the way its half actually exists — a working tree or a range of its own commits as `PATH@BASE..HEAD`, sealed and stamped per member so the committed half answers only where its right end is the tree in front of the reader, refusing a target flag it duplicates, a bare repository beside it with no --worktree and a scope aimed at a range, and a range of commits reviewed as one target — sealed into a single commit carrying its right end'"'"'s tree over its left end as the parent, so every reader keyed on one sha reads the whole range, named by the commits it sealed rather than by how the caller spelled them so one range is one snapshot with one rerun, announced by its own ends with the seal named beside them, read back out of that seal by a rerun carrying no flags at all, refused when it names no shape or no change, shown as a range while it runs, and kept out of the repository'"'"'s receipt wherever its right end is not the tree standing in front of the reader, and the corpus closed to every commit-point review — the plain record command refused outright with the reporting one named in its place, the refusal and the flag'"'"'s own help promising only what --bench delivers (this run'"'"'s verdicts stored, never a corpus row), that flag refused in turn on a durable run it would buy the plain command'"'"'s own behaviour on, and the handoff printing that one command alone — with the block those reviews are read in framed to a fixed width no over-long word can flatten, opened by a line naming the panel that produced it, and carrying a cell row that counts every completed cell under the same names its neighbouring rows use — the ones that found nothing included, and a count missing from an older summary costing its own cell a number rather than the whole block, every one of those names and the tiers table'"'"'s own rendered by one derivation over the pool of cells the tiers can launch — version digits, effort and the bare mark each appearing only where two pool cells would otherwise collide, Claude and Codex effort always spelled because it is a launch parameter, the word skill never rendered at all, a family gaining a second variant IN THE POOL renaming itself with no list to edit, a cell only a stored run holds named against that pool and never over it — the arrival carrying whatever separates it, its report leaving the tiers table byte for byte — a worktree panel refused outright unless Egor asked for it by name — the one door, checked before any repository argument is resolved so a spelling the tool cannot resolve cannot fall through it — and the machine specs commands are spelled in left untouched\n' "$asserts"

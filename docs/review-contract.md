@@ -92,12 +92,28 @@ minutes, floor 15 minutes. On breach the panel is killed, the run is marked
 `timed_out` in its record, and the statusline goes loud until a later triaged
 run covers the session's paths.
 
+Under the duration cap sits the stall watch, earned per pair the same way:
+activity is any byte on the cell's pipes or growth of its declared log files,
+and the cap is the longest silent gap the pair's COMPLETIONS ever showed + 2
+minutes, floor 4 minutes — armed only where those gaps stay under half the
+pair's runtimes, the evidence it streams at all, so a buffered side and a pair
+with no gap history can never be stall-killed. A kill takes the whole process
+group (the hang lives in the launcher's descendant), records `stalled_s` on the
+cell, is retried once inside the same run, and reads as `stalled` in the
+report. A stall kill is not a duration breach: it never raises the pair's
+duration cap, while a cap a pair was killed at grows by one grace on the next
+run, so a wrong kill corrects itself instead of repeating.
+
 ## Launches and reports
 
 `REVIEW_ASKED=1` marks a review Egor asked for by name; `REVIEW_GATE_OK=1` marks
-his explicit skip — both on the model's honour (2026-08-10). The framed block
-from `record --no-corpus` is the only review output Egor reads, delivered
-verbatim; the corpus rules (sealed judges, `--bench` opt-in) are unchanged.
+his explicit skip — both on the model's honour (2026-08-10). The framed block from
+`record --no-corpus` is the only review output Egor reads, and the report hook
+prints it: one copy, from review-bench's own rendering, costing no tokens. A model
+that retypes it can mistype it, and a gate comparing the retyping against the
+reference then buys a second identical block — which is what happened. What the
+model owes after the block is judgment the block cannot hold, never its contents
+restated. The corpus rules (sealed judges, `--bench` opt-in) are unchanged.
 
 ## Non-goals — deleted by this contract
 

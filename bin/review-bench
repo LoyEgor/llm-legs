@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import atexit
 import concurrent.futures
 import contextlib
 import fcntl
@@ -9,6 +10,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import itertools
 import math
 import statistics
@@ -832,6 +834,18 @@ AGY_TIMEOUT_GRACE_S = 30
 # gets the floor, so a cell nobody has measured is still cut off rather than left hanging.
 WATCHDOG_GRACE_S = 180
 WATCHDOG_FLOOR_S = 900
+# The stall watch under the duration watchdog: a hung leg is told apart from a slow one by the
+# pair's own record. Every completed run leaves the longest gap it ever went without producing a
+# byte, and only a pair whose gaps stay well under its runtimes — one that provably streams — gets
+# a stall cap at all, so a buffered side that is quiet the way it always is can never be killed
+# for it. A hung streaming cell then dies at gap-plus-grace instead of holding the whole panel to
+# the duration cap.
+STALL_GRACE_S = 120
+STALL_FLOOR_S = 240
+STALL_STREAM_RATIO = 0.5
+# Under a second on purpose: every reader that measures real waits filters patched-sleep noise at
+# the one-second line, and a poll nap is exactly such noise.
+STALL_POLL_S = 0.25
 AUTO_RATERS = tuple(
     spec for spec in (
         tuple(
@@ -1213,7 +1227,6 @@ RECEIPT_HASH_HEX = 8
 SCOPE_TRAILER = "Scope-Path: "
 # How much of a file decides whether it reads as text. Git's own sniff is the first 8000 bytes.
 BINARY_SNIFF_BYTES = 8000
-SYMLINK_MODE = "120000"
 # How far a covered path may move past the tree the panel read before the review stops answering
 # for it. Staleness IS the mechanical second round (docs/review-contract.md), so this number is the
 # only thing that returns reviewed paths to unreviewed.
@@ -1853,8 +1866,8 @@ def reviewed_blobs(repo, scope, sha):
 
     Read out of that commit and never hashed from the working tree: the tree moves while the run is
     in flight, and a rerun pinned to an existing snapshot sha reads a commit the checkout is already
-    far past — either way the anchor would be bytes no rater saw. A symlink is left out, since a
-    line budget cannot price a link target.
+    far past — either way the anchor would be bytes no rater saw. A symlink's blob is its link
+    text, which is exactly what the coverage reader prices it by.
     """
     wanted = {path for path in scope_snapshot_paths(repo, scope, sha) if "\n" not in path}
     if not wanted:
@@ -1870,7 +1883,7 @@ def reviewed_blobs(repo, scope, sha):
         if not tab or len(fields) != 3 or path not in wanted:
             continue
         held.add(path)
-        if fields[1] == "blob" and fields[0] != SYMLINK_MODE:
+        if fields[1] == "blob":
             blobs[path] = fields[2]
     for path in wanted - held:
         blobs[path] = ""
@@ -2494,7 +2507,12 @@ def watchdog_killed(row):
     exit 124 alone, that side never records a breach at all and stays pinned at the floor for ever.
     Nowhere else the wording: `cell_status` also reads a provider's own `gateway timeout` as a
     timeout, and that says nothing about the cap the cell was given.
+
+    A stall kill is not a duration breach: it shares the exit code, and counting it here would
+    let one hung cell raise its pair's duration cap for ever.
     """
+    if row.get("stalled_s"):
+        return False
     if row.get("exit_code") == 124:
         return True
     side = row.get("side") or rater_side(row.get("rater"))
@@ -2503,14 +2521,15 @@ def watchdog_killed(row):
 
 def panel_cell_history(benches):
     """Per (model, effort) pair over every recorded run: the longest it has ever taken to COMPLETE,
-    and the highest cap the watchdog has ever killed it at.
+    the highest cap the watchdog has ever killed it at, the longest a completion ever went without
+    producing a byte, and the highest stall cap a cell of the pair was ever killed at.
 
-    Two questions because a completion is the only evidence about the work — feeding a hang's
-    duration back in would let one hang raise the cap forever — while the kills are the only
-    evidence a pair whose real runtime is past its cap ever produces: with nothing but completions
-    it would be killed at the same cap on every later run, for ever.
+    Completions are the only evidence about the work — feeding a hang's duration or silence back
+    in would let one hang raise its own cap forever — while the kills are the only evidence a pair
+    whose real behaviour is past its cap ever produces: with nothing but completions it would be
+    killed at the same cap on every later run, for ever.
     """
-    maxima, breached = {}, {}
+    maxima, breached, quiet, stall_breached = {}, {}, {}, {}
     for directory in benches.iterdir() if benches.exists() else ():
         meta_path = directory / "meta.json"
         if not meta_path.exists():
@@ -2522,6 +2541,15 @@ def panel_cell_history(benches):
         for row in meta.get("rater_runs", ()):
             key = panel_cell_key(row)
             if key is None:
+                continue
+            # A retried kill rides on whatever row the retry produced — the row itself still
+            # counts as what it is (a completion feeds maxima and quiet, an error nothing).
+            retried = row.get("stalled_retry_s")
+            if isinstance(retried, (int, float)) and not isinstance(retried, bool) and retried > 0:
+                stall_breached[key] = max(float(retried), stall_breached.get(key, 0.0))
+            stalled = row.get("stalled_s")
+            if isinstance(stalled, (int, float)) and not isinstance(stalled, bool) and stalled > 0:
+                stall_breached[key] = max(float(stalled), stall_breached.get(key, 0.0))
                 continue
             if watchdog_killed(row):
                 cap = timeout_seconds_from_row(row)
@@ -2537,7 +2565,10 @@ def panel_cell_history(benches):
             ):
                 continue
             maxima[key] = max(duration, maxima.get(key, duration))
-    return maxima, breached
+            gap = row.get("max_quiet_ms")
+            if isinstance(gap, (int, float)) and not isinstance(gap, bool) and gap >= 0:
+                quiet[key] = max(gap, quiet.get(key, gap))
+    return maxima, breached, quiet, stall_breached
 
 
 def panel_duration_maxima(benches):
@@ -2553,7 +2584,7 @@ def watchdog_timeout_seconds(duration_ms):
 
 
 def panel_watchdog_timeouts(benches):
-    maxima, breached = panel_cell_history(benches)
+    maxima, breached = panel_cell_history(benches)[:2]
     timeouts = {}
     for key in set(maxima) | set(breached):
         timeout = watchdog_timeout_seconds(maxima.get(key))
@@ -2565,6 +2596,27 @@ def panel_watchdog_timeouts(benches):
                                        math.ceil(breached[key]) + WATCHDOG_GRACE_S))
         timeouts[key] = timeout
     return timeouts
+
+
+def panel_stall_timeouts(benches):
+    """The stall cap per (model, effort) pair: the longest gap a completion of the pair ever went
+    silent for, plus grace. Only for pairs whose gaps stay well under their runtimes — the evidence
+    the pair streams at all: a buffered side shows gaps the size of its whole runs and gets no cap,
+    so a cell that is quiet the way its shape always is can never be killed for it, and a pair with
+    no gap history gets none either. A cap a pair was already killed at grows by one grace per run,
+    like the duration watchdog's, so a wrong kill corrects itself instead of repeating.
+    """
+    maxima, _, quiet, stall_breached = panel_cell_history(benches)
+    caps = {}
+    for key, gap_ms in quiet.items():
+        duration = maxima.get(key)
+        if not duration or gap_ms >= STALL_STREAM_RATIO * duration:
+            continue
+        cap = max(STALL_FLOOR_S, math.ceil(gap_ms / 1000) + STALL_GRACE_S)
+        if key in stall_breached:
+            cap = max(cap, math.ceil(stall_breached[key]) + STALL_GRACE_S)
+        caps[key] = cap
+    return caps
 
 
 def tier_cell_counter(cells):
@@ -2680,6 +2732,7 @@ FAILURE_REASONS = (
     ("root commit", re.compile(r"root commit", re.IGNORECASE)),
     ("permission", re.compile(r"tool required the .command. permission", re.IGNORECASE)),
     ("bad command", re.compile(r"cannot be used with", re.IGNORECASE)),
+    ("stalled", re.compile(r"rater stalled", re.IGNORECASE)),
     ("crashed", re.compile(
         r"rater task crashed|account lookup failed|codex_core::", re.IGNORECASE)),
     ("auth", re.compile(r"not logged in|unauthor|forbidden|\b40[13]\b", re.IGNORECASE)),
@@ -2709,6 +2762,10 @@ STATUS_REASONS = {"not_run": "not run", "timed_out": "timeout", "model_mismatch"
 
 def cell_failure_reason(cell):
     """Why one cell that did not complete failed, in the report's own vocabulary."""
+    # A stall kill shares the timeout's exit code; the reader deciding whether to trust the panel
+    # needs to know the cell was silent, not slow.
+    if cell.get("stalled_s"):
+        return "stalled"
     status = cell.get("status")
     if status in STATUS_REASONS:
         return STATUS_REASONS[status]
@@ -2987,6 +3044,7 @@ def bench_summary(run_dir, meta, verdicts=None):
             } if isinstance(row.get("verifier_by_model"), dict) else {},
             "exit_code": row.get("exit_code"),
             "timeout_s": timeout_seconds_from_row(row),
+            "stalled_s": row.get("stalled_s"),
             "stderr": row.get("stderr"),
             "side": row.get("side") or rater_side(rater),
             "account": row.get("account"),
@@ -3546,6 +3604,18 @@ def triage_pending_run(repo=None, session=None):
 def emit_report(run_dir, meta, verdicts=None):
     # The markers are what the report hook keys on, so only a triaged run may carry them. Printed
     # either way, they made a list of cells look like a report, and that is what reached Egor.
+    if verdicts is None and not (run_dir / "verdicts.jsonl").exists():
+        # `record --no-corpus` stores no verdicts.jsonl; its receipt rows are then the only copy
+        # of the triage, and without them every re-render of a real report — the report hook's
+        # recovery of a capture whose tail the tool-output window cut — answered "pending".
+        # An empty rows list is a CLEAN triage, not a missing one: `or None` here sent exactly
+        # the clean review back to "pending".
+        try:
+            rows = json.loads((run_dir / REPORT_RECEIPT).read_text()).get("rows")
+        except (OSError, ValueError, json.JSONDecodeError):
+            rows = None
+        if isinstance(rows, list):
+            verdicts = rows
     if verdicts is None and not (run_dir / "verdicts.jsonl").exists():
         for line in pending_lines(run_dir, meta):
             print(line)
@@ -5149,6 +5219,206 @@ def rater_timeout(exc, started, timeout_s, command, extra_stdout=""):
     return 124, duration, stdout, stderr, command
 
 
+class RaterStalled(Exception):
+    """A cell killed by the stall watch: alive by the clock, silent past its pair's own cap."""
+
+    def __init__(self, quiet_s, stall_s, stdout, stderr):
+        super().__init__(f"no output activity for {round(quiet_s)}s (stall cap {stall_s}s)")
+        self.quiet_s = quiet_s
+        self.stall_s = stall_s
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def rater_stalled(exc, rater, started, command, extra_stdout=""):
+    """A stall kill's result row: the kill's exit code so every status reader calls it a timeout,
+    told apart from a duration breach by its wording here and by `stalled_s` on the meta row."""
+    rater["stalled_s"] = exc.stall_s
+    duration = round((time.monotonic() - started) * 1000)
+    stdout = "\n".join(
+        part for part in (exc.stdout.rstrip(), extra_stdout.rstrip()) if part
+    )
+    stderr = f"rater stalled: {exc}"
+    if exc.stderr.rstrip():
+        stderr += f"\n{exc.stderr.rstrip()}"
+    return 124, duration, stdout, stderr, command
+
+
+LIVE_CELL_GROUPS = set()
+_reaper_atexit = False
+_reaper_sigterm = False
+
+
+def reap_live_groups():
+    for pid in list(LIVE_CELL_GROUPS):
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except OSError:
+            pass
+
+
+def install_cell_reaper():
+    """Kill every still-live cell group when review-bench itself dies: start_new_session detaches
+    the cells from the terminal's group, so a Ctrl-C or a kill of an interrupted review would
+    otherwise leave every rater CLI running detached, spending its account with nobody to reap it.
+    The SIGTERM half can only install from the main thread; cells launch from workers, so the
+    launch path keeps asking until a main-thread caller (the panel launch) has claimed it.
+    """
+    global _reaper_atexit, _reaper_sigterm
+    if not _reaper_atexit:
+        _reaper_atexit = True
+        atexit.register(reap_live_groups)
+    if _reaper_sigterm:
+        return
+    try:
+        previous = signal.getsignal(signal.SIGTERM)
+
+        def on_term(signo, frame):
+            reap_live_groups()
+            if callable(previous):
+                previous(signo, frame)
+            else:
+                raise SystemExit(128 + signo)
+
+        signal.signal(signal.SIGTERM, on_term)
+        _reaper_sigterm = True
+    except (ValueError, OSError):
+        pass
+
+
+def kill_process_group(proc):
+    """The whole group, because the visible child is a launcher (claudeb, geminib, codex) and the
+    hang lives in its descendant, which killing the launcher alone would leave hanging around."""
+    for kill_signal in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(proc.pid, kill_signal)
+        except (ProcessLookupError, PermissionError, OSError):
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        try:
+            proc.wait(timeout=5)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def run_streamed(command, *, timeout_s, stall_s=None, watch_paths=(), cwd=None, env=None,
+                 input_text=None, stdout_path=None):
+    """subprocess.run with the duration cap every cell always had, plus an activity watch: any
+    byte on stdout or stderr, and any growth of a watch path (a side's own stream file), counts
+    as life. With a stall cap, a cell silent past it is killed and raised as RaterStalled; without
+    one — the pair's history has not earned it — only the duration cap can kill.
+
+    Timeouts keep subprocess.run's contract (TimeoutExpired with the output so far), so the
+    callers' timeout handling does not change shape.
+    """
+    stdout_file = open(stdout_path, "wb") if stdout_path else None
+    try:
+        proc = subprocess.Popen(
+            command, cwd=cwd, env=env,
+            stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
+            stdout=stdout_file if stdout_file else subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+    except Exception:
+        if stdout_file:
+            stdout_file.close()
+        raise
+    install_cell_reaper()
+    LIVE_CELL_GROUPS.add(proc.pid)
+    activity = [time.monotonic()]
+    collected = {"stdout": [], "stderr": []}
+
+    def pump(stream, name):
+        fd = stream.fileno()
+        while True:
+            try:
+                chunk = os.read(fd, 65536)
+            except OSError:
+                break
+            if not chunk:
+                break
+            collected[name].append(chunk)
+            activity[0] = time.monotonic()
+
+    readers = []
+    for name in ("stdout", "stderr"):
+        stream = getattr(proc, name)
+        if stream is not None:
+            thread = threading.Thread(target=pump, args=(stream, name), daemon=True)
+            thread.start()
+            readers.append(thread)
+    if input_text is not None:
+        def feed():
+            try:
+                proc.stdin.write(input_text.encode("utf-8", errors="replace"))
+                proc.stdin.close()
+            except (OSError, ValueError):
+                pass
+        threading.Thread(target=feed, daemon=True).start()
+
+    def drained(name):
+        # The pumps must be done first: read mid-pump, the tail flushed while the process died is
+        # still in flight and the exception carries a truncated transcript.
+        for thread in readers:
+            thread.join(timeout=5)
+        return b"".join(collected[name]).decode("utf-8", errors="replace")
+
+    watched = [str(path) for path in watch_paths]
+    if stdout_path:
+        watched.append(str(stdout_path))
+    sizes = {}
+    started = activity[0]
+    max_quiet = 0.0
+    try:
+        while True:
+            returncode = proc.poll()
+            now = time.monotonic()
+            for path in watched:
+                try:
+                    size = os.stat(path).st_size
+                except OSError:
+                    continue
+                if sizes.get(path) != size:
+                    sizes[path] = size
+                    activity[0] = now
+            quiet = now - activity[0]
+            max_quiet = max(max_quiet, quiet)
+            if returncode is not None:
+                break
+            if now - started > timeout_s:
+                kill_process_group(proc)
+                raise subprocess.TimeoutExpired(
+                    command, timeout_s, output=drained("stdout"), stderr=drained("stderr")
+                )
+            if stall_s and quiet > stall_s:
+                kill_process_group(proc)
+                raise RaterStalled(quiet, stall_s, drained("stdout"), drained("stderr"))
+            time.sleep(STALL_POLL_S)
+    except (subprocess.TimeoutExpired, RaterStalled):
+        raise
+    except BaseException:
+        # start_new_session detaches the cell from the terminal's group, so a Ctrl-C here no
+        # longer reaches it: without this kill an interrupted review leaves every rater CLI
+        # running detached, spending its account with nobody left to reap it.
+        kill_process_group(proc)
+        raise
+    finally:
+        LIVE_CELL_GROUPS.discard(proc.pid)
+        for thread in readers:
+            thread.join(timeout=5)
+        if stdout_file:
+            stdout_file.close()
+    result = subprocess.CompletedProcess(
+        command, proc.returncode, stdout=drained("stdout"), stderr=drained("stderr")
+    )
+    result.max_quiet_ms = round(max_quiet * 1000)
+    return result
+
+
 def run_codex(rater, repo, sha, focus, run_dir, diff, account):
     deadline = rater.get("timeout_s") or RATER_TIMEOUT_S
     raw_final = tempfile.NamedTemporaryFile(
@@ -5196,28 +5466,27 @@ def run_codex(rater, repo, sha, focus, run_dir, diff, account):
     try:
         clone = seal_overlay_clone(repo, sha)
         try:
-            with open(raw_events, "w") as stdout:
-                if prompt_input is None:
-                    proc = subprocess.run(
-                        command, cwd=clone, env=codex_environment(account),
-                        stdin=subprocess.DEVNULL, stdout=stdout, stderr=subprocess.PIPE,
-                        text=True, timeout=deadline
-                    )
-                else:
-                    proc = subprocess.run(
-                        command, cwd=clone, env=codex_environment(account),
-                        input=prompt_input, stdout=stdout, stderr=subprocess.PIPE,
-                        text=True, timeout=deadline
-                    )
-        except subprocess.TimeoutExpired as exc:
+            # The event stream is the side's own heartbeat: it goes to raw_events, and its growth
+            # is what the stall watch reads. raw_final only appears at the end, so it is not one.
+            proc = run_streamed(
+                command, cwd=clone, env=codex_environment(account),
+                timeout_s=deadline, stall_s=rater.get("stall_s"),
+                input_text=prompt_input, stdout_path=raw_events,
+            )
+        except (subprocess.TimeoutExpired, RaterStalled) as exc:
             output_tail = "\n".join(
                 part for part in (
                     text_file_tail(raw_final.name), text_file_tail(raw_events)
                 ) if part
             )
+            if isinstance(exc, RaterStalled):
+                return rater_stalled(
+                    exc, rater, started, command, extra_stdout=output_tail
+                )
             return rater_timeout(
                 exc, started, deadline, command, extra_stdout=output_tail
             )
+        rater["max_quiet_ms"] = proc.max_quiet_ms
         duration = round((time.monotonic() - started) * 1000)
         text = Path(raw_final.name).read_text(errors="replace")
         events = raw_events.read_text(errors="replace") if raw_events.exists() else ""
@@ -5363,10 +5632,13 @@ def run_claude(rater, repo, sha, focus, run_dir, diff, account):
     started = time.monotonic()
     try:
         try:
-            proc = subprocess.run(command, cwd=cwd, stdin=subprocess.DEVNULL,
-                                  capture_output=True, text=True, timeout=deadline)
+            proc = run_streamed(command, cwd=cwd, timeout_s=deadline,
+                                stall_s=rater.get("stall_s"))
         except subprocess.TimeoutExpired as exc:
             return rater_timeout(exc, started, deadline, command)
+        except RaterStalled as exc:
+            return rater_stalled(exc, rater, started, command)
+        rater["max_quiet_ms"] = proc.max_quiet_ms
         duration = round((time.monotonic() - started) * 1000)
         raw_output.write_text(proc.stdout)
         return proc.returncode, duration, proc.stdout, proc.stderr, command
@@ -5471,12 +5743,13 @@ def run_opencode(rater, repo, sha, focus, run_dir, diff, account):
             # while the cell still had time left.
             env = opencode_env(account, OPENCODE_GO_MAX_WAIT_S=str(deadline))
             try:
-                proc = subprocess.run(
-                    command, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                    timeout=deadline, env=env
-                )
+                proc = run_streamed(command, timeout_s=deadline,
+                                    stall_s=rater.get("stall_s"), env=env)
             except subprocess.TimeoutExpired as exc:
                 return rater_timeout(exc, started, deadline, command)
+            except RaterStalled as exc:
+                return rater_stalled(exc, rater, started, command)
+            rater["max_quiet_ms"] = proc.max_quiet_ms
             duration = round((time.monotonic() - started) * 1000)
             raw_output.write_text(proc.stdout)
             if proc.returncode == 0 or not opencode_max_tokens_error(proc.stderr):
@@ -6269,16 +6542,22 @@ def run_agy(rater, repo, sha, focus, run_dir, diff, account):
         clone = seal_overlay_clone(repo, sha)
         prepare_agy_skill_clone(clone)
         try:
-            proc = subprocess.run(
-                transport, cwd=clone, capture_output=True, text=True,
-                timeout=timeout_s + AGY_TIMEOUT_GRACE_S
+            # The CLI's own log is this side's heartbeat: a working cell appends to it steadily,
+            # and the hung one — the mode this watch exists for — goes silent there first.
+            proc = run_streamed(
+                transport, cwd=clone, timeout_s=timeout_s + AGY_TIMEOUT_GRACE_S,
+                stall_s=rater.get("stall_s"), watch_paths=[log_file],
             )
-        except subprocess.TimeoutExpired as exc:
-            result = rater_timeout(exc, started, timeout_s, displayed_command)
+        except (subprocess.TimeoutExpired, RaterStalled) as exc:
+            if isinstance(exc, RaterStalled):
+                result = rater_stalled(exc, rater, started, displayed_command)
+            else:
+                result = rater_timeout(exc, started, timeout_s, displayed_command)
             duration = result[1]
             log_text = log_file.read_text(errors="replace") if log_file.exists() else ""
             write_agy_usage(run_dir, rater, duration, log_text)
             return result
+        rater["max_quiet_ms"] = proc.max_quiet_ms
         duration = round((time.monotonic() - started) * 1000)
         raw_output.write_text(proc.stdout)
         log_text = log_file.read_text(errors="replace") if log_file.exists() else ""
@@ -6578,6 +6857,10 @@ def run_rater_task(rater, repo, sha, focus, run_dir, diff):
     # its first hiccup, while re-creating it whenever the pool comes back to an account it
     # already tried would let the two refill each other and spin the cell forever.
     budgets = defaultdict(lambda: list(transient_backoffs()))
+    # One retry for a stall kill, not per account: a hang is usually the process's, not the
+    # account's, so the fresh attempt may legitimately land on the same account — and a second
+    # stall in one cell is the cell's answer, not another lap.
+    stall_budget = 1
     while True:
         try:
             candidate = pool_account(side, walled, rater.get("slot", 0), bucket)
@@ -6592,11 +6875,24 @@ def run_rater_task(rater, repo, sha, focus, run_dir, diff):
             walled.add(candidate)
             continue
         account = candidate
+        # Per attempt, never carried over: a stall marker or gap left by a killed attempt must
+        # not be reported as the retry's.
+        rater.pop("stalled_s", None)
+        rater.pop("max_quiet_ms", None)
         try:
             result = SIDE_RUNNERS[side](rater, repo, sha, focus, run_dir, diff, candidate)
         except Exception as exc:
             return (rater, candidate, (1, 0, "", f"rater task crashed: {exc}", []))
         rc, _, text, stderr, _ = result
+        if rater.get("stalled_s") and stall_budget:
+            stall_budget -= 1
+            # The kill outlives the retry: dropped with the attempt, a cap that is merely too
+            # tight never escalates when the retry completes, and the pair burns one stall kill
+            # on every run for ever — the self-correction the stall watch promises.
+            rater["stalled_retry_s"] = rater["stalled_s"]
+            print(f"{rater['spec']}: killed as stalled — no output activity for "
+                  f"{rater['stalled_s']}s; retrying once")
+            continue
         # The account walled while this cell sat in the gate queue. Nothing was sent, so this
         # is not evidence against the account, and the side may still have other accounts.
         if side == "opencode" and stderr == GATE_WALL_STDERR:
@@ -7126,16 +7422,20 @@ def coverage_drift_pct(repo, record, paths):
     total = sum(content_line_count(blob_bytes(repo, sha)) for sha in reviewed.values() if sha)
     drift = 0
     for path in paths:
-        # Left out of the snapshot for the same reason it is priced at nothing here: a link target
-        # is not content a line budget can measure, and reading through the link prices the file it
-        # points at instead.
-        if (Path(repo) / path).is_symlink():
-            continue
-        current = file_bytes(Path(repo) / path)
+        target = Path(repo) / path
+        if target.is_symlink():
+            # A link is priced by its own text — the bytes its snapshot blob holds. Reading
+            # through it would price the file it points at, which may not even be in scope.
+            try:
+                current = os.readlink(target).encode()
+            except OSError:
+                current = b""
+        else:
+            current = file_bytes(target)
         sha = reviewed.get(path)
         if isinstance(sha, str) and sha:
             drift += content_drift_lines(blob_bytes(repo, sha), current)
-        elif path not in reviewed and not (Path(repo) / path).exists():
+        elif path not in reviewed and not os.path.lexists(target):
             # A deletion the run never held: the panel read a tree this file was still in, there is
             # no content left to price the change in, and every line count over an absent file is
             # zero — which is how an unreviewed deletion came back covered.
@@ -7483,11 +7783,19 @@ def cmd_run(args):
                 raise RuntimeError("account no longer affordable after limits refresh")
 
     started = utc_now()
+    # From the main thread, which is the only one the SIGTERM half installs from.
+    install_cell_reaper()
     # Every side, not the Antigravity leg alone: a hung cell of any vendor holds the panel open
     # with nothing to report, and the run it belongs to is what goes loud in the statusline.
     watchdog = panel_watchdog_timeouts(state_dir() / "benches")
+    stall_caps = panel_stall_timeouts(state_dir() / "benches")
     for rater in raters:
-        rater["timeout_s"] = watchdog.get(panel_cell_key(rater), WATCHDOG_FLOOR_S)
+        key = panel_cell_key(rater)
+        rater["timeout_s"] = watchdog.get(key, WATCHDOG_FLOOR_S)
+        # Only under the duration cap: a stall cap above it never fires, and carrying it would
+        # report a limit the cell cannot reach.
+        if key in stall_caps and stall_caps[key] < rater["timeout_s"]:
+            rater["stall_s"] = stall_caps[key]
     run_id = f"{started.strftime('%Y%m%dT%H%M%SZ')}-{sha[:7]}"
     run_dir = state_dir() / "benches" / run_id
     if run_dir.exists():
@@ -7694,6 +8002,14 @@ def cmd_run(args):
                     "command": redact_command(rater, command),
                     "errored": True, "timeout_s": rater["timeout_s"],
                 }
+                # The stall record is what the next run's caps learn from: the kill marks the cap
+                # it fired at, and a completion's longest silent gap prices the cap itself.
+                if rater.get("stalled_s"):
+                    run_meta["stalled_s"] = rater["stalled_s"]
+                if rater.get("stalled_retry_s"):
+                    run_meta["stalled_retry_s"] = rater["stalled_retry_s"]
+                if rater.get("max_quiet_ms") is not None:
+                    run_meta["max_quiet_ms"] = rater["max_quiet_ms"]
                 if model_resolved:
                     run_meta["model_resolved"] = model_resolved
                 rater_meta.append(run_meta)
@@ -7710,6 +8026,12 @@ def cmd_run(args):
                     "verifier_dropped": dropped, "verifier_unverified": unverified,
                     "timeout_s": rater["timeout_s"],
                 }
+                # A completed retry still records the attempt the stall watch killed under it —
+                # the only trace of that kill, and what lets its cap escalate next run.
+                if rater.get("stalled_retry_s"):
+                    run_meta["stalled_retry_s"] = rater["stalled_retry_s"]
+                if rater.get("max_quiet_ms") is not None:
+                    run_meta["max_quiet_ms"] = rater["max_quiet_ms"]
                 if verify_ms is not None:
                     run_meta["verify_ms"] = verify_ms
                     run_meta["verifier_audited"] = audited
@@ -7754,8 +8076,10 @@ def cmd_run(args):
         # One breached cell marks the whole run: nothing else says a review hung, and the statusline
         # goes loud off this key until a later triaged run covers the paths. The watchdog's own
         # kills alone — a provider answering `gateway timeout` is an ordinary failed cell, and red
-        # in the statusline means a hung review or it means nothing.
-        if any(watchdog_killed(row) for row in rater_meta):
+        # in the statusline means a hung review or it means nothing. A cell whose retry stalled
+        # too is that same hung review, killed earlier: `watchdog_killed` excludes it only so a
+        # stall never inflates the pair's duration cap, not to keep the run quiet.
+        if any(watchdog_killed(row) or row.get("stalled_s") for row in rater_meta):
             meta["timed_out"] = True
         meta.update(lens_meta)
         (run_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
