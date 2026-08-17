@@ -98,19 +98,17 @@ if [ "$hook_event" = SessionStart ]; then
         # Its own toplevel, not merely a surviving directory: a worktree that
         # lost its `.git` link still sits inside the parent checkout, so git
         # discovery ascends and the kept home would report that checkout's
-        # branch as the workspace — no `⧉`, no `✗`, nothing dim. A kept home
-        # drops the breadcrumb too: the render writes `.gone` once, so a
-        # survivor would later be named as the dir that went away.
+        # branch as the workspace.
         if [ -n "$prev_home" ]; then
           prev_top=$(git -C "$prev_home" rev-parse --show-toplevel 2>/dev/null) &&
             prev_top=$(cd "$prev_top" 2>/dev/null && pwd -P) &&
             [ "$prev_top" = "$(cd "$prev_home" 2>/dev/null && pwd -P)" ] && {
-              rm -f "$state_file.gone" "$away_file"
+              rm -f "$away_file"
               exit 0
             }
         fi
       fi
-      rm -f "$state_file" "$state_file.gone" "$away_file"
+      rm -f "$state_file" "$away_file"
       seed=$(git -C "${base_dir:-.}" rev-parse --show-toplevel 2>/dev/null) &&
         seed=$(cd "$seed" 2>/dev/null && pwd -P) && [ -n "$seed" ] && {
           umask 077
@@ -146,7 +144,7 @@ fi
 
 case "$tool_name" in
   ExitWorktree)
-    rm -f "$state_file" "$state_file.gone" "$away_file"
+    rm -f "$state_file" "$away_file"
     exit 0
     ;;
   EnterWorktree|Task|Agent)
@@ -347,7 +345,7 @@ umask 077
 tmp_file="$state_file.tmp.$$"
 trap 'rm -f "$tmp_file" 2>/dev/null; exit 0' EXIT
 printf '%s\n' "$toplevel" > "$tmp_file" && mv -f "$tmp_file" "$state_file" &&
-  rm -f "$state_file.gone" "$away_file"
+  rm -f "$away_file"
 
 marker="$cache_dir/.workdir-prune"
 now=$(date +%s 2>/dev/null)

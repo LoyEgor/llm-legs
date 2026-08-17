@@ -90,44 +90,6 @@ repo_dirs() {
   REPO_NAME="${REPO_ROOT##*/}"
 }
 
-# Does the branch name carry every word of the worktree directory name? Decides
-# whether the branch is redundant with the directory label or a surprise worth
-# printing (`WUT-254-portal-mobile` covered by `WUT-254_feat_portal-mobile`,
-# not by `staging`). A word is covered exactly, or by a digit-free prefix
-# drift of ≤2 chars on a stem of ≥4 not ending in a digit: `iframes` folds
-# under `iframe`, while ticket ids stay exact even fused on either side
-# (`wut25` vs `wut259`, `portal` vs `portal2`) and `main` never swallows
-# `maintenance` — looser evidence would hide the very divergence the yellow
-# branch exists to surface.
-name_covered_by_branch() {
-  local words branch word bword covered shorter longer
-  words=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' ' ')
-  branch=$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' ' ')
-  [ -n "${words// /}" ] || return 1
-  for word in $words; do
-    covered=0
-    for bword in $branch; do
-      if [ "$word" = "$bword" ]; then
-        covered=1
-        break
-      fi
-      shorter=$word longer=$bword
-      if [ ${#bword} -lt ${#word} ]; then
-        shorter=$bword longer=$word
-      fi
-      [ ${#shorter} -ge 4 ] || continue
-      [ $(( ${#longer} - ${#shorter} )) -le 2 ] || continue
-      case "$longer" in "$shorter"*) ;; *) continue ;; esac
-      case "$shorter" in *[[:digit:]]) continue ;; esac
-      case "${longer#"$shorter"}" in *[[:digit:]]*) continue ;; esac
-      covered=1
-      break
-    done
-    [ "$covered" = 1 ] || return 1
-  done
-  return 0
-}
-
 # ps reports elapsed time as [[dd-]hh:]mm:ss; the render needs the instant the process started.
 process_start_epoch() {
   local pid="$1" now="$2" elapsed days=0 hours=0 mins secs field
@@ -503,7 +465,6 @@ fast_part=""
 
 git_dir="$current_dir"
 active_top=""; active_common=""; active_root=""; active_name=""; active_is_wt=0
-lost_dir=""
 adopt_repo_dirs() {
   active_top="$REPO_TOP"; active_common="$REPO_COMMON"
   active_root="$REPO_ROOT"; active_name="$REPO_NAME"; active_is_wt="$REPO_IS_WT"
@@ -524,23 +485,9 @@ if [ -n "$session_id" ] && [ -f "$workdir_state" ]; then
     git_dir="$active_dir"
     adopt_repo_dirs
   fi
-  if [ -z "$active_top" ]; then
-    # The tracked directory stopped resolving — a removed worktree, usually.
-    # Falling back to the project dir without a word made the strip report the
-    # main checkout's branch as if work had moved there. Written once, and with
-    # the hook's tmp+mv, so the 7-day prune can age it out and no reader sees a
-    # half-written path.
-    if [ -n "$active_dir" ] && [ ! -f "$workdir_state.gone" ]; then
-      if printf '%s\n' "$active_dir" > "$workdir_state.gone.$$" 2>/dev/null; then
-        mv -f "$workdir_state.gone.$$" "$workdir_state.gone" 2>/dev/null ||
-          rm -f "$workdir_state.gone.$$" 2>/dev/null
-      fi
-    fi
-    rm -f "$workdir_state"
-  fi
-fi
-if [ -n "$session_id" ] && [ -z "$active_top" ] && [ -f "$workdir_state.gone" ]; then
-  IFS= read -r lost_dir < "$workdir_state.gone"
+  # A pointer that stopped resolving (a removed worktree, usually) is dropped
+  # here, and the render falls back to the project dir below.
+  [ -n "$active_top" ] || rm -f "$workdir_state"
 fi
 if [ -z "$active_top" ]; then
   if [ "$git_dir" = "$dir_path" ]; then
@@ -578,10 +525,6 @@ if [ -n "$active_top" ]; then
     wt_part=" ${wt_color}⧉ ${active_top##*/}${RESET}"
   fi
 fi
-# Never over the label of a worktree that IS live: the fallback directory can be
-# one itself, and a breadcrumb must not rename it.
-[ -n "$lost_dir" ] && [ "$active_is_wt" != 1 ] &&
-  wt_part=" ${DIM}⧉ ${lost_dir##*/} ✗${RESET}"
 dir_part="${dir_part}${wt_part}"
 
 branch_part=""
@@ -592,30 +535,17 @@ if [ -n "$active_top" ]; then
   git_status=$(git -C "$active_top" status --porcelain 2>/dev/null)
   git_status_rc=$?
   branch=$(git -C "$git_dir" rev-parse --abbrev-ref HEAD 2>/dev/null)
+  # In a worktree the `⧉` label is the whole identity: no branch segment there,
+  # whatever HEAD is. `head_known` still gates the diff counters below.
   if [ "$branch" = HEAD ]; then
-    short_sha=$(git -C "$git_dir" rev-parse --short HEAD 2>/dev/null)
-    branch_part=" ${BLUE}⎇${RESET} ${RED}@${short_sha}${RESET}"
     head_known=1
+    if [ "$active_is_wt" != 1 ]; then
+      short_sha=$(git -C "$git_dir" rev-parse --short HEAD 2>/dev/null)
+      branch_part=" ${BLUE}⎇${RESET} ${RED}@${short_sha}${RESET}"
+    fi
   elif [ -n "$branch" ]; then
     head_known=1
-    branch_color="$BLUE"
-    show_branch=1
-    case "$branch" in
-      claude/*|worktree-*) branch_color="$RED" ;;
-      *)
-        # In a worktree the directory label already names the work, so the
-        # branch is printed only when it is not the one that label implies —
-        # that is the case where commits land somewhere unexpected.
-        if [ "$active_is_wt" = 1 ]; then
-          if name_covered_by_branch "${active_top##*/}" "$branch"; then
-            show_branch=0
-          else
-            branch_color="$YELLOW"
-          fi
-        fi
-        ;;
-    esac
-    [ "$show_branch" = 1 ] && branch_part=" ${branch_color}⎇ ${branch}${RESET}"
+    [ "$active_is_wt" = 1 ] || branch_part=" ${BLUE}⎇ ${branch}${RESET}"
   fi
   if [ "$head_known" = 1 ]; then
     # Uncommitted volume in the ACTIVE repo, whoever wrote it: staged+unstaged

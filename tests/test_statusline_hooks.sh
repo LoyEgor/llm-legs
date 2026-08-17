@@ -42,8 +42,6 @@ REPO_E="$REPO_A/.claude/worktrees/feature-y"
 git -C "$REPO_A" worktree add -q -b feature-y "$REPO_E"
 REPO_F="$REPO_A/.claude/worktrees/auto-slug"
 git -C "$REPO_A" worktree add -q -b claude/agitated-fixture "$REPO_F"
-REPO_I="$REPO_A/.claude/worktrees/payment-iframes"
-git -C "$REPO_A" worktree add -q -b payment_iframe-styles "$REPO_I"
 REPO_J="$REPO_A/.claude/worktrees/wut-25-portal"
 git -C "$REPO_A" worktree add -q -b WUT-259_feat_portal-fixes "$REPO_J"
 # A repository whose git dir lives outside the checkout: `<common>/..` is NOT the
@@ -57,6 +55,13 @@ git -C "$REPO_G" -c user.name=Fixture -c user.email=fixture@example.com commit -
 printf '.claude/worktrees/\n' >> "$FIXTURES/repo-g-gitdir/info/exclude"
 REPO_H="$REPO_G/.claude/worktrees/sep-work"
 git -C "$REPO_G" worktree add -q -b sep-work "$REPO_H"
+REPO_K="$FIXTURES/repo-detached"
+mkdir -p "$REPO_K"
+git -C "$REPO_K" init -q -b main
+printf 'det\n' > "$REPO_K/tracked.txt"
+git -C "$REPO_K" add tracked.txt
+git -C "$REPO_K" -c user.name=Fixture -c user.email=fixture@example.com commit -qm initial
+git -C "$REPO_K" checkout -q --detach
 REPO_D="$FIXTURES/repo-d"
 mkdir -p "$REPO_D"
 git -C "$REPO_D" init -q -b main
@@ -70,10 +75,10 @@ TOP_C=$(git -C "$REPO_C" rev-parse --show-toplevel)
 TOP_D=$(git -C "$REPO_D" rev-parse --show-toplevel)
 TOP_E=$(git -C "$REPO_E" rev-parse --show-toplevel)
 TOP_F=$(git -C "$REPO_F" rev-parse --show-toplevel)
-TOP_I=$(git -C "$REPO_I" rev-parse --show-toplevel)
 TOP_J=$(git -C "$REPO_J" rev-parse --show-toplevel)
 TOP_H=$(git -C "$REPO_H" rev-parse --show-toplevel)
-SHORT_SHA=$(git -C "$REPO_C" rev-parse --short HEAD)
+TOP_K=$(git -C "$REPO_K" rev-parse --show-toplevel)
+SHORT_SHA=$(git -C "$REPO_K" rev-parse --short HEAD)
 
 DIM=$'\033[2m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; RED=$'\033[31m'; MAGENTA=$'\033[35m'; RESET=$'\033[0m'
 BLUE=$'\033[34m'
@@ -785,11 +790,9 @@ assert test ! -e "$STATE_DIR/workdir-session-ss-nogit"
 S="$STATE_DIR/workdir-session-ss-resume-plain"
 printf '%s\n' "$TOP_D" > "$S"
 printf '%s\n' "$TOP_A" > "$S.away"
-printf '%s\n' "$FIXTURES/vanished" > "$S.gone"
 run_workdir_hook "$(session_start_payload resume session-ss-resume-plain)"
 assert_eq "$TOP_D" "$(cat "$S")"
 assert test ! -e "$S.away"
-assert test ! -e "$S.gone"
 
 printf '%s\n' "$FIXTURES/vanished-repo" > "$STATE_DIR/workdir-session-ss-resume-plain-dead"
 run_workdir_hook "$(session_start_payload resume session-ss-resume-plain-dead)"
@@ -813,17 +816,10 @@ assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-ss-clear-wt")"
 printf '%s\n' "$REPO_A/.claude/worktrees/vanished-wt" > "$STATE_DIR/workdir-session-ss-resume-dead"
 run_workdir_hook "$(session_start_payload resume session-ss-resume-dead)"
 assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-ss-resume-dead")"
-# A kept home still drops the breadcrumb, like every reseeding path: the render
-# writes `.gone` once, so a survivor would later be reported as the lost dir.
-printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-session-ss-resume-gone"
-printf '%s\n' "$FIXTURES/vanished" > "$STATE_DIR/workdir-session-ss-resume-gone.gone"
-run_workdir_hook "$(session_start_payload resume session-ss-resume-gone)"
-assert_eq "$TOP_E" "$(cat "$STATE_DIR/workdir-session-ss-resume-gone")"
-assert test ! -e "$STATE_DIR/workdir-session-ss-resume-gone.gone"
 # A worktree directory that outlived its git link is NOT a live home: it sits
 # inside the parent checkout, so git discovery ascends and keeping it would make
-# the strip report the main checkout's branch — no `⧉`, no `✗`, nothing dim — as
-# if that were the workspace. Reseeding at least names where the shell is.
+# the strip report the main checkout's branch — no `⧉`, nothing — as if that
+# were the workspace. Reseeding at least names where the shell is.
 UNLINKED="$REPO_A/.claude/worktrees/lost-link"
 git -C "$REPO_A" worktree add -q -b lost-link "$UNLINKED"
 rm -f "$UNLINKED/.git"
@@ -886,58 +882,43 @@ assert grep -Fq main <<< "$control_one"
 assert test "${control_one#*»}" = "$control_one"
 
 # A worktree of the project is `⧉ <dir>`, never `»` — that arrow is reserved for
-# a foreign repository. This one sits outside <repo>/.claude/worktrees (red) and
-# its name is not carried by branch `feature-x`, so the branch is printed too.
+# a foreign repository. This one sits outside <repo>/.claude/worktrees, which is
+# the one alarm the cluster still carries.
 printf '%s\n' "$TOP_B" > "$STATE_DIR/workdir-status-override"
 override_output=$(run_statusline "$status_payload") || fail "statusline override failed"
 assert test "${override_output#*»}" = "$override_output"
 assert grep -Fq "${RED}⧉ $(basename "$TOP_B")" <<< "$override_output"
-assert grep -Fq "${YELLOW}⎇ feature-x" <<< "$override_output"
+assert test "${override_output#*⎇}" = "$override_output"
 
-# Canonical location and a branch that carries the directory's words: blue icon,
-# branch folded away as redundant.
+# In a worktree the directory label IS the identity: no branch segment at all,
+# whatever the branch is called. Canonical location, name matching the branch.
 printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-status-canon"
 canon_output=$(run_statusline "$(statusline_payload status-canon)") || fail "statusline canonical worktree failed"
 assert grep -Fq "${BLUE}⧉ feature-y" <<< "$canon_output"
 assert test "${canon_output#*⎇}" = "$canon_output"
 
-# Words match by prefix in either direction: `iframes` is carried by `iframe`,
-# so a singular/plural drift between directory and branch does not unfold it.
-printf '%s\n' "$TOP_I" > "$STATE_DIR/workdir-status-prefix"
-prefix_output=$(run_statusline "$(statusline_payload status-prefix)") || fail "statusline prefix fold failed"
-assert grep -Fq "${BLUE}⧉ payment-iframes" <<< "$prefix_output"
-assert test "${prefix_output#*⎇}" = "$prefix_output"
-
-# Numbers must match exactly: ticket ids are prefix-shaped (`25` heads `259`),
-# and a neighbouring ticket's branch is exactly the divergence yellow exists for.
+# A branch bearing no relation to the directory name is not printed either.
 printf '%s\n' "$TOP_J" > "$STATE_DIR/workdir-status-ticket"
-ticket_output=$(run_statusline "$(statusline_payload status-ticket)") || fail "statusline ticket mismatch failed"
+ticket_output=$(run_statusline "$(statusline_payload status-ticket)") || fail "statusline diverged branch failed"
 assert grep -Fq "${BLUE}⧉ wut-25-portal" <<< "$ticket_output"
-assert grep -Fq "${YELLOW}⎇ WUT-259_feat_portal-fixes" <<< "$ticket_output"
+assert test "${ticket_output#*⎇}" = "$ticket_output"
+assert test "${ticket_output#*WUT-259}" = "$ticket_output"
 
-# The fold rule pinned at the word level: prefix drift needs a ≥4-char stem not
-# ending in a digit and ≤2 chars of growth; everything else matches exactly.
-name_covered() {
-  bash -c "$(sed -n '/^name_covered_by_branch()/,/^}/p' "$STATUSLINE")"'
-name_covered_by_branch "$1" "$2"' _ "$1" "$2"
-}
-not_covered() { ! name_covered "$1" "$2"; }
-assert name_covered payment-iframes payment_iframe-styles
-assert name_covered WUT-254-portal-mobile WUT-254_feat_portal-mobile
-assert not_covered pay WUT-119_payment
-assert not_covered maintenance main
-assert not_covered wut25-portal wut259-portal-fixes
-assert not_covered wut-25-portal WUT-259_feat_portal-fixes
-assert not_covered wut-119-portal2 WUT-119_portal
-assert not_covered feat25-portal feat_portal-fixes
-
-# An auto-slug branch is the one thing the fold must never hide: harness-made
-# worktrees always land on `claude/*`, and this strip is the only place the global
-# CLAUDE.md rule about renaming them is visible.
+# Nor a harness auto-slug: branch names are policed nowhere on the strip.
 printf '%s\n' "$TOP_F" > "$STATE_DIR/workdir-status-autoslug"
 autoslug_output=$(run_statusline "$(statusline_payload status-autoslug)") || fail "statusline auto-slug failed"
 assert grep -Fq "${BLUE}⧉ auto-slug" <<< "$autoslug_output"
-assert grep -Fq "${RED}⎇ claude/agitated-fixture" <<< "$autoslug_output"
+assert test "${autoslug_output#*⎇}" = "$autoslug_output"
+assert test "${autoslug_output#*claude/agitated}" = "$autoslug_output"
+
+# Detached HEAD in a worktree is no exception — but the diff still measures.
+printf 'd1\n' > "$TOP_C/wt-det-junk.txt"
+printf '%s\n' "$TOP_C" > "$STATE_DIR/workdir-status-wt-detached"
+wt_det_output=$(run_statusline "$(statusline_payload status-wt-detached)") || fail "statusline detached worktree failed"
+assert grep -Fq "⧉ $(basename "$TOP_C")" <<< "$wt_det_output"
+assert test "${wt_det_output#*⎇}" = "$wt_det_output"
+assert grep -Fq "${GREEN}+1${RESET}/${RED}-0${RESET} ${DIM}+1f${RESET}" <<< "$wt_det_output"
+rm -f "$TOP_C/wt-det-junk.txt"
 
 # Same worktree, chat launched inside it: the project it belongs to stays visible.
 in_wt_output=$(run_statusline "$(statusline_payload status-in-wt '' "$REPO_E")") || fail "statusline in-worktree failed"
@@ -950,12 +931,6 @@ assert grep -Fq "${BLUE}⧉ feature-y" <<< "$in_wt_output"
 printf '%s\n' "$TOP_H" > "$STATE_DIR/workdir-status-sepdir"
 sepdir_output=$(run_statusline "$(statusline_payload status-sepdir '' "$REPO_G")") || fail "statusline separate-git-dir failed"
 assert grep -Fq "${BLUE}⧉ sep-work" <<< "$sepdir_output"
-
-# A live worktree label survives a stale breadcrumb.
-printf '%s\n' "$FIXTURES/vanished" > "$STATE_DIR/workdir-status-wt-live.gone"
-wt_live_output=$(run_statusline "$(statusline_payload status-wt-live '' "$REPO_E")") || fail "statusline live worktree over breadcrumb failed"
-assert grep -Fq "${BLUE}⧉ feature-y" <<< "$wt_live_output"
-assert test "${wt_live_output#*✗}" = "$wt_live_output"
 
 # A foreign repository keeps `»` and always shows its branch.
 printf '%s\n' "$TOP_D" > "$STATE_DIR/workdir-status-foreign"
@@ -971,36 +946,20 @@ same_output=$(run_statusline "$same_payload") || fail "statusline same-repo fail
 assert grep -Fq main <<< "$same_output"
 assert test "${same_output#*»}" = "$same_output"
 
-# A tracked directory that stopped resolving (removed worktree): the fallback to
-# the project dir is announced instead of silently reporting its branch, and the
-# breadcrumb survives later renders.
+# A tracked directory that stopped resolving (removed worktree): the render falls
+# back to the session project silently — the stale pointer is dropped and nothing
+# is left behind to render a breadcrumb from.
 printf '%s\n' "$FIXTURES/vanished" > "$STATE_DIR/workdir-status-dangling"
 dangling_output=$(run_statusline "$(statusline_payload status-dangling)") || fail "statusline dangling failed"
-assert grep -Fq main <<< "$dangling_output"
+assert grep -Fq "${BLUE}⎇ main" <<< "$dangling_output"
 assert test "${dangling_output#*»}" = "$dangling_output"
-assert grep -Fq "${DIM}⧉ vanished ✗" <<< "$dangling_output"
+assert test "${dangling_output#*⧉}" = "$dangling_output"
+assert test "${dangling_output#*✗}" = "$dangling_output"
 assert test ! -e "$STATE_DIR/workdir-status-dangling"
-assert_eq "$FIXTURES/vanished" "$(cat "$STATE_DIR/workdir-status-dangling.gone")"
-dangling_again=$(run_statusline "$(statusline_payload status-dangling)") || fail "statusline dangling rerender failed"
-assert grep -Fq "${DIM}⧉ vanished ✗" <<< "$dangling_again"
-# Written once, not on every render, so the cache prune can age the file out.
-printf '%s\n' "$FIXTURES/vanished-later" > "$STATE_DIR/workdir-status-dangling"
-dangling_third=$(run_statusline "$(statusline_payload status-dangling)") || fail "statusline dangling third failed"
-assert_eq "$FIXTURES/vanished" "$(cat "$STATE_DIR/workdir-status-dangling.gone")"
-
-# Tracking a live directory again clears the breadcrumb.
-run_workdir_hook "$(workdir_payload Bash status-dangling "$REPO_A" "cd '$REPO_A'")"
 assert test ! -e "$STATE_DIR/workdir-status-dangling.gone"
-recovered=$(run_statusline "$(statusline_payload status-dangling)") || fail "statusline recovery failed"
-assert test "${recovered#*✗}" = "$recovered"
 
-printf 'stale\n' > "$STATE_DIR/workdir-status-gone-reset.gone"
-run_workdir_hook "$(jq -cn --arg session status-gone-reset --arg cwd "$REPO_A" \
-  '{hook_event_name:"SessionStart",session_id:$session,cwd:$cwd,source:"startup"}')"
-assert test ! -e "$STATE_DIR/workdir-status-gone-reset.gone"
-
-printf '%s\n' "$TOP_C" > "$STATE_DIR/workdir-status-detached"
-detached_output=$(run_statusline "$(statusline_payload status-detached)") || fail "statusline detached failed"
+# Outside a worktree the branch always shows, detached HEAD as `@sha`.
+detached_output=$(run_statusline "$(statusline_payload status-detached '' "$REPO_K")") || fail "statusline detached failed"
 assert grep -Fq "@$SHORT_SHA" <<< "$detached_output"
 
 with_effort=$(run_statusline "$(statusline_payload status-effort)") || fail "statusline effort failed"
@@ -2213,17 +2172,17 @@ dgit checkout -q main
 printf 'w1\nw2\n' > "$TOP_B/wt-junk.txt"
 printf '%s\n' "$TOP_B" > "$STATE_DIR/workdir-diff-workdir"
 dwd_out=$(run_statusline "$(statusline_payload diff-workdir "$diff_extra")")
-assert grep -Fq 'feature-x' <<< "$dwd_out"
+assert grep -Fq "⧉ $(basename "$TOP_B")" <<< "$dwd_out"
 assert grep -Fq "${GREEN}+2${RESET}/${RED}-0${RESET} ${DIM}+1f${RESET}" <<< "$dwd_out"
 rm -f "$TOP_B/wt-junk.txt" "$STATE_DIR/workdir-diff-workdir"
 
 # Detached HEAD still measures the diff (vs the detached commit).
-printf 'd1\n' > "$TOP_C/det-junk.txt"
-det_extra=$(jq -cn --arg d "$TOP_C" '{cwd:$d,workspace:{current_dir:$d,project_dir:$d}}')
+printf 'd1\n' > "$TOP_K/det-junk.txt"
+det_extra=$(jq -cn --arg d "$TOP_K" '{cwd:$d,workspace:{current_dir:$d,project_dir:$d}}')
 ddet_out=$(run_statusline "$(statusline_payload diff-detached "$det_extra")")
 assert grep -Fq "@$SHORT_SHA" <<< "$ddet_out"
 assert grep -Fq "${GREEN}+1${RESET}/${RED}-0${RESET} ${DIM}+1f${RESET}" <<< "$ddet_out"
-rm -f "$TOP_C/det-junk.txt"
+rm -f "$TOP_K/det-junk.txt"
 
 # Unborn HEAD (no commits yet): staged lines count via the --cached fallback.
 REPO_E="$FIXTURES/diff-unborn"
