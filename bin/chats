@@ -14,6 +14,7 @@ import json
 import locale
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -354,14 +355,18 @@ def main():
     if not chosen:
         return
     profile, session, cwd = chosen
-    launch = "cd '%s' && claudeb profile %s --resume %s" % (
-        cwd.replace("'", "'\\''"), profile, session)
+    # Pinned explicitly because a resumed session restores the mode it was left
+    # in, not settings.json's defaultMode — one chat that ever drifted into auto
+    # (the 2026-08-14 rollout flipped a batch) would reopen in auto forever.
+    command = ["claudeb", "profile", profile, "--resume", session,
+               "--permission-mode", "bypassPermissions"]
+    launch = "cd %s && %s" % (shlex.quote(cwd), shlex.join(command))
     if show:
         print(launch)
         return
     try:
         os.chdir(cwd)
-        os.execvp("claudeb", ["claudeb", "profile", profile, "--resume", session])
+        os.execvp("claudeb", command)
     except OSError as error:
         die("cannot open the chat (%s); it is: %s" % (error, launch))
 
