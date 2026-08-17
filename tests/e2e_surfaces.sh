@@ -631,22 +631,21 @@ if jq -e '.vendors.claude.accounts[]? | select(.account == "alona") |
   alona_style=$(hs_alona_five_style)
   [[ "$alona_style" == $'DIM\t'* ]] || fail "alona expired stale=false five-hour row is not dimmed: $alona_style"
 fi
+# The store may not publish a reset over a day old on any bucket (invariant y): the window it
+# named has rolled over unseen, and every surface reads the field as a schedule — the menu
+# printed one as a weekday time for a disabled account until the collector started dropping it.
+# Asserted against the store rather than the rendered rows, because a dropped date reaches the
+# menu as the dash the isolated menu contract above already pins.
 ancient_count=0
 while IFS= read -r reset; do
   [ -n "$reset" ] || continue
   reset_epoch=$(iso2epoch "$reset") || fail "cannot parse live reset timestamp: $reset"
   [ "$reset_epoch" -ge "$(($(date +%s) - 86400))" ] || ancient_count=$((ancient_count + 1))
-# A login-needed account (auth_needed, or a non-ok auth.status) renders a unified
-# login row with no 5h line at all, so its reset can never produce a dash row.
-done < <(jq -r 'def loginish: (.auth_needed == true) or ((.auth.status? | type) == "string" and .auth.status != "ok");
-  .vendors[] | if ((.accounts? // []) | length) > 0 then
-  (.accounts[]? | select(loginish | not) | .five_hour.resets_at?)
-  else (select(loginish | not) | .five_hour.resets_at?) end | select(. != null)' <<<"$JSON")
-if [ "$ancient_count" -gt 0 ]; then
-  dash_count=$(grep -Ec '5h .* -$' <<<"$MENU_TXT")
-  [ "$dash_count" -ge "$ancient_count" ] \
-    || fail "live menu has $ancient_count ancient five-hour reset(s) but only $dash_count dash row(s)"
-fi
+done < <(jq -r '.vendors[] | if ((.accounts? // []) | length) > 0 then .accounts[]? else . end
+  | (.five_hour?, .weekly?, .fable?) | select(type == "object") | .resets_at?
+  | select(. != null)' <<<"$JSON")
+[ "$ancient_count" -eq 0 ] \
+  || fail "live store publishes $ancient_count reset(s) over a day past; every surface prints them as a schedule"
 claude_hard=$(jq 'if .vendors.claude.source == "claudeb-store" then (.vendors.claude.accounts | length) else 0 end' <<<"$JSON")
 codex_hard=$(jq 'if .vendors.codex.available == true then (.vendors.codex.accounts | length) else 0 end' <<<"$JSON")
 gemini_hard=$(jq 'if (.vendors.gemini.accounts | type) == "array" and

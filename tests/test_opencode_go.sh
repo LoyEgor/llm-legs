@@ -561,6 +561,48 @@ assert test -s "$WALLS"
 assert test "$(wall_field 'has("window")')" = false
 assert test "$(wall_field '.reset_at - .detected_at | round')" = 7200
 
+# The abbreviated and compounded wordings the gateway actually sends: parsing only spelled-out
+# units left the majority of real refusals with no horizon at all, and the ladder that reads one
+# then had nothing to read.
+cat >"$WORK/wall-abbrev.json" <<'EOF'
+{"type":"error","error":{"type":"GoUsageLimitError","message":"Weekly usage limit reached. Resets in 9hr 30min. To continue using this model now, upgrade."},"metadata":{"limitName":"weekly"}}
+EOF
+rm -rf "$WORKER_STATS_DIR"
+reset_calls
+printf '429|%s|0\n' "$WORK/wall-abbrev.json" >"$CURL_PLAN"
+assert_fails quiet "$SCRIPT" run glm-5.2 hello
+assert test "$(wall_field '.reset_at - .detected_at | round')" = 34200
+
+cat >"$WORK/wall-min.json" <<'EOF'
+{"type":"error","error":{"type":"GoUsageLimitError","message":"5-hour usage limit reached. Resets in 3min."},"metadata":{"limitName":"5h"}}
+EOF
+rm -rf "$WORKER_STATS_DIR"
+reset_calls
+printf '429|%s|0\n' "$WORK/wall-min.json" >"$CURL_PLAN"
+assert_fails quiet "$SCRIPT" run glm-5.2 hello
+assert test "$(wall_field '.reset_at - .detected_at | round')" = 180
+
+# The spelled-out singular the gateway also sends still reads as it always did.
+cat >"$WORK/wall-day.json" <<'EOF'
+{"type":"error","error":{"type":"GoUsageLimitError","message":"Weekly usage limit reached. Resets in 1 day."},"metadata":{"limitName":"weekly"}}
+EOF
+rm -rf "$WORKER_STATS_DIR"
+reset_calls
+printf '429|%s|0\n' "$WORK/wall-day.json" >"$CURL_PLAN"
+assert_fails quiet "$SCRIPT" run glm-5.2 hello
+assert test "$(wall_field '.reset_at - .detected_at | round')" = 86400
+
+# A refusal that names no reset at all still goes on record, with no horizon invented for it.
+cat >"$WORK/wall-undated.json" <<'EOF'
+{"type":"error","error":{"type":"GoUsageLimitError","message":"Weekly usage limit reached."},"metadata":{"limitName":"weekly"}}
+EOF
+rm -rf "$WORKER_STATS_DIR"
+reset_calls
+printf '429|%s|0\n' "$WORK/wall-undated.json" >"$CURL_PLAN"
+assert_fails quiet "$SCRIPT" run glm-5.2 hello
+assert test -s "$WALLS"
+assert test "$(wall_field 'has("reset_at")')" = false
+
 # The profile is the account: a wall on one must never retire another.
 rm -rf "$WORKER_STATS_DIR"
 reset_calls

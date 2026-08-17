@@ -1531,14 +1531,25 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
       if $epoch != null and $epoch < limits_reset_epoch_floor then null else $value end
     else null
     end;
+  def drop_ancient_reset:
+    if limits_reset_ancient($now; (.resets_at | iso2epoch)) then .resets_at = null else . end;
   def mark:
     if type == "object" and has("used_pct")
     then .resets_at = ((.resets_at // null) | normalize_reset) |
-      limits_bucket_expired($now; (.resets_at | iso2epoch)) as $x |
+      # A row whose date THIS pass drops must survive the next one: every collection walks the
+      # merged document, cached rows included, and a bucket judged by a date that is gone would
+      # come back unexpired — its dead reading rendered as a live percentage.
+      (limits_bucket_expired($now; (.resets_at | iso2epoch))
+       or (.resets_at == null and .expired == true)) as $x |
+      drop_ancient_reset |
       if $x
       then . + {expired:true,effective_pct:0}
       else . + {effective_pct:.used_pct}
       end
+    # A window nobody measured still carries the date it was told, and every surface reads that
+    # field as a schedule whether or not a percentage sits beside it.
+    elif type == "object" and has("resets_at")
+    then .resets_at = ((.resets_at // null) | normalize_reset) | drop_ancient_reset
     else . end;
   def data_as_of:
     [.five_hour?, .weekly?, .fable? |

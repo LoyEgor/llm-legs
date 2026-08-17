@@ -100,20 +100,28 @@ rm -f "$CORRUPT_BIN/mktemp"
 GEMINI_HELPER="$WORK/fake-agy-quota"
 GEMINI_CACHE="$WORK/gemini.json"
 GEMINI_SENTINEL="$WORK/gemini-called"
+# Both windows are stated ahead of now rather than on fixed dates: a reset the clock has carried
+# more than a day past is dropped by the collector, so a frozen date would stop being a reset to
+# pass through at all and this would assert the drop instead of the normalization it is here for.
+GEMINI_FIVE_RESET=$(date -u -r "$((now + 43200))" +%Y-%m-%dT%H:%M:%SZ)
+GEMINI_WEEK_RESET=$(date -u -r "$((now + 604800))" +%Y-%m-%dT%H:%M:%SZ)
+export GEMINI_FIVE_RESET GEMINI_WEEK_RESET
 cat >"$GEMINI_HELPER" <<'EOF'
 #!/usr/bin/env bash
 printf 'called\n' >>"$GEMINI_SENTINEL"
-printf '%s\n' '{"groups":[{"displayName":"Gemini Models","buckets":[{"bucketId":"gemini-weekly","window":"weekly","remainingFraction":0.75,"resetTime":"2026-07-18T12:00:00Z"},{"bucketId":"gemini-5h","window":"5h","remainingFraction":0.995,"resetTime":"2026-07-11T22:00:00Z"}]}]}'
+printf '{"groups":[{"displayName":"Gemini Models","buckets":[{"bucketId":"gemini-weekly","window":"weekly","remainingFraction":0.75,"resetTime":"%s"},{"bucketId":"gemini-5h","window":"5h","remainingFraction":0.995,"resetTime":"%s"}]}]}\n' \
+  "$GEMINI_WEEK_RESET" "$GEMINI_FIVE_RESET"
 EOF
 chmod +x "$GEMINI_HELPER"
 gemini_live=$(GEMINI_SENTINEL="$GEMINI_SENTINEL" LLM_LIMITS_GEMINI_REFRESH=1 \
   LLM_LIMITS_GEMINI_CMD="$GEMINI_HELPER" LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
   HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" /bin/bash "$SCRIPT" --refresh) \
   || fail "Gemini refresh collection failed"
-jq -e '.vendors.gemini.available == true and .vendors.gemini.source == "agy-local-rpc" and
+jq -e --arg five_reset "$GEMINI_FIVE_RESET" \
+  '.vendors.gemini.available == true and .vendors.gemini.source == "agy-local-rpc" and
   .vendors.gemini.five_hour.used_pct == 1 and
   .vendors.gemini.weekly.used_pct == 25 and
-  .vendors.gemini.five_hour.resets_at == "2026-07-11T22:00:00Z" and
+  .vendors.gemini.five_hour.resets_at == $five_reset and
   (.vendors.gemini | has("accounts") | not)' <<<"$gemini_live" >/dev/null \
   || fail "Gemini quota normalization mismatch (used_pct must be an integer)"
 jq -e '.vendors.gemini.five_hour.origin == "usage" and .vendors.gemini.five_hour.stale == false and
@@ -983,6 +991,9 @@ printf '{"five_hour":{"used_percentage":13,"resets_at":%s,"as_of":%s,"origin":"u
   "$((now + 5000))" "$now" "$now" >"$CLAUDEB_FRESH/limits/badauth.json"
 printf '{"five_hour":{"used_percentage":14,"resets_at":%s,"as_of":%s,"origin":"usage"},"auth":{"status":"failed","checked_at":%s}}\n' \
   "$((now + 5000))" "$now" "$now" >"$CLAUDEB_FRESH/limits/failedauth.json"
+printf '{"five_hour":{"used_percentage":19,"resets_at":%s,"as_of":%s,"origin":"usage"},"seven_day":{"used_percentage":23,"resets_at":%s,"as_of":%s,"origin":"usage"},"auth":{"status":"ok","checked_at":%s}}\n' \
+  "$((now - 200000))" "$((now - 200000))" "$((now - 4000))" "$((now - 200000))" "$now" \
+  >"$CLAUDEB_FRESH/limits/ancientreset.json"
 printf '{"five_hour":{"used_percentage":17,"resets_at":%s}}\n' "$((now + 5000))" >"$CLAUDEB_FRESH/limits/legacy.json"
 touch -t 202607110500 "$CLAUDEB_FRESH/limits/legacy.json"
 printf '{"auth":{"status":"expired","checked_at":%s}}\n' "$now" >"$CLAUDEB_FRESH/limits/authonly.json"
@@ -1011,6 +1022,30 @@ jq -e '[.vendors.claude.accounts[] | select(.account == "failedauth")][0]
 jq -e '[.vendors.claude.accounts[] | select(.account == "legacy")][0]
   | (.five_hour.as_of | type) == "number" and .five_hour.stale == true' <<<"$fresh_json" >/dev/null \
   || fail "missing as_of must fall back to snapshot mtime"
+# A reset over a day past is dropped, and dropping it may not cost the bucket its expiry: a
+# surface reading the date as a schedule is the bug, an unexpired 19% reading beside it would
+# be the worse one. A reset merely past keeps its date, since that window is still the one named.
+jq -e '[.vendors.claude.accounts[] | select(.account == "ancientreset")][0]
+  | .five_hour.resets_at == null and .five_hour.expired == true and
+    .five_hour.effective_pct == 0 and .weekly.resets_at != null and
+    .weekly.expired == true' <<<"$fresh_json" >/dev/null \
+  || fail "an ancient reset must be dropped while its bucket stays expired"
+# Every collection re-marks the whole merged document, cached rows included, so the row written
+# above comes back through this pass with its date already gone: judged by the date alone it
+# would read as a live 100%, which is the reading the drop exists to retire.
+STICKY_STORE="$WORK/sticky-store"
+mkdir -p "$STICKY_STORE/limits"
+printf 'sticky\n' >"$STICKY_STORE/.claudeb-state"
+printf '{"five_hour":{"used_percentage":100,"resets_at":%s,"as_of":%s,"origin":"usage"},"auth":{"status":"ok","checked_at":%s}}\n' \
+  "$((now + 5000))" "$((now - 9000))" "$now" >"$STICKY_STORE/limits/sticky.json"
+STICKY_CACHE="$WORK/sticky-cache.json"
+printf '{"schema":1,"fetched_at":"x","vendors":{"claude":{"available":true,"source":"claudeb-store","current_account":"sticky","accounts":[{"account":"sticky","enabled":true,"five_hour":{"used_pct":100,"resets_at":null,"as_of":%s,"origin":"usage","stale":false,"expired":true,"effective_pct":0}}]}}}\n' \
+  "$now" >"$STICKY_CACHE"
+sticky_json=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$STICKY_STORE" LLM_LIMITS_CACHE="$STICKY_CACHE" \
+  bash "$SCRIPT" --json) || fail "sticky-expiry collection failed"
+jq -e '[.vendors.claude.accounts[] | select(.account == "sticky")][0].five_hour
+  | .resets_at == null and .expired == true and .effective_pct == 0' <<<"$sticky_json" >/dev/null \
+  || fail "a bucket whose ancient reset was already dropped must stay expired on the next pass"
 jq -e --argjson oldest "$((now - 10800))" --argjson now "$now" '
   [.vendors.claude.accounts[] | select(.account == "divergent")][0] as $a |
   ($a.as_of | fromdateiso8601) == $oldest and

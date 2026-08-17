@@ -721,11 +721,20 @@ CODEX_TRANSIENT_RE = re.compile(
     r"|stream (?:disconnected|closed) before completion",
     re.IGNORECASE,
 )
+# Spelled alike in bin/opencode-go's stated_in (shared-invariants row ai). The gateway states most
+# resets abbreviated and compounded — "Resets in 9hr 30min" — so the components are summed rather
+# than read down to the first, and the unit alternation ends on a word boundary so that "3 mins"
+# and "3 minutes" are each consumed whole.
+WALL_RESET_UNIT = r"(second|sec|minute|min|hour|hr|day|week)s?\b"
 WALL_RESET_RE = re.compile(
-    r"resets? in\s+(\d+(?:\.\d+)?)\s*(second|minute|hour|day|week)s?", re.IGNORECASE
+    r"resets? in\s+((?:[0-9]+(?:\.[0-9]+)?\s*" + WALL_RESET_UNIT + r"[\s,]*)+)", re.IGNORECASE
+)
+WALL_RESET_COMPONENT_RE = re.compile(
+    r"([0-9]+(?:\.[0-9]+)?)\s*" + WALL_RESET_UNIT, re.IGNORECASE
 )
 WALL_RESET_UNITS = {
-    "second": 1, "minute": 60, "hour": 3600, "day": 86400, "week": 604800,
+    "second": 1, "sec": 1, "minute": 60, "min": 60,
+    "hour": 3600, "hr": 3600, "day": 86400, "week": 604800,
 }
 
 
@@ -817,7 +826,10 @@ def wall_reset_at(text):
     match = WALL_RESET_RE.search(text or "")
     if not match:
         return None
-    return time.time() + float(match.group(1)) * WALL_RESET_UNITS[match.group(2).lower()]
+    return time.time() + sum(
+        float(value) * WALL_RESET_UNITS[unit.lower()]
+        for value, unit in WALL_RESET_COMPONENT_RE.findall(match.group(1))
+    )
 
 
 def opencode_wall_window(text):

@@ -537,6 +537,21 @@ assert reread[("opencode", "opencode-go-far", "general")][1] == monthly_reset, r
 assert rb.wall_reset_at("Weekly usage limit reached. Resets in 3 days.") > time.time() + 2 * 86400
 assert rb.wall_reset_at("Resets in 45 minutes") < time.time() + 3600
 assert rb.wall_reset_at("HTTP 429 rate limited") is None
+# The wordings the gateway actually sends, recorded off real 429 bodies. Most of them abbreviate
+# and compound the units, and reading only the first component of "9hr 30min" — or only the
+# spelled-out spellings — left the majority of real refusals with no horizon at all.
+for body, seconds in [
+    ("Weekly usage limit reached. Resets in 9hr 30min. To continue using this model now, x", 34200),
+    ("5-hour usage limit reached. Resets in 3hr 28min. x", 12480),
+    ("5-hour usage limit reached. Resets in 3min. x", 180),
+    ("Weekly usage limit reached. Resets in 42min. x", 2520),
+    ("Weekly usage limit reached. Resets in 1 day. x", 86400),
+    ("Weekly usage limit reached. Resets in 4 days. x", 345600),
+    ("Monthly usage limit reached. Resets in 20 days. x", 1728000),
+    ("Weekly usage limit reached. Resets in 1 hour. x", 3600),
+]:
+    stated = rb.wall_reset_at(body) - time.time()
+    assert abs(stated - seconds) < 5, (body, stated, seconds)
 
 dated_wall_state = work / "dated-wall-state"
 dated_wall_state.mkdir()

@@ -59,12 +59,20 @@ wall_row() {
          elif ["5h","5hour","fivehour"] | index($n) then "5-hour"
          else null end
        end);
+    # Spelled alike in bin/review-bench (shared-invariants row ai). The gateway states most resets
+    # abbreviated and compounded — "Resets in 9hr 30min" — so the components are summed rather than
+    # read down to the first, and the unit alternation ends on a word boundary so that "3 mins" and
+    # "3 minutes" are each consumed whole.
+    def reset_units: {"second":1,"sec":1,"minute":60,"min":60,"hour":3600,"hr":3600,
+                      "day":86400,"week":604800};
     def stated_in:
-      ((capture("resets? in\\s+(?<v>[0-9]+(\\.[0-9]+)?)\\s*(?<u>second|minute|hour|day|week)s?"; "i")
+      ((capture("resets? in\\s+(?<r>(?:[0-9]+(\\.[0-9]+)?\\s*(?:second|sec|minute|min|hour|hr|day|week)s?\\b[\\s,]*)+)"; "i")
         // null) as $m |
        if $m == null then null
-       else ($m.v | tonumber) *
-            {"second":1,"minute":60,"hour":3600,"day":86400,"week":604800}[$m.u | ascii_downcase]
+       else [$m.r
+             | match("([0-9]+(\\.[0-9]+)?)\\s*(second|sec|minute|min|hour|hr|day|week)s?\\b"; "gi")
+             | (.captures[0].string | tonumber) * reset_units[.captures[2].string | ascii_downcase]]
+            | add
        end);
     # The status code is shared by two unrelated refusals: the plan is spent (days away), and the
     # provider behind it is throttling a burst (seconds). Retiring an account for the second is

@@ -14,12 +14,19 @@ LIMITS_VIEW_JQ='
 def limits_reset_epoch_floor: 31536000;
 def limits_bucket_expired($now; $reset):
   ($reset != null and $reset >= limits_reset_epoch_floor and $reset <= $now);
+# A reset over a day past named a window that has rolled over unseen — a 5-hour one several
+# times over — so the date describes no schedule anyone can wait for, and a surface printing it
+# invites reading a dead row as a live one. The bucket stays `expired` either way: this drops
+# the date, never the verdict.
+def limits_reset_ancient($now; $reset):
+  ($reset != null and $reset >= limits_reset_epoch_floor and ($now - $reset) > 86400);
 def limits_bucket_stale($now; $thr; $auth_expired; $origin; $asof):
   ($auth_expired or ($origin == "cached") or (($now - $asof) > $thr));
 def limits_effective_pct($pct; $expired):
   (if $expired then 0 else $pct end);
 def limits_reset_text($epoch; $now):
-  if $epoch == null or $epoch < limits_reset_epoch_floor then "-"
+  if $epoch == null or $epoch < limits_reset_epoch_floor
+     or limits_reset_ancient($now; $epoch) then "-"
   elif ($epoch - $now) < 604800 then
     (if ($epoch | strflocaltime("%Y-%m-%d")) != ($now | strflocaltime("%Y-%m-%d"))
      then (["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][$epoch | strflocaltime("%w") | tonumber]

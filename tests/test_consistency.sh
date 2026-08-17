@@ -527,10 +527,18 @@ assert doc_has 'Claude account existence'
 # are defined once in share/limits-view.sh; claudeb and the collector prepend
 # $LIMITS_VIEW_JQ, the menu renders the collector's precomputed fields, and probes
 # announce a passive collect so the merged cache moves with the snapshots.
-for view_def in limits_reset_epoch_floor limits_bucket_expired limits_bucket_stale \
-    limits_effective_pct limits_reset_text limits_age_text limits_markers limits_pct_text; do
+for view_def in limits_reset_epoch_floor limits_bucket_expired limits_reset_ancient \
+    limits_bucket_stale limits_effective_pct limits_reset_text limits_age_text \
+    limits_markers limits_pct_text; do
   assert eq "$(grep -c "^def $view_def" "$LIMITSVIEW")" 1
 done
+# The day an ancient reset is dropped after is spelled in the def, in the live store guard that
+# scans for a survivor, and in the doc — a drift in one of the three retires dates the others
+# still expect to see.
+assert grep -Fq '($now - $reset) > 86400' "$LIMITSVIEW"
+assert grep -Fq '86400' "$ROOT/tests/e2e_surfaces.sh"
+assert doc_has '`86400`s past is dropped'
+assert grep -Fq 'limits_reset_ancient' "$LLMLIMITS"
 for view_consumer in "$CLAUDEB" "$LLMLIMITS"; do
   assert grep -Fq 'share/limits-view.sh' "$view_consumer"
   assert grep -Fq 'limits_bucket_stale' "$view_consumer"
@@ -785,6 +793,55 @@ assert grep -Fq 'def ceiling($w): {"5-hour":21600,"weekly":691200,"monthly":2764
   "$OPENCODE_GO"
 assert grep -Fq 'WALL_WINDOW_MAX_TTL_S.get(window, WALL_MAX_TTL_S)' "$REVIEWBENCH"
 assert doc_has '`5-hour` 21600s, `weekly` 691200s, `monthly` 2764800s, unnamed 604800s'
+
+# The reset-phrase grammar is the second rule, pinned by behaviour rather than by spelling: the
+# wordings below are real 429 bodies, and a side that reads only spelled-out units records nothing
+# for most of them while the other records a horizon. Every stated horizon here is inside its own
+# window's ceiling, so what the two sides are compared on is the grammar alone.
+WALL_GRAMMAR=$(mktemp -d)
+sed -n '/^wall_row()/,/^}/p' "$OPENCODE_GO" >"$WALL_GRAMMAR/wall_row.sh"
+cat >"$WALL_GRAMMAR/corpus" <<'CORPUS'
+weekly|34200|Weekly usage limit reached. Resets in 9hr 30min. To continue using this model now, x
+5h|12480|5-hour usage limit reached. Resets in 3hr 28min. x
+5h|180|5-hour usage limit reached. Resets in 3min. x
+weekly|2520|Weekly usage limit reached. Resets in 42min. x
+weekly|86400|Weekly usage limit reached. Resets in 1 day. x
+weekly|345600|Weekly usage limit reached. Resets in 4 days. x
+monthly|1728000|Monthly usage limit reached. Resets in 20 days. x
+weekly|3600|Weekly usage limit reached. Resets in 1 hour. x
+weekly|none|Weekly usage limit reached. Upgrade to Pro for more usage.
+CORPUS
+grammar_expected=$(cut -d'|' -f2 "$WALL_GRAMMAR/corpus" | paste -sd, -)
+grammar_go=$(while IFS='|' read -r window _ message; do
+  printf 'GoUsageLimitError limitName=%s. %s\n' "$window" "$message" >"$WALL_GRAMMAR/body"
+  KEY_SERVICE=opencode-go bash -c '
+    . "$1/wall_row.sh"
+    wall_row 1000000 "$1/body" |
+      jq -r "if has(\"reset_at\") then .reset_at - .detected_at else \"none\" end"' _ "$WALL_GRAMMAR"
+done <"$WALL_GRAMMAR/corpus" | paste -sd, -)
+grammar_rb=$(python3 - "$REVIEWBENCH" "$WALL_GRAMMAR/corpus" <<'GRAMMAR'
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("review_bench", sys.argv[1])
+spec = importlib.util.spec_from_loader(loader.name, loader)
+rb = importlib.util.module_from_spec(spec)
+loader.exec_module(rb)
+# The clock is pinned to the same instant the jq side is handed, or the two sides are compared
+# on different nows: reading it again after the parse rounds a horizon down by a second whenever
+# the two calls straddle one, and the guard fails on a grammar that never changed.
+NOW = 1000000.0
+rb.time.time = lambda: NOW
+stated = []
+with open(sys.argv[2]) as corpus:
+    for line in corpus:
+        message = line.rstrip("\n").split("|", 2)[2]
+        at = rb.wall_reset_at(message)
+        stated.append("none" if at is None else str(round(at - NOW)))
+print(",".join(stated))
+GRAMMAR
+)
+assert eq "$grammar_go" "$grammar_expected"
+assert eq "$grammar_rb" "$grammar_expected"
+rm -rf "$WALL_GRAMMAR"
 
 # The account a wall is filed under is the plan's keychain service, spelled in three languages —
 # and llm-limits.sh is the one that maps it back to the profile every surface displays.
