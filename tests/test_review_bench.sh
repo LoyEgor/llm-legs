@@ -3535,6 +3535,37 @@ for command in (
     if "--range" in command:
         assert "--range" in conflict.stderr.split("got")[-1], conflict.stderr
 
+# A repository whose first commit has not landed yet has no HEAD to read, and every worktree path
+# that spelled one died on `Not a valid object name HEAD` — over a checkout that is nothing BUT
+# unreviewed work. The snapshot is a root commit against the empty tree, exactly as diff_base
+# already reads one.
+fresh_repo = work / "no-commit-repo"
+fresh_repo.mkdir()
+subprocess.run(["git", "-C", str(fresh_repo), "init", "-q"], check=True)
+(fresh_repo / "first.txt").write_text("first line\nsecond line\n")
+fresh_empty = rb.empty_tree_hash(fresh_repo)
+assert rb.head_tree_hash(fresh_repo) == fresh_empty
+assert rb.working_tree_tree(fresh_repo) != fresh_empty
+fresh_sha = rb.worktree_snapshot_commit(fresh_repo)
+assert rb.diff_base(fresh_repo, fresh_sha) == fresh_empty
+assert subprocess.run(
+    ["git", "-C", str(fresh_repo), "rev-list", "--parents", "-n", "1", fresh_sha],
+    check=True, capture_output=True, text=True,
+).stdout.split() == [fresh_sha]
+# The whole content reaches the panel: read as an unmeasurable diff it announces an empty target
+# and refuses instead.
+rb.announce_review_target(fresh_repo, fresh_sha)
+# And down the CLI, which is where it died. `--paths` matching nothing is the first refusal PAST
+# the tree resolution, so this stops before any panel is launched.
+fresh_scoped = subprocess.run(
+    [sys.argv[1], "review", "--worktree", "--repo", str(fresh_repo), "--tier", "T0",
+     "--paths", "nothing-here.txt"],
+    capture_output=True, text=True,
+)
+assert fresh_scoped.returncode != 0
+assert "Not a valid object name" not in fresh_scoped.stderr, fresh_scoped.stderr
+assert "matched nothing" in fresh_scoped.stderr, fresh_scoped.stderr
+
 # A worktree panel is something Egor asked for by name: without that ask, `review --worktree` is
 # the mid-work review a chat talked itself into.
 cycle_repo = work / "cycle-repo"

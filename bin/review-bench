@@ -1689,12 +1689,24 @@ def diff_base(repo, commit):
     return empty_tree_hash(repo)
 
 
+def head_tree_hash(repo):
+    """HEAD's tree, or the empty tree when the repository has no commit yet. Every worktree path
+    that spelled `HEAD` died on `Not a valid object name HEAD` in a checkout whose first commit is
+    still pending, which is exactly the state the files in it most want reviewing from.
+    """
+    proc = subprocess.run(["git", "rev-parse", "--verify", "--quiet", "HEAD^{tree}"],
+                          cwd=repo, capture_output=True, text=True)
+    if proc.returncode == 0 and proc.stdout.strip():
+        return proc.stdout.strip()
+    return empty_tree_hash(repo)
+
+
 def working_tree_tree(repo, paths=None, env=None):
     scope = list(paths or [])
     with tempfile.TemporaryDirectory(prefix="review-bench-index-") as directory:
         env = dict(env or os.environ, GIT_INDEX_FILE=str(Path(directory) / "index"))
         add = ("add", "-A", "--", *scope) if scope else ("add", "-A")
-        for command in (("read-tree", "HEAD"), add):
+        for command in (("read-tree", head_tree_hash(repo)), add):
             proc = subprocess.run(
                 ["git", *command], cwd=repo, env=env, capture_output=True, text=True,
             )
@@ -1715,14 +1727,10 @@ def working_tree_tree(repo, paths=None, env=None):
 def worktree_snapshot_commit(repo, clean_command=None, paths=None):
     scope = list(paths or [])
     tree = working_tree_tree(repo, scope)
-    head = resolve_commit(repo, "HEAD")
-    head_tree = subprocess.run(
-        ["git", "rev-parse", "HEAD^{tree}"],
-        cwd=repo, capture_output=True, text=True,
-    )
-    if head_tree.returncode != 0 or not head_tree.stdout.strip():
-        raise RuntimeError(head_tree.stderr.strip() or "HEAD tree is unavailable")
-    if tree == head_tree.stdout.strip():
+    head_commit = subprocess.run(["git", "rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
+                                 cwd=repo, capture_output=True, text=True)
+    head = head_commit.stdout.strip() if head_commit.returncode == 0 else ""
+    if tree == head_tree_hash(repo):
         if scope:
             raise ValueError(
                 "no changes under the given paths: " + " ".join(scope)
@@ -1738,7 +1746,9 @@ def worktree_snapshot_commit(repo, clean_command=None, paths=None):
         # nothing else, so a scope kept outside it would silently widen to the whole tree.
         message += "\n\n" + "".join(f"{SCOPE_TRAILER}{path}\n" for path in scope)
     proc = subprocess.run(
-        ["git", "commit-tree", tree, "-p", head, "-m", message],
+        # A snapshot of a repository with no commit yet is a root commit, and `-p ''` is a parent
+        # git refuses outright; diff_base reads its whole content against the empty tree.
+        ["git", "commit-tree", tree, *(("-p", head) if head else ()), "-m", message],
         cwd=repo, env=dict(os.environ, **FIXED_COMMIT_IDENTITY),
         capture_output=True, text=True,
     )
