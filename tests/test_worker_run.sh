@@ -942,6 +942,107 @@ assert await_done
 assert grep -qx 'RUN-FILES: unknown (codex records no per-file tool calls in a transcript)' \
   <<<"$("$RUNNER" report "$RUN_ID")"
 
+# --- The run record ------------------------------------------------------------------------------
+# What a run wrote, and for whom, kept beside the run itself. A report answers only whoever printed
+# it: unprinted it named nobody's work, truncated it named part of it, and pasted elsewhere it named
+# the wrong chat. The record is written whether or not anyone ever looks, and a vendor that cannot
+# name files says so here too — a reader must not take the silence for an empty list.
+assert test "$(head -n1 "$RUN_DIR/files")" = "WORKDIR: $(jq -r '.workdir' "$RUN_DIR/meta.json")"
+assert grep -qx 'UNKNOWN: codex records no per-file tool calls in a transcript' "$RUN_DIR/files"
+
+clear_stub
+set_config 'claudeb_model=opus' 'claudeb_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=recordacct
+mkdir -p "$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture"
+# Stamped ahead of now because the run has not started yet and its own start is the cut: a fixture
+# written at this second would be filtered out as the work of some earlier run.
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+# The run records its workdir as git and the shell resolve it, and a fixture spelled through the
+# symlink a temporary directory reaches it by strips against nothing.
+record_workdir=$(cd "$WORK/workdir" && pwd -P)
+{
+  tool_call Edit file_path "$record_workdir/bin/recorded"
+  tool_call Write file_path "$WORK/outside/recorded-absolute"
+} >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+export CLAUDE_CODE_SESSION_ID=chat-abc
+start_ok claudeb
+assert await_done
+assert test "$(cat "$RUN_DIR/launcher")" = chat-abc
+assert test "$(head -n1 "$RUN_DIR/files")" = "WORKDIR: $record_workdir"
+assert grep -qx 'bin/recorded' "$RUN_DIR/files"
+assert grep -qxF "$WORK/outside/recorded-absolute" "$RUN_DIR/files"
+assert test "$(grep -c '^UNKNOWN: ' "$RUN_DIR/files")" -eq 0
+# The same paths the report prints: one answer rendered twice, never two answers that can disagree.
+report=$("$RUNNER" report "$RUN_ID")
+assert grep -qx 'RUN-FILE: bin/recorded' <<<"$report"
+
+# A walled attempt wrote whatever it wrote before the wall, and rerouting restamps the run's start
+# and takes a new session — so the later attempt's own list cannot see it. The record is a union
+# across attempts, or the first attempt's files belong to nobody at all.
+printf '%s\n' "WORKDIR: $record_workdir" \
+  'UNKNOWN: no session transcript for the walled attempt' bin/from-the-walled-attempt >"$RUN_DIR/files"
+"$RUNNER" _supervise "$RUN_DIR" >/dev/null 2>&1
+assert grep -qx 'bin/from-the-walled-attempt' "$RUN_DIR/files"
+assert grep -qx 'bin/recorded' "$RUN_DIR/files"
+assert test "$(head -n1 "$RUN_DIR/files")" = "WORKDIR: $record_workdir"
+# The uncertainty carries forward with the paths: an attempt whose list was unanswerable stays
+# unanswerable however cleanly the attempt after it read.
+assert grep -qx 'UNKNOWN: no session transcript for the walled attempt' "$RUN_DIR/files"
+
+# An editor list answers for editor calls. A run that also worked through the shell changed files no
+# transcript records, so its list is a floor — said per run, since a run that ran no shell command
+# has a complete one. PARTIAL rather than UNKNOWN: the paths beside it are real and reviewable, and
+# the gate speaks about UNKNOWN alone.
+assert test "$(grep -c '^PARTIAL: ' "$RUN_DIR/files")" -eq 0
+assert test "$(grep -c 'RUN-FILES-PARTIAL: ' <<<"$report")" -eq 0
+clear_stub
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+{
+  tool_call Edit file_path "$record_workdir/bin/recorded"
+  tool_call Bash command 'sed -i "" s/a/b/ bin/edited-through-the-shell'
+} >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+export CLAUDE_CODE_SESSION_ID=chat-abc
+start_ok claudeb
+assert await_done
+assert grep -qx 'bin/recorded' "$RUN_DIR/files"
+assert grep -q '^PARTIAL: the run also ran shell commands' "$RUN_DIR/files"
+assert grep -q '^RUN-FILES-PARTIAL: the run also ran shell commands' <<<"$("$RUNNER" report "$RUN_ID")"
+
+# A failed run wrote whatever it wrote before it died, and that is the launching chat's work too.
+clear_stub
+export STUB_CODE=9 STUB_ERROR='plain failure'
+start_ok claudeb
+assert await_done
+assert test "$(head -n1 "$RUN_DIR/files")" = "WORKDIR: $(jq -r '.workdir' "$RUN_DIR/meta.json")"
+unset STUB_CODE STUB_ERROR
+
+# A record is written even when there is nothing to put in it — here, a run that could not reach its
+# own workdir. No record at all is what an unfinished run looks like, and both readers take that
+# absence for "this run wrote nothing", which is the one answer that is certainly wrong.
+clear_stub
+start_ok claudeb
+assert await_done
+jq '.workdir = null' "$RUN_DIR/meta.json" >"$WORK/meta.noworkdir" &&
+  mv "$WORK/meta.noworkdir" "$RUN_DIR/meta.json"
+rm -f "$RUN_DIR/files"
+"$RUNNER" _supervise "$RUN_DIR" >/dev/null 2>&1
+assert grep -qx 'UNKNOWN: the run recorded no workdir to resolve its files against' "$RUN_DIR/files"
+assert test "$(grep -c '^WORKDIR: ' "$RUN_DIR/files")" -eq 0
+
+# No chat to answer for it, or an id that cannot be compared as one: the run is nobody's rather than
+# somebody's by accident.
+clear_stub
+unset CLAUDE_CODE_SESSION_ID
+start_ok claudeb
+assert await_done
+assert test ! -e "$RUN_DIR/launcher"
+export CLAUDE_CODE_SESSION_ID='../elsewhere'
+clear_stub
+start_ok claudeb
+assert await_done
+assert test ! -e "$RUN_DIR/launcher"
+unset CLAUDE_CODE_SESSION_ID
+
 # "429" only counts as a limit signature with digit boundaries: an error id that
 # merely contains it stays an ordinary failure.
 clear_stub
@@ -1140,4 +1241,4 @@ assert meta_account_is plain1
 assert jq -e 'has("session_reserve") | not' "$RUN_DIR/meta.json" >/dev/null
 assert grep -qx 'ACCOUNT: plain1 (codex)' <<<"$("$RUNNER" report "$RUN_ID")"
 
-echo "PASS: $asserts asserts; worker-run detaches vendor CLIs, preserves live runs across bounded waits, resolves accounts and model knobs, reroutes an unpinned run off a walled account until every candidate is walled, retries only documented compatibility failures, and reports terminal outcomes"
+echo "PASS: $asserts asserts; worker-run detaches vendor CLIs, preserves live runs across bounded waits, resolves accounts and model knobs, reroutes an unpinned run off a walled account until every candidate is walled, retries only documented compatibility failures, records beside each run the chat that launched it and the files it wrote — the same list its report prints, unioned across every attempt, an UNKNOWN line where the vendor or the workdir leaves the list unanswerable and a PARTIAL one where the run also worked through the shell, written for a failed run and for a run that never reached its workdir too, and for no chat at all when none can be named — and reports terminal outcomes"

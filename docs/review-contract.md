@@ -22,13 +22,21 @@ is visibility, not blocking.
    tolerated by every reader. `commit-report.sh` clears entries whose paths are no
    longer dirty.
 
-   A worker a chat spawned IS that chat: files authored by a claudeb worker enter
-   the launching session's journal when that session reads `worker-run report`,
-   whose `WORKDIR:`/`RUN-FILE:` lines the hook resolves under the current session
-   id (invariant row `am`). Codex and Gemini workers keep no per-file transcript
-   and report `RUN-FILES: unknown`, so their files stay outside coverage — a named
-   limitation of those vendors, not an accident of the plumbing, and the session
-   that delegates to them owns the gap.
+   A worker a chat spawned IS that chat: `worker-run` stamps the launching
+   `CLAUDE_CODE_SESSION_ID` into `<run-dir>/launcher` at start and the run's own
+   files into `<run-dir>/files` after every attempt, and the hook sweeps the runs
+   stamped with its session on every tool call, journalling their paths under it
+   (invariant row `am`). Nothing here depends on the chat reading a report:
+   ownership taken off printed output belongs to whoever printed it. The gate
+   reads the same records, so a run that finishes between the chat's last tool
+   call and its commit is still priced as that chat's work. Codex and Gemini
+   workers keep no per-file transcript, so their record carries an `UNKNOWN:`
+   line instead of paths and their files stay outside coverage — a named
+   limitation of those vendors, not an accident of the plumbing. The gate names
+   those runs once each in its commit notice — with the record's own reason, and
+   alongside the runs that recorded editor calls only, the runs still going, and
+   the runs whose supervisor is gone (abandoned, never "still running") — and the
+   session that delegated to them owns the gap.
 2. **Run records** — `review-bench` stores per run: `session`, `scope`, `started`/
    `finished`, per-panel `(model, effort, duration_ms)`, triage state, and
    `reviewed{path: blob-sha}` — every path of the sealed snapshot commit, read out

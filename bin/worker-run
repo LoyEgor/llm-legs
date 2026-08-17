@@ -416,7 +416,9 @@ supervise() {
   [ -r "$directory/meta.json" ] || return 4
   vendor=$(jq -r '.vendor' "$directory/meta.json")
   workdir=$(jq -r '.workdir' "$directory/meta.json")
-  cd "$workdir" || return 4
+  # Even the run that never started answers for itself: absent, its record is indistinguishable from
+  # the record of a run still going, and a reader takes that for a run that wrote nothing.
+  cd "$workdir" || { persist_run_files "$directory"; return 4; }
   while :; do
     case "$vendor" in
       claudeb) supervise_claudeb "$directory" ;;
@@ -425,9 +427,48 @@ supervise() {
       *) return 4 ;;
     esac
     rc=$?
-    [ "$rc" -ne 0 ] || return 0
+    # After EVERY attempt, not only the last one: a walled attempt wrote whatever it wrote before the
+    # wall, and rerouting restamps the run's start and takes a new session — read afterwards, that
+    # attempt's files are behind the cut and belong to nobody at all. A failed attempt counts the
+    # same way; the record is a union across attempts.
+    persist_run_files "$directory"
+    [ "$rc" -eq 0 ] && return 0
     reroute_walled "$directory" "$vendor" || return "$rc"
   done
+}
+
+persist_run_files() {
+  # The run's own file list, written beside the run the moment it ends, so who answers for reviewing
+  # this work no longer depends on somebody reading a report: an unread report left the work covered
+  # by nobody, a truncated one covered a prefix silently, and a report read by another chat named the
+  # wrong owner (2026-08-17 lens round). Line one is the workdir the paths are relative to; an
+  # UNKNOWN line says the list could not be established, which a reader must not read as "no files".
+  local directory="$1" workdir
+  workdir=$(jq -r '.workdir' "$directory/meta.json" 2>/dev/null)
+  compute_run_files "$directory"
+  # A record is written even when there is nothing to put in it. No record at all is indistinguishable
+  # from a run that never terminated, and both readers take that absence for "this run wrote nothing"
+  # — the one answer that is certainly wrong about a run that has ended.
+  if [ -z "$workdir" ] || [ "$workdir" = null ]; then
+    RUN_FILES_LIST=''
+    RUN_FILES_REASON='the run recorded no workdir to resolve its files against'
+  fi
+  {
+    [ -z "$workdir" ] || [ "$workdir" = null ] || printf 'WORKDIR: %s\n' "$workdir"
+    # Union with what earlier attempts recorded — their calls are behind this attempt's start cut,
+    # and their UNCERTAINTY carries forward with their paths: an attempt whose list was unanswerable
+    # stays unanswerable however cleanly the attempt after it read. PARTIAL rather than UNKNOWN for
+    # the shell case: the paths beside it are real and reviewable, and only what stands beside them
+    # is missing.
+    { [ -z "$RUN_FILES_REASON" ] || printf 'UNKNOWN: %s\n' "$RUN_FILES_REASON"
+      [ -z "$RUN_FILES_PARTIAL" ] || printf 'PARTIAL: %s\n' "$RUN_FILES_PARTIAL"
+      grep '^UNKNOWN: \|^PARTIAL: ' "$directory/files" 2>/dev/null; } | sort -u
+    { [ -z "$RUN_FILES_LIST" ] || printf '%s\n' "$RUN_FILES_LIST"
+      grep -v '^WORKDIR: \|^UNKNOWN: \|^PARTIAL: ' "$directory/files" 2>/dev/null; } | sort -u
+  } >"$directory/files.tmp.$$" 2>/dev/null &&
+    mv -f "$directory/files.tmp.$$" "$directory/files" 2>/dev/null ||
+    rm -f "$directory/files.tmp.$$" 2>/dev/null
+  return 0
 }
 
 start_run() {
@@ -646,6 +687,15 @@ start_run() {
      + if $vendor == "gemini" then {agy_model:$agy_model} else {} end' >"$directory/meta.json" || fail 'could not write metadata'
   [ "$pick_reserve" != true ] || meta_update "$directory" '.session_reserve = true' ||
     fail 'could not record the session-reserve note'
+  # Who this run answers to, written where a hook can find it without parsing anything: a worker a
+  # chat spawned IS that chat (Egor, 2026-08-17), and the run is the only place that fact exists —
+  # the report says who a worker is, never who asked for it, so ownership read off a report is
+  # ownership assigned to whoever happened to read it. A file rather than a meta.json key because
+  # the reader is a per-tool-call hook globbing hundreds of runs, and one grep is its whole budget.
+  case "${CLAUDE_CODE_SESSION_ID:-}" in
+    ''|.|..|*[!A-Za-z0-9._-]*) ;;
+    *) printf '%s\n' "$CLAUDE_CODE_SESSION_ID" >"$directory/launcher" ;;
+  esac
 
   supervisor_body='ticks=0
 while [ ! -e "$2/.ready" ]; do
@@ -779,45 +829,82 @@ transcript_files() {
     <<<"$paths" | sort -u
 }
 
-run_files() {
+compute_run_files() {
   # The run's OWN changed files, from the run's own transcript. `git status` in the workdir answers
   # for the whole checkout, which parallel agents share — a relay reading it reported another
   # worker's hunks as this run's work, apology included (live-caught 2026-08-11). Anything this
-  # cannot establish says `unknown` rather than falling back to the workdir: an empty list and an
-  # unanswerable one are different claims.
-  local directory="$1" vendor account workdir session transcript files count value started
+  # cannot establish sets a REASON rather than falling back to the workdir or to silence: an empty
+  # list and an unanswerable one are different claims, and both the printed report and the record on
+  # disk are rendered from this one answer so they can never disagree.
+  local directory="$1" vendor account workdir session transcript started
+  RUN_FILES_LIST=''
+  RUN_FILES_REASON=''
+  RUN_FILES_PARTIAL=''
   vendor=$(jq -r '.vendor' "$directory/meta.json" 2>/dev/null)
   account=$(jq -r '.account' "$directory/meta.json" 2>/dev/null)
   workdir=$(jq -r '.workdir' "$directory/meta.json" 2>/dev/null)
   started=$(jq -r '.started_at // 0' "$directory/meta.json" 2>/dev/null)
   session=$(session_id "$directory")
   if [ "$vendor" != claudeb ]; then
-    printf 'RUN-FILES: unknown (%s records no per-file tool calls in a transcript)\n' "$vendor"
+    RUN_FILES_REASON="$vendor records no per-file tool calls in a transcript"
     return 0
   fi
   if ! transcript=$(session_transcript "$vendor" "$account" "$session"); then
-    printf 'RUN-FILES: unknown (no session transcript for %s)\n' "$session"
+    RUN_FILES_REASON="no session transcript for $session"
     return 0
   fi
-  if ! files=$(transcript_files "$transcript" "$workdir" "$started"); then
-    printf 'RUN-FILES: unknown (transcript unreadable)\n'
+  if ! RUN_FILES_LIST=$(transcript_files "$transcript" "$workdir" "$started"); then
+    RUN_FILES_LIST=''
+    RUN_FILES_REASON='transcript unreadable'
     return 0
   fi
-  if [ -z "$files" ]; then
+  # A list of editor calls answers for editor calls: a run that also worked through the shell —
+  # `sed -i`, a redirect, `mv` — changed files no transcript records as a tool call, and the list is
+  # a floor rather than the whole of it. Said per run, because a run that ran no shell command has a
+  # complete list and must not be doubted.
+  if transcript_ran_shell "$transcript" "$started"; then
+    RUN_FILES_PARTIAL='the run also ran shell commands, whose edits no transcript records'
+  fi
+  return 0
+}
+
+transcript_ran_shell() {
+  local transcript="$1" since="${2:-0}" hits
+  [[ "$since" =~ ^[0-9]+$ ]] || since=0
+  hits=$(jq -r --argjson since "$since" '
+           select(((((.timestamp? // "") | tostring | sub("\\.[0-9]+"; ""))
+                    | fromdateiso8601? // 0)) >= $since)
+           | .. | objects
+           | select((.type? == "tool_use") and ((.name? // "") == "Bash"))
+           | .name' "$transcript" 2>/dev/null) || return 1
+  [ -n "$hits" ]
+}
+
+run_files() {
+  local directory="$1" workdir count value
+  workdir=$(jq -r '.workdir' "$directory/meta.json" 2>/dev/null)
+  compute_run_files "$directory"
+  if [ -n "$RUN_FILES_REASON" ]; then
+    printf 'RUN-FILES: unknown (%s)\n' "$RUN_FILES_REASON"
+    return 0
+  fi
+  if [ -z "$RUN_FILES_LIST" ]; then
     # The count answers for editor tool calls only, and a bare `0` read as "changed nothing": an
     # edit made through the shell — `sed -i`, a redirect, `mv` — is real and appears in no transcript
     # as a tool call.
     printf 'RUN-FILES: 0 (editor tool calls only; shell edits are not tracked)\n'
+    [ -z "$RUN_FILES_PARTIAL" ] || printf 'RUN-FILES-PARTIAL: %s\n' "$RUN_FILES_PARTIAL"
     return 0
   fi
-  count=$(grep -c '' <<<"$files")
+  count=$(grep -c '' <<<"$RUN_FILES_LIST")
   # The paths below are workdir-relative (absolute only when they fall outside it), so a consumer
   # standing anywhere else — the launching chat's journal hook — can resolve them only with this.
   [ -z "$workdir" ] || [ "$workdir" = null ] || printf 'WORKDIR: %s\n' "$workdir"
   printf 'RUN-FILES: %s\n' "$count"
   while IFS= read -r value; do
     printf 'RUN-FILE: %s\n' "$value"
-  done <<<"$files"
+  done <<<"$RUN_FILES_LIST"
+  [ -z "$RUN_FILES_PARTIAL" ] || printf 'RUN-FILES-PARTIAL: %s\n' "$RUN_FILES_PARTIAL"
 }
 
 result_tail() {
