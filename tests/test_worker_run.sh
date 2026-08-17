@@ -881,6 +881,11 @@ assert grep -qx 'RUN-FILES: 3' <<<"$report"
 assert grep -qx 'RUN-FILE: bin/one' <<<"$report"
 assert grep -qx 'RUN-FILE: tests/two.ipynb' <<<"$report"
 assert grep -qxF "RUN-FILE: $WORK/outside/three" <<<"$report"
+# The paths are workdir-relative, and the reader that journals them for the launching chat stands
+# somewhere else entirely: without this line above the count they resolve against the wrong tree.
+assert grep -qxF "WORKDIR: $run_workdir" <<<"$report"
+assert test "$(grep -n '^WORKDIR: ' <<<"$report" | cut -d: -f1)" \
+  -lt "$(grep -n '^RUN-FILES: ' <<<"$report" | cut -d: -f1)"
 assert test "$(grep -c 'never-written' <<<"$report")" -eq 0
 assert test "$(grep -c 'bin/refused' <<<"$report")" -eq 0
 
@@ -918,6 +923,9 @@ assert test "$(grep -c 'pre-resume' <<<"$report")" -eq 0
 : >"$TRANSCRIPT"
 assert grep -qx 'RUN-FILES: 0 (editor tool calls only; shell edits are not tracked)' \
   <<<"$("$RUNNER" report "$RUN_ID")"
+# Nothing to resolve, so nothing to resolve it against: a bare WORKDIR line over a count that names
+# no file reads as a directory this run is claiming.
+assert test "$(grep -c '^WORKDIR: ' <<<"$("$RUNNER" report "$RUN_ID")")" -eq 0
 
 # A transcript jq cannot parse is unknown, never 0: the pipeline used to swallow the parse failure
 # and report an authoritative "changed nothing" about a run nobody could read.

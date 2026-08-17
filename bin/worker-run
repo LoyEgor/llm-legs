@@ -811,6 +811,9 @@ run_files() {
     return 0
   fi
   count=$(grep -c '' <<<"$files")
+  # The paths below are workdir-relative (absolute only when they fall outside it), so a consumer
+  # standing anywhere else — the launching chat's journal hook — can resolve them only with this.
+  [ -z "$workdir" ] || [ "$workdir" = null ] || printf 'WORKDIR: %s\n' "$workdir"
   printf 'RUN-FILES: %s\n' "$count"
   while IFS= read -r value; do
     printf 'RUN-FILE: %s\n' "$value"

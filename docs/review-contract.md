@@ -21,6 +21,14 @@ is visibility, not blocking.
    (session, path). Entries with no TAB are legacy (unowned, no timestamp) and are
    tolerated by every reader. `commit-report.sh` clears entries whose paths are no
    longer dirty.
+
+   A worker a chat spawned IS that chat: files authored by a claudeb worker enter
+   the launching session's journal when that session reads `worker-run report`,
+   whose `WORKDIR:`/`RUN-FILE:` lines the hook resolves under the current session
+   id (invariant row `am`). Codex and Gemini workers keep no per-file transcript
+   and report `RUN-FILES: unknown`, so their files stay outside coverage — a named
+   limitation of those vendors, not an accident of the plumbing, and the session
+   that delegates to them owns the gap.
 2. **Run records** — `review-bench` stores per run: `session`, `scope`, `started`/
    `finished`, per-panel `(model, effort, duration_ms)`, triage state, and
    `reviewed{path: blob-sha}` — every path of the sealed snapshot commit, read out

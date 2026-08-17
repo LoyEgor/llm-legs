@@ -1204,5 +1204,27 @@ assert eq "$(bench_roster "$OC_ROSTER/profiles")" "$oc_menu_roster"
 assert eq "$(bench_roster "$OC_ROSTER/nothing-here")" '-'
 rm -rf "$OC_ROSTER"
 
+# --- Row am: worker files reach the launching chat ----------------------------
+# Two repositories on one wire: worker-run prints the run's files and the directory they are
+# relative to, and the launching chat's journal hook reads exactly those two prefixes. Rename one
+# side and the files a chat's worker authored fall silently out of its review coverage — the
+# failure looks like a chat that only ever edited one file by hand.
+WORKER_RUN="$ROOT/bin/worker-run"
+assert grep -Fq "printf 'RUN-FILE: %s\\n' \"\$value\"" "$WORKER_RUN"
+assert grep -Fq "printf 'WORKDIR: %s\\n' \"\$workdir\"" "$WORKER_RUN"
+assert doc_has 'Worker files reach the launching chat'
+assert doc_has '`RUN-FILE: ` for every path and `WORKDIR: ` above the count'
+COMMIT_JOURNAL="$CLAUDE_SETUP/hooks/commit-journal.sh"
+if [ -r "$COMMIT_JOURNAL" ]; then
+  assert grep -Fq '/^RUN-FILE: / { print directory "\t" substr($0, 11)' "$COMMIT_JOURNAL"
+  assert grep -Fq 'previous ~ /^WORKDIR: /) ? substr(previous, 10)' "$COMMIT_JOURNAL"
+  # The two rules that keep the report from claiming work nobody did: the paths are read only under
+  # the count worker-run itself printed, and only when worker-run stood in command position.
+  assert grep -Fq '/^RUN-FILES: [0-9]+$/' "$COMMIT_JOURNAL"
+  assert grep -Fq 'worker-run([[:space:]]|$)' "$COMMIT_JOURNAL"
+else
+  printf 'SKIP: worker files reach the launching chat (%s is unreadable)\n' "$COMMIT_JOURNAL"
+fi
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the coverage word the bench prints, the gate translates and the statusline speaks verbatim, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, and the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp) and match %s\n' "$asserts" "$DOC"
+
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the coverage word the bench prints, the gate translates and the statusline speaks verbatim, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, and the two line prefixes that carry a worker'"'"'s files into the journal of the chat that launched it) and match %s\n' "$asserts" "$DOC"
