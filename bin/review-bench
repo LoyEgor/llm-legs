@@ -7682,16 +7682,18 @@ def content_drift_lines(before, after):
 
 def coverage_drift_pct(repo, record, paths):
     """How far the queried paths have moved past the tree the panel read, as a percentage of the
-    whole reviewed size.
+    reviewed size of THOSE paths — of the whole reviewed set only when the question is repo-wide.
 
     Measured against the run's own `reviewed` blobs and never against git history: a shared
     checkout takes commits from other chats continuously, and every history-shaped answer retired a
-    live review over work it had never read. A queried path the snapshot does not hold was never
-    reviewed at all, so all of it is drift — and the denominator stays the reviewed size, which is
-    what the 25% budget is a share of.
+    live review over work it had never read. The denominator is the asked paths' own reviewed size
+    because the 25% budget is a share of what those paths were reviewed at: priced against the
+    whole corpus instead, a rewrite of a small file dilutes under a large reviewed base beside it
+    and comes back covered.
     """
     reviewed = record.get("reviewed") if isinstance(record.get("reviewed"), dict) else {}
-    total = sum(content_line_count(blob_bytes(repo, sha)) for sha in reviewed.values() if sha)
+    priced = [reviewed.get(path) for path in paths] if paths else list(reviewed.values())
+    total = sum(content_line_count(blob_bytes(repo, sha)) for sha in priced if sha)
     drift = 0
     for path in paths:
         target = Path(repo) / path
@@ -7746,8 +7748,12 @@ def cmd_session_review(args):
         # it, so a deletion or a binary change under it would come back as covered at zero drift.
         if not (isinstance(reviewed, dict) and reviewed):
             continue
+        # Membership in the snapshot, not just the scope: a repo-wide scope admits every path
+        # ever named, including files born after the panel read the tree, and the run holds no
+        # blob to answer for those — it would blanket them at whatever drift its own corpus dilutes
+        # to.
         if run_triaged(run_dir) and all(
-            path_in_scope(path, record.get("scope")) for path in paths
+            path in reviewed and path_in_scope(path, record.get("scope")) for path in paths
         ):
             covering = (run_dir, record)
             break
@@ -9155,6 +9161,329 @@ def cmd_oc_models(args):
     return 0
 
 
+BOARD_REPEAT_RE = re.compile(r"#\d+$")
+BOARD_TIER_ORDER = (*REVIEW_TIERS, "OVER", "?")
+BOARD_COLUMNS = (
+    "cell", "runs/cmt", "raw+", "anch", "catch", "hit%", "medFP", "medWall", "cov*",
+    "ktok", "out-ktok", "cost", "value",
+)
+# Under either of these a cell's coverage is one panel's opinion, which is the same artifact
+# anchoring was introduced to kill, one step further in.
+BOARD_MIN_ANCHORED_RUNS = 3
+BOARD_MIN_ANCHORED_DEFECTS = 5
+BOARD_FOOTER = (
+    "cov* is anchored-only coverage; solo/family-only runs are excluded from it by design "
+    "(docs/research/opencode-raters-2026-08.md §26b), and a trailing ? marks a cell scored on "
+    f"fewer than {BOARD_MIN_ANCHORED_RUNS} anchored runs or "
+    f"{BOARD_MIN_ANCHORED_DEFECTS} anchored defects",
+    "cost is two units that do NOT compare: an OpenCode cell is priced as its share of the Go "
+    "plan's 5h request grant, every other cell as an API-price proxy over its mean tokens, so "
+    "value (cov*/cost) ranks cells only inside one unit family",
+    "raw+ is bench runs of that cell nobody adjudicated, so they are in no other column here",
+)
+HANDSCORED_SOURCE = "docs/research/opencode-raters-2026-08.md"
+HANDSCORED_COLUMNS = ("cell", "runs", "catch", "FP", "wall", "note", "source")
+# Paths measured by hand and never recorded as corpus runs. They are the only evidence these
+# models were tried at all, and every one of them is a decision the board would otherwise invite
+# an owner to take twice.
+HANDSCORED = (
+    {"cell": "gpt-5.6-luna chat", "runs": "11", "catch": "2", "fp": "0", "wall": "29s med",
+     "note": "hardcoded effort medium via /chat/completions"},
+    {"cell": "gpt-5.6-luna /responses high", "runs": "3", "catch": "2", "fp": "0", "wall": "186s",
+     "note": "needs a /responses client in bin/opencode-go"},
+    {"cell": "qwen3.8-max medium", "runs": "2", "catch": "0-2", "fp": "0", "wall": "483-503s",
+     "note": "manual 2026-08-11 on pinned commits; verdict: not a reviewer"},
+    {"cell": "oc-kimik3 medium manual", "runs": "", "catch": "3", "fp": "0", "wall": "158-223s",
+     "note": "3 catches on 143fc2f, but 22.6-28.6 min on a 2462-line diff; viable only behind a "
+             "diff-size gate"},
+    {"cell": "oc-dsv4flash low manual", "runs": "", "catch": "<=1", "fp": "", "wall": "70-108s",
+     "note": "loses to its own free reasoning-off cell"},
+)
+
+
+def board_cell_name(rater):
+    return BOARD_REPEAT_RE.sub("", rater or "")
+
+
+def board_usage(sd, run_id, rater):
+    path = sd / "benches" / str(run_id) / f"usage-{rater}.json"
+    try:
+        usage = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(usage, dict):
+        return None
+    # Two vendor spellings of one number reach this store — the Go gateway writes the OpenAI
+    # names, the Anthropic-shaped legs write theirs — so a column keyed on either alone reads
+    # as "no output tokens" for half the board.
+    output = usage.get("output_tokens")
+    if output is None:
+        output = usage.get("completion_tokens")
+    return usage.get("total_tokens"), output
+
+
+def board_price_weight(model):
+    for weights in PRICE_WEIGHTS.values():
+        if model in weights:
+            return weights[model]
+    if model.startswith("agy-flash"):
+        return PRICE_WEIGHTS["google"]["flash"]
+    if model == "agy-pro":
+        return PRICE_WEIGHTS["google"]["pro"]
+    return None
+
+
+def board_cost(cell, model, mean_total_tokens):
+    if cell.startswith("oc-"):
+        plan_model = OPENCODE_MODEL_IDS.get(model)
+        granted = GO_REQUESTS_5H.get(plan_model)
+        if not granted:
+            return None, None
+        return (BOARD_COST_SCALE / (granted / GO_USAGE_WEIGHT.get(plan_model, 1)),
+                "go-request")
+    weight = board_price_weight(model)
+    if weight is None or mean_total_tokens is None:
+        return None, None
+    return weight * mean_total_tokens / 1e6, "price-proxy"
+
+
+def board_raw_counts(sd, known):
+    """Bench runs of a known cell that no corpus row ever adjudicated.
+
+    A rater a run launched is in `rater_runs` whether or not anyone judged it later, so the gap
+    against the corpus is the measured-but-unscored volume — the only column here that says how
+    much evidence is sitting unused.
+    """
+    adjudicated = {
+        (row.get("run_id"), row.get("rater")) for row in read_jsonl(sd / "reviews.jsonl")
+    }
+    counts = Counter()
+    benches = sd / "benches"
+    for path in sorted(benches.iterdir()) if benches.exists() else ():
+        try:
+            meta = json.loads((path / "meta.json").read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        run_id = meta.get("run_id") or path.name
+        for entry in meta.get("rater_runs", []):
+            rater = entry.get("rater") or ""
+            if (run_id, rater) in adjudicated:
+                continue
+            name = board_cell_name(rater)
+            if name not in known:
+                name = normalize_legacy_rater(rater)
+            if name in known:
+                counts[name] += 1
+    return counts
+
+
+def board_tier(wall_s):
+    if wall_s is None:
+        return "?"
+    for tier_name, tier in REVIEW_TIERS.items():
+        if wall_s <= tier["budget_min"] * 60:
+            return tier_name
+    return "OVER"
+
+
+def board_cells(sd):
+    """Per-cell comparison rows over the whole corpus, coverage counted on anchored runs only.
+
+    A run's `misses` are adjudicated against that run's own panel, so a cell that ran solo or
+    beside its own family alone is scored against nothing but its own catches. Only a panel
+    holding another model that is not an OpenCode cell makes the coverage of the runs in it
+    comparable with anything (docs/research/opencode-raters-2026-08.md §26b).
+    """
+    by_run = defaultdict(list)
+    for row in read_jsonl(sd / "reviews.jsonl"):
+        by_run[row.get("run_id")].append(row)
+    cells = {}
+    for run_id, run_rows in by_run.items():
+        for row in run_rows:
+            rater = row.get("rater") or ""
+            name = board_cell_name(rater)
+            model = row.get("rater_model") or ""
+            entry = cells.setdefault(name, {
+                "cell": name, "models": Counter(), "commits": set(), "confirmed": [],
+                "false_positive": [], "wall_s": [], "n_anchored": 0,
+                "anchored_confirmed": 0, "anchored_misses": 0, "total_tokens": [],
+                "output_tokens": [],
+            })
+            entry["models"][model] += 1
+            if row.get("commit"):
+                entry["commits"].add(row["commit"])
+            entry["confirmed"].append(row.get("confirmed") or 0)
+            entry["false_positive"].append(row.get("false_positive") or 0)
+            if row.get("duration_ms"):
+                entry["wall_s"].append(row["duration_ms"] / 1000)
+            if any(
+                board_cell_name(other.get("rater")) != name
+                and (other.get("rater_model") or "") != model
+                and not (other.get("rater") or "").startswith("oc-")
+                for other in run_rows
+            ):
+                entry["n_anchored"] += 1
+                entry["anchored_confirmed"] += row.get("confirmed") or 0
+                entry["anchored_misses"] += row.get("misses") or 0
+            usage = board_usage(sd, run_id, rater)
+            if usage:
+                if usage[0] is not None:
+                    entry["total_tokens"].append(usage[0])
+                if usage[1] is not None:
+                    entry["output_tokens"].append(usage[1])
+    raw_counts = board_raw_counts(sd, set(cells))
+    return [board_row(entry, raw_counts[name]) for name, entry in cells.items()]
+
+
+def board_row(entry, n_raw):
+    confirmed = entry["confirmed"]
+    wall_s = statistics.median(entry["wall_s"]) if entry["wall_s"] else None
+    denominator = entry["anchored_confirmed"] + entry["anchored_misses"]
+    model = entry["models"].most_common(1)[0][0]
+    mean_total_tokens = (statistics.fmean(entry["total_tokens"])
+                         if entry["total_tokens"] else None)
+    cost_units, cost_unit = board_cost(entry["cell"], model, mean_total_tokens)
+    row = {
+        "cell": entry["cell"],
+        "model": model,
+        "n_runs": len(confirmed),
+        "n_commits": len(entry["commits"]),
+        "n_raw": n_raw,
+        "n_anchored": entry["n_anchored"],
+        "med_confirmed": statistics.median(confirmed),
+        "mean_confirmed": statistics.fmean(confirmed),
+        "hit_pct": 100 * sum(1 for value in confirmed if value > 0) / len(confirmed),
+        "med_false_positive": statistics.median(entry["false_positive"]),
+        "med_wall_s": wall_s,
+        "tier": board_tier(wall_s),
+        "cov_anch": 100 * entry["anchored_confirmed"] / denominator if denominator else None,
+        "anchored_denominator": denominator,
+        "low_evidence": (entry["n_anchored"] < BOARD_MIN_ANCHORED_RUNS
+                         or denominator < BOARD_MIN_ANCHORED_DEFECTS),
+        "mean_total_tokens": mean_total_tokens,
+        "mean_output_tokens": statistics.fmean(entry["output_tokens"])
+                              if entry["output_tokens"] else None,
+        "cost_units": cost_units,
+        "cost_unit": cost_unit,
+    }
+    row["value"] = (row["cov_anch"] / cost_units
+                    if row["cov_anch"] is not None and cost_units else None)
+    return row
+
+
+def board_sort_key(row):
+    return (row["cov_anch"] is None, -(row["cov_anch"] or 0), -row["mean_confirmed"])
+
+
+def board_values(row):
+    def number(value, spec, scale=1):
+        return format(value / scale, spec) if value is not None else ""
+
+    coverage = number(row["cov_anch"], ".1f")
+    if coverage and row["low_evidence"]:
+        coverage += "?"
+    return [
+        row["cell"],
+        f"{row['n_runs']}/{row['n_commits']}",
+        str(row["n_raw"]),
+        str(row["n_anchored"]),
+        f"{row['med_confirmed']:g}/{row['mean_confirmed']:.1f}",
+        f"{row['hit_pct']:.0f}",
+        f"{row['med_false_positive']:g}",
+        number(row["med_wall_s"], ".0f"),
+        coverage,
+        number(row["mean_total_tokens"], ".0f", 1000),
+        number(row["mean_output_tokens"], ".1f", 1000),
+        number(row["cost_units"], ".2f"),
+        number(row["value"], ".1f"),
+    ]
+
+
+def board_lines(rows):
+    rendered = {tier: [] for tier in BOARD_TIER_ORDER}
+    for row in sorted(rows, key=board_sort_key):
+        rendered[row["tier"]].append(board_values(row))
+    printable = [values for tier in BOARD_TIER_ORDER for values in rendered[tier]]
+    widths = [
+        max(len(header), *(len(values[index]) for values in printable))
+        for index, header in enumerate(BOARD_COLUMNS)
+    ]
+
+    def line(values):
+        return "  ".join(
+            value.ljust(widths[index]) if index == 0 else value.rjust(widths[index])
+            for index, value in enumerate(values)
+        ).rstrip()
+
+    lines = []
+    for tier in BOARD_TIER_ORDER:
+        if not rendered[tier]:
+            continue
+        budget = REVIEW_TIERS.get(tier)
+        label = f"{tier} (<= {budget['budget_min']} min)" if budget else {
+            "OVER": "OVER (past every tier budget)", "?": "? (no recorded wall clock)",
+        }[tier]
+        lines.extend(["", label, line(BOARD_COLUMNS), "  ".join("-" * width for width in widths)])
+        lines.extend(line(values) for values in rendered[tier])
+    lines.append("")
+    lines.extend(BOARD_FOOTER)
+    return lines
+
+
+def handscored_values(row):
+    return [row["cell"], row["runs"], row["catch"], row["fp"], row["wall"], row["note"],
+            HANDSCORED_SOURCE]
+
+
+def handscored_lines():
+    rows = [handscored_values(row) for row in HANDSCORED]
+    # Only the fixed-width head is padded: the note is a sentence, and padding every row out to
+    # the longest one turns a five-row block into a wall.
+    head = len(HANDSCORED_COLUMNS) - 2
+    widths = [
+        max(len(header), *(len(values[index]) for values in rows))
+        for index, header in enumerate(HANDSCORED_COLUMNS[:head])
+    ]
+    lines = ["", "hand-scored (out of corpus)"]
+    for values in (list(HANDSCORED_COLUMNS), *rows):
+        padded = [
+            value.ljust(widths[index]) if index == 0 else value.rjust(widths[index])
+            for index, value in enumerate(values[:head])
+        ]
+        lines.append("  ".join((*padded, *values[head:])).rstrip())
+    return lines
+
+
+def cmd_board(args):
+    rows = board_cells(state_dir())
+    if args.tier:
+        rows = [row for row in rows if row["tier"] == args.tier]
+    if args.no_oc:
+        rows = [row for row in rows if not row["cell"].startswith("oc-")]
+    if args.oc_only:
+        rows = [row for row in rows if row["cell"].startswith("oc-")]
+    rows = sorted(rows, key=board_sort_key)
+    hand = [dict(row, source=HANDSCORED_SOURCE) for row in HANDSCORED]
+    if args.json:
+        print(json.dumps({"cells": rows, "hand_scored": hand} if args.hand else rows, indent=2))
+        return 0
+    if args.tsv:
+        print("\t".join(("tier", *BOARD_COLUMNS)))
+        for row in rows:
+            print("\t".join((row["tier"], *board_values(row))))
+        if args.hand:
+            print()
+            print("\t".join(HANDSCORED_COLUMNS))
+            for row in HANDSCORED:
+                print("\t".join(handscored_values(row)))
+        return 0
+    for text in (board_lines(rows) if rows else ["no recorded runs match"]):
+        print(text)
+    for text in handscored_lines():
+        print(text)
+    return 0
+
+
 def cmd_list(args):
     benches = state_dir() / "benches"
     reviews = read_jsonl(state_dir() / "reviews.jsonl")
@@ -9417,6 +9746,21 @@ def main():
     lens.add_argument("action", choices=("list", "check"))
     lens.add_argument("slug", nargs="?", help="The lens to check")
     lens.set_defaults(func=cmd_lens)
+    board = subparsers.add_parser(
+        "board", help="Per-cell comparison table: catch, wall clock, anchored coverage and cost"
+    )
+    board.add_argument("--tier", choices=REVIEW_TIERS, help="Only cells in this tier")
+    board_family = board.add_mutually_exclusive_group()
+    board_family.add_argument("--no-oc", action="store_true", help="Drop the OpenCode cells")
+    board_family.add_argument("--oc-only", action="store_true", help="Only the OpenCode cells")
+    board_format = board.add_mutually_exclusive_group()
+    board_format.add_argument("--tsv", action="store_true", help="Tab-separated, tier as a column")
+    board_format.add_argument("--json", action="store_true", help="One object per cell")
+    board.add_argument(
+        "--hand", action="store_true",
+        help="Carry the hand-scored block into --tsv/--json too (the text table always has it)",
+    )
+    board.set_defaults(func=cmd_board)
     listing = subparsers.add_parser("list", help="List recent benchmark runs")
     listing.add_argument("--limit", type=int, default=20)
     listing.set_defaults(func=cmd_list)

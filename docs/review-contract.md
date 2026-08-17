@@ -69,13 +69,18 @@ prints exactly one line and exits 0:
 - `timed-out <run-id>` — the session's most recent run was killed by the watchdog
   and no later triaged run covers.
 
-A run covers a path when the run's `session` matches, the path is inside the
-run's `scope` (directory-prefix containment; empty scope = repo-wide), and the
-run is triaged. Drift is content, not history: per covered path, diff lines
+A run covers a path when the run's `session` matches, the run is triaged, the
+path is inside the run's `scope` (directory-prefix containment; empty scope =
+repo-wide), and the run's `reviewed` map holds that path — a recorded deletion
+(empty blob) counts as held. A run answers only for paths its snapshot actually
+held: a repo-wide run must not blanket files born after it, having no blob to
+price them against. Drift is content, not history: per asked path, diff lines
 between the `reviewed` blob and the current file (binaries count 0), summed and
-divided by the reviewed line total. A path deleted since a run that never held it
-is 100% — there is no content left to price the change in, and every line count
-over an absent file is zero. **Staleness IS the mechanical second round**:
+divided by those same asked paths' reviewed line total, never by the whole
+corpus — a small unreviewed change beside a large reviewed base is priced at its
+own size. With no `--paths` the question is repo-wide and the whole reviewed set
+is the total. Denominator 0 (only recorded deletions asked) is 100% with any
+diff lines and 0% without. **Staleness IS the mechanical second round**:
 fixes that outgrow 25% of the reviewed size return the paths to unreviewed, and
 the next review runs the full original scope plus the fixes — there is no other
 mechanically-forced round.
