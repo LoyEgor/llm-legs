@@ -2398,6 +2398,7 @@ def lens_refusal(call, *call_args):
 
 write_lens("edge-cases.md", "\n".join([
     "name: edge-cases",
+    "when: THE NEARBY-STATE HUNT IS ASKED FOR",
     f"source: {lens_source}",
     f"source_hash: {lens_source_digest}",
     "aliases: [edgecases, edge]",
@@ -2405,6 +2406,7 @@ write_lens("edge-cases.md", "\n".join([
 write_lens("repeat-lens.md", "name: repeat-lens\nrepeats: 2")
 edge_lens = rb.resolve_lens("edge-cases")
 assert edge_lens["body"].startswith("EDGE CASE METHODOLOGY BODY"), edge_lens["body"]
+assert edge_lens["when"] == "THE NEARBY-STATE HUNT IS ASKED FOR"
 assert edge_lens["repeats"] is None and edge_lens["aliases"] == ["edgecases", "edge"]
 assert edge_lens["hash"] == hashlib.sha256(
     (lens_registry / "edge-cases.md").read_bytes()
@@ -2433,6 +2435,7 @@ for frontmatter, body, reason in (
     (f"name: ok-lens\nsource: [{lens_source}, other.md]", lens_body,
      "source must be a single value"),
     ("name: ok-lens\nsource_hash: [abc]", lens_body, "source_hash must be a single value"),
+    ("name: ok-lens\nwhen: [always, never]", lens_body, "when must be a single value"),
     ("name: edge-cases", lens_body, "claimed by both"),
     ("name: ok-lens\naliases: [edge]", lens_body, "claimed by both"),
 ):
@@ -2580,8 +2583,16 @@ assert any(
 assert any(
     line.startswith("repeat-lens") and "repeats=2" in line for line in lens_listing
 ), lens_listing
+# The listing is where a model that never heard of a lens decides whether to take it, so every
+# lens says when — and one that does not is named as saying nothing, not skipped.
+assert "  when: THE NEARBY-STATE HUNT IS ASKED FOR" in lens_listing, lens_listing
+assert lens_listing.index("  when: THE NEARBY-STATE HUNT IS ASKED FOR") == 1 + next(
+    index for index, line in enumerate(lens_listing) if line.startswith("edge-cases")
+), lens_listing
+assert "  when: (not recorded — the lens file should say)" in lens_listing, lens_listing
 lens_checked = "\n".join(rb.lens_check_lines("edge"))
 assert lens_checked.startswith("edge-cases ") and lens_source_digest in lens_checked
+assert "when:     THE NEARBY-STATE HUNT IS ASKED FOR" in lens_checked, lens_checked
 assert "aliases:  edgecases, edge" in lens_checked, lens_checked
 assert "status:   current" in lens_checked, lens_checked
 (lens_registry / "gone-source.md").unlink()
@@ -9953,6 +9964,147 @@ cp "$FSD/defects/fixture__aaaaaaa.jsonl" "$FSD/defects/other__aaaaaaa.jsonl"
 WORKER_STATS_DIR="$FSD" "$SCRIPT" frontier --budgets 10 >/dev/null 2>&1 \
   && fail "frontier merged two repositories sharing a commit prefix"
 rm -f "$FSD/defects/other__aaaaaaa.jsonl"
+
+# The board is a metric audit as much as a table. `misses` are adjudicated against one run's own
+# panel, so a cell that ran solo — or beside its own family alone — is scored against nothing but
+# its own catches, and the coverage column has to stay empty there rather than print the 100% that
+# arithmetic implies (docs/research/opencode-raters-2026-08.md §26b).
+BSD="$WORK/board-stats"
+mkdir -p "$BSD"
+python3 - "$BSD" <<'PY'
+import json
+import pathlib
+import sys
+
+stats = pathlib.Path(sys.argv[1])
+# board-shared anchors oc-kimik3 and nothing else: sol-medium's only panel-mate is an oc cell,
+# which is exactly the partner the rule refuses to count as a reference. The three board-panel
+# runs are what carries sol-medium and opus-high past the low-evidence thresholds, so the same
+# fixture proves the guard fires and that it stops firing.
+rows = [
+    ("board-shared", "sol-medium", "sol", "a" * 40, 3, 1, 1, 200_000),
+    ("board-shared", "oc-kimik3", "oc-kimik3", "a" * 40, 1, 3, 0, 20_000),
+    ("board-repeat", "oc-kimik3#2", "oc-kimik3", "b" * 40, 9, 0, 2, 40_000),
+    ("board-solo", "oc-glm52", "oc-glm52", "b" * 40, 5, 0, 0, 700_000),
+]
+for index, commit in enumerate(("c", "d", "e"), 1):
+    rows.append((f"board-panel{index}", "sol-medium", "sol", commit * 40, 2, 1, 0, 200_000))
+    rows.append((f"board-panel{index}", "opus-high", "opus", commit * 40, 1, 2, 0, 400_000))
+(stats / "benches").mkdir(parents=True, exist_ok=True)
+(stats / "reviews.jsonl").write_text("".join(
+    json.dumps({
+        "run_id": run_id, "rater": rater, "rater_model": model, "rater_effort": "medium",
+        "commit": commit, "confirmed": confirmed, "misses": misses, "false_positive": fp,
+        "duration_ms": duration, "repo": "fixture", "ts": "2026-08-17T00:00:00+00:00",
+    }) + "\n"
+    for run_id, rater, model, commit, confirmed, misses, fp, duration in rows
+))
+# Both vendor spellings of one usage record, under the repeat suffix the cell name drops and the
+# file name keeps.
+for run_id, rater, usage in (
+    ("board-shared", "oc-kimik3",
+     {"prompt_tokens": 60000, "completion_tokens": 2000, "total_tokens": 62000}),
+    ("board-repeat", "oc-kimik3#2",
+     {"input_tokens": 78000, "output_tokens": 4000, "total_tokens": 82000}),
+    ("board-panel1", "opus-high",
+     {"input_tokens": 900000, "output_tokens": 100000, "total_tokens": 1000000}),
+):
+    directory = stats / "benches" / run_id
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"usage-{rater}.json").write_text(json.dumps(usage))
+# What a run launched, against what anyone ever judged: board-raw was never adjudicated at all,
+# and board-shared judged two of the three cells it ran.
+for run_id, raters in (
+    ("board-shared", ("sol-medium", "oc-kimik3", "oc-kimik3#3")),
+    ("board-raw", ("oc-kimik3", "oc-kimik3#2", "sol-medium", "nosuch-cell")),
+):
+    directory = stats / "benches" / run_id
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "meta.json").write_text(json.dumps({
+        "run_id": run_id, "rater_runs": [{"rater": rater} for rater in raters],
+    }))
+PY
+assert test "$?" -eq 0
+
+board_json=$(WORKER_STATS_DIR="$BSD" "$SCRIPT" board --json) \
+  || fail "board refused a fixture corpus"
+board_has() { jq -e "$1" >/dev/null <<<"$board_json"; }
+assert board_has '.[] | select(.cell == "oc-kimik3") | .cov_anch == 25'
+assert board_has '.[] | select(.cell == "oc-kimik3")
+  | .n_anchored == 1 and .n_runs == 2 and .n_commits == 2'
+assert board_has '.[] | select(.cell == "oc-glm52") | .cov_anch == null and .n_anchored == 0'
+# One anchored run behind a coverage number is the artifact anchoring exists to kill, one step in,
+# so the number stays visible and says so; three runs over five defects is what clears it.
+assert board_has '.[] | select(.cell == "oc-kimik3")
+  | .low_evidence == true and .anchored_denominator == 4'
+assert board_has '.[] | select(.cell == "sol-medium")
+  | .low_evidence == false and .anchored_denominator == 9 and (.cov_anch * 10 | round) == 667'
+assert board_has '.[] | select(.cell == "oc-glm52") | .low_evidence == true'
+# A rater no corpus row ever named earns a count against a known cell, never a row of its own.
+assert board_has '.[] | select(.cell == "oc-kimik3") | .n_raw == 3'
+assert board_has '.[] | select(.cell == "sol-medium") | .n_raw == 1'
+assert board_has '.[] | select(.cell == "opus-high") | .n_raw == 0'
+assert board_has '[.[] | select(.cell == "nosuch-cell")] == []'
+assert board_has '.[] | select(.cell == "oc-kimik3")
+  | .mean_total_tokens == 72000 and .mean_output_tokens == 3000'
+assert board_has '.[] | select(.cell == "sol-medium") | .mean_total_tokens == null'
+assert board_has '.[] | select(.cell == "oc-kimik3")
+  | (.cost_units * 10000 | round) == 90909 and (.value * 100 | round) == 275'
+assert board_has '.[] | select(.cell == "oc-glm52")
+  | (.cost_units * 10000 | round) == 11364 and .value == null'
+# The other side of the plan-request unit: a vendor billed per token is priced over its own mean
+# usage, and a cell nobody has a usage artifact for is priced not at all rather than at zero.
+assert board_has '.[] | select(.cell == "opus-high")
+  | .cost_units == 5 and .cost_unit == "price-proxy" and (.value * 10 | round) == 67'
+assert board_has '.[] | select(.cell == "oc-kimik3") | .cost_unit == "go-request"'
+assert board_has '.[] | select(.cell == "sol-medium")
+  | .cost_units == null and .cost_unit == null'
+assert board_has '[.[] | select(.cell == "oc-kimik3") | .tier] == ["T0"]'
+assert board_has '[.[] | select(.cell == "sol-medium") | .tier] == ["T1"]'
+assert board_has '[.[] | select(.cell == "opus-high") | .tier] == ["T2"]'
+assert board_has '[.[] | select(.cell == "oc-glm52") | .tier] == ["T3"]'
+assert test -z "$(jq -r 'if type == "object" then "object" else empty end' <<<"$board_json")"
+board_hand_json=$(WORKER_STATS_DIR="$BSD" "$SCRIPT" board --json --hand)
+assert jq -e '.cells | length == 4' >/dev/null <<<"$board_hand_json"
+assert jq -e '(.hand_scored | length) == 5
+  and all(.hand_scored[]; .source == "docs/research/opencode-raters-2026-08.md")' \
+  >/dev/null <<<"$board_hand_json"
+
+board_out=$(WORKER_STATS_DIR="$BSD" "$SCRIPT" board)
+# The static block names cells too, so every filter assertion below reads the tier tables alone.
+board_tiers_only() { WORKER_STATS_DIR="$BSD" "$SCRIPT" board "$@" | sed '/^hand-scored/,$d'; }
+assert contains "$board_out" 'T0 (<= 3 min)'
+assert contains "$board_out" 'T3 (<= 20 min)'
+assert contains "$board_out" 'cov* is anchored-only coverage'
+assert contains "$board_out" 'solo/family-only runs are excluded from it by design'
+assert contains "$board_out" 'cost is two units that do NOT compare'
+assert contains "$board_out" '25.0?'
+assert contains "$board_out" '66.7'
+grep -q '66\.7?' <<<"$board_out" && fail "board flagged a cell that cleared both thresholds"
+assert contains "$board_out" 'hand-scored (out of corpus)'
+assert contains "$board_out" 'needs a /responses client in bin/opencode-go'
+board_no_oc=$(board_tiers_only --no-oc)
+assert contains "$board_no_oc" 'sol-medium'
+grep -q 'oc-' <<<"$board_no_oc" && fail "board --no-oc kept an OpenCode cell"
+board_oc_only=$(board_tiers_only --oc-only)
+assert contains "$board_oc_only" 'oc-kimik3'
+grep -q 'sol-medium' <<<"$board_oc_only" && fail "board --oc-only kept a Claude cell"
+WORKER_STATS_DIR="$BSD" "$SCRIPT" board --no-oc --oc-only >/dev/null 2>&1 \
+  && fail "board accepted two contradictory family filters"
+board_tier=$(board_tiers_only --tier T0)
+assert contains "$board_tier" 'oc-kimik3'
+grep -q 'sol-medium' <<<"$board_tier" && fail "board --tier T0 kept a T1 cell"
+# A blank cell drops a column silently, and nobody reads this format by eye to notice.
+board_tsv=$(WORKER_STATS_DIR="$BSD" "$SCRIPT" board --tsv)
+assert test "$(head -1 <<<"$board_tsv" | cut -f1)" = "tier"
+assert test "$(awk -F'\t' '{print NF}' <<<"$board_tsv" | sort -u)" = "14"
+assert test "$(awk -F'\t' '$2 == "oc-glm52" {print $1}' <<<"$board_tsv")" = "T3"
+assert test "$(grep -c '' <<<"$board_tsv")" -eq 5
+assert test -z "$(awk -F'\t' '$2 == "oc-glm52" {print $10}' <<<"$board_tsv")"
+assert test "$(awk -F'\t' '$2 == "oc-kimik3" {print $10}' <<<"$board_tsv")" = "25.0?"
+grep -q 'hand-scored' <<<"$board_tsv" && fail "board --tsv carried the hand-scored block unasked"
+assert contains "$(WORKER_STATS_DIR="$BSD" "$SCRIPT" board --tsv --hand)" \
+  'qwen3.8-max medium'
 
 # record stamps the repository a run reviewed, or says plainly that it cannot be traced.
 REPO_RUN="$CSD/benches/repo-fixture"

@@ -1,5 +1,6 @@
 ---
 name: parallel-sessions
+when: the reviewed change's own job is coordinating simultaneous sessions or their workers — ownership records, commit journals and gates, worktree plumbing, run records, locks; its defects appear only when another chat works beside it, so a default review reads the code as correct
 ---
 
 Review this change as one part of a machine several chats and their workers run at the same time,

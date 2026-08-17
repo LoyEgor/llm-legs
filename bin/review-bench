@@ -949,7 +949,7 @@ REVIEW_PROFILES = tuple(REVIEW_PROFILE_FILES)
 # it; REVIEW_BENCH_LENS_DIR redirects the whole registry for tests.
 LENS_DIR = Path(__file__).resolve().parent.parent / "lenses"
 LENS_SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
-LENS_FRONTMATTER_KEYS = ("name", "source", "source_hash", "repeats", "aliases")
+LENS_FRONTMATTER_KEYS = ("name", "when", "source", "source_hash", "repeats", "aliases")
 LENS_SEVERITIES = ("P1", "P2", "P3")
 # The OpenCode raters already spend their prompt on a vendor profile and the Antigravity raters
 # receive no methodology at all — they run their own installed review skill from a literal
@@ -5115,7 +5115,7 @@ def read_lens(path):
     # A file naming one slug twice — or naming its own name as an alias — claims nothing against
     # itself; only another file claiming the same slug is the ambiguity load_lenses refuses.
     aliases = [alias for alias in dict.fromkeys(aliases) if alias != name]
-    for key in ("source", "source_hash"):
+    for key in ("when", "source", "source_hash"):
         if not isinstance(fields.get(key, ""), str):
             raise RuntimeError(
                 f"lens {name}: {key} must be a single value, got {fields[key]!r}"
@@ -5147,6 +5147,7 @@ def read_lens(path):
         "body": body.strip(),
         "hash": hashlib.sha256(data).hexdigest(),
         "repeats": repeats,
+        "when": fields.get("when") or "",
         "source": fields.get("source") or "",
         "source_hash": fields.get("source_hash") or "",
         "aliases": list(aliases),
@@ -9204,11 +9205,16 @@ def lens_list_lines():
     lenses = load_lenses()
     if not lenses:
         return [f"no lenses registered in {lens_dir()}"]
-    return [
-        f"{name:<20} {lens['path']}  repeats={lens['repeats'] or 'tier'}  "
-        f"{lens_source_status(lens)}"
-        for name, lens in sorted(lenses.items())
-    ]
+    lines = []
+    for name, lens in sorted(lenses.items()):
+        lines.append(
+            f"{name:<20} {lens['path']}  repeats={lens['repeats'] or 'tier'}  "
+            f"{lens_source_status(lens)}"
+        )
+        # The listing is how a model that never heard of a lens decides whether to take it, so
+        # a lens that does not say when is named here rather than skipped.
+        lines.append(f"  when: {lens['when'] or '(not recorded — the lens file should say)'}")
+    return lines
 
 
 def lens_check_lines(slug):
@@ -9216,6 +9222,7 @@ def lens_check_lines(slug):
     path = lens_source_path(lens)
     current = (lens_source_digest(path) or "") if path else ""
     lines = [f"{lens['name']}  {lens['path']}"]
+    lines.append(f"  when:     {lens['when'] or '(not recorded — the lens file should say)'}")
     if lens["aliases"]:
         lines.append(f"  aliases:  {', '.join(lens['aliases'])}")
     lines.append(f"  source:   {path or '(none recorded)'}")

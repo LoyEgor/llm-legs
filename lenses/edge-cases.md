@@ -1,5 +1,6 @@
 ---
 name: edge-cases
+when: a hunt past the happy path is asked for, or the change leans on nearby state a default review reads past — environment failures, boundary values, interruptions, concurrent access to what it holds
 ---
 
 Review the states that sit next to this change, not the path it was written for. The change
