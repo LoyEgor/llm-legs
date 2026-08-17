@@ -26,9 +26,9 @@ usage: claude-chat-switch [--front|--self] [--cwd <dir>] <profile> [session-id]
   --self        same hands-free switch, but targeted at the CALLING chat's own
                 tab, so it works without Terminal being frontmost (the path a
                 chat uses to hand its tab to another conversation)
-  --cwd <dir>   directory to cd into before resuming — required when the target
-                session belongs to another project, since claude finds a
-                transcript only under the current directory's project slug
+  --cwd <dir>   directory to cd into before resuming — the project the target
+                session belongs to, when that is not the chat's own; without it
+                the chat's own directory travels with the switch
 
 Arms a Hammerspoon one-shot that relaunches the target chat under <profile>. In
 --front/--self mode the /exit is typed for you, once the chat goes idle; plain
@@ -63,6 +63,103 @@ project_slug() {
   local real
   real=$(cd "$1" 2>/dev/null && pwd -P) || real="$1"
   printf '%s' "$real" | sed 's/[^A-Za-z0-9]/-/g'
+}
+
+# Every profile's projects/ is a symlink to ~/.claude/projects today, which is what
+# lets a session resume under a different account at all. They are still walked in
+# order — the running chat's own config dir first — in case one ever stops being one.
+transcript_roots() {
+  local pid=$1 cfg d
+  cfg=$(ps eww -o command= -p "$pid" 2>/dev/null \
+        | grep -oE 'CLAUDE_CONFIG_DIR=[^ ]+' | head -1 | cut -d= -f2-)
+  [ -n "$cfg" ] && printf '%s\n' "$cfg"
+  printf '%s\n' "$HOME/.claude"
+  for d in "$PROFILES_DIR"/*/; do
+    [ -d "$d" ] && printf '%s\n' "${d%/}"
+  done
+}
+
+transcript=""
+resume_cwd=""
+notes=""
+
+# Anything the resolution had to guess at. The menu path throws this script's output
+# away unless it exits non-zero, so a note only ever reaches him by travelling to the
+# Hammerspoon log alongside the switch it belongs to.
+note() {
+  local text=$1
+  text=${text//$'\n'/ }
+  text=${text//$'\r'/ }
+  notes="${notes:+$notes; }$text"
+  printf 'claude-chat-switch: %s\n' "$text" >&2
+}
+
+# The transcript of a session, wherever it lives; sets $transcript. Looking only under
+# the slug of the chat's current directory is what silently downgraded live chats to
+# fresh ones: a chat reopened from somewhere else keeps writing the transcript of the
+# project it was started in, so its cwd is a hint and never a verdict.
+find_transcript() {
+  local sid=$1 hint=$2 pid=$3 root slug="" hit real seen="" found=0
+  local -a roots=()
+  transcript=""
+  while IFS= read -r root; do
+    [ -n "$root" ] && roots+=("$root")
+  done < <(transcript_roots "$pid")
+  [ -n "$hint" ] && slug=$(project_slug "$hint")
+  for root in "${roots[@]}"; do
+    if [ -n "$slug" ] && [ -f "$root/projects/$slug/$sid.jsonl" ]; then
+      transcript="$root/projects/$slug/$sid.jsonl"
+      return 0
+    fi
+  done
+  # One id can hold transcripts under several projects at once (a session that moved,
+  # a copied transcript). Glob order is alphabetical, which picks the abandoned one as
+  # readily as the live one; the newest is the conversation still being written to.
+  # Roots mostly symlink to one store, so the same file is seen once per root.
+  for root in "${roots[@]}"; do
+    for hit in "$root"/projects/*/"$sid.jsonl"; do
+      [ -f "$hit" ] || continue
+      real=$(cd -- "$(dirname "$hit")" 2>/dev/null && printf '%s/%s' "$(pwd -P)" "${hit##*/}")
+      [ -n "$real" ] || real="$hit"
+      case "|$seen|" in *"|$real|"*) continue ;; esac
+      seen="${seen:+$seen|}$real"
+      found=$((found + 1))
+      if [ -z "$transcript" ] || [ "$hit" -nt "$transcript" ]; then transcript="$hit"; fi
+    done
+  done
+  [ -n "$transcript" ] || return 1
+  if [ "$found" -gt 1 ]; then
+    note "session $sid has transcripts under $found projects; taking the newest, $transcript"
+  fi
+  return 0
+}
+
+# Where the resumed chat should land; sets $resume_cwd. The registry's cwd is only
+# where the process was launched, and a cwd the transcript records can be one the
+# conversation has since left. The directory the transcript LIVES in is the ground
+# truth, so a candidate that does not slug to it belongs to some other project.
+project_home() {
+  local path=$1 fallback=$2 here recorded matched="" strayed=""
+  resume_cwd="$fallback"
+  here=$(basename "$(dirname "$path")")
+  [ -n "$fallback" ] && [ "$(project_slug "$fallback")" = "$here" ] && return 0
+  while IFS= read -r recorded; do
+    { [ -n "$recorded" ] && [ -d "$recorded" ]; } || continue
+    if [ "$(project_slug "$recorded")" = "$here" ]; then
+      matched="$recorded"
+      break
+    fi
+    [ -n "$strayed" ] || strayed="$recorded"
+  done < <(head -20 "$path" 2>/dev/null | jq -r 'select(.cwd) | .cwd' 2>/dev/null)
+  if [ -n "$matched" ]; then
+    resume_cwd="$matched"
+    [ -n "$strayed" ] && note "transcript $path records cwd $strayed outside its own project $here; resuming from $matched"
+  elif [ -n "$strayed" ]; then
+    note "transcript $path records only cwd $strayed, outside its own project $here; resuming from ${fallback:-whatever directory the tab is left in}"
+  else
+    note "transcript $path records no directory that still exists; resuming from ${fallback:-whatever directory the tab is left in}"
+  fi
+  return 0
 }
 
 # Claude Code keeps ~/.claude/sessions/<pid>.json per live interactive process
@@ -164,6 +261,7 @@ elif [ "$front_mode" -eq 1 ]; then
   [ -n "$claude_pid" ] || die "no claude process on the frontmost Terminal tab ($tty_dev)."
 fi
 
+fresh_reason=""
 if [ "$front_mode" -eq 1 ] || [ "$self_mode" -eq 1 ]; then
   registry=$(live_registry "$claude_pid")
   # --self is armed BY the chat it exits, usually mid-turn: without the registry
@@ -175,11 +273,10 @@ if [ "$front_mode" -eq 1 ] || [ "$self_mode" -eq 1 ]; then
     die "no live sessions-registry entry for claude pid $claude_pid; cannot tell when this chat is idle."
   fi
 
-  resume_id=""
   json_cwd=""
-  if [ -n "$session_id" ]; then
-    resume_id="$session_id"
-  else
+  # An id named on the command line is another conversation than the one running in
+  # this tab, so the tab's own cwd is no hint for it.
+  if [ -z "$session_id" ]; then
     if [ -n "$registry" ]; then
       session_id=$(jq -r '.sessionId // ""' "$registry" 2>/dev/null)
       json_cwd=$(jq -r '.cwd // ""' "$registry" 2>/dev/null)
@@ -190,15 +287,15 @@ if [ "$front_mode" -eq 1 ] || [ "$self_mode" -eq 1 ]; then
       json_cwd=""
     fi
     [ -n "$session_id" ] || die "cannot identify session for claude pid $claude_pid on $tty_dev (no live sessions-registry entry, no --resume in argv)."
-    resume_id="$session_id"
-    if [ -n "$json_cwd" ]; then
-      config_dir=$(ps eww -o command= -p "$claude_pid" 2>/dev/null | grep -oE 'CLAUDE_CONFIG_DIR=[^ ]+' | head -1 | cut -d= -f2-)
-      [ -n "$config_dir" ] || config_dir="$HOME/.claude"
-      slug=$(project_slug "$json_cwd")
-      # A chat that never wrote a message has no transcript, and claude errors on
-      # --resume of a nonexistent session — relaunch those as a fresh chat instead.
-      [ -f "$config_dir/projects/$slug/$session_id.jsonl" ] || resume_id=""
-    fi
+  fi
+  resume_id="$session_id"
+  if find_transcript "$session_id" "$json_cwd" "$claude_pid"; then
+    project_home "$transcript" "$json_cwd"
+  else
+    # A chat that never wrote a message has no transcript, and claude errors on
+    # --resume of a nonexistent session — relaunch those as a fresh chat instead.
+    resume_id=""
+    fresh_reason="no transcript on disk for session $session_id"
   fi
 else
   if [ -z "$session_id" ]; then
@@ -219,9 +316,9 @@ fi
 
 [ -n "$session_id" ] || die "could not determine a session id (not in \$CLAUDE_CODE_SESSION_ID and no transcript for this directory). Pass one explicitly: claude-chat-switch $profile <session-id>"
 
-# A --cwd that does not hold the target's transcript would resume nothing: claude
-# resolves --resume against the project slug of the cwd it starts in. Catch that
-# here, while the chat asking for the switch is still alive to report it.
+# --cwd names the project being switched TO, so one that does not hold the target's
+# transcript is the wrong directory and would bring the chat back outside its own
+# project. Catch it while the chat asking for the switch is still alive to report it.
 if [ -n "$cwd_arg" ]; then
   target_slug=$(project_slug "$cwd_arg")
   [ -f "$HOME/.claude/projects/$target_slug/$session_id.jsonl" ] \
@@ -242,7 +339,15 @@ fi
 # and the newline was already rejected above.
 lua_str() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"; }
 
-opts="{cwd=$(lua_str "$cwd_arg"), registry=$(lua_str "${registry:-}")}"
+# An explicit --cwd names the project being switched TO and outranks everything;
+# otherwise the chat's own directory travels with it, so the resume no longer lands
+# in whatever directory the shell that armed it happened to be sitting in.
+case "$resume_cwd" in *[$'\n\r']*) resume_cwd="" ;; esac
+[ -n "$resume_cwd" ] && [ ! -d "$resume_cwd" ] && resume_cwd=""
+cd_target="$cwd_arg"
+[ -n "$cd_target" ] || cd_target="$resume_cwd"
+
+opts="{cwd=$(lua_str "$cd_target"), registry=$(lua_str "${registry:-}"), freshReason=$(lua_str "$fresh_reason"), note=$(lua_str "$notes")}"
 if [ "$front_mode" -eq 1 ] || [ "$self_mode" -eq 1 ]; then
   call="ClaudeChatSwitch.switchChat(\"$profile\", \"$resume_id\", $claude_pid, \"$tty_dev\", $opts)"
 else
@@ -260,15 +365,15 @@ fi
 
 resume_cmd="claudeb profile $profile --resume $session_id"
 # Same quoting Hammerspoon types, so what he reads is what lands in the shell.
-[ -n "$cwd_arg" ] && resume_cmd="cd '${cwd_arg//\'/\'\\\'\'}' && $resume_cmd"
+[ -n "$cd_target" ] && resume_cmd="cd '${cd_target//\'/\'\\\'\'}' && $resume_cmd"
 
 if [ "$front_mode" -eq 1 ] || [ "$self_mode" -eq 1 ]; then
   if [ -n "$resume_id" ]; then
     printf 'claude-chat-switch: armed (auto). Hammerspoon will wait for the chat on %s to go idle, /exit it, and open session %s: %s\n' \
       "$tty_dev" "$session_id" "$resume_cmd"
   else
-    printf 'claude-chat-switch: armed (auto). Session %s has no transcript yet; Hammerspoon will /exit the chat on %s and open a FRESH chat: claudeb profile %s\n' \
-      "$session_id" "$tty_dev" "$profile"
+    printf 'claude-chat-switch: armed (auto). %s; Hammerspoon will /exit the chat on %s and open a FRESH chat: claudeb profile %s\n' \
+      "$fresh_reason" "$tty_dev" "$profile"
   fi
 else
   printf 'claude-chat-switch: armed. Exit this chat (Ctrl+C twice or /exit) and session %s reopens under profile "%s", resumed by: %s\n' \

@@ -55,8 +55,6 @@ local function resumeCommand(entry)
     if entry.sessionId ~= "" then
         cmd = cmd .. " --resume " .. entry.sessionId
     end
-    -- A session is resumable only from the directory it was started in: claude
-    -- looks for the transcript under the project slug of the CURRENT cwd.
     if entry.cwd then
         cmd = "cd " .. shellQuote(entry.cwd) .. " && " .. cmd
     end
@@ -351,9 +349,13 @@ end
 -- ttyDev present = auto mode (menu path, and a chat handing over its own tab):
 -- this module types /exit itself and only waits exitGraceSeconds. Absent = legacy
 -- passive mode (the user exits the chat).
--- opts.cwd      — directory to cd into before resuming (a foreign session's own cwd)
--- opts.registry — ~/.claude/sessions/<pid>.json of the chat being replaced; when
---                 given, /exit waits for that chat to go idle first.
+-- opts.cwd         — directory to cd into before resuming (the target's own cwd)
+-- opts.registry    — ~/.claude/sessions/<pid>.json of the chat being replaced; when
+--                    given, /exit waits for that chat to go idle first.
+-- opts.freshReason — why an empty sessionId is empty; said out loud, because losing
+--                    a conversation to a fresh chat is the failure worth hearing.
+-- opts.note        — what the resolution had to guess at (an ambiguous session id, a
+--                    transcript that records a directory outside its own project).
 function ClaudeChatSwitch.switchChat(profileName, sessionId, terminalPid, ttyDev, opts)
     if type(profileName) ~= "string" or profileName == ""
         or type(sessionId) ~= "string" then
@@ -381,6 +383,15 @@ function ClaudeChatSwitch.switchChat(profileName, sessionId, terminalPid, ttyDev
         tty and ("(auto-exit via " .. tty .. ", grace " .. exitGraceSeconds .. "s)")
             or ("(waiting up to " .. maxWaitSeconds .. "s for chat to exit)"),
         registry and " idle-gated" or ""))
+    if type(opts.note) == "string" and opts.note ~= "" then
+        logLine("note", opts.note)
+    end
+    local freshWhy
+    if sessionId == "" then
+        freshWhy = (type(opts.freshReason) == "string" and opts.freshReason ~= "")
+            and opts.freshReason or "the chat could not be resumed"
+        logLine("fresh", "resuming nothing: " .. freshWhy)
+    end
     trimLog()
 
     -- Cancelled before arming, not replaced by arriving: two switches for
@@ -459,6 +470,14 @@ function ClaudeChatSwitch.switchChat(profileName, sessionId, terminalPid, ttyDev
     end
     mine.job = job
     active = mine
+
+    -- The switch goes ahead either way - the tab is being handed over regardless -
+    -- but a chat replaced by an empty one has to be seen, not read off a log later.
+    -- Only once the tab is actually claimed: a refused switch that announced this
+    -- would have him believe a conversation was dropped when nothing happened.
+    if freshWhy then
+        hs.alert.show("Chat switch → " .. profileName .. ": FRESH chat\n" .. freshWhy)
+    end
 
     if not pidAlive(pid) then
         logLine("already-exited", "chat pid already gone; delivering now")

@@ -45,6 +45,9 @@ cat >"$FAKE_BIN/ps" <<'EOF'
 #!/usr/bin/env bash
 for arg in "$@"; do pid=$arg; done
 case "$*" in
+  # `ps eww` appends the environment to the command; that is where the chat's
+  # claudeb profile is read from, so the stub answers it like the real one.
+  *eww*) [ -n "${STUB_CONFIG_DIR:-}" ] && echo "claude CLAUDE_CONFIG_DIR=$STUB_CONFIG_DIR TERM=xterm" ;;
   *comm=*) echo "claude" ;;
   *ppid=*) echo "1" ;;
   *tty=*)
@@ -186,6 +189,133 @@ assert test "$RC" -eq 1
 assert grep -q "no live sessions-registry entry" <<<"$OUT"
 assert test -z "$PAYLOAD"
 
+# --- nothing to resume -> loud, never a silent fresh chat ------------------
+# Losing a conversation to a fresh chat is the one outcome that must reach him at
+# the moment it is decided, so the reason travels to the module and to the caller.
+run_switch -- --self olx
+assert test "$RC" -eq 0
+assert grep -q 'switchChat("olx", "", ' <<<"$PAYLOAD"
+assert grep -q 'freshReason="no transcript on disk for session stub-session-0001"' <<<"$PAYLOAD"
+assert grep -q 'no transcript on disk for session stub-session-0001' <<<"$OUT"
+assert grep -q 'FRESH chat' <<<"$OUT"
+
+# --- the chat's own directory becomes the cd prefix ------------------------
+# Without it the resume runs wherever the shell that armed it was sitting, which is
+# how a menu switch reopened a chat in the wrong project.
+TMP_SLUG=$(slug_of /tmp)
+mkdir -p "$HOME/.claude/projects/$TMP_SLUG"
+touch "$HOME/.claude/projects/$TMP_SLUG/stub-session-0001.jsonl"
+run_switch -- --self olx
+assert test "$RC" -eq 0
+assert grep -q 'switchChat("olx", "stub-session-0001", ' <<<"$PAYLOAD"
+assert grep -q 'cwd="/tmp"' <<<"$PAYLOAD"
+assert grep -q 'freshReason=""' <<<"$PAYLOAD"
+assert grep -q "cd '/tmp' && claudeb profile olx --resume stub-session-0001" <<<"$OUT"
+
+# --- a transcript that does not live under the chat's cwd ------------------
+# A chat reopened from another directory keeps writing the transcript of the project
+# it started in. Searching only the cwd's slug called that a fresh chat; the resume
+# survives, and it is the transcript's own project the tab returns to.
+ELSEWHERE="$WORK/elsewhere"; mkdir -p "$ELSEWHERE"
+ELSE_REAL=$(cd "$ELSEWHERE" && pwd -P)
+ESLUG=$(slug_of "$ELSEWHERE")
+rm -rf "$HOME/.claude/projects/$TMP_SLUG"
+mkdir -p "$HOME/.claude/projects/$ESLUG"
+printf '{"type":"summary"}\n{"cwd":"%s"}\n' "$ELSE_REAL" \
+  >"$HOME/.claude/projects/$ESLUG/stub-session-0001.jsonl"
+run_switch -- --self olx
+assert test "$RC" -eq 0
+assert grep -q 'switchChat("olx", "stub-session-0001", ' <<<"$PAYLOAD"
+assert grep -q "cwd=\"$ELSE_REAL\"" <<<"$PAYLOAD"
+
+# --- transcripts under the chat's claudeb profile --------------------------
+# The store the chat reads is its profile's, not ~/.claude: a switch that looks only
+# in the latter reports every profiled chat as having nothing to resume.
+rm -rf "$HOME/.claude/projects/$ESLUG"
+mkdir -p "$HOME/.claude-profiles/com/projects/$TMP_SLUG"
+touch "$HOME/.claude-profiles/com/projects/$TMP_SLUG/stub-session-0001.jsonl"
+run_switch STUB_CONFIG_DIR="$HOME/.claude-profiles/com" -- --self olx
+assert test "$RC" -eq 0
+assert grep -q 'switchChat("olx", "stub-session-0001", ' <<<"$PAYLOAD"
+assert grep -q 'cwd="/tmp"' <<<"$PAYLOAD"
+# ...and with the process env unreadable, the profiles are still swept: an env that
+# cannot be read is not evidence that the conversation does not exist.
+run_switch -- --self olx
+assert grep -q 'switchChat("olx", "stub-session-0001", ' <<<"$PAYLOAD"
+rm -rf "$HOME/.claude-profiles/com/projects"
+
+# --- a transcript that records a directory outside its own project ---------
+# Real transcripts carry cwd lines from directories the conversation has since left.
+# Where the transcript LIVES is the only ground truth, so a recorded cwd that slugs
+# to some other project loses to one that slugs to this one.
+DECOY="$WORK/decoy"; mkdir -p "$DECOY"
+DECOY_REAL=$(cd "$DECOY" && pwd -P)
+mkdir -p "$HOME/.claude/projects/$ESLUG"
+printf '{"cwd":"%s"}\n{"cwd":"%s"}\n' "$DECOY_REAL" "$ELSE_REAL" \
+  >"$HOME/.claude/projects/$ESLUG/stub-session-0001.jsonl"
+run_switch -- --self olx
+assert test "$RC" -eq 0
+assert grep -q "cwd=\"$ELSE_REAL\"" <<<"$PAYLOAD"
+assert grep -q 'note="transcript .* outside its own project' <<<"$PAYLOAD"
+
+# ...and when nothing it records belongs to its own project, the guess is the chat's
+# own cwd and it is said out loud rather than followed silently into another project.
+printf '{"cwd":"%s"}\n' "$DECOY_REAL" >"$HOME/.claude/projects/$ESLUG/stub-session-0001.jsonl"
+run_switch -- --self olx
+assert test "$RC" -eq 0
+assert grep -q 'cwd="/tmp"' <<<"$PAYLOAD"
+assert grep -q "note=\"transcript .* records only cwd $DECOY_REAL" <<<"$PAYLOAD"
+
+# ...and a transcript that names no directory that is still there is the same guess,
+# so it is said out loud too rather than being the one quiet way into a wrong project.
+printf '{"type":"summary"}\n{"cwd":"%s/gone"}\n' "$WORK" \
+  >"$HOME/.claude/projects/$ESLUG/stub-session-0001.jsonl"
+run_switch -- --self olx
+assert test "$RC" -eq 0
+assert grep -q 'cwd="/tmp"' <<<"$PAYLOAD"
+assert grep -q 'note="transcript .* records no directory that still exists' <<<"$PAYLOAD"
+rm -rf "$HOME/.claude/projects/$ESLUG"
+
+# --- one session id under two projects -> the newest wins ------------------
+# Glob order is alphabetical, so the abandoned copy is picked as readily as the live
+# one; the transcript still being written to is the conversation he asked for.
+TWIN_A="$WORK/twin-a"; TWIN_B="$WORK/twin-b"; mkdir -p "$TWIN_A" "$TWIN_B"
+TWIN_A_REAL=$(cd "$TWIN_A" && pwd -P); TWIN_B_REAL=$(cd "$TWIN_B" && pwd -P)
+ASLUG=$(slug_of "$TWIN_A"); BSLUG=$(slug_of "$TWIN_B")
+mkdir -p "$HOME/.claude/projects/$ASLUG" "$HOME/.claude/projects/$BSLUG"
+printf '{"cwd":"%s"}\n' "$TWIN_A_REAL" >"$HOME/.claude/projects/$ASLUG/stub-session-0001.jsonl"
+printf '{"cwd":"%s"}\n' "$TWIN_B_REAL" >"$HOME/.claude/projects/$BSLUG/stub-session-0001.jsonl"
+touch -t 202601010900 "$HOME/.claude/projects/$ASLUG/stub-session-0001.jsonl"
+touch -t 202601010905 "$HOME/.claude/projects/$BSLUG/stub-session-0001.jsonl"
+run_switch -- --self olx
+assert test "$RC" -eq 0
+assert grep -q 'switchChat("olx", "stub-session-0001", ' <<<"$PAYLOAD"
+assert grep -q "cwd=\"$TWIN_B_REAL\"" <<<"$PAYLOAD"
+assert grep -q 'note="session stub-session-0001 has transcripts under 2 projects' <<<"$PAYLOAD"
+rm -rf "$HOME/.claude/projects/$ASLUG" "$HOME/.claude/projects/$BSLUG"
+
+# --- an explicitly named session gets the same treatment -------------------
+# It is another conversation than the one in this tab, so it needs the lookup MORE
+# than the registry path does: nothing else knows where it lives or whether it exists.
+EXPLICIT="$WORK/explicit"; mkdir -p "$EXPLICIT"
+EXPLICIT_REAL=$(cd "$EXPLICIT" && pwd -P)
+XSLUG=$(slug_of "$EXPLICIT")
+XSID="cccccccc-dddd-eeee-ffff-000000000000"
+mkdir -p "$HOME/.claude/projects/$XSLUG"
+printf '{"cwd":"%s"}\n' "$EXPLICIT_REAL" >"$HOME/.claude/projects/$XSLUG/$XSID.jsonl"
+run_switch -- --self olx "$XSID"
+assert test "$RC" -eq 0
+assert grep -q "switchChat(\"olx\", \"$XSID\", " <<<"$PAYLOAD"
+assert grep -q "cwd=\"$EXPLICIT_REAL\"" <<<"$PAYLOAD"
+assert grep -q "cd '$EXPLICIT_REAL' && claudeb profile olx --resume $XSID" <<<"$OUT"
+
+run_switch -- --self olx nosuch-session-9999
+assert test "$RC" -eq 0
+assert grep -q 'switchChat("olx", "", ' <<<"$PAYLOAD"
+assert grep -q 'freshReason="no transcript on disk for session nosuch-session-9999"' <<<"$PAYLOAD"
+assert grep -q 'FRESH chat' <<<"$OUT"
+rm -rf "$HOME/.claude/projects/$XSLUG"
+
 # --- a path the error sentinel used to trip over ---------------------------
 # The armed console line echoes the cwd back, so "error" in a directory name must
 # not read as a failed arm.
@@ -241,6 +371,7 @@ function ChatGateStub.logger(_)
 end
 
 function ChatGateStub.startJob(opts)
+    if W.refuse then return nil, "busy:compact" end
     W.onEnd = opts.onEnd
     W.key = opts.key
     W.granted = true
@@ -282,6 +413,7 @@ local function newWorld(opts)
         screen = opts.screen or "no picker here",
         holdVoice = opts.holdVoice == true,
         holdExit = opts.holdExit == true,
+        refuse = opts.refuse == true,
         logs = {}, presses = {}, bursts = {}, voice = {}, timers = {}, afters = {},
         alerts = {}, queued = {}, cancelWaits = 0,
     }
@@ -587,6 +719,32 @@ check(#W.presses == 0, "the cancelled switch's Enter went out after it was calle
 check(#W.bursts == 1, "the cancelled switch typed something after it was called off")
 print("ok  wall: a cancelled switch lands nothing it left in the air")
 
+-- (j) nothing left to resume: the tab is handed over either way, but the reason the
+-- conversation is not coming with it is said out loud at the moment it is decided.
+W = newWorld()
+module.switchChat("olx", "", W.pid, "/dev/ttys009",
+    { cwd = "/tmp", freshReason = "no transcript on disk for session sid-j" })
+check(W:events("fresh") == 1 and W:detail("fresh"):find("sid-j", 1, true),
+    "the fresh downgrade was not logged with its reason")
+check(#W.alerts == 1 and W.alerts[1]:find("no transcript on disk", 1, true),
+    "the fresh downgrade did not alert with its reason")
+W.pidAlive = false
+W:tick(1)
+check(W.bursts[#W.bursts].actions[2].value == "cd '/tmp' && claudeb profile olx",
+    "the fresh relaunch carried a --resume")
+module.cancel()
+print("ok  wall: a fresh downgrade is logged and alerted with its reason")
+
+-- (k) the gate hands the tab to nobody: the switch never starts, so nothing about it
+-- may be announced - least of all that a conversation was replaced by an empty chat.
+W = newWorld({ refuse = true })
+check(module.switchChat("olx", "", W.pid, "/dev/ttys009",
+    { freshReason = "no transcript on disk for session sid-k" }) == false,
+    "a refused switch reported itself as armed")
+check(#W.alerts == 1 and W.alerts[1]:find("another automation", 1, true),
+    "a refused switch said something other than that the tab was taken")
+print("ok  wall: a refused switch announces no fresh chat")
+
 print(string.format("PASS: claude-chat-switch exit wall (%d checks)", checks))
 LUA
 } > "$HARNESS"
@@ -603,9 +761,11 @@ assert grep -q 'wall: a picker readable after the wall never adds a confirm Ente
 assert grep -q 'wall: exit-wall-passed names an Enter that never went out' <<<"$WALL_OUT"
 assert grep -q 'wall: a queued /exit is dropped when the chat exits on its own' <<<"$WALL_OUT"
 assert grep -q 'wall: a cancelled switch lands nothing it left in the air' <<<"$WALL_OUT"
+assert grep -q 'wall: a fresh downgrade is logged and alerted with its reason' <<<"$WALL_OUT"
+assert grep -q 'wall: a refused switch announces no fresh chat' <<<"$WALL_OUT"
 # Pinned, not a floor: the scenario greps above survive a gutted scenario body, so
 # a check that quietly disappears has to show up as this number moving.
 WALL_CHECKS=$(sed -n 's/^PASS: claude-chat-switch exit wall (\([0-9]*\) checks)$/\1/p' <<<"$WALL_OUT")
-assert test "${WALL_CHECKS:-0}" -eq 59
+assert test "${WALL_CHECKS:-0}" -eq 64
 
 echo "PASS: claude-chat-switch ($asserts assertions, $WALL_CHECKS wall checks)"
