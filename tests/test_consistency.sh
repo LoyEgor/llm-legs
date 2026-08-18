@@ -719,14 +719,15 @@ assert grep -Fq 'PID_START_SLACK=30' "$ROOT/bin/worker-run"
 assert grep -Fq 'ps -p "$2" -o etime=' "$ROOT/bin/worker-run"
 # An empty answer from ps means "no such process" and "ps could not answer" at once, and one of the
 # two is a live run about to be reported failed or swept. Both sites ask a pid that must be listed
-# before they believe the silence.
-assert grep -Fq 'ps -p $$ -o etime=' "$ROOT/bin/worker-run"
+# before they believe the silence — pid 1, because a sandbox hiding every process but our own still
+# lists `$$` and a foreign supervisor then still reads gone.
+assert grep -Fq 'ps -p 1 -o etime=' "$ROOT/bin/worker-run"
 assert eq "$(grep -c 'supervisor_running "\$directory" "\$pid"' "$ROOT/bin/worker-run")" 3
 if test -r "$JOURNAL_LIB"; then
   assert grep -Fq 'RJ_PID_SLACK=30' "$JOURNAL_LIB"
   assert grep -Fq '"pid_started_at"' "$JOURNAL_LIB"
   assert grep -Fq 'ps -p "$pid" -o etime=' "$JOURNAL_LIB"
-  assert grep -Fq 'ps -p $$ -o etime=' "$JOURNAL_LIB"
+  assert grep -Fq 'ps -p 1 -o etime=' "$JOURNAL_LIB"
   # EPERM from a foreign-owned live process must not read as death.
   assert eq "$(grep -c '^[^#]*kill -0' "$JOURNAL_LIB")" 0
 fi
@@ -1330,13 +1331,17 @@ assert doc_has 'whose first line is `WORKDIR: <dir>`'
 assert doc_has '`<run-dir>/noticed`'
 COMMIT_JOURNAL="$CLAUDE_SETUP/hooks/commit-journal.sh"
 if [ -r "$COMMIT_JOURNAL" ]; then
-  assert grep -Fq 'grep -l -x -F -- "$session" "$runs"/*/launcher' "$COMMIT_JOURNAL"
-  assert grep -Fq "'WORKDIR: '*) run_workdir=\${line#WORKDIR: }" "$COMMIT_JOURNAL"
+  # The launching chat is read off the launcher file, and every record is walked: a dead run whose
+  # chat never came back is journaled by whoever is here, under that chat's name and not this one's.
+  assert grep -Fq 'owner=$(head -n1 "$launcher" 2>/dev/null)' "$COMMIT_JOURNAL"
+  assert grep -Fq 'if [ "$owner" != "$own" ] || [ ! -f "$directory/exit_code" ]; then' \
+    "$COMMIT_JOURNAL"
+  assert grep -Fq 'session=$owner' "$COMMIT_JOURNAL"
+  assert grep -Fq "sed -n 's/^WORKDIR: //p' \"\$listing\"" "$COMMIT_JOURNAL"
   assert grep -Fq "'UNKNOWN: '*|'PARTIAL: '*|'') ;;" "$COMMIT_JOURNAL"
   # The two rules that keep a record from being claimed twice or claimed early: a run with no
   # exit_code has no final list yet unless its supervisor is gone, and one already imported is
   # marked as imported.
-  assert grep -Fq 'if [ ! -f "$directory/exit_code" ]; then' "$COMMIT_JOURNAL"
   assert grep -Fq 'liveness=$(rj_run_liveness "$directory")' "$COMMIT_JOURNAL"
   # ...with one release from that rule: a record carrying no launch stamp can never be answered
   # for, so past a couple of days its listing is as final as it will ever be. Anything that can

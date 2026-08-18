@@ -105,9 +105,10 @@ supervisor_running() { # directory pid
   elapsed=$(ps -p "$2" -o etime= 2>/dev/null | tr -d '[:space:]')
   if [ -z "$elapsed" ]; then
     # "No such process" and "ps could not answer" are the same empty output, and one of them is a
-    # live run about to be reported failed. A pid that must be listed settles it: if this very
-    # process is not listed either, ps is what is broken, and the signal probe answers instead.
-    [ -n "$(ps -p $$ -o etime= 2>/dev/null | tr -d '[:space:]')" ] && return 1
+    # live run about to be reported failed. A pid that must be listed settles it — pid 1, not `$$`:
+    # a sandbox hiding every process but our own still lists `$$`, and a foreign supervisor then
+    # still reads gone. If init is not listed either, ps is what is broken and the probe answers.
+    [ -n "$(ps -p 1 -o etime= 2>/dev/null | tr -d '[:space:]')" ] && return 1
     kill -0 "$2" 2>/dev/null
     return
   fi
