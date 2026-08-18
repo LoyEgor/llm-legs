@@ -140,17 +140,18 @@ assert_eq "$TOP_B" "$(cat "$STATE_DIR/workdir-session-cd-amp")"
 
 # `(cd /x && cmd)` is the form the cd-guard hook tells sessions to use instead of
 # a persistent cd, so it is the most common cd there is — and the one that never
-# moves the session: it dies with the command. It earns the home only as
-# sustained work, three in a row, like an away write. All three spellings feed
-# the same run; the unquoted one also proves the closing paren stays out of the
-# path, since a swallowed `)` would resolve nowhere and break the run.
+# moves the session: it dies with the command. A subshell cd that runs WORK earns
+# the home only as sustained work, three in a row, like an away write. All three
+# spellings feed the same run; the unquoted one also proves the closing paren
+# stays out of the path, since a swallowed `)` would resolve nowhere and break
+# the run.
 S="$STATE_DIR/workdir-session-cd-subshell"
 printf '%s\n' "$TOP_A" > "$S"
 run_workdir_hook "$(workdir_payload Bash session-cd-subshell "$REPO_A" "(cd '$REPO_B' && make)")"
 assert_eq "$TOP_A" "$(cat "$S")"
 run_workdir_hook "$(workdir_payload Bash session-cd-subshell "$REPO_A" "true && (cd '$REPO_B' && make)")"
 assert_eq "$TOP_A" "$(cat "$S")"
-run_workdir_hook "$(workdir_payload Bash session-cd-subshell "$REPO_A" "(cd $REPO_B)")"
+run_workdir_hook "$(workdir_payload Bash session-cd-subshell "$REPO_A" "(cd $REPO_B && make)")"
 assert_eq "$TOP_B" "$(cat "$S")"
 assert test ! -e "$S.away"
 
@@ -183,6 +184,101 @@ for _ in 1 2 3 4; do
 done
 assert_eq "$TOP_E" "$(cat "$S")"
 assert test ! -e "$S.away"
+
+# The incident this model exists for: a session that ran five `(cd /other && git
+# log)` lookups in a row saw the strip claim the work had moved there. A subshell
+# cd whose whole chain is provably read-only is read-grade — it never moves the
+# home and leaves no run behind, at any count.
+ro_case=0
+while IFS= read -r ro_cmd; do
+  [ -n "$ro_cmd" ] || continue
+  ro_case=$((ro_case + 1))
+  S="$STATE_DIR/workdir-session-ro-$ro_case"
+  printf '%s\n' "$TOP_A" > "$S"
+  for _ in 1 2 3 4 5; do
+    run_workdir_hook "$(workdir_payload Bash "session-ro-$ro_case" "$REPO_A" "$ro_cmd")"
+  done
+  assert_eq "$TOP_A" "$(cat "$S")"
+  assert test ! -e "$S.away"
+done <<EOF
+(cd '$REPO_D' && git log)
+(cd '$REPO_D' && cat other.txt | rg other)
+(cd '$REPO_D' && git log 2>/dev/null | head -3)
+(cd '$REPO_D' && git log 2>&1 | wc -l)
+(cd '$REPO_D' && FOO=1 git -c core.pager=cat log --oneline)
+(cd '$REPO_D' && find . -name '*.txt')
+(cd '$REPO_D' && sort other.txt)
+(cd '$REPO_D' && git log > /dev/null)
+EOF
+
+# Anything not PROVABLY read-only stays work, and work in a subshell is still
+# sustained: three in a row move the home. A surviving `>` condemns the command
+# whatever ran it, the mutating traps inside reading tools (`sort -ro`,
+# `find -fprint`, `git diff --output`) are read by name, and a backtick is
+# condemned unseen.
+work_case=0
+while IFS= read -r work_cmd; do
+  [ -n "$work_cmd" ] || continue
+  work_case=$((work_case + 1))
+  S="$STATE_DIR/workdir-session-subshell-work-$work_case"
+  printf '%s\n' "$TOP_A" > "$S"
+  run_workdir_hook "$(workdir_payload Bash "session-subshell-work-$work_case" "$REPO_A" "$work_cmd")"
+  run_workdir_hook "$(workdir_payload Bash "session-subshell-work-$work_case" "$REPO_A" "$work_cmd")"
+  assert_eq "$TOP_A" "$(cat "$S")"
+  run_workdir_hook "$(workdir_payload Bash "session-subshell-work-$work_case" "$REPO_A" "$work_cmd")"
+  assert_eq "$TOP_D" "$(cat "$S")"
+done <<EOF
+(cd '$REPO_D' && npm test)
+(cd '$REPO_D' && git log > out.txt)
+(cd '$REPO_D' && find . -delete)
+(cd '$REPO_D' && sort -o out.txt other.txt)
+(cd '$REPO_D' && git log && make)
+(cd '$REPO_D' && FOO=1 make)
+(cd '$REPO_D' && sed -i '' s/a/b/ other.txt)
+(cd '$REPO_D' && awk '{print > "o.txt"}' other.txt)
+(cd '$REPO_D' && git diff --output=/tmp/o.diff)
+(cd '$REPO_D' && sort -ro out.txt other.txt)
+(cd '$REPO_D' && find . -fprint out.txt)
+(cd '$REPO_D' && git log > /dev/null.out)
+(cd '$REPO_D' && echo \`touch out.txt\`)
+EOF
+
+# Nor can a read-grade excursion establish a home where there is none: that is
+# SessionStart's job, or a write's.
+for _ in 1 2 3; do
+  run_workdir_hook "$(workdir_payload Bash session-ro-fresh "$REPO_A" "(cd '$REPO_D' && git log)")"
+done
+assert test ! -e "$STATE_DIR/workdir-session-ro-fresh"
+assert test ! -e "$STATE_DIR/workdir-session-ro-fresh.away"
+
+# A read-grade excursion cannot break a worktree pin either.
+S="$STATE_DIR/workdir-session-ro-sticky"
+printf '%s\n' "$TOP_E" > "$S"
+for _ in 1 2 3 4 5; do
+  run_workdir_hook "$(workdir_payload Bash session-ro-sticky "$REPO_E" "(cd '$REPO_D' && git log)")"
+done
+assert_eq "$TOP_E" "$(cat "$S")"
+assert test ! -e "$S.away"
+
+# `cd` is the most read-only token there is, but a PERSISTENT one is the session
+# itself moving, so it retargets at once with nothing else on the line.
+S="$STATE_DIR/workdir-session-cd-bare"
+printf '%s\n' "$TOP_A" > "$S"
+run_workdir_hook "$(workdir_payload Bash session-cd-bare "$REPO_A" "cd '$REPO_D'")"
+assert_eq "$TOP_D" "$(cat "$S")"
+
+# Read-grade evidence AT home interrupts a run in progress exactly like a Read
+# does — the run is consecutive evidence — and nothing more.
+S="$STATE_DIR/workdir-session-ro-home"
+printf '%s\n' "$TOP_D" > "$S"
+run_workdir_hook "$(agent_payload Edit session-ro-home "$REPO_D" "$REPO_A/tracked.txt")"
+run_workdir_hook "$(workdir_payload Bash session-ro-home "$REPO_D" "(cd $REPO_D)")"
+assert_eq "$TOP_A
+$TOP_D" "$(cat "$S.away")"
+assert_eq "$TOP_D" "$(cat "$S")"
+run_workdir_hook "$(agent_payload Edit session-ro-home "$REPO_D" "$REPO_A/tracked.txt")"
+run_workdir_hook "$(agent_payload Edit session-ro-home "$REPO_D" "$REPO_A/tracked.txt")"
+assert_eq "$TOP_D" "$(cat "$S")"
 
 payload=$(workdir_payload Bash session-pushd "$REPO_A" "pushd '$REPO_B' && make")
 run_workdir_hook "$payload"
@@ -511,37 +607,41 @@ run_workdir_hook "$(dispatch_payload Task session-touch-dispatch "$REPO_A" \
   "Work in $REPO_D. Change $REPO_D/other.txt and $REPO_B/tracked.txt.")"
 assert_eq 0 "$(find "$STATE_DIR" -name 'touched-*' | wc -l | tr -d ' ')"
 
-# The session's own reads are the weakest evidence the strip has: three in a row
-# into the same foreign toplevel are a move, anything less is a lookup.
+# The session's own reads are not evidence at all: a lookup elsewhere never moves
+# the home, however many of them run in a row, and it leaves no run behind for a
+# later write to complete.
 S="$STATE_DIR/workdir-session-read-move"
 printf '%s\n' "$TOP_A" > "$S"
-run_workdir_hook "$(workdir_payload Read session-read-move "$REPO_A" "$REPO_D/other.txt")"
-assert_eq "$TOP_A" "$(cat "$S")"
-run_workdir_hook "$(workdir_payload Read session-read-move "$REPO_A" "$REPO_D/other.txt")"
-assert_eq "$TOP_A" "$(cat "$S")"
-run_workdir_hook "$(workdir_payload Read session-read-move "$REPO_A" "$REPO_D/other.txt")"
-assert_eq "$TOP_D" "$(cat "$S")"
-
-S="$STATE_DIR/workdir-session-read-split"
-printf '%s\n' "$TOP_A" > "$S"
-for _ in 1 2 3; do
-  run_workdir_hook "$(workdir_payload Read session-read-split "$REPO_A" "$REPO_D/other.txt")"
-  run_workdir_hook "$(workdir_payload Read session-read-split "$REPO_A" "$REPO_B/tracked.txt")"
+for _ in 1 2 3 4 5; do
+  run_workdir_hook "$(workdir_payload Read session-read-move "$REPO_A" "$REPO_D/other.txt")"
 done
 assert_eq "$TOP_A" "$(cat "$S")"
+assert test ! -e "$S.away"
 
-# A read back home is not work — it neither rewrites the home nor clears the run
-# — but it does INTERRUPT it: the run is CONSECUTIVE evidence, and leaving the
-# tail untouched let three lookups scattered over a read-heavy session, ordinary
-# home reads in between, walk the strip off to a reference repo.
+# A read is invisible against a worktree pin too.
+S="$STATE_DIR/workdir-session-read-sticky"
+printf '%s\n' "$TOP_E" > "$S"
+for _ in 1 2 3 4 5; do
+  run_workdir_hook "$(workdir_payload Read session-read-sticky "$REPO_E" "$REPO_D/other.txt")"
+done
+assert_eq "$TOP_E" "$(cat "$S")"
+assert test ! -e "$S.away"
+
+# A read back home is not work either — it neither rewrites the home nor clears
+# the run — but it does INTERRUPT a run someone else's writes started: the run is
+# CONSECUTIVE evidence, and leaving the tail untouched let scattered away writes,
+# ordinary home reads in between, walk the strip off to another repo.
 S="$STATE_DIR/workdir-session-read-home"
 printf '%s\n' "$TOP_A" > "$S"
-for _ in 1 2 3; do
-  run_workdir_hook "$(workdir_payload Read session-read-home "$REPO_A" "$REPO_D/other.txt")"
-  run_workdir_hook "$(workdir_payload Read session-read-home "$REPO_A" "$REPO_A/tracked.txt")"
-done
+run_workdir_hook "$(agent_payload Edit session-read-home "$REPO_A" "$REPO_D/other.txt")"
+run_workdir_hook "$(workdir_payload Read session-read-home "$REPO_A" "$REPO_A/tracked.txt")"
+run_workdir_hook "$(agent_payload Edit session-read-home "$REPO_A" "$REPO_D/other.txt")"
+run_workdir_hook "$(agent_payload Edit session-read-home "$REPO_A" "$REPO_D/other.txt")"
 assert_eq "$TOP_A" "$(cat "$S")"
-assert test -e "$S.away"
+assert_eq "$TOP_D
+$TOP_A
+$TOP_D
+$TOP_D" "$(cat "$S.away")"
 # Nothing is created for a read at home when no run is pending, and a long stay
 # at home does not grow the run either.
 S="$STATE_DIR/workdir-session-read-home-idle"
@@ -550,17 +650,17 @@ for _ in 1 2 3; do
   run_workdir_hook "$(workdir_payload Read session-read-home-idle "$REPO_A" "$REPO_A/tracked.txt")"
 done
 assert test ! -e "$S.away"
-run_workdir_hook "$(workdir_payload Read session-read-home-idle "$REPO_A" "$REPO_D/other.txt")"
+run_workdir_hook "$(agent_payload Edit session-read-home-idle "$REPO_A" "$REPO_D/other.txt")"
 for _ in 1 2 3 4; do
   run_workdir_hook "$(workdir_payload Read session-read-home-idle "$REPO_A" "$REPO_A/tracked.txt")"
 done
 assert_eq "$TOP_D
 $TOP_A" "$(cat "$S.away")"
-# The interrupted run still resumes on three fresh reads in a row.
-run_workdir_hook "$(workdir_payload Read session-read-home-idle "$REPO_A" "$REPO_D/other.txt")"
-run_workdir_hook "$(workdir_payload Read session-read-home-idle "$REPO_A" "$REPO_D/other.txt")"
+# The interrupted run still resumes on three fresh writes in a row.
+run_workdir_hook "$(agent_payload Edit session-read-home-idle "$REPO_A" "$REPO_D/other.txt")"
+run_workdir_hook "$(agent_payload Edit session-read-home-idle "$REPO_A" "$REPO_D/other.txt")"
 assert_eq "$TOP_A" "$(cat "$S")"
-run_workdir_hook "$(workdir_payload Read session-read-home-idle "$REPO_A" "$REPO_D/other.txt")"
+run_workdir_hook "$(agent_payload Edit session-read-home-idle "$REPO_A" "$REPO_D/other.txt")"
 assert_eq "$TOP_D" "$(cat "$S")"
 
 # A subagent's reads stay invisible: an Explore agent reads across every repo it
@@ -688,7 +788,7 @@ run_workdir_hook "$(workdir_payload Edit session-away-reset "$REPO_E" "$REPO_A/t
 run_workdir_hook "$(workdir_payload Edit session-away-reset "$REPO_E" "$REPO_A/tracked.txt")"
 assert_eq "$TOP_E" "$(cat "$S")"
 
-# Reads never break the pin, however many: cd-ing out to run tests or grep
+# Bash cds never break the pin, however many: cd-ing out to run tests or grep
 # another repo is exactly the noise stickiness exists to absorb.
 S="$STATE_DIR/workdir-session-away-cds"
 printf '%s\n' "$TOP_E" > "$S"

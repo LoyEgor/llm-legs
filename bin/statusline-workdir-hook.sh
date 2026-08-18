@@ -5,12 +5,13 @@ exec >/dev/null 2>&1
 input=$(cat) || exit 0
 parsed=$(printf '%s' "$input" | jq -r '
   def value: if . == null then "" else tostring end;
+  # `(` is a separator and is barred from unquoted tokens: the cd-guard hook
+  # steers persistent `cd` into `(cd /path && cmd)`, where the path token
+  # would otherwise swallow the closing paren. That separator is reported
+  # because such a cd dies with the command — see the away run below.
+  def tok: "\\\"(?:\\\\.|[^\\\"])*\\\"|\\x27[^\\x27]*\\x27|[^[:space:];&|()]+";
   def bash_hit:
-    # `(` is a separator and is barred from unquoted tokens: the cd-guard hook
-    # steers persistent `cd` into `(cd /path && cmd)`, where the path token
-    # would otherwise swallow the closing paren. That separator is reported
-    # because such a cd dies with the command — see the away run below.
-    "\\\"(?:\\\\.|[^\\\"])*\\\"|\\x27[^\\x27]*\\x27|[^[:space:];&|()]+" as $tok
+    tok as $tok
     | (.tool_input.command // "")
     | [match("(^|[;&|(\\n])[[:space:]]*((cd|pushd)[[:space:]]+(?<cd>" + $tok + ")|git([[:space:]]+-C[[:space:]]+(?<wt_dir>" + $tok + "))?[[:space:]]+worktree[[:space:]]+add(?<wt_args>([ \\t]+(" + $tok + "))+)|git[[:space:]]+-C[[:space:]]+(?<dir>" + $tok + ")([[:space:]]+(?<sub>[A-Za-z][A-Za-z-]*))?)"; "g")]
     | map(
@@ -37,6 +38,45 @@ parsed=$(printf '%s' "$input" | jq -r '
     | if $last.worktree_add == "1" and $last.worktree_base == "" then
         $last + {worktree_base: ([$hits[] | select(.cd_hit == "1") | .path] | last // "")}
       else $last end;
+  def read_tools: ["cd","pushd","popd","cat","head","tail","less","ls","wc","grep","rg","find","stat","file","du","df","jq","awk","cut","sort","uniq","tr","basename","dirname","realpath","pwd","echo","printf","test","[","which","type","date","diff","cmp","tree","nl","column","git"];
+  def read_git_subs: ["log","show","status","diff","blame","shortlog","describe","rev-parse","rev-list","ls-files","ls-tree","grep","reflog","cat-file"];
+  def git_read($t):
+    if any($t[]; startswith("--output")) then false
+    elif ($t | length) == 0 then false
+    else $t[0] as $head
+      | if $head == "-C" or $head == "-c" then git_read($t[2:])
+        elif ($head | startswith("-")) then git_read($t[1:])
+        else (read_git_subs | index($head)) != null
+        end
+    end;
+  def drop_env($t):
+    if ($t | length) > 0 and ($t[0] | test("^[A-Za-z_][A-Za-z0-9_]*=")) then drop_env($t[1:]) else $t end;
+  def segment_read_only:
+    drop_env([splits("[[:space:]]+")] | map(select(. != ""))) as $t
+    | if ($t | length) == 0 then true
+      else ($t[0] | sub(".*/"; "")) as $cmd
+        | if (read_tools | index($cmd)) == null then false
+          elif $cmd == "git" then git_read($t[1:])
+          elif $cmd == "sort" then all($t[1:][]; test("^-[A-Za-z]*o|^--output") | not)
+          elif $cmd == "find" then all($t[1:][]; . as $arg | (["-delete","-exec","-execdir","-ok","-okdir","-fprint","-fprint0","-fprintf","-fls"] | index($arg)) == null)
+          else true
+          end
+      end;
+  # Redirects that only discard output are neutralised first, so any surviving `>`
+  # condemns the command: that is what catches a write performed BY a reading tool
+  # (`awk "{print > \"f\"}"`, `git log > out`) without parsing either language.
+  # Splitting on separators over-splits quoted text, which can only call a read
+  # "work" — never the reverse. A backtick hides a command the splitter cannot
+  # see, so its mere presence is work.
+  def command_read_only:
+    if test("`") then false
+    else
+      gsub("[0-9]*>>?[[:space:]]*/dev/null(?=[[:space:];&|()]|$)"; " ")
+      | gsub("[0-9]*>&[0-9]+"; " ")
+      | if test(">") then false
+        else all(splits("[;&|()\\n]+"); segment_read_only)
+        end
+    end;
   def worktree_path:
     (.tool_response // "")
     | (if type == "string" then . elif type == "object" then ([.. | strings] | join("\n")) else "" end)
@@ -67,13 +107,14 @@ parsed=$(printf '%s' "$input" | jq -r '
     else "" end),
    (.source | value),
    (if $bash.sep == "(" then "1" else "" end),
+   (if .tool_name == "Bash" and ((.tool_input.command // "") | command_read_only) then "1" else "" end),
    ($bash.worktree_add // ""),
    ($bash.worktree_base // ""),
    (if .tool_name == "Task" or .tool_name == "Agent" then dispatch_paths else "" end)]
   | join("")
 ' 2>/dev/null) || exit 0
 
-IFS=$'\x1f' read -r hook_event tool_name session_id base_dir agent_flag candidate start_source bash_subshell bash_worktree_add bash_worktree_base dispatch <<< "$parsed"
+IFS=$'\x1f' read -r hook_event tool_name session_id base_dir agent_flag candidate start_source bash_subshell bash_read_only bash_worktree_add bash_worktree_base dispatch <<< "$parsed"
 [ -n "$session_id" ] || exit 0
 
 cache_dir="$HOME/.cache/claude-statusline"
@@ -272,35 +313,48 @@ esac
 # Sticky is not permanent, though: a worktree made by hand (`git worktree add`,
 # not the harness tool) will never see an ExitWorktree, so a session that
 # finishes there and moves on used to be pinned for its whole life — naming a
-# branch and a clean tree that were not the ones being edited. Three events in a
-# row into the same other toplevel are sustained work, not an excursion, and
+# branch and a clean tree that were not the ones being edited. Three WORK events
+# in a row into the same other toplevel are sustained work, not an excursion, and
 # break the pin. Bash cds never break it, however many — running tests elsewhere
 # is exactly the noise stickiness exists to absorb.
 #
 # The same proof is demanded in ANY home, worktree or not, of the evidence that
 # is weak on its own: a subagent write (a worker is dispatched at a path the
-# parent never visited, so one write there proves nothing), a subshell cd
-# (`(cd /other && make)` cannot outlive the command, so the session never
-# moved), and a main-session read (a grep sweep touches every repo in reach).
+# parent never visited, so one write there proves nothing) and a subshell cd
+# running work (`(cd /other && make)` cannot outlive the command, so the session
+# never moved).
+read_grade=
+case "$tool_name" in
+  Read) read_grade=1 ;;
+  # Only a SUBSHELL cd is demoted by its command being read-only: a persistent
+  # `cd` is the session itself moving, and `cd` alone is read-only.
+  Bash) [ -n "$bash_subshell" ] && [ -n "$bash_read_only" ] && read_grade=1 ;;
+esac
+# A lookup cannot ESTABLISH a home either: with none yet it comes from
+# SessionStart or from a write.
+if [ -n "$read_grade" ] && [ ! -f "$state_file" ]; then
+  exit 0
+fi
 if [ "$tool_name" != EnterWorktree ] && [ -z "$bash_worktree_add" ] && [ -f "$state_file" ]; then
   IFS= read -r prev_home < "$state_file" || :
   if [ "$toplevel" = "$prev_home" ]; then
     # Work at home rewrites the home and clears the run. A read is not work, so
     # it does neither — but it does INTERRUPT the run, which is consecutive
-    # evidence: leaving the tail untouched let three lookups scattered over a
-    # read-heavy session, home reads in between, move the home. Appended, not
-    # cleared, for the same concurrency reason as the run itself, and only onto
-    # an existing run, so the hottest tool in the harness creates no state; the
-    # last-line check keeps a long stay at home from growing the file.
-    if [ "$tool_name" = Read ]; then
+    # evidence. Appended, not cleared, for the same concurrency reason as the run
+    # itself, and only onto an existing run, so the hottest tool in the harness
+    # creates no state; the last-line check keeps a long stay at home from
+    # growing the file.
+    if [ -n "$read_grade" ]; then
       [ -f "$away_file" ] && [ "$(tail -n 1 "$away_file" 2>/dev/null)" != "$toplevel" ] &&
         printf '%s\n' "$toplevel" >> "$away_file" 2>/dev/null
       exit 0
     fi
   else
+    # Before every rule below, the sticky pin included: reading elsewhere leaves
+    # no trace to accumulate, so no quantity of it moves anything.
+    [ -n "$read_grade" ] && exit 0
     sustained=
     case "$tool_name" in
-      Read) sustained=1 ;;
       Edit|Write|NotebookEdit) [ -n "$agent_flag" ] && sustained=1 ;;
     esac
     case "$prev_home" in
@@ -314,7 +368,7 @@ if [ "$tool_name" != EnterWorktree ] && [ -z "$bash_worktree_add" ] && [ -f "$st
     [ -n "$bash_subshell" ] && sustained=1
     if [ -n "$sustained" ]; then
       # The run is APPENDED, one line per event, and read back from the tail —
-      # never incremented in place. A turn that edits or reads several files
+      # never incremented in place. A turn that edits several files
       # issues them as one parallel batch, which is precisely the burst this
       # rule is meant to catch, and those hooks run concurrently: a
       # read-modify-write counter had all three of them read the same value and
