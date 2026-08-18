@@ -695,6 +695,10 @@ rb_second_findings=$(sed -n 's/^SECOND_REVIEW_FINDINGS = \([0-9]*\)$/\1/p' "$REV
 assert eq "$rb_second_p1s" 2
 assert eq "$rb_second_findings" 8
 assert grep -Fq 'p1s >= SECOND_REVIEW_P1S or findings >= SECOND_REVIEW_FINDINGS' "$REVIEWBENCH"
+# The one path the lock lets go, named in the row and defined in the code: a deleted path no later
+# snapshot can hold would otherwise stay locked past every review and every waiver.
+assert doc_has '`path_lock_stands`'
+assert grep -Fq 'def path_lock_stands(repo, path, artifact):' "$REVIEWBENCH"
 if test -r "$FLOW_GATE"; then
   gate_second_p1s=$(sed -n 's/^SECOND_REVIEW_P1S=\([0-9]*\)$/\1/p' "$FLOW_GATE")
   gate_second_findings=$(sed -n 's/^SECOND_REVIEW_FINDINGS=\([0-9]*\)$/\1/p' "$FLOW_GATE")

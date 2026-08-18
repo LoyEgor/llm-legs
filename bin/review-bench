@@ -8038,13 +8038,16 @@ def run_record_claims(repo):
 def foreign_run_claims(repo, session):
     """The debt paths another chat's worker run owns, as `{path: (run id, launcher)}`. Read as
     unowned, a co-tenant's live work is exactly what a waiver naming no path would sign away.
+
+    A path this chat's own run wrote too is not among them: two workers editing one file makes it
+    both chats' work, and calling it a co-tenant's would refuse the launcher a waiver over its own
+    output.
     """
     claims = {}
     for path, rows in run_record_claims(repo).items():
-        for run_id, launcher in rows:
-            if launcher != session:
-                claims[path] = (run_id, launcher)
-                break
+        if any(launcher == session for _, launcher in rows):
+            continue
+        claims[path] = rows[0]
     return claims
 
 
@@ -8258,11 +8261,18 @@ def cmd_waive(args):
     # journal sweeps it.
     authors = debt_path_authors(repo, [path for path, _ in debt])
     claims = foreign_run_claims(repo, session)
+    mine = session_run_paths(repo, session)
 
     def foreign_owner(path):
+        """Who else's this path is, or None where this chat is one of its owners. Ownership is the
+        UNION of the two stores, the way `cmd_debt` counts it: one command calling a path this
+        chat's while the other refuses to sign for it is the repository answering itself twice.
+        """
         sessions = authors.get(path) or ()
+        if session in sessions or path in mine:
+            return None
         if sessions:
-            return None if session in sessions else ", ".join(sorted(sessions))
+            return ", ".join(sorted(sessions))
         claim = claims.get(path)
         return None if claim is None else f"run {claim[0]}, launched by {claim[1]}"
 

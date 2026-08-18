@@ -6900,6 +6900,43 @@ assert sr_answer("src/a.py", session="chat-3") == "debt 1 other"
 assert sr_answer("src/a.py") == "debt 1 other"
 (sr_repo / "docs" / "co.md").unlink()
 
+# Both commands answer one question. A path two chats' workers wrote is both chats' work, and a
+# path the journals hand to a co-tenant while this chat's own worker also wrote it is this chat's
+# too — read one way by the counter and another by the waiver, one command calls a path this chat's
+# while the other refuses to sign for it.
+sr_shared_claim = sr_store()
+sr_clear_journals()
+sr_source.write_text(sr_moved + "two workers wrote this\n")
+sr_worker_run("20260101T0800Z-theirs", "chat-2", [f"WORKDIR: {sr_repo}", "src/a.py"])
+sr_worker_run("20260101T0810Z-ours", "chat-1", [f"WORKDIR: {sr_repo}", "src/a.py"])
+assert "src/a.py" not in rb.foreign_run_claims(sr_repo, "chat-1")
+assert "src/a.py" not in rb.foreign_run_claims(sr_repo, "chat-2")
+# To a third chat it is both of theirs, named by the first run that wrote it.
+assert rb.foreign_run_claims(sr_repo, "chat-3")["src/a.py"] == ("20260101T0800Z-theirs", "chat-2")
+assert sr_answer("src/a.py") == "debt 1 mine"
+assert sr_waive("src/a.py", reason="ours as much as theirs")[0] == 0
+# Pathless, it is not dropped as somebody else's either.
+sr_pathless_claim = sr_store()
+sr_run(sr_pathless_claim, "20260101T000100Z-aaaaaaa", sr_blobs)
+assert sr_waive(reason="ours as much as theirs") == (
+    0, "waived 1 path(s): ours as much as theirs [src/a.py (no journal author)]")
+
+# The journals naming another chat is not the last word while this chat's own run is still unswept:
+# the two stores are read together, or the counter and the waiver disagree about one path.
+sr_journal_vs_run = sr_store()
+sr_journal(rb.COMMIT_JOURNAL, "chat-2", "src/a.py")
+assert sr_answer("src/a.py") == "debt 1 mine"
+assert sr_waive("src/a.py", reason="my worker wrote it after theirs")[0] == 0
+sr_clear_journals()
+
+# And a path only a co-tenant's run wrote is still theirs, named by the run that wrote it.
+sr_theirs_only = sr_store()
+(sr_worker_runs / "20260101T0810Z-ours" / "journaled").write_text("")
+assert sr_answer("src/a.py") == "debt 1 other"
+sr_rc, sr_said = sr_waive("src/a.py", reason="not mine at all")
+assert sr_rc == 1 and "20260101T0800Z-theirs" in sr_said and "chat-2" in sr_said, (sr_rc, sr_said)
+(sr_worker_runs / "20260101T0800Z-theirs" / "journaled").write_text("")
+
 sr_clear_journals()
 if sr_session_before is None:
     os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
