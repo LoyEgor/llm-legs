@@ -5,6 +5,8 @@ if not envGuardOk then
     print("ERROR: HOME env guard failed:", envGuardError)
 end
 
+local consolePrint = print
+
 local ipcOk, ipcError = pcall(function()
     require("hs.ipc")
     local installed = hs.ipc.cliInstall("/opt/homebrew")
@@ -14,6 +16,33 @@ local ipcOk, ipcError = pcall(function()
 end)
 if not ipcOk then
     print("ERROR: hs IPC setup failed:", ipcError)
+end
+
+-- hs.ipc's printReplacement (HS 1.1.1, Hammerspoon issue #3872, fix unmerged)
+-- recurses to a stack overflow when an `hs` client's reply port dies mid-eval:
+-- its reentrancy guard reports via log.w, which itself prints, and a send
+-- failure leaves the guard counter stuck so every later print loops forever.
+-- Same fan-out, but reentrancy is dropped silently and the guard always exits.
+if ipcOk then
+    local ipc = require("hs.ipc")
+    if ipc.__registeredCLIInstances and ipc.print_enter and ipc.print_exit and ipc.print_inside then
+        print = function(...)
+            consolePrint(...)
+            for id, v in pairs(ipc.__registeredCLIInstances) do
+                if v._cli and v._cli.console and v.print and not v._cli.quietMode
+                    and not ipc.print_inside(id) then
+                    ipc.print_enter(id)
+                    local parts = table.pack(...)
+                    local line = (parts.n > 0) and tostring(parts[1]) or ""
+                    for i = 2, parts.n do
+                        line = line .. "\t" .. tostring(parts[i])
+                    end
+                    pcall(v._cli.remote.sendMessage, v._cli.remote, line .. "\n", 3)
+                    ipc.print_exit(id)
+                end
+            end
+        end
+    end
 end
 
 local notifyOk, notifyError = pcall(function()

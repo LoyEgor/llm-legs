@@ -50,7 +50,7 @@ write_step_log() {
 
 send_alert() {
   local message="$1"
-  hs -c "hs.alert.show(\"$message\")" >/dev/null 2>&1 || true
+  hs -q -c "hs.alert.show(\"$message\")" >/dev/null 2>&1 || true
   osascript -e "display notification \"$message\" with title \"LLM self-check\"" >/dev/null 2>&1 || true
 }
 

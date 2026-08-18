@@ -133,9 +133,9 @@ case "$target_tty" in
 esac
 
 if [ -n "$target_tty" ]; then
-  hs_output=$(hs -c "ClaudeContinue.startTimerFor(\"$surface\", $minutes, nil, \"$target_tty\")" 2>&1)
+  hs_output=$(hs -q -c "ClaudeContinue.startTimerFor(\"$surface\", $minutes, nil, \"$target_tty\")" 2>&1)
 else
-  hs_output=$(hs -c "ClaudeContinue.startTimerFor(\"$surface\", $minutes)" 2>&1)
+  hs_output=$(hs -q -c "ClaudeContinue.startTimerFor(\"$surface\", $minutes)" 2>&1)
 fi
 hs_status=$?
 if [ "$hs_status" -ne 0 ]; then

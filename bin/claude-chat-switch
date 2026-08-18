@@ -353,7 +353,7 @@ if [ "$front_mode" -eq 1 ] || [ "$self_mode" -eq 1 ]; then
 else
   call="ClaudeChatSwitch.switchChat(\"$profile\", \"$session_id\", $claude_pid, nil, $opts)"
 fi
-hs_out=$(hs -c "return $call and 'armed' or 'refused'" 2>&1)
+hs_out=$(hs -q -c "return $call and 'armed' or 'refused'" 2>&1)
 hs_rc=$?
 # hs prints the module's console lines before the returned value, and the armed line
 # echoes the cwd back — matching error words against the whole output would report a
