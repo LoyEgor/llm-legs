@@ -6007,6 +6007,12 @@ def progress_capture_runner(rater, repo_path, commit, focus, run_dir, diff, acco
 
 
 rb.SIDE_RUNNERS["codex"] = progress_capture_runner
+# The launching chat is resolved by walking this process's parents against the harness's pid
+# registry, and the fixture one is empty: nothing in a suite may read the real ~/.claude/sessions,
+# and a run whose launcher cannot be named must leave the key out rather than write a blank.
+empty_session_registry = work / "sessions-empty"
+empty_session_registry.mkdir()
+os.environ[rb.SESSION_REGISTRY_DIR_ENV] = str(empty_session_registry)
 rb.affordability = lambda: {
     "claude": False, "codex": True, "agy": True, "opencode": True,
     "claude_account": None,
@@ -6032,6 +6038,7 @@ assert captured_progress[0]["target"] == pin_sha[:7]
 assert captured_progress[0]["done"] == [] and captured_progress[0]["failed"] == 0
 assert captured_progress[0]["expected"] == {"sol-medium": 4000}, captured_progress[0]
 assert isinstance(captured_progress[0]["started_epoch"], int)
+assert "session" not in captured_progress[0], captured_progress[0]
 # Both start fields must name the same clock read: an epoch stamped separately drifts from the
 # ISO string by however long setup took, and the reader's late math inherits the drift. The
 # wiring check above ran with time.time() shifted two hours, so a document built from a second
@@ -6054,12 +6061,27 @@ assert not list(
 # cmd_review hands its own Namespace to cmd_run, so the variant it was asked for has to survive
 # the trip: the statusline names it from this file and from nothing else.
 grant_owner_panels("max")
+# A registry entry for this very process is the first hop of the walk, which is the run's own
+# launcher as far as the document is concerned: the statusline of the chat that started a review
+# over ANOTHER repository has nothing but this key to recognise it by.
+session_registry = work / "sessions-fixture"
+session_registry.mkdir()
+(session_registry / f"{os.getpid()}.json").write_text(
+    json.dumps({"sessionId": "chat-launching-the-run"}) + "\n"
+)
+os.environ[rb.SESSION_REGISTRY_DIR_ENV] = str(session_registry)
 assert rb.cmd_run(argparse.Namespace(
     repo=str(pin_repo), commitish=pin_sha, raters="sol-medium",
     leg=False, verify=None, auto=None, focus=None, tier="T2", max=True, foreground=True,
 )) == 0
 assert captured_progress[1]["tier"] == "T2" and captured_progress[1]["max"] is True, \
     captured_progress[1]
+assert captured_progress[1]["session"] == "chat-launching-the-run", captured_progress[1]
+# A malformed entry is no entry: the walk carries on up rather than recording a session id that
+# is not a string.
+(session_registry / f"{os.getpid()}.json").write_text(json.dumps({"sessionId": 7}) + "\n")
+assert rb.walk_launching_session() is None
+os.environ[rb.SESSION_REGISTRY_DIR_ENV] = str(empty_session_registry)
 rb.SIDE_RUNNERS["codex"] = tier_runner
 rb.affordability = lambda: {
     "claude": True, "codex": True, "agy": True, "opencode": True,

@@ -3000,6 +3000,40 @@ write_progress "$$" T2 4 7 2026-07-27T22:00:00+00:00 "$REVIEW_DIRTY"
 progress_foreign_out=$(progress_render foreign-repo)
 assert test "${progress_foreign_out#*4/7}" = "$progress_foreign_out"
 
+# A run over another tree belongs to the chat that started it and to no other: reviewing a second
+# repository from here rendered nowhere while the tree was the only thing matched on.
+progress_set_session() { # session
+  jq --arg session "$1" '.session = $session' \
+    "$PROGRESS_DIR/$progress_prefix$$.json" > "$PROGRESS_DIR/$progress_prefix$$.json.tmp"
+  mv "$PROGRESS_DIR/$progress_prefix$$.json.tmp" "$PROGRESS_DIR/$progress_prefix$$.json"
+}
+progress_set_session review-progress-foreign-mine
+progress_foreign_mine_out=$(progress_render foreign-mine)
+assert grep -Fq 'review T2 4/7' <<< "$progress_foreign_mine_out"
+
+progress_set_session review-progress-another-chat
+progress_foreign_other_out=$(progress_render foreign-other)
+assert test "${progress_foreign_other_out#*4/7}" = "$progress_foreign_other_out"
+
+# Without a recorded session the walk still answers, for documents written before review-bench
+# recorded one — and where it cannot, a foreign tree stays invisible, as the tree-scoped render
+# always was.
+mkdir -p "$HOME/.claude/sessions"
+printf '{"sessionId":"review-progress-foreign-walk"}\n' > "$HOME/.claude/sessions/$$.json"
+write_progress "$$" T2 4 7 2026-07-27T22:00:00+00:00 "$REVIEW_DIRTY"
+progress_foreign_walk_out=$(progress_render foreign-walk)
+assert grep -Fq 'review T2 4/7' <<< "$progress_foreign_walk_out"
+progress_foreign_walk_other_out=$(progress_render foreign-walk-other)
+assert test "${progress_foreign_walk_other_out#*4/7}" = "$progress_foreign_walk_other_out"
+rm -f "$HOME/.claude/sessions/$$.json"
+
+# The recorded session decides how loudly a run on THIS tree renders, and nothing about whether it
+# renders at all: another chat's run here is still this tree's news.
+write_progress "$$" T2 4 7 2026-07-27T22:00:00+00:00
+progress_set_session review-progress-another-chat
+progress_own_tree_other_out=$(progress_render own-tree-other)
+assert grep -Fq " ${DIM}│${RESET} ${DIM}review T2 4/7${RESET}" <<< "$progress_own_tree_other_out"
+
 # A linked worktree is another chat's working tree, and matching on the repository could not tell
 # the two apart: `--git-common-dir` is one path for all of them, so a review running in a sibling
 # rendered here too. The pair proves the distinction is the working tree and not the repository —
@@ -3033,4 +3067,4 @@ assert review_slot_silent "$progress_gone_out"
 
 
 
-echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, a review slot that carries a run in flight and nothing else once it ends, the gate's verdict vocabulary rendered verbatim with red kept for a hung review, keyed on the commit journal and asked once per key with nothing else probed behind it, main-last and Gemini account predictions, and Codex/claudeb/Gemini worker tag propagation"
+echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, a review slot that carries a run in flight — over this tree or over another one this chat launched — and nothing else once it ends, the gate's verdict vocabulary rendered verbatim with red kept for a hung review, keyed on the commit journal and asked once per key with nothing else probed behind it, main-last and Gemini account predictions, and Codex/claudeb/Gemini worker tag propagation"

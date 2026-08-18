@@ -1281,6 +1281,10 @@ OWNER_GRANT_TTL_S = 1800
 
 RECEIPT_DIR = "receipts"
 PROGRESS_DIR = "progress"
+# Where the harness registers a live chat, one file per pid, and how far up the parents a run may
+# look for the one that launched it.
+SESSION_REGISTRY_DIR_ENV = "REVIEW_BENCH_SESSION_DIR"
+SESSION_WALK_HOPS = 15
 # Where a merged review's own repository is built and kept, and the file inside one that names the
 # repositories it was built from.
 MERGED_DIR = "merged"
@@ -1421,8 +1425,50 @@ def session_stamp():
     return {"session": session} if session else {}
 
 
+def session_registry_dir():
+    directory = os.environ.get(SESSION_REGISTRY_DIR_ENV)
+    return Path(directory) if directory else Path.home() / ".claude" / "sessions"
+
+
+def parent_pid(pid):
+    try:
+        line = subprocess.run(
+            ["ps", "-o", "ppid=", "-p", str(pid)],
+            capture_output=True, text=True, check=False,
+        ).stdout.strip()
+    except OSError:
+        return None
+    return int(line) if line.isdigit() else None
+
+
+def walk_launching_session(pid=None):
+    """The chat that launched this process, read from the harness registry keyed by pid: a run is
+    that chat's grandchild several execs down, so the launcher is the nearest ancestor with an
+    entry. Only worth asking at run start — a backgrounded run outlives its launcher and reparents
+    to pid 1, which is why the answer is recorded rather than walked again by every reader.
+    """
+    directory = session_registry_dir()
+    pid = os.getpid() if pid is None else pid
+    for _ in range(SESSION_WALK_HOPS):
+        if pid is None or pid <= 1:
+            break
+        try:
+            entry = json.loads((directory / f"{pid}.json").read_text())
+        except (OSError, ValueError):
+            entry = None
+        session = entry.get("sessionId") if isinstance(entry, dict) else None
+        if isinstance(session, str) and session:
+            return session
+        pid = parent_pid(pid)
+    return None
+
+
+def launching_session():
+    return session_stamp().get("session") or walk_launching_session()
+
+
 def review_progress_document(repo, run_id, tier, target, cells, started=None, pid=None,
-                             max_panel=False, expected=None, started_epoch=None):
+                             max_panel=False, expected=None, started_epoch=None, session=None):
     timestamp = started or iso_now()
     return {
         "repo": str(Path(repo).resolve()),
@@ -1440,7 +1486,7 @@ def review_progress_document(repo, run_id, tier, target, cells, started=None, pi
         # two start fields disagree about when the run began.
         "started_epoch": int(started_epoch if started_epoch is not None else time.time()),
         "ts": timestamp,
-        **session_stamp(),
+        **({"session": session} if session else session_stamp()),
     }
 
 
@@ -8138,6 +8184,9 @@ def cmd_run(args):
     # single document would be invisible in every repository but one.
     progress_documents = []
     progress_warned = False
+    # Resolved once, here: the launcher's parent chain is alive at run start and gone by the time
+    # a statusline asks, and every document of a merged review names the same chat.
+    progress_session = launching_session()
 
     def warn_progress(exc):
         nonlocal progress_warned
@@ -8160,6 +8209,7 @@ def cmd_run(args):
                     started_epoch=started.timestamp(),
                     max_panel=bool(getattr(args, "max", False)),
                     expected=expected_durations,
+                    session=progress_session,
                 )
                 prune_review_progress(progress_repo, directory)
                 progress_documents.append((directory / progress_name, progress))

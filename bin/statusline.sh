@@ -127,6 +127,15 @@ review_run_session() {
   return 1
 }
 
+# The chat a run belongs to: what review-bench recorded when it started the run, and the walk above
+# only for a document written before it did. The record wins because the walk answers from a parent
+# chain a backgrounded run has already lost — its launcher exits and it reparents to pid 1.
+review_run_owner() { # recorded_session pid
+  local owner="$1"
+  [ -n "$owner" ] || owner=$(review_run_session "$2" 2>/dev/null) || owner=""
+  printf '%s' "${owner//[^A-Za-z0-9_-]/}"
+}
+
 # The review gate's own answer to "is this chat's uncommitted work covered by a review of its own",
 # in the one line it prints for a reader that has no commit to attempt: `off` (nothing pending),
 # `dim <text>` (a coverage state worth saying) or `loud <text>`, which the gate reserves for a
@@ -1486,7 +1495,7 @@ fi
 
 
 review_part=""
-if [ -n "$active_top" ]; then
+if [ -n "$active_top" ] || [ -n "$session_id" ]; then
   # A run in flight owns the slot: review-bench writes one progress file per run, and while it
   # lives the label reports that panel instead of the gate's verdict. Liveness is derived here,
   # never declared by the writer — the file survives kill -9, a crash and a closed terminal, so
@@ -1558,9 +1567,16 @@ if [ -n "$active_top" ]; then
       # The slack absorbs ps's whole-second resolution, not a real gap: pids are handed out
       # sequentially and wrap near 100k, so a reuse this close to the last write cannot happen.
       [ "$progress_start" -le "$((progress_mtime + 5))" ] || continue
-      # The working tree, not the repository: a run in a sibling worktree is another chat's news,
-      # and a subdirectory the run was started from still resolves to the tree it belongs to.
-      [ "$(git_worktree_top "$progress_repo" 2>/dev/null)" = "$active_top" ] || continue
+      # Two ways a run is this render's news: the tree it runs over, or the chat that started it —
+      # the tree alone leaves a review of another repository invisible in the very statusline that
+      # launched it. The tree match is the working tree and not the repository: a run in a sibling
+      # worktree is another chat's news, and a subdirectory the run was started from still resolves
+      # to the tree it belongs to.
+      if [ -z "$active_top" ] ||
+        [ "$(git_worktree_top "$progress_repo" 2>/dev/null)" != "$active_top" ]; then
+        [ -n "$session_id" ] || continue
+        [ "$(review_run_owner "$progress_run_session" "$progress_pid")" = "$session_id" ] || continue
+      fi
       case "$progress_run_tier" in
         T[0-3]) ;;
         *) progress_run_tier="" ;;
@@ -1588,12 +1604,8 @@ if [ -n "$active_top" ]; then
     fi
     progress_label="${progress_label} ${progress_done}/${progress_total}"
     # A run another chat started is this chat's background news, not its call to action: dim, and
-    # not red either, since being late is that chat's problem to see. The `session` field is
-    # preferred over the process walk for when review-bench starts recording one.
-    progress_owner="$progress_session"
-    [ -n "$progress_owner" ] ||
-      progress_owner=$(review_run_session "$progress_owner_pid" 2>/dev/null) || progress_owner=""
-    progress_owner=${progress_owner//[^A-Za-z0-9_-]/}
+    # not red either, since being late is that chat's problem to see.
+    progress_owner=$(review_run_owner "$progress_session" "$progress_owner_pid")
     if [ -n "$progress_owner" ] && [ -n "$session_id" ] && [ "$progress_owner" != "$session_id" ]; then
       review_part=" ${sep} ${DIM}${progress_label}${RESET}"
     elif [ -n "$progress_late" ]; then
