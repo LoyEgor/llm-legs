@@ -6620,7 +6620,8 @@ assert sr_waivers["waivers"][0]["session"] == "chat-1", sr_waivers
 sr_placeholder = sr_store()
 sr_rc, sr_said = sr_waive("src/a.py", reason=rb.WAIVE_PLACEHOLDER_REASON)
 assert sr_rc == 1 and rb.WAIVE_PLACEHOLDER_REASON in sr_said, (sr_rc, sr_said)
-assert sr_waive("src/a.py", reason=f"{rb.WAIVE_PLACEHOLDER_REASON}, in one line: a doc typo")[0] == 0
+sr_rc, sr_said = sr_waive("src/a.py", reason=f"{rb.WAIVE_PLACEHOLDER_REASON}, in one line: a doc typo")
+assert (sr_rc, sr_said) == (0, "waived 1 path(s): WHY THIS GOES UNREVIEWED, in one line: a doc typo"), (sr_rc, sr_said)
 
 # A waiver naming no path is the repository's question, and the repository is shared: it settles
 # what the journals say is this chat's work and leaves every co-tenant's where it stands.
@@ -6634,8 +6635,15 @@ assert sr_waive(reason="mine only") == (0, "waived 1 path(s): mine only")
 sr_waivers = json.loads((rb.state_dir() / rb.WAIVER_DIR).glob("*.json").__next__().read_text())
 assert list(sr_waivers["waivers"][0]["paths"]) == ["src/a.py"], sr_waivers
 assert sr_answer() == "debt 1 other"
-# Spelled out, the co-tenant's path is a decision somebody made and goes through.
-assert sr_waive("docs/theirs.md", reason="theirs, said out loud")[0] == 0
+# Spelling the co-tenant's path out does not make it this chat's to sign for, and the refusal names
+# the path and the chat the journals hand it to.
+sr_rc, sr_said = sr_waive("docs/theirs.md", reason="theirs, said out loud")
+assert sr_rc == 1 and "docs/theirs.md" in sr_said and "chat-2" in sr_said, (sr_rc, sr_said)
+assert sr_answer() == "debt 1 other"
+# Their own chat says it, and it stands.
+os.environ["CLAUDE_CODE_SESSION_ID"] = "chat-2"
+assert sr_waive("docs/theirs.md", reason="theirs, and theirs to say so")[0] == 0
+os.environ["CLAUDE_CODE_SESSION_ID"] = "chat-1"
 assert sr_answer() == "none"
 sr_clear_journals()
 
@@ -6646,7 +6654,16 @@ sr_journal(rb.COMMIT_JOURNAL, "chat-2", "src/a.py")
 os.environ["CLAUDE_CODE_SESSION_ID"] = "chat-3"
 sr_rc, sr_said = sr_waive(reason="not mine")
 assert sr_rc == 1 and "--paths" in sr_said and "chat-3" in sr_said, (sr_rc, sr_said)
-assert sr_waive("src/a.py", reason="not mine, said out loud")[0] == 0
+sr_rc, sr_said = sr_waive("src/a.py", reason="not mine, said out loud")
+assert sr_rc == 1 and "src/a.py" in sr_said and "chat-2" in sr_said, (sr_rc, sr_said)
+# One foreign path refuses the whole waiver: a partial one records a decision the caller did not
+# make about the paths it dropped.
+sr_journal(rb.COMMIT_JOURNAL, "chat-3", "src/blob.bin")
+sr_binary.write_bytes(b"\x00\x09")
+sr_rc, sr_said = sr_waive("src/a.py", "src/blob.bin", reason="most of it is mine")
+assert sr_rc == 1 and "src/blob.bin" not in sr_said, (sr_rc, sr_said)
+assert sr_answer("src/blob.bin", session="chat-3") == "debt 1 mine"
+sr_binary.write_bytes(b"\x00\x01\x02\x03")
 os.environ["CLAUDE_CODE_SESSION_ID"] = "chat-1"
 sr_clear_journals()
 (sr_repo / "docs" / "theirs.md").unlink()
@@ -6672,7 +6689,8 @@ assert rb.journal_entries(sr_gitdir / rb.COMMIT_JOURNAL) == [("", "src/a.py")]
 assert "src/a.py" in rb.journal_paths(sr_repo)
 assert sr_answer() == "debt 1 other"
 assert rb.debt_authors(sr_repo, ["src/a.py"]) == set()
-assert sr_waive(reason="legacy")[0] == 1
+# Owned by nobody is not owned by somebody else: a chat may take that debt on, spelled out or not.
+assert sr_waive(reason="legacy")[0] == 0
 sr_clear_journals()
 
 # Deleting a file nobody reviewed is not how it stops needing a review: with no artifact holding
@@ -6691,6 +6709,73 @@ assert sr_answer("docs/gone.md") == "none"
 # and nothing is what stands there.
 sr_run(sr_deleted_unread, "20260101T000100Z-aaaaaaa", {"docs/vanished.md": ""})
 assert sr_answer("docs/vanished.md") == "none"
+
+# A session field left blank is the same record as one that was never written: the path stays in
+# the universe and belongs to nobody, where dropping the row would take the path with it.
+sr_blank_session = sr_store()
+sr_clear_journals()
+sr_source.write_text(sr_moved + "blank\n")
+with (sr_gitdir / rb.COMMIT_JOURNAL).open("ab") as handle:
+    handle.write(b"\t1750000000\tsrc/a.py\0")
+assert rb.journal_entries(sr_gitdir / rb.COMMIT_JOURNAL) == [("", "src/a.py")]
+assert "src/a.py" in rb.journal_paths(sr_repo)
+assert rb.debt_authors(sr_repo, ["src/a.py"]) == set()
+assert sr_answer() == "debt 1 other"
+# A record holding no path at all is the one that is not a record.
+with (sr_gitdir / rb.COMMIT_JOURNAL).open("ab") as handle:
+    handle.write(b"chat-1\t1750000000\t\0")
+assert rb.journal_entries(sr_gitdir / rb.COMMIT_JOURNAL) == [("", "src/a.py")]
+sr_clear_journals()
+
+# A round whose tally nobody can read is not a clean round: read as one it would release whatever
+# lock it earned along with the file that failed to parse.
+sr_untallied = sr_store()
+sr_source.write_text(sr_moved + "untallied\n")
+sr_untallied_dir = sr_run(sr_untallied, "20260101T000100Z-aaaaaaa", sr_blobs,
+                          report={"confirmed": 0, "confirmed_by_severity": {"P1": 0}})
+(sr_untallied_dir / rb.REPORT_RECEIPT).write_text("{ truncated")
+assert rb.run_confirmed_counts(sr_untallied_dir) is None
+assert sr_answer("src/a.py") == "debt 1 other locked"
+sr_rc, sr_said = sr_waive("src/a.py", reason="cannot read its own tally")
+assert sr_rc == 1 and "20260101T000100Z-aaaaaaa" in sr_said, (sr_rc, sr_said)
+# The memo keeps answers and never that failure, so triaging the run again ends the lock inside the
+# same process rather than after the next launch.
+(sr_untallied_dir / rb.REPORT_RECEIPT).write_text(
+    json.dumps({"confirmed": 1, "confirmed_by_severity": {"P1": 1}})
+)
+assert rb.run_confirmed_counts(sr_untallied_dir) == (1, 1)
+assert sr_answer("src/a.py") == "debt 1 other"
+
+# Fixing a round's findings routinely deletes a file it read, and no later run can ever hold a path
+# that is gone: the second review owes the scope still standing, or the lock has no release at all.
+sr_gone_scope = sr_store()
+(sr_repo / "src" / "doomed.py").write_text("to be deleted\n")
+sr_run(sr_gone_scope, "20260101T000100Z-aaaaaaa",
+       dict(sr_blobs, **{"src/doomed.py": sr_sha("src/doomed.py")}),
+       report={"confirmed": 2, "confirmed_by_severity": {"P1": 2}})
+sr_source.write_text(sr_moved + "fixed\n")
+(sr_repo / "src" / "doomed.py").unlink()
+assert sr_answer("src/a.py") == "debt 1 other locked"
+sr_run(sr_gone_scope, "20260101T000200Z-bbbbbbb",
+       {"src/a.py": sr_sha("src/a.py"), "src/blob.bin": sr_blobs["src/blob.bin"]})
+assert sr_answer("src/a.py") == "none"
+# A path that still stands is owed as it always was: dropping one of those from the rerun is the
+# narrow round the lock exists to refuse.
+sr_narrow = sr_store()
+sr_source.write_text(sr_moved + "narrow\n")
+sr_run(sr_narrow, "20260101T000100Z-aaaaaaa", sr_blobs,
+       report={"confirmed": 2, "confirmed_by_severity": {"P1": 2}})
+sr_run(sr_narrow, "20260101T000200Z-bbbbbbb", {"src/a.py": sr_sha("src/a.py")})
+assert sr_answer("src/a.py") == "debt 1 other locked"
+
+# Paths named and every spelling rejected is not the repository's question: run as the pathless
+# form, a waiver aimed at two files would settle everything this chat owns.
+sr_rejected = sr_store()
+sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/a.py")
+sr_rc, sr_said = sr_waive("../outside.py", ".", "  ", reason="typo somewhere")
+assert sr_rc == 1 and "../outside.py" in sr_said, (sr_rc, sr_said)
+assert sr_answer("src/a.py") == "debt 1 mine"
+(sr_repo / "src" / "doomed.py").unlink(missing_ok=True)
 
 sr_clear_journals()
 if sr_session_before is None:

@@ -1270,8 +1270,10 @@ if [ -r "$COMMIT_JOURNAL" ]; then
   assert grep -Fq "'WORKDIR: '*) run_workdir=\${line#WORKDIR: }" "$COMMIT_JOURNAL"
   assert grep -Fq "'UNKNOWN: '*|'') ;;" "$COMMIT_JOURNAL"
   # The two rules that keep a record from being claimed twice or claimed early: a run with no
-  # exit_code has no final list yet, and one already imported is marked as imported.
-  assert grep -Fq '[ -f "$directory/exit_code" ] || continue' "$COMMIT_JOURNAL"
+  # exit_code has no final list yet unless its supervisor is gone, and one already imported is
+  # marked as imported.
+  assert grep -Fq 'if [ ! -f "$directory/exit_code" ]; then' "$COMMIT_JOURNAL"
+  assert grep -Fq 'kill -0 "$pid" 2>/dev/null && continue' "$COMMIT_JOURNAL"
   assert grep -Fq ': >"$directory/journaled"' "$COMMIT_JOURNAL"
 else
   printf 'SKIP: worker files reach the launching chat (%s is unreadable)\n' "$COMMIT_JOURNAL"

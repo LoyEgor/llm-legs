@@ -35,7 +35,18 @@ if [ -z "$own" ] || [ "$own" = "-" ]; then
     '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$c}}' 2>/dev/null
   exit 0
 fi
-[ -r "$LIMITS_FILE" ] || exit 0
+# A guessed account may never close a door and may never go quiet either: the reading belongs to
+# whichever profile was launched here last, so denying a fan-out on it stops work over a number
+# that was never this session's, and saying nothing about it reads as headroom nobody measured.
+guessed_note() {
+  jq -cn --arg c "Heads-up: this workflow's agents will spend the SESSION's own account, never the claudeb rotation, and a large fleet can wall this session mid-task. Nothing in this session's environment names that account: the closest reading is $1, which is only the last claudeb profile launched on this machine and may be another chat's. Confirm the real one with llm-limits --table --no-write before a big fan-out, keep the fleet small, or move implementation stages to workers (run worker-pick)." \
+    '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$c}}' 2>/dev/null
+}
+
+if [ ! -r "$LIMITS_FILE" ]; then
+  [ "$own_source" = claudeb-state ] && guessed_note "$own, whose usage this run could not read"
+  exit 0
+fi
 
 now=$(date +%s) || exit 0
 # Pressure = max of the general 5h window and the fable bucket (workflow
@@ -61,15 +72,14 @@ pct=$(jq -r --arg own "$own" --argjson now "$now" '
    | [eff(.five_hour), eff(.fable)] | map(select(. != null)) | (if length == 0 then empty else max end)
   ] | first // empty
 ' "$LIMITS_FILE" 2>/dev/null) || exit 0
-[ -n "$pct" ] || exit 0
+if [ -z "$pct" ]; then
+  [ "$own_source" = claudeb-state ] && guessed_note "$own, whose usage this run could not read"
+  exit 0
+fi
 pct_int=$(printf '%.0f' "$pct" 2>/dev/null) || exit 0
 
-# A guessed account may never close a door: the reading belongs to whichever profile was launched
-# here last, which is routinely another chat's, and denying a fan-out on it stops work over a
-# number that was never this session's. It is worth saying out loud, and never worth more.
-if [ "$own_source" = claudeb-state ] && [ "$pct_int" -ge "$WARN_AT" ] 2>/dev/null; then
-  jq -cn --arg c "Heads-up: this workflow's agents will spend the SESSION's own account, never the claudeb rotation, and a large fleet can wall this session mid-task. Nothing in this session's environment names that account: the closest reading is $own at ${pct}%, which is only the last claudeb profile launched on this machine and may be another chat's. Confirm the real one with llm-limits --table --no-write before a big fan-out, keep the fleet small, or move implementation stages to workers (run worker-pick)." \
-    '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$c}}' 2>/dev/null
+if [ "$own_source" = claudeb-state ]; then
+  guessed_note "$own at ${pct}%"
   exit 0
 fi
 

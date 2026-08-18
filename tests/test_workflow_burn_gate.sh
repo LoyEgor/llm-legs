@@ -60,8 +60,20 @@ out=$(gate)
 assert lacks "$out" '"permissionDecision"'
 assert contains "$out" 'notcom'
 assert contains "$out" 'may be another chat'
+# And it never goes quiet: silence is how a reader learns there is headroom, which is the one
+# thing a guess cannot report.
 limits notcom 10
-assert lacks "$(gate)" 'additionalContext'
+out=$(gate)
+assert warned "$out"
+assert contains "$out" 'notcom at 10%'
+assert lacks "$out" '"permissionDecision"'
+# Nor when the guess has no usage reading behind it at all.
+mv "$WORK/limits.json" "$WORK/limits.away"
+out=$(gate)
+assert warned "$out"
+assert contains "$out" 'could not read'
+assert lacks "$out" '"permissionDecision"'
+mv "$WORK/limits.away" "$WORK/limits.json"
 # Named in the environment, the same numbers still deny: the door closes on an account this session
 # actually claims, and on no other.
 limits notcom 97
@@ -84,4 +96,4 @@ assert lacks "$out" '"permissionDecision"'
 assert lacks "$(jq -cn '{hook_event_name:"PreToolUse",tool_name:"Bash",tool_input:{}}' |
   env HOME="$HOME_DIR" LLM_LIMITS_FILE="$WORK/limits.json" bash "$GATE")" 'additionalContext'
 
-printf 'PASS: %s asserts; workflow-burn-gate warns at 70%% and denies at 95%% for the session account, naming it from the environment, the profile config dir or claudeb state, denying only on an account the session itself names while a claudeb-state guess warns that it may belong to another chat, warns without a number when nothing can name it, and stays out of every other tool call\n' "$asserts"
+printf 'PASS: %s asserts; workflow-burn-gate warns at 70%% and denies at 95%% for the session account, naming it from the environment, the profile config dir or claudeb state, denying only on an account the session itself names while a claudeb-state guess always speaks and warns that it may belong to another chat, warns without a number when nothing can name it, and stays out of every other tool call\n' "$asserts"
