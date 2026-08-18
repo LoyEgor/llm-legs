@@ -692,7 +692,7 @@ if test -r "$COMMIT_REPORT"; then
   # The third writer: an edit and the commit carrying it inside ONE Bash call are seen by neither
   # of the other two, and the debt that commit landed is then recorded under no chat at all.
   assert grep -Fq 'rj_append "$debt" "$own" "$now" "$path"' "$COMMIT_REPORT"
-  assert grep -Fq 'stamp_landed_debt "$dir" "$gitdir" "$session" "$out" "${report_last-}"' \
+  assert grep -Fq 'stamp_landed_debt "$dir" "$session" "$out" "${report_last-}" "$cmd" "$cwd"' \
     "$COMMIT_REPORT"
   # Read before the commit branch overwrites it: the marker is the far end of the walk below.
   assert grep -Fq 'report_last=$(cat "$gitdir/commit-report-last" 2>/dev/null)' "$COMMIT_REPORT"
@@ -700,7 +700,10 @@ if test -r "$COMMIT_REPORT"; then
   # sha resolved by that repository for itself; and never a path an unswept run of another chat
   # listed, which row am's sweep stamps under its launcher.
   assert grep -Fq 'shas=$(landed_commits "$dir" "$out" "$since")' "$COMMIT_REPORT"
-  assert grep -Fq 'done < <(journal_homes "$dir")' "$COMMIT_REPORT"
+  assert grep -Fq 'done < <(journal_homes "$dir"; command_dirs "$cmd" "$cwd")' "$COMMIT_REPORT"
+  # A worktree shares its parent's object store, so resolving a sha there is not evidence its
+  # content ever landed in that tree.
+  assert grep -Fq 'git -C "$top" merge-base --is-ancestor "$full" HEAD' "$COMMIT_REPORT"
   assert grep -Fq 'full=$(git -C "$top" rev-parse --verify --quiet "$sha^{commit}" 2>/dev/null)' \
     "$COMMIT_REPORT"
   # Where git's summary lines spoke they are the whole answer: a bare HEAD is a co-tenant's commit,
@@ -743,6 +746,9 @@ assert eq "$(grep -c '\.pid_started_at = ' "$ROOT/bin/worker-run")" 1
 # helper, or worker-run calls a recycled pid running while the hooks have retired the run.
 assert grep -Fq 'PID_START_SLACK=30' "$ROOT/bin/worker-run"
 assert grep -Fq 'ps -p "$2" -o etime=' "$ROOT/bin/worker-run"
+# 0 is the pre-launch placeholder both sides must refuse to probe: `ps -p 0` answers nothing while
+# pid 1 answers, so read as a pid it says the supervisor of a run that has not started is gone.
+assert grep -Fq '[ "$2" -gt 0 ] || return 1' "$ROOT/bin/worker-run"
 # An empty answer from ps means "no such process" and "ps could not answer" at once, and one of the
 # two is a live run about to be reported failed or swept. Both sites ask a pid that must be listed
 # before they believe the silence — pid 1, because a sandbox hiding every process but our own still
@@ -751,6 +757,7 @@ assert grep -Fq 'ps -p 1 -o etime=' "$ROOT/bin/worker-run"
 assert eq "$(grep -c 'supervisor_running "\$directory" "\$pid"' "$ROOT/bin/worker-run")" 3
 if test -r "$JOURNAL_LIB"; then
   assert grep -Fq 'RJ_PID_SLACK=30' "$JOURNAL_LIB"
+  assert grep -Fq '[ "$pid" -gt 0 ] || { printf '"'"'unknown\n'"'"'; return 0; }' "$JOURNAL_LIB"
   assert grep -Fq '"pid_started_at"' "$JOURNAL_LIB"
   assert grep -Fq 'ps -p "$pid" -o etime=' "$JOURNAL_LIB"
   assert grep -Fq 'ps -p 1 -o etime=' "$JOURNAL_LIB"
@@ -1379,7 +1386,7 @@ if [ -r "$COMMIT_JOURNAL" ]; then
   assert grep -Fq ': >"$directory/journaled"' "$COMMIT_JOURNAL"
   # A final record that will never gain a listing is retired unread: there is nothing left to
   # import, and its readers hold the whole workdir as pending while it sits there.
-  assert grep -Fq 'elif [ -n "$final" ]; then' "$COMMIT_JOURNAL"
+  assert eq "$(grep -c ': >"$directory/journaled"' "$COMMIT_JOURNAL")" 3
   # The other writer of the debt journal, and the earlier one: ownership is stamped at the edit,
   # since a commit that arms no notice would otherwise land debt owed by nobody. Per EDIT, with no
   # scan for an older record — row ao's epoch floor makes any stand-in invisible to the reader.
