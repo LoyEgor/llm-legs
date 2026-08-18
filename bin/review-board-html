@@ -6,6 +6,9 @@ Reads the board by invoking review-bench from the same directory; writes HTML
 to the given path or stdout. The page is standalone — it opens from file:// as
 well as inside an artifact wrapper — and cannot fetch live data, so regenerate
 it to refresh.
+
+The interface is English; the footer legend and the header tooltips are Russian
+by the owner's standing request, and are the one sanctioned exception here.
 """
 import json, subprocess, sys, html
 from datetime import datetime, timezone
@@ -21,84 +24,95 @@ except subprocess.CalledProcessError as exc:
 generated = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M %Z")
 
 TIER_LABELS = {
-    "T0": ("T0", "до 3 мин"), "T1": ("T1", "до 6 мин"), "T2": ("T2", "до 10 мин"),
-    "T3": ("T3", "до 20 мин"), "OVER": ("Сверх бюджета", "дольше 20 мин"), "?": ("Без замера времени", ""),
+    "T0": "up to 3 min", "T1": "up to 6 min", "T2": "up to 10 min", "T3": "up to 20 min",
+    "OVER": "over every budget", "?": "no wall clock recorded",
 }
 
 PAGE = """<!doctype html>
-<html lang="ru">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Доска ног</title>
+<title>Leg board</title>
 <style>
 :root {
   --bg:#f4f7f7; --surface:#ffffff; --ink:#1c272b; --muted:#5f7075; --faint:#8fa0a4;
   --border:#dbe4e4; --head:#eef3f3; --accent:#0e7c7b; --accent-ink:#0b5f5e;
-  --good:#256b45; --good-bg:#e3f1e9; --warn:#8a6414; --warn-bg:#f6eeda;
-  --bad:#a5433c; --bad-bg:#f7e7e5; --chip:#e7eeee; --mark:#eaf4f3;
+  --good:#256b45; --warn:#8a6414; --bad:#a5433c; --chip:#e7eeee; --mark:#eaf4f3;
+  --panel-bg:#dcefec; --panel-ink:#0b5f5e;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg:#10171a; --surface:#161f23; --ink:#d9e4e6; --muted:#93a6ab; --faint:#6c7f84;
     --border:#243237; --head:#1b262b; --accent:#45b8ad; --accent-ink:#63cdc2;
-    --good:#6fc493; --good-bg:#1a2f24; --warn:#d3a94e; --warn-bg:#2e2716;
-    --bad:#e08b83; --bad-bg:#331d1b; --chip:#202d32; --mark:#1c2e2d;
+    --good:#6fc493; --warn:#d3a94e; --bad:#e08b83; --chip:#202d32; --mark:#1c2e2d;
+    --panel-bg:#1d3a37; --panel-ink:#7fd8cd;
   }
 }
 * { box-sizing:border-box; }
 body { background:var(--bg); color:var(--ink); margin:0;
   font:15px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif; }
-main { max-width:1080px; margin:0 auto; padding:28px 20px 64px; }
-header h1 { font-size:26px; margin:0 0 2px; letter-spacing:-.01em; text-wrap:balance; }
-header .sub { color:var(--muted); margin:0 0 4px; max-width:68ch; }
+main { max-width:1360px; margin:0 auto; padding:26px 18px 60px; }
+header h1 { font-size:25px; margin:0 0 2px; letter-spacing:-.01em; }
+header .sub { color:var(--muted); margin:0 0 4px; max-width:70ch; }
 header .stamp { color:var(--faint); font-size:12.5px; }
-.controls { display:flex; gap:8px; flex-wrap:wrap; margin:18px 0 6px; }
-.controls button { font:600 13px/1 system-ui,sans-serif; color:var(--muted);
+.controls { display:flex; gap:7px; flex-wrap:wrap; align-items:center; margin:18px 0 4px; }
+.controls .sep { width:1px; height:20px; background:var(--border); margin:0 3px; }
+.controls button { font:600 12.5px/1 system-ui,sans-serif; color:var(--muted);
   background:var(--chip); border:1px solid var(--border); border-radius:999px;
-  padding:7px 14px; cursor:pointer; }
+  padding:6px 12px; cursor:pointer; }
 .controls button[aria-pressed="true"] { background:var(--accent); border-color:var(--accent);
   color:var(--surface); }
 .controls button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
-section.tier { margin-top:30px; }
-.tier h2 { font-size:17px; margin:0 0 2px; display:flex; align-items:baseline; gap:10px; }
-.tier h2 .budget { font-size:12.5px; font-weight:500; color:var(--muted);
+section.tier { margin-top:26px; }
+.tier h2, .block h2 { font-size:16px; margin:0 0 2px; display:flex; align-items:baseline;
+  gap:9px; }
+.tier h2 .budget, .block h2 .budget { font-size:12px; font-weight:500; color:var(--muted);
   text-transform:uppercase; letter-spacing:.06em; }
-.tablewrap { overflow-x:auto; border:1px solid var(--border); border-radius:10px;
-  background:var(--surface); margin-top:8px; }
-table { border-collapse:collapse; width:100%; min-width:900px;
-  font-variant-numeric:tabular-nums; }
-th { background:var(--head); color:var(--muted); font-size:11.5px; text-transform:uppercase;
-  letter-spacing:.05em; text-align:right; padding:8px 10px; white-space:nowrap;
+.tablewrap { overflow-x:auto; border:1px solid var(--border); border-radius:9px;
+  background:var(--surface); margin-top:7px; display:inline-block; max-width:100%;
+  vertical-align:top; }
+table { border-collapse:collapse; width:auto; font-variant-numeric:tabular-nums; }
+th { background:var(--head); color:var(--muted); font-size:11px; text-transform:uppercase;
+  letter-spacing:.04em; text-align:right; padding:6px 7px; white-space:nowrap;
   position:sticky; top:0; cursor:pointer; user-select:none; }
-th[data-dir="desc"]::after { content:" ↓"; color:var(--accent); }
-th[data-dir="asc"]::after { content:" ↑"; color:var(--accent); }
-.hand th { cursor:default; }
+th[data-dir="desc"]::after { content:" \\2193"; color:var(--accent); }
+th[data-dir="asc"]::after { content:" \\2191"; color:var(--accent); }
+.block th, .hand th { cursor:default; user-select:auto; }
 th:first-child, td:first-child { text-align:left; }
-td { padding:6px 10px; border-top:1px solid var(--border); text-align:right;
-  white-space:nowrap; font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:13px; }
-td.cell { font-family:ui-monospace,"SF Mono",Menlo,monospace; font-weight:600; }
-tr.oc td.cell { color:var(--accent-ink); }
-tr.ref td.cell::after { content:"эталон"; color:var(--faint); font:500 10px/1 system-ui,sans-serif;
-  text-transform:uppercase; letter-spacing:.06em; margin-left:8px; }
+td { padding:4px 7px; border-top:1px solid var(--border); text-align:right;
+  white-space:nowrap; font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:12.5px; }
+td.cell { font-weight:600; }
+tr.leg-opencode td.cell { color:var(--accent-ink); }
 td .dim { color:var(--faint); }
 .covgood { color:var(--good); font-weight:700; }
 .covmid  { color:var(--warn); font-weight:600; }
 .covlow  { color:var(--muted); }
-.lowev { color:var(--faint); font-weight:400; }
+.lowev { color:var(--faint); font-weight:400; cursor:help; }
 .lowev::after { content:" ?"; color:var(--bad); font-weight:700; }
 td.value b { color:var(--accent-ink); }
-.unit { font:500 10px/1 system-ui,sans-serif; color:var(--faint); margin-left:4px; }
-.hand { margin-top:34px; }
-.hand h2 { font-size:17px; margin:0; }
-.hand p.note { color:var(--muted); margin:2px 0 8px; max-width:75ch; }
-.hand td { white-space:normal; text-align:left; font-family:system-ui,sans-serif; font-size:13.5px; }
+.unit { font:500 9.5px/1 system-ui,sans-serif; color:var(--faint); margin-left:3px; }
+.chip { font:600 9.5px/1 system-ui,sans-serif; text-transform:uppercase; letter-spacing:.05em;
+  background:var(--panel-bg); color:var(--panel-ink); border-radius:999px; padding:2px 6px;
+  margin-left:6px; vertical-align:1px; }
+.block { margin-top:30px; }
+.block p.note, .hand p.note { color:var(--muted); margin:2px 0 7px; max-width:78ch;
+  font-size:13.5px; }
+.block td.panel { white-space:normal; font-family:system-ui,sans-serif; font-size:12.5px;
+  max-width:78ch; }
+.hand { margin-top:30px; }
+.hand h2 { font-size:16px; margin:0; }
+.hand td { white-space:normal; text-align:left; font-family:system-ui,sans-serif;
+  font-size:13px; }
 .hand td.cell { font-family:ui-monospace,Menlo,monospace; white-space:nowrap; }
-footer { margin-top:36px; color:var(--muted); font-size:13.5px; max-width:80ch; }
-footer h3 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--faint);
-  margin:18px 0 4px; }
-footer code { background:var(--chip); border-radius:4px; padding:1px 5px;
-  font-family:ui-monospace,Menlo,monospace; font-size:12.5px; }
+.hand td.note { max-width:64ch; }
+footer { margin-top:34px; color:var(--muted); font-size:13.5px; max-width:88ch; }
+footer h3 { font-size:12.5px; text-transform:uppercase; letter-spacing:.06em; color:var(--faint);
+  margin:18px 0 6px; }
+footer dl { margin:0; }
+footer dt { font-weight:700; color:var(--ink); font-family:ui-monospace,Menlo,monospace;
+  font-size:12.5px; margin-top:9px; }
+footer dd { margin:1px 0 0; }
 mark { background:var(--mark); color:inherit; border-radius:3px; padding:0 3px; }
 @media (prefers-reduced-motion: no-preference) { .controls button { transition:background .15s; } }
 </style>
@@ -106,90 +120,140 @@ mark { background:var(--mark); color:inherit; border-radius:3px; padding:0 3px; 
 <body>
 <main>
 <header>
-  <h1>Доска ног</h1>
-  <p class="sub">Все измеренные ячейки ревью-бенча по тирам: якорный coverage, время, реальные
-  токены и стоимость в единицах лимита. Источник — адъюдицированный корпус; команда
-  <code>review-board</code> пересобирает страницу из живых данных и открывает её.
-  Клик по заголовку колонки — сортировка.</p>
-  <p class="stamp">Собрано __GENERATED__ · __NCELLS__ ячеек · __NRUNS__ прогонов</p>
+  <h1>Leg board</h1>
+  <p class="sub">Every measured review-bench cell by tier: anchored coverage, wall clock, real
+  tokens and subscription cost. Source is the adjudicated corpus; <code>review-board</code>
+  rebuilds this page from live data. Click a column header to sort.</p>
+  <p class="stamp">Built __GENERATED__ &middot; __NCELLS__ cells &middot; __NRUNS__ runs</p>
 </header>
-<div class="controls" role="group" aria-label="Фильтр ячеек">
-  <button data-f="all" aria-pressed="true">все ячейки</button>
-  <button data-f="oc" aria-pressed="false">только OpenCode</button>
-  <button data-f="ref" aria-pressed="false">только эталоны</button>
-</div>
+<div class="controls" role="group" aria-label="Filter by leg" id="legfilters"></div>
+<section class="block" id="tierpanels">
+  <h2>Current panels <span class="budget">what each tier launches today</span></h2>
+  <p class="note">These are the cells a tier runs by default right now. Rows carrying the
+  <span class="chip">in panel</span> chip below are the same cells, measured.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th title="Тир ревью">tier</th><th title="Бюджет тира по времени">budget</th>
+    <th title="Ячейки, которые тир запускает по умолчанию сегодня">default panel</th></tr></thead>
+    <tbody id="panelrows"></tbody>
+  </table></div>
+</section>
 <div id="tiers"></div>
 <section class="hand">
-  <h2>Ручные пробы вне корпуса</h2>
-  <p class="note">Оценены вручную против известного канона, в корпус по протоколу не записывались.</p>
+  <h2>Hand-scored probes (outside the corpus)</h2>
+  <p class="note">Scored by hand against a known canon; never written to the corpus by protocol.</p>
   <div class="tablewrap"><table>
-    <thead><tr><th>ячейка</th><th style="text-align:right">прогоны</th><th style="text-align:right">находки</th><th style="text-align:right">FP</th><th style="text-align:right">время</th><th style="text-align:left">заметка</th></tr></thead>
+    <thead><tr><th title="Проба">cell</th><th title="Сколько прогонов">runs</th>
+    <th title="Подтверждённые находки">catch</th><th title="Ложные срабатывания">FP</th>
+    <th title="Время прогона">wall</th><th title="Что показала проба">note</th></tr></thead>
     <tbody id="handrows"></tbody>
   </table></div>
 </section>
 <footer>
-  <h3>Как читать</h3>
-  <p><mark>cov*</mark> — якорный coverage: доля пойманных дефектов, посчитанная только по прогонам,
-  где в панели была чужая не-OpenCode модель. Соло-прогоны и семейные панели исключены по
-  построению (§26b исследовательского лога): без соперника знаменатель самореферентный и даёт
-  ложные 100%. Значок <span class="lowev" style="font-weight:600">?</span> — мало якорных данных
-  (меньше 3 прогонов или меньше 5 дефектов в знаменателе), цифре не доверять.</p>
-  <p><mark>cost</mark> в двух несравнимых единицах: у OpenCode Go — доля реквест-квоты плана
-  (1000/реквестов за 5ч, kimi-k3 ≈ 9.1, glm-5.2 ≈ 1.1), у Claude/Codex/Gemini — прайс-прокси
-  (вес модели × средние токены прогона; haiku 1× · sonnet 2× · opus 5× · fable 10×; luna 1× ·
-  terra 10× · sol 25×; gemini flash 6× · pro 8×). <mark>value</mark> = cov*/cost — сравнивать
-  только внутри одной единицы стоимости.</p>
-  <p><mark>raw+</mark> — прогоны в бенчах без адъюдикации: данные есть (время, токены), вердиктов
-  нет, в coverage не участвуют. Большое raw+ = резерв для уточнения ячейки.</p>
+  <h3>Что означает каждая колонка</h3>
+  <dl>
+    <dt>cell</dt><dd>Ячейка — модель плюс режим её запуска, названная так же, как её печатает
+    блок отчёта ревью. Чип <span class="chip">in panel</span> значит, что панель её тира
+    запускает эту ячейку прямо сейчас.</dd>
+    <dt>runs/cmt</dt><dd>Сколько прогонов ячейки отсужено и на скольких разных коммитах.</dd>
+    <dt>raw+</dt><dd>Прогоны в завершённых бенчах, которые никто не отсудил: данные (время,
+    токены) есть, вердиктов нет, ни в одну другую колонку они не входят. Большое raw+ —
+    резерв для уточнения ячейки.</dd>
+    <dt>anch</dt><dd>Якорные прогоны — те, в чьей панели была не-OpenCode модель другого
+    семейства. Только они делают coverage сравнимым между ячейками: без соперника знаменатель
+    самореферентный.</dd>
+    <dt>catch</dt><dd>Подтверждённые находки за прогон: медиана и среднее по всем прогонам.</dd>
+    <dt>hit%</dt><dd>Доля прогонов, в которых ячейка нашла хотя бы один настоящий дефект.</dd>
+    <dt>FP med</dt><dd>Медиана ложных срабатываний за прогон.</dd>
+    <dt>wall med</dt><dd>Медианное время одного прогона; по нему ячейка и попадает в свой тир.</dd>
+    <dt>cov*</dt><dd>Якорный coverage: доля пойманных дефектов, посчитанная ТОЛЬКО по якорным
+    прогонам. Соло-прогоны и семейные панели исключены по построению (§26b исследовательского
+    лога) — они дают ложные 100%.</dd>
+    <dt>?</dt><dd>Мало данных под цифрой coverage: меньше 3 якорных прогонов либо
+    confirmed + misses меньше 5. Цифра видна, но доверять ей нельзя.</dd>
+    <dt>ktok</dt><dd>Средние токены прогона, тысячами — весь трафик, включая чтение кода.</dd>
+    <dt>cost</dt><dd>Две НЕсравнимые единицы. <mark>go</mark> — доля реквест-квоты плана Go
+    (1000/реквестов за 5ч; kimi-k3 ≈ 9.1, glm-5.2 ≈ 1.1). <mark>px</mark> — прайс-прокси
+    для Claude/Codex/Gemini: вес модели × средние токены прогона (haiku 1&times; &middot;
+    sonnet 2&times; &middot; opus 5&times; &middot; fable 10&times;; luna 1&times; &middot;
+    terra 10&times; &middot; sol 25&times;; gemini flash 6&times; &middot; pro 8&times;).</dd>
+    <dt>value</dt><dd>cov*/cost. Сравнивать только внутри одной единицы стоимости — между
+    <mark>go</mark> и <mark>px</mark> это число смысла не имеет.</dd>
+  </dl>
 </footer>
 </main>
 <script>
 const DATA = __DATA__;
-const TIERS = __TIERS__;
+const TIER_LABELS = __TIERS__;
+const LEG_LABELS = {opencode:"OpenCode", claude:"Claude", openai:"OpenAI", gemini:"Gemini",
+  other:"Other"};
+const LEG_ORDER = ["opencode", "claude", "openai", "gemini", "other"];
+const LOWEV_TITLE = "Мало данных: меньше 3 якорных прогонов либо confirmed + misses меньше 5 \\u2014 "
+  + "цифре доверять нельзя";
+const PANEL_TITLE = "Панель этого тира запускает эту ячейку сегодня";
+const COLUMNS = [
+  ["cell", "Ячейка: модель и режим запуска"],
+  ["runs/cmt", "Отсуженных прогонов / разных коммитов"],
+  ["raw+", "Прогоны завершённых бенчей без адъюдикации: в других колонках их нет"],
+  ["anch", "Якорные прогоны: в панели была не-OpenCode модель другого семейства"],
+  ["catch", "Подтверждённые находки за прогон: медиана / среднее"],
+  ["hit%", "Доля прогонов, где нашёлся хотя бы один настоящий дефект"],
+  ["FP med", "Медиана ложных срабатываний за прогон"],
+  ["wall med", "Медианное время прогона; по нему ячейка попадает в тир"],
+  ["cov*", "Якорный coverage: только по якорным прогонам, соло и семейные исключены"],
+  ["ktok", "Средние токены прогона, тысячами"],
+  ["cost", "go = доля реквест-квоты плана, px = прайс-прокси; единицы несравнимы"],
+  ["value", "cov*/cost, сравнивать только внутри одной единицы стоимости"],
+];
 function esc(v){ return String(v??"")
   .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
-function dot(v){ return v==null||v===""?'<span class="dim">·</span>':esc(v); }
+function dot(v){ return v==null||v===""?'<span class="dim">\\u00b7</span>':esc(v); }
 function covClass(c){ return c==null?"":(c>=25?"covgood":c>=12?"covmid":"covlow"); }
-function fmt(v,d){ return v==null?'<span class="dim">·</span>':(+v).toFixed(d===undefined?1:d); }
-function render(filter){
+function fmt(v,d){ return v==null?'<span class="dim">\\u00b7</span>':(+v).toFixed(d===undefined?1:d); }
+const legsPresent = LEG_ORDER.filter(l=>DATA.cells.some(c=>c.leg===l));
+const active = new Set(legsPresent);
+function headRow(){
+  return COLUMNS.map(([label,tip])=>`<th title="${esc(tip)}">${esc(label)}</th>`).join("");
+}
+function cellRow(c){
+  const cov=c.cov_anch==null?'<span class="dim">\\u00b7</span>':
+    `<span class="${covClass(c.cov_anch)}${c.low_evidence?" lowev":""}"${
+      c.low_evidence?` title="${esc(LOWEV_TITLE)}"`:""}>${c.cov_anch.toFixed(1)}</span>`;
+  const cost=c.cost_units==null?'<span class="dim">\\u00b7</span>':
+    `${c.cost_units.toFixed(2)}<span class="unit">${c.cost_unit==="go-request"?"go":"px"}</span>`;
+  const chip=c.in_panel?` <span class="chip" title="${esc(PANEL_TITLE)}">in panel</span>`:"";
+  return `<tr class="leg-${esc(c.leg)}">
+    <td class="cell">${esc(c.display||c.cell)}${chip}</td>
+    <td>${c.n_runs==null?'<span class="dim">\\u00b7</span>':c.n_runs+"/"+c.n_commits}</td>
+    <td>${c.n_raw||'<span class="dim">\\u00b7</span>'}</td>
+    <td>${fmt(c.n_anchored,0)}</td>
+    <td>${fmt(c.med_confirmed)}/${fmt(c.mean_confirmed)}</td>
+    <td>${fmt(c.hit_pct,0)}</td><td>${fmt(c.med_false_positive)}</td>
+    <td>${c.med_wall_s==null?'<span class="dim">\\u00b7</span>':Math.round(c.med_wall_s)+"s"}</td>
+    <td>${cov}</td>
+    <td>${c.mean_total_tokens==null?'<span class="dim">\\u00b7</span>':Math.round(c.mean_total_tokens/1000)}</td>
+    <td>${cost}</td>
+    <td class="value">${c.value==null?'<span class="dim">\\u00b7</span>':"<b>"+c.value.toFixed(1)+"</b>"}</td>
+    </tr>`;
+}
+function render(){
   const root=document.getElementById("tiers"); root.innerHTML="";
-  for(const [key,[label,budget]] of TIERS){
-    const cells=DATA.cells.filter(c=>c.tier===key)
-      .filter(c=>filter==="all"||(filter==="oc"?c.cell.startsWith("oc-"):!c.cell.startsWith("oc-")));
+  for(const [key,budget] of TIER_LABELS){
+    const cells=DATA.cells.filter(c=>c.tier===key && active.has(c.leg));
     if(!cells.length) continue;
     cells.sort((a,b)=>(b.cov_anch??-1)-(a.cov_anch??-1)||(b.mean_confirmed??0)-(a.mean_confirmed??0));
     const sec=document.createElement("section"); sec.className="tier";
-    sec.innerHTML=`<h2>${label} <span class="budget">${budget}</span></h2>
-      <div class="tablewrap"><table><thead><tr>
-      <th>ячейка</th><th>прогоны/коммиты</th><th>raw+</th><th>якорных</th><th>нах. мед/сред</th>
-      <th>hit%</th><th>FP мед</th><th>время мед</th><th>cov*</th><th>ктокены</th><th>cost</th><th>value</th>
-      </tr></thead><tbody>${cells.map(c=>{
-        const cov=c.cov_anch==null?'<span class="dim">·</span>':
-          `<span class="${covClass(c.cov_anch)}${c.low_evidence?" lowev":""}">${c.cov_anch.toFixed(1)}</span>`;
-        const cost=c.cost_units==null?'<span class="dim">·</span>':
-          `${c.cost_units.toFixed(2)}<span class="unit">${c.cost_unit==="go-request"?"go":"px"}</span>`;
-        return `<tr class="${c.cell.startsWith("oc-")?"oc":"ref"}">
-        <td class="cell">${esc(c.cell)}</td>
-        <td>${c.n_runs==null?'<span class="dim">·</span>':c.n_runs+"/"+c.n_commits}</td>
-        <td>${c.n_raw||'<span class="dim">·</span>'}</td>
-        <td>${fmt(c.n_anchored,0)}</td>
-        <td>${fmt(c.med_confirmed)}/${fmt(c.mean_confirmed)}</td>
-        <td>${fmt(c.hit_pct,0)}</td><td>${fmt(c.med_false_positive)}</td>
-        <td>${c.med_wall_s==null?'·':Math.round(c.med_wall_s)+"s"}</td>
-        <td>${cov}</td>
-        <td>${c.mean_total_tokens==null?'<span class="dim">·</span>':Math.round(c.mean_total_tokens/1000)}</td>
-        <td>${cost}</td>
-        <td class="value">${c.value==null?'<span class="dim">·</span>':"<b>"+c.value.toFixed(1)+"</b>"}</td>
-        </tr>`;}).join("")}</tbody></table></div>`;
+    sec.innerHTML=`<h2>${esc(key)} <span class="budget">${esc(budget)}</span></h2>
+      <div class="tablewrap"><table><thead><tr>${headRow()}</tr></thead>
+      <tbody>${cells.map(cellRow).join("")}</tbody></table></div>`;
     root.appendChild(sec);
   }
-  root.querySelectorAll("th").forEach((th,)=>th.addEventListener("click",()=>sortTable(th)));
+  root.querySelectorAll("th").forEach(th=>th.addEventListener("click",()=>sortTable(th)));
 }
 function cellNum(td){
   // Composite cells ("12/5", "1.5/2.3") sort by their first number: stripping the slash glues
   // both into one, so 2/30 reads as 230 and outranks 9/1.
   const t=td.textContent.trim().split("/")[0].trim();
-  if(t===""||t==="·") return -Infinity;
+  if(t===""||t==="\\u00b7") return -Infinity;
   const n=parseFloat(t.replace(/[^0-9.\\-]/g,""));
   return isNaN(n)?-Infinity:n;
 }
@@ -211,17 +275,38 @@ function sortTable(th){
   });
   rows.forEach(r=>tbody.appendChild(r));
 }
+function renderFilters(){
+  const bar=document.getElementById("legfilters");
+  bar.innerHTML=legsPresent.map(l=>
+    `<button data-leg="${esc(l)}" aria-pressed="true">${esc(LEG_LABELS[l]||l)}</button>`).join("")
+    + `<span class="sep"></span><button data-all="on">All on</button>`
+    + `<button data-all="off">All off</button>`;
+  bar.querySelectorAll("button[data-leg]").forEach(b=>b.addEventListener("click",()=>{
+    const leg=b.dataset.leg;
+    if(active.has(leg)) active.delete(leg); else active.add(leg);
+    b.setAttribute("aria-pressed", active.has(leg)?"true":"false");
+    render();
+  }));
+  bar.querySelectorAll("button[data-all]").forEach(b=>b.addEventListener("click",()=>{
+    const on=b.dataset.all==="on";
+    active.clear();
+    if(on) legsPresent.forEach(l=>active.add(l));
+    bar.querySelectorAll("button[data-leg]").forEach(x=>
+      x.setAttribute("aria-pressed", on?"true":"false"));
+    render();
+  }));
+}
+document.getElementById("panelrows").innerHTML=Object.entries(DATA.tiers||{}).map(([tier,t])=>
+  `<tr><td class="cell">${esc(tier)}</td><td>${esc(t.budget_min)} min</td>
+   <td class="panel">${(t.panel||[]).map(esc).join(", ")}</td></tr>`).join("");
 document.getElementById("handrows").innerHTML=(DATA.hand_scored||[]).map(h=>
   `<tr><td class="cell">${esc(h.cell)}</td><td style="text-align:right">${dot(h.runs)}</td>
-   <td style="text-align:right">${dot(h.catches??h.catch)}</td>
+   <td style="text-align:right">${dot(h["catch"])}</td>
    <td style="text-align:right">${dot(h.fp)}</td>
-   <td style="text-align:right">${dot(h.wall)}</td><td>${esc(h.note??"")}</td></tr>`).join("");
-document.querySelectorAll(".controls button").forEach(b=>b.addEventListener("click",()=>{
-  document.querySelectorAll(".controls button").forEach(x=>x.setAttribute("aria-pressed","false"));
-  b.setAttribute("aria-pressed","true");
-  render(b.dataset.f);
-}));
-render("all");
+   <td style="text-align:right">${dot(h.wall)}</td><td class="note">${esc(h.note??"")}</td></tr>`
+  ).join("");
+renderFilters();
+render();
 </script>
 </body>
 </html>
@@ -231,7 +316,7 @@ n_runs = sum(c.get("n_runs") or 0 for c in board["cells"])
 # Last, and with its own `</` neutralised: a cell name carrying `</script>` would otherwise close
 # the script block, and going first would let recorded text spell another placeholder.
 out = (PAGE
-       .replace("__TIERS__", json.dumps([[k, list(v)] for k, v in TIER_LABELS.items()], ensure_ascii=False))
+       .replace("__TIERS__", json.dumps(list(TIER_LABELS.items()), ensure_ascii=False))
        .replace("__GENERATED__", html.escape(generated))
        .replace("__NCELLS__", str(len(board["cells"])))
        .replace("__NRUNS__", str(n_runs))

@@ -9805,10 +9805,10 @@ HANDSCORED = (
      "note": "needs a /responses client in bin/opencode-go"},
     {"cell": "qwen3.8-max medium", "runs": "2", "catch": "0-2", "fp": "0", "wall": "483-503s",
      "note": "manual 2026-08-11 on pinned commits; verdict: not a reviewer"},
-    {"cell": "oc-kimik3 medium manual", "runs": "", "catch": "3", "fp": "0", "wall": "158-223s",
+    {"cell": "oc-kimik3 medium (manual)", "runs": "", "catch": "3", "fp": "0", "wall": "158-223s",
      "note": "3 catches on 143fc2f, but 22.6-28.6 min on a 2462-line diff; viable only behind a "
              "diff-size gate"},
-    {"cell": "oc-dsv4flash low manual", "runs": "", "catch": "<=1", "fp": "", "wall": "70-108s",
+    {"cell": "oc-dsv4flash low (manual)", "runs": "", "catch": "<=1", "fp": "", "wall": "70-108s",
      "note": "loses to its own free reasoning-off cell"},
 )
 
@@ -9895,6 +9895,67 @@ def board_raw_counts(sd, known):
     return counts
 
 
+BOARD_LEGS = {"opencode": "opencode", "claude": "claude", "codex": "openai", "agy": "gemini"}
+
+
+def board_leg(cell):
+    # A cell retired since its runs were written no longer parses, and the rest of the board
+    # still bills it by its prefix — the cost column and the family filters both read that.
+    if cell.startswith("oc-"):
+        return "opencode"
+    try:
+        return BOARD_LEGS[parse_rater(cell)["side"]]
+    except (ValueError, KeyError):
+        return "other"
+
+
+@lru_cache(maxsize=None)
+def board_panel_cells():
+    """Every cell some tier's default panel launches today, keyed the way the corpus keys one.
+
+    Membership belongs to the pool, not to a row's measured wall clock: a cell whose only runs
+    are unadjudicated is in the panel it is in, and bucketing it by tier first hides that.
+    """
+    return frozenset(
+        board_cell_name(rater["spec"])
+        for tier in REVIEW_TIERS.values()
+        for cell in tier["cells"]
+        for rater in parse_raters(cell)
+    )
+
+
+def board_parses(cell):
+    try:
+        parse_rater(cell)
+    except ValueError:
+        return False
+    return True
+
+
+def board_scheme(rows):
+    """One naming scheme over every cell the board prints, read the way a report reads its own:
+    the pool spells itself, and a cell no tier can launch is named against it. Under the pool
+    alone three retired efforts of one family all answer to the family's name.
+    """
+    return report_name_scheme(sorted(row["cell"] for row in rows))
+
+
+def board_tiers_block(scheme):
+    blocks = {}
+    for name, tier in REVIEW_TIERS.items():
+        panel = []
+        for cell in tier["cells"]:
+            for rater in parse_raters(cell):
+                key = board_cell_name(rater["spec"])
+                if key not in panel:
+                    panel.append(key)
+        blocks[name] = {
+            "budget_min": tier["budget_min"],
+            "panel": [human_cell_name(key, scheme) for key in panel],
+        }
+    return blocks
+
+
 def board_tier(wall_s):
     if wall_s is None:
         return "?"
@@ -9953,6 +10014,18 @@ def board_cells(sd):
     rows = [board_row(entry, raw_counts[name]) for name, entry in cells.items()]
     rows.extend(board_raw_row(name, count) for name, count in raw_counts.items()
                 if name not in cells)
+    scheme = board_scheme(rows)
+    panel = board_panel_cells()
+    taken = set()
+    # A spec no side parses any more is named off its family alone, which can land on the name of
+    # a cell that still runs. The board answers that the way the scheme itself does — with the
+    # machine key, unambiguous by construction — and never at the live cell's expense.
+    for row in sorted(rows, key=lambda row: (not board_parses(row["cell"]), row["cell"])):
+        display = human_cell_name(row["cell"], scheme)
+        row["display"] = row["cell"] if display in taken else display
+        taken.add(row["display"])
+        row["leg"] = board_leg(row["cell"])
+        row["in_panel"] = row["cell"] in panel
     return rows
 
 
@@ -9963,7 +10036,8 @@ def board_raw_row(name, n_raw):
     the shape of the row that says unscored evidence exists.
     """
     return {
-        "cell": name, "model": None, "n_runs": None, "n_commits": None, "n_raw": n_raw,
+        "cell": name,
+        "model": None, "n_runs": None, "n_commits": None, "n_raw": n_raw,
         "n_anchored": None, "med_confirmed": None, "mean_confirmed": None, "hit_pct": None,
         "med_false_positive": None, "med_wall_s": None, "tier": board_tier(None),
         "cov_anch": None, "anchored_denominator": None, "low_evidence": True,
@@ -9975,6 +10049,7 @@ def board_raw_row(name, n_raw):
 def board_row(entry, n_raw):
     confirmed = entry["confirmed"]
     wall_s = statistics.median(entry["wall_s"]) if entry["wall_s"] else None
+    tier = board_tier(wall_s)
     denominator = entry["anchored_confirmed"] + entry["anchored_misses"]
     model = entry["models"].most_common(1)[0][0]
     mean_total_tokens = (statistics.fmean(entry["total_tokens"])
@@ -9992,7 +10067,7 @@ def board_row(entry, n_raw):
         "hit_pct": 100 * sum(1 for value in confirmed if value > 0) / len(confirmed),
         "med_false_positive": statistics.median(entry["false_positive"]),
         "med_wall_s": wall_s,
-        "tier": board_tier(wall_s),
+        "tier": tier,
         "cov_anch": 100 * entry["anchored_confirmed"] / denominator if denominator else None,
         "anchored_denominator": denominator,
         "low_evidence": (entry["n_anchored"] < BOARD_MIN_ANCHORED_RUNS
@@ -10017,13 +10092,13 @@ def board_values(row):
         return format(value / scale, spec) if value is not None else ""
 
     if row["n_runs"] is None:
-        return [row["cell"], BOARD_EMPTY, str(row["n_raw"]),
+        return [row["display"], BOARD_EMPTY, str(row["n_raw"]),
                 *[BOARD_EMPTY] * (len(BOARD_COLUMNS) - 3)]
     coverage = number(row["cov_anch"], ".1f")
     if coverage and row["low_evidence"]:
         coverage += "?"
     return [
-        row["cell"],
+        row["display"],
         f"{row['n_runs']}/{row['n_commits']}",
         str(row["n_raw"]),
         str(row["n_anchored"]),
@@ -10096,6 +10171,8 @@ def handscored_lines():
 
 def cmd_board(args):
     rows = board_cells(state_dir())
+    # Built before any filter: a name is a property of the whole board, not of the slice asked for.
+    scheme = board_scheme(rows)
     if args.tier:
         rows = [row for row in rows if row["tier"] == args.tier]
     if args.no_oc:
@@ -10105,12 +10182,15 @@ def cmd_board(args):
     rows = sorted(rows, key=board_sort_key)
     hand = [dict(row, source=HANDSCORED_SOURCE) for row in HANDSCORED]
     if args.json:
-        print(json.dumps({"cells": rows, "hand_scored": hand} if args.hand else rows, indent=2))
+        document = {"cells": rows, "hand_scored": hand, "tiers": board_tiers_block(scheme)}
+        print(json.dumps(document if args.hand else rows, indent=2))
         return 0
     if args.tsv:
+        # The raw corpus key, not the display name: this format is read by machines, and the key
+        # is the only spelling guaranteed unique and stable across a naming-scheme change.
         print("\t".join(("tier", *BOARD_COLUMNS)))
         for row in rows:
-            print("\t".join((row["tier"], *board_values(row))))
+            print("\t".join((row["tier"], row["cell"], *board_values(row)[1:])))
         if args.hand:
             print()
             print("\t".join(HANDSCORED_COLUMNS))
