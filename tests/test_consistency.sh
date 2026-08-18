@@ -687,6 +687,13 @@ if test -r "$FLOW_GATE"; then
   # rewriting this file in the same second lose whichever ownership landed first.
   assert grep -Fq 'rj_append "$journal" "$session" "$stamp" "$item"' "$FLOW_GATE"
 fi
+COMMIT_REPORT="$CLAUDE_SETUP/hooks/commit-report.sh"
+if test -r "$COMMIT_REPORT"; then
+  # The third writer: an edit and the commit carrying it inside ONE Bash call are seen by neither
+  # of the other two, and the debt that commit landed is then recorded under no chat at all.
+  assert grep -Fq 'rj_append "$debt" "$own" "$now" "$path"' "$COMMIT_REPORT"
+  assert grep -Fq 'stamp_landed_debt "$dir" "$gitdir" "$session"' "$COMMIT_REPORT"
+fi
 JOURNAL_LIB="$CLAUDE_SETUP/hooks/lib/review-journal.sh"
 if test -r "$JOURNAL_LIB"; then
   assert grep -Fq "printf '%s\\0' \"\$2\$RJ_TAB\$3\$RJ_TAB\$4\" >>\"\$1\"" "$JOURNAL_LIB"
