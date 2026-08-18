@@ -1140,6 +1140,10 @@ assert grep -q '^STATUS: done$' "$WORK/wait.out"
 assert test "$(grep -c '^OUTCOME:' "$WORK/wait.out")" -eq 0
 assert meta_account_is rescue1
 assert jq -e '.walled_accounts == ["walled1"]' "$RUN_DIR/meta.json" >/dev/null
+# The supervisor's launch instant survives the reroute untouched while started_at is restamped:
+# it is the clock liveness is judged by, and a restamped one reads a live rerouted run as dead.
+assert jq -e '(.pid_started_at | type == "number") and .pid_started_at <= .started_at' \
+  "$RUN_DIR/meta.json" >/dev/null
 assert grep -qx -- '--account codex' "$PICK_LOG"
 assert grep -qx -- '--account codex --exclude walled1' "$PICK_LOG"
 assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 2

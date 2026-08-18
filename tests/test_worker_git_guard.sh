@@ -99,6 +99,23 @@ else
   fail 'spawn hook created an unlock flag without permission'
 fi
 
+# The unlock the guard reads is a file in a cache dir that can be unwritable, and a brief the
+# worker can read says GIT-CLEANUP is allowed while the guard still refuses: the worker cannot
+# resolve that on its own, so the hook says which of the two is true in the brief itself.
+blocked_session=spawn-unwritable
+blocked_dir="$HOME/.cache/claude-worker-tags"
+mkdir -p "$blocked_dir"
+chmod 500 "$blocked_dir"
+blocked_output=$(spawn_payload "$blocked_session" $'ACCOUNT: main\nEFFORT: high\nGIT-CLEANUP: allowed\nTask' |
+  WORKER_SPAWN_WORKER_PICK=/nonexistent "$SPAWN_HOOK") || fail 'blocked spawn exited nonzero'
+chmod 700 "$blocked_dir"
+if jq -e '.hookSpecificOutput.updatedInput.prompt | test("GIT-CLEANUP NOTE")' \
+  <<< "$blocked_output" >/dev/null 2>&1; then
+  pass
+else
+  fail 'an unwritable unlock dir left the brief claiming a cleanup the guard will refuse'
+fi
+
 if [ "$failures" -eq 0 ]; then
   printf 'PASS: %d assertions\n' "$passes"
   exit 0

@@ -722,7 +722,11 @@ exit "$rc"'
     fail 'setsid is unavailable'
   fi
   pid=$!
-  jq --argjson pid "$pid" '.pid = $pid' "$directory/meta.json" >"$directory/meta.json.tmp.$$" \
+  # pid_started_at is the supervisor's launch instant and never restamped: started_at moves on
+  # every walled reroute (run_overdue budgets one deadline per attempt), and a liveness check
+  # comparing the pid's own age against a restamped clock reads a live rerouted run as dead.
+  jq --argjson pid "$pid" --argjson began "$(date +%s)" '.pid = $pid | .pid_started_at = $began' \
+    "$directory/meta.json" >"$directory/meta.json.tmp.$$" \
     && mv -f "$directory/meta.json.tmp.$$" "$directory/meta.json" || fail 'could not record supervisor pid'
   : >"$directory/.ready"
   printf 'RUN: %s\nTAG: %s · %s · %s\nDIR: %s\n' "$run_id" "$account" "${model_label:-$model}" "$effort" "$directory"

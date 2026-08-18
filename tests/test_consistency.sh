@@ -665,7 +665,7 @@ if test -r "$FLOW_GATE"; then
   assert grep -Fq 'echo "bright rev ● $count" || echo "dim rev ● $count"' "$FLOW_GATE"
   # `loud` is the watchdog's alone, on both sides: red means a hung review and nothing else.
   assert grep -Fq 'timed-out*) echo "loud rev timeout" ;;' "$FLOW_GATE"
-  assert test "$(grep -Fc -- 'loud ' "$FLOW_GATE")" -eq 1
+  assert test "$(grep -Ec '^[^#]*echo "loud ' "$FLOW_GATE")" -eq 1
   # The verdict asks about the repository, never about the pending paths: debt outlives the commit
   # that landed it, and a question narrowed to one chat's dirty files cannot see the rest.
   assert grep -Fq 'review-bench debt --repo "$top_dir" --session "$session" "$@"' "$FLOW_GATE"
@@ -683,8 +683,36 @@ assert grep -Fq 'DEBT_JOURNAL = "claude-review-debt"' "$REVIEWBENCH"
 assert grep -Fq 'COMMIT_JOURNAL = "claude-commit-journal"' "$REVIEWBENCH"
 if test -r "$FLOW_GATE"; then
   assert grep -Fq 'journal="$gitdir/claude-review-debt"' "$FLOW_GATE"
-  assert grep -Fq "printf '%s\\0' \"\$session\$tab\$stamp\$tab\$item\"" "$FLOW_GATE"
+  # Both writers append through the one carrier, and appending is the invariant: two chats
+  # rewriting this file in the same second lose whichever ownership landed first.
+  assert grep -Fq 'rj_append "$journal" "$session" "$stamp" "$item"' "$FLOW_GATE"
 fi
+JOURNAL_LIB="$CLAUDE_SETUP/hooks/lib/review-journal.sh"
+if test -r "$JOURNAL_LIB"; then
+  assert grep -Fq "printf '%s\\0' \"\$2\$RJ_TAB\$3\$RJ_TAB\$4\" >>\"\$1\"" "$JOURNAL_LIB"
+  assert grep -Fq 'DEBT_JOURNAL' "$REVIEWBENCH"
+  # Appends participate in the rewriters' lock; a busy lock degrades to a raw append, never a
+  # dropped record.
+  assert grep -Fq 'rj_lock "$lock" && locked=1' "$JOURNAL_LIB"
+  assert grep -Fq 'rj_append_raw "$@"' "$JOURNAL_LIB"
+  # A settled episode's record never counts as authorship of the next one on the same path.
+  assert grep -Fq 'epoch < floors.get(path, 0)' "$REVIEWBENCH"
+fi
+
+# --- Row ar: worker run liveness identity --------------------------------------
+# The pid's launch instant is stamped once in llm-legs and read in claude-setup; a restamped
+# started_at (walled reroute) must never be the clock a live run is judged dead by.
+assert doc_has 'Worker run liveness identity'
+assert grep -Fq '.pid_started_at = $began' "$ROOT/bin/worker-run"
+assert eq "$(grep -c '\.pid_started_at = ' "$ROOT/bin/worker-run")" 1
+if test -r "$JOURNAL_LIB"; then
+  assert grep -Fq 'RJ_PID_SLACK=30' "$JOURNAL_LIB"
+  assert grep -Fq '"pid_started_at"' "$JOURNAL_LIB"
+  assert grep -Fq 'ps -p "$pid" -o etime=' "$JOURNAL_LIB"
+  # EPERM from a foreign-owned live process must not read as death.
+  assert eq "$(grep -c '^[^#]*kill -0' "$JOURNAL_LIB")" 0
+fi
+
 
 # --- Row ap: the second-round thresholds bind the waiver -----------------------
 # The fork's dials and the lock over a waiver are the same two numbers: a round that owes a second
@@ -1291,8 +1319,11 @@ if [ -r "$COMMIT_JOURNAL" ]; then
   # exit_code has no final list yet unless its supervisor is gone, and one already imported is
   # marked as imported.
   assert grep -Fq 'if [ ! -f "$directory/exit_code" ]; then' "$COMMIT_JOURNAL"
-  assert grep -Fq 'kill -0 "$pid" 2>/dev/null && continue' "$COMMIT_JOURNAL"
+  assert grep -Fq '[ "$(rj_run_liveness "$directory")" = dead ] || continue' "$COMMIT_JOURNAL"
   assert grep -Fq ': >"$directory/journaled"' "$COMMIT_JOURNAL"
+  # The other writer of the debt journal, and the earlier one: ownership is stamped at the edit,
+  # since a commit that arms no notice would otherwise land debt owed by nobody.
+  assert grep -Fq 'rj_append "$debt" "$session" "$now" "$relative"' "$COMMIT_JOURNAL"
 else
   printf 'SKIP: worker files reach the launching chat (%s is unreadable)\n' "$COMMIT_JOURNAL"
 fi

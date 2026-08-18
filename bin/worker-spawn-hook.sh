@@ -80,17 +80,30 @@ title=$(printf '%s' "$description" | sed -E 's/^[A-Za-z0-9_.?-]+( · [A-Za-z0-9_
 session_id=$(field '.session_id' | tr -cd 'A-Za-z0-9_-')
 [ -n "$session_id" ] || session_id=_
 pending_dir="$HOME/.cache/claude-worker-tags/$session_id"
+unlock_asked=0
+unlock_done=0
+printf '%s' "$prompt" | grep -qE '^GIT-CLEANUP:[[:space:]]*allowed' && unlock_asked=1
 if mkdir -p "$pending_dir" 2>/dev/null; then
   umask 077
   tmp_pending="$pending_dir/pending-$subagent.tmp.$$"
   printf '%s\n' "$prefix" > "$tmp_pending" 2>/dev/null && mv -f "$tmp_pending" "$pending_dir/pending-$subagent" 2>/dev/null
   rm -f "$tmp_pending" 2>/dev/null
-  if printf '%s' "$prompt" | grep -qE '^GIT-CLEANUP:[[:space:]]*allowed'; then
+  if [ "$unlock_asked" = 1 ]; then
     git_unlock="$pending_dir/git-unlock-$subagent"
     tmp_unlock="$git_unlock.tmp.$$"
     : > "$tmp_unlock" 2>/dev/null && mv -f "$tmp_unlock" "$git_unlock" 2>/dev/null
     rm -f "$tmp_unlock" 2>/dev/null
+    [ -e "$git_unlock" ] && unlock_done=1
   fi
+fi
+# The unlock the guard reads is a file, and a cache directory it cannot write silently voids a
+# `GIT-CLEANUP: allowed` the brief demonstrably carries: the worker is then refused with "only a
+# 'GIT-CLEANUP: allowed' line in the brief unlocks these commands", cannot resolve the
+# contradiction, and reports a blocked task. Said in the brief instead — the one channel that
+# cannot fail — so the worker knows which of the two is true before it spends the run on it.
+cleanup_note=''
+if [ "$unlock_asked" = 1 ] && [ "$unlock_done" = 0 ]; then
+  cleanup_note="GIT-CLEANUP NOTE (hook-injected): this brief allows git cleanup, but the unlock marker under $pending_dir could not be written, so worker-git-guard.sh will still refuse revert/restore/reset/clean/stash. Do not fight it: do the rest of the task, and report in your OUTCOME that the cleanup was blocked by an unwritable ~/.cache/claude-worker-tags rather than by the brief."
 fi
 
 updated="$prefix: $title"
@@ -103,15 +116,17 @@ if ! printf '%s' "$prompt" | grep -qE '^(MD-EDIT:[[:space:]]*allowed|MD-GUARD)';
   md_guard="MD-GUARD (hook-injected): CLAUDE.md / CLAUDE.local.md / MEMORY.md / files in memory/ dirs / anything under ~/.claude are READ-ONLY for this task. If your change makes one of them stale, return a DOCS IMPACT note proposing the edit instead of applying it. Only an explicit 'MD-EDIT: allowed' line in the brief unlocks them. The checkout is SHARED: uncommitted or untracked changes you did not make this run are other agents' live work — never git checkout/restore/reset/clean/stash over them, whatever git status suggests about authorship; report unexpected tree state in your OUTCOME and leave it in place."
 fi
 
-[ "$updated" = "$description" ] && [ -z "$md_guard" ] && exit 0
+[ "$updated" = "$description" ] && [ -z "$md_guard" ] && [ -z "$cleanup_note" ] && exit 0
 
-printf '%s' "$input" | jq -c --arg description "$updated" --arg guard "$md_guard" '
+printf '%s' "$input" | jq -c --arg description "$updated" --arg guard "$md_guard" \
+  --arg cleanup "$cleanup_note" '
   {hookSpecificOutput: {
     hookEventName: "PreToolUse",
     permissionDecision: "allow",
     updatedInput: (.tool_input
       | .description = $description
-      | if $guard != "" then .prompt = (.prompt + "\n\n" + $guard) else . end)
+      | if $guard != "" then .prompt = (.prompt + "\n\n" + $guard) else . end
+      | if $cleanup != "" then .prompt = (.prompt + "\n\n" + $cleanup) else . end)
   }}
 ' 2>/dev/null
 exit 0

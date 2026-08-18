@@ -6421,10 +6421,15 @@ sr_gitdir = pathlib.Path(subprocess.run(
 ).stdout.strip())
 
 
-def sr_journal(name, session, path):
-    """One entry the way the gate writes it: NUL-terminated `session TAB epoch TAB path`."""
+def sr_journal(name, session, path, epoch=1800000000):
+    """One entry the way the gate writes it: NUL-terminated `session TAB epoch TAB path`.
+
+    The default epoch postdates every artifact these fixtures record, the way a live gate's
+    `date +%s` postdates the artifacts standing when it writes: a debt record older than its
+    path's covering artifact is a settled episode's leftover and names no author.
+    """
     with (sr_gitdir / name).open("ab") as handle:
-        handle.write(f"{session}\t1750000000\t{path}\0".encode())
+        handle.write(f"{session}\t{epoch}\t{path}\0".encode())
 
 
 def sr_clear_journals():
@@ -6476,6 +6481,13 @@ assert sr_answer("src/a.py", session="chat-2") == "debt 1 other"
 sr_clear_journals()
 sr_journal(rb.DEBT_JOURNAL, "chat-1", "src/a.py")
 assert sr_answer("src/a.py") == "debt 1 mine"
+sr_clear_journals()
+# A debt record OLDER than the artifact covering its path is a settled episode's leftover the
+# compaction has not swept yet: it holds no chat answerable for the debt standing there now.
+sr_journal(rb.DEBT_JOURNAL, "chat-1", "src/a.py", epoch=1600000000)
+sr_journal(rb.DEBT_JOURNAL, "chat-2", "src/a.py")
+assert sr_answer("src/a.py", session="chat-1") == "debt 1 other"
+assert sr_answer("src/a.py", session="chat-2") == "debt 1 mine"
 sr_clear_journals()
 # Asked about no path in particular, the question is the repository's — and its universe is what the
 # artifacts hold plus what the journals name, never every file standing in the tree.
@@ -6716,10 +6728,10 @@ sr_legacy = sr_store()
 sr_source.write_text(sr_moved + "legacy\n")
 with (sr_gitdir / rb.COMMIT_JOURNAL).open("ab") as handle:
     handle.write(b"src/a.py\0")
-assert rb.journal_entries(sr_gitdir / rb.COMMIT_JOURNAL) == [("", "src/a.py")]
+assert rb.journal_entries(sr_gitdir / rb.COMMIT_JOURNAL) == [("", None, "src/a.py")]
 assert "src/a.py" in rb.journal_paths(sr_repo)
 assert sr_answer() == "debt 1 other"
-assert rb.debt_authors(sr_repo, ["src/a.py"]) == set()
+assert rb.debt_authors(sr_repo, [("src/a.py", None)]) == set()
 # Owned by nobody is not owned by somebody else: a chat may take that debt on, spelled out or not.
 assert sr_waive(reason="legacy")[0] == 0
 sr_clear_journals()
@@ -6748,14 +6760,14 @@ sr_clear_journals()
 sr_source.write_text(sr_moved + "blank\n")
 with (sr_gitdir / rb.COMMIT_JOURNAL).open("ab") as handle:
     handle.write(b"\t1750000000\tsrc/a.py\0")
-assert rb.journal_entries(sr_gitdir / rb.COMMIT_JOURNAL) == [("", "src/a.py")]
+assert rb.journal_entries(sr_gitdir / rb.COMMIT_JOURNAL) == [("", 1750000000, "src/a.py")]
 assert "src/a.py" in rb.journal_paths(sr_repo)
-assert rb.debt_authors(sr_repo, ["src/a.py"]) == set()
+assert rb.debt_authors(sr_repo, [("src/a.py", None)]) == set()
 assert sr_answer() == "debt 1 other"
 # A record holding no path at all is the one that is not a record.
 with (sr_gitdir / rb.COMMIT_JOURNAL).open("ab") as handle:
     handle.write(b"chat-1\t1750000000\t\0")
-assert rb.journal_entries(sr_gitdir / rb.COMMIT_JOURNAL) == [("", "src/a.py")]
+assert rb.journal_entries(sr_gitdir / rb.COMMIT_JOURNAL) == [("", 1750000000, "src/a.py")]
 sr_clear_journals()
 
 # A round whose tally nobody can read is not a clean round: read as one it would release whatever

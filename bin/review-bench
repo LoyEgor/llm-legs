@@ -7795,7 +7795,7 @@ def git_dir_path(repo):
 
 def journal_entries(path):
     """`session TAB epoch TAB path` records, NUL-separated, the way the commit journal and the debt
-    journal both write them, as `(session, path)` pairs. A record naming no session — the original
+    journal both write them, as `(session, epoch, path)` rows — epoch None where the record predates one. A record naming no session — the original
     format's bare path, or a session field left blank — comes back owned by nobody rather than
     dropped: the path is still work somebody recorded, and the debt universe is built out of
     exactly these rows. Only a record holding no path at all is not a record. The path keeps every
@@ -7808,10 +7808,14 @@ def journal_entries(path):
     rows = []
     for entry in raw.split("\0"):
         parts = entry.split("\t", 2)
-        session, path = (parts[0], parts[2]) if len(parts) >= 3 else ("", entry)
+        if len(parts) >= 3:
+            session, path = parts[0], parts[2]
+            epoch = int(parts[1]) if parts[1].isdigit() else None
+        else:
+            session, epoch, path = "", None, entry
         if not path:
             continue
-        rows.append((session, path))
+        rows.append((session, epoch, path))
     return rows
 
 
@@ -7826,7 +7830,7 @@ def journal_paths(repo):
     return {
         path
         for name in (DEBT_JOURNAL, COMMIT_JOURNAL)
-        for _, path in journal_entries(directory / name)
+        for _, _, path in journal_entries(directory / name)
     }
 
 
@@ -8095,27 +8099,42 @@ def session_run_paths(repo, session):
     }
 
 
-def debt_path_authors(repo, paths):
-    """Which chats each of these paths belongs to: the debt journal a commit's own gate appends to,
+def debt_path_authors(repo, debt):
+    """Which chats each debt path belongs to: the debt journal a commit's own gate appends to,
     plus the commit journal for work still uncommitted. A record naming no session belongs to
     nobody and makes no chat an author of it.
+
+    Takes the `(path, artifact)` pairs debt comes as, because a debt-journal record older than the
+    artifact covering its path is a SETTLED episode's leftover the compaction has not swept yet:
+    counted, it holds a chat answerable for another chat's later work on the same file. A record
+    whose epoch is unreadable is kept — misattributing is recoverable, disowning is not — and the
+    commit journal is never filtered: its records are pruned the moment a path is clean, so what
+    stands there is present-tense by construction.
     """
-    authors = {str(path): set() for path in paths}
+    authors = {str(path): set() for path, _ in debt}
+    floors = {
+        str(path): artifact["epoch"]
+        for path, artifact in debt
+        if isinstance(artifact, dict) and artifact.get("epoch")
+    }
     directory = git_dir_path(repo)
     if directory is None:
         return authors
     for name in (DEBT_JOURNAL, COMMIT_JOURNAL):
-        for session, path in journal_entries(directory / name):
-            if session and path in authors:
-                authors[path].add(session)
+        for session, epoch, path in journal_entries(directory / name):
+            if not session or path not in authors:
+                continue
+            if name == DEBT_JOURNAL and epoch is not None and epoch < floors.get(path, 0):
+                continue
+            authors[path].add(session)
     return authors
 
 
-def debt_authors(repo, paths):
+def debt_authors(repo, debt):
     """Which chats this debt belongs to, as one set over all of its paths."""
     return {
         session
-        for sessions in debt_path_authors(repo, paths).values()
+        for sessions in debt_path_authors(repo, debt).values()
         for session in sessions
     }
 
@@ -8226,7 +8245,7 @@ def cmd_debt(args):
             return 0
     owned = 0
     if session:
-        authors = debt_path_authors(repo, [path for path, _ in debt])
+        authors = debt_path_authors(repo, debt)
         mine = session_run_paths(repo, session)
         owned = sum(
             1 for path, _ in debt if session in authors.get(path, ()) or path in mine
@@ -8293,7 +8312,7 @@ def cmd_waive(args):
     # session may still take on, which is what keeps a legacy record waivable at all — unless a
     # co-tenant's worker run has claimed it, which is where that ownership lives until the commit
     # journal sweeps it.
-    authors = debt_path_authors(repo, [path for path, _ in debt])
+    authors = debt_path_authors(repo, debt)
     claims = foreign_run_claims(repo, session)
     mine = session_run_paths(repo, session)
 
