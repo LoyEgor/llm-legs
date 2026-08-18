@@ -18,8 +18,18 @@ if [ -z "$own" ] || [ "$own" = "-" ]; then
   if [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ "$CLAUDE_CONFIG_DIR" != "$HOME/.claude" ]; then
     own=$(basename "$CLAUDE_CONFIG_DIR")
   else
-    exit 0
+    # A session on the default config dir names its account nowhere in the environment; claudeb's
+    # own state file is what the statusline and the chat-link hook read it from.
+    own=$(head -n 1 "${HOME:-}/.claude-profiles/.claudeb/.claudeb-state" 2>/dev/null |
+      tr -d '[:space:]')
   fi
+fi
+# Which account it is was never the warning: that a fan-out bills the SESSION's own, and can wall
+# the very account still owing the task, holds whether or not anything here can name it.
+if [ -z "$own" ] || [ "$own" = "-" ]; then
+  jq -cn --arg c "Heads-up: this workflow's agents will spend the SESSION's own account, never the claudeb rotation, and a large fleet can wall this session mid-task. Nothing here can name that account (no CLAUDE_LIMITS_ACCOUNT, default config dir, no claudeb state), so its pressure is unknown: read it with llm-limits --table --no-write before a big fan-out, keep the fleet small, or move implementation stages to workers (run worker-pick)." \
+    '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$c}}' 2>/dev/null
+  exit 0
 fi
 [ -r "$LIMITS_FILE" ] || exit 0
 

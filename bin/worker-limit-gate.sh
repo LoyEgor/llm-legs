@@ -225,11 +225,17 @@ if [ -z "$spawn_account" ]; then
   fi
 fi
 
+unknown_note=''
 if [ -n "$spawn_account" ]; then
   pressure=$(account_pressure "$limits_vendor" "$spawn_account")
   if [ -n "$pressure" ] && jq -ne --argjson pct "$pressure" '$pct >= 100' >/dev/null; then
     deny "${label} account ${spawn_account} is at effective ${pressure}% — 100% is a hard wall, so ${worker} cannot spawn."
   fi
+  # No reading is not 0%: an unreadable limits file and an account at rest are the same emptiness
+  # here, and the wall above cannot fire on either. The spawn still goes through — a gate that
+  # cannot tell must not block work — but not as though headroom had been confirmed.
+  [ -n "$pressure" ] ||
+    unknown_note="${label} account ${spawn_account} has no usage reading (limit data absent, unreadable, or without that account's row), so the 100% wall could not be checked: confirm with llm-limits --table --no-write before treating it as having headroom."
 else
   pressure=''
 fi
@@ -243,6 +249,9 @@ if [ "$router_rc" -eq 0 ]; then
   if [ -n "$pressure" ] && jq -ne --argjson pct "$pressure" --argjson warn "$WARN_AT" '$pct >= $warn' >/dev/null; then
     pressure_note="${label} account ${spawn_account} is at ${pressure}% — close to the 100% hard wall."
     if [ -n "$note" ]; then note="$note $pressure_note"; else note="${label} account ${spawn_account} is at ${pressure}%. worker-pick selected it, so ${worker} is allowed, but the available window is close to the 100% hard wall."; fi
+  fi
+  if [ -n "$unknown_note" ]; then
+    if [ -n "$note" ]; then note="$note $unknown_note"; else note="$unknown_note"; fi
   fi
   # Orchestrators quote whatever account list their context still holds, so every routed spawn
   # carries the live one back — this is why a plain allow is no longer silent.

@@ -89,4 +89,16 @@ assert allowed "$(jq -cn --arg c "$T3_COMMAND" \
   '{hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: {command: $c}}' \
   | "$GATE" nonsense)"
 
-printf 'PASS: %s asserts; T3 and --max are refused until Egor names one, then unblocked for the window, and every other command and event passes through\n' "$asserts"
+# --- A grant store that cannot be written says so -----------------------------------------------
+# Silence here is answered minutes later by the launch gate with "he has not named it", which this
+# half knows to be false.
+locked="$WORK/locked"
+mkdir -p "$locked"
+chmod 500 "$locked"
+out=$(CLAUDEB_DIR="$locked/store" prompt_event 'прогони T3 по этому диффу')
+chmod 700 "$locked"
+assert contains "$out" 'additionalContext'
+assert contains "$out" 'could not be recorded'
+assert contains "$out" 'refuse it as unnamed'
+
+printf 'PASS: %s asserts; T3 and --max are refused until Egor names one, then unblocked for the window, an unwritable grant store is reported instead of swallowed, and every other command and event passes through\n' "$asserts"

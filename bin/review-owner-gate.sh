@@ -30,13 +30,19 @@ case "$MODE" in
     grep -Eiq '(^|[[:space:]«"'\''(,])(t3|т3)([[:space:]»"'\'').,:;!?]|$)|--tier[= ]+t3' <<<"$prompt" && named+=(t3)
     grep -Eiq -- '(^|[[:space:]])--max([[:space:]]|$)|max[[:space:]]+review|макс[а-яё]*[[:space:]]+(ревью|review|прогон)|полн[а-яё]+[[:space:]]+ревью|ревью[[:space:]]+на[[:space:]]+макс' <<<"$prompt" && named+=(max)
     [ "${#named[@]}" -gt 0 ] || exit 0
-    mkdir -p "$(grant_dir)" 2>/dev/null || exit 0
     touched=()
-    for panel in "${named[@]}"; do
-      touch "$(grant_dir)/$panel" 2>/dev/null && touched+=("$panel")
-    done
-    # Announcing a panel this hook failed to unblock would send the reader into a denial.
-    [ "${#touched[@]}" -gt 0 ] || exit 0
+    if mkdir -p "$(grant_dir)" 2>/dev/null; then
+      for panel in "${named[@]}"; do
+        touch "$(grant_dir)/$panel" 2>/dev/null && touched+=("$panel")
+      done
+    fi
+    # Announcing a panel this hook failed to unblock would send the reader into a denial — but
+    # walking away silently sends him there too, and the denial then says he never named it.
+    if [ "${#touched[@]}" -eq 0 ]; then
+      jq -cn --arg c "Egor named an owner-only review panel (${named[*]}), but the grant could not be recorded under $(grant_dir). The launch gate will refuse it as unnamed: tell him the grant store is unwritable rather than rebuilding the command another way." \
+        '{hookSpecificOutput: {hookEventName: "UserPromptSubmit", additionalContext: $c}}' 2>/dev/null
+      exit 0
+    fi
     named=("${touched[@]}")
     jq -cn --arg c "Egor named an owner-only review panel (${named[*]}): it is unblocked for the next $GRANT_TTL_MIN minutes. Run it only if he actually asked for it — nothing else ever picks these panels." \
       '{hookSpecificOutput: {hookEventName: "UserPromptSubmit", additionalContext: $c}}' 2>/dev/null
