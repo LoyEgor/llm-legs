@@ -1327,8 +1327,9 @@ if [ -r "$COMMIT_JOURNAL" ]; then
   assert grep -Fq '[ "$(rj_run_liveness "$directory")" = dead ] || continue' "$COMMIT_JOURNAL"
   assert grep -Fq ': >"$directory/journaled"' "$COMMIT_JOURNAL"
   # The other writer of the debt journal, and the earlier one: ownership is stamped at the edit,
-  # since a commit that arms no notice would otherwise land debt owed by nobody.
-  assert grep -Fq 'rj_append "$debt" "$session" "$now" "$relative"' "$COMMIT_JOURNAL"
+  # since a commit that arms no notice would otherwise land debt owed by nobody. Per EDIT, with no
+  # scan for an older record — row ao's epoch floor makes any stand-in invisible to the reader.
+  assert grep -Fq 'rj_append "$git_dir/claude-review-debt" "$session" "$now" "$relative"' "$COMMIT_JOURNAL"
 else
   printf 'SKIP: worker files reach the launching chat (%s is unreadable)\n' "$COMMIT_JOURNAL"
 fi
