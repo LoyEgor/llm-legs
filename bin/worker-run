@@ -65,9 +65,9 @@ run_with_deadline() {
 }
 
 run_overdue() {
-  # kill -0 alone cannot be trusted forever: after a reboot the recorded pid can
-  # belong to an unrelated process, and then a run whose supervisor never wrote
-  # exit_code reports "running" indefinitely. Twice the deadline covers the one
+  # A pid check alone cannot be trusted forever: a legacy record carries no launch
+  # stamp for supervisor_running to compare, and then a run whose supervisor never
+  # wrote exit_code reports "running" indefinitely. Twice the deadline covers the one
   # compatibility retry each vendor may make. Unparseable started_at counts as
   # overdue — better a failed report than an eternal "running".
   local started now
@@ -75,6 +75,43 @@ run_overdue() {
   [[ "$started" =~ ^[0-9]+$ ]] && [ "$started" -gt 0 ] || return 0
   now=$(date +%s)
   [ $((now - started)) -gt $((2 * DEADLINE + 900)) ]
+}
+
+# How far a supervisor's own start may sit from the launch its record stamped before the pid is a
+# different process wearing a recycled number. The review hooks judge these same runs by the same
+# number (hooks/lib/review-journal.sh, RJ_PID_SLACK): two tools disagreeing about whether a run is
+# alive is a chat told to wait forever for one the hooks have already retired.
+PID_START_SLACK=30
+
+etime_seconds() { # etime as ps prints it: [[dd-]hh:]mm:ss
+  printf '%s' "$1" | awk -F'[-:]' '
+    NF == 2 { print $1 * 60 + $2; exit }
+    NF == 3 { print $1 * 3600 + $2 * 60 + $3; exit }
+    NF == 4 { print $1 * 86400 + $2 * 3600 + $3 * 60 + $4; exit }
+  ' 2>/dev/null
+}
+
+# Whether the process wearing a run's recorded pid IS that run's supervisor. The number is reused
+# within a day on a busy machine, and whatever inherits it answers a signal probe exactly as the
+# supervisor would — which is how an abandoned run kept reporting "running". `ps`, never `kill -0`:
+# a live process owned by another user answers EPERM to the probe and reads as dead. A record
+# written before pid_started_at existed cannot be checked this way and keeps the old answer, or
+# every run started before that field went in would begin reading dead.
+supervisor_running() { # directory pid
+  local elapsed seconds started now begin drift
+  [[ "$2" =~ ^[0-9]+$ ]] && [ "$2" -gt 0 ] || return 1
+  command -v ps >/dev/null 2>&1 || { kill -0 "$2" 2>/dev/null; return; }
+  elapsed=$(ps -p "$2" -o etime= 2>/dev/null | tr -d '[:space:]')
+  [ -n "$elapsed" ] || return 1
+  started=$(jq -r '.pid_started_at // empty' "$1/meta.json" 2>/dev/null)
+  [[ "$started" =~ ^[0-9]+$ ]] && [ "$started" -gt 0 ] || return 0
+  seconds=$(etime_seconds "$elapsed")
+  [[ "$seconds" =~ ^[0-9]+$ ]] || return 0
+  now=$(date +%s)
+  begin=$((now - seconds))
+  drift=$((begin - started))
+  [ "$drift" -ge 0 ] || drift=$((-drift))
+  [ "$drift" -le "$PID_START_SLACK" ]
 }
 
 config_value() {
@@ -190,7 +227,7 @@ busy_accounts() {
     [ -r "$directory/meta.json" ] || continue
     [ ! -f "$directory/exit_code" ] || continue
     pid=$(jq -r '.pid' "$directory/meta.json" 2>/dev/null)
-    [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 0 ] && kill -0 "$pid" 2>/dev/null || continue
+    supervisor_running "$directory" "$pid" || continue
     run_overdue "$directory" && continue
     account=$(jq -r '.account // empty' "$directory/meta.json" 2>/dev/null)
     [ -z "$account" ] || names+=("$account")
@@ -973,9 +1010,9 @@ wait_run() {
   while :; do
     if [ -f "$directory/exit_code" ]; then terminal_report "$directory"; return 0; fi
     pid=$(jq -r '.pid' "$directory/meta.json")
-    # pid 0 is the pre-launch placeholder; kill -0 0 would probe our own
+    # pid 0 is the pre-launch placeholder, and a probe of it would answer for our own
     # process group and report a never-started run as alive.
-    if ! [[ "$pid" =~ ^[0-9]+$ ]] || [ "$pid" -le 0 ] || ! kill -0 "$pid" 2>/dev/null || run_overdue "$directory"; then
+    if ! supervisor_running "$directory" "$pid" || run_overdue "$directory"; then
       sleep 0.1
       if [ -f "$directory/exit_code" ]; then terminal_report "$directory"; else unknown_report "$directory"; fi
       return 0
@@ -1011,7 +1048,7 @@ report_run() {
     fi
   else
     pid=$(jq -r '.pid' "$directory/meta.json")
-    if [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 0 ] && kill -0 "$pid" 2>/dev/null && ! run_overdue "$directory"; then
+    if supervisor_running "$directory" "$pid" && ! run_overdue "$directory"; then
       running_report "$directory"
     else
       printf 'STATUS: failed\nEXIT: unknown\nSESSION: %s\nOUTCOME: %s\n' "$(session_id "$directory")" "$(failure_outcome "$vendor")"

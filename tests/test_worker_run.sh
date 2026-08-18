@@ -1098,6 +1098,39 @@ assert grep -q '^EXIT: unknown$' <<<"$stale_wait"
 stale_report=$("$RUNNER" report codex-9-9-aaaa)
 assert grep -q '^STATUS: failed$' <<<"$stale_report"
 
+# A pid is not a supervisor. The number is reused within a day on a busy machine, and whatever
+# inherits it answers a signal probe exactly as the supervisor would — so the launch instant the
+# record stamped is compared against the process's own start, the way the review hooks judge these
+# same runs. A run reading "running" here while they read it as gone is a chat told to wait forever.
+clear_stub
+sleep 120 &
+LIVE_SUPERVISOR=$!
+RECYCLED_DIR="$WORKER_RUN_DIR/codex-9-9-bbbb"
+mkdir -p "$RECYCLED_DIR"
+: >"$RECYCLED_DIR/out"
+: >"$RECYCLED_DIR/err"
+jq -cn --argjson pid "$LIVE_SUPERVISOR" --argjson now "$(date +%s)" \
+  '{vendor:"codex",account:"recycled",pid:$pid,started_at:$now,pid_started_at:1000}' \
+  >"$RECYCLED_DIR/meta.json"
+recycled_wait=$("$RUNNER" wait codex-9-9-bbbb --max 0)
+assert grep -q '^STATUS: failed$' <<<"$recycled_wait"
+assert grep -q '^EXIT: unknown$' <<<"$recycled_wait"
+recycled_report=$("$RUNNER" report codex-9-9-bbbb)
+assert grep -q '^STATUS: failed$' <<<"$recycled_report"
+# The same live pid whose start MATCHES the stamp is the supervisor itself, and it is left alone.
+jq -cn --argjson pid "$LIVE_SUPERVISOR" --argjson now "$(date +%s)" \
+  '{vendor:"codex",account:"recycled",pid:$pid,started_at:$now,pid_started_at:$now}' \
+  >"$RECYCLED_DIR/meta.json"
+assert grep -q '^STATUS: running$' <<<"$("$RUNNER" report codex-9-9-bbbb)"
+# A record written before the launch stamp existed has nothing to compare and keeps the old answer:
+# every run started before that field went in would otherwise begin reading dead.
+jq -cn --argjson pid "$LIVE_SUPERVISOR" --argjson now "$(date +%s)" \
+  '{vendor:"codex",account:"legacy",pid:$pid,started_at:$now}' >"$RECYCLED_DIR/meta.json"
+assert grep -q '^STATUS: running$' <<<"$("$RUNNER" report codex-9-9-bbbb)"
+kill "$LIVE_SUPERVISOR" 2>/dev/null
+wait "$LIVE_SUPERVISOR" 2>/dev/null
+rm -rf "$RECYCLED_DIR"
+
 # A wedged vendor CLI is killed at the deadline and the run turns terminal.
 clear_stub
 set_config 'codex_effort=high'

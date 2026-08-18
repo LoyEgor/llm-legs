@@ -710,6 +710,11 @@ fi
 assert doc_has 'Worker run liveness identity'
 assert grep -Fq '.pid_started_at = $began' "$ROOT/bin/worker-run"
 assert eq "$(grep -c '\.pid_started_at = ' "$ROOT/bin/worker-run")" 1
+# The writer is also a reader: wait, report and busy_accounts judge a supervisor through the one
+# helper, or worker-run calls a recycled pid running while the hooks have retired the run.
+assert grep -Fq 'PID_START_SLACK=30' "$ROOT/bin/worker-run"
+assert grep -Fq 'ps -p "$2" -o etime=' "$ROOT/bin/worker-run"
+assert eq "$(grep -c 'supervisor_running "\$directory" "\$pid"' "$ROOT/bin/worker-run")" 3
 if test -r "$JOURNAL_LIB"; then
   assert grep -Fq 'RJ_PID_SLACK=30' "$JOURNAL_LIB"
   assert grep -Fq '"pid_started_at"' "$JOURNAL_LIB"
