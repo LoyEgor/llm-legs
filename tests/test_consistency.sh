@@ -692,10 +692,25 @@ if test -r "$COMMIT_REPORT"; then
   # The third writer: an edit and the commit carrying it inside ONE Bash call are seen by neither
   # of the other two, and the debt that commit landed is then recorded under no chat at all.
   assert grep -Fq 'rj_append "$debt" "$own" "$now" "$path"' "$COMMIT_REPORT"
-  assert grep -Fq 'stamp_landed_debt "$dir" "$gitdir" "$session" "$out"' "$COMMIT_REPORT"
-  # Every commit the call landed, not the last one alone; and never a path an unswept run of
-  # another chat listed, which row am's sweep stamps under its launcher.
-  assert grep -Fq 'done < <(landed_commits "$dir" "$out")' "$COMMIT_REPORT"
+  assert grep -Fq 'stamp_landed_debt "$dir" "$gitdir" "$session" "$out" "${report_last-}"' \
+    "$COMMIT_REPORT"
+  # Read before the commit branch overwrites it: the marker is the far end of the walk below.
+  assert grep -Fq 'report_last=$(cat "$gitdir/commit-report-last" 2>/dev/null)' "$COMMIT_REPORT"
+  # Every commit the call landed, not the last one alone; in every repository it landed one, each
+  # sha resolved by that repository for itself; and never a path an unswept run of another chat
+  # listed, which row am's sweep stamps under its launcher.
+  assert grep -Fq 'shas=$(landed_commits "$dir" "$out" "$since")' "$COMMIT_REPORT"
+  assert grep -Fq 'done < <(journal_homes "$dir")' "$COMMIT_REPORT"
+  assert grep -Fq 'full=$(git -C "$top" rev-parse --verify --quiet "$sha^{commit}" 2>/dev/null)' \
+    "$COMMIT_REPORT"
+  # Where git's summary lines spoke they are the whole answer: a bare HEAD is a co-tenant's commit,
+  # a pull or a merge as readily as this call's own.
+  assert grep -Fq '[ -n "$printed" ] && return 0' "$COMMIT_REPORT"
+  # A co-tenant's journal row alone is that chat's pending work, swept in by `git commit -a`.
+  assert grep -Fq 'case "$foreign" in *$'"'"'\n'"'"'"$path"$'"'"'\n'"'"'*) continue ;; esac' \
+    "$COMMIT_REPORT"
+  # And a run whose own listing cannot answer for its files answers with its whole workdir.
+  assert grep -Fq "printf 'DIR: %s\\n' \"\$workdir\"" "$COMMIT_REPORT"
   assert grep -Fq 'claimed=$'"'"'\n'"'"'$(foreign_run_claims "$own")' "$COMMIT_REPORT"
 fi
 JOURNAL_LIB="$CLAUDE_SETUP/hooks/lib/review-journal.sh"
@@ -1362,6 +1377,9 @@ if [ -r "$COMMIT_JOURNAL" ]; then
     "$COMMIT_JOURNAL"
   assert grep -Fq 'RUN_RECORD_STALE_AFTER=172800' "$COMMIT_JOURNAL"
   assert grep -Fq ': >"$directory/journaled"' "$COMMIT_JOURNAL"
+  # A final record that will never gain a listing is retired unread: there is nothing left to
+  # import, and its readers hold the whole workdir as pending while it sits there.
+  assert grep -Fq 'elif [ -n "$final" ]; then' "$COMMIT_JOURNAL"
   # The other writer of the debt journal, and the earlier one: ownership is stamped at the edit,
   # since a commit that arms no notice would otherwise land debt owed by nobody. Per EDIT, with no
   # scan for an older record — row ao's epoch floor makes any stand-in invisible to the reader.
@@ -1379,6 +1397,11 @@ if [ -r "$REVIEW_GATE" ]; then
   assert grep -Fq "'WORKDIR: '*|'UNKNOWN: '*|'PARTIAL: '*|'') continue ;;" "$REVIEW_GATE"
   assert grep -Fq '[ -e "$directory/journaled" ] && continue' "$REVIEW_GATE"
   assert grep -Fq 'printf '"'"'%s\n'"'"' "${item%%:*}" >"${item#*:}/noticed"' "$REVIEW_GATE"
+  # A marker holding no state matches any: every one written before the liveness went into it
+  # would otherwise announce its long-retired run once more.
+  assert grep -Fq '[ -z "$held" ] || [ "$held" = "$2" ]' "$REVIEW_GATE"
+  # Priced, never keyed — a live run's listing and an uncheckable one's are both still growing.
+  assert eq "$(grep -c 'fold_listing live' "$REVIEW_GATE")" 2
 else
   printf 'SKIP: the gate reads the same run records (%s is unreadable)\n' "$REVIEW_GATE"
 fi
