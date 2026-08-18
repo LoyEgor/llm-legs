@@ -43,16 +43,34 @@ assert denied "$(gate)"
 
 # --- Nothing in the environment: claudeb's own state file names the account --------------------
 # A plain `claude` launch sets neither variable, and the gate used to skip that session entirely —
-# the one shape its own header describes as the failure it exists to stop.
+# the one shape its own header describes as the failure it exists to stop. But that file holds the
+# LAST profile launched on this machine, which is routinely another chat's: it may speak, never
+# close the door.
 ACCOUNT_ENV=
 CONFIG_DIR_ENV="$HOME_DIR/.claude"
 printf 'notcom\n' >"$HOME_DIR/.claude-profiles/.claudeb/.claudeb-state"
 limits notcom 97
-assert denied "$(gate)"
+out=$(gate)
+assert lacks "$out" '"permissionDecision"'
+assert warned "$out"
+assert contains "$out" 'notcom'
+assert contains "$out" 'last claudeb profile launched on this machine'
 limits notcom 80
-assert contains "$(gate)" 'notcom'
+out=$(gate)
+assert lacks "$out" '"permissionDecision"'
+assert contains "$out" 'notcom'
+assert contains "$out" 'may be another chat'
 limits notcom 10
 assert lacks "$(gate)" 'additionalContext'
+# Named in the environment, the same numbers still deny: the door closes on an account this session
+# actually claims, and on no other.
+limits notcom 97
+ACCOUNT_ENV=notcom
+assert denied "$(gate)"
+ACCOUNT_ENV=
+CONFIG_DIR_ENV="$HOME_DIR/.claude-profiles/notcom"
+assert denied "$(gate)"
+CONFIG_DIR_ENV="$HOME_DIR/.claude"
 
 # --- Nothing names it at all: the part of the warning that needs no number ----------------------
 rm -f "$HOME_DIR/.claude-profiles/.claudeb/.claudeb-state"
@@ -66,4 +84,4 @@ assert lacks "$out" '"permissionDecision"'
 assert lacks "$(jq -cn '{hook_event_name:"PreToolUse",tool_name:"Bash",tool_input:{}}' |
   env HOME="$HOME_DIR" LLM_LIMITS_FILE="$WORK/limits.json" bash "$GATE")" 'additionalContext'
 
-printf 'PASS: %s asserts; workflow-burn-gate warns at 70%% and denies at 95%% for the session account, naming it from the environment, the profile config dir or claudeb state, warns without a number when nothing can name it, and stays out of every other tool call\n' "$asserts"
+printf 'PASS: %s asserts; workflow-burn-gate warns at 70%% and denies at 95%% for the session account, naming it from the environment, the profile config dir or claudeb state, denying only on an account the session itself names while a claudeb-state guess warns that it may belong to another chat, warns without a number when nothing can name it, and stays out of every other tool call\n' "$asserts"

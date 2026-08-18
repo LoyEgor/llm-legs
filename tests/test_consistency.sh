@@ -698,6 +698,22 @@ if test -r "$FLOW_GATE"; then
   assert eq "$gate_second_findings" "$rb_second_findings"
 fi
 
+# --- Row aq: the waiver's placeholder reason -----------------------------------
+# The gate prints a paste-ready waive command carrying a placeholder reason, and the bench refuses
+# that one literal. A gate rewording it while the bench still refuses the old one reopens the hole
+# with the paste-ready command as the carrier.
+assert doc_has "The waiver's placeholder reason"
+rb_placeholder=$(sed -n 's/^WAIVE_PLACEHOLDER_REASON = "\(.*\)"$/\1/p' "$REVIEWBENCH")
+assert eq "$rb_placeholder" 'WHY THIS GOES UNREVIEWED'
+assert grep -Fq 'if reason == WAIVE_PLACEHOLDER_REASON:' "$REVIEWBENCH"
+if test -r "$FLOW_GATE"; then
+  gate_placeholder=$(sed -n "s/.*review-bench waive --reason '\([^']*\)'.*/\1/p" "$FLOW_GATE" |
+    head -1)
+  assert eq "$gate_placeholder" "$rb_placeholder"
+else
+  printf 'SKIP: waiver placeholder reason across claude-setup (%s is unreadable)\n' "$FLOW_GATE"
+fi
+
 # --- Row ae: account pin ownership -------------------------------------------
 # Three doors, one marker, one TTL. A door silently removed, or two of them disagreeing on where
 # the marker lives, is a pin a session can move again — the failure this row exists to prevent.

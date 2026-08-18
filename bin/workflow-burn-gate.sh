@@ -14,14 +14,18 @@ input=$(cat) || exit 0
 printf '%s' "$input" | jq -e '.hook_event_name == "PreToolUse" and .tool_name == "Workflow"' >/dev/null 2>&1 || exit 0
 
 own="${CLAUDE_LIMITS_ACCOUNT:-}"
+own_source=env
 if [ -z "$own" ] || [ "$own" = "-" ]; then
   if [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ "$CLAUDE_CONFIG_DIR" != "$HOME/.claude" ]; then
     own=$(basename "$CLAUDE_CONFIG_DIR")
   else
-    # A session on the default config dir names its account nowhere in the environment; claudeb's
-    # own state file is what the statusline and the chat-link hook read it from.
+    # A session on the default config dir names its account nowhere in the environment. claudeb's
+    # state file records the LAST profile launched on this machine and nothing about this chat
+    # (docs/statusline-contract.md refuses it as an account predictor for exactly that reason), so
+    # it is read as a guess and marked as one.
     own=$(head -n 1 "${HOME:-}/.claude-profiles/.claudeb/.claudeb-state" 2>/dev/null |
       tr -d '[:space:]')
+    own_source=claudeb-state
   fi
 fi
 # Which account it is was never the warning: that a fan-out bills the SESSION's own, and can wall
@@ -59,6 +63,15 @@ pct=$(jq -r --arg own "$own" --argjson now "$now" '
 ' "$LIMITS_FILE" 2>/dev/null) || exit 0
 [ -n "$pct" ] || exit 0
 pct_int=$(printf '%.0f' "$pct" 2>/dev/null) || exit 0
+
+# A guessed account may never close a door: the reading belongs to whichever profile was launched
+# here last, which is routinely another chat's, and denying a fan-out on it stops work over a
+# number that was never this session's. It is worth saying out loud, and never worth more.
+if [ "$own_source" = claudeb-state ] && [ "$pct_int" -ge "$WARN_AT" ] 2>/dev/null; then
+  jq -cn --arg c "Heads-up: this workflow's agents will spend the SESSION's own account, never the claudeb rotation, and a large fleet can wall this session mid-task. Nothing in this session's environment names that account: the closest reading is $own at ${pct}%, which is only the last claudeb profile launched on this machine and may be another chat's. Confirm the real one with llm-limits --table --no-write before a big fan-out, keep the fleet small, or move implementation stages to workers (run worker-pick)." \
+    '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$c}}' 2>/dev/null
+  exit 0
+fi
 
 if [ "$pct_int" -ge "$DENY_AT" ] 2>/dev/null; then
   jq -cn --arg r "Session account $own is at ${pct}% — a workflow fan-out would burn this same account and wall the session before its own task finishes. Do not run the workflow now: shrink the work to inline/single agents, route implementation through claudeb-/codex-workers (run worker-pick), or ask Egor." \

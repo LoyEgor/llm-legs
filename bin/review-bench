@@ -1299,6 +1299,11 @@ SCOPE_TRAILER = "Scope-Path: "
 # two numbers and is held equal to them by docs/shared-invariants.md.
 SECOND_REVIEW_P1S = 2
 SECOND_REVIEW_FINDINGS = 8
+# The reason the commit gate prints in its paste-ready waive command. A caller that pastes it
+# unedited records the placeholder as the decision, which is a waiver saying nothing at all — so it
+# is the one reason this tool refuses. Held equal to the gate's own literal by
+# docs/shared-invariants.md.
+WAIVE_PLACEHOLDER_REASON = "WHY THIS GOES UNREVIEWED"
 # Where the artifacts that answer for a path live: the waivers beside the receipts, and the two
 # journals beside each other in the git directory a chat commits from.
 WAIVER_DIR = "waivers"
@@ -7755,9 +7760,11 @@ def git_dir_path(repo):
 
 def journal_entries(path):
     """`session TAB epoch TAB path` records, NUL-separated, the way the commit journal and the debt
-    journal both write them. A record with fewer than three fields was written before the journal
-    named a session and belongs to nobody; the path keeps every tab past the second, because a tab
-    in a filename is part of the name.
+    journal both write them, as `(session, path)` pairs. A record with fewer than three fields is
+    the journal's original format — a bare path, no session — so it comes back owned by nobody
+    rather than dropped: the path is still work a chat recorded, and the debt universe is built out
+    of exactly these rows. The path keeps every tab past the second, because a tab in a filename is
+    part of the name.
     """
     try:
         raw = Path(path).read_bytes().decode("utf-8", "replace")
@@ -7766,7 +7773,11 @@ def journal_entries(path):
     rows = []
     for entry in raw.split("\0"):
         parts = entry.split("\t", 2)
-        if len(parts) < 3 or not parts[0] or not parts[2]:
+        if len(parts) < 3:
+            if entry:
+                rows.append(("", entry))
+            continue
+        if not parts[0] or not parts[2]:
             continue
         rows.append((parts[0], parts[2]))
     return rows
@@ -7838,6 +7849,11 @@ def repo_artifacts(repo):
         record = run_repo_record(resolved, meta)
         if record is None or not run_triaged(run_dir):
             continue
+        # A killed panel read part of its scope and was sealed with all of it. Triaging what came
+        # back settles the chat that ran it, and would otherwise settle the paths its dead cells
+        # never reached — for every chat at once.
+        if meta.get("timed_out"):
+            continue
         reviewed = record.get("reviewed")
         # A run holding no snapshot read committed code: nothing in the working tree is anchored to
         # it, so it answers for no path at all.
@@ -7868,12 +7884,33 @@ def repo_artifacts(repo):
     return artifacts
 
 
+def artifact_locked(artifact):
+    """Whether this artifact is a round the contract owes a second review over: it came back with
+    enough confirmed P1s or findings that the fork sends the chat back to review.
+    """
+    if not artifact or artifact["kind"] != "run":
+        return False
+    p1s, findings = run_confirmed_counts(artifact["dir"])
+    return p1s >= SECOND_REVIEW_P1S or findings >= SECOND_REVIEW_FINDINGS
+
+
 def covering_artifacts(repo):
     """The newest artifact holding each path — the one thing a path's current content is compared
-    against."""
+    against.
+
+    A locked round is the exception. What discharges one is the full original scope reviewed again
+    over the fixes, so only a run whose own reviewed paths hold every path that round read may take
+    a path back from it; a one-path rerun, and a waiver at any width, would otherwise retire a
+    second review by answering for a corner of it.
+    """
     covering = {}
     for artifact in repo_artifacts(repo):
         for path in artifact["shas"]:
+            standing = covering.get(path)
+            if artifact_locked(standing) and not (
+                artifact["kind"] == "run" and set(standing["shas"]) <= set(artifact["shas"])
+            ):
+                continue
             covering[path] = artifact
     return covering
 
@@ -7888,32 +7925,53 @@ def repo_debt(repo, paths=None):
     born after the panel read the tree.
     """
     covering = covering_artifacts(repo)
-    candidates = list(paths) if paths else sorted(set(covering) | journal_paths(repo))
+    named = journal_paths(repo)
+    candidates = list(paths) if paths else sorted(set(covering) | named)
     debt = []
     for path in candidates:
         artifact = covering.get(path)
-        recorded = artifact["shas"].get(path, "") if artifact else ""
-        if path_blob_sha(repo, path) != recorded:
+        sha = path_blob_sha(repo, path)
+        if artifact is None:
+            # A path no artifact holds has no recorded content to compare, and a deleted one hashes
+            # to the same empty string that absence does: compared, the two cancel and deleting an
+            # unreviewed file is how it escapes review. The journals having named it is what keeps
+            # the removal visible.
+            if sha or path in named:
+                debt.append((path, None))
+            continue
+        if sha != artifact["shas"].get(path, ""):
             debt.append((path, artifact))
     return debt
 
 
-def debt_authors(repo, paths):
-    """Which chats this debt belongs to: the debt journal a commit's own gate appends to, plus the
-    commit journal for work still uncommitted.
+def debt_path_authors(repo, paths):
+    """Which chats each of these paths belongs to: the debt journal a commit's own gate appends to,
+    plus the commit journal for work still uncommitted. A record naming no session belongs to
+    nobody and makes no chat an author of it.
     """
-    wanted = set(paths)
+    authors = {str(path): set() for path in paths}
     directory = git_dir_path(repo)
     if directory is None:
-        return set()
+        return authors
+    for name in (DEBT_JOURNAL, COMMIT_JOURNAL):
+        for session, path in journal_entries(directory / name):
+            if session and path in authors:
+                authors[path].add(session)
+    return authors
+
+
+def debt_authors(repo, paths):
+    """Which chats this debt belongs to, as one set over all of its paths."""
     return {
         session
-        for name in (DEBT_JOURNAL, COMMIT_JOURNAL)
-        for session, path in journal_entries(directory / name)
-        if path in wanted
+        for sessions in debt_path_authors(repo, paths).values()
+        for session in sessions
     }
 
 
+# Memoized because the covering reader asks the same run for its tally once per path it holds, and
+# a triaged run's counts are written once and never move under a reader.
+@lru_cache(maxsize=None)
 def run_confirmed_counts(run_dir):
     """`(confirmed P1s, confirmed findings)` of a triaged run, read from its report receipt where
     one was written and from the verdicts otherwise — the receipt being the only record a
@@ -7937,18 +7995,21 @@ def run_confirmed_counts(run_dir):
     return severity_tallies(run_dir, verdicts)[""]["P1"], total
 
 
-def debt_locked(debt):
-    """Whether a bad round stands over any of this debt. The run holding a debt path came back with
-    enough confirmed P1s or findings that the contract owes a second review, and a waiver is not a
-    way around one.
+def debt_locks(debt):
+    """The bad rounds standing over this debt, as `{run id: [paths]}`. The run holding a debt path
+    came back with enough confirmed P1s or findings that the contract owes a second review, and a
+    waiver is not a way around one — so a refusal can name which paths those are and which round
+    has to answer for them.
     """
-    for _, artifact in debt:
-        if not artifact or artifact["kind"] != "run":
-            continue
-        p1s, findings = run_confirmed_counts(artifact["dir"])
-        if p1s >= SECOND_REVIEW_P1S or findings >= SECOND_REVIEW_FINDINGS:
-            return True
-    return False
+    locks = {}
+    for path, artifact in debt:
+        if artifact_locked(artifact):
+            locks.setdefault(artifact["id"], set()).add(path)
+    return {run_id: sorted(paths) for run_id, paths in locks.items()}
+
+
+def debt_locked(debt):
+    return bool(debt_locks(debt))
 
 
 def session_timeout_run(repo, session):
@@ -8015,16 +8076,50 @@ def cmd_waive(args):
     if not reason:
         print("waive: --reason must say why this work is going unreviewed")
         return 1
-    debt = repo_debt(repo, debt_query_paths(repo, getattr(args, "paths", None)))
+    if reason == WAIVE_PLACEHOLDER_REASON:
+        print(
+            f"waive: refused — '{WAIVE_PLACEHOLDER_REASON}' is the placeholder the commit gate "
+            "prints in the command it hands you, not a reason. The waiver has to carry your own "
+            "words for why this work is going unreviewed."
+        )
+        return 1
+    session = launching_session() or ""
+    if not session:
+        print(
+            "waive: refused — nothing here names the chat recording this waiver, so it would "
+            "stand over the work with no one to ask about it. Run it from the chat that owns "
+            "the work."
+        )
+        return 1
+    explicit = debt_query_paths(repo, getattr(args, "paths", None))
+    debt = repo_debt(repo, explicit)
     if not debt:
         print("waive: nothing here is in debt")
         return 1
-    if debt_locked(debt):
+    if not explicit:
+        # Asked about no path in particular, the question is the repository's — and the repository
+        # is shared. A pathless waiver settling every co-tenant's debt under this one chat's name is
+        # the one thing the artifact must never do, so it keeps what the journals say is this
+        # chat's and makes the rest something the caller has to spell out.
+        authors = debt_path_authors(repo, [path for path, _ in debt])
+        debt = [row for row in debt if session in authors.get(row[0], ())]
+        if not debt:
+            print(
+                f"waive: refused — none of this repository's debt is journalled to this chat "
+                f"({session}), and a waiver naming no path would settle other chats' work under "
+                "it. Name what you are not reviewing with --paths."
+            )
+            return 1
+    locks = debt_locks(debt)
+    if locks:
+        named = "; ".join(
+            f"{run_id} over {', '.join(paths)}" for run_id, paths in sorted(locks.items())
+        )
         print(
             f"waive: refused — the review standing over this work came back with "
             f"{SECOND_REVIEW_P1S}+ confirmed P1s or {SECOND_REVIEW_FINDINGS}+ confirmed findings, "
             "and that round owes a second review over the full scope plus the fixes. Run it "
-            "instead of waiving it."
+            f"instead of waiving it. Locked: {named}."
         )
         return 1
     path = waiver_file(repo)
@@ -8034,7 +8129,7 @@ def cmd_waive(args):
     entry = {
         "id": f"waiver-{int(time.time())}-{hashlib.sha1(reason.encode()).hexdigest()[:7]}",
         "epoch": int(time.time()),
-        "session": launching_session() or "",
+        "session": session,
         "reason": reason,
         "paths": {name: path_blob_sha(repo, name) for name, _ in debt},
     }
