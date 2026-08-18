@@ -697,6 +697,11 @@ if test -r "$JOURNAL_LIB"; then
   assert grep -Fq 'rj_append_raw "$@"' "$JOURNAL_LIB"
   # A settled episode's record never counts as authorship of the next one on the same path.
   assert grep -Fq 'epoch < floors.get(path, 0)' "$REVIEWBENCH"
+  # Rewriters may not replace an inode a raw append just landed on: every swap is size-guarded.
+  assert grep -Fq 'rj_swap() { # file tmp snap_size' "$JOURNAL_LIB"
+  if test -r "$FLOW_GATE"; then
+    assert grep -Fq 'rj_swap "$journal" "$scratch" "$snap_size"' "$FLOW_GATE"
+  fi
 fi
 
 # --- Row ar: worker run liveness identity --------------------------------------
