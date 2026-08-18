@@ -1286,10 +1286,15 @@ GO_REQUESTS_5H = {
     "mimo-v2.5": 30100,
 }
 GO_USAGE_WEIGHT = {"gpt-5.6-luna": 2}
-# The other three vendors bill windows that no measured ruler converts into Go requests yet.
-# PRICE_WEIGHTS stands in until one exists, and prices a run rather than a window — which is why
-# the two cost columns never compare (the board's footer says so to the reader).
-LIMIT_WEIGHTS = {"claude": None, "codex": None, "gemini": None}
+# Live plan models the Go plan publishes no per-request grant for. Their cost stays blank on
+# purpose: a made-up grant would rank them against the models that publish one.
+GO_UNPRICED = frozenset({"qwen3.7-max", "kimi-k2.7-code", "glm-5.1", "mimo-v2.5-pro"})
+assert all(plan_model in GO_REQUESTS_5H or plan_model in GO_UNPRICED
+           for plan_model in OPENCODE_MODEL_IDS.values())
+# The other three vendors bill windows that no measured ruler converts into Go requests, and no
+# limit share of theirs converts into another's either. PRICE_WEIGHTS stands in until such a
+# ruler exists, and prices a run rather than a window — which is why the two cost columns never
+# compare (the board's footer says so to the reader).
 # price-proxy, 2026-08-17: list price per token relative to each vendor's cheapest tier, not a
 # bill and not a limit share.
 PRICE_WEIGHTS = {
@@ -9787,8 +9792,9 @@ BOARD_FOOTER = (
     f"fewer than {BOARD_MIN_ANCHORED_RUNS} anchored runs or "
     f"{BOARD_MIN_ANCHORED_DEFECTS} anchored defects",
     "cost is two units that do NOT compare: an OpenCode cell is priced as its share of the Go "
-    "plan's 5h request grant, every other cell as an API-price proxy over its mean tokens, so "
-    "value (cov*/cost) ranks cells only inside one unit family",
+    "plan's 5h request grant, every other cell as an API-price proxy over its mean tokens "
+    "relative to its OWN vendor's cheapest tier, so value (cov*/cost) ranks a priced cell only "
+    "against cells of the same vendor",
     "raw+ is bench runs of that cell nobody adjudicated, counted only over benches that "
     "finished, so they are in no other column here; a row that is "
     f"{BOARD_EMPTY} everywhere else is a cell only raw runs have ever measured",
@@ -9873,7 +9879,8 @@ def board_raw_counts(sd, known):
     against the corpus is the measured-but-unscored volume — the only column here that says how
     much evidence is sitting unused. A run still in flight has a meta.json too, and counting it
     would sell work in progress as evidence, so the same finish stamp `list` reads to tell an
-    aborted run from a real one gates this.
+    aborted run from a real one gates this. A cell its run recorded as errored measured nothing
+    either, and counting it would sell a failure as evidence waiting to be read.
     """
     adjudicated = {
         (row.get("run_id"), row.get("rater")) for row in read_jsonl(sd / "reviews.jsonl")
@@ -9889,6 +9896,8 @@ def board_raw_counts(sd, known):
             continue
         run_id = meta.get("run_id") or path.name
         for entry in meta.get("rater_runs", []):
+            if entry.get("errored"):
+                continue
             rater = entry.get("rater") or ""
             if (run_id, rater) not in adjudicated:
                 counts[board_raw_name(rater, known)] += 1
@@ -9956,6 +9965,18 @@ def board_tiers_block(scheme):
     return blocks
 
 
+def board_constants():
+    """Every number the board's own renderers would otherwise each spell for themselves."""
+    return {
+        "price_weights": PRICE_WEIGHTS,
+        "go_requests_5h": GO_REQUESTS_5H,
+        "go_usage_weight": GO_USAGE_WEIGHT,
+        "cost_scale": BOARD_COST_SCALE,
+        "min_anchored_runs": BOARD_MIN_ANCHORED_RUNS,
+        "min_anchored_defects": BOARD_MIN_ANCHORED_DEFECTS,
+    }
+
+
 def board_tier(wall_s):
     if wall_s is None:
         return "?"
@@ -9980,7 +10001,9 @@ def board_cells(sd):
     for run_id, run_rows in by_run.items():
         for row in run_rows:
             rater = row.get("rater") or ""
-            name = board_cell_name(rater)
+            # The same normalization the raw counts key on: under two spellings of one cell the
+            # legacy one parses as no side at all, so the row splits off with leg "other".
+            name = board_cell_name(normalize_legacy_rater(rater))
             model = row.get("rater_model") or ""
             entry = cells.setdefault(name, {
                 "cell": name, "models": Counter(), "commits": set(), "confirmed": [],
@@ -10084,7 +10107,10 @@ def board_row(entry, n_raw):
 
 
 def board_sort_key(row):
-    return (row["cov_anch"] is None, -(row["cov_anch"] or 0), -(row["mean_confirmed"] or 0))
+    # Raw-only rows are equal under every corpus key, and an unordered block of them reshuffles
+    # between runs of the same board.
+    return (row["cov_anch"] is None, -(row["cov_anch"] or 0), -(row["mean_confirmed"] or 0),
+            -(row["n_raw"] or 0), row["cell"])
 
 
 def board_values(row):
@@ -10182,7 +10208,8 @@ def cmd_board(args):
     rows = sorted(rows, key=board_sort_key)
     hand = [dict(row, source=HANDSCORED_SOURCE) for row in HANDSCORED]
     if args.json:
-        document = {"cells": rows, "hand_scored": hand, "tiers": board_tiers_block(scheme)}
+        document = {"cells": rows, "hand_scored": hand, "tiers": board_tiers_block(scheme),
+                    "constants": board_constants()}
         print(json.dumps(document if args.hand else rows, indent=2))
         return 0
     if args.tsv:
@@ -10190,7 +10217,9 @@ def cmd_board(args):
         # is the only spelling guaranteed unique and stable across a naming-scheme change.
         print("\t".join(("tier", *BOARD_COLUMNS)))
         for row in rows:
-            print("\t".join((row["tier"], row["cell"], *board_values(row)[1:])))
+            # The dim placeholder is a reading aid; a machine reader takes it for a value.
+            values = ["" if value == BOARD_EMPTY else value for value in board_values(row)[1:]]
+            print("\t".join((row["tier"], row["cell"], *values)))
         if args.hand:
             print()
             print("\t".join(HANDSCORED_COLUMNS))

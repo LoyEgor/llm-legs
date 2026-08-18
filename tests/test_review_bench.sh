@@ -10477,13 +10477,15 @@ rows = [
     ("board-shared", "oc-kimik3", "oc-kimik3", "a" * 40, 1, 3, 0, 20_000),
     ("board-repeat", "oc-kimik3#2", "oc-kimik3", "b" * 40, 9, 0, 2, 40_000),
     ("board-solo", "oc-glm52", "oc-glm52", "b" * 40, 5, 0, 0, 700_000),
-    # One family under three spellings the pool does not hold: two efforts the pool never
-    # launches and the effort-less spec the gateway itself refuses. Named against the pool
-    # alone all three are "grok", which is the pool cell's own name.
+    # One family under three spellings, of which the pool launches the first alone. Named
+    # against the pool alone all three are "grok", so the two the pool cannot launch would take
+    # the live cell's own name away from it.
     ("board-grok", "oc-grok45-low", "oc-grok45", "f" * 40, 1, 0, 0, 100_000),
     ("board-grok", "oc-grok45-medium", "oc-grok45", "f" * 40, 1, 0, 0, 110_000),
     ("board-grok", "oc-grok45", "oc-grok45", "f" * 40, 1, 0, 0, 120_000),
     ("board-grok", "oc-dsv4flash-medium", "oc-dsv4flash", "f" * 40, 1, 0, 0, 130_000),
+    # A corpus row under the retired spelling of a cell the pool still launches.
+    ("board-legacy", "agy-flash-low-skill", "agy-flash36", "f" * 40, 2, 0, 0, 90_000),
 ]
 for index, commit in enumerate(("c", "d", "e"), 1):
     rows.append((f"board-panel{index}", "sol-medium", "sol", commit * 40, 2, 1, 0, 200_000))
@@ -10513,18 +10515,21 @@ for run_id, rater, usage in (
 # What a run launched, against what anyone ever judged, and whether it ever finished: board-raw
 # was adjudicated by nobody, board-shared judged two of the three cells it ran, and board-running
 # is a bench in flight — a meta.json exists for it the moment it starts, and its cells are work
-# rather than evidence until the finish stamp lands.
+# rather than evidence until the finish stamp lands. A cell the run marked errored finished the
+# bench without measuring anything, so it is no reserve either.
 for run_id, finished, raters in (
     ("board-shared", "2026-08-17T00:05:00+00:00",
      ("sol-medium", "oc-kimik3", "oc-kimik3#3")),
     ("board-raw", "2026-08-17T00:06:00+00:00",
      ("oc-kimik3", "oc-kimik3#2", "sol-medium", "raw-only-cell", "agy-flash-low-skill#2",
-      "opus-low")),
+      "opus-low", "raw-volume-cell", "raw-volume-cell#2", "raw-volume-cell#3",
+      {"rater": "errored-only-cell", "errored": True})),
     ("board-running", None, ("oc-kimik3#9", "never-finished-cell")),
 ):
     directory = stats / "benches" / run_id
     directory.mkdir(parents=True, exist_ok=True)
-    meta = {"run_id": run_id, "rater_runs": [{"rater": rater} for rater in raters]}
+    meta = {"run_id": run_id, "rater_runs": [
+        entry if isinstance(entry, dict) else {"rater": entry} for entry in raters]}
     if finished:
         meta["finished"] = finished
     (directory / "meta.json").write_text(json.dumps(meta))
@@ -10557,8 +10562,15 @@ assert board_has '.[] | select(.cell == "raw-only-cell")
     and .model == null and .cov_anch == null and .med_wall_s == null and .cost_units == null'
 assert board_has '([.[] | select(.cell == "raw-only-cell") | keys] | first)
   == ([.[] | select(.cell == "oc-kimik3") | keys] | first)'
-# Named the way the corpus would name it today, not the way the bench that ran it spelled it.
-assert board_has '.[] | select(.cell == "agy-flash36-low-skill") | .n_raw == 1'
+# A cell its own run recorded as errored measured nothing, and a raw+ reserve of failures is a
+# reserve of nothing.
+assert board_has '[.[] | select(.cell == "errored-only-cell")] == []'
+# Named the way the corpus would name it today, not the way the bench that ran it spelled it —
+# the corpus row and the raw count of one cell answer to one key, or the legacy half of it splits
+# off as a cell no side parses.
+assert board_has '.[] | select(.cell == "agy-flash36-low-skill")
+  | .n_raw == 1 and .n_runs == 1 and .leg == "gemini"'
+assert board_has '[.[] | select(.cell == "agy-flash-low-skill")] == []'
 # One derivation names a cell everywhere a human reads it, and it is the pool that decides how
 # much a name has to carry: kimi stands alone, while opus-high has a skilled twin in the pool and
 # so has to say which of the two it is.
@@ -10582,6 +10594,8 @@ assert board_has '[.[] | .display] | length == (unique | length)'
 assert board_has '.[] | select(.cell == "oc-grok45-low") | .display == "grok"'
 assert board_has '.[] | select(.cell == "oc-grok45-medium") | .display != "grok"'
 assert board_has '.[] | select(.cell == "oc-grok45") | .display == "oc-grok45"'
+assert board_has '.[] | select(.cell == "oc-grok45-low") | .in_panel == true'
+assert board_has '.[] | select(.cell == "oc-grok45-medium") | .in_panel == false'
 # Against the panel of the cell's OWN tier: a cell measured at T0 answers for what T0 launches.
 # A cell no one has adjudicated is still in the panel it is in: membership belongs to the pool,
 # and reading it off a row's measured wall clock leaves every unmeasured cell out of every panel.
@@ -10611,10 +10625,15 @@ assert board_has '[.[] | select(.cell == "opus-high") | .tier] == ["T2"]'
 assert board_has '[.[] | select(.cell == "oc-glm52") | .tier] == ["T3"]'
 assert test -z "$(jq -r 'if type == "object" then "object" else empty end' <<<"$board_json")"
 board_hand_json=$(WORKER_STATS_DIR="$BSD" "$SCRIPT" board --json --hand)
-assert jq -e '.cells | length == 11' >/dev/null <<<"$board_hand_json"
+assert jq -e '.cells | length == 12' >/dev/null <<<"$board_hand_json"
 assert jq -e '.tiers | keys == ["T0","T1","T2","T3"]' >/dev/null <<<"$board_hand_json"
 assert jq -e '.tiers.T0.budget_min == 3 and (.tiers.T0.panel | index("kimi")) != null
   and (.tiers.T0.panel | index("oc-kimik3")) == null' >/dev/null <<<"$board_hand_json"
+assert jq -e '.constants.min_anchored_runs == 3 and .constants.min_anchored_defects == 5
+  and .constants.cost_scale == 1000 and .constants.price_weights.anthropic.opus == 5
+  and .constants.price_weights.google.flash == 6
+  and .constants.go_requests_5h["kimi-k3"] == 110
+  and .constants.go_usage_weight["gpt-5.6-luna"] == 2' >/dev/null <<<"$board_hand_json"
 assert jq -e '(.hand_scored | length) == 5
   and all(.hand_scored[]; .source == "docs/research/opencode-raters-2026-08.md")' \
   >/dev/null <<<"$board_hand_json"
@@ -10638,10 +10657,12 @@ assert contains "$board_out" 'hand-scored (out of corpus)'
 assert contains "$board_out" 'needs a /responses client in bin/opencode-go'
 board_no_oc=$(board_tiers_only --no-oc)
 assert contains "$board_no_oc" 'sol-med'
-grep -q 'kimi' <<<"$board_no_oc" && fail "board --no-oc kept an OpenCode cell"
+assert jq -e 'length > 0 and all(.[]; .cell | startswith("oc-") | not)' >/dev/null \
+  <<<"$(WORKER_STATS_DIR="$BSD" "$SCRIPT" board --json --no-oc)"
 board_oc_only=$(board_tiers_only --oc-only)
 assert contains "$board_oc_only" 'kimi'
-grep -q 'sol-med' <<<"$board_oc_only" && fail "board --oc-only kept a Codex cell"
+assert jq -e 'length > 0 and all(.[]; .cell | startswith("oc-"))' >/dev/null \
+  <<<"$(WORKER_STATS_DIR="$BSD" "$SCRIPT" board --json --oc-only)"
 WORKER_STATS_DIR="$BSD" "$SCRIPT" board --no-oc --oc-only >/dev/null 2>&1 \
   && fail "board accepted two contradictory family filters"
 board_tier=$(board_tiers_only --tier T0)
@@ -10652,12 +10673,61 @@ board_tsv=$(WORKER_STATS_DIR="$BSD" "$SCRIPT" board --tsv)
 assert test "$(head -1 <<<"$board_tsv" | cut -f1)" = "tier"
 assert test "$(awk -F'\t' '{print NF}' <<<"$board_tsv" | sort -u)" = "14"
 assert test "$(awk -F'\t' '$2 == "oc-glm52" {print $1}' <<<"$board_tsv")" = "T3"
-assert test "$(grep -c '' <<<"$board_tsv")" -eq 12
+assert test "$(grep -c '' <<<"$board_tsv")" -eq 13
 assert test -z "$(awk -F'\t' '$2 == "oc-glm52" {print $10}' <<<"$board_tsv")"
+# The dim placeholder the eye reads as "nothing here" is a value to everything that parses this.
+assert test -z "$(awk -F'\t' '$2 == "raw-only-cell" {print $3 $5 $6 $14}' <<<"$board_tsv")"
+assert test "$(awk -F'\t' '$2 == "raw-only-cell" {print $4}' <<<"$board_tsv")" = "1"
+# Rows the corpus cannot tell apart still have to come out in one order, and the volume behind
+# them is the only thing that ranks them.
+assert test "$(awk -F'\t' '$2 ~ /^raw-(volume|only)-cell$/ {print $2}' <<<"$board_tsv" \
+  | head -1)" = "raw-volume-cell"
 assert test "$(awk -F'\t' '$2 == "oc-kimik3" {print $10}' <<<"$board_tsv")" = "25.0?"
 grep -q 'hand-scored' <<<"$board_tsv" && fail "board --tsv carried the hand-scored block unasked"
 assert contains "$(WORKER_STATS_DIR="$BSD" "$SCRIPT" board --tsv --hand)" \
   'qwen3.8-max medium'
+
+# The second renderer of the same board: it reads review-bench from its own directory and
+# inherits the fixture store, so a broken template or a dropped column shows up here.
+BOARD_HTML="$WORK/board.html"
+WORKER_STATS_DIR="$BSD" "$ROOT/bin/review-board-html" "$BOARD_HTML" \
+  || fail "review-board-html refused the fixture board"
+board_html=$(cat "$BOARD_HTML")
+assert contains "$board_html" 'raw-only-cell'
+assert contains "$board_html" 'out-ktok'
+grep -q '__DATA__\|__TIERS__\|__GENERATED__\|__NCELLS__\|__NRUNS__' "$BOARD_HTML" \
+  && fail "review-board-html left a template placeholder unreplaced"
+# Every number the page states about the board comes from the board, not from a second copy here.
+assert contains "$board_html" '"min_anchored_runs": 3'
+assert contains "$board_html" '"cost_scale": 1000'
+assert contains "$board_html" '["T0", "up to 3 min"]'
+grep -q 'меньше 3 якорных' "$BOARD_HTML" \
+  && fail "review-board-html spelled a board threshold of its own"
+# The page is a program, and its columns and its empty cells are decided at render time.
+if command -v node >/dev/null 2>&1; then
+  cat >"$WORK/board-html-render.js" <<'JS'
+const fs = require("fs");
+const source = fs.readFileSync(process.argv[2], "utf8").split("<script>")[1].split("</script>")[0];
+const element = () => ({innerHTML: "", textContent: "", querySelectorAll: () => [],
+  addEventListener: () => {}, appendChild: () => {}});
+global.document = {getElementById: element, createElement: element, querySelectorAll: () => []};
+const page = new Function(source + "\nreturn {cellRow, DATA, COLUMNS};")();
+const cells = Object.fromEntries(page.DATA.cells.map(cell => [cell.cell, cell]));
+const columns = name => page.cellRow(cells[name]).match(/<td[^>]*>[\s\S]*?<\/td>/g);
+const fail = message => { console.error(message); process.exit(1); };
+const dim = '<span class="dim">\u00b7</span>';
+const rawOnly = columns("raw-only-cell");
+if (rawOnly.length !== page.COLUMNS.length)
+  fail(`${rawOnly.length} rendered columns against ${page.COLUMNS.length} headers`);
+if (rawOnly[4] !== `<td>${dim}</td>`) fail(`catch of an unscored row: ${rawOnly[4]}`);
+if (columns("opus-high")[2] !== "<td>0</td>")
+  fail(`a measured zero raw+ rendered as ${columns("opus-high")[2]}`);
+console.log("board-html-render-ok");
+JS
+  assert contains "$(node "$WORK/board-html-render.js" "$BOARD_HTML")" 'board-html-render-ok'
+else
+  printf 'SKIP: HTML board render checks (node is not installed)\n'
+fi
 
 # record stamps the repository a run reviewed, or says plainly that it cannot be traced.
 REPO_RUN="$CSD/benches/repo-fixture"

@@ -23,10 +23,10 @@ except subprocess.CalledProcessError as exc:
     sys.exit(1)
 generated = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M %Z")
 
-TIER_LABELS = {
-    "T0": "up to 3 min", "T1": "up to 6 min", "T2": "up to 10 min", "T3": "up to 20 min",
-    "OVER": "over every budget", "?": "no wall clock recorded",
-}
+TIER_LABELS = {name: f"up to {tier['budget_min']} min"
+               for name, tier in board.get("tiers", {}).items()}
+TIER_LABELS["OVER"] = "over every budget"
+TIER_LABELS["?"] = "no wall clock recorded"
 
 PAGE = """<!doctype html>
 <html lang="en">
@@ -168,16 +168,14 @@ mark { background:var(--mark); color:inherit; border-radius:3px; padding:0 3px; 
     <dt>cov*</dt><dd>Якорный coverage: доля пойманных дефектов, посчитанная ТОЛЬКО по якорным
     прогонам. Соло-прогоны и семейные панели исключены по построению (§26b исследовательского
     лога) — они дают ложные 100%.</dd>
-    <dt>?</dt><dd>Мало данных под цифрой coverage: меньше 3 якорных прогонов либо
-    confirmed + misses меньше 5. Цифра видна, но доверять ей нельзя.</dd>
+    <dt>?</dt><dd id="lowev-legend"></dd>
     <dt>ktok</dt><dd>Средние токены прогона, тысячами — весь трафик, включая чтение кода.</dd>
-    <dt>cost</dt><dd>Две НЕсравнимые единицы. <mark>go</mark> — доля реквест-квоты плана Go
-    (1000/реквестов за 5ч; kimi-k3 ≈ 9.1, glm-5.2 ≈ 1.1). <mark>px</mark> — прайс-прокси
-    для Claude/Codex/Gemini: вес модели × средние токены прогона (haiku 1&times; &middot;
-    sonnet 2&times; &middot; opus 5&times; &middot; fable 10&times;; luna 1&times; &middot;
-    terra 10&times; &middot; sol 25&times;; gemini flash 6&times; &middot; pro 8&times;).</dd>
-    <dt>value</dt><dd>cov*/cost. Сравнивать только внутри одной единицы стоимости — между
-    <mark>go</mark> и <mark>px</mark> это число смысла не имеет.</dd>
+    <dt>out-ktok</dt><dd>Средние выходные токены прогона, тысячами — только то, что модель
+    написала сама.</dd>
+    <dt>cost</dt><dd id="cost-legend"></dd>
+    <dt>value</dt><dd>cov*/cost. У <mark>px</mark> вес нормирован на самый дешёвый тариф своего
+    вендора, поэтому сравнивать это число можно только внутри одного вендора — а между
+    <mark>go</mark> и <mark>px</mark> оно смысла не имеет вовсе.</dd>
   </dl>
 </footer>
 </main>
@@ -187,8 +185,9 @@ const TIER_LABELS = __TIERS__;
 const LEG_LABELS = {opencode:"OpenCode", claude:"Claude", openai:"OpenAI", gemini:"Gemini",
   other:"Other"};
 const LEG_ORDER = ["opencode", "claude", "openai", "gemini", "other"];
-const LOWEV_TITLE = "Мало данных: меньше 3 якорных прогонов либо confirmed + misses меньше 5 \\u2014 "
-  + "цифре доверять нельзя";
+const C = DATA.constants || {};
+const LOWEV_TITLE = `Мало данных: меньше ${C.min_anchored_runs} якорных прогонов либо `
+  + `confirmed + misses меньше ${C.min_anchored_defects} \u2014 цифре доверять нельзя`;
 const PANEL_TITLE = "Панель этого тира запускает эту ячейку сегодня";
 const COLUMNS = [
   ["cell", "Ячейка: модель и режим запуска"],
@@ -201,6 +200,7 @@ const COLUMNS = [
   ["wall med", "Медианное время прогона; по нему ячейка попадает в тир"],
   ["cov*", "Якорный coverage: только по якорным прогонам, соло и семейные исключены"],
   ["ktok", "Средние токены прогона, тысячами"],
+  ["out-ktok", "Средние выходные токены прогона, тысячами"],
   ["cost", "go = доля реквест-квоты плана, px = прайс-прокси; единицы несравнимы"],
   ["value", "cov*/cost, сравнивать только внутри одной единицы стоимости"],
 ];
@@ -221,16 +221,19 @@ function cellRow(c){
   const cost=c.cost_units==null?'<span class="dim">\\u00b7</span>':
     `${c.cost_units.toFixed(2)}<span class="unit">${c.cost_unit==="go-request"?"go":"px"}</span>`;
   const chip=c.in_panel?` <span class="chip" title="${esc(PANEL_TITLE)}">in panel</span>`:"";
+  const caught=c.med_confirmed==null&&c.mean_confirmed==null?fmt(null)
+    :`${fmt(c.med_confirmed)}/${fmt(c.mean_confirmed)}`;
   return `<tr class="leg-${esc(c.leg)}">
     <td class="cell">${esc(c.display||c.cell)}${chip}</td>
     <td>${c.n_runs==null?'<span class="dim">\\u00b7</span>':c.n_runs+"/"+c.n_commits}</td>
-    <td>${c.n_raw||'<span class="dim">\\u00b7</span>'}</td>
+    <td>${dot(c.n_raw)}</td>
     <td>${fmt(c.n_anchored,0)}</td>
-    <td>${fmt(c.med_confirmed)}/${fmt(c.mean_confirmed)}</td>
+    <td>${caught}</td>
     <td>${fmt(c.hit_pct,0)}</td><td>${fmt(c.med_false_positive)}</td>
     <td>${c.med_wall_s==null?'<span class="dim">\\u00b7</span>':Math.round(c.med_wall_s)+"s"}</td>
     <td>${cov}</td>
-    <td>${c.mean_total_tokens==null?'<span class="dim">\\u00b7</span>':Math.round(c.mean_total_tokens/1000)}</td>
+    <td>${c.mean_total_tokens==null?fmt(null):Math.round(c.mean_total_tokens/1000)}</td>
+    <td>${c.mean_output_tokens==null?fmt(null):(c.mean_output_tokens/1000).toFixed(1)}</td>
     <td>${cost}</td>
     <td class="value">${c.value==null?'<span class="dim">\\u00b7</span>':"<b>"+c.value.toFixed(1)+"</b>"}</td>
     </tr>`;
@@ -305,6 +308,28 @@ document.getElementById("handrows").innerHTML=(DATA.hand_scored||[]).map(h=>
    <td style="text-align:right">${dot(h.fp)}</td>
    <td style="text-align:right">${dot(h.wall)}</td><td class="note">${esc(h.note??"")}</td></tr>`
   ).join("");
+function goCost(model){
+  return C.cost_scale/(C.go_requests_5h[model]/((C.go_usage_weight||{})[model]||1));
+}
+function goExample(model){
+  const v=goCost(model);
+  return `${esc(model)} \u2248 ${v>=1?v.toFixed(1):v.toFixed(2)}`;
+}
+function costLegend(){
+  const models=Object.keys(C.go_requests_5h||{}).sort((a,b)=>goCost(b)-goCost(a));
+  const examples=models.length?`; ${goExample(models[0])}, ${goExample(models[models.length-1])}`:"";
+  const px=Object.entries(C.price_weights||{}).map(([vendor,weights])=>
+    `${esc(vendor)}: `+Object.entries(weights).map(([m,w])=>`${esc(m)} ${w}&times;`)
+      .join(" &middot; ")).join("; ");
+  return `Две НЕсравнимые единицы. <mark>go</mark> \u2014 доля реквест-квоты плана Go `
+    + `(${esc(C.cost_scale)}/реквестов за 5ч${examples}). <mark>px</mark> \u2014 прайс-прокси `
+    + `для Claude/Codex/Gemini: вес модели \u00d7 средние токены прогона, вес нормирован на `
+    + `самый дешёвый тариф своего вендора (${px}).`;
+}
+document.getElementById("lowev-legend").textContent =
+  `Мало данных под цифрой coverage: меньше ${C.min_anchored_runs} якорных прогонов либо `
+  + `confirmed + misses меньше ${C.min_anchored_defects}. Цифра видна, но доверять ей нельзя.`;
+document.getElementById("cost-legend").innerHTML = costLegend();
 renderFilters();
 render();
 </script>
