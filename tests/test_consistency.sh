@@ -692,7 +692,11 @@ if test -r "$COMMIT_REPORT"; then
   # The third writer: an edit and the commit carrying it inside ONE Bash call are seen by neither
   # of the other two, and the debt that commit landed is then recorded under no chat at all.
   assert grep -Fq 'rj_append "$debt" "$own" "$now" "$path"' "$COMMIT_REPORT"
-  assert grep -Fq 'stamp_landed_debt "$dir" "$gitdir" "$session"' "$COMMIT_REPORT"
+  assert grep -Fq 'stamp_landed_debt "$dir" "$gitdir" "$session" "$out"' "$COMMIT_REPORT"
+  # Every commit the call landed, not the last one alone; and never a path an unswept run of
+  # another chat listed, which row am's sweep stamps under its launcher.
+  assert grep -Fq 'done < <(landed_commits "$dir" "$out")' "$COMMIT_REPORT"
+  assert grep -Fq 'claimed=$'"'"'\n'"'"'$(foreign_run_claims "$own")' "$COMMIT_REPORT"
 fi
 JOURNAL_LIB="$CLAUDE_SETUP/hooks/lib/review-journal.sh"
 if test -r "$JOURNAL_LIB"; then
@@ -1350,9 +1354,10 @@ if [ -r "$COMMIT_JOURNAL" ]; then
   # exit_code has no final list yet unless its supervisor is gone, and one already imported is
   # marked as imported.
   assert grep -Fq 'liveness=$(rj_run_liveness "$directory")' "$COMMIT_JOURNAL"
-  # ...with one release from that rule: a record carrying no launch stamp can never be answered
-  # for, so past a couple of days its listing is as final as it will ever be. Anything that can
-  # still resolve stays unswept.
+  # ...with one release from that rule: a record whose liveness stays unknown can never be answered
+  # for — no launch stamp to compare, or a `ps` that lists no process at all — so past a couple of
+  # days its listing is as final as it will ever be. Anything that still reads live or dead never
+  # reaches the release.
   assert grep -Fq '{ [ "$liveness" = unknown ] && run_record_stale "$directory"; } || continue' \
     "$COMMIT_JOURNAL"
   assert grep -Fq 'RUN_RECORD_STALE_AFTER=172800' "$COMMIT_JOURNAL"
@@ -1373,7 +1378,7 @@ if [ -r "$REVIEW_GATE" ]; then
   # is retired by a marker rather than by a clock over a HEAD any co-tenant moves.
   assert grep -Fq "'WORKDIR: '*|'UNKNOWN: '*|'PARTIAL: '*|'') continue ;;" "$REVIEW_GATE"
   assert grep -Fq '[ -e "$directory/journaled" ] && continue' "$REVIEW_GATE"
-  assert grep -Fq ': >"$item/noticed"' "$REVIEW_GATE"
+  assert grep -Fq 'printf '"'"'%s\n'"'"' "${item%%:*}" >"${item#*:}/noticed"' "$REVIEW_GATE"
 else
   printf 'SKIP: the gate reads the same run records (%s is unreadable)\n' "$REVIEW_GATE"
 fi
