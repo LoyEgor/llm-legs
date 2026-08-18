@@ -7899,6 +7899,17 @@ def artifact_locked(artifact):
     return p1s >= SECOND_REVIEW_P1S or findings >= SECOND_REVIEW_FINDINGS
 
 
+def path_lock_stands(repo, path, artifact):
+    """Whether a locked round still holds `path` back.
+
+    A path that is gone is held by nothing. No snapshot a later run writes can hold it, and the
+    waiver that would answer for it is refused for being locked, so the lock over it would outlive
+    every action a chat can take — while the deletion is itself what a reasoned waiver or a range
+    review settles.
+    """
+    return artifact_locked(artifact) and os.path.lexists(Path(repo) / path)
+
+
 def covering_artifacts(repo):
     """The newest artifact holding each path — the one thing a path's current content is compared
     against.
@@ -7917,7 +7928,9 @@ def covering_artifacts(repo):
     for artifact in repo_artifacts(repo):
         for path in artifact["shas"]:
             standing = covering.get(path)
-            if artifact_locked(standing) and not lock_discharged(repo, standing, artifact):
+            if path_lock_stands(repo, path, standing) and not lock_discharged(
+                repo, standing, artifact
+            ):
                 continue
             covering[path] = artifact
     return covering
@@ -7995,13 +8008,13 @@ def run_record_paths(repo, directory):
     return paths
 
 
-def foreign_run_claims(repo, session):
-    """The debt paths another chat's worker run already owns, as `{path: (run id, launcher)}`.
+def run_record_claims(repo):
+    """Whose the unswept worker runs' files are, as `{path: [(run id, launcher), ...]}`.
 
     A worker a chat spawned IS that chat (docs/shared-invariants.md row `am`), and between the
     worker writing its file list and the commit journal sweeping it, the run record is the only
-    place that ownership exists. Read as unowned in that window, a co-tenant's live work is exactly
-    what a waiver naming no path would sign away.
+    place that ownership exists — which is the same window whether the asking chat is the launcher
+    or a co-tenant, so both questions come from this one reading.
     """
     claims = {}
     try:
@@ -8014,12 +8027,35 @@ def foreign_run_claims(repo, session):
         except OSError:
             continue
         # Swept into the journals already, so the journals are the answer and this record is
-        # history — the two readers must not both claim one run.
-        if not launcher or launcher == session or (directory / "journaled").exists():
+        # history — the two stores must not both claim one run.
+        if not launcher or (directory / "journaled").exists():
             continue
         for path in run_record_paths(repo, directory):
-            claims.setdefault(path, (directory.name, launcher))
+            claims.setdefault(path, []).append((directory.name, launcher))
     return claims
+
+
+def foreign_run_claims(repo, session):
+    """The debt paths another chat's worker run owns, as `{path: (run id, launcher)}`. Read as
+    unowned, a co-tenant's live work is exactly what a waiver naming no path would sign away.
+    """
+    claims = {}
+    for path, rows in run_record_claims(repo).items():
+        for run_id, launcher in rows:
+            if launcher != session:
+                claims[path] = (run_id, launcher)
+                break
+    return claims
+
+
+def session_run_paths(repo, session):
+    """The paths a run THIS chat launched wrote and no journal has swept yet. Its worker's files
+    are the chat's own work, and counted as nobody's they read to the chat like a co-tenant's.
+    """
+    return {
+        path for path, rows in run_record_claims(repo).items()
+        if any(launcher == session for _, launcher in rows)
+    }
 
 
 def debt_path_authors(repo, paths):
@@ -8088,21 +8124,23 @@ def read_run_confirmed_counts(run_dir):
     return severity_tallies(run_dir, verdicts)[""]["P1"], total
 
 
-def debt_locks(debt):
+def debt_locks(repo, debt):
     """The bad rounds standing over this debt, as `{run id: [paths]}`. The run holding a debt path
     came back with enough confirmed P1s or findings that the contract owes a second review, and a
     waiver is not a way around one — so a refusal can name which paths those are and which round
     has to answer for them.
+
+    A path that is gone is not one of them, for the reason `path_lock_stands` carries.
     """
     locks = {}
     for path, artifact in debt:
-        if artifact_locked(artifact):
+        if path_lock_stands(repo, path, artifact):
             locks.setdefault(artifact["id"], set()).add(path)
     return {run_id: sorted(paths) for run_id, paths in locks.items()}
 
 
-def debt_locked(debt):
-    return bool(debt_locks(debt))
+def debt_locked(repo, debt):
+    return bool(debt_locks(repo, debt))
 
 
 def session_timeout_run(repo, session):
@@ -8152,14 +8190,17 @@ def cmd_debt(args):
     owned = 0
     if session:
         authors = debt_path_authors(repo, [path for path, _ in debt])
-        owned = sum(1 for path, _ in debt if session in authors.get(path, ()))
+        mine = session_run_paths(repo, session)
+        owned = sum(
+            1 for path, _ in debt if session in authors.get(path, ()) or path in mine
+        )
     # Nobody asked whose this is, so nothing here knows: `other` would be an ownership no reader
     # computed, and it reads exactly like a co-tenant's.
     owner = "unknown" if not session else ("mine" if owned else "other")
     # A chat owning one path of ten reads `debt 10 mine` and answers for all ten. The word keeps
     # its meaning for every reader switching on it; the count beside it is the new fact.
     share = f" {owned}" if 0 < owned < len(debt) else ""
-    locked = " locked" if debt_locked(debt) else ""
+    locked = " locked" if debt_locked(repo, debt) else ""
     print(f"debt {len(debt)} {owner}{share}{locked}")
     return 0
 
@@ -8247,7 +8288,7 @@ def cmd_waive(args):
                 "work under it. Name what you are not reviewing with --paths."
             )
             return 1
-    locks = debt_locks(debt)
+    locks = debt_locks(repo, debt)
     if locks:
         named = "; ".join(
             f"{run_id} over {', '.join(paths)}" for run_id, paths in sorted(locks.items())

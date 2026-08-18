@@ -6861,6 +6861,45 @@ assert sr_waive(reason="a legacy row, and mine now") == (
     0, "waived 1 path(s): a legacy row, and mine now [src/a.py (no journal author)]")
 (sr_repo / "docs" / "worker.md").unlink()
 
+# A round's fixes routinely delete a file it read, and no snapshot a later run writes can hold a
+# path that is gone: left locked, that path outlives every review and every waiver a chat could
+# answer it with, while the deletion is exactly what a reasoned waiver settles.
+sr_deleted_lock = sr_store()
+sr_clear_journals()
+(sr_repo / "src" / "pair.py").write_text("the other path of the round\n")
+sr_source.write_text(sr_moved + "the locked round read this\n")
+sr_run(sr_deleted_lock, "20260101T000100Z-aaaaaaa",
+       {"src/a.py": sr_sha("src/a.py"), "src/pair.py": sr_sha("src/pair.py")},
+       report={"confirmed": 2, "confirmed_by_severity": {"P1": 2}})
+sr_source.write_text(sr_moved + "and then the fixes\n")
+(sr_repo / "src" / "pair.py").unlink()
+assert sr_answer("src/a.py") == "debt 1 other locked"
+assert sr_answer("src/pair.py") == "debt 1 other"
+assert sr_answer("src/a.py", "src/pair.py") == "debt 2 other locked"
+assert sr_waive("src/pair.py", reason="the fixes deleted it")[0] == 0
+assert sr_answer("src/pair.py") == "none"
+# The path still standing is owed as it always was.
+sr_rc, sr_said = sr_waive("src/a.py", reason="and this one along with it")
+assert sr_rc == 1 and "20260101T000100Z-aaaaaaa" in sr_said, (sr_rc, sr_said)
+
+# A worker THIS chat launched is this chat: until the commit journal sweeps its record, the
+# journals name nobody for those files, and counted as nobody's they read to the chat that ordered
+# the work like a co-tenant's.
+sr_own_run = sr_store()
+sr_clear_journals()
+sr_source.write_text(sr_moved + "my own worker wrote this\n")
+(sr_repo / "docs" / "co.md").write_text("a co-tenant's file\n")
+sr_journal(rb.COMMIT_JOURNAL, "chat-2", "docs/co.md")
+sr_worker_run("20260101T0700Z-mine", "chat-1", [f"WORKDIR: {sr_repo}", "src/a.py"])
+assert sr_answer("src/a.py") == "debt 1 mine"
+assert sr_answer("src/a.py", "docs/co.md") == "debt 2 mine 1"
+# Somebody else's run of the same file is somebody else's.
+assert sr_answer("src/a.py", session="chat-3") == "debt 1 other"
+# Swept, the record is history and the journals answer — which name nobody here.
+(sr_worker_runs / "20260101T0700Z-mine" / "journaled").write_text("")
+assert sr_answer("src/a.py") == "debt 1 other"
+(sr_repo / "docs" / "co.md").unlink()
+
 sr_clear_journals()
 if sr_session_before is None:
     os.environ.pop("CLAUDE_CODE_SESSION_ID", None)

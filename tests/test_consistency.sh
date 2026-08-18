@@ -1274,8 +1274,7 @@ worker_run_root=$(grep -oE 'WORKER_RUN_DIR:-\$HOME/[^}]*' "$WORKER_RUN" | head -
 assert eq "$rb_run_root" '.cache/claude-worker-runs'
 assert eq "$worker_run_root" "$rb_run_root"
 assert grep -Fq 'os.environ.get("WORKER_RUN_DIR")' "$REVIEWBENCH_RUNS"
-assert grep -Fq 'if not launcher or launcher == session or (directory / "journaled").exists():' \
-  "$REVIEWBENCH_RUNS"
+assert grep -Fq 'if not launcher or (directory / "journaled").exists():' "$REVIEWBENCH_RUNS"
 assert doc_has 'Worker files reach the launching chat'
 assert doc_has 'whose first line is `WORKDIR: <dir>`'
 assert doc_has '`<run-dir>/noticed`'
@@ -1283,7 +1282,7 @@ COMMIT_JOURNAL="$CLAUDE_SETUP/hooks/commit-journal.sh"
 if [ -r "$COMMIT_JOURNAL" ]; then
   assert grep -Fq 'grep -l -x -F -- "$session" "$runs"/*/launcher' "$COMMIT_JOURNAL"
   assert grep -Fq "'WORKDIR: '*) run_workdir=\${line#WORKDIR: }" "$COMMIT_JOURNAL"
-  assert grep -Fq "'UNKNOWN: '*|'') ;;" "$COMMIT_JOURNAL"
+  assert grep -Fq "'UNKNOWN: '*|'PARTIAL: '*|'') ;;" "$COMMIT_JOURNAL"
   # The two rules that keep a record from being claimed twice or claimed early: a run with no
   # exit_code has no final list yet unless its supervisor is gone, and one already imported is
   # marked as imported.
