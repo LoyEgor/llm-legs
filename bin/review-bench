@@ -1270,6 +1270,35 @@ REVIEW_TIERS = {
     },
 }
 
+# What one run of a Go-plan model costs, in the only currency that subscription buys: requests
+# granted per 5h window. gpt-5.6-luna bills every request at 2x, so its 4100 is really 2050.
+GO_REQUESTS_5H = {
+    "kimi-k3": 110,
+    "grok-4.5": 120,
+    "qwen3.8-max": 160,
+    "glm-5.2": 880,
+    "deepseek-v4-pro": 1050,
+    "minimax-m3": 3200,
+    "deepseek-v4-flash": 3800,
+    "gpt-5.6-luna": 4100,
+    "qwen3.7-plus": 4300,
+    "hy3": 4300,
+    "mimo-v2.5": 30100,
+}
+GO_USAGE_WEIGHT = {"gpt-5.6-luna": 2}
+# The other three vendors bill windows that no measured ruler converts into Go requests yet.
+# PRICE_WEIGHTS stands in until one exists, and prices a run rather than a window — which is why
+# the two cost columns never compare (the board's footer says so to the reader).
+LIMIT_WEIGHTS = {"claude": None, "codex": None, "gemini": None}
+# price-proxy, 2026-08-17: list price per token relative to each vendor's cheapest tier, not a
+# bill and not a limit share.
+PRICE_WEIGHTS = {
+    "anthropic": {"haiku": 1, "sonnet": 2, "opus": 5, "fable": 10},
+    "openai": {"gpt-5.6-luna": 1, "gpt-5.6-terra": 10, "sol": 25},
+    "google": {"flash-lite": 1, "flash": 6, "pro": 8},
+}
+BOARD_COST_SCALE = 1000
+
 # The two heaviest panels are the owner's to start, and no agent's: tier T3, and any tier's --max
 # composition. Enforcement is code on both sides — `bin/review-owner-gate.sh` denies the command
 # until Egor names the panel himself, and the guard below refuses the same two panels wherever
@@ -9751,6 +9780,7 @@ BOARD_COLUMNS = (
 # anchoring was introduced to kill, one step further in.
 BOARD_MIN_ANCHORED_RUNS = 3
 BOARD_MIN_ANCHORED_DEFECTS = 5
+BOARD_EMPTY = "·"
 BOARD_FOOTER = (
     "cov* is anchored-only coverage; solo/family-only runs are excluded from it by design "
     "(docs/research/opencode-raters-2026-08.md §26b), and a trailing ? marks a cell scored on "
@@ -9759,7 +9789,9 @@ BOARD_FOOTER = (
     "cost is two units that do NOT compare: an OpenCode cell is priced as its share of the Go "
     "plan's 5h request grant, every other cell as an API-price proxy over its mean tokens, so "
     "value (cov*/cost) ranks cells only inside one unit family",
-    "raw+ is bench runs of that cell nobody adjudicated, so they are in no other column here",
+    "raw+ is bench runs of that cell nobody adjudicated, counted only over benches that "
+    "finished, so they are in no other column here; a row that is "
+    f"{BOARD_EMPTY} everywhere else is a cell only raw runs have ever measured",
 )
 HANDSCORED_SOURCE = "docs/research/opencode-raters-2026-08.md"
 HANDSCORED_COLUMNS = ("cell", "runs", "catch", "FP", "wall", "note", "source")
@@ -9827,12 +9859,21 @@ def board_cost(cell, model, mean_total_tokens):
     return weight * mean_total_tokens / 1e6, "price-proxy"
 
 
+def board_raw_name(rater, known):
+    name = board_cell_name(rater)
+    if name in known:
+        return name
+    return board_cell_name(normalize_legacy_rater(rater))
+
+
 def board_raw_counts(sd, known):
-    """Bench runs of a known cell that no corpus row ever adjudicated.
+    """Bench runs that no corpus row ever adjudicated, per cell.
 
     A rater a run launched is in `rater_runs` whether or not anyone judged it later, so the gap
     against the corpus is the measured-but-unscored volume — the only column here that says how
-    much evidence is sitting unused.
+    much evidence is sitting unused. A run still in flight has a meta.json too, and counting it
+    would sell work in progress as evidence, so the same finish stamp `list` reads to tell an
+    aborted run from a real one gates this.
     """
     adjudicated = {
         (row.get("run_id"), row.get("rater")) for row in read_jsonl(sd / "reviews.jsonl")
@@ -9844,16 +9885,13 @@ def board_raw_counts(sd, known):
             meta = json.loads((path / "meta.json").read_text())
         except (OSError, json.JSONDecodeError):
             continue
+        if parse_iso_timestamp(meta.get("finished") or meta.get("finished_at")) is None:
+            continue
         run_id = meta.get("run_id") or path.name
         for entry in meta.get("rater_runs", []):
             rater = entry.get("rater") or ""
-            if (run_id, rater) in adjudicated:
-                continue
-            name = board_cell_name(rater)
-            if name not in known:
-                name = normalize_legacy_rater(rater)
-            if name in known:
-                counts[name] += 1
+            if (run_id, rater) not in adjudicated:
+                counts[board_raw_name(rater, known)] += 1
     return counts
 
 
@@ -9912,7 +9950,26 @@ def board_cells(sd):
                 if usage[1] is not None:
                     entry["output_tokens"].append(usage[1])
     raw_counts = board_raw_counts(sd, set(cells))
-    return [board_row(entry, raw_counts[name]) for name, entry in cells.items()]
+    rows = [board_row(entry, raw_counts[name]) for name, entry in cells.items()]
+    rows.extend(board_raw_row(name, count) for name, count in raw_counts.items()
+                if name not in cells)
+    return rows
+
+
+def board_raw_row(name, n_raw):
+    """A cell only unadjudicated bench runs have ever measured.
+
+    Every corpus-derived key is None rather than absent, so nothing downstream has to special-case
+    the shape of the row that says unscored evidence exists.
+    """
+    return {
+        "cell": name, "model": None, "n_runs": None, "n_commits": None, "n_raw": n_raw,
+        "n_anchored": None, "med_confirmed": None, "mean_confirmed": None, "hit_pct": None,
+        "med_false_positive": None, "med_wall_s": None, "tier": board_tier(None),
+        "cov_anch": None, "anchored_denominator": None, "low_evidence": True,
+        "mean_total_tokens": None, "mean_output_tokens": None, "cost_units": None,
+        "cost_unit": None, "value": None,
+    }
 
 
 def board_row(entry, n_raw):
@@ -9952,13 +10009,16 @@ def board_row(entry, n_raw):
 
 
 def board_sort_key(row):
-    return (row["cov_anch"] is None, -(row["cov_anch"] or 0), -row["mean_confirmed"])
+    return (row["cov_anch"] is None, -(row["cov_anch"] or 0), -(row["mean_confirmed"] or 0))
 
 
 def board_values(row):
     def number(value, spec, scale=1):
         return format(value / scale, spec) if value is not None else ""
 
+    if row["n_runs"] is None:
+        return [row["cell"], BOARD_EMPTY, str(row["n_raw"]),
+                *[BOARD_EMPTY] * (len(BOARD_COLUMNS) - 3)]
     coverage = number(row["cov_anch"], ".1f")
     if coverage and row["low_evidence"]:
         coverage += "?"

@@ -1,0 +1,242 @@
+#!/usr/bin/env python3
+"""Render `review-bench board --json --hand` as a self-contained HTML page.
+
+Usage: review-board-html [output.html]
+Reads the board by invoking review-bench from the same directory; writes HTML
+to the given path or stdout. The page is standalone — it opens from file:// as
+well as inside an artifact wrapper — and cannot fetch live data, so regenerate
+it to refresh.
+"""
+import json, subprocess, sys, html
+from datetime import datetime, timezone
+from pathlib import Path
+
+try:
+    board = json.loads(subprocess.run(
+        [str(Path(__file__).resolve().parent / "review-bench"), "board", "--json", "--hand"],
+        check=True, capture_output=True, text=True, encoding="utf-8").stdout)
+except subprocess.CalledProcessError as exc:
+    sys.stderr.write(exc.stderr or f"review-bench board exited {exc.returncode}\n")
+    sys.exit(1)
+generated = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M %Z")
+
+TIER_LABELS = {
+    "T0": ("T0", "до 3 мин"), "T1": ("T1", "до 6 мин"), "T2": ("T2", "до 10 мин"),
+    "T3": ("T3", "до 20 мин"), "OVER": ("Сверх бюджета", "дольше 20 мин"), "?": ("Без замера времени", ""),
+}
+
+PAGE = """<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Доска ног</title>
+<style>
+:root {
+  --bg:#f4f7f7; --surface:#ffffff; --ink:#1c272b; --muted:#5f7075; --faint:#8fa0a4;
+  --border:#dbe4e4; --head:#eef3f3; --accent:#0e7c7b; --accent-ink:#0b5f5e;
+  --good:#256b45; --good-bg:#e3f1e9; --warn:#8a6414; --warn-bg:#f6eeda;
+  --bad:#a5433c; --bad-bg:#f7e7e5; --chip:#e7eeee; --mark:#eaf4f3;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:#10171a; --surface:#161f23; --ink:#d9e4e6; --muted:#93a6ab; --faint:#6c7f84;
+    --border:#243237; --head:#1b262b; --accent:#45b8ad; --accent-ink:#63cdc2;
+    --good:#6fc493; --good-bg:#1a2f24; --warn:#d3a94e; --warn-bg:#2e2716;
+    --bad:#e08b83; --bad-bg:#331d1b; --chip:#202d32; --mark:#1c2e2d;
+  }
+}
+* { box-sizing:border-box; }
+body { background:var(--bg); color:var(--ink); margin:0;
+  font:15px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif; }
+main { max-width:1080px; margin:0 auto; padding:28px 20px 64px; }
+header h1 { font-size:26px; margin:0 0 2px; letter-spacing:-.01em; text-wrap:balance; }
+header .sub { color:var(--muted); margin:0 0 4px; max-width:68ch; }
+header .stamp { color:var(--faint); font-size:12.5px; }
+.controls { display:flex; gap:8px; flex-wrap:wrap; margin:18px 0 6px; }
+.controls button { font:600 13px/1 system-ui,sans-serif; color:var(--muted);
+  background:var(--chip); border:1px solid var(--border); border-radius:999px;
+  padding:7px 14px; cursor:pointer; }
+.controls button[aria-pressed="true"] { background:var(--accent); border-color:var(--accent);
+  color:var(--surface); }
+.controls button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+section.tier { margin-top:30px; }
+.tier h2 { font-size:17px; margin:0 0 2px; display:flex; align-items:baseline; gap:10px; }
+.tier h2 .budget { font-size:12.5px; font-weight:500; color:var(--muted);
+  text-transform:uppercase; letter-spacing:.06em; }
+.tablewrap { overflow-x:auto; border:1px solid var(--border); border-radius:10px;
+  background:var(--surface); margin-top:8px; }
+table { border-collapse:collapse; width:100%; min-width:900px;
+  font-variant-numeric:tabular-nums; }
+th { background:var(--head); color:var(--muted); font-size:11.5px; text-transform:uppercase;
+  letter-spacing:.05em; text-align:right; padding:8px 10px; white-space:nowrap;
+  position:sticky; top:0; cursor:pointer; user-select:none; }
+th[data-dir="desc"]::after { content:" ↓"; color:var(--accent); }
+th[data-dir="asc"]::after { content:" ↑"; color:var(--accent); }
+.hand th { cursor:default; }
+th:first-child, td:first-child { text-align:left; }
+td { padding:6px 10px; border-top:1px solid var(--border); text-align:right;
+  white-space:nowrap; font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:13px; }
+td.cell { font-family:ui-monospace,"SF Mono",Menlo,monospace; font-weight:600; }
+tr.oc td.cell { color:var(--accent-ink); }
+tr.ref td.cell::after { content:"эталон"; color:var(--faint); font:500 10px/1 system-ui,sans-serif;
+  text-transform:uppercase; letter-spacing:.06em; margin-left:8px; }
+td .dim { color:var(--faint); }
+.covgood { color:var(--good); font-weight:700; }
+.covmid  { color:var(--warn); font-weight:600; }
+.covlow  { color:var(--muted); }
+.lowev { color:var(--faint); font-weight:400; }
+.lowev::after { content:" ?"; color:var(--bad); font-weight:700; }
+td.value b { color:var(--accent-ink); }
+.unit { font:500 10px/1 system-ui,sans-serif; color:var(--faint); margin-left:4px; }
+.hand { margin-top:34px; }
+.hand h2 { font-size:17px; margin:0; }
+.hand p.note { color:var(--muted); margin:2px 0 8px; max-width:75ch; }
+.hand td { white-space:normal; text-align:left; font-family:system-ui,sans-serif; font-size:13.5px; }
+.hand td.cell { font-family:ui-monospace,Menlo,monospace; white-space:nowrap; }
+footer { margin-top:36px; color:var(--muted); font-size:13.5px; max-width:80ch; }
+footer h3 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--faint);
+  margin:18px 0 4px; }
+footer code { background:var(--chip); border-radius:4px; padding:1px 5px;
+  font-family:ui-monospace,Menlo,monospace; font-size:12.5px; }
+mark { background:var(--mark); color:inherit; border-radius:3px; padding:0 3px; }
+@media (prefers-reduced-motion: no-preference) { .controls button { transition:background .15s; } }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <h1>Доска ног</h1>
+  <p class="sub">Все измеренные ячейки ревью-бенча по тирам: якорный coverage, время, реальные
+  токены и стоимость в единицах лимита. Источник — адъюдицированный корпус; команда
+  <code>review-board</code> пересобирает страницу из живых данных и открывает её.
+  Клик по заголовку колонки — сортировка.</p>
+  <p class="stamp">Собрано __GENERATED__ · __NCELLS__ ячеек · __NRUNS__ прогонов</p>
+</header>
+<div class="controls" role="group" aria-label="Фильтр ячеек">
+  <button data-f="all" aria-pressed="true">все ячейки</button>
+  <button data-f="oc" aria-pressed="false">только OpenCode</button>
+  <button data-f="ref" aria-pressed="false">только эталоны</button>
+</div>
+<div id="tiers"></div>
+<section class="hand">
+  <h2>Ручные пробы вне корпуса</h2>
+  <p class="note">Оценены вручную против известного канона, в корпус по протоколу не записывались.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>ячейка</th><th style="text-align:right">прогоны</th><th style="text-align:right">находки</th><th style="text-align:right">FP</th><th style="text-align:right">время</th><th style="text-align:left">заметка</th></tr></thead>
+    <tbody id="handrows"></tbody>
+  </table></div>
+</section>
+<footer>
+  <h3>Как читать</h3>
+  <p><mark>cov*</mark> — якорный coverage: доля пойманных дефектов, посчитанная только по прогонам,
+  где в панели была чужая не-OpenCode модель. Соло-прогоны и семейные панели исключены по
+  построению (§26b исследовательского лога): без соперника знаменатель самореферентный и даёт
+  ложные 100%. Значок <span class="lowev" style="font-weight:600">?</span> — мало якорных данных
+  (меньше 3 прогонов или меньше 5 дефектов в знаменателе), цифре не доверять.</p>
+  <p><mark>cost</mark> в двух несравнимых единицах: у OpenCode Go — доля реквест-квоты плана
+  (1000/реквестов за 5ч, kimi-k3 ≈ 9.1, glm-5.2 ≈ 1.1), у Claude/Codex/Gemini — прайс-прокси
+  (вес модели × средние токены прогона; haiku 1× · sonnet 2× · opus 5× · fable 10×; luna 1× ·
+  terra 10× · sol 25×; gemini flash 6× · pro 8×). <mark>value</mark> = cov*/cost — сравнивать
+  только внутри одной единицы стоимости.</p>
+  <p><mark>raw+</mark> — прогоны в бенчах без адъюдикации: данные есть (время, токены), вердиктов
+  нет, в coverage не участвуют. Большое raw+ = резерв для уточнения ячейки.</p>
+</footer>
+</main>
+<script>
+const DATA = __DATA__;
+const TIERS = __TIERS__;
+function esc(v){ return String(v??"")
+  .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+function dot(v){ return v==null||v===""?'<span class="dim">·</span>':esc(v); }
+function covClass(c){ return c==null?"":(c>=25?"covgood":c>=12?"covmid":"covlow"); }
+function fmt(v,d){ return v==null?'<span class="dim">·</span>':(+v).toFixed(d===undefined?1:d); }
+function render(filter){
+  const root=document.getElementById("tiers"); root.innerHTML="";
+  for(const [key,[label,budget]] of TIERS){
+    const cells=DATA.cells.filter(c=>c.tier===key)
+      .filter(c=>filter==="all"||(filter==="oc"?c.cell.startsWith("oc-"):!c.cell.startsWith("oc-")));
+    if(!cells.length) continue;
+    cells.sort((a,b)=>(b.cov_anch??-1)-(a.cov_anch??-1)||(b.mean_confirmed??0)-(a.mean_confirmed??0));
+    const sec=document.createElement("section"); sec.className="tier";
+    sec.innerHTML=`<h2>${label} <span class="budget">${budget}</span></h2>
+      <div class="tablewrap"><table><thead><tr>
+      <th>ячейка</th><th>прогоны/коммиты</th><th>raw+</th><th>якорных</th><th>нах. мед/сред</th>
+      <th>hit%</th><th>FP мед</th><th>время мед</th><th>cov*</th><th>ктокены</th><th>cost</th><th>value</th>
+      </tr></thead><tbody>${cells.map(c=>{
+        const cov=c.cov_anch==null?'<span class="dim">·</span>':
+          `<span class="${covClass(c.cov_anch)}${c.low_evidence?" lowev":""}">${c.cov_anch.toFixed(1)}</span>`;
+        const cost=c.cost_units==null?'<span class="dim">·</span>':
+          `${c.cost_units.toFixed(2)}<span class="unit">${c.cost_unit==="go-request"?"go":"px"}</span>`;
+        return `<tr class="${c.cell.startsWith("oc-")?"oc":"ref"}">
+        <td class="cell">${esc(c.cell)}</td>
+        <td>${c.n_runs==null?'<span class="dim">·</span>':c.n_runs+"/"+c.n_commits}</td>
+        <td>${c.n_raw||'<span class="dim">·</span>'}</td>
+        <td>${fmt(c.n_anchored,0)}</td>
+        <td>${fmt(c.med_confirmed)}/${fmt(c.mean_confirmed)}</td>
+        <td>${fmt(c.hit_pct,0)}</td><td>${fmt(c.med_false_positive)}</td>
+        <td>${c.med_wall_s==null?'·':Math.round(c.med_wall_s)+"s"}</td>
+        <td>${cov}</td>
+        <td>${c.mean_total_tokens==null?'<span class="dim">·</span>':Math.round(c.mean_total_tokens/1000)}</td>
+        <td>${cost}</td>
+        <td class="value">${c.value==null?'<span class="dim">·</span>':"<b>"+c.value.toFixed(1)+"</b>"}</td>
+        </tr>`;}).join("")}</tbody></table></div>`;
+    root.appendChild(sec);
+  }
+  root.querySelectorAll("th").forEach((th,)=>th.addEventListener("click",()=>sortTable(th)));
+}
+function cellNum(td){
+  // Composite cells ("12/5", "1.5/2.3") sort by their first number: stripping the slash glues
+  // both into one, so 2/30 reads as 230 and outranks 9/1.
+  const t=td.textContent.trim().split("/")[0].trim();
+  if(t===""||t==="·") return -Infinity;
+  const n=parseFloat(t.replace(/[^0-9.\\-]/g,""));
+  return isNaN(n)?-Infinity:n;
+}
+function sortTable(th){
+  const table=th.closest("table"), tbody=table.querySelector("tbody");
+  const idx=[...th.parentNode.children].indexOf(th);
+  const dir=th.dataset.dir==="desc"?"asc":"desc";
+  table.querySelectorAll("th").forEach(h=>delete h.dataset.dir);
+  th.dataset.dir=dir;
+  const rows=[...tbody.rows];
+  rows.sort((a,b)=>{
+    if(idx===0){ const r=a.cells[0].textContent.localeCompare(b.cells[0].textContent);
+      return dir==="desc"?-r:r; }
+    // Two blank cells are both -Infinity, and subtracting those is NaN — an answer sort() is
+    // free to act on however it likes.
+    const x=cellNum(a.cells[idx]), y=cellNum(b.cells[idx]);
+    const r=x===y?0:(x<y?-1:1);
+    return dir==="desc"?-r:r;
+  });
+  rows.forEach(r=>tbody.appendChild(r));
+}
+document.getElementById("handrows").innerHTML=(DATA.hand_scored||[]).map(h=>
+  `<tr><td class="cell">${esc(h.cell)}</td><td style="text-align:right">${dot(h.runs)}</td>
+   <td style="text-align:right">${dot(h.catches??h.catch)}</td>
+   <td style="text-align:right">${dot(h.fp)}</td>
+   <td style="text-align:right">${dot(h.wall)}</td><td>${esc(h.note??"")}</td></tr>`).join("");
+document.querySelectorAll(".controls button").forEach(b=>b.addEventListener("click",()=>{
+  document.querySelectorAll(".controls button").forEach(x=>x.setAttribute("aria-pressed","false"));
+  b.setAttribute("aria-pressed","true");
+  render(b.dataset.f);
+}));
+render("all");
+</script>
+</body>
+</html>
+"""
+
+n_runs = sum(c.get("n_runs") or 0 for c in board["cells"])
+# Last, and with its own `</` neutralised: a cell name carrying `</script>` would otherwise close
+# the script block, and going first would let recorded text spell another placeholder.
+out = (PAGE
+       .replace("__TIERS__", json.dumps([[k, list(v)] for k, v in TIER_LABELS.items()], ensure_ascii=False))
+       .replace("__GENERATED__", html.escape(generated))
+       .replace("__NCELLS__", str(len(board["cells"])))
+       .replace("__NRUNS__", str(n_runs))
+       .replace("__DATA__", json.dumps(board, ensure_ascii=False).replace("</", "<\\/")))
+if len(sys.argv) > 1:
+    Path(sys.argv[1]).write_text(out, encoding="utf-8")
+else:
+    sys.stdout.write(out)

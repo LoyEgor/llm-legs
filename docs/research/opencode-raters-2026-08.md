@@ -669,3 +669,153 @@ carries 1.5 median FP the verifier used to hide), and kimik3's catch side was AL
 censored — the verifier threw away real defects (26 of its restored claims were confirmed).
 `gpt-5.6-luna` has no corpus rows at all (raw-path probes only, §22-25) — its cells stay
 hand-scored and verifier-free by construction.
+
+### §26a. Archived full corrected table (authoritative snapshot, 2026-08-17)
+
+The corrected dataset (`corrected-rows.jsonl`) and the 2,779 per-claim Opus verdicts lived in a
+session tmp scratchpad and did not survive a reboot. The recovered claims themselves are durable
+(`verified-*.jsonl` `kept:false` rows), so the correction is reproducible — but only at the cost
+of re-running the Opus adjudication. Until then, THIS table is the authoritative corrected
+snapshot (extracted from the session transcript). Columns: n = runs/commits · median/mean
+catches · hit% (runs with ≥1 catch) · median FP · median wall · pooled coverage
+confirmed/(confirmed+misses) · Σ catches/FP. Repeat voices merged; `-anthropic`/`-google` are
+prompt-transport experiments; (bare) = no skill wrapper.
+
+T0 (wall ≤ 3 min)
+
+| cell | n | med/mean | hit% | FP | wall | cov | Σ |
+|---|---|---|---|---|---|---|---|
+| oc-grok45-low-google | 3/1 | 2/1.7 | 100 | 0 | 99s | 100* | 5/1 |
+| oc-grok45-low-anthropic | 1/1 | 1/1.0 | 100 | 0 | 37s | 100* | 1/0 |
+| fable-low | 2/2 | 3.5/3.5 | 100 | 1 | 129s | 70.0 | 7/2 |
+| oc-glm5.2 high | 9/6 | 1/0.9 | 56 | 0 | 87s | 61.5 | 8/12 |
+| oc-kimi-k3 low | 3/3 | 2/2.0 | 100 | 1 | 118s | 54.5 | 6/2 |
+| oc-kimi-k3-google | 4/1 | 2.5/3.3 | 100 | 5 | 33s | 44.8 | 13/23 |
+| agy-flash35 med (bare) | 5/4 | 1/1.4 | 80 | 2 | 66s | 38.9 | 7/10 |
+| oc-kimi-k3 off (leg) | 58/28 | 1/1.4 | 66 | 1.5 | 17s | 35.4 | 80/127 |
+| agy-flash37 high | 27/7 | 0/0.7 | 41 | 0 | 140s | 35.2 | 19/15 |
+| oc-ds-flash off | 12/4 | 2.5/2.8 | 83 | 4.5 | 10s | 34.7 | 34/76 |
+| oc-grok45 low | 52/29 | 1/1.2 | 56 | 0 | 28s | 29.2 | 64/33 |
+| oc-kimi-k2.7-code | 5/2 | 0/1.4 | 40 | 1 | 9s | 26.9 | 7/26 |
+| agy-flash37 med | 28/7 | 0/0.6 | 32 | 0 | 89s | 25.8 | 17/9 |
+| agy-flash36 high | 21/9 | 1/1.1 | 62 | 0 | 52s | 22.7 | 22/5 |
+| agy-flash35 high | 26/20 | 0/1.2 | 46 | 0 | 95s | 22.6 | 30/12 |
+| agy-flash37 low | 22/7 | 0/0.5 | 23 | 0 | 83s | 20.4 | 11/6 |
+| sol medium | 27/20 | 1/1.1 | 56 | 0 | 168s | 15.8 | 29/4 |
+| agy-flash35 med | 55/31 | 0/0.9 | 47 | 0 | 109s | 14.2 | 48/36 |
+| agy-flash36 med | 37/28 | 0/0.6 | 38 | 0 | 64s | 13.1 | 23/17 |
+| oc-mimo2.5-pro | 6/2 | 0/0.7 | 33 | 5.5 | 15s | 12.5 | 4/31 |
+| sol low | 21/17 | 1/1.1 | 52 | 0 | 73s | 12.0 | 23/4 |
+| opus low (bare) | 9/8 | 1/1.1 | 67 | 0 | 101s | 11.6 | 10/5 |
+| opus low | 12/8 | 1/1.1 | 58 | 1 | 87s | 11.3 | 13/9 |
+| oc-ds-flash low | 2/2 | 0.5/0.5 | 50 | 0.5 | 89s | 11.1 | 1/1 |
+| oc-hy3 | 5/2 | 0/0.6 | 40 | 3 | 10s | 10.7 | 3/19 |
+| oc-qwen3.7-max-anthropic | 6/1 | 0/0.3 | 33 | 0.5 | 8s | 10.5 | 2/4 |
+| agy-flash36 high (bare) | 1/1 | 2/2.0 | 100 | 0 | 38s | 10.0 | 2/0 |
+| oc-glm5.2 off | 6/2 | 0/0.5 | 33 | 4.5 | 15s | 9.4 | 3/30 |
+| agy-pro high | 36/30 | 0/0.6 | 36 | 0 | 101s | 9.0 | 20/14 |
+| agy-flash35 low | 8/8 | 0/0.5 | 38 | 2 | 83s | 7.3 | 4/13 |
+| agy-pro low | 23/16 | 0/0.4 | 17 | 0 | 94s | 6.7 | 9/7 |
+| oc-qwen3.7-max | 7/2 | 0/0.3 | 29 | 2 | 9s | 6.7 | 2/14 |
+| oc-glm5.1-google | 1/1 | 1/1.0 | 100 | 1 | 176s | 5.9 | 1/1 |
+| oc-qwen3.7-max-google | 1/1 | 1/1.0 | 100 | 1 | 8s | 5.9 | 1/1 |
+| oc-qwen3.7-plus-anthropic | 1/1 | 1/1.0 | 100 | 0 | 6s | 5.9 | 1/0 |
+| oc-mimo2.5-anthropic | 1/1 | 1/1.0 | 100 | 6 | 32s | 5.9 | 1/6 |
+| oc-mimo2.5-google | 1/1 | 1/1.0 | 100 | 21 | 43s | 5.9 | 1/21 |
+| oc-kimi-k3-anthropic | 4/1 | 0/0.3 | 25 | 1 | 17s | 5.6 | 1/4 |
+| sol low-bare | 16/9 | 0/0.4 | 44 | 0 | 76s | 5.3 | 7/0 |
+| sonnet low | 6/4 | 0.5/0.5 | 50 | 0.5 | 128s | 3.4 | 3/5 |
+| oc-qwen3.7-plus | 5/1 | 0/0.2 | 20 | 4 | 15s | 3.4 | 1/15 |
+| oc-glm5.1 | 6/2 | 0/0.2 | 17 | 4.5 | 12s | 3.3 | 1/25 |
+| agy-pro high (bare) | 5/4 | 0/0.2 | 20 | 0 | 30s | 2.8 | 1/3 |
+| sol medium-bare | 9/9 | 0/0.2 | 22 | 0 | 154s | 2.6 | 2/1 |
+| haiku medium | 3/2 | 0/0 | 0 | 1 | 90s | 0 | 0/2 |
+| sonnet medium (bare) | 5/4 | 0/0 | 0 | 0 | 146s | 0 | 0/2 |
+| sonnet low (bare) | 4/3 | 0/0 | 0 | 0 | 110s | 0 | 0/1 |
+| haiku medium-skill | 1/1 | 0/0 | 0 | 3 | 162s | 0 | 0/3 |
+| oc-grok45 off | 1/1 | 0/0 | 0 | 0 | 7s | 0 | 0/0 |
+| oc-mimo2.5 | 5/1 | 0/0 | 0 | 5 | 42s | 0 | 0/65 |
+| oc-glm5.2-anthropic | 6/1 | 0/0 | 0 | 0.5 | 12s | 0 | 0/12 |
+| oc-glm5.2-google · oc-glm5.1-anthropic · oc-qwen3.7-plus-google · oc-k2.7-code-anthropic/-google · oc-mimo2.5-pro-anthropic/-google · oc-hy3-anthropic/-google | 1-5/1 each | 0/0 | 0 | 1-4 | 6-92s | 0 | 0/1-4 |
+| agy-flash36 low | 13/10 | 0/0 | 0 | 2 | 16s | 0 | 0/18 |
+| agy-flash36 med (bare) · flash36/35 low (bare) · flash35 high (bare) · pro low (bare) · flash-low-skill | 1-5 each | 0/0 | 0 | 0-8 | 7-159s | 0/- | 0/0-8 |
+| haiku high · haiku max | 1/1 each | 0/0 | 0 | 1-6 | 90-136s | 0 | 0/1-6 |
+
+T1 (≤ 6 min)
+
+| cell | n | med/mean | hit% | FP | wall | cov | Σ |
+|---|---|---|---|---|---|---|---|
+| oc-glm5.2 low | 4/2 | 1/1.0 | 75 | 0 | 183s | 66.7 | 4/6 |
+| fable-medium | 2/2 | 4/4.0 | 100 | 0 | 244s | 61.5 | 8/0 |
+| sol high-bare | 25/13 | 2/4.0 | 84 | 0 | 356s | 45.6 | 99/11 |
+| grok low (vendor dead) | 4/4 | 2.5/2.8 | 100 | 0.5 | 232s | 28.2 | 11/2 |
+| opus medium (bare) | 12/11 | 1/2.0 | 92 | 2 | 207s | 24.2 | 24/21 |
+| oc-minimax-m3 | 3/3 | 1/1.3 | 100 | 2 | 340s | 19.0 | 4/5 |
+| oc-grok45-anthropic | 1/1 | 2/2.0 | 100 | 0 | 236s | 12.5 | 2/0 |
+| sonnet medium | 13/8 | 0/1.4 | 46 | 1 | 322s | 11.2 | 18/13 |
+| sonnet high (bare) | 3/3 | 2/1.3 | 67 | 0 | 326s | 10.0 | 4/1 |
+| haiku xhigh · sonnet xhigh (bare) · haiku low | 1-2 | 0/0 | 0 | 0.5-1 | 201-359s | 0 | 0/1 |
+
+T2 (≤ 10 min)
+
+| cell | n | med/mean | hit% | FP | wall | cov | Σ |
+|---|---|---|---|---|---|---|---|
+| fable-max | 1/1 | 5/5.0 | 100 | 0 | 575s | 100* | 5/0 |
+| oc-grok45 high | 1/1 | 3/3.0 | 100 | 1 | 573s | 75.0 | 3/1 |
+| opus high (bare) | 9/8 | 4/4.7 | 89 | 0 | 447s | 40.4 | 42/10 |
+| opus max (bare) | 1/1 | 1/1.0 | 100 | 0 | 400s | 33.3 | 1/0 |
+| sol high | 28/24 | 2/2.4 | 75 | 0 | 364s | 29.3 | 68/15 |
+| opus high | 14/8 | 2/2.9 | 93 | 1 | 571s | 27.0 | 41/14 |
+| opus xhigh (bare) | 3/3 | 1/1.7 | 67 | 0 | 453s | 22.7 | 5/0 |
+| grok medium (vendor dead) | 5/5 | 2/2.0 | 80 | 0 | 440s | 20.8 | 10/2 |
+| fable-high | 1/1 | 1/1.0 | 100 | 0 | 494s | 20.0 | 1/0 |
+| opus medium | 14/8 | 2/2.1 | 79 | 1.5 | 429s | 19.1 | 29/22 |
+| sol xhigh | 18/18 | 1/1.3 | 67 | 0 | 519s | 17.9 | 24/10 |
+| sol xhigh-bare | 13/13 | 0/0.7 | 38 | 0 | 464s | 11.5 | 9/9 |
+
+T3 (≤ 20 min) and over budget
+
+| cell | n | med/mean | hit% | FP | wall | cov | Σ |
+|---|---|---|---|---|---|---|---|
+| sonnet max | 1/1 | 4/4.0 | 100 | 0 | 868s | 100* | 4/0 |
+| sol max-bare | 7/7 | 5/7.1 | 100 | 1 | 966s | 80.6 | 50/11 |
+| oc-kimi-k3 medium | 4/4 | 3/3.0 | 100 | 0 | 873s | 75.0 | 12/0 |
+| fable-xhigh | 1/1 | 4/4.0 | 100 | 0 | 655s | 66.7 | 4/0 |
+| sol max | 14/12 | 3.5/4.1 | 86 | 0.5 | 1127s | 39.5 | 58/14 |
+| opus max | 1/1 | 7/7.0 | 100 | 1 | 619s | 38.9 | 7/1 |
+| opus xhigh | 4/4 | 3.5/3.3 | 75 | 1.5 | 853s | 22.4 | 13/7 |
+| grok high (vendor dead) | 4/4 | 2.5/2.3 | 75 | 1 | 645s | 20.0 | 9/3 |
+| sonnet high | 10/8 | 0.5/1.1 | 50 | 1.5 | 679s | 11.6 | 11/25 |
+| oc-ds-pro | 2/1 | 1/1.0 | 50 | 0.5 | 905s | 10.5 | 2/1 |
+| sonnet xhigh | 4/4 | 1.5/1.3 | 75 | 2 | 698s | 9.8 | 5/7 |
+| oc-kimi-k3 high (OVER, 26 min) | 3/3 | 1/1.0 | 100 | 0 | 1575s | 33.3 | 3/0 |
+
+Out of corpus (hand-scored, verifier-free by construction): luna chat 11 runs · 2 catches /
+0 FP / 29s; luna /responses high 3 runs · 2/0/186s.
+
+\* 100% coverage on a single commit is a tiny-defect-pool artifact, not signal.
+
+### §26b. Coverage is panel-relative — the headline oc coverage numbers are NOT comparable (2026-08-17)
+
+Audit of the metric itself, triggered by the owner's question. `misses` on a corpus row is
+counted only against the defects adjudicated in THAT run's own panel (`defects.jsonl` is
+per-run); there is no global per-commit defect pool and no cross-run retroactive misses.
+Consequences, measured on the raw corpus:
+
+- Every headline oc cell ran with ZERO non-oc anchors in its panels (often solo, or an
+  oc-family pair). A solo run trivially scores 100% coverage — the pool is its own catches.
+  Affected: oc-glm52 high/low, oc-kimik3 low/medium/high, oc-grok45-high, oc-dsv4flash.
+  Their 35-100% coverage numbers are self-referential and must not be compared with incumbents.
+- On anchored runs only (panel contains a non-oc rater): oc-kimik3 9.6%, oc-grok45-low 7.3%
+  (uncorrected corpus; §26 corrections would lift kimik3 a few points) vs sol-high 29.9%,
+  opus-high 27.7%, agy-flash37-med 21.3%, sol-low 11.2%, opus-low 11.4%. Fair T0 statement:
+  the oc leg cells sit at roughly frontier-low-effort recall while being 5-20x faster — not
+  above sol-high as the naive table implied.
+- The §26a table's `cov` column is therefore only comparable BETWEEN cells that shared
+  panels/commits (the classic anchored range: sol/opus/agy/sonnet/haiku + oc-kimik3 +
+  oc-grok45-low). For all small-n oc cells it is an upper-bound artifact.
+
+Rule going forward: a scoring run counts for cross-model comparison only if its panel contains
+an anchor reference cell (sol-high or opus-high class), or it runs on a seeded audit commit
+scored against the commit's known canon (absolute coverage, no anchor needed). Solo/family-only
+runs may explore behavior but never enter the comparison table's coverage column.
