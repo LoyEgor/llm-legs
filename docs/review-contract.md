@@ -50,52 +50,71 @@ is visibility, not blocking.
 |---|---|---|
 | framed `record` block in chat | Egor | sees the review happened and what it found |
 | statusline review segment | Egor | spot-checks that disk truth matches the chat's claims |
-| `review-bench session-review` | the gate (and through it the model) | whether this session's paths are covered |
+| `review-bench debt` | the gate (and through it the model) | what this repository owes a review, and whose |
 | commit-time notify (once) | the model | reminded before an unreviewed commit; decides |
 | `escalation-verdict` fork | the model; Egor when present | fix / simplify / re-review after a bad round |
 | watchdog `timed-out` | Egor (loud) | a review hung past its cap |
 
 A line nobody acts on is deleted, not kept for safety.
 
-## Coverage
+## Debt
 
-`review-bench session-review --repo <top> --session <sid> [--paths <p>...]`
+One concept, and it is content: a path is **in debt** when its working-tree
+content differs from what the newest artifact holding it recorded. Two artifacts
+hold paths — a triaged run's `reviewed{path: blob-sha}` snapshot, and a
+**waiver**. Debt is commit-agnostic: committing neither creates nor settles it,
+because nothing here reads git history. A path no artifact ever held is in debt
+whole while it exists — a run that never read it has no content to compare, so a
+repo-wide review cannot blanket files born after it. A held path that is gone is
+in debt; a deletion the run READ is settled by it (the snapshot records that path
+against the empty string).
+
+`review-bench debt --repo <top> [--session <sid>] [--paths <p>...] [--list]`
 prints exactly one line and exits 0:
 
-- `none` — no triaged run by this session covers the paths.
-- `covered <run-id> <drift-pct>` — a triaged run by this session covers every
-  path and drift is ≤ 25%.
-- `stale <run-id> <drift-pct>` — a covering run exists but drift exceeds 25%.
+- `none` — nothing asked about is in debt.
+- `debt <n> mine|other [locked]` — `n` paths in debt (restricted to `--paths`
+  when given). `mine` when `<sid>` is among the debt's authors.
 - `timed-out <run-id>` — the session's most recent run was killed by the watchdog
-  and no later triaged run covers.
+  and no later triaged run of its own has spoken since.
 
-A run covers a path when the run's `session` matches, the run is triaged, the
-path is inside the run's `scope` (directory-prefix containment; empty scope =
-repo-wide), and the run's `reviewed` map holds that path — a recorded deletion
-(empty blob) counts as held. A run answers only for paths its snapshot actually
-held: a repo-wide run must not blanket files born after it, having no blob to
-price them against. Drift is content, not history: per asked path, diff lines
-between the `reviewed` blob and the current file (binaries count 0), summed and
-divided by those same asked paths' reviewed line total, never by the whole
-corpus — a small unreviewed change beside a large reviewed base is priced at its
-own size. With no `--paths` the question is repo-wide and the whole reviewed set
-is the total. Denominator 0 (only recorded deletions asked) is 100% with any
-diff lines and 0% without. **Staleness IS the mechanical second round**:
-fixes that outgrow 25% of the reviewed size return the paths to unreviewed, and
-the next review runs the full original scope plus the fixes — there is no other
+`--list` prints the debt paths themselves, one per line, instead of the verdict.
+With no `--paths` the question is the repository's, and its universe is what the
+artifacts hold plus what the journals name — never every file in the tree.
+
+**Authors.** Uncommitted debt is attributed through `<git-dir>/claude-commit-journal`;
+debt a commit carried away is attributed through `<git-dir>/claude-review-debt`,
+which the gate appends to at the commit that lands it, in the same
+`session TAB epoch TAB path` NUL-separated records, pruning on every write the
+entries of paths no longer in debt.
+
+**Waivers.** `review-bench waive --repo <top> --reason "..." [--paths <p>...]`
+records that this work is going unreviewed and why, into a per-repository store
+beside the receipts (`<state-dir>/waivers/`): the debt paths, their current blob
+shas, the reason, the session, the epoch. A waiver covers exactly those shas —
+the next edit is debt again. An empty reason is refused.
+
+**The lock IS the mechanical second round.** When the newest run holding a debt
+path came back with `SECOND_REVIEW_P1S` confirmed P1s or `SECOND_REVIEW_FINDINGS`
+confirmed findings, the debt reads `locked`: `waive` refuses it and the commit
+notice withholds the waiver option, saying why. The only way out is the
+follow-up review over the full original scope plus the fixes — there is no other
 mechanically-forced round.
 
 ## The gate (claude-setup `hooks/review-flow-gate.sh`)
 
 - `verdict <repo> [session]` — the statusline's single voice (invariant row ah).
-  Reads the session's journal entries still dirty, asks `session-review`, prints
-  one line: `off` (nothing pending), `dim rev ok`, `dim rev none <n>`,
-  `dim rev stale <pct>%`, or `loud rev timeout`. `loud` exists for the watchdog
-  alone — red in the statusline always means a hung review, nothing else.
-- Commit hook — **notify-once, never a wall**. A `git commit` while the session's
-  pending paths are `none`/`stale` exits 2 once with the state spelled out and
-  stamps a marker; the retry passes and consumes the marker. A new unreviewed
-  state re-arms the notice. `covered` commits pass silently. Foreign dirty or
+  Asks `debt` about the whole repository, with no paths: debt outlives the commit
+  that landed it. Prints one line: `off` (no debt, nothing it can read),
+  `bright rev ● <n>` (this chat's own debt), `dim rev ● <n>` (a co-tenant's), or
+  `loud rev timeout`. `loud` exists for the watchdog alone — red in the
+  statusline always means a hung review, nothing else.
+- Commit hook — **notify-once, never a wall**. A `git commit` whose pending paths
+  carry debt exits 2 once, listing those paths and both ways to answer them — the
+  review command and the `waive` command, the latter withheld with its reason
+  when the debt is `locked` — and stamps a marker; the retry passes, consumes the
+  marker and writes this chat's name into the debt journal. A new state re-arms
+  the notice. A commit with nothing in debt passes silently. Foreign dirty or
   untracked paths are never priced, never mentioned, never block.
 - `escalation-verdict <p1> <total>` — the one voice for round outcomes (invariant
   row af). Below thresholds: exits 1, prints nothing. At `SECOND_REVIEW_P1S=2`

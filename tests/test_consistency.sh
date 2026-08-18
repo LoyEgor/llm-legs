@@ -643,35 +643,59 @@ fi
 FLOW_GATE="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/review-flow-gate.sh"
 
 # --- Row ah: the statusline speaks the gate's verdict --------------------------
-# Three implementations, one sentence: review-bench prints the coverage word, the gate translates
-# it into a style plus a label, and the statusline renders that verbatim. Renaming a word on any
-# one side is silent — the gate falls through to `off` on an answer it cannot read, so a review
-# that hung would render as nothing pending.
+# Three implementations, one sentence: review-bench prints the debt word, the gate translates it
+# into a style plus a label, and the statusline renders that verbatim. Renaming a word on any one
+# side is silent — the gate falls through to `off` on an answer it cannot read, so a review that
+# hung would render as nothing owed.
 assert doc_has 'The statusline speaks the gate'
 assert grep -Fq '"$gate" verdict "$1" "$2"' "$STATUSLINE"
 assert grep -Fq "''|off) answer=off ;;" "$STATUSLINE"
-assert grep -Fq '"dim "*|"loud "*) ;;' "$STATUSLINE"
-# The four words the gate switches on, printed nowhere else.
+assert grep -Fq '"dim "*|"bright "*|"loud "*) ;;' "$STATUSLINE"
+# The three words the gate switches on, printed nowhere else.
 assert grep -Fq 'print("none")' "$REVIEWBENCH"
-assert grep -Fq 'print(f"timed-out {run_dir.name}")' "$REVIEWBENCH"
-assert grep -Fq "print(f\"{'stale' if drift > DRIFT_STALE_PCT else 'covered'} {run_dir.name} {drift}\")" \
-  "$REVIEWBENCH"
-rb_drift_stale=$(grep -E '^DRIFT_STALE_PCT = [0-9]+$' "$REVIEWBENCH" | grep -oE '[0-9]+')
-assert eq "$rb_drift_stale" 25
-assert doc_has '`covered <run-id> <drift-pct>`'
-assert doc_has '25%'
+assert grep -Fq 'print(f"timed-out {hung}")' "$REVIEWBENCH"
+assert grep -Fq 'print(f"debt {len(debt)} {owner}{locked}")' "$REVIEWBENCH"
+assert doc_has '`debt <n> mine|other [locked]`'
 if test -r "$FLOW_GATE"; then
   assert grep -Fq 'if [ "${1:-}" = verdict ]; then' "$FLOW_GATE"
-  assert grep -Fq 'covered*) echo "dim rev ok" ;;' "$FLOW_GATE"
-  assert grep -Fq 'none*) echo "dim rev none ${#pending[@]}" ;;' "$FLOW_GATE"
-  assert grep -Fq 'stale*)' "$FLOW_GATE"
-  assert grep -Fq 'echo "dim rev stale ${pct}%"' "$FLOW_GATE"
+  assert grep -Fq 'echo "bright rev ● $count" || echo "dim rev ● $count"' "$FLOW_GATE"
   # `loud` is the watchdog's alone, on both sides: red means a hung review and nothing else.
   assert grep -Fq 'timed-out*) echo "loud rev timeout" ;;' "$FLOW_GATE"
   assert test "$(grep -Fc -- 'loud ' "$FLOW_GATE")" -eq 1
-  assert grep -Fq 'session-review --repo "$top_dir" --session "$session" --paths' "$FLOW_GATE"
+  # The verdict asks about the repository, never about the pending paths: debt outlives the commit
+  # that landed it, and a question narrowed to one chat's dirty files cannot see the rest.
+  assert grep -Fq 'review-bench debt --repo "$top_dir" --session "$session" "$@"' "$FLOW_GATE"
+  assert grep -Fq 'answer=$(review_debt) || { echo off; exit 0; }' "$FLOW_GATE"
 else
   printf 'SKIP: statusline verdict grammar across claude-setup (%s is unreadable)\n' "$FLOW_GATE"
+fi
+
+# --- Row ao: the review debt journal -------------------------------------------
+# One record format for both journals in the git dir, one writer for the debt one, and a reader
+# that asks nothing else about authorship: a format that drifts on either side leaves debt owned by
+# nobody, which reads exactly like a co-tenant's.
+assert doc_has 'Review debt journal'
+assert grep -Fq 'DEBT_JOURNAL = "claude-review-debt"' "$REVIEWBENCH"
+assert grep -Fq 'COMMIT_JOURNAL = "claude-commit-journal"' "$REVIEWBENCH"
+if test -r "$FLOW_GATE"; then
+  assert grep -Fq 'journal="$gitdir/claude-review-debt"' "$FLOW_GATE"
+  assert grep -Fq "printf '%s\\0' \"\$session\$tab\$stamp\$tab\$item\"" "$FLOW_GATE"
+fi
+
+# --- Row ap: the second-round thresholds bind the waiver -----------------------
+# The fork's dials and the lock over a waiver are the same two numbers: a round that owes a second
+# review in the gate's voice must not be waivable in the bench's.
+assert doc_has 'Second-round thresholds bind the waiver'
+rb_second_p1s=$(sed -n 's/^SECOND_REVIEW_P1S = \([0-9]*\)$/\1/p' "$REVIEWBENCH")
+rb_second_findings=$(sed -n 's/^SECOND_REVIEW_FINDINGS = \([0-9]*\)$/\1/p' "$REVIEWBENCH")
+assert eq "$rb_second_p1s" 2
+assert eq "$rb_second_findings" 8
+assert grep -Fq 'p1s >= SECOND_REVIEW_P1S or findings >= SECOND_REVIEW_FINDINGS' "$REVIEWBENCH"
+if test -r "$FLOW_GATE"; then
+  gate_second_p1s=$(sed -n 's/^SECOND_REVIEW_P1S=\([0-9]*\)$/\1/p' "$FLOW_GATE")
+  gate_second_findings=$(sed -n 's/^SECOND_REVIEW_FINDINGS=\([0-9]*\)$/\1/p' "$FLOW_GATE")
+  assert eq "$gate_second_p1s" "$rb_second_p1s"
+  assert eq "$gate_second_findings" "$rb_second_findings"
 fi
 
 # --- Row ae: account pin ownership -------------------------------------------
@@ -731,8 +755,12 @@ if [ -r "$FLOW_GATE" ] && [ -r "$REPORT_GATE" ]; then
   assert grep -Fq 'SECOND_REVIEW_FINDINGS=8' "$FLOW_GATE"
   assert grep -Fq 'WEAK_LINK_P1S=5' "$FLOW_GATE"
   for copy in SECOND_REVIEW_P1S SECOND_REVIEW_FINDINGS WEAK_LINK_P1S 'weak block'; do
-    assert test "$(grep -Fc -- "$copy" "$REVIEW_BENCH")" -eq 0
     assert test "$(grep -Fc -- "$copy" "$REPORT_GATE")" -eq 0
+  done
+  # review-bench spells the two round-size numbers for the waiver lock alone (row ap holds them
+  # equal); the weak-link dial and every word of the fork stay the gate's.
+  for copy in WEAK_LINK_P1S 'weak block'; do
+    assert test "$(grep -Fc -- "$copy" "$REVIEW_BENCH")" -eq 0
   done
   assert doc_has 'Second-round verdict has one voice'
   assert doc_has '`escalation-verdict <p1> <total>`'
@@ -1246,5 +1274,30 @@ else
   printf 'SKIP: the gate reads the same run records (%s is unreadable)\n' "$REVIEW_GATE"
 fi
 
+# --- Row an: launching-chat pid walk ------------------------------------------
+# The same walk in bash and in python, and a drift between them is silent: the writer records a
+# session the reader would never have resolved the same way, and a run renders in the statusline of
+# the wrong chat or of none.
+REVIEWBENCH="$ROOT/bin/review-bench"
+walk_hops_bash=$(grep -oE '\[ "\$hops" -lt [0-9]+ \]' "$STATUSLINE" | grep -oE '[0-9]+')
+walk_hops_py=$(grep -oE '^SESSION_WALK_HOPS = [0-9]+' "$REVIEWBENCH" | grep -oE '[0-9]+')
+assert eq "$walk_hops_bash" 15
+assert eq "$walk_hops_py" "$walk_hops_bash"
+assert doc_has 'at most `15` hops and stopping at pid 1'
+assert grep -Fq 'ps -o ppid= -p' "$STATUSLINE"
+assert grep -Fq '["ps", "-o", "ppid=", "-p", str(pid)]' "$REVIEWBENCH"
+assert grep -Fq '$HOME/.claude/sessions/$pid.json' "$STATUSLINE"
+assert grep -Fq 'Path.home() / ".claude" / "sessions"' "$REVIEWBENCH"
+assert grep -Fq 'f"{pid}.json"' "$REVIEWBENCH"
+for walk_site in "$STATUSLINE" "$REVIEWBENCH"; do
+  assert grep -Fq 'sessionId' "$walk_site"
+done
+assert grep -Fq 'REVIEW_BENCH_SESSION_DIR' "$REVIEWBENCH"
+# Precedence, not just the walk: the recorded session answers first on both sides, or the fallback
+# becomes the answer and a backgrounded run — whose parents are gone — is attributed to nobody.
+assert grep -Fq 'session=progress_session' "$REVIEWBENCH"
+assert grep -Fq 'review_run_owner "$progress_run_session" "$progress_pid"' "$STATUSLINE"
+assert doc_has 'the recorded `session` first, the walk as the fallback'
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the coverage word the bench prints, the gate translates and the statusline speaks verbatim, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, and the run record that carries a worker'"'"'s files into the journal of the chat that launched it) and match %s\n' "$asserts" "$DOC"
+
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the debt word the bench prints, the gate translates and the statusline speaks verbatim, the journal that records whose debt a commit landed, the round-size numbers that lock a waiver, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, and the launching-chat pid walk the progress writer runs once and the statusline only falls back to) and match %s\n' "$asserts" "$DOC"

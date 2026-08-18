@@ -1293,12 +1293,18 @@ MERGED_HOME_HEX = 16
 RECEIPT_FIELDS = ("repo", "tree", "commit", "run_id", "ts")
 RECEIPT_HASH_HEX = 8
 SCOPE_TRAILER = "Scope-Path: "
-# How much of a file decides whether it reads as text. Git's own sniff is the first 8000 bytes.
-BINARY_SNIFF_BYTES = 8000
-# How far a covered path may move past the tree the panel read before the review stops answering
-# for it. Staleness IS the mechanical second round (docs/review-contract.md), so this number is the
-# only thing that returns reviewed paths to unreviewed.
-DRIFT_STALE_PCT = 25
+# What a round's triage earns, and what a waiver may not step over: a review that came back with
+# this many confirmed P1s, or this many confirmed findings of any severity, owes a second pass, so
+# the debt standing behind it cannot be waived away. The commit gate prices its own fork on these
+# two numbers and is held equal to them by docs/shared-invariants.md.
+SECOND_REVIEW_P1S = 2
+SECOND_REVIEW_FINDINGS = 8
+# Where the artifacts that answer for a path live: the waivers beside the receipts, and the two
+# journals beside each other in the git directory a chat commits from.
+WAIVER_DIR = "waivers"
+WAIVER_LOCK = ".waivers.lock"
+DEBT_JOURNAL = "claude-review-debt"
+COMMIT_JOURNAL = "claude-commit-journal"
 # One identity and one clock behind every commit object review-bench writes, so the same input
 # always answers with the same sha. The email is also how a snapshot is told from a real commit.
 FIXED_COMMIT_IDENTITY = {
@@ -7599,8 +7605,8 @@ def cmd_pending_report(args):
     return 0
 
 
-def session_review_paths(repo, paths):
-    """The queried paths as the run records them: repository-relative, deduplicated, sorted.
+def debt_query_paths(repo, paths):
+    """The queried paths as the artifacts record them: repository-relative, deduplicated, sorted.
 
     Spelled against the REPOSITORY ROOT and never against the caller's directory, unlike a review
     scope: these come out of the commit journal, which stores repository-relative paths, and a
@@ -7620,15 +7626,6 @@ def session_review_paths(repo, paths):
             continue
         normalized.add(relative)
     return sorted(normalized)
-
-
-def path_in_scope(path, scope):
-    """Whether a run scoped to `scope` read `path`. An empty scope is the whole repository, and a
-    scope entry is a directory prefix as often as it is a file.
-    """
-    if not scope:
-        return True
-    return any(path == item or path.startswith(item + "/") for item in scope)
 
 
 # Memoized for the same reason git_common_dir is: the reader walks every recorded run, and a
@@ -7692,8 +7689,8 @@ def run_triaged(run_dir):
     return (run_dir / "verdicts.jsonl").exists() or (run_dir / REPORT_RECEIPT).exists()
 
 
-# Memoized because the drift reading asks for the same blob twice — once for the reviewed size and
-# once for the path it belongs to — and the statusline is on this path at every render.
+# Memoized because a debt reading asks for the same blob across paths and runs, and the statusline
+# is on this path at every render.
 @lru_cache(maxsize=None)
 def blob_bytes(repo, sha):
     proc = subprocess.run(["git", "cat-file", "blob", sha], cwd=repo, capture_output=True)
@@ -7707,108 +7704,353 @@ def file_bytes(path):
         return b""
 
 
-def content_line_count(data):
-    return 0 if b"\0" in data[:BINARY_SNIFF_BYTES] else len(data.splitlines())
-
-
-def content_drift_lines(before, after):
-    """Lines separating two revisions of one file, added plus removed, the way a diff counts them.
-    Binary content on either side is 0: a byte-level change nobody reads as lines cannot be priced
-    against a line budget.
-    """
-    if b"\0" in before[:BINARY_SNIFF_BYTES] or b"\0" in after[:BINARY_SNIFF_BYTES]:
-        return 0
-    old, new = before.splitlines(), after.splitlines()
-    return sum(
-        (i2 - i1) + (j2 - j1)
-        for tag, i1, i2, j1, j2 in SequenceMatcher(None, old, new, autojunk=False).get_opcodes()
-        if tag != "equal"
+@lru_cache(maxsize=None)
+def object_format(repo):
+    proc = subprocess.run(
+        ["git", "rev-parse", "--show-object-format"], cwd=repo, capture_output=True, text=True,
     )
+    return "sha256" if proc.returncode == 0 and proc.stdout.strip() == "sha256" else "sha1"
 
 
-def coverage_drift_pct(repo, record, paths):
-    """How far the queried paths have moved past the tree the panel read, as a percentage of the
-    reviewed size of THOSE paths — of the whole reviewed set only when the question is repo-wide.
-
-    Measured against the run's own `reviewed` blobs and never against git history: a shared
-    checkout takes commits from other chats continuously, and every history-shaped answer retired a
-    live review over work it had never read. The denominator is the asked paths' own reviewed size
-    because the 25% budget is a share of what those paths were reviewed at: priced against the
-    whole corpus instead, a rewrite of a small file dilutes under a large reviewed base beside it
-    and comes back covered.
+def content_blob_sha(repo, data):
+    """The sha git would give this content, so working-tree bytes and the shas an artifact recorded
+    are the same kind of thing and compare directly. Hashed here rather than through `git
+    hash-object`: this runs per path on the statusline's path, and a subprocess apiece was the cost
+    the whole reader is memoized to avoid.
     """
-    reviewed = record.get("reviewed") if isinstance(record.get("reviewed"), dict) else {}
-    priced = [reviewed.get(path) for path in paths] if paths else list(reviewed.values())
-    total = sum(content_line_count(blob_bytes(repo, sha)) for sha in priced if sha)
-    drift = 0
-    for path in paths:
-        target = Path(repo) / path
-        if target.is_symlink():
-            # A link is priced by its own text — the bytes its snapshot blob holds. Reading
-            # through it would price the file it points at, which may not even be in scope.
-            try:
-                current = os.readlink(target).encode()
-            except OSError:
-                current = b""
-        else:
-            current = file_bytes(target)
-        sha = reviewed.get(path)
-        if isinstance(sha, str) and sha:
-            drift += content_drift_lines(blob_bytes(repo, sha), current)
-        elif path not in reviewed and not os.path.lexists(target):
-            # A deletion the run never held: the panel read a tree this file was still in, there is
-            # no content left to price the change in, and every line count over an absent file is
-            # zero — which is how an unreviewed deletion came back covered.
-            return 100
-        else:
-            drift += content_line_count(current)
-    if not drift:
-        return 0
-    return drift * 100 // total if total else 100
+    digest = hashlib.sha256 if object_format(str(repo)) == "sha256" else hashlib.sha1
+    return digest(b"blob %d\0" % len(data) + data).hexdigest()
 
 
-def cmd_session_review(args):
-    """Whether a review this chat ran covers these paths, in one line and nothing else.
+def path_blob_sha(repo, path):
+    """What the working tree holds for `path` right now, as a blob sha — the empty string when
+    nothing is there, which is also how an artifact records a path it read as deleted.
 
-    Always exit 0: the gate reads a failure as no answer and falls silent, so a repository it
-    cannot resolve or a chat with no runs at all has to come back as `none` rather than as an error
-    code the reader turns into a clean bill.
+    A symlink is its own link text and never the file it points at: read through, a link would be
+    priced by content that may not be in this repository at all.
     """
-    repo = resolve_repo_arg(args.repo)
-    session = str(getattr(args, "session", "") or "")
-    if repo is None or not session:
-        print("none")
+    target = Path(repo) / path
+    if target.is_symlink():
+        try:
+            return content_blob_sha(repo, os.readlink(target).encode())
+        except OSError:
+            return ""
+    if not os.path.lexists(target) or target.is_dir():
+        return ""
+    return content_blob_sha(repo, file_bytes(target))
+
+
+def git_dir_path(repo):
+    """The per-worktree git directory, where both journals live. The absolute git dir and not the
+    common one: linked worktrees share the common dir, and a sibling's journal would answer for
+    work this tree never saw.
+    """
+    proc = subprocess.run(
+        ["git", "rev-parse", "--absolute-git-dir"], cwd=repo, capture_output=True, text=True,
+    )
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    return Path(proc.stdout.strip())
+
+
+def journal_entries(path):
+    """`session TAB epoch TAB path` records, NUL-separated, the way the commit journal and the debt
+    journal both write them. A record with fewer than three fields was written before the journal
+    named a session and belongs to nobody; the path keeps every tab past the second, because a tab
+    in a filename is part of the name.
+    """
+    try:
+        raw = Path(path).read_bytes().decode("utf-8", "replace")
+    except OSError:
+        return []
+    rows = []
+    for entry in raw.split("\0"):
+        parts = entry.split("\t", 2)
+        if len(parts) < 3 or not parts[0] or not parts[2]:
+            continue
+        rows.append((parts[0], parts[2]))
+    return rows
+
+
+def journal_paths(repo):
+    """Every path either journal names, which is the universe a repository-wide debt question asks
+    about: the tool answers for paths somebody recorded work on, and never enumerates a repository
+    whose unreviewed files are most of it.
+    """
+    directory = git_dir_path(repo)
+    if directory is None:
+        return set()
+    return {
+        path
+        for name in (DEBT_JOURNAL, COMMIT_JOURNAL)
+        for _, path in journal_entries(directory / name)
+    }
+
+
+def run_id_epoch(run_id):
+    try:
+        return int(
+            datetime.strptime(str(run_id)[:16], "%Y%m%dT%H%M%SZ")
+            .replace(tzinfo=timezone.utc).timestamp()
+        )
+    except (ValueError, TypeError):
         return 0
-    paths = session_review_paths(repo, getattr(args, "paths", None))
-    runs = session_runs(repo, session)
-    # Newest first, and whichever kind of run comes first is the answer: a watchdog kill is what the
-    # reader is waiting on until a LATER triaged run covers the paths, and an untriaged run standing
-    # on top of that kill is not one — it says nothing, so it must not speak over it either.
-    covering = None
-    for run_dir, meta, record in runs:
-        if meta.get("timed_out"):
-            print(f"timed-out {run_dir.name}")
-            return 0
+
+
+def waiver_file(repo):
+    name = receipt_file_name(repo)
+    return None if not name else state_dir() / WAIVER_DIR / name
+
+
+def read_waivers(repo):
+    path = waiver_file(repo)
+    if path is None:
+        return []
+    try:
+        stored = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return []
+    rows = stored.get("waivers") if isinstance(stored, dict) else None
+    return [row for row in rows or () if isinstance(row, dict)]
+
+
+def repo_artifacts(repo):
+    """Everything that answers for a path of this working tree, oldest first: the snapshot of every
+    triaged run that read it, and every waiver recorded against it.
+
+    One kind of answer out of two sources — a review read the content, or a chat said out loud that
+    it is going unreviewed and why. Nothing here reads git history: a shared checkout takes commits
+    from other chats continuously, and a history-shaped answer retires a live review over work it
+    never read.
+    """
+    artifacts = []
+    benches = state_dir() / "benches"
+    resolved = resolved_repo_path(repo)
+    for run_dir in sorted(benches.iterdir()) if benches.exists() else ():
+        try:
+            meta = json.loads((run_dir / "meta.json").read_text())
+        except (OSError, ValueError):
+            # The bench directory is shared and pruned while this walks it, and the answer must
+            # not turn on which unrelated run was half-written at the time.
+            continue
+        if not isinstance(meta, dict):
+            continue
+        record = run_repo_record(resolved, meta)
+        if record is None or not run_triaged(run_dir):
+            continue
         reviewed = record.get("reviewed")
         # A run holding no snapshot read committed code: nothing in the working tree is anchored to
-        # it, so a deletion or a binary change under it would come back as covered at zero drift.
+        # it, so it answers for no path at all.
         if not (isinstance(reviewed, dict) and reviewed):
             continue
-        # Membership in the snapshot, not just the scope: a repo-wide scope admits every path
-        # ever named, including files born after the panel read the tree, and the run holds no
-        # blob to answer for those — it would blanket them at whatever drift its own corpus dilutes
-        # to.
-        if run_triaged(run_dir) and all(
-            path in reviewed and path_in_scope(path, record.get("scope")) for path in paths
-        ):
-            covering = (run_dir, record)
-            break
-    if covering is None:
+        artifacts.append({
+            "kind": "run", "id": run_dir.name, "epoch": run_id_epoch(run_dir.name), "dir": run_dir,
+            "shas": {
+                path: sha for path, sha in reviewed.items()
+                if isinstance(path, str) and isinstance(sha, str)
+            },
+        })
+    for waiver in read_waivers(repo):
+        shas = waiver.get("paths")
+        if not isinstance(shas, dict):
+            continue
+        artifacts.append({
+            "kind": "waiver", "id": str(waiver.get("id") or ""),
+            "epoch": counted_int(waiver.get("epoch")), "dir": None,
+            "session": str(waiver.get("session") or ""),
+            "reason": str(waiver.get("reason") or ""),
+            "shas": {
+                path: sha for path, sha in shas.items()
+                if isinstance(path, str) and isinstance(sha, str)
+            },
+        })
+    artifacts.sort(key=lambda item: (item["epoch"], item["id"]))
+    return artifacts
+
+
+def covering_artifacts(repo):
+    """The newest artifact holding each path — the one thing a path's current content is compared
+    against."""
+    covering = {}
+    for artifact in repo_artifacts(repo):
+        for path in artifact["shas"]:
+            covering[path] = artifact
+    return covering
+
+
+def repo_debt(repo, paths=None):
+    """The paths whose working-tree content differs from what the newest artifact holding them
+    recorded, each with that artifact, as `(path, artifact)` pairs.
+
+    Commit-agnostic by construction: committing neither creates debt nor settles it, and only a
+    review or a waiver does. A path no artifact ever held is in debt whole while it exists — a run
+    that never read it holds no content to compare, so covering it would be a blanket over files
+    born after the panel read the tree.
+    """
+    covering = covering_artifacts(repo)
+    candidates = list(paths) if paths else sorted(set(covering) | journal_paths(repo))
+    debt = []
+    for path in candidates:
+        artifact = covering.get(path)
+        recorded = artifact["shas"].get(path, "") if artifact else ""
+        if path_blob_sha(repo, path) != recorded:
+            debt.append((path, artifact))
+    return debt
+
+
+def debt_authors(repo, paths):
+    """Which chats this debt belongs to: the debt journal a commit's own gate appends to, plus the
+    commit journal for work still uncommitted.
+    """
+    wanted = set(paths)
+    directory = git_dir_path(repo)
+    if directory is None:
+        return set()
+    return {
+        session
+        for name in (DEBT_JOURNAL, COMMIT_JOURNAL)
+        for session, path in journal_entries(directory / name)
+        if path in wanted
+    }
+
+
+def run_confirmed_counts(run_dir):
+    """`(confirmed P1s, confirmed findings)` of a triaged run, read from its report receipt where
+    one was written and from the verdicts otherwise — the receipt being the only record a
+    `--no-corpus` round leaves.
+    """
+    try:
+        receipt = json.loads((run_dir / REPORT_RECEIPT).read_text())
+    except (OSError, ValueError):
+        receipt = None
+    if isinstance(receipt, dict):
+        severities = receipt.get("confirmed_by_severity")
+        return (
+            counted_int((severities if isinstance(severities, dict) else {}).get("P1")),
+            counted_int(receipt.get("confirmed")),
+        )
+    try:
+        verdicts = read_jsonl(run_dir / "verdicts.jsonl")
+    except (OSError, ValueError):
+        return 0, 0
+    total = sum(1 for row in verdicts if row.get("verdict") == "confirmed")
+    return severity_tallies(run_dir, verdicts)[""]["P1"], total
+
+
+def debt_locked(debt):
+    """Whether a bad round stands over any of this debt. The run holding a debt path came back with
+    enough confirmed P1s or findings that the contract owes a second review, and a waiver is not a
+    way around one.
+    """
+    for _, artifact in debt:
+        if not artifact or artifact["kind"] != "run":
+            continue
+        p1s, findings = run_confirmed_counts(artifact["dir"])
+        if p1s >= SECOND_REVIEW_P1S or findings >= SECOND_REVIEW_FINDINGS:
+            return True
+    return False
+
+
+def session_timeout_run(repo, session):
+    """The run of `session` a watchdog killed, while it is still the newest thing that chat has to
+    say. An untriaged run standing on top of a kill says nothing, so it must not speak over it; a
+    later triaged run does, and takes the answer back.
+    """
+    for run_dir, meta, record in session_runs(repo, session):
+        if meta.get("timed_out"):
+            return run_dir.name
+        reviewed = record.get("reviewed")
+        if run_triaged(run_dir) and isinstance(reviewed, dict) and reviewed:
+            return None
+    return None
+
+
+def cmd_debt(args):
+    """What this repository owes a review, in one line and nothing else.
+
+    Always exit 0: the gate reads a failure as no answer and falls silent, so a repository it
+    cannot resolve has to come back as `none` rather than as an error code the reader turns into a
+    clean bill.
+    """
+    listing = bool(getattr(args, "list", False))
+    repo = resolve_repo_arg(args.repo)
+    if repo is None:
+        if not listing:
+            print("none")
+        return 0
+    session = str(getattr(args, "session", "") or "")
+    paths = debt_query_paths(repo, getattr(args, "paths", None))
+    if not listing and session:
+        hung = session_timeout_run(repo, session)
+        if hung:
+            print(f"timed-out {hung}")
+            return 0
+    debt = repo_debt(repo, paths)
+    if listing:
+        for path, _ in debt:
+            print(path)
+        return 0
+    if not debt:
         print("none")
         return 0
-    run_dir, record = covering
-    drift = coverage_drift_pct(repo, record, paths)
-    print(f"{'stale' if drift > DRIFT_STALE_PCT else 'covered'} {run_dir.name} {drift}")
+    owner = "mine" if session and session in debt_authors(repo, [path for path, _ in debt]) \
+        else "other"
+    locked = " locked" if debt_locked(debt) else ""
+    print(f"debt {len(debt)} {owner}{locked}")
+    return 0
+
+
+def cmd_waive(args):
+    """Record that this chat is not reviewing these paths, and why.
+
+    The waiver is content-keyed like every other artifact: it holds the shas standing there when it
+    was written, so the very next edit is debt again. A skipped review that keeps covering whatever
+    replaces it is not a decision anybody made.
+    """
+    repo = resolve_repo_arg(args.repo)
+    if repo is None:
+        print("waive: not a repository")
+        return 1
+    reason = " ".join(str(getattr(args, "reason", "") or "").split())
+    if not reason:
+        print("waive: --reason must say why this work is going unreviewed")
+        return 1
+    debt = repo_debt(repo, debt_query_paths(repo, getattr(args, "paths", None)))
+    if not debt:
+        print("waive: nothing here is in debt")
+        return 1
+    if debt_locked(debt):
+        print(
+            f"waive: refused — the review standing over this work came back with "
+            f"{SECOND_REVIEW_P1S}+ confirmed P1s or {SECOND_REVIEW_FINDINGS}+ confirmed findings, "
+            "and that round owes a second review over the full scope plus the fixes. Run it "
+            "instead of waiving it."
+        )
+        return 1
+    path = waiver_file(repo)
+    if path is None:
+        print("waive: the repository identity is unavailable")
+        return 1
+    entry = {
+        "id": f"waiver-{int(time.time())}-{hashlib.sha1(reason.encode()).hexdigest()[:7]}",
+        "epoch": int(time.time()),
+        "session": launching_session() or "",
+        "reason": reason,
+        "paths": {name: path_blob_sha(repo, name) for name, _ in debt},
+    }
+    with wall_file_lock(path, WAIVER_LOCK):
+        try:
+            stored = json.loads(path.read_text())
+        except (OSError, ValueError):
+            stored = {}
+        if not isinstance(stored, dict) or not isinstance(stored.get("waivers"), list):
+            stored = {"waivers": []}
+        stored["waivers"].append(entry)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        scratch = path.with_name(f".{path.name}.{os.getpid()}")
+        scratch.write_text(json.dumps(stored, indent=2, sort_keys=True) + "\n")
+        os.replace(scratch, path)
+    print(f"waived {len(debt)} path(s): {reason}")
     return 0
 
 
@@ -9596,8 +9838,8 @@ def lens_list_lines():
     return lines
 
 
-def lens_check_lines(slug):
-    lens = resolve_lens(slug)
+def lens_check_lines(slug, lens=None):
+    lens = lens or resolve_lens(slug)
     path = lens_source_path(lens)
     current = (lens_source_digest(path) or "") if path else ""
     lines = [f"{lens['name']}  {lens['path']}"]
@@ -9612,14 +9854,24 @@ def lens_check_lines(slug):
 
 
 def cmd_lens(args):
-    if args.action == "check":
-        if not args.slug:
-            raise ValueError("review-bench lens check needs a lens slug")
-        lines = lens_check_lines(args.slug)
-    else:
-        lines = lens_list_lines()
-    for line in lines:
+    if args.action != "check":
+        for line in lens_list_lines():
+            print(line)
+        return 0
+    if not args.slug:
+        raise ValueError("review-bench lens check needs a lens slug")
+    lens = resolve_lens(args.slug)
+    for line in lens_check_lines(args.slug, lens):
         print(line)
+    # Enforced here and not in `read_lens`, which every reader of an already-registered lens goes
+    # through: a run mid-flight must not die over prose, while the check that registers one is
+    # exactly where a lens nobody can tell when to take has to fail.
+    if not lens["when"]:
+        print(
+            "  FAILED: no `when:` in the frontmatter — a lens whose file does not say when to "
+            "take it is one nobody takes."
+        )
+        return 1
     return 0
 
 
@@ -9692,17 +9944,33 @@ def main():
     )
     pending.set_defaults(func=cmd_pending_report)
 
-    session_review = subparsers.add_parser(
-        "session-review",
-        help="Whether a review this chat ran covers these paths, in one line the gate reads",
+    debt = subparsers.add_parser(
+        "debt",
+        help="What this repository owes a review, in one line the gate reads",
     )
-    session_review.add_argument("--repo", default=".")
-    session_review.add_argument("--session", default="", metavar="ID", help="The asking chat")
-    session_review.add_argument(
+    debt.add_argument("--repo", default=".")
+    debt.add_argument("--session", default="", metavar="ID", help="The asking chat")
+    debt.add_argument(
         "--paths", nargs="*", action="extend", default=[], metavar="PATH",
         help="Repository-relative paths to answer for",
     )
-    session_review.set_defaults(func=cmd_session_review)
+    debt.add_argument(
+        "--list", action="store_true",
+        help="Print the debt paths themselves, one per line, instead of the verdict",
+    )
+    debt.set_defaults(func=cmd_debt)
+
+    waive = subparsers.add_parser(
+        "waive",
+        help="Record that this work is going unreviewed, and why",
+    )
+    waive.add_argument("--repo", default=".")
+    waive.add_argument("--reason", default="", metavar="TEXT", help="Why it is going unreviewed")
+    waive.add_argument(
+        "--paths", nargs="*", action="extend", default=[], metavar="PATH",
+        help="Repository-relative paths to waive; every debt path without them",
+    )
+    waive.set_defaults(func=cmd_waive)
     run = subparsers.add_parser("run", help="Run blind reviewers against one commit")
     run.add_argument("commitish", nargs="?")
     run.add_argument("--worktree", action="store_true")

@@ -136,10 +136,10 @@ review_run_owner() { # recorded_session pid
   printf '%s' "${owner//[^A-Za-z0-9_-]/}"
 }
 
-# The review gate's own answer to "is this chat's uncommitted work covered by a review of its own",
-# in the one line it prints for a reader that has no commit to attempt: `off` (nothing pending),
-# `dim <text>` (a coverage state worth saying) or `loud <text>`, which the gate reserves for a
-# review that hung past its cap. Nothing here decides any of it and nothing here second-guesses the
+# The review gate's own answer to "what does this repository owe a review, and is it this chat's",
+# in the one line it prints for a reader that has no commit to attempt: `off` (no debt), `dim
+# <text>` (another chat's debt), `bright <text>` (this chat's own) or `loud <text>`, which the gate
+# reserves for a review that hung past its cap. Nothing here decides any of it and nothing here second-guesses the
 # text — the gate is the only place that knows what a review owes, and a label computing its own
 # version of that answer is one of two renderings of one question, of which one is always wrong
 # (Egor, 2026-08-09).
@@ -206,7 +206,7 @@ review_verdict_line() { # toplevel session status_key now
         # answer, and it is shown loud rather than swallowed.
         case "$answer" in
           ''|off) answer=off ;;
-          "dim "*|"loud "*) ;;
+          "dim "*|"bright "*|"loud "*) ;;
           *) answer="loud $answer" ;;
         esac
         tmp="$cache.tmp.${BASHPID:-$$}"
@@ -1621,8 +1621,10 @@ fi
 
 if [ "${review_style:-}" = loud ]; then
   # The gate keeps `loud` for the watchdog alone, so red in this slot always means a hung review
-  # and never a missing or stale one (docs/review-contract.md).
+  # and never debt, which is news the reader acts on in their own time (docs/review-contract.md).
   review_part=" ${sep} ${RED}${review_text}${RESET}"
+elif [ "${review_style:-}" = bright ]; then
+  review_part=" ${sep} ${review_text}"
 elif [ "${review_style:-}" = dim ]; then
   review_part=" ${sep} ${DIM}${review_text}${RESET}"
 fi

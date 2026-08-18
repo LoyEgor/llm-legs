@@ -183,8 +183,8 @@ routine.
 ## Continuing this
 
 The tier a diff deserves is the chat's own call — task importance first, then diff complexity,
-with T0 as the floor. What the tool answers is narrower: `review-bench session-review` says whether
-a review this chat ran covers these paths, and how far they have drifted from the blobs it read.
+with T0 as the floor. What the tool answers is narrower: `review-bench debt` says which paths
+no longer match the blobs the newest artifact holding them read, and whose those paths are.
 
 ## Round 4 — pre-registration (2026-07-28, clean-review detector)
 
