@@ -1127,6 +1127,23 @@ assert grep -q '^STATUS: running$' <<<"$("$RUNNER" report codex-9-9-bbbb)"
 jq -cn --argjson pid "$LIVE_SUPERVISOR" --argjson now "$(date +%s)" \
   '{vendor:"codex",account:"legacy",pid:$pid,started_at:$now}' >"$RECYCLED_DIR/meta.json"
 assert grep -q '^STATUS: running$' <<<"$("$RUNNER" report codex-9-9-bbbb)"
+# A ps that cannot answer at all — a sandbox that hides other processes, a fork that failed —
+# prints exactly what "no such process" prints, and reading that as death reports a live run
+# failed. The signal probe, which this otherwise never uses, answers where ps cannot.
+mkdir -p "$WORK/blind-ps"
+printf '#!/bin/sh\nexit 1\n' >"$WORK/blind-ps/ps"
+chmod +x "$WORK/blind-ps/ps"
+jq -cn --argjson pid "$LIVE_SUPERVISOR" --argjson now "$(date +%s)" \
+  '{vendor:"codex",account:"recycled",pid:$pid,started_at:$now,pid_started_at:1000}' \
+  >"$RECYCLED_DIR/meta.json"
+assert grep -q '^STATUS: running$' <<<"$(PATH="$WORK/blind-ps:$PATH" "$RUNNER" report codex-9-9-bbbb)"
+# The probe still answers about the process: a pid nothing is behind reads gone, blind ps or not.
+GONE_PID=$(sh -c 'echo $$')
+while kill -0 "$GONE_PID" 2>/dev/null; do GONE_PID=$((GONE_PID + 1)); done
+jq -cn --argjson pid "$GONE_PID" --argjson now "$(date +%s)" \
+  '{vendor:"codex",account:"recycled",pid:$pid,started_at:$now,pid_started_at:$now}' \
+  >"$RECYCLED_DIR/meta.json"
+assert grep -q '^STATUS: failed$' <<<"$(PATH="$WORK/blind-ps:$PATH" "$RUNNER" report codex-9-9-bbbb)"
 kill "$LIVE_SUPERVISOR" 2>/dev/null
 wait "$LIVE_SUPERVISOR" 2>/dev/null
 rm -rf "$RECYCLED_DIR"

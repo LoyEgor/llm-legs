@@ -695,8 +695,11 @@ if test -r "$JOURNAL_LIB"; then
   # dropped record.
   assert grep -Fq 'rj_lock "$lock" && locked=1' "$JOURNAL_LIB"
   assert grep -Fq 'rj_append_raw "$@"' "$JOURNAL_LIB"
-  # A settled episode's record never counts as authorship of the next one on the same path.
-  assert grep -Fq 'epoch < floors.get(path, 0)' "$REVIEWBENCH"
+  # A settled episode's record never counts as authorship of the next one on the same path — and
+  # that floor chooses between a path's records instead of emptying the set, or a path back in debt
+  # through a channel no hook stamps answers `unknown` while its author is written down.
+  assert grep -Fq 'if epoch is None or epoch >= floor' "$REVIEWBENCH"
+  assert grep -Fq 'authors[path].update(standing or {session for session, _ in records})' "$REVIEWBENCH"
   # Rewriters may not replace an inode a raw append just landed on: every swap is size-guarded.
   assert grep -Fq 'rj_swap() { # file tmp snap_size' "$JOURNAL_LIB"
   if test -r "$FLOW_GATE"; then
@@ -714,11 +717,16 @@ assert eq "$(grep -c '\.pid_started_at = ' "$ROOT/bin/worker-run")" 1
 # helper, or worker-run calls a recycled pid running while the hooks have retired the run.
 assert grep -Fq 'PID_START_SLACK=30' "$ROOT/bin/worker-run"
 assert grep -Fq 'ps -p "$2" -o etime=' "$ROOT/bin/worker-run"
+# An empty answer from ps means "no such process" and "ps could not answer" at once, and one of the
+# two is a live run about to be reported failed or swept. Both sites ask a pid that must be listed
+# before they believe the silence.
+assert grep -Fq 'ps -p $$ -o etime=' "$ROOT/bin/worker-run"
 assert eq "$(grep -c 'supervisor_running "\$directory" "\$pid"' "$ROOT/bin/worker-run")" 3
 if test -r "$JOURNAL_LIB"; then
   assert grep -Fq 'RJ_PID_SLACK=30' "$JOURNAL_LIB"
   assert grep -Fq '"pid_started_at"' "$JOURNAL_LIB"
   assert grep -Fq 'ps -p "$pid" -o etime=' "$JOURNAL_LIB"
+  assert grep -Fq 'ps -p $$ -o etime=' "$JOURNAL_LIB"
   # EPERM from a foreign-owned live process must not read as death.
   assert eq "$(grep -c '^[^#]*kill -0' "$JOURNAL_LIB")" 0
 fi
@@ -1329,7 +1337,13 @@ if [ -r "$COMMIT_JOURNAL" ]; then
   # exit_code has no final list yet unless its supervisor is gone, and one already imported is
   # marked as imported.
   assert grep -Fq 'if [ ! -f "$directory/exit_code" ]; then' "$COMMIT_JOURNAL"
-  assert grep -Fq '[ "$(rj_run_liveness "$directory")" = dead ] || continue' "$COMMIT_JOURNAL"
+  assert grep -Fq 'liveness=$(rj_run_liveness "$directory")' "$COMMIT_JOURNAL"
+  # ...with one release from that rule: a record carrying no launch stamp can never be answered
+  # for, so past a couple of days its listing is as final as it will ever be. Anything that can
+  # still resolve stays unswept.
+  assert grep -Fq '{ [ "$liveness" = unknown ] && run_record_stale "$directory"; } || continue' \
+    "$COMMIT_JOURNAL"
+  assert grep -Fq 'RUN_RECORD_STALE_AFTER=172800' "$COMMIT_JOURNAL"
   assert grep -Fq ': >"$directory/journaled"' "$COMMIT_JOURNAL"
   # The other writer of the debt journal, and the earlier one: ownership is stamped at the edit,
   # since a commit that arms no notice would otherwise land debt owed by nobody. Per EDIT, with no

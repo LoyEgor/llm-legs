@@ -8110,6 +8110,14 @@ def debt_path_authors(repo, debt):
     whose epoch is unreadable is kept — misattributing is recoverable, disowning is not — and the
     commit journal is never filtered: its records are pruned the moment a path is clean, so what
     stands there is present-tense by construction.
+
+    That floor CHOOSES between a path's records and never empties the set, for the same reason: a
+    path can be back in debt through a channel no hook stamps (a merge, a rebase, an editor outside
+    this machine's hooks), and a LOCKED round's artifact postdates every stamp there is by
+    definition. Both leave every record below the floor, and dropping them all answers `unknown` on
+    a path whose author is written down — disowning, which the rule above forbids. So the floor
+    applies only while something of the path's still stands above it; otherwise the leftovers are
+    the best answer available and each session that holds one keeps its newest record.
     """
     authors = {str(path): set() for path, _ in debt}
     floors = {
@@ -8120,13 +8128,19 @@ def debt_path_authors(repo, debt):
     directory = git_dir_path(repo)
     if directory is None:
         return authors
-    for name in (DEBT_JOURNAL, COMMIT_JOURNAL):
-        for session, epoch, path in journal_entries(directory / name):
-            if not session or path not in authors:
-                continue
-            if name == DEBT_JOURNAL and epoch is not None and epoch < floors.get(path, 0):
-                continue
-            authors[path].add(session)
+    settled = {}
+    for session, epoch, path in journal_entries(directory / DEBT_JOURNAL):
+        if not session or path not in authors:
+            continue
+        settled.setdefault(path, []).append((session, epoch))
+    for path, records in settled.items():
+        floor = floors.get(path, 0)
+        standing = {session for session, epoch in records if epoch is None or epoch >= floor}
+        authors[path].update(standing or {session for session, _ in records})
+    for session, _, path in journal_entries(directory / COMMIT_JOURNAL):
+        if not session or path not in authors:
+            continue
+        authors[path].add(session)
     return authors
 
 

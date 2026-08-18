@@ -6489,6 +6489,14 @@ sr_journal(rb.DEBT_JOURNAL, "chat-2", "src/a.py")
 assert sr_answer("src/a.py", session="chat-1") == "debt 1 other"
 assert sr_answer("src/a.py", session="chat-2") == "debt 1 mine"
 sr_clear_journals()
+# That floor CHOOSES among a path's records and never empties the set. A path back in debt through
+# a channel no hook stamps — a merge, a rebase, an editor these hooks never see — leaves nothing but
+# leftovers under it, and dropping them all answers `unknown` about a path whose author is written
+# down, which is the disowning the rule above exists to prevent.
+sr_journal(rb.DEBT_JOURNAL, "chat-1", "src/a.py", epoch=1600000000)
+assert sr_answer("src/a.py", session="chat-1") == "debt 1 mine"
+assert sr_answer("src/a.py", session="chat-2") == "debt 1 other"
+sr_clear_journals()
 # Asked about no path in particular, the question is the repository's — and its universe is what the
 # artifacts hold plus what the journals name, never every file standing in the tree.
 assert sr_answer() == "debt 1 other"
@@ -6720,6 +6728,17 @@ sr_run(sr_kill_cover, "20260101T000100Z-aaaaaaa", sr_blobs, timed_out=True)
 assert sr_answer("src/a.py", session="chat-2") == "debt 1 other"
 sr_run(sr_kill_cover, "20260101T000200Z-bbbbbbb", sr_blobs)
 assert sr_answer("src/a.py", session="chat-2") == "none"
+
+# A LOCKED round's artifact postdates every stamp there is: it was written after the work it read,
+# so a floor that empties the set disowns exactly the chat that owes the second review.
+sr_locked_floor = sr_store()
+sr_source.write_text(sr_moved + "locked floor\n")
+sr_run(sr_locked_floor, "20280101T000100Z-ccccccc", {"src/a.py": "stale-sha"},
+       report={"confirmed": 3, "confirmed_by_severity": {"P1": 2}})
+sr_journal(rb.DEBT_JOURNAL, "chat-1", "src/a.py")
+assert sr_answer("src/a.py", session="chat-1") == "debt 1 mine locked"
+assert rb.debt_authors(sr_repo, [("src/a.py", {"epoch": 1830000000})]) == {"chat-1"}
+sr_clear_journals()
 
 # The journal's original format wrote a bare path and named no session: the path belongs to nobody
 # and stays in the universe a repository-wide question asks about, rather than dropping out of it

@@ -94,7 +94,8 @@ etime_seconds() { # etime as ps prints it: [[dd-]hh:]mm:ss
 # Whether the process wearing a run's recorded pid IS that run's supervisor. The number is reused
 # within a day on a busy machine, and whatever inherits it answers a signal probe exactly as the
 # supervisor would — which is how an abandoned run kept reporting "running". `ps`, never `kill -0`:
-# a live process owned by another user answers EPERM to the probe and reads as dead. A record
+# a live process owned by another user answers EPERM to the probe and reads as dead, and the probe
+# is reached for only where ps itself proved unable to answer. A record
 # written before pid_started_at existed cannot be checked this way and keeps the old answer, or
 # every run started before that field went in would begin reading dead.
 supervisor_running() { # directory pid
@@ -102,7 +103,14 @@ supervisor_running() { # directory pid
   [[ "$2" =~ ^[0-9]+$ ]] && [ "$2" -gt 0 ] || return 1
   command -v ps >/dev/null 2>&1 || { kill -0 "$2" 2>/dev/null; return; }
   elapsed=$(ps -p "$2" -o etime= 2>/dev/null | tr -d '[:space:]')
-  [ -n "$elapsed" ] || return 1
+  if [ -z "$elapsed" ]; then
+    # "No such process" and "ps could not answer" are the same empty output, and one of them is a
+    # live run about to be reported failed. A pid that must be listed settles it: if this very
+    # process is not listed either, ps is what is broken, and the signal probe answers instead.
+    [ -n "$(ps -p $$ -o etime= 2>/dev/null | tr -d '[:space:]')" ] && return 1
+    kill -0 "$2" 2>/dev/null
+    return
+  fi
   started=$(jq -r '.pid_started_at // empty' "$1/meta.json" 2>/dev/null)
   [[ "$started" =~ ^[0-9]+$ ]] && [ "$started" -gt 0 ] || return 0
   seconds=$(etime_seconds "$elapsed")
