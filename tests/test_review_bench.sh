@@ -6331,6 +6331,25 @@ sr_session_before = os.environ.get("CLAUDE_CODE_SESSION_ID")
 # A waiver carries the chat that recorded it, and the tool refuses to write one it cannot name a
 # chat for, so these scenarios run as the chat the journals below name.
 os.environ["CLAUDE_CODE_SESSION_ID"] = "chat-1"
+sr_worker_runs_before = os.environ.get("WORKER_RUN_DIR")
+sr_worker_runs = work / "session-review-worker-runs"
+sr_worker_runs.mkdir()
+os.environ["WORKER_RUN_DIR"] = str(sr_worker_runs)
+
+
+def sr_worker_run(run_id, launcher, lines, journaled=False):
+    """One run record the way `worker-run` writes it: the launching chat beside the file list its
+    attempts produced.
+    """
+    directory = sr_worker_runs / run_id
+    directory.mkdir()
+    if launcher is not None:
+        (directory / "launcher").write_text(launcher + "\n")
+    if lines is not None:
+        (directory / "files").write_text("\n".join(lines) + "\n")
+    if journaled:
+        (directory / "journaled").write_text("")
+    return directory
 sr_stores = 0
 
 
@@ -6464,7 +6483,14 @@ assert sr_answer() == "debt 1 other"
 (sr_repo / "src" / "unnamed.py").write_text("nobody named me\n")
 assert sr_answer() == "debt 1 other"
 sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/unnamed.py")
+# One path of the two is this chat's: the word stays binary for every reader switching on it, and
+# the count beside it is what keeps a chat from reading nine co-tenants' files as its own.
+assert sr_answer() == "debt 2 mine 1"
+sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/a.py")
 assert sr_answer() == "debt 2 mine"
+assert sr_answer(session="chat-2") == "debt 2 other"
+# Nobody named a session, so nothing computed an ownership: `other` would assert one.
+assert sr_answer(session="") == "debt 2 unknown"
 sr_clear_journals()
 (sr_repo / "src" / "unnamed.py").unlink()
 # A binary is content like any other: what no line budget could price is a sha that either matches
@@ -6557,14 +6583,18 @@ sr_source.write_text(sr_moved)
 sr_timed = sr_store()
 sr_run(sr_timed, "20260101T000100Z-aaaaaaa", sr_blobs)
 sr_run(sr_timed, "20260101T000200Z-bbbbbbb", triaged=False, timed_out=True)
+# Only over something owed: a kill standing above content every artifact already settles demands
+# nothing, and reported anyway it is a red statusline no later artifact could ever clear.
+assert sr_answer("src/a.py") == "none"
+sr_source.write_text(sr_moved + "past the panel\n")
 assert sr_answer("src/a.py") == "timed-out 20260101T000200Z-bbbbbbb"
 # A hung run of another chat is not this one's answer.
-assert sr_answer("src/a.py", session="chat-2") == "none"
+assert sr_answer("src/a.py", session="chat-2") == "debt 1 other"
 # A newer run of this chat that nobody judged says nothing, so it may not speak over the kill
 # either; only a later triaged run ends it.
 sr_run(sr_timed, "20260101T000250Z-eeeeeee", sr_blobs, triaged=False)
 assert sr_answer("src/a.py") == "timed-out 20260101T000200Z-bbbbbbb"
-sr_run(sr_timed, "20260101T000300Z-ccccccc", sr_blobs)
+sr_run(sr_timed, "20260101T000300Z-ccccccc", dict(sr_blobs, **{"src/a.py": sr_sha("src/a.py")}))
 assert sr_answer("src/a.py") == "none"
 # The kill masks the verdict, never the listing: a reader asking which paths are in debt is not
 # asking what the chat is waiting on.
@@ -6630,8 +6660,9 @@ sr_source.write_text(sr_moved + "mine\n")
 (sr_repo / "docs" / "theirs.md").write_text("their work\n")
 sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/a.py")
 sr_journal(rb.COMMIT_JOURNAL, "chat-2", "docs/theirs.md")
-assert sr_answer() == "debt 2 mine"
-assert sr_waive(reason="mine only") == (0, "waived 1 path(s): mine only")
+assert sr_answer() == "debt 2 mine 1"
+assert sr_waive(reason="mine only") == (
+    0, "waived 1 path(s): mine only [src/a.py]")
 sr_waivers = json.loads((rb.state_dir() / rb.WAIVER_DIR).glob("*.json").__next__().read_text())
 assert list(sr_waivers["waivers"][0]["paths"]) == ["src/a.py"], sr_waivers
 assert sr_answer() == "debt 1 other"
@@ -6777,11 +6808,68 @@ assert sr_rc == 1 and "../outside.py" in sr_said, (sr_rc, sr_said)
 assert sr_answer("src/a.py") == "debt 1 mine"
 (sr_repo / "src" / "doomed.py").unlink(missing_ok=True)
 
+# A worker a chat spawned IS that chat. Between the worker writing its file list and the commit
+# journal sweeping it, the run record is the only place that ownership exists — read as unowned,
+# those files are a co-tenant's live work a waiver naming no path would sign away.
+sr_claimed = sr_store()
+sr_clear_journals()
+sr_source.write_text(sr_moved + "a worker wrote this\n")
+(sr_repo / "docs" / "worker.md").write_text("worker output\n")
+sr_journal(rb.COMMIT_JOURNAL, "chat-1", "docs/worker.md")
+sr_worker_run("20260101T0100Z-worker", "chat-2",
+              [f"WORKDIR: {sr_repo}", "PARTIAL: shell commands went unrecorded", "src/a.py"])
+assert rb.foreign_run_claims(sr_repo, "chat-1") == {
+    "src/a.py": ("20260101T0100Z-worker", "chat-2")
+}, rb.foreign_run_claims(sr_repo, "chat-1")
+# The chat that launched it owns it, so nothing is foreign to that one.
+assert rb.foreign_run_claims(sr_repo, "chat-2") == {}
+sr_rc, sr_said = sr_waive("src/a.py", reason="not mine to skip")
+assert sr_rc == 1 and "20260101T0100Z-worker" in sr_said and "chat-2" in sr_said, (sr_rc, sr_said)
+# Naming no path, the claimed one is dropped the way a journal-foreign one is, and the line names
+# what the waiver actually took.
+assert sr_waive(reason="mine only") == (
+    0, "waived 1 path(s): mine only [docs/worker.md]")
+assert sr_answer("src/a.py") == "debt 1 other"
+# Swept into the journals, the record is history: the journals answer for those files now, and a
+# run claimed twice would leave them nobody's to waive at all.
+sr_swept = sr_store()
+(sr_worker_runs / "20260101T0100Z-worker" / "journaled").write_text("")
+assert rb.foreign_run_claims(sr_repo, "chat-1") == {}
+assert sr_waive("src/a.py", reason="nobody claims it now")[0] == 0
+# What a record does not name it does not claim: a reason line is not a path, a relative path with
+# no workdir has nothing to anchor it, and an absolute path outside this repository is another
+# tree's. A record missing its launcher or its list claims nothing at all.
+sr_worker_run("20260101T0200Z-noise", "chat-2",
+              ["WORKDIR: /nowhere", "UNKNOWN: the vendor keeps no per-file record"])
+sr_worker_run("20260101T0300Z-bare", "chat-2", ["src/a.py"])
+sr_worker_run("20260101T0400Z-outside", "chat-2",
+              [f"WORKDIR: {sr_repo}", "/etc/hosts", str(sr_repo / "docs" / "b.md")])
+sr_worker_run("20260101T0500Z-nolauncher", None, [f"WORKDIR: {sr_repo}", "src/a.py"])
+sr_worker_run("20260101T0600Z-nofiles", "chat-2", None)
+assert rb.foreign_run_claims(sr_repo, "chat-1") == {
+    "docs/b.md": ("20260101T0400Z-outside", "chat-2")
+}, rb.foreign_run_claims(sr_repo, "chat-1")
+
+# A path the journals hand to nobody is waivable, and the line says so out loud: a chat has to see
+# that it just signed for work no record names as its own.
+sr_unowned_line = sr_store()
+sr_clear_journals()
+sr_source.write_text(sr_moved + "nobody named it\n")
+with (sr_gitdir / rb.COMMIT_JOURNAL).open("ab") as handle:
+    handle.write(b"src/a.py\0")
+assert sr_waive(reason="a legacy row, and mine now") == (
+    0, "waived 1 path(s): a legacy row, and mine now [src/a.py (no journal author)]")
+(sr_repo / "docs" / "worker.md").unlink()
+
 sr_clear_journals()
 if sr_session_before is None:
     os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
 else:
     os.environ["CLAUDE_CODE_SESSION_ID"] = sr_session_before
+if sr_worker_runs_before is None:
+    os.environ.pop("WORKER_RUN_DIR", None)
+else:
+    os.environ["WORKER_RUN_DIR"] = sr_worker_runs_before
 os.environ["CLAUDEB_DIR"] = sr_claudeb_before
 assert worktree_receipt["commit"] == snapshot_sha
 assert worktree_receipt["tree"] == snapshot_tree

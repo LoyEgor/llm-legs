@@ -7962,6 +7962,66 @@ def repo_debt(repo, paths=None):
     return debt
 
 
+def worker_run_root():
+    return Path(os.environ.get("WORKER_RUN_DIR") or Path.home() / ".cache" / "claude-worker-runs")
+
+
+def run_record_paths(repo, directory):
+    """The repository-relative paths a run record names, read like `commit-journal.sh` reads it: the
+    `WORKDIR:` line anchors every relative path, and an `UNKNOWN:`/`PARTIAL:` line is the reason the
+    list is short rather than a file.
+    """
+    try:
+        lines = (directory / "files").read_text().splitlines()
+    except OSError:
+        return []
+    workdir = ""
+    paths = []
+    for line in lines:
+        if line.startswith("WORKDIR: "):
+            workdir = workdir or line[len("WORKDIR: "):]
+            continue
+        if not line or line.startswith("UNKNOWN: ") or line.startswith("PARTIAL: "):
+            continue
+        if line.startswith("/"):
+            candidate = line
+        elif workdir:
+            candidate = os.path.join(workdir, line)
+        else:
+            continue
+        relative = scope_path_relative(repo, candidate)
+        if relative is not None and relative != os.curdir:
+            paths.append(relative)
+    return paths
+
+
+def foreign_run_claims(repo, session):
+    """The debt paths another chat's worker run already owns, as `{path: (run id, launcher)}`.
+
+    A worker a chat spawned IS that chat (docs/shared-invariants.md row `am`), and between the
+    worker writing its file list and the commit journal sweeping it, the run record is the only
+    place that ownership exists. Read as unowned in that window, a co-tenant's live work is exactly
+    what a waiver naming no path would sign away.
+    """
+    claims = {}
+    try:
+        directories = sorted(worker_run_root().iterdir())
+    except OSError:
+        return claims
+    for directory in directories:
+        try:
+            launcher = (directory / "launcher").read_text().strip()
+        except OSError:
+            continue
+        # Swept into the journals already, so the journals are the answer and this record is
+        # history — the two readers must not both claim one run.
+        if not launcher or launcher == session or (directory / "journaled").exists():
+            continue
+        for path in run_record_paths(repo, directory):
+            claims.setdefault(path, (directory.name, launcher))
+    return claims
+
+
 def debt_path_authors(repo, paths):
     """Which chats each of these paths belongs to: the debt journal a commit's own gate appends to,
     plus the commit journal for work still uncommitted. A record naming no session belongs to
@@ -8074,23 +8134,33 @@ def cmd_debt(args):
         return 0
     session = str(getattr(args, "session", "") or "")
     paths = debt_query_paths(repo, getattr(args, "paths", None))
-    if not listing and session:
-        hung = session_timeout_run(repo, session)
-        if hung:
-            print(f"timed-out {hung}")
-            return 0
     debt = repo_debt(repo, paths)
     if listing:
         for path, _ in debt:
             print(path)
         return 0
+    # Before the kill and never after it: a hung review over content some artifact has since
+    # settled demands nothing, and reported anyway it is a red statusline no later artifact clears.
     if not debt:
         print("none")
         return 0
-    owner = "mine" if session and session in debt_authors(repo, [path for path, _ in debt]) \
-        else "other"
+    if session:
+        hung = session_timeout_run(repo, session)
+        if hung:
+            print(f"timed-out {hung}")
+            return 0
+    owned = 0
+    if session:
+        authors = debt_path_authors(repo, [path for path, _ in debt])
+        owned = sum(1 for path, _ in debt if session in authors.get(path, ()))
+    # Nobody asked whose this is, so nothing here knows: `other` would be an ownership no reader
+    # computed, and it reads exactly like a co-tenant's.
+    owner = "unknown" if not session else ("mine" if owned else "other")
+    # A chat owning one path of ten reads `debt 10 mine` and answers for all ten. The word keeps
+    # its meaning for every reader switching on it; the count beside it is the new fact.
+    share = f" {owned}" if 0 < owned < len(debt) else ""
     locked = " locked" if debt_locked(debt) else ""
-    print(f"debt {len(debt)} {owner}{locked}")
+    print(f"debt {len(debt)} {owner}{share}{locked}")
     return 0
 
 
@@ -8142,28 +8212,39 @@ def cmd_waive(args):
         return 1
     # The repository is shared, and a waiver signs for one chat. Debt the journals hand to another
     # chat is that chat's to answer for, spelled out or not; debt they hand to nobody is what a
-    # session may still take on, which is what keeps a legacy record waivable at all.
+    # session may still take on, which is what keeps a legacy record waivable at all — unless a
+    # co-tenant's worker run has claimed it, which is where that ownership lives until the commit
+    # journal sweeps it.
     authors = debt_path_authors(repo, [path for path, _ in debt])
+    claims = foreign_run_claims(repo, session)
+
+    def foreign_owner(path):
+        sessions = authors.get(path) or ()
+        if sessions:
+            return None if session in sessions else ", ".join(sorted(sessions))
+        claim = claims.get(path)
+        return None if claim is None else f"run {claim[0]}, launched by {claim[1]}"
+
     if explicit:
         foreign = {
-            path: sorted(sessions) for path, sessions in authors.items()
-            if sessions and session not in sessions
+            path: owner for path, owner in ((row[0], foreign_owner(row[0])) for row in debt)
+            if owner
         }
         if foreign:
-            named = "; ".join(f"{path} ({', '.join(rows)})" for path, rows in sorted(foreign.items()))
+            named = "; ".join(f"{path} ({owner})" for path, owner in sorted(foreign.items()))
             print(
-                f"waive: refused — this chat ({session}) is not who the journals name for "
+                f"waive: refused — this chat ({session}) is not who the record names for "
                 f"{named}. A waiver signs for the chat that owns the work, so those paths are "
                 "theirs to waive or to review."
             )
             return 1
     else:
-        debt = [row for row in debt if not authors.get(row[0]) or session in authors[row[0]]]
+        debt = [row for row in debt if foreign_owner(row[0]) is None]
         if not debt:
             print(
-                f"waive: refused — every path in this repository's debt is journalled to another "
-                f"chat, not to this one ({session}), and a waiver naming no path would settle "
-                "their work under it. Name what you are not reviewing with --paths."
+                f"waive: refused — every path in this repository's debt belongs to another chat, "
+                f"not to this one ({session}), and a waiver naming no path would settle their "
+                "work under it. Name what you are not reviewing with --paths."
             )
             return 1
     locks = debt_locks(debt)
@@ -8201,7 +8282,12 @@ def cmd_waive(args):
         scratch = path.with_name(f".{path.name}.{os.getpid()}")
         scratch.write_text(json.dumps(stored, indent=2, sort_keys=True) + "\n")
         os.replace(scratch, path)
-    print(f"waived {len(debt)} path(s): {reason}")
+    # Nobody chose these paths one by one, so the line has to show which ones the waiver took, and
+    # which of them no journal hands to this chat at all.
+    signed = "" if explicit else " [" + ", ".join(
+        name + ("" if authors.get(name) else " (no journal author)") for name, _ in debt
+    ) + "]"
+    print(f"waived {len(debt)} path(s): {reason}{signed}")
     return 0
 
 

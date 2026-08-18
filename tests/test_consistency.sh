@@ -654,8 +654,12 @@ assert grep -Fq '"dim "*|"bright "*|"loud "*) ;;' "$STATUSLINE"
 # The three words the gate switches on, printed nowhere else.
 assert grep -Fq 'print("none")' "$REVIEWBENCH"
 assert grep -Fq 'print(f"timed-out {hung}")' "$REVIEWBENCH"
-assert grep -Fq 'print(f"debt {len(debt)} {owner}{locked}")' "$REVIEWBENCH"
-assert doc_has '`debt <n> mine|other [locked]`'
+assert grep -Fq 'print(f"debt {len(debt)} {owner}{share}{locked}")' "$REVIEWBENCH"
+assert doc_has '`debt <n> mine|other|unknown [<owned>] [locked]`'
+# The owner word is what the gate switches on, so every word review-bench can print is named in
+# the row that promises the gate reads them all.
+assert grep -Fq 'owner = "unknown" if not session else ("mine" if owned else "other")' "$REVIEWBENCH"
+assert doc_has 'nothing may parse positionally past the owner word'
 if test -r "$FLOW_GATE"; then
   assert grep -Fq 'if [ "${1:-}" = verdict ]; then' "$FLOW_GATE"
   assert grep -Fq 'echo "bright rev ● $count" || echo "dim rev ● $count"' "$FLOW_GATE"
@@ -1261,6 +1265,17 @@ assert grep -Fq "printf 'WORKDIR: %s\\n' \"\$workdir\"" "$WORKER_RUN"
 assert grep -Fq "printf 'UNKNOWN: %s\\n' \"\$RUN_FILES_REASON\"" "$WORKER_RUN"
 assert grep -Fq "printf 'PARTIAL: %s\\n' \"\$RUN_FILES_PARTIAL\"" "$WORKER_RUN"
 assert grep -Fq 'mv -f "$directory/files.tmp.$$" "$directory/files"' "$WORKER_RUN"
+# The third reader: a waiver naming no path must drop the files a co-tenant's worker run claims,
+# which it can only do by looking in the same directory the other two sweep.
+REVIEWBENCH_RUNS="$ROOT/bin/review-bench"
+rb_run_root=$(sed -n '/^def worker_run_root():/,/^$/p' "$REVIEWBENCH_RUNS" |
+  sed -n 's|.*Path.home() / "\(.*\)" / "\(.*\)")$|\1/\2|p' | head -1)
+worker_run_root=$(grep -oE 'WORKER_RUN_DIR:-\$HOME/[^}]*' "$WORKER_RUN" | head -1 | sed 's|.*\$HOME/||')
+assert eq "$rb_run_root" '.cache/claude-worker-runs'
+assert eq "$worker_run_root" "$rb_run_root"
+assert grep -Fq 'os.environ.get("WORKER_RUN_DIR")' "$REVIEWBENCH_RUNS"
+assert grep -Fq 'if not launcher or launcher == session or (directory / "journaled").exists():' \
+  "$REVIEWBENCH_RUNS"
 assert doc_has 'Worker files reach the launching chat'
 assert doc_has 'whose first line is `WORKDIR: <dir>`'
 assert doc_has '`<run-dir>/noticed`'
