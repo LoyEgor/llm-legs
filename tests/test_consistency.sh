@@ -910,6 +910,10 @@ assert grep -Fq 'p1s >= SECOND_REVIEW_P1S or findings >= SECOND_REVIEW_FINDINGS'
 # snapshot can hold would otherwise stay locked past every review and every waiver.
 assert doc_has '`path_lock_stands`'
 assert grep -Fq 'def path_lock_stands(repo, path, artifact):' "$REVIEWBENCH"
+# And the one ROUND it lets go, for the same reason: a lock over a round whose budget is spent asks
+# for the pass that budget already refused, and the waiver stays refused for being locked.
+assert doc_has '`round_budget_spent`'
+assert grep -Fq 'return owed and not round_budget_spent(artifact["dir"])' "$REVIEWBENCH"
 if test -r "$FLOW_GATE"; then
   gate_second_p1s=$(sed -n 's/^SECOND_REVIEW_P1S=\([0-9]*\)$/\1/p' "$FLOW_GATE")
   gate_second_findings=$(sed -n 's/^SECOND_REVIEW_FINDINGS=\([0-9]*\)$/\1/p' "$FLOW_GATE")

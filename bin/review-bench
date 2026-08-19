@@ -1364,6 +1364,7 @@ WAIVER_LOCK = ".waivers.lock"
 DEBT_JOURNAL = "claude-review-debt"
 COMMIT_JOURNAL = "claude-commit-journal"
 RUN_CONFIRMED_COUNTS = {}
+ROUND_BUDGET_SPENT_CACHE = {}
 # One identity and one clock behind every commit object review-bench writes, so the same input
 # always answers with the same sha. The email is also how a snapshot is told from a real commit.
 FIXED_COMMIT_IDENTITY = {
@@ -3838,6 +3839,26 @@ def read_fix_status(run_dir):
     return stored if isinstance(stored, dict) else None
 
 
+def receipt_verdict_rows(run_dir):
+    """The verdict rows a run's report receipt kept, or None where it holds none. An empty list is
+    a CLEAN triage, not a missing one.
+    """
+    try:
+        rows = json.loads((run_dir / REPORT_RECEIPT).read_text()).get("rows")
+    except (OSError, ValueError):
+        return None
+    return rows if isinstance(rows, list) else None
+
+
+def recorded_verdict_rows(run_dir):
+    """The triage on record for a run, from whichever copy of it survives: `record --no-corpus`
+    stores no verdicts.jsonl, and its receipt rows are then the only one.
+    """
+    if (run_dir / "verdicts.jsonl").exists():
+        return read_jsonl(run_dir / "verdicts.jsonl")
+    return receipt_verdict_rows(run_dir)
+
+
 def confirmed_count(verdicts):
     """The confirmed verdicts of a row list, counted the way `bench_summary` counts them, so the
     frame's header and the `fixes:` row underneath it can never disagree about the same run."""
@@ -3857,6 +3878,16 @@ def fix_status(run_dir, confirmed):
     if not confirmed:
         return "nothing to fix", False
     if record and record.get("state") == "done":
+        # A receipt answers for the triage it was written against. Re-adjudicating a run replaces
+        # its verdicts and leaves the receipt where it is, so a round that came back with more
+        # confirmed findings than anybody fixed would read as finished on the strength of the
+        # older pass.
+        against = record.get("confirmed")
+        if isinstance(against, int) and not isinstance(against, bool) and against != confirmed:
+            return (
+                f"NOT APPLIED — recorded against a triage of {against} confirmed, "
+                f"and this one has {confirmed}"
+            ), True
         return (
             f"done — {counted_int(record.get('fixed'))} fixed, "
             f"{counted_int(record.get('false_positives'))} false positives"
@@ -3880,31 +3911,67 @@ def run_scope_key(meta):
     members = tuple(sorted(
         entry(record) for record in meta.get("repos") or () if isinstance(record, dict)
     ))
-    return entry(meta), members
+    # A merged panel's own `repo` is the workspace built for that one run — a path derived from the
+    # snapshot it read, so two rounds over the very same repositories never share it and the budget
+    # would never bind for a merged review at all. Its members ARE the scope.
+    return members or (entry(meta),)
+
+
+def run_reviewed_paths(meta):
+    reviewed = meta.get("reviewed")
+    return set(reviewed) if isinstance(reviewed, dict) else set()
 
 
 def review_round(run_dir, meta):
     """Which round of its scope this run is: the second once an earlier run of the same scope has
-    fix status on record, the first otherwise.
+    its fixes done on record and this run reads everything that one read, the first otherwise.
 
     Read off the runs on disk rather than off a flag, because the caller that would have to pass
     the flag is exactly the one a spent round budget exists to argue with — and a round nobody
-    ever fixed is not a round the scope has spent.
+    ever fixed is not a round the scope has spent, which is why a `blocked` receipt is not one
+    either: the fork it stopped for is what the next round is.
+
+    Held to the paths as well as to the scope key, because that key alone is a repository: every
+    later review of the same checkout — a different commit, months on — would read as the round
+    answering for this one and lose the escalation fork for good. The second round is the run a
+    lock demands, so it is recognised by what discharges a lock: reading the whole of what the
+    round before it read.
     """
     key = run_scope_key(meta)
+    held = run_reviewed_paths(meta)
     benches = run_dir.parent
     for other in sorted(benches.iterdir()) if benches.exists() else ():
         if other.name >= run_dir.name:
             break
-        if not (other / FIX_RECEIPT).exists():
+        record = read_fix_status(other)
+        if not record or record.get("state") != "done":
             continue
         try:
             earlier = json.loads((other / "meta.json").read_text())
         except (OSError, ValueError):
             continue
-        if isinstance(earlier, dict) and run_scope_key(earlier) == key:
+        if not isinstance(earlier, dict) or run_scope_key(earlier) != key:
+            continue
+        if run_reviewed_paths(earlier) <= held:
             return ROUND_BUDGET
     return 1
+
+
+def round_budget_spent(run_dir):
+    """Whether the run in `run_dir` is the second round over its scope, so the contract owes no
+    third pass over it. Memoized like every other per-run tally the covering reader asks for once
+    per path a run holds; a round's own number never changes while a process runs.
+    """
+    key = str(run_dir)
+    if key not in ROUND_BUDGET_SPENT_CACHE:
+        try:
+            meta = json.loads((run_dir / "meta.json").read_text())
+        except (OSError, ValueError):
+            return False
+        ROUND_BUDGET_SPENT_CACHE[key] = (
+            isinstance(meta, dict) and review_round(run_dir, meta) >= ROUND_BUDGET
+        )
+    return ROUND_BUDGET_SPENT_CACHE[key]
 
 
 def member_finding_prefix(meta, commit):
@@ -4053,12 +4120,7 @@ def emit_report(run_dir, meta, verdicts=None):
         # recovery of a capture whose tail the tool-output window cut — answered "pending".
         # An empty rows list is a CLEAN triage, not a missing one: `or None` here sent exactly
         # the clean review back to "pending".
-        try:
-            rows = json.loads((run_dir / REPORT_RECEIPT).read_text()).get("rows")
-        except (OSError, ValueError, json.JSONDecodeError):
-            rows = None
-        if isinstance(rows, list):
-            verdicts = rows
+        verdicts = receipt_verdict_rows(run_dir)
     if verdicts is None and not (run_dir / "verdicts.jsonl").exists():
         for line in pending_lines(run_dir, meta):
             print(line)
@@ -7758,6 +7820,13 @@ def cmd_fixes(args):
     run_dir = state_dir() / "benches" / args.run_id
     if not (run_dir / "meta.json").exists():
         raise ValueError(f"unknown run id: {args.run_id}")
+    # A receipt is an answer to confirmed findings, and an untriaged run has none: taken here it
+    # would spend the scope's round budget over a pass nobody judged, while the run's own report
+    # still asks for the triage.
+    if not run_triaged(run_dir):
+        raise ValueError(
+            f"{args.run_id} has no triage on record: record the verdicts before the fixes"
+        )
     if args.blocked is not None:
         if args.fixed is not None or args.fp is not None:
             raise ValueError("--fixed and --fp belong to --done; a blocked round fixed nothing")
@@ -7771,7 +7840,13 @@ def cmd_fixes(args):
             raise ValueError("--done needs --fixed N and --fp M: the report prints both numbers")
         if args.fixed < 0 or args.fp < 0:
             raise ValueError("--fixed and --fp count findings, so neither can be negative")
-        record = {"state": "done", "fixed": args.fixed, "false_positives": args.fp}
+        record = {
+            "state": "done", "fixed": args.fixed, "false_positives": args.fp,
+            # Which triage this answers for. Counted off the same rows the report counts, so a
+            # receipt written over one pass is recognised as stale the moment a re-adjudication
+            # replaces it — and never merely because the two read different copies of one triage.
+            "confirmed": confirmed_count(recorded_verdict_rows(run_dir)),
+        }
         line = f"done — {args.fixed} fixed, {args.fp} false positives"
     record["recorded_at"] = iso_now()
     session = launching_session()
@@ -8101,7 +8176,11 @@ def artifact_locked(artifact):
     if counts is None:
         return True
     p1s, findings = counts
-    return p1s >= SECOND_REVIEW_P1S or findings >= SECOND_REVIEW_FINDINGS
+    owed = p1s >= SECOND_REVIEW_P1S or findings >= SECOND_REVIEW_FINDINGS
+    # Except over a scope whose round budget is spent: that round's own report offers no third pass,
+    # and a lock demanding one is a gate nothing can open — the waiver is refused for being locked,
+    # and the review the refusal names is the pass the budget already spent.
+    return owed and not round_budget_spent(artifact["dir"])
 
 
 def path_lock_stands(repo, path, artifact):
