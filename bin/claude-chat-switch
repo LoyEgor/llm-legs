@@ -355,7 +355,7 @@ else
 fi
 hs_out=$(hs -q -c "return $call and 'armed' or 'refused'" 2>&1)
 hs_rc=$?
-# hs prints the module's console lines before the returned value, and the armed line
+# -q suppresses the console fan-out, but keep the last-line pick: the armed line
 # echoes the cwd back — matching error words against the whole output would report a
 # failed arm for any path containing "error" while the switch went ahead regardless.
 hs_last=$(printf '%s\n' "$hs_out" | awk 'NF{line=$0} END{if (line) print line}')

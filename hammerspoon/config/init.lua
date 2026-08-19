@@ -28,20 +28,26 @@ if ipcOk then
     if ipc.__registeredCLIInstances and ipc.print_enter and ipc.print_exit and ipc.print_inside then
         print = function(...)
             consolePrint(...)
+            -- format before print_enter: a throwing __tostring must not strand the guard
+            local parts = table.pack(...)
+            local line = (parts.n > 0) and tostring(parts[1]) or ""
+            for i = 2, parts.n do
+                line = line .. "\t" .. tostring(parts[i])
+            end
             for id, v in pairs(ipc.__registeredCLIInstances) do
-                if v._cli and v._cli.console and v.print and not v._cli.quietMode
+                local cli = v._cli
+                if cli and cli.console and cli.remote and not cli.quietMode
                     and not ipc.print_inside(id) then
                     ipc.print_enter(id)
-                    local parts = table.pack(...)
-                    local line = (parts.n > 0) and tostring(parts[1]) or ""
-                    for i = 2, parts.n do
-                        line = line .. "\t" .. tostring(parts[i])
-                    end
-                    pcall(v._cli.remote.sendMessage, v._cli.remote, line .. "\n", 3)
+                    -- the closure keeps every evaluation (incl. the sendMessage
+                    -- index on a torn-down remote) inside pcall, so exit always runs
+                    pcall(function() cli.remote:sendMessage(line .. "\n", 3) end)
                     ipc.print_exit(id)
                 end
             end
         end
+    else
+        consolePrint("WARN: hs.ipc internals changed; print shim NOT applied, stock printReplacement (issue #3872) is live")
     end
 end
 

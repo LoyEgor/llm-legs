@@ -46,15 +46,15 @@ write_limits notcom "$(date -u -r "$((now + 6000))" +%Y-%m-%dT%H:%M:%SZ)"
 
 out=$(run_timer env -u TERM_PROGRAM CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" auto 10) \
   || fail "auto (no TERM_PROGRAM) exited non-zero"
-grep -q 'HS -c ClaudeContinue.startTimerFor("app", ' "$CALLS" || fail "auto without TERM_PROGRAM should target app: $(cat "$CALLS")"
+grep -q 'HS -q -c ClaudeContinue.startTimerFor("app", ' "$CALLS" || fail "auto without TERM_PROGRAM should target app: $(cat "$CALLS")"
 
 out=$(run_timer env TERM_PROGRAM=iTerm.app CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" auto 10) \
   || fail "auto (TERM_PROGRAM set) exited non-zero"
-grep -q 'HS -c ClaudeContinue.startTimerFor("terminal", ' "$CALLS" || fail "auto with TERM_PROGRAM should target terminal: $(cat "$CALLS")"
+grep -q 'HS -q -c ClaudeContinue.startTimerFor("terminal", ' "$CALLS" || fail "auto with TERM_PROGRAM should target terminal: $(cat "$CALLS")"
 
 out=$(run_timer env TERM_PROGRAM= CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" auto 10) \
   || fail "auto (TERM_PROGRAM set but empty) exited non-zero"
-grep -q 'HS -c ClaudeContinue.startTimerFor("terminal", ' "$CALLS" || fail "auto with empty-but-set TERM_PROGRAM should still target terminal: $(cat "$CALLS")"
+grep -q 'HS -q -c ClaudeContinue.startTimerFor("terminal", ' "$CALLS" || fail "auto with empty-but-set TERM_PROGRAM should still target terminal: $(cat "$CALLS")"
 
 # --- account resolution order ---
 
@@ -89,12 +89,12 @@ write_limits notcom "1970-01-01T03:00:00+02:00"
 out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" app 0) || fail "expired-window run failed"
 echo "$out" | grep -q "already reset" || fail "expired window should report fallback reason: $out"
 echo "$out" | grep -q '+15 min' || fail "expired window should arm for +15 min: $out"
-grep -q 'HS -c ClaudeContinue.startTimerFor("app", 15)' "$CALLS" || fail "expired window should call startTimerFor with 15: $(cat "$CALLS")"
+grep -q 'HS -q -c ClaudeContinue.startTimerFor("app", 15)' "$CALLS" || fail "expired window should call startTimerFor with 15: $(cat "$CALLS")"
 
 rm -f "$FIXTURE_HOME/.llm-limits.json"
 out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" app 0) || fail "missing-cache run failed"
 echo "$out" | grep -q "no five_hour.resets_at" || fail "missing cache file should report fallback reason: $out"
-grep -q 'HS -c ClaudeContinue.startTimerFor("app", 15)' "$CALLS" || fail "missing cache should arm for 15: $(cat "$CALLS")"
+grep -q 'HS -q -c ClaudeContinue.startTimerFor("app", 15)' "$CALLS" || fail "missing cache should arm for 15: $(cat "$CALLS")"
 
 write_limits unknown-account "$(date -u -r "$((now + 6000))" +%Y-%m-%dT%H:%M:%SZ)"
 out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" app 0) || fail "account-not-in-fixture run failed"
