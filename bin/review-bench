@@ -155,6 +155,11 @@ def report_frame_header(word, width=REPORT_FRAME_WIDTH):
 
 
 REPORT_BEGIN = report_frame_header(REPORT_FRAME_WORD)
+# The header a round whose confirmed findings are still unfixed is framed in. It rides the same
+# frame rather than a marker of its own, because the review consumers narrow the header to this
+# word: a spelling only one side knows is a report Egor never sees (docs/shared-invariants.md as).
+REPORT_UNFINISHED_WORD = f"{REPORT_FRAME_WORD} · NOT FINISHED"
+REPORT_UNFINISHED_BEGIN = report_frame_header(REPORT_UNFINISHED_WORD)
 REPORT_END = "=" * REPORT_FRAME_WIDTH
 # A run without verdicts has no report to print: the triage that decides what to fix is what
 # makes one. It gets this line instead, and the hooks key on it to demand the missing pass —
@@ -164,6 +169,20 @@ TRIAGE_PENDING = "REVIEW-TRIAGE-PENDING"
 # gate stops asking rather than dragging an old run into an unrelated turn.
 TRIAGE_GATE_HOURS = 6
 REPORT_RECEIPT = "reported.json"
+FIX_RECEIPT = "fixes.json"
+# Confirmed P1s at which the fixing pass stops instead of starting: past it the round is not a
+# list of defects to patch but a fork Egor decides, and a worker that patched its way through one
+# spent that decision for him.
+HANDOFF_P1_STOP = 3
+# Rounds one scope may be reviewed in. The second one's report offers no third: a scope that came
+# back twice is answered by fixing what is confirmed and writing the rest into the false-positive
+# doctrine, not by a panel pricing the same code again.
+ROUND_BUDGET = 2
+ROUND_BUDGET_SPENT = (
+    "second round over this scope — the budget of two is spent, and there is no third:\n"
+    "- fix what is confirmed and leave it uncommitted;\n"
+    "- fold what is left into the false-positive doctrine rather than reviewing this scope again."
+)
 TRIAGE_NUDGED = "report-nudged"
 # How many times a run may be asked for its report before the gate gives up. Not once: a stop
 # hook also fires when the turn is interrupted, and a single ask was spent there instead of at the
@@ -3646,7 +3665,12 @@ def report_lines(run_dir, meta, verdicts=None):
         read_jsonl(run_dir / "verdicts.jsonl") if (run_dir / "verdicts.jsonl").exists() else []
     )
     earned = escalation_verdict(*escalation_numbers(run_dir, meta, verdict_rows))
+    # The gate prices what the findings earned; it cannot see how many rounds this scope has
+    # already spent, and a second one that offers a third is how a scope gets reviewed forever.
+    if earned and review_round(run_dir, meta) >= ROUND_BUDGET:
+        earned = ROUND_BUDGET_SPENT
     rows.append(("round:", earned or "closed — nothing more is owed before the commit"))
+    rows.append(("fixes:", fix_status(run_dir, summary["confirmed"])[0]))
     rejected_counts = [
         ("duplicate", summary["duplicate"]),
         ("false", summary["false_positive"]),
@@ -3806,6 +3830,83 @@ def write_report_receipt(run_dir, verdicts, severities=None):
     }) + "\n")
 
 
+def read_fix_status(run_dir):
+    try:
+        stored = json.loads((run_dir / FIX_RECEIPT).read_text())
+    except (OSError, ValueError):
+        return None
+    return stored if isinstance(stored, dict) else None
+
+
+def confirmed_count(verdicts):
+    """The confirmed verdicts of a row list, counted the way `bench_summary` counts them, so the
+    frame's header and the `fixes:` row underneath it can never disagree about the same run."""
+    return sum(
+        1 for row in verdicts or ()
+        if isinstance(row, dict) and row.get("rater") and row.get("verdict") == "confirmed"
+    )
+
+
+def fix_status(run_dir, confirmed):
+    """The report's `fixes:` value and whether the round is still unfinished.
+
+    Carried in every state, because a line printed only sometimes is one whose absence reads as
+    "applied": a round is finished when somebody recorded that it is, never by default.
+    """
+    record = read_fix_status(run_dir)
+    if not confirmed:
+        return "nothing to fix", False
+    if record and record.get("state") == "done":
+        return (
+            f"done — {counted_int(record.get('fixed'))} fixed, "
+            f"{counted_int(record.get('false_positives'))} false positives"
+        ), False
+    reason = " ".join(str((record or {}).get("reason") or "").split())
+    return f"NOT APPLIED — {reason or 'pending'}", True
+
+
+def run_scope_key(meta):
+    """What two runs must share to be rounds over one scope: the tree each read and the paths it
+    was narrowed to, every member of a merged panel included. Resolved, because the same checkout
+    reaches a run under more than one spelling and two spellings are not two scopes.
+    """
+    def entry(record):
+        recorded = str(record.get("repo") or "")
+        return (
+            str(resolved_repo_path(recorded) or recorded) if recorded else "",
+            tuple(sorted(str(item) for item in record.get("scope") or ())),
+        )
+
+    members = tuple(sorted(
+        entry(record) for record in meta.get("repos") or () if isinstance(record, dict)
+    ))
+    return entry(meta), members
+
+
+def review_round(run_dir, meta):
+    """Which round of its scope this run is: the second once an earlier run of the same scope has
+    fix status on record, the first otherwise.
+
+    Read off the runs on disk rather than off a flag, because the caller that would have to pass
+    the flag is exactly the one a spent round budget exists to argue with — and a round nobody
+    ever fixed is not a round the scope has spent.
+    """
+    key = run_scope_key(meta)
+    benches = run_dir.parent
+    for other in sorted(benches.iterdir()) if benches.exists() else ():
+        if other.name >= run_dir.name:
+            break
+        if not (other / FIX_RECEIPT).exists():
+            continue
+        try:
+            earlier = json.loads((other / "meta.json").read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(earlier, dict) and run_scope_key(earlier) == key:
+            return ROUND_BUDGET
+    return 1
+
+
 def member_finding_prefix(meta, commit):
     """The prefix a merged run's findings carry for the repository whose snapshot is `commit`, or
     "" when the run read one repository. A merged review names the merged workspace's commit and
@@ -3962,7 +4063,9 @@ def emit_report(run_dir, meta, verdicts=None):
         for line in pending_lines(run_dir, meta):
             print(line)
         return
-    print(REPORT_BEGIN)
+    resolved = verdicts if verdicts is not None else read_jsonl(run_dir / "verdicts.jsonl")
+    unfinished = fix_status(run_dir, confirmed_count(resolved))[1]
+    print(REPORT_UNFINISHED_BEGIN if unfinished else REPORT_BEGIN)
     for line in report_lines(run_dir, meta, verdicts):
         print(line)
     print(REPORT_END)
@@ -7645,6 +7748,70 @@ def cmd_pending_report(args):
     return 0
 
 
+def cmd_fixes(args):
+    """Record what happened to a triaged round's confirmed findings, so the report can say it.
+
+    Two forms and no third: the work was done, with the two counts the report prints, or it was
+    not, with the reason it was not. A round with nothing on record is neither — it reads as
+    pending, which is what an interrupted fixing pass actually leaves behind.
+    """
+    run_dir = state_dir() / "benches" / args.run_id
+    if not (run_dir / "meta.json").exists():
+        raise ValueError(f"unknown run id: {args.run_id}")
+    if args.blocked is not None:
+        if args.fixed is not None or args.fp is not None:
+            raise ValueError("--fixed and --fp belong to --done; a blocked round fixed nothing")
+        reason = " ".join(str(args.blocked).split())
+        if not reason:
+            raise ValueError("--blocked must carry the reason the fixes were not applied")
+        record = {"state": "blocked", "reason": reason}
+        line = f"NOT APPLIED — {reason}"
+    else:
+        if args.fixed is None or args.fp is None:
+            raise ValueError("--done needs --fixed N and --fp M: the report prints both numbers")
+        if args.fixed < 0 or args.fp < 0:
+            raise ValueError("--fixed and --fp count findings, so neither can be negative")
+        record = {"state": "done", "fixed": args.fixed, "false_positives": args.fp}
+        line = f"done — {args.fixed} fixed, {args.fp} false positives"
+    record["recorded_at"] = iso_now()
+    session = launching_session()
+    if session:
+        record["session"] = session
+    (run_dir / FIX_RECEIPT).write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+    print(f"{args.run_id} fixes: {line}")
+    return 0
+
+
+def cmd_pending_delivery(args):
+    """Every run this chat launched whose triage is recorded, newest last, one id per line.
+
+    A run a headless worker triaged left no command output in this chat to carry its block, so the
+    report the delivery gate exists to hand Egor has nothing to find; this is the only thing that
+    names one. Bounded by the window `pending-report` asks in, because an old run's report is
+    about a diff that has since moved, and read-only — a delivery ledger decides what is new, not
+    a mark written here.
+    """
+    session = str(args.session or "").strip()
+    if not session:
+        raise ValueError("--session names the chat whose runs to answer for")
+    benches = state_dir() / "benches"
+    now = datetime.now(timezone.utc)
+    for run_dir in sorted(benches.iterdir()) if benches.exists() else ():
+        try:
+            meta = json.loads((run_dir / "meta.json").read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(meta, dict) or str(meta.get("session") or "") != session:
+            continue
+        if not run_triaged(run_dir):
+            continue
+        finished = parse_iso_timestamp(meta.get("finished") or meta.get("finished_at"))
+        if finished is None or (now - finished).total_seconds() > TRIAGE_GATE_HOURS * 3600:
+            continue
+        print(run_dir.name)
+    return 0
+
+
 def debt_query_paths(repo, paths):
     """The queried paths as the artifacts record them: repository-relative, deduplicated, sorted.
 
@@ -8419,7 +8586,14 @@ def handoff(run_id, paths, members=None, worktree=False):
         + (" --no-corpus" if worktree else "")
         + f" --verdicts {shlex.quote(verdict_path)}"
     )
+    fixes_done = f"review-bench fixes {shlex.quote(run_id)} --done --fixed <N> --fp <M>"
+    fixes_blocked = (
+        f"review-bench fixes {shlex.quote(run_id)} --blocked {shlex.quote('P1 threshold')}"
+    )
     print("\nADJUDICATION HANDOFF")
+    print("Orchestrator: hand this brief to a FRESH worker session, never the one that authored "
+          "the changes under review — a session judging its own work confirms nothing.")
+    print("\nSTEP 1 — blind triage.")
     print("Read these files without revealing one rater's output to another:")
     for path in paths:
         print(f"  {path}")
@@ -8431,6 +8605,17 @@ def handoff(run_id, paths, members=None, worktree=False):
     print("Merge and deduplicate the findings blind. Write one verdict per zero-based finding "
           "index as {rater, idx, verdict}, where verdict is confirmed, false_positive, or duplicate.")
     print(f"Record exactly with: {command}")
+    print(f"\nTHRESHOLD STOP — {HANDOFF_P1_STOP} or more confirmed P1s: fix NOTHING. Record the "
+          f"verdicts as above, record the fix status as blocked with `{fixes_blocked}`, then stop "
+          "and report back with the P1 list.")
+    print("Orchestrator: at that threshold the next move is Egor's fork decision. A session "
+          "running in maximum autonomy never pauses for it — it takes the decision itself and "
+          "sends the worker on to step 2.")
+    print("\nSTEP 2 — the same worker pass, immediately after `record`.")
+    print("Fix every confirmed finding. Run the test suites covering what you touched in every "
+          "repository. Mutation-verify each new test assert: revert the code it guards, confirm "
+          "the assert fails, restore it. Commit and stage nothing — leave the work in the tree.")
+    print(f"Then record the outcome exactly with: {fixes_done}")
 
 
 def redact_command(rater, command):
@@ -10433,6 +10618,31 @@ def main():
         help="Only runs this chat launched, plus any run recording no launching chat",
     )
     pending.set_defaults(func=cmd_pending_report)
+
+    delivery = subparsers.add_parser(
+        "pending-delivery",
+        help="Run ids this chat launched whose triage is recorded, one per line",
+    )
+    delivery.add_argument("--session", default="", metavar="ID", required=True,
+                          help="The chat whose runs to answer for")
+    delivery.set_defaults(func=cmd_pending_delivery)
+
+    fixes = subparsers.add_parser(
+        "fixes", help="Record whether a triaged round's confirmed findings were fixed"
+    )
+    fixes.add_argument("run_id")
+    fixes_state = fixes.add_mutually_exclusive_group(required=True)
+    fixes_state.add_argument(
+        "--done", action="store_true", help="the confirmed findings are fixed"
+    )
+    fixes_state.add_argument(
+        "--blocked", metavar="REASON", help="why they were not applied"
+    )
+    fixes.add_argument("--fixed", type=int, metavar="N",
+                       help="confirmed findings fixed (with --done)")
+    fixes.add_argument("--fp", type=int, metavar="M",
+                       help="findings that turned out false while fixing (with --done)")
+    fixes.set_defaults(func=cmd_fixes)
 
     debt = subparsers.add_parser(
         "debt",

@@ -586,11 +586,19 @@ assert doc_has 'Hammerspoon launchd agent identity'
 # side still renders, so nothing fails until a report silently stops being found.
 FRAME_WIDTH=50
 FRAME_WORD=review
+# The mark a round that still owes its fixes wears inside the same frame (row as). The emitter
+# builds the word, both consumers make it optional in their header regex; either side alone is a
+# report that stops being delivered the moment it starts mattering.
+FRAME_UNFINISHED_MARK='· NOT FINISHED'
 FRAME_FOOTER_RE='={10,}'
 assert test "$(grep -Ec '^REPORT_FRAME_WIDTH = ' "$REVIEWBENCH")" -eq 1
 rb_frame_width=$(grep -E '^REPORT_FRAME_WIDTH = [0-9]+$' "$REVIEWBENCH" | awk '{print $3}')
 assert eq "$rb_frame_width" "$FRAME_WIDTH"
 assert grep -Fq "REPORT_FRAME_WORD = \"$FRAME_WORD\"" "$REVIEWBENCH"
+assert grep -Fq "REPORT_UNFINISHED_WORD = f\"{REPORT_FRAME_WORD} $FRAME_UNFINISHED_MARK\"" \
+  "$REVIEWBENCH"
+assert grep -Fq 'REPORT_UNFINISHED_BEGIN = report_frame_header(REPORT_UNFINISHED_WORD)' \
+  "$REVIEWBENCH"
 assert grep -Fq 'REPORT_END = "=" * REPORT_FRAME_WIDTH' "$REVIEWBENCH"
 assert grep -Fq "f\"{'=' * left} {word} {'=' * (fill - left)}\"" "$REVIEWBENCH"
 assert doc_has 'Review report frame'
@@ -610,12 +618,42 @@ if test -r "$COMMIT_REPORT" && test -r "$REPORT_NUDGE" && test -r "$DELIVERY_GAT
   # The review consumers narrow the header to its own word, so a commit or push report framed
   # identically is never taken for one; the closing rule stays the shared shape. Both of them
   # PRINT what they locate, so a frame either of them misreads is a report Egor never sees.
-  cs_header_re='(?m)^=+ '"$FRAME_WORD"' =+\r?(?=\n|$)'
+  cs_header_re='(?m)^=+ '"$FRAME_WORD"'(?: '"$FRAME_UNFINISHED_MARK"')? =+\r?(?=\n|$)'
   cs_footer_re='(?m)^'"$FRAME_FOOTER_RE"'\r?(?=\n|$)'
   for cs_hook in "$REPORT_NUDGE" "$DELIVERY_GATE"; do
     assert grep -Fq "HEADER_SPAN_RE = re.compile(r\"$cs_header_re\")" "$cs_hook"
     assert grep -Fq "FOOTER_SPAN_RE = re.compile(r\"$cs_footer_re\")" "$cs_hook"
   done
+  # Row as: the two spellings review-bench actually RENDERS, matched against the very regex the
+  # hooks were just pinned to. A pin on the source strings alone passes while a width, a space or
+  # the separator drifts on the emitting side, and the report that stops being found is exactly
+  # the one that still owes work.
+  frame_render=$(python3 - "$REVIEWBENCH" "$cs_header_re" <<'FRAMEPY'
+import importlib.machinery
+import importlib.util
+import re
+import sys
+
+loader = importlib.machinery.SourceFileLoader("review_bench", sys.argv[1])
+module = importlib.util.module_from_spec(importlib.util.spec_from_loader("review_bench", loader))
+loader.exec_module(module)
+header = re.compile(sys.argv[2])
+print(",".join(
+    "ok" if header.fullmatch(line) and len(line) == module.REPORT_FRAME_WIDTH else repr(line)
+    for line in (module.REPORT_BEGIN, module.REPORT_UNFINISHED_BEGIN)
+))
+FRAMEPY
+)
+  assert eq "$frame_render" "ok,ok"
+  # The Stop net's third source is the tool's own answer, so the query and the shape of what it
+  # returns are one contract: a flag renamed on either side delivers nothing and says nothing.
+  assert grep -Fq '[review_bench, "pending-delivery", "--session", session_id],' "$DELIVERY_GATE"
+  assert grep -Fq '"pending-delivery",' "$REVIEWBENCH"
+  assert grep -Fq 'delivery.add_argument("--session", default="", metavar="ID", required=True,' \
+    "$REVIEWBENCH"
+  assert doc_has 'Review report header words'
+  assert doc_has '`review · NOT FINISHED`'
+  assert doc_has '`review-bench pending-delivery --session <id>`'
   # Both hooks must read one command grammar: a run id only one of them keeps whole — the
   # collision `-<pid>` suffix included — or a launch only one recognises, splits one delivery
   # into two behaviours, and the ledger keys they share stop matching.
@@ -1561,4 +1599,4 @@ assert grep -Fq 'review_run_owner "$progress_run_session" "$progress_pid"' "$STA
 assert doc_has 'the recorded `session` first, the walk as the fallback'
 
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the debt word the bench prints, the gate translates and the statusline speaks verbatim, the journal that records whose debt a commit landed, the round-size numbers that lock a waiver, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, and the launching-chat pid walk the progress writer runs once and the statusline only falls back to) and match %s\n' "$asserts" "$DOC"
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the debt word the bench prints, the gate translates and the statusline speaks verbatim, the journal that records whose debt a commit landed, the round-size numbers that lock a waiver, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, and the two header words the bench renders and both report hooks must find) and match %s\n' "$asserts" "$DOC"
