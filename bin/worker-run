@@ -838,6 +838,16 @@ print_outcome() {
   [ "$code" != 0 ] || return 0
   if has_limit_signature "$directory" "$vendor"; then
     printf 'OUTCOME: %s_USAGE_LIMIT\n' "$(vendor_name "$vendor")"
+    # Worker agents relay these lines verbatim, so the wall's SCOPE lives here, not in agent prose:
+    # a pinned/resumed run never consulted the pool, and "every account walled" said of one sent
+    # the orchestrator hunting a pool problem that never existed.
+    if [ "$(jq -r '.pinned' "$directory/meta.json" 2>/dev/null)" = true ]; then
+      printf 'WALL: pinned account %s — pool not consulted\n' \
+        "$(jq -r '.account' "$directory/meta.json" 2>/dev/null)"
+    else
+      printf 'WALL: pool exhausted (walled: %s)\n' \
+        "$(jq -r '((.walled_accounts // []) + [.account]) | join(", ")' "$directory/meta.json" 2>/dev/null)"
+    fi
     reset=$(grep -Eioh '(retry[_ -]?at|reset(s)?([_ -]?at|[ _-]?in)?)[[:space:]:=]+[^,;]+' "$directory/out" "$directory/err" 2>/dev/null | head -n1)
     [ -z "$reset" ] || printf 'RESET: %s\n' "$reset"
   else

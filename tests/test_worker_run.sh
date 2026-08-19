@@ -614,6 +614,7 @@ for spec in 'claudeb:usage limit reached:CLAUDEB_USAGE_LIMIT' 'codex:quota exhau
   assert await_done
   assert grep -q '^STATUS: failed$' "$WORK/wait.out"
   assert grep -qx "OUTCOME: $outcome" "$WORK/wait.out"
+  assert grep -qx 'WALL: pool exhausted (walled: limitacct)' "$WORK/wait.out"
 done
 
 # A clean exit whose text merely mentions quotas is not a limit: no OUTCOME line.
@@ -1057,6 +1058,17 @@ start_ok claudeb
 assert await_done
 assert grep -qx 'OUTCOME: CLAUDEB_USAGE_LIMIT' "$WORK/wait.out"
 
+# A pinned run never consulted the pool, and its WALL line says so: worker agents relay these
+# lines verbatim in place of describing routing themselves.
+clear_stub
+set_config 'claudeb_model=opus' 'claudeb_effort=high'
+export STUB_CODE=9 STUB_ERROR='usage limit reached'
+start_ok claudeb --account pinacct
+assert await_done
+assert grep -qx 'OUTCOME: CLAUDEB_USAGE_LIMIT' "$WORK/wait.out"
+assert grep -qx 'WALL: pinned account pinacct — pool not consulted' "$WORK/wait.out"
+assert test "$(grep -c '^REROUTE:' "$WORK/wait.out")" -eq 0
+
 # Accounts carrying a live same-vendor run are excluded from the pick, so
 # parallel starts spread instead of stacking on one account.
 clear_stub
@@ -1240,6 +1252,7 @@ start_ok codex
 assert await_done
 assert grep -q '^STATUS: failed$' "$WORK/wait.out"
 assert grep -qx 'OUTCOME: CODEX_USAGE_LIMIT' "$WORK/wait.out"
+assert grep -qx 'WALL: pool exhausted (walled: walled1, walled2)' "$WORK/wait.out"
 assert meta_account_is walled2
 assert jq -e '.walled_accounts == ["walled1"]' "$RUN_DIR/meta.json" >/dev/null
 assert grep -qx 'REROUTE: walled on walled1 → continued on walled2' "$WORK/wait.out"
