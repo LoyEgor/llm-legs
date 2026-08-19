@@ -692,13 +692,29 @@ if test -r "$COMMIT_REPORT"; then
   # The third writer: an edit and the commit carrying it inside ONE Bash call are seen by neither
   # of the other two, and the debt that commit landed is then recorded under no chat at all.
   assert grep -Fq 'rj_append "$debt" "$own" "$now" "$path"' "$COMMIT_REPORT"
-  assert grep -Fq 'stamp_landed_debt "$session" "$HEAD_SNAPSHOT"' "$COMMIT_REPORT"
+  # Every repository the snapshot names, whatever the call's output parsed to: the block this hook
+  # renders reads ONE repository, and gated on it a commit in any other took no debt row at all.
+  assert grep -Fq '[ -n "$HEAD_SNAPSHOT" ] && stamp_landed_debt "$session" "$HEAD_SNAPSHOT"' \
+    "$COMMIT_REPORT"
   # What the call landed is the range between the HEAD the gate wrote down before it and this one,
   # per repository: git's summary lines are silent for a quiet commit and for a repository the
   # command never printed, and a clock over a bare HEAD answers for a co-tenant's commit as readily.
   # One snapshot per call, consumed here — nothing may keep a marker of what it reported instead.
   assert grep -Fq 'shas=$(landed_commits "$top" "$pre")' "$COMMIT_REPORT"
-  assert grep -Fq 'git -C "$1" log --first-parent -n 40 --format=%H "$2..HEAD"' "$COMMIT_REPORT"
+  assert grep -Fq 'git -C "$1" log --first-parent --format=%H "$range"' "$COMMIT_REPORT"
+  # `--amend` and a rebase REPLACE the commit the snapshot named: required to descend from it, the
+  # hook enumerated nothing and the amend that landed was answered for by nobody. Shared history is
+  # what still separates that from a checkout of an unrelated line.
+  assert grep -Fq 'git -C "$1" merge-base "$2" HEAD >/dev/null 2>&1 || return 0' "$COMMIT_REPORT"
+  # A repository whose HEAD resolved to nothing when the snapshot was taken is named by the sentinel
+  # and read as "everything this tip reaches" — dropped instead, its first commit is the one commit
+  # no reader can measure.
+  assert grep -Fq 'RJ_UNBORN=unborn' "$CLAUDE_SETUP/hooks/lib/review-journal.sh"
+  assert grep -Fq '[ -n "$head" ] || head=$RJ_UNBORN' "$CLAUDE_SETUP/hooks/lib/review-journal.sh"
+  assert grep -Fq 'if [ "$2" = "$RJ_UNBORN" ]; then' "$COMMIT_REPORT"
+  # The cap on one call's landing is read in the caller: a note written inside a command
+  # substitution is written into a subshell, and the report carries no trace of what it dropped.
+  assert grep -Fq 'truncation_note "$top" "$landed"' "$COMMIT_REPORT"
   assert grep -Fq 'rm -f "$snapshot_file"' "$COMMIT_REPORT"
   assert test "$(grep -c 'commit-report-last' "$COMMIT_REPORT")" -eq 0
   # Both hooks scope the snapshot through the same two library readers, or the repository the gate
@@ -720,12 +736,22 @@ if test -r "$COMMIT_REPORT"; then
   # workdir is normally the whole repository.
   assert grep -Fq 'scope="HEIR: ${directory##*/} $owner"' "$COMMIT_REPORT"
   assert grep -Fq 'scope="DIR: ${directory##*/}"' "$COMMIT_REPORT"
-  assert grep -Fq 'if [ -n "$owner" ] && rj_run_final "$directory"; then' "$COMMIT_REPORT"
+  assert grep -Fq 'if [ -n "$owner" ] && { [ -n "$heir" ] || rj_run_final "$directory"; }; then' \
+    "$COMMIT_REPORT"
+  # `journaled` says the record has been READ, not that its files are named: the sweep retires a run
+  # whose listing was missing or vague on the same marker, and closed on that alone the scope it
+  # never resolved passes to whoever commits next. The heir file is that scope and outranks it here.
+  assert grep -Fq '[ -e "$directory/journaled" ] && [ -z "$heir" ] && continue' "$COMMIT_REPORT"
+  assert grep -Fq '[ -f "$directory/heir" ] && heir=1' "$COMMIT_REPORT"
   assert grep -Fq 'rj_append "$debt" "${heir_owners[index]}" "$now" "$path"' "$COMMIT_REPORT"
   # A commit is claimed only where the debt journal does not already answer for it: a worker that
-  # committed in its own shell went through no hook of this flow, and its sweep's stamp postdates
-  # that commit.
+  # committed in its own shell went through no hook of this flow, and its sweep's stamp does not
+  # predate that commit — a stamp landing in the commit's own second is that same sweep, and read as
+  # older it handed the worker's file to whoever was committing beside it. Another name's row only:
+  # a settled row of OUR own is what this commit's content must not inherit.
   assert grep -Fq 'case "$newer" in *$'"'"'\n'"'"'"$path"$'"'"'\n'"'"'*) continue ;; esac' \
+    "$COMMIT_REPORT"
+  assert grep -Fq "awk -F\"\$tab\" -v c=\"\$ct\" -v o=\"\$own\" '\$1 != o && \$2 >= c { print \$3 }'" \
     "$COMMIT_REPORT"
   # An entry of ours is not a debt row of ours: the append that should have followed it can fail.
   assert grep -Fq 'case "$debt_mine" in *$'"'"'\n'"'"'"$path"$'"'"'\n'"'"'*) continue ;; esac' \
@@ -1393,7 +1419,12 @@ if [ -r "$COMMIT_JOURNAL" ]; then
   assert grep -Fq 'emit_terminal_notes' "$COMMIT_JOURNAL"
   assert grep -Fq 'session=$owner' "$COMMIT_JOURNAL"
   assert grep -Fq "sed -n 's/^WORKDIR: //p' \"\$listing\"" "$COMMIT_JOURNAL"
-  assert grep -Fq "'UNKNOWN: '*|'PARTIAL: '*|'') ;;" "$COMMIT_JOURNAL"
+  assert grep -Fq "'UNKNOWN: '*|'PARTIAL: '*) vague=1 ;;" "$COMMIT_JOURNAL"
+  # A record about ANOTHER chat's run is that chat's to act on: whoever sweeps it leaves the
+  # sentence in the OWNER's spool, since printed here it reaches a reader who can do nothing with
+  # it while the chat whose files are named nowhere never hears of them at all.
+  assert grep -Fq 'marker=$dir/$owner.commit-journal.$key' "$COMMIT_JOURNAL"
+  assert grep -Fq 'printf '"'"'%s\n'"'"' "$2" >>"$dir/$owner.commit-journal.notes"' "$COMMIT_JOURNAL"
   assert grep -Fq 'liveness=$(rj_run_liveness "$1")' "$JOURNAL_LIB"
   # ...with one release from that rule: a record whose liveness stays unknown can never be answered
   # for — no launch stamp to compare, or a `ps` that lists no process at all — so past a couple of
@@ -1405,6 +1436,12 @@ if [ -r "$COMMIT_JOURNAL" ]; then
   # A final record that will never gain a listing is retired unread: there is nothing left to
   # import, and its readers hold the whole workdir as pending while it sits there.
   assert eq "$(grep -c ': >"$directory/journaled"' "$COMMIT_JOURNAL")" 3
+  # Retired is not resolved. A run retired without its files ever being named leaves an heir naming
+  # the launcher and the workdir, or the marker alone tells the claiming hook the record is settled
+  # and the scope nobody resolved goes to whoever commits next.
+  assert grep -Fq 'leave_heir "$directory" "$owner" "$run_workdir"' "$COMMIT_JOURNAL"
+  assert grep -Fq "printf '%s\\n%s\\n' \"\$2\" \"\$3\" >\"\$1/heir\"" "$COMMIT_JOURNAL"
+  assert eq "$(grep -c 'leave_heir "\$directory" "\$owner" "\$run_workdir"' "$COMMIT_JOURNAL")" 2
   # The other writer of the debt journal, and the earlier one: ownership is stamped at the edit,
   # since a commit that arms no notice would otherwise land debt owed by nobody. Per EDIT, with no
   # scan for an older record — row ao's epoch floor makes any stand-in invisible to the reader.
