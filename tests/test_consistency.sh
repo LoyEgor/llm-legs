@@ -755,6 +755,11 @@ if test -r "$COMMIT_REPORT"; then
     "$CLAUDE_SETUP/hooks/lib/review-journal.sh"
   assert grep -Fq 'rj_snapshot_heads "$session" "$dir" "$cmd" "${payload_cwd:-$PWD}" "$landing" "${call:-}"' \
     "$FLOW_GATE"
+  # Except for a --dry-run, which lands nothing: the report exits on that same flag before it
+  # consumes anything, and the file left standing under the session-only name is read by the chat's
+  # next call carrying no id as its own evidence.
+  assert grep -Fq "! printf '%s' \"\$cmd\" | grep -qE -- '(^|[[:space:]])--dry-run([[:space:]]|\$)' &&" \
+    "$FLOW_GATE"
   # Armed for every kind that CREATES commits, not for `commit` alone: a merge, a cherry-pick and a
   # revert land content under this chat's name and were measured against no pre-call HEAD at all.
   assert grep -Fq 'for candidate in merge cherry-pick revert; do' "$FLOW_GATE"
