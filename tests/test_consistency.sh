@@ -712,8 +712,20 @@ if test -r "$COMMIT_REPORT"; then
   # A co-tenant's journal row alone is that chat's pending work, swept in by `git commit -a`.
   assert grep -Fq 'case "$foreign" in *$'"'"'\n'"'"'"$path"$'"'"'\n'"'"'*) continue ;; esac' \
     "$COMMIT_REPORT"
-  # And a run whose own listing cannot answer for its files answers with its whole workdir.
-  assert grep -Fq "printf 'DIR: %s\\n' \"\$workdir\"" "$COMMIT_REPORT"
+  # And a run whose own listing cannot answer for its files answers with its whole workdir: passed
+  # over where that listing EXISTS, since its own sweep will resolve them, and recorded under the
+  # LAUNCHER where the run never wrote one at all — nothing else will ever name those paths, and a
+  # workdir is normally the whole repository.
+  assert grep -Fq "printf 'DIR: %s %s\\n' \"\${directory##*/}\" \"\$workdir\"" "$COMMIT_REPORT"
+  assert grep -Fq "printf 'HEIR: %s %s %s\\n' \"\${directory##*/}\" \"\$owner\" \"\$workdir\"" \
+    "$COMMIT_REPORT"
+  assert grep -Fq 'rj_append "$debt" "${heir_owners[index]}" "$now" "$path"' "$COMMIT_REPORT"
+  # A commit no summary line spoke for is claimed only where the debt journal does not already
+  # answer for it: a worker that committed in its own shell went through no hook of this flow, and
+  # its sweep's stamp postdates that commit.
+  assert grep -Fq "printf 'walked:%s\\n' \"\$sha\"" "$COMMIT_REPORT"
+  assert grep -Fq 'case "$newer" in *$'"'"'\n'"'"'"$path"$'"'"'\n'"'"'*) continue ;; esac' \
+    "$COMMIT_REPORT"
   assert grep -Fq 'claimed=$'"'"'\n'"'"'$(foreign_run_claims "$own")' "$COMMIT_REPORT"
 fi
 JOURNAL_LIB="$CLAUDE_SETUP/hooks/lib/review-journal.sh"
@@ -1367,8 +1379,13 @@ if [ -r "$COMMIT_JOURNAL" ]; then
   # The launching chat is read off the launcher file, and every record is walked: a dead run whose
   # chat never came back is journaled by whoever is here, under that chat's name and not this one's.
   assert grep -Fq 'owner=$(head -n1 "$launcher" 2>/dev/null)' "$COMMIT_JOURNAL"
-  assert grep -Fq 'if [ "$owner" != "$own" ] || [ ! -f "$directory/exit_code" ]; then' \
-    "$COMMIT_JOURNAL"
+  # An exit code is the run's own statement that it is over and answers for ANY chat's record: held
+  # for a liveness probe that reads unknown, a co-tenant's finished run parks for the stale release
+  # with nothing else naming its files, while the edit notice skips it for having an exit code.
+  assert grep -Fq 'if [ ! -f "$directory/exit_code" ]; then' "$COMMIT_JOURNAL"
+  # What it could NOT record goes to the model too: a PostToolUse stderr on exit 0 reaches nobody
+  # who could review, waive or hand on the files it names.
+  assert grep -Fq 'emit_terminal_notes' "$COMMIT_JOURNAL"
   assert grep -Fq 'session=$owner' "$COMMIT_JOURNAL"
   assert grep -Fq "sed -n 's/^WORKDIR: //p' \"\$listing\"" "$COMMIT_JOURNAL"
   assert grep -Fq "'UNKNOWN: '*|'PARTIAL: '*|'') ;;" "$COMMIT_JOURNAL"
