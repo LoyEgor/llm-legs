@@ -694,8 +694,31 @@ if test -r "$COMMIT_REPORT"; then
   assert grep -Fq 'rj_append "$debt" "$own" "$now" "$path"' "$COMMIT_REPORT"
   # Every repository the snapshot names, whatever the call's output parsed to: the block this hook
   # renders reads ONE repository, and gated on it a commit in any other took no debt row at all.
-  assert grep -Fq '[ -n "$HEAD_SNAPSHOT" ] && stamp_landed_debt "$session" "$HEAD_SNAPSHOT"' \
+  assert grep -Fq '[ -n "$HEAD_SNAPSHOT" ] && snapshot_creates_commits &&' "$COMMIT_REPORT"
+  assert grep -Fq 'stamp_landed_debt "$session" "$HEAD_SNAPSHOT"' "$COMMIT_REPORT"
+  # Only a call that CREATES commits may have its range stamped, and the gate is what says which
+  # kind armed the snapshot: `git pull` moves HEAD over commits other people wrote, and stamped as
+  # this call's it puts an upstream author's paths into this chat's review scope.
+  assert grep -Fq 'RJ_SNAPSHOT_KIND=KIND' "$CLAUDE_SETUP/hooks/lib/review-journal.sh"
+  assert grep -Fq "printf '%s%s%s\\n' \"\$RJ_SNAPSHOT_KIND\" \"\$RJ_TAB\" \"\${5:-commit}\"" "$CLAUDE_SETUP/hooks/lib/review-journal.sh"
+  assert grep -Fq 'case "${SNAPSHOT_KIND:-commit}" in commit|merge|cherry-pick|revert) return 0 ;; esac' \
     "$COMMIT_REPORT"
+  assert grep -Fq '[ "$top" = "$RJ_SNAPSHOT_KIND" ] && continue' "$COMMIT_REPORT"
+  # A merge answers `--name-only` with nothing at all unless the diff is taken against its FIRST
+  # parent, so every path a merge brought to this line went into no debt row.
+  assert grep -Fq 'git -C "$top" log -1 --format= --name-only --first-parent -z "$full"' \
+    "$COMMIT_REPORT"
+  # One snapshot per CALL: a chat runs Bash calls concurrently, and one name for all of them let the
+  # second call's snapshot overwrite the first's. Both hooks key it on the `tool_use_id` their
+  # payloads carry — the same id on the PreToolUse that writes the file and the PostToolUse that
+  # consumes it — and fall back to the session-only name only where the payload carries none.
+  assert grep -Fq "printf '%s/.cache/claude/review-journal/%s.%s.heads' \"\$HOME\" \"\$1\" \"\$2\"" \
+    "$CLAUDE_SETUP/hooks/lib/review-journal.sh"
+  assert grep -Fq "call=\$(printf '%s' \"\$payload\" | jq -r '.tool_use_id // empty' 2>/dev/null)" \
+    "$COMMIT_REPORT"
+  assert grep -Fq "call=\$(printf '%s' \"\$input\" | jq -r '.tool_use_id // empty' 2>/dev/null)" \
+    "$FLOW_GATE"
+  assert grep -Fq 'snapshot_file=$(rj_head_snapshot "$session" "$call")' "$COMMIT_REPORT"
   # What the call landed is the range between the HEAD the gate wrote down before it and this one,
   # per repository: git's summary lines are silent for a quiet commit and for a repository the
   # command never printed, and a clock over a bare HEAD answers for a co-tenant's commit as readily.
@@ -721,7 +744,12 @@ if test -r "$COMMIT_REPORT"; then
   # wrote down and the one the report stamps in are not the same set.
   assert grep -Fq 'done < <(rj_journal_homes "$2"; rj_command_dirs "$3" "$4")' \
     "$CLAUDE_SETUP/hooks/lib/review-journal.sh"
-  assert grep -Fq 'rj_snapshot_heads "$session" "$dir" "$cmd" "${payload_cwd:-$PWD}"' "$FLOW_GATE"
+  assert grep -Fq 'rj_snapshot_heads "$session" "$dir" "$cmd" "${payload_cwd:-$PWD}" "$landing" "${call:-}"' \
+    "$FLOW_GATE"
+  # Armed for every kind that CREATES commits, not for `commit` alone: a merge, a cherry-pick and a
+  # revert land content under this chat's name and were measured against no pre-call HEAD at all.
+  assert grep -Fq 'for candidate in merge cherry-pick revert; do' "$FLOW_GATE"
+  assert grep -Fq 'git_subcommand commit && { kind=commit; landing=commit; }' "$FLOW_GATE"
   # A worktree shares its parent's object store, so resolving a sha there is not evidence its
   # content ever landed in that tree.
   assert grep -Fq 'git -C "$top" merge-base --is-ancestor "$full" HEAD' "$COMMIT_REPORT"
@@ -1425,6 +1453,10 @@ if [ -r "$COMMIT_JOURNAL" ]; then
   # it while the chat whose files are named nowhere never hears of them at all.
   assert grep -Fq 'marker=$dir/$owner.commit-journal.$key' "$COMMIT_JOURNAL"
   assert grep -Fq 'printf '"'"'%s\n'"'"' "$2" >>"$dir/$owner.commit-journal.notes"' "$COMMIT_JOURNAL"
+  # Moved aside before it is read: a foreign sweep appending between the read and the unlink writes
+  # into a file about to be deleted, and that sentence is the only record that some chat's files are
+  # named nowhere.
+  assert grep -Fq 'if mv -f "$spool" "$taken" 2>/dev/null; then' "$COMMIT_JOURNAL"
   assert grep -Fq 'liveness=$(rj_run_liveness "$1")' "$JOURNAL_LIB"
   # ...with one release from that rule: a record whose liveness stays unknown can never be answered
   # for — no launch stamp to compare, or a `ps` that lists no process at all — so past a couple of
