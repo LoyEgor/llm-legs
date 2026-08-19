@@ -703,6 +703,10 @@ if test -r "$COMMIT_REPORT"; then
   assert grep -Fq "printf '%s%s%s\\n' \"\$RJ_SNAPSHOT_KIND\" \"\$RJ_TAB\" \"\${5:-commit}\"" "$CLAUDE_SETUP/hooks/lib/review-journal.sh"
   assert grep -Fq 'case "${SNAPSHOT_KIND:-commit}" in commit|merge|cherry-pick|revert) return 0 ;; esac' \
     "$COMMIT_REPORT"
+  # A `git merge` that FAST-FORWARDS creates nothing either: it is the same range of other people's
+  # commits a pull brings, and only a commit carrying a second parent was made by the call.
+  assert grep -Fq 'if [ "${SNAPSHOT_KIND:-commit}" = merge ]; then' "$COMMIT_REPORT"
+  assert grep -Fq 'git -C "$top" rev-list --no-walk --merges --stdin' "$COMMIT_REPORT"
   assert grep -Fq '[ "$top" = "$RJ_SNAPSHOT_KIND" ] && continue' "$COMMIT_REPORT"
   # A merge answers `--name-only` with nothing at all unless the diff is taken against its FIRST
   # parent, so every path a merge brought to this line went into no debt row.
@@ -713,6 +717,11 @@ if test -r "$COMMIT_REPORT"; then
   # payloads carry — the same id on the PreToolUse that writes the file and the PostToolUse that
   # consumes it — and fall back to the session-only name only where the payload carries none.
   assert grep -Fq "printf '%s/.cache/claude/review-journal/%s.%s.heads' \"\$HOME\" \"\$1\" \"\$2\"" \
+    "$CLAUDE_SETUP/hooks/lib/review-journal.sh"
+  # A call the gate refused takes no PostToolUse and its snapshot stays: aged out under BOTH names,
+  # since the session-only fallback matches no per-call glob and the next call carrying no id of its
+  # own then consumes another call's tree as its evidence.
+  assert grep -Fq '\( -name "$1.*.heads" -o -name "$1.heads" \)' \
     "$CLAUDE_SETUP/hooks/lib/review-journal.sh"
   assert grep -Fq "call=\$(printf '%s' \"\$payload\" | jq -r '.tool_use_id // empty' 2>/dev/null)" \
     "$COMMIT_REPORT"
@@ -770,7 +779,11 @@ if test -r "$COMMIT_REPORT"; then
   # whose listing was missing or vague on the same marker, and closed on that alone the scope it
   # never resolved passes to whoever commits next. The heir file is that scope and outranks it here.
   assert grep -Fq '[ -e "$directory/journaled" ] && [ -z "$heir" ] && continue' "$COMMIT_REPORT"
-  assert grep -Fq '[ -f "$directory/heir" ] && heir=1' "$COMMIT_REPORT"
+  assert grep -Fq '[ -f "$directory/heir" ] && {' "$COMMIT_REPORT"
+  # Whose that scope is comes off the heir itself, whose owner line is EMPTY where the launcher
+  # named nobody a journal entry could carry: read off the launcher alone, a name this flow rejects
+  # everywhere else would inherit the debt here.
+  assert grep -Fq 'owner=$(sed -n 1p "$directory/heir" 2>/dev/null)' "$COMMIT_REPORT"
   assert grep -Fq 'rj_append "$debt" "${heir_owners[index]}" "$now" "$path"' "$COMMIT_REPORT"
   # A commit is claimed only where the debt journal does not already answer for it: a worker that
   # committed in its own shell went through no hook of this flow, and its sweep's stamp does not
@@ -785,6 +798,11 @@ if test -r "$COMMIT_REPORT"; then
   assert grep -Fq 'case "$debt_mine" in *$'"'"'\n'"'"'"$path"$'"'"'\n'"'"'*) continue ;; esac' \
     "$COMMIT_REPORT"
   assert grep -Fq 'claimed=$'"'"'\n'"'"'$(foreign_run_claims "$own")' "$COMMIT_REPORT"
+  # A path passed over on a DIR claim is left to a sweep that names no path at all for a run ending
+  # unable to list its files: written down beside the run record, it is journalled under that run's
+  # owner when the record is swept instead of staying in nobody's debt row for good.
+  assert grep -Fq 'defer_path "${dir_ids[index]}" "$top" "$path"' "$COMMIT_REPORT"
+  assert grep -Fq "printf '%s\\t%s\\n' \"\$2\" \"\$3\" >>\"\$dir/deferred-paths\"" "$COMMIT_REPORT"
 fi
 JOURNAL_LIB="$CLAUDE_SETUP/hooks/lib/review-journal.sh"
 if test -r "$JOURNAL_LIB"; then
@@ -1457,6 +1475,15 @@ if [ -r "$COMMIT_JOURNAL" ]; then
   # into a file about to be deleted, and that sentence is the only record that some chat's files are
   # named nowhere.
   assert grep -Fq 'if mv -f "$spool" "$taken" 2>/dev/null; then' "$COMMIT_JOURNAL"
+  # The deferred paths of a run are read on every call, retired record or not: `journaled` closes
+  # the sweep below to it, and a commit deferring a path lands after that marker as readily as
+  # before it. Consumed by the same move-aside, so a report appending mid-read loses nothing.
+  assert grep -Fq 'consume_deferred "$directory" "$owner"' "$COMMIT_JOURNAL"
+  # Including the note about a listing no workdir can anchor: keyed and printed under the SWEEPING
+  # chat it is spent on a marker the owner never sees and read by a chat that can do nothing about
+  # it, while the one whose files are named nowhere never hears of them.
+  assert eq "$(grep -c '^          "\$owner"$' "$COMMIT_JOURNAL")" 1
+  assert grep -Fq 'mv -f "$file" "$taken" 2>/dev/null || return 0' "$COMMIT_JOURNAL"
   assert grep -Fq 'liveness=$(rj_run_liveness "$1")' "$JOURNAL_LIB"
   # ...with one release from that rule: a record whose liveness stays unknown can never be answered
   # for — no launch stamp to compare, or a `ps` that lists no process at all — so past a couple of
@@ -1472,6 +1499,9 @@ if [ -r "$COMMIT_JOURNAL" ]; then
   # the launcher and the workdir, or the marker alone tells the claiming hook the record is settled
   # and the scope nobody resolved goes to whoever commits next.
   assert grep -Fq 'leave_heir "$directory" "$owner" "$run_workdir"' "$COMMIT_JOURNAL"
+  # A launcher naming nobody usable leaves one too, with an EMPTY owner line: the marker alone would
+  # close that workdir to the claim scan, and a name no journal entry can carry may not inherit it.
+  assert grep -Fq 'leave_heir "$directory" "" "$run_workdir"' "$COMMIT_JOURNAL"
   assert grep -Fq "printf '%s\\n%s\\n' \"\$2\" \"\$3\" >\"\$1/heir\"" "$COMMIT_JOURNAL"
   assert eq "$(grep -c 'leave_heir "\$directory" "\$owner" "\$run_workdir"' "$COMMIT_JOURNAL")" 2
   # The other writer of the debt journal, and the earlier one: ownership is stamped at the edit,
