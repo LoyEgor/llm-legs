@@ -649,6 +649,13 @@ FRAMEPY
   # returns are one contract: a flag renamed on either side delivers nothing and says nothing.
   assert grep -Fq '[review_bench, "pending-delivery", "--session", session_id],' "$DELIVERY_GATE"
   assert grep -Fq '"pending-delivery",' "$REVIEWBENCH"
+  # And the STATE beside each id, which is half the ledger key: the net's line regex accepts these
+  # three spellings and drops every other line without a word, so a state added or renamed on the
+  # emitting side reaches nobody and nothing fails. Spelled once per repository, here held equal.
+  cs_delivery_states='done|blocked|unfinished'
+  assert grep -Fq "DELIVERY_STATES = (\"${cs_delivery_states//|/\", \"}\")" "$REVIEWBENCH"
+  assert grep -Fq "Z-[0-9a-f]+(?:-\\d+)?) ($cs_delivery_states)\\Z\")" "$DELIVERY_GATE"
+  assert doc_has 'exactly `done`, `blocked` and `unfinished`'
   assert grep -Fq 'delivery.add_argument("--session", default="", metavar="ID", required=True,' \
     "$REVIEWBENCH"
   assert doc_has 'Review report header words'

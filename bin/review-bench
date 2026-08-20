@@ -173,6 +173,10 @@ TRIAGE_GATE_HOURS = 6
 # a chat running since the 15th listed 39 pre-fixes-mechanism runs at once — none of which can ever
 # gain a fix status — and the Stop gate rendered every one of them into a single 39KB message.
 DELIVERY_UNFINISHED_MAX_HOURS = 24
+# Every state the delivery queue may name, and the whole vocabulary the Stop net's line regex
+# accepts (docs/shared-invariants.md as). A state spelled on one side only is a line the other
+# side discards in silence, which is a report Egor never sees.
+DELIVERY_STATES = ("done", "blocked", "unfinished")
 REPORT_RECEIPT = "reported.json"
 FIX_RECEIPT = "fixes.json"
 # Confirmed P1s at which the fixing pass stops instead of starting: past it the round is not a
@@ -183,6 +187,12 @@ HANDOFF_P1_STOP = 3
 # back twice is answered by fixing what is confirmed and writing the rest into the false-positive
 # doctrine, not by a panel pricing the same code again.
 ROUND_BUDGET = 2
+# How long an earlier fixed round keeps answering for its scope. A round and the round that reads
+# its fixes are one piece of work, and that pass runs over an uncommitted tree — days at the
+# outside. Without the bound the path test below is not enough on its own: a full-repository scope
+# reads a superset of every earlier one, so a single fixed round would price every later review of
+# that checkout as its second forever, taking the escalation fork and the waiver lock with it.
+ROUND_LINEAGE_MAX_HOURS = 72
 ROUND_BUDGET_SPENT = (
     "second round over this scope — the budget of two is spent, and there is no third:\n"
     "- fix what is confirmed and leave it uncommitted;\n"
@@ -192,6 +202,10 @@ TRIAGE_NUDGED = "report-nudged"
 # Stamped by `worker-run` when the brief it launches carries this run's `record` command: the
 # triage is that worker's, and a Stop gate nagging the chat meanwhile asks for the same work twice.
 DELEGATED_STAMP = "delegated"
+# How far the stamped supervisor's own start may sit from the launch instant recorded beside its
+# pid before the number belongs to a different process. Held equal to the slack the review hooks
+# judge the same supervisors by (shared-invariants row `ar`, `RJ_PID_SLACK`).
+DELEGATED_PID_SLACK = 30
 # How many times a run may be asked for its report before the gate gives up. Not once: a stop
 # hook also fires when the turn is interrupted, and a single ask was spent there instead of at the
 # end of the turn it was meant to gate (seen live 2026-07-31). Still bounded, because a triage
@@ -3680,7 +3694,7 @@ def report_lines(run_dir, meta, verdicts=None):
     if earned and review_round(run_dir, meta) >= ROUND_BUDGET:
         earned = ROUND_BUDGET_SPENT
     rows.append(("round:", earned or "closed — nothing more is owed before the commit"))
-    rows.append(("fixes:", fix_status(run_dir, summary["confirmed"])[0]))
+    rows.append(("fixes:", fix_status(run_dir, summary["confirmed"], verdict_rows)[0]))
     rejected_counts = [
         ("duplicate", summary["duplicate"]),
         ("false", summary["false_positive"]),
@@ -3877,7 +3891,22 @@ def confirmed_count(verdicts):
     )
 
 
-def fix_status(run_dir, confirmed):
+def triage_digest(verdicts):
+    """A fingerprint of the confirmed rows a receipt answers for.
+
+    The count alone cannot tell a re-adjudication that swapped one confirmed finding for another
+    from the triage the receipt was written against, and the finding nobody fixed then reads as
+    done on the strength of a pass that never saw it.
+    """
+    rows = sorted(
+        f"{row.get('rater')}\x00{row.get('idx')}"
+        for row in verdicts or ()
+        if isinstance(row, dict) and row.get("rater") and row.get("verdict") == "confirmed"
+    )
+    return hashlib.sha256("\n".join(rows).encode()).hexdigest()[:16]
+
+
+def fix_status(run_dir, confirmed, verdicts=None):
     """The report's `fixes:` value and whether the round is still unfinished.
 
     Carried in every state, because a line printed only sometimes is one whose absence reads as
@@ -3896,6 +3925,17 @@ def fix_status(run_dir, confirmed):
             return (
                 f"NOT APPLIED — recorded against a triage of {against} confirmed, "
                 f"and this one has {confirmed}"
+            ), True
+        # And answers for those findings, not merely for how many there were: a re-adjudication
+        # that confirms a different finding in place of the old one leaves the count where it was.
+        # Only a receipt carrying the fingerprint can be asked — the ones written before it went in
+        # keep the count answer rather than reading unfinished for want of a field.
+        stamped = record.get("triage")
+        if (isinstance(stamped, str) and stamped and verdicts is not None
+                and stamped != triage_digest(verdicts)):
+            return (
+                f"NOT APPLIED — recorded against a different triage of the same {confirmed} "
+                "confirmed"
             ), True
         return (
             f"done — {counted_int(record.get('fixed'))} fixed, "
@@ -3945,9 +3985,21 @@ def review_round(run_dir, meta):
     answering for this one and lose the escalation fork for good. The second round is the run a
     lock demands, so it is recognised by what discharges a lock: reading the whole of what the
     round before it read.
+
+    And held to `ROUND_LINEAGE_MAX_HOURS` as well as to the paths, because the path test does not
+    settle that on its own: a full-repository scope reads a SUPERSET of every earlier round of the
+    same checkout, and a run whose meta carries no `reviewed` map at all — every commit-point and
+    ranged run — offers the empty set, which is a subset of anything. Either way one fixed round
+    would answer for every later review of that repository, forever. Two rounds of one piece of
+    work sit days apart at the outside; a round nothing has answered in longer is history.
     """
     key = run_scope_key(meta)
     held = run_reviewed_paths(meta)
+    # Measured against this run's own finish and never against the clock: a round's number is
+    # printed into its report and read back by every later `debt`, and one computed from `now`
+    # would answer differently every time the same block was re-rendered.
+    since = parse_iso_timestamp(meta.get("finished") or meta.get("finished_at")) or utc_now()
+    floor = since - timedelta(hours=ROUND_LINEAGE_MAX_HOURS)
     benches = run_dir.parent
     for other in sorted(benches.iterdir()) if benches.exists() else ():
         if other.name >= run_dir.name:
@@ -3960,6 +4012,9 @@ def review_round(run_dir, meta):
         except (OSError, ValueError):
             continue
         if not isinstance(earlier, dict) or run_scope_key(earlier) != key:
+            continue
+        finished = parse_iso_timestamp(earlier.get("finished") or earlier.get("finished_at"))
+        if finished is None or finished < floor:
             continue
         if run_reviewed_paths(earlier) <= held:
             return ROUND_BUDGET
@@ -4064,32 +4119,76 @@ def escalation_numbers(run_dir, meta, verdicts, repo=None):
     return own, sum(whole.values())
 
 
+def pid_elapsed_seconds(pid):
+    """How long the process wearing `pid` has been running, or None where `ps` lists nothing.
+
+    `ps` and never `kill -0` (shared-invariants row `ar`): a live process owned by another user
+    answers EPERM to the signal probe and reads as dead, while `ps` lists it.
+    """
+    try:
+        proc = subprocess.run(["ps", "-p", str(pid), "-o", "etime="],
+                              capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    raw = proc.stdout.strip()
+    if not raw:
+        return None
+    fields = raw.replace("-", ":").split(":")
+    multipliers = (1, 60, 3600, 86400)
+    if len(fields) > len(multipliers):
+        return None
+    try:
+        numbers = [int(field) for field in fields]
+    except ValueError:
+        return None
+    return sum(value * scale for value, scale in zip(reversed(numbers), multipliers))
+
+
 def triage_delegated(run_dir):
     """Whether a live worker holds this run's triage.
 
-    The stamp's first line is the pid `worker-run` supervises. A pid that is gone hands the run
-    straight back to the gate — a worker that died mid-triage is exactly what the nag is for — and
-    an unsignalable live process (another user's) is alive, not dead.
+    The stamp's first line is the pid `worker-run` supervises and the instant that pid began. A
+    pid that is gone hands the run straight back to the gate — a worker that died mid-triage is
+    exactly what the nag is for — and the instant is what says the pid is STILL that worker's: the
+    number is reused within a day on a busy machine, and whatever inherits it answers a probe
+    exactly as the supervisor would, silencing an untriaged run for as long as it lives. That is
+    the pid-reuse rule of shared-invariants row `ar`, which this reader is bound by like the rest.
+
+    A stamp carrying no instant keeps the run silenced on the bare pid: stamps written before the
+    field went in must not start reading dead. So does a `ps` that cannot answer at all, which is
+    only ever told apart from death by asking it for a pid that must exist.
     """
     try:
-        stamped = (run_dir / DELEGATED_STAMP).read_text().split("\n", 1)[0].strip()
+        stamped = (run_dir / DELEGATED_STAMP).read_text().split("\n", 1)[0].split()
     except (OSError, UnicodeDecodeError):
         return False
+    if not stamped:
+        return False
     try:
-        pid = int(stamped)
+        pid = int(stamped[0])
     except ValueError:
         return False
     if pid <= 0:
         return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
+    elapsed = pid_elapsed_seconds(pid)
+    if elapsed is None:
+        # Pid 1 and never this process: a sandbox hiding every process but our own still lists our
+        # own, and a foreign supervisor would then read gone.
+        return pid_elapsed_seconds(1) is None
+    if len(stamped) < 2:
         return True
-    except OSError:
-        return False
-    return True
+    try:
+        began = int(stamped[1])
+    except ValueError:
+        return True
+    return abs(int(utc_now().timestamp()) - elapsed - began) <= DELEGATED_PID_SLACK
+
+
+def delegate_gone(run_dir):
+    """Whether a worker was handed this run's pass and is no longer running. A run nobody
+    delegated says nothing here: the chat that triaged it may be fixing in this very turn.
+    """
+    return (run_dir / DELEGATED_STAMP).exists() and not triage_delegated(run_dir)
 
 
 def triage_pending_run(repo=None, session=None):
@@ -4165,7 +4264,7 @@ def emit_report(run_dir, meta, verdicts=None):
             print(line)
         return
     resolved = verdicts if verdicts is not None else read_jsonl(run_dir / "verdicts.jsonl")
-    unfinished = fix_status(run_dir, confirmed_count(resolved))[1]
+    unfinished = fix_status(run_dir, confirmed_count(resolved), resolved)[1]
     print(REPORT_UNFINISHED_BEGIN if unfinished else REPORT_BEGIN)
     for line in report_lines(run_dir, meta, verdicts):
         print(line)
@@ -7879,12 +7978,26 @@ def cmd_fixes(args):
             raise ValueError("--done needs --fixed N and --fp M: the report prints both numbers")
         if args.fixed < 0 or args.fp < 0:
             raise ValueError("--fixed and --fp count findings, so neither can be negative")
+        rows = recorded_verdict_rows(run_dir)
+        confirmed = confirmed_count(rows)
+        # A done receipt says the round's confirmed findings were answered, and the two counts are
+        # the answer: fewer between them than the triage confirmed is a pass that stopped, which
+        # has its own form. Unchecked, `--done --fixed 0 --fp 0` retired the loud frame and spent
+        # the scope's round budget over work nobody did.
+        if args.fixed + args.fp < confirmed:
+            raise ValueError(
+                f"--fixed {args.fixed} and --fp {args.fp} answer for fewer findings than the "
+                f"{confirmed} this triage confirmed: a pass that left some of them standing is "
+                "--blocked with the reason, not done"
+            )
         record = {
             "state": "done", "fixed": args.fixed, "false_positives": args.fp,
             # Which triage this answers for. Counted off the same rows the report counts, so a
             # receipt written over one pass is recognised as stale the moment a re-adjudication
             # replaces it — and never merely because the two read different copies of one triage.
-            "confirmed": confirmed_count(recorded_verdict_rows(run_dir)),
+            # The fingerprint beside the count is what catches a re-adjudication of the same size.
+            "confirmed": confirmed,
+            "triage": triage_digest(rows),
         }
         line = f"done — {args.fixed} fixed, {args.fp} false positives"
     record["recorded_at"] = iso_now()
@@ -7903,10 +8016,16 @@ def delivery_state(run_dir):
     A round with nothing confirmed is `done` at its triage: no fixing pass will ever record a
     receipt for it, and a report held back for one would never be delivered at all.
     """
+    rows = recorded_verdict_rows(run_dir)
     state = str((read_fix_status(run_dir) or {}).get("state") or "")
-    if state in ("done", "blocked"):
-        return state
-    if not confirmed_count(recorded_verdict_rows(run_dir)):
+    if state == "done":
+        # Read through `fix_status` and never off the raw field: a receipt the report has already
+        # rejected for answering another triage renders NOT FINISHED, and queued as `done` it
+        # spends the one ledger key the finished report is ever delivered under.
+        return None if fix_status(run_dir, confirmed_count(rows), rows)[1] else "done"
+    if state == "blocked":
+        return "blocked"
+    if not confirmed_count(rows):
         return "done"
     return None
 
@@ -7953,10 +8072,21 @@ def cmd_pending_delivery(args):
         aged = age > TRIAGE_GATE_HOURS * 3600
         state = delivery_state(run_dir)
         if state is None:
-            if not aged or age > DELIVERY_UNFINISHED_MAX_HOURS * 3600:
+            if age > DELIVERY_UNFINISHED_MAX_HOURS * 3600:
+                continue
+            # Inside the window `pending-report` asks in, a pass that has not answered is left
+            # alone: the fixer may be mid-pass and the report is about to change. One exception —
+            # a DELEGATED pass whose worker is gone. Nothing will answer for that round, and the
+            # stop happening now is often the only one the chat has: it ends right after the
+            # worker failed, and nothing in this flow schedules a later one.
+            if not aged and not delegate_gone(run_dir):
                 continue
             state = "unfinished"
         elif aged:
+            continue
+        # The net discards outright any line whose state is not one it knows, so a state this loop
+        # could name and that vocabulary does not hold would be delivered to nobody at all.
+        if state not in DELIVERY_STATES:
             continue
         print(f"{run_dir.name} {state}")
     return 0
@@ -8734,7 +8864,32 @@ def cmd_waive(args):
     return 0
 
 
-def handoff(run_id, paths, members=None, worktree=False):
+def reviews_current_tree(repo, sha, worktree=False):
+    """Whether `sha` holds the tree standing in front of the reader of `repo`.
+
+    The same question `write_review_receipt` asks before it refuses to move a repository's receipt
+    backwards, asked here for the same reason: a bench run of a historical commit or of a range
+    that ended before HEAD reviewed code the checkout no longer holds, so a fixing pass over its
+    findings edits whatever the current tree happens to keep at those paths. A worktree run
+    reviews the current state by construction — its sha IS the snapshot of it.
+
+    Fails open exactly where the receipt does. A `git` that cannot answer must leave the handoff
+    as it was rather than silently withhold the fixing pass from an ordinary review.
+    """
+    if worktree:
+        return True
+    head = subprocess.run(["git", "rev-parse", "HEAD^{tree}"],
+                          cwd=repo, capture_output=True, text=True)
+    if head.returncode != 0 or not head.stdout.strip():
+        return True
+    reviewed = subprocess.run(["git", "rev-parse", f"{sha}^{{tree}}"],
+                              cwd=repo, capture_output=True, text=True)
+    if reviewed.returncode != 0 or not reviewed.stdout.strip():
+        return True
+    return reviewed.stdout.strip() == head.stdout.strip()
+
+
+def handoff(run_id, paths, members=None, worktree=False, fixable=True):
     verdict_path = verdict_scratch_path(run_id)
     # A commit-point review is handed the reporting command and nothing else. The corpus form
     # printed beside it is what a chat copied — the run then went to the corpus, and with it to
@@ -8763,18 +8918,32 @@ def handoff(run_id, paths, members=None, worktree=False):
     print("Merge and deduplicate the findings blind. Write one verdict per zero-based finding "
           "index as {rater, idx, verdict}, where verdict is confirmed, false_positive, or duplicate.")
     print(f"Record exactly with: {command}")
-    print(f"\nTHRESHOLD STOP — {HANDOFF_P1_STOP} or more confirmed P1s: fix NOTHING. Record the "
-          f"verdicts as above, record the fix status as blocked with `{fixes_blocked}`, then stop "
-          "and report back with the P1 list. At that count the second review is mandatory and the "
-          "waiver over this work is withheld until it runs; below it a second round is owed by "
-          "the tally alone and may be waived with a reason on record.")
+    if not fixable:
+        # A durable bench run judged a snapshot the checkout is already past — a historical commit,
+        # a range that ended before HEAD. Its confirmed findings are about content nobody is
+        # standing on, so a step 2 over them edits whatever the current tree holds at those paths.
+        print("\nThat is the whole pass: this run reviewed a snapshot the checkout has moved past, "
+              "so its findings are not about the code in front of you. Fix nothing and record no "
+              "fix status.")
+        return
+    # Counted per repository for a merged panel, the way the gate that prices the round counts them
+    # (`escalation_numbers`): handed the whole panel's P1s, three findings spread over three
+    # repositories would stop the pass over a threshold no member reached.
+    stop_scope = " in ANY ONE of the repositories above" if members else ""
+    print(f"\nTHRESHOLD STOP — {HANDOFF_P1_STOP} or more confirmed P1s{stop_scope}: fix NOTHING. "
+          f"Record the verdicts as above, record the fix status as blocked with `{fixes_blocked}`, "
+          "then stop and report back with the P1 list. At that count the second review is "
+          "mandatory and the waiver over this work is withheld until it runs; a round that earns "
+          "one on its tally alone instead is owed it by default and may be waived with a reason "
+          "on record.")
     print("Orchestrator: at that threshold the next move is Egor's fork decision. A session "
           "running in maximum autonomy never pauses for it — it takes the decision itself and "
           "sends the worker on to step 2.")
     print("\nSTEP 2 — the same worker pass, immediately after `record`.")
     print("Fix every confirmed finding. Run the test suites covering what you touched in every "
           "repository. Mutation-verify each new test assert: revert the code it guards, confirm "
-          "the assert fails, restore it. Commit and stage nothing — leave the work in the tree.")
+          "the assert fails, restore it. Neither commit nor stage anything — leave the work in "
+          "the tree.")
     print(f"Then record the outcome exactly with: {fixes_done}")
 
 
@@ -9382,7 +9551,10 @@ def cmd_run(args):
             # answer the reader would get by asking the cell again by hand.
             print(f"rerun: {shlex.join(rerun_command)}")
         print(f"run id: {run_id}")
-        handoff(run_id, paths, members, worktree=worktree_mode)
+        handoff(run_id, paths, members, worktree=worktree_mode, fixable=all(
+            reviews_current_tree(target, target_sha, target_worktree)
+            for target, target_sha, _, target_worktree in receipt_targets
+        ))
         emit_report(run_dir, meta)
         return 1 if (failed or errored_raters) else 0
     finally:

@@ -1333,13 +1333,18 @@ DELEGBRIEF
 RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/deleg.out")
 RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/deleg.out")
 assert test -s "$DELEG_BENCHES/20260801T120000Z-abc123f/delegated"
-assert test "$(sed -n 1p "$DELEG_BENCHES/20260801T120000Z-abc123f/delegated")" \
+assert test "$(awk 'NR == 1 {print $1}' "$DELEG_BENCHES/20260801T120000Z-abc123f/delegated")" \
   = "$(jq -r '.pid' "$RUN_DIR/meta.json")"
-assert kill -0 "$(sed -n 1p "$DELEG_BENCHES/20260801T120000Z-abc123f/delegated")"
+assert kill -0 "$(awk 'NR == 1 {print $1}' "$DELEG_BENCHES/20260801T120000Z-abc123f/delegated")"
+# The launch instant stands beside the pid, and it is the same one the record stamps: read on the
+# pid alone the stamp silences an untriaged run for as long as whatever recycled the number lives
+# (shared-invariants row ar).
+assert test "$(awk 'NR == 1 {print $2}' "$DELEG_BENCHES/20260801T120000Z-abc123f/delegated")" \
+  = "$(jq -r '.pid_started_at' "$RUN_DIR/meta.json")"
 # The stamp answers for a run that exists: an id no bench holds is not a directory to invent, and a
 # brief that delegates no triage stamps nothing at all.
 assert test ! -e "$DELEG_BENCHES/20260801T990000Z-fffffff"
 assert test ! -e "$DELEG_BENCHES/20260801T130000Z-def4560/delegated"
 await_done || fail "the delegated run never finished"
 
-echo "PASS: $asserts asserts; worker-run detaches vendor CLIs, preserves live runs across bounded waits, resolves accounts and model knobs, reroutes an unpinned run off a walled account until every candidate is walled, retries only documented compatibility failures, records beside each run the chat that launched it and the files it wrote — the same list its report prints, unioned across every attempt, an UNKNOWN line where the vendor or the workdir leaves the list unanswerable and a PARTIAL one where the run also worked through the shell, written for a failed run and for a run that never reached its workdir too, and for no chat at all when none can be named — stamps the bench of a triage its brief delegates with the supervisor's pid, and reports terminal outcomes"
+echo "PASS: $asserts asserts; worker-run detaches vendor CLIs, preserves live runs across bounded waits, resolves accounts and model knobs, reroutes an unpinned run off a walled account until every candidate is walled, retries only documented compatibility failures, records beside each run the chat that launched it and the files it wrote — the same list its report prints, unioned across every attempt, an UNKNOWN line where the vendor or the workdir leaves the list unanswerable and a PARTIAL one where the run also worked through the shell, written for a failed run and for a run that never reached its workdir too, and for no chat at all when none can be named — stamps the bench of a triage its brief delegates with the supervisor's pid and its launch instant, and reports terminal outcomes"

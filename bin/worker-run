@@ -771,12 +771,16 @@ exit "$rc"'
   # pid_started_at is the supervisor's launch instant and never restamped: started_at moves on
   # every walled reroute (run_overdue budgets one deadline per attempt), and a liveness check
   # comparing the pid's own age against a restamped clock reads a live rerouted run as dead.
-  jq --argjson pid "$pid" --argjson began "$(date +%s)" '.pid = $pid | .pid_started_at = $began' \
+  pid_began=$(date +%s)
+  jq --argjson pid "$pid" --argjson began "$pid_began" '.pid = $pid | .pid_started_at = $began' \
     "$directory/meta.json" >"$directory/meta.json.tmp.$$" \
     && mv -f "$directory/meta.json.tmp.$$" "$directory/meta.json" || fail 'could not record supervisor pid'
   # A brief carrying a bench run's own `record` command is that run's triage, delegated: stamp the
   # bench with the supervisor's pid so the Stop gate nagging for an untriaged report stays quiet
   # while this worker lives — and asks again the moment it dies, which is the case the nag is for.
+  # The launch instant stands beside the pid on that first line, and the reader compares it: the
+  # number is reused within a day, and read alone it silences an untriaged run for as long as
+  # whatever inherited it lives (shared-invariants row `ar`).
   # Written before .ready, since the supervisor waits on that file and the triage starts after it.
   delegated_state="${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}"
   grep -Eo 'review-bench[[:blank:]]+record[[:blank:]]+[0-9]{8}T[0-9]{6}Z-[0-9a-f]+(-[0-9]+)?' \
@@ -784,7 +788,7 @@ exit "$rc"'
     while IFS= read -r delegated_run; do
       [ -d "$delegated_state/benches/$delegated_run" ] || continue
       {
-        printf '%s\n' "$pid"
+        printf '%s %s\n' "$pid" "$pid_began"
         [ ! -s "$directory/launcher" ] || cat "$directory/launcher"
       } >"$delegated_state/benches/$delegated_run/delegated" 2>/dev/null || :
     done
