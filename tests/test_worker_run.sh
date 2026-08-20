@@ -89,7 +89,7 @@ fi
 [ -z "${STUB_SLEEP:-}" ] || sleep "$STUB_SLEEP"
 [ -z "${STUB_ERROR:-}" ] || printf '%s\n' "$STUB_ERROR" >&2
 if [ "${STUB_CODE:-0}" -eq 0 ]; then
-  printf '{"result":"claudeb result","session_id":"claude-session","total_cost_usd":1.25}\n'
+  printf '{"result":"claudeb result","session_id":"%s","total_cost_usd":1.25}\n' "${STUB_SESSION-claude-session}"
 fi
 exit "${STUB_CODE:-0}"
 EOF
@@ -193,7 +193,7 @@ set_config() {
 clear_stub() {
   : >"$CALL_LOG"
   : >"$PICK_LOG"
-  unset STUB_SLEEP STUB_ERROR STUB_CODE STUB_STDOUT
+  unset STUB_SLEEP STUB_ERROR STUB_CODE STUB_STDOUT STUB_SESSION
   rm -f "$STUB_DIR/claudeb_drop_effort" "$STUB_DIR/codex_trusted" "$STUB_DIR/codex.stdin" \
     "$STUB_DIR/codex_bad_model" "$STUB_DIR/codex_bad_model_always" "$STUB_DIR/codex_noise" \
     "$STUB_DIR/codex_noise_deep" "$STUB_DIR/codex_phrase_deep" "$STUB_DIR/codex_append_target" \
@@ -950,6 +950,9 @@ assert grep -qx 'RUN-FILES: unknown (codex records no per-file tool calls in a t
 # name files says so here too — a reader must not take the silence for an empty list.
 assert test "$(head -n1 "$RUN_DIR/files")" = "WORKDIR: $(jq -r '.workdir' "$RUN_DIR/meta.json")"
 assert grep -qx 'UNKNOWN: codex records no per-file tool calls in a transcript' "$RUN_DIR/files"
+# And no worker session is recorded for a vendor whose sessions run none of this machine's journal
+# hooks: an id folded in from one of those could only match a journal entry by accident.
+assert test ! -e "$RUN_DIR/worker-session"
 
 clear_stub
 set_config 'claudeb_model=opus' 'claudeb_effort=high'
@@ -969,6 +972,10 @@ export CLAUDE_CODE_SESSION_ID=chat-abc
 start_ok claudeb
 assert await_done
 assert test "$(cat "$RUN_DIR/launcher")" = chat-abc
+# The worker's OWN session beside the chat that launched it. A run that edits through the shell
+# alone names no file here, while its own hooks journaled every one of those edits under this id —
+# without the pair on record the launching chat commits its worker's work as nobody's.
+assert test "$(cat "$RUN_DIR/worker-session")" = claude-session
 assert test "$(head -n1 "$RUN_DIR/files")" = "WORKDIR: $record_workdir"
 assert grep -qx 'bin/recorded' "$RUN_DIR/files"
 assert grep -qxF "$WORK/outside/recorded-absolute" "$RUN_DIR/files"
@@ -982,7 +989,15 @@ assert grep -qx 'RUN-FILE: bin/recorded' <<<"$report"
 # across attempts, or the first attempt's files belong to nobody at all.
 printf '%s\n' "WORKDIR: $record_workdir" \
   'UNKNOWN: no session transcript for the walled attempt' bin/from-the-walled-attempt >"$RUN_DIR/files"
+# The session that attempt ran under, which the reroute replaced: what it journaled stands under
+# that id and under no other, so the sessions are unioned exactly as the paths are.
+printf 'walled-session\n' >>"$RUN_DIR/worker-session"
 "$RUNNER" _supervise "$RUN_DIR" >/dev/null 2>&1
+assert grep -qx 'walled-session' "$RUN_DIR/worker-session"
+assert grep -qx 'claude-session' "$RUN_DIR/worker-session"
+# Once per id however often the record is rewritten: a resumed run repeats the id its session
+# already had, and the readers walk this file against every journal row they hold.
+assert test "$(grep -c . "$RUN_DIR/worker-session")" -eq 2
 assert grep -qx 'bin/from-the-walled-attempt' "$RUN_DIR/files"
 assert grep -qx 'bin/recorded' "$RUN_DIR/files"
 assert test "$(head -n1 "$RUN_DIR/files")" = "WORKDIR: $record_workdir"
@@ -1043,6 +1058,27 @@ start_ok claudeb
 assert await_done
 assert test ! -e "$RUN_DIR/launcher"
 unset CLAUDE_CODE_SESSION_ID
+# An id the vendor never printed is never guessed at either: no file at all, which reads as "this
+# run's own journal entries cannot be found" rather than as somebody else's session.
+clear_stub
+export STUB_SESSION=''
+start_ok claudeb
+assert await_done
+assert test ! -e "$RUN_DIR/worker-session"
+unset STUB_SESSION
+
+# A RESUMED run's worker session is known before its first token — the session keeps the id it
+# already had — and the gate that prices a live run's worker work reads this file while the run is
+# going. Written only when the attempt ends, everything that session journals in the meantime is
+# priced as nobody's, which is the hole the pair on record exists to close.
+clear_stub
+export STUB_SESSION=resumed-session STUB_SLEEP=0.5
+start_ok claudeb --account resumeacct --resume resumed-session
+assert test "$(cat "$RUN_DIR/worker-session")" = resumed-session
+assert await_done
+# And once per id, however many times the record is rewritten over it.
+assert test "$(grep -c . "$RUN_DIR/worker-session")" -eq 1
+unset STUB_SESSION STUB_SLEEP
 
 # "429" only counts as a limit signature with digit boundaries: an error id that
 # merely contains it stays an ordinary failure.
@@ -1347,4 +1383,4 @@ assert test ! -e "$DELEG_BENCHES/20260801T990000Z-fffffff"
 assert test ! -e "$DELEG_BENCHES/20260801T130000Z-def4560/delegated"
 await_done || fail "the delegated run never finished"
 
-echo "PASS: $asserts asserts; worker-run detaches vendor CLIs, preserves live runs across bounded waits, resolves accounts and model knobs, reroutes an unpinned run off a walled account until every candidate is walled, retries only documented compatibility failures, records beside each run the chat that launched it and the files it wrote — the same list its report prints, unioned across every attempt, an UNKNOWN line where the vendor or the workdir leaves the list unanswerable and a PARTIAL one where the run also worked through the shell, written for a failed run and for a run that never reached its workdir too, and for no chat at all when none can be named — stamps the bench of a triage its brief delegates with the supervisor's pid and its launch instant, and reports terminal outcomes"
+echo "PASS: $asserts asserts; worker-run detaches vendor CLIs, preserves live runs across bounded waits, resolves accounts and model knobs, reroutes an unpinned run off a walled account until every candidate is walled, retries only documented compatibility failures, records beside each run the chat that launched it, the worker session it ran under and the files it wrote — the same list its report prints, unioned across every attempt, an UNKNOWN line where the vendor or the workdir leaves the list unanswerable and a PARTIAL one where the run also worked through the shell, written for a failed run and for a run that never reached its workdir too, and for no chat at all when none can be named — stamps the bench of a triage its brief delegates with the supervisor's pid and its launch instant, and reports terminal outcomes"

@@ -202,6 +202,20 @@ reference then buys a second identical block — which is what happened. What th
 model owes after the block is judgment the block cannot hold, never its contents
 restated. The corpus rules (sealed judges, `--bench` opt-in) are unchanged.
 
+**Two frame words, two delivered states.** `review` — the fixes are done, or
+there was nothing to fix. `review · NOT FINISHED` — and ONLY this — is a round
+whose fix status is `blocked`: the pass stopped at the P1 threshold and fixed
+nothing, and the block carries the fork (fix as it stands / rewrite the weak
+block / cut the scope) as Egor's decision, not the fixer's. A round whose fixing
+pass has not answered wears the PLAIN word and says so in its `fixes:` row, at
+any age: the model reads that block when it runs `review-bench report` itself,
+and no hook ever delivers it — deriving a loud word from "no fixes recorded" put
+a report saying nothing was fixed in front of Egor while the fixes were landing
+(2026-08-20), and promoting such a round to a deliverable state of its own
+handed the Stop gate 39 unanswerable rounds in one message the same day. The
+finished report follows on its own, from the Stop net's `pending-delivery`
+source, one per state per round.
+
 ## Non-goals — deleted by this contract
 
 Cross-session policing of any kind; pricing the shared tree (cycles, tickets,

@@ -492,6 +492,7 @@ persist_run_files() {
   local directory="$1" workdir
   workdir=$(jq -r '.workdir' "$directory/meta.json" 2>/dev/null)
   compute_run_files "$directory"
+  record_worker_session "$directory"
   # A record is written even when there is nothing to put in it. No record at all is indistinguishable
   # from a run that never terminated, and both readers take that absence for "this run wrote nothing"
   # — the one answer that is certainly wrong about a run that has ended.
@@ -514,6 +515,32 @@ persist_run_files() {
   } >"$directory/files.tmp.$$" 2>/dev/null &&
     mv -f "$directory/files.tmp.$$" "$directory/files" 2>/dev/null ||
     rm -f "$directory/files.tmp.$$" 2>/dev/null
+  return 0
+}
+
+record_worker_session() {
+  # The worker's OWN session id, beside the launcher this run answers to. A run that edited through
+  # the shell alone lists no file at all (`PARTIAL:` and nothing else), while the worker session's
+  # own hooks journaled every one of those edits under THIS id — so without the mapping the launching
+  # chat commits its worker's work with no debt on it (live case 2026-08-20). Unioned across attempts
+  # like the file list: rerouting takes a new session, and the walled attempt journaled under the old
+  # one. A resumed run repeats the id the session already had, which is what its entries carry too.
+  local directory="$1" vendor session
+  vendor=$(jq -r '.vendor' "$directory/meta.json" 2>/dev/null)
+  # Only the vendor whose sessions run this machine's journal hooks. A codex or agy id names no chat
+  # any journal here was ever written under, and one folded in could only match by accident.
+  [ "$vendor" = claudeb ] || return 0
+  session=$(session_id "$directory")
+  # A resumed run's id is known before its first token — the session keeps the id it already had,
+  # and every entry it journals while the run is LIVE carries that one. Read only where the run
+  # has not answered with an id of its own yet, so a session that somehow moved still wins.
+  [ "$session" != - ] || session=$(jq -r '.resume // empty' "$directory/meta.json" 2>/dev/null)
+  # Never a guess: an id nothing named, or one no journal record could carry, leaves no file.
+  case "$session" in
+    ''|-|.|..|*[!A-Za-z0-9._-]*) return 0 ;;
+  esac
+  grep -qxF -- "$session" "$directory/worker-session" 2>/dev/null && return 0
+  printf '%s\n' "$session" >>"$directory/worker-session" 2>/dev/null || :
   return 0
 }
 
@@ -792,6 +819,9 @@ exit "$rc"'
         [ ! -s "$directory/launcher" ] || cat "$directory/launcher"
       } >"$delegated_state/benches/$delegated_run/delegated" 2>/dev/null || :
     done
+  # Before the run is readable and not only when it ends: a resumed session journals under an id
+  # this launch already knows, and the gate that prices a live run's worker work reads this file.
+  record_worker_session "$directory"
   : >"$directory/.ready"
   printf 'RUN: %s\nTAG: %s · %s · %s\nDIR: %s\n' "$run_id" "$account" "${model_label:-$model}" "$effort" "$directory"
 }

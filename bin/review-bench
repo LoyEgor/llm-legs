@@ -155,12 +155,28 @@ def report_frame_header(word, width=REPORT_FRAME_WIDTH):
 
 
 REPORT_BEGIN = report_frame_header(REPORT_FRAME_WORD)
-# The header a round whose confirmed findings are still unfixed is framed in. It rides the same
-# frame rather than a marker of its own, because the review consumers narrow the header to this
-# word: a spelling only one side knows is a report Egor never sees (docs/shared-invariants.md as).
-REPORT_UNFINISHED_WORD = f"{REPORT_FRAME_WORD} · NOT FINISHED"
-REPORT_UNFINISHED_BEGIN = report_frame_header(REPORT_UNFINISHED_WORD)
+# The only header that is not the plain word, and the only round that wears it: one whose fixing
+# pass stopped at the P1 threshold. It rides the same frame rather than a marker of its own,
+# because the review consumers narrow the header to this word: a spelling only one side knows is
+# a report Egor never sees (docs/shared-invariants.md as). A round whose pass has not answered
+# YET keeps the plain word — reading the loud one off "no fixes recorded" is what put NOT
+# FINISHED in front of Egor over a round whose fixes were landing at that moment (2026-08-20).
+REPORT_BLOCKED_WORD = f"{REPORT_FRAME_WORD} · NOT FINISHED"
+REPORT_BLOCKED_BEGIN = report_frame_header(REPORT_BLOCKED_WORD)
 REPORT_END = "=" * REPORT_FRAME_WIDTH
+# What the NOT FINISHED frame owes beyond the reason on the receipt: the pass stopped, and which
+# way the round goes from there is not the fixer's to decide. It asserts no reason of its own —
+# `--blocked` takes whichever one the pass actually had, and a fork naming the P1 threshold over
+# a round that stopped for something else tells Egor a thing nobody recorded.
+REPORT_BLOCKED_FORK = (
+    "the fixing pass stopped over the findings above, for the reason\n"
+    "on the row over this one. Which way the round goes from here —\n"
+    "fixing them as they stand, reworking the code they cluster in,\n"
+    "or cutting the scope — is Egor's decision and not the fixer's,\n"
+    "and it reaches him with the P1 list and the reasoning before\n"
+    "anybody acts on it."
+)
+
 # A run without verdicts has no report to print: the triage that decides what to fix is what
 # makes one. It gets this line instead, and the hooks key on it to demand the missing pass —
 # the marked block used to be printed either way, and a list of cells was what reached Egor.
@@ -168,15 +184,14 @@ TRIAGE_PENDING = "REVIEW-TRIAGE-PENDING"
 # Hours a worktree run keeps owing its report. Past that the diff it reviewed is stale, so the
 # gate stops asking rather than dragging an old run into an unrelated turn.
 TRIAGE_GATE_HOURS = 6
-# The far end of the delivery fallback: a triaged round whose fixing pass never answered is worth
-# a report only while the tree it read is still recognisable. Live failure this bounds (2026-08-20):
-# a chat running since the 15th listed 39 pre-fixes-mechanism runs at once — none of which can ever
-# gain a fix status — and the Stop gate rendered every one of them into a single 39KB message.
-DELIVERY_UNFINISHED_MAX_HOURS = 24
 # Every state the delivery queue may name, and the whole vocabulary the Stop net's line regex
 # accepts (docs/shared-invariants.md as). A state spelled on one side only is a line the other
-# side discards in silence, which is a report Egor never sees.
-DELIVERY_STATES = ("done", "blocked", "unfinished")
+# side discards in silence, which is a report Egor never sees. `pending` is deliberately absent
+# and has no window that ever admits it: a round whose fixing pass has not answered has a report
+# the model may read and no hook may hand Egor, since the next pass changes it. A chat running
+# since the 15th listed 39 pre-fixes-mechanism runs at once — none of which can ever gain a fix
+# status — and a fallback that named them rendered all 39 into one 39KB message (2026-08-20).
+DELIVERY_STATES = ("done", "blocked")
 REPORT_RECEIPT = "reported.json"
 FIX_RECEIPT = "fixes.json"
 # Confirmed P1s at which the fixing pass stops instead of starting: past it the round is not a
@@ -3694,7 +3709,12 @@ def report_lines(run_dir, meta, verdicts=None):
     if earned and review_round(run_dir, meta) >= ROUND_BUDGET:
         earned = ROUND_BUDGET_SPENT
     rows.append(("round:", earned or "closed — nothing more is owed before the commit"))
-    rows.append(("fixes:", fix_status(run_dir, summary["confirmed"], verdict_rows)[0]))
+    fixes_line, fixes_state = fix_status(run_dir, summary["confirmed"], verdict_rows)
+    rows.append(("fixes:", fixes_line))
+    if fixes_state == "blocked":
+        # The reason alone is a receipt field; what the loud frame is FOR is the fork, and a block
+        # that only says work stopped leaves the reader to guess whose move it is.
+        rows.append(("stopped:", REPORT_BLOCKED_FORK))
     rejected_counts = [
         ("duplicate", summary["duplicate"]),
         ("false", summary["false_positive"]),
@@ -3907,42 +3927,73 @@ def triage_digest(verdicts):
 
 
 def fix_status(run_dir, confirmed, verdicts=None):
-    """The report's `fixes:` value and whether the round is still unfinished.
+    """The report's `fixes:` value and what the round's fixing pass answered: `done`, `blocked`
+    (a receipt naming why the pass stopped) or `pending` — no receipt at all, or one that answers
+    a triage this run no longer carries.
 
     Carried in every state, because a line printed only sometimes is one whose absence reads as
-    "applied": a round is finished when somebody recorded that it is, never by default.
+    "applied": a round is finished when somebody recorded that it is, never by default. The three
+    are kept apart here rather than collapsed into "not done", because the frame word is picked
+    off this answer and a stopped round and a running one are not the same news.
     """
     record = read_fix_status(run_dir)
     if not confirmed:
-        return "nothing to fix", False
-    if record and record.get("state") == "done":
-        # A receipt answers for the triage it was written against. Re-adjudicating a run replaces
-        # its verdicts and leaves the receipt where it is, so a round that came back with more
-        # confirmed findings than anybody fixed would read as finished on the strength of the
-        # older pass.
-        against = record.get("confirmed")
-        if isinstance(against, int) and not isinstance(against, bool) and against != confirmed:
-            return (
-                f"NOT APPLIED — recorded against a triage of {against} confirmed, "
-                f"and this one has {confirmed}"
-            ), True
-        # And answers for those findings, not merely for how many there were: a re-adjudication
-        # that confirms a different finding in place of the old one leaves the count where it was.
-        # Only a receipt carrying the fingerprint can be asked — the ones written before it went in
-        # keep the count answer rather than reading unfinished for want of a field.
-        stamped = record.get("triage")
-        if (isinstance(stamped, str) and stamped and verdicts is not None
-                and stamped != triage_digest(verdicts)):
-            return (
-                f"NOT APPLIED — recorded against a different triage of the same {confirmed} "
-                "confirmed"
-            ), True
+        return "nothing to fix", "done"
+    state = str((record or {}).get("state") or "")
+    if state in ("done", "blocked"):
+        # A receipt answers for the triage it was written against, whichever way it answered. A
+        # re-adjudication replaces a run's verdicts and leaves the receipt where it is, so a round
+        # that came back with more confirmed findings than anybody fixed would read as finished on
+        # the strength of the older pass — and a stopped one would go on offering Egor the fork
+        # over a P1 list that is no longer the one it stopped over.
+        stale = stale_fix_receipt(record, confirmed, verdicts)
+        if stale:
+            return stale, "pending"
+    if state == "done":
         return (
             f"done — {counted_int(record.get('fixed'))} fixed, "
             f"{counted_int(record.get('false_positives'))} false positives"
-        ), False
+        ), "done"
     reason = " ".join(str((record or {}).get("reason") or "").split())
-    return f"NOT APPLIED — {reason or 'pending'}", True
+    if state == "blocked":
+        return f"NOT APPLIED — {reason or 'blocked'}", "blocked"
+    return f"NOT APPLIED — {reason or 'pending'}", "pending"
+
+
+def stale_fix_receipt(record, confirmed, verdicts):
+    """The `fixes:` line for a receipt written against a triage the run no longer carries, or None
+    where it still answers for the one in front of it.
+
+    Only a receipt carrying the field can be asked — the ones written before either of them went
+    in keep their own answer rather than reading unfinished for want of a field.
+    """
+    against = record.get("confirmed")
+    if isinstance(against, int) and not isinstance(against, bool) and against != confirmed:
+        return (
+            f"NOT APPLIED — recorded against a triage of {against} confirmed, "
+            f"and this one has {confirmed}"
+        )
+    # And answers for those findings, not merely for how many there were: a re-adjudication that
+    # confirms a different finding in place of the old one leaves the count where it was.
+    stamped = record.get("triage")
+    if (isinstance(stamped, str) and stamped and verdicts is not None
+            and stamped != triage_digest(verdicts)):
+        return (
+            f"NOT APPLIED — recorded against a different triage of the same {confirmed} confirmed"
+        )
+    return None
+
+
+def round_state(run_dir, verdicts=None):
+    """Which state a round is in: `done` once its fixing pass answered, `blocked` where a receipt
+    says that pass stopped, `pending` while it still owes an answer.
+
+    The frame word and the delivery key are read from this one answer, so a report delivered
+    under one state and framed in another cannot happen. Age is deliberately not an input: a
+    round nobody ever answered for is `pending` at any age, not a state of its own.
+    """
+    rows = verdicts if verdicts is not None else recorded_verdict_rows(run_dir)
+    return fix_status(run_dir, confirmed_count(rows), rows)[1]
 
 
 def run_scope_key(meta):
@@ -4184,13 +4235,6 @@ def triage_delegated(run_dir):
     return abs(int(utc_now().timestamp()) - elapsed - began) <= DELEGATED_PID_SLACK
 
 
-def delegate_gone(run_dir):
-    """Whether a worker was handed this run's pass and is no longer running. A run nobody
-    delegated says nothing here: the chat that triaged it may be fixing in this very turn.
-    """
-    return (run_dir / DELEGATED_STAMP).exists() and not triage_delegated(run_dir)
-
-
 def triage_pending_run(repo=None, session=None):
     """The newest worktree run of `repo` if it still owes its triaged report, else None.
 
@@ -4264,8 +4308,7 @@ def emit_report(run_dir, meta, verdicts=None):
             print(line)
         return
     resolved = verdicts if verdicts is not None else read_jsonl(run_dir / "verdicts.jsonl")
-    unfinished = fix_status(run_dir, confirmed_count(resolved), resolved)[1]
-    print(REPORT_UNFINISHED_BEGIN if unfinished else REPORT_BEGIN)
+    print(REPORT_BLOCKED_BEGIN if round_state(run_dir, resolved) == "blocked" else REPORT_BEGIN)
     for line in report_lines(run_dir, meta, verdicts):
         print(line)
     print(REPORT_END)
@@ -7971,7 +8014,14 @@ def cmd_fixes(args):
         reason = " ".join(str(args.blocked).split())
         if not reason:
             raise ValueError("--blocked must carry the reason the fixes were not applied")
-        record = {"state": "blocked", "reason": reason}
+        rows = recorded_verdict_rows(run_dir)
+        record = {
+            "state": "blocked", "reason": reason,
+            # Which triage the pass stopped over, stamped exactly as a done receipt stamps it: the
+            # fork this receipt puts in front of Egor is over THESE confirmed findings, and a
+            # re-adjudication replacing them leaves a stop nobody recorded over the new ones.
+            "confirmed": confirmed_count(rows), "triage": triage_digest(rows),
+        }
         line = f"NOT APPLIED — {reason}"
     else:
         if args.fixed is None or args.fp is None:
@@ -8010,24 +8060,19 @@ def cmd_fixes(args):
 
 
 def delivery_state(run_dir):
-    """What state a triaged round's report would be delivered in — `done` or `blocked` — or None
-    while the fixing pass still owes an answer.
+    """What state a triaged round's report would be delivered in, or None while its fixing pass
+    may still be running — the one state no hook hands Egor.
+
+    Read through `round_state` and never off the receipt's raw field, so the state a report is
+    delivered under is the state its frame was rendered in: a receipt the report has already
+    rejected for answering another triage reads `pending` here too, and queued as `done` it would
+    spend the one ledger key the finished report is ever delivered under.
 
     A round with nothing confirmed is `done` at its triage: no fixing pass will ever record a
     receipt for it, and a report held back for one would never be delivered at all.
     """
-    rows = recorded_verdict_rows(run_dir)
-    state = str((read_fix_status(run_dir) or {}).get("state") or "")
-    if state == "done":
-        # Read through `fix_status` and never off the raw field: a receipt the report has already
-        # rejected for answering another triage renders NOT FINISHED, and queued as `done` it
-        # spends the one ledger key the finished report is ever delivered under.
-        return None if fix_status(run_dir, confirmed_count(rows), rows)[1] else "done"
-    if state == "blocked":
-        return "blocked"
-    if not confirmed_count(rows):
-        return "done"
-    return None
+    state = round_state(run_dir)
+    return None if state == "pending" else state
 
 
 def cmd_pending_delivery(args):
@@ -8040,14 +8085,12 @@ def cmd_pending_delivery(args):
     once per state rather than once per run, and the blocked round Egor forks on is followed by
     the finished one.
 
-    A round is named once its fixing pass answered, and bounded by the window `pending-report`
-    asks in, because an old run's report is about a diff that has since moved. One exception, and
-    it is why the window is not a plain filter here: a round whose fixing pass never answered at
-    all is named `unfinished` between that window and `DELIVERY_UNFINISHED_MAX_HOURS`, because a
-    worker that died mid-pass would otherwise take the report with it and nothing else in this
-    flow ever mentions the run again. Bounded at BOTH ends, and the far one is load-bearing: a
-    long-lived chat holds runs no fixing pass will ever answer for — every one predating the
-    receipt itself — and unbounded, this hands the Stop gate all of them in one message.
+    A round is named once its fixing pass answered, and only inside the window `pending-report`
+    asks in, because an old run's report is about a diff that has since moved. A round whose pass
+    never answered is named at NO age: it is `pending`, the one state with no delivery key, and a
+    fallback that promoted it past some age is what handed the Stop gate 39 pre-fixes-mechanism
+    runs in a single message (2026-08-20). Such a run is reported only when the model asks for it
+    by hand.
 
     Read-only — a delivery ledger decides what is new, not a mark written here.
     """
@@ -8068,21 +8111,12 @@ def cmd_pending_delivery(args):
         finished = parse_iso_timestamp(meta.get("finished") or meta.get("finished_at"))
         if finished is None:
             continue
-        age = (now - finished).total_seconds()
-        aged = age > TRIAGE_GATE_HOURS * 3600
         state = delivery_state(run_dir)
+        # A pass that has not answered is left alone whatever its age: the fixer may be mid-pass
+        # and the report is about to change, and past that it is a report about a diff that moved.
         if state is None:
-            if age > DELIVERY_UNFINISHED_MAX_HOURS * 3600:
-                continue
-            # Inside the window `pending-report` asks in, a pass that has not answered is left
-            # alone: the fixer may be mid-pass and the report is about to change. One exception —
-            # a DELEGATED pass whose worker is gone. Nothing will answer for that round, and the
-            # stop happening now is often the only one the chat has: it ends right after the
-            # worker failed, and nothing in this flow schedules a later one.
-            if not aged and not delegate_gone(run_dir):
-                continue
-            state = "unfinished"
-        elif aged:
+            continue
+        if (now - finished).total_seconds() > TRIAGE_GATE_HOURS * 3600:
             continue
         # The net discards outright any line whose state is not one it knows, so a state this loop
         # could name and that vocabulary does not hold would be delivered to nobody at all.
@@ -8554,6 +8588,43 @@ def session_run_paths(repo, session):
     }
 
 
+def worker_session_launchers():
+    """`{worker session id: launcher session id}` off the run records, for the journal entries a
+    worker left under its OWN id.
+
+    A worker that edited through the shell alone lists no file in its record, while its own hooks
+    journaled every one of those edits — under the worker's session, which is no chat any reader
+    here would otherwise recognise, so the launcher read its own worker's work as a co-tenant's
+    (live case 2026-08-20). Unlike `run_record_claims` this reads a `journaled` record too: that
+    marker retires the run's LISTING, and nothing ever renames what the worker's session journaled.
+
+    A `--resume` run repeats one worker id across launches. Where those launches are one chat's it
+    is still that chat's author; where TWO chats resumed the same worker session, nothing here
+    divides its entries between them, and handing every entry to both hands each chat a waiver
+    over the other's work — so an ambiguous id maps to nobody and its entries stay the worker's
+    own. Each launcher keeps its own run's LISTED files through `run_record_claims`, which is
+    per-run and never ambiguous.
+    """
+    mapping = {}
+    try:
+        directories = sorted(worker_run_root().iterdir())
+    except OSError:
+        return {}
+    for directory in directories:
+        try:
+            launcher = (directory / "launcher").read_text().strip()
+            workers = (directory / "worker-session").read_text().split()
+        except OSError:
+            continue
+        if not launcher:
+            continue
+        for worker in workers:
+            mapping.setdefault(worker, set()).add(launcher)
+    return {
+        worker: next(iter(owners)) for worker, owners in mapping.items() if len(owners) == 1
+    }
+
+
 def debt_path_authors(repo, debt):
     """Which chats each debt path belongs to: the debt journal a commit's own gate appends to,
     plus the commit journal for work still uncommitted. A record naming no session belongs to
@@ -8583,6 +8654,16 @@ def debt_path_authors(repo, debt):
     directory = git_dir_path(repo)
     if directory is None:
         return authors
+    # A worker a chat spawned IS that chat, so the launcher is an author of every record its worker
+    # session left. Both stand there, never one instead of the other: the worker's own gate asks
+    # this same question under the worker's id while the run is going, and answered `other` it would
+    # refuse that session a waiver over the work it just did.
+    launchers = worker_session_launchers()
+
+    def owners(session):
+        launcher = launchers.get(session)
+        return {session, launcher} if launcher else {session}
+
     settled = {}
     for session, epoch, path in journal_entries(directory / DEBT_JOURNAL):
         if not session or path not in authors:
@@ -8591,11 +8672,12 @@ def debt_path_authors(repo, debt):
     for path, records in settled.items():
         floor = floors.get(path, 0)
         standing = {session for session, epoch in records if epoch is None or epoch >= floor}
-        authors[path].update(standing or {session for session, _ in records})
+        for session in standing or {session for session, _ in records}:
+            authors[path].update(owners(session))
     for session, _, path in journal_entries(directory / COMMIT_JOURNAL):
         if not session or path not in authors:
             continue
-        authors[path].add(session)
+        authors[path].update(owners(session))
     return authors
 
 
@@ -8671,10 +8753,11 @@ def debt_locked(repo, debt):
 def session_timeout_run(repo, session):
     """The run of `session` a watchdog killed, while it is still the newest thing that chat has to
     say. An untriaged run standing on top of a kill says nothing, so it must not speak over it; a
-    later triaged run does, and takes the answer back.
+    later triaged run does, and takes the answer back — as does the killed run's own triage: a kill
+    whose findings were judged left nothing to wait on, and shouted anyway it outlives its answer.
     """
     for run_dir, meta, record in session_runs(repo, session):
-        if meta.get("timed_out"):
+        if meta.get("timed_out") and not run_triaged(run_dir):
             return run_dir.name
         reviewed = record.get("reviewed")
         if run_triaged(run_dir) and isinstance(reviewed, dict) and reviewed:
@@ -8917,6 +9000,8 @@ def handoff(run_id, paths, members=None, worktree=False, fixable=True):
             print(f"  {member['label']}/ = {member['repo']}")
     print("Merge and deduplicate the findings blind. Write one verdict per zero-based finding "
           "index as {rater, idx, verdict}, where verdict is confirmed, false_positive, or duplicate.")
+    print("Raters overlap: the same file plus the same function or defect is ONE defect however "
+          "many of them reported it — confirm it once and mark every other rater's copy duplicate.")
     print(f"Record exactly with: {command}")
     if not fixable:
         # A durable bench run judged a snapshot the checkout is already past — a historical commit,
