@@ -95,11 +95,14 @@ shas, the reason, the session, the epoch. A waiver covers exactly those shas —
 the next edit is debt again. An empty reason is refused.
 
 **The lock IS the mechanical second round.** When the newest run holding a debt
-path came back with `SECOND_REVIEW_P1S` confirmed P1s or `SECOND_REVIEW_FINDINGS`
-confirmed findings, the debt reads `locked`: `waive` refuses it and the commit
-notice withholds the waiver option, saying why. The only way out is the
-follow-up review over the full original scope plus the fixes — there is no other
-mechanically-forced round.
+path came back with `SECOND_REVIEW_P1S` confirmed P1s, the debt reads `locked`:
+`waive` refuses it and the commit notice withholds the waiver option, saying why.
+The only way out is the follow-up review over the full original scope plus the
+fixes — there is no other mechanically-forced round. A round that earned its
+second review on the tally alone (`SECOND_REVIEW_FINDINGS` confirmed findings
+under the P1 count) locks nothing: the fork says the round is owed, and `waive`
+may still answer it on the model's own judgment, which a waiver records with its
+reason.
 
 ## The gate (claude-setup `hooks/review-flow-gate.sh`)
 
@@ -117,13 +120,15 @@ mechanically-forced round.
   the notice. A commit with nothing in debt passes silently. Foreign dirty or
   untracked paths are never priced, never mentioned, never block.
 - `escalation-verdict <p1> <total>` — the one voice for round outcomes (invariant
-  row af). Below thresholds: exits 1, prints nothing. At `SECOND_REVIEW_P1S=2`
-  P1s or `SECOND_REVIEW_FINDINGS=8` findings: exits 0 and prints the fork — fix
-  and commit / simplify or redesign the weak block / re-review, and a re-review
-  must rerun the full original scope plus fixes, never the fixes alone (a fresh
-  pass over old code finds new defects; a fix-only pass only certifies the
-  fixes). At `WEAK_LINK_P1S=5` P1s the fork leads with simplify/cut/redesign
-  first, review after. The model judges; Egor decides when he is present. When
+  row af). Below thresholds: exits 1, prints nothing. Above either of the two —
+  `SECOND_REVIEW_P1S=3` P1s or `SECOND_REVIEW_FINDINGS=8` findings — it exits 0
+  and prints the same three options: fix and commit / simplify, cut or redesign
+  the weak block / re-review, and a re-review must rerun the full original scope
+  plus fixes, never the fixes alone (a fresh pass over old code finds new
+  defects; a fix-only pass only certifies the fixes). What differs is the line
+  above them: at the P1 count the second review is mandatory and the waiver is
+  withheld until it runs; on the tally alone it is owed by default and `waive`
+  is still open. The model judges; Egor decides when he is present. When
   the fork rides a delivered report, the report hook's context turns advisory
   into demand: the model's next message must OPEN with its written analysis —
   the weak block, why the findings cluster there, the option chosen and why —

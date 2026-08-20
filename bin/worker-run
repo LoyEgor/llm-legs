@@ -774,6 +774,20 @@ exit "$rc"'
   jq --argjson pid "$pid" --argjson began "$(date +%s)" '.pid = $pid | .pid_started_at = $began' \
     "$directory/meta.json" >"$directory/meta.json.tmp.$$" \
     && mv -f "$directory/meta.json.tmp.$$" "$directory/meta.json" || fail 'could not record supervisor pid'
+  # A brief carrying a bench run's own `record` command is that run's triage, delegated: stamp the
+  # bench with the supervisor's pid so the Stop gate nagging for an untriaged report stays quiet
+  # while this worker lives — and asks again the moment it dies, which is the case the nag is for.
+  # Written before .ready, since the supervisor waits on that file and the triage starts after it.
+  delegated_state="${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}"
+  grep -Eo 'review-bench[[:blank:]]+record[[:blank:]]+[0-9]{8}T[0-9]{6}Z-[0-9a-f]+(-[0-9]+)?' \
+    "$directory/brief" 2>/dev/null | awk '{print $NF}' | sort -u |
+    while IFS= read -r delegated_run; do
+      [ -d "$delegated_state/benches/$delegated_run" ] || continue
+      {
+        printf '%s\n' "$pid"
+        [ ! -s "$directory/launcher" ] || cat "$directory/launcher"
+      } >"$delegated_state/benches/$delegated_run/delegated" 2>/dev/null || :
+    done
   : >"$directory/.ready"
   printf 'RUN: %s\nTAG: %s · %s · %s\nDIR: %s\n' "$run_id" "$account" "${model_label:-$model}" "$effort" "$directory"
 }

@@ -1316,4 +1316,30 @@ assert meta_account_is plain1
 assert jq -e 'has("session_reserve") | not' "$RUN_DIR/meta.json" >/dev/null
 assert grep -qx 'ACCOUNT: plain1 (codex)' <<<"$("$RUNNER" report "$RUN_ID")"
 
-echo "PASS: $asserts asserts; worker-run detaches vendor CLIs, preserves live runs across bounded waits, resolves accounts and model knobs, reroutes an unpinned run off a walled account until every candidate is walled, retries only documented compatibility failures, records beside each run the chat that launched it and the files it wrote — the same list its report prints, unioned across every attempt, an UNKNOWN line where the vendor or the workdir leaves the list unanswerable and a PARTIAL one where the run also worked through the shell, written for a failed run and for a run that never reached its workdir too, and for no chat at all when none can be named — and reports terminal outcomes"
+# A brief carrying a bench run's own `record` command is that run's triage, delegated: the bench is
+# stamped with the supervisor's pid, which is what tells the Stop gate somebody is writing the
+# report — and, once the pid is gone, that nobody is.
+clear_stub
+export PICK_ACCOUNT=deleg PICK_RC=0 STUB_SLEEP=3
+DELEG_BENCHES="$HOME/.claude-profiles/.claudeb/worker-stats/benches"
+mkdir -p "$DELEG_BENCHES/20260801T120000Z-abc123f" "$DELEG_BENCHES/20260801T130000Z-def4560"
+cat >"$WORK/deleg-brief" <<'DELEGBRIEF'
+STEP 1 — blind triage.
+Record exactly with: review-bench record 20260801T120000Z-abc123f --no-corpus --verdicts /tmp/v.jsonl
+No bench holds review-bench record 20260801T990000Z-fffffff, so nothing is stamped for it.
+DELEGBRIEF
+"$RUNNER" start codex --brief "$WORK/deleg-brief" --workdir "$WORK/workdir" \
+  >"$WORK/deleg.out" 2>"$WORK/deleg.err" || fail "delegated start failed: $(<"$WORK/deleg.err")"
+RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/deleg.out")
+RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/deleg.out")
+assert test -s "$DELEG_BENCHES/20260801T120000Z-abc123f/delegated"
+assert test "$(sed -n 1p "$DELEG_BENCHES/20260801T120000Z-abc123f/delegated")" \
+  = "$(jq -r '.pid' "$RUN_DIR/meta.json")"
+assert kill -0 "$(sed -n 1p "$DELEG_BENCHES/20260801T120000Z-abc123f/delegated")"
+# The stamp answers for a run that exists: an id no bench holds is not a directory to invent, and a
+# brief that delegates no triage stamps nothing at all.
+assert test ! -e "$DELEG_BENCHES/20260801T990000Z-fffffff"
+assert test ! -e "$DELEG_BENCHES/20260801T130000Z-def4560/delegated"
+await_done || fail "the delegated run never finished"
+
+echo "PASS: $asserts asserts; worker-run detaches vendor CLIs, preserves live runs across bounded waits, resolves accounts and model knobs, reroutes an unpinned run off a walled account until every candidate is walled, retries only documented compatibility failures, records beside each run the chat that launched it and the files it wrote — the same list its report prints, unioned across every attempt, an UNKNOWN line where the vendor or the workdir leaves the list unanswerable and a PARTIAL one where the run also worked through the shell, written for a failed run and for a run that never reached its workdir too, and for no chat at all when none can be named — stamps the bench of a triage its brief delegates with the supervisor's pid, and reports terminal outcomes"

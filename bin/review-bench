@@ -168,6 +168,11 @@ TRIAGE_PENDING = "REVIEW-TRIAGE-PENDING"
 # Hours a worktree run keeps owing its report. Past that the diff it reviewed is stale, so the
 # gate stops asking rather than dragging an old run into an unrelated turn.
 TRIAGE_GATE_HOURS = 6
+# The far end of the delivery fallback: a triaged round whose fixing pass never answered is worth
+# a report only while the tree it read is still recognisable. Live failure this bounds (2026-08-20):
+# a chat running since the 15th listed 39 pre-fixes-mechanism runs at once — none of which can ever
+# gain a fix status — and the Stop gate rendered every one of them into a single 39KB message.
+DELIVERY_UNFINISHED_MAX_HOURS = 24
 REPORT_RECEIPT = "reported.json"
 FIX_RECEIPT = "fixes.json"
 # Confirmed P1s at which the fixing pass stops instead of starting: past it the round is not a
@@ -184,6 +189,9 @@ ROUND_BUDGET_SPENT = (
     "- fold what is left into the false-positive doctrine rather than reviewing this scope again."
 )
 TRIAGE_NUDGED = "report-nudged"
+# Stamped by `worker-run` when the brief it launches carries this run's `record` command: the
+# triage is that worker's, and a Stop gate nagging the chat meanwhile asks for the same work twice.
+DELEGATED_STAMP = "delegated"
 # How many times a run may be asked for its report before the gate gives up. Not once: a stop
 # hook also fires when the turn is interrupted, and a single ask was spent there instead of at the
 # end of the turn it was meant to gate (seen live 2026-07-31). Still bounded, because a triage
@@ -1346,12 +1354,13 @@ MERGED_HOME_HEX = 16
 RECEIPT_FIELDS = ("repo", "tree", "commit", "run_id", "ts")
 RECEIPT_HASH_HEX = 8
 SCOPE_TRAILER = "Scope-Path: "
-# What a round's triage earns, and what a waiver may not step over: a review that came back with
-# this many confirmed P1s, or this many confirmed findings of any severity, owes a second pass, so
-# the debt standing behind it cannot be waived away. The commit gate prices its own fork on these
-# two numbers and is held equal to them by docs/shared-invariants.md.
-SECOND_REVIEW_P1S = 2
-SECOND_REVIEW_FINDINGS = 8
+# What a waiver may not step over: a review that came back with this many confirmed P1s owes a
+# second pass, so the debt standing behind it cannot be waived away. One number, and the one the
+# fixing pass already stops at — the stop, the lock and the commit gate's fork are the same
+# question asked at three moments, and the gate is held equal to it by docs/shared-invariants.md.
+# A round that earned its second pass on the tally alone locks nothing: the fork says it is owed,
+# and a waiver may still answer it with a reason on record.
+SECOND_REVIEW_P1S = HANDOFF_P1_STOP
 # The reason the commit gate prints in its paste-ready waive command. A caller that pastes it
 # unedited records the placeholder as the decision, which is a waiver saying nothing at all — so it
 # is the one reason this tool refuses. Held equal to the gate's own literal by
@@ -4055,6 +4064,34 @@ def escalation_numbers(run_dir, meta, verdicts, repo=None):
     return own, sum(whole.values())
 
 
+def triage_delegated(run_dir):
+    """Whether a live worker holds this run's triage.
+
+    The stamp's first line is the pid `worker-run` supervises. A pid that is gone hands the run
+    straight back to the gate — a worker that died mid-triage is exactly what the nag is for — and
+    an unsignalable live process (another user's) is alive, not dead.
+    """
+    try:
+        stamped = (run_dir / DELEGATED_STAMP).read_text().split("\n", 1)[0].strip()
+    except (OSError, UnicodeDecodeError):
+        return False
+    try:
+        pid = int(stamped)
+    except ValueError:
+        return False
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
 def triage_pending_run(repo=None, session=None):
     """The newest worktree run of `repo` if it still owes its triaged report, else None.
 
@@ -4101,6 +4138,8 @@ def triage_pending_run(repo=None, session=None):
         if session and launcher and launcher != session:
             return None
         if (run_dir / "verdicts.jsonl").exists() or (run_dir / REPORT_RECEIPT).exists():
+            return None
+        if triage_delegated(run_dir):
             return None
         finished = parse_iso_timestamp(meta.get("finished") or meta.get("finished_at"))
         if finished is None:
@@ -7857,14 +7896,41 @@ def cmd_fixes(args):
     return 0
 
 
+def delivery_state(run_dir):
+    """What state a triaged round's report would be delivered in — `done` or `blocked` — or None
+    while the fixing pass still owes an answer.
+
+    A round with nothing confirmed is `done` at its triage: no fixing pass will ever record a
+    receipt for it, and a report held back for one would never be delivered at all.
+    """
+    state = str((read_fix_status(run_dir) or {}).get("state") or "")
+    if state in ("done", "blocked"):
+        return state
+    if not confirmed_count(recorded_verdict_rows(run_dir)):
+        return "done"
+    return None
+
+
 def cmd_pending_delivery(args):
-    """Every run this chat launched whose triage is recorded, newest last, one id per line.
+    """Every run this chat launched whose report is ready to deliver, newest last, as
+    `<run-id> <state>`.
 
     A run a headless worker triaged left no command output in this chat to carry its block, so the
     report the delivery gate exists to hand Egor has nothing to find; this is the only thing that
-    names one. Bounded by the window `pending-report` asks in, because an old run's report is
-    about a diff that has since moved, and read-only — a delivery ledger decides what is new, not
-    a mark written here.
+    names one. The STATE is half the answer: the gate keys its ledger on it, so a round delivers
+    once per state rather than once per run, and the blocked round Egor forks on is followed by
+    the finished one.
+
+    A round is named once its fixing pass answered, and bounded by the window `pending-report`
+    asks in, because an old run's report is about a diff that has since moved. One exception, and
+    it is why the window is not a plain filter here: a round whose fixing pass never answered at
+    all is named `unfinished` between that window and `DELIVERY_UNFINISHED_MAX_HOURS`, because a
+    worker that died mid-pass would otherwise take the report with it and nothing else in this
+    flow ever mentions the run again. Bounded at BOTH ends, and the far one is load-bearing: a
+    long-lived chat holds runs no fixing pass will ever answer for — every one predating the
+    receipt itself — and unbounded, this hands the Stop gate all of them in one message.
+
+    Read-only — a delivery ledger decides what is new, not a mark written here.
     """
     session = str(args.session or "").strip()
     if not session:
@@ -7881,9 +7947,18 @@ def cmd_pending_delivery(args):
         if not run_triaged(run_dir):
             continue
         finished = parse_iso_timestamp(meta.get("finished") or meta.get("finished_at"))
-        if finished is None or (now - finished).total_seconds() > TRIAGE_GATE_HOURS * 3600:
+        if finished is None:
             continue
-        print(run_dir.name)
+        age = (now - finished).total_seconds()
+        aged = age > TRIAGE_GATE_HOURS * 3600
+        state = delivery_state(run_dir)
+        if state is None:
+            if not aged or age > DELIVERY_UNFINISHED_MAX_HOURS * 3600:
+                continue
+            state = "unfinished"
+        elif aged:
+            continue
+        print(f"{run_dir.name} {state}")
     return 0
 
 
@@ -8163,8 +8238,12 @@ def repo_artifacts(repo):
 
 
 def artifact_locked(artifact):
-    """Whether this artifact is a round the contract owes a second review over: it came back with
-    enough confirmed P1s or findings that the fork sends the chat back to review.
+    """Whether this artifact is a round no waiver may answer for: it came back with enough
+    confirmed P1s that the fixing pass stopped and the fork sends the chat back to review.
+
+    The tally threshold is deliberately not here. A round that earned its second pass on findings
+    alone is owed one in the gate's fork, and the model may still waive it with its reason on
+    record; only the P1 count takes that judgment away.
 
     A run whose tally cannot be read at all is locked too. Read as a clean round it would release
     whatever lock it earned along with the file nobody could parse, and the refusal names the run
@@ -8175,8 +8254,8 @@ def artifact_locked(artifact):
     counts = run_confirmed_counts(artifact["dir"])
     if counts is None:
         return True
-    p1s, findings = counts
-    owed = p1s >= SECOND_REVIEW_P1S or findings >= SECOND_REVIEW_FINDINGS
+    p1s, _ = counts
+    owed = p1s >= SECOND_REVIEW_P1S
     # Except over a scope whose round budget is spent: that round's own report offers no third pass,
     # and a lock demanding one is a gate nothing can open — the waiver is refused for being locked,
     # and the review the refusal names is the pass the budget already spent.
@@ -8442,9 +8521,9 @@ def read_run_confirmed_counts(run_dir):
 
 def debt_locks(repo, debt):
     """The bad rounds standing over this debt, as `{run id: [paths]}`. The run holding a debt path
-    came back with enough confirmed P1s or findings that the contract owes a second review, and a
-    waiver is not a way around one — so a refusal can name which paths those are and which round
-    has to answer for them.
+    came back with enough confirmed P1s that the contract owes a second review, and a waiver is
+    not a way around one — so a refusal can name which paths those are and which round has to
+    answer for them.
 
     A path that is gone is not one of them, for the reason `path_lock_stands` carries.
     """
@@ -8618,9 +8697,9 @@ def cmd_waive(args):
         )
         print(
             f"waive: refused — the review standing over this work came back with "
-            f"{SECOND_REVIEW_P1S}+ confirmed P1s or {SECOND_REVIEW_FINDINGS}+ confirmed findings, "
-            "and that round owes a second review over the full scope plus the fixes. Run it "
-            f"instead of waiving it. Locked: {named}."
+            f"{SECOND_REVIEW_P1S}+ confirmed P1s, and that round owes a mandatory second review "
+            "over the full scope plus the fixes. Run it instead of waiving it. "
+            f"Locked: {named}."
         )
         return 1
     path = waiver_file(repo)
@@ -8686,7 +8765,9 @@ def handoff(run_id, paths, members=None, worktree=False):
     print(f"Record exactly with: {command}")
     print(f"\nTHRESHOLD STOP — {HANDOFF_P1_STOP} or more confirmed P1s: fix NOTHING. Record the "
           f"verdicts as above, record the fix status as blocked with `{fixes_blocked}`, then stop "
-          "and report back with the P1 list.")
+          "and report back with the P1 list. At that count the second review is mandatory and the "
+          "waiver over this work is withheld until it runs; below it a second round is owed by "
+          "the tally alone and may be waived with a reason on record.")
     print("Orchestrator: at that threshold the next move is Egor's fork decision. A session "
           "running in maximum autonomy never pauses for it — it takes the decision itself and "
           "sends the worker on to step 2.")

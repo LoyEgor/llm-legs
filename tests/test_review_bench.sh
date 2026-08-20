@@ -6561,18 +6561,22 @@ assert sr_answer("src/a.py") == "debt 1 other"
 assert sr_waive("src/blob.bin") == (1, "waive: nothing here is in debt")
 
 # A round that came back badly is not a round a chat may waive away: the run holding the debt path
-# carries its own tally, and either threshold locks it.
+# carries its own tally, and the P1 threshold — the one the fixing pass stops at — locks it.
 sr_locked = sr_store()
 sr_run(sr_locked, "20260101T000100Z-aaaaaaa", sr_blobs,
-       report={"confirmed": 2, "confirmed_by_severity": {"P1": 2}})
+       report={"confirmed": 3, "confirmed_by_severity": {"P1": 3}})
 assert sr_answer("src/a.py") == "debt 1 other locked"
 sr_rc, sr_said = sr_waive("src/a.py", reason="not now")
 assert sr_rc == 1 and sr_said.startswith("waive: refused"), (sr_rc, sr_said)
-sr_findings_lock = sr_store()
-sr_run(sr_findings_lock, "20260101T000100Z-aaaaaaa", sr_blobs,
+# The tally alone does NOT lock, however far past its own threshold it runs: that round is owed a
+# second review in the fork's voice, and the waiver may still answer it — a waiver records its
+# reason, so what is left is a judged skip and never a silent one.
+sr_findings_only = sr_store()
+sr_run(sr_findings_only, "20260101T000100Z-aaaaaaa", sr_blobs,
        report={"confirmed": 8, "confirmed_by_severity": {"P1": 0}})
-assert sr_answer("src/a.py") == "debt 1 other locked"
-# Under both thresholds it is ordinary debt, waiver and all.
+assert sr_answer("src/a.py") == "debt 1 other"
+assert sr_waive("src/a.py", reason="eight small ones, each judged")[0] == 0
+# Under the threshold it is ordinary debt, waiver and all.
 sr_soft = sr_store()
 sr_run(sr_soft, "20260101T000100Z-aaaaaaa", sr_blobs,
        report={"confirmed": 1, "confirmed_by_severity": {"P1": 1}})
@@ -6585,7 +6589,7 @@ assert sr_waive("src/a.py", reason="tiny")[0] == 0
 # it, and a waiver takes none at any width.
 sr_cleared = sr_store()
 sr_run(sr_cleared, "20260101T000100Z-aaaaaaa", sr_blobs,
-       report={"confirmed": 2, "confirmed_by_severity": {"P1": 2}})
+       report={"confirmed": 3, "confirmed_by_severity": {"P1": 3}})
 assert sr_answer("src/a.py") == "debt 1 other locked"
 sr_run(sr_cleared, "20260101T000200Z-bbbbbbb", {"src/a.py": sr_sha("src/a.py")})
 assert sr_answer("src/a.py") == "debt 1 other locked"
@@ -6601,20 +6605,20 @@ assert sr_answer("src/a.py") == "none"
 # the review the refusal names is the pass the budget spent.
 sr_spent = sr_store()
 sr_first_round = sr_run(sr_spent, "20260101T000100Z-aaaaaaa", sr_blobs,
-                        report={"confirmed": 2, "confirmed_by_severity": {"P1": 2}})
+                        report={"confirmed": 3, "confirmed_by_severity": {"P1": 3}})
 (sr_first_round / rb.FIX_RECEIPT).write_text(json.dumps({"state": "done", "fixed": 2}))
 sr_run(sr_spent, "20260101T000200Z-bbbbbbb", sr_blobs,
-       report={"confirmed": 2, "confirmed_by_severity": {"P1": 2}})
+       report={"confirmed": 3, "confirmed_by_severity": {"P1": 3}})
 assert sr_answer("src/a.py") == "debt 1 other"
 assert sr_waive("src/a.py", reason="the budget of two is spent")[0] == 0
 # A round the first one never fixed still locks: only a `done` receipt spends the budget.
 sr_stopped = sr_store()
 sr_stopped_first = sr_run(sr_stopped, "20260101T000100Z-aaaaaaa", sr_blobs,
-                          report={"confirmed": 2, "confirmed_by_severity": {"P1": 2}})
+                          report={"confirmed": 3, "confirmed_by_severity": {"P1": 3}})
 (sr_stopped_first / rb.FIX_RECEIPT).write_text(
     json.dumps({"state": "blocked", "reason": "P1 threshold"}))
 sr_run(sr_stopped, "20260101T000200Z-bbbbbbb", sr_blobs,
-       report={"confirmed": 2, "confirmed_by_severity": {"P1": 2}})
+       report={"confirmed": 3, "confirmed_by_severity": {"P1": 3}})
 assert sr_answer("src/a.py") == "debt 1 other locked"
 
 # A held path that is gone is debt: what the panel read is not standing there any more.
@@ -6769,7 +6773,7 @@ assert sr_answer("src/a.py", session="chat-2") == "none"
 sr_locked_floor = sr_store()
 sr_source.write_text(sr_moved + "locked floor\n")
 sr_run(sr_locked_floor, "20280101T000100Z-ccccccc", {"src/a.py": "stale-sha"},
-       report={"confirmed": 3, "confirmed_by_severity": {"P1": 2}})
+       report={"confirmed": 3, "confirmed_by_severity": {"P1": 3}})
 sr_journal(rb.DEBT_JOURNAL, "chat-1", "src/a.py")
 assert sr_answer("src/a.py", session="chat-1") == "debt 1 mine locked"
 assert rb.debt_authors(sr_repo, [("src/a.py", {"epoch": 1830000000})]) == {"chat-1"}
@@ -6849,7 +6853,7 @@ sr_gone_scope = sr_store()
 (sr_repo / "src" / "doomed.py").write_text("to be deleted\n")
 sr_run(sr_gone_scope, "20260101T000100Z-aaaaaaa",
        dict(sr_blobs, **{"src/doomed.py": sr_sha("src/doomed.py")}),
-       report={"confirmed": 2, "confirmed_by_severity": {"P1": 2}})
+       report={"confirmed": 3, "confirmed_by_severity": {"P1": 3}})
 sr_source.write_text(sr_moved + "fixed\n")
 (sr_repo / "src" / "doomed.py").unlink()
 assert sr_answer("src/a.py") == "debt 1 other locked"
@@ -6861,7 +6865,7 @@ assert sr_answer("src/a.py") == "none"
 sr_narrow = sr_store()
 sr_source.write_text(sr_moved + "narrow\n")
 sr_run(sr_narrow, "20260101T000100Z-aaaaaaa", sr_blobs,
-       report={"confirmed": 2, "confirmed_by_severity": {"P1": 2}})
+       report={"confirmed": 3, "confirmed_by_severity": {"P1": 3}})
 sr_run(sr_narrow, "20260101T000200Z-bbbbbbb", {"src/a.py": sr_sha("src/a.py")})
 assert sr_answer("src/a.py") == "debt 1 other locked"
 
@@ -6936,7 +6940,7 @@ sr_clear_journals()
 sr_source.write_text(sr_moved + "the locked round read this\n")
 sr_run(sr_deleted_lock, "20260101T000100Z-aaaaaaa",
        {"src/a.py": sr_sha("src/a.py"), "src/pair.py": sr_sha("src/pair.py")},
-       report={"confirmed": 2, "confirmed_by_severity": {"P1": 2}})
+       report={"confirmed": 3, "confirmed_by_severity": {"P1": 3}})
 sr_source.write_text(sr_moved + "and then the fixes\n")
 (sr_repo / "src" / "pair.py").unlink()
 assert sr_answer("src/a.py") == "debt 1 other locked"
@@ -11257,6 +11261,36 @@ GATE_SD="$STALE_SD" gate_run 20260730T000000Z-gatestale 48 1
 gate_stale=$(WORKER_STATS_DIR="$STALE_SD" "$SCRIPT" pending-report --repo "$GATE_REPO" || true)
 assert test -z "$gate_stale"
 
+# A triage a live worker is already doing is not one the chat owes: `worker-run` stamps the bench
+# with its supervisor's pid, and the gate stays quiet for as long as that pid answers.
+DELEG_SD="$WORK/gate-delegated"
+DELEG_REPO="$WORK/gate-delegated-repo"
+git init -q "$DELEG_REPO"
+GATE_SD="$DELEG_SD" GATE_REPO="$DELEG_REPO" gate_run 20260731T080000Z-gatedelegated 0 1
+deleg_before=$(WORKER_STATS_DIR="$DELEG_SD" "$SCRIPT" pending-report --repo "$DELEG_REPO") \
+  || fail "pending-report missed the untriaged run before anybody took it"
+assert contains "$deleg_before" "20260731T080000Z-gatedelegated 1"
+DELEG_STAMP="$DELEG_SD/benches/20260731T080000Z-gatedelegated/delegated"
+printf '%s\nsess-deleg\n' "$$" >"$DELEG_STAMP"
+deleg_live=$(WORKER_STATS_DIR="$DELEG_SD" "$SCRIPT" pending-report --repo "$DELEG_REPO" --mark \
+  || true)
+assert test -z "$deleg_live"
+# Quiet, and quiet for free: a silenced run must not spend the asks it will need if the worker dies.
+assert test ! -e "$DELEG_SD/benches/20260731T080000Z-gatedelegated/report-nudged"
+# A pid that is gone gives the run straight back — a worker that died mid-triage is exactly what
+# the nag exists for, and a stamp that outlived it would bury the report instead.
+deleg_dead_pid=$(bash -c 'echo $$')
+printf '%s\n' "$deleg_dead_pid" >"$DELEG_STAMP"
+deleg_dead=$(WORKER_STATS_DIR="$DELEG_SD" "$SCRIPT" pending-report --repo "$DELEG_REPO") \
+  || fail "a dead worker's stamp silenced the run for good"
+assert contains "$deleg_dead" "20260731T080000Z-gatedelegated 1"
+# And a stamp naming no pid at all is no worker either.
+printf 'not-a-pid\n' >"$DELEG_STAMP"
+deleg_garbage=$(WORKER_STATS_DIR="$DELEG_SD" "$SCRIPT" pending-report --repo "$DELEG_REPO") \
+  || fail "an unreadable stamp silenced the run"
+assert contains "$deleg_garbage" "20260731T080000Z-gatedelegated 1"
+rm -f "$DELEG_STAMP"
+
 # --- Fix status, the round budget and the delivery queue ----------------------
 # A triaged round is not a finished one: the report says so in a line it always carries, and the
 # frame word says it again louder, because a block shaped like every other one reads as finished.
@@ -11445,12 +11479,22 @@ fix_bench fixes 20260801T000000Z-fixround1 --done --fixed 2 --fp 0 >/dev/null \
 fix_resettled=$(fix_bench report 20260801T000000Z-fixround1) || fail "the round lost its report"
 assert test "$(fix_row "$fix_resettled")" = "done — 2 fixed, 0 false positives"
 
-# The delivery queue: a run this chat launched whose triage is on record, which no command in this
-# chat ever printed, because a headless worker recorded it in a process of its own.
+# The delivery queue: a run this chat launched whose round has a state to deliver, which no command
+# in this chat ever printed, because a headless worker recorded it in a process of its own. The
+# STATE stands beside the id: the gate keys its ledger on it, so a round delivers one report per
+# state it reaches rather than one per run.
 fix_delivery=$(fix_bench pending-delivery --session sess-fix) \
   || fail "pending-delivery refused a recorded run"
-assert contains "$fix_delivery" "20260801T000000Z-fixround1"
-assert contains "$fix_delivery" "20260801T020000Z-fixround2"
+assert test "$(grep -c '^20260801T000000Z-fixround1 done$' <<<"$fix_delivery")" = 1
+# A round whose fixing pass stopped is delivered in the state it stopped in — that report is the
+# fork Egor answers, and the finished one comes after he has.
+assert test "$(grep -c '^20260801T060000Z-fixstopped blocked$' <<<"$fix_delivery")" = 1
+# A round with nothing confirmed has no fixing pass to wait for: it is done at its triage, and a
+# report held for a receipt nobody will ever write would never be delivered at all.
+assert test "$(grep -c '^20260801T010000Z-fixquiet done$' <<<"$fix_delivery")" = 1
+# One still mid-pass is not delivered at all: its report is about to change, and the copy sent now
+# is the extra one this queue exists to stop printing.
+assert test "$(grep -Fc -- "20260801T020000Z-fixround2" <<<"$fix_delivery")" -eq 0
 # Another chat's runs are that chat's to be shown, and asking here would put its review in the
 # wrong window.
 fix_foreign=$(fix_bench pending-delivery --session sess-elsewhere) \
@@ -11469,6 +11513,39 @@ fix_bench record 20260730T000000Z-fixstale --no-corpus >/dev/null \
   || fail "the stale run refused its own triage"
 fix_stale=$(fix_bench pending-delivery --session sess-fix) || fail "pending-delivery failed"
 assert test "$(grep -Fc -- "20260730T000000Z-fixstale" <<<"$fix_stale")" -eq 0
+# A worker that died mid-pass must not take the report down with it: past the same window, a round
+# whose fixing pass never answered at all is named `unfinished` and delivered once, which is the one
+# case the window is not a plain filter for.
+GATE_SD="$FIX_SD" GATE_REPO="$FIX_QUIET_REPO" GATE_SESSION=sess-fix \
+  gate_run 20260730T010000Z-fixabandoned 10 1
+fix_bench record 20260730T010000Z-fixabandoned --no-corpus \
+  --verdicts "$WORK/fix-verdicts3.jsonl" >/dev/null || fail "the abandoned round refused its triage"
+fix_abandoned=$(fix_bench pending-delivery --session sess-fix) || fail "pending-delivery failed"
+assert test "$(grep -c '^20260730T010000Z-fixabandoned unfinished$' <<<"$fix_abandoned")" = 1
+# Fresh, the very same round says nothing: while the window is open the pass is still somebody's.
+GATE_SD="$FIX_SD" GATE_REPO="$FIX_QUIET_REPO" GATE_SESSION=sess-fix \
+  gate_run 20260802T010000Z-fixmidpass 0 1
+fix_bench record 20260802T010000Z-fixmidpass --no-corpus \
+  --verdicts "$WORK/fix-verdicts3.jsonl" >/dev/null || fail "the mid-pass round refused its triage"
+fix_midpass=$(fix_bench pending-delivery --session sess-fix) || fail "pending-delivery failed"
+assert test "$(grep -Fc -- "20260802T010000Z-fixmidpass" <<<"$fix_midpass")" -eq 0
+# And past the far end it stays gone for good. Unbounded, this fallback answered with every round a
+# long chat ever recorded before the fix receipt existed — 39 of them in one message, live
+# (2026-08-20) — none of which any pass can ever answer for now.
+GATE_SD="$FIX_SD" GATE_REPO="$FIX_QUIET_REPO" GATE_SESSION=sess-fix \
+  gate_run 20260729T000000Z-fixancient 48 1
+fix_bench record 20260729T000000Z-fixancient --no-corpus \
+  --verdicts "$WORK/fix-verdicts3.jsonl" >/dev/null || fail "the ancient round refused its triage"
+fix_ancient=$(fix_bench pending-delivery --session sess-fix) || fail "pending-delivery failed"
+assert test "$(grep -Fc -- "20260729T000000Z-fixancient" <<<"$fix_ancient")" -eq 0
+# The bound is an age and not a count: the run one hour inside it is still delivered.
+GATE_SD="$FIX_SD" GATE_REPO="$FIX_QUIET_REPO" GATE_SESSION=sess-fix \
+  gate_run 20260729T010000Z-fixlastcall 23 1
+fix_bench record 20260729T010000Z-fixlastcall --no-corpus \
+  --verdicts "$WORK/fix-verdicts3.jsonl" >/dev/null || fail "the last-call round refused its triage"
+fix_lastcall=$(fix_bench pending-delivery --session sess-fix) || fail "pending-delivery failed"
+assert test "$(grep -c '^20260729T010000Z-fixlastcall unfinished$' <<<"$fix_lastcall")" = 1
+
 # Read-only: nothing about being listed may spend a run's asks or change what it owes.
 assert test ! -e "$FIX_SD/benches/20260801T000000Z-fixround1/report-nudged"
 

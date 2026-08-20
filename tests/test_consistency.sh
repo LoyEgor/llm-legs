@@ -897,15 +897,19 @@ if test -r "$JOURNAL_LIB"; then
 fi
 
 
-# --- Row ap: the second-round thresholds bind the waiver -----------------------
-# The fork's dials and the lock over a waiver are the same two numbers: a round that owes a second
-# review in the gate's voice must not be waivable in the bench's.
-assert doc_has 'Second-round thresholds bind the waiver'
-rb_second_p1s=$(sed -n 's/^SECOND_REVIEW_P1S = \([0-9]*\)$/\1/p' "$REVIEWBENCH")
-rb_second_findings=$(sed -n 's/^SECOND_REVIEW_FINDINGS = \([0-9]*\)$/\1/p' "$REVIEWBENCH")
-assert eq "$rb_second_p1s" 2
-assert eq "$rb_second_findings" 8
-assert grep -Fq 'p1s >= SECOND_REVIEW_P1S or findings >= SECOND_REVIEW_FINDINGS' "$REVIEWBENCH"
+# --- Row ap: the P1 threshold binds the waiver ---------------------------------
+# The fork's mandatory branch and the lock over a waiver are the same number: a round that owes a
+# mandatory second review in the gate's voice must not be waivable in the bench's. And one number
+# per repository — the count the fixing pass stops at IS the count that locks.
+assert doc_has 'The P1 threshold binds the waiver'
+rb_second_p1s=$(sed -n 's/^HANDOFF_P1_STOP = \([0-9]*\)$/\1/p' "$REVIEWBENCH")
+assert eq "$rb_second_p1s" 3
+assert grep -Fq 'SECOND_REVIEW_P1S = HANDOFF_P1_STOP' "$REVIEWBENCH"
+assert grep -Fqx '    owed = p1s >= SECOND_REVIEW_P1S' "$REVIEWBENCH"
+# The tally dial is the gate's alone: spelled here it would lock a round the fork leaves waivable,
+# and a waiver carrying its reason is the judgment that answers one.
+assert eq "$(grep -Fc SECOND_REVIEW_FINDINGS "$REVIEWBENCH")" 0
+assert doc_has 'is the gate'"'"'s alone and locks nothing'
 # The one path the lock lets go, named in the row and defined in the code: a deleted path no later
 # snapshot can hold would otherwise stay locked past every review and every waiver.
 assert doc_has '`path_lock_stands`'
@@ -918,7 +922,7 @@ if test -r "$FLOW_GATE"; then
   gate_second_p1s=$(sed -n 's/^SECOND_REVIEW_P1S=\([0-9]*\)$/\1/p' "$FLOW_GATE")
   gate_second_findings=$(sed -n 's/^SECOND_REVIEW_FINDINGS=\([0-9]*\)$/\1/p' "$FLOW_GATE")
   assert eq "$gate_second_p1s" "$rb_second_p1s"
-  assert eq "$gate_second_findings" "$rb_second_findings"
+  assert eq "$gate_second_findings" 8
 fi
 
 # --- Row aq: the waiver's placeholder reason -----------------------------------
@@ -989,16 +993,17 @@ if [ -r "$FLOW_GATE" ] && [ -r "$REPORT_GATE" ]; then
   assert grep -Fq 'ev_p1="${2:-}" ev_total="${3:-}"' "$FLOW_GATE"
   assert grep -Fq '[str(ESCALATION_GATE), "escalation-verdict", str(p1), str(total)],' \
     "$REVIEW_BENCH"
-  # The three dials, in the gate and only there.
-  assert grep -Fq 'SECOND_REVIEW_P1S=2' "$FLOW_GATE"
+  # The two dials, in the gate and only there. There is no third: a count at which the fork led
+  # with the rework was one, and that choice is inside what the P1 branch already asks.
+  assert grep -Fq 'SECOND_REVIEW_P1S=3' "$FLOW_GATE"
   assert grep -Fq 'SECOND_REVIEW_FINDINGS=8' "$FLOW_GATE"
-  assert grep -Fq 'WEAK_LINK_P1S=5' "$FLOW_GATE"
+  assert eq "$(grep -Fc WEAK_LINK_P1S "$FLOW_GATE")" 0
   for copy in SECOND_REVIEW_P1S SECOND_REVIEW_FINDINGS WEAK_LINK_P1S 'weak block'; do
     assert test "$(grep -Fc -- "$copy" "$REPORT_GATE")" -eq 0
   done
-  # review-bench spells the two round-size numbers for the waiver lock alone (row ap holds them
-  # equal); the weak-link dial and every word of the fork stay the gate's.
-  for copy in WEAK_LINK_P1S 'weak block'; do
+  # review-bench spells the P1 number for the waiver lock alone (row ap holds it equal); the tally
+  # dial, the retired weak-link dial and every word of the fork stay the gate's.
+  for copy in WEAK_LINK_P1S 'weak block' SECOND_REVIEW_FINDINGS; do
     assert test "$(grep -Fc -- "$copy" "$REVIEW_BENCH")" -eq 0
   done
   assert doc_has 'Second-round verdict has one voice'
