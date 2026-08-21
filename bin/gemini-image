@@ -146,13 +146,21 @@ Call generate_image exactly once with these parameters:
 ImageName: $image_name
 AspectRatio: $aspect
 $image_paths
+If that call fails with a quota error, do NOT wait or retry: reply with the single word QUOTA.
 Reply with ONLY the absolute path of the generated file on the last line."
 
 # Backdated a second: -newer misses files that land in the marker's own mtime quantum.
 : >"$launch_marker"
 touch -A -01 "$launch_marker" 2>/dev/null || true
-if ! geminib profile "$account" --model gemini-3.6-flash-low --print-timeout 8m \
-  --dangerously-skip-permissions --log-file "$log_file" --print "$instruction" >"$stdout_file"; then
+generation_rc=0
+geminib profile "$account" --model gemini-3.6-flash-low --print-timeout 180s \
+  --dangerously-skip-permissions --log-file "$log_file" --print "$instruction" >"$stdout_file" || generation_rc=$?
+# The image model has its own per-account quota, invisible in the chat-model quota table.
+if [ "$(tail -n 1 "$stdout_file" | tr -d '\r')" = QUOTA ]; then
+  printf 'GEMINI_USAGE_LIMIT\n' >&2
+  exit 3
+fi
+if [ "$generation_rc" -ne 0 ]; then
   if grep -Eqi 'RESOURCE_EXHAUSTED|Individual quota reached|usage limit|quota exceeded|rate limit' \
       "$stdout_file" "$log_file" 2>/dev/null; then
     printf 'GEMINI_USAGE_LIMIT\n' >&2

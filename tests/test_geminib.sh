@@ -499,10 +499,19 @@ for argument in "$@"; do
   previous=$argument
 done
 printf 'account=%s\nprint_flag=%s\n' "$2" "$before_previous" >>"$IMAGE_CALLS"
+timeout_next=false
+for argument in "$@"; do
+  if [ "$timeout_next" = true ]; then printf 'print_timeout=%s\n' "$argument" >>"$IMAGE_CALLS"; timeout_next=false; fi
+  [ "$argument" = --print-timeout ] && timeout_next=true
+done
 printf '%s' "$previous" >"$IMAGE_PROMPT"
 case "${IMAGE_MODE:-reply}" in
   limit)
     printf 'RESOURCE_EXHAUSTED\n'
+    exit 1
+    ;;
+  quota)
+    printf 'status\nQUOTA\n'
     exit 1
     ;;
   rescue)
@@ -638,6 +647,17 @@ image_run --dest "$WORK/image-output/generation-limit.jpg" --prompt portrait \
   --account main || image_rc=$?
 assert test "$image_rc" -eq 3
 assert grep -qx GEMINI_USAGE_LIMIT "$IMAGE_ERR"
+
+IMAGE_MODE=quota
+export IMAGE_MODE
+image_rc=0
+image_run --dest "$WORK/image-output/image-quota.jpg" --prompt portrait \
+  --account main || image_rc=$?
+assert test "$image_rc" -eq 3
+assert grep -qx GEMINI_USAGE_LIMIT "$IMAGE_ERR"
+assert grep -q 'reply with the single word QUOTA' "$IMAGE_PROMPT"
+assert grep -qx 'print_timeout=180s' "$IMAGE_CALLS"
+assert_fails grep -qiE 'RESOURCE_EXHAUSTED|quota exceeded|rate limit|usage limit' "$IMAGE_PROMPT"
 
 IMAGE_MODE=rescue
 IMAGE_RESCUE_FILE="$HOME/.gemini-profiles/rescue/.gemini/antigravity-cli/brain/conversation/rescued.jpg"
