@@ -105,6 +105,17 @@ emit "$AINAMED" "{'type':'ai-title','aiTitle':'Machine guess about гадани�
 QUOTED="$CORPUS/99999999-9999-9999-9999-999999999999.jsonl"
 emit "$QUOTED" "{'type':'user','cwd':'/tmp/proj','timestamp':'2026-01-16T10:00:00.000Z','toolUseResult':{'type':'custom-title'},'message':{'role':'user','content':'событие должно парситься как речь'}}"
 
+# A worker run talking about the very thing he searches for. A chat launched it to
+# carry out that errand; the errand is not a conversation he can go back to.
+WORKER="$CORPUS/dddddddd-dddd-dddd-dddd-dddddddddddd.jsonl"
+emit "$WORKER" "{'type':'user','cwd':'/tmp/proj','entrypoint':'sdk-cli','timestamp':'2026-01-28T09:00:00.000Z','message':{'role':'user','content':'TASK: почини оверлей, он моргает'}}"
+
+# A worker run whose transcript holds no speech at all — only what its tools printed.
+# The tail scan reads it back as a chat with nothing said, so the entrypoint has to
+# come off the matched line itself or the errand leaks into an --all search.
+WORKERTOOL="$CORPUS/eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee.jsonl"
+emit "$WORKERTOOL" "{'type':'user','cwd':'/tmp/proj','entrypoint':'sdk-cli','timestamp':'2026-01-28T09:30:00.000Z','message':{'role':'user','content':[{'type':'tool_result','content':'grep -n оверлей overlay.lua'}]}}"
+
 run() { OUT=$("$SCRIPT" --account acct --root "$WORK/projects" "$@" 2>&1); RC=$?; }
 
 # --- the spoken match wins and carries its real date ------------------------
@@ -166,8 +177,26 @@ assert test -z "$(grep -o '2222-2222' <<<"$OUT")"
 assert test -z "$(grep -o '3333-3333' <<<"$OUT")"
 assert test -z "$(grep -o '5555-5555' <<<"$OUT")"
 
-# --all widens to what tools printed
+# --- a worker run is the errand, never the chat that sent it ----------------
+assert test -z "$(grep -o 'dddd-dddd' <<<"$OUT")"
+assert grep -q '1 headless run hidden' <<<"$OUT"
+run --agents оверлей
+assert grep -q 'dddd-dddd' <<<"$OUT"
+assert test -z "$(grep -o 'headless run hidden' <<<"$OUT")"
+# the note counts only what --agents would actually reveal: a run the same --days
+# still drops is not a hidden one
+run --days 1 оверлей
+assert grep -q 'no chat matched' <<<"$OUT"
+assert test -z "$(grep -o 'headless run hidden' <<<"$OUT")"
+# widening to tool output does not un-hide the errand, nor does a transcript that
+# never held a spoken line
 run --all оверлей
+assert test -z "$(grep -o 'dddd-dddd' <<<"$OUT")"
+assert test -z "$(grep -o 'eeee-eeee' <<<"$OUT")"
+run --agents --all оверлей
+assert grep -q 'eeee-eeee' <<<"$OUT"
+
+# --all widens to what tools printed
 assert grep -q '2222-2222' <<<"$OUT"
 
 # --- nothing found says so, and says how to widen ---------------------------

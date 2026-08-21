@@ -49,6 +49,12 @@ BANG = re.compile(r"<bash-input>(.*?)</bash-input>", re.S)
 # extra patterns of the single search pass, so naming costs no second scan.
 NAME_PATTERNS = ('"custom-title"', '"ai-title"')
 NAME_LINE_MAX = 8 * 1024
+# A worker, bench or subagent run is not a chat: it was launched BY one to carry out
+# an errand, holds no conversation he could resume, and these outnumber real chats by
+# an order of magnitude — so listing them answers with the errand instead of with the
+# chat that sent it. Only a positive entrypoint hides a transcript; ones written
+# before the field carry none at all.
+HEADLESS_VIA = "sdk-cli"
 
 
 def die(message):
@@ -223,7 +229,9 @@ def scan_matches(terms, include_all, root):
             continue
         if state is None:
             state = found.setdefault(path, {"hits": 0, "terms": set(), "snippet": None,
-                                            "spoke": None, "capped": False, "rank": -1})
+                                            "spoke": None, "capped": False, "rank": -1,
+                                            "via": None})
+        state["via"] = state["via"] or entry.get("entrypoint")
         state["hits"] += 1
         state["terms"].update(hit)
         when = stamp(entry)
@@ -257,7 +265,8 @@ def scan_matches(terms, include_all, root):
             # No hit, no snippet: nothing was said here, so nothing may be quoted
             # as if it had been.
             state = found.setdefault(path, {"hits": 0, "terms": set(), "snippet": None,
-                                            "spoke": None, "capped": False, "rank": -1})
+                                            "spoke": None, "capped": False, "rank": -1,
+                                            "via": None})
         state["terms"].update(hit)
     return found, names
 
@@ -396,12 +405,6 @@ def last_facts(path):
     return None
 
 
-def last_spoken(path):
-    """Timestamp of the last real message, read backward from the end."""
-    facts = last_facts(path)
-    return facts["when"] if facts else None
-
-
 def load_cache(path):
     try:
         with open(path, encoding="utf-8") as handle:
@@ -475,11 +478,7 @@ def scan_recent(root, days, cache_path, agents=False):
             when = row.get("at")
             if not when or (horizon and when < horizon):
                 continue
-            # Headless runs — workers, review benches, subagent fleets — outnumber
-            # real chats by an order of magnitude and are nothing he ever sat in.
-            # Transcripts predating the field carry no entrypoint at all, so only
-            # a positive "sdk-cli" hides a chat.
-            if not agents and row.get("via") == "sdk-cli":
+            if not agents and row.get("via") == HEADLESS_VIA:
                 continue
             listed = {field: value for field, value in row.items() if field != "key"}
             rows.append(dict(listed, path=path, session=name[: -len(".jsonl")]))
@@ -558,6 +557,11 @@ def report_recent(args):
         print("  " + row["session"])
 
 
+def hidden_note(headless):
+    return (" · %d headless run%s hidden (--agents)"
+            % (headless, "" if headless == 1 else "s")) if headless else ""
+
+
 def ago(when, now):
     minutes = (now - when).total_seconds() / 60
     if minutes < 90:
@@ -578,7 +582,7 @@ def main():
                         help="list every chat instead of searching, newest real message first")
     parser.add_argument("--json", action="store_true", help="machine-readable output (--recent only)")
     parser.add_argument("--agents", action="store_true",
-                        help="also list headless runs — workers, benches, subagents (--recent only)")
+                        help="also match and list headless runs — workers, benches, subagents")
     parser.add_argument("--days", type=float, help="only chats whose last message is within N days")
     parser.add_argument("--limit", type=int, default=None,
                         help="candidates to print (default 8 when searching, all with --recent)")
@@ -609,12 +613,22 @@ def main():
     found, names = scan_matches(args.terms, args.all, args.root)
     now = datetime.now(timezone.utc).astimezone()
 
-    rows = []
+    rows, headless = [], 0
     for path, state in found.items():
-        when = last_spoken(path) or state["spoke"]
+        facts = last_facts(path)
+        when = (facts["when"] if facts else None) or state["spoke"]
         if when is None:
             continue
+        # Out of the window first: a hidden-run note counted before it would promise
+        # that --agents reveals a run the same --days still drops.
         if args.days is not None and (now - when).total_seconds() > args.days * 86400:
+            continue
+        # The matched line's own entrypoint stands in where the tail scan found no
+        # speech to read one from — a transcript ending in megabytes of tool output
+        # would otherwise lose the classification and list the errand as a chat.
+        via = (facts or {}).get("via") or state["via"]
+        if not args.agents and via == HEADLESS_VIA:
+            headless += 1
             continue
         rows.append((when, path, state))
     # Newest last-real-message first (never file mtime), relevance to break ties:
@@ -623,7 +637,7 @@ def main():
 
     if not rows:
         scope = "" if args.all else " (visible conversation only; --all widens to tool output)"
-        print("no chat matched %s%s" % (", ".join(args.terms), scope))
+        print("no chat matched %s%s%s" % (", ".join(args.terms), scope, hidden_note(headless)))
         return
 
     profile = args.account or account()
@@ -649,8 +663,9 @@ def main():
         print("  resume:      cd %s && %s" % ("'" + (cwd or ".").replace("'", "'\\''") + "'", launcher))
         print()
 
-    print("%d chat(s) matched, %d shown, %.1fs — LAST is the last real message; file mtime is not it "
-          "(opening a chat bumps mtime with nothing said)" % (len(rows), len(shown), time.time() - started))
+    print("%d chat(s) matched, %d shown, %.1fs%s — LAST is the last real message; file mtime is not it "
+          "(opening a chat bumps mtime with nothing said)"
+          % (len(rows), len(shown), time.time() - started, hidden_note(headless)))
 
 
 if __name__ == "__main__":
