@@ -149,6 +149,16 @@ write_limits_bucket true 60
 run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" app 0 >/dev/null || fail "stale-marked-row run failed"
 grep -q 'LLM_LIMITS --refresh' "$CALLS" || fail "a row the collector marked stale must be refreshed: $(cat "$CALLS")"
 
+# `expired` is the collector's other verdict and independent of `stale`: a just-collected row whose
+# window has already rolled is not stale, and it is the one reading a refresh can actually replace.
+cat >"$FIXTURE_HOME/.llm-limits.json" <<EOF
+{"vendors":{"claude":{"accounts":[{"account":"notcom","five_hour":{
+  "resets_at":"$(date -u -r "$((now - 300))" +%Y-%m-%dT%H:%M:%SZ)",
+  "as_of":$((now - 60)),"stale":false,"expired":true}}]}}}
+EOF
+run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" app 0 >/dev/null || fail "expired-marked-row run failed"
+grep -q 'LLM_LIMITS --refresh' "$CALLS" || fail "a row the collector marked expired must be refreshed: $(cat "$CALLS")"
+
 # --- hs unreachable ---
 
 out=$(PATH="/usr/bin:/bin" HOME="$FIXTURE_HOME" "$SCRIPT" app 0 2>&1)

@@ -80,8 +80,8 @@ resolve_root() {
   cd -P "$(dirname "$source")/.." && pwd
 }
 legs_root=$(resolve_root) || legs_root=""
-# The five-hour staleness threshold, from the one place it is written down
-# (docs/shared-invariants.md row a) — never a literal of this script's own.
+# The staleness threshold OF the five_hour bucket (not a five-hour one), from the one place it
+# is written down (docs/shared-invariants.md row a) — never a literal of this script's own.
 stale_after=""
 if [ -n "$legs_root" ] && [ -r "$legs_root/share/limits-view.sh" ]; then
   . "$legs_root/share/limits-view.sh"
@@ -92,19 +92,22 @@ fi
 # is limits-view.sh's `limits_bucket_stale` — expired auth and a cached-origin reading as much as
 # age — and a surface that re-derives any part of it from `as_of` alone trusts a row the rest of
 # the system prints with a `~`. The age below is asked on top because that flag is frozen at the
-# instant the collector wrote it and cannot go stale on its own.
+# instant the collector wrote it and cannot go stale on its own. `expired` is a separate verdict
+# from `stale` (a just-collected row whose window has already rolled is expired but not stale), and
+# it is the one reading a refresh can actually replace: without it the arming below falls back to a
+# blind 15 minutes off a row the collector already zeroed.
 fresh_five_hour_as_of() {
   [ -f "$cache" ] || return 1
   jq -r --arg acct "$account" '
     (.vendors.claude.accounts[]? | select(.account == $acct) | .five_hour)
-    | select(type == "object" and .stale == false)
+    | select(type == "object" and .stale == false and (.expired // false) == false)
     | .as_of | if type == "number" then . else empty end
   ' "$cache" 2>/dev/null | head -n1
 }
 
 # A refresh is real OAuth/usage traffic, and one spent on a reading minutes old buys nothing while
 # self-inflicting 429s under capacity weather (Egor, 2026-07-17). Asked of the store first: only a
-# row that is missing, unreadable, already marked stale, or past its own threshold is worth the call.
+# row that is missing, unreadable, marked stale or expired, or past its own threshold is worth it.
 if command -v llm-limits >/dev/null 2>&1; then
   as_of=$(fresh_five_hour_as_of)
   if [ -z "$as_of" ] || [ -z "$stale_after" ] ||
