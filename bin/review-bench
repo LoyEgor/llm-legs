@@ -8318,6 +8318,104 @@ def cmd_pending_report(args):
     return 0
 
 
+def fix_written_paths(repo, scope, session, window):
+    """The paths of `scope` whose every journalled edit inside `window` is the fixing session's
+    own, at the shas they held when this reading began.
+
+    Every refusal here leaves the path in debt where it belongs. A path the window names nobody
+    for holds no fix bytes at all, and covering it would blanket the round's whole scope. A record
+    with no timestamp cannot be placed inside the window, one stamped AFTER its end is bytes the
+    sha below holds and the window never checked, and one naming another chat — or a co-tenant's
+    worker run the journals have not swept yet — is an edit this pass never made: either way the
+    file holds bytes nobody has answered for.
+
+    A worker a chat spawned IS that chat, so its own journal entries fold into the launcher exactly
+    as `debt` folds them (docs/shared-invariants.md row `am`).
+    """
+    start, end = window
+    # The shas BEFORE the two record stores and never after them: an edit landing between the
+    # readings stands in a sha taken last while the record read past it names nobody, and the
+    # receipt would settle a co-tenant's bytes with no entry to disqualify them. Read first, those
+    # bytes are simply not in the sha this covers, and the path is in debt at its next reading.
+    shas = {path: path_blob_sha(repo, path) for path in scope}
+    records = {}
+    for entry, epoch, path in journal_rows(repo):
+        if path in scope:
+            records.setdefault(path, []).append((entry, epoch))
+    launchers = worker_session_launchers()
+    claims = run_record_claims(repo)
+    covered = {}
+    for path, rows in records.items():
+        # The run records read raw and never through `foreign_run_claims`, which drops a path this
+        # chat's own run wrote too: right for a waiver over the launcher's own output, wrong here,
+        # where the co-tenant's bytes stand in the very sha this receipt would settle.
+        if any(launcher != session for _, launcher in claims.get(path, ())):
+            continue
+        if any(epoch is None or epoch > end for _, epoch in rows):
+            continue
+        inside = [entry for entry, epoch in rows if start <= epoch <= end]
+        if not inside:
+            continue
+        if not all(entry == session or launchers.get(entry) == session for entry in inside):
+            continue
+        covered[path] = shas[path]
+    return covered
+
+
+def fix_coverage(run_dir, session, recorded, rows, fixed):
+    """What a done receipt covers besides the run's own snapshot: the bytes this round's OWN fixing
+    pass wrote, per repository of the run, as `covers` entries.
+
+    A round the gate closed is one nothing will ever read again — no second pass is owed over it —
+    so its fixes left in debt are a waiver every later chat has to know to write, over work this
+    very receipt accounts for. A round the gate escalated covers nothing: the pass it owes reads
+    the fixes itself, and so does the mandatory one a locked round demands. Priced by asking the
+    gate rather than by counting here, so the two dials keep living in one place
+    (docs/shared-invariants.md row `af`) — and an unreachable gate covers nothing, which is the
+    behaviour of every round written before this receipt held coverage at all.
+
+    A killed panel covers nothing either, for the reason its snapshot is no artifact: it was sealed
+    with a scope its dead cells never reached.
+
+    The window opens at the SEAL and not at the finish: that is the instant the panel stopped being
+    able to read the tree, and the recorded seal is inherited by a rerun of the same snapshot, so a
+    rerun covers the same lineage the run it repeats does. A run predating the seal stamp covers
+    nothing rather than falling back to its launch: the launch is minutes EARLIER, and every one of
+    those minutes is time the panel could still read a file this window would then settle.
+
+    A pass that fixed nothing wrote no fix bytes to cover, and a triage nothing can read prices no
+    round at all — an all-false-positive round and a corrupt receipt both leave the scope's post-
+    seal edits as ordinary unreviewed work.
+    """
+    try:
+        meta = json.loads((run_dir / "meta.json").read_text())
+    except (OSError, ValueError):
+        return []
+    if not session or not isinstance(meta, dict) or meta.get("timed_out"):
+        return []
+    if not fixed or rows is None:
+        return []
+    if escalation_verdict(*escalation_numbers(run_dir, meta, rows)):
+        return []
+    sealed = parse_iso_timestamp(meta.get("sealed_at"))
+    if sealed is None:
+        return []
+    window = (int(sealed.timestamp()), int(recorded.timestamp()))
+    covers = []
+    members = [row for row in meta.get("repos") or () if isinstance(row, dict)]
+    for entry in [meta] + members:
+        repo = str(entry.get("repo") or "")
+        reviewed = entry.get("reviewed")
+        # The round's own scope and nothing wider: a fix that touched a file no cell was ever
+        # shown is new work, and no panel read the content a receipt would settle it at.
+        if not repo or not isinstance(reviewed, dict) or not reviewed:
+            continue
+        paths = fix_written_paths(repo, set(reviewed), session, window)
+        if paths:
+            covers.append({"repo": repo, "paths": paths})
+    return covers
+
+
 def cmd_fixes(args):
     """Record what happened to a triaged round's confirmed findings, so the report can say it.
 
@@ -8393,10 +8491,16 @@ def cmd_fixes(args):
             "triage": triage_digest(rows),
         }
         line = f"done — {args.fixed} fixed, {args.fp} false positives"
-    record["recorded_at"] = iso_now()
+    recorded = utc_now()
+    record["recorded_at"] = recorded.isoformat()
     session = launching_session()
     if session:
         record["session"] = session
+    if record["state"] == "done":
+        covers = fix_coverage(run_dir, session, recorded, rows, args.fixed)
+        if covers:
+            record["covers"] = covers
+            line += f"; {sum(len(entry['paths']) for entry in covers)} fixed path(s) covered"
     (run_dir / FIX_RECEIPT).write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
     print(f"{args.run_id} fixes: {line}")
     return 0
@@ -8609,6 +8713,11 @@ def git_dir_path(repo):
     common one: linked worktrees share the common dir, and a sibling's journal would answer for
     work this tree never saw.
     """
+    # A run's recorded repository outlives the tree — a removed worktree, a pruned merged
+    # workspace — and subprocess with a missing cwd RAISES rather than failing, which would cost
+    # the caller its receipt entirely. Guarded here for every caller, as `git_common_dir` is.
+    if not Path(repo).is_dir():
+        return None
     proc = subprocess.run(
         ["git", "rev-parse", "--absolute-git-dir"], cwd=repo, capture_output=True, text=True,
     )
@@ -8643,19 +8752,28 @@ def journal_entries(path):
     return rows
 
 
+def journal_rows(repo):
+    """Every record the two journals hold, as `(session, epoch, path)`.
+
+    Both of them, always: a path the chat has since committed has moved out of the commit journal
+    into the debt one, and a reader of either alone calls that work unrecorded.
+    """
+    directory = git_dir_path(repo)
+    if directory is None:
+        return []
+    return [
+        row
+        for name in (DEBT_JOURNAL, COMMIT_JOURNAL)
+        for row in journal_entries(directory / name)
+    ]
+
+
 def journal_paths(repo):
     """Every path either journal names, which is the universe a repository-wide debt question asks
     about: the tool answers for paths somebody recorded work on, and never enumerates a repository
     whose unreviewed files are most of it.
     """
-    directory = git_dir_path(repo)
-    if directory is None:
-        return set()
-    return {
-        path
-        for name in (DEBT_JOURNAL, COMMIT_JOURNAL)
-        for _, _, path in journal_entries(directory / name)
-    }
+    return {path for _, _, path in journal_rows(repo)}
 
 
 def run_id_epoch(run_id):
@@ -8685,12 +8803,53 @@ def read_waivers(repo):
     return [row for row in rows or () if isinstance(row, dict)]
 
 
+def fix_coverage_artifact(run_dir, repo):
+    """The artifact a clean round's done receipt is for `repo`, or None where it covers nothing
+    there.
+
+    The receipt's own `covers` block: the fix-step bytes that round wrote, at the shas they stood
+    at when it was recorded, so the next edit over them is debt again exactly as it is over a
+    waiver's. Read through `round_state` and never off the receipt's raw state — a re-adjudication
+    that leaves the receipt answering another triage takes its coverage back with it. Against the
+    recorded fingerprint as well, because `round_state` calls a round with nothing confirmed done
+    whoever answered it: re-adjudicated to all false positives, a round would otherwise keep the
+    coverage its first triage bought.
+    """
+    record = read_fix_status(run_dir)
+    if not isinstance(record, dict):
+        return None
+    for entry in record.get("covers") or ():
+        if not isinstance(entry, dict):
+            continue
+        recorded_repo = str(entry.get("repo") or "")
+        if not recorded_repo or resolved_repo_path(recorded_repo) != repo:
+            continue
+        shas = entry.get("paths")
+        rows = recorded_verdict_rows(run_dir)
+        if not isinstance(shas, dict) or not shas or round_state(run_dir, rows) != "done":
+            return None
+        if record.get("triage") != triage_digest(rows):
+            return None
+        recorded = parse_iso_timestamp(record.get("recorded_at"))
+        return {
+            "kind": "fixes", "id": f"{run_dir.name}+fixes", "dir": run_dir,
+            "epoch": int(recorded.timestamp()) if recorded else run_id_epoch(run_dir.name),
+            "shas": {
+                path: sha for path, sha in shas.items()
+                if isinstance(path, str) and isinstance(sha, str)
+            },
+        }
+    return None
+
+
 def repo_artifacts(repo):
     """Everything that answers for a path of this working tree, oldest first: the snapshot of every
-    triaged run that read it, and every waiver recorded against it.
+    triaged run that read it, every waiver recorded against it, and the fix bytes of every round
+    that closed under the gate's thresholds.
 
-    One kind of answer out of two sources — a review read the content, or a chat said out loud that
-    it is going unreviewed and why. Nothing here reads git history: a shared checkout takes commits
+    One kind of answer out of three sources — a review read the content, a chat said out loud that
+    it is going unreviewed and why, or a round nobody will review again wrote it while answering
+    findings that were reviewed. Nothing here reads git history: a shared checkout takes commits
     from other chats continuously, and a history-shaped answer retires a live review over work it
     never read.
     """
@@ -8726,6 +8885,9 @@ def repo_artifacts(repo):
                 if isinstance(path, str) and isinstance(sha, str)
             },
         })
+        covered = fix_coverage_artifact(run_dir, resolved)
+        if covered:
+            artifacts.append(covered)
     for waiver in read_waivers(repo):
         shas = waiver.get("paths")
         if not isinstance(shas, dict):
@@ -9523,9 +9685,8 @@ def doctor_scan(now=None):
                 and not meta.get("timed_out")):
             findings["kill_asymmetry"].append(doctor_row(run_dir.name, meta.get("repo"), age))
     for repo in sorted(repos):
-        # A checkout that is gone, or was never a git working tree, answers neither question — and
-        # git_dir_path would raise on the missing cwd rather than return nothing.
-        if not repo.is_dir() or git_dir_path(repo) is None:
+        # A checkout that is gone, or was never a git working tree, answers neither question.
+        if git_dir_path(repo) is None:
             continue
         # Built once and handed to both: each of them otherwise walks the whole benches directory
         # for the same answer, and this scan is over every checkout the store has ever recorded.

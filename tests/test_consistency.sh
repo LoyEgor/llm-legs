@@ -1115,6 +1115,10 @@ if [ -r "$FLOW_GATE" ] && [ -r "$REPORT_GATE" ]; then
   assert grep -Fq 'ev_p1="${2:-}" ev_total="${3:-}"' "$FLOW_GATE"
   assert grep -Fq '[str(ESCALATION_GATE), "escalation-verdict", str(p1), str(total)],' \
     "$REVIEW_BENCH"
+  # The fix-bytes receipt asks the same question rather than pricing a closed round itself: the
+  # dials it would have to spell are exactly the pair this row keeps in the gate.
+  assert grep -Fq 'if escalation_verdict(*escalation_numbers(run_dir, meta, rows)):' \
+    "$REVIEW_BENCH"
   # The two dials, in the gate and only there. There is no third: a count at which the fork led
   # with the rework was one, and that choice is inside what the P1 branch already asks.
   assert grep -Fq 'SECOND_REVIEW_P1S=3' "$FLOW_GATE"

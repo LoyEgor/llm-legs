@@ -6405,7 +6405,7 @@ def sr_store():
 
 
 def sr_run(benches, run_id, reviewed=None, session="chat-1", scope=None,
-           triaged=True, timed_out=False, repo=None, report=None):
+           triaged=True, timed_out=False, repo=None, report=None, sealed_at=None):
     directory = benches / run_id
     directory.mkdir()
     meta = {
@@ -6416,6 +6416,8 @@ def sr_run(benches, run_id, reviewed=None, session="chat-1", scope=None,
         # answers this one.
         "finished": rb.iso_now(),
     }
+    if sealed_at is not None:
+        meta["sealed_at"] = sealed_at
     if scope is not None:
         meta["scope"] = scope
     if timed_out:
@@ -7111,6 +7113,336 @@ sr_worker_run("20260101T1210Z-again", "chat-1", None, worker="worker-sess-6")
 assert rb.worker_session_launchers()["worker-sess-6"] == "chat-1"
 assert sr_answer("src/a.py", session="chat-1") == "debt 1 mine"
 sr_clear_journals()
+
+# --- A clean round covers the bytes its own fixing pass wrote ---------------------------------
+# A round that closed under both of the gate's dials earns no second review, so nothing will ever
+# read its fixes: left in debt they are a waiver every chat after this one would have to know to
+# write, over work the done receipt already answers for. Five guards keep that receipt off
+# everybody else's bytes — the window, the session, the scope, a pass that fixed nothing, and a
+# round the gate did not close.
+sr_fix_gate = work / "session-review-flow-gate.sh"
+# The two dials and the wording are the gate's alone (shared-invariants row af), so the round
+# outcome is taken from a stub of it: what the live gate says today is not this suite's to depend on.
+sr_fix_gate.write_text(
+    "#!/bin/bash\n"
+    '[ "$1" = escalation-verdict ] || exit 1\n'
+    '[ "${2:-0}" -ge 3 ] || [ "${3:-0}" -gt 8 ] || exit 1\n'
+    "printf 'stub fork. Pick one and carry it out:\\n'\n"
+)
+sr_fix_gate.chmod(0o755)
+sr_gate_before = rb.ESCALATION_GATE
+rb.ESCALATION_GATE = sr_fix_gate
+sr_fix_worker_runs = work / "session-review-fix-worker-runs"
+sr_fix_worker_runs.mkdir()
+os.environ["WORKER_RUN_DIR"] = str(sr_fix_worker_runs)
+sr_fix_sealed = int(time.time()) - 300
+sr_fix_edit = sr_fix_sealed + 60
+sr_big = (sr_repo / "docs" / "big.md").read_text()
+
+
+def sr_stamp(epoch):
+    return rb.datetime.fromtimestamp(epoch, rb.timezone.utc).isoformat()
+
+
+def sr_fix_run(benches, reviewed=None, run_id="20260601T000000Z-fixcover", judged=("P2", 1),
+               **kwargs):
+    """A triaged round the gate closes, with a finding on record for its pass to have fixed: a
+    receipt answering nobody covers nothing, so a scenario about coverage needs a real triage.
+    """
+    directory = sr_run(benches, run_id, reviewed or {"src/a.py": sr_blobs["src/a.py"]},
+                       sealed_at=sr_stamp(sr_fix_sealed), **kwargs)
+    if judged:
+        sr_judged(directory, *judged)
+    return directory
+
+
+def sr_fixes(run_id="20260601T000000Z-fixcover", fixed=1, fp=0, blocked=None):
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc = rb.cmd_fixes(argparse.Namespace(
+            run_id=run_id, blocked=blocked,
+            **({"fixed": None, "fp": None} if blocked else {"fixed": fixed, "fp": fp}),
+        ))
+    return rc, out.getvalue().strip()
+
+
+def sr_judged(run_dir, severity, count):
+    """A triage of `count` confirmed findings at one severity, joined the way the gate's numbers
+    are: the verdict rows alone carry no severity, so a tally is only readable through the
+    findings beside them.
+    """
+    (run_dir / "findings-oc-kimik3.jsonl").write_text("".join(
+        json.dumps({"file": "src/a.py", "line": n + 1, "severity": severity,
+                    "summary": f"finding {n}"}) + "\n"
+        for n in range(count)
+    ))
+    (run_dir / "verdicts.jsonl").write_text("".join(
+        json.dumps({"rater": "oc-kimik3", "idx": n, "verdict": "confirmed"}) + "\n"
+        for n in range(count)
+    ))
+
+
+sr_covered_fixes = sr_store()
+sr_source.write_text(sr_moved)
+sr_fix_run(sr_covered_fixes)
+assert sr_answer("src/a.py") == "none"
+sr_source.write_text(sr_moved + "the fixing pass answered a finding\n")
+sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/a.py", epoch=sr_fix_edit)
+assert sr_answer("src/a.py") == "debt 1 mine"
+sr_covered_rc, sr_covered_out = sr_fixes()
+assert sr_covered_rc == 0 and "1 fixed path(s) covered" in sr_covered_out, sr_covered_out
+assert sr_answer("src/a.py") == "none"
+assert sr_answer() == "none"
+# At the shas the fix left behind and no further, exactly as a waiver stands: the next edit over
+# them is debt again, and the round that closed answers for none of it.
+sr_source.write_text(sr_moved + "and then somebody kept typing\n")
+assert sr_answer("src/a.py") == "debt 1 mine"
+sr_clear_journals()
+
+# The shas are taken BEFORE the journals, so a write landing between the two readings is outside
+# the sha this receipt covers rather than inside it with no entry to disqualify it. Staged by
+# writing the file from the journal reader itself: read in the other order, the co-tenant's bytes
+# below would be the ones covered, and the path would come back settled.
+sr_race_fixes = sr_store()
+sr_source.write_text(sr_moved)
+sr_fix_run(sr_race_fixes)
+sr_source.write_text(sr_moved + "the fixing pass answered a finding\n")
+sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/a.py", epoch=sr_fix_edit)
+sr_race_rows = rb.journal_rows
+
+
+def sr_racing_journal_rows(repo):
+    sr_source.write_text(sr_moved + "a co-tenant typed between the two readings\n")
+    return sr_race_rows(repo)
+
+
+rb.journal_rows = sr_racing_journal_rows
+try:
+    assert sr_fixes()[0] == 0
+finally:
+    rb.journal_rows = sr_race_rows
+assert sr_answer("src/a.py") == "debt 1 mine"
+sr_clear_journals()
+
+# A worker this chat launched IS this chat (row am), so what it journaled under its own id is the
+# fixing session's own bytes.
+sr_worker_fixes = sr_store()
+sr_source.write_text(sr_moved)
+sr_fix_run(sr_worker_fixes)
+sr_source.write_text(sr_moved + "the worker this chat launched fixed it\n")
+sr_journal(rb.COMMIT_JOURNAL, "worker-sess-fix", "src/a.py", epoch=sr_fix_edit)
+sr_fix_launched = sr_fix_worker_runs / "20260601T0000Z-mine"
+sr_fix_launched.mkdir()
+(sr_fix_launched / "launcher").write_text("chat-1\n")
+(sr_fix_launched / "worker-session").write_text("worker-sess-fix\n")
+assert sr_fixes()[0] == 0
+assert sr_answer("src/a.py") == "none"
+sr_clear_journals()
+
+# Another chat wrote the same file inside the window: the receipt answers for its own pass and for
+# nothing standing beside it, so the path keeps its debt whoever else has to settle it.
+sr_shadowed_fixes = sr_store()
+sr_source.write_text(sr_moved)
+sr_fix_run(sr_shadowed_fixes)
+sr_source.write_text(sr_moved + "two chats wrote this file\n")
+sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/a.py", epoch=sr_fix_edit)
+sr_journal(rb.COMMIT_JOURNAL, "chat-2", "src/a.py", epoch=sr_fix_edit + 5)
+sr_shadowed_rc, sr_shadowed_out = sr_fixes()
+assert sr_shadowed_rc == 0 and "covered" not in sr_shadowed_out, sr_shadowed_out
+assert sr_answer("src/a.py") == "debt 1 mine"
+sr_clear_journals()
+
+# And a co-tenant's worker run the journals have not swept yet is that same parallel edit, in the
+# one store where it exists at all while the run is still writing.
+sr_foreign_fixes = sr_store()
+sr_source.write_text(sr_moved)
+sr_fix_run(sr_foreign_fixes)
+sr_source.write_text(sr_moved + "a co-tenant's worker is writing here too\n")
+sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/a.py", epoch=sr_fix_edit)
+sr_foreign_fix_run = sr_fix_worker_runs / "20260601T0100Z-theirs"
+sr_foreign_fix_run.mkdir()
+(sr_foreign_fix_run / "launcher").write_text("chat-2\n")
+(sr_foreign_fix_run / "files").write_text(f"WORKDIR: {sr_repo}\nsrc/a.py\n")
+assert "covered" not in sr_fixes()[1]
+assert sr_answer("src/a.py") == "debt 1 mine"
+# And it stays theirs when THIS chat's own run claims the path too. `foreign_run_claims` lets that
+# pair through, because a launcher may waive its own output; the sha this receipt would settle
+# still holds the co-tenant's bytes, so coverage asks the run records itself.
+sr_own_fix_run = sr_fix_worker_runs / "20260601T0101Z-mine-as-well"
+sr_own_fix_run.mkdir()
+(sr_own_fix_run / "launcher").write_text("chat-1\n")
+(sr_own_fix_run / "files").write_text(f"WORKDIR: {sr_repo}\nsrc/a.py\n")
+assert rb.foreign_run_claims(str(sr_repo), "chat-1") == {}
+assert "covered" not in sr_fixes()[1]
+assert sr_answer("src/a.py") == "debt 1 mine"
+shutil.rmtree(sr_foreign_fix_run)
+shutil.rmtree(sr_own_fix_run)
+sr_clear_journals()
+
+# An entry stamped PAST the window's end is bytes the recorded sha holds and the window never
+# checked: the receipt reads the tree after it stamps itself, and a co-tenant writing in between
+# would otherwise be waived unexamined.
+sr_after_fixes = sr_store()
+sr_source.write_text(sr_moved)
+sr_fix_run(sr_after_fixes)
+sr_source.write_text(sr_moved + "and a co-tenant kept typing past the stamp\n")
+sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/a.py", epoch=sr_fix_edit)
+sr_journal(rb.COMMIT_JOURNAL, "chat-2", "src/a.py", epoch=int(time.time()) + 600)
+assert "covered" not in sr_fixes()[1]
+assert sr_answer("src/a.py") == "debt 1 mine"
+sr_clear_journals()
+
+# A pass that fixed nothing wrote no fix bytes: an all-false-positive round answers its triage in
+# full and leaves whatever the session typed meanwhile as the new work it is.
+sr_nofix_fixes = sr_store()
+sr_source.write_text(sr_moved)
+sr_fix_run(sr_nofix_fixes)
+sr_source.write_text(sr_moved + "the finding was a false positive; this is other work\n")
+sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/a.py", epoch=sr_fix_edit)
+assert "covered" not in sr_fixes(fixed=0, fp=1)[1]
+assert sr_answer("src/a.py") == "debt 1 mine"
+sr_clear_journals()
+
+# A run written before the seal instant was recorded covers nothing, rather than falling back to
+# its launch: the launch is minutes EARLIER, and those minutes are time the panel could still read
+# the file this window would then settle.
+sr_unsealed_fixes = sr_store()
+sr_source.write_text(sr_moved)
+sr_unsealed_dir = sr_fix_run(sr_unsealed_fixes)
+sr_unsealed_meta = json.loads((sr_unsealed_dir / "meta.json").read_text())
+del sr_unsealed_meta["sealed_at"]
+sr_unsealed_meta["started"] = sr_stamp(sr_fix_sealed - 600)
+(sr_unsealed_dir / "meta.json").write_text(json.dumps(sr_unsealed_meta))
+sr_source.write_text(sr_moved + "written while the panel could still read it\n")
+sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/a.py", epoch=sr_fix_sealed - 60)
+assert "covered" not in sr_fixes()[1]
+assert sr_answer("src/a.py") == "debt 1 mine"
+sr_clear_journals()
+
+# Coverage is a bonus the receipt carries, never a condition of writing one: a repository the run
+# recorded and nobody can reach any more — a removed worktree, a pruned merged workspace — leaves
+# the round closable, because losing the receipt would leave it impossible to close at all.
+sr_gone_fixes = sr_store()
+sr_gone_dir = sr_fix_run(sr_gone_fixes, repo=str(work / "session-review-repo-removed"))
+assert rb.git_dir_path(str(work / "session-review-repo-removed")) is None
+sr_gone_rc, sr_gone_out = sr_fixes()
+assert sr_gone_rc == 0 and "covered" not in sr_gone_out, sr_gone_out
+assert "covers" not in json.loads((sr_gone_dir / rb.FIX_RECEIPT).read_text())
+
+# Nor is a triage nothing can read: the round prices at no number the gate would recognise, so it
+# covers nothing and still records that its pass ran.
+sr_unreadable_fixes = sr_store()
+sr_unreadable_dir = sr_fix_run(sr_unreadable_fixes, judged=None, triaged=False)
+(sr_unreadable_dir / rb.REPORT_RECEIPT).write_text("{ truncated mid-write")
+assert rb.recorded_verdict_rows(sr_unreadable_dir) is None
+assert rb.fix_coverage(sr_unreadable_dir, "chat-1", rb.utc_now(), None, 1) == []
+sr_unreadable_rc, sr_unreadable_out = sr_fixes(fixed=0)
+assert sr_unreadable_rc == 0 and "covered" not in sr_unreadable_out, sr_unreadable_out
+assert (sr_unreadable_dir / rb.FIX_RECEIPT).exists()
+
+# A re-adjudication takes the coverage back with it. `round_state` calls a round with nothing
+# confirmed done whoever answered it, so the fingerprint the receipt recorded is what tells a
+# retriaged round from the one this pass answered.
+sr_retriage_fixes = sr_store()
+sr_source.write_text(sr_moved)
+sr_retriage_dir = sr_fix_run(sr_retriage_fixes)
+sr_source.write_text(sr_moved + "the fixing pass answered a finding\n")
+sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/a.py", epoch=sr_fix_edit)
+assert "1 fixed path(s) covered" in sr_fixes()[1]
+assert sr_answer("src/a.py") == "none"
+(sr_retriage_dir / "verdicts.jsonl").write_text(
+    json.dumps({"rater": "oc-kimik3", "idx": 0, "verdict": "false_positive"}) + "\n"
+)
+assert rb.round_state(sr_retriage_dir) == "done"
+assert sr_answer("src/a.py") == "debt 1 mine"
+sr_clear_journals()
+
+# A fix that touched a file the round never read is new work, not a fix: the panel holds no content
+# for it, and a receipt covering it would settle bytes nobody reviewed.
+sr_scope_fixes = sr_store()
+sr_source.write_text(sr_moved)
+sr_fix_run(sr_scope_fixes)
+sr_source.write_text(sr_moved + "in scope\n")
+(sr_repo / "docs" / "big.md").write_text("a file the panel was never shown\n")
+sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/a.py", epoch=sr_fix_edit)
+sr_journal(rb.COMMIT_JOURNAL, "chat-1", "docs/big.md", epoch=sr_fix_edit)
+assert sr_fixes()[0] == 0
+assert sr_answer("src/a.py") == "none"
+assert sr_answer("docs/big.md") == "debt 1 mine"
+(sr_repo / "docs" / "big.md").write_text(sr_big)
+sr_clear_journals()
+
+# Bytes journaled before the seal are not this pass's fixes: the panel could still read the tree
+# then, and the entry says only that somebody wrote the file at some point before the round.
+sr_window_fixes = sr_store()
+sr_source.write_text(sr_moved)
+sr_fix_run(sr_window_fixes)
+sr_source.write_text(sr_moved + "written while the panel could still read it\n")
+sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/a.py", epoch=sr_fix_sealed - 60)
+assert "covered" not in sr_fixes()[1]
+assert sr_answer("src/a.py") == "debt 1 mine"
+sr_clear_journals()
+
+# An entry with no TAB is undatable and unowned: it may be anybody's, so the path it names holds
+# bytes this pass cannot answer for.
+sr_legacy_fixes = sr_store()
+sr_source.write_text(sr_moved)
+sr_fix_run(sr_legacy_fixes)
+sr_source.write_text(sr_moved + "an unattributable entry stands beside the fix\n")
+sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/a.py", epoch=sr_fix_edit)
+with (sr_gitdir / rb.COMMIT_JOURNAL).open("ab") as handle:
+    handle.write(b"src/a.py\0")
+assert "covered" not in sr_fixes()[1]
+assert sr_answer("src/a.py") == "debt 1 mine"
+sr_clear_journals()
+
+# A pass that STOPPED fixed nothing to cover, and the fork it stopped for is what reads the tree
+# next.
+sr_blocked_fixes = sr_store()
+sr_source.write_text(sr_moved)
+sr_fix_run(sr_blocked_fixes)
+sr_source.write_text(sr_moved + "the pass stopped\n")
+sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/a.py", epoch=sr_fix_edit)
+assert sr_fixes(blocked="P1 threshold")[0] == 0
+assert sr_answer("src/a.py") == "debt 1 mine"
+sr_clear_journals()
+
+# A round over the tally dial earned a second review, and that pass reads the fixes itself: covered
+# here they would be settled before it ever ran.
+sr_tally_fixes = sr_store()
+sr_source.write_text(sr_moved)
+sr_judged(sr_fix_run(sr_tally_fixes), "P2", 9)
+sr_source.write_text(sr_moved + "nine findings answered\n")
+sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/a.py", epoch=sr_fix_edit)
+assert "covered" not in sr_fixes(fixed=9)[1]
+assert sr_answer("src/a.py") == "debt 1 mine"
+sr_clear_journals()
+
+# And one over the P1 dial owes a MANDATORY one: its debt reads locked, which is the state a
+# receipt that covered its own fixes would have hidden.
+sr_p1_fixes = sr_store()
+sr_source.write_text(sr_moved)
+sr_judged(sr_fix_run(sr_p1_fixes), "P1", 3)
+sr_source.write_text(sr_moved + "three P1s answered anyway\n")
+sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/a.py", epoch=sr_fix_edit)
+assert "covered" not in sr_fixes(fixed=3)[1]
+assert sr_answer("src/a.py") == "debt 1 mine locked"
+sr_clear_journals()
+
+# A killed panel was sealed with a scope its dead cells never reached, so its receipt covers
+# nothing either — the same reason its snapshot is no artifact.
+sr_killed_fixes = sr_store()
+sr_source.write_text(sr_moved)
+sr_killed_dir = sr_fix_run(sr_killed_fixes, timed_out=True)
+sr_source.write_text(sr_moved + "a hung round's pass answered\n")
+sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/a.py", epoch=sr_fix_edit)
+assert sr_fixes()[0] == 0
+assert "covers" not in json.loads((sr_killed_dir / rb.FIX_RECEIPT).read_text())
+assert sr_answer("src/a.py") == "debt 1 mine"
+sr_clear_journals()
+
+rb.ESCALATION_GATE = sr_gate_before
+os.environ["WORKER_RUN_DIR"] = str(sr_worker_runs)
 
 sr_clear_journals()
 if sr_session_before is None:

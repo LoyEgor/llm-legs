@@ -67,10 +67,11 @@ A line nobody acts on is deleted, not kept for safety.
 ## Debt
 
 One concept, and it is content: a path is **in debt** when its working-tree
-content differs from what the newest artifact holding it recorded. Two artifacts
-hold paths — a triaged run's `reviewed{path: blob-sha}` snapshot, and a
-**waiver**. Debt is commit-agnostic: committing neither creates nor settles it,
-because nothing here reads git history. A path no artifact ever held is in debt
+content differs from what the newest artifact holding it recorded. Three artifacts
+hold paths — a triaged run's `reviewed{path: blob-sha}` snapshot, a **waiver**, and
+the fix bytes a **closed round's own done receipt** covers. Debt is commit-agnostic:
+committing neither creates nor settles it, because nothing here reads git history.
+A path no artifact ever held is in debt
 whole while it exists — a run that never read it has no content to compare, so a
 repo-wide review cannot blanket files born after it. A held path that is gone is
 in debt; a deletion the run READ is settled by it (the snapshot records that path
@@ -139,6 +140,27 @@ round and not a scope of its own. It takes no target: a commitish, `--range`,
 `--worktree` and `--paths` are each refused, because choosing the scope is the
 choice this mode removes. With several `--repo` it behaves like any merged panel —
 one debt scope per member, one receipt per member.
+
+**A closed round's own fixes.** A `fixes --done` receipt recorded for a round the
+gate's `escalation-verdict` closed — neither `SECOND_REVIEW_P1S` nor
+`SECOND_REVIEW_FINDINGS` reached in any repository of the run — also covers the bytes
+that round's own fixing pass wrote, at the shas they stand at when it is recorded.
+Nothing will ever read those bytes: no second pass is owed, so left in debt they are a
+waiver every later chat has to know to write over work the receipt already answers for.
+Five guards, evaluated per repository, and each one leaves the path in debt instead. The
+bytes must be journaled between the run's SEAL instant — the one already on record,
+which a rerun by sha inherits, and never a launch stamp standing in for it — and the
+receipt. Every journal entry on that path inside that window must be the fixing session's
+own, the workers it launched folded in as they are everywhere else, with an undatable
+legacy entry, an entry stamped past the window's end, or a co-tenant's unswept worker run
+disqualifying it: a parallel edit stays debt whether or not this chat wrote the file too.
+An entry OLDER than the seal disqualifies nothing, whoever left it — the panel read those
+bytes. The path must be one the run's snapshot holds, because a fix that touched a file no
+cell was shown is new work. A pass that fixed nothing wrote no fix bytes to cover. And a
+round recorded `blocked`, a round the gate escalated, and a round the watchdog killed
+cover nothing at all — their fixes ride the round they owe. Like a waiver's, the coverage
+is exactly those shas: the next edit is debt again, and a re-adjudication that leaves the
+receipt answering another triage takes the coverage back with it.
 
 **The lock IS the mechanical second round.** When the newest run holding a debt
 path came back with `SECOND_REVIEW_P1S` confirmed P1s, the debt reads `locked`:
