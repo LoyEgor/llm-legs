@@ -1418,6 +1418,48 @@ WAIVER_DIR = "waivers"
 WAIVER_LOCK = ".waivers.lock"
 DEBT_JOURNAL = "claude-review-debt"
 COMMIT_JOURNAL = "claude-commit-journal"
+# The ledger claude-setup's two report hooks write and read, and the only record that a round's
+# report ever reached Egor: one key per line under `$XDG_CACHE_HOME/claude/review-delivery`, of
+# which `run:<id>:<state>` is the one a run can be looked up by. Read-only here — a diagnostic
+# that wrote a key would retire a report nobody has seen. Held equal to the hooks' own spelling by
+# docs/shared-invariants.md.
+DELIVERY_LEDGER_DIR = ("claude", "review-delivery")
+DELIVERY_LEDGER_SUFFIX = ".emitted"
+DELIVERY_LEDGER_KEY = "run:{run_id}:{state}"
+# How long each of `doctor`'s aged anomalies must have stood before it is one, spelled once and
+# nowhere else. Every one of them is a silence: a record some mechanism should have moved on and
+# did not, and the age is what tells a mechanism that failed from one still working. The two
+# classes with no entry here — debt nobody owns, a panel that completed nothing and was never
+# marked killed — are answered by their shape alone and have no clock to run.
+DOCTOR_AGES_S = {
+    # Well past the Stop gate's three asks, so what stands here is a triage nobody will do.
+    "untriaged": 18 * 3600,
+    # The triage gate's own window, derived from it and never respelled: past it no hook will ever
+    # hand that report over, so a literal here would go on asking after the window had moved.
+    "undelivered": TRIAGE_GATE_HOURS * 3600,
+    "stuck_fixes": 48 * 3600,
+    "eternal_lock": 7 * 24 * 3600,
+}
+# How far back the RUN-level classes above look. Their subject is a record somebody could still
+# act on: nobody triages a panel from last month, delivers its report or fixes its round, and a
+# count that only ever grows is not a statistic — it says the same thing every time it is read,
+# including about mechanisms that did not exist when those runs were written. The two classes
+# about the tree as it stands now — a lock standing over live paths, debt in front of the reader —
+# are not bounded by it and never go quiet on their own.
+DOCTOR_WINDOW_S = 14 * 24 * 3600
+DOCTOR_CLASSES = (
+    "untriaged", "undelivered", "stuck_fixes", "eternal_lock", "orphan_debt", "kill_asymmetry",
+)
+# The document the collector writes and the menubar reads; its schema is fixed by
+# docs/shared-invariants.md, because the renderer has no other way to learn a class name.
+DOCTOR_SNAPSHOT = "doctor-snapshot.json"
+DOCTOR_DETAIL_LINES = 10
+DOCTOR_AGENT_LABEL = "com.llm-legs.review-doctor"
+DOCTOR_AGENT_INTERVAL_S = 6 * 3600
+# What launchd is pointed at. A LaunchAgent's visible program is what macOS Login Items names it
+# by, so it is a wrapper carrying a descriptive name of its own, exactly as llm-selfcheck's is —
+# never a bare interpreter, and never the PATH symlink a human types.
+DOCTOR_AGENT_WRAPPER = (".local", "libexec", "review-doctord")
 RUN_CONFIRMED_COUNTS = {}
 ROUND_BUDGET_SPENT_CACHE = {}
 # One identity and one clock behind every commit object review-bench writes, so the same input
@@ -4261,6 +4303,30 @@ def run_reviewed_paths(meta):
     return held
 
 
+def recorded_seal_instant(sha):
+    """When a run already on record sealed `sha`, or None where none did.
+
+    A rerun is pinned to a snapshot an earlier run sealed and reads exactly the tree that seal
+    froze, so a seal stamped from its own clock dates that content to now: every fixes receipt
+    written since would read as lineage the panel could have seen, and a rerun of the PRE-FIX
+    snapshot would spend the scope's round budget and open its lock over a pass that saw none of
+    them. The snapshot commit cannot answer this itself — every commit object review-bench writes
+    carries one fixed clock, so the same input always answers with the same sha.
+    """
+    benches = state_dir() / "benches"
+    for run_dir in sorted(benches.iterdir()) if benches.exists() else ():
+        try:
+            meta = json.loads((run_dir / "meta.json").read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(meta, dict) or str(meta.get("commit") or "") != str(sha):
+            continue
+        recorded = parse_iso_timestamp(meta.get("sealed_at"))
+        if recorded is not None:
+            return recorded
+    return None
+
+
 def review_round(run_dir, meta):
     """Which round of its scope this run is: the second once an earlier run of the same scope has
     its fixes done on record and this run reads everything that one read, the first otherwise.
@@ -4291,8 +4357,12 @@ def review_round(run_dir, meta):
     since = parse_iso_timestamp(meta.get("finished") or meta.get("finished_at")) or utc_now()
     floor = since - timedelta(hours=ROUND_LINEAGE_MAX_HOURS)
     # When this run SEALED its tree, which is the instant it stopped being able to read a fix — and
-    # never its finish, hours later for a T2 panel. Only the receipts before it are lineage.
-    sealed = parse_iso_timestamp(meta.get("started") or meta.get("started_at")) or since
+    # never its finish, hours later for a T2 panel. Only the receipts before it are lineage. The
+    # launch stamp is the fallback for runs written before the seal instant was recorded; it is
+    # minutes late, and late here spends the scope's budget over fixes the panel never read.
+    sealed = parse_iso_timestamp(
+        meta.get("sealed_at") or meta.get("started") or meta.get("started_at")
+    ) or since
     benches = run_dir.parent
     for other in sorted(benches.iterdir()) if benches.exists() else ():
         if other.name >= run_dir.name:
@@ -8746,7 +8816,7 @@ def lock_discharged(repo, locked, artifact):
     return surviving <= set(artifact["shas"])
 
 
-def repo_debt(repo, paths=None):
+def repo_debt(repo, paths=None, covering=None):
     """The paths whose working-tree content differs from what the newest artifact holding them
     recorded, each with that artifact, as `(path, artifact)` pairs.
 
@@ -8755,7 +8825,8 @@ def repo_debt(repo, paths=None):
     that never read it holds no content to compare, so covering it would be a blanket over files
     born after the panel read the tree.
     """
-    covering = covering_artifacts(repo)
+    if covering is None:
+        covering = covering_artifacts(repo)
     named = journal_paths(repo)
     candidates = list(paths) if paths else sorted(set(covering) | named)
     debt = []
@@ -9276,6 +9347,372 @@ def cmd_waive(args):
     return 0
 
 
+def doctor_ledger_keys(session, cache):
+    """The delivery keys claude-setup's report hooks recorded for `session`.
+
+    A chat with no ledger file has delivered nothing, and that is not the same as having had
+    nothing to deliver: whether its Stop gate ever ran is unreadable from here, so the age
+    threshold is what keeps a chat that simply has not reached its stop out of the count.
+    """
+    session = str(session or "")
+    if session not in cache:
+        keys = set()
+        # The hooks refuse a session id of any other shape, so one this scan would build a path
+        # out of is one no ledger was ever written under.
+        if re.fullmatch(r"[A-Za-z0-9._-]+", session):
+            ledger = (
+                Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
+                .joinpath(*DELIVERY_LEDGER_DIR) / f"{session}{DELIVERY_LEDGER_SUFFIX}"
+            )
+            try:
+                keys = set(ledger.read_text(encoding="utf-8", errors="replace").split())
+            except OSError:
+                keys = set()
+        cache[session] = keys
+    return cache[session]
+
+
+def doctor_triage_instant(run_dir):
+    """When somebody stood behind this run's findings, or None where nobody has. A run triaged
+    before the report receipt existed left only its verdicts file, whose mtime is the closest
+    thing on disk to the instant.
+    """
+    try:
+        receipt = json.loads((run_dir / REPORT_RECEIPT).read_text())
+    except (OSError, ValueError):
+        receipt = None
+    recorded = parse_iso_timestamp(
+        receipt.get("reported_at") if isinstance(receipt, dict) else None
+    )
+    if recorded is not None:
+        return recorded
+    try:
+        return datetime.fromtimestamp((run_dir / "verdicts.jsonl").stat().st_mtime, timezone.utc)
+    except OSError:
+        return None
+
+
+def doctor_row(what, repo, age=None):
+    return {"what": str(what), "repo": str(repo or ""), "age_s": None if age is None else int(age)}
+
+
+def doctor_locks(repo, now, covering=None):
+    """Rounds this checkout has locked on the P1 count that nothing has discharged, oldest first.
+
+    `covering_artifacts` already hands a path over to the run that answered its lock, so an
+    artifact still covering a path it locked is one no later run holds.
+    """
+    standing = {}
+    if covering is None:
+        covering = covering_artifacts(repo)
+    for path, artifact in covering.items():
+        if path_lock_stands(repo, path, artifact):
+            standing.setdefault(artifact["id"], artifact)
+    rows = []
+    for run_id, artifact in sorted(standing.items()):
+        age = now.timestamp() - artifact["epoch"]
+        if age >= DOCTOR_AGES_S["eternal_lock"]:
+            rows.append(doctor_row(run_id, repo, age))
+    return rows
+
+
+def doctor_orphan_debt(repo, covering=None):
+    """Debt paths no chat answers for: every journal record naming them is the original bare-path
+    format, or there is no record at all. Nobody will be asked to review or waive these, so they
+    sit in the count for ever while the gate stays silent about whose they are.
+
+    Both channels the gate itself answers `mine` out of, or a path a chat's own worker wrote and
+    no sweep has reached yet is counted as nobody's while that chat is being asked about it.
+    """
+    debt = repo_debt(repo, covering=covering)
+    if not debt:
+        return []
+    authors = debt_path_authors(repo, debt)
+    claimed = run_record_claims(repo)
+    return [
+        doctor_row(path, repo) for path, _ in debt
+        if not authors.get(str(path)) and not claimed.get(str(path))
+    ]
+
+
+def doctor_scan(now=None):
+    """Every anomaly the review system's own records can be asked about, as
+    `{class: [row, ...]}`.
+
+    Pull-only and read-only: nothing here marks a record, speaks to a vendor or costs a token, and
+    the answer is a count per class with the records behind it rather than a verdict about any one
+    run. The classes are the ways this system has been seen to go quiet — a panel nobody judged, a
+    report nobody delivered, a triage nobody answered, a lock nothing opens, debt nobody owns, and
+    a run that completed nothing without being marked killed.
+    """
+    now = now or utc_now()
+    findings = {name: [] for name in DOCTOR_CLASSES}
+    benches = state_dir() / "benches"
+    # Resolved, because every path it is tested against is: under a symlinked state dir — macOS
+    # `/tmp` and `/var/folders`, every WORKER_STATS_DIR fixture — an unresolved root shares no
+    # prefix with anything and the workspace one panel read is scanned as a checkout of Egor's.
+    merged_root = resolved_repo_path(state_dir() / MERGED_DIR)
+    ledgers = {}
+    repos = {}
+
+    def remember(recorded):
+        # The merged workspace a run was built in is a repository too, and by the time anybody
+        # asks it holds no work of Egor's — only the copy one panel read.
+        resolved = resolved_repo_path(recorded) if recorded else None
+        if resolved is None or resolved == merged_root or merged_root in resolved.parents:
+            return
+        repos.setdefault(resolved, None)
+
+    # Never the cwd, however close to hand the tree in front of the reader is: this scan is the
+    # collector's, and one that answered differently depending on where it was invoked from would
+    # write a different snapshot every six hours off an unchanged store.
+    for run_dir in sorted(benches.iterdir()) if benches.exists() else ():
+        try:
+            meta = json.loads((run_dir / "meta.json").read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(meta, dict):
+            continue
+        # Before the finish stamp is asked for: a checkout is a repository whatever became of the
+        # panel that named it, and the tree-level classes below are the two this system has no
+        # other way to reach.
+        for record in [meta] + [row for row in meta.get("repos") or () if isinstance(row, dict)]:
+            remember(str(record.get("repo") or ""))
+        finished = parse_iso_timestamp(meta.get("finished") or meta.get("finished_at"))
+        # A launch document carries no finish stamp. Every RUN class below is about a record
+        # nobody moved on after it stopped being written to, so a panel still running is none.
+        if finished is None:
+            continue
+        age = (now - finished).total_seconds()
+        recent = age <= DOCTOR_WINDOW_S
+        # The two round classes below ask only about runs carrying a report receipt, because that
+        # receipt is what a ROUND is: `record --no-corpus` writes it and nothing else does, so a
+        # benchmark row adjudicated into verdicts.jsonl — which owes Egor no report and will never
+        # have a fixing pass — cannot sit in either count for ever.
+        reported = (run_dir / REPORT_RECEIPT).exists()
+        if not run_triaged(run_dir):
+            # And `untriaged` asks what the Stop gate asks: a worktree run. A commit-point panel
+            # nobody scored is a benchmark backlog, not a review that went unanswered.
+            if recent and meta.get("worktree") is True and age >= DOCTOR_AGES_S["untriaged"]:
+                findings["untriaged"].append(doctor_row(run_dir.name, meta.get("repo"), age))
+        elif reported:
+            state = delivery_state(run_dir)
+            session = str(meta.get("session") or "")
+            # A run no chat launched has no ledger to be missing from: it was never anybody's to
+            # deliver, and counted here it would be a permanent finding no action clears.
+            if (recent and state in DELIVERY_STATES and session
+                    and age >= DOCTOR_AGES_S["undelivered"]):
+                key = DELIVERY_LEDGER_KEY.format(run_id=run_dir.name, state=state)
+                if key not in doctor_ledger_keys(session, ledgers):
+                    findings["undelivered"].append(
+                        doctor_row(f"{run_dir.name} {state}", meta.get("repo"), age)
+                    )
+            if recent and round_state(run_dir) == "pending":
+                triaged_at = doctor_triage_instant(run_dir)
+                stuck = None if triaged_at is None else (now - triaged_at).total_seconds()
+                if stuck is not None and stuck >= DOCTOR_AGES_S["stuck_fixes"]:
+                    findings["stuck_fixes"].append(
+                        doctor_row(run_dir.name, meta.get("repo"), stuck)
+                    )
+        # The kill marking and the empty panel come from two different code paths, and a run that
+        # completed nothing without wearing `timed_out` took the one that skips it: the statusline
+        # never went loud and no artifact was withheld, so the count is how often that happens.
+        # Through the same reader every other surface uses, or a record written before the field
+        # existed — whose cells all completed — is counted as a panel that completed nothing.
+        if (recent and meta.get("raters") and not completed_raters_from_meta(meta)
+                and not meta.get("timed_out")):
+            findings["kill_asymmetry"].append(doctor_row(run_dir.name, meta.get("repo"), age))
+    for repo in sorted(repos):
+        # A checkout that is gone, or was never a git working tree, answers neither question — and
+        # git_dir_path would raise on the missing cwd rather than return nothing.
+        if not repo.is_dir() or git_dir_path(repo) is None:
+            continue
+        # Built once and handed to both: each of them otherwise walks the whole benches directory
+        # for the same answer, and this scan is over every checkout the store has ever recorded.
+        covering = covering_artifacts(repo)
+        findings["eternal_lock"].extend(doctor_locks(repo, now, covering))
+        findings["orphan_debt"].extend(doctor_orphan_debt(repo, covering))
+    return findings
+
+
+def doctor_age_text(seconds):
+    seconds = max(0, int(seconds))
+    days, rest = divmod(seconds, 86400)
+    return f"{days}d {rest // 3600}h" if days else f"{rest // 3600}h"
+
+
+def doctor_lines(findings):
+    """One line per class that found something, its rows indented beneath it, and the quiet
+    classes named together at the end — a reader has to be able to tell "asked and clean" from
+    "not asked at all", and a class printed only when it fires cannot say which it was.
+    """
+    lines = []
+    for name in DOCTOR_CLASSES:
+        rows = findings[name]
+        if not rows:
+            continue
+        lines.append(f"{name}: {len(rows)}")
+        for row in rows[:DOCTOR_DETAIL_LINES]:
+            age = "" if row["age_s"] is None else f"  {doctor_age_text(row['age_s'])}"
+            lines.append(f"  {row['what']}  {row['repo']}{age}")
+        # Named rather than dropped: a cut list that says nothing reads as the whole of it.
+        if len(rows) > DOCTOR_DETAIL_LINES:
+            lines.append(f"  … {len(rows) - DOCTOR_DETAIL_LINES} more not printed")
+    clean = [name for name in DOCTOR_CLASSES if not findings[name]]
+    if clean:
+        lines.append("ok: " + ", ".join(clean))
+    return lines
+
+
+def doctor_snapshot_document(findings, now):
+    counts = {name: len(findings[name]) for name in DOCTOR_CLASSES}
+    return {"as_of": int(now.timestamp()), "anomalies": counts, "total": sum(counts.values())}
+
+
+def write_doctor_snapshot(findings, now, directory=None):
+    """Atomically, because the menubar reads this on every render: a half-written document is a
+    menu line that vanishes for as long as the write takes.
+    """
+    path = (Path(directory) if directory else state_dir()) / DOCTOR_SNAPSHOT
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+    temporary.write_text(json.dumps(doctor_snapshot_document(findings, now)) + "\n")
+    temporary.replace(path)
+    return path
+
+
+def doctor_wrapper_exec_line():
+    """One spelling for the line install writes and uninstall recognises, so a wrapper pointing
+    anywhere else is never deleted as ours.
+    """
+    return f"exec {shlex.quote(str(Path(__file__).resolve()))} doctor --snapshot"
+
+
+def doctor_agent_paths(home):
+    home = Path(home)
+    return {
+        "plist": home / "Library" / "LaunchAgents" / f"{DOCTOR_AGENT_LABEL}.plist",
+        "wrapper": home.joinpath(*DOCTOR_AGENT_WRAPPER),
+        "logs": home / ".claude-profiles" / ".claudeb",
+    }
+
+
+def doctor_agent_plist(paths):
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{DOCTOR_AGENT_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{paths["wrapper"]}</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>{DOCTOR_AGENT_INTERVAL_S}</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:{paths["logs"].parent.parent}/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>{paths["logs"]}/review-doctor.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>{paths["logs"]}/review-doctor.stderr.log</string>
+</dict>
+</plist>
+"""
+
+
+def write_doctor_agent(home):
+    """The wrapper and the plist, and nothing that talks to launchd: the tests exercise exactly
+    this against a fixture HOME, and a load hidden inside it would install a real agent on the
+    machine running them.
+    """
+    paths = doctor_agent_paths(home)
+    for directory in (paths["plist"].parent, paths["wrapper"].parent, paths["logs"]):
+        directory.mkdir(parents=True, exist_ok=True)
+    temporary = paths["wrapper"].with_name(f"{paths['wrapper'].name}.tmp.{os.getpid()}")
+    temporary.write_text(f"#!/usr/bin/env bash\n{doctor_wrapper_exec_line()}\n")
+    temporary.chmod(0o755)
+    temporary.replace(paths["wrapper"])
+    paths["plist"].write_text(doctor_agent_plist(paths))
+    return paths
+
+
+def remove_doctor_agent(home):
+    paths = doctor_agent_paths(home)
+    paths["plist"].unlink(missing_ok=True)
+    try:
+        ours = doctor_wrapper_exec_line() in paths["wrapper"].read_text()
+    except OSError:
+        ours = False
+    if ours:
+        paths["wrapper"].unlink(missing_ok=True)
+    return paths
+
+
+def doctor_launchctl(plist, load):
+    """What launchd made of the plist: the empty string where it loaded, its complaint where it
+    did not. A failed load is invisible from every other surface — an absent snapshot renders no
+    menu line by design — so a caller that dropped this would print "Installed" over a collector
+    that will never run once.
+    """
+    domain = f"gui/{os.getuid()}"
+    subprocess.run(["launchctl", "bootout", domain, str(plist)], capture_output=True, check=False)
+    if not load:
+        return ""
+    attempts = [["launchctl", "bootstrap", domain, str(plist)],
+                ["launchctl", "load", "-w", str(plist)]]
+    complaint = ""
+    for command in attempts:
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        if not result.returncode:
+            return ""
+        complaint = (result.stderr or result.stdout or "").strip() or f"exit {result.returncode}"
+    return complaint
+
+
+def cmd_doctor(args):
+    """The SCAN always exits 0. It is a diagnostic and never a gate: a review system with an
+    anomaly in it is still a review system, and a nonzero exit here would make one a wall
+    somewhere. Installing the collector is the other thing this command does, and a job launchd
+    refused is a plain failure of the thing that was asked for.
+    """
+    if args.install_agent:
+        paths = write_doctor_agent(Path.home())
+        complaint = doctor_launchctl(paths["plist"], True)
+        if complaint:
+            print(f"Wrote {paths['plist']}, but launchd refused to load it: {complaint}. "
+                  f"{DOCTOR_AGENT_LABEL} will take no snapshot until it does.", file=sys.stderr)
+            return 1
+        print(f"Installed {DOCTOR_AGENT_LABEL}, snapshot every "
+              f"{DOCTOR_AGENT_INTERVAL_S // 3600}h through {paths['wrapper']}.")
+        return 0
+    if args.uninstall_agent:
+        paths = doctor_agent_paths(Path.home())
+        doctor_launchctl(paths["plist"], False)
+        remove_doctor_agent(Path.home())
+        print(f"Uninstalled {DOCTOR_AGENT_LABEL}.")
+        return 0
+    now = utc_now()
+    findings = doctor_scan(now)
+    if args.snapshot:
+        # Never stdout: `--json` promises ONE object there, and the collector that wants both
+        # forms in one scan is exactly the caller that would have to strip this line off first.
+        print(f"snapshot: {write_doctor_snapshot(findings, now)}", file=sys.stderr)
+    if args.json:
+        document = doctor_snapshot_document(findings, now)
+        document["details"] = {name: findings[name] for name in DOCTOR_CLASSES}
+        print(json.dumps(document, indent=2))
+    else:
+        for line in doctor_lines(findings):
+            print(line)
+    return 0
+
+
 def reviews_current_tree(repo, sha, worktree=False):
     """Whether `sha` holds the tree standing in front of the reader of `repo`.
 
@@ -9505,6 +9942,7 @@ def cmd_run(args):
     # Set for a merged review, and it is what makes the run answer to every repository it read
     # rather than to the workspace it read them out of.
     members = None
+    inherited_seal = None
     # The range's own right end, kept for the target line: what gets sealed is a commit of the
     # tool's own making, and naming that in place of the commit the caller asked about is how a
     # target line stops answering the question it exists for.
@@ -9546,6 +9984,16 @@ def cmd_run(args):
         sha = resolve_commit(repo, commitish)
         document = merged_manifest(repo)
         members = document["repos"] if document and document["merged"] == sha else None
+        # A rerun is pinned to a seal an earlier run made, and its own clock would date that
+        # content to now. The instant already on record is the one this tree stopped changing at.
+        inherited_seal = (
+            recorded_seal_instant(sha) if is_worktree_snapshot(repo, sha) else None
+        )
+    # The instant the content stopped being able to change under this run, which is what
+    # `review_round` weighs a fixes receipt against. `started` below is minutes later — an
+    # availability sweep and a possible limits refresh sit between them — and a receipt landing in
+    # that gap answers for work no cell of this panel ever read, while counting as its lineage.
+    sealed_at = inherited_seal or utc_now()
     worktree_mode = worktree_mode or is_worktree_snapshot(repo, sha)
     # A rerun arrives as the sealed sha and no flags at all, so the mode is read back out of what
     # was sealed: the seal's own subject for one repository, each member's record for a merged
@@ -9718,7 +10166,8 @@ def cmd_run(args):
         "run_id": run_id, "commit": sha, "repo": str(repo),
         "raters": requested_raters, "completed_raters": [],
         "rater_runs": [], "durations": {},
-        "started": started.isoformat(), "focus": args.focus or "",
+        "started": started.isoformat(), "sealed_at": sealed_at.isoformat(),
+        "focus": args.focus or "",
         "verifier": verify_model or "",
         **session_stamp(),
     }
@@ -9971,7 +10420,8 @@ def cmd_run(args):
             ],
             "rater_runs": rater_meta,
             "durations": {row["rater"]: row["duration_ms"] for row in rater_meta},
-            "started": started.isoformat(), "finished": iso_now(), "focus": args.focus or "",
+            "started": started.isoformat(), "sealed_at": sealed_at.isoformat(),
+            "finished": iso_now(), "focus": args.focus or "",
             "verifier": verify_model or "",
             # Rewritten from scratch when the run ends, and the triage nag reads the finished
             # document: dropped here, the launching chat would be forgotten exactly when it is asked.
@@ -11568,6 +12018,31 @@ def main():
         help=f"only the newest N runs (default {HEALTH_DEFAULT_RUNS}; 0 for every run)",
     )
     health.set_defaults(func=cmd_health)
+    doctor = subparsers.add_parser(
+        "doctor",
+        help="Anomalies in the review system's own records: runs nobody judged, reports nobody "
+             "delivered, rounds nobody fixed, locks nothing opens, debt nobody owns",
+    )
+    doctor_mode = doctor.add_mutually_exclusive_group()
+    doctor_mode.add_argument(
+        "--json", action="store_true", help="One JSON object with the counts and their rows",
+    )
+    # Outside the group with the two agent flags: this one only ALSO writes the document, so it
+    # composes with either output form, and refusing `--json --snapshot` made a collector that
+    # wants both run the whole scan twice.
+    doctor.add_argument(
+        "--snapshot", action="store_true",
+        help=f"Also write the counts to <state-dir>/{DOCTOR_SNAPSHOT}, which the menubar reads",
+    )
+    doctor_mode.add_argument(
+        "--install-agent", action="store_true",
+        help=f"Install the launchd collector that takes that snapshot every "
+             f"{DOCTOR_AGENT_INTERVAL_S // 3600}h",
+    )
+    doctor_mode.add_argument(
+        "--uninstall-agent", action="store_true", help="Remove that collector, plist and wrapper",
+    )
+    doctor.set_defaults(func=cmd_doctor)
     lens = subparsers.add_parser(
         "lens", help="Registered review lenses and whether each still matches its source"
     )

@@ -300,6 +300,73 @@ local function bucketAtLimit(bucket)
   return type(bucket) == "table" and (tonumber(bucket.effective_pct) or 0) >= 100
 end
 
+-- The bench's own store, spelled the way bin/review-bench spells it: a menu reading a different
+-- one would report on records nobody is writing. Held equal by docs/shared-invariants.md, which
+-- also fixes the document's schema — the class names below exist nowhere else on this side.
+local DOCTOR_CLASSES = {
+  "untriaged", "undelivered", "stuck_fixes", "eternal_lock", "orphan_debt", "kill_asymmetry",
+}
+local DOCTOR_STALE_S = 24 * 3600
+
+local function doctorSnapshotPath()
+  if M.doctorSnapshotPath then return M.doctorSnapshotPath end
+  local override = os.getenv("WORKER_STATS_DIR")
+  if override and override ~= "" then return override .. "/doctor-snapshot.json" end
+  local base = os.getenv("CLAUDEB_DIR")
+  if not base or base == "" then base = home .. "/.claude-profiles/.claudeb" end
+  return base .. "/worker-stats/doctor-snapshot.json"
+end
+
+local function readDoctorSnapshot()
+  local ok, decoded = pcall(function()
+    local file = io.open(doctorSnapshotPath(), "r")
+    if not file then return nil end
+    local contents = file:read("*a")
+    file:close()
+    return hs.json.decode(contents)
+  end)
+  if not ok or type(decoded) ~= "table" or type(decoded.anomalies) ~= "table" then return nil end
+  return decoded
+end
+
+-- A collector that stopped running is itself the finding: the counts below would go on reading
+-- clean off a document nothing has rewritten since.
+local function doctorStaleSuffix(asOf)
+  local stamp = tonumber(asOf)
+  if not stamp then return "" end
+  local age = os.time() - stamp
+  if age < DOCTOR_STALE_S then return "" end
+  return string.format(" · snapshot %dd old", math.floor(age / 86400))
+end
+
+-- Absent means the collector was never installed, and a line saying so would be one more thing to
+-- read past in a menu about limits.
+local function appendDoctor(menu)
+  local snapshot = readDoctorSnapshot()
+  if not snapshot then return end
+  local total = tonumber(snapshot.total) or 0
+  local title = total > 0
+    and string.format("review doctor: %d issue%s", total, total == 1 and "" or "s")
+    or "review doctor: OK"
+  local row = {
+    title = infoTitle(title .. doctorStaleSuffix(snapshot.as_of), false, total == 0),
+    disabled = true,
+  }
+  local items = {}
+  for _, name in ipairs(DOCTOR_CLASSES) do
+    local count = tonumber(snapshot.anomalies[name]) or 0
+    if count > 0 then
+      table.insert(items, { title = string.format("%s: %d", name, count), disabled = true })
+    end
+  end
+  if #items > 0 then
+    row.disabled = nil
+    row.menu = items
+  end
+  table.insert(menu, row)
+  table.insert(menu, { title = "-" })
+end
+
 local function readLlmLimits()
   local ok, result, reason = pcall(function()
     local file = io.open(M.cachePath, "r")
@@ -1080,6 +1147,7 @@ function M.menuItems()
     end
     if announced then table.insert(menu, { title = "-" }) end
   end
+  appendDoctor(menu)
   table.insert(menu, {
     title = infoTitle("Routing"),
     menu = routingSubmenu(),

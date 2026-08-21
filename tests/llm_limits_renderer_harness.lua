@@ -2,6 +2,10 @@ local source = debug.getinfo(1, "S").source
 local root = source:match("^@(.+)/tests/[^/]+$")
 assert(root, "renderer harness path is unavailable")
 
+-- What the fake io.open hands back for the doctor snapshot, so the fake decoder knows which of
+-- the two documents it is being asked for.
+local DOCTOR_CONTENTS = "<doctor-snapshot>"
+
 local Styled = {}
 Styled.__index = Styled
 
@@ -24,13 +28,16 @@ function Styled.__concat(left, right)
 end
 
 local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptFn,
-    workerModel, fsAttributes, interfaceStyle)
+    workerModel, fsAttributes, interfaceStyle, doctorSnapshot)
   local mock = {
     alert = { show = alertFn or function() end },
     execute = function() return true end,
     fs = { attributes = fsAttributes or function() return nil end },
     host = { interfaceStyle = function() return interfaceStyle end },
-    json = { decode = function()
+    -- The doctor snapshot is a second document read through the same decoder, so the fixture is
+    -- chosen by what the fake io.open handed back rather than by call order.
+    json = { decode = function(text)
+      if text == DOCTOR_CONTENTS then return doctorSnapshot end
       return type(fixture) == "function" and fixture() or fixture
     end },
     osascript = { applescript = osascriptFn or function() return true, true, {} end },
@@ -54,6 +61,10 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
         return nil
       end
       local contents = "fixture"
+      if path:match("/doctor%-snapshot%.json$") then
+        if doctorSnapshot == nil then return nil end
+        contents = DOCTOR_CONTENTS
+      end
       if path:match("/%.claude/worker%-model$") then
         if workerModel == nil then return nil end
         contents = workerModel
@@ -1533,6 +1544,91 @@ local quietFixture = {
 for _, item in ipairs(loadModule(quietFixture).menuItems()) do
   assert(not titleText(item):match("EXPERIMENT"), "no experiment reported, yet the menu announced one")
 end
+
+-- The review doctor's own line. Its counts come from the collector's snapshot; this renderer
+-- never scans a store itself, and a missing snapshot means the collector was never installed —
+-- one more line to read past in a menu about limits.
+local function doctorRow(menu)
+  for _, item in ipairs(menu) do
+    if titleText(item):find("review doctor", 1, true) then return item end
+  end
+  return nil
+end
+
+local doctorFixture = {
+  schema = 1,
+  vendors = { claude = { available = false }, codex = { available = false }, gemini = { available = false } },
+}
+assert(not doctorRow(loadModule(doctorFixture).menuItems()),
+  "the menu announced a review doctor with no snapshot on disk")
+
+do
+  local clean = { as_of = os.time(), total = 0, anomalies = {
+    untriaged = 0, undelivered = 0, stuck_fixes = 0, eternal_lock = 0,
+    orphan_debt = 0, kill_asymmetry = 0,
+  }}
+  local row = doctorRow(loadModule(doctorFixture, nil, nil, nil, nil, nil, nil, nil,
+    clean).menuItems())
+  assert(row, "a clean doctor snapshot rendered no line")
+  assert(titleText(row) == "review doctor: OK", titleText(row))
+  assert(row.disabled == true, "the clean doctor line is clickable")
+  assert(row.menu == nil, "the clean doctor line carries a submenu of nothing")
+  assert(isDimmed(row.title.runs[1].attributes, 0), "the clean doctor line is not dimmed")
+end
+
+do
+  local dirty = { as_of = os.time(), total = 4, anomalies = {
+    untriaged = 1, undelivered = 0, stuck_fixes = 3, eternal_lock = 0,
+    orphan_debt = 0, kill_asymmetry = 0,
+  }}
+  local row = doctorRow(loadModule(doctorFixture, nil, nil, nil, nil, nil, nil, nil,
+    dirty).menuItems())
+  assert(titleText(row) == "review doctor: 4 issues", titleText(row))
+  assert(row.disabled == nil, "the doctor line with findings cannot be opened")
+  -- Only the classes that fired, in the order the snapshot spells them: a submenu listing every
+  -- class with a zero beside it is a wall of nothing to read past.
+  assert(#row.menu == 2, "the doctor submenu named " .. #row.menu .. " classes")
+  assert(titleText(row.menu[1]) == "untriaged: 1", titleText(row.menu[1]))
+  assert(titleText(row.menu[2]) == "stuck_fixes: 3", titleText(row.menu[2]))
+  assert(row.menu[1].disabled == true, "a doctor class row is clickable")
+end
+
+do
+  local single = { as_of = os.time(), total = 1, anomalies = { orphan_debt = 1 }}
+  local row = doctorRow(loadModule(doctorFixture, nil, nil, nil, nil, nil, nil, nil,
+    single).menuItems())
+  assert(titleText(row) == "review doctor: 1 issue", titleText(row))
+end
+
+-- A collector that stopped running is the finding: the counts read clean off a document nothing
+-- has rewritten, and only the age says so.
+do
+  local now = 1800000000
+  local stale = { as_of = now - 3 * 86400, total = 0, anomalies = { untriaged = 0 }}
+  local row = doctorRow(loadModule(doctorFixture, nil, now, nil, nil, nil, nil, nil,
+    stale).menuItems())
+  assert(titleText(row) == "review doctor: OK · snapshot 3d old", titleText(row))
+  local fresh = { as_of = now - 3600, total = 0, anomalies = { untriaged = 0 }}
+  local freshRow = doctorRow(loadModule(doctorFixture, nil, now, nil, nil, nil, nil, nil,
+    fresh).menuItems())
+  assert(titleText(freshRow) == "review doctor: OK", titleText(freshRow))
+  -- The instant is parsed rather than type-checked: an as_of the decoder hands over as text is
+  -- still an instant, and rejected for its type it hides exactly the silence this line exists for.
+  local text = { as_of = tostring(now - 3 * 86400), total = 0, anomalies = { untriaged = 0 }}
+  local textRow = doctorRow(loadModule(doctorFixture, nil, now, nil, nil, nil, nil, nil,
+    text).menuItems())
+  assert(titleText(textRow) == "review doctor: OK · snapshot 3d old", titleText(textRow))
+  -- And one that is no instant at all says nothing rather than dating the snapshot to 1970.
+  local junk = { as_of = "whenever", total = 0, anomalies = { untriaged = 0 }}
+  local junkRow = doctorRow(loadModule(doctorFixture, nil, now, nil, nil, nil, nil, nil,
+    junk).menuItems())
+  assert(titleText(junkRow) == "review doctor: OK", titleText(junkRow))
+end
+
+-- A document that is not the one review-bench writes says nothing at all, rather than rendering a
+-- line off keys it guessed.
+assert(not doctorRow(loadModule(doctorFixture, nil, nil, nil, nil, nil, nil, nil,
+  { total = 3 }).menuItems()), "the menu rendered a doctor line off a schema-less document")
 
 -- Which roles may use a vendor at all is a per-vendor switch, so it belongs on the vendor header
 -- beside the pool switches; the file spells it as a veto, and only the literal "off" is one.

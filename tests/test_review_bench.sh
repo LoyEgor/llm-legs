@@ -7227,6 +7227,32 @@ assert (
 ) in snapshot_rerun_stdout.getvalue(), snapshot_rerun_stdout.getvalue()
 assert "--verify" not in snapshot_rerun_stdout.getvalue().split("rerun:")[1].splitlines()[0]
 
+# A rerun reads exactly the tree the seal it is pinned to froze, so the instant it is measured by
+# is that seal's and never this pass's clock: stamped from now, every fixes receipt written since
+# the snapshot reads as lineage this panel could have seen, and a rerun of the PRE-FIX snapshot
+# spends the scope's round budget and opens its lock over cells that saw none of them. The seal's
+# own commit cannot say it — one fixed clock stands behind every commit object review-bench writes.
+seal_inherit_store = work / "seal-inherit-claudeb"
+(seal_inherit_store / "worker-stats" / "benches").mkdir(parents=True)
+shutil.copytree(worktree_run_dir,
+                seal_inherit_store / "worker-stats" / "benches" / worktree_run_dir.name)
+os.environ["CLAUDEB_DIR"] = str(seal_inherit_store)
+with contextlib.redirect_stdout(io.StringIO()):
+    rb.cmd_run(argparse.Namespace(
+        repo=str(pin_repo), commitish=snapshot_sha, raters="sol-medium,sol-high",
+        leg=False, verify=None, auto=None, focus=None,
+    ))
+seal_inherit_dir = next(
+    directory for directory in (seal_inherit_store / "worker-stats" / "benches").iterdir()
+    if directory.name != worktree_run_dir.name
+)
+seal_inherit_meta = json.loads((seal_inherit_dir / "meta.json").read_text())
+assert seal_inherit_meta["commit"] == snapshot_sha, seal_inherit_meta
+assert seal_inherit_meta["sealed_at"] == worktree_meta["sealed_at"], seal_inherit_meta
+# And nothing on record for a sha is no seal to inherit: the rerun above ran in a store holding
+# only its own panel, so it kept the clock.
+assert snapshot_rerun_meta["sealed_at"] != worktree_meta["sealed_at"], snapshot_rerun_meta
+
 
 def oc_rerun_runner(rater, repo_path, commit, focus, run_dir, diff, account):
     return 1, 1, "", "fixture rater failure", []
@@ -11638,6 +11664,22 @@ meta["started"] = (
 open(path, "w").write(json.dumps(meta) + "\n")
 STRETCHPY
 }
+# The seal instant the tool stamps for itself, which `started` is minutes later than: only a
+# fixture spelling the two apart can ask which of them a lineage receipt is measured against.
+fix_seal() { # run-id hours-before-finish
+  python3 - "$FIX_SD/benches/$1/meta.json" "$2" <<'SEALPY'
+import json
+import sys
+from datetime import datetime, timedelta
+
+path = sys.argv[1]
+meta = json.loads(open(path).read())
+meta["sealed_at"] = (
+    datetime.fromisoformat(meta["finished"]) - timedelta(hours=float(sys.argv[2]))
+).isoformat()
+open(path, "w").write(json.dumps(meta) + "\n")
+SEALPY
+}
 gate_run 20260731T000000Z-gatefresh 0 0
 gate_pending=$(WORKER_STATS_DIR="$GATE_SD" "$SCRIPT" pending-report --repo "$GATE_REPO") \
   || fail "pending-report missed an untriaged worktree run"
@@ -12314,6 +12356,15 @@ fix_sealed_after=$(fix_bench record 20260802T060000Z-fixjustafter --no-corpus \
   --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the answering round refused its triage"
 assert contains "$fix_sealed_after" "the budget of two is spent"
 fix_backdate 20260701T000000Z-fixlongago 398
+# And the run's own seal stamp outranks its launch stamp wherever it carries one: the tool seals
+# the tree, then sweeps availability and may refresh limits before it writes `started`, so a
+# receipt landing in that gap answers for work no cell of this panel could read.
+fix_seal 20260802T060000Z-fixjustafter 3
+fix_backdate 20260701T000000Z-fixlongago 398.5
+fix_pre_seal=$(fix_bench record 20260802T060000Z-fixjustafter --no-corpus \
+  --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the answering round refused its triage"
+assert test "$(grep -Fc -- "the budget of two is spent" <<<"$fix_pre_seal")" -eq 0
+assert contains "$fix_pre_seal" "re-review"
 
 # A review of part of the tree never answers for the repository: `receipt` with no selector finds
 # nothing, and the scope's own receipt is readable only when asked for by name.
@@ -12441,5 +12492,418 @@ if test -x "$REPORT_HOOK"; then
 else
   printf 'SKIP: review report hook behavior (%s is unavailable)\n' "$REPORT_HOOK"
 fi
+
+
+# The review system's own health, which is a different question from a vendor cell's: `doctor`
+# reads the stores and names the records nothing moved on, and answers 0 whatever it finds — a
+# diagnostic that exits nonzero becomes a wall somewhere.
+DOC_CACHE="$WORK/doctor-cache"
+DOC_REPO="$WORK/doctor-repo"
+git init -q "$DOC_REPO"
+doctor_json() { # state-dir [args...]
+  WORKER_STATS_DIR="$1" XDG_CACHE_HOME="$DOC_CACHE" "$SCRIPT" doctor --json "${@:2}"
+}
+doctor_count() { # state-dir class
+  doctor_json "$1" | jq -r ".anomalies.\"$2\""
+}
+doc_run() { # store run-id hours-ago findings
+  GATE_SD="$1" GATE_REPO="$DOC_REPO" gate_run "$2" "$3" "$4"
+}
+
+# Nothing recorded is not the same as nothing asked: every class is named clean, so a reader can
+# tell a quiet system from a scan that never ran.
+DOC_EMPTY="$WORK/doctor-empty"
+mkdir -p "$DOC_EMPTY/benches"
+doc_empty=$(WORKER_STATS_DIR="$DOC_EMPTY" XDG_CACHE_HOME="$DOC_CACHE" "$SCRIPT" doctor) \
+  || fail "doctor exited nonzero on an empty store"
+assert test "$doc_empty" = "ok: untriaged, undelivered, stuck_fixes, eternal_lock, orphan_debt, kill_asymmetry"
+assert test "$(doctor_json "$DOC_EMPTY" | jq -r '.total')" = "0"
+
+# untriaged: the Stop gate's own question asked at the age nobody is going to answer it at. A run
+# still inside that gate's window is not one it failed to ask about, and a commit-point panel
+# nobody scored is a benchmark backlog rather than a review that went unanswered.
+DOC_UNTRIAGED="$WORK/doctor-untriaged"
+doc_run "$DOC_UNTRIAGED" 20260801T000000Z-docold 20 0
+assert test "$(doctor_count "$DOC_UNTRIAGED" untriaged)" = "1"
+doc_run "$DOC_UNTRIAGED" 20260801T010000Z-docnew 2 0
+assert test "$(doctor_count "$DOC_UNTRIAGED" untriaged)" = "1"
+doc_run "$DOC_UNTRIAGED" 20260801T020000Z-docdurable 20 0
+python3 - "$DOC_UNTRIAGED/benches/20260801T020000Z-docdurable/meta.json" <<'DOCPY'
+import json
+import sys
+meta = json.loads(open(sys.argv[1]).read())
+del meta["worktree"]
+open(sys.argv[1], "w").write(json.dumps(meta) + "\n")
+DOCPY
+assert test "$(doctor_count "$DOC_UNTRIAGED" untriaged)" = "1"
+# A run past the window is history: nobody triages last month's panel, and a count that only grows
+# says the same thing every time it is read.
+doc_run "$DOC_UNTRIAGED" 20260801T030000Z-docancient 400 0
+assert test "$(doctor_count "$DOC_UNTRIAGED" untriaged)" = "1"
+
+# undelivered: a round in a deliverable state whose launching chat's ledger holds no key for it.
+# The ledger is claude-setup's, read here and never written: a diagnostic that keyed a delivery
+# would retire a report nobody has seen.
+DOC_DELIVERY="$WORK/doctor-delivery"
+GATE_SD="$DOC_DELIVERY" GATE_REPO="$DOC_REPO" GATE_SESSION=doc-chat \
+  gate_run 20260801T000000Z-docdeliver 8 0
+WORKER_STATS_DIR="$DOC_DELIVERY" "$SCRIPT" record 20260801T000000Z-docdeliver --no-corpus \
+  >/dev/null || fail "the delivery round refused its triage"
+assert test "$(doctor_count "$DOC_DELIVERY" undelivered)" = "1"
+mkdir -p "$DOC_CACHE/claude/review-delivery"
+printf 'run:20260801T000000Z-docdeliver:done\n' \
+  >"$DOC_CACHE/claude/review-delivery/doc-chat.emitted"
+assert test "$(doctor_count "$DOC_DELIVERY" undelivered)" = "0"
+# The state is half the key: a ledger holding the run under any other state has not delivered this
+# one, and the state-blind key the nudge writes for itself is no answer either.
+printf 'run:20260801T000000Z-docdeliver\nrun:20260801T000000Z-docdeliver:blocked\n' \
+  >"$DOC_CACHE/claude/review-delivery/doc-chat.emitted"
+assert test "$(doctor_count "$DOC_DELIVERY" undelivered)" = "1"
+rm -f "$DOC_CACHE/claude/review-delivery/doc-chat.emitted"
+# A benchmark row is not a round: it owes Egor no report, so it can never sit in this count.
+DOC_BENCH="$WORK/doctor-bench"
+GATE_SD="$DOC_BENCH" GATE_REPO="$DOC_REPO" GATE_SESSION=doc-chat \
+  gate_run 20260801T000000Z-docbench 8 0
+printf '' >"$DOC_BENCH/benches/20260801T000000Z-docbench/verdicts.jsonl"
+assert test "$(doctor_count "$DOC_BENCH" undelivered)" = "0"
+assert test "$(doctor_count "$DOC_BENCH" stuck_fixes)" = "0"
+
+# stuck_fixes: a triage standing with nothing from its fixing pass. Measured from when somebody
+# stood behind the findings, not from when the panel ran — the pass starts at the triage.
+DOC_FIXES="$WORK/doctor-fixes"
+GATE_SD="$DOC_FIXES" GATE_REPO="$DOC_REPO" GATE_SESSION=doc-chat \
+  gate_run 20260801T000000Z-docfixes 60 2
+printf '%s\n' '{"rater":"oc-kimik3","idx":0,"verdict":"confirmed"}' \
+  '{"rater":"oc-kimik3","idx":1,"verdict":"confirmed"}' >"$WORK/doctor-verdicts.jsonl"
+WORKER_STATS_DIR="$DOC_FIXES" "$SCRIPT" record 20260801T000000Z-docfixes --no-corpus \
+  --verdicts "$WORK/doctor-verdicts.jsonl" >/dev/null || fail "the stuck round refused its triage"
+assert test "$(doctor_count "$DOC_FIXES" stuck_fixes)" = "0"
+python3 - "$DOC_FIXES/benches/20260801T000000Z-docfixes/reported.json" <<'DOCPY'
+import json
+import sys
+from datetime import datetime, timedelta, timezone
+receipt = json.loads(open(sys.argv[1]).read())
+receipt["reported_at"] = (datetime.now(timezone.utc) - timedelta(hours=50)).isoformat()
+open(sys.argv[1], "w").write(json.dumps(receipt) + "\n")
+DOCPY
+assert test "$(doctor_count "$DOC_FIXES" stuck_fixes)" = "1"
+WORKER_STATS_DIR="$DOC_FIXES" "$SCRIPT" fixes 20260801T000000Z-docfixes --done --fixed 2 --fp 0 \
+  >/dev/null || fail "fixes --done refused the stuck round"
+assert test "$(doctor_count "$DOC_FIXES" stuck_fixes)" = "0"
+
+# eternal_lock: a round locked on the P1 count that no later run holds. The lock is the mechanical
+# second round, so one nothing has answered in a week is a chat that walked away from it.
+DOC_LOCK_REPO="$WORK/doctor-lock-repo"
+git init -q "$DOC_LOCK_REPO"
+printf 'locked\n' >"$DOC_LOCK_REPO/held.py"
+doc_lock_sha=$(git -C "$DOC_LOCK_REPO" hash-object -w held.py)
+DOC_LOCK="$WORK/doctor-lock"
+doc_lock_artifact() { # store run-id p1s
+  mkdir -p "$1/benches/$2"
+  python3 - "$1/benches/$2" "$2" "$DOC_LOCK_REPO" "$doc_lock_sha" "$3" <<'DOCPY'
+import json
+import pathlib
+import sys
+from datetime import datetime, timedelta, timezone
+run = pathlib.Path(sys.argv[1])
+finished = datetime.now(timezone.utc) - timedelta(hours=1)
+(run / "meta.json").write_text(json.dumps({
+    "run_id": sys.argv[2], "worktree": True, "repo": sys.argv[3], "session": "doc-chat",
+    "raters": ["oc-kimik3"], "completed_raters": ["oc-kimik3"], "rater_runs": [],
+    "reviewed": {"held.py": sys.argv[4]},
+    "started": finished.isoformat(), "finished": finished.isoformat(),
+}) + "\n")
+(run / "reported.json").write_text(json.dumps({
+    "reported_at": finished.isoformat(), "verdicts": 0, "confirmed": int(sys.argv[5]),
+    "confirmed_by_severity": {"P1": int(sys.argv[5]), "P2": 0, "P3": 0}, "rows": [],
+}) + "\n")
+DOCPY
+}
+doc_lock_artifact "$DOC_LOCK" 20260101T000000Z-doclock 3
+assert test "$(doctor_count "$DOC_LOCK" eternal_lock)" = "1"
+# Discharged by a later run holding every surviving path of it, which is exactly what
+# `covering_artifacts` hands the path over to — nothing here re-derives that rule.
+doc_lock_artifact "$DOC_LOCK" 20260102T000000Z-docdischarge 0
+assert test "$(doctor_count "$DOC_LOCK" eternal_lock)" = "0"
+# A lock earned this week is the second round working, not one standing for ever.
+DOC_FRESH_LOCK="$WORK/doctor-fresh-lock"
+doc_lock_artifact "$DOC_FRESH_LOCK" "$(date -u -v-2d '+%Y%m%dT%H%M%SZ' 2>/dev/null \
+  || date -u -d '2 days ago' '+%Y%m%dT%H%M%SZ')-docfresh" 3
+assert test "$(doctor_count "$DOC_FRESH_LOCK" eternal_lock)" = "0"
+
+# orphan_debt: debt paths whose only journal record is the original bare-path format, so no chat
+# is ever asked to review or waive them.
+DOC_DEBT_REPO="$WORK/doctor-debt-repo"
+git init -q "$DOC_DEBT_REPO"
+printf 'unowned\n' >"$DOC_DEBT_REPO/orphan.py"
+printf 'owned\n' >"$DOC_DEBT_REPO/owned.py"
+DOC_DEBT="$WORK/doctor-debt"
+mkdir -p "$DOC_DEBT/benches/20260801T000000Z-docdebt"
+python3 - "$DOC_DEBT/benches/20260801T000000Z-docdebt" "$DOC_DEBT_REPO" <<'DOCPY'
+import json
+import pathlib
+import sys
+from datetime import datetime, timedelta, timezone
+run = pathlib.Path(sys.argv[1])
+finished = datetime.now(timezone.utc) - timedelta(hours=1)
+(run / "meta.json").write_text(json.dumps({
+    "run_id": run.name, "worktree": True, "repo": sys.argv[2], "session": "doc-chat",
+    "raters": ["oc-kimik3"], "completed_raters": ["oc-kimik3"], "rater_runs": [],
+    "started": finished.isoformat(), "finished": finished.isoformat(),
+}) + "\n")
+(run / "verdicts.jsonl").write_text("")
+DOCPY
+printf 'orphan.py\0' >>"$DOC_DEBT_REPO/.git/claude-commit-journal"
+printf 'doc-chat\t1800000000\towned.py\0' >>"$DOC_DEBT_REPO/.git/claude-commit-journal"
+assert test "$(doctor_count "$DOC_DEBT" orphan_debt)" = "1"
+assert contains "$(doctor_json "$DOC_DEBT" | jq -r '.details.orphan_debt[].what')" "orphan.py"
+printf 'doc-chat\t1800000000\torphan.py\0' >>"$DOC_DEBT_REPO/.git/claude-commit-journal"
+assert test "$(doctor_count "$DOC_DEBT" orphan_debt)" = "0"
+
+# The other channel the gate answers `mine` out of: between a worker writing its file list and the
+# journal sweeping it, the run record is where that path's owner lives. Counted as nobody's, the
+# doctor reports debt a chat is being asked about at the same moment.
+printf 'claimed\n' >"$DOC_DEBT_REPO/claimed.py"
+printf 'claimed.py\0' >>"$DOC_DEBT_REPO/.git/claude-commit-journal"
+assert test "$(doctor_count "$DOC_DEBT" orphan_debt)" = "1"
+DOC_RUNS="$WORK/doctor-worker-runs"
+mkdir -p "$DOC_RUNS/doc-worker-run"
+printf 'doc-chat\n' >"$DOC_RUNS/doc-worker-run/launcher"
+printf 'WORKDIR: %s\nclaimed.py\n' "$DOC_DEBT_REPO" >"$DOC_RUNS/doc-worker-run/files"
+assert test "$(WORKER_RUN_DIR="$DOC_RUNS" doctor_count "$DOC_DEBT" orphan_debt)" = "0"
+rm -rf "$DOC_RUNS"
+rm -f "$DOC_DEBT_REPO/claimed.py"
+
+# A repository is a repository whatever became of the panel that named it. Discovered from
+# FINISHED runs alone, the two tree-level classes answer clean for exactly the checkout whose runs
+# all died at launch — the shape `kill_asymmetry` exists to count.
+DOC_INFLIGHT_REPO="$WORK/doctor-inflight-repo"
+git init -q "$DOC_INFLIGHT_REPO"
+printf 'inflight\n' >"$DOC_INFLIGHT_REPO/inflight.py"
+printf 'inflight.py\0' >>"$DOC_INFLIGHT_REPO/.git/claude-commit-journal"
+DOC_UNFINISHED="$WORK/doctor-unfinished"
+mkdir -p "$DOC_UNFINISHED/benches/20260801T000000Z-docinflight"
+python3 - "$DOC_UNFINISHED/benches/20260801T000000Z-docinflight" "$DOC_INFLIGHT_REPO" <<'DOCPY'
+import json
+import pathlib
+import sys
+run = pathlib.Path(sys.argv[1])
+(run / "meta.json").write_text(json.dumps({
+    "run_id": run.name, "worktree": True, "repo": sys.argv[2], "session": "doc-chat",
+    "raters": ["oc-kimik3"], "completed_raters": [], "rater_runs": [],
+    "started": "2026-08-01T00:00:00+00:00",
+}) + "\n")
+DOCPY
+assert test "$(doctor_count "$DOC_UNFINISHED" orphan_debt)" = "1"
+assert contains "$(doctor_json "$DOC_UNFINISHED" | jq -r '.details.orphan_debt[].what')" \
+  "inflight.py"
+
+# The workspace a merged panel was built in is not a checkout of Egor's. The state dir routinely
+# sits under a symlink — macOS `/tmp`, `/var/folders`, this very fixture — so the exclusion is
+# asked of resolved paths on both sides or it excludes nothing at all.
+DOC_MERGED="$WORK/doctor-merged"
+DOC_MERGED_WS="$DOC_MERGED/merged/docmergedws"
+mkdir -p "$DOC_MERGED_WS" "$DOC_MERGED/benches/20260801T000000Z-docmerged"
+git init -q "$DOC_MERGED_WS"
+printf 'copy\n' >"$DOC_MERGED_WS/copied.py"
+printf 'copied.py\0' >>"$DOC_MERGED_WS/.git/claude-commit-journal"
+python3 - "$DOC_MERGED/benches/20260801T000000Z-docmerged" "$DOC_MERGED_WS" <<'DOCPY'
+import json
+import pathlib
+import sys
+from datetime import datetime, timedelta, timezone
+run = pathlib.Path(sys.argv[1])
+finished = datetime.now(timezone.utc) - timedelta(hours=1)
+(run / "meta.json").write_text(json.dumps({
+    "run_id": run.name, "worktree": True, "repo": sys.argv[2], "session": "doc-chat",
+    "raters": ["oc-kimik3"], "completed_raters": ["oc-kimik3"], "rater_runs": [],
+    "started": finished.isoformat(), "finished": finished.isoformat(),
+}) + "\n")
+DOCPY
+assert test "$(doctor_count "$DOC_MERGED" orphan_debt)" = "0"
+
+# kill_asymmetry: the fast-error path that never marks the run it killed. Nothing downstream can
+# tell such a run from a clean one, so the count is how often that path is taken.
+DOC_KILL="$WORK/doctor-kill"
+doc_run "$DOC_KILL" 20260801T000000Z-dockill 3 0
+# A panel that completed nothing left no cell record either: the launch document's empty list is
+# all there is, which is what makes the run indistinguishable from a clean one downstream.
+python3 - "$DOC_KILL/benches/20260801T000000Z-dockill/meta.json" <<'DOCPY'
+import json
+import sys
+meta = json.loads(open(sys.argv[1]).read())
+meta["completed_raters"] = []
+meta["rater_runs"] = []
+open(sys.argv[1], "w").write(json.dumps(meta) + "\n")
+DOCPY
+assert test "$(doctor_count "$DOC_KILL" kill_asymmetry)" = "1"
+python3 - "$DOC_KILL/benches/20260801T000000Z-dockill/meta.json" <<'DOCPY'
+import json
+import sys
+meta = json.loads(open(sys.argv[1]).read())
+meta["timed_out"] = True
+open(sys.argv[1], "w").write(json.dumps(meta) + "\n")
+DOCPY
+assert test "$(doctor_count "$DOC_KILL" kill_asymmetry)" = "0"
+python3 - "$DOC_KILL/benches/20260801T000000Z-dockill/meta.json" <<'DOCPY'
+import json
+import sys
+meta = json.loads(open(sys.argv[1]).read())
+del meta["timed_out"]
+meta["completed_raters"] = ["oc-kimik3"]
+open(sys.argv[1], "w").write(json.dumps(meta) + "\n")
+DOCPY
+assert test "$(doctor_count "$DOC_KILL" kill_asymmetry)" = "0"
+# Read through the tool's own reader, or a record written before the field existed — whose cells
+# every other surface reconstructs as completed — is counted as a panel that completed nothing.
+python3 - "$DOC_KILL/benches/20260801T000000Z-dockill/meta.json" <<'DOCPY'
+import json
+import sys
+meta = json.loads(open(sys.argv[1]).read())
+del meta["completed_raters"]
+meta["rater_runs"] = [{"rater": "oc-kimik3", "exit_code": 0, "findings": 0, "duration_ms": 1000}]
+open(sys.argv[1], "w").write(json.dumps(meta) + "\n")
+DOCPY
+assert test "$(doctor_count "$DOC_KILL" kill_asymmetry)" = "0"
+python3 - "$DOC_KILL/benches/20260801T000000Z-dockill/meta.json" <<'DOCPY'
+import json
+import sys
+meta = json.loads(open(sys.argv[1]).read())
+meta["completed_raters"] = ["oc-kimik3"]
+open(sys.argv[1], "w").write(json.dumps(meta) + "\n")
+DOCPY
+# A launch document carries no finish stamp, and a panel in flight is nobody's failure to act.
+python3 - "$DOC_KILL/benches/20260801T000000Z-dockill/meta.json" <<'DOCPY'
+import json
+import sys
+meta = json.loads(open(sys.argv[1]).read())
+meta["completed_raters"] = []
+del meta["finished"]
+open(sys.argv[1], "w").write(json.dumps(meta) + "\n")
+DOCPY
+assert test "$(doctor_json "$DOC_KILL" | jq -r '.total')" = "0"
+
+# A found anomaly still exits 0, and prints the classes it found beside the ones it did not.
+doc_found=$(WORKER_STATS_DIR="$DOC_KILL" XDG_CACHE_HOME="$DOC_CACHE" "$SCRIPT" doctor) \
+  || fail "doctor exited nonzero"
+assert contains "$doc_found" "ok: untriaged"
+
+# --snapshot writes exactly the document the menubar reads: any other key, and the renderer has no
+# way to learn a class name it was never given.
+DOC_SNAP="$WORK/doctor-snapshot-store"
+doc_run "$DOC_SNAP" 20260801T000000Z-docsnap 20 0
+WORKER_STATS_DIR="$DOC_SNAP" XDG_CACHE_HOME="$DOC_CACHE" "$SCRIPT" doctor --snapshot >/dev/null \
+  || fail "doctor --snapshot failed"
+doc_snapshot="$DOC_SNAP/doctor-snapshot.json"
+assert test -f "$doc_snapshot"
+assert test "$(jq -r 'keys | join(",")' "$doc_snapshot")" = "anomalies,as_of,total"
+assert test "$(jq -r '.anomalies | keys | sort | join(",")' "$doc_snapshot")" \
+  = "eternal_lock,kill_asymmetry,orphan_debt,stuck_fixes,undelivered,untriaged"
+assert test "$(jq -r '.as_of | type' "$doc_snapshot")" = "number"
+assert test "$(jq -r '.total' "$doc_snapshot")" = "1"
+assert test "$(jq -r '.anomalies.untriaged' "$doc_snapshot")" = "1"
+# `--snapshot` only ALSO writes the document, so it composes with the machine-readable form: a
+# collector wanting both would otherwise pay for the whole scan twice. Its notice goes to stderr —
+# `--json` promises ONE object on stdout, and a caller that has to cut a line off first is reading
+# something else.
+doc_both=$(WORKER_STATS_DIR="$DOC_SNAP" XDG_CACHE_HOME="$DOC_CACHE" "$SCRIPT" doctor \
+  --json --snapshot 2>"$WORK/doctor-both.err") || fail "doctor --json --snapshot was refused"
+assert contains "$(cat "$WORK/doctor-both.err")" "snapshot: $doc_snapshot"
+assert test "$(jq -r '.total' <<<"$doc_both")" = "1"
+assert test "$(grep -Fc -- "snapshot: " <<<"$doc_both")" -eq 0
+
+# The collector is a launchd agent whose visible program is a wrapper carrying a name Login Items
+# can be read by — never a bare interpreter. Installed here against a fixture HOME: a test that
+# bootstrapped the real one would put a job on Egor's machine.
+DOC_HOME="$WORK/doctor-home"
+mkdir -p "$DOC_HOME"
+python3 - "$SCRIPT" "$DOC_HOME" <<'DOCPY'
+import importlib.machinery
+import importlib.util
+import os
+import pathlib
+import stat
+import sys
+
+loader = importlib.machinery.SourceFileLoader("review_bench", sys.argv[1])
+rb = importlib.util.module_from_spec(importlib.util.spec_from_loader("review_bench", loader))
+loader.exec_module(rb)
+home = pathlib.Path(sys.argv[2])
+paths = rb.write_doctor_agent(home)
+wrapper, plist = paths["wrapper"], paths["plist"]
+assert wrapper == home / ".local" / "libexec" / "review-doctord", wrapper
+assert plist == home / "Library" / "LaunchAgents" / "com.llm-legs.review-doctor.plist", plist
+body = wrapper.read_text()
+assert body.startswith("#!/usr/bin/env bash\n"), body
+assert body.strip().endswith("doctor --snapshot"), body
+assert str(pathlib.Path(sys.argv[1]).resolve()) in body, body
+assert os.stat(wrapper).st_mode & stat.S_IXUSR, oct(os.stat(wrapper).st_mode)
+document = plist.read_text()
+# The wrapper and nothing else: a plist naming python3 or bash reaches Login Items unnamed.
+assert f"<string>{wrapper}</string>" in document, document
+for bare in ("<string>python3</string>", "<string>/bin/bash</string>", "<string>bash</string>"):
+    assert bare not in document, document
+assert f"<integer>{rb.DOCTOR_AGENT_INTERVAL_S}</integer>" in document, document
+assert rb.DOCTOR_AGENT_INTERVAL_S == 6 * 3600, rb.DOCTOR_AGENT_INTERVAL_S
+assert f"<string>{rb.DOCTOR_AGENT_LABEL}</string>" in document, document
+rb.remove_doctor_agent(home)
+assert not plist.exists(), plist
+assert not wrapper.exists(), wrapper
+# A wrapper of that name pointing anywhere else belongs to somebody else, and uninstall leaves it.
+wrapper.parent.mkdir(parents=True, exist_ok=True)
+wrapper.write_text("#!/usr/bin/env bash\nexec /somewhere/else\n")
+rb.remove_doctor_agent(home)
+assert wrapper.exists(), wrapper
+# A report receipt that is valid JSON but not an object answers no triage instant, and reached
+# through `.get` it is an AttributeError — which is the scan exiting nonzero on a diagnostic whose
+# whole contract is that it never does.
+broken = home / "broken-round"
+broken.mkdir(parents=True, exist_ok=True)
+(broken / rb.REPORT_RECEIPT).write_text("null\n")
+assert rb.doctor_triage_instant(broken) is None
+(broken / "verdicts.jsonl").write_text("{}\n")
+assert rb.doctor_triage_instant(broken) is not None
+# Every class the scan can answer has an entry in the snapshot, and every aged one has exactly one
+# threshold, spelled in the one dict and nowhere else.
+assert set(rb.DOCTOR_AGES_S) <= set(rb.DOCTOR_CLASSES), rb.DOCTOR_AGES_S
+assert rb.DOCTOR_AGES_S == {
+    "untriaged": 18 * 3600, "undelivered": 6 * 3600,
+    "stuck_fixes": 48 * 3600, "eternal_lock": 7 * 24 * 3600,
+}, rb.DOCTOR_AGES_S
+DOCPY
+# The heredoc's own exit status, the way every other block here is read: unasked, an AssertionError
+# inside it prints a traceback the suite walks straight past and still ends in PASS.
+assert test "$?" -eq 0
+
+# launchd refusing the job is the whole of the failure, and the only surface that could say so:
+# an absent snapshot renders no menu line by design, so an install printing success over a
+# collector that will never run once leaves nothing anywhere to notice it by. Against a stub
+# launchctl and a fixture HOME — the real one would put a job on Egor's machine.
+DOC_STUB="$WORK/doctor-launchctl-stub"
+DOC_FAIL_HOME="$WORK/doctor-refused-home"
+mkdir -p "$DOC_STUB" "$DOC_FAIL_HOME"
+cat >"$DOC_STUB/launchctl" <<'STUB'
+#!/bin/bash
+[ "$1" = bootout ] && exit 0
+echo "Load failed: 5: Input/output error" >&2
+exit 5
+STUB
+chmod +x "$DOC_STUB/launchctl"
+doc_refused=$(HOME="$DOC_FAIL_HOME" PATH="$DOC_STUB:$PATH" WORKER_STATS_DIR="$DOC_SNAP" \
+  XDG_CACHE_HOME="$DOC_CACHE" "$SCRIPT" doctor --install-agent 2>&1) \
+  && fail "doctor --install-agent reported success over a launchd that refused the job"
+assert contains "$doc_refused" "launchd refused to load it"
+assert contains "$doc_refused" "Input/output error"
+assert test "$(grep -Fc -- "Installed com.llm-legs.review-doctor" <<<"$doc_refused")" -eq 0
+# And a job launchd took is the plain success it always was.
+cat >"$DOC_STUB/launchctl" <<'STUB'
+#!/bin/bash
+exit 0
+STUB
+chmod +x "$DOC_STUB/launchctl"
+doc_loaded=$(HOME="$DOC_FAIL_HOME" PATH="$DOC_STUB:$PATH" WORKER_STATS_DIR="$DOC_SNAP" \
+  XDG_CACHE_HOME="$DOC_CACHE" "$SCRIPT" doctor --install-agent) \
+  || fail "doctor --install-agent failed over a launchd that loaded the job"
+assert contains "$doc_loaded" "Installed com.llm-legs.review-doctor"
 
 printf 'PASS: %s assertions; canonical review tiers over one shared OpenCode floor and a per-tier Gemini panel that never runs Pro at T0, stays inside the account roster and contains its own tier'"'"'s default panel when escalated, with no retired cell in any of them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, an agy finding judged on its own transport first and handed to the gateway only where that transport declined, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account schedulable only as the pool'"'"'s reserve and never as a roster tail, and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, carried from there into the corpus row, the report header and a receipt of the lens'"'"'s own while every lens row stays out of the canonical defect list, the frontier denominators, the composition corpus and the default leaderboard, worktree runs narrowed to named paths whose snapshot holds only those paths, is deterministic per path set, spelled against the directory the caller stands in and lexically canonicalized so a `..` can neither walk out of the repository nor split one file into two scopes, carries its scope as commit trailers a failed read refuses rather than widens, so a rerun by sha stays inside it, refuses a commitish, a pathspec matching nothing and a scope holding no change — the refusal before any snapshot object is written — and writes only a receipt of its own — leaving the repository'"'"'s receipt untouched byte for byte, a lens narrowed by the same paths naming a combined receipt of its own that leaves the plain, pure-lens and pure-scope receipts byte for byte and survives a rerun by sha with both selectors intact, a day-one repository reviewed end to end — its root commit sealed and cloned, given a deterministic empty base commit inside that clone so the vendor skill diffs its whole content, measured in lines and paths against the empty tree rather than as an unmeasurable diff, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask, the lookup scoped to the repository so another chat cannot answer for it, both review hooks keyed so exactly one fires, and the one line the gate reads: debt as content against the newest artifact holding a path — a triaged run'"'"'s snapshot whoever launched it, or a waiver — a path no artifact ever held and a held path now gone both in debt whole, a link — dangling included — priced by its own text rather than through its target, an untriaged run settling nothing, the debt owned by whoever the two journals name, a waiver covering exactly the shas it recorded and no edit after them, a round past the second-round thresholds locking that waiver until a later run answers for it, and the newest hung run outranking every older answer until a later triaged run of its own speaks — with the watchdog capping every cell at the longest duration recorded for its own model and effort plus three minutes over a fifteen-minute floor and marking the run it killed timed out, and a merged review of several repositories read by one panel out of a single workspace holding each repository under its own prefix — deterministic, self-contained once built and pruned with the run it belongs to — whose findings and adjudication handoff name the repository each belongs to, whose scopes and progress are per repository, and which stamps EVERY repository it read with that repository'"'"'s own receipt, while refusing a commitish, a repository named twice, a clean tree, a missing repository and its own workspace as a tree to seal, with the gateway being down priced as a wait that expires rather than a verdict — the family whose every attempt failed on the gateway ITSELF cooling for a fixed span while a spent plan, a pool run dry behind one and an unusable answer are left to the records that already carry them, one canary attempt of the cooling family running inside that span so the recovery can be noticed at all, its answer clearing the wait and its failure extending it from the moment the outage began, written under a lock and not written at all where nothing changed, and a side the pool answers for left to the pool, and each repository of one panel named the way its half actually exists — a working tree or a range of its own commits as `PATH@BASE..HEAD`, sealed and stamped per member so the committed half answers only where its right end is the tree in front of the reader, refusing a target flag it duplicates, a bare repository beside it with no --worktree and a scope aimed at a range, and a range of commits reviewed as one target — sealed into a single commit carrying its right end'"'"'s tree over its left end as the parent, so every reader keyed on one sha reads the whole range, named by the commits it sealed rather than by how the caller spelled them so one range is one snapshot with one rerun, announced by its own ends with the seal named beside them, read back out of that seal by a rerun carrying no flags at all, refused when it names no shape or no change, shown as a range while it runs, and kept out of the repository'"'"'s receipt wherever its right end is not the tree standing in front of the reader, and the corpus closed to every commit-point review — the plain record command refused outright with the reporting one named in its place, the refusal and the flag'"'"'s own help promising only what --bench delivers (this run'"'"'s verdicts stored, never a corpus row), that flag refused in turn on a durable run it would buy the plain command'"'"'s own behaviour on, and the handoff printing that one command alone — with the block those reviews are read in framed to a fixed width no over-long word can flatten, opened by a line naming the panel that produced it, and carrying a cell row that counts every completed cell under the same names its neighbouring rows use — the ones that found nothing included, and a count missing from an older summary costing its own cell a number rather than the whole block, every one of those names and the tiers table'"'"'s own rendered by one derivation over the pool of cells the tiers can launch — version digits, effort and the bare mark each appearing only where two pool cells would otherwise collide, Claude and Codex effort always spelled because it is a launch parameter, the word skill never rendered at all, a family gaining a second variant IN THE POOL renaming itself with no list to edit, a cell only a stored run holds named against that pool and never over it — the arrival carrying whatever separates it, its report leaving the tiers table byte for byte — a worktree panel refused outright unless Egor asked for it by name — the one door, checked before any repository argument is resolved so a spelling the tool cannot resolve cannot fall through it — and the machine specs commands are spelled in left untouched, and the durable per-cell board that prints coverage only where a run'"'"'s panel held another model that is not an OpenCode cell — a solo or family-only run scoring none at all rather than its own catches back — folding a repeat suffix into the cell it belongs to while the usage file it names keeps that suffix, reading either vendor spelling of the same token record, pricing an OpenCode cell against the Go plan'"'"'s request grant and every other side not at all, bucketing each cell by its median wall clock against the same budgets the tiers are spelled in, marking with a ? every coverage number too few anchored runs or defects stand behind, counting beside it the bench runs of that cell nobody ever adjudicated — over benches that carry a finish stamp alone, so a run still in flight is never sold as evidence, and with a cell only those runs have ever measured given a row of its own whose every corpus-derived key is null rather than missing, pricing the vendors billed per token over their own measured usage in a unit the footer refuses to compare with the plan-request one, and answering the family, tier, machine-format and hand-scored flags it offers over a static block the text table always carries, every one of its rows named by the same derivation the report block spells a cell with — read over the whole board rather than over the pool alone, so two cells no tier can launch never answer to one name and neither takes the name of a cell that still runs — tagged with the leg the same prefix its cost is priced by names, and with whether any tier'"'"'s default panel holds it today, measured or not, beside a tiers block naming those panels in that same spelling, and the fix status a triaged round owes — recorded done with its two counts or blocked with its reason, refused without either and refused for a run nobody launched, rendered into a `fixes:` row the report always carries in one of three values and into one of exactly TWO frame words — the plain review once the fixes are done, there was nothing to fix, or the pass has not answered yet whatever its age, and NOT FINISHED with the stopped-at-the-threshold rows beneath it only where a receipt says the pass stopped — so a round whose pass still owes an answer is readable by the model and named by no delivery line at all, a second round over one scope — derived from an earlier run of that scope having its fixes DONE on record, read whole by this one and recent enough to be the same piece of work, not from a flag or from a blocked stop — offering no third pass where the first one still may, locking no waiver it could not answer, keyed for a merged panel on its members rather than on the workspace built for one run, and a round of a scope nobody has fixed yet, or of work an earlier round never read, still offered its own first, with a done receipt bound by its ROWS and not by their count alone to the triage it answered, so a re-adjudication puts the round back to unanswered whether or not it changed the tally, refused outright where its two counts answer for fewer findings than the triage confirmed, and never taken at all by a run nobody judged, and the delivery queue naming this chat'"'"'s own recorded runs alone, never another chat'"'"'s, never an untriaged one, never one past the triage window, never one whose done receipt the report has already rejected, never one whose fixing pass has not answered — at any age, dead delegate or not — speaking only states the Stop net can read, and spending nothing by answering; and the adjudication handoff ending at `record` for a run whose snapshot the checkout has moved past, counting a merged panel'"'"'s threshold stop per repository the way the gate prices it, and telling the worker to neither commit nor stage\n' "$asserts"

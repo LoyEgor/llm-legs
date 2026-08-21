@@ -1743,4 +1743,111 @@ assert grep -Fq 'review_run_owner "$progress_run_session" "$progress_pid"' "$STA
 assert doc_has 'the recorded `session` first, the walk as the fallback'
 
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the debt word the bench prints, the gate translates and the statusline speaks verbatim, the journal that records whose debt a commit landed, the round-size numbers that lock a waiver, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, and the two header words the bench renders, one of which is worn by a round no hook may deliver — so both of them apply one further rule over the rows of the block itself, and the one review command both repositories hand a chat, which names no paths because the mode computes its own scope) and match %s\n' "$asserts" "$DOC"
+# --- Row au: the delivery ledger is one file with one key shape ---------------
+# Two hooks write it and review-bench's doctor reads it. A reader pointed at another path, or one
+# asking for a key shape nobody writes, reports every delivered round as never delivered.
+assert doc_has '$XDG_CACHE_HOME/claude/review-delivery/<session>.emitted'
+assert doc_has '`run:<id>:<state>`'
+assert grep -Fq 'DELIVERY_LEDGER_DIR = ("claude", "review-delivery")' "$REVIEWBENCH"
+assert grep -Fq 'DELIVERY_LEDGER_SUFFIX = ".emitted"' "$REVIEWBENCH"
+assert grep -Fq 'DELIVERY_LEDGER_KEY = "run:{run_id}:{state}"' "$REVIEWBENCH"
+# Read-only on this side: a diagnostic that wrote a key would retire a report nobody has seen.
+assert eq "$(grep -c 'DELIVERY_LEDGER_KEY.format(' "$REVIEWBENCH")" 1
+assert eq "$(grep -cE 'ledger.*(open\(.*"a"|write_text)' "$REVIEWBENCH")" 0
+if test -r "$REPORT_NUDGE" && test -r "$DELIVERY_GATE"; then
+  for cs_ledger_hook in "$REPORT_NUDGE" "$DELIVERY_GATE"; do
+    assert grep -Fq '"claude" / "review-delivery"' "$cs_ledger_hook"
+    assert grep -qE 'f"[{](session|session_id)[}][.]emitted"' "$cs_ledger_hook"
+    assert grep -Fq 'keys.append(f"run:{run_id}:{state}")' "$cs_ledger_hook"
+  done
+  # The key the reader builds is the key the writers build, over the same run and state — asserted
+  # by running both spellings rather than by matching two source lines that could each be wrong.
+  ledger_key_match=$(python3 - "$REVIEWBENCH" <<'LEDGERPY'
+import importlib.machinery
+import importlib.util
+import sys
+
+loader = importlib.machinery.SourceFileLoader("review_bench", sys.argv[1])
+module = importlib.util.module_from_spec(importlib.util.spec_from_loader("review_bench", loader))
+loader.exec_module(module)
+print(module.DELIVERY_LEDGER_KEY.format(run_id="20260101T000000Z-abcdef0", state="done"))
+LEDGERPY
+)
+  assert eq "$ledger_key_match" "run:20260101T000000Z-abcdef0:done"
+else
+  printf 'SKIP: delivery ledger across claude-setup (%s is unreadable)\n' "$CLAUDE_SETUP"
+fi
+
+# --- Row av: the doctor snapshot is the menubar's whole vocabulary -----------
+# The renderer scans no store and computes no threshold: a class the writer adds and the Lua list
+# does not hold is a count nobody ever sees.
+assert doc_has '`<state_dir>/doctor-snapshot.json`'
+assert grep -Fq 'DOCTOR_SNAPSHOT = "doctor-snapshot.json"' "$REVIEWBENCH"
+assert grep -Fq 'doctor-snapshot.json' "$HAMMER"
+doctor_classes_py=$(python3 - "$REVIEWBENCH" <<'DOCTORPY'
+import importlib.machinery
+import importlib.util
+import sys
+
+loader = importlib.machinery.SourceFileLoader("review_bench", sys.argv[1])
+module = importlib.util.module_from_spec(importlib.util.spec_from_loader("review_bench", loader))
+loader.exec_module(module)
+from datetime import datetime, timezone
+document = module.doctor_snapshot_document(
+    {name: [] for name in module.DOCTOR_CLASSES}, datetime.now(timezone.utc)
+)
+# The document as it is WRITTEN, not the constant beside it: an extra key here is one the reader
+# was never told about, and a missing one is a row rendered off nothing.
+print(",".join(sorted(document)))
+print(",".join(module.DOCTOR_CLASSES))
+print(",".join(sorted(document["anomalies"])))
+DOCTORPY
+)
+assert eq "$(sed -n 1p <<<"$doctor_classes_py")" "anomalies,as_of,total"
+doctor_classes=$(sed -n 2p <<<"$doctor_classes_py")
+assert eq "$(sed -n 3p <<<"$doctor_classes_py")" \
+  "$(tr ',' '\n' <<<"$doctor_classes" | sort | paste -sd, -)"
+assert eq "$doctor_classes" \
+  "untriaged,undelivered,stuck_fixes,eternal_lock,orphan_debt,kill_asymmetry"
+doctor_classes_lua=$(sed -n '/^local DOCTOR_CLASSES = {/,/^}/p' "$HAMMER" \
+  | grep -oE '"[a-z_]+"' | tr -d '"' | paste -sd, -)
+assert eq "$doctor_classes_lua" "$doctor_classes"
+for doctor_class in $(tr ',' ' ' <<<"$doctor_classes"); do
+  assert doc_has "\`$doctor_class\`"
+done
+# One store, spelled the same way on both sides: a menu reading another one reports on records
+# nobody is writing.
+assert grep -Fq 'os.environ.get("WORKER_STATS_DIR")' "$REVIEWBENCH"
+assert grep -Fq 'os.getenv("WORKER_STATS_DIR")' "$HAMMER"
+assert grep -Fq 'os.getenv("CLAUDEB_DIR")' "$HAMMER"
+assert grep -Fq '"/worker-stats/doctor-snapshot.json"' "$HAMMER"
+assert grep -Fq 'home .. "/.claude-profiles/.claudeb"' "$HAMMER"
+# The ages are the tool's alone: a threshold spelled on the rendering side is one nobody can move.
+# Asked of the doctor block itself and of every spelling one age has — the second count, the hour
+# form and the day form — because the Lua carries unrelated week and day literals of its own, and
+# the renderer's only number is the snapshot age it computes over `as_of`.
+assert eq "$(grep -c 'DOCTOR_AGES_S = {' "$REVIEWBENCH")" 1
+doctor_lua=$(sed -n '/^local DOCTOR_CLASSES = {/,/^local function readLlmLimits/p' "$HAMMER")
+assert grep -Fq 'function appendDoctor' <<<"$doctor_lua"
+assert grep -Fq 'function doctorStaleSuffix' <<<"$doctor_lua"
+doctor_ages=$(python3 - "$REVIEWBENCH" <<'AGEPY'
+import importlib.machinery
+import importlib.util
+import sys
+
+loader = importlib.machinery.SourceFileLoader("review_bench", sys.argv[1])
+module = importlib.util.module_from_spec(importlib.util.spec_from_loader("review_bench", loader))
+loader.exec_module(module)
+for seconds in sorted(set(module.DOCTOR_AGES_S.values())):
+    print(seconds)
+    print(f"{seconds // 3600} * 3600")
+    if seconds % 86400 == 0:
+        print(f"{seconds // 86400} * 24 * 3600")
+AGEPY
+)
+while IFS= read -r doctor_age; do
+  assert eq "$(grep -cF -- "$doctor_age" <<<"$doctor_lua")" 0
+done <<<"$doctor_ages"
+
+
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the debt word the bench prints, the gate translates and the statusline speaks verbatim, the journal that records whose debt a commit landed, the round-size numbers that lock a waiver, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, and the two header words the bench renders, one of which is worn by a round no hook may deliver — so both of them apply one further rule over the rows of the block itself, and the one review command both repositories hand a chat, which names no paths because the mode computes its own scope, the delivery ledger the two report hooks write and the doctor only reads, and the doctor snapshot whose six class names are the menubar'"'"'s whole vocabulary) and match %s\n' "$asserts" "$DOC"

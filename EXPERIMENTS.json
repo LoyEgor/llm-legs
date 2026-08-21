@@ -12,5 +12,17 @@
    "menubar LLM Limits header row"
   ],
   "how_to_remove": "follow docs/EXIT-PLAN.md § Token-freeze experiment: delete the token-freeze marker file once the parasite-mode refresh replaces the curl path (verdict decided 2026-08-09; never restore automated curl refreshes). The switch, the journal, and the frozen stale-cause are permanent by that plan's temporary inventory; delete this registry entry last."
+ },
+ {
+  "id": "review-doctor-collector",
+  "what": "Trial of a periodic snapshot of `review-bench doctor` plus the menubar line that reads it, to find out whether the review system misbehaves at all and in which of its six anomaly classes; the `doctor` command itself is permanent tooling and stays whatever this decides",
+  "started": "2026-08-21",
+  "review_by": "2026-09-21",
+  "state_marker": "~/Library/LaunchAgents/com.llm-legs.review-doctor.plist",
+  "evidence": "~/.claude-profiles/.claudeb/worker-stats/doctor-snapshot.json",
+  "surfaces": [
+   "menubar LLM Limits review doctor row"
+  ],
+  "how_to_remove": "run `review-bench doctor --uninstall-agent` (removes the launchd plist and the ~/.local/libexec/review-doctord wrapper), delete the appendDoctor block and its call in hammerspoon/llm-limits.lua with the renderer tests in tests/llm_limits_renderer_harness.lua, delete <state-dir>/doctor-snapshot.json, and keep `review-bench doctor` and its own tests — the command is not the experiment. Delete this registry entry last."
  }
 ]

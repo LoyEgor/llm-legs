@@ -262,6 +262,20 @@ pending rounds to a deliverable state floods the Stop gate with every
 pre-receipt run the chat ever held. The finished report follows on its own, from
 the Stop net's `pending-delivery` source, one per state per round.
 
+## Doctor
+
+`review-bench doctor` is pull-only diagnostics over the stores this page describes, and never a
+gate: it exits 0 whatever it finds, because a review system with an anomaly in it is still a
+review system. It names six classes — `untriaged`, `undelivered`, `stuck_fixes`, `eternal_lock`,
+`orphan_debt`, `kill_asymmetry` — each a silence rather than an error: a record some mechanism
+above should have moved on and did not. Their ages live in one dict in the tool and are spelled
+nowhere else, here included. The run-level classes look back only so far, because nobody triages
+last month's panel and a count that only grows says the same thing every time it is read; the two
+about the tree as it stands — a lock over live paths, debt in front of the reader — are unbounded.
+
+The periodic snapshot (`--snapshot`, its launchd collector and the menubar row that reads it) is a
+registered experiment, `review-doctor-collector` in `EXPERIMENTS.json`; the command itself is not.
+
 ## Non-goals — deleted by this contract
 
 Cross-session policing of any kind; pricing the shared tree (cycles, tickets,
