@@ -1042,6 +1042,27 @@ else
   printf 'SKIP: waiver placeholder reason across claude-setup (%s is unreadable)\n' "$FLOW_GATE"
 fi
 
+# --- Row at: the review that answers a debt ------------------------------------
+# One command, spelled in both repositories, and it names NO paths on purpose: --debt computes the
+# scope and widens it to the locked round's survivors. A gate that drifts back to a path list hands
+# over a scope that leaves the lock standing, and the narrow review that passes looks like an answer.
+assert doc_has 'The review that answers a debt'
+rb_debt_cmd=$(sed -n 's/^DEBT_REVIEW_COMMAND = "\(.*\)"$/\1/p' "$REVIEWBENCH")
+assert eq "$rb_debt_cmd" 'REVIEW_ASKED=1 review-bench review --debt --tier T1'
+assert grep -Fq '{DEBT_REVIEW_COMMAND}) — that mode computes the ' "$REVIEWBENCH"
+assert grep -Fq 'That second review is `{DEBT_REVIEW_COMMAND}`' "$REVIEWBENCH"
+if test -r "$FLOW_GATE"; then
+  gate_debt_cmd=$(sed -n "s/^printf -v review_cmd '(cd %q && \(.*\))' .*/\1/p" "$FLOW_GATE")
+  assert eq "$gate_debt_cmd" "$rb_debt_cmd"
+  gate_fork_cmd=$(sed -n 's/.*Run it as `\([^`]*\)` in each repository.*/\1/p' "$FLOW_GATE" | head -1)
+  assert eq "$gate_fork_cmd" "$rb_debt_cmd"
+  # The notice's review command carries no scope of its own; the waive command beside it still does.
+  assert eq "$(grep -c -- '--paths' <<<"$gate_debt_cmd")" 0
+  assert grep -Fq -- "review-bench waive --reason" "$FLOW_GATE"
+else
+  printf 'SKIP: debt review command across claude-setup (%s is unreadable)\n' "$FLOW_GATE"
+fi
+
 # --- Row ae: account pin ownership -------------------------------------------
 # Three doors, one marker, one TTL. A door silently removed, or two of them disagreeing on where
 # the marker lives, is a pin a session can move again — the failure this row exists to prevent.
@@ -1722,4 +1743,4 @@ assert grep -Fq 'review_run_owner "$progress_run_session" "$progress_pid"' "$STA
 assert doc_has 'the recorded `session` first, the walk as the fallback'
 
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the debt word the bench prints, the gate translates and the statusline speaks verbatim, the journal that records whose debt a commit landed, the round-size numbers that lock a waiver, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, and the two header words the bench renders, one of which is worn by a round no hook may deliver — so both of them apply one further rule over the rows of the block itself) and match %s\n' "$asserts" "$DOC"
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the debt word the bench prints, the gate translates and the statusline speaks verbatim, the journal that records whose debt a commit landed, the round-size numbers that lock a waiver, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, and the two header words the bench renders, one of which is worn by a round no hook may deliver — so both of them apply one further rule over the rows of the block itself, and the one review command both repositories hand a chat, which names no paths because the mode computes its own scope) and match %s\n' "$asserts" "$DOC"

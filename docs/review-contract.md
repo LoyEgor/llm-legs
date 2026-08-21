@@ -94,12 +94,40 @@ beside the receipts (`<state-dir>/waivers/`): the debt paths, their current blob
 shas, the reason, the session, the epoch. A waiver covers exactly those shas —
 the next edit is debt again. An empty reason is refused.
 
+**The review that scopes itself.** `review-bench review --debt --tier Tn` is the
+one review nobody hands a scope, and the one the commit gate prints. Its scope is
+every path `debt` names, WIDENED with every surviving path of any locked round
+standing over that debt: a lock is discharged only by a run that holds all of
+them, and a path sitting at exactly the sha the locked round recorded is by
+definition not in debt — so a debt-only scope could never answer the round it
+exists for. Per path, the comparison base is the content the newest artifact
+holding it recorded; where no artifact holds it, or its recorded blob is no longer
+readable, the path is dropped from the base and the panel sees the file whole.
+Those bases live in no commit of the repository — one path was last read three
+commits ago, its neighbour is still uncommitted — so the left end is BUILT: a
+parentless synthetic commit carrying the current tree with each scope path's blob
+replaced, sealed as the parent of the working-tree snapshot. The panel reads one
+diff, from what was last answered for to what is there now, and the commits in
+between are invisible, which is the point — committing neither creates debt nor
+settles it, so the shape the work was committed in is not what is under review.
+
+The run records shas for EVERY path of that scope, including paths whose diff is
+empty: a locked round's survivor that no run HOLDS discharges no lock. It marks
+the repository reviewed the way an unscoped worktree run does — this is the
+repository's whole open question, not a corner of it — and its scope never reaches
+the round key, so a second `--debt` run over the same work is that scope's second
+round and not a scope of its own. It takes no target: a commitish, `--range`,
+`--worktree` and `--paths` are each refused, because choosing the scope is the
+choice this mode removes. With several `--repo` it behaves like any merged panel —
+one debt scope per member, one receipt per member.
+
 **The lock IS the mechanical second round.** When the newest run holding a debt
 path came back with `SECOND_REVIEW_P1S` confirmed P1s, the debt reads `locked`:
 `waive` refuses it and the commit notice withholds the waiver option, saying why.
 The only way out is the follow-up review over the full original scope plus the
-fixes — there is no other mechanically-forced round. A round that earned its
-second review on the tally alone (`SECOND_REVIEW_FINDINGS` confirmed findings
+fixes, which is what `review --debt` computes with no path named by hand — there
+is no other mechanically-forced round. A round that earned its second review on
+the tally alone (`SECOND_REVIEW_FINDINGS` confirmed findings
 under the P1 count) locks nothing: the fork says the round is owed, and `waive`
 may still answer it on the model's own judgment, which a waiver records with its
 reason.
@@ -114,8 +142,10 @@ reason.
   statusline always means a hung review, nothing else.
 - Commit hook — **notify-once, never a wall**. A `git commit` whose pending paths
   carry debt exits 2 once, listing those paths and both ways to answer them — the
-  review command and the `waive` command, the latter withheld with its reason
-  when the debt is `locked` — and stamps a marker; the retry passes, consumes the
+  `review --debt` command, which carries no path list because the mode reads the
+  debt itself and widens to whatever a locked round still owes, and the `waive`
+  command over exactly those paths, the latter withheld with its reason when the
+  debt is `locked` — and stamps a marker; the retry passes, consumes the
   marker and writes this chat's name into the debt journal. A new state re-arms
   the notice. A commit with nothing in debt passes silently. Foreign dirty or
   untracked paths are never priced, never mentioned, never block.
@@ -125,7 +155,8 @@ reason.
   and prints the same three options: fix and commit / simplify, cut or redesign
   the weak block / re-review, and a re-review must rerun the full original scope
   plus fixes, never the fixes alone (a fresh pass over old code finds new
-  defects; a fix-only pass only certifies the fixes). What differs is the line
+  defects; a fix-only pass only certifies the fixes), named as the same `--debt`
+command the commit notice prints (invariant row at). What differs is the line
   above them: at the P1 count the second review is mandatory and the waiver is
   withheld until it runs; on the tally alone it is owed by default and `waive`
   is still open. The model judges; Egor decides when he is present. When

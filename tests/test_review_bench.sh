@@ -3589,7 +3589,8 @@ for command in (
 ):
     conflict = subprocess.run(command, capture_output=True, text=True)
     assert conflict.returncode != 0
-    assert "exactly one of commitish, --range and --worktree" in conflict.stderr, conflict.stderr
+    assert "exactly one of commitish, --range, --worktree and --debt" in conflict.stderr, \
+        conflict.stderr
     if "--range" in command:
         assert "--range" in conflict.stderr.split("got")[-1], conflict.stderr
 
@@ -7253,6 +7254,264 @@ for oc_rerun_name, oc_rerun_no_verify in (("default", False), ("raw", True)):
 for side in rb.SIDE_RUNNERS:
     rb.SIDE_RUNNERS[side] = tier_runner
 
+# --- --debt: the review that scopes itself ------------------------------------------------------
+# The one review nobody hands a scope. It reads every path this repository owes an answer for,
+# widened to what a locked round still holds, each from the content the artifact answering for it
+# recorded — so work reviewed, then committed, then edited again reaches the panel as ONE diff
+# across the commit, and the run settles exactly what it read.
+debt_repo = work / "debt-review"
+debt_repo.mkdir()
+subprocess.run(["git", "init", "-q", str(debt_repo)], check=True)
+for debt_key, debt_value in (("user.email", "bench@example.test"), ("user.name", "Review Bench")):
+    subprocess.run(["git", "-C", str(debt_repo), "config", debt_key, debt_value], check=True)
+
+
+def debt_git(*argv):
+    return subprocess.run(["git", "-C", str(debt_repo), *argv], check=True,
+                          capture_output=True, text=True).stdout.strip()
+
+
+def debt_sha(path):
+    return debt_git("hash-object", "--", str(debt_repo / path))
+
+
+(debt_repo / "reviewed.py").write_text("one\ntwo\n")
+(debt_repo / "pair.py").write_text("the other half\n")
+(debt_repo / "settled.py").write_text("nothing has touched this\n")
+debt_git("add", "-A")
+debt_git("commit", "-qm", "initial")
+debt_gitdir = pathlib.Path(debt_git("rev-parse", "--absolute-git-dir"))
+debt_claudeb_before = os.environ["CLAUDEB_DIR"]
+debt_first_sha = debt_sha("reviewed.py")
+debt_pair_sha = debt_sha("pair.py")
+debt_settled_sha = debt_sha("settled.py")
+debt_stores = 0
+
+
+def debt_store():
+    """A bench store per scenario, for the reason sr_store has one: the answer is about the NEWEST
+    artifact holding a path.
+    """
+    global debt_stores
+    debt_stores += 1
+    os.environ["CLAUDEB_DIR"] = str(work / f"debt-review-store-{debt_stores}")
+    directory = rb.state_dir() / "benches"
+    directory.mkdir(parents=True)
+    return directory
+
+
+def debt_artifact(benches, run_id, reviewed, report=None):
+    directory = benches / run_id
+    directory.mkdir()
+    (directory / "meta.json").write_text(json.dumps({
+        "run_id": run_id, "repo": str(debt_repo), "session": "chat-1", "worktree": True,
+        "reviewed": dict(reviewed), "finished": rb.iso_now(),
+    }))
+    if report is None:
+        (directory / "verdicts.jsonl").write_text("")
+    else:
+        (directory / rb.REPORT_RECEIPT).write_text(json.dumps(report))
+    return directory
+
+
+def debt_journal(path, name=None):
+    with (debt_gitdir / (name or rb.COMMIT_JOURNAL)).open("ab") as handle:
+        handle.write(f"chat-1\t1800000000\t{path}\0".encode())
+
+
+debt_seen = []
+
+
+def debt_runner(rater, repo_path, commit, focus, run_dir, diff, account):
+    debt_seen.append(diff)
+    return 0, 1, "NO FINDINGS", "", []
+
+
+for debt_side in rb.SIDE_RUNNERS:
+    rb.SIDE_RUNNERS[debt_side] = debt_runner
+
+
+def debt_review(**fields):
+    """One `review-bench review --debt`, panel and all, with the diff its cells were handed."""
+    call = dict(repo=str(debt_repo), commitish=None, worktree=False, debt=True, range=None,
+                paths=None, raters="sol-medium-bare", leg=False, verify=None, auto=None,
+                focus=None)
+    call.update(fields)
+    del debt_seen[:]
+    stdout = io.StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stdout):
+        rc = rb.cmd_run(argparse.Namespace(**call))
+    assert rc == 0, stdout.getvalue()
+    run_id = next(line.split(": ", 1)[1] for line in stdout.getvalue().splitlines()
+                  if line.startswith("run id: "))
+    run_dir = rb.state_dir() / "benches" / run_id
+    # Triaged by hand, the way every other debt fixture here is: what settles a path is a run
+    # somebody stood behind, and cmd_run only produces the panel.
+    (run_dir / "verdicts.jsonl").write_text("")
+    meta = json.loads((run_dir / "meta.json").read_text())
+    return meta, debt_seen[0], stdout.getvalue()
+
+
+def debt_verdict():
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rb.cmd_debt(argparse.Namespace(
+            repo=str(debt_repo), session="chat-1", paths=[], list=False,
+        ))
+    return out.getvalue().strip()
+
+
+# A path this chat committed and nobody ever reviewed is in the scope of its own accord, and the
+# run's receipt settles it: nobody named it, and nobody had to.
+debt_never = debt_store()
+(debt_repo / "born.py").write_text("committed, never read\n")
+debt_git("add", "-A")
+debt_git("commit", "-qm", "born")
+debt_journal("born.py")
+assert debt_verdict() == "debt 1 mine", debt_verdict()
+debt_meta, debt_diff, _ = debt_review()
+assert debt_meta["reviewed"] == {"born.py": debt_sha("born.py")}, debt_meta
+assert "committed, never read" in debt_diff, debt_diff
+# It is the repository's own question, so it stamps the repository's own receipt and its scope
+# never reaches the round key — a scoped receipt here would leave the debt standing after the
+# review, and a key made of these paths would make every round a scope of its own.
+assert debt_meta["scope"] == ["born.py"] and debt_meta["debt"] is True, debt_meta
+assert rb.review_receipt(debt_repo)["run_id"] == debt_meta["run_id"], "no plain receipt"
+assert rb.review_receipt(debt_repo, scope=["born.py"]) is None, "a scoped receipt was written"
+assert [key[1] for key in rb.run_scope_key(debt_meta)] == [()], rb.run_scope_key(debt_meta)
+assert debt_verdict() == "none", debt_verdict()
+# The journals are the debt universe for paths no artifact holds, and every scenario below asks
+# about a fresh store: a name left in them would put this settled file back in the next answer.
+for debt_name in (rb.DEBT_JOURNAL, rb.COMMIT_JOURNAL):
+    (debt_gitdir / debt_name).unlink(missing_ok=True)
+
+# Content reviewed at X, committed, then edited to Y: the panel reads X..Y as one diff, and the
+# commit in between is invisible. Nothing else can show it — the review is against what was READ.
+debt_drift = debt_store()
+debt_artifact(debt_drift, "20260101T000100Z-aaaaaaa", {"reviewed.py": debt_first_sha})
+(debt_repo / "reviewed.py").write_text("one\ntwo\ncommitted three\n")
+debt_git("commit", "-aqm", "committed drift")
+(debt_repo / "reviewed.py").write_text("one\ntwo\ncommitted three\nuncommitted four\n")
+debt_meta, debt_diff, _ = debt_review()
+assert "+committed three" in debt_diff and "+uncommitted four" in debt_diff, debt_diff
+assert "committed drift" not in debt_diff, debt_diff
+assert rb.snapshot_scope_paths(debt_repo, debt_meta["commit"]) == ["reviewed.py"], debt_meta
+assert debt_meta["reviewed"] == {"reviewed.py": debt_sha("reviewed.py")}, debt_meta
+assert debt_verdict() == "none", debt_verdict()
+# And the base is a commit of the tool's own making, not one of this repository's: no commit here
+# holds the mixture of contents the artifacts recorded.
+debt_base = rb.diff_base(debt_repo, debt_meta["commit"])
+assert debt_base not in debt_git("rev-list", "HEAD").split(), debt_base
+assert debt_git("show", "-s", "--format=%s", debt_base) == "review-bench debt base", debt_base
+
+# A locked round is discharged by the run this mode produces, and by nothing narrower: the lock is
+# released only by a run holding every surviving path of that round, and a path standing at the sha
+# the round recorded is NOT in debt — so a scope made of the debt alone can never answer it.
+debt_locked_store = debt_store()
+debt_artifact(debt_locked_store, "20260101T000100Z-aaaaaaa",
+              {"reviewed.py": debt_sha("reviewed.py"), "pair.py": debt_pair_sha},
+              report={"confirmed": 3, "confirmed_by_severity": {"P1": 3}})
+(debt_repo / "reviewed.py").write_text("one\ntwo\ncommitted three\nuncommitted four\nfixed\n")
+assert debt_verdict() == "debt 1 other locked", debt_verdict()
+assert [path for path, _ in rb.repo_debt(debt_repo)] == ["reviewed.py"], rb.repo_debt(debt_repo)
+assert [path for path, _ in rb.debt_review_scope(debt_repo)] == ["pair.py", "reviewed.py"], \
+    rb.debt_review_scope(debt_repo)
+debt_meta, debt_diff, _ = debt_review()
+# The survivor contributes no diff at all and is HELD anyway: a run that does not hold it
+# discharges nothing, which is exactly what the debt-only scope beside it proves.
+assert "diff --git a/pair.py" not in debt_diff, debt_diff
+assert f"{rb.SCOPE_TRAILER}pair.py" in debt_diff, debt_diff
+assert debt_meta["reviewed"] == {
+    "reviewed.py": debt_sha("reviewed.py"), "pair.py": debt_pair_sha,
+}, debt_meta
+assert debt_verdict() == "none", debt_verdict()
+debt_narrow = debt_store()
+debt_artifact(debt_narrow, "20260101T000100Z-aaaaaaa",
+              {"reviewed.py": debt_first_sha, "pair.py": debt_pair_sha},
+              report={"confirmed": 3, "confirmed_by_severity": {"P1": 3}})
+debt_artifact(debt_narrow, "20260101T000200Z-bbbbbbb", {"reviewed.py": debt_sha("reviewed.py")})
+rb.RUN_CONFIRMED_COUNTS.clear()
+rb.ROUND_BUDGET_SPENT_CACHE.clear()
+assert debt_verdict() == "debt 1 other locked", debt_verdict()
+
+# A recorded sha this store can no longer read is no base at all: the path is dropped from it, and
+# the panel is shown the file whole rather than a diff against an error.
+debt_gone = debt_store()
+debt_artifact(debt_gone, "20260101T000100Z-aaaaaaa", {"reviewed.py": "0" * 40})
+debt_meta, debt_diff, _ = debt_review()
+assert "new file mode" in debt_diff and "+one" in debt_diff, debt_diff
+assert debt_meta["reviewed"] == {"reviewed.py": debt_sha("reviewed.py")}, debt_meta
+
+# The mode computes its own target, so every flag that names one is refused rather than combined —
+# and refused before anything is sealed.
+debt_refusals = {}
+for debt_label, debt_fields in (
+    ("paths", {"paths": ["reviewed.py"]}),
+    ("range", {"range": f"{debt_git('rev-parse', 'HEAD~1')}..HEAD"}),
+    ("commitish", {"commitish": "HEAD"}),
+    ("worktree", {"worktree": True}),
+):
+    try:
+        debt_review(**debt_fields)
+        debt_refusals[debt_label] = ""
+    except ValueError as exc:
+        debt_refusals[debt_label] = str(exc)
+assert all("--debt computes its own target" in text for text in debt_refusals.values()), \
+    debt_refusals
+assert "--paths" in debt_refusals["paths"], debt_refusals
+assert "--range" in debt_refusals["range"], debt_refusals
+assert "a commitish" in debt_refusals["commitish"], debt_refusals
+assert "--worktree" in debt_refusals["worktree"], debt_refusals
+# And a repository owing nothing has no review to run: an empty panel would report that nobody
+# found anything in nothing.
+debt_store()
+try:
+    debt_review()
+    debt_owes = ""
+except ValueError as exc:
+    debt_owes = str(exc)
+assert "is in review debt" in debt_owes, debt_owes
+# And it reads the working tree, so it is armed the way `--worktree` is: without Egor's ask by
+# name it is exactly the mid-work panel that door exists to close.
+debt_asked_before = os.environ.pop("REVIEW_ASKED", None)
+try:
+    rb.guard_review_armed(argparse.Namespace(worktree=False, debt=True))
+    debt_armed = ""
+except ValueError as exc:
+    debt_armed = str(exc)
+finally:
+    if debt_asked_before is not None:
+        os.environ["REVIEW_ASKED"] = debt_asked_before
+assert "REVIEW_ASKED=1" in debt_armed, debt_armed
+
+# The second review a locked round owes IS this command, and both the waiver's refusal and the
+# adjudication handoff name it rather than asking the reader to widen a path list by hand.
+debt_waive_store = debt_store()
+debt_artifact(debt_waive_store, "20260101T000100Z-aaaaaaa",
+              {"reviewed.py": debt_first_sha, "pair.py": debt_pair_sha},
+              report={"confirmed": 3, "confirmed_by_severity": {"P1": 3}})
+rb.RUN_CONFIRMED_COUNTS.clear()
+rb.ROUND_BUDGET_SPENT_CACHE.clear()
+debt_waive_out = io.StringIO()
+os.environ["CLAUDE_CODE_SESSION_ID"] = "chat-1"
+try:
+    with contextlib.redirect_stdout(debt_waive_out):
+        debt_waive_rc = rb.cmd_waive(argparse.Namespace(
+            repo=str(debt_repo), reason="the narrow rerun will do", paths=["reviewed.py"],
+        ))
+finally:
+    os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+assert debt_waive_rc == 1, debt_waive_out.getvalue()
+assert rb.DEBT_REVIEW_COMMAND in debt_waive_out.getvalue(), debt_waive_out.getvalue()
+debt_handoff = io.StringIO()
+with contextlib.redirect_stdout(debt_handoff):
+    rb.handoff("debt-run", ["/tmp/findings.jsonl"])
+assert rb.DEBT_REVIEW_COMMAND in debt_handoff.getvalue(), debt_handoff.getvalue()
+
+for debt_side in rb.SIDE_RUNNERS:
+    rb.SIDE_RUNNERS[debt_side] = tier_runner
+os.environ["CLAUDEB_DIR"] = debt_claudeb_before
+
 # --- scoped worktree runs ---------------------------------------------------------------------
 # A review of part of the working tree is not a review of the repository. Its snapshot must hold
 # only the paths it was given, and its receipt must never be the one `coverage` and the statusline
@@ -7488,7 +7747,8 @@ for scope_label, scope_kwargs in (
         scope_reject[scope_label] = ""
     except ValueError as exc:
         scope_reject[scope_label] = str(exc)
-assert "cannot narrow a commit" in scope_reject["commitish"], scope_reject
+assert "a single commitish is already one fixed set of paths" in scope_reject["commitish"], \
+    scope_reject
 # The refusal comes before the snapshot: a run that cannot start must leave no commit behind.
 assert scope_commit_objects() == scope_objects_before, "a refused scoped run wrote a commit"
 scope_beta_sha = rb.worktree_snapshot_commit(scope_repo, paths=["beta.txt"])
@@ -9608,9 +9868,11 @@ for multi_label, multi_args, multi_fields in (
     ("both-flags", [f"{multi_repos['pushed']}@{multi_base}..{multi_head}"], {"worktree": True}),
     ("mixed-bare", [f"{multi_repos['pushed']}@{multi_base}..{multi_head}",
                     str(multi_repos["live"])], {"worktree": False}),
-    ("scoped", [f"{multi_repos['pushed']}@{multi_base}..{multi_head}",
-                str(multi_repos["live"])],
-     {"paths": ["multi-pushed/pushed.txt"]}),
+    # A pathspec outside the range's own diff narrows the review to nothing, and a member sealed
+    # over an empty scope is a half of the panel that reads as reviewed and was never shown.
+    ("scoped-nothing", [f"{multi_repos['pushed']}@{multi_base}..{multi_head}",
+                        str(multi_repos["live"])],
+     {"paths": ["multi-pushed/never-here.txt"]}),
 ):
     try:
         multi_run(multi_args, **multi_fields)
@@ -9620,7 +9882,22 @@ for multi_label, multi_args, multi_fields in (
 assert "the run's target is already given" in multi_refusals["commitish"], multi_refusals
 assert "drop --worktree" in multi_refusals["both-flags"], multi_refusals
 assert "add --worktree" in multi_refusals["mixed-bare"], multi_refusals
-assert "already a fixed set of paths" in multi_refusals["scoped"], multi_refusals
+assert "matched nothing" in multi_refusals["scoped-nothing"], multi_refusals
+
+# ...and a pathspec the range DOES touch narrows that member the way --paths narrows a working
+# tree: the member carries the scope, and its repository's own receipt stays where it was, because
+# a narrowed review answers to a receipt of its own and never marks the repository reviewed.
+multi_pushed_before = rb.review_receipt(multi_tops["pushed"])
+multi_rc, multi_stdout = multi_run(
+    [f"{multi_repos['pushed']}@{multi_base}..{multi_head}", str(multi_repos["live"])],
+    paths=["multi-pushed/pushed.txt"],
+)
+assert multi_rc == 0, multi_stdout
+multi_scoped = multi_meta_of(multi_stdout)
+assert [member["scope"] for member in multi_scoped["repos"]] == [["pushed.txt"], []], multi_scoped
+assert rb.review_receipt(multi_tops["pushed"]) == multi_pushed_before, "a scoped member stamped it"
+assert rb.review_receipt(multi_tops["pushed"], scope=["pushed.txt"])["run_id"] == \
+    multi_scoped["run_id"], "the scoped member wrote no receipt of its own"
 
 os.environ["CLAUDEB_DIR"] = str(merged_store)
 

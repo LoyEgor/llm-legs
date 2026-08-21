@@ -1016,10 +1016,18 @@ LENS_FLAG_HELP = (
     "(review-bench lens list)"
 )
 SCOPE_FLAG_HELP = (
-    "Review only the working-tree changes under these pathspecs (--worktree only); the run "
-    "answers to a receipt of its own and never marks the repository reviewed. With several "
-    "--repo, each pathspec starts with the repository's own prefix as it appears in the diff "
-    "(repo/path), and a repository none of them names keeps its whole working tree"
+    "Review only the changes under these pathspecs — of the working tree with --worktree, of the "
+    "range with --range or --repo PATH@BASE..HEAD; the run answers to a receipt of its own and "
+    "never marks the repository reviewed. With several --repo, each pathspec starts with the "
+    "repository's own prefix as it appears in the diff (repo/path), and a repository none of them "
+    "names keeps its whole change"
+)
+DEBT_FLAG_HELP = (
+    "Review everything this repository owes a review and nothing else: every path whose current "
+    "content nothing that read it stands behind, widened to every surviving path of any locked "
+    "round standing over it, each read from the content its newest artifact recorded — so work "
+    "reviewed, committed and edited again is one diff across the commit. The scope is computed, "
+    "not given, so it takes no target and no --paths"
 )
 REPO_FLAG_HELP = (
     "The repository to review, as PATH or PATH@BASE..HEAD to review a range of its commits "
@@ -1383,6 +1391,15 @@ MERGED_HOME_HEX = 16
 RECEIPT_FIELDS = ("repo", "tree", "commit", "run_id", "ts")
 RECEIPT_HASH_HEX = 8
 SCOPE_TRAILER = "Scope-Path: "
+# The subject line a debt review's sealed commit carries, and the only thing that tells one from
+# an ordinary worktree snapshot: both are sealed under the same identity, and a rerun pinned to
+# the sha has nothing else left to read the mode off.
+DEBT_SNAPSHOT_SUBJECT = "review-bench debt snapshot"
+# The one command that answers a repository's whole open question — the second review a locked
+# round owes included, since the mode widens to that round's surviving paths by construction. The
+# commit gate prints it verbatim inside a `cd`, and docs/shared-invariants.md holds the two equal;
+# a caller that hand-picks paths instead is choosing the scope, which is the choice this removes.
+DEBT_REVIEW_COMMAND = "REVIEW_ASKED=1 review-bench review --debt --tier T1"
 # What a waiver may not step over: a review that came back with this many confirmed P1s owes a
 # second pass, so the debt standing behind it cannot be waived away. One number, and the one the
 # fixing pass already stops at — the stop, the lock and the commit gate's fork are the same
@@ -1874,6 +1891,93 @@ def working_tree_tree(repo, paths=None, env=None):
         return proc.stdout.strip()
 
 
+def tree_path_entries(repo, tree, paths):
+    """The `(mode, blob)` this tree holds under each of `paths`, keyed by path. A gitlink is left
+    out: a submodule is not a blob, and overlaying one would rewrite a pointer nobody reviewed.
+    """
+    if not paths:
+        return {}
+    proc = subprocess.run(["git", "ls-tree", "-r", "-z", tree, "--", *paths],
+                          cwd=repo, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or f"could not read the tree {tree}")
+    entries = {}
+    for record in proc.stdout.split("\0"):
+        info, tab, path = record.partition("\t")
+        fields = info.split()
+        if tab and len(fields) == 3 and fields[1] == "blob":
+            entries[path] = (fields[0], fields[2])
+    return entries
+
+
+def reachable_blobs(repo, shas):
+    """Which of `shas` this repository can still read as blobs. An artifact records a sha and
+    never the object behind it, so a store that was gc'd or a snapshot fetched from elsewhere
+    leaves shas nothing can be diffed against — and a base built on one is a review of an error.
+    """
+    wanted = sorted({str(sha) for sha in shas if sha})
+    if not wanted:
+        return set()
+    proc = subprocess.run(
+        ["git", "cat-file", "--batch-check=%(objectname) %(objecttype)"],
+        cwd=repo, input="".join(f"{sha}\n" for sha in wanted), capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        return set()
+    return {
+        line.split()[0] for line in proc.stdout.splitlines() if line.endswith(" blob")
+    }
+
+
+def overlay_tree(repo, tree, entries):
+    """`tree` with every path of `entries` set to the `(mode, blob)` it names, or removed where it
+    names None.
+
+    This is how both self-scoping reviews build their LEFT end: the result differs from `tree` at
+    the named paths and nowhere else, so the diff the panel reads holds exactly the scope. A debt
+    review overlays the content the covering artifact recorded, a scoped range overlays the range's
+    own base — and in both cases the commits in between are invisible, which is the point: what is
+    under review is the drift since something last stood behind the file, not the shape the work
+    was committed in.
+    """
+    if not entries:
+        return tree
+    zero = "0" * (64 if object_format(str(repo)) == "sha256" else 40)
+    payload = "".join(
+        (f"{entry[0]} {entry[1]}\t{path}\0" if entry else f"0 {zero}\t{path}\0")
+        for path, entry in sorted(entries.items())
+    )
+    with tempfile.TemporaryDirectory(prefix="review-bench-overlay-") as directory:
+        env = dict(os.environ, GIT_INDEX_FILE=str(Path(directory) / "index"))
+        for command, stdin in ((["read-tree", tree], None),
+                               (["update-index", "-z", "--index-info"], payload)):
+            proc = subprocess.run(["git", *command], cwd=repo, env=env, input=stdin,
+                                  capture_output=True, text=True)
+            if proc.returncode != 0:
+                detail = proc.stderr.strip() or proc.stdout.strip() or "git failed"
+                raise RuntimeError(f"could not build the review base: {detail}")
+        proc = subprocess.run(["git", "write-tree"], cwd=repo, env=env,
+                              capture_output=True, text=True)
+        if proc.returncode != 0 or not proc.stdout.strip():
+            detail = proc.stderr.strip() or proc.stdout.strip() or "git write-tree failed"
+            raise RuntimeError(f"could not build the review base: {detail}")
+        return proc.stdout.strip()
+
+
+def synthetic_base_commit(repo, tree, subject):
+    """A parentless commit holding `tree`, so everything downstream that derives what a review is a
+    change against from the sealed commit's parent needs nothing taught about a base nobody wrote.
+    """
+    proc = subprocess.run(
+        ["git", "commit-tree", tree, "-m", subject],
+        cwd=repo, env=dict(os.environ, **FIXED_COMMIT_IDENTITY),
+        stdin=subprocess.DEVNULL, capture_output=True, text=True,
+    )
+    if proc.returncode != 0 or not proc.stdout.strip():
+        raise RuntimeError(proc.stderr.strip() or "could not build the review base")
+    return proc.stdout.strip()
+
+
 def worktree_snapshot_commit(repo, clean_command=None, paths=None):
     scope = list(paths or [])
     tree = working_tree_tree(repo, scope)
@@ -1987,7 +2091,7 @@ def is_range_snapshot(repo, sha):
     return range_snapshot_ends(repo, sha) is not None
 
 
-def range_snapshot_commit(repo, spec):
+def range_snapshot_commit(repo, spec, scope=()):
     """A range of commits sealed as one commit to review: the tree at its right end, carrying its
     left end as the parent. Everything downstream is keyed on a single sha and derives what it is a
     change against from that sha's parent, so a range spelled this way needs nothing else taught —
@@ -1995,6 +2099,12 @@ def range_snapshot_commit(repo, spec):
     rerun pinned to the sha finds it again. Committed work was reviewable only one commit at a time
     before this, so a change spread over a branch cost one panel per commit, and work already
     pushed could not be sent to a panel at all except through the working tree it was no longer in.
+
+    A `scope` narrows it to those pathspecs the way `--paths` narrows a working tree: the parent
+    becomes a synthetic left end holding the range's own base content at exactly those paths and
+    the right end's everywhere else, so the sealed diff is the range restricted to them while the
+    tree the raters browse stays whole. The message keeps the range's REAL ends, because that is
+    the question the caller asked and the synthetic parent answers no question at all.
     """
     left, right = parse_range_spec(spec)
     ends = []
@@ -2011,15 +2121,110 @@ def range_snapshot_commit(repo, spec):
             f"{spec} changes nothing: {left} and {right} hold the same tree, so there is no "
             "review in it"
         )
+    scope = list(scope or ())
+    parent = base
+    if scope:
+        for pathspec in scope:
+            changed, _ = diff_numstat(repo, [base_tree, head_tree], [pathspec])
+            if not changed:
+                raise ValueError(
+                    f"--paths matched nothing in {spec}: {pathspec}; a range is already a fixed "
+                    "set of paths, so a pathspec outside its diff narrows the review to nothing"
+                )
+        was = tree_path_entries(repo, base_tree, scope)
+        now = tree_path_entries(repo, head_tree, scope)
+        base_tree = overlay_tree(
+            repo, head_tree, {path: was.get(path) for path in set(was) | set(now)}
+        )
+        parent = synthetic_base_commit(repo, base_tree, "review-bench range base")
     message = f"review-bench range snapshot\n\n{base}..{head}\n"
+    if scope:
+        message += "".join(f"{SCOPE_TRAILER}{path}\n" for path in scope)
     proc = subprocess.run(
-        ["git", "commit-tree", head_tree, "-p", base, "-m", message],
+        ["git", "commit-tree", head_tree, "-p", parent, "-m", message],
         cwd=repo, env=dict(os.environ, **FIXED_COMMIT_IDENTITY),
         capture_output=True, text=True,
     )
     if proc.returncode != 0 or not proc.stdout.strip():
         raise RuntimeError(proc.stderr.strip() or "could not seal the range")
     return proc.stdout.strip()
+
+
+def debt_snapshot_commit(repo, scope):
+    """This repository's whole open question sealed as one commit: the content standing in the
+    working tree now, over a synthetic base holding, for every path in `scope`, the content the
+    newest artifact that answers for it recorded.
+
+    Nothing else can be the base. The comparison debt is made of is per path and per artifact — one
+    file was last read three commits ago, its neighbour is still uncommitted — and no commit in
+    this repository holds that mixture, so the review of it has to be built rather than found. Built
+    this way the commits under the drift are invisible: work reviewed, committed and then edited
+    again reaches the panel as ONE diff from what was read to what is there, which is the whole
+    reason a debt review cannot be spelled as a range or as a worktree run.
+
+    A path no artifact holds, and one whose recorded blob this store can no longer read, is dropped
+    from the base instead: the diff then shows the file whole, which is what a file nobody has ever
+    read is worth reviewing as.
+    """
+    paths = [path for path, _ in scope]
+    unusable = [path for path in paths if "\n" in path or "\r" in path]
+    if unusable:
+        raise ValueError(
+            "the debt of this repository names a path carrying a newline, which the snapshot "
+            "records one per line and could not read back: " + ", ".join(map(repr, unusable))
+        )
+    head = head_tree_hash(repo)
+    held = tree_path_entries(repo, head, paths)
+    # A path in neither HEAD nor the working tree is a deletion of something never committed: the
+    # run still has to answer for it, but `git add` refuses a pathspec matching nothing at all.
+    staged = [path for path in paths if os.path.lexists(Path(repo) / path) or path in held]
+    tree = working_tree_tree(repo, staged) if staged else head
+    current = tree_path_entries(repo, tree, paths)
+    recorded = {
+        path: (artifact["shas"].get(path, "") if artifact else "") for path, artifact in scope
+    }
+    readable = reachable_blobs(repo, recorded.values())
+    base_tree = overlay_tree(repo, tree, {
+        # The mode the path wears NOW, so a base built for a content comparison does not report a
+        # mode change nobody made; an artifact records a blob and never a mode.
+        path: (current.get(path, ("100644", ""))[0], recorded[path])
+        if recorded[path] in readable else None
+        for path in paths
+    })
+    if base_tree == tree:
+        raise ValueError(
+            "this repository's debt holds no reviewable change: every path it names stands at the "
+            "content the artifact answering for it already recorded, or is gone with nothing ever "
+            "recorded for it. Record why with `review-bench waive --reason ...`"
+        )
+    message = (
+        DEBT_SNAPSHOT_SUBJECT + "\n\n"
+        "Everything in this repository that nothing stands behind, as one change: for each file\n"
+        "below the left side is the content the last review or waiver of it recorded, and the\n"
+        "right side is what is there now. The commits in between are deliberately not shown —\n"
+        "what is under review is the drift since something last answered for the file.\n\n"
+        + "".join(f"{SCOPE_TRAILER}{path}\n" for path in paths)
+    )
+    proc = subprocess.run(
+        ["git", "commit-tree", tree, "-p",
+         synthetic_base_commit(repo, base_tree, "review-bench debt base"), "-m", message],
+        cwd=repo, env=dict(os.environ, **FIXED_COMMIT_IDENTITY),
+        capture_output=True, text=True,
+    )
+    if proc.returncode != 0 or not proc.stdout.strip():
+        raise RuntimeError(proc.stderr.strip() or "could not seal the debt review")
+    return proc.stdout.strip()
+
+
+def is_debt_snapshot(repo, sha):
+    """Whether this sha is a debt review's seal. A rerun arrives as the sha and no flags, and the
+    mode decides two things a scoped worktree run decides the other way: the scope is the whole of
+    what the run answers for rather than a narrowing of it, and the receipt it writes is the
+    repository's own.
+    """
+    proc = subprocess.run(["git", "show", "-s", "--format=%s", sha],
+                          cwd=repo, capture_output=True, text=True)
+    return proc.returncode == 0 and proc.stdout.strip() == DEBT_SNAPSHOT_SUBJECT
 
 
 def snapshot_scope_paths(repo, sha):
@@ -2083,7 +2288,7 @@ def scope_snapshot_paths(repo, scope, sha):
     )))
 
 
-def reviewed_blobs(repo, scope, sha):
+def reviewed_blobs(repo, scope, sha, paths=None):
     """The blob the sealed commit holds for every path the panel is shown, keyed by path. A path
     the snapshot deleted is keyed to the empty string: a deletion is a change the panel read as
     surely as a rewrite is, and no blob can stand for it.
@@ -2092,8 +2297,14 @@ def reviewed_blobs(repo, scope, sha):
     in flight, and a rerun pinned to an existing snapshot sha reads a commit the checkout is already
     far past — either way the anchor would be bytes no rater saw. A symlink's blob is its link
     text, which is exactly what the coverage reader prices it by.
+
+    `paths` names the answered-for set outright instead of deriving it from the diff, which is what
+    a debt review needs: a locked round's survivor sitting at exactly the sha that round recorded
+    contributes no diff at all, and a run that does not HOLD it discharges no lock — so the run
+    that was widened to read it has to record it too.
     """
-    wanted = {path for path in scope_snapshot_paths(repo, scope, sha) if "\n" not in path}
+    listed = scope_snapshot_paths(repo, scope, sha)
+    wanted = {path for path in listed if "\n" not in path}
     if not wanted:
         return {}
     proc = subprocess.run(["git", "ls-tree", "-r", "-z", sha],
@@ -2131,7 +2342,8 @@ def sealed_target(repo, spec=None, scope=(), clean_command=None):
     member — names its half this way, so the two kinds are two arguments rather than two code paths.
     """
     if spec:
-        return range_snapshot_commit(repo, spec), resolve_commit(repo, parse_range_spec(spec)[1])
+        return (range_snapshot_commit(repo, spec, scope=scope),
+                resolve_commit(repo, parse_range_spec(spec)[1]))
     return worktree_snapshot_commit(repo, clean_command=clean_command, paths=scope), None
 
 
@@ -2238,16 +2450,10 @@ def merged_members(sources, paths=()):
     for label, (repo, spec) in zip(labels, sources):
         scope = scopes[label]
         if spec:
-            if scope:
-                raise ValueError(
-                    f"--repo {repo} names a range of commits, which is already a fixed set of "
-                    f"paths; --paths narrows a working tree, so drop the {label}/ entries or "
-                    "review that repository's tree instead"
-                )
-            commit, head = sealed_target(repo, spec)
+            commit, head = sealed_target(repo, spec, scope=scope)
             members.append({
                 "label": label, "repo": str(repo), "commit": commit,
-                "base": diff_base(repo, commit), "scope": [],
+                "base": diff_base(repo, commit), "scope": scope,
                 # What the caller asked about, kept for every line that names this member: the
                 # sealed commit is the tool's own and answers no question anybody asked.
                 "head": head,
@@ -4003,10 +4209,15 @@ def run_scope_key(meta):
     """
     def entry(record):
         recorded = str(record.get("repo") or "")
-        return (
-            str(resolved_repo_path(recorded) or recorded) if recorded else "",
-            tuple(sorted(str(item) for item in record.get("scope") or ())),
+        # A debt review's scope is the repository's whole open question at the moment it ran, not a
+        # narrowing anybody chose — and the second round of one piece of work computes a different
+        # path set from the first, since the fixes moved what is owed. Keyed on those paths the two
+        # rounds would be two scopes, the budget would never bind, and the fork would go on
+        # demanding a third pass for ever.
+        scope = () if record.get("debt") else tuple(
+            sorted(str(item) for item in record.get("scope") or ())
         )
+        return (str(resolved_repo_path(recorded) or recorded) if recorded else "", scope)
 
     members = tuple(sorted(
         entry(record) for record in meta.get("repos") or () if isinstance(record, dict)
@@ -7844,14 +8055,15 @@ def guard_verifier_scope(args, tier_name):
 
 
 def guard_review_armed(args):
-    """A worktree review runs when Egor asked for one by name, and mid-work panels are what this
-    closes.
+    """A review that reads the working tree — `--worktree` or `--debt` — runs when Egor asked for
+    one by name, and mid-work panels are what this closes.
 
     `REVIEW_ASKED=1` is taken at face value here because the flow gate checks that claim against
     the session transcript before the command ever runs, and a second flag saying the same thing
     would be one the caller grants itself unchecked.
     """
-    if not getattr(args, "worktree", False) or os.environ.get("REVIEW_ASKED") == "1":
+    if not (getattr(args, "worktree", False) or getattr(args, "debt", False)) \
+            or os.environ.get("REVIEW_ASKED") == "1":
         return
     raise ValueError(
         "reviews are commit-triggered — prefix with REVIEW_ASKED=1 (Egor's commit permission "
@@ -8502,6 +8714,60 @@ def repo_debt(repo, paths=None):
     return debt
 
 
+def debt_review_scope(repo):
+    """Every path a `--debt` review of `repo` must read, each with the artifact its content is
+    compared against, as `(path, artifact)` pairs — the same shape `repo_debt` answers in.
+
+    The debt itself, WIDENED to every surviving path of any locked round standing over it. A lock
+    is discharged by a run whose reviewed paths hold all of them (`lock_discharged`), and a path
+    still sitting at the sha the locked round recorded is by definition NOT in debt — so a scope
+    made of the debt alone can never discharge the very round it exists to answer, and the review
+    the contract demands would have to be widened by hand every time, by the one reader with no way
+    to know what that round read.
+
+    A widened path keeps its own covering artifact, which for a locked round's survivor is that
+    round: it contributes no diff, and the run holds it and discharges the lock by construction.
+    """
+    debt = repo_debt(repo)
+    scope = dict(debt)
+    covering = None
+    for _, artifact in debt:
+        if not artifact or not artifact_locked(artifact):
+            continue
+        for path in artifact["shas"]:
+            if path in scope or not os.path.lexists(Path(repo) / path):
+                continue
+            if covering is None:
+                covering = covering_artifacts(repo)
+            scope[path] = covering.get(path)
+    return sorted(scope.items())
+
+
+def debt_members(repos):
+    """Each repository of a merged debt review, sealed exactly as a solo one seals itself: the
+    scope is that repository's own open question, so a panel spanning two checkouts still owes each
+    of them the receipt it would have earned alone.
+    """
+    members = []
+    for label, repo in zip(merged_repo_labels(repos), repos):
+        scope = debt_review_scope(repo)
+        if not scope:
+            raise ValueError(
+                f"--repo {repo} owes no review — nothing in it is in debt, so a merged debt "
+                "review of it would read an empty half; drop that --repo"
+            )
+        commit = debt_snapshot_commit(repo, scope)
+        members.append({
+            "label": label, "repo": str(repo), "commit": commit,
+            "base": diff_base(repo, commit), "scope": [path for path, _ in scope],
+            # A rerun is pinned to the merged commit and carries no flags; the manifest is where
+            # each member's mode has to survive, or the rerun writes the scoped receipt instead of
+            # the repository's own and settles nothing.
+            "debt": True,
+        })
+    return members
+
+
 def worker_run_root():
     return Path(os.environ.get("WORKER_RUN_DIR") or Path.home() / ".cache" / "claude-worker-runs")
 
@@ -8911,7 +9177,9 @@ def cmd_waive(args):
         print(
             f"waive: refused — the review standing over this work came back with "
             f"{SECOND_REVIEW_P1S}+ confirmed P1s, and that round owes a mandatory second review "
-            "over the full scope plus the fixes. Run it instead of waiving it. "
+            "over the full scope plus the fixes. Run it instead of waiving it: "
+            f"({shlex.join(['cd', str(repo)])} && {DEBT_REVIEW_COMMAND}) — that mode computes the "
+            "scope itself and widens to what this round still holds. "
             f"Locked: {named}."
         )
         return 1
@@ -9021,6 +9289,9 @@ def handoff(run_id, paths, members=None, worktree=False, fixable=True):
           "mandatory and the waiver over this work is withheld until it runs; a round that earns "
           "one on its tally alone instead is owed it by default and may be waived with a reason "
           "on record.")
+    print(f"That second review is `{DEBT_REVIEW_COMMAND}` in each repository above (raise the "
+          "tier if the work deserves it): it computes its own scope, which is this round's full "
+          "scope plus the fixes by construction, so nothing is picked by hand.")
     print("Orchestrator: at that threshold the next move is Egor's fork decision. A session "
           "running in maximum autonomy never pauses for it — it takes the decision itself and "
           "sends the worker on to step 2.")
@@ -9113,6 +9384,23 @@ def cmd_run(args):
     # so the target flags are checked against what the --repo lines already said.
     inline_ranges = [spec for _, spec in sources if spec]
     all_ranged = bool(inline_ranges) and len(inline_ranges) == len(sources)
+    # `--debt` is a target of its own, and the one nobody spells: it reads what the artifacts say
+    # is unanswered for, from the content they recorded. Every other target flag names a scope the
+    # caller chose, which is exactly the choice this mode exists to take away, so they are refused
+    # rather than combined.
+    debt_mode = bool(getattr(args, "debt", False))
+    if debt_mode:
+        given = [name for name, present in (
+            ("a commitish", bool(commitish)), ("--range", bool(range_spec)),
+            ("--worktree", worktree_mode), ("--paths", bool(getattr(args, "paths", None))),
+            ("--repo PATH@BASE..HEAD", bool(inline_ranges)),
+        ) if present]
+        if given:
+            raise ValueError(
+                "--debt computes its own target and its own scope — every path nothing that read "
+                "it stands behind, widened to what a locked round still owes — so it takes no "
+                "other target: drop " + " and ".join(given)
+            )
     if inline_ranges and (commitish or range_spec):
         raise ValueError(
             "--repo PATH@BASE..HEAD names its own range, so the run's target is already given; "
@@ -9128,13 +9416,13 @@ def cmd_run(args):
             "a --repo named without a range of its own is read from its working tree, so this "
             "review reads both: add --worktree, or give every repository a range"
         )
-    if not inline_ranges:
+    if not inline_ranges and not debt_mode:
         named = [name for name, given in
                  (("commitish", bool(commitish)), ("--range", bool(range_spec)),
                   ("--worktree", worktree_mode)) if given]
         if len(named) != 1:
             raise ValueError(
-                "exactly one of commitish, --range and --worktree must be given"
+                "exactly one of commitish, --range, --worktree and --debt must be given"
                 + (f"; got {' and '.join(named)}" if named else "")
             )
     # One repository named with a range is that repository's own --range run: the merged workspace
@@ -9143,9 +9431,12 @@ def cmd_run(args):
     if len(sources) == 1 and sources[0][1]:
         range_spec = sources[0][1]
     requested_scope = list(getattr(args, "paths", None) or [])
-    if requested_scope and not worktree_mode:
-        raise ValueError("--paths narrows the working tree; it cannot narrow a commit")
-    if len(repos) > 1 and not (worktree_mode or all_ranged):
+    if requested_scope and not (worktree_mode or range_spec or all_ranged):
+        raise ValueError(
+            "--paths narrows a working tree or a range of commits; a single commitish is already "
+            "one fixed set of paths"
+        )
+    if len(repos) > 1 and not (worktree_mode or all_ranged or debt_mode):
         raise ValueError(
             "a merged review reads the working trees of every --repo it is given; one commitish "
             "or range cannot name a change in more than one repository"
@@ -9157,7 +9448,25 @@ def cmd_run(args):
     # tool's own making, and naming that in place of the commit the caller asked about is how a
     # target line stops answering the question it exists for.
     range_head = None
-    if len(repos) > 1:
+    if debt_mode and len(repos) > 1:
+        members = debt_members(repos)
+        repo, sha = merged_snapshot_workspace(members)
+        scope = []
+    elif debt_mode:
+        if merged_manifest(repo) is not None:
+            raise ValueError(
+                f"{repo} is a merged review's workspace and owes no review of its own; name the "
+                "repositories it was built from instead"
+            )
+        owed = debt_review_scope(repo)
+        if not owed:
+            raise ValueError(
+                f"nothing in {repo} is in review debt: every path an artifact holds stands at the "
+                "content it recorded, and the journals name no other. There is no review to run"
+            )
+        scope = [path for path, _ in owed]
+        sha = debt_snapshot_commit(repo, owed)
+    elif len(repos) > 1:
         members = merged_members(sources, requested_scope)
         repo, sha = merged_snapshot_workspace(members)
         scope = []
@@ -9177,6 +9486,14 @@ def cmd_run(args):
         document = merged_manifest(repo)
         members = document["repos"] if document and document["merged"] == sha else None
     worktree_mode = worktree_mode or is_worktree_snapshot(repo, sha)
+    # A rerun arrives as the sealed sha and no flags at all, so the mode is read back out of what
+    # was sealed: the seal's own subject for one repository, each member's record for a merged
+    # panel. Without it the rerun writes a scoped receipt where the run it repeats wrote the
+    # repository's own, and the debt the first pass settled comes back.
+    debt_mode = debt_mode or (
+        any(isinstance(member, dict) and member.get("debt") for member in members) if members
+        else worktree_mode and is_debt_snapshot(repo, sha)
+    )
     # A range is sealed the way a worktree snapshot is, and everything that treats those as
     # synthetic rather than as commits of the repository is right to. What it is NOT is a review of
     # the current state: a run over old or pushed commits would otherwise stamp the repository's
@@ -9201,11 +9518,17 @@ def cmd_run(args):
     # A member sealed from a range is not a review of the tree anybody is standing on, so it
     # answers for its own repository only where its right end IS that tree — the same rule a
     # single-repository range run follows, asked per member because one panel now holds both kinds.
+    # A debt review answers to no receipt of its own: its scope is not a corner of the repository's
+    # question but the whole of it, computed rather than chosen, so it stamps the plain receipt the
+    # way an unscoped worktree run does.
     receipt_targets = [
-        (Path(member["repo"]), member["commit"], list(member.get("scope") or []),
+        (Path(member["repo"]), member["commit"],
+         [] if member.get("debt") else list(member.get("scope") or []),
          worktree_mode and not member.get("head"))
         for member in members
-    ] if members else [(repo, sha, scope, worktree_mode and not range_mode)]
+    ] if members else [
+        (repo, sha, [] if debt_mode else scope, worktree_mode and not range_mode)
+    ]
     announce_review_target(repo, sha, scope, members, head_label=range_head)
     reviews_path = state_dir() / "reviews.jsonl"
     # The corpus that picks `--auto` cells and prices how long they take, and it is the tool's
@@ -9342,14 +9665,20 @@ def cmd_run(args):
         launch_meta["worktree"] = True
         if scope:
             launch_meta["scope"] = scope
-        reviewed = reviewed_blobs(repo, scope, sha)
+        if debt_mode and not members:
+            launch_meta["debt"] = True
+        # A debt review answers for its whole scope and not for the part of it that produced a
+        # diff: a locked round's survivor standing at exactly the sha that round recorded shows
+        # nothing, and a run that fails to HOLD it discharges no lock and settles nothing.
+        reviewed = reviewed_blobs(repo, scope, sha, paths=scope if debt_mode else None)
         launch_meta["reviewed"] = reviewed
     if members:
         for member in members:
             # A ranged member has no working tree to drift: its content is committed already.
             if not member.get("head"):
                 member["reviewed"] = reviewed_blobs(
-                    member["repo"], member["scope"], member["commit"]
+                    member["repo"], member["scope"], member["commit"],
+                    paths=member["scope"] if member.get("debt") else None,
                 )
         launch_meta["repos"] = [dict(member) for member in members]
     if tier_name:
@@ -9591,6 +9920,8 @@ def cmd_run(args):
             meta["worktree"] = True
             if scope:
                 meta["scope"] = scope
+            if debt_mode and not members:
+                meta["debt"] = True
             # The launch snapshot, carried rather than retaken: the finished document is rewritten
             # from scratch, and a second `hash-object` here would anchor the run to the tree the
             # fixes already moved.
@@ -10976,6 +11307,7 @@ def main():
     review = subparsers.add_parser("review", help="Run a canonical review tier")
     review.add_argument("commitish", nargs="?")
     review.add_argument("--worktree", action="store_true")
+    review.add_argument("--debt", action="store_true", help=DEBT_FLAG_HELP)
     review.add_argument("--range", metavar="A..B", help=RANGE_FLAG_HELP)
     review.add_argument("--repo", action="append", metavar="PATH", help=REPO_FLAG_HELP)
     review.add_argument("--tier", choices=REVIEW_TIERS, required=True)
