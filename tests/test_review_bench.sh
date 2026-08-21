@@ -7424,6 +7424,37 @@ assert f"{rb.SCOPE_TRAILER}pair.py" in debt_diff, debt_diff
 assert debt_meta["reviewed"] == {
     "reviewed.py": debt_sha("reviewed.py"), "pair.py": debt_pair_sha,
 }, debt_meta
+# And it answers for the paths it was WIDENED to rather than for the ones that happen to show in
+# the snapshot: a path the base holds nothing for and the tree no longer carries is in neither
+# listing, and left out of `reviewed` the run holds it nowhere and discharges no lock.
+assert rb.reviewed_blobs(
+    debt_repo, ["pair.py"], debt_meta["commit"], paths=["pair.py", "vanished.py"]
+) == {"pair.py": debt_pair_sha, "vanished.py": ""}, rb.reviewed_blobs(
+    debt_repo, ["pair.py"], debt_meta["commit"], paths=["pair.py", "vanished.py"]
+)
+
+# A debt path is a FILE and never a pathspec: a repository holding one honestly named
+# `:(exclude)...` had that name reach git as MAGIC, and the snapshot then answered for the debt
+# minus the very file the name excluded.
+magic_repo = work / "debt-magic"
+magic_repo.mkdir()
+subprocess.run(["git", "init", "-q", str(magic_repo)], check=True)
+for magic_key, magic_value in (("user.email", "bench@example.test"),
+                               ("user.name", "Review Bench")):
+    subprocess.run(["git", "-C", str(magic_repo), "config", magic_key, magic_value], check=True)
+(magic_repo / "keep.py").write_text("one\n")
+(magic_repo / ":(exclude)keep.py").write_text("two\n")
+subprocess.run(["git", "-C", str(magic_repo), "add", "-A"], check=True)
+subprocess.run(["git", "-C", str(magic_repo), "commit", "-qm", "initial"], check=True)
+(magic_repo / "keep.py").write_text("one\nedited\n")
+magic_commit = rb.debt_snapshot_commit(
+    magic_repo, [("keep.py", None), (":(exclude)keep.py", None)]
+)
+magic_held = subprocess.run(
+    ["git", "-C", str(magic_repo), "ls-tree", "-r", "--name-only", magic_commit],
+    check=True, capture_output=True, text=True,
+).stdout.splitlines()
+assert sorted(magic_held) == [":(exclude)keep.py", "keep.py"], magic_held
 assert debt_verdict() == "none", debt_verdict()
 debt_narrow = debt_store()
 debt_artifact(debt_narrow, "20260101T000100Z-aaaaaaa",
@@ -11575,6 +11606,38 @@ if findings:
     ) + "\n")
 GATEPY
 }
+# A fixes receipt is dated when it was written, and a fixture that backdates a run's clock has to
+# backdate its receipt too: left at the real now, it reads as recorded after every backdated run.
+fix_backdate() { # run-id hours-ago
+  python3 - "$FIX_SD/benches/$1/fixes.json" "$2" <<'BACKPY'
+import json
+import sys
+from datetime import datetime, timedelta, timezone
+
+path = sys.argv[1]
+record = json.loads(open(path).read())
+record["recorded_at"] = (
+    datetime.now(timezone.utc) - timedelta(hours=float(sys.argv[2]))
+).isoformat()
+open(path, "w").write(json.dumps(record, indent=2, sort_keys=True) + "\n")
+BACKPY
+}
+# A panel seals its tree when it STARTS and answers hours later; the fixture spells one instant
+# for both, so only this can ask which of the two a lineage receipt is measured against.
+fix_stretch() { # run-id hours-before-finish
+  python3 - "$FIX_SD/benches/$1/meta.json" "$2" <<'STRETCHPY'
+import json
+import sys
+from datetime import datetime, timedelta
+
+path = sys.argv[1]
+meta = json.loads(open(path).read())
+meta["started"] = (
+    datetime.fromisoformat(meta["finished"]) - timedelta(hours=float(sys.argv[2]))
+).isoformat()
+open(path, "w").write(json.dumps(meta) + "\n")
+STRETCHPY
+}
 gate_run 20260731T000000Z-gatefresh 0 0
 gate_pending=$(WORKER_STATS_DIR="$GATE_SD" "$SCRIPT" pending-report --repo "$GATE_REPO") \
   || fail "pending-report missed an untriaged worktree run"
@@ -11921,10 +11984,10 @@ assert test "$(grep -Fc -- "the budget of two is spent" <<<"$fix_after_stop")" -
 FIX_LINEAGE_REPO="$WORK/fix-lineage-repo"
 git init -q "$FIX_LINEAGE_REPO"
 GATE_SD="$FIX_SD" GATE_REPO="$FIX_LINEAGE_REPO" GATE_SESSION=sess-fix GATE_REVIEWED="a.py b.py" \
-  gate_run 20260801T080000Z-fixlineage1 0 1
+  gate_run 20260801T080000Z-fixlineage1 0 2
 fix_bench record 20260801T080000Z-fixlineage1 --no-corpus \
-  --verdicts "$WORK/fix-verdicts3.jsonl" >/dev/null || fail "the lineage round refused its triage"
-fix_bench fixes 20260801T080000Z-fixlineage1 --done --fixed 1 --fp 0 >/dev/null \
+  --verdicts "$WORK/fix-verdicts.jsonl" >/dev/null || fail "the lineage round refused its triage"
+fix_bench fixes 20260801T080000Z-fixlineage1 --done --fixed 1 --fp 1 >/dev/null \
   || fail "fixes --done refused the lineage round"
 GATE_SD="$FIX_SD" GATE_REPO="$FIX_LINEAGE_REPO" GATE_SESSION=sess-fix GATE_REVIEWED="c.py" \
   gate_run 20260801T090000Z-fixelsewhere 0 1
@@ -11937,6 +12000,19 @@ GATE_SD="$FIX_SD" GATE_REPO="$FIX_LINEAGE_REPO" GATE_SESSION=sess-fix \
 fix_lineage2=$(fix_bench record 20260801T100000Z-fixlineage2 --no-corpus \
   --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the second lineage round refused its triage"
 assert contains "$fix_lineage2" "the budget of two is spent"
+# And the earlier round's receipt is read exactly as its own REPORT reads it: a re-adjudication
+# leaves the receipt standing over a triage it no longer answers, and taken at its raw word the
+# round the report itself calls pending goes on spending the scope's budget of two.
+printf '%s\n' '{"rater":"oc-kimik3","idx":0,"verdict":"confirmed"}' \
+  '{"rater":"oc-kimik3","idx":1,"verdict":"confirmed"}' >"$WORK/fix-lineage-restale.jsonl"
+fix_bench record 20260801T080000Z-fixlineage1 --no-corpus \
+  --verdicts "$WORK/fix-lineage-restale.jsonl" >/dev/null || fail "re-adjudication refused"
+fix_stale_lineage=$(fix_bench record 20260801T100000Z-fixlineage2 --no-corpus \
+  --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the second lineage round refused its triage"
+assert test "$(grep -Fc -- "the budget of two is spent" <<<"$fix_stale_lineage")" -eq 0
+assert contains "$fix_stale_lineage" "re-review"
+fix_bench record 20260801T080000Z-fixlineage1 --no-corpus \
+  --verdicts "$WORK/fix-verdicts.jsonl" >/dev/null || fail "re-adjudication back refused"
 
 # A merged panel's own repo is the workspace built for that one run, and the fixes give the next
 # round a workspace of its own: keyed on it, the budget would never bind for a merged review at
@@ -11957,6 +12033,35 @@ GATE_SD="$FIX_SD" GATE_REPO="$WORK/fix-merged-workspace-2" GATE_SESSION=sess-fix
 fix_merged2=$(fix_bench record 20260801T120000Z-fixmerged2 --no-corpus \
   --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the second merged round refused its triage"
 assert contains "$fix_merged2" "the budget of two is spent"
+
+# And what a merged panel READ is its members' maps as much as the workspace's own: only the
+# members' hold a debt review's zero-diff survivors, since the workspace map is that snapshot's
+# diff and a path standing exactly where the locked round recorded it shows nothing in one. Read
+# off the workspace alone every merged panel offers the empty set, and one fixed round answers for
+# every later review of those repositories.
+FIX_MEMBERS_A="$WORK/fix-members-a"
+FIX_MEMBERS_B="$WORK/fix-members-b"
+git init -q "$FIX_MEMBERS_A"
+git init -q "$FIX_MEMBERS_B"
+fix_members_read="[{\"label\":\"a\",\"repo\":\"$FIX_MEMBERS_A\",\"scope\":[],\"reviewed\":{\"a.py\":\"sha-a\"}},{\"label\":\"b\",\"repo\":\"$FIX_MEMBERS_B\",\"scope\":[],\"reviewed\":{\"b.py\":\"sha-b\"}}]"
+fix_members_elsewhere="[{\"label\":\"a\",\"repo\":\"$FIX_MEMBERS_A\",\"scope\":[],\"reviewed\":{\"z.py\":\"sha-z\"}},{\"label\":\"b\",\"repo\":\"$FIX_MEMBERS_B\",\"scope\":[],\"reviewed\":{\"y.py\":\"sha-y\"}}]"
+GATE_SD="$FIX_SD" GATE_REPO="$WORK/fix-members-workspace-1" GATE_SESSION=sess-fix \
+  GATE_MEMBERS="$fix_members_read" gate_run 20260801T130000Z-fixmembers1 0 1
+fix_bench record 20260801T130000Z-fixmembers1 --no-corpus \
+  --verdicts "$WORK/fix-verdicts3.jsonl" >/dev/null || fail "the member-read round refused its triage"
+fix_bench fixes 20260801T130000Z-fixmembers1 --done --fixed 1 --fp 0 >/dev/null \
+  || fail "fixes --done refused the member-read round"
+GATE_SD="$FIX_SD" GATE_REPO="$WORK/fix-members-workspace-2" GATE_SESSION=sess-fix \
+  GATE_MEMBERS="$fix_members_elsewhere" gate_run 20260801T140000Z-fixmemberselse 0 1
+fix_members_else=$(fix_bench record 20260801T140000Z-fixmemberselse --no-corpus \
+  --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the unrelated merged round refused its triage"
+assert test "$(grep -Fc -- "the budget of two is spent" <<<"$fix_members_else")" -eq 0
+assert contains "$fix_members_else" "re-review"
+GATE_SD="$FIX_SD" GATE_REPO="$WORK/fix-members-workspace-3" GATE_SESSION=sess-fix \
+  GATE_MEMBERS="$fix_members_read" gate_run 20260801T150000Z-fixmembers2 0 1
+fix_members2=$(fix_bench record 20260801T150000Z-fixmembers2 --no-corpus \
+  --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the answering merged round refused its triage"
+assert contains "$fix_members2" "the budget of two is spent"
 
 # A receipt answers for the triage it was written against. Re-adjudicating replaces the verdicts
 # and leaves the receipt where it is, so a round that came back with more confirmed findings than
@@ -12149,6 +12254,14 @@ assert contains "$fix_swapped" "$report_frame_header"
 fix_shortfall=$(fix_bench fixes 20260802T040000Z-fixswap --done --fixed 0 --fp 0 2>&1 || true)
 assert contains "$fix_shortfall" "answer for fewer findings than the 2 this triage confirmed"
 assert test "$(jq -r .fixed "$FIX_SD/benches/20260802T040000Z-fixswap/fixes.json")" = 2
+# And bounded from above by that same triage, or the shortfall check is the only thing between a
+# typo and a round retired for good on a tally its own verdicts cannot account for: nothing is
+# fixed that nobody confirmed, and no receipt answers for findings the panel never produced.
+fix_overfixed=$(fix_bench fixes 20260802T040000Z-fixswap --done --fixed 9 --fp 0 2>&1 || true)
+assert contains "$fix_overfixed" "names more findings than the 2 this triage confirmed"
+fix_overtotal=$(fix_bench fixes 20260802T040000Z-fixswap --done --fixed 2 --fp 9 2>&1 || true)
+assert contains "$fix_overtotal" "answer for more findings than the 3 this run has"
+assert test "$(jq -r .fixed "$FIX_SD/benches/20260802T040000Z-fixswap/fixes.json")" = 2
 
 # And the second round of a scope is a round of the same PIECE OF WORK. Held to the paths alone
 # this was unbounded in time: a full-repository scope reads a superset of every earlier round of
@@ -12163,6 +12276,7 @@ fix_bench record 20260701T000000Z-fixlongago --no-corpus \
   --verdicts "$WORK/fix-verdicts3.jsonl" >/dev/null || fail "the old round refused its triage"
 fix_bench fixes 20260701T000000Z-fixlongago --done --fixed 1 --fp 0 >/dev/null \
   || fail "fixes --done refused the old round"
+fix_backdate 20260701T000000Z-fixlongago 398
 GATE_SD="$FIX_SD" GATE_REPO="$FIX_AGED_REPO" GATE_SESSION=sess-fix \
   gate_run 20260802T050000Z-fixmuchlater 0 1
 fix_much_later=$(fix_bench record 20260802T050000Z-fixmuchlater --no-corpus \
@@ -12176,6 +12290,30 @@ GATE_SD="$FIX_SD" GATE_REPO="$FIX_AGED_REPO" GATE_SESSION=sess-fix \
 fix_just_after=$(fix_bench record 20260802T060000Z-fixjustafter --no-corpus \
   --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the answering round refused its triage"
 assert contains "$fix_just_after" "the budget of two is spent"
+# And a round is the second one over fixes it could actually READ: a receipt recorded after this
+# run sealed its tree answers for work that landed later, and counted as lineage it spends the
+# budget and releases the lock over a pass that saw none of it.
+fix_backdate 20260701T000000Z-fixlongago 0
+fix_late_receipt=$(fix_bench record 20260802T060000Z-fixjustafter --no-corpus \
+  --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the answering round refused its triage"
+assert test "$(grep -Fc -- "the budget of two is spent" <<<"$fix_late_receipt")" -eq 0
+assert contains "$fix_late_receipt" "re-review"
+fix_backdate 20260701T000000Z-fixlongago 398
+# And "could read" is the tree it SEALED and never the hour it answered: a T2 panel runs for hours,
+# and a receipt written while it ran names fixes its snapshot never held. Measured against the
+# finish that receipt counted as lineage and released the lock over a pass that saw none of them.
+fix_stretch 20260802T060000Z-fixjustafter 2
+fix_backdate 20260701T000000Z-fixlongago 397
+fix_mid_run_receipt=$(fix_bench record 20260802T060000Z-fixjustafter --no-corpus \
+  --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the answering round refused its triage"
+assert test "$(grep -Fc -- "the budget of two is spent" <<<"$fix_mid_run_receipt")" -eq 0
+assert contains "$fix_mid_run_receipt" "re-review"
+# The same receipt one hour the other side of the seal is the lineage it was always meant to be.
+fix_backdate 20260701T000000Z-fixlongago 399
+fix_sealed_after=$(fix_bench record 20260802T060000Z-fixjustafter --no-corpus \
+  --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the answering round refused its triage"
+assert contains "$fix_sealed_after" "the budget of two is spent"
+fix_backdate 20260701T000000Z-fixlongago 398
 
 # A review of part of the tree never answers for the repository: `receipt` with no selector finds
 # nothing, and the scope's own receipt is readable only when asked for by name.

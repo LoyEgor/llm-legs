@@ -23,12 +23,14 @@ case "$surface" in
     ;;
 esac
 
-case "$extra" in
-  ''|*[!0-9-]*|-)
-    usage
-    exit 2
-    ;;
-esac
+# A signed integer and nothing else: a pattern admitting any mix of digits and hyphens took
+# `10-`, which dies in the arithmetic below, and `1-2`, which quietly becomes a subtraction.
+is_int() {
+  case "${1#-}" in ''|*[!0-9]*) return 1 ;; esac
+  return 0
+}
+
+is_int "$extra" || { usage; exit 2; }
 
 run_bounded() {
   local seconds=$1 pid watchdog_pid timeout_cmd rc
@@ -68,8 +70,47 @@ account=${CLAUDE_LIMITS_ACCOUNT:-notcom}
 [ "$account" = "-" ] && account=notcom
 cache="$HOME/.llm-limits.json"
 
+resolve_root() {
+  local source="${BASH_SOURCE[0]}" directory
+  while [ -L "$source" ]; do
+    directory=$(cd -P "$(dirname "$source")" && pwd)
+    source=$(readlink "$source")
+    [[ "$source" = /* ]] || source="$directory/$source"
+  done
+  cd -P "$(dirname "$source")/.." && pwd
+}
+legs_root=$(resolve_root) || legs_root=""
+# The five-hour staleness threshold, from the one place it is written down
+# (docs/shared-invariants.md row a) — never a literal of this script's own.
+stale_after=""
+if [ -n "$legs_root" ] && [ -r "$legs_root/share/limits-view.sh" ]; then
+  . "$legs_root/share/limits-view.sh"
+  stale_after=${LIMITS_STALE_FIVE_HOUR:-}
+fi
+
+# The `as_of` of a row the COLLECTOR itself calls fresh, and nothing for one it does not. Staleness
+# is limits-view.sh's `limits_bucket_stale` — expired auth and a cached-origin reading as much as
+# age — and a surface that re-derives any part of it from `as_of` alone trusts a row the rest of
+# the system prints with a `~`. The age below is asked on top because that flag is frozen at the
+# instant the collector wrote it and cannot go stale on its own.
+fresh_five_hour_as_of() {
+  [ -f "$cache" ] || return 1
+  jq -r --arg acct "$account" '
+    (.vendors.claude.accounts[]? | select(.account == $acct) | .five_hour)
+    | select(type == "object" and .stale == false)
+    | .as_of | if type == "number" then . else empty end
+  ' "$cache" 2>/dev/null | head -n1
+}
+
+# A refresh is real OAuth/usage traffic, and one spent on a reading minutes old buys nothing while
+# self-inflicting 429s under capacity weather (Egor, 2026-07-17). Asked of the store first: only a
+# row that is missing, unreadable, already marked stale, or past its own threshold is worth the call.
 if command -v llm-limits >/dev/null 2>&1; then
-  run_bounded 20 llm-limits --refresh
+  as_of=$(fresh_five_hour_as_of)
+  if [ -z "$as_of" ] || [ -z "$stale_after" ] ||
+     [ "$(( $(date +%s) - ${as_of%%.*} ))" -ge "$stale_after" ]; then
+    run_bounded 20 llm-limits --refresh
+  fi
 fi
 
 # Same ISO8601-with-offset parser llm-limits.sh uses, so resets_at math stays in sync.
@@ -92,13 +133,6 @@ if [ -f "$cache" ]; then
     | if $resets == null then "" else (($resets | iso2epoch) // "") end
   ' "$cache" 2>/dev/null)
 fi
-
-is_int() {
-  case "$1" in
-    ''|*[!0-9-]*) return 1 ;;
-    *) return 0 ;;
-  esac
-}
 
 now=$(date +%s)
 fallback_reason=""

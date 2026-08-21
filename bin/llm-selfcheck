@@ -19,6 +19,10 @@ state_file="$log_dir/selfcheck.state"
 agent_dir="$HOME/Library/LaunchAgents"
 plist="$agent_dir/com.llm-legs.selfcheck.plist"
 link="$HOME/.local/bin/llm-selfcheck"
+# What launchd is pointed at. A LaunchAgent's visible program is what macOS Login Items names it
+# by, so it is a wrapper under a descriptive name of its own, exactly as com.llm-refresh's is
+# (docs/DIAGNOSTICS.md) — never a bare interpreter, and never the PATH symlink a human types.
+wrapper="$HOME/.local/libexec/llm-selfcheckd"
 label="com.llm-legs.selfcheck"
 
 timeout_command() {
@@ -61,7 +65,10 @@ alert_failure() {
 last_run_epoch() {
   local ts
   [ -f "$log_file" ] || return 0
-  ts=$(grep -o 'timestamp=[^ ]*' "$log_file" | tail -n 1 | cut -d= -f2-)
+  # A COMPLETION line (`write_log`) and never a step line: the tripwire logs its own step before
+  # the suites run, and read as the last run an interrupted self-check debounced itself out of
+  # retrying for the next 20 hours.
+  ts=$(grep 'failed_step=' "$log_file" | grep -o 'timestamp=[^ ]*' | tail -n 1 | cut -d= -f2-)
   [ -n "$ts" ] || return 0
   date -j -f '%Y-%m-%dT%H:%M:%S%z' "$ts" '+%s' 2>/dev/null || date -d "$ts" '+%s' 2>/dev/null
 }
@@ -156,9 +163,20 @@ run_checks() {
   write_log PASS -
 }
 
+# One spelling for the line install writes and uninstall recognises: `%q` escapes a path with
+# spaces, and a raw-path search never matched what was on disk, so the wrapper was left behind.
+wrapper_exec_line() {
+  printf 'exec %q "$@"' "$script_path"
+}
+
 install_agent() {
-  mkdir -p "$agent_dir" "$log_dir" "$(dirname "$link")"
+  local wrapper_tmp
+  mkdir -p "$agent_dir" "$log_dir" "$(dirname "$link")" "$(dirname "$wrapper")"
   ln -sfn "$script_path" "$link"
+  wrapper_tmp=$(mktemp "${wrapper}.tmp.XXXXXX") || return 1
+  printf '#!/usr/bin/env bash\n%s\n' "$(wrapper_exec_line)" >"$wrapper_tmp"
+  chmod 755 "$wrapper_tmp"
+  mv -f "$wrapper_tmp" "$wrapper"
   cat >"$plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -168,7 +186,7 @@ install_agent() {
   <string>$label</string>
   <key>ProgramArguments</key>
   <array>
-    <string>$link</string>
+    <string>$wrapper</string>
   </array>
   <key>WorkingDirectory</key>
   <string>$repo_root</string>
@@ -207,6 +225,9 @@ uninstall_agent() {
   rm -f "$plist"
   if [ -L "$link" ] && [ "$(readlink "$link")" = "$script_path" ]; then
     rm -f "$link"
+  fi
+  if [ -f "$wrapper" ] && grep -qF "$(wrapper_exec_line)" "$wrapper"; then
+    rm -f "$wrapper"
   fi
   printf 'Uninstalled %s.\n' "$label"
 }

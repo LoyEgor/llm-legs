@@ -125,6 +125,30 @@ out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" app) || fail "default
 minutes=$(echo "$out" | grep -oE 'for [0-9]+ min' | grep -oE '[0-9]+')
 [ "$minutes" = "30" ] || fail "default extra should be +10 (20 to reset + 10 = 30, got $minutes): $out"
 
+# --- refresh gate: the collector's own staleness verdict, not this script's arithmetic ---
+
+write_limits_bucket() { # stale age-seconds
+  cat >"$FIXTURE_HOME/.llm-limits.json" <<EOF
+{"vendors":{"claude":{"accounts":[{"account":"notcom","five_hour":{
+  "resets_at":"$(date -u -r "$((now + 1200 + 30))" +%Y-%m-%dT%H:%M:%SZ)",
+  "as_of":$((now - $2)),"stale":$1}}]}}}
+EOF
+}
+
+write_limits_bucket false 60
+run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" app 0 >/dev/null || fail "fresh-row run failed"
+grep -q 'LLM_LIMITS --refresh' "$CALLS" && fail "a row the collector calls fresh must not be refreshed: $(cat "$CALLS")"
+
+write_limits_bucket false 3600
+run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" app 0 >/dev/null || fail "aged-row run failed"
+grep -q 'LLM_LIMITS --refresh' "$CALLS" || fail "a row past the five-hour threshold must be refreshed: $(cat "$CALLS")"
+
+# The flag is written at collection time and cannot age, so it is asked as well as the clock: a
+# minutes-old row the collector marked stale (expired auth, cached origin) is not one to arm off.
+write_limits_bucket true 60
+run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" app 0 >/dev/null || fail "stale-marked-row run failed"
+grep -q 'LLM_LIMITS --refresh' "$CALLS" || fail "a row the collector marked stale must be refreshed: $(cat "$CALLS")"
+
 # --- hs unreachable ---
 
 out=$(PATH="/usr/bin:/bin" HOME="$FIXTURE_HOME" "$SCRIPT" app 0 2>&1)

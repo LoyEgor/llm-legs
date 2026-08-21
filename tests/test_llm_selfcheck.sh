@@ -192,9 +192,26 @@ assert grep -A1 '<key>RunAtLoad</key>' "$PLIST" | grep -q '<true/>'
 assert grep -q "$HOME/.claude-profiles/.claudeb/selfcheck.stdout.log" "$PLIST"
 assert grep -q '^bootout gui/' "$LAUNCH_CALLS"
 assert grep -q '^bootstrap gui/' "$LAUNCH_CALLS"
+# What Login Items names the job by is the wrapper, never the PATH symlink a human types.
+WRAPPER="$HOME/.local/libexec/llm-selfcheckd"
+assert test -x "$WRAPPER"
+assert grep -qF "exec $SCRIPT \"\$@\"" "$WRAPPER"
+assert grep -qF "<string>$WRAPPER</string>" "$PLIST"
 
 bash "$SCRIPT" uninstall >/dev/null || fail "uninstall failed"
 assert test ! -e "$PLIST"
 assert test ! -L "$HOME/.local/bin/llm-selfcheck"
+assert test ! -e "$WRAPPER"
+
+# The wrapper is written with `%q`, so a checkout path holding a space reaches disk ESCAPED, and
+# recognised on the way out by the raw path it survived every uninstall.
+SPACED="$WORK/with space/bin"
+mkdir -p "$SPACED"
+cp "$ROOT/bin/llm-selfcheck" "$SPACED/llm-selfcheck"
+chmod +x "$SPACED/llm-selfcheck"
+bash "$SPACED/llm-selfcheck" install >/dev/null || fail "install from a spaced path failed"
+assert grep -qF 'with\ space/bin/llm-selfcheck' "$WRAPPER"
+bash "$SPACED/llm-selfcheck" uninstall >/dev/null || fail "uninstall from a spaced path failed"
+assert test ! -e "$WRAPPER"
 
 echo "PASS: $asserts asserts; config tripwire, ordered suites and skip list, daily fixture-only e2e vs manual --e2e, log format and trimming, failure alerts, debounce/catch-up/stale-alert dedup, install and uninstall plist"

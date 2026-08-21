@@ -1868,8 +1868,8 @@ def head_tree_hash(repo):
     return empty_tree_hash(repo)
 
 
-def working_tree_tree(repo, paths=None, env=None):
-    scope = list(paths or [])
+def working_tree_tree(repo, paths=None, env=None, literal=False):
+    scope = literal_pathspecs(paths or []) if literal else list(paths or [])
     with tempfile.TemporaryDirectory(prefix="review-bench-index-") as directory:
         env = dict(env or os.environ, GIT_INDEX_FILE=str(Path(directory) / "index"))
         add = ("add", "-A", "--", *scope) if scope else ("add", "-A")
@@ -1891,13 +1891,14 @@ def working_tree_tree(repo, paths=None, env=None):
         return proc.stdout.strip()
 
 
-def tree_path_entries(repo, tree, paths):
+def tree_path_entries(repo, tree, paths, literal=False):
     """The `(mode, blob)` this tree holds under each of `paths`, keyed by path. A gitlink is left
     out: a submodule is not a blob, and overlaying one would rewrite a pointer nobody reviewed.
     """
     if not paths:
         return {}
-    proc = subprocess.run(["git", "ls-tree", "-r", "-z", tree, "--", *paths],
+    spelled = literal_pathspecs(paths) if literal else list(paths)
+    proc = subprocess.run(["git", "ls-tree", "-r", "-z", tree, "--", *spelled],
                           cwd=repo, capture_output=True, text=True)
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or f"could not read the tree {tree}")
@@ -2174,12 +2175,12 @@ def debt_snapshot_commit(repo, scope):
             "records one per line and could not read back: " + ", ".join(map(repr, unusable))
         )
     head = head_tree_hash(repo)
-    held = tree_path_entries(repo, head, paths)
+    held = tree_path_entries(repo, head, paths, literal=True)
     # A path in neither HEAD nor the working tree is a deletion of something never committed: the
     # run still has to answer for it, but `git add` refuses a pathspec matching nothing at all.
     staged = [path for path in paths if os.path.lexists(Path(repo) / path) or path in held]
-    tree = working_tree_tree(repo, staged) if staged else head
-    current = tree_path_entries(repo, tree, paths)
+    tree = working_tree_tree(repo, staged, literal=True) if staged else head
+    current = tree_path_entries(repo, tree, paths, literal=True)
     recorded = {
         path: (artifact["shas"].get(path, "") if artifact else "") for path, artifact in scope
     }
@@ -2258,6 +2259,16 @@ def is_worktree_snapshot(repo, sha):
     return proc.returncode == 0 and proc.stdout.strip() == "review-bench@local"
 
 
+def literal_pathspecs(paths):
+    """`paths` as git pathspecs that mean themselves, for the readers whose paths are FILES rather
+    than a caller's pathspecs — a debt scope, computed from the journals and the artifacts, where a
+    file honestly named `:(exclude)x` or `*` would otherwise reach git as MAGIC and silently stage,
+    review and record a set nobody asked for. The journal hooks spell those same paths this way.
+    A `--paths` scope is the opposite case and keeps its globs: the caller wrote them.
+    """
+    return [f":(literal){path}" for path in paths]
+
+
 def scope_snapshot_paths(repo, scope, sha):
     """Every file a run with this scope is shown, repository-relative.
 
@@ -2303,7 +2314,7 @@ def reviewed_blobs(repo, scope, sha, paths=None):
     contributes no diff at all, and a run that does not HOLD it discharges no lock — so the run
     that was widened to read it has to record it too.
     """
-    listed = scope_snapshot_paths(repo, scope, sha)
+    listed = list(paths) if paths else scope_snapshot_paths(repo, scope, sha)
     wanted = {path for path in listed if "\n" not in path}
     if not wanted:
         return {}
@@ -4229,8 +4240,25 @@ def run_scope_key(meta):
 
 
 def run_reviewed_paths(meta):
+    """Every path a run recorded reading, in one namespace.
+
+    A merged panel records a map per member as well as its own, and only the members' hold a debt
+    review's zero-diff survivors: the workspace map is that snapshot's diff, which by definition
+    shows nothing for a path standing exactly where the locked round recorded it. Read off the
+    workspace alone, the run that discharges a lock reads as one that never held those paths.
+    """
+    held = set()
     reviewed = meta.get("reviewed")
-    return set(reviewed) if isinstance(reviewed, dict) else set()
+    if isinstance(reviewed, dict):
+        held |= set(reviewed)
+    for record in meta.get("repos") or ():
+        if not isinstance(record, dict):
+            continue
+        member = record.get("reviewed")
+        if isinstance(member, dict):
+            label = str(record.get("label") or "")
+            held |= {f"{label}/{path}" if label else str(path) for path in member}
+    return held
 
 
 def review_round(run_dir, meta):
@@ -4262,12 +4290,20 @@ def review_round(run_dir, meta):
     # would answer differently every time the same block was re-rendered.
     since = parse_iso_timestamp(meta.get("finished") or meta.get("finished_at")) or utc_now()
     floor = since - timedelta(hours=ROUND_LINEAGE_MAX_HOURS)
+    # When this run SEALED its tree, which is the instant it stopped being able to read a fix — and
+    # never its finish, hours later for a T2 panel. Only the receipts before it are lineage.
+    sealed = parse_iso_timestamp(meta.get("started") or meta.get("started_at")) or since
     benches = run_dir.parent
     for other in sorted(benches.iterdir()) if benches.exists() else ():
         if other.name >= run_dir.name:
             break
         record = read_fix_status(other)
         if not record or record.get("state") != "done":
+            continue
+        # The receipt as the REPORT reads it and never its raw field: a re-adjudication replaces a
+        # run's verdicts and leaves the receipt standing, and a round the report itself calls
+        # pending must not spend the scope's budget of two.
+        if round_state(other) != "done":
             continue
         try:
             earlier = json.loads((other / "meta.json").read_text())
@@ -4277,6 +4313,13 @@ def review_round(run_dir, meta):
             continue
         finished = parse_iso_timestamp(earlier.get("finished") or earlier.get("finished_at"))
         if finished is None or finished < floor:
+            continue
+        # A round is the second one over fixes it could actually read: a receipt recorded after
+        # this run sealed its tree answers for work that landed later, and taken as lineage it
+        # spends the budget and releases the lock over a pass that saw none of it. Receipts from
+        # before the field went in carry no instant and keep their own answer.
+        recorded = parse_iso_timestamp(record.get("recorded_at"))
+        if recorded is not None and recorded > sealed:
             continue
         if run_reviewed_paths(earlier) <= held:
             return ROUND_BUDGET
@@ -4518,9 +4561,11 @@ def emit_report(run_dir, meta, verdicts=None):
         for line in pending_lines(run_dir, meta):
             print(line)
         return
+    # One read of the triage for both: the frame word and the rows are the same run's answer, and
+    # re-read for the rows they can disagree with the frame around them.
     resolved = verdicts if verdicts is not None else read_jsonl(run_dir / "verdicts.jsonl")
     print(REPORT_BLOCKED_BEGIN if round_state(run_dir, resolved) == "blocked" else REPORT_BEGIN)
-    for line in report_lines(run_dir, meta, verdicts):
+    for line in report_lines(run_dir, meta, resolved):
         print(line)
     print(REPORT_END)
 
@@ -8251,6 +8296,22 @@ def cmd_fixes(args):
                 f"--fixed {args.fixed} and --fp {args.fp} answer for fewer findings than the "
                 f"{confirmed} this triage confirmed: a pass that left some of them standing is "
                 "--blocked with the reason, not done"
+            )
+        # And bounded from above by the same triage, or the shortfall check below is the only
+        # thing standing between a typo and a round retired for good on a tally its own verdicts
+        # cannot account for: nothing can be fixed that nobody confirmed, and no receipt answers
+        # for more findings than the panel produced.
+        if args.fixed > confirmed:
+            raise ValueError(
+                f"--fixed {args.fixed} names more findings than the {confirmed} this triage "
+                "confirmed: a pass cannot fix what nobody confirmed"
+            )
+        judged = len(rows or ())
+        if args.fixed + args.fp > judged:
+            raise ValueError(
+                f"--fixed {args.fixed} and --fp {args.fp} answer for more findings than the "
+                f"{judged} this run has: the counts are outcomes for findings the panel produced, "
+                "and a receipt naming others is a record of no round at all"
             )
         record = {
             "state": "done", "fixed": args.fixed, "false_positives": args.fp,
