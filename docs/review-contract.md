@@ -26,10 +26,17 @@ is visibility, not blocking.
    `CLAUDE_CODE_SESSION_ID` into `<run-dir>/launcher` at start and the run's own
    files into `<run-dir>/files` after every attempt, and the hook sweeps the runs
    stamped with its session on every tool call, journalling their paths under it
-   (invariant row `am`). Nothing here depends on the chat reading a report:
-   ownership taken off printed output belongs to whoever printed it. The gate
-   reads the same records, so a run that finishes between the chat's last tool
-   call and its commit is still priced as that chat's work. Codex and Gemini
+   (invariant row `am`). A worker that edited through the SHELL lists no file at
+   all, so `worker-run` records that run's own claudeb session ids in
+   `<run-dir>/worker-session` beside the listing: those ids journaled every such
+   edit under themselves, and no chat in the repository answers for them. The gate
+   folds the commit-journal entries they own into the launching chat's pending set,
+   and `debt --session <launcher>` counts those paths as the launcher's — the
+   launcher joins the record's authors and the worker id stays beside it. Nothing
+   here depends on the chat reading a report: ownership taken off printed output
+   belongs to whoever printed it. The gate reads the same records, so a run that
+   finishes between the chat's last tool call and its commit is still priced as
+   that chat's work. Codex and Gemini
    workers keep no per-file transcript, so their record carries an `UNKNOWN:`
    line instead of paths and their files stay outside coverage — a named
    limitation of those vendors, not an accident of the plumbing. The gate names
@@ -67,16 +74,28 @@ because nothing here reads git history. A path no artifact ever held is in debt
 whole while it exists — a run that never read it has no content to compare, so a
 repo-wide review cannot blanket files born after it. A held path that is gone is
 in debt; a deletion the run READ is settled by it (the snapshot records that path
-against the empty string).
+against the empty string). A killed run holds no path at all: triaging it settles
+the chat's round — the `timed-out` verdict goes quiet and the report the Stop gate
+waits for is discharged — but its snapshot is never read as an artifact, because
+the panel was sealed with the whole scope and reached only part of it, and counting
+it would settle the paths its dead cells never read for every chat at once.
 
 `review-bench debt --repo <top> [--session <sid>] [--paths <p>...] [--list]`
 prints exactly one line and exits 0:
 
 - `none` — nothing asked about is in debt.
-- `debt <n> mine|other [locked]` — `n` paths in debt (restricted to `--paths`
-  when given). `mine` when `<sid>` is among the debt's authors.
+- `debt <n> mine|other|unknown [<owned>] [locked]` — `n` paths in debt (restricted
+  to `--paths` when given). The owner word is the third field and the only one a
+  reader switches on: `mine` when `<sid>` authored at least one debt path or a run
+  of its own holds one, `other` when it owns none, `unknown` when no `--session` was
+  given at all — nobody asked whose this is, so nothing here knows, and `other`
+  would be an ownership no reader computed. `<owned>` stands after the word only
+  where the chat owns SOME but not all of them: the word keeps its meaning for every
+  reader switching on it, and the count beside it is the new fact.
 - `timed-out <run-id>` — the session's most recent run was killed by the watchdog
-  and no later triaged run of its own has spoken since.
+  and nothing of its own has spoken since. A later triaged run of that session takes
+  the answer back, and so does the killed run's OWN triage: a kill whose findings
+  were judged left nothing to wait on.
 
 `--list` prints the debt paths themselves, one per line, instead of the verdict.
 With no `--paths` the question is the repository's, and its universe is what the
@@ -156,7 +175,7 @@ reason.
   the weak block / re-review, and a re-review must rerun the full original scope
   plus fixes, never the fixes alone (a fresh pass over old code finds new
   defects; a fix-only pass only certifies the fixes), named as the same `--debt`
-command the commit notice prints (invariant row at). What differs is the line
+  command the commit notice prints (invariant row at). What differs is the line
   above them: at the P1 count the second review is mandatory and the waiver is
   withheld until it runs; on the tally alone it is owed by default and `waive`
   is still open. The model judges; Egor decides when he is present. When
@@ -170,8 +189,8 @@ command the commit notice prints (invariant row at). What differs is the line
 
 Per (model, effort): cap = the longest recorded duration for that pair + 3
 minutes, floor 15 minutes. On breach the panel is killed, the run is marked
-`timed_out` in its record, and the statusline goes loud until a later triaged
-run covers the session's paths. A breached cap grows by one grace on the next
+`timed_out` in its record, and the statusline goes loud until that run's own
+triage is recorded or a later triaged run of the same session speaks. A breached cap grows by one grace on the next
 run so a wrong kill corrects itself — but the growth is a probe with three
 strikes, not a right: only runs killed since the pair's last completion count,
 and the third in a row drops the kill record, returning the pair to the cap
@@ -227,25 +246,21 @@ verdicts each cell reads confirmed/found, so the order is visible.
 `REVIEW_ASKED=1` marks a review Egor asked for by name; `REVIEW_GATE_OK=1` marks
 his explicit skip — both on the model's honour (2026-08-10). The framed block from
 `record --no-corpus` is the only review output Egor reads, and the report hook
-prints it: one copy, from review-bench's own rendering, costing no tokens. A model
-that retypes it can mistype it, and a gate comparing the retyping against the
-reference then buys a second identical block — which is what happened. What the
+prints it: one copy, from review-bench's own rendering, costing no tokens. What the
 model owes after the block is judgment the block cannot hold, never its contents
 restated. The corpus rules (sealed judges, `--bench` opt-in) are unchanged.
 
-**Two frame words, two delivered states.** `review` — the fixes are done, or
-there was nothing to fix. `review · NOT FINISHED` — and ONLY this — is a round
-whose fix status is `blocked`: the pass stopped at the P1 threshold and fixed
-nothing, and the block carries the fork (fix as it stands / rewrite the weak
-block / cut the scope) as Egor's decision, not the fixer's. A round whose fixing
-pass has not answered wears the PLAIN word and says so in its `fixes:` row, at
-any age: the model reads that block when it runs `review-bench report` itself,
-and no hook ever delivers it — deriving a loud word from "no fixes recorded" put
-a report saying nothing was fixed in front of Egor while the fixes were landing
-(2026-08-20), and promoting such a round to a deliverable state of its own
-handed the Stop gate 39 unanswerable rounds in one message the same day. The
-finished report follows on its own, from the Stop net's `pending-delivery`
-source, one per state per round.
+**Two frame words, two delivered states** (invariant `as`). `review` — the fixes
+are done, or there was nothing to fix. `review · NOT FINISHED` — and ONLY this —
+is a round whose fix status is `blocked`: the pass stopped at the P1 threshold
+and fixed nothing, and the block carries the fork (fix as it stands / rewrite the
+weak block / cut the scope) as Egor's decision, not the fixer's. A round whose
+fixing pass has not answered wears the PLAIN word and says so in its `fixes:`
+row, at any age, and no hook ever delivers it — a loud word derived from "no
+fixes recorded" reports failure while the fixes are still landing, and promoting
+pending rounds to a deliverable state floods the Stop gate with every
+pre-receipt run the chat ever held. The finished report follows on its own, from
+the Stop net's `pending-delivery` source, one per state per round.
 
 ## Non-goals — deleted by this contract
 
