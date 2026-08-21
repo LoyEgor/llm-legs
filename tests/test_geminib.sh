@@ -486,6 +486,8 @@ IMAGE_SIPS_CALLS="$WORK/image-sips-calls"
 IMAGE_REPLY="$WORK/generated.jpg"
 export IMAGE_CALLS IMAGE_PROMPT IMAGE_PICK_CALLS IMAGE_MAGICK_CALLS IMAGE_SIPS_CALLS IMAGE_REPLY
 mkdir -p "$IMAGE_BIN" "$WORK/image-output" "$HOME/.claude"
+mkdir -p "$HOME/.gemini-profiles/explicit" "$HOME/.gemini-profiles/poolacct" \
+  "$HOME/.gemini-profiles/pinacct" "$HOME/.gemini-profiles/rescue"
 : >"$IMAGE_PICK_CALLS"
 : >"$IMAGE_MAGICK_CALLS"
 : >"$IMAGE_SIPS_CALLS"
@@ -574,6 +576,53 @@ image_rc=0
 image_run --dest "$WORK/image-output/bad.jpg" --prompt badge --aspect 5:4 || image_rc=$?
 assert test "$image_rc" -eq 2
 assert grep -q '^usage: gemini-image ' "$IMAGE_ERR"
+
+# An extensionless destination names no format for the conversion below to write, and `magick`
+# cannot infer one from it.
+image_rc=0
+image_run --dest "$WORK/image-output/noext" --prompt badge || image_rc=$?
+assert test "$image_rc" -eq 2
+assert grep -q '^usage: gemini-image ' "$IMAGE_ERR"
+# A bare trailing dot is that same nameless format, and it reads as an extension to a pattern.
+image_rc=0
+image_run --dest "$WORK/image-output/trailing." --prompt badge || image_rc=$?
+assert test "$image_rc" -eq 2
+assert grep -q '^usage: gemini-image ' "$IMAGE_ERR"
+
+# `geminib profile` CREATES an unknown name, keychain and all, so a typo or a stale pin would
+# launch a logged-out ghost profile and leave it in the roster every limits surface reads.
+: >"$IMAGE_CALLS"
+image_rc=0
+image_run --dest "$WORK/image-output/ghost.jpg" --prompt badge --account ghostacct || image_rc=$?
+assert test "$image_rc" -eq 1
+assert grep -q 'unknown account: ghostacct' "$IMAGE_ERR"
+assert test ! -d "$HOME/.gemini-profiles/ghostacct"
+assert test ! -s "$IMAGE_CALLS"
+
+# A generation is billed the moment it is sent, so everything the destination alone can refuse is
+# refused before it goes out.
+mv "$IMAGE_BIN/magick" "$WORK/magick-away"
+: >"$IMAGE_CALLS"
+image_rc=0
+image_run --dest "$WORK/image-output/nomagick.png" --prompt badge --account main || image_rc=$?
+assert test "$image_rc" -eq 1
+assert grep -q 'magick is required' "$IMAGE_ERR"
+assert test ! -s "$IMAGE_CALLS"
+: >"$IMAGE_CALLS"
+image_rc=0
+image_run --dest "$WORK/image-output/nomagick.jpg" --prompt badge --account main --transparent \
+  || image_rc=$?
+assert test "$image_rc" -eq 2
+assert grep -q 'requires a .png destination' "$IMAGE_ERR"
+# A non-png destination needs it too the moment the model answers in another format, which nothing
+# here can know before the generation is spent.
+: >"$IMAGE_CALLS"
+image_rc=0
+image_run --dest "$WORK/image-output/nomagick.jpg" --prompt badge --account main || image_rc=$?
+assert test "$image_rc" -eq 1
+assert grep -q 'magick is required' "$IMAGE_ERR"
+assert test ! -s "$IMAGE_CALLS"
+mv "$WORK/magick-away" "$IMAGE_BIN/magick"
 
 printf 'reference\n' >"$WORK/reference.jpg"
 : >"$IMAGE_PICK_CALLS"
@@ -672,4 +721,4 @@ assert image_run --dest "$WORK/image-output/converted.png" --prompt landscape --
 assert grep -q "$IMAGE_REPLY $WORK/image-output/converted.png" "$IMAGE_MAGICK_CALLS"
 assert grep -qx converted "$WORK/image-output/converted.png"
 
-echo "PASS: $asserts asserts; base and isolated HOME routing, worker-pool exclusion (own file beside the profiles, headless runs refused, interactive and pinned runs pass, the last member goes out too, visible in list/status), shared configuration and Playwright caches, per-profile keychain kept unlockable behind a login.keychain-db symlink, parallel ordered list/status probes, one-step creation, strict launch names, exec delimiter stripping, override-aware login hints, persistent remove markers, use pin set/show/clear/refusal parity, and one-image generation routing, prompt, rescue, and conversion"
+echo "PASS: $asserts asserts; base and isolated HOME routing, worker-pool exclusion (own file beside the profiles, headless runs refused, interactive and pinned runs pass, the last member goes out too, visible in list/status), shared configuration and Playwright caches, per-profile keychain kept unlockable behind a login.keychain-db symlink, parallel ordered list/status probes, one-step creation, strict launch names, exec delimiter stripping, override-aware login hints, persistent remove markers, use pin set/show/clear/refusal parity, and one-image generation routing, refused unknown accounts, destination checks made before a generation is spent, prompt, rescue, and conversion"

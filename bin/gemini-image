@@ -6,6 +6,12 @@ usage() {
   exit 2
 }
 
+normalized_extension() {
+  local value
+  value=$(printf '%s' "${1##*.}" | tr '[:upper:]' '[:lower:]')
+  case "$value" in jpeg) printf 'jpg' ;; *) printf '%s' "$value" ;; esac
+}
+
 resolve_root() {
   local source="${BASH_SOURCE[0]}" directory
   while [ -L "$source" ]; do
@@ -60,16 +66,22 @@ done
 
 [ -n "$dest" ] && [ -n "$prompt" ] || usage
 [[ "$dest" = /* ]] || usage
+extension=$(normalized_extension "${dest##*/}")
+# An extensionless destination — a bare trailing dot included — names no format for `magick` to
+# infer, and the mismatch below would hand it one anyway.
+{ [[ "${dest##*/}" = *.* ]] && [ -n "$extension" ]; } || usage
 [ -d "$(dirname "$dest")" ] || usage
-if [ "$remove_green" = true ]; then
-  case "$(printf '%s' "${dest##*.}" | tr '[:upper:]' '[:lower:]')" in
-    png) ;;
-    *)
-      printf 'gemini-image: --transparent requires a .png destination\n' >&2
-      exit 2
-      ;;
-  esac
+if [ "$remove_green" = true ] && [ "$extension" != png ]; then
+  printf 'gemini-image: --transparent requires a .png destination\n' >&2
+  exit 2
 fi
+# Unconditional because the answer's own extension is what decides the conversion and no check here
+# can know it yet: a `.jpg` destination answered with a `.png` needs `magick` too. A generation is
+# billed the moment it is sent, so the missing tool costs a whole image if it is found afterwards.
+command -v magick >/dev/null 2>&1 || {
+  printf 'gemini-image: magick is required for this output\n' >&2
+  exit 1
+}
 case "$aspect" in
   1:1|2:3|3:2|3:4|4:3|9:16|16:9) ;;
   *) usage ;;
@@ -112,6 +124,13 @@ if [ -z "$account" ]; then
     fi
     printf 'gemini-image: worker-pick unavailable; falling back to account %s\n' "$account" >&2
   fi
+fi
+
+# Collected before the match, never piped into it: `grep -q` leaves on the first line and the
+# roster writing into a closed pipe fails the whole pipeline under `pipefail`.
+if ! grep -Fqx -- "$account" <<<"$(gemini_account_names)"; then
+  printf 'gemini-image: unknown account: %s\n' "$account" >&2
+  exit 1
 fi
 
 profile_home=$(gemini_account_home "$account")
@@ -190,12 +209,6 @@ if [ -z "$generated" ]; then
   exit 1
 fi
 
-normalized_extension() {
-  local value
-  value=$(printf '%s' "${1##*.}" | tr '[:upper:]' '[:lower:]')
-  case "$value" in jpeg) printf 'jpg' ;; *) printf '%s' "$value" ;; esac
-}
-extension=$(normalized_extension "$dest")
 if [ "$remove_green" = true ] || [ "$extension" = png ] \
     || [ "$extension" != "$(normalized_extension "$generated")" ]; then
   command -v magick >/dev/null 2>&1 || {
