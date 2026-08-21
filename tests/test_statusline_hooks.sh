@@ -2781,35 +2781,50 @@ review_render() { # session repo
 
 # The gate is asked about the working tree and this chat, and its answer is printed word for word.
 : > "$GATE_LOG"
-GATE_ANSWER='dim rev ● 3'
+GATE_ANSWER='dim rev 3'
 GATE_RC=0
 review_none_out=$(review_render review-dirty "$REVIEW_DIRTY")
-assert grep -Fq " ${DIM}│${RESET} ${DIM}rev ● 3${RESET}" <<< "$review_none_out"
+assert grep -Fq " ${DIM}│${RESET} ${DIM}rev 3${RESET}" <<< "$review_none_out"
 assert_eq "verdict $TOP_REVIEW_DIRTY review-dirty" "$(head -1 "$GATE_LOG")"
 
-# Debt this chat authored reads bright — normal weight, no colour of its own — and dim is a
-# co-tenant's. Both carry the count verbatim; the segment neither invents a number nor strips one.
-GATE_ANSWER='bright rev ● 2'
+# Debt this chat authored reads bright — normal weight, no colour of its own — and dim is
+# everyone else's. Both carry the count verbatim; the segment neither invents a number nor strips
+# one, and the number is diff lines, which is the gate's business and not the render's.
+GATE_ANSWER='bright rev 2'
 review_mine_out=$(review_render review-mine "$REVIEW_DIRTY")
-assert grep -Fq " ${DIM}│${RESET} rev ● 2" <<< "$review_mine_out"
-assert test "${review_mine_out#*"${DIM}rev ●"}" = "$review_mine_out"
+assert grep -Fq " ${DIM}│${RESET} rev 2" <<< "$review_mine_out"
+assert test "${review_mine_out#*"${DIM}rev"}" = "$review_mine_out"
 assert test "${review_mine_out#*"${RED}rev"}" = "$review_mine_out"
 
-# Red belongs to the watchdog alone (docs/review-contract.md): a review that hung past its cap is
-# the one verdict worth interrupting the eye, and a nonzero exit is the gate answering rather than
-# the gate failing.
-GATE_ANSWER='loud rev timeout'
+# Both sides standing is ONE segment in two tones: this chat's own up to the slash at normal
+# weight, everyone else's from the slash dimmed. Two labels would ask the reader to add them up.
+GATE_ANSWER='split rev 12/34'
+review_split_out=$(review_render review-split "$REVIEW_DIRTY")
+assert grep -Fq " ${DIM}│${RESET} rev 12${DIM}/34${RESET}" <<< "$review_split_out"
+assert test "${review_split_out#*"${DIM}rev 12"}" = "$review_split_out"
+assert test "${review_split_out#*"${RED}rev"}" = "$review_split_out"
+# Truncation can eat the slash, and then the whole text stands at the near weight rather than
+# being printed once per side.
+GATE_ANSWER='split rev 123456789012345678/9'
+review_split_long_out=$(review_render review-split-long "$REVIEW_DIRTY")
+assert grep -Fq " ${DIM}│${RESET} rev 123456789012345…" <<< "$review_split_long_out"
+assert test "${review_split_long_out#*"${DIM}/"}" = "$review_split_long_out"
+
+# The watchdog has no voice here at all: a killed run settles nothing, so its paths stand in the
+# numbers like any others and the kill is seen through the report flow and `review-bench doctor`
+# (docs/review-contract.md). No word of the gate's own vocabulary is red, and a nonzero exit is
+# the gate answering rather than the gate failing.
 GATE_RC=2
-review_timeout_out=$(review_render review-timeout "$REVIEW_DIRTY")
-assert grep -Fq " ${DIM}│${RESET} ${RED}rev timeout${RESET}" <<< "$review_timeout_out"
-GATE_RC=0
 review_calm_n=0
-for review_calm in 'off' 'dim rev ● 3' 'bright rev ● 2'; do
+for review_calm in 'off' 'dim rev 3' 'bright rev 2' 'split rev 12/34'; do
   review_calm_n=$((review_calm_n + 1))
   GATE_ANSWER="$review_calm"
   review_calm_out=$(review_render "review-calm-$review_calm_n" "$REVIEW_DIRTY")
   assert test "${review_calm_out#*"${RED}rev"}" = "$review_calm_out"
+  assert test "${review_calm_out#*●}" = "$review_calm_out"
+  assert test "${review_calm_out#*timeout}" = "$review_calm_out"
 done
+GATE_RC=0
 
 # `off` is the gate having nothing to say, and the segment says nothing.
 GATE_ANSWER=off
@@ -2817,7 +2832,8 @@ review_off_out=$(review_render review-off "$REVIEW_DIRTY")
 assert review_slot_silent "$review_off_out"
 
 # A style this build does not know is still an answer: shown loud and whole, never swallowed. A
-# gate that grows a fourth word must not go silent in the label that speaks for it.
+# gate that grows a fifth word must not go silent in the label that speaks for it — red is left
+# for exactly that, and the gate's own vocabulary never reaches it.
 GATE_ANSWER='held because'
 review_unknown_out=$(review_render review-unknown "$REVIEW_DIRTY")
 assert grep -Fq " ${DIM}│${RESET} ${RED}held because${RESET}" <<< "$review_unknown_out"
@@ -2829,21 +2845,21 @@ GATE_RC=1
 review_empty_out=$(review_render review-empty "$REVIEW_DIRTY")
 assert review_slot_silent "$review_empty_out"
 GATE_CMD="$FIXTURES/no-such-gate.sh"
-GATE_ANSWER='dim rev ● 3'
+GATE_ANSWER='dim rev 3'
 GATE_RC=0
 review_nogate_out=$(review_render review-nogate "$REVIEW_DIRTY")
 assert review_slot_silent "$review_nogate_out"
 GATE_CMD="$GATE_STUB"
 
 # Truncation is the one thing done to the text, and it is display only.
-GATE_ANSWER='loud rev timeout on a run nobody killed'
+GATE_ANSWER='dim rev 3 and a sentence nobody expected'
 review_long_out=$(review_render review-long "$REVIEW_DIRTY")
-assert grep -Fq "rev timeout on a ru…" <<< "$review_long_out"
+assert grep -Fq "rev 3 and a sentenc…" <<< "$review_long_out"
 assert test "${review_long_out#*nobody}" = "$review_long_out"
 
 # Asked once per key, not once per render: this runs on every prompt, and the gate's verdict mode
 # reads git and review-bench. A second render with nothing moved must come off the cache.
-GATE_ANSWER='dim rev ● 3'
+GATE_ANSWER='dim rev 3'
 rm -f "$STATE_DIR/review-class-review-cache"
 : > "$GATE_LOG"
 run_statusline "$(statusline_payload review-cache "" "$REVIEW_DIRTY")" >/dev/null ||
@@ -2873,7 +2889,7 @@ test -z "$(ls "$HOME/.cache/claude-statusline"/review-tier-* 2>/dev/null)" ||
   fail "the review segment still spawned a probe: $(ls "$HOME/.cache/claude-statusline")"
 
 # The label sits after the repository cluster and before the workers.
-GATE_ANSWER='dim rev ● 3'
+GATE_ANSWER='dim rev 3'
 review_order_line=$(review_render review-order "$REVIEW_DIRTY")
 review_order_line="${review_order_line%%$'\n'*}"
 review_before="${review_order_line%%"$review_rev_delimited"*}"
@@ -2904,7 +2920,12 @@ if [ -x "$REAL_GATE" ]; then
   mkdir -p "$GATE_BIN"
   cat > "$GATE_BIN/review-bench" <<'RB'
 #!/bin/bash
-printf '%s\n' "${SESSION_REVIEW_ANSWER:-none}"
+# The verdict asks the split question and nothing else; the classic line is what every other
+# caller of this reader gets, and answering it here would hide the gate asking the wrong one.
+for rb_arg in "$@"; do
+  [ "$rb_arg" = --split ] && { printf '%s\n' "${SESSION_REVIEW_ANSWER:-split 0 0 0}"; exit 0; }
+done
+printf 'none\n'
 RB
   chmod +x "$GATE_BIN/review-bench"
   # The gate answers for the chat's own uncommitted work, which it reads out of the commit journal
@@ -2915,17 +2936,21 @@ RB
     review_render "$1" "$REVIEW_DIRTY"
   )
   real_objects_before=$(find "$REVIEW_DIRTY/.git/objects" -type f | wc -l | tr -d ' ')
-  review_real_other_out=$(review_real_render review-real 'debt 4 other')
-  assert grep -Fq " ${DIM}│${RESET} ${DIM}rev ● 4${RESET}" <<< "$review_real_other_out"
-  review_real_mine_out=$(review_real_render review-real-mine 'debt 1 mine')
-  assert grep -Fq " ${DIM}│${RESET} rev ● 1" <<< "$review_real_mine_out"
-  # A locked debt is still just debt in the strip: the lock decides what the commit notice offers,
-  # not how loud the label is.
-  review_real_locked_out=$(review_real_render review-real-locked 'debt 2 mine locked')
-  assert grep -Fq " ${DIM}│${RESET} rev ● 2" <<< "$review_real_locked_out"
-  # The watchdog's verdict is the one that survives the whole chain in red.
-  review_real_timeout_out=$(review_real_render review-real-timeout 'timed-out run-7')
-  assert grep -Fq " ${DIM}│${RESET} ${RED}rev timeout${RESET}" <<< "$review_real_timeout_out"
+  review_real_other_out=$(review_real_render review-real 'split 0 4 0')
+  assert grep -Fq " ${DIM}│${RESET} ${DIM}rev 4${RESET}" <<< "$review_real_other_out"
+  review_real_mine_out=$(review_real_render review-real-mine 'split 1 0 0')
+  assert grep -Fq " ${DIM}│${RESET} rev 1" <<< "$review_real_mine_out"
+  # Both sides survive the whole chain in the two weights, and debt nobody recorded rides with the
+  # foreign number rather than reading as this chat's.
+  review_real_split_out=$(review_real_render review-real-split 'split 2 3 0')
+  assert grep -Fq " ${DIM}│${RESET} rev 2${DIM}/3${RESET}" <<< "$review_real_split_out"
+  review_real_orphan_out=$(review_real_render review-real-orphan 'split 2 0 3')
+  assert grep -Fq " ${DIM}│${RESET} rev 2${DIM}/3${RESET}" <<< "$review_real_orphan_out"
+  review_real_nobody_out=$(review_real_render review-real-nobody 'split 0 0 5')
+  assert grep -Fq " ${DIM}│${RESET} ${DIM}rev 5${RESET}" <<< "$review_real_nobody_out"
+  # A repository owing lines nowhere says nothing, whatever its paths.
+  review_real_zero_out=$(review_real_render review-real-zero 'split 0 0 0')
+  assert review_slot_silent "$review_real_zero_out"
   # Nothing is in debt, so the gate has nothing to say about it.
   rm -f "$review_gitdir/claude-commit-journal"
   review_real_off_out=$(PATH="$GATE_BIN:$PATH" review_render review-real-off "$REVIEW_DIRTY")
@@ -3165,4 +3190,4 @@ assert review_slot_silent "$progress_gone_out"
 
 
 
-echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, a review slot that carries a run in flight — over this tree or over another one this chat launched — and nothing else once it ends, the gate's verdict vocabulary rendered verbatim with red kept for a hung review, keyed on the commit journal and asked once per key with nothing else probed behind it, main-last and Gemini account predictions, and Codex/claudeb/Gemini worker tag propagation"
+echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, a review slot that carries a run in flight — over this tree or over another one this chat launched — and nothing else once it ends, the gate's verdict vocabulary rendered verbatim, both debt sides in one two-toned segment and red kept for a word this build does not know, keyed on the commit journal and asked once per key with nothing else probed behind it, main-last and Gemini account predictions, and Codex/claudeb/Gemini worker tag propagation"

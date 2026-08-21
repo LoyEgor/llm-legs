@@ -789,26 +789,48 @@ FLOW_GATE="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/review-flow-gate.sh
 assert doc_has 'The statusline speaks the gate'
 assert grep -Fq '"$gate" verdict "$1" "$2"' "$STATUSLINE"
 assert grep -Fq "''|off) answer=off ;;" "$STATUSLINE"
-assert grep -Fq '"dim "*|"bright "*|"loud "*) ;;' "$STATUSLINE"
+assert grep -Fq '"dim "*|"bright "*|"split "*) ;;' "$STATUSLINE"
+# Two tones in one segment, cut on the first slash and nowhere else: the numbers are the gate's
+# and the weights are this line's, so a render that split them differently would say whose the
+# debt is with the gate disagreeing.
+assert grep -Fq '${review_text%%/*}${DIM}/${review_text#*/}${RESET}' "$STATUSLINE"
 # The three words the gate switches on, printed nowhere else.
 assert grep -Fq 'print("none")' "$REVIEWBENCH"
 assert grep -Fq 'print(f"timed-out {hung}")' "$REVIEWBENCH"
 assert grep -Fq 'print(f"debt {len(debt)} {owner}{share}{locked}")' "$REVIEWBENCH"
+assert grep -Fq 'print("split %d %d %d" % debt_split(repo, paths, session))' "$REVIEWBENCH"
 assert doc_has '`debt <n> mine|other|unknown [<owned>] [locked]`'
+assert doc_has '`split <own> <foreign> <orphaned>`'
+# The counter is the review target header's, not a second differ: one edit priced two ways is two
+# numbers for one question, and the label is then arguing with the panel's own target line.
+assert grep -Fq 'changes, _ = diff_numstat(repo, [str(left), str(right)], no_index=True)' "$REVIEWBENCH"
+assert grep -Fq 'DEBT_LINE_CACHE_FILE = "debt-lines.json"' "$REVIEWBENCH"
+assert doc_has '`<state dir>/debt-lines.json`'
+# The header's differ is also what the header REFUSES to count: a path the repository's attributes
+# take out of diffing has no lines on either surface, and the comparison of two files outside the
+# repository is the one place no `.gitattributes` pattern can reach.
+assert grep -Fq '"git", "check-attr", "--stdin", "-z", "diff"' "$REVIEWBENCH"
+assert doc_has 'take out of diffing (`-diff`)'
 # The owner word is what the gate switches on, so every word review-bench can print is named in
 # the row that promises the gate reads them all.
 assert grep -Fq 'owner = "unknown" if not session else ("mine" if owned else "other")' "$REVIEWBENCH"
 assert doc_has 'nothing may parse positionally past the owner word'
 if test -r "$FLOW_GATE"; then
   assert grep -Fq 'if [ "${1:-}" = verdict ]; then' "$FLOW_GATE"
-  assert grep -Fq 'echo "bright rev ● $count" || echo "dim rev ● $count"' "$FLOW_GATE"
-  # `loud` is the watchdog's alone, on both sides: red means a hung review and nothing else.
-  assert grep -Fq 'timed-out*) echo "loud rev timeout" ;;' "$FLOW_GATE"
-  assert test "$(grep -Ec '^[^#]*echo "loud ' "$FLOW_GATE")" -eq 1
+  assert grep -Fq 'echo "split rev $own/$foreign"' "$FLOW_GATE"
+  assert grep -Fq 'echo "bright rev $own"' "$FLOW_GATE"
+  assert grep -Fq 'echo "dim rev $foreign"' "$FLOW_GATE"
+  # Debt nobody recorded is folded into the foreign side HERE and nowhere else: read as the asking
+  # chat's it reports work that chat never did as its own to answer for.
+  assert grep -Fq 'foreign=$((foreign + orphaned))' "$FLOW_GATE"
+  # Nothing the gate says is red, and the watchdog has no statusline consumer at all: a killed run
+  # settles nothing, so its paths are already in the numbers.
+  assert test "$(grep -Ec '^[^#]*echo "loud ' "$FLOW_GATE")" -eq 0
+  assert test "$(grep -Fc 'rev timeout' "$FLOW_GATE")" -eq 0
   # The verdict asks about the repository, never about the pending paths: debt outlives the commit
   # that landed it, and a question narrowed to one chat's dirty files cannot see the rest.
   assert grep -Fq 'review-bench debt --repo "$top_dir" --session "$session" "$@"' "$FLOW_GATE"
-  assert grep -Fq 'answer=$(review_debt) || { echo off; exit 0; }' "$FLOW_GATE"
+  assert grep -Fq 'answer=$(review_debt --split) || { echo off; exit 0; }' "$FLOW_GATE"
 else
   printf 'SKIP: statusline verdict grammar across claude-setup (%s is unreadable)\n' "$FLOW_GATE"
 fi

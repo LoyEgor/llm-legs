@@ -7114,6 +7114,235 @@ assert rb.worker_session_launchers()["worker-sess-6"] == "chat-1"
 assert sr_answer("src/a.py", session="chat-1") == "debt 1 mine"
 sr_clear_journals()
 
+# --- debt --split: the same debt in DIFF LINES, split by whose it is --------------------------
+# What the statusline says. Per path the number is the diff between the content the artifact
+# covering it recorded and the content standing there now — counted by the differ the review target
+# header prints its `N file(s) · M line(s)` with, so the label and the header price one edit alike.
+def sr_split(*paths, session="chat-1", repo=None):
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc = rb.cmd_debt(argparse.Namespace(
+            repo=str(repo or sr_repo), session=session, paths=list(paths),
+            list=False, split=True,
+        ))
+    assert rc == 0, rc
+    return out.getvalue().strip()
+
+
+sr_split_store = sr_store()
+sr_clear_journals()
+sr_source.write_text("".join(f"line {n}\n" for n in range(1, 21)))
+sr_run(sr_split_store, "20260101T000100Z-aaaaaaa", {"src/a.py": sr_sha("src/a.py")})
+# Nothing owed is one shape too: the translator switches on the counts, never on which line came.
+assert sr_split("src/a.py") == "split 0 0 0"
+# Three lines past what the run read is three lines of debt, whatever the size of the file holding
+# them: the base is the artifact's content and never the whole file.
+sr_source.write_text("".join(f"line {n}\n" for n in range(1, 21)) + "one\ntwo\nthree\n")
+sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/a.py")
+assert sr_answer("src/a.py") == "debt 1 mine"
+assert sr_split("src/a.py") == "split 3 0 0"
+# The same debt read by the chat that did not write it, and by a reader who named no chat at all.
+assert sr_split("src/a.py", session="chat-2") == "split 0 3 0"
+assert sr_split("src/a.py", session="") == "split 0 3 0"
+# A path no artifact holds has no recorded side to compare, so it is in debt WHOLE: its own line
+# count, which is what a file nobody has ever read is worth reviewing as.
+(sr_repo / "src" / "fresh.py").write_text("a\nb\nc\nd\n")
+sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/fresh.py")
+assert sr_split("src/a.py", "src/fresh.py") == "split 7 0 0"
+# A held path that is gone counts the content it lost, on the same comparison read the other way.
+# Recorded AND readable, because a live artifact's blobs are in the store: the snapshot commit that
+# sealed the run wrote them, and comparing against one nothing can read is the case below instead.
+def sr_written_sha(path, repo=None):
+    return subprocess.run(
+        ["git", "-C", str(repo or sr_repo), "hash-object", "-w", "--",
+         str((repo or sr_repo) / path)],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+
+(sr_repo / "src" / "held.py").write_text("held one\nheld two\n")
+sr_run(sr_split_store, "20260101T000200Z-bbbbbbb", {"src/held.py": sr_written_sha("src/held.py")})
+sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/held.py")
+assert sr_split("src/held.py") == "split 0 0 0"
+(sr_repo / "src" / "held.py").unlink()
+assert sr_split("src/held.py") == "split 2 0 0"
+# A recorded blob this store can no longer read is the unheld case: there is nothing to compare
+# against, so the file counts whole, exactly as the debt snapshot drops such a path from its base.
+(sr_repo / "src" / "held.py").write_text("held one\nheld two\nheld three\n")
+sr_run(sr_split_store, "20260101T000300Z-ccccccc", {"src/held.py": "0" * 40})
+assert sr_split("src/held.py") == "split 3 0 0"
+(sr_repo / "src" / "held.py").unlink()
+# Lines is what the unit means: a binary file's change has none, exactly as the review header
+# prices it, and a repository owing nothing else says nothing in the statusline.
+sr_binary.write_bytes(b"\x00\x09\x0a")
+sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/blob.bin")
+assert sr_answer("src/blob.bin") == "debt 1 mine"
+assert sr_split("src/blob.bin") == "split 0 0 0"
+sr_binary.write_bytes(b"\x00\x01\x02\x03")
+
+# Debt no journal entry names and no run record claims belongs to NOBODY, and it is the reason
+# this answer has a third number. Live 2026-08-20: `debt` said `mine` for a repository whose
+# co-tenant work was journaled nowhere, so the chat read another chat's files as its own to answer
+# for. The gate folds this into the foreign side; here it stays visible.
+(sr_repo / "src" / "cotenant.py").write_text("co\ntenant\n")
+assert sr_answer("src/a.py", "src/cotenant.py") == "debt 2 mine 1"
+assert sr_split("src/a.py", "src/cotenant.py") == "split 3 0 2"
+# Claimed by a co-tenant's unswept run it is that chat's, not nobody's: the run record is where
+# that ownership lives until the journals sweep it (shared-invariants row `am`).
+sr_worker_run("20260101T1300Z-cotenant", "chat-2",
+              [f"WORKDIR: {sr_repo}", "src/cotenant.py"])
+assert sr_split("src/a.py", "src/cotenant.py") == "split 3 2 0"
+# And a run THIS chat launched makes it this chat's, as the verdict word already folds it.
+assert sr_split("src/a.py", "src/cotenant.py", session="chat-2") == "split 2 3 0"
+(sr_worker_runs / "20260101T1300Z-cotenant" / "journaled").write_text("")
+assert sr_split("src/a.py", "src/cotenant.py") == "split 3 0 2"
+# A journal entry naming the co-tenant does the same thing through the other store.
+sr_journal(rb.COMMIT_JOURNAL, "chat-2", "src/cotenant.py")
+assert sr_split("src/a.py", "src/cotenant.py") == "split 3 2 0"
+
+# The counts are cached on the two contents that decide them and on nothing else — never on the run
+# id, which moves while the content does not — or the statusline would diff every debt path on
+# every render inside its ~3s budget.
+sr_cache_file = rb.state_dir() / rb.DEBT_LINE_CACHE_FILE
+sr_cache_key = "%s:%s" % (
+    rb.covering_artifacts(sr_repo)["src/a.py"]["shas"]["src/a.py"],
+    rb.path_blob_sha(sr_repo, "src/a.py"),
+)
+assert json.loads(sr_cache_file.read_text())[sr_cache_key] == 3, sr_cache_file.read_text()
+# Read back rather than measured again: a planted count is what the answer follows.
+sr_cache_file.write_text(json.dumps({sr_cache_key: 41}))
+rb.DEBT_LINE_CACHE = None
+assert sr_split("src/a.py") == "split 41 0 0"
+# And it can never answer for a pair it was not measured on: the edit moves the working sha, which
+# is half the key, so the planted entry is simply not this question's.
+sr_source.write_text("".join(f"line {n}\n" for n in range(1, 21)) + "one\ntwo\nthree\nfour\n")
+assert sr_split("src/a.py") == "split 4 0 0"
+rb.DEBT_LINE_CACHE = None
+assert json.loads(sr_cache_file.read_text())[sr_cache_key] == 41, sr_cache_file.read_text()
+# A recorded blob this store cannot read is compared as an absence and KEYED as one. The cache file
+# is one machine's while an object store is one checkout's, so an entry naming a blob this
+# repository could not produce would hand the whole-file number to the checkout that still holds it.
+(sr_repo / "src" / "ghost.py").write_text("g1\ng2\ng3\n")
+sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/ghost.py")
+sr_run(sr_split_store, "20260101T000400Z-ddddddd", {"src/ghost.py": "0" * 40})
+assert sr_split("src/ghost.py") == "split 3 0 0"
+sr_ghost_entries = json.loads(sr_cache_file.read_text())
+assert sr_ghost_entries[":%s" % rb.path_blob_sha(sr_repo, "src/ghost.py")] == 3, sr_ghost_entries
+assert not [key for key in sr_ghost_entries if key.startswith("0" * 40)], sr_ghost_entries
+# A path that is GONE has no current side, and the key says so with the same empty string the
+# lookup asks with. Hashed as an empty FILE instead, every deleted debt path files an entry nothing
+# can ever ask for and is re-diffed on every render while that entry crowds the window.
+(sr_repo / "src" / "gone.py").write_text("g1\ng2\ng3\n")
+sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/gone.py")
+sr_run(sr_split_store, "20260101T000500Z-eeeeeee",
+       {"src/gone.py": sr_written_sha("src/gone.py")})
+sr_gone_recorded = rb.covering_artifacts(sr_repo)["src/gone.py"]["shas"]["src/gone.py"]
+(sr_repo / "src" / "gone.py").unlink()
+assert sr_split("src/gone.py") == "split 3 0 0"
+sr_gone_entries = json.loads(sr_cache_file.read_text())
+assert sr_gone_entries["%s:" % sr_gone_recorded] == 3, sr_gone_entries
+sr_cache_file.write_text(json.dumps({"%s:" % sr_gone_recorded: 44}))
+rb.DEBT_LINE_CACHE = None
+assert sr_split("src/gone.py") == "split 44 0 0"
+# A recorded blob of zero length is a measurement like any other, and read back it looks exactly
+# like the one thing that is not — a blob this store lost. Skipped, an emptied file's debt is
+# measured again on every render.
+(sr_repo / "src" / "empty.py").write_text("")
+sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/empty.py")
+sr_run(sr_split_store, "20260101T000600Z-fffffff",
+       {"src/empty.py": sr_written_sha("src/empty.py")})
+sr_empty_recorded = rb.covering_artifacts(sr_repo)["src/empty.py"]["shas"]["src/empty.py"]
+(sr_repo / "src" / "empty.py").write_text("e1\ne2\n")
+assert sr_split("src/empty.py") == "split 2 0 0"
+sr_empty_key = "%s:%s" % (sr_empty_recorded, rb.path_blob_sha(sr_repo, "src/empty.py"))
+assert json.loads(sr_cache_file.read_text())[sr_empty_key] == 2, sr_cache_file.read_text()
+# And the loss it is told apart from: a store can drop the object between the reachability read and
+# the read that measures, and the whole file counted against nothing must never be written down
+# under the sha of the content it was not compared with.
+(sr_repo / "src" / "lost.py").write_text("l1\nl2\n")
+sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/lost.py")
+sr_run(sr_split_store, "20260101T000700Z-ggggggg",
+       {"src/lost.py": sr_written_sha("src/lost.py")})
+sr_lost_recorded = rb.covering_artifacts(sr_repo)["src/lost.py"]["shas"]["src/lost.py"]
+(sr_repo / "src" / "lost.py").write_text("l1\nl2\nl3\n")
+sr_real_blob_bytes = rb.blob_bytes
+rb.blob_bytes = lambda repo, sha: b""
+assert sr_split("src/lost.py") == "split 3 0 0"
+rb.blob_bytes = sr_real_blob_bytes
+sr_lost_entries = json.loads(sr_cache_file.read_text())
+assert not [key for key in sr_lost_entries if key.startswith(sr_lost_recorded)], sr_lost_entries
+(sr_repo / "src" / "empty.py").unlink()
+(sr_repo / "src" / "lost.py").unlink()
+rb.DEBT_LINE_CACHE = None
+# A path this repository's attributes take out of diffing is priced as the review target header
+# prices it — no lines — and is the one answer here never written down: the comparison is of two
+# files OUTSIDE the repository, which no `.gitattributes` pattern can name, and an attribute
+# belongs to a checkout while the cache is shared by every checkout on the machine.
+(sr_repo / ".gitattributes").write_text("src/bundle.js -diff\n")
+(sr_repo / "src" / "bundle.js").write_text("b1\nb2\nb3\n")
+sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/bundle.js")
+assert sr_split("src/bundle.js") == "split 0 0 0"
+sr_attr_entries = json.loads(sr_cache_file.read_text())
+sr_bundle_sha = rb.path_blob_sha(sr_repo, "src/bundle.js")
+assert not [key for key in sr_attr_entries if key.endswith(sr_bundle_sha)], sr_attr_entries
+(sr_repo / ".gitattributes").unlink()
+assert sr_split("src/bundle.js") == "split 3 0 0"
+# An error is not a measurement. Written down it would answer for these two contents for as long
+# as both of them stand, long after whatever failed here stopped failing.
+sr_real_numstat = rb.diff_numstat
+
+
+def sr_failing_numstat(*args, **kwargs):
+    raise RuntimeError("git diff failed")
+
+
+(sr_repo / "src" / "flaky.py").write_text("f1\nf2\n")
+sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/flaky.py")
+rb.diff_numstat = sr_failing_numstat
+assert sr_split("src/flaky.py") == "split 0 0 0"
+rb.diff_numstat = sr_real_numstat
+rb.DEBT_LINE_CACHE = None
+assert sr_split("src/flaky.py") == "split 2 0 0"
+# Fresh measurements are persisted as they are made and not at the end alone: the gate asks this
+# under a timeout, and a first pass over a cold cache killed before its last path would otherwise
+# leave nothing behind and start again from zero on the render after it.
+sr_batch_paths = [f"src/batch{n}.py" for n in range(3)]
+for sr_index, sr_name in enumerate(sr_batch_paths):
+    (sr_repo / sr_name).write_text("".join(f"b{sr_index} {n}\n" for n in range(sr_index + 1)))
+    sr_journal(rb.COMMIT_JOURNAL, "chat-1", sr_name)
+sr_measured = []
+
+
+def sr_interrupted_numstat(*args, **kwargs):
+    sr_measured.append(1)
+    if len(sr_measured) > 1:
+        raise KeyboardInterrupt
+    return sr_real_numstat(*args, **kwargs)
+
+
+sr_real_batch = rb.DEBT_LINE_CACHE_BATCH
+rb.DEBT_LINE_CACHE_BATCH = 1
+rb.diff_numstat = sr_interrupted_numstat
+try:
+    sr_split(*sr_batch_paths)
+    raise AssertionError("the interrupted pass answered")
+except KeyboardInterrupt:
+    pass
+rb.diff_numstat = sr_real_numstat
+rb.DEBT_LINE_CACHE_BATCH = sr_real_batch
+rb.DEBT_LINE_CACHE = None
+assert json.loads(sr_cache_file.read_text()).get(
+    ":%s" % rb.path_blob_sha(sr_repo, sr_batch_paths[0])
+) == 1, sr_cache_file.read_text()
+for sr_name in sr_batch_paths + ["src/ghost.py", "src/bundle.js", "src/flaky.py"]:
+    (sr_repo / sr_name).unlink()
+
+# A repository the reader cannot resolve owes nothing it can name, and it says so in the one shape.
+assert sr_split(repo=work / "session-review-not-a-repo") == "split 0 0 0"
+(sr_repo / "src" / "fresh.py").unlink()
+(sr_repo / "src" / "cotenant.py").unlink()
+sr_clear_journals()
+
 # --- A clean round covers the bytes its own fixing pass wrote ---------------------------------
 # A round that closed under both of the gate's dials earns no second review, so nothing will ever
 # read its fixes: left in debt they are a waiver every chat after this one would have to know to

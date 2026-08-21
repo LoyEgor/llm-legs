@@ -60,7 +60,7 @@ is visibility, not blocking.
 | `review-bench debt` | the gate (and through it the model) | what this repository owes a review, and whose |
 | commit-time notify (once) | the model | reminded before an unreviewed commit; decides |
 | `escalation-verdict` fork | the model; Egor when present | fix / simplify / re-review after a bad round |
-| watchdog `timed-out` | Egor (loud) | a review hung past its cap |
+| watchdog `timed-out` | the report flow and `review-bench doctor` (untriaged) | a review hung past its cap |
 
 A line nobody acts on is deleted, not kept for safety.
 
@@ -81,7 +81,7 @@ waits for is discharged — but its snapshot is never read as an artifact, becau
 the panel was sealed with the whole scope and reached only part of it, and counting
 it would settle the paths its dead cells never read for every chat at once.
 
-`review-bench debt --repo <top> [--session <sid>] [--paths <p>...] [--list]`
+`review-bench debt --repo <top> [--session <sid>] [--paths <p>...] [--list|--split]`
 prints exactly one line and exits 0:
 
 - `none` — nothing asked about is in debt.
@@ -97,6 +97,17 @@ prints exactly one line and exits 0:
   and nothing of its own has spoken since. A later triaged run of that session takes
   the answer back, and so does the killed run's OWN triage: a kill whose findings
   were judged left nothing to wait on.
+
+`--split`, which answers `split <own> <foreign> <orphaned>`, is the same question in
+DIFF LINES for a machine: per path, the lines between the content its covering artifact recorded and
+the content standing there now — counted by the differ the review target header
+prints — added up over the paths `<sid>` answers for, the paths another chat does,
+and the paths NO journal entry names and no run record claims, which belong to
+nobody and must not be read as the asking chat's. The counts are cached under
+`<state dir>/debt-lines.json`, keyed by the two contents that decide each one — a
+recorded blob this store cannot read keyed as the absence it is compared as, and a
+path this repository's attributes take out of line counting (`-diff`) never cached
+at all, since both belong to a checkout while the file is shared by all of them.
 
 `--list` prints the debt paths themselves, one per line, instead of the verdict.
 With no `--paths` the question is the repository's, and its universe is what the
@@ -176,11 +187,13 @@ reason.
 ## The gate (claude-setup `hooks/review-flow-gate.sh`)
 
 - `verdict <repo> [session]` — the statusline's single voice (invariant row ah).
-  Asks `debt` about the whole repository, with no paths: debt outlives the commit
-  that landed it. Prints one line: `off` (no debt, nothing it can read),
-  `bright rev ● <n>` (this chat's own debt), `dim rev ● <n>` (a co-tenant's), or
-  `loud rev timeout`. `loud` exists for the watchdog alone — red in the
-  statusline always means a hung review, nothing else.
+  Asks `debt --split` about the whole repository, with no paths: debt outlives the
+  commit that landed it. The unit is DIFF LINES, and debt owned by nobody counts
+  with the foreign side. Prints one line: `off` (no debt, nothing it can read),
+  `bright rev <own>`, `dim rev <foreign>`, or `split rev <own>/<foreign>` when both
+  stand — rendered as one segment, own bright and foreign dim. Nothing here is red,
+  and a watchdog kill is not shown at all: a killed run settles nothing, so its
+  paths are already in the numbers.
 - Commit hook — **notify-once, never a wall**. A `git commit` whose pending paths
   carry debt exits 2 once, listing those paths and both ways to answer them — the
   `review --debt` command, which carries no path list because the mode reads the
@@ -211,8 +224,9 @@ reason.
 
 Per (model, effort): cap = the longest recorded duration for that pair + 3
 minutes, floor 15 minutes. On breach the panel is killed, the run is marked
-`timed_out` in its record, and the statusline goes loud until that run's own
-triage is recorded or a later triaged run of the same session speaks. A breached cap grows by one grace on the next
+`timed_out` in its record, which the report flow and `review-bench doctor` read;
+the statusline shows nothing for it, since a killed run settles nothing and its
+paths stand in the debt like any others. A breached cap grows by one grace on the next
 run so a wrong kill corrects itself — but the growth is a probe with three
 strikes, not a right: only runs killed since the pair's last completion count,
 and the third in a row drops the kill record, returning the pair to the cap

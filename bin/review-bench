@@ -1462,6 +1462,18 @@ DOCTOR_AGENT_INTERVAL_S = 6 * 3600
 DOCTOR_AGENT_WRAPPER = (".local", "libexec", "review-doctord")
 RUN_CONFIRMED_COUNTS = {}
 ROUND_BUDGET_SPENT_CACHE = {}
+# How many lines of debt a path carries, keyed by the two contents that decide it and nothing else,
+# so an entry can never answer for a pair it was not measured on. It is what keeps `debt --split`
+# inside the statusline's budget: without it every render diffs every debt path afresh.
+DEBT_LINE_CACHE_FILE = "debt-lines.json"
+# Trimmed to the newest half when it grows past this: entries are keyed by content and nothing ever
+# invalidates one, so a checkout edited for months would otherwise carry every blob it ever held.
+DEBT_LINE_CACHE_MAX = 4096
+# Written out every this many fresh measurements and not at the end alone: the gate asks this under
+# a timeout, and a first pass over a cold cache killed before its last path would otherwise persist
+# nothing at all and start again from zero on the render after it.
+DEBT_LINE_CACHE_BATCH = 32
+DEBT_LINE_CACHE = None
 # One identity and one clock behind every commit object review-bench writes, so the same input
 # always answers with the same sha. The email is also how a snapshot is told from a real commit.
 FIXED_COMMIT_IDENTITY = {
@@ -7985,16 +7997,23 @@ def commit_diff(repo, sha):
     return proc.stdout
 
 
-def diff_numstat(repo, revisions, paths=None, env=None):
+def diff_numstat(repo, revisions, paths=None, env=None, no_index=False):
     # Renames are detected, not expanded into a delete plus an add: a moved file with no edits is
     # one file and zero lines, and counting it as 2N lines escalates a trivial move to T3. With -z
     # a rename record ends with an empty path and carries the old and new names as the next two
-    # NUL-separated fields.
+    # NUL-separated fields — which is also the shape `--no-index` answers in, so the two modes
+    # parse alike.
+    #
+    # `--no-index` compares two files outside the object store, for content no commit holds: it
+    # exits 1 when they differ, which is its answer and not a failure, and a trailing `--` makes it
+    # print the pair as ONE path, so the pathspec terminator goes in only for a revision diff.
     proc = subprocess.run(
-        ["git", "diff", "--numstat", "-z", "--find-renames", *revisions, "--", *(paths or ())],
+        ["git", "diff", "--numstat", "-z", "--find-renames",
+         *(("--no-index",) if no_index else ()), *revisions,
+         *(() if no_index else ("--", *(paths or ())))],
         cwd=repo, capture_output=True, env=env,
     )
-    if proc.returncode != 0:
+    if proc.returncode != 0 and not (no_index and proc.returncode == 1):
         raise RuntimeError(proc.stderr.decode(errors="replace").strip() or "git diff failed")
     fields = proc.stdout.split(b"\0")
     changes = {}
@@ -8690,9 +8709,9 @@ def content_blob_sha(repo, data):
     return digest(b"blob %d\0" % len(data) + data).hexdigest()
 
 
-def path_blob_sha(repo, path):
-    """What the working tree holds for `path` right now, as a blob sha — the empty string when
-    nothing is there, which is also how an artifact records a path it read as deleted.
+def path_content_bytes(repo, path):
+    """What the working tree holds for `path` right now, as bytes, or None where nothing is there
+    — which an artifact records as the empty sha, and which is not the same thing as an empty file.
 
     A symlink is its own link text and never the file it points at: read through, a link would be
     priced by content that may not be in this repository at all.
@@ -8700,12 +8719,20 @@ def path_blob_sha(repo, path):
     target = Path(repo) / path
     if target.is_symlink():
         try:
-            return content_blob_sha(repo, os.readlink(target).encode())
+            return os.readlink(target).encode()
         except OSError:
-            return ""
+            return None
     if not os.path.lexists(target) or target.is_dir():
-        return ""
-    return content_blob_sha(repo, file_bytes(target))
+        return None
+    return file_bytes(target)
+
+
+def path_blob_sha(repo, path):
+    """The working tree's content for `path` as a blob sha — the empty string when nothing is
+    there, which is also how an artifact records a path it read as deleted.
+    """
+    data = path_content_bytes(repo, path)
+    return "" if data is None else content_blob_sha(repo, data)
 
 
 def git_dir_path(repo):
@@ -8978,9 +9005,13 @@ def lock_discharged(repo, locked, artifact):
     return surviving <= set(artifact["shas"])
 
 
-def repo_debt(repo, paths=None, covering=None):
+def repo_debt(repo, paths=None, covering=None, shas=None):
     """The paths whose working-tree content differs from what the newest artifact holding them
     recorded, each with that artifact, as `(path, artifact)` pairs.
+
+    `shas` is filled with the working-tree sha of every path examined, for a caller that needs the
+    same answer next: this reads and hashes the file, and the debt of a repository is priced on the
+    statusline's own path.
 
     Commit-agnostic by construction: committing neither creates debt nor settles it, and only a
     review or a waiver does. A path no artifact ever held is in debt whole while it exists — a run
@@ -8995,6 +9026,8 @@ def repo_debt(repo, paths=None, covering=None):
     for path in candidates:
         artifact = covering.get(path)
         sha = path_blob_sha(repo, path)
+        if shas is not None:
+            shas[str(path)] = sha
         if artifact is None:
             # A path no artifact holds has no recorded content to compare, and a deleted one hashes
             # to the same empty string that absence does: compared, the two cancel and deleting an
@@ -9006,6 +9039,185 @@ def repo_debt(repo, paths=None, covering=None):
         if sha != artifact["shas"].get(path, ""):
             debt.append((path, artifact))
     return debt
+
+
+def debt_line_cache():
+    """The line counts this machine has already measured, read once per process."""
+    global DEBT_LINE_CACHE
+    if DEBT_LINE_CACHE is None:
+        try:
+            loaded = json.loads((state_dir() / DEBT_LINE_CACHE_FILE).read_text())
+        except (OSError, ValueError):
+            loaded = None
+        DEBT_LINE_CACHE = {
+            key: value for key, value in loaded.items()
+            if isinstance(key, str) and isinstance(value, int) and not isinstance(value, bool)
+        } if isinstance(loaded, dict) else {}
+    return DEBT_LINE_CACHE
+
+
+def save_debt_line_cache():
+    """Last writer wins, and losing is free: an entry is a measurement of two contents, so a
+    concurrent render's file holds the same numbers for whatever keys it shares.
+    """
+    entries = debt_line_cache()
+    if len(entries) > DEBT_LINE_CACHE_MAX:
+        for key in list(entries)[:-(DEBT_LINE_CACHE_MAX // 2)]:
+            del entries[key]
+    path = state_dir() / DEBT_LINE_CACHE_FILE
+    tmp = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+        tmp.write_text(json.dumps(entries))
+        os.replace(tmp, path)
+        tmp = None
+    except OSError:
+        pass
+    finally:
+        if tmp is not None:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def diff_suppressed_paths(repo, paths):
+    """The paths this repository's attributes take out of line counting — `-diff`, which the review
+    target header prices as a binary file and gives no lines at all.
+
+    Attributes are matched against the path IN this repository, and the comparison below is of two
+    files outside it, which no `.gitattributes` pattern can ever name: asked there, a minified
+    bundle marked binary comes back counted as text. Their answer is also the one thing here that
+    is never cached, since it belongs to a repository while the cache is keyed by content across
+    every checkout on this machine.
+    """
+    wanted = [path for path in paths if path and "\0" not in path]
+    if not wanted:
+        return set()
+    proc = subprocess.run(
+        ["git", "check-attr", "--stdin", "-z", "diff"], cwd=repo,
+        input=b"\0".join(os.fsencode(path) for path in wanted), capture_output=True,
+    )
+    if proc.returncode != 0:
+        return set()
+    fields = proc.stdout.split(b"\0")
+    return {
+        os.fsdecode(fields[index]) for index in range(0, len(fields) - 2, 3)
+        if fields[index + 2] == b"unset"
+    }
+
+
+def debt_line_counts(repo, debt, shas=None):
+    """How many lines each debt path is in debt by, as `{path: lines}`: the diff between the
+    content the artifact covering it recorded and the content standing there now, counted by the
+    same differ the review target header prints its `N file(s) · M line(s)` with.
+
+    Both sides are handed to git as files, because neither is reliably an object this repository
+    holds: uncommitted working-tree bytes are in no store at all, and hashing them into one would
+    make a statusline render write into the repository it is only reading.
+
+    A path no artifact holds has no recorded side and counts whole, and a held path that is gone
+    has no current side and counts the content it lost — both fall out of one of the two sides
+    being empty, so neither is a case of its own. A recorded blob this store can no longer read is
+    the first of those: unreadable and never recorded are the same absence to a comparison, exactly
+    as `debt_snapshot_commit` drops such a path from the base and shows the file whole — and that
+    absence is what the key says too, or the number measured where the blob is missing would answer
+    for the checkout that still holds it.
+    """
+    cache = debt_line_cache()
+    counts = {}
+    pending = []
+    suppressed = diff_suppressed_paths(repo, [str(path) for path, _ in debt])
+    readable = reachable_blobs(
+        repo, [artifact["shas"].get(path, "") for path, artifact in debt if artifact]
+    )
+    for path, artifact in debt:
+        name = str(path)
+        if name in suppressed:
+            counts[name] = 0
+            continue
+        recorded = artifact["shas"].get(path, "") if artifact else ""
+        if recorded not in readable:
+            recorded = ""
+        current = (shas or {}).get(name)
+        if current is None:
+            current = path_blob_sha(repo, path)
+        key = f"{recorded}:{current}"
+        if key in cache:
+            counts[name] = cache[key]
+        else:
+            pending.append((name, recorded))
+    if not pending:
+        return counts
+    measured = 0
+    with tempfile.TemporaryDirectory(prefix="review-bench-debt-") as scratch:
+        left = Path(scratch) / "recorded"
+        right = Path(scratch) / "current"
+        for name, recorded in pending:
+            recorded_bytes = blob_bytes(repo, recorded) if recorded else b""
+            current_bytes = path_content_bytes(repo, name)
+            left.write_bytes(recorded_bytes)
+            right.write_bytes(current_bytes or b"")
+            try:
+                changes, _ = diff_numstat(repo, [str(left), str(right)], no_index=True)
+            except RuntimeError:
+                # An error is not a measurement. Written down it would answer for these two
+                # contents for as long as both of them stand, long after whatever failed here.
+                counts[name] = 0
+                continue
+            counts[name] = sum(changes.values())
+            # Keyed by the bytes this actually compared and never by a sha read a moment earlier:
+            # the file may have been written to since, and an entry filed under the content it no
+            # longer holds is a wrong number for the content it does. Absence spells itself the
+            # empty string, exactly as the lookup above spells it: hashed as an empty file instead,
+            # a deleted path writes a key nothing can ever ask for and misses on every render.
+            current_now = "" if current_bytes is None else content_blob_sha(repo, current_bytes)
+            # `readable` vetted the recorded sha, but a store can lose the object between that read
+            # and this one, and an empty answer is how the loss looks — told from a genuinely empty
+            # blob, which caches like any other, by the sha of what came back.
+            if not recorded or content_blob_sha(repo, recorded_bytes) == recorded:
+                cache[f"{recorded}:{current_now}"] = counts[name]
+                measured += 1
+                if measured % DEBT_LINE_CACHE_BATCH == 0:
+                    save_debt_line_cache()
+    save_debt_line_cache()
+    return counts
+
+
+def debt_split(repo, paths=None, session=""):
+    """This repository's debt in DIFF LINES, split three ways for the statusline: `(own, foreign,
+    orphaned)`.
+
+    `own` is the debt of paths the asking chat answers for, folded exactly as the verdict line's
+    owner word folds them — its journal entries plus the runs it launched (row `am`). `foreign` is
+    another chat's, by the same evidence read the other way round.
+
+    `orphaned` is neither, and it is the reason this is three numbers and not two: a path no
+    journal entry names and no run record claims belongs to NOBODY, and counted as the asking
+    chat's it reports work that chat never did as its own to answer for. It is a co-tenant's to
+    every reader outside — the gate folds it into `foreign` — but a reader asking the store
+    directly can tell how much of what it is looking at is owned by no one at all.
+    """
+    shas = {}
+    debt = repo_debt(repo, paths, shas=shas)
+    if not debt:
+        return 0, 0, 0
+    lines = debt_line_counts(repo, debt, shas=shas)
+    authors = debt_path_authors(repo, debt)
+    claims = run_record_claims(repo)
+    mine = session_run_paths(repo, session, claims=claims) if session else set()
+    own = foreign = orphaned = 0
+    for path, _ in debt:
+        path = str(path)
+        count = lines.get(path, 0)
+        if session and (session in authors.get(path, ()) or path in mine):
+            own += count
+        elif authors.get(path) or claims.get(path):
+            foreign += count
+        else:
+            orphaned += count
+    return own, foreign, orphaned
 
 
 def debt_review_scope(repo):
@@ -9138,12 +9350,15 @@ def foreign_run_claims(repo, session):
     return claims
 
 
-def session_run_paths(repo, session):
+def session_run_paths(repo, session, claims=None):
     """The paths a run THIS chat launched wrote and no journal has swept yet. Its worker's files
     are the chat's own work, and counted as nobody's they read to the chat like a co-tenant's.
+
+    Over `claims` where the caller already has them: this reading walks every run record on the
+    machine, and a caller asking both ownership questions would otherwise walk it twice.
     """
     return {
-        path for path, rows in run_record_claims(repo).items()
+        path for path, rows in (run_record_claims(repo) if claims is None else claims).items()
         if any(launcher == session for _, launcher in rows)
     }
 
@@ -9333,13 +9548,21 @@ def cmd_debt(args):
     clean bill.
     """
     listing = bool(getattr(args, "list", False))
+    split = bool(getattr(args, "split", False))
     repo = resolve_repo_arg(args.repo)
     if repo is None:
-        if not listing:
+        if split:
+            print("split 0 0 0")
+        elif not listing:
             print("none")
         return 0
     session = str(getattr(args, "session", "") or "")
     paths = debt_query_paths(repo, getattr(args, "paths", None))
+    if split:
+        # One shape whatever the answer is, including nothing owed: the statusline's translator
+        # switches on the counts and never on which of two lines came back.
+        print("split %d %d %d" % debt_split(repo, paths, session))
+        return 0
     debt = repo_debt(repo, paths)
     if listing:
         for path, _ in debt:
@@ -9677,8 +9900,8 @@ def doctor_scan(now=None):
                         doctor_row(run_dir.name, meta.get("repo"), stuck)
                     )
         # The kill marking and the empty panel come from two different code paths, and a run that
-        # completed nothing without wearing `timed_out` took the one that skips it: the statusline
-        # never went loud and no artifact was withheld, so the count is how often that happens.
+        # completed nothing without wearing `timed_out` took the one that skips it: nothing named
+        # it a kill and no artifact was withheld, so the count is how often that happens.
         # Through the same reader every other surface uses, or a record written before the field
         # existed — whose cells all completed — is counted as a panel that completed nothing.
         if (recent and meta.get("raters") and not completed_raters_from_meta(meta)
@@ -10299,7 +10522,7 @@ def cmd_run(args):
     # From the main thread, which is the only one the SIGTERM half installs from.
     install_cell_reaper()
     # Every side, not the Antigravity leg alone: a hung cell of any vendor holds the panel open
-    # with nothing to report, and the run it belongs to is what goes loud in the statusline.
+    # with nothing to report, and the run it belongs to is what the report flow and `doctor` raise.
     watchdog = panel_watchdog_timeouts(state_dir() / "benches")
     stall_caps = panel_stall_timeouts(state_dir() / "benches")
     for rater in raters:
@@ -10603,9 +10826,10 @@ def cmd_run(args):
         if tier_name:
             meta["tier"] = tier_name
             meta["max"] = use_max
-        # One breached cell marks the whole run: nothing else says a review hung, and the statusline
-        # goes loud off this key until a later triaged run covers the paths. The watchdog's own
-        # kills alone — a provider answering `gateway timeout` is an ordinary failed cell, and red
+        # One breached cell marks the whole run: nothing else says a review hung, and the report
+        # flow and `doctor`'s untriaged class read this key — the statusline does not, since a
+        # killed run settles nothing and its paths stand in the debt like any others. The
+        # watchdog's own kills alone — a provider answering `gateway timeout` is an ordinary failed cell, and red
         # in the statusline means a hung review or it means nothing. A cell whose retry stalled
         # too is that same hung review, killed earlier: `watchdog_killed` excludes it only so a
         # stall never inflates the pair's duration cap, not to keep the run quiet.
@@ -12075,9 +12299,14 @@ def main():
         "--paths", nargs="*", action="extend", default=[], metavar="PATH",
         help="Repository-relative paths to answer for",
     )
-    debt.add_argument(
+    debt_answer = debt.add_mutually_exclusive_group()
+    debt_answer.add_argument(
         "--list", action="store_true",
         help="Print the debt paths themselves, one per line, instead of the verdict",
+    )
+    debt_answer.add_argument(
+        "--split", action="store_true",
+        help="Print `split <own> <foreign> <orphaned>` diff lines instead of the verdict",
     )
     debt.set_defaults(func=cmd_debt)
 

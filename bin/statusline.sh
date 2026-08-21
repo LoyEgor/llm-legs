@@ -136,13 +136,13 @@ review_run_owner() { # recorded_session pid
   printf '%s' "${owner//[^A-Za-z0-9_-]/}"
 }
 
-# The review gate's own answer to "what does this repository owe a review, and is it this chat's",
-# in the one line it prints for a reader that has no commit to attempt: `off` (no debt), `dim
-# <text>` (another chat's debt), `bright <text>` (this chat's own) or `loud <text>`, which the gate
-# reserves for a review that hung past its cap. Nothing here decides any of it and nothing here second-guesses the
-# text — the gate is the only place that knows what a review owes, and a label computing its own
-# version of that answer is one of two renderings of one question, of which one is always wrong
-# (Egor, 2026-08-09).
+# The review gate's own answer to "what does this repository owe a review, and how much of it is
+# this chat's", in the one line it prints for a reader that has no commit to attempt: `off` (no
+# debt), `dim <text>` (another chat's debt alone), `bright <text>` (this chat's own alone) or
+# `split <own>/<foreign>`, whose two sides carry the two weights in one segment. Nothing here
+# decides any of it and nothing here second-guesses the text — the gate is the only place that
+# knows what a review owes, and a label computing its own version of that answer is one of two
+# renderings of one question, of which one is always wrong (Egor, 2026-08-09).
 #
 # Read-only and cheap by contract: the gate's verdict mode launches no panel and writes nothing, so
 # a render can ask it as often as the cache below allows.
@@ -206,7 +206,7 @@ review_verdict_line() { # toplevel session status_key now
         # answer, and it is shown loud rather than swallowed.
         case "$answer" in
           ''|off) answer=off ;;
-          "dim "*|"bright "*|"loud "*) ;;
+          "dim "*|"bright "*|"split "*) ;;
           *) answer="loud $answer" ;;
         esac
         tmp="$cache.tmp.${BASHPID:-$$}"
@@ -1620,13 +1620,18 @@ fi
 [ -n "$progress_total" ] && { review_style=""; review_text=""; }
 
 if [ "${review_style:-}" = loud ]; then
-  # The gate keeps `loud` for the watchdog alone, so red in this slot always means a hung review
-  # and never debt, which is news the reader acts on in their own time (docs/review-contract.md).
+  # Nothing the gate says is red: `loud` is this build reading a word the gate grew after it, shown
+  # whole rather than swallowed (docs/statusline-contract.md).
   review_part=" ${sep} ${RED}${review_text}${RESET}"
-elif [ "${review_style:-}" = bright ]; then
-  review_part=" ${sep} ${review_text}"
 elif [ "${review_style:-}" = dim ]; then
   review_part=" ${sep} ${DIM}${review_text}${RESET}"
+elif [ "${review_style:-}" = split ] && [ "$review_text" != "${review_text#*/}" ]; then
+  # Both sides in one segment: this chat's own debt at normal weight, everyone else's dimmed after
+  # the slash. Truncation can eat the slash, and then the whole text stands at the near weight
+  # rather than being printed twice.
+  review_part=" ${sep} ${review_text%%/*}${DIM}/${review_text#*/}${RESET}"
+elif [ "${review_style:-}" = bright ] || [ "${review_style:-}" = split ]; then
+  review_part=" ${sep} ${review_text}"
 fi
 
 # Two lines: identity/work (model, account, dir/branch/diff, workers) on top,
