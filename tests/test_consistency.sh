@@ -727,6 +727,36 @@ blocked|done|pending"
   assert doc_has 'exactly `done` and `blocked`'
   assert grep -Fq 'delivery.add_argument("--session", default="", metavar="ID", required=True,' \
     "$REVIEWBENCH"
+  # Whose run it is, asked of ONE run by id: both nets render through `report`, and a run reached
+  # by id says nothing about who launched it. The query and the REFUSAL are one contract — the
+  # flag, the sentence review-bench raises, the `review-bench: ` prefix main() puts before it, and
+  # the regex both hooks read the launcher out of. Any one of them drifting alone frames another
+  # chat's review in this chat's window, which is what happened live (2026-08-22).
+  cs_foreign_re='(?m)^review-bench: run \S+ belongs to chat (\S+)\s*$'
+  assert grep -Fq 'raise ValueError(f"run {run_dir.name} belongs to chat {launcher}")' "$REVIEWBENCH"
+  assert grep -Fq 'print(f"review-bench: {exc}", file=sys.stderr)' "$REVIEWBENCH"
+  for cs_hook in "$REPORT_NUDGE" "$DELIVERY_GATE"; do
+    assert grep -Fq "FOREIGN_RE = re.compile(r\"$cs_foreign_re\")" "$cs_hook"
+    assert grep -Fq 'argv += ["--session", session]' "$cs_hook"
+    # The run id the ownership check keys on: a `report` the regex cannot resolve to a literal id
+    # must never fall back to the captured block, in both nets alike.
+    assert grep -Fq 'r"(?:^|\s)(?:record|report)(?!\s+\d{8}T\d{6}Z-[0-9a-f]+(?:-\d+)?\b)")' "$cs_hook"
+  done
+  # And the line review-bench actually PRINTS, matched against that very regex: a pin on the two
+  # source strings alone passes while the wording drifts apart, and the report that stops being
+  # recognised as foreign is the one delivered to the wrong chat.
+  cs_foreign_match=$(python3 - "$cs_foreign_re" <<'FOREIGNPY'
+import re
+import sys
+
+run_dir = type("run", (), {"name": "20260822T180004Z-628edbc"})
+line = "review-bench: " + "run {run_dir.name} belongs to chat {launcher}".format(
+    run_dir=run_dir, launcher="73403494")
+match = re.search(sys.argv[1], line)
+print(match.group(1) if match else repr(line))
+FOREIGNPY
+)
+  assert eq "$cs_foreign_match" "73403494"
   assert doc_has 'Review report header words'
   assert doc_has '`review · NOT FINISHED`'
   assert doc_has 'exactly TWO spellings'
@@ -797,9 +827,9 @@ assert grep -Fq '${review_text%%/*}${DIM}/${review_text#*/}${RESET}' "$STATUSLIN
 # The three words the gate switches on, printed nowhere else.
 assert grep -Fq 'print("none")' "$REVIEWBENCH"
 assert grep -Fq 'print(f"timed-out {hung}")' "$REVIEWBENCH"
-assert grep -Fq 'print(f"debt {len(debt)} {owner}{share}{foreign}{locked}")' "$REVIEWBENCH"
+assert grep -Fq 'print(f"debt {len(debt)} {owner}{share}{foreign}{standing}")' "$REVIEWBENCH"
 assert grep -Fq 'print("split %d %d %d" % debt_split(repo, paths, session))' "$REVIEWBENCH"
-assert doc_has '`debt <n> mine|other|unknown [<owned>] [(+<f> foreign)] [locked]`'
+assert doc_has '`debt <n> mine|other|unknown [<owned>] [(+<f> foreign)] [locked|decreed]`'
 # The share is the debt a `--debt` review leaves out, priced by the one reader that leaves it out:
 # a line quoting a number the scope never skipped is the mismatch the segment exists to end.
 assert grep -Fq 'others = len(debt_foreign_skipped(repo, debt, session, buckets=buckets))' "$REVIEWBENCH"
@@ -816,9 +846,23 @@ assert doc_has '`<state dir>/debt-lines.json`'
 assert grep -Fq '"git", "check-attr", "--stdin", "-z", "diff"' "$REVIEWBENCH"
 assert doc_has 'take out of diffing (`-diff`)'
 # The owner word is what the gate switches on, so every word review-bench can print is named in
-# the row that promises the gate reads them all.
-assert grep -Fq 'owner = "unknown" if not session else ("mine" if owned else "other")' "$REVIEWBENCH"
+# the row that promises the gate reads them all — and so is the one line that carries no such word:
+# debt whose owner is entirely on record must not be read back as `unknown`, and a gate parsing the
+# third field positionally would take `(+1` for an ownership word.
+assert grep -Fq 'owner = "mine" if owned else "other"' "$REVIEWBENCH"
+assert grep -Fq 'word = " unknown" if unowned or not foreign else ""' "$REVIEWBENCH"
+assert grep -Fq 'print(f"debt {len(debt)}{word}{standing}")' "$REVIEWBENCH"
+assert doc_has '`debt 2 locked`'
 assert doc_has 'nothing may parse positionally past the owner word'
+# The count is the whole debt on BOTH branches: the gate reads field two as the number of files it
+# names in its notice, and a line answering `0` over work nobody read is a clean bill nobody gave.
+assert test "$(grep -c 'print(f"debt {len(debt)}' "$REVIEWBENCH")" -eq 2
+# Egor's recorded unlock stands where the lock word would. The line has no room for the reason, and
+# a decreed round read as an ordinary unlocked one is the discharge going silent on the two
+# surfaces that act on this line.
+assert grep -Fq '" decreed" if waived_decrees(debt) else ""' "$REVIEWBENCH"
+assert doc_has '`decreed` where Egor'
+assert grep -Fq 'reads `decreed` where it' "$ROOT/docs/review-contract.md"
 if test -r "$FLOW_GATE"; then
   # The foreign share stands BEFORE the lock word: every reader of this line matches ` locked` at
   # the END of it, and a suffix after it silently unlocks the debt for all of them.
@@ -1065,6 +1109,14 @@ assert grep -Fq 'def path_lock_stands(repo, path, artifact):' "$REVIEWBENCH"
 # for the pass that budget already refused, and the waiver stays refused for being locked.
 assert doc_has '`round_budget_spent`'
 assert grep -Fq 'return owed and not round_budget_spent(artifact["dir"])' "$REVIEWBENCH"
+# And the one word that discharges a lock outright. It is Egor's alone, so the row says so and the
+# command refuses every round that is not locked — a model reaching for it on its own judgment is
+# the round forgiving itself.
+assert doc_has 'review-bench decree <run-id> --reason TEXT'
+assert doc_has 'Only his explicit word authorises it'
+assert grep -Fq 'DECREE_RECEIPT = "decree.json"' "$REVIEWBENCH"
+assert grep -Fq '    if not round_locked(run_dir):' "$REVIEWBENCH"
+assert grep -Fq '    if read_decree(artifact["dir"]):' "$REVIEWBENCH"
 if test -r "$FLOW_GATE"; then
   gate_second_p1s=$(sed -n 's/^SECOND_REVIEW_P1S=\([0-9]*\)$/\1/p' "$FLOW_GATE")
   gate_second_findings=$(sed -n 's/^SECOND_REVIEW_FINDINGS=\([0-9]*\)$/\1/p' "$FLOW_GATE")
@@ -1963,5 +2015,37 @@ assert eq "$(grep -c 'aiTitle' "$REVIEWBENCH_RUNS")" 0
 chat_short=$(grep -oE '^SHORT_ID = [0-9]+' "$CHATNAMES" | grep -oE '[0-9]+')
 assert eq "$chat_short" 8
 assert doc_has 'first 8 characters'
+
+# --- Row ax: a diff too big for one cell is split, not the panel ---------------
+# The two numbers are spelled in the tool and in the contract prose the reader acts on. Moved in
+# one place and not the other, the prose documents a panel nobody runs — and the sizes are what a
+# reader decides whether a chunked round covered its scope by.
+assert doc_has 'A diff too big for one cell is split, not the panel'
+rb_chunk_threshold=$(sed -n 's/^DIFF_CHUNK_THRESHOLD_LINES = \([0-9]*\)$/\1/p' "$REVIEWBENCH")
+rb_chunk_target=$(sed -n 's/^DIFF_CHUNK_TARGET_LINES = \([0-9]*\)$/\1/p' "$REVIEWBENCH")
+assert eq "$rb_chunk_threshold" 1500
+assert eq "$rb_chunk_target" 800
+assert doc_has "\`DIFF_CHUNK_THRESHOLD_LINES = $rb_chunk_threshold\`"
+assert doc_has "\`DIFF_CHUNK_TARGET_LINES = $rb_chunk_target\`"
+assert grep -Fq "($rb_chunk_threshold) the commit's diff is cut at FILE boundaries" \
+  "$ROOT/docs/review-contract.md"
+assert grep -Fq "\`DIFF_CHUNK_TARGET_LINES\` ($rb_chunk_target)" "$ROOT/docs/review-contract.md"
+# One run whatever the chunk count: the receipt, the handoff and the finding indices are the
+# round's, and a chunk that became a run of its own would split all three.
+assert grep -Fq 'chunks = diff_chunks(repo, sha)' "$REVIEWBENCH"
+# And ONE panel whatever the chunk count: a cell per (rater, chunk) made a tier review 325 cells
+# and hundreds of processes (live, 2026-08-22), so a cell reads its chunks one after another.
+assert grep -Fq 'run_rater_chunks, rater, repo, sha, args.focus or "", run_dir,' "$REVIEWBENCH"
+assert doc_has 'never multiplies the panel'
+assert grep -Fq 'never multiplies the panel' "$ROOT/docs/review-contract.md"
+# Both numbers are the diff's own lines. Priced by numstat they leave out every header and context
+# line, so the prose promises a bound on the text a cell is handed that the tool never applies.
+assert grep -Fq 'if len(whole.stdout.splitlines()) <= DIFF_CHUNK_THRESHOLD_LINES:' "$REVIEWBENCH"
+assert doc_has "Both numbers count the DIFF's own lines"
+assert grep -Fq "numbers are the DIFF's own lines" "$ROOT/docs/review-contract.md"
+# A chunk nothing came back from is content nobody read, and the snapshot may attest no such path:
+# the one place a dead cell still costs a round coverage.
+assert grep -Fq 'meta["reviewed"] = attested_paths(reviewed, unread)' "$REVIEWBENCH"
+assert doc_has "A chunk NO cell's pass came back from"
 
 printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the debt word the bench prints, the gate translates and the statusline speaks verbatim, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the round-size numbers that lock a waiver, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, and the two header words the bench renders, one of which is worn by a round no hook may deliver — so both of them apply one further rule over the rows of the block itself, and the one review command both repositories hand a chat, which names no paths because the mode computes its own scope, the delivery ledger the two report hooks write and the doctor only reads, the doctor snapshot whose six class names are the menubar'"'"'s whole vocabulary, and the one resolver every surface names a chat through) and match %s\n' "$asserts" "$DOC"

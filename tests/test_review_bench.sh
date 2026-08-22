@@ -2994,6 +2994,23 @@ assert usage["output_tokens"] == 30
 assert usage["total_tokens"] == 150
 assert usage["stream_generate_requests"] == 1
 assert usage["stream_completions"] == 1
+# A chunked cell reads its chunks one after another under ONE name, so its log and its usage
+# record ride the chunk the way every other raw artifact does: keyed on the bare spec, one log
+# holds every chunk and the cell is priced at the last one alone.
+chunked_rater = dict(transport_rater, chunk={"index": 1, "paths": ["src/a.py"]})
+rc, duration, text, stderr, command = rb.run_agy(
+    chunked_rater, repo, sha, "", transport_run, "ignored fixture diff", "work"
+)
+assert rc == 0, stderr
+assert pathlib.Path(command[12]) == transport_run / "agy-agy-flash36-low-skill~c1.log"
+assert (transport_run / "usage-agy-flash36-low-skill~c1.jsonl").exists()
+assert json.loads(
+    (transport_run / "usage-agy-flash36-low-skill.jsonl").read_text()
+)["duration_ms"] == usage["duration_ms"]
+# And the cell is told which files are its own, with nothing about lines inside them.
+chunked_prompt = (work / "agy-prompt").read_text()
+assert "src/a.py" in chunked_prompt and "lines" not in chunked_prompt, chunked_prompt
+(work / "agy-prompt").write_text("/code-review")
 
 adaptive_run = work / "agy-adaptive-run"
 adaptive_run.mkdir()
@@ -6411,7 +6428,8 @@ def sr_store():
 
 
 def sr_run(benches, run_id, reviewed=None, session="chat-1", scope=None,
-           triaged=True, timed_out=False, repo=None, report=None, sealed_at=None):
+           triaged=True, timed_out=False, repo=None, report=None, sealed_at=None,
+           errored=False):
     directory = benches / run_id
     directory.mkdir()
     meta = {
@@ -6428,6 +6446,16 @@ def sr_run(benches, run_id, reviewed=None, session="chat-1", scope=None,
         meta["scope"] = scope
     if timed_out:
         meta["timed_out"] = True
+    if errored:
+        # The panel that LOST a cell, recorded the way a real run records one: the row is there,
+        # marked errored, and the cell is missing from `completed_raters`.
+        meta["raters"] = ["sol-medium-bare", "oc-kimik3"]
+        meta["completed_raters"] = ["sol-medium-bare"]
+        meta["rater_runs"] = [
+            {"rater": "sol-medium-bare", "exit_code": 0, "findings": 0, "duration_ms": 1},
+            {"rater": "oc-kimik3", "exit_code": 1, "findings": 0, "duration_ms": 1,
+             "errored": True, "stderr": "rater produced no parseable finding"},
+        ]
     (directory / "meta.json").write_text(json.dumps(meta))
     if report is not None:
         (directory / rb.REPORT_RECEIPT).write_text(json.dumps(report))
@@ -6559,12 +6587,20 @@ assert sr_answer() == "debt 2 mine 1"
 sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/a.py")
 assert sr_answer() == "debt 2 mine"
 assert sr_answer(session="chat-2") == "debt 2 other"
-# Nobody named a session, so nothing computed an ownership: `other` would assert one. And no
-# foreign share either — the number is what a `--debt` review LEAVES OUT, and asked by nobody that
-# review skips nothing and reads the whole of this, so a count beside it would price an exclusion
-# that never happens.
-assert sr_answer(session="") == "debt 2 unknown"
+# Nobody named a session, so nothing computed an ownership — but `unknown` over debt the journals
+# DO hand to a chat is an ownership too, and the wrong one. The word drops; the COUNT never does,
+# whatever the words around it do, since it is the number every reader prices this repository by
+# and a `0` in front of two unread files is the clean bill nobody gave. No foreign share rides it
+# either: with no asker `debt_foreign_skipped` leaves nothing out, and a count of an exclusion that
+# never happens names a scope no review of this line will take.
+assert sr_answer(session="") == "debt 2"
 assert rb.debt_scope(sr_repo, "")[1] == []
+# And the word stands over exactly the part nobody owns, so a repository holding both reads both.
+sr_clear_journals()
+sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/unnamed.py")
+assert sr_answer(session="") == "debt 2 unknown"
+sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/a.py")
+assert sr_answer(session="") == "debt 2"
 sr_clear_journals()
 (sr_repo / "src" / "unnamed.py").unlink()
 # A binary is content like any other: what no line budget could price is a sha that either matches
@@ -6660,6 +6696,63 @@ sr_stopped_first = sr_run(sr_stopped, "20260101T000100Z-aaaaaaa", sr_blobs,
 sr_run(sr_stopped, "20260101T000200Z-bbbbbbb", sr_blobs,
        report={"confirmed": 3, "confirmed_by_severity": {"P1": 3}})
 assert sr_answer("src/a.py") == "debt 1 other locked"
+
+# Egor's own word discharges a lock, and nothing else does: the decree is the ONE door out of the
+# withheld waiver, it is recorded on the round it unlocks, and it is loud everywhere that round is
+# read — a model that ran this on its own judgment is a round forgiving itself, and the only defence
+# against that is that the reason is in front of Egor in the report he reads.
+
+
+def sr_decree(run_id, reason="Egor took the fork: ship it"):
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc = rb.cmd_decree(argparse.Namespace(run_id=run_id, reason=reason))
+    return rc, out.getvalue().strip()
+
+
+sr_decreed = sr_store()
+sr_decreed_dir = sr_run(sr_decreed, "20260101T000100Z-aaaaaaa", sr_blobs,
+                        report={"confirmed": 3, "confirmed_by_severity": {"P1": 3}})
+assert sr_answer("src/a.py") == "debt 1 other locked"
+assert sr_decree("nobody-launched-this")[0] == 1
+assert sr_decree("20260101T000100Z-aaaaaaa", reason="   ")[0] == 1
+sr_rc, sr_said = sr_decree("20260101T000100Z-aaaaaaa")
+assert sr_rc == 0, sr_said
+assert "decree: Egor took the fork: ship it" in sr_said, sr_said
+assert "is discharged" in sr_said, sr_said
+# Once and once only: a second one over the same round would be a reason nobody can trace back.
+assert sr_decree("20260101T000100Z-aaaaaaa", reason="and again")[0] == 1
+# The one-line answer names the discharge where it named the lock. It has no room for the reason,
+# and read as an ordinary unlocked round the decree would be invisible to the two surfaces that act
+# on this line — which is the whole defence against a decree nobody authorised.
+assert sr_answer("src/a.py") == "debt 1 other decreed"
+sr_rc, sr_said = sr_waive("src/a.py", reason="decreed above")
+assert sr_rc == 0, sr_said
+assert "decree: 20260101T000100Z-aaaaaaa — Egor took the fork: ship it" in sr_said, sr_said
+# And the round's own report says it, or the block Egor reads shows a round that answered its
+# second review when nothing ever did.
+sr_decreed_meta = json.loads((sr_decreed_dir / "meta.json").read_text())
+sr_decreed_report = "\n".join(rb.report_lines(sr_decreed_dir, sr_decreed_meta))
+assert "decree:" in sr_decreed_report, sr_decreed_report
+assert "Egor took the fork: ship it" in sr_decreed_report, sr_decreed_report
+# A round that is not locked is refused outright: there is nothing to discharge, and a decree on
+# record over an ordinary round is a reason that looks like an unlock and never was one.
+sr_unlocked_decree = sr_store()
+sr_run(sr_unlocked_decree, "20260101T000100Z-aaaaaaa", sr_blobs,
+       report={"confirmed": 1, "confirmed_by_severity": {"P1": 1}})
+assert sr_answer("src/a.py") == "debt 1 other"
+sr_rc, sr_said = sr_decree("20260101T000100Z-aaaaaaa")
+assert sr_rc == 1 and "not locked" in sr_said, (sr_rc, sr_said)
+assert not (sr_unlocked_decree / "20260101T000100Z-aaaaaaa" / rb.DECREE_RECEIPT).exists()
+# And a round whose tally cannot be READ is locked fail-closed, so a decree on it would discharge
+# a lock nobody ever established — for good, since a round carrying `decree.json` is unlocked
+# whatever a later triage turns out to say. The way out is triaging it again.
+sr_untriaged_decree = sr_store()
+sr_run(sr_untriaged_decree, "20260101T000100Z-aaaaaaa", sr_blobs, triaged=False)
+assert rb.round_locked(sr_untriaged_decree / "20260101T000100Z-aaaaaaa")
+sr_rc, sr_said = sr_decree("20260101T000100Z-aaaaaaa")
+assert sr_rc == 1 and "no readable triage tally" in sr_said, (sr_rc, sr_said)
+assert not (sr_untriaged_decree / "20260101T000100Z-aaaaaaa" / rb.DECREE_RECEIPT).exists()
 
 # A held path that is gone is debt: what the panel read is not standing there any more.
 sr_deletions = sr_store()
@@ -6789,6 +6882,49 @@ os.environ["CLAUDE_CODE_SESSION_ID"] = "chat-1"
 assert sr_answer() == "none"
 sr_clear_journals()
 
+# A path that is GONE and priced at nothing is any chat's to settle, whoever the journals name for
+# it: the owner-only refusal exists so no chat signs away work it never read, and there is no work
+# left to read here — a handoff file consumed and deleted, in debt only because a journal remembers
+# it (live: REVIEW-BENCH-INCIDENT-20260822.md, 2026-08-22).
+sr_ghost = sr_store()
+(sr_repo / "docs" / "ghost.md").write_text("a handoff nobody kept\n")
+sr_journal(rb.COMMIT_JOURNAL, "chat-2", "docs/ghost.md")
+sr_journal(rb.COMMIT_JOURNAL, "chat-2", "docs/theirs.md")
+(sr_repo / "docs" / "theirs.md").write_text("still theirs, still here\n")
+assert sr_answer("docs/ghost.md") == "debt 1 other"
+sr_rc, sr_said = sr_waive("docs/ghost.md", reason="handoff consumed, file still here")
+assert sr_rc == 1 and "chat-2" in sr_said, (sr_rc, sr_said)
+(sr_repo / "docs" / "ghost.md").unlink()
+assert rb.debt_line_counts(sr_repo, rb.repo_debt(sr_repo))["docs/ghost.md"] == 0
+assert sr_waive("docs/ghost.md", reason="handoff consumed, file deleted")[0] == 0
+assert sr_answer("docs/ghost.md") == "none"
+# The path beside it still holds content, so it is still its owner's alone to answer for.
+sr_rc, sr_said = sr_waive("docs/theirs.md", reason="and this one too")
+assert sr_rc == 1 and "docs/theirs.md" in sr_said and "chat-2" in sr_said, (sr_rc, sr_said)
+sr_clear_journals()
+# Priced at nothing is not the same as holding nothing: a deleted BINARY measures no line, and so
+# does a path the attributes take out of diffing and a measurement that failed. What the panel read
+# is bytes, so bytes are what this asks about — a deleted asset another chat owns is real content
+# gone, and any chat waiving it signs away work it never saw.
+sr_deleted_binary = sr_store()
+sr_binary.write_bytes(b"\x00\x01\x02\x03\x04")
+# Written into the store, because this asks what the recorded content IS: a sha nothing can read
+# is the same absence a path no artifact ever held is, here as everywhere else.
+sr_binary_blob = subprocess.run(
+    ["git", "-C", str(sr_repo), "hash-object", "-w", "--", str(sr_binary)],
+    check=True, capture_output=True, text=True,
+).stdout.strip()
+sr_run(sr_deleted_binary, "20260101T000100Z-aaaaaaa",
+       dict(sr_blobs, **{"src/blob.bin": sr_binary_blob}))
+sr_journal(rb.COMMIT_JOURNAL, "chat-2", "src/blob.bin")
+sr_binary.unlink()
+assert sr_answer("src/blob.bin") == "debt 1 other"
+assert rb.debt_line_counts(sr_repo, rb.repo_debt(sr_repo, ["src/blob.bin"]))["src/blob.bin"] == 0
+sr_rc, sr_said = sr_waive("src/blob.bin", reason="deleted, so nobody's to answer for")
+assert sr_rc == 1 and "chat-2" in sr_said, (sr_rc, sr_said)
+sr_binary.write_bytes(b"\x00\x01\x02\x03")
+sr_clear_journals()
+
 # A chat the journals never name owns none of this debt, and refusing is the only answer that does
 # not sign somebody else's work away.
 sr_stranger = sr_store()
@@ -6830,14 +6966,26 @@ os.environ["CLAUDE_CODE_SESSION_ID"] = "chat-1"
 sr_clear_journals()
 (sr_repo / "docs" / "theirs.md").unlink()
 
-# A run the watchdog killed was sealed with its whole scope and read part of it. Triaging what came
-# back tells the chat that ran it what the panel found, and settles the content of no path for
-# anybody — the same run the reader reports as a kill cannot cover the tree behind it.
+# Whether a round covers its paths turns on ONE fact: a triage receipt exists. HOW its incomplete
+# cells died — a rater error, the watchdog, a stall, any kill condition added later — never enters
+# it. Read the other way, the panel that lost a cell to a kill settled nothing while the identical
+# panel that lost the same cell to an error settled everything, and the whole difference was which
+# code path marked the run (Egor, 2026-08-22).
 sr_kill_cover = sr_store()
 sr_source.write_text(sr_moved)
-sr_run(sr_kill_cover, "20260101T000100Z-aaaaaaa", sr_blobs, timed_out=True)
+sr_run(sr_kill_cover, "20260101T000100Z-aaaaaaa", sr_blobs, timed_out=True, triaged=False)
 assert sr_answer("src/a.py", session="chat-2") == "debt 1 other"
-sr_run(sr_kill_cover, "20260101T000200Z-bbbbbbb", sr_blobs)
+sr_run(sr_kill_cover, "20260101T000200Z-bbbbbbb", sr_blobs, timed_out=True)
+assert sr_answer("src/a.py", session="chat-2") == "none"
+# And the errored twin of it, in a store of its own, answers the same — the parity IS the rule.
+# The twin has to be a real one: a run with no dead cell at all asks the question of nothing.
+sr_error_cover = sr_store()
+sr_error_dir = sr_run(sr_error_cover, "20260101T000100Z-aaaaaaa", sr_blobs, errored=True)
+sr_error_meta = json.loads((sr_error_dir / "meta.json").read_text())
+assert [row["rater"] for row in sr_error_meta["rater_runs"] if row.get("errored")] == [
+    "oc-kimik3"
+], sr_error_meta["rater_runs"]
+assert sr_error_meta["completed_raters"] != sr_error_meta["raters"], sr_error_meta
 assert sr_answer("src/a.py", session="chat-2") == "none"
 
 # A LOCKED round's artifact postdates every stamp there is: it was written after the work it read,
@@ -7883,16 +8031,17 @@ assert "covered" not in sr_fixes(fixed=3)[1]
 assert sr_answer("src/a.py") == "debt 1 mine locked"
 sr_clear_journals()
 
-# A killed panel was sealed with a scope its dead cells never reached, so its receipt covers
-# nothing either — the same reason its snapshot is no artifact.
+# A killed panel's own done receipt covers its fix bytes like any other closed round's: the kill
+# is a diagnostic, and the receipt is priced on the triage and the gate's verdict — the two things
+# that say whether anything will ever read those bytes again.
 sr_killed_fixes = sr_store()
 sr_source.write_text(sr_moved)
 sr_killed_dir = sr_fix_run(sr_killed_fixes, timed_out=True)
 sr_source.write_text(sr_moved + "a hung round's pass answered\n")
 sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/a.py", epoch=sr_fix_edit)
 assert sr_fixes()[0] == 0
-assert "covers" not in json.loads((sr_killed_dir / rb.FIX_RECEIPT).read_text())
-assert sr_answer("src/a.py") == "debt 1 mine"
+assert "covers" in json.loads((sr_killed_dir / rb.FIX_RECEIPT).read_text())
+assert sr_answer("src/a.py") == "none"
 sr_clear_journals()
 
 # A fixing pass a codex or gemini worker ran leaves NOTHING behind: no Claude session, so none of
@@ -8061,6 +8210,99 @@ assert rb.review_outcome(sr_repo, sr_outcome_receipt)[1] == 3
 # A durable receipt reads the corpus alone: a commit-point tally has no place in a benchmark's.
 assert rb.review_outcome(sr_repo, dict(sr_outcome_receipt, commit="0" * 40))[1] == 0
 
+# --- the fixing brief `record` writes ------------------------------------------------------------
+# Step 2 of the round, and it exists only here: the panel's own handoff cannot name a count nobody
+# has judged, and briefing the blind pass to fix what it just confirmed is the same session judging
+# its own work.
+
+
+def sr_recorded(run_id, severity, count, meta_fields=None):
+    """One `record` over a triaged round, returning everything it printed."""
+    run_dir = sr_run(sr_store(), run_id, {"src/a.py": sr_blobs["src/a.py"]}, triaged=False)
+    meta = json.loads((run_dir / "meta.json").read_text())
+    meta["raters"] = ["oc-kimik3"]
+    meta["completed_raters"] = ["oc-kimik3"]
+    meta.update(meta_fields or {})
+    (run_dir / "meta.json").write_text(json.dumps(meta))
+    (run_dir / "findings-oc-kimik3.jsonl").write_text("".join(
+        json.dumps({"file": "src/a.py", "line": n + 1, "severity": severity,
+                    "summary": f"finding {n}"}) + "\n"
+        for n in range(count)
+    ))
+    verdict_file = work / f"{run_id}-record-verdicts.jsonl"
+    verdict_file.write_text("".join(
+        json.dumps({"rater": "oc-kimik3", "idx": n, "verdict": "confirmed"}) + "\n"
+        for n in range(count)
+    ))
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc = rb.cmd_record(argparse.Namespace(
+            run_id=run_id, verdicts=str(verdict_file), no_corpus=True, bench=False,
+        ))
+    assert rc == 0, out.getvalue()
+    return out.getvalue()
+
+
+sr_fix_brief = sr_recorded("20260601T000100Z-fixbrief", "P3", 2)
+assert "FIX HANDOFF — STEP 2 of 2: 2 confirmed (P3 2)" in sr_fix_brief, sr_fix_brief
+assert "review-bench fixes 20260601T000100Z-fixbrief --done --fixed <N> --fp <M>" in sr_fix_brief, \
+    sr_fix_brief
+# The constraints the panel's brief no longer carries land HERE, on the pass they actually bind.
+assert "Mutation-verify each new test assert" in sr_fix_brief, sr_fix_brief
+assert "Neither commit nor stage anything" in sr_fix_brief, sr_fix_brief
+# And one line on the shape of worker the severities call for — a recommendation, since the reader
+# has the findings themselves and this line has only their severity.
+assert "recommend a fast worker: P3 findings are mechanical edits" in sr_fix_brief, sr_fix_brief
+sr_fix_p2 = sr_recorded("20260601T000200Z-fixp2", "P2", 1)
+assert "recommend a fast worker, after reading the P2s" in sr_fix_p2, sr_fix_p2
+sr_fix_p1 = sr_recorded("20260601T000300Z-fixp1", "P1", 1)
+assert "recommend a strong worker" in sr_fix_p1, sr_fix_p1
+# At the threshold the fixing pass is not dispatched at all: the brief names the stop and the
+# second review, and nothing to fix.
+sr_fix_stop = sr_recorded("20260601T000400Z-fixstop", "P1", rb.HANDOFF_P1_STOP)
+assert f"THRESHOLD STOP — {rb.HANDOFF_P1_STOP} confirmed P1s" in sr_fix_stop, sr_fix_stop
+assert "review-bench fixes 20260601T000400Z-fixstop --blocked 'P1 threshold'" in sr_fix_stop, \
+    sr_fix_stop
+assert "--done --fixed" not in sr_fix_stop, sr_fix_stop
+assert "recommend a" not in sr_fix_stop, sr_fix_stop
+# A threshold stop fixes NOTHING by construction, so its round leaves no path in debt: the bytes it
+# read are the bytes standing there. Read off the debt alone, the second review the contract makes
+# mandatory scopes to nothing at all and can never be launched — so the reopening walk reads every
+# artifact standing over the repository instead.
+sr_clear_journals()
+sr_stop_store = sr_store()
+sr_source.write_text(sr_moved + "threshold stop\n")
+sr_run(sr_stop_store, "20260601T000700Z-stopscope", {"src/a.py": sr_sha("src/a.py")},
+       report={"confirmed": rb.HANDOFF_P1_STOP,
+               "confirmed_by_severity": {"P1": rb.HANDOFF_P1_STOP}})
+assert rb.repo_debt(sr_repo, ["src/a.py"]) == [], rb.repo_debt(sr_repo, ["src/a.py"])
+sr_stop_scope = dict(rb.debt_review_scope(sr_repo))
+assert "src/a.py" in sr_stop_scope, sr_stop_scope
+# Against what answered for the path BEFORE that round, never against the round itself: scoped off
+# its own receipt, the second pass reads a diff of nothing.
+assert sr_stop_scope["src/a.py"] is None, sr_stop_scope["src/a.py"]
+# And a gate nobody can ask does not take that scope away. The lock is the P1 count, read here; a
+# locked round the scope cannot reach is a repository that can neither review nor waive its way
+# out — the waiver refuses it for being locked and the review has nothing to read.
+sr_stop_gate = rb.ESCALATION_GATE
+rb.ESCALATION_GATE = work / "no-gate-at-this-path.sh"
+rb.ESCALATION_VERDICT_CACHE.clear()
+assert rb.escalation_verdict(rb.HANDOFF_P1_STOP, rb.HANDOFF_P1_STOP) == rb.ESCALATION_UNKNOWN
+assert "src/a.py" in dict(rb.debt_review_scope(sr_repo)), rb.debt_review_scope(sr_repo)
+rb.ESCALATION_GATE = sr_stop_gate
+rb.ESCALATION_VERDICT_CACHE.clear()
+
+# Nothing confirmed is nothing to dispatch: the round's fix status is done of its own accord, and a
+# brief here would send a worker to fix an empty list.
+sr_fix_none = sr_recorded("20260601T000500Z-fixnone", "P3", 0)
+assert "FIX HANDOFF" not in sr_fix_none, sr_fix_none
+# Nor over a snapshot the checkout has moved past, for the reason the panel's brief stops there:
+# the findings are about code nobody is standing on.
+sr_fix_stale = sr_recorded("20260601T000600Z-fixstale", "P3", 1,
+                           meta_fields={"worktree": False, "repo": str(pin_repo),
+                                        "commit": pin_sha})
+assert "FIX HANDOFF" not in sr_fix_stale, sr_fix_stale
+
 rb.ESCALATION_GATE = sr_gate_before
 os.environ["WORKER_RUN_DIR"] = str(sr_worker_runs)
 
@@ -8103,23 +8345,23 @@ assert (
     "--verdicts /tmp/review-bench-plain-run-verdicts.jsonl"
 ) in plain_handoff.getvalue(), plain_handoff.getvalue()
 assert "--no-corpus" not in plain_handoff.getvalue(), plain_handoff.getvalue()
-# The handoff is a two-step brief, not a triage order: the pass that judges the findings is the
-# pass that fixes them, and a worker sent home after step 1 leaves the round owing work nobody
-# recorded. The threshold is where it stops instead — that call is Egor's, not a worker's.
+# The panel's own brief is STEP 1 and nothing else: a blind triage that fixes nothing. The pass
+# that fixes what survived is a dispatch of its own, briefed by `record` — the panel cannot write
+# that brief, since it does not yet know which of its findings anybody confirmed.
 handoff_text = plain_handoff.getvalue()
-assert "STEP 1 — blind triage." in handoff_text, handoff_text
-assert "STEP 2 — the same worker pass" in handoff_text, handoff_text
+assert "STEP 1 of 2: blind triage" in handoff_text, handoff_text
+assert "Fix nothing in this pass" in handoff_text, handoff_text
+assert "STEP 2 is a pass of its own, briefed by `record`" in handoff_text, handoff_text
 assert f"THRESHOLD STOP — {rb.HANDOFF_P1_STOP} or more confirmed P1s" in handoff_text, handoff_text
-assert "review-bench fixes plain-run --done --fixed <N> --fp <M>" in handoff_text, handoff_text
 assert "review-bench fixes plain-run --blocked 'P1 threshold'" in handoff_text, handoff_text
 # The one line aimed past the worker: at the threshold a chat with nobody to ask decides for
 # itself rather than stalling on a fork Egor is not there to take.
 assert "maximum autonomy" in handoff_text, handoff_text
 assert "FRESH worker session" in handoff_text, handoff_text
-assert "Mutation-verify" in handoff_text, handoff_text
-# Neither commit nor stage: read as an imperative and an object, "commit and stage nothing" told the
-# worker to do the one thing the contract withholds until Egor asks for it.
-assert "Neither commit nor stage anything" in handoff_text, handoff_text
+# The fixing constraints are NOT here: printed to a worker told to fix nothing they are noise, and
+# the pass they bind is the one `record` briefs.
+assert "Mutation-verify" not in handoff_text, handoff_text
+assert "Neither commit nor stage anything" not in handoff_text, handoff_text
 # And a run whose snapshot the checkout has moved past — a historical commit, a range that ended
 # before HEAD — is handed no fixing pass at all: its findings are about code nobody is standing on,
 # so a step 2 over them edits whatever the current tree happens to keep at those paths.
@@ -8131,7 +8373,7 @@ assert "Record exactly with: review-bench record stale-run" in durable_text, dur
 assert "STEP 2" not in durable_text, durable_text
 assert "THRESHOLD STOP" not in durable_text, durable_text
 assert "review-bench fixes stale-run" not in durable_text, durable_text
-assert "Fix nothing and record no fix status." in durable_text, durable_text
+assert "No fixing pass follows, and no fix status is recorded." in durable_text, durable_text
 # The threshold a merged panel stops at is one repository's, the way the gate that prices the round
 # counts it: three findings spread over three repositories reached no member's threshold.
 merged_handoff = io.StringIO()
@@ -8232,6 +8474,405 @@ for oc_rerun_name, oc_rerun_no_verify in (("default", False), ("raw", True)):
 for side in rb.SIDE_RUNNERS:
     rb.SIDE_RUNNERS[side] = tier_runner
 
+# --- a diff too big for one cell ----------------------------------------------------------------
+# Measured, not guessed: past ~1500 diff lines the strong diff-fed cells started coming back empty
+# or dying outright, while the -skill cells reading the repository stayed flat. So the panel splits
+# the diff instead of the panel: same run, same receipt, same handoff, one chunk per cell.
+chunk_repo = work / "chunk-review"
+chunk_repo.mkdir()
+subprocess.run(["git", "init", "-q", str(chunk_repo)], check=True)
+for chunk_key, chunk_value in (("user.email", "bench@example.test"),
+                               ("user.name", "Review Bench")):
+    subprocess.run(["git", "-C", str(chunk_repo), "config", chunk_key, chunk_value], check=True)
+
+
+def chunk_git(*argv):
+    return subprocess.run(["git", "-C", str(chunk_repo), *argv], check=True,
+                          capture_output=True, text=True).stdout.strip()
+
+
+(chunk_repo / "seed.txt").write_text("seed\n")
+chunk_git("add", "-A")
+chunk_git("commit", "-qm", "seed")
+# Under the threshold nothing is split, and the run is the one it always was.
+(chunk_repo / "small.py").write_text("".join(f"small {n}\n" for n in range(20)))
+chunk_git("add", "-A")
+chunk_git("commit", "-qm", "small")
+chunk_small_sha = chunk_git("rev-parse", "HEAD")
+assert rb.diff_chunks(chunk_repo, chunk_small_sha) == [], rb.diff_chunks(chunk_repo,
+                                                                        chunk_small_sha)
+(chunk_repo / "big_a.py").write_text("".join(f"a {n}\n" for n in range(900)))
+(chunk_repo / "big_b.py").write_text("".join(f"b {n}\n" for n in range(700)))
+(chunk_repo / "tail.py").write_text("".join(f"t {n}\n" for n in range(20)))
+chunk_git("add", "-A")
+chunk_git("commit", "-qm", "big")
+chunk_sha = chunk_git("rev-parse", "HEAD")
+chunk_list = rb.diff_chunks(chunk_repo, chunk_sha)
+# Packed at FILE boundaries and in git's own order: a file over the target is a chunk of its own
+# rather than half of two, since a reviewer handed half a file reports the other half missing.
+assert [chunk["paths"] for chunk in chunk_list] == [
+    ["big_a.py"], ["big_b.py", "tail.py"],
+], [chunk["paths"] for chunk in chunk_list]
+for chunk_index, chunk in enumerate(chunk_list):
+    assert chunk["index"] == chunk_index, chunk
+    # Each chunk is a diff on its own — the commit header, what it holds, and nothing of the
+    # other chunks' files.
+    assert chunk["diff"].startswith("commit "), chunk["diff"][:80]
+    assert f"This is chunk {chunk_index + 1} of {len(chunk_list)}" in chunk["diff"], chunk["diff"]
+    held = sorted(line.split(" b/", 1)[1] for line in chunk["diff"].splitlines()
+                  if line.startswith("diff --git "))
+    assert held == sorted(chunk["paths"]), (held, chunk["paths"])
+# No chunk carries more than the target, and the only chunk that may is one holding a SINGLE file
+# over the target by itself — the property the whole split exists for, and the one every other
+# assertion here (counts, grouping, ordering) is satisfied without.
+
+
+def chunk_within_bounds(sha, chunks):
+    for chunk in chunks:
+        bodies = {path: rb.diff_file_body(chunk_repo, sha, path) for path in chunk["paths"]}
+        held = sum(len(body.splitlines()) for body in bodies.values())
+        assert held <= rb.DIFF_CHUNK_TARGET_LINES or len(chunk["paths"]) == 1, (
+            chunk["paths"], held
+        )
+        # And whatever it holds, it holds WHOLE: a file cut in half is the one thing chunking may
+        # never do, since neither piece's reviewer sees the other's text.
+        for path, body in bodies.items():
+            assert body in chunk["diff"], (path, chunk["paths"], len(body.splitlines()))
+
+
+chunk_within_bounds(chunk_sha, chunk_list)
+# A file over the threshold is never cut inside either: it is ONE chunk, read whole. Cut into
+# sub-hunks, the halves of one rewrite went to different cells with neither able to see what the
+# other was handed, and the deletion-only pieces were not even valid patches (2026-08-22).
+chunk_lone = chunk_repo / "lone.py"
+chunk_lone.write_text("".join(f"line {n}\n" for n in range(16000)))
+chunk_git("add", "-A")
+chunk_git("commit", "-qm", "lone")
+chunk_lone.write_text("".join(
+    (f"line {n} edited\n" if n % 20 == 0 else f"line {n}\n") for n in range(16000)
+))
+chunk_git("commit", "-qam", "lone edited")
+chunk_lone_sha = chunk_git("rev-parse", "HEAD")
+# A commit that IS one such file is handed out unsplit: one chunk is no split at all.
+assert rb.diff_chunks(chunk_repo, chunk_lone_sha) == [], rb.diff_chunks(chunk_repo,
+                                                                       chunk_lone_sha)
+(chunk_repo / "beside.py").write_text("".join(f"n {n}\n" for n in range(20)))
+chunk_lone.write_text("".join(
+    (f"line {n} again\n" if n % 20 == 0 else f"line {n}\n") for n in range(16000)
+))
+chunk_git("add", "-A")
+chunk_git("commit", "-qm", "lone and a neighbour")
+chunk_pair_sha = chunk_git("rev-parse", "HEAD")
+chunk_pair_list = rb.diff_chunks(chunk_repo, chunk_pair_sha)
+assert [chunk["paths"] for chunk in chunk_pair_list] == [["beside.py"], ["lone.py"]], [
+    chunk["paths"] for chunk in chunk_pair_list
+]
+chunk_within_bounds(chunk_pair_sha, chunk_pair_list)
+# Every hunk of the oversized file is in that one chunk: a hunk left out is a piece of the commit
+# nobody reviewed, and the round would still report itself as covering the path.
+chunk_lone_hunks = [line for line in
+                    rb.diff_file_body(chunk_repo, chunk_pair_sha, "lone.py").splitlines()
+                    if line.startswith("@@")]
+chunk_seen_hunks = [line for line in chunk_pair_list[1]["diff"].splitlines()
+                    if line.startswith("@@")]
+assert chunk_seen_hunks == chunk_lone_hunks, (len(chunk_seen_hunks), len(chunk_lone_hunks))
+
+chunk_seen = []
+
+
+def chunk_runner(rater, repo_path, commit, focus, run_dir, diff, account):
+    chunk_seen.append((rater["spec"], diff))
+    return 0, 1, "NO FINDINGS", "", []
+
+
+for side in rb.SIDE_RUNNERS:
+    rb.SIDE_RUNNERS[side] = chunk_runner
+chunk_store = work / "chunk-review-claudeb"
+os.environ["CLAUDEB_DIR"] = str(chunk_store)
+chunk_stdout = io.StringIO()
+# The target line goes to stderr, where every review announcement goes.
+with contextlib.redirect_stdout(chunk_stdout), contextlib.redirect_stderr(chunk_stdout):
+    assert rb.cmd_run(argparse.Namespace(
+        repo=str(chunk_repo), commitish=chunk_sha, raters="sol-medium-bare,oc-kimik3",
+        leg=False, verify=None, auto=None, focus=None,
+    )) == 0, chunk_stdout.getvalue()
+chunk_out = chunk_stdout.getvalue()
+assert f"· {len(chunk_list)} chunks" in chunk_out, chunk_out
+assert f"diff split into {len(chunk_list)} chunk(s)" in chunk_out, chunk_out
+# Chunking splits the DIFF and never the PANEL. A cell per (rater, chunk) made a tier panel over a
+# big commit 325 cells and hundreds of processes (live, 2026-08-22): the cell count is the tier's
+# alone, and a cell reads its chunks one after another under its own name.
+assert "the panel keeps its 2 cell(s)" in chunk_out, chunk_out
+# ONE run, one receipt, one handoff: the chunks are how the panel reads, not how the round is
+# recorded, or a finding index would need a chunk beside it to mean anything.
+chunk_runs = list((chunk_store / "worker-stats" / "benches").iterdir())
+assert len(chunk_runs) == 1, chunk_runs
+assert chunk_out.count("ADJUDICATION HANDOFF") == 1, chunk_out
+assert chunk_out.count("run id: ") == 1, chunk_out
+chunk_meta = json.loads((chunk_runs[0] / "meta.json").read_text())
+assert chunk_meta["chunks"] == [
+    {"index": chunk["index"], "paths": chunk["paths"]} for chunk in chunk_list
+], chunk_meta["chunks"]
+assert chunk_meta["raters"] == ["sol-medium-bare", "oc-kimik3"], chunk_meta["raters"]
+assert {row["rater"]: row["chunks_read"] for row in chunk_meta["rater_runs"]} == {
+    "sol-medium-bare": [0, 1], "oc-kimik3": [0, 1],
+}, chunk_meta["rater_runs"]
+# Every cell saw every chunk, one invocation at a time, and no `#k` name the chunking invented:
+# that suffix stays the tier's own word for a rater it deliberately runs twice.
+assert sorted(chunk_seen) == sorted(
+    (spec, chunk["diff"]) for spec in ("sol-medium-bare", "oc-kimik3") for chunk in chunk_list
+), [spec for spec, _ in chunk_seen]
+# A small commit takes none of it: same cells, the whole diff, the same meta a run has always
+# written.
+chunk_small_store = work / "chunk-small-claudeb"
+os.environ["CLAUDEB_DIR"] = str(chunk_small_store)
+del chunk_seen[:]
+chunk_small_stdout = io.StringIO()
+with contextlib.redirect_stdout(chunk_small_stdout), contextlib.redirect_stderr(chunk_small_stdout):
+    assert rb.cmd_run(argparse.Namespace(
+        repo=str(chunk_repo), commitish=chunk_small_sha, raters="sol-medium-bare,oc-kimik3",
+        leg=False, verify=None, auto=None, focus=None,
+    )) == 0, chunk_small_stdout.getvalue()
+assert " chunks" not in chunk_small_stdout.getvalue(), chunk_small_stdout.getvalue()
+assert "diff split into" not in chunk_small_stdout.getvalue(), chunk_small_stdout.getvalue()
+assert sorted(spec for spec, _ in chunk_seen) == ["oc-kimik3", "sol-medium-bare"], chunk_seen
+assert all(text == rb.commit_diff(chunk_repo, chunk_small_sha) for _, text in chunk_seen)
+chunk_small_run = next((chunk_small_store / "worker-stats" / "benches").iterdir())
+chunk_small_meta = json.loads((chunk_small_run / "meta.json").read_text())
+assert "chunks" not in chunk_small_meta, chunk_small_meta
+assert all("chunks_read" not in row for row in chunk_small_meta["rater_runs"]), chunk_small_meta
+# The whole point, stated as the comparison: the same raters over a chunked commit and over one
+# small enough to skip chunking launch the SAME number of cells.
+assert chunk_meta["raters"] == chunk_small_meta["raters"], (
+    chunk_meta["raters"], chunk_small_meta["raters"]
+)
+
+# A changed path whose NAME is pathspec magic is a file like any other, and git is asked about it
+# as one. Raw, `star*.py` also drags in the neighbour a wildcard matches — a file another chunk
+# holds, reviewed twice — and a leading colon is magic git resolves to nothing at all, so the chunk
+# claiming to hold that path carries an empty diff while the run records the path as read.
+(chunk_repo / "star*.py").write_text("magic\n")
+(chunk_repo / "starry.py").write_text("plain\n")
+(chunk_repo / ":colon.py").write_text("colon\n")
+chunk_git("add", "-A")
+chunk_git("commit", "-qm", "pathspec magic")
+chunk_magic_sha = chunk_git("rev-parse", "HEAD")
+chunk_magic_body = rb.diff_file_body(chunk_repo, chunk_magic_sha, "star*.py")
+assert "diff --git a/star*.py" in chunk_magic_body, chunk_magic_body
+assert "starry.py" not in chunk_magic_body, chunk_magic_body
+assert "diff --git a/:colon.py" in rb.diff_file_body(chunk_repo, chunk_magic_sha, ":colon.py")
+
+# The threshold is the DIFF's own lines and not numstat's changed-line count: headers and context
+# are text the cell is handed too, and a commit of many small scattered edits prices well under the
+# threshold while the prompt it produces is over it.
+for chunk_scatter in range(300):
+    (chunk_repo / f"scatter{chunk_scatter:03d}.py").write_text(
+        "".join(f"s {n}\n" for n in range(10))
+    )
+chunk_git("add", "-A")
+chunk_git("commit", "-qm", "scatter seed")
+for chunk_scatter in range(300):
+    chunk_scatter_file = chunk_repo / f"scatter{chunk_scatter:03d}.py"
+    chunk_scatter_file.write_text(
+        chunk_scatter_file.read_text().replace("s 5\n", "s five\n")
+    )
+chunk_git("commit", "-qam", "scatter edited")
+chunk_scatter_sha = chunk_git("rev-parse", "HEAD")
+chunk_scatter_numstat, _ = rb.diff_numstat(
+    chunk_repo, [rb.diff_base(chunk_repo, chunk_scatter_sha), chunk_scatter_sha]
+)
+assert sum(chunk_scatter_numstat.values()) <= rb.DIFF_CHUNK_THRESHOLD_LINES, \
+    sum(chunk_scatter_numstat.values())
+# And it clears the threshold by more than a context setting: measured with NO context at all —
+# the smallest any `diff.context` can make this diff, and the tool asks git for it without pinning
+# one — it is still over, so nobody's git configuration decides whether this case chunks.
+chunk_scatter_min = subprocess.run(
+    ["git", "-C", str(chunk_repo), "show", "--format=", "--no-ext-diff", "-U0",
+     chunk_scatter_sha],
+    check=True, capture_output=True, text=True,
+).stdout
+assert len(chunk_scatter_min.splitlines()) > rb.DIFF_CHUNK_THRESHOLD_LINES, \
+    len(chunk_scatter_min.splitlines())
+chunk_scatter_list = rb.diff_chunks(chunk_repo, chunk_scatter_sha)
+assert len(chunk_scatter_list) > 1, len(chunk_scatter_list)
+chunk_within_bounds(chunk_scatter_sha, chunk_scatter_list)
+
+# A file added or rewritten WHOLE arrives as one uncuttable hunk, and it goes out as one chunk
+# beside its neighbours rather than as pieces of itself.
+(chunk_repo / "whole.py").write_text("".join(f"w {n}\n" for n in range(2000)))
+(chunk_repo / "whole_beside.py").write_text("".join(f"v {n}\n" for n in range(20)))
+chunk_git("add", "-A")
+chunk_git("commit", "-qm", "one huge hunk")
+chunk_whole_sha = chunk_git("rev-parse", "HEAD")
+chunk_whole_body = rb.diff_file_body(chunk_repo, chunk_whole_sha, "whole.py")
+assert len([line for line in chunk_whole_body.splitlines() if line.startswith("@@")]) == 1
+chunk_whole_list = rb.diff_chunks(chunk_repo, chunk_whole_sha)
+assert [chunk["paths"] for chunk in chunk_whole_list] == [
+    ["whole.py"], ["whole_beside.py"],
+], [chunk["paths"] for chunk in chunk_whole_list]
+chunk_within_bounds(chunk_whole_sha, chunk_whole_list)
+# Every added line of it reaches that one chunk, in order: the file is the unit, so nothing of it
+# can go missing between two cells.
+chunk_whole_added = [
+    line for line in chunk_whole_list[0]["diff"].splitlines() if line.startswith("+w ")
+]
+assert chunk_whole_added == [f"+w {n}" for n in range(2000)], len(chunk_whole_added)
+# So a chunk's paths say the whole of what it holds, and the cells that read the repository
+# instead of the pasted text are told nothing about lines.
+chunk_told = rb.chunk_instruction(chunk_whole_sha, chunk_whole_list[0]["paths"])
+assert "whole.py" in chunk_told and "lines" not in chunk_told, chunk_told
+assert all("regions" not in chunk for chunk in chunk_whole_list + chunk_list), chunk_list
+
+# A rename reaches its chunk AS a rename. Asked about the destination alone, git has nothing to
+# pair it with and prints a brand-new file: the deletion of the source lands in no chunk at all,
+# and the cell reviews a moved file as one written from scratch.
+chunk_git("mv", "tail.py", "moved_tail.py")
+(chunk_repo / "moved_tail.py").write_text("".join(f"t {n}\n" for n in range(21)))
+(chunk_repo / "rename_beside.py").write_text("".join(f"r {n}\n" for n in range(1600)))
+chunk_git("add", "-A")
+chunk_git("commit", "-qm", "renamed")
+chunk_rename_sha = chunk_git("rev-parse", "HEAD")
+chunk_rename_body = rb.diff_file_body(
+    chunk_repo, chunk_rename_sha, "moved_tail.py",
+    rb.diff_numstat(chunk_repo, [rb.diff_base(chunk_repo, chunk_rename_sha),
+                                 chunk_rename_sha])[1].get("moved_tail.py"),
+)
+assert "rename from tail.py" in chunk_rename_body, chunk_rename_body
+assert "new file mode" not in chunk_rename_body, chunk_rename_body
+chunk_rename_list = rb.diff_chunks(chunk_repo, chunk_rename_sha)
+chunk_rename_held = "".join(
+    chunk["diff"] for chunk in chunk_rename_list if "moved_tail.py" in chunk["paths"]
+)
+assert "rename from tail.py" in chunk_rename_held, chunk_rename_held
+
+# A chunk NO cell came back from is a slice of the commit nobody opened, and the run's snapshot may
+# attest only what was read: those paths stay in debt while everything a live chunk held is covered
+# exactly as an unchunked round covers it. Whatever killed the cells — coverage never turns on that.
+(chunk_repo / "wt_a.py").write_text("".join(f"wa {n}\n" for n in range(900)))
+(chunk_repo / "wt_b.py").write_text("".join(f"wb {n}\n" for n in range(700)))
+
+
+def chunk_kill_runner(rater, repo_path, commit, focus, run_dir, diff, account):
+    if (rater.get("chunk") or {}).get("index") == 1:
+        return 1, 1, "", "this cell died", []
+    return 0, 1, "NO FINDINGS", "", []
+
+
+for side in rb.SIDE_RUNNERS:
+    rb.SIDE_RUNNERS[side] = chunk_kill_runner
+chunk_partial_store = work / "chunk-partial-claudeb"
+os.environ["CLAUDEB_DIR"] = str(chunk_partial_store)
+chunk_partial_stdout = io.StringIO()
+with contextlib.redirect_stdout(chunk_partial_stdout), \
+        contextlib.redirect_stderr(chunk_partial_stdout):
+    rb.cmd_run(argparse.Namespace(
+        repo=str(chunk_repo), commitish=None, worktree=True,
+        raters="sol-medium-bare,oc-kimik3", leg=False, verify=None, auto=None, focus=None,
+    ))
+chunk_partial_dir = next((chunk_partial_store / "worker-stats" / "benches").iterdir())
+chunk_partial_meta = json.loads((chunk_partial_dir / "meta.json").read_text())
+chunk_partial_chunks = chunk_partial_meta["chunks"]
+assert len(chunk_partial_chunks) == 2, chunk_partial_chunks
+assert sorted(chunk_partial_meta["reviewed"]) == sorted(chunk_partial_chunks[0]["paths"]), (
+    chunk_partial_meta["reviewed"], chunk_partial_chunks
+)
+assert chunk_partial_chunks[1]["paths"], chunk_partial_chunks
+assert not set(chunk_partial_chunks[1]["paths"]) & set(chunk_partial_meta["reviewed"]), (
+    chunk_partial_meta["reviewed"], chunk_partial_chunks
+)
+# The partial run kept the cells its raters asked for; the dead chunk cost coverage, not cells.
+assert chunk_partial_meta["raters"] == ["sol-medium-bare", "oc-kimik3"], chunk_partial_meta
+assert all(row["chunks_read"] == [0] for row in chunk_partial_meta["rater_runs"]), (
+    chunk_partial_meta["rater_runs"]
+)
+# And a panel whose passes all came back attests every path of it, chunked or not.
+assert rb.unread_chunk_paths(
+    chunk_list, [{"chunks_read": [chunk["index"] for chunk in chunk_list]}]
+) == set()
+assert rb.unread_chunk_paths([], []) == set()
+# A cell the run DISCARDS read nothing the receipt may attest: its answer reaches no adjudicator,
+# so a chunk only that cell opened is a chunk nobody reviewed.
+assert rb.unread_chunk_paths(
+    chunk_list,
+    [{"spec": "sol-medium-bare", "chunks_read": [chunk["index"] for chunk in chunk_list]}],
+    {"sol-medium-bare"},
+) == {path for chunk in chunk_list for path in chunk["paths"]}
+
+# Exit 0 is not what a pass is judged by anywhere else in this tool: prose, an empty answer or a
+# 429 in the text is unusable output. Counted as read it is invisible — the cell's answer is its
+# chunks joined, so another chunk's clean marker carries it — and the paths of a chunk nobody
+# reviewed are attested as read.
+
+
+def chunk_prose_runner(rater, repo_path, commit, focus, run_dir, diff, account):
+    if (rater.get("chunk") or {}).get("index") == 1:
+        return 0, 1, "I read it over and it all looks reasonable to me.", "", []
+    return 0, 1, "NO FINDINGS", "", []
+
+
+for side in rb.SIDE_RUNNERS:
+    rb.SIDE_RUNNERS[side] = chunk_prose_runner
+chunk_prose_store = work / "chunk-prose-claudeb"
+os.environ["CLAUDEB_DIR"] = str(chunk_prose_store)
+chunk_prose_stdout = io.StringIO()
+with contextlib.redirect_stdout(chunk_prose_stdout), \
+        contextlib.redirect_stderr(chunk_prose_stdout):
+    rb.cmd_run(argparse.Namespace(
+        repo=str(chunk_repo), commitish=None, worktree=True,
+        raters="sol-medium-bare,oc-kimik3", leg=False, verify=None, auto=None, focus=None,
+    ))
+chunk_prose_dir = next((chunk_prose_store / "worker-stats" / "benches").iterdir())
+chunk_prose_meta = json.loads((chunk_prose_dir / "meta.json").read_text())
+assert all(row["chunks_read"] == [0] for row in chunk_prose_meta["rater_runs"]), \
+    chunk_prose_meta["rater_runs"]
+assert not set(chunk_prose_meta["chunks"][1]["paths"]) & set(chunk_prose_meta["reviewed"]), (
+    chunk_prose_meta["reviewed"], chunk_prose_meta["chunks"]
+)
+# The cell records how many invocations its duration is the sum of: every reader of that number —
+# the watchdog cap, the duration median, the late line — prices ONE invocation, and a cell's total
+# handed to them reads as a rater that suddenly got twice as slow.
+assert all(row["passes"] == 2 for row in chunk_prose_meta["rater_runs"]), \
+    chunk_prose_meta["rater_runs"]
+assert rb.cell_pass_duration({"duration_ms": 900, "passes": 3}) == 300
+assert rb.cell_pass_duration({"duration_ms": 900}) == 900
+assert rb.review_duration_medians([{"rater": "sol-medium-bare", "duration_ms": 900,
+                                    "passes": 3}]) == {"sol-medium-bare": 300}
+
+# A kill in ONE chunk of a cell whose other chunks came back is still that cell's kill: every pass
+# clears the markers of the one before it, and a watchdog kill nobody records is a hang the caps
+# never learn from and a run that never says it was killed.
+
+
+def chunk_kill_marker_runner(rater, repo_path, commit, focus, run_dir, diff, account):
+    if (rater.get("chunk") or {}).get("index") == 0:
+        rater["killed"] = "watchdog"
+        rater["killed_cap_s"] = 900
+        return 124, 1, "", "rater timed out after 900s", []
+    return 0, 1, "NO FINDINGS", "", []
+
+
+for side in rb.SIDE_RUNNERS:
+    rb.SIDE_RUNNERS[side] = chunk_kill_marker_runner
+chunk_marker_store = work / "chunk-marker-claudeb"
+os.environ["CLAUDEB_DIR"] = str(chunk_marker_store)
+chunk_marker_stdout = io.StringIO()
+with contextlib.redirect_stdout(chunk_marker_stdout), \
+        contextlib.redirect_stderr(chunk_marker_stdout):
+    rb.cmd_run(argparse.Namespace(
+        repo=str(chunk_repo), commitish=None, worktree=True,
+        raters="sol-medium-bare,oc-kimik3", leg=False, verify=None, auto=None, focus=None,
+    ))
+chunk_marker_meta = json.loads(
+    (next((chunk_marker_store / "worker-stats" / "benches").iterdir()) / "meta.json").read_text()
+)
+assert chunk_marker_meta.get("timed_out") is True, chunk_marker_meta
+assert all(row["killed"] == "watchdog" and row["killed_cap_s"] == 900
+           for row in chunk_marker_meta["rater_runs"]), chunk_marker_meta["rater_runs"]
+assert all(rb.watchdog_killed(row) for row in chunk_marker_meta["rater_runs"]), \
+    chunk_marker_meta["rater_runs"]
+for side in rb.SIDE_RUNNERS:
+    rb.SIDE_RUNNERS[side] = tier_runner
+
 # --- --debt: the review that scopes itself ------------------------------------------------------
 # The one review nobody hands a scope. It reads every path this repository owes an answer for,
 # widened to what a locked round still holds, each from the content the artifact answering for it
@@ -8263,6 +8904,9 @@ debt_claudeb_before = os.environ["CLAUDEB_DIR"]
 debt_first_sha = debt_sha("reviewed.py")
 debt_pair_sha = debt_sha("pair.py")
 debt_settled_sha = debt_sha("settled.py")
+# The scope reopens a round the FORK says is owed a second one, and the fork is the gate's word:
+# the stub above answers it here too, so this suite never depends on the gate installed today.
+rb.ESCALATION_GATE = sr_fix_gate
 debt_stores = 0
 
 
@@ -8395,10 +9039,17 @@ assert [path for path, _ in rb.repo_debt(debt_repo)] == ["reviewed.py"], rb.repo
 assert [path for path, _ in rb.debt_review_scope(debt_repo)] == ["pair.py", "reviewed.py"], \
     rb.debt_review_scope(debt_repo)
 debt_meta, debt_diff, _ = debt_review()
-# The survivor contributes no diff at all and is HELD anyway: a run that does not hold it
-# discharges nothing, which is exactly what the debt-only scope beside it proves.
-assert "diff --git a/pair.py" not in debt_diff, debt_diff
+# And the round that owed the second review is REOPENED: its own receipt is not read, so every
+# path it held compares against whatever answered for that path BEFORE it and its full scope comes
+# back as a real diff. Scoped off the newest artifact instead — which is that very round — a live
+# second round read the 258 lines its own fixing pass wrote and nothing else, while the handoff
+# promised the full original scope plus the fixes (2026-08-22).
+assert "diff --git a/pair.py" in debt_diff, debt_diff
 assert f"{rb.SCOPE_TRAILER}pair.py" in debt_diff, debt_diff
+assert "+the other half" in debt_diff, debt_diff
+# The whole file, not the drift since the round: nothing older than the reopened round answered
+# for `reviewed.py` either, so the panel is handed all of it.
+assert "+committed three" in debt_diff and "+one" in debt_diff, debt_diff
 assert debt_meta["reviewed"] == {
     "reviewed.py": debt_sha("reviewed.py"), "pair.py": debt_pair_sha,
 }, debt_meta
@@ -8410,6 +9061,23 @@ assert rb.reviewed_blobs(
 ) == {"pair.py": debt_pair_sha, "vanished.py": ""}, rb.reviewed_blobs(
     debt_repo, ["pair.py"], debt_meta["commit"], paths=["pair.py", "vanished.py"]
 )
+
+# The other direction: a round below both thresholds owes nothing, so its receipt stands and the
+# scope is the ordinary debt delta. Reopening every round would hand each review its predecessor's
+# whole scope forever.
+debt_settled_round = debt_store()
+debt_artifact(debt_settled_round, "20260101T000100Z-aaaaaaa",
+              {"reviewed.py": debt_sha("reviewed.py"), "pair.py": debt_pair_sha},
+              report={"confirmed": 1, "confirmed_by_severity": {"P1": 1}})
+rb.RUN_CONFIRMED_COUNTS.clear()
+rb.ROUND_BUDGET_SPENT_CACHE.clear()
+(debt_repo / "reviewed.py").write_text("one\ntwo\ncommitted three\nuncommitted four\nnot owed\n")
+assert debt_verdict() == "debt 1 other", debt_verdict()
+assert [path for path, _ in rb.debt_review_scope(debt_repo)] == ["reviewed.py"], \
+    rb.debt_review_scope(debt_repo)
+debt_meta, debt_diff, _ = debt_review()
+assert "diff --git a/pair.py" not in debt_diff, debt_diff
+assert "+not owed" in debt_diff and "+committed three" not in debt_diff, debt_diff
 
 # A debt path is a FILE and never a pathspec: a repository holding one honestly named
 # `:(exclude)...` had that name reach git as MAGIC, and the snapshot then answered for the debt
@@ -9878,6 +10546,14 @@ historical = rb.range_snapshot_commit(sealed_repo, f"{sealed_base}..{sealed_seco
 assert rb.write_review_receipt(sealed_repo, historical, "run-historical", 0, worktree=False) is None
 # The same guard passes a range that ends at the tip, which is the flow this feature exists for.
 assert rb.write_review_receipt(sealed_repo, sealed_sha, "run-tip", 0, worktree=False) is not None
+# `record` asks the same question again when it writes the fixing brief, and a range wears the
+# worktree flag because it is sealed the same way: read off that flag alone, a fixing pass would be
+# dispatched over commits the checkout has moved past.
+assert not rb.round_fixable({"repo": str(sealed_repo), "commit": historical, "worktree": True})
+assert rb.round_fixable({"repo": str(sealed_repo), "commit": sealed_sha, "worktree": True})
+# A repository nothing can ask about leaves the pass on, exactly as the reader above fails open.
+assert rb.round_fixable({"repo": str(sealed_repo / "gone"), "commit": historical,
+                         "worktree": True})
 
 sealed_refusals = {}
 for sealed_label, sealed_spec in (("shape", "HEAD"), ("empty", f"{sealed_head}..{sealed_head}")):
@@ -13136,6 +13812,20 @@ assert test "$(grep -Fc -- "20260801T020000Z-fixround2" <<<"$fix_delivery")" -eq
 fix_foreign=$(fix_bench pending-delivery --session sess-elsewhere) \
   || fail "pending-delivery failed for a chat with no runs"
 assert test -z "$fix_foreign"
+# The same ownership question asked of ONE run by id, which is what the delivery hooks render
+# from: a run reached by id says nothing about who launched it, and the block they frame is Egor's
+# indicator that HIS review finished — one chat framed another chat's review as its own
+# (2026-08-22). The refusal names the launcher, since the hook that swallowed the report says so.
+fix_bench report 20260801T000000Z-fixround1 --session sess-fix >/dev/null \
+  || fail "report refused the chat that launched the run"
+fix_report_foreign=$(fix_bench report 20260801T000000Z-fixround1 --session sess-elsewhere 2>&1) &&
+  fail "report rendered a run another chat launched: $fix_report_foreign"
+assert contains "$fix_report_foreign" "run 20260801T000000Z-fixround1 belongs to chat sess-fix"
+assert test "$(grep -Fc -- "$report_frame_header" <<<"$fix_report_foreign")" -eq 0
+# Asked by nobody in particular it renders as it always did: the hooks pass no `--session` where
+# the harness named no chat, and a report withheld there is one Egor never sees at all.
+fix_bench report 20260801T000000Z-fixround1 >/dev/null \
+  || fail "report refused an ask naming no chat"
 # An untriaged run has no report to deliver at all — that is the triage gate's question, not
 # this one's.
 GATE_SD="$FIX_SD" GATE_REPO="$FIX_REPO" GATE_SESSION=sess-fix \
@@ -13779,8 +14469,9 @@ finished = datetime.now(timezone.utc) - timedelta(hours=1)
 DOCPY
 assert test "$(doctor_count "$DOC_MERGED" orphan_debt)" = "0"
 
-# kill_asymmetry: the fast-error path that never marks the run it killed. Nothing downstream can
-# tell such a run from a clean one, so the count is how often that path is taken.
+# kill_asymmetry: every panel that came back with nothing, whichever path killed it. Coverage no
+# longer turns on the kill marking, so the marking no longer splits this class in two — the count
+# is a diagnostic over empty rounds, not a second-class round.
 DOC_KILL="$WORK/doctor-kill"
 doc_run "$DOC_KILL" 20260801T000000Z-dockill 3 0
 # A panel that completed nothing left no cell record either: the launch document's empty list is
@@ -13801,7 +14492,9 @@ meta = json.loads(open(sys.argv[1]).read())
 meta["timed_out"] = True
 open(sys.argv[1], "w").write(json.dumps(meta) + "\n")
 DOCPY
-assert test "$(doctor_count "$DOC_KILL" kill_asymmetry)" = "0"
+# Marked or unmarked, the same empty round: the watchdog's marking is a diagnostic of its own and
+# buys the run neither a listing nor a pass.
+assert test "$(doctor_count "$DOC_KILL" kill_asymmetry)" = "1"
 python3 - "$DOC_KILL/benches/20260801T000000Z-dockill/meta.json" <<'DOCPY'
 import json
 import sys

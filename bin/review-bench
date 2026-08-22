@@ -207,6 +207,7 @@ DELIVERY_STATES = ("done", "blocked")
 DELIVERY_MARK = "delivery.json"
 REPORT_RECEIPT = "reported.json"
 FIX_RECEIPT = "fixes.json"
+DECREE_RECEIPT = "decree.json"
 # Confirmed P1s at which the fixing pass stops instead of starting: past it the round is not a
 # list of defects to patch but a fork Egor decides, and a worker that patched its way through one
 # spent that decision for him.
@@ -1100,7 +1101,7 @@ RATER_RE = re.compile(
     r"(?:-(low|medium|high|xhigh|max))?(-skill|-bare|-anthropic|-google)?$"
 )
 RATER_REPEAT_RE = re.compile(r"^(\S+) x([2-9])$")
-RATER_ATTEMPT_RE = re.compile(r"#[2-9]$")
+RATER_ATTEMPT_RE = re.compile(r"#\d+$")
 PRIORITY_RE = re.compile(r"\b(P[123])\b", re.IGNORECASE)
 # Half this repository's files have no extension, so a cited path is anything carrying a
 # directory separator as well as anything carrying a suffix.
@@ -1481,6 +1482,7 @@ DOCTOR_AGENT_INTERVAL_S = 6 * 3600
 DOCTOR_AGENT_WRAPPER = (".local", "libexec", "review-doctord")
 RUN_CONFIRMED_COUNTS = {}
 ROUND_BUDGET_SPENT_CACHE = {}
+ESCALATION_VERDICT_CACHE = {}
 # How many lines of debt a path carries, keyed by the two contents that decide it and nothing else,
 # so an entry can never answer for a pair it was not measured on. It is what keeps `debt --split`
 # inside the statusline's budget: without it every render diffs every debt path afresh.
@@ -1503,6 +1505,10 @@ FIXED_COMMIT_IDENTITY = {
     "GIT_COMMITTER_EMAIL": "review-bench@local",
     "GIT_COMMITTER_DATE": "2005-04-07T22:13:13 +0000",
 }
+# Above this many diff lines a panel is split; each chunk is packed to the target below. Both are
+# measured in `diff_chunks` and duplicated in docs/review-contract.md, guarded by row `ax`.
+DIFF_CHUNK_THRESHOLD_LINES = 1500
+DIFF_CHUNK_TARGET_LINES = 800
 REVIEW_LATE_MULTIPLIER = 3
 REVIEW_LATE_FLOOR_S = 120
 
@@ -2110,7 +2116,7 @@ def worktree_snapshot_commit(repo, clean_command=None, paths=None):
     return proc.stdout.strip()
 
 
-def announce_review_target(repo, sha, scope=(), members=None, head_label=None):
+def announce_review_target(repo, sha, scope=(), members=None, head_label=None, chunks=0):
     """What this run is about to send to the panel, said out loud before it goes: which base to
     which head, how many files, how many lines, under which scope.
 
@@ -2140,6 +2146,8 @@ def announce_review_target(repo, sha, scope=(), members=None, head_label=None):
             text += f" · sealed as {commit[:7]}"
         if narrowed:
             text += " · scope: " + " ".join(narrowed)
+        if chunks and not label:
+            text += f" · {chunks} chunks"
         described.append(f"  {label}/ = {where}: {text}" if label else f"reviewing {where}: {text}")
     if not total_files:
         raise ValueError(
@@ -2149,6 +2157,8 @@ def announce_review_target(repo, sha, scope=(), members=None, head_label=None):
             "found anything in nothing; name the commits to review with --range A..B or a "
             "commitish, or --worktree for uncommitted work."
         )
+    if chunks and members:
+        described.append(f"  {chunks} chunks over these repositories")
     for line in described:
         print(line, file=sys.stderr)
 
@@ -2996,18 +3006,32 @@ def review_counts(rows):
     return counts
 
 
+def cell_pass_duration(row):
+    """What ONE invocation of this cell took, or None where the row records no usable duration.
+
+    A chunked cell runs its passes one after another under one name and records their sum, so the
+    readers that price an invocation — the watchdog cap, the duration median, the late line — must
+    divide it back out or read the cell as a rater that suddenly got N times slower.
+    """
+    duration = row.get("duration_ms")
+    if (
+        not isinstance(duration, (int, float))
+        or isinstance(duration, bool)
+        or duration < 0
+    ):
+        return None
+    passes = row.get("passes")
+    if isinstance(passes, int) and not isinstance(passes, bool) and passes > 1:
+        return duration / passes
+    return duration
+
+
 def review_duration_medians(rows):
     durations = defaultdict(list)
     for row in rows:
         rater = row.get("rater")
-        duration = row.get("duration_ms")
-        if (
-            isinstance(rater, str)
-            and rater
-            and isinstance(duration, (int, float))
-            and not isinstance(duration, bool)
-            and duration >= 0
-        ):
+        duration = cell_pass_duration(row)
+        if isinstance(rater, str) and rater and duration is not None:
             durations[normalize_legacy_rater(rater)].append(duration)
     return {
         rater: statistics.median(values)
@@ -3052,7 +3076,10 @@ def watchdog_killed(row):
     """
     if row.get("stalled_s"):
         return False
-    if row.get("exit_code") == 124:
+    # The marker as well as the code: a chunked cell whose other passes came back carries the kill
+    # of the one that hung under an exit 0 of its own, and read on the code alone that hang reaches
+    # neither the run's `timed_out` nor the cap it fired at.
+    if row.get("exit_code") == 124 or row.get("killed") == "watchdog":
         return True
     side = row.get("side") or rater_side(row.get("rater"))
     return side == "agy" and cell_status(row) == "timed_out"
@@ -3104,12 +3131,8 @@ def panel_cell_history(benches):
             # A completion whose duration lives only in the legacy top-level map still clears
             # the kill record; only the maxima need the number.
             run_done.add(key)
-            duration = row.get("duration_ms")
-            if (
-                not isinstance(duration, (int, float))
-                or isinstance(duration, bool)
-                or duration < 0
-            ):
+            duration = cell_pass_duration(row)
+            if duration is None:
                 continue
             maxima[key] = max(duration, maxima.get(key, duration))
             gap = row.get("max_quiet_ms")
@@ -3899,6 +3922,9 @@ def verifier_report_value(summary, scheme=None):
 
 
 ESCALATION_GATE = Path.home() / ".claude/hooks/review-flow-gate.sh"
+ESCALATION_UNKNOWN = (
+    "unknown — the commit gate could not be asked; attempt the commit for the verdict"
+)
 
 
 def escalation_verdict(p1, total):
@@ -3919,12 +3945,12 @@ def escalation_verdict(p1, total):
             stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10,
         )
     except (OSError, subprocess.SubprocessError):
-        return "unknown — the commit gate could not be asked; attempt the commit for the verdict"
+        return ESCALATION_UNKNOWN
     if done.returncode == 0:
         return done.stdout.strip() or None
     if done.returncode == 1:
         return None
-    return "unknown — the commit gate could not be asked; attempt the commit for the verdict"
+    return ESCALATION_UNKNOWN
 
 
 def report_lines(run_dir, meta, verdicts=None):
@@ -3960,6 +3986,8 @@ def report_lines(run_dir, meta, verdicts=None):
     # Beside the tier, because the tier alone names a panel and the reader would price these
     # findings as the tool's own: a lens run's severities were awarded by another methodology.
     scope = f"{tier} · lens {meta['lens']}" if meta.get("lens") else tier
+    if meta.get("chunks"):
+        scope += f" · {len(meta['chunks'])} chunks"
     dropped = meta.get("lens_panel_dropped") or []
     if dropped:
         scope += f" (−{len(dropped)} cell(s) the lens dropped)"
@@ -4024,6 +4052,10 @@ def report_lines(run_dir, meta, verdicts=None):
     if earned and review_round(run_dir, meta) >= ROUND_BUDGET:
         earned = ROUND_BUDGET_SPENT
     rows.append(("round:", earned or "closed — nothing more is owed before the commit"))
+    decreed = read_decree(run_dir)
+    if decreed:
+        rows.append(("decree:", f"{decreed['reason']} — Egor's recorded unlock of this round's "
+                                "withheld waiver; no second panel answered it"))
     fixes_line, fixes_state = fix_status(run_dir, summary["confirmed"], verdict_rows)
     rows.append(("fixes:", fixes_line))
     if fixes_state == "blocked":
@@ -4187,6 +4219,27 @@ def write_report_receipt(run_dir, verdicts, severities=None):
             for row in verdicts
         ],
     }) + "\n")
+
+
+def read_decree(run_dir):
+    """Egor's recorded unlock of this round, or None.
+
+    The only thing that discharges a P1 lock without the second review it demands, and it exists
+    because the lock has no other door: the round is locked until a full second panel runs, and
+    when Egor decides that panel is not worth its tokens nothing on disk could say so. A model
+    never writes one on its own judgment — that would be the round forgiving itself — so every
+    surface that would have named the lock names the decree instead: the reason itself wherever
+    there is room for a sentence, and the bare `decreed` word where the answer is one machine-read
+    line, loudly enough that a decree nobody authorised is visible in the same block Egor reads the
+    findings in and never as a round nothing ever withheld.
+    """
+    try:
+        stored = json.loads((run_dir / DECREE_RECEIPT).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(stored, dict) or not str(stored.get("reason") or "").strip():
+        return None
+    return stored
 
 
 def read_fix_status(run_dir):
@@ -4723,6 +4776,15 @@ def cmd_report(args):
         target = "last run" if args.last else f"run id {args.run_id}"
         raise ValueError(f"unknown {target}")
     meta = json.loads((run_dir / "meta.json").read_text())
+    # The delivery hooks print this rendering to Egor unasked, so `--session` is what keeps a chat
+    # from framing another chat's review as its own: a run reached by id says nothing about who
+    # launched it, and the report he reads IS the indicator that HIS review finished (2026-08-22).
+    # A worker's launch answers to the chat that sent it, the fold `caller_chat` makes.
+    asking = str(getattr(args, "session", "") or "").strip()
+    launcher = str(meta.get("session") or "")
+    if (asking and launcher and launcher != asking
+            and worker_session_launchers().get(launcher) != asking):
+        raise ValueError(f"run {run_dir.name} belongs to chat {launcher}")
     emit_report(run_dir, meta)
     return 0
 
@@ -6162,8 +6224,24 @@ def review_prompt(sha, focus, profile=None, lens=None):
     )
 
 
-def skill_brief(sha, focus, repo_path):
+def chunk_instruction(sha, paths):
+    """What a cell reading part of a chunked commit is told, for the sides handed a repository
+    rather than a diff. One sentence, in the same words the pasted-diff chunks carry. A chunk is
+    whole files and never a piece of one, so its paths say the whole of what it holds."""
+    if not paths:
+        return ""
+    listed = " ".join(shlex.quote(path) for path in paths)
+    return (
+        f" This commit was split into chunks so no reviewer is handed more diff than it reads "
+        f"reliably: review ONLY these files of it — {', '.join(paths)} — and report nothing about "
+        f"what is missing from them, since the other files are being reviewed in parallel by "
+        f"other cells. Read them with `git show {sha} -- {listed}`."
+    )
+
+
+def skill_brief(sha, focus, repo_path, paths=()):
     suffix = f"\nAdditional review focus: {focus}" if focus else ""
+    suffix = chunk_instruction(sha, paths) + suffix
     return (
         f"You are a code-review worker. The repository is your current working directory "
         f"({repo_path}). Review commit {sha} the way you normally would: invoke the "
@@ -6506,10 +6584,10 @@ def run_streamed(command, *, timeout_s, stall_s=None, watch_paths=(), cwd=None, 
 def run_codex(rater, repo, sha, focus, run_dir, diff, account):
     deadline = rater.get("timeout_s") or RATER_TIMEOUT_S
     raw_final = tempfile.NamedTemporaryFile(
-        dir=run_dir, prefix=f"raw-final-{rater['spec']}-", delete=False
+        dir=run_dir, prefix=f"raw-final-{cell_artifact(rater)}-", delete=False
     )
     raw_final.close()
-    raw_events = run_dir / f"raw-events-{rater['spec']}.jsonl"
+    raw_events = run_dir / f"raw-events-{cell_artifact(rater)}.jsonl"
     command = [command_path("REVIEW_BENCH_CODEX_BIN", "codex"), "exec"]
     prompt_input = None
     lens = rater.get("lens")
@@ -6532,6 +6610,7 @@ def run_codex(rater, repo, sha, focus, run_dir, diff, account):
         instruction = (
             f"{READ_ONLY_REVIEW_INSTRUCTION} Reply with exactly {CLEAN_REVIEW_MARKER} and "
             "nothing else when the commit has no findings."
+            + chunk_instruction(sha, cell_chunk_paths(rater))
         )
         if focus:
             instruction += f" Additional review focus: {focus}"
@@ -6699,11 +6778,11 @@ def refresh_limits(account):
 
 def run_claude(rater, repo, sha, focus, run_dir, diff, account):
     deadline = rater.get("timeout_s") or RATER_TIMEOUT_S
-    raw_output = run_dir / f"raw-{rater['spec']}.json"
+    raw_output = run_dir / f"raw-{cell_artifact(rater)}.json"
     raw_output.unlink(missing_ok=True)
     clone = seal_overlay_clone(repo, sha)
     if uses_skill_brief(rater):
-        prompt = skill_brief(sha, focus, clone)
+        prompt = skill_brief(sha, focus, clone, cell_chunk_paths(rater))
     else:
         prompt = review_prompt(sha, focus, lens=rater.get("lens")) + "\n\nCommit diff:\n" + diff
     cwd = clone
@@ -6783,7 +6862,7 @@ def gate_admission_key(rater):
 
 
 def run_opencode(rater, repo, sha, focus, run_dir, diff, account):
-    raw_output = run_dir / f"raw-{rater['spec']}.json"
+    raw_output = run_dir / f"raw-{cell_artifact(rater)}.json"
     prompt = review_prompt(sha, focus, rater["profile"]) + "\n\nCommit diff:\n" + diff
     prompt_file = tempfile.NamedTemporaryFile(
         mode="w", prefix=f"review-bench-{rater['spec']}-", suffix=".txt", delete=False
@@ -7594,18 +7673,20 @@ def write_agy_usage(run_dir, rater, duration, log_text):
         )
         if matches:
             usage[usage_key] = max(map(int, matches))
-    path = run_dir / f"usage-{rater['spec']}.jsonl"
+    path = run_dir / f"usage-{cell_artifact(rater)}.jsonl"
     path.write_text(json.dumps(usage, ensure_ascii=False) + "\n")
     return usage
 
 
 def run_agy(rater, repo, sha, focus, run_dir, diff, account):
-    raw_output = run_dir / f"raw-{rater['spec']}.md"
-    log_file = run_dir / f"agy-{rater['spec']}.log"
+    raw_output = run_dir / f"raw-{cell_artifact(rater)}.md"
+    log_file = run_dir / f"agy-{cell_artifact(rater)}.log"
     model = agy_model_id(rater)
     timeout_s = rater.get("timeout_s") or AGY_TIMEOUT_MAX_S
     print_timeout = f"{timeout_s // 60}m" if timeout_s % 60 == 0 else f"{timeout_s}s"
-    prompt = "/code-review" + (f"\nAdditional review focus: {focus}" if focus else "")
+    prompt = ("/code-review"
+              + chunk_instruction(sha, cell_chunk_paths(rater))
+              + (f"\nAdditional review focus: {focus}" if focus else ""))
     # agy resolves its Google account from HOME and takes no account flag, so the profile has to be
     # selected by launching it through geminib rather than by an argument.
     command = [command_path("REVIEW_BENCH_GEMINIB_BIN", "geminib"), "profile", account]
@@ -7991,7 +8072,7 @@ def run_rater_task(rater, repo, sha, focus, run_dir, diff):
             walled.add(candidate)
             continue
         wall_text = (
-            text_file_tail(run_dir / f"raw-events-{rater['spec']}.jsonl")
+            text_file_tail(run_dir / f"raw-events-{cell_artifact(rater)}.jsonl")
             if side == "codex" else text
         )
         # A server-side hiccup, a burst throttle and a spent subscription arrive as the same
@@ -8023,6 +8104,79 @@ def run_rater_task(rater, repo, sha, focus, run_dir, diff):
                               no_account_left(side, baseline_exclusion_note(side)
                                               + role_closed_note(side)), []))
     return (rater, account, result)
+
+
+def chunk_pass_failure(spec, rc, text, stderr):
+    """Why this chunk's pass is not one the run may attest, or "" where it came back.
+
+    The exit code is not what a cell is judged by anywhere else: an answer of prose, an empty one
+    or a 429 in the text is unusable output. Counted as read it is invisible — the cell's answer is
+    its chunks joined, so another chunk's findings or clean marker carry it — and the paths of a
+    chunk nobody reviewed are attested as read.
+    """
+    if rc != 0:
+        return (((stderr or text or "").strip() or "no output"))[-400:]
+    if text and is_429_error(text):
+        return "the account answered 429"
+    return unusable_review(text, normalize_findings(text, spec))[:400]
+
+
+def run_rater_chunks(rater, repo, sha, focus, run_dir, diff, chunks):
+    """One cell, reading its chunks one after another under a single rater name.
+
+    Chunking splits the DIFF and never the panel: a cell per (rater, chunk) turned a 13-cell tier
+    over a 25-chunk commit into 325 concurrent cells and hundreds of processes (live, 2026-08-22),
+    so the panel keeps exactly the cells its tier asked for whatever the diff's size. The passes
+    that came back are named in `chunks_read`, which is what the receipt attests: a cell that lost
+    one chunk keeps the findings of the others and leaves that chunk's paths in debt, rather than
+    paying for one dead pass with everything the cell did read.
+
+    `passes` is how many invocations the recorded duration is the sum of. Every reader of that
+    number — the watchdog cap, the duration median, the late line — prices ONE invocation, and a
+    cell's total handed to them reads as a rater that suddenly got N times slower.
+    """
+    if not chunks:
+        rater["chunks_read"] = []
+        return run_rater_task(rater, repo, sha, focus, run_dir, diff)
+    read = []
+    texts = []
+    notes = []
+    elapsed = 0
+    account = None
+    last = None
+    # Every pass clears the kill markers of the one before it (`run_rater_task`), so without this
+    # a watchdog or stall kill in an early chunk reaches neither the run's record nor `timed_out`,
+    # and the cap that fired learns nothing from the hang it fired at.
+    marks = {}
+    for chunk in chunks:
+        rater["chunk"] = chunk
+        _, account, last = run_rater_task(
+            rater, repo, sha, focus, run_dir, chunk["diff"]
+        )
+        rc, duration, text, stderr, _ = last
+        elapsed += duration
+        for key in ("stalled_s", "stalled_retry_s", "killed", "killed_cap_s"):
+            if rater.get(key) is not None and key not in marks:
+                marks[key] = rater[key]
+        quiet = rater.get("max_quiet_ms")
+        if quiet is not None:
+            marks["max_quiet_ms"] = max(quiet, marks.get("max_quiet_ms", quiet))
+        failure = chunk_pass_failure(rater["spec"], rc, text, stderr)
+        if failure:
+            notes.append(f"chunk {chunk['index']}: exit {rc}: {failure}")
+        else:
+            read.append(chunk["index"])
+            texts.append(text or "")
+        print(f"{rater['spec']}: chunk {chunk['index'] + 1}/{len(chunks)}, "
+              f"{duration} ms, exit {rc}")
+    rater.pop("chunk", None)
+    rater.update(marks)
+    rater["chunks_read"] = read
+    rater["passes"] = len(chunks)
+    if not read:
+        rc, _, text, stderr, command = last
+        return (rater, account, (rc or 1, elapsed, text, stderr, command))
+    return (rater, account, (0, elapsed, "\n\n".join(texts), "\n".join(notes), last[4]))
 
 
 def resolve_commit(repo, commitish):
@@ -8061,7 +8215,7 @@ def diff_numstat(repo, revisions, paths=None, env=None, no_index=False):
         raise RuntimeError(proc.stderr.decode(errors="replace").strip() or "git diff failed")
     fields = proc.stdout.split(b"\0")
     changes = {}
-    sources = set()
+    renames = {}
     index = 0
     while index < len(fields):
         record = fields[index]
@@ -8073,11 +8227,177 @@ def diff_numstat(repo, revisions, paths=None, env=None, no_index=False):
         if not raw_path:
             if index + 1 >= len(fields):
                 break
-            sources.add(os.fsdecode(fields[index]))
             raw_path = fields[index + 1]
+            renames[os.fsdecode(raw_path)] = os.fsdecode(fields[index])
             index += 2
         changes[os.fsdecode(raw_path)] = lines
-    return changes, sources
+    return changes, renames
+
+
+def diff_file_body(repo, sha, path, source=None):
+    """One path's slice of a commit's diff. Asked of git per path rather than cut out of the whole
+    diff: a review of this very repository carries diff text INSIDE its own diff, so splitting on
+    the `diff --git` line would cut a chunk in the middle of a quoted patch.
+
+    `source` is the path a rename came FROM, and it goes into the pathspec beside the destination:
+    asked about the destination alone, git has nothing to pair it with and renders the rename as a
+    brand-new file — the deletion of the source in no chunk at all, and a reviewer told a moved
+    file was written from scratch.
+    """
+    proc = subprocess.run(
+        # Through `:(literal)`, because this path came out of git's own listing and is a FILE: a
+        # changed file honestly named `*` or `:(exclude)x` reaching git as MAGIC matches nothing,
+        # and the chunk claiming to hold it would carry an empty diff.
+        ["git", "show", "--format=", "--no-ext-diff", sha, "--",
+         *literal_pathspecs([source, path] if source else [path])],
+        cwd=repo, capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or f"git show failed for {path}")
+    return proc.stdout
+
+
+def diff_chunk_groups(changes):
+    """The commit's changed paths packed into groups of at most the chunk target, in the order git
+    prints them.
+
+    Packed at FILE boundaries and nowhere else, because a reviewer handed half a file reports the
+    other half as missing: a group goes over the target only where ONE file does, and that file is
+    a group of its own, read whole.
+    """
+    groups, current, current_lines = [], [], 0
+    for path, lines in changes.items():
+        if current and current_lines + lines > DIFF_CHUNK_TARGET_LINES:
+            groups.append(current)
+            current, current_lines = [], 0
+        current.append(path)
+        current_lines += lines
+    if current:
+        groups.append(current)
+    return groups
+
+
+def diff_chunks(repo, sha):
+    """A big commit's diff split into what one cell reads, or `[]` where the whole of it is small
+    enough that nothing is split at all.
+
+    Measured, not guessed (606 stored runs with a resolvable target, 2026-08-22): a diff-fed
+    Claude or Codex cell dies on 3-8% of its cells while the diff stays under
+    `DIFF_CHUNK_THRESHOLD_LINES`, on 16% between that and 2000 lines, and on 29% past 3000 — while
+    the -skill and agy cells, which read a clone instead of a pasted diff, show no such trend. Its
+    shape is what picks the numbers: the size of the pasted prompt and nothing else, so every chunk
+    is packed to `DIFF_CHUNK_TARGET_LINES`, well inside the band where the panel is reliable.
+
+    Each chunk is a diff of its own — the commit header, which files it holds, and their hunks —
+    so a cell reading one needs nothing the run does not hand it. Cut at FILE boundaries only: a
+    file over the target is one chunk read whole rather than pieces of itself, and a commit that
+    IS one such file is handed out unsplit, since a reviewer given part of a file reports the rest
+    of it as missing and no two pieces of it ever see each other's text.
+    """
+    base = diff_base(repo, sha)
+    # The DIFF's own lines and not numstat's: what decides whether a cell dies is the size of the
+    # text it is handed, and numstat counts neither the file headers nor the context lines around
+    # every hunk — a commit of many small scattered edits prices well under the threshold while the
+    # prompt it produces is several times it. Asked of the whole commit in one call, so nothing but
+    # an over-threshold commit pays for the per-file reads below.
+    whole = subprocess.run(["git", "show", "--format=", "--no-ext-diff", sha],
+                           cwd=repo, capture_output=True, text=True)
+    if whole.returncode != 0:
+        raise RuntimeError(whole.stderr.strip() or "git show failed")
+    if len(whole.stdout.splitlines()) <= DIFF_CHUNK_THRESHOLD_LINES:
+        return []
+    changes, renames = diff_numstat(repo, [base, sha])
+    proc = subprocess.run(["git", "show", "-s", "--format=fuller", sha],
+                          cwd=repo, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or "git show failed")
+    header = proc.stdout
+    bodies = {path: diff_file_body(repo, sha, path, renames.get(path)) for path in changes}
+    measured = {path: len(body.splitlines()) for path, body in bodies.items()}
+    pieces = [
+        (paths, "".join(bodies[path] for path in paths))
+        for paths in diff_chunk_groups(measured)
+    ]
+    if len(pieces) < 2:
+        return []
+    chunks = []
+    for index, (paths, body) in enumerate(pieces):
+        note = (
+            f"This is chunk {index + 1} of {len(pieces)} of commit {sha}'s diff. The commit was "
+            "split at file boundaries so that no reviewer is handed more diff than it reads "
+            "reliably; the other chunks are being reviewed in parallel by other cells. Review "
+            "ONLY what is below, and report nothing about what is missing from it. Files in this "
+            "chunk: " + ", ".join(paths)
+        )
+        chunks.append({
+            "index": index, "paths": list(paths),
+            "diff": f"{header}\n{note}\n\n{body}",
+        })
+    return chunks
+
+
+def cell_artifact(rater):
+    """The stem this cell's raw artifacts are named with. A chunked cell reads its chunks one after
+    another under ONE rater name, so the chunk rides the stem: two invocations writing one
+    `raw-<spec>` file would leave the run priced and its model resolved at the last chunk alone."""
+    chunk = rater.get("chunk")
+    return f"{rater['spec']}~c{chunk['index']}" if chunk else rater["spec"]
+
+
+def cell_envelope(run_dir, spec):
+    """The raw envelope a cell's resolved model is read from — its own, or its first chunk's where
+    the cell read several, since every chunk of one cell resolves the same model."""
+    direct = run_dir / f"raw-{spec}.json"
+    if direct.exists():
+        return direct
+    pieces = sorted(run_dir.glob(f"raw-{spec}~c*.json"))
+    return pieces[0] if pieces else direct
+
+
+def cell_chunk_paths(rater):
+    """The files a chunked cell may look at, for the sides that read the repository instead of a
+    pasted diff. Empty for an unchunked cell, which reads the commit whole."""
+    chunk = rater.get("chunk")
+    return list(chunk["paths"]) if chunk else []
+
+
+def unread_chunk_paths(chunks, raters, errored=()):
+    """The files of a chunked panel that no RECORDED cell read: every path held by a chunk not one
+    such cell's pass over it came back from, whatever killed those passes.
+
+    `raters` is the panel with the errored cells taken out. A cell the run discards — an unusable
+    answer, a 429 of its own — has no findings file and no row anybody adjudicates, so counting
+    the chunks it opened as covered attests content that reached no reader at all.
+
+    `errored` names the cells the run discards — an unusable answer, a 429 of its own. Such a cell
+    has no findings file and no row anybody adjudicates, so a chunk only IT opened is a chunk that
+    reached no reader at all.
+
+    A round covers its scope on its triage receipt alone, and that receipt may only attest content
+    somebody actually read. Under chunking a dead pass is no longer a redundant reader — it is a
+    slice of the commit nobody opened — so the paths those chunks held stay out of the run's
+    snapshot and remain in debt, while everything that came back covers its own paths as always.
+    A file split into pieces is unread where ANY of its pieces is: half a file read is not the file.
+    """
+    if not chunks:
+        return set()
+    alive = set()
+    for rater in raters:
+        if rater.get("spec") in errored:
+            continue
+        alive.update(rater.get("chunks_read") or ())
+    return {
+        path for chunk in chunks if chunk["index"] not in alive for path in chunk["paths"]
+    }
+
+
+def attested_paths(reviewed, unread, prefix=""):
+    """A run's snapshot with the paths nothing read taken out of it. `prefix` is a merged member's
+    label, since a chunk names paths of the merged workspace and a member's snapshot names its
+    own."""
+    if not unread:
+        return reviewed
+    return {path: sha for path, sha in reviewed.items() if f"{prefix}{path}" not in unread}
 
 
 def tier_table_vendor_cells(cells):
@@ -8578,9 +8898,6 @@ def fix_coverage(run_dir, session, recorded, rows, fixed):
     (docs/shared-invariants.md row `af`) — and an unreachable gate covers nothing, which is the
     behaviour of every round written before this receipt held coverage at all.
 
-    A killed panel covers nothing either, for the reason its snapshot is no artifact: it was sealed
-    with a scope its dead cells never reached.
-
     The window opens at the SEAL and not at the finish: that is the instant the panel stopped being
     able to read the tree, and the recorded seal is inherited by a rerun of the same snapshot, so a
     rerun covers the same lineage the run it repeats does. A run predating the seal stamp covers
@@ -8595,7 +8912,7 @@ def fix_coverage(run_dir, session, recorded, rows, fixed):
         meta = json.loads((run_dir / "meta.json").read_text())
     except (OSError, ValueError):
         return []
-    if not session or not isinstance(meta, dict) or meta.get("timed_out"):
+    if not session or not isinstance(meta, dict):
         return []
     if not fixed or rows is None:
         return []
@@ -9158,11 +9475,6 @@ def repo_artifacts(repo):
         record = run_repo_record(resolved, meta)
         if record is None or not run_triaged(run_dir):
             continue
-        # A killed panel read part of its scope and was sealed with all of it. Triaging what came
-        # back settles the chat that ran it, and would otherwise settle the paths its dead cells
-        # never reached — for every chat at once.
-        if meta.get("timed_out"):
-            continue
         reviewed = record.get("reviewed")
         # A run holding no snapshot read committed code: nothing in the working tree is anchored to
         # it, so it answers for no path at all.
@@ -9207,8 +9519,13 @@ def artifact_locked(artifact):
     A run whose tally cannot be read at all is locked too. Read as a clean round it would release
     whatever lock it earned along with the file nobody could parse, and the refusal names the run
     id, so the way out is triaging it again rather than a number nobody has.
+
+    A round Egor decreed is not locked, whatever its tally: the decree IS the discharge, and the
+    reason it carries is printed wherever the lock would have been named.
     """
     if not artifact or artifact["kind"] != "run":
+        return False
+    if read_decree(artifact["dir"]):
         return False
     counts = run_confirmed_counts(artifact["dir"])
     if counts is None:
@@ -9219,6 +9536,52 @@ def artifact_locked(artifact):
     # and a lock demanding one is a gate nothing can open — the waiver is refused for being locked,
     # and the review the refusal names is the pass the budget already spent.
     return owed and not round_budget_spent(artifact["dir"])
+
+
+def artifact_owes_second_round(artifact):
+    """Whether this round is one the gate's fork says is owed a follow-up review — either
+    threshold, not the P1 count alone, since both send the chat back over the full scope.
+
+    The second dial is asked of the gate, like every other pricing of a round's tally: it lives
+    there and a copy of it here is a copy that drifts. A gate that cannot be reached widens nothing
+    on that dial — the scope it would widen is the one every reader already sees, and the report
+    prints the unknown where the reader can act on it.
+
+    A LOCKED round is the one thing never left to that ask. Its P1 count — and an unreadable tally,
+    which `artifact_locked` reads the same fail-closed way — is decided here and nowhere else, and
+    a locked round can be discharged by nothing but the review of its full scope: were an
+    unreachable gate to keep it out of the `--debt` scope, the waiver would refuse it for being
+    locked while the one review that answers it could not be computed, and the repository would sit
+    behind a lock nothing can open.
+    """
+    if not artifact or artifact["kind"] != "run":
+        return False
+    if read_decree(artifact["dir"]) or round_budget_spent(artifact["dir"]):
+        return False
+    if artifact_locked(artifact):
+        return True
+    verdict = cached_escalation_verdict(*run_confirmed_counts(artifact["dir"]))
+    return bool(verdict) and verdict != ESCALATION_UNKNOWN
+
+
+def cached_escalation_verdict(p1, total):
+    """The gate's answer for one pair of numbers, asked once per process: a scope walks the same
+    round once per path it holds, and each ask is a subprocess under a timeout."""
+    # Keyed on the gate too: a test pointing the module at a stub, and the module at the real one
+    # after it, must not read each other's answers back.
+    key = (str(ESCALATION_GATE), p1, total)
+    if key not in ESCALATION_VERDICT_CACHE:
+        ESCALATION_VERDICT_CACHE[key] = escalation_verdict(p1, total)
+    return ESCALATION_VERDICT_CACHE[key]
+
+
+def round_locked(run_dir):
+    """Whether this round is one no waiver may answer for, asked of the same rule every debt
+    reader asks. Spelled once: a decree refused over a round the waiver is already refused for,
+    or granted over one nothing withholds, is a mechanism answering a different question from the
+    one it exists to discharge.
+    """
+    return artifact_locked({"kind": "run", "id": run_dir.name, "dir": run_dir})
 
 
 def path_lock_stands(repo, path, artifact):
@@ -9232,9 +9595,13 @@ def path_lock_stands(repo, path, artifact):
     return artifact_locked(artifact) and os.path.lexists(Path(repo) / path)
 
 
-def covering_artifacts(repo):
+def covering_artifacts(repo, ignoring=()):
     """The newest artifact holding each path — the one thing a path's current content is compared
     against.
+
+    `ignoring` names run ids whose own answer must not be read, which is how a second round re-
+    enters the full scope of the round that owed it (`debt_review_scope`). Nothing outside that
+    scope passes it: the debt every other reader sees is the debt as the artifacts left it.
 
     A locked round is the exception. What discharges one is the full original scope reviewed again
     over the fixes, so only a run whose own reviewed paths hold every path that round read may take
@@ -9248,6 +9615,8 @@ def covering_artifacts(repo):
     """
     covering = {}
     for artifact in repo_artifacts(repo):
+        if artifact["id"] in ignoring:
+            continue
         for path in artifact["shas"]:
             standing = covering.get(path)
             if path_lock_stands(repo, path, standing) and not lock_discharged(
@@ -9527,20 +9896,41 @@ def debt_review_scope(repo):
     the contract demands would have to be widened by hand every time, by the one reader with no way
     to know what that round read.
 
-    A widened path keeps its own covering artifact, which for a locked round's survivor is that
-    round: it contributes no diff, and the run holds it and discharges the lock by construction.
+    A round the thresholds left owing a second one is REOPENED here, and it is looked for among
+    every artifact standing over this repository rather than among the ones some path is in debt
+    against: a round whose reviewed bytes nobody has touched since — the threshold stop that fixed
+    nothing being exactly that round — puts no path in debt at all, and read off the debt its
+    mandatory second pass could never be scoped (live, 2026-08-22). Its own receipt is not read,
+    so every path it holds compares against whatever answered for that path before it and its full
+    scope re-enters as a real diff. That is the ruling the fork has always printed — a re-review
+    reruns the full original scope plus the fixes, never the fixes alone, because a fresh pass over
+    old code finds new defects — and the mechanics said otherwise: the round before it had recorded
+    those very shas, so a scope built off the newest artifact saw only the fixing pass's own bytes
+    and a live second round read 258 lines of fixes and nothing else (2026-08-22).
+
+    Bounded by the round budget the same way the lock is: a second round that owes a third owes it
+    to nobody, so its receipt answers for its scope like any other.
     """
-    debt = repo_debt(repo)
+    covering = covering_artifacts(repo)
+    debt = repo_debt(repo, covering=covering)
+    standing = {}
+    for artifact in covering.values():
+        standing.setdefault(artifact["id"], artifact)
+    reopened = {
+        run_id: artifact for run_id, artifact in standing.items()
+        if artifact_owes_second_round(artifact)
+    }
+    if reopened:
+        # The round's own fix-bytes artifact goes with it: same round, same answer.
+        covering = covering_artifacts(
+            repo, ignoring={key for run_id in reopened for key in (run_id, f"{run_id}+fixes")}
+        )
+        debt = repo_debt(repo, covering=covering)
     scope = dict(debt)
-    covering = None
-    for _, artifact in debt:
-        if not artifact or not artifact_locked(artifact):
-            continue
+    for artifact in reopened.values():
         for path in artifact["shas"]:
             if path in scope or not os.path.lexists(Path(repo) / path):
                 continue
-            if covering is None:
-                covering = covering_artifacts(repo)
             scope[path] = covering.get(path)
     return sorted(scope.items())
 
@@ -10011,25 +10401,55 @@ def cmd_debt(args):
             return 0
     buckets = debt_ownership(repo, debt, session, claims=claims, records=records)
     owned = len(buckets["own"])
-    # Nobody asked whose this is, so nothing here knows: `other` would be an ownership no reader
-    # computed, and it reads exactly like a co-tenant's.
-    owner = "unknown" if not session else ("mine" if owned else "other")
+    # The lock word, or the reason Egor discharged it: a decree stands exactly where a lock would
+    # have, so the surface the commit gate and the statusline read names the unlock instead of
+    # falling silent and showing a decreed round as one nothing ever withheld.
+    standing = (
+        " locked" if debt_locked(repo, debt)
+        else " decreed" if waived_decrees(debt) else ""
+    )
+    if not session:
+        # With no asker there is no MINE or OTHER, but `unknown` over debt the records DO name an
+        # owner for is the wrong word: it stands over the unowned part alone and drops entirely
+        # where there is none, so a reader must test for the word rather than count to field three.
+        # The count stays the debt's own, whatever the word does: it is the field every reader
+        # prices this repository by, and a line answering `0` over work nobody has read is the one
+        # thing it may never say. No foreign share rides it either — nothing is asking, so
+        # `debt_foreign_skipped` leaves nothing out and a count of an exclusion that never happens
+        # names a scope no review of this line will take.
+        foreign = len(buckets["foreign"])
+        unowned = len(debt) - foreign
+        word = " unknown" if unowned or not foreign else ""
+        print(f"debt {len(debt)}{word}{standing}")
+        return 0
+    owner = "mine" if owned else "other"
     # A chat owning one path of ten reads `debt 10 mine` and answers for all ten. The word keeps
     # its meaning for every reader switching on it; the count beside it is the new fact.
     share = f" {owned}" if 0 < owned < len(debt) else ""
-    locked = " locked" if debt_locked(repo, debt) else ""
     # The part of that count a `--debt` review will not read, named here rather than left for the
     # reader to infer from a number this line does not print: the one-liner is what a chat sees
     # before it decides, and one that said `debt 7` over a scope of one is how six files went to
     # Egor as reviewed clean (live case 2026-08-22). It stands BEFORE the lock word, which every
     # reader of this line matches at the END of it.
     # Withheld only where the owner word already says it: `other` is the chat owning NONE of this
-    # debt, and a count repeating that adds nothing. Nobody asked whose this is, so the review
-    # skips nothing either, and a share printed there would name an exclusion no scope makes.
+    # debt, and a count repeating that adds nothing.
     others = len(debt_foreign_skipped(repo, debt, session, buckets=buckets))
     foreign = f" (+{others} foreign)" if others and others < len(debt) else ""
-    print(f"debt {len(debt)} {owner}{share}{foreign}{locked}")
+    print(f"debt {len(debt)} {owner}{share}{foreign}{standing}")
     return 0
+
+
+def waived_decrees(debt):
+    """The decrees this waiver is riding, as `{run id: reason}`: without them a waiver Egor
+    unlocked by word reads exactly like one no round ever withheld."""
+    decrees = {}
+    for _, artifact in debt:
+        if not artifact or artifact["kind"] != "run":
+            continue
+        decreed = read_decree(artifact["dir"])
+        if decreed:
+            decrees[artifact["id"]] = decreed["reason"]
+    return decrees
 
 
 def cmd_waive(args):
@@ -10086,6 +10506,18 @@ def cmd_waive(args):
     authors = debt_path_authors(repo, debt)
     claims = foreign_run_claims(repo, session)
     mine = session_run_paths(repo, session)
+    # A journaled path whose file is gone and whose recorded side holds no bytes either prices
+    # nothing: there is no content for its owner to answer for, and the owner-only refusal over it
+    # leaves residue no chat in the repository can ever clear — the owner's chat is usually the one
+    # that ended. Asked of the BYTES and never of a line count, which is also 0 for a binary file,
+    # for a path the repository's attributes take out of diffing, and for a measurement that
+    # failed: a deleted binary asset another chat owns is real content, and a zero there would hand
+    # its waiver to any chat at all.
+    weightless = {
+        path for path, artifact in debt
+        if not os.path.lexists(Path(repo) / path)
+        and not blob_bytes(repo, artifact["shas"].get(path, "") if artifact else "")
+    }
     # Both whole-store readings once for the whole refusal: named per path, every path in debt
     # would walk the run records and re-read every session file again.
     launchers, store = worker_run_launchers(), store_names()
@@ -10098,6 +10530,8 @@ def cmd_waive(args):
         UNION of the two stores, the way `cmd_debt` counts it: one command calling a path this
         chat's while the other refuses to sign for it is the repository answering itself twice.
         """
+        if path in weightless:
+            return None
         sessions = authors.get(path) or ()
         if session in sessions or path in mine:
             return None
@@ -10171,6 +10605,58 @@ def cmd_waive(args):
         name + ("" if authors.get(name) else " (no journal author)") for name, _ in debt
     ) + "]"
     print(f"waived {len(debt)} path(s): {reason}{signed}")
+    for run_id, decreed in sorted(waived_decrees(debt).items()):
+        print(f"decree: {run_id} — {decreed}")
+    return 0
+
+
+def cmd_decree(args):
+    """Record Egor's unlock of a round the P1 count locked.
+
+    Only his explicit word authorises one (docs/review-contract.md), the same discipline a commit
+    is under: a model running this on its own judgment is the round forgiving itself, which is the
+    one thing the lock exists to make impossible. Nothing here can enforce that — what it can do is
+    make a decree loud, so a misused one is visible in the block Egor reads.
+    """
+    run_dir = state_dir() / "benches" / args.run_id
+    if not (run_dir / "meta.json").exists():
+        print(f"decree: unknown run id: {args.run_id}")
+        return 1
+    reason = " ".join(str(getattr(args, "reason", "") or "").split())
+    if not reason:
+        print("decree: --reason must carry Egor's own words for why this round goes without "
+              "its mandatory second review")
+        return 1
+    standing = read_decree(run_dir)
+    if standing:
+        print(f"decree: {args.run_id} already carries one — {standing.get('reason')}")
+        return 1
+    # `round_locked` calls a round whose tally cannot be read locked, fail-closed, so a decree
+    # accepted on one would discharge a lock nobody ever established — and the discharge outlives
+    # the repair, since a round carrying `decree.json` is unlocked whatever it is triaged to.
+    if run_confirmed_counts(run_dir) is None:
+        print(
+            f"decree: refused — {args.run_id} has no readable triage tally, so nothing here can "
+            "say what it is locked for. Triage it again (review-bench record) and decree the "
+            "round the numbers show."
+        )
+        return 1
+    if not round_locked(run_dir):
+        print(
+            f"decree: refused — {args.run_id} is not locked, so there is nothing to discharge. A "
+            f"decree answers the withheld waiver a round of {SECOND_REVIEW_P1S}+ confirmed P1s "
+            "stands over; every other round is already waivable with a reason on record."
+        )
+        return 1
+    (run_dir / DECREE_RECEIPT).write_text(json.dumps({
+        "reason": reason,
+        "session": launching_session() or "",
+        "recorded_at": iso_now(),
+        "epoch": int(time.time()),
+    }, indent=2, sort_keys=True) + "\n")
+    print(f"decree: {reason}")
+    print(f"{args.run_id} is discharged: the waiver it withheld is grantable, and this reason "
+          "prints in its report and in every frame that named the lock.")
     return 0
 
 
@@ -10276,7 +10762,7 @@ def doctor_scan(now=None, undelivered_window=DOCTOR_WINDOW_S):
     the answer is a count per class with the records behind it rather than a verdict about any one
     run. The classes are the ways this system has been seen to go quiet — a panel nobody judged, a
     report nobody delivered, a triage nobody answered, a lock nothing opens, debt nobody owns, and
-    a run that completed nothing without being marked killed.
+    a panel that completed nothing.
     """
     now = now or utc_now()
     findings = {name: [] for name in DOCTOR_CLASSES}
@@ -10356,13 +10842,13 @@ def doctor_scan(now=None, undelivered_window=DOCTOR_WINDOW_S):
                     findings["stuck_fixes"].append(
                         doctor_row(run_dir.name, meta.get("repo"), stuck)
                     )
-        # The kill marking and the empty panel come from two different code paths, and a run that
-        # completed nothing without wearing `timed_out` took the one that skips it: nothing named
-        # it a kill and no artifact was withheld, so the count is how often that happens.
-        # Through the same reader every other surface uses, or a record written before the field
-        # existed — whose cells all completed — is counted as a panel that completed nothing.
-        if (recent and meta.get("raters") and not completed_raters_from_meta(meta)
-                and not meta.get("timed_out")):
+        # Every panel that came back with nothing, however it died. Coverage no longer turns on
+        # the kill marking, so the two code paths have one consequence and the asymmetry this
+        # class was named for is gone; what is left is a diagnostic — a review whose whole panel
+        # produced nothing is a silence whatever killed it, and a triaged one covers its scope
+        # like any other round. Through the same reader every other surface uses, or a record
+        # written before the field existed is counted as a panel that completed nothing.
+        if recent and meta.get("raters") and not completed_raters_from_meta(meta):
             findings["kill_asymmetry"].append(doctor_row(run_dir.name, meta.get("repo"), age))
     for repo in sorted(repos):
         # A checkout that is gone, or was never a git working tree, answers neither question.
@@ -10594,16 +11080,21 @@ def reviews_current_tree(repo, sha, worktree=False):
     reviews the current state by construction — its sha IS the snapshot of it.
 
     Fails open exactly where the receipt does. A `git` that cannot answer must leave the handoff
-    as it was rather than silently withhold the fixing pass from an ordinary review.
+    as it was rather than silently withhold the fixing pass from an ordinary review. `record` asks
+    this long after the run, from wherever the triage happens, so a repository that has since moved
+    or gone is one more `git` that cannot answer rather than a crash over the verdicts.
     """
     if worktree:
         return True
-    head = subprocess.run(["git", "rev-parse", "HEAD^{tree}"],
-                          cwd=repo, capture_output=True, text=True)
-    if head.returncode != 0 or not head.stdout.strip():
-        return True
-    reviewed = subprocess.run(["git", "rev-parse", f"{sha}^{{tree}}"],
+    try:
+        head = subprocess.run(["git", "rev-parse", "HEAD^{tree}"],
                               cwd=repo, capture_output=True, text=True)
+        if head.returncode != 0 or not head.stdout.strip():
+            return True
+        reviewed = subprocess.run(["git", "rev-parse", f"{sha}^{{tree}}"],
+                                  cwd=repo, capture_output=True, text=True)
+    except OSError:
+        return True
     if reviewed.returncode != 0 or not reviewed.stdout.strip():
         return True
     return reviewed.stdout.strip() == head.stdout.strip()
@@ -10623,10 +11114,11 @@ def handoff(run_id, paths, members=None, worktree=False, fixable=True):
     fixes_blocked = (
         f"review-bench fixes {shlex.quote(run_id)} --blocked {shlex.quote('P1 threshold')}"
     )
-    print("\nADJUDICATION HANDOFF")
+    print("\nADJUDICATION HANDOFF — STEP 1 of 2: blind triage. Fix nothing in this pass; the "
+          "fixing pass is dispatched separately, off the brief `record` prints when the verdicts "
+          "land.")
     print("Orchestrator: hand this brief to a FRESH worker session, never the one that authored "
           "the changes under review — a session judging its own work confirms nothing.")
-    print("\nSTEP 1 — blind triage.")
     print("Read these files without revealing one rater's output to another:")
     for path in paths:
         print(f"  {path}")
@@ -10644,32 +11136,122 @@ def handoff(run_id, paths, members=None, worktree=False, fixable=True):
         # A durable bench run judged a snapshot the checkout is already past — a historical commit,
         # a range that ended before HEAD. Its confirmed findings are about content nobody is
         # standing on, so a step 2 over them edits whatever the current tree holds at those paths.
-        print("\nThat is the whole pass: this run reviewed a snapshot the checkout has moved past, "
-              "so its findings are not about the code in front of you. Fix nothing and record no "
-              "fix status.")
+        print("\nThat is the whole round: this run reviewed a snapshot the checkout has moved "
+              "past, so its findings are not about the code in front of you. No fixing pass "
+              "follows, and no fix status is recorded.")
         return
     # Counted per repository for a merged panel, the way the gate that prices the round counts them
     # (`escalation_numbers`): handed the whole panel's P1s, three findings spread over three
     # repositories would stop the pass over a threshold no member reached.
     stop_scope = " in ANY ONE of the repositories above" if members else ""
-    print(f"\nTHRESHOLD STOP — {HANDOFF_P1_STOP} or more confirmed P1s{stop_scope}: fix NOTHING. "
-          f"Record the verdicts as above, record the fix status as blocked with `{fixes_blocked}`, "
-          "then stop and report back with the P1 list. At that count the second review is "
-          "mandatory and the waiver over this work is withheld until it runs; a round that earns "
-          "one on its tally alone instead is owed it by default and may be waived with a reason "
-          "on record.")
+    print(f"\nTHRESHOLD STOP — {HANDOFF_P1_STOP} or more confirmed P1s{stop_scope}: record the "
+          f"verdicts as above, record the fix status as blocked with `{fixes_blocked}`, then stop "
+          "and report back with the P1 list — no fixing pass is dispatched. At that count the "
+          "second review is mandatory and the waiver over this work is withheld until it runs; a "
+          "round that earns one on its tally alone instead is owed it by default and may be "
+          "waived with a reason on record.")
     print(f"That second review is `{DEBT_REVIEW_COMMAND}` in each repository above (raise the "
           "tier if the work deserves it): it computes its own scope, which is this round's full "
-          "scope plus the fixes by construction, so nothing is picked by hand.")
+          "scope plus the fixes — the round that owed it is reopened, so its whole scope re-enters "
+          "the diff and nothing is picked by hand.")
     print("Orchestrator: at that threshold the next move is Egor's fork decision. A session "
-          "running in maximum autonomy never pauses for it — it takes the decision itself and "
-          "sends the worker on to step 2.")
-    print("\nSTEP 2 — the same worker pass, immediately after `record`.")
-    print("Fix every confirmed finding. Run the test suites covering what you touched in every "
-          "repository. Mutation-verify each new test assert: revert the code it guards, confirm "
-          "the assert fails, restore it. Neither commit nor stage anything — leave the work in "
-          "the tree.")
-    print(f"Then record the outcome exactly with: {fixes_done}")
+          "running in maximum autonomy never pauses for it — it takes the decision itself.")
+    print(f"\nSTEP 2 is a pass of its own, briefed by `record`: {fixes_done} is where it ends up, "
+          "and the brief naming what it fixes cannot be written before the triage says what "
+          "survived.")
+
+
+def round_fixable(meta):
+    """Whether a fixing pass over this round's confirmed findings edits the code the panel read.
+
+    The same question the panel's own handoff asks before it offers a step 2, asked again at
+    `record` because that is where the fixing brief is written now.
+    """
+    worktree = meta.get("worktree") is True
+    members = [row for row in meta.get("repos") or () if isinstance(row, dict)]
+    if members:
+        targets = [(Path(str(row.get("repo") or ".")), str(row.get("commit") or ""),
+                    worktree and not row.get("head")) for row in members]
+    else:
+        repo = Path(str(meta.get("repo") or "."))
+        sha = str(meta.get("commit") or "")
+        # A sealed range wears the worktree flag — it is sealed the same way — and the flag alone
+        # would answer this yes without asking, offering a fixing pass over commits the checkout
+        # has moved past. The exclusion `cmd_run` makes when it stamps receipts, made again here;
+        # a repository that cannot be asked fails open, exactly as the reader below does.
+        try:
+            ranged = is_range_snapshot(repo, sha)
+        except OSError:
+            ranged = False
+        targets = [(repo, sha, worktree and not ranged)]
+    return all(reviews_current_tree(repo, sha, flag) for repo, sha, flag in targets)
+
+
+def fix_worker_recommendation(severities):
+    """One line on what shape of worker the confirmed findings are: priced on severity, which is
+    the only thing on record about them, and left as a recommendation because the reader has the
+    findings themselves in front of it."""
+    if counted_int(severities.get("P1")):
+        return ("recommend a strong worker: a confirmed P1 is a judgment call about the design "
+                "under it, and a fast model reproduces the defect inside its own fix")
+    if counted_int(severities.get("P2")):
+        return ("recommend a fast worker, after reading the P2s: they are usually mechanical, and "
+                "the ones that turn out to be design calls are worth a strong one")
+    return "recommend a fast worker: P3 findings are mechanical edits"
+
+
+def fix_handoff_lines(run_dir, meta, verdicts):
+    """The round's second brief: what survived triage, under which constraints it gets fixed, and
+    where the outcome is recorded.
+
+    Printed by `record` and never by the panel. The panel cannot write it — it does not know what
+    survived, and a fixing brief handed out beside raw findings names a count nobody has judged.
+    Two briefs also make the two passes two dispatches, which is the point: the blind pass must not
+    be the pass that fixes what it just confirmed.
+
+    A round with nothing confirmed gets none of it: there is nothing to fix, and its fix status
+    goes straight to done with no receipt to record.
+    """
+    confirmed = confirmed_count(verdicts)
+    if not confirmed or round_state(run_dir, verdicts) == "done" or not round_fixable(meta):
+        return []
+    run_id = run_dir.name
+    severities = bench_summary(run_dir, meta, verdicts)["severities"]
+    tally = " · ".join(
+        f"{level} {severities[level]}" for level in ("P1", "P2", "P3") if severities.get(level)
+    )
+    p1s, _ = escalation_numbers(run_dir, meta, verdicts)
+    head = f"\nFIX HANDOFF — STEP 2 of 2: {confirmed} confirmed"
+    lines = [f"{head} ({tally})" if tally else head]
+    if p1s >= HANDOFF_P1_STOP:
+        lines.append(
+            f"THRESHOLD STOP — {p1s} confirmed P1s: fix NOTHING and dispatch no fixing pass. "
+            "Record the stop with: "
+            f"review-bench fixes {shlex.quote(run_id)} --blocked {shlex.quote('P1 threshold')}"
+        )
+        lines.append(
+            "Then report back with the P1 list: the second review over the full original scope "
+            "plus the fixes is mandatory, the waiver over this work is withheld until it runs, "
+            f"and it is `{DEBT_REVIEW_COMMAND}` in each repository this round read."
+        )
+        return lines
+    lines.append("Orchestrator: this is a dispatch of its own, not the triage pass above.")
+    lines.append(
+        "Fix every confirmed finding. Run the test suites covering what you touched in every "
+        "repository. Mutation-verify each new test assert: revert the code it guards, confirm the "
+        "assert fails, restore it. Neither commit nor stage anything — leave the work in the tree."
+    )
+    lines.append(
+        "Then record the outcome exactly with: "
+        f"review-bench fixes {shlex.quote(run_id)} --done --fixed <N> --fp <M>"
+    )
+    lines.append(fix_worker_recommendation(severities))
+    return lines
+
+
+def emit_fix_handoff(run_dir, meta, verdicts):
+    for line in fix_handoff_lines(run_dir, meta, verdicts):
+        print(line)
 
 
 def redact_command(rater, command):
@@ -10922,7 +11504,11 @@ def cmd_run(args):
     ] if members else [
         (repo, sha, [] if debt_mode else scope, worktree_mode and not range_mode)
     ]
-    announce_review_target(repo, sha, scope, members, head_label=range_head)
+    # Before the panel is picked, because the chunk count is what the panel is multiplied by: a
+    # cell reads one chunk, and the run answers for the commit only if every rater reads them all.
+    chunks = diff_chunks(repo, sha)
+    announce_review_target(repo, sha, scope, members, head_label=range_head,
+                           chunks=len(chunks))
     for line in debt_skipped:
         print(line, file=sys.stderr)
     reviews_path = state_dir() / "reviews.jsonl"
@@ -11002,6 +11588,10 @@ def cmd_run(args):
         and not getattr(args, "no_verify", False)
     ):
         verify_model = verifier_model(OPENCODE_VERIFIER)
+    if chunks:
+        print(f"diff split into {len(chunks)} chunk(s) of at most "
+              f"{DIFF_CHUNK_TARGET_LINES} line(s); each cell reads them one after another, "
+              f"so the panel keeps its {len(raters)} cell(s)")
     print("selected raters:")
     for rater in raters:
         count = counts[normalize_legacy_rater(rater["spec"])]
@@ -11077,6 +11667,10 @@ def cmd_run(args):
                     paths=member["scope"] if member.get("debt") else None,
                 )
         launch_meta["repos"] = [dict(member) for member in members]
+    if chunks:
+        launch_meta["chunks"] = [
+            {"index": chunk["index"], "paths": chunk["paths"]} for chunk in chunks
+        ]
     if tier_name:
         launch_meta["tier"] = tier_name
         launch_meta["max"] = use_max
@@ -11091,9 +11685,9 @@ def cmd_run(args):
     }
     launch_meta.update(lens_meta)
     (run_dir / "meta.json").write_text(json.dumps(launch_meta, indent=2) + "\n")
-    diff = commit_diff(repo, sha) if any(
+    diff = "" if chunks else (commit_diff(repo, sha) if any(
         rater["side"] in ("claude", "opencode") or rater["bare"]
-        for rater in raters) else ""
+        for rater in raters) else "")
 
     submitted_raters = sorted(raters, key=gate_admission_key)
     expected_durations = expected_review_durations(
@@ -11151,8 +11745,8 @@ def cmd_run(args):
             # thread scheduling. Submitting slowest-first makes the whole order its own.
             futures = {
                 pool.submit(
-                    run_rater_task, rater, repo, sha, args.focus or "", run_dir,
-                    diff,
+                    run_rater_chunks, rater, repo, sha, args.focus or "", run_dir,
+                    diff, chunks,
                 ): rater
                 for rater in submitted_raters
             }
@@ -11193,7 +11787,7 @@ def cmd_run(args):
             rater, account, result = result_by_spec[requested["spec"]]
             rc, duration, text, stderr, command = result
             model_resolved = resolved_model_from_envelope(
-                run_dir / f"raw-{rater['spec']}.json"
+                cell_envelope(run_dir, rater["spec"])
             )
             findings = normalize_findings(text, rater["spec"])
             findings = [
@@ -11251,6 +11845,9 @@ def cmd_run(args):
                     "command": redact_command(rater, command),
                     "errored": True, "timeout_s": rater["timeout_s"],
                 }
+                if chunks:
+                    run_meta["chunks_read"] = list(rater.get("chunks_read") or ())
+                    run_meta["passes"] = len(chunks)
                 # The stall record is what the next run's caps learn from: the kill marks the cap
                 # it fired at, and a completion's longest silent gap prices the cap itself.
                 if rater.get("stalled_s"):
@@ -11278,10 +11875,20 @@ def cmd_run(args):
                     "verifier_dropped": dropped, "verifier_unverified": unverified,
                     "timeout_s": rater["timeout_s"],
                 }
+                if chunks:
+                    run_meta["chunks_read"] = list(rater.get("chunks_read") or ())
+                    run_meta["passes"] = len(chunks)
                 # A completed retry still records the attempt the stall watch killed under it —
-                # the only trace of that kill, and what lets its cap escalate next run.
+                # the only trace of that kill, and what lets its cap escalate next run. So does a
+                # kill in one chunk of a cell whose other chunks came back: the cell completed,
+                # and the hang it hit is evidence no other row carries.
                 if rater.get("stalled_retry_s"):
                     run_meta["stalled_retry_s"] = rater["stalled_retry_s"]
+                if rater.get("stalled_s"):
+                    run_meta["stalled_s"] = rater["stalled_s"]
+                if rater.get("killed"):
+                    run_meta["killed"] = rater["killed"]
+                    run_meta["killed_cap_s"] = rater["killed_cap_s"]
                 if rater.get("max_quiet_ms") is not None:
                     run_meta["max_quiet_ms"] = rater["max_quiet_ms"]
                 if verify_ms is not None:
@@ -11293,7 +11900,8 @@ def cmd_run(args):
                 rater_meta.append(run_meta)
                 print(f"{rater['spec']}: {len(findings)} finding(s), {duration} ms, exit {rc}")
             report_late_review(
-                rater["spec"], duration, expected_durations.get(rater["spec"])
+                rater["spec"], cell_pass_duration(run_meta),
+                expected_durations.get(rater["spec"])
             )
 
         note_gateway_outcome(raters, errored_raters, gateway_down)
@@ -11313,6 +11921,10 @@ def cmd_run(args):
             # document: dropped here, the launching chat would be forgotten exactly when it is asked.
             **session_stamp(),
         }
+        # Every path a chunk no cell came back from held. The snapshot below attests what was
+        # read and nothing else, so those paths stay in debt while the rest of the scope is
+        # covered exactly as an unchunked round covers it.
+        unread = unread_chunk_paths(chunks, raters, errored_raters)
         if worktree_mode:
             meta["worktree"] = True
             if scope:
@@ -11322,19 +11934,26 @@ def cmd_run(args):
             # The launch snapshot, carried rather than retaken: the finished document is rewritten
             # from scratch, and a second `hash-object` here would anchor the run to the tree the
             # fixes already moved.
-            meta["reviewed"] = reviewed
+            meta["reviewed"] = attested_paths(reviewed, unread)
         if members:
-            meta["repos"] = [dict(member) for member in members]
+            meta["repos"] = [
+                dict(member, reviewed=attested_paths(
+                    member["reviewed"], unread, f"{member['label']}/"
+                )) if isinstance(member.get("reviewed"), dict) else dict(member)
+                for member in members
+            ]
+        if chunks:
+            meta["chunks"] = launch_meta["chunks"]
         if tier_name:
             meta["tier"] = tier_name
             meta["max"] = use_max
         # One breached cell marks the whole run: nothing else says a review hung, and the report
-        # flow and `doctor`'s untriaged class read this key — the statusline does not, since a
-        # killed run settles nothing and its paths stand in the debt like any others. The
-        # watchdog's own kills alone — a provider answering `gateway timeout` is an ordinary failed cell, and red
-        # in the statusline means a hung review or it means nothing. A cell whose retry stalled
-        # too is that same hung review, killed earlier: `watchdog_killed` excludes it only so a
-        # stall never inflates the pair's duration cap, not to keep the run quiet.
+        # flow and `debt`'s own timed-out line read this key. It is a diagnostic and nothing more —
+        # whether a round covers its scope turns on its triage receipt alone, so a kill costs the
+        # round no coverage an errored cell would have kept. The watchdog's own kills alone: a
+        # provider answering `gateway timeout` is an ordinary failed cell. A cell whose retry
+        # stalled too is that same hung review, killed earlier: `watchdog_killed` excludes it only
+        # so a stall never inflates the pair's duration cap, not to keep the run quiet.
         if any(watchdog_killed(row) or row.get("stalled_s") for row in rater_meta):
             meta["timed_out"] = True
         meta.update(lens_meta)
@@ -11550,6 +12169,7 @@ def cmd_record(args):
             bench_summary(run_dir, meta, normalized_verdicts)["severities"],
         )
         emit_report(run_dir, meta, normalized_verdicts)
+        emit_fix_handoff(run_dir, meta, normalized_verdicts)
         return 0
     if worktree:
         if verdicts_changed:
@@ -11560,6 +12180,7 @@ def cmd_record(args):
             "are not durable corpus commits"
         )
         emit_report(run_dir, meta)
+        emit_fix_handoff(run_dir, meta, normalized_verdicts)
         return 0
     caught_by = {key: {key[0]} for key in canonical}
     for key, verdict in verdict_map.items():
@@ -11621,6 +12242,9 @@ def cmd_record(args):
             "weighted_score": sum(priorities[p] * weight for p, weight in WEIGHTS.items()),
             "duration_ms": duration,
         }
+        passes = meta_by_rater.get(rater, {}).get("passes")
+        if passes:
+            record["passes"] = passes
         if verify_ms is not None:
             record["verify_ms"] = verify_ms
         model_resolved = meta_by_rater.get(rater, {}).get("model_resolved")
@@ -11673,6 +12297,7 @@ def cmd_record(args):
         print(f"recorded {len(fresh)} rater row(s); "
               f"skipped {len(records) - len(fresh)} existing row(s)")
     emit_report(run_dir, meta)
+    emit_fix_handoff(run_dir, meta, normalized_verdicts)
     return 0
 
 
@@ -12751,6 +13376,10 @@ def main():
     report = subparsers.add_parser("report", help="Print a compact benchmark run report")
     report.add_argument("run_id", nargs="?")
     report.add_argument("--last", action="store_true", help="Report the newest run")
+    report.add_argument(
+        "--session", default="", metavar="ID",
+        help="Refuse the run (exit 2) unless this chat launched it",
+    )
     report.set_defaults(func=cmd_report)
     pending = subparsers.add_parser(
         "pending-report",
@@ -12834,6 +13463,15 @@ def main():
         help="Repository-relative paths to waive; every debt path without them",
     )
     waive.set_defaults(func=cmd_waive)
+
+    decree = subparsers.add_parser(
+        "decree",
+        help="Record Egor's unlock of a round the P1 count locked (his explicit word only)",
+    )
+    decree.add_argument("run_id")
+    decree.add_argument("--reason", default="", metavar="TEXT",
+                        help="Egor's own words for why the second review is not being run")
+    decree.set_defaults(func=cmd_decree)
     run = subparsers.add_parser("run", help="Run blind reviewers against one commit")
     run.add_argument("commitish", nargs="?")
     run.add_argument("--worktree", action="store_true")

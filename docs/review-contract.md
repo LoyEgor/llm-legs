@@ -76,28 +76,46 @@ A path no artifact ever held is in debt
 whole while it exists — a run that never read it has no content to compare, so a
 repo-wide review cannot blanket files born after it. A held path that is gone is
 in debt; a deletion the run READ is settled by it (the snapshot records that path
-against the empty string). A killed run holds no path at all: triaging it settles
-the chat's round — the `timed-out` verdict goes quiet and the report the Stop gate
-waits for is discharged — but its snapshot is never read as an artifact, because
-the panel was sealed with the whole scope and reached only part of it, and counting
-it would settle the paths its dead cells never read for every chat at once.
+against the empty string). Whether a round holds its paths turns on ONE fact — a
+triage receipt exists — and never on HOW its incomplete cells died. A rater error, a
+watchdog kill, a stall kill, any kill condition added later: all of them leave the
+same round, sealed with the whole scope and answered for by whoever judged what came
+back. A kill that degraded coverage made two identical rounds settle differently for
+no reason a reader could act on, and every new kill condition silently took paths
+back out of every artifact. The kill markings stay as diagnostics — `debt`'s own
+`timed-out` line, the report flow, `review-bench doctor` — and settle nothing on
+their own. The receipt itself may only ever attest what was READ, which is the one
+place a dead cell still costs coverage: where the diff was chunked and no cell of some
+chunk came back, that chunk's paths are dropped from the run's snapshot and stay in
+debt, while every path a chunk that did come back held is covered as always. Cause of
+death is not asked there either — only whether anybody opened the content.
 
 `review-bench debt --repo <top> [--session <sid>] [--paths <p>...] [--list|--split]`
 prints exactly one line and exits 0:
 
 - `none` — nothing asked about is in debt.
-- `debt <n> mine|other|unknown [<owned>] [(+<f> foreign)] [locked]` — `n` paths in debt (restricted
-  to `--paths` when given). The owner word is the third field and the only one a
-  reader switches on: `mine` when `<sid>` authored at least one debt path or a run
-  of its own holds one, `other` when it owns none, `unknown` when no `--session` was
+- `debt <n> [mine|other|unknown] [<owned>] [(+<f> foreign)] [locked|decreed]` — `n` paths in debt
+  (restricted to `--paths` when given), always the whole count and never a share of
+  it, since `n` is the field every reader prices the repository by. The owner word is
+  the third field and the only one a reader switches on: `mine` when `<sid>` authored
+  at least one debt path or a run of its own holds one, `other` when it owns none,
+  `unknown` when no `--session` was
   given at all — nobody asked whose this is, so nothing here knows, and `other`
-  would be an ownership no reader computed. `<owned>` stands after the word only
+  would be an ownership no reader computed. With no `--session` and EVERY debt path
+  recorded to some chat, the word is dropped entirely — `debt 2 locked` — since
+  `unknown` over debt whose owner is on record states the one thing the records
+  contradict; a reader parsing positionally must therefore accept a line whose third
+  field is not an ownership word. `<owned>` stands after the word only
   where the chat owns SOME but not all of them: the word keeps its meaning for every
   reader switching on it, and the count beside it is the new fact. `(+<f> foreign)`
-  follows where `n` leaves out another chat's debt — the count is over the asking
-  chat's own scope, and a reader who cannot see what it excluded reads it as the
-  repository's whole open question. It stands BEFORE `locked`, which every reader
-  matches at the end of the line.
+  follows where a `--debt` review of `n` will leave another chat's debt out — the scope
+  is the asking chat's own, and a reader who cannot see what it excluded reads it as the
+  repository's whole open question. It is withheld where the owner word already says
+  it — `other` IS the chat owning none of this debt, so `(+<n> foreign)` over all of it
+  repeats the line's own third field — and with no `--session` there is no asking chat,
+  nothing is left out, and no share rides the line at all. It stands BEFORE the last
+  word, which every reader matches at the end of the line: `locked`, or `decreed`
+  where Egor's own unlock stands in the lock's place.
 - `timed-out <run-id>` — the session's most recent run was killed by the watchdog
   and nothing of its own has spoken since. A later triaged run of that session takes
   the answer back, and so does the killed run's OWN triage: a kill whose findings
@@ -138,7 +156,24 @@ WIDENED with every surviving path of any locked round
 standing over that debt: a lock is discharged only by a run that holds all of
 them, and a path sitting at exactly the sha the locked round recorded is by
 definition not in debt — so a debt-only scope could never answer the round it
-exists for. Per path, the comparison base is the content the newest artifact
+exists for. Widened the same way, and for the same reason, by every round the fork
+says is OWED a second one, locked or not: that round's own receipt is not read at
+all, so its whole scope re-enters the diff at whatever answered for those paths
+before it. A second round re-reads the full scope of the round that owed it plus
+the fixes, never the fixes alone (Egor, standing since the 11-round loop) — scoped
+off the newest artifact instead, which is that very round, a live second round read
+the 258 lines its own fixing pass had written and nothing else while the handoff
+promised the whole of it (2026-08-22). A round below both thresholds owes nothing
+and keeps its receipt, or every review would inherit its predecessor's scope
+forever; so does a round whose own round budget is spent, since the second pass
+over a scope owes no third. Two answers never turn on the gate answering at all: a
+round LOCKED by its P1 count is reopened whatever can be asked of the gate — else
+the one round no waiver may settle is also the one whose review cannot be scoped,
+a lock nothing can open — and a round whose tally cannot be READ fail-closes into
+the same reopening. The reopening is looked for among every artifact standing over
+the repository and not among the ones some path is in debt against: a threshold
+stop fixes nothing by construction, so its round leaves no path in debt at all and
+read off the debt its mandatory pass could never be scoped (2026-08-22). Per path, the comparison base is the content the newest artifact
 holding it recorded; where no artifact holds it, or its recorded blob is no longer
 readable, the path is dropped from the base and the panel sees the file whole.
 Those bases live in no commit of the repository — one path was last read three
@@ -185,21 +220,41 @@ record stands in — the launching chat, the repository, a listing that says it 
 complete, and the workdir dirt it gained inside the window. Where a co-tenant ran a blind
 run over the same path too, nothing can tell the two apart and the path stays in debt. The path must be one the run's snapshot holds, because a fix that touched a file no
 cell was shown is new work. A pass that fixed nothing wrote no fix bytes to cover. And a
-round recorded `blocked`, a round the gate escalated, and a round the watchdog killed
-cover nothing at all — their fixes ride the round they owe. Like a waiver's, the coverage
+round recorded `blocked` and a round the gate escalated cover nothing at all — their
+fixes ride the round they owe. How the round's incomplete cells died is not asked here
+either: a kill is a diagnostic, never a second-class round. Like a waiver's, the coverage
 is exactly those shas: the next edit is debt again, and a re-adjudication that leaves the
 receipt answering another triage takes the coverage back with it.
 
 **The lock IS the mechanical second round.** When the newest run holding a debt
 path came back with `SECOND_REVIEW_P1S` confirmed P1s, the debt reads `locked`:
 `waive` refuses it and the commit notice withholds the waiver option, saying why.
-The only way out is the follow-up review over the full original scope plus the
+The way out is the follow-up review over the full original scope plus the
 fixes, which is what `review --debt` computes with no path named by hand — there
 is no other mechanically-forced round. A round that earned its second review on
 the tally alone (`SECOND_REVIEW_FINDINGS` confirmed findings
 under the P1 count) locks nothing: the fork says the round is owed, and `waive`
 may still answer it on the model's own judgment, which a waiver records with its
 reason.
+
+**A decree is Egor's own unlock, and the only other way out a chat can take.**
+(A lock also ends by itself where the locked round's own round budget is spent —
+that round's report offers no third pass, and a lock demanding one is a gate
+nothing can open.) `review-bench decree
+<run-id> --reason TEXT` records `decree.json` on a LOCKED round; from then on the
+round's withheld waiver is grantable, and the reason prints loud — a `decree:` row in
+that round's report, and a `decree: <run-id> — <reason>` line under every waiver riding
+it; the one-line `debt` answer, which has no room for a sentence, reads `decreed` where it
+would have read `locked` rather than reading like a round nothing ever withheld. It is refused on a round that is not locked (nothing to discharge), without a
+reason, and on a round that already carries one.
+
+**Only Egor's explicit word authorises a decree, the same discipline a commit is
+under.** A model never runs it on its own judgment, never as a way past a round it
+would rather not re-review, and never because the second panel looks expensive — a
+locked round forgiving itself is the one thing the lock exists to prevent, and every
+other route to that outcome is mechanically closed. What this command cannot enforce,
+it makes loud instead: the reason stands in the block Egor reads, so a decree nobody
+authorised is visible as one.
 
 ## The gate (claude-setup `hooks/review-flow-gate.sh`)
 
@@ -209,8 +264,8 @@ reason.
   with the foreign side. Prints one line: `off` (no debt, nothing it can read),
   `bright rev <own>`, `dim rev <foreign>`, or `split rev <own>/<foreign>` when both
   stand — rendered as one segment, own bright and foreign dim. Nothing here is red,
-  and a watchdog kill is not shown at all: a killed run settles nothing, so its
-  paths are already in the numbers.
+  and a watchdog kill is not shown at all: a kill settles nothing of its own, so the
+  paths of the round it hit stand in these numbers exactly as any others.
 - Commit hook — **notify-once, never a wall**. A `git commit` whose pending paths
   carry debt exits 2 once, listing those paths and both ways to answer them — the
   `review --debt` command, which carries no path list because the mode reads the
@@ -308,6 +363,46 @@ prints it: one copy, from review-bench's own rendering, costing no tokens. What 
 model owes after the block is judgment the block cannot hold, never its contents
 restated. The corpus rules (sealed judges, `--bench` opt-in) are unchanged.
 
+**A round is two dispatches, and the panel briefs only the first.** The panel's
+ADJUDICATION HANDOFF is STEP 1 of 2: a fresh worker session, blind triage, `record` — and
+it says to fix nothing, because the fixing pass is dispatched separately. `record` writes
+STEP 2 itself when the verdicts land: how many findings survived and at which severities,
+the fixing constraints (suites, mutation-verified asserts, neither commit nor stage), the
+`fixes --done --fixed <N> --fp <M>` line that closes the round, and one plain recommendation
+of the shape of worker the severities call for — mechanical findings a fast one, a confirmed
+P1 a strong one. The panel cannot write that brief: it does not know what survived, and a
+fixing brief handed out beside raw findings names a count nobody has judged. A round with
+nothing confirmed prints no step 2 at all, and neither does one over a snapshot the checkout
+has moved past. At the P1 threshold step 2 is the stop itself: record it `blocked`, fix
+nothing, report the P1 list.
+
+**A diff too big for one cell is split, not the panel.** Past `DIFF_CHUNK_THRESHOLD_LINES`
+(1500) the commit's diff is cut at FILE boundaries into chunks packed to
+`DIFF_CHUNK_TARGET_LINES` (800), and each cell reads them one after another. Chunking
+**never multiplies the panel**: the cell count is the tier's own whatever the diff's size, one
+rater is one cell with one findings file and one verdict namespace, and no `#N` suffix is
+invented here — that spelling stays the tier's word for a rater it deliberately runs twice. A
+cell per (rater, chunk) made a 13-cell tier over a 25-chunk commit 325 concurrent cells and
+hundreds of processes (live, 2026-08-22). A failed pass costs that cell that chunk and nothing
+else: it keeps the findings of the passes that did come back. Both
+numbers are the DIFF's own lines, headers and context included, since what kills a cell is the
+size of the text it is handed and not the number of lines a commit changed. A file is NEVER cut
+inside: one whose own diff is over the target is a chunk of its own, read whole, and a commit
+that IS one such file is handed out unsplit — the target bounds every chunk holding more than
+one file and nothing else. Cut into sub-hunks instead, the halves of one rewrite went to cells
+that could not see each other's text and the deletion-only pieces were not even valid patches
+(2026-08-22). A chunk's paths therefore say the whole of what it holds, which is all the cells
+reading the repository instead of the pasted text are told. It is ONE run: one receipt, one
+handoff, one set of finding indices; the target line names the chunk count. A chunk NO cell's
+pass came back from is the one thing that costs the round coverage — its paths stay in debt,
+while a chunk any recorded cell read is covered however many other passes over it died. A pass
+counts as read on its ANSWER and not on its exit code: prose, an empty reply or a 429 in the
+text is a failed pass, since the cell's answer is its chunks joined and another chunk's clean
+marker would carry an unread one. Below the threshold nothing is split and the run is
+byte for byte the one it always was. The numbers are measured, not chosen (`diff_chunks`): diff-fed Claude
+and Codex cells die on a few percent of their cells under 1500 lines, ~16% between 1500 and
+2000, ~29% past 3000, while the cells that read a clone show no such trend.
+
 **Two frame words, two delivered states** (invariant `as`). `review` — the fixes
 are done, or there was nothing to fix. `review · NOT FINISHED` — and ONLY this —
 is a round whose fix status is `blocked`: the pass stopped at the P1 threshold
@@ -344,7 +439,9 @@ deliver them.
 gate: it exits 0 whatever it finds, because a review system with an anomaly in it is still a
 review system. It names six classes — `untriaged`, `undelivered`, `stuck_fixes`, `eternal_lock`,
 `orphan_debt`, `kill_asymmetry` — each a silence rather than an error: a record some mechanism
-above should have moved on and did not. Their ages live in one dict in the tool and are spelled
+above should have moved on and did not. `kill_asymmetry` keeps its name and counts every panel
+that completed nothing, however it died; it is a diagnostic and nothing more, since coverage no
+longer turns on the kill marking that once split those rounds in two. Their ages live in one dict in the tool and are spelled
 nowhere else, here included. The run-level classes look back only so far, because nobody triages
 last month's panel and a count that only grows says the same thing every time it is read; the two
 about the tree as it stands — a lock over live paths, debt in front of the reader — are unbounded.
