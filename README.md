@@ -193,6 +193,11 @@ Snapshot store and schema live in `~/.claude-profiles/` (documented in its READM
   filters, Enter `exec`s `claudeb profile <p> --resume <id>` in the target chat's directory. It opens
   on the last week and loads more history when he scrolls past the end; `--days N` / `--all` pin one
   window instead, `--print` shows the launch line rather than running it. Needs a terminal of its own.
+- `bin/chat-name` → `~/.local/bin/chat-name` — `<session-id>` prints `<original title> (<short id>)`
+  off the one resolver (`share/chat_names.py`), and exits 1 with nothing where the chat has no name
+  it may surface by. The symlink is the whole install: the shell surfaces that hold no Python find
+  it on PATH (`../claude-setup/hooks/commit-report.sh`) and fall silently back to a bare uuid when
+  they cannot, so an unlinked entry point is a feature that never once runs.
 - `bin/claude-resume-timer` → `~/.local/bin/claude-resume-timer` — `[app|terminal|auto] [extra-minutes]`
   reads the given (or auto-detected) account's 5h window from `~/.llm-limits.json` and arms the
   Hammerspoon `ClaudeContinue.startTimerFor` per-destination resume timer for that reset + extra

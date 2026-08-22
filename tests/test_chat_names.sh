@@ -190,4 +190,25 @@ print((found.get(str(Path(root) / (session + ".jsonl"))) or {}).get("ai"))
 PY
 )" = "renamed after the cache was written"
 
+# --- bin/chat-name: the same answer for the surfaces that hold no Python ------
+# The shell hooks that print a chat to Egor (claude-setup commit-report.sh) go through this and
+# through nothing else. Two answers rather than one: a name, or exit 1 with an empty stdout — every
+# caller already has the id it asked about, and its own spelling of it is the fallback, so a chat
+# with no name it may surface by must not come back as an id wrapped in parentheses beside nothing.
+CLI="$ROOT/bin/chat-name"
+assert test "$("$CLI" "$CHAT")" = "renamed after the cache was written (11111111)"
+assert "$CLI" "$CHAT" >/dev/null
+# A derived placeholder is no name here either, and the caller keeps its own id.
+assert test -z "$("$CLI" "$PLAIN" 2>/dev/null)"
+assert test "$("$CLI" "$PLAIN" >/dev/null 2>&1; echo $?)" = 1
+# A worker folds to the chat that launched it — the errand's own title never surfaces — while the
+# id in parentheses stays the one the caller asked about.
+assert test "$("$CLI" "$WORKER")" = "renamed after the cache was written (44444444)"
+# Two chats resumed one worker session: named for either it hands the reader the wrong
+# conversation, so the caller keeps the id.
+assert test "$("$CLI" "$SHARED" >/dev/null 2>&1; echo $?)" = 1
+# A caller that named no chat asked nothing, and that is neither of the two answers above.
+assert test "$("$CLI" >/dev/null 2>&1; echo $?)" = 2
+assert test "$("$CLI" "" >/dev/null 2>&1; echo $?)" = 2
+
 echo "PASS: chat-names ($asserts assertions)"
