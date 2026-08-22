@@ -265,10 +265,6 @@ fi
 
 if [ "$remove_green" = true ] || [ "$extension" = png ] \
     || [ "$extension" != "$(normalized_extension "$generated")" ]; then
-  command -v magick >/dev/null 2>&1 || {
-    printf 'codex-image: magick is required for this output\n' >&2
-    exit 1
-  }
   if [ "$remove_green" = true ]; then
     chroma_key_to_png "$generated" "$tmp_dir" "$dest"
   else
