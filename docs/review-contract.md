@@ -86,14 +86,18 @@ it would settle the paths its dead cells never read for every chat at once.
 prints exactly one line and exits 0:
 
 - `none` — nothing asked about is in debt.
-- `debt <n> mine|other|unknown [<owned>] [locked]` — `n` paths in debt (restricted
+- `debt <n> mine|other|unknown [<owned>] [(+<f> foreign)] [locked]` — `n` paths in debt (restricted
   to `--paths` when given). The owner word is the third field and the only one a
   reader switches on: `mine` when `<sid>` authored at least one debt path or a run
   of its own holds one, `other` when it owns none, `unknown` when no `--session` was
   given at all — nobody asked whose this is, so nothing here knows, and `other`
   would be an ownership no reader computed. `<owned>` stands after the word only
   where the chat owns SOME but not all of them: the word keeps its meaning for every
-  reader switching on it, and the count beside it is the new fact.
+  reader switching on it, and the count beside it is the new fact. `(+<f> foreign)`
+  follows where `n` leaves out another chat's debt — the count is over the asking
+  chat's own scope, and a reader who cannot see what it excluded reads it as the
+  repository's whole open question. It stands BEFORE `locked`, which every reader
+  matches at the end of the line.
 - `timed-out <run-id>` — the session's most recent run was killed by the watchdog
   and nothing of its own has spoken since. A later triaged run of that session takes
   the answer back, and so does the killed run's OWN triage: a kill whose findings
@@ -128,7 +132,9 @@ the next edit is debt again. An empty reason is refused.
 
 **The review that scopes itself.** `review-bench review --debt --tier Tn` is the
 one review nobody hands a scope, and the one the commit gate prints. Its scope is
-every path `debt` names, WIDENED with every surviving path of any locked round
+this chat's own debt plus the debt nobody owns — another chat's live work is a
+moving target, and the round would answer for content its author never saw —
+WIDENED with every surviving path of any locked round
 standing over that debt: a lock is discharged only by a run that holds all of
 them, and a path sitting at exactly the sha the locked round recorded is by
 definition not in debt — so a debt-only scope could never answer the round it
@@ -150,7 +156,13 @@ repository's whole open question, not a corner of it — and its scope never rea
 the round key, so a second `--debt` run over the same work is that scope's second
 round and not a scope of its own. It takes no target: a commitish, `--range`,
 `--worktree` and `--paths` are each refused, because choosing the scope is the
-choice this mode removes. With several `--repo` it behaves like any merged panel —
+choice this mode removes. What the scope left out is NAMED beside the target —
+`skipped foreign: <n> path(s), <m> line(s) (chat <labels>) — include with --all` —
+and `--all`, which only this mode accepts, reads it: a review that silently read
+part of the debt reported a repository clean over files no rater ever opened. A
+locked round's held paths are never skipped, whoever wrote them: the lock is
+discharged only by a run holding all of them. Where nothing is left, the refusal
+carries the same sentence rather than reading as a tree that owes nothing. With several `--repo` it behaves like any merged panel —
 one debt scope per member, one receipt per member.
 
 **A closed round's own fixes.** A `fixes --done` receipt recorded for a round the
@@ -167,7 +179,11 @@ own, the workers it launched folded in as they are everywhere else, with an unda
 legacy entry, an entry stamped past the window's end, or a co-tenant's unswept worker run
 disqualifying it: a parallel edit stays debt whether or not this chat wrote the file too.
 An entry OLDER than the seal disqualifies nothing, whoever left it — the panel read those
-bytes. The path must be one the run's snapshot holds, because a fix that touched a file no
+bytes. A codex or gemini worker has no Claude session, runs none of the journal hooks and
+lists no files, so a pass delegated to one leaves NO entry either way; there its own run
+record stands in — the launching chat, the repository, a listing that says it cannot be
+complete, and the workdir dirt it gained inside the window. Where a co-tenant ran a blind
+run over the same path too, nothing can tell the two apart and the path stays in debt. The path must be one the run's snapshot holds, because a fix that touched a file no
 cell was shown is new work. A pass that fixed nothing wrote no fix bytes to cover. And a
 round recorded `blocked`, a round the gate escalated, and a round the watchdog killed
 cover nothing at all — their fixes ride the round they owe. Like a waiver's, the coverage
@@ -303,6 +319,24 @@ fixes recorded" reports failure while the fixes are still landing, and promoting
 pending rounds to a deliverable state floods the Stop gate with every
 pre-receipt run the chat ever held. The finished report follows on its own, from
 the Stop net's `pending-delivery` source, one per state per round.
+
+**Who may close a round.** `record` and `fixes` key on the session the RUN RECORD
+names, never on the shell they were typed in: a claudeb worker carries a session of
+its own and a codex worker inherits the launching chat's environment, and keyed on
+the caller the same round's receipt, report and fix coverage moved to a different
+chat depending on who ran the command.
+
+**Nothing is dropped.** `pending-delivery` asks inside the triage window, which is a
+bound on reports nobody has looked at and not a verdict that an older one is not
+owed. `review-bench settle-delivery [--dry-run]` settles every round `doctor` counts
+as undelivered, one of two ways and never a third: **queued**, so the launching
+chat's next stop hands it over whatever its age, or **lapsed** with the instant,
+because the transcript that stop reads is gone. Both are written into the run's own
+`delivery.json` against the STATE they answer for, so a re-adjudication puts the
+round back in the queue. `doctor` stops counting a lapsed round as undelivered and
+marks a queued one `queued`; `doctor --lapsed` lists the written-off ones, unbounded
+by the scan window, because the whole point of the class is that nobody will ever
+deliver them.
 
 ## Doctor
 

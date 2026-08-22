@@ -536,6 +536,40 @@ workdir_dirty_paths() { # workdir
   [ -z "$answer" ] || printf '%s\n' "$answer"
 }
 
+# The content standing at each already-uncommitted path, as `<blob sha>\t<path>`, so the snapshot
+# at the end can tell a file this run REWROTE from one it merely found dirty. Without it a worker
+# whose vendor keeps no per-file record and whose fix pass edits files that were already dirty —
+# which is every fixing pass over a review scope — reaches no store at all: the launching chat saw
+# its own worker's fixes as debt owed by nobody, and a closed round covered none of them (live case
+# 2026-08-22). A path git cannot hash (gone, a directory, a special file) records `-`, which
+# compares equal only to itself.
+workdir_dirty_shas() { # workdir
+  local top paths path sha
+  top=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null) || return 1
+  [ -n "$top" ] || return 1
+  paths=$(workdir_dirty_paths "$1") || return 1
+  [ -n "$paths" ] || return 0
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    sha=-
+    [ -f "$top/$path" ] && sha=$(git -C "$top" hash-object -- "$path" 2>/dev/null) && [ -n "$sha" ] ||
+      sha=-
+    printf '%s\t%s\n' "$sha" "$path"
+  done <<<"$paths"
+}
+
+# The paths whose content is not what `dirty-before` recorded for them: rewritten by this run, or
+# gone. A floor written before the shas existed lists paths alone, and every one of them reads as
+# unchanged — the old behaviour, which is what a record written by an older worker-run must keep.
+workdir_rewritten_paths() { # directory workdir
+  local before="$1/dirty-before-shas"
+  [ -s "$before" ] || return 0
+  workdir_dirty_shas "$2" 2>/dev/null | awk -F'\t' -v before="$before" '
+    BEGIN { while ((getline line < before) > 0) { split(line, f, "\t"); was[f[2]] = f[1] } }
+    NF == 2 && ($2 in was) && was[$2] != $1 { print $2 }
+  '
+}
+
 # The run's own listing, spelled against the repository TOP the way the dirt snapshot is. The
 # listing answers in paths relative to the WORKDIR, so subtracted as it stands from a top-relative
 # set it matches nothing at all for a run launched one directory in, and every path the run's own
@@ -579,8 +613,9 @@ record_workdir_dirt() { # directory workdir
   top=$(git -C "$workdir" rev-parse --show-toplevel 2>/dev/null) || return 0
   [ -n "$top" ] || return 0
   gained=$(comm -23 \
-    <(comm -23 <(workdir_dirty_paths "$workdir") \
-                <(sort -u "$directory/dirty-before" 2>/dev/null)) \
+    <({ comm -23 <(workdir_dirty_paths "$workdir") \
+                 <(sort -u "$directory/dirty-before" 2>/dev/null)
+        workdir_rewritten_paths "$directory" "$workdir"; } | sort -u) \
     <(listing_top_paths "$directory" "$top" "$workdir"))
   [ -n "$gained" ] || [ -f "$directory/dirty" ] || return 0
   { printf 'WORKDIR: %s\n' "$top"
@@ -849,6 +884,9 @@ start_run() {
   workdir_dirty_paths "$workdir" >"$directory/dirty-before.tmp.$$" 2>/dev/null &&
     mv -f "$directory/dirty-before.tmp.$$" "$directory/dirty-before" 2>/dev/null ||
     rm -f "$directory/dirty-before.tmp.$$" 2>/dev/null
+  workdir_dirty_shas "$workdir" >"$directory/dirty-before-shas.tmp.$$" 2>/dev/null &&
+    mv -f "$directory/dirty-before-shas.tmp.$$" "$directory/dirty-before-shas" 2>/dev/null ||
+    rm -f "$directory/dirty-before-shas.tmp.$$" 2>/dev/null
 
   supervisor_body='ticks=0
 while [ ! -e "$2/.ready" ]; do

@@ -797,9 +797,13 @@ assert grep -Fq '${review_text%%/*}${DIM}/${review_text#*/}${RESET}' "$STATUSLIN
 # The three words the gate switches on, printed nowhere else.
 assert grep -Fq 'print("none")' "$REVIEWBENCH"
 assert grep -Fq 'print(f"timed-out {hung}")' "$REVIEWBENCH"
-assert grep -Fq 'print(f"debt {len(debt)} {owner}{share}{locked}")' "$REVIEWBENCH"
+assert grep -Fq 'print(f"debt {len(debt)} {owner}{share}{foreign}{locked}")' "$REVIEWBENCH"
 assert grep -Fq 'print("split %d %d %d" % debt_split(repo, paths, session))' "$REVIEWBENCH"
-assert doc_has '`debt <n> mine|other|unknown [<owned>] [locked]`'
+assert doc_has '`debt <n> mine|other|unknown [<owned>] [(+<f> foreign)] [locked]`'
+# The share is the debt a `--debt` review leaves out, priced by the one reader that leaves it out:
+# a line quoting a number the scope never skipped is the mismatch the segment exists to end.
+assert grep -Fq 'others = len(debt_foreign_skipped(repo, debt, session, buckets=buckets))' "$REVIEWBENCH"
+assert grep -Fq 'foreign = debt_foreign_skipped(repo, debt, session)' "$REVIEWBENCH"
 assert doc_has '`split <own> <foreign> <orphaned>`'
 # The counter is the review target header's, not a second differ: one edit priced two ways is two
 # numbers for one question, and the label is then arguing with the panel's own target line.
@@ -816,6 +820,9 @@ assert doc_has 'take out of diffing (`-diff`)'
 assert grep -Fq 'owner = "unknown" if not session else ("mine" if owned else "other")' "$REVIEWBENCH"
 assert doc_has 'nothing may parse positionally past the owner word'
 if test -r "$FLOW_GATE"; then
+  # The foreign share stands BEFORE the lock word: every reader of this line matches ` locked` at
+  # the END of it, and a suffix after it silently unlocks the debt for all of them.
+  assert grep -Fq "case \"\$answer\" in *' locked') locked=1 ;; esac" "$FLOW_GATE"
   assert grep -Fq 'if [ "${1:-}" = verdict ]; then' "$FLOW_GATE"
   assert grep -Fq 'echo "split rev $own/$foreign"' "$FLOW_GATE"
   assert grep -Fq 'echo "bright rev $own"' "$FLOW_GATE"
@@ -1923,6 +1930,12 @@ assert doc_has 'One resolver names every chat'
 assert doc_has '`share/chat_names.py`'
 assert grep -Fq 'from chat_names import' "$CHATFIND"
 assert grep -Fq 'from chat_names import' "$REVIEWBENCH_RUNS"
+# The transcript ROOTS are part of that one reading: every chat here lives under a claudeb profile,
+# so a consumer globbing `~/.claude/projects` for itself reads every one of them as gone.
+assert grep -Fq 'def transcript_roots():' "$CHATNAMES"
+assert doc_has '`transcript_path`'
+assert grep -Fq 'return transcript_path(str(session or "")) is not None' "$REVIEWBENCH_RUNS"
+assert eq "$(grep -c '"\.claude" / "projects"' "$REVIEWBENCH_RUNS")" 0
 # The shell surfaces name a chat through the same resolver, over one entry point rather than a
 # reading of their own: a hook that scanned a transcript for itself is a second answer to the
 # question this row exists to keep single.

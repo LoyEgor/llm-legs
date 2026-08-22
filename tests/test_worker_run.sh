@@ -1070,6 +1070,23 @@ assert_fails grep -qx 'bin/the-co-tenant-was-already-editing-this' "$RUN_DIR/dir
 assert_fails grep -qx 'tests/tracked-by-the-editor' "$RUN_DIR/dirty"
 assert grep -qx 'tests/tracked-by-the-editor' "$RUN_DIR/files"
 
+# A file already dirty that the run REWRITES is this run's work too. The floor is a set of NAMES,
+# and subtracted by name a path that was on it before is invisible however far its content moved:
+# a fixing pass whose every edit landed in files somebody already had open reached the record as
+# nothing at all (live case 2026-08-22). So the floor carries each path's content beside its name,
+# and a changed sha is the evidence a name comparison never had.
+clear_stub
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+tool_call Bash command 'sed -i "" s/x/y/ bin/the-co-tenant-was-already-editing-this' \
+  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+start_ok claudeb --workdir "$DIRT_REPO"
+printf 'the run rewrote it\n' >>"$DIRT_REPO/bin/the-co-tenant-was-already-editing-this"
+assert await_done
+assert grep -qx 'bin/the-co-tenant-was-already-editing-this' "$RUN_DIR/dirty"
+# And a file on the same floor this run never touched is still the co-tenant's: same name, same
+# content, no claim.
+assert_fails grep -qx 'bin/somebody-elses-file' "$RUN_DIR/dirty"
+
 # A run whose transcript answered for every edit it made has named its work already. The rest of a
 # shared checkout's dirt is somebody else's, and a snapshot of it here is this run's record
 # vouching for another chat's file.

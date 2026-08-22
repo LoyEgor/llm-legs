@@ -28,7 +28,8 @@ from pathlib import Path
 sys.path.insert(0, os.path.join(
     os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "share"))
 from chat_names import (  # noqa: E402
-    chat_label, store_names, worker_run_launchers, worker_run_root, worker_session_launchers,
+    chat_label, store_names, transcript_path, worker_run_launchers,
+    worker_run_root, worker_session_launchers,
 )
 
 
@@ -198,6 +199,12 @@ TRIAGE_GATE_HOURS = 6
 # since the 15th listed 39 pre-fixes-mechanism runs at once — none of which can ever gain a fix
 # status — and a fallback that named them rendered all 39 into one 39KB message (2026-08-20).
 DELIVERY_STATES = ("done", "blocked")
+# What `settle-delivery` writes beside a round whose report the window above has left behind:
+# `{"state": ..., "queued": <iso>}` puts it back in front of its launching chat at any age, and
+# `{"state": ..., "lapsed": <iso>}` records that the chat it was owed to is gone from disk, so
+# nobody will ever read it. Neither is a delivery — the ledger row `au` describes stays the only
+# record that a report reached Egor — and a lapsed round is still listed, by `doctor --lapsed`.
+DELIVERY_MARK = "delivery.json"
 REPORT_RECEIPT = "reported.json"
 FIX_RECEIPT = "fixes.json"
 # Confirmed P1s at which the fixing pass stops instead of starting: past it the round is not a
@@ -1033,7 +1040,13 @@ DEBT_FLAG_HELP = (
     "content nothing that read it stands behind, widened to every surviving path of any locked "
     "round standing over it, each read from the content its newest artifact recorded — so work "
     "reviewed, committed and edited again is one diff across the commit. The scope is computed, "
-    "not given, so it takes no target and no --paths"
+    "not given, so it takes no target and no --paths. It reads this chat's own debt and the debt "
+    "nobody owns; another chat's is named on the target line and left out, since a co-tenant's "
+    "live work is a diff that moves under the panel"
+)
+DEBT_ALL_FLAG_HELP = (
+    "Widen that scope to the debt of every chat, not this one's own and the unowned. For an "
+    "explicit ask to review what a co-tenant left behind, which is not a gate's business"
 )
 REPO_FLAG_HELP = (
     "The repository to review, as PATH or PATH@BASE..HEAD to review a range of its commits "
@@ -1646,6 +1659,31 @@ def walk_launching_session(pid=None):
 
 def launching_session():
     return session_stamp().get("session") or walk_launching_session()
+
+
+def caller_chat():
+    """The chat the caller's shell answers to: its own session, or the chat that launched it where
+    the shell is a worker's. A worker a chat spawned IS that chat (docs/shared-invariants.md row
+    `am`), and a command it runs on the round's behalf is the launcher's command.
+    """
+    session = launching_session()
+    return worker_session_launchers().get(session, session) if session else session
+
+
+def round_session(run_dir):
+    """The chat a round answers to: the session its own run record names, and the caller's only
+    where the record names none.
+
+    Read off the RECORD and not off the environment, so which shell typed `record` or `fixes` —
+    the launching chat, its claudeb worker, a codex worker inheriting the chat's variables, a bare
+    terminal — cannot move a round's report, its receipt or its fix coverage to another chat. The
+    launching session is stamped once, at launch, by the only process that could know it.
+    """
+    try:
+        recorded = json.loads((run_dir / "meta.json").read_text()).get("session")
+    except (OSError, ValueError):
+        recorded = None
+    return recorded if isinstance(recorded, str) and recorded else (caller_chat() or "")
 
 
 def review_progress_document(repo, run_id, tier, target, cells, started=None, pid=None,
@@ -8289,7 +8327,41 @@ def review_outcome(repo, receipt):
                 for path in sorted(run_dir.glob("findings-*.jsonl"))
                 if path.name[len("findings-"):-len(".jsonl")] not in errored
             )
+            # A commit-point round never enters the corpus, so reviews.jsonl holds no row for it
+            # and the sum above is 0 whatever its triage confirmed: the receipt of a round that
+            # provoked a whole fixing pass read as a review that found nothing (live case
+            # 2026-08-22). The triage is on record in the report receipt, and this is the same
+            # tally the frame printed, narrowed to the member this repository is.
+            confirmed += triaged_confirmed(run_dir, prefix)
     return worktree, confirmed, findings
+
+
+def triaged_confirmed(run_dir, prefix=""):
+    """How many findings a run's triage confirmed in the member `prefix` names, off whichever copy
+    of that triage survives. Counted through the findings themselves, because a merged panel's
+    tally spans every repository it read and a member's receipt answers only for its own.
+    """
+    rows = recorded_verdict_rows(run_dir)
+    if not rows:
+        return 0
+    if not prefix:
+        return confirmed_count(rows)
+    findings = {}
+    total = 0
+    for row in rows:
+        if not isinstance(row, dict) or row.get("verdict") != "confirmed":
+            continue
+        rater = row.get("rater")
+        idx = row.get("idx")
+        if not rater or not isinstance(idx, int) or isinstance(idx, bool):
+            continue
+        if rater not in findings:
+            findings[rater] = finding_rows(run_dir, rater)
+        if idx < len(findings[rater]) and str(
+            findings[rater][idx].get("file") or ""
+        ).startswith(prefix):
+            total += 1
+    return total
 
 
 def cmd_receipt(args):
@@ -8343,6 +8415,103 @@ def cmd_pending_report(args):
     return 0
 
 
+def run_record_window(directory):
+    """`(start epoch, end epoch)` a worker run occupied, or None where its record cannot place it.
+
+    The end is the `exit_code` file's own mtime — the instant `worker-run` wrote the run's last
+    word — and a run still writing ends at now, since its edits are still landing.
+    """
+    try:
+        started = json.loads((directory / "meta.json").read_text()).get("started_at")
+    except (OSError, ValueError):
+        return None
+    if not isinstance(started, int) or isinstance(started, bool):
+        return None
+    exit_code = directory / "exit_code"
+    try:
+        return started, int(exit_code.stat().st_mtime)
+    except OSError:
+        return started, int(time.time())
+
+
+def blind_fix_runs(repo, session, window, records=None):
+    """What the run records say about paths a fixing pass may have written without recording
+    which, as `(named, foreign, mine, theirs)`: the paths this chat's own blind runs DID name, the
+    ones a co-tenant's did, whether any run of this chat could have written into `repo` unrecorded
+    inside `window`, and whether any other chat's could.
+
+    A codex or gemini worker keeps no per-file transcript and runs no journal hook of ours, so a
+    fix pass delegated to one reaches every store as nothing at all — the journals, the file
+    listing and the artifacts alike (live case 2026-08-22). Its record still says three things:
+    which chat launched it, which repository it stood in, and that its own listing cannot be
+    complete. Where that is the ONLY actor any store places on a scope path inside the window,
+    it is the pass that wrote it; where a co-tenant ran one too, nothing here can tell the two
+    apart and the path stays in debt, which is what every other guard here does with an
+    ambiguity.
+
+    The two FLAGS answer only for a run whose dirt record cannot be read per path — one written
+    before `dirty-before-shas` existed, whose already-dirty paths all read as untouched however
+    the run rewrote them. That is the whole of what a flag standing over the repository can say:
+    a run whose dirt record DOES answer per path has named its own work in `named`, and a flag
+    beside it would cover every unjournalled scope path on no evidence about that path at all —
+    an editor edit outside this machine's hooks, made while the pass ran, retired from debt as
+    though the pass had answered for it.
+
+    `named` and its foreign twin are the dirt records, which are about CONTENT and never
+    authorship — read here only through the launcher of the run that recorded them, and only
+    inside the window, which is the one reading where the two questions coincide.
+    """
+    named, foreign, mine, theirs = set(), set(), False, False
+    start, end = window
+    launchers = worker_session_launchers()
+    for directory in (worker_run_dirs() if records is None else records):
+        try:
+            launcher = (directory / "launcher").read_text().strip()
+        except OSError:
+            continue
+        if not launcher:
+            continue
+        own = launcher == session or launchers.get(launcher) == session
+        span = run_record_window(directory)
+        if span is None or span[1] < start or span[0] > end:
+            continue
+        dirt = set(run_record_paths(repo, directory, listing="dirty"))
+        if own:
+            named |= dirt
+        else:
+            # A co-tenant's blind run naming the path is the parallel edit a co-tenant's journal
+            # entry is, in the one store that holds it while nothing has swept the run.
+            foreign |= dirt
+        try:
+            listing = (directory / "files").read_text()
+        except OSError:
+            listing = ""
+        if not listing:
+            continue
+        # A `WORKDIR:` this repository does not hold places the run in another checkout entirely;
+        # `run_record_paths` answers empty for both that and a listing of no paths, so the workdir
+        # line is read here rather than inferred from the paths.
+        workdir = next(
+            (line[len("WORKDIR: "):] for line in listing.splitlines()
+             if line.startswith("WORKDIR: ")), "",
+        )
+        if not workdir or scope_path_relative(repo, workdir) is None:
+            continue
+        # Line-anchored, the way `run_record_paths` and `record_workdir_dirt` read the same two
+        # markers: a filename holding one of these tokens is a path, and a second spelling of one
+        # record's grammar is how the readings come to disagree about it.
+        if not any(line.startswith(("UNKNOWN: ", "PARTIAL: ")) for line in listing.splitlines()):
+            continue
+        # A record whose dirt reading predates the content shas answers for no path of its own.
+        if (directory / "dirty-before-shas").exists():
+            continue
+        if own:
+            mine = True
+        else:
+            theirs = True
+    return named, foreign, mine, theirs
+
+
 def fix_written_paths(repo, scope, session, window):
     """The paths of `scope` whose every journalled edit inside `window` is the fixing session's
     own, at the shas they held when this reading began.
@@ -8355,7 +8524,9 @@ def fix_written_paths(repo, scope, session, window):
     file holds bytes nobody has answered for.
 
     A worker a chat spawned IS that chat, so its own journal entries fold into the launcher exactly
-    as `debt` folds them (docs/shared-invariants.md row `am`).
+    as `debt` folds them (docs/shared-invariants.md row `am`). A vendor whose worker journals
+    nothing at all leaves a path with no entry either way, and `blind_fix_runs` is the evidence
+    that stands in for one.
     """
     start, end = window
     # The shas BEFORE the two record stores and never after them: an edit landing between the
@@ -8369,19 +8540,27 @@ def fix_written_paths(repo, scope, session, window):
             records.setdefault(path, []).append((entry, epoch))
     launchers = worker_session_launchers()
     claims = run_record_claims(repo)
+    blind_named, blind_foreign, blind_mine, blind_theirs = blind_fix_runs(repo, session, window)
     covered = {}
-    for path, rows in records.items():
+    for path in scope:
+        rows = records.get(path, ())
         # The run records read raw and never through `foreign_run_claims`, which drops a path this
         # chat's own run wrote too: right for a waiver over the launcher's own output, wrong here,
-        # where the co-tenant's bytes stand in the very sha this receipt would settle.
-        if any(launcher != session for _, launcher in claims.get(path, ())):
+        # where the co-tenant's bytes stand in the very sha this receipt would settle. Raw is not
+        # unfolded, though — a run a worker of this chat spawned is this chat's (row `am`), the way
+        # the journal entries below fold, or the pass's own nested worker reads as a co-tenant.
+        if any(launcher != session and launchers.get(launcher) != session
+               for _, launcher in claims.get(path, ())):
+            continue
+        if path in blind_foreign:
             continue
         if any(epoch is None or epoch > end for _, epoch in rows):
             continue
         inside = [entry for entry, epoch in rows if start <= epoch <= end]
-        if not inside:
-            continue
-        if not all(entry == session or launchers.get(entry) == session for entry in inside):
+        if inside:
+            if not all(entry == session or launchers.get(entry) == session for entry in inside):
+                continue
+        elif not (path in blind_named or (blind_mine and not blind_theirs)):
             continue
         covered[path] = shas[path]
     return covered
@@ -8518,7 +8697,7 @@ def cmd_fixes(args):
         line = f"done — {args.fixed} fixed, {args.fp} false positives"
     recorded = utc_now()
     record["recorded_at"] = recorded.isoformat()
-    session = launching_session()
+    session = round_session(run_dir)
     if session:
         record["session"] = session
     if record["state"] == "done":
@@ -8545,6 +8724,75 @@ def delivery_state(run_dir):
     """
     state = round_state(run_dir)
     return None if state == "pending" else state
+
+
+def delivery_mark(run_dir):
+    """What `settle-delivery` recorded about this round's report, as a dict — empty where it has
+    never been asked about."""
+    try:
+        mark = json.loads((run_dir / DELIVERY_MARK).read_text())
+    except (OSError, ValueError):
+        return {}
+    return mark if isinstance(mark, dict) else {}
+
+
+def session_transcript_exists(session):
+    """Whether the chat a report is owed to is still on disk to receive it.
+
+    The Stop hook that delivers reads the transcript the harness hands it, so a session with none
+    left has no stop to reach: a report queued for it would be owed for ever by a reader that can
+    never run.
+
+    Through the one resolver that names a chat (row `aw`) and never a glob of this reader's own:
+    every chat on this machine runs under a claudeb PROFILE, whose transcripts live outside
+    `~/.claude/projects` entirely, so a reading that knew only the default root would write off
+    every round there is as owed to a chat that is gone — which is the silence this command exists
+    to end.
+    """
+    try:
+        return transcript_path(str(session or "")) is not None
+    except OSError:
+        return False
+
+
+def cmd_settle_delivery(args):
+    """Put every deliverable round no ledger names back in front of the chat that launched it, and
+    write off the ones whose chat is gone.
+
+    The delivery window is a bound on reports nobody has looked at; it is not a verdict that an
+    older one is not owed. A chat whose stop never came inside it — it was closed, it was
+    compacting, the mechanism did not exist yet — leaves its round marked `done` on disk and
+    delivered nowhere, which is the count `doctor` reports as `undelivered` (18 of them, some 12
+    days old, when this was written). Each is settled one of two ways and never a third: queued,
+    so the launching chat's next stop hands it over whatever its age, or lapsed with the instant,
+    because the transcript that stop reads is gone. Nothing is dropped silently — a lapsed round
+    keeps its own listing under `doctor --lapsed`.
+    """
+    # At no window: the scan's fortnight is a bound on what a reader is asked to look at, and the
+    # rounds this command exists for are precisely the ones that outlived it — 18 of them, some 12
+    # days old, when it was written. Windowed, they would fall out of reach two days later and be
+    # neither queued nor written off, which is the silence the docstring above promises to end.
+    findings = doctor_scan(undelivered_window=float("inf"))
+    benches = state_dir() / "benches"
+    queued, lapsed = [], []
+    for row in findings["undelivered"]:
+        run_id, state = row["what"].split()[:2]
+        run_dir = benches / run_id
+        try:
+            session = str(json.loads((run_dir / "meta.json").read_text()).get("session") or "")
+        except (OSError, ValueError):
+            continue
+        alive = session_transcript_exists(session)
+        mark = {"state": state, ("queued" if alive else "lapsed"): iso_now(), "session": session}
+        (queued if alive else lapsed).append((run_id, state, session))
+        if not args.dry_run:
+            (run_dir / DELIVERY_MARK).write_text(json.dumps(mark, sort_keys=True) + "\n")
+    for label, rows in (("queued", queued), ("lapsed", lapsed)):
+        for run_id, state, session in rows:
+            print(f"{label} {run_id} {state} {session}")
+    prefix = "would settle" if args.dry_run else "settled"
+    print(f"{prefix}: {len(queued)} queued, {len(lapsed)} lapsed")
+    return 0
 
 
 def cmd_pending_delivery(args):
@@ -8588,7 +8836,16 @@ def cmd_pending_delivery(args):
         # and the report is about to change, and past that it is a report about a diff that moved.
         if state is None:
             continue
-        if (now - finished).total_seconds() > TRIAGE_GATE_HOURS * 3600:
+        mark = delivery_mark(run_dir)
+        # A queued round is named at ANY age. The window is a bound on runs nobody has looked at:
+        # once `settle-delivery` has established that this report was never handed over and that
+        # the chat it is owed to still exists, its age is the reason to deliver it, not to stop.
+        # The mark answers for the STATE it was written against: a re-adjudication moves a round
+        # back through `pending`, and the report it reaches next is not the one settled there.
+        # A lapsed round needs no branch of its own — it is one this window has already closed
+        # over, and its chat is gone from disk anyway.
+        queued = mark.get("queued") and mark.get("state") == state
+        if not queued and (now - finished).total_seconds() > TRIAGE_GATE_HOURS * 3600:
             continue
         # The net discards outright any line whose state is not one it knows, so a state this loop
         # could name and that vocabulary does not hold would be delivered to nobody at all.
@@ -9203,6 +9460,32 @@ def debt_line_counts(repo, debt, shas=None):
     return counts
 
 
+def debt_ownership(repo, debt, session, claims=None, records=None):
+    """Each debt path sorted by whose it is: `{"own", "foreign", "orphaned", "authors"}`.
+
+    The one rule three readers switch on — the split's line counts, the one-liner's owner word and
+    the scope a `--debt` review computes — so a path counted foreign on the statusline cannot be
+    the one a review of the same repository silently reads.
+    """
+    records = worker_run_dirs() if records is None else records
+    claims = run_record_claims(repo, records) if claims is None else claims
+    authors = debt_path_authors(repo, debt)
+    mine = session_run_paths(repo, session, claims=claims) if session else set()
+    dirt = session_dirt_paths(repo, session, records=records)
+    buckets = {"own": set(), "foreign": set(), "orphaned": set(), "authors": authors}
+    for path, _ in debt:
+        path = str(path)
+        if session and (session in authors.get(path, ()) or path in mine):
+            buckets["own"].add(path)
+        elif authors.get(path) or claims.get(path):
+            buckets["foreign"].add(path)
+        elif path in dirt:
+            buckets["own"].add(path)
+        else:
+            buckets["orphaned"].add(path)
+    return buckets
+
+
 def debt_split(repo, paths=None, session=""):
     """This repository's debt in DIFF LINES, split three ways for the statusline: `(own, foreign,
     orphaned)`.
@@ -9226,19 +9509,11 @@ def debt_split(repo, paths=None, session=""):
     if not debt:
         return 0, 0, 0
     lines = debt_line_counts(repo, debt, shas=shas)
-    authors = debt_path_authors(repo, debt)
-    mine = session_run_paths(repo, session, claims=claims) if session else set()
-    own = foreign = orphaned = 0
-    for path, _ in debt:
-        path = str(path)
-        count = lines.get(path, 0)
-        if session and (session in authors.get(path, ()) or path in mine):
-            own += count
-        elif authors.get(path) or claims.get(path):
-            foreign += count
-        else:
-            orphaned += count
-    return own, foreign, orphaned
+    buckets = debt_ownership(repo, debt, session, claims=claims, records=records)
+    return tuple(
+        sum(lines.get(path, 0) for path in buckets[name])
+        for name in ("own", "foreign", "orphaned")
+    )
 
 
 def debt_review_scope(repo):
@@ -9270,18 +9545,94 @@ def debt_review_scope(repo):
     return sorted(scope.items())
 
 
-def debt_members(repos):
+def debt_foreign_skipped(repo, debt, session, buckets=None, claims=None, records=None):
+    """The debt paths a `--debt` review of this repository will NOT read: another chat's, less the
+    ones a locked round holds.
+
+    One rule, two readers — the scope `debt_scope` computes and the count `debt`'s own line prints
+    beside it. A line quoting a number the scope never left out is the same lie as a scope that
+    dropped a path silently: the count is what a chat reads BEFORE it decides. With no session
+    nothing is foreign to anybody, so the review reads the whole of it and this is empty.
+    """
+    if not session:
+        return set()
+    locked = {
+        path for _, artifact in debt if artifact and artifact_locked(artifact)
+        for path in artifact["shas"]
+    }
+    if buckets is None:
+        buckets = debt_ownership(repo, debt, session, claims=claims, records=records)
+    return buckets["foreign"] - locked
+
+
+def debt_scope(repo, session="", include_foreign=False):
+    """A `--debt` review's scope and what it left out, as `(pairs, skipped)`.
+
+    Another chat's live work is a moving target: reviewing it prices a diff that changes under the
+    panel, and the round it produces answers for content the chat that wrote it never saw. So the
+    default scope is this chat's own debt plus the debt nobody owns, and `--all` is the ask that
+    widens it. What is left out is NAMED by the caller and never silently dropped — a review that
+    reads six of nine files while its one-liner says nine is how a chat told Egor work had been
+    reviewed clean that no rater ever opened (live case 2026-08-22).
+
+    A path a LOCKED round holds is never skipped, whoever wrote it: the lock is discharged only by
+    a run holding all of them, so dropping one leaves that round owed for ever with no command
+    able to answer it.
+    """
+    pairs = debt_review_scope(repo)
+    if include_foreign or not session:
+        return pairs, []
+    debt = repo_debt(repo)
+    owed = {str(path) for path, _ in debt}
+    foreign = debt_foreign_skipped(repo, debt, session)
+    kept = [(path, artifact) for path, artifact in pairs if str(path) not in foreign]
+    skipped = sorted(path for path in foreign if path in owed)
+    return kept, skipped
+
+
+def debt_skipped_line(repo, skipped):
+    """The one sentence a review owes about the debt it is not reading: how much of it there is,
+    whose it is, and the flag that includes it."""
+    if not skipped:
+        return ""
+    debt = repo_debt(repo, skipped)
+    lines = sum(debt_line_counts(repo, debt).values())
+    authors = debt_path_authors(repo, debt)
+    launchers, store = worker_run_launchers(), store_names()
+    # The run records beside the journals, because a path is foreign by EITHER store: debt a
+    # co-tenant's worker run claims and no journal has swept yet has an owner written down, and a
+    # sentence promising whose it is that names nobody is the one reading this line came for.
+    claims = run_record_claims(repo)
+    owners = sorted({
+        chat_label(owner, launchers=launchers, store=store)
+        for path in {str(path) for path, _ in debt}
+        for owner in (*(authors.get(path) or ()),
+                      *(row[1] for row in claims.get(path, ())))
+    })
+    whose = f" (chat {', '.join(owners)})" if owners else ""
+    return (f"skipped foreign: {len(skipped)} path(s), {lines} line(s){whose} "
+            "— include with --all")
+
+
+def debt_members(repos, session="", include_foreign=False, skipped=None):
     """Each repository of a merged debt review, sealed exactly as a solo one seals itself: the
     scope is that repository's own open question, so a panel spanning two checkouts still owes each
     of them the receipt it would have earned alone.
+
+    `skipped` collects each member's own skipped-foreign sentence: the scope is per repository, so
+    a merged panel owes that answer once per member and not once for the run.
     """
     members = []
     for label, repo in zip(merged_repo_labels(repos), repos):
-        scope = debt_review_scope(repo)
+        scope, left_out = debt_scope(repo, session, include_foreign)
+        if left_out and skipped is not None:
+            skipped.append(f"  {label}/ = {repo}: " + debt_skipped_line(repo, left_out))
         if not scope:
             raise ValueError(
-                f"--repo {repo} owes no review — nothing in it is in debt, so a merged debt "
-                "review of it would read an empty half; drop that --repo"
+                f"--repo {repo} owes no review — "
+                + (debt_skipped_line(repo, left_out) if left_out else
+                   "nothing in it is in debt")
+                + ", so a merged debt review of it would read an empty half; drop that --repo"
             )
         commit = debt_snapshot_commit(repo, scope)
         members.append({
@@ -9450,6 +9801,32 @@ def session_run_paths(repo, session, claims=None):
         path for path, rows in (run_record_claims(repo) if claims is None else claims).items()
         if any(launcher == session for _, launcher in rows)
     }
+
+
+def session_dirt_paths(repo, session, records=None):
+    """The paths this chat's OWN finished runs recorded as workdir dirt.
+
+    Weaker evidence than every other store here and read only where they are all silent: dirt is
+    about content, not authorship, so a co-tenant's journal entry or run listing over the same path
+    outranks it. What it answers is the case nothing else can — a worker whose vendor keeps no
+    per-file record edits a file through the shell, and the chat that ordered the work sees its own
+    bytes as debt owed by nobody, on the foreign side of its own statusline (live case 2026-08-22).
+    """
+    if not session:
+        return set()
+    launchers = worker_session_launchers()
+    paths = set()
+    for directory in (worker_run_dirs() if records is None else records):
+        if not (directory / "exit_code").exists():
+            continue
+        try:
+            launcher = (directory / "launcher").read_text().strip()
+        except OSError:
+            continue
+        if not launcher or (launcher != session and launchers.get(launcher) != session):
+            continue
+        paths.update(run_record_paths(repo, directory, listing="dirty"))
+    return paths
 
 
 def debt_path_authors(repo, debt):
@@ -9632,13 +10009,8 @@ def cmd_debt(args):
         if hung:
             print(f"timed-out {hung}")
             return 0
-    owned = 0
-    if session:
-        authors = debt_path_authors(repo, debt)
-        mine = session_run_paths(repo, session, claims=claims)
-        owned = sum(
-            1 for path, _ in debt if session in authors.get(path, ()) or path in mine
-        )
+    buckets = debt_ownership(repo, debt, session, claims=claims, records=records)
+    owned = len(buckets["own"])
     # Nobody asked whose this is, so nothing here knows: `other` would be an ownership no reader
     # computed, and it reads exactly like a co-tenant's.
     owner = "unknown" if not session else ("mine" if owned else "other")
@@ -9646,7 +10018,17 @@ def cmd_debt(args):
     # its meaning for every reader switching on it; the count beside it is the new fact.
     share = f" {owned}" if 0 < owned < len(debt) else ""
     locked = " locked" if debt_locked(repo, debt) else ""
-    print(f"debt {len(debt)} {owner}{share}{locked}")
+    # The part of that count a `--debt` review will not read, named here rather than left for the
+    # reader to infer from a number this line does not print: the one-liner is what a chat sees
+    # before it decides, and one that said `debt 7` over a scope of one is how six files went to
+    # Egor as reviewed clean (live case 2026-08-22). It stands BEFORE the lock word, which every
+    # reader of this line matches at the END of it.
+    # Withheld only where the owner word already says it: `other` is the chat owning NONE of this
+    # debt, and a count repeating that adds nothing. Nobody asked whose this is, so the review
+    # skips nothing either, and a share printed there would name an exclusion no scope makes.
+    others = len(debt_foreign_skipped(repo, debt, session, buckets=buckets))
+    foreign = f" (+{others} foreign)" if others and others < len(debt) else ""
+    print(f"debt {len(debt)} {owner}{share}{foreign}{locked}")
     return 0
 
 
@@ -9882,9 +10264,13 @@ def doctor_orphan_debt(repo, covering=None):
     ]
 
 
-def doctor_scan(now=None):
+def doctor_scan(now=None, undelivered_window=DOCTOR_WINDOW_S):
     """Every anomaly the review system's own records can be asked about, as
     `{class: [row, ...]}`.
+
+    `undelivered_window` is the one bound a caller may move, because it is the one class whose
+    bound is about ATTENTION and not about the record: `settle-delivery` asks the same question
+    with no window at all, an older report being no less owed than a recent one.
 
     Pull-only and read-only: nothing here marks a record, speaks to a vendor or costs a token, and
     the answer is a count per class with the records behind it rather than a verdict about any one
@@ -9947,13 +10333,22 @@ def doctor_scan(now=None):
             session = str(meta.get("session") or "")
             # A run no chat launched has no ledger to be missing from: it was never anybody's to
             # deliver, and counted here it would be a permanent finding no action clears.
-            if (recent and state in DELIVERY_STATES and session
+            if (age <= undelivered_window and state in DELIVERY_STATES and session
                     and age >= DOCTOR_AGES_S["undelivered"]):
                 key = DELIVERY_LEDGER_KEY.format(run_id=run_dir.name, state=state)
-                if key not in doctor_ledger_keys(session, ledgers):
-                    findings["undelivered"].append(
-                        doctor_row(f"{run_dir.name} {state}", meta.get("repo"), age)
-                    )
+                mark = delivery_mark(run_dir)
+                settled = mark.get("state") == state
+                # A round written off as lapsed is not a silence any mechanism will break: the
+                # chat it was owed to is gone from disk. It leaves this count for `--lapsed`,
+                # where it stays readable, rather than standing here for ever.
+                if key not in doctor_ledger_keys(session, ledgers) and not (
+                    settled and mark.get("lapsed")
+                ):
+                    findings["undelivered"].append(doctor_row(
+                        f"{run_dir.name} {state}"
+                        + (" queued" if settled and mark.get("queued") else ""),
+                        meta.get("repo"), age,
+                    ))
             if recent and round_state(run_dir) == "pending":
                 triaged_at = doctor_triage_instant(run_dir)
                 stuck = None if triaged_at is None else (now - triaged_at).total_seconds()
@@ -9979,6 +10374,30 @@ def doctor_scan(now=None):
         findings["eternal_lock"].extend(doctor_locks(repo, now, covering))
         findings["orphan_debt"].extend(doctor_orphan_debt(repo, covering))
     return findings
+
+
+def doctor_lapsed():
+    """Every round `settle-delivery` wrote off, oldest first: its id and state, the repository it
+    read, and when it was written off. Unbounded by the scan window above — the whole point of the
+    class is that these reports are owed to nobody and will never be delivered, so the list has to
+    stay readable for as long as the records do rather than go quiet after a fortnight.
+    """
+    benches = state_dir() / "benches"
+    rows = []
+    for run_dir in sorted(benches.iterdir()) if benches.exists() else ():
+        mark = delivery_mark(run_dir)
+        if not mark.get("lapsed"):
+            continue
+        try:
+            repo = json.loads((run_dir / "meta.json").read_text()).get("repo")
+        except (OSError, ValueError):
+            repo = ""
+        rows.append({
+            "what": f"{run_dir.name} {mark.get('state') or ''}".strip(),
+            "repo": str(repo or ""), "lapsed": str(mark.get("lapsed")),
+            "session": str(mark.get("session") or ""),
+        })
+    return rows
 
 
 def doctor_age_text(seconds):
@@ -10142,6 +10561,12 @@ def cmd_doctor(args):
         doctor_launchctl(paths["plist"], False)
         remove_doctor_agent(Path.home())
         print(f"Uninstalled {DOCTOR_AGENT_LABEL}.")
+        return 0
+    if getattr(args, "lapsed", False):
+        rows = doctor_lapsed()
+        for row in rows:
+            print(f"  {row['what']}  {row['repo']}  {row['lapsed']}")
+        print(f"lapsed: {len(rows)}")
         return 0
     now = utc_now()
     findings = doctor_scan(now)
@@ -10345,6 +10770,11 @@ def cmd_run(args):
                 "it stands behind, widened to what a locked round still owes — so it takes no "
                 "other target: drop " + " and ".join(given)
             )
+    if getattr(args, "all", False) and not debt_mode:
+        raise ValueError(
+            "--all widens the scope --debt computes to every chat's debt; every other target "
+            "names its own paths already"
+        )
     if inline_ranges and (commitish or range_spec):
         raise ValueError(
             "--repo PATH@BASE..HEAD names its own range, so the run's target is already given; "
@@ -10389,12 +10819,15 @@ def cmd_run(args):
     # rather than to the workspace it read them out of.
     members = None
     inherited_seal = None
+    debt_skipped = []
     # The range's own right end, kept for the target line: what gets sealed is a commit of the
     # tool's own making, and naming that in place of the commit the caller asked about is how a
     # target line stops answering the question it exists for.
     range_head = None
+    debt_all = bool(getattr(args, "all", False))
+    debt_asker = caller_chat() or ""
     if debt_mode and len(repos) > 1:
-        members = debt_members(repos)
+        members = debt_members(repos, debt_asker, debt_all, debt_skipped)
         repo, sha = merged_snapshot_workspace(members)
         scope = []
     elif debt_mode:
@@ -10403,11 +10836,16 @@ def cmd_run(args):
                 f"{repo} is a merged review's workspace and owes no review of its own; name the "
                 "repositories it was built from instead"
             )
-        owed = debt_review_scope(repo)
+        owed, left_out = debt_scope(repo, debt_asker, debt_all)
+        if left_out:
+            debt_skipped.append(debt_skipped_line(repo, left_out))
         if not owed:
             raise ValueError(
-                f"nothing in {repo} is in review debt: every path an artifact holds stands at the "
-                "content it recorded, and the journals name no other. There is no review to run"
+                f"nothing in {repo} is in review debt for this chat: "
+                + (debt_skipped_line(repo, left_out) if left_out else
+                   "every path an artifact holds stands at the content it recorded, and the "
+                   "journals name no other")
+                + ". There is no review to run"
             )
         scope = [path for path, _ in owed]
         sha = debt_snapshot_commit(repo, owed)
@@ -10485,6 +10923,8 @@ def cmd_run(args):
         (repo, sha, [] if debt_mode else scope, worktree_mode and not range_mode)
     ]
     announce_review_target(repo, sha, scope, members, head_label=range_head)
+    for line in debt_skipped:
+        print(line, file=sys.stderr)
     reviews_path = state_dir() / "reviews.jsonl"
     # The corpus that picks `--auto` cells and prices how long they take, and it is the tool's
     # own reviews even when this run carries a lens: a cell is chosen for how it performs at
@@ -12266,6 +12706,7 @@ def main():
     review.add_argument("commitish", nargs="?")
     review.add_argument("--worktree", action="store_true")
     review.add_argument("--debt", action="store_true", help=DEBT_FLAG_HELP)
+    review.add_argument("--all", action="store_true", help=DEBT_ALL_FLAG_HELP)
     review.add_argument("--range", metavar="A..B", help=RANGE_FLAG_HELP)
     review.add_argument("--repo", action="append", metavar="PATH", help=REPO_FLAG_HELP)
     review.add_argument("--tier", choices=REVIEW_TIERS, required=True)
@@ -12333,6 +12774,16 @@ def main():
     delivery.add_argument("--session", default="", metavar="ID", required=True,
                           help="The chat whose runs to answer for")
     delivery.set_defaults(func=cmd_pending_delivery)
+
+    settle = subparsers.add_parser(
+        "settle-delivery",
+        help="Queue every deliverable round no ledger names back to its launching chat, or write "
+             "it off where that chat's transcript is gone",
+    )
+    settle.add_argument(
+        "--dry-run", action="store_true", help="Print the split without writing a mark",
+    )
+    settle.set_defaults(func=cmd_settle_delivery)
 
     fixes = subparsers.add_parser(
         "fixes", help="Record whether a triaged round's confirmed findings were fixed"
@@ -12493,6 +12944,10 @@ def main():
     )
     doctor_mode.add_argument(
         "--uninstall-agent", action="store_true", help="Remove that collector, plist and wrapper",
+    )
+    doctor_mode.add_argument(
+        "--lapsed", action="store_true",
+        help="List instead the rounds written off as undeliverable, with the instant each was",
     )
     doctor.set_defaults(func=cmd_doctor)
     lens = subparsers.add_parser(
