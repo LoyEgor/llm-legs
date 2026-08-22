@@ -515,6 +515,80 @@ persist_run_files() {
   } >"$directory/files.tmp.$$" 2>/dev/null &&
     mv -f "$directory/files.tmp.$$" "$directory/files" 2>/dev/null ||
     rm -f "$directory/files.tmp.$$" 2>/dev/null
+  # After the listing and never before it: what this reads out of the record is the record this
+  # call just wrote, and the paths it must not claim are the ones standing in it.
+  record_workdir_dirt "$directory" "$workdir"
+  return 0
+}
+
+# The uncommitted paths of the repository the workdir belongs to, one per line, spelled against
+# that repository's top — which is what `--porcelain` answers in, whatever subdirectory the run was
+# launched from. Untracked files are listed individually (`-uall`): a file the run created and
+# nothing tracks is exactly the work that reaches no other record at all.
+#
+# Nonzero where git could not answer at all, never an empty answer: read as a clean tree, a status
+# that failed at launch makes every file Egor already had open content this run gained.
+workdir_dirty_paths() { # workdir
+  local answer
+  [ -n "${1:-}" ] && [ "$1" != null ] || return 1
+  answer=$(git -C "$1" status --porcelain --no-renames -uall -z 2>/dev/null |
+    tr '\0' '\n' | cut -c4- | sed '/^$/d' | sort -u; exit "${PIPESTATUS[0]}") || return 1
+  [ -z "$answer" ] || printf '%s\n' "$answer"
+}
+
+# The run's own listing, spelled against the repository TOP the way the dirt snapshot is. The
+# listing answers in paths relative to the WORKDIR, so subtracted as it stands from a top-relative
+# set it matches nothing at all for a run launched one directory in, and every path the run's own
+# tracker named is recorded a second time as owed by nobody.
+listing_top_paths() { # directory top workdir
+  local rel=${3%/}
+  case "$rel" in
+    "$2"/*) rel=${rel#"$2"/} ;;
+    *) rel='' ;;
+  esac
+  grep -v '^WORKDIR: \|^UNKNOWN: \|^PARTIAL: ' "$1/files" 2>/dev/null |
+    awk -v rel="$rel" -v top="$2/" '
+      !NF { next }
+      substr($0, 1, 1) == "/" { if (index($0, top) == 1) print substr($0, length(top) + 1); next }
+      { print (rel == "" ? $0 : rel "/" $0) }' | sort -u
+}
+
+# What this run's repository gained uncommitted content on while it ran, for the readers that price
+# review debt. A worker working through the SHELL — `sed -i`, a redirect, a heredoc — leaves no
+# editor tool call in its transcript and no journal entry anywhere, so that work is in no file
+# list, in no journal and under no artifact: a repository-wide debt question answered `none` over
+# two rewritten files, and a merged review scoped straight past them (live case 2026-08-21).
+#
+# Written ONLY where the run itself says its own list cannot be complete. A run whose transcript
+# answered for every edit it made has named its work already, and the rest of a shared checkout's
+# dirt is a co-tenant's — claimed here it would be this run's evidence for somebody else's file.
+#
+# Bounded twice over, because `git status` answers for the whole checkout and parallel agents share
+# it: the paths already uncommitted when the run STARTED are dropped (that is Egor's or another
+# chat's work, recorded wherever it was recorded), and so are the paths the run's own tracker named
+# (they carry an owner and are priced through it). What is left is content that changed inside this
+# run's window and that nothing on this machine attributes to anyone — which is exactly how every
+# reader of this file prices it: as owed by nobody, never as the launcher's.
+#
+# No floor on record, no snapshot: the guard missing and the tree clean at launch are the same
+# empty set, and taken for the second the dirt of everyone working beside this run is claimed here.
+record_workdir_dirt() { # directory workdir
+  local directory="$1" workdir="$2" top gained
+  grep -q '^UNKNOWN: \|^PARTIAL: ' "$directory/files" 2>/dev/null || return 0
+  [ -f "$directory/dirty-before" ] || return 0
+  top=$(git -C "$workdir" rev-parse --show-toplevel 2>/dev/null) || return 0
+  [ -n "$top" ] || return 0
+  gained=$(comm -23 \
+    <(comm -23 <(workdir_dirty_paths "$workdir") \
+                <(sort -u "$directory/dirty-before" 2>/dev/null)) \
+    <(listing_top_paths "$directory" "$top" "$workdir"))
+  [ -n "$gained" ] || [ -f "$directory/dirty" ] || return 0
+  { printf 'WORKDIR: %s\n' "$top"
+    [ -z "$gained" ] || printf '%s\n' "$gained"
+    grep -v '^WORKDIR: ' "$directory/dirty" 2>/dev/null; } |
+    awk 'NR == 1 || !seen[$0]++' >"$directory/dirty.tmp.$$" 2>/dev/null &&
+    mv -f "$directory/dirty.tmp.$$" "$directory/dirty" 2>/dev/null ||
+    rm -f "$directory/dirty.tmp.$$" 2>/dev/null
   return 0
 }
 
@@ -769,6 +843,12 @@ start_run() {
     ''|.|..|*[!A-Za-z0-9._-]*) ;;
     *) printf '%s\n' "$CLAUDE_CODE_SESSION_ID" >"$directory/launcher" ;;
   esac
+  # What was already uncommitted here before this run touched anything. It is the floor the dirt
+  # snapshot at the end is measured against: without it, every file Egor or a co-tenant chat had
+  # open would be evidence produced by whichever run happened to finish beside them.
+  workdir_dirty_paths "$workdir" >"$directory/dirty-before.tmp.$$" 2>/dev/null &&
+    mv -f "$directory/dirty-before.tmp.$$" "$directory/dirty-before" 2>/dev/null ||
+    rm -f "$directory/dirty-before.tmp.$$" 2>/dev/null
 
   supervisor_body='ticks=0
 while [ ! -e "$2/.ready" ]; do

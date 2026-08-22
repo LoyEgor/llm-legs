@@ -1024,6 +1024,113 @@ assert grep -qx 'bin/recorded' "$RUN_DIR/files"
 assert grep -q '^PARTIAL: the run also ran shell commands' "$RUN_DIR/files"
 assert grep -q '^RUN-FILES-PARTIAL: the run also ran shell commands' <<<"$("$RUNNER" report "$RUN_ID")"
 
+# What the run's own repository gained uncommitted content on while it ran — the only evidence a
+# shell edit leaves anywhere. Nothing records `sed -i` as a tool call, so a file rewritten that way
+# is in no listing, in no journal and under no artifact, and every standing-debt reader answered
+# `none` over it (live case 2026-08-21).
+clear_stub
+DIRT_REPO="$WORK/dirt-repo"
+mkdir -p "$DIRT_REPO/bin" "$DIRT_REPO/tests"
+git -C "$DIRT_REPO" init -q .
+printf 'original\n' >"$DIRT_REPO/bin/shell-edited"
+printf 'original\n' >"$DIRT_REPO/tests/tracked-by-the-editor"
+printf 'original\n' >"$DIRT_REPO/bin/the-co-tenant-was-already-editing-this"
+git -C "$DIRT_REPO" add -A >/dev/null
+git -C "$DIRT_REPO" -c user.email=t@t -c user.name=t commit -qm base >/dev/null
+# Somebody else's live work, uncommitted BEFORE this run existed. The floor the snapshot is taken
+# against, or every file Egor had open becomes evidence produced by whichever run finished beside it.
+printf 'egor was here\n' >>"$DIRT_REPO/bin/the-co-tenant-was-already-editing-this"
+DIRT_TOP=$(cd "$DIRT_REPO" && pwd -P)
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+{
+  tool_call Edit file_path "$DIRT_TOP/tests/tracked-by-the-editor"
+  tool_call Bash command 'sed -i "" s/original/rewritten/ bin/shell-edited'
+} >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+export CLAUDE_CODE_SESSION_ID=chat-abc
+start_ok claudeb --workdir "$DIRT_REPO"
+# The stub never runs the worker's commands, so the shell edit and the editor call are made here —
+# what is under test is which of them the record claims, not that a CLI can write a file.
+printf 'rewritten\n' >"$DIRT_REPO/bin/shell-edited"
+printf 'rewritten\n' >"$DIRT_REPO/tests/tracked-by-the-editor"
+printf 'brand new\n' >"$DIRT_REPO/bin/created-through-a-redirect"
+mkdir -p "$DIRT_REPO/notes"
+printf 'brand new\n' >"$DIRT_REPO/notes/inside-an-untracked-directory"
+assert await_done
+assert test "$(head -n1 "$RUN_DIR/dirty")" = "WORKDIR: $DIRT_TOP"
+assert grep -qx 'bin/shell-edited' "$RUN_DIR/dirty"
+assert grep -qx 'bin/created-through-a-redirect' "$RUN_DIR/dirty"
+# A file under a directory git has never tracked: named only with -uall, and reported as the bare
+# directory otherwise — which is no path any reader of this record can price.
+assert grep -qx 'notes/inside-an-untracked-directory' "$RUN_DIR/dirty"
+assert_fails grep -qx 'notes/' "$RUN_DIR/dirty"
+# Already dirty before the run began: a co-tenant's, and this run has no evidence about it.
+assert_fails grep -qx 'bin/the-co-tenant-was-already-editing-this' "$RUN_DIR/dirty"
+# The tracker named this one, so it is priced through the owner the listing carries; repeated here
+# it would be one path claimed twice, once with an owner and once without.
+assert_fails grep -qx 'tests/tracked-by-the-editor' "$RUN_DIR/dirty"
+assert grep -qx 'tests/tracked-by-the-editor' "$RUN_DIR/files"
+
+# A run whose transcript answered for every edit it made has named its work already. The rest of a
+# shared checkout's dirt is somebody else's, and a snapshot of it here is this run's record
+# vouching for another chat's file.
+clear_stub
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+tool_call Edit file_path "$DIRT_TOP/tests/tracked-by-the-editor" \
+  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+start_ok claudeb --workdir "$DIRT_REPO"
+printf 'and again\n' >"$DIRT_REPO/bin/somebody-elses-file"
+assert await_done
+assert test "$(grep -c '^PARTIAL: ' "$RUN_DIR/files")" -eq 0
+assert test ! -e "$RUN_DIR/dirty"
+
+# A run launched in a SUBDIRECTORY still records its repository's own spelling of every path:
+# `--porcelain` answers against the repository top whatever directory it was asked from, and
+# anchored on the workdir instead every path would resolve one level deep and price nothing.
+clear_stub
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+{
+  tool_call Bash command 'sed -i "" s/rewritten/again/ bin/shell-edited'
+  tool_call Edit file_path "$DIRT_TOP/tests/named-from-a-subdirectory"
+} >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+start_ok claudeb --workdir "$DIRT_REPO/tests"
+printf 'from a subdirectory\n' >"$DIRT_REPO/bin/edited-from-a-subdirectory"
+printf 'from a subdirectory\n' >"$DIRT_REPO/tests/named-from-a-subdirectory"
+assert await_done
+assert test "$(head -n1 "$RUN_DIR/dirty")" = "WORKDIR: $DIRT_TOP"
+assert grep -qx 'bin/edited-from-a-subdirectory' "$RUN_DIR/dirty"
+# And the listing still bounds the snapshot from one directory in: the two are spelled against
+# different anchors, so subtracted in the listing's own spelling every path the run's own tracker
+# named is recorded here a second time with no owner at all.
+assert grep -qx 'named-from-a-subdirectory' "$RUN_DIR/files"
+assert_fails grep -qx 'tests/named-from-a-subdirectory' "$RUN_DIR/dirty"
+
+# The floor and a clean tree are the same empty set, so a floor git could not answer for is written
+# nowhere at all and the snapshot refuses to run without one: measured against nothing, every file
+# Egor and every co-tenant chat had open is content this run gained.
+clear_stub
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+tool_call Bash command 'sed -i "" s/again/once more/ bin/shell-edited' \
+  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+start_ok claudeb --workdir "$DIRT_REPO"
+assert test -e "$RUN_DIR/dirty-before"
+rm -f "$RUN_DIR/dirty-before"
+printf 'nobody measured the floor\n' >"$DIRT_REPO/bin/without-a-floor"
+assert await_done
+assert test ! -e "$RUN_DIR/dirty"
+
+# A workdir in no repository has no dirty set to take, and the run says nothing rather than
+# guessing.
+clear_stub
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+tool_call Bash command 'sed -i "" s/a/b/ somewhere' \
+  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+start_ok claudeb
+assert await_done
+assert grep -q '^PARTIAL: ' "$RUN_DIR/files"
+assert test ! -e "$RUN_DIR/dirty"
+assert test ! -e "$RUN_DIR/dirty-before"
+unset CLAUDE_CODE_SESSION_ID
+
 # A failed run wrote whatever it wrote before it died, and that is the launching chat's work too.
 clear_stub
 export STUB_CODE=9 STUB_ERROR='plain failure'

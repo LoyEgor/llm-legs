@@ -1680,6 +1680,22 @@ assert doc_has 'Worker files reach the launching chat'
 assert doc_has 'whose first line is `WORKDIR: <dir>`'
 assert doc_has '`<run-dir>/worker-session`'
 assert doc_has '`<run-dir>/noticed`'
+# The last channel a shell edit can reach a reader through: the run's own workdir dirt, bounded by
+# what was already uncommitted at launch and by what the listing already names. One spelling across
+# the writer and its reader, and one rule about what it may claim — evidence of content, never of
+# authorship — or a snapshot of a shared checkout is read as one chat's work.
+assert grep -Fq 'mv -f "$directory/dirty-before.tmp.$$" "$directory/dirty-before"' "$WORKER_RUN"
+# The floor exists or nothing is claimed: an empty file is what a clean tree at launch looks like,
+# so a git that could not answer must leave none at all.
+assert grep -Fq '[ -f "$directory/dirty-before" ] || return 0' "$WORKER_RUN"
+assert grep -Fq 'mv -f "$directory/dirty.tmp.$$" "$directory/dirty"' "$WORKER_RUN"
+assert grep -Fq 'listing="dirty"' "$REVIEWBENCH_RUNS"
+# Folded into the debt universe and NEVER into the mapping that names a launcher: a name attached
+# to a path `git status` alone knows about hands one chat a waiver over another's work.
+assert eq "$(sed -n '/^def run_record_claims/,/^def /p' "$REVIEWBENCH_RUNS" | grep -c 'dirty')" 0
+assert grep -Fq 'named = journal_paths(repo) | set(claims) | set(dirty)' "$REVIEWBENCH_RUNS"
+assert doc_has '`<run-dir>/dirty`'
+assert doc_has '`<run-dir>/dirty-before`'
 COMMIT_JOURNAL="$CLAUDE_SETUP/hooks/commit-journal.sh"
 if [ -r "$COMMIT_JOURNAL" ]; then
   # The launching chat is read off the launcher file, and every record is walked: a dead run whose
@@ -1907,6 +1923,18 @@ assert doc_has 'One resolver names every chat'
 assert doc_has '`share/chat_names.py`'
 assert grep -Fq 'from chat_names import' "$CHATFIND"
 assert grep -Fq 'from chat_names import' "$REVIEWBENCH_RUNS"
+# The shell surfaces name a chat through the same resolver, over one entry point rather than a
+# reading of their own: a hook that scanned a transcript for itself is a second answer to the
+# question this row exists to keep single.
+CHATNAME="$ROOT/bin/chat-name"
+assert test -x "$CHATNAME"
+assert grep -Fq 'from chat_names import chat_name, short_session' "$CHATNAME"
+assert doc_has '`bin/chat-name`'
+COMMIT_REPORT_NAMES="$CLAUDE_SETUP/hooks/commit-report.sh"
+if [ -r "$COMMIT_REPORT_NAMES" ]; then
+  assert grep -Fq 'command -v chat-name' "$COMMIT_REPORT_NAMES"
+  assert eq "$(grep -c 'aiTitle\|customTitle\|nameSource' "$COMMIT_REPORT_NAMES")" 0
+fi
 # The harness placeholder is refused in exactly one place, and neither consumer reads that store
 # for itself — a second reader is a name he has never seen, on a surface that swears it is his.
 assert grep -Fq 'DERIVED_NAME_SOURCE = "derived"' "$CHATNAMES"

@@ -6373,9 +6373,11 @@ sr_worker_runs.mkdir()
 os.environ["WORKER_RUN_DIR"] = str(sr_worker_runs)
 
 
-def sr_worker_run(run_id, launcher, lines, journaled=False, worker=None):
+def sr_worker_run(run_id, launcher, lines, journaled=False, worker=None, dirty=None,
+                  finished=False):
     """One run record the way `worker-run` writes it: the launching chat beside the file list its
-    attempts produced, and the worker's own session where the vendor named one.
+    attempts produced, the worker's own session where the vendor named one, and the workdir dirt
+    the run gained where its own list says it cannot be complete.
     """
     directory = sr_worker_runs / run_id
     directory.mkdir()
@@ -6385,6 +6387,10 @@ def sr_worker_run(run_id, launcher, lines, journaled=False, worker=None):
         (directory / "files").write_text("\n".join(lines) + "\n")
     if worker is not None:
         (directory / "worker-session").write_text(worker + "\n")
+    if dirty is not None:
+        (directory / "dirty").write_text("\n".join(dirty) + "\n")
+    if finished:
+        (directory / "exit_code").write_text("0\n")
     if journaled:
         (directory / "journaled").write_text("")
     return directory
@@ -7167,6 +7173,97 @@ def sr_split(*paths, session="chat-1", repo=None):
     assert rc == 0, rc
     return out.getvalue().strip()
 
+
+# --- the work a shell edit leaves nowhere else ------------------------------------------------
+# A worker working through the shell — `sed -i`, a redirect, a heredoc — writes no editor tool call
+# into its transcript, so its files reach the run listing, the journals and the artifacts alike as
+# nothing at all. Asked about such a path by name the tool priced it correctly the whole time;
+# asked what this repository owes, it answered over a universe those files were in no store of, and
+# a merged panel scoped straight past two rewritten files (live case 2026-08-21). The run's own
+# workdir dirt is the only record that they changed.
+sr_shell_dirt = sr_store()
+sr_clear_journals()
+(sr_repo / "src" / "shell-edited.py").write_text("one\ntwo\n")
+assert sr_answer("src/shell-edited.py") == "debt 1 other"
+assert "src/shell-edited.py" not in sr_answer(listing=True).splitlines()
+sr_dirt_run = sr_worker_run(
+    "20260101T1400Z-dirt", "chat-1",
+    [f"WORKDIR: {sr_repo}", "PARTIAL: the run also ran shell commands"],
+    dirty=[f"WORKDIR: {sr_repo}", "src/shell-edited.py"], finished=True,
+)
+assert "src/shell-edited.py" in sr_answer(listing=True).splitlines()
+# The review a `--debt` round runs is over exactly that list, and a scope that cannot reach the
+# path is the same silence one directory further on.
+assert "src/shell-edited.py" in dict(rb.debt_review_scope(sr_repo)), rb.debt_review_scope(sr_repo)
+# Owned by NOBODY, and that is the whole of what the snapshot may claim: `git status` answers for a
+# shared checkout, so a name attached here would hand the launcher a waiver over whatever a
+# co-tenant happened to have open. Anonymous debt is answerable by whoever looks at it;
+# misattributed debt is answered by the wrong chat or by no one.
+assert sr_split("src/shell-edited.py", session="chat-1") == "split 0 0 2"
+assert sr_split("src/shell-edited.py", session="chat-2") == "split 0 0 2"
+assert "src/shell-edited.py" not in rb.session_run_paths(sr_repo, "chat-1")
+assert "src/shell-edited.py" not in rb.foreign_run_claims(sr_repo, "chat-2")
+# A co-tenant's own dirt lands in the very same `git status`, and the store that names an owner for
+# it outranks the snapshot that names none: reported as nobody's, work whose author is written down
+# right there would go unasked for.
+(sr_repo / "src" / "cotenant-dirt.py").write_text("co\n")
+sr_journal(rb.COMMIT_JOURNAL, "chat-2", "src/cotenant-dirt.py")
+(sr_dirt_run / "dirty").write_text(
+    f"WORKDIR: {sr_repo}\nsrc/shell-edited.py\nsrc/cotenant-dirt.py\n"
+)
+assert sr_split("src/cotenant-dirt.py", session="chat-1") == "split 0 1 0"
+assert sr_split("src/cotenant-dirt.py", session="chat-2") == "split 1 0 0"
+sr_clear_journals()
+# A run still writing has a snapshot that is still moving, and priced now half a run's dirt reads
+# as the whole of it. The exit code is the run's own statement that it is over — the same evidence
+# every other reader of these records waits for.
+(sr_dirt_run / "exit_code").unlink()
+assert "src/shell-edited.py" not in sr_answer(listing=True).splitlines()
+(sr_dirt_run / "exit_code").write_text("0\n")
+# The `journaled` marker retires a run's LISTING and nothing else: no sweep will ever name a path
+# the listing never held, so the snapshot outlives it exactly as the worker-session mapping does.
+(sr_dirt_run / "journaled").write_text("")
+assert "src/shell-edited.py" in sr_answer(listing=True).splitlines()
+
+# The listing itself is a store of the same kind, and it was read for ownership while the universe
+# was built without it: a path a worker named that no journal has swept yet and no artifact ever
+# held was in no count, no `--list` and no `--debt` scope either.
+(sr_repo / "src" / "listed-by-the-run.py").write_text("listed\n")
+sr_worker_run("20260101T1500Z-listed", "chat-2",
+              [f"WORKDIR: {sr_repo}", "src/listed-by-the-run.py"])
+assert "src/listed-by-the-run.py" in sr_answer(listing=True).splitlines()
+# And it carries an owner, so it is that chat's rather than nobody's.
+assert sr_split("src/listed-by-the-run.py", session="chat-1") == "split 0 1 0"
+assert sr_split("src/listed-by-the-run.py", session="chat-2") == "split 1 0 0"
+shutil.rmtree(sr_worker_runs / "20260101T1500Z-listed")
+
+# A workdir that is a checkout of its OWN inside this one — the in-repo worktree convention
+# `<repo>/.claude/worktrees/<name>` — reads as this repository's by spelling alone. The journals
+# never crossed a checkout to reach it, each holding the paths of one git dir, and folded in here
+# another tree's files (which this repository's git does not track at all) are counted as this
+# repository's debt and a `--debt` round is scoped over paths its panel can never read.
+sr_nested = sr_repo / ".claude" / "worktrees" / "ticket-1"
+(sr_nested / "src").mkdir(parents=True)
+(sr_nested / ".git").write_text("gitdir: %s/.git/worktrees/ticket-1\n" % sr_repo)
+(sr_nested / "src" / "another-tree.py").write_text("elsewhere\n")
+sr_nested_run = sr_worker_run(
+    "20260101T1600Z-nested", "chat-1",
+    [f"WORKDIR: {sr_nested}", "PARTIAL: the run also ran shell commands",
+     "src/named-in-another-tree.py"],
+    dirty=[f"WORKDIR: {sr_nested}", "src/another-tree.py"], finished=True,
+)
+(sr_nested / "src" / "named-in-another-tree.py").write_text("elsewhere too\n")
+sr_nested_listing = sr_answer(listing=True).splitlines()
+for sr_nested_path in ("src/another-tree.py", "src/named-in-another-tree.py"):
+    assert ".claude/worktrees/ticket-1/" + sr_nested_path not in sr_nested_listing, sr_nested_listing
+shutil.rmtree(sr_nested_run)
+shutil.rmtree(sr_repo / ".claude")
+rb.nested_working_tree.cache_clear()
+
+shutil.rmtree(sr_dirt_run)
+for sr_dirt_path in ("src/shell-edited.py", "src/cotenant-dirt.py", "src/listed-by-the-run.py"):
+    (sr_repo / sr_dirt_path).unlink()
+sr_clear_journals()
 
 sr_split_store = sr_store()
 sr_clear_journals()
