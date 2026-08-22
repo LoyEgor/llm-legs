@@ -25,6 +25,12 @@ from functools import lru_cache
 from difflib import SequenceMatcher
 from pathlib import Path
 
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "share"))
+from chat_names import (  # noqa: E402
+    chat_label, store_names, worker_run_launchers, worker_run_root, worker_session_launchers,
+)
+
 
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 OPENCODE_EFFORTS = ("low", "medium", "high")
@@ -9274,10 +9280,6 @@ def debt_members(repos):
     return members
 
 
-def worker_run_root():
-    return Path(os.environ.get("WORKER_RUN_DIR") or Path.home() / ".cache" / "claude-worker-runs")
-
-
 def run_record_paths(repo, directory):
     """The repository-relative paths a run record names, read like `commit-journal.sh` reads it: the
     `WORKDIR:` line anchors every relative path, and an `UNKNOWN:`/`PARTIAL:` line is the reason the
@@ -9360,43 +9362,6 @@ def session_run_paths(repo, session, claims=None):
     return {
         path for path, rows in (run_record_claims(repo) if claims is None else claims).items()
         if any(launcher == session for _, launcher in rows)
-    }
-
-
-def worker_session_launchers():
-    """`{worker session id: launcher session id}` off the run records, for the journal entries a
-    worker left under its OWN id.
-
-    A worker that edited through the shell alone lists no file in its record, while its own hooks
-    journaled every one of those edits — under the worker's session, which is no chat any reader
-    here would otherwise recognise, so the launcher read its own worker's work as a co-tenant's
-    (live case 2026-08-20). Unlike `run_record_claims` this reads a `journaled` record too: that
-    marker retires the run's LISTING, and nothing ever renames what the worker's session journaled.
-
-    A `--resume` run repeats one worker id across launches. Where those launches are one chat's it
-    is still that chat's author; where TWO chats resumed the same worker session, nothing here
-    divides its entries between them, and handing every entry to both hands each chat a waiver
-    over the other's work — so an ambiguous id maps to nobody and its entries stay the worker's
-    own. Each launcher keeps its own run's LISTED files through `run_record_claims`, which is
-    per-run and never ambiguous.
-    """
-    mapping = {}
-    try:
-        directories = sorted(worker_run_root().iterdir())
-    except OSError:
-        return {}
-    for directory in directories:
-        try:
-            launcher = (directory / "launcher").read_text().strip()
-            workers = (directory / "worker-session").read_text().split()
-        except OSError:
-            continue
-        if not launcher:
-            continue
-        for worker in workers:
-            mapping.setdefault(worker, set()).add(launcher)
-    return {
-        worker: next(iter(owners)) for worker, owners in mapping.items() if len(owners) == 1
     }
 
 
@@ -9650,6 +9615,12 @@ def cmd_waive(args):
     authors = debt_path_authors(repo, debt)
     claims = foreign_run_claims(repo, session)
     mine = session_run_paths(repo, session)
+    # Both whole-store readings once for the whole refusal: named per path, every path in debt
+    # would walk the run records and re-read every session file again.
+    launchers, store = worker_run_launchers(), store_names()
+
+    def name_of(owner):
+        return chat_label(owner, launchers=launchers, store=store)
 
     def foreign_owner(path):
         """Who else's this path is, or None where this chat is one of its owners. Ownership is the
@@ -9660,9 +9631,9 @@ def cmd_waive(args):
         if session in sessions or path in mine:
             return None
         if sessions:
-            return ", ".join(sorted(sessions))
+            return ", ".join(sorted({name_of(owner) for owner in sessions}))
         claim = claims.get(path)
-        return None if claim is None else f"run {claim[0]}, launched by {claim[1]}"
+        return None if claim is None else f"run {claim[0]}, launched by {name_of(claim[1])}"
 
     if explicit:
         foreign = {
@@ -9672,8 +9643,8 @@ def cmd_waive(args):
         if foreign:
             named = "; ".join(f"{path} ({owner})" for path, owner in sorted(foreign.items()))
             print(
-                f"waive: refused — this chat ({session}) is not who the record names for "
-                f"{named}. A waiver signs for the chat that owns the work, so those paths are "
+                f"waive: refused — this chat ({name_of(session)}) is not who the record names "
+                f"for {named}. A waiver signs for the chat that owns the work, so those paths are "
                 "theirs to waive or to review."
             )
             return 1
@@ -9682,8 +9653,8 @@ def cmd_waive(args):
         if not debt:
             print(
                 f"waive: refused — every path in this repository's debt belongs to another chat, "
-                f"not to this one ({session}), and a waiver naming no path would settle their "
-                "work under it. Name what you are not reviewing with --paths."
+                f"not to this one ({name_of(session)}), and a waiver naming no path would "
+                "settle their work under it. Name what you are not reviewing with --paths."
             )
             return 1
     locks = debt_locks(repo, debt)

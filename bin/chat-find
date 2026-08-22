@@ -11,11 +11,18 @@ import argparse
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import time
 from datetime import datetime, timezone
+from functools import lru_cache
+
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "share"))
+from chat_names import (  # noqa: E402
+    HEADLESS_VIA, NAME_LINE_MAX, NAME_PATTERNS, chat_name, names_by_path, note_name,
+    searcher, split_hit, store_names, worker_run_launchers,
+)
 
 HIS_CORPUS = os.path.expanduser("~/.claude/projects")
 ROOT = os.environ.get("CHAT_FIND_ROOT") or HIS_CORPUS
@@ -29,7 +36,6 @@ MAX_HITS_PER_FILE = 200
 CACHE = os.environ.get("CHAT_FIND_CACHE") or os.path.expanduser(
     "~/.claude-profiles/.claudeb/chat-recent-cache.json")
 CACHE_VERSION = 4
-ARGV_ROOM = 128 * 1024
 # A transcript can end with megabytes of tool output after the last word spoken,
 # so the backward scan grows until it finds speech instead of trusting one window.
 TAIL_WINDOWS = (512 * 1024, 4 * 1024 * 1024, 32 * 1024 * 1024)
@@ -44,17 +50,6 @@ PROFILE_OK = re.compile(r"^[A-Za-z0-9._-]+$")
 # A `! command` he typed is stored wrapped in its own tags; quoted back with them
 # it reads as markup rather than as the line he typed.
 BANG = re.compile(r"<bash-input>(.*?)</bash-input>", re.S)
-# Chat names live in the transcript as their own tiny events: one he typed
-# ("custom-title") and one the model guessed ("ai-title"). They are matched as
-# extra patterns of the single search pass, so naming costs no second scan.
-NAME_PATTERNS = ('"custom-title"', '"ai-title"')
-NAME_LINE_MAX = 8 * 1024
-# A worker, bench or subagent run is not a chat: it was launched BY one to carry out
-# an errand, holds no conversation he could resume, and these outnumber real chats by
-# an order of magnitude — so listing them answers with the errand instead of with the
-# chat that sent it. Only a positive entrypoint hides a transcript; ones written
-# before the field carry none at all.
-HEADLESS_VIA = "sdk-cli"
 
 
 def die(message):
@@ -149,38 +144,6 @@ def maybe_speech(raw, include_all):
     return b'"user"' in raw or b'"assistant"' in raw
 
 
-def split_hit(raw):
-    """Split a matcher line into (path, json payload).
-
-    Anchored on ":{" rather than the first colon so a path containing one still
-    parses; transcript slugs cannot, but --root is free to point anywhere.
-    """
-    at = raw.find(b":{")
-    if at < 0:
-        return None, None
-    return raw[:at].decode("utf-8", "replace"), raw[at + 1:]
-
-
-def searcher():
-    """(argv, executable) for the fastest available matcher.
-
-    On transcripts — multi-megabyte JSON lines — ripgrep beats BSD grep by two
-    orders of magnitude (0.3s vs 40s over the corpus). There is usually no rg on
-    PATH here, but Claude Code carries one inside its own binary and serves it
-    when argv[0] is "rg", which is exactly what `executable=` lets us do.
-    """
-    real = shutil.which("rg")
-    if real:
-        return ["rg", "-g", "*.jsonl", "--no-heading", "--no-line-number", "--no-messages"], real
-    for candidate in (os.environ.get("CLAUDE_CODE_EXECPATH"),
-                      os.path.expanduser("~/.local/bin/claude"),
-                      shutil.which("claude")):
-        if candidate and os.path.exists(candidate):
-            return ["rg", "-g", "*.jsonl", "--no-heading", "--no-line-number", "--no-messages"], candidate
-    grep = shutil.which("grep")
-    return ["grep", "-r", "--include=*.jsonl"], grep
-
-
 def scan_matches(terms, include_all, root):
     """One streaming pass over the corpus, reduced to per-file match state.
 
@@ -250,17 +213,23 @@ def scan_matches(terms, include_all, root):
     proc.stdout.close()
     if proc.wait() not in (0, 1):
         die("search failed (%s exited %d)" % (argv[0], proc.returncode))
-    for path, name in names.items():
-        text = name["custom"] or name["ai"]
+    # Naming classifies a transcript the way main() does — the tail's entrypoint first, the
+    # matched line's only where the tail has none. Off the matched line alone, a run whose
+    # errand talked about anything but itself would be named by the title of that errand.
+    for path, state in found.items():
+        state["via"] = (last_facts(path) or {}).get("via") or state["via"]
+    display = resolved_names(names, found)
+    for path, text in display.items():
         low = text.lower()
         hit = [t for t in lowered if t in low]
         if not hit:
             continue
         state = found.get(path)
         if state is None:
-            # A name he typed himself may stand alone as a candidate; a
-            # model-guessed one only ever decorates a chat found by its words.
-            if not name["custom"]:
+            # A name he typed himself may stand alone as a candidate; a name resolved
+            # from anywhere else — a model guess, a worker run's launching chat — only
+            # ever decorates a chat found by its words.
+            if (names.get(path) or {}).get("custom") != text:
                 continue
             # No hit, no snippet: nothing was said here, so nothing may be quoted
             # as if it had been.
@@ -268,30 +237,28 @@ def scan_matches(terms, include_all, root):
                                             "spoke": None, "capped": False, "rank": -1,
                                             "via": None})
         state["terms"].update(hit)
-    return found, names
+    return found, display
 
 
-def note_name(names, raw):
-    """Record one chat-name event, reporting whether the line was one.
+def resolved_names(names, found):
+    """path -> the name that transcript may be shown under, everything nameless left out.
 
-    The last name of each kind in a transcript wins. False means the line is not
-    a name event, so the caller goes on matching it as conversation.
+    Every name this tool prints or matches comes through here, so a worker run answers with
+    the chat that launched it and never with a name of its own — one he has never seen.
     """
-    path, payload = split_hit(raw)
-    if payload is None:
-        return False
-    try:
-        entry = json.loads(payload.decode("utf-8", "replace"))
-    except ValueError:
-        return False
-    key = {"custom-title": "custom", "ai-title": "ai"}.get(entry.get("type"))
-    if not key:
-        return False
-    text = entry.get("customTitle") if key == "custom" else entry.get("aiTitle")
-    if not isinstance(text, str) or not text.strip():
-        return True
-    names.setdefault(path, {"custom": None, "ai": None})[key] = " ".join(text.split())[:110]
-    return True
+    launchers, store = worker_run_launchers(), store_names()
+    display = {}
+    for path in set(names) | set(found):
+        title = names.get(path) or {}
+        name = chat_name(
+            os.path.basename(path)[: -len(".jsonl")],
+            title.get("custom") or title.get("ai"),
+            headless=(found.get(path) or {}).get("via") == HEADLESS_VIA,
+            launchers=launchers, store=store,
+        )
+        if name:
+            display[path] = name
+    return display
 
 
 def snippet(text, term):
@@ -389,6 +356,7 @@ def context_tokens(usage):
     return total or None
 
 
+@lru_cache(maxsize=None)
 def last_facts(path):
     """Everything known about a chat's end, read backward from it."""
     try:
@@ -492,37 +460,6 @@ def scan_recent(root, days, cache_path, agents=False):
     return rows
 
 
-def scan_names(root, paths=None):
-    """path -> the name a chat carries, from one grep pass.
-
-    Narrowed to the chats actually being listed: naming a week of them is a pass
-    over a few hundred files instead of over every transcript ever written.
-    """
-    argv, binary = searcher()
-    if not binary or paths == []:
-        return {}
-    command = argv + ["-a", "-H", "-F"]
-    for pattern in NAME_PATTERNS:
-        command += ["-e", pattern]
-    # An all-time listing is thousands of paths, which is most of ARG_MAX on this
-    # machine; past the threshold, scanning the whole corpus is the cheap option
-    # next to an E2BIG that would abort the listing entirely.
-    if paths and sum(len(path) for path in paths) > ARGV_ROOM:
-        paths = None
-    command += ["--"] + (paths if paths else [root])
-    names = {}
-    proc = subprocess.Popen(command, executable=binary, stdout=subprocess.PIPE,
-                            stderr=subprocess.DEVNULL)
-    for raw in proc.stdout:
-        raw = raw.rstrip(b"\n")
-        if len(raw) < NAME_LINE_MAX:
-            note_name(names, raw)
-    proc.stdout.close()
-    proc.wait()
-    return {path: name["custom"] or name["ai"]
-            for path, name in names.items() if name["custom"] or name["ai"]}
-
-
 def short_model(name):
     # The release date in a model id ("claude-haiku-4-5-20251001") is width the
     # column pays for one model and nobody reads.
@@ -537,9 +474,13 @@ def report_recent(args):
     rows = scan_recent(args.root, args.days, cache_path, args.agents)
     if args.limit:
         rows = rows[: args.limit]
-    names = scan_names(args.root, [row["path"] for row in rows])
+    names = names_by_path(args.root, [row["path"] for row in rows])
+    launchers, store = worker_run_launchers(), store_names()
     for row in rows:
-        row["name"] = names.get(row["path"])
+        title = names.get(row["path"]) or {}
+        row["name"] = chat_name(row["session"], title.get("custom") or title.get("ai"),
+                                headless=row.get("via") == HEADLESS_VIA, launchers=launchers,
+                                store=store)
     if args.json:
         json.dump(rows, sys.stdout, ensure_ascii=False)
         sys.stdout.write("\n")
@@ -553,8 +494,8 @@ def report_recent(args):
             (" ⎇ " + row["branch"]) if row.get("branch") else "",
             short_model(row.get("model")),
             ("%dk" % (row["ctx"] // 1000)) if row.get("ctx") else "-",
-            row.get("name") or row.get("text") or ""))
-        print("  " + row["session"])
+            row.get("text") or row.get("name") or ""))
+        print("  " + row["session"] + ("  " + row["name"] if row.get("name") else ""))
 
 
 def hidden_note(headless):
@@ -652,10 +593,8 @@ def main():
         print("LAST %s (%s) · %s · %s" % (
             when.strftime("%Y-%m-%d %H:%M"), ago(when, now), tally,
             ",".join(sorted(state["terms"]))))
-        name = names.get(path) or {}
-        chat_name = name.get("custom") or name.get("ai")
-        if chat_name:
-            print("  name:        " + chat_name)
+        if names.get(path):
+            print("  name:        " + names[path])
         if title:
             print("  opened with: " + title)
         if state["snippet"]:

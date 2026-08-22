@@ -6788,6 +6788,26 @@ sr_rc, sr_said = sr_waive(reason="not mine")
 assert sr_rc == 1 and "--paths" in sr_said and "chat-3" in sr_said, (sr_rc, sr_said)
 sr_rc, sr_said = sr_waive("src/a.py", reason="not mine, said out loud")
 assert sr_rc == 1 and "src/a.py" in sr_said and "chat-2" in sr_said, (sr_rc, sr_said)
+# The chat the journals name and the chat being refused both come back as names, and a chat with
+# no name of its own stays the id there is nothing better than. A session id is the on-disk grammar
+# and nothing Egor has ever seen: told his work belongs to `chat-2` he cannot tell which
+# conversation to go back to, while the name Claude Code gave it stands in his tab title.
+sr_named_chat = fixture_home / ".claude-profiles" / "com" / "projects" / "-tmp-proj"
+sr_named_chat.mkdir(parents=True, exist_ok=True)
+(sr_named_chat / "chat-2.jsonl").write_text(
+    json.dumps({"type": "ai-title", "aiTitle": "the owner chat", "sessionId": "chat-2"}) + "\n"
+)
+(sr_named_chat / "chat-3.jsonl").write_text(
+    json.dumps({"type": "ai-title", "aiTitle": "the asking chat", "sessionId": "chat-3"}) + "\n"
+)
+sr_rc, sr_said = sr_waive("src/a.py", reason="not mine, said out loud")
+assert sr_rc == 1 and "the owner chat" in sr_said and "the asking chat" in sr_said, sr_said
+sr_rc, sr_said = sr_waive(reason="not mine")
+assert sr_rc == 1 and "the asking chat" in sr_said and "chat-3" not in sr_said, sr_said
+(sr_named_chat / "chat-3.jsonl").unlink()
+sr_rc, sr_said = sr_waive("src/a.py", reason="not mine, said out loud")
+assert sr_rc == 1 and "this chat (chat-3)" in sr_said, sr_said
+(sr_named_chat / "chat-2.jsonl").unlink()
 # One foreign path refuses the whole waiver: a partial one records a decision the caller did not
 # make about the paths it dropped.
 sr_journal(rb.COMMIT_JOURNAL, "chat-3", "src/blob.bin")
@@ -7047,6 +7067,15 @@ sr_theirs_only = sr_store()
 assert sr_answer("src/a.py") == "debt 1 other"
 sr_rc, sr_said = sr_waive("src/a.py", reason="not mine at all")
 assert sr_rc == 1 and "20260101T0800Z-theirs" in sr_said and "chat-2" in sr_said, (sr_rc, sr_said)
+# And a run record's launcher is named the same way (share/chat_names.py), never by its raw id.
+(sr_named_chat / "chat-2.jsonl").write_text(
+    json.dumps({"type": "ai-title", "aiTitle": "make review bench simpler", "sessionId": "chat-2"})
+    + "\n"
+)
+sr_rc, sr_said = sr_waive("src/a.py", reason="not mine at all")
+assert sr_rc == 1 and "make review bench simpler" in sr_said, (sr_rc, sr_said)
+assert "chat-2" not in sr_said, sr_said
+(sr_named_chat / "chat-2.jsonl").unlink()
 (sr_worker_runs / "20260101T0800Z-theirs" / "journaled").write_text("")
 
 # A worker that edited through the shell alone lists no file in its record, while its own hooks
@@ -7068,6 +7097,16 @@ assert sr_answer("src/a.py") == "debt 1 mine"
 assert sr_answer("src/a.py", session="worker-sess-1") == "debt 1 mine"
 # To anyone else it is still somebody's, and the launcher is who they are told to ask.
 assert sr_answer("src/a.py", session="chat-3") == "debt 1 other"
+# Named, that owner is named ONCE: the worker and the chat that launched it are one conversation
+# to go back to, and printed twice they read as two chats to ask.
+(sr_named_chat / "chat-1.jsonl").write_text(
+    json.dumps({"type": "ai-title", "aiTitle": "the launching chat", "sessionId": "chat-1"}) + "\n"
+)
+os.environ["CLAUDE_CODE_SESSION_ID"] = "chat-3"
+sr_rc, sr_said = sr_waive("src/a.py", reason="not mine")
+assert sr_rc == 1 and sr_said.count("the launching chat") == 1, sr_said
+os.environ["CLAUDE_CODE_SESSION_ID"] = "chat-1"
+(sr_named_chat / "chat-1.jsonl").unlink()
 # And the launcher may waive it: refused a name of its own, the chat that ordered the work could
 # neither review it nor sign for it — the run's listing names no path to fall back on.
 assert sr_waive("src/a.py", reason="my own worker wrote it")[0] == 0

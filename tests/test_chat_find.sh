@@ -16,6 +16,14 @@ SCRIPT="$ROOT/bin/chat-find"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
+# Every store the name resolver reads points inside the work directory: his own profiles, his
+# worker run records and the resolver's cache are none of this suite's business.
+export HOME="$WORK/home"
+export CHAT_NAME_ROOTS="$WORK/projects"
+export WORKER_RUN_DIR="$WORK/runs"
+export CHAT_NAMES_CACHE="$WORK/chat-names.json"
+mkdir -p "$HOME" "$WORK/runs"
+
 asserts=0
 fail() { echo "FAIL: $*" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
@@ -106,15 +114,29 @@ QUOTED="$CORPUS/99999999-9999-9999-9999-999999999999.jsonl"
 emit "$QUOTED" "{'type':'user','cwd':'/tmp/proj','timestamp':'2026-01-16T10:00:00.000Z','toolUseResult':{'type':'custom-title'},'message':{'role':'user','content':'событие должно парситься как речь'}}"
 
 # A worker run talking about the very thing he searches for. A chat launched it to
-# carry out that errand; the errand is not a conversation he can go back to.
+# carry out that errand; the errand is not a conversation he can go back to. It
+# carries a name of its own — the errand's — and the run record names the chat that
+# sent it, which is the only name it may ever be shown under.
 WORKER="$CORPUS/dddddddd-dddd-dddd-dddd-dddddddddddd.jsonl"
 emit "$WORKER" "{'type':'user','cwd':'/tmp/proj','entrypoint':'sdk-cli','timestamp':'2026-01-28T09:00:00.000Z','message':{'role':'user','content':'TASK: почини оверлей, он моргает'}}"
+emit "$WORKER" "{'type':'ai-title','aiTitle':'Errand: наладка оверлея','sessionId':'dddddddd-dddd-dddd-dddd-dddddddddddd'}"
+mkdir -p "$WORK/runs/20260128T0900Z-worker"
+printf '77777777-7777-7777-7777-777777777777\n' >"$WORK/runs/20260128T0900Z-worker/launcher"
+printf 'dddddddd-dddd-dddd-dddd-dddddddddddd\n' >"$WORK/runs/20260128T0900Z-worker/worker-session"
 
 # A worker run whose transcript holds no speech at all — only what its tools printed.
 # The tail scan reads it back as a chat with nothing said, so the entrypoint has to
 # come off the matched line itself or the errand leaks into an --all search.
 WORKERTOOL="$CORPUS/eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee.jsonl"
 emit "$WORKERTOOL" "{'type':'user','cwd':'/tmp/proj','entrypoint':'sdk-cli','timestamp':'2026-01-28T09:30:00.000Z','message':{'role':'user','content':[{'type':'tool_result','content':'grep -n оверлей overlay.lua'}]}}"
+
+# A run nobody launched, whose MATCHED line carries no entrypoint at all — only the tail says
+# what it is. It has a title of its own, and the errand it was sent on is the one thing it may
+# never be shown under.
+LONERUN="$CORPUS/ffffffff-ffff-ffff-ffff-ffffffffffff.jsonl"
+emit "$LONERUN" "{'type':'user','cwd':'/tmp/proj','timestamp':'2026-01-28T11:00:00.000Z','message':{'role':'user','content':'пересборка стилей'}}"
+emit "$LONERUN" "{'type':'ai-title','aiTitle':'Errand: чужая пересборка','sessionId':'ffffffff-ffff-ffff-ffff-ffffffffffff'}"
+emit "$LONERUN" "{'type':'assistant','cwd':'/tmp/proj','entrypoint':'sdk-cli','timestamp':'2026-01-28T11:01:00.000Z','message':{'role':'assistant','content':[{'type':'text','text':'готово'}]}}"
 
 run() { OUT=$("$SCRIPT" --account acct --root "$WORK/projects" "$@" 2>&1); RC=$?; }
 
@@ -164,6 +186,12 @@ assert grep -q 'opened with: оверлей и тени хедера' <<<"$OUT"
 assert grep -q 'resume:      cd ' <<<"$OUT"
 run гадание
 assert grep -q 'no chat matched' <<<"$OUT"
+# A name resolved from anywhere but this transcript never conjures a row of its own: an
+# errand carries its launcher's name, and a search for that name answers with the chat and
+# not with every errand the chat ever sent.
+run --agents финальное
+assert grep -q '7777-7777' <<<"$OUT"
+assert test -z "$(grep -o 'dddd-dddd' <<<"$OUT")"
 
 # --- a message quoting a name-event marker is still conversation -------------
 run парситься
@@ -183,6 +211,18 @@ assert grep -q '1 headless run hidden' <<<"$OUT"
 run --agents оверлей
 assert grep -q 'dddd-dddd' <<<"$OUT"
 assert test -z "$(grep -o 'headless run hidden' <<<"$OUT")"
+# Shown, it is shown as the chat that launched it and never under the name the errand
+# gave itself — a name he has never seen on anything he could go back to.
+assert test "$(grep -c 'name:        Оверлей: финальное имя' <<<"$OUT")" -eq 2
+assert test -z "$(grep -o 'Errand: наладка' <<<"$OUT")"
+# And a run whose matched line says nothing about what it is stays hidden all the same, then
+# stands there under no name at all: the tail is what classifies it, here as in the listing.
+run пересборка
+assert grep -q 'no chat matched' <<<"$OUT"
+assert grep -q '1 headless run hidden' <<<"$OUT"
+run --agents пересборка
+assert grep -q 'ffff-ffff' <<<"$OUT"
+assert test -z "$(grep -o 'Errand: чужая' <<<"$OUT")"
 # the note counts only what --agents would actually reveal: a run the same --days
 # still drops is not a hidden one
 run --days 1 оверлей
@@ -243,6 +283,9 @@ assert test "$RC" -eq 0
 # every chat that spoke is listed, ordered by its last real message
 assert grep -q 'bbbb-bbbb' <<<"$OUT"
 assert grep -q '1111-1111' <<<"$OUT"
+# the name stands beside the session id, and the last real message keeps the line above it
+assert grep -q '^  77777777-7777-7777-7777-777777777777  Оверлей: финальное имя$' <<<"$OUT"
+assert grep -q 'оверлей и тени хедера$' <<<"$OUT"
 DATES=$(grep -o '^2026-[0-9-]* [0-9:]*' <<<"$OUT")
 assert test "$DATES" = "$(sort -r <<<"$DATES")"
 # the false visit still cannot pass for a fresh conversation
@@ -253,6 +296,23 @@ assert test -z "$(grep -o 'cccc-cccc' <<<"$OUT")"
 assert test -z "$(grep -o 'aaaa-aaaa' <<<"$OUT")"
 recent --agents
 assert grep -q 'aaaa-aaaa' <<<"$OUT"
+# A listed errand is its launcher's chat, and one no record names has no name at all.
+assert grep -q '^  dddddddd-dddd-dddd-dddd-dddddddddddd  Оверлей: финальное имя$' <<<"$OUT"
+assert grep -q '^  aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa$' <<<"$OUT"
+
+# --- a derived placeholder is not a name -------------------------------------
+# The harness names every unnamed chat after its working directory; he has never seen one.
+mkdir -p "$HOME/.claude-profiles/com/sessions"
+printf '{"pid":1,"sessionId":"11111111-1111-1111-1111-111111111111","name":"proj-59","nameSource":"derived"}\n' \
+  >"$HOME/.claude-profiles/com/sessions/1.json"
+# A chat the harness did NOT derive a name for is named by the record while its transcript
+# holds no title event yet — the same name his tab title carries.
+printf '{"pid":2,"sessionId":"22222222-2222-2222-2222-222222222222","name":"живой чат без события имени"}\n' \
+  >"$HOME/.claude-profiles/com/sessions/2.json"
+recent --agents --all
+assert test -z "$(grep -o 'proj-59' <<<"$OUT")"
+assert grep -q '^  22222222-2222-2222-2222-222222222222  живой чат без события имени$' <<<"$OUT"
+rm -f "$HOME/.claude-profiles/com/sessions/1.json" "$HOME/.claude-profiles/com/sessions/2.json"
 
 # --- a client-side notice dates nothing and names no model -------------------
 recent --json

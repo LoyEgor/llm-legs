@@ -1663,14 +1663,19 @@ assert grep -Fq '[ "$vendor" = claudeb ] || return 0' "$WORKER_RUN"
 # The third reader: a waiver naming no path must drop the files a co-tenant's worker run claims,
 # which it can only do by looking in the same directory the other two sweep.
 REVIEWBENCH_RUNS="$ROOT/bin/review-bench"
-rb_run_root=$(sed -n '/^def worker_run_root():/,/^$/p' "$REVIEWBENCH_RUNS" |
+CHATNAMES="$ROOT/share/chat_names.py"
+rb_run_root=$(sed -n '/^def worker_run_root():/,/^$/p' "$CHATNAMES" |
   sed -n 's|.*Path.home() / "\(.*\)" / "\(.*\)")$|\1/\2|p' | head -1)
 worker_run_root=$(grep -oE 'WORKER_RUN_DIR:-\$HOME/[^}]*' "$WORKER_RUN" | head -1 | sed 's|.*\$HOME/||')
 assert eq "$rb_run_root" '.cache/claude-worker-runs'
 assert eq "$worker_run_root" "$rb_run_root"
-assert grep -Fq 'os.environ.get("WORKER_RUN_DIR")' "$REVIEWBENCH_RUNS"
+assert grep -Fq 'os.environ.get("WORKER_RUN_DIR")' "$CHATNAMES"
 assert grep -Fq 'if not launcher or (directory / "journaled").exists():' "$REVIEWBENCH_RUNS"
-assert grep -Fq '(directory / "worker-session").read_text().split()' "$REVIEWBENCH_RUNS"
+# The launcher walk lives once (row `aw`): review-bench imports it rather than keeping a second
+# reading of the same records, which is how the two answers stayed reconcilable at all.
+assert grep -Fq '(directory / "worker-session").read_text().split()' "$CHATNAMES"
+assert eq "$(grep -c 'worker-session' "$REVIEWBENCH_RUNS")" 0
+assert grep -Fq 'worker_run_root, worker_session_launchers' "$REVIEWBENCH_RUNS"
 assert doc_has 'Worker files reach the launching chat'
 assert doc_has 'whose first line is `WORKDIR: <dir>`'
 assert doc_has '`<run-dir>/worker-session`'
@@ -1893,4 +1898,29 @@ while IFS= read -r doctor_age; do
 done <<<"$doctor_ages"
 
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the debt word the bench prints, the gate translates and the statusline speaks verbatim, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the round-size numbers that lock a waiver, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, and the two header words the bench renders, one of which is worn by a round no hook may deliver — so both of them apply one further rule over the rows of the block itself, and the one review command both repositories hand a chat, which names no paths because the mode computes its own scope, the delivery ledger the two report hooks write and the doctor only reads, and the doctor snapshot whose six class names are the menubar'"'"'s whole vocabulary) and match %s\n' "$asserts" "$DOC"
+# --- Row aw: one resolver names every chat -----------------------------------
+# A chat is shown under the name Claude Code gave it and under nothing else. Two consumers name
+# chats and a third store (the harness session records) holds a name that looks like one and is
+# not, so a second reading of any of it is how an invented name reaches Egor.
+CHATFIND="$ROOT/bin/chat-find"
+assert doc_has 'One resolver names every chat'
+assert doc_has '`share/chat_names.py`'
+assert grep -Fq 'from chat_names import' "$CHATFIND"
+assert grep -Fq 'from chat_names import' "$REVIEWBENCH_RUNS"
+# The harness placeholder is refused in exactly one place, and neither consumer reads that store
+# for itself — a second reader is a name he has never seen, on a surface that swears it is his.
+assert grep -Fq 'DERIVED_NAME_SOURCE = "derived"' "$CHATNAMES"
+assert eq "$(grep -c 'nameSource' "$CHATFIND")" 0
+assert eq "$(grep -c 'nameSource' "$REVIEWBENCH_RUNS")" 0
+# Same for the title events: one reader of `ai-title`/`custom-title`, or the two consumers can
+# disagree about what a chat is called.
+assert grep -Fq "NAME_PATTERNS = ('\"custom-title\"', '\"ai-title\"')" "$CHATNAMES"
+assert eq "$(grep -c 'aiTitle' "$CHATFIND")" 0
+assert eq "$(grep -c 'aiTitle' "$REVIEWBENCH_RUNS")" 0
+# The id a nameless chat falls back to is one length, or one surface prints a prefix another
+# reader cannot match to a session.
+chat_short=$(grep -oE '^SHORT_ID = [0-9]+' "$CHATNAMES" | grep -oE '[0-9]+')
+assert eq "$chat_short" 8
+assert doc_has 'first 8 characters'
+
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the debt word the bench prints, the gate translates and the statusline speaks verbatim, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the round-size numbers that lock a waiver, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, and the two header words the bench renders, one of which is worn by a round no hook may deliver — so both of them apply one further rule over the rows of the block itself, and the one review command both repositories hand a chat, which names no paths because the mode computes its own scope, the delivery ledger the two report hooks write and the doctor only reads, the doctor snapshot whose six class names are the menubar'"'"'s whole vocabulary, and the one resolver every surface names a chat through) and match %s\n' "$asserts" "$DOC"
