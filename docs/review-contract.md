@@ -56,6 +56,7 @@ is visibility, not blocking.
 | signal | consumer | what it changes |
 |---|---|---|
 | framed `record` block in chat | Egor | sees the review happened and what it found |
+| `review:` row in the commit frame | Egor | sees, at the commit itself, whether what just landed is unreviewed |
 | statusline review segment | Egor | spot-checks that disk truth matches the chat's claims |
 | `review-bench debt` | the gate (and through it the model) | what this repository owes a review, and whose |
 | commit-time notify (once) | the model | reminded before an unreviewed commit; decides |
@@ -201,8 +202,13 @@ reason.
   command over exactly those paths, the latter withheld with its reason when the
   debt is `locked` — and stamps a marker; the retry passes, consumes the
   marker and writes this chat's name into the debt journal. A new state re-arms
-  the notice. A commit with nothing in debt passes silently. Foreign dirty or
-  untracked paths are never priced, never mentioned, never block.
+  the notice. A commit with nothing in debt passes silently. A commit target the
+  command NAMES but neither hook can resolve — a token carrying an unexpanded
+  shell variable, a path that is no directory, or more than one directory — is
+  priced over every journal home, the call's own cwd and every directory the
+  command itself named, one notice per repository, never over that cwd alone
+  (invariant row ao). Foreign dirty or untracked paths are never priced, never
+  mentioned, never block.
 - `escalation-verdict <p1> <total>` — the one voice for round outcomes (invariant
   row af). Below thresholds: exits 1, prints nothing. Above either of the two —
   `SECOND_REVIEW_P1S=3` P1s or `SECOND_REVIEW_FINDINGS=8` findings — it exits 0

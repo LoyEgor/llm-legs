@@ -793,6 +793,36 @@ image_rc=0
 image_run --dest "$WORK/image-output/noext" --prompt badge || image_rc=$?
 assert test "$image_rc" -eq 2
 assert grep -q '^usage: codex-image ' "$IMAGE_ERR"
+# A bare trailing dot is that same nameless format, and it reads as an extension to a pattern.
+image_rc=0
+image_run --dest "$WORK/image-output/trailing." --prompt badge || image_rc=$?
+assert test "$image_rc" -eq 2
+assert grep -q '^usage: codex-image ' "$IMAGE_ERR"
+
+# A generation is billed the moment it is sent, so everything the destination alone can refuse is
+# refused before it goes out.
+mv "$IMAGE_BIN/magick" "$WORK/magick-away"
+: >"$IMAGE_CALLS"
+image_rc=0
+image_run --dest "$WORK/image-output/nomagick.png" --prompt badge --account main || image_rc=$?
+assert test "$image_rc" -eq 1
+assert grep -q 'magick is required' "$IMAGE_ERR"
+assert test ! -s "$IMAGE_CALLS"
+: >"$IMAGE_CALLS"
+image_rc=0
+image_run --dest "$WORK/image-output/nomagick.jpg" --prompt badge --account main --transparent \
+  || image_rc=$?
+assert test "$image_rc" -eq 2
+assert grep -q 'requires a .png destination' "$IMAGE_ERR"
+# A non-png destination needs it too the moment the model answers in another format, which nothing
+# here can know before the generation is spent.
+: >"$IMAGE_CALLS"
+image_rc=0
+image_run --dest "$WORK/image-output/nomagick.jpg" --prompt badge --account main || image_rc=$?
+assert test "$image_rc" -eq 1
+assert grep -q 'magick is required' "$IMAGE_ERR"
+assert test ! -s "$IMAGE_CALLS"
+mv "$WORK/magick-away" "$IMAGE_BIN/magick"
 
 IMAGE_MODE=hang
 export IMAGE_MODE
@@ -812,4 +842,4 @@ assert env CODEX_IMAGE_DEADLINE=garbage PATH="$IMAGE_PATH" TMPDIR="$IMAGE_TMPDIR
   --prompt landscape --account main >"$IMAGE_OUT" 2>"$IMAGE_ERR"
 assert grep -qx 'account=main' "$IMAGE_OUT"
 
-echo "PASS: $asserts asserts; add and shared-link trap, worker-pool exclusion (pick skips it, headless runs are refused however named, interactive and pinned runs pass, the last member goes out too, visible in list/status), list/status, quota-aware authenticated pick with main-last priority, reset credits, auth-needed cache markers, dead-token classification (short cause, no raw RPC blob) with list/status/pick honoring the marker over lying local auth.json, a transient non-auth error preserving the definite auth verdict while fresh weather on a never-marked account stays non-auth, and marker recovery only on a genuinely good probe, exact run environments/arguments, one-step profile auto-create with shared links, browser-OAuth menu login passthrough with device-auth de-advertised everywhere yet still working manually, and missing-name guard, existing-profile relaunch stays quiet, creation-only reserved-name guards, leading-hyphen and charset rejection parity, multi-account cache compatibility, remove forgets profiles including reserved legacy names and prunes the cache entry (main refused), use pin set/show/clear/refusal parity, and Codex image generation routing, prompt, account environments, rescue, generation deadline with garbage-value fallback, extensionless-dest refusal, and limits"
+echo "PASS: $asserts asserts; add and shared-link trap, worker-pool exclusion (pick skips it, headless runs are refused however named, interactive and pinned runs pass, the last member goes out too, visible in list/status), list/status, quota-aware authenticated pick with main-last priority, reset credits, auth-needed cache markers, dead-token classification (short cause, no raw RPC blob) with list/status/pick honoring the marker over lying local auth.json, a transient non-auth error preserving the definite auth verdict while fresh weather on a never-marked account stays non-auth, and marker recovery only on a genuinely good probe, exact run environments/arguments, one-step profile auto-create with shared links, browser-OAuth menu login passthrough with device-auth de-advertised everywhere yet still working manually, and missing-name guard, existing-profile relaunch stays quiet, creation-only reserved-name guards, leading-hyphen and charset rejection parity, multi-account cache compatibility, remove forgets profiles including reserved legacy names and prunes the cache entry (main refused), use pin set/show/clear/refusal parity, and Codex image generation routing, prompt, account environments, rescue, generation deadline with garbage-value fallback, destination checks made before a generation is spent, and limits"

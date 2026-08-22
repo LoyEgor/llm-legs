@@ -910,6 +910,23 @@ if test -r "$COMMIT_REPORT"; then
   assert grep -Fq 'truncation_note "$top" "$landed"' "$COMMIT_REPORT"
   assert grep -Fq 'rm -f "$snapshot_file"' "$COMMIT_REPORT"
   assert test "$(grep -c 'commit-report-last' "$COMMIT_REPORT")" -eq 0
+  # The one repository each hook SPEAKS for is derived by both through the same library reader, and
+  # by no extractor of their own: a target the command names and neither can resolve — an unexpanded
+  # `$R`, a path that is not there — answered off the session's cwd rendered a confident block about
+  # a repository where nothing happened, and armed no notice in the one the commit landed in.
+  assert grep -Fq 'rj_command_target "$cmd" "$cwd"' "$COMMIT_REPORT"
+  assert grep -Fq 'rj_command_target "$cmd" "$here"' "$FLOW_GATE"
+  assert test "$(grep -cF 'git[[:space:]]+-C[[:space:]]+' "$COMMIT_REPORT")" -eq 0
+  assert test "$(grep -cF 'git[[:space:]]+-C[[:space:]]+' "$FLOW_GATE")" -eq 0
+  assert grep -Fq 'RJ_TARGET_UNRESOLVED=1' "$CLAUDE_SETUP/hooks/lib/review-journal.sh"
+  assert grep -Fq 'if [ -n "$RJ_TARGET_UNRESOLVED" ]; then' "$COMMIT_REPORT"
+  assert grep -Fq 'if [ -n "$RJ_TARGET_UNRESOLVED" ]; then' "$FLOW_GATE"
+  # And the set they price it over is one reader too, or the gate arms a notice in a repository the
+  # report will never look for a landing in.
+  assert grep -Fq 'done < <(rj_journal_homes "$1"; rj_command_dirs "${2-}" "$1")' \
+    "$CLAUDE_SETUP/hooks/lib/review-journal.sh"
+  assert grep -Fq 'rj_target_repos "$cwd" "$cmd"' "$COMMIT_REPORT"
+  assert grep -Fq 'rj_target_repos "$here" "$cmd"' "$FLOW_GATE"
   # Both hooks scope the snapshot through the same two library readers, or the repository the gate
   # wrote down and the one the report stamps in are not the same set.
   assert grep -Fq 'done < <(rj_journal_homes "$2"; rj_command_dirs "$3" "$4")' \
@@ -1074,7 +1091,7 @@ assert eq "$rb_debt_cmd" 'REVIEW_ASKED=1 review-bench review --debt --tier T1'
 assert grep -Fq '{DEBT_REVIEW_COMMAND}) — that mode computes the ' "$REVIEWBENCH"
 assert grep -Fq 'That second review is `{DEBT_REVIEW_COMMAND}`' "$REVIEWBENCH"
 if test -r "$FLOW_GATE"; then
-  gate_debt_cmd=$(sed -n "s/^printf -v review_cmd '(cd %q && \(.*\))' .*/\1/p" "$FLOW_GATE")
+  gate_debt_cmd=$(sed -n "s/^[[:space:]]*printf -v review_cmd '(cd %q && \(.*\))' .*/\1/p" "$FLOW_GATE")
   assert eq "$gate_debt_cmd" "$rb_debt_cmd"
   gate_fork_cmd=$(sed -n 's/.*Run it as `\([^`]*\)` in each repository.*/\1/p' "$FLOW_GATE" | head -1)
   assert eq "$gate_fork_cmd" "$rb_debt_cmd"
@@ -1876,4 +1893,4 @@ while IFS= read -r doctor_age; do
 done <<<"$doctor_ages"
 
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the debt word the bench prints, the gate translates and the statusline speaks verbatim, the journal that records whose debt a commit landed, the round-size numbers that lock a waiver, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, and the two header words the bench renders, one of which is worn by a round no hook may deliver — so both of them apply one further rule over the rows of the block itself, and the one review command both repositories hand a chat, which names no paths because the mode computes its own scope, the delivery ledger the two report hooks write and the doctor only reads, and the doctor snapshot whose six class names are the menubar'"'"'s whole vocabulary) and match %s\n' "$asserts" "$DOC"
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the debt word the bench prints, the gate translates and the statusline speaks verbatim, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the round-size numbers that lock a waiver, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, and the two header words the bench renders, one of which is worn by a round no hook may deliver — so both of them apply one further rule over the rows of the block itself, and the one review command both repositories hand a chat, which names no paths because the mode computes its own scope, the delivery ledger the two report hooks write and the doctor only reads, and the doctor snapshot whose six class names are the menubar'"'"'s whole vocabulary) and match %s\n' "$asserts" "$DOC"
