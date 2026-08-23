@@ -161,23 +161,43 @@ def report_frame_header(word, width=REPORT_FRAME_WIDTH):
     return f"{'=' * left} {word} {'=' * (fill - left)}"
 
 
-REPORT_BEGIN = report_frame_header(REPORT_FRAME_WORD)
-# The only header that is not the plain word, and the only round that wears it: one whose fixing
-# pass stopped at the P1 threshold. It rides the same frame rather than a marker of its own,
-# because the review consumers narrow the header to this word: a spelling only one side knows is
-# a report Egor never sees (docs/shared-invariants.md as). A round whose pass has not answered
-# YET keeps the plain word — reading the loud one off "no fixes recorded" is what put NOT
-# FINISHED in front of Egor over a round whose fixes were landing at that moment (2026-08-20).
+# The frame word carries the run's STATE and no row below it does, so a reader who sees only the
+# header knows whether the block in front of them is finished, hung, empty or old. Every one of
+# them rides the same frame rather than a marker of its own, because the review consumers narrow
+# the header to this word: a spelling only one side knows is a report Egor never sees
+# (docs/shared-invariants.md as).
+# A round whose fixing pass STOPPED at the P1 threshold. A pass that has not answered YET keeps
+# the plain word — reading the loud one off "no fixes recorded" is what put NOT FINISHED in front
+# of Egor over a round whose fixes were landing at that moment (2026-08-20).
 REPORT_BLOCKED_WORD = f"{REPORT_FRAME_WORD} · NOT FINISHED"
-REPORT_BLOCKED_BEGIN = report_frame_header(REPORT_BLOCKED_WORD)
+# No cell completed: there is no panel behind the rows, whatever they say. A run the watchdog
+# killed states that on the `failed:` rows of the cells it killed and nowhere else — coverage is
+# the triage receipt's to answer for, and a whole panel that came back with a kill in it is
+# already NO PANEL.
+REPORT_NO_PANEL_WORD = f"{REPORT_FRAME_WORD} · NO PANEL"
+# Not about the tree in front of the reader: the block was never handed over at the moment it was
+# recorded, or the content it priced has moved since. Neither of those is a clock, and a clock was
+# the wrong question — a report read five minutes after a rewrite of the files it read is already
+# about something else, and one delivered the instant it was recorded stays current at any age. It
+# carries the run's own date, which is the only thing that says how far off it is.
+REPORT_STALE_WORD = f"{REPORT_FRAME_WORD} · STALE"
+# A panel nobody asked for by tier — an explicit `--raters` bench. It is not a review round: it
+# settles no debt and owes no fixes, so it wears a word of its own instead of the review one.
+REPORT_BENCH_WORD = "bench"
+REPORT_FRAME_WORDS = (
+    REPORT_FRAME_WORD, REPORT_BLOCKED_WORD, REPORT_NO_PANEL_WORD,
+    REPORT_STALE_WORD, REPORT_BENCH_WORD,
+)
 REPORT_END = "=" * REPORT_FRAME_WIDTH
 # What the NOT FINISHED frame owes beyond the reason on the receipt: the pass stopped, and which
-# way the round goes from there is not the fixer's to decide. It asserts no reason of its own —
+# way the round goes from there is not the fixer's to decide. `fork` hands it to the model that
+# has to act on it rather than the block spending six lines on it at Egor, who does not read it.
+# It asserts no reason of its own —
 # `--blocked` takes whichever one the pass actually had, and a fork naming the P1 threshold over
 # a round that stopped for something else tells Egor a thing nobody recorded.
 REPORT_BLOCKED_FORK = (
-    "the fixing pass stopped over the findings above, for the reason\n"
-    "on the row over this one. Which way the round goes from here —\n"
+    "the fixing pass stopped over this round's findings, for the reason\n"
+    "on its `fixes:` row. Which way the round goes from here —\n"
     "fixing them as they stand, reworking the code they cluster in,\n"
     "or cutting the scope — is Egor's decision and not the fixer's,\n"
     "and it reaches him with the P1 list and the reasoning before\n"
@@ -3107,11 +3127,16 @@ def panel_cell_history(benches):
             meta = json.loads(meta_path.read_text())
         except (OSError, ValueError, json.JSONDecodeError):
             continue
-        run_kills, run_done = {}, set()
-        for row in meta.get("rater_runs", ()):
+        run_kills, run_retry_kills, run_done = {}, {}, set()
+        rows = list(meta.get("rater_runs", ()))
+        # Which rows an in-run retry superseded: the LAST row of a spec is the cell's answer and
+        # every earlier one is an attempt it replaced (`cell_attempt_rows` reads them the same way).
+        final_index = {row.get("rater"): index for index, row in enumerate(rows)}
+        for index, row in enumerate(rows):
             key = panel_cell_key(row)
             if key is None:
                 continue
+            superseded_row = index != final_index.get(row.get("rater"))
             # A retried kill rides on whatever row the retry produced — the row itself still
             # counts as what it is (a completion feeds maxima and quiet, an error nothing).
             retried = row.get("stalled_retry_s")
@@ -3124,7 +3149,8 @@ def panel_cell_history(benches):
             if watchdog_killed(row):
                 cap = timeout_seconds_from_row(row)
                 if cap:
-                    run_kills[key] = max(cap, run_kills.get(key, cap))
+                    target = run_retry_kills if superseded_row else run_kills
+                    target[key] = max(cap, target.get(key, cap))
                 continue
             if cell_status(row) != "completed":
                 continue
@@ -3158,6 +3184,16 @@ def panel_cell_history(benches):
                 continue
             breached[key] = max(cap, breached.get(key, cap))
             kill_streaks[key] = kill_streaks.get(key, 0) + 1
+        # A cap kill the retry replaced outlives it, exactly as a stall kill does: cleared with the
+        # completion the retry produced, a cap that is merely too tight escalates on no run at all
+        # and the pair pays the same kill for ever. It raises the cap and costs no strike — the
+        # retry is the proof the cell works, and a run holding no completion for the pair has no
+        # such proof: applied there, a cell killed in the attempt AND the retry re-entered
+        # `breached` the strike loop had just popped and never returned to the floor at all.
+        for key, cap in run_retry_kills.items():
+            if key not in run_done:
+                continue
+            breached[key] = max(cap, breached.get(key, cap))
     return maxima, breached, quiet, stall_breached, kill_streaks
 
 
@@ -3359,7 +3395,7 @@ FAILURE_REASONS = (
     # Ordered by how specific the wording is, not by how often the cause occurs: a pool-empty
     # message quotes the error of the last account it tried, so any later pattern would claim it.
     ("pool empty", re.compile(r"has no \w+ account left", re.IGNORECASE)),
-    ("plan wall", re.compile(
+    ("walled", re.compile(
         r"GoUsageLimitError|limitName|usage limit|out of credits|usage balance exhaust"
         r"|402 Payment Required|Individual quota reached|RESOURCE_EXHAUSTED"
         r"|exhausted your capacity on this model|walled off while", re.IGNORECASE)),
@@ -3369,7 +3405,7 @@ FAILURE_REASONS = (
     # Kept apart from a throttle on purpose: a bare 429 is equally a spent plan, and the code
     # that stopped retiring accounts over one would be undone by a table that calls it a throttle.
     ("bare 429", re.compile(r"\b429\b")),
-    ("unparseable", re.compile(
+    ("bad output", re.compile(
         r"no parseable finding|malformed (?:Markdown|JSON)|no explicit no-issues"
         r"|did not declare a clean review|stopped before reviewing|returned empty content",
         re.IGNORECASE)),
@@ -3379,6 +3415,7 @@ FAILURE_REASONS = (
     ("permission", re.compile(r"tool required the .command. permission", re.IGNORECASE)),
     ("bad command", re.compile(r"cannot be used with", re.IGNORECASE)),
     ("stalled", re.compile(r"rater stalled", re.IGNORECASE)),
+    ("timeout", re.compile(r"timed out|timeout", re.IGNORECASE)),
     ("crashed", re.compile(
         r"rater task crashed|account lookup failed|codex_core::", re.IGNORECASE)),
     ("auth", re.compile(r"not logged in|unauthor|forbidden|\b40[13]\b", re.IGNORECASE)),
@@ -3399,11 +3436,14 @@ def failure_reason(stderr):
     return "unclassified" if text.strip() else "no output"
 
 
-# The two answers that name no cause, so a caller with anything else to say should say it.
-UNNAMED_REASONS = ("unclassified", "no output")
-
-
-STATUS_REASONS = {"not_run": "not run", "timed_out": "timeout", "model_mismatch": "mismatch"}
+# One vocabulary for every surface that names a cause, the report first: a word spelled here and
+# respelled anywhere else is a cause the reader has to translate. The kills say what ended them —
+# our cap or our silence watch — because a cell the panel stopped and one that died on its own are
+# not the same news.
+STATUS_REASONS = {
+    "not_run": "not run", "timed_out": "killed · cap", "model_mismatch": "mismatch",
+}
+CELL_STALL_REASON = "killed · stalled"
 
 
 def cell_failure_reason(cell):
@@ -3411,62 +3451,27 @@ def cell_failure_reason(cell):
     # A stall kill shares the timeout's exit code; the reader deciding whether to trust the panel
     # needs to know the cell was silent, not slow.
     if cell.get("stalled_s"):
-        return "stalled"
+        return CELL_STALL_REASON
     status = cell.get("status")
+    # `killed · cap` names OUR watchdog and nothing else: `cell_status` reads a provider's own
+    # timeout wording as a timeout too, and blamed on the panel's cap it sends the reader to raise
+    # a cap that never operated.
+    if status == "timed_out" and not watchdog_killed(cell):
+        return failure_reason(cell.get("stderr"))
     if status in STATUS_REASONS:
         return STATUS_REASONS[status]
     return failure_reason(cell.get("stderr"))
 
 
-def cell_kill_note(cell):
-    """The budget that ended a cell, when a budget did. None for a cell that died on its own —
-    a side's client timeout and our watchdog produce the same status and the same stderr wording,
-    and only this tells the reader whether the panel or the model owns the lost time.
-    """
-    killed = cell.get("killed")
-    cap = cell.get("killed_cap_s")
-    # `stalled_s` alone is how every run recorded before `killed` existed marks a stall kill.
-    if killed == "stall" or (not killed and cell.get("stalled_s")):
-        cap = cap or cell.get("stalled_s")
-        quiet = cell.get("max_quiet_ms")
-        if isinstance(quiet, (int, float)) and not isinstance(quiet, bool) and quiet >= 0:
-            return f"stalled, quiet {format_seconds(quiet / 1000)}"
-        return f"stalled, cap {format_seconds(cap)}" if cap else "stalled"
-    # Runs recorded before `killed` existed mark our kill unambiguously only by exit 124 with the
-    # cap that operated in `timeout_s`. An agy CLIENT timeout shares its wording with our kill of
-    # that side — for the cap history that ambiguity must count as a breach, but a report row
-    # claiming a cap that may never have operated would lie, so a legacy agy row keeps its bare
-    # duration.
-    if killed == "watchdog" or (
-        not killed and cell.get("exit_code") == 124 and cell.get("timeout_s")
-    ):
-        cap = cap or cell.get("timeout_s")
-        return f"watchdog cap {format_seconds(cap)}" if cap else "watchdog cap"
-    return None
-
-
-def dead_cell_entry(name, cell, reason=None, streak=None):
-    """One entry of the `errored:`/`timeout:` rows: what the cell cost, what ended it, and whether
-    it has been failing for long enough that the next run should not be spent on it again."""
-    parts = [name]
-    duration = cell.get("duration_ms")
-    if isinstance(duration, (int, float)) and not isinstance(duration, bool) and duration >= 0:
-        parts.append(format_seconds(duration / 1000))
-    # Inside the parentheses, never appended after them: the row separates its entries with the
-    # same ' · ' a trailing fragment would carry, and a reader would count one dead cell as two.
-    streak_note = (
-        f"{streak} fails in a row" if streak and streak >= CHRONIC_FAILURE_STREAK else None
-    )
-    note = ", ".join(part for part in (reason, cell_kill_note(cell), streak_note) if part)
-    if note:
-        parts.append(f"({note})")
-    return " ".join(parts)
-
-
 def rater_side(spec):
-    """Which pool a cell draws from, for rows recorded before the side was written down."""
+    """Which pool a cell draws from, for rows recorded before the side was written down.
+
+    Asked of the family, because the instance suffix of a repeated cell is not part of any spec
+    the parser knows: unresolved, `oc-kimik3#2` was a cell of no side at all, and the row that
+    collapses a whole walled leg into one line let it print beside itself as its own failure.
+    """
     try:
-        return parse_rater(spec)["side"] if spec else None
+        return parse_rater(rater_family(spec))["side"] if spec else None
     except ValueError:
         return None
 
@@ -3689,9 +3694,85 @@ def parse_iso_timestamp(value):
     return parsed.astimezone(timezone.utc)
 
 
+def run_finished_at(meta):
+    """When the run itself ended. `finished_at` is the older spelling, still on stored runs."""
+    return parse_iso_timestamp(meta.get("finished") or meta.get("finished_at"))
+
+
+def cell_attempt_rows(rows):
+    """One row per cell, and the attempts an in-run retry superseded hung under it.
+
+    A retried cell recorded both attempts under one spec, and the report answers for the final
+    one alone: counted twice, one cell would sit in `failed:` and in `found:` at once and the
+    panel would read as holding a member it never had. The superseded rows stay reachable because
+    what they cost is part of the cell's own stretch of the wall clock, and because the kill one
+    of them may carry is what teaches the next run's cap.
+    """
+    grouped = {}
+    for row in rows:
+        grouped.setdefault(row.get("rater"), []).append(row)
+    final = []
+    attempts = {}
+    for rater, group in grouped.items():
+        final.append(group[-1])
+        if len(group) > 1:
+            attempts[rater] = group[:-1]
+    return final, attempts
+
+
+def cell_record(row, run_dir, durations, attempts=()):
+    """One recorded attempt as the shape everything downstream reads a cell in.
+
+    The superseded attempts of a retried cell are built the same way and hung under it: `health`
+    prices the pool per ACCOUNT, and an attempt that walled one account before the retry cleared
+    on another is the whole of what that view exists to show.
+    """
+    rater = row.get("rater")
+    findings = row.get("findings")
+    if (not isinstance(findings, int) or isinstance(findings, bool)) and rater:
+        findings = len(finding_rows(run_dir, rater))
+    if not isinstance(findings, int) or isinstance(findings, bool):
+        findings = 0
+    duration = row.get("duration_ms")
+    if (
+        not isinstance(duration, (int, float))
+        or isinstance(duration, bool)
+        or duration < 0
+    ):
+        duration = durations.get(rater)
+    return {
+        "rater": rater,
+        "duration_ms": duration,
+        "status": cell_status(row),
+        "started_at": row.get("started_at"),
+        "finished_at": row.get("finished_at"),
+        "verify_ms": row.get("verify_ms"),
+        "attempts": list(attempts),
+        "findings": findings,
+        "verifier_dropped": counted_int(row.get("verifier_dropped")),
+        "verifier_unverified": counted_int(row.get("verifier_unverified")),
+        "verifier_audited": counted_int(row.get("verifier_audited")),
+        "verifier_ran": row.get("verify_ms") is not None,
+        "verifier_by_model": {
+            str(model): counted_int(count)
+            for model, count in (row.get("verifier_by_model") or {}).items()
+        } if isinstance(row.get("verifier_by_model"), dict) else {},
+        "exit_code": row.get("exit_code"),
+        "timeout_s": timeout_seconds_from_row(row),
+        "stalled_s": row.get("stalled_s"),
+        "killed": row.get("killed"),
+        "killed_cap_s": row.get("killed_cap_s"),
+        "max_quiet_ms": row.get("max_quiet_ms"),
+        "stderr": row.get("stderr"),
+        "side": row.get("side") or rater_side(rater),
+        "account": row.get("account"),
+    }
+
+
 def bench_summary(run_dir, meta, verdicts=None):
     cells = []
-    rows = [dict(row) for row in meta.get("rater_runs", ()) if isinstance(row, dict)]
+    recorded = [dict(row) for row in meta.get("rater_runs", ()) if isinstance(row, dict)]
+    rows, superseded = cell_attempt_rows(recorded)
     seen = {row.get("rater") for row in rows if row.get("rater")}
     successful = set(completed_raters_from_meta(meta))
     for rater in (*meta.get("raters", ()), *meta.get("durations", {})):
@@ -3708,41 +3789,10 @@ def bench_summary(run_dir, meta, verdicts=None):
         rater = row.get("rater")
         if rater in successful and "exit_code" not in row and not row.get("errored"):
             row["exit_code"] = 0
-        findings = row.get("findings")
-        if (not isinstance(findings, int) or isinstance(findings, bool)) and rater:
-            findings = len(finding_rows(run_dir, rater))
-        if not isinstance(findings, int) or isinstance(findings, bool):
-            findings = 0
-        duration = row.get("duration_ms")
-        if (
-            not isinstance(duration, (int, float))
-            or isinstance(duration, bool)
-            or duration < 0
-        ):
-            duration = durations.get(rater)
-        cells.append({
-            "rater": rater,
-            "duration_ms": duration,
-            "status": cell_status(row),
-            "findings": findings,
-            "verifier_dropped": counted_int(row.get("verifier_dropped")),
-            "verifier_unverified": counted_int(row.get("verifier_unverified")),
-            "verifier_audited": counted_int(row.get("verifier_audited")),
-            "verifier_ran": row.get("verify_ms") is not None,
-            "verifier_by_model": {
-                str(model): counted_int(count)
-                for model, count in (row.get("verifier_by_model") or {}).items()
-            } if isinstance(row.get("verifier_by_model"), dict) else {},
-            "exit_code": row.get("exit_code"),
-            "timeout_s": timeout_seconds_from_row(row),
-            "stalled_s": row.get("stalled_s"),
-            "killed": row.get("killed"),
-            "killed_cap_s": row.get("killed_cap_s"),
-            "max_quiet_ms": row.get("max_quiet_ms"),
-            "stderr": row.get("stderr"),
-            "side": row.get("side") or rater_side(rater),
-            "account": row.get("account"),
-        })
+        cells.append(cell_record(row, run_dir, durations, [
+            cell_record(attempt, run_dir, durations)
+            for attempt in superseded.get(rater, ())
+        ]))
     verdict_path = run_dir / "verdicts.jsonl"
     # Verdicts handed in rather than read back are a triage that is deliberately not recorded:
     # reporting it must leave no file behind, or the run reads as half-adjudicated to `list`,
@@ -3759,10 +3809,16 @@ def bench_summary(run_dir, meta, verdicts=None):
     severities = Counter()
     false_by = Counter()
     confirmed_by = Counter()
+    judged_by = Counter()
     findings_by_rater = {}
     for row in verdicts:
+        judged_by[row["rater"]] += 1
         if row["verdict"] == "false_positive":
-            false_by[rater_family(row["rater"])] += 1
+            # Per cell INSTANCE, the way the confirmed counter beside it counts: keyed by family
+            # here, an instance that produced no noise of its own could not be told from one that
+            # did, and the report's `quiet:` row is read off exactly that. The `noise:` row does
+            # the collapsing itself.
+            false_by[row["rater"]] += 1
         if row["verdict"] != "confirmed":
             continue
         confirmed_by[row["rater"]] += 1
@@ -3798,6 +3854,7 @@ def bench_summary(run_dir, meta, verdicts=None):
         "severities": severities,
         "false_by": false_by,
         "confirmed_by": confirmed_by,
+        "judged_by": judged_by,
         "token_estimate": rejected_tokens,
         "wall_seconds": max(0, (finished - started).total_seconds())
         if started and finished else None,
@@ -3843,16 +3900,6 @@ def log_review_event(event, run_dir, meta):
         print(f"warning: could not write review log: {exc}", file=sys.stderr)
 
 
-def format_seconds(seconds):
-    if seconds is None:
-        return "unknown time"
-    if seconds >= 60:
-        value = f"{seconds / 60:.1f}".rstrip("0").rstrip(".")
-        return f"{value} min"
-    value = f"{seconds:.1f}".rstrip("0").rstrip(".")
-    return f"{value} sec"
-
-
 def estimated_tokens_text(tokens):
     if tokens < 1000:
         return f"~{tokens} tok"
@@ -3875,56 +3922,413 @@ def aligned_report_lines(rows):
     return lines
 
 
-def verifier_report_value(summary, scheme=None):
-    """None only when the panel held no cell the verifier is allowed to touch. Anywhere else the
-    line stays, including where no verifier ran: a silent line and a verified run read alike.
+SIDE_LEG_NAME = {"claude": "CLAUDE", "codex": "CODEX", "agy": "GEMINI", "opencode": "OPENCODE"}
+# The column every value in a report block starts at, wrapped continuations included. Fixed rather
+# than measured off the labels, so the same row sits under the same column in every run's block.
+REPORT_LABEL_WIDTH = 14
+REPORT_WIDTH_FALLBACK = 100
+# Under half a minute a duration is noise in a block read for where the time went.
+REPORT_DURATION_FLOOR_MS = 30000
+# The share of a tier's own budget that may go unaccounted for before the header shouts about it,
+# and the ceiling that share is capped at: past five minutes of nobody's time the tier no longer
+# decides whether it matters.
+REPORT_LOST_SHARE = 3
+REPORT_LOST_CAP_S = 300
+
+
+def report_width():
+    """The width a report block is laid out to: the terminal's, `COLUMNS` included, or 100 where
+    there is no terminal — a block rendered into a hook's capture has no width of its own."""
+    return shutil.get_terminal_size((REPORT_WIDTH_FALLBACK, 20)).columns
+
+
+def report_ms(value):
+    """A duration read back out of someone else's JSON, or 0 where none was recorded."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
+        return 0.0
+    return float(value)
+
+
+def report_minutes(ms):
+    """Every duration a report block prints, in the one unit it prints them in."""
+    return f"{report_ms(ms) / 60000:.1f} min"
+
+
+def report_cell_name(spec, scheme=None):
+    """`kimi·2` for the second instance of one cell in a panel. `#2` is how the store spells an
+    instance, and a report is not read in the store's spelling."""
+    base, _, instance = str(spec or "").partition("#")
+    name = human_cell_name(base, scheme)
+    return f"{name}·{instance}" if instance else name
+
+
+def report_block_lines(rows, width=None):
+    """The rows of a report block, each `(label, value, wrappable)`, at one value column.
+
+    A wrappable value breaks between its ` · ` items and never inside one: the pairs these rows
+    are made of — `name n/m`, `killed · cap` — say nothing once they are split over two lines.
+    Continuations carry no label and sit under the value column, or they read as rows of their own
+    with the label missing.
     """
-    eligible = [cell for cell in summary["cells"] if cell["side"] in VERIFIED_SIDES]
+    width = report_width() if width is None else width
+    label_width = max(
+        REPORT_LABEL_WIDTH, max((len(label) for label, _, _ in rows), default=0) + 1
+    )
+    room = max(20, width - label_width)
+    lines = []
+    for label, value, wrappable in rows:
+        body, current = [], ""
+        for item in str(value).split(" · ") if wrappable else [str(value)]:
+            candidate = item if not current else f"{current} · {item}"
+            if current and len(candidate) > room:
+                body.append(current)
+                current = item
+            else:
+                current = candidate
+        body.append(current)
+        for index, line in enumerate(body):
+            lines.append(f"{(label if index == 0 else ''):<{label_width}}{line}".rstrip())
+    return lines
+
+
+def report_delivered_late(run_dir, state):
+    """Whether this round's report is reaching its reader long after the run recorded it.
+
+    One signal for every late channel there is: `settle-delivery` writes the mark, and a round it
+    had to queue — or write off as lapsed, for `doctor --lapsed` to list — is by definition one no
+    hook handed over when the panel closed. Read off the RUN and never off the invocation, because
+    every channel renders the block through the same two commands: a flag on the command line
+    would make one report current in the nudge and stale at the next stop.
+
+    The mark answers for the STATE it was written against, exactly as `pending-delivery` reads it:
+    a re-adjudication moves the round on, and the report it reaches next is not the one settled
+    there.
+    """
+    mark = delivery_mark(run_dir)
+    return bool(mark) and mark.get("state") == state
+
+
+def report_snapshot_moved(meta):
+    """Whether the tree has moved off the content this run reviewed: its own `reviewed` map priced
+    by the very comparison `--debt` prices work with, so the word the block wears and the debt a
+    later review reads can never disagree.
+
+    A merged panel's own map is spelled against its overlay workspace, whose content is frozen at
+    the seal and pruned without notice — read there, every merged round is either current for ever
+    or moved the moment the copy goes. The members are the checkouts the reader is standing in.
+    """
+    members = [entry for entry in meta.get("repos") or () if isinstance(entry, dict)]
+    for entry in members or [meta]:
+        repo = str(entry.get("repo") or "")
+        reviewed = entry.get("reviewed")
+        if not repo or not isinstance(reviewed, dict):
+            continue
+        shas = {
+            path: sha for path, sha in reviewed.items()
+            if isinstance(path, str) and isinstance(sha, str)
+        }
+        if not shas:
+            continue
+        artifact = {"kind": "run", "id": str(meta.get("run_id") or ""), "shas": shas}
+        if repo_debt(repo, paths=list(shas), covering=dict.fromkeys(shas, artifact),
+                     claims={}, dirty={}):
+            return True
+    return False
+
+
+def report_frame_word(run_dir, meta, state=None, summary=None):
+    """The word this run's frame carries, which is the only place the block states its own STATE.
+
+    One word, in the order the reader's next move goes: a round whose fixing pass stopped is
+    Egor's to decide whatever else is true of it, an empty panel says nothing about fixes, and a
+    stale block is only worth naming while the rest of it is ordinary.
+    """
+    if not tier_from_meta(meta):
+        return REPORT_BENCH_WORD
+    state = round_state(run_dir) if state is None else state
+    if state == "blocked":
+        return REPORT_BLOCKED_WORD
+    cells = (summary if summary is not None else bench_summary(run_dir, meta))["cells"]
+    if not any(cell["status"] == "completed" for cell in cells):
+        return REPORT_NO_PANEL_WORD
+    # A run that recorded no finish has no date to be read against, and this word is never rendered
+    # without one: undated it says a block is old and refuses to say how old, which is the one thing
+    # the reader came to it for. In the reader's own zone, because his clock is what he compares it
+    # against — the record keeps UTC.
+    finished = run_finished_at(meta)
+    if finished and (report_delivered_late(run_dir, state) or report_snapshot_moved(meta)):
+        local = finished.astimezone()
+        return f"{REPORT_STALE_WORD} · {local.day} {local.strftime('%b')}"
+    return REPORT_FRAME_WORD
+
+
+def timed_cells(cells):
+    return [cell for cell in cells if isinstance(cell.get("duration_ms"), (int, float))
+            and not isinstance(cell.get("duration_ms"), bool) and cell["duration_ms"] >= 0]
+
+
+def cell_chain_ms(cell):
+    """How long one cell held its slot of the run open: what it ran, what the retry it earned ran,
+    and the verification of its findings that ran after it.
+
+    The queue it waited in is deliberately outside this. That time is what the header's LOST names,
+    and folded in here it would read as the cell's own cost and vanish from the block entirely.
+    """
+    return (
+        report_ms(cell.get("duration_ms"))
+        + report_ms(cell.get("verify_ms"))
+        + sum(report_ms(attempt.get("duration_ms")) for attempt in cell.get("attempts") or ())
+    )
+
+
+def report_lost_cause(cells, meta, lost_ms):
+    """What filled the wall clock the longest chain does not account for, where the run recorded
+    enough to say: the cell that waited longest before it started, named by the side it waited on.
+
+    Below half the lost time it is not the cause of anything and the header keeps the bare number:
+    a queue named over time it did not hold sends the reader at the wrong leg.
+    """
+    started = parse_iso_timestamp(meta.get("started") or meta.get("started_at"))
+    if started is None or lost_ms <= 0:
+        return None
+    delays = []
+    for cell in cells:
+        # The retry overwrites `started_at`, so a retried cell's wait read off the final row
+        # swallows the first attempt's whole runtime — time `cell_chain_ms` already counts — and
+        # names a queue on a leg that never held it.
+        starts = [parse_iso_timestamp(cell.get("started_at"))]
+        starts += [parse_iso_timestamp(attempt.get("started_at"))
+                   for attempt in cell.get("attempts") or ()]
+        starts = [stamp for stamp in starts if stamp is not None]
+        if starts:
+            delays.append(((min(starts) - started).total_seconds(), cell))
+    if not delays:
+        return None
+    delay, cell = max(delays, key=lambda entry: entry[0])
+    if delay * 1000 < lost_ms / 2:
+        return None
+    return f"{SIDE_LEG_NAME.get(cell.get('side'), str(cell.get('side') or '?')).lower()} queue"
+
+
+def report_header_value(summary, meta, scheme):
+    """The one line that prices the run: its wall clock, the longest chain inside it, and whatever
+    of the wall clock that chain does not account for.
+
+    The chain and not the slowest cell, because a cell whose verification or retry ran after it
+    held the panel open for all of it — and the difference between the two is the whole point of
+    the row: it is the time nothing in the block below can be blamed for.
+    """
+    wall_s = summary["wall_seconds"]
+    value = "unknown time" if wall_s is None else f"{wall_s / 60:.1f} min"
+    candidates = timed_cells(summary["cells"])
+    if candidates:
+        chain = max(candidates, key=cell_chain_ms)
+        # The chain the row is named for, minus the verification printed beside it: shown as the
+        # final attempt alone, the components of a retried cell no longer add up to the wall.
+        held_ms = cell_chain_ms(chain) - report_ms(chain.get("verify_ms"))
+        value += f" / {report_minutes(held_ms)} {report_cell_name(chain['rater'], scheme)}"
+        if chain.get("stalled_s") or watchdog_killed(chain):
+            value += " killed"
+        if report_ms(chain.get("verify_ms")) >= REPORT_DURATION_FLOOR_MS:
+            value += f" + {report_minutes(chain['verify_ms'])} verify"
+        if wall_s is not None:
+            # Every OTHER cell's verification is accounted time too: the run verifies serially
+            # after the panel closes, so pricing the chain alone reported the whole verifier pass
+            # as time nothing in the block accounts for.
+            lost_ms = wall_s * 1000 - cell_chain_ms(chain) - sum(
+                report_ms(cell.get("verify_ms"))
+                for cell in summary["cells"] if cell is not chain
+            )
+            # `T1 max` is the tier plus its composition, and only the tier has a budget: read
+            # whole, every max run falls back to the flat cap and loses the share of its own.
+            budget_min = REVIEW_TIERS.get(
+                str(summary["tier"] or "").split(" ")[0], {}
+            ).get("budget_min")
+            # Only what is worth a reader's attention: a run always loses some minutes to its own
+            # scheduling, and a number printed on every header is one nobody reads any more. The
+            # threshold is a share of the tier's own budget, so the same lost minute is loud on a
+            # T0 and beneath notice on a T3.
+            loud_s = min(
+                REPORT_LOST_CAP_S,
+                budget_min * 60 / REPORT_LOST_SHARE if budget_min else REPORT_LOST_CAP_S,
+            )
+            if lost_ms >= loud_s * 1000:
+                cause = report_lost_cause(summary["cells"], meta, lost_ms)
+                value += f" · {report_minutes(lost_ms)} {cause or 'LOST'}"
+    members = [entry for entry in meta.get("repos") or () if isinstance(entry, dict)]
+    if members:
+        value += " · " + ", ".join(
+            str(entry.get("label") or Path(str(entry.get("repo"))).name) for entry in members
+        )
+    # A chunked round attests only the chunks its cells read, so a block that hides the count
+    # reads as a panel that saw the whole diff. In the value and not the label, which every row's
+    # value column is aligned to.
+    if meta.get("chunks"):
+        value += f" · {len(meta['chunks'])} chunks"
+    return value
+
+
+def verifier_verdict_counts(run_dir):
+    """Per verifier model: how many findings it judged, and how many of them it rejected. Read off
+    the audit rows because the run's own tally records neither of them per model."""
+    checked, rejected = Counter(), Counter()
+    for path in sorted(run_dir.glob("verified-*.jsonl")):
+        for row in read_jsonl(path):
+            model = row.get("verifier")
+            if not model:
+                continue
+            checked[str(model)] += 1
+            if row.get("kept") is False:
+                rejected[str(model)] += 1
+    return checked, rejected
+
+
+def verifier_report_value(run_dir, summary, scheme=None):
+    """The `verifier:` value, or None where the panel held no cell the verifier is allowed to
+    touch. Anywhere else the row stays, the silent case included: a run nobody checked and one
+    where every claim survived read alike without it.
+    """
+    # Cells that COMPLETED: a leg that never ran offered the verifier nothing, and `off` printed
+    # over it reads as a check that was skipped rather than one that had nothing to check.
+    eligible = [
+        cell for cell in summary["cells"]
+        if cell["side"] in VERIFIED_SIDES and cell["status"] == "completed"
+    ]
     if not eligible:
         return None
-    if not summary["verifier"]:
-        unchecked = sum(counted_int(cell["findings"]) for cell in eligible)
-        if not unchecked:
-            return "off — nothing to check"
-        return f"off — {unchecked} finding(s) unchecked"
-    by_model = summary["verifier_by_model"]
-    judged = sum(by_model.values())
-    audited = max(summary["verifier_audited"], judged)
-    if len(by_model) > 1:
-        names = " · ".join(
-            f"{human_cell_name(model, scheme)} {count}"
-            for model, count in sorted(by_model.items(), key=lambda item: (-item[1], item[0]))
+    checked, rejected = verifier_verdict_counts(run_dir)
+    # A run recorded before the audit rows carried a model name has no per-model tally at all, and
+    # the run's own totals are then the only record of what was judged.
+    audited_total = sum(checked.values()) or max(
+        summary["verifier_audited"], summary["verifier_dropped"])
+    rejected_total = sum(rejected.values()) if checked else summary["verifier_dropped"]
+    # What no audit row covers, whichever record knows it: a verifier that walled part-way is the
+    # only one that records its own unchecked count, and one that never ran records nothing — so a
+    # row reading the tally alone reports a panel nobody checked as a panel with nothing to check.
+    # The findings count is POST-filter — a rejected claim is already gone from it — while the
+    # audit rows include the rejections: subtracting all of them let a run with both rejections
+    # and fail-open verifier rows report nothing unchecked.
+    unchecked = max(
+        summary["verifier_unverified"],
+        sum(counted_int(cell["findings"]) for cell in eligible)
+        - (audited_total - rejected_total),
+    )
+    if not checked:
+        # `off` is the SWITCH and not the outcome: a verifier that RAN and walled on every claim,
+        # and one from before the audit rows carried a model name, both leave no per-model row and
+        # neither is off. The reader is owed the name of the model to look at either way — the
+        # run's own totals where it has them, the wall where it has none.
+        ran = bool(audited_total or summary["verifier_unverified"]
+                   or any(cell["verifier_ran"] for cell in eligible))
+        if not (ran and summary["verifier"]):
+            return f"off · {unchecked} unchecked"
+        name = human_cell_name(summary["verifier"], scheme)
+        parts = [f"{name} {audited_total}/{rejected_total}" if audited_total
+                 else f"{name} walled"]
+        if unchecked:
+            parts.append(f"{unchecked} unchecked")
+        return " · ".join(parts)
+    parts = [
+        f"{human_cell_name(model, scheme)} {count}/{rejected[model]}"
+        for model, count in checked.most_common()
+    ]
+    if unchecked:
+        parts.append(f"{unchecked} unchecked")
+    return " · ".join(parts)
+
+
+def report_failed_rows(run_dir, summary, meta, scheme):
+    """The `failed:` rows: one per family and cause, and one CAPS row for a whole side the panel
+    never launched at all.
+
+    A side with nothing launched is one fact and not eight — the reader's next move is the leg
+    itself — and naming every cell of it buries the cells that did fail. A not-run instance whose
+    sibling of the same family failed inherits that sibling's cause: they are one cell asked for
+    twice, and a `not run` row beside the failure it was skipped for says nothing.
+    """
+    cells = summary["cells"]
+    failed = [cell for cell in cells if cell["status"] != "completed"]
+    if not failed:
+        return []
+    by_side = defaultdict(list)
+    for cell in cells:
+        by_side[cell.get("side")].append(cell)
+    recorded = {
+        str(entry.get("rater")): str(entry.get("state") or "")
+        for entry in meta.get("skipped") or () if isinstance(entry, dict)
+    }
+    legs = {
+        side for side, members in by_side.items()
+        if side and all(member["status"] == "not_run" for member in members)
+    }
+    rows = []
+    for side in sorted(legs):
+        states = {recorded.get(member["rater"], "") for member in by_side[side]}
+        # `off` is a switch nobody closed unless a record says so: as the default it named a leg
+        # spent on walls — or one from before `skipped` was recorded — as one Egor turned off.
+        word = next(
+            (state for state in ("walled", "cooling", "off") if state in states), "not run"
         )
-    else:
-        # The configured model whenever none answered: a walled verifier still owes the reader
-        # the name of the model to look at, and it is the only name a pre-2026-08 run kept.
-        names = human_cell_name(next(iter(by_model), summary["verifier"]), scheme)
-    if not audited:
-        # Whether the verifier ran, not whether it rejected anything: a run recorded before the
-        # tally existed keeps only its drop and wall totals, and reading a zero drop as "never
-        # ran" tells the reader nothing was checked on 3 of the 205 runs on disk, where
-        # everything was. Either total is evidence it ran: a wall before the first rejection
-        # leaves only the wall count, and 7 runs on disk carry one.
-        if (
-            any(cell["verifier_ran"] for cell in eligible)
-            or summary["verifier_dropped"]
-            or summary["verifier_unverified"]
-        ):
-            counts = [f"{summary['verifier_dropped']} rejected"]
-            if summary["verifier_unverified"]:
-                counts.append(f"{summary['verifier_unverified']} kept unchecked")
-            return f"{names} — {', '.join(counts)}"
-        return f"{names} — nothing to check"
-    counts = [f"{judged} checked", f"{summary['verifier_dropped']} rejected"]
-    if audited > judged:
-        counts.append(f"{audited - judged} kept unchecked")
-    return f"{names} — {', '.join(counts)}"
+        rows.append((f"{SIDE_LEG_NAME.get(side, str(side).upper())} LEG {word.upper()}", "", ""))
+    failed = [cell for cell in failed if cell.get("side") not in legs]
+    if not failed:
+        return rows
+    streaks = cell_failure_streaks(
+        run_dir.parent, run_dir.name, [cell["rater"] for cell in failed]
+    )
+    family_cause = {}
+    for cell in failed:
+        if cell["status"] != "not_run":
+            family_cause.setdefault(rater_family(cell["rater"]), cell_failure_reason(cell))
+    groups = {}
+    for cell in failed:
+        family = rater_family(cell["rater"])
+        cause = (
+            family_cause.get(family, STATUS_REASONS["not_run"])
+            if cell["status"] == "not_run" else cell_failure_reason(cell)
+        )
+        groups.setdefault((family, cause), []).append(cell)
+    for (family, cause), members in groups.items():
+        # One instance of a family whose sibling completed must keep its `·2`: printed as the
+        # bare family it reads as the sibling standing in `found:`.
+        name = (
+            f"{human_cell_name(family, scheme)} ×{len(members)}" if len(members) > 1
+            else report_cell_name(members[0]["rater"], scheme)
+        )
+        streak = max(
+            (streaks.get(cell["rater"]) or 0
+             for cell in members if cell["status"] != "not_run"),
+            default=0,
+        )
+        if streak >= CHRONIC_FAILURE_STREAK:
+            cause += f" · {streak} runs in a row"
+        duration = max((report_ms(cell.get("duration_ms")) for cell in members), default=0)
+        rows.append((
+            name, cause,
+            report_minutes(duration) if duration >= REPORT_DURATION_FLOOR_MS else "",
+        ))
+    return rows
 
 
 ESCALATION_GATE = Path.home() / ".claude/hooks/review-flow-gate.sh"
 ESCALATION_UNKNOWN = (
     "unknown — the commit gate could not be asked; attempt the commit for the verdict"
 )
+# The gate's fork opens on this line; everything above it is the verdict itself.
+ESCALATION_FORK_LEAD = "Pick one and carry it out"
+
+
+def escalation_headline(earned):
+    """A verdict of the gate's as ONE report row: its opening sentence, without the fork it hands
+    the model. Never a sentence of this file's own — the P1 verdict withholds the waiver over this
+    work and the tally verdict leaves `waive` open, and one hardcoded row said the same thing for
+    both.
+    """
+    head = (earned or "").strip().splitlines()[0].strip()
+    lead = head.find(ESCALATION_FORK_LEAD)
+    if lead > 0:
+        head = head[:lead]
+    return head.strip().rstrip(".;:— -")
 
 
 def escalation_verdict(p1, total):
@@ -3953,228 +4357,197 @@ def escalation_verdict(p1, total):
     return ESCALATION_UNKNOWN
 
 
+def round_fork_text(run_dir, meta, verdicts=None):
+    """The whole of what a round's report does NOT say: which way it goes from here.
+
+    It is three arms and a command, and Egor does not read it — the model that has to act on it
+    does, so `review-bench fork` hands it to the hook instead of the block spending eight lines on
+    it. Empty is the ordinary answer: nothing is owed and there is no fork.
+    """
+    rows = verdicts if verdicts is not None else recorded_verdict_rows(run_dir)
+    parts = []
+    earned = escalation_verdict(*escalation_numbers(run_dir, meta, rows or []))
+    if earned == ESCALATION_UNKNOWN:
+        parts.append(earned)
+    elif earned:
+        parts.append(
+            ROUND_BUDGET_SPENT if review_round(run_dir, meta) >= ROUND_BUDGET else earned
+        )
+    if fix_status(run_dir, confirmed_count(rows), rows)[1] == "blocked":
+        parts.append(REPORT_BLOCKED_FORK)
+    return "\n".join(parts)
+
+
 def report_lines(run_dir, meta, verdicts=None):
+    """The block a review round is read in: what it cost, what it confirmed, and which cell every
+    one of those answers came from.
+
+    No panel cell is unaccounted for: every one of them stands in `found:`, `noise:`, `quiet:`,
+    `echoed:`, `untriaged:` or `failed:` — a leg the panel never launched collapsed into one row
+    of the last — because the cell that broke silently is the one nobody goes looking for, and a
+    cell missing from all of them is invisible. Not a partition: a cell is listed per confirmed
+    finding and per rejected one, so one holding both stands in `found:` and `noise:` alike.
+    """
     summary = bench_summary(run_dir, meta, verdicts)
     scheme = report_name_scheme([
         *(row.get("rater") for row in summary["cells"]),
         *summary["verifier_by_model"],
         summary["verifier"],
     ])
-    completed = [
-        row for row in summary["cells"]
-        if row["status"] == "completed"
-    ]
-    timed_completed = [
-        row for row in completed
-        if (
-            isinstance(row.get("duration_ms"), (int, float))
-            and not isinstance(row.get("duration_ms"), bool)
-            and row["duration_ms"] >= 0
-        )
-    ]
+    completed = [row for row in summary["cells"] if row["status"] == "completed"]
+    confirmed_by = summary["confirmed_by"]
+    false_by = summary["false_by"]
+    total = summary["confirmed"]
     tier = summary["tier"] or "untiered"
-    if timed_completed:
-        slowest = max(timed_completed, key=lambda row: row["duration_ms"])
-        slowest_text = (
-            f"slowest completed: {human_cell_name(slowest.get('rater'), scheme)} "
-            f"{format_seconds(slowest['duration_ms'] / 1000)}"
-        )
-    elif completed:
-        slowest_text = "completed durations unknown"
-    else:
-        slowest_text = "no cells completed"
-    # Beside the tier, because the tier alone names a panel and the reader would price these
-    # findings as the tool's own: a lens run's severities were awarded by another methodology.
-    scope = f"{tier} · lens {meta['lens']}" if meta.get("lens") else tier
-    if meta.get("chunks"):
-        scope += f" · {len(meta['chunks'])} chunks"
-    dropped = meta.get("lens_panel_dropped") or []
-    if dropped:
-        scope += f" (−{len(dropped)} cell(s) the lens dropped)"
-    # The frame around this block says only that it is a report, so the first line has to say
-    # whose: the reader who is handed one has no other way to tell a panel of raters from
-    # anything else that prints inside the same frame.
     members = [entry for entry in meta.get("repos") or () if isinstance(entry, dict)]
-    kind = "review-bench merged panel" if members else "review-bench panel"
-    head = [kind]
-    if members:
-        head.append(f"{len(members)} repos")
-    head += [scope, f"{format_seconds(summary['wall_seconds'])} wall", slowest_text]
-    lines = [" · ".join(head)]
-    errored = Counter()
-    timed_out = Counter()
-    mismatched = Counter()
-    not_run = Counter()
-    streaks = cell_failure_streaks(
-        run_dir.parent, run_dir.name,
-        [row.get("rater") for row in summary["cells"]
-         if row["status"] in ("timed_out", "errored", "nonzero_exit")],
-    )
-    for row in summary["cells"]:
-        status = row["status"]
-        if status == "completed":
-            continue
-        name = human_cell_name(row.get("rater"), scheme)
-        streak = streaks.get(row.get("rater"))
-        if status == "not_run":
-            not_run[name] += 1
-        elif status == "timed_out":
-            timed_out[dead_cell_entry(name, row, streak=streak)] += 1
-        elif status == "model_mismatch":
-            mismatched[name] += 1
-        else:
-            # An exit code says a cell failed, which the line it sits on already said. The
-            # cause is what decides whether to look further, so it goes in its place, and the
-            # code comes back whenever the classifier names no cause — an unknown wording and
-            # a silent failure both leave it as the only fact recorded about the cell.
-            detail = cell_failure_reason(row)
-            if detail in UNNAMED_REASONS and row.get("exit_code") not in (None, 0):
-                detail = f"exit {row['exit_code']}"
-            errored[dead_cell_entry(name, row, reason=detail, streak=streak)] += 1
-    rows = []
-    severity = " · ".join(
-        f"{level} {summary['severities'][level]}"
-        for level in ("P1", "P2", "P3")
-        if summary["severities"][level]
-    )
-    rows.append((f"confirmed {summary['confirmed']}:", severity))
-    # The verdict on those very numbers, beside them. The commit gate has always priced it, but it
-    # speaks only when a commit is attempted, and the report is where the fixer decides the work is
-    # finished — so the round that earned another one has to say so here, in the block Egor reads.
-    # Priced on the gate's own two numbers, never on this block's headline count: the row above is
-    # the whole panel, and for a merged run the gate reads one member's P1s.
-    verdict_rows = verdicts if verdicts is not None else (
-        read_jsonl(run_dir / "verdicts.jsonl") if (run_dir / "verdicts.jsonl").exists() else []
-    )
+    rows = [(
+        f"{tier} · {len(members)} rep:" if members else f"{tier}:",
+        report_header_value(summary, meta, scheme), True,
+    )]
+    if meta.get("lens"):
+        dropped = meta.get("lens_panel_dropped") or []
+        # Its own row, never beside the tier: the severities below were awarded by another
+        # methodology, and a reader who priced them as the tool's own read a lens run as a review.
+        rows.append((
+            "lens:",
+            str(meta["lens"]) + (f" · {len(dropped)} cells dropped" if dropped else ""),
+            True,
+        ))
+    severities = summary["severities"]
+    rows.append((
+        "confirmed:",
+        " · ".join([
+            *(f"{level} {severities[level]}" for level in LENS_SEVERITIES),
+            f"{total} total",
+        ]) if total else "0",
+        True,
+    ))
+    verdict_rows = verdicts if verdicts is not None else (recorded_verdict_rows(run_dir) or [])
+    fixes_line, fixes_state = fix_status(run_dir, total, verdict_rows)
+    record = read_fix_status(run_dir) or {}
+    if fixes_state != "done":
+        rows.append(("fixes:", fixes_line, True))
+    elif total and counted_int(record.get("fixed")) + counted_int(
+        record.get("false_positives")
+    ) < total:
+        # A receipt answering for fewer findings than the triage confirmed. `fixes` refuses to
+        # write one, so this is a receipt from before that refusal existed — and the round it
+        # retired is one nobody finished.
+        rows.append(("fixes:", f"{counted_int(record.get('fixed'))} of {total}", True))
+    # The verdict on those very numbers. The commit gate has always priced it, but it speaks only
+    # when a commit is attempted, and the report is where the fixer decides the work is finished —
+    # so the round that earned another one has to say so here. The fork itself is not in this
+    # block: `review-bench fork` hands it to the model, which is who acts on it.
     earned = escalation_verdict(*escalation_numbers(run_dir, meta, verdict_rows))
-    # The gate prices what the findings earned; it cannot see how many rounds this scope has
-    # already spent, and a second one that offers a third is how a scope gets reviewed forever.
-    if earned and review_round(run_dir, meta) >= ROUND_BUDGET:
-        earned = ROUND_BUDGET_SPENT
-    rows.append(("round:", earned or "closed — nothing more is owed before the commit"))
+    # A gate that could not be asked says so here too: filtered out, a round nobody could price
+    # printed no row at all and read as closed — the silent clean bill the unknown wording exists
+    # to end.
+    if earned == ESCALATION_UNKNOWN:
+        rows.append(("round:", earned, True))
+    elif earned and review_round(run_dir, meta) < ROUND_BUDGET:
+        rows.append(("round:", escalation_headline(earned), True))
     decreed = read_decree(run_dir)
     if decreed:
-        rows.append(("decree:", f"{decreed['reason']} — Egor's recorded unlock of this round's "
-                                "withheld waiver; no second panel answered it"))
-    fixes_line, fixes_state = fix_status(run_dir, summary["confirmed"], verdict_rows)
-    rows.append(("fixes:", fixes_line))
-    if fixes_state == "blocked":
-        # The reason alone is a receipt field; what the loud frame is FOR is the fork, and a block
-        # that only says work stopped leaves the reader to guess whose move it is.
-        rows.append(("stopped:", REPORT_BLOCKED_FORK))
-    rejected_counts = [
-        ("duplicate", summary["duplicate"]),
-        ("false", summary["false_positive"]),
-    ]
-    rejected_counts = [
-        (verdict, count) for verdict, count in rejected_counts if count
-    ]
-    if rejected_counts:
-        count_width = max(len(str(count)) for _, count in rejected_counts)
-        verdict_width = max(len(verdict) for verdict, _ in rejected_counts)
-        for index, (verdict, count) in enumerate(rejected_counts):
-            tokens = count * ADJUDICATION_TOK_ESTIMATE[
-                "false_positive" if verdict == "false" else verdict
-            ]
-            value = (
-                f"{count:>{count_width}} {verdict:<{verdict_width}}  "
-                f"{estimated_tokens_text(tokens)}"
-            )
-            rows.append(("rejected:" if index == 0 else "", value))
-    if summary["false_positive"] and summary["false_by"]:
-        false_by = " · ".join(
-            f"{human_cell_name(rater, scheme)} ×{count}"
-            for rater, count in sorted(
-                summary["false_by"].items(),
-                key=lambda item: (-item[1], human_cell_name(item[0], scheme)),
-            )
-        )
-        rows.append(("false by:", false_by))
-    verifier_value = verifier_report_value(summary, scheme)
+        rows.append((
+            "decree:",
+            f"{decreed['reason']} — Egor's recorded unlock of this round's withheld waiver; "
+            "no second panel answered it",
+            True,
+        ))
+    verifier_value = verifier_report_value(run_dir, summary, scheme)
     if verifier_value:
-        rows.append(("verifier:", verifier_value))
-    # Zero-finding cells included: a cell that read the diff and found nothing is evidence, and
-    # left out it reads exactly like one that never ran — the errored row below is what says
-    # which cells produced nothing because they failed.
-    if completed:
-        # Most useful first, priced on what survived triage rather than on what was claimed: the
-        # question this row is read with is which models earned their place in the next panel.
-        ranked = sorted(
-            completed,
-            key=lambda row: (
-                -summary["confirmed_by"].get(row.get("rater"), 0),
-                -counted_int(row.get("findings")),
-                human_cell_name(row.get("rater"), scheme),
-            ),
-        )
-        # With verdicts on record each cell reads confirmed/found — the sort is by confirmed, and
-        # a row sorted by a number it does not show reads as unsorted. Keyed on the triage having
-        # happened, not on anything surviving it: a run whose findings were all rejected must read
-        # 0/5, which is the opposite of an untriaged 5.
-        confirmed_by = summary["confirmed_by"]
-        rows.append((
-            "cells:",
-            " · ".join(
-                f"{human_cell_name(row.get('rater'), scheme)} "
-                + (f"{confirmed_by.get(row.get('rater'), 0)}/{counted_int(row.get('findings'))}"
-                   if summary["adjudicated"] else f"{counted_int(row.get('findings'))}")
-                for row in ranked
-            ),
-        ))
-    if errored:
-        rows.append((
-            "errored:",
-            " · ".join(
-                f"{detail} ×{count}" if count > 1 else detail
-                for detail, count in errored.items()
-            ),
-        ))
-    wall_labels = reported_wall_labels(summary["cells"])
-    if wall_labels:
-        rows.append(("walls:", " · ".join(wall_labels)))
-    if timed_out:
-        rows.append((
-            "timeout:",
-            " · ".join(
-                f"{entry} ×{count}" if count > 1 else entry
-                for entry, count in timed_out.items()
-            ),
-        ))
-    if mismatched:
-        rows.append((
-            "mismatch:",
-            " · ".join(
-                f"{name} ×{count}" if count > 1 else name
-                for name, count in mismatched.items()
-            ),
-        ))
-    if not_run:
-        rows.append((
-            "not run:",
-            " · ".join(
-                f"{name} ×{count}" if count > 1 else name
-                for name, count in not_run.items()
-            ),
-        ))
-    # The wall above is the panel's, and "slowest completed" prices only the cells that answered:
-    # a cell that hung held every later cell back and left no trace in either figure, which is how
-    # a 27-minute round read as a 17-minute one (2026-08-16).
-    timed_cells = [
-        row for row in summary["cells"]
-        if isinstance(row.get("duration_ms"), (int, float))
-        and not isinstance(row.get("duration_ms"), bool)
-        and row["duration_ms"] >= 0
+        rows.append(("verifier:", verifier_value, True))
+    rejected = [
+        (kind, count) for kind, count in
+        (("duplicate", summary["duplicate"]), ("false", summary["false_positive"])) if count
     ]
-    if timed_cells:
-        gate = max(timed_cells, key=lambda row: row["duration_ms"])
-        if gate["status"] != "completed":
+    if rejected:
+        tokens = [
+            estimated_tokens_text(count * ADJUDICATION_TOK_ESTIMATE[
+                "false_positive" if kind == "false" else kind
+            ])
+            for kind, count in rejected
+        ]
+        count_width = max(len(str(count)) for _, count in rejected)
+        kind_width = max(len(kind) for kind, _ in rejected)
+        token_width = max(len(token) for token in tokens)
+        for index, ((kind, count), token) in enumerate(zip(rejected, tokens)):
             rows.append((
-                "wall gated by:",
-                f"{human_cell_name(gate.get('rater'), scheme)} "
-                f"{format_seconds(gate['duration_ms'] / 1000)} ({cell_failure_reason(gate)})",
+                "rejected:" if index == 0 else "",
+                f"{count:>{count_width}} {kind:<{kind_width}}  {token:>{token_width}}",
+                False,
             ))
-    lines.extend(aligned_report_lines(rows))
-    return lines
+    # Priced on what survived triage rather than on what was claimed: the question this row is read
+    # with is which cells earned their place in the next panel. A cell that found nothing is in
+    # `quiet:` instead — listed here as 0/n it would read as a cell worth keeping.
+    found = sorted(
+        (cell for cell in completed if confirmed_by.get(cell["rater"])),
+        key=lambda cell: (-confirmed_by[cell["rater"]], -counted_int(cell.get("findings"))),
+    )
+    if found:
+        name_width = max(len(report_cell_name(cell["rater"], scheme)) for cell in found)
+        for index, cell in enumerate(found):
+            rows.append((
+                "found:" if index == 0 else "",
+                f"{report_cell_name(cell['rater'], scheme):<{name_width}}  "
+                f"{confirmed_by[cell['rater']]}/{counted_int(cell.get('findings'))}",
+                False,
+            ))
+    # Collapsed onto the family, because this row is read for which MODEL is expensive to believe
+    # and two instances of one model are one answer to that. `found:` beside it stays per instance:
+    # there the question is which cell to keep, and the instances answer it differently.
+    noise_by_family = Counter()
+    noisy_instances = Counter()
+    for spec, count in false_by.items():
+        noise_by_family[rater_family(spec) or spec] += count
+        noisy_instances[rater_family(spec) or spec] += 1
+    noise = sorted(noise_by_family.items(), key=lambda item: (-item[1], item[0]))
+    if noise:
+        rows.append((
+            "noise:",
+            " · ".join(
+                report_cell_name(family, scheme)
+                + (f" ×{noisy_instances[family]}" if noisy_instances[family] > 1 else "")
+                + f" {count}"
+                for family, count in noise
+            ),
+            True,
+        ))
+    # The INSTANCE's own verdicts, not its family's: a second instance that found nothing while the
+    # first produced noise is a cell that said nothing, and folding it into its family's row would
+    # leave it accounted for nowhere.
+    judged_by = summary["judged_by"]
+    uncredited = [
+        cell for cell in completed
+        if not confirmed_by.get(cell["rater"]) and not false_by.get(cell["rater"])
+    ]
+    # Three different cells, and one row read `quiet` over all of them: one that claimed nothing,
+    # one whose every claim another cell had already made, and one nobody judged at all — which is
+    # the whole panel of an untriaged `--raters` run, reported as having found nothing.
+    quiet = [cell for cell in uncredited if not counted_int(cell.get("findings"))]
+    echoed = [
+        cell for cell in uncredited
+        if counted_int(cell.get("findings")) and judged_by.get(cell["rater"])
+    ]
+    untriaged = [
+        cell for cell in uncredited
+        if counted_int(cell.get("findings")) and not judged_by.get(cell["rater"])
+    ]
+    for label, group in (("quiet:", quiet), ("echoed:", echoed), ("untriaged:", untriaged)):
+        if group:
+            rows.append((label, f"{len(group)} cells", True))
+    failed_rows = report_failed_rows(run_dir, summary, meta, scheme)
+    if failed_rows:
+        cell_rows = [row for row in failed_rows if row[1]]
+        name_width = max((len(name) for name, _, _ in cell_rows), default=0)
+        cause_width = max((len(cause) for _, cause, _ in cell_rows), default=0)
+        for index, (name, cause, duration) in enumerate(failed_rows):
+            rows.append((
+                "failed:" if index == 0 else "",
+                f"{name:<{name_width}}  {cause:<{cause_width}}  {duration:>8}".rstrip(),
+                False,
+            ))
+    return report_block_lines(rows)
 
 
 def verdict_scratch_path(run_id):
@@ -4743,7 +5116,9 @@ def emit_report(run_dir, meta, verdicts=None):
     # One read of the triage for both: the frame word and the rows are the same run's answer, and
     # re-read for the rows they can disagree with the frame around them.
     resolved = verdicts if verdicts is not None else read_jsonl(run_dir / "verdicts.jsonl")
-    print(REPORT_BLOCKED_BEGIN if round_state(run_dir, resolved) == "blocked" else REPORT_BEGIN)
+    print(report_frame_header(
+        report_frame_word(run_dir, meta, round_state(run_dir, resolved))
+    ))
     for line in report_lines(run_dir, meta, resolved):
         print(line)
     print(REPORT_END)
@@ -4789,6 +5164,21 @@ def cmd_report(args):
     return 0
 
 
+def cmd_fork(args):
+    """Print the fork a round's report deliberately does not carry, for the hook that hands the
+    model its context. Silent where nothing is owed: the report says the round is closed, and a
+    fork printed over it is work nobody asked for.
+    """
+    run_dir = state_dir() / "benches" / args.run_id
+    if not (run_dir / "meta.json").exists():
+        raise ValueError(f"unknown run id: {args.run_id}")
+    meta = json.loads((run_dir / "meta.json").read_text())
+    text = round_fork_text(run_dir, meta)
+    if text:
+        print(text)
+    return 0
+
+
 HEALTH_DEFAULT_RUNS = 20
 HEALTH_WORST_CELLS = 12
 
@@ -4798,7 +5188,11 @@ def run_health(run_dir, meta):
     by_side = defaultdict(Counter)
     by_cell = defaultdict(Counter)
     accounts = defaultdict(Counter)
-    for cell in bench_summary(run_dir, meta)["cells"]:
+    summary = bench_summary(run_dir, meta)
+    # Every ATTEMPT, not every cell: this view is read to see whether the pool is still rotating,
+    # and an attempt that walled one account before the retry cleared on another is precisely the
+    # rotation it is read for. The report answers for the final attempt; this does not.
+    for cell in [entry for row in summary["cells"] for entry in (*row["attempts"], row)]:
         side = cell.get("side") or "?"
         reason = "ok" if cell["status"] == "completed" else cell_failure_reason(cell)
         by_side[side][reason] += 1
@@ -4836,7 +5230,9 @@ def health_tally(counts):
     total = sum(counts.values())
     failed = total - counts["ok"]
     share = f"{100 * failed / total:3.0f}%" if total else "   -"
-    detail = " · ".join(
+    # Never ' · ': the vocabulary itself carries that separator (`killed · cap`, `killed · stalled`)
+    # and joined with it one cause reads as two — `killed · cap 2 · walled 1 · killed · stalled 1`.
+    detail = ", ".join(
         f"{reason} {count}" for reason, count in counts.most_common() if reason != "ok"
     )
     return f"{failed:>3}/{total:<3} {share}  {detail}".rstrip()
@@ -5097,8 +5493,8 @@ def no_account_left_head(side):
 
 
 def no_account_left(side, note=""):
-    # The note goes on the head line: appended after the labels it would glue itself to the last
-    # one, and reported_wall_labels drops a label line that carries anything else.
+    # The note goes on the head line: appended after the labels it would glue itself to the
+    # last one, and a reader counts one wall as two.
     message = f"{no_account_left_head(side)} to run on{note}"
     if side == "opencode":
         labels = active_wall_labels(side)
@@ -5137,17 +5533,6 @@ def active_wall_labels(side):
             moment = datetime.fromtimestamp(reset_at)
             reset = f", resets {moment.strftime('%a %H:%M' if near else '%b %-d')}"
         labels.append(f"{side} {name}: {kind}{reset}")
-    return labels
-
-
-def reported_wall_labels(cells):
-    labels = []
-    for cell in cells:
-        for line in str(cell.get("stderr") or "").splitlines():
-            if re.fullmatch(r"opencode [^:]+: (?:5-hour|weekly|monthly|plan) wall"
-                            r"(?:, resets [A-Z][a-z]{2} (?:\d\d:\d\d|\d{1,2}))?", line):
-                if line not in labels:
-                    labels.append(line)
     return labels
 
 
@@ -5269,6 +5654,14 @@ def unaffordable_reason(side):
         if labels:
             return "opencode pool walled: " + ", ".join(labels) + note
     return f"{side} side is unaffordable{note}"
+
+
+def skip_state(side):
+    """The one word the report's leg row carries for a side the panel could not launch: a switch
+    somebody closed, or quota nobody has left. They read alike in a reason sentence and send the
+    reader at opposite things — one is flipped back, the other waited out.
+    """
+    return "off" if reviewers_role_off(side) else "walled"
 
 
 def measured_skill_only(rater):
@@ -8016,6 +8409,51 @@ def first_free_account(side, roster, excluded, slot, bucket="general"):
     return usable[slot % len(usable)]
 
 
+# The three answers worth asking one more time, and the only ones: a cell that produced nothing
+# readable, a provider that answered with its own fault, and a cell the panel's own cap cut off.
+# Every other cause is the cell's answer — a wall rotates accounts, a throttle is waited out by the
+# vendor's own predicate, and asking a spent plan again spends the next account too.
+CELL_RETRY_CAUSES = ("bad output", "server error", STATUS_REASONS["timed_out"])
+
+
+def cell_retry_cause(rc, text, stderr, rater):
+    """Why this attempt is worth one more, or None where its answer is the cell's answer."""
+    if rater.get("killed") == "watchdog":
+        return STATUS_REASONS["timed_out"]
+    if rc != 0:
+        reason = failure_reason(stderr)
+    elif text and is_429_error(text):
+        reason = None
+    else:
+        reason = "bad output" if unusable_review(
+            text, normalize_findings(text, rater["spec"])
+        ) else None
+    return reason if reason in CELL_RETRY_CAUSES else None
+
+
+def superseded_attempt(rater, account, result):
+    """The rater_run row a retried attempt leaves behind.
+
+    Recorded rather than dropped: what it cost is part of the cell's own stretch of the wall clock,
+    and the kill it may carry is what the next run's cap escalates on. Every surface that counts
+    CELLS reads the LAST row of a spec, so this one is never counted as a cell of its own — see
+    `cell_attempt_rows`.
+    """
+    rc, duration, _text, stderr, command = result
+    row = {
+        "rater": rater["spec"], "model": rater["model"], "effort": rater["effort"],
+        "side": rater["side"], "account": account, "duration_ms": duration,
+        "findings": 0, "exit_code": rc, "stderr": (stderr or "")[-2000:],
+        "command": redact_command(rater, command), "errored": True,
+        "timeout_s": rater.get("timeout_s"),
+        "started_at": rater.get("started_at"), "finished_at": rater.get("finished_at"),
+    }
+    for key in ("stalled_s", "max_quiet_ms", "killed", "killed_cap_s"):
+        if rater.get(key) is not None:
+            row[key] = rater[key]
+    return row
+
+
 def run_rater_task(rater, repo, sha, focus, run_dir, diff):
     """Run one rater, asking the pool for another account each time one walls off."""
     side = rater["side"]
@@ -8032,6 +8470,10 @@ def run_rater_task(rater, repo, sha, focus, run_dir, diff):
     # account's, so the fresh attempt may legitimately land on the same account — and a second
     # stall in one cell is the cell's answer, not another lap.
     stall_budget = 1
+    # One for the whole cell, not per account: the causes it answers are the run's own bad luck,
+    # and a budget per account would spend the panel's wall clock walking the pool over the same
+    # answer. Only the second failure of a cell reaches the report.
+    retry_budget = 1
     while True:
         try:
             candidate = pool_account(side, walled, rater.get("slot", 0), bucket)
@@ -8052,10 +8494,16 @@ def run_rater_task(rater, repo, sha, focus, run_dir, diff):
         rater.pop("max_quiet_ms", None)
         rater.pop("killed", None)
         rater.pop("killed_cap_s", None)
+        attempt_started = utc_now()
         try:
             result = SIDE_RUNNERS[side](rater, repo, sha, focus, run_dir, diff, candidate)
         except Exception as exc:
             return (rater, candidate, (1, 0, "", f"rater task crashed: {exc}", []))
+        # Stamped per attempt and overwritten by the retry: the report reads them to price what
+        # each cell's slot held, and a queue the run spent on the attempt nobody kept is not this
+        # cell's own wait.
+        rater["started_at"] = attempt_started.isoformat()
+        rater["finished_at"] = iso_now()
         rc, _, text, stderr, _ = result
         if rater.get("stalled_s") and stall_budget:
             stall_budget -= 1
@@ -8063,6 +8511,9 @@ def run_rater_task(rater, repo, sha, focus, run_dir, diff):
             # tight never escalates when the retry completes, and the pair burns one stall kill
             # on every run for ever — the self-correction the stall watch promises.
             rater["stalled_retry_s"] = rater["stalled_s"]
+            rater.setdefault("superseded", []).append(
+                superseded_attempt(rater, candidate, result)
+            )
             print(f"{rater['spec']}: killed as stalled — no output activity for "
                   f"{rater['stalled_s']}s; retrying once")
             continue
@@ -8087,6 +8538,15 @@ def run_rater_task(rater, repo, sha, focus, run_dir, diff):
                   f"failure ({failure_reason(stderr)}); retrying in {delay:g}s")
             if delay:
                 time.sleep(delay)
+            continue
+        retry_cause = cell_retry_cause(rc, text, stderr, rater) if retry_budget else None
+        if retry_cause:
+            retry_budget -= 1
+            rater.setdefault("superseded", []).append(
+                superseded_attempt(rater, candidate, result)
+            )
+            rater["retry_of"] = retry_cause
+            print(f"{rater['spec']}: {retry_cause}; retrying once")
             continue
         if not SIDE_WALL[side](rc, wall_text, stderr):
             return (rater, candidate, result)
@@ -8148,11 +8608,16 @@ def run_rater_chunks(rater, repo, sha, focus, run_dir, diff, chunks):
     # a watchdog or stall kill in an early chunk reaches neither the run's record nor `timed_out`,
     # and the cap that fired learns nothing from the hang it fired at.
     marks = {}
+    # Every pass overwrites `started_at` too, and the cell's `duration_ms` is the SUM of them all:
+    # left at the last chunk's stamp, the cell reads as having sat in a queue for everything the
+    # chunks before it took, and the header names a leg that never held it.
+    cell_started = None
     for chunk in chunks:
         rater["chunk"] = chunk
         _, account, last = run_rater_task(
             rater, repo, sha, focus, run_dir, chunk["diff"]
         )
+        cell_started = cell_started or rater.get("started_at")
         rc, duration, text, stderr, _ = last
         elapsed += duration
         for key in ("stalled_s", "stalled_retry_s", "killed", "killed_cap_s"):
@@ -8171,6 +8636,8 @@ def run_rater_chunks(rater, repo, sha, focus, run_dir, diff, chunks):
               f"{duration} ms, exit {rc}")
     rater.pop("chunk", None)
     rater.update(marks)
+    if cell_started:
+        rater["started_at"] = cell_started
     rater["chunks_read"] = read
     rater["passes"] = len(chunks)
     if not read:
@@ -8637,8 +9104,12 @@ def review_outcome(repo, receipt):
                         continue
                 elif (meta.get("run_id") or run_dir.name) != receipt.get("run_id"):
                     continue
+            # The FINAL attempt of each cell answers for it: a retry's superseded row keeps its
+            # own `errored`, and reading every row dropped the findings of cells that went on to
+            # complete — the very cells whose retry is why the panel has anything to count.
+            final_runs, _ = cell_attempt_rows(list(meta.get("rater_runs", ())))
             errored = {
-                entry.get("rater") for entry in meta.get("rater_runs", ())
+                entry.get("rater") for entry in final_runs
                 if entry.get("errored") and entry.get("rater")
             }
             findings += sum(
@@ -8916,7 +9387,7 @@ def fix_coverage(run_dir, session, recorded, rows, fixed):
         return []
     if not fixed or rows is None:
         return []
-    if escalation_verdict(*escalation_numbers(run_dir, meta, rows)):
+    if escalation_verdict(*escalation_numbers(run_dir, meta, rows)) is not None:
         return []
     sealed = parse_iso_timestamp(meta.get("sealed_at"))
     if sealed is None:
@@ -11536,10 +12007,13 @@ def cmd_run(args):
             # answers nothing consumes.
             available["opencode"] = opencode_pool_free()
         raters = [rater for rater in requested if cell_available(available, rater)]
-        skipped = [
-            (rater["spec"], unaffordable_reason(rater["side"]))
-            for rater in requested if not cell_available(available, rater)
-        ]
+        skipped = []
+        skip_states = {}
+        for rater in requested:
+            if cell_available(available, rater):
+                continue
+            skipped.append((rater["spec"], unaffordable_reason(rater["side"])))
+            skip_states[rater["spec"]] = skip_state(rater["side"])
         if not raters:
             # A wait with a date on it, not a malformed request: a bare refusal sends the reader
             # looking for a fault in what they asked for.
@@ -11557,6 +12031,7 @@ def cmd_run(args):
             if lens else None,
         )
         panel_skipped = []
+        skip_states = {}
     lens_dropped = []
     if lens:
         raters, lens_dropped = lens_panel(raters, lens)
@@ -11567,6 +12042,13 @@ def cmd_run(args):
     raters, cooling_skipped = apply_gateway_cooldown(raters)
     skipped = list(skipped) + cooling_skipped
     panel_skipped = list(panel_skipped) + cooling_skipped
+    skip_states.update({spec: "cooling" for spec, _ in cooling_skipped})
+    # Carried into the run's own record rather than printed and forgotten: the report's leg row is
+    # read hours later, and a side nobody launched reads as a side nobody wanted without it.
+    skip_records = [
+        {"rater": spec, "reason": reason, "state": skip_states.get(spec, "walled")}
+        for spec, reason in panel_skipped
+    ]
     # A verifiable cell is a cell the pool staffed, so its own side is the account the verifier
     # runs on: agy leads with Gemini's transport, and an OpenCode cell only launches while the
     # OpenCode pool is free. Nothing beyond this is left to ask about the verifier's reach.
@@ -11671,6 +12153,8 @@ def cmd_run(args):
         launch_meta["chunks"] = [
             {"index": chunk["index"], "paths": chunk["paths"]} for chunk in chunks
         ]
+    if skip_records:
+        launch_meta["skipped"] = skip_records
     if tier_name:
         launch_meta["tier"] = tier_name
         launch_meta["max"] = use_max
@@ -11844,6 +12328,8 @@ def cmd_run(args):
                     "findings": 0, "exit_code": rc, "stderr": stderr[-2000:] if stderr else "",
                     "command": redact_command(rater, command),
                     "errored": True, "timeout_s": rater["timeout_s"],
+                    "started_at": rater.get("started_at"),
+                    "finished_at": rater.get("finished_at"),
                 }
                 if chunks:
                     run_meta["chunks_read"] = list(rater.get("chunks_read") or ())
@@ -11861,6 +12347,11 @@ def cmd_run(args):
                     run_meta["killed_cap_s"] = rater["killed_cap_s"]
                 if model_resolved:
                     run_meta["model_resolved"] = model_resolved
+                if rater.get("retry_of"):
+                    run_meta["retry_of"] = rater["retry_of"]
+                # In attempt order and under the same spec: every surface that counts cells reads
+                # the last row of one, so the retry has to be the last row there is.
+                rater_meta.extend(rater.get("superseded") or ())
                 rater_meta.append(run_meta)
                 print(f"ERRORED (not recorded): {rater['spec']}")
             else:
@@ -11874,6 +12365,8 @@ def cmd_run(args):
                     "command": redact_command(rater, command),
                     "verifier_dropped": dropped, "verifier_unverified": unverified,
                     "timeout_s": rater["timeout_s"],
+                    "started_at": rater.get("started_at"),
+                    "finished_at": rater.get("finished_at"),
                 }
                 if chunks:
                     run_meta["chunks_read"] = list(rater.get("chunks_read") or ())
@@ -11897,6 +12390,11 @@ def cmd_run(args):
                     run_meta["verifier_by_model"] = verified_by
                 if model_resolved:
                     run_meta["model_resolved"] = model_resolved
+                if rater.get("retry_of"):
+                    run_meta["retry_of"] = rater["retry_of"]
+                # In attempt order and under the same spec: every surface that counts cells reads
+                # the last row of one, so the retry has to be the last row there is.
+                rater_meta.extend(rater.get("superseded") or ())
                 rater_meta.append(run_meta)
                 print(f"{rater['spec']}: {len(findings)} finding(s), {duration} ms, exit {rc}")
             report_late_review(
@@ -11944,6 +12442,8 @@ def cmd_run(args):
             ]
         if chunks:
             meta["chunks"] = launch_meta["chunks"]
+        if skip_records:
+            meta["skipped"] = skip_records
         if tier_name:
             meta["tier"] = tier_name
             meta["max"] = use_max
@@ -11954,7 +12454,10 @@ def cmd_run(args):
         # provider answering `gateway timeout` is an ordinary failed cell. A cell whose retry
         # stalled too is that same hung review, killed earlier: `watchdog_killed` excludes it only
         # so a stall never inflates the pair's duration cap, not to keep the run quiet.
-        if any(watchdog_killed(row) or row.get("stalled_s") for row in rater_meta):
+        # Over the cells' FINAL rows: an attempt the panel killed and then retried into a real
+        # review is not a hung run, and the superseded row beside it is kept for the cap it teaches.
+        if any(watchdog_killed(row) or row.get("stalled_s")
+               for row in cell_attempt_rows(rater_meta)[0]):
             meta["timed_out"] = True
         meta.update(lens_meta)
         (run_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
@@ -12512,11 +13015,16 @@ def frontier_inputs(sd, commits=None):
         run_id = meta.get("run_id") or path.name
         # `raters` holds the cells that answered; `rater_runs` holds every attempt, errored ones
         # included. An attempt that failed found nothing, which is the outcome a composition
-        # actually delivers, so it belongs in the denominator.
-        for entry in meta.get("rater_runs", ()):
+        # actually delivers, so it belongs in the denominator — but an in-run retry is ONE
+        # delivery, so the cell is read at its last row and priced at what the whole chain cost.
+        rows, superseded = cell_attempt_rows(
+            [row for row in meta.get("rater_runs", ()) if isinstance(row, dict)]
+        )
+        for entry in rows:
             rater = entry.get("rater")
             if not rater:
                 continue
+            attempts = superseded.get(rater) or ()
             # Two specs in one run may normalise to the same cell, so an attempt is identified
             # by the name it ran under: collapsing them would count two attempts and one catch.
             counted_runs[commit].add((run_id, rater))
@@ -12525,8 +13033,11 @@ def frontier_inputs(sd, commits=None):
             run_counts[(commit, rater)] += 1
             if entry.get("errored"):
                 errors[(commit, rater)] += 1
-            if entry.get("duration_ms"):
-                durations[rater].append(entry["duration_ms"] / 60000)
+            chain_ms = report_ms(entry.get("duration_ms")) + sum(
+                report_ms(row.get("duration_ms")) for row in attempts
+            )
+            if chain_ms:
+                durations[rater].append(chain_ms / 60000)
     comparable = set.intersection(*ran.values()) if ran else set()
     comparable = {rater for rater in comparable if durations.get(rater)}
     excluded = sorted(set().union(*ran.values()) - comparable) if ran else []
@@ -12699,7 +13210,10 @@ def opencode_health():
             meta = json.loads(meta_path.read_text())
         except json.JSONDecodeError:
             continue
-        for row in meta.get("rater_runs", []):
+        rows, superseded = cell_attempt_rows(
+            [row for row in meta.get("rater_runs", ()) if isinstance(row, dict)]
+        )
+        for row in rows:
             if row.get("side") != "opencode":
                 continue
             # Keyed by cell, not model: the whole point is that the configuration
@@ -12715,8 +13229,12 @@ def opencode_health():
                 detail = " ".join((row.get("stderr") or "").split())
                 entry["last_error"] = f"{meta.get('run_id', '?')}: {detail[-90:]}"
             else:
-                if row.get("duration_ms"):
-                    entry["seconds"].append(round(row["duration_ms"] / 1000))
+                duration_ms = report_ms(row.get("duration_ms")) + sum(
+                    report_ms(attempt.get("duration_ms"))
+                    for attempt in superseded.get(row.get("rater"), ())
+                )
+                if duration_ms:
+                    entry["seconds"].append(round(duration_ms / 1000))
                 entry["findings"].append(row.get("findings") or 0)
     return health
 
@@ -13381,6 +13899,12 @@ def main():
         help="Refuse the run (exit 2) unless this chat launched it",
     )
     report.set_defaults(func=cmd_report)
+    fork = subparsers.add_parser(
+        "fork",
+        help="Print which way a triaged round goes from here, for the report hook's context",
+    )
+    fork.add_argument("run_id")
+    fork.set_defaults(func=cmd_fork)
     pending = subparsers.add_parser(
         "pending-report",
         help="Name the worktree run still owing a triaged report (exit 1 if none)",

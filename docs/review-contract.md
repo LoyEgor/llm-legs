@@ -342,17 +342,42 @@ claim a cap that may never have operated.
 
 ## Report rows for cells that died
 
-`errored:` and `timeout:` carry each dead cell's own numbers — its duration, then
-in parentheses the budget that killed it (`watchdog cap 17 min`,
-`stalled, quiet 6 min`), a short reason tag on `errored:` entries (a timeout IS
-its row's reason), and, at three or more consecutive failing runs,
-`3 fails in a row`. The streak is counted over the runs that held
-that cell; a panel it was never part of is passed over rather than read as a
-recovery. `wall gated by:` appears whenever the slowest cell of the run is not a
-completed one — the hang held every later cell back and appears in neither the
-wall nor `slowest completed`. `cells:` is ordered by usefulness: confirmed
-findings first, then raw findings, then name — and once a triage holds
-verdicts each cell reads confirmed/found, so the order is visible.
+One `failed:` row per family AND cause — name, cause, duration — and no panel cell
+is unaccounted for: every one of them stands in `found:`, `noise:`, `quiet:`,
+`echoed:`, `untriaged:` or `failed:`, because the cell that broke silently is the
+one nobody goes looking for. Not a partition — a cell is listed in `found:` per
+confirmed finding and in `noise:` per rejected one, so a cell with both appears in
+two rows. `quiet:`, `echoed:` and `untriaged:` name cells by a count alone and are
+three different facts: a
+cell that claimed nothing is `quiet`, one whose every claim another cell had
+already made is `echoed`, and one whose findings nobody judged — the whole panel
+of an untriaged `--raters` run — is `untriaged`. Read as one word they all said a
+cell had found nothing. The cause is one
+word of a closed vocabulary — the status words `not run`, `killed · cap`,
+`killed · stalled` and `mismatch`, and whatever the failure's own text names:
+`pool empty`, `walled`, `throttled`, `bare 429`, `bad output`, `capacity`,
+`server error`, `root commit`, `permission`, `bad command`, `stalled`, `timeout`,
+`crashed`, `auth`, plus `no output` for a silent failure and `unclassified` for
+text that matches nothing (`FAILURE_REASONS` and `STATUS_REASONS` are the two
+lists; nothing narrows them on the way to the row, so a reader switching on a
+shorter list misses real causes) — and the two `killed` ones name OUR cap and OUR
+silence watch alone: a
+provider that timed out on its own is not the panel stopping a cell. At
+`CHRONIC_FAILURE_STREAK` consecutive failing runs the cause carries
+`3 runs in a row` — below that a cell is merely unlucky. The streak is counted
+over the runs that held that cell; a panel it was never part of is passed over
+rather than read as a recovery. A whole side no cell was launched on collapses
+into one CAPS row naming what the run recorded about that side — `CLAUDE LEG
+WALLED`, `COOLING`, `OFF`, and `NOT RUN` where nothing was recorded at all, since
+`off` is a switch Egor closed and not a default — and a `not_run` instance whose sibling
+failed inherits the sibling's cause. The header prices the run instead of listing
+it: the wall clock, the longest CHAIN inside it (a cell plus the retry and
+verification that ran after it), the `LOST` minutes nothing in the block accounts
+for — the chain plus every other cell's verification, which runs serially after
+the panel — and then the members and chunks a merged or chunked round read. The
+header carries NO time of its own: a current block is about now by construction,
+and the one timestamp a report ever prints is the finish date the STALE frame word
+carries, for the block that is not about the tree in front of the reader.
 
 ## Launches and reports
 
@@ -403,11 +428,25 @@ byte for byte the one it always was. The numbers are measured, not chosen (`diff
 and Codex cells die on a few percent of their cells under 1500 lines, ~16% between 1500 and
 2000, ~29% past 3000, while the cells that read a clone show no such trend.
 
-**Two frame words, two delivered states** (invariant `as`). `review` — the fixes
-are done, or there was nothing to fix. `review · NOT FINISHED` — and ONLY this —
-is a round whose fix status is `blocked`: the pass stopped at the P1 threshold
-and fixed nothing, and the block carries the fork (fix as it stands / rewrite the
-weak block / cut the scope) as Egor's decision, not the fixer's. A round whose
+**Five frame words, two delivered states** (invariant `as`). The word is the only
+place a block states its state. `review` — the fixes are done, or there was
+nothing to fix. `review · NOT FINISHED` — and ONLY this — is a round whose fix
+status is `blocked`: the pass stopped at the P1 threshold and fixed nothing.
+`review · NO PANEL` names a run no cell completed. `review · STALE · <D Mon>`
+names a block that is not about the tree in front of the reader, on either of two
+counts and never on a clock: the report was not handed over at `record` time —
+`settle-delivery` had to queue it, or wrote it off as lapsed — or the content it
+priced has moved, its `reviewed` snapshot priced by the same `repo_debt` a
+`--debt` review is scoped with. Its date is the run's own finish, in the reader's
+zone, and is the frame's only timestamp: a current block is about now by
+construction, so the header carries no time at all. `bench` is an untiered
+explicit-`--raters` panel, which is no review round and settles no debt. A
+watchdog kill has NO word of its own: the cell it killed says so on its `failed:`
+row (`killed · cap`, `killed · stalled`) and how much of the diff the survivors
+covered is the triage receipt's to answer, not the frame's. The fork (fix as it
+stands / rewrite the weak block / cut the scope) is NOT in the block:
+`review-bench fork <run-id>` prints it for the report hook to hand the model,
+which is who acts on it, while Egor reads the block. A round whose
 fixing pass has not answered wears the PLAIN word and says so in its `fixes:`
 row, at any age, and no hook ever delivers it — a loud word derived from "no
 fixes recorded" reports failure while the fixes are still landing, and promoting

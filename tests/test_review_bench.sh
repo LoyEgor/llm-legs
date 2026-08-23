@@ -7,6 +7,11 @@ STATS="$ROOT/bin/worker-stats"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
+# A STALE frame dates itself in the READER's zone, so a suite that leaves the zone to the machine
+# passes only where its author sits. Fixed, offset and DST-free, and deliberately not UTC — under
+# UTC the conversion that word does would go unmeasured.
+export TZ=Asia/Tokyo
+
 asserts=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
@@ -40,14 +45,15 @@ rb = importlib.util.module_from_spec(spec)
 loader.exec_module(rb)
 # The frame is the contract, not a marker string: a header of the word centered in '=' to exactly
 # 50 characters, a footer of 50 of them, and both parseable by the shapes every consumer keys on.
-assert rb.REPORT_BEGIN == "=" * 21 + " review " + "=" * 21, rb.REPORT_BEGIN
+plain_frame = rb.report_frame_header(rb.REPORT_FRAME_WORD)
+assert plain_frame == "=" * 21 + " review " + "=" * 21, plain_frame
 assert rb.REPORT_END == "=" * 50, rb.REPORT_END
-assert len(rb.REPORT_BEGIN) == 50 and len(rb.REPORT_END) == 50
-assert re.fullmatch(r"=+ [a-z]+ =+", rb.REPORT_BEGIN), rb.REPORT_BEGIN
+assert len(plain_frame) == 50 and len(rb.REPORT_END) == 50
+assert re.fullmatch(r"=+ [a-z]+ =+", plain_frame), plain_frame
 assert re.fullmatch(r"={10,}", rb.REPORT_END), rb.REPORT_END
 # The footer shape must not swallow the header: a consumer that reads the block by its end would
 # close it on the line that opens it.
-assert not re.fullmatch(r"={10,}", rb.REPORT_BEGIN)
+assert not re.fullmatch(r"={10,}", plain_frame)
 # An odd remainder goes to the right, and the total stays exactly 50 whatever the word costs.
 for frame_word, frame_left in (("review", 21), ("notes", 21), ("comments", 20)):
     frame_header = rb.report_frame_header(frame_word)
@@ -61,27 +67,45 @@ for long_word in ("a" * 48, "a" * 60):
     long_header = rb.report_frame_header(long_word)
     assert re.fullmatch(r"=+ [a-z]+ =+", long_header), long_header
     assert len(long_header) > 50, long_header
-# A round whose fixing pass STOPPED at the P1 threshold wears the same frame with a louder word,
-# and it is the only second word there is: both of them keep the shape the hooks find blocks by,
-# and a report that stops matching it is one Egor never sees. A round merely still owing an answer
-# keeps the plain word — the loud one read off "no fixes recorded" is what put NOT FINISHED in
-# front of Egor over a round whose fixes were landing.
-assert rb.REPORT_BLOCKED_BEGIN == "=" * 13 + " review · NOT FINISHED " + "=" * 14, \
-    rb.REPORT_BLOCKED_BEGIN
-frame_shape = re.compile(r"=+ review(?: · NOT FINISHED)? =+")
-for frame_line in (rb.REPORT_BEGIN, rb.REPORT_BLOCKED_BEGIN):
-    assert len(frame_line) == 50, frame_line
-    assert frame_shape.fullmatch(frame_line), frame_line
-    assert not re.fullmatch(r"={10,}", frame_line), frame_line
-assert rb.REPORT_BEGIN != rb.REPORT_BLOCKED_BEGIN
-# No third word exists to be framed in or delivered under: the module builds exactly these two.
-assert sorted(
-    name for name in vars(rb) if name.startswith("REPORT_") and name.endswith("_BEGIN")
-) == ["REPORT_BEGIN", "REPORT_BLOCKED_BEGIN"], sorted(vars(rb))
+# The state a block is in is carried by its word and by nothing below it, and every one of those
+# words keeps the shape the hooks find blocks by: a report that stops matching it is one Egor
+# never sees. A round merely still owing an answer keeps the plain word — the loud one read off
+# "no fixes recorded" is what put NOT FINISHED in front of Egor over a round whose fixes were
+# landing at that moment.
+assert rb.REPORT_FRAME_WORDS == (
+    "review", "review · NOT FINISHED", "review · NO PANEL", "review · STALE", "bench",
+), rb.REPORT_FRAME_WORDS
+frame_shape = re.compile(
+    r"=+ (?:bench|review(?: · (?:NOT FINISHED|NO PANEL|STALE · \d{1,2} [A-Za-z]{3}))?) =+"
+)
+for state_word in rb.REPORT_FRAME_WORDS:
+    # The stale word is the one that carries a date, and it is never rendered without one.
+    rendered = rb.report_frame_header(
+        f"{state_word} · 19 Aug" if state_word == rb.REPORT_STALE_WORD else state_word
+    )
+    assert len(rendered) == 50, rendered
+    assert frame_shape.fullmatch(rendered), rendered
+    assert not re.fullmatch(r"={10,}", rendered), rendered
+assert len(set(rb.REPORT_FRAME_WORDS)) == len(rb.REPORT_FRAME_WORDS)
+# No frame is built out of a constant any more: the word is picked per run, so a state word that
+# reached no emitter is a state no report can wear.
+assert not [name for name in vars(rb) if name.startswith("REPORT_") and name.endswith("_BEGIN")], \
+    sorted(vars(rb))
 assert rb.DELIVERY_STATES == ("done", "blocked"), rb.DELIVERY_STATES
-rb.REPORT_BEGIN = "FIXTURE-REVIEW-REPORT-BEGIN"
-rb.REPORT_BLOCKED_BEGIN = "FIXTURE-REVIEW-REPORT-BLOCKED-BEGIN"
+# Every block the suite prints wears a fixture frame instead of the real one: the review hooks
+# read the tool output of whatever runs in a chat, and a real frame here is a report Egor is
+# handed over a fixture nobody reviewed.
+rb.report_frame_header = lambda word, width=rb.REPORT_FRAME_WIDTH: (
+    f"FIXTURE-REVIEW-REPORT-BEGIN {word}"
+)
 rb.REPORT_END = "FIXTURE-REVIEW-REPORT-END"
+FIXTURE_FRAME_PREFIX = "FIXTURE-REVIEW-REPORT-BEGIN"
+
+
+def fixture_frame(word=rb.REPORT_FRAME_WORD):
+    return rb.report_frame_header(word)
+
+
 assert rb.TRIAGE_PENDING == "REVIEW-TRIAGE-PENDING"
 rb.TRIAGE_PENDING = "FIXTURE-REVIEW-TRIAGE-PENDING"
 fixtures = pathlib.Path(sys.argv[2])
@@ -790,24 +814,36 @@ def rendered_tiers_table():
     return buffer.getvalue()
 
 tiers_table_before = rendered_tiers_table()
+newcomer_specs = ("grok-low", "opus-high-skill", "oc-grok45-low", "opus-high")
 newcomer_rows = [
     {"rater": spec, "side": rb.rater_side(spec) or "grok", "duration_ms": 1000,
-     "findings": 0, "exit_code": 0}
-    for spec in ("grok-low", "opus-high-skill", "oc-grok45-low", "opus-high")
+     "findings": 1, "exit_code": 0}
+    for spec in newcomer_specs
 ]
 newcomer_dir = work / "newcomer-report"
 newcomer_dir.mkdir()
+for spec in newcomer_specs:
+    (newcomer_dir / f"findings-{spec}.jsonl").write_text(
+        json.dumps({"file": "a.py", "line": 1, "severity": "P2", "summary": spec}) + "\n"
+    )
+(newcomer_dir / "verdicts.jsonl").write_text("".join(
+    json.dumps({"rater": spec, "idx": 0, "verdict": "confirmed"}) + "\n"
+    for spec in newcomer_specs
+))
 newcomer_report = rb.report_lines(newcomer_dir, {
-    "run_id": "newcomer", "raters": [row["rater"] for row in newcomer_rows],
+    "run_id": "newcomer", "raters": list(newcomer_specs),
     "rater_runs": newcomer_rows,
     "started": "2026-07-30T00:00:00+00:00", "finished": "2026-07-30T00:00:01+00:00",
 })
-newcomer_cells = [line for line in newcomer_report if line.startswith("cells:")][0]
-assert "grok 0" in newcomer_cells and "grok-low 0" in newcomer_cells, newcomer_cells
-assert "opus-high 0" in newcomer_cells and "opus-high-bare 0" in newcomer_cells, newcomer_cells
+newcomer_found = {
+    tuple(line.split()[-2:]) for line in newcomer_report if line.strip().endswith("1/1")
+}
+assert newcomer_found == {
+    ("grok", "1/1"), ("grok-low", "1/1"), ("opus-high", "1/1"), ("opus-high-bare", "1/1"),
+}, newcomer_report
 assert rendered_tiers_table() == tiers_table_before
-# The confirmed/found form keys on the triage having HAPPENED, not on anything surviving it: a run
-# whose findings were all rejected must read 0/2, which is the opposite of an untriaged 2.
+# A cell whose every claim was rejected is in `noise:` and nowhere else: printed as 0/2 beside the
+# cells that found something, the row that answers "which cells earned their place" would name it.
 rejected_dir = work / "rejected-triage-report"
 rejected_dir.mkdir()
 (rejected_dir / "verdicts.jsonl").write_text("".join(
@@ -820,8 +856,10 @@ rejected_report = rb.report_lines(rejected_dir, {
                     "findings": 2, "exit_code": 0}],
     "started": "2026-07-30T00:00:00+00:00", "finished": "2026-07-30T00:00:01+00:00",
 })
-rejected_cells = [line for line in rejected_report if line.startswith("cells:")][0]
-assert "sol-high 0/2" in rejected_cells, rejected_cells
+assert [line for line in rejected_report if line.startswith("noise:")] == \
+    ["noise:        sol-high 2"], rejected_report
+assert not [line for line in rejected_report if line.startswith(("found:", "quiet:"))], \
+    rejected_report
 # The report frames read the same table through the spec they store.
 assert rb.human_cell_name("oc-kimik3#2") == "kimi"
 assert rb.human_cell_name("sol-high-bare") == "sol-high-bare"
@@ -1015,6 +1053,55 @@ assert ratchet_pair not in rb.panel_cell_history(ratchet_history)[4], \
 ratchet_run("20260101T001200Z-lll", kill_at=900)
 assert rb.panel_watchdog_timeouts(ratchet_history)[ratchet_pair] == 1080, \
     rb.panel_watchdog_timeouts(ratchet_history)
+# A cap kill an in-run RETRY replaced still teaches the next cap, exactly as a stall kill does.
+# Cleared with the completion the retry produced — the two rows share a spec, so the pair counts as
+# having completed — a cap that is merely too tight escalated on no run at all and the pair paid
+# the same kill for ever. It costs no strike: the retry is the proof the cell works.
+(ratchet_history / "20260101T001300Z-mmm").mkdir(parents=True)
+(ratchet_history / "20260101T001300Z-mmm" / "meta.json").write_text(json.dumps({"rater_runs": [
+    {"rater": "sol-high", "model": "sol", "effort": "high", "side": "codex",
+     "duration_ms": 1_088_000, "timeout_s": 1080, "findings": 0, "exit_code": 124,
+     "errored": True, "stderr": "rater timed out after 1080s"},
+    {"rater": "sol-high", "model": "sol", "effort": "high", "side": "codex",
+     "duration_ms": 600_000, "findings": 2, "exit_code": 0},
+]}))
+assert rb.panel_watchdog_timeouts(ratchet_history)[ratchet_pair] == 1260, \
+    rb.panel_watchdog_timeouts(ratchet_history)
+assert ratchet_pair not in rb.panel_cell_history(ratchet_history)[4], \
+    rb.panel_cell_history(ratchet_history)[4]
+# And a cell killed in the attempt AND in the retry is a dead cell, not a proven one: the run
+# produced no completion, so its superseded kill teaches nothing and must not re-enter the record
+# the strike loop pops. Re-entered, the third strike never reached the floor and one dead cell
+# climbed a grace per run for ever at 2x the cap per panel — the 2026-08-16 incident again.
+dead_retry_history = work / "watchdog-dead-retry-history"
+def dead_retry_run(run_id, kill_at):
+    directory = dead_retry_history / run_id
+    directory.mkdir(parents=True)
+    row = {"rater": "sol-high", "model": "sol", "effort": "high", "side": "codex",
+           "duration_ms": kill_at * 1000 + 8_000, "timeout_s": kill_at, "findings": 0,
+           "exit_code": 124, "errored": True,
+           "stderr": f"rater timed out after {kill_at}s"}
+    (directory / "meta.json").write_text(json.dumps({"rater_runs": [row, dict(row)]}))
+dead_retry_run("20260101T000100Z-aaa", 900)
+assert rb.panel_watchdog_timeouts(dead_retry_history)[ratchet_pair] == 1080, \
+    rb.panel_watchdog_timeouts(dead_retry_history)
+assert rb.panel_cell_history(dead_retry_history)[4][ratchet_pair] == 1, \
+    rb.panel_cell_history(dead_retry_history)[4]
+dead_retry_run("20260101T000200Z-bbb", 1080)
+assert rb.panel_watchdog_timeouts(dead_retry_history)[ratchet_pair] == 1260, \
+    rb.panel_watchdog_timeouts(dead_retry_history)
+dead_retry_run("20260101T000300Z-ccc", 1260)
+# A pair with no completion on file drops out of the map entirely on the pop, which is the floor:
+# the caller reads the cap it never earned an override for.
+assert rb.panel_watchdog_timeouts(dead_retry_history).get(
+    ratchet_pair, rb.WATCHDOG_FLOOR_S) == rb.WATCHDOG_FLOOR_S, \
+    rb.panel_watchdog_timeouts(dead_retry_history)
+assert ratchet_pair not in rb.panel_cell_history(dead_retry_history)[4], \
+    rb.panel_cell_history(dead_retry_history)[4]
+# The cycle repeats from the floor rather than resuming the old climb.
+dead_retry_run("20260101T000400Z-ddd", 900)
+assert rb.panel_watchdog_timeouts(dead_retry_history)[ratchet_pair] == 1080, \
+    rb.panel_watchdog_timeouts(dead_retry_history)
 
 # The stall cap under the duration cap is earned per (model, effort) pair: the longest silent gap
 # its completions ever showed, plus grace over a floor — and only where those gaps stay well under
@@ -1077,7 +1164,22 @@ assert rb.panel_watchdog_timeouts(stall_history)[("agy-flash36", "medium")] == 1
     rb.panel_watchdog_timeouts(stall_history)
 # The report tells a silent cell from a slow one: the reader deciding whether to trust the panel
 # needs the difference.
-assert rb.cell_failure_reason({"status": "timed_out", "stalled_s": 240, "stderr": ""}) == "stalled"
+assert rb.cell_failure_reason({"status": "timed_out", "stalled_s": 240, "stderr": ""}) \
+    == "killed · stalled"
+assert rb.cell_failure_reason({
+    "status": "timed_out", "exit_code": 124, "stderr": "rater timed out after 900s",
+}) == "killed · cap"
+# And a cap of ours from a provider that gave up on its own: `cell_status` reads either wording as
+# a timeout, and the row that blames our cap for the second sends the reader to raise one that
+# never operated. The agy side is the exception — its cap IS the client `--print-timeout`.
+assert rb.cell_failure_reason({
+    "status": "timed_out", "side": "codex", "exit_code": 1,
+    "stderr": "Error: timeout waiting for response",
+}) == "timeout"
+assert rb.cell_failure_reason({
+    "status": "timed_out", "side": "agy", "exit_code": 1,
+    "stderr": "Error: timeout waiting for response",
+}) == "killed · cap"
 assert rb.failure_reason("rater stalled: no output activity for 241s") == "stalled"
 
 # A cell that has failed every run for days is not the same news as one that failed today, and the
@@ -1202,21 +1304,45 @@ try:
     assert stalled_rater["killed"] == "stall", stalled_rater
     assert stalled_rater["killed_cap_s"] == 240 and stalled_rater["stalled_s"] == 240
     assert stalled_rater["max_quiet_ms"] == 360_000, stalled_rater
-    # A cell that ended itself claims neither key, which is the whole difference the report reads.
-    assert rb.cell_kill_note({"exit_code": 1, "stderr": "Error: timeout waiting for response"}) \
-        is None
-    assert rb.cell_kill_note({"killed": "watchdog", "killed_cap_s": 1020}) \
-        == "watchdog cap 17 min"
-    assert rb.cell_kill_note({"killed": "stall", "killed_cap_s": 240,
-                              "max_quiet_ms": 360_000}) == "stalled, quiet 6 min"
-    # A stall kill recorded before `killed` existed is marked by `stalled_s` alone.
-    assert rb.cell_kill_note({"stalled_s": 240}) == "stalled, cap 4 min"
-    # A watchdog kill recorded before `killed` existed is marked by its shape, and the cap that
-    # operated is the row's own `timeout_s` — while a provider's `gateway timeout` names no cap.
-    assert rb.cell_kill_note({"exit_code": 124, "timeout_s": 1020, "side": "codex",
-                              "stderr": "rater timed out after 1020s"}) == "watchdog cap 17 min"
-    assert rb.cell_kill_note({"exit_code": 1, "timeout_s": 900, "side": "opencode",
-                              "stderr": "gateway timeout"}) is None
+    # The kill MARKER and not the exit code is what earns a cell its one retry: a provider's own
+    # `gateway timeout` reads as the same status, and asking it again is a lap the panel does not
+    # owe. Only these three causes are worth a second attempt — a wall rotates accounts instead,
+    # and asking a spent plan again spends the next account too.
+    assert rb.CELL_RETRY_CAUSES == ("bad output", "server error", "killed · cap"), \
+        rb.CELL_RETRY_CAUSES
+    assert rb.cell_retry_cause(
+        124, "", "rater timed out after 900s",
+        {"spec": "agy-pro-high-skill", "killed": "watchdog"},
+    ) == "killed · cap"
+    assert rb.cell_retry_cause(
+        124, "", "rater timed out after 900s", {"spec": "agy-pro-high-skill"}
+    ) is None
+    assert rb.cell_retry_cause(1, "", "gateway timeout", {"spec": "oc-kimik3"}) is None
+    assert rb.cell_retry_cause(1, "", "gateway said 503", {"spec": "oc-kimik3"}) == "server error"
+    assert rb.cell_retry_cause(
+        1, "", "GoUsageLimitError limitName=opencode-plan", {"spec": "oc-kimik3"}
+    ) is None
+    assert rb.cell_retry_cause(0, "prose about the diff", "", {"spec": "oc-kimik3"}) == "bad output"
+    assert rb.cell_retry_cause(
+        0,
+        json.dumps({"file": "a.py", "line": 1, "severity": "P2", "summary": "real"}),
+        "", {"spec": "oc-kimik3"},
+    ) is None
+    assert rb.cell_retry_cause(
+        0, '{"is_error":true,"api_error_status":429}', "", {"spec": "oc-kimik3"}
+    ) is None
+    # And a superseded attempt is recorded whole, the kill it carries included: it is the only
+    # evidence the next run's cap can escalate on.
+    retried_attempt = rb.superseded_attempt(
+        {"spec": "agy-pro-high-skill", "model": "agy-pro", "effort": "high", "side": "agy",
+         "timeout_s": 900, "killed": "watchdog", "killed_cap_s": 900, "stalled_s": None,
+         "started_at": "2026-08-22T00:00:00+00:00", "finished_at": "2026-08-22T00:15:00+00:00"},
+        "work", (124, 900_000, "", "rater timed out after 900s", ["fixture"]),
+    )
+    assert retried_attempt["killed"] == "watchdog" and retried_attempt["errored"] is True
+    assert retried_attempt["duration_ms"] == 900_000 and retried_attempt["findings"] == 0
+    assert retried_attempt["started_at"] == "2026-08-22T00:00:00+00:00"
+    assert "stalled_s" not in retried_attempt, retried_attempt
 
     # The tail a dying cell flushes must reach the exception whole: taken mid-pump, the
     # transcript is cut exactly where the kill's own evidence would be. The marker comes from a
@@ -1312,29 +1438,23 @@ max_tier_dir = work / "max-tier-report"
 max_tier_dir.mkdir()
 assert rb.tier_from_meta(max_tier_meta) == "T3 max"
 assert rb.review_log_event("run", max_tier_dir, max_tier_meta)["tier"] == "T3 max"
-assert rb.report_lines(max_tier_dir, max_tier_meta)[0].startswith(
-    "review-bench panel · T3 max · "
-), rb.report_lines(max_tier_dir, max_tier_meta)[0]
-# Every cell that completed, the empty-handed ones included: a row listing only the cells that
-# found something reads exactly like a run where the rest never started.
-max_tier_cells = [
-    line for line in rb.report_lines(max_tier_dir, max_tier_meta)
-    if line.startswith("cells:")
-]
-assert len(max_tier_cells) == 1, rb.report_lines(max_tier_dir, max_tier_meta)
-# Under the same names every other row of the block uses: a reader comparing the cell row against
-# the errored one below it would otherwise be matching slugs against model names by hand. Ordered
-# by usefulness, which for a panel that all found nothing is the name.
-assert max_tier_cells[0].split(":", 1)[1].strip() == " · ".join(
-    f"{name} 0"
-    for name in sorted(rb.human_cell_name(row["rater"]) for row in max_tier_rows)
-), max_tier_cells[0]
-assert "oc-kimik3" not in max_tier_cells[0], max_tier_cells[0]
+max_tier_report = rb.report_lines(max_tier_dir, max_tier_meta)
+# The label is the tier and the value prices the run: what it took, and the longest chain inside
+# it. The frame word above says what state it is in, and no row repeats that.
+assert max_tier_report[0].startswith("T3 max:"), max_tier_report[0]
+# Every completed cell that found nothing is COUNTED and not named: named beside the cells that
+# found something, the row that answers "which cells earned their place" would name all of them.
+assert [line for line in max_tier_report if line.startswith("quiet:")] == [
+    f"quiet:        {len(max_tier_rows)} cells"
+], max_tier_report
+assert not [
+    line for line in max_tier_report if line.startswith(("found:", "noise:", "failed:"))
+], max_tier_report
 # A summary written before the count was stored costs its own cell a number, and nothing else:
-# reading the key outright takes the whole block down, errored rows and all, on the one run whose
+# reading the key outright takes the whole block down, failed rows and all, on the one run whose
 # failures the reader most needs.
 legacy_cells_meta = {
-    "run_id": "legacy-cells",
+    "run_id": "legacy-cells", "tier": "T1",
     "raters": ["opus-medium", "sol-high"],
     "rater_runs": [
         {"rater": "opus-medium", "side": "claude", "duration_ms": 1000, "exit_code": 0},
@@ -1355,16 +1475,16 @@ try:
     legacy_cells_report = rb.report_lines(legacy_cells_dir, legacy_cells_meta)
 finally:
     rb.bench_summary = stored_bench_summary
-legacy_cells_row = [line for line in legacy_cells_report if line.startswith("cells:")]
-assert len(legacy_cells_row) == 1, legacy_cells_report
-assert legacy_cells_row[0].split(":", 1)[1].strip() == "opus-med-bare 0", legacy_cells_row[0]
-assert any(line.startswith("errored:") for line in legacy_cells_report), legacy_cells_report
+assert [line for line in legacy_cells_report if line.startswith("quiet:")] == [
+    "quiet:        1 cells"], legacy_cells_report
+assert [line for line in legacy_cells_report if line.startswith("failed:")] == [
+    "failed:       sol-high  unclassified"], legacy_cells_report
 pending_report = io.StringIO()
 with contextlib.redirect_stdout(pending_report):
     rb.emit_report(max_tier_dir, max_tier_meta)
 # An untriaged run gets no markers: they are what the report hook keys on, and a run of cells
 # carrying them is exactly the empty report that used to reach the reader.
-assert rb.REPORT_BEGIN not in pending_report.getvalue()
+assert FIXTURE_FRAME_PREFIX not in pending_report.getvalue()
 assert rb.REPORT_END not in pending_report.getvalue()
 pending_report_lines = pending_report.getvalue().splitlines()
 assert pending_report_lines[0] == (
@@ -1377,7 +1497,11 @@ marked_report = io.StringIO()
 with contextlib.redirect_stdout(marked_report):
     rb.emit_report(max_tier_dir, max_tier_meta, [])
 marked_lines = marked_report.getvalue().splitlines()
-assert marked_lines[0] == rb.REPORT_BEGIN and marked_lines[-1] == rb.REPORT_END
+# Weeks past its own `finished` and still the PLAIN word: age is not what makes a block stale. This
+# run's report was handed over when it was recorded and the content it read is untouched, so there
+# is nothing about it a date would tell the reader (the two things that do are asserted below).
+assert marked_lines[0] == fixture_frame(), marked_lines
+assert marked_lines[-1] == rb.REPORT_END, marked_lines
 # `record --no-corpus` leaves only the receipt behind, and its rows are the triage's one copy:
 # a re-render of the run — the report hook recovering a capture whose closing rule the
 # tool-output window cut — must produce the frame from them, never answer "pending".
@@ -1389,21 +1513,20 @@ receipt_report = io.StringIO()
 with contextlib.redirect_stdout(receipt_report):
     rb.emit_report(max_tier_dir, max_tier_meta)
 receipt_lines = receipt_report.getvalue().splitlines()
-# Framed in the PLAIN word: the receipt confirms a finding and nothing says it was fixed, which
-# is a round still owing an answer — the model may read that block and no hook may deliver it.
-assert receipt_lines[0] == rb.REPORT_BEGIN, receipt_lines
+assert receipt_lines[0] == fixture_frame(), receipt_lines
 assert receipt_lines[-1] == rb.REPORT_END, receipt_lines
-assert any(line.startswith("confirmed 1:") for line in receipt_lines), receipt_lines
-assert any(line.startswith("fixes:") for line in receipt_lines), receipt_lines
-# And age is no part of that answer: this fixture's triage is weeks behind the window a fixer
-# could still be inside, and the same run stamped a second ago renders the same word. A round
-# nobody answered for growing a louder frame with the clock is what re-delivered rounds Egor had
-# already read, under a word their own receipt never said.
+assert any(line.startswith("confirmed:") for line in receipt_lines), receipt_lines
+# A round still owing an answer keeps the ordinary word: the loud one read off "no fixes
+# recorded" is what put NOT FINISHED in front of Egor over a round whose fixes were landing at
+# that moment. Only a fixing pass that STOPPED earns it.
 fresh_meta = dict(max_tier_meta, finished=rb.iso_now())
 fresh_report = io.StringIO()
 with contextlib.redirect_stdout(fresh_report):
     rb.emit_report(max_tier_dir, fresh_meta)
-assert fresh_report.getvalue().splitlines()[0] == rb.REPORT_BEGIN, fresh_report.getvalue()
+fresh_lines = fresh_report.getvalue().splitlines()
+assert fresh_lines[0] == fixture_frame(), fresh_report.getvalue()
+# The confirmed finding nobody has answered is the one row that must survive both words.
+assert any(line.startswith("fixes:") for line in fresh_lines), fresh_lines
 assert rb.round_state(max_tier_dir) == "pending"
 # Named by no delivery line at either age: `pending` is the one state with no key of its own.
 assert rb.delivery_state(max_tier_dir) is None
@@ -1413,8 +1536,11 @@ clean_receipt_report = io.StringIO()
 with contextlib.redirect_stdout(clean_receipt_report):
     rb.emit_report(max_tier_dir, max_tier_meta)
 clean_receipt_lines = clean_receipt_report.getvalue().splitlines()
-assert clean_receipt_lines[0] == rb.REPORT_BEGIN, clean_receipt_lines
+assert clean_receipt_lines[0] == fixture_frame(), clean_receipt_lines
 assert clean_receipt_lines[-1] == rb.REPORT_END, clean_receipt_lines
+# A clean triage owes nothing, and the two rows that speak only when something is owed go quiet.
+assert not [line for line in clean_receipt_lines
+            if line.startswith(("fixes:", "round:"))], clean_receipt_lines
 (max_tier_dir / rb.REPORT_RECEIPT).unlink()
 partial_tier_meta = dict(max_tier_meta, rater_runs=max_tier_rows[:1])
 assert rb.tier_from_meta(partial_tier_meta) == "T3 max"
@@ -1439,167 +1565,302 @@ for name, started, finished in (
 assert rb.newest_run_dir(newest_fixture).name == "newer"
 duration_dir = work / "duration-report"
 duration_dir.mkdir()
-duration_meta = {
-    "raters": ["sol-max", "sol-low"],
+# The header prices the run and nothing else prices it: wall clock, the longest CHAIN inside it,
+# and whatever of the wall clock that chain cannot account for. The chain and not the slowest
+# cell, because a cell whose verification ran after it held the panel open for both.
+chain_meta = {
+    "run_id": "chain", "tier": "T2", "raters": ["oc-kimik3", "agy-pro-high-skill"],
     "rater_runs": [
-        {"rater": "sol-max", "exit_code": 0, "findings": 0},
-        {"rater": "sol-low", "exit_code": 0, "findings": 0, "duration_ms": 1000},
+        {"rater": "oc-kimik3", "side": "opencode", "exit_code": 0, "findings": 1,
+         "duration_ms": 900_000, "verify_ms": 120_000},
+        {"rater": "agy-pro-high-skill", "side": "agy", "exit_code": 0, "findings": 0,
+         "duration_ms": 960_000},
     ],
-    "started": "2026-07-30T00:00:00Z",
-    "finished": "2026-07-30T00:00:02Z",
+    "started": "2026-08-22T00:00:00Z", "finished": "2026-08-22T00:25:00Z",
 }
-duration_header = rb.report_lines(duration_dir, duration_meta)[0]
-assert "slowest completed: sol-low 1 sec" in duration_header
-assert "0 sec" not in duration_header
-unknown_duration_meta = dict(
-    duration_meta,
-    raters=["sol-max"],
-    rater_runs=[{"rater": "sol-max", "exit_code": 0, "findings": 0}],
+chain_header = rb.report_lines(duration_dir, chain_meta)[0]
+# And it carries no time or date of its own: a report Egor is handed IS about the tree in front of
+# him — the frame word is what says otherwise, and says it once — so a stamp on every header was a
+# column he read on every block to learn nothing.
+assert chain_header == (
+    "T2:           25.0 min / 15.0 min kimi + 2.0 min verify · 8.0 min LOST"
+), chain_header
+assert not re.search(r"\d{2}:\d{2}", chain_header), chain_header
+# The cell that RAN longest is the gemini one, and naming it would send the reader to tune a cap
+# that was never the panel's cost.
+assert "gem-pro" not in chain_header, chain_header
+
+
+# `True` is an int in Python and these numbers come back out of a file anyone can hand-edit: a
+# bool read as a duration prices the run's longest chain at a millisecond.
+assert rb.timed_cells([{"duration_ms": True}, {"duration_ms": -1}, {"duration_ms": None}]) == []
+assert rb.timed_cells([{"duration_ms": 0}]) == [{"duration_ms": 0}]
+
+
+def lost_header(tier, cell_ms, lost_ms):
+    minutes, seconds = divmod(int((cell_ms + lost_ms) / 1000), 60)
+    return rb.report_lines(duration_dir, {
+        "run_id": "lost", "tier": tier, "raters": ["sol-high"],
+        "rater_runs": [{"rater": "sol-high", "side": "codex", "exit_code": 0,
+                        "findings": 0, "duration_ms": cell_ms}],
+        "started": "2026-08-22T00:00:00Z",
+        "finished": f"2026-08-22T00:{minutes:02d}:{seconds:02d}Z",
+    })[0]
+
+
+# Lost time is loud against the tier's own budget — a third of it — so the same 3.3 min is the
+# story of a T0 run and unremarkable in a T3 one, and a flat threshold would cry over one or
+# stay silent over both.
+assert lost_header("T0", 60_000, 200_000).endswith("3.3 min LOST"), lost_header("T0", 60_000, 200_000)
+assert lost_header("T3", 60_000, 200_000).endswith("1.0 min sol-high"), \
+    lost_header("T3", 60_000, 200_000)
+# Past five minutes it is loud in every tier: the longest budget's third is eight, and waiting
+# that long for nothing is not a T3 run's normal.
+assert lost_header("T3", 60_000, 330_000).endswith("5.5 min LOST"), lost_header("T3", 60_000, 330_000)
+# Below the threshold nothing is printed at all — there is no quiet spelling of this number. Every
+# run loses minutes to its own scheduling, and a tail on every header is one nobody reads.
+assert lost_header("T2", 60_000, 20_000).endswith("1.0 min sol-high"), lost_header("T2", 60_000, 20_000)
+assert lost_header("T2", 60_000, 199_000).endswith("1.0 min sol-high"), \
+    lost_header("T2", 60_000, 199_000)
+assert lost_header("T2", 60_000, 200_000).endswith("3.3 min LOST"), lost_header("T2", 60_000, 200_000)
+assert "lost" not in lost_header("T2", 60_000, 200_000), lost_header("T2", 60_000, 200_000)
+queue_rows = [
+    {"rater": "oc-kimik3", "side": "opencode", "exit_code": 0, "findings": 0,
+     "duration_ms": 60_000, "started_at": "2026-08-22T00:00:10Z"},
+    {"rater": "agy-pro-high-skill", "side": "agy", "exit_code": 0, "findings": 0,
+     "duration_ms": 60_000, "started_at": "2026-08-22T00:08:00Z"},
+]
+queue_meta = {
+    "run_id": "queue", "tier": "T2", "raters": [row["rater"] for row in queue_rows],
+    "rater_runs": queue_rows,
+    "started": "2026-08-22T00:00:00Z", "finished": "2026-08-22T00:09:20Z",
+}
+# With per-cell start times the lost time has an address, and the address is the point: the
+# number alone sends the reader looking through the panel for time no cell of it spent.
+assert rb.report_lines(duration_dir, queue_meta)[0].endswith("8.3 min gemini queue"), \
+    rb.report_lines(duration_dir, queue_meta)[0]
+early_queue_meta = json.loads(json.dumps(queue_meta))
+early_queue_meta["rater_runs"][1]["started_at"] = "2026-08-22T00:01:40Z"
+# A wait that covers less than half the lost time is not what the run was doing, and a leg named
+# over it sends the reader at the wrong one.
+assert rb.report_lines(duration_dir, early_queue_meta)[0].endswith("8.3 min LOST"), \
+    rb.report_lines(duration_dir, early_queue_meta)[0]
+# A run whose cells recorded no duration still prices its own wall clock, and one that recorded
+# no clock says so rather than printing a zero.
+untimed_meta = dict(queue_meta, rater_runs=[
+    {"rater": "sol-low", "side": "codex", "exit_code": 0, "findings": 0}], raters=["sol-low"])
+assert rb.report_lines(duration_dir, untimed_meta)[0] == "T2:           9.3 min", \
+    rb.report_lines(duration_dir, untimed_meta)[0]
+assert rb.report_lines(duration_dir, dict(untimed_meta, started=None, finished=None))[0] == (
+    "T2:           unknown time"
 )
-assert "completed durations unknown" in rb.report_lines(
-    duration_dir, unknown_duration_meta
-)[0]
-not_run_meta = dict(
-    duration_meta,
-    raters=["sol-low"],
-    completed_raters=[],
-    rater_runs=[],
-)
-not_run_report = "\n".join(rb.report_lines(duration_dir, not_run_meta))
-assert any(
-    line.startswith("not run:") and line.endswith("sol-low")
-    for line in not_run_report.splitlines()
-)
-assert "errored:" not in not_run_report
-reason_meta = dict(
-    duration_meta,
-    raters=["sol-low", "oc-kimik3"],
-    rater_runs=[
-        {"rater": "sol-low", "exit_code": 1, "errored": True,
-         "stderr": 'HTTP 429 {"error":{"code":"provider_rate_limit_exceeded"}}'},
-        {"rater": "oc-kimik3", "exit_code": 3, "errored": True, "stderr": "boom"},
+# The lens ran another methodology over the same code: priced on the tier's row, its severities
+# read as the tool's own.
+lens_report = rb.report_lines(duration_dir, dict(
+    queue_meta, lens="dead-code", lens_panel_dropped=["opus-medium", "sol-high"]))
+assert lens_report[1] == "lens:         dead-code · 2 cells dropped", lens_report
+assert "dead-code" not in lens_report[0], lens_report
+# Merged scopes are named where the reader can weigh the numbers against them.
+assert rb.report_lines(duration_dir, dict(queue_meta, repos=[
+    {"repo": "/x/api", "label": "api"}, {"repo": "/x/web"},
+]))[0].endswith("· api, web")
+
+# --- the report block: every panel cell answered for in exactly one row ------------------------
+shape_dir = work / "report-shape-benches" / "20260822T000000Z-shape"
+shape_dir.mkdir(parents=True)
+shape_rows = [
+    {"rater": "opus-medium", "side": "claude", "exit_code": 0, "findings": 4,
+     "duration_ms": 120_000},
+    {"rater": "oc-kimik3", "side": "opencode", "exit_code": 0, "findings": 1,
+     "duration_ms": 900_000, "verify_ms": 120_000, "verifier_unverified": 1},
+    {"rater": "oc-kimik3#2", "side": "opencode", "exit_code": 0, "findings": 1,
+     "duration_ms": 60_000},
+    {"rater": "sol-low", "side": "codex", "exit_code": 0, "findings": 0, "duration_ms": 30_000},
+    {"rater": "oc-grok45-low", "side": "opencode", "exit_code": 1, "errored": True,
+     "duration_ms": 45_000, "stderr": "gateway returned 503"},
+    {"rater": "oc-grok45-low#2", "side": "opencode", "not_run": True},
+    {"rater": "agy-pro-high-skill", "side": "agy", "exit_code": 124, "errored": True,
+     "duration_ms": 900_000, "timeout_s": 900, "stderr": "rater timed out after 900s"},
+]
+shape_meta = {
+    "run_id": shape_dir.name, "tier": "T2",
+    "raters": [row["rater"] for row in shape_rows], "rater_runs": shape_rows,
+    "started": "2026-08-22T00:00:00Z", "finished": "2026-08-22T00:25:00Z",
+}
+(shape_dir / "meta.json").write_text(json.dumps(shape_meta))
+for shape_cell, shape_findings in (
+    ("opus-medium", [
+        {"file": "a.py", "line": 1, "severity": "P1", "summary": "real"},
+        {"file": "b.py", "line": 2, "severity": "P2", "summary": "invented"},
+        {"file": "c.py", "line": 3, "severity": "P3", "summary": "said twice"},
+        {"file": "f.py", "line": 6, "severity": "P2", "summary": "invented again"}]),
+    ("oc-kimik3", [{"file": "d.py", "line": 4, "severity": "P2", "summary": "real too"}]),
+    ("oc-kimik3#2", [{"file": "e.py", "line": 5, "severity": "P3", "summary": "invented"}]),
+):
+    (shape_dir / f"findings-{shape_cell}.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in shape_findings)
+    )
+(shape_dir / "verified-oc-kimik3.jsonl").write_text("".join(json.dumps(row) + "\n" for row in [
+    {"verifier": "oc-dsv4flash", "kept": True},
+    {"verifier": "oc-dsv4flash", "kept": False},
+    {"verifier": "oc-dsv4flash", "kept": True},
+    {"verifier": "oc-qwen37plus", "kept": True},
+]))
+shape_verdicts = [
+    {"rater": "opus-medium", "idx": 0, "verdict": "confirmed"},
+    {"rater": "opus-medium", "idx": 1, "verdict": "false_positive"},
+    {"rater": "opus-medium", "idx": 2, "verdict": "duplicate"},
+    {"rater": "opus-medium", "idx": 3, "verdict": "false_positive"},
+    {"rater": "oc-kimik3", "idx": 0, "verdict": "confirmed"},
+    {"rater": "oc-kimik3#2", "idx": 0, "verdict": "false_positive"},
+]
+shape_report = rb.report_lines(shape_dir, shape_meta, shape_verdicts)
+assert shape_report == [
+    "T2:           25.0 min / 15.0 min kimi + 2.0 min verify · 8.0 min LOST",
+    "confirmed:    P1 1 · P2 1 · P3 0 · 2 total",
+    "fixes:        NOT APPLIED — pending",
+    # Above `rejected:` and per model, because the two rows are one story: who threw the claims
+    # out, and how many. A tally of the panel's own would name the wrong judge.
+    "verifier:     deepseek 3/1 · qwen37plus 1/0 · 1 unchecked",
+    "rejected:     1 duplicate  ~400 tok",
+    "              3 false       ~5k tok",
+    # Priced on what survived triage: `confirmed/found` is what says a cell earned its slot, and
+    # the sort puts the cell that earned it most at the top.
+    "found:        opus-med-bare  1/4",
+    "              kimi           1/1",
+    # `#2` is the second instance of one cell, and the report spells it as one: read as a model
+    # name of its own it is a panel member nobody configured.
+    "noise:        opus-med-bare 2 · kimi 1",
+    "quiet:        1 cells",
+    # One row per family AND cause: the not-run sibling of a failed cell is the same cell asked
+    # for twice, and a bare `not run` row beside the failure it was skipped for says nothing.
+    "failed:       grok ×2  server error   0.8 min",
+    "              gem-pro  killed · cap  15.0 min",
+], shape_report
+
+
+def report_block(lines, label):
+    """Every line of one labelled row, the continuation lines under it included: a row's later
+    lines carry no label, so a check reading the labelled line alone passes over whatever the row
+    grew below it."""
+    block, active = [], False
+    for line in lines:
+        head = line[:rb.REPORT_LABEL_WIDTH].strip()
+        if head:
+            active = head == label
+        if active:
+            block.append(line)
+    return block
+
+
+def report_accounting(run_dir, meta, verdicts=None):
+    """How many of a run's cells the block names, and how many it says it left unnamed.
+
+    The invariant the whole shape rests on: a cell in none of the four answer rows is a cell that
+    broke where no reader will look for it, and that is the failure this block exists to end.
+    """
+    summary = rb.bench_summary(run_dir, meta, verdicts)
+    scheme = rb.report_name_scheme([cell["rater"] for cell in summary["cells"]])
+    label, named, legs, quiet = None, set(), set(), 0
+    for line in rb.report_lines(run_dir, meta, verdicts):
+        head = line[:rb.REPORT_LABEL_WIDTH].strip()
+        body = line[rb.REPORT_LABEL_WIDTH:].strip()
+        label = head.rstrip(":") if head else label
+        if label == "found":
+            named.add(body.split()[0])
+        elif label == "noise":
+            named.update(item.rsplit(" ", 1)[0] for item in body.split(" · "))
+        elif label in ("quiet", "echoed", "untriaged"):
+            # Three rows now name a cell by a COUNT and no name — one that claimed nothing, one
+            # whose claims another cell had already made, and one nobody judged — and a cell in
+            # none of them is the panel member nobody knows ran.
+            quiet += int(body.split()[0])
+        elif label == "failed":
+            name = body.split("  ")[0].strip()
+            if name.endswith(("LEG NOT RUN", "LEG OFF", "LEG WALLED", "LEG COOLING")):
+                legs.add(name.split()[0])
+            else:
+                named.add(name.split(" ×")[0])
+    unnamed = [
+        cell["rater"] for cell in summary["cells"]
+        if rb.report_cell_name(cell["rater"], scheme) not in named
+        and rb.human_cell_name(rb.rater_family(cell["rater"]), scheme) not in named
+        and rb.SIDE_LEG_NAME.get(cell["side"], "") not in legs
+    ]
+    return unnamed, quiet
+
+
+shape_unnamed, shape_quiet = report_accounting(shape_dir, shape_meta, shape_verdicts)
+assert (shape_unnamed, shape_quiet) == (["sol-low"], 1), (shape_unnamed, shape_quiet)
+# A cell that completed and whose every claim went untriaged is the dangerous one: counted among
+# the quiet cells it is visible, dropped from all four rows it is a panel member nobody knows ran.
+untriaged_unnamed, untriaged_quiet = report_accounting(shape_dir, shape_meta, [])
+assert len(untriaged_unnamed) == untriaged_quiet == 4, (untriaged_unnamed, untriaged_quiet)
+# The token column is right-aligned with the counts, so the reader reads a column and not a
+# sentence: `~400 tok` against `~3k tok` flush left is the wider number reading as the smaller.
+shape_rejected = [line for line in shape_report
+                  if line[rb.REPORT_LABEL_WIDTH:].startswith(("1 duplicate", "3 false"))]
+assert [line.rstrip()[-8:] for line in shape_rejected] == ["~400 tok", " ~5k tok"], shape_rejected
+
+# One cell asked for twice inside a run is one cell in the report: its failed first attempt is
+# time the panel spent, not a cell of its own, and reported as one it is a broken cell Egor is
+# asked to act on twice.
+retry_meta = {
+    "run_id": "retry", "tier": "T1", "raters": ["sol-high"],
+    "rater_runs": [
+        {"rater": "sol-high", "side": "codex", "exit_code": 1, "errored": True,
+         "duration_ms": 45_000, "stderr": "gateway returned 503"},
+        {"rater": "sol-high", "side": "codex", "exit_code": 0, "findings": 1,
+         "duration_ms": 90_000, "retry_of": "server error"},
     ],
-)
-reason_report = "\n".join(rb.report_lines(duration_dir, reason_meta))
-assert "sol-low (throttled)" in reason_report, reason_report
-# Nothing recognisable in the text leaves the exit code as the only fact left to print, and a
-# cell that said nothing at all is the same case: naming the silence discards that last fact.
-assert "kimi (exit 3)" in reason_report, reason_report
-wall_reset = time.time() + 2 * 86400
-wall_label = "opencode alt: weekly wall, resets " + \
-    rb.datetime.fromtimestamp(wall_reset).strftime("%a %H:%M")
-pool_wall_meta = dict(
-    duration_meta,
-    raters=["oc-kimik3"],
-    rater_runs=[{
-        "rater": "oc-kimik3", "side": "opencode", "exit_code": 1, "errored": True,
-        "stderr": "the pool has no opencode account left to run on\n" + wall_label,
-    }],
-)
-pool_wall_report = "\n".join(rb.report_lines(duration_dir, pool_wall_meta))
-assert "kimi (pool empty)" in pool_wall_report, pool_wall_report
-assert any(
-    line.startswith("walls:") and line.endswith(wall_label)
-    for line in pool_wall_report.splitlines()
-), pool_wall_report
-silent_meta = dict(
-    duration_meta,
-    raters=["sol-low"],
-    rater_runs=[{"rater": "sol-low", "exit_code": 5, "errored": True, "stderr": ""}],
-)
-assert "sol-low (exit 5)" in "\n".join(rb.report_lines(duration_dir, silent_meta))
+    "started": "2026-08-22T00:00:00Z", "finished": "2026-08-22T00:02:30Z",
+}
+retry_report = rb.report_lines(duration_dir, retry_meta)
+assert not [line for line in retry_report if line.startswith("failed:")], retry_report
+# Its one finding was never judged, so the cell is `untriaged` and not `quiet`: read as quiet, a
+# cell that found something was reported as a cell that found nothing.
+assert "untriaged:    1 cells" in retry_report, retry_report
+# And the attempt is inside the chain the row PRINTS, which is what keeps the retry out of the
+# lost time: 45 s of it ran, and shown as the final attempt alone (1.5 min) the components of the
+# header no longer add up to the wall the run actually spent.
+assert retry_report[0] == "T1:           2.5 min / 2.2 min sol-high", retry_report
+
+# A whole side nobody launched is ONE fact — the leg — and the reader's next move is the leg
+# itself; a row per skipped cell buries the cells that did fail under eight of them.
+leg_rows = [
+    {"rater": "opus-medium", "side": "claude", "not_run": True},
+    {"rater": "sol-low", "side": "codex", "exit_code": 0, "findings": 0, "duration_ms": 30_000},
+]
+leg_meta = {
+    "run_id": "leg", "tier": "T1", "raters": [row["rater"] for row in leg_rows],
+    "rater_runs": leg_rows,
+    "started": "2026-08-22T00:00:00Z", "finished": "2026-08-22T00:01:00Z",
+}
+# The ONE row, and nothing under it: a leg row printed above the cells it collapses is the same
+# eight lines it exists to replace. With nothing recorded about the side the row says only that
+# nobody ran it — `off` is a switch, and read as the default it told Egor he had closed a leg the
+# walls had emptied.
+assert report_block(rb.report_lines(duration_dir, leg_meta), "failed:") \
+    == ["failed:       CLAUDE LEG NOT RUN"], rb.report_lines(duration_dir, leg_meta)
+# Off by configuration, walled, and cooling off a gateway limit are three different next moves,
+# and the run is the only place that knows which: without the skip reason in meta every one of
+# them reported as the harmless one.
+for leg_state, leg_word in (("walled", "WALLED"), ("cooling", "COOLING"), ("off", "OFF")):
+    leg_state_meta = dict(leg_meta, skipped=[
+        {"rater": "opus-medium", "reason": "under the floor", "state": leg_state}])
+    assert report_block(rb.report_lines(duration_dir, leg_state_meta), "failed:") == [
+        f"failed:       CLAUDE LEG {leg_word}"], leg_state
 
 # Counts come back out of a JSON file anyone can hand-edit, and `True` is an int in Python:
 # a hand-written `"verifier_dropped": true` would otherwise report one rejected finding.
 assert rb.counted_int(3) == 3
 assert rb.counted_int(True) == rb.counted_int(-1) == rb.counted_int("3") == 0
 assert rb.counted_int(None) == 0
-
-# The verifier changes model per finding when the gateway throttles one, so the report names
-# who actually judged rather than who was configured, and says so even when nobody answered.
-chain_report = "\n".join(rb.report_lines(duration_dir, dict(
-    duration_meta,
-    verifier="oc-kimik3",
-    raters=["oc-kimik3", "oc-grok45-low"],
-    rater_runs=[
-        {"rater": "oc-kimik3", "side": "opencode", "exit_code": 0, "findings": 1,
-         "verifier_dropped": 2, "verifier_audited": 3,
-         "verifier_by_model": {"oc-kimik3": 3}},
-        {"rater": "oc-grok45-low", "side": "opencode", "exit_code": 0, "findings": 1,
-         "verifier_dropped": 1, "verifier_audited": 2,
-         "verifier_by_model": {"oc-qwen37plus": 2}},
-    ],
-)))
-assert "verifier:     kimi 3 · qwen37plus 2 — 5 checked, 3 rejected" in chain_report, \
-    chain_report
-walled_report = "\n".join(rb.report_lines(duration_dir, dict(
-    duration_meta,
-    verifier="oc-kimik3",
-    raters=["oc-kimik3"],
-    rater_runs=[
-        {"rater": "oc-kimik3", "side": "opencode", "exit_code": 0, "findings": 2,
-         "verifier_dropped": 0, "verifier_audited": 2, "verifier_by_model": {}},
-    ],
-)))
-assert "verifier:     kimi — 0 checked, 0 rejected, 2 kept unchecked" in walled_report, \
-    walled_report
-# A run recorded before the verifier logged its own counts keeps only the drop total, and a
-# report that reads its absence as "nothing to check" would deny checks that did happen.
-legacy_verifier_report = "\n".join(rb.report_lines(duration_dir, dict(
-    duration_meta,
-    verifier="oc-kimik3",
-    raters=["oc-kimik3"],
-    rater_runs=[
-        {"rater": "oc-kimik3", "side": "opencode", "exit_code": 0, "findings": 1,
-         "verifier_dropped": 4},
-    ],
-)))
-assert "verifier:     kimi — 4 rejected" in legacy_verifier_report, legacy_verifier_report
-# 3 of the 205 runs on disk are that same legacy record with nothing rejected: reading the zero
-# as "the verifier never ran" reports every finding it cleared as unchecked. verify_ms is what
-# says it ran, and it has been recorded per cell since c011911.
-legacy_kept_all_report = "\n".join(rb.report_lines(duration_dir, dict(
-    duration_meta,
-    verifier="oc-kimik3",
-    raters=["oc-kimik3"],
-    rater_runs=[
-        {"rater": "oc-kimik3", "side": "opencode", "exit_code": 0, "findings": 2,
-         "verifier_dropped": 0, "verifier_unverified": 0, "verify_ms": 4000},
-    ],
-)))
-assert "verifier:     kimi — 0 rejected" in legacy_kept_all_report.splitlines(), \
-    legacy_kept_all_report
-# 7 of those legacy runs walled the verifier partway. The wall total is the only unchecked count
-# they kept, so a line that prints the drops alone reports a partial pass as a complete one.
-legacy_walled_report = "\n".join(rb.report_lines(duration_dir, dict(
-    duration_meta,
-    verifier="oc-kimik3",
-    raters=["oc-kimik3"],
-    rater_runs=[
-        {"rater": "oc-kimik3", "side": "opencode", "exit_code": 0, "findings": 5,
-         "verifier_dropped": 1, "verifier_unverified": 3, "verify_ms": 4000},
-    ],
-)))
-assert "verifier:     kimi — 1 rejected, 3 kept unchecked" in legacy_walled_report, \
-    legacy_walled_report
-# A wall before the first rejection leaves the wall count as the only evidence the verifier ran,
-# so a guard reading the drop total alone reports those findings as never offered to it.
-legacy_wall_only_report = "\n".join(rb.report_lines(duration_dir, dict(
-    duration_meta,
-    verifier="oc-kimik3",
-    raters=["oc-kimik3"],
-    rater_runs=[
-        {"rater": "oc-kimik3", "side": "opencode", "exit_code": 0, "findings": 2,
-         "verifier_dropped": 0, "verifier_unverified": 2},
-    ],
-)))
-assert "verifier:     kimi — 0 rejected, 2 kept unchecked" in legacy_wall_only_report, \
-    legacy_wall_only_report
 # Every count is read back out of a file anyone can hand-edit, so each is sanitised where it is
 # read, not only where it is summed: a bool reaching one cell field and not its neighbour is the
 # inconsistency that makes the next edit trust the wrong one.
 sanitised_cells = rb.bench_summary(duration_dir, dict(
-    duration_meta,
+    queue_meta,
     verifier="oc-kimik3",
     raters=["oc-kimik3"],
     rater_runs=[
@@ -1610,40 +1871,302 @@ sanitised_cells = rb.bench_summary(duration_dir, dict(
 assert sanitised_cells[0]["verifier_dropped"] == 0, sanitised_cells
 assert sanitised_cells[0]["verifier_unverified"] == 0, sanitised_cells
 assert sanitised_cells[0]["verifier_audited"] == 0, sanitised_cells
-# Nothing was offered to it, so "unchecked" would name material that does not exist.
-nothing_report = "\n".join(rb.report_lines(duration_dir, dict(
-    duration_meta,
-    verifier="oc-kimik3",
-    raters=["oc-kimik3"],
-    rater_runs=[{"rater": "oc-kimik3", "side": "opencode", "exit_code": 0, "findings": 0}],
-)))
-assert "verifier:     kimi — nothing to check" in nothing_report, nothing_report
-empty_off_report = "\n".join(rb.report_lines(duration_dir, dict(
-    duration_meta,
-    raters=["oc-kimik3"],
-    rater_runs=[{"rater": "oc-kimik3", "side": "opencode", "exit_code": 0, "findings": 0}],
-)))
-assert "verifier:     off — nothing to check" in empty_off_report, empty_off_report
-off_report = "\n".join(rb.report_lines(duration_dir, dict(
-    duration_meta,
-    raters=["oc-kimik3"],
-    rater_runs=[{"rater": "oc-kimik3", "side": "opencode", "exit_code": 0, "findings": 3}],
-)))
-assert "verifier:     off — 3 finding(s) unchecked" in off_report, off_report
-agy_off_report = "\n".join(rb.report_lines(duration_dir, dict(
-    duration_meta,
-    raters=["agy-pro-high-skill"],
-    rater_runs=[{"rater": "agy-pro-high-skill", "side": "agy", "exit_code": 0, "findings": 2}],
-)))
-assert "verifier:     off — 2 finding(s) unchecked" in agy_off_report, agy_off_report
-# The verifier reaches OpenCode and agy findings only, so a panel without either is not a run
-# whose verifier stayed off — nothing was its to touch, and the line would mislead.
-assert "verifier:" not in "\n".join(rb.report_lines(duration_dir, duration_meta))
 
-# A value of several lines — the escalation fork is three arms — stays under the value column;
-# flush left its later lines read as rows of their own whose label went missing.
-wrapped_rows = rb.aligned_report_lines([("outcome:", "first\nsecond"), ("panel:", "one")])
-assert wrapped_rows == ["outcome:  first", "          second", "panel:    one"], wrapped_rows
+# The verifier row is read off the audit files, which are the only record of WHO judged each
+# finding — the run's own tally counts drops without naming a model, and a panel judged by two
+# models reads as one.
+verifier_dir = work / "verifier-report"
+verifier_dir.mkdir()
+verifier_meta = {
+    "run_id": "verifier", "tier": "T1", "raters": ["oc-kimik3"],
+    "rater_runs": [{"rater": "oc-kimik3", "side": "opencode", "exit_code": 0, "findings": 2,
+                    "verifier_unverified": 2, "verify_ms": 4000}],
+    "started": "2026-08-22T00:00:00Z", "finished": "2026-08-22T00:01:00Z",
+}
+# A verifier that walled before its first answer left nothing but the unchecked count, and a row
+# that reports those findings as judged is the verified panel Egor never got.
+assert [line for line in rb.report_lines(verifier_dir, verifier_meta)
+        if line.startswith("verifier:")] == ["verifier:     off · 2 unchecked"], \
+    rb.report_lines(verifier_dir, verifier_meta)
+(verifier_dir / "verified-oc-kimik3.jsonl").write_text("".join(json.dumps(row) + "\n" for row in [
+    {"verifier": "oc-dsv4flash", "kept": True},
+    {"verifier": "oc-dsv4flash", "kept": False},
+    {"idx": 3, "walled": True},
+]))
+assert [line for line in rb.report_lines(verifier_dir, verifier_meta)
+        if line.startswith("verifier:")] == ["verifier:     deepseek 2/1 · 2 unchecked"], \
+    rb.report_lines(verifier_dir, verifier_meta)
+# `off` is the SWITCH and not the outcome: a configured verifier that walled on every claim leaves
+# no audit row of its own, and printed as `off` it reads exactly like a run nobody set one for —
+# while the one name the reader has to look at, the model in meta, is dropped with it.
+walled_verifier_dir = work / "verifier-report-walled"
+walled_verifier_dir.mkdir()
+walled_meta = dict(verifier_meta, verifier="oc-dsv4flash")
+assert [line for line in rb.report_lines(walled_verifier_dir, walled_meta)
+        if line.startswith("verifier:")] == ["verifier:     deepseek walled · 2 unchecked"], \
+    rb.report_lines(walled_verifier_dir, walled_meta)
+# And a run recorded before the audit rows carried a model name keeps its own totals: the rows say
+# who judged nowhere, and the run tallied how many.
+legacy_verifier_dir = work / "verifier-report-legacy"
+legacy_verifier_dir.mkdir()
+(legacy_verifier_dir / "verified-oc-kimik3.jsonl").write_text(
+    "".join(json.dumps(row) + "\n" for row in [{"kept": True}, {"kept": False}])
+)
+legacy_meta = dict(verifier_meta, verifier="oc-dsv4flash", rater_runs=[
+    {"rater": "oc-kimik3", "side": "opencode", "exit_code": 0, "findings": 2,
+     "verifier_audited": 3, "verifier_dropped": 1, "verify_ms": 4000},
+])
+assert [line for line in rb.report_lines(legacy_verifier_dir, legacy_meta)
+        if line.startswith("verifier:")] == ["verifier:     deepseek 3/1"], \
+    rb.report_lines(legacy_verifier_dir, legacy_meta)
+# The verifier reaches OpenCode and agy findings only, so a panel without either is not a run
+# whose verifier stayed off — nothing was its to touch, and the row would mislead.
+assert not [line for line in rb.report_lines(duration_dir, leg_meta)
+            if line.startswith("verifier:")]
+agy_verifier_dir = work / "verifier-report-agy"
+agy_verifier_dir.mkdir()
+assert [line for line in rb.report_lines(agy_verifier_dir, dict(
+    verifier_meta, raters=["agy-pro-high-skill"], rater_runs=[
+        {"rater": "agy-pro-high-skill", "side": "agy", "exit_code": 0, "findings": 2}],
+)) if line.startswith("verifier:")] == ["verifier:     off · 2 unchecked"]
+
+# `fixes:` and `round:` speak only when something is owed. A row that prints in the ordinary case
+# is a row the reader stops reading, and these two are the ones that must be read.
+quiet_rows_dir = work / "quiet-rows-report"
+quiet_rows_dir.mkdir()
+quiet_rows_meta = {
+    "run_id": "quiet-rows", "tier": "T1", "raters": ["sol-low"],
+    "rater_runs": [{"rater": "sol-low", "side": "codex", "exit_code": 0, "findings": 1,
+                    "duration_ms": 30_000}],
+    "started": "2026-08-22T00:00:00Z", "finished": "2026-08-22T00:01:00Z",
+}
+(quiet_rows_dir / "findings-sol-low.jsonl").write_text(
+    json.dumps({"file": "a.py", "line": 1, "severity": "P2", "summary": "real"}) + "\n"
+)
+quiet_rows_verdicts = [{"rater": "sol-low", "idx": 0, "verdict": "confirmed"}]
+(quiet_rows_dir / rb.FIX_RECEIPT).write_text(json.dumps(
+    {"state": "done", "fixed": 1, "false_positives": 0, "confirmed": 1,
+     "triage": rb.triage_digest(quiet_rows_verdicts)}
+))
+done_report = rb.report_lines(quiet_rows_dir, quiet_rows_meta, quiet_rows_verdicts)
+assert not [line for line in done_report if line.startswith(("fixes:", "round:"))], done_report
+assert "confirmed:    P1 0 · P2 1 · P3 0 · 1 total" in done_report, done_report
+# A receipt that answers for fewer findings than the triage confirmed. `fixes` refuses to write
+# one, so it can only be a receipt from before that refusal — and the round it retired is one
+# nobody finished.
+(quiet_rows_dir / rb.FIX_RECEIPT).write_text(json.dumps(
+    {"state": "done", "fixed": 0, "false_positives": 0, "confirmed": 1,
+     "triage": rb.triage_digest(quiet_rows_verdicts)}
+))
+assert "fixes:        0 of 1" in rb.report_lines(
+    quiet_rows_dir, quiet_rows_meta, quiet_rows_verdicts
+), rb.report_lines(quiet_rows_dir, quiet_rows_meta, quiet_rows_verdicts)
+(quiet_rows_dir / rb.FIX_RECEIPT).unlink()
+# Nothing was confirmed, so nothing is owed and nothing is claimed either.
+assert rb.report_lines(quiet_rows_dir, quiet_rows_meta, [])[1] == "confirmed:    0", \
+    rb.report_lines(quiet_rows_dir, quiet_rows_meta, [])
+
+# The fork — which way the round goes from here — is the model's to act on and Egor does not read
+# it, so it leaves the block and `fork` hands it over. The two dials and the wording are the
+# commit gate's alone (shared-invariants row af), so the verdict is taken from a stub of it.
+fork_gate = work / "report-fork-gate.sh"
+fork_gate.write_text(
+    "#!/bin/bash\n"
+    '[ "$1" = escalation-verdict ] || exit 1\n'
+    '[ "${2:-0}" -ge 3 ] || exit 1\n'
+    "printf 'stub fork. Pick one and carry it out:\\n'\n"
+)
+fork_gate.chmod(0o755)
+fork_gate_before = rb.ESCALATION_GATE
+rb.ESCALATION_GATE = fork_gate
+fork_dir = work / "report-fork-benches" / "20260822T000000Z-fork"
+fork_dir.mkdir(parents=True)
+fork_meta = {
+    "run_id": fork_dir.name, "tier": "T1", "raters": ["sol-low"],
+    "rater_runs": [{"rater": "sol-low", "side": "codex", "exit_code": 0, "findings": 3,
+                    "duration_ms": 30_000}],
+    "started": "2026-08-22T00:00:00Z", "finished": "2026-08-22T00:01:00Z",
+}
+(fork_dir / "meta.json").write_text(json.dumps(fork_meta))
+(fork_dir / "findings-sol-low.jsonl").write_text("".join(
+    json.dumps({"file": f"{index}.py", "line": 1, "severity": "P1", "summary": "real"}) + "\n"
+    for index in range(3)
+))
+fork_verdicts = [
+    {"rater": "sol-low", "idx": index, "verdict": "confirmed"} for index in range(3)
+]
+(fork_dir / "verdicts.jsonl").write_text(
+    "".join(json.dumps(row) + "\n" for row in fork_verdicts)
+)
+owed_report = rb.report_lines(fork_dir, fork_meta, fork_verdicts)
+# The block says what the GATE says, in one row and in the gate's own words: a sentence of this
+# file's own said "second review owed" over the verdict that withholds the waiver and over the one
+# that leaves `waive` open alike.
+assert "round:        stub fork" in owed_report, owed_report
+assert not [line for line in owed_report if "second review owed" in line], owed_report
+assert not [line for line in owed_report if "Pick one" in line], owed_report
+assert rb.round_fork_text(fork_dir, fork_meta, fork_verdicts).startswith("stub fork."), \
+    rb.round_fork_text(fork_dir, fork_meta, fork_verdicts)
+fork_state = work / "report-fork-state"
+(fork_state / "benches").mkdir(parents=True)
+os.replace(fork_dir, fork_state / "benches" / fork_dir.name)
+os.environ["WORKER_STATS_DIR"] = str(fork_state)
+fork_output = io.StringIO()
+with contextlib.redirect_stdout(fork_output):
+    assert rb.cmd_fork(argparse.Namespace(run_id=fork_dir.name)) == 0
+assert fork_output.getvalue().startswith("stub fork."), fork_output.getvalue()
+# A round that owes nothing has no fork, and printing one is work nobody asked for.
+closed_fork = fork_state / "benches" / "20260822T000001Z-closed"
+closed_fork.mkdir()
+closed_meta = dict(fork_meta, run_id=closed_fork.name)
+(closed_fork / "meta.json").write_text(json.dumps(closed_meta))
+closed_output = io.StringIO()
+with contextlib.redirect_stdout(closed_output):
+    assert rb.cmd_fork(argparse.Namespace(run_id=closed_fork.name)) == 0
+assert closed_output.getvalue() == "", closed_output.getvalue()
+# A fixing pass that STOPPED is the one case the fork carries whatever the gate says: the reason
+# it stopped is Egor's decision to make, and the frame word above is what tells him it is his.
+(closed_fork / "findings-sol-low.jsonl").write_text(
+    json.dumps({"file": "a.py", "line": 1, "severity": "P2", "summary": "real"}) + "\n"
+)
+(closed_fork / "verdicts.jsonl").write_text(
+    json.dumps({"rater": "sol-low", "idx": 0, "verdict": "confirmed"}) + "\n"
+)
+(closed_fork / rb.FIX_RECEIPT).write_text(json.dumps(
+    {"state": "blocked", "reason": "the scope is wrong"}
+))
+assert rb.round_fork_text(closed_fork, closed_meta) == rb.REPORT_BLOCKED_FORK, \
+    rb.round_fork_text(closed_fork, closed_meta)
+assert rb.report_frame_word(closed_fork, closed_meta) == rb.REPORT_BLOCKED_WORD
+blocked_report = rb.report_lines(closed_fork, closed_meta)
+assert "fixes:        NOT APPLIED — the scope is wrong" in blocked_report, blocked_report
+assert not [line for line in blocked_report if "not the fixer's" in line], blocked_report
+# A gate nobody could ask says so in BOTH places. Filtered out of either, a round nothing could
+# price printed no row and handed over no fork, which reads exactly like a round that owes
+# nothing — the silent clean bill the unknown wording exists to end.
+rb.ESCALATION_GATE = work / "missing-escalation-gate"
+unknown_report = rb.report_lines(fork_state / "benches" / fork_dir.name, fork_meta, fork_verdicts)
+assert [line for line in unknown_report if line.startswith("round:") and "unknown" in line], \
+    unknown_report
+assert rb.round_fork_text(
+    fork_state / "benches" / fork_dir.name, fork_meta, fork_verdicts
+) == rb.ESCALATION_UNKNOWN
+rb.ESCALATION_GATE = fork_gate_before
+os.environ.pop("WORKER_STATS_DIR", None)
+
+# A panel where no cell completed has no findings to report and nothing to say about fixes; the
+# state is the frame word's to carry, and an explicit `--raters` bench is not a review at all.
+no_panel_meta = dict(leg_meta, rater_runs=[
+    {"rater": "opus-medium", "side": "claude", "not_run": True}], raters=["opus-medium"])
+assert rb.report_frame_word(duration_dir, no_panel_meta) == rb.REPORT_NO_PANEL_WORD
+# A watchdog kill has NO word of its own. It is stated on the `failed:` row of the cell it killed,
+# and how much of the diff the survivors covered is the triage receipt's answer, not the frame's —
+# a run the kill left nothing behind on is already NO PANEL by the rule above.
+assert rb.report_frame_word(
+    duration_dir, dict(leg_meta, timed_out=True)) == rb.REPORT_FRAME_WORD
+assert rb.report_frame_word(duration_dir, dict(
+    leg_meta, tier=None, raters=["sol-low"], rater_runs=[
+        {"rater": "sol-low", "side": "codex", "exit_code": 0, "findings": 0}],
+)) == rb.REPORT_BENCH_WORD
+# What makes a block stale is not its age but that it is not about the tree in front of the reader,
+# which is two things and neither is a clock: a report nobody handed over when the run recorded it,
+# and content that has moved since the panel read it. A clock answered both wrong — it called a
+# block stale over a tree nobody had touched, and called one current five minutes after the very
+# files it priced were rewritten.
+stale_repo = work / "stale-frame-repo"
+(stale_repo / "src").mkdir(parents=True)
+(stale_repo / "src" / "a.py").write_text("reviewed content\n")
+subprocess.run(["git", "init", "-q"], cwd=stale_repo, check=True)
+stale_dir = work / "stale-frame-benches" / "20260822T200100Z-stale"
+stale_dir.mkdir(parents=True)
+stale_meta = dict(
+    leg_meta, run_id=stale_dir.name, repo=str(stale_repo),
+    finished="2026-08-22T20:01:00Z",
+    reviewed={"src/a.py": rb.path_blob_sha(stale_repo, "src/a.py")},
+)
+(stale_dir / "meta.json").write_text(json.dumps(stale_meta))
+# Recorded, handed over, and the bytes it read still standing exactly where it read them: a report
+# like this is current at any age at all, and a date on it would be noise.
+assert rb.report_frame_word(stale_dir, stale_meta) == rb.REPORT_FRAME_WORD
+# One byte on, and the rows price content that is no longer there. The date is the run's own finish
+# in the READER's zone — `20:01Z` on the 22nd is the 23rd in Tokyo — because his clock is what he
+# would compare it against.
+(stale_repo / "src" / "a.py").write_text("edited since\n")
+moved_word = f"{rb.REPORT_STALE_WORD} · 23 Aug"
+assert rb.report_frame_word(stale_dir, stale_meta) == moved_word, \
+    rb.report_frame_word(stale_dir, stale_meta)
+# The same answer through the same comparison a `--debt` review is scoped from, never a second one:
+# a frame word disagreeing with the debt is a block that says the tree moved and a review that
+# cannot be asked to read it, or the reverse.
+assert rb.report_snapshot_moved(stale_meta) is True
+(stale_repo / "src" / "a.py").write_text("reviewed content\n")
+assert rb.report_snapshot_moved(stale_meta) is False
+# A path the round read and somebody has since deleted is content that moved as much as a rewrite:
+# hashed as the empty string it must not cancel against the sha the run recorded.
+(stale_repo / "src" / "a.py").unlink()
+assert rb.report_frame_word(stale_dir, stale_meta) == moved_word
+(stale_repo / "src" / "a.py").write_text("reviewed content\n")
+assert rb.report_frame_word(stale_dir, stale_meta) == rb.REPORT_FRAME_WORD
+# A merged panel is priced on its MEMBERS. Its own map is spelled against an overlay workspace
+# whose content is frozen at the seal and pruned without notice — read there, every merged round is
+# current for ever, or stale the moment the copy goes.
+merged_stale_meta = dict(
+    stale_meta, repo=str(work / "stale-frame-workspace-long-gone"),
+    reviewed={"member/src/a.py": "0" * 40},
+    repos=[{"repo": str(stale_repo), "label": "member",
+            "reviewed": dict(stale_meta["reviewed"])}],
+)
+assert rb.report_frame_word(stale_dir, merged_stale_meta) == rb.REPORT_FRAME_WORD
+(stale_repo / "src" / "a.py").write_text("edited since\n")
+assert rb.report_frame_word(stale_dir, merged_stale_meta) == moved_word
+(stale_repo / "src" / "a.py").write_text("reviewed content\n")
+# The other half: the report never reached its reader at `record` time. `settle-delivery` is what
+# writes that down, and its mark is the ONE signal for every late channel there is — the delivery
+# queue, and a round written off as lapsed for `doctor --lapsed` to list. Read off the run and not
+# off the invocation, or the same block is current in the nudge and stale at the next stop.
+for stale_mark in ({"state": "done", "queued": rb.iso_now()},
+                   {"state": "done", "lapsed": rb.iso_now()}):
+    (stale_dir / rb.DELIVERY_MARK).write_text(json.dumps(stale_mark))
+    assert rb.report_frame_word(stale_dir, stale_meta, "done") == moved_word, stale_mark
+    assert rb.report_delivered_late(stale_dir, "done") is True
+# The mark answers for the STATE it was written against, exactly as `pending-delivery` reads it: a
+# re-adjudication moves the round on, and the report it reaches next is not the one settled there.
+assert rb.report_frame_word(stale_dir, stale_meta, "blocked") == rb.REPORT_BLOCKED_WORD
+(stale_dir / rb.DELIVERY_MARK).write_text(json.dumps(
+    {"state": "blocked", "queued": rb.iso_now()}))
+assert rb.report_frame_word(stale_dir, stale_meta, "done") == rb.REPORT_FRAME_WORD
+assert rb.report_delivered_late(stale_dir, "done") is False
+(stale_dir / rb.DELIVERY_MARK).unlink()
+# A run that recorded no finish has no date to be read against, and this word is never rendered
+# without one: undated it says a block is old and refuses to say how old.
+undated_stale_meta = dict(stale_meta, finished=None, finished_at=None,
+                          reviewed={"src/a.py": "0" * 40})
+assert rb.report_frame_word(stale_dir, undated_stale_meta) == rb.REPORT_FRAME_WORD
+
+# The terminal's width, not the author's: continuation lines indent to the value column and break
+# only between ` · ` items, and a `name n/m` pair is never split across two lines.
+os.environ["COLUMNS"] = "46"
+try:
+    narrow = rb.report_block_lines([
+        ("noise:", " · ".join(f"cell-{index} {index}" for index in range(6)), True),
+        ("found:", "cell-longname  3/9", False),
+        # A column row is never broken at all: `killed · cap` split over two lines says nothing,
+        # and the columns beside it stop being columns.
+        ("failed:", "gem-flash35-med  killed · cap · 3 runs in a row  27.1 min", False),
+    ])
+finally:
+    os.environ.pop("COLUMNS")
+assert narrow == [
+    "noise:        cell-0 0 · cell-1 1 · cell-2 2",
+    "              cell-3 3 · cell-4 4 · cell-5 5",
+    "found:        cell-longname  3/9",
+    "failed:       gem-flash35-med  killed · cap · 3 runs in a row  27.1 min",
+], narrow
+# The value column is the widest label plus one, never narrower than the block's own: rows of one
+# report reading against two different columns is the misalignment the block is read by.
+assert rb.report_block_lines([("verifier-longer:", "x", True), ("a:", "y", True)]) == [
+    "verifier-longer: x", "a:               y",
+]
 
 # --- findings: one entry per place, agreement first --------------------------------------
 findings_dir = work / "findings-view"
@@ -1723,23 +2246,27 @@ for text, expected in (
     # A pool-empty message quotes the error of the last account it tried, so the specific
     # wording has to win over the cause it carries.
     ("has no codex account left\nGoUsageLimitError: limitName=plan", "pool empty"),
-    ("GoUsageLimitError limitName=opencode-plan", "plan wall"),
-    (rb.GATE_WALL_STDERR, "plan wall"),
-    ("Error: You have exhausted your capacity on this model. Resets in 0s.", "plan wall"),
-    ("API error (status 402 Payment Required): Grok Build usage balance exhausted", "plan wall"),
+    ("GoUsageLimitError limitName=opencode-plan", "walled"),
+    (rb.GATE_WALL_STDERR, "walled"),
+    ("Error: You have exhausted your capacity on this model. Resets in 0s.", "walled"),
+    ("API error (status 402 Payment Required): Grok Build usage balance exhausted", "walled"),
     ('HTTP 429\n{"code":"provider_rate_limit_exceeded"}', "throttled"),
     # The named cause wins; on its own the status code says only that something refused.
     ("HTTP 429", "bare 429"),
     ("rater produced no parseable finding and did not declare a clean review: prose",
-     "unparseable"),
+     "bad output"),
     # Both numbers are in use across the sides, so the rule is the stem, not either message.
-    ("no parseable finding here", "unparseable"),
-    ("opencode returned no parseable findings", "unparseable"),
-    ("agy -skill returned malformed Markdown: expected /code-review findings", "unparseable"),
-    ("opencode returned empty content (finish_reason='length')", "unparseable"),
-    ("opencode stopped before reviewing", "unparseable"),
+    ("no parseable finding here", "bad output"),
+    ("opencode returned no parseable findings", "bad output"),
+    ("agy -skill returned malformed Markdown: expected /code-review findings", "bad output"),
+    ("opencode returned empty content (finish_reason='length')", "bad output"),
+    ("opencode stopped before reviewing", "bad output"),
     ("the model is at capacity", "capacity"),
     ("gateway said 503", "server error"),
+    # A cell that died on its own clock: our own two kills are named by their status, never off
+    # wording every provider spells its own way.
+    ("Error: timeout waiting for response", "timeout"),
+    ("504 Gateway Timeout", "timeout"),
     ("cannot review the root commit", "root commit"),
     ('a tool required the "command" permission that headless runs cannot grant', "permission"),
     ("error: the argument '--commit <SHA>' cannot be used with '[PROMPT]'", "bad command"),
@@ -1751,7 +2278,9 @@ for text, expected in (
 ):
     assert rb.failure_reason(text) == expected, (text, rb.failure_reason(text))
 # A status the report already assigns is not re-derived from the text behind it.
-assert rb.cell_failure_reason({"status": "timed_out", "stderr": "HTTP 429"}) == "timeout"
+assert rb.cell_failure_reason({
+    "status": "timed_out", "exit_code": 124, "stderr": "HTTP 429",
+}) == "killed · cap"
 assert rb.cell_failure_reason({"status": "model_mismatch", "stderr": ""}) == "mismatch"
 assert rb.cell_failure_reason({"status": "not_run", "stderr": ""}) == "not run"
 assert rb.cell_failure_reason({"status": "errored", "stderr": "HTTP 429"}) == "bare 429"
@@ -1790,7 +2319,18 @@ assert rb.run_health(health_first, json.loads(
 # Column widths are cosmetic and would make these assertions break on any new run name.
 health_text = "\n".join(" ".join(line.split()) for line in rb.health_lines(health_all))
 assert "20260101T000000Z-aaa 1/2 50% throttled 1" in health_text, health_text
-assert "all runs 2/4 50% throttled 1 · plan wall 1" in health_text, health_text
+assert "all runs 2/4 50% throttled 1, walled 1" in health_text, health_text
+# The causes carry ' · ' inside them, so the tally may never join on it: `killed · cap 2 · walled
+# 1` reads as three causes, two of which do not exist.
+kill_tally = rb.health_tally(rb.Counter({
+    rb.STATUS_REASONS["timed_out"]: 2, "walled": 1, rb.CELL_STALL_REASON: 1, "ok": 0,
+}))
+assert kill_tally.endswith("killed · cap 2, walled 1, killed · stalled 1"), kill_tally
+# Only the two separators the cause NAMES carry, so a reader splitting on ' · ' counts three.
+assert kill_tally.count(" · ") == 2, kill_tally
+# The retried cell is counted per ATTEMPT here and per cell in the report: this view is read to
+# see whether the pool is still rotating, and the account that walled is the whole of that.
+assert "20260102T000000Z-bbb 1/2 50% walled 1" in health_text, health_text
 assert "codex work 1/2" in health_text, health_text
 # Both accounts show even though one of them never failed: a pool that stopped rotating is
 # read off this section, and an account that vanishes when it works cannot show that.
@@ -5094,7 +5634,10 @@ _, server_error_account, server_error_result = rb.run_rater_task(
 )
 assert server_error_account == "opencode-go" and server_error_result[0] == 1
 assert not rb.is_walled("opencode", "opencode-go")
-assert len(server_error_capture.read_text().splitlines()) == 3, \
+# Three on the account's transient budget, and a fourth on the cell's own single retry: the two
+# are different questions — whether this account will answer, and whether the CELL can be had at
+# all — and the cell's one is what keeps a 503 out of the report.
+assert len(server_error_capture.read_text().splitlines()) == 4, \
     server_error_capture.read_text()
 del os.environ["OPENCODE_FIXTURE_RC"]
 del os.environ["OPENCODE_FIXTURE_STDERR"]
@@ -5813,8 +6356,12 @@ try:
     walled_mixed_report = "\n".join(rb.report_lines(
         walled_state / "benches" / walled_mixed_meta["run_id"], walled_mixed_meta
     ))
-    assert any(line.startswith("not run:") and "kimi" in line
-               for line in walled_mixed_report.splitlines()), walled_mixed_report
+    # One row for the leg, not one per lost cell: the reader's next move is the wall, and both
+    # kimi instances named under it is the same fact printed twice.
+    assert report_block(walled_mixed_report.splitlines(), "failed:") == [
+        "failed:       OPENCODE LEG WALLED"], walled_mixed_report
+    # And nothing claims the verifier stayed off: no cell of its side ever produced a finding.
+    assert "verifier:" not in walled_mixed_report, walled_mixed_report
 
     # A tier is a cell list handed to this same path by cmd_review, so a tier whose OpenCode cells
     # all drop runs the rest of itself rather than refusing whole.
@@ -5953,7 +6500,7 @@ with contextlib.redirect_stdout(review_stdout):
     ))
 # A review owes a triage, not a report: the marked block belongs to the verdicts, so a run that
 # has none prints the line the hooks turn into the missing pass.
-assert rb.REPORT_BEGIN not in review_stdout.getvalue()
+assert FIXTURE_FRAME_PREFIX not in review_stdout.getvalue()
 assert rb.REPORT_END not in review_stdout.getvalue()
 assert review_stdout.getvalue().count(rb.TRIAGE_PENDING) == 1
 review_run_dir = next((review_store / "worker-stats" / "benches").iterdir())
@@ -6038,7 +6585,7 @@ assert all(
     for rater in opencode_specs
 )
 filtered_output = filtered_stdout.getvalue()
-assert rb.REPORT_BEGIN not in filtered_output and rb.REPORT_END not in filtered_output
+assert FIXTURE_FRAME_PREFIX not in filtered_output and rb.REPORT_END not in filtered_output
 assert filtered_output.count(rb.TRIAGE_PENDING) == 1
 assert all(
     row["verifier_by_model"] == {rb.OPENCODE_VERIFIER: 1} and row["verifier_audited"] == 1
@@ -6047,8 +6594,7 @@ assert all(
 # Who judged, not just how many were dropped: the chain advances per finding, so a report
 # naming no model leaves the reader unable to tell which verifier produced the rejections.
 filtered_report = "\n".join(rb.report_lines(filtered_run, filtered_meta, []))
-assert "verifier:     deepseek — 6 checked, 6 rejected" in filtered_report, \
-    filtered_report
+assert "verifier:     deepseek 6/6" in filtered_report, filtered_report
 assert "fixture finding" not in filtered_output
 assert rb.bench_summary(filtered_run, filtered_meta)["findings"] == 0
 
@@ -6287,7 +6833,11 @@ stalled_meta = json.loads((stalled_run_dir / "meta.json").read_text())
 assert stall_runner_calls == ["sol-medium", "sol-medium"], stall_runner_calls
 assert stalled_meta["timed_out"] is True, stalled_meta
 assert stalled_meta["rater_runs"][0]["stalled_s"] == 7, stalled_meta
-assert stalled_meta["rater_runs"][0]["stalled_retry_s"] == 7, stalled_meta
+# Two rows under one spec, the attempt the stall watch killed first and the retry that answers for
+# the cell last: dropped, the minutes that attempt held the panel open read as time nothing
+# accounts for, and the header charges them to the run's own lost time.
+assert len(stalled_meta["rater_runs"]) == 2, stalled_meta
+assert stalled_meta["rater_runs"][-1]["stalled_retry_s"] == 7, stalled_meta
 
 
 def stall_then_complete(rater, repo_path, commit, focus, run_dir, diff, account):
@@ -6314,7 +6864,10 @@ retried_run_dir = max(
 retried_meta = json.loads((retried_run_dir / "meta.json").read_text())
 assert stall_runner_calls == ["sol-medium", "sol-medium"], stall_runner_calls
 assert "timed_out" not in retried_meta, retried_meta
-retried_row = retried_meta["rater_runs"][0]
+assert len(retried_meta["rater_runs"]) == 2, retried_meta
+killed_row = retried_meta["rater_runs"][0]
+assert killed_row["stalled_s"] == 9 and killed_row["errored"] is True, killed_row
+retried_row = retried_meta["rater_runs"][-1]
 assert retried_row["exit_code"] == 0 and "stalled_s" not in retried_row, retried_row
 assert retried_row["stalled_retry_s"] == 9, retried_row
 for side in rb.SIDE_RUNNERS:
@@ -8580,8 +9133,16 @@ assert chunk_seen_hunks == chunk_lone_hunks, (len(chunk_seen_hunks), len(chunk_l
 chunk_seen = []
 
 
+chunk_call_times = {}
+
+
 def chunk_runner(rater, repo_path, commit, focus, run_dir, diff, account):
     chunk_seen.append((rater["spec"], diff))
+    if rater.get("chunk"):
+        chunk_call_times.setdefault(rater["spec"], []).append(rb.utc_now())
+        # The passes have to be measurably apart, or nothing here can tell the cell's own start
+        # from the last chunk's.
+        time.sleep(0.6)
     return 0, 1, "NO FINDINGS", "", []
 
 
@@ -8617,6 +9178,16 @@ assert chunk_meta["raters"] == ["sol-medium-bare", "oc-kimik3"], chunk_meta["rat
 assert {row["rater"]: row["chunks_read"] for row in chunk_meta["rater_runs"]} == {
     "sol-medium-bare": [0, 1], "oc-kimik3": [0, 1],
 }, chunk_meta["rater_runs"]
+# The cell's `started_at` is its FIRST chunk's, since its `duration_ms` is the sum of them all.
+# Left at the last one's, the row said the cell sat in a queue for everything the chunks before it
+# took, and `report_lost_cause` named a leg that never held it.
+for chunk_row in chunk_meta["rater_runs"]:
+    chunk_row_started = rb.parse_iso_timestamp(chunk_row["started_at"])
+    chunk_calls = chunk_call_times[chunk_row["rater"]]
+    assert len(chunk_calls) == 2, chunk_calls
+    assert (chunk_row_started - chunk_calls[0]).total_seconds() < 0.4, (
+        chunk_row["rater"], chunk_row["started_at"], [call.isoformat() for call in chunk_calls]
+    )
 # Every cell saw every chunk, one invocation at a time, and no `#k` name the chunking invented:
 # that suffix stays the tier's own word for a rater it deliberately runs twice.
 assert sorted(chunk_seen) == sorted(
@@ -8823,15 +9394,21 @@ with contextlib.redirect_stdout(chunk_prose_stdout), \
     ))
 chunk_prose_dir = next((chunk_prose_store / "worker-stats" / "benches").iterdir())
 chunk_prose_meta = json.loads((chunk_prose_dir / "meta.json").read_text())
-assert all(row["chunks_read"] == [0] for row in chunk_prose_meta["rater_runs"]), \
+# Unusable output earns the pass one retry, so a cell here holds a superseded attempt beside its
+# final row. Every surface that counts CELLS reads the last row of a spec, and the chunk record is
+# the pass's: read over the raw rows instead, one cell would answer for its chunks twice.
+chunk_prose_final, chunk_prose_attempts = rb.cell_attempt_rows(chunk_prose_meta["rater_runs"])
+assert all(row["chunks_read"] == [0] for row in chunk_prose_final), \
     chunk_prose_meta["rater_runs"]
+assert sorted(chunk_prose_attempts) == ["oc-kimik3", "sol-medium-bare"], chunk_prose_attempts
+assert all(len(rows) == 1 for rows in chunk_prose_attempts.values()), chunk_prose_attempts
 assert not set(chunk_prose_meta["chunks"][1]["paths"]) & set(chunk_prose_meta["reviewed"]), (
     chunk_prose_meta["reviewed"], chunk_prose_meta["chunks"]
 )
 # The cell records how many invocations its duration is the sum of: every reader of that number —
 # the watchdog cap, the duration median, the late line — prices ONE invocation, and a cell's total
 # handed to them reads as a rater that suddenly got twice as slow.
-assert all(row["passes"] == 2 for row in chunk_prose_meta["rater_runs"]), \
+assert all(row["passes"] == 2 for row in chunk_prose_final), \
     chunk_prose_meta["rater_runs"]
 assert rb.cell_pass_duration({"duration_ms": 900, "passes": 3}) == 300
 assert rb.cell_pass_duration({"duration_ms": 900}) == 900
@@ -10023,7 +10600,8 @@ with contextlib.redirect_stdout(repeat_record_stdout):
     assert rb.cmd_record(argparse.Namespace(
         run_id=repeat_meta["run_id"], verdicts=str(repeat_verdicts),
     )) == 0
-assert "confirmed 2:" in repeat_record_stdout.getvalue()
+assert "confirmed:    P1 0 · P2 0 · P3 2 · 2 total" in repeat_record_stdout.getvalue(), \
+    repeat_record_stdout.getvalue()
 assert "not adjudicated" not in repeat_record_stdout.getvalue()
 repeat_corpus = rb.read_jsonl(repeat_store / "worker-stats" / "reviews.jsonl")
 assert [row["rater"] for row in repeat_corpus] == ["sol-medium", "sol-medium#2"], repeat_corpus
@@ -10063,7 +10641,7 @@ with contextlib.redirect_stdout(worktree_record_stdout):
         run_id="worktree-record-fixture", verdicts=str(empty_verdicts), bench=True,
     )) == 0
 assert "corpus skipped" in worktree_record_stdout.getvalue()
-assert worktree_record_stdout.getvalue().count(rb.REPORT_BEGIN) == 1
+assert worktree_record_stdout.getvalue().count(FIXTURE_FRAME_PREFIX) == 1
 assert worktree_record_stdout.getvalue().count(rb.REPORT_END) == 1
 assert not (worktree_record_dir / "defects.jsonl").exists()
 assert (worktree_record_dir / "verdicts.jsonl").read_text() == ""
@@ -10121,10 +10699,11 @@ with contextlib.redirect_stdout(no_corpus_stdout):
     )) == 0
 # The verdicts reach the report without reaching the disk: printing the pre-adjudication shape
 # here is what sent the reader back to a list of cells, which is why the flag exists.
-assert "confirmed 1:  P1 1" in no_corpus_stdout.getvalue(), no_corpus_stdout.getvalue()
+assert "confirmed:    P1 1 · P2 0 · P3 0 · 1 total" in no_corpus_stdout.getvalue(), \
+    no_corpus_stdout.getvalue()
 assert "recorded nothing; this run's stored state is unchanged" in \
     no_corpus_stdout.getvalue(), no_corpus_stdout.getvalue()
-assert no_corpus_stdout.getvalue().count(rb.REPORT_BEGIN) == 1, \
+assert no_corpus_stdout.getvalue().count(FIXTURE_FRAME_PREFIX) == 1, \
     no_corpus_stdout.getvalue()
 assert "fixes:        NOT APPLIED — pending" in no_corpus_stdout.getvalue(), \
     no_corpus_stdout.getvalue()
@@ -10337,7 +10916,7 @@ rerun_arg = next(
 rerun_values = shlex.split(rerun_arg)
 assert rerun_rc == 1 and "ERRORED (not recorded): sol-high#2" in rerun_output, rerun_output
 assert rerun_output.count(rb.TRIAGE_PENDING) == 1
-assert rb.REPORT_BEGIN not in rerun_output and rb.REPORT_END not in rerun_output
+assert FIXTURE_FRAME_PREFIX not in rerun_output and rb.REPORT_END not in rerun_output
 assert len(rerun_values) == 1
 assert [rater["spec"] for rater in rb.parse_raters(rerun_values[0])] == ["sol-high"]
 print("dispatcher-rater-repeat-ok")
@@ -10813,14 +11392,16 @@ assert lens_corpus and all(
     row["lens"] == "edge-cases" and row["lens_hash"] == lens_meta["lens_hash"]
     for row in lens_corpus
 ), lens_corpus
-# The tier alone names a panel, and these severities were awarded by another methodology.
-lens_report_head = rb.report_lines(lens_run_dir, lens_meta)[0]
-assert lens_report_head.startswith(
-    "review-bench panel · T1 · lens edge-cases"
-), lens_report_head
+# Its own row and never the tier's: these severities were awarded by another methodology, and a
+# reader who priced them as the tool's own read a lens run as a review.
+lens_report = rb.report_lines(lens_run_dir, lens_meta)
+assert lens_report[0].startswith("T1:"), lens_report
 # The panel is narrower than the tier beside it, and the report is the surface that says so.
-assert f"−{len(lens_meta['lens_panel_dropped'])} cell(s)" in lens_report_head, lens_report_head
-assert "lens" not in rb.report_lines(plain_lens_run_dir, plain_lens_meta)[0], \
+assert lens_report[1] == (
+    f"lens:         edge-cases · {len(lens_meta['lens_panel_dropped'])} cells dropped"
+), lens_report
+assert not [line for line in rb.report_lines(plain_lens_run_dir, plain_lens_meta)
+            if line.startswith("lens:")], \
     rb.report_lines(plain_lens_run_dir, plain_lens_meta)
 
 # A lens receipt sits beside the repository's own and never as it: the receipt is what decides
@@ -11090,8 +11671,10 @@ assert {path.name: path.read_bytes() for path in merged_receipt_dir.iterdir()} \
 merged_report_meta = json.loads((merged_run_dir / "meta.json").read_text())
 merged_report_head = rb.report_lines(merged_run_dir, merged_report_meta)[0]
 assert merged_report_head.startswith(
-    f"review-bench merged panel · {len(merged_report_meta['repos'])} repos · "
+    f"untiered · {len(merged_report_meta['repos'])} rep:"
 ), merged_report_head
+# And which repositories: a number alone leaves the reader unable to weigh the findings.
+assert merged_report_head.endswith("· producer, consumer"), merged_report_head
 assert len(merged_report_meta["repos"]) == 2, merged_report_meta["repos"]
 # A merged snapshot is no more a durable corpus commit than a single-repository one.
 assert not (merged_state / "reviews.jsonl").exists()
@@ -11234,24 +11817,25 @@ dry_pool_stderr = rb.no_account_left("opencode")
 rb.mark_walled("opencode", "opencode-go-late", reset_at=time.time() + 7200, window="weekly")
 assert rb.no_account_left("opencode") != dry_pool_stderr, "the fixture recorded no second wall"
 assert not rb.gateway_outage("opencode", 1, dry_pool_stderr)
-# And the exclusion note rides on the head line: appended after the labels it would take the last
-# one out of the report's `walls:` row, which re-reads each label with a full match.
+# And the exclusion note rides on the head line: appended after the labels it would run into the
+# last one, and the wall a reader waits on is read off these lines whole.
 excluded_stderr = rb.no_account_left(
     "opencode", "; excluded by REVIEW_BENCH_EXCLUDE_OPENCODE: opencode-go-late"
 )
 assert excluded_stderr.splitlines()[0].endswith("opencode-go-late"), excluded_stderr
 assert rb.active_wall_labels("opencode"), "the fixture recorded no wall to label"
-assert rb.reported_wall_labels([{"stderr": excluded_stderr}]) == rb.active_wall_labels("opencode")
+assert all(label in excluded_stderr.splitlines()
+           for label in rb.active_wall_labels("opencode")), excluded_stderr
 assert not rb.gateway_outage("opencode", 1, excluded_stderr)
 # A weekday names a day only inside the week it belongs to: a monthly wall three weeks out spelled
 # "Tue 09:00" reads as tomorrow to whoever decides whether to wait, so past that week the label
-# carries a date — and the report's `walls:` row, which re-reads each label whole, takes both.
+# carries a date.
 rb.mark_walled("opencode", "opencode-go-far", reset_at=time.time() + 25 * 86400, window="monthly")
 far_wall_label = [line for line in rb.active_wall_labels("opencode") if " far:" in line]
 assert far_wall_label and re.search(r", resets [A-Z][a-z]{2} \d{1,2}$", far_wall_label[0]), \
     far_wall_label
-assert rb.reported_wall_labels([{"stderr": rb.no_account_left("opencode")}]) == \
-    rb.active_wall_labels("opencode")
+assert all(label in rb.no_account_left("opencode").splitlines()
+           for label in rb.active_wall_labels("opencode"))
 del os.environ["WORKER_STATS_DIR"]
 
 # A run where every attempt of one family failed and the other answered: one starts cooling, the
@@ -11689,6 +12273,8 @@ import json
 import pathlib
 import sys
 
+from datetime import datetime, timedelta, timezone
+
 state = pathlib.Path(sys.argv[1])
 adjudicated = state / "benches" / "report-adjudicated"
 adjudicated_meta = {
@@ -11710,8 +12296,13 @@ adjudicated_meta = {
          "duration_ms": 15_000, "findings": 0, "exit_code": 2, "errored": True,
          "stderr": "fixture failure"},
     ],
-    "durations": {"sol-high": 120_000}, "started": "2026-07-30T00:00:00+00:00",
-    "finished": "2026-07-30T00:05:30+00:00", "focus": "",
+    "durations": {"sol-high": 120_000},
+    # 5.5 minutes wide, and the wall is what the header prices.
+    "started": (
+        datetime.now(timezone.utc) - timedelta(seconds=330)
+    ).isoformat(timespec="seconds"),
+    "finished": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    "focus": "",
 }
 (adjudicated / "meta.json").write_text(json.dumps(adjudicated_meta))
 findings = {
@@ -11755,8 +12346,15 @@ worktree_meta = {
          "side": "agy", "duration_ms": 180_000, "timeout_s": 180, "findings": 0,
          "exit_code": 124, "errored": True, "stderr": "rater timed out after 180s"},
     ],
-    "durations": {}, "started": "2026-07-29T00:00:00+00:00",
-    "finished": "2026-07-29T00:00:30+00:00", "focus": "",
+    "durations": {},
+    # Older than the adjudicated run beside it, so `--last` must pick the other one.
+    "started": (
+        datetime.now(timezone.utc) - timedelta(seconds=600)
+    ).isoformat(timespec="seconds"),
+    "finished": (
+        datetime.now(timezone.utc) - timedelta(seconds=570)
+    ).isoformat(timespec="seconds"),
+    "focus": "",
 }
 (worktree / "meta.json").write_text(json.dumps(worktree_meta))
 for rater, count in (("oc-kimik3", 1), ("oc-kimik3#2", 2)):
@@ -11789,8 +12387,9 @@ report_frame_header='===================== review ====================='
 report_frame_footer='=================================================='
 # Every report carries the verdict on its own tally, in the commit gate's words: a round is closed
 # here or it owes another, and the block that says neither is the one a chat read as "done" while a
-# second review was owed (2026-08-08).
-expected_report="$report_frame_header"$'\nreview-bench panel · T2 · 5.5 min wall · slowest completed: sol-high 2 min\nconfirmed 1:    P1 1\nround:          closed — nothing more is owed before the commit\nfixes:          NOT APPLIED — pending\nrejected:       1 duplicate  ~400 tok\n                2 false      ~3k tok\nfalse by:       kimi ×1 · sol-high ×1\nverifier:       off — 2 finding(s) unchecked\ncells:          sol-high 1/2 · kimi 0/2\nerrored:        opus-med-bare 15 sec (exit 2)\ntimeout:        gem-flash36-med 4 min (watchdog cap 4 min)\nmismatch:       gem-flash35-low\nwall gated by:  gem-flash36-med 4 min (timeout)\n'"$report_frame_footer"
+# second review was owed (2026-08-08). No stamp anywhere in it: a report Egor is handed is about
+# the tree in front of him, and only the frame word ever says otherwise.
+expected_report="$report_frame_header"$'\nT2:           5.5 min / 4.0 min gem-flash36-med killed\nconfirmed:    P1 1 · P2 0 · P3 0 · 1 total\nfixes:        NOT APPLIED — pending\nverifier:     off · 2 unchecked\nrejected:     1 duplicate  ~400 tok\n              2 false       ~3k tok\nfound:        sol-high  1/2\nnoise:        kimi 1 · sol-high 1\nfailed:       gem-flash36-med  killed · cap   4.0 min\n              gem-flash35-low  mismatch       0.5 min\n              opus-med-bare    unclassified\n'"$report_frame_footer"
 assert test "$report_output" = "$expected_report"
 # The frame is what the reader and every consumer of this block see first: a word centered in '='
 # to exactly 50 characters, and a footer of exactly 50 more.
@@ -11800,13 +12399,31 @@ assert test "${#report_frame_header}" -eq 50
 assert test "$(python3 -c 'import sys; print(len(sys.argv[1]))' \
   "$report_frame_header")" -eq 50
 assert test "${#report_frame_footer}" -eq 50
-assert grep -qE '^=+ review( · NOT FINISHED)? =+$' <<<"$(head -1 <<<"$report_output")"
+# Every state word keeps the shape the hooks find the block by (shared-invariants row ab).
+assert grep -qE '^=+ (bench|review( · (NOT FINISHED|NO PANEL|STALE · [0-9]{1,2} [A-Z][a-z]{2}))?) =+$' \
+  <<<"$(head -1 <<<"$report_output")"
 assert grep -qE '^={10,}$' <<<"$(tail -1 <<<"$report_output")"
 # The header must not read as the footer, or a consumer closing the block on its end shape closes
 # it on the line that opens it.
 assert test "$(grep -cE '^={10,}$' <<<"$report_output")" = "1"
-assert contains "$report_output" $'rejected:       1 duplicate  ~400 tok\n                2 false      ~3k tok'
-assert contains "$report_output" $'false by:       kimi ×1 · sol-high ×1\nverifier:       off — 2 finding(s) unchecked\ncells:          sol-high 1/2 · kimi 0/2\nerrored:        opus-med-bare 15 sec (exit 2)\ntimeout:        gem-flash36-med 4 min (watchdog cap 4 min)\nmismatch:       gem-flash35-low\nwall gated by:  gem-flash36-med 4 min (timeout)'
+# The numbers and the token estimate are read as columns, right-aligned against each other.
+assert contains "$report_output" $'rejected:     1 duplicate  ~400 tok\n              2 false       ~3k tok'
+# Every cell of the panel is answered for in exactly one of the four rows below: two named in
+# `found:`/`noise:`, three in `failed:` with the cause and what each cost.
+assert contains "$report_output" $'found:        sol-high  1/2\nnoise:        kimi 1 · sol-high 1\nfailed:       gem-flash36-med  killed · cap   4.0 min\n              gem-flash35-low  mismatch       0.5 min\n              opus-med-bare    unclassified'
+# The state is the frame word's alone, and no row below it repeats the state or the old block's
+# per-status lists — the hooks and the reader both key on the word.
+assert test "$(grep -cE '^(cells|errored|timeout|mismatch|not run|walls|false by|wall gated by):' \
+  <<<"$report_output")" = "0"
+# The fork — which way the round goes from here — is the model's context and not Egor's reading,
+# so `fork` is where the hook picks it up. This round is closed and owes no fork at all.
+fork_output=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" fork report-adjudicated) \
+  || fail "fork failed on a closed round"
+assert test -z "$fork_output"
+fork_unknown_rc=0
+fork_unknown=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" fork no-such-run 2>&1) || fork_unknown_rc=$?
+assert test "$fork_unknown_rc" -ne 0
+assert contains "$fork_unknown" "unknown run id"
 last_report=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" report --last) \
   || fail "last report failed"
 assert test "$last_report" = "$expected_report"
@@ -11990,28 +12607,33 @@ PY
 assert test "$?" -eq 0
 fail_report=$(WORKER_STATS_DIR="$FAIL_SD" "$SCRIPT" report 20260101T000500Z-eeeeeee) \
   || fail "failure-observability report failed"
-# Sorted by what survived triage, then by raw findings, then by name: the row answers which models
-# earned their place in the next panel, which the launch order never said.
-assert contains "$fail_report" 'cells:          kimi 2/3 · glm52 1/1 · sol-high 0/5'
-# The budget that killed the cell, named apart from a client that gave up on its own — both arrive
-# as the same status and the same "timed out" wording.
-assert contains "$fail_report" 'gem-flash36-med 20 min (watchdog cap 17 min)'
-assert contains "$fail_report" 'gem-pro 6.7 min (stalled, quiet 6 min)'
-# Three runs in a row failing, counted over the runs that held the cell — the run between them
-# that never launched it is passed over, not read as a recovery.
-assert contains "$fail_report" 'gem-flash35-med 27.1 min (3 fails in a row)'
-assert contains "$fail_report" 'errored:        opus-med-bare 15 sec (exit 2)'
-# The hung cell held the panel for the whole wall while "slowest completed" priced 1.5 minutes of
-# it: without this line the gate is invisible in the block Egor reads.
-assert contains "$fail_report" 'wall gated by:  gem-flash35-med 27.1 min (timeout)'
+# The hung cell held the panel for the whole wall while the old block priced "slowest completed:
+# 1.5 min" and named it with nothing beside it: the header is now the run's own price, and the
+# chain that set it is the cell the reader has to act on.
+assert contains "$fail_report" 'T2:           27.5 min / 27.1 min gem-flash35-med killed'
+# Sorted by what survived triage, then by raw findings: the row answers which models earned their
+# place in the next panel, which the launch order never said.
+assert contains "$fail_report" $'found:        kimi   2/3\n              glm52  1/1'
+# One row per family and cause, with the streak on the cause and the cost beside it. Three runs in
+# a row failing is counted over the runs that HELD the cell — the run between them that never
+# launched it is passed over, not read as a recovery.
+assert contains "$fail_report" $'failed:       gem-flash35-med  killed · cap · 3 runs in a row  27.1 min\n              gem-flash36-med  killed · cap                    20.0 min\n              gem-pro          killed · stalled                 6.7 min\n              opus-med-bare    unclassified'
 # Two failures are a bad night, not a chronic cell.
-assert test "$(grep -c 'fails in a row' <<<"$fail_report")" = "1"
-# And the line is silent where the wall was the panel's own work: a completed cell gating it is
-# what "slowest completed" already says.
+assert test "$(grep -c 'runs in a row' <<<"$fail_report")" = "1"
+# A cell that completed and claimed nothing that survived is COUNTED, never named: named here it
+# would read as a cell worth keeping, and dropped entirely it would be a panel member nobody sees.
+# Which of the count rows it lands in is the fact itself: this one's only finding another cell had
+# already made, and `quiet` over it said the cell found nothing.
+assert contains "$fail_report" 'echoed:       1 cells'
+# And nothing below the frame names the run's state or lists cells by status.
+assert test "$(grep -cE '^(cells|errored|timeout|mismatch|not run|walls|false by|wall gated by):' \
+  <<<"$fail_report")" = "0"
 fail_clean=$(WORKER_STATS_DIR="$FAIL_SD" "$SCRIPT" report 20260101T000600Z-fffffff) \
   || fail "failure-observability clean report failed"
-assert test "$(grep -c 'wall gated by:' <<<"$fail_clean")" = "0"
-assert contains "$fail_clean" 'errored:      opus-med-bare 5 sec (exit 2, 3 fails in a row)'
+# A run whose wall was its own work has no failed cell to name, and the header prices the panel
+# itself; the streak still counts, because the cell is the same one.
+assert contains "$fail_clean" 'failed:       opus-med-bare  unclassified · 3 runs in a row'
+assert test "$(grep -c 'killed' <<<"$fail_clean")" = "0"
 # A meta written before any of these keys existed still renders: the report shows what it has and
 # claims no cause it was never told.
 python3 - "$FAIL_SD/benches" <<'PY'
@@ -12043,10 +12665,11 @@ PY
 assert test "$?" -eq 0
 legacy_kill_report=$(WORKER_STATS_DIR="$FAIL_SD" "$SCRIPT" report 20260101T000700Z-9999999) \
   || fail "legacy-kill report failed"
-assert contains "$legacy_kill_report" 'gem-pro 4.1 min (stalled, cap 4 min)'
-assert contains "$legacy_kill_report" 'wall gated by:  gem-pro 4.1 min (stalled)'
+# The kill is read off the stall wording the run recorded, with no `killed` key to read it from,
+# and the cell that held the wall is the header's chain.
+assert contains "$legacy_kill_report" 'T2:           5.0 min / 4.1 min gem-pro killed'
 # A cell whose duration was never recorded loses its own figure and nothing else.
-assert contains "$legacy_kill_report" 'errored:        kimi (exit 2)'
+assert contains "$legacy_kill_report" $'failed:       gem-pro  killed · stalled · 2 runs in a row   4.1 min\n              kimi     unclassified'
 
 SD="$WORK/state"
 RUN="$SD/benches/run-fixture"
@@ -12505,6 +13128,7 @@ HOME="$WORK/home" WORKER_STATS_DIR="$FSD" python3 - "$SCRIPT" "$FSD" <<'PY'
 import importlib.machinery
 import importlib.util
 import json
+import os
 import pathlib
 import sys
 
@@ -12581,6 +13205,24 @@ assert repeat_counted["ccccccc"] == {
 repeat_rates = rb.hit_rates(repeat_by_commit, repeat_counts, repeat_counted)
 assert repeat_rates["fixture@ccccccc#1"]["sol-high"] == 0.5, repeat_rates
 print("frontier-rater-repeat-ok")
+
+health_stats = stats.parent / "opencode-health-retry-stats"
+health_run = health_stats / "benches" / "retry-run"
+health_run.mkdir(parents=True)
+(health_run / "meta.json").write_text(json.dumps({
+    "run_id": "retry-run",
+    "rater_runs": [
+        {"rater": "oc-kimik3", "side": "opencode", "duration_ms": 10_000,
+         "exit_code": 1, "errored": True, "stderr": "server error"},
+        {"rater": "oc-kimik3", "side": "opencode", "duration_ms": 20_000,
+         "exit_code": 0, "findings": 1},
+    ],
+}))
+os.environ["WORKER_STATS_DIR"] = str(health_stats)
+retry_health = rb.opencode_health()["oc-kimik3"]
+assert retry_health["runs"] == 1 and retry_health["errors"] == 0, retry_health
+assert retry_health["seconds"] == [30] and retry_health["findings"] == [1], retry_health
+os.environ["WORKER_STATS_DIR"] = str(stats)
 
 found, total = rb.composition_coverage(by_commit, rates, ["oc-kimik3"])
 assert total == 4, total
@@ -13359,7 +14001,7 @@ assert contains "$gate_pending" "record 20260731T000000Z-gatefresh --no-corpus"
 gate_reported=$(WORKER_STATS_DIR="$GATE_SD" "$SCRIPT" record 20260731T000000Z-gatefresh \
   --no-corpus) || fail "no-corpus record without verdicts failed"
 assert contains "$gate_reported" "$report_frame_header"
-assert contains "$gate_reported" "confirmed 0:"
+assert contains "$gate_reported" "confirmed:    0"
 assert test -e "$GATE_SD/benches/20260731T000000Z-gatefresh/reported.json"
 # --no-corpus still leaves the run pending to `list`: only the receipt the gate reads is written.
 assert test ! -e "$GATE_SD/benches/20260731T000000Z-gatefresh/verdicts.jsonl"
@@ -13524,6 +14166,12 @@ for fix_frame in "$fix_blocked_header" "$report_frame_header"; do
     fail "a frame this suite pins is not 50 chars wide: $fix_frame"
 done
 fix_row() { grep -E '^fixes: +' <<<"$1" | sed -E 's/^fixes: +//'; }
+# The ORDINARY word, whatever the run's age: these fixtures are backdated on purpose, and age has
+# no bearing on the word — each is rendered at its own `record` over the tree it read. What none of
+# them may wear is the loud word, which is read off the receipt alone.
+fix_plain_frame() {
+  grep -qE '^=+ review =+$' <<<"$1"
+}
 fix_bench() { HOME="$FIX_HOME" WORKER_STATS_DIR="$FIX_SD" "$SCRIPT" "$@"; }
 
 GATE_SD="$FIX_SD" GATE_REPO="$FIX_REPO" GATE_SESSION=sess-fix \
@@ -13537,7 +14185,7 @@ fix_first=$(fix_bench record 20260801T000000Z-fixround1 --no-corpus \
 # so the loud word here is the one Egor read as "nothing was fixed" while the fixes were landing
 # (2026-08-20). The row says the truth; the frame does not shout it.
 assert test "$(fix_row "$fix_first")" = "NOT APPLIED — pending"
-assert contains "$fix_first" "$report_frame_header"
+assert fix_plain_frame "$fix_first"
 assert test "$(grep -Fc -- "$fix_blocked_header" <<<"$fix_first")" -eq 0
 # Nothing stopped, so there is no fork to take and no row claiming there is.
 assert test "$(grep -Fc -- "stopped:" <<<"$fix_first")" -eq 0
@@ -13547,7 +14195,13 @@ fix_first_delivery=$(fix_bench pending-delivery --session sess-fix) \
   || fail "pending-delivery refused a chat whose only round is mid-pass"
 assert test "$(grep -Fc -- "20260801T000000Z-fixround1" <<<"$fix_first_delivery")" -eq 0
 # Round one may still be offered the pass the gate priced.
-assert contains "$fix_first" "re-review"
+assert contains "$fix_first" "round:        stub fork"
+# And the fork itself is not in the block: three arms and a command are the model's context, and
+# `fork` is where the report hook picks them up.
+assert test "$(grep -Fc -- "re-review" <<<"$fix_first")" -eq 0
+fix_first_fork=$(fix_bench fork 20260801T000000Z-fixround1) \
+  || fail "fork refused a round that owes one"
+assert contains "$fix_first_fork" "re-review"
 
 # The blocked form carries the reason into the block, so the chat reads why the work stopped
 # rather than that it did.
@@ -13564,10 +14218,15 @@ assert contains "$fix_blocked_report" "$fix_blocked_header"
 # A blocked round re-framed by a rule of its own is what delivered a second copy of a report Egor
 # had already read, saying a thing its receipt never said (2026-08-20).
 assert test "$(grep -Fc -- "$report_frame_header" <<<"$fix_blocked_report")" -eq 0
-assert contains "$fix_blocked_report" "stopped:"
-assert contains "$fix_blocked_report" "the fixing pass stopped over the findings above, for the reason"
-assert contains "$fix_blocked_report" "fixing them as they stand, reworking the code they cluster in,"
-assert contains "$fix_blocked_report" "is Egor's decision and not the fixer's"
+# The fork under it is the model's context and not Egor's reading, so the block keeps the reason
+# and `fork` carries the three arms.
+assert test "$(grep -Fc -- "stopped:" <<<"$fix_blocked_report")" -eq 0
+assert test "$(grep -Fc -- "is Egor's decision and not the fixer's" <<<"$fix_blocked_report")" -eq 0
+fix_blocked_fork=$(fix_bench fork 20260801T000000Z-fixround1) \
+  || fail "fork refused a stopped round"
+assert contains "$fix_blocked_fork" "the fixing pass stopped over this round's findings, for the reason"
+assert contains "$fix_blocked_fork" "fixing them as they stand, reworking the code they cluster in,"
+assert contains "$fix_blocked_fork" "is Egor's decision and not the fixer's"
 # `--blocked` takes whichever reason the pass actually had, and the fork under the loud word
 # asserts none of its own: a round stopped by a walled worker read "stopped at the P1 threshold
 # and fixed nothing" over a receipt that said neither.
@@ -13577,7 +14236,7 @@ fix_walled_report=$(fix_bench report 20260801T000000Z-fixround1) \
   || fail "the walled round has no report"
 assert test "$(fix_row "$fix_walled_report")" = "NOT APPLIED — the worker was walled mid-pass"
 assert contains "$fix_walled_report" "$fix_blocked_header"
-assert contains "$fix_walled_report" "the fixing pass stopped over the findings above, for the reason"
+assert contains "$fix_walled_report" "NOT APPLIED — the worker was walled mid-pass"
 assert test "$(grep -Fc -- "stopped at the P1 threshold" <<<"$fix_walled_report")" -eq 0
 # A blocked receipt answers for the triage it stopped over, exactly as a done one answers for the
 # triage it fixed: re-adjudicated to different findings, the round owes an answer again rather than
@@ -13588,7 +14247,7 @@ fix_blockswap=$(fix_bench record 20260801T000000Z-fixround1 --no-corpus \
   --verdicts "$WORK/fix-verdicts-blockswap.jsonl") || fail "re-adjudication of a blocked round refused"
 assert test "$(fix_row "$fix_blockswap")" \
   = "NOT APPLIED — recorded against a different triage of the same 1 confirmed"
-assert contains "$fix_blockswap" "$report_frame_header"
+assert fix_plain_frame "$fix_blockswap"
 assert test "$(grep -Fc -- "stopped:" <<<"$fix_blockswap")" -eq 0
 # And it is named by no delivery line while it owes that answer, whatever state its receipt holds.
 fix_blockswap_delivery=$(fix_bench pending-delivery --session sess-fix) \
@@ -13614,8 +14273,10 @@ fix_done=$(fix_bench fixes 20260801T000000Z-fixround1 --done --fixed 1 --fp 1) \
 assert contains "$fix_done" "done — 1 fixed, 1 false positives"
 fix_done_report=$(fix_bench report 20260801T000000Z-fixround1) \
   || fail "the fixed round has no report"
-assert test "$(fix_row "$fix_done_report")" = "done — 1 fixed, 1 false positives"
-assert contains "$fix_done_report" "$report_frame_header"
+# And the block goes silent about fixes: a row that prints in the ordinary case is a row the
+# reader stops reading, and the receipt itself is where the counts live.
+assert test -z "$(fix_row "$fix_done_report")"
+assert fix_plain_frame "$fix_done_report"
 assert test "$(grep -Fc -- "$fix_blocked_header" <<<"$fix_done_report")" -eq 0
 assert test "$(grep -Fc -- "stopped:" <<<"$fix_done_report")" -eq 0
 assert test -e "$FIX_SD/benches/20260801T000000Z-fixround1/fixes.json"
@@ -13633,8 +14294,8 @@ GATE_SD="$FIX_SD" GATE_REPO="$FIX_QUIET_REPO" GATE_SESSION=sess-fix \
   gate_run 20260801T010000Z-fixquiet 0 0
 fix_quiet=$(fix_bench record 20260801T010000Z-fixquiet --no-corpus) \
   || fail "the clean round refused its own triage"
-assert test "$(fix_row "$fix_quiet")" = "nothing to fix"
-assert contains "$fix_quiet" "$report_frame_header"
+assert test -z "$(fix_row "$fix_quiet")"
+assert fix_plain_frame "$fix_quiet"
 assert test "$(grep -Fc -- "$fix_blocked_header" <<<"$fix_quiet")" -eq 0
 
 # Two rounds over one scope and no third. Derived from the runs on disk — an earlier run of the
@@ -13644,13 +14305,17 @@ GATE_SD="$FIX_SD" GATE_REPO="$FIX_REPO" GATE_SESSION=sess-fix \
 printf '%s\n' '{"rater":"oc-kimik3","idx":0,"verdict":"confirmed"}' >"$WORK/fix-verdicts2.jsonl"
 fix_second=$(fix_bench record 20260801T020000Z-fixround2 --no-corpus \
   --verdicts "$WORK/fix-verdicts2.jsonl") || fail "the second round refused its own triage"
-assert test "$(grep -Fc -- "re-review" <<<"$fix_second")" -eq 0
-assert contains "$fix_second" "the budget of two is spent"
-assert contains "$fix_second" "false-positive doctrine"
+assert test "$(grep -Fc -- "round:" <<<"$fix_second")" -eq 0
+# The third round is refused in the fork the model reads, not in the block Egor reads.
+fix_second_fork=$(fix_bench fork 20260801T020000Z-fixround2) \
+  || fail "fork refused the round whose budget is spent"
+assert contains "$fix_second_fork" "the budget of two is spent"
+assert contains "$fix_second_fork" "false-positive doctrine"
 # A round of another scope is still its own first: the budget is per scope, not per repository
 # the state directory happens to hold.
 fix_other=$(fix_bench report 20260801T010000Z-fixquiet) || fail "the clean round lost its report"
-assert test "$(grep -Fc -- "the budget of two is spent" <<<"$fix_other")" -eq 0
+assert test "$(grep -Fc -- "the budget of two is spent" \
+  <<<"$(fix_bench fork 20260801T010000Z-fixquiet)")" -eq 0
 # And a scope whose own findings earned the fork keeps it: the round on record belongs to another
 # tree, so what spends the budget is the scope matching, never a fix receipt merely existing
 # somewhere in a state directory every repository shares.
@@ -13659,8 +14324,9 @@ GATE_SD="$FIX_SD" GATE_REPO="$FIX_QUIET_REPO" GATE_SESSION=sess-fix \
 printf '%s\n' '{"rater":"oc-kimik3","idx":0,"verdict":"confirmed"}' >"$WORK/fix-verdicts3.jsonl"
 fix_other_first=$(fix_bench record 20260801T040000Z-fixotherfirst --no-corpus \
   --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the other scope's round refused its own triage"
-assert contains "$fix_other_first" "re-review"
-assert test "$(grep -Fc -- "the budget of two is spent" <<<"$fix_other_first")" -eq 0
+assert contains "$fix_other_first" "round:        stub fork"
+assert test "$(grep -Fc -- "the budget of two is spent" \
+  <<<"$(fix_bench fork 20260801T040000Z-fixotherfirst)")" -eq 0
 
 # A receipt answers for confirmed findings, so a run nobody judged has none to answer for. Taken
 # here it would spend the scope's budget over a pass that never happened.
@@ -13685,8 +14351,9 @@ GATE_SD="$FIX_SD" GATE_REPO="$FIX_BLOCKED_REPO" GATE_SESSION=sess-fix \
   gate_run 20260801T070000Z-fixafterstop 0 1
 fix_after_stop=$(fix_bench record 20260801T070000Z-fixafterstop --no-corpus \
   --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the round after a stop refused its triage"
-assert contains "$fix_after_stop" "re-review"
-assert test "$(grep -Fc -- "the budget of two is spent" <<<"$fix_after_stop")" -eq 0
+assert contains "$fix_after_stop" "round:        stub fork"
+assert test "$(grep -Fc -- "the budget of two is spent" \
+  <<<"$(fix_bench fork 20260801T070000Z-fixafterstop)")" -eq 0
 
 # And the scope is a piece of work, not a checkout: an unrelated later review of the same
 # repository must keep its own first round, or one fixed round costs that repository the
@@ -13704,13 +14371,16 @@ GATE_SD="$FIX_SD" GATE_REPO="$FIX_LINEAGE_REPO" GATE_SESSION=sess-fix GATE_REVIE
   gate_run 20260801T090000Z-fixelsewhere 0 1
 fix_elsewhere=$(fix_bench record 20260801T090000Z-fixelsewhere --no-corpus \
   --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the unrelated round refused its triage"
-assert contains "$fix_elsewhere" "re-review"
-assert test "$(grep -Fc -- "the budget of two is spent" <<<"$fix_elsewhere")" -eq 0
+assert contains "$fix_elsewhere" "round:        stub fork"
+assert test "$(grep -Fc -- "the budget of two is spent" \
+  <<<"$(fix_bench fork 20260801T090000Z-fixelsewhere)")" -eq 0
 GATE_SD="$FIX_SD" GATE_REPO="$FIX_LINEAGE_REPO" GATE_SESSION=sess-fix \
   GATE_REVIEWED="a.py b.py c.py" gate_run 20260801T100000Z-fixlineage2 0 1
 fix_lineage2=$(fix_bench record 20260801T100000Z-fixlineage2 --no-corpus \
   --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the second lineage round refused its triage"
-assert contains "$fix_lineage2" "the budget of two is spent"
+fix_fork_fix_lineage2=$(fix_bench fork 20260801T100000Z-fixlineage2) \
+  || fail "fork failed on 20260801T100000Z-fixlineage2"
+assert contains "$fix_fork_fix_lineage2" "the budget of two is spent"
 # And the earlier round's receipt is read exactly as its own REPORT reads it: a re-adjudication
 # leaves the receipt standing over a triage it no longer answers, and taken at its raw word the
 # round the report itself calls pending goes on spending the scope's budget of two.
@@ -13720,8 +14390,9 @@ fix_bench record 20260801T080000Z-fixlineage1 --no-corpus \
   --verdicts "$WORK/fix-lineage-restale.jsonl" >/dev/null || fail "re-adjudication refused"
 fix_stale_lineage=$(fix_bench record 20260801T100000Z-fixlineage2 --no-corpus \
   --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the second lineage round refused its triage"
-assert test "$(grep -Fc -- "the budget of two is spent" <<<"$fix_stale_lineage")" -eq 0
-assert contains "$fix_stale_lineage" "re-review"
+assert test "$(grep -Fc -- "the budget of two is spent" \
+  <<<"$(fix_bench fork 20260801T100000Z-fixlineage2)")" -eq 0
+assert contains "$fix_stale_lineage" "round:        stub fork"
 fix_bench record 20260801T080000Z-fixlineage1 --no-corpus \
   --verdicts "$WORK/fix-verdicts.jsonl" >/dev/null || fail "re-adjudication back refused"
 
@@ -13743,7 +14414,9 @@ GATE_SD="$FIX_SD" GATE_REPO="$WORK/fix-merged-workspace-2" GATE_SESSION=sess-fix
   GATE_MEMBERS="$fix_members" gate_run 20260801T120000Z-fixmerged2 0 1
 fix_merged2=$(fix_bench record 20260801T120000Z-fixmerged2 --no-corpus \
   --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the second merged round refused its triage"
-assert contains "$fix_merged2" "the budget of two is spent"
+fix_fork_fix_merged2=$(fix_bench fork 20260801T120000Z-fixmerged2) \
+  || fail "fork failed on 20260801T120000Z-fixmerged2"
+assert contains "$fix_fork_fix_merged2" "the budget of two is spent"
 
 # And what a merged panel READ is its members' maps as much as the workspace's own: only the
 # members' hold a debt review's zero-diff survivors, since the workspace map is that snapshot's
@@ -13766,13 +14439,16 @@ GATE_SD="$FIX_SD" GATE_REPO="$WORK/fix-members-workspace-2" GATE_SESSION=sess-fi
   GATE_MEMBERS="$fix_members_elsewhere" gate_run 20260801T140000Z-fixmemberselse 0 1
 fix_members_else=$(fix_bench record 20260801T140000Z-fixmemberselse --no-corpus \
   --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the unrelated merged round refused its triage"
-assert test "$(grep -Fc -- "the budget of two is spent" <<<"$fix_members_else")" -eq 0
-assert contains "$fix_members_else" "re-review"
+assert test "$(grep -Fc -- "the budget of two is spent" \
+  <<<"$(fix_bench fork 20260801T140000Z-fixmemberselse)")" -eq 0
+assert contains "$fix_members_else" "round:        stub fork"
 GATE_SD="$FIX_SD" GATE_REPO="$WORK/fix-members-workspace-3" GATE_SESSION=sess-fix \
   GATE_MEMBERS="$fix_members_read" gate_run 20260801T150000Z-fixmembers2 0 1
 fix_members2=$(fix_bench record 20260801T150000Z-fixmembers2 --no-corpus \
   --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the answering merged round refused its triage"
-assert contains "$fix_members2" "the budget of two is spent"
+fix_fork_fix_members2=$(fix_bench fork 20260801T150000Z-fixmembers2) \
+  || fail "fork failed on 20260801T150000Z-fixmembers2"
+assert contains "$fix_fork_fix_members2" "the budget of two is spent"
 
 # A receipt answers for the triage it was written against. Re-adjudicating replaces the verdicts
 # and leaves the receipt where it is, so a round that came back with more confirmed findings than
@@ -13784,12 +14460,15 @@ fix_restale=$(fix_bench record 20260801T000000Z-fixround1 --no-corpus \
 assert contains "$fix_restale" "recorded against a triage of 1 confirmed, and this one has 2"
 # A receipt that no longer answers the triage is a pass that has not answered: the plain word,
 # since the fixer may be working through the new findings right now.
-assert contains "$fix_restale" "$report_frame_header"
+assert fix_plain_frame "$fix_restale"
 assert test "$(grep -Fc -- "$fix_blocked_header" <<<"$fix_restale")" -eq 0
 fix_bench fixes 20260801T000000Z-fixround1 --done --fixed 2 --fp 0 >/dev/null \
   || fail "fixes --done refused the re-adjudicated round"
 fix_resettled=$(fix_bench report 20260801T000000Z-fixround1) || fail "the round lost its report"
-assert test "$(fix_row "$fix_resettled")" = "done — 2 fixed, 0 false positives"
+# Answered for, so the row goes quiet again — and the receipt on disk keeps the counts.
+assert test -z "$(fix_row "$fix_resettled")"
+assert test "$(jq -r '[.fixed, .false_positives] | @tsv' \
+  "$FIX_SD/benches/20260801T000000Z-fixround1/fixes.json")" = "$(printf '2\t0')"
 
 # The delivery queue: a run this chat launched whose round has a state to deliver, which no command
 # in this chat ever printed, because a headless worker recorded it in a process of its own. The
@@ -13853,7 +14532,7 @@ fix_abandoned_report=$(fix_bench report 20260730T010000Z-fixabandoned) \
   || fail "the unanswered round has no report"
 # And it wears the plain word while it waits: the report the model reads is the truthful one, and
 # the `fixes:` row is what says the pass still owes an answer.
-assert contains "$fix_abandoned_report" "$report_frame_header"
+assert fix_plain_frame "$fix_abandoned_report"
 assert test "$(grep -Fc -- "$fix_blocked_header" <<<"$fix_abandoned_report")" -eq 0
 assert test "$(fix_row "$fix_abandoned_report")" = "NOT APPLIED — pending"
 # Fresh, the very same round says nothing either: the age was never the question.
@@ -13866,7 +14545,7 @@ assert test "$(grep -Fc -- "20260802T010000Z-fixmidpass" <<<"$fix_midpass")" -eq
 # And the block it renders is the aged one's, word for word: one state, one frame, one rule.
 fix_midpass_report=$(fix_bench report 20260802T010000Z-fixmidpass) \
   || fail "the mid-pass round has no report"
-assert contains "$fix_midpass_report" "$report_frame_header"
+assert fix_plain_frame "$fix_midpass_report"
 assert test "$(grep -Fc -- "$fix_blocked_header" <<<"$fix_midpass_report")" -eq 0
 # An ancient one is no different, and that is the point: no age promotes an unanswered round.
 GATE_SD="$FIX_SD" GATE_REPO="$FIX_QUIET_REPO" GATE_SESSION=sess-fix \
@@ -13891,7 +14570,7 @@ fix_aged_report=$(fix_bench report 20260729T020000Z-fixagedblocked) \
   || fail "the aged blocked round has no report"
 assert contains "$fix_aged_report" "$fix_blocked_header"
 assert test "$(grep -Fc -- "$report_frame_header" <<<"$fix_aged_report")" -eq 0
-assert contains "$fix_aged_report" "stopped:"
+assert contains "$fix_aged_report" "NOT APPLIED — P1 threshold, fork pending"
 fix_aged_delivery=$(fix_bench pending-delivery --session sess-fix) || fail "pending-delivery failed"
 assert test "$(grep -Fc -- "20260729T020000Z-fixagedblocked" <<<"$fix_aged_delivery")" -eq 0
 
@@ -13921,7 +14600,7 @@ fix_dead=$(fix_bench pending-delivery --session sess-fix) || fail "pending-deliv
 assert test "$(grep -Fc -- "20260802T020000Z-fixdeadworker" <<<"$fix_dead")" -eq 0
 fix_dead_report=$(fix_bench report 20260802T020000Z-fixdeadworker) \
   || fail "the abandoned round has no report"
-assert contains "$fix_dead_report" "$report_frame_header"
+assert fix_plain_frame "$fix_dead_report"
 # And the same round while that worker lives reads identically: nothing about the frame or the
 # queue turns on a pid, so a stamp going stale can never change what Egor is handed.
 printf '%s %s\nsess-fix\n' "$$" "$(deleg_pid_began "$$")" >"$fix_dead_stamp"
@@ -13966,12 +14645,13 @@ fix_bench fixes 20260802T040000Z-fixswap --done --fixed 2 --fp 1 >/dev/null \
   || fail "fixes --done refused the swap round"
 fix_swap_same=$(fix_bench record 20260802T040000Z-fixswap --no-corpus \
   --verdicts "$WORK/fix-swap-a.jsonl") || fail "re-adjudication to the same triage refused"
-assert test "$(fix_row "$fix_swap_same")" = "done — 2 fixed, 1 false positives"
+# The same triage, so the receipt still answers it and the row stays quiet.
+assert test -z "$(fix_row "$fix_swap_same")"
 fix_swapped=$(fix_bench record 20260802T040000Z-fixswap --no-corpus \
   --verdicts "$WORK/fix-swap-b.jsonl") || fail "re-adjudication to a swapped triage refused"
 assert test "$(fix_row "$fix_swapped")" \
   = "NOT APPLIED — recorded against a different triage of the same 2 confirmed"
-assert contains "$fix_swapped" "$report_frame_header"
+assert fix_plain_frame "$fix_swapped"
 
 # The two counts of a done receipt ARE the answer to the confirmed findings, so fewer between them
 # than the triage confirmed is a pass that stopped — which has its own form. Unchecked, `--fixed 0
@@ -14006,23 +14686,27 @@ GATE_SD="$FIX_SD" GATE_REPO="$FIX_AGED_REPO" GATE_SESSION=sess-fix \
   gate_run 20260802T050000Z-fixmuchlater 0 1
 fix_much_later=$(fix_bench record 20260802T050000Z-fixmuchlater --no-corpus \
   --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the later round refused its triage"
-assert contains "$fix_much_later" "re-review"
-assert test "$(grep -Fc -- "the budget of two is spent" <<<"$fix_much_later")" -eq 0
+assert contains "$fix_much_later" "round:        stub fork"
+assert test "$(grep -Fc -- "the budget of two is spent" \
+  <<<"$(fix_bench fork 20260802T050000Z-fixmuchlater)")" -eq 0
 # Inside the lineage window the very same shape IS the second round: what the bound refuses is a
 # stranger, not the pass that answers a fixed round.
 GATE_SD="$FIX_SD" GATE_REPO="$FIX_AGED_REPO" GATE_SESSION=sess-fix \
   gate_run 20260802T060000Z-fixjustafter 396 1
 fix_just_after=$(fix_bench record 20260802T060000Z-fixjustafter --no-corpus \
   --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the answering round refused its triage"
-assert contains "$fix_just_after" "the budget of two is spent"
+fix_fork_fix_just_after=$(fix_bench fork 20260802T060000Z-fixjustafter) \
+  || fail "fork failed on 20260802T060000Z-fixjustafter"
+assert contains "$fix_fork_fix_just_after" "the budget of two is spent"
 # And a round is the second one over fixes it could actually READ: a receipt recorded after this
 # run sealed its tree answers for work that landed later, and counted as lineage it spends the
 # budget and releases the lock over a pass that saw none of it.
 fix_backdate 20260701T000000Z-fixlongago 0
 fix_late_receipt=$(fix_bench record 20260802T060000Z-fixjustafter --no-corpus \
   --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the answering round refused its triage"
-assert test "$(grep -Fc -- "the budget of two is spent" <<<"$fix_late_receipt")" -eq 0
-assert contains "$fix_late_receipt" "re-review"
+assert test "$(grep -Fc -- "the budget of two is spent" \
+  <<<"$(fix_bench fork 20260802T060000Z-fixjustafter)")" -eq 0
+assert contains "$fix_late_receipt" "round:        stub fork"
 fix_backdate 20260701T000000Z-fixlongago 398
 # And "could read" is the tree it SEALED and never the hour it answered: a T2 panel runs for hours,
 # and a receipt written while it ran names fixes its snapshot never held. Measured against the
@@ -14031,13 +14715,16 @@ fix_stretch 20260802T060000Z-fixjustafter 2
 fix_backdate 20260701T000000Z-fixlongago 397
 fix_mid_run_receipt=$(fix_bench record 20260802T060000Z-fixjustafter --no-corpus \
   --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the answering round refused its triage"
-assert test "$(grep -Fc -- "the budget of two is spent" <<<"$fix_mid_run_receipt")" -eq 0
-assert contains "$fix_mid_run_receipt" "re-review"
+assert test "$(grep -Fc -- "the budget of two is spent" \
+  <<<"$(fix_bench fork 20260802T060000Z-fixjustafter)")" -eq 0
+assert contains "$fix_mid_run_receipt" "round:        stub fork"
 # The same receipt one hour the other side of the seal is the lineage it was always meant to be.
 fix_backdate 20260701T000000Z-fixlongago 399
 fix_sealed_after=$(fix_bench record 20260802T060000Z-fixjustafter --no-corpus \
   --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the answering round refused its triage"
-assert contains "$fix_sealed_after" "the budget of two is spent"
+fix_fork_fix_sealed_after=$(fix_bench fork 20260802T060000Z-fixjustafter) \
+  || fail "fork failed on 20260802T060000Z-fixjustafter"
+assert contains "$fix_fork_fix_sealed_after" "the budget of two is spent"
 fix_backdate 20260701T000000Z-fixlongago 398
 # And the run's own seal stamp outranks its launch stamp wherever it carries one: the tool seals
 # the tree, then sweeps availability and may refresh limits before it writes `started`, so a
@@ -14046,8 +14733,9 @@ fix_seal 20260802T060000Z-fixjustafter 3
 fix_backdate 20260701T000000Z-fixlongago 398.5
 fix_pre_seal=$(fix_bench record 20260802T060000Z-fixjustafter --no-corpus \
   --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the answering round refused its triage"
-assert test "$(grep -Fc -- "the budget of two is spent" <<<"$fix_pre_seal")" -eq 0
-assert contains "$fix_pre_seal" "re-review"
+assert test "$(grep -Fc -- "the budget of two is spent" \
+  <<<"$(fix_bench fork 20260802T060000Z-fixjustafter)")" -eq 0
+assert contains "$fix_pre_seal" "round:        stub fork"
 
 # A review of part of the tree never answers for the repository: `receipt` with no selector finds
 # nothing, and the scope's own receipt is readable only when asked for by name.
@@ -14079,7 +14767,7 @@ if test -x "$TRIAGE_HOOK"; then
     '{tool_name:"Bash",tool_response:{stdout:$output}}' | "$TRIAGE_HOOK")"
   assert test -z "$triage_hook_fixture"
   triage_hook_report="$(jq -nc \
-    --arg output "$report_frame_header"$'\nconfirmed 0:\n'"$report_frame_footer" \
+    --arg output "$report_frame_header"$'\nconfirmed:    0\n'"$report_frame_footer" \
     '{tool_name:"Bash",tool_response:{stdout:$output}}' | "$TRIAGE_HOOK")"
   assert test -z "$triage_hook_report"
 else
@@ -14129,16 +14817,27 @@ fi
 
 REPORT_HOOK="${REVIEW_REPORT_HOOK:-"$ROOT/../claude-setup/hooks/review-report-nudge.sh"}"
 if test -x "$REPORT_HOOK"; then
-  # The report is delivered BY the hook, so the block leaves as a systemMessage and the model is
-  # told to add judgment instead of retyping it — a retyped block can be mistyped, and a gate
-  # comparing the retyping against the reference then bought a second identical block.
+  # Every command below names its run by a LITERAL id, the way a real `record`/`report` does: the
+  # hook asks review-bench whose chat a run belongs to before it delivers anything, and a command
+  # naming its run as a word or `--last` is one nothing can attribute — it delivers no block at
+  # all. A placeholder here tested a path no real command reaches.
+  HOOK_RUN=20260822T000000Z-abc1234
+  # The reader the hook finds on PATH answers over a fixture store, never Egor's own: this block
+  # runs `review-bench report` for real, and the runs it must not find are the ones he has.
+  HOOK_SD="$WORK/report-hook-state"
+  HOOK_CACHE="$WORK/report-hook-cache"
+  mkdir -p "$HOOK_SD/benches" "$HOOK_CACHE"
+  export WORKER_STATS_DIR="$HOOK_SD" XDG_CACHE_HOME="$HOOK_CACHE"
+  # A CAPTURE IS NOT A SOURCE. The whole framed block below rides a command whose run
+  # review-bench cannot render, and it reaches Egor through nothing at all: a block rebuilt out of
+  # captured text is one nobody can attribute, and the model is told to fetch the real one instead.
   report_capture=$'before\n'"$report_frame_header"$'\nT1 report\n'"$report_frame_footer"$'\nafter'
-  hook_output="$(jq -nc --arg output "$report_capture" \
-    '{tool_name:"Bash",tool_input:{command:"review-bench record run --no-corpus"},
+  hook_output="$(jq -nc --arg output "$report_capture" --arg run "$HOOK_RUN" \
+    '{tool_name:"Bash",tool_input:{command:("review-bench record " + $run + " --no-corpus")},
       tool_response:{stdout:$output}}' | "$REPORT_HOOK")"
-  assert contains "$(jq -r '.systemMessage' <<<"$hook_output")" "$report_frame_header"
-  assert contains "$(jq -r '.hookSpecificOutput.additionalContext' <<<"$hook_output")" \
-    "Do NOT paste"
+  assert test -z "$(jq -r '.systemMessage // ""' <<<"$hook_output")"
+  assert contains "$(jq -r '.hookSpecificOutput.additionalContext // ""' <<<"$hook_output")" \
+    "$HOOK_RUN"
   # Only review-bench's own output is a report. Keying on the frame alone fired on any `====`
   # divider the model read, and a hook that PRINTS to Egor would push that at him as a review.
   for hook_case in '{"tool_name":"Read","tool_input":{"command":"review-bench report x"}}' \
@@ -14147,31 +14846,84 @@ if test -x "$REPORT_HOOK"; then
       '$case + {tool_response:{stdout:$output}}' | "$REPORT_HOOK")"
     assert test -z "$hook_foreign"
   done
-  # A run read back with `head -N` can stop short of the closing rule and hold no run id to
-  # re-render from: the model is then the only one still holding the report.
-  hook_truncated="$(jq -nc \
+  # A head-cut copy of one is no different: the rows a review report carries are a bench panel's
+  # rows too, and a report rebuilt from them delivered untiered panels as review rounds.
+  hook_truncated="$(jq -nc --arg run "$HOOK_RUN" \
     --arg output "$report_frame_header"$'\nT1 report\nfindings: none' \
-    '{tool_name:"Bash",tool_input:{command:"review-bench record run --no-corpus"},
+    '{tool_name:"Bash",tool_input:{command:("review-bench record " + $run + " --no-corpus")},
       tool_response:{stdout:$output}}' | "$REPORT_HOOK")"
-  assert contains "$(jq -r '.hookSpecificOutput.additionalContext' <<<"$hook_truncated")" \
-    "sed -n"
   assert test -z "$(jq -r '.systemMessage // ""' <<<"$hook_truncated")"
-  # The other side of the same key: a window that cut the header is silent, because the closing
-  # rule alone belongs to every framed report and to any `====` divider that reaches this hook.
-  hook_headerless="$(jq -nc \
+  # The other side of the same key: a window that cut the header hands Egor NOTHING, because the
+  # closing rule alone belongs to every framed report and to any `====` divider that reaches this
+  # hook. The command still names a run, so the model is told to fetch that report by hand — what
+  # may never happen is a block going to Egor off a rule nobody can attribute to a review.
+  hook_headerless="$(jq -nc --arg run "$HOOK_RUN" \
     --arg output $'T1 report\nfindings: none\n'"$report_frame_footer" \
-    '{tool_name:"Bash",tool_input:{command:"review-bench record run"},
+    '{tool_name:"Bash",tool_input:{command:("review-bench record " + $run)},
       tool_response:{stdout:$output}}' | "$REPORT_HOOK")"
-  assert test -z "$hook_headerless"
+  assert test -z "$(jq -r '.systemMessage // ""' <<<"$hook_headerless")"
   # The header has to be the whole line: a report is not what a sentence mentioning one is.
   hook_inline="$(jq -nc --arg output "talking about $report_frame_header in passing" \
     '{tool_name:"Bash",tool_input:{command:"review-bench review --tier T1"},
       tool_response:{stdout:$output}}' | "$REPORT_HOOK")"
   assert test -z "$hook_inline"
+  # A `report` whose run is named by a word rather than a literal id can be attributed to no
+  # chat, so Egor gets nothing and the MODEL is told to re-run it by id — this whole file in the
+  # capture buying a delivery is what that rule ends.
   hook_without_output="$(jq -n --rawfile source "$SCRIPT" \
     '{tool_name:"Bash",tool_input:{command:"review-bench report x"},
       tool_response:{stdout:$source}}' | "$REPORT_HOOK")"
-  assert test -z "$hook_without_output"
+  assert test -z "$(jq -r '.systemMessage // ""' <<<"$hook_without_output")"
+  assert contains "$(jq -r '.hookSpecificOutput.additionalContext // ""' \
+    <<<"$hook_without_output")" "literal run id"
+  # End to end, through the reader itself: this chat's own run, rendered by review-bench rather
+  # than lifted out of the capture, delivered under the frame the hook narrows the header to and
+  # carrying the header row whole — the run's price and, last, when it finished. Everything above
+  # proves the capture path; nothing proved that what the tool PRINTS is what the hook delivers.
+  HOOK_SESSION=hook-e2e-chat
+  HOOK_OWN_RUN=20260822T194728Z-5d5aef1
+  cp -R "$REPORT_SD/benches/report-adjudicated" "$HOOK_SD/benches/$HOOK_OWN_RUN"
+  python3 - "$HOOK_SD/benches/$HOOK_OWN_RUN/meta.json" "$HOOK_OWN_RUN" "$HOOK_SESSION" <<'E2EPY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+meta = json.loads(path.read_text())
+meta["run_id"] = sys.argv[2]
+meta["session"] = sys.argv[3]
+path.write_text(json.dumps(meta))
+E2EPY
+  # And its fixing pass answered: a round still owing an answer is readable by the model and
+  # delivered by nobody, so an unanswered fixture proves the withholding rule and not delivery.
+  WORKER_STATS_DIR="$HOOK_SD" "$SCRIPT" fixes "$HOOK_OWN_RUN" --done --fixed 1 --fp 0 >/dev/null \
+    || fail "the end-to-end delivery fixture could not record its fix receipt"
+  hook_e2e="$(jq -nc --arg run "$HOOK_OWN_RUN" --arg session "$HOOK_SESSION" \
+    '{tool_name:"Bash",session_id:$session,
+      tool_input:{command:("review-bench report " + $run)},
+      tool_response:{stdout:"…output the window cut…"}}' \
+    | PATH="$ROOT/bin:$PATH" "$REPORT_HOOK")"
+  hook_e2e_message="$(jq -r '.systemMessage // ""' <<<"$hook_e2e")"
+  # Delivered BY the hook, so the block leaves as a systemMessage and the model is told to add
+  # judgment instead of retyping it: a retyped block can be mistyped, and a gate comparing the
+  # retyping against the reference then bought a second identical block.
+  assert contains "$(jq -r '.hookSpecificOutput.additionalContext // ""' <<<"$hook_e2e")" \
+    "Do NOT paste"
+  assert contains "$hook_e2e_message" "$report_frame_header"
+  assert contains "$hook_e2e_message" \
+    "T2:           5.5 min / 4.0 min gem-flash36-med killed"
+  assert contains "$hook_e2e_message" "$report_frame_footer"
+  # And a run this chat did not launch reaches Egor as ONE line naming the chat it belongs to —
+  # never as a frame: the block is the indicator that HIS review finished.
+  hook_e2e_foreign="$(jq -nc --arg run "$HOOK_OWN_RUN" \
+    '{tool_name:"Bash",session_id:"hook-e2e-other",
+      tool_input:{command:("review-bench report " + $run)},
+      tool_response:{stdout:"…output the window cut…"}}' \
+    | PATH="$ROOT/bin:$PATH" "$REPORT_HOOK")"
+  hook_e2e_foreign_message="$(jq -r '.systemMessage // ""' <<<"$hook_e2e_foreign")"
+  assert test "$hook_e2e_foreign_message" = \
+    "review-bench report $HOOK_OWN_RUN belongs to chat ${HOOK_SESSION:0:8}: not delivered here, not this chat's review."
+  unset WORKER_STATS_DIR XDG_CACHE_HOME
 else
   printf 'SKIP: review report hook behavior (%s is unavailable)\n' "$REPORT_HOOK"
 fi
@@ -14656,4 +15408,4 @@ doc_loaded=$(HOME="$DOC_FAIL_HOME" PATH="$DOC_STUB:$PATH" WORKER_STATS_DIR="$DOC
   || fail "doctor --install-agent failed over a launchd that loaded the job"
 assert contains "$doc_loaded" "Installed com.llm-legs.review-doctor"
 
-printf 'PASS: %s assertions; canonical review tiers over one shared OpenCode floor and a per-tier Gemini panel that never runs Pro at T0, stays inside the account roster and contains its own tier'"'"'s default panel when escalated, with no retired cell in any of them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, an agy finding judged on its own transport first and handed to the gateway only where that transport declined, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account schedulable only as the pool'"'"'s reserve and never as a roster tail, and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, carried from there into the corpus row, the report header and a receipt of the lens'"'"'s own while every lens row stays out of the canonical defect list, the frontier denominators, the composition corpus and the default leaderboard, worktree runs narrowed to named paths whose snapshot holds only those paths, is deterministic per path set, spelled against the directory the caller stands in and lexically canonicalized so a `..` can neither walk out of the repository nor split one file into two scopes, carries its scope as commit trailers a failed read refuses rather than widens, so a rerun by sha stays inside it, refuses a commitish, a pathspec matching nothing and a scope holding no change — the refusal before any snapshot object is written — and writes only a receipt of its own — leaving the repository'"'"'s receipt untouched byte for byte, a lens narrowed by the same paths naming a combined receipt of its own that leaves the plain, pure-lens and pure-scope receipts byte for byte and survives a rerun by sha with both selectors intact, a day-one repository reviewed end to end — its root commit sealed and cloned, given a deterministic empty base commit inside that clone so the vendor skill diffs its whole content, measured in lines and paths against the empty tree rather than as an unmeasurable diff, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask, the lookup scoped to the repository so another chat cannot answer for it, both review hooks keyed so exactly one fires, and the one line the gate reads: debt as content against the newest artifact holding a path — a triaged run'"'"'s snapshot whoever launched it, or a waiver — a path no artifact ever held and a held path now gone both in debt whole, a link — dangling included — priced by its own text rather than through its target, an untriaged run settling nothing, the debt owned by whoever the two journals name, a waiver covering exactly the shas it recorded and no edit after them, a round past the second-round thresholds locking that waiver until a later run answers for it, and the newest hung run outranking every older answer until a later triaged run of its own speaks — with the watchdog capping every cell at the longest duration recorded for its own model and effort plus three minutes over a fifteen-minute floor and marking the run it killed timed out, and a merged review of several repositories read by one panel out of a single workspace holding each repository under its own prefix — deterministic, self-contained once built and pruned with the run it belongs to — whose findings and adjudication handoff name the repository each belongs to, whose scopes and progress are per repository, and which stamps EVERY repository it read with that repository'"'"'s own receipt, while refusing a commitish, a repository named twice, a clean tree, a missing repository and its own workspace as a tree to seal, with the gateway being down priced as a wait that expires rather than a verdict — the family whose every attempt failed on the gateway ITSELF cooling for a fixed span while a spent plan, a pool run dry behind one and an unusable answer are left to the records that already carry them, one canary attempt of the cooling family running inside that span so the recovery can be noticed at all, its answer clearing the wait and its failure extending it from the moment the outage began, written under a lock and not written at all where nothing changed, and a side the pool answers for left to the pool, and each repository of one panel named the way its half actually exists — a working tree or a range of its own commits as `PATH@BASE..HEAD`, sealed and stamped per member so the committed half answers only where its right end is the tree in front of the reader, refusing a target flag it duplicates, a bare repository beside it with no --worktree and a scope aimed at a range, and a range of commits reviewed as one target — sealed into a single commit carrying its right end'"'"'s tree over its left end as the parent, so every reader keyed on one sha reads the whole range, named by the commits it sealed rather than by how the caller spelled them so one range is one snapshot with one rerun, announced by its own ends with the seal named beside them, read back out of that seal by a rerun carrying no flags at all, refused when it names no shape or no change, shown as a range while it runs, and kept out of the repository'"'"'s receipt wherever its right end is not the tree standing in front of the reader, and the corpus closed to every commit-point review — the plain record command refused outright with the reporting one named in its place, the refusal and the flag'"'"'s own help promising only what --bench delivers (this run'"'"'s verdicts stored, never a corpus row), that flag refused in turn on a durable run it would buy the plain command'"'"'s own behaviour on, and the handoff printing that one command alone — with the block those reviews are read in framed to a fixed width no over-long word can flatten, opened by a line naming the panel that produced it, and carrying a cell row that counts every completed cell under the same names its neighbouring rows use — the ones that found nothing included, and a count missing from an older summary costing its own cell a number rather than the whole block, every one of those names and the tiers table'"'"'s own rendered by one derivation over the pool of cells the tiers can launch — version digits, effort and the bare mark each appearing only where two pool cells would otherwise collide, Claude and Codex effort always spelled because it is a launch parameter, the word skill never rendered at all, a family gaining a second variant IN THE POOL renaming itself with no list to edit, a cell only a stored run holds named against that pool and never over it — the arrival carrying whatever separates it, its report leaving the tiers table byte for byte — a worktree panel refused outright unless Egor asked for it by name — the one door, checked before any repository argument is resolved so a spelling the tool cannot resolve cannot fall through it — and the machine specs commands are spelled in left untouched, and the durable per-cell board that prints coverage only where a run'"'"'s panel held another model that is not an OpenCode cell — a solo or family-only run scoring none at all rather than its own catches back — folding a repeat suffix into the cell it belongs to while the usage file it names keeps that suffix, reading either vendor spelling of the same token record, pricing an OpenCode cell against the Go plan'"'"'s request grant and every other side not at all, bucketing each cell by its median wall clock against the same budgets the tiers are spelled in, marking with a ? every coverage number too few anchored runs or defects stand behind, counting beside it the bench runs of that cell nobody ever adjudicated — over benches that carry a finish stamp alone, so a run still in flight is never sold as evidence, and with a cell only those runs have ever measured given a row of its own whose every corpus-derived key is null rather than missing, pricing the vendors billed per token over their own measured usage in a unit the footer refuses to compare with the plan-request one, and answering the family, tier, machine-format and hand-scored flags it offers over a static block the text table always carries, every one of its rows named by the same derivation the report block spells a cell with — read over the whole board rather than over the pool alone, so two cells no tier can launch never answer to one name and neither takes the name of a cell that still runs — tagged with the leg the same prefix its cost is priced by names, and with whether any tier'"'"'s default panel holds it today, measured or not, beside a tiers block naming those panels in that same spelling, and the fix status a triaged round owes — recorded done with its two counts or blocked with its reason, refused without either and refused for a run nobody launched, rendered into a `fixes:` row the report always carries in one of three values and into one of exactly TWO frame words — the plain review once the fixes are done, there was nothing to fix, or the pass has not answered yet whatever its age, and NOT FINISHED with the stopped-at-the-threshold rows beneath it only where a receipt says the pass stopped — so a round whose pass still owes an answer is readable by the model and named by no delivery line at all, a second round over one scope — derived from an earlier run of that scope having its fixes DONE on record, read whole by this one and recent enough to be the same piece of work, not from a flag or from a blocked stop — offering no third pass where the first one still may, locking no waiver it could not answer, keyed for a merged panel on its members rather than on the workspace built for one run, and a round of a scope nobody has fixed yet, or of work an earlier round never read, still offered its own first, with a done receipt bound by its ROWS and not by their count alone to the triage it answered, so a re-adjudication puts the round back to unanswered whether or not it changed the tally, refused outright where its two counts answer for fewer findings than the triage confirmed, and never taken at all by a run nobody judged, and the delivery queue naming this chat'"'"'s own recorded runs alone, never another chat'"'"'s, never an untriaged one, never one past the triage window, never one whose done receipt the report has already rejected, never one whose fixing pass has not answered — at any age, dead delegate or not — speaking only states the Stop net can read, and spending nothing by answering; and the adjudication handoff ending at `record` for a run whose snapshot the checkout has moved past, counting a merged panel'"'"'s threshold stop per repository the way the gate prices it, and telling the worker to neither commit nor stage, and the report a round is owed reaching the chat its OWN record names whatever shell closed it — queued past the window where nobody ever delivered it, or written off by name into a listing of its own — with a blind vendor worker fixing pass read off the run record no journal of ours ever saw, and a --debt review naming the foreign debt it left out and taking --all to read it\n' "$asserts"
+printf 'PASS: %s assertions; canonical review tiers over one shared OpenCode floor and a per-tier Gemini panel that never runs Pro at T0, stays inside the account roster and contains its own tier'"'"'s default panel when escalated, with no retired cell in any of them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, an agy finding judged on its own transport first and handed to the gateway only where that transport declined, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account schedulable only as the pool'"'"'s reserve and never as a roster tail, and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, carried from there into the corpus row, the report header and a receipt of the lens'"'"'s own while every lens row stays out of the canonical defect list, the frontier denominators, the composition corpus and the default leaderboard, worktree runs narrowed to named paths whose snapshot holds only those paths, is deterministic per path set, spelled against the directory the caller stands in and lexically canonicalized so a `..` can neither walk out of the repository nor split one file into two scopes, carries its scope as commit trailers a failed read refuses rather than widens, so a rerun by sha stays inside it, refuses a commitish, a pathspec matching nothing and a scope holding no change — the refusal before any snapshot object is written — and writes only a receipt of its own — leaving the repository'"'"'s receipt untouched byte for byte, a lens narrowed by the same paths naming a combined receipt of its own that leaves the plain, pure-lens and pure-scope receipts byte for byte and survives a rerun by sha with both selectors intact, a day-one repository reviewed end to end — its root commit sealed and cloned, given a deterministic empty base commit inside that clone so the vendor skill diffs its whole content, measured in lines and paths against the empty tree rather than as an unmeasurable diff, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask, the lookup scoped to the repository so another chat cannot answer for it, both review hooks keyed so exactly one fires, and the one line the gate reads: debt as content against the newest artifact holding a path — a triaged run'"'"'s snapshot whoever launched it, or a waiver — a path no artifact ever held and a held path now gone both in debt whole, a link — dangling included — priced by its own text rather than through its target, an untriaged run settling nothing, the debt owned by whoever the two journals name, a waiver covering exactly the shas it recorded and no edit after them, a round past the second-round thresholds locking that waiver until a later run answers for it, and the newest hung run outranking every older answer until a later triaged run of its own speaks — with the watchdog capping every cell at the longest duration recorded for its own model and effort plus three minutes over a fifteen-minute floor and marking the run it killed timed out, and a merged review of several repositories read by one panel out of a single workspace holding each repository under its own prefix — deterministic, self-contained once built and pruned with the run it belongs to — whose findings and adjudication handoff name the repository each belongs to, whose scopes and progress are per repository, and which stamps EVERY repository it read with that repository'"'"'s own receipt, while refusing a commitish, a repository named twice, a clean tree, a missing repository and its own workspace as a tree to seal, with the gateway being down priced as a wait that expires rather than a verdict — the family whose every attempt failed on the gateway ITSELF cooling for a fixed span while a spent plan, a pool run dry behind one and an unusable answer are left to the records that already carry them, one canary attempt of the cooling family running inside that span so the recovery can be noticed at all, its answer clearing the wait and its failure extending it from the moment the outage began, written under a lock and not written at all where nothing changed, and a side the pool answers for left to the pool, and each repository of one panel named the way its half actually exists — a working tree or a range of its own commits as `PATH@BASE..HEAD`, sealed and stamped per member so the committed half answers only where its right end is the tree in front of the reader, refusing a target flag it duplicates, a bare repository beside it with no --worktree and a scope aimed at a range, and a range of commits reviewed as one target — sealed into a single commit carrying its right end'"'"'s tree over its left end as the parent, so every reader keyed on one sha reads the whole range, named by the commits it sealed rather than by how the caller spelled them so one range is one snapshot with one rerun, announced by its own ends with the seal named beside them, read back out of that seal by a rerun carrying no flags at all, refused when it names no shape or no change, shown as a range while it runs, and kept out of the repository'"'"'s receipt wherever its right end is not the tree standing in front of the reader, and the corpus closed to every commit-point review — the plain record command refused outright with the reporting one named in its place, the refusal and the flag'"'"'s own help promising only what --bench delivers (this run'"'"'s verdicts stored, never a corpus row), that flag refused in turn on a durable run it would buy the plain command'"'"'s own behaviour on, and the handoff printing that one command alone — with the block those reviews are read in framed to a fixed width no over-long word can flatten, opened by a line naming the panel that produced it, and answering for every panel cell in exactly one of four rows — what each cell confirmed of what it claimed, whose claims were false, how many said nothing at all, and one row per family and cause for the ones that failed with a whole unlaunched leg collapsed into one — priced by a header naming the wall clock of the run, the longest chain inside it, the time no cell of it accounts for and, last and always, when the run finished in the reader'"'"'s own zone, wrapped to the terminal between its own separators, with a count missing from an older summary costing its own cell a number rather than the whole block, every one of those names and the tiers table'"'"'s own rendered by one derivation over the pool of cells the tiers can launch — version digits, effort and the bare mark each appearing only where two pool cells would otherwise collide, Claude and Codex effort always spelled because it is a launch parameter, the word skill never rendered at all, a family gaining a second variant IN THE POOL renaming itself with no list to edit, a cell only a stored run holds named against that pool and never over it — the arrival carrying whatever separates it, its report leaving the tiers table byte for byte — a worktree panel refused outright unless Egor asked for it by name — the one door, checked before any repository argument is resolved so a spelling the tool cannot resolve cannot fall through it — and the machine specs commands are spelled in left untouched, and the durable per-cell board that prints coverage only where a run'"'"'s panel held another model that is not an OpenCode cell — a solo or family-only run scoring none at all rather than its own catches back — folding a repeat suffix into the cell it belongs to while the usage file it names keeps that suffix, reading either vendor spelling of the same token record, pricing an OpenCode cell against the Go plan'"'"'s request grant and every other side not at all, bucketing each cell by its median wall clock against the same budgets the tiers are spelled in, marking with a ? every coverage number too few anchored runs or defects stand behind, counting beside it the bench runs of that cell nobody ever adjudicated — over benches that carry a finish stamp alone, so a run still in flight is never sold as evidence, and with a cell only those runs have ever measured given a row of its own whose every corpus-derived key is null rather than missing, pricing the vendors billed per token over their own measured usage in a unit the footer refuses to compare with the plan-request one, and answering the family, tier, machine-format and hand-scored flags it offers over a static block the text table always carries, every one of its rows named by the same derivation the report block spells a cell with — read over the whole board rather than over the pool alone, so two cells no tier can launch never answer to one name and neither takes the name of a cell that still runs — tagged with the leg the same prefix its cost is priced by names, and with whether any tier'"'"'s default panel holds it today, measured or not, beside a tiers block naming those panels in that same spelling, and the fix status a triaged round owes — recorded done with its two counts or blocked with its reason, refused without either and refused for a run nobody launched, rendered into a `fixes:` row the report carries only where something is owed and into the frame word alone, which is the one place a block states its state — the plain review while the pass may still be running, the stale date once the block outlives the tree it describes, NO PANEL, the bench word for a panel no tier launched, and NOT FINISHED only where a receipt says the pass stopped — a watchdog kill wearing no word at all, since the cell it killed says so on its own failed: row, with the fork that round has to take handed to the model by the fork command instead of printed at Egor — so a round whose pass still owes an answer is readable by the model and named by no delivery line at all, a second round over one scope — derived from an earlier run of that scope having its fixes DONE on record, read whole by this one and recent enough to be the same piece of work, not from a flag or from a blocked stop — offering no third pass where the first one still may, locking no waiver it could not answer, keyed for a merged panel on its members rather than on the workspace built for one run, and a round of a scope nobody has fixed yet, or of work an earlier round never read, still offered its own first, with a done receipt bound by its ROWS and not by their count alone to the triage it answered, so a re-adjudication puts the round back to unanswered whether or not it changed the tally, refused outright where its two counts answer for fewer findings than the triage confirmed, and never taken at all by a run nobody judged, and the delivery queue naming this chat'"'"'s own recorded runs alone, never another chat'"'"'s, never an untriaged one, never one past the triage window, never one whose done receipt the report has already rejected, never one whose fixing pass has not answered — at any age, dead delegate or not — speaking only states the Stop net can read, and spending nothing by answering; and the adjudication handoff ending at `record` for a run whose snapshot the checkout has moved past, counting a merged panel'"'"'s threshold stop per repository the way the gate prices it, and telling the worker to neither commit nor stage, and the report a round is owed reaching the chat its OWN record names whatever shell closed it — queued past the window where nobody ever delivered it, or written off by name into a listing of its own — with a blind vendor worker fixing pass read off the run record no journal of ours ever saw, and a --debt review naming the foreign debt it left out and taking --all to read it\n' "$asserts"

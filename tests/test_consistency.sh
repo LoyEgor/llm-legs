@@ -590,6 +590,13 @@ FRAME_WORD=review
 # pass that stopped at the P1 threshold. Spelled on one side alone it is a report that stops being
 # delivered the moment it starts mattering.
 FRAME_UNFINISHED_MARK='NOT FINISHED'
+# The rest of the state vocabulary of row `as`, underscored for the shell's word splitting. Every
+# one of them rides the same frame, so a consumer keyed on the bare word finds none of them.
+FRAME_STATE_MARKS='NO_PANEL STALE'
+FRAME_BENCH_WORD=bench
+FRAME_STATE_RE='NOT FINISHED|NO PANEL|STALE · [0-9]{1,2} [A-Z][a-z]{2}'
+# Same alternation as the doc spells it, its date left as the placeholder prose can carry.
+FRAME_DOC_STATE_RE='NOT FINISHED|NO PANEL|STALE · <D Mon>'
 FRAME_FOOTER_RE='={10,}'
 assert test "$(grep -Ec '^REPORT_FRAME_WIDTH = ' "$REVIEWBENCH")" -eq 1
 rb_frame_width=$(grep -E '^REPORT_FRAME_WIDTH = [0-9]+$' "$REVIEWBENCH" | awk '{print $3}')
@@ -597,14 +604,20 @@ assert eq "$rb_frame_width" "$FRAME_WIDTH"
 assert grep -Fq "REPORT_FRAME_WORD = \"$FRAME_WORD\"" "$REVIEWBENCH"
 assert grep -Fq "REPORT_BLOCKED_WORD = f\"{REPORT_FRAME_WORD} · $FRAME_UNFINISHED_MARK\"" \
   "$REVIEWBENCH"
-assert grep -Fq 'REPORT_BLOCKED_BEGIN = report_frame_header(REPORT_BLOCKED_WORD)' "$REVIEWBENCH"
-# Two words and no more: a third one built here is a spelling no consumer can find.
-assert test "$(grep -c 'report_frame_header(' "$REVIEWBENCH")" -eq 3
+for cs_state_mark in $FRAME_STATE_MARKS; do
+  assert grep -Fq "_WORD = f\"{REPORT_FRAME_WORD} · ${cs_state_mark//_/ }\"" "$REVIEWBENCH"
+done
+assert grep -Fq "REPORT_BENCH_WORD = \"$FRAME_BENCH_WORD\"" "$REVIEWBENCH"
+# One frame per run, built where the run's own state is known and nowhere else: a word baked into
+# a module constant is a state the emitter cannot pick between.
+assert test "$(grep -c 'report_frame_header(' "$REVIEWBENCH")" -eq 2
+assert test "$(grep -cE '^REPORT_[A-Z_]+_BEGIN' "$REVIEWBENCH")" -eq 0
 assert grep -Fq 'REPORT_END = "=" * REPORT_FRAME_WIDTH' "$REVIEWBENCH"
 assert grep -Fq "f\"{'=' * left} {word} {'=' * (fill - left)}\"" "$REVIEWBENCH"
 assert doc_has 'Review report frame'
 assert doc_has '`^=+ [a-z]+ =+$`'
-assert doc_has "\`^=+ $FRAME_WORD =+\$\`"
+assert doc_has "\`^=+ $FRAME_WORD(?: · (?:$FRAME_DOC_STATE_RE))? =+\$\`"
+assert doc_has "the \`$FRAME_BENCH_WORD\` word"
 assert doc_has '`^={10,}$`'
 
 CLAUDE_SETUP="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}"
@@ -619,7 +632,7 @@ if test -r "$COMMIT_REPORT" && test -r "$REPORT_NUDGE" && test -r "$DELIVERY_GAT
   # The review consumers narrow the header to its own word, so a commit or push report framed
   # identically is never taken for one; the closing rule stays the shared shape. Both of them
   # PRINT what they locate, so a frame either of them misreads is a report Egor never sees.
-  cs_header_re='(?m)^=+ '"$FRAME_WORD"'(?: · '"$FRAME_UNFINISHED_MARK"')? =+\r?(?=\n|$)'
+  cs_header_re='(?m)^=+ '"$FRAME_WORD"'(?: · (?:'"$FRAME_STATE_RE"'))? =+\r?(?=\n|$)'
   cs_footer_re='(?m)^'"$FRAME_FOOTER_RE"'\r?(?=\n|$)'
   # One word is worn by TWO rounds — a finished one and one whose fixing pass has not answered —
   # so the header cannot decide deliverability and both nets apply the same second rule over the
@@ -627,29 +640,39 @@ if test -r "$COMMIT_REPORT" && test -r "$REPORT_NUDGE" && test -r "$DELIVERY_GAT
   # withheld at one stop and delivered at the next.
   cs_stopped_header_re='(?m)^=+ '"$FRAME_WORD"' · '"$FRAME_UNFINISHED_MARK"' =+\r?(?=\n|$)'
   cs_unanswered_row_re='(?mi)^fixes:[ \t]*NOT APPLIED\b'
-  cs_stopped_row_re='(?mi)^stopped:'
   for cs_hook in "$REPORT_NUDGE" "$DELIVERY_GATE"; do
     assert grep -Fq "HEADER_SPAN_RE = re.compile(r\"$cs_header_re\")" "$cs_hook"
     assert grep -Fq "FOOTER_SPAN_RE = re.compile(r\"$cs_footer_re\")" "$cs_hook"
     assert grep -Fq "STOPPED_HEADER_RE = re.compile(r\"$cs_stopped_header_re\")" "$cs_hook"
     assert grep -Fq "UNANSWERED_ROW_RE = re.compile(r\"$cs_unanswered_row_re\")" "$cs_hook"
-    assert grep -Fq "STOPPED_ROW_RE = re.compile(r\"$cs_stopped_row_re\")" "$cs_hook"
     assert grep -Fq 'if not UNANSWERED_ROW_RE.search(text):' "$cs_hook"
-    assert grep -Fq \
-      'return bool(STOPPED_HEADER_RE.search(text) or STOPPED_ROW_RE.search(text))' "$cs_hook"
+    # The header is the block's only remaining evidence of a threshold stop, so a head-cut copy
+    # of one is withheld: a row-level fallback here would key on a row the block no longer has.
+    assert grep -Fq 'return bool(STOPPED_HEADER_RE.search(text))' "$cs_hook"
+    assert test "$(grep -c 'STOPPED_ROW_RE' "$cs_hook")" -eq 0
     assert grep -Fq 'if deliverable(block):' "$cs_hook"
   done
-  # And the range the nudge hands the model when nothing can rebuild a cut block opens on both
-  # spellings — narrower and the model pastes back a block with no frame.
-  assert grep -Fq \
-    'sed -nE \"/^=+ '"$FRAME_WORD"'( · '"$FRAME_UNFINISHED_MARK"')? =+$/,/^={10,}/p\"' \
-    "$REPORT_NUDGE"
-  # Row as: the two spellings review-bench actually RENDERS, matched against the very regex the
-  # hooks were just pinned to. A pin on the source strings alone passes while a width, a space or
-  # the separator drifts on the emitting side, and the report that stops being found is exactly
-  # the one that still owes work.
+  # And a capture is a source for NEITHER of them: what a review-bench command PRINTED is read by
+  # nothing, so the only rule left that recognises a report inside captured output is the one that
+  # finds run ids in the command. Every recovery that read a block out of a tool result — a row
+  # fallback for a head-cut copy, a foreign-header walk, the tail key that deduped one, the sed
+  # range the model was told to re-read with — delivered blocks nobody could attribute.
+  for cs_hook in "$REPORT_NUDGE" "$DELIVERY_GATE"; do
+    assert test "$(grep -Ec 'REVIEW_ROW_RE|FOREIGN_HEADER_RE|tail_key|REREAD' "$cs_hook")" -eq 0
+    assert test "$(grep -Fc 'sed -nE' "$cs_hook")" -eq 0
+  done
+  # One fork command for both, asked per run rather than read off the block: a budget-spent round
+  # prints no row for the fork it earns, so a net inferring it from rows escalates nothing.
+  for cs_hook in "$REPORT_NUDGE" "$DELIVERY_GATE"; do
+    assert grep -Fq '[review_bench, "fork", run_id],' "$cs_hook"
+    assert grep -Fq '"hookSpecificOutput"' "$cs_hook"
+  done
+  # Row as: every word review-bench actually RENDERS, matched against the very regex the hooks
+  # were just pinned to. A pin on the source strings alone passes while a width, a space or the
+  # separator drifts on the emitting side, and the report that stops being found is exactly the
+  # one that still owes work.
   frame_render=$(python3 - "$REVIEWBENCH" "$cs_header_re" "$cs_stopped_header_re" \
-    "$cs_unanswered_row_re" "$cs_stopped_row_re" <<'FRAMEPY'
+    "$cs_unanswered_row_re" <<'FRAMEPY'
 import importlib.machinery
 import importlib.util
 import re
@@ -661,37 +684,67 @@ loader.exec_module(module)
 header = re.compile(sys.argv[2])
 stopped_header = re.compile(sys.argv[3])
 unanswered_row = re.compile(sys.argv[4])
-stopped_row = re.compile(sys.argv[5])
 
 
-def rendered(line, stopped):
-    if len(line) != module.REPORT_FRAME_WIDTH or not header.fullmatch(line):
+def rendered(word, found, stopped):
+    line = module.report_frame_header(word)
+    if len(line) != module.REPORT_FRAME_WIDTH or bool(header.fullmatch(line)) is not found:
         return repr(line)
-    # The loud word is the consumers' only header-level evidence that an unanswered round is
-    # Egor's, so it is asserted against their narrower regex too: matched by the plain frame,
-    # every hook prints a report the next fixing pass rewrites.
+    # The loud word is the consumers' only evidence that an unanswered round is Egor's, so it is
+    # asserted against their narrower regex too: matched by any other word, every hook prints a
+    # report the next fixing pass rewrites.
     return "ok" if bool(stopped_header.fullmatch(line)) is stopped else repr(line)
 
 
-rows = "\n".join(module.aligned_report_lines([
-    ("fixes:", "NOT APPLIED — pending"),
-    ("stopped:", module.REPORT_BLOCKED_FORK),
-]))
+rows = "\n".join(module.report_block_lines([("fixes:", "NOT APPLIED — pending", False)]))
 print(",".join(
-    [rendered(line, stopped) for line, stopped in (
-        (module.REPORT_BEGIN, False),
-        (module.REPORT_BLOCKED_BEGIN, True),
+    [rendered(word, True, word == module.REPORT_BLOCKED_WORD) for word in (
+        module.REPORT_FRAME_WORD,
+        module.REPORT_BLOCKED_WORD,
+        module.REPORT_NO_PANEL_WORD,
+        f"{module.REPORT_STALE_WORD} · 3 Aug",
     )]
-    # The rows as the emitter ALIGNS them, not as the source spells them: the label is padded to
-    # the widest one in the block, and a rule anchored to the label matches only by luck.
+    # The bench word is deliberately outside the narrowing (row ab): matched by it, a panel that
+    # owes no fixes is delivered as a review round.
+    + [rendered(module.REPORT_BENCH_WORD, False, False)]
+    # The row as the emitter ALIGNS it, not as the source spells it: the label is padded to the
+    # widest one in the block, and a rule anchored to the label matches only by luck.
     + ["ok" if unanswered_row.search(rows) else repr(rows)]
-    + ["ok" if stopped_row.search(rows) else repr(rows)]
 ))
 FRAMEPY
 )
-  assert eq "$frame_render" "ok,ok,ok,ok"
-  assert grep -Fq '("fixes:", fixes_line)' "$REVIEWBENCH"
-  assert grep -Fq '("stopped:", REPORT_BLOCKED_FORK)' "$REVIEWBENCH"
+  assert eq "$frame_render" "ok,ok,ok,ok,ok,ok"
+  assert grep -Fq '("fixes:", fixes_line, True)' "$REVIEWBENCH"
+  # The fork the loud word owes is delivered by a command of its own, so no row carries it.
+  assert grep -Fq 'REPORT_BLOCKED_FORK' "$REVIEWBENCH"
+  assert grep -Fq 'def round_fork_text(' "$REVIEWBENCH"
+  assert grep -Fq 'def cmd_fork(' "$REVIEWBENCH"
+  assert test "$(grep -c "\"stopped:\"" "$REVIEWBENCH")" -eq 0
+  # A watchdog kill wears no word of its own: the cell it killed says so on its `failed:` row, and
+  # coverage is the triage receipt's answer to give. Re-added on the emitting side alone it is a
+  # report every hook stops delivering; re-added on the hooks' alone it is a state nothing frames.
+  assert test "$(grep -c 'KILLED' "$REVIEWBENCH")" -eq 0
+  for cs_hook in "$REPORT_NUDGE" "$DELIVERY_GATE"; do
+    assert test "$(grep -c 'KILLED' "$cs_hook")" -eq 0
+  done
+  # STALE is a content-and-delivery answer and never a clock (row as). An hours constant on the
+  # emitting side is a block that goes stale over a tree nobody touched and stays current over one
+  # rewritten under it, and neither hook can see which of the two it is holding.
+  assert test "$(grep -c 'REPORT_STALE_HOURS' "$REVIEWBENCH")" -eq 0
+  assert grep -Fq 'def report_delivered_late(' "$REVIEWBENCH"
+  assert grep -Fq 'def report_snapshot_moved(' "$REVIEWBENCH"
+  # ONE comparison for both readers: a content check written beside `repo_debt`'s is a frame word
+  # that disagrees with the debt the very next `--debt` review is scoped from.
+  assert grep -Fq 'if repo_debt(repo, paths=list(shas), covering=dict.fromkeys(shas, artifact),' \
+    "$REVIEWBENCH"
+  # And ONE late-delivery signal, read off the run's own mark instead of passed in by whoever is
+  # rendering: a caller-side flag makes the same report current in the nudge and stale at the stop.
+  assert grep -Fq 'return bool(mark) and mark.get("state") == state' "$REVIEWBENCH"
+  # That date is the frame's only timestamp: a current block is about now by construction, and a
+  # finish stamp on every header is what made a stale one indistinguishable from this morning's.
+  assert test "$(grep -c "strftime('%b %H:%M')" "$REVIEWBENCH")" -eq 0
+  assert doc_has '`report_snapshot_moved`'
+  assert doc_has 'A clock was the wrong question'
   # Every state the emitter frames is a state the delivery queue can name, minus the one it must
   # not: a fourth word added to one side and not the other is a report framed and never delivered.
   frame_states=$(python3 - "$REVIEWBENCH" <<'STATEPY'
@@ -738,10 +791,13 @@ blocked|done|pending"
   for cs_hook in "$REPORT_NUDGE" "$DELIVERY_GATE"; do
     assert grep -Fq "FOREIGN_RE = re.compile(r\"$cs_foreign_re\")" "$cs_hook"
     assert grep -Fq 'argv += ["--session", session]' "$cs_hook"
-    # The run id the ownership check keys on: a `report` the regex cannot resolve to a literal id
-    # must never fall back to the captured block, in both nets alike.
-    assert grep -Fq 'r"(?:^|\s)(?:record|report)(?!\s+\d{8}T\d{6}Z-[0-9a-f]+(?:-\d+)?\b)")' "$cs_hook"
   done
+  # The run id the ownership check keys on. A `report` the regex cannot resolve to a literal id is
+  # a run neither net may deliver — the Stop net simply finds no id to ask about, and the nudge
+  # says so to the model, so only it spells this.
+  assert grep -Fq 'r"(?!\s+\d{8}T\d{6}Z-[0-9a-f]+(?:-\d+)?\b)")' "$REPORT_NUDGE"
+  assert grep -Fq 'r"review-bench(?:\s+-{1,2}[\w-]+(?:=\S+)?)*\s+(?:record|report)"' \
+    "$REPORT_NUDGE"
   # And the line review-bench actually PRINTS, matched against that very regex: a pin on the two
   # source strings alone passes while the wording drifts apart, and the report that stops being
   # recognised as foreign is the one delivered to the wrong chat.
@@ -759,12 +815,13 @@ FOREIGNPY
   assert eq "$cs_foreign_match" "73403494"
   assert doc_has 'Review report header words'
   assert doc_has '`review · NOT FINISHED`'
-  assert doc_has 'exactly TWO spellings'
+  assert doc_has 'exactly FIVE spellings'
   assert doc_has 'a state may be REMOVED from the vocabulary but never renamed'
   assert doc_has '`ledger_keys(run_id, state, block)`'
   assert doc_has 'once ACROSS the channels, not once per hook'
   assert doc_has '`UNANSWERED_ROW_RE`'
-  assert doc_has '`STOPPED_ROW_RE`'
+  assert doc_has 'There is no `stopped:` row any more'
+  assert doc_has '`review-bench fork <run-id>`'
   assert doc_has '`review-bench pending-delivery --session <id>`'
   # Both hooks must read one command grammar: a run id only one of them keeps whole — the
   # collision `-<pid>` suffix included — or a launch only one recognises, splits one delivery
@@ -773,14 +830,6 @@ FOREIGNPY
   assert test -n "$cs_run_re"
   assert eq "$(grep -F 'COMMAND_RUN_RE = re.compile(' "$DELIVERY_GATE")" "$cs_run_re"
   assert grep -Fq '(?:-\d+)?' "$REPORT_NUDGE"
-  # One tail-key derivation on both sides: the nudge writes it at delivery, the net matches a
-  # head-cut copy on it — computed differently, the dedup silently stops working.
-  cs_tail_line=$(grep -F 'return "tail:" + hashlib.sha256(block[-400:].encode()).hexdigest()' \
-    "$REPORT_NUDGE")
-  assert test -n "$cs_tail_line"
-  assert eq \
-    "$(grep -F 'return "tail:" + hashlib.sha256(block[-400:].encode()).hexdigest()' \
-      "$DELIVERY_GATE")" "$cs_tail_line"
   # And ONE ledger between them, keys included. Both nets can print a frame to Egor, and "one
   # report per run-state" means once across the two of them: a key one writes and the other never
   # asks about is the same block delivered twice in one turn (2026-08-20 and again 2026-08-21).
@@ -792,13 +841,12 @@ FOREIGNPY
   assert test "$(printf '%s\n' "$cs_keys_fn" | wc -l)" -eq 4
   assert eq "$(cs_keys_body "$DELIVERY_GATE")" "$cs_keys_fn"
   for cs_hook in "$REPORT_NUDGE" "$DELIVERY_GATE"; do
-    assert grep -Fq 'keys = [hashlib.sha256(block.encode()).hexdigest(), tail_key(block)]' "$cs_hook"
+    assert grep -Fq 'keys = [hashlib.sha256(block.encode()).hexdigest()]' "$cs_hook"
     assert grep -Fq 'keys.append(f"run:{run_id}:{state}")' "$cs_hook"
     # Half that key is the state, and it is read off the BLOCK wherever no delivery line named
     # one: derived differently by the two nets, they write keys neither recognises.
     assert grep -Fq \
-      'return "blocked" if STOPPED_HEADER_RE.search(block) or STOPPED_ROW_RE.search(block) else "done"' \
-      "$cs_hook"
+      'return "blocked" if STOPPED_HEADER_RE.search(block) else "done"' "$cs_hook"
   done
   cs_launch_re=$(sed -n '/^LAUNCH_RE = re.compile($/,/review-bench\\s")$/p' "$REPORT_NUDGE")
   assert test -n "$cs_launch_re"
@@ -1215,7 +1263,7 @@ if [ -r "$FLOW_GATE" ] && [ -r "$REPORT_GATE" ]; then
     "$REVIEW_BENCH"
   # The fix-bytes receipt asks the same question rather than pricing a closed round itself: the
   # dials it would have to spell are exactly the pair this row keeps in the gate.
-  assert grep -Fq 'if escalation_verdict(*escalation_numbers(run_dir, meta, rows)):' \
+  assert grep -Fq 'if escalation_verdict(*escalation_numbers(run_dir, meta, rows)) is not None:' \
     "$REVIEW_BENCH"
   # The two dials, in the gate and only there. There is no third: a count at which the fork led
   # with the rework was one, and that choice is inside what the P1 branch already asks.
@@ -1235,9 +1283,13 @@ if [ -r "$FLOW_GATE" ] && [ -r "$REPORT_GATE" ]; then
   # The fork's closing words are also the trigger the report nudge keys its escalation demand on:
   # let either spelling drift and the model is never told to open with the weak-block analysis.
   assert grep -Fq 'Pick one and carry it out:' "$FLOW_GATE"
-  if [ -r "$REPORT_NUDGE" ]; then
-    assert grep -Fq 'ESCALATION_MARKER = "Pick one and carry it out"' "$REPORT_NUDGE"
-  fi
+  # Both report nets key on it: each hands the fork to the model, and the demand rides only the
+  # fork that carries the verdict.
+  for cs_hook in "$REPORT_NUDGE" "$DELIVERY_GATE"; do
+    if [ -r "$cs_hook" ]; then
+      assert grep -Fq 'ESCALATION_MARKER = "Pick one and carry it out"' "$cs_hook"
+    fi
+  done
 else
   printf 'SKIP: review escalation voice across claude-setup (%s or %s is unreadable)\n' \
     "$FLOW_GATE" "$REPORT_GATE"
@@ -2048,4 +2100,4 @@ assert grep -Fq "numbers are the DIFF's own lines" "$ROOT/docs/review-contract.m
 assert grep -Fq 'meta["reviewed"] = attested_paths(reviewed, unread)' "$REVIEWBENCH"
 assert doc_has "A chunk NO cell's pass came back from"
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the debt word the bench prints, the gate translates and the statusline speaks verbatim, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the round-size numbers that lock a waiver, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, and the two header words the bench renders, one of which is worn by a round no hook may deliver — so both of them apply one further rule over the rows of the block itself, and the one review command both repositories hand a chat, which names no paths because the mode computes its own scope, the delivery ledger the two report hooks write and the doctor only reads, the doctor snapshot whose six class names are the menubar'"'"'s whole vocabulary, and the one resolver every surface names a chat through) and match %s\n' "$asserts" "$DOC"
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the debt word the bench prints, the gate translates and the statusline speaks verbatim, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the round-size numbers that lock a waiver, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, and the five header words the bench renders, one of which is worn by a round no hook may deliver — so both of them apply one further rule over the rows of the block itself, and the one review command both repositories hand a chat, which names no paths because the mode computes its own scope, the delivery ledger the two report hooks write and the doctor only reads, the doctor snapshot whose six class names are the menubar'"'"'s whole vocabulary, and the one resolver every surface names a chat through) and match %s\n' "$asserts" "$DOC"
