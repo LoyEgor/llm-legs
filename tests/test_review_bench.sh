@@ -2,6 +2,7 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+export RBENCH_SHARE="$ROOT/share"
 SCRIPT="$ROOT/bin/review-bench"
 STATS="$ROOT/bin/worker-stats"
 WORK="$(mktemp -d)"
@@ -23,8 +24,6 @@ import argparse
 from collections import Counter
 import contextlib
 import hashlib
-import importlib.machinery
-import importlib.util
 import io
 import json
 import os
@@ -39,24 +38,24 @@ import threading
 import time
 import types
 
-loader = importlib.machinery.SourceFileLoader("review_bench", sys.argv[1])
-spec = importlib.util.spec_from_loader("review_bench", loader)
-rb = importlib.util.module_from_spec(spec)
-loader.exec_module(rb)
+sys.path.insert(0, os.environ["RBENCH_SHARE"])
+import rbench as rb
+from chat_names import worker_session_launchers
+from datetime import datetime, timedelta, timezone
 # The frame is the contract, not a marker string: a header of the word centered in '=' to exactly
 # 50 characters, a footer of 50 of them, and both parseable by the shapes every consumer keys on.
-plain_frame = rb.report_frame_header(rb.REPORT_FRAME_WORD)
+plain_frame = rb.report.report_frame_header(rb.REPORT_FRAME_WORD)
 assert plain_frame == "=" * 21 + " review " + "=" * 21, plain_frame
-assert rb.REPORT_END == "=" * 50, rb.REPORT_END
-assert len(plain_frame) == 50 and len(rb.REPORT_END) == 50
+assert rb.round.REPORT_END == "=" * 50, rb.round.REPORT_END
+assert len(plain_frame) == 50 and len(rb.round.REPORT_END) == 50
 assert re.fullmatch(r"=+ [a-z]+ =+", plain_frame), plain_frame
-assert re.fullmatch(r"={10,}", rb.REPORT_END), rb.REPORT_END
+assert re.fullmatch(r"={10,}", rb.round.REPORT_END), rb.round.REPORT_END
 # The footer shape must not swallow the header: a consumer that reads the block by its end would
 # close it on the line that opens it.
 assert not re.fullmatch(r"={10,}", plain_frame)
 # An odd remainder goes to the right, and the total stays exactly 50 whatever the word costs.
 for frame_word, frame_left in (("review", 21), ("notes", 21), ("comments", 20)):
-    frame_header = rb.report_frame_header(frame_word)
+    frame_header = rb.report.report_frame_header(frame_word)
     assert len(frame_header) == 50, frame_header
     assert frame_header == "=" * frame_left + f" {frame_word} " + "=" * (
         50 - frame_left - len(frame_word) - 2
@@ -64,7 +63,7 @@ for frame_word, frame_left in (("review", 21), ("notes", 21), ("comments", 20)):
 # A word with no room left widens the line rather than spending its padding: a header ending on
 # the word is no longer the shape its consumers find the block by, so it opens nothing.
 for long_word in ("a" * 48, "a" * 60):
-    long_header = rb.report_frame_header(long_word)
+    long_header = rb.report.report_frame_header(long_word)
     assert re.fullmatch(r"=+ [a-z]+ =+", long_header), long_header
     assert len(long_header) > 50, long_header
 # The state a block is in is carried by its word and by nothing below it, and every one of those
@@ -80,7 +79,7 @@ frame_shape = re.compile(
 )
 for state_word in rb.REPORT_FRAME_WORDS:
     # The stale word is the one that carries a date, and it is never rendered without one.
-    rendered = rb.report_frame_header(
+    rendered = rb.report.report_frame_header(
         f"{state_word} · 19 Aug" if state_word == rb.REPORT_STALE_WORD else state_word
     )
     assert len(rendered) == 50, rendered
@@ -95,19 +94,19 @@ assert rb.DELIVERY_STATES == ("done", "blocked"), rb.DELIVERY_STATES
 # Every block the suite prints wears a fixture frame instead of the real one: the review hooks
 # read the tool output of whatever runs in a chat, and a real frame here is a report Egor is
 # handed over a fixture nobody reviewed.
-rb.report_frame_header = lambda word, width=rb.REPORT_FRAME_WIDTH: (
+rb.report.report_frame_header = lambda word, width=rb.REPORT_FRAME_WIDTH: (
     f"FIXTURE-REVIEW-REPORT-BEGIN {word}"
 )
-rb.REPORT_END = "FIXTURE-REVIEW-REPORT-END"
+rb.round.REPORT_END = "FIXTURE-REVIEW-REPORT-END"
 FIXTURE_FRAME_PREFIX = "FIXTURE-REVIEW-REPORT-BEGIN"
 
 
 def fixture_frame(word=rb.REPORT_FRAME_WORD):
-    return rb.report_frame_header(word)
+    return rb.report.report_frame_header(word)
 
 
-assert rb.TRIAGE_PENDING == "REVIEW-TRIAGE-PENDING"
-rb.TRIAGE_PENDING = "FIXTURE-REVIEW-TRIAGE-PENDING"
+assert rb.round.TRIAGE_PENDING == "REVIEW-TRIAGE-PENDING"
+rb.round.TRIAGE_PENDING = "FIXTURE-REVIEW-TRIAGE-PENDING"
 fixtures = pathlib.Path(sys.argv[2])
 repo = pathlib.Path(sys.argv[3])
 work = pathlib.Path(sys.argv[4])
@@ -138,15 +137,11 @@ def grant_owner_panels(*panels, age=0.0):
 
 
 wall_probe = r"""
-import importlib.machinery
-import importlib.util
 import os
 import sys
 
-loader = importlib.machinery.SourceFileLoader("review_bench_probe", sys.argv[1])
-spec = importlib.util.spec_from_loader("review_bench_probe", loader)
-module = importlib.util.module_from_spec(spec)
-loader.exec_module(module)
+sys.path.insert(0, os.environ["RBENCH_SHARE"])
+import rbench as module
 side, account, bucket = sys.argv[3:6]
 if sys.argv[2] == "mark":
     module.mark_walled(side, account, bucket)
@@ -299,7 +294,7 @@ split_path.write_text(
 (split_wall_state / "opencode-seen" / "opencode-go-split").write_text(
     f"{int(split_now) - 3600}\n"
 )
-split_before = rb.read_wall_rows(split_path)
+split_before = rb.accounts.read_wall_rows(split_path)
 assert split_path.stat().st_size > rb.WALL_COMPACT_BYTES
 assert rb.compact_walls(split_path) is not None
 split_kept = [json.loads(line) for line in split_path.read_text().splitlines()
@@ -309,7 +304,7 @@ assert sorted(row["reset_at"] for row in split_kept) == sorted(
     [split_pre["reset_at"], split_post["reset_at"]]
 ), split_kept
 # Compaction is housekeeping: the answer the pool reads out of the file may not change with it.
-assert rb.read_wall_rows(split_path) == split_before, split_before
+assert rb.accounts.read_wall_rows(split_path) == split_before, split_before
 
 # The row that stands longest wins the merge: a plain wall recorded after a dated one must not
 # throw the provider's horizon away and put a weekly limit back in the pool an hour later.
@@ -325,7 +320,7 @@ horizon_path.write_text(
         "detected_at": time.time(),
     }) + "\n"
 )
-horizon_rows = rb.read_wall_rows(horizon_path)
+horizon_rows = rb.accounts.read_wall_rows(horizon_path)
 assert horizon_rows[("opencode", "go", "general")][1] > time.time() + 2 * 86400, horizon_rows
 
 # The record is advisory: a read that fails leaves accounts usable, because refusing to run on
@@ -334,13 +329,13 @@ unreadable_state = work / "unreadable-wall-state"
 unreadable_state.mkdir()
 unreadable_path = unreadable_state / rb.WALL_STATE_FILE
 unreadable_path.write_text("")
-real_read_wall_rows = rb.read_wall_rows
-rb.read_wall_rows = lambda path: None
+real_read_wall_rows = rb.accounts.read_wall_rows
+rb.accounts.read_wall_rows = lambda path: None
 os.environ["WORKER_STATS_DIR"] = str(unreadable_state)
 try:
     assert not rb.is_walled("opencode", "go")
 finally:
-    rb.read_wall_rows = real_read_wall_rows
+    rb.accounts.read_wall_rows = real_read_wall_rows
     del os.environ["WORKER_STATS_DIR"]
 
 # Every answer comes from the file, so a wall another process appends is seen at once and one
@@ -377,12 +372,12 @@ def refuse_the_lock(path):
     yield False
 
 
-real_wall_file_lock = rb.wall_file_lock
-rb.wall_file_lock = refuse_the_lock
+real_wall_file_lock = rb.accounts.wall_file_lock
+rb.accounts.wall_file_lock = refuse_the_lock
 try:
     assert rb.compact_walls(unlocked_path) is None
 finally:
-    rb.wall_file_lock = real_wall_file_lock
+    rb.accounts.wall_file_lock = real_wall_file_lock
 assert unlocked_path.read_text() == unlocked_rows
 
 # The provider's own horizon beats the flat guess in both directions: a plain wall recorded later
@@ -401,7 +396,7 @@ rank_path.write_text(
     + json.dumps({"side": "agy", "account": "b", "bucket": "agy-pro",
                   "detected_at": now}) + "\n"
 )
-ranked = rb.read_wall_rows(rank_path)
+ranked = rb.accounts.read_wall_rows(rank_path)
 assert ranked[("agy", "a", "agy-pro")][1] == now + 30, ranked
 assert ranked[("agy", "b", "agy-pro")][1] == now + 3 * 86400, ranked
 # Once the provider's horizon passes the account is open, and an older flat guess must not
@@ -465,7 +460,7 @@ try:
     write_served_stamp(int(served_now) - 1800)
     assert not rb.is_walled("opencode", served_account)
     assert rb.walled_accounts("opencode") == set()
-    assert served_key not in rb.read_wall_rows(served_state / rb.WALL_STATE_FILE)
+    assert served_key not in rb.accounts.read_wall_rows(served_state / rb.WALL_STATE_FILE)
     # A tie goes to the wall: read as served, an account that refused in the same second it last
     # completed would never be probed again and would freeze clean forever.
     write_served_walls(served_now - 1800)
@@ -545,7 +540,7 @@ unclamped_path.write_text(json.dumps({
     "side": "opencode", "account": "opencode-go-far", "bucket": "general",
     "detected_at": time.time(), "reset_at": far_reset,
 }) + "\n")
-assert rb.read_wall_rows(unclamped_path)[
+assert rb.accounts.read_wall_rows(unclamped_path)[
     ("opencode", "opencode-go-far", "general")
 ][1] == far_reset, "the reader re-clamped a recorded horizon"
 assert rb.recorded_reset_at("not a time") is None
@@ -575,7 +570,7 @@ assert monthly_row["reset_at"] == monthly_reset, monthly_row
 # A wall with no window keeps the flat cap exactly as it was, whichever side recorded it.
 assert windowless_row["reset_at"] == windowless_row["detected_at"] + rb.WALL_MAX_TTL_S, \
     windowless_row
-reread = rb.read_wall_rows(monthly_wall_state / rb.WALL_STATE_FILE)
+reread = rb.accounts.read_wall_rows(monthly_wall_state / rb.WALL_STATE_FILE)
 assert reread[("opencode", "opencode-go-far", "general")][1] == monthly_reset, reread
 assert rb.wall_reset_at("Weekly usage limit reached. Resets in 3 days.") > time.time() + 2 * 86400
 assert rb.wall_reset_at("Resets in 45 minutes") < time.time() + 3600
@@ -616,7 +611,7 @@ unwritten_state = work / "unwritten-wall-state"
 unwritten_state.mkdir()
 os.environ["WORKER_STATS_DIR"] = str(unwritten_state)
 unwritten_warning = io.StringIO()
-real_wall_file_lock_2 = rb.wall_file_lock
+real_wall_file_lock_2 = rb.accounts.wall_file_lock
 
 
 @contextlib.contextmanager
@@ -625,12 +620,12 @@ def unwritable_wall(path):
     yield True
 
 
-rb.wall_file_lock = unwritable_wall
+rb.accounts.wall_file_lock = unwritable_wall
 try:
     with contextlib.redirect_stderr(unwritten_warning):
         rb.mark_walled("opencode", "unwritten")
 finally:
-    rb.wall_file_lock = real_wall_file_lock_2
+    rb.accounts.wall_file_lock = real_wall_file_lock_2
     del os.environ["WORKER_STATS_DIR"]
 assert "could not record" in unwritten_warning.getvalue(), unwritten_warning.getvalue()
 clear_walls()
@@ -666,7 +661,7 @@ late_path.write_text(late_rows)
 late_wall = {
     "side": "agy", "account": "late", "bucket": "agy-pro", "detected_at": time.time(),
 }
-real_read_rows = rb.read_wall_rows
+real_read_rows = rb.accounts.read_wall_rows
 
 
 def append_while_reading(path):
@@ -677,13 +672,13 @@ def append_while_reading(path):
     return rows
 
 
-rb.read_wall_rows = append_while_reading
+rb.accounts.read_wall_rows = append_while_reading
 try:
     assert rb.compact_walls(late_path) is None
 finally:
-    rb.read_wall_rows = real_read_rows
+    rb.accounts.read_wall_rows = real_read_rows
 assert late_path.read_text() == late_rows + json.dumps(late_wall) + "\n"
-assert rb.read_wall_rows(late_path) == {
+assert rb.accounts.read_wall_rows(late_path) == {
     ("agy", "late", "agy-pro"): (late_wall["detected_at"], None, None)
 }
 
@@ -778,12 +773,12 @@ assert len(set(pool_names)) == len(
 ), sorted(set(pool_names))
 # A second version of a single-version family renames it the moment it joins THE POOL — the
 # digits are derived from the tiers, never declared.
-stored_pool_raters = rb._REVIEW_POOL_RATERS
+stored_pool_raters = rb.raters._REVIEW_POOL_RATERS
 try:
-    rb._REVIEW_POOL_RATERS = list(rb.review_pool_raters()) + [rb.parse_rater("oc-kimik27code")]
+    rb.raters._REVIEW_POOL_RATERS = list(rb.review_pool_raters()) + [rb.parse_rater("oc-kimik27code")]
     kimi_two_versions = rb.name_scheme()
 finally:
-    rb._REVIEW_POOL_RATERS = stored_pool_raters
+    rb.raters._REVIEW_POOL_RATERS = stored_pool_raters
 assert rb.short_cell_name(rb.parse_rater("oc-kimik3"), kimi_two_versions) == "kimik3"
 assert rb.short_cell_name(rb.parse_rater("oc-kimik27code"), kimi_two_versions) == "kimik27code"
 # A cell only a stored run holds is named against the pool, never over it. Reading one report
@@ -1233,7 +1228,7 @@ assert rb.cell_failure_streaks(
 streamer = work / "streamer.sh"
 streamer.write_text("#!/bin/bash\necho first\nsleep 0.7\necho second\n")
 streamer.chmod(0o755)
-streamed = rb.run_streamed([str(streamer)], timeout_s=30, stall_s=20)
+streamed = rb.launch.run_streamed([str(streamer)], timeout_s=30, stall_s=20)
 assert streamed.returncode == 0 and streamed.stdout == "first\nsecond\n", streamed
 # The gap between the two writes must be visible in the recorded maximum; the bound is loose
 # because quiet is sampled on poll ticks.
@@ -1245,12 +1240,12 @@ hanger.write_text(
     "#!/bin/bash\necho started\nsleep 600 &\necho $! >" + str(hanger_child) + "\nwait\n"
 )
 hanger.chmod(0o755)
-stall_poll_was = rb.STALL_POLL_S
-rb.STALL_POLL_S = 0.05
+stall_poll_was = rb.catalog.STALL_POLL_S
+rb.catalog.STALL_POLL_S = 0.05
 try:
     stall_started_at = time.monotonic()
     try:
-        rb.run_streamed([str(hanger)], timeout_s=30, stall_s=1)
+        rb.launch.run_streamed([str(hanger)], timeout_s=30, stall_s=1)
     except rb.RaterStalled as exc:
         assert exc.quiet_s >= 1 and exc.stall_s == 1, exc
         assert exc.stdout == "started\n", exc.stdout
@@ -1275,13 +1270,13 @@ try:
         + "; sleep 0.3; done\n"
     )
     filewriter.chmod(0o755)
-    quiet_stdout = rb.run_streamed(
+    quiet_stdout = rb.launch.run_streamed(
         [str(filewriter)], timeout_s=30, stall_s=1, watch_paths=[watched_log]
     )
     assert quiet_stdout.returncode == 0, quiet_stdout
 
     try:
-        rb.run_streamed([str(hanger)], timeout_s=1, stall_s=None)
+        rb.launch.run_streamed([str(hanger)], timeout_s=1, stall_s=None)
     except subprocess.TimeoutExpired as exc:
         assert "started" in (exc.output or ""), exc.output
         # The silence a killed cell died in is recorded nowhere else: the row it leaves is an
@@ -1359,7 +1354,7 @@ try:
     )
     trapper.chmod(0o755)
     try:
-        rb.run_streamed([str(trapper)], timeout_s=30, stall_s=1)
+        rb.launch.run_streamed([str(trapper)], timeout_s=30, stall_s=1)
     except rb.RaterStalled as exc:
         assert "dying-words" in exc.stdout, exc.stdout
     else:
@@ -1373,7 +1368,7 @@ try:
 
     def interrupting_sleep(seconds):
         # Only once the descendant's pid is on disk, so the assertion below has a pid to watch.
-        if seconds == rb.STALL_POLL_S and hanger_child.exists() \
+        if seconds == rb.catalog.STALL_POLL_S and hanger_child.exists() \
                 and hanger_child.read_text().strip():
             raise KeyboardInterrupt
         interrupt_sleep(seconds)
@@ -1382,7 +1377,7 @@ try:
     time.sleep = interrupting_sleep
     try:
         try:
-            rb.run_streamed([str(hanger)], timeout_s=30, stall_s=None)
+            rb.launch.run_streamed([str(hanger)], timeout_s=30, stall_s=None)
         except KeyboardInterrupt:
             pass
         else:
@@ -1416,7 +1411,7 @@ try:
             probe.kill()
         rb.LIVE_CELL_GROUPS.discard(probe.pid)
 finally:
-    rb.STALL_POLL_S = stall_poll_was
+    rb.catalog.STALL_POLL_S = stall_poll_was
 assert rb.panel_cell_key({"model": "sol", "effort": "high"}) == ("sol", "high")
 assert rb.panel_cell_key({"model": "oc-glm52", "effort": ""}) == ("oc-glm52", "")
 assert rb.panel_cell_key({"effort": "high"}) is None
@@ -1437,7 +1432,7 @@ max_tier_meta = {
 max_tier_dir = work / "max-tier-report"
 max_tier_dir.mkdir()
 assert rb.tier_from_meta(max_tier_meta) == "T3 max"
-assert rb.review_log_event("run", max_tier_dir, max_tier_meta)["tier"] == "T3 max"
+assert rb.panel.review_log_event("run", max_tier_dir, max_tier_meta)["tier"] == "T3 max"
 max_tier_report = rb.report_lines(max_tier_dir, max_tier_meta)
 # The label is the tier and the value prices the run: what it took, and the longest chain inside
 # it. The frame word above says what state it is in, and no row repeats that.
@@ -1466,15 +1461,15 @@ legacy_cells_meta = {
 }
 legacy_cells_dir = work / "legacy-cells-report"
 legacy_cells_dir.mkdir()
-legacy_cells_summary = rb.bench_summary(legacy_cells_dir, legacy_cells_meta)
+legacy_cells_summary = rb.panel.bench_summary(legacy_cells_dir, legacy_cells_meta)
 for cell in legacy_cells_summary["cells"]:
     cell.pop("findings")
-stored_bench_summary = rb.bench_summary
-rb.bench_summary = lambda *summary_args, **summary_kwargs: legacy_cells_summary
+stored_bench_summary = rb.panel.bench_summary
+rb.panel.bench_summary = lambda *summary_args, **summary_kwargs: legacy_cells_summary
 try:
     legacy_cells_report = rb.report_lines(legacy_cells_dir, legacy_cells_meta)
 finally:
-    rb.bench_summary = stored_bench_summary
+    rb.panel.bench_summary = stored_bench_summary
 assert [line for line in legacy_cells_report if line.startswith("quiet:")] == [
     "quiet:        1 cells"], legacy_cells_report
 assert [line for line in legacy_cells_report if line.startswith("failed:")] == [
@@ -1485,10 +1480,10 @@ with contextlib.redirect_stdout(pending_report):
 # An untriaged run gets no markers: they are what the report hook keys on, and a run of cells
 # carrying them is exactly the empty report that used to reach the reader.
 assert FIXTURE_FRAME_PREFIX not in pending_report.getvalue()
-assert rb.REPORT_END not in pending_report.getvalue()
+assert rb.round.REPORT_END not in pending_report.getvalue()
 pending_report_lines = pending_report.getvalue().splitlines()
 assert pending_report_lines[0] == (
-    f"{rb.TRIAGE_PENDING} max-tier-report · 0 finding(s) to triage"
+    f"{rb.round.TRIAGE_PENDING} max-tier-report · 0 finding(s) to triage"
 )
 assert pending_report_lines[1] == (
     "report with: review-bench record max-tier-report --no-corpus"
@@ -1497,11 +1492,9 @@ marked_report = io.StringIO()
 with contextlib.redirect_stdout(marked_report):
     rb.emit_report(max_tier_dir, max_tier_meta, [])
 marked_lines = marked_report.getvalue().splitlines()
-# Weeks past its own `finished` and still the PLAIN word: age is not what makes a block stale. This
-# run's report was handed over when it was recorded and the content it read is untouched, so there
-# is nothing about it a date would tell the reader (the two things that do are asserted below).
-assert marked_lines[0] == fixture_frame(), marked_lines
-assert marked_lines[-1] == rb.REPORT_END, marked_lines
+# Weeks past its own `finished`: STALE, dated by that finish, and nothing else about the run matters.
+assert marked_lines[0] == fixture_frame(f"{rb.REPORT_STALE_WORD} · 30 Jul"), marked_lines
+assert marked_lines[-1] == rb.round.REPORT_END, marked_lines
 # `record --no-corpus` leaves only the receipt behind, and its rows are the triage's one copy:
 # a re-render of the run — the report hook recovering a capture whose closing rule the
 # tool-output window cut — must produce the frame from them, never answer "pending".
@@ -1513,8 +1506,8 @@ receipt_report = io.StringIO()
 with contextlib.redirect_stdout(receipt_report):
     rb.emit_report(max_tier_dir, max_tier_meta)
 receipt_lines = receipt_report.getvalue().splitlines()
-assert receipt_lines[0] == fixture_frame(), receipt_lines
-assert receipt_lines[-1] == rb.REPORT_END, receipt_lines
+assert receipt_lines[0] == fixture_frame(f"{rb.REPORT_STALE_WORD} · 30 Jul"), receipt_lines
+assert receipt_lines[-1] == rb.round.REPORT_END, receipt_lines
 assert any(line.startswith("confirmed:") for line in receipt_lines), receipt_lines
 # A round still owing an answer keeps the ordinary word: the loud one read off "no fixes
 # recorded" is what put NOT FINISHED in front of Egor over a round whose fixes were landing at
@@ -1536,8 +1529,8 @@ clean_receipt_report = io.StringIO()
 with contextlib.redirect_stdout(clean_receipt_report):
     rb.emit_report(max_tier_dir, max_tier_meta)
 clean_receipt_lines = clean_receipt_report.getvalue().splitlines()
-assert clean_receipt_lines[0] == fixture_frame(), clean_receipt_lines
-assert clean_receipt_lines[-1] == rb.REPORT_END, clean_receipt_lines
+assert clean_receipt_lines[0] == fixture_frame(f"{rb.REPORT_STALE_WORD} · 30 Jul"), clean_receipt_lines
+assert clean_receipt_lines[-1] == rb.round.REPORT_END, clean_receipt_lines
 # A clean triage owes nothing, and the two rows that speak only when something is owed go quiet.
 assert not [line for line in clean_receipt_lines
             if line.startswith(("fixes:", "round:"))], clean_receipt_lines
@@ -1759,7 +1752,7 @@ def report_accounting(run_dir, meta, verdicts=None):
     The invariant the whole shape rests on: a cell in none of the four answer rows is a cell that
     broke where no reader will look for it, and that is the failure this block exists to end.
     """
-    summary = rb.bench_summary(run_dir, meta, verdicts)
+    summary = rb.panel.bench_summary(run_dir, meta, verdicts)
     scheme = rb.report_name_scheme([cell["rater"] for cell in summary["cells"]])
     label, named, legs, quiet = None, set(), set(), 0
     for line in rb.report_lines(run_dir, meta, verdicts):
@@ -1859,7 +1852,7 @@ assert rb.counted_int(None) == 0
 # Every count is read back out of a file anyone can hand-edit, so each is sanitised where it is
 # read, not only where it is summed: a bool reaching one cell field and not its neighbour is the
 # inconsistency that makes the next edit trust the wrong one.
-sanitised_cells = rb.bench_summary(duration_dir, dict(
+sanitised_cells = rb.panel.bench_summary(duration_dir, dict(
     queue_meta,
     verifier="oc-kimik3",
     raters=["oc-kimik3"],
@@ -1977,8 +1970,8 @@ fork_gate.write_text(
     "printf 'stub fork. Pick one and carry it out:\\n'\n"
 )
 fork_gate.chmod(0o755)
-fork_gate_before = rb.ESCALATION_GATE
-rb.ESCALATION_GATE = fork_gate
+fork_gate_before = rb.round.ESCALATION_GATE
+rb.round.ESCALATION_GATE = fork_gate
 fork_dir = work / "report-fork-benches" / "20260822T000000Z-fork"
 fork_dir.mkdir(parents=True)
 fork_meta = {
@@ -2044,14 +2037,14 @@ assert not [line for line in blocked_report if "not the fixer's" in line], block
 # A gate nobody could ask says so in BOTH places. Filtered out of either, a round nothing could
 # price printed no row and handed over no fork, which reads exactly like a round that owes
 # nothing — the silent clean bill the unknown wording exists to end.
-rb.ESCALATION_GATE = work / "missing-escalation-gate"
+rb.round.ESCALATION_GATE = work / "missing-escalation-gate"
 unknown_report = rb.report_lines(fork_state / "benches" / fork_dir.name, fork_meta, fork_verdicts)
 assert [line for line in unknown_report if line.startswith("round:") and "unknown" in line], \
     unknown_report
 assert rb.round_fork_text(
     fork_state / "benches" / fork_dir.name, fork_meta, fork_verdicts
 ) == rb.ESCALATION_UNKNOWN
-rb.ESCALATION_GATE = fork_gate_before
+rb.round.ESCALATION_GATE = fork_gate_before
 os.environ.pop("WORKER_STATS_DIR", None)
 
 # A panel where no cell completed has no findings to report and nothing to say about fixes; the
@@ -2063,84 +2056,55 @@ assert rb.report_frame_word(duration_dir, no_panel_meta) == rb.REPORT_NO_PANEL_W
 # and how much of the diff the survivors covered is the triage receipt's answer, not the frame's —
 # a run the kill left nothing behind on is already NO PANEL by the rule above.
 assert rb.report_frame_word(
-    duration_dir, dict(leg_meta, timed_out=True)) == rb.REPORT_FRAME_WORD
+    duration_dir, dict(leg_meta, timed_out=True, finished=rb.iso_now())) == rb.REPORT_FRAME_WORD
 assert rb.report_frame_word(duration_dir, dict(
     leg_meta, tier=None, raters=["sol-low"], rater_runs=[
         {"rater": "sol-low", "side": "codex", "exit_code": 0, "findings": 0}],
 )) == rb.REPORT_BENCH_WORD
-# What makes a block stale is not its age but that it is not about the tree in front of the reader,
-# which is two things and neither is a clock: a report nobody handed over when the run recorded it,
-# and content that has moved since the panel read it. A clock answered both wrong — it called a
-# block stale over a tree nobody had touched, and called one current five minutes after the very
-# files it priced were rewritten.
-stale_repo = work / "stale-frame-repo"
-(stale_repo / "src").mkdir(parents=True)
-(stale_repo / "src" / "a.py").write_text("reviewed content\n")
-subprocess.run(["git", "init", "-q"], cwd=stale_repo, check=True)
+# STALE is a clock and nothing else: a block older than REPORT_STALE_HOURS is not about the tree in
+# front of the reader. Content and delivery checks were tried and called a block stale right after
+# its own fixing pass moved the tree — a reader cannot tell that from a report out of the past.
 stale_dir = work / "stale-frame-benches" / "20260822T200100Z-stale"
 stale_dir.mkdir(parents=True)
-stale_meta = dict(
-    leg_meta, run_id=stale_dir.name, repo=str(stale_repo),
-    finished="2026-08-22T20:01:00Z",
-    reviewed={"src/a.py": rb.path_blob_sha(stale_repo, "src/a.py")},
-)
+stale_fresh = (rb.store.utc_now() - timedelta(hours=rb.REPORT_STALE_HOURS - 1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+stale_meta = dict(leg_meta, run_id=stale_dir.name, finished=stale_fresh)
 (stale_dir / "meta.json").write_text(json.dumps(stale_meta))
-# Recorded, handed over, and the bytes it read still standing exactly where it read them: a report
-# like this is current at any age at all, and a date on it would be noise.
 assert rb.report_frame_word(stale_dir, stale_meta) == rb.REPORT_FRAME_WORD
-# One byte on, and the rows price content that is no longer there. The date is the run's own finish
-# in the READER's zone — `20:01Z` on the 22nd is the 23rd in Tokyo — because his clock is what he
-# would compare it against.
-(stale_repo / "src" / "a.py").write_text("edited since\n")
-moved_word = f"{rb.REPORT_STALE_WORD} · 23 Aug"
-assert rb.report_frame_word(stale_dir, stale_meta) == moved_word, \
+# The date is the run's own finish in the READER's zone, because his clock is what he compares it
+# against — the record keeps UTC.
+old_finish = "2026-08-22T20:01:00Z"
+stale_meta = dict(stale_meta, finished=old_finish)
+assert rb.report_frame_word(stale_dir, stale_meta) == f"{rb.REPORT_STALE_WORD} · 23 Aug", \
     rb.report_frame_word(stale_dir, stale_meta)
-# The same answer through the same comparison a `--debt` review is scoped from, never a second one:
-# a frame word disagreeing with the debt is a block that says the tree moved and a review that
-# cannot be asked to read it, or the reverse.
-assert rb.report_snapshot_moved(stale_meta) is True
-(stale_repo / "src" / "a.py").write_text("reviewed content\n")
-assert rb.report_snapshot_moved(stale_meta) is False
-# A path the round read and somebody has since deleted is content that moved as much as a rewrite:
-# hashed as the empty string it must not cancel against the sha the run recorded.
-(stale_repo / "src" / "a.py").unlink()
-assert rb.report_frame_word(stale_dir, stale_meta) == moved_word
-(stale_repo / "src" / "a.py").write_text("reviewed content\n")
-assert rb.report_frame_word(stale_dir, stale_meta) == rb.REPORT_FRAME_WORD
-# A merged panel is priced on its MEMBERS. Its own map is spelled against an overlay workspace
-# whose content is frozen at the seal and pruned without notice — read there, every merged round is
-# current for ever, or stale the moment the copy goes.
-merged_stale_meta = dict(
-    stale_meta, repo=str(work / "stale-frame-workspace-long-gone"),
-    reviewed={"member/src/a.py": "0" * 40},
-    repos=[{"repo": str(stale_repo), "label": "member",
-            "reviewed": dict(stale_meta["reviewed"])}],
-)
-assert rb.report_frame_word(stale_dir, merged_stale_meta) == rb.REPORT_FRAME_WORD
-(stale_repo / "src" / "a.py").write_text("edited since\n")
-assert rb.report_frame_word(stale_dir, merged_stale_meta) == moved_word
-(stale_repo / "src" / "a.py").write_text("reviewed content\n")
-# The other half: the report never reached its reader at `record` time. `settle-delivery` is what
-# writes that down, and its mark is the ONE signal for every late channel there is — the delivery
-# queue, and a round written off as lapsed for `doctor --lapsed` to list. Read off the run and not
-# off the invocation, or the same block is current in the nudge and stale at the next stop.
-for stale_mark in ({"state": "done", "queued": rb.iso_now()},
-                   {"state": "done", "lapsed": rb.iso_now()}):
-    (stale_dir / rb.DELIVERY_MARK).write_text(json.dumps(stale_mark))
-    assert rb.report_frame_word(stale_dir, stale_meta, "done") == moved_word, stale_mark
-    assert rb.report_delivered_late(stale_dir, "done") is True
-# The mark answers for the STATE it was written against, exactly as `pending-delivery` reads it: a
-# re-adjudication moves the round on, and the report it reaches next is not the one settled there.
-assert rb.report_frame_word(stale_dir, stale_meta, "blocked") == rb.REPORT_BLOCKED_WORD
-(stale_dir / rb.DELIVERY_MARK).write_text(json.dumps(
-    {"state": "blocked", "queued": rb.iso_now()}))
-assert rb.report_frame_word(stale_dir, stale_meta, "done") == rb.REPORT_FRAME_WORD
-assert rb.report_delivered_late(stale_dir, "done") is False
+# A delivery mark or a moved tree changes nothing: the clock alone answers.
+(stale_dir / rb.DELIVERY_MARK).write_text(json.dumps({"state": "done", "queued": rb.iso_now()}))
+assert rb.report_frame_word(stale_dir, dict(stale_meta, finished=stale_fresh), "done") \
+    == rb.REPORT_FRAME_WORD
 (stale_dir / rb.DELIVERY_MARK).unlink()
+assert rb.report_frame_word(stale_dir, stale_meta, "blocked") == rb.REPORT_BLOCKED_WORD
+# The tree half of the same rule, and the half a regression would reintroduce: the reviewed
+# repository has moved on since the run recorded its commit, and the word is still the clock's.
+stale_repo = work / "stale-frame-repo"
+stale_repo.mkdir()
+(stale_repo / "a.py").write_text("x = 1\n")
+stale_repo_env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
+                      GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
+for stale_repo_argv in (("init", "-q", "-b", "main"), ("add", "a.py"), ("commit", "-qm", "seed")):
+    subprocess.run(["git", "-C", str(stale_repo), *stale_repo_argv], check=True,
+                   capture_output=True, env=stale_repo_env)
+stale_reviewed = subprocess.run(
+    ["git", "-C", str(stale_repo), "rev-parse", "HEAD"],
+    check=True, capture_output=True, text=True, env=stale_repo_env).stdout.strip()
+(stale_repo / "a.py").write_text("x = 2\n")
+moved_meta = dict(stale_meta, repo=str(stale_repo), commit=stale_reviewed)
+assert rb.report_frame_word(
+    stale_dir, dict(moved_meta, finished=stale_fresh)) == rb.REPORT_FRAME_WORD, \
+    rb.report_frame_word(stale_dir, dict(moved_meta, finished=stale_fresh))
+assert rb.report_frame_word(stale_dir, moved_meta) == f"{rb.REPORT_STALE_WORD} · 23 Aug", \
+    rb.report_frame_word(stale_dir, moved_meta)
 # A run that recorded no finish has no date to be read against, and this word is never rendered
 # without one: undated it says a block is old and refuses to say how old.
-undated_stale_meta = dict(stale_meta, finished=None, finished_at=None,
-                          reviewed={"src/a.py": "0" * 40})
+undated_stale_meta = dict(stale_meta, finished=None, finished_at=None)
 assert rb.report_frame_word(stale_dir, undated_stale_meta) == rb.REPORT_FRAME_WORD
 
 # The terminal's width, not the author's: continuation lines indent to the value column and break
@@ -2322,7 +2286,7 @@ assert "20260101T000000Z-aaa 1/2 50% throttled 1" in health_text, health_text
 assert "all runs 2/4 50% throttled 1, walled 1" in health_text, health_text
 # The causes carry ' · ' inside them, so the tally may never join on it: `killed · cap 2 · walled
 # 1` reads as three causes, two of which do not exist.
-kill_tally = rb.health_tally(rb.Counter({
+kill_tally = rb.health_tally(Counter({
     rb.STATUS_REASONS["timed_out"]: 2, "walled": 1, rb.CELL_STALL_REASON: 1, "ok": 0,
 }))
 assert kill_tally.endswith("killed · cap 2, walled 1, killed · stalled 1"), kill_tally
@@ -2346,7 +2310,7 @@ retired_dir = write_health_run("20260103T000000Z-ccc", [
 ])
 retired_meta = json.loads((retired_dir / "meta.json").read_text())
 assert rb.tier_from_meta(retired_meta) is None
-retired_cells = rb.bench_summary(retired_dir, retired_meta)["cells"]
+retired_cells = rb.panel.bench_summary(retired_dir, retired_meta)["cells"]
 assert retired_cells[0]["status"] == "completed"
 assert retired_cells[0]["side"] == "opencode" and retired_cells[0]["account"] == "prod"
 # The side is recoverable from the spec for rows recorded before it was written down.
@@ -2354,22 +2318,22 @@ legacy_side_dir = write_health_run("20260104T000000Z-ddd", [
     {"rater": "sol-low", "exit_code": 0, "findings": 0},
 ])
 legacy_side_meta = json.loads((legacy_side_dir / "meta.json").read_text())
-assert rb.bench_summary(legacy_side_dir, legacy_side_meta)["cells"][0]["side"] == "codex"
+assert rb.panel.bench_summary(legacy_side_dir, legacy_side_meta)["cells"][0]["side"] == "codex"
 assert rb.rater_side("oc-dsv4flash-medium") is None and rb.rater_side("") is None
 
-real_append_review_log = rb.append_review_log
-real_review_log_event = rb.review_log_event
+real_append_review_log = rb.report.append_review_log
+real_review_log_event = rb.panel.review_log_event
 for target in ("append", "event"):
     if target == "append":
-        rb.append_review_log = lambda event: (_ for _ in ()).throw(OSError("fixture append"))
+        rb.report.append_review_log = lambda event: (_ for _ in ()).throw(OSError("fixture append"))
     else:
-        rb.review_log_event = lambda *args: (_ for _ in ()).throw(ValueError("fixture event"))
+        rb.panel.review_log_event = lambda *args: (_ for _ in ()).throw(ValueError("fixture event"))
     warning = io.StringIO()
     with contextlib.redirect_stderr(warning):
         rb.log_review_event("run", max_tier_dir, max_tier_meta)
     assert "warning: could not write review log:" in warning.getvalue()
-    rb.append_review_log = real_append_review_log
-    rb.review_log_event = real_review_log_event
+    rb.report.append_review_log = real_append_review_log
+    rb.panel.review_log_event = real_review_log_event
 late_report = io.StringIO()
 with contextlib.redirect_stdout(late_report):
     assert rb.report_late_review("sol-high", 150001, 50000)
@@ -2841,7 +2805,7 @@ for cell, facts in rb.OPENCODE_MODEL_FACTS.items():
 assert rb.OPENCODE_EFFORT_REQUIRED_MODELS <= {
     cell for cell, facts in rb.OPENCODE_MODEL_FACTS.items() if not facts["off"]
 }
-assert rb.OPENCODE_UNUSABLE_MODELS <= {
+assert rb.catalog.OPENCODE_UNUSABLE_MODELS <= {
     cell for cell, facts in rb.OPENCODE_MODEL_FACTS.items()
     if facts["off_s"] is None and facts["low_s"] is None
 }
@@ -2883,9 +2847,9 @@ for cell, ceiling in rb.OPENCODE_EFFORT_CEILING.items():
 # Nothing is refused outright since deepseek-v4-flash was revived, and a loop over an empty
 # set passes without testing the refusal it exists to test. One member is injected so the
 # path stays covered until a measurement puts a real model back in the set.
-real_unusable = rb.OPENCODE_UNUSABLE_MODELS
-rb.OPENCODE_UNUSABLE_MODELS = real_unusable or {"oc-mimo25"}
-for unusable in sorted(rb.OPENCODE_UNUSABLE_MODELS):
+real_unusable = rb.catalog.OPENCODE_UNUSABLE_MODELS
+rb.catalog.OPENCODE_UNUSABLE_MODELS = real_unusable or {"oc-mimo25"}
+for unusable in sorted(rb.catalog.OPENCODE_UNUSABLE_MODELS):
     for spec in (unusable, f"{unusable}-low"):
         try:
             rb.parse_rater(spec)
@@ -2893,7 +2857,7 @@ for unusable in sorted(rb.OPENCODE_UNUSABLE_MODELS):
             assert "measured unusable" in str(exc), exc
         else:
             raise AssertionError(f"{spec} is measured unusable and must be refused")
-rb.OPENCODE_UNUSABLE_MODELS = real_unusable
+rb.catalog.OPENCODE_UNUSABLE_MODELS = real_unusable
 # The expected cost has to come from the table, not a second copy of it.
 assert rb.opencode_expected_s(rb.parse_rater("oc-glm52")) == \
     rb.OPENCODE_MODEL_FACTS["oc-glm52"]["off_s"]
@@ -3224,7 +3188,7 @@ previous_pick = os.environ.get("REVIEW_BENCH_WORKER_PICK_BIN")
 os.environ["REVIEW_BENCH_WORKER_PICK_BIN"] = str(fixtures / "fake-worker-pick.sh")
 os.environ["WORKER_PICK_FAKE_ACCOUNTS"] = "worker session"
 os.environ["WORKER_PICK_FAKE_SESSION"] = "session"
-pick = rb.affordability()
+pick = rb.accounts.affordability()
 assert pick["codex"] is True
 assert pick["agy"] is True
 assert pick["opencode"] is True
@@ -3238,7 +3202,7 @@ walled_pick = work / "walled-worker-pick.sh"
 walled_pick.write_text("#!/bin/sh\necho 'worker-pick: no selectable account' >&2\nexit 3\n")
 walled_pick.chmod(0o755)
 os.environ["REVIEW_BENCH_WORKER_PICK_BIN"] = str(walled_pick)
-walled_available = rb.affordability()
+walled_available = rb.accounts.affordability()
 assert walled_available["claude"] is False, walled_available
 assert walled_available["codex"] is False and walled_available["agy"] is False
 assert walled_available["claude_account"] is None
@@ -3257,7 +3221,7 @@ split_pick.write_text(
 )
 split_pick.chmod(0o755)
 os.environ["REVIEW_BENCH_WORKER_PICK_BIN"] = str(split_pick)
-mixed_available = rb.affordability()
+mixed_available = rb.accounts.affordability()
 assert mixed_available["codex"] is True, mixed_available
 assert mixed_available["agy"] is False, mixed_available
 assert mixed_available["claude"] is False, mixed_available
@@ -3267,24 +3231,24 @@ assert mixed_available["claude"] is False, mixed_available
 # joined at the tail would hand it ordinary cells beside accounts that are not the reserve.
 os.environ["REVIEW_BENCH_WORKER_PICK_BIN"] = str(fixtures / "fake-worker-pick.sh")
 os.environ["WORKER_PICK_FAKE_ACCOUNTS"] = "s1 s2 session"
-rb._SIDE_ROSTER.clear()
+rb.accounts._SIDE_ROSTER.clear()
 assert rb.side_roster("claude", frozenset()) == ["s1", "s2"], rb.side_roster("claude", frozenset())
-rb._SIDE_ROSTER.clear()
+rb.accounts._SIDE_ROSTER.clear()
 assert rb.side_roster("claude", frozenset({"s1", "s2"})) == ["session"]
-rb._SIDE_ROSTER.clear()
-assert [rb.pool_account("claude", set(), slot) for slot in range(3)] == ["s1", "s2", "s1"]
+rb.accounts._SIDE_ROSTER.clear()
+assert [rb.accounts.pool_account("claude", set(), slot) for slot in range(3)] == ["s1", "s2", "s1"]
 os.environ["REVIEW_BENCH_EXCLUDE_CLAUDE"] = "s1,s2"
-rb._SIDE_ROSTER.clear()
-assert rb.pool_account("claude", set()) == "session"
+rb.accounts._SIDE_ROSTER.clear()
+assert rb.accounts.pool_account("claude", set()) == "session"
 del os.environ["REVIEW_BENCH_EXCLUDE_CLAUDE"]
-rb._SIDE_ROSTER.clear()
+rb.accounts._SIDE_ROSTER.clear()
 
 # Only claudeb has a session account, so only claudeb can answer with the reserve: a fixture
 # marking every vendor would test Gemini and Codex against behaviour the pool never produces.
 os.environ["WORKER_PICK_FAKE_ACCOUNTS"] = "session"
-assert rb.worker_pick_answer("claude", ()) == ("session", True)
-assert rb.worker_pick_answer("agy", ()) == ("session", False)
-assert rb.worker_pick_answer("codex", ()) == ("session", False)
+assert rb.accounts.worker_pick_answer("claude", ()) == ("session", True)
+assert rb.accounts.worker_pick_answer("agy", ()) == ("session", False)
+assert rb.accounts.worker_pick_answer("codex", ()) == ("session", False)
 del os.environ["WORKER_PICK_FAKE_SESSION"]
 
 # Fable bills a bucket of its own, so a fable cell has to be routed against that bucket. Asked
@@ -3293,18 +3257,18 @@ os.environ["WORKER_PICK_FAKE_ACCOUNTS"] = "wk1 wk2"
 os.environ["WORKER_PICK_FAKE_FABLE_ACCOUNTS"] = "fb1"
 fable_bucket = rb.wall_bucket(rb.parse_rater("fable-high"))
 assert fable_bucket == "fable"
-rb._SIDE_ROSTER.clear()
-assert rb.pool_account("claude", set(), 0, fable_bucket) == "fb1"
+rb.accounts._SIDE_ROSTER.clear()
+assert rb.accounts.pool_account("claude", set(), 0, fable_bucket) == "fb1"
 # Keyed apart: one cache entry for both buckets would serve whichever cell asked first.
-assert rb.pool_account("claude", set(), 0) == "wk1"
+assert rb.accounts.pool_account("claude", set(), 0) == "wk1"
 assert rb.side_roster("claude", frozenset(), True) == ["fb1"]
 assert rb.side_roster("claude", frozenset()) == ["wk1", "wk2"]
 
 # An exhausted fable bucket takes fable cells off the panel and leaves ordinary Claude work
 # alone, which the contract keeps independent of it.
 os.environ["WORKER_PICK_FAKE_FABLE_ACCOUNTS"] = ""
-rb._SIDE_ROSTER.clear()
-spent_fable = rb.affordability()
+rb.accounts._SIDE_ROSTER.clear()
+spent_fable = rb.accounts.affordability()
 assert spent_fable["claude"] is True and spent_fable["claude_fable"] is False, spent_fable
 assert rb.cell_available(spent_fable, rb.parse_rater("fable-high")) is False
 assert rb.cell_available(spent_fable, rb.parse_rater("opus-high")) is True
@@ -3318,26 +3282,26 @@ role_config = work / "worker-model-reviewers"
 role_config.write_text("worker=auto\n")
 os.environ["WORKER_PICK_CONFIG_FILE"] = str(role_config)
 os.environ["WORKER_PICK_FAKE_ACCOUNTS"] = "r1 r2"
-rb._SIDE_ROSTER.clear()
+rb.accounts._SIDE_ROSTER.clear()
 assert rb.side_roster("claude", frozenset()) == ["r1", "r2"]
 role_config.write_text("worker=auto\nclaudeb_reviewers=off\n")
 assert rb.reviewers_role_off("claude") is True
 assert rb.side_roster("claude", frozenset()) == [], rb.side_roster("claude", frozenset())
-assert rb.affordability()["claude"] is False
+assert rb.accounts.affordability()["claude"] is False
 assert rb.unaffordable_reason("claude") == "claudeb is switched off for reviewers"
 assert "claudeb is switched off for reviewers" in rb.no_account_left("claude",
                                                                      rb.role_closed_note("claude"))
 # The other vendors and the other role are untouched by it.
 assert rb.reviewers_role_off("agy") is False
-assert rb.affordability()["agy"] is True
+assert rb.accounts.affordability()["agy"] is True
 role_config.write_text("worker=auto\nclaudeb_workers=off\n")
 assert rb.reviewers_role_off("claude") is False
-rb._SIDE_ROSTER.clear()
+rb.accounts._SIDE_ROSTER.clear()
 assert rb.side_roster("claude", frozenset()) == ["r1", "r2"]
 assert rb.unaffordable_reason("claude") == "claude side is unaffordable"
 del os.environ["WORKER_PICK_CONFIG_FILE"]
 
-rb._SIDE_ROSTER.clear()
+rb.accounts._SIDE_ROSTER.clear()
 del os.environ["WORKER_PICK_FAKE_ACCOUNTS"]
 if previous_pick is None:
     del os.environ["REVIEW_BENCH_WORKER_PICK_BIN"]
@@ -3492,7 +3456,7 @@ try:
         capture_output=True, text=True
     ).returncode != 0
 finally:
-    rb.shutil.rmtree(sealed_parent, ignore_errors=True)
+    shutil.rmtree(sealed_parent, ignore_errors=True)
 os.environ.update({
     "REVIEW_BENCH_GEMINIB_BIN": str(fixtures / "fake-geminib.sh"),
     "GEMINIB_CAPTURE_PROFILE": str(work / "geminib-profile"),
@@ -3555,7 +3519,7 @@ assert "src/a.py" in chunked_prompt and "lines" not in chunked_prompt, chunked_p
 adaptive_run = work / "agy-adaptive-run"
 adaptive_run.mkdir()
 adaptive_rater = dict(transport_rater, timeout_s=383)
-real_run_streamed = rb.run_streamed
+real_run_streamed = rb.launch.run_streamed
 agy_subprocess_timeouts = []
 
 
@@ -3565,13 +3529,13 @@ def capture_agy_timeout(command, **kwargs):
     return real_run_streamed(command, **kwargs)
 
 
-rb.run_streamed = capture_agy_timeout
+rb.launch.run_streamed = capture_agy_timeout
 try:
     rc, _, _, stderr, adaptive_command = rb.run_agy(
         adaptive_rater, repo, sha, "", adaptive_run, "ignored fixture diff", "work"
     )
 finally:
-    rb.run_streamed = real_run_streamed
+    rb.launch.run_streamed = real_run_streamed
 assert rc == 0 and not stderr
 assert adaptive_command[adaptive_command.index("--print-timeout") + 1] == "383s"
 assert agy_subprocess_timeouts == [413], agy_subprocess_timeouts
@@ -3716,49 +3680,49 @@ clear_walls()
 # The pool ranks accounts but cannot know how many cells are about to ask, so every cell taking
 # its head puts a whole run's concurrency on one account while the rest of the roster idles.
 os.environ["WORKER_PICK_FAKE_ACCOUNTS"] = "a1 a2 a3"
-rb._SIDE_ROSTER.clear()
+rb.accounts._SIDE_ROSTER.clear()
 assert rb.side_roster("agy", frozenset()) == ["a1", "a2", "a3"], rb.side_roster("agy", frozenset())
-spread_picks = [rb.pool_account("agy", set(), slot) for slot in range(4)]
+spread_picks = [rb.accounts.pool_account("agy", set(), slot) for slot in range(4)]
 assert spread_picks == ["a1", "a2", "a3", "a1"], spread_picks
 # Rotation is unchanged: a cell whose own slot is retired walks the rest of the roster.
 rb.mark_walled("agy", "a1", "general")
-assert rb.pool_account("agy", set(), 0) == "a2", rb.pool_account("agy", set(), 0)
-assert rb.pool_account("agy", {"a2"}, 0) == "a3", rb.pool_account("agy", {"a2"}, 0)
-assert rb.pool_account("agy", {"a2", "a3"}, 0) is None
+assert rb.accounts.pool_account("agy", set(), 0) == "a2", rb.accounts.pool_account("agy", set(), 0)
+assert rb.accounts.pool_account("agy", {"a2"}, 0) == "a3", rb.accounts.pool_account("agy", {"a2"}, 0)
+assert rb.accounts.pool_account("agy", {"a2", "a3"}, 0) is None
 clear_walls()
 # The roster is enumerated once per process: a per-cell enumeration would spawn one worker-pick
 # per account per cell for an answer the run already has.
 os.environ["WORKER_PICK_FAKE_ACCOUNTS"] = "b1 b2"
-assert rb.pool_account("agy", set(), 0) == "a1", "roster re-enumerated mid-run"
-rb._SIDE_ROSTER.clear()
+assert rb.accounts.pool_account("agy", set(), 0) == "a1", "roster re-enumerated mid-run"
+rb.accounts._SIDE_ROSTER.clear()
 assert rb.side_roster("agy", frozenset()) == ["b1", "b2"]
 # Off, every cell gets the pool's head, which is what the measurement compares against.
 # Saved rather than deleted: the caller may have set it, and a test that reads the ambient
 # environment for a default it also asserts on passes or fails by accident.
 spread_was = os.environ.get("REVIEW_BENCH_SPREAD_ACCOUNTS")
 os.environ["REVIEW_BENCH_SPREAD_ACCOUNTS"] = "0"
-flat_picks = [rb.pool_account("agy", set(), slot) for slot in range(3)]
+flat_picks = [rb.accounts.pool_account("agy", set(), slot) for slot in range(3)]
 assert flat_picks == ["b1", "b1", "b1"], flat_picks
 if spread_was is None:
     del os.environ["REVIEW_BENCH_SPREAD_ACCOUNTS"]
 else:
     os.environ["REVIEW_BENCH_SPREAD_ACCOUNTS"] = spread_was
-rb._SIDE_ROSTER.clear()
+rb.accounts._SIDE_ROSTER.clear()
 
 # The cell's own bucket decides what counts as retired. Gemini walls per model, so a pro wall
 # hides the account from a pro cell and must leave a flash cell its whole roster.
 os.environ["WORKER_PICK_FAKE_ACCOUNTS"] = "c1 c2"
-rb._SIDE_ROSTER.clear()
+rb.accounts._SIDE_ROSTER.clear()
 bucket_pro = rb.wall_bucket(rb.parse_rater("agy-pro-high-skill"))
 bucket_flash = rb.wall_bucket(rb.parse_rater("agy-flash36-low-skill"))
 rb.mark_walled("agy", "c1", bucket_pro)
-assert rb.pool_account("agy", set(), 0, bucket_pro) == "c2", rb.pool_account("agy", set(), 0, bucket_pro)
-assert rb.pool_account("agy", set(), 0, bucket_flash) == "c1"
+assert rb.accounts.pool_account("agy", set(), 0, bucket_pro) == "c2", rb.accounts.pool_account("agy", set(), 0, bucket_pro)
+assert rb.accounts.pool_account("agy", set(), 0, bucket_flash) == "c1"
 # The cell must ask for its own bucket, not settle for the loop noticing afterwards: rotation
 # reaches the same account either way, so the pre-filter working is visible only as the pool
 # being asked once instead of twice.
 bucket_asks = []
-real_pool_account = rb.pool_account
+real_pool_account = rb.accounts.pool_account
 
 
 def counting_pool_account(side, excluded, slot=0, bucket="general"):
@@ -3766,7 +3730,7 @@ def counting_pool_account(side, excluded, slot=0, bucket="general"):
     return real_pool_account(side, excluded, slot, bucket)
 
 
-rb.pool_account = counting_pool_account
+rb.accounts.pool_account = counting_pool_account
 bucket_run = work / "agy-bucket-run"
 bucket_run.mkdir()
 try:
@@ -3774,14 +3738,14 @@ try:
         rb.parse_rater("agy-pro-high-skill"), repo, sha, "", bucket_run, "ignored fixture diff"
     )
 finally:
-    rb.pool_account = real_pool_account
+    rb.accounts.pool_account = real_pool_account
 assert bucket_account == "c2", bucket_account
 assert bucket_asks == [bucket_pro], bucket_asks
 clear_walls()
 
 # An empty answer is the pool's momentary state, not a fact about the run: cached, it would
 # turn one bad instant into a side that has nothing to offer for the rest of the process.
-rb._SIDE_ROSTER.clear()
+rb.accounts._SIDE_ROSTER.clear()
 os.environ["WORKER_PICK_FAKE_ACCOUNTS"] = "d1"
 assert rb.side_roster("agy", frozenset({"d1"})) == []
 os.environ["WORKER_PICK_FAKE_ACCOUNTS"] = "d1 d2"
@@ -3789,24 +3753,24 @@ assert rb.side_roster("agy", frozenset({"d1"})) == ["d2"], "an empty roster was 
 
 # The pool's ranking is a live verdict about walls that a long run keeps invalidating, so the
 # cache holds it for a window rather than for the process.
-rb._SIDE_ROSTER.clear()
+rb.accounts._SIDE_ROSTER.clear()
 os.environ["WORKER_PICK_FAKE_ACCOUNTS"] = "e1"
 assert rb.side_roster("agy", frozenset()) == ["e1"]
 os.environ["WORKER_PICK_FAKE_ACCOUNTS"] = "e2"
 assert rb.side_roster("agy", frozenset()) == ["e1"], "re-asked inside its own window"
-roster_ttl_was = rb.ROSTER_TTL_S
-rb.ROSTER_TTL_S = 0
+roster_ttl_was = rb.accounts.ROSTER_TTL_S
+rb.accounts.ROSTER_TTL_S = 0
 try:
     assert rb.side_roster("agy", frozenset()) == ["e2"], "the pool is never re-asked"
 finally:
-    rb.ROSTER_TTL_S = roster_ttl_was
+    rb.accounts.ROSTER_TTL_S = roster_ttl_was
 
 # Every cell of a side starts at once and misses together, so the enumeration happens under the
 # lock: beside it, each of them would spawn its own worker-pick per account.
-rb._SIDE_ROSTER.clear()
+rb.accounts._SIDE_ROSTER.clear()
 os.environ["WORKER_PICK_FAKE_ACCOUNTS"] = "f1 f2"
 roster_picks = []
-real_worker_pick_answer = rb.worker_pick_answer
+real_worker_pick_answer = rb.accounts.worker_pick_answer
 
 
 def counting_worker_pick(side, excluded, fable=False):
@@ -3814,22 +3778,22 @@ def counting_worker_pick(side, excluded, fable=False):
     return real_worker_pick_answer(side, excluded, fable)
 
 
-rb.worker_pick_answer = counting_worker_pick
+rb.accounts.worker_pick_answer = counting_worker_pick
 try:
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as roster_pool:
         rosters = list(roster_pool.map(
             lambda _: rb.side_roster("agy", frozenset()), range(4)
         ))
 finally:
-    rb.worker_pick_answer = real_worker_pick_answer
+    rb.accounts.worker_pick_answer = real_worker_pick_answer
 assert all(roster == ["f1", "f2"] for roster in rosters), rosters
 # Two answers and the one that ends the walk, once for the side rather than once per cell.
 assert len(roster_picks) == 3, roster_picks
 
 # The gate is per roster: enumeration spawns a worker-pick per account, and one slow pool must
 # not hold every other side out of its own answer for as long as that takes.
-rb._SIDE_ROSTER.clear()
-rb._SIDE_ROSTER_GATES.clear()
+rb.accounts._SIDE_ROSTER.clear()
+rb.accounts._SIDE_ROSTER_GATES.clear()
 slow_side_entered = threading.Event()
 slow_side_release = threading.Event()
 
@@ -3841,7 +3805,7 @@ def blocking_worker_pick(side, excluded, fable=False):
     return real_worker_pick_answer(side, excluded, fable)
 
 
-rb.worker_pick_answer = blocking_worker_pick
+rb.accounts.worker_pick_answer = blocking_worker_pick
 gate_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 try:
     blocked = gate_pool.submit(rb.side_roster, "codex", frozenset())
@@ -3854,16 +3818,16 @@ try:
         free_roster = "blocked"
 finally:
     slow_side_release.set()
-    rb.worker_pick_answer = real_worker_pick_answer
+    rb.accounts.worker_pick_answer = real_worker_pick_answer
     gate_pool.shutdown(wait=True)
 assert free_roster == ["f1", "f2"], "one side blocked another"
 assert blocked.result(10) == ["f1", "f2"]
 
 # The roster is filtered against one read of the record, not one read per candidate.
-rb._SIDE_ROSTER.clear()
+rb.accounts._SIDE_ROSTER.clear()
 os.environ["WORKER_PICK_FAKE_ACCOUNTS"] = "g1 g2 g3"
 wall_reads = []
-real_persisted_walls = rb.persisted_walls
+real_persisted_walls = rb.accounts.persisted_walls
 
 
 def counting_persisted_walls(path):
@@ -3871,14 +3835,14 @@ def counting_persisted_walls(path):
     return real_persisted_walls(path)
 
 
-rb.persisted_walls = counting_persisted_walls
+rb.accounts.persisted_walls = counting_persisted_walls
 try:
-    assert rb.pool_account("agy", set(), 0) == "g1"
+    assert rb.accounts.pool_account("agy", set(), 0) == "g1"
 finally:
-    rb.persisted_walls = real_persisted_walls
+    rb.accounts.persisted_walls = real_persisted_walls
 assert len(wall_reads) == 1, wall_reads
 del os.environ["WORKER_PICK_FAKE_ACCOUNTS"]
-rb._SIDE_ROSTER.clear()
+rb.accounts._SIDE_ROSTER.clear()
 
 # An account another rater already retired is excluded from the next request instead of ending
 # the search, so a second usable account is still reached.
@@ -3956,9 +3920,9 @@ os.environ["OPENCODE_CAPTURE_PROFILE"] = str(default_profile_capture)
 os.environ["OPENCODE_GO_PROFILE"] = "ambient"
 rb.run_opencode(
     opencode_rater, repo, sha, "", opencode_run, "fixture commit diff",
-    rb.pool_account("opencode", set()),
+    rb.accounts.pool_account("opencode", set()),
 )
-assert rb.opencode_profiles() == ["-"] and rb.pool_account("opencode", set()) == \
+assert rb.opencode_profiles() == ["-"] and rb.accounts.pool_account("opencode", set()) == \
     "opencode-go" and default_profile_capture.read_text().strip() == "unset"
 del os.environ["OPENCODE_GO_PROFILE"]
 
@@ -3982,7 +3946,7 @@ del os.environ["OPENCODE_WALL_DEFAULT"]
 
 verifier_profile_capture = work / "opencode-verifier-profile"
 os.environ["OPENCODE_CAPTURE_PROFILE"] = str(verifier_profile_capture)
-verifier_profile_result = rb.verify_one(
+verifier_profile_result = rb.verify.verify_one(
     0, {"severity": "P2", "file": "bin/review-bench", "line": 3, "summary": "claim"},
     repo, sha, "oc-kimik3", ["line"],
 )
@@ -4793,7 +4757,7 @@ assert skipped_account is None and "no opencode account left" in skipped_result[
 # more doomed request.
 clear_walls()
 gate_saw = []
-real_gate = rb.OPENCODE_GATE
+real_gate = rb.launch.OPENCODE_GATE
 
 
 class WallOrderGate:
@@ -4805,14 +4769,14 @@ class WallOrderGate:
         real_gate.release()
 
 
-rb.OPENCODE_GATE = WallOrderGate()
+rb.launch.OPENCODE_GATE = WallOrderGate()
 try:
-    walled_verify = rb.verify_one(
+    walled_verify = rb.verify.verify_one(
         0, {"severity": "P2", "file": "bin/review-bench", "line": 3, "summary": "claim"},
         repo, sha, "oc-kimik3", ["line"],
     )
 finally:
-    rb.OPENCODE_GATE = real_gate
+    rb.launch.OPENCODE_GATE = real_gate
 assert gate_saw == [True], gate_saw
 assert walled_verify["walled"] and walled_verify["kept"], walled_verify
 
@@ -4904,7 +4868,7 @@ def chain_fixture(command, **kwargs):
 
 subprocess.run = chain_fixture
 try:
-    chain_row = rb.verify_one(
+    chain_row = rb.verify.verify_one(
         0, {"severity": "P2", "file": "bin/review-bench", "line": 3, "summary": "claim"},
         repo, sha, "oc-kimik3", ["line one"],
     )
@@ -4936,7 +4900,7 @@ def once_fixture(command, **kwargs):
 
 subprocess.run = once_fixture
 try:
-    rb.verify_one(
+    rb.verify.verify_one(
         0, {"severity": "P2", "file": "bin/review-bench", "line": 3, "summary": "claim"},
         repo, sha, "oc-kimik3", ["line one"],
     )
@@ -4959,7 +4923,7 @@ def noisy_answer_fixture(command, **kwargs):
 
 subprocess.run = noisy_answer_fixture
 try:
-    rb.verify_one(
+    rb.verify.verify_one(
         0, {"severity": "P2", "file": "bin/review-bench", "line": 3, "summary": "claim"},
         repo, sha, "oc-kimik3", ["line one"],
     )
@@ -5030,7 +4994,7 @@ def style_fixture(command, **kwargs):
 
 subprocess.run = style_fixture
 try:
-    style_row = rb.verify_one(
+    style_row = rb.verify.verify_one(
         0, {"severity": "P2", "file": "bin/review-bench", "line": 3, "summary": "claim"},
         repo, sha, "oc-dsv4flash", ["line one"],
     )
@@ -5079,7 +5043,7 @@ gemini_verdict = (
 router_down = 'HTTP 500\n{"error":{"type":"Router.Unavailable"}}'
 os.environ["REVIEW_BENCH_WORKER_PICK_BIN"] = worker_pick_bin
 os.environ["WORKER_PICK_FAKE_ACCOUNTS"] = "gem1 gem2"
-rb._SIDE_ROSTER.clear()
+rb.accounts._SIDE_ROSTER.clear()
 agy_claim ={"severity": "P2", "file": "bin/review-bench", "line": 3, "summary": "claim"}
 outage_calls = []
 
@@ -5095,7 +5059,7 @@ def gemini_link_fixture(command, **kwargs):
 
 subprocess.run = gemini_link_fixture
 try:
-    outage_row = rb.verify_one(
+    outage_row = rb.verify.verify_one(
         0, agy_claim, repo, sha, "oc-dsv4flash", ["line one"], None, "agy",
     )
     outage_kept, outage_audit = rb.verify_findings(
@@ -5133,12 +5097,12 @@ assert "narration: it restates what the diff does" not in gemini_prompt
 # judged; before this was lazy it blocked here until one of them finished.
 gate_held = []
 for _ in range(rb.OPENCODE_MAX_CONCURRENCY):
-    rb.OPENCODE_GATE.acquire(0)
+    rb.launch.OPENCODE_GATE.acquire(0)
     gate_held.append(1)
 gated_row, gated_error = [], []
 def judge_while_gate_is_full():
     try:
-        gated_row.append(rb.verify_one(
+        gated_row.append(rb.verify.verify_one(
             0, agy_claim, repo, sha, "oc-dsv4flash", ["line one"], None, "agy",
         ))
     except BaseException as exc:
@@ -5154,9 +5118,9 @@ try:
 finally:
     subprocess.run = real_run
     for _ in gate_held:
-        rb.OPENCODE_GATE.release()
+        rb.launch.OPENCODE_GATE.release()
 # An OpenCode finding still takes the slot before it calls, so the gateway stays rationed.
-assert rb.OPENCODE_GATE.active == 0, rb.OPENCODE_GATE.active
+assert rb.launch.OPENCODE_GATE.active == 0, rb.launch.OPENCODE_GATE.active
 clear_walls()
 
 # The verdict of a model agy substituted is not the model the drop rate was measured on, so the
@@ -5182,7 +5146,7 @@ def gemini_mismatch_fixture(command, **kwargs):
 
 subprocess.run = gemini_mismatch_fixture
 try:
-    mismatch_row = rb.verify_one(
+    mismatch_row = rb.verify.verify_one(
         0, agy_claim, repo, sha, "oc-dsv4flash", ["line one"], None, "agy",
     )
 finally:
@@ -5214,7 +5178,7 @@ def gemini_prose_fixture(command, **kwargs):
 
 subprocess.run = gemini_prose_fixture
 try:
-    prose_row = rb.verify_one(
+    prose_row = rb.verify.verify_one(
         0, agy_claim, repo, sha, "oc-dsv4flash", ["line one"], None, "agy",
     )
 finally:
@@ -5241,7 +5205,7 @@ def gemini_handoff_fixture(command, **kwargs):
 
 subprocess.run = gemini_handoff_fixture
 try:
-    handoff_row = rb.verify_one(
+    handoff_row = rb.verify.verify_one(
         0, agy_claim, repo, sha, "oc-dsv4flash", ["line one"], None, "agy",
     )
 finally:
@@ -5268,7 +5232,7 @@ def gemini_stall_fixture(command, **kwargs):
 
 subprocess.run = gemini_stall_fixture
 try:
-    stall_row = rb.verify_one(
+    stall_row = rb.verify.verify_one(
         0, agy_claim, repo, sha, "oc-dsv4flash", ["line one"], None, "agy",
     )
 finally:
@@ -5298,7 +5262,7 @@ def gemini_cutoff_fixture(command, **kwargs):
 
 subprocess.run = gemini_cutoff_fixture
 try:
-    cutoff_row = rb.verify_one(
+    cutoff_row = rb.verify.verify_one(
         0, agy_claim, repo, sha, "oc-dsv4flash", ["line one"], None, "agy",
     )
 finally:
@@ -5325,7 +5289,7 @@ for opencode_profile in rb.opencode_profiles():
     rb.mark_walled("opencode", rb.opencode_account(opencode_profile))
 subprocess.run = gemini_spent_fixture
 try:
-    spent_row = rb.verify_one(
+    spent_row = rb.verify.verify_one(
         0, agy_claim, repo, sha, "oc-dsv4flash", ["line one"], None, "agy",
     )
 finally:
@@ -5351,7 +5315,7 @@ for opencode_profile in rb.opencode_profiles():
     rb.mark_walled("opencode", rb.opencode_account(opencode_profile))
 subprocess.run = gemini_missing_fixture
 try:
-    missing_row = rb.verify_one(
+    missing_row = rb.verify.verify_one(
         0, agy_claim, repo, sha, "oc-dsv4flash", ["line one"], None, "agy",
     )
 finally:
@@ -5368,7 +5332,7 @@ clear_walls()
 # that happened during that wait — including another thread retiring the account — is news.
 # Checked once before the wait, every queued claim sends one more doomed request.
 queued_wall_calls = []
-queued_gate = rb.OPENCODE_GATE
+queued_gate = rb.launch.OPENCODE_GATE
 
 
 class WallDuringWaitGate:
@@ -5388,14 +5352,14 @@ def gemini_declines_fixture(command, **kwargs):
 
 
 subprocess.run = gemini_declines_fixture
-rb.OPENCODE_GATE = WallDuringWaitGate()
+rb.launch.OPENCODE_GATE = WallDuringWaitGate()
 try:
-    queued_wall_row = rb.verify_one(
+    queued_wall_row = rb.verify.verify_one(
         0, agy_claim, repo, sha, "oc-dsv4flash", ["line one"], None, "agy",
     )
 finally:
     subprocess.run = real_run
-    rb.OPENCODE_GATE = queued_gate
+    rb.launch.OPENCODE_GATE = queued_gate
 assert [command[0] for command in queued_wall_calls] == [geminib_bin], queued_wall_calls
 assert queued_wall_row["why"] == "verifier gave no usable answer; finding kept", queued_wall_row
 clear_walls()
@@ -5415,7 +5379,7 @@ for opencode_profile in rb.opencode_profiles():
     rb.mark_walled("opencode", rb.opencode_account(opencode_profile))
 subprocess.run = gemini_unusable_fixture
 try:
-    unusable_row = rb.verify_one(
+    unusable_row = rb.verify.verify_one(
         0, agy_claim, repo, sha, "oc-dsv4flash", ["line one"], None, "agy",
     )
 finally:
@@ -5447,7 +5411,7 @@ def gemini_walled_fixture(command, **kwargs):
 
 subprocess.run = gemini_walled_fixture
 try:
-    walled_row = rb.verify_one(
+    walled_row = rb.verify.verify_one(
         0, agy_claim, repo, sha, "oc-dsv4flash", ["line one"], None, "agy",
     )
 finally:
@@ -5476,7 +5440,7 @@ def opencode_only_fixture(command, **kwargs):
 
 subprocess.run = opencode_only_fixture
 try:
-    opencode_side_row = rb.verify_one(
+    opencode_side_row = rb.verify.verify_one(
         0, agy_claim, repo, sha, "oc-dsv4flash", ["line one"],
     )
 finally:
@@ -5485,13 +5449,13 @@ assert not [command for command in opencode_side_calls if command[0] == geminib_
 assert len(opencode_side_calls) == 4, opencode_side_calls
 assert opencode_side_row["kept"] is True and opencode_side_row["code_matches"] is None
 del os.environ["WORKER_PICK_FAKE_ACCOUNTS"], os.environ["REVIEW_BENCH_WORKER_PICK_BIN"]
-rb._SIDE_ROSTER.clear()
+rb.accounts._SIDE_ROSTER.clear()
 clear_walls()
 
 # One claim restated at the same place is one question, asked once — and every original claim
 # still gets its own audit row carrying the shared verdict.
 dedup_calls = []
-real_verify_one = rb.verify_one
+real_verify_one = rb.verify.verify_one
 
 
 def counting_verify_one(index, finding, *args, **kwargs):
@@ -5510,11 +5474,11 @@ dedup_input = [
     {"severity": "P3", "file": "", "line": None, "summary": "uncited"},
     {"severity": "P3", "file": "", "line": None, "summary": "also uncited"},
 ]
-rb.verify_one = counting_verify_one
+rb.verify.verify_one = counting_verify_one
 try:
     dedup_kept, dedup_audit = rb.verify_findings(dedup_input, repo, sha, "oc-dsv4flash", tree)
 finally:
-    rb.verify_one = real_verify_one
+    rb.verify.verify_one = real_verify_one
 # Two different claims about one line are two questions: the verdict is rendered on one claim's
 # text, so sharing it would settle the claim the verifier never saw. An uncited claim is nobody's
 # neighbour either.
@@ -5660,7 +5624,7 @@ assert dated_profile_capture.read_text().splitlines() == ["unset"], \
     dated_profile_capture.read_text()
 assert rb.is_walled("opencode", "opencode-go")
 dated_key = ("opencode", "opencode-go", "general")
-dated_rows = rb.read_wall_rows(rb.state_dir() / rb.WALL_STATE_FILE)
+dated_rows = rb.accounts.read_wall_rows(rb.state_dir() / rb.WALL_STATE_FILE)
 assert dated_rows[dated_key][1] > time.time() + 2 * 86400, dated_rows
 assert dated_rows[dated_key][2] == "weekly", dated_rows
 os.environ["REVIEW_BENCH_WALL_TTL_S"] = "1"
@@ -5676,7 +5640,7 @@ clear_walls()
 # An account that walls while the cell sits in the gate queue costs the cell nothing: it was
 # never sent, so the cell rotates onto another account instead of failing the side.
 profiles_path.write_text("-\nsecond\n")
-queued_gate_real = rb.OPENCODE_GATE
+queued_gate_real = rb.launch.OPENCODE_GATE
 
 
 class WallWhileQueuedGate:
@@ -5693,7 +5657,7 @@ class WallWhileQueuedGate:
         queued_gate_real.release()
 
 
-rb.OPENCODE_GATE = WallWhileQueuedGate()
+rb.launch.OPENCODE_GATE = WallWhileQueuedGate()
 queued_run = work / "opencode-queued-wall"
 queued_run.mkdir()
 try:
@@ -5701,7 +5665,7 @@ try:
         opencode_rater, repo, sha, "", queued_run, "fixture commit diff"
     )
 finally:
-    rb.OPENCODE_GATE = queued_gate_real
+    rb.launch.OPENCODE_GATE = queued_gate_real
 assert queued_account == "opencode-go-second" and queued_result[0] == 0, queued_result
 
 # The retry budget belongs to the account, not the cell: the default profile spends a whole
@@ -5730,7 +5694,7 @@ profiles_path.unlink()
 clear_walls()
 del os.environ["REVIEW_BENCH_TRANSIENT_BACKOFF_S"]
 
-real_run_streamed = rb.run_streamed
+real_run_streamed = rb.launch.run_streamed
 timeout_stderr = b"HTTP 429 usage limit reached"
 
 
@@ -5740,7 +5704,7 @@ def timeout_run(command, **kwargs):
     )
 
 
-rb.run_streamed = timeout_run
+rb.launch.run_streamed = timeout_run
 opencode_rater["timeout_s"] = 1
 try:
     timeout_wall_run = work / "opencode-timeout-wall"
@@ -5777,7 +5741,7 @@ try:
             raise rb.RaterStalled(6, kwargs.get("stall_s"), "partial", "")
         return real_run_streamed(command, **kwargs)
 
-    rb.run_streamed = stall_once
+    rb.launch.run_streamed = stall_once
     stall_retry_run = work / "opencode-stall-retry"
     stall_retry_run.mkdir()
     stall_log = io.StringIO()
@@ -5803,7 +5767,7 @@ try:
         stall_always_calls.append(1)
         raise rb.RaterStalled(6, kwargs.get("stall_s"), "", "")
 
-    rb.run_streamed = stall_always
+    rb.launch.run_streamed = stall_always
     stall_dead_run = work / "opencode-stall-dead"
     stall_dead_run.mkdir()
     with contextlib.redirect_stdout(io.StringIO()):
@@ -5818,7 +5782,7 @@ try:
     assert len(stall_always_calls) == 2, stall_always_calls
     del os.environ["OPENCODE_FIXTURE_STDOUT"]
 finally:
-    rb.run_streamed = real_run_streamed
+    rb.launch.run_streamed = real_run_streamed
     for leftover in ("timeout_s", "stall_s", "stalled_s", "stalled_retry_s", "max_quiet_ms",
                      "killed", "killed_cap_s"):
         opencode_rater.pop(leftover, None)
@@ -6071,9 +6035,9 @@ assert rb.normalize_findings("P2 bin/claudeb:88 warm path skips the mutex", "sol
 
 # The measured refusals live in parse_rater, so a verifier goes through it too — otherwise
 # a model refused as a rater is accepted here and sent once per finding.
-verifier_real_unusable = rb.OPENCODE_UNUSABLE_MODELS
-rb.OPENCODE_UNUSABLE_MODELS = verifier_real_unusable or {"oc-mimo25"}
-for refused in sorted(rb.OPENCODE_UNUSABLE_MODELS):
+verifier_real_unusable = rb.catalog.OPENCODE_UNUSABLE_MODELS
+rb.catalog.OPENCODE_UNUSABLE_MODELS = verifier_real_unusable or {"oc-mimo25"}
+for refused in sorted(rb.catalog.OPENCODE_UNUSABLE_MODELS):
     try:
         rb.verifier_model(refused)
     except ValueError as exc:
@@ -6081,7 +6045,7 @@ for refused in sorted(rb.OPENCODE_UNUSABLE_MODELS):
     else:
         raise AssertionError(f"{refused} is measured unusable and cannot verify")
     assert refused not in rb.verifier_choices()
-rb.OPENCODE_UNUSABLE_MODELS = verifier_real_unusable
+rb.catalog.OPENCODE_UNUSABLE_MODELS = verifier_real_unusable
 for locked in sorted(rb.OPENCODE_EFFORT_REQUIRED_MODELS):
     try:
         rb.verifier_model(locked)
@@ -6138,23 +6102,23 @@ clear_walls()
 # either — the cells got that guard in this commit and the verifier was left without it.
 os.environ["OPENCODE_CAPTURE_ARGS"] = str(work / "queued-verify-args")
 for _ in range(rb.OPENCODE_MAX_CONCURRENCY):
-    rb.OPENCODE_GATE.acquire(0)
+    rb.launch.OPENCODE_GATE.acquire(0)
 queued = {}
 
 
 def queued_verify():
-    queued["row"] = rb.verify_one(0, verify_findings_input[0], repo, sha, "oc-kimik3", None)
+    queued["row"] = rb.verify.verify_one(0, verify_findings_input[0], repo, sha, "oc-kimik3", None)
 
 
 verifier_thread = threading.Thread(target=queued_verify)
 verifier_thread.start()
 blocked_by = time.monotonic() + 5
-while not rb.OPENCODE_GATE.waiting and time.monotonic() < blocked_by:
+while not rb.launch.OPENCODE_GATE.waiting and time.monotonic() < blocked_by:
     time.sleep(0.001)
-assert rb.OPENCODE_GATE.waiting, "the verifier never reached the gate"
+assert rb.launch.OPENCODE_GATE.waiting, "the verifier never reached the gate"
 rb.mark_walled("opencode", "opencode-go")
 for _ in range(rb.OPENCODE_MAX_CONCURRENCY):
-    rb.OPENCODE_GATE.release()
+    rb.launch.OPENCODE_GATE.release()
 verifier_thread.join(10)
 assert queued["row"]["walled"] is True and queued["row"]["kept"] is True, queued
 assert "while queued" in queued["row"]["why"], queued
@@ -6165,12 +6129,12 @@ profiles_path.write_text("-\nsecond\n")
 queued_profile_capture = work / "queued-verifier-profile"
 os.environ["OPENCODE_CAPTURE_PROFILE"] = str(queued_profile_capture)
 for _ in range(rb.OPENCODE_MAX_CONCURRENCY):
-    rb.OPENCODE_GATE.acquire(0)
+    rb.launch.OPENCODE_GATE.acquire(0)
 queued_failover = {}
 
 
 def queued_failover_verify():
-    queued_failover["row"] = rb.verify_one(
+    queued_failover["row"] = rb.verify.verify_one(
         0, verify_findings_input[0], repo, sha, "oc-kimik3", None
     )
 
@@ -6178,12 +6142,12 @@ def queued_failover_verify():
 failover_thread = threading.Thread(target=queued_failover_verify)
 failover_thread.start()
 blocked_by = time.monotonic() + 5
-while not rb.OPENCODE_GATE.waiting and time.monotonic() < blocked_by:
+while not rb.launch.OPENCODE_GATE.waiting and time.monotonic() < blocked_by:
     time.sleep(0.001)
-assert rb.OPENCODE_GATE.waiting, "the failover verifier never reached the gate"
+assert rb.launch.OPENCODE_GATE.waiting, "the failover verifier never reached the gate"
 rb.mark_walled("opencode", "opencode-go")
 for _ in range(rb.OPENCODE_MAX_CONCURRENCY):
-    rb.OPENCODE_GATE.release()
+    rb.launch.OPENCODE_GATE.release()
 failover_thread.join(10)
 assert not queued_failover["row"].get("walled"), queued_failover
 assert queued_profile_capture.read_text().strip() == "second"
@@ -6302,7 +6266,7 @@ def walled_panel_run(raters, verify=None, tier=None):
     seen = {path.name for path in (walled_state / "benches").iterdir()}
     with contextlib.redirect_stdout(io.StringIO()) as captured, \
             contextlib.redirect_stderr(io.StringIO()):
-        rc = rb.cmd_run(argparse.Namespace(
+        rc = rb.cli.cmd_run(argparse.Namespace(
             repo=str(pin_repo), commitish=pin_sha, raters=raters, tier=tier,
             leg=False, verify=verify, auto=None, focus=None,
         ))
@@ -6314,10 +6278,10 @@ def walled_panel_run(raters, verify=None, tier=None):
 walled_run_offset = [0]
 walled_previous_home = os.environ["HOME"]
 walled_previous_runners = dict(rb.SIDE_RUNNERS)
-walled_previous_staleness = rb.check_limits_staleness
-walled_real_utc_now = rb.utc_now
+walled_previous_staleness = rb.accounts.check_limits_staleness
+walled_real_utc_now = rb.store.utc_now
 walled_real_time = time.time
-rb.utc_now = lambda: walled_real_utc_now() + _wall_dt.timedelta(seconds=walled_run_offset[0])
+rb.store.utc_now = lambda: walled_real_utc_now() + _wall_dt.timedelta(seconds=walled_run_offset[0])
 os.environ["HOME"] = str(walled_home)
 os.environ.pop("WORKER_STATS_DIR", None)
 os.environ["CLAUDEB_DIR"] = str(walled_store)
@@ -6325,15 +6289,15 @@ os.environ["REVIEW_BENCH_WORKER_PICK_BIN"] = str(fixtures / "fake-worker-pick.sh
 os.environ["WORKER_PICK_FAKE_ACCOUNTS"] = "wk1 wk2"
 for walled_side in rb.SIDE_RUNNERS:
     rb.SIDE_RUNNERS[walled_side] = walled_panel_runner
-rb.check_limits_staleness = lambda account: False
-rb._SIDE_ROSTER.clear()
+rb.accounts.check_limits_staleness = lambda account: False
+rb.accounts._SIDE_ROSTER.clear()
 time.time = lambda: walled_now
 try:
     (walled_state / "benches").mkdir()
     write_opencode_walls(("alt", "new"))
     assert rb.opencode_pool_free() is False
-    assert rb.pool_account("opencode", set()) is None
-    walled_affordable = rb.affordability()
+    assert rb.accounts.pool_account("opencode", set()) is None
+    walled_affordable = rb.accounts.affordability()
     assert walled_affordable["opencode"] is False, walled_affordable
     assert walled_affordable["codex"] is True, walled_affordable
     assert rb.cell_available(walled_affordable, rb.parse_rater("oc-kimik3")) is False
@@ -6386,7 +6350,7 @@ try:
     walled_refusal = ""
     try:
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            rb.cmd_run(argparse.Namespace(
+            rb.cli.cmd_run(argparse.Namespace(
                 repo=str(pin_repo), commitish=pin_sha, raters="oc-kimik3 x2,oc-dsv4flash",
                 leg=False, verify=None, auto=None, focus=None,
             ))
@@ -6401,7 +6365,7 @@ try:
         try:
             with contextlib.redirect_stdout(io.StringIO()), \
                     contextlib.redirect_stderr(io.StringIO()):
-                rb.cmd_run(argparse.Namespace(
+                rb.cli.cmd_run(argparse.Namespace(
                     repo=str(pin_repo), commitish=pin_sha, raters=None,
                     tier=walled_verify_tier,
                     leg=False, verify="oc-dsv4flash", auto=None, focus=None,
@@ -6446,7 +6410,7 @@ try:
         resets={"alt": walled_now - 86400, "new": walled_now - 86400},
     )
     assert rb.opencode_pool_free() is True
-    assert rb.affordability()["opencode"] is True
+    assert rb.accounts.affordability()["opencode"] is True
     assert rb.unaffordable_reason("opencode") == "opencode side is unaffordable"
     write_opencode_walls(("alt", "new"))
     assert rb.opencode_pool_free() is False
@@ -6454,12 +6418,12 @@ try:
     assert rb.opencode_pool_free() is True, "a fresh account left the pool reading as walled"
 finally:
     time.time = walled_real_time
-    rb.utc_now = walled_real_utc_now
+    rb.store.utc_now = walled_real_utc_now
     os.environ["HOME"] = walled_previous_home
     rb.SIDE_RUNNERS.update(walled_previous_runners)
-    rb.check_limits_staleness = walled_previous_staleness
+    rb.accounts.check_limits_staleness = walled_previous_staleness
     del os.environ["WORKER_PICK_FAKE_ACCOUNTS"], os.environ["REVIEW_BENCH_WORKER_PICK_BIN"]
-    rb._SIDE_ROSTER.clear()
+    rb.accounts._SIDE_ROSTER.clear()
 
 model_store = work / "model-claudeb"
 model_state = model_store / "worker-stats"
@@ -6485,24 +6449,24 @@ def tier_runner(rater, repo_path, commit, focus, run_dir, diff, account):
 
 for side in rb.SIDE_RUNNERS:
     rb.SIDE_RUNNERS[side] = tier_runner
-rb.pool_account = lambda side, excluded, slot=0, bucket="general": "fixture"
-rb.affordability = lambda: {
+rb.accounts.pool_account = lambda side, excluded, slot=0, bucket="general": "fixture"
+rb.accounts.affordability = lambda: {
     "claude": True, "codex": True, "agy": True, "opencode": True,
     "claude_account": "fixture",
 }
-rb.check_limits_staleness = lambda account: False
+rb.accounts.check_limits_staleness = lambda account: False
 os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-verify-keep.json")
 review_stdout = io.StringIO()
 with contextlib.redirect_stdout(review_stdout):
-    review_rc = rb.cmd_review(argparse.Namespace(
+    review_rc = rb.cli.cmd_review(argparse.Namespace(
         repo=str(pin_repo), commitish=pin_descendant_sha, tier="T1",
         verify=None, focus=None,
     ))
 # A review owes a triage, not a report: the marked block belongs to the verdicts, so a run that
 # has none prints the line the hooks turn into the missing pass.
 assert FIXTURE_FRAME_PREFIX not in review_stdout.getvalue()
-assert rb.REPORT_END not in review_stdout.getvalue()
-assert review_stdout.getvalue().count(rb.TRIAGE_PENDING) == 1
+assert rb.round.REPORT_END not in review_stdout.getvalue()
+assert review_stdout.getvalue().count(rb.round.TRIAGE_PENDING) == 1
 review_run_dir = next((review_store / "worker-stats" / "benches").iterdir())
 review_meta_path = review_run_dir / "meta.json"
 review_meta = json.loads(review_meta_path.read_text())
@@ -6563,7 +6527,7 @@ os.environ["CLAUDEB_DIR"] = str(filtered_review_store)
 os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-verify-drop.json")
 filtered_stdout = io.StringIO()
 with contextlib.redirect_stdout(filtered_stdout):
-    assert rb.cmd_review(argparse.Namespace(
+    assert rb.cli.cmd_review(argparse.Namespace(
         repo=str(pin_repo), commitish=pin_descendant_sha, tier="T0",
         verify=None, focus=None,
     )) == 0
@@ -6585,8 +6549,8 @@ assert all(
     for rater in opencode_specs
 )
 filtered_output = filtered_stdout.getvalue()
-assert FIXTURE_FRAME_PREFIX not in filtered_output and rb.REPORT_END not in filtered_output
-assert filtered_output.count(rb.TRIAGE_PENDING) == 1
+assert FIXTURE_FRAME_PREFIX not in filtered_output and rb.round.REPORT_END not in filtered_output
+assert filtered_output.count(rb.round.TRIAGE_PENDING) == 1
 assert all(
     row["verifier_by_model"] == {rb.OPENCODE_VERIFIER: 1} and row["verifier_audited"] == 1
     for row in filtered_meta["rater_runs"] if row["side"] == "opencode"
@@ -6596,7 +6560,7 @@ assert all(
 filtered_report = "\n".join(rb.report_lines(filtered_run, filtered_meta, []))
 assert "verifier:     deepseek 6/6" in filtered_report, filtered_report
 assert "fixture finding" not in filtered_output
-assert rb.bench_summary(filtered_run, filtered_meta)["findings"] == 0
+assert rb.panel.bench_summary(filtered_run, filtered_meta)["findings"] == 0
 
 progress_capture_store = work / "progress-capture-claudeb"
 os.environ["CLAUDEB_DIR"] = str(progress_capture_store)
@@ -6624,7 +6588,7 @@ rb.SIDE_RUNNERS["codex"] = progress_capture_runner
 empty_session_registry = work / "sessions-empty"
 empty_session_registry.mkdir()
 os.environ[rb.SESSION_REGISTRY_DIR_ENV] = str(empty_session_registry)
-rb.affordability = lambda: {
+rb.accounts.affordability = lambda: {
     "claude": False, "codex": True, "agy": True, "opencode": True,
     "claude_account": None,
 }
@@ -6634,7 +6598,7 @@ rb.affordability = lambda: {
 _real_time = time.time
 time.time = lambda: _real_time() + 7200
 try:
-    assert rb.cmd_run(argparse.Namespace(
+    assert rb.cli.cmd_run(argparse.Namespace(
         repo=str(pin_repo), commitish=pin_sha, raters="sol-medium,opus-medium",
         leg=False, verify=None, auto=None, focus=None,
     )) == 0
@@ -6681,7 +6645,7 @@ session_registry.mkdir()
     json.dumps({"sessionId": "chat-launching-the-run"}) + "\n"
 )
 os.environ[rb.SESSION_REGISTRY_DIR_ENV] = str(session_registry)
-assert rb.cmd_run(argparse.Namespace(
+assert rb.cli.cmd_run(argparse.Namespace(
     repo=str(pin_repo), commitish=pin_sha, raters="sol-medium",
     leg=False, verify=None, auto=None, focus=None, tier="T2", max=True, foreground=True,
 )) == 0
@@ -6694,7 +6658,7 @@ assert captured_progress[1]["session"] == "chat-launching-the-run", captured_pro
 assert rb.walk_launching_session() is None
 os.environ[rb.SESSION_REGISTRY_DIR_ENV] = str(empty_session_registry)
 rb.SIDE_RUNNERS["codex"] = tier_runner
-rb.affordability = lambda: {
+rb.accounts.affordability = lambda: {
     "claude": True, "codex": True, "agy": True, "opencode": True,
     "claude_account": "fixture",
 }
@@ -6703,7 +6667,7 @@ worktree_run_store = work / "worktree-run-claudeb"
 os.environ["CLAUDEB_DIR"] = str(worktree_run_store)
 worktree_stdout = io.StringIO()
 with contextlib.redirect_stdout(worktree_stdout):
-    worktree_rc = rb.cmd_run(argparse.Namespace(
+    worktree_rc = rb.cli.cmd_run(argparse.Namespace(
         repo=str(pin_repo), commitish=None, worktree=True, raters="sol-medium",
         leg=False, verify=None, auto=None, focus=None,
     ))
@@ -6747,7 +6711,7 @@ for side in rb.SIDE_RUNNERS:
 timeout_run_store = work / "timed-out-run-claudeb"
 os.environ["CLAUDEB_DIR"] = str(timeout_run_store)
 with contextlib.redirect_stdout(io.StringIO()):
-    timeout_rc = rb.cmd_run(argparse.Namespace(
+    timeout_rc = rb.cli.cmd_run(argparse.Namespace(
         repo=str(pin_repo), commitish=None, worktree=True, raters="sol-medium",
         leg=False, verify=None, auto=None, focus=None,
     ))
@@ -6775,7 +6739,7 @@ stall_caps_seen.clear()
 # Run ids carry second resolution; back-to-back launches in one store collide on the run dir.
 subprocess.run(["sleep", "1.1"], check=True)
 with contextlib.redirect_stdout(io.StringIO()):
-    stall_rc = rb.cmd_run(argparse.Namespace(
+    stall_rc = rb.cli.cmd_run(argparse.Namespace(
         repo=str(pin_repo), commitish=None, worktree=True, raters="sol-medium",
         leg=False, verify=None, auto=None, focus=None,
     ))
@@ -6797,7 +6761,7 @@ timeout_caps_seen.clear()
 stall_caps_seen.clear()
 subprocess.run(["sleep", "1.1"], check=True)
 with contextlib.redirect_stdout(io.StringIO()):
-    assert rb.cmd_run(argparse.Namespace(
+    assert rb.cli.cmd_run(argparse.Namespace(
         repo=str(pin_repo), commitish=None, worktree=True, raters="sol-medium",
         leg=False, verify=None, auto=None, focus=None,
     )) == 1
@@ -6821,7 +6785,7 @@ for side in rb.SIDE_RUNNERS:
     rb.SIDE_RUNNERS[side] = stalling_runner
 subprocess.run(["sleep", "1.1"], check=True)
 with contextlib.redirect_stdout(io.StringIO()):
-    assert rb.cmd_run(argparse.Namespace(
+    assert rb.cli.cmd_run(argparse.Namespace(
         repo=str(pin_repo), commitish=None, worktree=True, raters="sol-medium",
         leg=False, verify=None, auto=None, focus=None,
     )) == 1
@@ -6853,7 +6817,7 @@ for side in rb.SIDE_RUNNERS:
     rb.SIDE_RUNNERS[side] = stall_then_complete
 subprocess.run(["sleep", "1.1"], check=True)
 with contextlib.redirect_stdout(io.StringIO()):
-    assert rb.cmd_run(argparse.Namespace(
+    assert rb.cli.cmd_run(argparse.Namespace(
         repo=str(pin_repo), commitish=None, worktree=True, raters="sol-medium",
         leg=False, verify=None, auto=None, focus=None,
     )) == 0
@@ -6929,7 +6893,7 @@ subprocess.run(["git", "-C", str(sr_repo), "checkout", "--", "docs/b.md"], check
 (sr_repo / "src" / "link.py").symlink_to("a.py")
 sr_link_snapshot, _ = rb.sealed_target(sr_repo, scope=["src"])
 sr_link_blobs = rb.reviewed_blobs(sr_repo, ["src"], sr_link_snapshot)
-assert rb.blob_bytes(sr_repo, sr_link_blobs["src/link.py"]) == b"a.py", sr_link_blobs
+assert rb.store.blob_bytes(sr_repo, sr_link_blobs["src/link.py"]) == b"a.py", sr_link_blobs
 (sr_repo / "src" / "link.py").unlink()
 
 sr_claudeb_before = os.environ["CLAUDEB_DIR"]
@@ -7800,7 +7764,7 @@ sr_journal(rb.COMMIT_JOURNAL, "worker-sess-1", "src/a.py")
 sr_worker_run("20260101T0900Z-shell", "chat-1",
               [f"WORKDIR: {sr_repo}", "PARTIAL: shell commands went unrecorded"],
               worker="worker-sess-1")
-assert rb.worker_session_launchers()["worker-sess-1"] == "chat-1"
+assert worker_session_launchers()["worker-sess-1"] == "chat-1"
 assert sr_answer("src/a.py") == "debt 1 mine"
 # The worker's own session is an author too, never replaced by its launcher: the gate inside that
 # worker asks this same question under that id, and answered `other` it would refuse the session a
@@ -7833,7 +7797,7 @@ sr_clear_journals()
 sr_source.write_text(sr_moved + "nobody launched it\n")
 sr_journal(rb.COMMIT_JOURNAL, "worker-sess-4", "src/a.py")
 sr_worker_run("20260101T1000Z-anon", None, None, worker="worker-sess-4")
-assert "worker-sess-4" not in rb.worker_session_launchers()
+assert "worker-sess-4" not in worker_session_launchers()
 assert sr_answer("src/a.py") == "debt 1 other"
 sr_clear_journals()
 
@@ -7849,7 +7813,7 @@ sr_worker_run("20260101T1100Z-first", "chat-1",
 sr_worker_run("20260101T1110Z-second", "chat-2",
               [f"WORKDIR: {sr_repo}", "PARTIAL: shell commands went unrecorded"],
               worker="worker-sess-5")
-assert "worker-sess-5" not in rb.worker_session_launchers()
+assert "worker-sess-5" not in worker_session_launchers()
 assert sr_answer("src/a.py", session="chat-1") == "debt 1 other"
 assert sr_answer("src/a.py", session="chat-2") == "debt 1 other"
 assert sr_waive("src/a.py", reason="my worker wrote it")[0] == 1
@@ -7860,7 +7824,7 @@ sr_source.write_text(sr_moved + "one chat resumed its own worker\n")
 sr_journal(rb.COMMIT_JOURNAL, "worker-sess-6", "src/a.py")
 sr_worker_run("20260101T1200Z-first", "chat-1", None, worker="worker-sess-6")
 sr_worker_run("20260101T1210Z-again", "chat-1", None, worker="worker-sess-6")
-assert rb.worker_session_launchers()["worker-sess-6"] == "chat-1"
+assert worker_session_launchers()["worker-sess-6"] == "chat-1"
 assert sr_answer("src/a.py", session="chat-1") == "debt 1 mine"
 sr_clear_journals()
 
@@ -8137,13 +8101,13 @@ sr_cache_key = "%s:%s" % (
 assert json.loads(sr_cache_file.read_text())[sr_cache_key] == 3, sr_cache_file.read_text()
 # Read back rather than measured again: a planted count is what the answer follows.
 sr_cache_file.write_text(json.dumps({sr_cache_key: 41}))
-rb.DEBT_LINE_CACHE = None
+rb.debt.DEBT_LINE_CACHE = None
 assert sr_split("src/a.py") == "split 41 0 0"
 # And it can never answer for a pair it was not measured on: the edit moves the working sha, which
 # is half the key, so the planted entry is simply not this question's.
 sr_source.write_text("".join(f"line {n}\n" for n in range(1, 21)) + "one\ntwo\nthree\nfour\n")
 assert sr_split("src/a.py") == "split 4 0 0"
-rb.DEBT_LINE_CACHE = None
+rb.debt.DEBT_LINE_CACHE = None
 assert json.loads(sr_cache_file.read_text())[sr_cache_key] == 41, sr_cache_file.read_text()
 # A recorded blob this store cannot read is compared as an absence and KEYED as one. The cache file
 # is one machine's while an object store is one checkout's, so an entry naming a blob this
@@ -8168,7 +8132,7 @@ assert sr_split("src/gone.py") == "split 3 0 0"
 sr_gone_entries = json.loads(sr_cache_file.read_text())
 assert sr_gone_entries["%s:" % sr_gone_recorded] == 3, sr_gone_entries
 sr_cache_file.write_text(json.dumps({"%s:" % sr_gone_recorded: 44}))
-rb.DEBT_LINE_CACHE = None
+rb.debt.DEBT_LINE_CACHE = None
 assert sr_split("src/gone.py") == "split 44 0 0"
 # A recorded blob of zero length is a measurement like any other, and read back it looks exactly
 # like the one thing that is not — a blob this store lost. Skipped, an emptied file's debt is
@@ -8191,15 +8155,15 @@ sr_run(sr_split_store, "20260101T000700Z-ggggggg",
        {"src/lost.py": sr_written_sha("src/lost.py")})
 sr_lost_recorded = rb.covering_artifacts(sr_repo)["src/lost.py"]["shas"]["src/lost.py"]
 (sr_repo / "src" / "lost.py").write_text("l1\nl2\nl3\n")
-sr_real_blob_bytes = rb.blob_bytes
-rb.blob_bytes = lambda repo, sha: b""
+sr_real_blob_bytes = rb.store.blob_bytes
+rb.store.blob_bytes = lambda repo, sha: b""
 assert sr_split("src/lost.py") == "split 3 0 0"
-rb.blob_bytes = sr_real_blob_bytes
+rb.store.blob_bytes = sr_real_blob_bytes
 sr_lost_entries = json.loads(sr_cache_file.read_text())
 assert not [key for key in sr_lost_entries if key.startswith(sr_lost_recorded)], sr_lost_entries
 (sr_repo / "src" / "empty.py").unlink()
 (sr_repo / "src" / "lost.py").unlink()
-rb.DEBT_LINE_CACHE = None
+rb.debt.DEBT_LINE_CACHE = None
 # A path this repository's attributes take out of diffing is priced as the review target header
 # prices it — no lines — and is the one answer here never written down: the comparison is of two
 # files OUTSIDE the repository, which no `.gitattributes` pattern can name, and an attribute
@@ -8215,7 +8179,7 @@ assert not [key for key in sr_attr_entries if key.endswith(sr_bundle_sha)], sr_a
 assert sr_split("src/bundle.js") == "split 3 0 0"
 # An error is not a measurement. Written down it would answer for these two contents for as long
 # as both of them stand, long after whatever failed here stopped failing.
-sr_real_numstat = rb.diff_numstat
+sr_real_numstat = rb.scope.diff_numstat
 
 
 def sr_failing_numstat(*args, **kwargs):
@@ -8224,10 +8188,10 @@ def sr_failing_numstat(*args, **kwargs):
 
 (sr_repo / "src" / "flaky.py").write_text("f1\nf2\n")
 sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/flaky.py")
-rb.diff_numstat = sr_failing_numstat
+rb.scope.diff_numstat = sr_failing_numstat
 assert sr_split("src/flaky.py") == "split 0 0 0"
-rb.diff_numstat = sr_real_numstat
-rb.DEBT_LINE_CACHE = None
+rb.scope.diff_numstat = sr_real_numstat
+rb.debt.DEBT_LINE_CACHE = None
 assert sr_split("src/flaky.py") == "split 2 0 0"
 # Fresh measurements are persisted as they are made and not at the end alone: the gate asks this
 # under a timeout, and a first pass over a cold cache killed before its last path would otherwise
@@ -8246,17 +8210,17 @@ def sr_interrupted_numstat(*args, **kwargs):
     return sr_real_numstat(*args, **kwargs)
 
 
-sr_real_batch = rb.DEBT_LINE_CACHE_BATCH
-rb.DEBT_LINE_CACHE_BATCH = 1
-rb.diff_numstat = sr_interrupted_numstat
+sr_real_batch = rb.debt.DEBT_LINE_CACHE_BATCH
+rb.debt.DEBT_LINE_CACHE_BATCH = 1
+rb.scope.diff_numstat = sr_interrupted_numstat
 try:
     sr_split(*sr_batch_paths)
     raise AssertionError("the interrupted pass answered")
 except KeyboardInterrupt:
     pass
-rb.diff_numstat = sr_real_numstat
-rb.DEBT_LINE_CACHE_BATCH = sr_real_batch
-rb.DEBT_LINE_CACHE = None
+rb.scope.diff_numstat = sr_real_numstat
+rb.debt.DEBT_LINE_CACHE_BATCH = sr_real_batch
+rb.debt.DEBT_LINE_CACHE = None
 assert json.loads(sr_cache_file.read_text()).get(
     ":%s" % rb.path_blob_sha(sr_repo, sr_batch_paths[0])
 ) == 1, sr_cache_file.read_text()
@@ -8285,8 +8249,8 @@ sr_fix_gate.write_text(
     "printf 'stub fork. Pick one and carry it out:\\n'\n"
 )
 sr_fix_gate.chmod(0o755)
-sr_gate_before = rb.ESCALATION_GATE
-rb.ESCALATION_GATE = sr_fix_gate
+sr_gate_before = rb.round.ESCALATION_GATE
+rb.round.ESCALATION_GATE = sr_fix_gate
 sr_fix_worker_runs = work / "session-review-fix-worker-runs"
 sr_fix_worker_runs.mkdir()
 os.environ["WORKER_RUN_DIR"] = str(sr_fix_worker_runs)
@@ -8296,7 +8260,7 @@ sr_big = (sr_repo / "docs" / "big.md").read_text()
 
 
 def sr_stamp(epoch):
-    return rb.datetime.fromtimestamp(epoch, rb.timezone.utc).isoformat()
+    return datetime.fromtimestamp(epoch, timezone.utc).isoformat()
 
 
 def sr_fix_run(benches, reviewed=None, run_id="20260601T000000Z-fixcover", judged=("P2", 1),
@@ -8363,7 +8327,7 @@ sr_source.write_text(sr_moved)
 sr_fix_run(sr_race_fixes)
 sr_source.write_text(sr_moved + "the fixing pass answered a finding\n")
 sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/a.py", epoch=sr_fix_edit)
-sr_race_rows = rb.journal_rows
+sr_race_rows = rb.store.journal_rows
 
 
 def sr_racing_journal_rows(repo):
@@ -8371,11 +8335,11 @@ def sr_racing_journal_rows(repo):
     return sr_race_rows(repo)
 
 
-rb.journal_rows = sr_racing_journal_rows
+rb.store.journal_rows = sr_racing_journal_rows
 try:
     assert sr_fixes()[0] == 0
 finally:
-    rb.journal_rows = sr_race_rows
+    rb.store.journal_rows = sr_race_rows
 assert sr_answer("src/a.py") == "debt 1 mine"
 sr_clear_journals()
 
@@ -8490,7 +8454,7 @@ sr_unreadable_fixes = sr_store()
 sr_unreadable_dir = sr_fix_run(sr_unreadable_fixes, judged=None, triaged=False)
 (sr_unreadable_dir / rb.REPORT_RECEIPT).write_text("{ truncated mid-write")
 assert rb.recorded_verdict_rows(sr_unreadable_dir) is None
-assert rb.fix_coverage(sr_unreadable_dir, "chat-1", rb.utc_now(), None, 1) == []
+assert rb.fix_coverage(sr_unreadable_dir, "chat-1", rb.store.utc_now(), None, 1) == []
 sr_unreadable_rc, sr_unreadable_out = sr_fixes(fixed=0)
 assert sr_unreadable_rc == 0 and "covered" not in sr_unreadable_out, sr_unreadable_out
 assert (sr_unreadable_dir / rb.FIX_RECEIPT).exists()
@@ -8837,12 +8801,12 @@ assert sr_stop_scope["src/a.py"] is None, sr_stop_scope["src/a.py"]
 # And a gate nobody can ask does not take that scope away. The lock is the P1 count, read here; a
 # locked round the scope cannot reach is a repository that can neither review nor waive its way
 # out — the waiver refuses it for being locked and the review has nothing to read.
-sr_stop_gate = rb.ESCALATION_GATE
-rb.ESCALATION_GATE = work / "no-gate-at-this-path.sh"
+sr_stop_gate = rb.round.ESCALATION_GATE
+rb.round.ESCALATION_GATE = work / "no-gate-at-this-path.sh"
 rb.ESCALATION_VERDICT_CACHE.clear()
 assert rb.escalation_verdict(rb.HANDOFF_P1_STOP, rb.HANDOFF_P1_STOP) == rb.ESCALATION_UNKNOWN
 assert "src/a.py" in dict(rb.debt_review_scope(sr_repo)), rb.debt_review_scope(sr_repo)
-rb.ESCALATION_GATE = sr_stop_gate
+rb.round.ESCALATION_GATE = sr_stop_gate
 rb.ESCALATION_VERDICT_CACHE.clear()
 
 # Nothing confirmed is nothing to dispatch: the round's fix status is done of its own accord, and a
@@ -8856,7 +8820,7 @@ sr_fix_stale = sr_recorded("20260601T000600Z-fixstale", "P3", 1,
                                         "commit": pin_sha})
 assert "FIX HANDOFF" not in sr_fix_stale, sr_fix_stale
 
-rb.ESCALATION_GATE = sr_gate_before
+rb.round.ESCALATION_GATE = sr_gate_before
 os.environ["WORKER_RUN_DIR"] = str(sr_worker_runs)
 
 sr_clear_journals()
@@ -8955,7 +8919,7 @@ snapshot_rerun_store = work / "snapshot-rerun-claudeb"
 os.environ["CLAUDEB_DIR"] = str(snapshot_rerun_store)
 snapshot_rerun_stdout = io.StringIO()
 with contextlib.redirect_stdout(snapshot_rerun_stdout):
-    snapshot_rerun_rc = rb.cmd_run(argparse.Namespace(
+    snapshot_rerun_rc = rb.cli.cmd_run(argparse.Namespace(
         repo=str(pin_repo), commitish=snapshot_sha, raters="sol-medium,sol-high",
         leg=False, verify=None, auto=None, focus=None,
     ))
@@ -8985,7 +8949,7 @@ shutil.copytree(worktree_run_dir,
                 seal_inherit_store / "worker-stats" / "benches" / worktree_run_dir.name)
 os.environ["CLAUDEB_DIR"] = str(seal_inherit_store)
 with contextlib.redirect_stdout(io.StringIO()):
-    rb.cmd_run(argparse.Namespace(
+    rb.cli.cmd_run(argparse.Namespace(
         repo=str(pin_repo), commitish=snapshot_sha, raters="sol-medium,sol-high",
         leg=False, verify=None, auto=None, focus=None,
     ))
@@ -9015,7 +8979,7 @@ for oc_rerun_name, oc_rerun_no_verify in (("default", False), ("raw", True)):
     os.environ["CLAUDEB_DIR"] = str(oc_rerun_store)
     oc_rerun_stdout = io.StringIO()
     with contextlib.redirect_stdout(oc_rerun_stdout):
-        rb.cmd_run(argparse.Namespace(
+        rb.cli.cmd_run(argparse.Namespace(
             repo=str(pin_repo), commitish=pin_sha, raters="oc-kimik3,sol-medium",
             leg=False, verify=None, no_verify=oc_rerun_no_verify, auto=None, focus=None,
         ))
@@ -9139,7 +9103,7 @@ chunk_call_times = {}
 def chunk_runner(rater, repo_path, commit, focus, run_dir, diff, account):
     chunk_seen.append((rater["spec"], diff))
     if rater.get("chunk"):
-        chunk_call_times.setdefault(rater["spec"], []).append(rb.utc_now())
+        chunk_call_times.setdefault(rater["spec"], []).append(rb.store.utc_now())
         # The passes have to be measurably apart, or nothing here can tell the cell's own start
         # from the last chunk's.
         time.sleep(0.6)
@@ -9153,7 +9117,7 @@ os.environ["CLAUDEB_DIR"] = str(chunk_store)
 chunk_stdout = io.StringIO()
 # The target line goes to stderr, where every review announcement goes.
 with contextlib.redirect_stdout(chunk_stdout), contextlib.redirect_stderr(chunk_stdout):
-    assert rb.cmd_run(argparse.Namespace(
+    assert rb.cli.cmd_run(argparse.Namespace(
         repo=str(chunk_repo), commitish=chunk_sha, raters="sol-medium-bare,oc-kimik3",
         leg=False, verify=None, auto=None, focus=None,
     )) == 0, chunk_stdout.getvalue()
@@ -9200,7 +9164,7 @@ os.environ["CLAUDEB_DIR"] = str(chunk_small_store)
 del chunk_seen[:]
 chunk_small_stdout = io.StringIO()
 with contextlib.redirect_stdout(chunk_small_stdout), contextlib.redirect_stderr(chunk_small_stdout):
-    assert rb.cmd_run(argparse.Namespace(
+    assert rb.cli.cmd_run(argparse.Namespace(
         repo=str(chunk_repo), commitish=chunk_small_sha, raters="sol-medium-bare,oc-kimik3",
         leg=False, verify=None, auto=None, focus=None,
     )) == 0, chunk_small_stdout.getvalue()
@@ -9249,7 +9213,7 @@ for chunk_scatter in range(300):
     )
 chunk_git("commit", "-qam", "scatter edited")
 chunk_scatter_sha = chunk_git("rev-parse", "HEAD")
-chunk_scatter_numstat, _ = rb.diff_numstat(
+chunk_scatter_numstat, _ = rb.scope.diff_numstat(
     chunk_repo, [rb.diff_base(chunk_repo, chunk_scatter_sha), chunk_scatter_sha]
 )
 assert sum(chunk_scatter_numstat.values()) <= rb.DIFF_CHUNK_THRESHOLD_LINES, \
@@ -9305,7 +9269,7 @@ chunk_git("commit", "-qm", "renamed")
 chunk_rename_sha = chunk_git("rev-parse", "HEAD")
 chunk_rename_body = rb.diff_file_body(
     chunk_repo, chunk_rename_sha, "moved_tail.py",
-    rb.diff_numstat(chunk_repo, [rb.diff_base(chunk_repo, chunk_rename_sha),
+    rb.scope.diff_numstat(chunk_repo, [rb.diff_base(chunk_repo, chunk_rename_sha),
                                  chunk_rename_sha])[1].get("moved_tail.py"),
 )
 assert "rename from tail.py" in chunk_rename_body, chunk_rename_body
@@ -9336,7 +9300,7 @@ os.environ["CLAUDEB_DIR"] = str(chunk_partial_store)
 chunk_partial_stdout = io.StringIO()
 with contextlib.redirect_stdout(chunk_partial_stdout), \
         contextlib.redirect_stderr(chunk_partial_stdout):
-    rb.cmd_run(argparse.Namespace(
+    rb.cli.cmd_run(argparse.Namespace(
         repo=str(chunk_repo), commitish=None, worktree=True,
         raters="sol-medium-bare,oc-kimik3", leg=False, verify=None, auto=None, focus=None,
     ))
@@ -9388,7 +9352,7 @@ os.environ["CLAUDEB_DIR"] = str(chunk_prose_store)
 chunk_prose_stdout = io.StringIO()
 with contextlib.redirect_stdout(chunk_prose_stdout), \
         contextlib.redirect_stderr(chunk_prose_stdout):
-    rb.cmd_run(argparse.Namespace(
+    rb.cli.cmd_run(argparse.Namespace(
         repo=str(chunk_repo), commitish=None, worktree=True,
         raters="sol-medium-bare,oc-kimik3", leg=False, verify=None, auto=None, focus=None,
     ))
@@ -9435,7 +9399,7 @@ os.environ["CLAUDEB_DIR"] = str(chunk_marker_store)
 chunk_marker_stdout = io.StringIO()
 with contextlib.redirect_stdout(chunk_marker_stdout), \
         contextlib.redirect_stderr(chunk_marker_stdout):
-    rb.cmd_run(argparse.Namespace(
+    rb.cli.cmd_run(argparse.Namespace(
         repo=str(chunk_repo), commitish=None, worktree=True,
         raters="sol-medium-bare,oc-kimik3", leg=False, verify=None, auto=None, focus=None,
     ))
@@ -9483,7 +9447,7 @@ debt_pair_sha = debt_sha("pair.py")
 debt_settled_sha = debt_sha("settled.py")
 # The scope reopens a round the FORK says is owed a second one, and the fork is the gate's word:
 # the stub above answers it here too, so this suite never depends on the gate installed today.
-rb.ESCALATION_GATE = sr_fix_gate
+rb.round.ESCALATION_GATE = sr_fix_gate
 debt_stores = 0
 
 
@@ -9539,7 +9503,7 @@ def debt_review(**fields):
     del debt_seen[:]
     stdout = io.StringIO()
     with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stdout):
-        rc = rb.cmd_run(argparse.Namespace(**call))
+        rc = rb.cli.cmd_run(argparse.Namespace(**call))
     assert rc == 0, stdout.getvalue()
     run_id = next(line.split(": ", 1)[1] for line in stdout.getvalue().splitlines()
                   if line.startswith("run id: "))
@@ -9931,9 +9895,9 @@ assert "working tree matches HEAD" not in scope_refusals["unchanged"], scope_ref
 # so a review spelled one flag per file silently read one file of fifteen and reported itself
 # exactly like a full run — the receipt was the only thing that knew.
 repeated_paths = {}
-repeated_real = {"review": rb.cmd_review, "run": rb.cmd_run}
-rb.cmd_review = lambda args: repeated_paths.__setitem__("review", args.paths)
-rb.cmd_run = lambda args: repeated_paths.__setitem__("run", args.paths)
+repeated_real = {"review": rb.cli.cmd_review, "run": rb.cli.cmd_run}
+rb.cli.cmd_review = lambda args: repeated_paths.__setitem__("review", args.paths)
+rb.cli.cmd_run = lambda args: repeated_paths.__setitem__("run", args.paths)
 repeated_argv = sys.argv
 for repeated_cmd in ("review", "run"):
     sys.argv = ["review-bench", repeated_cmd, "--worktree", "--tier", "T0",
@@ -9941,7 +9905,7 @@ for repeated_cmd in ("review", "run"):
     rb.main()
     assert repeated_paths[repeated_cmd] == ["alpha.txt", "beta.txt", "gamma.txt"], repeated_paths
 sys.argv = repeated_argv
-rb.cmd_review, rb.cmd_run = repeated_real["review"], repeated_real["run"]
+rb.cli.cmd_review, rb.cli.cmd_run = repeated_real["review"], repeated_real["run"]
 
 scope_store = work / "scope-run-claudeb"
 os.environ["CLAUDEB_DIR"] = str(scope_store)
@@ -9967,7 +9931,7 @@ assert rb.receipt_file_name(scope_repo, "edge-cases", ["alpha.txt"]) != scope_le
 
 scope_stdout = io.StringIO()
 with contextlib.redirect_stdout(scope_stdout):
-    scope_rc = rb.cmd_run(argparse.Namespace(
+    scope_rc = rb.cli.cmd_run(argparse.Namespace(
         repo=str(scope_repo), commitish=None, worktree=True, paths=["alpha.txt"],
         raters="sol-medium", leg=False, verify=None, auto=None, focus=None,
     ))
@@ -9990,7 +9954,7 @@ assert rb.review_receipt(scope_repo, None, ["alpha.txt"])["scope"] == ["alpha.tx
 scope_rerun_store = work / "scope-rerun-claudeb"
 os.environ["CLAUDEB_DIR"] = str(scope_rerun_store)
 with contextlib.redirect_stdout(io.StringIO()):
-    assert rb.cmd_run(argparse.Namespace(
+    assert rb.cli.cmd_run(argparse.Namespace(
         repo=str(scope_repo), commitish=scope_only_sha, raters="sol-medium",
         leg=False, verify=None, auto=None, focus=None,
     )) == 0
@@ -10011,7 +9975,7 @@ rb.persist_review_receipt(scope_repo, scope_head_tree, scope_head, "prior-full-r
 scope_flat_path = scope_guard_store / "worker-stats" / rb.RECEIPT_DIR / scope_flat_name
 scope_flat_before = scope_flat_path.read_bytes()
 with contextlib.redirect_stdout(io.StringIO()):
-    assert rb.cmd_run(argparse.Namespace(
+    assert rb.cli.cmd_run(argparse.Namespace(
         repo=str(scope_repo), commitish=None, worktree=True, paths=["alpha.txt"],
         raters="sol-medium", leg=False, verify=None, auto=None, focus=None,
     )) == 0
@@ -10035,7 +9999,7 @@ for scope_label, scope_kwargs in (
 ):
     try:
         with contextlib.redirect_stdout(io.StringIO()):
-            rb.cmd_run(argparse.Namespace(
+            rb.cli.cmd_run(argparse.Namespace(
                 repo=str(scope_repo), raters="sol-medium",
                 leg=False, verify=None, auto=None, focus=None, **scope_kwargs,
             ))
@@ -10065,7 +10029,7 @@ scope_lens_untouched = {
 }
 scope_lens_stdout = io.StringIO()
 with contextlib.redirect_stdout(scope_lens_stdout):
-    assert rb.cmd_run(argparse.Namespace(
+    assert rb.cli.cmd_run(argparse.Namespace(
         repo=str(scope_repo), commitish=None, worktree=True, lens="edge-cases",
         paths=["beta.txt"], raters="sol-medium", leg=False, verify=None, auto=None, focus=None,
     )) == 0, scope_lens_stdout.getvalue()
@@ -10091,7 +10055,7 @@ assert scope_lens_meta["lens"] == "edge-cases" and scope_lens_meta["scope"] == [
 scope_lens_rerun_store = work / "scope-lens-rerun-claudeb"
 os.environ["CLAUDEB_DIR"] = str(scope_lens_rerun_store)
 with contextlib.redirect_stdout(io.StringIO()):
-    assert rb.cmd_run(argparse.Namespace(
+    assert rb.cli.cmd_run(argparse.Namespace(
         repo=str(scope_repo), commitish=scope_beta_sha, lens="edge-cases", raters="sol-medium",
         leg=False, verify=None, auto=None, focus=None,
     )) == 0
@@ -10173,7 +10137,7 @@ root_store = work / "root-commit-claudeb"
 os.environ["CLAUDEB_DIR"] = str(root_store)
 root_stdout = io.StringIO()
 with contextlib.redirect_stdout(root_stdout):
-    root_rc = rb.cmd_run(argparse.Namespace(
+    root_rc = rb.cli.cmd_run(argparse.Namespace(
         repo=str(root_repo), commitish=root_sha, raters="sol-medium",
         leg=False, verify=None, auto=None, focus=None,
     ))
@@ -10374,7 +10338,7 @@ assert not nonrepo_store.exists(), list(nonrepo_store.rglob("*")) \
 raw_opencode_store = work / "raw-opencode-claudeb"
 os.environ["CLAUDEB_DIR"] = str(raw_opencode_store)
 os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-verify-drop.json")
-raw_opencode_rc = rb.cmd_run(argparse.Namespace(
+raw_opencode_rc = rb.cli.cmd_run(argparse.Namespace(
     repo=str(pin_repo), commitish=pin_sha, raters="oc-kimik3,oc-grok45-low",
     leg=False, verify=None, no_verify=False, auto=None, focus=None,
 ))
@@ -10396,7 +10360,7 @@ assert all(
 # while its caller believes it was checked is the seam this whole rule exists to close.
 bench_verify_refusal = ""
 try:
-    rb.cmd_run(argparse.Namespace(
+    rb.cli.cmd_run(argparse.Namespace(
         repo=str(pin_repo), commitish=pin_sha, raters="oc-kimik3",
         leg=False, verify=rb.OPENCODE_VERIFIER, no_verify=False, auto=None, focus=None,
     ))
@@ -10410,7 +10374,7 @@ assert "review-bench review <target> --tier <tier>" in bench_verify_refusal, \
 # takes it and does with it what it now does with every bench run: nothing.
 refused_verify_store = work / "refused-verify-claudeb"
 os.environ["CLAUDEB_DIR"] = str(refused_verify_store)
-refused_verify_rc = rb.cmd_run(argparse.Namespace(
+refused_verify_rc = rb.cli.cmd_run(argparse.Namespace(
     repo=str(pin_repo), commitish=pin_sha, raters="oc-kimik3,oc-grok45-low",
     leg=False, verify=None, no_verify=True, auto=None, focus=None,
 ))
@@ -10426,7 +10390,7 @@ assert not list(refused_verify_run.glob("verified-*.jsonl")), \
 no_oc_store = work / "no-opencode-claudeb"
 os.environ["CLAUDEB_DIR"] = str(no_oc_store)
 with fixture_tier(["sol-low"]) as no_oc_tier:
-    no_oc_rc = rb.cmd_run(argparse.Namespace(
+    no_oc_rc = rb.cli.cmd_run(argparse.Namespace(
         repo=str(pin_repo), commitish=pin_sha, raters=None, tier=no_oc_tier,
         leg=False, verify=None, no_verify=False, auto=None, focus=None,
     ))
@@ -10458,7 +10422,7 @@ def run_agy_verify(store_name, fixture, **overrides):
     os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / fixture)
     stdout = io.StringIO()
     with contextlib.redirect_stdout(stdout), fixture_tier([agy_verify_spec]) as agy_tier:
-        rc = rb.cmd_run(argparse.Namespace(**dict(
+        rc = rb.cli.cmd_run(argparse.Namespace(**dict(
             dict(repo=str(pin_repo), commitish=pin_sha, raters=None, tier=agy_tier,
                  leg=False, verify=None, no_verify=False, auto=None, focus=None),
             **overrides,
@@ -10521,7 +10485,7 @@ os.environ["OPENCODE_FIXTURE_STDOUT"] = agy_verify_ambient_stdout
 
 explicit_verify_store = work / "explicit-review-verify-claudeb"
 os.environ["CLAUDEB_DIR"] = str(explicit_verify_store)
-explicit_verify_rc = rb.cmd_review(argparse.Namespace(
+explicit_verify_rc = rb.cli.cmd_review(argparse.Namespace(
     repo=str(pin_repo), commitish=pin_sha, tier="T0",
     verify="oc-mimo25", focus=None,
 ))
@@ -10559,12 +10523,12 @@ def dispatcher_repeat_account(side, excluded, slot=0, bucket="general"):
 
 
 rb.SIDE_RUNNERS["codex"] = dispatcher_repeat_runner
-rb.pool_account = dispatcher_repeat_account
-rb.affordability = lambda: {
+rb.accounts.pool_account = dispatcher_repeat_account
+rb.accounts.affordability = lambda: {
     "claude": False, "codex": True, "agy": True, "opencode": True,
     "claude_account": None,
 }
-repeat_rc = rb.cmd_run(argparse.Namespace(
+repeat_rc = rb.cli.cmd_run(argparse.Namespace(
     repo=str(pin_repo), commitish=pin_sha, raters="sol-medium x2",
     leg=False, verify=None, auto=None, focus=None,
 ))
@@ -10642,7 +10606,7 @@ with contextlib.redirect_stdout(worktree_record_stdout):
     )) == 0
 assert "corpus skipped" in worktree_record_stdout.getvalue()
 assert worktree_record_stdout.getvalue().count(FIXTURE_FRAME_PREFIX) == 1
-assert worktree_record_stdout.getvalue().count(rb.REPORT_END) == 1
+assert worktree_record_stdout.getvalue().count(rb.round.REPORT_END) == 1
 assert not (worktree_record_dir / "defects.jsonl").exists()
 assert (worktree_record_dir / "verdicts.jsonl").read_text() == ""
 # The flag exists only because a worktree run has no other way to keep its verdicts. On a durable
@@ -10748,7 +10712,7 @@ assert retired_side_row["confirmed"] == 1, retired_side_row
 os.environ["CLAUDEB_DIR"] = str(repeat_store)
 # Handed-in rows go through the same schema filter as a file's: nothing stops a caller passing
 # raw triage notes, and an unfiltered row would be counted under a verdict that does not exist.
-assert rb.bench_summary(no_corpus_dir, json.loads(
+assert rb.panel.bench_summary(no_corpus_dir, json.loads(
     (no_corpus_dir / "meta.json").read_text()
 ), [
     {"rater": "sol-medium", "idx": 0, "verdict": "confirmed"},
@@ -10812,7 +10776,7 @@ os.environ["OPENCODE_CAPTURE_PROMPT"] = str(work / "verify-timing-prompt")
 os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-verify-keep.json")
 with fixture_tier(["sol-medium"]) as unreachable_tier:
     try:
-        rb.cmd_run(argparse.Namespace(
+        rb.cli.cmd_run(argparse.Namespace(
             repo=str(pin_repo), commitish=pin_sha, raters=None, tier=unreachable_tier,
             leg=False, verify="oc-kimik3", auto=None, focus=None,
         ))
@@ -10821,7 +10785,7 @@ with fixture_tier(["sol-medium"]) as unreachable_tier:
     else:
         raise AssertionError("--verify accepted a run with no cell the verifier reaches")
 with fixture_tier(["oc-kimik3"]) as verify_timing_tier:
-    verify_timing_rc = rb.cmd_run(argparse.Namespace(
+    verify_timing_rc = rb.cli.cmd_run(argparse.Namespace(
         repo=str(pin_repo), commitish=pin_sha, raters=None, tier=verify_timing_tier,
         leg=False, verify="oc-kimik3", auto=None, focus=None,
     ))
@@ -10903,7 +10867,7 @@ os.environ["CLAUDEB_DIR"] = str(rerun_store)
 rb.SIDE_RUNNERS["codex"] = dispatcher_rerun_runner
 rerun_stdout = io.StringIO()
 with contextlib.redirect_stdout(rerun_stdout):
-    rerun_rc = rb.cmd_run(argparse.Namespace(
+    rerun_rc = rb.cli.cmd_run(argparse.Namespace(
         repo=str(pin_repo), commitish=pin_sha, raters="sol-high x2",
         leg=False, verify=None, auto=None, focus=None,
     ))
@@ -10915,8 +10879,8 @@ rerun_arg = next(
 )
 rerun_values = shlex.split(rerun_arg)
 assert rerun_rc == 1 and "ERRORED (not recorded): sol-high#2" in rerun_output, rerun_output
-assert rerun_output.count(rb.TRIAGE_PENDING) == 1
-assert FIXTURE_FRAME_PREFIX not in rerun_output and rb.REPORT_END not in rerun_output
+assert rerun_output.count(rb.round.TRIAGE_PENDING) == 1
+assert FIXTURE_FRAME_PREFIX not in rerun_output and rb.round.REPORT_END not in rerun_output
 assert len(rerun_values) == 1
 assert [rater["spec"] for rater in rb.parse_raters(rerun_values[0])] == ["sol-high"]
 print("dispatcher-rater-repeat-ok")
@@ -10943,12 +10907,12 @@ def model_runner(rater, repo_path, commit, focus, run_dir, diff, account):
     return 0, 1, text, "", ["fake"]
 
 rb.SIDE_RUNNERS["claude"] = model_runner
-rb.pool_account = lambda side, excluded, slot=0, bucket="general": "fixture"
-rb.affordability = lambda: {
+rb.accounts.pool_account = lambda side, excluded, slot=0, bucket="general": "fixture"
+rb.accounts.affordability = lambda: {
     "claude": True, "codex": False, "claude_account": "fixture",
 }
-rb.check_limits_staleness = lambda account: False
-run_rc = rb.cmd_run(argparse.Namespace(
+rb.accounts.check_limits_staleness = lambda account: False
+run_rc = rb.cli.cmd_run(argparse.Namespace(
     repo=str(pin_repo), commitish=pin_descendant_sha,
     raters="opus-medium,sonnet-medium-skill", leg=False, verify=None,
     auto=None, focus=None,
@@ -10974,7 +10938,7 @@ model_receipt_path = (
 model_receipt = json.loads(model_receipt_path.read_text())
 assert model_receipt["errored"] == 1, \
     f"partial receipt errored: {model_receipt['errored']}"
-successful_receipt_rc = rb.cmd_run(argparse.Namespace(
+successful_receipt_rc = rb.cli.cmd_run(argparse.Namespace(
     repo=str(pin_repo), commitish=pin_descendant_sha,
     raters="opus-medium", leg=False, verify=None,
     auto=None, focus=None,
@@ -10985,7 +10949,7 @@ assert successful_receipt_rc == 0 and successful_receipt["errored"] == 0, \
 model_receipt_path.unlink()
 time.sleep(1.1)
 all_error_before = set((model_store / "worker-stats" / "benches").iterdir())
-all_error_rc = rb.cmd_run(argparse.Namespace(
+all_error_rc = rb.cli.cmd_run(argparse.Namespace(
     repo=str(pin_repo), commitish=pin_descendant_sha,
     raters="sonnet-medium-skill", leg=False, verify=None,
     auto=None, focus=None,
@@ -11019,7 +10983,7 @@ receipt_failure_exception = None
 try:
     with contextlib.redirect_stdout(receipt_failure_stdout), \
             contextlib.redirect_stderr(receipt_failure_stderr):
-        receipt_failure_rc = rb.cmd_run(argparse.Namespace(
+        receipt_failure_rc = rb.cli.cmd_run(argparse.Namespace(
             repo=str(pin_repo), commitish=pin_descendant_sha,
             raters="opus-medium", leg=False, verify=None,
             auto=None, focus=None,
@@ -11044,7 +11008,7 @@ os.environ["CLAUDEB_DIR"] = str(receipt_history_store)
 history_stderr = io.StringIO()
 with contextlib.redirect_stdout(io.StringIO()), \
         contextlib.redirect_stderr(history_stderr):
-    history_rc = rb.cmd_run(argparse.Namespace(
+    history_rc = rb.cli.cmd_run(argparse.Namespace(
         repo=str(pin_repo), commitish=pin_sha,
         raters="opus-medium", leg=False, verify=None,
         auto=None, focus=None,
@@ -11178,8 +11142,8 @@ def range_run_runner(rater, repo_path, commit, focus, run_dir, diff, account):
 
 for side in rb.SIDE_RUNNERS:
     rb.SIDE_RUNNERS[side] = range_run_runner
-rb.pool_account = lambda side, excluded, slot=0, bucket="general": "fixture"
-rb.affordability = lambda: {
+rb.accounts.pool_account = lambda side, excluded, slot=0, bucket="general": "fixture"
+rb.accounts.affordability = lambda: {
     "claude": True, "codex": True, "agy": True, "opencode": True,
     "claude_account": "fixture",
 }
@@ -11190,7 +11154,7 @@ def sealed_run(store_name, **fields):
     os.environ["CLAUDEB_DIR"] = str(work / store_name)
     stream = io.StringIO()
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stream):
-        rc = rb.cmd_run(argparse.Namespace(
+        rc = rb.cli.cmd_run(argparse.Namespace(
             repo=str(sealed_repo), raters="opus-medium", leg=False, verify=None,
             auto=None, focus=None, **fields,
         ))
@@ -11240,13 +11204,13 @@ def lens_run_runner(rater, repo_path, commit, focus, run_dir, diff, account):
 
 for side in rb.SIDE_RUNNERS:
     rb.SIDE_RUNNERS[side] = lens_run_runner
-rb.pool_account = lambda side, excluded, slot=0, bucket="general": "fixture"
-rb.affordability = lambda: {
+rb.accounts.pool_account = lambda side, excluded, slot=0, bucket="general": "fixture"
+rb.accounts.affordability = lambda: {
     "claude": True, "codex": True, "agy": True, "opencode": True,
     "claude_account": "fixture",
 }
 with contextlib.redirect_stdout(io.StringIO()) as lens_tier_out:
-    lens_tier_rc = rb.cmd_review(argparse.Namespace(
+    lens_tier_rc = rb.cli.cmd_review(argparse.Namespace(
         repo=str(pin_repo), commitish=pin_sha, tier="T1",
         verify=None, focus=None, lens="edge",
     ))
@@ -11282,7 +11246,7 @@ assert lens_meta["verifier"] == "", lens_meta
 repeat_lens_store = work / "lens-repeat-claudeb"
 os.environ["CLAUDEB_DIR"] = str(repeat_lens_store)
 with contextlib.redirect_stdout(io.StringIO()) as repeat_lens_out:
-    lens_repeat_rc = rb.cmd_run(argparse.Namespace(
+    lens_repeat_rc = rb.cli.cmd_run(argparse.Namespace(
         repo=str(pin_repo), commitish=pin_sha, raters="opus-medium-skill x3,oc-kimik3",
         leg=False, verify=None, auto=None, focus=None, lens="repeat-lens",
     ))
@@ -11307,7 +11271,7 @@ rb.write_jsonl(rb.state_dir() / "reviews.jsonl", [
     for spec in rb.AUTO_RATERS if not spec.startswith("agy-")
 ])
 with contextlib.redirect_stdout(io.StringIO()):
-    assert rb.cmd_run(argparse.Namespace(
+    assert rb.cli.cmd_run(argparse.Namespace(
         repo=str(pin_repo), commitish=pin_sha, raters="", leg=False,
         verify=None, auto=3, focus=None, lens="edge-cases",
     )) == 0
@@ -11324,7 +11288,7 @@ skill_lens_store = work / "lens-skill-claudeb"
 os.environ["CLAUDEB_DIR"] = str(skill_lens_store)
 lens_seen.clear()
 with contextlib.redirect_stdout(io.StringIO()):
-    assert rb.cmd_run(argparse.Namespace(
+    assert rb.cli.cmd_run(argparse.Namespace(
         repo=str(pin_repo), commitish=pin_sha, raters="opus-medium-skill,opus-medium",
         leg=False, verify=None, auto=None, focus=None, lens="edge-cases",
     )) == 0
@@ -11337,7 +11301,7 @@ assert lens_seen == {"opus-medium": "edge-cases"}, lens_seen
 empty_lens_store = work / "lens-empty-claudeb"
 os.environ["CLAUDEB_DIR"] = str(empty_lens_store)
 try:
-    rb.cmd_run(argparse.Namespace(
+    rb.cli.cmd_run(argparse.Namespace(
         repo=str(pin_repo), commitish=pin_sha, raters="sonnet-medium-skill",
         leg=False, verify=None, auto=None, focus=None, lens="edge-cases",
     ))
@@ -11347,7 +11311,7 @@ else:
     raise AssertionError("a lens run emptied by skill-only drops was accepted")
 assert not (empty_lens_store / "worker-stats" / "benches").exists()
 try:
-    rb.cmd_run(argparse.Namespace(
+    rb.cli.cmd_run(argparse.Namespace(
         repo=str(pin_repo), commitish=pin_sha, raters="oc-kimik3,agy-pro-high-skill",
         leg=False, verify=None, auto=None, focus=None, lens="edge-cases",
     ))
@@ -11359,7 +11323,7 @@ plain_lens_store = work / "lens-absent-claudeb"
 os.environ["CLAUDEB_DIR"] = str(plain_lens_store)
 lens_seen.clear()
 with contextlib.redirect_stdout(io.StringIO()):
-    assert rb.cmd_review(argparse.Namespace(
+    assert rb.cli.cmd_review(argparse.Namespace(
         repo=str(pin_repo), commitish=pin_sha, tier="T1", verify=None, focus=None,
     )) == 0
 plain_lens_meta = json.loads(
@@ -11569,7 +11533,7 @@ for merged_side in rb.SIDE_RUNNERS:
     rb.SIDE_RUNNERS[merged_side] = merged_runner
 merged_stdout = io.StringIO()
 with contextlib.redirect_stdout(merged_stdout):
-    merged_rc = rb.cmd_run(argparse.Namespace(
+    merged_rc = rb.cli.cmd_run(argparse.Namespace(
         repo=[str(path) for path in merged_pair], commitish=None, worktree=True, paths=None,
         raters="sol-medium-bare,opus-medium", leg=False, verify=None, auto=None, focus=None,
     ))
@@ -11684,7 +11648,7 @@ assert not (merged_state / "reviews.jsonl").exists()
 merged_rerun_store = work / "merged-rerun-claudeb"
 os.environ["CLAUDEB_DIR"] = str(merged_rerun_store)
 with contextlib.redirect_stdout(io.StringIO()):
-    assert rb.cmd_run(argparse.Namespace(
+    assert rb.cli.cmd_run(argparse.Namespace(
         repo=str(merged_workspace), commitish=merged_sha, raters="sol-medium-bare",
         leg=False, verify=None, auto=None, focus=None,
     )) == 0
@@ -11722,7 +11686,7 @@ merged_scope_store = work / "merged-scope-claudeb"
 os.environ["CLAUDEB_DIR"] = str(merged_scope_store)
 merged_scope_stdout = io.StringIO()
 with contextlib.redirect_stdout(merged_scope_stdout):
-    assert rb.cmd_run(argparse.Namespace(
+    assert rb.cli.cmd_run(argparse.Namespace(
         repo=[str(path) for path in merged_pair], commitish=None, worktree=True,
         paths=["producer/rates.json"], raters="sol-medium-bare", leg=False, verify=None,
         auto=None, focus=None,
@@ -11776,7 +11740,7 @@ for merged_label, merged_kwargs in (
 ):
     try:
         with contextlib.redirect_stdout(io.StringIO()):
-            rb.cmd_run(argparse.Namespace(
+            rb.cli.cmd_run(argparse.Namespace(
                 raters="sol-medium-bare", leg=False, verify=None, auto=None, focus=None,
                 **merged_kwargs,
             ))
@@ -11942,21 +11906,21 @@ def agy_gate_runner(rater, repo_path, commit, focus, run_dir, diff, account):
 
 for agy_gate_side in rb.SIDE_RUNNERS:
     rb.SIDE_RUNNERS[agy_gate_side] = agy_gate_runner
-agy_gate_real_afford = rb.affordability
-rb.affordability = lambda: {
+agy_gate_real_afford = rb.accounts.affordability
+rb.accounts.affordability = lambda: {
     "claude": True, "codex": True, "agy": False, "opencode": True,
     "claude_fable": True, "claude_account": "fixture",
 }
 agy_gate_stdout = io.StringIO()
 try:
     with contextlib.redirect_stdout(agy_gate_stdout), contextlib.redirect_stderr(io.StringIO()):
-        rb.cmd_run(argparse.Namespace(
+        rb.cli.cmd_run(argparse.Namespace(
             repo=str(agy_gate_repo), commitish=None, worktree=True, paths=None,
             raters="agy-pro-high-skill,sol-medium-bare", leg=False, verify=None, auto=None,
             focus=None,
         ))
 finally:
-    rb.affordability = agy_gate_real_afford
+    rb.accounts.affordability = agy_gate_real_afford
 assert "skipped agy-pro-high-skill: agy side is unaffordable" in agy_gate_stdout.getvalue(), \
     agy_gate_stdout.getvalue()
 agy_gate_meta = json.loads(
@@ -11979,7 +11943,7 @@ cooldown_wiring_state.mkdir(parents=True)
 }))
 cooldown_wiring_stdout = io.StringIO()
 with contextlib.redirect_stdout(cooldown_wiring_stdout), contextlib.redirect_stderr(io.StringIO()):
-    rb.cmd_run(argparse.Namespace(
+    rb.cli.cmd_run(argparse.Namespace(
         repo=str(agy_gate_repo), commitish=None, worktree=True, paths=None,
         raters="oc-grok45-low x3", leg=False, verify=None, auto=None, focus=None,
     ))
@@ -12001,7 +11965,7 @@ def cooldown_wiring_failing_runner(rater, repo_path, commit, focus, run_dir, dif
 for cooldown_wiring_side in rb.SIDE_RUNNERS:
     rb.SIDE_RUNNERS[cooldown_wiring_side] = cooldown_wiring_failing_runner
 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-    rb.cmd_run(argparse.Namespace(
+    rb.cli.cmd_run(argparse.Namespace(
         repo=str(agy_gate_repo), commitish=None, worktree=True, paths=None,
         raters="oc-grok45-low x2", leg=False, verify=None, auto=None, focus=None,
     ))
@@ -12105,7 +12069,7 @@ def multi_run(repo_args, **fields):
     stdout = io.StringIO()
     # The target line is announced on stderr, and it is half of what these runs are checked for.
     with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stdout):
-        rc = rb.cmd_run(argparse.Namespace(**call))
+        rc = rb.cli.cmd_run(argparse.Namespace(**call))
     return rc, stdout.getvalue()
 
 
@@ -13125,18 +13089,13 @@ for commit, rows in defects.items():
 PY
 
 HOME="$WORK/home" WORKER_STATS_DIR="$FSD" python3 - "$SCRIPT" "$FSD" <<'PY'
-import importlib.machinery
-import importlib.util
 import json
 import os
 import pathlib
 import sys
 
-spec = importlib.util.spec_from_loader(
-    "rb", importlib.machinery.SourceFileLoader("rb", sys.argv[1])
-)
-rb = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(rb)
+sys.path.insert(0, os.environ["RBENCH_SHARE"])
+import rbench as rb
 stats = pathlib.Path(sys.argv[2])
 
 (by_commit, cells, minutes, excluded, run_counts, errors,
@@ -13271,21 +13230,21 @@ assert counter_proven is True, counter_proven
 # A side billed as one subscription has no pool to ask, and naming its pseudo-account is the
 # only way to take that side off the table.
 import os
-assert rb.pool_account("opencode", set()) == "opencode-go"
+assert rb.accounts.pool_account("opencode", set()) == "opencode-go"
 os.environ["REVIEW_BENCH_EXCLUDE_OPENCODE"] = "opencode-go"
-assert rb.pool_account("opencode", set()) is None
+assert rb.accounts.pool_account("opencode", set()) is None
 del os.environ["REVIEW_BENCH_EXCLUDE_OPENCODE"]
 # The greedy fallback is what runs on the real corpus, where the candidate space is far past
 # the exhaustive threshold, and no fixture would ever reach it: the threshold is lowered so the
 # path is exercised, and it must return a real composition and admit it is not proven optimal.
-exhaustive_limit = rb.EXHAUSTIVE_COMPOSITIONS
-rb.EXHAUSTIVE_COMPOSITIONS = 1
+exhaustive_limit = rb.stats.EXHAUSTIVE_COMPOSITIONS
+rb.stats.EXHAUSTIVE_COMPOSITIONS = 1
 greedy, greedy_covered, greedy_proven = rb.best_composition(
     by_commit, rates, cells, minutes, 10.0, 3
 )
 assert greedy and greedy_covered > 0, (greedy, greedy_covered)
 assert greedy_proven is False, greedy_proven
-rb.EXHAUSTIVE_COMPOSITIONS = exhaustive_limit
+rb.stats.EXHAUSTIVE_COMPOSITIONS = exhaustive_limit
 print("frontier-ok")
 PY
 assert test "$?" -eq 0
@@ -14166,11 +14125,13 @@ for fix_frame in "$fix_blocked_header" "$report_frame_header"; do
     fail "a frame this suite pins is not 50 chars wide: $fix_frame"
 done
 fix_row() { grep -E '^fixes: +' <<<"$1" | sed -E 's/^fixes: +//'; }
-# The ORDINARY word, whatever the run's age: these fixtures are backdated on purpose, and age has
-# no bearing on the word — each is rendered at its own `record` over the tree it read. What none of
-# them may wear is the loud word, which is read off the receipt alone.
+# The ORDINARY word for a run under REPORT_STALE_HOURS old and the dated STALE one past it; what
+# neither may wear is the loud word, which is read off the receipt alone.
 fix_plain_frame() {
   grep -qE '^=+ review =+$' <<<"$1"
+}
+fix_stale_frame() {
+  grep -qE '^=+ review · STALE · [0-9]{1,2} [A-Z][a-z]{2} =+$' <<<"$1"
 }
 fix_bench() { HOME="$FIX_HOME" WORKER_STATS_DIR="$FIX_SD" "$SCRIPT" "$@"; }
 
@@ -14530,9 +14491,9 @@ fix_abandoned=$(fix_bench pending-delivery --session sess-fix) || fail "pending-
 assert test "$(grep -Fc -- "20260730T010000Z-fixabandoned" <<<"$fix_abandoned")" -eq 0
 fix_abandoned_report=$(fix_bench report 20260730T010000Z-fixabandoned) \
   || fail "the unanswered round has no report"
-# And it wears the plain word while it waits: the report the model reads is the truthful one, and
-# the `fixes:` row is what says the pass still owes an answer.
-assert fix_plain_frame "$fix_abandoned_report"
+# And never the loud word while it waits: ten hours on it is STALE, and the `fixes:` row is what
+# says the pass still owes an answer.
+assert fix_stale_frame "$fix_abandoned_report"
 assert test "$(grep -Fc -- "$fix_blocked_header" <<<"$fix_abandoned_report")" -eq 0
 assert test "$(fix_row "$fix_abandoned_report")" = "NOT APPLIED — pending"
 # Fresh, the very same round says nothing either: the age was never the question.
@@ -14542,7 +14503,8 @@ fix_bench record 20260802T010000Z-fixmidpass --no-corpus \
   --verdicts "$WORK/fix-verdicts3.jsonl" >/dev/null || fail "the mid-pass round refused its triage"
 fix_midpass=$(fix_bench pending-delivery --session sess-fix) || fail "pending-delivery failed"
 assert test "$(grep -Fc -- "20260802T010000Z-fixmidpass" <<<"$fix_midpass")" -eq 0
-# And the block it renders is the aged one's, word for word: one state, one frame, one rule.
+# And the block it renders differs from the aged one's by the clock alone: the plain word here,
+# STALE there, and never the loud one on either — one state, one rule.
 fix_midpass_report=$(fix_bench report 20260802T010000Z-fixmidpass) \
   || fail "the mid-pass round has no report"
 assert fix_plain_frame "$fix_midpass_report"
@@ -14554,10 +14516,11 @@ fix_bench record 20260729T000000Z-fixancient --no-corpus \
   --verdicts "$WORK/fix-verdicts3.jsonl" >/dev/null || fail "the ancient round refused its triage"
 fix_ancient=$(fix_bench pending-delivery --session sess-fix) || fail "pending-delivery failed"
 assert test "$(grep -Fc -- "20260729T000000Z-fixancient" <<<"$fix_ancient")" -eq 0
-# Age never re-words a frame: a blocked round two days old is still NOT FINISHED and still says
-# so on its own receipt's terms, even though the window has closed over its delivery. A rule that
-# re-framed an old round by the clock delivered a second copy of a report Egor had already read,
-# under a word its receipt never said (2026-08-20).
+# Age re-words nothing a receipt already spoke for: a blocked round two days old is still NOT
+# FINISHED — the loud word outranks the STALE clock — and still says so on its own receipt's
+# terms, even though the window has closed over its delivery. A rule that re-framed an old round
+# by anything but that clock delivered a second copy of a report Egor had already read, under a
+# word its receipt never said (2026-08-20).
 FIX_AGED_REPO="$WORK/fix-agedblocked-repo"
 git init -q "$FIX_AGED_REPO"
 GATE_SD="$FIX_SD" GATE_REPO="$FIX_AGED_REPO" GATE_SESSION=sess-fix \
@@ -15320,16 +15283,13 @@ assert test "$(grep -Fc -- "snapshot: " <<<"$doc_both")" -eq 0
 DOC_HOME="$WORK/doctor-home"
 mkdir -p "$DOC_HOME"
 python3 - "$SCRIPT" "$DOC_HOME" <<'DOCPY'
-import importlib.machinery
-import importlib.util
 import os
 import pathlib
 import stat
 import sys
 
-loader = importlib.machinery.SourceFileLoader("review_bench", sys.argv[1])
-rb = importlib.util.module_from_spec(importlib.util.spec_from_loader("review_bench", loader))
-loader.exec_module(rb)
+sys.path.insert(0, os.environ["RBENCH_SHARE"])
+import rbench as rb
 home = pathlib.Path(sys.argv[2])
 paths = rb.write_doctor_agent(home)
 wrapper, plist = paths["wrapper"], paths["plist"]
@@ -15407,5 +15367,124 @@ doc_loaded=$(HOME="$DOC_FAIL_HOME" PATH="$DOC_STUB:$PATH" WORKER_STATS_DIR="$DOC
   XDG_CACHE_HOME="$DOC_CACHE" "$SCRIPT" doctor --install-agent) \
   || fail "doctor --install-agent failed over a launchd that loaded the job"
 assert contains "$doc_loaded" "Installed com.llm-legs.review-doctor"
+
+
+# --- Docs findings carry no P weight -------------------------------------------
+# A confirmed `.md` finding is prose an LLM may never read: it is confirmed, it is fixed, and it
+# prices nothing — no severity, no total, neither of the gate's dials — while the counts the
+# fixing pass answers for still hold it.
+DOCS_SD="$WORK/docs-weight-state"
+DOCS_HOME="$WORK/docs-weight-home"
+DOCS_REPO="$WORK/docs-weight-repo"
+DOCS_ARGV="$WORK/docs-weight-gate-argv"
+git init -q "$DOCS_REPO"
+mkdir -p "$DOCS_HOME/.claude/hooks" "$DOCS_SD/benches"
+# The two dials and the wording are the commit gate's alone (shared-invariants row af), so this
+# stub spells them and logs the pair it was handed.
+cat >"$DOCS_HOME/.claude/hooks/review-flow-gate.sh" <<'DOCSTUB'
+#!/bin/bash
+[ "$1" = escalation-verdict ] || exit 1
+printf '%s %s\n' "${2:-}" "${3:-}" >>"$DOCS_ARGV"
+{ [ "${2:-0}" -ge 3 ] || [ "${3:-0}" -ge 8 ]; } || exit 1
+printf 'stub fork. Pick one and carry it out:\n'
+DOCSTUB
+chmod +x "$DOCS_HOME/.claude/hooks/review-flow-gate.sh"
+docs_bench() {
+  HOME="$DOCS_HOME" WORKER_STATS_DIR="$DOCS_SD" DOCS_ARGV="$DOCS_ARGV" "$SCRIPT" "$@"
+}
+docs_run() { # run-id findings-json
+  mkdir -p "$DOCS_SD/benches/$1"
+  DOCS_RUN_REPO="$DOCS_REPO" python3 - "$DOCS_SD/benches/$1" "$1" "$2" <<'DOCSRUNPY'
+import json
+import os
+import pathlib
+import sys
+from datetime import datetime, timezone
+
+run = pathlib.Path(sys.argv[1])
+findings = json.loads(sys.argv[3])
+now = datetime.now(timezone.utc).isoformat()
+(run / "meta.json").write_text(json.dumps({
+    "run_id": sys.argv[2], "worktree": True, "tier": "T1", "raters": ["oc-kimik3"],
+    "repo": os.environ["DOCS_RUN_REPO"], "session": "sess-docs",
+    "rater_runs": [{"rater": "oc-kimik3", "side": "opencode", "exit_code": 0,
+                    "findings": len(findings), "duration_ms": 1000}],
+    "started": now, "finished": now,
+}) + "\n")
+(run / "findings-oc-kimik3.jsonl").write_text(
+    "".join(json.dumps(row) + "\n" for row in findings)
+)
+(run.parent.parent / "confirm-all.jsonl").write_text("".join(
+    json.dumps({"rater": "oc-kimik3", "idx": index, "verdict": "confirmed"}) + "\n"
+    for index in range(len(findings))
+))
+DOCSRUNPY
+}
+docs_receipt() { # run-id key
+  python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' \
+    "$DOCS_SD/benches/$1/reported.json" "$2"
+}
+docs_row() { grep -E '^confirmed: +' <<<"$1" | sed -E 's/^confirmed: +//'; }
+
+# Three code findings and two in docs. The severities and the total price the three; the two are
+# named by a tail of their own rather than dropped, because the fixing pass still owes them.
+docs_run 20260823T000000Z-docsmix '[
+  {"severity":"P1","file":"a.py","line":1,"summary":"code one"},
+  {"severity":"P2","file":"b.py","line":2,"summary":"code two"},
+  {"severity":"P3","file":"c.py","line":3,"summary":"code three"},
+  {"severity":"P1","file":"docs/one.md","line":4,"summary":"prose one"},
+  {"severity":"P2","file":"docs/two.md","line":5,"summary":"prose two"}]'
+: >"$DOCS_ARGV"
+docs_mix=$(docs_bench record 20260823T000000Z-docsmix --no-corpus \
+  --verdicts "$DOCS_SD/confirm-all.jsonl") || fail "the mixed round refused its own triage"
+assert test "$(docs_row "$docs_mix")" = "P1 1 · P2 1 · P3 1 · 3 total · 2 in docs"
+# The receipt is what every later reader prices the round on, so the split is on it too.
+assert test "$(docs_receipt 20260823T000000Z-docsmix confirmed)" = 3
+assert test "$(docs_receipt 20260823T000000Z-docsmix docs)" = 2
+assert test "$(docs_receipt 20260823T000000Z-docsmix confirmed_by_severity)" \
+  = "{'P1': 1, 'P2': 1, 'P3': 1}"
+# And the gate is handed those very numbers: counted whole, five confirmed findings with one P1
+# each side of the line would have priced a round the contract prices at three.
+assert test "$(sort -u "$DOCS_ARGV")" = "1 3"
+# The cell still answers for all five: they were confirmed, and the row that says which cell found
+# what is not a tally of what a round is priced on.
+assert contains "$docs_mix" "5/5"
+
+# The fixing pass answers for the docs findings too, so its two counts add up to all five — and the
+# refusal names both numbers, or the reader takes the report's `3 total` for the count it owes.
+docs_short=$(docs_bench fixes 20260823T000000Z-docsmix --done --fixed 3 --fp 0 2>&1) \
+  && fail "fixes took counts that left the docs findings unanswered"
+assert contains "$docs_short" "5 this triage confirmed (3 in code, 2 in docs)"
+docs_done=$(docs_bench fixes 20260823T000000Z-docsmix --done --fixed 4 --fp 1) \
+  || fail "fixes refused counts answering for every confirmed finding"
+assert contains "$docs_done" "done — 4 fixed, 1 false positives"
+
+# Nine confirmed of which two are prose is a round of seven, under the tally dial: it owes no
+# second review, and counted whole it would have claimed one.
+docs_run 20260823T010000Z-docstally "$(python3 -c '
+import json
+print(json.dumps(
+    [{"severity": "P3", "file": f"{index}.py", "line": 1, "summary": "code"} for index in range(7)]
+    + [{"severity": "P3", "file": f"doc{index}.md", "line": 1, "summary": "prose"}
+       for index in range(2)]
+))')"
+: >"$DOCS_ARGV"
+docs_tally=$(docs_bench record 20260823T010000Z-docstally --no-corpus \
+  --verdicts "$DOCS_SD/confirm-all.jsonl") || fail "the tally round refused its own triage"
+assert test "$(docs_row "$docs_tally")" = "P1 0 · P2 0 · P3 7 · 7 total · 2 in docs"
+assert test "$(sort -u "$DOCS_ARGV")" = "0 7"
+assert test "$(grep -Fc -- "round:" <<<"$docs_tally")" -eq 0
+docs_tally_fork=$(docs_bench fork 20260823T010000Z-docstally) \
+  || fail "fork refused a round it owes nothing over"
+assert test "$(grep -Fc -- "Pick one" <<<"$docs_tally_fork")" -eq 0
+
+# No docs finding, no tail: a round of code alone reads exactly as it always did.
+docs_run 20260823T020000Z-docsnone '[
+  {"severity":"P2","file":"a.py","line":1,"summary":"code one"},
+  {"severity":"P2","file":"b.py","line":2,"summary":"code two"}]'
+docs_none=$(docs_bench record 20260823T020000Z-docsnone --no-corpus \
+  --verdicts "$DOCS_SD/confirm-all.jsonl") || fail "the code-only round refused its own triage"
+assert test "$(docs_row "$docs_none")" = "P1 0 · P2 2 · P3 0 · 2 total"
+assert test "$(docs_receipt 20260823T020000Z-docsnone docs)" = 0
 
 printf 'PASS: %s assertions; canonical review tiers over one shared OpenCode floor and a per-tier Gemini panel that never runs Pro at T0, stays inside the account roster and contains its own tier'"'"'s default panel when escalated, with no retired cell in any of them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, an agy finding judged on its own transport first and handed to the gateway only where that transport declined, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account schedulable only as the pool'"'"'s reserve and never as a roster tail, and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, carried from there into the corpus row, the report header and a receipt of the lens'"'"'s own while every lens row stays out of the canonical defect list, the frontier denominators, the composition corpus and the default leaderboard, worktree runs narrowed to named paths whose snapshot holds only those paths, is deterministic per path set, spelled against the directory the caller stands in and lexically canonicalized so a `..` can neither walk out of the repository nor split one file into two scopes, carries its scope as commit trailers a failed read refuses rather than widens, so a rerun by sha stays inside it, refuses a commitish, a pathspec matching nothing and a scope holding no change — the refusal before any snapshot object is written — and writes only a receipt of its own — leaving the repository'"'"'s receipt untouched byte for byte, a lens narrowed by the same paths naming a combined receipt of its own that leaves the plain, pure-lens and pure-scope receipts byte for byte and survives a rerun by sha with both selectors intact, a day-one repository reviewed end to end — its root commit sealed and cloned, given a deterministic empty base commit inside that clone so the vendor skill diffs its whole content, measured in lines and paths against the empty tree rather than as an unmeasurable diff, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask, the lookup scoped to the repository so another chat cannot answer for it, both review hooks keyed so exactly one fires, and the one line the gate reads: debt as content against the newest artifact holding a path — a triaged run'"'"'s snapshot whoever launched it, or a waiver — a path no artifact ever held and a held path now gone both in debt whole, a link — dangling included — priced by its own text rather than through its target, an untriaged run settling nothing, the debt owned by whoever the two journals name, a waiver covering exactly the shas it recorded and no edit after them, a round past the second-round thresholds locking that waiver until a later run answers for it, and the newest hung run outranking every older answer until a later triaged run of its own speaks — with the watchdog capping every cell at the longest duration recorded for its own model and effort plus three minutes over a fifteen-minute floor and marking the run it killed timed out, and a merged review of several repositories read by one panel out of a single workspace holding each repository under its own prefix — deterministic, self-contained once built and pruned with the run it belongs to — whose findings and adjudication handoff name the repository each belongs to, whose scopes and progress are per repository, and which stamps EVERY repository it read with that repository'"'"'s own receipt, while refusing a commitish, a repository named twice, a clean tree, a missing repository and its own workspace as a tree to seal, with the gateway being down priced as a wait that expires rather than a verdict — the family whose every attempt failed on the gateway ITSELF cooling for a fixed span while a spent plan, a pool run dry behind one and an unusable answer are left to the records that already carry them, one canary attempt of the cooling family running inside that span so the recovery can be noticed at all, its answer clearing the wait and its failure extending it from the moment the outage began, written under a lock and not written at all where nothing changed, and a side the pool answers for left to the pool, and each repository of one panel named the way its half actually exists — a working tree or a range of its own commits as `PATH@BASE..HEAD`, sealed and stamped per member so the committed half answers only where its right end is the tree in front of the reader, refusing a target flag it duplicates, a bare repository beside it with no --worktree and a scope aimed at a range, and a range of commits reviewed as one target — sealed into a single commit carrying its right end'"'"'s tree over its left end as the parent, so every reader keyed on one sha reads the whole range, named by the commits it sealed rather than by how the caller spelled them so one range is one snapshot with one rerun, announced by its own ends with the seal named beside them, read back out of that seal by a rerun carrying no flags at all, refused when it names no shape or no change, shown as a range while it runs, and kept out of the repository'"'"'s receipt wherever its right end is not the tree standing in front of the reader, and the corpus closed to every commit-point review — the plain record command refused outright with the reporting one named in its place, the refusal and the flag'"'"'s own help promising only what --bench delivers (this run'"'"'s verdicts stored, never a corpus row), that flag refused in turn on a durable run it would buy the plain command'"'"'s own behaviour on, and the handoff printing that one command alone — with the block those reviews are read in framed to a fixed width no over-long word can flatten, opened by a line naming the panel that produced it, and answering for every panel cell in exactly one of four rows — what each cell confirmed of what it claimed, whose claims were false, how many said nothing at all, and one row per family and cause for the ones that failed with a whole unlaunched leg collapsed into one — priced by a header naming the wall clock of the run, the longest chain inside it, the time no cell of it accounts for and, last and always, when the run finished in the reader'"'"'s own zone, wrapped to the terminal between its own separators, with a count missing from an older summary costing its own cell a number rather than the whole block, every one of those names and the tiers table'"'"'s own rendered by one derivation over the pool of cells the tiers can launch — version digits, effort and the bare mark each appearing only where two pool cells would otherwise collide, Claude and Codex effort always spelled because it is a launch parameter, the word skill never rendered at all, a family gaining a second variant IN THE POOL renaming itself with no list to edit, a cell only a stored run holds named against that pool and never over it — the arrival carrying whatever separates it, its report leaving the tiers table byte for byte — a worktree panel refused outright unless Egor asked for it by name — the one door, checked before any repository argument is resolved so a spelling the tool cannot resolve cannot fall through it — and the machine specs commands are spelled in left untouched, and the durable per-cell board that prints coverage only where a run'"'"'s panel held another model that is not an OpenCode cell — a solo or family-only run scoring none at all rather than its own catches back — folding a repeat suffix into the cell it belongs to while the usage file it names keeps that suffix, reading either vendor spelling of the same token record, pricing an OpenCode cell against the Go plan'"'"'s request grant and every other side not at all, bucketing each cell by its median wall clock against the same budgets the tiers are spelled in, marking with a ? every coverage number too few anchored runs or defects stand behind, counting beside it the bench runs of that cell nobody ever adjudicated — over benches that carry a finish stamp alone, so a run still in flight is never sold as evidence, and with a cell only those runs have ever measured given a row of its own whose every corpus-derived key is null rather than missing, pricing the vendors billed per token over their own measured usage in a unit the footer refuses to compare with the plan-request one, and answering the family, tier, machine-format and hand-scored flags it offers over a static block the text table always carries, every one of its rows named by the same derivation the report block spells a cell with — read over the whole board rather than over the pool alone, so two cells no tier can launch never answer to one name and neither takes the name of a cell that still runs — tagged with the leg the same prefix its cost is priced by names, and with whether any tier'"'"'s default panel holds it today, measured or not, beside a tiers block naming those panels in that same spelling, and the fix status a triaged round owes — recorded done with its two counts or blocked with its reason, refused without either and refused for a run nobody launched, rendered into a `fixes:` row the report carries only where something is owed and into the frame word alone, which is the one place a block states its state — the plain review while the pass may still be running, the stale date once the block outlives the tree it describes, NO PANEL, the bench word for a panel no tier launched, and NOT FINISHED only where a receipt says the pass stopped — a watchdog kill wearing no word at all, since the cell it killed says so on its own failed: row, with the fork that round has to take handed to the model by the fork command instead of printed at Egor — so a round whose pass still owes an answer is readable by the model and named by no delivery line at all, a second round over one scope — derived from an earlier run of that scope having its fixes DONE on record, read whole by this one and recent enough to be the same piece of work, not from a flag or from a blocked stop — offering no third pass where the first one still may, locking no waiver it could not answer, keyed for a merged panel on its members rather than on the workspace built for one run, and a round of a scope nobody has fixed yet, or of work an earlier round never read, still offered its own first, with a done receipt bound by its ROWS and not by their count alone to the triage it answered, so a re-adjudication puts the round back to unanswered whether or not it changed the tally, refused outright where its two counts answer for fewer findings than the triage confirmed, and never taken at all by a run nobody judged, and the delivery queue naming this chat'"'"'s own recorded runs alone, never another chat'"'"'s, never an untriaged one, never one past the triage window, never one whose done receipt the report has already rejected, never one whose fixing pass has not answered — at any age, dead delegate or not — speaking only states the Stop net can read, and spending nothing by answering; and the adjudication handoff ending at `record` for a run whose snapshot the checkout has moved past, counting a merged panel'"'"'s threshold stop per repository the way the gate prices it, and telling the worker to neither commit nor stage, and the report a round is owed reaching the chat its OWN record names whatever shell closed it — queued past the window where nobody ever delivered it, or written off by name into a listing of its own — with a blind vendor worker fixing pass read off the run record no journal of ours ever saw, and a --debt review naming the foreign debt it left out and taking --all to read it\n' "$asserts"

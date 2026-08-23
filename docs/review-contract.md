@@ -401,6 +401,16 @@ nothing confirmed prints no step 2 at all, and neither does one over a snapshot 
 has moved past. At the P1 threshold step 2 is the stop itself: record it `blocked`, fix
 nothing, report the P1 list.
 
+**A finding in a `.md` file carries no P weight.** It stays confirmed and the fixing pass
+fixes it like any other, but every number the round is PRICED on counts CODE findings alone:
+the `confirmed:` row's severities and total, the report receipt's `confirmed` and
+`confirmed_by_severity`, both `escalation-verdict` dials and the P1 lock. The row names the
+rest in a tail of its own — `P1 1 · P2 8 · P3 3 · 12 total · 3 in docs`, absent where there
+are none — and the receipt carries a `docs` count beside the others. Documentation is prose
+an LLM may never read; code executes on every run, so a round whose loudest findings are
+documentation is not a round that owes a second review. The `fixes --done` counts still
+answer for all of them, docs included, and the refusal names both numbers.
+
 **A diff too big for one cell is split, not the panel.** Past `DIFF_CHUNK_THRESHOLD_LINES`
 (1500) the commit's diff is cut at FILE boundaries into chunks packed to
 `DIFF_CHUNK_TARGET_LINES` (800), and each cell reads them one after another. Chunking
@@ -433,13 +443,11 @@ place a block states its state. `review` — the fixes are done, or there was
 nothing to fix. `review · NOT FINISHED` — and ONLY this — is a round whose fix
 status is `blocked`: the pass stopped at the P1 threshold and fixed nothing.
 `review · NO PANEL` names a run no cell completed. `review · STALE · <D Mon>`
-names a block that is not about the tree in front of the reader, on either of two
-counts and never on a clock: the report was not handed over at `record` time —
-`settle-delivery` had to queue it, or wrote it off as lapsed — or the content it
-priced has moved, its `reviewed` snapshot priced by the same `repo_debt` a
-`--debt` review is scoped with. Its date is the run's own finish, in the reader's
-zone, and is the frame's only timestamp: a current block is about now by
-construction, so the header carries no time at all. `bench` is an untiered
+names a run that finished older than three hours ago (`REPORT_STALE_HOURS`) — a
+clock and nothing else: content and delivery criteria were tried and called a
+block stale the moment its own fixing pass moved the tree. Its date is the run's
+own finish, in the reader's zone, and is the frame's only timestamp: a current
+block carries no time at all. `bench` is an untiered
 explicit-`--raters` panel, which is no review round and settles no debt. A
 watchdog kill has NO word of its own: the cell it killed says so on its `failed:`
 row (`killed · cap`, `killed · stalled`) and how much of the diff the survivors
@@ -447,8 +455,9 @@ covered is the triage receipt's to answer, not the frame's. The fork (fix as it
 stands / rewrite the weak block / cut the scope) is NOT in the block:
 `review-bench fork <run-id>` prints it for the report hook to hand the model,
 which is who acts on it, while Egor reads the block. A round whose
-fixing pass has not answered wears the PLAIN word and says so in its `fixes:`
-row, at any age, and no hook ever delivers it — a loud word derived from "no
+fixing pass has not answered wears the PLAIN word until the clock above dates
+it STALE, says so in its `fixes:` row either way, and is delivered by no hook at
+any age — a loud word derived from "no
 fixes recorded" reports failure while the fixes are still landing, and promoting
 pending rounds to a deliverable state floods the Stop gate with every
 pre-receipt run the chat ever held. The finished report follows on its own, from
