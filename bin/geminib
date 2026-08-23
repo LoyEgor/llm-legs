@@ -88,10 +88,86 @@ reserved_name() {
   esac
 }
 
+# Where a path ENDS UP, symlinks resolved. A leg's config link is recognised by this and never by
+# how it is spelled: a relative or otherwise-spelled link to main's config survives a string
+# compare, and the rewrite below then lands in ~/.gemini/config/mcp_config.json — disabling the
+# servers of Egor's interactive profile.
+resolved_path() {
+  local target="$1" directory base
+  if [ -d "$target" ]; then
+    (cd -P "$target" 2>/dev/null && pwd)
+    return
+  fi
+  directory=$(cd -P "$(dirname "$target")" 2>/dev/null && pwd) || return 0
+  base=$(basename "$target")
+  printf '%s/%s\n' "${directory%/}" "$base"
+}
+
+# Antigravity starts every enabled MCP server on every launch, so main's server list, once shared
+# by symlinking the whole config directory, spawned one process per leg (57 mcp-remote on
+# 2026-08-22). A leg gets its own mcp_config.json with every server forced disabled instead, which
+# is also what leaves the interactive main profile free to enable servers by hand.
+ensure_mcp_disabled() {
+  local directory="$1" config_dir="$directory/.gemini/config"
+  local base_config="$base_home/.gemini/config" file entry name temporary
+  local base_resolved
+  base_resolved=$(resolved_path "$base_config")
+  # Two links are replaced by a directory of the leg's own: one INTO main's config, and a dangling
+  # one — what the whole-directory link of the previous shape becomes the moment ~/.gemini/config
+  # is renamed. Left standing, the dangling one takes `mkdir -p` with it and, under `set -e`, the
+  # whole of `list`/`status` with that.
+  if [ -L "$config_dir" ] && { [ ! -e "$config_dir" ] || {
+    [ -n "$base_resolved" ] && [ "$(resolved_path "$config_dir")" = "$base_resolved" ]
+  }; }; then
+    rm -f "$config_dir"
+  fi
+  mkdir -p "$config_dir" 2>/dev/null || return 0
+  if [ -d "$base_config" ]; then
+    # Every pass, not only the one that created the directory: a file Antigravity or Egor adds to
+    # main's config afterwards reaches an existing leg through nothing else, which is what the
+    # whole-directory link used to give for free.
+    for entry in "$base_config"/* "$base_config"/.[!.]*; do
+      [ -e "$entry" ] || continue
+      name=$(basename "$entry")
+      [ "$name" != mcp_config.json ] || continue
+      [ ! -L "$config_dir/$name" ] || [ -e "$config_dir/$name" ] || rm -f "$config_dir/$name"
+      [ -e "$config_dir/$name" ] || [ -L "$config_dir/$name" ] ||
+        ln -s "$entry" "$config_dir/$name"
+    done
+  fi
+  # A dangling link left by a file main no longer has: it is main's config the leg mirrors, and a
+  # link to nothing is not part of it.
+  for entry in "$config_dir"/* "$config_dir"/.[!.]*; do
+    [ -L "$entry" ] && [ ! -e "$entry" ] && rm -f "$entry"
+  done
+  if [ ! -e "$config_dir/mcp_config.json" ] && [ -f "$base_config/mcp_config.json" ]; then
+    cp "$base_config/mcp_config.json" "$config_dir/mcp_config.json"
+  fi
+  file="$config_dir/mcp_config.json"
+  temporary="$config_dir/.mcp_config.json.$$"
+  # Whatever the leg's config dir turned out to be, main's is never rewritten in place.
+  if [ -n "$base_resolved" ] && [ "$(resolved_path "$config_dir")" = "$base_resolved" ]; then
+    return 0
+  fi
+  # Writing through a link would land in whatever config it points at — main's, usually.
+  if [ -L "$file" ]; then
+    if cp "$file" "$temporary" 2>/dev/null; then mv -f "$temporary" "$file"; else rm -f "$temporary"; fi
+  fi
+  [ -s "$file" ] || return 0
+  if jq -e '(.mcpServers // {}) | all(.[]; .disabled == true)' >/dev/null 2>&1 <"$file"; then
+    return 0
+  fi
+  if jq '.mcpServers |= with_entries(.value.disabled = true)' <"$file" >"$temporary" 2>/dev/null; then
+    mv -f "$temporary" "$file"
+  else
+    rm -f "$temporary"
+  fi
+}
+
 ensure_profile() {
   local directory="$1" item source target
   mkdir -p "$directory/.gemini/antigravity-cli"
-  for item in GEMINI.md config extensions extension_integrity.json settings.json trustedFolders.json; do
+  for item in GEMINI.md extensions extension_integrity.json settings.json trustedFolders.json; do
     target="$directory/.gemini/$item"
     if [ -e "$base_home/.gemini/$item" ] && [ ! -e "$target" ] && [ ! -L "$target" ]; then
       ln -s "$base_home/.gemini/$item" "$target"
@@ -101,6 +177,7 @@ ensure_profile() {
   if [ -e "$base_home/.gemini/antigravity-cli/settings.json" ] && [ ! -e "$target" ] && [ ! -L "$target" ]; then
     ln -s "$base_home/.gemini/antigravity-cli/settings.json" "$target"
   fi
+  ensure_mcp_disabled "$directory"
   mkdir -p "$directory/Library/Caches"
   for item in ms-playwright-go ms-playwright; do
     # Linked even before the base cache exists: a dangling link makes the first driver
@@ -265,11 +342,16 @@ parallel_account_output() {
   rm -rf "$directory"
 }
 
+# The all-accounts pass belongs to the two commands that REPORT on every account. Run before
+# dispatch instead, it relinked and keychain-migrated every leg on `disable`, on `use`, and on a
+# headless run the worker pool was about to refuse.
 list_accounts() {
+  ensure_profiles
   parallel_account_output list_account_line
 }
 
 show_status() {
+  ensure_profiles
   parallel_account_output status_account_line
 }
 
@@ -336,7 +418,6 @@ show_help() {
     'geminib status                        Per-account login state and quota.'
 }
 
-ensure_profiles
 if [ "${2:-}" = exec ] && [ "${1:-}" != main ] \
    && [[ "${1:-}" =~ ^[a-z0-9][a-z0-9-]*$ ]] \
    && [ -d "$profiles_dir/${1:-}" ]; then

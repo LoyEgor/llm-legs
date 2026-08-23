@@ -28,6 +28,22 @@ printf 'instructions\n' >"$HOME/.gemini/GEMINI.md"
 printf '{}\n' >"$HOME/.gemini/settings.json"
 printf '{}\n' >"$HOME/.gemini/antigravity-cli/settings.json"
 printf 'config\n' >"$HOME/.gemini/config/value"
+BASE_MCP="$HOME/.gemini/config/mcp_config.json"
+cat >"$BASE_MCP" <<'EOF'
+{
+  "mcpServers": {
+    "figma-dev-mode-mcp-server": {
+      "command": "npx",
+      "args": ["mcp-remote", "http://127.0.0.1:3845/sse"]
+    },
+    "already-off": {
+      "command": "noop",
+      "disabled": true
+    }
+  }
+}
+EOF
+BASE_MCP_SUM="$(shasum "$BASE_MCP" | cut -d' ' -f1)"
 printf 'extension\n' >"$HOME/.gemini/extensions/value"
 
 cat >"$FAKE_BIN/agy" <<'EOF'
@@ -114,7 +130,7 @@ assert wait_announce '--refresh-account gemini/alpha'
 assert grep -qx "HOME=$HOME/.gemini-profiles/alpha agy" <<<"$add_output"
 assert grep -qx 'alpha: Not logged in' <<<"$add_output"
 assert test -d "$HOME/.gemini-profiles/alpha/.gemini/antigravity-cli"
-for item in GEMINI.md config extensions settings.json; do
+for item in GEMINI.md extensions settings.json; do
   assert test -L "$HOME/.gemini-profiles/alpha/.gemini/$item"
 done
 assert test -L "$HOME/.gemini-profiles/alpha/.gemini/antigravity-cli/settings.json"
@@ -135,6 +151,98 @@ assert grep -q "unlock-keychain -p .* $HOME/.gemini-profiles/alpha/Library/Keych
 assert grep -q "list-keychains -d user -s $HOME/.gemini-profiles/alpha/Library/Keychains/login.keychain-db" \
   "$SECURITY_CALLS"
 assert_fails grep -q "CALL home=$HOME " "$SECURITY_CALLS"
+
+# Antigravity starts every enabled MCP server on every launch, so a leg that reads main's server
+# list spawns one process per leg per server. Legs get their own copy, forced fully disabled.
+ALPHA_CONFIG="$HOME/.gemini-profiles/alpha/.gemini/config"
+ALPHA_MCP="$ALPHA_CONFIG/mcp_config.json"
+assert test ! -L "$ALPHA_CONFIG"
+assert test -d "$ALPHA_CONFIG"
+assert test "$(readlink "$ALPHA_CONFIG/value")" = "$HOME/.gemini/config/value"
+assert test ! -L "$ALPHA_MCP"
+assert test "$(jq -c '[.mcpServers[].disabled]' "$ALPHA_MCP")" = '[true,true]'
+assert test "$(jq -r '.mcpServers | keys | join(",")' "$ALPHA_MCP")" = 'already-off,figma-dev-mode-mcp-server'
+assert test "$(jq -r '.mcpServers["figma-dev-mode-mcp-server"].args[0]' "$ALPHA_MCP")" = mcp-remote
+# main is the interactive profile Egor may enable a server in; enforcement must never reach it.
+assert test "$(shasum "$BASE_MCP" | cut -d' ' -f1)" = "$BASE_MCP_SUM"
+
+alpha_sum="$(shasum "$ALPHA_MCP" | cut -d' ' -f1)"
+alpha_stamp="$(stat -f %Fm "$ALPHA_MCP")"
+bash "$SCRIPT" list >/dev/null
+assert test "$(shasum "$ALPHA_MCP" | cut -d' ' -f1)" = "$alpha_sum"
+assert test "$(stat -f %Fm "$ALPHA_MCP")" = "$alpha_stamp"
+
+mkdir -p "$HOME/.gemini-profiles/legacy/.gemini"
+ln -s "$HOME/.gemini/config" "$HOME/.gemini-profiles/legacy/.gemini/config"
+# The same legacy link spelled some other way. Recognised by string, it survives, every write below
+# then lands THROUGH it, and disabling that leg's servers disables main's — Egor's interactive
+# profile, the one place a server is his to enable.
+mkdir -p "$HOME/.gemini-profiles/relative/.gemini"
+ln -s ../../../.gemini/config "$HOME/.gemini-profiles/relative/.gemini/config"
+mkdir -p "$HOME/.gemini-profiles/ownconf/.gemini/config"
+printf '{"mcpServers":{"local":{"command":"noop"}}}\n' >"$HOME/.gemini-profiles/ownconf/.gemini/config/mcp_config.json"
+printf 'mine\n' >"$HOME/.gemini-profiles/ownconf/.gemini/config/value"
+mkdir -p "$HOME/.gemini-profiles/emptyconf/.gemini/config"
+: >"$HOME/.gemini-profiles/emptyconf/.gemini/config/mcp_config.json"
+# A compliant file needs no rewrite, so nothing else would ever break a link into a shared config:
+# leave one and the next `mcp enable` outside the leg re-arms every leg at once.
+mkdir -p "$HOME/.gemini-profiles/linkedconf/.gemini/config"
+printf '{"mcpServers":{"shared":{"command":"noop","disabled":true}}}\n' >"$WORK/shared-mcp.json"
+SHARED_MCP_SUM="$(shasum "$WORK/shared-mcp.json" | cut -d' ' -f1)"
+ln -s "$WORK/shared-mcp.json" "$HOME/.gemini-profiles/linkedconf/.gemini/config/mcp_config.json"
+bash "$SCRIPT" list >/dev/null
+assert test ! -L "$HOME/.gemini-profiles/linkedconf/.gemini/config/mcp_config.json"
+assert test "$(jq -r '.mcpServers.shared.command' "$HOME/.gemini-profiles/linkedconf/.gemini/config/mcp_config.json")" = noop
+assert test "$(shasum "$WORK/shared-mcp.json" | cut -d' ' -f1)" = "$SHARED_MCP_SUM"
+assert test ! -L "$HOME/.gemini-profiles/legacy/.gemini/config"
+assert test "$(jq -c '[.mcpServers[].disabled]' "$HOME/.gemini-profiles/legacy/.gemini/config/mcp_config.json")" = '[true,true]'
+assert test ! -L "$HOME/.gemini-profiles/relative/.gemini/config"
+assert test "$(jq -c '[.mcpServers[].disabled]' "$HOME/.gemini-profiles/relative/.gemini/config/mcp_config.json")" = '[true,true]'
+assert test "$(shasum "$BASE_MCP" | cut -d' ' -f1)" = "$BASE_MCP_SUM"
+assert grep -qx mine "$HOME/.gemini-profiles/ownconf/.gemini/config/value"
+assert test "$(jq -r '.mcpServers.local.disabled' "$HOME/.gemini-profiles/ownconf/.gemini/config/mcp_config.json")" = true
+# An empty file is what a fresh Antigravity profile leaves behind; it lists nothing to disable.
+assert test ! -s "$HOME/.gemini-profiles/emptyconf/.gemini/config/mcp_config.json"
+rm -rf "$HOME/.gemini-profiles/legacy" "$HOME/.gemini-profiles/ownconf" \
+  "$HOME/.gemini-profiles/emptyconf" "$HOME/.gemini-profiles/linkedconf" \
+  "$HOME/.gemini-profiles/relative"
+
+# A DANGLING config link — what the legacy absolute one becomes the moment ~/.gemini/config is
+# renamed. `mkdir -p` on it fails, and under `set -e` that took `list` down with it: every healthy
+# account vanished from the output and worker-run read the whole leg as unavailable.
+mkdir -p "$HOME/.gemini-profiles/dangling/.gemini"
+ln -s "$HOME/.gemini/config-was-renamed" "$HOME/.gemini-profiles/dangling/.gemini/config"
+DANGLING_LIST="$(bash "$SCRIPT" list)" || fail "a dangling leg config link took list down"
+assert test ! -L "$HOME/.gemini-profiles/dangling/.gemini/config"
+assert test -d "$HOME/.gemini-profiles/dangling/.gemini/config"
+assert test "$(jq -c '[.mcpServers[].disabled]' \
+  "$HOME/.gemini-profiles/dangling/.gemini/config/mcp_config.json")" = '[true,true]'
+assert grep -q alpha <<<"$DANGLING_LIST"
+rm -rf "$HOME/.gemini-profiles/dangling"
+
+# The per-entry links are main's config mirrored, so they are refreshed on every pass: created
+# once, a file Antigravity or Egor adds to main afterwards reached no existing leg at all — the
+# regression against the whole-directory link this shape replaced.
+printf 'added later\n' >"$HOME/.gemini/config/added.json"
+bash "$SCRIPT" list >/dev/null
+assert test "$(readlink "$ALPHA_CONFIG/added.json")" = "$HOME/.gemini/config/added.json"
+# And a link to a file main no longer has is no part of that mirror.
+rm -f "$HOME/.gemini/config/added.json"
+bash "$SCRIPT" list >/dev/null
+assert test ! -L "$ALPHA_CONFIG/added.json"
+assert test "$(readlink "$ALPHA_CONFIG/value")" = "$HOME/.gemini/config/value"
+assert test "$(shasum "$BASE_MCP" | cut -d' ' -f1)" = "$BASE_MCP_SUM"
+
+# Healing every account is what `list` and `status` are FOR; every other command touches only the
+# account it names. Run before dispatch it relinked and keychain-migrated every leg on a `use`
+# that only prints a pin — and on a headless run the worker pool was about to refuse.
+mkdir -p "$HOME/.gemini-profiles/untouched/.gemini"
+ln -s "$HOME/.gemini/config" "$HOME/.gemini-profiles/untouched/.gemini/config"
+bash "$SCRIPT" use >/dev/null
+assert test -L "$HOME/.gemini-profiles/untouched/.gemini/config"
+bash "$SCRIPT" list >/dev/null
+assert test ! -L "$HOME/.gemini-profiles/untouched/.gemini/config"
+rm -rf "$HOME/.gemini-profiles/untouched"
 
 mkdir -p "$HOME/.gemini-profiles/trap/.gemini/config" "$HOME/.gemini-profiles/trap/Library/Keychains"
 mkdir -p "$HOME/.gemini-profiles/trap/Library/Caches/ms-playwright-go"
@@ -721,4 +829,4 @@ assert image_run --dest "$WORK/image-output/converted.png" --prompt landscape --
 assert grep -q "$IMAGE_REPLY $WORK/image-output/converted.png" "$IMAGE_MAGICK_CALLS"
 assert grep -qx converted "$WORK/image-output/converted.png"
 
-echo "PASS: $asserts asserts; base and isolated HOME routing, worker-pool exclusion (own file beside the profiles, headless runs refused, interactive and pinned runs pass, the last member goes out too, visible in list/status), shared configuration and Playwright caches, per-profile keychain kept unlockable behind a login.keychain-db symlink, parallel ordered list/status probes, one-step creation, strict launch names, exec delimiter stripping, override-aware login hints, persistent remove markers, use pin set/show/clear/refusal parity, and one-image generation routing, refused unknown accounts, destination checks made before a generation is spent, prompt, rescue, and conversion"
+echo "PASS: $asserts asserts; base and isolated HOME routing, worker-pool exclusion (own file beside the profiles, headless runs refused, interactive and pinned runs pass, the last member goes out too, visible in list/status), shared configuration and Playwright caches, a private MCP config per leg with every server forced disabled (main untouched, compliant files not rewritten), per-profile keychain kept unlockable behind a login.keychain-db symlink, parallel ordered list/status probes, one-step creation, strict launch names, exec delimiter stripping, override-aware login hints, persistent remove markers, use pin set/show/clear/refusal parity, and one-image generation routing, refused unknown accounts, destination checks made before a generation is spent, prompt, rescue, and conversion"
