@@ -24,6 +24,12 @@ account_cache="$account_cache_dir/$acct.json"
 worker_stats_dir="${WORKER_STATS_DIR:-$claudeb_dir/worker-stats}"
 limits_file="${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}"
 
+# Never $0: `bash bin/statusline.sh` would double the directory, and the harness may invoke a
+# symlink — realpath resolves both to the script's real home.
+statusline_self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) || statusline_self="${BASH_SOURCE[0]}"
+statusline_dir=$(dirname "$statusline_self")
+. "$statusline_dir/../share/limits-view.sh"
+
 file_mtime() {
   stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null
 }
@@ -226,6 +232,50 @@ review_verdict_line() { # toplevel session status_key now
   fi
 }
 
+# `review-bench review-anchor` reads every run record to answer, so like the gate's verdict it is
+# cached and refreshed off the render path.
+review_anchor_line() { # session cwd now
+  local sid="$1" cwd="$2" now="$3"
+  local bench="${STATUSLINE_REVIEW_BENCH:-$statusline_dir/review-bench}"
+  local cache lock cached cache_mtime lock_mtime timeout_bin
+  [ -x "$bench" ] || return 0
+  # Keyed on the session alone: the cwd only picks a merged panel's member and the TTL bounds
+  # that, while a cwd key voided a valid anchor at every cd.
+  cache="$statusline_cache_dir/review-anchor-$sid"
+  lock="$cache.lock"
+  cache_mtime=$(file_mtime "$cache" 2>/dev/null)
+  cached=""
+  [[ "$cache_mtime" =~ ^[0-9]+$ ]] && cached=$(cat "$cache" 2>/dev/null)
+  if [[ "$cache_mtime" =~ ^[0-9]+$ ]] && [ "$((now - cache_mtime))" -le 15 ]; then
+    printf '%s' "$cached"
+    return 0
+  fi
+  if mkdir -p "$statusline_cache_dir" 2>/dev/null; then
+    lock_mtime=$(file_mtime "$lock" 2>/dev/null)
+    if [ ! -d "$lock" ] ||
+      { [[ "$lock_mtime" =~ ^[0-9]+$ ]] && [ "$((now - lock_mtime))" -gt 120 ]; }; then
+      (
+        snapshot_lock_acquire "$lock" || exit 0
+        trap 'rmdir "$lock" 2>/dev/null' EXIT
+        # Bounded like the gate's verdict call: a wedged git inside the bench must not leave the
+        # refresh holding the lock until the 120s staleness sweep.
+        timeout_bin=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
+        if [ -n "$timeout_bin" ]; then
+          answer=$("$timeout_bin" 10 "$bench" review-anchor --session "$sid" --cwd "$cwd" 2>/dev/null | head -1) || answer=""
+        else
+          answer=$("$bench" review-anchor --session "$sid" --cwd "$cwd" 2>/dev/null | head -1) || answer=""
+        fi
+        tmp="$cache.tmp.${BASHPID:-$$}"
+        printf '%s' "$answer" > "$tmp" 2>/dev/null &&
+          mv -f "$tmp" "$cache" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+      ) >/dev/null 2>&1 &
+    fi
+  fi
+  if [[ "$cache_mtime" =~ ^[0-9]+$ ]] && [ "$((now - cache_mtime))" -le 120 ]; then
+    printf '%s' "$cached"
+  fi
+}
+
 # Propagate just-merged headers to all surfaces via the zero-network collector
 # (never --refresh); full contract: docs/statusline-contract.md "Store merge-kick".
 # Every failure is silent — the statusline must never break because a nudge failed.
@@ -403,42 +453,38 @@ else
   rl_mtime=$(file_mtime "$rl_cache_file")
 fi
 
-h5_pct=""; h5_reset=""; wk_pct=""; wk_reset=""
-h5_as_of=""; wk_as_of=""; h5_origin=""; wk_origin=""; auth_status=""
+now=$(date +%s)
+h5_pct=""; h5_reset=""; h5_dim=""; wk_pct=""; wk_reset=""; wk_dim=""; wk_origin=""
 if [ -n "$rl_json" ]; then
-  IFS=$'\x1f' read -r h5_pct h5_reset wk_pct wk_reset h5_as_of wk_as_of h5_origin wk_origin auth_status < <(printf '%s' "$rl_json" | jq -r '
-    def num0: if . == null then "" else (.+0|round|tostring) end;
-    def str0: if . == null then "" else tostring end;
-    [ (.five_hour.used_percentage | num0),
-      (.five_hour.resets_at | str0),
-      (.seven_day.used_percentage | num0),
-      (.seven_day.resets_at | str0),
-      (.five_hour.as_of | str0),
-      (.seven_day.as_of | str0),
-      (.five_hour.origin // ""),
-      (.seven_day.origin // ""),
-      (.auth.status // "")
-    ] | join("")' 2>/dev/null)
+  # Legacy raw-headers caches carry no as_of; the cache file's mtime is the honest lower bound
+  # (captured before any rewrite this render did), and a payload without either is as fresh as
+  # this render.
+  [[ "$rl_mtime" =~ ^[0-9]+$ ]] || rl_mtime="$now"
+  IFS=$'\x1f' read -r h5_pct h5_reset h5_dim wk_pct wk_reset wk_dim wk_origin < <(printf '%s' "$rl_json" | jq -r \
+    --argjson now "$now" --argjson mtime "$rl_mtime" \
+    --argjson thr5 "$LIMITS_STALE_FIVE_HOUR" --argjson thrw "$LIMITS_STALE_WEEKLY" "$LIMITS_VIEW_JQ"'
+    (.auth.status == "expired") as $auth_expired
+    | def bucket($b; $thr):
+        if ($b | type) != "object" then ["", "", ""] else
+          (if ($b.as_of | type) == "number" then $b.as_of else $mtime end) as $asof
+          | (if ($b.resets_at | type) == "number" then $b.resets_at else null end) as $reset
+          | limits_bucket_expired($now; $reset) as $expired
+          | limits_bucket_stale($now; $thr; $auth_expired; ($b.origin // ""); $asof) as $stale
+          | [ (limits_effective_pct($b.used_percentage; $expired)
+               | if . == null then "" else (. + 0 | round | tostring) end),
+              (if $reset == null or $reset < limits_reset_epoch_floor
+                  or limits_reset_ancient($now; $reset) then "" else ($reset | tostring) end),
+              (if $stale or $expired then "1" else "" end) ]
+        end;
+    bucket(.five_hour; $thr5) + bucket(.seven_day; $thrw) + [(.seven_day.origin // "")]
+    | join("\u001f")' 2>/dev/null)
 fi
 
 # Rendering a header-origin week would print a percentage nobody measured — and one every
 # other surface discards (shared-invariants n). Show `?` instead.
 [ "$wk_origin" = headers ] && { wk_pct=""; wk_reset=""; }
 
-now=$(date +%s)
-h5_dim=""; wk_dim=""
-if [ -n "$h5_reset" ] && [ "$h5_reset" -lt "$now" ] 2>/dev/null; then h5_dim=1; fi
-if [ -n "$wk_reset" ] && [ "$wk_reset" -lt "$now" ] 2>/dev/null; then wk_dim=1; fi
 if [ -n "$rl_json" ]; then
-  [ "$auth_status" = expired ] && { h5_dim=1; wk_dim=1; }
-  [ "$h5_origin" = cached ] && h5_dim=1
-  [ "$wk_origin" = cached ] && wk_dim=1
-  # Legacy raw-headers caches carry no as_of; the cache file's mtime is the
-  # honest lower bound (captured before any rewrite this render did).
-  [[ "$h5_as_of" =~ ^[0-9]+$ ]] || h5_as_of="$rl_mtime"
-  [[ "$wk_as_of" =~ ^[0-9]+$ ]] || wk_as_of="$rl_mtime"
-  [[ "$h5_as_of" =~ ^[0-9]+$ ]] && [ $((now - h5_as_of)) -gt 1800 ] && h5_dim=1
-  [[ "$wk_as_of" =~ ^[0-9]+$ ]] && [ $((now - wk_as_of)) -gt 21600 ] && wk_dim=1
   stale_acct=""
   if [ -n "$rl_from_cache" ]; then
     if [ "$acct" != main ]; then
@@ -506,6 +552,25 @@ if [ -z "$active_top" ]; then
   fi
 fi
 
+# The review is the centre of attention: while this chat has one in flight or unanswered, the
+# folder shown is the one that review is about, never the shell's — Egor must not see one folder
+# and a review about another. Exactly the dir/branch/diff cluster and the gate's verdict follow
+# it; the ports probe and the live-progress match keep the session's own workdir (session_top),
+# since a port belongs to the project the chat is sitting in.
+session_top="$active_top"
+anchor_extra=""
+if [ -n "$session_id" ]; then
+  anchor_line=$(review_anchor_line "$session_id" "$git_dir" "$now")
+  anchor_path="${anchor_line%% +*}"
+  if [ -n "$anchor_path" ] && repo_dirs "$anchor_path"; then
+    git_dir="$anchor_path"
+    adopt_repo_dirs
+    # `+N` only with the anchor itself: an anchor whose repository is gone is ignored whole, or
+    # the session's own folder wears the dead panel's member count.
+    [ "$anchor_path" != "$anchor_line" ] && anchor_extra="${anchor_line##* }"
+  fi
+fi
+
 dir_part="${BLUE}${dir}${RESET}"
 wt_part=""
 if [ -n "$active_top" ]; then
@@ -534,6 +599,7 @@ if [ -n "$active_top" ]; then
     wt_part=" ${wt_color}⧉ ${active_top##*/}${RESET}"
   fi
 fi
+[ -n "$anchor_extra" ] && dir_part="${dir_part} ${DIM}${anchor_extra}${RESET}"
 dir_part="${dir_part}${wt_part}"
 
 branch_part=""
@@ -645,20 +711,20 @@ sep="${DIM}│${RESET}"
 fable_part=""
 fable_account="$acct"
 if [ -n "$fable_account" ] && [ "$fable_account" != main ]; then
-  IFS='|' read -r fable_found fable_pct fable_reset fable_stale < <(jq -r --arg name "$fable_account" '
+  # The collector's own `effective_pct`/`stale`/`expired` fields, as the menubar renders them.
+  IFS='|' read -r fable_found fable_pct fable_reset fable_dim < <(jq -r --arg name "$fable_account" '
     .vendors.claude.accounts[]?
     | select(.account == $name)
     | .fable // empty
-    | ["1", (if .used_pct == null then "" else (.used_pct | round | tostring) end), (.resets_at // ""), (.stale == true | tostring)]
+    | ["1", (if .effective_pct == null then "" else (.effective_pct | round | tostring) end),
+       (.resets_at // ""), (if .stale == true or .expired == true then "1" else "" end)]
     | join("|")
   ' "$limits_file" 2>/dev/null)
   if [ "$fable_found" = 1 ]; then
-    fable_dim=""
-    [ "$fable_stale" = true ] && fable_dim=1
     # Stale flags inside a frozen llm-limits.json never flip; the file's own
     # age is the backstop.
     limits_mtime=$(file_mtime "$limits_file")
-    [[ "$limits_mtime" =~ ^[0-9]+$ ]] && [ $((now - limits_mtime)) -gt 21600 ] && fable_dim=1
+    [[ "$limits_mtime" =~ ^[0-9]+$ ]] && [ $((now - limits_mtime)) -gt "$LIMITS_STALE_FABLE" ] && fable_dim=1
     fable_reset_txt=""
     if [ -n "$fable_reset" ]; then
       case "$fable_reset" in
@@ -669,7 +735,15 @@ if [ -n "$fable_account" ] && [ "$fable_account" != main ]; then
       IFS='|' read -r fable_reset_epoch fable_dow fable_time <<< "$fable_date"
       if [[ "$fable_reset_epoch" =~ ^[0-9]+$ ]]; then
         fable_rem=$(( fable_reset_epoch - now ))
-        if [ "$fable_rem" -gt 86400 ] || [ "$fable_rem" -le 0 ]; then
+        # A reset over a day past is dropped exactly as the menubar drops it — the shared
+        # `limits_reset_ancient` answers, never a local threshold (shared-invariants row y).
+        fable_ancient=""
+        [ "$fable_rem" -le 0 ] && fable_ancient=$(jq -n --argjson now "$now" \
+          --argjson reset "$fable_reset_epoch" \
+          "$LIMITS_VIEW_JQ"'limits_reset_ancient($now; $reset)' 2>/dev/null)
+        if [ "$fable_ancient" = true ]; then
+          :
+        elif [ "$fable_rem" -gt 86400 ] || [ "$fable_rem" -le 0 ]; then
           case "$fable_dow" in
             1) fable_dname=Mon ;; 2) fable_dname=Tue ;; 3) fable_dname=Wed ;; 4) fable_dname=Thu ;;
             5) fable_dname=Fri ;; 6) fable_dname=Sat ;; 7) fable_dname=Sun ;;
@@ -1460,7 +1534,7 @@ if [ -n "$session_id" ]; then
   ports_cache="$statusline_cache_dir/ports-$session_id"
   ports_mtime=$(file_mtime "$ports_cache" 2>/dev/null)
   if { ! [[ "$ports_mtime" =~ ^[0-9]+$ ]] || [ "$((now - ports_mtime))" -gt 15 ]; } && [ -x "$probe_bin" ]; then
-    ( "$probe_bin" "$session_id" "$PPID" "$active_top" >/dev/null 2>&1 & ) 2>/dev/null
+    ( "$probe_bin" "$session_id" "$PPID" "$session_top" >/dev/null 2>&1 & ) 2>/dev/null
   fi
   if [[ "$ports_mtime" =~ ^[0-9]+$ ]] && [ "$((now - ports_mtime))" -le 60 ]; then
     # `read` still sets the var on a newline-less EOF; ignore the nonzero return.
@@ -1495,7 +1569,7 @@ fi
 
 
 review_part=""
-if [ -n "$active_top" ] || [ -n "$session_id" ]; then
+if [ -n "$session_top" ] || [ -n "$session_id" ]; then
   # A run in flight owns the slot: review-bench writes one progress file per run, and while it
   # lives the label reports that panel instead of the gate's verdict. Liveness is derived here,
   # never declared by the writer — the file survives kill -9, a crash and a closed terminal, so
@@ -1572,8 +1646,8 @@ if [ -n "$active_top" ] || [ -n "$session_id" ]; then
       # launched it. The tree match is the working tree and not the repository: a run in a sibling
       # worktree is another chat's news, and a subdirectory the run was started from still resolves
       # to the tree it belongs to.
-      if [ -z "$active_top" ] ||
-        [ "$(git_worktree_top "$progress_repo" 2>/dev/null)" != "$active_top" ]; then
+      if [ -z "$session_top" ] ||
+        [ "$(git_worktree_top "$progress_repo" 2>/dev/null)" != "$session_top" ]; then
         [ -n "$session_id" ] || continue
         [ "$(review_run_owner "$progress_run_session" "$progress_pid")" = "$session_id" ] || continue
       fi

@@ -1327,6 +1327,16 @@ def main():
                           help="The chat whose runs to answer for")
     delivery.set_defaults(func=_round.cmd_pending_delivery)
 
+    anchor = subparsers.add_parser(
+        "review-anchor",
+        help="The repository this chat's live or unanswered review is about (exit 1 if none)",
+    )
+    anchor.add_argument("--session", default="", metavar="ID", required=True,
+                        help="The chat whose review to anchor on")
+    anchor.add_argument("--cwd", default="", metavar="DIR",
+                        help="Prefer the merged-panel member equal to this directory's repository")
+    anchor.set_defaults(func=_round.cmd_review_anchor)
+
     settle = subparsers.add_parser(
         "settle-delivery",
         help="Queue every deliverable round no ledger names back to its launching chat, or write "

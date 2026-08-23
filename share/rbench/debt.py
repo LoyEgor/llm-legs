@@ -1351,6 +1351,13 @@ def doctor_ledger_keys(session, cache):
     return cache[session]
 
 
+def ledger_delivered(session, run_id, state, cache):
+    """Whether the hooks' ledger says this round's report reached Egor in this `state`. Read-only,
+    like every reading of the ledger on this side; the key shape is spelled here and nowhere else.
+    """
+    return DELIVERY_LEDGER_KEY.format(run_id=run_id, state=state) in doctor_ledger_keys(session, cache)
+
+
 def doctor_triage_instant(run_dir):
     """When somebody stood behind this run's findings, or None where nobody has. A run triaged
     before the report receipt existed left only its verdicts file, whose mtime is the closest

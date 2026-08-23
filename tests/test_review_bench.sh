@@ -14393,6 +14393,63 @@ fix_first_delivery=$(fix_bench pending-delivery --session sess-fix) \
   || fail "pending-delivery refused a chat whose only round is freshly triaged"
 assert test "$(grep -c '^20260801T000000Z-fixround1 triaged$' <<<"$fix_first_delivery")" = 1
 assert test "$(grep -Fc -- "20260801T000000Z-fixround1 done" <<<"$fix_first_delivery")" -eq 0
+# The statusline's folder follows the review: a round this chat still has in front of it names
+# its repository through `review-anchor`, a merged panel names the member equal to --cwd's
+# repository (else the first) plus a dim count of the others, and a chat owing nothing gets exit 1.
+fix_anchor=$(fix_bench review-anchor --session sess-fix --cwd "$WORK") \
+  || fail "review-anchor refused a chat whose round is pending delivery"
+assert test "$fix_anchor" = "$FIX_REPO"
+fix_bench review-anchor --session sess-nobody && fail "review-anchor named a run for a chat that owes nothing"
+# The gate's ledger is the one record a report reached Egor: a `(run, state)` it names is pending
+# nowhere — neither in this listing nor under the anchor built on it. An isolated finished round
+# (nothing confirmed, so no fork stands in front of the chat) proves it end to end.
+FIX_LEDGER="$FIX_HOME/.cache/claude/review-delivery"
+git init -q "$WORK/fix-delivered-repo"
+GATE_SD="$FIX_SD" GATE_REPO="$WORK/fix-delivered-repo" GATE_SESSION=sess-delivered \
+  gate_run 20260730T000000Z-delivered 0 2
+printf '%s\n' '{"rater":"oc-kimik3","idx":0,"verdict":"false_positive"}' \
+  '{"rater":"oc-kimik3","idx":1,"verdict":"false_positive"}' >"$WORK/fix-delivered-verdicts.jsonl"
+fix_bench record 20260730T000000Z-delivered --no-corpus \
+  --verdicts "$WORK/fix-delivered-verdicts.jsonl" >/dev/null \
+  || fail "the delivered-round fixture refused its triage"
+assert test "$(fix_bench review-anchor --session sess-delivered --cwd "$WORK")" = "$WORK/fix-delivered-repo"
+mkdir -p "$FIX_LEDGER"
+printf 'run:20260730T000000Z-delivered:done\n' > "$FIX_LEDGER/sess-delivered.emitted"
+fix_delivered=$(fix_bench pending-delivery --session sess-delivered) \
+  || fail "pending-delivery failed over a delivered round"
+assert test "$(grep -c delivered <<<"$fix_delivered")" = 0
+fix_bench review-anchor --session sess-delivered --cwd "$WORK" \
+  && fail "review-anchor anchored a round the ledger says was delivered"
+rm -f "$FIX_LEDGER/sess-delivered.emitted"
+rm -rf "$FIX_SD/benches/20260730T000000Z-delivered" "$WORK/fix-delivered-repo"
+# The merged live run is deliberately OLDER than the pending fixround1: a run in flight outranks
+# any merely-pending one, whatever their ids say.
+mkdir -p "$FIX_SD/benches/20260731T000000Z-merged" "$FIX_SD/progress" "$WORK/anchor-other"
+git -C "$WORK/anchor-other" init -q
+jq -n --arg repo "$FIX_REPO" --arg other "$WORK/anchor-other" --arg session sess-fix \
+  '{run_id:"20260731T000000Z-merged", session:$session, worktree:true, repo:"/nonexistent/merged",
+    repos:[{repo:$other},{repo:$repo}], started:"2026-07-31T00:00:00+00:00"}' \
+  > "$FIX_SD/benches/20260731T000000Z-merged/meta.json"
+jq -n --arg repo "$FIX_REPO" --arg session sess-fix --argjson pid "$$" \
+  '{repo:$repo, pid:$pid, run_id:"20260731T000000Z-merged", session:$session, cells:["a"], done:[],
+    started:"2026-07-31T00:00:00+00:00", ts:"2026-07-31T00:00:00+00:00"}' \
+  > "$FIX_SD/progress/anchor-merged.json"
+assert test "$(fix_bench review-anchor --session sess-fix --cwd "$FIX_REPO")" = "$FIX_REPO +1"
+assert test "$(fix_bench review-anchor --session sess-fix --cwd "$WORK")" = "$WORK/anchor-other +1"
+# A progress document naming no session is the pid walk's to attribute (shared-invariants row an),
+# the same precedence the statusline reader applies: the run stays this chat's live one.
+FIX_SESSIONS="$WORK/fix-sessions"
+mkdir -p "$FIX_SESSIONS"
+jq -n '{sessionId:"sess-fix"}' > "$FIX_SESSIONS/$$.json"
+jq -n --arg repo "$FIX_REPO" --argjson pid "$$" \
+  '{repo:$repo, pid:$pid, run_id:"20260731T000000Z-merged", cells:["a"], done:[],
+    started:"2026-07-31T00:00:00+00:00", ts:"2026-07-31T00:00:00+00:00"}' \
+  > "$FIX_SD/progress/anchor-merged.json"
+assert test "$(REVIEW_BENCH_SESSION_DIR="$FIX_SESSIONS" fix_bench review-anchor \
+  --session sess-fix --cwd "$FIX_REPO")" = "$FIX_REPO +1"
+rm -rf "$FIX_SESSIONS"
+rm -f "$FIX_SD/progress/anchor-merged.json"
+rm -rf "$FIX_SD/benches/20260731T000000Z-merged" "$WORK/anchor-other"
 # The triage Stop gate owes a triaged run one thing more where the stub gate's fork opened: the
 # fork decision, on record before any fixing pass. It asks for the `fork` command in the place of
 # the `record` one, under the same bounded counter, and goes quiet the moment it is on record.

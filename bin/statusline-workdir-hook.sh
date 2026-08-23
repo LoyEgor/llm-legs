@@ -410,6 +410,10 @@ if [[ "$now" =~ ^[0-9]+$ ]] && [[ "$marker_mtime" =~ ^[0-9]+$ ]] && [ "$((now - 
   find "$cache_dir" -type f \
     \( -name 'workdir-*' -o -name 'touched-*' -o -name 'review-tier-*' -o -name 'review-class-*' \) \
     -mtime +7 -delete
+  # A live chat rewrites its anchor every TTL, so a day-old one is a dead chat's; the lock is a
+  # DIRECTORY (mkdir), which the -type f sweep above can never reach.
+  find "$cache_dir" -type f -name 'review-anchor-*' -mtime +1 -delete
+  find "$cache_dir" -type d -name 'review-anchor-*.lock' -mtime +1 -exec rmdir {} + 2>/dev/null
   touch "$marker"
 fi
 

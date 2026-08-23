@@ -1295,11 +1295,23 @@ def cmd_pending_delivery(args):
     39 pre-fixes-mechanism runs in a single message (2026-08-20). Such a run is reported only when
     the model asks for it by hand.
 
-    Read-only — a delivery ledger decides what is new, not a mark written here.
+    Read-only — nothing is marked here — but the gate's own ledger is honoured: a `(run, state)`
+    it already names reached Egor and is pending nowhere, this listing and the statusline anchor
+    built on it included.
     """
     session = str(args.session or "").strip()
     if not session:
         raise ValueError("--session names the chat whose runs to answer for")
+    for run_dir, state in pending_delivery_rows(session):
+        print(f"{run_dir.name} {state}")
+    return 0
+
+
+def pending_delivery_rows(session):
+    """`cmd_pending_delivery`'s answer as `(run_dir, state)` pairs, in print order."""
+    from . import debt as _debt  # here and not at module top: debt imports this module at load
+    ledgers = {}
+    rows = []
     benches = _store.state_dir() / "benches"
     now = datetime.now(timezone.utc)
     for run_dir in sorted(benches.iterdir()) if benches.exists() else ():
@@ -1316,7 +1328,7 @@ def cmd_pending_delivery(args):
             continue
         forked = _store.parse_iso_timestamp((read_fork(run_dir) or {}).get("at"))
         if forked is not None and (now - forked).total_seconds() <= _store.TRIAGE_GATE_HOURS * 3600:
-            print(f"{run_dir.name} fork")
+            rows.append((run_dir, "fork"))
         state = delivery_state(run_dir)
         # A pass that has not answered is left alone whatever its age: the fixer may be mid-pass
         # and the report is about to change, and past that it is a report about a diff that moved.
@@ -1326,7 +1338,7 @@ def cmd_pending_delivery(args):
         # mark ever exempts it: promoted past a window, 39 pre-fixes-mechanism runs rendered into
         # one message at once (2026-08-20).
         if state == "triaged":
-            print(f"{run_dir.name} {state}")
+            rows.append((run_dir, state))
             continue
         mark = delivery_mark(run_dir)
         # A queued round is named at ANY age. The window is a bound on runs nobody has looked at:
@@ -1343,7 +1355,123 @@ def cmd_pending_delivery(args):
         # could name and that vocabulary does not hold would be delivered to nobody at all.
         if state not in DELIVERY_STATES:
             continue
-        print(f"{run_dir.name} {state}")
+        rows.append((run_dir, state))
+    # The ledger is the one record a report reached Egor (docs/shared-invariants.md row `au`):
+    # unread, a delivered `triaged` round stayed "pending" for the rest of its window and the
+    # anchor held the statusline on a finished review.
+    return [
+        (run_dir, state) for run_dir, state in rows
+        if not _debt.ledger_delivered(session, run_dir.name, state, ledgers)
+    ]
+
+
+def run_repos(meta):
+    """The repositories a run read: a merged panel's members, else the run's own."""
+    members = [
+        str(entry.get("repo")) for entry in meta.get("repos") or ()
+        if isinstance(entry, dict) and entry.get("repo")
+    ]
+    return members or [str(meta.get("repo") or "")]
+
+
+def live_progress_run_ids(session):
+    """Run ids with a progress document this chat launched whose process is still alive."""
+    directory = _store.state_dir() / _store.PROGRESS_DIR
+    now = time.time()
+    run_ids = set()
+    for path in directory.iterdir() if directory.is_dir() else ():
+        try:
+            document = json.loads(path.read_text())
+            if not isinstance(document, dict):
+                continue
+            # Row `an`'s precedence, the same one the statusline reader applies: the recorded
+            # session first, the pid walk only for a document written before a session was
+            # recorded — else a run this chat started is dropped from this chat's own counter.
+            recorded = document.get("session")
+            if recorded:
+                if recorded != session:
+                    continue
+            elif _store.walk_launching_session(int(document["pid"])) != session:
+                continue
+            mtime = path.stat().st_mtime
+            if now - mtime > 7200:
+                continue
+            # The statusline reader's liveness rule, on triage_delegated's machinery (`ps`, never
+            # a signal probe — shared-invariants row `ar`): the pid must be alive AND its process
+            # must have started no later than the file's last write, which a pid recycled after
+            # the run died cannot satisfy. `ps` failing on every pid is a sandbox, not death.
+            elapsed = pid_elapsed_seconds(int(document["pid"]))
+            if elapsed is None:
+                if pid_elapsed_seconds(1) is not None:
+                    continue
+            elif now - elapsed > mtime + DELEGATED_PID_SLACK:
+                continue
+        except (OSError, ValueError, TypeError, KeyError):
+            continue
+        if document.get("run_id"):
+            run_ids.add(str(document["run_id"]))
+    return run_ids
+
+
+def session_anchor_run(session):
+    """The run this chat still has in front of it: the newest one in flight — a live run outranks
+    any merely-pending one, since the counter rendering beside the folder is its — else the newest
+    whose round is unanswered (`pending-report` / `pending-delivery` name it). None when the chat
+    owes nothing.
+    """
+    benches = _store.state_dir() / "benches"
+    live = live_progress_run_ids(session)
+    pending = {run_dir.name for run_dir, _ in pending_delivery_rows(session)}
+    fallback = None
+    for run_dir in sorted(benches.iterdir(), reverse=True) if benches.exists() else ():
+        try:
+            meta = json.loads((run_dir / "meta.json").read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(meta, dict):
+            continue
+        launcher = str(meta.get("session") or "")
+        if launcher:
+            if launcher != session:
+                continue
+        # Meta stamps the session from the environment alone, while the progress writer also
+        # walks the pid chain (shared-invariants row `an`: recorded session first, walk as the
+        # fallback): a run whose meta names nobody is still this chat's where its live progress
+        # document says so — and, having no recorded launcher to answer for it, nobody else's.
+        elif run_dir.name not in live:
+            continue
+        if run_dir.name in live:
+            return run_dir, meta
+        if fallback is None:
+            if run_dir.name in pending:
+                fallback = (run_dir, meta)
+            else:
+                owed = triage_pending_run(run_repos(meta)[0], session)
+                if owed is not None and owed[0] == run_dir:
+                    fallback = (run_dir, meta)
+    return fallback
+
+
+def cmd_review_anchor(args):
+    """Print the repository the statusline's folder segment must show for this chat: `<repo>`,
+    or `<repo> +N` for a merged panel, where the member equal to `--cwd`'s repository wins and the
+    first member stands otherwise. Exit 1 when no review is in front of the chat.
+    """
+    session = str(args.session or "").strip()
+    if not session:
+        raise ValueError("--session names the chat whose review to anchor on")
+    found = session_anchor_run(session)
+    if found is None:
+        return 1
+    repos = run_repos(found[1])
+    anchor = repos[0]
+    cwd_common = _store.git_common_dir(args.cwd) if args.cwd else None
+    if cwd_common is not None:
+        for candidate in repos:
+            if _store.git_common_dir(candidate) == cwd_common:
+                anchor = candidate
+                break
+    print(anchor if len(repos) == 1 else f"{anchor} +{len(repos) - 1}")
     return 0
 
 

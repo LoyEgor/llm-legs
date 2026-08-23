@@ -52,13 +52,10 @@ assert grep -Fq -- '--argjson thr5 "$LIMITS_STALE_FIVE_HOUR"' "$LLMLIMITS"
 assert eq "$(grep -c 'is_stale(' "$CLAUDEB")" 0
 assert eq "$(grep -cE '\$stale > (1800|21600)' "$LLMLIMITS")" 0
 
-# statusline dim logic — anchor on the age comparison, not the arrow rounding term
-sl_five=$(grep -oE 'now - h5_as_of\)\) -gt [0-9]+' "$STATUSLINE" | grep -oE '[0-9]+$')
-sl_week=$(grep -oE 'now - wk_as_of\)\) -gt [0-9]+' "$STATUSLINE" | grep -oE '[0-9]+$')
-sl_fable=$(grep -oE 'now - limits_mtime\)\) -gt [0-9]+' "$STATUSLINE" | grep -oE '[0-9]+$')
-assert eq "$sl_five" "$FIVE"
-assert eq "$sl_week" "$WEEK"
-assert eq "$sl_fable" "$FABLE"
+# the statusline consumes the shared variables too, and carries no dim literal of its own
+assert grep -Fq -- '--argjson thr5 "$LIMITS_STALE_FIVE_HOUR" --argjson thrw "$LIMITS_STALE_WEEKLY"' "$STATUSLINE"
+assert grep -Fq -- '-gt "$LIMITS_STALE_FABLE"' "$STATUSLINE"
+assert eq "$(grep -cE -- '-gt (1800|21600)\b' "$STATUSLINE")" 0
 
 # hammerspoon must stay stale-flag-driven, not hardcode one of these thresholds
 assert grep -q 'bucket.stale == true' "$HAMMER"
@@ -605,6 +602,16 @@ for view_consumer in "$CLAUDEB" "$LLMLIMITS"; do
   assert grep -Fq 'limits_reset_text' "$view_consumer"
   assert grep -Fq 'limits_age_text' "$view_consumer"
 done
+# the statusline judges its raw account snapshots with the same defs and renders the fable row
+# off the collector's fields, like the menu; no private expiry/stale/pct copy survives
+assert grep -Fq 'share/limits-view.sh' "$STATUSLINE"
+for view_def in limits_bucket_expired limits_bucket_stale limits_effective_pct \
+    limits_reset_epoch_floor limits_reset_ancient; do
+  assert grep -Fq "$view_def" "$STATUSLINE"
+done
+assert grep -Fq '.effective_pct | round | tostring' "$STATUSLINE"
+assert eq "$(grep -c 'used_pct' "$STATUSLINE")" 0
+assert eq "$(grep -cE '"\$(h5|wk)_reset" -lt "\$now"' "$STATUSLINE")" 0
 # the menu stays flag-driven off the collector's fields (never re-derives pct semantics)
 assert grep -Fq 'tonumber(bucket.effective_pct)' "$HAMMER"
 assert eq "$(grep -c 'used_percentage' "$HAMMER")" 0
@@ -826,7 +833,7 @@ blocked|done|pending"
   cs_delivery_states='done|blocked'
   assert grep -Fq "DELIVERY_STATES = (\"${cs_delivery_states//|/\", \"}\")" "$RB_ROUND"
   assert grep -Fq 'return "triaged"' "$RB_ROUND"
-  assert grep -Fq 'print(f"{run_dir.name} fork")' "$RB_ROUND"
+  assert grep -Fq 'rows.append((run_dir, "fork"))' "$RB_ROUND"
   assert grep -Fq "Z-[0-9a-f]+(?:-\\d+)?) ($cs_delivery_states|triaged|fork)\\Z\")" "$DELIVERY_GATE"
   assert grep -Fq 'LINE_STATES = ("triaged", "fork")' "$DELIVERY_GATE"
   assert grep -Fq 'const="triaged", choices=("triaged", "fork")' "$RB_CLI"
@@ -1995,7 +2002,10 @@ assert grep -Fq 'DELIVERY_LEDGER_DIR = ("claude", "review-delivery")' "$RB_DEBT"
 assert grep -Fq 'DELIVERY_LEDGER_SUFFIX = ".emitted"' "$RB_DEBT"
 assert grep -Fq 'DELIVERY_LEDGER_KEY = "run:{run_id}:{state}"' "$RB_DEBT"
 # Read-only on this side: a diagnostic that wrote a key would retire a report nobody has seen.
-assert rb_pkg_only 'DELIVERY_LEDGER_KEY.format(' 1 "$RB_DEBT"
+# The key shape is spelled in debt.py alone: the doctor scan and `ledger_delivered`, which is how
+# `pending_delivery_rows` (and the statusline anchor over it) honours the ledger.
+assert rb_pkg_only 'DELIVERY_LEDGER_KEY.format(' 2 "$RB_DEBT"
+assert rb_pkg_only 'ledger_delivered(session, run_dir.name, state, ledgers)' 1 "$RB_ROUND"
 assert test -z "$(grep -rlE 'ledger.*(open\(.*"a"|write_text)' --include='*.py' "$RB_PKG")"
 if test -r "$REPORT_NUDGE" && test -r "$DELIVERY_GATE"; then
   for cs_ledger_hook in "$REPORT_NUDGE" "$DELIVERY_GATE"; do
@@ -2162,4 +2172,32 @@ assert grep -Fq "numbers are the DIFF's own lines" "$ROOT/docs/review-contract.m
 assert grep -Fq 'meta["reviewed"] = _scope.attested_paths(reviewed, unread)' "$RB_CLI"
 assert doc_has "A chunk NO cell's pass came back from"
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the debt word the bench prints, the gate translates and the statusline speaks verbatim, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the round-size numbers that lock a waiver, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, and the five header words the bench renders, one of which is worn by a round no hook may deliver — so both of them apply one further rule over the rows of the block itself, and the one review command both repositories hand a chat, which names no paths because the mode computes its own scope, the delivery ledger the two report hooks write and the doctor only reads, the doctor snapshot whose six class names are the menubar'"'"'s whole vocabulary, and the one resolver every surface names a chat through) and match %s\n' "$asserts" "$DOC"
+# --- Row ay: sanctioned headless launchers ------------------------------------
+# The list of tools that own their launches is spelled in the contract and again in the gate's
+# regex. Drift either way is silent: a launcher the gate forgot has its every run denied, and a
+# spelling the contract forgot is a bare launch nobody can see.
+LAUNCH_GATE="${WORKER_LAUNCH_GATE:-$HOME/.claude/hooks/worker-launch-gate.sh}"
+assert test -x "$LAUNCH_GATE"
+gate_sanctioned=$(grep -m1 '^SANCTIONED_RE=' "$LAUNCH_GATE" |
+  grep -oE '[a-z][a-z-]+-(run|bench|limits|driver|image|go)' | sort -u | paste -sd' ' -)
+for launcher in worker-run review-bench llm-limits claude-session-driver codex-image gemini-image opencode-go; do
+  assert grep -Fq "\`$launcher\`" "$ROOT/$DOC"
+  assert grep -Fq "$launcher" "$LAUNCH_GATE"
+done
+assert eq "$gate_sanctioned" 'claude-session-driver codex-image gemini-image llm-limits opencode-go review-bench worker-run'
+# `claudeb revive` and `claudeb warm` are subcommands, not binaries: the gate must not exempt every
+# `claudeb` line, or the bare launch it exists to deny walks straight through.
+assert grep -Fq 'claudeb[[:space:]]+(revive|warm)' "$LAUNCH_GATE"
+assert doc_has '`claudeb revive`, `claudeb warm`'
+# Every bare-launch spelling the contract names has a pattern, and every pattern a spelling.
+for launch_spelling in 'claude -p' 'claudeb … -p' 'codex exec' 'codexb … exec' 'gemini -p' 'geminib … --print' 'agy … --print' 'opencode run'; do
+  assert grep -Fq "\`$launch_spelling\`" "$ROOT/$DOC"
+  assert grep -Fq "\`$launch_spelling\`" "$ROOT/docs/routing-contract.md"
+done
+assert eq "$(grep -Fc '${VENDOR_WORD}' "$LAUNCH_GATE")" 5
+assert grep -Fq 'grep -Eq "$SANCTIONED_RE" <<<"$cmd" && exit 0' "$LAUNCH_GATE"
+assert grep -Fq 'worker-launch-gate.sh' "$WORKER_GATE_SETTINGS"
+assert doc_has 'Sanctioned headless launchers'
+assert grep -Fq '## Sanctioned launchers' "$ROOT/docs/routing-contract.md"
+
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the debt word the bench prints, the gate translates and the statusline speaks verbatim, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the round-size numbers that lock a waiver, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, and the five header words the bench renders, one of which is worn by a round no hook may deliver — so both of them apply one further rule over the rows of the block itself, and the one review command both repositories hand a chat, which names no paths because the mode computes its own scope, the delivery ledger the two report hooks write and the doctor only reads, the doctor snapshot whose six class names are the menubar'"'"'s whole vocabulary, the one resolver every surface names a chat through, and the launchers a headless vendor run may reach the machine through) and match %s\n' "$asserts" "$DOC"

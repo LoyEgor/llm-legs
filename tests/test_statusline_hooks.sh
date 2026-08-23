@@ -1147,6 +1147,53 @@ assert test "${general_out#*~acctgen}" = "$general_out"
 assert grep -Fq "${GREEN}44%" <<< "$general_out"
 assert_eq "$(bucket_json 44 22)" "$(cat "$CLAUDEB_FIX/limits/acctgen.json")"
 
+# Every bucket renders through share/limits-view.sh (shared-invariants y), as the menubar does:
+# an expired window shows its EFFECTIVE value (0%) dimmed, a placeholder reset below the epoch
+# floor is neither expired nor a date, and a reset over a day past loses its date but not its
+# verdict. The fable row is the collector's own effective_pct/stale/expired, never a re-derivation.
+jq -cn --argjson now "$NOW" '
+  {five_hour:{used_percentage:33,resets_at:($now-10),as_of:$now,origin:"headers"},
+   seven_day:{used_percentage:11,resets_at:0,as_of:$now,origin:"session"},
+   auth:{status:"ok",checked_at:$now}}' > "$CLAUDEB_FIX/limits/acctgen.json"
+view_out=$(run_statusline "$(statusline_payload status-view-expired)" acctgen) \
+  || fail "statusline shared-view render failed"
+assert grep -Fq "5h ${DIM}0%${RESET}" <<< "$view_out"
+assert_eq "" "${view_out##*wk ${GREEN}11%${RESET}}"
+assert test "${view_out#*33%}" = "$view_out"
+jq -cn --argjson now "$NOW" '
+  {five_hour:{used_percentage:33,resets_at:($now-90000),as_of:$now,origin:"headers"},
+   seven_day:{used_percentage:11,resets_at:($now+86400),as_of:$now,origin:"session"},
+   auth:{status:"ok",checked_at:$now}}' > "$CLAUDEB_FIX/limits/acctgen.json"
+view_ancient_out=$(run_statusline "$(statusline_payload status-view-ancient)" acctgen) \
+  || fail "statusline shared-view ancient render failed"
+assert grep -Fq "5h ${DIM}0%${RESET} ${DIM}│" <<< "$view_ancient_out"
+jq -cn --argjson now "$NOW" '
+  {vendors:{claude:{accounts:[{account:"acctgen",five_hour:{stale:false},weekly:{stale:false},
+    fable:{used_pct:90,effective_pct:0,expired:true,stale:false,resets_at:null}}]}}}' \
+  > "$WORK/limits.json"
+view_fable_out=$(run_statusline "$(statusline_payload status-view-fable)" acctgen) \
+  || fail "statusline shared-view fable render failed"
+assert grep -Fq "fb ${DIM}0%${RESET}" <<< "$view_fable_out"
+assert test "${view_fable_out#*90%}" = "$view_fable_out"
+jq -cn '{vendors:{claude:{accounts:[{account:"acctgen",five_hour:{stale:false},weekly:{stale:false},
+    fable:{used_pct:90,effective_pct:90,expired:false,stale:true,resets_at:null}}]}}}' \
+  > "$WORK/limits.json"
+view_fable_stale_out=$(run_statusline "$(statusline_payload status-view-fable-stale)" acctgen) \
+  || fail "statusline shared-view stale fable render failed"
+assert grep -Fq "fb ${DIM}90%${RESET}" <<< "$view_fable_stale_out"
+# A fable reset over a day past loses its date but not its verdict — the menubar's `-`, spelled
+# here as no date at all.
+fable_ancient_iso=$(date -u -r $((NOW - 259200)) +%Y-%m-%dT%H:%M:%SZ)
+jq -cn --arg reset "$fable_ancient_iso" '{vendors:{claude:{accounts:[{account:"acctgen",
+    five_hour:{stale:false},weekly:{stale:false},
+    fable:{used_pct:90,effective_pct:0,expired:true,stale:false,resets_at:$reset}}]}}}' \
+  > "$WORK/limits.json"
+view_fable_ancient_out=$(run_statusline "$(statusline_payload status-view-fable-ancient)" acctgen) \
+  || fail "statusline ancient fable render failed"
+assert_eq "" "${view_fable_ancient_out##*fb ${DIM}0%${RESET}}"
+rm -f "$WORK/limits.json"
+bucket_json 44 22 > "$CLAUDEB_FIX/limits/acctgen.json"
+
 # A cached header-origin week is a number nobody measured (shared-invariants n): the render
 # must show `?`, and a real reading must replace it even though newer() would otherwise keep
 # the higher percentage for the rest of the weekly window.
@@ -3187,7 +3234,103 @@ assert_eq 0 \
   "$(grep -Eco 'review (T[0-3] )?[0-9]+/[0-9]+' <<< "$progress_gone_out" | tr -d ' ')"
 assert review_slot_silent "$progress_gone_out"
 
+# The folder follows the review: while this chat has a run in flight or a round unanswered, the
+# `dir` segment, the branch/diff cluster and the gate's question are the review's repository, not
+# the shell's (Egor: "I must never see one folder and a review about another").
+ANCHOR_BENCHES="$CLAUDEB_FIX/worker-stats/benches"
+write_anchor_run() { # run-id session repo [member-repo...]
+  local run_id="$1" session="$2" repo="$3"
+  shift 3
+  mkdir -p "$ANCHOR_BENCHES/$run_id"
+  jq -cn --arg run_id "$run_id" --arg session "$session" --arg repo "$repo" \
+    --args '{run_id:$run_id, session:$session, repo:$repo, worktree:true, commit:"abc1234",
+             started:"2026-07-27T22:00:00+00:00"}
+            + (if ($ARGS.positional | length) > 0
+               then {repos: [$ARGS.positional[] | {repo: .}]} else {} end)' "$@" \
+    > "$ANCHOR_BENCHES/$run_id/meta.json"
+  jq -cn --arg run_id "$run_id" --arg session "$session" --arg repo "$repo" --argjson pid "$$" \
+    '{repo:$repo, pid:$pid, run_id:$run_id, session:$session, tier:"T2", max:false,
+      target:"worktree", cells:["a","b"], done:["a"], failed:0,
+      started:"2026-07-27T22:00:00+00:00", ts:"2026-07-27T22:00:00+00:00"}' \
+    > "$PROGRESS_DIR/anchor-$run_id.json"
+}
+anchor_await() { # session
+  local i
+  for i in $(seq 1 100); do
+    [ -f "$STATE_DIR/review-anchor-$1" ] && [ ! -d "$STATE_DIR/review-anchor-$1.lock" ] && return 0
+    sleep 0.05
+  done
+  fail "the backgrounded anchor never landed: $1"
+}
+anchor_render() { # session cwd
+  local payload
+  rm -f "$STATE_DIR/review-anchor-$1" "$STATE_DIR/review-class-$1"
+  rmdir "$STATE_DIR/review-anchor-$1.lock" "$STATE_DIR/review-class-$1.lock" 2>/dev/null
+  payload=$(statusline_payload "$1" "" "$2")
+  run_statusline "$payload" >/dev/null || fail "anchor render failed: $1"
+  anchor_await "$1"
+  run_statusline "$payload" >/dev/null || fail "anchor render failed: $1"
+  review_await_verdict "$1"
+  run_statusline "$payload" || fail "anchor render failed: $1"
+}
+anchor_dir_b="${DIM}$(basename "$REPO_A")${RESET} ${MAGENTA}»${RESET} ${BLUE}$(basename "$REVIEW_CLEAN")${RESET}"
 
+# (a) A live review over repository B while the shell sits in A: the folder is B and `rev` is B's.
+: > "$GATE_LOG"
+GATE_ANSWER='bright rev 2'
+write_anchor_run 20260727T220000Z-aaaaaaa anchor-live "$REVIEW_CLEAN"
+anchor_live_out=$(anchor_render anchor-live "$REPO_A")
+assert grep -Fq "$anchor_dir_b" <<< "$anchor_live_out"
+assert grep -Fq " ${DIM}│${RESET} review T2 1/2" <<< "$anchor_live_out"
+assert_eq "verdict $review_clean_root anchor-live" "$(tail -1 "$GATE_LOG")"
+assert_eq "$REVIEW_CLEAN" "$(cat "$STATE_DIR/review-anchor-anchor-live")"
+
+# Once the run ends and nothing is owed, the shell's folder is back and the gate is asked about it.
+: > "$GATE_LOG"
+rm -f "$PROGRESS_DIR/anchor-20260727T220000Z-aaaaaaa.json"
+anchor_ended_out=$(anchor_render anchor-live "$REPO_A")
+assert test "${anchor_ended_out#*»}" = "$anchor_ended_out"
+assert_eq "verdict $TOP_A anchor-live" "$(tail -1 "$GATE_LOG")"
+rm -rf "$ANCHOR_BENCHES/20260727T220000Z-aaaaaaa"
+
+# (b) A merged panel anchors to the member equal to the shell's repository, else to the first
+# member, and names the others as a dim `+N` either way.
+write_anchor_run 20260727T220000Z-bbbbbbb anchor-merged "$FIXTURES/merged-workspace-gone" \
+  "$REVIEW_CLEAN" "$REVIEW_DIRTY"
+anchor_member_out=$(anchor_render anchor-merged "$REVIEW_DIRTY")
+assert grep -Fq "${BLUE}$(basename "$REVIEW_DIRTY")${RESET} ${DIM}+1${RESET}" <<< "$anchor_member_out"
+assert test "${anchor_member_out#*»}" = "$anchor_member_out"
+anchor_first_out=$(anchor_render anchor-merged "$REPO_A")
+assert grep -Fq "$anchor_dir_b ${DIM}+1${RESET}" <<< "$anchor_first_out"
+rm -f "$PROGRESS_DIR/anchor-20260727T220000Z-bbbbbbb.json"
+rm -rf "$ANCHOR_BENCHES/20260727T220000Z-bbbbbbb"
+
+# (c) No review in front of the chat: byte-identical to a chat that never had one.
+anchor_none_out=$(anchor_render anchor-none "$REPO_A")
+anchor_control_out=$(anchor_render anchor-control "$REPO_A")
+assert_eq "$anchor_control_out" "$anchor_none_out"
+assert test "${anchor_none_out#*»}" = "$anchor_none_out"
+assert_eq "" "$(cat "$STATE_DIR/review-anchor-anchor-none")"
+
+# (d) Two runs from one chat: the newest wins, and nothing else decides.
+write_anchor_run 20260727T220000Z-ccccccc anchor-two "$REVIEW_CLEAN"
+write_anchor_run 20260727T230000Z-ddddddd anchor-two "$REVIEW_DIRTY"
+anchor_two_out=$(anchor_render anchor-two "$REPO_A")
+assert grep -Fq "${MAGENTA}»${RESET} ${BLUE}$(basename "$REVIEW_DIRTY")${RESET}" <<< "$anchor_two_out"
+assert test "${anchor_two_out#*"$(basename "$REVIEW_CLEAN")"}" = "$anchor_two_out"
+rm -f "$PROGRESS_DIR"/anchor-*.json
+rm -rf "$ANCHOR_BENCHES"
+
+# (e) An anchor whose repository no longer resolves is ignored WHOLE: the session's own folder,
+# with no leftover member count from the dead panel.
+printf '%s' "/nonexistent/repo-gone +2" > "$STATE_DIR/review-anchor-anchor-gone"
+anchor_gone_out=$(run_statusline "$(statusline_payload anchor-gone "" "$REPO_A")") \
+  || fail "anchor missing-repo render failed"
+assert grep -Fq "${BLUE}$(basename "$REPO_A")${RESET}" <<< "$anchor_gone_out"
+assert test "${anchor_gone_out#*+2}" = "$anchor_gone_out"
+assert test "${anchor_gone_out#*»}" = "$anchor_gone_out"
+rm -f "$STATE_DIR/review-anchor-anchor-gone"
+GATE_ANSWER=off
 
 
 echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, a review slot that carries a run in flight — over this tree or over another one this chat launched — and nothing else once it ends, the gate's verdict vocabulary rendered verbatim, both debt sides in one two-toned segment and red kept for a word this build does not know, keyed on the commit journal and asked once per key with nothing else probed behind it, main-last and Gemini account predictions, and Codex/claudeb/Gemini worker tag propagation"

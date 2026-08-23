@@ -45,6 +45,23 @@ beyond it is deleted, not preserved.
    meaning "no worker may run", answered as `every <vendor> account is out of the worker pool`
    and reported by `worker-run` as `OUTCOME: <VENDOR>_UNAVAILABLE`, never as a usage limit.
 
+## Sanctioned launchers
+
+Reachability is only half of visibility. A vendor launched as a bare headless CLI call from a
+chat's Bash — `claude -p`, `claudeb … -p`, `codex exec`, `codexb … exec`, `gemini -p`,
+`geminib … --print`, `agy … --print`, `opencode run` — leaves no `worker-run` record, no statusline
+tag, no journal ownership, no pool refusal, no limit signature and no stall watch, so nothing
+downstream can tell a worker ran at all. Every headless run therefore goes through `worker-run` or
+a tool that owns its own launches, and this is the whole list: `worker-run`, `review-bench`,
+`llm-limits`, `claudeb revive`, `claudeb warm`, `claude-session-driver`, `codex-image`,
+`gemini-image`, `opencode-go`. `bin/worker-launch-gate.sh` is the mechanical half — a PreToolUse
+Bash gate denying a command that spells a bare launch unless the same command names one of those
+launchers. It reads the whole command string, and a vendor name counts only where a
+shell would run it: quoted text collapses into one operand word before the quotes come off, so
+`'claude' -p` and `X="a b" claude -p` are denied while a launch quoted inside an echo or a grep is
+the operand it is. It fails open on its own errors. Interactive launches — no `-p` / `--print` /
+`--prompt`, no `exec`, no `run` — are the user, not a worker, and are never gated.
+
 ## Roles
 
 A vendor serves two roles — `workers` (implementation) and `reviewers` (review-bench raters) —
