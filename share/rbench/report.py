@@ -414,6 +414,31 @@ def report_failed_rows(run_dir, summary, meta, scheme):
     return rows
 
 
+def confirmed_tally(severities, total, docs):
+    """The `confirmed:` row and the one-line `triaged` delivery read this one call, so the two
+    can never disagree."""
+    if not total:
+        return "0"
+    return " · ".join([
+        *(f"{level} {severities[level]}" for level in _prompts.LENS_SEVERITIES),
+        f"{total - docs} total",
+        *([f"{docs} in docs"] if docs else []),
+    ])
+
+
+def triaged_line(run_dir, meta):
+    summary = _panel.bench_summary(run_dir, meta, _round.recorded_verdict_rows(run_dir))
+    tally = confirmed_tally(summary["severities"], summary["confirmed"], summary["docs"])
+    return f"{_round.REPORT_FRAME_WORD} {run_dir.name} · triaged: {tally} — fixing pass next"
+
+
+def fork_line(run_dir):
+    fork = _round.read_fork(run_dir)
+    if fork is None:
+        raise ValueError(f"run {run_dir.name} has no fork on record")
+    return f"{_round.REPORT_FRAME_WORD} {run_dir.name} · fork: {fork['choice']} — {fork['why']}"
+
+
 def round_fork_text(run_dir, meta, verdicts=None):
     """The whole of what a round's report does NOT say: which way it goes from here.
 
@@ -470,15 +495,9 @@ def report_lines(run_dir, meta, verdicts=None):
             str(meta["lens"]) + (f" · {len(dropped)} cells dropped" if dropped else ""),
             True,
         ))
-    severities = summary["severities"]
-    docs = summary["docs"]
     rows.append((
         "confirmed:",
-        " · ".join([
-            *(f"{level} {severities[level]}" for level in _prompts.LENS_SEVERITIES),
-            f"{total - docs} total",
-            *([f"{docs} in docs"] if docs else []),
-        ]) if total else "0",
+        confirmed_tally(summary["severities"], total, summary["docs"]),
         True,
     ))
     verdict_rows = verdicts if verdicts is not None else (_round.recorded_verdict_rows(run_dir) or [])
@@ -646,14 +665,26 @@ def cmd_report(args):
     # The delivery hooks print this rendering to Egor unasked, so `--session` is what keeps a chat
     # from framing another chat's review as its own: a run reached by id says nothing about who
     # launched it, and the report he reads IS the indicator that HIS review finished (2026-08-22).
-    # A worker's launch answers to the chat that sent it, the fold `caller_chat` makes.
-    asking = str(getattr(args, "session", "") or "").strip()
+    refuse_foreign_chat(run_dir, meta, str(getattr(args, "session", "") or "").strip())
+    line = getattr(args, "line", None)
+    if line == "triaged":
+        print(triaged_line(run_dir, meta))
+    elif line == "fork":
+        print(fork_line(run_dir))
+    else:
+        emit_report(run_dir, meta)
+    return 0
+
+
+def refuse_foreign_chat(run_dir, meta, asking):
+    """A run is its launcher's: an empty `asking` (the harness named no chat) passes, any other
+    chat is refused by name. A worker's launch answers to the chat that sent it, the fold
+    `caller_chat` makes.
+    """
     launcher = str(meta.get("session") or "")
     if (asking and launcher and launcher != asking
             and worker_session_launchers().get(launcher) != asking):
         raise ValueError(f"run {run_dir.name} belongs to chat {launcher}")
-    emit_report(run_dir, meta)
-    return 0
 
 
 def cmd_fork(args):
@@ -665,6 +696,34 @@ def cmd_fork(args):
     if not (run_dir / "meta.json").exists():
         raise ValueError(f"unknown run id: {args.run_id}")
     meta = json.loads((run_dir / "meta.json").read_text())
+    if getattr(args, "check", False):
+        if _round.fork_missing(run_dir, meta):
+            print(_round.fork_refusal(run_dir.name), file=sys.stderr)
+            return 3
+        return 0
+    choice = getattr(args, "choice", None)
+    why = " ".join(str(getattr(args, "why", "") or "").split())
+    if choice or why:
+        if not (choice and why):
+            raise ValueError("--choice and --why go together")
+        if len(why) < _round.FORK_WHY_MIN_CHARS:
+            raise ValueError(
+                f"--why is the strategic reason for the choice and needs at least "
+                f"{_round.FORK_WHY_MIN_CHARS} characters; got {len(why)}"
+            )
+        if not _round.fork_owed(run_dir, meta):
+            raise ValueError(f"run {run_dir.name} crossed no threshold; no fork is owed")
+        # The record is the launching chat's alone: a co-tenant chat (a worker the gate refused
+        # a fixing pass to included) must not write the fork that unblocks its own gate. The
+        # asking chat is the environment's unless the caller names one, never argv alone.
+        asking = str(getattr(args, "session", "") or "").strip() or _store.launching_session() or ""
+        if meta.get("session") and not asking:
+            raise ValueError(f"run {run_dir.name} belongs to chat {meta['session']}; name yours with --session")
+        refuse_foreign_chat(run_dir, meta, asking)
+        record = {"choice": choice, "why": why, "session": asking, "at": _store.iso_now()}
+        (run_dir / _round.FORK_RECORD).write_text(json.dumps(record) + "\n")
+        print(fork_line(run_dir))
+        return 0
     text = round_fork_text(run_dir, meta)
     if text:
         print(text)

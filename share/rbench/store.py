@@ -55,6 +55,10 @@ DEBT_REVIEW_COMMAND = "REVIEW_ASKED=1 review-bench review --debt --tier T1"
 # journals beside each other in the git directory a chat commits from.
 WAIVER_DIR = "waivers"
 WAIVER_LOCK = ".waivers.lock"
+# Where a checkout of this repository's family lives inside it (the in-repo worktree convention
+# `<repo>/.claude/worktrees/<name>`). A path spelled under it is that checkout's own question,
+# answered there against its own tree, and never this one's debt.
+WORKTREE_PATH_PREFIX = ".claude/worktrees/"
 DEBT_JOURNAL = "claude-review-debt"
 COMMIT_JOURNAL = "claude-commit-journal"
 # One identity and one clock behind every commit object review-bench writes, so the same input
@@ -106,6 +110,66 @@ def git_common_dir(repo):
         return common.resolve(strict=True)
     except OSError:
         return None
+
+
+# Asked of the nearest ancestor that still exists: a run recorded in a worktree since removed still
+# names the family it belonged to, and its review answers for the checkouts that outlived it.
+@lru_cache(maxsize=None)
+def repo_family(repo):
+    """The git common dir every checkout of this repository shares — main and all its worktrees,
+    present or since removed. It is the identity a review's coverage answers for
+    (docs/review-contract.md §Debt).
+    """
+    directory = Path(repo)
+    if directory.is_dir():
+        return git_common_dir(str(directory))
+    ancestor = directory.parent
+    while not ancestor.is_dir():
+        parent = ancestor.parent
+        if parent == ancestor:
+            return None
+        ancestor = parent
+    common = git_common_dir(str(ancestor))
+    if common is not None and family_member_path(common, directory):
+        return common
+    return None
+
+
+def family_member_path(common, directory):
+    """Whether the since-removed `directory` was a checkout of the family `common` names: git's
+    own worktree registry, or the in-repo worktree convention under the family's main checkout.
+    The nearest existing ancestor alone cannot say — any repository encloses whatever once sat
+    inside it, a removed checkout of another family included, and adopting one hands this family
+    that checkout's artifacts.
+    """
+    # Resolved non-strictly on both sides: the directory is gone, and `/var` spelling against the
+    # common dir's resolved `/private/var` would deny a checkout that was one.
+    directory = Path(directory).resolve()
+    try:
+        registered = [gitdir.read_text() for gitdir in (common / "worktrees").glob("*/gitdir")]
+    except OSError:
+        registered = []
+    if any(Path(text.strip()).resolve().parent == directory for text in registered):
+        return True
+    if common.name != ".git":
+        return False
+    container = common.parent / WORKTREE_PATH_PREFIX.rstrip("/")
+    return container in directory.parents
+
+
+def head_tree_paths(repo):
+    """Every path HEAD holds, or None where HEAD cannot be read at all. It is what tells a
+    deletion still owed a review from a path that is simply not in this repository any more, which
+    is nobody's debt. A failure is not an empty tree: read as one it declares every deleted path a
+    ghost at once, so the caller keeps every candidate as debt instead.
+    """
+    if not Path(repo).is_dir():
+        return None
+    proc = subprocess.run(["git", "ls-tree", "-r", "-z", "--name-only", "HEAD"],
+                          cwd=repo, capture_output=True)
+    if proc.returncode != 0:
+        return None
+    return {os.fsdecode(name) for name in proc.stdout.split(b"\0") if name}
 
 
 def resolve_repo_arg(path, require_worktree=False):
@@ -637,20 +701,26 @@ def resolved_repo_path(path):
         return None
 
 
-def run_repo_record(repo, meta):
+def run_repo_record(repo, meta, family=None):
     """The part of a run's record that belongs to the repository asking — the run itself, or the
     member of a merged panel that read it — or None when the run read another checkout entirely.
 
-    Matched on the WORKING TREE and never on the repository behind it: every linked worktree shares
-    one git dir, so a run of one of them would otherwise cover a sibling's paths, whose content it
-    never read.
+    `family` is the asking checkout's `repo_family`, and it widens the match to every checkout of
+    it: a review launched in a worktree read the same repository-relative paths, so its snapshot
+    answers for the main checkout too (docs/review-contract.md §Debt). The exact working tree is
+    still preferred, so a merged panel that read two checkouts of one family answers as the member
+    that read this one.
     """
     if repo is None:
         return None
-    members = [entry for entry in meta.get("repos") or () if isinstance(entry, dict)]
-    for entry in [meta] + members:
+    entries = [meta] + [entry for entry in meta.get("repos") or () if isinstance(entry, dict)]
+    for entry in entries:
         recorded = str(entry.get("repo") or "")
         if recorded and resolved_repo_path(recorded) == repo:
+            return entry
+    for entry in entries if family is not None else ():
+        recorded = str(entry.get("repo") or "")
+        if recorded and repo_family(recorded) == family:
             return entry
     return None
 
@@ -839,13 +909,15 @@ def run_record_paths(repo, directory, listing="files"):
     except OSError:
         return []
     workdir = ""
+    anchor = repo
     paths = []
     for line in lines:
         if line.startswith("WORKDIR: "):
             if workdir:
                 continue
             workdir = line[len("WORKDIR: "):]
-            if nested_working_tree(str(repo), workdir):
+            anchor = record_anchor(str(repo), workdir)
+            if anchor is None:
                 return []
             continue
         if not line or line.startswith("UNKNOWN: ") or line.startswith("PARTIAL: "):
@@ -856,7 +928,11 @@ def run_record_paths(repo, directory, listing="files"):
             candidate = os.path.join(workdir, line)
         else:
             continue
-        relative = scope_path_relative(repo, candidate)
+        relative = scope_path_relative(anchor, candidate)
+        if relative is None and line.startswith("/"):
+            # An absolute line may name the main checkout while the run sat in a worktree of it:
+            # the same repository-relative file, spelled against the other family member.
+            relative = scope_path_relative(repo, candidate)
         if relative is not None and relative != os.curdir:
             paths.append(relative)
     return paths
@@ -883,6 +959,23 @@ def nested_working_tree(repo, workdir):
         if (directory / ".git").exists():
             return True
     return False
+
+
+@lru_cache(maxsize=None)
+def record_anchor(repo, workdir):
+    """The checkout a run record's paths are spelled against: the family member the run actually
+    ran in, or `repo` itself.
+
+    A worktree's files ARE this repository's files under another checkout's name, so a run of one
+    answers for the same repository-relative paths the journals name (row `am`). None where the
+    workdir is a working tree of its OWN that is NOT of this family: those paths read as this
+    repository's by spelling alone while its git tracks none of them.
+    """
+    top = resolve_repo_arg(workdir, require_worktree=True) if Path(workdir).is_dir() else None
+    family = repo_family(repo)
+    if top is not None and family is not None and repo_family(str(top)) == family:
+        return top
+    return None if nested_working_tree(repo, workdir) else Path(repo)
 
 
 def worker_run_dirs():

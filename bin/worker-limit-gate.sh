@@ -15,10 +15,31 @@ input=$(cat) || exit 0
 worker=$(printf '%s' "$input" | jq -r '.tool_input.subagent_type // empty' 2>/dev/null) || exit 0
 sid=$(printf '%s' "$input" | jq -r '.session_id // ""' 2>/dev/null) || sid=''
 
+# Stamped from warn() because every allowed spawn leaves through it and no refused one does: a
+# denied spawn, a fork or a plain agent quoting `record <id>` must not silence the triage Stop
+# gate. Claimed at the spawn because `worker-run` stamps its pid about a minute later and the
+# Stop gate fires in that minute; the pid stamp overwrites the claim, which is live for
+# DELEGATED_CLAIM_SECONDS (review-bench) and dead after.
+claim_delegated_triage() {
+  case "$worker" in claudeb-worker|codex-worker|gemini-worker) ;; *) return 0 ;; esac
+  local claimed_run claim_stamp
+  for claimed_run in $(printf '%s' "$brief_text" |
+      grep -Eo "review-bench[[:blank:]]+record[[:blank:]]+$run_id_re" | awk '{print $NF}' | sort -u); do
+    claim_stamp="$REVIEW_STATE/benches/$claimed_run/delegated"
+    [ -d "$REVIEW_STATE/benches/$claimed_run" ] || continue
+    # Never over a live worker's pid stamp: only an absent stamp or an earlier claim is replaced.
+    if [ -e "$claim_stamp" ] && ! head -n1 "$claim_stamp" 2>/dev/null | grep -q '^claimed '; then
+      continue
+    fi
+    printf 'claimed %s %s\n' "${sid:-unknown}" "$(date +%s)" >"$claim_stamp" 2>/dev/null || :
+  done
+}
+
 # Carries $toggle_note, so a vendor that disagrees with the toggle is reported without
 # stealing the exit from a limit verdict that matters more. `warn ""` is the quiet path.
 warn() {
   local msg=${1:-}
+  claim_delegated_triage
   if [ -n "${toggle_note:-}" ]; then
     if [ -n "$msg" ]; then msg="${toggle_note} ${msg}"; else msg="$toggle_note"; fi
   fi
@@ -32,6 +53,36 @@ deny() {
     '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}' 2>/dev/null || true
   exit 0
 }
+
+# The brief is the prompt plus every readable file an absolute path in it names: a worker is
+# routinely told "follow the brief at /path" and the review-bench commands stand in that file.
+REVIEW_STATE="${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}"
+brief_text=$(printf '%s' "$input" | jq -r '.tool_input.prompt // empty' 2>/dev/null) || brief_text=''
+for brief_file in $(printf '%s\n' "$brief_text" | grep -Eo '/[^[:space:]"'"'"'`<>]+' |
+    sed -E 's/[.,;:)]+$//' | sort -u); do
+  real_brief=$(realpath "$brief_file" 2>/dev/null) || continue
+  repo_top=$(git rev-parse --show-toplevel 2>/dev/null)
+  real_repo=$(realpath "${repo_top:-$PWD}" 2>/dev/null) || continue
+  real_tmp=$(realpath "${TMPDIR:-/tmp}" 2>/dev/null) || real_tmp="/tmp"
+  if [[ "$real_brief" != "$real_repo"/* ]] && [[ "$real_brief" != "$real_tmp"/* ]]; then
+    continue
+  fi
+  [ -f "$real_brief" ] && [ -r "$real_brief" ] || continue
+  [ "$(wc -c <"$real_brief" | tr -d '[:space:]')" -le 1048576 ] || continue
+  brief_text="$brief_text"$'\n'"$(cat "$real_brief")"
+done
+run_id_re='[0-9]{8}T[0-9]{6}Z-[0-9a-f]+(-[0-9]+)?'
+# One regex binds the flag to the `fixes <id>` it belongs to: a brief that merely cites a run
+# beside an unrelated --done is not a fixing pass, and a fixing pass without the flag is none.
+# review-bench's `fork --check` is the whole verdict (exit 3 names the command): no threshold
+# is priced here.
+fixing_pass_re="review-bench[[:blank:]]+fixes[[:blank:]]+${run_id_re}([[:blank:]]+[^[:blank:]]+)*[[:blank:]]+--(done|blocked)([[:blank:]]|$)"
+for fork_run in $(printf '%s' "$brief_text" | grep -Eo "$fixing_pass_re" |
+    grep -Eo "^review-bench[[:blank:]]+fixes[[:blank:]]+$run_id_re" | awk '{print $NF}' | sort -u); do
+  fork_refusal=$(review-bench fork "$fork_run" --check 2>&1 >/dev/null)
+  [ "$?" -eq 3 ] || continue
+  deny "REVIEW GATE: $fork_refusal"
+done
 
 # 0 = deny or re-arm, 1 = pass the retry, 2 = cache error.
 claim_once() {

@@ -61,6 +61,7 @@ is visibility, not blocking.
 | `review-bench debt` | the gate (and through it the model) | what this repository owes a review, and whose |
 | commit-time notify (once) | the model | reminded before an unreviewed commit; decides |
 | `escalation-verdict` fork | the model; Egor when present | fix / simplify / re-review after a bad round |
+| `review-bench fork --choice --why` record | the gates, then Egor as one line | no fixing pass over a threshold-crossing round before the decision is on disk |
 | watchdog `timed-out` | the report flow and `review-bench doctor` (untriaged) | a review hung past its cap |
 
 A line nobody acts on is deleted, not kept for safety.
@@ -70,13 +71,34 @@ A line nobody acts on is deleted, not kept for safety.
 One concept, and it is content: a path is **in debt** when its working-tree
 content differs from what the newest artifact holding it recorded. Three artifacts
 hold paths — a triaged run's `reviewed{path: blob-sha}` snapshot, a **waiver**, and
-the fix bytes a **closed round's own done receipt** covers. Debt is commit-agnostic:
-committing neither creates nor settles it, because nothing here reads git history.
+the fix bytes a **closed round's own done receipt** covers.
 A path no artifact ever held is in debt
 whole while it exists — a run that never read it has no content to compare, so a
-repo-wide review cannot blanket files born after it. A held path that is gone is
-in debt; a deletion the run READ is settled by it (the snapshot records that path
-against the empty string). Whether a round holds its paths turns on ONE fact — a
+repo-wide review cannot blanket files born after it. A held path gone from the
+working tree is in debt while HEAD still holds it, the removal of recorded content
+being a change somebody has to read; a deletion the run READ is settled by it (the
+snapshot records that path against the empty string).
+
+**The artifacts are the checkout FAMILY's.** Every artifact recorded against ANY
+checkout of the repository — the main one and every worktree of it, present or
+since removed, which is one resolved `git rev-parse --git-common-dir` — answers for
+every checkout of it, and a merged panel's members are matched one at a time. The
+paths are repository-relative on both sides, so they match 1:1. Read per checkout,
+main compared files a worktree's panel had read against its own older run and
+reported 11k ghost debt lines after the merge, one file of them 7453 (2026-08-23).
+
+**Content, not the path it was read under.** A path NO artifact holds whose current
+sha any family artifact recorded is current: a file that moved carries its review
+with it. A path some artifact does hold is answered by that artifact alone, or a
+narrow rerun would take a path back from the locked round `covering_artifacts`
+withheld it from.
+
+**Two candidates are nobody's debt here.** One that stands in neither the working
+tree nor HEAD, since nothing is left for a review to read, and one spelled under
+another checkout of the family (`.claude/worktrees/<name>/…`), which is that
+checkout's own question — a removed worktree leaves both in the journals for ever,
+with no command able to answer them. Both drop silently out of `debt`, `--list`,
+`--split` and the `--debt` scope. Whether a round holds its paths turns on ONE fact — a
 triage receipt exists — and never on HOW its incomplete cells died. A rater error, a
 watchdog kill, a stall kill, any kill condition added later: all of them leave the
 same round, sealed with the whole scope and answered for by whoever judged what came
@@ -143,8 +165,9 @@ which the gate appends to at the commit that lands it, in the same
 entries of paths no longer in debt.
 
 **Waivers.** `review-bench waive --repo <top> --reason "..." [--paths <p>...]`
-records that this work is going unreviewed and why, into a per-repository store
-beside the receipts (`<state-dir>/waivers/`): the debt paths, their current blob
+records that this work is going unreviewed and why, into this checkout's own file
+beside the receipts (`<state-dir>/waivers/`, read across the family like every
+other artifact): the debt paths, their current blob
 shas, the reason, the session, the epoch. A waiver covers exactly those shas —
 the next edit is debt again. An empty reason is refused.
 
@@ -290,12 +313,28 @@ authorised is visible as one.
   command the commit notice prints (invariant row at). What differs is the line
   above them: at the P1 count the second review is mandatory and the waiver is
   withheld until it runs; on the tally alone it is owed by default and `waive`
-  is still open. The model judges; Egor decides when he is present. When
-  the fork rides a delivered report, the report hook's context turns advisory
-  into demand: the model's next message must OPEN with its written analysis —
-  the weak block, why the findings cluster there, the option chosen and why —
-  because choosing silently leaves Egor unable to judge whether the block
-  should exist at all.
+  is still open. The model judges; Egor decides when he is present.
+
+### The fork is a record
+
+A round that crossed EITHER dial has no fixing pass until the decision is on
+disk: `review-bench fork <run-id> --choice fix|simplify|re-review --why '<text>'`
+writes `<run-dir>/fork.json` (`choice`, `why`, `session`, `at`). `--why` is the
+strategic reason for the choice — why fix rather than simplify or redesign the
+block — never a list of findings, and is refused under 80 characters
+(`FORK_WHY_MIN_CHARS`). `review-bench fork <run-id> --check` is the one verdict
+the gates relay: exit 3 with the `fork` command while the round crossed a dial
+and no record stands, exit 0 otherwise — a round under both dials never needs
+one. Three gates read it and none composes a threshold of its own: the Bash
+PreToolUse gate (`review-flow-gate.sh`) blocks a `review-bench fixes <id>
+--done|--blocked` command, the Agent PreToolUse gate (`worker-limit-gate.sh`)
+blocks a brief carrying one — the prompt, plus any brief file an absolute path
+in it names — and the Stop gate (`review-report-gate.sh`) treats such a run
+without `fork.json` exactly like an untriaged one, asking for the `fork`
+command under the same bounded `--mark` counter. The record reaches Egor as one
+line through the delivery channel — `review <run-id> · fork: <choice> — <why>`,
+ledger key `fork`, once — which is what replaced the prose demand that the
+model open its next message with a written analysis.
 
 ## Watchdog
 
@@ -438,7 +477,7 @@ byte for byte the one it always was. The numbers are measured, not chosen (`diff
 and Codex cells die on a few percent of their cells under 1500 lines, ~16% between 1500 and
 2000, ~29% past 3000, while the cells that read a clone show no such trend.
 
-**Five frame words, two delivered states** (invariant `as`). The word is the only
+**Five frame words, four delivered states** (invariant `as`). The word is the only
 place a block states its state. `review` — the fixes are done, or there was
 nothing to fix. `review · NOT FINISHED` — and ONLY this — is a round whose fix
 status is `blocked`: the pass stopped at the P1 threshold and fixed nothing.
@@ -456,12 +495,18 @@ stands / rewrite the weak block / cut the scope) is NOT in the block:
 `review-bench fork <run-id>` prints it for the report hook to hand the model,
 which is who acts on it, while Egor reads the block. A round whose
 fixing pass has not answered wears the PLAIN word until the clock above dates
-it STALE, says so in its `fixes:` row either way, and is delivered by no hook at
-any age — a loud word derived from "no
-fixes recorded" reports failure while the fixes are still landing, and promoting
-pending rounds to a deliverable state floods the Stop gate with every
-pre-receipt run the chat ever held. The finished report follows on its own, from
-the Stop net's `pending-delivery` source, one per state per round.
+it STALE, and says so in its `fixes:` row either way. While its triage is
+younger than the triage-gate window it is delivered ONCE as `triaged` — ONE
+LINE, never the block: `review <run-id> · triaged: P1 a · P2 b · P3 c · N total
+[· D in docs] — fixing pass next`, rendered by `review-bench report <id> --line`
+off the same tally the `confirmed:` row prints, no fork and no reply expected.
+The recorded fork decision follows the same way under `fork` (`--line fork`).
+Past that window it is delivered by no
+hook at any age — a loud word derived from "no fixes recorded" reports failure
+while the fixes are still landing, and promoting aged rounds to a deliverable
+state floods the Stop gate with every pre-receipt run the chat ever held. The
+finished report follows on its own, from the Stop net's `pending-delivery`
+source, one per state per round.
 
 **Who may close a round.** `record` and `fixes` key on the session the RUN RECORD
 names, never on the shell they were typed in: a claudeb worker carries a session of
@@ -472,7 +517,8 @@ chat depending on who ran the command.
 **Nothing is dropped.** `pending-delivery` asks inside the triage window, which is a
 bound on reports nobody has looked at and not a verdict that an older one is not
 owed. `review-bench settle-delivery [--dry-run]` settles every round `doctor` counts
-as undelivered, one of two ways and never a third: **queued**, so the launching
+as undelivered — the two FINAL states alone, never a `triaged` round, whose window
+is the whole flood guard — one of two ways and never a third: **queued**, so the launching
 chat's next stop hands it over whatever its age, or **lapsed** with the instant,
 because the transcript that stop reads is gone. Both are written into the run's own
 `delivery.json` against the STATE they answer for, so a re-adjudication puts the

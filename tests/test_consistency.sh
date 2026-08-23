@@ -792,8 +792,9 @@ FRAMEPY
   # finish stamp on every header is what made a stale one indistinguishable from this morning's.
   assert test -z "$(grep -rl "strftime('%b %H:%M')" --include='*.py' "$RB_PKG")"
   assert doc_has 'older than three hours'
-  # Every state the emitter frames is a state the delivery queue can name, minus the one it must
-  # not: a fourth word added to one side and not the other is a report framed and never delivered.
+  # Every state the emitter frames is a state the delivery queue can name, minus `pending` — the
+  # queue names that one `triaged`, inside the triage window alone and never past it: a fourth
+  # word added to one side and not the other is a report framed and never delivered.
   frame_states=$(python3 - "$RB_ROUND" <<'STATEPY'
 import os
 import re
@@ -819,10 +820,23 @@ blocked|done|pending"
   # And the STATE beside each id, which is half the ledger key: the net's line regex accepts these
   # three spellings and drops every other line without a word, so a state added or renamed on the
   # emitting side reaches nobody and nothing fails. Spelled once per repository, here held equal.
+  # DELIVERY_STATES stays the two FINAL states `settle-delivery` may queue; `triaged` and `fork`
+  # join the line vocabulary alone — one delivery each, as ONE LINE `report --line` renders, never
+  # queued and never a frame.
   cs_delivery_states='done|blocked'
   assert grep -Fq "DELIVERY_STATES = (\"${cs_delivery_states//|/\", \"}\")" "$RB_ROUND"
-  assert grep -Fq "Z-[0-9a-f]+(?:-\\d+)?) ($cs_delivery_states)\\Z\")" "$DELIVERY_GATE"
-  assert doc_has 'exactly `done` and `blocked`'
+  assert grep -Fq 'return "triaged"' "$RB_ROUND"
+  assert grep -Fq 'print(f"{run_dir.name} fork")' "$RB_ROUND"
+  assert grep -Fq "Z-[0-9a-f]+(?:-\\d+)?) ($cs_delivery_states|triaged|fork)\\Z\")" "$DELIVERY_GATE"
+  assert grep -Fq 'LINE_STATES = ("triaged", "fork")' "$DELIVERY_GATE"
+  assert grep -Fq 'const="triaged", choices=("triaged", "fork")' "$RB_CLI"
+  assert doc_has 'exactly `done`, `blocked`, `triaged` and `fork`'
+  # The fork decision is a RECORD the gates require before any fixing pass, never prose demanded
+  # of the model: the `MUST open with your own written analysis` note is gone from both nets.
+  for cs_hook in "$REPORT_NUDGE" "$DELIVERY_GATE"; do
+    assert test "$(grep -c 'ESCALATION_NOTE' "$cs_hook")" -eq 0
+  done
+  assert grep -Fq 'FORK_WHY_MIN_CHARS = 80' "$RB_ROUND"
   assert grep -Fq 'delivery.add_argument("--session", default="", metavar="ID", required=True,' \
     "$RB_CLI"
   # Whose run it is, asked of ONE run by id: both nets render through `report`, and a run reached
@@ -1332,16 +1346,24 @@ if [ -r "$FLOW_GATE" ] && [ -r "$REPORT_GATE" ]; then
   assert grep -Fqx '        if _panel.docs_finding(finding) or finding.get("severity") not in _catalog.WEIGHTS:' \
     "$RB_ROUND"
   assert rb_pkg_only '.endswith(".md")' 1 "$RB_PANEL"
-  # The fork's closing words are also the trigger the report nudge keys its escalation demand on:
-  # let either spelling drift and the model is never told to open with the weak-block analysis.
   assert grep -Fq 'Pick one and carry it out:' "$FLOW_GATE"
-  # Both report nets key on it: each hands the fork to the model, and the demand rides only the
-  # fork that carries the verdict.
-  for cs_hook in "$REPORT_NUDGE" "$DELIVERY_GATE"; do
-    if [ -r "$cs_hook" ]; then
-      assert grep -Fq 'ESCALATION_MARKER = "Pick one and carry it out"' "$cs_hook"
-    fi
+  # The nudge's escalation demand is retired with the fork RECORD; no reader of the fork's closing
+  # words is left there to pin.
+  if [ -r "$REPORT_NUDGE" ]; then
+    assert test "$(grep -Fc 'ESCALATION_MARKER' "$REPORT_NUDGE")" -eq 0
+  fi
+  # No fixing pass before the fork RECORD: both PreToolUse gates relay review-bench's own
+  # `fork --check` (exit 3) over a `fixes <id> --done|--blocked`, and the Stop gate asks for the
+  # `fork` command where `pending-report` names it. The claim the Agent-spawn hook writes is read
+  # by the one reader of the pid stamp, for a bounded time named once.
+  for cs_gate in "$FLOW_GATE" "$WORKER_GATE"; do
+    assert grep -Fq 'fork_refusal=$(review-bench fork "$fork_run" --check 2>&1 >/dev/null)' "$cs_gate"
+    assert grep -Fq '[ "$?" -eq 3 ] || continue' "$cs_gate"
   done
+  assert grep -Fq '"review-bench fork "*)' "$REPORT_GATE"
+  assert grep -Fq 'DELEGATED_CLAIM_SECONDS = 600' "$RB_ROUND"
+  assert grep -Fq "printf 'claimed %s %s\\n' \"\${sid:-unknown}\" \"\$(date +%s)\"" "$WORKER_GATE"
+  assert grep -Fq 'if stamped[0] == "claimed":' "$RB_ROUND"
 else
   printf 'SKIP: review escalation voice across claude-setup (%s or %s is unreadable)\n' \
     "$FLOW_GATE" "$REPORT_GATE"

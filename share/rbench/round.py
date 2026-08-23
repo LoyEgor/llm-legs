@@ -72,13 +72,9 @@ REPORT_BLOCKED_FORK = (
 # makes one. It gets this line instead, and the hooks key on it to demand the missing pass —
 # the marked block used to be printed either way, and a list of cells was what reached Egor.
 TRIAGE_PENDING = "REVIEW-TRIAGE-PENDING"
-# Every state the delivery queue may name, and the whole vocabulary the Stop net's line regex
-# accepts (docs/shared-invariants.md as). A state spelled on one side only is a line the other
-# side discards in silence, which is a report Egor never sees. `pending` is deliberately absent
-# and has no window that ever admits it: a round whose fixing pass has not answered has a report
-# the model may read and no hook may hand Egor, since the next pass changes it. A chat running
-# since the 15th listed 39 pre-fixes-mechanism runs at once — none of which can ever gain a fix
-# status — and a fallback that named them rendered all 39 into one 39KB message (2026-08-20).
+# The two FINAL states a round settles in — the only ones `settle-delivery` may queue. The Stop
+# net's line vocabulary adds `triaged` and `fork` (docs/shared-invariants.md as): one line each,
+# never queued.
 DELIVERY_STATES = ("done", "blocked")
 # Confirmed P1s at which the fixing pass stops instead of starting: past it the round is not a
 # list of defects to patch but a fork Egor decides, and a worker that patched its way through one
@@ -107,6 +103,12 @@ DELEGATED_STAMP = "delegated"
 # pid before the number belongs to a different process. Held equal to the slack the review hooks
 # judge the same supervisors by (shared-invariants row `ar`, `RJ_PID_SLACK`).
 DELEGATED_PID_SLACK = 30
+# How long the Agent-spawn hook's `claimed <session> <epoch>` stamp stands in for the pid
+# `worker-run` writes about a minute later; past it the stamp reads dead exactly as a gone pid.
+DELEGATED_CLAIM_SECONDS = 600
+FORK_RECORD = "fork.json"
+FORK_CHOICES = ("fix", "simplify", "re-review")
+FORK_WHY_MIN_CHARS = 80
 # How many times a run may be asked for its report before the gate gives up. Not once: a stop
 # hook also fires when the turn is interrupted, and a single ask was spent there instead of at the
 # end of the turn it was meant to gate (seen live 2026-07-31). Still bounded, because a triage
@@ -634,6 +636,12 @@ def triage_delegated(run_dir):
         return False
     if not stamped:
         return False
+    if stamped[0] == "claimed":
+        try:
+            claimed = int(stamped[2])
+        except (IndexError, ValueError):
+            return False
+        return int(_store.utc_now().timestamp()) - claimed <= DELEGATED_CLAIM_SECONDS
     try:
         pid = int(stamped[0])
     except ValueError:
@@ -652,6 +660,41 @@ def triage_delegated(run_dir):
     except ValueError:
         return True
     return abs(int(_store.utc_now().timestamp()) - elapsed - began) <= DELEGATED_PID_SLACK
+
+
+def read_fork(run_dir):
+    try:
+        record = json.loads((run_dir / FORK_RECORD).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(record, dict) or record.get("choice") not in FORK_CHOICES:
+        return None
+    return record
+
+
+def fork_owed(run_dir, meta, verdicts=None):
+    """Asked of the gate through `escalation_verdict` like every other reader (row af); a gate
+    that cannot be asked owes nothing here, since the report already says so out loud."""
+    rows = verdicts if verdicts is not None else recorded_verdict_rows(run_dir)
+    if rows is None:
+        return False
+    earned = escalation_verdict(*escalation_numbers(run_dir, meta, rows))
+    return bool(earned) and earned != ESCALATION_UNKNOWN
+
+
+def fork_missing(run_dir, meta, verdicts=None):
+    return fork_owed(run_dir, meta, verdicts) and read_fork(run_dir) is None
+
+
+def fork_command(run_id):
+    return (
+        f"review-bench fork {shlex.quote(run_id)} --choice fix|simplify|re-review "
+        f"--why '<the strategic reason for the choice, {FORK_WHY_MIN_CHARS}+ chars>'"
+    )
+
+
+def fork_refusal(run_id):
+    return f"review run {run_id} crossed a threshold and has no fork on record; record it first: {fork_command(run_id)}"
 
 
 def triage_pending_run(repo=None, session=None):
@@ -700,7 +743,8 @@ def triage_pending_run(repo=None, session=None):
         if session and launcher and launcher != session:
             return None
         if (run_dir / "verdicts.jsonl").exists() or (run_dir / _store.REPORT_RECEIPT).exists():
-            return None
+            if not fork_missing(run_dir, meta):
+                return None
         if triage_delegated(run_dir):
             return None
         finished = _store.parse_iso_timestamp(meta.get("finished") or meta.get("finished_at"))
@@ -860,6 +904,10 @@ def cmd_pending_report(args):
     if args.mark:
         with marker.open("a") as handle:
             handle.write(_store.iso_now() + "\n")
+    if _store.run_triaged(run_dir):
+        print(f"{run_dir.name} {confirmed_count(recorded_verdict_rows(run_dir))}")
+        print(fork_command(run_dir.name))
+        return 0
     findings = _panel.bench_summary(run_dir, meta)["findings"]
     print(f"{run_dir.name} {findings}")
     print(triage_command(run_dir.name, findings))
@@ -1160,20 +1208,45 @@ def cmd_fixes(args):
     return 0
 
 
+def triage_instant(run_dir):
+    """When this run's triage went on record, off the report receipt `record` writes, or None
+    where no receipt is readable. Verdicts alone carry no instant of their own: a corpus
+    adjudication is a benchmark row, not a round, and the pre-receipt runs are exactly the ones
+    the delivery window must never re-open."""
+    try:
+        recorded = json.loads((run_dir / _store.REPORT_RECEIPT).read_text()).get("reported_at")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return _store.parse_iso_timestamp(recorded)
+
+
 def delivery_state(run_dir):
-    """What state a triaged round's report would be delivered in, or None while its fixing pass
-    may still be running — the one state no hook hands Egor.
+    """What state a triaged round's report would be delivered in, or None where no hook may hand
+    it to Egor.
 
     Read through `round_state` and never off the receipt's raw field, so the state a report is
     delivered under is the state its frame was rendered in: a receipt the report has already
     rejected for answering another triage reads `pending` here too, and queued as `done` it would
     spend the one ledger key the finished report is ever delivered under.
 
+    A `pending` round — verdicts on record, fixing pass unanswered — is `triaged` while that
+    triage is younger than the gate window: the counts Egor waited twelve minutes of triage for
+    reached him only after the fixing pass, from the orchestrator's prose (2026-08-23). Past the
+    window it is None at ANY age — an old triage is about a diff that has since moved, and the
+    pre-receipt backlog must never re-enter the queue.
+
     A round with nothing confirmed is `done` at its triage: no fixing pass will ever record a
     receipt for it, and a report held back for one would never be delivered at all.
     """
     state = round_state(run_dir)
-    return None if state == "pending" else state
+    if state != "pending":
+        return state
+    recorded = triage_instant(run_dir)
+    if recorded is None:
+        return None
+    if _store.utc_now() - recorded > timedelta(hours=_store.TRIAGE_GATE_HOURS):
+        return None
+    return "triaged"
 
 
 def delivery_mark(run_dir):
@@ -1212,15 +1285,15 @@ def cmd_pending_delivery(args):
     A run a headless worker triaged left no command output in this chat to carry its block, so the
     report the delivery gate exists to hand Egor has nothing to find; this is the only thing that
     names one. The STATE is half the answer: the gate keys its ledger on it, so a round delivers
-    once per state rather than once per run, and the blocked round Egor forks on is followed by
-    the finished one.
+    once per state rather than once per run — `triaged` the moment its triage is on record, then
+    the finished one, with the blocked round Egor forks on in between where the pass stopped.
 
-    A round is named once its fixing pass answered, and only inside the window `pending-report`
-    asks in, because an old run's report is about a diff that has since moved. A round whose pass
-    never answered is named at NO age: it is `pending`, the one state with no delivery key, and a
-    fallback that promoted it past some age is what handed the Stop gate 39 pre-fixes-mechanism
-    runs in a single message (2026-08-20). Such a run is reported only when the model asks for it
-    by hand.
+    A finished round is named only inside the window `pending-report` asks in, because an old
+    run's report is about a diff that has since moved. A `triaged` one is named only while its
+    TRIAGE is that young — `delivery_state`'s own window — and a round whose pass never answered
+    past it is named at NO age: a fallback that promoted such rounds is what handed the Stop gate
+    39 pre-fixes-mechanism runs in a single message (2026-08-20). Such a run is reported only when
+    the model asks for it by hand.
 
     Read-only — a delivery ledger decides what is new, not a mark written here.
     """
@@ -1241,10 +1314,19 @@ def cmd_pending_delivery(args):
         finished = _store.parse_iso_timestamp(meta.get("finished") or meta.get("finished_at"))
         if finished is None:
             continue
+        forked = _store.parse_iso_timestamp((read_fork(run_dir) or {}).get("at"))
+        if forked is not None and (now - forked).total_seconds() <= _store.TRIAGE_GATE_HOURS * 3600:
+            print(f"{run_dir.name} fork")
         state = delivery_state(run_dir)
         # A pass that has not answered is left alone whatever its age: the fixer may be mid-pass
         # and the report is about to change, and past that it is a report about a diff that moved.
         if state is None:
+            continue
+        # A triaged round rides `delivery_state`'s window on the triage instant, and NO queued
+        # mark ever exempts it: promoted past a window, 39 pre-fixes-mechanism runs rendered into
+        # one message at once (2026-08-20).
+        if state == "triaged":
+            print(f"{run_dir.name} {state}")
             continue
         mark = delivery_mark(run_dir)
         # A queued round is named at ANY age. The window is a bound on runs nobody has looked at:

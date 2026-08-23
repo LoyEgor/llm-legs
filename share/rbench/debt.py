@@ -130,19 +130,49 @@ def waiver_file(repo):
     return None if not name else _store.state_dir() / _store.WAIVER_DIR / name
 
 
+def waiver_files(repo):
+    """Every waiver file of this repository's FAMILY. A waiver names one checkout in the hash
+    after its first field, so a waiver a worktree recorded answers for the main checkout like any
+    other artifact — but the first field is only a directory NAME, which unrelated clones share,
+    so membership is decided by the family each file records, never by the glob that found it.
+    This checkout's own file needs no record: its name is derived from this very path.
+    """
+    directory = _store.state_dir() / _store.WAIVER_DIR
+    identity = _store.repo_identity(str(repo))
+    if not identity or not directory.is_dir():
+        return []
+    family = _store.repo_family(str(repo))
+    own = waiver_file(repo)
+    files = []
+    for path in sorted(directory.glob(f"{identity}__*.json")):
+        if own is not None and path == own:
+            files.append(path)
+            continue
+        if family is None:
+            continue
+        try:
+            stored = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        recorded = stored.get("family") if isinstance(stored, dict) else None
+        if recorded == str(family):
+            files.append(path)
+    return files
+
+
 def read_waivers(repo):
-    path = waiver_file(repo)
-    if path is None:
-        return []
-    try:
-        stored = json.loads(path.read_text())
-    except (OSError, ValueError):
-        return []
-    rows = stored.get("waivers") if isinstance(stored, dict) else None
-    return [row for row in rows or () if isinstance(row, dict)]
+    rows = []
+    for path in waiver_files(repo):
+        try:
+            stored = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        entries = stored.get("waivers") if isinstance(stored, dict) else None
+        rows.extend(row for row in entries or () if isinstance(row, dict))
+    return rows
 
 
-def fix_coverage_artifact(run_dir, repo):
+def fix_coverage_artifact(run_dir, repo, family=None):
     """The artifact a clean round's done receipt is for `repo`, or None where it covers nothing
     there.
 
@@ -157,28 +187,40 @@ def fix_coverage_artifact(run_dir, repo):
     record = _round.read_fix_status(run_dir)
     if not isinstance(record, dict):
         return None
-    for entry in record.get("covers") or ():
-        if not isinstance(entry, dict):
-            continue
-        recorded_repo = str(entry.get("repo") or "")
-        if not recorded_repo or _store.resolved_repo_path(recorded_repo) != repo:
-            continue
-        shas = entry.get("paths")
-        rows = _round.recorded_verdict_rows(run_dir)
-        if not isinstance(shas, dict) or not shas or _round.round_state(run_dir, rows) != "done":
-            return None
-        if record.get("triage") != _round.triage_digest(rows):
-            return None
-        recorded = _store.parse_iso_timestamp(record.get("recorded_at"))
-        return {
-            "kind": "fixes", "id": f"{run_dir.name}+fixes", "dir": run_dir,
-            "epoch": int(recorded.timestamp()) if recorded else _store.run_id_epoch(run_dir.name),
-            "shas": {
-                path: sha for path, sha in shas.items()
-                if isinstance(path, str) and isinstance(sha, str)
-            },
-        }
-    return None
+    named = [
+        (entry, str(entry.get("repo") or ""))
+        for entry in record.get("covers") or () if isinstance(entry, dict)
+    ]
+    # The exact working tree first, exactly as `run_repo_record` matches a merged panel's members:
+    # a family sibling's entry read in file order would cover this checkout with the member that
+    # read the other one.
+    entry = next(
+        (entry for entry, recorded_repo in named
+         if recorded_repo and _store.resolved_repo_path(recorded_repo) == repo),
+        None,
+    ) or next(
+        (entry for entry, recorded_repo in named
+         if recorded_repo and family is not None
+         and _store.repo_family(recorded_repo) == family),
+        None,
+    )
+    if entry is None:
+        return None
+    shas = entry.get("paths")
+    rows = _round.recorded_verdict_rows(run_dir)
+    if not isinstance(shas, dict) or not shas or _round.round_state(run_dir, rows) != "done":
+        return None
+    if record.get("triage") != _round.triage_digest(rows):
+        return None
+    recorded = _store.parse_iso_timestamp(record.get("recorded_at"))
+    return {
+        "kind": "fixes", "id": f"{run_dir.name}+fixes", "dir": run_dir,
+        "epoch": int(recorded.timestamp()) if recorded else _store.run_id_epoch(run_dir.name),
+        "shas": {
+            path: sha for path, sha in shas.items()
+            if isinstance(path, str) and isinstance(sha, str)
+        },
+    }
 
 
 def repo_artifacts(repo):
@@ -191,10 +233,17 @@ def repo_artifacts(repo):
     findings that were reviewed. Nothing here reads git history: a shared checkout takes commits
     from other chats continuously, and a history-shaped answer retires a live review over work it
     never read.
+
+    Gathered across the whole checkout FAMILY, and answering for every checkout of it.
     """
     artifacts = []
     benches = _store.state_dir() / "benches"
     resolved = _store.resolved_repo_path(repo)
+    # Why family-wide: a review launched in a worktree records that worktree as its repository,
+    # while the paths it read are repository-relative and are the main checkout's own files once
+    # the branch lands. Read per checkout, main compared those files against its own older run and
+    # reported 11k ghost debt lines over code a worktree panel had read (live, 2026-08-23).
+    family = _store.repo_family(repo)
     for run_dir in sorted(benches.iterdir()) if benches.exists() else ():
         try:
             meta = json.loads((run_dir / "meta.json").read_text())
@@ -204,7 +253,7 @@ def repo_artifacts(repo):
             continue
         if not isinstance(meta, dict):
             continue
-        record = _store.run_repo_record(resolved, meta)
+        record = _store.run_repo_record(resolved, meta, family=family)
         if record is None or not _store.run_triaged(run_dir):
             continue
         reviewed = record.get("reviewed")
@@ -219,7 +268,7 @@ def repo_artifacts(repo):
                 if isinstance(path, str) and isinstance(sha, str)
             },
         })
-        covered = fix_coverage_artifact(run_dir, resolved)
+        covered = fix_coverage_artifact(run_dir, resolved, family)
         if covered:
             artifacts.append(covered)
     for waiver in read_waivers(repo):
@@ -327,7 +376,7 @@ def path_lock_stands(repo, path, artifact):
     return artifact_locked(artifact) and os.path.lexists(Path(repo) / path)
 
 
-def covering_artifacts(repo, ignoring=()):
+def covering_artifacts(repo, ignoring=(), artifacts=None):
     """The newest artifact holding each path — the one thing a path's current content is compared
     against.
 
@@ -346,7 +395,7 @@ def covering_artifacts(repo, ignoring=()):
     refusing it and no review able to answer for it.
     """
     covering = {}
-    for artifact in repo_artifacts(repo):
+    for artifact in repo_artifacts(repo) if artifacts is None else artifacts:
         if artifact["id"] in ignoring:
             continue
         for path in artifact["shas"]:
@@ -369,7 +418,48 @@ def lock_discharged(repo, locked, artifact):
     return surviving <= set(artifact["shas"])
 
 
-def repo_debt(repo, paths=None, covering=None, shas=None, claims=None, dirty=None):
+def reviewed_shas(artifacts, repo):
+    """Every content these artifacts still answer for, under whatever path each read it: a file
+    somebody moved carries its review with it, and the deleted-path sha is nothing at all.
+
+    Per path, the NEWEST record alone — a sha an older artifact read and a later one moved past is
+    superseded content, current nowhere. And never the empty blob: every empty file is
+    byte-identical, so one reviewed `__init__.py` would answer for placeholders no panel ever saw.
+    """
+    newest = {}
+    for artifact in artifacts:
+        for path, sha in artifact["shas"].items():
+            newest[path] = sha
+    empty = _store.content_blob_sha(repo, b"")
+    return {sha for sha in newest.values() if sha and sha != empty}
+
+
+def haunted_paths(repo, candidates):
+    """The candidates that are not this checkout's debt to begin with: one that stands neither in
+    the working tree nor in HEAD, since there is no content left for a review to read, and one
+    under another checkout of the family, whose own reader answers for it.
+
+    Both are what a removed worktree leaves behind for ever — five journal records naming a tree
+    nobody can open, in this repository's own `debt --list` (live, 2026-08-23).
+    """
+    haunted = {
+        str(path) for path in candidates
+        if str(path).startswith(_store.WORKTREE_PATH_PREFIX)
+    }
+    absent = [
+        str(path) for path in candidates
+        if str(path) not in haunted and not os.path.lexists(Path(repo) / path)
+    ]
+    if absent:
+        # None is a HEAD nothing could read, and it fails closed: every absent candidate is
+        # treated as one HEAD still holds, so it stays debt rather than ghosting all at once.
+        committed = _store.head_tree_paths(repo)
+        if committed is not None:
+            haunted |= {path for path in absent if path not in committed}
+    return haunted
+
+
+def repo_debt(repo, paths=None, covering=None, shas=None, claims=None, dirty=None, reviewed=None):
     """The paths whose working-tree content differs from what the newest artifact holding them
     recorded, each with that artifact, as `(path, artifact)` pairs.
 
@@ -377,10 +467,17 @@ def repo_debt(repo, paths=None, covering=None, shas=None, claims=None, dirty=Non
     same answer next: this reads and hashes the file, and the debt of a repository is priced on the
     statusline's own path.
 
-    Commit-agnostic by construction: committing neither creates debt nor settles it, and only a
-    review or a waiver does. A path no artifact ever held is in debt whole while it exists — a run
+    Commit-agnostic while a path still stands: committing neither creates debt nor settles it,
+    and only a review or a waiver does — a committed DELETION leaves HEAD too, which is the
+    `haunted_paths` question below. A path no artifact ever held is in debt whole while it exists — a run
     that never read it holds no content to compare, so covering it would be a blanket over files
     born after the panel read the tree.
+
+    `reviewed` is every content the family's artifacts read, and a path NO artifact holds standing
+    at one of them is current: a file that moved keeps the review its bytes earned. A path some
+    artifact does hold is answered by that artifact alone, or a narrow rerun would take a path back
+    from the locked round `covering_artifacts` withheld it from. `haunted_paths` drops what is
+    nobody's debt here at all.
 
     The universe a repository-wide question asks about is what somebody RECORDED work on, and the
     worker run records are one of those stores: a run's own file list, and the dirt its workdir
@@ -390,16 +487,21 @@ def repo_debt(repo, paths=None, covering=None, shas=None, claims=None, dirty=Non
     rewritten files with nothing anywhere saying it had (live case 2026-08-21). `claims` and
     `dirty` come from a caller that has already read those records, which is the whole store.
     """
-    if covering is None:
-        covering = covering_artifacts(repo)
+    if covering is None or reviewed is None:
+        artifacts = repo_artifacts(repo)
+        covering = covering_artifacts(repo, artifacts=artifacts) if covering is None else covering
+        reviewed = reviewed_shas(artifacts, repo) if reviewed is None else reviewed
     if claims is None:
         claims = _store.run_record_claims(repo)
     if dirty is None:
         dirty = _store.run_dirty_paths(repo)
     named = _store.journal_paths(repo) | set(claims) | set(dirty)
     candidates = list(paths) if paths else sorted(set(covering) | named)
+    haunted = haunted_paths(repo, candidates)
     debt = []
     for path in candidates:
+        if str(path) in haunted:
+            continue
         artifact = covering.get(path)
         sha = _store.path_blob_sha(repo, path)
         if shas is not None:
@@ -408,7 +510,11 @@ def repo_debt(repo, paths=None, covering=None, shas=None, claims=None, dirty=Non
             # A path no artifact holds has no recorded content to compare, and a deleted one hashes
             # to the same empty string that absence does: compared, the two cancel and deleting an
             # unreviewed file is how it escapes review. The journals having named it is what keeps
-            # the removal visible.
+            # the removal visible. Only a path NOTHING holds may escape on content read elsewhere:
+            # a held one is answered by its own artifact, or a narrow rerun would take a path back
+            # from the locked round `covering_artifacts` withheld it from.
+            if sha and sha in reviewed:
+                continue
             if sha or path in named:
                 debt.append((path, None))
             continue
@@ -643,8 +749,9 @@ def debt_review_scope(repo):
     Bounded by the round budget the same way the lock is: a second round that owes a third owes it
     to nobody, so its receipt answers for its scope like any other.
     """
-    covering = covering_artifacts(repo)
-    debt = repo_debt(repo, covering=covering)
+    artifacts = repo_artifacts(repo)
+    covering = covering_artifacts(repo, artifacts=artifacts)
+    debt = repo_debt(repo, covering=covering, reviewed=reviewed_shas(artifacts, repo))
     standing = {}
     for artifact in covering.values():
         standing.setdefault(artifact["id"], artifact)
@@ -653,15 +760,18 @@ def debt_review_scope(repo):
         if artifact_owes_second_round(artifact)
     }
     if reopened:
-        # The round's own fix-bytes artifact goes with it: same round, same answer.
-        covering = covering_artifacts(
-            repo, ignoring={key for run_id in reopened for key in (run_id, f"{run_id}+fixes")}
-        )
-        debt = repo_debt(repo, covering=covering)
+        # The round's own fix-bytes artifact goes with it: same round, same answer. Out of the
+        # content set too, or its scope comes back current on the shas it recorded itself.
+        ignoring = {key for run_id in reopened for key in (run_id, f"{run_id}+fixes")}
+        artifacts = [artifact for artifact in artifacts if artifact["id"] not in ignoring]
+        covering = covering_artifacts(repo, artifacts=artifacts)
+        debt = repo_debt(repo, covering=covering, reviewed=reviewed_shas(artifacts, repo))
     scope = dict(debt)
     for artifact in reopened.values():
         for path in artifact["shas"]:
             if path in scope or not os.path.lexists(Path(repo) / path):
+                continue
+            if str(path).startswith(_store.WORKTREE_PATH_PREFIX):
                 continue
             scope[path] = covering.get(path)
     return sorted(scope.items())
@@ -1147,6 +1257,9 @@ def cmd_waive(args):
             stored = {}
         if not isinstance(stored, dict) or not isinstance(stored.get("waivers"), list):
             stored = {"waivers": []}
+        family = _store.repo_family(str(repo))
+        if family is not None:
+            stored["family"] = str(family)
         stored["waivers"].append(entry)
         path.parent.mkdir(parents=True, exist_ok=True)
         scratch = path.with_name(f".{path.name}.{os.getpid()}")
@@ -1282,7 +1395,7 @@ def doctor_locks(repo, now, covering=None):
     return rows
 
 
-def doctor_orphan_debt(repo, covering=None):
+def doctor_orphan_debt(repo, covering=None, reviewed=None):
     """Debt paths no chat answers for: every journal record naming them is the original bare-path
     format, or there is no record at all. Nobody will be asked to review or waive these, so they
     sit in the count for ever while the gate stays silent about whose they are.
@@ -1292,7 +1405,7 @@ def doctor_orphan_debt(repo, covering=None):
     """
     records = _store.worker_run_dirs()
     claimed = _store.run_record_claims(repo, records)
-    debt = repo_debt(repo, covering=covering, claims=claimed,
+    debt = repo_debt(repo, covering=covering, reviewed=reviewed, claims=claimed,
                      dirty=_store.run_dirty_paths(repo, records))
     if not debt:
         return []
@@ -1409,9 +1522,12 @@ def doctor_scan(now=None, undelivered_window=DOCTOR_WINDOW_S):
             continue
         # Built once and handed to both: each of them otherwise walks the whole benches directory
         # for the same answer, and this scan is over every checkout the store has ever recorded.
-        covering = covering_artifacts(repo)
+        artifacts = repo_artifacts(repo)
+        covering = covering_artifacts(repo, artifacts=artifacts)
         findings["eternal_lock"].extend(doctor_locks(repo, now, covering))
-        findings["orphan_debt"].extend(doctor_orphan_debt(repo, covering))
+        findings["orphan_debt"].extend(
+            doctor_orphan_debt(repo, covering, reviewed_shas(artifacts, repo))
+        )
     return findings
 
 

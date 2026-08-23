@@ -1282,12 +1282,27 @@ def main():
         "--session", default="", metavar="ID",
         help="Refuse the run (exit 2) unless this chat launched it",
     )
+    report.add_argument(
+        "--line", nargs="?", const="triaged", choices=("triaged", "fork"), metavar="STATE",
+        help="One delivery line instead of the block: the triaged tally (default) or the fork",
+    )
     report.set_defaults(func=_report.cmd_report)
     fork = subparsers.add_parser(
         "fork",
-        help="Print which way a triaged round goes from here, for the report hook's context",
+        help="Print which way a triaged round goes from here, or record Egor's fork decision",
     )
     fork.add_argument("run_id")
+    fork.add_argument("--choice", choices=_round.FORK_CHOICES, help="The way the round goes")
+    fork.add_argument(
+        "--why", metavar="TEXT",
+        help=f"The strategic reason for the choice — why fix rather than simplify or redesign the "
+             f"block, never a list of findings; {_round.FORK_WHY_MIN_CHARS}+ characters",
+    )
+    fork.add_argument("--session", default="", metavar="ID", help="The chat recording it")
+    fork.add_argument(
+        "--check", action="store_true",
+        help="Exit 3 while the round crossed a threshold and has no fork on record",
+    )
     fork.set_defaults(func=_report.cmd_fork)
     pending = subparsers.add_parser(
         "pending-report",
