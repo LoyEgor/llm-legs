@@ -95,11 +95,17 @@ paths are repository-relative on both sides, so they match 1:1. Read per checkou
 main compared files a worktree's panel had read against its own older run and
 reported 11k ghost debt lines after the merge, one file of them 7453 (2026-08-23).
 
-**Content, not the path it was read under.** A path NO artifact holds whose current
-sha any family artifact recorded is current: a file that moved carries its review
-with it. A path some artifact does hold is answered by that artifact alone, or a
-narrow rerun would take a path back from the locked round `covering_artifacts`
-withheld it from.
+**Content, not the path it was read under.** A path whose current sha any family
+artifact recorded is current, whatever path it read it under: a file that moved carries
+its review with it, and a family holds one NAME per path at as many contents as it has
+checkouts — a worktree on a feature branch and its main checkout each stand at their
+own bytes, and priced against the newest artifact alone each re-opened the other the
+moment either recorded a waiver, the whole cross-branch delta coming back as fresh debt
+in both directions (2026-08-24). The LOCK is the exception, on both halves of this
+rule: a path a locked round holds is answered by that round alone, or a narrow rerun —
+or a sibling checkout that happens to stand at bytes some artifact read — would take it
+back from the round `covering_artifacts` withheld it from. A path that IS in debt is
+still priced against the newest artifact holding it.
 
 **Two candidates are nobody's debt here.** One that stands in neither the working
 tree nor HEAD, since nothing is left for a review to read, and one spelled under
@@ -172,13 +178,18 @@ which the gate appends to at the commit that lands it, in the same
 `session TAB epoch TAB path` NUL-separated records, pruning on every write the
 entries of paths no longer in debt.
 
-**Listed evidence outranks a listless claim.** A vendor worker that lists no files
-leaves its launcher holding a whole WORKDIR (`<run-dir>/heir`, invariant row ao), and
-the debt journal then names that launcher on every path a commit carried under it —
-indistinguishable there from an edit that chat made itself. Such a window claim yields
-to any record that NAMES the path: a journaled Claude session entry, or a run record
-whose own file listing holds it. The window keeps the paths nobody names, and an owner
-that both holds the window and names the path keeps it. Nothing here weakens the
+**A listless claim closes with the run, and listed evidence outranks it.** A vendor
+worker that lists no files leaves its launcher holding what its workdir was DIRTY at
+when the run ended (`<run-dir>/heir` beside `<run-dir>/dirty`, invariant row ao), and
+the debt journal then names that launcher on those paths as a commit carries them —
+indistinguishable there from an edit that chat made itself. Its dirt and never its
+workdir, which is normally the whole repository: standing on the directory, the claim
+outlives the run, and one listless record went on taking the paths of every commit
+anybody made in that checkout for three days after it ended. A run that left no dirt
+snapshot claims nothing beyond what its own listing already names. Such a window claim
+yields to any record that NAMES the path: a journaled Claude session entry, or a run
+record whose own file listing holds it. The window keeps the paths nobody names, and an
+owner that both holds the window and names the path keeps it. Nothing here weakens the
 refusal itself — a path another chat's record names is still that chat's, and `waive`
 still refuses it by that chat's name.
 
@@ -221,7 +232,15 @@ the repository and not among the ones some path is in debt against: a threshold
 stop fixes nothing by construction, so its round leaves no path in debt at all and
 read off the debt its mandatory pass could never be scoped (2026-08-22). Per path, the comparison base is the content the newest artifact
 holding it recorded; where no artifact holds it, or its recorded blob is no longer
-readable, the path is dropped from the base and the panel sees the file whole.
+readable, the base is the one the STATUSLINE prices that path against — HEAD while
+the working tree is dirty, the parent of the oldest commit under the earliest
+journal stamp while it is clean — so the panel reads exactly the lines the debt
+count names. One helper answers both (`debt_base_blobs`). Only a path HEAD does not
+hold is dropped from the base and seen whole, and only a reopened round's paths
+carry an empty side of their own, because that pass is owed the full original scope
+plus the fixes. Spelled twice, the two drifted: an 84-line edit reached the raters
+as 11.9k lines of untouched code and twenty of the findings were about the old
+lines (2026-08-24).
 Those bases live in no commit of the repository — one path was last read three
 commits ago, its neighbour is still uncommitted — so the left end is BUILT: a
 parentless synthetic commit carrying the current tree with each scope path's blob
@@ -237,7 +256,29 @@ repository's whole open question, not a corner of it — and its scope never rea
 the round key, so a second `--debt` run over the same work is that scope's second
 round and not a scope of its own. It takes no target: a commitish, `--range`,
 `--worktree` and `--paths` are each refused, because choosing the scope is the
-choice this mode removes. What the scope left out is NAMED beside the target —
+choice this mode removes.
+
+Because nobody spells that scope, nobody sees its SIZE either, so the run prices it
+before anything is sealed or launched and prints `scope: <n> file(s) · <m>
+line(s)`. Above `DEBT_SCOPE_LINES_MAX` diff lines it launches nothing: it lists the
+largest paths, counts the ones it did not list, and prints the same command plus
+`--scope-lines <m>`, whose number must equal the one printed. A flag that merely
+lifted the ceiling would be a bare override; a number that has to match is a size
+somebody read, which is the waive pattern — a decision on record. Nothing is ever
+narrowed by it: either the whole computed scope is reviewed or nothing runs.
+
+And the panel is one per CHAT, not one per repository. Before a single-repository
+round launches, the repositories this chat currently owes debt in are enumerated
+from the flow gate's own per-call HEAD snapshots; if more than one owes and the
+command's `--repo` set does not cover them all, nothing launches and the merged
+command naming every one of them is printed instead. A round settles only what it
+read, so the rest would stand unreviewed behind a panel that came back clean — and
+paying for one panel and one triage instead of three is the reason the merged mode
+exists. `--this-repo-only --reason '...'` is the way past it, the reason recorded
+with the run the way a waiver's is. Every surface that hands a chat this command —
+the commit notice, the settle ask, the adjudication handoff, the waiver's refusal —
+prints that same merged form, or the gate would arrange the very split round the
+tool refuses. What the scope left out is NAMED beside the target —
 `skipped foreign: <n> path(s), <m> line(s) (chat <labels>) — include with --all` —
 and `--all`, which only this mode accepts, reads it: a review that silently read
 part of the debt reported a repository clean over files no rater ever opened. A

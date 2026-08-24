@@ -403,10 +403,14 @@ def debt_snapshot_commit(repo, scope):
     again reaches the panel as ONE diff from what was read to what is there, which is the whole
     reason a debt review cannot be spelled as a range or as a worktree run.
 
-    A path no artifact holds, and one whose recorded blob this store can no longer read, is dropped
-    from the base instead: the diff then shows the file whole, which is what a file nobody has ever
-    read is worth reviewing as.
+    The base is the one `debt_line_counts` prices against — `debt_base_blobs` answers both — so the
+    panel reads exactly the lines the statusline counts. A path whose recorded blob this store
+    cannot read takes the side its price takes: HEAD where the edit is uncommitted, the parent of
+    the oldest unreviewed commit where it is not. A path HEAD does not hold is dropped from the
+    base instead, and the diff shows the file whole, which is what a file nobody has ever read is
+    worth reviewing as.
     """
+    from . import debt as _debt  # here and not at module top: debt imports this module at load
     paths = [path for path, _ in scope]
     unusable = [path for path in paths if "\n" in path or "\r" in path]
     if unusable:
@@ -421,15 +425,12 @@ def debt_snapshot_commit(repo, scope):
     staged = [path for path in paths if os.path.lexists(Path(repo) / path) or path in held]
     tree = working_tree_tree(repo, staged, literal=True) if staged else head
     current = tree_path_entries(repo, tree, paths, literal=True)
-    recorded = {
-        path: (artifact["shas"].get(path, "") if artifact else "") for path, artifact in scope
-    }
-    readable = reachable_blobs(repo, recorded.values())
+    recorded = _debt.debt_base_blobs(repo, scope)
     base_tree = overlay_tree(repo, tree, {
         # The mode the path wears NOW, so a base built for a content comparison does not report a
         # mode change nobody made; an artifact records a blob and never a mode.
         path: (current.get(path, ("100644", ""))[0], recorded[path])
-        if recorded[path] in readable else None
+        if recorded.get(path) else None
         for path in paths
     })
     if base_tree == tree:

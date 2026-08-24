@@ -1149,6 +1149,40 @@ assert await_done
 assert grep -q '^PARTIAL: ' "$RUN_DIR/files"
 assert test ! -e "$RUN_DIR/dirty"
 assert test ! -e "$RUN_DIR/dirty-before"
+
+# A running run's liveness, for the one reader who has nothing else: claudeb writes its JSON once,
+# at the end, so OUT-BYTES reads 0 for the whole run and a wrapper agent declared a healthy
+# 52-minute run stalled one minute before it finished (live 2026-08-24). The dirt tracker already
+# knows which paths are this run's, and the newest of their mtimes is the answer.
+clear_stub
+printf 'delete me\n' >"$DIRT_REPO/bin/deletion-is-work"
+git -C "$DIRT_REPO" add bin/deletion-is-work
+git -C "$DIRT_REPO" -c user.email=t@t -c user.name=t commit -qm 'track deletion liveness'
+export STUB_SLEEP=4
+start_ok claudeb --workdir "$DIRT_REPO"
+idle=$("$RUNNER" wait "$RUN_ID" --max 0)
+assert grep -qx 'STATUS: running' <<<"$idle"
+assert grep -qx 'OUT-BYTES: 0' <<<"$idle"
+# Nothing has changed yet, and the dirt every co-tenant left behind before this run started is on
+# the floor rather than in this answer.
+assert grep -qx 'LAST-EDIT: none' <<<"$idle"
+rm -f "$DIRT_REPO/bin/deletion-is-work"
+deleting=$("$RUNNER" wait "$RUN_ID" --max 0)
+assert grep -Eq '^LAST-EDIT: [0-9]$' <<<"$deleting"
+printf 'the run is working\n' >"$DIRT_REPO/bin/proof-of-life"
+working=$("$RUNNER" wait "$RUN_ID" --max 0)
+assert grep -Eq '^LAST-EDIT: [0-9]$' <<<"$working"
+assert grep -qx 'OUT-BYTES: 0' <<<"$working"
+assert grep -Eq '^CPU-SECONDS: [0-9]+$' <<<"$working"
+# The rows a relay already parses keep their bytes.
+assert grep -Eq '^ELAPSED: [0-9]+$' <<<"$working"
+assert grep -Eq '^ERR-BYTES: [0-9]+$' <<<"$working"
+assert grep -Eq '^SESSION: ' <<<"$working"
+assert grep -Eq '^(LAST-EDIT|CPU-SECONDS): ' <<<"$("$RUNNER" report "$RUN_ID")"
+assert await_done
+# A terminal report answers with the run's files instead; a liveness row there is a run still going.
+assert test "$(grep -c '^LAST-EDIT: \|^CPU-SECONDS: ' "$WORK/wait.out")" -eq 0
+unset STUB_SLEEP
 unset CLAUDE_CODE_SESSION_ID
 
 # --- Per-file lists from the gemini and codex transcripts ----------------------------------------
@@ -1465,6 +1499,56 @@ assert test "$(grep -c 'cx-patch-text-failed' <<<"$report")" -eq 0
 assert test "$(grep -c 'cx-no-event-failed' <<<"$report")" -eq 0
 assert grep -q '^RUN-FILES-PARTIAL: the run also ran shell commands' <<<"$report"
 assert grep -qx 'bin/cx-patched' "$RUN_DIR/files"
+
+# A target still carrying an unexpanded `$name` or a backtick is text, not a path anybody can
+# attribute: a run editing this suite's own fixtures patches their `*** Update File: $cx_workdir/…`
+# headers, and the variable reached a live run's file list as a file (2026-08-24). The run says so
+# instead of naming it.
+clear_stub
+CX_TS=$(iso $(($(date +%s) + 60)))
+{
+  cx_patch_event "$cx_workdir/bin/cx-patched" '' true
+  cx_patch_event '$cx_workdir/bin/cx-from-a-variable' '' true
+  cx_patch_event '${workdir}/bin/cx-from-a-brace' '' true
+  cx_patch_event '`pwd`/bin/cx-from-a-backtick' '' true
+  cx_patch_event "$cx_workdir/bin/cost"'$report.txt' '' true
+  cx_patch_event "$cx_workdir/bin/cost"'$.txt' '' true
+  cx_patch_event "$cx_workdir/bin/cost"'`report.txt' '' true
+} >"$CX_ROLLOUT"
+start_ok codex
+assert await_done
+report=$("$RUNNER" report "$RUN_ID")
+assert grep -qx 'RUN-FILES: 4' <<<"$report"
+assert grep -qx 'RUN-FILE: bin/cx-patched' <<<"$report"
+assert grep -qxF 'RUN-FILE: bin/cost$report.txt' <<<"$report"
+assert grep -qxF 'RUN-FILE: bin/cost$.txt' <<<"$report"
+assert grep -qxF 'RUN-FILE: bin/cost`report.txt' <<<"$report"
+assert_fails grep -q '^RUN-FILE: .*cx-from-a-variable' <<<"$report"
+assert_fails grep -q '^RUN-FILE: .*cx-from-a-brace' <<<"$report"
+assert_fails grep -q '^RUN-FILE: .*cx-from-a-backtick' <<<"$report"
+assert test "$(grep -v '^WORKDIR: \|^UNKNOWN: \|^PARTIAL: ' "$RUN_DIR/files" | grep -c 'cx-from-a-')" -eq 0
+# The text itself, so a reader can see what the transcript could not resolve.
+assert grep -qx 'RUN-FILES-PARTIAL: the run named a target the transcript cannot resolve: $cx_workdir/bin/cx-from-a-variable' <<<"$report"
+assert grep -qx 'PARTIAL: the run named a target the transcript cannot resolve: $cx_workdir/bin/cx-from-a-variable' "$RUN_DIR/files"
+# And it never reads as the whole list being unanswerable: the paths beside it are real.
+assert_fails grep -q '^RUN-FILES: unknown' <<<"$report"
+
+# The same guard for agy, which names its targets in its own log through the same reader.
+clear_stub
+export PICK_RC=0 PICK_ACCOUNT=gemfiles
+AGY_TS=$(agy_iso $(($(date +%s) + 60)))
+{
+  agy_write write_to_file "$agy_workdir/bin/agy-written"
+  agy_write write_to_file '$agy_workdir/bin/agy-from-a-variable'
+} >"$AGY_TRANSCRIPT"
+start_ok gemini
+assert await_done
+report=$("$RUNNER" report "$RUN_ID")
+assert grep -qx 'RUN-FILES: 1' <<<"$report"
+assert grep -qx 'RUN-FILE: bin/agy-written' <<<"$report"
+assert grep -qx 'RUN-FILES-PARTIAL: the run named a target the transcript cannot resolve: $agy_workdir/bin/agy-from-a-variable' <<<"$report"
+assert_fails grep -q '^RUN-FILE: .*agy-from-a-variable' <<<"$report"
+export PICK_RC=0 PICK_ACCOUNT=codexfiles
 
 # Patch headers printed by a shell command are text, not editor targets.
 clear_stub
@@ -1985,4 +2069,4 @@ assert test ! -e "$DELEG_BENCHES/20260801T990000Z-fffffff"
 assert test ! -e "$DELEG_BENCHES/20260801T130000Z-def4560/delegated"
 await_done || fail "the delegated run never finished"
 
-echo "PASS: $asserts asserts; worker-run detaches vendor CLIs, preserves live runs across bounded waits, resolves accounts and model knobs, reroutes an unpinned run off a walled account until every candidate is walled, retries only documented compatibility failures, records beside each run the chat that launched it, the worker session it ran under and the files it wrote — read for claudeb, codex and agy alike out of that vendor's own transcript, the same list its report prints, unioned across every attempt, an UNKNOWN line where a mutating call names no target, a shell command writes, a tool is one this reader cannot classify or the workdir leaves the list unanswerable, a PARTIAL one where the run also worked through the shell, and a WORKDIR-ESCAPE line beside a run that named no path inside its own workdir at all, written for a failed run and for a run that never reached its workdir too, and for no chat at all when none can be named — stamps the bench of a triage its brief delegates with the supervisor's pid and its launch instant, and reports terminal outcomes"
+echo "PASS: $asserts asserts; worker-run detaches vendor CLIs, preserves live runs across bounded waits, resolves accounts and model knobs, reroutes an unpinned run off a walled account until every candidate is walled, retries only documented compatibility failures, records beside each run the chat that launched it, the worker session it ran under and the files it wrote — read for claudeb, codex and agy alike out of that vendor's own transcript, the same list its report prints, unioned across every attempt, an UNKNOWN line where a mutating call names no target, a shell command writes, a tool is one this reader cannot classify or the workdir leaves the list unanswerable, a PARTIAL one where the run also worked through the shell or named a target still carrying an unexpanded shell variable, and a WORKDIR-ESCAPE line beside a run that named no path inside its own workdir at all, written for a failed run and for a run that never reached its workdir too, and for no chat at all when none can be named — answers a still-running wait with LAST-EDIT and CPU-SECONDS beside the stdout byte counts that say nothing about liveness, stamps the bench of a triage its brief delegates with the supervisor's pid and its launch instant, and reports terminal outcomes"

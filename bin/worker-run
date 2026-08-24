@@ -610,6 +610,16 @@ workdir_rewritten_paths() { # directory workdir
   '
 }
 
+# The paths this run's window put content at, top-relative: dirty now and not dirty at launch, or
+# dirty at launch and holding different content since. Read twice over — by the dirt record at the
+# end, and by the liveness row of a run still going — and one definition, or the two disagree about
+# what this run has touched.
+workdir_gained_paths() { # directory workdir
+  { comm -23 <(workdir_dirty_paths "$2") \
+             <(sort -u "$1/dirty-before" 2>/dev/null)
+    workdir_rewritten_paths "$1" "$2"; } | sort -u
+}
+
 # The run's own listing, spelled against the repository TOP the way the dirt snapshot is. The
 # listing answers in paths relative to the WORKDIR, so subtracted as it stands from a top-relative
 # set it matches nothing at all for a run launched one directory in, and every path the run's own
@@ -653,9 +663,7 @@ record_workdir_dirt() { # directory workdir
   top=$(git -C "$workdir" rev-parse --show-toplevel 2>/dev/null) || return 0
   [ -n "$top" ] || return 0
   gained=$(comm -23 \
-    <({ comm -23 <(workdir_dirty_paths "$workdir") \
-                 <(sort -u "$directory/dirty-before" 2>/dev/null)
-        workdir_rewritten_paths "$directory" "$workdir"; } | sort -u) \
+    <(workdir_gained_paths "$directory" "$workdir") \
     <(listing_top_paths "$directory" "$top" "$workdir"))
   [ -n "$gained" ] || [ -f "$directory/dirty" ] || return 0
   { printf 'WORKDIR: %s\n' "$top"
@@ -1114,6 +1122,7 @@ resolve_tool_path() { # path workdir
 
 classify_tool_rows() { # rows workdir
   local rows="$1" workdir="$2" line tag value paths='' places='' shell=false inside=0 outside='' dir=''
+  local unexpanded_target_re='(^|/)(\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\}|`[^`]+`)(/|$)'
   [ -z "$workdir" ] || [ "$workdir" = null ] || dir="${workdir%/}/"
   while IFS= read -r line; do
     [ -n "$line" ] || continue
@@ -1124,6 +1133,11 @@ classify_tool_rows() { # rows workdir
         if [ -z "$value" ]; then
           [ -n "$RUN_FILES_REASON" ] ||
             RUN_FILES_REASON='the transcript records a write whose target it does not name'
+          continue
+        fi
+        if [[ "$value" =~ $unexpanded_target_re ]]; then
+          [ -n "$RUN_FILES_PARTIAL" ] ||
+            RUN_FILES_PARTIAL="the run named a target the transcript cannot resolve: $value"
           continue
         fi
         value=$(resolve_tool_path "$value" "$workdir")
@@ -1168,7 +1182,9 @@ classify_tool_rows() { # rows workdir
   RUN_FILES_LIST=$(awk -v dir="$dir" \
     '{ if (dir != "" && index($0, dir) == 1) $0 = substr($0, length(dir) + 1) } NF' \
     <<<"$paths" | sort -u)
-  [ "$shell" = false ] || RUN_FILES_PARTIAL="$SHELL_FLOOR_PARTIAL"
+  # First reason wins, like RUN_FILES_REASON: one PARTIAL line carries the caveat, and the named
+  # unresolvable target says more than the generic shell floor beside it.
+  [ "$shell" = false ] || [ -n "$RUN_FILES_PARTIAL" ] || RUN_FILES_PARTIAL="$SHELL_FLOOR_PARTIAL"
   return 0
 }
 
@@ -1479,14 +1495,55 @@ unknown_report() {
   tail -n 40 "$directory/err" 2>/dev/null
 }
 
+# How long ago this run last put bytes on disk. OUT-BYTES is no liveness signal — claudeb writes
+# its JSON once, at the end, so it reads 0 for the whole run and a wrapper agent declared a healthy
+# 52-minute run stalled one minute before it finished (live 2026-08-24). Newest mtime among the
+# paths the dirt tracker already calls this run's own; nonzero where nothing has changed yet.
+last_edit_age() { # directory workdir now
+  local directory="$1" workdir="$2" now="$3" top path target mtime newest='' age
+  [ -f "$directory/dirty-before" ] || return 1
+  top=$(git -C "$workdir" rev-parse --show-toplevel 2>/dev/null) || return 1
+  [ -n "$top" ] || return 1
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    target="$top/$path"
+    while ! mtime=$(stat -f %m "$target" 2>/dev/null || stat -c %Y "$target" 2>/dev/null); do
+      [ "$target" != "$top" ] || { mtime=''; break; }
+      target=${target%/*}
+    done
+    [ -n "$mtime" ] || continue
+    [[ "$mtime" =~ ^[0-9]+$ ]] || continue
+    [ -n "$newest" ] && [ "$mtime" -le "$newest" ] || newest=$mtime
+  done < <(workdir_gained_paths "$directory" "$workdir")
+  [ -n "$newest" ] || return 1
+  age=$((now - newest)); [ "$age" -ge 0 ] || age=0
+  printf '%s\n' "$age"
+}
+
+# CPU the run has burned, summed over the whole process group: the supervisor is `setsid`'d, so its
+# pid IS the group and one `ps` covers the CLI and everything it spawned. The second half of the
+# liveness answer — a run whose files sit still is thinking if this keeps climbing.
+pid_group_cpu_seconds() { # pid
+  [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -gt 0 ] || return 1
+  ps -g "$1" -o time= 2>/dev/null |
+    awk 'NF { n = split($1, f, ":"); s = 0; for (i = 1; i <= n; i++) s = s * 60 + f[i]; total += s; seen = 1 }
+         END { if (!seen) exit 1; printf "%d\n", total }'
+}
+
 running_report() {
-  local directory="$1" now started elapsed out_bytes err_bytes
+  local directory="$1" now started elapsed out_bytes err_bytes workdir age cpu
   now=$(date +%s)
   started=$(jq -r '.started_at' "$directory/meta.json")
   elapsed=$((now - started)); [ "$elapsed" -ge 0 ] || elapsed=0
   out_bytes=$(wc -c <"$directory/out" | tr -d '[:space:]')
   err_bytes=$(wc -c <"$directory/err" | tr -d '[:space:]')
   printf 'STATUS: running\nELAPSED: %s\nOUT-BYTES: %s\nERR-BYTES: %s\nSESSION: %s\n' "$elapsed" "$out_bytes" "$err_bytes" "$(session_id "$directory")"
+  workdir=$(jq -r '.workdir' "$directory/meta.json" 2>/dev/null)
+  age=$(last_edit_age "$directory" "$workdir" "$now") || age=none
+  printf 'LAST-EDIT: %s\n' "$age"
+  cpu=$(pid_group_cpu_seconds "$(jq -r '.pid' "$directory/meta.json" 2>/dev/null)") &&
+    printf 'CPU-SECONDS: %s\n' "$cpu"
+  return 0
 }
 
 wait_run() {

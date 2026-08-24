@@ -29,6 +29,17 @@ SECOND_REVIEW_P1S = _round.HANDOFF_P1_STOP
 # is the one reason this tool refuses. Held equal to the gate's own literal by
 # docs/shared-invariants.md.
 WAIVE_PLACEHOLDER_REASON = "WHY THIS GOES UNREVIEWED"
+# Above this many diff lines a `--debt` review launches nothing until the caller names the size.
+# The mode computes its own scope, so nobody chooses it and nobody reads it before the panel does:
+# one chat took a sweep of 11.9k lines for an 84-line edit and spent forty minutes on twenty
+# findings in code it had never touched (live case 2026-08-24). The number is not a ceiling on what
+# may be reviewed — `--scope-lines <n>` matching what this printed proceeds — it is what turns a
+# sweep into a decision somebody made. Held equal to its docs/shared-invariants.md row by
+# tests/test_consistency.sh.
+DEBT_SCOPE_LINES_MAX = 3000
+# How much of an over-size scope the refusal itemises. The list is there to be READ before the
+# number is typed back, and a hundred rows is a scroll nobody reads.
+DEBT_SCOPE_ROWS_SHOWN = 20
 # The ledger claude-setup's two report hooks write and read, and the only record that a round's
 # report ever reached Egor: one key per line under `$XDG_CACHE_HOME/claude/review-delivery`, of
 # which `run:<id>:<state>` is the one a run can be looked up by. Read-only here — a diagnostic
@@ -58,6 +69,13 @@ DOCTOR_AGES_S = {
 # about the tree as it stands now — a lock standing over live paths, debt in front of the reader —
 # are not bounded by it and never go quiet on their own.
 DOCTOR_WINDOW_S = 14 * 24 * 3600
+# How long a QUEUED report stays owed before `settle-delivery` writes it off. Queueing hands a
+# round to the launching chat's next stop, and a chat that never stops again — closed, but with its
+# transcript still on disk, which is the state `session_transcript_exists` cannot tell from a live
+# one — holds it for ever: 24 rounds from a nine-day span sat `queued` and undelivered through the
+# whole doctor window (live 2026-08-24). A week is the same bound the eternal lock uses, and the
+# round stays readable under `doctor --lapsed` exactly as one whose transcript is already gone.
+DELIVERY_QUEUE_LAPSE_S = 7 * 24 * 3600
 DOCTOR_CLASSES = (
     "untriaged", "undelivered", "stuck_fixes", "eternal_lock", "orphan_debt", "kill_asymmetry",
 )
@@ -100,8 +118,9 @@ def cmd_settle_delivery(args):
     delivered nowhere, which is the count `doctor` reports as `undelivered` (18 of them, some 12
     days old, when this was written). Each is settled one of two ways and never a third: queued,
     so the launching chat's next stop hands it over whatever its age, or lapsed with the instant,
-    because the transcript that stop reads is gone. Nothing is dropped silently — a lapsed round
-    keeps its own listing under `doctor --lapsed`.
+    because the transcript that stop reads is gone — or because the queue itself has stood past
+    `DELIVERY_QUEUE_LAPSE_S`, which is the same dead chat wearing a transcript nobody deleted.
+    Nothing is dropped silently — a lapsed round keeps its own listing under `doctor --lapsed`.
     """
     # At no window: the scan's fortnight is a bound on what a reader is asked to look at, and the
     # rounds this command exists for are precisely the ones that outlived it — 18 of them, some 12
@@ -117,14 +136,31 @@ def cmd_settle_delivery(args):
             session = str(json.loads((run_dir / "meta.json").read_text()).get("session") or "")
         except (OSError, ValueError):
             continue
-        alive = _round.session_transcript_exists(session)
-        mark = {"state": state, ("queued" if alive else "lapsed"): _store.iso_now(), "session": session}
+        # A queue that has already stood a week is the same dead end a missing transcript is: the
+        # chat kept its file and never stopped again, so requeueing it says `undelivered` for ever.
+        # The queued instant is kept beside the write-off — it is the record of how long the round
+        # was actually owed, and the listing is the only place anybody reads it now.
+        held = _round.delivery_mark(run_dir)
+        standing = held.get("state") == state and str(held.get("session") or "") == session
+        queued_at = held.get("queued") if standing else None
+        queued_on = _store.parse_iso_timestamp(queued_at)
+        stale = queued_on is not None and \
+            (_store.utc_now() - queued_on).total_seconds() > DELIVERY_QUEUE_LAPSE_S
+        alive = _round.session_transcript_exists(session) and not stale
+        mark = {"state": state, "session": session}
+        mark["queued" if alive else "lapsed"] = _store.iso_now()
+        # The instant a queue began is the ROUND's, never this pass's. This command runs from every
+        # stop, so restamping a standing queue here would hold it permanently seconds old and no
+        # round would ever reach `DELIVERY_QUEUE_LAPSE_S`.
+        if queued_at is not None:
+            mark["queued"] = queued_at
         (queued if alive else lapsed).append((run_id, state, session))
         if not args.dry_run:
             (run_dir / _store.DELIVERY_MARK).write_text(json.dumps(mark, sort_keys=True) + "\n")
     for label, rows in (("queued", queued), ("lapsed", lapsed)):
+        verb = ("would queue" if label == "queued" else "would lapse") if args.dry_run else label
         for run_id, state, session in rows:
-            print(f"{label} {run_id} {state} {session}")
+            print(f"{verb} {run_id} {state} {session}")
     prefix = "would settle" if args.dry_run else "settled"
     print(f"{prefix}: {len(queued)} queued, {len(lapsed)} lapsed")
     return 0
@@ -439,6 +475,21 @@ def reviewed_shas(artifacts, repo):
     return {sha for sha in newest.values() if sha and sha != empty}
 
 
+def path_holders(artifacts):
+    """Every content any of these artifacts recorded UNDER EACH PATH, as `{path: {sha, ...}}`.
+
+    Not `reviewed_shas`, which keeps the newest record per path and drops the path itself: the
+    question here is whether some artifact of the family read THIS path at THIS content, which the
+    newest record alone cannot answer once two checkouts of one family stand at different content.
+    """
+    holders = {}
+    for artifact in artifacts:
+        for path, sha in artifact["shas"].items():
+            if sha:
+                holders.setdefault(path, set()).add(sha)
+    return holders
+
+
 def haunted_paths(repo, candidates):
     """The candidates that are not this checkout's debt to begin with: one that stands neither in
     the working tree nor in HEAD, since there is no content left for a review to read, and one
@@ -464,7 +515,8 @@ def haunted_paths(repo, candidates):
     return haunted
 
 
-def repo_debt(repo, paths=None, covering=None, shas=None, claims=None, dirty=None, reviewed=None):
+def repo_debt(repo, paths=None, covering=None, shas=None, claims=None, dirty=None, reviewed=None,
+              holders=None):
     """The paths whose working-tree content differs from what the newest artifact holding them
     recorded, each with that artifact, as `(path, artifact)` pairs.
 
@@ -492,10 +544,11 @@ def repo_debt(repo, paths=None, covering=None, shas=None, claims=None, dirty=Non
     rewritten files with nothing anywhere saying it had (live case 2026-08-21). `claims` and
     `dirty` come from a caller that has already read those records, which is the whole store.
     """
-    if covering is None or reviewed is None:
+    if covering is None or reviewed is None or holders is None:
         artifacts = repo_artifacts(repo)
         covering = covering_artifacts(repo, artifacts=artifacts) if covering is None else covering
         reviewed = reviewed_shas(artifacts, repo) if reviewed is None else reviewed
+        holders = path_holders(artifacts) if holders is None else holders
     if claims is None:
         claims = _store.run_record_claims(repo)
     if dirty is None:
@@ -524,6 +577,20 @@ def repo_debt(repo, paths=None, covering=None, shas=None, claims=None, dirty=Non
                 debt.append((path, None))
             continue
         if sha != artifact["shas"].get(path, ""):
+            # The artifacts are the checkout FAMILY's, and a family holds ONE name per path at as
+            # many contents as it has checkouts: a worktree on a feature branch and its main
+            # checkout each recorded this path at their own bytes, and the newer of the two
+            # displaces the other's exact-match artifact here. Compared against it alone, every
+            # cross-branch delta was priced as fresh debt in BOTH directions and each checkout's
+            # own waiver re-opened its sibling the moment it was written (live 2026-08-24).
+            # So a content some artifact of the family actually READ is not debt, wherever it was
+            # read. A LOCKED round short-circuits it, exactly as the artifact-alone rule does for
+            # the unheld paths below: what discharges a lock is the full original scope reviewed
+            # again, and a sibling's matching sha would otherwise retire a second review nobody
+            # ran. Line pricing is untouched — a path that IS in debt still prices against the
+            # newest artifact.
+            if sha and sha in holders.get(path, ()) and not path_lock_stands(repo, path, artifact):
+                continue
             debt.append((path, artifact))
     return debt
 
@@ -651,38 +718,28 @@ def head_path_blobs(repo, paths):
     return {path: entry[1] for path, entry in entries.items()}
 
 
-def debt_line_counts(repo, debt, shas=None):
-    """How many lines each debt path is in debt by, as `{path: lines}`: the diff between the
-    content the artifact covering it recorded and the content standing there now, counted by the
-    same differ the review target header prints its `N file(s) · M line(s)` with.
+def debt_base_blobs(repo, debt, shas=None):
+    """The LEFT side of every debt path, as `{path: sha}`, and the empty string where nothing
+    readable stands behind it and the file is worth reading whole.
 
-    Both sides are handed to git as files, because neither is reliably an object this repository
-    holds: uncommitted working-tree bytes are in no store at all, and hashing them into one would
-    make a statusline render write into the repository it is only reading.
+    The ONE answer both the price and the panel are built from: `debt_line_counts` measures the
+    drift across this base and `debt_snapshot_commit` seals it as a review's base, so a panel reads
+    exactly the lines the statusline counts. Spelled twice they diverged — the price was an 84-line
+    edit while the base fell back to the whole file, and the round read 11.9k lines of untouched
+    code and reported twenty findings in it (live 2026-08-24).
 
-    A side that cannot be READ — nothing ever recorded the path, or the blob its artifact named is
-    gone from this store — is decided by where the unreviewed work stands. A path DIRTY in the
-    working tree is priced against the content HEAD holds, whole where HEAD holds none: the edit is
-    what it owes, not the history under it, and a waiver recording shas whose objects were never
-    written priced one test file at 16251 lines of debt that way (live 2026-08-24). A CLEAN path
-    has all of its unreviewed work in commits, so HEAD is that work rather than the base for it:
-    the left side is the parent of the oldest commit reaching HEAD at or after the earliest epoch
-    the journals stamped for the path — everything from that stamp on is what nobody read (live
-    2026-08-24: a committed contract file read as 0 lines of debt while `--list` still named it).
-    With no epoch stamped and no such commit, HEAD stands and the path owes no lines, since nothing
-    on record says which commits went unreviewed. The review BASE keeps the older shape —
-    `debt_snapshot_commit` drops such a path and shows the panel the whole file — because a review
-    reads content while this counts drift. A held path that is gone has no current side and counts
-    the content it lost, and a recorded EMPTY sha stands as itself: a run that READ the path as
-    absent recorded that.
+    A recorded blob this store can READ is that side. Where it cannot — nothing ever recorded the
+    path, or the sha its artifact named is gone from this store — where the unreviewed work stands
+    decides. A path DIRTY in the working tree owes its edit and not the history under it, so HEAD
+    is the base. A CLEAN path has all of its unreviewed work in commits, so HEAD IS that work
+    rather than the base for it: the base is the parent of the oldest commit reaching HEAD at or
+    after the earliest epoch the journals stamped for the path. With no epoch stamped and no commit
+    under one, HEAD stands and the path owes nothing, since nothing on record says which commits
+    went unreviewed. A path HEAD does not hold has no base at all and is read whole, which is what
+    a file nobody has ever seen is worth.
 
-    The key spells the sha actually compared, HEAD's included, or a number measured where the
-    recorded blob is missing would answer for the checkout whose store still holds it.
+    A recorded EMPTY sha stands as itself: a run that READ the path as absent recorded that.
     """
-    cache = debt_line_cache()
-    counts = {}
-    pending = []
-    suppressed = diff_suppressed_paths(repo, [str(path) for path, _ in debt])
     readable = _scope.reachable_blobs(
         repo, [artifact["shas"].get(path, "") for path, artifact in debt if artifact]
     )
@@ -695,19 +752,18 @@ def debt_line_counts(repo, debt, shas=None):
         repo, [str(path) for path, _ in debt if str(path) not in recorded_sides]
     )
     epochs = None
-    for path, artifact in debt:
+    bases = {}
+    for path, _ in debt:
         name = str(path)
-        if name in suppressed:
-            counts[name] = 0
-            continue
-        current = (shas or {}).get(name)
-        if current is None:
-            current = _store.path_blob_sha(repo, path)
         if name in recorded_sides:
-            recorded = recorded_sides[name]
-        else:
-            recorded = heads.get(name, "")
-            if recorded and recorded == current:
+            bases[name] = recorded_sides[name]
+            continue
+        recorded = heads.get(name, "")
+        if recorded:
+            current = (shas or {}).get(name)
+            if current is None:
+                current = _store.path_blob_sha(repo, path)
+            if recorded == current:
                 # Asked per path and only here: a clean path with no readable side is the one case
                 # where HEAD is the unreviewed work instead of the base for it.
                 if epochs is None:
@@ -716,11 +772,46 @@ def debt_line_counts(repo, debt, shas=None):
                 before = None if epoch is None else unreviewed_parent_blob(repo, name, epoch)
                 if before is not None:
                     recorded = before
-        key = f"{recorded}:{current}"
+        bases[name] = recorded
+    return bases
+
+
+def debt_line_counts(repo, debt, shas=None):
+    """How many lines each debt path is in debt by, as `{path: lines}`: the diff between the
+    content something last stood behind it with — `debt_base_blobs`, the same base the review's
+    own diff is built over — and the content standing there now, counted by the same differ the
+    review target header prints its `N file(s) · M line(s)` with.
+
+    Both sides are handed to git as files, because neither is reliably an object this repository
+    holds: uncommitted working-tree bytes are in no store at all, and hashing them into one would
+    make a statusline render write into the repository it is only reading.
+
+    A held path that is gone has no current side and counts the content it lost.
+
+    The key spells the sha actually compared, HEAD's included, or a number measured where the
+    recorded blob is missing would answer for the checkout whose store still holds it.
+    """
+    cache = debt_line_cache()
+    counts = {}
+    pending = []
+    suppressed = diff_suppressed_paths(repo, [str(path) for path, _ in debt])
+    priced = [(path, artifact) for path, artifact in debt if str(path) not in suppressed]
+    currents = {}
+    for path, _ in priced:
+        name = str(path)
+        current = (shas or {}).get(name)
+        currents[name] = _store.path_blob_sha(repo, path) if current is None else current
+    bases = debt_base_blobs(repo, priced, shas=currents)
+    for path, _ in debt:
+        name = str(path)
+        if name in suppressed:
+            counts[name] = 0
+            continue
+        key = f"{bases[name]}:{currents[name]}"
         if key in cache:
             counts[name] = cache[key]
         else:
-            pending.append((name, recorded))
+            pending.append((name, bases[name]))
     if not pending:
         return counts
     measured = 0
@@ -746,9 +837,9 @@ def debt_line_counts(repo, debt, shas=None):
             # empty string, exactly as the lookup above spells it: hashed as an empty file instead,
             # a deleted path writes a key nothing can ever ask for and misses on every render.
             current_now = "" if current_bytes is None else _store.content_blob_sha(repo, current_bytes)
-            # `readable` vetted the recorded sha, but a store can lose the object between that read
-            # and this one, and an empty answer is how the loss looks — told from a genuinely empty
-            # blob, which caches like any other, by the sha of what came back.
+            # `debt_base_blobs` vetted the recorded sha, but a store can lose the object between
+            # that read and this one, and an empty answer is how the loss looks — told from a
+            # genuinely empty blob, which caches like any other, by the sha of what came back.
             if not recorded or _store.content_blob_sha(repo, recorded_bytes) == recorded:
                 cache[f"{recorded}:{current_now}"] = counts[name]
                 measured += 1
@@ -814,6 +905,19 @@ def debt_split(repo, paths=None, session=""):
     )
 
 
+def unread_artifact(path):
+    """An artifact standing for nothing ever having answered for `path`: an empty left side, which
+    is what a review of a file nobody has read is a diff against.
+
+    A reopened round's paths are the one scope that carries this. Left as None they would fall to
+    `debt_base_blobs`' rule for an unreadable side and be read against HEAD — right for an ordinary
+    debt path, whose edit is what it owes, and wrong here: the fork's ruling is that the second pass
+    rereads the FULL original scope plus the fixes, and against HEAD it would see the fixes alone
+    the moment the first round's work was committed.
+    """
+    return {"id": "", "shas": {path: ""}}
+
+
 def debt_review_scope(repo):
     """Every path a `--debt` review of `repo` must read, each with the artifact its content is
     compared against, as `(path, artifact)` pairs — the same shape `repo_debt` answers in.
@@ -842,7 +946,8 @@ def debt_review_scope(repo):
     """
     artifacts = repo_artifacts(repo)
     covering = covering_artifacts(repo, artifacts=artifacts)
-    debt = repo_debt(repo, covering=covering, reviewed=reviewed_shas(artifacts, repo))
+    debt = repo_debt(repo, covering=covering, reviewed=reviewed_shas(artifacts, repo),
+                     holders=path_holders(artifacts))
     standing = {}
     for artifact in covering.values():
         standing.setdefault(artifact["id"], artifact)
@@ -856,15 +961,17 @@ def debt_review_scope(repo):
         ignoring = {key for run_id in reopened for key in (run_id, f"{run_id}+fixes")}
         artifacts = [artifact for artifact in artifacts if artifact["id"] not in ignoring]
         covering = covering_artifacts(repo, artifacts=artifacts)
-        debt = repo_debt(repo, covering=covering, reviewed=reviewed_shas(artifacts, repo))
+        debt = repo_debt(repo, covering=covering, reviewed=reviewed_shas(artifacts, repo),
+                         holders=path_holders(artifacts))
     scope = dict(debt)
     for artifact in reopened.values():
         for path in artifact["shas"]:
-            if path in scope or not os.path.lexists(Path(repo) / path):
+            if not os.path.lexists(Path(repo) / path):
                 continue
             if str(path).startswith(_store.WORKTREE_PATH_PREFIX):
                 continue
-            scope[path] = covering.get(path)
+            if scope.get(path) is None:
+                scope[path] = covering.get(path) or unread_artifact(path)
     return sorted(scope.items())
 
 
@@ -913,6 +1020,144 @@ def debt_scope(repo, session="", include_foreign=False):
     return kept, skipped
 
 
+def debt_review_command(repos=(), tier="", include_foreign=False, scope_lines=None,
+                        this_repo_only=""):
+    """The one command a chat is handed when a review is owed, carrying whatever this call has to
+    add to it — and `DEBT_REVIEW_COMMAND` itself where nothing does.
+
+    Every printer builds it here. Spelled by hand at each site, a chat owing two repositories was
+    handed the bare form by the commit notice and the merged one by the tool, ran the bare one, and
+    the second repository's debt sat unreviewed behind a panel that reported clean.
+    """
+    command = _store.DEBT_REVIEW_COMMAND
+    if tier:
+        command = command.replace("--tier T1", f"--tier {tier}")
+    for repo in repos:
+        command += " --repo " + shlex.quote(str(repo))
+    if include_foreign:
+        command += " --all"
+    if this_repo_only:
+        command += " --this-repo-only --reason " + shlex.quote(this_repo_only)
+    if scope_lines is not None:
+        command += f" --scope-lines {scope_lines}"
+    return command
+
+
+def debt_chat_review_command(session, repos=(), tier=""):
+    """The `--debt` command to hand THIS chat: merged over every repository it owes when there is
+    more than one, and the bare `DEBT_REVIEW_COMMAND` otherwise.
+
+    One panel per chat is a rule about what gets LAUNCHED, and a one-liner printed in the bare form
+    is what a chat launches. So every surface that hands the command over — the commit notice, the
+    settle ask, the adjudication handoff, the waiver's refusal — asks here rather than spelling it,
+    or the tool refuses the very command the gate just told the chat to run.
+    """
+    owed = debt_owed_repos(session, named=repos) if session else []
+    return debt_review_command(owed if len(owed) > 1 else (), tier)
+
+
+def debt_owed_repos(session, include_foreign=False, named=()):
+    """Every repository `session` currently owes a `--debt` review in, as sorted absolute paths.
+
+    The candidates are the trees this chat's own calls reached (`chat_call_repos`) plus the ones
+    the command already names; each is asked the same question the review itself asks, so a
+    repository listed here is one the review would have something to read in.
+    """
+    candidates = list(dict.fromkeys([str(repo) for repo in named] + _store.chat_call_repos(session)))
+    owed = []
+    for candidate in candidates:
+        repo = _store.resolve_repo_arg(candidate)
+        if repo is None or str(repo) in owed:
+            continue
+        if _scope.merged_manifest(repo) is not None:
+            continue
+        pairs, _ = debt_scope(repo, session, include_foreign)
+        if pairs:
+            owed.append(str(repo))
+    return sorted(owed)
+
+
+def debt_one_panel_guard(repos, session, include_foreign, tier, waived):
+    """RULE: one debt panel per chat, not one per repository. Refuse a round answering for some of
+    the repositories this chat owes while leaving the rest standing.
+
+    A `--debt` round settles the repository it read and nothing else, so a chat owing three of them
+    that runs three rounds pays three panels and triages three reports for one piece of work — and
+    the merged mode exists precisely to read them under one panel. The refusal names the merged
+    command rather than describing it, and `--this-repo-only` with a reason on record is the way
+    past it: a decision somebody made, never a bare override.
+
+    With no asking chat there is nothing to enumerate and nothing to refuse.
+    """
+    if not session or waived:
+        return
+    owed = debt_owed_repos(session, include_foreign, named=repos)
+    if len(owed) < 2 or set(owed) <= {str(repo) for repo in repos}:
+        return
+    raise ValueError(
+        f"this chat owes a review in {len(owed)} repositories and this command reads "
+        f"{len(repos)}; a round settles only what it read, so the rest would stand unreviewed "
+        "behind a panel that came back clean. Launching nothing. Read them under ONE panel:\n"
+        f"{debt_review_command(owed, tier, include_foreign)}\n"
+        "or say why this one goes alone, which is recorded with the run: add --this-repo-only "
+        "--reason '...'"
+    )
+
+
+def debt_scope_price(scoped):
+    """What a `--debt` round is about to read, as `(files, lines, rows)`: `debt_line_counts` over
+    every path of every repository in `scoped`, which is the differ the statusline prices the same
+    debt with and the one the target header counts its own `N file(s) · M line(s)` by.
+
+    `rows` is `(name, lines)` largest first, the name carrying its repository wherever more than one
+    is being read.
+    """
+    scoped = list(scoped)
+    rows = []
+    for repo, pairs in scoped:
+        counts = debt_line_counts(repo, pairs)
+        for path, _ in pairs:
+            name = str(path) if len(scoped) == 1 else f"{repo}/{path}"
+            rows.append((name, counts.get(str(path), 0)))
+    rows.sort(key=lambda row: (-row[1], row[0]))
+    return len(rows), sum(lines for _, lines in rows), rows
+
+
+def debt_scope_gate(scoped, allowed, tier="", include_foreign=False, repos=(),
+                    this_repo_only=""):
+    """RULE: a sweep needs an explicit number. Print what this round is about to read, and above
+    `DEBT_SCOPE_LINES_MAX` launch nothing until the caller has named that size back.
+
+    `--debt` is the one target nobody spells, so its size is the one thing a chat never sees before
+    the panel has already read it. `allowed` is the `--scope-lines` the caller typed, and it has to
+    EQUAL what this prints: a flag that merely disabled the check would be a bare override, while a
+    number that has to match is a size somebody read.
+    """
+    files, lines, rows = debt_scope_price(scoped)
+    print(f"scope: {files} file(s) · {lines} line(s)")
+    if lines <= DEBT_SCOPE_LINES_MAX or allowed == lines:
+        return
+    shown = [row for row in rows if row[1]][:DEBT_SCOPE_ROWS_SHOWN]
+    listing = "".join(f"\n  {count} line(s)  {name}" for name, count in shown)
+    hidden = len([row for row in rows if row[1]]) - len(shown)
+    if hidden > 0:
+        listing += f"\n  ... and {hidden} more path(s)"
+    named = (
+        f", not the {allowed} this command named" if allowed is not None else ""
+    )
+    retry = debt_review_command(
+        repos=repos, tier=tier, include_foreign=include_foreign, scope_lines=lines,
+        this_repo_only=this_repo_only,
+    )
+    raise ValueError(
+        f"this --debt round would read {lines} line(s) across {files} file(s){named}, past the "
+        f"{DEBT_SCOPE_LINES_MAX} a sweep may take unread. Launching nothing. The largest of it:"
+        f"{listing}\n"
+        "Read that, then run the same command naming the size you read:\n"
+        f"{retry}"
+    )
+
+
 def debt_skipped_line(repo, skipped):
     """The one sentence a review owes about the debt it is not reading: how much of it there is,
     whose it is, and the flag that includes it."""
@@ -937,15 +1182,15 @@ def debt_skipped_line(repo, skipped):
             "— include with --all")
 
 
-def debt_members(repos, session="", include_foreign=False, skipped=None):
-    """Each repository of a merged debt review, sealed exactly as a solo one seals itself: the
-    scope is that repository's own open question, so a panel spanning two checkouts still owes each
-    of them the receipt it would have earned alone.
+def debt_member_scopes(repos, session="", include_foreign=False, skipped=None):
+    """Each repository of a merged debt review with its own open question, as
+    `(label, repo, pairs)` — computed and not yet sealed, so the round can be priced before it
+    writes an object into any of them.
 
     `skipped` collects each member's own skipped-foreign sentence: the scope is per repository, so
     a merged panel owes that answer once per member and not once for the run.
     """
-    members = []
+    scopes = []
     for label, repo in zip(_scope.merged_repo_labels(repos), repos):
         scope, left_out = debt_scope(repo, session, include_foreign)
         if left_out and skipped is not None:
@@ -957,6 +1202,17 @@ def debt_members(repos, session="", include_foreign=False, skipped=None):
                    "nothing in it is in debt")
                 + ", so a merged debt review of it would read an empty half; drop that --repo"
             )
+        scopes.append((label, repo, scope))
+    return scopes
+
+
+def debt_members(scopes):
+    """Each repository of a merged debt review, sealed exactly as a solo one seals itself: the
+    scope is that repository's own open question, so a panel spanning two checkouts still owes each
+    of them the receipt it would have earned alone.
+    """
+    members = []
+    for label, repo, scope in scopes:
         commit = _scope.debt_snapshot_commit(repo, scope)
         members.append({
             "label": label, "repo": str(repo), "commit": commit,
@@ -974,11 +1230,11 @@ def listless_window_yields(repo, authors, named, floors=None, records=None, laun
     path. `authors` is edited in place and returned.
 
     A run that ended unable to list its own files is retired with an heir record, and every path a
-    later commit carried under its workdir went into the debt journal as that run's launcher's
-    (docs/shared-invariants.md row `ao`). That claim names a DIRECTORY — normally the whole
-    repository — and is the weakest one this store holds: read as the equal of a record naming the
-    file itself, it refused every waiver over work whose author is written down beside it, and four
-    paths of one chat's own fixing pass sat unanswerable behind a co-tenant's window (live case
+    later commit carried under it went into the debt journal as that run's launcher's
+    (docs/shared-invariants.md row `ao`). That claim names the run's own DIRT and not an edit
+    anybody recorded, and is the weakest one this store holds: read as the equal of a record naming
+    the file itself, it refused every waiver over work whose author is written down beside it, and
+    four paths of one chat's own fixing pass sat unanswerable behind a co-tenant's window (live case
     2026-08-24). So where anything NAMES the path — a commit-journal entry, or a run record whose
     own listing holds it — that record answers for it and the window claim steps aside; the window
     keeps exactly the paths nobody names, which is the case it was left for.
@@ -994,8 +1250,8 @@ def listless_window_yields(repo, authors, named, floors=None, records=None, laun
     listed = None
     for path, sessions in authors.items():
         claimants = {
-            owner for owner, prefix in windows
-            if owner in sessions and _store.path_under_window(prefix, path)
+            owner for owner, window in windows
+            if owner in sessions and _store.path_under_window(window, path)
         }
         if not claimants:
             continue
@@ -1179,10 +1435,23 @@ def cmd_debt(args):
     if repo is None:
         if split:
             print("split 0 0 0")
+        elif getattr(args, "command", False):
+            print(_store.DEBT_REVIEW_COMMAND)
         elif not listing:
             print("none")
         return 0
-    session = str(getattr(args, "session", "") or "")
+    # The asking chat, and where nobody named one the chat whose shell is asking. Answered as the
+    # empty string it was, every path fell into foreign/orphaned by construction and `--split` came
+    # back `own 0` over a checkout the caller owed all of — read as "you owe nothing" by a live
+    # chat and by two workers (2026-08-24). `waive` already refuses outright rather than answer
+    # silently in this same situation; this is the same refusal, answered instead of refused.
+    session = str(getattr(args, "session", "") or "") or _store.caller_chat()
+    if getattr(args, "command", False):
+        # The one-liner itself, for a surface that hands it over rather than acting on it: the
+        # commit notice is the first place a chat is told what to run, and one that names this
+        # repository alone arranges the split panel the review would then refuse.
+        print(debt_chat_review_command(session, [repo]))
+        return 0
     paths = _store.debt_query_paths(repo, getattr(args, "paths", None))
     if split:
         # One shape whatever the answer is, including nothing owed: the statusline's translator
@@ -1378,7 +1647,8 @@ def cmd_waive(args):
             f"waive: refused — the review standing over this work came back with "
             f"{SECOND_REVIEW_P1S}+ confirmed P1s, and that round owes a mandatory second review "
             "over the full scope plus the fixes. Run it instead of waiving it: "
-            f"({shlex.join(['cd', str(repo)])} && {_store.DEBT_REVIEW_COMMAND}) — that mode computes the "
+            f"({shlex.join(['cd', str(repo)])} && "
+            f"{debt_chat_review_command(_store.caller_chat(), [repo])}) — that mode computes the "
             "scope itself and widens to what this round still holds. "
             f"Locked: {named}."
         )
@@ -1549,7 +1819,7 @@ def doctor_locks(repo, now, covering=None):
     return rows
 
 
-def doctor_orphan_debt(repo, covering=None, reviewed=None):
+def doctor_orphan_debt(repo, covering=None, reviewed=None, holders=None):
     """Debt paths no chat answers for: every journal record naming them is the original bare-path
     format, or there is no record at all. Nobody will be asked to review or waive these, so they
     sit in the count for ever while the gate stays silent about whose they are.
@@ -1560,7 +1830,7 @@ def doctor_orphan_debt(repo, covering=None, reviewed=None):
     records = _store.worker_run_dirs()
     claimed = _store.run_record_claims(repo, records)
     debt = repo_debt(repo, covering=covering, reviewed=reviewed, claims=claimed,
-                     dirty=_store.run_dirty_paths(repo, records))
+                     dirty=_store.run_dirty_paths(repo, records), holders=holders)
     if not debt:
         return []
     authors = debt_path_authors(repo, debt)
@@ -1680,7 +1950,8 @@ def doctor_scan(now=None, undelivered_window=DOCTOR_WINDOW_S):
         covering = covering_artifacts(repo, artifacts=artifacts)
         findings["eternal_lock"].extend(doctor_locks(repo, now, covering))
         findings["orphan_debt"].extend(
-            doctor_orphan_debt(repo, covering, reviewed_shas(artifacts, repo))
+            doctor_orphan_debt(repo, covering, reviewed_shas(artifacts, repo),
+                               path_holders(artifacts))
         )
     return findings
 

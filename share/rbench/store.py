@@ -294,6 +294,49 @@ def caller_chat():
     return worker_session_launchers().get(session, session) if session else session
 
 
+# Where the review flow gate leaves the pre-call HEAD snapshot of every repository a Bash call of
+# a chat may commit in: one file per call, a `KIND` line and then one `<toplevel>\t<head>` line per
+# repository. Spelled off HOME and not off XDG_CACHE_HOME because the WRITER is
+# (`hooks/lib/review-journal.sh` `rj_head_snapshot`), and a reader that looked elsewhere would find
+# an empty set and call a chat's second repository nobody's business.
+CALL_HEADS_DIR = (".cache", "claude", "review-journal")
+CALL_HEADS_SUFFIX = ".heads"
+CALL_HEADS_KIND = "KIND"
+
+
+def chat_call_repos(session):
+    """Every repository the calls of `session` have reached, as absolute paths in the order they
+    were first seen.
+
+    The gate's own enumeration, read rather than recomputed: it is what decides which trees get a
+    commit notice, and a second implementation of "which repositories is this chat working in"
+    would hand one answer to the notice and another to the review it prints.
+    """
+    if not session or session in (".", "..") or "/" in session:
+        return []
+    directory = Path(os.path.expanduser("~")).joinpath(*CALL_HEADS_DIR)
+    try:
+        names = sorted(entry.name for entry in directory.iterdir())
+    except OSError:
+        return []
+    repos = {}
+    for name in names:
+        if not name.endswith(CALL_HEADS_SUFFIX):
+            continue
+        stem = name[: -len(CALL_HEADS_SUFFIX)]
+        if stem != session and not stem.startswith(session + "."):
+            continue
+        try:
+            rows = (directory / name).read_text().splitlines()
+        except OSError:
+            continue
+        for row in rows:
+            top = row.split("\t")[0]
+            if top and top != CALL_HEADS_KIND:
+                repos.setdefault(top, None)
+    return list(repos)
+
+
 def round_session(run_dir):
     """The chat a round answers to: the session its own run record names, and the caller's only
     where the record names none.
@@ -1142,16 +1185,23 @@ def run_listed_paths(repo, directories=None, floors=None):
 
 
 def heir_window_claims(repo, directories=None):
-    """The owners a retired listless run left holding a whole WORKDIR, as `[(owner, prefix)]`, the
-    prefix repository-relative and `""` for the repository itself.
+    """The paths a retired listless run left its owner holding, as `[(owner, paths)]`, each path
+    repository-relative.
 
     `commit-journal.sh` retires a run that ended unable to name its own files by leaving
-    `<run-dir>/heir` — the launcher and the workdir — and `commit-report.sh` then records every path
-    a commit carried under that directory as the launcher's (row `ao`). Those journal records are
+    `<run-dir>/heir` — the launcher and the workdir — and `commit-report.sh` then records the paths
+    a commit carried under that record as the launcher's (row `ao`). Those journal records are
     indistinguishable from the ones a chat's own edit leaves, so the heir record is the only thing
-    that can tell a claim made by NAMING a file from one made by standing over a directory. An empty
-    owner line claims nothing, the way it inherits nothing: a name no journal entry can carry may
-    not hold the debt either.
+    that can tell a claim made by NAMING a file from one made by standing over a run.
+
+    The window is that run's own `dirty` record and never its WORKDIR, which is normally the whole
+    repository: read as the directory, one listless run of 2026-08-21 went on claiming every path
+    of every commit anybody made in that checkout for the record's whole seven-day life, and four
+    legacy files nobody had touched since sat as two live chats' own debt (2026-08-24). An heir
+    answers for what was DIRTY in its workdir when the run ended, and a record with no dirt
+    snapshot answers for nothing beyond what its `files` listing already names. An empty owner line
+    claims nothing, the way it inherits nothing: a name no journal entry can carry may not hold the
+    debt either.
     """
     windows = []
     for directory in (worker_run_dirs() if directories is None else directories):
@@ -1163,19 +1213,18 @@ def heir_window_claims(repo, directories=None):
         workdir = lines[1].strip() if len(lines) > 1 else ""
         if not owner or not workdir:
             continue
-        anchor = record_anchor(str(repo), workdir)
-        if anchor is None:
+        # Through the one parser that reads a run's path files, so the reader and `commit-report.sh`
+        # cannot come to disagree about what a `WORKDIR:` line anchors.
+        paths = frozenset(run_record_paths(repo, directory, listing="dirty"))
+        if not paths:
             continue
-        relative = scope_path_relative(anchor, workdir)
-        if relative is None:
-            continue
-        windows.append((owner, "" if relative == os.curdir else relative))
+        windows.append((owner, paths))
     return windows
 
 
-def path_under_window(prefix, path):
-    """Whether `path` falls in a heir record's workdir window. An empty prefix is the repository."""
-    return not prefix or path == prefix or str(path).startswith(prefix + os.sep)
+def path_under_window(window, path):
+    """Whether `path` is one of the paths a heir record answers for."""
+    return str(path) in window
 
 
 def session_dirt_paths(repo, session, records=None):

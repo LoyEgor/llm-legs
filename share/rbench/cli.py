@@ -44,6 +44,17 @@ DEBT_ALL_FLAG_HELP = (
     "Widen that scope to the debt of every chat, not this one's own and the unowned. For an "
     "explicit ask to review what a co-tenant left behind, which is not a gate's business"
 )
+DEBT_SCOPE_LINES_HELP = (
+    "The size of the computed scope, in diff lines, as the run itself printed it. Only a --debt "
+    "round past its line ceiling asks for one, and only a number EQUAL to what it printed proceeds "
+    "— a flag that merely disabled the ceiling would be a bare override; a number that has to "
+    "match is a size somebody read"
+)
+DEBT_ALONE_FLAG_HELP = (
+    "Read this repository's debt alone while this chat owes others, with --reason saying why. One "
+    "round settles what it read and nothing else, so the rest stand unreviewed behind a panel that "
+    "came back clean; the reason is recorded with the run the way a waiver's is"
+)
 REPO_FLAG_HELP = (
     "The repository to review, as PATH or PATH@BASE..HEAD to review a range of its commits "
     "instead of its working tree. Repeatable: one run then reads every named repository as a "
@@ -290,6 +301,22 @@ def cmd_run(args):
             "--all widens the scope --debt computes to every chat's debt; every other target "
             "names its own paths already"
         )
+    if getattr(args, "this_repo_only", False):
+        if not debt_mode:
+            raise ValueError(
+                "--this-repo-only answers the one-panel rule --debt computes its repositories by; "
+                "every other target reads the repositories it was given"
+            )
+        if not str(getattr(args, "reason", "") or "").strip():
+            raise ValueError(
+                "--this-repo-only needs --reason '...': leaving this chat's other repositories "
+                "unreviewed is a decision, and it is recorded with the run like a waiver's"
+            )
+    if getattr(args, "scope_lines", None) is not None and not debt_mode:
+        raise ValueError(
+            "--scope-lines names the size of the scope --debt computes; every other target names "
+            "its own paths already"
+        )
     if inline_ranges and (commitish or range_spec):
         raise ValueError(
             "--repo PATH@BASE..HEAD names its own range, so the run's target is already given; "
@@ -341,8 +368,18 @@ def cmd_run(args):
     range_head = None
     debt_all = bool(getattr(args, "all", False))
     debt_asker = _store.caller_chat() or ""
+    debt_alone = str(getattr(args, "reason", "") or "") if getattr(args, "this_repo_only", False) else ""
+    debt_lines = getattr(args, "scope_lines", None)
+    debt_retry_repos = repos if getattr(args, "repo", None) else ()
+    if debt_mode:
+        # Both before anything is sealed: a snapshot commit is an object written into the caller's
+        # repository, and a round refused after writing one has already spent what it refused.
+        _debt.debt_one_panel_guard(repos, debt_asker, debt_all, tier_name, debt_alone)
     if debt_mode and len(repos) > 1:
-        members = _debt.debt_members(repos, debt_asker, debt_all, debt_skipped)
+        scopes = _debt.debt_member_scopes(repos, debt_asker, debt_all, debt_skipped)
+        _debt.debt_scope_gate([(repo, pairs) for _, repo, pairs in scopes], debt_lines,
+                              tier_name, debt_all, debt_retry_repos, debt_alone)
+        members = _debt.debt_members(scopes)
         repo, sha = _scope.merged_snapshot_workspace(members)
         scope = []
     elif debt_mode:
@@ -362,6 +399,8 @@ def cmd_run(args):
                    "journals name no other")
                 + ". There is no review to run"
             )
+        _debt.debt_scope_gate([(repo, owed)], debt_lines, tier_name, debt_all,
+                              debt_retry_repos, debt_alone)
         scope = [path for path, _ in owed]
         sha = _scope.debt_snapshot_commit(repo, owed)
     elif len(repos) > 1:
@@ -602,6 +641,8 @@ def cmd_run(args):
         # nothing, and a run that fails to HOLD it discharges no lock and settles nothing.
         reviewed = _scope.reviewed_blobs(repo, scope, sha, paths=scope if debt_mode else None)
         launch_meta["reviewed"] = reviewed
+    if debt_alone:
+        launch_meta["this_repo_only"] = debt_alone
     if members:
         for member in members:
             # A ranged member has no working tree to drift: its content is committed already.
@@ -895,6 +936,8 @@ def cmd_run(args):
             # from scratch, and a second `hash-object` here would anchor the run to the tree the
             # fixes already moved.
             meta["reviewed"] = _scope.attested_paths(reviewed, unread)
+        if debt_alone:
+            meta["this_repo_only"] = debt_alone
         if members:
             meta["repos"] = [
                 dict(member, reviewed=_scope.attested_paths(
@@ -1077,10 +1120,12 @@ def cmd_record(args):
     if getattr(args, "no_corpus", False):
         # One sentence that holds in every state, because narrating the run's state here was
         # wrong three review rounds running: pending or adjudicated, worktree or durable, the
-        # fact this line owes the reader is that the command changed nothing.
+        # fact this line owes the reader is which store the triage went into and which it did
+        # not. "Recorded nothing" was read as "not triaged" by two workers and an orchestrator
+        # (2026-08-24) over a run whose report renders and whose debt settles.
         print(
-            f"--no-corpus: reported {len(normalized_verdicts)} verdict(s) and recorded "
-            "nothing; this run's stored state is unchanged"
+            f"--no-corpus: {len(normalized_verdicts)} verdict(s) triaged into this run's "
+            "report receipt; no corpus row written"
         )
         # The one thing it does leave: proof the report was printed, so the stop gate stops
         # asking. Nothing reads this name but the gate, which is why it can exist without
@@ -1236,6 +1281,10 @@ def main():
     review.add_argument("--all", action="store_true", help=DEBT_ALL_FLAG_HELP)
     review.add_argument("--range", metavar="A..B", help=RANGE_FLAG_HELP)
     review.add_argument("--repo", action="append", metavar="PATH", help=REPO_FLAG_HELP)
+    review.add_argument("--scope-lines", type=int, metavar="N", help=DEBT_SCOPE_LINES_HELP)
+    review.add_argument("--this-repo-only", action="store_true", help=DEBT_ALONE_FLAG_HELP)
+    review.add_argument("--reason", default="", metavar="TEXT",
+                       help="Why this repository goes alone, recorded with the run")
     review.add_argument("--tier", choices=_catalog.REVIEW_TIERS, required=True)
     review.add_argument("--max", action="store_true", help="Use the full tier composition")
     review.add_argument(
@@ -1371,6 +1420,11 @@ def main():
     debt.add_argument("--repo", default=".")
     debt.add_argument("--session", default="", metavar="ID", help="The asking chat")
     debt.add_argument(
+        "--command", action="store_true",
+        help="Print the --debt review command for the asking chat instead of its debt: merged "
+             "over every repository that chat owes, since one round settles only what it read",
+    )
+    debt.add_argument(
         "--paths", nargs="*", action="extend", default=[], metavar="PATH",
         help="Repository-relative paths to answer for",
     )
@@ -1410,6 +1464,10 @@ def main():
     run.add_argument("--worktree", action="store_true")
     run.add_argument("--range", metavar="A..B", help=RANGE_FLAG_HELP)
     run.add_argument("--repo", action="append", metavar="PATH", help=REPO_FLAG_HELP)
+    run.add_argument("--scope-lines", type=int, metavar="N", help=DEBT_SCOPE_LINES_HELP)
+    run.add_argument("--this-repo-only", action="store_true", help=DEBT_ALONE_FLAG_HELP)
+    run.add_argument("--reason", default="", metavar="TEXT",
+                       help="Why this repository goes alone, recorded with the run")
     selection = run.add_mutually_exclusive_group()
     selection.add_argument("--tier", choices=_catalog.REVIEW_TIERS)
     selection.add_argument(
@@ -1551,5 +1609,4 @@ def main():
     except (ValueError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
         print(f"review-bench: {exc}", file=sys.stderr)
         return 2
-
 

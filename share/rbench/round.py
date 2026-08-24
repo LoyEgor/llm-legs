@@ -990,12 +990,13 @@ def unsettled_round(repo, session):
                 _store.run_dirty_paths(resolved, records),
                 _debt.covering_artifacts(resolved, artifacts=artifacts),
                 _debt.reviewed_shas(artifacts, resolved),
+                _debt.path_holders(artifacts),
             )
-        records, claims, dirty, covering, reviewed_shas = inputs
+        records, claims, dirty, covering, reviewed_shas, holders = inputs
         shas = {}
         debt = _debt.repo_debt(
             resolved, paths=sorted(reviewed), covering=covering, shas=shas, claims=claims,
-            dirty=dirty, reviewed=reviewed_shas,
+            dirty=dirty, reviewed=reviewed_shas, holders=holders,
         )
         if not debt:
             continue
@@ -1120,7 +1121,7 @@ def unsettled_report(repo, session, mark):
         "review-bench", "waive", "--reason", _debt.WAIVE_PLACEHOLDER_REASON, "--paths",
         *(f"./{path}" for path in paths),
     ]))
-    print(_store.DEBT_REVIEW_COMMAND)
+    print(_debt.debt_chat_review_command(session, [repo]))
     return 0
 
 
@@ -1557,9 +1558,12 @@ def pending_delivery_rows(session):
         # the chat it is owed to still exists, its age is the reason to deliver it, not to stop.
         # The mark answers for the STATE it was written against: a re-adjudication moves a round
         # back through `pending`, and the report it reaches next is not the one settled there.
-        # A lapsed round needs no branch of its own — it is one this window has already closed
-        # over, and its chat is gone from disk anyway.
-        queued = mark.get("queued") and mark.get("state") == state
+        # A round written off as lapsed is out of the queue whatever else the mark says. It keeps
+        # the queued instant it was owed under — that is the record of how long nobody took it —
+        # so read on `queued` alone a queue that RAN OUT would go on exempting its round from the
+        # window for ever, which is the silence `DELIVERY_QUEUE_LAPSE_S` exists to end.
+        queued = (mark.get("queued") and mark.get("state") == state
+                  and not mark.get("lapsed"))
         if not queued and (now - finished).total_seconds() > _store.TRIAGE_GATE_HOURS * 3600:
             continue
         # The net discards outright any line whose state is not one it knows, so a state this loop
@@ -1736,8 +1740,15 @@ def handoff(run_id, paths, members=None, worktree=False, fixable=True):
           "second review is mandatory and the waiver over this work is withheld until it runs; a "
           "round that earns one on its tally alone instead is owed it by default and may be "
           "waived with a reason on record.")
-    print(f"That second review is `{_store.DEBT_REVIEW_COMMAND}` in each repository above (raise the "
-          "tier if the work deserves it): it computes its own scope, which is this round's full "
+    # Asked of the CHAT and not of this round's members: one panel per chat is a rule about what
+    # gets launched, and a round telling a chat to run the bare command in each repository is a
+    # split panel arranged by the very surface that forbids it.
+    from . import debt as _debt  # here and not at module top: debt imports this module at load
+    second = _debt.debt_chat_review_command(
+        _store.caller_chat(), [member["repo"] for member in members] if members else ()
+    )
+    print(f"Run that second review once with `{second}` (raise the tier if the work deserves "
+          "it): it computes its own scope, which is this round's full "
           "scope plus the fixes — the round that owed it is reopened, so its whole scope re-enters "
           "the diff and nothing is picked by hand.")
     print("Orchestrator: at that threshold the next move is Egor's fork decision. A session "
@@ -1815,10 +1826,12 @@ def fix_handoff_lines(run_dir, meta, verdicts):
             "Record the stop with: "
             f"review-bench fixes {shlex.quote(run_id)} --blocked {shlex.quote('P1 threshold')}"
         )
+        from . import debt as _debt  # here and not at module top: debt imports this module at load
         lines.append(
             "Then report back with the P1 list: the second review over the full original scope "
             "plus the fixes is mandatory, the waiver over this work is withheld until it runs, "
-            f"and it is `{_store.DEBT_REVIEW_COMMAND}` in each repository this round read."
+            f"and it is `{_debt.debt_chat_review_command(_store.round_session(run_dir), run_repos(meta))}`. "
+            "Run that command once for the round."
         )
         return lines
     lines.append("Orchestrator: this is a dispatch of its own, not the triage pass above.")

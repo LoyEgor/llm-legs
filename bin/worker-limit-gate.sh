@@ -66,13 +66,37 @@ for brief_file in $(printf '%s\n' "$brief_text" | grep -Eo '/[^[:space:]"'"'"'`<
   brief_text="$brief_text"$'\n'"$(cat "$real_brief")"
 done
 run_id_re='[0-9]{8}T[0-9]{6}Z-[0-9a-f]+(-[0-9]+)?'
-# One command-span regex keeps the flag with the `fixes <id>` it belongs to: a brief that merely
-# cites a run beside an unrelated --done is not a fixing pass, and a pass without the flag is none.
 # review-bench's `fork --check` is the whole verdict (exit 3 names the command): no threshold
 # is priced here.
-fixing_pass_re="review-bench[[:blank:]]+fixes([[:blank:]]+[^[:blank:]]+)*"
 fixing_segments=$(printf '%s\n' "$brief_text" |
-  awk '{
+  awk '
+  function emit() {
+    gsub(/review-bench/, "\nreview-bench", segment)
+    print segment
+    segment = ""
+  }
+  function unquoted(line,    i, c, quote, apostrophe) {
+    apostrophe = sprintf("%c", 39)
+    quote = ""
+    for (i = 1; i <= length(line); i++) {
+      c = substr(line, i, 1)
+      if (quote != "") {
+        if (c == quote) quote = ""
+        continue
+      }
+      if (c == apostrophe || c == "\"" || c == "`") {
+        quote = c
+        continue
+      }
+      if (c ~ /[;|&]/) {
+        emit()
+        continue
+      }
+      segment = segment c
+    }
+    emit()
+  }
+  {
     line = continued $0
     if (line ~ /\\[[:blank:]]*$/) {
       sub(/\\[[:blank:]]*$/, "", line)
@@ -80,14 +104,31 @@ fixing_segments=$(printf '%s\n' "$brief_text" |
       next
     }
     continued = ""
-    gsub(/[;|&`]/, "\n", line)
-    gsub(/review-bench/, "\nreview-bench", line)
-    print line
+    unquoted(line)
   }
-  END { if (continued != "") print continued }')
-for fork_run in $(printf '%s\n' "$fixing_segments" | grep -Eo "$fixing_pass_re" |
-    grep -E -- '(^|[[:blank:]])--(done|blocked)([[:blank:]]|$)' |
-    grep -Eo "$run_id_re" | sort -u); do
+  END { if (continued != "") unquoted(continued) }')
+for fork_run in $(printf '%s\n' "$fixing_segments" | awk -v run_id_re="$run_id_re" '
+  {
+    count = split($0, token, /[[:blank:]]+/)
+    for (i = 1; i < count; i++) {
+      if (token[i] != "review-bench" || token[i + 1] != "fixes") continue
+      status = 0
+      run = ""
+      for (j = i + 2; j <= count; j++) {
+        if (token[j] == "--done" || token[j] == "--blocked") {
+          status = 1
+          continue
+        }
+        if (token[j] ~ /^--/) continue
+        if (token[j] ~ ("^" run_id_re "$")) run = token[j]
+        break
+      }
+      if (run == "") continue
+      for (j++; j <= count; j++)
+        if (token[j] == "--done" || token[j] == "--blocked") status = 1
+      if (status) print run
+    }
+  }' | sort -u); do
   fork_refusal=$(review-bench fork "$fork_run" --check 2>&1 >/dev/null)
   [ "$?" -eq 3 ] || continue
   deny "REVIEW GATE: $fork_refusal"

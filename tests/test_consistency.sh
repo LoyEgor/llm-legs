@@ -1262,10 +1262,18 @@ fi
 assert doc_has 'The review that answers a debt'
 rb_debt_cmd=$(sed -n 's/^DEBT_REVIEW_COMMAND = "\(.*\)"$/\1/p' "$RB_STORE")
 assert eq "$rb_debt_cmd" 'REVIEW_ASKED=1 review-bench review --debt --tier T1'
-assert grep -Fq '{_store.DEBT_REVIEW_COMMAND}) — that mode computes the ' "$RB_DEBT"
-assert grep -Fq 'That second review is `{_store.DEBT_REVIEW_COMMAND}`' "$RB_ROUND"
+# One builder over that literal, and every surface that HANDS the command to a chat goes through
+# the per-chat form: a notice or a handoff spelling the bare command itself is what arranges the
+# split panel the review then refuses, and a chat told to run it twice runs it twice.
+assert grep -Fq 'command = _store.DEBT_REVIEW_COMMAND' "$RB_DEBT"
+assert eq "$(grep -c '_store.DEBT_REVIEW_COMMAND' "$RB_DEBT")" 2
+assert eq "$(grep -c '_store.DEBT_REVIEW_COMMAND' "$RB_ROUND")" 0
+assert grep -Fq 'debt_chat_review_command(_store.caller_chat(), [repo])}) — that mode computes the ' \
+  "$RB_DEBT"
+assert eq "$(grep -c 'debt_chat_review_command' "$RB_ROUND")" 3
+assert grep -Fq 'Run that second review once with `{second}`' "$RB_ROUND"
 if test -r "$FLOW_GATE"; then
-  gate_debt_cmd=$(sed -n "s/^[[:space:]]*printf -v review_cmd '(cd %q && \(.*\))' .*/\1/p" "$FLOW_GATE")
+  gate_debt_cmd=$(sed -n "s/^[[:space:]]*review_base='\(.*\)'$/\1/p" "$FLOW_GATE" | head -1)
   assert eq "$gate_debt_cmd" "$rb_debt_cmd"
   gate_fork_cmd=$(sed -n 's/.*Run it as `\([^`]*\)` in each repository.*/\1/p' "$FLOW_GATE" | head -1)
   assert eq "$gate_fork_cmd" "$rb_debt_cmd"
@@ -1275,6 +1283,21 @@ if test -r "$FLOW_GATE"; then
 else
   printf 'SKIP: debt review command across claude-setup (%s is unreadable)\n' "$FLOW_GATE"
 fi
+
+# --- Row az: a computed sweep is named before it is read ----------------------
+# The number is the whole rule: a chat past it may only proceed by typing back the size it read,
+# so the constant, the row and the flag that names it have to be one value.
+assert doc_has 'A computed sweep is named before it is read'
+rb_scope_max=$(sed -n 's/^DEBT_SCOPE_LINES_MAX = \([0-9]*\)$/\1/p' "$RB_DEBT")
+rb_scope_rows=$(sed -n 's/^DEBT_SCOPE_ROWS_SHOWN = \([0-9]*\)$/\1/p' "$RB_DEBT")
+assert eq "$rb_scope_max" 3000
+assert eq "$rb_scope_rows" 20
+assert doc_has "\`DEBT_SCOPE_LINES_MAX = $rb_scope_max\`"
+assert doc_has "\`DEBT_SCOPE_ROWS_SHOWN = $rb_scope_rows\` rows"
+# Priced by the same differ row ah counts the debt with, or the gate refuses a size no surface shows.
+assert grep -Fq 'counts = debt_line_counts(repo, pairs)' "$RB_DEBT"
+# And the flag names the size rather than disabling the ceiling.
+assert grep -Fq 'lines <= DEBT_SCOPE_LINES_MAX or allowed == lines' "$RB_DEBT"
 
 # --- Row ae: account pin ownership -------------------------------------------
 # Three doors, one marker, one TTL. A door silently removed, or two of them disagreeing on where
