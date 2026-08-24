@@ -4567,6 +4567,7 @@ assert(#charRight.cursorMoves() == 1
 -- it against the TUI's redraws, and the teardown that stops that timer with the selection.
 do
   local ttyPath = os.tmpname()
+  os.remove(ttyPath)
   local function readTty()
     local handle = io.open(ttyPath, "r")
     if not handle then
@@ -4582,7 +4583,6 @@ do
   assert(module.handleEvent(charSpanPress(123)), "the tty-backed Shift+Left was not consumed")
   written.runDeferred()
   written.deliverScrape(oneRow)
-  os.remove(ttyPath)
   assert(readTty() == nil, "the display caret wrote before its timer fired")
   assert(written.fireTimer(0.02), "the display caret armed no write timer")
   local cup = string.format("\27[%d;%dH", gestureRowIndex(1), promptCells + 6)
@@ -6546,6 +6546,53 @@ caret, calibrate = module.gestureCaretPoint({ bundleID = "com.apple.Terminal", w
   tabIndex = 1, tabElement = "tab-a" })
 assert(caret == nil and calibrate == false,
   "a window with no frame asked for a calibration scrape with nothing to measure")
+end
+
+do
+local fx = { mode = "hidden", tasks = {} }
+fx.window = { id = function() return 71 end }
+fx.app = {
+  bundleID = function() return "com.apple.Terminal" end,
+  focusedWindow = function() return fx.window end,
+}
+fx.tab = {}
+fx.tabGroup = { attributeValue = function(_, name)
+  if name == "AXValue" then return fx.tab end
+  if name == "AXTabs" then return { fx.tab } end
+end }
+fx.windowElement = { childrenWithRole = function()
+  return fx.mode == "shown" and { fx.tabGroup } or {}
+end }
+env.hs.application.frontmostApplication = function() return fx.app end
+env.hs.axuielement.windowElement = function()
+  if fx.mode == "missing" then return nil end
+  return fx.windowElement
+end
+env.hs.task.new = function(path, callback)
+  fx.tasks[#fx.tasks + 1] = { path = path, callback = callback }
+  return { start = function() return true end, terminate = function() end }
+end
+
+module.setTestHooks(nil)
+module.start()
+assert(#fx.tasks == 1 and fx.tasks[1].path == "/usr/bin/osascript",
+  "a hidden tab bar was treated as an unresolved Terminal window")
+fx.tasks[1].callback(0, "/dev/ttys001\n")
+assert(#fx.tasks == 2 and fx.tasks[2].path == "/bin/ps",
+  "the hidden-tab sentinel changed between observations")
+fx.tasks[2].callback(0, "S+ claude\n")
+assert(module.foregroundVerdict() == "claude",
+  "a cached context did not match the same hidden-tab sentinel")
+fx.mode = "shown"
+assert(module.foregroundVerdict() == "uncertain",
+  "a real tab element matched the hidden-tab sentinel")
+module.stop()
+
+fx.mode = "missing"
+fx.tasks = {}
+module.start()
+assert(#fx.tasks == 0, "a missing window element did not bail")
+module.stop()
 end
 
 return "PASS: Claude Cmd key decisions"

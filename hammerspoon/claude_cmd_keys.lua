@@ -680,6 +680,7 @@ local shutdownCallback
 -- same reason axGrid exists.
 local shared = {
   latencyDropped = 0,
+  hiddenTabElement = {},
   pointerFlight = 0,
   -- Pixels the pointer may sit away from where our own last event left it and still
   -- count as ours rather than as a hand on the trackpad.
@@ -785,12 +786,18 @@ local function observeFrontmost(app)
     observed.windowID = window and window:id() or nil
     local windowElement = window and axuielement and axuielement.windowElement(window) or nil
     local tabGroup = windowElement and windowElement:childrenWithRole("AXTabGroup")[1] or nil
-    local selectedTab = tabGroup and tabGroup:attributeValue("AXValue") or nil
-    observed.tabElement = selectedTab
-    for index, tab in ipairs(tabGroup and tabGroup:attributeValue("AXTabs") or {}) do
-      if tab == selectedTab then
-        observed.tabIndex = index
-        break
+    if windowElement and not tabGroup then
+      -- Terminal can hide the tab bar only for a single-tab window.
+      observed.tabElement = shared.hiddenTabElement
+      observed.tabIndex = 1
+    else
+      local selectedTab = tabGroup and tabGroup:attributeValue("AXValue") or nil
+      observed.tabElement = selectedTab
+      for index, tab in ipairs(tabGroup and tabGroup:attributeValue("AXTabs") or {}) do
+        if tab == selectedTab then
+          observed.tabIndex = index
+          break
+        end
       end
     end
   end
