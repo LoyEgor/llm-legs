@@ -554,17 +554,25 @@ fi
 
 # The review is the centre of attention: while this chat has one in flight or unanswered, the
 # folder shown is the one that review is about, never the shell's — Egor must not see one folder
-# and a review about another. Exactly the dir/branch/diff cluster and the gate's verdict follow
-# it; the ports probe and the live-progress match keep the session's own workdir (session_top),
-# since a port belongs to the project the chat is sitting in.
+# and a review about another. The dir/branch/diff cluster follows it; the ports probe and the
+# live-progress match keep the session's own workdir (session_top), since a port belongs to the
+# project the chat is sitting in. The `rev` verdict follows the anchor only inside one repository:
+# where the anchor holds ANOTHER one, the folder may move but the session's own debt may not
+# vanish with it (Egor, 2026-08-24), and `anchor_foreign` is what keeps it on the line.
 session_top="$active_top"
+session_common="$active_common"
 anchor_extra=""
+anchor_foreign=0
 if [ -n "$session_id" ]; then
   anchor_line=$(review_anchor_line "$session_id" "$git_dir" "$now")
   anchor_path="${anchor_line%% +*}"
   if [ -n "$anchor_path" ] && repo_dirs "$anchor_path"; then
     git_dir="$anchor_path"
     adopt_repo_dirs
+    # Repository identity, like `»`: an anchor on a sibling worktree of the same repository is the
+    # same debt read family-wide, and nothing about the line changes for it. With no session
+    # repository at all there is no own debt to keep, so the anchor's own verdict stands as before.
+    [ -n "$session_common" ] && [ "$active_common" != "$session_common" ] && anchor_foreign=1
     # `+N` only with the anchor itself: an anchor whose repository is gone is ignored whole, or
     # the session's own folder wears the dead panel's member count.
     [ "$anchor_path" != "$anchor_line" ] && anchor_extra="${anchor_line##* }"
@@ -1555,11 +1563,24 @@ fi
 # What the review gate says about this chat's uncommitted work, spoken by the gate itself.
 review_style=""
 review_text=""
-if [ -n "$active_top" ]; then
-  review_status_key=$(printf '%s' "$git_status" | cksum 2>/dev/null)
+# Whose debt, though, is the reader's own tree: while the anchor holds another repository the
+# question goes to the session's workdir, not the folder on the line — the review over there is
+# named by the `rev` marker beside this, and the number a reader can act on here must not
+# disappear behind it. Its own `git status` keys the answer, or an edit in the tree being asked
+# about would not invalidate the cache.
+verdict_top="$active_top"
+verdict_status="$git_status"
+verdict_status_rc="$git_status_rc"
+if [ "$anchor_foreign" = 1 ] && [ -n "$session_top" ]; then
+  verdict_top="$session_top"
+  verdict_status=$(git -C "$session_top" status --porcelain 2>/dev/null)
+  verdict_status_rc=$?
+fi
+if [ -n "$verdict_top" ]; then
+  review_status_key=$(printf '%s' "$verdict_status" | cksum 2>/dev/null)
   review_status_key="${review_status_key// /-}"
-  [ "$git_status_rc" -eq 0 ] || review_status_key="unreadable"
-  review_verdict=$(review_verdict_line "$active_top" "$session_id" "$review_status_key" "$now")
+  [ "$verdict_status_rc" -eq 0 ] || review_status_key="unreadable"
+  review_verdict=$(review_verdict_line "$verdict_top" "$session_id" "$review_status_key" "$now")
   review_style=${review_verdict%% *}
   case "$review_verdict" in *' '*) review_text=${review_verdict#* } ;; esac
   # Truncated and nothing else: the words are the gate's, and a segment that rewrites them is the
@@ -1583,6 +1604,7 @@ if [ -n "$session_top" ] || [ -n "$session_id" ]; then
   progress_newest=""
   progress_session=""
   progress_owner_pid=""
+  progress_top=""
   progress_dir="$worker_stats_dir/progress"
   if [ -d "$progress_dir" ]; then
     # Every file is read and matched on the repository recorded inside it, never on its name:
@@ -1646,8 +1668,8 @@ if [ -n "$session_top" ] || [ -n "$session_id" ]; then
       # launched it. The tree match is the working tree and not the repository: a run in a sibling
       # worktree is another chat's news, and a subdirectory the run was started from still resolves
       # to the tree it belongs to.
-      if [ -z "$session_top" ] ||
-        [ "$(git_worktree_top "$progress_repo" 2>/dev/null)" != "$session_top" ]; then
+      progress_run_top=$(git_worktree_top "$progress_repo" 2>/dev/null)
+      if [ -z "$session_top" ] || [ "$progress_run_top" != "$session_top" ]; then
         [ -n "$session_id" ] || continue
         [ "$(review_run_owner "$progress_run_session" "$progress_pid")" = "$session_id" ] || continue
       fi
@@ -1664,11 +1686,12 @@ if [ -n "$session_top" ] || [ -n "$session_id" ]; then
         progress_late=$progress_run_late
         progress_session=$progress_run_session
         progress_owner_pid=$progress_pid
+        progress_top=$progress_run_top
       fi
     done
   fi
   if [ -n "$progress_total" ]; then
-    progress_label="review"
+    progress_label="rev"
     # The max panel is a variant of a tier, never a run of its own: --max is refused without
     # --tier, so an untiered run carrying it is a corrupt file and its mark is dropped with the
     # tier rather than rendered as a panel size nothing names.
@@ -1690,27 +1713,43 @@ if [ -n "$session_top" ] || [ -n "$session_id" ]; then
   fi
 fi
 
-# A run in flight owns the slot and prints its own label, so the gate's verdict must not colour it.
-[ -n "$progress_total" ] && { review_style=""; review_text=""; }
+if [ "$anchor_foreign" = 1 ]; then
+  # The marker is carried by a counter over the anchored tree only. A newer counter over the
+  # session tree is separate news and cannot silently rename the foreign folder.
+  if [ -z "$progress_total" ] || [ "$progress_top" != "$active_top" ]; then
+    review_part=" ${sep} ${DIM}rev${RESET}${review_part}"
+  fi
+  # Each segment keeps its own word here: the two numbers are about two repositories, and a bare
+  # count beside a foreign folder names nothing the reader can place.
+else
+  # One repository, so one word for both: the counter in flight already says `rev` and the verdict
+  # beside it prints its numbers alone. It is never taken away — any review over this tree, this
+  # chat's or another's, used to blank the debt the reader acts on (Egor, 2026-08-24) — and a style
+  # word this build does not know is printed whole, never trimmed.
+  if [ -n "$progress_total" ] && [ "${review_style:-}" != loud ]; then
+    review_text=${review_text#rev }
+  fi
+fi
 
+verdict_part=""
 if [ "${review_style:-}" = loud ]; then
   # Nothing the gate says is red: `loud` is this build reading a word the gate grew after it, shown
   # whole rather than swallowed (docs/statusline-contract.md).
-  review_part=" ${sep} ${RED}${review_text}${RESET}"
+  verdict_part=" ${sep} ${RED}${review_text}${RESET}"
 elif [ "${review_style:-}" = dim ]; then
-  review_part=" ${sep} ${DIM}${review_text}${RESET}"
+  verdict_part=" ${sep} ${DIM}${review_text}${RESET}"
 elif [ "${review_style:-}" = split ] && [ "$review_text" != "${review_text#*/}" ]; then
   # Both sides in one segment: this chat's own debt at normal weight, everyone else's dimmed after
   # the slash. Truncation can eat the slash, and then the whole text stands at the near weight
   # rather than being printed twice.
-  review_part=" ${sep} ${review_text%%/*}${DIM}/${review_text#*/}${RESET}"
+  verdict_part=" ${sep} ${review_text%%/*}${DIM}/${review_text#*/}${RESET}"
 elif [ "${review_style:-}" = bright ] || [ "${review_style:-}" = split ]; then
-  review_part=" ${sep} ${review_text}"
+  verdict_part=" ${sep} ${review_text}"
 fi
 
 # Two lines: identity/work (model, account, dir/branch/diff, workers) on top,
 # usage (ctx, 5h, weekly, fable, cost) below.
-line1="${CYAN}${model}${model_suffix}${RESET}${fast_part}${cb_part} ${sep} ${dir_part}${branch_part}${ports_part}${review_part}${worker_part}"
+line1="${CYAN}${model}${model_suffix}${RESET}${fast_part}${cb_part} ${sep} ${dir_part}${branch_part}${ports_part}${review_part}${verdict_part}${worker_part}"
 
 line2="ctx $(pct_colored "$ctx_pct" "$ctx_dim" 40)${ctx_tokens_part} ${sep} 5h $(pct_colored "$h5_pct" "$h5_dim")${h5_arrow} ${sep} wk $(pct_colored "$wk_pct" "$wk_dim")${wk_arrow}${fable_part}"
 

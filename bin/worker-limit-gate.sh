@@ -21,7 +21,7 @@ sid=$(printf '%s' "$input" | jq -r '.session_id // ""' 2>/dev/null) || sid=''
 # Stop gate fires in that minute; the pid stamp overwrites the claim, which is live for
 # DELEGATED_CLAIM_SECONDS (review-bench) and dead after.
 claim_delegated_triage() {
-  case "$worker" in claudeb-worker|codex-worker|gemini-worker) ;; *) return 0 ;; esac
+  case "$worker" in claudeb-worker|codex-worker|gemini-worker|sonnet-worker) ;; *) return 0 ;; esac
   local claimed_run claim_stamp
   for claimed_run in $(printf '%s' "$brief_text" |
       grep -Eo "review-bench[[:blank:]]+record[[:blank:]]+$run_id_re" | awk '{print $NF}' | sort -u); do
@@ -61,24 +61,33 @@ brief_text=$(printf '%s' "$input" | jq -r '.tool_input.prompt // empty' 2>/dev/n
 for brief_file in $(printf '%s\n' "$brief_text" | grep -Eo '/[^[:space:]"'"'"'`<>]+' |
     sed -E 's/[.,;:)]+$//' | sort -u); do
   real_brief=$(realpath "$brief_file" 2>/dev/null) || continue
-  repo_top=$(git rev-parse --show-toplevel 2>/dev/null)
-  real_repo=$(realpath "${repo_top:-$PWD}" 2>/dev/null) || continue
-  real_tmp=$(realpath "${TMPDIR:-/tmp}" 2>/dev/null) || real_tmp="/tmp"
-  if [[ "$real_brief" != "$real_repo"/* ]] && [[ "$real_brief" != "$real_tmp"/* ]]; then
-    continue
-  fi
   [ -f "$real_brief" ] && [ -r "$real_brief" ] || continue
   [ "$(wc -c <"$real_brief" | tr -d '[:space:]')" -le 1048576 ] || continue
   brief_text="$brief_text"$'\n'"$(cat "$real_brief")"
 done
 run_id_re='[0-9]{8}T[0-9]{6}Z-[0-9a-f]+(-[0-9]+)?'
-# One regex binds the flag to the `fixes <id>` it belongs to: a brief that merely cites a run
-# beside an unrelated --done is not a fixing pass, and a fixing pass without the flag is none.
+# One command-span regex keeps the flag with the `fixes <id>` it belongs to: a brief that merely
+# cites a run beside an unrelated --done is not a fixing pass, and a pass without the flag is none.
 # review-bench's `fork --check` is the whole verdict (exit 3 names the command): no threshold
 # is priced here.
-fixing_pass_re="review-bench[[:blank:]]+fixes[[:blank:]]+${run_id_re}([[:blank:]]+[^[:blank:]]+)*[[:blank:]]+--(done|blocked)([[:blank:]]|$)"
-for fork_run in $(printf '%s' "$brief_text" | grep -Eo "$fixing_pass_re" |
-    grep -Eo "^review-bench[[:blank:]]+fixes[[:blank:]]+$run_id_re" | awk '{print $NF}' | sort -u); do
+fixing_pass_re="review-bench[[:blank:]]+fixes([[:blank:]]+[^[:blank:]]+)*"
+fixing_segments=$(printf '%s\n' "$brief_text" |
+  awk '{
+    line = continued $0
+    if (line ~ /\\[[:blank:]]*$/) {
+      sub(/\\[[:blank:]]*$/, "", line)
+      continued = line " "
+      next
+    }
+    continued = ""
+    gsub(/[;|&`]/, "\n", line)
+    gsub(/review-bench/, "\nreview-bench", line)
+    print line
+  }
+  END { if (continued != "") print continued }')
+for fork_run in $(printf '%s\n' "$fixing_segments" | grep -Eo "$fixing_pass_re" |
+    grep -E -- '(^|[[:blank:]])--(done|blocked)([[:blank:]]|$)' |
+    grep -Eo "$run_id_re" | sort -u); do
   fork_refusal=$(review-bench fork "$fork_run" --check 2>&1 >/dev/null)
   [ "$?" -eq 3 ] || continue
   deny "REVIEW GATE: $fork_refusal"

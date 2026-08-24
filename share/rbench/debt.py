@@ -84,6 +84,11 @@ DEBT_LINE_CACHE_MAX = 4096
 # a timeout, and a first pass over a cold cache killed before its last path would otherwise persist
 # nothing at all and start again from zero on the render after it.
 DEBT_LINE_CACHE_BATCH = 32
+# How far BEFORE a journal stamp the commit it records may sit. The debt journal is appended by the
+# post-commit hook, so its epoch follows its own commit by however long that hook takes — asked from
+# the stamp exactly, the pricing below missed the very commit the record is about (live 2026-08-24:
+# a stamp 4 seconds late read a committed contract file as 0 lines of debt).
+JOURNAL_STAMP_GRACE_S = 600
 DEBT_LINE_CACHE = None
 def cmd_settle_delivery(args):
     """Put every deliverable round no ledger names back in front of the chat that launched it, and
@@ -590,6 +595,62 @@ def diff_suppressed_paths(repo, paths):
     }
 
 
+def journal_epochs(repo):
+    """The EARLIEST epoch either journal recorded for each path, as `{path: epoch}`.
+
+    It dates the first edit somebody stamped and nobody has answered for since, so every commit
+    from there on is unreviewed work. A record carrying no epoch dates nothing and is left out
+    rather than read as the beginning of time, which would price a file's whole history as debt.
+    """
+    epochs = {}
+    for _, epoch, path in _store.journal_rows(repo):
+        if epoch is None:
+            continue
+        if path not in epochs or epoch < epochs[path]:
+            epochs[path] = epoch
+    return epochs
+
+
+def unreviewed_parent_blob(repo, path, epoch):
+    """What stood under `path` before the commits nobody has read: the blob its OLDEST commit
+    reaching HEAD at or after `epoch`, less the stamp grace, had in its parent. None where no such
+    commit exists — nothing then says which commits are unreviewed, so the caller keeps HEAD — and
+    the empty string where that commit is a root or its parent held no such path, which prices the
+    file whole.
+
+    First-parent only: a merge brings a side branch's commits in under one date, and walking into
+    them would price work that landed with the branch rather than with the stamped edit.
+    """
+    listed = subprocess.run(
+        ["git", "log", "--first-parent", "--format=%H", f"--since=@{int(epoch) - JOURNAL_STAMP_GRACE_S}", "HEAD", "--",
+         *_scope.literal_pathspecs([path])],
+        cwd=repo, capture_output=True, text=True,
+    )
+    if listed.returncode != 0 or not listed.stdout.split():
+        return None
+    oldest = listed.stdout.split()[-1]
+    found = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{oldest}^:{path}"],
+        cwd=repo, capture_output=True, text=True,
+    )
+    return found.stdout.strip() if found.returncode == 0 else ""
+
+
+def head_path_blobs(repo, paths):
+    """The blob HEAD holds under each of `paths`, as `{path: sha}` — a path HEAD does not hold is
+    absent from the answer rather than empty in it. One tree read for every path that needs one.
+    """
+    if not paths:
+        return {}
+    try:
+        entries = _scope.tree_path_entries(
+            repo, _scope.head_tree_hash(repo), paths, literal=True
+        )
+    except RuntimeError:
+        return {}
+    return {path: entry[1] for path, entry in entries.items()}
+
+
 def debt_line_counts(repo, debt, shas=None):
     """How many lines each debt path is in debt by, as `{path: lines}`: the diff between the
     content the artifact covering it recorded and the content standing there now, counted by the
@@ -599,13 +660,24 @@ def debt_line_counts(repo, debt, shas=None):
     holds: uncommitted working-tree bytes are in no store at all, and hashing them into one would
     make a statusline render write into the repository it is only reading.
 
-    A path no artifact holds has no recorded side and counts whole, and a held path that is gone
-    has no current side and counts the content it lost — both fall out of one of the two sides
-    being empty, so neither is a case of its own. A recorded blob this store can no longer read is
-    the first of those: unreadable and never recorded are the same absence to a comparison, exactly
-    as `debt_snapshot_commit` drops such a path from the base and shows the file whole — and that
-    absence is what the key says too, or the number measured where the blob is missing would answer
-    for the checkout that still holds it.
+    A side that cannot be READ — nothing ever recorded the path, or the blob its artifact named is
+    gone from this store — is decided by where the unreviewed work stands. A path DIRTY in the
+    working tree is priced against the content HEAD holds, whole where HEAD holds none: the edit is
+    what it owes, not the history under it, and a waiver recording shas whose objects were never
+    written priced one test file at 16251 lines of debt that way (live 2026-08-24). A CLEAN path
+    has all of its unreviewed work in commits, so HEAD is that work rather than the base for it:
+    the left side is the parent of the oldest commit reaching HEAD at or after the earliest epoch
+    the journals stamped for the path — everything from that stamp on is what nobody read (live
+    2026-08-24: a committed contract file read as 0 lines of debt while `--list` still named it).
+    With no epoch stamped and no such commit, HEAD stands and the path owes no lines, since nothing
+    on record says which commits went unreviewed. The review BASE keeps the older shape —
+    `debt_snapshot_commit` drops such a path and shows the panel the whole file — because a review
+    reads content while this counts drift. A held path that is gone has no current side and counts
+    the content it lost, and a recorded EMPTY sha stands as itself: a run that READ the path as
+    absent recorded that.
+
+    The key spells the sha actually compared, HEAD's included, or a number measured where the
+    recorded blob is missing would answer for the checkout whose store still holds it.
     """
     cache = debt_line_cache()
     counts = {}
@@ -614,17 +686,36 @@ def debt_line_counts(repo, debt, shas=None):
     readable = _scope.reachable_blobs(
         repo, [artifact["shas"].get(path, "") for path, artifact in debt if artifact]
     )
+    recorded_sides = {}
+    for path, artifact in debt:
+        held = artifact["shas"].get(path) if artifact else None
+        if held == "" or (held and held in readable):
+            recorded_sides[str(path)] = held
+    heads = head_path_blobs(
+        repo, [str(path) for path, _ in debt if str(path) not in recorded_sides]
+    )
+    epochs = None
     for path, artifact in debt:
         name = str(path)
         if name in suppressed:
             counts[name] = 0
             continue
-        recorded = artifact["shas"].get(path, "") if artifact else ""
-        if recorded not in readable:
-            recorded = ""
         current = (shas or {}).get(name)
         if current is None:
             current = _store.path_blob_sha(repo, path)
+        if name in recorded_sides:
+            recorded = recorded_sides[name]
+        else:
+            recorded = heads.get(name, "")
+            if recorded and recorded == current:
+                # Asked per path and only here: a clean path with no readable side is the one case
+                # where HEAD is the unreviewed work instead of the base for it.
+                if epochs is None:
+                    epochs = journal_epochs(repo)
+                epoch = epochs.get(name)
+                before = None if epoch is None else unreviewed_parent_blob(repo, name, epoch)
+                if before is not None:
+                    recorded = before
         key = f"{recorded}:{current}"
         if key in cache:
             counts[name] = cache[key]
@@ -676,7 +767,7 @@ def debt_ownership(repo, debt, session, claims=None, records=None):
     """
     records = _store.worker_run_dirs() if records is None else records
     claims = _store.run_record_claims(repo, records) if claims is None else claims
-    authors = debt_path_authors(repo, debt)
+    authors = debt_path_authors(repo, debt, records)
     mine = _store.session_run_paths(repo, session, claims=claims) if session else set()
     dirt = _store.session_dirt_paths(repo, session, records=records)
     buckets = {"own": set(), "foreign": set(), "orphaned": set(), "authors": authors}
@@ -878,7 +969,55 @@ def debt_members(repos, session="", include_foreign=False, skipped=None):
     return members
 
 
-def debt_path_authors(repo, debt):
+def listless_window_yields(repo, authors, named, floors=None, records=None, launchers=None):
+    """Rule D: a claim a listless run's WINDOW is the whole of yields to any record that NAMES the
+    path. `authors` is edited in place and returned.
+
+    A run that ended unable to list its own files is retired with an heir record, and every path a
+    later commit carried under its workdir went into the debt journal as that run's launcher's
+    (docs/shared-invariants.md row `ao`). That claim names a DIRECTORY — normally the whole
+    repository — and is the weakest one this store holds: read as the equal of a record naming the
+    file itself, it refused every waiver over work whose author is written down beside it, and four
+    paths of one chat's own fixing pass sat unanswerable behind a co-tenant's window (live case
+    2026-08-24). So where anything NAMES the path — a commit-journal entry, or a run record whose
+    own listing holds it — that record answers for it and the window claim steps aside; the window
+    keeps exactly the paths nobody names, which is the case it was left for.
+
+    A window owner that also NAMES the path keeps it, whichever way it is named: the refusal over a
+    co-tenant's real work is not weakened here. The naming launchers stand in the authors that are
+    left, or a path with an owner on record would come out belonging to nobody and waivable by
+    anybody.
+    """
+    windows = _store.heir_window_claims(repo, records)
+    if not windows:
+        return authors
+    listed = None
+    for path, sessions in authors.items():
+        claimants = {
+            owner for owner, prefix in windows
+            if owner in sessions and _store.path_under_window(prefix, path)
+        }
+        if not claimants:
+            continue
+        if listed is None:
+            listed = _store.run_listed_paths(repo, records, floors)
+        naming = set(named.get(path) or ())
+        for launcher in listed.get(path) or ():
+            naming |= owners_of(launcher, launchers)
+        yielded = claimants - naming
+        if not yielded or not naming:
+            continue
+        authors[path] = (sessions - yielded) | naming
+    return authors
+
+
+def owners_of(session, launchers=None):
+    """A session and the chat that launched it: a worker a chat spawned IS that chat (row `am`)."""
+    launcher = (worker_session_launchers() if launchers is None else launchers).get(session)
+    return {session, launcher} if launcher else {session}
+
+
+def debt_path_authors(repo, debt, run_records=None):
     """Which chats each debt path belongs to: the debt journal a commit's own gate appends to,
     plus the commit journal for work still uncommitted. A record naming no session belongs to
     nobody and makes no chat an author of it.
@@ -897,6 +1036,9 @@ def debt_path_authors(repo, debt):
     a path whose author is written down — disowning, which the rule above forbids. So the floor
     applies only while something of the path's still stands above it; otherwise the leftovers are
     the best answer available and each session that holds one keeps its newest record.
+
+    `listless_window_yields` has the last word: a claim standing on a workdir window alone is not
+    the equal of a record naming the file.
     """
     authors = {str(path): set() for path, _ in debt}
     floors = {
@@ -912,11 +1054,7 @@ def debt_path_authors(repo, debt):
     # this same question under the worker's id while the run is going, and answered `other` it would
     # refuse that session a waiver over the work it just did.
     launchers = worker_session_launchers()
-
-    def owners(session):
-        launcher = launchers.get(session)
-        return {session, launcher} if launcher else {session}
-
+    named = {}
     settled = {}
     for session, epoch, path in _store.journal_entries(directory / _store.DEBT_JOURNAL):
         if not session or path not in authors:
@@ -926,12 +1064,18 @@ def debt_path_authors(repo, debt):
         floor = floors.get(path, 0)
         standing = {session for session, epoch in records if epoch is None or epoch >= floor}
         for session in standing or {session for session, _ in records}:
-            authors[path].update(owners(session))
+            authors[path].update(owners_of(session, launchers))
+    # The commit journal is the record of an edit somebody MADE, and with a run's own listing the
+    # whole of rule D's naming evidence. The debt journal is none of it, however many rows stand
+    # there: `commit-report.sh` appends one per commit per path, so two commits carried under one
+    # heir window leave exactly what two edits of the window owner's own would.
     for session, _, path in _store.journal_entries(directory / _store.COMMIT_JOURNAL):
         if not session or path not in authors:
             continue
-        authors[path].update(owners(session))
-    return authors
+        owned = owners_of(session, launchers)
+        authors[path].update(owned)
+        named.setdefault(path, set()).update(owned)
+    return listless_window_yields(repo, authors, named, floors, run_records, launchers)
 
 
 def debt_authors(repo, debt):
@@ -1248,7 +1392,10 @@ def cmd_waive(args):
         "epoch": int(time.time()),
         "session": session,
         "reason": reason,
-        "paths": {name: _store.path_blob_sha(repo, name) for name, _ in debt},
+        # The writing variant: a waiver is a command, and the shas it records are read back
+        # as CONTENT by every later pricing of these paths. Recorded without their objects,
+        # the whole file read as debt on the very next edit (live 2026-08-24).
+        "paths": _store.stored_path_blob_shas(repo, [name for name, _ in debt]),
     }
     with _accounts.wall_file_lock(path, _store.WAIVER_LOCK):
         try:
@@ -1744,5 +1891,3 @@ def cmd_doctor(args):
         for line in doctor_lines(findings):
             print(line)
     return 0
-
-

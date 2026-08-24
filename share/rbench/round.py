@@ -96,6 +96,10 @@ ROUND_BUDGET_SPENT = (
     "- fold what is left into the false-positive doctrine rather than reviewing this scope again."
 )
 TRIAGE_NUDGED = "report-nudged"
+# The same counter over the other thing a run can owe at a stop: the debt its own scope still
+# carries once its round budget is spent. Its own file, because a round asked three times for its
+# triage has spent nothing of what it owes after the fixes land.
+SETTLE_NUDGED = "settle-nudged"
 # Stamped by `worker-run` when the brief it launches carries this run's `record` command: the
 # triage is that worker's, and a Stop gate nagging the chat meanwhile asks for the same work twice.
 DELEGATED_STAMP = "delegated"
@@ -619,16 +623,9 @@ def pid_elapsed_seconds(pid):
 def triage_delegated(run_dir):
     """Whether a live worker holds this run's triage.
 
-    The stamp's first line is the pid `worker-run` supervises and the instant that pid began. A
-    pid that is gone hands the run straight back to the gate — a worker that died mid-triage is
-    exactly what the nag is for — and the instant is what says the pid is STILL that worker's: the
-    number is reused within a day on a busy machine, and whatever inherits it answers a probe
-    exactly as the supervisor would, silencing an untriaged run for as long as it lives. That is
-    the pid-reuse rule of shared-invariants row `ar`, which this reader is bound by like the rest.
-
-    A stamp carrying no instant keeps the run silenced on the bare pid: stamps written before the
-    field went in must not start reading dead. So does a `ps` that cannot answer at all, which is
-    only ever told apart from death by asking it for a pid that must exist.
+    The stamp's first line is the pid `worker-run` supervises and the instant that pid began,
+    judged by `pid_still_running`: a pid that is gone hands the run straight back to the gate, a
+    worker that died mid-triage being exactly what the nag is for.
     """
     try:
         stamped = (run_dir / DELEGATED_STAMP).read_text().split("\n", 1)[0].split()
@@ -642,9 +639,21 @@ def triage_delegated(run_dir):
         except (IndexError, ValueError):
             return False
         return int(_store.utc_now().timestamp()) - claimed <= DELEGATED_CLAIM_SECONDS
+    return pid_still_running(stamped[0], stamped[1] if len(stamped) > 1 else None)
+
+
+def pid_still_running(pid, began):
+    """Whether the process wearing `pid` is the one that started at `began`.
+
+    The pid-reuse rule of shared-invariants row `ar`, in one place because two readers judge the
+    same processes by it: a run's delegated triage stamp, and a worker run's own record. A stamp
+    carrying no instant is answered on the bare pid — records written before the field went in must
+    not start reading dead — and so is a `ps` that cannot answer at all, which is only ever told
+    apart from death by asking it for a pid that must exist.
+    """
     try:
-        pid = int(stamped[0])
-    except ValueError:
+        pid = int(pid)
+    except (TypeError, ValueError):
         return False
     if pid <= 0:
         return False
@@ -653,11 +662,11 @@ def triage_delegated(run_dir):
         # Pid 1 and never this process: a sandbox hiding every process but our own still lists our
         # own, and a foreign supervisor would then read gone.
         return pid_elapsed_seconds(1) is None
-    if len(stamped) < 2:
+    if began is None:
         return True
     try:
-        began = int(stamped[1])
-    except ValueError:
+        began = int(began)
+    except (TypeError, ValueError):
         return True
     return abs(int(_store.utc_now().timestamp()) - elapsed - began) <= DELEGATED_PID_SLACK
 
@@ -883,16 +892,14 @@ def cmd_receipt(args):
     return 0
 
 
-def cmd_pending_report(args):
-    pending = triage_pending_run(args.repo, getattr(args, "session", "") or None)
-    if pending is None:
-        return 1
-    run_dir, meta = pending
-    marker = run_dir / TRIAGE_NUDGED
-    # One appended line per ask, counted back. A number read, incremented and rewritten loses an
-    # increment whenever two stop hooks fire together — Egor runs several chats at once — and the
-    # allowance quietly stretches. A marker that cannot be read counts as spent: a gate blind to
-    # its own state must go quiet rather than block a stop it can never release.
+def gate_asks_spent(marker, mark):
+    """Whether this run has spent its asks at the Stop gate, counting this one where `mark` says to.
+
+    One appended line per ask, counted back. A number read, incremented and rewritten loses an
+    increment whenever two stop hooks fire together — Egor runs several chats at once — and the
+    allowance quietly stretches. A marker that cannot be read counts as spent: a gate blind to its
+    own state must go quiet rather than block a stop it can never release.
+    """
     try:
         asked = sum(1 for line in marker.read_text().splitlines() if line.strip())
     except FileNotFoundError:
@@ -900,10 +907,23 @@ def cmd_pending_report(args):
     except (OSError, UnicodeDecodeError):
         asked = TRIAGE_GATE_ASKS
     if asked >= TRIAGE_GATE_ASKS:
-        return 1
-    if args.mark:
+        return True
+    if mark:
         with marker.open("a") as handle:
             handle.write(_store.iso_now() + "\n")
+    return False
+
+
+def cmd_pending_report(args):
+    session = getattr(args, "session", "") or None
+    pending = triage_pending_run(args.repo, session)
+    if pending is None:
+        # Nothing here owes a triage, which is where the other thing a stop may not sleep on
+        # begins: a round whose budget is spent while its own scope is still in debt.
+        return unsettled_report(args.repo, session, args.mark)
+    run_dir, meta = pending
+    if gate_asks_spent(run_dir / TRIAGE_NUDGED, args.mark):
+        return 1
     if _store.run_triaged(run_dir):
         print(f"{run_dir.name} {confirmed_count(recorded_verdict_rows(run_dir))}")
         print(fork_command(run_dir.name))
@@ -911,6 +931,196 @@ def cmd_pending_report(args):
     findings = _panel.bench_summary(run_dir, meta)["findings"]
     print(f"{run_dir.name} {findings}")
     print(triage_command(run_dir.name, findings))
+    return 0
+
+
+def unsettled_round(repo, session):
+    """The newest round of `session` over `repo` whose round budget is spent while its own scope is
+    still in debt, as `(run_dir, diff lines, paths)`, or None.
+
+    A closed budget may not sleep on unsettled debt. The contract owes no third pass over a scope
+    whose second round is done, and none over a round nothing further is owed — so nothing left in
+    the flow will ever come back to those paths: no lock stands over them, no fork demands a round,
+    and the commit notice speaks once, at a commit that may never come. Left there, 252 diff lines
+    of one chat's own fixing pass sat in debt with no waiver and nothing asking for one (live case
+    2026-08-24). The two answers are the two the commit notice prints, and this asks for them at the
+    one moment the chat is deciding it is done.
+
+    A round still owed a follow-up is passed over: the fork and the lock speak for those, and a
+    second demand over the same round would ask for a waiver the lock refuses. So is a round whose
+    fixing pass has not answered — its bytes are still landing — and one whose snapshot this
+    repository is not in. So, finally, is one whose residual debt is entirely a co-tenant's: the
+    `paths` are what this session may answer for, and the line count is over those same paths, or
+    the demand names a number no command it prints can settle.
+    """
+    from . import debt as _debt  # here and not at module top: debt imports this module at load
+    resolved = _store.resolve_repo_arg(repo) if repo else None
+    if resolved is None or not session:
+        return None
+    family = _store.repo_family(str(resolved))
+    benches = _store.state_dir() / "benches"
+    inputs = None
+    for run_dir in sorted(benches.iterdir(), reverse=True) if benches.exists() else ():
+        try:
+            meta = json.loads((run_dir / "meta.json").read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(meta, dict) or str(meta.get("session") or "") != session:
+            continue
+        record = _store.run_repo_record(resolved, meta, family=family)
+        if record is None or not _store.run_triaged(run_dir):
+            continue
+        reviewed = record.get("reviewed")
+        if not isinstance(reviewed, dict) or not reviewed:
+            continue
+        if round_state(run_dir) != "done":
+            continue
+        artifact = {"kind": "run", "id": run_dir.name, "dir": run_dir}
+        if _debt.artifact_owes_second_round(artifact):
+            continue
+        if inputs is None:
+            # Read at the first round that reaches here rather than before the loop: this runs at
+            # every Stop, and most of them have no finished round of their own to pay for a walk of
+            # the whole run store and every artifact of the family.
+            records = _store.worker_run_dirs()
+            artifacts = _debt.repo_artifacts(resolved)
+            inputs = (
+                records,
+                _store.run_record_claims(resolved, records),
+                _store.run_dirty_paths(resolved, records),
+                _debt.covering_artifacts(resolved, artifacts=artifacts),
+                _debt.reviewed_shas(artifacts, resolved),
+            )
+        records, claims, dirty, covering, reviewed_shas = inputs
+        shas = {}
+        debt = _debt.repo_debt(
+            resolved, paths=sorted(reviewed), covering=covering, shas=shas, claims=claims,
+            dirty=dirty, reviewed=reviewed_shas,
+        )
+        if not debt:
+            continue
+        buckets = _debt.debt_ownership(resolved, debt, session, claims=claims, records=records)
+        paths = [
+            path for path, _ in debt
+            if path in buckets["own"] or path in buckets["orphaned"]
+        ]
+        # Residual that is entirely another chat's is no debt of this session's to settle: neither
+        # answer the demand prints is one it may give — the waiver `waive` refuses by that chat's
+        # name, and a review of a co-tenant's work is that chat's round to ask for.
+        if not paths:
+            continue
+        lines = _debt.debt_line_counts(resolved, debt, shas=shas)
+        return run_dir, sum(lines.get(path, 0) for path in paths), paths
+    return None
+
+
+def live_round_reads(repo, session, paths):
+    """Whether a review this chat has IN FLIGHT already reads every one of `paths`.
+
+    The demand's own answer is a review of those paths, and while one is running it is being given:
+    asking for it again burns the allowance against a panel that is about to settle the very debt
+    named (three asks against a live panel, 2026-08-24). Live is the one signal the statusline's
+    review anchor uses — a progress document of this chat whose process is alive — and the scope is
+    the run's own `reviewed` snapshot, written at launch. A run of ANOTHER chat silences nothing: its
+    scope is not this chat's to wait on. A run that dies without recording leaves nothing alive, so
+    the next Stop asks as before.
+    """
+    resolved = _store.resolve_repo_arg(repo) if repo else None
+    if resolved is None or not session or not paths:
+        return False
+    demanded = set(paths)
+    benches = _store.state_dir() / "benches"
+    family = _store.repo_family(str(resolved))
+    for run_id in live_progress_run_ids(session):
+        try:
+            meta = json.loads((benches / run_id / "meta.json").read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(meta, dict):
+            continue
+        record = _store.run_repo_record(resolved, meta, family=family)
+        if record is None:
+            continue
+        reviewed = record.get("reviewed")
+        if isinstance(reviewed, dict) and demanded <= set(reviewed):
+            return True
+    return False
+
+
+def live_worker_run(repo, session):
+    """Whether a worker run THIS chat launched is still writing inside this repository's family.
+
+    The other half of the situation `live_round_reads` reads: the demand prices CONTENT, and while
+    a worker of this chat is mid-edit there is no content to answer for yet — the ask went out over
+    18056 lines of two half-written files and spent the allowance on a scope that was gone a minute
+    later (2026-08-24). A worker a chat spawned IS that chat (shared-invariants row `am`), so this
+    is the chat waiting for itself; another chat's run silences nothing, and neither does a run
+    standing in some other repository, whose edits this demand would never name.
+
+    No path matching, deliberately: a run's file list is written at its end, and the vendors that
+    keep none never write one at all — where the run STANDS is the only thing on disk while it
+    still runs. Liveness is the pid rule row `ar` binds every reader of these records to, so an
+    abandoned supervisor silences nothing: a run that died mid-write would otherwise hold the ask
+    off for as long as its record sits there.
+    """
+    resolved = _store.resolve_repo_arg(repo) if repo else None
+    if resolved is None or not session:
+        return False
+    family = _store.repo_family(str(resolved))
+    if family is None:
+        return False
+    for directory in _store.worker_run_dirs():
+        if (directory / "exit_code").exists():
+            continue
+        try:
+            launcher = (directory / "launcher").read_text().strip()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if launcher != session:
+            continue
+        try:
+            meta = json.loads((directory / "meta.json").read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(meta, dict):
+            continue
+        workdir = meta.get("workdir")
+        if not isinstance(workdir, str) or not workdir:
+            continue
+        if _store.repo_family(workdir) != family:
+            continue
+        if pid_still_running(meta.get("pid"), meta.get("pid_started_at")):
+            return True
+    return False
+
+
+def unsettled_report(repo, session, mark):
+    """The settle demand as the Stop gate reads it: `<run-id> <diff lines>`, then the two commands
+    that answer it — the waiver over exactly those paths, and the review that scopes itself.
+
+    The hook relays; nothing here is a judgment it makes. The waiver's reason is the placeholder the
+    commit notice prints in the same position, which `waive` itself refuses, so the chat has to say
+    why in its own words.
+    """
+    from . import debt as _debt  # here and not at module top: debt imports this module at load
+    found = unsettled_round(repo, session)
+    if found is None:
+        return 1
+    run_dir, lines, paths = found
+    # Before the counter, never after: a demand already being answered — or not yet askable,
+    # because the content it would price is still being written — must cost nothing.
+    if live_round_reads(repo, session, paths):
+        return 1
+    if live_worker_run(repo, session):
+        return 1
+    if gate_asks_spent(run_dir / SETTLE_NUDGED, mark):
+        return 1
+    print(f"{run_dir.name} {lines}")
+    print(shlex.join([
+        "review-bench", "waive", "--reason", _debt.WAIVE_PLACEHOLDER_REASON, "--paths",
+        *(f"./{path}" for path in paths),
+    ]))
+    print(_store.DEBT_REVIEW_COMMAND)
     return 0
 
 
@@ -1032,7 +1242,9 @@ def fix_written_paths(repo, scope, session, window):
     # readings stands in a sha taken last while the record read past it names nobody, and the
     # receipt would settle a co-tenant's bytes with no entry to disqualify them. Read first, those
     # bytes are simply not in the sha this covers, and the path is in debt at its next reading.
-    shas = {path: _store.path_blob_sha(repo, path) for path in scope}
+    # Written into the store as they are read: this receipt's coverage is an artifact, and
+    # what it records is diffed as content by every later pricing of these paths.
+    shas = _store.stored_path_blob_shas(repo, scope)
     records = {}
     for entry, epoch, path in _store.journal_rows(repo):
         if path in scope:
@@ -1176,12 +1388,11 @@ def cmd_fixes(args):
                 f"--fixed {args.fixed} names more findings than the {confirmed} this triage "
                 f"confirmed{split}: a pass cannot fix what nobody confirmed"
             )
-        judged = len(rows or ())
-        if args.fixed + args.fp > judged:
+        if args.fixed + args.fp > confirmed:
             raise ValueError(
                 f"--fixed {args.fixed} and --fp {args.fp} answer for more findings than the "
-                f"{judged} this run has: the counts are outcomes for findings the panel produced, "
-                "and a receipt naming others is a record of no round at all"
+                f"{confirmed} this triage confirmed{split}: the counts are outcomes for confirmed "
+                "findings, and a receipt naming others is a record of no fixing pass at all"
             )
         record = {
             "state": "done", "fixed": args.fixed, "false_positives": args.fp,
@@ -1662,5 +1873,3 @@ def commit_mode_command(args):
     if getattr(args, "lens", ""):
         command += ["--lens", args.lens]
     return shlex.join(command)
-
-

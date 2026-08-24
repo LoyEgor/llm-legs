@@ -2768,15 +2768,12 @@ git -C "$REVIEW_DIRTY" add tracked.txt
 git -C "$REVIEW_DIRTY" -c user.name=Fixture -c user.email=fixture@example.com commit -qm initial
 printf 'line\n%.0s' {1..21} > "$REVIEW_DIRTY/change.txt"
 TOP_REVIEW_DIRTY=$(cd "$REVIEW_DIRTY" && pwd -P)
-review_delimited=" ${DIM}│${RESET} review"
-review_dim_delimited=" ${DIM}│${RESET} ${DIM}review"
 review_rev_delimited=" ${DIM}│${RESET} ${DIM}rev"
-# The slot carries the gate's `rev …` verdict or a run's own `review` counter, in any of the three
-# colourings; a case proving it silent has to rule out all of them, and the fixture repository is
-# itself named review-dirty, so a bare word cannot be searched for.
+# The gate's verdict and a run's own counter wear ONE word, so a case proving the slot silent rules
+# out that word in each of its three colourings; the fixture repository is itself named
+# review-dirty, so a bare word cannot be searched for.
 review_slot_silent() { # rendered
   case "$1" in
-    *"$review_delimited"*|*"$review_dim_delimited"*|\
     *" ${DIM}│${RESET} ${DIM}rev"*|*" ${DIM}│${RESET} ${RED}rev"*|*" ${DIM}│${RESET} rev"*)
       return 1 ;;
   esac
@@ -3044,7 +3041,7 @@ rm -f "$review_stale_receipt"
 
 review_nongit_out=$(run_statusline "$(statusline_payload review-nongit "" "$NON_GIT")") \
   || fail "review non-git render failed"
-assert test "${review_nongit_out#*review T}" = "$review_nongit_out"
+assert test "${review_nongit_out#*rev T}" = "$review_nongit_out"
 
 PROGRESS_DIR="$CLAUDEB_FIX/worker-stats/progress"
 mkdir -p "$PROGRESS_DIR"
@@ -3067,8 +3064,8 @@ progress_render() {
 # A run in flight is the whole story the slot tells about a tree: the panel and its counter.
 write_progress "$$" T2 3 8 2026-07-27T22:00:00+00:00
 progress_live_out=$(progress_render live)
-assert grep -Fq 'review T2 3/8' <<< "$progress_live_out"
-assert test "${progress_live_out#*review T2 max}" = "$progress_live_out"
+assert grep -Fq 'rev T2 3/8' <<< "$progress_live_out"
+assert test "${progress_live_out#*rev T2 max}" = "$progress_live_out"
 
 write_progress "$$" T2 0 1 2026-07-27T22:00:00+00:00
 jq --argjson started_epoch "$((NOW - 121))" \
@@ -3077,15 +3074,15 @@ jq --argjson started_epoch "$((NOW - 121))" \
   > "$PROGRESS_DIR/$progress_prefix$$.json.tmp"
 mv "$PROGRESS_DIR/$progress_prefix$$.json.tmp" "$PROGRESS_DIR/$progress_prefix$$.json"
 progress_late_out=$(progress_render late)
-assert grep -Fq " ${DIM}│${RESET} ${RED}review T2 0/1${RESET}" <<< "$progress_late_out"
+assert grep -Fq " ${DIM}│${RESET} ${RED}rev T2 0/1${RESET}" <<< "$progress_late_out"
 
 jq --argjson started_epoch "$NOW" '.started_epoch = $started_epoch' \
   "$PROGRESS_DIR/$progress_prefix$$.json" \
   > "$PROGRESS_DIR/$progress_prefix$$.json.tmp"
 mv "$PROGRESS_DIR/$progress_prefix$$.json.tmp" "$PROGRESS_DIR/$progress_prefix$$.json"
 progress_fresh_out=$(progress_render fresh)
-assert grep -Fq " ${DIM}│${RESET} review T2 0/1" <<< "$progress_fresh_out"
-assert test "${progress_fresh_out#*"${RED}review"}" = "$progress_fresh_out"
+assert grep -Fq " ${DIM}│${RESET} rev T2 0/1" <<< "$progress_fresh_out"
+assert test "${progress_fresh_out#*"${RED}rev"}" = "$progress_fresh_out"
 
 jq --argjson started_epoch "$((NOW - 121))" \
   '.started_epoch = $started_epoch | .done = ["cell-0"]' \
@@ -3093,8 +3090,8 @@ jq --argjson started_epoch "$((NOW - 121))" \
   > "$PROGRESS_DIR/$progress_prefix$$.json.tmp"
 mv "$PROGRESS_DIR/$progress_prefix$$.json.tmp" "$PROGRESS_DIR/$progress_prefix$$.json"
 progress_done_late_out=$(progress_render done-late)
-assert grep -Fq " ${DIM}│${RESET} review T2 1/1" <<< "$progress_done_late_out"
-assert test "${progress_done_late_out#*"${RED}review"}" = "$progress_done_late_out"
+assert grep -Fq " ${DIM}│${RESET} rev T2 1/1" <<< "$progress_done_late_out"
+assert test "${progress_done_late_out#*"${RED}rev"}" = "$progress_done_late_out"
 
 write_progress "$$" T2 0 1 2026-07-27T22:00:00+00:00
 jq --argjson started_epoch "$((NOW - 121))" '.started_epoch = $started_epoch' \
@@ -3102,26 +3099,26 @@ jq --argjson started_epoch "$((NOW - 121))" '.started_epoch = $started_epoch' \
   > "$PROGRESS_DIR/$progress_prefix$$.json.tmp"
 mv "$PROGRESS_DIR/$progress_prefix$$.json.tmp" "$PROGRESS_DIR/$progress_prefix$$.json"
 progress_no_expected_out=$(progress_render no-expected)
-assert grep -Fq " ${DIM}│${RESET} review T2 0/1" <<< "$progress_no_expected_out"
-assert test "${progress_no_expected_out#*"${RED}review"}" = "$progress_no_expected_out"
+assert grep -Fq " ${DIM}│${RESET} rev T2 0/1" <<< "$progress_no_expected_out"
+assert test "${progress_no_expected_out#*"${RED}rev"}" = "$progress_no_expected_out"
 
 write_progress "$$" T2 0 1 2026-07-27T22:00:00+00:00
 progress_legacy_out=$(progress_render legacy)
-assert grep -Fq " ${DIM}│${RESET} review T2 0/1" <<< "$progress_legacy_out"
-assert test "${progress_legacy_out#*"${RED}review"}" = "$progress_legacy_out"
+assert grep -Fq " ${DIM}│${RESET} rev T2 0/1" <<< "$progress_legacy_out"
+assert test "${progress_legacy_out#*"${RED}rev"}" = "$progress_legacy_out"
 
 # The max panel is a variant of the same tier at the same time budget, so a T2 max run must not
 # read as the T2 it is not: it buys a wider panel, and the label is where that is visible.
 write_progress "$$" T2 5 16 2026-07-27T22:00:00+00:00 "" true
 progress_max_out=$(progress_render max)
-assert grep -Fq 'review T2 max 5/16' <<< "$progress_max_out"
+assert grep -Fq 'rev T2 max 5/16' <<< "$progress_max_out"
 
 # --max is refused without --tier, so a file claiming the variant without the tier is corrupt in
 # that field; the counter still renders and no bare variant name takes the tier's place.
 write_progress "$$" "" 2 4 2026-07-27T22:00:00+00:00 "" true
 progress_max_untiered_out=$(progress_render max-untiered)
-assert grep -Fq 'review 2/4' <<< "$progress_max_untiered_out"
-assert test "${progress_max_untiered_out#*review max}" = "$progress_max_untiered_out"
+assert grep -Fq 'rev 2/4' <<< "$progress_max_untiered_out"
+assert test "${progress_max_untiered_out#*rev max}" = "$progress_max_untiered_out"
 
 # review-bench keys the file name on the path it was handed, so a run started from a
 # subdirectory lands under a name no render can predict — and a repository whose directory name
@@ -3133,22 +3130,22 @@ jq -cn --arg repo "$REVIEW_CLEAN/sub" --argjson pid "$$" \
     failed:0,started:"2026-07-28T00:00:00+00:00",ts:"2026-07-28T00:00:00+00:00"}' \
   > "$progress_alias"
 progress_alias_out=$(progress_render alias)
-assert grep -Fq 'review T3 1/3' <<< "$progress_alias_out"
+assert grep -Fq 'rev T3 1/3' <<< "$progress_alias_out"
 rm -f "$progress_alias"
 
 # An --auto run carries no tier; the counter still renders.
 write_progress "$$" "" 1 5 2026-07-27T22:00:00+00:00
 progress_untiered_out=$(progress_render untiered)
-assert grep -Fq 'review 1/5' <<< "$progress_untiered_out"
-assert test "${progress_untiered_out#*review T}" = "$progress_untiered_out"
+assert grep -Fq 'rev 1/5' <<< "$progress_untiered_out"
+assert test "${progress_untiered_out#*rev T}" = "$progress_untiered_out"
 
 progress_second_pid=$( (sleep 30 >/dev/null 2>&1 & echo $!) )
 write_progress "$$" T1 2 6 2026-07-27T22:00:00+00:00
 write_progress "$progress_second_pid" T3 5 9 2026-07-27T23:30:00+00:00
 progress_two_out=$(progress_render two-runs)
-assert grep -Fq 'review T3 5/9' <<< "$progress_two_out"
-assert test "${progress_two_out#*review T1}" = "$progress_two_out"
-assert_eq 1 "$(grep -o 'review T3' <<< "$progress_two_out" | wc -l | tr -d ' ')"
+assert grep -Fq 'rev T3 5/9' <<< "$progress_two_out"
+assert test "${progress_two_out#*rev T1}" = "$progress_two_out"
+assert_eq 1 "$(grep -o 'rev T3' <<< "$progress_two_out" | wc -l | tr -d ' ')"
 rm -f "$PROGRESS_DIR/$progress_prefix$$.json"
 
 # A pid the run no longer owns renders nothing: the file outlives kill -9, and the process now
@@ -3179,7 +3176,7 @@ progress_set_session() { # session
 }
 progress_set_session review-progress-foreign-mine
 progress_foreign_mine_out=$(progress_render foreign-mine)
-assert grep -Fq 'review T2 4/7' <<< "$progress_foreign_mine_out"
+assert grep -Fq 'rev T2 4/7' <<< "$progress_foreign_mine_out"
 
 progress_set_session review-progress-another-chat
 progress_foreign_other_out=$(progress_render foreign-other)
@@ -3192,7 +3189,7 @@ mkdir -p "$HOME/.claude/sessions"
 printf '{"sessionId":"review-progress-foreign-walk"}\n' > "$HOME/.claude/sessions/$$.json"
 write_progress "$$" T2 4 7 2026-07-27T22:00:00+00:00 "$REVIEW_DIRTY"
 progress_foreign_walk_out=$(progress_render foreign-walk)
-assert grep -Fq 'review T2 4/7' <<< "$progress_foreign_walk_out"
+assert grep -Fq 'rev T2 4/7' <<< "$progress_foreign_walk_out"
 progress_foreign_walk_other_out=$(progress_render foreign-walk-other)
 assert test "${progress_foreign_walk_other_out#*4/7}" = "$progress_foreign_walk_other_out"
 rm -f "$HOME/.claude/sessions/$$.json"
@@ -3202,7 +3199,7 @@ rm -f "$HOME/.claude/sessions/$$.json"
 write_progress "$$" T2 4 7 2026-07-27T22:00:00+00:00
 progress_set_session review-progress-another-chat
 progress_own_tree_other_out=$(progress_render own-tree-other)
-assert grep -Fq " ${DIM}│${RESET} ${DIM}review T2 4/7${RESET}" <<< "$progress_own_tree_other_out"
+assert grep -Fq " ${DIM}│${RESET} ${DIM}rev T2 4/7${RESET}" <<< "$progress_own_tree_other_out"
 
 # A linked worktree is another chat's working tree, and matching on the repository could not tell
 # the two apart: `--git-common-dir` is one path for all of them, so a review running in a sibling
@@ -3218,7 +3215,7 @@ assert test "${progress_sibling_out#*4/7}" = "$progress_sibling_out"
 mkdir -p "$REVIEW_CLEAN/nested/deeper"
 write_progress "$$" T2 4 7 2026-07-27T22:00:00+00:00 "$REVIEW_CLEAN/nested/deeper"
 progress_subdir_out=$(progress_render subdirectory)
-assert grep -Fq 'review T2 4/7' <<< "$progress_subdir_out"
+assert grep -Fq 'rev T2 4/7' <<< "$progress_subdir_out"
 
 write_progress "$$" T2 9 7 2026-07-27T22:00:00+00:00
 progress_overrun_out=$(progress_render overrun)
@@ -3231,8 +3228,44 @@ rm -f "$PROGRESS_DIR/$progress_prefix$$.json"
 
 progress_gone_out=$(progress_render gone)
 assert_eq 0 \
-  "$(grep -Eco 'review (T[0-3] )?[0-9]+/[0-9]+' <<< "$progress_gone_out" | tr -d ' ')"
+  "$(grep -Eco 'rev (T[0-3] )?[0-9]+/[0-9]+' <<< "$progress_gone_out" | tr -d ' ')"
 assert review_slot_silent "$progress_gone_out"
+
+# The debt never disappears behind a review. Both stand on the line over ONE tree — the counter
+# with the word, the verdict with its numbers alone — where a run in flight used to blank the
+# verdict outright, so any review over this tree, this chat's or another chat's, hid the number the
+# reader acts on (Egor, 2026-08-24).
+GATE_ANSWER='split rev 54/10'
+# Alone, the verdict keeps the word: nothing beside it says what the numbers are about.
+progress_alone_out=$(review_render review-progress-alone "$REVIEW_CLEAN")
+assert grep -Fq " ${DIM}│${RESET} rev 54${DIM}/10${RESET}" <<< "$progress_alone_out"
+assert test "${progress_alone_out#*rev T}" = "$progress_alone_out"
+# This chat's own run: its own segment bright, the verdict's own split weighting untouched beside
+# it, and the word carried once.
+write_progress "$$" T0 3 9 2026-07-27T22:00:00+00:00
+progress_own_debt_out=$(review_render review-progress-own-debt "$REVIEW_CLEAN")
+assert grep -Fq " ${DIM}│${RESET} rev T0 3/9 ${DIM}│${RESET} 54${DIM}/10${RESET}" \
+  <<< "$progress_own_debt_out"
+assert test "${progress_own_debt_out#*rev 54}" = "$progress_own_debt_out"
+# Another chat's run over this tree dims its own segment and colours nothing of the verdict: the
+# two weights are decided by two rules and neither paints the other.
+progress_set_session review-progress-elsewhere
+progress_other_debt_out=$(review_render review-progress-other-debt "$REVIEW_CLEAN")
+assert grep -Fq \
+  " ${DIM}│${RESET} ${DIM}rev T0 3/9${RESET} ${DIM}│${RESET} 54${DIM}/10${RESET}" \
+  <<< "$progress_other_debt_out"
+# A one-sided verdict loses the word the same way, and the trim takes that word and nothing else.
+GATE_ANSWER='bright rev 7'
+progress_one_sided_out=$(review_render review-progress-one-sided "$REVIEW_CLEAN")
+assert grep -Fq " ${DIM}│${RESET} ${DIM}rev T0 3/9${RESET} ${DIM}│${RESET} 7" \
+  <<< "$progress_one_sided_out"
+# A style word this build cannot classify is the gate speaking and reaches the reader whole, even
+# where its sentence opens with the word the counter beside it already carries.
+GATE_ANSWER='rev 7 held for review'
+progress_loud_debt_out=$(review_render review-progress-loud-debt "$REVIEW_CLEAN")
+assert grep -Fq " ${DIM}│${RESET} ${RED}rev 7 held for revi…${RESET}" <<< "$progress_loud_debt_out"
+rm -f "$PROGRESS_DIR/$progress_prefix$$.json"
+GATE_ANSWER=off
 
 # The folder follows the review: while this chat has a run in flight or a round unanswered, the
 # `dir` segment, the branch/diff cluster and the gate's question are the review's repository, not
@@ -3275,15 +3308,61 @@ anchor_render() { # session cwd
 }
 anchor_dir_b="${DIM}$(basename "$REPO_A")${RESET} ${MAGENTA}»${RESET} ${BLUE}$(basename "$REVIEW_CLEAN")${RESET}"
 
-# (a) A live review over repository B while the shell sits in A: the folder is B and `rev` is B's.
+# (a) A live review over repository B while the shell sits in A: the folder is B, the review is
+# marked as such — and A's own debt stays on the line, since the folder may follow the review but
+# the debt may not disappear with it (Egor, 2026-08-24). Two segments in order, the marker first,
+# and the gate is asked about the session's OWN tree.
 : > "$GATE_LOG"
 GATE_ANSWER='bright rev 2'
 write_anchor_run 20260727T220000Z-aaaaaaa anchor-live "$REVIEW_CLEAN"
 anchor_live_out=$(anchor_render anchor-live "$REPO_A")
 assert grep -Fq "$anchor_dir_b" <<< "$anchor_live_out"
-assert grep -Fq " ${DIM}│${RESET} review T2 1/2" <<< "$anchor_live_out"
-assert_eq "verdict $review_clean_root anchor-live" "$(tail -1 "$GATE_LOG")"
+assert grep -Fq " ${DIM}│${RESET} rev T2 1/2 ${DIM}│${RESET} rev 2" <<< "$anchor_live_out"
+assert_eq "verdict $TOP_A anchor-live" "$(tail -1 "$GATE_LOG")"
+# Asked about the session's tree and never about the anchored one: a number about a repository the
+# reader is not standing in is worse than none.
+assert_eq 0 "$(grep -Fc -- "verdict $review_clean_root anchor-live" "$GATE_LOG" | tr -d ' ')"
 assert_eq "$REVIEW_CLEAN" "$(cat "$STATE_DIR/review-anchor-anchor-live")"
+
+# A newer live run from another chat over the session tree is still that tree's dim news. It is not
+# the anchored review, so its counter cannot remove the marker that names the foreign folder.
+write_progress "$$" T3 4 7 2026-07-27T23:00:00+00:00 "$REPO_A"
+progress_set_session anchor-other-chat
+anchor_other_live_out=$(anchor_render anchor-live "$REPO_A")
+assert grep -Fq \
+  " ${DIM}│${RESET} ${DIM}rev${RESET} ${DIM}│${RESET} ${DIM}rev T3 4/7${RESET} ${DIM}│${RESET} rev 2" \
+  <<< "$anchor_other_live_out"
+rm -f "$PROGRESS_DIR/$progress_prefix$$.json"
+
+# A round of this chat merely PENDING over there has no counter to show, and the word is what says
+# the folder on the line is a review's rather than the shell's. Dim, and the own debt beside it.
+: > "$GATE_LOG"
+printf '%s' "$REVIEW_CLEAN" > "$STATE_DIR/review-anchor-anchor-pending"
+rm -f "$STATE_DIR/review-class-anchor-pending" "$PROGRESS_DIR"/anchor-*.json
+anchor_pending_payload=$(statusline_payload anchor-pending "" "$REPO_A")
+run_statusline "$anchor_pending_payload" >/dev/null || fail "anchor pending render failed"
+review_await_verdict anchor-pending
+anchor_pending_out=$(run_statusline "$anchor_pending_payload") \
+  || fail "anchor pending render failed"
+assert grep -Fq "$anchor_dir_b" <<< "$anchor_pending_out"
+assert grep -Fq " ${DIM}│${RESET} ${DIM}rev${RESET} ${DIM}│${RESET} rev 2" <<< "$anchor_pending_out"
+assert_eq "verdict $TOP_A anchor-pending" "$(tail -1 "$GATE_LOG")"
+rm -f "$STATE_DIR/review-anchor-anchor-pending"
+
+# An anchor on the session's OWN repository changes nothing at all: the counter and the debt of
+# the one tree they are both about, byte-identical to the same live run with nothing anchoring it.
+write_anchor_run 20260727T220000Z-eeeeeee anchor-same "$REPO_A"
+anchor_same_out=$(anchor_render anchor-same "$REPO_A")
+rm -f "$PROGRESS_DIR"/anchor-*.json
+rm -rf "$ANCHOR_BENCHES/20260727T220000Z-eeeeeee"
+write_anchor_run 20260727T220000Z-fffffff anchor-same-loose "$REPO_A"
+rm -rf "$ANCHOR_BENCHES/20260727T220000Z-fffffff"
+anchor_same_loose_out=$(anchor_render anchor-same-loose "$REPO_A")
+assert_eq "$anchor_same_loose_out" "$anchor_same_out"
+assert grep -Fq " ${DIM}│${RESET} rev T2 1/2 ${DIM}│${RESET} 2" <<< "$anchor_same_out"
+assert test "${anchor_same_out#*rev 2}" = "$anchor_same_out"
+rm -f "$PROGRESS_DIR"/anchor-*.json
+write_anchor_run 20260727T220000Z-aaaaaaa anchor-live "$REVIEW_CLEAN"
 
 # Once the run ends and nothing is owed, the shell's folder is back and the gate is asked about it.
 : > "$GATE_LOG"
@@ -3333,4 +3412,4 @@ rm -f "$STATE_DIR/review-anchor-anchor-gone"
 GATE_ANSWER=off
 
 
-echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, a review slot that carries a run in flight — over this tree or over another one this chat launched — and nothing else once it ends, the gate's verdict vocabulary rendered verbatim, both debt sides in one two-toned segment and red kept for a word this build does not know, keyed on the commit journal and asked once per key with nothing else probed behind it, main-last and Gemini account predictions, and Codex/claudeb/Gemini worker tag propagation"
+echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, a review slot that carries a run in flight — over this tree or over another one this chat launched — and nothing else once it ends, a folder that follows a review into another repository under the \`rev\` marker while the session's own debt keeps its place beside it — one word carried once where the counter and the verdict are about one tree, the gate's verdict vocabulary rendered with only same-repository rev-label deduplication, both debt sides in one two-toned segment and red kept for a word this build does not know, keyed on the commit journal and asked once per key with nothing else probed behind it, main-last and Gemini account predictions, and Codex/claudeb/Gemini worker tag propagation"

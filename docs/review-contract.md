@@ -36,10 +36,9 @@ is visibility, not blocking.
    here depends on the chat reading a report: ownership taken off printed output
    belongs to whoever printed it. The gate reads the same records, so a run that
    finishes between the chat's last tool call and its commit is still priced as
-   that chat's work. Codex and Gemini
-   workers keep no per-file transcript, so their record carries an `UNKNOWN:`
-   line instead of paths and their files stay outside coverage — a named
-   limitation of those vendors, not an accident of the plumbing. The gate names
+   that chat's work. A run whose transcript cannot name every mutating target
+   carries an `UNKNOWN:` line instead of paths and its files stay outside
+   coverage. The gate names
    those runs once each in its commit notice — with the record's own reason, and
    alongside the runs that recorded editor calls only, the runs still going, and
    the runs whose supervisor is gone (abandoned, never "still running") — and the
@@ -73,11 +72,20 @@ content differs from what the newest artifact holding it recorded. Three artifac
 hold paths — a triaged run's `reviewed{path: blob-sha}` snapshot, a **waiver**, and
 the fix bytes a **closed round's own done receipt** covers.
 A path no artifact ever held is in debt
-whole while it exists — a run that never read it has no content to compare, so a
-repo-wide review cannot blanket files born after it. A held path gone from the
-working tree is in debt while HEAD still holds it, the removal of recorded content
-being a change somebody has to read; a deletion the run READ is settled by it (the
-snapshot records that path against the empty string).
+while it exists — a run that never read it has no content to compare, so a
+repo-wide review cannot blanket files born after it — and it is PRICED by where its
+unreviewed work stands: DIRTY in the working tree, against the content HEAD holds
+(whole where HEAD holds no such path, since the edit is what it owes and not the
+history under it); CLEAN, against the parent of the oldest commit reaching HEAD at or
+after the earliest epoch the journals stamped for the path, less the width of the
+post-commit hook that writes that stamp (`JOURNAL_STAMP_GRACE_S`), because with the
+tree clean HEAD IS the unreviewed work rather than the base for it; and with no epoch
+stamped or no commit under one, against HEAD, which owes no lines at all — nothing on
+record then says which commits went unreviewed, and the path count is what still names
+it. The same left side answers wherever a recorded blob is no longer readable. A held path
+gone from the working tree is in debt while HEAD still holds it, the removal of
+recorded content being a change somebody has to read; a deletion the run READ is
+settled by it (the snapshot records that path against the empty string).
 
 **The artifacts are the checkout FAMILY's.** Every artifact recorded against ANY
 checkout of the repository — the main one and every worktree of it, present or
@@ -164,12 +172,27 @@ which the gate appends to at the commit that lands it, in the same
 `session TAB epoch TAB path` NUL-separated records, pruning on every write the
 entries of paths no longer in debt.
 
+**Listed evidence outranks a listless claim.** A vendor worker that lists no files
+leaves its launcher holding a whole WORKDIR (`<run-dir>/heir`, invariant row ao), and
+the debt journal then names that launcher on every path a commit carried under it —
+indistinguishable there from an edit that chat made itself. Such a window claim yields
+to any record that NAMES the path: a journaled Claude session entry, or a run record
+whose own file listing holds it. The window keeps the paths nobody names, and an owner
+that both holds the window and names the path keeps it. Nothing here weakens the
+refusal itself — a path another chat's record names is still that chat's, and `waive`
+still refuses it by that chat's name.
+
 **Waivers.** `review-bench waive --repo <top> --reason "..." [--paths <p>...]`
 records that this work is going unreviewed and why, into this checkout's own file
 beside the receipts (`<state-dir>/waivers/`, read across the family like every
 other artifact): the debt paths, their current blob
 shas, the reason, the session, the epoch. A waiver covers exactly those shas —
-the next edit is debt again. An empty reason is refused.
+the next edit is debt again — and the objects behind them are WRITTEN into the
+repository as it is recorded, which a command may do and a render may not: a sha
+whose blob is in no store reads back as an absence, and the next edit is priced
+against the tree's own history instead of against the waiver — live, the whole file
+(16251 lines of one test file, 2026-08-24). A done receipt's
+coverage is recorded the same way. An empty reason is refused.
 
 **The review that scopes itself.** `review-bench review --debt --tier Tn` is the
 one review nobody hands a scope, and the one the commit gate prints. Its scope is
@@ -335,6 +358,36 @@ command under the same bounded `--mark` counter. The record reaches Egor as one
 line through the delivery channel — `review <run-id> · fork: <choice> — <why>`,
 ledger key `fork`, once — which is what replaced the prose demand that the
 model open its next message with a written analysis.
+
+### A spent round budget may not sleep on its own debt
+
+Where nothing owes a triage, `pending-report` answers the Stop gate one question more:
+a run of THIS chat whose round is done and owes no second one — its budget spent — with
+debt still standing on paths its own snapshot holds AND THIS CHAT MAY ANSWER FOR (its own
+or nobody's). Nothing in the flow will come back to them: no further round is offered, and
+no waiver or newer artifact answers for them. A residual that is entirely a co-tenant's is
+not asked at all, and the line count is over the same paths the waiver names — a demand
+naming a number no command it prints can settle is a blocked stop nothing can release.
+The answer is three lines the hook only words — `<run-id> <diff lines>`, the `waive`
+command over exactly those paths with the reason left to be written, and the `--debt`
+review — and it is bounded by a `--mark` counter of its own (`settle-nudged`), the same
+allowance as the triage ask, so a demand this chat cannot answer costs a fixed number of
+blocked stops and never waits for Egor. Settled either way, it is silent.
+
+It is silent, too, while the answer is already being given: a review THIS CHAT has in
+flight whose own `reviewed` snapshot holds every path the demand would name takes the ask
+away before it is asked, and the `settle-nudged` counter is not touched — the allowance is
+for a demand nobody is acting on, and three of its asks burned against a live panel over
+those very paths (2026-08-24). Live is the one signal the statusline's review anchor reads
+and no heuristic of its own — a progress document of this chat whose process is alive
+(`live_progress_run_ids`) — so a run of ANOTHER chat silences nothing, its scope being not
+this chat's to wait on, and a run that dies without recording leaves nothing alive, so the
+next Stop asks exactly as before. A WORKER RUN this chat launched that is still writing
+inside this repository's family silences it the same way and on the same terms
+(`live_worker_run`, liveness by the pid rule of shared-invariants row `ar`, no path
+matching): while the worker edits there is no settled content to price, and the ask went
+out over 18056 lines of half-written files (2026-08-24) — another chat's run, a run
+standing in another repository, and an abandoned supervisor silence nothing.
 
 ## Watchdog
 

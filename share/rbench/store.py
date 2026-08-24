@@ -817,6 +817,36 @@ def path_blob_sha(repo, path):
     return "" if data is None else content_blob_sha(repo, data)
 
 
+def stored_path_blob_shas(repo, paths):
+    """`path_blob_sha` per path, with each object WRITTEN into this repository, as `{path: sha}`.
+
+    Only a COMMAND may call this — a waiver, a done receipt — and never a render, which must leave
+    the repository it reads untouched (`content_blob_sha`). What an artifact records is read back
+    later as CONTENT: a sha whose object is in no store is a left side nothing can diff, and
+    `debt_line_counts` then prices the path against HEAD instead of against what was recorded.
+
+    Hashed from the bytes through stdin and never from the file's own name: `git hash-object`
+    applies this repository's clean filters to a named file, and the filtered sha would not be the
+    one `path_blob_sha` gives the same content. A path that is gone holds no object to write.
+    """
+    shas = {}
+    for path in paths:
+        data = path_content_bytes(repo, path)
+        if data is None:
+            shas[str(path)] = ""
+            continue
+        proc = subprocess.run(
+            ["git", "hash-object", "-w", "-t", "blob", "--stdin"], cwd=repo,
+            input=data, capture_output=True,
+        )
+        if proc.returncode != 0:
+            detail = proc.stderr.decode("utf-8", "replace").strip()
+            suffix = f": {detail}" if detail else ""
+            raise RuntimeError(f"could not store the blob for {path}{suffix}")
+        shas[str(path)] = content_blob_sha(repo, data)
+    return shas
+
+
 def git_dir_path(repo):
     """The per-worktree git directory, where both journals live. The absolute git dir and not the
     common one: linked worktrees share the common dir, and a sibling's journal would answer for
@@ -885,13 +915,25 @@ def journal_paths(repo):
     return {path for _, _, path in journal_rows(repo)}
 
 
+# Both shapes an id carries a launch instant in: a bench run stamps `YYYYMMDDTHHMMSSZ`, a
+# `worker-run` record the unix epoch behind the vendor name. One pattern for both, because a reader
+# that knew only the first placed every real run record at 0 — under every epoch floor there is.
+RUN_ID_EPOCH = re.compile(r"^(?:(\d{8}T\d{6}Z)|[A-Za-z][^-]*-(\d{9,}))(?:-|$)")
+
+
 def run_id_epoch(run_id):
+    match = RUN_ID_EPOCH.match(str(run_id))
+    if match is None:
+        return 0
+    stamp, epoch = match.groups()
+    if epoch:
+        return int(epoch)
     try:
         return int(
-            datetime.strptime(str(run_id)[:16], "%Y%m%dT%H%M%SZ")
+            datetime.strptime(stamp, "%Y%m%dT%H%M%SZ")
             .replace(tzinfo=timezone.utc).timestamp()
         )
-    except (ValueError, TypeError):
+    except ValueError:
         return 0
 
 
@@ -1075,6 +1117,67 @@ def session_run_paths(repo, session, claims=None):
     }
 
 
+def run_listed_paths(repo, directories=None, floors=None):
+    """Which chats' runs NAMED each path in a listing of their own, as `{path: {launcher}}`.
+
+    Read PAST the `journaled` marker, unlike `run_record_claims`: this is not a claim waiting to be
+    swept but evidence about what a record SAYS, and it outlives the journal entry the sweep left —
+    those are pruned the moment a path goes clean, while the listing stands as long as the record
+    does.
+    """
+    listed = {}
+    for directory in (worker_run_dirs() if directories is None else directories):
+        try:
+            launcher = (directory / "launcher").read_text().strip()
+        except OSError:
+            continue
+        if not launcher:
+            continue
+        epoch = run_id_epoch(directory.name)
+        for path in run_record_paths(repo, directory):
+            if epoch < (floors or {}).get(path, 0):
+                continue
+            listed.setdefault(path, set()).add(launcher)
+    return listed
+
+
+def heir_window_claims(repo, directories=None):
+    """The owners a retired listless run left holding a whole WORKDIR, as `[(owner, prefix)]`, the
+    prefix repository-relative and `""` for the repository itself.
+
+    `commit-journal.sh` retires a run that ended unable to name its own files by leaving
+    `<run-dir>/heir` — the launcher and the workdir — and `commit-report.sh` then records every path
+    a commit carried under that directory as the launcher's (row `ao`). Those journal records are
+    indistinguishable from the ones a chat's own edit leaves, so the heir record is the only thing
+    that can tell a claim made by NAMING a file from one made by standing over a directory. An empty
+    owner line claims nothing, the way it inherits nothing: a name no journal entry can carry may
+    not hold the debt either.
+    """
+    windows = []
+    for directory in (worker_run_dirs() if directories is None else directories):
+        try:
+            lines = (directory / "heir").read_text().splitlines()
+        except OSError:
+            continue
+        owner = lines[0].strip() if lines else ""
+        workdir = lines[1].strip() if len(lines) > 1 else ""
+        if not owner or not workdir:
+            continue
+        anchor = record_anchor(str(repo), workdir)
+        if anchor is None:
+            continue
+        relative = scope_path_relative(anchor, workdir)
+        if relative is None:
+            continue
+        windows.append((owner, "" if relative == os.curdir else relative))
+    return windows
+
+
+def path_under_window(prefix, path):
+    """Whether `path` falls in a heir record's workdir window. An empty prefix is the repository."""
+    return not prefix or path == prefix or str(path).startswith(prefix + os.sep)
+
+
 def session_dirt_paths(repo, session, records=None):
     """The paths this chat's OWN finished runs recorded as workdir dirt.
 
@@ -1183,5 +1286,3 @@ def median(values):
     if len(ordered) % 2:
         return ordered[middle]
     return round((ordered[middle - 1] + ordered[middle]) / 2)
-
-
