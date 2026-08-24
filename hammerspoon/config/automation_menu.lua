@@ -213,11 +213,21 @@ buildMenu = function()
         end
     end
     local llmLimitsItem = { title = "LLM Limits", menu = llmLimitsMenu }
+    local betterTerminalMenu = {
+        { title = "module not loaded", disabled = true },
+    }
+    if _G.bt and type(_G.bt.menuItems) == "function" then
+        local ok, items = pcall(_G.bt.menuItems)
+        if ok and type(items) == "table" then
+            betterTerminalMenu = items
+        end
+    end
 
     local menu = {
         destinationItem,
         { title = "-" },
         llmLimitsItem,
+        { title = "Better Terminal", menu = betterTerminalMenu },
         { title = "-" },
         {
             title = "iPad Connected",

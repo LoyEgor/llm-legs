@@ -819,6 +819,7 @@ local function setEnforce(value)
 end
 
 local function ipadConnected(baseline)
+    pcall(function() if _G.bt and _G.bt.setProfile then _G.bt.setProfile("ipad") end end)
     if not baseline then
         storeEnforce(true)
         refreshAutomationMenu()
@@ -848,6 +849,7 @@ local function ipadConnected(baseline)
 end
 
 local function ipadDisconnected(baseline)
+    pcall(function() if _G.bt and _G.bt.setProfile then _G.bt.setProfile("desktop") end end)
     if _G.DisplayMirror and _G.DisplayMirror.prepareDisconnect then
         -- BetterDisplay must finish unmirroring before the disconnect teardown can quit it.
         _G.DisplayMirror.prepareDisconnect(function()
@@ -1065,4 +1067,16 @@ end)
 if not compactResumeOk then
     print("ERROR: Claude compact resume failed to load:", compactResumeError)
     hs.alert.show("Claude compact resume error")
+end
+
+local betterTerminalOk, betterTerminalError = pcall(function()
+    package.path = package.path
+        .. ";/Volumes/Work/Projects/better-terminal/hammerspoon/?.lua"
+        .. ";/Volumes/Work/Projects/better-terminal/hammerspoon/?/init.lua"
+    require("bt")
+    _G.bt.setProfile(_G.IpadMode and _G.IpadMode.isOn and _G.IpadMode.isOn() and "ipad" or "desktop")
+end)
+
+if not betterTerminalOk then
+    print("ERROR: Better Terminal failed to load:", betterTerminalError)
 end
