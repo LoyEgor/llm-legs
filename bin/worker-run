@@ -33,6 +33,14 @@ umask 077
 command -v worker_pool_refuse_headless >/dev/null ||
   fail 'share/worker-pool.sh defines no worker_pool_refuse_headless: refusing to launch unchecked'
 
+# The main→base-HOME, named→<profiles-dir>/<name> mapping (shared-invariants row m) lives in one
+# place for every reader of an agy profile; respelled here, a worker's transcript would be looked
+# for under a directory geminib does not use.
+. "$SCRIPT_DIRECTORY/../share/gemini-accounts.sh" ||
+  fail 'share/gemini-accounts.sh is missing: worker-run cannot resolve an agy profile HOME'
+gemini_base_home=$HOME
+gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$HOME/.gemini-profiles}"
+
 # Wall-clock ceiling per vendor invocation (matches gemini's --print-timeout 170m).
 # Not a work cap — the longest observed real run is minutes — but a wedged CLI
 # (stalled stream, hung auth) must eventually write an exit_code or every wait
@@ -158,11 +166,14 @@ codex_unsupported_model() {
 }
 
 # Where the spawned instance keeps its own transcript: claudeb files it under the profile's projects
-# tree named by session id, codex under the profile's sessions tree with the id inside the filename.
-# agy is absent on purpose — its log carries no session jsonl to find.
+# tree named by session id, codex under the profile's sessions tree with the id inside the filename,
+# agy under the profile's brain tree named by conversation id — deterministic from the id the run's
+# own log already gave up, so nothing here searches for it.
 session_transcript() {
   local vendor="$1" account="$2" session="$3" transcript=''
   [ -n "$session" ] && [ "$session" != - ] || return 1
+  # A relative step in an id read out of a log would resolve the path somewhere else entirely.
+  case "$session" in .|..|*/*) return 1 ;; esac
   case "$vendor" in
     claudeb)
       for transcript in "${CLAUDEB_PROFILES_ROOT:-$HOME/.claude-profiles}/$account/projects/"*/"$session.jsonl"; do
@@ -171,6 +182,9 @@ session_transcript() {
       done
       ;;
     codex) transcript=$(find "$(codex_home "$account")/sessions" -type f -name "*$session*.jsonl" 2>/dev/null | head -n1) ;;
+    gemini)
+      transcript="$(gemini_account_home "$account")/.gemini/antigravity-cli/brain/$session/.system_generated/logs/transcript_full.jsonl"
+      ;;
   esac
   [ -n "$transcript" ] && [ -f "$transcript" ] || return 1
   printf '%s' "$transcript"
@@ -515,10 +529,36 @@ persist_run_files() {
   } >"$directory/files.tmp.$$" 2>/dev/null &&
     mv -f "$directory/files.tmp.$$" "$directory/files" 2>/dev/null ||
     rm -f "$directory/files.tmp.$$" 2>/dev/null
+  record_workdir_escape "$directory"
   # After the listing and never before it: what this reads out of the record is the record this
   # call just wrote, and the paths it must not claim are the ones standing in it.
   record_workdir_dirt "$directory" "$workdir"
   return 0
+}
+
+# A run that worked somewhere other than the workdir it was given, kept beside the run so the two
+# readers who care hear it: whoever prints a report, and whoever later wonders why the workdir is
+# clean. agy did this SILENTLY (live 2026-08-24) — handed a directory it does not trust it moved
+# into the first --add-dir and reported success — and a silent success over an untouched workdir is
+# the one failure a launcher cannot see. One line per escaped destination, unioned across attempts.
+record_workdir_escape() { # directory
+  local directory="$1"
+  [ -n "$RUN_FILES_ESCAPE" ] || return 0
+  grep -qxF -- "$RUN_FILES_ESCAPE" "$directory/workdir-escape" 2>/dev/null && return 0
+  printf '%s\n' "$RUN_FILES_ESCAPE" >>"$directory/workdir-escape" 2>/dev/null || :
+  return 0
+}
+
+# Off the live answer where one was just computed, off the record otherwise, so every report says it
+# — the one `wait` prints the moment the run ends included, which computes no file list of its own.
+workdir_escape_line() { # directory
+  local escaped
+  {
+    [ -z "${RUN_FILES_ESCAPE:-}" ] || printf '%s\n' "$RUN_FILES_ESCAPE"
+    [ ! -r "$1/workdir-escape" ] || sed '/^$/d' "$1/workdir-escape"
+  } | awk '!seen[$0]++ {
+    printf "WORKDIR-ESCAPE: the run named no path inside its own workdir; it worked in %s\n", $0
+  }'
 }
 
 # The uncommitted paths of the repository the workdir belongs to, one per line, spelled against
@@ -1021,6 +1061,257 @@ print_outcome() {
   fi
 }
 
+# Said once for every vendor: an editor list answers for editor calls, and a run that also worked
+# through the shell changed files no transcript records as a call, so its list is a floor. The gate
+# and the record readers match this text, so the vendors may not word it differently.
+SHELL_FLOOR_PARTIAL='the run also ran shell commands, whose edits no transcript records'
+
+# The shell command forms that write a file no transcript names. One list for every vendor, because
+# the question is the same one: a worker's editor calls name their targets and its shell does not,
+# so a run that wrote this way cannot answer for its own files however cleanly the rest of it read.
+# Redirects to a file descriptor or to /dev/null are struck out first — they write no file, and
+# counted as writes they made every `2>/dev/null` in a read-only run unanswerable. What is NOT here:
+# a program that writes files of its own accord (a build, a test run, a package install). Those the
+# workdir-dirt net answers for, and listed here they would make almost every real run UNKNOWN.
+WRITE_SHELL_PATTERN='(^|[^0-9<>&=])([0-9]+|&)?>>?([^=&]|$)|(^|[[:space:]])(sed|perl|ruby)[[:space:]]+[^|;&]*-i|(^|[[:space:]])(tee|mv|cp|rm|rmdir|touch|ln|truncate|dd|patch)([[:space:]]|$)|(^|[[:space:]])git[[:space:]]+(apply|checkout|restore|stash|clean|reset|mv|rm)([[:space:]]|$)'
+
+writes_through_shell() { # command-line
+  printf '%s' "$1" |
+    sed -E 's/2>&1|>&2/ /g; s/(([0-9]+|&)?>+)[[:space:]]*\/dev\/null([[:space:];|&]|$)/ \3/g' |
+    grep -Eq "$WRITE_SHELL_PATTERN"
+}
+
+# One verdict over the tagged rows a vendor's own extractor emits: `F` a mutating call's target,
+# `C` a shell command line, `D` the directory a shell command ran in, `X` a call whose file targets
+# the transcript does not name, `T` a mutating context with no usable timestamp. Fail-closed, and the
+# whole run at once: a write naming no target, a shell command that writes, or a call this reader does
+# not know leaves the run UNKNOWN — the answer it gave before any extractor existed, and the one the
+# dirt net is written against. A read-only shell command does not spoil the list; any shell at all
+# makes it a floor, as it does for claudeb.
+resolve_tool_path() { # path workdir
+  local value="$1" workdir="$2" part joined='' index
+  local -a parts resolved
+  if [[ "$value" != /* ]]; then
+    [ -n "$workdir" ] && [ "$workdir" != null ] || { printf '%s\n' "$value"; return 0; }
+    value="${workdir%/}/$value"
+  fi
+  IFS='/' read -ra parts <<<"${value#/}"
+  for part in "${parts[@]}"; do
+    case "$part" in
+      ''|.) ;;
+      ..)
+        if [ "${#resolved[@]}" -gt 0 ]; then
+          index=$((${#resolved[@]} - 1))
+          unset "resolved[$index]"
+        fi
+        ;;
+      *) resolved+=("$part") ;;
+    esac
+  done
+  for part in "${resolved[@]}"; do joined+="/$part"; done
+  printf '%s\n' "${joined:-/}"
+}
+
+classify_tool_rows() { # rows workdir
+  local rows="$1" workdir="$2" line tag value paths='' places='' shell=false inside=0 outside='' dir=''
+  [ -z "$workdir" ] || [ "$workdir" = null ] || dir="${workdir%/}/"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    tag=${line:0:1}
+    value=${line:2}
+    case "$tag" in
+      F)
+        if [ -z "$value" ]; then
+          [ -n "$RUN_FILES_REASON" ] ||
+            RUN_FILES_REASON='the transcript records a write whose target it does not name'
+          continue
+        fi
+        value=$(resolve_tool_path "$value" "$workdir")
+        paths+="$value"$'\n'
+        places+="$value"$'\n'
+        ;;
+      C)
+        shell=true
+        if writes_through_shell "$value"; then
+          [ -n "$RUN_FILES_REASON" ] ||
+            RUN_FILES_REASON='the run wrote through the shell, whose targets no transcript names'
+        fi
+        ;;
+      D)
+        [ -z "$value" ] || places+="$(resolve_tool_path "$value" "$workdir")"$'\n'
+        ;;
+      X)
+        [ -n "$RUN_FILES_REASON" ] ||
+          RUN_FILES_REASON="the transcript records a call whose file targets it does not name: $value"
+        ;;
+      T)
+        [ -n "$RUN_FILES_REASON" ] ||
+          RUN_FILES_REASON='the transcript records a mutating context with an unparseable timestamp'
+        ;;
+    esac
+  done <<<"$rows"
+  # Live-reproduced 2026-08-24: handed a workdir agy does not trust, agy worked in the first
+  # --add-dir instead and said nothing — every path it touched was somewhere else entirely. Not
+  # "a path outside the workdir", which is ordinary (a worker reads ~/.claude, writes /tmp): the
+  # signal is that NOTHING it named is inside, which no run doing its actual job ever looks like.
+  if [ -n "$dir" ] && [ -n "$places" ]; then
+    while IFS= read -r value; do
+      [ -n "$value" ] || continue
+      case "$value" in
+        "$dir"*|"${dir%/}") inside=$((inside + 1)) ;;
+        *) [ -n "$outside" ] || outside="$value" ;;
+      esac
+    done <<<"$places"
+    [ "$inside" -ne 0 ] || [ -z "$outside" ] || RUN_FILES_ESCAPE="$outside"
+  fi
+  [ -z "$RUN_FILES_REASON" ] || return 0
+  RUN_FILES_LIST=$(awk -v dir="$dir" \
+    '{ if (dir != "" && index($0, dir) == 1) $0 = substr($0, length(dir) + 1) } NF' \
+    <<<"$paths" | sort -u)
+  [ "$shell" = false ] || RUN_FILES_PARTIAL="$SHELL_FLOOR_PARTIAL"
+  return 0
+}
+
+# agy's own per-conversation log, the only place it names the files it wrote. `transcript.jsonl`
+# beside it carries the same rows with the tool_call ARGUMENTS stripped, so it can never answer
+# this question — read the `_full` one or nothing.
+gemini_tool_rows() { # transcript since
+  jq -rs --argjson since "$2" '
+    def epoch(value):
+      try ((value | tostring | sub("\\.[0-9]+(?=Z$)"; "")) | fromdateiso8601) catch null;
+    def write_tool: test("^(write_to_file|replace_file_content|multi_replace_file_content)$");
+    def read_tool: test("^(view_file|list_dir|find_by_name|grep_search|search_web|read_url_content|manage_task|schedule|send_message|ask_question|list_permissions)$");
+    def succeeded: tostring | ascii_upcase | test("^(DONE|SUCCESS|SUCCEEDED)$");
+    def failed: tostring | ascii_upcase | test("^(FAILED|FAILURE|ERROR|CANCELLED|CANCELED|REJECTED)$");
+    . as $rows
+    | to_entries[]
+    | .key as $index
+    | .value as $row
+    | ($rows[$index + 1] // {}) as $execution
+    | epoch($row.created_at? // "") as $t
+    | [$row.tool_calls[]?
+        | (.name? // "") as $name
+        | (.args? // {}) as $args
+        | if ($name | write_tool) then
+            if ($execution.type? == "CODE_ACTION" and ($execution.status? | succeeded)) then
+              "F\t" + (($args.TargetFile? // "") | tostring)
+            elif ($execution.type? == "CODE_ACTION" and ($execution.status? | failed)) then empty
+            else "X\t" + $name + " outcome" end
+          elif $name == "run_command" then
+            ("C\t" + (($args.CommandLine? // "") | tostring | gsub("[\n\r\t]"; " "))),
+            ("D\t" + (($args.Cwd? // "") | tostring))
+          elif ($name | read_tool) then empty
+          else "X\t" + $name
+          end
+      ] as $classified
+    | if $t == null then
+        if ($classified | length) > 0 then "T\tunparseable" else empty end
+      elif $t < $since then empty
+      else $classified[]
+      end' "$1" 2>/dev/null
+}
+
+# codex names its edits twice over and neither alone is complete: the `patch_apply_end` event holds
+# the changed paths of a patch that applied, and the call itself holds the patch TEXT, whose
+# `*** ... File:` headers name targets for the runs whose events are missing (both gaps live-measured
+# over the local rollout corpus). The union is what the run answers with. Its shell arrives as JSON
+# inside the harness call — one `"cmd"` field per command, whatever wrapper carries it — and the JS
+# `exec` tool is a dispatcher, so what it dispatched TO is the tool that must be classified.
+codex_tool_rows() { # rollout since
+  jq -rs --argjson since "$2" '
+    def epoch(value):
+      try ((value | tostring | sub("\\.[0-9]+(?=Z$)"; "")) | fromdateiso8601) catch null;
+    def targets(text):
+      ([text | scan("\\*\\*\\* (?:Update|Add|Delete) File: [^\"\\\\\r\n]+")
+             | sub("^\\*\\*\\* (?:Update|Add|Delete) File: "; "")]
+       + [text | scan("\\*\\*\\* Move to: [^\"\\\\\r\n]+")
+              | sub("^\\*\\*\\* Move to: "; "")])
+      | map(gsub("\\r$"; ""));
+    def js_mask:
+      gsub("\"(?:\\\\.|[^\"\\\\])*\"|\\x27(?:\\\\.|[^\\x27\\\\])*\\x27|`(?:\\\\.|[^`\\\\])*`|//[^\\r\\n]*|/\\*(?:[^*]|\\*+[^*/])*\\*+/"; " ");
+    def exec_tools(text):
+      [text | js_mask | scan("\\btools\\.[A-Za-z_][A-Za-z_0-9]*\\s*\\(")
+            | sub("^tools\\."; "") | sub("\\s*\\($"; "")];
+    def fields(text; key):
+      [text | scan("(?:\"" + key + "\"|\\b" + key + "\\b)\\s*:\\s*\"(?:\\\\.|[^\"\\\\])*\"")
+            | sub("^(?:\"" + key + "\"|" + key + ")\\s*:\\s*\""; "") | sub("\"$"; "")];
+    def result_for(rows; payload):
+      [rows[] | .payload? // {}
+       | select((.type? == "custom_tool_call_output" or .type? == "function_call_output")
+                and (.call_id? // "") != "" and .call_id? == (payload.call_id? // ""))] | last? // {};
+    def result_state(result):
+      (result.output? // result.result? // "" | tostring) as $output
+      | if result.success? == true then "success"
+        elif result.success? == false then "failed"
+        elif ($output | test("Script failed|apply_patch verification failed|\\\"exit_code\\\"\\s*:\\s*[1-9]"; "i")) then "failed"
+        elif ($output | test("Script completed|Success\\.|Done!|\\\"exit_code\\\"\\s*:\\s*0"; "i")) then "success"
+        else "unknown"
+        end;
+    def direct_args(blob): try (blob | fromjson | select(type == "object")) catch null;
+    . as $rows
+    | to_entries[]
+    | .key as $index
+    | .value as $row
+    | ($row.payload? // {}) as $payload
+    | ($rows[$index + 1].payload? // {}) as $next
+    | epoch($row.timestamp? // "") as $t
+    | [if ($payload.type? == "patch_apply_end") then
+         if ($payload.success? == true) then
+           (($payload.changes? // {}) | to_entries | .[]
+            | ("F\t" + .key), ("F\t" + (.value.move_path? | select(type == "string" and . != ""))))
+         else empty end
+       elif ($payload.type? == "custom_tool_call" or $payload.type? == "function_call") then
+         (($payload.input? // $payload.arguments? // "") | tostring) as $blob
+         | (if ($payload.name? == "exec") then
+              (exec_tools($blob) | if length == 0 then ["exec (naming no tool)"] else . end)
+            else [($payload.name? // "")] end)
+         | .[] as $name
+         | if $name == "apply_patch" then
+              (if ($next.type? == "patch_apply_end") then
+                (if $next.success? == true then "success" else "failed" end)
+              else result_state(result_for($rows; $payload)) end) as $state
+             | if $state == "success" then (targets($blob) | .[] | "F\t" + .)
+               elif $state == "failed" then empty
+               else "X\tapply_patch outcome" end
+           elif ($name | test("^(exec_command|run|shell)$")) then
+             if $payload.name? == "exec" then
+               (fields($blob; "cmd")) as $commands
+               | (fields($blob; "workdir")) as $directories
+               | (exec_tools($blob) | map(select(test("^(exec_command|run|shell)$"))) | length) as $calls
+               | if ($commands | length) != $calls or ($directories | length) > $calls then
+                   "X\t" + $name + " arguments"
+                 else ($commands[] | "C\t" + gsub("[\n\r\t]"; " ")),
+                      ($directories[] | "D\t" + .)
+                 end
+             else (direct_args($blob)) as $args
+               | if $args == null or ($args.cmd? | type) != "string" then "X\t" + $name + " arguments"
+                 else ("C\t" + ($args.cmd | gsub("[\n\r\t]"; " "))),
+                      (if ($args.workdir? | type) == "string" then "D\t" + $args.workdir else empty end)
+                 end
+             end
+           elif $name == "write_stdin" then
+             if $payload.name? == "exec" then
+               (fields($blob; "chars")) as $commands
+               | (exec_tools($blob) | map(select(. == "write_stdin")) | length) as $calls
+               | if ($commands | length) != $calls then "X\twrite_stdin arguments"
+                 else ($commands[] | "C\t" + gsub("[\n\r\t]"; " ")) end
+             else (direct_args($blob)) as $args
+               | if $args == null or ($args.chars? | type) != "string" then "X\twrite_stdin arguments"
+                 else "C\t" + ($args.chars | gsub("[\n\r\t]"; " ")) end
+             end
+           elif ($name | test("^(view_image|update_plan|wait|web_search|web__run|tool_search|get_goal|update_goal|create_goal|get_app_state|list_apps|getTabContext|request_user_input)$")) then
+             empty
+           else "X\t" + $name end
+       elif ($payload.type? == "mcp_tool_call_end") then
+         "X\t" + (($payload.invocation?.tool? // "mcp tool") | tostring)
+       else empty end] as $classified
+    | if $t == null then
+        if ($classified | length) > 0 then "T\tunparseable" else empty end
+      elif $t < $since then empty
+      else $classified[]
+      end' "$1" 2>/dev/null
+}
+
 transcript_files() {
   # Only the file-writing tool calls, read by recursive descent so a wrapper key around the message
   # (assistant turn, sidechain entry) does not hide the call. NotebookEdit names its target
@@ -1062,35 +1353,53 @@ compute_run_files() {
   # cannot establish sets a REASON rather than falling back to the workdir or to silence: an empty
   # list and an unanswerable one are different claims, and both the printed report and the record on
   # disk are rendered from this one answer so they can never disagree.
-  local directory="$1" vendor account workdir session transcript started
+  local directory="$1" vendor account workdir session transcript started rows
   RUN_FILES_LIST=''
   RUN_FILES_REASON=''
   RUN_FILES_PARTIAL=''
+  RUN_FILES_ESCAPE=''
   vendor=$(jq -r '.vendor' "$directory/meta.json" 2>/dev/null)
   account=$(jq -r '.account' "$directory/meta.json" 2>/dev/null)
   workdir=$(jq -r '.workdir' "$directory/meta.json" 2>/dev/null)
   started=$(jq -r '.started_at // 0' "$directory/meta.json" 2>/dev/null)
   session=$(session_id "$directory")
-  if [ "$vendor" != claudeb ]; then
-    RUN_FILES_REASON="$vendor records no per-file tool calls in a transcript"
-    return 0
-  fi
   if ! transcript=$(session_transcript "$vendor" "$account" "$session"); then
     RUN_FILES_REASON="no session transcript for $session"
     return 0
   fi
-  if ! RUN_FILES_LIST=$(transcript_files "$transcript" "$workdir" "$started"); then
-    RUN_FILES_LIST=''
-    RUN_FILES_REASON='transcript unreadable'
-    return 0
-  fi
-  # A list of editor calls answers for editor calls: a run that also worked through the shell —
-  # `sed -i`, a redirect, `mv` — changed files no transcript records as a tool call, and the list is
-  # a floor rather than the whole of it. Said per run, because a run that ran no shell command has a
-  # complete list and must not be doubted.
-  if transcript_ran_shell "$transcript" "$started"; then
-    RUN_FILES_PARTIAL='the run also ran shell commands, whose edits no transcript records'
-  fi
+  case "$vendor" in
+    claudeb)
+      if ! RUN_FILES_LIST=$(transcript_files "$transcript" "$workdir" "$started"); then
+        RUN_FILES_LIST=''
+        RUN_FILES_REASON='transcript unreadable'
+        return 0
+      fi
+      # A list of editor calls answers for editor calls: a run that also worked through the shell —
+      # `sed -i`, a redirect, `mv` — changed files no transcript records as a tool call, and the list
+      # is a floor rather than the whole of it. Said per run, because a run that ran no shell command
+      # has a complete list and must not be doubted.
+      if transcript_ran_shell "$transcript" "$started"; then
+        RUN_FILES_PARTIAL="$SHELL_FLOOR_PARTIAL"
+      fi
+      ;;
+    gemini)
+      rows=$(gemini_tool_rows "$transcript" "$started") || {
+        RUN_FILES_REASON='transcript unreadable'
+        return 0
+      }
+      classify_tool_rows "$rows" "$workdir"
+      ;;
+    codex)
+      rows=$(codex_tool_rows "$transcript" "$started") || {
+        RUN_FILES_REASON='transcript unreadable'
+        return 0
+      }
+      classify_tool_rows "$rows" "$workdir"
+      ;;
+    # Fail-closed for a vendor added without an extractor: an empty list is a claim about the run,
+    # and it is the one claim certainly wrong about a run nobody can read.
+    *) RUN_FILES_REASON="no per-file extractor for $vendor" ;;
+  esac
   return 0
 }
 
@@ -1110,6 +1419,7 @@ run_files() {
   local directory="$1" workdir count value
   workdir=$(jq -r '.workdir' "$directory/meta.json" 2>/dev/null)
   compute_run_files "$directory"
+  workdir_escape_line "$directory"
   if [ -n "$RUN_FILES_REASON" ]; then
     printf 'RUN-FILES: unknown (%s)\n' "$RUN_FILES_REASON"
     return 0
@@ -1151,6 +1461,7 @@ terminal_report() {
   if [ "$code" = 0 ]; then status=done; else status=failed; fi
   printf 'STATUS: %s\nEXIT: %s\nSESSION: %s\n' "$status" "$code" "$(session_id "$directory")"
   reroute_lines "$directory"
+  workdir_escape_line "$directory"
   print_outcome "$directory" "$vendor" "$code"
   result_tail "$directory" "$vendor" 40
   if [ "$code" != 0 ]; then

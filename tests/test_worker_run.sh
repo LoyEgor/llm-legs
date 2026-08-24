@@ -28,6 +28,7 @@ export WORKER_RUN_CODEX="$WORK/bin/codex"
 export WORKER_RUN_GEMINIB="$WORK/bin/geminib"
 export CLAUDEB_PROFILES_ROOT="$HOME/.claude-profiles"
 export CODEX_PROFILES_DIR="$HOME/.codex-profiles"
+export GEMINIB_PROFILES_DIR="$HOME/.gemini-profiles"
 export STUB_DIR="$WORK/stub-state"
 export CALL_LOG="$WORK/calls"
 export PICK_LOG="$WORK/picks"
@@ -769,10 +770,11 @@ set_config 'codex_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=selfedit
 SELF_RUNNER="$WORK/bin/worker-run-selfedit"
 cp "$RUNNER" "$SELF_RUNNER"
-# worker-run sources share/worker-pool.sh relative to its own resolved root, so a copy needs the
-# share tree beside it — the pool wall must never be a file the runner can quietly do without.
+# worker-run sources its share files relative to its own resolved root, so a copy needs the share
+# tree beside it — the pool wall must never be a file the runner can quietly do without, and the
+# agy HOME mapping is not a formula worker-run may fall back to spelling itself.
 mkdir -p "$WORK/share"
-cp "$ROOT/share/worker-pool.sh" "$WORK/share/"
+cp "$ROOT/share/worker-pool.sh" "$ROOT/share/gemini-accounts.sh" "$WORK/share/"
 printf '%s\n' "$SELF_RUNNER" >"$STUB_DIR/codex_append_target"
 "$SELF_RUNNER" start codex --brief "$WORK/brief" --workdir "$WORK/workdir" >"$WORK/start.out" 2>"$WORK/start.err" || fail "self-edit start failed: $(<"$WORK/start.err")"
 RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/start.out")
@@ -933,14 +935,15 @@ assert test "$(grep -c '^WORKDIR: ' <<<"$("$RUNNER" report "$RUN_ID")")" -eq 0
 printf 'not json {\n' >"$TRANSCRIPT"
 assert grep -qx 'RUN-FILES: unknown (transcript unreadable)' <<<"$("$RUNNER" report "$RUN_ID")"
 
-# A vendor whose transcript records no per-file tool calls says so; a silent 0 would read as a run
-# that changed nothing.
+# A run whose transcript cannot be found says so; a silent 0 would read as a run that changed
+# nothing. Every vendor answers here now, so the reason names the missing rollout and no longer
+# claims the vendor keeps no record at all.
 clear_stub
 set_config 'codex_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=filesacct
 start_ok codex
 assert await_done
-assert grep -qx 'RUN-FILES: unknown (codex records no per-file tool calls in a transcript)' \
+assert grep -qx 'RUN-FILES: unknown (no session transcript for codex-session)' \
   <<<"$("$RUNNER" report "$RUN_ID")"
 
 # --- The run record ------------------------------------------------------------------------------
@@ -949,7 +952,7 @@ assert grep -qx 'RUN-FILES: unknown (codex records no per-file tool calls in a t
 # the wrong chat. The record is written whether or not anyone ever looks, and a vendor that cannot
 # name files says so here too — a reader must not take the silence for an empty list.
 assert test "$(head -n1 "$RUN_DIR/files")" = "WORKDIR: $(jq -r '.workdir' "$RUN_DIR/meta.json")"
-assert grep -qx 'UNKNOWN: codex records no per-file tool calls in a transcript' "$RUN_DIR/files"
+assert grep -qx 'UNKNOWN: no session transcript for codex-session' "$RUN_DIR/files"
 # And no worker session is recorded for a vendor whose sessions run none of this machine's journal
 # hooks: an id folded in from one of those could only match a journal entry by accident.
 assert test ! -e "$RUN_DIR/worker-session"
@@ -1147,6 +1150,481 @@ assert grep -q '^PARTIAL: ' "$RUN_DIR/files"
 assert test ! -e "$RUN_DIR/dirty"
 assert test ! -e "$RUN_DIR/dirty-before"
 unset CLAUDE_CODE_SESSION_ID
+
+# --- Per-file lists from the gemini and codex transcripts ----------------------------------------
+# Those vendors DO name the files they write, each in its own log, and a listless run claimed the
+# whole workdir dirt of its time window — every path a co-tenant chat had edited in the same
+# minutes read as this run's (shared-invariants row am bounds the claim, and only a real list can
+# narrow it). The rule is fail-closed and whole-run: the list is exact only where every mutating
+# action named its target.
+clear_stub
+unset CLAUDE_CODE_SESSION_ID
+set_config 'gemini_model=pro' 'gemini_effort=high'
+printf 'gemfiles\n' >"$STUB_DIR/gemini_profiles"
+agy_iso() { date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ; }
+agy_row_status() { # created_at status name args-json
+  jq -cn --arg ts "$1" --arg status "$2" --arg name "$3" --argjson args "$4" \
+    '{step_index: 0, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE",
+      created_at: $ts, tool_calls: [{name: $name, args: $args}]}'
+  case "$3" in
+    write_to_file|replace_file_content|multi_replace_file_content)
+      jq -cn --arg ts "$1" --arg status "$2" \
+        '{step_index: 1, source: "TOOL", type: "CODE_ACTION", created_at: $ts, status: $status}'
+      ;;
+  esac
+}
+agy_row() { agy_row_status "$1" DONE "$2" "$3"; }
+agy_write() { agy_row "$AGY_TS" "$1" "$(jq -cn --arg p "$2" '{TargetFile: $p}')"; }
+agy_read() { agy_row "$AGY_TS" view_file "$(jq -cn --arg p "$1" '{AbsolutePath: $p}')"; }
+agy_shell() { agy_row "$AGY_TS" run_command "$(jq -cn --arg c "$1" --arg d "$2" '{CommandLine: $c, Cwd: $d}')"; }
+AGY_TRANSCRIPT="$GEMINIB_PROFILES_DIR/gemfiles/.gemini/antigravity-cli/brain/gemini-conversation/.system_generated/logs/transcript_full.jsonl"
+mkdir -p "$(dirname "$AGY_TRANSCRIPT")"
+# The workdir as the shell resolves it: a fixture spelled through the symlink a temporary directory
+# reaches strips against nothing, and every path then reads as one the run worked outside its own
+# directory.
+agy_workdir=$(cd "$WORK/workdir" && pwd -P)
+export PICK_RC=0 PICK_ACCOUNT=gemfiles
+AGY_TS=$(agy_iso $(($(date +%s) + 60)))
+{
+  agy_write write_to_file "$agy_workdir/bin/agy-written"
+  agy_write replace_file_content "$agy_workdir/bin/agy-written"
+  agy_write multi_replace_file_content "$WORK/outside/agy-absolute"
+  agy_read "$agy_workdir/bin/agy-only-read"
+  agy_shell 'git status --short 2>/dev/null' "$agy_workdir"
+} >"$AGY_TRANSCRIPT"
+start_ok gemini
+assert await_done
+report=$("$RUNNER" report "$RUN_ID")
+assert grep -qx 'RUN-FILES: 2' <<<"$report"
+assert grep -qx 'RUN-FILE: bin/agy-written' <<<"$report"
+assert grep -qxF "RUN-FILE: $WORK/outside/agy-absolute" <<<"$report"
+# A file the run only READ is not a file it changed, and every listed path is one somebody will be
+# asked to review.
+assert test "$(grep -c 'agy-only-read' <<<"$report")" -eq 0
+# A read-only shell command does not spoil the list, but any shell at all makes the list a floor —
+# the same sentence claudeb's own runs carry, since it is the same fact about a transcript.
+assert grep -q '^RUN-FILES-PARTIAL: the run also ran shell commands' <<<"$report"
+assert grep -qx 'bin/agy-written' "$RUN_DIR/files"
+assert test "$(grep -c '^UNKNOWN: ' "$RUN_DIR/files")" -eq 0
+assert test ! -e "$RUN_DIR/workdir-escape"
+
+# Relative tool targets are anchored to the run workdir before both rendering and escape detection.
+clear_stub
+AGY_TS=$(agy_iso $(($(date +%s) + 60)))
+agy_write write_to_file 'bin/agy-relative' >"$AGY_TRANSCRIPT"
+start_ok gemini
+assert await_done
+report=$("$RUNNER" report "$RUN_ID")
+assert grep -qx 'RUN-FILES: 1' <<<"$report"
+assert grep -qx 'RUN-FILE: bin/agy-relative' <<<"$report"
+assert test ! -e "$RUN_DIR/workdir-escape"
+
+# A rejected write changed nothing and cannot make the successful call beside it review debt.
+clear_stub
+AGY_TS=$(agy_iso $(($(date +%s) + 60)))
+{
+  agy_write write_to_file "$agy_workdir/bin/agy-write-succeeded"
+  agy_row_status "$AGY_TS" FAILED write_to_file \
+    "$(jq -cn --arg p "$agy_workdir/bin/agy-write-failed" '{TargetFile: $p}')"
+} >"$AGY_TRANSCRIPT"
+start_ok gemini
+assert await_done
+report=$("$RUNNER" report "$RUN_ID")
+assert test "$(grep -c '^RUN-FILE: ' <<<"$report")" -eq 1
+assert grep -qx 'RUN-FILE: bin/agy-write-succeeded' <<<"$report"
+assert test "$(grep -c 'agy-write-failed' <<<"$report")" -eq 0
+
+# `transcript.jsonl` sits beside the one that was read and carries the same rows with the tool_call
+# ARGUMENTS stripped: read instead of `transcript_full.jsonl` it can name no file ever again.
+assert grep -q 'transcript_full.jsonl' "$ROOT/bin/worker-run"
+
+# A shell command that WRITES leaves the run exactly as unanswerable as it was before any extractor
+# existed: the transcript names the editor calls and nothing names the redirect beside them.
+clear_stub
+AGY_TS=$(agy_iso $(($(date +%s) + 60)))
+{
+  agy_write write_to_file "$agy_workdir/bin/agy-written"
+  agy_shell "printf hello > $agy_workdir/bin/agy-through-a-redirect" "$agy_workdir"
+} >"$AGY_TRANSCRIPT"
+start_ok gemini
+assert await_done
+assert grep -qx 'RUN-FILES: unknown (the run wrote through the shell, whose targets no transcript names)' \
+  <<<"$("$RUNNER" report "$RUN_ID")"
+assert grep -qx 'UNKNOWN: the run wrote through the shell, whose targets no transcript names' \
+  "$RUN_DIR/files"
+# And no path stands beside the UNKNOWN: half a list read as the whole of one is the claim the
+# fail-closed rule exists to refuse.
+assert test "$(grep -c 'agy-written' "$RUN_DIR/files")" -eq 0
+
+# Numbered and ampersand redirects open files too, so every supported fd spelling spoils the list.
+clear_stub
+AGY_TS=$(agy_iso $(($(date +%s) + 60)))
+{
+  agy_write write_to_file "$agy_workdir/bin/agy-written"
+  agy_shell 'printf one 1>one; printf two 2>two; printf three 3>three; printf all &>all' "$agy_workdir"
+} >"$AGY_TRANSCRIPT"
+start_ok gemini
+assert await_done
+assert grep -qx 'RUN-FILES: unknown (the run wrote through the shell, whose targets no transcript names)' \
+  <<<"$("$RUNNER" report "$RUN_ID")"
+
+# A redirect to a file descriptor or to /dev/null writes no file. Counted as a write it made every
+# `2>/dev/null` in a read-only review run unanswerable, which is most of them.
+clear_stub
+AGY_TS=$(agy_iso $(($(date +%s) + 60)))
+{
+  agy_write write_to_file "$agy_workdir/bin/agy-written"
+  agy_shell 'pnpm install >/dev/null 2>&1; git diff 2>&1 | head -20; rg -n pattern . 2>/dev/null' "$agy_workdir"
+} >"$AGY_TRANSCRIPT"
+start_ok gemini
+assert await_done
+assert grep -qx 'RUN-FILES: 1' <<<"$("$RUNNER" report "$RUN_ID")"
+
+# The /dev/null exception ends at the device name; a similarly prefixed file is still a write.
+clear_stub
+AGY_TS=$(agy_iso $(($(date +%s) + 60)))
+{
+  agy_write write_to_file "$agy_workdir/bin/agy-written"
+  agy_shell 'printf hidden >/dev/null.log' "$agy_workdir"
+} >"$AGY_TRANSCRIPT"
+start_ok gemini
+assert await_done
+assert grep -qx 'RUN-FILES: unknown (the run wrote through the shell, whose targets no transcript names)' \
+  <<<"$("$RUNNER" report "$RUN_ID")"
+
+# Comparison and arrow operators are not redirects; the shell still makes this exact editor list a floor.
+clear_stub
+AGY_TS=$(agy_iso $(($(date +%s) + 60)))
+{
+  agy_write write_to_file "$agy_workdir/bin/agy-written"
+  agy_shell "awk '\$2 >= 5' data; node -e 'items.filter(x => x)'" "$agy_workdir"
+} >"$AGY_TRANSCRIPT"
+start_ok gemini
+assert await_done
+report=$("$RUNNER" report "$RUN_ID")
+assert grep -qx 'RUN-FILES: 1' <<<"$report"
+assert grep -q '^RUN-FILES-PARTIAL: the run also ran shell commands' <<<"$report"
+
+# A tool this reader does not know is a tool whose targets it cannot name: agy's own image
+# generation names only the image's LABEL, and a subagent it invokes edits under a transcript of
+# its own. Neither may pass as a complete list, and the reason names the call so the next reader
+# knows what to teach it.
+clear_stub
+AGY_TS=$(agy_iso $(($(date +%s) + 60)))
+{
+  agy_write write_to_file "$agy_workdir/bin/agy-written"
+  agy_row "$AGY_TS" generate_image '{"ImageName": "asset", "AspectRatio": "1:1"}'
+} >"$AGY_TRANSCRIPT"
+start_ok gemini
+assert await_done
+assert grep -qx 'RUN-FILES: unknown (the transcript records a call whose file targets it does not name: generate_image)' \
+  <<<"$("$RUNNER" report "$RUN_ID")"
+
+# A write whose target the transcript leaves empty is the same refusal.
+clear_stub
+AGY_TS=$(agy_iso $(($(date +%s) + 60)))
+agy_row "$AGY_TS" write_to_file '{"CodeContent": "x"}' >"$AGY_TRANSCRIPT"
+start_ok gemini
+assert await_done
+assert grep -qx 'RUN-FILES: unknown (the transcript records a write whose target it does not name)' \
+  <<<"$("$RUNNER" report "$RUN_ID")"
+
+# A resumed conversation APPENDS to the same transcript, so the file holds the calls of the runs
+# before it — reported unfiltered this run claims a file an earlier one edited. The run's own start
+# is the cut, and a call stamped in that very second is this run's.
+clear_stub
+export STUB_SLEEP=0.3
+start_ok gemini
+run_started=$(jq -r '.started_at' "$RUN_DIR/meta.json")
+AGY_TS=$(agy_iso $((run_started - 7200)))
+agy_write write_to_file "$agy_workdir/bin/agy-before-the-resume" >"$AGY_TRANSCRIPT"
+AGY_TS=$(agy_iso "$run_started")
+AGY_TS="${AGY_TS%Z}.123Z"
+agy_write write_to_file "$agy_workdir/bin/agy-at-the-start" >>"$AGY_TRANSCRIPT"
+assert await_done
+report=$("$RUNNER" report "$RUN_ID")
+assert grep -qx 'RUN-FILES: 1' <<<"$report"
+assert grep -qx 'RUN-FILE: bin/agy-at-the-start' <<<"$report"
+unset STUB_SLEEP
+
+# A syntactically valid mutating row with no usable time cannot be silently excluded from the run.
+clear_stub
+AGY_TS=not-a-timestamp
+agy_write write_to_file "$agy_workdir/bin/agy-unparseable-time" >"$AGY_TRANSCRIPT"
+start_ok gemini
+assert await_done
+assert grep -qx 'RUN-FILES: unknown (the transcript records a mutating context with an unparseable timestamp)' \
+  <<<"$("$RUNNER" report "$RUN_ID")"
+
+# A transcript jq cannot parse is unknown, never 0.
+clear_stub
+printf 'not json {\n' >"$AGY_TRANSCRIPT"
+start_ok gemini
+assert await_done
+assert grep -qx 'RUN-FILES: unknown (transcript unreadable)' <<<"$("$RUNNER" report "$RUN_ID")"
+
+# No transcript at all — an agy too old to keep one, a conversation id the log never printed, a
+# profile that is not where it was looked for — is unknown too, and never the workdir.
+clear_stub
+mv "$AGY_TRANSCRIPT" "$AGY_TRANSCRIPT.moved"
+start_ok gemini
+assert await_done
+assert grep -qx 'RUN-FILES: unknown (no session transcript for gemini-conversation)' \
+  <<<"$("$RUNNER" report "$RUN_ID")"
+rm -f "$AGY_TRANSCRIPT.moved"
+
+# Live-reproduced 2026-08-24: handed a workdir it does not trust, agy moved into the first
+# --add-dir, worked THERE, and reported success — a green run over an untouched workdir, which is
+# the one failure a launcher cannot see. Not "a path outside the workdir", which is ordinary: the
+# signal is that NOTHING the run named is inside it. Said in the report and marked beside the run,
+# and said even where the list itself is unanswerable — the escape is the louder of the two facts.
+clear_stub
+AGY_TS=$(agy_iso $(($(date +%s) + 60)))
+{
+  agy_write write_to_file "$WORK/extra/agy-went-elsewhere"
+  agy_shell "printf x > $WORK/extra/and-wrote-here" "$WORK/extra"
+} >"$AGY_TRANSCRIPT"
+start_ok gemini
+assert await_done
+report=$("$RUNNER" report "$RUN_ID")
+assert grep -qxF "WORKDIR-ESCAPE: the run named no path inside its own workdir; it worked in $WORK/extra/agy-went-elsewhere" \
+  <<<"$report"
+assert grep -q '^RUN-FILES: unknown' <<<"$report"
+assert grep -qxF "$WORK/extra/agy-went-elsewhere" "$RUN_DIR/workdir-escape"
+# The same sentence in the report `wait` prints the moment the run ends, which computes no list of
+# its own: read only where a report was asked for, the loudest fact about the run reaches nobody.
+assert grep -q '^WORKDIR-ESCAPE: ' "$WORK/wait.out"
+"$RUNNER" _supervise "$RUN_DIR" >/dev/null 2>&1
+assert test "$(grep -c . "$RUN_DIR/workdir-escape")" -eq 1
+# Every escaped destination accumulated across attempts reaches the report once.
+printf '%s\n' "$WORK/outside/agy-second-escape" >>"$RUN_DIR/workdir-escape"
+report=$("$RUNNER" report "$RUN_ID")
+assert test "$(grep -c '^WORKDIR-ESCAPE: ' <<<"$report")" -eq 2
+# A run that touched its own workdir AND wrote outside it is doing its job: a worker reads
+# ~/.claude and writes /tmp, and screamed about every time this line would say nothing at all.
+clear_stub
+AGY_TS=$(agy_iso $(($(date +%s) + 60)))
+{
+  agy_write write_to_file "$agy_workdir/bin/agy-written"
+  agy_write write_to_file "$WORK/extra/agy-also-here"
+} >"$AGY_TRANSCRIPT"
+start_ok gemini
+assert await_done
+assert test ! -e "$RUN_DIR/workdir-escape"
+assert test "$(grep -c '^WORKDIR-ESCAPE: ' <<<"$("$RUNNER" report "$RUN_ID")")" -eq 0
+
+# codex names its edits twice over and neither alone is complete: the patch event holds the paths of
+# a patch that applied, the call itself holds the patch TEXT (both gaps live-measured over the local
+# rollout corpus), so the run answers with the union.
+clear_stub
+set_config 'codex_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=codexfiles
+CX_ROLLOUT="$CODEX_PROFILES_DIR/codexfiles/sessions/fixture/rollout-codex-session.jsonl"
+mkdir -p "$(dirname "$CX_ROLLOUT")"
+cx_row() { jq -cn --arg ts "$CX_TS" --argjson p "$1" '{timestamp: $ts, type: "response_item", payload: $p}'; }
+cx_patch_event() { # target move-or-empty success
+  cx_row "$(jq -cn --arg t "$1" --arg m "$2" --argjson ok "$3" \
+    '{type: "patch_apply_end", success: $ok,
+      changes: {($t): {type: "update", move_path: (if $m == "" then null else $m end)}}}')"
+}
+cx_exec() { cx_row "$(jq -cn --arg s "$1" '{type: "custom_tool_call", name: "exec", input: $s}')"; }
+cx_exec_id() { cx_row "$(jq -cn --arg id "$1" --arg s "$2" '{type: "custom_tool_call", name: "exec", call_id: $id, input: $s}')"; }
+cx_call() { cx_row "$(jq -cn --arg n "$1" --arg a "$2" '{type: "function_call", name: $n, arguments: $a}')"; }
+cx_call_id() { cx_row "$(jq -cn --arg id "$1" --arg n "$2" --arg a "$3" '{type: "function_call", name: $n, call_id: $id, arguments: $a}')"; }
+cx_output() { cx_row "$(jq -cn --arg id "$1" --arg out "$2" '{type: "custom_tool_call_output", call_id: $id, output: $out}')"; }
+cx_workdir=$(cd "$WORK/workdir" && pwd -P)
+CX_TS=$(iso $(($(date +%s) + 60)))
+{
+  cx_patch_event "$cx_workdir/bin/cx-patched" '' true
+  cx_patch_event "$cx_workdir/bin/cx-moved-from" "$cx_workdir/bin/cx-moved-to" true
+  # A failed event cannot contribute either its changes map or the patch text in the call before it.
+  cx_exec "const patch = \"*** Begin Patch\\n*** Update File: $cx_workdir/bin/cx-patch-text-failed\\n*** End Patch\"; await tools.apply_patch({\"input\": patch});"
+  cx_patch_event "$cx_workdir/bin/cx-patch-text-failed" '' false
+  cx_patch_event "$cx_workdir/bin/cx-patch-failed" '' false
+  # A failed apply_patch has no patch_apply_end in current rollouts; its call result is the join.
+  cx_exec_id cx-no-event-failed "const patch = \"*** Begin Patch\\n*** Update File: $cx_workdir/bin/cx-no-event-failed\\n*** End Patch\"; await tools.apply_patch({\"input\": patch});"
+  cx_output cx-no-event-failed 'Script failed: apply_patch verification failed'
+  # The patch text alone, for the runs whose event never arrived.
+  cx_exec_id cx-no-event-success "const patch = \"*** Begin Patch\\n*** Update File: $cx_workdir/bin/cx-from-the-patch-text\\n*** End Patch\"; await tools.apply_patch({\"input\": patch});"
+  cx_output cx-no-event-success 'Script completed'
+  cx_call exec_command "{\"cmd\":\"git status --short\",\"workdir\":\"$cx_workdir\"}"
+  # An empty stdin write is codex polling a long command for more output: it writes nothing, and
+  # spoiled wholesale this one call left almost every real codex run unanswerable.
+  cx_call write_stdin '{"session_id":1,"chars":"","yield_time_ms":1000}'
+} >"$CX_ROLLOUT"
+start_ok codex
+assert await_done
+report=$("$RUNNER" report "$RUN_ID")
+assert grep -qx 'RUN-FILES: 4' <<<"$report"
+assert grep -qx 'RUN-FILE: bin/cx-patched' <<<"$report"
+assert grep -qx 'RUN-FILE: bin/cx-moved-from' <<<"$report"
+assert grep -qx 'RUN-FILE: bin/cx-moved-to' <<<"$report"
+assert grep -qx 'RUN-FILE: bin/cx-from-the-patch-text' <<<"$report"
+assert test "$(grep -c 'cx-patch-failed' <<<"$report")" -eq 0
+assert test "$(grep -c 'cx-patch-text-failed' <<<"$report")" -eq 0
+assert test "$(grep -c 'cx-no-event-failed' <<<"$report")" -eq 0
+assert grep -q '^RUN-FILES-PARTIAL: the run also ran shell commands' <<<"$report"
+assert grep -qx 'bin/cx-patched' "$RUN_DIR/files"
+
+# Patch headers printed by a shell command are text, not editor targets.
+clear_stub
+CX_TS=$(iso $(($(date +%s) + 60)))
+{
+  cx_patch_event "$cx_workdir/bin/cx-patched" '' true
+  cx_call exec_command "$(jq -cn --arg d "$cx_workdir" '{cmd:"printf %s *** Update File: bin/cx-mentioned-only",workdir:$d}')"
+} >"$CX_ROLLOUT"
+start_ok codex
+assert await_done
+report=$("$RUNNER" report "$RUN_ID")
+assert grep -qx 'RUN-FILES: 1' <<<"$report"
+assert test "$(grep -c 'cx-mentioned-only' <<<"$report")" -eq 0
+
+# CRLF patch headers produce the same path bytes as LF headers.
+clear_stub
+CX_TS=$(iso $(($(date +%s) + 60)))
+printf -v crlf_patch '*** Begin Patch\r\n*** Update File: %s/bin/cx-crlf\r\n*** End Patch\r\n' "$cx_workdir"
+{
+  cx_call_id cx-crlf apply_patch "$crlf_patch"
+  cx_output cx-crlf '{"output":"Success. Updated the following files","metadata":{"exit_code":0}}'
+} >"$CX_ROLLOUT"
+start_ok codex
+assert await_done
+report=$("$RUNNER" report "$RUN_ID")
+assert grep -qx 'RUN-FILE: bin/cx-crlf' <<<"$report"
+assert test "$(printf '%s' "$report" | tr -cd '\r' | wc -c | tr -d ' ')" -eq 0
+
+# codex's shell arrives as JSON inside the harness call, and the write list reads it the same way
+# whichever wrapper carries it — the JS `exec` dispatcher included.
+clear_stub
+CX_TS=$(iso $(($(date +%s) + 60)))
+{
+  cx_patch_event "$cx_workdir/bin/cx-patched" '' true
+  cx_exec "const r = await tools.exec_command({\"cmd\":\"sed -i '' s/a/b/ bin/cx-through-the-shell\",\"workdir\":\"$cx_workdir\"}); text(r.output);"
+} >"$CX_ROLLOUT"
+start_ok codex
+assert await_done
+assert grep -qx 'RUN-FILES: unknown (the run wrote through the shell, whose targets no transcript names)' \
+  <<<"$("$RUNNER" report "$RUN_ID")"
+
+# Unsupported JavaScript string forms cannot make a shell call disappear; they fail closed.
+clear_stub
+CX_TS=$(iso $(($(date +%s) + 60)))
+cx_exec "await tools.exec_command({cmd:'git status',workdir:'$cx_workdir'}); await tools.exec_command({cmd:\`git status\`,workdir:\`$cx_workdir\`});" \
+  >"$CX_ROLLOUT"
+start_ok codex
+assert await_done
+assert grep -qx 'RUN-FILES: unknown (the transcript records a call whose file targets it does not name: exec_command arguments)' \
+  <<<"$("$RUNNER" report "$RUN_ID")"
+
+# Tool-looking text in strings and comments is not an executed call.
+clear_stub
+CX_TS=$(iso $(($(date +%s) + 60)))
+cx_exec $'await tools.view_image({path:"fixture.png"}); const note = "tools.fs_write()"; // tools.js()' \
+  >"$CX_ROLLOUT"
+start_ok codex
+assert await_done
+assert grep -qx 'RUN-FILES: 0 (editor tool calls only; shell edits are not tracked)' \
+  <<<"$("$RUNNER" report "$RUN_ID")"
+
+# Direct function-call arguments must be a JSON object, not prose containing field-shaped text.
+clear_stub
+CX_TS=$(iso $(($(date +%s) + 60)))
+cx_call exec_command "arbitrary text cmd: \"git status\", workdir: \"$cx_workdir\"" >"$CX_ROLLOUT"
+start_ok codex
+assert await_done
+assert grep -qx 'RUN-FILES: unknown (the transcript records a call whose file targets it does not name: exec_command arguments)' \
+  <<<"$("$RUNNER" report "$RUN_ID")"
+
+# Bare JavaScript object keys are the dominant exec_command rollout form and use the same shell rule.
+clear_stub
+CX_TS=$(iso $(($(date +%s) + 60)))
+{
+  cx_patch_event "$cx_workdir/bin/cx-patched" '' true
+  cx_exec "const r = await tools.exec_command({cmd:\"sed -i '' s/a/b/ bin/cx-bare-shell\",workdir:\"$cx_workdir\"}); text(r.output);"
+} >"$CX_ROLLOUT"
+start_ok codex
+assert await_done
+assert grep -qx 'RUN-FILES: unknown (the run wrote through the shell, whose targets no transcript names)' \
+  <<<"$("$RUNNER" report "$RUN_ID")"
+
+# Bytes typed into a shell a previous call started are read as a command line like any other.
+clear_stub
+CX_TS=$(iso $(($(date +%s) + 60)))
+{
+  cx_patch_event "$cx_workdir/bin/cx-patched" '' true
+  cx_call write_stdin '{"session_id":1,"chars":"cat header > bin/cx-typed-in\n"}'
+} >"$CX_ROLLOUT"
+start_ok codex
+assert await_done
+assert grep -qx 'RUN-FILES: unknown (the run wrote through the shell, whose targets no transcript names)' \
+  <<<"$("$RUNNER" report "$RUN_ID")"
+
+# A tool this reader does not know: node's own REPL, a spawned subagent, an MCP server's write —
+# each can put bytes on disk under no name the rollout carries.
+clear_stub
+CX_TS=$(iso $(($(date +%s) + 60)))
+{
+  cx_patch_event "$cx_workdir/bin/cx-patched" '' true
+  cx_call js '{"code":"nodeRepl.write(1)"}'
+} >"$CX_ROLLOUT"
+start_ok codex
+assert await_done
+assert grep -qx 'RUN-FILES: unknown (the transcript records a call whose file targets it does not name: js)' \
+  <<<"$("$RUNNER" report "$RUN_ID")"
+clear_stub
+CX_TS=$(iso $(($(date +%s) + 60)))
+{
+  cx_patch_event "$cx_workdir/bin/cx-patched" '' true
+  cx_row '{"type": "mcp_tool_call_end", "invocation": {"server": "s", "tool": "fs.write"}}'
+} >"$CX_ROLLOUT"
+start_ok codex
+assert await_done
+assert grep -qx 'RUN-FILES: unknown (the transcript records a call whose file targets it does not name: fs.write)' \
+  <<<"$("$RUNNER" report "$RUN_ID")"
+
+# A resumed codex session appends to the rollout it already had, and the cut is the run's own start.
+clear_stub
+export STUB_SLEEP=0.3
+start_ok codex
+run_started=$(jq -r '.started_at' "$RUN_DIR/meta.json")
+CX_TS=$(iso $((run_started - 7200)))
+cx_patch_event "$cx_workdir/bin/cx-before-the-resume" '' true >"$CX_ROLLOUT"
+CX_TS=$(iso "$run_started")
+cx_patch_event "$cx_workdir/bin/cx-at-the-start" '' true >>"$CX_ROLLOUT"
+assert await_done
+report=$("$RUNNER" report "$RUN_ID")
+assert grep -qx 'RUN-FILES: 1' <<<"$report"
+assert grep -qx 'RUN-FILE: bin/cx-at-the-start' <<<"$report"
+unset STUB_SLEEP
+
+# Codex mutating rows with unusable timestamps fail closed just like Gemini rows.
+clear_stub
+CX_TS=not-a-timestamp
+cx_patch_event "$cx_workdir/bin/cx-unparseable-time" '' true >"$CX_ROLLOUT"
+start_ok codex
+assert await_done
+assert grep -qx 'RUN-FILES: unknown (the transcript records a mutating context with an unparseable timestamp)' \
+  <<<"$("$RUNNER" report "$RUN_ID")"
+
+# An unusable timestamp on a classified read-only call remains read-only.
+clear_stub
+CX_TS=not-a-timestamp
+cx_call view_image '{"path":"fixture.png"}' >"$CX_ROLLOUT"
+start_ok codex
+assert await_done
+assert grep -qx 'RUN-FILES: 0 (editor tool calls only; shell edits are not tracked)' \
+  <<<"$("$RUNNER" report "$RUN_ID")"
+
+assert grep -E '^\| am \|.*record_workdir_escape.*workdir_escape_line' "$ROOT/docs/shared-invariants.md" >/dev/null
+
+clear_stub
+printf 'not json {\n' >"$CX_ROLLOUT"
+start_ok codex
+assert await_done
+assert grep -qx 'RUN-FILES: unknown (transcript unreadable)' <<<"$("$RUNNER" report "$RUN_ID")"
+rm -f "$CX_ROLLOUT"
+set_config 'claudeb_model=opus' 'claudeb_effort=high'
+export PICK_ACCOUNT=recordacct
 
 # A failed run wrote whatever it wrote before it died, and that is the launching chat's work too.
 clear_stub
@@ -1507,4 +1985,4 @@ assert test ! -e "$DELEG_BENCHES/20260801T990000Z-fffffff"
 assert test ! -e "$DELEG_BENCHES/20260801T130000Z-def4560/delegated"
 await_done || fail "the delegated run never finished"
 
-echo "PASS: $asserts asserts; worker-run detaches vendor CLIs, preserves live runs across bounded waits, resolves accounts and model knobs, reroutes an unpinned run off a walled account until every candidate is walled, retries only documented compatibility failures, records beside each run the chat that launched it, the worker session it ran under and the files it wrote — the same list its report prints, unioned across every attempt, an UNKNOWN line where the vendor or the workdir leaves the list unanswerable and a PARTIAL one where the run also worked through the shell, written for a failed run and for a run that never reached its workdir too, and for no chat at all when none can be named — stamps the bench of a triage its brief delegates with the supervisor's pid and its launch instant, and reports terminal outcomes"
+echo "PASS: $asserts asserts; worker-run detaches vendor CLIs, preserves live runs across bounded waits, resolves accounts and model knobs, reroutes an unpinned run off a walled account until every candidate is walled, retries only documented compatibility failures, records beside each run the chat that launched it, the worker session it ran under and the files it wrote — read for claudeb, codex and agy alike out of that vendor's own transcript, the same list its report prints, unioned across every attempt, an UNKNOWN line where a mutating call names no target, a shell command writes, a tool is one this reader cannot classify or the workdir leaves the list unanswerable, a PARTIAL one where the run also worked through the shell, and a WORKDIR-ESCAPE line beside a run that named no path inside its own workdir at all, written for a failed run and for a run that never reached its workdir too, and for no chat at all when none can be named — stamps the bench of a triage its brief delegates with the supervisor's pid and its launch instant, and reports terminal outcomes"
