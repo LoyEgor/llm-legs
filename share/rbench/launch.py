@@ -453,10 +453,28 @@ def run_codex(rater, repo, sha, focus, run_dir, diff, account):
             shutil.rmtree(clone, ignore_errors=True)
 
 
+def claude_stream_result(events_text):
+    """The final answer of a `--output-format stream-json` run: its `result` event, which is the
+    same object `--output-format json` prints alone. None where the stream never reached one."""
+    result = None
+    for line in events_text.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and event.get("type") == "result":
+            result = line
+    return result
+
+
 def run_claude(rater, repo, sha, focus, run_dir, diff, account):
     deadline = rater.get("timeout_s") or _catalog.RATER_TIMEOUT_S
     raw_output = run_dir / f"raw-{_scope.cell_artifact(rater)}.json"
     raw_output.unlink(missing_ok=True)
+    raw_events = run_dir / f"raw-events-{_scope.cell_artifact(rater)}.jsonl"
     clone = _prompts.seal_overlay_clone(repo, sha)
     if _prompts.uses_skill_brief(rater):
         prompt = _prompts.skill_brief(sha, focus, clone, _scope.cell_chunk_paths(rater))
@@ -465,23 +483,42 @@ def run_claude(rater, repo, sha, focus, run_dir, diff, account):
     cwd = clone
     command = [
         _store.command_path("REVIEW_BENCH_CLAUDEB_BIN", "claudeb"), "profile", account,
-        "-p", prompt, "--output-format", "json",
+        "-p", prompt, "--output-format", "stream-json", "--verbose",
         "--model", _catalog.CLAUDE_MODEL_IDS.get(rater["model"], rater["model"]),
         "--effort", rater["effort"],
     ]
     started = time.monotonic()
     try:
         try:
+            # The event stream is this side's heartbeat — one line per turn, growing in
+            # raw_events, which is what the stall watch reads. The answer is the stream's final
+            # `result` event alone: every earlier event is machine chatter finding extraction
+            # would read as findings.
             proc = run_streamed(command, cwd=cwd, timeout_s=deadline,
-                                stall_s=rater.get("stall_s"))
+                                stall_s=rater.get("stall_s"), stdout_path=raw_events)
         except subprocess.TimeoutExpired as exc:
-            return _store.rater_timeout(exc, rater, started, deadline, command)
+            return _store.rater_timeout(
+                exc, rater, started, deadline, command,
+                extra_stdout=_store.text_file_tail(raw_events),
+            )
         except RaterStalled as exc:
-            return rater_stalled(exc, rater, started, command)
+            return rater_stalled(
+                exc, rater, started, command, extra_stdout=_store.text_file_tail(raw_events)
+            )
         rater["max_quiet_ms"] = proc.max_quiet_ms
         duration = round((time.monotonic() - started) * 1000)
-        raw_output.write_text(proc.stdout)
-        return proc.returncode, duration, proc.stdout, proc.stderr, command
+        events = raw_events.read_text(errors="replace") if raw_events.exists() else ""
+        text = claude_stream_result(events)
+        if text is None:
+            # A stream that never reached its result event is unusable output whatever the exit
+            # code — the one answer asked for once more — and the tail is kept for the wall
+            # predicate.
+            stderr = "\n".join(part for part in (
+                "no result event in the claude stream", (proc.stderr or "").rstrip(),
+            ) if part)
+            return proc.returncode or 1, duration, _store.text_file_tail(raw_events), stderr, command
+        raw_output.write_text(text)
+        return proc.returncode, duration, text, proc.stderr, command
     finally:
         if clone:
             shutil.rmtree(clone, ignore_errors=True)
@@ -849,17 +886,22 @@ SIDE_RUNNERS = {
     "agy": run_agy,
     "opencode": run_opencode,
 }
-# The three answers worth asking one more time, and the only ones: a cell that produced nothing
-# readable, a provider that answered with its own fault, and a cell the panel's own cap cut off.
-# Every other cause is the cell's answer — a wall rotates accounts, a throttle is waited out by the
-# vendor's own predicate, and asking a spent plan again spends the next account too.
-CELL_RETRY_CAUSES = ("bad output", "server error", _panel.STATUS_REASONS["timed_out"])
+# The two answers worth asking one more time, and the only ones: a cell that produced nothing
+# readable and a provider that answered with its own fault. Every other cause is the cell's
+# answer — a wall rotates accounts, asking a spent plan again spends the next account too, and a
+# kill of ours (cap or stall) ENDS the cell: 0 of 9 cap-kill retries on record ever produced a
+# confirmed finding, at a median 7.2 minutes of panel wall each.
+CELL_RETRY_CAUSES = ("bad output", "server error")
+# Launches one pass may spend on the same answer — transient waits and retry causes together, a
+# wall spending none; a chunked cell has one budget per chunk. Past it the answer stands: one agy
+# cell walked the pool seven times for a 45-minute cell, and 35 such cells burned 280 wall minutes.
+CELL_ATTEMPTS_MAX = 2
 
 
 def cell_retry_cause(rc, text, stderr, rater):
     """Why this attempt is worth one more, or None where its answer is the cell's answer."""
-    if rater.get("killed") == "watchdog":
-        return _panel.STATUS_REASONS["timed_out"]
+    if rater.get("killed"):
+        return None
     if rc != 0:
         reason = _panel.failure_reason(stderr)
     elif text and _accounts.is_429_error(text):
@@ -874,10 +916,9 @@ def cell_retry_cause(rc, text, stderr, rater):
 def superseded_attempt(rater, account, result):
     """The rater_run row a retried attempt leaves behind.
 
-    Recorded rather than dropped: what it cost is part of the cell's own stretch of the wall clock,
-    and the kill it may carry is what the next run's cap escalates on. Every surface that counts
-    CELLS reads the LAST row of a spec, so this one is never counted as a cell of its own — see
-    `cell_attempt_rows`.
+    Recorded rather than dropped: what it cost is part of the cell's own stretch of the wall clock.
+    Every surface that counts CELLS reads the LAST row of a spec, so this one is never counted as
+    a cell of its own — see `cell_attempt_rows`.
     """
     rc, duration, _text, stderr, command = result
     row = {
@@ -906,14 +947,7 @@ def run_rater_task(rater, repo, sha, focus, run_dir, diff):
     # its first hiccup, while re-creating it whenever the pool comes back to an account it
     # already tried would let the two refill each other and spin the cell forever.
     budgets = defaultdict(lambda: list(_accounts.transient_backoffs()))
-    # One retry for a stall kill, not per account: a hang is usually the process's, not the
-    # account's, so the fresh attempt may legitimately land on the same account — and a second
-    # stall in one cell is the cell's answer, not another lap.
-    stall_budget = 1
-    # One for the whole cell, not per account: the causes it answers are the run's own bad luck,
-    # and a budget per account would spend the panel's wall clock walking the pool over the same
-    # answer. Only the second failure of a cell reaches the report.
-    retry_budget = 1
+    rater["attempts"] = 0
     while True:
         try:
             candidate = _accounts.pool_account(side, walled, rater.get("slot", 0), bucket)
@@ -945,23 +979,14 @@ def run_rater_task(rater, repo, sha, focus, run_dir, diff):
         rater["started_at"] = attempt_started.isoformat()
         rater["finished_at"] = _store.iso_now()
         rc, _, text, stderr, _ = result
-        if rater.get("stalled_s") and stall_budget:
-            stall_budget -= 1
-            # The kill outlives the retry: dropped with the attempt, a cap that is merely too
-            # tight never escalates when the retry completes, and the pair burns one stall kill
-            # on every run for ever — the self-correction the stall watch promises.
-            rater["stalled_retry_s"] = rater["stalled_s"]
-            rater.setdefault("superseded", []).append(
-                superseded_attempt(rater, candidate, result)
-            )
-            print(f"{rater['spec']}: killed as stalled — no output activity for "
-                  f"{rater['stalled_s']}s; retrying once")
-            continue
         # The account walled while this cell sat in the gate queue. Nothing was sent, so this
         # is not evidence against the account, and the side may still have other accounts.
         if side == "opencode" and stderr == _accounts.GATE_WALL_STDERR:
             walled.add(candidate)
             continue
+        # Every launch that reached the provider is one attempt of this pass; a wall hands it
+        # back below, since the account answered for itself and not for the cell.
+        rater["attempts"] = rater.get("attempts", 0) + 1
         wall_text = (
             _store.text_file_tail(run_dir / f"raw-events-{_scope.cell_artifact(rater)}.jsonl")
             if side == "codex" else text
@@ -970,18 +995,21 @@ def run_rater_task(rater, repo, sha, focus, run_dir, diff):
         # status code. Retiring an account for either of the first two empties the pool of
         # accounts that were never out of quota, so they are waited out here and only the
         # wall predicate below, which insists on the plan wording, can retire anything.
-        if rc != 0 and budgets[candidate] and _accounts.SIDE_TRANSIENT.get(side, _accounts._never_transient)(
-            rc, wall_text, stderr
-        ):
+        # A kill of ours is never asked again, whatever its partial stderr says: a 503 in the
+        # tail of a hung cell is not a server error to wait out. The wall predicate still reads
+        # it, since an account that walled mid-hang is walled.
+        may_retry = rater["attempts"] < CELL_ATTEMPTS_MAX and not rater.get("killed")
+        if may_retry and rc != 0 and budgets[candidate] and _accounts.SIDE_TRANSIENT.get(
+            side, _accounts._never_transient
+        )(rc, wall_text, stderr):
             delay = budgets[candidate].pop(0)
             print(f"{rater['spec']}: {side} account {candidate} answered with a transient "
                   f"failure ({_panel.failure_reason(stderr)}); retrying in {delay:g}s")
             if delay:
                 time.sleep(delay)
             continue
-        retry_cause = cell_retry_cause(rc, text, stderr, rater) if retry_budget else None
+        retry_cause = cell_retry_cause(rc, text, stderr, rater) if may_retry else None
         if retry_cause:
-            retry_budget -= 1
             rater.setdefault("superseded", []).append(
                 superseded_attempt(rater, candidate, result)
             )
@@ -996,9 +1024,12 @@ def run_rater_task(rater, repo, sha, focus, run_dir, diff):
         walled.add(candidate)
         print(f"{rater['spec']}: {side} account {candidate} hit its usage wall")
         # A run can succeed while its output already carries the wall wording: the review is
-        # kept and only the account is retired.
-        if rc == 0:
+        # kept and only the account is retired. A killed one is retired the same way and ends
+        # here: relaunched on the next account, the kill would be hidden and the cell would run
+        # past its hard stop.
+        if rc == 0 or rater.get("killed"):
             return (rater, candidate, result)
+        rater["attempts"] -= 1
     if result is None:
         return (rater, None, (1, 0, "",
                               _accounts.no_account_left(side, _accounts.baseline_exclusion_note(side)
@@ -1052,15 +1083,17 @@ def run_rater_chunks(rater, repo, sha, focus, run_dir, diff, chunks):
     # left at the last chunk's stamp, the cell reads as having sat in a queue for everything the
     # chunks before it took, and the header names a leg that never held it.
     cell_started = None
+    passes = 0
     for chunk in chunks:
         rater["chunk"] = chunk
         _, account, last = run_rater_task(
             rater, repo, sha, focus, run_dir, chunk["diff"]
         )
+        passes += 1
         cell_started = cell_started or rater.get("started_at")
         rc, duration, text, stderr, _ = last
         elapsed += duration
-        for key in ("stalled_s", "stalled_retry_s", "killed", "killed_cap_s"):
+        for key in ("stalled_s", "killed", "killed_cap_s"):
             if rater.get(key) is not None and key not in marks:
                 marks[key] = rater[key]
         quiet = rater.get("max_quiet_ms")
@@ -1074,12 +1107,15 @@ def run_rater_chunks(rater, repo, sha, focus, run_dir, diff, chunks):
             texts.append(text or "")
         print(f"{rater['spec']}: chunk {chunk['index'] + 1}/{len(chunks)}, "
               f"{duration} ms, exit {rc}")
+        # A kill ends the whole cell: the chunks after it are not read, and are left in debt.
+        if rater.get("killed"):
+            break
     rater.pop("chunk", None)
     rater.update(marks)
     if cell_started:
         rater["started_at"] = cell_started
     rater["chunks_read"] = read
-    rater["passes"] = len(chunks)
+    rater["passes"] = passes
     if not read:
         rc, _, text, stderr, command = last
         return (rater, account, (rc or 1, elapsed, text, stderr, command))

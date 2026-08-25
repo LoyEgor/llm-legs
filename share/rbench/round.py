@@ -1150,8 +1150,9 @@ def blind_fix_runs(repo, session, window, records=None):
     ones a co-tenant's did, whether any run of this chat could have written into `repo` unrecorded
     inside `window`, and whether any other chat's could.
 
-    A codex or gemini worker keeps no per-file transcript and runs no journal hook of ours, so a
-    fix pass delegated to one reaches every store as nothing at all — the journals, the file
+    A codex or gemini worker runs no journal hook of ours, and its file listing is exact only
+    when its vendor transcript named every mutating target (else `UNKNOWN:`), so a listless fix
+    pass delegated to one reaches every store as nothing at all — the journals, the file
     listing and the artifacts alike (live case 2026-08-22). Its record still says three things:
     which chat launched it, which repository it stood in, and that its own listing cannot be
     complete. Where that is the ONLY actor any store places on a scope path inside the window,

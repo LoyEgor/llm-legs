@@ -3,6 +3,7 @@ import re
 import math
 import statistics
 from collections import Counter, defaultdict
+from datetime import datetime, timedelta, timezone
 
 from . import store as _store
 from . import catalog as _catalog
@@ -97,20 +98,89 @@ def watchdog_killed(row):
     return side == "agy" and cell_status(row) == "timed_out"
 
 
-def panel_cell_history(benches):
-    """Per (model, effort) pair over every recorded run: the longest it has ever taken to COMPLETE,
-    the highest cap the watchdog killed it at since its last completion together with how many
-    kills in a row that is, the longest a completion ever went without producing a byte, and the
-    highest stall cap a cell of the pair was ever killed at.
+RUN_ID_STAMP_RE = re.compile(r"^(\d{8}T\d{6})Z")
 
-    Completions are the only evidence about the work — feeding a hang's duration or silence back
-    in would let one hang raise its own cap forever — while the kills are the only evidence a pair
-    whose real behaviour is past its cap ever produces: with nothing but completions it would be
-    killed at the same cap on every later run, for ever. A kill BEHIND the pair's last completion
-    says nothing about what it needs now, so a completion clears the kill record; runs are walked
-    in run-id order for exactly that reading.
+
+def run_started_at(directory, meta):
+    started = _store.parse_iso_timestamp(meta.get("started"))
+    if started is not None:
+        return started
+    match = RUN_ID_STAMP_RE.match(directory.name)
+    if not match:
+        return None
+    try:
+        return datetime.strptime(match.group(1), "%Y%m%dT%H%M%S").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def recorded_confirmed_raters(run_dir):
+    """The cells a run's triage confirmed at least one finding of, from whichever copy of the
+    triage survives: verdicts.jsonl, else the report receipt's rows (`record --no-corpus` stores
+    no verdicts.jsonl). Empty where nothing is confirmed or the run is untriaged.
     """
-    maxima, breached, quiet, stall_breached, kill_streaks = {}, {}, {}, {}, {}
+    rows = None
+    if (run_dir / "verdicts.jsonl").exists():
+        try:
+            rows = _store.read_jsonl(run_dir / "verdicts.jsonl")
+        except (OSError, ValueError):
+            rows = []
+    else:
+        try:
+            rows = json.loads((run_dir / _store.REPORT_RECEIPT).read_text()).get("rows")
+        except (OSError, ValueError, AttributeError):
+            rows = None
+    if not isinstance(rows, list):
+        rows = []
+    return {
+        row["rater"] for row in rows
+        if isinstance(row, dict) and row.get("verdict") == "confirmed" and row.get("rater")
+    }
+
+
+def cap_sample_of(row, confirmed):
+    """One completed row's contribution to its pair's cap samples, or None for anything else.
+
+    Only completions: a kill or an errored row says nothing about how long the work takes, and
+    feeding one back in is the ratchet that walked agy's cap from 600s to 1800s in three weeks.
+    """
+    if cell_status(row) != "completed" or row.get("killed") or row.get("stalled_s") \
+            or watchdog_killed(row):
+        return None
+    duration = cell_pass_duration(row)
+    if duration is None:
+        return None
+    gap = row.get("max_quiet_ms")
+    if not isinstance(gap, (int, float)) or isinstance(gap, bool) or gap < 0:
+        gap = None
+    return {
+        "duration_s": duration / 1000,
+        "confirmed": row.get("rater") in confirmed,
+        "gap_s": None if gap is None else gap / 1000,
+    }
+
+
+def empty_cap_samples():
+    return {"durations": [], "confirmed": [], "gaps": []}
+
+
+def add_cap_sample(samples, sample):
+    samples["durations"].append(sample["duration_s"])
+    if sample["confirmed"]:
+        samples["confirmed"].append(sample["duration_s"])
+    if sample["gap_s"] is not None:
+        samples["gaps"].append(sample["gap_s"])
+
+
+def panel_cap_samples(benches, now=None):
+    """Per (model, effort) pair over the last CAP_WINDOW_DAYS of runs: the seconds every
+    completion took, the seconds of the completions a triage confirmed a finding of, and the
+    silent gaps completions showed. A run with no readable start, or one dated after now, is
+    outside every window.
+    """
+    now = now or _store.utc_now()
+    cutoff = now - timedelta(days=_catalog.CAP_WINDOW_DAYS)
+    samples = {}
     for directory in sorted(benches.iterdir()) if benches.exists() else ():
         meta_path = directory / "meta.json"
         if not meta_path.exists():
@@ -119,78 +189,56 @@ def panel_cell_history(benches):
             meta = json.loads(meta_path.read_text())
         except (OSError, ValueError, json.JSONDecodeError):
             continue
-        run_kills, run_retry_kills, run_done = {}, {}, set()
-        rows = list(meta.get("rater_runs", ()))
-        # Which rows an in-run retry superseded: the LAST row of a spec is the cell's answer and
-        # every earlier one is an attempt it replaced (`cell_attempt_rows` reads them the same way).
-        final_index = {row.get("rater"): index for index, row in enumerate(rows)}
-        for index, row in enumerate(rows):
+        started = run_started_at(directory, meta)
+        if started is None or started < cutoff or started > now:
+            continue
+        confirmed = recorded_confirmed_raters(directory)
+        for row in meta.get("rater_runs", ()):
             key = panel_cell_key(row)
-            if key is None:
+            sample = cap_sample_of(row, confirmed) if key else None
+            if sample is None:
                 continue
-            superseded_row = index != final_index.get(row.get("rater"))
-            # A retried kill rides on whatever row the retry produced — the row itself still
-            # counts as what it is (a completion feeds maxima and quiet, an error nothing).
-            retried = row.get("stalled_retry_s")
-            if isinstance(retried, (int, float)) and not isinstance(retried, bool) and retried > 0:
-                stall_breached[key] = max(float(retried), stall_breached.get(key, 0.0))
-            stalled = row.get("stalled_s")
-            if isinstance(stalled, (int, float)) and not isinstance(stalled, bool) and stalled > 0:
-                stall_breached[key] = max(float(stalled), stall_breached.get(key, 0.0))
-                continue
-            if watchdog_killed(row):
-                cap = timeout_seconds_from_row(row)
-                if cap:
-                    target = run_retry_kills if superseded_row else run_kills
-                    target[key] = max(cap, target.get(key, cap))
-                continue
-            if cell_status(row) != "completed":
-                continue
-            # A completion whose duration lives only in the legacy top-level map still clears
-            # the kill record; only the maxima need the number.
-            run_done.add(key)
-            duration = cell_pass_duration(row)
-            if duration is None:
-                continue
-            maxima[key] = max(duration, maxima.get(key, duration))
-            gap = row.get("max_quiet_ms")
-            if isinstance(gap, (int, float)) and not isinstance(gap, bool) and gap >= 0:
-                quiet[key] = max(gap, quiet.get(key, gap))
-        # Strikes are counted in RUNS, not rows: a T2 panel holds three cells of one pair, and a
-        # single bad run must cost one strike, not the whole escalation probe. A pair that also
-        # completed in the run proved it works — those kills clear with the rest.
-        for key in run_done:
-            breached.pop(key, None)
-            kill_streaks.pop(key, None)
-        for key, cap in run_kills.items():
-            if key in run_done:
-                continue
-            if kill_streaks.get(key, 0) + 1 >= CHRONIC_FAILURE_STREAK:
-                # The third strike ends the probe EPISODE, not the pair's right to probe: kept, the
-                # record pinned a pair with no completion at the floor for ever — its streak could
-                # only clear on a completion the floor cap itself prevented. Cleared, the next kill
-                # opens a fresh episode: a dead cell costs one grace per run on average, and a
-                # merely slow one still meets a cap two graces up every third run.
-                breached.pop(key, None)
-                kill_streaks.pop(key, None)
-                continue
-            breached[key] = max(cap, breached.get(key, cap))
-            kill_streaks[key] = kill_streaks.get(key, 0) + 1
-        # A cap kill the retry replaced outlives it, exactly as a stall kill does: cleared with the
-        # completion the retry produced, a cap that is merely too tight escalates on no run at all
-        # and the pair pays the same kill for ever. It raises the cap and costs no strike — the
-        # retry is the proof the cell works, and a run holding no completion for the pair has no
-        # such proof: applied there, a cell killed in the attempt AND the retry re-entered
-        # `breached` the strike loop had just popped and never returned to the floor at all.
-        for key, cap in run_retry_kills.items():
-            if key not in run_done:
-                continue
-            breached[key] = max(cap, breached.get(key, cap))
-    return maxima, breached, quiet, stall_breached, kill_streaks
+            add_cap_sample(samples.setdefault(key, empty_cap_samples()), sample)
+    return samples
 
 
-def panel_duration_maxima(benches):
-    return panel_cell_history(benches)[0]
+def duration_cap_seconds(samples):
+    """The duration cap one pair's samples earn: its longest confirmed completion + grace, or
+    with fewer than the thin threshold of those, its longest completion of any kind + grace;
+    the default where the pair completed nothing in the window.
+    """
+    if len(samples["confirmed"]) >= _catalog.DURATION_CAP_THIN_SAMPLES:
+        longest = max(samples["confirmed"])
+    elif samples["durations"]:
+        longest = max(samples["durations"])
+    else:
+        return _catalog.DURATION_CAP_DEFAULT_S
+    return math.ceil(longest) + _catalog.DURATION_CAP_GRACE_S
+
+
+def stall_cap_seconds(samples):
+    """The stall cap one pair's samples earn — its longest recorded silent gap + grace over the
+    floor — or None where no completion recorded a gap: silence is then no evidence at all."""
+    if not samples["gaps"]:
+        return None
+    return max(
+        _catalog.STALL_CAP_FLOOR_S,
+        math.ceil(max(samples["gaps"])) + _catalog.STALL_CAP_GRACE_S,
+    )
+
+
+def agy_ceiling_seconds(key, tier):
+    if key and key[0] in _catalog.AGY_MODEL_IDS:
+        return _catalog.AGY_DURATION_CEILING_S.get(tier)
+    return None
+
+
+def cell_timeout_seconds(caps, key, tier=None):
+    """What one cell is handed as its duration cap: the pair's earned cap or the default, under
+    Gemini's ceiling for the tier where the cell is an agy one."""
+    cap = caps.get(key, _catalog.DURATION_CAP_DEFAULT_S)
+    ceiling = agy_ceiling_seconds(key, tier)
+    return min(cap, ceiling) if ceiling else cap
 
 
 # Three, because two in a row happens to every cell on a capacity weather day: below this the
@@ -243,54 +291,24 @@ def cell_failure_streaks(benches, run_id, raters):
     return streaks
 
 
-def watchdog_timeout_seconds(duration_ms):
-    if duration_ms is None:
-        return _catalog.WATCHDOG_FLOOR_S
-    return max(
-        _catalog.WATCHDOG_FLOOR_S, math.ceil(float(duration_ms) / 1000) + _catalog.WATCHDOG_GRACE_S
-    )
+def panel_cap_timeouts(benches, now=None):
+    """(duration caps, stall caps) per pair from one walk of the store."""
+    samples = panel_cap_samples(benches, now=now)
+    watchdog = {key: duration_cap_seconds(pair) for key, pair in samples.items()}
+    stall = {}
+    for key, pair in samples.items():
+        cap = stall_cap_seconds(pair)
+        if cap is not None:
+            stall[key] = cap
+    return watchdog, stall
 
 
-def panel_watchdog_timeouts(benches):
-    maxima, breached, _, _, _ = panel_cell_history(benches)
-    timeouts = {}
-    for key in set(maxima) | set(breached):
-        timeout = watchdog_timeout_seconds(maxima.get(key))
-        if key in breached:
-            # A cap a pair has already been killed at is a cap it needs more than: the next run
-            # gives it one grace more, up to the ceiling every cell used to share, so a slow model
-            # climbs out instead of being killed at the floor on every run it ever gets. The climb
-            # is a probe with three strikes, not a right — the history drops a pair's kill record
-            # on its third kill in a row, which is why a breach standing here always escalates: a
-            # genuinely dead cell was buying one grace more per run and walked every panel's wall
-            # from 15 toward 30 minutes in one night (2026-08-16).
-            timeout = max(timeout, min(_catalog.RATER_TIMEOUT_S,
-                                       math.ceil(breached[key]) + _catalog.WATCHDOG_GRACE_S))
-        timeouts[key] = timeout
-    return timeouts
+def panel_watchdog_timeouts(benches, now=None):
+    return panel_cap_timeouts(benches, now=now)[0]
 
 
-def panel_stall_timeouts(benches):
-    """The stall cap per (model, effort) pair: the longest gap a completion of the pair ever went
-    silent for, plus grace. Only for pairs whose gaps stay well under their runtimes — the evidence
-    the pair streams at all: a buffered side shows gaps the size of its whole runs and gets no cap,
-    so a cell that is quiet the way its shape always is can never be killed for it, and a pair with
-    no gap history gets none either. A cap a pair was already killed at grows by one grace per
-    run, so a wrong kill corrects itself instead of repeating — unbounded, unlike the duration
-    cap's three-strike probe: a stall kill costs the run one in-cell retry, not its wall, and the
-    duration cap still bounds the cell either way.
-    """
-    maxima, _, quiet, stall_breached, _ = panel_cell_history(benches)
-    caps = {}
-    for key, gap_ms in quiet.items():
-        duration = maxima.get(key)
-        if not duration or gap_ms >= _catalog.STALL_STREAM_RATIO * duration:
-            continue
-        cap = max(_catalog.STALL_FLOOR_S, math.ceil(gap_ms / 1000) + _catalog.STALL_GRACE_S)
-        if key in stall_breached:
-            cap = max(cap, math.ceil(stall_breached[key]) + _catalog.STALL_GRACE_S)
-        caps[key] = cap
-    return caps
+def panel_stall_timeouts(benches, now=None):
+    return panel_cap_timeouts(benches, now=now)[1]
 
 
 def tier_cell_counter(cells):
@@ -399,7 +417,8 @@ FAILURE_REASONS = (
     ("bare 429", re.compile(r"\b429\b")),
     ("bad output", re.compile(
         r"no parseable finding|malformed (?:Markdown|JSON)|no explicit no-issues"
-        r"|did not declare a clean review|stopped before reviewing|returned empty content",
+        r"|did not declare a clean review|stopped before reviewing|returned empty content"
+        r"|no result event",
         re.IGNORECASE)),
     ("capacity", re.compile(r"at capacity|temporarily unavailable|overloaded", re.IGNORECASE)),
     ("server error", re.compile(_catalog.HTTP_SERVER_STATUS)),

@@ -31,8 +31,10 @@ from .store import (
     worker_run_dirs, write_jsonl, write_review_receipt,
 )
 from .catalog import (
-    ADJUDICATION_TOK_ESTIMATE, AGY_EFFORTS, AGY_MODEL_IDS, AGY_TIMEOUT_GRACE_S,
-    AGY_TIMEOUT_MAX_S, AUTO_RATERS, BOARD_COST_SCALE, CLAUDE_MODEL_IDS, EFFORTS,
+    ADJUDICATION_TOK_ESTIMATE, AGY_DURATION_CEILING_S, AGY_EFFORTS, AGY_MODEL_IDS,
+    AGY_TIMEOUT_GRACE_S, AGY_TIMEOUT_MAX_S, AUTO_RATERS, BOARD_COST_SCALE, CAP_WINDOW_DAYS,
+    CLAUDE_MODEL_IDS, DURATION_CAP_DEFAULT_S, DURATION_CAP_GRACE_S,
+    DURATION_CAP_THIN_SAMPLES, EFFORTS,
     EXCLUDED_CELLS, EXCLUDED_CELL_REPLACEMENTS, GEMINI_VERIFIER, GEMINI_VERIFIER_EFFORT,
     GEMINI_VERIFIER_RATER, GO_REQUESTS_5H, GO_UNPRICED, GO_USAGE_WEIGHT, OPENCODE_EFFORTS,
     OPENCODE_EFFORT_CEILING, OPENCODE_EFFORT_EXPECTED_S, OPENCODE_EFFORT_REQUIRED_MODELS,
@@ -41,9 +43,9 @@ from .catalog import (
     OPENCODE_REVIEW_LEG_MAX, OPENCODE_SCREENED_MODELS, OPENCODE_STREAM_MODELS,
     OPENCODE_UNUSABLE_MODELS, OPENCODE_VERIFIER, OPENCODE_VERIFIER_CHAIN, PRICE_WEIGHTS,
     RATER_TIMEOUT_S, REVIEW_TIERS, REVIEW_TIER_AGY, REVIEW_TIER_AGY_MAX, REVIEW_TIER_FLOOR,
-    REVIEW_TIER_FLOOR_MAX, SHORT_EFFORT_NAMES, SHORT_MODEL_NAMES, STALL_FLOOR_S, STALL_GRACE_S,
-    STALL_POLL_S, STALL_STREAM_RATIO, VERDICTS, WATCHDOG_FLOOR_S, WATCHDOG_GRACE_S, WEIGHTS,
-    WORTHLESS_CELLS, WORTHLESS_MODELS, model_name_parts,
+    REVIEW_TIER_FLOOR_MAX, SHORT_EFFORT_NAMES, SHORT_MODEL_NAMES, STALL_CAP_FLOOR_S,
+    STALL_CAP_GRACE_S, STALL_POLL_S, VERDICTS, WEIGHTS, WORTHLESS_CELLS,
+    WORTHLESS_MODELS, model_name_parts,
 )
 from .raters import (
     ALWAYS_EFFORT_SIDES, LOCATION_RE, PRIORITY_RE, RATER_ATTEMPT_RE, RATER_RE, RATER_REPEAT_RE,
@@ -92,14 +94,17 @@ from .scope import (
 )
 from .panel import (
     CELL_STALL_REASON, CHRONIC_FAILURE_STREAK, CHRONIC_STREAK_WALK_RUNS, FAILURE_REASONS,
-    STATUS_REASONS, bench_summary, cell_attempt_rows, cell_failure_reason,
-    cell_failure_streaks, cell_pass_duration, cell_record, cell_status,
-    completed_raters_from_meta, docs_confirmed_count, docs_finding, expected_review_durations,
-    failure_reason, legacy_tier_match, panel_cell_history, panel_cell_key,
-    panel_duration_maxima, panel_stall_timeouts, panel_watchdog_timeouts, rater_specs_counter,
+    RUN_ID_STAMP_RE, STATUS_REASONS, add_cap_sample, agy_ceiling_seconds, bench_summary,
+    cap_sample_of, cell_attempt_rows, cell_failure_reason, cell_failure_streaks,
+    cell_pass_duration, cell_record, cell_status, cell_timeout_seconds,
+    completed_raters_from_meta, docs_confirmed_count, docs_finding, duration_cap_seconds,
+    empty_cap_samples, expected_review_durations, failure_reason, legacy_tier_match,
+    panel_cap_samples, panel_cap_timeouts, panel_cell_key, panel_stall_timeouts,
+    panel_watchdog_timeouts,
+    rater_specs_counter, recorded_confirmed_raters, run_started_at,
     review_counts, review_duration_medians, review_log_event, run_finished_at,
-    tier_cell_counter, tier_from_meta, timeout_seconds_from_row, watchdog_killed,
-    watchdog_timeout_seconds,
+    stall_cap_seconds, tier_cell_counter, tier_from_meta, timeout_seconds_from_row,
+    watchdog_killed,
 )
 from .prompts import (
     AGY_SKILL_SEVERITIES, ANSWER_KEYS, CLEAN_ANNOUNCE_BLOCKERS, CLEAN_ANNOUNCE_PATH_RE,
@@ -121,11 +126,12 @@ from .prompts import (
     unusable_review, uses_skill_brief,
 )
 from .launch import (
-    CELL_RETRY_CAUSES, DIFF_NARRATION_MIN_ROWS, DIFF_NARRATION_RE, GEMINI_VERIFY_PRINT_TIMEOUT,
-    GEMINI_VERIFY_PRINT_TIMEOUT_S, LIVE_CELL_GROUPS, OPENCODE_GATE, OPENCODE_MAX_CONCURRENCY,
-    PriorityGate, RaterStalled, SIDE_RUNNERS, VERIFY_MAX_TOKENS, VERIFY_TIMEOUT_S,
-    VERIFY_WHOLE_FILE_LINES, VERIFY_WINDOW_LINES, agy_expected_label, agy_failure_detail,
-    agy_model_id, agy_model_mismatch, agy_served_labels, cell_retry_cause, chunk_pass_failure,
+    CELL_ATTEMPTS_MAX, CELL_RETRY_CAUSES, DIFF_NARRATION_MIN_ROWS, DIFF_NARRATION_RE,
+    GEMINI_VERIFY_PRINT_TIMEOUT, GEMINI_VERIFY_PRINT_TIMEOUT_S, LIVE_CELL_GROUPS, OPENCODE_GATE,
+    OPENCODE_MAX_CONCURRENCY, PriorityGate, RaterStalled, SIDE_RUNNERS, VERIFY_MAX_TOKENS,
+    VERIFY_TIMEOUT_S, VERIFY_WHOLE_FILE_LINES, VERIFY_WINDOW_LINES, agy_expected_label,
+    agy_failure_detail, agy_model_id, agy_model_mismatch, agy_served_labels, cell_retry_cause,
+    chunk_pass_failure, claude_stream_result,
     codex_environment, gate_admission_key, install_cell_reaper, is_diff_narration,
     kill_process_group, opencode_env, opencode_expected_s, opencode_max_tokens_error,
     prepare_agy_skill_clone, rater_stalled, reap_live_groups, redact_command,

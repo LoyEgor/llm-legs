@@ -221,20 +221,23 @@ AGY_MODEL_IDS = {
 RATER_TIMEOUT_S = 1800
 AGY_TIMEOUT_MAX_S = 600
 AGY_TIMEOUT_GRACE_S = 30
-# The watchdog's cap for one (model, effort) pair: everything that pair has ever completed in, plus
-# room for a slow run of the same shape, and never under the floor. A pair with no history at all
-# gets the floor, so a cell nobody has measured is still cut off rather than left hanging.
-WATCHDOG_GRACE_S = 180
-WATCHDOG_FLOOR_S = 900
-# The stall watch under the duration watchdog: a hung leg is told apart from a slow one by the
-# pair's own record. Every completed run leaves the longest gap it ever went without producing a
-# byte, and only a pair whose gaps stay well under its runtimes — one that provably streams — gets
-# a stall cap at all, so a buffered side that is quiet the way it always is can never be killed
-# for it. A hung streaming cell then dies at gap-plus-grace instead of holding the whole panel to
-# the duration cap.
-STALL_GRACE_S = 120
-STALL_FLOOR_S = 240
-STALL_STREAM_RATIO = 0.5
+# The duration cap per (model, effort) pair is anchored on yield: the longest of the pair's
+# completions that produced a CONFIRMED finding over the window + grace, or, with too few of
+# them, the longest of all its completions + grace. Kills raise nothing — the cap follows what a
+# pair delivers, never what it merely survived (docs/analysis/review-latency-2026-08-24.md,
+# section 5). The max and not a quantile: q95 lost 6.1% of panel-unique confirmed findings for
+# the same p90 wall, which the ceiling and the window earn on their own.
+CAP_WINDOW_DAYS = 21
+DURATION_CAP_GRACE_S = 180
+DURATION_CAP_THIN_SAMPLES = 5
+DURATION_CAP_DEFAULT_S = 900
+# Gemini's ceiling per tier, applied after the yield rule. Only agy: its tail past these holds no
+# confirmed findings (section 4), while opus and sol legitimately run 300-1200s for theirs.
+AGY_DURATION_CEILING_S = {"T0": 480, "T1": 480, "T2": 600, "T3": 600}
+# The stall cap under the duration cap: the longest silent gap the pair's completions showed
+# over the window + grace. A cell that stands silent past that is cut; waiting for it has no value.
+STALL_CAP_GRACE_S = 120
+STALL_CAP_FLOOR_S = 240
 # Under a second on purpose: every reader that measures real waits filters patched-sleep noise at
 # the one-second line, and a poll nap is exactly such noise.
 STALL_POLL_S = 0.25
@@ -323,8 +326,9 @@ SHORT_EFFORT_NAMES = {"medium": "med"}
 # Gemini 3.7 Flash (2026-08-14, corpus at 235): flash37-medium runs a 1.58 min median against
 # flash35-medium's 1.81 and is the cleanest Flash on raw claims (2 false of 19 adjudicated), so
 # it takes a slot in every panel; flash37-high (2.38 min, the priciest Flash, 9 of 34 attempts
-# lost to transport errors that the rates already price) pays only at T0, where it holds the P1
-# coverage the dropped repeats held. flash37-low earned 22 attempts and still no slot: no
+# lost to transport errors that the rates already price) holds the P1 coverage the dropped
+# repeats held at T0, and since 2026-08-24 runs one copy in T1/T2 as well to collect statistics
+# beside the other legs (Egor). flash37-low earned 22 attempts and still no slot: no
 # composition holding it matches these panels on all four populations at their price. Same
 # enumeration, every population no lower, every tier cheaper.
 REVIEW_TIER_AGY = {
@@ -341,6 +345,7 @@ REVIEW_TIER_AGY = {
         "agy-flash36-medium-skill",
         "agy-flash36-high-skill x2",
         "agy-flash37-medium-skill",
+        "agy-flash37-high-skill",
         "agy-pro-high-skill",
     ],
 }
@@ -365,14 +370,19 @@ REVIEW_TIER_AGY_MAX = {
         "agy-flash36-medium-skill",
         "agy-flash36-high-skill x2",
         "agy-flash37-medium-skill",
+        "agy-flash37-high-skill",
         "agy-pro-high-skill",
     ],
+    # flash37-high x1 (2026-08-24, Egor): collecting statistics beside the other legs in T1/T2.
+    # The ceiling stays inside ROSTER_MAX + 1, so T2's second flash36-medium copy (one repeat on
+    # record, nothing added) gives up its slot.
     "T2": [
         "agy-flash35-medium-skill x2",
         "agy-flash35-high-skill",
-        "agy-flash36-medium-skill x2",
+        "agy-flash36-medium-skill",
         "agy-flash36-high-skill x2",
         "agy-flash37-medium-skill",
+        "agy-flash37-high-skill",
         "agy-pro-high-skill",
     ],
     "T3": [

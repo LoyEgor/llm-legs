@@ -606,11 +606,10 @@ def cmd_run(args):
     _launch.install_cell_reaper()
     # Every side, not the Antigravity leg alone: a hung cell of any vendor holds the panel open
     # with nothing to report, and the run it belongs to is what the report flow and `doctor` raise.
-    watchdog = _panel.panel_watchdog_timeouts(_store.state_dir() / "benches")
-    stall_caps = _panel.panel_stall_timeouts(_store.state_dir() / "benches")
+    watchdog, stall_caps = _panel.panel_cap_timeouts(_store.state_dir() / "benches")
     for rater in raters:
         key = _panel.panel_cell_key(rater)
-        rater["timeout_s"] = watchdog.get(key, _catalog.WATCHDOG_FLOOR_S)
+        rater["timeout_s"] = _panel.cell_timeout_seconds(watchdog, key, tier_name)
         # Only under the duration cap: a stall cap above it never fires, and carrying it would
         # report a limit the cell cannot reach.
         if key in stall_caps and stall_caps[key] < rater["timeout_s"]:
@@ -708,7 +707,10 @@ def cmd_run(args):
 
     def extract_findings(rater, result):
         rc, _, text, _, _ = result
-        findings = _prompts.normalize_findings(text, rater["spec"])
+        is_error = rc != 0 or (rc == 0 and text and _accounts.is_429_error(text))
+        # Nothing is read out of a dead cell: a killed stream's partial events parse as findings
+        # the model withdrew, and the findings file is what the report globs.
+        findings = [] if is_error else _prompts.normalize_findings(text, rater["spec"])
         findings = [
             dict(row, file=_verify.canonical_finding_path(row.get("file"), tree))
             for row in findings
@@ -721,7 +723,6 @@ def cmd_run(args):
                 dict(row, repo=_scope.merged_finding_label(row.get("file"), members))
                 for row in findings
             ]
-        is_error = rc != 0 or (rc == 0 and text and _accounts.is_429_error(text))
         unusable = "" if is_error else _prompts.unusable_review(text, findings)
         return findings, is_error, unusable
 
@@ -915,13 +916,11 @@ def cmd_run(args):
                 }
                 if chunks:
                     run_meta["chunks_read"] = list(rater.get("chunks_read") or ())
-                    run_meta["passes"] = len(chunks)
+                    run_meta["passes"] = rater.get("passes") or len(chunks)
                 # The stall record is what the next run's caps learn from: the kill marks the cap
                 # it fired at, and a completion's longest silent gap prices the cap itself.
                 if rater.get("stalled_s"):
                     run_meta["stalled_s"] = rater["stalled_s"]
-                if rater.get("stalled_retry_s"):
-                    run_meta["stalled_retry_s"] = rater["stalled_retry_s"]
                 if rater.get("max_quiet_ms") is not None:
                     run_meta["max_quiet_ms"] = rater["max_quiet_ms"]
                 if rater.get("killed"):
@@ -952,13 +951,9 @@ def cmd_run(args):
                 }
                 if chunks:
                     run_meta["chunks_read"] = list(rater.get("chunks_read") or ())
-                    run_meta["passes"] = len(chunks)
-                # A completed retry still records the attempt the stall watch killed under it —
-                # the only trace of that kill, and what lets its cap escalate next run. So does a
-                # kill in one chunk of a cell whose other chunks came back: the cell completed,
-                # and the hang it hit is evidence no other row carries.
-                if rater.get("stalled_retry_s"):
-                    run_meta["stalled_retry_s"] = rater["stalled_retry_s"]
+                    run_meta["passes"] = rater.get("passes") or len(chunks)
+                # A kill in one chunk of a cell whose other chunks came back is recorded on the
+                # completed cell, and the caps never sample a row that carries the kill.
                 if rater.get("stalled_s"):
                     run_meta["stalled_s"] = rater["stalled_s"]
                 if rater.get("killed"):
@@ -1039,9 +1034,8 @@ def cmd_run(args):
         # round no coverage an errored cell would have kept. The watchdog's own kills alone: a
         # provider answering `gateway timeout` is an ordinary failed cell. A cell whose retry
         # stalled too is that same hung review, killed earlier: `watchdog_killed` excludes it only
-        # so a stall never inflates the pair's duration cap, not to keep the run quiet.
-        # Over the cells' FINAL rows: an attempt the panel killed and then retried into a real
-        # review is not a hung run, and the superseded row beside it is kept for the cap it teaches.
+        # to keep a stall out of the duration reading, not to keep the run quiet. Over the cells'
+        # FINAL rows: a superseded attempt is not the cell's answer.
         if any(_panel.watchdog_killed(row) or row.get("stalled_s")
                for row in _panel.cell_attempt_rows(rater_meta)[0]):
             meta["timed_out"] = True

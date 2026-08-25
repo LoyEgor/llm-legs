@@ -432,34 +432,34 @@ standing in another repository, and an abandoned supervisor silence nothing.
 
 ## Watchdog
 
-Per (model, effort): cap = the longest recorded duration for that pair + 3
-minutes, floor 15 minutes. On breach the panel is killed, the run is marked
-`timed_out` in its record, which the report flow and `review-bench doctor` read;
-the statusline shows nothing for it, since a killed run settles nothing and its
-paths stand in the debt like any others. A breached cap grows by one grace on the next
-run so a wrong kill corrects itself — but the growth is a probe with three
-strikes, not a right: only runs killed since the pair's last completion count,
-and the third in a row drops the kill record, returning the pair to the cap
-its completions earn and opening a fresh episode — the next kill probes again,
-so a pair with no completion on file is re-probed every third run instead of
-being pinned at the floor for ever. Left unbounded, one genuinely dead cell
-walked every panel's wall from 15 toward 30 minutes in a night; episodes bound
-it to one grace per run on average. A completion clears the kill record, so a
-recovered pair is judged on its completions alone.
+Per (model, effort), from the last `CAP_WINDOW_DAYS = 21` days of runs: cap = the longest of
+the pair's completions a triage confirmed a finding of + `DURATION_CAP_GRACE_S = 180`; under
+`DURATION_CAP_THIN_SAMPLES = 5` such completions, the longest of all its completions + the same
+grace; no completion in the window, `DURATION_CAP_DEFAULT_S = 900`. A kill raises nothing — a
+killed row, a chunked cell's included, is never a sample. An agy cell is then held under
+`AGY_DURATION_CEILING_S` for the tier (480s at T0/T1, 600s at T2/T3); Claude and codex have no
+ceiling. On breach the cell is killed, the run is marked `timed_out` in its record, which the
+report flow and `review-bench doctor` read; the statusline shows nothing for it, since a killed
+run settles nothing and its paths stand in the debt like any others.
 
-Under the duration cap sits the stall watch, earned per pair the same way:
-activity is any byte on the cell's pipes or growth of its declared log files,
-and the cap is the longest silent gap the pair's COMPLETIONS ever showed + 2
-minutes, floor 4 minutes — armed only where those gaps stay under half the
-pair's runtimes, the evidence it streams at all, so a buffered side and a pair
-with no gap history can never be stall-killed. A kill takes the whole process
-group (the hang lives in the launcher's descendant), records `stalled_s` on the
-cell, is retried once inside the same run, and reads as `stalled` in the
-report. A stall kill is not a duration breach: it never raises the pair's
-duration cap, while the stall cap it was killed at grows by one grace on the
-next run so a wrong kill corrects itself — unbounded, unlike the duration
-cap's probe, because a stall kill costs the run one in-cell retry rather than
-its wall, and the duration cap still bounds the cell either way.
+Under the duration cap sits the stall watch: activity is any byte on the cell's pipes or growth
+of its declared stream file — geminib's `--log-file` for agy, the `--json` event file for codex,
+the `--output-format stream-json` event file for Claude; OpenCode declares none and is watched
+through its pipes alone — and the cap is
+the longest silent gap the pair's completions showed in the same window +
+`STALL_CAP_GRACE_S = 120`, floor `STALL_CAP_FLOOR_S = 240`; a pair with no gap on record has none, and a stall cap at or
+above the duration cap is not handed to the cell. A kill takes the whole process group, records
+`stalled_s` on the cell and reads as `stalled` in the report.
+
+A kill of ours — cap or stall — ENDS the cell: no retry, no further chunk pass, and nothing of
+its partial output is read; the cell stands killed with its reason. The only answers asked for
+again are unusable output — a Claude stream that never reached its `result` event included —
+and a provider's own server error, and one pass LAUNCHES at most `CELL_ATTEMPTS_MAX = 2` times,
+transient waits and retry causes together: a chunked cell reads every chunk it has, each pass
+under a budget of its own, while a kill on any pass still ends the whole cell. A usage wall
+rotates the account and spends nothing of it, and a killed attempt whose partial output carries
+the wall wording retires the account without asking the next one. Past the budget the pass's
+answer stands.
 
 Every kill writes down which budget fired: `killed` (`watchdog` or `stall`) and
 `killed_cap_s` on the cell's meta row, beside `max_quiet_ms`. A cell that ended
