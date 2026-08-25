@@ -145,7 +145,10 @@ account_rows() {
     if (.accounts | type) == "array" and (.accounts | length) > 0 then
       .accounts[] | row(.account)
     else
-      row(if (.current_account | type) == "string" then .current_account else "main" end)
+      # The Gemini base profile is deletable, so an empty vendor names no account to revive.
+      (if (.current_account | type) == "string" then .current_account
+       elif $vendor == "gemini" then empty
+       else "main" end) as $name | row($name)
     end
   ' "$store" 2>/dev/null
 }
@@ -437,6 +440,7 @@ run_tick() {
     pushback=0
     target_rc=0
     claude_note=''
+    probe_verdicts=''
 
     if [ "$(jq 'length' <<<"$stale")" -gt 0 ]; then
       if [ "$vendor" = claude ]; then
@@ -469,12 +473,12 @@ run_tick() {
             ( export LLM_LIMITS_ANNOUNCE_SUPPRESS=1
               timeout_command "$probe_timeout" "$claudeb_bin" revive "$account" ) \
               >/dev/null 2>"$refresh_log" || rc=$?
-            errors=$(recorded_errors "$vendor" "$account" "$now")
-            if [ "$rc" -eq 4 ]; then
-              claude_note="$account needs a human login; no automated path can refresh it"
-            elif [ "$rc" -ne 0 ] && { cat "$refresh_log"; printf '%s\n' "$errors"; } | is_pushback_detail; then
-              pushback=1
-            fi
+            # revive only reaches the store through the collector run below, so what it did is
+            # remembered here and judged once the store can answer for it.
+            stderr_pushback=0
+            ! is_pushback_detail <"$refresh_log" || stderr_pushback=1
+            probe_verdicts="$probe_verdicts$account	$rc	$stderr_pushback
+"
             [ "$rc" -eq 0 ] || target_rc=$rc
             rm -f "$refresh_log"
             tick_tmp=''
@@ -513,12 +517,10 @@ run_tick() {
             else
               lock_lost=1
             fi
-            errors=$(recorded_errors "$vendor" "$account" "$now")
-            if [ "$rc" -eq 4 ]; then
-              claude_note="$account needs a human login; no automated path can refresh it"
-            elif [ "$rc" -ne 0 ] && { cat "$refresh_log"; printf '%s\n' "$errors"; } | is_pushback_detail; then
-              pushback=1
-            fi
+            stderr_pushback=0
+            ! is_pushback_detail <"$refresh_log" || stderr_pushback=1
+            probe_verdicts="$probe_verdicts$account	$rc	$stderr_pushback
+"
             [ "$rc" -eq 0 ] || target_rc=$rc
             rm -f "$refresh_log"
             tick_tmp=''
@@ -531,6 +533,15 @@ run_tick() {
             "$collector" >/dev/null 2>&1 || true
             blocked=$(blocked_accounts_json "$vendor" "$interval")
           fi
+          while IFS="$(printf '\t')" read -r account rc stderr_pushback; do
+            [ -n "$account" ] || continue
+            if [ "$rc" -eq 4 ]; then
+              claude_note="$account needs a human login; no automated path can refresh it"
+            elif [ "$rc" -ne 0 ] && { [ "$stderr_pushback" -eq 1 ] ||
+                 recorded_errors "$vendor" "$account" "$now" | is_pushback_detail; }; then
+              pushback=1
+            fi
+          done <<<"$probe_verdicts"
         fi
       else
         while IFS= read -r account; do
@@ -554,14 +565,17 @@ run_tick() {
       [ "$vendor" != claude ] || post_stale=$(drop_reserved "$post_stale")
       refreshed_count=$(jq -n --argjson before "$stale" --argjson after "$post_stale" \
         '$before - $after | length')
-      if [ -n "$claude_note" ]; then
+      if [ "$pushback" -eq 1 ]; then
+        # Pushback outranks a login note: it is what loosens the ladder, and one account that
+        # needs a human must not hide another account being rate-limited on the same tick.
+        outcome=pushback
+        detail='refresh path reported a 429 or rate-limit signal'
+        [ -z "$claude_note" ] || detail="$detail; $claude_note"
+      elif [ -n "$claude_note" ]; then
         # A login-needed account leaves the stale list by becoming unrefreshable, which the
         # count below would otherwise read as a refresh.
         outcome=error
         detail="$claude_note"
-      elif [ "$pushback" -eq 1 ]; then
-        outcome=pushback
-        detail='refresh path reported a 429 or rate-limit signal'
       elif [ "$(jq 'length' <<<"$post_stale")" -eq 0 ]; then
         outcome=refreshed
         detail='all stale accounts refreshed'

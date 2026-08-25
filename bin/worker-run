@@ -453,7 +453,7 @@ reroute_walled() {
   # Defence against a picker that ignores --exclude: relaunching on an account
   # this run already burnt would wall again forever.
   case ",$walled," in *",$PICKED_ACCOUNT,"*) return 1 ;; esac
-  if [ "$vendor" = gemini ] && [ "$PICKED_ACCOUNT" != main ]; then
+  if [ "$vendor" = gemini ]; then
     grep -Eq "^${PICKED_ACCOUNT}:" <<<"$("$(jq -r '.cli' "$directory/meta.json")" list 2>/dev/null)" ||
       return 1
   fi
@@ -806,7 +806,7 @@ start_run() {
     exit 4
   fi
   case "$vendor:$account" in
-    gemini:main) ;;
+    gemini:main) ! gemini_main_removed || fail 'gemini account main has been removed' ;;
     gemini:*) [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]] || fail "invalid gemini account: $account" ;;
     *) [[ "$account" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || fail "invalid account: $account" ;;
   esac

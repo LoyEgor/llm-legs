@@ -16,6 +16,15 @@ cat >"$STUB" <<'EOF'
 set -u
 if [ "$#" -eq 0 ]; then
   printf '<bare>\n' >>"$STUB_LOG"
+  # Stands in for the real merge: what revive left in the claudeb snapshot reaches the store
+  # only here, never before.
+  if [ -s "${CB_SNAPSHOT:-/dev/null}" ]; then
+    tmp=$(mktemp "${LLM_LIMITS_CACHE}.tmp.XXXXXX") || exit 5
+    jq --argjson now "$LLM_REFRESH_NOW" --slurpfile pending <(jq -Rn '[inputs]' <"$CB_SNAPSHOT") '
+      .vendors.claude.accounts |= map(if (.account | IN($pending[0][])) then
+        .refresh_error={cause:"HTTP 429 rate limit",at:$now} else . end)' \
+      "$LLM_LIMITS_CACHE" >"$tmp" && mv -f "$tmp" "$LLM_LIMITS_CACHE"
+  fi
   exit "${STUB_PASSIVE_RC:-0}"
 fi
 [ "${1:-}" = --refresh-account ] || exit 2
@@ -83,6 +92,24 @@ case "${CB_RESULT:-ok}" in
     exit 5
     ;;
   fail)
+    printf 'claudeb: revive: %s: session driver failed (exit 5)\n' "$account" >&2
+    exit 5
+    ;;
+  mixed)
+    case " ${CB_LOGIN_ACCOUNTS:-} " in
+      *" $account "*)
+        restate '.vendors.claude.accounts |= map(if .account == $account then
+                   .auth_needed=true else . end)'
+        printf 'claudeb: revive: %s needs a human login\n' "$account" >&2
+        exit 4
+        ;;
+    esac
+    printf 'claudeb: revive failed account=%s cause=warm-429 http=429\n' "$account" >&2
+    exit 5
+    ;;
+  snapshot-pushback)
+    # The 429 lands in the claudeb snapshot only; stderr says nothing a reader could match.
+    printf '%s\n' "$account" >>"${CB_SNAPSHOT:-/dev/null}"
     printf 'claudeb: revive: %s: session driver failed (exit 5)\n' "$account" >&2
     exit 5
     ;;
@@ -191,7 +218,8 @@ run_refresh() {
     LLM_LIMITS_REFRESH_CLAUDEB="${CB_BIN:-$CB_STUB}" CB_LOG="$dir/claudeb.log" \
     CB_ENV="$dir/claudeb-env.log" \
     CB_RESULT="${CB_RESULT:-ok}" CB_STEAL_PID="${CB_STEAL_PID:-$$}" \
-    CB_TOKEN_FRESH="${CB_TOKEN_FRESH:-}" \
+    CB_TOKEN_FRESH="${CB_TOKEN_FRESH:-}" CB_SNAPSHOT="${CB_SNAPSHOT:-$dir/cb-snapshot.log}" \
+    CB_LOGIN_ACCOUNTS="${CB_LOGIN_ACCOUNTS:-}" \
     LLM_LIMITS_REFRESH_REVIVE_TIMEOUT="${LLM_LIMITS_REFRESH_REVIVE_TIMEOUT:-240}" \
     LLM_LIMITS_REFRESH_PROBE_TIMEOUT="${LLM_LIMITS_REFRESH_PROBE_TIMEOUT:-90}" \
     LLM_LIMITS_REFRESH_LOCK_STALE_SECONDS="${LLM_LIMITS_REFRESH_LOCK_STALE_SECONDS:-1800}" \
@@ -511,6 +539,43 @@ CB_RESULT=pushback run_refresh "$case_dir" "$NOW" || fail 'revive pushback run f
 jq -eR 'fromjson | select(.vendor == "claude" and .outcome == "pushback" and
   .interval_min == 45 and .accounts_tried == ["alpha"])' "$case_dir/journal.jsonl" >/dev/null || \
   fail 'the revive 429 was not journaled as pushback'
+pass
+
+# One tick can meet both: an account that needs a human and another being rate-limited. Only the
+# 429 carries a cadence decision, so the login note must not be what the tick reports instead.
+case_dir="$WORK/claude-login-and-429"
+mkdir -p "$case_dir/home"
+write_store "$case_dir/store.json" "$NOW" 7200 60 60
+jq --argjson now "$NOW" '.vendors.claude.accounts += [{account:"zeta",
+  five_hour:{used_pct:10,as_of:($now - 7200)},weekly:{used_pct:20,as_of:($now - 7200)}}]' \
+  "$case_dir/store.json" >"$case_dir/store.tmp" && mv "$case_dir/store.tmp" "$case_dir/store.json"
+write_state "$case_dir/state.json" 30 30 30 0 "$((NOW - 1000))"
+jq --argjson now "$NOW" '.vendors.codex.last_attempt_epoch=$now | .vendors.gemini.last_attempt_epoch=$now' \
+  "$case_dir/state.json" >"$case_dir/state.tmp" && mv "$case_dir/state.tmp" "$case_dir/state.json"
+CB_RESULT=mixed CB_LOGIN_ACCOUNTS=alpha CB_TOKEN_FRESH="alpha zeta" \
+  run_refresh "$case_dir" "$NOW" || fail 'login-plus-429 run failed'
+[ "$(jq -r '.claude.interval_min' "$case_dir/state.json")" -eq 45 ] || \
+  fail 'a login note swallowed the 429 and left the cadence where it was'
+jq -eR 'fromjson | select(.vendor == "claude" and .outcome == "pushback" and
+  (.detail | test("429") and test("needs a human login")))' "$case_dir/journal.jsonl" >/dev/null || \
+  fail 'the tick reported the login need and the 429 as if only one of them happened'
+pass
+
+# What a probe hit reaches the store only through the collect that follows it: a 429 recorded
+# there and nowhere a reader could see earlier must still loosen the cadence.
+case_dir="$WORK/claude-429-store-only"
+mkdir -p "$case_dir/home"
+write_store "$case_dir/store.json" "$NOW" 7200 60 60
+write_state "$case_dir/state.json" 30 30 30 0 "$((NOW - 1000))"
+jq --argjson now "$NOW" '.vendors.codex.last_attempt_epoch=$now | .vendors.gemini.last_attempt_epoch=$now' \
+  "$case_dir/state.json" >"$case_dir/state.tmp" && mv "$case_dir/state.tmp" "$case_dir/state.json"
+CB_RESULT=snapshot-pushback CB_TOKEN_FRESH=alpha \
+  run_refresh "$case_dir" "$NOW" || fail 'store-only 429 run failed'
+[ "$(jq -r '.claude.interval_min' "$case_dir/state.json")" -eq 45 ] || \
+  fail 'a 429 the collect recorded did not loosen the cadence from 30 to 45'
+jq -eR 'fromjson | select(.vendor == "claude" and .outcome == "pushback")' \
+  "$case_dir/journal.jsonl" >/dev/null || \
+  fail 'a 429 visible only in the store was not journaled as pushback'
 pass
 
 # The driver self-limits, but a hung session must never hold the tick past the heartbeat.

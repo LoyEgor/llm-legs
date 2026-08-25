@@ -1,6 +1,16 @@
+# main runs under the real HOME, so nothing about it can be deleted to mark it gone: `geminib
+# remove main` writes this marker instead, and every enumerator decides main's existence by it.
+gemini_removal_marker() {
+  printf '%s/%s.json.removed\n' \
+    "${gemini_accounts_cache_dir:-${LLM_LIMITS_GEMINI_ACCOUNTS_DIR:-$gemini_base_home/.llm-limits-gemini}}" \
+    "$1"
+}
+
+gemini_main_removed() { [ -e "$(gemini_removal_marker main)" ]; }
+
 gemini_account_names() {
   local path
-  printf 'main\n'
+  gemini_main_removed || printf 'main\n'
   if [ -d "$gemini_profiles_dir" ]; then
     for path in "$gemini_profiles_dir"/*; do
       [ -d "$path" ] && basename "$path"

@@ -93,7 +93,7 @@ return "MISSING"
 }
 
 assert_codex_account_rows() {
-  local menu="$1" json="$2" count account auth credits needs_entry row
+  local menu="$1" json="$2" count account auth credits needs_entry row rest
   count=$(jq '.vendors.codex.accounts | length' <<<"$json")
   while IFS= read -r account; do
     auth=$(jq -r --arg account "$account" '.vendors.codex.accounts[] | select(.account == $account) | .auth_needed == true' <<<"$json")
@@ -107,8 +107,14 @@ assert_codex_account_rows() {
       if [ "$needs_entry" = true ]; then
         [[ "$row" == *"!"* ]] || fail "Codex auth-needed row lacks the user-entry marker: $row"
       else
-        [ "$row" = "$account  login needed" ] \
-          || fail "Codex auth-needed row is not name plus login needed: $row"
+        # An age always renders now, so the row is name, optional age, notice — and nothing else:
+        # an exact match would read the age itself as drift.
+        rest=${row#"$account"}
+        rest=${rest%"  login needed"}
+        case "$rest" in
+          ''|'  never'|'  '[0-9]*[mhd]) ;;
+          *) fail "Codex auth-needed row carries more than a name and an age: $row" ;;
+        esac
       fi
     else
       row=$(awk -v account="$account" '$1 == account {print; exit}' <<<"$menu")

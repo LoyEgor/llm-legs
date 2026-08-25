@@ -1353,7 +1353,20 @@ seed_live_cache() {
      seven_day:{used_percentage:60,resets_at:($now+86400),as_of:($now-5000),origin:"session"},
      auth:{status:"ok",checked_at:$now}}' > "$CLAUDEB_FIX/limits/liveacct.json"
 }
+# The first render of a session has no remembered spend, so there is nothing the current cost
+# can have grown from: an unmoved reading then is an idle replay like any other.
 seed_live_cache
+run_statusline "$(statusline_payload status-first "{\"cost\":{\"total_cost_usd\":1.5},\"rate_limits\":$live_rl}")" liveacct \
+  >/dev/null || fail "statusline first-render merge failed"
+assert jq -e --argjson now "$NOW" '.five_hour.as_of == ($now - 5000) and .seven_day.as_of == ($now - 5000)' \
+  "$CLAUDEB_FIX/limits/liveacct.json" >/dev/null
+assert test ! -e "$STATE_DIR/rl-cost-status-first"
+
+# A merge accepted on its own merits (a higher reading) is what seeds the remembered spend.
+jq -cn --argjson now "$NOW" '
+  {five_hour:{used_percentage:29,resets_at:($now+3600),as_of:($now-5000),origin:"session"},
+   seven_day:{used_percentage:59,resets_at:($now+86400),as_of:($now-5000),origin:"session"},
+   auth:{status:"ok",checked_at:$now}}' > "$CLAUDEB_FIX/limits/liveacct.json"
 run_statusline "$(statusline_payload status-live "{\"cost\":{\"total_cost_usd\":1.5},\"rate_limits\":$live_rl}")" liveacct \
   >/dev/null || fail "statusline live-merge seeding failed"
 assert_eq "1.5" "$(cat "$STATE_DIR/rl-cost-status-live")"
@@ -1382,6 +1395,11 @@ jq -cn --argjson now "$NOW" \
   '{five_hour:{used_percentage:30,resets_at:($now+3600),as_of:($now-5000),origin:"session"},
     auth_needed:true,auth_cause:"needs-relogin",auth_checked_at:($now-600)}' \
   > "$CLAUDEB_FIX/limits/liveauthacct.json"
+# Seed the remembered spend through the weekly window alone: only a five-hour window accepted
+# as newer speaks for the credentials, and this case is about what a re-stamp may NOT clear.
+run_statusline "$(statusline_payload status-live-auth "{\"cost\":{\"total_cost_usd\":0.2},\"rate_limits\":{\"seven_day\":{\"used_percentage\":60,\"resets_at\":$((NOW + 86400))}}}")" liveauthacct \
+  >/dev/null || fail "statusline live-auth seeding failed"
+assert_eq "0.2" "$(cat "$STATE_DIR/rl-cost-status-live-auth")"
 run_statusline "$(statusline_payload status-live-auth "{\"cost\":{\"total_cost_usd\":0.5},\"rate_limits\":$live_rl}")" liveauthacct \
   >/dev/null || fail "statusline live-auth merge failed"
 assert jq -e --argjson floor "$NOW" '.five_hour.as_of >= $floor and .auth_needed == true and

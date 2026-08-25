@@ -396,7 +396,8 @@ render_table() {
       (("codex", "gemini") as $k | $v[$k]
        | select(.removed != true)
        | if ((.accounts | type) == "array") and
-            (($k == "codex" and any(.accounts[]; .auth_needed == true)) or (.accounts | length) > 1) then
+            (($k == "codex" and any(.accounts[]; .auth_needed == true)) or (.accounts | length) > 1 or
+             ($k == "gemini" and (.accounts | length) > 0)) then
            (.accounts[] | select(.removed != true)
               | {src: ($k + "/" + .account + (if .is_current then "*" else "" end)),
                  five: .five_hour, week: .weekly, fable:null,
@@ -558,7 +559,11 @@ gemini_accounts_list=$(
     if [ -d "$gemini_accounts_cache_dir" ]; then
       for gemini_removed_path in "$gemini_accounts_cache_dir"/*.json.removed; do
         [ -e "$gemini_removed_path" ] || continue
-        basename "$gemini_removed_path" .json.removed
+        gemini_removed_name=$(basename "$gemini_removed_path" .json.removed)
+        # A named account keeps a `removed:true` row; main's removal is total absence, so its
+        # marker must not put it back into the roster it was just taken out of.
+        [ "$gemini_removed_name" != main ] || continue
+        printf '%s\n' "$gemini_removed_name"
       done
     fi
   } | awk 'NF && !seen[$0]++'
@@ -1333,7 +1338,7 @@ while IFS= read -r gemini_account; do
       def used($remaining):
         ((1 - $remaining) * 100) |
         (if . < 0 then 0 elif . > 100 then 100 else . end) | round;
-      {account:$account,is_current:($account == "main"),enabled:$enabled,source:"agy-local-rpc",group:$d.group,
+      {account:$account,enabled:$enabled,source:"agy-local-rpc",group:$d.group,
        five_hour:{used_pct:used($d.five.remainingFraction),resets_at:$d.five.resetTime,
                   as_of:$as_of_epoch,origin:"usage",stale:($stale > $thr5)},
        weekly:{used_pct:used($d.week.remainingFraction),resets_at:$d.week.resetTime,
@@ -1343,7 +1348,7 @@ while IFS= read -r gemini_account; do
   elif [ "$gemini_auth" = 1 ]; then
     gemini_account_json=$(jq -cn --arg account "$gemini_account" --argjson enabled "$gemini_enabled" \
       --arg as_of "$(epoch_iso "$gemini_mtime")" --argjson as_of_epoch "$gemini_mtime" \
-      '{account:$account,is_current:($account == "main"),enabled:$enabled,auth_needed:true,
+      '{account:$account,enabled:$enabled,auth_needed:true,
         status:"login needed",source:"agy-local-rpc",as_of:$as_of,as_of_epoch:$as_of_epoch}')
   else
     # No cache and no auth marker = the account has never been refreshed. Emit
@@ -1361,7 +1366,7 @@ while IFS= read -r gemini_account; do
       rm -f "$gemini_removed_marker"
     else
       gemini_account_json=$(jq -cn --arg account "$gemini_account" --argjson enabled "$gemini_enabled" \
-        '{account:$account,is_current:($account == "main"),enabled:$enabled,removed:true,
+        '{account:$account,enabled:$enabled,removed:true,
           status:"removed",source:"agy-local-rpc"}')
     fi
   fi
@@ -1407,6 +1412,10 @@ gemini_accounts=$(printf '%s' "$gemini_account_lines" | jq -sc --argjson order "
       if ($old | type) == "object" then .refresh_error = $old else del(.refresh_error) end
     end)
   | sort_by(.account as $n | (($order | index($n)) // ($order | length)))
+  # The base profile is deletable like every other account, so no fixed name can be the current one.
+  | (first(.[] | select(.removed != true and .enabled != false) | .account) //
+     first(.[] | select(.removed != true) | .account) // null) as $current
+  | map(.is_current = (.account == $current))
 ')
 
 gemini_refresh_error=$(jq -rn --argjson rows "$gemini_accounts" --argjson records "$gemini_refresh_records" '
@@ -1431,20 +1440,23 @@ gemini=$(jq -cn --argjson accounts "$gemini_accounts" --argjson wall "$gemini_wa
           (.five_hour.used_pct | type) == "number" and
           (.weekly.used_pct | type) == "number" and
           .five_hour.used_pct < 100 and .weekly.used_pct < 100)] as $usable |
-  (first($accounts[] | select(.account == "main")) // $accounts[0]) as $main |
+  (first($accounts[] | select(.is_current)) // $visible[0] // null) as $current |
   ($usable | sort_by(if .account == "main" then 1 else 0 end,
                      ([.five_hour.used_pct,.weekly.used_pct] | max), .account) | .[0]) as $selected |
   if ($accounts | length) == 0 then
     {available:false,status:"no quota snapshot",source:"agy-local-rpc",last_wall:$wall}
-  elif ($accounts | length) == 1 then
-    $main
+  # The flat shape is what a store holding nothing but the base profile has always been; every
+  # other roster, main deleted or not, is rendered as named account rows.
+  elif ($accounts | length) == 1 and $accounts[0].account == "main" then
+    $accounts[0]
     | del(.account,.is_current)
     | .available = (.removed != true and .auth_needed != true and
                     (.five_hour | type) == "object" and (.weekly | type) == "object")
     | .last_wall = $wall
   else
-    ({available:(($usable | length) > 0),current_account:"main",accounts:$accounts,
+    ({available:(($usable | length) > 0),accounts:$accounts,
       source:"agy-local-rpc",last_wall:$wall} +
+     (if $current == null then {} else {current_account:$current.account} end) +
      (if ($usable | length) == 0 and any($visible[]; .auth_needed == true)
       then {auth_needed:true} else {} end) +
      (if $selected != null then
@@ -1800,11 +1812,13 @@ else
   experiments_banner
   plain_dim=''
   plain_rst=''
+  plain_red=''
   if color_stdout; then
     plain_dim=$'\033[2m'
     plain_rst=$'\033[0m'
+    plain_red=$'\033[31m'
   fi
-  jq -r --arg dim "$plain_dim" --arg rst "$plain_rst" --argjson render_now "$now_epoch" "$iso_def$LIMITS_VIEW_JQ$age_def$reset_format_def"'
+  jq -r --arg dim "$plain_dim" --arg rst "$plain_rst" --arg red "$plain_red" --argjson render_now "$now_epoch" "$iso_def$LIMITS_VIEW_JQ$age_def$reset_format_def"'
     def dimmed($window):
       if ($window.expired == true or $window.stale == true) then $dim + . + $rst else . end;
     def pct($window):
@@ -1828,11 +1842,13 @@ else
       if .auth_needed == true or
          ((.auth.status? | type) == "string" and .auth.status != "ok")
       then "login needed" else "-" end;
+    def aged($row): ($row | compact_age($render_now)) |
+      if $row.age_alarm == true then $red + . + $rst else . end;
     def line($src; $row; $rot; $credits; $status):
       $src + ": 5h " + pct($row.five_hour) + " @ " + reset($row.five_hour) +
       " | wk " + pct($row.weekly) + " @ " + reset($row.weekly) +
       " | fb " + pct($row.fable) + " @ " + reset($row.fable) +
-      " | age " + ($row | compact_age($render_now)) +
+      " | age " + aged($row) +
       " | rot " + $rot + " | cr " + $credits + " | status " + $status;
     .vendors | to_entries[] |
     select(.value.removed != true) |
@@ -1845,14 +1861,15 @@ else
     elif (.key == "codex" or .key == "gemini") and
          ((.value.accounts | type) == "array") and
          ((.value.accounts | length) > 1 or
-          (.key == "codex" and any(.value.accounts[]; .auth_needed == true))) then
+          (.key == "codex" and any(.value.accounts[]; .auth_needed == true)) or
+          (.key == "gemini" and (.value.accounts | length) > 0)) then
       .key as $key | .value.accounts[] | select(.removed != true) |
       line($key + "/" + .account + (if .is_current then "*" else "" end); .; rotation;
         (if $key == "codex" then credits else "-" end); account_status)
     elif .value.available then
       line(.key; .value; ((.value.accounts[0] // .value) | rotation);
         (if .key == "codex" then (.value | credits) else "-" end); "-")
-    else line(.key; {}; "-"; "-";
+    else line(.key; {age_alarm: (.value.age_alarm == true)}; "-"; "-";
       (if .value.auth_needed == true then "login needed" else (.value.status // "-") end)) +
       (if .value.last_wall then " | last wall " + .value.last_wall else "" end) end
   ' <<<"$result"

@@ -137,6 +137,11 @@ for spec in \
   assert grep -q "cache=/dev/null args=--account $leg" "$PICK_LOG"
   assert jq -e --arg account "$account" '.account == $account' \
     "$data/served-models.jsonl" >/dev/null
+  # A routed leg never reaches the bare CLI: for Gemini that CLI runs under the real HOME, the
+  # base profile the router no longer has to have.
+  case "$leg" in
+    gemini) assert test "$(grep -c $'^agy\t' "$CALL_LOG")" -eq 0 ;;
+  esac
 done
 
 for spec in \

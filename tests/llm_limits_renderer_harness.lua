@@ -1911,4 +1911,34 @@ do
   assert(titleText(current):find("10m", 1, true), "a fresh age lost its span")
 end
 
+-- Gemini without its base profile: one account left is still an account row with its own pool,
+-- pin and refresh controls, and nothing addresses the name that is gone.
+do
+  local soleGemini = { schema = 1, vendors = {
+    claude = { available = false },
+    codex = { available = false },
+    gemini = { available = true, current_account = "com", accounts = {
+      { account = "com", is_current = true, enabled = true, five_hour = bucket(10),
+        weekly = bucket(20) },
+    } },
+  }}
+  local soleMenu = loadModule(soleGemini).menuItems()
+  local comRow = accountItem(soleMenu, "com")
+  assert(comRow, "the last Gemini account did not render an account row")
+  assert(submenuItem(comRow, "In worker pool"), "the last Gemini account lost its pool toggle")
+  assert(submenuItem(comRow, "Pin for workers"), "the last Gemini account lost its pin toggle")
+  assert(submenuItem(comRow, "Hard refresh"), "the last Gemini account lost its hard refresh")
+  for _, item in ipairs(soleMenu) do
+    assert(not titleText(item):find("main", 1, true),
+      "a Gemini menu without main still addressed main")
+  end
+
+  -- A pin naming an account this vendor no longer has is still clearable from the menu.
+  local orphanMenu = loadModule(soleGemini, nil, nil, nil, nil,
+    "gemini_profile=main").menuItems()
+  local orphanRow = accountItem(orphanMenu, "main")
+  assert(orphanRow and submenuItem(orphanRow, "Pin for workers"),
+    "a Gemini pin on a departed account left no way to clear it")
+end
+
 return "PASS: Hammerspoon projection contract"

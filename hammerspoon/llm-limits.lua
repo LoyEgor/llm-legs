@@ -1189,8 +1189,10 @@ function M.menuItems()
         if type(row.menu) ~= "table" then return end
         for _, item in ipairs(roleItems(entry.key)) do table.insert(row.menu, item) end
       end
+      -- One row is enough: the flat shape belongs to a store holding nothing but the base
+      -- profile, and that profile is deletable.
       local hasGeminiAccounts = entry.key == "gemini" and type(vendor) == "table"
-        and type(vendor.accounts) == "table" and #vendor.accounts > 1
+        and type(vendor.accounts) == "table" and #vendor.accounts > 0
       -- A removed single-account vendor (gemini marker) is skipped entirely until its
       -- creds are valid again; llm-limits.sh clears the marker on that recovery.
       if type(vendor) == "table" and vendor.removed == true then
@@ -1212,9 +1214,10 @@ function M.menuItems()
             disabled = true,
           }
           if entry.key == "gemini" then
+            -- Vendor-wide: a Gemini with no live data may have no accounts left to name.
             unavailableRow.disabled = nil
             unavailableRow.menu = {{
-              title = "Hard refresh", fn = function() M.hardRefreshGemini("main") end,
+              title = "Refresh", fn = function() M.refreshVendor("gemini") end,
             }}
           end
         end
@@ -1229,7 +1232,7 @@ function M.menuItems()
           and vendor.accounts or nil
         local isClaudeAccounts = entry.key == "claude" and type(blocks) == "table" and #blocks > 0
         local isCodexAccounts = entry.key == "codex" and type(blocks) == "table" and #blocks > 0
-        local isGeminiAccounts = entry.key == "gemini" and type(blocks) == "table" and #blocks > 1
+        local isGeminiAccounts = entry.key == "gemini" and type(blocks) == "table" and #blocks > 0
         local isAccountRows = isClaudeAccounts or isCodexAccounts or isGeminiAccounts
         renderedAccountRows = isAccountRows
         local hasAccountControls = isClaudeAccounts and vendor.source == "claudeb-store"

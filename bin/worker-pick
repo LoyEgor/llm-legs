@@ -181,7 +181,7 @@ fail_safe() {
     exit 3
   fi
   case "$worker_mode" in
-    gemini) printf 'NEXT: gemini %s · %s · %s — unavailable (%s)\n' "${gm_pin:-main}" "$gm_model" "$gm_effort" "$1" ;;
+    gemini) printf 'NEXT: gemini %s · %s · %s — unavailable (%s)\n' "${gm_pin:-?}" "$gm_model" "$gm_effort" "$1" ;;
     auto) printf 'NEXT: claudeb (rotating) — %s  |  gemini unavailable\n' "$1" ;;
     *) printf 'NEXT: claudeb (rotating) — %s\n' "$1" ;;
   esac

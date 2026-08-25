@@ -19,6 +19,7 @@ geminib_root=$(resolve_root)
 quota_helper="${GEMINIB_QUOTA_CMD:-$geminib_root/agy-quota.py}"
 gemini_base_home=$base_home
 gemini_profiles_dir=$profiles_dir
+gemini_accounts_cache_dir="${LLM_LIMITS_GEMINI_ACCOUNTS_DIR:-$base_home/.llm-limits-gemini}"
 . "$geminib_root/share/gemini-accounts.sh"
 . "$geminib_root/share/worker-pool.sh"
 . "$geminib_root/share/worker-model.sh"
@@ -29,7 +30,9 @@ is_disabled() { worker_pool_is_disabled "$pool_dir" "$1"; }
 set_disabled() { worker_pool_set_disabled "$pool_dir" "$1" "$2"; }
 pool_suffix() { if is_disabled "$1"; then printf ' (out of pool)'; fi; }
 
-account_exists() { [ "$1" = main ] || [ -d "$profiles_dir/$1" ]; }
+account_exists() {
+  if [ "$1" = main ]; then ! gemini_main_removed; else [ -d "$profiles_dir/$1" ]; fi
+}
 
 pin_account() {
   worker_model_pin_account gemini_profile geminib gemini_account_names is_disabled "${1:-}"
@@ -265,25 +268,36 @@ add_account() {
 }
 
 remove_account() {
-  local name="${1:-}" directory cache_dir
-  if [ -z "$name" ] || [ "$name" = main ] ||
-     ! [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
-    printf 'usage: geminib remove <name> (not "main")\n' >&2
+  local name="${1:-}" directory marker
+  if [ -z "$name" ] || ! [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    printf 'usage: geminib remove <name>\n' >&2
     exit 2
   fi
-  directory="$profiles_dir/$name"
-  if [ ! -e "$directory" ] && [ ! -L "$directory" ]; then
-    printf 'geminib: unknown account: %s\n' "$name" >&2
-    exit 2
+  marker=$(gemini_removal_marker "$name")
+  if [ "$name" = main ]; then
+    # main's HOME is the real one: nothing under it is this tool's to delete, so the marker
+    # alone is what takes main out of every enumerator.
+    if gemini_main_removed; then
+      printf 'geminib: unknown account: %s\n' "$name" >&2
+      exit 2
+    fi
+  else
+    directory="$profiles_dir/$name"
+    if [ ! -e "$directory" ] && [ ! -L "$directory" ]; then
+      printf 'geminib: unknown account: %s\n' "$name" >&2
+      exit 2
+    fi
+    rm -rf "$directory"
+    rm -f "$gemini_accounts_cache_dir/$name.json"
   fi
-  rm -rf "$directory"
   if is_disabled "$name"; then set_disabled "$name" off; fi
-  cache_dir="${LLM_LIMITS_GEMINI_ACCOUNTS_DIR:-$base_home/.llm-limits-gemini}"
-  mkdir -p "$cache_dir"
-  rm -f "$cache_dir/$name.json"
-  : >"$cache_dir/$name.json.removed"
+  mkdir -p "$gemini_accounts_cache_dir"
+  : >"$marker"
   announce_account_removed "$geminib_root"
   printf 'geminib: removed %s\n' "$name"
+  if [ "$name" = main ]; then
+    printf 'geminib: main stays hidden while %s exists; delete that file to bring it back.\n' "$marker"
+  fi
 }
 
 list_account_line() {
@@ -380,6 +394,10 @@ run_account() {
     esac
   done
   if [ "$name" = main ]; then
+    if gemini_main_removed; then
+      printf 'geminib: unknown account: %s\n' "$name" >&2
+      exit 2
+    fi
     exec env HOME="$base_home" "$agy_bin" "$@"
   fi
   directory="$profiles_dir/$name"
@@ -410,7 +428,7 @@ show_help() {
     'geminib profile <name> [agy args...]  Open an isolated profile; creates it if missing (Antigravity asks you to log in once). Aliases: p, run.' \
     'geminib <name> exec [args...]' \
     'geminib add <name>                    Create a profile without launching; prints the login command.' \
-    'geminib remove <name>                 Forget a profile and prune its cached quota.' \
+    'geminib remove <name>                 Forget a profile and prune its cached quota; main leaves only a marker.' \
     'geminib enable <name>|--all           Return an account (or every account) to worker selection.' \
     'geminib disable <name>|--all          Exclude an account (or every account) from the worker pool; headless runs are then refused, your own sessions are not.' \
     'geminib use <name>|--clear            Pin worker selection to one account; no name prints the pin.' \

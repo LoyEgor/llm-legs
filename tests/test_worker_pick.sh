@@ -289,6 +289,17 @@ run_filter gemini_fresh '.vendors.gemini = {available:true,accounts:[
   {account:"main",group:"Gemini Models",five_hour:{used_pct:10},weekly:{used_pct:10}},
   {account:"work",group:"Gemini Models",five_hour:{used_pct:10},weekly:{used_pct:10}}]}'
 assert contains "$(head -n1 <<<"$output")" 'gemini work · pro · high — ACCOUNT: work'
+# The base profile is deletable, so a roster without it routes on the accounts it does have and
+# never falls back to the name that is gone.
+run_filter gemini_fresh '.vendors.gemini = {available:true,current_account:"com",accounts:[
+  {account:"com",group:"Gemini Models",is_current:true,five_hour:{used_pct:40},weekly:{used_pct:40}},
+  {account:"work",group:"Gemini Models",five_hour:{used_pct:10},weekly:{used_pct:10}}]}'
+assert contains "$(head -n1 <<<"$output")" 'gemini work · pro · high — ACCOUNT: work'
+assert not_contains "$(sed -n '3p' <<<"$output")" main
+run_filter gemini_fresh '.vendors.gemini = {available:true,current_account:"com",accounts:[
+  {account:"com",group:"Gemini Models",is_current:true,five_hour:{used_pct:100},weekly:{used_pct:40}}]}'
+assert contains "$(sed -n '3p' <<<"$output")" 'gemini: com 40% 5h 100% WALLED'
+assert not_contains "$(head -n1 <<<"$output")" 'ACCOUNT: main'
 write_config 'gemini_profile=work'
 run_filter gemini_fresh '.vendors.gemini = {available:true,accounts:[
   {account:"main",group:"Gemini Models",five_hour:{used_pct:20},weekly:{used_pct:20}},

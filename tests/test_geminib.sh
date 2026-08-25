@@ -540,7 +540,6 @@ assert test -e "$cache_dir/alpha.json.removed"
 # Removal announces a passive collect (no args) so the menu row drops without a
 # manual refresh.
 assert wait_announce ''
-assert_fails bash "$SCRIPT" remove main
 assert_fails bash "$SCRIPT" remove ../outside
 assert_fails bash "$SCRIPT" remove never-existed
 
@@ -829,4 +828,40 @@ assert image_run --dest "$WORK/image-output/converted.png" --prompt landscape --
 assert grep -q "$IMAGE_REPLY $WORK/image-output/converted.png" "$IMAGE_MAGICK_CALLS"
 assert grep -qx converted "$WORK/image-output/converted.png"
 
-echo "PASS: $asserts asserts; base and isolated HOME routing, worker-pool exclusion (own file beside the profiles, headless runs refused, interactive and pinned runs pass, the last member goes out too, visible in list/status), shared configuration and Playwright caches, a private MCP config per leg with every server forced disabled (main untouched, compliant files not rewritten), per-profile keychain kept unlockable behind a login.keychain-db symlink, parallel ordered list/status probes, one-step creation, strict launch names, exec delimiter stripping, override-aware login hints, persistent remove markers, use pin set/show/clear/refusal parity, and one-image generation routing, refused unknown accounts, destination checks made before a generation is spent, prompt, rescue, and conversion"
+# main has no profile directory to delete, so `remove` hides it by marker alone: the real HOME
+# keeps its Antigravity login, and every enumerator must behave as though main never existed.
+MAIN_MARKER="$HOME/.llm-limits-gemini/main.json.removed"
+assert test ! -e "$MAIN_MARKER"
+: >"$AGY_CALLS"
+: >"$ANNOUNCE_LOG"
+remove_main_output=$(bash "$SCRIPT" remove main) || fail "remove main failed"
+assert grep -qx 'geminib: removed main' <<<"$remove_main_output"
+assert grep -qF "$MAIN_MARKER" <<<"$remove_main_output"
+assert test -e "$MAIN_MARKER"
+assert test -f "$HOME/.gemini/settings.json"
+assert test -f "$HOME/.gemini/antigravity-cli/settings.json"
+assert wait_announce ''
+assert_fails bash "$SCRIPT" run main
+assert_fails bash "$SCRIPT" profile main
+assert_fails bash "$SCRIPT" main exec
+assert test ! -s "$AGY_CALLS"
+assert_fails bash "$SCRIPT" remove main
+assert_fails bash "$SCRIPT" add main
+assert_fails bash "$SCRIPT" enable main
+assert_fails bash "$SCRIPT" disable main
+main_list=$(bash "$SCRIPT" list) || fail "list after remove main failed"
+assert_fails grep -q '^main:' <<<"$main_list"
+main_status=$(bash "$SCRIPT" status) || fail "status after remove main failed"
+assert_fails grep -q '^main:' <<<"$main_status"
+main_names=$(gemini_profiles_dir="$HOME/.gemini-profiles" gemini_base_home="$HOME" \
+  bash -c '. "'"$ROOT"'/share/gemini-accounts.sh" && gemini_account_names')
+assert_fails grep -qx main <<<"$main_names"
+printf 'worker=auto\n' >"$PIN_CONFIG"
+assert_fails env WORKER_PICK_CONFIG_FILE="$PIN_CONFIG" bash "$SCRIPT" use main
+assert_fails grep -q '^gemini_profile=' "$PIN_CONFIG"
+# Deleting the marker is the whole undo.
+rm -f "$MAIN_MARKER"
+assert bash "$SCRIPT" run main
+assert grep -qx "CALL home=$HOME argc=0" "$AGY_CALLS"
+
+echo "PASS: $asserts asserts; base and isolated HOME routing, worker-pool exclusion (own file beside the profiles, headless runs refused, interactive and pinned runs pass, the last member goes out too, visible in list/status), shared configuration and Playwright caches, a private MCP config per leg with every server forced disabled (main untouched, compliant files not rewritten), per-profile keychain kept unlockable behind a login.keychain-db symlink, parallel ordered list/status probes, one-step creation, strict launch names, exec delimiter stripping, override-aware login hints, persistent remove markers, a base profile removed by marker alone (hidden from list/status/pin/launch, the real HOME untouched, undone by deleting the marker), use pin set/show/clear/refusal parity, and one-image generation routing, refused unknown accounts, destination checks made before a generation is spent, prompt, rescue, and conversion"

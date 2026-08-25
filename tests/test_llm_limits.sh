@@ -427,6 +427,80 @@ jq -e '[.vendors.gemini.accounts[] | select(.account == "gone")][0] |
 [ ! -e "$GEMINI_REMOVED_ONLY_CACHE/gone.json.removed" ] \
   || fail "recreated Gemini profile left its removed marker"
 
+# `geminib remove main` writes its marker into the accounts cache. The base profile then leaves
+# the store entirely — no row at all, not even a removed one — and what is left carries the
+# vendor: current_account is the first enabled account in the account order, and the hoisted
+# windows come from the account that spends least.
+GEMINI_NO_MAIN_PROFILES="$WORK/gemini-no-main-profiles"
+GEMINI_NO_MAIN_CACHE="$WORK/gemini-no-main-cache"
+GEMINI_NO_MAIN_STORE="$WORK/gemini-no-main-store.json"
+mkdir -p "$GEMINI_NO_MAIN_PROFILES/com" "$GEMINI_NO_MAIN_PROFILES/work" "$GEMINI_NO_MAIN_CACHE"
+gemini_account_snapshot() {
+  printf '{"groups":[{"displayName":"Gemini Models","buckets":[{"window":"5h","remainingFraction":%s,"resetTime":"2099-01-01T00:00:00Z"},{"window":"weekly","remainingFraction":%s,"resetTime":"2099-01-02T00:00:00Z"}]}]}\n' \
+    "$2" "$3" >"$GEMINI_NO_MAIN_CACHE/$1.json"
+}
+gemini_account_snapshot com 0.7 0.6
+gemini_account_snapshot work 0.5 0.4
+: >"$GEMINI_NO_MAIN_CACHE/main.json.removed"
+gemini_no_main() {
+  GEMINIB_PROFILES_DIR="$GEMINI_NO_MAIN_PROFILES" \
+    LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$GEMINI_NO_MAIN_CACHE" \
+    LLM_LIMITS_GEMINI_CACHE="$WORK/gemini-exhausted-main.json" \
+    HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$GEMINI_NO_MAIN_STORE" /bin/bash "$SCRIPT" "$@"
+}
+no_main=$(gemini_no_main --json)
+jq -e '.vendors.gemini |
+  ([.accounts[] | select(.account == "main")] | length) == 0 and
+  (. | has("removed") | not) and .available == true and
+  .current_account == "com" and .accounts[0].account == "com" and
+  .accounts[0].is_current == true and .accounts[1].is_current == false and
+  .five_hour.used_pct == 30 and .weekly.used_pct == 40' <<<"$no_main" >/dev/null \
+  || fail "removed Gemini main still shaped the vendor row"
+[ -e "$GEMINI_NO_MAIN_CACHE/main.json.removed" ] \
+  || fail "a passive collect cleared the Gemini main removal marker"
+no_main_table=$(gemini_no_main --table)
+grep -q '^gemini/main' <<<"$no_main_table" && fail "removed Gemini main still rendered a table row"
+grep -q '^gemini/com\*' <<<"$no_main_table" || fail "Gemini current account lost its table mark"
+grep -q '^gemini/work ' <<<"$no_main_table" || fail "remaining Gemini account missing from the table"
+no_main_plain=$(gemini_no_main --plain)
+grep -q '^gemini/main' <<<"$no_main_plain" && fail "removed Gemini main still rendered a plain row"
+grep -q '^gemini/com\*:' <<<"$no_main_plain" || fail "Gemini current account lost its plain mark"
+
+# The current account is the first ENABLED one: a pool exclusion moves the mark on.
+mkdir -p "$GEMINI_NO_MAIN_PROFILES/.geminib"
+printf 'com\n' >"$GEMINI_NO_MAIN_PROFILES/.geminib/disabled"
+no_main_off=$(gemini_no_main --json)
+jq -e '.vendors.gemini | .current_account == "work" and
+  ([.accounts[] | select(.is_current)] | length) == 1 and
+  ([.accounts[] | select(.account == "work" and .is_current)] | length) == 1' \
+  <<<"$no_main_off" >/dev/null || fail "an excluded Gemini account kept the current mark"
+rm -f "$GEMINI_NO_MAIN_PROFILES/.geminib/disabled"
+
+# One account left is still an account row, never the flat legacy shape main used to own.
+GEMINI_SOLE_PROFILES="$WORK/gemini-sole-profiles"
+mkdir -p "$GEMINI_SOLE_PROFILES/com"
+no_main_sole=$(GEMINIB_PROFILES_DIR="$GEMINI_SOLE_PROFILES" \
+  LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$GEMINI_NO_MAIN_CACHE" \
+  LLM_LIMITS_GEMINI_CACHE="$WORK/gemini-exhausted-main.json" \
+  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$WORK/gemini-sole-store.json" /bin/bash "$SCRIPT" --json)
+jq -e '.vendors.gemini | (.accounts | length) == 1 and .accounts[0].account == "com" and
+  .current_account == "com" and .available == true and (. | has("account") | not)' \
+  <<<"$no_main_sole" >/dev/null || fail "the last Gemini account collapsed into the legacy shape"
+
+# No accounts at all is a stated verdict, not a crash and not a resurrected main.
+GEMINI_EMPTY_PROFILES="$WORK/gemini-empty-profiles"
+GEMINI_EMPTY_CACHE="$WORK/gemini-empty-cache"
+mkdir -p "$GEMINI_EMPTY_PROFILES" "$GEMINI_EMPTY_CACHE"
+: >"$GEMINI_EMPTY_CACHE/main.json.removed"
+no_main_empty=$(GEMINIB_PROFILES_DIR="$GEMINI_EMPTY_PROFILES" \
+  LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$GEMINI_EMPTY_CACHE" \
+  LLM_LIMITS_GEMINI_CACHE="$WORK/gemini-exhausted-main.json" \
+  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$WORK/gemini-empty-store.json" /bin/bash "$SCRIPT" --json) \
+  || true
+jq -e '.vendors.gemini | .available == false and .status == "no quota snapshot" and
+  (. | has("accounts") | not) and (. | has("current_account") | not) and .usable_now == false' \
+  <<<"$no_main_empty" >/dev/null || fail "a Gemini vendor with no accounts did not state its verdict"
+
 GEMINI_PARALLEL_PROFILES="$WORK/gemini-parallel-profiles"
 GEMINI_PARALLEL_CACHE="$WORK/gemini-parallel-cache"
 GEMINI_PARALLEL_GATE="$WORK/gemini-parallel-gate"
@@ -621,6 +695,12 @@ grep -q '^codex: .* | rot off ' <<<"$pool_plain" \
 rm -f "$HOME_FIXTURE/.codex-profiles/.codexb/disabled"
 grep -q '^gemini: .* | status no quota snapshot | last wall 2026-07-11T08:00:00Z$' <<<"$plain" \
   || fail "plain unavailable vendor lost its last wall"
+# A vendor with no data at all is the loudest age alarm there is; the plain row must not be the
+# one surface that renders it as an ordinary reading.
+plain_color=$(CLICOLOR_FORCE=1 HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" \
+  LLM_LIMITS_WALLS_LOG="$WALLS" bash "$SCRIPT" --plain) || fail "plain colour collection failed"
+grep '^gemini:' <<<"$plain_color" | grep -q "| age "$'\033\[31m' \
+  || fail "an unavailable vendor rendered its age unalarmed in plain"
 fallback_table=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) || fail "fallback table collection failed"
 grep -q '^claude/main' <<<"$fallback_table" || fail "unique fallback main account missing from table"
 
@@ -1945,6 +2025,18 @@ grep -q $'\033\[31mnever' <<<"$alarm_color" || fail "the never age did not rende
 grep -q $'\033\[31m2d' <<<"$alarm_color" || fail "a day-old age did not render red"
 grep '^claude/recent' <<<"$alarm_color" | grep -q $'\033\[31m' \
   && fail "a fresh age rendered red"
+alarm_plain=$(CLICOLOR_FORCE=1 HOME="$HOME_FIXTURE" CLAUDEB_DIR="$ALARM_STORE" \
+  LLM_LIMITS_CACHE="$ALARM_CACHE" bash "$SCRIPT" --plain) \
+  || fail "age-alarm colour plain collection failed"
+grep '^claude/nodata:' <<<"$alarm_plain" | grep -q "| age "$'\033\[31m'"never" \
+  || fail "the never age did not render red in plain"
+grep '^claude/twodays:' <<<"$alarm_plain" | grep -q "| age "$'\033\[31m'"2d" \
+  || fail "a day-old age did not render red in plain"
+grep '^claude/recent' <<<"$alarm_plain" | grep -q $'\033\[31m' \
+  && fail "a fresh age rendered red in plain"
+alarm_plain_piped=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$ALARM_STORE" \
+  LLM_LIMITS_CACHE="$ALARM_CACHE" bash "$SCRIPT" --plain) || fail "age-alarm plain collection failed"
+printf '%s' "$alarm_plain_piped" | grep -q $'\033' && fail "the redirected plain output emitted colour escapes"
 
 USABLE_STORE="$WORK/usable-store"
 USABLE_HOME="$WORK/usable-home"
@@ -2358,5 +2450,5 @@ else
   echo "SKIP (hs unavailable): Hammerspoon projection contract"
 fi
 
-echo "PASS: account order (priority names, profile birth time, unknowns last) and vendor-scoped --refresh-account, schema, Claude unique accounts and fallback, Codex multi-account reset credits, auth-needed accounts and legacy cache, local Claude rotation usability, enabled flags, freshness contract, reset placeholder normalization, machine effective percentages and usability, refresh failure reasons, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, weekly bucket provenance, experiment announcements, Hammerspoon projection contract, no opaque gray in the renderer, plain output, table output and sorts, reset tiers, expired windows, age alarm, bare JSON default, atomic cache, per-account newest-wins merge, missing exit 3"
+echo "PASS: account order (priority names, profile birth time, unknowns last) and vendor-scoped --refresh-account, schema, Claude unique accounts and fallback, Codex multi-account reset credits, auth-needed accounts and legacy cache, local Claude rotation usability, enabled flags, freshness contract, reset placeholder normalization, machine effective percentages and usability, refresh failure reasons, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, weekly bucket provenance, experiment announcements, Hammerspoon projection contract, no opaque gray in the renderer, plain output, table output and sorts, reset tiers, expired windows, age alarm, bare JSON default, atomic cache, per-account newest-wins merge, a removed Gemini base profile absent from every surface with the vendor hoisted from what remains, missing exit 3"
 exit 0

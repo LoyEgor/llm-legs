@@ -407,7 +407,11 @@ rl_merge() {
         or ((($f.resets_at? // 0) == ($o.resets_at? // 0))
             and (((($f.used_percentage? // 0)) | round) > ((($o.used_percentage? // 0)) | round)))
       );
-    ((($cost | tonumber?) // -1) > (($prevcost | tonumber?) // -1)) as $live |
+    # Liveness is spend that GREW since the last accepted merge; with no numeric previous cost
+    # there is nothing to have grown from, so the first render of a session must not pass an
+    # unmoved reading off as live.
+    (((($prevcost | tonumber?) // null) as $p | (($cost | tonumber?) // null) as $c
+      | $p != null and $c != null and $c > $p)) as $live |
     def unmoved($k): ($fresh[$k] // null) as $f | ($old[$k] // null) as $o |
       ($f != null) and ($o != null)
       and (($f.resets_at? // 0) == ($o.resets_at? // 0))
